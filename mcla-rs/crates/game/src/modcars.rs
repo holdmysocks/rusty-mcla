@@ -50,6 +50,8 @@ pub struct ModCarRt {
     pub hide_driver: bool,
     /// no licence plate is drawn on the car (`hide_plate`)
     pub hide_plate: bool,
+    /// the garage leaves out the part rows the car has nothing for (`hide_empty_parts`, MODS.md M-8)
+    pub hide_empty_parts: bool,
     pub long_name: String,
     pub short_name: String,
 }
@@ -155,6 +157,12 @@ pub fn hides_driver(name: &str) -> bool {
 /// Is no licence plate drawn on this mod car (`hide_plate`)? Its `LicensePlate` meshes are left out of the model.
 pub fn hides_plate(name: &str) -> bool {
     car(name).is_some_and(|c| c.hide_plate)
+}
+
+/// Does the garage leave out the part rows this mod car has nothing to choose in (`hide_empty_parts`, MODS.md M-8)?
+/// Disc cars never: they keep the original's greyed rows.
+pub fn hides_empty_parts(name: &str) -> bool {
+    car(name).is_some_and(|c| c.hide_empty_parts)
 }
 
 pub fn is_mod_car(name: &str) -> bool {
@@ -458,6 +466,7 @@ fn car_rt(set: &mcla_mods::ModSet, c: &mcla_mods::ModCar, data_root: &Path, mods
         picture_donor: d.pictures.clone(),
         hide_driver: c.hide_driver,
         hide_plate: c.hide_plate,
+        hide_empty_parts: c.hide_empty_parts,
         long_name: c.long_name.clone(),
         short_name: c.short_name.clone(),
     })
