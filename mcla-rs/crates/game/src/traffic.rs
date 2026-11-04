@@ -1,7 +1,7 @@
 //! Ambient traffic as the original drives it (`mcAmbientCar`, vtable 0x820c2b0c, with its
-//! `mcAmbientBehaviorDrive2` 0x820d9dfc; per frame sub_826EA968: the behaviour sub_827A0138,
-//! the acceleration sub_826EA420, the speed sub_826EA240). A car rides its lane kinematically
-//! (the rail follower advances by speed x dt, sub_82798F18) with no pedals or steering. Met by
+//! `mcAmbientBehaviorDrive2` 0x820d9dfc; per frame F-50624: the behaviour F-87488,
+//! the acceleration F-30960, the speed F-58614). A car rides its lane kinematically
+//! (the rail follower advances by speed x dt, F-50894) with no pedals or steering. Met by
 //! something it turns physical (state 4) and rolls to rest (state 5); in free roam it then
 //! finds its way back onto a lane on a recovery rail (state 6), goes round a car standing in
 //! its way (state 7) and backs off one it is stuck behind (state 8). A semi cab tows a trailer
@@ -14,9 +14,9 @@ use glam::{Quat, Vec2, Vec3};
 use mcla_formats::rage::navsys::{LaneCurve, NavSys, RegionRect, DEFAULT_ROAD_SPEED};
 
 const MPH: f32 = 0.44704;
-/// The slowest a car is ever asked to drive (sub_827A2B38: 10 mph).
+/// The slowest a car is ever asked to drive (F-70324: 10 mph).
 const MIN_WANT: f32 = 4.4704;
-/// Braking below this stops the car (sub_826EA240: 0.5 mph).
+/// Braking below this stops the car (F-58614: 0.5 mph).
 const STOP_SPEED: f32 = 0.22352;
 /// Occluders are taken within 400 m of the focus, as the pedestrian spawner's (peds.rs
 /// `OCC_RANGE_SCALE`).
@@ -26,7 +26,7 @@ const RAIL_TURN: f32 = 2.44346;
 const PASS_TURN: f32 = 2.26893;
 /// The semi trailers (0x8282BDDC); a cab draws one of them.
 pub const TRAILERS: [&str; 5] = ["va_semitruck_00_trailer", "va_semitruck_00_tanker", "va_semitruck_00_flatbed", "va_semitruck_00_flatloaded", "va_semitruck_dub1_00_trailer"];
-/// The "hitch" bones (sub_82790E68): the cab's and every trailer's; the model's front is -z.
+/// The "hitch" bones (F-19769): the cab's and every trailer's; the model's front is -z.
 const CAB_HITCH: Vec3 = Vec3::new(0.0, 1.132, 1.289);
 const TRAILER_HITCH: Vec3 = Vec3::new(0.0, 1.174, -5.219);
 /// The trailer's rear bogie (between its axles at 3.914 and 5.219), which trails the hitch.
@@ -53,12 +53,12 @@ pub struct AmbType {
     pub freeway_only: bool,
     pub cab: bool,
     pub trailer: bool,
-    /// `bIsTaxi` (type +113: never parked, sub_826F23A0)
+    /// `bIsTaxi` (type +113: never parked, F-74446)
     pub taxi: bool,
-    /// `bIsProxy` (type +108): the start speed rule never removes such a car (sub_826E7FF8)
+    /// `bIsProxy` (type +108): the start speed rule never removes such a car (F-30683)
     pub proxy: bool,
     /// the bound's full width and length (the `.r155` root +8 bound, max +0x10 - min +0x20:
-    /// obstacle vfuncs 4 and 6, sub_826D9818); 0: not read
+    /// obstacle vfuncs 4 and 6, F-46284); 0: not read
     pub width: f32,
     pub length: f32,
     /// `mcAmbientCarTypeColor.xml` (render type +236): the 20 colours times `fScale`, and
@@ -108,7 +108,7 @@ impl AmbType {
         }
     }
 
-    /// The colour of colour index `i` (the spawner draws `rand % 20`, sub_826F6920; the
+    /// The colour of colour index `i` (the spawner draws `rand % 20`, F-92144; the
     /// render instance's +52): `vColors[i] x fScale`, as the player's paint is handed on.
     pub fn color(&self, i: usize) -> Option<[f32; 4]> {
         self.colors.map(|c| {
@@ -176,8 +176,8 @@ pub fn bound_box(root: &std::path::Path, model: &str) -> Option<(glam::Vec3, gla
 }
 
 /// A traffic type's two LOD steps, `tune/ambients/traffic/<model>/mcAmbientRenderType.xml` (the render type's
-/// parser table 0x82830414, filled by sub_82790530: fLodSwitchScale at +40, fHighToMedSwitch at +44,
-/// fMedToLowSwitch at +48): LOD 0 below +44 x +40, LOD 1 below +48 x +40 (sub_827902F0). Every type has the file;
+/// parser table 0x82830414, filled by F-10142: fLodSwitchScale at +40, fHighToMedSwitch at +44,
+/// fMedToLowSwitch at +48): LOD 0 below +44 x +40, LOD 1 below +48 x +40 (F-69447). Every type has the file;
 /// the steps differ by type (40 / 155 for most cars, 40 / 250 for buses and service trucks, 180 / 250 for the
 /// flatbed semis, 50 / 155 and 40 / 200 for one type each).
 pub fn lod_steps(root: &std::path::Path, model: &str) -> Option<[f32; 2]> {
@@ -188,7 +188,7 @@ pub fn lod_steps(root: &std::path::Path, model: &str) -> Option<[f32; 2]> {
 }
 
 /// The centre of a traffic model's bound (the root bound's centroid, +0x30), in the car's space: the middle of the
-/// sphere the LOD choice tests (sub_826E9F88: the car's matrix times bound +48).
+/// sphere the LOD choice tests (F-41581: the car's matrix times bound +48).
 pub fn bound_centre(root: &std::path::Path, model: &str) -> Option<glam::Vec3> {
     for e in std::fs::read_dir(root.join("resources/ambients").join(model)).ok()? {
         let p = e.ok()?.path();
@@ -203,10 +203,10 @@ pub fn bound_centre(root: &std::path::Path, model: &str) -> Option<glam::Vec3> {
     None
 }
 
-/// The drawn wheels turn only within 75 m of the focus, horizontally (sub_82794FA8: d^2 < 5625).
+/// The drawn wheels turn only within 75 m of the focus, horizontally (F-37033: d^2 < 5625).
 pub const SPIN_REACH2: f32 = 5625.0;
 
-/// A drawn wheel's angle kept in [0, 2 pi] (sub_82794FA8: one 2 pi off above, one on below 0).
+/// A drawn wheel's angle kept in [0, 2 pi] (F-37033: one 2 pi off above, one on below 0).
 pub fn wrap_spin(a: f32) -> f32 {
     let tau = std::f32::consts::TAU;
     if a > tau {
@@ -218,13 +218,13 @@ pub fn wrap_spin(a: f32) -> f32 {
     }
 }
 
-/// A parked car's drawn wheel turn (sub_82794FA8): 0.2 of a riding car's - it has no behaviour
+/// A parked car's drawn wheel turn (F-37033): 0.2 of a riding car's - it has no behaviour
 /// (car +452 = 0) and is no trailer.
 pub const PARKED_SPIN: f32 = 0.2;
 
-/// A parked car's front wheels' turn (sub_826E86C8 with a spot: car +3584 = a Gaussian, mean 0, sd
-/// pi / 8 (sub_821CE328), clamped to +-0.706858; drawn added to the front wheels' steer while the
-/// car has no behaviour and is no trailer, sub_82794FA8). `u1` in (0, 1], `u2` in [0, 1).
+/// A parked car's front wheels' turn (F-77422 with a spot: car +3584 = a Gaussian, mean 0, sd
+/// pi / 8 (F-66400), clamped to +-0.706858; drawn added to the front wheels' steer while the
+/// car has no behaviour and is no trailer, F-37033). `u1` in (0, 1], `u2` in [0, 1).
 pub fn parked_steer(u1: f32, u2: f32) -> f32 {
     let g = (-2.0 * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos();
     (g * std::f32::consts::FRAC_PI_8).clamp(-0.706858, 0.706858)
@@ -284,7 +284,7 @@ pub fn amb_tune(root: &std::path::Path, model: &str, hubs: Option<[Option<Vec3>;
         let gravity = v(&phys, "fGravityFactor").unwrap_or(1.0);
         let (cog_sim, cog_off) = (v(&wheel, "fCogSim")?, v(&wheel, "fCogOffset")?);
         let (grip, ts, sd, travel, tt, td, st) = (v(&wheel, "fTireGrip")?, v(&wheel, "fSuspensionTension")?, v(&wheel, "fSuspensionDamping")?, v(&wheel, "fSuspensionTravel")?, v(&wheel, "fTireTension")?, v(&wheel, "fTireDamping")?, v(&wheel, "fTireStretch")?);
-        // (sub_826E5B30)
+        // (F-82909)
         let wq = mass * gravity * 9.8 / 4.0;
         let ks = ts * wq / travel;
         let kt = 2.0 * wq * tt / st;
@@ -410,8 +410,8 @@ impl Lanes {
 
 /// The road network as the traffic rides it, made once: the lanes' curves (the original's
 /// lanes are B-splines - `navsys::LaneCurve` - and its rail follower takes the car's point and
-/// heading off the curve at its phase, sub_827986C0 -> lane vfunc 9 sub_82245E00 ->
-/// sub_82586A28), cut wherever the tangent has turned 2 degrees, with the curve's tangents.
+/// heading off the curve at its phase, F-74567 -> lane vfunc 9 F-42884 ->
+/// F-87587), cut wherever the tangent has turned 2 degrees, with the curve's tangents.
 /// Traffic keeps to this graph (its own link indices; lanes and successors as the shared one).
 pub fn rail_nav(nav: &NavSys) -> &'static NavSys {
     static N: std::sync::OnceLock<NavSys> = std::sync::OnceLock::new();
@@ -478,7 +478,7 @@ fn wrap_2pi(a: f32) -> f32 {
     if r >= t - 1e-5 { 0.0 } else { r }
 }
 
-/// Points along an arc, a line and an arc (sub_8279E518; `s` +1 turns towards the heading's
+/// Points along an arc, a line and an arc (F-85722; `s` +1 turns towards the heading's
 /// left normal (-sin, cos) in x/z, -1 the other way), every half metre; y runs from the
 /// start's to the end's.
 #[allow(clippy::too_many_arguments)]
@@ -518,7 +518,7 @@ fn csc(p0: Vec3, h0: Vec3, p1: Vec3, h1: Vec3, rr: f32, max_turn: f32) -> Vec<(f
         for s1 in [1.0f32, -1.0] {
             let c0 = a + nrm(phi0) * (s0 * rr);
             let c1 = b + nrm(phi1) * (s1 * rr);
-            // (sub_8279D3A8: no way when the target lies inside the start circle)
+            // (F-13911: no way when the target lies inside the start circle)
             if (c0 - b).length_squared() < rr * rr {
                 continue;
             }
@@ -539,7 +539,7 @@ fn csc(p0: Vec3, h0: Vec3, p1: Vec3, h1: Vec3, rr: f32, max_turn: f32) -> Vec<(f
             if th0 + th1 > max_turn {
                 continue;
             }
-            // (its length, sub_8279CB68: the arcs and the line between the tangent points, which
+            // (its length, F-62306: the arcs and the line between the tangent points, which
             // take the start's and the end's heights)
             out.push((rr * (th0 + th1) + (line * line + (p1.y - p0.y) * (p1.y - p0.y)).sqrt(), sample_csc(p0, p1, c0, s0, phi0, th0, c1, s1, psi, th1, rr)));
         }
@@ -547,7 +547,7 @@ fn csc(p0: Vec3, h0: Vec3, p1: Vec3, h1: Vec3, rr: f32, max_turn: f32) -> Vec<(f
     out
 }
 
-/// An arc then a line to `p1` (the passing rail, sub_827A14C0): both turning senses.
+/// An arc then a line to `p1` (the passing rail, F-92334): both turning senses.
 fn cs(p0: Vec3, h0: Vec3, p1: Vec3, rr: f32, max_turn: f32) -> Vec<(f32, Vec<Vec3>)> {
     let (a, b) = (Vec2::new(p0.x, p0.z), Vec2::new(p1.x, p1.z));
     let phi0 = h0.z.atan2(h0.x);
@@ -571,7 +571,7 @@ fn cs(p0: Vec3, h0: Vec3, p1: Vec3, rr: f32, max_turn: f32) -> Vec<(f32, Vec<Vec
     out
 }
 
-/// The turning radius of the recovery and passing rails (sub_8279E4C8): the pivot radius when
+/// The turning radius of the recovery and passing rails (F-36195): the pivot radius when
 /// the car has stood 2 s, else the smallest radius growing with speed above 10 mph.
 fn turn_radius(ty: &AmbType, v: f32, ready: bool) -> f32 {
     if ready { ty.pivot_turn } else { ty.min_turn * (1.0 + 6.0 * ((v - 4.4704) * 0.149129).clamp(0.0, 1.0)) }
@@ -598,12 +598,12 @@ pub struct Rider {
     /// start delay when moving off (car +444: U x 0.8 s) and the time asked to go (+440)
     pub wait: f32,
     waited: f32,
-    /// the constraint entries switched on (hysteresis sub_826E91F8): car ahead, stop line, slower lane
+    /// the constraint entries switched on (hysteresis F-49294): car ahead, stop line, slower lane
     pub on: [bool; 3],
     /// the stop and the car ahead the entries were made for (a new one resets the hysteresis)
     stop_id: Option<usize>,
     obst_id: Option<usize>,
-    /// the behaviour's state (sub_827A0138): 0 a trailer (no behaviour), 1 on its lane, 4
+    /// the behaviour's state (F-87488): 0 a trailer (no behaviour), 1 on its lane, 4
     /// physical, 5 come to rest, 6 on a recovery rail, 7 on a passing rail, 8 backing up, 9 a
     /// race path's car on the path's rails, 10 a race path's car let go of by the path's unload
     /// (no rail: stands, not posed, until the unspawner takes it)
@@ -630,18 +630,18 @@ pub struct Rider {
     /// on the ground (the car update's probe and smoothing, car +1696 .. +2528); None: made
     /// anew from the car's pose
     pub seat: Option<Seat>,
-    /// the drawn body's pitch and roll (sub_82794FA8)
+    /// the drawn body's pitch and roll (F-37033)
     pub tilt: Tilt,
     /// the physics level holds the car (loose.rs `Amb`: inactive while it rides, active - state 4 -
     /// until its rest rule); `active`: its body is active; `wake`: the game made it physical
-    /// (vehicles.rs hands that to the level: 0x8258D3F8)
+    /// (vehicles.rs hands that to the level: F-24099)
     pub in_level: bool,
     pub active: bool,
     pub wake: bool,
     rng: u32,
     id: u32,
     /// the follower's curve speed |dP/dt| (+180) and the lane it was taken on (another
-    /// lane: taken anew, as sub_82798B98 does when it sets a rail)
+    /// lane: taken anew, as F-48384 does when it sets a rail)
     ds: f32,
     ds_lane: usize,
     /// the phase on the lane (follower +176): the car's point and heading are the curve's
@@ -654,7 +654,7 @@ pub struct Rider {
     /// the speed controller's entry in charge of `a` (car +420: 0 the car ahead; None = free
     /// driving), kept while the car is not driven
     pub slot: Option<usize>,
-    /// the drawn wheels' lock (sub_826E5950, `Lock`)
+    /// the drawn wheels' lock (F-37906, `Lock`)
     pub lock: Lock,
     /// when it was made and how long it lives at least on a listed road (car +464 / +468:
     /// 8 + 4U s)
@@ -662,8 +662,8 @@ pub struct Rider {
     pub life: f32,
     /// a race path's car on the path's rails (state 9; racescript.rs, `step_route`)
     pub route: Option<Box<Route>>,
-    /// a race path's bPhysical (path +170): the instance's +140 bit 0x80 (sub_826EAD00 ->
-    /// sub_826FA588), for the car's life
+    /// a race path's bPhysical (path +170): the instance's +140 bit 0x80 (F-92604 ->
+    /// F-55165), for the car's life
     pub phys_pair: bool,
     /// the race path it was started on (behaviour +468, kept for the car's life - F-28180 is its only
     /// writer after the ctor) has bParked (+164, `PathRails::quiet`): behaviour slot 18, F-86955
@@ -736,8 +736,8 @@ impl Rider {
         r.bonus = r.rand() - 0.5;
         r.gap = 2.0 + 3.0 * r.rand();
         r.wait = r.rand() * 0.8;
-        // (the speed offset, car +424, is 0 from the spawn - sub_826EAD00 - until its first draw:
-        // +432 = 3 + 3U s of age, sub_826EA240)
+        // (the speed offset, car +424, is 0 from the spawn - F-92604 - until its first draw:
+        // +432 = 3 + 3U s of age, F-58614)
         r.off = 0.0;
         r.off_timer = 3.0 + 3.0 * r.rand();
         r.choose_next(nav);
@@ -748,8 +748,8 @@ impl Rider {
     }
 
     /// A bPhysical car (inst +140 bit 0x80) whose pose was written this frame: the follower has
-    /// a rail (sub_827986C0 sets the pose flag only then; car slot 20 sub_826E5D20 ->
-    /// sub_826FA760 puts the inactive instance on the simulator's list, loose.rs `ambient_posed`).
+    /// a rail (F-74567 sets the pose flag only then; car slot 20 F-22467 ->
+    /// F-86858 puts the inactive instance on the simulator's list, loose.rs `ambient_posed`).
     pub fn pairs_inactive(&self) -> bool {
         self.phys_pair && (matches!(self.state, 1 | 9) || (matches!(self.state, 6..=8) && self.path.is_some()))
     }
@@ -769,7 +769,7 @@ impl Rider {
         (x >> 8) as f32 / 16777216.0
     }
 
-    /// sub_826EA240: every 3 + 3U s a new offset, -6, +6 or 0 m/s by thirds.
+    /// F-58614: every 3 + 3U s a new offset, -6, +6 or 0 m/s by thirds.
     fn draw_offset(&mut self) {
         let u = self.rand();
         self.off = if u < 1.0 / 3.0 { -6.0 } else if u < 2.0 / 3.0 { 6.0 } else { 0.0 };
@@ -789,8 +789,8 @@ impl Rider {
         k
     }
 
-    /// Which lane follows this one, chosen on entering a lane (slot 16 sub_8279FBB0 ->
-    /// sub_8273BD80): offline the route is empty, so any lane starting where this one ends
+    /// Which lane follows this one, chosen on entering a lane (slot 16 F-48618 ->
+    /// F-20639): offline the route is empty, so any lane starting where this one ends
     /// but itself, uniformly at random - no weighting, no look-ahead.
     fn choose_next(&mut self, nav: &NavSys) {
         let end = self.lane_end(nav);
@@ -824,7 +824,7 @@ impl Rider {
         self.ds_lane = usize::MAX;
     }
 
-    /// The car's point: the lane's curve at its phase (sub_827986C0 -> sub_82586A28).
+    /// The car's point: the lane's curve at its phase (F-74567 -> F-87587).
     pub fn pos(&self, nav: &NavSys) -> Vec3 {
         let l = &nav.links[self.link];
         match nav.curves.get(l.lane) {
@@ -833,14 +833,14 @@ impl Rider {
         }
     }
 
-    /// The heading: the curve's derivative at the phase, normalised (sub_827986C0).
+    /// The heading: the curve's derivative at the phase, normalised (F-74567).
     pub fn tangent(&self, nav: &NavSys) -> Vec3 {
         let l = &nav.links[self.link];
         let d = nav.curves.get(l.lane).map_or(Vec3::ZERO, |c| c.eval(self.phase(nav)).1);
         d.normalize_or(l.tangent_at(self.s / l.len.max(1e-3)))
     }
 
-    /// The pose the follower stores (sub_827986C0): point, heading, and the curve speed
+    /// The pose the follower stores (F-74567): point, heading, and the curve speed
     /// +180 = the mean of |dP/dt| here and the last value (taken anew on another lane).
     fn pose(&mut self, nav: &NavSys) -> (Vec3, Vec3) {
         let l = &nav.links[self.link];
@@ -866,7 +866,7 @@ impl Rider {
         }
     }
 
-    /// The physics level put the car to rest (sub_826E68C0 -> behaviour vfunc 13 sub_8279F790: state 5).
+    /// The physics level put the car to rest (F-38021 -> behaviour vfunc 13 F-58957: state 5).
     pub(super) fn came_to_rest(&mut self) {
         self.active = false;
         if self.state == 4 {
@@ -886,15 +886,15 @@ impl Rider {
     }
 }
 
-/// The speed of a lane (sub_82245A28 on the lane's owner, flags at owner +4) and whether it is
+/// The speed of a lane (F-27898 on the lane's owner, flags at owner +4) and whether it is
 /// a junction lane (owner flags & 0x30, or lane flags & 0x1000).
-/// A lane owned by a junction (sub_822452F8: the lane's owner, or the owner's parent, has the
+/// A lane owned by a junction (F-41621: the lane's owner, or the owner's parent, has the
 /// junction flag 4).
 fn junction_lane(l: &mcla_formats::rage::navsys::Link) -> bool {
     (l.owner_flags | l.parent_flags) & 4 != 0
 }
 
-/// The junction a lane belongs to (sub_822452F8: the lane's owner +08 when the owner's flags +04
+/// The junction a lane belongs to (F-41621: the lane's owner +08 when the owner's flags +04
 /// have bit 4, else the owner's parent when its flags have bit 4; none else), as an index into
 /// the navsys junction array (root +58; `NavSys::lane_junction`).
 fn lane_junction(nav: &NavSys, lane: usize) -> Option<usize> {
@@ -903,7 +903,7 @@ fn lane_junction(nav: &NavSys, lane: usize) -> Option<usize> {
 
 /// The port's signals' junction built from navsys junction `j` (the one with its centre +80).
 /// None for the 12 junctions without arms (`parse_junctions` leaves them out): there
-/// sub_8273A178 finds no arm at J +160 and reads the zero vector at 0x828608E0, so no lane of
+/// F-78185 finds no arm at J +160 and reads the zero vector at 0x828608E0, so no lane of
 /// theirs is ever green.
 fn signals_junction(signals: &crate::signals::Signals, nav: &NavSys, j: usize) -> Option<usize> {
     let c = *nav.junction_centers.get(j)?;
@@ -911,7 +911,7 @@ fn signals_junction(signals: &crate::signals::Signals, nav: &NavSys, j: usize) -
     signals.junction_at(c).filter(|&ji| bits(signals.junctions[ji].center) == bits(c))
 }
 
-/// sub_8273A178(J, rail): may a car enter `link`'s lane at junction `j` - the lane's first span
+/// F-78185(J, rail): may a car enter `link`'s lane at junction `j` - the lane's first span
 /// within 25 degrees of the current arm and the timer J +164 under 6.5 s (`Junction::lane_state`
 /// 2)? A junction without arms: never. (Online: always - not ported.)
 fn junction_green(signals: &crate::signals::Signals, nav: &NavSys, j: usize, link: usize) -> bool {
@@ -940,8 +940,8 @@ fn rail_key(nav: &NavSys, r: &Rider) -> Option<(RailKey, f32)> {
 }
 
 /// The order in which cars take rails: a rail's car list (rail +96, a linked list; the
-/// obstacle's entry is appended at its tail by sub_8273E160 when the follower sets the rail,
-/// sub_82798B98 / sub_82798F18, and unlinked when it leaves, sub_8273E1A8).
+/// obstacle's entry is appended at its tail by F-30206 when the follower sets the rail,
+/// F-48384 / F-50894, and unlinked when it leaves, F-13436).
 static RAIL_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 fn next_rail_seq() -> u64 {
@@ -949,8 +949,8 @@ fn next_rail_seq() -> u64 {
 }
 
 /// A driver's car's lanes (its obstacle, mcRacer's +56: entries +20 + 24 k, at most 12, count
-/// +308) as sub_826D99B8 keeps them, and the lane it reports (racer +640 lane, +644 squared
-/// distance; sub_822A9D98).
+/// +308) as F-58331 keeps them, and the lane it reports (racer +640 lane, +644 squared
+/// distance; F-80793).
 #[derive(Clone, Debug, Default)]
 pub struct DriverLanes {
     list: Vec<(usize, f32)>,
@@ -959,7 +959,7 @@ pub struct DriverLanes {
     pub best_t: f32,
 }
 
-/// A lane's first two control points (sub_8273A178 reads P0 - P1); the link's ends without them.
+/// A lane's first two control points (F-78185 reads P0 - P1); the link's ends without them.
 fn lane_entry(nav: &NavSys, link: usize) -> (Vec3, Vec3) {
     let c = nav.curves.get(nav.links[link].lane);
     match c.and_then(|c| Some((*c.pts.first()?, *c.pts.get(1)?))) {
@@ -987,7 +987,7 @@ fn lane_ends(nav: &NavSys) -> &'static hashbrown::HashMap<[u32; 3], Vec<usize>> 
     })
 }
 
-/// What holds a junction's box for sub_8273A848 (`Vehicles::junction_blockers`).
+/// What holds a junction's box for F-50959 (`Vehicles::junction_blockers`).
 #[derive(Default, Clone, Debug)]
 pub struct Blockers {
     /// the player's lane is one of the junction's and near
@@ -1003,7 +1003,7 @@ impl Blockers {
     }
 }
 
-/// The junction ahead of the player's lane (sub_826F4B98 + sub_826F0E30), as a navsys junction
+/// The junction ahead of the player's lane (F-94775 + F-95137), as a navsys junction
 /// index. None when the lane is a junction lane (owner or parent flag 4) or its owner has
 /// flags & 0x30 or & 0x40. Else up to 8 rounds: at the lane's end (its first point when
 /// `reverse`) take the lanes of that vertex in the vertex table's order, not the lane itself,
@@ -1052,7 +1052,7 @@ pub fn player_junction_ahead(nav: &NavSys, lane: usize, reverse: bool) -> Option
     None
 }
 
-/// A junction's box as sub_8273A848 tests it (mcRnIntersectionAmbient): the centre +0x50 / +0x58,
+/// A junction's box as F-50959 tests it (mcRnIntersectionAmbient): the centre +0x50 / +0x58,
 /// the axes +0x60 and +0x70 (their y terms times 0), the half extents +0x40 and +0x3c.
 #[derive(Clone, Copy, Debug)]
 struct JunctionBox {
@@ -1098,14 +1098,14 @@ fn junction_box(center: Vec3) -> Option<JunctionBox> {
     m.get(&(center.x.to_bits(), center.z.to_bits())).copied()
 }
 
-/// The light a rider obeys (sub_827A29F0 -> sub_827A3570 / sub_827A3458 / sub_8273A178): the
+/// The light a rider obeys (F-55442 -> F-83573 / F-16850 / F-78185): the
 /// junction lane it is to enter - its next lane when that is a junction lane, else the first
-/// junction lane starting where the next lane ends (sub_822464F0; no further) - and its
+/// junction lane starting where the next lane ends (F-32663; no further) - and its
 /// junction's state for that lane (`Junction::lane_state`, the lane's first span against the
 /// current arm). Returns (junction, xz metres from `pos` to the junction lane's first point =
-/// the stop line, state 2 green / 1 yellow / 0 red). (Which junction lane sub_822464F0 takes
+/// the stop line, state 2 green / 1 yellow / 0 red). (Which junction lane F-32663 takes
 /// when several start at that point follows the node's lane order; here the graph's successor
-/// order. The junction is the lane's, sub_822452F8; one without arms gives none here.)
+/// order. The junction is the lane's, F-41621; one without arms gives none here.)
 fn signal_stop(env: &Env, r: &Rider, pos: Vec3) -> Option<(usize, f32, u8, usize)> {
     let nav = env.nav;
     let n = r.next?;
@@ -1147,7 +1147,7 @@ pub fn rail_speed(nav: &NavSys, link: usize) -> (f32, bool) {
     (v, f & 0x30 != 0 || l.flags & 0x1000 != 0)
 }
 
-/// The acceleration that brings speed `v` to `vt` at `dist - margin` metres (sub_82796658):
+/// The acceleration that brings speed `v` to `vt` at `dist - margin` metres (F-20809):
 /// over the time the gap takes at the average speed. Standing with the target standing: `up`
 /// (MaxAccel + bonus) while there is room, else `-down`; no room left (or a negative time):
 /// `-down`.
@@ -1203,7 +1203,7 @@ impl Other {
     }
 }
 
-/// Is the obstacle in the way of a rail point (sub_827A59A8; no lane width used): its corners'
+/// Is the obstacle in the way of a rail point (F-87404; no lane width used): its corners'
 /// offsets along the line from it to the rail point straddle that point, or come within half
 /// our width of it.
 fn in_the_way(o: &Other, q: Vec3, own_wid: f32) -> bool {
@@ -1221,7 +1221,7 @@ fn in_the_way(o: &Other, q: Vec3, own_wid: f32) -> bool {
     (mn < 0.0 && mx > 0.0) || mn.abs() < 0.5 * own_wid || mx.abs() < 0.5 * own_wid
 }
 
-/// Is it a "blocking" obstacle (sub_827A5E28): one that stands for good.
+/// Is it a "blocking" obstacle (F-70116): one that stands for good.
 fn blocking(o: &Other, fwd: Vec3) -> bool {
     if o.vel.length_squared() > 4.99612 {
         return false;
@@ -1262,7 +1262,7 @@ fn on_rail(segs: &[(Vec3, Vec3)], p: Vec3, open_start: bool) -> Option<(Vec3, f3
     at
 }
 
-/// The car ahead (sub_827A6448): the nearest obstacle and the nearest "blocking" one.
+/// The car ahead (F-47175): the nearest obstacle and the nearest "blocking" one.
 struct Ahead {
     j: usize,
     d: f32,
@@ -1340,7 +1340,7 @@ pub struct Env<'a> {
     pub col: &'a WorldCollider,
     pub others: &'a [Other],
     pub signals: &'a crate::signals::Signals,
-    /// the frame's blockers per navsys junction (sub_8273A848's hits, `Vehicles::frame_blockers`)
+    /// the frame's blockers per navsys junction (F-50959's hits, `Vehicles::frame_blockers`)
     pub blockers: &'a hashbrown::HashMap<usize, Blockers>,
     pub clock: f32,
     /// a race or another event is on: no recovery, passing or backing up (byte +0x64251)
@@ -1350,7 +1350,7 @@ pub struct Env<'a> {
     pub parity: bool,
 }
 
-/// Is a rail clear (sub_8279D9D0 with the own half width): the city's bound and the cars.
+/// Is a rail clear (F-23371 with the own half width): the city's bound and the cars.
 fn sweep_clear(env: &Env, me: usize, pts: &[Vec3], hw: f32) -> bool {
     for (k, p) in pts.iter().enumerate() {
         if k % 2 == 1 && k + 1 != pts.len() {
@@ -1367,7 +1367,7 @@ fn sweep_clear(env: &Env, me: usize, pts: &[Vec3], hw: f32) -> bool {
     true
 }
 
-/// The footprint probe (sub_8279FC80, states 6 and 7; sub_827A3AB0 in state 8): a segment
+/// The footprint probe (F-39379, states 6 and 7; F-82779 in state 8): a segment
 /// 0.75 m up, 0.675 of the half width to one side (the side alternates by frame), from -0.9
 /// to +0.9 of the half length. Does it hit anything?
 fn probe_hit(env: &Env, me: usize, pos: Vec3, fwd: Vec3, hl: f32, hw: f32) -> bool {
@@ -1383,7 +1383,7 @@ fn probe_hit(env: &Env, me: usize, pos: Vec3, fwd: Vec3, hl: f32, hw: f32) -> bo
     env.others.iter().enumerate().any(|(j, o)| j != me && (o.pos.y - pos.y).abs() < 2.0 && o.pos.distance_squared(pos) < (hl + o.half_len + o.half_wid + 2.0).powi(2) && (0..=n).any(|k| o.box_dist(a.lerp(b, k as f32 / n as f32)) < 0.01))
 }
 
-/// The recovery rail (sub_827A06D0): ten tries at a random point of a random lane within 25 m
+/// The recovery rail (F-26466): ten tries at a random point of a random lane within 25 m
 /// (at or after the point nearest to us), four arc-line-arc ways to each that turn no more
 /// than `max_turn` and sweep clear; the shortest.
 #[allow(clippy::too_many_arguments)]
@@ -1428,7 +1428,7 @@ fn recovery_rail(r: &mut Rider, env: &Env, me: usize, start: Vec3, dir: Vec3, rr
     best.map(|(_, pts, link, s)| Path::new(pts, speed, Some((link, s))))
 }
 
-/// The recovery try (sub_827A3E08), in state 5 and every frame in state 6: not online, not a
+/// The recovery try (F-15490), in state 5 and every frame in state 6: not online, not a
 /// semi, not upside down; about once a second; a new rail replaces one being ridden only when
 /// it is shorter by a metre where more than 10 m are left.
 fn try_recovery(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, upright: bool, dt: f32) -> bool {
@@ -1465,10 +1465,10 @@ fn try_recovery(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, uprig
     true
 }
 
-/// The passing rail (sub_827A4048 -> sub_82799728 -> sub_827A14C0): to beside the obstacle's
+/// The passing rail (F-28706 -> F-10687 -> F-92334): to beside the obstacle's
 /// leftmost or rightmost corner, pushed out by half our width and `c` (1.1, 1.5, 0.8 m), on an
 /// arc and a line of at most 130 degrees, swept clear; then a rail back onto a lane at 0.7 of
-/// the lane's speed (sub_827A10B8).
+/// the lane's speed (F-89026).
 fn passing_rail(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, obst: usize, lane_speed: f32, ready: bool) -> Option<(Path, Path)> {
     let o = &env.others[obst];
     let corners = o.corners();
@@ -1526,7 +1526,7 @@ pub fn brake_lamp(r: &Rider) -> bool {
     r.v == 0.0 || (r.slot == Some(1) && r.v < 6.7056) || r.active || r.obst_v.is_some_and(|o| r.v > o * 1.5)
 }
 
-/// The speed controller (sub_827A3708 -> sub_826EA420): the constraint entries (car ahead,
+/// The speed controller (F-33409 -> F-30960): the constraint entries (car ahead,
 /// stop line, slower next lane), each with its hysteresis; the most negative wins, else the
 /// positive one with the smallest gap, else free driving towards `want`. Returns the
 /// acceleration and the entry chosen.
@@ -1537,7 +1537,7 @@ fn control(r: &mut Rider, v: f32, want: f32, half_len: f32, ahead: &Ahead, other
     let up = ty.max_accel + r.bonus;
     let mph = v / MPH;
     let mut entries: [Option<(f32, f32, bool)>; 3] = [None; 3];
-    // 0: the car ahead (sub_827A3128): centre to centre, half lengths and the standing gap
+    // 0: the car ahead (F-10623): centre to centre, half lengths and the standing gap
     // stretched with speed
     let obst = (ahead.j != usize::MAX).then_some(ahead.j);
     if obst != r.obst_id {
@@ -1551,7 +1551,7 @@ fn control(r: &mut Rider, v: f32, want: f32, half_len: f32, ahead: &Ahead, other
         entries[0] = Some((needed(v, ahead.vt, ahead.d, margin, up, max_decel), ahead.d - margin, o.player));
         r.ahead = (ahead.d, margin);
     }
-    // 1: the stop line while the light says stop (sub_827A3570), half our length short of it
+    // 1: the stop line while the light says stop (F-83573), half our length short of it
     let sid = stop.map(|s| s.0);
     if sid != r.stop_id {
         r.on[1] = false;
@@ -1573,7 +1573,7 @@ fn control(r: &mut Rider, v: f32, want: f32, half_len: f32, ahead: &Ahead, other
             r.on[k] = false;
             continue;
         };
-        // (sub_826E91F8; no room left forces it on)
+        // (F-49294; no room left forces it on)
         if !r.on[k] {
             r.on[k] = a > on_a || -a > on_d || gap <= 0.0;
         } else if gap > 0.0 && ((a >= 0.0 && a < off_a) || (a < 0.0 && -a < off_d)) {
@@ -1614,7 +1614,7 @@ fn control(r: &mut Rider, v: f32, want: f32, half_len: f32, ahead: &Ahead, other
     (a, chosen)
 }
 
-/// The integrator (sub_826EA240).
+/// The integrator (F-58614).
 fn integrate(r: &mut Rider, mut a: f32, dt: f32) {
     r.a = a;
     a = a.min(r.ty.max_accel);
@@ -1625,7 +1625,7 @@ fn integrate(r: &mut Rider, mut a: f32, dt: f32) {
     r.v = nv.max(0.0);
 }
 
-/// One frame of a rider on its lane (state 1; sub_827A0138 / sub_826EA420 / sub_826EA240),
+/// One frame of a rider on its lane (state 1; F-87488 / F-30960 / F-58614),
 /// with the stuck and passing tests after it. Returns the new pose.
 #[allow(clippy::too_many_arguments)]
 pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, dt: f32) -> (Vec3, Vec3) {
@@ -1635,7 +1635,7 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
     if r.off_timer <= 0.0 {
         r.draw_offset();
     }
-    // wanted speed (sub_827A2B38): the lane's speed and the next lane's, with the offset
+    // wanted speed (F-70324): the lane's speed and the next lane's, with the offset
     // except on junction lanes
     let (cur, junction) = rail_speed(nav, r.link);
     let want = if junction { cur.max(MIN_WANT) } else { (cur + r.off).max(MIN_WANT) };
@@ -1674,7 +1674,7 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
         }
     };
     r.kept = (v == 0.0 && ahead.j != usize::MAX).then(|| (ahead.j, env.others[ahead.j].pos));
-    // sub_827A3458: go = green for the lane and the junction's box not held by anything but this car
+    // F-16850: go = green for the lane and the junction's box not held by anything but this car
     // (`Blockers`); a refused car stops at the line as at red (and `waits` counts its demand)
     let stop = signal_stop(env, r, pos).filter(|x| !(x.2 == 2 && !env.blockers.get(&x.3).is_some_and(|b| b.blocks(me)))).map(|x| (x.0, x.1));
     let slower = (next_want <= v).then(|| {
@@ -1687,7 +1687,7 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
         a = -r.ty.max_decel;
     }
     integrate(r, a, dt);
-    // along the lane (sub_82798F18): the phase moves by the distance over the curve speed
+    // along the lane (F-50894): the phase moves by the distance over the curve speed
     // (+180, from the last pose); past the lane's end the rest of the distance goes on along
     // the next lane from its start, at that lane's speed there (vfunc 11), clamped to it
     let d = r.v * dt;
@@ -1740,7 +1740,7 @@ fn after_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, ahead
     let semi = r.ty.trailer || (r.ty.cab && r.partner.is_some());
     let light_near = signal_stop(env, r, pos).is_some_and(|x| x.1 < 50.0);
     let blocker = ahead.blocking.filter(|&b| b == ahead.j);
-    // stuck (sub_827A3810): standing more than 2 s behind the blocker that limits us: back
+    // stuck (F-14023): standing more than 2 s behind the blocker that limits us: back
     // up 2 m at 4 m/s, three times at most until it is no longer stuck
     let can_stuck = upright && chosen != Some(1) && !semi && blocker.is_some() && chosen == Some(0) && !light_near;
     if can_stuck && r.v == 0.0 {
@@ -1760,7 +1760,7 @@ fn after_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, ahead
     } else if !can_stuck {
         r.stuck = (0.0, 0.0, 0);
     }
-    // passing (sub_827A42C0 / sub_827A4048)
+    // passing (F-72757 / F-28706)
     let Some(b) = blocker else {
         r.pass_stand = 0.0;
         return;
@@ -1866,7 +1866,7 @@ pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half
         } else if let Some((link, s)) = r.path.as_ref().and_then(|p| p.end) {
             r.path = None;
             r.state = 1;
-            // (a rail set anew: its curve speed is taken anew, sub_82798B98)
+            // (a rail set anew: its curve speed is taken anew, F-48384)
             r.place(env.nav, link, s);
             r.on = [false; 3];
             r.choose_next(env.nav);
@@ -1878,7 +1878,7 @@ pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half
     Some((p, f))
 }
 
-/// How a riding car stands on the ground (car update sub_826E5D20, decoded 2026-10-20): the
+/// How a riding car stands on the ground (car update F-22467, decoded 2026-10-20): the
 /// rail gives only x / z and the heading; the height and tilt come from a ground probe
 /// (mask 0x800) set up one frame and read the next, and the up and forward are the means of
 /// the last eight.
@@ -1899,14 +1899,14 @@ pub struct Seat {
     at: (Vec3, Vec3),
 }
 
-/// The drawn wheels' lock (sub_826E5950, written after the render update in sub_826E8EC8): set
+/// The drawn wheels' lock (F-37906, written after the render update in F-46062): set
 /// when the speed controller's entry in charge is the car ahead (car +420 == 0), the mean of the
 /// last 4 updates' asked acceleration (car +2336: count, next, sum, 4 entries, pushed by
-/// sub_826E4DB0 from sub_826E5AB8 every update) is a deceleration of at least fMaxDecel, and
+/// F-60856 from F-43567 every update) is a deceleration of at least fMaxDecel, and
 /// |car +208|^2 >= 4.99612 ((5 mph)^2, the 30 Hz frame's position change). Kept per update index
 /// (owner byte +557 + U, U flipping each update): the render update reads the byte of its index
 /// before it is written, so the drawn wheels see the bit of two updates before; while it is set
-/// they do not turn. The car's skid sound reads the rule directly (sub_826DD748).
+/// they do not turn. The car's skid sound reads the rule directly (F-50163).
 #[derive(Clone, Debug, Default)]
 pub struct Lock {
     n: u8,
@@ -1931,7 +1931,7 @@ impl Lock {
         self.since = 0.0;
         let v = self.prev.map_or(Vec3::ZERO, |p| (pos - p) / t);
         self.prev = Some(pos);
-        // (sub_826E4DB0)
+        // (F-60856)
         let i = self.i as usize;
         if self.n == 0 {
             self.e[0] = x;
@@ -1961,18 +1961,18 @@ impl Lock {
     pub fn drawn(&self) -> bool {
         self.buf[self.u]
     }
-    /// sub_826E5950 now (the skid sound).
+    /// F-37906 now (the skid sound).
     pub fn now(&self) -> bool {
         self.now
     }
 }
 
 /// The drawn body's pitch and roll from the car's change of velocity (render update
-/// sub_82794FA8): a 30 Hz frame's velocity change dv (car +224: v - v of the last frame, v from
+/// F-37033): a 30 Hz frame's velocity change dv (car +224: v - v of the last frame, v from
 /// the positions, car +208), within 30 m (horizontal) of the focus pitch = clamp(dv . forward /
 /// fMaxPitchDot) x fMaxPitchAngle (nose up when speeding up), roll = clamp(dv . right /
 /// fMaxRollDot) x fMaxRollAngle (right side up: leaning out of a turn); beyond 30 m (0, 0). The
-/// last ten samples averaged (sub_82794B78); drawn turned about the car's right axis by the
+/// last ten samples averaged (F-14882); drawn turned about the car's right axis by the
 /// pitch, then its back axis by the roll, within 30 m only; the wheels not turned.
 #[derive(Clone, Debug, Default)]
 pub struct Tilt {
@@ -1988,7 +1988,7 @@ pub struct Tilt {
 }
 
 /// `mcAmbientRenderCarType.xml`: +68 fMaxPitchDot, +72 fMaxRollDot, +76 fMaxPitchAngle, +80
-/// fMaxRollAngle (sub_82792518) - the same for every type.
+/// fMaxRollAngle (F-58135) - the same for every type.
 const PITCH_DOT: f32 = 0.5;
 const ROLL_DOT: f32 = 0.1;
 const PITCH_ANGLE: f32 = 2.0;
@@ -2065,12 +2065,12 @@ impl Seat {
 /// The ground under `p` (the probe: a vertical segment +- 1.75 m round it, the city's bound -
 /// the original's collision class 0x800): contact point and its normal, facing up.
 pub fn probe_ground(col: &WorldCollider, p: Vec3) -> Option<(Vec3, Vec3)> {
-    // (sub_826E5540 -> sub_827974F0: one-sided faces, the nearest hit - collision.rs `probe_front`)
+    // (F-18688 -> F-57005: one-sided faces, the nearest hit - collision.rs `probe_front`)
     let h = col.probe_front(p + Vec3::Y * PROBE_HALF, Vec3::NEG_Y, 2.0 * PROBE_HALF)?;
     Some((h.point, h.normal.normalize_or(Vec3::Y)))
 }
 
-/// Should the car set up a probe this frame (sub_826E5D20): trailers every frame; a standing
+/// Should the car set up a probe this frame (F-22467): trailers every frame; a standing
 /// car never (offline); else on alternate frames by the car's id, every fourth beyond 80 m
 /// from the focus unless it is tilted more than 5 degrees within 120 m.
 fn probe_due(r: &Rider, frame: u32, dist2: f32, up_y: f32) -> bool {
@@ -2303,7 +2303,7 @@ impl Vehicles {
                     }
                 }
                 // a race path's car let go of by its path (unload): no rail, not posed; its speed
-                // +412 is what it measures, |car +208| (sub_826EA420 with no rail; +416 = 0)
+                // +412 is what it measures, |car +208| (F-30960 with no rail; +416 = 0)
                 10 => {
                     r.v = c.state.vel.length();
                     c.state.vel = Vec3::ZERO;
@@ -2314,7 +2314,7 @@ impl Vehicles {
                 _ => {
                     let p = step(r, &env, i, half, upright, dt);
                     // refused by the light this frame (the stop entry is made only then): the
-                    // junction counts it as waiting (sub_827A3458)
+                    // junction counts it as waiting (F-16850)
                     if let Some(ji) = r.stop_id {
                         waits.push((ji, c.state.pos));
                     }
@@ -2324,7 +2324,7 @@ impl Vehicles {
             let (p, f) = pose;
             let v = r.v;
             let back = matches!(r.path.as_ref(), Some(pp) if pp.reverse);
-            // on the ground (sub_826E5D20)
+            // on the ground (F-22467)
             let dir = if back { -f } else { f };
             let dist2 = Vec3::new(c.state.pos.x - focus.x, 0.0, c.state.pos.z - focus.z).length_squared();
             let due = probe_due(r, frame, dist2, c.state.up().y);
@@ -2339,7 +2339,7 @@ impl Vehicles {
             }
             c.state.ang_vel = Vec3::ZERO;
             let wr = c.model.params.wheel_radius.max(0.2);
-            // (the drawn wheels turn at 0.6 of the rolling rate, within 75 m: sub_82794FA8)
+            // (the drawn wheels turn at 0.6 of the rolling rate, within 75 m: F-37033)
             let turn = if dist2 < SPIN_REACH2 && !r.lock.drawn() { 0.6 * if back { -v } else { v } / wr * dt } else { 0.0 };
             for w in c.state.wheels.iter_mut() {
                 w.spin = wrap_spin(w.spin + turn);
@@ -2456,7 +2456,7 @@ impl Vehicles {
         }
     }
 
-    /// The trailers (slot 28 sub_826FB400): the rear bogie trails the cab's hitch - the
+    /// The trailers (slot 28 F-16044): the rear bogie trails the cab's hitch - the
     /// smallest turn that points the trailer from the hitch to where its bogie was, then moved
     /// so its hitch is on the cab's. A trailer whose cab is gone is let go (slot 29, reason 16:
     /// the spawner's next step removes it - the cars are not removed in the middle of the
@@ -2470,8 +2470,8 @@ impl Vehicles {
                 r.partner = None;
                 continue;
             };
-            // (once physical a trailer never trails again: +500 bit 0x10, set by sub_826E96E0, is
-            // cleared only at the car's init, sub_826E9BB8 - it lies where it came to rest)
+            // (once physical a trailer never trails again: +500 bit 0x10, set by F-35377, is
+            // cleared only at the car's init, F-40231 - it lies where it came to rest)
             if r.physical {
                 continue;
             }
@@ -2499,7 +2499,7 @@ impl Vehicles {
             let wr = t.model.params.wheel_radius.max(0.2);
             let near = Vec3::new(pos.x - focus.x, 0.0, pos.z - focus.z).length_squared() < SPIN_REACH2;
             for w in t.state.wheels.iter_mut() {
-                // (the drawn wheels at 0.6 of the rolling rate, as the riding cars': sub_82794FA8)
+                // (the drawn wheels at 0.6 of the rolling rate, as the riding cars': F-37033)
                 w.spin = wrap_spin(w.spin + if near { 0.6 * speed / wr * dt } else { 0.0 });
                 w.steer = 0.0;
                 w.grounded = true;
@@ -2508,7 +2508,7 @@ impl Vehicles {
         }
     }
 
-    /// Hitch a trailer to a cab just made (slot 5 sub_826E86C8 -> sub_826FB778): with p 0.75
+    /// Hitch a trailer to a cab just made (slot 5 F-77422 -> F-45988): with p 0.75
     /// one of the five trailers, its hitch on the cab's, facing the same way.
     pub(super) fn hitch_trailer(&mut self, gpu: &crate::render::Gpu, root: &std::path::Path, nav: &NavSys, cab: usize) {
         let Some(r) = self.cars[cab].rail.as_mut() else { return };
@@ -2543,9 +2543,9 @@ impl Vehicles {
     }
 
     /// Something met a traffic car on a rail: from now on the physics has it (base slot 18
-    /// sub_826E96E0, state 4). A trailer has no behaviour (car +452 = 0): it is physical from
-    /// here (and never trails again); its cab is made active with it (sub_826E7340 ->
-    /// sub_826EA0A8, the level's constraints join them).
+    /// F-35377, state 4). A trailer has no behaviour (car +452 = 0): it is physical from
+    /// here (and never trails again); its cab is made active with it (F-15252 ->
+    /// F-10339, the level's constraints join them).
     pub(super) fn let_go(&mut self, k: usize, _world: &crate::world::World) {
         let Some(r) = self.cars[k].rail.as_mut() else { return };
         if r.state == 0 {
@@ -2574,7 +2574,7 @@ impl Vehicles {
         r.then = None;
         r.passing = None;
         r.rest = 0.0;
-        // (back from physics the seat starts from the car's pose, sub_826E5680)
+        // (back from physics the seat starts from the car's pose, F-47485)
         r.seat = None;
         c.state.vel = c.state.forward() * if back { -r.v } else { r.v };
     }
@@ -2822,7 +2822,7 @@ mod tests {
 
     #[test]
     fn the_drawn_wheels_lock_two_updates_late() {
-        // (sub_826E5950: the car ahead in charge, mean asked deceleration >= fMaxDecel, over 5 mph)
+        // (F-37906: the car ahead in charge, mean asked deceleration >= fMaxDecel, over 5 mph)
         let mut l = Lock::default();
         let dt = 1.0 / 30.0;
         let mut x = 0.0;
@@ -3239,7 +3239,7 @@ mod tests {
         assert!(seen.iter().all(|&n| n > 850 && n < 1150), "{seen:?}");
     }
 
-    /// sub_8273A848's box: |a70 . d| < 0.4 h3c and |a60 . d| < 0.4 h40, the height left out.
+    /// F-50959's box: |a70 . d| < 0.4 h3c and |a60 . d| < 0.4 h40, the height left out.
     #[test]
     fn a_physical_or_resting_car_is_not_put_back_on_its_seat() {
         // (a seat from before the hit: physical or at rest the instance stays where the collider left it)
@@ -3268,7 +3268,7 @@ mod tests {
     }
 
     /// bPhysical (instance +140 bit 0x80) only lets inactive pairs in while the car is posed by
-    /// its rail (slot 20 / sub_826FA760: the follower has a rail).
+    /// its rail (slot 20 / F-86858: the follower has a rail).
     #[test]
     fn a_physical_path_car_pairs_only_while_on_a_rail() {
         let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, phys_pair: false, quiet: false, obst_v: None, rail_seq: 0, rail_key: None, rail_fresh: true };
@@ -3312,8 +3312,8 @@ mod tests {
 
 // ---------------------------------------------------------------------------------------
 // The spawner and unspawner (density manager `mcAmbientDensityTuning`, vtable 0x820C39C4;
-// sub_826F79F0: the region list on odd manager frames, sub_826F4E90; spawning sub_826F6920
-// and unspawning sub_826F4390 on even ones - 15 Hz each). Decoded 2026-10-19:
+// F-47889: the region list on odd manager frames, F-49549; spawning F-92144
+// and unspawning F-65438 on even ones - 15 Hz each). Decoded 2026-10-19:
 // docs/PEOPLE_TRAFFIC.md "Ambient traffic spawner".
 
 /// A road as the spawner weighs it (`mcRnRoadAmbient`).
@@ -3326,11 +3326,11 @@ pub struct Road {
     /// its lanes: first link and length
     pub lanes: Vec<(usize, f32)>,
     pub lane_len: f32,
-    /// the box the occluders are asked about (road vfunc 2 sub_8224D130; empty: never hidden)
+    /// the box the occluders are asked about (road vfunc 2 F-76320; empty: never hidden)
     pub bmin: Vec3,
     pub bmax: Vec3,
     pub no_box: bool,
-    /// the rectangle the front-end mode's sphere and frustum tests take (sub_8224D4C0, sub_826F4E90)
+    /// the rectangle the front-end mode's sphere and frustum tests take (F-46547, F-49549)
     pub rect: RegionRect,
 }
 
@@ -3419,14 +3419,14 @@ pub struct Spawner {
     /// the player's road (M+320), kept while the player is on no road's lane
     pub player_road: Option<u32>,
     /// this frame's region box: centre, unit length axis (x, z), full length and width
-    /// (the parked-car lists take the same box, sub_826F17D8)
+    /// (the parked-car lists take the same box, F-51021)
     pub region_box: (glam::Vec2, glam::Vec2, f32, f32),
-    /// the cutscene mode this frame (sub_826D4CA0): the parked lists' box as wide as it is long
+    /// the cutscene mode this frame (F-97032): the parked lists' box as wide as it is long
     pub cutscene: bool,
-    /// the front-end mode this frame (sub_826D4C90): its camera and values
+    /// the front-end mode this frame (F-95688): its camera and values
     pub frontend: Option<FrontEnd>,
     /// the junctions' rectangles (as `ints`), the junctions the front-end region list holds,
-    /// and the front-end lane points (ambient S+48, sub_8273E7E8)
+    /// and the front-end lane points (ambient S+48, F-56167)
     pub int_rects: Vec<RegionRect>,
     pub fe_ints: Vec<usize>,
     pub fe_pts: FrontEndPoints,
@@ -3625,7 +3625,7 @@ impl Spawner {
         Spawner { roads, ints, tune: Tune::load(root), data_dir: root.to_string_lossy().into_owned(), list: Vec::new(), int_weight: 0.0, listed: vec![false; n], target: 0.0, current: 0, frame: 0, step: 0.0, script: Default::default(), why: [0; 8], player_road: None, region_box: (glam::Vec2::ZERO, glam::Vec2::NEG_Y, 0.0, 0.0), cutscene: false, frontend: None, int_rects, fe_ints: Vec::new(), fe_pts: FrontEndPoints::default(), lane_links }
     }
 
-    /// The road a link belongs to (sub_82245340): its lane's owner when that is a road (flag
+    /// The road a link belongs to (F-86691): its lane's owner when that is a road (flag
     /// 2), else the owner's parent when that is one (a road's connector lanes); a junction's
     /// lanes have none.
     pub fn road_of(&self, nav: &NavSys, link: usize) -> Option<u32> {
@@ -3639,7 +3639,7 @@ impl Spawner {
         }
     }
 
-    /// The density value of a road (sub_8273B670): the script's index, else the road's own,
+    /// The density value of a road (F-85897): the script's index, else the road's own,
     /// else 3. In free roam with the player at 30 mph or more (mode byte +0x64250; the
     /// mode's meaning is a guess) the indices map 0 -> 0, 1-2 -> 0.55, 3-5 -> 1.25, 6 -> 0.10.
     fn value(&self, r: u32, free_fast: bool) -> f32 {
@@ -3662,7 +3662,7 @@ impl Spawner {
     }
 }
 
-/// Is a point seen from the focus (sub_826F0628 / sub_826F0870): nearer than 50 m always;
+/// Is a point seen from the focus (F-95989 / F-92805): nearer than 50 m always;
 /// up to 250 m within the field of view either way along the view line (|cos|) and not
 /// behind an occluder (sphere r 2, 1.5 m up); beyond, never.
 pub(super) fn seen(t: &Tune, focus: Vec3, view: Vec3, mph: f32, p: Vec3, occ: Option<&crate::occluder::Selected>) -> bool {
@@ -3683,10 +3683,10 @@ pub(super) fn seen(t: &Tune, focus: Vec3, view: Vec3, mph: f32, p: Vec3, occ: Op
 }
 
 // ---------------------------------------------------------------------------------
-// The ambient manager's front-end mode (sub_826D4C90: byte 0x829095FE, set by the press-start
-// script's AmbientMgr_SetFrontEnd(1, a, b, c, d, n), sub_826D5D10, which also writes S+8312 = a,
+// The ambient manager's front-end mode (F-95688: byte 0x829095FE, set by the press-start
+// script's AmbientMgr_SetFrontEnd(1, a, b, c, d, n), F-72572, which also writes S+8312 = a,
 // S+8316 = b, S+8304 = c, S+8308 = d and 0x8282A7D8 = n). No player exists on the start screen:
-// sub_826D75D8 runs the manager once with the camera (sub_826F14E0: focus its eye, view its
+// F-96156 runs the manager once with the camera (F-83397: focus its eye, view its
 // forward made flat, speed 0, no player's road).
 
 /// The world's frames run before the start screen's first frame is seen: the press-start script sets
@@ -3709,11 +3709,11 @@ pub struct FrontEnd {
     pub tan: [f32; 2],
     /// S+8312 (widens the frustum across, radians), S+8316 (up), S+8304 (near), S+8308 (far)
     pub amb: [f32; 4],
-    /// the roads' density index (0x8282A7D8, sub_8273B670)
+    /// the roads' density index (0x8282A7D8, F-85897)
     pub index: i32,
 }
 
-/// The front-end lane points (ambient S+48, sub_8273E7E8): the planes and region count they were
+/// The front-end lane points (ambient S+48, F-56167): the planes and region count they were
 /// made for (the list is made again only when either changed), and at most 256 points - where a
 /// lane goes into the frustum across one plane, inside the other five: the point, the lane, its
 /// phase and the rail link and metres along it (none: a lane off the rail graph).
@@ -3724,7 +3724,7 @@ pub struct FrontEndPoints {
     pub pts: Vec<(Vec3, usize, f32, Option<(usize, f32)>)>,
 }
 
-/// The front-end frustum (sub_8273E2F8): six planes, outward normal and w = normal . point (a
+/// The front-end frustum (F-91754): six planes, outward normal and w = normal . point (a
 /// point is outside when normal . p - w > 0): near (at S+8304), left, right, far (at S+8308), top,
 /// bottom; the sides at atan(tan across) + S+8312 and atan(tan up) + S+8316 off the forward axis.
 pub fn frontend_planes(fe: &FrontEnd) -> [glam::Vec4; 6] {
@@ -3754,7 +3754,7 @@ fn plane_out(pl: glam::Vec4, p: Vec3) -> bool {
     pl.truncate().dot(p) - pl.w > 0.0
 }
 
-/// Where a lane goes into a plane's inside (sub_822450A0): the lane at t = k x 0.01010101 (k 0 ..
+/// Where a lane goes into a plane's inside (F-78433): the lane at t = k x 0.01010101 (k 0 ..
 /// 99, lane vfunc 7); a step from outside to inside gives the middle of the step and its phase;
 /// at most `max`.
 pub fn lane_entries(c: &LaneCurve, pl: glam::Vec4, max: usize) -> Vec<(Vec3, f32)> {
@@ -3777,7 +3777,7 @@ pub fn lane_entries(c: &LaneCurve, pl: glam::Vec4, max: usize) -> Vec<(Vec3, f32
     out
 }
 
-/// sub_8224D4C0 (the regions' vfunc 3): does the circle (x / z) meet the region's rectangle -
+/// F-46547 (the regions' vfunc 3): does the circle (x / z) meet the region's rectangle -
 /// first the length x 0.7071 + r round +34 / +38, then the squared distance from the centre,
 /// turned by -atan2(dir.x, dir.z), to the rectangle (+3c across, +40 along) at most r^2.
 pub fn region_meets_circle(r: &RegionRect, c: Vec3, rad: f32) -> bool {
@@ -3806,7 +3806,7 @@ pub fn region_meets_circle(r: &RegionRect, c: Vec3, rad: f32) -> bool {
     d <= rad * rad
 }
 
-/// The 8 corners of a region's box (sub_826F4E90's front-end branch): centre +- direction x
+/// The 8 corners of a region's box (F-49549's front-end branch): centre +- direction x
 /// length / 2 +- across x width / 2, at the height range's two ends.
 fn region_corners(r: &RegionRect) -> [Vec3; 8] {
     let (d, s) = (r.dir * (r.len * 0.5), r.side * (r.width * 0.5));
@@ -3825,15 +3825,15 @@ fn all_out_of_one(planes: &[glam::Vec4; 6], pts: &[Vec3]) -> bool {
 }
 
 impl Spawner {
-    /// sub_826F4E90's front-end branch: the regions (roads and junctions) whose rectangle meets
+    /// F-49549's front-end branch: the regions (roads and junctions) whose rectangle meets
     /// the sphere ahead of the camera - D = S+8308, v = the flat forward x D, L = |v|, centre eye +
-    /// v / 2, radius sqrt((L / 2)^2 + (L / tan across)^2); at most 200 (sub_822491E8) - kept,
+    /// v / 2, radius sqrt((L / 2)^2 + (L / tan across)^2); at most 200 (F-30720) - kept,
     /// at most 100, unless all 8 corners of the region's box are outside one plane of the
     /// front-end frustum; the target the sum of their weights (no density scale), 0 .. 1 -> 1.
-    /// (The cutscene's own neighbours, sub_826F2000, are not added in this mode.)
+    /// (The cutscene's own neighbours, F-63162, are not added in this mode.)
     fn region_list_frontend(&mut self, fe: &FrontEnd) {
         let t = self.tune;
-        // (the parked lists' own box, sub_826F13A8, at the mode's zero speed and M+324 = 0)
+        // (the parked lists' own box, F-97927, at the mode's zero speed and M+324 = 0)
         let vx = glam::Vec2::new(fe.fwd.x, fe.fwd.z).normalize_or(glam::Vec2::NEG_Y);
         let fx = glam::Vec2::new(fe.eye.x, fe.eye.z);
         self.region_box = (fx + vx * lerp(t.box_off, 0.0), vx, lerp(t.box_len, 0.0), lerp(t.box_width, 0.0));
@@ -3888,11 +3888,11 @@ impl Spawner {
         }
     }
 
-    /// sub_8273E7E8 (from sub_826D75D8 every frame in the front-end mode, before the managers
+    /// F-56167 (from F-96156 every frame in the front-end mode, before the managers
     /// run): the front-end planes and manager 0's region list; when either has changed (the
     /// planes compared exactly, the list by its count only) the points are made again - for every
     /// region whose lanes' box (lane +10 / +20) is not wholly outside one plane, every lane's
-    /// entries across each plane (sub_822450A0, 64 at most) that are inside the other five; at
+    /// entries across each plane (F-78433, 64 at most) that are inside the other five; at
     /// most 256.
     fn frontend_points(&mut self, nav: &NavSys, fe: &FrontEnd) {
         let planes = frontend_planes(fe);
@@ -3950,14 +3950,14 @@ impl Spawner {
 }
 
 impl Vehicles {
-    /// AmbientMgr_Reset (sub_826D6A40 -> sub_826D5F40 -> sub_826D56F0 with the message 0x40): every ambient car
-    /// of kind 0x40 - a car type (type vt+24 sub_82130008 = 1; a person's type returns 0) without a parking
+    /// AmbientMgr_Reset (F-11140 -> F-91399 -> F-99126 with the message 0x40): every ambient car
+    /// of kind 0x40 - a car type (type vt+24 F-49619 = 1; a person's type returns 0) without a parking
     /// spot (car +44 = 0) - goes at once, no fade: riding traffic, trailers, a layout item's car (its item stays).
-    /// The cars in spots (kind 0x20) and the walkers (0x10) stay. Per car (sub_826DF370 / sub_826E0140 /
-    /// sub_826E0438 with no time): +500 bit 0x80, a request that takes the car over (sub_826DE730), its
-    /// behaviour (sub_826E02F0), then the car's vfunc 11 with reason 11 (sub_826E7AC0: the car taken out) and
-    /// back to its group's free list (sub_826D6390, the type's counts sub_826E39E8). The spawn requests of kind
-    /// 0x40 still waiting for ground are ended too (sub_826ED338: state 7) - the port keeps none at this point.
+    /// The cars in spots (kind 0x20) and the walkers (0x10) stay. Per car (F-76814 / F-75521 /
+    /// F-29339 with no time): +500 bit 0x80, a request that takes the car over (F-10793), its
+    /// behaviour (F-20553), then the car's vfunc 11 with reason 11 (F-12958: the car taken out) and
+    /// back to its group's free list (F-72573, the type's counts F-39893). The spawn requests of kind
+    /// 0x40 still waiting for ground are ended too (F-42105: state 7) - the port keeps none at this point.
     pub fn ambient_reset(&mut self) {
         let before = self.cars.len();
         self.cars.retain(|c| {
@@ -3979,7 +3979,7 @@ impl Vehicles {
         sp.road_of(nav, self.cars[i].rail.as_ref()?.link)
     }
 
-    /// The player's lane (sub_826D99B8 for the racer's obstacle): the nearest within the
+    /// The player's lane (F-58331 for the racer's obstacle): the nearest within the
     /// chassis bound's half diagonal + 2.25 m. (The original keeps a list of lanes changed by
     /// one random check a frame; the nearest of them is taken here at once.)
     fn player_lane(nav: &NavSys, c: &super::CarInstance) -> Option<usize> {
@@ -4031,8 +4031,8 @@ impl Vehicles {
         }
         // trailers whose cab is gone
         self.cars.retain(|c| c.rail.as_ref().map_or(true, |r| r.state != 0 || r.partner.is_some()));
-        // cars on their way out (car +500 bit 0x4, sub_826E9AD0): the fade +484 falls by 2 a second
-        // (0x82040E94); at 0 the car is removed (sub_826D50E8 with its reason)
+        // cars on their way out (car +500 bit 0x4, F-82632): the fade +484 falls by 2 a second
+        // (0x82040E94); at 0 the car is removed (F-51512 with its reason)
         for c in self.cars.iter_mut() {
             if let Some(f) = c.removing.as_mut() {
                 *f -= 2.0 * dt;
@@ -4063,7 +4063,7 @@ impl Vehicles {
             }
             None => (Vec3::NEG_Z, 0.0, None),
         };
-        // (the cutscene mode, sub_826D4CA0: the focus the camera's eye, the view its forward made
+        // (the cutscene mode, F-97032: the focus the camera's eye, the view its forward made
         // flat, no speed - the velocity it takes, [0x828608D0], is zero - and no player's road)
         let cut = self.amb_cutscene;
         let (center, view, mph, player_link) = match cut {
@@ -4071,7 +4071,7 @@ impl Vehicles {
             None => (center, view, mph, player_link),
         };
         sp.cutscene = cut.is_some();
-        // (the front-end mode, sub_826D4C90: no player on the start screen - sub_826F14E0 takes the
+        // (the front-end mode, F-95688: no player on the start screen - F-83397 takes the
         // camera as in the cutscene mode: its eye, its forward made flat, speed 0, no player's road)
         let fe = self.amb_frontend.filter(|_| cut.is_none()).map(|f| FrontEnd { eye: f.eye, fwd: f.dir.normalize_or(Vec3::NEG_Z), tan: self.amb_frontend_tan, amb: f.amb, index: f.index });
         let (center, view, mph, player_link) = match fe {
@@ -4082,8 +4082,8 @@ impl Vehicles {
             sp.fe_pts = FrontEndPoints::default();
         }
         sp.frontend = fe;
-        // (the player's car wiped out - its sim's +592 bit 0x10, set by mcCarDamage sub_823429B0 for
-        // WipeoutDelay: sub_826F0548 - no spawning or unspawning, the lists still made)
+        // (the player's car wiped out - its sim's +592 bit 0x10, set by mcCarDamage F-69183 for
+        // WipeoutDelay: F-43424 - no spawning or unspawning, the lists still made)
         let wiped = fe.is_none() && self.cars.iter().find(|c| c.is_player).is_some_and(|c| c.state.upset > 0.0 || c.state.veh.as_ref().is_some_and(|v| v.wipe.is_some()));
         {
             static WAS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -4100,14 +4100,14 @@ impl Vehicles {
         while sp.step >= 1.0 / 30.0 {
             sp.step -= 1.0 / 30.0;
             sp.frame = sp.frame.wrapping_add(1);
-            // (sub_826D75D8: the front-end lane points from manager 0's region list, every frame
+            // (F-96156: the front-end lane points from manager 0's region list, every frame
             // before the manager runs)
             if let Some(f) = fe {
                 sp.frontend_points(nav, &f);
             }
             if sp.frame % 2 == 1 {
                 self.region_list(&mut sp, nav, center, view, mph, free_fast);
-                // the parked cars' lists right after (sub_826F17D8, vehicles/parked.rs)
+                // the parked cars' lists right after (F-51021, vehicles/parked.rs)
                 self.parked_lists(&sp);
                 if let Some(f) = fe.filter(|_| sp.frame % 30 == 1 && std::env::var("MCLA_TRAFFIC_TRACE").is_ok()) {
                     // (diagnostics) the riding cars inside the drawn frustum (5 m .. 10 km, no widening)
@@ -4119,7 +4119,7 @@ impl Vehicles {
                     log::info!("traffic regions {} target {:.2} current {} enabled {} mph {:.0} turned down (type, pool, junction, freeway, one way, room, seen, no ground) {:?}", sp.list.len(), sp.target, sp.current, enabled, mph, sp.why);
                 }
             } else {
-                // sub_826F7988 (traffic, people, then the parked cars) and sub_826F6130 (the
+                // F-93348 (traffic, people, then the parked cars) and F-75661 (the
                 // unspawners, only while the region list has roads); none while wiped out
                 if wiped {
                     continue;
@@ -4143,7 +4143,7 @@ impl Vehicles {
         self.spawner = Some(sp);
     }
 
-    /// sub_826F4E90: the roads in the box ahead of the focus, their weights and the target.
+    /// F-49549: the roads in the box ahead of the focus, their weights and the target.
     #[allow(clippy::too_many_arguments)]
     fn region_list(&mut self, sp: &mut Spawner, nav: &NavSys, focus: Vec3, view: Vec3, mph: f32, free_fast: bool) {
         if let Some(f) = sp.frontend {
@@ -4162,7 +4162,7 @@ impl Vehicles {
         let bh = glam::Vec2::new(len * 0.5, width * 0.5);
         sp.region_box = (bc, vx, len, width);
         let on_freeway = player_road.is_some_and(|r| sp.roads[r as usize].speed >= 29.0129);
-        // hidden: behind an occluder of the spawner's view only (sub_82175508 with flags 2 - no
+        // hidden: behind an occluder of the spawner's view only (F-45295 with flags 2 - no
         // frustum test): the eye 1.75 m above the focus, occluders within 400 m
         let occ = crate::occluder::city(&sp.data_dir).map(|c| c.select_around(focus + Vec3::Y * 1.75, OCC_RANGE));
         let speed_factor = lerp(t.density_at, ((mph - t.density_mph[0]) / (t.density_mph[1] - t.density_mph[0])).clamp(0.0, 1.0));
@@ -4212,7 +4212,7 @@ impl Vehicles {
                 target += iw;
             }
         }
-        // (the density scale, 0x826F5504: on the sum, before the clamp - not in the cutscene branch)
+        // (the density scale, A-74605: on the sum, before the clamp - not in the cutscene branch)
         if !sp.cutscene {
             target *= self.density_scale.unwrap_or(1.0);
         }
@@ -4224,17 +4224,17 @@ impl Vehicles {
         sp.current = (0..self.cars.len()).filter(|&i| self.ambient_car(i) && self.car_road(sp, nav, i).is_some_and(|r| sp.listed[r as usize])).count() as u32;
     }
 
-    /// sub_826F6920: up to 60 tries, at most min(target - current, 6) cars.
+    /// F-92144: up to 60 tries, at most min(target - current, 6) cars.
     #[allow(clippy::too_many_arguments)]
     fn spawn_frame(&mut self, sp: &mut Spawner, gpu: &crate::render::Gpu, world: &crate::world::World, nav: &NavSys, focus: Vec3, view: Vec3, mph: f32, player_link: Option<usize>) {
         let mut n = (sp.target as i32 - sp.current as i32).min(6);
         if n <= 0 || (sp.list.is_empty() && sp.fe_ints.is_empty()) || self.models.is_empty() {
             return;
         }
-        // (the front-end mode: one try a frame, 0x826F6C5C)
+        // (the front-end mode: one try a frame, A-67400)
         let fe = sp.frontend.is_some();
         // no spawning while the player is under 30 mph on a junction's lane (the lane's owner or
-        // its parent flagged 4, sub_822452F8)
+        // its parent flagged 4, F-41621)
         if mph * MPH < 13.41 && player_link.is_some_and(|l| (nav.links[l].owner_flags | nav.links[l].parent_flags) & 4 != 0) {
             return;
         }
@@ -4268,7 +4268,7 @@ impl Vehicles {
                 continue;
             }
             // the front-end mode: a point of the front-end list (S+8240 of them, the global MWC %
-            // count), its lane and phase; the lane's road (sub_82245340), else the try is wasted
+            // count), its lane and phase; the lane's road (F-86691), else the try is wasted
             let fe_at = if fe {
                 if sp.fe_pts.pts.is_empty() {
                     continue;
@@ -4360,7 +4360,7 @@ impl Vehicles {
                 continue;
             }
             // unseen (a long type at both ends too; the front-end mode has no visibility test,
-            // 0x826F7658)
+            // A-85419)
             if !fe && seen(&t, focus, view, mph, pos, occ.as_ref()) {
                 sp.why[6] += 1;
                 continue;
@@ -4373,7 +4373,7 @@ impl Vehicles {
                 }
             }
             // on the ground: a probe +- 1.75 m at the point, none - no spawn ("could not spawn
-            // on terrain", sub_826E4A48)
+            // on terrain", F-46111)
             let Some((ground, normal)) = probe_ground(&world.collider, pos) else {
                 sp.why[7] += 1;
                 continue;
@@ -4384,7 +4384,7 @@ impl Vehicles {
             let color = ty.color(shade).unwrap_or(super::TRAFFIC_PALETTE[shade % super::TRAFFIC_PALETTE.len()]);
             let yaw = (-dir.x).atan2(-dir.z);
             let idx = self.spawn(gpu, model, ground, yaw, color, false);
-            // (its lights' hour offset, car +3568: 0 .. 0.25 h - sub_826E86C8)
+            // (its lights' hour offset, car +3568: 0 .. 0.25 h - F-77422)
             self.cars[idx].amb_lamps.hour_offset = self.rand() * 0.25;
             let f = (dir - normal * dir.dot(normal)).normalize_or(dir);
             let right = f.cross(normal).normalize_or(Vec3::X);
@@ -4393,7 +4393,7 @@ impl Vehicles {
             let mut rider = Rider::new(nav, ty, link, s, seed);
             rider.born = self.clock;
             rider.seat = Some(Seat::new(ground, normal, f));
-            // the start speed (vfunc 84 sub_826E7FF8, called by the spawn slot 5 sub_826E86C8
+            // the start speed (vfunc 84 F-30683, called by the spawn slot 5 F-77422
             // for every ambient car, path = none): removed (reason 17) when the rule says so
             let (hl, hw) = half_size(&self.cars[idx]);
             match self.path_start_speed(nav, &rider, ground, (2.0 * hw, 2.0 * hl), None, Some(idx)) {
@@ -4423,7 +4423,7 @@ impl Vehicles {
         }
     }
 
-    /// sub_826F4390: 30 cars looked at, at most one removed.
+    /// F-65438: 30 cars looked at, at most one removed.
     fn unspawn_frame(&mut self, sp: &Spawner, nav: &NavSys, focus: Vec3, view: Vec3, mph: f32) {
         let amb: Vec<usize> = (0..self.cars.len()).filter(|&i| self.ambient_car(i)).collect();
         if amb.is_empty() {
@@ -4440,7 +4440,7 @@ impl Vehicles {
         for _ in 0..30 {
             let i = amb[(self.rand() * amb.len() as f32) as usize % amb.len()];
             let c = &self.cars[i];
-            // (a layout item's car is left to the parked unspawner's item branch: sub_826F4390
+            // (a layout item's car is left to the parked unspawner's item branch: F-65438
             // skips a car whose +40 is set)
             if c.item.is_some() {
                 continue;
@@ -4449,12 +4449,12 @@ impl Vehicles {
             let Some(r) = c.rail.as_ref() else { continue };
             if r.state != 1 && r.state != 0 {
                 // (a trailer, state 0, has no behaviour: left to the rule below as before)
-                // not on a navsys lane (sub_826E9870 false: the detached, the physical, the
+                // not on a navsys lane (F-96472 false: the detached, the physical, the
                 // recovery / passing / backing rails): listed when within +16 (the outer
                 // radius) of the focus, and then kept while seen or young; otherwise removed
-                // (reason 8) - sub_826F4390: remove if !r27 || r24 || stuck || r30 || crowded || !r23
+                // (reason 8) - F-65438: remove if !r27 || r24 || stuck || r30 || crowded || !r23
                 let near = Vec3::new(pos.x - focus.x, 0.0, pos.z - focus.z).length() < sp.tune.unspawn_outer;
-                // (the front-end mode: seen = listed, here within the outer radius, 0x826F48A4)
+                // (the front-end mode: seen = listed, here within the outer radius, A-37258)
                 let seen_now = if sp.frontend.is_some() { near } else { seen(&sp.tune, focus, view, mph, pos, occ.as_ref()) };
                 if near && (self.clock - r.born < r.life || seen_now) {
                     continue;
@@ -4467,7 +4467,7 @@ impl Vehicles {
             }
             let road = self.car_road(sp, nav, i);
             let listed = road.is_some_and(|x| sp.listed[x as usize]);
-            // (the front-end mode: a listed car counts as seen - never removed - 0x826F48A4)
+            // (the front-end mode: a listed car counts as seen - never removed - A-37258)
             if if sp.frontend.is_some() { listed } else { seen(&sp.tune, focus, view, mph, pos, occ.as_ref()) } {
                 continue;
             }
@@ -4496,15 +4496,15 @@ impl Vehicles {
 // ---------------------------------------------------------------------------------
 // The races' ambient paths (`*_AmbientData.xml`, mcAmbientPath; decoded 2026-10-21,
 // work/people2/re/ag16_report.txt A1 - A6, the vertex snap work/people2/racepaths/report.txt):
-// path init (sub_827393B8: the vertices snapped onto lanes, the curve rail, the join rail, the
-// spawn matrix) and the car that follows the path (sub_826DF430 with the path's params; its
-// behaviour route sub_8279FA00): the curve rail, the join rail, then the path's lane as
+// path init (F-87998: the vertices snapped onto lanes, the curve rail, the join rail, the
+// spawn matrix) and the car that follows the path (F-45833 with the path's params; its
+// behaviour route F-28180): the curve rail, the join rail, then the path's lane as
 // ordinary traffic, at most fPathMaxSpeed for its whole life.
 
-/// A path vertex looks for a lane within 30 m (sub_82738FB8: the vertex's w, [0x82006BF0]).
+/// A path vertex looks for a lane within 30 m (F-46970: the vertex's w, [0x82006BF0]).
 pub const SNAP_RADIUS: f32 = 30.0;
 
-/// The nearest point of a curve to `p` (sub_825875F0): `n` chords at t = k / n, the one whose
+/// The nearest point of a curve to `p` (F-53741): `n` chords at t = k / n, the one whose
 /// own nearest point is nearest gives the phase bracket [ta, tb]; the side whose third point
 /// (ta + h or tb - h, h = (tb - ta) / 3) is nearer is taken first, then `iters` halvings, each
 /// keeping the end that has come nearest so far (ties: the lower end first, then the upper).
@@ -4564,7 +4564,7 @@ pub fn curve_nearest(c: &LaneCurve, p: Vec3, n: usize, iters: usize) -> (f32, f3
 }
 
 /// A lane's box (lane +16 / +32: here the box of its control points, which holds its curve),
-/// its stored length (+0c, the curve's: sub_82244E10) and its flags (+4).
+/// its stored length (+0c, the curve's: F-50105) and its flags (+4).
 struct LaneBox {
     min: Vec3,
     max: Vec3,
@@ -4597,7 +4597,7 @@ fn lane_boxes(nav: &NavSys) -> &'static [LaneBox] {
     })
 }
 
-/// A lane's answer to a point (lane slot 3 sub_82245388: the 48-byte record {point, tangent,
+/// A lane's answer to a point (lane slot 3 F-15621: the 48-byte record {point, tangent,
 /// lane, squared distance, phase, valid}).
 #[derive(Clone, Copy, Debug)]
 pub struct LaneHit {
@@ -4605,14 +4605,14 @@ pub struct LaneHit {
     pub t: f32,
     pub d2: f32,
     pub point: Vec3,
-    /// the curve's derivative there (sub_82586BC8)
+    /// the curve's derivative there (F-26180)
     pub dir: Vec3,
 }
 
-/// The lane nearest to `p` within `r` (sub_8224A868 -> sub_8224A4F8 with no heading): the lane
-/// quadtree's nodes whose x / z box comes within r (sub_82246BF8 / sub_82246B78), their lanes with
-/// flags & 1 whose box comes within r (lane slot 5 sub_82244DC0) asked for their nearest curve
-/// point (slot 3: sub_825875F0 with 8 chords for a lane of 450 m or more, else 4, and 10 halvings),
+/// The lane nearest to `p` within `r` (F-66090 -> F-59579 with no heading): the lane
+/// quadtree's nodes whose x / z box comes within r (F-21575 / F-80185), their lanes with
+/// flags & 1 whose box comes within r (lane slot 5 F-56243) asked for their nearest curve
+/// point (slot 3: F-53741 with 8 chords for a lane of 450 m or more, else 4, and 10 halvings),
 /// valid when the squared distance is under r^2; the least squared distance wins (the first of
 /// equals). Also the number of valid answers (the original keeps 64 at most).
 pub fn snap_to_lane(nav: &NavSys, p: Vec3, r: f32) -> (Option<LaneHit>, usize) {
@@ -4641,7 +4641,7 @@ pub fn snap_to_lane(nav: &NavSys, p: Vec3, r: f32) -> (Option<LaneHit>, usize) {
     (best, hits)
 }
 
-/// The curve rail of a path (sub_827383B8 -> sub_825867F8 -> sub_82587A78; class sub_82737E80,
+/// The curve rail of a path (F-86418 -> F-80887 -> F-42351; class F-33069,
 /// flags 0x801): a clamped B-spline over `cps`, degree min(3, k - 1) (at least 1), the knots
 /// handed over p zeros, 1 .. k - p - 1, then k - p repeated p times, with one more knot put
 /// before and after (K0 = K1 - (K2 - K1), the last = the one before + its step; with four
@@ -4680,7 +4680,7 @@ pub fn path_curve(cps: &[Vec3]) -> LaneCurve {
     LaneCurve { degree: p as u8, pts: cps.to_vec(), knots: kn, t_range, t_max: t_range - 1e-4 }
 }
 
-/// A race path after its init (sub_827393B8).
+/// A race path after its init (F-87998).
 #[derive(Clone, Debug, Default)]
 pub struct PathRails {
     /// +32: the vertices, those that found a lane moved onto it
@@ -4695,10 +4695,10 @@ pub struct PathRails {
     /// heading at the start
     pub join: Option<Vec<Vec3>>,
     pub join_dir: Vec3,
-    /// the spawn matrix after init (sub_82738E48): its place and z row
+    /// the spawn matrix after init (F-94337): its place and z row
     pub spawn: Vec3,
     pub row2: Vec3,
-    /// both rails' speed: fPathMaxSpeed x 0.44704 m/s (sub_82738A10)
+    /// both rails' speed: fPathMaxSpeed x 0.44704 m/s (F-69121)
     pub speed: f32,
     /// (diagnostics) the most valid lane answers a vertex had; the original keeps 64
     pub hits: usize,
@@ -4708,7 +4708,7 @@ pub struct PathRails {
     pub quiet: bool,
 }
 
-/// Path init (sub_827393B8). `snap`: bSnapToRails per vertex (a single-vertex path that is not
+/// Path init (F-87998). `snap`: bSnapToRails per vertex (a single-vertex path that is not
 /// parked snaps its vertex); `min_turn`: the TypeName type's fMinTurningRadius (type +160; no
 /// type, no join rail); `spawn` / `row2`: the file's SpawnMtx; `max_mph`: fPathMaxSpeed.
 #[allow(clippy::too_many_arguments)]
@@ -4719,7 +4719,7 @@ pub fn path_rails(nav: &NavSys, verts: &[Vec3], snap: &[bool], parked: bool, min
         flags[0] = true;
     }
     let mut out = PathRails { speed: max_mph * 0.44704, spawn, row2, ..Default::default() };
-    // sub_82738FB8: each flagged vertex onto its nearest lane; the last one keeps the lane
+    // F-46970: each flagged vertex onto its nearest lane; the last one keeps the lane
     for i in 0..n {
         let mut q = verts[i];
         if flags[i] {
@@ -4735,7 +4735,7 @@ pub fn path_rails(nav: &NavSys, verts: &[Vec3], snap: &[bool], parked: bool, min
         }
         out.snapped.push(q);
     }
-    // the join rail (sub_82738558): the last vertex flagged and the one before not; from the
+    // the join rail (F-45519): the last vertex flagged and the one before not; from the
     // vertex before along the file's last step (two vertices: the spawn matrix's -z) to the last
     // along the lane; the shortest of the four arc - line - arc ways at fMinTurningRadius.
     // (With no lane found the lane's direction is unset: no rail is made here.)
@@ -4796,7 +4796,7 @@ impl PathRails {
         heading_of(self.row2.x, self.row2.z)
     }
 
-    /// The follower's route (sub_8279FA00): more than one vertex - the curve rail, then the
+    /// The follower's route (F-28180): more than one vertex - the curve rail, then the
     /// join rail, at phase 0 - then the path's lane at its phase; one vertex: the lane at once.
     /// None without a lane.
     pub fn route(&self, path: usize) -> Option<Route> {
@@ -4865,7 +4865,7 @@ impl Route {
         }
     }
 
-    /// The pose the follower stores (sub_827986C0 on a curve rail: the curve speed +180 the mean
+    /// The pose the follower stores (F-74567 on a curve rail: the curve speed +180 the mean
     /// of |dP/dt| here and the last value).
     fn pose(&mut self) -> (Vec3, Vec3) {
         let (p, d, sp) = match &self.rails[self.i] {
@@ -4907,11 +4907,11 @@ fn lane_link_at(nav: &NavSys, lanes: &Lanes, lane: usize, t: f32) -> Option<(usi
 }
 
 /// One frame of a race path's car on the path's rails (state 9): the follower as on a lane
-/// (sub_82798F18; the phase by distance over the curve speed on the curve rail, by arc length on
-/// the join rail), wanted speed max(10 mph, rail speed + offset) (sub_827A2B38), the car ahead
+/// (F-50894; the phase by distance over the curve speed on the curve rail, by arc length on
+/// the join rail), wanted speed max(10 mph, rail speed + offset) (F-70324), the car ahead
 /// along the rest of this rail and the next (the next path rail or the lane). Past the last rail
 /// the rest of the distance goes on along the path's lane from its phase (the lane-end turn
-/// sub_8279FBB0 returns the route's lane), then ordinary traffic (state 1). (The stop-line and
+/// F-48618 returns the route's lane), then ordinary traffic (state 1). (The stop-line and
 /// slower-lane entries are not made on these rails, as on the other run-time rails here.)
 pub fn step_route(r: &mut Rider, env: &Env, me: usize, half_len: f32, dt: f32) -> (Vec3, Vec3) {
     let nav = env.nav;
@@ -5007,9 +5007,9 @@ pub fn step_route(r: &mut Rider, env: &Env, me: usize, half_len: f32, dt: f32) -
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PathSpawn {
     Done,
-    /// no ground under the spawn matrix yet (the request waits up to its 3 s, sub_826E0438)
+    /// no ground under the spawn matrix yet (the request waits up to its 3 s, F-29339)
     NoGround,
-    /// not made, or taken out at once (sub_826D50E8 reason 17)
+    /// not made, or taken out at once (F-51512 reason 17)
     Removed,
 }
 
@@ -5019,7 +5019,7 @@ impl Vehicles {
         &mut self.park_rng
     }
 
-    /// A type for a random ambient path (sub_82738B08 -> sub_826DA8D0 on the traffic list,
+    /// A type for a random ambient path (F-52741 -> F-91280 on the traffic list,
     /// S +8556): the focus district's list at this hour among the loaded types of bound group
     /// `group`, taxis only when `taxis`.
     pub fn path_type_draw(&mut self, root: &std::path::Path, focus: Vec3, group: u32, taxis: bool) -> Option<String> {
@@ -5036,23 +5036,23 @@ impl Vehicles {
         self.ambient.pick(focus, self.hour, r, &ok).map(|s| s.to_string())
     }
 
-    /// The start speed (car vfunc 84 sub_826E7FF8, called by the spawn slot 5 sub_826E86C8 for
+    /// The start speed (car vfunc 84 F-30683, called by the spawn slot 5 F-77422 for
     /// every ambient car - traffic too - and at a race path's trigger; listings
     /// work/people2/racepaths/v84.txt, work/people2/racepaths2/m.txt). `start`: the path's
     /// fPathStartSpeed x 0.44704 (0 when bParked, or referenced and not fired); None for a car
     /// without a path. f25 = the rail's speed + the car's offset (+424). No rail, a junction lane
     /// (the rail's owner or its parent flagged 4) or online: v = start, else f25, removed when
-    /// under 0. Else the cars on the rail (sub_826E7E28; phase = behaviour +208): the one ahead
+    /// under 0. Else the cars on the rail (F-90496; phase = behaviour +208): the one ahead
     /// (least phase ahead, else the least on the next rail) caps it at sqrt(|v_a|^2 + fMaxDecel
     /// (gap - 2)) with our fMaxDecel, the one behind (greatest phase behind) asks at least
     /// sqrt(|v_b|^2 - fMaxDecel_b (gap - 2)), gap = the centres' distance less both half lengths,
     /// a negative term removes; the light (`light_start_cap`); the slot test (`slot_clear`), which
     /// removes a car that is no cab and no trailer (nor car +500 bit 0x20: the cars of the ambient
-    /// manager's second pool, sub_826D7CE0 -> sub_826E99C8 with 1, which serves the bIsProxy
-    /// types, sub_826DE670 -> sub_826D6B48; such a car is never removed anyway).
+    /// manager's second pool, F-86868 -> F-53584 with 1, which serves the bIsProxy
+    /// types, F-12577 -> F-21879; such a car is never removed anyway).
     /// Then f25 = max(f25, 0); removed when the least is over the cap, over f25 or over the
     /// light's speed; v = min(start or f25, cap, light), removed when under the least. A bIsProxy
-    /// type (+108) is never removed. Removed: None (sub_826D50E8, reason 17). `size`: the car's
+    /// type (+108) is never removed. Removed: None (F-51512, reason 17). `size`: the car's
     /// bound (width, length); `me`: the car's own index when it is in the list already.
     #[allow(clippy::too_many_arguments)]
     fn path_start_speed(&self, nav: &NavSys, rider: &Rider, pos: Vec3, size: (f32, f32), start: Option<f32>, me: Option<usize>) -> Option<f32> {
@@ -5085,7 +5085,7 @@ impl Vehicles {
             (Some(rt), Key::Path(p, i)) => Some(if i + 1 < rt.rails.len() { Key::Path(p, i + 1) } else { Key::Lane(rt.lane) }),
             _ => rider.next.map(|n| Key::Lane(nav.links[n].lane)),
         };
-        // sub_826E7E28: the rail's car list (sub_8273E108: in the order the cars took the rail,
+        // F-90496: the rail's car list (F-83161: in the order the cars took the rail,
         // the first 64, the car itself among them and then passed over): the greatest phase
         // under ours behind, the least over ours ahead (the first of equals); none ahead: the
         // least phase on the next rail's list (behaviour +192)
@@ -5179,11 +5179,11 @@ impl Vehicles {
         Some(v)
     }
 
-    /// The light's start speed (sub_826E7FF8 at 0x826E8394): when the next rail (behaviour +192)
-    /// is a junction lane (sub_82245218: its owner or the owner's parent flagged 4), its junction
-    /// J (sub_822452F8) lets the car go when the lane is green (sub_8273A178: the lane's first
+    /// The light's start speed (F-30683 at A-11634): when the next rail (behaviour +192)
+    /// is a junction lane (F-50269: its owner or the owner's parent flagged 4), its junction
+    /// J (F-41621) lets the car go when the lane is green (F-78185: the lane's first
     /// span within 25 degrees of the current arm, timer < 6.5 s; `Junction::lane_state` 2) and J
-    /// is not blocked (sub_8273A848, `junction_blocked`). d = |the lane's first control point (rail
+    /// is not blocked (F-50959, `junction_blocked`). d = |the lane's first control point (rail
     /// vfunc 12) - the car| less half its length, at least 0; v = sqrt(vn^2 + 2 (fMaxDecel / 2) d),
     /// vn the lane's speed when the car may go, else 0: the speed that still stops at the line
     /// (or reaches the lane's speed there). None: no such lane. (J of a junction without arms:
@@ -5216,16 +5216,16 @@ impl Vehicles {
         (x >= 0.0).then(|| x.sqrt())
     }
 
-    /// sub_8273A848: is navsys junction `ji` blocked for a car to enter? (1) A driver's car (the
+    /// F-50959: is navsys junction `ji` blocked for a car to enter? (1) A driver's car (the
     /// vehicle manager 0x82874374's list: the player, racers, police) whose lane (racer +640,
-    /// `DriverLanes::best`) is a lane of the junction (sub_822452F8) and whose squared distance
-    /// (+644) is under (4.5 x 0.667)^2; (2) the cars on the junction's rails (sub_8273C1B8: its
+    /// `DriverLanes::best`) is a lane of the junction (F-41621) and whose squared distance
+    /// (+644) is under (4.5 x 0.667)^2; (2) the cars on the junction's rails (F-42526: its
     /// lanes, then its children's, each rail's car list in order, 64 at most altogether), not
-    /// trailers, the car itself left out: one whose lane is not green (sub_8273A178) and that
+    /// trailers, the car itself left out: one whose lane is not green (F-78185) and that
     /// moves (+412 not 0); or one standing inside the junction's box (centre +0x50 / +0x58,
     /// |axis +0x70 . d| < 0.4 x +0x3c and |axis +0x60 . d| < 0.4 x +0x40) that has no next rail,
     /// or whose next rail is the junction's and not green, or that is headed (its forward,
-    /// sub_826DDD90) off the green arm (sub_8273A360).
+    /// F-50349) off the green arm (F-16432).
     fn junction_blocked(&self, nav: &NavSys, ji: usize, me: Option<usize>) -> bool {
         let b = self.junction_blockers(nav, ji, None);
         if std::env::var_os("MCLA_START_LOG").is_some() && b.players {
@@ -5237,7 +5237,7 @@ impl Vehicles {
         }
     }
 
-    /// Everything sub_8273A848 would call a hit on navsys junction `ji`, collected: `players`
+    /// Everything F-50959 would call a hit on navsys junction `ji`, collected: `players`
     /// (part 1: the player's lane is one of the junction's, within 4.5 x 0.667 m) and the cars
     /// of part 2 (see `junction_blocked`), as `cars` indexes. The original returns at the first
     /// hit with the asking car left out of the list; taking the set and leaving the asker out
@@ -5326,7 +5326,7 @@ impl Vehicles {
     }
 
     /// The blockers of every junction that has a car on its lanes or the player's lane, once a
-    /// frame, for the riders' light (sub_827A3458 -> sub_8273A848(J, car)).
+    /// frame, for the riders' light (F-16850 -> F-50959(J, car)).
     fn frame_blockers(&self, nav: &NavSys) -> hashbrown::HashMap<usize, Blockers> {
         let lists = self.rail_lists(nav);
         let mut js: Vec<usize> = lists.keys().filter_map(|&l| lane_junction(nav, l)).collect();
@@ -5345,10 +5345,10 @@ impl Vehicles {
             .collect()
     }
 
-    /// One step of the junctions' lights (sub_8273ABC0 for all, sub_826D75D8's player demand):
-    /// `blocked` = sub_8273A848(J, 0) for the junctions whose timer passes 10 s this step, and
+    /// One step of the junctions' lights (F-86376 for all, F-96156's player demand):
+    /// `blocked` = F-50959(J, 0) for the junctions whose timer passes 10 s this step, and
     /// the player's demand at the junction ahead of its lane (`player_junction_ahead`; none in
-    /// the cutscene mode). Priority (sub_826F61D8): a race exists and the player is over 10 mph.
+    /// the cutscene mode). Priority (F-42082): a race exists and the player is over 10 mph.
     /// Approximate: evaluated once after the riders moved (the original's order against the
     /// ambient manager update is not traced).
     pub fn step_signals(&mut self, nav: &NavSys, dt: f32, race: Option<(f32, f32)>) {
@@ -5421,17 +5421,17 @@ impl Vehicles {
         }
     }
 
-    /// The driver cars' lanes, once a frame (sub_822A9D98 -> the obstacle's vfunc 11
-    /// sub_826D99B8 with the flag mcRacer vfunc 10 = 1): w = the car's radius (racer +480 =
+    /// The driver cars' lanes, once a frame (F-80793 -> the obstacle's vfunc 11
+    /// F-58331 with the flag mcRacer vfunc 10 = 1): w = the car's radius (racer +480 =
     /// sqrt(hx^2 + hz^2), hx / hz the greater magnitude of the bound box's least and greatest x /
-    /// z, sub_822AEBE0) + 4.5 x 0.5; the lane quadtree's lanes within w at the car's place (flags
-    /// & 1, 48 at most: sub_82249210); one entry of the car's list drawn (the shared MWC,
+    /// z, F-57218) + 4.5 x 0.5; the lane quadtree's lanes within w at the car's place (flags
+    /// & 1, 48 at most: F-53328); one entry of the car's list drawn (the shared MWC,
     /// (lo & 0x7FFFFFFF) % n: the racer's obstacle has no car at +16): when the query has its
-    /// lane and the lane's nearest point (slot 3, sub_82245388) is within w its phase is kept,
-    /// else the entry goes (the last moved into its place, sub_826DA0A8); then one of the
+    /// lane and the lane's nearest point (slot 3, F-15621) is within w its phase is kept,
+    /// else the entry goes (the last moved into its place, F-59811); then one of the
     /// query's lanes drawn, unless it was the one just checked: in the list - kept or dropped
     /// as before; not - added with its phase when within w and the list has fewer than 12
-    /// (sub_826DA058). The lane reported: the entry whose point at its kept phase is nearest
+    /// (F-94578). The lane reported: the entry whose point at its kept phase is nearest
     /// (squared distance, the first of equals).
     fn update_driver_lanes(&mut self, nav: &NavSys) {
         let mut live: Vec<u32> = Vec::new();
@@ -5513,7 +5513,7 @@ impl Vehicles {
         self.driver_lanes.retain(|k, _| live.contains(k));
     }
 
-    /// The slot test sub_826F5FE0 (with sub_826F3A40), only on a navsys lane (rail flags & 0x1800
+    /// The slot test F-12899 (with F-84149), only on a navsys lane (rail flags & 0x1800
     /// == 0; the path's rails pass): P = the lane's point at the car's phase (rail vfunc 7). The
     /// lanes of the navsys vertex table (root +0x38) at the lane's last control point's vertex -
     /// the lane itself among them - and at its first one but the lane itself: every ambient car
@@ -5560,7 +5560,7 @@ impl Vehicles {
     }
 
     /// The rider of a race path's car on its route (state 9; on the lane at once when the route
-    /// has no rails), its type's top speed fPathMaxSpeed for life (sub_826EA240 reads behaviour
+    /// has no rails), its type's top speed fPathMaxSpeed for life (F-58614 reads behaviour
     /// +244 for the type's fMaxSpeed).
     fn path_rider(&mut self, nav: &NavSys, ty: AmbType, pr: &PathRails, path: usize) -> Option<Rider> {
         let lanes = lanes(nav);
@@ -5583,7 +5583,7 @@ impl Vehicles {
         Some(r)
     }
 
-    /// The follower of item `h` for its race path (sub_826DF430 with the path's params: the
+    /// The follower of item `h` for its race path (F-45833 with the path's params: the
     /// type by the item's name, the colour `shade` of the type's twenty; placed at the spawn
     /// matrix with no distance or visibility test once the ground is found there), its start
     /// speed fPathStartSpeed (0 when `standing`: bParked, or referenced and not fired) within
@@ -5624,7 +5624,7 @@ impl Vehicles {
         PathSpawn::Done
     }
 
-    /// The parked placement of item `h` (sub_826DF7F0, as parked.rs places an item's car): at its
+    /// The parked placement of item `h` (F-90920, as parked.rs places an item's car): at its
     /// place and heading, no behaviour.
     fn place_path_parked(&mut self, gpu: &crate::render::Gpu, root: &std::path::Path, h: u32) -> PathSpawn {
         let Some(item) = self.layout.get(h as usize).cloned().flatten() else { return PathSpawn::Removed };
@@ -5652,7 +5652,7 @@ impl Vehicles {
         PathSpawn::Done
     }
 
-    /// A trigger fired race path `path` whose item is `h` (sub_82687F58): the item's path is
+    /// A trigger fired race path `path` whose item is `h` (F-53279): the item's path is
     /// marked fired. A car there takes the path's params (vfunc 84): the waiting car placed
     /// parked (referenced, not fired, not bParked: it has its behaviour and stood) drives off on
     /// its route at fPathStartSpeed; a bParked car stays; a car following the path is set on its
@@ -5743,7 +5743,7 @@ impl Vehicles {
         Some((shade, self.spawn_path_car(gpu, world, h, shade, pr, path, start_mph, false)))
     }
 
-    /// Race_UnloadAmbientPathArray (path vfunc sub_82739228: the item removed, reason 11): a car
+    /// Race_UnloadAmbientPathArray (path vfunc F-47222: the item removed, reason 11): a car
     /// riding a lane goes with its item; any other (on the path's rails or a recovery rail,
     /// physical, placed parked) is let go of - no item, no path rails - and stays.
     pub fn unload_path_items(&mut self, handles: &[u32]) {
@@ -5755,10 +5755,10 @@ impl Vehicles {
                 c.item = None;
                 if let Some(r) = c.rail.as_mut() {
                     if r.route.take().is_some() || r.state == 9 {
-                        // behaviour vfunc 11 sub_8279F650 clears the follower's rails that were
-                        // the path's (sub_82798C98, sub_827986A8): with no current rail
-                        // sub_82798F18 does not advance and sub_827986C0 leaves the pose flag
-                        // 0x80 clear, so the car is not posed (slot 20 / sub_826FA760 skipped)
+                        // behaviour vfunc 11 F-59895 clears the follower's rails that were
+                        // the path's (F-78813, F-55520): with no current rail
+                        // F-50894 does not advance and F-74567 leaves the pose flag
+                        // 0x80 clear, so the car is not posed (slot 20 / F-86858 skipped)
                         // and stands; nothing recovers it - the unspawner takes it (off a lane)
                         r.state = 10;
                         r.path = None;
