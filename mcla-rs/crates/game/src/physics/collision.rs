@@ -475,6 +475,11 @@ impl PassDeath {
     }
 }
 
+/// Sets whether this thread's queries pass through `death` (the game's level step, between the cars' steps), and what it was.
+pub fn pass_death_set(on: bool) -> bool {
+    PASS_DEATH.with(|c| c.replace(on))
+}
+
 impl Drop for PassDeath {
     fn drop(&mut self) {
         PASS_DEATH.with(|c| c.set(self.0));

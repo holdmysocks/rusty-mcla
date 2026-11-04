@@ -1745,7 +1745,7 @@ mod tests {
                 let m = &b.matrix1;
                 let matrix = [wv(m, 0), wv(m, 16), wv(m, 32), wv(m, 48)];
                 let body = PBody { at: sb.at, rows: sb.rows, v: sb.vel, w: sb.ang, p: Vec3::ZERO, l: Vec3::ZERO, force: sb.force, torque: sb.torque, jf: Vec3::ZERO, jt: Vec3::ZERO, push: Vec3::ZERO, turn: Vec3::ZERO, last: matrix, prev: matrix, last_set: true, deep: false, deep_count: 0, mass: 0.0, inv_mass: sb.inv_mass, inertia: Vec3::ZERO, inv_inertia: sb.inv_moments, max_speed: f32::MAX, max_spin: f32::MAX, moves: 0 };
-                let veh = VehObj { shape, shape2: (b.level == TRAILER).then_some(shape), class: 6, gravity: 1.0, cg: Vec3::ZERO, index: b.level, here: true, inflict: 1.0, rider_touch: None };
+                let veh = VehObj { shape, shape2: (b.level == TRAILER).then_some(shape), class: 6, gravity: 1.0, cg: Vec3::ZERO, index: b.level, here: true, inflict: 1.0, rider_touch: None, pair: true };
                 obj_of.push(Some(ls.objs.len()));
                 ls.objs.push(Obj { ty: 0, inst: None, matrix, entry: None, hit: false, body: Some(body), level: b.level as i64, addr: b.level as i64, veh: Some(veh), sleep: crate::physics::loose::Sleep::reset(), dormant: false, amb: None });
             }
@@ -1783,7 +1783,7 @@ mod tests {
                 let k = match ls.manis.iter().position(|m| m.a == wa && m.b == wb && m.rope == rope) {
                     Some(k) => k,
                     None => {
-                        ls.manis.push(Mani { a: wa, b: wb, part_a: 0, part_b: 0, cell: 0, stale: false, visited: true, island: 1, order: 0, slots: Vec::new(), rope });
+                        ls.manis.push(Mani { a: wa, b: wb, part_a: 0, part_b: 0, cell: 0, stale: false, visited: true, island: 1, order: 0, slots: Vec::new(), rope, owner: 0 });
                         slots.push(Vec::new());
                         ls.manis.len() - 1
                     }

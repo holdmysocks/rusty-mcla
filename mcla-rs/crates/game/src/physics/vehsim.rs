@@ -1181,56 +1181,6 @@ pub fn queue_push(st: &mut CarState, by: Vec3) {
     vs.bike_pending = Some((turn, super::solver::direct(pending, by)));
 }
 
-/// What another car's step gave this car (the shared level's solves): the impulse and its turn into the
-/// momenta, the push solve's move and turn into the pose - as the car's own body takes them (F-94789,
-/// F-67019), so the next step keeps its exact body.
-pub fn take_answer(st: &mut CarState, p: &CarParams, vt: &VehTune, jf: Vec3, jt: Vec3, push: Vec3, turn: Vec3) {
-    use super::exact as ex;
-    let t = &vt.t;
-    let mass = t.s.mass;
-    let inertia = moments(p, t);
-    let inverse = Vec3::new(ex::recip(inertia.x), ex::recip(inertia.y), ex::recip(inertia.z));
-    let pivot_local = Vec3::new(t.s.model_offset_x, t.s.model_offset_y, t.s.model_offset_z);
-    let Some(vs) = st.veh.as_mut() else { return };
-    let kept = vs.body.filter(|b| b.snap == (st.pos, st.rot, st.vel, st.ang_vel));
-    let (mut rows, mut at, mut pm, mut lm, count, seen) = match kept {
-        Some(b) => (b.rows, b.at, b.p, b.l, b.count, b.seen),
-        None => {
-            let m = Mat3::from_quat(st.rot);
-            let rows = [m.x_axis, m.y_axis, m.z_axis];
-            let iw = ex::world_inertia(&rows, inertia);
-            let w = st.ang_vel;
-            let l = Vec3::new(ex::dot3(Vec3::new(iw[0].x, iw[1].x, iw[2].x), w), ex::dot3(Vec3::new(iw[0].y, iw[1].y, iw[2].y), w), ex::dot3(Vec3::new(iw[0].z, iw[1].z, iw[2].z), w));
-            (rows, st.pos + m * pivot_local, st.vel * mass, l, 0, [rows[0], rows[1], rows[2], st.pos])
-        }
-    };
-    pm = pm + jf;
-    lm = lm + jt;
-    let mut v = pm * (1.0 / mass);
-    if v.length_squared() > 134.1 * 134.1 {
-        let k = 134.1 / v.length();
-        v *= k;
-        pm *= k;
-    }
-    let mut w = ex::spin_of(lm, &rows, inverse);
-    if w.length_squared() > 12.566_371 * 12.566_371 {
-        let k = 12.566_371 / w.length();
-        w *= k;
-        lm *= k;
-    }
-    at = at + push;
-    if super::solver::turn_applies(turn) {
-        rows = super::solver::rows_pushed(&rows, turn);
-    }
-    let origin = ex::origin_of(at, &rows, pivot_local);
-    st.vel = v;
-    st.ang_vel = w;
-    st.pos = origin;
-    st.rot = Quat::from_mat3(&Mat3::from_cols(rows[0], rows[1], rows[2])).normalize();
-    vs.body_now = Some([rows[0], rows[1], rows[2], origin]);
-    vs.body = Some(BodyExact { rows, origin, at, p: pm, l: lm, count, snap: (st.pos, st.rot, st.vel, st.ang_vel), seen });
-}
-
 /// The thrown rider's and his bike's level indices as the shared step orders them (the cache's pair order and side A:
 /// the lower). The original's rule (decoded 2026-11-04): one level, its free index list a stack at level +116 with
 /// the count in use at +42; an insert (F-72385) takes list[count] and counts up, a delete (F-97735, F-34261; F-53632 for
@@ -1251,7 +1201,111 @@ const OTHER_LEVEL: i64 = -1;
 /// box cull decides
 const RIDER_PARTNER_REACH: f32 = 8.0;
 
+/// What a car's step and the game's level step (vehicles.rs, one physics level for every car) hand each other at the
+/// step's yields - the original's order for several cars (F-93826: every car's update, F-38310: every body's move
+/// (F-44566), one collide over every pair, F-96487: each island solved once, every body integrated, the push solve):
+/// the shared level is lent to the car only while it runs, and taken back at each yield with the car's own part.
+#[derive(Default)]
+pub struct LevelX {
+    /// the shared level, while the car does not hold it
+    pub level: Option<super::loose::LooseState>,
+    /// the car's own part of it (its manifolds), while the car is yielded
+    pub part: Option<super::loose::CarPart>,
+    /// where the car's step stands
+    pub stage: Stage,
+    /// at `Stage::Moved`: its body moved as F-44566 moves it, with this tick's forces (for the other cars' collides and
+    /// solves), its two-wheel state and its wipe-out (its callback on the thrown rider)
+    pub moved: Option<(super::loose::PBody, bool, bool)>,
+    /// at `Stage::Moved`: the thrown rider is in its step
+    pub rider: bool,
+    /// at `Stage::Collided`: the other vehicles (their ids) and the loose objects in its island
+    pub touch_veh: Vec<u32>,
+    pub touch_obj: Vec<usize>,
+    /// at `Stage::Collided`: its share for an island of several cars - its solver body, its contacts with the city
+    pub share: Option<super::loose::ExtraCar>,
+    /// given back (a car of an island whose solve another car's step ran): its share with the island's answer
+    pub answer: Option<super::loose::ExtraCar>,
+}
+
+/// Where a car's step stands in the level's tick.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Stage {
+    #[default]
+    Start,
+    /// moved, not yet collided
+    Moved,
+    /// collided and its callbacks run, not yet solved
+    Collided,
+    Done,
+}
+
+/// One poll's pause: Pending once, then Ready.
+struct Pause(bool);
+
+impl std::future::Future for Pause {
+    type Output = ();
+    fn poll(mut self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+        if std::mem::replace(&mut self.0, true) {
+            std::task::Poll::Ready(())
+        } else {
+            std::task::Poll::Pending
+        }
+    }
+}
+
+/// The level and the car's part out to the game at a yield, and back in when it polls again.
+async fn level_yield(loose: &mut super::loose::LooseState, x: &std::cell::RefCell<LevelX>, stage: Stage) {
+    {
+        let mut g = x.borrow_mut();
+        g.part = Some(loose.take_car());
+        g.level = Some(std::mem::take(loose));
+        g.stage = stage;
+    }
+    Pause(false).await;
+    level_in(loose, x);
+    // (the car's own queries pass through `death` - another car's step can have left it otherwise)
+    super::collision::pass_death_set(true);
+}
+
+/// The lent level into the car's state (its own part kept).
+fn level_in(loose: &mut super::loose::LooseState, x: &std::cell::RefCell<LevelX>) {
+    let mut g = x.borrow_mut();
+    let part = g.part.take().unwrap_or_else(|| loose.take_car());
+    if let Some(l) = g.level.take() {
+        *loose = l;
+    }
+    loose.put_car(part);
+}
+
+/// The level back out of the car's state at the step's end (its own part kept in it).
+fn level_out(loose: &mut super::loose::LooseState, x: &std::cell::RefCell<LevelX>) {
+    let mut g = x.borrow_mut();
+    if g.level.is_some() {
+        return;
+    }
+    let part = loose.take_car();
+    g.level = Some(std::mem::take(loose));
+    loose.put_car(part);
+    g.stage = Stage::Done;
+}
+
+/// Polls a step that needs no level to its end (no yields without one).
+pub fn run_now<F: std::future::Future>(f: F) -> F::Output {
+    let mut f = std::pin::pin!(f);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    match f.as_mut().poll(&mut cx) {
+        std::task::Poll::Ready(v) => v,
+        std::task::Poll::Pending => unreachable!("a step without the level's exchange does not yield"),
+    }
+}
+
 pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, world: &WorldCollider, dt: f32) {
+    run_now(step_async(st, p, vt, input, world, dt, None))
+}
+
+/// [`step`] with the game's level step: the level lent through `x`, the step yielding where the original's tick
+/// runs another body's share (see [`LevelX`]).
+pub async fn step_async(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, world: &WorldCollider, dt: f32, x: Option<&std::cell::RefCell<LevelX>>) {
     // (chassis +224 as the tick comes in: what mcCarDamage's rumble test and mcFeedback's update read, crate::rumble)
     st.rumble.speed = st.vel.length();
     // (a replay of a recorded computer driver gives the chassis' own pedals: no mapping)
@@ -1274,6 +1328,9 @@ pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, wor
         input
     };
     let mut vs = st.veh.take().map(|b| *b).unwrap_or_default();
+    if let Some(x) = x {
+        level_in(&mut vs.loose, x);
+    }
     // (the car's own queries pass through `death`: the fluid callback takes its contacts out of the solve)
     let _pass_death = super::collision::PassDeath::on();
     // (F-79372: the car's fluid with its lattice over the hull's own box, +32 / +16)
@@ -2604,7 +2661,10 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         fire_exact && pressed && !upset && !wiped
     };
     let backup = (st.pos, st.rot, st.wheels);
-    physics_frame(st, &mut vs, p, vt, input, ratio, world, dt);
+    physics_frame(st, &mut vs, p, vt, input, ratio, world, dt, x).await;
+    if let Some(x) = x {
+        level_out(&mut vs.loose, x);
+    }
     // (mcCar::Update F-53665, after the chassis update: a car down again after more than 0.5 s in the air -
     // chassis +584 negated for that tick, under -0.5 - sets byte +473; while it is set the pad's rumble 1 is
     // asked every tick, and it is cleared when no wheel is bottomed (+530, F-31583))
@@ -2684,7 +2744,7 @@ struct TyreFrame {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTune, input: CarInput, ratio: f32, world: &WorldCollider, dt: f32) {
+async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTune, input: CarInput, ratio: f32, world: &WorldCollider, dt: f32, x: Option<&std::cell::RefCell<LevelX>>) {
     // (the speed the car comes into this tick with - chassis +224, written before the step)
     let speed_in = st.vel.length();
     let air_then = st.airborne_time;
@@ -5517,6 +5577,21 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         let mut rider_shared: Option<(super::artic_run::RiderIsland, super::solver::IslandSolved, Vec<super::solver::Touch>, Vec<usize>)> = None;
         // (the rider in the bike's island with the loose world: his share between the solve and the push)
         let mut rider_merged: Option<(super::artic_run::RiderIsland, Vec<Vec<(usize, usize)>>, usize)> = None;
+        // (the game's level step: the answer of an island another car's step solved)
+        let mut answer: Option<super::loose::ExtraCar> = None;
+        // (the game's level step, F-38310: every body moves before anything collides - this car's moved body, with this
+        // tick's forces, for the other cars' collides and solves)
+        if let (Some(x), true) = (x, exact_collide) {
+            let now = [rows0[0], rows0[1], rows0[2], body_rows[3]];
+            let mut b = super::loose::PBody::of_car(at1, rows1, v_in, w_in, mass, inertia, vs.hull_last.unwrap_or(now), now, force, torque);
+            b.p = pm;
+            b.l = lm;
+            let mut g = x.borrow_mut();
+            g.moved = Some((b, vs.two != 0, vs.wipe.is_some()));
+            g.rider = rider_run.is_some();
+            drop(g);
+            level_yield(&mut vs.loose, x, Stage::Moved).await;
+        }
         if exact_collide {
             let hull = p.hull.as_ref().unwrap();
             let last = vs.hull_last.unwrap_or([rows0[0], rows0[1], rows0[2], body_rows[3]]);
@@ -5700,8 +5775,8 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     vs.loose.agro_contacts(&car_in, &mut vs.agro);
                 }
             }
-            let loose_ids = if loose_world.is_some() { vs.loose.car_island() } else { Vec::new() };
-            let loose_touch = !loose_ids.is_empty();
+            let mut loose_ids = if loose_world.is_some() { vs.loose.car_island() } else { Vec::new() };
+            let mut loose_touch = !loose_ids.is_empty();
             let up = rows1[1];
             let slippery = vs.stuck == 2 && gear_not_reverse(vs.gear, vs.way_after);
             let head_on = (t.s.bound_friction, t.s.bound_elasticity, t.s.head_on_cg_offset);
@@ -5830,6 +5905,36 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     vs.loose.wake_car_island(lw);
                 }
             }
+            // (the game's level step, F-96487: every car collided before any island is solved. This car's share for an island
+            // of several cars (its solver body, momenta, contacts with the city); given back: the island's answer when
+            // another car's step solves it, or the other cars of its island, lent into the level, when this step does)
+            if let (Some(x), Some(_)) = (x, loose_world) {
+                use super::loose::Who;
+                let mut body = super::solver::Body { at: at1, rows: rows1, vel: if frozen { Vec3::ZERO } else { v_in }, ang: if frozen { Vec3::ZERO } else { w_in }, inv_mass: 1.0 / mass, inv_moments: inverse, force: if frozen { Vec3::ZERO } else { force }, torque: if frozen { Vec3::ZERO } else { torque } };
+                if !frozen && ex::dot3(w_in * dt, w_in * dt) > f32::from_bits(0x2b8c_bccc) {
+                    let mut w0 = ex::spin_of(lm, &rows_turned, inverse);
+                    if w0.length_squared() > 12.566_371 * 12.566_371 {
+                        w0 *= 12.566_371 / w0.length();
+                    }
+                    body.ang = w0;
+                }
+                let parts: Vec<u8> = city_rows.iter().zip(city_part.iter()).filter(|x| *x.0).map(|x| *x.1).collect();
+                let turn_left = if dbg_flag("MCLA_DBG_Y4") { Vec3::ZERO } else { vs.push_turn_left };
+                {
+                    let mut g = x.borrow_mut();
+                    let sides: Vec<Who> = loose_ids.iter().flat_map(|&k| [vs.loose.manis[k].a, vs.loose.manis[k].b]).collect();
+                    g.touch_veh = sides.iter().filter_map(|w| if let Who::Obj(o) = *w { vs.loose.objs[o].veh.filter(|v| v.here && v.pair).map(|v| v.index) } else { None }).collect();
+                    g.touch_obj = sides.iter().filter_map(|w| if let Who::Obj(o) = *w { vs.loose.objs[o].veh.is_none().then_some(o) } else { None }).collect();
+                    g.share = Some(super::loose::ExtraCar::new(body, pm, lm, turn_left, contacts.clone(), parts));
+                }
+                level_yield(&mut vs.loose, x, Stage::Collided).await;
+                answer = x.borrow_mut().answer.take();
+                if answer.is_none() && !vs.loose.extras.is_empty() {
+                    vs.loose.islands_again(car_city_pair);
+                    loose_ids = vs.loose.car_island();
+                    loose_touch = !loose_ids.is_empty();
+                }
+            }
             // (the rider's share of the update: his refresh, materials and the callbacks' runs with the bike's; in an
             // island of his own - his pair with the bike holds no contact, or the bike's island has something loose in
             // it, unported together - his solves now, else his rows go into the bike's island below)
@@ -5935,7 +6040,19 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 }
                 }
             }
-            if !contacts.is_empty() || loose_touch || rider_isl.is_some() || rider_step2.is_some() {
+            if let Some(a) = answer.as_mut() {
+                // (an island another car's step solved: the answer for this car - its impulse and turn, its momenta as the
+                // breaking pass left them, its contacts with the city with their results - and the island as this car's
+                // callbacks see it)
+                impulse = a.impulse;
+                turning = a.turning;
+                pm = a.p;
+                lm = a.l;
+                let view = a.view.take().expect("an answered car's view of its island");
+                loose_answered = view.links.iter().zip(view.touches.iter()).any(|(l, t)| l.from.is_some() && t.impulse != Vec3::ZERO);
+                solve_body = Some(a.body);
+                loose_island = Some((a.body, std::mem::take(&mut a.city), view));
+            } else if !contacts.is_empty() || loose_touch || rider_isl.is_some() || rider_step2.is_some() {
                 let mut body = super::solver::Body { at: at1, rows: rows1, vel: if frozen { Vec3::ZERO } else { v_in }, ang: if frozen { Vec3::ZERO } else { w_in }, inv_mass: 1.0 / mass, inv_moments: inverse, force: if frozen { Vec3::ZERO } else { force }, torque: if frozen { Vec3::ZERO } else { torque } };
                 // (the move's turn of the rows, F-54600, ends by taking the turning rate from
                 // the angular momentum again through the rows as they then stand - before the
@@ -6208,7 +6325,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 }
             }
             // (the props' impact report, slot 25 of a fragment instance: the type's events)
-            if let Some(lw) = world.loose.as_ref() {
+            if let Some(lw) = world.loose.as_ref().filter(|_| answer.is_none()) {
                 vs.loose.impact_reports(lw, &out);
             }
             for (l, t) in out.links.iter().zip(out.touches.iter()) {
@@ -6240,8 +6357,16 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                     rd.finish(&isl, dt);
                     pushed
                 }
-                _ => vs.loose.push_car_island(&mut out, &body, start, dt),
+                _ => match answer.as_ref() {
+                    // (the push solve of an island another car's step solved: what it gave this car)
+                    Some(a) => a.pushed,
+                    None => vs.loose.push_car_island(&mut out, &body, start, dt),
+                },
             };
+            // (the other cars of the island: the island as each one's step sees it)
+            if !vs.loose.extras.is_empty() {
+                vs.loose.extra_views(&out);
+            }
             for (l, t) in out.links.iter().zip(out.touches.iter()) {
                 if l.from.is_none() && !l.rider {
                     contacts[l.car_row].pushed = t.pushed;

@@ -3802,6 +3802,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
         // ---- one physics level for every car (physics/loose.rs): the loose props and pieces once a tick
         // before and after the cars, each car's step with the cars not yet stepped as bodies of its island
         // (each pair is solved in the earlier car's step) ----
+        let phys_t0 = std::time::Instant::now();
         let shared = world.collider.loose.clone().filter(|_| std::env::var_os("MCLA_DBG_NOSHARED").is_none());
         let step_dt = dt.min(1.0 / 30.0);
         if let Some(lw) = shared.as_deref() {
@@ -3809,13 +3810,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
             self.ambient_into_level(step_dt);
             self.level.pre_collide(lw, step_dt);
         }
-        let mut level_car: Option<usize> = None;
-        let mut level_first = true;
+        // (the cars' steps of the tick - which car, its input, what follows its step: run together after this walk,
+        // `step_cars`)
+        let mut jobs: Vec<(usize, CarInput, StepPost)> = Vec::new();
         for idx in 0..self.cars.len() {
-            if shared.is_some() {
-                self.level_swap(&mut level_car, Some(idx), step_dt, level_first, true);
-                level_first = false;
-            }
             self.sst_trail_follow(idx);
             self.sst_search_step(idx);
             let c = &mut self.cars[idx];
@@ -3850,16 +3848,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 continue;
             }
             if let Some((p, yaw)) = c.ai.as_mut().and_then(|a| a.reset_to.take()) {
-                // (the car holds the shared level while it steps - `level_swap`: it goes back first,
-                // not away with the old state; the reset car's own pairs with it are dropped)
-                if level_car == Some(idx) {
-                    if let Some(v) = c.state.veh.as_deref_mut() {
-                        let mut l = std::mem::take(&mut v.loose);
-                        l.take_car();
-                        self.level = l;
-                    }
-                    level_car = None;
-                }
+                // (the reset car's own pairs go with its old state)
                 c.state = CarState::new(p, yaw);
                 c.pose_history.reset();
                 c.placed = false;
@@ -3891,14 +3880,6 @@ if keep || c.state.pos.distance(center) < 450.0 {
                             if d.length() > 1e-3 {
                                 let dir = d.normalize();
                                 let gear = c.state.gear;
-                                if level_car == Some(idx) {
-                                    if let Some(v) = c.state.veh.as_deref_mut() {
-                                        let mut l = std::mem::take(&mut v.loose);
-                                        l.take_car();
-                                        self.level = l;
-                                    }
-                                    level_car = None;
-                                }
                                 c.state = CarState::new(p, (-dir.x).atan2(-dir.z));
                                 // (a cruising hookman has no physical car out here: the original poses it on its ghost,
                                 // which rides the rail on the road - every placement through the +-5 m ground hit (F-29307).
@@ -3973,10 +3954,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // let the suspension settle, then leave the car where it stands
                 if c.settle > 0.0 {
                     c.settle -= dt;
-                    c.state.step(c.tuned.as_deref().unwrap_or(&c.model.params), CarInput { brake: 1.0, handbrake: true, ..Default::default() }, &world.collider, dt.min(1.0 / 30.0));
-                    c.state.vel.x = 0.0;
-                    c.state.vel.z = 0.0;
-                    c.state.ang_vel.y = 0.0;
+                    jobs.push((idx, CarInput { brake: 1.0, handbrake: true, ..Default::default() }, StepPost::Settle));
                 } else {
                     c.state.vel = Vec3::ZERO;
                     c.state.ang_vel = Vec3::ZERO;
@@ -3990,42 +3968,57 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // the 0 that F-30391(0) left)
                 let steer = if c.brain.is_some() { 0.0 } else { 0.5 };
                 let input = CarInput { deactivated: true, steer, ..Default::default() };
-                c.state.step(c.tuned.as_deref().unwrap_or(&c.model.params), input, &world.collider, dt.min(1.0 / 30.0));
+                jobs.push((idx, input, StepPost::None));
                 continue;
             }
             if self.frozen || (self.grid_hold.is_some() && !c.is_player && !c.pinned) {
                 // settle onto the ground but do not drive
-                c.state.step(c.tuned.as_deref().unwrap_or(&c.model.params), CarInput { brake: 1.0, ..Default::default() }, &world.collider, dt.min(1.0 / 30.0));
-                c.state.vel.x = 0.0;
-                c.state.vel.z = 0.0;
-                c.state.ang_vel = Vec3::ZERO;
+                jobs.push((idx, CarInput { brake: 1.0, ..Default::default() }, StepPost::Frozen));
                 continue;
             }
-            c.state.step(c.tuned.as_deref().unwrap_or(&c.model.params), c.input, &world.collider, dt.min(1.0 / 30.0));
-            // (N-VP-1 test hook: MCLA_GRID_TRACE=1 logs the racers through the grid hold and 10 s after it)
-            if (c.pinned || c.is_player) && std::env::var("MCLA_GRID_TRACE").is_ok() {
-                use std::sync::atomic::{AtomicU32, Ordering};
-                static LEFT: AtomicU32 = AtomicU32::new(0);
-                if self.grid_hold.is_some() {
-                    LEFT.store(600, Ordering::Relaxed);
+            jobs.push((idx, c.input, StepPost::Trace));
+        }
+        self.step_cars(&jobs, world, step_dt, shared.is_some());
+        for &(idx, _, post) in &jobs {
+            let c = &mut self.cars[idx];
+            match post {
+                StepPost::Settle => {
+                    c.state.vel.x = 0.0;
+                    c.state.vel.z = 0.0;
+                    c.state.ang_vel.y = 0.0;
                 }
-                let left = LEFT.load(Ordering::Relaxed);
-                if left > 0 {
-                    if c.is_player && self.grid_hold.is_none() {
-                        LEFT.store(left - 1, Ordering::Relaxed);
-                    }
-                    if let Some(vs) = c.state.veh.as_ref() {
-                        let f = c.state.forward();
-                        log::info!("grid {:<22} to_go {:6.2} thr {:.2} brk {:.2} hand {} st {} charge {:.2} rpm {:5.0} gear {} spd {:6.2} rear slide {:.2} {:.2} vlong {:6.1} {:6.1} front slide {:.2} {:.2} vlong {:6.1} pos {:.3} {:.3} nitro {} rspin {:.1} {:.1} shaft {:.1} {:.1} drive {} clutch {} held {} | F load {:.0} flong {:.0} disp {:.4} slide {:.2} | R load {:.0} flong {:.0} disp {:.4} slide {:.2} | v {:.3}",
-                            if c.is_player { "player" } else { c.model.name.as_str() }, self.grid_hold.unwrap_or(0.0), c.input.throttle, c.input.brake, c.input.handbrake as u8, vs.burn_state, vs.burn, c.state.rpm, vs.gear, c.state.vel.dot(f),
-                            vs.wheels[2].slide, vs.wheels[3].slide, vs.wheels[2].velocity_long, vs.wheels[3].velocity_long, vs.wheels[0].slide, vs.wheels[1].slide, vs.wheels[0].velocity_long, c.state.pos.x, c.state.pos.z, c.input.nitro as u8, vs.wheels[2].spin_rate, vs.wheels[3].spin_rate, vs.omega[0], vs.omega[1], vs.drive, vs.clutch as u8, vs.trans_inhibited as u8, vs.wheels[0].load, vs.wheels[0].f_long, vs.wheels[0].disp_long, vs.wheels[0].slide, vs.wheels[2].load, vs.wheels[2].f_long, vs.wheels[2].disp_long, vs.wheels[2].slide, c.state.vel.length());
+                StepPost::Frozen => {
+                    c.state.vel.x = 0.0;
+                    c.state.vel.z = 0.0;
+                    c.state.ang_vel = Vec3::ZERO;
+                }
+                StepPost::None => {}
+                StepPost::Trace => {
+                    // (N-VP-1 test hook: MCLA_GRID_TRACE=1 logs the racers through the grid hold and 10 s after it)
+                    if (c.pinned || c.is_player) && std::env::var("MCLA_GRID_TRACE").is_ok() {
+                        use std::sync::atomic::{AtomicU32, Ordering};
+                        static LEFT: AtomicU32 = AtomicU32::new(0);
+                        if self.grid_hold.is_some() {
+                            LEFT.store(600, Ordering::Relaxed);
+                        }
+                        let left = LEFT.load(Ordering::Relaxed);
+                        if left > 0 {
+                            if c.is_player && self.grid_hold.is_none() {
+                                LEFT.store(left - 1, Ordering::Relaxed);
+                            }
+                            if let Some(vs) = c.state.veh.as_ref() {
+                                let f = c.state.forward();
+                                log::info!("grid {:<22} to_go {:6.2} thr {:.2} brk {:.2} hand {} st {} charge {:.2} rpm {:5.0} gear {} spd {:6.2} rear slide {:.2} {:.2} vlong {:6.1} {:6.1} front slide {:.2} {:.2} vlong {:6.1} pos {:.3} {:.3} nitro {} rspin {:.1} {:.1} shaft {:.1} {:.1} drive {} clutch {} held {} | F load {:.0} flong {:.0} disp {:.4} slide {:.2} | R load {:.0} flong {:.0} disp {:.4} slide {:.2} | v {:.3}",
+                                    if c.is_player { "player" } else { c.model.name.as_str() }, self.grid_hold.unwrap_or(0.0), c.input.throttle, c.input.brake, c.input.handbrake as u8, vs.burn_state, vs.burn, c.state.rpm, vs.gear, c.state.vel.dot(f),
+                                    vs.wheels[2].slide, vs.wheels[3].slide, vs.wheels[2].velocity_long, vs.wheels[3].velocity_long, vs.wheels[0].slide, vs.wheels[1].slide, vs.wheels[0].velocity_long, c.state.pos.x, c.state.pos.z, c.input.nitro as u8, vs.wheels[2].spin_rate, vs.wheels[3].spin_rate, vs.omega[0], vs.omega[1], vs.drive, vs.clutch as u8, vs.trans_inhibited as u8, vs.wheels[0].load, vs.wheels[0].f_long, vs.wheels[0].disp_long, vs.wheels[0].slide, vs.wheels[2].load, vs.wheels[2].f_long, vs.wheels[2].disp_long, vs.wheels[2].slide, c.state.vel.length());
+                            }
+                        }
                     }
                 }
             }
         }
         self.sst_trails(step_dt);
         if let Some(lw) = shared.as_deref() {
-            self.level_swap(&mut level_car, None, step_dt, false, true);
             // (the thrown rider whose island is one with the level's: his bike's step left it here - his build, solve,
             // push and post-push with that island's, his tick's answers back to the bike's state)
             let job = self.cars.iter_mut().find_map(|c| c.state.veh.as_deref_mut().and_then(|v| v.rider_job.take().map(|j| (j, v))));
@@ -4042,6 +4035,18 @@ if keep || c.state.pos.distance(center) < 450.0 {
         }
         if shared.is_some() {
             self.soft_push();
+        }
+        // (MCLA_PHYS_TIMING=1: the level's physics block - every car's step and the loose world - timed, logged every 1000 ticks)
+        if std::env::var_os("MCLA_PHYS_TIMING").is_some() {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static SUM: AtomicU64 = AtomicU64::new(0);
+            static N: AtomicU64 = AtomicU64::new(0);
+            let ns = phys_t0.elapsed().as_nanos() as u64;
+            let us = SUM.fetch_add(ns, Ordering::Relaxed) + ns;
+            let n = N.fetch_add(1, Ordering::Relaxed) + 1;
+            if n % 1000 == 0 {
+                log::info!("phys timing: {} ticks, mean {:.1} us, cars {}", n, us as f64 / n as f64 / 1000.0, self.cars.iter().filter(|c| c.state.veh.is_some()).count());
+            }
         }
         // car-car separation (soft spheres): the port's own rule, now only for a pair the shared level does
         // not take (a car without the original's body: no hull, no simulation tuning; MCLA_DBG_NOSHARED)
@@ -4281,65 +4286,252 @@ if keep || c.state.pos.distance(center) < 450.0 {
         }
     }
 
-    fn level_swap(&mut self, cur: &mut Option<usize>, next: Option<usize>, dt: f32, first: bool, _step: bool) {
-        use crate::physics::loose::{static_shape, LiveVeh};
-        if let Some(k) = cur.take() {
-            let mut answers = Vec::new();
-            if let Some(vs) = self.cars.get_mut(k).and_then(|c| c.state.veh.as_deref_mut()) {
-                answers = vs.loose.vehicle_answers();
-                let part = vs.loose.take_car();
-                std::mem::swap(&mut self.level, &mut vs.loose);
-                vs.loose.put_car(part);
+    /// Every car's step of the tick in the original's order for several cars (physics/vehsim.rs `LevelX`, F-93826 ->
+    /// F-38310 -> F-96487): each car's update and move (to its first yield), then each car's collide with the level
+    /// lent to it - the other cars bodies of it, each pair made by the lower car's step - then each island solved once:
+    /// an island of one car by its own step, an island of several by one of them (the car with the thrown rider, else the
+    /// first), the others lent into its level and answered, their steps ending with the island's answer. Without the
+    /// shared level each car's whole step in turn.
+    fn step_cars(&mut self, jobs: &[(usize, CarInput, StepPost)], world: &World, dt: f32, shared: bool) {
+        use crate::physics::loose::{static_shape, LiveVeh, LooseState, PBody};
+        use crate::physics::vehsim::{LevelX, Stage};
+        use std::cell::RefCell;
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::task::{Context, Poll, Waker};
+        // (each car the level can hold: its id, its place in the cars, the part of a LiveVeh that does not move, and its
+        // body as the last tick left it moved by the step - for a car whose step does not hand one)
+        struct Info {
+            uid: u32,
+            idx: usize,
+            shape: &'static crate::physics::hull::HullShape,
+            class: u8,
+            inflict: f32,
+            parked: bool,
+            player: bool,
+            tune: (f32, f32, f32),
+            body: PBody,
+            cg: Vec3,
+            two: bool,
+            wiped: bool,
+        }
+        fn uid_of(infos: &[Info], idx: usize) -> u32 {
+            infos.iter().find(|i| i.idx == idx).map_or(u32::MAX, |i| i.uid)
+        }
+        fn find(root: &[usize], mut x: usize) -> usize {
+            while root[x] != x {
+                x = root[x];
             }
-            for (uid, jf, jt, push, turn) in answers {
-                if let Some(j) = self.cars.iter().position(|c| c.uid == uid) {
-                    self.notify_contact(k, j);
-                }
-                let Some(o) = self.cars.iter_mut().find(|c| c.uid == uid) else { continue };
-                let p = o.tuned.as_deref().unwrap_or(&o.model.params).clone();
-                if let Some(vt) = p.veh.clone() {
-                    crate::physics::vehsim::take_answer(&mut o.state, &p, &vt, jf, jt, push, turn);
-                }
-            }
+            x
         }
-        let Some(k) = next else { return };
-        let ghost = self.cars[k].pu_ghost;
-        if let Some(vs) = self.cars[k].state.veh.as_deref_mut() {
-            vs.loose.ghost = ghost;
-        }
-        // (a car under MegaStealth meets the map and nothing else: it steps without the level)
-        if self.cars[k].state.veh.is_none() || ghost {
-            return;
-        }
-        let me = self.cars[k].uid;
-        let mut list = Vec::new();
+        let mut infos: Vec<Info> = Vec::new();
         for (j, o) in self.cars.iter().enumerate() {
-            // (a car before this one has stepped: their pair was in its step; traffic the level holds
-            // is an object of its own there - loose.rs `Amb`)
-            if j <= k || !o.placed || o.pu_ghost || self.cars[k].pu_ghost || o.park_held || o.rail.as_ref().is_some_and(|r| r.in_level) {
+            if !o.placed || o.pu_ghost || o.park_held || o.rail.as_ref().is_some_and(|r| r.in_level) {
                 continue;
             }
             let p = o.tuned.as_deref().unwrap_or(&o.model.params);
             let (Some(vt), Some(hull)) = (p.veh.as_ref(), p.hull.as_ref()) else { continue };
             let Some((body, cg)) = crate::physics::vehsim::island_body(&o.state, p, vt, dt) else { continue };
-            let class = if o.rail.is_some() || o.parked.is_some() { 6 } else { 8 };
-            // (an mcCar's callback on the thrown rider, F-55998, as the moved body stands: its up.y, its two-wheel state,
-            // its wipe-out bits, its driver)
-            let rider_touch = o.state.veh.as_ref().filter(|_| class == 8).and_then(|ws| {
-                crate::physics::loose::rider_touch(o.is_player, ws.two != 0, body.rows[1].y, ws.wipe.is_some(), (vt.t.s.bound_friction, vt.t.s.bound_elasticity, vt.t.s.head_on_cg_offset))
+            let ws = o.state.veh.as_ref();
+            infos.push(Info {
+                uid: o.uid,
+                idx: j,
+                shape: static_shape(hull),
+                class: if o.rail.is_some() || o.parked.is_some() { 6 } else { 8 },
+                inflict: o.inflict,
+                parked: o.parked.is_some(),
+                player: o.is_player,
+                tune: (vt.t.s.bound_friction, vt.t.s.bound_elasticity, vt.t.s.head_on_cg_offset),
+                body,
+                cg,
+                two: ws.is_some_and(|w| w.two != 0),
+                wiped: ws.is_some_and(|w| w.wipe.is_some()),
             });
-            list.push(LiveVeh { id: o.uid, shape: static_shape(hull), class, gravity: 1.0, cg, level: o.uid as i64 - me as i64, body, inflict: o.inflict, parked: o.parked.is_some(), rider_touch });
         }
-        let vs = self.cars[k].state.veh.as_deref_mut().unwrap();
-        let part = vs.loose.take_car();
-        std::mem::swap(&mut self.level, &mut vs.loose);
-        vs.loose.put_car(part);
-        vs.loose.live = true;
-        vs.loose.skip_pre = true;
-        vs.loose.skip_end = true;
-        vs.loose.later = !first;
-        vs.loose.set_vehicles(list);
-        *cur = Some(k);
+        // (which steps take the level: a car with the original's body, not under MegaStealth - that one meets the map and
+        // nothing else)
+        for &(idx, ..) in jobs {
+            let ghost = self.cars[idx].pu_ghost;
+            if let Some(vs) = self.cars[idx].state.veh.as_deref_mut() {
+                vs.loose.ghost = ghost;
+            }
+        }
+        let lend: Vec<bool> = jobs
+            .iter()
+            .map(|&(idx, ..)| {
+                let c = &self.cars[idx];
+                shared && c.state.veh.is_some() && !c.pu_ghost && c.tuned.as_deref().unwrap_or(&c.model.params).veh.is_some()
+            })
+            .collect();
+        let xs: Vec<RefCell<LevelX>> = jobs.iter().map(|_| RefCell::new(LevelX::default())).collect();
+        let mut level = std::mem::take(&mut self.level);
+        level.live = true;
+        level.skip_pre = true;
+        level.skip_end = true;
+        level.ghost = false;
+        let death = crate::physics::collision::pass_death_set(false);
+        crate::physics::collision::pass_death_set(death);
+        let mut contacts: Vec<(usize, u32)> = Vec::new();
+        {
+            let collider = &world.collider;
+            type Step<'s> = Pin<Box<dyn Future<Output = ()> + 's>>;
+            let mut steps: Vec<Option<Step<'_>>> = Vec::new();
+            {
+                let mut cars: Vec<Option<&mut CarInstance>> = self.cars.iter_mut().map(Some).collect();
+                for (j, &(idx, input, _)) in jobs.iter().enumerate() {
+                    let CarInstance { state, tuned, model, .. } = cars[idx].take().unwrap();
+                    let p: &CarParams = tuned.as_deref().unwrap_or(&model.params);
+                    if lend[j] {
+                        steps.push(Some(Box::pin(state.step_in_level(p, input, collider, dt, &xs[j]))));
+                    } else {
+                        // (no level: the whole step now, in the cars' order)
+                        state.step(p, input, collider, dt);
+                        steps.push(None);
+                    }
+                }
+            }
+            let mut cx = Context::from_waker(Waker::noop());
+            // (one poll of a step with the level lent: the level back after it - the step gives it at each yield and
+            // at its end)
+            let mut poll = |j: usize, level: &mut LooseState, steps: &mut Vec<Option<Step<'_>>>| {
+                xs[j].borrow_mut().level = Some(std::mem::take(level));
+                let done = matches!(steps[j].as_mut().unwrap().as_mut().poll(&mut cx), Poll::Ready(()));
+                *level = xs[j].borrow_mut().level.take().expect("the level back from a car's step");
+                if done {
+                    steps[j] = None;
+                    xs[j].borrow_mut().stage = Stage::Done;
+                }
+            };
+            // (the other cars as bodies of car j's level: moved by their own steps where they were; the lower car of each
+            // two makes their pair)
+            let list = |j: usize| -> Vec<LiveVeh> {
+                let me = jobs[j].0;
+                let me_uid = uid_of(&infos, me);
+                infos
+                    .iter()
+                    .filter(|i| i.idx != me)
+                    .map(|i| {
+                        let moved = jobs.iter().position(|x| x.0 == i.idx).and_then(|k| xs[k].borrow().moved);
+                        let (body, two, wiped) = moved.unwrap_or((i.body, i.two, i.wiped));
+                        let rider_touch = if i.class == 8 { crate::physics::loose::rider_touch(i.player, two, body.rows[1].y, wiped, i.tune) } else { None };
+                        LiveVeh { id: i.uid, shape: i.shape, class: i.class, gravity: 1.0, cg: i.cg, level: i.uid as i64 - me_uid as i64, body, inflict: i.inflict, parked: i.parked, rider_touch, pair: i.idx > me }
+                    })
+                    .collect()
+            };
+            let n = jobs.len();
+            // ---- every car's update and move ----
+            for j in 0..n {
+                if steps[j].is_some() {
+                    poll(j, &mut level, &mut steps);
+                }
+            }
+            // ---- every car's collide ----
+            let mut first = true;
+            for j in 0..n {
+                if steps[j].is_some() && xs[j].borrow().stage == Stage::Moved {
+                    level.later = !first;
+                    first = false;
+                    level.set_vehicles(list(j));
+                    poll(j, &mut level, &mut steps);
+                }
+            }
+            level.later = true;
+            // ---- the islands: cars joined by their rows with each other or with the same loose object ----
+            let waiting: Vec<bool> = (0..n).map(|j| steps[j].is_some() && xs[j].borrow().stage == Stage::Collided).collect();
+            let mut root: Vec<usize> = (0..n).collect();
+            let mut obj_first: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+            for j in (0..n).filter(|&j| waiting[j]) {
+                let (veh, objs) = {
+                    let g = xs[j].borrow();
+                    (g.touch_veh.clone(), g.touch_obj.clone())
+                };
+                let mut join = |a: usize, b: usize| {
+                    let (ra, rb) = (find(&root, a), find(&root, b));
+                    if ra != rb {
+                        root[ra.max(rb)] = ra.min(rb);
+                    }
+                };
+                for uid in veh {
+                    if let Some(k) = (0..n).find(|&k| waiting[k] && uid_of(&infos, jobs[k].0) == uid) {
+                        join(j, k);
+                    }
+                }
+                for o in objs {
+                    match obj_first.get(&o) {
+                        Some(&k) => join(j, k),
+                        None => {
+                            obj_first.insert(o, j);
+                        }
+                    }
+                }
+            }
+            // ---- each island solved once ----
+            let obj_of = |level: &LooseState, uid: u32| level.objs.iter().position(|o| o.amb.is_none() && o.veh.is_some_and(|v| v.index == uid));
+            for j in 0..n {
+                if !waiting[j] || find(&root, j) != j {
+                    continue;
+                }
+                let group: Vec<usize> = (0..n).filter(|&k| waiting[k] && find(&root, k) == j).collect();
+                let lead = group.iter().copied().find(|&k| xs[k].borrow().rider).unwrap_or(group[0]);
+                level.set_vehicles(list(lead));
+                let lead_obj = obj_of(&level, uid_of(&infos, jobs[lead].0));
+                let mut lent = Vec::new();
+                for &k in group.iter().filter(|&&k| k != lead) {
+                    let uid = uid_of(&infos, jobs[k].0);
+                    let (share, part) = {
+                        let mut g = xs[k].borrow_mut();
+                        (g.share.take(), g.part.take())
+                    };
+                    match (share, part, obj_of(&level, uid)) {
+                        (Some(mut e), Some(part), Some(o)) => {
+                            e.uid = uid;
+                            e.obj = o;
+                            level.lend_extra(e, part, lead_obj);
+                            lent.push(k);
+                        }
+                        (_, part, _) => xs[k].borrow_mut().part = part,
+                    }
+                }
+                level.lead = lead_obj.filter(|_| !lent.is_empty());
+                poll(lead, &mut level, &mut steps);
+                level.lead = None;
+                for (uid, ..) in level.vehicle_answers() {
+                    contacts.push((jobs[lead].0, uid));
+                }
+                for (e, part) in level.return_extras(lead_obj) {
+                    if let Some(&k) = lent.iter().find(|&&k| uid_of(&infos, jobs[k].0) == e.uid) {
+                        let mut g = xs[k].borrow_mut();
+                        // (a car the island's solve did not take - its rows with the island all disabled: its own solve)
+                        if e.view.is_some() {
+                            g.answer = Some(e);
+                        }
+                        g.part = Some(part);
+                    }
+                }
+                // (the other cars' steps end with the island's answer)
+                for &k in group.iter().filter(|&&k| k != lead) {
+                    level.set_vehicles(list(k));
+                    poll(k, &mut level, &mut steps);
+                    for (uid, ..) in level.vehicle_answers() {
+                        contacts.push((jobs[k].0, uid));
+                    }
+                }
+            }
+            // (a step still waiting - none is expected: to its end)
+            for j in 0..n {
+                while steps[j].is_some() {
+                    level.set_vehicles(list(j));
+                    poll(j, &mut level, &mut steps);
+                }
+            }
+        }
+        crate::physics::collision::pass_death_set(death);
+        self.level = level;
+        for (k, uid) in contacts {
+            if let Some(j) = self.cars.iter().position(|c| c.uid == uid) {
+                self.notify_contact(k, j);
+            }
+        }
     }
 
     /// Traffic into the physics level before the tick (loose.rs `Amb`): the cars gone leave it; each
@@ -6807,4 +6999,16 @@ fn car_pipe(pass: &mut wgpu::RenderPass<'_>, gpu: &Gpu, pick: &mut (u8, u32, boo
         pass.set_pipeline(own.unwrap_or(base));
     }
     *pick = (cull, mode as u32, own.is_some());
+}
+
+/// What follows a car's step of the tick (vehicles.rs `step_cars`).
+#[derive(Clone, Copy)]
+enum StepPost {
+    None,
+    /// a parked car settling: it does not roll or turn
+    Settle,
+    /// frozen, or held on the grid: settles onto the ground but does not drive
+    Frozen,
+    /// a driven car (the MCLA_GRID_TRACE hook)
+    Trace,
 }

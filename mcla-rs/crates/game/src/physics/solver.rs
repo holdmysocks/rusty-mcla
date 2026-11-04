@@ -729,6 +729,13 @@ pub struct IslandSolved {
     pub limits: Vec<Vec<LimitRow>>,
 }
 
+impl IslandSolved {
+    /// An island's solve left by another step (the game's level step: a car's view of an island it did not solve).
+    pub fn empty() -> IslandSolved {
+        IslandSolved { rows: Vec::new(), states: Vec::new(), bounce: 0.0, limits: Vec::new() }
+    }
+}
+
 fn states_of(bodies: &[Body]) -> Vec<State> {
     std::iter::once(NO_STATE).chain(bodies.iter().map(State::of)).collect()
 }

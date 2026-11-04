@@ -392,6 +392,8 @@ pub struct Mani {
     pub slots: Vec<Slot2>,
     /// a constraint's manifold (F-87905): its one contact made afresh every update
     pub rope: bool,
+    /// (the game's level step) a manifold of another car's part lent to the island's solve: that car's id + 1, else 0
+    pub owner: u32,
 }
 
 impl Mani {
@@ -565,6 +567,10 @@ pub struct LooseState {
     /// objects whose island a car's step solved this tick with the thrown rider and his bike (vehsim.rs): the islands no
     /// car is in that hold one are not solved again (`step_rest_rider`, which empties it)
     pub merged: Vec<usize>,
+    /// (the game's level step) the other cars of the stepping car's island, whose solve and push its step runs
+    pub extras: Vec<ExtraCar>,
+    /// (the game's level step) the stepping car's own object in the level (the other cars' steps name it so)
+    pub lead: Option<usize>,
 }
 
 /// An effect a prop's event starts: its name and where it is played.
@@ -1188,7 +1194,7 @@ impl LooseState {
                 let side = |local: Vec3, point: Vec3| Side { body: None, point, local, rows: [Vec3::X, Vec3::Y, Vec3::Z], margin: 0.04, core: Vec3::ZERO };
                 let fresh = Touch { depth: 0.0 - dist, a: side(local_a, qa), b: side(local_b, qb), normal, back: Vec3::ZERO - normal, ..Default::default() };
                 let k = at.unwrap_or_else(|| {
-                    self.manis.push(Mani { a, b, part_a: pa, part_b: pb, cell: 0, stale: false, visited: true, island: 0, order: 0, slots: Vec::new(), rope: false });
+                    self.manis.push(Mani { a, b, part_a: pa, part_b: pb, cell: 0, stale: false, visited: true, island: 0, order: 0, slots: Vec::new(), rope: false, owner: 0 });
                     self.manis.len() - 1
                 });
                 self.manis[k].insert(fresh, element, veh_surface.unwrap_or(Surface::Prop), amb_surface.unwrap_or(Surface::Prop));
@@ -1261,7 +1267,7 @@ impl LooseState {
         for o in 0..n {
             if let Some(vh) = self.objs[o].veh {
                 // (stage R: a vehicle about the car - the parts' boxes decide)
-                if vh.here {
+                if vh.here && vh.pair {
                     pairs.push(if self.objs[o].level < self.car_place().0 { (Who::Obj(o), Who::Car) } else { (Who::Car, Who::Obj(o)) });
                 }
                 continue;
@@ -1290,6 +1296,10 @@ impl LooseState {
                 continue;
             }
             for q in 0..n {
+                // (a car whose pairs another car's step makes: not here)
+                if self.objs[q].veh.is_some_and(|v| !v.pair && v.here) && self.objs[q].amb.is_none() {
+                    continue;
+                }
                 if q != o && !(q < o && start(&self.objs[q])) {
                     cand.push((o.min(q), o.max(q)));
                 }
@@ -1360,7 +1370,7 @@ impl LooseState {
                     let b = Side { body: None, point: h.on_b, local: h.on_b, rows: [Vec3::X, Vec3::Y, Vec3::Z], margin: 0.04, core: Vec3::ZERO };
                     let fresh = Touch { depth: h.depth, a, b, normal: h.normal, back: Vec3::ZERO - h.normal, ..Default::default() };
                     let k = self.manis.iter().position(|m| m.a == Who::Obj(o) && m.b == Who::City && m.part_a == c && m.cell == h.cell).unwrap_or_else(|| {
-                        self.manis.push(Mani { a: Who::Obj(o), b: Who::City, part_a: c, part_b: 0, cell: h.cell, stale: false, visited: true, island: 0, order: 0, slots: Vec::new(), rope: false });
+                        self.manis.push(Mani { a: Who::Obj(o), b: Who::City, part_a: c, part_b: 0, cell: h.cell, stale: false, visited: true, island: 0, order: 0, slots: Vec::new(), rope: false, owner: 0 });
                         self.manis.len() - 1
                     });
                     if dbg() {
@@ -1390,6 +1400,12 @@ impl LooseState {
         // in the cache's order, (lower, higher level index); each is a node of a union-find forest whose
         // roots are the islands; FIND F-28830 hangs every node it passes under the root, at the tail of
         // the root's children; UNION F-91971 by rank. The update walks each tree in pre-order.)
+        self.build_islands(car_city);
+    }
+
+    /// The islands of the tick's manifolds (F-14298, see [`Self::collide`]): each manifold's island (the car's 0) and
+    /// its pair's place in the island's tree.
+    fn build_islands(&mut self, car_city: bool) {
         let n_obj = self.objs.len() + 1;
         let node = |w: Who| match w {
             Who::Car => Some(0usize),
@@ -2013,6 +2029,49 @@ pub struct RiderJob {
     pub other: usize,
 }
 
+/// A car of an island of several cars whose solve another car's step runs (the game's level step: one solve an island,
+/// F-96487): its object in the level, its solver body as its own step made it (the move, this tick's forces), its
+/// contacts with the city as its callbacks left them; and what the island gave it.
+pub struct ExtraCar {
+    pub uid: u32,
+    pub obj: usize,
+    pub body: Body,
+    /// its momenta (+368 / +384 before the solve) and the push solve's turn it starts from
+    pub p: Vec3,
+    pub l: Vec3,
+    pub turn_left: Vec3,
+    pub city: Vec<solver::Contact>,
+    pub city_part: Vec<u8>,
+    /// its part's place of its pair with the city in its own island's tree (kept for its part)
+    pub city_order: Option<usize>,
+    /// the answer: the impulse and its turn (+368 / +384), its runs of the callbacks and its disabled rows' normals (A, B),
+    /// the island as its own step sees it, the push
+    pub impulse: Vec3,
+    pub turning: Vec3,
+    pub runs: Vec<(bool, bool, bool)>,
+    pub off: (Vec3, Vec3),
+    pub view: Option<IslandOut>,
+    pub pushed: Pushed,
+}
+
+impl Clone for ExtraCar {
+    fn clone(&self) -> ExtraCar {
+        ExtraCar { view: None, runs: self.runs.clone(), city: self.city.clone(), city_part: self.city_part.clone(), ..*self }
+    }
+}
+
+impl std::fmt::Debug for ExtraCar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExtraCar").field("uid", &self.uid).field("obj", &self.obj).finish_non_exhaustive()
+    }
+}
+
+impl ExtraCar {
+    pub fn new(body: Body, p: Vec3, l: Vec3, turn_left: Vec3, city: Vec<solver::Contact>, city_part: Vec<u8>) -> ExtraCar {
+        ExtraCar { uid: 0, obj: usize::MAX, body, p, l, turn_left, city, city_part, city_order: None, impulse: Vec3::ZERO, turning: Vec3::ZERO, runs: Vec::new(), off: (Vec3::ZERO, Vec3::ZERO), view: None, pushed: Pushed::default() }
+    }
+}
+
 /// What a car's island came to.
 pub struct IslandOut {
     pub touches: Vec<Touch>,
@@ -2039,6 +2098,160 @@ pub struct IslandOut {
 }
 
 impl LooseState {
+    /// Is this object another car of the island, whose solve this step runs ([`ExtraCar`])?
+    pub fn is_extra(&self, o: usize) -> bool {
+        self.extras.iter().any(|e| e.obj == o)
+    }
+
+    /// Another car's share into this step's island (the game's level step): its part's manifolds as this level names
+    /// them (its own side its object, the stepping car's object the car), its contacts with the city a manifold of its
+    /// object and the city (one per run of the same part), its body the solver body its own step made. `lead`: the
+    /// stepping car's object.
+    pub fn lend_extra(&mut self, mut e: ExtraCar, part: CarPart, lead: Option<usize>) {
+        let tag = e.uid + 1;
+        let me = Who::Obj(e.obj);
+        e.city_order = part.car_city_order;
+        let swap = |w: Who| match w {
+            Who::Car => me,
+            Who::Obj(o) if Some(o) == lead => Who::Car,
+            w => w,
+        };
+        for mut m in part.manis {
+            m.a = swap(m.a);
+            m.b = swap(m.b);
+            m.owner = tag;
+            self.manis.push(m);
+        }
+        let rows = e.body.rows;
+        let mut k = 0;
+        while k < e.city.len() {
+            let part_a = e.city_part.get(k).copied().unwrap_or(0) as u16;
+            let mut slots = Vec::new();
+            while k < e.city.len() && e.city_part.get(k).copied().unwrap_or(0) as u16 == part_a {
+                let t = car_city_touch(&e.city[k], rows);
+                slots.push(Slot2 { t, age: 1, enabled: true, element: 0, surface: Surface::Road, surface_a: Surface::Road });
+                k += 1;
+            }
+            self.manis.push(Mani { a: me, b: Who::City, part_a, part_b: 0, cell: usize::MAX, stale: false, visited: true, island: 0, order: 0, slots, rope: false, owner: tag });
+        }
+        if let Some(b) = self.objs[e.obj].body.as_mut() {
+            let x = e.body;
+            b.at = x.at;
+            b.rows = x.rows;
+            b.v = x.vel;
+            b.w = x.ang;
+            b.inv_mass = x.inv_mass;
+            b.inv_inertia = x.inv_moments;
+            b.force = x.force;
+            b.torque = x.torque;
+            b.p = e.p;
+            b.l = e.l;
+            b.push = Vec3::ZERO;
+            b.turn = e.turn_left;
+            b.jf = Vec3::ZERO;
+            b.jt = Vec3::ZERO;
+        }
+        let o = &mut self.objs[e.obj];
+        o.matrix = [rows[0], rows[1], rows[2], o.matrix[3]];
+        e.view = None;
+        self.extras.push(e);
+    }
+
+    /// The islands again after other cars' parts were lent ([`Self::lend_extra`]); the stepping car's island then holds
+    /// theirs.
+    pub fn islands_again(&mut self, car_city: bool) {
+        self.build_islands(car_city);
+    }
+
+    /// The island as each other car's step sees it, after the push solve: the stepping car's rows its object's, the other
+    /// car's own rows the car's, its contacts with the city its own rows (`from` None, their numbers).
+    pub fn extra_views(&mut self, out: &IslandOut) {
+        let lead = self.lead.unwrap_or(usize::MAX);
+        for e in 0..self.extras.len() {
+            let (me, tag) = (self.extras[e].obj, self.extras[e].uid + 1);
+            let mut city_row: HashMap<(usize, usize), usize> = HashMap::new();
+            let mut n = 0;
+            for (k, m) in self.manis.iter().enumerate().filter(|(_, m)| m.owner == tag && m.b == Who::City && m.cell == usize::MAX) {
+                for i in 0..m.slots.len() {
+                    city_row.insert((k, i), n);
+                    n += 1;
+                }
+            }
+            let swap = |w: Option<Who>| match w {
+                Some(Who::Car) => Some(Who::Obj(lead)),
+                Some(Who::Obj(o)) if o == me => Some(Who::Car),
+                w => w,
+            };
+            let links: Vec<Link> = out
+                .links
+                .iter()
+                .map(|l| {
+                    let mut l = *l;
+                    l.a = swap(l.a);
+                    l.b = swap(l.b);
+                    if let Some(r) = l.from.and_then(|f| city_row.get(&f)) {
+                        l.from = None;
+                        l.car_row = *r;
+                        l.b = None;
+                    } else if l.from.is_none() && !l.rider {
+                        // (the stepping car's own contacts with the city: none of this car's)
+                        l.from = Some((usize::MAX, l.car_row));
+                    }
+                    l
+                })
+                .collect();
+            let x = &self.extras[e];
+            let view = IslandOut { touches: out.touches.clone(), links, bodies: out.bodies.clone(), owners: out.owners.clone(), solved: solver::IslandSolved::empty(), impulse: Vec3::ZERO, turning: Vec3::ZERO, by_b: out.by_b.clone(), car_runs: x.runs.clone(), off_a: x.off.0, off_b: x.off.1, rider_rows: Vec::new() };
+            self.extras[e].view = Some(view);
+        }
+    }
+
+    /// The other cars' shares back out of the level after this step's solve and push: each car's answer (impulse,
+    /// turn, momenta after the breaking pass's shares, push), its contacts with the city with their results, and its part
+    /// as its own level names it.
+    pub fn return_extras(&mut self, lead: Option<usize>) -> Vec<(ExtraCar, CarPart)> {
+        let mut out = Vec::new();
+        for mut e in std::mem::take(&mut self.extras) {
+            let tag = e.uid + 1;
+            let me = Who::Obj(e.obj);
+            let swap = |w: Who| match w {
+                w if w == me => Who::Car,
+                Who::Car => lead.map_or(Who::Car, Who::Obj),
+                w => w,
+            };
+            let (mine, rest): (Vec<Mani>, Vec<Mani>) = std::mem::take(&mut self.manis).into_iter().partition(|m| m.owner == tag);
+            self.manis = rest;
+            let mut part = CarPart { manis: Vec::new(), car_city_order: e.city_order };
+            let mut k = 0;
+            for mut m in mine {
+                if m.b == Who::City && m.cell == usize::MAX {
+                    for s in &m.slots {
+                        if let Some(c) = e.city.get_mut(k) {
+                            c.kept = s.t.kept;
+                            c.impulse = s.t.impulse;
+                            c.pushed = s.t.pushed;
+                        }
+                        k += 1;
+                    }
+                    continue;
+                }
+                m.a = swap(m.a);
+                m.b = swap(m.b);
+                m.owner = 0;
+                part.manis.push(m);
+            }
+            if let Some(b) = self.objs[e.obj].body {
+                e.impulse = b.jf;
+                e.turning = b.jt;
+                e.p = b.p;
+                e.l = b.l;
+                e.pushed = Pushed { push: b.push, turn: b.turn, deep: b.deep };
+            }
+            out.push((e, part));
+        }
+        out
+    }
+
     /// Is an instance one the breaking pass lists (instance vtable[8], F-83042)?
     fn breakable(&self, world: &LooseWorld, o: usize) -> bool {
         let obj = &self.objs[o];
@@ -2108,6 +2321,8 @@ impl LooseState {
         let mut next_city = 0;
         // (where each row of the walk comes from: the car's contact with the city of that number, or a manifold)
         let mut src: Vec<RowSrc> = Vec::new();
+        // (the other cars of the island: each one's disabled rows' normals as A and as B)
+        let mut extra_off: Vec<(usize, Vec3, Vec3)> = self.extras.iter().map(|e| (e.obj, Vec3::ZERO, Vec3::ZERO)).collect();
         // (and, for a manifold's, which slot: the merged order names them so)
         let mut slot_of: Vec<Option<(usize, usize)>> = Vec::new();
         let city_link = |(row, c): (usize, &solver::Contact)| {
@@ -2159,6 +2374,13 @@ impl LooseState {
                     } else if m.b == Who::Car {
                         off_b += Vec3::ZERO - s.t.normal;
                     }
+                    for e in extra_off.iter_mut() {
+                        if m.a == Who::Obj(e.0) {
+                            e.1 += s.t.normal;
+                        } else if m.b == Who::Obj(e.0) {
+                            e.2 += Vec3::ZERO - s.t.normal;
+                        }
+                    }
                     if !old_order {
                         list.push((pair, key, key_b, None));
                         src.push(RowSrc::Mani(k));
@@ -2175,13 +2397,13 @@ impl LooseState {
                 // (stage R: a vehicle's whole bound is its polyhedron - the thickness from a corner of it)
                 // (an ambient trailer's whole bound is its composite: margin +112, no core)
                 if let Who::Obj(o) = m.a {
-                    if let Some(vh) = self.objs[o].veh.filter(|v| v.shape2.is_none()) {
+                    if let Some(vh) = self.objs[o].veh.filter(|v| v.shape2.is_none() && !self.is_extra(o)) {
                         t.a.margin = f32::from_bits(0x3d23_d70a);
                         t.a.core = veh_core(vh.shape, &t.a.rows, t.normal);
                     }
                 }
                 if let Who::Obj(o) = m.b {
-                    if let Some(vh) = self.objs[o].veh.filter(|v| v.shape2.is_none()) {
+                    if let Some(vh) = self.objs[o].veh.filter(|v| v.shape2.is_none() && !self.is_extra(o)) {
                         t.b.margin = f32::from_bits(0x3d23_d70a);
                         t.b.core = veh_core(vh.shape, &t.b.rows, t.back);
                     }
@@ -2291,6 +2513,16 @@ impl LooseState {
         } else {
             [tagged.iter().filter(|x| x.0 == car_addr).map(|x| x.1).collect(), walk_b.iter().filter(|x| x.0 == car_addr).map(|x| x.1).collect()]
         };
+        // (each other car's two runs, as the car's: its rows of the A-sorted list where its instance is A, then of the
+        // B-sorted one)
+        let extra_runs_at: Vec<[Vec<usize>; 2]> = self
+            .extras
+            .iter()
+            .map(|e| {
+                let k = self.objs[e.obj].addr;
+                [tagged.iter().filter(|x| x.0 == k).map(|x| x.1).collect(), walk_b.iter().filter(|x| x.0 == k).map(|x| x.1).collect()]
+            })
+            .collect();
         let mut row_of = vec![usize::MAX; enabled.len()];
         for (r, x) in tagged.iter().filter(|x| x.2.is_some()).enumerate() {
             row_of[x.1] = r;
@@ -2488,6 +2720,35 @@ impl LooseState {
                     (first_active, hull, any)
                 })
                 .collect();
+            // (the other cars' runs and disabled normals, for their own steps' callbacks)
+            for (e, runs_at) in extra_runs_at.iter().enumerate() {
+                let me = Who::Obj(self.extras[e].obj);
+                let side_of = |n: usize| -> Option<(Who, u16)> {
+                    let RowSrc::Mani(k) = src[n] else { return None };
+                    let m = &self.manis[k];
+                    if m.a == me {
+                        Some((m.b, m.part_a))
+                    } else if m.b == me {
+                        Some((m.a, m.part_b))
+                    } else {
+                        None
+                    }
+                };
+                let runs: Vec<(bool, bool, bool)> = runs_at
+                    .iter()
+                    .filter(|r| !r.is_empty())
+                    .map(|r| {
+                        let first_active = side_of(r[0]).is_some_and(|(o, _)| matches!(o, Who::Obj(o) if self.objs.get(o).is_some_and(|x| x.body.is_some() && !x.dormant)));
+                        let hull = r.iter().any(|&n| side_of(n).is_some_and(|(_, part)| part == 0));
+                        let any = r.iter().any(|&n| row_of[n] != usize::MAX && touches[row_of[n]].impulse != Vec3::ZERO);
+                        (first_active, hull, any)
+                    })
+                    .collect();
+                let (_, oa, ob) = extra_off[e];
+                let x = &mut self.extras[e];
+                x.runs = runs;
+                x.off = (oa, ob);
+            }
             // (the rider's impulses into his links, F-24076, and his rows' results back to his share)
             if let Some(mg) = merge.as_mut() {
                 solver::island_apply_jointed(&solved, std::slice::from_mut(&mut *mg.body));
@@ -3284,6 +3545,9 @@ pub struct VehObj {
     /// car: (friction, elasticity, how far its own contact point goes down) when it writes them, None when it leaves
     /// the contact alone (an ambient car's callbacks never write: F-65962 / F-13089). See [`rider_touch`].
     pub rider_touch: Option<RiderTouch>,
+    /// (the game's level step) the stepping car makes its pair with this vehicle (the lower car of two makes it, in
+    /// its own step); false: a body of the level only (its pairs are another car's)
+    pub pair: bool,
 }
 
 /// F-55998 (an mcCarInstance's contact callback) on a contact with the thrown rider - his class 11 is none of the
@@ -3600,6 +3864,8 @@ pub struct LiveVeh {
     pub parked: bool,
     /// its callback on a contact with the thrown rider ([`rider_touch`])
     pub rider_touch: Option<RiderTouch>,
+    /// the stepping car makes its pair with it ([`VehObj::pair`])
+    pub pair: bool,
 }
 
 /// A car hull shape kept for the level's whole life (the vehicle objects hold a plain reference).
@@ -3694,7 +3960,7 @@ impl LooseState {
             obj.addr = v.level;
             obj.matrix = [v.body.rows[0], v.body.rows[1], v.body.rows[2], ex::origin_of(v.body.at, &v.body.rows, v.cg)];
             obj.body = if v.parked { None } else { Some(v.body) };
-            obj.veh = Some(VehObj { shape: v.shape, shape2: None, class: v.class, gravity: v.gravity, cg: v.cg, index: v.id, here: true, inflict: v.inflict, rider_touch: v.rider_touch });
+            obj.veh = Some(VehObj { shape: v.shape, shape2: None, class: v.class, gravity: v.gravity, cg: v.cg, index: v.id, here: true, inflict: v.inflict, rider_touch: v.rider_touch, pair: v.pair });
         }
         let objs = &self.objs;
         self.manis.retain(|m| ![m.a, m.b].iter().any(|w| matches!(w, Who::Obj(o) if objs[*o].veh.map_or(false, |x| !x.here))));
@@ -3760,7 +4026,7 @@ impl LooseState {
             obj.addr = v.addr as i64 - ot.car_addr as i64 + car_addr;
             obj.matrix = v.matrix;
             obj.body = Some(v.body);
-            obj.veh = Some(VehObj { shape, shape2: None, class: v.class, gravity: v.gravity, cg: v.cg, index: v.index, here: true, inflict: 1.0, rider_touch: None });
+            obj.veh = Some(VehObj { shape, shape2: None, class: v.class, gravity: v.gravity, cg: v.cg, index: v.index, here: true, inflict: 1.0, rider_touch: None, pair: true });
         }
         let gone = |w: Who, objs: &Vec<Obj>| matches!(w, Who::Obj(o) if objs[o].veh.map_or(false, |x| !x.here || ot.inject));
         let objs = &self.objs;
@@ -3774,7 +4040,7 @@ impl LooseState {
                 let slot = Slot2 { t, age: 1, enabled: true, element: k.element, surface: vh.shape.surface_of(k.element_b), surface_a: Surface::Prop };
                 match self.manis.iter().position(|m| m.a == Who::Car && m.b == Who::Obj(o)) {
                     Some(i) => self.manis[i].slots.push(slot),
-                    None => self.manis.push(Mani { a: Who::Car, b: Who::Obj(o), part_a: 0, part_b: 0, cell: 0, stale: false, visited: true, island: 0, order: 0, slots: vec![slot], rope: false }),
+                    None => self.manis.push(Mani { a: Who::Car, b: Who::Obj(o), part_a: 0, part_b: 0, cell: 0, stale: false, visited: true, island: 0, order: 0, slots: vec![slot], rope: false, owner: 0 }),
                 }
             }
         }
@@ -3899,7 +4165,7 @@ impl LooseState {
         let o = match self.amb_obj(uid) {
             Some(o) => o,
             None => {
-                let veh = VehObj { shape: tune.shape, shape2: tune.shape2, class: 6, gravity: tune.gravity, cg: tune.cg, index: uid, here: true, inflict, rider_touch: None };
+                let veh = VehObj { shape: tune.shape, shape2: tune.shape2, class: 6, gravity: tune.gravity, cg: tune.cg, index: uid, here: true, inflict, rider_touch: None, pair: true };
                 let amb = Amb { uid, tune: tune.clone(), wheels: [AmbWheel::default(); 6], count: 0, moved: Vec3::ZERO, turn: Vec3::ZERO, partner, woke: false, slept: false, last_at: None, posed: false };
                 // (its level index: above the stepping cars' 0 - the car is A against it)
                 let level = 1_000_000 + uid as i64;
@@ -4190,7 +4456,7 @@ impl LooseState {
             let side = |m: &[Vec3; 4], p: Vec3| Side { body: None, point: p, local: inv(m, p - m[3]), rows: [m[0], m[1], m[2]], margin: 0.04, core: Vec3::ZERO };
             let t = Touch { depth, friction: 0.0, elasticity: 0.0, a: side(&self.objs[oa].matrix, pa), b: side(&self.objs[ob].matrix, pb), normal: n, back: Vec3::ZERO - n, kind, ..Default::default() };
             let slot = Slot2 { t, age: 0, enabled: true, element: 0, surface: Surface::Prop, surface_a: Surface::Prop };
-            self.manis.push(Mani { a: Who::Obj(oa), b: Who::Obj(ob), part_a: 0, part_b: 0, cell: 0, stale: false, visited: true, island: 0, order: 0, slots: vec![slot], rope: true });
+            self.manis.push(Mani { a: Who::Obj(oa), b: Who::Obj(ob), part_a: 0, part_b: 0, cell: 0, stale: false, visited: true, island: 0, order: 0, slots: vec![slot], rope: true, owner: 0 });
         }
     }
 }

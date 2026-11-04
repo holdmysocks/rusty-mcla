@@ -681,6 +681,18 @@ impl CarState {
         }
     }
 
+    /// [`Self::step`] in the game's level step (vehsim.rs `LevelX`): the level lent through `x`, the step yielding where
+    /// another car's share of the tick runs.
+    pub async fn step_in_level(&mut self, p: &CarParams, input: CarInput, world: &WorldCollider, dt: f32, x: &std::cell::RefCell<super::vehsim::LevelX>) {
+        match p.veh.clone() {
+            Some(vt) if p.hull.is_some() => {
+                self.zone_half = p.zone_box();
+                super::vehsim::step_async(self, p, &vt, input, world, dt, Some(x)).await
+            }
+            _ => self.step(p, input, world, dt),
+        }
+    }
+
     pub fn step(&mut self, p: &CarParams, input: CarInput, world: &WorldCollider, dt: f32) {
         self.zone_half = p.zone_box();
         // (the deform pieces' places, once the model is in (F-10977): the hubs at the skeleton's hub bones,
