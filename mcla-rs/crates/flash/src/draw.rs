@@ -8,7 +8,7 @@
 
 use crate::player::Player;
 use crate::value::InstId;
-use mcla_formats::rage::swf::{Character, CxForm, FillStyle, Matrix, Movie, Shape, ShapeCmd, Text, TextRecord};
+use mcla_formats::rage::swf::{Button, ButtonRecord, Character, CxForm, FillStyle, Matrix, Movie, Shape, ShapeCmd, Text, TextRecord};
 
 /// What a batch samples.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -76,6 +76,31 @@ pub fn combine_cx(local: &CxForm, parent: &CxForm, tint: [u8; 4]) -> CxForm {
         out.mult[i] = ((((local.mult[i] as i32 * parent.mult[i] as i32) >> 6) as i8 as i32 * tint[i] as i32) / 255) as i8;
     }
     out
+}
+
+/// `F-28198`: the record mask of a button draw state - 3 (down) 4, 2 (over) 2, else 1 (up).
+pub fn button_state_mask(state: u32) -> u8 {
+    match state {
+        3 => 4,
+        2 => 2,
+        _ => 1,
+    }
+}
+
+/// `F-28198`: matrix and colour transform a button record's character is drawn
+/// with - the record's matrix under the parent's (the original's fused
+/// multiply-adds), its colour transform combined with the parent's.
+pub fn button_record_xform(p: &Matrix, cx: &CxForm, r: &ButtonRecord) -> (Matrix, CxForm) {
+    let m = &r.matrix;
+    let w = Matrix {
+        a: p.a.mul_add(m.a, p.c * m.b),
+        b: p.b.mul_add(m.a, p.d * m.b),
+        c: m.c.mul_add(p.a, m.d * p.c),
+        d: m.c.mul_add(p.b, m.d * p.d),
+        tx: m.tx.mul_add(p.a, m.ty * p.c) + p.tx,
+        ty: m.tx.mul_add(p.b, m.ty * p.d) + p.ty,
+    };
+    (w, combine_cx(&r.cxform, cx, [255; 4]))
 }
 
 /// ARGB through a colour transform -> RGBA (`F-25297`); the alpha is then
@@ -208,8 +233,31 @@ impl<'a> Builder<'a> {
                 };
                 self.edit_text(inst.character, &text, &world, &cx, inst.tint);
             }
+            Some(Character::Button(b)) => self.button(b, &world, &cx),
             _ => {}
         }
+    }
+
+    /// `F-28198`: the records of the drawn state, each character through the
+    /// record's matrix and colour transform. The state is 1 (up) unless the
+    /// instance holds button focus (2 over, 3 down = mask 4); the original sets
+    /// focus only in its focus navigation `F-59337`, which never runs in the
+    /// game (0 hits in every recorded scene), so it is always 1 here.
+    /// The records' characters get a new draw state (`F-17766` defaults), so
+    /// they are drawn with alpha 255, not the button instance's own.
+    fn button(&mut self, b: &Button, world: &Matrix, cx: &CxForm) {
+        let mask = button_state_mask(1);
+        let outer = std::mem::replace(&mut self.alpha, 255);
+        for r in b.records.iter().filter(|r| r.states & mask != 0) {
+            let (w, c) = button_record_xform(world, cx, r);
+            match r.character.and_then(|id| self.movie.char(id)) {
+                Some(Character::Shape(s)) => self.shape(s, &w, &c),
+                Some(Character::Text(t)) => self.text(t, &w, &c),
+                Some(Character::Button(b)) => self.button(b, &w, &c),
+                _ => {}
+            }
+        }
+        self.alpha = outer;
     }
 
     pub fn shape(&mut self, s: &Shape, world: &Matrix, cx: &CxForm) {

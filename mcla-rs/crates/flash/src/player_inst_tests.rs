@@ -3,7 +3,7 @@
 //! compared (found child, request flags, the frames the display-only pass runs for, the final frame, the stack's values).
 
 use super::*;
-use mcla_formats::rage::swf::{Character, Cmd, FontPage, Frame, Place, Sprite};
+use mcla_formats::rage::swf::{Button, Character, Cmd, FontPage, Frame, Place, Sprite};
 
 fn tagged(tag: &'static str) -> impl Iterator<Item = (Vec<String>, Vec<String>)> {
     include_str!("testdata/flash_inst_ref.txt").lines().filter_map(move |l| {
@@ -33,7 +33,7 @@ fn traced_movie(n: usize) -> Arc<Movie> {
         stage: [0.0, 1280.0, 0.0, 720.0],
         fps: 30,
         root: Sprite { frames },
-        chars: vec![None, Some(Character::Sprite(Sprite { frames: Vec::new() })), Some(Character::Button)],
+        chars: vec![None, Some(Character::Sprite(Sprite { frames: Vec::new() })), Some(Character::Button(Button { records: Vec::new() }))],
         exports: Vec::new(),
     })
 }

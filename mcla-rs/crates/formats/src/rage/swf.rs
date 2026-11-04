@@ -2,10 +2,10 @@
 //! resource type 27, the original `hud/hud.swf`, `pause/pause.swf` ...).
 //!
 //! Layouts are read from the executable's fixup and draw routines (generated
-//! recomp, see `UI_WORK.md`): `swfFILE` fixup `0x825EF100`, object dispatch
-//! `0x825FDA90` (type byte at +8), shape draw `0x82608548`, text draw
-//! `0x82603BB8`, glyph quad `0x82603388`, gradient `0x82607930`, frame command
-//! fixup `0x8260B588`, PlaceObject2 execute `0x8260B038`.
+//! recomp, see `UI_WORK.md`): `swfFILE` fixup `F-66443`, object dispatch
+//! `F-55359` (type byte at +8), shape draw `F-19892`, text draw
+//! `F-11515`, glyph quad `F-83474`, gradient `F-54894`, frame command
+//! fixup `F-43457`, PlaceObject2 execute `F-70772`.
 //!
 //! Shapes are stored pre-tessellated: a command stream of fill/line style
 //! selections and triangle lists in twips. Fonts are glyph sheets (textures)
@@ -142,7 +142,7 @@ pub struct Glyph {
 }
 
 /// A glyph sheet: embedded, or a texture of the shared UI dictionary by name
-/// (page +16 names, resolved at load by `0x8217D9F8`).
+/// (page +16 names, resolved at load by `F-29581`).
 #[derive(Debug, Clone)]
 pub enum Sheet {
     Embedded(Texture),
@@ -210,7 +210,7 @@ pub struct Text {
     pub records: Vec<TextRecord>,
 }
 
-/// Dynamic text field. Drawn by `0x82605B28` / layout `0x82604548`: the text is
+/// Dynamic text field. Drawn by `F-88391` / layout `F-50496`: the text is
 /// the instance's own text, else the variable's value, else `initial`; the
 /// colour is the instance's tint (not `color`); lines wrap at `width`.
 #[derive(Debug, Clone)]
@@ -227,7 +227,7 @@ pub struct EditText {
     pub height: u16,
     /// +32 field width in em units (1024 per text height), then three raw words
     pub rect: [f32; 4],
-    /// +48: non-zero selects the other draw path (`0x826058B0`)
+    /// +48: non-zero selects the other draw path (`F-28519`)
     pub html: u8,
     /// +49: 0 left, 1 right, 2 centre, 3 justify
     pub align: u8,
@@ -236,6 +236,26 @@ pub struct EditText {
 #[derive(Debug, Clone)]
 pub struct Sprite {
     pub frames: Vec<Frame>,
+}
+
+/// Button: its state records (`+12`, count byte `+21`; the 8-byte condition
+/// action records at `+16` / `+22` are not read, see `docs/UI.md`).
+#[derive(Debug, Clone)]
+pub struct Button {
+    pub records: Vec<ButtonRecord>,
+}
+
+/// One 40-byte button record as the button draw F-28198 reads it.
+#[derive(Debug, Clone)]
+pub struct ButtonRecord {
+    /// +0 state mask: 1 up, 2 over, 4 down, 8 hit
+    pub states: u8,
+    /// +4 six floats, final units like an instance matrix
+    pub matrix: Matrix,
+    /// +28 four multipliers, +32 four additions (signed bytes, 64 = 1)
+    pub cxform: CxForm,
+    /// +36 the drawn character (pointer to its object)
+    pub character: Option<u16>,
 }
 
 #[derive(Debug, Clone)]
@@ -282,7 +302,7 @@ pub enum Cmd {
 pub enum Character {
     Shape(Shape),
     Sprite(Sprite),
-    Button,
+    Button(Button),
     Bitmap(Bitmap),
     Font(Font),
     Text(Text),
@@ -295,7 +315,7 @@ impl Character {
         match self {
             Character::Shape(_) => "shape",
             Character::Sprite(_) => "sprite",
-            Character::Button => "button",
+            Character::Button(_) => "button",
             Character::Bitmap(_) => "bitmap",
             Character::Font(_) => "font",
             Character::Text(_) => "text",
@@ -394,7 +414,7 @@ impl<'a> Parser<'a> {
         Ok(Some(match rd.u8(o + 8) {
             1 => Character::Shape(self.shape(o)?),
             2 => Character::Sprite(self.sprite(o)?),
-            3 => Character::Button,
+            3 => Character::Button(self.button(o)),
             4 => Character::Bitmap(self.bitmap(o)),
             5 => Character::Font(self.font(o)?),
             6 => Character::Text(self.text(o)?),
@@ -713,6 +733,26 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(Text { matrix: Matrix::read(rd, o + 12), records })
+    }
+
+    fn button(&self, o: usize) -> Button {
+        let rd = &self.rd;
+        let records = match rd.ptr(o + 12) {
+            Some(a) => (0..rd.u8(o + 21) as usize)
+                .map(|i| {
+                    let r = a + 40 * i;
+                    let b = |k: usize| rd.u8(r + 28 + k) as i8;
+                    ButtonRecord {
+                        states: rd.u8(r),
+                        matrix: Matrix::read(rd, r + 4),
+                        cxform: CxForm { mult: [b(0), b(1), b(2), b(3)], add: [b(4), b(5), b(6), b(7)] },
+                        character: rd.ptr(r + 36).and_then(|c| self.offsets.get(&c).copied()),
+                    }
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        Button { records }
     }
 
     fn edit_text(&self, o: usize) -> EditText {
