@@ -20,12 +20,21 @@ pub struct Cruising {
     pub dest_speed: f32,
     pub state: u32,
     pub follow: Follow,
+    /// the ambient ghost followed (+1648, 0: none) and the ambient request (+1652, -1: none)
+    pub ghost: u32,
+    pub request: i32,
+    /// state 1: the closest the car has been to its last racing goal (+1696)
+    pub closest: f32,
+    /// the current rail (+1700) and its parameter (+1704); the ghost's rail point at the attach (+1600)
+    pub rail: u32,
+    pub rail_t: f32,
+    pub rail_pt: Vec3,
 }
 
 impl Default for Cruising {
     /// The constructor's values (+1664 = +1668 = -1, the index -1).
     fn default() -> Self {
-        Cruising { dests: [Vec3::ZERO; 64], count: 0, idx: -1, looping: false, offset: Vec3::ZERO, speed: -1.0, dest_speed: -1.0, state: 0, follow: Follow::default() }
+        Cruising { dests: [Vec3::ZERO; 64], count: 0, idx: -1, looping: false, offset: Vec3::ZERO, speed: -1.0, dest_speed: -1.0, state: 0, follow: Follow::default(), ghost: 0, request: -1, closest: 1e8, rail: 0, rail_t: 0.0, rail_pt: Vec3::ZERO }
     }
 }
 
@@ -68,6 +77,184 @@ impl Cruising {
     /// BrainCruising_GetCurrentDestinationIndex (F-76171; -1 without a brain).
     pub fn current_dest(b: Option<&Cruising>) -> i32 {
         b.map_or(-1, |b| b.idx)
+    }
+}
+
+/// The ghost the ambient traffic hands over: its id, its rail record's rail and parameter (+452 -> +188, +208; None
+/// when either is missing) and its speed (+412).
+#[derive(Clone, Copy, Debug)]
+pub struct Ghost {
+    pub id: u32,
+    pub rail: Option<(u32, f32)>,
+    pub speed: f32,
+}
+
+/// What the brain's state logic asks of the world, one method per routine it calls (brain_cruising.md section 3).
+pub trait CruiseEnv {
+    /// the teleport F-90476 onto the rail nearest `p` (remove from traffic, place, velocity); false: nowhere (it sets state 4)
+    fn teleport(&mut self, b: &mut Cruising, p: Vec3) -> bool;
+    /// route + request (82745590): a rail route to the current destination and the ambient request (state 3, or 4)
+    fn route(&mut self, b: &mut Cruising);
+    /// two racing goals on the nearest rail ahead (82745B90)
+    fn rail_goals(&mut self, b: &mut Cruising) -> bool;
+    /// the racing brain's update (F-13552)
+    fn racer_update(&mut self, b: &mut Cruising);
+    /// HasReachedGoal of the racing brain (F-43234)
+    fn racer_reached(&mut self, b: &Cruising) -> bool;
+    /// DriveToNearestRail (F-12584)
+    fn drive_to_rail(&mut self, b: &mut Cruising);
+    /// the teleport at the car's own place, then route + request (82746230)
+    fn rejoin_here(&mut self, b: &mut Cruising);
+    /// the nearest rail to the car within 45 degrees, then route + request (827458D8)
+    fn attach_nearest(&mut self, b: &mut Cruising);
+    /// a rail's point and tangent at `t` (rail slot 8)
+    fn rail_pose(&mut self, rail: u32, t: f32) -> (Vec3, Vec3);
+    /// the parameter of a rail's point nearest the car (rail slot 14)
+    fn rail_nearest_t(&mut self, rail: u32) -> f32;
+    /// state 5 (`follow`, or the pose on the ghost without a physical car)
+    fn follow_ghost(&mut self, b: &mut Cruising);
+    /// the racer has a physical car (racer +48)
+    fn physical(&self) -> bool;
+    fn car_pos(&self) -> Vec3;
+    /// the racing brain's last goal, None without goals (+176 / +180)
+    fn last_goal(&self) -> Option<Vec3>;
+    /// the racer's reset position (+192)
+    fn reset_pos(&self) -> Vec3;
+}
+
+impl Cruising {
+    /// The next destination after one is reached: on (wrapping when looping); past the last: state 6, none.
+    fn next_dest(&mut self, env: &mut impl CruiseEnv) {
+        self.idx += 1;
+        if self.looping && self.idx >= self.count {
+            self.idx = 0;
+        }
+        if self.idx < self.count {
+            env.route(self);
+        } else {
+            self.count = 0;
+            self.state = 6;
+            self.idx = -1;
+        }
+    }
+
+    /// F-64718, the update.
+    pub fn update(&mut self, env: &mut impl CruiseEnv) {
+        match self.state {
+            4 => {
+                if self.idx != -1 {
+                    let p = self.dests[self.idx as usize & 63];
+                    if env.teleport(self, p) {
+                        self.next_dest(env);
+                    }
+                } else {
+                    let p = env.reset_pos();
+                    if env.teleport(self, p) {
+                        env.route(self);
+                    }
+                }
+            }
+            1 => {
+                if !env.physical() {
+                    env.rejoin_here(self);
+                    return;
+                }
+                let d2 = env.last_goal().map_or(0.0, |g| {
+                    let d = env.car_pos() - g;
+                    fma(d.x, d.x, fma(d.z, d.z, d.y * d.y)).sqrt()
+                });
+                if d2 > self.closest + 1.0 {
+                    if !env.rail_goals(self) {
+                        self.state = 4;
+                        return;
+                    }
+                } else {
+                    self.closest = if d2 - self.closest >= 0.0 { self.closest } else { d2 };
+                }
+                env.racer_update(self);
+                if env.racer_reached(self) {
+                    env.route(self);
+                }
+            }
+            2 => {
+                if !env.physical() {
+                    env.rejoin_here(self);
+                } else if env.rail_goals(self) {
+                    self.state = 1;
+                } else {
+                    env.racer_update(self);
+                }
+            }
+            5 => env.follow_ghost(self),
+            3 => {
+                self.follow.steer = 0.0;
+                self.follow.demand = 0.0;
+            }
+            _ => {
+                self.follow.steer = 0.0;
+                self.follow.demand = -100.0;
+            }
+        }
+    }
+
+    /// The attach (vt 12, 827449C8): the ambient system has made the ghost (`status` 0) or failed.
+    pub fn attach(&mut self, env: &mut impl CruiseEnv, status: i32, ghost: Option<&Ghost>) {
+        self.request = -1;
+        match ghost.filter(|_| status == 0).and_then(|g| g.rail.map(|r| (g, r))) {
+            Some((g, (rail, t))) => {
+                self.ghost = g.id;
+                let (p, tan) = env.rail_pose(rail, t);
+                self.rail_pt = p;
+                self.follow.way = tan;
+                self.state = 5;
+                self.follow.speed = g.speed;
+            }
+            None => self.state = 4,
+        }
+    }
+
+    /// The ghost's release (vt 15, 82745DC8): `reason` 1 at its route's end, 5 let go by the brain; `rail` where it
+    /// ended (0: none). Ignored for another ghost.
+    pub fn event(&mut self, env: &mut impl CruiseEnv, reason: i32, rail: u32, ghost: u32) {
+        if ghost != self.ghost {
+            return;
+        }
+        self.ghost = 0;
+        match reason {
+            1 => {
+                self.idx += 1;
+                if self.looping && self.idx >= self.count {
+                    self.idx = 0;
+                }
+                if self.idx < self.count {
+                    if rail == 0 {
+                        env.attach_nearest(self);
+                    } else {
+                        self.rail = rail;
+                        self.rail_t = env.rail_nearest_t(rail);
+                        env.route(self);
+                    }
+                } else {
+                    self.count = 0;
+                    self.state = 6;
+                    self.idx = -1;
+                }
+            }
+            5 => {
+                if self.state == 5 {
+                    self.state = 0;
+                }
+            }
+            _ => self.state = 4,
+        }
+    }
+
+    /// BrainCruising_TeleportToNextDestination's step (82746288): onto the current destination's rail, then on.
+    pub fn teleport_next(&mut self, env: &mut impl CruiseEnv) {
+        let p = self.dests[self.idx as usize & 63];
+        if env.teleport(self, p) {
+            self.next_dest(env);
+        }
     }
 }
 
@@ -210,5 +397,144 @@ mod tests {
             }
         }
         assert!(b.len() / 832 >= 20000 && bad == 0, "{bad} differ");
+    }
+
+    /// The original's calls of a case, replayed: each method takes the next logged call (its id must match) and gives
+    /// its logged result.
+    struct Replay<'a> {
+        r: &'a [u8],
+        next: usize,
+        bad: bool,
+    }
+
+    impl Replay<'_> {
+        fn w(&self, i: usize) -> u32 {
+            u32::from_le_bytes(self.r[4 * i..4 * i + 4].try_into().unwrap())
+        }
+        fn f(&self, i: usize) -> f32 {
+            f32::from_bits(self.w(i))
+        }
+        fn v(&self, i: usize) -> Vec3 {
+            Vec3::new(self.f(i), self.f(i + 1), self.f(i + 2))
+        }
+        /// the next call: its result and two arguments
+        fn take(&mut self, id: u32) -> (u32, u32, u32) {
+            let k = self.next;
+            self.next += 1;
+            if k >= self.w(6) as usize || self.w(44 + 4 * k) != id {
+                self.bad = true;
+                return (0, 0, 0);
+            }
+            (self.w(45 + 4 * k), self.w(46 + 4 * k), self.w(47 + 4 * k))
+        }
+    }
+
+    impl CruiseEnv for Replay<'_> {
+        fn teleport(&mut self, _: &mut Cruising, p: Vec3) -> bool {
+            let (r, a, b) = self.take(1);
+            if (a, b) != (p.x.to_bits(), p.z.to_bits()) {
+                self.bad = true;
+            }
+            r != 0
+        }
+        fn route(&mut self, _: &mut Cruising) {
+            self.take(2);
+        }
+        fn rail_goals(&mut self, _: &mut Cruising) -> bool {
+            self.take(3).0 != 0
+        }
+        fn racer_update(&mut self, _: &mut Cruising) {
+            self.take(4);
+        }
+        fn racer_reached(&mut self, _: &Cruising) -> bool {
+            self.take(5).0 != 0
+        }
+        fn drive_to_rail(&mut self, _: &mut Cruising) {
+            self.take(6);
+        }
+        fn rejoin_here(&mut self, _: &mut Cruising) {
+            self.take(7);
+        }
+        fn attach_nearest(&mut self, _: &mut Cruising) {
+            self.take(8);
+        }
+        fn rail_pose(&mut self, rail: u32, t: f32) -> (Vec3, Vec3) {
+            let (_, a, b) = self.take(9);
+            if (a, b) != (rail, t.to_bits()) {
+                self.bad = true;
+            }
+            (self.v(26 + 12), self.v(26 + 15))
+        }
+        fn rail_nearest_t(&mut self, rail: u32) -> f32 {
+            let (r, a, _) = self.take(10);
+            if a != rail {
+                self.bad = true;
+            }
+            f32::from_bits(r)
+        }
+        fn follow_ghost(&mut self, _: &mut Cruising) {
+            self.take(11);
+        }
+        fn physical(&self) -> bool {
+            self.w(4) != 0
+        }
+        fn car_pos(&self) -> Vec3 {
+            self.v(108)
+        }
+        fn last_goal(&self) -> Option<Vec3> {
+            (self.w(5) > 0).then(|| self.v(114))
+        }
+        fn reset_pos(&self) -> Vec3 {
+            self.v(111)
+        }
+    }
+
+    /// The state logic run offline (work/racerai/cstate): 20,000 cases of the update in every state but 5, the attach,
+    /// the ghost event and TeleportToNextDestination, the callees logged stubs. The same calls in the same order with the
+    /// same arguments, and every field after equal.
+    #[test]
+    fn state_logic_is_the_originals() {
+        let Ok(b) = std::fs::read("D:/MCLA/work/racerai/cstate/cases.bin") else { return };
+        let mut bad = 0;
+        for r in b.chunks_exact(138 * 4) {
+            let mut env = Replay { r, next: 0, bad: false };
+            let fields = |e: &Replay, o: usize| -> [u32; 18] { std::array::from_fn(|i| e.w(o + i)) };
+            let pre = fields(&env, 8);
+            let mut br = Cruising::default();
+            for i in 0..6 {
+                br.dests[i] = env.v(120 + 3 * i);
+            }
+            let f = f32::from_bits;
+            (br.count, br.ghost, br.request, br.idx, br.looping) = (pre[0] as i32, pre[1], pre[2] as i32, pre[3] as i32, pre[4] >> 24 != 0);
+            (br.follow.speed, br.follow.demand, br.follow.steer, br.closest) = (f(pre[5]), f(pre[6]), f(pre[7]), f(pre[8]));
+            (br.rail, br.rail_t, br.state) = (pre[9], f(pre[10]), pre[11]);
+            br.rail_pt = Vec3::new(f(pre[12]), f(pre[13]), f(pre[14]));
+            br.follow.way = Vec3::new(f(pre[15]), f(pre[16]), f(pre[17]));
+            let (a1, a2, a3) = (env.w(1), env.w(2), env.w(3));
+            match env.w(0) {
+                0 => br.update(&mut env),
+                1 => {
+                    let g = (a2 != 0).then(|| Ghost { id: a2, rail: (a2 == 0x16000 && env.w(119) == 3).then(|| (0x17100, env.f(117))), speed: env.f(118) });
+                    br.attach(&mut env, a1 as i32, g.as_ref())
+                }
+                2 => br.event(&mut env, a1 as i32, a2, a3),
+                _ => br.teleport_next(&mut env),
+            }
+            let got = [
+                br.count as u32, br.ghost, br.request as u32, br.idx as u32, (br.looping as u32) << 24, br.follow.speed.to_bits(), br.follow.demand.to_bits(),
+                br.follow.steer.to_bits(), br.closest.to_bits(), br.rail, br.rail_t.to_bits(), br.state,
+                br.rail_pt.x.to_bits(), br.rail_pt.y.to_bits(), br.rail_pt.z.to_bits(), br.follow.way.x.to_bits(), br.follow.way.y.to_bits(), br.follow.way.z.to_bits(),
+            ];
+            let want = fields(&env, 26);
+            if got != want || env.bad || env.next != env.w(6) as usize {
+                if bad < 5 {
+                    println!("op {} pre {pre:x?}
+port {got:x?}
+orig {want:x?} calls {} of {} bad {}", env.w(0), env.next, env.w(6), env.bad);
+                }
+                bad += 1;
+            }
+        }
+        assert!(b.len() / 552 >= 20000 && bad == 0, "{bad} differ");
     }
 }
