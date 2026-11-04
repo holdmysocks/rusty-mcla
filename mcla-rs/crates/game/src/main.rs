@@ -5036,8 +5036,8 @@ impl App {
                 let pi = self.vehicles.cars.iter().position(|c| c.is_player);
                 let done = pi.map_or(true, |i| r.finish_time.get(i).copied().flatten().is_some());
                 if !done && !race_finished && self.game.race_end_t.is_none() {
-                    let (rank, _) = self.game.player_position(&self.vehicles);
-                    self.game.mc4_lead_rank(rank as i32);
+                    let rank = pi.map_or(1, |i| self.game.race_rank(&self.vehicles, i));
+                    self.game.mc4_lead_rank(rank);
                 }
             }
             self.game.ui_sim_dt += sim_dt;
