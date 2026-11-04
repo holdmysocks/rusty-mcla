@@ -6488,7 +6488,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // (step 19d: what the rules of `mc4` want said and played)
             {
-                let (say, sounds, tick) = self.game.mc4_say_take();
+                let (over, say, sounds, tick) = self.game.mc4_say_take();
+                for s in over {
+                    if let Some(a) = self.audio.as_mut() {
+                        self.speech.stop_now(a);
+                    }
+                    if !self.speech.say(&s) {
+                        log::debug!("speech: no scenario {}", s);
+                    }
+                }
                 for s in say {
                     if !self.speech.say(&s) {
                         log::debug!("speech: no scenario {}", s);

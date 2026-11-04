@@ -748,6 +748,8 @@ pub enum ObjCmd {
     /// a career speech line's take (`speech.rs`): played through `object` (the voice's Speech sound, or a category name)
     /// on the audio timer 0 (it holds while the game is paused); `player`: at the player's car, followed while it plays
     Line { key: String, object: String, player: bool },
+    /// the career speech's line on show stopped (the speech manager's stop, F-73277)
+    LineStop,
     /// a dynamic mixer scene on / off
     Scene { name: String, on: bool },
     /// the sound (or, for a type-23 object, the scene) whose hash sits at `offset` of a game.dat object
@@ -944,6 +946,12 @@ impl Audio {
             self.obj_cmds.push(ObjCmd::Clip { key: key.to_string(), category, pos });
         }
         self.objects
+    }
+    /// The career speech line playing stopped (see [`ObjCmd::LineStop`]).
+    pub fn obj_line_stop(&mut self) {
+        if self.objects {
+            self.obj_cmds.push(ObjCmd::LineStop);
+        }
     }
     /// A career speech line's take (see [`ObjCmd::Line`]).
     pub fn obj_line(&mut self, key: &str, object: &str, player: bool) -> bool {

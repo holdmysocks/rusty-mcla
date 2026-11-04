@@ -183,6 +183,8 @@ pub struct Sound {
     pub speech_busy: bool,
     /// the career speech line said at the player's car (F-32206 puts it at the entity's position), followed while it plays
     speech_line: Option<crate::sndobj::Handle>,
+    /// the career speech line last started (stopped by `ObjCmd::LineStop`)
+    line_h: Option<crate::sndobj::Handle>,
     /// cruisers already reported disabled on the radio
     pub cop_disabled: std::collections::HashSet<usize>,
     /// set by the game each frame: the HUD movie's `damage_alpha`, a splash posted to the HUD's queue 1, the pause
@@ -429,10 +431,17 @@ impl Sound {
                         let pos = if player { vehicles.player().map(|c| c.state.pos) } else { None };
                         if let Some(h) = lib.play_clip(&key, &object, crate::sndobj::Req { pos, ..Default::default() }) {
                             lib.set_timer(h, 0);
+                            self.line_h = Some(h);
                             if pos.is_some() {
                                 self.speech_line = Some(h);
                             }
                         }
+                    }
+                    crate::audio::ObjCmd::LineStop => {
+                        if let Some(h) = self.line_h.take() {
+                            lib.stop(h);
+                        }
+                        self.speech_line = None;
                     }
                     crate::audio::ObjCmd::Clip { key, category, pos } => {
                         lib.play_clip(&key, category, crate::sndobj::Req { pos, ..Default::default() });
