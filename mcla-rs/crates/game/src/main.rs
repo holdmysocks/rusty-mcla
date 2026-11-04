@@ -145,6 +145,7 @@ mod tcp_rail;
 mod brain;
 mod brainpath;
 mod cruising;
+mod railroute;
 mod brainturn;
 mod vehicle_model;
 mod vehicles;
