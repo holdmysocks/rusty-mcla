@@ -10446,7 +10446,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         {
             // drivers of the player's car, the racers and the police (traffic models have their own)
             let force = std::env::var("MCLA_DRV_STEER").ok().and_then(|v| v.parse::<f32>().ok());
-            let seats: Vec<drivers::Seat> = self
+            let mut seats: Vec<drivers::Seat> = self
                 .vehicles
                 .cars
                 .iter()
@@ -10488,6 +10488,26 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     drivers::Seat { id: i, uid: c.uid, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str(), hi: c.is_player || c.hi_driver, lights: c.model.simtunes.as_ref().and_then(|t| t.driver_lights), colors: if c.is_player { Some(self.vehicles.player_cabin_light) } else { c.look.as_ref().map(|l| l.cabin_light) }, head: c.amb_lamps.s[0] }
                 })
                 .collect();
+            // the distance LOD (F-12028): every seat here is drawn, so its draw-gate tests pass; the scene byte is a story
+            // scene playing, the cine-script test the same (F-52539); the reference is the player's car, else the camera.
+            // (approx.: the port keeps no wipeout state for other cars - "wrecked" is the damaged-out test alone, damage
+            // at its limit as the player's 0x04)
+            let reference = self.vehicles.player().filter(|c| c.placed).map(|c| [c.state.pos.x, c.state.pos.z]);
+            let (scene, cam) = (self.cine.playing.is_some(), [self.cam.pos.x, self.cam.pos.z]);
+            let cars = &self.vehicles.cars;
+            self.drivers.freeze_far(&mut seats, |s| drivers::FreezeIn {
+                active: true,
+                scene,
+                show: true,
+                car: true,
+                cine: scene,
+                player: s.player,
+                wrecked: cars.get(s.id).is_some_and(|c| c.state.damage >= 0.999),
+                reference,
+                camera: cam,
+                pos: cars.get(s.id).map_or([s.pos.x, s.pos.z], |c| [c.state.pos.x, c.state.pos.z]),
+                ..Default::default()
+            });
             self.drivers.prepare(&mut gpu, &seats, self.cam.pos, &frustum, dt);
         }
         passprof::mark("main setup");

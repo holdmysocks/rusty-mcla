@@ -204,6 +204,61 @@ pub struct Drivers {
     /// the colours of a car's own set-up (`<car>.xcc`) for a car that wears none (`Seat::colors`)
     own_colors: HashMap<String, [[f32; 4]; 2]>,
     data_dir: PathBuf,
+    /// per car (`Seat::uid`): the distance LOD's freeze byte (input context +48, `freeze_step`)
+    frozen: HashMap<u32, bool>,
+}
+
+/// What the drivers' distance LOD (F-12028) reads of one racer's driver.
+#[derive(Clone, Copy, Default)]
+pub struct FreezeIn {
+    /// racer +421: the car's instance is up (set by the input gatherer F-28290)
+    pub active: bool,
+    /// the scene-playing byte (a story scene from its start to FinishScene)
+    pub scene: bool,
+    /// racer +145 / +147: the draw gate's show flags (F-14542)
+    pub show: bool,
+    pub show_scene: bool,
+    /// the no-damage mode byte and racer +370 (the draw gate's other test)
+    pub no_damage: bool,
+    pub b370: bool,
+    /// racer +96: the racer has a car
+    pub car: bool,
+    /// a cine script running (F-52539)
+    pub cine: bool,
+    /// the car is the player's (F-65988)
+    pub player: bool,
+    /// the car's state +592 has 0x10 (wiped out) or 0x04 (damaged out)
+    pub wrecked: bool,
+    /// the player's car's place (x, z), None without one: then the camera's
+    pub reference: Option<[f32; 2]>,
+    pub camera: [f32; 2],
+    pub pos: [f32; 2],
+}
+
+/// F-12028: the freeze byte after one update and whether it reset the inputs (F-55405, once on freezing). The gates above
+/// leave the byte as it is; no car freezes; a cine script or a wreck thaws; the player's car is never touched; otherwise
+/// frozen while the car is more than 20 m from the reference (x / z, d^2 > 400: dz^2 fused onto dx^2 in double, rounded
+/// to single - the fmadds).
+pub fn freeze_step(frozen: bool, f: &FreezeIn) -> (bool, bool) {
+    if !f.active || f.scene || !(f.show || f.show_scene) || (f.no_damage && !f.show_scene && f.b370) {
+        return (frozen, false);
+    }
+    if !f.car {
+        return (true, false);
+    }
+    if f.cine {
+        return (false, false);
+    }
+    if f.player {
+        return (frozen, false);
+    }
+    let r = f.reference.unwrap_or(f.camera);
+    let (dx, dz) = (f.pos[0] - r[0], f.pos[1] - r[1]);
+    let d2 = (dz as f64 * dz as f64 + (dx * dx) as f64) as f32;
+    if !f.wrecked && d2 > 400.0 {
+        return (true, !frozen);
+    }
+    (false, false)
 }
 
 /// The neutral / left / right / talk round robins (tables 0x827EA5F4, 0x827EA608, 0x827EA61C, 0x827EA630,
@@ -281,7 +336,24 @@ fn hash(a: u32) -> u32 {
 }
 
 impl Drivers {
-    pub fn load(&mut self, data_dir: &str) {
+    /// The distance LOD on this frame's seats (F-12028 per drawn driver): a frozen driver's input context keeps what the
+    /// reset (F-55405) gave it - no steer, no speed, not reversing - and its machine runs on those (F-28290 skips the
+    /// gathering while the byte is set).
+    pub fn freeze_far(&mut self, seats: &mut [Seat], f: impl Fn(&Seat) -> FreezeIn) {
+        let mut next = HashMap::new();
+        for s in seats.iter_mut() {
+            let (on, _) = freeze_step(self.frozen.get(&s.uid).copied().unwrap_or(false), &f(s));
+            if on {
+                s.steer = 0.0;
+                s.speed = 0.0;
+                s.reversing = false;
+            }
+            next.insert(s.uid, on);
+        }
+        self.frozen = next;
+    }
+
+pub fn load(&mut self, data_dir: &str) {
         let root = Path::new(data_dir);
         self.data_dir = root.to_path_buf();
         self.char_dir = root.join("resources/character");
@@ -748,6 +820,36 @@ mod original_tests {
             n += 1;
         }
         assert_eq!(n, 192);
+    }
+
+    #[test]
+    fn driver_freeze_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/driver_freeze_ref.txt").lines() {
+            let w: Vec<&str> = line.split(' ').collect();
+            let b = |i: usize| w[i] != "0";
+            let x = |i: usize| f32::from_bits(u32::from_str_radix(w[i], 16).unwrap());
+            let fl: u32 = w[11].parse().unwrap();
+            let f = FreezeIn {
+                active: b(2),
+                scene: b(3),
+                show: b(4),
+                show_scene: b(5),
+                no_damage: b(6),
+                b370: b(7),
+                car: b(8),
+                cine: b(9),
+                player: b(10),
+                wrecked: fl & 0x14 != 0,
+                reference: (w[12] == "1").then(|| [x(13), x(14)]),
+                camera: [x(15), x(16)],
+                pos: [x(17), x(18)],
+            };
+            let got = freeze_step(b(1), &f);
+            assert_eq!((got.0 as u8, got.1 as u8), (w[20].parse::<u8>().unwrap(), w[21].parse::<u8>().unwrap()), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 4048);
     }
 }
 
