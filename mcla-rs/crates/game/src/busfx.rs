@@ -36,7 +36,7 @@ fn pow10(y: f32) -> f32 {
 }
 
 /// F-42985: 10^(dB/20), 0 below -100 dB
-fn db2lin(db: f32) -> f32 {
+pub(crate) fn db2lin(db: f32) -> f32 {
     fsel(db - -100.0, pow10(db * f32::from_bits(0x3D4C_CCCD)), 0.0)
 }
 

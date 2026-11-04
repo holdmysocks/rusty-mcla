@@ -426,12 +426,74 @@ pub struct SoundLib {
     /// MANAGER_OPPONENT_GAINS: the racers' presence, dB on its categories (applied at once, every frame)
     presence: (Vec<u32>, f32),
     presence_db: f32,
+    /// MANAGER_PLAYER_SPEED (F-15595): each record and its controller's linear level
+    speed: Option<Vec<(SpeedRec, f32)>>,
     /// DYNAMIC_MIXER_SLOWDOWN's SFX_HARD record (pitch ratio 0.1, its level unchanged): the controller's ratio now and
     /// its target (career2 `audioramp/notes.md`: 1 a second either way; the PLAYER_VEHICLES and AMBIENCE records are
     /// `Audio::set_time_slow`'s)
     slow_hard: (f32, f32),
     /// the scenes on at the end of the last update (the blocking test)
     scenes_on_hint: std::collections::HashSet<u32>,
+}
+
+/// A MANAGER_PLAYER_SPEED record (game.dat type 39, 28 bytes from +11): category, speed input A's and B's low / high,
+/// the level at the low / high end (s16 mB) and the slew rate (dB per second).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SpeedRec {
+    pub cat: u32,
+    pub a: [f32; 2],
+    pub b: [f32; 2],
+    pub mb: [i16; 2],
+    pub rate: f32,
+}
+
+impl SpeedRec {
+    pub(crate) fn table(o: &[u8]) -> Vec<SpeedRec> {
+        let f = |at: usize| f32::from_be_bytes(o[at..at + 4].try_into().unwrap());
+        (0..o.len().saturating_sub(11) / 28)
+            .map(|i| {
+                let at = 11 + 28 * i;
+                SpeedRec {
+                    cat: u32::from_be_bytes(o[at..at + 4].try_into().unwrap()),
+                    a: [f(at + 4), f(at + 8)],
+                    b: [f(at + 12), f(at + 16)],
+                    mb: [i16::from_be_bytes([o[at + 20], o[at + 21]]), i16::from_be_bytes([o[at + 22], o[at + 23]])],
+                    rate: f(at + 24),
+                }
+            })
+            .collect()
+    }
+}
+
+/// F-15595 for one record: the inputs (0 in camera mode 5, the cinematic) at or under both lows give the low level, at
+/// or over either high the high level, else low + max(tA, tB) x (high - low) with tA = (A - Alo) / (Ahi - Alo) and tB
+/// = B - Blo / Bhi - Blo (the original's arithmetic); the controller's level (as dB, -100 under 1e-5) moves toward it
+/// at rate x dt and is set again (SetVolumeDB F-10740: dB2lin). Returns the new linear level.
+pub(crate) fn speed_step(r: &SpeedRec, lin: f32, mode: i32, sa: f32, sb: f32, dt: f32) -> f32 {
+    let (a, b) = if mode == 5 { (0.0, 0.0) } else { (sa, sb) };
+    let target = if !(a > r.a[0]) && !(b > r.b[0]) {
+        r.mb[0] as f32 * 0.01
+    } else if !(a >= r.a[1]) && !(b >= r.b[1]) {
+        let ta = (a - r.a[0]) / (r.a[1] - r.a[0]);
+        let tb = b - r.b[0] / r.b[1] - r.b[0];
+        let t = if ta - tb >= 0.0 { ta } else { tb };
+        let lo = r.mb[0] as f32;
+        t.mul_add(r.mb[1] as f32 - lo, lo) * 0.01
+    } else {
+        r.mb[1] as f32 * 0.01
+    };
+    // (vlogefp as the recomp runs it: f32 log2, as the TwinLoop's levels)
+    let cur = if lin - f32::from_bits(0x3727_C5AC) >= 0.0 { (lin.log2() * f32::from_bits(0x3E9A_1CAC)) * 20.0 } else { -100.0 };
+    let db = if !(cur >= target) {
+        let v = dt.mul_add(r.rate, cur);
+        if !(v <= target) { target } else { v }
+    } else if !(cur <= target) {
+        let v = -dt.mul_add(r.rate, -cur);
+        if !(v >= target) { target } else { v }
+    } else {
+        cur
+    };
+    crate::busfx::db2lin(db)
 }
 
 /// A dynamic mixer scene (game.dat `DYNAMIC_MIXER_*`, type 23: +14 enter, +18 exit, +22 loop, +26 stream sound, +30
@@ -548,6 +610,7 @@ impl SoundLib {
             presence: (Vec::new(), 0.0),
             speed_fade: 0.0,
             presence_db: 0.0,
+            speed: None,
             slow_hard: (1.0, 1.0),
             scenes_on_hint: Default::default(),
         })
@@ -778,6 +841,19 @@ impl SoundLib {
 
     fn step_scenes(&mut self, dt: f32) {
         let mut changed = false;
+        // MANAGER_PLAYER_SPEED (F-15595, every mixer update): the speed inputs (+1748 / +1752) are only ever set to 0 in
+        // the game (F-35488 and the timer pause in F-99037), so every record follows its low end
+        if self.speed.is_none() {
+            self.speed = Some(self.game.get_name("MANAGER_PLAYER_SPEED").map_or(Vec::new(), |o| SpeedRec::table(o).into_iter().map(|r| (r, 1.0)).collect()));
+        }
+        let mode = self.cam_mode.map_or(-1, |m| m.0);
+        for (r, lin) in self.speed.iter_mut().flatten() {
+            let v = speed_step(r, *lin, mode, 0.0, 0.0, dt);
+            if v != *lin {
+                *lin = v;
+                changed = true;
+            }
+        }
         let (cur, to) = self.slow_hard;
         if cur != to {
             self.slow_hard.0 = if to > cur { (cur + dt).min(to) } else { (cur - dt).max(to) };
@@ -852,6 +928,9 @@ impl SoundLib {
         }
         if self.speed_fade != 0.0 {
             *rt.entry(joaat("AMBIENCE")).or_insert(0.0) += self.speed_fade;
+        }
+        for (r, lin) in self.speed.iter().flatten() {
+            *rt.entry(r.cat).or_insert(0.0) += lin2db(*lin);
         }
         for sc in self.scenes.values().filter(|s| s.level > 0.0) {
             for (h, db) in &sc.recs {
@@ -2430,9 +2509,43 @@ mod tests {
         assert_eq!(n, 600);
     }
 
-    /// The durations of the sound tree (F-53189 with each type's method), the play offsets (F-90115), the Looping split
-    /// (F-39812) and the Sequential start (F-71973) against the original's code run offline on random trees
-    /// (tools/sound_duration_reference.py; a case the original faults on is left out)
+    /// MANAGER_PLAYER_SPEED against the original's F-15595 run offline (tools/player_speed_reference.py): the game's table
+    /// and 60 random ones, 5,802 frames of camera mode, both speed inputs and the frame time; every controller's new
+    /// linear level, bit for bit.
+    #[test]
+    fn player_speed_matches_the_original() {
+        use super::*;
+        let hx = |t: &str| u32::from_str_radix(&t[1..], 16).unwrap();
+        let num = |t: &str| t[1..].parse::<u32>().unwrap();
+        let (mut recs, mut lins, mut n) = (Vec::new(), Vec::new(), 0);
+        for l in include_str!("testdata/player_speed_ref.txt").lines() {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            match w.first() {
+                Some(&"T") => {
+                    recs.clear();
+                    lins.clear();
+                }
+                Some(&"r") => {
+                    let f = |i: usize| f32::from_bits(hx(w[i]));
+                    recs.push(SpeedRec { cat: num(w[1]), a: [f(2), f(3)], b: [f(4), f(5)], mb: [num(w[6]) as u16 as i16, num(w[7]) as u16 as i16], rate: f(8) });
+                    lins.push(1.0f32);
+                }
+                Some(&"F") => {
+                    let (mode, sa, sb, dt) = (num(w[1]) as i32, f32::from_bits(hx(w[2])), f32::from_bits(hx(w[3])), f32::from_bits(hx(w[4])));
+                    let want: Vec<u32> = w[6..].iter().map(|t| hx(t)).collect();
+                    assert_eq!(want.len(), recs.len(), "{l}");
+                    for (k, r) in recs.iter().enumerate() {
+                        lins[k] = speed_step(r, lins[k], mode, sa, sb, dt);
+                        assert_eq!(lins[k].to_bits(), want[k], "record {k} {r:?}: {l}");
+                    }
+                    n += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(n, 5802);
+    }
+
     #[test]
     fn twinloop_fade_matches_the_original() {
         // tools/twinloop_reference.py: the original's TwinLoop Init, Play and Update on random TwinLoops and times; every
@@ -2505,6 +2618,9 @@ mod tests {
         assert_eq!(n, 39_240);
     }
 
+    /// The durations of the sound tree (F-53189 with each type's method), the play offsets (F-90115), the Looping split
+    /// (F-39812) and the Sequential start (F-71973) against the original's code run offline on random trees
+    /// (tools/sound_duration_reference.py; a case the original faults on is left out)
     #[test]
     fn durations_match_the_original() {
         use super::*;
