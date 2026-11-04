@@ -3708,6 +3708,45 @@ impl LooseState {
         out
     }
 
+    /// The thrown rider's partner among the other vehicles (artic_run.rs `RiderRagdoll::collide_other`): the ambient
+    /// car - one polyhedron at its instance, as ov.0's - whose place is nearest `at` within `reach` m. The rider's pair
+    /// with it is the only one the port collides (two at once: the nearer). A live mcCar (class 8: its body is its own
+    /// step's) and a semi's two-part bound are not taken.
+    pub fn rider_partner(&self, at: Vec3, reach: f32) -> Option<usize> {
+        let mut best: Option<(usize, f32)> = None;
+        for (o, obj) in self.objs.iter().enumerate() {
+            let (Some(vh), Some(_)) = (obj.veh, obj.amb.as_ref()) else { continue };
+            if vh.class != 6 || vh.parts() != 1 || vh.index == u32::MAX {
+                continue;
+            }
+            let d = (obj.matrix[3] - at).length();
+            if d <= reach && best.map_or(true, |(_, b)| d < b) {
+                best = Some((o, d));
+            }
+        }
+        best.map(|(o, _)| o)
+    }
+
+    /// A vehicle object's bound as the rider's collide takes it: its hull, its centre, its matrix now (as this tick's
+    /// move left it) and last (collider +32: the matrix before the move; an inactive car's own).
+    pub fn rider_side(&self, o: usize) -> Option<(&'static HullShape, Vec3, [Vec3; 4], [Vec3; 4])> {
+        let obj = self.objs.get(o)?;
+        let vh = obj.veh?;
+        Some((vh.shape, vh.cg, obj.matrix, obj.body.map_or(obj.matrix, |b| b.prev)))
+    }
+
+    /// The object is in a pair of the loose world this tick (a manifold with contacts).
+    pub fn in_pairs(&self, o: usize) -> bool {
+        self.manis.iter().any(|m| m.a == Who::Obj(o) || m.b == Who::Obj(o))
+    }
+
+    /// An inactive ambient car the rider's contact meets is made active as a car's does (A-28475 -> F-24099).
+    pub fn ambient_wake(&mut self, o: usize) {
+        if self.objs.get(o).is_some_and(|x| x.amb.is_some()) {
+            self.ambient_activate(o);
+        }
+    }
+
     /// An inactive ambient car made active (F-24099 -> slot 28 F-41833, vfunc 41: its collider at
     /// the instance's velocity, inst +96; its turn the collider's own; the rest count from 0). A semi's
     /// cab or trailer then joins its partner by three constraints if the partner holds none, and makes

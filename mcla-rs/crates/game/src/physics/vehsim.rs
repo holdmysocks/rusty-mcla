@@ -1211,6 +1211,13 @@ pub fn take_answer(st: &mut CarState, p: &CarParams, vt: &VehTune, jf: Vec3, jt:
 const BIKE_LEVEL: i64 = 0;
 const RIDER_LEVEL: i64 = 1;
 const RIDER_IS_A: bool = false;
+/// Another vehicle's level in the rider's pair with it: below the rider's, as ov.0's ambient car (0x5745 / 0x5754) -
+/// the car is A and its pair's rows come before his self rows (the order in general follows the level's free index
+/// list: unverified)
+const OTHER_LEVEL: i64 = -1;
+/// How near (m, the car's place to the rider's instance) a vehicle is looked at for the rider's collide; the parts'
+/// box cull decides
+const RIDER_PARTNER_REACH: f32 = 8.0;
 
 pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, world: &WorldCollider, dt: f32) {
     // (chassis +224 as the tick comes in: what mcCarDamage's rumble test and mcFeedback's update read, crate::rumble)
@@ -5736,14 +5743,56 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             let mut rider_isl: Option<super::artic_run::RiderIsland> = None;
             if let Some(rd) = rider_run.as_mut() {
                 let bike = super::artic_run::BikeRows { level: BIKE_LEVEL, rider_level: RIDER_LEVEL, city: car_city_pair.then(|| city_rows.len()), rider: None, city_on: city_rows.clone(), touch: vs.wipe.is_some().then_some((t.s.bound_friction, t.s.bound_elasticity)), shared: !loose_touch };
+                // (the rider against another vehicle - an ambient car, after this tick's move of what is loose: his
+                // collide with its hull (F-82759, as with the bike); an inactive car his contact meets is made active
+                // (A-28475 -> F-24099). The car's callbacks leave his contacts alone (class 6: its pre-solve F-65962 /
+                // its post-solve F-13089 take partners of class 4 / 5 and mcCarInstance only). An AI mcCar (class 8,
+                // F-55998's AI branch: friction / elasticity from its tune when tilted) is not taken - its body is its
+                // own step's (decoded, not ported). Rider and car solve as one island when
+                // the bike is not in it and the car is in no other pair of the loose world; otherwise the car's rows
+                // only join (unported: the three-body island, and the car's other rows with his))
+                let mut other_obj: Option<usize> = None;
+                if loose_world.is_some() {
+                    let at = super::artic_collide::rows3(&rd.rd16)[3];
+                    other_obj = vs.loose.rider_partner(at, RIDER_PARTNER_REACH);
+                    match other_obj.and_then(|o| vs.loose.rider_side(o)) {
+                        Some((shape, cg, now, last)) => {
+                            let side = super::artic_collide::VehSide { hull: shape, hull_cg: cg, hull_margin: f32::from_bits(0x3d23_d70a), now, last, wheels: Vec::new() };
+                            rd.collide_other(Some((&side, RIDER_LEVEL < OTHER_LEVEL)));
+                        }
+                        None => rd.collide_other(None),
+                    }
+                } else {
+                    rd.collide_other(None);
+                }
+                let other_joins = other_obj.is_some() && rd.other.manifolds.iter().any(|m| !m.slots.is_empty());
+                if let (Some(o), true) = (other_obj, other_joins) {
+                    vs.loose.ambient_wake(o);
+                }
+                let bike_joins = !rd.veh_now.is_empty() && rd.veh.manifolds.iter().any(|m| !m.slots.is_empty());
+                let car_body = other_obj.filter(|&o| other_joins && !bike_joins && !vs.loose.in_pairs(o)).and_then(|o| vs.loose.objs[o].body.map(|b| (o, b)));
+                let other = other_joins.then(|| super::artic_run::OtherRows { level: OTHER_LEVEL, rider_level: RIDER_LEVEL, shared: car_body.is_some() });
                 // (F-55998 on a rider contact - partner class 11, not 8 / 6 / 4 / 13 - takes its driver branch: the
                 // car's driver record (the 104 B table indexed by [[car +80] +76] +76) has +24 = 3 for the player
                 // (read live: the player's bike 3, an AI car 1), and then chassis +592 bits 0x10 / 0x04 (wiped out)
                 // write BoundFriction / BoundElasticity into the enabled contacts; otherwise only a fixed partner
                 // (level state 2) is touched - never the rider)
-                let isl = rd.build(&super::artic_run::Outside { others: (0, 0.0), parts: Vec::new(), bike: Some(bike) });
-                log::debug!("rider: with the bike {}, loose {}, rows {}, bike x rider manifolds {}", isl.with_bike, loose_touch, isl.rows.len(), rd.veh.manifolds.len());
-                if isl.with_bike && !loose_touch {
+                let isl = rd.build(&super::artic_run::Outside { others: (0, 0.0), parts: Vec::new(), bike: Some(bike), other });
+                log::debug!("rider: with the bike {}, loose {}, rows {}, bike x rider manifolds {}, other vehicle {:?} ({})", isl.with_bike, loose_touch, isl.rows.len(), rd.veh.manifolds.len(), other_obj, isl.with_other);
+                if let (Some((o, b)), true, false) = (car_body, isl.with_other, isl.with_bike) {
+                    // (the rider x car island: the car's share into its accumulators, its push into +400 / +416)
+                    let (j, jt, pushed) = rd.with_car(isl, b.as_solver(), super::solver::Pushed { push: b.push, turn: b.turn, deep: false }, dt, &mut rider_tick);
+                    if let Some(cb) = vs.loose.objs[o].body.as_mut() {
+                        cb.jf = cb.jf + j;
+                        cb.jt = cb.jt + jt;
+                        cb.push = pushed.push;
+                        cb.turn = pushed.turn;
+                        if pushed.deep && !cb.deep {
+                            cb.deep = true;
+                            cb.deep_count = cb.deep_count.saturating_add(1).min(254);
+                        }
+                    }
+                } else if isl.with_bike && !loose_touch {
                     rider_isl = Some(isl);
                 } else {
                     // (his island apart from the bike's: when the bike's has something loose in it, the bike's rows
