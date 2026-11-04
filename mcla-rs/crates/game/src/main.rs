@@ -101,6 +101,7 @@ mod skin;
 mod sky;
 mod sound;
 mod sndobj;
+mod occlusion;
 mod engaudio;
 mod collaudio;
 mod ambaudio;
