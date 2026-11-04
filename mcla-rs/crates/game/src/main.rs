@@ -857,6 +857,14 @@ impl App {
                     self.cine.reanimate("cut_drv01", "cut_cop_alert_02", "cut_drv01");
                     let at = self.vehicles.player().map(|c| c.state.pos).unwrap_or_default();
                     self.police.suspect_fled(t, at);
+                    // (StopStreamPrimary, PlayStreamSecondary: the walk's stream stops and CUT_COP_ALERT, prepared before the
+                    // walk (F-11568 -> F-56810), plays (F-85444 -> F-16885 -> F-58551, which stops the speech and the police
+                    // radio by the object's flags); the walk's end stops it (StopStreamSecondary F-45468, the bail's 0xb6c) -
+                    // the scene audio's sync below turns the one cutscene slot off there)
+                    if self.audio.as_mut().is_some_and(|a| a.obj_cutscene("CUT_COP_ALERT", true, true)) {
+                        self.speech.stop();
+                        self.radio.stop();
+                    }
                     if !self.speech.busy() {
                         self.speech.say("PLAYER_COPS_ESCAPE_TICKET");
                     }
@@ -3120,7 +3128,7 @@ impl App {
                     // manager's target (+68) is the player (F-79134). "impact start car done" then ends at its first
                     // update with the game paused (F-38554: the flags' 0x20000000, F-28290 = the cine layer's +320,
                     // set while the pause manager pauses, F-94276), else after 5 s in it (+156 += dt, F-71604); its
-                    // exit (F-85478) is the engine sound's start with 0 (vt+52). The pause menu opened below is that
+                    // exit (F-85478) is the engine sound's start with 0 (vt+52). The reset below stands for that
                     // pause, so the start goes with it; with the police on the player there is neither and the car
                     // stays damaged out
                     if self.wreck_timer <= 0.0 && self.game.police_on_player {
@@ -3139,24 +3147,42 @@ impl App {
                         self.game.race_wreck_over = true;
                         log::info!("wreck over in a race: the race is over (damaged out {})", self.game.race_dmg_out);
                     } else if self.wreck_timer <= 0.0 {
-                        // the wreck's end in the cruise (F-79134 -> F-89773): unless it is up already, UI_MENU_SELECT and
-                        // the PauseMenu opened - the game paused, the menu the cruise menu's DAMAGED OUT tab with its
-                        // QUICK FIX row (Game::ui, F-43165). No repair and no money here: the car stays wrecked until
-                        // QUICK FIX (`quick_fix`, free) or the garage. The pause ends "impact start car done" at once
-                        // (F-38554), its exit starting the engine sound with 0 (F-85478)
                         if std::mem::take(&mut self.wreck_engine) == 2 {
                             self.sound.play_ignition();
+                        } else if self.sound.engine_stopped() {
+                            // (the reset stands for the menu's QUICK FIX: F-39432 sets a stopped sound running, vt+48)
+                            self.sound.engine_set_running();
                         }
-                        if self.game.mode != Mode::Paused {
-                            if let Some(a) = self.audio.as_mut() {
-                                a.obj("UI_MENU_SELECT");
-                            }
-                            self.game.mode = Mode::Paused;
-                            self.game.pause_page = 0;
-                            self.game.pause_tab = 0;
-                            self.game.menu_sel = 0;
-                            log::info!("wreck over in the cruise: the pause menu (DAMAGED OUT)");
+                        // the wreck event's end (F-79134 -> F-89773). (approx.: the original then opens the
+                        // PauseMenu in the cruise - its QUICK FIX row, free - or ends the race into the
+                        // race-over menu; the port has neither row yet, so the car is set going here,
+                        // free, as that QUICK FIX would)
+                        let safe = self.safe_matrix;
+                        if let Some(c) = self.vehicles.player_mut() {
+                            let f = c.state.forward();
+                            let gear = c.state.gear;
+                            // (QUICK FIX, F-32850: a damaged-out car from the racer's safe matrix, +224 - out of the water
+                            // it drove into - upright with that matrix's heading; approx. without one: where it stands, lifted)
+                            let (at, yaw) = match safe {
+                                Some((pos, rot)) => (pos, quick_fix_yaw(rot)),
+                                None => (c.state.pos + Vec3::Y * 0.8, (-f.x).atan2(-f.z)),
+                            };
+                            c.state = physics::CarState::new(at, yaw);
+                            c.pose_history.reset();
+                            c.state.gear = gear;
+                            c.placed = false;
+                            // (the reset's F-30391(0): the flags +592 to 0, so the damaged-out hold ends; the
+                            // engine word +46 = 1)
+                            c.stunned = 0.0;
+                            c.engine_off = false;
+                            c.deactivated = false;
                         }
+                        self.crash_bits = 0;
+                        self.crash_exploding = false;
+                        // (the player's reset puts the warpers back, F-86999)
+                        self.warp_wipe.reset();
+                        self.warp_expl.reset();
+                        self.warp_look.reset();
                     }
                 } else if let Some(c) = self.vehicles.player_mut() {
                     let dm = c.model.simtunes.as_ref().map(|s| s.base.damage.clone()).unwrap_or_default();
@@ -7714,7 +7740,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 p.engine_off = false;
                 p.deactivated = false;
                 self.crash_bits = 0;
-                self.crash_exploding = false;
             }
             // (F-39432 also sets the engine sound running at once, vt+48 F-79364: state 4, no crank)
             self.sound.engine_set_running();
