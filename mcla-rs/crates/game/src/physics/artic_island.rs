@@ -1843,4 +1843,93 @@ mod tests {
         assert_eq!(n, 5);
         assert!(report.is_empty(), "{}", report.join("\n"));
     }
+
+    /// Plan step 3's island through the live path: xi.0 1387 - 1392 (the rider thrown onto racer 58's car, an AI mcCar,
+    /// class 8) fed into loose.rs `LooseState::solve_island` with a `RiderMerge` and the racer as the island's car - its
+    /// hull's contact with the city (1387, side A) the car's own row (`IslRow::Bike`), the rider's rows with it his share
+    /// with the car as `Who::Car`, every row in the recorded A list's order. In the original this is one island of the
+    /// car's rows and the rider's (F-96487 over every pair, section 17 of ragdoll_self_contacts.md); the port's game
+    /// still solves the car's own rows in its own later step (vehicles.rs: open). Checked: the rider RGX0 -> RGD1, isl
+    /// +40, every row's +128 / +112 and the car's +368 / +384 (the island's answer for the car) word for word.
+    #[test]
+    fn rider_racer_live_island_is_the_originals() {
+        use crate::physics::artic_run::{IslRow, RiderIsland};
+        use crate::physics::loose::{CarDyn, CarIn, LooseState, LooseWorld, RiderMerge};
+        let (map, ticks) = shared_ticks_of(include_bytes!("testdata/rider_car_xi0.bin"));
+        let cases = run_cases(include_bytes!("testdata/rider_car_xi0_run.bin"));
+        let shape: &'static crate::physics::hull::HullShape = Box::leak(Box::new(crate::physics::hull::HullShape::new(vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z], &[[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]])));
+        let mut report = Vec::new();
+        let (mut n, mut with_city) = (0, 0);
+        for t in &ticks {
+            let Some(c) = cases.iter().find(|c| c.op == b'i' && c.tick == t.tick) else { continue };
+            n += 1;
+            let mut a = load(&c.inp);
+            for &p in &t.hinge_parts {
+                a.contact_on_part(&map, p);
+            }
+            let touches = shared_touches(&map, a.n(), t);
+            assert_eq!(touches.len(), t.n as usize);
+            let mut car = shared_bike(t);
+            let dt = c.v1;
+            // (the rows: the car's with the city its own, the rider's his share - with the car its body 0)
+            let mut city: Vec<solver::Contact> = Vec::new();
+            let mut rows: Vec<IslRow> = Vec::new();
+            let mut rider_touches = Vec::new();
+            let mut partners = Vec::new();
+            for ((bside, rec), x) in t.contacts.iter().zip(touches.iter()) {
+                if rec.side == 2 {
+                    // (the car's hull with the city: the car A)
+                    assert_eq!(*bside, 0);
+                    rows.push(IslRow::Bike(city.len()));
+                    city.push(solver::Contact { depth: x.depth, friction: x.friction, elasticity: x.elasticity, local: Vec3::ZERO, on_body: x.a.point, on_world: x.b.point, normal: x.normal, pushed: x.pushed, kept: x.kept, target: x.target, impulse: Vec3::ZERO });
+                    continue;
+                }
+                partners.push((*bside != 2).then_some(true));
+                rows.push(IslRow::Rider(rider_touches.len()));
+                rider_touches.push(*x);
+            }
+            with_city += (!city.is_empty()) as usize;
+            let isl = RiderIsland::recorded(rider_touches, rows, &partners);
+            let mut ls = LooseState::default();
+            let world = LooseWorld::default();
+            let m4 = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO];
+            let car_in = CarIn { hull: shape, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: m4, last: m4, speed: 0.0, bound: (Vec3::ZERO, Vec3::ZERO), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.0, 0.0), wiped: false };
+            let (mut p, mut l) = (Vec3::ZERO, Vec3::ZERO);
+            let mut dynm = CarDyn { p: &mut p, l: &mut l, mass: 0.0, inverse: Vec3::ZERO, rows: [Vec3::X, Vec3::Y, Vec3::Z] };
+            let city_rows = vec![true; city.len()];
+            let city_part = vec![0u8; city.len()];
+            let mut mg = RiderMerge { body: &mut a, isl, slots: Vec::new(), other: usize::MAX, rider_key: crate::physics::loose::RIDER_LOOSE_KEY };
+            let out = ls.solve_island(&world, &car_in, &mut car, &mut dynm, &city, &city_rows, &city_part, &[], dt, Some(&mut mg));
+            drop(mg);
+            a.motion_measure(dt);
+            let mut bad = Vec::new();
+            if out.solved.bounce.to_bits() != t.bounce {
+                bad.push(format!("bounce {:08x} want {:08x}", out.solved.bounce.to_bits(), t.bounce));
+            }
+            assert_eq!(out.touches.len(), t.contacts.len());
+            for (k, (x, (_, rec))) in out.touches.iter().zip(t.contacts.iter()).enumerate() {
+                if !vec_words(x.kept, &rec.w[32..35]) {
+                    bad.push(format!("row {k} (side {}) kept {:?} want {:08x?}", rec.side, x.kept, &rec.w[32..35]));
+                }
+                if !vec_words(x.impulse, &rec.w[28..31]) {
+                    bad.push(format!("row {k} (side {}) impulse {:?} want {:08x?}", rec.side, x.impulse, &rec.w[28..31]));
+                }
+            }
+            let (b0, b1) = (&t.bike0, &t.bike1);
+            for (name, o, got) in [("impulse +368", 368, out.impulse), ("turning +384", 384, out.turning)] {
+                if wv(b0, o) != Vec3::ZERO || !vec_words(got, &b1[o / 4..o / 4 + 3]) {
+                    bad.push(format!("car {name}: island {got:?}, recorded {:?} -> {:?}", wv(b0, o), wv(b1, o)));
+                }
+            }
+            let (words, nan) = strict(&a, &c.out);
+            eprintln!("live racer island, tick {}: {} rows ({} of the car with the city), {} differing words, {nan} NaN on both sides, {} row / car results differ", t.tick, out.touches.len(), city.len(), words.len(), bad.len());
+            bad.extend(words);
+            if !bad.is_empty() {
+                report.push(format!("tick {}: {} differences, first {:#?}", t.tick, bad.len(), &bad[..bad.len().min(16)]));
+            }
+        }
+        assert_eq!(n, 6);
+        assert_eq!(with_city, 1);
+        assert!(report.is_empty(), "{}", report.join("\n"));
+    }
 }
