@@ -200,6 +200,45 @@ fn squad_may_go(arrow: bool, from: u8, to: i32) -> bool {
     }
 }
 
+/// The squad tactics' CatchUp (the Double Pursuit's AlongSide) / Halt machine, one update (F-95322): the state asked for in
+/// the last update is entered first (F-43677), then the state's update runs. CatchUp's enter (F-81752: slots -1, hysteresis
+/// 2, the formation at once, the swipe timer and latch 0, lock 5 s) is followed in the same update by its update (F-47983 /
+/// F-41674): the lock counts down, the formation once it has run out (the lock again on a send), the swipes, then the Arrow
+/// Trap asks for Halt with a cop within fSafeDist of a target that is not moving. Halt (F-16041) asks for CatchUp with no
+/// cop within fSafeDist or the target over fArrestTgtThresholdSpd. Returns true when Halt's update ran (its cops' stops
+/// are the caller's).
+#[allow(clippy::too_many_arguments)]
+fn squad_machine<C>(sq: &mut Squad, cx: &mut C, arrow: bool, any_safe: bool, t_moving: bool, fast: bool, dt: f32,
+                    formation: &mut dyn FnMut(&mut Squad, &mut C, f32) -> bool, swipes: &mut dyn FnMut(&mut Squad, &mut C)) -> bool {
+    if let Some(h) = sq.next.take() {
+        sq.halt = h;
+        if !h {
+            sq.begun = false;
+        }
+    }
+    if sq.halt {
+        if (!any_safe || fast) && squad_may_go(arrow, 2, 0) {
+            sq.next = Some(false);
+        }
+        return true;
+    }
+    if !sq.begun {
+        let next = sq.next;
+        *sq = Squad { begun: true, hyst: 2.0, next, ..Default::default() };
+        formation(sq, cx, 0.0);
+        sq.lock = 5.0;
+    }
+    sq.lock -= dt;
+    if sq.lock < 0.0 && formation(sq, cx, dt) {
+        sq.lock = 5.0;
+    }
+    swipes(sq, cx);
+    if arrow && any_safe && !t_moving && squad_may_go(arrow, 0, 2) {
+        sq.next = Some(true);
+    }
+    false
+}
+
 /// Dispatch to Location's transition test (F-40040): WaitToDispatch only to Dispatch, Dispatch only to Respond, Respond only
 /// to WaitAtLocation, nothing out of WaitAtLocation (its end is the tactic's result). The machine starts in WaitToDispatch: the
 /// tactic's begin starts it with its enter flag set (F-26187).
@@ -459,6 +498,8 @@ struct Squad {
     /// CatchUp (the Double Pursuit's AlongSide) entered
     begun: bool,
     halt: bool,
+    /// the state asked for (true Halt, false CatchUp), entered at the start of the next update
+    next: Option<bool>,
     /// +16: the formation's lock, +20: its hysteresis
     lock: f32,
     hyst: f32,
@@ -2278,11 +2319,8 @@ impl Police {
             if let Some(n) = j.filter(|_| self.last_junction.is_none()) {
                 self.last_junction = j;
                 let sig = world.nav.as_ref().and_then(|nv| nv.junction_centers.get(n)).and_then(|c| vehicles.signals.junctions.iter().find(|s| (s.center - *c).length_squared() < 0.01));
-                let a = sig.and_then(|s| match s.forced {
-                    -2 => None,
-                    f if f >= 0 => s.arms.get(f as usize).copied(),
-                    _ => (s.timer < 8.5).then(|| s.arms.get(s.current as usize).copied()).flatten(),
-                }).unwrap_or(Vec3::ZERO);
+                // (the arm getters F-93041 / F-75755 read J +160 / +164 only: a forced arm or forced red reaches them through `step`)
+                let a = sig.and_then(|s| (s.timer < 8.5).then(|| s.arms.get(s.current as usize).copied()).flatten()).unwrap_or(Vec3::ZERO);
                 let d = if speed > t("fMovingSpeed", 1.0) * 0.447 { -pvel / speed } else { Vec3::ZERO };
                 if watching && d.dot(a) < 0.9 {
                     breaking = true;
@@ -2847,94 +2885,74 @@ impl Police {
             };
             let mut sq = std::mem::take(&mut self.sq);
             let mut tacs = std::mem::take(&mut self.tacs);
-            if sq.halt {
-                // Halt (F-58305 / F-16041): the cops within fSafeDist Stop again, x 0.5 when closing; none within it, or
-                // the target over fArrestTgtThresholdSpd -> CatchUp
-                if (!any_safe || mph > t("fArrestTgtThresholdSpd", 10.0)) && squad_may_go(arrow, 2, 0) {
-                    sq.halt = false;
-                    sq.begun = false;
-                } else {
-                    for c in vehicles.cars.iter_mut().filter(|c| pursuer(c) && c.state.pos.distance(ppos) < safe) {
-                        let tc = tacs.entry(c.uid).or_default();
-                        if tc.st != Tac::Halt {
-                            *tc = CopTac { st: Tac::Halt, ..Default::default() };
-                        }
-                        if closing(c, 0.0) {
-                            c.state.vel *= 0.5;
-                        }
-                    }
+            // the flank swipes (only when F-42951 holds for cop A): the Arrow Trap's within 10 m, behind the
+            // target, A with it on its left 135 - 160 deg off its right axis (after REPORT_MANEUVER_CLOSE and
+            // 0.5 s), B with it on its right 20 - 45 deg; the Double Pursuit's within 15 m, 160 - 180 / 0 - 20 deg
+            let (near, a_win, b_win) = if arrow { (10.0, (135.0, 160.0), (20.0, 45.0)) } else { (15.0, (160.0, 180.0), (0.0, 20.0)) };
+            let geo = |u: Option<u32>| -> Option<(f32, bool, bool, bool, f32)> {
+                let c = vehicles.cars.iter().find(|c| Some(c.uid) == u)?;
+                let to = ppos - c.state.pos;
+                Some((to.length(), c.state.forward().dot(to) > 0.0, c.state.right().dot(to) > 0.0, pvel.dot(c.state.vel) > 0.0, crate::aiv::ang3(c.state.right(), to).to_degrees()))
+            };
+            let head_on_dist = t("fHeadOnBlockDist", 60.0);
+            let fast = mph > t("fArrestTgtThresholdSpd", 10.0);
+            let mut cues: Vec<String> = Vec::new();
+            let mut cx = (tacs, swipes, &mut cues);
+            type Cx<'a> = (HashMap<u32, CopTac>, HashMap<u32, crate::ai::Overrides>, &'a mut Vec<String>);
+            let halted = squad_machine(&mut sq, &mut cx, arrow, any_safe, t_moving, fast, dt, &mut |sq: &mut Squad, cx: &mut Cx, dt| formation(sq, &mut cx.0, vehicles, dt), &mut |sq: &mut Squad, cx: &mut Cx| {
+                if !ed78 {
+                    return;
                 }
-            }
-            if !sq.halt {
-                if !sq.begun {
-                    // (CatchUp's enter, F-81752 / F-86874: slots -1, hysteresis 2, the formation at once, lock 5 s)
-                    sq = Squad { begun: true, hyst: 2.0, ..Default::default() };
-                    formation(&mut sq, &mut tacs, vehicles, 0.0);
-                    sq.lock = 5.0;
-                } else {
-                    // (F-47983 / F-41674: once the lock has run out the formation every tick, the lock again on a send)
-                    sq.lock -= dt;
-                    if sq.lock < 0.0 && formation(&mut sq, &mut tacs, vehicles, dt) {
-                        sq.lock = 5.0;
-                    }
-                }
-                // the flank swipes (only when F-42951 holds for cop A): the Arrow Trap's within 10 m, behind the
-                // target, A with it on its left 135 - 160 deg off its right axis (after REPORT_MANEUVER_CLOSE and
-                // 0.5 s), B with it on its right 20 - 45 deg; the Double Pursuit's within 15 m, 160 - 180 / 0 - 20 deg
-                let (near, a_win, b_win) = if arrow { (10.0, (135.0, 160.0), (20.0, 45.0)) } else { (15.0, (160.0, 180.0), (0.0, 20.0)) };
-                let geo = |u: Option<u32>| -> Option<(f32, bool, bool, bool, f32)> {
-                    let c = vehicles.cars.iter().find(|c| Some(c.uid) == u)?;
-                    let to = ppos - c.state.pos;
-                    Some((to.length(), c.state.forward().dot(to) > 0.0, c.state.right().dot(to) > 0.0, pvel.dot(c.state.vel) > 0.0, crate::aiv::ang3(c.state.right(), to).to_degrees()))
-                };
-                if ed78 {
-                    let mut a_in = false;
-                    if let Some((d, ahead, on_right, same_dir, bearing)) = geo(sq.slots[0]) {
-                        if d < near && same_dir && !(arrow && ahead) && !on_right && bearing > a_win.0 && bearing < a_win.1 {
-                            a_in = true;
-                            if !sq.latch {
-                                sq.latch = true;
-                                sq.swipe_t = 0.5;
-                                if !goons {
-                                    self.radio_cue.push("REPORT_MANEUVER_CLOSE".into());
-                                }
-                            } else if sq.swipe_t <= 0.0 {
-                                swipes.insert(sq.slots[0].unwrap_or_default(), crate::ai::Overrides { steer: Some(-1.0), brake: Some(1.0), ..Default::default() });
+                let mut a_in = false;
+                if let Some((d, ahead, on_right, same_dir, bearing)) = geo(sq.slots[0]) {
+                    if d < near && same_dir && !(arrow && ahead) && !on_right && bearing > a_win.0 && bearing < a_win.1 {
+                        a_in = true;
+                        if !sq.latch {
+                            sq.latch = true;
+                            sq.swipe_t = 0.5;
+                            if !goons {
+                                cx.2.push("REPORT_MANEUVER_CLOSE".into());
                             }
-                        }
-                    }
-                    if a_in {
-                        sq.swipe_t = (sq.swipe_t - dt).max(0.0);
-                    } else {
-                        sq.swipe_t = 0.0;
-                        sq.latch = false;
-                    }
-                    if let Some((d, ahead, on_right, same_dir, bearing)) = geo(sq.slots[1]) {
-                        if d < near && same_dir && !(arrow && ahead) && on_right && bearing > b_win.0 && bearing < b_win.1 {
-                            swipes.insert(sq.slots[1].unwrap_or_default(), crate::ai::Overrides { steer: Some(1.0), brake: Some(1.0), ..Default::default() });
-                        }
-                    }
-                    // (every cop head-on within fHeadOnBlockDist: handbrake, full lock to the target's side)
-                    for u in &members {
-                        if let (Some(tc), Some((d, _, on_right, _, _))) = (tacs.get(u), geo(Some(*u))) {
-                            if tc.head_on && d < t("fHeadOnBlockDist", 60.0) {
-                                let o = swipes.entry(*u).or_default();
-                                o.handbrake = Some(true);
-                                o.steer = Some(if on_right { 1.0 } else { -1.0 });
-                            }
+                        } else if sq.swipe_t <= 0.0 {
+                            cx.1.insert(sq.slots[0].unwrap_or_default(), crate::ai::Overrides { steer: Some(-1.0), brake: Some(1.0), ..Default::default() });
                         }
                     }
                 }
-                // (the Arrow Trap: a cop within fSafeDist of a target that has stopped -> Halt: those within it Stop,
-                // x 0.5 when closing)
-                if arrow && any_safe && !t_moving && squad_may_go(arrow, 0, 2) {
-                    log::info!("police: arrow trap halts");
-                    sq.halt = true;
-                    for c in vehicles.cars.iter_mut().filter(|c| pursuer(c) && c.state.pos.distance(ppos) < safe) {
-                        tacs.insert(c.uid, CopTac { st: Tac::Halt, ..Default::default() });
-                        if closing(c, 0.0) {
-                            c.state.vel *= 0.5;
+                if a_in {
+                    sq.swipe_t = (sq.swipe_t - dt).max(0.0);
+                } else {
+                    sq.swipe_t = 0.0;
+                    sq.latch = false;
+                }
+                if let Some((d, ahead, on_right, same_dir, bearing)) = geo(sq.slots[1]) {
+                    if d < near && same_dir && !(arrow && ahead) && on_right && bearing > b_win.0 && bearing < b_win.1 {
+                        cx.1.insert(sq.slots[1].unwrap_or_default(), crate::ai::Overrides { steer: Some(1.0), brake: Some(1.0), ..Default::default() });
+                    }
+                }
+                // (every cop head-on within fHeadOnBlockDist: handbrake, full lock to the target's side)
+                for u in &members {
+                    if let (Some(tc), Some((d, _, on_right, _, _))) = (cx.0.get(u), geo(Some(*u))) {
+                        if tc.head_on && d < head_on_dist {
+                            let o = cx.1.entry(*u).or_default();
+                            o.handbrake = Some(true);
+                            o.steer = Some(if on_right { 1.0 } else { -1.0 });
                         }
+                    }
+                }
+            });
+            let (mut tacs, s, _) = cx;
+            swipes = s;
+            self.radio_cue.extend(cues);
+            if halted {
+                // Halt (F-58305 / F-16041): the cops within fSafeDist Stop again, x 0.5 when closing (the per-cop timer +16
+                // and the brain's +568 / +688 test are not ported)
+                for c in vehicles.cars.iter_mut().filter(|c| pursuer(c) && c.state.pos.distance(ppos) < safe) {
+                    let tc = tacs.entry(c.uid).or_default();
+                    if tc.st != Tac::Halt {
+                        *tc = CopTac { st: Tac::Halt, ..Default::default() };
+                    }
+                    if closing(c, 0.0) {
+                        c.state.vel *= 0.5;
                     }
                 }
             }
@@ -3706,6 +3724,45 @@ mod tests {
         assert!(checked > 100, "{checked}");
     }
 
+    /// The Arrow Trap's CatchUp / Halt machine against the original's tactic object run offline (tools/squad_fsm_reference.py:
+    /// ctor, reset, begin, 300 updates of F-76774 in 30 cases of formation sends, a cop within, the target moving / fast;
+    /// there all 9,000 updates equal): every update where the state or the state asked for changed, and the last, with
+    /// CatchUp's lock bit for bit.
+    #[test]
+    fn squad_machine_matches_the_original() {
+        let reference = include_str!("testdata/squad_fsm_ref.txt");
+        let (mut checked, mut flags, mut k) = (0, Vec::new(), 0usize);
+        let mut sq = Squad::default();
+        for line in reference.lines() {
+            let v: Vec<&str> = line.split_whitespace().collect();
+            if v[0] == "CASE" {
+                flags = v[1].chars().map(|c| c.to_digit(16).unwrap()).collect();
+                sq = Squad::default();
+                k = 0;
+                continue;
+            }
+            let v = if v[0] == "END" { &v[1..] } else { &v[..] };
+            let want: usize = v[0].parse().unwrap();
+            while k <= want {
+                let f = |b: u32| flags[k] & b != 0;
+                let send = f(8);
+                squad_machine(&mut sq, &mut (), true, f(4), f(2), f(1), 1.0 / 60.0, &mut |sq: &mut Squad, _: &mut (), d: f32| {
+                    if send || d == 0.0 {
+                        sq.slots = [Some(0), Some(1), Some(2)];
+                    }
+                    send
+                }, &mut |_: &mut Squad, _: &mut ()| {});
+                k += 1;
+            }
+            let st = if sq.halt { 2 } else { 0 };
+            let got = (st, sq.next.map_or(-1, |h| if h { 2 } else { 0 }), if st == 0 { sq.lock.to_bits() } else { 0 });
+            let exp = (v[1].parse().unwrap(), v[2].parse().unwrap(), u32::from_str_radix(v[3], 16).unwrap());
+            assert_eq!(got, exp, "update {want}");
+            checked += 1;
+        }
+        assert!(checked > 100, "{checked}");
+    }
+
     /// F-83946: the sum over the offences, the pursuit's seconds, the flee fine, the career cut
     /// and the clamp, as the routine reads them.
     #[test]
@@ -4039,13 +4096,9 @@ fn block_traffic_cond(world: &World, vehicles: &Vehicles, p: &crate::vehicles::C
         let d2 = d.x * d.x + j.center.y * j.center.y + d.z * d.z;
         let reach = 0.5 * j.reach + 10.0;
         if d2 < reach * reach {
-            let (cur, timer) = match j.forced {
-                -2 => (None, 0.0),
-                f if f >= 0 => (Some(f as usize), 0.0),
-                _ => (Some(j.current as usize), j.timer),
-            };
-            // (green below 6.5, yellow to 8.5, red all round after)
-            let arm = cur.filter(|_| timer < 8.5).and_then(|c| j.arms.get(c));
+            // (green below 6.5, yellow to 8.5, red all round after; J +160 / +164 only, a forced arm or forced red through
+            // `step`)
+            let arm = Some(j.current as usize).filter(|_| j.timer < 8.5).and_then(|c| j.arms.get(c));
             let Some(arm) = arm else { return false };
             let to = Vec3::new(j.center.x - pos.x, j.center.y, j.center.z - pos.z);
             if arm.dot(to.normalize_or_zero()).clamp(-1.0, 1.0).acos() < 2.61799 {
