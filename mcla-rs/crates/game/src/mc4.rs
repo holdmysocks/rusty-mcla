@@ -16896,14 +16896,26 @@ mod tests {
         let mut run = vec![first];
         g.mc4_race_started(first);
         for _ in 0..2 {
-            let n = g.story_series_next().unwrap();
+            let n = g.series_next().unwrap();
             assert!(!run.contains(&n), "a race not run lately first");
             assert_eq!(n, *arr.iter().find(|i| !run.contains(i)).unwrap());
             run.push(n);
             g.mc4_race_started(n);
         }
         // (all three run: the one run longest ago - the series goes on until a racer has his wins)
-        assert_eq!(g.story_series_next(), Some(run[0]));
+        assert_eq!(g.series_next(), Some(run[0]));
+        // (a hangout's series: every race by the history, the first too - the recomp ran race 1, began race 2,
+        // and the next visit opened with race 3, `sr_results_race3`)
+        let hw = g.series_array(&g.career.event_races("hw_local_hangout1_series"));
+        assert_eq!(hw.len(), 5);
+        // (its first race, hw_ordered_mg_01, is in GH_04's series run above: in the history, so passed over)
+        assert!(run.contains(&hw[0]));
+        let fresh = |g: &crate::game::Game| hw.iter().copied().find(|&i| g.mc4.as_ref().unwrap().career.history_position(g.mc4_race_index(&g.race_defs[i].id).unwrap() as i64).is_none());
+        for _ in 0..2 {
+            let n = g.series_next_of(&hw);
+            assert!(n.is_some() && n == fresh(&g) && n != Some(hw[0]));
+            g.mc4_race_started(n.unwrap());
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

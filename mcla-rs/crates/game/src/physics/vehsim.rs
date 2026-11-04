@@ -229,6 +229,9 @@ pub struct WheelSim {
     pub bump_phase: f32,
     pub bump_height: f32,
     pub bump_width: f32,
+    /// how far the tyre sinks into what it stood on at its last update (+448: the material's
+    /// depth, F-84335; nothing in the air), which the next suspension target takes off (F-11915)
+    pub sink: f32,
     /// what the wheel stood on at its last update (+464; None in the air)
     pub ground: Option<u8>,
     /// wheel byte +529 (it had a contact record at its last update) and the record's frame as
@@ -3159,7 +3162,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                         Some(m) => [m[0], m[1], m[2]],
                         None => if steer == 0.0 { [body_rows[0], body_rows[1], body_rows[2]] } else { let a = Quat::from_axis_angle(up, -steer) * right; [a, up, a.cross(up).normalize_or(fwd)] },
                     };
-                    exact_x = suspension_target(rows, t.normal, t.depth, ws.comp);
+                    exact_x = suspension_target(rows, t.normal, t.depth, ws.comp, ws.sink);
                 }
                 touch.filter(|t| t.depth > -0.02).map(|t| super::collision::Hit { t: top + round + p.susp_rest + ram - ws.comp - t.depth / tilt(t.normal), point: t.point, normal: t.normal, surface: t.surface })
             });
@@ -3510,6 +3513,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 ws.bump = f32::from_bits(REPLAY_BUMP[i.min(3)].load(std::sync::atomic::Ordering::Relaxed));
             }
             ws.ground = Some(hit.surface as u8);
+            ws.sink = super::collision::surface_depth(hit.surface);
         }
         // (the contact this wheel has now, for the next tick's choice)
         ws.kept = if steep { None } else { Some((hit.normal, hit.normal.dot(hit.point), x + 0.007 - ws.comp)) };
@@ -3610,7 +3614,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             // of drag from that the tick it came down - 1,100 N if it starts from nothing.)
             let (disp_lat, disp_long) = if dbg_flag("MCLA_DBG_ZEROTYRE") { (0.0, 0.0) } else { (ws.disp_lat, ws.disp_long) };
             // (and its slide value stays what it was: only a wheel without any contact loses it)
-            *ws = WheelSim { comp, comp_rate: rate, bump: ws.bump, bump_phase: ws.bump_phase, bump_height: ws.bump_height, bump_width: ws.bump_width, ground: ws.ground, kept: ws.kept, camber: ws.camber, disp_lat, disp_long, slide: if dbg_flag("MCLA_DBG_OLDTYREIN") { 0.0 } else { ws.slide }, velocity_lat: if dbg_flag("MCLA_DBG_Y5") { 0.0 } else { v_lat }, ..Default::default() };
+            *ws = WheelSim { comp, comp_rate: rate, bump: ws.bump, bump_phase: ws.bump_phase, bump_height: ws.bump_height, bump_width: ws.bump_width, ground: ws.ground, kept: ws.kept, sink: ws.sink, camber: ws.camber, disp_lat, disp_long, slide: if dbg_flag("MCLA_DBG_OLDTYREIN") { 0.0 } else { ws.slide }, velocity_lat: if dbg_flag("MCLA_DBG_Y5") { 0.0 } else { v_lat }, ..Default::default() };
             if !dbg_flag("MCLA_DBG_ZEROTYRE") {
                 let k_lat = 2.0 * w_static / wt.disp_limit_lat.max(0.005);
                 let k_long = 2.0 * w_static / wt.disp_limit_long.max(0.005);
@@ -6476,9 +6480,9 @@ fn fnms32(a: f32, b: f32, c: f32) -> f32 {
 /// the contact record's normal and depth (F-50733); `comp` the compression before. The
 /// contact's own forward and sideways directions, how squarely the wheel stands on them
 /// (never under 0.75), the depth over that, less the 7 mm a wheel stands in what it touches.
-fn suspension_target(rows: [Vec3; 3], n: Vec3, depth: f32, comp: f32) -> Option<f32> {
+fn suspension_target(rows: [Vec3; 3], n: Vec3, depth: f32, comp: f32, sink: f32) -> Option<f32> {
     use super::gjk::{cross_as_original as cross, recip_as_original as recip};
-    let [w0, w1, w2] = rows;
+    let w0 = rows[0];
     let f = cross(w0, n);
     let l2 = fma32(f.z, f.z, fma32(f.x, f.x, f.y * f.y));
     if l2 < 0.0 {
@@ -6486,6 +6490,14 @@ fn suspension_target(rows: [Vec3; 3], n: Vec3, depth: f32, comp: f32) -> Option<
     }
     let forward = f * recip(l2.sqrt());
     let lateral = cross(n, forward);
+    Some(target_in_frame(rows, lateral, forward, n, depth, comp, sink))
+}
+
+/// F-11915 on the contact's frame (wheel +320 sideways, +352 forwards): the depth over how squarely the wheel stands
+/// on it, added to the compression, less the sink's share along the normal. Checked against the original's code run
+/// offline on 4,000 wheels (tools/suspension_target_reference.py, test `the_suspension_target_matches_the_original`).
+fn target_in_frame(rows: [Vec3; 3], lateral: Vec3, forward: Vec3, n: Vec3, depth: f32, comp: f32, sink: f32) -> f32 {
+    let [w0, w1, w2] = rows;
     let a = fma32(w0.x, lateral.x, fma32(w0.z, lateral.z, w0.y * lateral.y)).abs();
     let b = fma32(w2.x, forward.x, fma32(w2.z, forward.z, w2.y * forward.y)).abs();
     let up = fma32(n.x, w1.x, fma32(w1.z, n.z, w1.y * n.y));
@@ -6493,8 +6505,9 @@ fn suspension_target(rows: [Vec3; 3], n: Vec3, depth: f32, comp: f32) -> Option<
     let least = if least - 0.75 >= 0.0 { least } else { 0.75 };
     let tilt = if least - 1.0 >= 0.0 { 1.0 } else { least };
     let over = 1.0 / tilt;
-    // (wheel +448 and the global at 0x828DA450 are both nothing in every recording)
-    Some(fnms32(over, 0.0, fnms32(up, 0.0, fma32(depth, over, comp) - f32::from_bits(0x3be56042))))
+    // (less the share of the sink, wheel +448, along the contact's normal; the global the
+    // tilt's reciprocal goes with is nothing in every recording)
+    fnms32(over, 0.0, fnms32(up, sink, fma32(depth, over, comp) - f32::from_bits(0x3be56042)))
 }
 
 /// A car set down where a cine car event puts it, with a velocity (docs/reference/cutscenes/cine_car_event.md, snap):
@@ -7229,3 +7242,26 @@ mod original_normal_tests {
     }
 }
 
+#[cfg(test)]
+mod suspension_target_tests {
+    use super::*;
+
+    /// F-11915 against the original's code run offline (tools/suspension_target_reference.py): 4,000 wheels on level
+    /// contacts, sinks 0 - 0.2 (the materials' depths among them), the result to the bit.
+    #[test]
+    fn the_suspension_target_matches_the_original() {
+        let (mut n, mut bad) = (0, Vec::new());
+        for l in include_str!("../testdata/suspension_target_ref.txt").lines() {
+            let (a, b) = l.split_once(" -> ").unwrap();
+            let v: Vec<f32> = a.split(' ').map(|x| f32::from_bits(u32::from_str_radix(x, 16).unwrap())).collect();
+            let at = |k: usize| Vec3::new(v[k], v[k + 1], v[k + 2]);
+            let got = target_in_frame([at(0), at(3), at(6)], at(9), at(12), at(15), v[18], v[19], v[20]);
+            if got.to_bits() != u32::from_str_radix(b, 16).unwrap() {
+                bad.push(format!("{l} port {:08x} ({got})", got.to_bits()));
+            }
+            n += 1;
+        }
+        assert!(bad.is_empty(), "{} of {n} differ, first: {:?}", bad.len(), &bad[..bad.len().min(3)]);
+        assert_eq!(n, 4000);
+    }
+}
