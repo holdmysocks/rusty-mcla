@@ -1877,6 +1877,15 @@ impl Game {
                         }
                     }
                 }
+                // (the load-time clamp of a record's brake model, F-69072: an index past the wheel table's brakes becomes the stock brake)
+                let stock_file = std::fs::read_to_string(std::path::Path::new(&self.data_dir).join("tune/vehicle/stockBrakeIndex.txt")).unwrap_or_default();
+                for c in m.garage.iter_mut().filter(|c| !c.empty) {
+                    let b = crate::save_gaps::brake_load_clamp(c.visual.BrakeMdlIdx, BRAKES.len(), false, || crate::save_gaps::stock_brake_index(&stock_file, &c.TypeName));
+                    if b != c.visual.BrakeMdlIdx {
+                        c.visual.BrakeMdlIdx = b;
+                        c.visual.brake_model = BRAKES.get(b as usize).map(|s| s.to_string());
+                    }
+                }
                 self.mc4 = Some(m);
                 self.mc4_options_in();
                 self.mc4_career_in();

@@ -683,3 +683,63 @@ mod tests {
         assert_eq!(bad, 0, "{bad} of {n} operations differ");
     }
 }
+
+/// The stock-brake lookup of the load-time clamp (F-69072): `tune/vehicle/stockBrakeIndex.txt` is read as the game's tokenizer reads it, a
+/// token being one line (leading blanks skipped, trailing blanks and the line end trimmed, empty lines skipped); the first token equal to the
+/// record's type name (byte for byte) is followed by the index token, taken with C's atoi (a token that starts with neither a digit nor "-"
+/// gives 0); no match gives 0.
+pub fn stock_brake_index(text: &str, type_name: &str) -> i32 {
+    let mut tokens = text.split('\n').map(|l| l.trim_matches(|c: char| c == ' ' || c == '\t' || c == '\r')).filter(|l| !l.is_empty());
+    while let Some(t) = tokens.next() {
+        if t == type_name {
+            let n = tokens.next().unwrap_or("");
+            let first = n.chars().next();
+            if !matches!(first, Some(c) if c == '-' || c.is_ascii_digit()) {
+                return 0;
+            }
+            let end = n.char_indices().skip(1).find(|(_, c)| !c.is_ascii_digit()).map_or(n.len(), |(i, _)| i);
+            return n[..end].parse::<i32>().unwrap_or(0);
+        }
+    }
+    0
+}
+
+/// The load-time clamp of a garage record's BrakeMdlIdx (F-69072 and the brake half of F-75123, mode 0 of a record read from a save):
+/// an index past the wheel table's brake count (`brakes` of wheel_models.list: 15) is replaced by the stock brake of the record's vehicle
+/// (`stock_brake_index`, a negative result 0); an index inside the table is left alone. The reset mode (F-75123 with r4 = 1) gives 0.
+pub fn brake_load_clamp(brake: u8, count: usize, reset: bool, stock: impl FnOnce() -> i32) -> u8 {
+    if (brake as usize) < count {
+        return brake;
+    }
+    if reset {
+        return 0;
+    }
+    stock().max(0).min(255) as u8
+}
+
+#[cfg(test)]
+mod brake_clamp_tests {
+    use super::*;
+
+    /// Observed on the original's F-75123 run offline (work/d34-save-engine/brk.py, brk_out.txt): brake 0..14 untouched, 15..255 -> the lookup
+    /// (mode 0) or 0 (mode 1), over 2 x 10 x 256 cases.
+    #[test]
+    fn clamp_as_the_original() {
+        for b in 0..=255u8 {
+            let want0 = if b < 15 { b } else { 9 };
+            assert_eq!(brake_load_clamp(b, 15, false, || 9), want0);
+            assert_eq!(brake_load_clamp(b, 15, true, || 9), if b < 15 { b } else { 0 });
+        }
+        assert_eq!(brake_load_clamp(200, 15, false, || -1), 0);
+    }
+
+    #[test]
+    fn lookup_of_the_shipped_file() {
+        let t = "vp_am_vantage_07\r\n8\r\nvp_cry_300c_06\r\n9\r\nvp_mbz_s600_07\r\n9\r\nvp_mbz_s600_07_DUB\r\n11\r\n";
+        assert_eq!(stock_brake_index(t, "vp_am_vantage_07"), 8);
+        assert_eq!(stock_brake_index(t, "vp_mbz_s600_07"), 9);
+        assert_eq!(stock_brake_index(t, "vp_mbz_s600_07_DUB"), 11);
+        assert_eq!(stock_brake_index(t, "vp_mbz_s600_07_dub"), 0);
+        assert_eq!(stock_brake_index(t, "nothing"), 0);
+    }
+}
