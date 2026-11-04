@@ -969,6 +969,11 @@ pub struct Vehicles {
     pub driver_lanes: hashbrown::HashMap<u32, traffic::DriverLanes>,
     /// a scene or the vehicle pick: physics and AI are held
     pub frozen: bool,
+    /// a race is on as the ambient manager's byte +0x64251 has it (F-86550): the current race (F-27863), not a payback
+    /// (race type 0 - 4, race +3096), not over (+3773, `$IsRaceFinish`) - set by the game each frame
+    pub race_event: bool,
+    /// the navsys junction ahead of the player's lane (F-94775 + F-95137, the tracker +5888), as `step_signals` found it
+    pub player_junction: Option<usize>,
     /// the race's grid hold (N-VP-1): seconds to GO. The cars simulate, held by their brakes - the
     /// player's chassis brake forced and his front wheels locked (`CarInput::hold`), the computer
     /// drivers at their pre-race antics (`AiDriver::grid_input`) - so revving and burnouts happen as

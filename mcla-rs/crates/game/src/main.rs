@@ -5304,6 +5304,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             } else if self.vehicles.player().is_some_and(|c| c.engine_off) {
                 player_input.throttle = 0.0;
             }
+            // (the ambient manager's race byte +0x64251, F-86550: a current race, not a payback - race type 5 - and not over)
+            self.vehicles.race_event = self.game.race.as_ref().is_some_and(|r| r.kind != game::RaceKind::Payback)
+                && !(self.game.mode == Mode::Results || self.game.race_end_t.is_some());
             crate::ticktimes::mark(crate::ticktimes::S::Vehicles);
             self.vehicles.update(&world, player_input, sim_dt);
             crate::ticktimes::mark(crate::ticktimes::S::Other);
