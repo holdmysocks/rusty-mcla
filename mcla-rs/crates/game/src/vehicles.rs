@@ -385,7 +385,7 @@ pub struct CarInstance {
     pub amb_slot: [i32; 2],
     /// ... and the lights in them, eased (F-99357; all 0 at the start, F-19499)
     pub amb_light: AmbSlotLights,
-    /// the draw object's drawn-steer ring (traffic.rs `SteerRing`), kept by the pooled instance
+    /// the draw object's drawn-steer ring (traffic.rs `SteerRing`; emptied when the car takes its instance, F-46127)
     pub amb_steer: traffic::SteerRing,
     /// the draw object's updates since the car took it (+32: 0 at the activate hook F-25927 -> F-65833, + 1 after each
     /// render update up to 3, F-14577; traffic.rs `parked_render_runs`)
@@ -405,9 +405,9 @@ pub struct CarInstance {
 pub struct AmbPool {
     built: bool,
     /// the free list of each pool; None = an instance never used (ids -1, F-19499)
-    free: [std::collections::VecDeque<Option<([i32; 2], AmbSlotLights, traffic::SteerRing)>>; 2],
+    free: [std::collections::VecDeque<Option<([i32; 2], AmbSlotLights)>>; 2],
     /// the cars out, in the order they were taken: uid, pool, what the instance holds
-    live: Vec<(u32, usize, [i32; 2], AmbSlotLights, traffic::SteerRing)>,
+    live: Vec<(u32, usize, [i32; 2], AmbSlotLights)>,
 }
 
 impl AmbPool {
@@ -418,18 +418,18 @@ impl AmbPool {
         }
     }
     /// The gone go back to the tail, then the new take the head. Returns what each new car inherits.
-    fn step(&mut self, now: &[(u32, usize)]) -> Vec<(u32, Option<([i32; 2], AmbSlotLights, traffic::SteerRing)>)> {
+    fn step(&mut self, now: &[(u32, usize)]) -> Vec<(u32, Option<([i32; 2], AmbSlotLights)>)> {
         self.build();
         let mut back = Vec::new();
         self.live.retain(|l| {
             let keep = now.iter().any(|n| n.0 == l.0);
             if !keep {
-                back.push((l.1, l.2, l.3, l.4));
+                back.push((l.1, l.2, l.3));
             }
             keep
         });
-        for (g, ids, light, ring) in back {
-            self.free[g].push_back(Some((ids, light, ring)));
+        for (g, ids, light) in back {
+            self.free[g].push_back(Some((ids, light)));
         }
         let mut got = Vec::new();
         for &(uid, g) in now {
@@ -438,9 +438,9 @@ impl AmbPool {
             }
             // (an empty pool: the spawner counts its cars, so the port should not get here; a fresh instance then)
             let old = self.free[g].pop_front().flatten();
-            let (ids, light, ring) = old.unwrap_or(([-1, -1], AmbSlotLights::default(), Default::default()));
-            got.push((uid, old.map(|_| (ids, light, ring))));
-            self.live.push((uid, g, ids, light, ring));
+            let (ids, light) = old.unwrap_or(([-1, -1], AmbSlotLights::default()));
+            got.push((uid, old));
+            self.live.push((uid, g, ids, light));
         }
         got
     }
@@ -1646,55 +1646,6 @@ pub fn car_params_mods(car: &CarAsset, base: &CarParams) -> Option<CarParams> {
     p.grip_rear *= 1.12;
     p.finalize();
     Some(p)
-}
-
-/// A set-up car's wheel `i` as F-47822 draws it, from the sim's last update: the turn (rows axle, up, way of the posed
-/// matrix) and how far the pose moved the wheel's place. None for a bike, a car the sim does not run or without its
-/// `.r50`, and with MCLA_WHEEL_POSE_OLD.
-fn drawn_wheel_pose(c: &CarInstance, i: usize) -> Option<(Quat, Vec3)> {
-    static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *OLD.get_or_init(|| std::env::var_os("MCLA_WHEEL_POSE_OLD").is_some()) || c.model.bike {
-        return None;
-    }
-    let tunes = c.model.simtunes.as_ref()?;
-    let vs = c.state.veh.as_ref()?;
-    let world = vs.wheels[i].world?;
-    let p = c.params();
-    let vt = p.veh.as_ref()?;
-    let st = &c.state;
-    let body = vs.body_now.unwrap_or_else(|| [st.rot * Vec3::X, st.rot * Vec3::Y, st.rot * Vec3::Z, st.pos]);
-    let m = crate::wheel_pose::local(&body, &world);
-    let wide = c.setup.or(c.model.fit).is_some_and(|f| f.wide) as usize;
-    let car = crate::wheel_pose::CarTerms {
-        bike: false,
-        bike_turn: 0.0,
-        ceiling: [tunes.fender_ceiling[0][wide], tunes.fender_ceiling[1][wide]],
-        steer_limit: tunes.tire_steer[0],
-        steer_offset: tunes.tire_steer[1],
-    };
-    let front = i < 2;
-    let wt = if front { &vt.t.wheel_front } else { &vt.t.wheel_back };
-    let hyd = if c.input.hyd & crate::physics::car::HYD_FITTED != 0 { vs.hyd.height[i] } else { 0.0 };
-    let (rest, offset) = match vs.rest_exact {
-        Some(r) => (Vec3::new(r[i][0], r[i][1], r[i][2]), r[i][4]),
-        None => (Vec3::new(p.wheel_pos[i].x, p.wheel_pos[i].y - p.susp_rest, p.wheel_pos[i].z), hyd + wt.suspension_offset),
-    };
-    let w = crate::wheel_pose::WheelTerms {
-        rest,
-        axis: vt.t.steer_axis.filter(|_| front).map_or(Vec3::Y, Vec3::from),
-        radius: wt.radius,
-        width: vt.tyre_width[!front as usize],
-        steering_limit: wt.steering_limit,
-        camber_limit: wt.camber_limit,
-        lean: crate::physics::exact::sign(p.wheel_pos[i].x) * vs.wheels[i].camber,
-        comp: vs.wheels[i].comp,
-        travel_extent: wt.travel_extent,
-        travel_limit: wt.travel_limit,
-        offset,
-    };
-    let posed = crate::wheel_pose::pose(m, &car, &w, false);
-    let rot = Quat::from_mat3(&glam::Mat3::from_cols(posed[0], posed[1], posed[2])).normalize();
-    Some((rot, posed[3] - m[3]))
 }
 
 impl CarInstance {
@@ -4754,20 +4705,12 @@ if keep || c.state.pos.distance(center) < 450.0 {
             }
             for (i, b) in c.wheel_bindings.iter().enumerate() {
                 let left = i % 2 == 0;
-                let mut steer = Quat::from_rotation_y(-pose.steer[i]);
-                // (F-47822: a car's wheel is drawn from its matrix among the car's parts, kept under the fender, its
-                // turn cut by TireSteerLimit and shifted by TireSteerOffset - see wheel_pose.rs; the shift is added to
-                // the drawn hub. A bike's two wheels: not yet. MCLA_WHEEL_POSE_OLD=1: the steer alone, as before)
-                let mut shift = Vec3::ZERO;
-                if let Some((rot, d)) = drawn_wheel_pose(c, i) {
-                    steer = rot;
-                    shift = d;
-                }
+                let steer = Quat::from_rotation_y(-pose.steer[i]);
                 // the rim models face -x (hub cap at x = -0.24): left wheels as modelled, right
                 // wheels turned around; rolling forward (-z) is a negative rotation about x
                 let spin = Quat::from_rotation_x(if left { -pose.spin[i] } else { pose.spin[i] });
                 let flip = if left { Quat::IDENTITY } else { Quat::from_rotation_y(std::f32::consts::PI) };
-                let mut local = pose.hubs[i] + shift;
+                let mut local = pose.hubs[i];
                 if c.model.bike {
                     // Bike physical wheels and their visual mirrors share the center line.
                     let lo = pose.hubs[i ^ 1];
@@ -5050,8 +4993,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// level x the kind's factor of the executable's two tables (0x827E7688 other cars: brake 2,
     /// tail 2, head 2, reversing 0.528, third brake 0.346; 0x827E76D8 the player's: brake 0.3,
     /// tail 1.004, head 2, the others 1).
-    /// (place, facing, colour, level, the lamp's id for its light trail: the car's uid and the lamp's number)
-    pub fn halo_lamps(&self, night: f32, cam: Vec3) -> Vec<(Vec3, Vec3, [f32; 3], f32, u64)> {
+    pub fn halo_lamps(&self, night: f32, cam: Vec3) -> Vec<(Vec3, Vec3, [f32; 3], f32)> {
         let mut out = Vec::new();
         let old_rule = std::env::var("MCLA_GLOW_OLD").is_ok();
         for (ci, c) in self.cars.iter().enumerate() {
@@ -5112,15 +5054,14 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 }
             };
             let has_bone = |id: u8| !old_rule && c.model.glow_bones.iter().any(|(k, _, _)| *k == id);
-            let lamp = |n: usize| ((c.uid as u64) << 12) | n as u64;
-            for (n, (id, local, facing)) in c.model.glow_bones.iter().enumerate() {
+            for (id, local, facing) in &c.model.glow_bones {
                 let k = level(*id);
                 if k <= 0.0 || old_rule {
                     continue;
                 }
-                out.push((pose.pos + pose.rot * *local, pose.rot * *facing, colour(*id, dflt(*id)), k, lamp(n)));
+                out.push((pose.pos + pose.rot * *local, pose.rot * *facing, colour(*id, dflt(*id)), k));
             }
-            for (n, (id, local)) in c.model.lamps.iter().enumerate() {
+            for (id, local) in &c.model.lamps {
                 if has_bone(*id) || !matches!(*id, 0 | 1 | 3 | 6 | 12) {
                     continue;
                 }
@@ -5132,11 +5073,11 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // (MCLA_GLOW_OLD: the R8's four brake glows from the recorded table, as until 2026-10-15)
                 if old_rule && *id == 0 && c.model.name == "vp_aud_r8_08" {
                     let sx = if local.x < 0.0 { -1.0 } else { 1.0 };
-                    out.push((pose.pos + pose.rot * Vec3::new(0.701 * sx, 0.747, 1.803), out_dir, colour(*id, dflt(*id)), k, lamp(2048 + 2 * n)));
-                    out.push((pose.pos + pose.rot * Vec3::new(0.526 * sx, 0.773, 1.902), out_dir, colour(*id, dflt(*id)), k, lamp(2049 + 2 * n)));
+                    out.push((pose.pos + pose.rot * Vec3::new(0.701 * sx, 0.747, 1.803), out_dir, colour(*id, dflt(*id)), k));
+                    out.push((pose.pos + pose.rot * Vec3::new(0.526 * sx, 0.773, 1.902), out_dir, colour(*id, dflt(*id)), k));
                     continue;
                 }
-                out.push((pose.pos + pose.rot * *local, out_dir, colour(*id, dflt(*id)), k, lamp(1024 + n)));
+                out.push((pose.pos + pose.rot * *local, out_dir, colour(*id, dflt(*id)), k));
             }
         }
         out
@@ -6597,10 +6538,12 @@ impl Vehicles {
             .collect();
         for (uid, old) in self.amb_pool.step(&now) {
             if let Some(c) = self.cars.iter_mut().find(|c| c.uid == uid) {
+                // (the activate hook F-25927 -> the draw object's F-46127: the update count, the drawn steer's ring count
+                // and next and the wheel angles go to 0)
                 c.amb_frames = 0;
-                if let Some((ids, light, ring)) = old {
+                c.amb_steer = traffic::SteerRing::default();
+                if let Some((ids, light)) = old {
                     c.amb_slot = ids;
-                    c.amb_steer = ring;
                     c.amb_light = AmbSlotLights { seen: false, drawn_before: false, ..light };
                 }
             }
@@ -6613,7 +6556,6 @@ impl Vehicles {
             if let Some(c) = self.cars.iter().find(|c| c.uid == l.0) {
                 l.2 = c.amb_slot;
                 l.3 = c.amb_light;
-                l.4 = c.amb_steer;
             }
         }
     }

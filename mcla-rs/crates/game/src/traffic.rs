@@ -231,8 +231,8 @@ pub fn parked_steer(u1: f32, u2: f32) -> f32 {
 }
 
 /// The drawn steer's ring (F-17429, the car's draw object +88: count, next, sum, 8 values). The draw objects are made
-/// once with the pool's render instances (F-62509 zeroes it, title only), so a new car carries on its instance's ring
-/// (vehicles.rs `AmbPool`).
+/// once with the pool's render instances (F-62509), and a car taking one empties it (count and next 0, F-46127 from the
+/// activate hook F-25927; vehicles.rs `amb_pool_step`): its first sample starts the ring.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct SteerRing {
     n: i32,
