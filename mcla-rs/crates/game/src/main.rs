@@ -5008,6 +5008,7 @@ impl App {
                     self.game.eob = Some(t);
                     self.game.place_splash = self.game.place_splash.map(|(p, left)| (p, left + 2.2));
                 }
+                self.game.rewards_ask();
                 self.game.career.event(career::Ev::Rep(self.game.rep));
                 // (the results screen stamps a win when the first row starts with "YOU")
                 let mut res = res;
@@ -7213,6 +7214,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if self.game.wager_paid {
                     self.game.career.event(career::Ev::Money(self.game.last_reward.0));
                 }
+                // (the REWARDS page gives the missions' pending rewards ahead of the race's reputation,
+                // which the port has paid already: `rewards_ask`)
+                self.game.rewards_ask();
                 self.game.career.event(career::Ev::Rep(self.game.rep));
                 self.game.last_results = res;
                 self.game.mode = Mode::Results;

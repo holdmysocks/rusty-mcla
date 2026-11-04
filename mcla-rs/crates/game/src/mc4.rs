@@ -16762,6 +16762,9 @@ mod tests {
             assert_eq!((g.career.state_id_of(k), g.career.log_order().contains(&k)), (3, true), "{call}");
             g.career.event(Ev::Race { district: "Hollywood", place: 1, hookman: true, class: "TUNER", race, beat_goal: false });
             g.career.core_race_end(call, 1, true, rep);
+            // (the REWARDS page gives the pending list - RACE_GH_02's hidden REP_ON_HW_STRIP,
+            // F-73125 - ahead of the race's reputation: `Game::rewards_ask`)
+            g.career.give_pending();
             g.rep = rep;
             g.career.event(Ev::Rep(rep));
         }

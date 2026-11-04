@@ -758,6 +758,10 @@ pub struct Game {
     /// an event's results are up and MISSION RESULTS has not been filled yet: it is filled when
     /// its turn comes, after REWARDS (`Career::take_mission_updates`, F-66221)
     pub mu_pending: bool,
+    /// the results flow has still to ask the REWARDS getter (F-22948) and give the pending list
+    pub rp_pending: bool,
+    /// the REWARDS page was hidden: its pending list to be emptied (F-72397)
+    pub rp_hide: bool,
     /// the race's end in slow motion (EndOfRaceSequence of RaceOver.sch: PerspectiveForm_SetSlowMotion
     /// on form 60, 0.2 s of real time after the end-of-race speech) and the wait before it
     pub race_slow: crate::mc4::SlowMo,
@@ -1450,6 +1454,8 @@ impl Game {
             pink_over: None,
             mission_results: Vec::new(),
             mu_pending: false,
+            rp_pending: false,
+            rp_hide: false,
             race_slow: crate::mc4::SlowMo::default(),
             race_slow_wait: None,
             hangout_slow: crate::mc4::SlowMo::default(),
@@ -3073,9 +3079,30 @@ impl Game {
 
     /// Pay out a finished mission (delivery / payback).
     /// `delivered`: the damage (0..1) of the car handed over, for a delivery.
+    /// The results flow asks the REWARDS getter once (F-22948: a pending reward with bHidden
+    /// clear shows the page) and, when REWARDS shows, its init gives the pending list (F-40930 ->
+    /// F-73125). Done before the race's reputation reaches the career: in the original the
+    /// race's experience is itself a pending reward behind the missions' (the new game's script
+    /// order: the freeway hookmen of REP_ON_HW_STRIP before the 260 threshold's TelephoneChallenge).
+    pub fn rewards_ask(&mut self) {
+        if !std::mem::take(&mut self.rp_pending) {
+            return;
+        }
+        if self.career.pending_shown() {
+            self.reward_panel = true;
+        }
+        if self.reward_panel {
+            log::info!("rewards: {} pending given", self.career.pending.len());
+            self.career.give_pending();
+        } else {
+            self.career.flush_done_wait();
+        }
+    }
+
     pub fn award_mission(&mut self, success: bool, delivered: Option<f32>) {
         // (the event's results: MISSION RESULTS has its turn after REWARDS)
         self.mu_pending = true;
+        self.rp_pending = true;
         if !success {
             // (a payback that is lost starts again from its first leg)
             if delivered.is_none() {
@@ -3102,6 +3129,7 @@ impl Game {
     pub fn award_race(&mut self, place: usize, field: usize) {
         // (the event's results: MISSION RESULTS has its turn after REWARDS)
         self.mu_pending = true;
+        self.rp_pending = true;
         // (x 0.6 for a race from the ARCADE menu, x 0.35 for a network game's: `mc4_race_factor`)
         let (mut money, mut rep) = crate::rewards::race_reward(self.rep, self.player_perf(), self.race_diff, place, field, self.mc4_race_factor());
         // (a race of the race editor gives nothing: EditorRace.sco sets the results' word
@@ -8599,6 +8627,14 @@ impl Game {
                 let row_h = 40.0 * sc;
                 // (MISSION RESULTS' turn, after REWARDS: the missions updated since the form was
                 // last up - F-44151 brings it when there is one, F-66221 fills it)
+                // (REWARDS shows when a pending reward is not hidden - F-22948 -, and its page gives
+                // the whole pending list - F-40930 / F-73125, emptied by its hide F-77851)
+                if std::mem::take(&mut self.rp_hide) {
+                    self.career.pending_hidden();
+                }
+                if self.flash_menu.is_some() {
+                    self.rewards_ask();
+                }
                 if self.mu_pending && self.flash_menu.is_some() && self.series_ask.is_none() && !self.series_first && !self.reward_panel && !self.mc4_tt_panel_first() {
                     self.mu_pending = false;
                     let v = self.career.take_mission_updates();
@@ -8933,6 +8969,8 @@ impl Game {
                         } else {
                             self.career.reward_page = 0;
                             self.reward_panel = false;
+                            // (the page's hide empties the pending list: F-72397)
+                            self.rp_hide = true;
                         }
                     }
                     (false, false, false, false)

@@ -52,6 +52,8 @@ struct Mission {
     prereq: Vec<Requirement>,
     objectives: Vec<Requirement>,
     rewards: Vec<Reward>,
+    /// each reward's bHidden (+8) and bGiveImmediately (+9)
+    reward_flags: Vec<(bool, bool)>,
     /// place in the mission lists (`0x68d5d432`, then `0x3b47e155`): the save's index
     index: i32,
     /// a South Central mission (the save's add-on block)
@@ -335,6 +337,10 @@ pub struct Career {
     /// each mission's "updated" byte (+690: F-30196 sets it, F-92621 clears it; not saved)
     /// and what it is found from (`scan_updates`)
     updated: std::cell::RefCell<Vec<bool>>,
+    /// the reward manager's pending list (F-64223): (mission, reward) not given yet
+    pub pending: Vec<(usize, usize)>,
+    /// completions held back in the journal behind their pending rewards
+    done_wait: Vec<usize>,
     upd: Vec<UpdSnap>,
 }
 
@@ -491,12 +497,15 @@ impl Career {
             let tail = &t[after..];
             let rew = tail.find("<aRewards>").map(|a| &tail[a..tail.find("</aRewards>").unwrap_or(tail.len())]).unwrap_or("");
             let mut rewards = Vec::new();
+            let mut reward_flags = Vec::new();
             for r in rew.split("<Item type=\"mcReward").skip(1) {
+                let flags = (val(r, "bHidden") == Some("true"), val(r, "bGiveImmediately") == Some("true"));
                 match r.split('"').next().unwrap_or("") {
                     "Mission" => rewards.push(Reward::Mission { id: tag(r, "szMissionId").unwrap_or("").to_ascii_uppercase(), state: tag(r, "szTransitionState").unwrap_or("").to_ascii_uppercase().replace('_', "") }),
                     "Car" => rewards.push(Reward::Car(tag(r, "szCarName").unwrap_or("").to_ascii_lowercase())),
-                    _ => {}
+                    _ => continue,
                 }
+                reward_flags.push(flags);
             }
             c.index.insert(id.clone(), c.missions.len());
             c.missions.push(Mission {
@@ -507,6 +516,7 @@ impl Career {
                 prereq: requirements(section(&t, "aPrerequisites")),
                 objectives: requirements(section(&t, "aObjectives")),
                 rewards,
+                reward_flags,
                 index: if south { list_sc.iter().position(|n| *n == stem).map_or(-1, |k| (list_main.len() + k) as i32) } else { list_main.iter().position(|n| *n == stem).map_or(-1, |k| k as i32) },
                 addon: south,
                 auto_start: val(&t, "bAutoStart") == Some("true"),
@@ -770,6 +780,8 @@ impl Career {
         self.journal_complete = true;
         self.ext_init();
         self.upd.clear();
+        self.pending.clear();
+        self.done_wait.clear();
         if let Some(&i) = self.index.get("RACE_GH_06") {
             self.activate(i);
         }
@@ -804,6 +816,8 @@ impl Career {
         self.journal_complete = false;
         self.ext_init();
         self.upd.clear();
+        self.pending.clear();
+        self.done_wait.clear();
         self.set_done_order(&[]);
         if !self.state.iter().any(|s| s.stage != Stage::Locked) {
             self.new_game();
@@ -835,6 +849,50 @@ impl Career {
             self.enter_checking(i);
         }
         log::info!("career: mission {} started", self.missions[i].id);
+    }
+
+    /// AddReward F-64223: a reward already pending is ignored; bGiveImmediately gives it now,
+    /// else it waits in the list for the REWARDS page (`give_pending`).
+    fn add_reward(&mut self, i: usize, k: usize, m: &Mission) {
+        if reward_add(&mut self.pending, (i, k), m.reward_flags.get(k).map_or(true, |f| f.1)) {
+            self.give(&m.rewards[k]);
+        }
+    }
+
+    /// The REWARDS getter F-22948: a pending reward with bHidden clear makes the page show.
+    pub fn pending_shown(&self) -> bool {
+        reward_shown(&self.pending, |&(i, k)| self.missions[i].reward_flags[k].0)
+    }
+
+    /// The REWARDS page's init gives every pending reward, the count read again each step
+    /// (F-40930 -> F-73125); the list stays until the page hides (`pending_hidden`), so a reward
+    /// added again meanwhile is ignored.
+    pub fn give_pending(&mut self) {
+        let mut n = 0;
+        while n < self.pending.len() {
+            let (i, k) = self.pending[n];
+            let r = self.missions[i].rewards[k].clone();
+            self.give(&r);
+            n += 1;
+        }
+        // (a mission handed to CHECKING_PREREQUISITES steps on at once when they are met, as in `event`)
+        self.activate_met();
+        self.flush_done_wait();
+        self.scan_updates();
+    }
+
+    /// The completions held behind their pending rewards go to the journal (the rewards given,
+    /// or no REWARDS page this time).
+    pub fn flush_done_wait(&mut self) {
+        for i in std::mem::take(&mut self.done_wait) {
+            self.journal.push((false, i));
+        }
+    }
+
+    /// The REWARDS page's hide empties the list (F-72397 -> F-77851): what was added after its
+    /// init is dropped ungiven.
+    pub fn pending_hidden(&mut self) {
+        self.pending.clear();
     }
 
     fn give(&mut self, r: &Reward) {
@@ -1024,8 +1082,8 @@ impl Career {
                     }
                 }
                 log::info!("career: mission {} complete", m.id);
-                for r in &m.rewards {
-                    self.give(r);
+                for k in 0..m.rewards.len() {
+                    self.add_reward(i, k, &m);
                 }
                 // what the event itself pays: prize cars from the reward tables, the rival's
                 // car for pink slips, prize money (amounts are ours: the original computes
@@ -1061,29 +1119,16 @@ impl Career {
                 }
             }
         }
-        // missions whose prerequisites have just been met
-        loop {
-            let mut changed = false;
-            for i in 0..self.missions.len() {
-                let waiting = match self.state[i].stage {
-                    Stage::Armed => true,
-                    // nobody hands this one out: it follows from its prerequisites alone
-                    Stage::Locked => !self.rewarded.contains(&i) && self.missions[i].prereq.iter().any(|r| r.conds.iter().any(|c| matches!(c, Cond::Mission(_)))),
-                    _ => false,
-                };
-                if waiting && self.prereqs_met(i) {
-                    self.activate(i);
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
+        self.activate_met();
         // (step 20: completions after what they handed out; Experience baselines take the
         // reputation in hand - not after a race or its money, whose reputation follows)
         for i in std::mem::take(&mut self.done_now) {
-            self.journal.push((false, i));
+            // (a completion whose rewards wait in the pending list follows them: `give_pending`)
+            if self.pending.iter().any(|&(j, _)| j == i) {
+                self.done_wait.push(i);
+            } else {
+                self.journal.push((false, i));
+            }
         }
         if !matches!(ev, Ev::Race { .. } | Ev::Money(_)) {
             self.resolve_pending();
@@ -2301,6 +2346,28 @@ impl Career {
     }
 
     /// Experience baselines armed by a race take the reputation that race paid.
+    /// Missions whose prerequisites have just been met step on.
+    fn activate_met(&mut self) {
+        loop {
+            let mut changed = false;
+            for i in 0..self.missions.len() {
+                let waiting = match self.state[i].stage {
+                    Stage::Armed => true,
+                    // nobody hands this one out: it follows from its prerequisites alone
+                    Stage::Locked => !self.rewarded.contains(&i) && self.missions[i].prereq.iter().any(|r| r.conds.iter().any(|c| matches!(c, Cond::Mission(_)))),
+                    _ => false,
+                };
+                if waiting && self.prereqs_met(i) {
+                    self.activate(i);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
     fn resolve_pending(&mut self) {
         let rep = self.rep;
         for e in self.ext.iter_mut() {
@@ -2807,6 +2874,24 @@ impl Career {
     }
 }
 
+/// AddReward F-64223 on the pending list: a reward already in it is ignored; with
+/// bGiveImmediately it is to be given now (true), else it is appended.
+pub fn reward_add<T: PartialEq>(list: &mut Vec<T>, r: T, give_now: bool) -> bool {
+    if list.contains(&r) {
+        return false;
+    }
+    if give_now {
+        return true;
+    }
+    list.push(r);
+    false
+}
+
+/// The REWARDS getter F-22948: any pending reward whose bHidden is clear.
+pub fn reward_shown<T>(list: &[T], hidden: impl Fn(&T) -> bool) -> bool {
+    list.iter().any(|r| !hidden(r))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2816,6 +2901,48 @@ mod tests {
     /// manager of random missions, and the form's hide F-75010 (only the missions with bShouldUpdate and the byte lose it,
     /// with their requirements' +140 and conditions' +84); a requirement's listener F-64780 and the mission's F-30196 for every
     /// combination of message, condition, +116, bAllowUpdate, the mission's handle and membership.
+    /// The pending reward list against the original's AddReward F-64223, getter F-22948, give-all
+    /// F-73125 and clear F-77851 run offline (`tools/ui_reward_list_reference.py`).
+    #[test]
+    fn reward_list_matches_the_original() {
+        let text = include_str!("testdata/ui_reward_list_ref.txt");
+        let (mut cases, mut differ) = (0, 0);
+        for line in text.lines() {
+            let (input, want) = line.split_once(" -> ").unwrap();
+            let (head, ops) = input.split_once(" ; ").unwrap();
+            let h: Vec<u32> = head.split_whitespace().skip(1).map(|v| u32::from_str_radix(v, 16).unwrap()).collect();
+            let flags: Vec<(bool, bool)> = (0..h[0] as usize).map(|k| (h[1 + 2 * k] != 0, h[2 + 2 * k] != 0)).collect();
+            let mut list: Vec<usize> = Vec::new();
+            let mut got = Vec::new();
+            for op in ops.split_whitespace() {
+                match op.as_bytes()[0] {
+                    b'a' => {
+                        let k = usize::from_str_radix(&op[1..], 16).unwrap();
+                        got.push(if reward_add(&mut list, k, flags[k].1) { format!("{k:x}") } else { ".".into() });
+                    }
+                    b'g' => got.push(if reward_shown(&list, |&k| flags[k].0) { "3".into() } else { "2".into() }),
+                    b'p' => got.push(if list.is_empty() { ".".into() } else { list.iter().map(|k| format!("{k:x}")).collect() }),
+                    _ => {
+                        list.clear();
+                        got.push("-".into());
+                    }
+                }
+            }
+            let mut out = got.join(" ");
+            out.push_str(" |");
+            for k in &list {
+                out.push_str(&format!(" {k:x}"));
+            }
+            cases += 1;
+            if out.trim() != want.trim() {
+                differ += 1;
+                eprintln!("{input}: want {want} got {out}");
+            }
+        }
+        eprintln!("reward list: {cases} cases, {differ} differ");
+        assert!(cases >= 600 && differ == 0);
+    }
+
     #[test]
     fn mission_updates_match_the_original() {
         let (mut n, mut bad) = ([0usize; 2], 0usize);
