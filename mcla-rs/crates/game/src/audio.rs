@@ -14,7 +14,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const RATE: u32 = 44100;
+/// The mix rate: the original's 48 kHz (its voice filters, F-59608, and 256-sample blocks are designed for it)
+const RATE: u32 = 48000;
 const TAB: char = '\u{9}';
 
 /// Decoded PCM: mono, or interleaved stereo (folded streams).
@@ -277,10 +278,8 @@ impl SourceFilter {
 
     fn design(hp: bool, hz: u32, wk: f32) -> [f32; 5] {
         use crate::physics::exact::{guest_cos, guest_sin};
-        // (the original's cutoffs, up to 23900 Hz, stay under its 48 kHz Nyquist; the port's 44.1 kHz mix holds them at
-        // 22000 Hz, as a cutoff past its own Nyquist gives an unstable section that turns the whole mix to NaN - issue #40;
-        // closer to 22050 the f32 cosine rounds to -1 and puts a pole on the unit circle)
-        let hz = if wk == W_K { hz.min(22000) } else { hz };
+        // (the cutoffs, up to 23900 Hz, stay under the 48 kHz mix's Nyquist; at 44.1 kHz a cutoff past 22050 Hz gave an
+        // unstable section that turned the whole mix to NaN - issue #40)
         let w = hz as f32 * wk;
         let c = guest_cos(w as f64) as f32;
         let s = guest_sin(w as f64) as f32;
@@ -567,7 +566,7 @@ struct Output {
 
 /// Open the default output device, else any other output device that opens (#13: a disabled or vanished default,
 /// a format the default will not take); on each device its default format first, then the others it supports
-/// (`open_device`). rodio converts the mix's 44.1 kHz stereo to the format. `verbose`: log every device tried.
+/// (`open_device`). rodio converts the mix's 48 kHz stereo to the format. `verbose`: log every device tried.
 fn open_output(verbose: bool) -> Option<Output> {
     use rodio::cpal::traits::{DeviceTrait, HostTrait};
     // (test hook MCLA_AUDIO_FAIL_OPENS=<n>: the first n opens fail, as with no usable device)
@@ -1636,12 +1635,14 @@ impl Audio {
 
 #[cfg(test)]
 mod tests {
-    /// Issue #40: every cutoff the mixer can send (0..23900 Hz) gives a stable section at the port's 44.1 kHz
-    /// (|a2| < 1, |a1| < 1 + a2), so a slewed LPF near the top no longer turns the mix to NaN
+    /// Issue #40: every cutoff the mixer can send (0..23900 Hz) gives a stable section at the mix rate
+    /// (|a2| < 1, |a1| < 1 + a2), so a slewed LPF near the top no longer turns the mix to NaN; and the mix rate's
+    /// 2 pi / rate is the original's 48 kHz word
     #[test]
     fn source_filter_stable_at_the_mix_rate() {
         use super::{SourceFilter, W_K};
-        for hz in (20..=23900).step_by(7).chain(22040..22100) {
+        assert_eq!(W_K.to_bits(), 0x3909_421F);
+        for hz in (20..=23900).step_by(7).chain(22040..22100).chain(23850..=23900) {
             let c = SourceFilter::design(false, hz, W_K);
             assert!(c.iter().all(|v| v.is_finite()) && c[4].abs() < 1.0 && c[3].abs() < 1.0 + c[4], "{hz} Hz: {c:?}");
         }
