@@ -3894,8 +3894,10 @@ pub fn station_reset(vehicles: &mut Vehicles, world: &World, n: u32) -> Option<u
 pub fn scene_frame(vehicles: &mut Vehicles, world: &World, zones: &[(Vec3, f32)]) -> Option<glam::Mat4> {
     let c = vehicles.player_mut()?;
     // (CineScript_FindClosestSceneSafezone: the place and heading replace the car's - Racer_InitializeResetPosition
-    // and ResetWithDamageIntact put the car there upright; none found keeps the car's own)
-    let (pos, f) = match closest_scene_safezone(world, zones, c.state.pos) {
+    // and ResetWithDamageIntact put the car there upright; none found keeps the frame the script filled: the car's
+    // place and Racer_GetAngleY's heading, CopPullover.sco 0x129 / CopArrest.sco 0x95d)
+    let own = (c.state.pos, crate::brain::racer_angle_y(Some([c.state.rot * Vec3::X, c.state.rot * Vec3::Y, c.state.rot * Vec3::Z])));
+    let (pos, f) = match closest_scene_safezone(world, zones, c.state.pos).or(Some(own)) {
         Some((p, h)) => {
             let h = h.to_radians();
             log::info!("police: scene place {:?} heading {:.1} (car at {:?})", p, h.to_degrees(), c.state.pos);

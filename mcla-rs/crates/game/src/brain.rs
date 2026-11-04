@@ -1001,6 +1001,18 @@ pub fn racer_angle_deg(a: Option<Vec3>, b: Option<Vec3>) -> f32 {
     crate::physics::exact::guest_atan2(v.x as f64, v.z as f64) as f32 * f32::from_bits(0x4265_2ee0)
 }
 
+/// Racer_GetAngleY (F-95363): the heading in degrees of a racer's car matrix (rows a, b, c): row c made unit by the vector
+/// unit as the matrix normalise does (vmsum3fp, vrsqrtefp with infinity to 0, one Newton step), the guest atan2(c.x, c.z)
+/// rounded to single, x 57.29578; 0 without a car. The car faces (-sin h, 0, -cos h).
+pub fn racer_angle_y(rows: Option<[Vec3; 3]>) -> f32 {
+    let Some([_, _, c]) = rows else { return 0.0 };
+    let d = crate::physics::exact::dot3(c, c);
+    let e = 1.0 / d.sqrt();
+    let e = if e == f32::INFINITY { 0.0 } else { e };
+    let c = c * ((1.0 - d * (e * e)) * (0.5 * e) + e);
+    crate::physics::exact::guest_atan2(c.x as f64, c.z as f64) as f32 * f32::from_bits(0x4265_2ee0)
+}
+
 /// One frame of car `i`'s brain (vehicles.rs): its view of the car, the obstacles, the update, and
 /// what it does to the car besides the pedals (nitrous, the off-mesh drop). `to_go`: seconds to GO
 /// while the grid holds the racers.
@@ -1223,6 +1235,27 @@ mod tests {
             }
         }
         assert!(b.len() / 44 >= 6000 && bad == 0, "{bad} differ");
+    }
+
+    /// Racer_GetAngleY against the original's code run offline (`work/racerai/angy`: 8,000 car matrices - any yaw, small and
+    /// large pitch / roll, rows scaled and skewed a little, both matrix sources, missing racer / car), word for word.
+    #[test]
+    fn racer_angle_y_is_the_originals() {
+        let Ok(b) = std::fs::read("D:/MCLA/work/racerai/angy/cases.bin") else { return };
+        let w = |r: &[u8], i: usize| u32::from_le_bytes(r[4 * i..4 * i + 4].try_into().unwrap());
+        let mut bad = 0;
+        for r in b.chunks_exact(56) {
+            let v = |i: usize| Vec3::new(f32::from_bits(w(r, 3 * i)), f32::from_bits(w(r, 3 * i + 1)), f32::from_bits(w(r, 3 * i + 2)));
+            let rows = (w(r, 12) == 0).then(|| [v(0), v(1), v(2)]);
+            let got = racer_angle_y(rows).to_bits();
+            if got != w(r, 13) {
+                if bad < 5 {
+                    println!("rows {rows:?}: port {got:08x} original {:08x}", w(r, 13));
+                }
+                bad += 1;
+            }
+        }
+        assert!(b.len() / 56 >= 8000 && bad == 0, "{bad} differ");
     }
 
     /// PaybackLegCore's START CHASE AI (0x986..0xb8e): goals radius 25 in the order given, no nitro, looping, 32 m/s cap,
