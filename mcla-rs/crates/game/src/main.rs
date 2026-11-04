@@ -45,10 +45,8 @@ mod althk;
 mod flags;
 mod fixed_step;
 mod vehicle_pose;
-mod wheel_pose;
 mod video;
 mod cine;
-mod cinecast;
 mod cinecar;
 mod cinedriver;
 mod rider_eject;
@@ -136,7 +134,6 @@ mod rivals;
 mod rubber;
 mod rumble;
 mod aiv;
-mod tcp_rail;
 mod brain;
 mod brainpath;
 mod brainturn;
@@ -3580,7 +3577,6 @@ impl App {
         self.opening_tick(dt, world.streaming());
         // ---- hangouts: the people there, pulling in, leaving ----
         self.cine.tick(dt);
-        self.cine.racer_sets = self.vehicles.cars.iter().filter(|c| !c.driver_set.is_empty()).map(|c| c.driver_set.clone()).collect();
         // an in-game scene's audio (core_rolling_prototype): its stream prepared by the name its script gives
         // (F-27055), played as the scene plays (F-16075 -> F-58551: the speech and the police radio stop, flags 0x3
         // on every one of them), stopped with the scene (F-19749)
@@ -9376,6 +9372,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         self.vehicles.interior_glass = pov;
         // (the player's driver, F-60712 -> F-45131 -> F-14542 / F-56050: in the POV view the set's cockpit view
         // model (arms and hands), none at all while looking back from it; in the bumper view none either)
+        // (the rider machine's CockpitCamActive, F-28290's view test: the camera manager's drive view +80 == 1, the cockpit)
+        self.drivers.ckpt_view = self.view_mode == 3 && self.cine.playing.is_none();
         self.drivers.cockpit = if pov { if self.look_back { 2 } else { 1 } } else if self.view_mode == 4 && self.cine.playing.is_none() && !self.crash_cam.active() { 2 } else { 0 };
         // (m_NFLFade for the night fill light the traffic cars add to their ambient - fillmap.rs)
         fillmap::set_fade(self.sky_now().tod.map_or(0.0, |t| t.nfl));

@@ -90,6 +90,108 @@ struct Rig {
     hit_hard: Option<f32>,
     /// a rider's eject clips by their name after the bike's prefix ("drv_eject_l", rider_eject.rs)
     ejects: HashMap<String, Clip>,
+    /// a rider's clips of the bike pose machine's riding states (`BikeClips`)
+    bike: Option<BikeClips>,
+}
+
+/// The clips of mcMotorcycleAnimMachine's start / cruise / stopped idle states (start action F-88016, cruise enter F-27733,
+/// stopped idle enter F-73617): the low and fast lean sweeps, the stopped-idle sweep and their cockpit-camera
+/// (`_ckpt`) variants, and the start's idle.
+struct BikeClips {
+    idle_low: Option<Clip>,
+    low: Clip,
+    fst: Clip,
+    low_ck: Option<Clip>,
+    fst_ck: Option<Clip>,
+    stp: Option<Clip>,
+    stp_ck: Option<Clip>,
+}
+
+/// A rider's state in the bike pose machine (the riding part of its graph, F-71745): which state, the cockpit-camera flag of the
+/// last frame (its change is the edge the enters and the self-transitions test), the crossfade of the last state change and the
+/// pose it fades from.
+#[derive(Default)]
+struct Ride {
+    /// 0 "start here", 1 "cruise", 2 "stopped idle"
+    state: u8,
+    ck: bool,
+    fade: f32,
+    rate: f32,
+    /// the old tree under the crossfade: the start action's looping `drv_idle_low` (its time) or the frozen pose
+    from_idle: Option<f32>,
+    from: Vec<(Quat, Vec3)>,
+    last: Vec<(Quat, Vec3)>,
+}
+
+/// The cruise state's steering to sweep phase (F-25740): slope 0.75 within |x| <= 0.5, 0.25 outside.
+fn ride_remap(x: f32) -> f32 {
+    if x.abs() <= 0.5 {
+        (x * 1.5 + 1.0) * 0.5
+    } else {
+        let side = if x >= 0.0 { 1.0 } else { -1.0 };
+        (side * crate::physics::exact::fma(x.abs() - 0.5, 0.5, 0.75) + 1.0) * 0.5
+    }
+}
+
+/// One frame of the bike pose machine's riding states for a rider (`Ride`), the pose into `out`:
+/// - "start here" goes to "cruise" at once, its action playing `drv_idle_low` looped with no blend (F-88016); the
+///   cruise enter then fades from it.
+/// - "cruise" (enter F-27733, update F-61324): the low and fast lean sweeps (`_ckpt` with the cockpit camera) as
+///   a pair, the fast one's weight clamp((speed - 17.8816) x 0.2236936, 0, 1), both frozen at the remapped steering phase; entered
+///   over 0.45 s, 0.01 s when the cockpit flag changed this frame. Leaves for "stopped idle" when speed <= 0.15 mph (tune +48 x
+///   0.44704, F-49190), else re-enters itself on a cockpit flag change.
+/// - "stopped idle" (enter F-73617, update F-63745): `drv_idle_stp_sweep` (`_ckpt`) frozen at phase
+///   clamp(x, -0.5, 0.5) + 0.5; entered over 0.35 s (0.01 s on a cockpit flag change). Leaves for "cruise" when
+///   speed > 0.15 mph + 0.5 (the graph's condition on StoppedRollingBandCutoff, F-78470), else re-enters itself on a change.
+/// A state change fades linearly (rate 1 / blend time, the first frame at rate x dt) from the old tree, which stays frozen
+/// (the start's idle keeps looping). The machine's other states (tuck, wheelie, endo, burnouts, nos, shift, reverse, impacts,
+/// fidget, gesture switch) and the pan-sweep overlay are not ported (docs/PEOPLE_TRAFFIC.md).
+#[allow(clippy::too_many_arguments)]
+fn ride_pose<'a>(r: &mut Ride, b: &'a BikeClips, bones: &[crate::skin::Bone], ck: bool, speed: f32, x: f32, time: f32, dt: f32, out: &mut Vec<(Quat, Vec3)>, tmp: &mut Vec<(Quat, Vec3)>) {
+    const STOPPED: f32 = 0.15 * 0.44704;
+    let edge = ck != r.ck && r.state != 0;
+    r.ck = ck;
+    let enter = |r: &mut Ride, state: u8, blend: f32, from_idle: Option<f32>| {
+        r.state = state;
+        r.fade = 0.0;
+        r.rate = 1.0 / if edge { 0.01 } else { blend };
+        r.from_idle = from_idle;
+        r.from = r.last.clone();
+    };
+    match r.state {
+        0 => enter(r, 1, 0.45, Some(time)),
+        1 if speed <= STOPPED => enter(r, 2, 0.35, None),
+        1 if edge => enter(r, 1, 0.45, None),
+        2 if speed > STOPPED + 0.5 => enter(r, 1, 0.45, None),
+        2 if edge => enter(r, 2, 0.35, None),
+        _ => {}
+    }
+    r.fade = (r.fade + r.rate * dt).min(1.0);
+    let pick = |c: &'a Option<Clip>, d: &'a Clip| if ck { c.as_ref().unwrap_or(d) } else { d };
+    if r.state == 1 {
+        let (low, fst) = (pick(&b.low_ck, &b.low), pick(&b.fst_ck, &b.fst));
+        let ph = ride_remap(x);
+        let w = ((speed - 17.8816) * 0.223_693_64).max(0.0).min(1.0);
+        low.local(bones, ph * low.last_frame(), out);
+        fst.local(bones, ph * fst.last_frame(), tmp);
+        blend_pose(out, tmp, w);
+    } else {
+        let stp = if ck { b.stp_ck.as_ref().or(b.stp.as_ref()) } else { b.stp.as_ref() };
+        let c = stp.unwrap_or(&b.low);
+        let ph = x.clamp(-0.5, 0.5) + 0.5;
+        c.local(bones, ph * c.last_frame(), out);
+    }
+    if r.fade < 1.0 {
+        match (r.from_idle, b.idle_low.as_ref()) {
+            (Some(t0), Some(idle)) => idle.local(bones, idle.frame(time - t0, true), tmp),
+            _ => tmp.clone_from(&r.from),
+        }
+        if tmp.len() == out.len() {
+            blend_pose(tmp, out, r.fade);
+            out.clone_from(tmp);
+        }
+    }
+    r.last.clone_from(out);
 }
 
 /// A rider off his seat (GitHub #39, rider_eject.rs, bike_rider_ragdoll.md 2 / 5).
@@ -195,6 +297,9 @@ pub struct Drivers {
     /// the player's driver as the view draws him (the draw mode, F-60712): 0 the full model, 1 the set's
     /// cockpit view model (F-56050), 2 none (looking back from the POV view, the bumper view - F-14542)
     pub cockpit: u8,
+    /// the human's drive view is the cockpit one (the camera manager's view +80 == 1): the rider machine's CockpitCamActive
+    pub ckpt_view: bool,
+    rides: HashMap<usize, Ride>,
     time: f32,
     frame: u32,
     acting: HashMap<usize, Acting>,
@@ -511,7 +616,19 @@ pub fn load(&mut self, data_dir: &str) {
                         ejects.insert(n.to_string(), c);
                     }
                 }
-                Some(Rig { steer, idle_stop: clip(&["drv_idle_stp"]), reverse: clip(&["drv_rev"]), model, gestures, hit_hard, ejects })
+                let bike = match (clip(&["drv_low_lean_sweep"]), clip(&["drv_fst_lean_sweep"])) {
+                    (Some(low), Some(fst)) => Some(BikeClips {
+                        idle_low: clip(&["drv_idle_low"]),
+                        low,
+                        fst,
+                        low_ck: clip(&["drv_low_lean_sweep_ckpt"]),
+                        fst_ck: clip(&["drv_fst_lean_sweep_ckpt"]),
+                        stp: clip(&["drv_idle_stp_sweep"]),
+                        stp_ck: clip(&["drv_idle_stp_sweep_ckpt"]),
+                    }),
+                    _ => None,
+                };
+                Some(Rig { steer, idle_stop: clip(&["drv_idle_stp"]), reverse: clip(&["drv_rev"]), model, gestures, hit_hard, ejects, bike })
             })();
             if rig.is_none() {
                 log::warn!("drivers: no animations for {}", car);
@@ -617,6 +734,10 @@ pub fn load(&mut self, data_dir: &str) {
                 continue;
             }
             let frame = self.frame;
+            if self.poses.get(&s.id).map_or(true, |q| q.seen + 1 != frame) {
+                // (a rider not drawn last frame starts over in "start here")
+                self.rides.remove(&s.id);
+            }
             let p = self.poses.entry(s.id).or_default();
             if p.seen + 1 != frame {
                 *p = Pose { steer: s.steer, ..Default::default() };
@@ -628,6 +749,10 @@ pub fn load(&mut self, data_dir: &str) {
             p.reverse += ((if s.reversing && s.speed.abs() > 0.3 { 1.0 } else { 0.0 }) - p.reverse) * (dt * 4.0).min(1.0);
             let p = *p;
             let Some(Some(rig)) = self.rigs.get(&(car_key(s.car), si)) else { continue };
+            if let (true, Some(b)) = (s.bike, rig.bike.as_ref()) {
+                let ride = self.rides.entry(s.id).or_default();
+                ride_pose(ride, b, &rig.model.bones, s.player && self.ckpt_view, s.speed, p.steer.clamp(-1.0, 1.0), self.time, dt, &mut local, &mut other);
+            } else {
             // the sweep runs from full left lock to full right lock
             let last = rig.steer.last_frame();
             rig.steer.local(&rig.model.bones, (0.5 + 0.5 * p.steer.clamp(-1.0, 1.0)) * last, &mut local);
@@ -642,6 +767,7 @@ pub fn load(&mut self, data_dir: &str) {
                     rev.local(&rig.model.bones, rev.last_frame(), &mut other);
                     blend_pose(&mut local, &other, p.reverse);
                 }
+            }
             }
             // a scene's gesture over the driving pose, and the jaw flap over that
             if let Some(a) = self.acting.get_mut(&s.id) {
@@ -892,5 +1018,51 @@ mod cabin_tests {
         // (the set-up `vp_aud_r8_08.xcc`'s 0x3f078788 = 135 / 255)
         let c = Cabin::of(Mat4::IDENTITY, [[0.0; 3]; 2], [[f32::from_bits(0x3f07_8788), f32::from_bits(0x3f07_8788), f32::from_bits(0x3f07_8788), 1.0], [0.0; 4]], 1.0, false);
         assert!(near(c.gauge_col, [0.52941072; 3], 6e-8), "{c:?}");
+    }
+}
+
+#[cfg(test)]
+mod ride_tests {
+    use super::*;
+
+    /// F-25740 run offline on 3,012 steering values (work/cameras2/bikegraph/remap_ref.py; the bits as decimal words): equal.
+    #[test]
+    fn ride_remap_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/bike_ride_remap_ref.txt").lines() {
+            let w: Vec<u32> = line.split(' ').map(|s| s.parse().unwrap()).collect();
+            assert_eq!(ride_remap(f32::from_bits(w[0])).to_bits(), w[1], "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3012);
+    }
+
+    /// The riding states' transitions (F-71745): start -> cruise at once; cruise -> stopped idle at <= 0.15 mph; back to
+    /// cruise only above 0.15 mph + 0.5 m/s; a cockpit flag change re-enters the state with the 0.01 s blend.
+    #[test]
+    fn ride_states() {
+        let mk = || {
+            let bones = vec![crate::skin::Bone { parent: None, pos: Vec3::ZERO, rot: Quat::IDENTITY, bind: Vec3::ZERO }];
+            let anim = Arc::new(mcla_formats::rage::anim::Animation::default());
+            let ids = vec![0u16];
+            let c = || Clip::bind(&anim, &ids, false, false);
+            (bones, BikeClips { idle_low: None, low: c(), fst: c(), low_ck: None, fst_ck: None, stp: None, stp_ck: None })
+        };
+        let (bones, b) = mk();
+        let (mut out, mut tmp) = (Vec::new(), Vec::new());
+        let mut r = Ride::default();
+        let mut step = |r: &mut Ride, ck: bool, v: f32| ride_pose(r, &b, &bones, ck, v, 0.0, 0.0, 1.0 / 30.0, &mut out, &mut tmp);
+        step(&mut r, false, 0.0);
+        assert_eq!((r.state, r.rate), (1, 1.0 / 0.45));
+        step(&mut r, false, 0.0);
+        assert_eq!((r.state, r.rate), (2, 1.0 / 0.35));
+        step(&mut r, false, 0.5);
+        assert_eq!(r.state, 2);
+        step(&mut r, false, 0.6);
+        assert_eq!((r.state, r.rate), (1, 1.0 / 0.45));
+        step(&mut r, true, 10.0);
+        assert_eq!((r.state, r.rate), (1, 1.0 / 0.01));
+        step(&mut r, true, 0.05);
+        assert_eq!((r.state, r.rate), (2, 1.0 / 0.35));
     }
 }
