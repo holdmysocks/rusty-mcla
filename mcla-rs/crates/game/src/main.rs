@@ -45,9 +45,9 @@ mod althk;
 mod flags;
 mod fixed_step;
 mod vehicle_pose;
-mod wheel_pose;
 mod video;
 mod cine;
+mod cinecast;
 mod cinecar;
 mod cinedriver;
 mod rider_eject;
@@ -135,7 +135,6 @@ mod rivals;
 mod rubber;
 mod rumble;
 mod aiv;
-mod tcp_rail;
 mod brain;
 mod brainpath;
 mod brainturn;
@@ -3579,6 +3578,7 @@ impl App {
         self.opening_tick(dt, world.streaming());
         // ---- hangouts: the people there, pulling in, leaving ----
         self.cine.tick(dt);
+        self.cine.racer_sets = self.vehicles.cars.iter().filter(|c| !c.driver_set.is_empty()).map(|c| c.driver_set.clone()).collect();
         // an in-game scene's audio (core_rolling_prototype): its stream prepared by the name its script gives
         // (F-27055), played as the scene plays (F-16075 -> F-58551: the speech and the police radio stop, flags 0x3
         // on every one of them), stopped with the scene (F-19749)
