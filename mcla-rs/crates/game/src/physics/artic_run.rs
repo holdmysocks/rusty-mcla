@@ -83,7 +83,26 @@ pub struct Outside {
     pub parts: Vec<i32>,
     /// the bike's rows in the island (they take places in its row order): None, the rider's island holds only his own
     pub bike: Option<BikeRows>,
+    /// another vehicle the rider's collide met this tick ([`RiderRagdoll::collide_other`]): its rows' places in the
+    /// island's order; None, no other vehicle
+    pub other: Option<OtherRows>,
 }
+
+/// Another vehicle's share of the rider's island (an ambient car: ov.0 724 - 735).
+#[derive(Clone, Debug, Default)]
+pub struct OtherRows {
+    /// the level indices of the vehicle and the rider (the pair's order: the lower is A). ov.0 had the car below the
+    /// rider (0x5745 / 0x5754); the order in general follows the level's free index list - the port keeps ov.0's
+    pub level: i64,
+    pub rider_level: i64,
+    /// the rider x vehicle island: the vehicle is body 0 of the solve and its rows with the rider are rows of it
+    /// ([`RiderRagdoll::with_car`]); false: the rows only join and count in the callbacks' runs (an island the port does
+    /// not solve together - the bike in it too, or the vehicle in other pairs of the loose world)
+    pub shared: bool,
+}
+
+/// A vehicle's level as the rider's runs (F-37566 / F-15373) see it: never the own bike's.
+const OTHER_RUN_LEVEL: u16 = 0xfffe;
 
 /// The bike's share of the rider's island as its row order needs it.
 #[derive(Clone, Debug, Default)]
@@ -132,6 +151,8 @@ pub struct RiderIsland {
     pub rows: Vec<IslRow>,
     /// his pair with the bike holds contacts (the disabled ones too): the bike is in his island
     pub with_bike: bool,
+    /// his pair with another vehicle holds contacts: that vehicle is in his island
+    pub with_other: bool,
 }
 
 /// Where a row of the rider's island comes from.
@@ -141,6 +162,7 @@ enum Src {
     Own,
     BikeCity,
     BikeRider,
+    OtherRider,
 }
 
 /// One pair of an island for its row order: the two objects (the level index; None: the city, which joins
@@ -295,6 +317,10 @@ pub struct RiderRagdoll {
     /// collide against the bike this tick)
     pub veh: RiderVeh,
     pub veh_now: Vec<[Vec3; 4]>,
+    /// the rider's sub-manifolds with another vehicle (an ambient car) and its part matrix of this tick's collide
+    /// (empty: none met this tick)
+    pub other: RiderVeh,
+    pub other_now: Vec<[Vec3; 4]>,
     /// rd+169 / +170 / +172
     pub gate: ContactGate,
     /// rd+164: the level index of the bike he came off (-1: none)
@@ -344,6 +370,8 @@ impl RiderRagdoll {
             own: RiderSelf::default(),
             veh: RiderVeh::default(),
             veh_now: Vec::new(),
+            other: RiderVeh::default(),
+            other_now: Vec::new(),
             gate,
             own_bike: -1,
             rd16,
@@ -479,6 +507,51 @@ impl RiderRagdoll {
         self.veh_now = std::iter::once(veh.now).chain(veh.wheels.iter().map(|w| w.map_or(veh.now, |w| w.now))).collect();
     }
 
+    /// 2c. The collide against another vehicle (an ambient car, its bound one polyhedron at the instance): the same
+    /// composite-against-composite collide as the bike's (F-82759, [`RiderVeh::collide`]: the same collision object at
+    /// manifold +1252, 0xBCEA58C0 in ov.0) with that vehicle's hull as part 0 and its collider's +32 as its last.
+    /// Checked word for word on ov.0 720 - 735 (`artic_collide::tests::car_contacts_match_recording`). None: no
+    /// vehicle near this tick - the pair is let go.
+    pub fn collide_other(&mut self, veh: Option<(&VehSide, bool)>) {
+        let Some((veh, rider_is_a)) = veh else {
+            self.other = RiderVeh::default();
+            self.other_now.clear();
+            return;
+        };
+        let (now, _) = self.part_matrices();
+        let (_, last) = world_parts(&self.parts, &rows3(&self.rd16), &rows3(&mat_at(&self.body.raw_collider, 32)));
+        self.other.rider_is_a = rider_is_a;
+        self.other.collide(&self.shapes, &now, &last, veh);
+        self.other_now = vec![veh.now];
+    }
+
+    /// The rest of a tick with the rider and another vehicle in one island (no bike, no other row): the vehicle body 0
+    /// (rigid), the rider the jointed body, every enabled row in the island's order, 8 sweeps and one elasticity factor
+    /// (F-68442 / F-36821, as the bike's shared island), the vehicle's share from the island's apply (into its
+    /// accumulators +368 / +384), the post-solve passes, the push solve with the vehicle's push as it stands (its +400 /
+    /// +416) and the post-push. Checked on ov.0 724 - 735 (`artic_island::tests::
+    /// rider_car_island_velocity_solve_is_the_originals`: 11 ticks word for word, 730 open). Answers the vehicle's
+    /// impulse and turning and its push.
+    pub fn with_car(&mut self, mut isl: RiderIsland, car: solver::Body, car_push: solver::Pushed, dt: f32, out: &mut TickOut) -> (Vec3, Vec3, solver::Pushed) {
+        out.island = true;
+        out.contacts = isl.city_rows;
+        let inv_dt = 1.0 / dt;
+        let bodies = [car];
+        let body = std::slice::from_mut(&mut self.body);
+        let mut solved = solver::island_solve_jointed(&bodies, &isl.touches, body, (0, 0.0), dt, inv_dt);
+        solver::island_apply_jointed(&solved, body);
+        solver::island_impulses(&solved, &mut isl.touches);
+        let given = solver::island_apply(&bodies, &isl.touches);
+        let (fall, motion) = self.after_solve(&isl, dt);
+        out.body_fall = fall;
+        out.motion = motion;
+        let body = std::slice::from_mut(&mut self.body);
+        let mut pushes = [car_push];
+        solver::island_push_jointed(&bodies, &mut isl.touches, &mut solved, body, dt, inv_dt, &mut pushes);
+        self.finish(&isl, dt);
+        (given[0].0, given[0].1, pushes[0])
+    }
+
     /// 3. The update's share of the rider before the solve: the refresh and the materials, the island's row lists
     /// ([`island_rows`]), the own-bike filter over his two runs (F-37566, F-97446), the hinges' contact bytes
     /// (F-18964) and his rows in the list's order.
@@ -497,6 +570,22 @@ impl RiderRagdoll {
             self.veh.refresh(&now, &self.veh_now);
             self.veh.materials(&self.shapes, self.ty.f320);
         }
+        // (another vehicle: its pair joins as the bike's does; its materials the rider's F-22759 - an ambient car's own
+        // callbacks leave a partner of class 11 alone: its pre-solve F-65962 disables contacts with classes 4 / 5 only
+        // (F-44543) and casts the partner to its own type (F-45219), its post-solve F-13089 casts it to mcCarInstance)
+        let other = outside.other.as_ref().filter(|_| !self.other_now.is_empty());
+        let other_joins = other.is_some() && self.other.manifolds.iter().any(|m| !m.slots.is_empty());
+        if other.is_some() {
+            self.other.refresh(&now, &self.other_now);
+            self.other.materials(&self.shapes, self.ty.f320);
+        }
+        let mut orows: Vec<(usize, usize)> = Vec::new();
+        for (m, mf) in self.other.manifolds.iter().enumerate().filter(|_| other.is_some()) {
+            for k in 0..mf.slots.len() {
+                orows.push((m, k));
+            }
+        }
+        let mut other_rider: Vec<bool> = orows.iter().map(|&(m, k)| self.other.manifolds[m].slots[k].enabled).collect();
         let mut own: Vec<(usize, usize)> = Vec::new();
         for (m, mf) in self.own.manifolds.iter().enumerate() {
             for k in 0..mf.slots.len() {
@@ -521,9 +610,11 @@ impl RiderRagdoll {
         // object's level (the object is A), then the others by (lower, higher) level (the lower is A). The sort's keys
         // are the instances' addresses: the city's below the bike's below the rider's in ro.0, rm.0, rh.0 and rf.0.
         let bike = outside.bike.as_ref();
-        let rider = bike.map_or(0, |b| b.rider_level);
-        let (city_key, bike_key, rider_key) = (0i64, 1i64, 2i64);
+        let rider = bike.map(|b| b.rider_level).or(other.map(|o| o.rider_level)).unwrap_or(0);
+        // (the other vehicle's instance below the rider's too: ov.0's car at 0xA931B220, the rider at 0xBF5322D0)
+        let (city_key, bike_key, rider_key, other_key) = (0i64, 1i64, 2i64, 1i64);
         let shared = bike.map_or(false, |b| b.shared);
+        let other_shared = other.map_or(false, |o| o.shared);
         let mut pairs: Vec<(WalkPair, Src)> = Vec::new();
         if city_joins {
             pairs.push((WalkPair { a: Some(rider), b: None, key_a: rider_key, key_b: city_key, rows: slots.len() }, Src::City));
@@ -538,6 +629,10 @@ impl RiderRagdoll {
                 let (lo, hi) = if b.level < rider { ((b.level, bike_key), (rider, rider_key)) } else { ((rider, rider_key), (b.level, bike_key)) };
                 pairs.push((WalkPair { a: Some(lo.0), b: Some(hi.0), key_a: lo.1, key_b: hi.1, rows: bike_rider.len() }, Src::BikeRider));
             }
+        }
+        if let (Some(o), true) = (other, other_joins) {
+            let (lo, hi) = if o.level < rider { ((o.level, other_key), (rider, rider_key)) } else { ((rider, rider_key), (o.level, other_key)) };
+            pairs.push((WalkPair { a: Some(lo.0), b: Some(hi.0), key_a: lo.1, key_b: hi.1, rows: other_rider.len() }, Src::OtherRider));
         }
         if own_joins {
             pairs.push((WalkPair { a: Some(rider), b: Some(rider), key_a: rider_key, key_b: rider_key, rows: own.len() }, Src::Own));
@@ -577,13 +672,14 @@ impl RiderRagdoll {
             if mine.is_empty() {
                 continue;
             }
-            let others: Vec<u16> = mine.iter().map(|x| level_of(&walk[x.0], as_a) as u16).collect();
+            let others: Vec<u16> = mine.iter().map(|x| if srcs[x.0] == Src::OtherRider { OTHER_RUN_LEVEL } else { level_of(&walk[x.0], as_a) as u16 }).collect();
             let mut enabled: Vec<bool> = mine
                 .iter()
                 .map(|&(p, r)| match srcs[p] {
                     Src::City => self.city.manifolds[slots[r].0].slots[slots[r].1].enabled,
                     Src::Own => self.own.manifolds[own[r].0].slots[own[r].1].enabled,
                     Src::BikeRider => bike_rider[r],
+                    Src::OtherRider => other_rider[r],
                     Src::BikeCity => true,
                 })
                 .collect();
@@ -592,6 +688,10 @@ impl RiderRagdoll {
                     let (m, k) = vrows[r];
                     self.veh.manifolds[m].slots[k].touch.elasticity = self.ty.f320;
                 }
+                if srcs[p] == Src::OtherRider {
+                    let (m, k) = orows[r];
+                    self.other.manifolds[m].slots[k].touch.elasticity = self.ty.f320;
+                }
             }
             self.gate.own_bike_run(self.own_bike, &others, &mut enabled);
             for (&(p, r), e) in mine.iter().zip(enabled) {
@@ -599,6 +699,7 @@ impl RiderRagdoll {
                     Src::City => self.city.manifolds[slots[r].0].slots[slots[r].1].enabled = e,
                     Src::Own => self.own.manifolds[own[r].0].slots[own[r].1].enabled = e,
                     Src::BikeRider => bike_rider[r] = e,
+                    Src::OtherRider => other_rider[r] = e,
                     Src::BikeCity => {}
                 }
             }
@@ -609,8 +710,12 @@ impl RiderRagdoll {
                 self.veh.manifolds[m].slots[k].enabled = e;
             }
         }
+        for (&(m, k), &e) in orows.iter().zip(other_rider.iter()) {
+            self.other.manifolds[m].slots[k].enabled = e;
+        }
         let with_bike = srcs.contains(&Src::BikeRider);
-        let mut isl = RiderIsland { touches: Vec::new(), used: Vec::new(), runs: rider_runs, island, city_rows: 0, rows: Vec::new(), with_bike };
+        let with_other = srcs.contains(&Src::OtherRider);
+        let mut isl = RiderIsland { touches: Vec::new(), used: Vec::new(), runs: rider_runs, island, city_rows: 0, rows: Vec::new(), with_bike, with_other };
         if !island {
             return isl;
         }
@@ -627,6 +732,12 @@ impl RiderRagdoll {
         if veh_joins {
             for &(m, _) in &vrows {
                 let part = self.veh.manifolds[m].part as i32;
+                self.body.contact_on_part(&self.child_link, part);
+            }
+        }
+        if other_joins {
+            for &(m, _) in &orows {
+                let part = self.other.manifolds[m].part as i32;
                 self.body.contact_on_part(&self.child_link, part);
             }
         }
@@ -691,6 +802,25 @@ impl RiderRagdoll {
                     isl.touches.push(t);
                     isl.used.push((Src::BikeRider, m, k));
                 }
+                Src::OtherRider => {
+                    if !(other_shared && other_rider[r]) {
+                        continue;
+                    }
+                    // (the vehicle's side: body 0 of the solve, its rows (one part at the instance), the hull's margin)
+                    let (m, k) = orows[r];
+                    let mf = &self.other.manifolds[m];
+                    let link = part_link(&self.child_link, n_links, mf.part as i32);
+                    let mut t = mf.slots[k].touch;
+                    let on_b = !self.other.rider_is_a;
+                    let vm = self.other_now[mf.veh as usize];
+                    let side = if on_b { &mut t.a } else { &mut t.b };
+                    side.body = Some(0);
+                    side.rows = [vm[0], vm[1], vm[2]];
+                    t.jointed = Some(JointedSide { body: 0, link, on_b, point_w: POINT_W, self_b: None });
+                    isl.rows.push(IslRow::Rider(isl.touches.len()));
+                    isl.touches.push(t);
+                    isl.used.push((Src::OtherRider, m, k));
+                }
             }
         }
         isl
@@ -725,6 +855,7 @@ impl RiderRagdoll {
             let s = match src {
                 Src::City => &mut self.city.manifolds[m].slots[k].touch,
                 Src::BikeRider => &mut self.veh.manifolds[m].slots[k].touch,
+                Src::OtherRider => &mut self.other.manifolds[m].slots[k].touch,
                 _ => &mut self.own.manifolds[m].slots[k].touch,
             };
             s.kept = t.kept;

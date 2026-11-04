@@ -1253,7 +1253,10 @@ mod tests {
     }
 
     fn shared_ticks() -> (Vec<i32>, Vec<SharedTick>) {
-        let b = include_bytes!("testdata/rider_bike_shared.bin");
+        shared_ticks_of(include_bytes!("testdata/rider_bike_shared.bin"))
+    }
+
+    fn shared_ticks_of(b: &[u8]) -> (Vec<i32>, Vec<SharedTick>) {
         assert_eq!(&b[..8], b"RGSHR001");
         let w: Vec<u32> = b[8..].chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
         let (ticks, mut i) = (w[0] as usize, 1);
@@ -1421,4 +1424,75 @@ mod tests {
     /// inputs (the RGD1 snapshot's records equal the PAIR records but for +0), the row order (A list), the sweep
     /// count (island +20 = 1: 8) and the elasticity factor (equal on every tick).
     const OPEN: [u32; 3] = [156, 158, 159];
+
+    /// The thrown rider against another vehicle: ov.0 724 - 735 (recomp recorder, a parked ambient car 0x5745 -
+    /// mcAmbientPhysInst, level state 0 (active) after the bike struck it - the rider 0x5754 lying on it, the bike
+    /// elsewhere). Island = the car (rigid body 0, side A of every row, its part 0) and the rider (jointed, side B, or
+    /// both sides of his self rows); no city row. Same check as the bike's: the rider RGX0 -> RGD1 word for word, the
+    /// elasticity factor (isl +40 = 1: the rows' elasticity is 0 - the rider's F-22759 - and neither the ambient car's
+    /// pre-solve callback nor anything else writes it), every row's kept multipliers and impulse, and the car's share
+    /// in its accumulators +368 / +384 between the snapshots. Fixtures rider_car_ov0.bin (export_car.py, RGSHR001 with
+    /// the car as the "bike") and rider_car_ov0_run.bin (export_island.py, ops 'i').
+    #[test]
+    fn rider_car_island_velocity_solve_is_the_originals() {
+        let (map, ticks) = shared_ticks_of(include_bytes!("testdata/rider_car_ov0.bin"));
+        let cases = run_cases(include_bytes!("testdata/rider_car_ov0_run.bin"));
+        let mut report = Vec::new();
+        let mut n = 0;
+        for t in &ticks {
+            let Some(c) = cases.iter().find(|c| c.op == b'i' && c.tick == t.tick) else { continue };
+            n += 1;
+            let mut a = load(&c.inp);
+            for &p in &t.hinge_parts {
+                a.contact_on_part(&map, p);
+            }
+            let mut touches = shared_touches(&map, a.n(), t);
+            assert_eq!(touches.len(), t.n as usize);
+            let car = shared_bike(t);
+            let dt = c.v1;
+            let mut jointed = [a];
+            let solved = solver::island_solve_jointed(&[car], &touches, &mut jointed, (0, 0.0), dt, 1.0 / dt);
+            solver::island_apply_jointed(&solved, &mut jointed);
+            let [mut a] = jointed;
+            a.motion_measure(dt);
+            let mut bad = Vec::new();
+            if solved.bounce.to_bits() != t.bounce {
+                bad.push(format!("bounce {:08x} want {:08x}", solved.bounce.to_bits(), t.bounce));
+            }
+            solver::island_impulses(&solved, &mut touches);
+            for (k, (x, (_, rec))) in touches.iter().zip(t.contacts.iter()).enumerate() {
+                if !vec_words(x.kept, &rec.w[32..35]) {
+                    bad.push(format!("row {k} (side {}) kept {:?} want {:08x?}", rec.side, x.kept, &rec.w[32..35]));
+                }
+                if !vec_words(x.impulse, &rec.w[28..31]) {
+                    bad.push(format!("row {k} (side {}) impulse {:?} want {:08x?}", rec.side, x.impulse, &rec.w[28..31]));
+                }
+            }
+            let given = solver::island_apply(&[car], &touches);
+            let (b0, b1) = (&t.bike0, &t.bike1);
+            for (name, o, got) in [("impulse +368", 368, given[0].0), ("turning +384", 384, given[0].1)] {
+                if wv(b0, o) != Vec3::ZERO || !vec_words(got, &b1[o / 4..o / 4 + 3]) {
+                    bad.push(format!("car {name}: island {got:?}, recorded {:?} -> {:?}", wv(b0, o), wv(b1, o)));
+                }
+            }
+            let (words, nan) = strict(&a, &c.out);
+            eprintln!("rider x car velocity solve, tick {}: {} rows ({} with the car), {} differing words, {nan} NaN on both sides, {} row results differ", t.tick, touches.len(), t.contacts.iter().filter(|(b, _)| *b != 2).count(), words.len(), bad.len());
+            bad.extend(words);
+            if OPEN_CAR.contains(&t.tick) {
+                if bad.is_empty() {
+                    report.push(format!("tick {}: exact now - take it off OPEN_CAR", t.tick));
+                }
+            } else if !bad.is_empty() {
+                report.push(format!("tick {}: {} differences, first {:#?}", t.tick, bad.len(), &bad[..bad.len().min(16)]));
+            }
+        }
+        assert_eq!(n, 12);
+        assert!(report.is_empty(), "{}", report.join("\n"));
+    }
+
+    /// The tick of ov.0 whose rider x car solve is not yet the original's word for word (unverified, open): 730, the
+    /// first tick of six rows all with the car (no self row), four of them new sub-manifolds. One row (rider part 17)
+    /// ends about 1e-5 from the recorded multipliers and impulse, and the rider's links by an ulp or two - the same kind
+    /// of difference as rv.0 156 / 158 / 159 ([`OPEN`]). The car's share and the other eleven ticks are exact.
+    const OPEN_CAR: [u32; 1] = [730];
 }

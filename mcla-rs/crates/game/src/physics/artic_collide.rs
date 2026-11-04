@@ -1270,6 +1270,122 @@ mod tests {
         assert_eq!(subs_ok, ticks_n);
     }
 
+    /// The rider against another vehicle: ov.0 720 - 736 (a parked ambient car, level 0x5745, lower than the rider's
+    /// 0x5754: the car is A), its bound a lone polyhedron (type 4: one part at the instance itself, the hull taken from
+    /// the snapshot's bound - 16 vertices, 28 triangles - by testdata/rider_car_ov0_col.bin, export_carcol.py). The same
+    /// collide as the bike's ([`RiderVeh::collide`] with the car as the vehicle side, its last the collider's +32): the
+    /// sub-manifolds after the refresh, every new contact word for word with its polygon, the refreshed ones, and the
+    /// materials (the rider's F-22759 elasticity; neither the ambient car's callbacks - its pre-solve F-65962 disables
+    /// only contacts with partners of class 4 / 5 (F-44543) and casts the partner to its own type (F-45219, which the
+    /// rider fails), its post-solve F-13089 casts it to mcCarInstance - nor anything else writes them).
+    #[test]
+    fn car_contacts_match_recording() {
+        let Some(root) = data_dir() else {
+            eprintln!("skipped: the extracted data (MCLA_DATA_DIR) is missing");
+            return;
+        };
+        let rs = root.to_string_lossy().to_string();
+        super::super::collision::load_surfaces(&rs);
+        let ty = rider_type(&root).expect("rider type");
+        let sh = shapes(&ty, &Surface::table(&rs));
+        let f = bike_fix(include_bytes!("testdata/rider_car_ov0_col.bin"));
+        let hv = f.w("hv");
+        let verts: Vec<Vec3> = hv.chunks(3).map(|c| Vec3::new(f32::from_bits(c[0]), f32::from_bits(c[1]), f32::from_bits(c[2]))).collect();
+        let tris: Vec<[u16; 3]> = f.w("ht").chunks(3).map(|c| [c[0] as u16, c[1] as u16, c[2] as u16]).collect();
+        let hx = f.w("hx");
+        let mut hull = super::super::hull::HullShape::new(verts, &tris);
+        hull.mats = f.w("hm").to_vec();
+        hull.cg = Vec3::new(f32::from_bits(hx[0]), f32::from_bits(hx[1]), f32::from_bits(hx[2]));
+        hull.scan = (hx[4] as usize).min(hull.verts.len());
+        let margin = f32::from_bits(hx[3]);
+        let lv = f.w("lv");
+        let rider_is_a = lv[0] < lv[1];
+        assert!(!rider_is_a);
+        let mut pair = RiderVeh { manifolds: Vec::new(), rider_is_a };
+        let (mut matched, mut recorded, mut extra, mut subs_ok, mut ticks_n, mut elements) = (0, 0, 0, 0, 0, 0);
+        let (mut kept_ok, mut kept_all, mut mat_ok, mut mat_all) = (0, 0, 0, 0);
+        // (736, the recording's last tick, has its RGD1 snapshot but no tick-end PAIR records: the run ended in it)
+        for &tick in f.w("ticks").iter().filter(|&&t| t < 736) {
+            let mats = |n: &str| f.mats(&format!("{n}_{tick}")).iter().map(rows3).collect::<Vec<_>>();
+            let (r16, r32) = (rows3(&f.mat(&format!("r16_{tick}"), 0)), rows3(&f.mat(&format!("r32_{tick}"), 0)));
+            let (b16, b32) = (rows3(&f.mat(&format!("b16_{tick}"), 0)), rows3(&f.mat(&format!("b32_{tick}"), 0)));
+            let now: Vec<[Vec3; 4]> = mats("rcu").iter().map(|p| world_matrix(p, &r16)).collect();
+            let last: Vec<[Vec3; 4]> = mats("rpv").iter().map(|p| world_matrix(p, &r32)).collect();
+            let bnow: Vec<[Vec3; 4]> = mats("bcu").iter().map(|p| world_matrix(p, &b16)).collect();
+            let blast: Vec<[Vec3; 4]> = mats("bpv").iter().map(|p| world_matrix(p, &b32)).collect();
+            let veh = VehSide { hull: &hull, hull_cg: hull.cg, hull_margin: margin, now: bnow[0], last: blast[0], wheels: Vec::new() };
+            pair.collide(&sh, &now, &last, &veh);
+            ticks_n += 1;
+            let mut fresh: Vec<(u8, u8, RiderSlot)> = pair.manifolds.iter().flat_map(|m| m.slots.iter().filter(|s| s.age == 0).map(move |s| (m.veh, m.part, *s))).collect();
+            // (a recorded (part A, part B) is (the car's part, the rider's): the car is A)
+            for c in f.w(&format!("bct{tick}")).chunks(52).filter(|c| c[2] == 1) {
+                let r = &c[8..];
+                recorded += 1;
+                let want = (r[3], rec3(r, 16), rec3(r, 32), rec3(r, 48), rec3(r, 64), rec3(r, 80));
+                let k = fresh.iter().position(|(v, p, s)| (*v as u32, *p as u32) == (c[0], c[1]) && (s.touch.depth.to_bits(), bits3(s.touch.a.local), bits3(s.touch.b.local), bits3(s.touch.a.point), bits3(s.touch.b.point), bits3(s.touch.normal)) == want);
+                match k {
+                    Some(k) => {
+                        if fresh[k].2.polygon == c[4] {
+                            elements += 1;
+                        } else {
+                            eprintln!("tick {tick} parts {} / {}: element {} recorded {}", c[0], c[1], fresh[k].2.polygon, c[4]);
+                        }
+                        fresh.remove(k);
+                        matched += 1;
+                    }
+                    None => {
+                        let near = fresh.iter().find(|(v, p, _)| (*v as u32, *p as u32) == (c[0], c[1]));
+                        eprintln!("tick {tick} parts {} / {}: recorded depth {} n {:?} la {:?}, port {:?}", c[0], c[1], f32::from_bits(r[3]), [r[20], r[21], r[22]].map(f32::from_bits), [r[4], r[5], r[6]].map(f32::from_bits), near.map(|(_, _, s)| (s.touch.depth, s.touch.normal, s.touch.a.local)));
+                    }
+                }
+            }
+            for (v, p, s) in &fresh {
+                eprintln!("tick {tick} parts {v} / {p}: the port's contact, not a recorded new one (depth {})", s.touch.depth);
+            }
+            extra += fresh.len();
+            pair.refresh(&now, &bnow);
+            for c in f.w(&format!("bct{tick}")).chunks(52) {
+                let r = &c[8..];
+                kept_all += 1;
+                let ok = pair.manifolds.iter().filter(|m| (m.veh as u32, m.part as u32) == (c[0], c[1])).flat_map(|m| m.slots.iter()).any(|s| {
+                    s.age as u32 == c[2] && bits3(s.touch.a.local) == rec3(r, 16) && s.touch.depth.to_bits() == r[3] && bits3(s.touch.a.point) == rec3(r, 48) && bits3(s.touch.b.point) == rec3(r, 64)
+                });
+                if ok {
+                    kept_ok += 1;
+                } else {
+                    eprintln!("tick {tick} parts {} / {}: the refreshed contact (age {}, depth {}) is not the port's", c[0], c[1], c[2], f32::from_bits(r[3]));
+                }
+            }
+            let mine: Vec<(u32, u32)> = pair.manifolds.iter().filter(|m| !m.slots.is_empty()).map(|m| (m.veh as u32, m.part as u32)).collect();
+            let want: Vec<(u32, u32)> = f.w(&format!("bsb{tick}")).chunks(3).filter(|c| c[2] > 0).map(|c| (c[0], c[1])).collect();
+            if mine == want {
+                subs_ok += 1;
+            } else {
+                eprintln!("tick {tick}: car sub-manifolds {mine:?}, recorded {want:?}");
+            }
+            pair.materials(&sh, ty.f320);
+            for c in f.w(&format!("bct{tick}")).chunks(52) {
+                let r = &c[8..];
+                if let Some(sl) = pair.manifolds.iter().filter(|m| (m.veh as u32, m.part as u32) == (c[0], c[1])).flat_map(|m| m.slots.iter()).find(|s| bits3(s.touch.a.local) == rec3(r, 16)) {
+                    mat_all += 1;
+                    if (sl.touch.friction.to_bits(), sl.touch.elasticity.to_bits()) == (r[7], r[11]) {
+                        mat_ok += 1;
+                    } else {
+                        eprintln!("tick {tick}: friction / elasticity {} / {}, recorded {} / {}", sl.touch.friction, sl.touch.elasticity, f32::from_bits(r[7]), f32::from_bits(r[11]));
+                    }
+                }
+            }
+        }
+        eprintln!("rider x car: sub-manifolds equal in {subs_ok} / {ticks_n} ticks; contacts {matched} / {recorded} word for word ({elements} with the recorded polygon), {extra} of the port's not among them; after the refresh {kept_ok} / {kept_all} equal; materials {mat_ok} / {mat_all}");
+        assert!(recorded > 0);
+        assert_eq!(matched, recorded);
+        assert_eq!(elements, matched);
+        assert_eq!(extra, 0);
+        assert_eq!(subs_ok, ticks_n);
+        assert_eq!(kept_ok, kept_all);
+        assert_eq!(mat_ok, mat_all);
+    }
+
     /// The bound: 21 parts, capsules with the ragdoll material, the self-pair gate (collider +740 = 1, +744 = 0 in ro.0).
     #[test]
     fn shapes_and_self_pairs() {
