@@ -1159,6 +1159,11 @@ impl SoundLib {
         self.insts.iter().any(|i| i.id == h.0)
     }
 
+    /// A playing sound's Duration in ms (F-53189 on its root through F-73664; -1 unknown or endless).
+    pub fn duration_ms(&self, h: Handle) -> i32 {
+        self.insts.iter().find(|i| i.id == h.0).map_or(-1, |i| dur_total(&i.root).0)
+    }
+
     pub fn count(&self) -> usize {
         self.insts.len()
     }

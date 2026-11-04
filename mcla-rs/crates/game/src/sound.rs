@@ -850,6 +850,7 @@ impl Sound {
                 gear: vs.map_or(st.gear, |v| v.gear),
                 shift: vs.map_or(0, |v| if v.gear_change.active { v.gear_change.direction } else { 0 }),
                 idle_only: in_menu,
+                revs: false,
                 racing: false,
                 speed_ratio: 0.0,
                 rubber_hold: 0.0,
