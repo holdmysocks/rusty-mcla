@@ -2406,8 +2406,24 @@ fn nav_u(h: f32) -> f32 {
     ((1.0 - t).clamp(-1.0, 1.0).acos() * 0.63662).min(1.0)
 }
 
+/// The widest display the original lays out for (16:9).
+pub const NAV_WIDEST: f32 = 16.0 / 9.0;
+
+/// The bars left and right of the middle 16:9 of a wider screen, where the GPS map's view ends (the city's
+/// edge and nothing past it at 21:9 / 32:9). None when the screen is not wider than 16:9.
+pub fn nav_pillars(screen: egui::Rect) -> Option<[egui::Rect; 2]> {
+    let w = screen.height() * NAV_WIDEST;
+    (screen.width() > w + 1.0).then(|| {
+        let x0 = screen.center().x - w * 0.5;
+        [egui::Rect::from_min_max(screen.min, egui::pos2(x0, screen.max.y)), egui::Rect::from_min_max(egui::pos2(x0 + w, screen.min.y), screen.max)]
+    })
+}
+
 /// Where the eye may stand at height `h` (`F-94269`): (xmin, xmax, zmin, zmax).
 pub fn nav_bounds(h: f32, aspect: f32) -> [f32; 4] {
+    // (the original's display is 16:9 at the widest - +1676 of the GPS arrow's control, wide or 4:3: a wider
+    // window keeps the 16:9 view in the middle - `nav_pillars` - and these bounds)
+    let aspect = aspect.min(NAV_WIDEST);
     let off = nav_off(h);
     let a = off.atan2(h);
     let hf = 0.218166f32;
@@ -4158,6 +4174,18 @@ pub fn nav_open_rows(s: CamRows, t: f32) -> CamRows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A screen wider than 16:9 keeps the GPS map's 16:9 view and bounds; 16:9 and 4:3 are as before.
+    #[test]
+    fn wide_screens_keep_the_16_9_map() {
+        let r = |w: f32, h: f32| egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h));
+        assert!(nav_pillars(r(1600.0, 900.0)).is_none() && nav_pillars(r(1200.0, 900.0)).is_none());
+        let [a, b] = nav_pillars(r(2100.0, 900.0)).unwrap();
+        assert_eq!((a.max.x, b.min.x, b.max.x), (250.0, 1850.0, 2100.0));
+        assert_eq!(nav_bounds(NAV_HIGH, 21.0 / 9.0), nav_bounds(NAV_HIGH, 16.0 / 9.0));
+        assert_eq!(nav_bounds(NAV_LOW, 32.0 / 9.0), nav_bounds(NAV_LOW, 16.0 / 9.0));
+        assert_ne!(nav_bounds(NAV_LOW, 4.0 / 3.0), nav_bounds(NAV_LOW, 16.0 / 9.0));
+    }
 
     /// The frame count (the cop flash's clock) goes at the original's 30 frames a second whatever the port draws at.
     #[test]

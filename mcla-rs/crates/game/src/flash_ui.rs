@@ -1294,7 +1294,13 @@ impl FlashMenu {
                 p.set_path(&format!("menu.elements.{}.text2", i), Value::str(if matches!(page.row_props.get(i), Some(13 | 17)) { &r.value } else { "" }));
                 p.set_path(&format!("menu.elements.{}.text3", i), Value::str(&r.value));
             } else if !matches!(page.layout, MenuLayout::Vehicles { .. } | MenuLayout::PerfShop { .. } | MenuLayout::Abilities { .. } | MenuLayout::Results { .. }) {
-                p.set_path(&format!("menu.elements.{}.text2", i), r.part.as_ref().map_or_else(|| Value::str(&r.value), |part| Value::Int(part.price.clamp(0, i32::MAX as i64) as i32)));
+                // (the cart's rows - template 122 - read their price from `text2` as a number, as a part list's do)
+                let cart_price = matches!(page.layout, MenuLayout::Cart { .. }).then(|| r.value.trim_start_matches('$').parse::<i32>().unwrap_or(0));
+                p.set_path(&format!("menu.elements.{}.text2", i), match (cart_price, r.part.as_ref()) {
+                    (Some(v), _) => Value::Int(v),
+                    (None, Some(part)) => Value::Int(part.price.clamp(0, i32::MAX as i64) as i32),
+                    (None, None) => Value::str(&r.value),
+                });
                 p.set_path(&format!("menu.elements.{}.text3", i), Value::Int(r.part.as_ref().map_or(12, |part| part.brand)));
             }
             if !matches!(page.layout, MenuLayout::PerfShop { .. } | MenuLayout::Abilities { .. } | MenuLayout::Results { .. }) {

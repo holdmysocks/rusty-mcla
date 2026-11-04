@@ -8396,7 +8396,8 @@ impl Game {
                                 l
                             } else if let Some(l) = plate_layout {
                                 l
-                            } else if paint_page || vinyl_flat {
+                            } else if paint_page || vinyl_flat || asking_cart.is_some() {
+                                // (the question is `INSTALL_CONF_MENU`'s template 42, type 1: Main.sc.xml)
                                 MenuLayout::Paint
                             } else if rim_open {
                                 MenuLayout::GarageRims
@@ -9728,6 +9729,13 @@ impl Game {
                             crate::hudmap::paint_world(ctx, &ctx.layer_painter(layer), &mut hm.assets, &q, vp, ctx.screen_rect(), Some(ripple), hf.as_ref().map(|h| (h, hud.cam_pos)));
                         } else {
                             ctx.layer_painter(layer).add(crate::hudmap_gpu::icons(ctx.screen_rect(), &mut hm.assets, &q, vp, hud.cam_pos, Some(ripple)));
+                        }
+                        // (a screen wider than 16:9: the original's 16:9 view in the middle, black beside it - the
+                        // city ends there; the panels and the prompt bar stay over it)
+                        if let Some(bars) = crate::hudmap::nav_pillars(ctx.screen_rect()) {
+                            for r in bars {
+                                ctx.layer_painter(layer).rect_filled(r, 0.0, egui::Color32::BLACK);
+                            }
                         }
                     }
                     self.city_map(ctx, vehicles, world, hud);
@@ -14606,6 +14614,12 @@ impl Game {
                 crate::hudmap::paint_world(ctx, &ctx.layer_painter(layer), &mut hm.assets, &q, vp, ctx.screen_rect(), Some(ripple), hf.as_ref().map(|h| (h, cam_pos)));
             } else {
                 ctx.layer_painter(layer).add(crate::hudmap_gpu::icons(ctx.screen_rect(), &mut hm.assets, &q, vp, cam_pos, Some(ripple)));
+            }
+            // (wider than 16:9: the 16:9 view in the middle, as on the GPS map - `nav_pillars`)
+            if let Some(bars) = crate::hudmap::nav_pillars(ctx.screen_rect()) {
+                for r in bars {
+                    ctx.layer_painter(layer).rect_filled(r, 0.0, egui::Color32::BLACK);
+                }
             }
         }
         let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("flash_navsys"));
