@@ -93,9 +93,9 @@ pub struct Ghost {
 pub trait CruiseEnv {
     /// the teleport F-90476 onto the rail nearest `p` (remove from traffic, place, velocity); false: nowhere (it sets state 4)
     fn teleport(&mut self, b: &mut Cruising, p: Vec3) -> bool;
-    /// route + request (82745590): a rail route to the current destination and the ambient request (state 3, or 4)
+    /// route + request (F-25539): a rail route to the current destination and the ambient request (state 3, or 4)
     fn route(&mut self, b: &mut Cruising);
-    /// two racing goals on the nearest rail ahead (82745B90)
+    /// two racing goals on the nearest rail ahead (F-90991)
     fn rail_goals(&mut self, b: &mut Cruising) -> bool;
     /// the racing brain's update (F-13552)
     fn racer_update(&mut self, b: &mut Cruising);
@@ -103,9 +103,9 @@ pub trait CruiseEnv {
     fn racer_reached(&mut self, b: &Cruising) -> bool;
     /// DriveToNearestRail (F-12584)
     fn drive_to_rail(&mut self, b: &mut Cruising);
-    /// the teleport at the car's own place, then route + request (82746230)
+    /// the teleport at the car's own place, then route + request (F-19049)
     fn rejoin_here(&mut self, b: &mut Cruising);
-    /// the nearest rail to the car within 45 degrees, then route + request (827458D8)
+    /// the nearest rail to the car within 45 degrees, then route + request (F-12634)
     fn attach_nearest(&mut self, b: &mut Cruising);
     /// a rail's point and tangent at `t` (rail slot 8)
     fn rail_pose(&mut self, rail: u32, t: f32) -> (Vec3, Vec3);
@@ -197,7 +197,7 @@ impl Cruising {
         }
     }
 
-    /// The attach (vt 12, 827449C8): the ambient system has made the ghost (`status` 0) or failed.
+    /// The attach (vt 12, F-26049): the ambient system has made the ghost (`status` 0) or failed.
     pub fn attach(&mut self, env: &mut impl CruiseEnv, status: i32, ghost: Option<&Ghost>) {
         self.request = -1;
         match ghost.filter(|_| status == 0).and_then(|g| g.rail.map(|r| (g, r))) {
@@ -213,7 +213,7 @@ impl Cruising {
         }
     }
 
-    /// The ghost's release (vt 15, 82745DC8): `reason` 1 at its route's end, 5 let go by the brain; `rail` where it
+    /// The ghost's release (vt 15, F-95102): `reason` 1 at its route's end, 5 let go by the brain; `rail` where it
     /// ended (0: none). Ignored for another ghost.
     pub fn event(&mut self, env: &mut impl CruiseEnv, reason: i32, rail: u32, ghost: u32) {
         if ghost != self.ghost {
@@ -249,7 +249,7 @@ impl Cruising {
         }
     }
 
-    /// BrainCruising_TeleportToNextDestination's step (82746288): onto the current destination's rail, then on.
+    /// BrainCruising_TeleportToNextDestination's step (F-11718): onto the current destination's rail, then on.
     pub fn teleport_next(&mut self, env: &mut impl CruiseEnv) {
         let p = self.dests[self.idx as usize & 63];
         if env.teleport(self, p) {
