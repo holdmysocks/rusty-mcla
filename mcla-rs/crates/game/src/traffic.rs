@@ -3833,6 +3833,110 @@ mod tests {
         eprintln!("race clearing: {n} runs, {writes} slot 19 writes, {set} runs setting lanes, {edge} arms at |dot| = 0.643 exactly");
     }
 
+    /// The road at a point (F-86195 with the quadtree query F-44023 and the roads' box test F-35347) and the density
+    /// index (F-85897) against the original's code run whole offline on the real city navsys
+    /// (tools/road_density_reference.py -> testdata/road_density_ref.txt): 6,000 points - in and about road boxes, on
+    /// their edges and on the quadtree's splits and box edges to the float, the whole city and beyond, NaN, the two
+    /// points the scripts give AmbientMgr_SetRoadDensity - with F-86195's road and every hit F-44023 counted (road and
+    /// squared distance bits, in order); 600 index cases over the global, script, cutscene, front-end and own values;
+    /// 1,200 runs of the setters AmbientMgr_SetRoadDensity (F-84942) and the race event's fire (F-36201): the road
+    /// written and the index.
+    #[test]
+    fn road_density_matches_the_original() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
+        let res = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")).unwrap();
+        let nav = NavSys::parse(&res).unwrap();
+        let h = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let (mut n, mut on, mut multi, mut d, mut s) = (0, 0, 0, 0, 0);
+        for l in include_str!("testdata/road_density_ref.txt").lines().filter(|l| !l.is_empty()) {
+            let (c, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<&str> = c.split(' ').collect();
+            if c[0] == "S" {
+                // the setters: AmbientMgr_SetRoadDensity (kind 0) and the race event's fire (kind 1, skipped while the
+                // word 0x828CCE34 is set), both only with the ambient manager there: the road at the point gets the index
+                let w: Vec<u32> = c[1..].iter().map(|t| h(t)).collect();
+                let p = Vec3::new(f32::from_bits(w[1]), f32::from_bits(w[2]), f32::from_bits(w[3]));
+                let on = w[5] != 0 && (w[0] == 0 || w[6] == 0);
+                let got = if on { nav.road_at(p).map(|r| format!("{r} {:08x}", w[4])) } else { None };
+                assert_eq!(got.unwrap_or_else(|| "-".into()), o, "{l}");
+                s += 1;
+                continue;
+            }
+            if c[0] == "D" {
+                let w: Vec<u32> = c[1..].iter().map(|t| h(t)).collect();
+                let got = density_index(w[0] as i32, w[1] as i32, w[2] & 0xFF != 0, (w[3] & 0xFF != 0).then_some(w[4] as i32), w[5] as i32);
+                assert_eq!(got as u32, h(o), "{l}");
+                d += 1;
+                continue;
+            }
+            let p = Vec3::new(f32::from_bits(h(c[1])), f32::from_bits(h(c[2])), f32::from_bits(h(c[3])));
+            let (r, hits) = o.split_once(" |").unwrap();
+            let want: Vec<(usize, u32)> = hits.split_whitespace().map(|t| {
+                let (a, b) = t.split_once(':').unwrap();
+                (a.parse().unwrap(), h(b))
+            }).collect();
+            let got: Vec<(usize, u32)> = nav.road_hits(p, 8).into_iter().map(|(r, d2)| (r, d2.to_bits())).collect();
+            assert_eq!(got, want, "hits: {l}");
+            let r: i64 = r.parse().unwrap();
+            assert_eq!(nav.road_at(p).map_or(-1, |x| x as i64), r, "road: {l}");
+            on += (r >= 0) as usize;
+            multi += (want.len() > 1) as usize;
+            n += 1;
+        }
+        assert_eq!((n, d, s), (6000, 600, 1200));
+        eprintln!("road density: {n} points, {on} on a road, {multi} with more than one hit; {d} index cases; {s} setter runs");
+    }
+
+    /// The removal message (F-99126 with the kind byte F-93575 / F-30914) and the enable natives (F-26788, F-74501,
+    /// F-54264) against the original's code run whole offline (tools/ambient_remove_reference.py ->
+    /// testdata/ambient_remove_ref.txt): 3,000 runs of 0 - 12 objects in the manager's six chains (spot word, type byte
+    /// +108, vfunc 24 / 28 answers) under the used and random messages - the objects given a removal request (reason
+    /// 11), in order -, and 1,500 native calls (argument, manager there or not, threaded, the stack byte): the byte
+    /// stored and the message sent (straight or queued).
+    #[test]
+    fn ambient_remove_matches_the_original() {
+        let h = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let (mut k, mut e, mut removed) = (0, 0, 0);
+        for l in include_str!("testdata/ambient_remove_ref.txt").lines().filter(|l| !l.is_empty()) {
+            let (c, o) = l.split_once(" -> ").unwrap();
+            let w: Vec<u32> = c.split_whitespace().skip(1).map(h).collect();
+            if l.starts_with('K') {
+                // (the count is written in decimal)
+                let (msg, n) = (w[0] as u8, c.split(' ').nth(2).unwrap().parse::<usize>().unwrap());
+                let objs: Vec<&[u32]> = w[2..2 + 5 * n].chunks(5).collect();
+                // the chains in the order F-99126 walks them: buckets 0..2 at +8, then at +32
+                let mut got = Vec::new();
+                for ch in 0..6 {
+                    for (i, ob) in objs.iter().enumerate().filter(|(_, ob)| ob[0] == ch) {
+                        if removal_hits(ambient_kind(ob[2] as u8, ob[1], ob[3], ob[4]), msg) {
+                            got.push(format!("{i}/11"));
+                        }
+                    }
+                }
+                let want: Vec<String> = o.split_whitespace().map(|s| s.to_string()).collect();
+                assert_eq!(got, want, "{l}");
+                removed += want.len();
+                k += 1;
+            } else {
+                let (native, arg, mgr, threaded, stack) = (w[0] as usize, w[1], w[2] != 0, w[3] & 0xFF != 0, w[4] as u8);
+                let t: Vec<&str> = o.split_whitespace().collect();
+                let stored = if mgr { format!("{:02x}", arg & 0xFF) } else { "--".into() };
+                assert_eq!(t[0], stored, "{l}");
+                let sent = if mgr { enable_message(native, arg) } else { None };
+                match sent {
+                    None => assert_eq!(t[1], "-", "{l}"),
+                    Some(m) => {
+                        assert_eq!(t[1], if threaded { "Q" } else { "M" }, "{l}");
+                        assert_eq!(h(t[2]) as u8, m | (stack & 0x0F), "{l}");
+                    }
+                }
+                e += 1;
+            }
+        }
+        assert!(k >= 2990 && e >= 1490, "{k} {e}");
+        eprintln!("ambient removal: {k} runs, {removed} objects removed; {e} native calls");
+    }
+
     /// The race holds and the wanted speeds (F-70324 with F-73512, F-15116, F-50269 and F-85925 by the case) against the
     /// original's code run offline on 6,000 cases (tools/race_hold_reference.py -> testdata/race_hold_ref.txt): the gate
     /// (the event byte, a remote car, a proxy, the route's lane, the path), the two lanes' owners, parents and flags, the
@@ -4887,17 +4991,12 @@ impl Spawner {
         }
     }
 
-    /// The density value of a road (F-85897): the script's index, else the road's own,
-    /// else 3. In free roam with the player at 30 mph or more (mode byte +0x64250; the
-    /// mode's meaning is a guess) the indices map 0 -> 0, 1-2 -> 0.55, 3-5 -> 1.25, 6 -> 0.10.
+    /// The density value of a road: its index (F-85897, [`density_index`]), then in free roam
+    /// with the player at 30 mph or more (mode byte +0x64250; the mode's meaning is a guess)
+    /// the indices map 0 -> 0, 1-2 -> 0.55, 3-5 -> 1.25, 6 -> 0.10.
     fn value(&self, r: u32, free_fast: bool) -> f32 {
-        let own = self.roads[r as usize].density;
-        // (the front-end mode's index, 0x8282A7D8, before the road's own)
-        let base = match self.frontend {
-            Some(f) => f.index,
-            None => if own >= 0 { own } else { 3 },
-        };
-        let idx = self.script.get(&r).copied().unwrap_or(base).clamp(0, 6) as usize;
+        let script = self.script.get(&r).copied().unwrap_or(-1);
+        let idx = density_index(-1, script, self.cutscene, self.frontend.map(|f| f.index), self.roads[r as usize].density).clamp(0, 6) as usize;
         if free_fast {
             return match idx {
                 0 => 0.0,
@@ -4907,6 +5006,53 @@ impl Spawner {
             };
         }
         self.tune.values[idx]
+    }
+}
+
+/// An ambient object's kind byte (F-30914, through F-93575): 0x80 the type's byte +108 bit 0, 0x20 a parking spot
+/// (+44 not 0), 0x10 bit 0 of the type's vfunc 28 (a person's type), 0x40 without a spot when the low byte of the
+/// type's vfunc 24 is not 0 (a car's type). (The low nibble is what the byte held before; the messages never test it.)
+pub fn ambient_kind(flag108: u8, spot: u32, v24: u32, v28: u32) -> u8 {
+    let mut k = (flag108 & 1) << 7 | ((v28 & 1) as u8) << 4;
+    if spot != 0 {
+        k |= 0x20;
+    } else if v24 & 0xFF != 0 {
+        k |= 0x40;
+    }
+    k
+}
+
+/// Does removal message `msg` take an object of kind `kind` (F-99126: any of the bits 0x80, 0x40, 0x20, 0x10 set in both)?
+pub fn removal_hits(kind: u8, msg: u8) -> bool {
+    kind & msg & 0xF0 != 0
+}
+
+/// The message the enable natives send when their byte is set to 0 (F-26788 traffic 0x60, F-74501 people 0x10,
+/// F-54264 parked cars 0x20; the low nibble is a stack byte's, never tested): `arg`'s low byte 0, else none. (Each
+/// first stores the byte - 0x8282A7C8 + native -, and does nothing at all while no ambient manager exists.)
+pub fn enable_message(native: usize, arg: u32) -> Option<u8> {
+    (arg & 0xFF == 0).then(|| [0x60, 0x10, 0x20][native])
+}
+
+/// A road's density index (F-85897): the global index when 0 or more (0x8282E930, written only by
+/// the native RnRoadAmbient_SetGlobalRoadDensity F-79936, which no script calls - the port passes -1);
+/// else the road's script index (+164, set by AmbientMgr_SetRoadDensity and the race scripts' road
+/// density event, -1 none); else 5 in the cutscene mode (byte 0x829095FD); else the front-end
+/// mode's index (byte 0x829095FE, index 0x8282A7D8); else the road's own (+152, from the data)
+/// unless -1; else 3 (0x827DC4CC).
+pub fn density_index(global: i32, script: i32, cutscene: bool, frontend: Option<i32>, own: i32) -> i32 {
+    if global >= 0 {
+        global
+    } else if script != -1 {
+        script
+    } else if cutscene {
+        5
+    } else if let Some(n) = frontend {
+        n
+    } else if own != -1 {
+        own
+    } else {
+        3
     }
 }
 
@@ -5207,12 +5353,47 @@ impl Vehicles {
     /// back to its group's free list (F-72573, the type's counts F-39893). The spawn requests of kind
     /// 0x40 still waiting for ground are ended too (F-42105: state 7) - the port keeps none at this point.
     pub fn ambient_reset(&mut self) {
+        let n = self.ambient_remove(0x40);
+        log::info!("ambient: reset - {} cars taken out, {} left", n, self.cars.len());
+    }
+
+    /// The ambient manager's removal message (F-99126): every ambient car whose kind byte (F-30914) shares a bit of
+    /// 0xf0 with `msg` goes at once (the people, kind 0x10, are not the cars' and stay here). Returns how many went.
+    pub fn ambient_remove(&mut self, msg: u8) -> usize {
         let before = self.cars.len();
         self.cars.retain(|c| {
             let ambient = !c.is_player && !c.cop && !c.racer && !c.pinned && (c.rail.is_some() || c.parked.is_some());
-            !ambient || c.parked.is_some_and(|s| s != super::parked::ITEM_SPOT)
+            // (a car type: vfunc 24 = 1, vfunc 28 = 0; its spot +44: a parking spot, not a layout item's)
+            let spot = c.parked.is_some_and(|s| s != super::parked::ITEM_SPOT);
+            !ambient || !removal_hits(ambient_kind(0, spot as u32, 1, 0), msg)
         });
-        log::info!("ambient: reset - {} cars taken out, {} left", before - self.cars.len(), self.cars.len());
+        before - self.cars.len()
+    }
+
+    /// AmbientMgr_SetTrafficEnable (F-26788) and AmbientMgr_SetParkedCarsEnable (F-54264) switched off: their message
+    /// ([`enable_message`]) removes the riding and parked cars (0x60) or the parked ones (0x20) at once; the
+    /// spawners stop by the byte (the port: `traffic_target` 0, `parked_held`).
+    pub fn ambient_disable(&mut self, native: usize) {
+        if let Some(m) = enable_message(native, 0) {
+            let n = self.ambient_remove(m);
+            log::info!("ambient: enable byte {native} off - {n} cars taken out, {} left", self.cars.len());
+        }
+    }
+
+    /// The roads' part of the railnet's reset (F-44338, which also resets the junctions: `Signals::release`):
+    /// every road's script density index +164 back to -1 (F-46490); script requests not yet taken go too.
+    pub fn reset_road_density(&mut self) {
+        self.road_density.clear();
+        self.road_density_new.clear();
+        if let Some(sp) = self.spawner.as_mut() {
+            sp.script.clear();
+        }
+    }
+
+    /// AmbientMgr_SetRoadDensity (F-84942) from a script the port runs by hand: the road at `p` (F-86195)
+    /// gets `index` as its density index, -1 gives it back (taken at the spawner's next run).
+    pub fn set_road_density(&mut self, p: Vec3, index: i32) {
+        self.road_density_new.push((p, index));
     }
 
     /// Is car `i` ambient traffic the spawner owns?
@@ -5287,19 +5468,12 @@ impl Vehicles {
             }
         }
         self.cars.retain(|c| c.removing.map_or(true, |f| f > 0.0));
-        // roads a race script set the density of
+        // roads a script set the density of (AmbientMgr_SetRoadDensity F-84942, the race scripts'
+        // road density event F-36201): the road at the point (F-86195) gets the index as its +164,
+        // -1 giving it back; no road there, nothing
         for (p, d) in std::mem::take(&mut self.road_density_new) {
-            for i in nav.links_near(p, 30.0) {
-                let l = &nav.links[i];
-                let ab = l.b - l.a;
-                let t = ((p - l.a).dot(ab) / ab.length_squared().max(1e-3)).clamp(0.0, 1.0);
-                let q = l.a + ab * t;
-                if (q.y - p.y).abs() < 7.0 && Vec3::new(q.x - p.x, 0.0, q.z - p.z).length() < 13.0 {
-                    self.road_density.insert(l.lane, d);
-                    if let Some(r) = sp.road_of(nav, i) {
-                        sp.script.insert(r, d);
-                    }
-                }
+            if let Some(r) = nav.road_at(p) {
+                sp.script.insert(r as u32, d);
             }
         }
         // the focus: the player's car, its heading and speed, its lane and road (M+320: kept

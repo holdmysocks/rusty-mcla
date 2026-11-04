@@ -138,6 +138,9 @@ const CARSELECT_MUSIC: &str = "MUSIC_CARSELECT_MASTER";
 /// CUTSCENES.md "The opening scenes' audio (session `cut-audio`, 2026-10-23)")
 const FILM_CUT_INTRO_AT: f32 = 58.2;
 const PAUSE_FRAME: Vec3 = Vec3::new(0.0, 1.42, 0.08);
+/// The point RACE_GH_06_READY_TO_START_ON_ENTER.sco gives AmbientMgr_SetRoadDensity (0x8be .. 0x8dc, 0xab1): the
+/// road of CUT_STORY_RACE_GH_06 (F-86195 finds it), index 0 for the scene, -1 after it.
+const GH_06_SCENE_ROAD: Vec3 = Vec3::new(-234.0, 21.0, -733.0);
 mod rivals;
 mod rubber;
 mod rumble;
@@ -2505,6 +2508,10 @@ impl App {
         // (CarSelection holds the clock - Graphics_GetAndSetAutoUpdateTimeOfDay(0) at its start, (1) once ACCEPT's
         // black is up - and the parked cars, AmbientMgr_SetParkedCarsEnable 0 / 1)
         let car_selection = (1..=3).contains(&self.intro_stage) || self.game.starter_pick.is_some();
+        if car_selection && !self.vehicles.parked_held {
+            // (AmbientMgr_SetParkedCarsEnable(0): the cars in spots go at once, F-54264 -> F-99126)
+            self.vehicles.ambient_disable(2);
+        }
         self.vehicles.parked_held = car_selection;
         if self.opt.time.is_none() && matches!(self.game.mode, Mode::FreeRoam | Mode::Race) && !car_selection {
             let dh = dt * sky::cloud_speed().hour_rate;
@@ -4960,8 +4967,8 @@ impl App {
             }
             self.props_dirty = true;
             self.vehicles.signals.release();
-                self.vehicles.road_density.clear();
-                self.vehicles.road_density_new.clear();
+            // (the railnet's reset F-44338: every road's script density index back to -1, F-46490)
+            self.vehicles.reset_road_density();
             self.props.signals.release();
         }
         if let (Some(rt), Some(race), true) = (self.dress.as_mut(), self.game.race.as_ref(), self.game.mode == Mode::Race && sim_dt > 0.0) {
@@ -4983,7 +4990,7 @@ impl App {
             }
             if self.tick_no % 600 == 0 {
                 log::info!("race script: {} scripted cars started, {} junctions held, {} nitro cues, {} whooshes", rt.started, rt.lights, rt.boosts, self.whooshes_heard);
-                log::info!("race script: {} road densities set ({} lanes)", rt.roads, self.vehicles.road_density.len());
+                log::info!("race script: {} road densities set ({} roads with a script index)", rt.roads, self.vehicles.spawner.as_ref().map_or(0, |s| s.script.values().filter(|&&d| d != -1).count()));
             }
         }
         // (the red light / freeway man's taunts in the race, and RACE BACK - althk.rs)
@@ -5981,6 +5988,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // play no scene of their own)
                         let after_scene = c == "SIDEKICK_RACE_GH_06" && scene.is_some() && std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok());
                         if after_scene {
+                            // (its script clears the road of the scene first - AmbientMgr_SetRoadDensity((-234, 21,
+                            // -733), 0) at 0x8dc - and gives it back after the scene, 0xab1)
+                            self.vehicles.set_road_density(GH_06_SCENE_ROAD, 0);
                             self.pending_log = Some(c.trim_start_matches("SIDEKICK_").to_string());
                         } else {
                             self.game.career.call_delivered(c.trim_start_matches("SIDEKICK_"));
@@ -6078,6 +6088,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if self.pending_log.is_some() && self.cuts.idle() && self.game.movie.is_none() {
                 if let Some(id) = self.pending_log.take() {
                     log::info!("career: {} enters the log after its scene", id);
+                    if id == "RACE_GH_06" {
+                        // (RACE_GH_06_READY_TO_START_ON_ENTER 0xab1: the scene's road given back, -1)
+                        self.vehicles.set_road_density(GH_06_SCENE_ROAD, -1);
+                    }
                     self.game.career.call_delivered(&id);
                 }
             }
@@ -6972,6 +6986,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 // mixer scenes, POLICE_SCRIPT_TRIGGERED only on the cops' path)
                                 self.arrest_traffic = Some(self.vehicles.traffic_target);
                                 self.vehicles.traffic_target = 0;
+                                // (the enable byte cleared: the riding and parked cars go at once, F-26788 -> F-99126)
+                                self.vehicles.ambient_disable(0);
                                 self.sound.arrest_mix = (!goons, true);
                                 if police::arrest_engine_off(scene) {
                                     if let Some(c) = self.vehicles.player_mut() {
@@ -12346,8 +12362,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 self.props_dirty = true;
                 self.vehicles.signals.release();
-                self.vehicles.road_density.clear();
-                self.vehicles.road_density_new.clear();
+                // (the railnet's reset F-44338: every road's script density index back to -1, F-46490)
+                self.vehicles.reset_road_density();
                 self.props.signals.release();
                 if started && std::env::var("MCLA_NO_DRESS").is_err() {
                     if let Some(d) = self.game.active_def.as_ref().or(self.game.current_race.and_then(|i| self.game.race_defs.get(i))).and_then(|def| racescript::load(&self.opt.data_dir, &def.id, def.checkpoints.first().copied())) {
@@ -12392,6 +12408,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if let Some(env) = self.game.mc4_arcade_env() {
                         if env.traffic == 0.0 {
                             self.vehicles.traffic_target = 0;
+                            self.vehicles.ambient_disable(0);
                         } else {
                             self.vehicles.density_scale = Some(env.traffic);
                         }
