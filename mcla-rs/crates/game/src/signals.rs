@@ -225,7 +225,7 @@ impl Signals {
     /// `blocked[ji]` per junction = sub_8273A848(J, 0) (`Vehicles::junction_blocked`: the
     /// player on one of its lanes within 3 m, or ambient cars on its rails).
     /// The player's demand (`demand`, sub_826F61D8 -> sub_8273A540, the junction ahead of the
-    /// player's lane found by `Vehicles::player_junction_ahead`): see `player_demand`.
+    /// player's lane found by `traffic::player_junction_record`): see `player_demand`.
     pub fn step(&mut self, dt: f32, blocked: &[bool], demand: Option<(usize, Vec3, bool)>, player: Option<(Vec3, Vec3)>, race: Option<(f32, f32)>) {
         for (ji, arm) in std::mem::take(&mut self.waiting) {
             if let Some(c) = self.junctions.get_mut(ji as usize).and_then(|j| j.demand.get_mut(arm as usize)) {

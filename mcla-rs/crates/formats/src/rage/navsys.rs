@@ -399,6 +399,27 @@ impl LaneCurve {
     }
 }
 
+/// The navsys data the race traffic clearing (F-20685) and the lane-leads-to-a-record test (F-91078) read, as the
+/// file holds it (docs/reference/people/race_traffic_clearing_rule.md).
+#[derive(Debug, Clone, Default)]
+pub struct RecordData {
+    /// per junction: its connection list (root +0x3c, entry by its id +0x20) in file order, each item with the arm
+    /// index of the entry's +8 array (-1: none; a null +8 array: none at all)
+    pub junction_arms: Vec<Vec<(NavNode, i32)>>,
+    /// per junction: its arms' outward directions (+0x2c vec4s, count +0x30) as stored, x / y / z
+    pub arm_dirs: Vec<Vec<[f32; 3]>>,
+    /// per road: its lanes in the order F-95725 counts and F-61293 / F-12622 index them (its own +0x14 / +0x18,
+    /// then its first child's subtree: each node's own lanes, its next sibling's subtree, its child's)
+    pub road_lanes: Vec<Vec<usize>>,
+    /// per lane: its record (F-17030: the owner +8 when its flags +4 have 0x2, else the owner's parent with 0x2,
+    /// else the owner with 0x4, else the parent with 0x4)
+    pub lane_record: Vec<Option<NavNode>>,
+    /// per vertex (root +0x38, 8 bytes each: -> lanes, u16 count): the lanes listed there, in table order
+    pub vertex_lanes: Vec<Vec<usize>>,
+    /// per lane: the vertex index of its last control point (curve +0x20 [CVCount - 1]); u32::MAX none
+    pub last_vertex: Vec<u32>,
+}
+
 /// A road or a junction: an item of the connection list (root +0x3c) and of the quadtree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavNode {
@@ -473,6 +494,8 @@ pub struct NavSys {
     pub junction_next: Vec<Vec<NavNode>>,
     /// the lane quadtree (root +130; node class 0x47b4dc), node 0 the root
     pub quad: Vec<QuadNode>,
+    /// what the race traffic clearing (F-20685) and its lane test (F-91078) read
+    pub records: RecordData,
     /// the longest link (`path_to_point`'s look-up of the links near its goal)
     max_link_len: f32,
     /// the graph's strongly connected components, made on first use (`path_to_point`)
@@ -823,6 +846,67 @@ impl NavSys {
         };
         nav.road_next = zone_offs.iter().map(|&o| items(o)).collect();
         nav.junction_next = (0..nav.junction_rects.len()).filter_map(|i| jarr.map(|a| items(a + i * 0xc0))).collect();
+        // the race traffic clearing's data (F-20685, F-91078)
+        let mut rec = RecordData::default();
+        for i in 0..nav.junction_rects.len() {
+            let Some(o) = jarr.map(|a| a + i * 0xc0) else { break };
+            let id = rd.u32(o + 0x20) as usize;
+            let mut arms = Vec::new();
+            if let Some(e) = conn.filter(|_| id < conn_n).map(|c| c + id * 16).filter(|&e| rd.has(e, 16)) {
+                let a8 = rd.ptr(e + 8);
+                if let Some(a) = rd.ptr(e) {
+                    for k in 0..rd.u16(e + 4) as usize {
+                        let Some(n) = rd.ptr(a + k * 4).and_then(node_of) else { continue };
+                        arms.push((n, a8.map_or(-1, |p| rd.u32(p + k * 4) as i32)));
+                    }
+                }
+            }
+            rec.junction_arms.push(arms);
+            let n = rd.u16(o + 0x30) as usize;
+            rec.arm_dirs.push(rd.ptr(o + 0x2c).map_or(Vec::new(), |d| (0..n).map(|k| [rd.f32(d + k * 16), rd.f32(d + k * 16 + 4), rd.f32(d + k * 16 + 8)]).collect()));
+        }
+        for &zo in &zone_offs {
+            let mut out = Vec::new();
+            walk(&rd, zo, false, &link_index, &mut out, 0);
+            rec.road_lanes.push(out);
+        }
+        rec.lane_record = link_offs
+            .iter()
+            .map(|&lo| {
+                let ow = rd.ptr(lo + 8)?;
+                let par = rd.ptr(ow + 8);
+                let fl = |o: usize| rd.u32(o + 4);
+                let r = if fl(ow) & 2 != 0 {
+                    ow
+                } else if let Some(p) = par.filter(|&p| fl(p) & 2 != 0) {
+                    p
+                } else if fl(ow) & 4 != 0 {
+                    ow
+                } else {
+                    par.filter(|&p| fl(p) & 4 != 0)?
+                };
+                node_of(r)
+            })
+            .collect();
+        rec.last_vertex = raw.iter().map(|l| if l.vi.1 == u16::MAX { u32::MAX } else { l.vi.1 as u32 }).collect();
+        let nv = raw.iter().flat_map(|l| [l.vi.0, l.vi.1]).filter(|&v| v != u16::MAX).max().map_or(0, |v| v as usize + 1);
+        if let Some(t) = rd.ptr(0x38) {
+            for v in 0..nv {
+                let e = t + v * 8;
+                let mut ls = Vec::new();
+                if rd.has(e, 8) {
+                    if let Some(a) = rd.ptr(e) {
+                        for k in 0..rd.u16(e + 4) as usize {
+                            if let Some(l) = rd.ptr(a + k * 4).and_then(link_index) {
+                                ls.push(l);
+                            }
+                        }
+                    }
+                }
+                rec.vertex_lanes.push(ls);
+            }
+        }
+        nav.records = rec;
         nav.build_graph(raw, zone_lanes);
         Ok(nav)
     }
@@ -848,7 +932,7 @@ impl NavSys {
         for z in &mut zones {
             z.links.clear();
         }
-        let mut nav = NavSys { zones, streets: self.streets.clone(), curves: self.curves.clone(), raw: self.raw.clone(), zone_lanes: self.zone_lanes.clone(), lane_junction: self.lane_junction.clone(), junction_centers: self.junction_centers.clone(), junction_c: self.junction_c.clone(), junction_lanes: self.junction_lanes.clone(), junction_rects: self.junction_rects.clone(), road_next: self.road_next.clone(), junction_next: self.junction_next.clone(), quad: self.quad.clone(), ..Default::default() };
+        let mut nav = NavSys { zones, streets: self.streets.clone(), curves: self.curves.clone(), raw: self.raw.clone(), zone_lanes: self.zone_lanes.clone(), lane_junction: self.lane_junction.clone(), junction_centers: self.junction_centers.clone(), junction_c: self.junction_c.clone(), junction_lanes: self.junction_lanes.clone(), junction_rects: self.junction_rects.clone(), road_next: self.road_next.clone(), junction_next: self.junction_next.clone(), quad: self.quad.clone(), records: self.records.clone(), ..Default::default() };
         nav.build_graph(raw, self.zone_lanes.clone());
         nav
     }
