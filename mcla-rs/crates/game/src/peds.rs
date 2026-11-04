@@ -2346,8 +2346,10 @@ impl Peds {
         }
     }
 
-    /// Skin everything in view into this frame's vertex buffer.
-    pub fn prepare(&mut self, gpu: &Gpu, cam: Vec3, frustum: &Frustum) {
+    /// Skin everything in view into this frame's vertex buffer. `hidden`: the cops' arrest scene is on screen (F-36139) -
+    /// the walker render F-68474 returns before its light step and its draw, so nothing is emitted and the lights stay as
+    /// they were.
+    pub fn prepare(&mut self, gpu: &Gpu, cam: Vec3, frustum: &Frustum, hidden: bool) {
         self.buf.clear();
         let tables = self.night_lights.as_ref().and_then(|_| crate::render::LAMP_TABLES.read().ok()?.clone());
         let mut local: Vec<(Quat, Vec3)> = Vec::new();
@@ -2365,7 +2367,7 @@ impl Peds {
                 blend_pose(&mut local, &p.from, (p.blend / p.blend_len).clamp(0.0, 1.0));
             }
             p.cur.clone_from(&local);
-            if !visible {
+            if !visible || hidden {
                 continue;
             }
             let lod = lod as usize;

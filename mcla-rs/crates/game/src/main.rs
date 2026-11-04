@@ -10497,6 +10497,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             use rayon::prelude::*;
             // (the walkers' skinning for this frame, docs/PERFORMANCE.md 2026-10-27 (4): beside the shadow passes)
             let (peds, ped_eye, ped_frustum) = (&mut self.peds, self.cam.pos, &frustum);
+            let ped_hidden = self.arrest_on_screen;
             let (mut parts, ()): (Vec<(usize, wgpu::CommandBuffer, usize, usize)>, ()) = mcla_flash::raster::pool().install(|| rayon::join(|| {
                 // (0 the shadow map, 1 - 4 the cascade tiles, 5 the collector, 6 the reflection)
                 (0..7usize)
@@ -10519,7 +10520,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         _ => (j, reflection_job(), 0, 0),
                     })
                     .collect()
-            }, || peds.prepare(gpu, ped_eye, ped_frustum)));
+            }, || peds.prepare(gpu, ped_eye, ped_frustum, ped_hidden)));
             parts.sort_by_key(|p| p.0);
             for (j, cb, n, sec_n) in parts {
                 if j == 0 {
@@ -11301,10 +11302,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B people");
                 pass.set_pipeline(&gpu.pipeline_opaque);
                 if !pic_on {
-                    // (F-68474: no walker drawn while the arrest's scene is on screen, F-36139)
-                    if !self.arrest_on_screen {
-                        self.peds.draw(&mut pass, &gpu, false, &mut draws);
-                    }
+                    // (F-68474: no walker drawn while the arrest's scene is on screen, F-36139 - `prepare` emitted none)
+                    self.peds.draw(&mut pass, &gpu, false, &mut draws);
                     self.cine.draw(&mut pass, &gpu, false, &mut draws);
                 }
                 self.drivers.draw(&mut pass, &gpu, &mut draws);
