@@ -237,7 +237,11 @@ pub struct CarIn {
     pub hyd_on: bool,
     pub ang_vel: Vec3,
     pub air_time: f32,
-    pub wipeout: bool,
+    /// the car matrix's third row (M2: the car's back, the port's rot x Z)
+    pub back: Vec3,
+    /// wiped out, chassis +592 & 0x10 (a car's `upset` over WipeoutDelay, a bike's wipe), and damaged out (& 0x04)
+    pub wiped: bool,
+    pub damaged_out: bool,
     pub two_wheels: bool,
     pub horn: bool,
     /// the high beams (the flash target, HEADLIGHTS held)
@@ -306,6 +310,27 @@ pub(crate) fn intake_db(gear_idx: i32, step: f32) -> f32 {
         1.0 - if x - 0.5 >= 0.0 { 0.5 } else { x }
     };
     if lin - f32::from_bits(0x3727_C5AC) >= 0.0 { (lin.log2() * f32::from_bits(0x3E9A_1CAC)) * 20.0 } else { -100.0 }
+}
+
+/// What a steam loop's slot does this frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Steam {
+    None,
+    Play,
+    Move,
+    Stop,
+}
+
+/// The steam loops' rule (F-89706 / F-87058 and the slot functions F-26850 / F-96861 / F-73124): wiped out, a slot whose
+/// record has its matrix plays into an empty slot and moves a live one; a record without one stops its slot; not wiped
+/// out, both live slots stop.
+pub(crate) fn steam_step(wipeout: bool, matrix: [bool; 2], live: [bool; 2]) -> [Steam; 2] {
+    std::array::from_fn(|k| match (wipeout && matrix[k], live[k]) {
+        (true, false) => Steam::Play,
+        (true, true) => Steam::Move,
+        (false, true) => Steam::Stop,
+        (false, false) => Steam::None,
+    })
 }
 
 #[derive(Default)]
@@ -400,6 +425,9 @@ pub struct CarSounds {
     parts_seen: Option<u64>,
     /// GLOBAL_CAR_PARTICLES +18 (CAR_BANGERS_GLASS_LARGE): a window cracking or breaking
     glass_hash: u32,
+    /// GLOBAL_CAR_PARTICLES +22 (RADIATOR_STEAM_MASTER) and slots 1428 / 1432: the wipeout's two steam loops
+    steam_hash: u32,
+    steam: [Option<Handle>; 2],
     /// the last window event heard (damagemap::CarDamage::glass)
     glass_seen: Option<u64>,
 }
@@ -472,6 +500,8 @@ impl CarSounds {
             scrape: [(None, 0.0); 2],
             parts_seen: None,
             glass_hash: g.get_name("GLOBAL_CAR_PARTICLES").map_or(0, |o| be_u32(o, 18)),
+            steam_hash: g.get_name("GLOBAL_CAR_PARTICLES").map_or(0, |o| be_u32(o, 22)),
+            steam: [None; 2],
             glass_seen: None,
         }
     }
@@ -491,6 +521,9 @@ impl CarSounds {
         }
         if let Some((h, _)) = self.hyd_loop.take() {
             lib.stop(h);
+        }
+        for s in self.steam.iter_mut() {
+            stop(lib, s);
         }
         for s in [&mut self.two_loop, &mut self.horn, &mut self.siren, &mut self.turbo_v, &mut self.intake_v, &mut self.nitro_empty, &mut self.pings, &mut self.sst_burn, &mut self.sst_loop, &mut self.sst_full] {
             stop(lib, s);
@@ -535,6 +568,7 @@ impl CarSounds {
         self.high_beams(lib, c);
         self.nitrous(lib, mats, c, cam_mode);
         self.damage(lib, c, cam_mode);
+        self.steam(lib, c);
         self.prev_shift = c.shift;
     }
 
@@ -736,7 +770,7 @@ impl CarSounds {
         let wxz = w.x * w.x + w.z * w.z;
         let sq = |at: usize| be_f32(&s, at) * be_f32(&s, at);
         // (sound offset, state, gate time offset) or None = stop; Some(None) = leave as is
-        let want: Option<Option<(usize, u8, Option<usize>)>> = if c.wipeout {
+        let want: Option<Option<(usize, u8, Option<usize>)>> = if c.wiped || c.damaged_out {
             if c.air_time > 0.25 {
                 Some((w.length_squared() >= sq(121)).then_some((117, 4, None)))
             } else if wxz >= sq(113) {
@@ -934,6 +968,24 @@ impl CarSounds {
             self.siren = lib.play_hash(be_u32(&self.police, 18), Req { volume: base, ..req });
         } else if let Some(h) = self.siren {
             lib.set(h, req);
+        }
+    }
+
+    /// The wipeout's steam loops: every frame of the wipeout flag (chassis +592 & 0x10) the car effects update F-21480
+    /// starts the two damage smoke trails (F-89706) and hands their matrices to F-26850 / F-96861, which play
+    /// RADIATOR_STEAM_MASTER into an empty slot at the matrix and else move the slot's sound there; the first frame
+    /// without the flag F-87058 stops both (F-73124). The matrices are the car's with the place moved 0.75 m along M2 and
+    /// -0.75 m (back and front).
+    fn steam(&mut self, lib: &mut SoundLib, c: &CarIn) {
+        let live = [!free(lib, &self.steam[0]), !free(lib, &self.steam[1])];
+        for (k, act) in steam_step(c.wiped, [true; 2], live).into_iter().enumerate() {
+            let at = c.pos + c.back * if k == 0 { 0.75 } else { -0.75 };
+            match act {
+                Steam::Play if !is_null(self.steam_hash) => self.steam[k] = lib.play_hash(self.steam_hash, self.req(at)),
+                Steam::Move => lib.set(self.steam[k].unwrap(), self.req(at)),
+                Steam::Stop => stop(lib, &mut self.steam[k]),
+                _ => {}
+            }
         }
     }
 
@@ -1411,7 +1463,9 @@ pub fn car_in(c: &CarInstance) -> CarIn {
         hyd_on: vs.is_some_and(|v| v.hyd.on),
         ang_vel: st.ang_vel,
         air_time: st.airborne_time,
-        wipeout: st.wipeout > 0.0,
+        damaged_out: st.damage >= 0.999,
+        back: st.rot * Vec3::Z,
+        wiped: st.upset > 0.0 || vs.is_some_and(|v| v.wipe.is_some()),
         two_wheels: vs.is_some_and(|v| v.two != 0) && !c.model.bike,
         nitro_firing: st.nitro_on(),
         sst: vs.map(|v| (v.sst.level, v.sst.burning)),
@@ -2943,5 +2997,50 @@ mod tests {
             }
         }
         assert_eq!(n, 17492);
+    }
+
+    /// The wipeout's steam loops against the original's smoke trail start / stop and slot functions run offline
+    /// (tools/steam_loops_reference.py): 300 runs, 9,941 frames of the wipeout flag going on and off, records with or
+    /// without their matrix, sounds ending and makes failing; every play (RADIATOR_STEAM_MASTER at the record's matrix,
+    /// P+52 0, flags 4), move, stop and slot equal.
+    #[test]
+    fn steam_loops_match_the_original() {
+        let txt = include_str!("testdata/steam_ref.txt");
+        let num = |t: &str| t[1..].parse::<u32>().unwrap() != 0;
+        let (mut matrix, mut live, mut n) = ([false; 2], [false; 2], 0);
+        for l in txt.lines() {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            match w.first() {
+                Some(&"R") => {
+                    matrix = [num(w[1]), num(w[2])];
+                    live = [false; 2];
+                }
+                Some(&"F") => {
+                    let (wipeout, ended, made) = (num(w[1]), [num(w[4]), num(w[5])], num(w[6]));
+                    for k in 0..2 {
+                        if ended[k] {
+                            live[k] = false;
+                        }
+                    }
+                    let acts = steam_step(wipeout, matrix, live);
+                    let mut got = String::new();
+                    for k in 0..2 {
+                        let play = acts[k] == Steam::Play;
+                        match acts[k] {
+                            Steam::Play => live[k] = made,
+                            Steam::Stop => live[k] = false,
+                            _ => {}
+                        }
+                        let (p, g) = (play as u8, if play { 4 } else { 0 });
+                        got += &format!(" p{p} h{p} q{p} e0 g{g} o{} k{} s{}", (acts[k] == Steam::Move) as u8, (acts[k] == Steam::Stop) as u8, live[k] as u8);
+                    }
+                    let want = l.split(" ->").nth(1).unwrap();
+                    assert_eq!(got.trim(), want.split(" a").next().unwrap().trim(), "{l}");
+                    n += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(n, 9941);
     }
 }
