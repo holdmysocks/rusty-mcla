@@ -128,6 +128,8 @@ struct Ped {
     then_angry: bool,
     /// the car dodged last
     dodged: Option<Vec3>,
+    /// the avoidance part's dodge words (M, F-15352 / F-83234 / F-56160)
+    dodge: Avoid,
     /// a layout item's person (F-39915): its item, and its age and least age (8 + 4U s)
     item: Option<u32>,
     age: f32,
@@ -535,19 +537,7 @@ const RAIL_MIN: f32 = 0.5;
 
 /// F-17399: the point of segment a -> b nearest to q (3-D; t clamped to 0 .. 1, 0 for a zero segment).
 fn closest_on_segment(a: Vec3, b: Vec3, q: Vec3) -> Vec3 {
-    use crate::physics::exact::fma;
-    use crate::tcp_rail::{vdiff, vmadd3};
-    let v = vdiff(b, a);
-    let l = fma(v.x, v.x, fma(v.y, v.y, v.z * v.z));
-    let t = if l == 0.0 {
-        0.0
-    } else {
-        let w = vdiff(q, a);
-        let d = fma(w.x, v.x, fma(w.y, v.y, w.z * v.z)) / l;
-        let t = if d >= 0.0 { d } else { 0.0 };
-        if t - 1.0 >= 0.0 { 1.0 } else { t }
-    };
-    vmadd3(v, t, a)
+    seg_nearest(a, b, q).1
 }
 
 /// F-93741: the path segment nearest to q (3-D squared distance, the first of equals), None for fewer than 2 points.
@@ -824,12 +814,13 @@ fn stop_time(v: f32, rand: &mut dyn FnMut() -> f32) -> f32 {
 /// car's position and the way out (away from the nearest point of its path).
 /// One entry of the avoid list (`mcAvoidAnimMgrData.xml`, in file order): `AvoidType` (0 AvoidAny, 1 AvoidMale,
 /// 2 AvoidFemale, 3 Pivot, 4 AngryMale, 5 AngryFemale), `ApproachDir` (0 Any, 1 Front, 2 Rear, 3 Left, 4 Right) and
-/// the clip, if it was found.
+/// the clip, if it was found; `AudioType` (0 None, 1 Fast, 2 Slow: the slide start's speech, F-83234).
 #[derive(Clone, Copy, Debug)]
 pub struct AvoidItem {
     pub ty: u32,
     pub dir: u32,
     pub clip: Option<usize>,
+    pub audio: u32,
 }
 
 /// The evade clip pick (F-37443): over the list in order, an entry of the walker's sex (or AvoidAny) whose approach
@@ -882,30 +873,630 @@ pub fn evade_pick(items: &[AvoidItem], female: bool, dir: f32, approach: f32, ti
     Some(ok[rng.index(ok.len() as u32) as usize])
 }
 
-fn car_threat(pos: Vec3, threats: &[Threat]) -> Option<(Vec3, Vec3, f32)> {
-    for t in threats {
-        if (t.pos.y - pos.y).abs() > 5.0 || t.vel.length_squared() < 1e-4 {
-            continue;
-        }
-        // half width of a car side on (the original picks the half extent of the side it
-        // comes at; not decoded - the half width of an average car)
-        let reach = 1.0 + PED_RADIUS;
-        for k in 1..=4 {
-            let (a, b) = (t.pos + t.vel * (0.25 * (k - 1) as f32), t.pos + t.vel * (0.25 * k as f32));
-            let ab = flat(b - a);
-            let s = flat(pos - a).dot(ab) / ab.length_squared().max(1e-6);
-            if s <= 0.0 || s >= 1.0 {
-                continue;
+// ---------------------------------------------------------------------------------------------
+// The walkers' car dodge (docs/reference/people/car_dodge_rule.md): the threat F-15352, the direction search F-94813
+// with its probe F-78951 and lane limit F-50861, and the slide start F-83234. Vector operations as the recompiled
+// VMX code does them (each lane rounded and flushed, `vlanes`), scalar ones as its FPU code (fused where fused).
+
+fn vadd(a: Vec3, b: Vec3) -> Vec3 {
+    vlanes(a, b, |x, y| x + y)
+}
+
+fn vsub(a: Vec3, b: Vec3) -> Vec3 {
+    vlanes(a, b, |x, y| x - y)
+}
+
+fn vmul(a: Vec3, b: Vec3) -> Vec3 {
+    vlanes(a, b, |x, y| x * y)
+}
+
+/// vmaddfp a x splat(k) + c (the product rounded, then the sum).
+fn vmadd(a: Vec3, k: f32, c: Vec3) -> Vec3 {
+    vadd(vmul(a, Vec3::splat(k)), c)
+}
+
+/// The y lane cleared by `vsel` (the other lanes as they are).
+fn vflat(v: Vec3) -> Vec3 {
+    Vec3::new(v.x, 0.0, v.z)
+}
+
+/// vrsqrtefp as the recompiled code does it: 1 / sqrt(x), each step rounded and flushed.
+fn vrsqrt(x: f32) -> f32 {
+    vftz(1.0 / vftz(vftz(x).sqrt()))
+}
+
+/// The dodge's Newton step on y0 = vrsqrt(x), in vector operations: y0 + (-(x y0^2 - 1)) (0.5 y0).
+fn vnr(x: f32, y0: f32) -> f32 {
+    let k = -vftz(vftz(x * vftz(y0 * y0)) - 1.0);
+    vftz(vftz(k * vftz(0.5 * y0)) + y0)
+}
+
+/// x in the walker's own frame: the dot products with the rows of its matrix (F-33765), merged.
+fn vlocal(rows: &[Vec3; 3], x: Vec3) -> Vec3 {
+    Vec3::new(vdot3(rows[0], x), vdot3(rows[1], x), vdot3(rows[2], x))
+}
+
+/// The 3D length the slide start writes, sqrt(fma(z, z, fma(x, x, y y))).
+fn len3(v: Vec3) -> f32 {
+    use crate::physics::exact::fma;
+    fma(v.z, v.z, fma(v.x, v.x, v.y * v.y)).sqrt()
+}
+
+/// The dodge's constants (the image's words).
+const DODGE_DY: f32 = 5.0; // 0x828308BC
+const DODGE_MOVING: u32 = 0x38D1_B717; // 1e-4, 0x82080750
+const DODGE_DIAG: u32 = 0x3F35_04F3; // 0.70710677, 0x82007DE8
+const DODGE_ACC_MAX: f32 = 10000.0; // 0x828308B4
+const DODGE_ACC_SPEED: f32 = 100.0; // 0x828308B8
+const DODGE_STEP: f32 = 0.25; // s, 0x8283086C
+const DODGE_ACC_STEP: f32 = 0.25; // q, 0x82830870
+/// K (0x8294A544): zero in the image, never written, read 0 in two running originals
+const DODGE_K: f32 = 0.0;
+const DODGE_T_MIN: u32 = 0x3586_37BD; // 1e-6, 0x82003774
+const DODGE_DIR_EPS: u32 = 0x2B8C_BCCC; // 1e-12, 0x827D8520
+const DODGE_FLIP: f32 = 3.0; // 0x820077F8
+const DODGE_LIFT: u32 = 0x3E99_999A; // 0.3, 0x8283087C
+const DODGE_INSIDE_R: u32 = 0x3D4C_CCCD; // 0.05 (x 2.0), 0x82830880
+const DODGE_DEG: u32 = 0x3C8E_FA35; // pi / 180, 0x82006BFC
+const DODGE_REACH: f32 = 10.0; // 0x82003A8C, also the lane limit's radius
+const DODGE_LANE_GAP: f32 = 3.0; // 0x82830884
+const DODGE_LANE_EPS: u32 = 0x3727_C5AC; // 1e-5, 0x82007A3C
+const DODGE_TURNS: [f32; 3] = [0.0, -45.0, 45.0]; // 0x820DA334
+/// The speech thresholds on the car's squared speed (0x8294A558 / 0x8294A55C, copied from 0x820DA32C / 0x820DA330).
+const DODGE_SPEECH_FAST: u32 = 0x4453_0C5B; // 844.193
+const DODGE_SPEECH_SLOW: u32 = 0x4374_C419; // 244.766
+/// F-88694's mask, the type flag of what the walker stops inside / dodges into partly (the probes' query: type 640, mask
+/// *(0x82830888) & ~0x20 = 0x381E; the ground probe's type 512).
+pub(crate) const DODGE_INSIDE_MASK: u32 = 0x800;
+
+/// A grid object as the threat test reads it (mcObstacle, F-15352).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DodgeCar {
+    /// +6: 0 / 1 racers, 2 an ambient car (any other kind is passed over)
+    pub kind: u8,
+    /// kind 2: F-96472 (it rides a navsys lane rail), C+452 != 0 (a behaviour), F-17857 (its physics is active)
+    pub rail: bool,
+    pub beh: bool,
+    pub active: bool,
+    /// vt+4: the matrix's rows 0 and 2 and its place
+    pub a: Vec3,
+    pub c: Vec3,
+    pub q: Vec3,
+    /// vt+8 (kinds 0 / 1: F-98427) and +416 (kinds 0 / 1)
+    pub vel: Vec3,
+    pub prev: Vec3,
+    /// vt+12 (width, length) and vt+28
+    pub size: (f32, f32),
+    pub rv: f32,
+    /// ((+48)->+8)+580, the car's burnout charge (None: no car at +48)
+    pub burn: Option<f32>,
+    /// vt+32 != 0: the car's physics instance (left out of the probes)
+    pub inst: bool,
+}
+
+/// The walker as the dodge reads it: P (its place), r (I+492), U (I+4768), the rows of its matrix (F-33765), bSex.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DodgeWalker {
+    pub p: Vec3,
+    pub r: f32,
+    pub u: Vec3,
+    pub rows: [Vec3; 3],
+    pub female: bool,
+}
+
+/// The walker's avoidance part (M) as far as the dodge writes it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Avoid {
+    /// +0 .. +64: the path points of the last object tested
+    pub pts: [Vec3; 5],
+    /// +80: the object dodged (index into the threat list)
+    pub car: Option<usize>,
+    /// +96: where the walker stopped inside a 0x800 object
+    pub stop_at: Vec3,
+    /// +128: the slide's flat direction
+    pub dir: Vec3,
+    /// +160 / +176: the slide's ends
+    pub from: Vec3,
+    pub to: Vec3,
+    /// +236 the time to the car, +240 the slide's time, +244 its length
+    pub t: f32,
+    pub time: f32,
+    pub len: f32,
+    /// +248: the avoid list entry playing
+    pub clip: Option<usize>,
+    /// +252 / +256: the clip's yaw and length corrections
+    pub yaw: f32,
+    pub stretch: f32,
+    /// +260: 0x2 a clip of its own playing, 0x4 sliding
+    pub flags: u32,
+}
+
+/// The world as the dodge asks it.
+pub(crate) trait DodgeWorld {
+    /// F-88694's sphere (F-66549, type 640, mask 0x800, the walker left out): anything there.
+    fn inside(&mut self, c: Vec3, r: f32) -> bool;
+    /// F-27454: a ball of radius `r` swept from `a` to `b` (type 640, mask 0x381E; the walker and, with `car`, the
+    /// car left out): where it hits (Q+128) and the type flags of what (archetype +16).
+    fn sweep(&mut self, a: Vec3, b: Vec3, r: f32, car: bool) -> Option<(Vec3, u32)>;
+    /// F-57005: the segment `a` -> `b` (type 512, mask 0x381E) hits something.
+    fn ground(&mut self, a: Vec3, b: Vec3) -> bool;
+    /// F-59579: the nearest lane point within `r` of `x` and its squared distance.
+    fn lane(&mut self, x: Vec3, r: f32) -> Option<(Vec3, f32)>;
+    /// F-21043: the mover of clip `clip` at `t`.
+    fn mover(&mut self, clip: usize, t: f32) -> Vec3;
+    /// F-84843: the stop timer.
+    fn stop(&mut self);
+    /// F-39461 with `kind` (0: the voice's +14 sound, 1: its +10).
+    fn speech(&mut self, kind: u32);
+    /// F-99671 (the temporary rails dropped) and F-50795 (the path given up).
+    fn drop_rails(&mut self);
+}
+
+/// F-17399: the point of a -> b nearest to w (t of the 3D projection, clamped to 0 .. 1 by fsel), with t (its out
+/// argument; `closest_on_segment` without it).
+fn seg_nearest(a: Vec3, b: Vec3, w: Vec3) -> (f32, Vec3) {
+    use crate::physics::exact::fma;
+    let d = vsub(b, a);
+    let l2 = fma(d.x, d.x, fma(d.y, d.y, d.z * d.z));
+    let t = if l2 == 0.0 {
+        0.0
+    } else {
+        let e = vsub(w, a);
+        let t = fma(e.x, d.x, fma(e.y, d.y, e.z * d.z)) / l2;
+        let t = if t >= 0.0 { t } else { 0.0 };
+        if t - 1.0 >= 0.0 { 1.0 } else { t }
+    };
+    (t, vmadd(d, t, a))
+}
+
+/// F-50861: the lane limit at `x` along `dir`: the nearest lane point within 10 m (F-59579), the flat way to it
+/// normalised (F-41334, else `dir`); none when the lane is not ahead (cos < 1e-6), else how far along `dir` the walker
+/// may go to stay 3 m + its radius from the lane.
+fn lane_limit(w: &DodgeWalker, x: Vec3, dir: Vec3, world: &mut dyn DodgeWorld) -> Option<f32> {
+    use crate::physics::exact::fma;
+    let (near, d2) = world.lane(x, DODGE_REACH)?;
+    let n = vsub(near, x);
+    let n = crate::aiv::norm_or(Vec3::new(n.x, 0.0, n.z), f32::from_bits(DODGE_LANE_EPS), dir);
+    let c = fma(dir.x, n.x, fma(dir.z, n.z, dir.y * n.y));
+    if c < f32::from_bits(DODGE_T_MIN) {
+        return None;
+    }
+    Some(((d2.sqrt() - DODGE_LANE_GAP) - w.r) / c)
+}
+
+/// The probe query of F-94813 (F-13499's fields as the search sets them): Q+208 the walker's place, Q+32 / Q+48 the
+/// swept ball's ends, Q+240 the way probed, Q+256 the reach, Q+4 / Q+12 the car left out.
+struct DodgeProbe {
+    pq: Vec3,
+    from: Vec3,
+    to: Vec3,
+    way: Vec3,
+    reach: f32,
+    car: bool,
+}
+
+/// F-78951: one probe of length `l`. Nothing swept: the clear way is the lane limit + l (or the reach), at least l,
+/// and ground under the swept end; a hit: the clear way is the plan distance to the hit less the radius - a 0x800
+/// object nearer than l gives a partial dodge into it -, bounded by the lane limit + l, at least l. On success the
+/// displacement is the way x l.
+#[allow(clippy::too_many_arguments)]
+fn dodge_probe(w: &DodgeWalker, q: &DodgeProbe, l: f32, disp: &mut Vec3, t: &mut f32, clear: &mut f32, f800: &mut bool, world: &mut dyn DodgeWorld) -> bool {
+    use crate::physics::exact::fma;
+    match world.sweep(q.from, q.to, w.r, q.car) {
+        None => {
+            let x = vmadd(q.way, l, q.pq);
+            *clear = match lane_limit(w, x, q.way, world) {
+                Some(m) => m + l,
+                None => q.reach,
+            };
+            if *clear < l {
+                return false;
             }
-            let near = a + ab * s;
-            let off = flat(pos - near);
-            if off.length() < reach {
-                let away = if off.length() > 1e-3 { off.normalize() } else { Vec3::new(-t.vel.z, 0.0, t.vel.x).normalize_or_zero() };
-                return Some((t.pos, away, t.vel.length()));
+            if !world.ground(Vec3::new(q.to.x, q.to.y + 1.0, q.to.z), Vec3::new(q.to.x, q.to.y - 1.0, q.to.z)) {
+                return false;
+            }
+            *disp = vmul(q.way, Vec3::splat(l));
+            true
+        }
+        Some((at, flags)) => {
+            let h = vsub(at, q.pq);
+            let dh = fma(h.z, h.z, h.x * h.x).sqrt();
+            let c0 = dh - w.r;
+            *clear = if -c0 >= 0.0 { 0.0 } else { c0 };
+            if flags & DODGE_INSIDE_MASK != 0 {
+                *f800 = true;
+                if *clear < l {
+                    let lo = f32::from_bits(DODGE_T_MIN);
+                    let den = if lo - dh >= 0.0 { lo } else { dh };
+                    *disp = vmul(h, Vec3::splat(*clear / den));
+                    *t = (*t / l) * dh;
+                    return true;
+                }
+            }
+            if *clear < l {
+                return false;
+            }
+            let x = vmadd(q.way, l, q.pq);
+            if let Some(m) = lane_limit(w, x, q.way, world) {
+                let m = m + l;
+                let c = if *clear - m >= 0.0 { m } else { *clear };
+                *clear = if -c >= 0.0 { 0.0 } else { c };
+            }
+            if *clear < l {
+                return false;
+            }
+            *disp = vmul(q.way, Vec3::splat(l));
+            true
+        }
+    }
+}
+
+/// F-94813: the way out. The away direction turned by 0, -45 and +45 degrees about +y, each probed over near / cos (the
+/// ball swept from U (r + 0.3) above the walker out to the reach + 10 m along the turned way laid in the ground's plane,
+/// (U x way) x U); for a hit on the path (not the body) the same three turns of the opposite direction over far / cos -
+/// these keep the swept end of the first three's last. `disp` comes back as the displacement.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn dodge_search(w: &DodgeWalker, car: bool, disp: &mut Vec3, near: f32, far: f32, path: bool, t: &mut f32, clear: &mut f32, f800: &mut bool, world: &mut dyn DodgeWorld) -> bool {
+    use crate::physics::exact::{fma, guest_cos, guest_sin};
+    *f800 = false;
+    let from = vmadd(w.u, w.r + f32::from_bits(DODGE_LIFT), w.p);
+    let mut q = DodgeProbe { pq: w.p, from, to: Vec3::ZERO, way: Vec3::ZERO, reach: 0.0, car };
+    let turn = |v: Vec3, th: f32| {
+        let ang = th * f32::from_bits(DODGE_DEG);
+        let (sn, cs) = (guest_sin(ang as f64) as f32, guest_cos(ang as f64) as f32);
+        (Vec3::new(fma(v.z, sn, v.x * cs), v.y, fma(v.z, cs, -(v.x * sn))), cs)
+    };
+    let swz = |v: Vec3| (Vec3::new(v.y, v.z, v.x), Vec3::new(v.z, v.x, v.y));
+    for th in DODGE_TURNS {
+        let (way, cs) = turn(*disp, th);
+        let l = near / cs;
+        q.way = way;
+        q.reach = l + DODGE_REACH;
+        let (u_yzx, u_zxy) = swz(w.u);
+        let (w_yzx, w_zxy) = swz(way);
+        let c1 = -vsub(vmul(w_yzx, u_zxy), vmul(w_zxy, u_yzx));
+        let (c_yzx, c_zxy) = swz(c1);
+        let n = -vsub(vmul(u_yzx, c_zxy), vmul(u_zxy, c_yzx));
+        let n2 = vdot3(n, n);
+        let y0 = vrsqrt(n2);
+        let y0 = if y0 == f32::INFINITY { 0.0 } else { y0 };
+        let n = vmul(n, Vec3::splat(vnr(n2, y0)));
+        q.to = vadd(vmul(n, Vec3::splat(q.reach)), q.from);
+        if dodge_probe(w, &q, l, disp, t, clear, f800, world) {
+            return true;
+        }
+    }
+    if path {
+        for th in DODGE_TURNS {
+            let (way, cs) = turn(vneg(*disp), th);
+            let l = far / cs;
+            q.way = way;
+            q.reach = l + DODGE_REACH;
+            if dodge_probe(w, &q, l, disp, t, clear, f800, world) {
+                return true;
             }
         }
     }
-    None
+    false
+}
+
+/// F-83234: start the slide by `disp` (the car dodge: `car` its index and velocity, `v8` its place - the walker's; the
+/// sidestep F-26402: no car, `sidestep`). With an evade clip playing and no clip of its own, not a sidestep, the clip is
+/// re-aimed (M+252 / +256 from its mover at its time + T); else, not a sidestep, the evade clip is picked (F-37443: the
+/// move's and the approach's angles in the walker's frame, T, the least and the most move). The slide lasts the clip
+/// less 8 frames (or T); speech, only when not sliding yet, by the car's squared speed, then the clip's AudioType (a
+/// random bit without a clip). Then the slide P -> P + disp starts.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn slide_start(m: &mut Avoid, w: &DodgeWalker, items: &[AvoidItem], durs: &[f32], car: Option<(usize, Vec3)>, disp: Vec3, v8: Vec3, t: f32, clear: f32, sidestep: bool, world: &mut dyn DodgeWorld, speech: &mut crate::vehicles::parked::Mwc, pick: &mut crate::vehicles::parked::Mwc) {
+    use crate::physics::exact::{fma, fnms};
+    use std::f32::consts::{PI, TAU};
+    let back = Vec3::new(0.0, 0.0, -1.0);
+    let re = m.clip.is_some() && m.flags & 2 == 0 && !sidestep;
+    if re {
+        let tr = items[m.clip.unwrap()].clip.map_or(Vec3::ZERO, |c| world.mover(c, m.time + t));
+        let fd = crate::aiv::ang_xz(tr, back) - crate::aiv::ang_xz(vlocal(&w.rows, disp), back);
+        let x = if -(fd - PI) >= 0.0 { fd } else { fd - TAU };
+        m.yaw = if x + PI >= 0.0 { x } else { x + TAU };
+        m.stretch = len3(disp) - len3(tr);
+    } else if !sidestep {
+        let ld = vlocal(&w.rows, disp);
+        let lv = vlocal(&w.rows, v8);
+        let mn = fma(ld.z, ld.z, ld.x * ld.x).sqrt();
+        let a2 = crate::aiv::ang_xz(lv, back);
+        let a1 = crate::aiv::ang_xz(ld, back);
+        let got = evade_pick(items, w.female, a1, a2, t, mn, clear, |c, at| world.mover(c, at.unwrap_or(durs[c])), pick);
+        if let Some((_, yaw)) = got {
+            m.yaw = yaw;
+        }
+        m.clip = got.map(|g| g.0);
+        m.stretch = 0.0;
+    }
+    let sp2 = car.map_or(0.0, |(_, v)| fma(v.z, v.z, fma(v.x, v.x, v.y * v.y)));
+    let (fast, slow) = (f32::from_bits(DODGE_SPEECH_FAST), f32::from_bits(DODGE_SPEECH_SLOW));
+    let quiet = m.flags & 4 != 0;
+    let mut say = None;
+    match m.clip.and_then(|e| items[e].clip.map(|c| (e, c))) {
+        Some((e, c)) => {
+            if !re {
+                m.len = fnms(8.0, f32::from_bits(0x3D08_8889), durs[c]);
+                if !quiet {
+                    say = if sp2 > fast {
+                        Some(0)
+                    } else if sp2 < slow {
+                        Some(1)
+                    } else {
+                        match items[e].audio {
+                            2 => Some(1),
+                            1 => Some(0),
+                            _ => None,
+                        }
+                    };
+                }
+            }
+        }
+        None => {
+            let lo = f32::from_bits(DODGE_T_MIN);
+            m.len = if t - lo >= 0.0 { t } else { lo };
+            if !quiet && !sidestep {
+                say = Some(if sp2 > fast {
+                    0
+                } else if sp2 < slow {
+                    1
+                } else {
+                    speech.next() & 1
+                });
+            }
+        }
+    }
+    if let Some(k) = say {
+        world.speech(k);
+    }
+    m.flags = (m.flags & !6) | 4;
+    m.from = w.p;
+    m.to = vadd(disp, w.p);
+    m.dir = crate::aiv::norm_or(Vec3::new(disp.x, 0.0, disp.z), f32::from_bits(DODGE_LANE_EPS), Vec3::ZERO);
+    m.t = t;
+    if !re {
+        m.time = 0.0;
+    }
+    m.car = car.map(|c| c.0);
+    world.drop_rails();
+}
+
+/// F-15352: the car threat, every frame. Over the grid objects (`cars`, in the 3x3 cells' order): racers, and ambient
+/// cars off the lane rails with a behaviour or active physics; within 5 m in height, moving (1e-4); the body from its
+/// rear to its leading point along the axis it moves on (across for a diagonal), then 3 steps of 0.25 s with a racer's
+/// acceleration; the first segment the walker's projection falls inside of (0 < t < 1) within the half extent + its
+/// radius in plan is the hit. Inside a 0x800 object: stop. Else the way out (F-94813) and the slide (F-83234).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn car_dodge(m: &mut Avoid, w: &DodgeWalker, cars: &[DodgeCar], dt: f32, items: &[AvoidItem], durs: &[f32], world: &mut dyn DodgeWorld, speech: &mut crate::vehicles::parked::Mwc, pick: &mut crate::vehicles::parked::Mwc) {
+    use crate::physics::exact::fma;
+    let p = w.p;
+    let inv = {
+        let x = vftz(dt);
+        let y = vftz(1.0 / x);
+        let k = -vftz(vftz(y * x) - 1.0);
+        if x == 0.0 { 0.0 } else { vftz(vftz(y * k) + y) }
+    };
+    for (j, o) in cars.iter().enumerate() {
+        match o.kind {
+            0 | 1 => {}
+            2 if !o.rail && (o.beh || o.active) => {}
+            _ => continue,
+        }
+        if vftz(o.q.y - p.y).abs() > DODGE_DY {
+            continue;
+        }
+        let v = vflat(o.vel);
+        let s2 = vdot3(v, v);
+        if f32::from_bits(DODGE_MOVING) > s2 {
+            continue;
+        }
+        let speed = if s2 == 0.0 { 0.0 } else { vftz(s2 * vnr(s2, vrsqrt(s2))) };
+        let g = vftz(f32::from_bits(DODGE_DIAG) * speed);
+        let va = vdot3(v, o.a);
+        let vc = vftz(0.0 - vdot3(v, o.c));
+        let (mut acc, mut sideways) = (Vec3::ZERO, false);
+        if o.kind <= 1 {
+            let a0 = vflat(vmul(vsub(o.vel, o.prev), Vec3::splat(inv)));
+            let a2 = vdot3(a0, a0);
+            acc = if a2 > DODGE_ACC_MAX || DODGE_ACC_SPEED > s2 { Vec3::ZERO } else { a0 };
+            sideways = o.burn.is_some_and(|b| b > 0.0) && va.abs() > g;
+        }
+        let (hl, hw) = (o.size.1 * 0.5, o.size.0 * 0.5);
+        let ng = vftz(0.0 - g);
+        let (p0, p1, r0) = if vc >= g {
+            (vmadd(o.c, hl, o.q), vmadd(o.c, -hl, o.q), hw)
+        } else if ng > vc {
+            (vmadd(o.c, -hl, o.q), vmadd(o.c, hl, o.q), hw)
+        } else if va >= g {
+            (vmadd(o.a, -hw, o.q), vmadd(o.a, hw, o.q), hl)
+        } else if ng > va {
+            (vmadd(o.a, hw, o.q), vmadd(o.a, -hw, o.q), hl)
+        } else {
+            (vmadd(o.c, hl, o.q), vmadd(o.c, -hl, o.q), o.rv)
+        };
+        let aq = vmul(acc, Vec3::splat(DODGE_ACC_STEP));
+        let h2 = (DODGE_ACC_STEP * DODGE_ACC_STEP) * 0.5;
+        let p2 = vmadd(acc, h2, vmadd(v, DODGE_STEP, p1));
+        let v1 = vadd(v, aq);
+        let p3 = vmadd(acc, h2, vmadd(v1, DODGE_STEP, p2));
+        let v2 = vadd(v1, aq);
+        let v3 = vadd(v2, aq);
+        let p4 = vmadd(acc, h2, vmadd(v2, DODGE_STEP, p3));
+        m.pts = [p0, p1, p2, p3, p4];
+        let reach = vftz(r0 + w.r);
+        let reach2 = vftz(reach * reach);
+        for k in 1..5usize {
+            let (t, n) = seg_nearest(m.pts[k - 1], m.pts[k], p);
+            if !(t > 0.0 && t < 1.0) {
+                continue;
+            }
+            let off = vflat(vsub(n, p));
+            let n2 = vdot3(off, off);
+            if !(reach2 > n2) {
+                continue;
+            }
+            // the hit: inside a 0x800 object stop (unless a clip of its own plays), nothing else
+            if world.inside(Vec3::new(p.x, p.y + 1.0, p.z), fma(f32::from_bits(DODGE_INSIDE_R), 2.0, w.r)) {
+                if m.flags & 2 == 0 {
+                    world.stop();
+                    m.stop_at = p;
+                }
+                return;
+            }
+            let tt = ((k as f32 - 2.0) + t) * DODGE_STEP;
+            let lo = f32::from_bits(DODGE_T_MIN);
+            let mut tt = if lo - tt >= 0.0 { lo } else { tt };
+            let rr = vftz(vftz(DODGE_K + r0) + w.r);
+            let dist = if n2 == 0.0 { 0.0 } else { vftz(n2 * vnr(n2, vrsqrt(n2))) };
+            let (mut near, mut far) = (vftz(rr - dist), vftz(rr + dist));
+            let mut off = vsub(p, n);
+            if sideways {
+                off = vmadd(v3, tt, off);
+            }
+            let d0 = vflat(off);
+            let m2 = vdot3(d0, d0);
+            let mut dir = if m2 > f32::from_bits(DODGE_DIR_EPS) { vmul(d0, Vec3::splat(vnr(m2, vrsqrt(m2)))) } else { Vec3::X };
+            if m.flags & 4 != 0 && m.flags & 2 == 0 && 0.0 > vdot3(m.dir, dir) && -far < near + DODGE_FLIP {
+                dir = vneg(dir);
+                std::mem::swap(&mut near, &mut far);
+            }
+            let mut clear = 0.0;
+            let mut f800 = false;
+            if dodge_search(w, o.inst, &mut dir, near, far, k > 1, &mut tt, &mut clear, &mut f800, world) {
+                slide_start(m, w, items, durs, Some((j, o.vel)), dir, vsub(o.q, p), tt, clear, false, world, speech, pick);
+            }
+            return;
+        }
+    }
+}
+
+/// The world the dodge asks, as the port has it (docs/reference/people/car_dodge_rule.md "Port differences"): the
+/// engine's queries are not decoded, so `inside` is the city collider's sphere, `sweep` the city collider's sphere marched
+/// from a to b in steps of r / 2 (what it touches first, as a 0x800 object; props, cars and other walkers are not in it),
+/// `ground` the city collider's ray a -> b, `lane` the port's F-59579 (`vehicles::traffic::snap_to_lane`), `mover` the evade clip's
+/// mover translation from its start (`Clip::mover`, the time clamped to the clip). What the dodge asks for is kept
+/// and done by `dodge_frame`.
+struct PedDodgeWorld<'a> {
+    col: Option<&'a WorldCollider>,
+    nav: Option<&'a NavSys>,
+    evade: &'a [Clip],
+    stop: bool,
+    say: Option<u32>,
+    dropped: bool,
+}
+
+impl DodgeWorld for PedDodgeWorld<'_> {
+    fn inside(&mut self, c: Vec3, r: f32) -> bool {
+        self.col.is_some_and(|col| col.sphere(c, r).is_some())
+    }
+    fn sweep(&mut self, a: Vec3, b: Vec3, r: f32, _car: bool) -> Option<(Vec3, u32)> {
+        let col = self.col?;
+        let d = b - a;
+        let n = ((d.length() / (r * 0.5).max(0.05)).ceil() as usize).clamp(1, 400);
+        (0..=n).find_map(|k| col.sphere(a + d * (k as f32 / n as f32), r).map(|(_, _, at)| (at, DODGE_INSIDE_MASK)))
+    }
+    fn ground(&mut self, a: Vec3, b: Vec3) -> bool {
+        let Some(col) = self.col else { return true };
+        let d = b - a;
+        let l = d.length();
+        l > 0.0 && col.raycast(a, d / l, l).is_some()
+    }
+    fn lane(&mut self, x: Vec3, r: f32) -> Option<(Vec3, f32)> {
+        crate::vehicles::traffic::snap_to_lane(self.nav?, x, r).0.map(|h| (h.point, h.d2))
+    }
+    fn mover(&mut self, clip: usize, t: f32) -> Vec3 {
+        let Some(c) = self.evade.get(clip) else { return Vec3::ZERO };
+        let t = t.clamp(0.0, c.anim.duration.max(0.0));
+        c.mover(c.frame(t, false)).0 - c.mover(0.0).0
+    }
+    fn stop(&mut self) {
+        self.stop = true;
+    }
+    fn speech(&mut self, kind: u32) {
+        self.say = Some(kind);
+    }
+    fn drop_rails(&mut self) {
+        self.dropped = true;
+    }
+}
+
+/// The dodge's two generators: the speech MWC (0x82860880) and the shared one the clip pick draws from (0x82860890;
+/// in the original also drawn by others).
+#[derive(Default)]
+pub(crate) struct DodgeRng {
+    speech: crate::vehicles::parked::Mwc,
+    pick: crate::vehicles::parked::Mwc,
+}
+
+/// One frame of the car dodge for a walker (F-97113's call of F-15352, every frame, and the slide's consumer F-56160):
+/// the threat test on the cars, then what it asked for - the stop timer, the speech, the rails and path dropped, the
+/// evade clip picked (F-37443) started as a one-off clip -, and the slide P -> P + disp over M+244 (M+240 += dt, the
+/// place the straight line's point at min(M+240 / M+244, 1)). With a clip the walker slides here and the clip plays
+/// without its root motion; without one the port's sidestep slide (`Ped::slide`, walk or run by the slide's speed)
+/// carries it. At the slide's end M+248 and bit 0x4 are cleared and the clip ends (the port's after-dodge: face the car,
+/// angry). Returns true while a dodge's clip plays.
+#[allow(clippy::too_many_arguments)]
+fn dodge_frame(p: &mut Ped, ty: &PedType, threats: &[Threat], col: Option<&WorldCollider>, nav: Option<&NavSys>, dt: f32, rand: &mut dyn FnMut() -> f32, rng: &mut DodgeRng, evades: &mut u32, speech: &mut Vec<Speech>) -> bool {
+    let m = &mut p.dodge;
+    // M+260 bit 0x2: a clip of the walker's own (the port's angry and Pivot clips)
+    m.flags = (m.flags & !2) | if matches!(p.state, State::Angry(_) | State::Turn(_)) { 2 } else { 0 };
+    let w = DodgeWalker { p: p.pos, r: PED_RADIUS, u: p.ground.up, rows: [p.rot * Vec3::X, p.rot * Vec3::Y, p.rot * Vec3::Z], female: ty.female };
+    let cars: Vec<DodgeCar> = threats.iter().map(|t| t.car).collect();
+    let durs: Vec<f32> = ty.evade.iter().map(|c| c.anim.duration).collect();
+    let mut world = PedDodgeWorld { col, nav, evade: &ty.evade, stop: false, say: None, dropped: false };
+    let re = m.clip.is_some() && m.flags & 2 == 0;
+    car_dodge(m, &w, &cars, dt, &ty.avoid, &durs, &mut world, &mut rng.speech, &mut rng.pick);
+    if world.stop {
+        p.stop = stop_time(ty.idle.anim.duration, rand);
+        p.stops += 1;
+    }
+    if let Some(k) = world.say {
+        speech.push(Speech { pos: p.pos, voice: ty.voice.clone(), female: ty.female, fast: k == 0 });
+    }
+    let m = p.dodge;
+    let clip = m.clip.and_then(|e| ty.avoid.get(e)?.clip);
+    if world.dropped {
+        p.rail = None;
+        p.path.clear();
+        p.ride = None;
+        p.dodged = m.car.and_then(|j| threats.get(j)).map(|t| t.pos);
+        *evades += 1;
+        match clip {
+            // (re-aimed: the clip playing goes on)
+            Some(c) if !(re && p.state == State::Evade(c)) => {
+                start_one_off(p, State::Evade(c));
+                p.slide = None;
+            }
+            Some(_) => p.slide = None,
+            None => p.slide = Some((m.from, m.to, m.time, m.len)),
+        }
+    }
+    if m.flags & 4 == 0 {
+        return false;
+    }
+    // the slide (F-56160)
+    let time = m.time + dt;
+    p.dodge.time = time;
+    let done = time >= m.len;
+    if done {
+        p.dodge.clip = None;
+        p.dodge.flags &= !4;
+    }
+    if clip.is_none() || !matches!(p.state, State::Evade(_)) {
+        // (no clip: the sidestep slide moves the walker)
+        return false;
+    }
+    p.pos = m.from.lerp(m.to, (time / m.len).min(1.0));
+    p.ground.t_face = flat(p.rot * -Vec3::Z).normalize_or(Vec3::Z);
+    if done {
+        // the clip ends with the slide: the caller's end of a one-off clip follows
+        if let State::Evade(k) = p.state {
+            p.time = p.time.max(ty.evade[k].anim.duration);
+        }
+    }
+    true
 }
 
 /// Start locomotion clip k (0 idle, 1 walk, 2 run) at `rate` through F-52026, from t = 0: crossfaded in over 8 frames
@@ -964,46 +1555,19 @@ fn loco_clip(p: &mut Ped, ty: &PedType, st: u32, flags: u32, slide: f32) -> f32 
 /// reversed path (F-94431). Moves `p` and sets its state; returns the walk clip's
 /// playback rate.
 #[allow(clippy::too_many_arguments)]
-fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[Obst], col: Option<&WorldCollider>, threats: &[Threat], due: u8, dt: f32, rand: &mut dyn FnMut() -> f32, evades: &mut u32, speech: &mut Vec<Speech>) -> f32 {
+fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[Obst], col: Option<&WorldCollider>, nav: Option<&NavSys>, threats: &[Threat], due: u8, dt: f32, rand: &mut dyn FnMut() -> f32, rng: &mut DodgeRng, evades: &mut u32, speech: &mut Vec<Speech>) -> f32 {
     // (the behaviour's facing: the rail's, kept apart from the drawn one, which is the mean of the last 8 frames')
     let fwd = if p.ground.face != Vec3::ZERO { p.ground.face } else { flat(p.rot * -Vec3::Z).normalize_or(Vec3::Z) };
     p.ground.t_face = fwd;
     let set_state = set_clip_state;
     p.hold = (p.hold - dt).max(0.0);
-    // clips playing (dodge, angry, turn): the caller moves the walker by their root
-    if matches!(p.state, State::Evade(_) | State::Angry(_) | State::Turn(_)) {
+    // the car dodge, every frame (F-15352 from F-97113, no gate of its own): a dodge's clip slides the walker here
+    if dodge_frame(p, ty, threats, col, nav, dt, rand, rng, evades, speech) {
         return 1.0;
     }
-    // a car coming: dodge out of its way with an evade clip
-    if p.calm <= 0.0 && !ty.evade.is_empty() && p.hold <= 0.0 {
-        if let Some((car, away, speed)) = car_threat(p.pos, threats) {
-            let from_front = fwd.dot(flat(car - p.pos).normalize_or_zero()) > 0.4;
-            let mut best = (f32::MIN, 0usize);
-            for (k, c) in ty.evade.iter().enumerate() {
-                if c.front && !from_front {
-                    continue;
-                }
-                let s = (p.rot * c.travel.normalize_or_zero()).dot(away) + rand() * 0.5;
-                if s > best.0 {
-                    best = (s, k);
-                }
-            }
-            p.from = p.cur.clone();
-            p.blend = 0.15;
-            p.state = State::Evade(best.1);
-            p.time = 0.0;
-            // (a one-off clip: F-20899's slots)
-            p.clips.cur = -1;
-            p.clips.parked = -1;
-            p.clips.oneoff = 1;
-            p.slide = None;
-            p.rail = None;
-            p.path.clear();
-            p.dodged = Some(car);
-            *evades += 1;
-            speech.push(Speech { pos: p.pos, voice: ty.voice.clone(), female: ty.female, fast: ty.evade[best.1].fast || speed * speed > 244.77 });
-            return 1.0;
-        }
+    // clips playing (angry, turn): the caller moves the walker by their root
+    if matches!(p.state, State::Evade(_) | State::Angry(_) | State::Turn(_)) {
+        return 1.0;
     }
     if p.hold > 0.0 {
         set_state(p, State::Idle);
@@ -1256,6 +1820,38 @@ enum Plan {
 pub struct Threat {
     pub pos: Vec3,
     pub vel: Vec3,
+    /// the car as the dodge's threat test reads it
+    pub(crate) car: DodgeCar,
+}
+
+impl Threat {
+    /// A car as a grid object of the dodge (F-15352): the kinds as `brainturn::ObjectInfo::from_car` takes them (the
+    /// player 0, racers 1, others 2), an ambient car on a lane rail passed over and off one active; the matrix's rows 0
+    /// and 2 and its place; the size 2 x the tuning box's half extents (`body_half`; the original's from the bound box)
+    /// and vt+28 = sqrt(fma(hx, hx, hz hz)) as the racer's own extent writer has it; +416 taken as the velocity (its
+    /// writer is not found: no acceleration); the burnout charge `burn`.
+    pub fn from_car(c: &crate::vehicles::CarInstance) -> Threat {
+        use crate::brainturn::ObjectInfo;
+        let kind = ObjectInfo::from_car(0, c).kind;
+        let h = c.params().body_half;
+        let (r, q) = (c.state.rot, c.state.pos);
+        let car = DodgeCar {
+            kind,
+            rail: c.rail.is_some(),
+            beh: false,
+            active: c.rail.is_none(),
+            a: r * Vec3::X,
+            c: r * Vec3::Z,
+            q,
+            vel: c.state.vel,
+            prev: c.state.vel,
+            size: (h.x * 2.0, h.z * 2.0),
+            rv: crate::physics::exact::fma(h.x, h.x, h.z * h.z).sqrt(),
+            burn: c.state.veh.as_ref().map(|v| v.burn),
+            inst: true,
+        };
+        Threat { pos: q, vel: c.state.vel, car }
+    }
 }
 
 pub struct Speech {
@@ -1311,8 +1907,8 @@ pub struct Peds {
     /// a second place and hour whose types are read ahead (`read_ahead_also`)
     ahead_also: Option<(Vec3, f32)>,
     avoid: Vec<(Arc<Animation>, bool, bool, u8)>,
-    /// the avoid list in file order (the manager's +0x64228 list): clip name, AvoidType, ApproachDir
-    avoid_list: Vec<(String, u32, u32)>,
+    /// the avoid list in file order (the manager's +0x64228 list): clip name, AvoidType, ApproachDir, AudioType
+    avoid_list: Vec<(String, u32, u32, u32)>,
     list: Vec<Ped>,
     active: HashSet<(usize, u32)>,
     curb: HashMap<usize, Option<f32>>,
@@ -1326,6 +1922,7 @@ pub struct Peds {
     /// evades started so far (diagnostics)
     pub evades: u32,
     evade_radius: f32,
+    dodge_rng: DodgeRng,
     voices: Option<HashMap<String, String>>,
     /// the speech banks' scan, started ahead on a thread (`scan_voices_ahead`)
     voices_scan: Option<std::thread::JoinHandle<HashMap<String, String>>>,
@@ -1413,6 +2010,7 @@ impl Peds {
             evades: 0,
             crossings: 0,
             evade_radius: std::env::var("MCLA_PED_EVADE").ok().and_then(|v| v.parse().ok()).unwrap_or(2.3),
+            dodge_rng: DodgeRng::default(),
             voices: None,
             voices_scan: None,
             buf: SkinBuffer::default(),
@@ -1519,7 +2117,9 @@ impl Peds {
                 const DIRS: [&str; 5] = ["Any", "Front", "Rear", "Left", "Right"];
                 let ty = TYPES.iter().position(|t| *t == field("AvoidType")).unwrap_or(0) as u32;
                 let dir = DIRS.iter().position(|t| *t == field("ApproachDir")).unwrap_or(0) as u32;
-                self.avoid_list.push((name.clone(), ty, dir));
+                const AUDIO: [&str; 3] = ["None", "Fast", "Slow"];
+                let audio = AUDIO.iter().position(|t| *t == field("AudioType")).unwrap_or(0) as u32;
+                self.avoid_list.push((name.clone(), ty, dir, audio));
                 class.insert(name, (field("AudioType") == "Fast", field("ApproachDir") == "Front", kind));
             }
         }
@@ -1601,7 +2201,7 @@ impl Peds {
         let turn_radius = std::fs::read_to_string(self.tune_dir.join(name).join("mcAmbientType.xml")).ok().and_then(|t| xml_value(&t, "fMinTurningRadius")).unwrap_or(0.1);
         // the avoid list as the pick reads it: an entry's clip only when it is one of this sex's evades (the other
         // sex's entries and the angry / pivot ones fail the pick's type test anyway)
-        let avoid = self.avoid_list.iter().map(|(n, ty, dir)| AvoidItem { ty: *ty, dir: *dir, clip: evade_names.iter().position(|e| e == n) }).collect();
+        let avoid = self.avoid_list.iter().map(|(n, ty, dir, audio)| AvoidItem { ty: *ty, dir: *dir, clip: evade_names.iter().position(|e| e == n), audio: *audio }).collect();
         Some(PedType { female, voice: core, model, walk, idle, run, a28, a36, evade, avoid, angry, pivot, lod_switch, turn_radius })
     }
 
@@ -1891,6 +2491,7 @@ impl Peds {
                 turn_rest: 0.0,
                 then_angry: false,
                 dodged: None,
+                dodge: Avoid::default(),
                 hold: 0.5,
                 item: None,
                 age: 0.0,
@@ -2063,6 +2664,7 @@ impl Peds {
                     turn_rest: 0.0,
                     then_angry: false,
                     dodged: None,
+                dodge: Avoid::default(),
                     hold: 0.0,
                     item: None,
                     age: 0.0,
@@ -2135,38 +2737,16 @@ impl Peds {
                 // the same: a dodge, then clip 0 again crossfaded in over 8 frames, F-52026)
                 p.age += dt;
                 p.blend = (p.blend - dt).max(0.0);
-                if p.state == State::Idle && !ty.evade.is_empty() {
-                    if let Some((car, away, speed)) = car_threat(p.pos, threats) {
-                        let fwd = flat(p.rot * -Vec3::Z).normalize_or(Vec3::Z);
-                        let from_front = fwd.dot(flat(car - p.pos).normalize_or_zero()) > 0.4;
-                        let mut best = (f32::MIN, 0usize);
-                        for (k, c) in ty.evade.iter().enumerate() {
-                            if c.front && !from_front {
-                                continue;
-                            }
-                            let s = (p.rot * c.travel.normalize_or_zero()).dot(away) + rand() * 0.5;
-                            if s > best.0 {
-                                best = (s, k);
-                            }
-                        }
-                        p.from = p.cur.clone();
-                        p.blend = 0.15;
-                        p.blend_len = 0.25;
-                        p.state = State::Evade(best.1);
-                        p.time = 0.0;
-                        p.dodged = Some(car);
-                        self.evades += 1;
-                        self.speech.push(Speech { pos: p.pos, voice: ty.voice.clone(), female: ty.female, fast: ty.evade[best.1].fast || speed * speed > 244.77 });
-                    }
+                // (its dodge: the same F-15352; a clip slides it, `dodge_frame`)
+                if p.state == State::Idle || matches!(p.state, State::Evade(_)) {
+                    dodge_frame(p, ty, threats, Some(col), Some(nav), dt, &mut rand, &mut self.dodge_rng, &mut self.evades, &mut self.speech);
                 }
                 let t0 = p.time;
                 p.time += dt;
                 if let State::Evade(k) = p.state {
+                    // (no root motion: the dodge's slide moves it)
                     let clip = &ty.evade[k];
-                    let (a, ar) = clip.mover(clip.frame(t0, false));
-                    let (b, br) = clip.mover(clip.frame(p.time, false));
-                    p.pos += p.rot * (ar.inverse() * (b - a));
-                    p.rot = (p.rot * (ar.inverse() * br)).normalize();
+                    let _ = t0;
                     if p.time >= clip.anim.duration.max(0.05) {
                         p.from = p.cur.clone();
                         // (clip 0 again through F-52026: after a one-off clip a crossfade of 8 frames)
@@ -2207,7 +2787,7 @@ impl Peds {
                         due |= 1 << (if clip { n & 1 } else { n % 3 });
                     }
                 }
-                rate = sidewalk_step(p, ty, i, &peds_pos, &boxes, Some(col), threats, due, dt, &mut rand, &mut self.evades, &mut self.speech);
+                rate = sidewalk_step(p, ty, i, &peds_pos, &boxes, Some(col), Some(nav), threats, due, dt, &mut rand, &mut self.dodge_rng, &mut self.evades, &mut self.speech);
             }
             // a car about to pass too close?
             if !on_mesh && matches!(p.state, State::Walk | State::Idle) && p.calm <= 0.0 && !ty.evade.is_empty() {
@@ -2272,7 +2852,10 @@ impl Peds {
                     apply(p, 0.0, f1);
                 }
             } else {
-                apply(p, clip.frame(t0, false), clip.frame(p.time, false));
+                // (a dodge's clip on the mesh: no root motion, the slide moves the walker - F-56160)
+                if !(on_mesh && matches!(p.state, State::Evade(_))) {
+                    apply(p, clip.frame(t0, false), clip.frame(p.time, false));
+                }
                 if let State::Turn(_) = p.state {
                     // what the clip does not turn, at most pi/4 per 8 frames
                     let a = p.turn_rest.clamp(-TURN_RATE * dt, TURN_RATE * dt);
@@ -2566,6 +3149,7 @@ impl Peds {
             turn_rest: 0.0,
             then_angry: false,
             dodged: None,
+                dodge: Avoid::default(),
             hold: 0.0,
             item: Some(item),
             age: 0.0,
@@ -2890,7 +3474,7 @@ mod tests {
             let c: Vec<&str> = c.split(' ').collect();
             let o: Vec<&str> = o.split(' ').collect();
             let k = |i: usize, j: usize| 9 + 9 * i + j;
-            let items: Vec<AvoidItem> = (0..h(c[0]) as usize).map(|i| AvoidItem { ty: h(c[k(i, 0)]), dir: h(c[k(i, 1)]), clip: (h(c[k(i, 2)]) != 0).then_some(i) }).collect();
+            let items: Vec<AvoidItem> = (0..h(c[0]) as usize).map(|i| AvoidItem { ty: h(c[k(i, 0)]), dir: h(c[k(i, 1)]), clip: (h(c[k(i, 2)]) != 0).then_some(i), audio: 0 }).collect();
             let v = |i: usize, j: usize| Vec3::new(f(c[k(i, j)]), f(c[k(i, j + 1)]), f(c[k(i, j + 2)]));
             let d = |t: &str| h(&t.replace('_', ""));
             let mut rng = crate::vehicles::parked::Mwc { lo: d(c[7]), carry: d(c[8]) };
@@ -2901,6 +3485,173 @@ mod tests {
             picked += (e >= 0) as usize;
         }
         assert_eq!((n, picked), (4000, 566));
+    }
+
+    /// The world of a car dodge reference case: the stubs' answers in order, every call logged as the harness does.
+    struct DodgeCase<'a> {
+        c: &'a [u32],
+        log: Vec<String>,
+        sw: usize,
+        gr: usize,
+        ln: usize,
+        mc: [u32; 8],
+    }
+
+    // the case's words (tools/car_dodge_reference.py)
+    const DC_SW: usize = 43;
+    const DC_GR: usize = 73;
+    const DC_LN: usize = 79;
+    const DC_ENT: usize = 110;
+    const DC_OBJ: usize = 178;
+    const DC_X: usize = 308;
+
+    impl DodgeCase<'_> {
+        fn w(&mut self, t: u32, ws: &[u32]) {
+            self.log.push(format!("t{t}"));
+            self.log.extend(ws.iter().map(|w| format!("{w:x}")));
+        }
+        fn v(&self, i: usize) -> Vec3 {
+            Vec3::new(f32::from_bits(self.c[i]), f32::from_bits(self.c[i + 1]), f32::from_bits(self.c[i + 2]))
+        }
+    }
+
+    impl DodgeWorld for DodgeCase<'_> {
+        fn inside(&mut self, c: Vec3, r: f32) -> bool {
+            self.w(1, &[c.x.to_bits(), c.y.to_bits(), c.z.to_bits(), r.to_bits()]);
+            self.c[42] != 0
+        }
+        fn sweep(&mut self, a: Vec3, b: Vec3, r: f32, car: bool) -> Option<(Vec3, u32)> {
+            self.w(3, &[a.x.to_bits(), a.y.to_bits(), a.z.to_bits(), b.x.to_bits(), b.y.to_bits(), b.z.to_bits(), r.to_bits(), car as u32]);
+            let s = DC_SW + 5 * self.sw;
+            self.sw += 1;
+            (self.c[s] != 0).then(|| (self.v(s + 1), self.c[s + 4]))
+        }
+        fn ground(&mut self, a: Vec3, b: Vec3) -> bool {
+            self.w(4, &[a.x.to_bits(), a.y.to_bits(), a.z.to_bits(), b.x.to_bits(), b.y.to_bits(), b.z.to_bits()]);
+            self.gr += 1;
+            self.c[DC_GR + self.gr - 1] != 0
+        }
+        fn lane(&mut self, x: Vec3, r: f32) -> Option<(Vec3, f32)> {
+            self.w(5, &[x.x.to_bits(), x.y.to_bits(), x.z.to_bits(), r.to_bits()]);
+            let s = DC_LN + 5 * self.ln;
+            self.ln += 1;
+            (self.c[s] != 0).then(|| (x + self.v(s + 1), f32::from_bits(self.c[s + 4])))
+        }
+        fn mover(&mut self, clip: usize, t: f32) -> Vec3 {
+            self.w(6, &[clip as u32, t.to_bits()]);
+            let k = if self.mc[clip] > 0 { 1 } else { 0 };
+            self.mc[clip] += 1;
+            self.v(DC_ENT + 11 * clip + 5 + 3 * k)
+        }
+        fn stop(&mut self) {
+            self.w(2, &[]);
+        }
+        fn speech(&mut self, kind: u32) {
+            self.w(7, &[kind]);
+        }
+        fn drop_rails(&mut self) {
+            self.w(8, &[]);
+            self.w(9, &[]);
+        }
+    }
+
+    /// The walkers' car dodge against the original's code run offline (tools/car_dodge_reference.py ->
+    /// testdata/car_dodge_ref.txt): the threat F-15352 whole on up to 5 grid objects of every kind (racers with and without
+    /// a car, ambient cars on / off the rails, moving along / across / diagonally, accelerating or not, a burnout charge,
+    /// in and out of the 5 m height band), with the direction search, probes, lane limit, the slide start and the evade
+    /// pick inside it; the search F-94813 and the slide start F-83234 called on their own. The world's queries are the
+    /// case's answers; every query (its words, in order), the avoidance part's words and the two MWCs must be equal.
+    #[test]
+    fn car_dodge_matches_the_original() {
+        let h = |t: &str| u32::from_str_radix(&t.replace('_', ""), 16).unwrap();
+        let mut n = [0usize; 3];
+        for l in include_str!("testdata/car_dodge_ref.txt").lines() {
+            let (ci, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<u32> = ci.split(' ').map(h).collect();
+            let want: Vec<String> = o.split(' ').map(|t| if t.starts_with('t') { t.to_string() } else { format!("{:x}", h(t)) }).collect();
+            let f = |i: usize| f32::from_bits(c[i]);
+            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let w = DodgeWalker { p: v(1), r: f(4), u: v(5), rows: [v(8), v(11), v(14)], female: c[17] != 0 };
+            let nent = c[109] as usize;
+            let items: Vec<AvoidItem> = (0..nent)
+                .map(|i| {
+                    let e = DC_ENT + 11 * i;
+                    AvoidItem { ty: c[e], dir: c[e + 1], audio: c[e + 2], clip: (c[e + 3] != 0).then_some(i) }
+                })
+                .collect();
+            let durs: Vec<f32> = (0..6).map(|i| f(DC_ENT + 11 * i + 4)).collect();
+            let cars: Vec<DodgeCar> = (0..c[176] as usize)
+                .map(|j| {
+                    let o = DC_OBJ + 26 * j;
+                    let has = c[o + 23] != 0;
+                    DodgeCar {
+                        kind: c[o + 1] as u8,
+                        rail: c[o + 2] != 0,
+                        beh: c[o + 3] != 0,
+                        active: c[o + 4] != 0,
+                        a: v(o + 5),
+                        c: v(o + 8),
+                        q: v(o + 11),
+                        vel: v(o + 14),
+                        prev: v(o + 17),
+                        size: (f(o + 20), f(o + 21)),
+                        rv: f(o + 22),
+                        burn: has.then(|| f(o + 24)),
+                        inst: has && c[o + 25] != 0,
+                    }
+                })
+                .collect();
+            let mut m = Avoid {
+                dir: v(19),
+                clip: (c[22] != u32::MAX).then_some(c[22] as usize),
+                time: f(23),
+                len: f(24),
+                yaw: f(25),
+                stretch: f(26),
+                t: f(27),
+                stop_at: v(28),
+                from: v(31),
+                to: v(34),
+                flags: c[18],
+                ..Default::default()
+            };
+            let mut speech = crate::vehicles::parked::Mwc { lo: c[37], carry: c[38] };
+            let mut pick = crate::vehicles::parked::Mwc { lo: c[39], carry: c[40] };
+            let mut world = DodgeCase { c: &c, log: Vec::new(), sw: 0, gr: 0, ln: 0, mc: [0; 8] };
+            let x = DC_X;
+            let mut out: Vec<u32> = Vec::new();
+            let vw = |o: &mut Vec<u32>, v: Vec3| o.extend([v.x.to_bits(), v.y.to_bits(), v.z.to_bits()]);
+            if c[0] == 1 {
+                let mut dir = v(x + 1);
+                let (mut t, mut clear, mut f800) = (f(x + 7), f(x + 8), false);
+                let r = dodge_search(&w, c[x] != 0, &mut dir, f(x + 4), f(x + 5), c[x + 6] != 0, &mut t, &mut clear, &mut f800, &mut world);
+                out.push(r as u32);
+                vw(&mut out, dir);
+                out.extend([t.to_bits(), clear.to_bits(), f800 as u32]);
+            } else {
+                if c[0] == 0 {
+                    car_dodge(&mut m, &w, &cars, f(41), &items, &durs, &mut world, &mut speech, &mut pick);
+                } else {
+                    let car = (c[x] != u32::MAX).then(|| (c[x] as usize, cars[c[x] as usize].vel));
+                    slide_start(&mut m, &w, &items, &durs, car, v(x + 1), v(x + 4), f(x + 7), f(x + 8), c[x + 10] != 0, &mut world, &mut speech, &mut pick);
+                }
+                for p in m.pts {
+                    vw(&mut out, p);
+                }
+                out.push(m.car.map_or(u32::MAX, |j| j as u32));
+                vw(&mut out, m.stop_at);
+                vw(&mut out, m.dir);
+                vw(&mut out, m.from);
+                vw(&mut out, m.to);
+                out.extend([m.t.to_bits(), m.time.to_bits(), m.len.to_bits(), m.clip.map_or(u32::MAX, |e| e as u32)]);
+                out.extend([m.yaw.to_bits(), m.stretch.to_bits(), m.flags, speech.lo, speech.carry, pick.lo, pick.carry]);
+            }
+            let mut got: Vec<String> = out.iter().map(|w| format!("{w:x}")).collect();
+            got.extend(world.log);
+            assert_eq!(got.join(" "), want.join(" "), "{l}");
+            n[c[0] as usize] += 1;
+        }
+        assert_eq!(n, [3000, 500, 500]);
     }
 
     fn quad() -> NavPoly {
@@ -3126,20 +3877,6 @@ mod tests {
         assert!(next_rail(&path, Vec3::new(0.2, 0.0, 0.0), Vec3::X, 0.1).is_none());
         // at the end of the path: nothing
         assert!(next_rail(&path, Vec3::new(10.5, 0.0, 0.0), Vec3::X, 0.1).is_none());
-    }
-
-    #[test]
-    fn car_prediction_over_a_second() {
-        let car = Threat { pos: Vec3::new(-10.0, 0.0, 0.0), vel: Vec3::new(20.0, 0.0, 0.0) };
-        // in its path within the next second (four steps of 0.25 s)
-        assert!(car_threat(Vec3::new(1.0, 0.0, 0.8), &[car]).is_some());
-        // beside its path, behind it, or further than a second away
-        assert!(car_threat(Vec3::new(1.0, 0.0, 3.0), &[car]).is_none());
-        assert!(car_threat(Vec3::new(-15.0, 0.0, 0.0), &[car]).is_none());
-        assert!(car_threat(Vec3::new(15.0, 0.0, 0.0), &[car]).is_none());
-        // the way out is away from its line
-        let (_, away, _) = car_threat(Vec3::new(1.0, 0.0, -0.8), &[car]).unwrap();
-        assert!(away.z < -0.9);
     }
 
     #[test]
