@@ -275,6 +275,8 @@ pub struct SoundLib {
     insts: Vec<Instance>,
     next: u64,
     next_voice: u64,
+    /// each wave voice's slot state for the voice manager (1 playing, 2 stopping; waiting when absent)
+    voice_state: HashMap<u64, u8>,
     pub listener: (Vec3, Vec3, Vec3),
     /// the reverb level and room size (env +5100 / +5104, set every frame by the probes of F-26357 -
     /// BUS_GRAPH_RULE.md 2.5)
@@ -407,6 +409,7 @@ impl SoundLib {
             insts: Vec::new(),
             next: 1,
             next_voice: 0,
+            voice_state: HashMap::new(),
             listener: (Vec3::ZERO, Vec3::X, Vec3::NEG_Z),
             cat_dat: cat,
             sliders: Default::default(),
@@ -1214,12 +1217,19 @@ impl SoundLib {
         let ms = dt * 1000.0;
         let mut insts = std::mem::take(&mut self.insts);
         let (lp, lr, lf) = self.listener;
+        let mut drives = Vec::new();
+        let mut states = HashMap::new();
         for inst in insts.iter_mut() {
             // a sound on a paused timer is not updated (F-89113): its voices hold where they are, silent, and go on from
             // there when the timer runs again
             if inst.timer.is_some_and(|t| self.timer_paused[t as usize]) {
                 let slowed = if inst.req.player { SLOWED } else { 0 };
-                hold_voices(&inst.root, &mut |v| audio.hold(v | slowed));
+                hold_voices(&inst.root, &mut |v| {
+                    audio.hold(v | slowed);
+                    if let Some(s) = self.voice_state.get(&(v | slowed)) {
+                        states.insert(v | slowed, *s);
+                    }
+                });
                 continue;
             }
             // Doppler (F-42745): radial speed from the distance change, ratio c / (c + v), smoothed 50/50
@@ -1241,9 +1251,42 @@ impl SoundLib {
             let mut out = Vec::new();
             self.step(&mut inst.root, ms, ctx, inst.req.offset(), &mut out);
             for v in out {
-                self.emit(v, inst, (lp, lr, lf), audio);
+                drives.push(self.emit(v, inst, (lp, lr, lf)));
             }
         }
+        // the voice manager (F-46122): the waves ranked by their levels, 96 a bucket; the first 76 (the config's 96 voices
+        // less 20, F-68447 / F-11111) are heard: a waiting one starts while physical voices are free, past them the
+        // playing ones stop. A wave not playing goes on (its position runs) and starts from there when picked again.
+        let slots: Vec<VoiceSlot> = drives
+            .iter()
+            .map(|d| VoiceSlot { active: true, ended: false, state: self.voice_state.get(&d.id).copied().unwrap_or(0), group: 0, flags: d.flags, h: d.h })
+            .collect();
+        let banks: Vec<&[VoiceSlot]> = slots.chunks(96).collect();
+        let picked = rank_pick(&banks, 76, 96u32.saturating_sub(audio.voices() as u32));
+        let at = |id: u16| (id >> 8) as usize * 96 + (id & 0xff) as usize;
+        let mut go = vec![false; drives.len()];
+        for &id in &picked.start {
+            go[at(id)] = true;
+        }
+        let mut halt = vec![false; drives.len()];
+        for &id in &picked.stop {
+            halt[at(id)] = true;
+        }
+        for (k, d) in drives.into_iter().enumerate() {
+            match (slots[k].state, go[k], halt[k]) {
+                // a stopped voice waits again once its physical voice has stopped (F-44224: the next update)
+                (2, ..) => {}
+                (1, _, true) => {
+                    states.insert(d.id, 2);
+                }
+                (1, ..) | (0, true, _) => {
+                    states.insert(d.id, 1);
+                    audio.drive(d.id, &d.clip, d.mix, d.ratio, d.looping, d.start, d.filt);
+                }
+                _ => {}
+            }
+        }
+        self.voice_state = states;
         insts.retain(|i| i.root.st != St::Done);
         // sounds started while updating (none today) stay
         insts.append(&mut self.insts);
@@ -1493,7 +1536,7 @@ impl SoundLib {
 
     /// A playing wave to the mixer: the voice's gain chain (F-24161), the pan law (F-56973 / F-67363),
     /// pitch and Doppler.
-    fn emit(&mut self, v: Leaf, inst: &Instance, listener: (Vec3, Vec3, Vec3), audio: &mut Audio) {
+    fn emit(&mut self, v: Leaf, inst: &Instance, listener: (Vec3, Vec3, Vec3)) -> Drive {
         let cat = self.cats.get(&v.ctx.category).copied().unwrap_or(Category { volume: 0.0, pitch: 0, lpf: 23900, hpf: 0, rolloff_scale: 1.0, reverb_amount: 1.0, reverb_dist: 1.0 });
         let (lp, lr, lf) = listener;
         let k = std::f32::consts::FRAC_1_SQRT_2;
@@ -1570,8 +1613,27 @@ impl SoundLib {
             send: if inst.req.chain != 0 { inst.req.fx_send * db2lin(a) } else { 0.0 },
             pans_chain: (inst.req.chain != 0 && inst.req.pans_chain).then_some(((lb * gl, lb * gr), rev_b)),
         };
-        audio.drive(v.voice | if inst.req.player { SLOWED } else { 0 }, &v.clip, mix, ratio, v.looping, v.start_frame, filt);
+        // the record's levels as the voice manager ranks them (F-24161): +26 = dB2lin(B), +28 / +30 = entry +72 / +76 x
+        // dB2lin(A), +32 = dB2lin(C) with C the request's volume (here in the chain's top, so taken out of A); flag 0x80 =
+        // entry +95 bit 2
+        let la = db2lin(a - inst.req.volume);
+        let h = [level_half(lb), level_half(inst.req.fx_send * la), level_half(inst.req.dry * la), level_half(db2lin(inst.req.volume))];
+        let id = v.voice | if inst.req.player { SLOWED } else { 0 };
+        Drive { id, clip: v.clip, mix, ratio, looping: v.looping, start: v.start_frame, filt, h, flags: if inst.req.pans_chain { 0x80 } else { 0 } }
     }
+}
+
+/// A wave's settings for the mixer this update, and its record's levels and flags for the voice manager.
+struct Drive {
+    id: u64,
+    clip: Arc<Clip>,
+    mix: crate::audio::Mix,
+    ratio: f32,
+    looping: bool,
+    start: f64,
+    filt: (u16, u16),
+    h: [u16; 4],
+    flags: u8,
 }
 
 /// Every wave / stream voice of a sound's tree.
@@ -1835,6 +1897,156 @@ struct Leaf {
     stereo: bool,
 }
 
+/// One wave voice as the voice manager ranks it (F-91203): its slot is in use and has not ended (position field -8), the
+/// slot's state (+16 top bits: 0 waiting, 1 playing, 2 stopping, F-60799 / F-71842 / F-44224), the voice group +4 (F-61065;
+/// 0 = none, and no sound of the data sets the group tristate), the record's flag byte +24 and its levels +26 / +28 / +30 /
+/// +32 as stored ([`level_half`]).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct VoiceSlot {
+    pub active: bool,
+    pub ended: bool,
+    pub state: u8,
+    pub group: u32,
+    pub flags: u8,
+    pub h: [u16; 4],
+}
+
+/// What the voice manager does this update (F-46122): the counts of the ranking (voices, groups, forced to the front,
+/// voices in no group), the voices to start and the playing voices to stop, as (bank << 8 | slot).
+#[derive(Debug, PartialEq)]
+pub(crate) struct Picked {
+    pub counts: [u16; 4],
+    pub start: Vec<u16>,
+    pub stop: Vec<u16>,
+}
+
+/// The voice update's store of a level (F-24161): negative and NaN as 0, under 6.1e-5 as 0, at most 65504, the half float
+/// cut off (not rounded).
+pub(crate) fn level_half(x: f32) -> u16 {
+    let x = if x >= 0.0 { x } else { 0.0 };
+    if !(x >= 6.103_515_6e-5) {
+        return 0;
+    }
+    let b = x.min(65504.0).to_bits();
+    ((((b >> 23) & 0x1ff) + 16) << 10 | (b >> 13) & 0x3ff | (b >> 16) & 0x8000) as u16
+}
+
+/// The voice manager's ranking and pick (F-91203, F-96767). Every slot in use is ranked by its loudness: key = !(trunc
+/// ((h28 + h30) x h26 x h32 x 2^32)), the smallest first, and 0 (the front) for a voice that pans an effect chain (+24 bit
+/// 0x80), one with bit 0x08, or one with bit 0x20 that is not silent; the voices of a group go together, ranked by their
+/// loudest. Down the ranking the first `budget` voices are kept: a waiting one starts while `free` physical voices last
+/// (a group only whole); past the budget the playing ones stop. Ties keep the slots' order backwards, as the original's
+/// lists do (each new voice at the front, then a stable radix sort).
+pub(crate) fn rank_pick(banks: &[&[VoiceSlot]], budget: u32, free: u32) -> Picked {
+    let half = |h: u16| {
+        let h = h as u32;
+        if h == 0 {
+            0.0
+        } else {
+            f32::from_bits((h & 0x8000) << 16 | (h & 0x3ff) << 13 | (((h >> 10) & 31) + 112) << 23)
+        }
+    };
+    // (key, id, state); `lone` in list order, each group's members newest first
+    let mut recs: Vec<(u64, u16, u8)> = Vec::new();
+    let mut lone: Vec<usize> = Vec::new();
+    let mut groups: Vec<(u32, u64, Vec<usize>)> = Vec::new();
+    let mut forced = 0u16;
+    for (b, bank) in banks.iter().enumerate() {
+        for (i, s) in bank.iter().enumerate().take(96) {
+            if !s.active || s.ended {
+                continue;
+            }
+            let [h26, h28, h30, h32] = s.h.map(half);
+            let p = (h28 + h30) * h26 * h32;
+            let x = p * 4_294_967_296.0;
+            let t = if x.is_nan() { i64::MIN } else { x as i64 };
+            let mut key = !(t as u64);
+            if (s.flags & 0x20 != 0 && p > 0.0) || s.flags & 0x08 != 0 || s.flags & 0x80 != 0 {
+                key = 0;
+                forced += 1;
+            }
+            recs.push((key, (i as u16) | ((b as u16) & 0xff) << 8, s.state));
+            let r = recs.len() - 1;
+            if s.group == 0 {
+                lone.insert(0, r);
+            } else {
+                let g = match groups.iter().position(|g| g.0 == s.group) {
+                    Some(g) => g,
+                    None => {
+                        groups.push((s.group, key, Vec::new()));
+                        groups.len() - 1
+                    }
+                };
+                let g = &mut groups[g];
+                if g.2.is_empty() || g.1 > key {
+                    g.1 = key;
+                }
+                g.2.insert(0, r);
+            }
+        }
+    }
+    let counts = [recs.len() as u16, groups.len() as u16, forced, lone.len() as u16];
+    lone.sort_by_key(|&r| recs[r].0);
+    let mut order: Vec<usize> = Vec::new();
+    for g in 0..groups.len() {
+        if order.is_empty() || groups[g].1 <= groups[order[0]].1 {
+            order.insert(0, g);
+        } else {
+            let mut p = 0;
+            while p + 1 < order.len() && groups[order[p + 1]].1 < groups[g].1 {
+                p += 1;
+            }
+            order.insert(p + 1, g);
+        }
+    }
+    let (mut budget, mut free) = (budget, free);
+    let (mut r, mut gi) = (0, 0);
+    let (mut start, mut stop) = (Vec::new(), Vec::new());
+    while r < lone.len() || gi < order.len() {
+        if budget != 0 {
+            if r < lone.len() && (gi >= order.len() || recs[lone[r]].0 < groups[order[gi]].1) {
+                let (_, id, st) = recs[lone[r]];
+                if st == 0 && free != 0 {
+                    free -= 1;
+                    start.push(id);
+                }
+                r += 1;
+                budget -= 1;
+            } else {
+                let m = &groups[order[gi]].2;
+                let mut left = m.len() as u32;
+                if budget >= left {
+                    for &x in m {
+                        let (_, id, st) = recs[x];
+                        if st == 0 {
+                            if free < left {
+                                break;
+                            }
+                            free -= 1;
+                            left -= 1;
+                            start.push(id);
+                        }
+                        budget -= 1;
+                    }
+                }
+                gi += 1;
+            }
+        } else {
+            if r < lone.len() {
+                if recs[lone[r]].2 == 1 {
+                    stop.push(recs[lone[r]].1);
+                }
+                r += 1;
+            }
+            if gi < order.len() {
+                stop.extend(groups[order[gi]].2.iter().filter(|&&x| recs[x].2 == 1).map(|&x| recs[x].1));
+                gi += 1;
+            }
+        }
+    }
+    Picked { counts, start, stop }
+}
+
 /// The release ramp of F-31923 on the original's integer clock: `ratio = (end - now) / (end - start)` (0.0 when `end <= start`
 /// or `now >= end`, which also marks the sound ended: -100 dB), `vol += 20 * log2(ratio) * 0.301` in dB (-100 below 1e-5). Returns the
 /// new volume and whether the sound goes on (an ended sound stops only when `flags & 0x10` is clear in the original's +58).
@@ -1988,6 +2200,39 @@ fn decode_mp3_whole_from(dec: rodio::Decoder<std::io::BufReader<std::fs::File>>,
 
 #[cfg(test)]
 mod tests {
+
+    /// The voice manager's ranking and pick (F-91203, F-96767) against the original's code run offline on random voice
+    /// slots (tools/voice_rank_reference.py): the counts, the voices to start and to stop, in order
+    #[test]
+    fn voice_pick_matches_the_original() {
+        use super::*;
+        let mut n = 0;
+        for line in include_str!("testdata/voice_rank_ref.txt").lines() {
+            let (case, out) = line.split_once(" -> ").unwrap();
+            let (head, slots) = case.split_once(" | ").unwrap();
+            let h: Vec<u32> = head.split(' ').map(|x| x.parse().unwrap()).collect();
+            let mut banks = vec![vec![VoiceSlot::default(); 96]; h[0] as usize];
+            for s in slots.split(' ').filter(|s| !s.is_empty()) {
+                let v: Vec<u32> = s.split(',').map(|x| x.parse().unwrap()).collect();
+                banks[v[0] as usize][v[1] as usize] = VoiceSlot {
+                    active: true,
+                    ended: v[2] != 0,
+                    state: v[3] as u8,
+                    group: v[4],
+                    flags: v[5] as u8,
+                    h: [v[6] as u16, v[7] as u16, v[8] as u16, v[9] as u16],
+                };
+            }
+            let refs: Vec<&[VoiceSlot]> = banks.iter().map(|b| b.as_slice()).collect();
+            let mut part = out.split('|');
+            let nums = |s: &str| -> Vec<u16> { s.split_whitespace().map(|x| x.parse().unwrap()).collect() };
+            let c = nums(part.next().unwrap());
+            let want = Picked { counts: [c[0], c[1], c[2], c[3]], start: nums(part.next().unwrap()), stop: nums(part.next().unwrap()) };
+            assert_eq!(rank_pick(&refs, h[1], h[2]), want, "{head}");
+            n += 1;
+        }
+        assert_eq!(n, 600);
+    }
 
     /// The durations of the sound tree (F-53189 with each type's method), the play offsets (F-90115), the Looping split
     /// (F-39812) and the Sequential start (F-71973) against the original's code run offline on random trees
