@@ -8126,7 +8126,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // is left to the boom cameras below)
                 let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
                 let car_view = replay::CarView::of(&render_state, car.model.max.y);
-                let mut probe = ReplayProbe(&cam_level);
+                // (and the watched car's own hull, for the polar camera's push-out)
+                let own_hull = car.tuned.as_deref().unwrap_or(&car.model.params).hull.as_ref().map(|h| physics::camprobe::CamObj::of_hull(h, render_state.pos, render_state.rot));
+                let mut probe = ReplayProbe(&cam_level, own_hull);
                 if let Some(p) = self.game.replay.as_mut() {
                     // (the right stick turns the polar camera, F-79918; the triggers' zoom is not wired)
                     p.stick(self.pad_look.0, self.pad_look.1, 0.0, dt);
@@ -14411,7 +14413,7 @@ fn lookback_scene(asked: &mut bool, audio: Option<&mut audio::Audio>, on: bool) 
 /// the place where it first touches; the heli's look at the car: city only, both ways
 /// (approx.: the original's undirected sweep F-80278 - the ball at both ends and the sweep in
 /// both directions).
-struct ReplayProbe<'a>(&'a physics::camprobe::CamLevel<'a>);
+struct ReplayProbe<'a>(&'a physics::camprobe::CamLevel<'a>, Option<physics::camprobe::CamObj>);
 
 impl replay::Probe for ReplayProbe<'_> {
     fn sweep(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
@@ -14426,6 +14428,9 @@ impl replay::Probe for ReplayProbe<'_> {
             return Some(a);
         }
         l.sweep(a, b, r, false).or_else(|| l.sweep(b, a, r, false).map(|(t, n)| (1.0 - t, n))).map(|(t, _)| a + (b - a) * t)
+    }
+    fn own(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
+        self.1.as_ref()?.sweep(a, b, r).map(|(t, _)| a + (b - a) * t)
     }
 }
 

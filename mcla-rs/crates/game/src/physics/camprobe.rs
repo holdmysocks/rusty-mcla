@@ -43,6 +43,28 @@ impl CamObj {
         let radius = w.iter().map(|v| v.distance(centre)).fold(0.0, f32::max);
         CamObj { tris, normals, beside, centre, radius }
     }
+
+    /// A ball swept from `a` to `b` against this car alone, directed: the first touch, (t, normal).
+    pub fn sweep(&self, a: Vec3, b: Vec3, r: f32) -> Option<(f32, Vec3)> {
+        let d = b - a;
+        if d.length_squared() < 1e-12 {
+            return None;
+        }
+        // (the capsule a..b with r against the car's ball)
+        let t = ((self.centre - a).dot(d) / d.length_squared()).clamp(0.0, 1.0);
+        if (a + d * t).distance(self.centre) > self.radius + r {
+            return None;
+        }
+        let mut best: Option<(f32, Vec3)> = None;
+        for (i, v) in self.tris.iter().enumerate() {
+            if let Some(h) = sweep_polygon(a, d, r, v, self.normals[i]) {
+                if best.map_or(true, |b| h.0 < b.0) {
+                    best = Some(h);
+                }
+            }
+        }
+        best
+    }
 }
 
 /// A contact of a ball: where it touches, the contact normal and how deep.
@@ -287,14 +309,7 @@ impl<'a> CamLevel<'a> {
         });
         if cars {
             for o in &self.cars {
-                // (the capsule a..b with r against the car's ball)
-                let t = ((o.centre - a).dot(d) / d.length_squared()).clamp(0.0, 1.0);
-                if (a + d * t).distance(o.centre) > o.radius + r {
-                    continue;
-                }
-                for (i, v) in o.tris.iter().enumerate() {
-                    take(sweep_polygon(a, d, r, v, o.normals[i]));
-                }
+                take(o.sweep(a, b, r));
             }
         }
         best

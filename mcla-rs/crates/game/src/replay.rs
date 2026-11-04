@@ -547,6 +547,11 @@ pub trait Probe {
     fn heli(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
         self.sweep(a, b, r)
     }
+    /// the same sweep against the watched car's own bound alone (F-38041's query: only that
+    /// instance, directed)
+    fn own(&mut self, _a: Vec3, _b: Vec3, _r: f32) -> Option<Vec3> {
+        None
+    }
 }
 
 impl<F: FnMut(Vec3, Vec3, f32) -> Option<Vec3>> Probe for F {
@@ -647,12 +652,18 @@ impl Director {
         }
     }
 
-    /// the polar camera's place: about the car in the world's frame, pushed in by the city
+    /// the polar camera's place: about the car in the world's frame, pushed in by the city;
+    /// after a hit, pushed out of the car's own bound by a ball swept towards the place from
+    /// 100 times as far out (F-38041), only then (F-72161)
     fn polar_place(&self, car: &CarView, probe: &mut dyn Probe) -> (Vec3, Quat) {
         let t = car.at(TARGET);
         let mut place = t + rot_y(rot_x(POLAR_OFFSET, -self.polar.pitch), self.polar.yaw);
-        if let Some(p) = probe.sweep(t, place, self.near_r(self.polar.fov) + 0.25) {
+        let r = self.near_r(self.polar.fov) + 0.25;
+        if let Some(p) = probe.sweep(t, place, r) {
             place = p;
+            if let Some(p) = probe.own(t + (place - t) * 100.0, place, r) {
+                place = p;
+            }
         }
         (place, look_rot(place - t))
     }
@@ -952,6 +963,78 @@ mod tests {
     /// nothing in the way
     fn open(_: Vec3, _: Vec3, _: f32) -> Option<Vec3> {
         None
+    }
+
+    /// a world that answers the polar camera's two sweeps and keeps what it was asked
+    struct PolarWorld {
+        world: Option<Vec3>,
+        own: Option<Vec3>,
+        asked_own: Vec<(Vec3, Vec3, f32)>,
+    }
+
+    impl Probe for PolarWorld {
+        fn sweep(&mut self, _: Vec3, _: Vec3, _: f32) -> Option<Vec3> {
+            self.world
+        }
+        fn own(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
+            self.asked_own.push((a, b, r));
+            self.own
+        }
+    }
+
+    /// F-72161 -> F-38041: the car's own bound is swept only after the city hit, from T + 100 x
+    /// (place - T) to the place, with the city sweep's ball; its hit is the place.
+    #[test]
+    fn polar_push_out() {
+        let tune = CamTune::default();
+        let c = car();
+        let d = Director::new(&tune, 3, &c);
+        let t = c.at(TARGET);
+        let r = d.near_r(d.polar.fov) + 0.25;
+        // no city hit: the car's bound is not asked
+        let mut w = PolarWorld { world: None, own: Some(Vec3::ZERO), asked_own: vec![] };
+        let (p, _) = d.polar_place(&c, &mut w);
+        assert!(w.asked_own.is_empty());
+        assert_eq!(p, t + rot_y(rot_x(POLAR_OFFSET, -d.polar.pitch), d.polar.yaw));
+        // a city hit without a car hit: the city's place
+        let hit = t + Vec3::new(0.5, 0.2, 1.0);
+        let mut w = PolarWorld { world: Some(hit), own: None, asked_own: vec![] };
+        assert_eq!(d.polar_place(&c, &mut w).0, hit);
+        assert_eq!(w.asked_own, vec![(t + (hit - t) * 100.0, hit, r)]);
+        // both: the car's
+        let out = t + Vec3::new(0.9, 0.4, 1.8);
+        let mut w = PolarWorld { world: Some(hit), own: Some(out), asked_own: vec![] };
+        let (p, q) = d.polar_place(&c, &mut w);
+        assert_eq!(p, out);
+        assert_eq!(q, look_rot(out - t));
+    }
+
+    /// The own-bound sweep on a hull: a place inside the car is moved to where the ball from
+    /// outside first touches it; a place clear of it is left alone.
+    #[test]
+    fn own_hull_sweep() {
+        use crate::physics::camprobe::CamObj;
+        use crate::physics::hull::HullShape;
+        let verts = vec![
+            Vec3::new(-1.0, 0.0, -2.0), Vec3::new(1.0, 0.0, -2.0), Vec3::new(1.0, 1.0, -2.0), Vec3::new(-1.0, 1.0, -2.0),
+            Vec3::new(-1.0, 0.0, 2.0), Vec3::new(1.0, 0.0, 2.0), Vec3::new(1.0, 1.0, 2.0), Vec3::new(-1.0, 1.0, 2.0),
+        ];
+        // outward-facing (counter-clockwise seen from outside)
+        let q = |a: u16, b: u16, c: u16, d: u16| [[a, b, c], [a, c, d]];
+        let tris: Vec<[u16; 3]> = [q(0, 3, 2, 1), q(4, 5, 6, 7), q(0, 1, 5, 4), q(3, 7, 6, 2), q(0, 4, 7, 3), q(1, 2, 6, 5)].concat();
+        let hull = HullShape::new(verts, &tris);
+        let o = CamObj::of_hull(&hull, Vec3::ZERO, Quat::IDENTITY);
+        let t = Vec3::new(0.0, 0.65, 0.0);
+        let r = 0.3;
+        // a place inside the box, behind it: the ball stops 0.3 m behind the rear face
+        let place = Vec3::new(0.0, 0.65, 1.5);
+        let (s, n) = o.sweep(t + (place - t) * 100.0, place, r).unwrap();
+        let a = t + (place - t) * 100.0;
+        let got = a + (place - a) * s;
+        assert!((got.z - 2.3).abs() < 1e-3 && n.z > 0.99, "{got:?} {n:?}");
+        // a place 1 m clear of the box: no touch
+        let place = Vec3::new(0.0, 0.65, 3.3);
+        assert!(o.sweep(t + (place - t) * 100.0, place, r).is_none());
     }
 
     #[test]
