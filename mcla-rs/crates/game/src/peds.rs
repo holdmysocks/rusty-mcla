@@ -11,7 +11,7 @@
 //! cars (they are never hit: `bCollideWithPlayer` is false in the tuning) and shout their
 //! evade lines from the `ped_*` speech banks.
 
-use crate::ambient::{xml_value, Distribution};
+use crate::ambient::{xml_bool, xml_value, Distribution};
 use crate::assets::load_resource_file;
 use crate::physics::collision::WorldCollider;
 use crate::render::{Frustum, Gpu};
@@ -32,6 +32,10 @@ struct PedType {
     walk: Clip,
     idle: Clip,
     evade: Vec<Clip>,
+    /// the avoid list (file order) with each entry's clip in `evade`: what `evade_pick` reads once the car dodge
+    /// (F-15352, docs/reference/people/car_dodge_rule.md) is ported
+    #[allow(dead_code)]
+    avoid: Vec<AvoidItem>,
     angry: Vec<Clip>,
     /// the shared Pivot clips (`Mped_turnL/R_90/180`) with the yaw their root turns
     pivot: Vec<(Clip, f32)>,
@@ -117,7 +121,7 @@ struct Ped {
     then_angry: bool,
     /// the car dodged last
     dodged: Option<Vec3>,
-    /// a layout item's person (sub_826DFB08): its item, and its age and least age (8 + 4U s)
+    /// a layout item's person (F-39915): its item, and its age and least age (8 + 4U s)
     item: Option<u32>,
     age: f32,
     life: f32,
@@ -127,14 +131,14 @@ struct Ped {
 
 const NO_POLY: u32 = u32::MAX;
 /// The original's frame: path requests are let through once per 30 Hz frame; spawning and
-/// unspawning run on every other one (sub_826F79F0 alternates by frame parity).
+/// unspawning run on every other one (F-47889 alternates by frame parity).
 const FRAME: f32 = 1.0 / 30.0;
-/// The spawner's occlusion test (sub_826F0628): a sphere of 2 m, 1.5 m above the spawn
-/// point, against the volumes seen from 1.75 m above the player (view 2, sub_822C1FA8).
+/// The spawner's occlusion test (F-95989): a sphere of 2 m, 1.5 m above the spawn
+/// point, against the volumes seen from 1.75 m above the player (view 2, F-75502).
 const OCC_LIFT: f32 = 1.5;
 const OCC_RADIUS: f32 = 2.0;
 const OCC_EYE: f32 = 1.75;
-/// The occluder range scale the city sets up (sub_822C2EA8 writes 10 to 0x827D2958).
+/// The occluder range scale the city sets up (F-20115 writes 10 to 0x827D2958).
 const OCC_RANGE_SCALE: f32 = 10.0;
 
 fn flat(v: Vec3) -> Vec3 {
@@ -142,7 +146,7 @@ fn flat(v: Vec3) -> Vec3 {
 }
 
 /// The original's random walk over the sidewalk polygons (`navQueryPathRandom`, search
-/// sub_827691B0, set up by sub_8276AB10). Up to 32 hops; at each hop every sidewalk
+/// F-28561, set up by F-39482). Up to 32 hops; at each hop every sidewalk
 /// neighbour of the polygon weighs `L * max(((1 + cos) / 2)^2, 0.01)` - L the length of the
 /// shared edge, cos between the heading and the way to the edge's middle - or 0.001 when it
 /// is one of the last four polygons entered. The walk moves to the chosen edge's middle and
@@ -157,7 +161,7 @@ pub(crate) fn random_path(mesh: &NavMesh, start: u32, pos: Vec3, heading: Vec3, 
     let mut h = flat(heading).normalize_or_zero();
     let mut cands: Vec<(f32, &NavLink)> = Vec::new();
     // starting off the pavement the filter is only a weight (x 1e-6 outside it), so the walk
-    // finds its way back (sub_826FC258)
+    // finds its way back (F-50927)
     let soft = !mesh.polys[start as usize].sidewalk();
     for hop in 0..32 {
         cands.clear();
@@ -232,7 +236,7 @@ const PED_RADIUS: f32 = 0.3;
 const AWARE_RADIUS: f32 = 0.667;
 /// The sphere ahead sits 0 .. 2.5 m in front, drawn anew for every test.
 const AHEAD_MAX: f32 = 2.5;
-/// Sphere refresh (sub_8279D2D8 via the manager): every 30 Hz frame each walker re-queries,
+/// Sphere refresh (A-72290 via the manager): every 30 Hz frame each walker re-queries,
 /// with this chance by its distance to the focus (within 25 m, 85 m, beyond), the one of its
 /// three spheres the global frame counter points at (counter % 3): 0 the ground probe (r 2,
 /// mask 0x800), 1 around the walker, 2 ahead of it. The hits only last that frame.
@@ -242,19 +246,19 @@ const AWARE_CHANCE_FAR: f32 = 0.1;
 const SLIDE_TIME: f32 = 0.25;
 /// Clip blends are 8 frames (0x82830878).
 const BLEND_S: f32 = 8.0 / 30.0;
-/// Turning on the spot: at most pi/4 per 8 frames (sub_827B8678).
+/// Turning on the spot: at most pi/4 per 8 frames (F-59108).
 const TURN_RATE: f32 = 2.94524;
 /// Rails: the first of the segments i, i+1, i+2, i-1, i-2 whose middle is more than 0.5 m
-/// away and at most 72 degrees round; else segment i with up to 216 (sub_827983B8).
+/// away and at most 72 degrees round; else segment i with up to 216 (F-61656).
 const RAIL_TURN: f32 = 1.25664;
 const RAIL_TURN_LAST: f32 = 3.76991;
 const RAIL_MIN: f32 = 0.5;
-/// A rail around something in the way: at most 130 degrees round (sub_827A14C0); the way
-/// to it swept by a capsule of the ped's radius 0.6 - 1.2 m up (sub_8279D9D0, mask 0x383e:
+/// A rail around something in the way: at most 130 degrees round (F-92334); the way
+/// to it swept by a capsule of the ped's radius 0.6 - 1.2 m up (F-23371, mask 0x383e:
 /// furniture, cars, peds and buildings, the walker being passed included).
 const AVOID_TURN: f32 = 2.26893;
 const AVOID_CLEAR: f32 = PED_RADIUS;
-/// Speed follows the wanted speed with a 0.1 s lag (sub_8279EF40, sub_827966C0).
+/// Speed follows the wanted speed with a 0.1 s lag (F-33058, F-54830).
 const SPEED_LAG: f32 = 0.1;
 
 fn rotate_y(v: Vec3, a: f32) -> Vec3 {
@@ -314,7 +318,7 @@ fn sphere_hit(c: Vec3, r: f32, me: usize, peds: &[Vec3], props: &[Obst], skip_pe
 /// the walker `ignore` and the box centred at `ignore_box` - what is being passed - are left
 /// out)? With `away`, something the way leads away from does not count (the sidestep's
 /// probe starts touching what the walker is pushed out of); the detour's sweep has no such
-/// test (sub_8279D9D0).
+/// test (F-23371).
 #[allow(clippy::too_many_arguments)]
 fn way_clear(a: Vec3, b: Vec3, clear: f32, me: usize, ignore: usize, ignore_box: Option<Vec3>, peds: &[Vec3], props: &[Obst], col: Option<&WorldCollider>, skip_peds: bool, away: bool) -> bool {
     let n = (flat(b - a).length() / 0.2).ceil().max(1.0) as usize;
@@ -336,7 +340,7 @@ fn way_clear(a: Vec3, b: Vec3, clear: f32, me: usize, ignore: usize, ignore_box:
     !props.iter().any(|o| Some(o.0) != ignore_box && seg(o) < clear)
 }
 
-/// The next rail along the path from `pos` facing `fwd` (sub_827983B8): to the middle of
+/// The next rail along the path from `pos` facing `fwd` (F-61656): to the middle of
 /// the path segment nearest to the walker, or of one of its neighbours.
 fn next_rail(path: &[(Vec3, u32)], pos: Vec3, fwd: Vec3) -> Option<Vec3> {
     if path.len() < 2 {
@@ -367,7 +371,7 @@ fn next_rail(path: &[(Vec3, u32)], pos: Vec3, fwd: Vec3) -> Option<Vec3> {
     [i, i + 1, i + 2, i - 1, i - 2].into_iter().find_map(|k| try_seg(k, RAIL_TURN)).or_else(|| try_seg(i, RAIL_TURN_LAST))
 }
 
-/// The wait timer (sub_8279A8C8) from the idle clip's length `v`.
+/// The wait timer (F-84843) from the idle clip's length `v`.
 fn stop_time(v: f32, rand: &mut dyn FnMut() -> f32) -> f32 {
     if v <= 0.0 {
         2.0 + 2.0 * rand()
@@ -378,9 +382,69 @@ fn stop_time(v: f32, rand: &mut dyn FnMut() -> f32) -> f32 {
     }
 }
 
-/// A car about to run the walker over (sub_8279B538): its path over the next second in
+/// A car about to run the walker over (F-15352): its path over the next second in
 /// four steps of 0.25 s passing within its half width and the walker's radius. Returns the
 /// car's position and the way out (away from the nearest point of its path).
+/// One entry of the avoid list (`mcAvoidAnimMgrData.xml`, in file order): `AvoidType` (0 AvoidAny, 1 AvoidMale,
+/// 2 AvoidFemale, 3 Pivot, 4 AngryMale, 5 AngryFemale), `ApproachDir` (0 Any, 1 Front, 2 Rear, 3 Left, 4 Right) and
+/// the clip, if it was found.
+#[derive(Clone, Copy, Debug)]
+pub struct AvoidItem {
+    pub ty: u32,
+    pub dir: u32,
+    pub clip: Option<usize>,
+}
+
+/// The evade clip pick (F-37443): over the list in order, an entry of the walker's sex (or AvoidAny) whose approach
+/// sector holds `approach` (Front |a| <= pi/4, Rear |a| >= 3pi/4, Right |a - pi/2| <= pi/4, Left |a + pi/2| <= pi/4),
+/// whose clip has moved at least `min` by `time` (floored at 0.25 s), whose move then points within 50 degrees of
+/// `dir` (its angle from -z, F-32060 `aiv::ang_xz`, the difference wrapped into -pi..pi), and that has moved at most `max` by
+/// its end; one of those, uniformly by the shared MWC (`index`). `disp(clip, t)` is the clip's mover at `t`
+/// (`None`: its end). Returns the entry and its wrapped angle.
+#[allow(clippy::too_many_arguments)]
+pub fn evade_pick(items: &[AvoidItem], female: bool, dir: f32, approach: f32, time: f32, min: f32, max: f32, mut disp: impl FnMut(usize, Option<f32>) -> Vec3, rng: &mut crate::vehicles::parked::Mwc) -> Option<(usize, f32)> {
+    use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
+    let min2 = min * min;
+    let max2 = max * max;
+    let t = if time - 0.25 >= 0.0 { time } else { 0.25 };
+    let len2 = |d: Vec3| d.z.mul_add(d.z, d.x.mul_add(d.x, d.y * d.y));
+    let mut ok = Vec::new();
+    for (i, it) in items.iter().enumerate() {
+        let Some(c) = it.clip else { continue };
+        if it.ty != 0 && it.ty != 1 + female as u32 {
+            continue;
+        }
+        let out = match it.dir {
+            1 => approach.abs() > FRAC_PI_4,
+            2 => approach.abs() < f32::from_bits(0x4016_CBE4),
+            4 => (approach - FRAC_PI_2).abs() > FRAC_PI_4,
+            3 => (approach + FRAC_PI_2).abs() > FRAC_PI_4,
+            _ => false,
+        };
+        if out {
+            continue;
+        }
+        let d = disp(c, Some(t));
+        if len2(d) < min2 {
+            continue;
+        }
+        let a = crate::aiv::ang_xz(d, Vec3::new(-0.0, -0.0, -1.0)) - dir;
+        let a = if -(a - PI) >= 0.0 { a } else { a - TAU };
+        let a = if a + PI >= 0.0 { a } else { a + TAU };
+        if a.abs() > f32::from_bits(0x3F5F_66F3) {
+            continue;
+        }
+        if len2(disp(c, None)) > max2 {
+            continue;
+        }
+        ok.push((i, a));
+    }
+    if ok.is_empty() {
+        return None;
+    }
+    Some(ok[rng.index(ok.len() as u32) as usize])
+}
+
 fn car_threat(pos: Vec3, threats: &[Threat]) -> Option<(Vec3, Vec3, f32)> {
     for t in threats {
         if (t.pos.y - pos.y).abs() > 5.0 || t.vel.length_squared() < 1e-4 {
@@ -408,10 +472,10 @@ fn car_threat(pos: Vec3, threats: &[Threat]) -> Option<(Vec3, Vec3, f32)> {
 }
 
 /// One frame of a walker on the navigation mesh in the original's sidewalk behaviour
-/// (mcAmbientBehaviorSidewalk::Update sub_8279F198): stops (sub_8279A8C8 / 8279AA18),
-/// sidesteps (sub_8279C038), rails round things in the way (sub_82799538), the path's
-/// rails (sub_827983B8, sub_82798F18), car dodges (sub_8279B538) and the turn round of a
-/// reversed path (sub_8279C198). Moves `p` and sets its state; returns the walk clip's
+/// (mcAmbientBehaviorSidewalk::Update F-72378): stops (F-84843 / F-10083),
+/// sidesteps (F-26402), rails round things in the way (F-79428), the path's
+/// rails (F-61656, F-50894), car dodges (F-15352) and the turn round of a
+/// reversed path (F-94431). Moves `p` and sets its state; returns the walk clip's
 /// playback rate.
 #[allow(clippy::too_many_arguments)]
 fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[Obst], col: Option<&WorldCollider>, threats: &[Threat], due: u8, dt: f32, rand: &mut dyn FnMut() -> f32, evades: &mut u32, speech: &mut Vec<Speech>) -> f32 {
@@ -474,7 +538,7 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
         set_state(p, State::Walk);
         return p.speed / ty.walk_speed.max(0.1);
     }
-    // a reversed path: turn round as it is taken (sub_8279F260; a Pivot clip beyond
+    // a reversed path: turn round as it is taken (F-95960; a Pivot clip beyond
     // 45 degrees), which ends the wait
     if p.turn_round {
         p.turn_round = false;
@@ -521,11 +585,11 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
             }
         }
     }
-    // something ahead (sub_8279AA18, run every frame the walker is not waiting, on a detour
-    // rail too): a rail round it, or stop. The candidates (sub_827A14C0): the corner of the
+    // something ahead (F-10083, run every frame the walker is not waiting, on a detour
+    // rail too): a rail round it, or stop. The candidates (F-92334): the corner of the
     // box furthest left as seen from the walker, pushed out to the left by half the walker's
     // width and 0.25 (0.55); for furniture also the corner furthest right pushed right; a
-    // walker in the way is only ever passed on the left (sub_8279AA18 clears args +44 bit 0x40
+    // walker in the way is only ever passed on the left (F-10083 clears args +44 bit 0x40
     // for type 0x20). Each is reached by a turn of at most 130 degrees (turning radius 0.1:
     // arcs too short to sample) and swept by the capsule all the way; the shortest wins.
     let hit = if query { sphere_hit(ahead, AWARE_RADIUS, me, peds, props, false) } else { None };
@@ -626,7 +690,7 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
     p.speed / ty.walk_speed.max(0.1)
 }
 
-/// The pedestrian spawn candidates around `focus` (sub_826F05C8 -> sub_826F97F8): the
+/// The pedestrian spawn candidates around `focus` (F-47658 -> F-12133): the
 /// sidewalk polygons a sphere of radius `r` touches, the first 128 in the order of the
 /// level's chunks and their quadtrees, sorted (`NavMesh::sphere_query`), with their areas.
 pub(crate) fn spawn_candidates(mesh: &NavMesh, focus: Vec3, r: f32) -> Vec<(u32, f32)> {
@@ -634,7 +698,7 @@ pub(crate) fn spawn_candidates(mesh: &NavMesh, focus: Vec3, r: f32) -> Vec<(u32,
     found.into_iter().map(|i| (i, mesh.polys[i as usize].area)).collect()
 }
 
-/// A random point of a polygon as the original picks it (sub_826F9A10): a triangle of the
+/// A random point of a polygon as the original picks it (F-76960): a triangle of the
 /// fan from the first corner, chosen by area with `r1`, the rest of `r1` across it and
 /// sqrt(`r2`) from the first corner towards the far edge.
 pub(crate) fn random_point(q: &NavPoly, r1: f32, r2: f32) -> Vec3 {
@@ -690,11 +754,11 @@ pub struct Speech {
 
 /// `tune/ambients/density_tuning.xml` (the original's density manager, vtable 0x820c39c4).
 struct Tuning {
-    /// within this a spawn point must not be in view (sub_826F0628)
+    /// within this a spawn point must not be in view (F-95989)
     spawn_inner: f32,
     /// radius of the sphere whose sidewalk polygons are spawn candidates
     spawn_outer: f32,
-    /// unspawned further than this ahead, half of it behind (sub_826F49B8)
+    /// unspawned further than this ahead, half of it behind (F-39594)
     unspawn: f32,
     /// pedestrians per square metre of candidate sidewalk
     density: f32,
@@ -715,8 +779,8 @@ fn read_type(model: &Path, anims: &Path) -> Option<TypeRead> {
 }
 
 pub struct Peds {
-    /// the ambient manager's front-end mode (sub_826D4C90, the start screen): the spawner has no
-    /// visibility test (sub_826F3038, 0x826F36BC); the focus and view are the camera's
+    /// the ambient manager's front-end mode (F-95688, the start screen): the spawner has no
+    /// visibility test (F-33044, A-29552); the focus and view are the camera's
     pub frontend: bool,
     /// spawner frames still to run at once (the front-end mode's loading wait, traffic.rs
     /// `FRONT_END_PREROLL`)
@@ -731,6 +795,8 @@ pub struct Peds {
     /// a second place and hour whose types are read ahead (`read_ahead_also`)
     ahead_also: Option<(Vec3, f32)>,
     avoid: Vec<(Arc<Animation>, bool, bool, u8)>,
+    /// the avoid list in file order (the manager's +0x64228 list): clip name, AvoidType, ApproachDir
+    avoid_list: Vec<(String, u32, u32)>,
     list: Vec<Ped>,
     active: HashSet<(usize, u32)>,
     curb: HashMap<usize, Option<f32>>,
@@ -787,7 +853,7 @@ fn hash(a: u32, b: u32) -> u32 {
 }
 
 /// A person type's name (the character sets `ped_*_set` / `drv_*_set`), as the ambient type list
-/// holds them next to the car types (sub_826D5390).
+/// holds them next to the car types (F-54839).
 pub fn is_person_type(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     n.ends_with("_set") && (n.starts_with("ped_") || n.starts_with("drv_"))
@@ -816,6 +882,7 @@ impl Peds {
             reading: HashMap::new(),
             ahead_also: None,
             avoid: Vec::new(),
+            avoid_list: Vec::new(),
             list: Vec::new(),
             active: HashSet::new(),
             curb: HashMap::new(),
@@ -928,6 +995,11 @@ impl Peds {
                     "Pivot" => 3,
                     _ => 2,
                 };
+                const TYPES: [&str; 6] = ["AvoidAny", "AvoidMale", "AvoidFemale", "Pivot", "AngryMale", "AngryFemale"];
+                const DIRS: [&str; 5] = ["Any", "Front", "Rear", "Left", "Right"];
+                let ty = TYPES.iter().position(|t| *t == field("AvoidType")).unwrap_or(0) as u32;
+                let dir = DIRS.iter().position(|t| *t == field("ApproachDir")).unwrap_or(0) as u32;
+                self.avoid_list.push((name.clone(), ty, dir));
                 class.insert(name, (field("AudioType") == "Fast", field("ApproachDir") == "Front", kind));
             }
         }
@@ -970,11 +1042,13 @@ impl Peds {
         let idle = Clip::bind(pick("idle").or(pick("walk"))?, &model.ids, false, false);
         // "ped_fh_006_set" -> female, voice "fh_006"
         let core = name.trim_start_matches("ped_").trim_end_matches("_set").to_string();
-        let female = core.trim_start_matches("sc_").starts_with('f');
+        // (the type's bSex, +109: true for every "f" set, false for every "m" one)
+        let female = std::fs::read_to_string(self.tune_dir.join(name).join("mcAmbientType.xml")).ok().and_then(|t| xml_bool(&t, "bSex")).unwrap_or_else(|| core.trim_start_matches("sc_").starts_with('f'));
         let gender = if female { "fped" } else { "mped" };
         let mut evade = Vec::new();
+        let mut evade_names = Vec::new();
         let mut angry = Vec::new();
-        // Pivot clips are chosen without regard to sex (sub_826F7FA8)
+        // Pivot clips are chosen without regard to sex (F-16288)
         let mut pivot = Vec::new();
         for (a, fast, front, kind) in &self.avoid {
             if *kind == 3 {
@@ -988,7 +1062,10 @@ impl Peds {
                 continue;
             }
             match kind {
-                0 => evade.push(Clip::bind(a, &model.ids, *fast, *front)),
+                0 => {
+                    evade.push(Clip::bind(a, &model.ids, *fast, *front));
+                    evade_names.push(a.short());
+                }
                 1 => angry.push(Clip::bind(a, &model.ids, *fast, *front)),
                 _ => {}
             }
@@ -1000,7 +1077,10 @@ impl Peds {
         }
         let walk_speed = walk.travel.length() / walk.anim.duration.max(1e-3);
         let turn_radius = std::fs::read_to_string(self.tune_dir.join(name).join("mcAmbientType.xml")).ok().and_then(|t| xml_value(&t, "fMinTurningRadius")).unwrap_or(0.1);
-        Some(PedType { female, voice: core, model, walk, idle, evade, angry, pivot, lod_switch, walk_speed, turn_radius })
+        // the avoid list as the pick reads it: an entry's clip only when it is one of this sex's evades (the other
+        // sex's entries and the angry / pivot ones fail the pick's type test anyway)
+        let avoid = self.avoid_list.iter().map(|(n, ty, dir)| AvoidItem { ty: *ty, dir: *dir, clip: evade_names.iter().position(|e| e == n) }).collect();
+        Some(PedType { female, voice: core, model, walk, idle, evade, avoid, angry, pivot, lod_switch, walk_speed, turn_radius })
     }
 
     /// The files of the types the spawner can draw around `focus` now, read and parsed on worker threads (two at a
@@ -1139,7 +1219,7 @@ impl Peds {
         self.list.iter().filter(|p| p.plan.is_some()).count()
     }
 
-    /// Within the view cone near the player (sub_826F0628, pedestrian branch): closer than
+    /// Within the view cone near the player (F-95989, pedestrian branch): closer than
     /// the inner spawn radius and at an angle to the view line (either way along it) below
     /// the cone's half angle, which narrows with speed.
     fn in_view(&self, v: Vec3) -> bool {
@@ -1152,7 +1232,7 @@ impl Peds {
         c.acos() < fov
     }
 
-    /// Outside the band the pedestrians live in (sub_826F49B8): more than half the box width
+    /// Outside the band the pedestrians live in (F-39594): more than half the box width
     /// to the side of the view line, or further than the unspawn radius ahead (half of it
     /// behind).
     fn out_of_range(&self, focus: Vec3, pos: Vec3) -> bool {
@@ -1163,8 +1243,8 @@ impl Peds {
         lateral > self.tune.box_width * 0.5 || flat(v).length() > lim
     }
 
-    /// One run of the original's pedestrian spawner (sub_826F3038) and unspawner
-    /// (sub_826F49B8, from sub_826F6130) on the navigation mesh: every other 30 Hz frame.
+    /// One run of the original's pedestrian spawner (F-33044) and unspawner
+    /// (F-39594, from F-75661) on the navigation mesh: every other 30 Hz frame.
     fn spawn_frame(&mut self, gpu: &mut Gpu, mesh: &NavMesh, col: &WorldCollider, focus: Vec3) {
         // unspawn: 30 random checks a frame
         for _ in 0..30 {
@@ -1172,7 +1252,7 @@ impl Peds {
                 break;
             }
             let i = (self.rand() * self.list.len() as f32) as usize % self.list.len();
-            // (an item's person goes like any walker, sub_826F49B8: no item test)
+            // (an item's person goes like any walker, F-39594: no item test)
             if self.out_of_range(focus, self.list[i].pos) {
                 let p = self.list.swap_remove(i);
                 if std::env::var("MCLA_PED_DUMP").is_ok() {
@@ -1182,7 +1262,7 @@ impl Peds {
             }
         }
         // candidates: the sidewalk polygons touching the sphere of the outer spawn radius,
-        // the first 128 (sub_826F05C8)
+        // the first 128 (F-47658)
         self.cands = spawn_candidates(mesh, focus, self.tune.spawn_outer);
         let total: f32 = self.cands.iter().map(|c| c.1).sum();
         // area times the density, times the focus district's density at this hour
@@ -1248,7 +1328,7 @@ impl Peds {
             }
             let a = self.rand() * std::f32::consts::TAU;
             let face = Vec3::new(a.sin(), 0.0, a.cos());
-            // the walking speed factor, drawn once (sub_82797CC8)
+            // the walking speed factor, drawn once (F-57015)
             let scale = 0.85 + 0.3 * self.rand();
             let id = self.next_id;
             self.next_id = self.next_id.wrapping_add(1);
@@ -1299,11 +1379,11 @@ impl Peds {
         }
     }
 
-    /// The frame's one path request (sub_82797B20 lets one through per frame, to a walker
+    /// The frame's one path request (F-73065 lets one through per frame, to a walker
     /// without a path - it keeps one until it is cancelled - whose last request is at least
     /// 16 frames old): a random walk from where it stands, the way it faces (backwards after
     /// an even number of stops in a row, more than one), with the points on the edges `frac`
-    /// (0.3 .. 0.7, per path) along them (sub_827979A8).
+    /// (0.3 .. 0.7, per path) along them (F-44435).
     fn plan_frame(&mut self, mesh: &NavMesh) {
         for p in self.list.iter_mut() {
             p.since_plan = p.since_plan.saturating_add(1);
@@ -1520,10 +1600,10 @@ impl Peds {
             let Some(Some(ty)) = self.types.get(&self.list[i].ty) else { continue };
             let p = &mut self.list[i];
             if p.item.is_some() {
-                // (an item's person, sub_826DFB08: flag 0x08 clear - no walking, no avoiding;
+                // (an item's person, F-39915: flag 0x08 clear - no walking, no avoiding;
                 // no rail - locomotion state 0, the set's clip 0 (`*Ped_Idle*`) looped from 0
-                // at rate 1, sub_8279EF40 / sub_826ECF58. The car check sub_8279B538 runs all
-                // the same: a dodge, then clip 0 again with its 1 s blend, sub_826EC8F0)
+                // at rate 1, F-33058 / F-29547. The car check F-15352 runs all
+                // the same: a dodge, then clip 0 again with its 1 s blend, F-52026)
                 p.age += dt;
                 p.blend = (p.blend - dt).max(0.0);
                 if p.state == State::Idle && !ty.evade.is_empty() {
@@ -1674,7 +1754,7 @@ impl Peds {
                     let angry = |r: f32| State::Angry((r * ty.angry.len() as f32) as usize % ty.angry.len());
                     p.state = if on_mesh {
                         // after a dodge: face the car (a Pivot clip beyond 45 degrees), then
-                        // the angry clip, else wait (sub_8279B468)
+                        // the angry clip, else wait (F-73407)
                         let f = flat(p.rot * -Vec3::Z).normalize_or(Vec3::Z);
                         match p.state {
                             State::Evade(_) => {
@@ -1900,7 +1980,7 @@ impl Peds {
         self.rng = self.rng.wrapping_mul(1664525).wrapping_add(1013904223 + self.list.len() as u32);
     }
 
-    /// sub_826DFB08: a layout item's person, standing at the item's place facing
+    /// F-39915: a layout item's person, standing at the item's place facing
     /// (-sin h, 0, -cos h). False when the type is not one of the people's.
     pub fn spawn_item(&mut self, gpu: &mut Gpu, col: &WorldCollider, item: u32, name: &str, pos: Vec3, heading: f32) -> bool {
         let Some(ti) = self.dirs.iter().position(|d| d.0.eq_ignore_ascii_case(name)) else { return false };
@@ -1974,14 +2054,14 @@ impl Peds {
         self.list.retain(|p| p.item.map_or(true, live));
     }
 
-    /// The walkers' LOD by the main view, as the original's walker render routine (sub_82794358, main
-    /// pass) gets it from its vt+44 sub_82794308 -> sub_827902F0(the set's render type, the sphere's
+    /// The walkers' LOD by the main view, as the original's walker render routine (F-68474, main
+    /// pass) gets it from its vt+44 F-68463 -> F-69447(the set's render type, the sphere's
     /// centre, radius 0.9 (0x82007FA8), flag 0): -1 when the sphere is outside the view or behind an
     /// occluder or its far side is 500 or more in front of the near plane (0x82003250); LOD 0 below
     /// the set's `fHighToMedSwitch` x `fLodSwitchScale`, LOD 1 below `fMedToLowSwitch` x the scale,
     /// else LOD 2 (every set: 40 / 80). There is no other distance limit. OPTIONS > PERFORMANCE
     /// (`k`): DRAW DISTANCE x the 500, DETAIL LEVEL x the steps (3X: LOD 0 throughout).
-    /// The centre: the original takes the walker's matrix x its bound's centroid (sub_826E9F88);
+    /// The centre: the original takes the walker's matrix x its bound's centroid (F-41581);
     /// the port takes the walker's root (the centroid was not read - approximate).
     pub fn pick_lods(&mut self, eye: Vec3, axis: Vec3, near: f32, k: crate::props::Lod, frustum: &Frustum, occluders: &crate::occluder::Selected) {
         const RADIUS: f32 = 0.9;
@@ -2018,7 +2098,7 @@ impl Peds {
             }
             let lod = lod as usize;
             // (at night the four lights of its program, picked and eased as the original's
-            // sub_822F2C48 does at the walker's place - only while it is drawn, as there)
+            // F-44222 does at the walker's place - only while it is drawn, as there)
             if let (Some((dynamic, frames)), Some(t)) = (&self.night_lights, &tables) {
                 let fl = self.fig_lights.entry(p.key).or_insert_with(|| crate::figlight::FigureLight::new(t, p.pos));
                 fl.step(t, p.pos, *frames);
@@ -2101,6 +2181,34 @@ mod tests {
     use super::*;
     use crate::ambient::Tod;
 
+    /// The evade clip pick (F-37443 with the xz angle F-32060) against the original's code run offline on 4,000 cases
+    /// (tools/evade_pick_reference.py -> testdata/evade_pick_ref.txt): lists of up to 10 entries of every AvoidType and
+    /// ApproachDir, clips present or not, the threat angles at the sector edges a float step either side, the clips'
+    /// moves about 50 degrees off the threat angle and about the minimum and maximum distance, the shared MWC's state.
+    /// The entry, its angle and the MWC after must be equal bit for bit.
+    #[test]
+    fn evade_pick_matches_the_original() {
+        let h = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let f = |t: &str| f32::from_bits(h(t));
+        let (mut n, mut picked) = (0, 0);
+        for l in include_str!("testdata/evade_pick_ref.txt").lines() {
+            let (c, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<&str> = c.split(' ').collect();
+            let o: Vec<&str> = o.split(' ').collect();
+            let k = |i: usize, j: usize| 9 + 9 * i + j;
+            let items: Vec<AvoidItem> = (0..h(c[0]) as usize).map(|i| AvoidItem { ty: h(c[k(i, 0)]), dir: h(c[k(i, 1)]), clip: (h(c[k(i, 2)]) != 0).then_some(i) }).collect();
+            let v = |i: usize, j: usize| Vec3::new(f(c[k(i, j)]), f(c[k(i, j + 1)]), f(c[k(i, j + 2)]));
+            let d = |t: &str| h(&t.replace('_', ""));
+            let mut rng = crate::vehicles::parked::Mwc { lo: d(c[7]), carry: d(c[8]) };
+            let got = evade_pick(&items, h(c[1]) != 0, f(c[2]), f(c[3]), f(c[4]), f(c[5]), f(c[6]), |i, t| if t.is_some() { v(i, 3) } else { v(i, 6) }, &mut rng);
+            let (e, a) = got.map(|(e, a)| (e as i32, a.to_bits())).unwrap_or((-1, u32::MAX));
+            assert_eq!((e, a, rng.lo, rng.carry), (o[0].parse::<i32>().unwrap(), h(o[1]), d(o[2]), d(o[3])), "{l}");
+            n += 1;
+            picked += (e >= 0) as usize;
+        }
+        assert_eq!((n, picked), (4000, 566));
+    }
+
     fn quad() -> NavPoly {
         NavPoly {
             chunk: 0,
@@ -2175,7 +2283,7 @@ mod tests {
 
     #[test]
     fn stop_timer_like_the_original() {
-        // sub_8279A8C8 with the idle clip lengths seen live; the stop lengths recorded on the
+        // F-84843 with the idle clip lengths seen live; the stop lengths recorded on the
         // original were 2.07 / 2.40 / 4.40 / 4.73 / 6.73 / 25.4 s ...
         let mut r = [0.0f32, 0.5, 0.9].into_iter().cycle();
         let mut rand = || r.next().unwrap();
