@@ -390,6 +390,9 @@ struct App {
     arrest_station: Option<u32>,
     /// CopArrest.sco 0x6e4 AmbientMgr_SetTrafficEnable(0) for the scene: the traffic target to give back after it
     arrest_traffic: Option<usize>,
+    /// the police manager's state 3 (+60): from CopArrest.sco 0xa1f PoliceManager_SetArrestCutSceneOnScreen (F-79053) to
+    /// its PoliceManager_CutSceneDone (F-30655) - the walkers are not drawn meanwhile (F-68474 returns when F-36139 says so)
+    arrest_on_screen: bool,
     /// CopArrest.sco's TRANSITIONMOVIE black: 1 s down before the scene (waited), up 1 s at its start, the scene's
     /// fade_to_black, held over the form, up 1 s after the station reset (waited)
     arrest_mask: boomcam::CutMask,
@@ -1080,6 +1083,7 @@ impl App {
             arrest_form: None,
             arrest_station: None,
             arrest_traffic: None,
+            arrest_on_screen: false,
             arrest_mask: Default::default(),
             arrest_wait: false,
             arrest_fade: None,
@@ -6871,6 +6875,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.arrest_deact = true;
                 let goons = self.police.goons;
                 let mut started_scene = false;
+                // (0xa1f, a cops' arrest only - the payback's goons take 0x940: SetArrestCutSceneOnScreen, before the scene pick)
+                if !goons {
+                    self.arrest_on_screen = true;
+                }
                         // the arrest (CopArrest.sco): the wiped-out biker's scene first (manager +64, F-22530), then the
                         // payback's (race type 5), else the scene by the number of cops in the chase
                         // (PoliceManager_GetNumCopsInLatestTactic)
@@ -7485,6 +7493,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // SetAllPoliceUnderground(0, 1))
             self.sound.play_ignition();
             self.police.units_up();
+            self.arrest_on_screen = false;
         }
         // (F-10725: the crank's end sets the engine running again, chassis engine +46 = 1)
         if self.sound.take_engine_running() {
@@ -11218,7 +11227,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B people");
                 pass.set_pipeline(&gpu.pipeline_opaque);
                 if !pic_on {
-                    self.peds.draw(&mut pass, &gpu, false, &mut draws);
+                    // (F-68474: no walker drawn while the arrest's scene is on screen, F-36139)
+                    if !self.arrest_on_screen {
+                        self.peds.draw(&mut pass, &gpu, false, &mut draws);
+                    }
                     self.cine.draw(&mut pass, &gpu, false, &mut draws);
                 }
                 self.drivers.draw(&mut pass, &gpu, &mut draws);
