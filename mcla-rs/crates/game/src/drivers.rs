@@ -39,6 +39,56 @@ pub struct Seat<'a> {
     pub colors: Option<[[f32; 4]; 2]>,
     /// the car's head lamp state (lamp object +168, eased: `AmbLamps::s[0]`)
     pub head: f32,
+    /// the car body's velocity (body +272; its length is the chassis' +224 speed): the wind on a rider (`Wind::step`)
+    pub vel: Vec3,
+}
+
+/// The wind on a rider's clothes (VSSkinned_Wind's windParams / windEmitterPlaneEq): what the draw hook keeps at +112 (the
+/// phase), +116 (the strength) and +128 (the bike's velocity); the constructor (F-92182) sets all three to 0.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Wind {
+    pub phase: f32,
+    pub speed: f32,
+    pub vel: Vec3,
+}
+
+impl Wind {
+    /// F-31704, each frame for every live driver in a vehicle (the hooks' update): on a bike the strength is
+    /// clamp(speed x 2.237 x 0.0111111, 0, 1) - mph / 90 - (0 in a car, or with the debug bool "nowind" set: never in
+    /// play); the phase gains dt x 1.5 x strength (fused), the velocity is kept as it is. Nothing moves while the game is
+    /// paused (the game's pause byte: the hook is skipped; and the pause manager's +4 / +10 would zero the step). Not mapped:
+    /// the instance's +129 byte and F-78526, which skip it too - taken as a drawn driver's.
+    pub fn step(&mut self, speed: f32, vel: Vec3, bike: bool, dt: f32, paused: bool) {
+        if paused {
+            return;
+        }
+        let s = if bike {
+            let k = speed * f32::from_bits(0x400f_2b02) * f32::from_bits(0x3c36_0b61);
+            let k = if k >= 0.0 { k } else { 0.0 };
+            if k - 1.0 >= 0.0 { 1.0 } else { k }
+        } else {
+            0.0
+        };
+        self.phase = dt.mul_add(s * 1.5, self.phase);
+        self.speed = s;
+        self.vel = vel;
+    }
+
+    /// F-42959's windEmitterPlaneEq: the velocity made unit by the vector unit (vmsum3fp as x + (y + z), vrsqrtefp - infinity to 0 - and
+    /// one Newton step) when its square is over 1e-5, else (0, 0, -1); w = that . the car matrix's place (fused as
+    /// x (z (y))).
+    pub fn plane(&self, at: Vec3) -> [f32; 4] {
+        let v = self.vel;
+        let d = v.x * v.x + (v.y * v.y + v.z * v.z);
+        let n = if d > f32::from_bits(0x3727_c5ac) {
+            let e = 1.0 / d.sqrt();
+            let e = if e == f32::INFINITY { 0.0 } else { e };
+            v * ((1.0 - d * (e * e)) * (0.5 * e) + e)
+        } else {
+            Vec3::new(0.0, 0.0, -1.0)
+        };
+        [n.x, n.y, n.z, at.x.mul_add(n.x, at.z.mul_add(n.z, at.y * n.y))]
+    }
 }
 
 /// The car's lights on its driver's draw (F-42959, the driver in a car: the vertex programs' gaugeLightPos_ConeAng
@@ -53,28 +103,40 @@ pub struct Cabin {
     pub neon_pos: Vec3,
     pub neon_col: Vec3,
     pub floor: [f32; 4],
+    /// windEmitterPlaneEq c215 and windParams c216 (phase, strength): `Wind::plane`, the hook's +112 / +116
+    pub wind_eq: [f32; 4],
+    pub wind: [f32; 2],
+}
+
+/// The lamp object's +408, the interior neon's flash (F-10129, every frame): (cos(rate x clock x 10) + 1) x 0.5 with the
+/// record's IntNeonFlashRate (a signed byte) and the unpaused clock (0x827D7518: `App::wind_clock`), cos the guest
+/// runtime's (F-63589) in double, rounded once. 1 at the rate 0.
+pub fn neon_flash(rate: f32, clock: f32) -> f32 {
+    (crate::physics::exact::guest_cos((rate * clock * 10.0) as f64) as f32 + 1.0) * 0.5
 }
 
 impl Cabin {
     /// From the car's matrix `m` (its body's, the vehicle's +144: the offsets are in its frame), the model tune's two
-    /// offsets, the record's colours, the head lamp state and whether it is a bike:
+    /// offsets, the record's colours (w of the second: IntNeonIntensity), the head lamp state, whether it is a bike, the
+    /// neon's flash (`neon_flash`) and the hook's wind:
     /// - gauge = m x vDriverGaugeLightOffset, colour = (c + (mean - c) x 0.5) x head x 1.0 (an image constant) with
     ///   c = DashGaugeColor and mean = (r + g) x 0.33333298 + b x 0.33333 (by day the head state and so the light are 0);
     /// - cone direction = minus the matrix's third row;
-    /// - neon = m x vDriverNeonLightOffset, colour = IntNeonColor x (lamp object +408 x +268) x IntNeonIntensity; +268
-    ///   is set to 1 every update and +408 = (1 + cos(IntNeonFlashRate x clock x k)) x 0.5 (F-10129, cos F-63589) - 1 at the rate 0
-    ///   every record carries, which is what is ported;
-    /// - floor = (the matrix's up row, its place . up + 0.3); a bike's w is -1e5 (F-54299).
-    pub fn of(m: Mat4, offs: [[f32; 3]; 2], colors: [[f32; 4]; 2], head: f32, bike: bool) -> Cabin {
-        let at = |o: [f32; 3]| m.transform_point3(Vec3::from(o));
+    /// - neon = m x vDriverNeonLightOffset, colour = IntNeonColor x ((lamp object +408 x +268) x IntNeonIntensity); +268
+    ///   is set to 1 every update (F-10129), +408 is `flash`;
+    /// - floor = (the matrix's up row, its place . up + 0.3); a bike's w is -1e5 (F-54299);
+    /// - windEmitterPlaneEq = `Wind::plane` at the matrix's place, windParams = (phase, strength).
+    pub fn of(m: Mat4, offs: [[f32; 3]; 2], colors: [[f32; 4]; 2], head: f32, bike: bool, flash: f32, wind: &Wind) -> Cabin {
+        // (in the vector unit's order: the place, then x, y and z of the offset, each a product then a sum)
+        let at = |o: [f32; 3]| m.z_axis.truncate() * o[2] + (m.y_axis.truncate() * o[1] + (m.x_axis.truncate() * o[0] + m.w_axis.truncate()));
         let up = m.y_axis.truncate();
         let p = m.w_axis.truncate();
         let c = Vec3::new(colors[0][0], colors[0][1], colors[0][2]);
-        let mean = (c.x + c.y) * f32::from_bits(0x3eaa_aa9f) + c.z * f32::from_bits(0x3eaa_aa3b);
+        let mean = (c.x + c.y).mul_add(f32::from_bits(0x3eaa_aa9f), c.z * f32::from_bits(0x3eaa_aa3b));
         let g = (c + (Vec3::splat(mean) - c) * 0.5) * head;
-        let n = Vec3::new(colors[1][0], colors[1][1], colors[1][2]) * colors[1][3];
-        let w = if bike { -1.0e5 } else { up.z.mul_add(p.z, up.y.mul_add(p.y, up.x * p.x)) + 0.3 };
-        Cabin { gauge_pos: at(offs[0]), gauge_col: g, cone_dir: -m.z_axis.truncate(), neon_pos: at(offs[1]), neon_col: n, floor: [up.x, up.y, up.z, w] }
+        let n = Vec3::new(colors[1][0], colors[1][1], colors[1][2]) * (flash * 1.0 * colors[1][3]);
+        let w = if bike { -1.0e5 } else { up.x.mul_add(p.x, p.y.mul_add(up.y, p.z * up.z)) + 0.3 };
+        Cabin { gauge_pos: at(offs[0]), gauge_col: g, cone_dir: -m.z_axis.truncate(), neon_pos: at(offs[1]), neon_col: n, floor: [up.x, up.y, up.z, w], wind_eq: wind.plane(p), wind: [wind.phase, wind.speed] }
     }
 }
 
@@ -311,6 +373,11 @@ pub struct Drivers {
     data_dir: PathBuf,
     /// per car (`Seat::uid`): the distance LOD's freeze byte (input context +48, `freeze_step`)
     frozen: HashMap<u32, bool>,
+    /// per car (`Seat::uid`): its driver's draw hook's wind (`Wind`), from the hook's creation on
+    wind: HashMap<u32, Wind>,
+    /// the unpaused clock (0x827D7518, `App::wind_clock`) and whether the game is paused - set before `prepare`
+    pub clock: f32,
+    pub paused: bool,
 }
 
 /// What the drivers' distance LOD (F-12028) reads of one racer's driver.
@@ -458,7 +525,7 @@ impl Drivers {
         self.frozen = next;
     }
 
-pub fn load(&mut self, data_dir: &str) {
+    pub fn load(&mut self, data_dir: &str) {
         let root = Path::new(data_dir);
         self.data_dir = root.to_path_buf();
         self.char_dir = root.join("resources/character");
@@ -716,6 +783,11 @@ pub fn load(&mut self, data_dir: &str) {
         self.buf.clear();
         self.time += dt;
         self.frame += 1;
+        // (the hooks' update, F-31704: every driver in a vehicle, drawn or not; a car gone takes its hook with it)
+        self.wind.retain(|u, _| seats.iter().any(|s| s.uid == *u));
+        for s in seats {
+            self.wind.entry(s.uid).or_default().step(s.vel.length(), s.vel, s.bike, dt, self.paused);
+        }
         let mut local: Vec<(Quat, Vec3)> = Vec::new();
         let mut other: Vec<(Quat, Vec3)> = Vec::new();
         for s in seats {
@@ -899,7 +971,8 @@ pub fn load(&mut self, data_dir: &str) {
                         })
                     }
                 };
-                self.buf.next_cabin = Some(Cabin::of(s.mat, offs, colors, s.head, s.bike));
+                let wind = self.wind.get(&s.uid).copied().unwrap_or_default();
+                self.buf.next_cabin = Some(Cabin::of(s.mat, offs, colors, s.head, s.bike, neon_flash(colors[0][3], self.clock), &wind));
             }
             self.buf.emit(&rig.model, 0, &local, s.mat);
             if s.player {
@@ -994,29 +1067,91 @@ mod cabin_tests {
         (a - Vec3::from(b)).abs().max_element() < e
     }
 
+    /// F-31704 then F-42959 on the same hook, run offline on the original's code (tools/driver_wind_reference.py, 6,000
+    /// cases): the hook's wind and the eight values the driver's draw is given, bit for bit.
+    #[test]
+    fn wind_and_cabin_match_the_original() {
+        let text = include_str!("testdata/driver_wind_ref.txt");
+        let mut bad = [0usize; 12];
+        let mut first: Option<String> = None;
+        let mut n = 0;
+        for line in text.lines() {
+            let (i, o) = line.strip_prefix("DW ").unwrap().split_once(" -> ").unwrap();
+            let x: Vec<u32> = i.split(' ').map(|w| u32::from_str_radix(w, 16).unwrap()).collect();
+            let y: Vec<u32> = o.split(' ').map(|w| u32::from_str_radix(w, 16).unwrap()).collect();
+            let f = |k: usize| f32::from_bits(x[k]);
+            let v3 = |k: usize| Vec3::new(f(k), f(k + 1), f(k + 2));
+            let m = Mat4::from_cols_array(&std::array::from_fn(|k| f(k)));
+            let offs = [v3(16).to_array(), v3(19).to_array()];
+            let colors = [[f(22), f(23), f(24), 0.0], [f(25), f(26), f(27), f(28)]];
+            assert_eq!(f(30), 1.0);
+            let mut w = Wind { phase: f(33), ..Default::default() };
+            w.step(f(34), v3(35), x[32] != 0, f(40), x[39] != 0);
+            let c = Cabin::of(m, offs, colors, f(31), x[32] != 0, f(29), &w);
+            let b3 = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+            let got: [&[u32]; 12] = [
+                &[w.phase.to_bits()],
+                &[w.speed.to_bits()],
+                &b3(w.vel),
+                &b3(c.neon_pos),
+                &b3(c.neon_col),
+                &b3(c.gauge_pos),
+                &b3(c.gauge_col),
+                &b3(c.cone_dir),
+                &c.floor.map(f32::to_bits),
+                &c.wind_eq.map(f32::to_bits),
+                &c.wind.map(f32::to_bits),
+                &[],
+            ];
+            let want: [&[u32]; 12] = [&y[0..1], &y[1..2], &y[2..5], &y[6..9], &y[10..13], &y[14..17], &y[18..21], &y[22..25], &y[26..30], &y[30..34], &y[34..36], &[]];
+            for k in 0..11 {
+                if got[k] != want[k] {
+                    bad[k] += 1;
+                    first.get_or_insert_with(|| format!("field {k}: {:08x?} against {:08x?} in {line}", got[k], want[k]));
+                }
+            }
+            n += 1;
+        }
+        assert_eq!(n, 6000);
+        assert!(bad.iter().all(|&b| b == 0), "mismatches by field {bad:?}; first {}", first.unwrap_or_default());
+    }
+
     /// F-42959 against the running original: c209 / c210 / c211 / c212 / c214 of a driver's and a rider's draws.
     #[test]
     fn cabin_lights_match_the_recorded_draws() {
         // (an R8 at noon, work/intglass/cap/pov_noon.bin draw 1938, the body at draw 1923; its tune's offsets): the gauge
         // and neon places, the floor; by day the head state 0 - no gauge colour
         let m = car([0.0183608793, 0.998237431, 0.0564348772], [-0.474544317, -0.0409810767, 0.87927711], [819.610229, 17.5722237, -808.409119]);
-        let c = Cabin::of(m, [[-0.375, 0.875, -1.325], [-0.375, 0.675, -0.85]], [[0.52941, 0.52941, 0.52941, 1.0], [0.0; 4]], 0.0, false);
+        let c = Cabin::of(m, [[-0.375, 0.875, -1.325], [-0.375, 0.675, -0.85]], [[0.52941, 0.52941, 0.52941, 1.0], [0.0; 4]], 0.0, false, 1.0, &Wind::default());
         assert!(near(c.gauge_pos, [819.327515, 18.3752842, -807.017334], 2e-4), "{c:?}");
         assert!(near(c.neon_pos, [819.549255, 18.1951046, -807.446289], 2e-4), "{c:?}");
         assert!(near(c.cone_dir, [-0.474544317, -0.0409810767, 0.87927711], 1e-7) && c.gauge_col == Vec3::ZERO && c.neon_col == Vec3::ZERO);
         assert!(near(Vec3::new(c.floor[0], c.floor[1], c.floor[2]), [0.0183608793, 0.998237431, 0.0564348772], 1e-7) && (c.floor[3] + 12.7324543).abs() < 2e-4, "{c:?}");
+        // (parked: no velocity - the plane (0, 0, -1) through the body, c215 (0 0 -1 808.409119); a car's windParams 0)
+        assert!(c.wind_eq == [0.0, 0.0, -1.0, 808.409119] && c.wind == [0.0, 0.0], "{c:?}");
         // (the ZX-14 at 23:00, work/police17/cap/rider_night.bin draw 627, the body at draw 608): its record's DashGaugeColor
         // with the head lamps on, the floor of a bike, the neon (offset 0) at the bike's origin
         let m = car([-0.0173120443, 0.999082983, 0.0391364694], [-0.470790386, -0.0426769406, 0.881210923], [819.67041, 17.5936108, -808.20929]);
-        let c = Cabin::of(m, [[0.0, 1.05, -1.275], [0.0; 3]], [[74.0 / 255.0, 93.0 / 255.0, 130.0 / 255.0, 1.0], [0.52, 0.52, 1.0, 0.0]], 1.0, true);
+        let c = Cabin::of(m, [[0.0, 1.05, -1.275], [0.0; 3]], [[74.0 / 255.0, 93.0 / 255.0, 130.0 / 255.0, 1.0], [0.52, 0.52, 1.0, 0.0]], 1.0, true, 1.0, &Wind::default());
         assert!(near(c.gauge_pos, [819.051941, 18.5882359, -807.044678], 2e-4), "{c:?}");
         assert!(near(c.gauge_col, [0.339214742, 0.376469642, 0.449018657], 6e-8), "{c:?}");
         assert!(near(c.neon_pos, [819.67041, 17.5936108, -808.20929], 1e-5) && c.neon_col == Vec3::ZERO && c.floor[3] == -1.0e5, "{c:?}");
+        // (its wind, c215 (0.880322516 -0.044405967 0.472292662 339.081726), c216 (0.246283069 0.00220525498): the bike
+        // creeping at 0.0887 m/s - the strength is mph / 90; the plane along the velocity, w through the body's place)
+        let n = Vec3::new(0.880322516, -0.044405967, 0.472292662);
+        let mut w = Wind { phase: 0.246283069, ..Default::default() };
+        w.step(0.00220525498 * 90.0 / 2.237, n * 0.0887, true, 0.0, false);
+        let c = Cabin::of(m, [[0.0; 3]; 2], [[0.0; 4]; 2], 1.0, true, 1.0, &w);
+        assert!(near(Vec3::new(c.wind_eq[0], c.wind_eq[1], c.wind_eq[2]), n.to_array(), 1e-7) && (c.wind_eq[3] - 339.081726).abs() < 2e-4, "{c:?}");
+        assert!(c.wind[0] == 0.246283069 && (c.wind[1] - 0.00220525498).abs() < 1e-9, "{c:?}");
+        // (the same in a car: no strength)
+        w.step(10.0, n, false, 1.0 / 60.0, false);
+        assert!(w.speed == 0.0 && w.phase == 0.246283069);
         // (work/checkpoints2/cap/col4.bin at 01:06: the player's Saleen, its record's colour; a racer's R8, its set-up's)
-        let c = Cabin::of(Mat4::IDENTITY, [[0.0; 3]; 2], [[0.464063, 0.363281, 0.188281, 1.0], [0.0; 4]], 1.0, false);
+        let c = Cabin::of(Mat4::IDENTITY, [[0.0; 3]; 2], [[0.464063, 0.363281, 0.188281, 1.0], [0.0; 4]], 1.0, false, 1.0, &Wind::default());
         assert!(near(c.gauge_col, [0.401301622, 0.350911021, 0.263410985], 2e-6), "{c:?}");
         // (the set-up `vp_aud_r8_08.xcc`'s 0x3f078788 = 135 / 255)
-        let c = Cabin::of(Mat4::IDENTITY, [[0.0; 3]; 2], [[f32::from_bits(0x3f07_8788), f32::from_bits(0x3f07_8788), f32::from_bits(0x3f07_8788), 1.0], [0.0; 4]], 1.0, false);
+        let c = Cabin::of(Mat4::IDENTITY, [[0.0; 3]; 2], [[f32::from_bits(0x3f07_8788), f32::from_bits(0x3f07_8788), f32::from_bits(0x3f07_8788), 1.0], [0.0; 4]], 1.0, false, 1.0, &Wind::default());
         assert!(near(c.gauge_col, [0.52941072; 3], 6e-8), "{c:?}");
     }
 }

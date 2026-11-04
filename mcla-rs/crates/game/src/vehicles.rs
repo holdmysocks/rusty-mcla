@@ -811,7 +811,7 @@ pub struct CarLook {
     pub area_a: [[f32; 4]; 5],
     pub area_b: [[f32; 4]; 5],
     pub rim_finish: [[f32; 4]; 3],
-    /// the driver's gauge colour A and interior neon colour as the record holds them (w of the neon: IntNeonIntensity)
+    /// the driver's gauge colour A and interior neon colour as the record holds them (w: IntNeonFlashRate, IntNeonIntensity)
     pub cabin_light: [[f32; 4]; 2],
 }
 
@@ -1001,7 +1001,7 @@ pub struct Vehicles {
     pub player_rim_finish: [[f32; 4]; 3],
     /// the player's cabin colours A, B, C (w 1 = chosen)
     pub player_interior: [[f32; 4]; 5],
-    /// the player's gauge colour A and interior neon colour as its record holds them (w of the neon: IntNeonIntensity) -
+    /// the player's gauge colour A and interior neon colour as its record holds them (w: IntNeonFlashRate, IntNeonIntensity) -
     /// what its driver is lit by (`Game::cabin_light_colors`)
     pub player_cabin_light: [[f32; 4]; 2],
     /// the brakes fitted in the garage (BRAKES: a model of `resources/brakes`), else the car's own

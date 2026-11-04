@@ -10497,7 +10497,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // trucks and SUVs seat their driver higher than the shared animation does
                         mat = mat * glam::Mat4::from_translation(Vec3::new(0.0, 0.3, 0.0));
                     }
-                    drivers::Seat { id: i, uid: c.uid, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str(), hi: c.is_player || c.hi_driver, lights: c.model.simtunes.as_ref().and_then(|t| t.driver_lights), colors: if c.is_player { Some(self.vehicles.player_cabin_light) } else { c.look.as_ref().map(|l| l.cabin_light) }, head: c.amb_lamps.s[0] }
+                    drivers::Seat { id: i, uid: c.uid, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str(), hi: c.is_player || c.hi_driver, lights: c.model.simtunes.as_ref().and_then(|t| t.driver_lights), colors: if c.is_player { Some(self.vehicles.player_cabin_light) } else { c.look.as_ref().map(|l| l.cabin_light) }, head: c.amb_lamps.s[0], vel: c.state.vel }
                 })
                 .collect();
             // the distance LOD (F-12028): every seat here is drawn, so its draw-gate tests pass; the scene byte is a story
@@ -10520,6 +10520,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 pos: cars.get(s.id).map_or([s.pos.x, s.pos.z], |c| [c.state.pos.x, c.state.pos.z]),
                 ..Default::default()
             });
+            (self.drivers.clock, self.drivers.paused) = (self.wind_clock, self.game.mode == Mode::Paused);
             self.drivers.prepare(&mut gpu, &seats, self.cam.pos, &frustum, dt);
         }
         passprof::mark("main setup");
