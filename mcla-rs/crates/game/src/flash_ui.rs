@@ -1800,7 +1800,7 @@ mod tests {
         let mut h = FlashHud::load(&dir, &shared).unwrap();
         let shown = |h: &mut FlashHud| h.movie.player.get_path("SplashStrings.0").map(|v| v.to_string().to_string()).unwrap_or_default();
         for i in 0..7 {
-            h.splash(0, &format!("S{i}"), 0, 2.0);
+            h.splash(0, &format!("S{i}"), 0, 2.0, true);
         }
         assert_eq!(shown(&mut h), "S0");
         assert_eq!(h.splash_queue[0].iter().map(|q| q.0.as_str()).collect::<Vec<_>>(), ["S0", "S1", "S2", "S3", "S4"]);
@@ -1810,6 +1810,17 @@ mod tests {
         h.post_splashes();
         assert_eq!(shown(&mut h), "S1");
         assert_eq!(h.splash_queue[0].len(), 4);
+        // (F-53934: the one on show is taken off, the newest go while clearable - K is not, so it and those before
+        // it stay; with K gone all go)
+        h.splash_queue[0].pop_back();
+        h.splash(0, "K", 0, 2.0, false);
+        h.splash(0, "C", 0, 2.0, true);
+        h.splash_cleanup();
+        assert_eq!(shown(&mut h), "");
+        assert_eq!(h.splash_queue[0].iter().map(|q| q.0.as_str()).collect::<Vec<_>>(), ["S1", "S2", "S3", "K"]);
+        h.splash_queue[0].pop_back();
+        h.splash_cleanup();
+        assert!(h.splash_queue[0].is_empty());
     }
 
     /// The HUD movie's 3-2-1-GO against the race clock (countdown_321Go_3sec: the slot raised at -3 s,
@@ -2066,8 +2077,9 @@ pub struct FlashHud {
     pub movie: FlashMovie,
     countdown_shown: bool,
     /// the game's splash queues (`F-60177`): per slot, up to five waiting
-    /// (text, colour, seconds), posted when the movie has freed the slot
-    splash_queue: [std::collections::VecDeque<(String, i32, f32)>; 3],
+    /// (text, colour, seconds, cleared by SplashManager_Cleanup: the item's +144, F-23140), posted when the movie
+    /// has freed the slot
+    splash_queue: [std::collections::VecDeque<(String, i32, f32, bool)>; 3],
     /// a splash was posted to queue 1 (the movie then plays RACER_FOUND_MASTER)
     pub racer_found: bool,
     /// the camera bar: the view last seen (-1 at the start, as the game's own copy)
@@ -2133,16 +2145,33 @@ impl FlashHud {
     /// Queue a splash message (F-71442). A slot's ring holds five, the one on show
     /// (its head) included; a sixth is dropped (F-92234 returns 0). Queued into an
     /// empty slot it is posted at once.
-    pub fn splash(&mut self, slot: usize, text: &str, color: i32, seconds: f32) {
+    pub fn splash(&mut self, slot: usize, text: &str, color: i32, seconds: f32, clear: bool) {
         let slot = slot.min(2);
         let q = &mut self.splash_queue[slot];
         if q.len() >= 5 {
             return;
         }
         let was_empty = q.is_empty();
-        q.push_back((text.to_string(), color, seconds));
+        q.push_back((text.to_string(), color, seconds, clear));
         if was_empty {
             self.post_head(slot);
+        }
+    }
+
+    /// SplashManager_Cleanup (F-53934), per slot: a queue not empty whose splash on show is clearable has it taken
+    /// off the movie (`SplashVisibles[i]` 0, `duration[i]` 0, `SplashStrings[i]` ""); then, as many times as it has
+    /// items, the newest goes back to the pool while it is clearable (the first that is not stops it).
+    pub fn splash_cleanup(&mut self) {
+        for slot in 0..3 {
+            if self.splash_queue[slot].front().map_or(false, |q| q.3) {
+                let p = &mut self.movie.player;
+                p.set_path(&format!("SplashVisibles.{}", slot), Value::Int(0));
+                p.set_path(&format!("duration.{}", slot), Value::Float(0.0));
+                p.set_path(&format!("SplashStrings.{}", slot), Value::str(""));
+            }
+            while self.splash_queue[slot].back().map_or(false, |q| q.3) {
+                self.splash_queue[slot].pop_back();
+            }
         }
     }
 
@@ -2165,7 +2194,7 @@ impl FlashHud {
     /// `duration[i]` = seconds (at least 2), `SplashStrings[i]`). The movie clears
     /// `SplashVisibles[i]` when done.
     fn post_head(&mut self, slot: usize) {
-        let Some((text, color, seconds)) = self.splash_queue[slot].front().cloned() else { return };
+        let Some((text, color, seconds, _)) = self.splash_queue[slot].front().cloned() else { return };
         let p = &mut self.movie.player;
         p.set_path(&format!("SplashColor.{}", slot), Value::Int(color));
         p.set_path(&format!("SplashVisibles.{}", slot), Value::Int(1));

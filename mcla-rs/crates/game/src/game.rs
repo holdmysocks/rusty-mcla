@@ -5140,7 +5140,8 @@ impl Game {
         if hud_splash && !self.message_posted && self.message_timer > 0.0 && !self.message.is_empty() {
             let m = self.message.to_uppercase().replace('_', " ");
             if let Some(fh) = self.flash_hud.as_mut() {
-                fh.splash(crate::flash_ui::SPLASH_TOP, &m, 0, 3.0);
+                // (every script's Splash but the flag games' passes 1 for "cleared at the race's end", D2)
+                fh.splash(crate::flash_ui::SPLASH_TOP, &m, 0, 3.0, true);
             }
             self.message_posted = true;
         }

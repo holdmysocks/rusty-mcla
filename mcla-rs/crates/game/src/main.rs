@@ -7293,6 +7293,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // tournament core the same: not shown)
                         self.game.series_first = false;
                     }
+                    // (EndOfRaceSequence, where it runs, starts with SplashManager_Cleanup: F-53934)
+                    if self.game.race_end_t.is_some() {
+                        if let Some(fh) = self.game.flash_hud.as_mut() {
+                            fh.splash_cleanup();
+                        }
+                    }
                     if let Some(line) = tournament {
                         // (the points decide: the career hears of it with the next event)
                         self.game.event_line = if self.game.event_line.is_empty() { line } else { format!("{}   -   {}", self.game.event_line, line) };
