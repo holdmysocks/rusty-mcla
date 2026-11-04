@@ -6717,6 +6717,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // (F-83946 takes system 0 of the experience tables, Progression, through F-68013 / F-14176)
                 self.police.progress = self.game.career.exp_tables.system("Progression").map_or(rewards::progress(self.game.rep).1, |d| d.fraction(self.game.rep));
                 self.police.radio_busy = self.radio.busy();
+                self.police.speech_busy = self.speech.busy();
                 self.police.in_race = self.game.race.is_some();
                 // (the police manager and its tactics run once a game frame, 1/30 s - the chassis ticks twice in
                 // between; their timers and per-frame tests (the +144 "still" step) take that dt. The level probe

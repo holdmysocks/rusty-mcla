@@ -212,6 +212,37 @@ fn dispatch_may_go(from: u8, to: i32) -> bool {
     }
 }
 
+/// Dispatch to Location's machine, the start of its update (F-95322): the state asked for in the last update is entered
+/// (F-43677; its time 0, Respond and WaitAtLocation start unrouted, WaitAtLocation follows the trail when it has crumbs).
+/// Returns the state entered.
+fn dispatch_enter(d: &mut Dispatch) -> Option<u8> {
+    let n = d.next.take()?;
+    d.st = n;
+    d.t = 0.0;
+    if n >= 2 {
+        d.routed = false;
+        d.arrived = false;
+    }
+    if n == 3 {
+        d.trail = !d.crumbs.is_empty();
+    }
+    Some(n)
+}
+
+/// The states' tests on their time before this update's dt (the state ran first, F-88920; a state asked for is stored,
+/// F-28114): WaitToDispatch (F-64066) after `delay` (fDispatchRdoDelayTime) with no career speech line playing (nor the
+/// form-table entry 109's +3636 set - not identified, not ported); Dispatch (F-52633) at once unless a career speech line
+/// plays (the police radio has a manager of its own); Respond once arrived.
+fn dispatch_ask(d: &mut Dispatch, delay: f32, speech_busy: bool) {
+    let st = d.st;
+    match st {
+        0 if d.t > delay && !speech_busy && dispatch_may_go(st, 1) => d.next = Some(1),
+        1 if !speech_busy && dispatch_may_go(st, 2) => d.next = Some(2),
+        2 if d.arrived && dispatch_may_go(st, 3) => d.next = Some(3),
+        _ => {}
+    }
+}
+
 /// "Moving" (F-43975 for the target, F-36212 for the cop's own car): the speed over fMovingSpeed x 0.447.
 fn moving(speed: f32, moving_speed: f32) -> bool {
     speed > moving_speed * 0.447
@@ -465,6 +496,9 @@ struct Dispatch {
     /// the brain's route is set; it has arrived (brain +576 == 1)
     routed: bool,
     arrived: bool,
+    /// a state asked for (FSM +16, F-28114), entered at the start of the next FSM update (F-43677). (The machine is begun
+    /// in state 0 by the engage itself, F-11097 / F-26187, as the dispatched cop is a car already in the world - loaded)
+    next: Option<u8>,
 }
 
 /// The race's cop zone (PoliceManager +188 zone, +192 lap, +196 state, +212 timer).
@@ -551,6 +585,8 @@ pub struct Police {
     /// the police radio is speaking (main), the radio byte F-62213 reads; a race is running (F-42951: a police cop in a
     /// race plans the plain way and never swipes)
     pub radio_busy: bool,
+    /// a career speech line plays (the speech manager's +2256 and +2260; main)
+    pub speech_busy: bool,
     pub in_race: bool,
     /// +136: while above 0 the brains' lost flag +773 is off (F-79519; F-63286 counts it down and sets the flag
     /// again); the tactic's begin (F-82656) sets fTrackTgtTime - the manager's track byte is 1 by default (F-39756)
@@ -735,6 +771,7 @@ impl Police {
             dsp: None,
             dispatch_call: None,
             radio_busy: false,
+            speech_busy: false,
             in_race: false,
             track_t: 0.0,
             last_known_v: Vec3::ZERO,
@@ -2649,7 +2686,7 @@ impl Police {
                     log::info!("police: dispatch {} - cruiser {}", call, cop);
                     self.kind = TacKind::Dispatch;
                     self.cops.clear();
-                    self.dsp = Some(Dispatch { cop, st: 0, t: 0.0, loc: ppos, call, crumbs: Vec::new(), crumb_t: 1.0, seen_t: 0.0, trail: false, routed: false, arrived: false });
+                    self.dsp = Some(Dispatch { cop, st: 0, t: 0.0, loc: ppos, call, crumbs: Vec::new(), crumb_t: 1.0, seen_t: 0.0, trail: false, routed: false, arrived: false, next: None });
                 }
             }
         }
@@ -2659,7 +2696,6 @@ impl Police {
         if let Some(mut d) = self.dsp.take() {
             let cop = vehicles.cars.iter().find(|c| c.uid == d.cop);
             let mut result = 0;
-            d.t += dt;
             // (the player's trail: a point a second, 15 at most, while the cop has not reached the place)
             if d.st < 3 && d.crumbs.len() < 15 && d.crumb_t > 0.0 {
                 d.crumb_t -= dt;
@@ -2688,49 +2724,31 @@ impl Police {
                 }
             }
             if result == 0 {
-                let st = d.st;
-                match st {
-                    // WaitToDispatch (F-64066): fDispatchRdoDelayTime and no radio line playing
-                    0 if d.t > t("fDispatchRdoDelayTime", 3.0) && !self.radio_busy && dispatch_may_go(st, 1) => {
-                        d.st = 1;
-                        d.t = 0.0;
-                        // (Dispatch F-44635: the DISPATCH line of the trigger's sound record)
-                        self.radio_cue.push(d.call.clone());
-                    }
-                    // (F-52633: on to Respond when the line has played)
-                    1 if d.t > 0.0 && !self.radio_busy && dispatch_may_go(st, 2) => {
-                        d.st = 2;
-                        d.t = 0.0;
-                        d.routed = false;
-                        d.arrived = false;
-                        // (Respond F-81858: REPORT_ACCEPT_CALL, GoToPosition to the place, siren on)
-                        self.radio_cue.push("REPORT_ACCEPT_CALL".into());
-                    }
-                    2 if d.arrived && dispatch_may_go(st, 3) => {
-                        // (WaitAtLocation F-52732: along the player's trail, else a search at once, +-pi/2 at random)
-                        d.st = 3;
-                        d.t = 0.0;
-                        d.routed = false;
-                        d.arrived = false;
-                        d.trail = !d.crumbs.is_empty();
-                        if !d.trail {
-                            self.dispatch_search(world, vehicles, d.cop, t("fMinSetGoalTime", 1.0));
-                        }
-                    }
-                    3 => {
-                        // (F-92001: fDispatchLocWaitTime at the place ends it; at the trail's last crumb a search)
-                        if d.t > t("fDispatchLocWaitTime", 30.0) {
-                            result = 2;
-                        } else if d.trail && d.arrived {
-                            d.trail = false;
-                            if let Some(&last) = d.crumbs.last() {
-                                self.last_known = last;
-                            }
-                            self.dispatch_search(world, vehicles, d.cop, t("fMinSetGoalTime", 1.0));
-                        }
-                    }
+                // (F-95322: the state asked for in the last update is entered first, F-43677; then the state's test runs on
+                // its time, which grows by dt after it, F-88920)
+                match dispatch_enter(&mut d) {
+                    // (Dispatch F-44635: the DISPATCH line of the trigger's sound record)
+                    Some(1) => self.radio_cue.push(d.call.clone()),
+                    // (Respond F-81858: REPORT_ACCEPT_CALL, GoToPosition to the place, siren on)
+                    Some(2) => self.radio_cue.push("REPORT_ACCEPT_CALL".into()),
+                    // (WaitAtLocation F-52732: along the player's trail, else a search at once, +-pi/2 at random)
+                    Some(3) if !d.trail => self.dispatch_search(world, vehicles, d.cop, t("fMinSetGoalTime", 1.0)),
                     _ => {}
                 }
+                dispatch_ask(&mut d, t("fDispatchRdoDelayTime", 3.0), self.speech_busy);
+                // (F-92001: fDispatchLocWaitTime at the place ends it; at the trail's last crumb a search)
+                if d.st == 3 {
+                    if d.t > t("fDispatchLocWaitTime", 30.0) {
+                        result = 2;
+                    } else if d.trail && d.arrived {
+                        d.trail = false;
+                        if let Some(&last) = d.crumbs.last() {
+                            self.last_known = last;
+                        }
+                        self.dispatch_search(world, vehicles, d.cop, t("fMinSetGoalTime", 1.0));
+                    }
+                }
+                d.t += dt;
             }
             match result {
                 // (F-22530: a dispatch's result 1 starts a Pursuit with its cop)
@@ -3647,6 +3665,45 @@ mod tests {
             let o = super::unit2(glam::Vec2::new(f(x), f(y)), glam::Vec2::new(1.0, -1.0));
             assert_eq!((o.x.to_bits(), o.y.to_bits()), (ox, oy), "{x:08x} {y:08x}");
         }
+    }
+
+    /// Dispatch to Location's machine against the original's tactic object run offline (tools/dispatch_fsm_reference.py:
+    /// ctor, reset, engage, 900 updates of F-87106 in 48 cases of speech windows and arrival frames; there all 43,200
+    /// updates equal): every update where the state or the state asked for changed, and the last, with the state's time
+    /// bit for bit.
+    #[test]
+    fn dispatch_machine_matches_the_original() {
+        let reference = include_str!("testdata/dispatch_fsm_ref.txt");
+        let (mut checked, mut case) = (0, None::<(i64, i64, i64)>);
+        let mut d = None::<Dispatch>;
+        let mut k = 0i64;
+        for line in reference.lines() {
+            let v: Vec<&str> = line.split_whitespace().collect();
+            if v[0] == "CASE" {
+                case = Some((v[1].parse().unwrap(), v[2].parse().unwrap(), v[3].parse().unwrap()));
+                d = Some(Dispatch { cop: 1, st: 0, t: 0.0, loc: Vec3::ZERO, call: String::new(), crumbs: Vec::new(), crumb_t: 1.0, seen_t: 0.0,
+                    trail: false, routed: false, arrived: false, next: None });
+                k = 0;
+                continue;
+            }
+            let (a, b, c) = case.unwrap();
+            let d = d.as_mut().unwrap();
+            let v = if v[0] == "END" { &v[1..] } else { &v[..] };
+            let want: i64 = v[0].parse().unwrap();
+            // (the update's order in Police::update: enter, the tests, the time)
+            while k <= want {
+                dispatch_enter(d);
+                d.arrived = k >= c;
+                dispatch_ask(d, 3.0, k >= a && k < b);
+                d.t += 1.0 / 60.0;
+                k += 1;
+            }
+            let got = (d.st as i32, d.next.map_or(-1, |n| n as i32), d.t.to_bits());
+            let exp = (v[1].parse().unwrap(), v[2].parse().unwrap(), u32::from_str_radix(v[3], 16).unwrap());
+            assert_eq!(got, exp, "case {a} {b} {c} update {want}");
+            checked += 1;
+        }
+        assert!(checked > 100, "{checked}");
     }
 
     /// F-83946: the sum over the offences, the pursuit's seconds, the flee fine, the career cut
