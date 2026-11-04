@@ -414,13 +414,19 @@ impl Lanes {
 /// F-87587), cut wherever the tangent has turned 2 degrees, with the curve's tangents.
 /// Traffic keeps to this graph (its own link indices; lanes and successors as the shared one).
 pub fn rail_nav(nav: &NavSys) -> &'static NavSys {
-    static N: std::sync::OnceLock<NavSys> = std::sync::OnceLock::new();
-    N.get_or_init(|| {
+    RAIL_NAV.get_or_init(|| {
         let t = std::time::Instant::now();
         let cv = nav.curved(2f32.to_radians());
         log::info!("traffic: lanes as curves, {} links (control polygon {}), {:.2} s", cv.links.len(), nav.links.len(), t.elapsed().as_secs_f32());
         cv
     })
+}
+
+static RAIL_NAV: std::sync::OnceLock<NavSys> = std::sync::OnceLock::new();
+
+/// The traffic's road network once it is made (`rail_nav`): what the riders' links index.
+pub fn rail_nav_made() -> Option<&'static NavSys> {
+    RAIL_NAV.get()
 }
 
 /// The lanes of the city, made once.
@@ -1505,6 +1511,37 @@ fn passing_rail(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, obst:
         return Some((Path::new(pts, r.v.max(4.0), None), back));
     }
     None
+}
+
+/// The turn signals: the render flags' bits 0x20 (F-41231, the lamp state `s[2]`) and 0x10 (F-81289, `s[3]`), for
+/// a car at `pos` (F-58860: its matrix's place) whose blink (car +3572) is `blink` and offset +3580 `blink_on`. Both
+/// are off past `blink_on` + 0.375 in the blink, and without a behaviour (a trailer). The rail tests read the owner
+/// of the follower's rail (rail +8, its flags +4: the port's `owner_flags`): 0x20 is lit on a rail whose owner has
+/// 0x10, or when the next rail's owner has 0x10 and the car is within 100 m (squared 10000) of the current rail's
+/// end (rail slot 13, F-93886: the curve's last control point); 0x10 likewise with 0x20, except that on a rail
+/// whose owner has 0x20 and +0x10 word 0 (F-29760) it is off past phase 0.5. A lane change rail (F-68395) lights
+/// one side by itself; the original's traffic makes none offline (doc), so there is no such case here. Only a car
+/// on a lane (state 1) is tested: the dynamic rails (recovery, passing, a race path's rails) are built with no
+/// owner (+8 = 0 in their ctors F-33069 / F-36658, their reset slot 23 leaves it), so only the next-rail test can
+/// light them, and what the follower's next rail is on them is not decoded (doc).
+pub fn signals(nav: &NavSys, r: &Rider, pos: Vec3, blink: f32, blink_on: f32) -> (bool, bool) {
+    if blink > blink_on + 0.375 || r.state != 1 {
+        return (false, false);
+    }
+    let cur = &nav.links[r.link];
+    let near = || {
+        let Some(end) = nav.curves.get(cur.lane).and_then(|c| c.pts.last()) else { return false };
+        let (dx, dy, dz) = (pos.x - end.x, pos.y - end.y, pos.z - end.z);
+        dx.mul_add(dx, dz.mul_add(dz, dy * dy)) < 10000.0
+    };
+    let next = r.next.map(|n| nav.links[n].owner_flags).unwrap_or(0);
+    let a = cur.owner_flags & 0x10 != 0 || (next & 0x10 != 0 && near());
+    let b = if cur.owner_flags & 0x20 != 0 {
+        !(cur.owner_w10 == 0 && r.t > 0.5)
+    } else {
+        next & 0x20 != 0 && near()
+    };
+    (a, b)
 }
 
 /// The car ahead's speed as F-56024 takes its velocity's length: y^2, then x and z fused on, in
@@ -2950,6 +2987,38 @@ mod tests {
         assert_eq!(n, 4000);
     }
 
+    /// The turn signals (F-41231 bit 0x20, F-81289 bit 0x10, with the lane end F-93886 and the owner test F-29760)
+    /// against the original's code run offline on 5,000 cases (tools/turn_signal_reference.py ->
+    /// testdata/turn_signal_ref.txt): the blink at and around its offset + 0.375, the current lane's owner (none, its
+    /// flags, its +0x10 word), the phase about 0.5, the next lane (none, its owner and flags), the car's place about
+    /// 100 m from the lane's end.
+    #[test]
+    fn turn_signals_match_the_original() {
+        use mcla_formats::rage::navsys::Link;
+        let h = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
+        let x = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let link = |lane: usize, owner_flags: u32, owner_w10: u32| Link { a: Vec3::ZERO, b: Vec3::X, len: 1.0, flags: 0, zone: None, owner_flags, owner_w10, owner_speed: 0.0, parent_flags: 0, parent_zone: None, lane, next: Vec::new(), prev: Vec::new(), side: Vec::new(), opp: Vec::new(), back: Vec::new(), hop: Vec::new(), hop_a: Vec::new(), node_a: 0, node_b: 0, ta: Vec3::ZERO, tb: Vec3::ZERO, t: [0.0; 2] };
+        let mut n = 0;
+        for line in include_str!("testdata/turn_signal_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = i.split_whitespace().collect();
+            let end = Vec3::new(h(w[12]), h(w[13]), h(w[14]));
+            let mut nav = NavSys::default();
+            // (no owner: flags 0, as the port's navsys keeps a lane without one)
+            let (f1, w10) = if w[2] == "1" { (x(w[3]), w[4].parse().unwrap()) } else { (0, 0) };
+            nav.links.push(link(0, f1, w10));
+            nav.links.push(link(1, if w[7] == "1" { x(w[8]) } else { 0 }, 0));
+            nav.curves.push(LaneCurve { pts: vec![Vec3::ZERO, Vec3::ONE, Vec3::X, end], ..Default::default() });
+            let mut r = vrider(AmbType::default());
+            r.t = h(w[5]);
+            r.next = (w[6] == "1").then_some(1);
+            let (a, b) = signals(&nav, &r, Vec3::new(h(w[9]), h(w[10]), h(w[11])), h(w[0]), h(w[1]));
+            assert_eq!(format!("{} {}", a as u8, b as u8), o, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 5000);
+    }
+
     /// The needed acceleration (F-20809) on 800 cases.
     #[test]
     #[ignore]
@@ -4386,6 +4455,9 @@ impl Vehicles {
             let idx = self.spawn(gpu, model, ground, yaw, color, false);
             // (its lights' hour offset, car +3568: 0 .. 0.25 h - F-77422)
             self.cars[idx].amb_lamps.hour_offset = self.rand() * 0.25;
+            // (then the signal blink's two offsets, +3576 and +3580: 0.2 U - 0.1 s each; the blink +3572 starts at 0)
+            self.cars[idx].amb_lamps.blink_wrap = 0.2 * self.rand() - 0.1;
+            self.cars[idx].amb_lamps.blink_on = 0.2 * self.rand() - 0.1;
             let f = (dir - normal * dir.dot(normal)).normalize_or(dir);
             let right = f.cross(normal).normalize_or(Vec3::X);
             self.cars[idx].state.relocate(ground, Quat::from_mat3(&glam::Mat3::from_cols(right, normal, -f)).normalize());

@@ -490,6 +490,12 @@ pub struct AmbLamps {
     /// an ambient car's own hour offset for its lights (car +3568: the global MWC's 23 bits x 2^-25,
     /// 0 .. 0.25 h, drawn by the spawn slot F-77422; 0 for the others, F-20039)
     pub hour_offset: f32,
+    /// an ambient car's signal blink (car +3572: seconds, + dt each update, back to 0 past 0.75 + `blink_wrap`;
+    /// F-46062) and its two offsets drawn after the hour offset by F-77422 (+3576, +3580: 0.2 U - 0.1 s each);
+    /// the signals are lit while `blink` <= `blink_on` + 0.375 (F-41231, F-81289)
+    pub blink: f32,
+    pub blink_wrap: f32,
+    pub blink_on: f32,
 }
 
 /// An ambient car's lights (F-75961, bit 2 of the render flags): on when the hour is past the
@@ -4835,15 +4841,43 @@ if keep || c.state.pos.distance(center) < 450.0 {
 
     /// Each frame before the cars' uniforms: the traffic cars' lamp states and glow levels
     /// (`AmbLamps`) - for the cars drawn now: in the view and within the lamps' reach along the
-    /// camera's axis `axis` from `eye`. The flags as F-46062 sets them: lights on at night, the
-    /// brake lamp by the original's rule (`traffic::brake_lamp`, F-56024), reversing; the turn
-    /// signals are not driven yet (the original's rule is in the doc). Parked cars have every
-    /// flag off, as recorded.
+    /// camera's axis `axis` from `eye`. The flags as F-46062 sets them, for every traffic car each
+    /// frame: lights on at night, the brake lamp (`traffic::brake_lamp`, F-56024), the turn signals
+    /// with the car's blink (`traffic::signals`, F-41231 / F-81289), reversing; a trailer with its cab
+    /// takes the cab's five flags instead (F-46062 copies 0x40, 0x20, 0x10, 0x8 and 0x4 from the cab's
+    /// record). Parked cars have every flag off, as recorded.
     pub fn traffic_lamps(&mut self, eye: Vec3, axis: Vec3, frustum: &crate::render::Frustum, night: f32, dt: f32) {
         let alpha = self.render_alpha;
         let lights_off = self.lights_off;
         let hour = self.hour;
+        let nav = traffic::rail_nav_made();
+        // (the hour window of F-75961; `night` over 0.5 inside 6 .. 18 h is the weather's own term)
+        let wet = night > 0.5 && (6.0..=18.0).contains(&hour);
+        let mut flags: Vec<[bool; 5]> = Vec::with_capacity(self.cars.len());
         for c in self.cars.iter_mut() {
+            // (the blink: + dt each update, back to 0 past 0.75 + the car's +3576 - F-46062)
+            let a = &mut c.amb_lamps;
+            a.blink += dt;
+            if a.blink > a.blink_wrap + 0.75 {
+                a.blink = 0.0;
+            }
+            let driven = c.parked.is_none();
+            let due = traffic_lights_due(hour, c.amb_lamps.hour_offset, wet) && c.removing.map_or(true, |f| f >= 0.1);
+            let (sa, sb) = match (nav, c.rail.as_ref()) {
+                (Some(nav), Some(r)) if driven => traffic::signals(nav, r, c.state.pos, c.amb_lamps.blink, c.amb_lamps.blink_on),
+                _ => (false, false),
+            };
+            flags.push([driven && !lights_off && due, driven && c.rail.as_ref().is_some_and(traffic::brake_lamp), sa, sb, driven && c.state.gear < 0]);
+        }
+        // a trailer with its cab: the cab's flags
+        for i in 0..self.cars.len() {
+            let Some(r) = self.cars[i].rail.as_ref().filter(|r| r.ty.trailer) else { continue };
+            let Some(id) = r.partner else { continue };
+            if let Some(k) = self.cars.iter().position(|c| c.rail.as_ref().is_some_and(|x| x.rng_id() == id && x.state != 0)) {
+                flags[i] = flags[k];
+            }
+        }
+        for (c, flags) in self.cars.iter_mut().zip(flags) {
             if c.is_player {
                 continue;
             }
@@ -4851,18 +4885,12 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let pos = c.render_pose(alpha).pos;
             c.amb_lamps.tint = 0.25 + 1.5 * ((pos.distance(eye) / 30.0).min(1.0) - 0.5).clamp(0.0, 1.0);
             // (the flag is the car's, whether or not the car is in the view)
-            let wet_now = night > 0.5 && (6.0..=18.0).contains(&hour);
-            c.amb_lamps.head_on = c.parked.is_none() && !lights_off && traffic_lights_due(hour, c.amb_lamps.hour_offset, wet_now) && c.removing.map_or(true, |f| f >= 0.1);
+            c.amb_lamps.head_on = flags[0];
             let d = (pos - eye).dot(axis);
             let r = Vec3::splat(c.model.params.body_half.length() + 1.0);
             if d > TRAFFIC_LAMP_REACH || !frustum.intersects_aabb(pos - r, pos + r) {
                 continue;
             }
-            let driven = c.parked.is_none();
-            // (the hour window of F-75961; `night` over 0.5 inside 6 .. 18 h is the weather's own term)
-            let wet = night > 0.5 && (6.0..=18.0).contains(&hour);
-            let due = traffic_lights_due(hour, c.amb_lamps.hour_offset, wet) && c.removing.map_or(true, |f| f >= 0.1);
-            let flags = [driven && !lights_off && due, driven && c.rail.as_ref().is_some_and(traffic::brake_lamp), false, false, driven && c.state.gear < 0];
             let a = &mut c.amb_lamps;
             for (v, on) in a.s.iter_mut().zip(flags) {
                 *v = traffic_ease(*v, on, dt);
