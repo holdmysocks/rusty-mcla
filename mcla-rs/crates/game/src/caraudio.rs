@@ -55,7 +55,7 @@ fn approach(p: &mut f32, target: f32, step: f32) {
 
 /// F-90102 (audio2 2026-10-27): `p` steps toward `target` by `a * b` with the multiply and the add fused
 /// (the original's fmadds / fnmsubs), clamped at the target. Verified bit for bit against the original (b1 evidence).
-fn approach_fma(p: &mut f32, target: f32, a: f32, b: f32) {
+pub(crate) fn approach_fma(p: &mut f32, target: f32, a: f32, b: f32) {
     if *p < target {
         *p = a.mul_add(b, *p).min(target);
     } else if *p > target {

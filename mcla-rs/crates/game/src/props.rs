@@ -110,8 +110,10 @@ impl PropModel {
         let cap = FAR_DIST * k.draw;
         match self.kind {
             1 => {
-                let far = (by(7200.0) * k.draw).min(cap);
-                // (the model's angle x 0.9 while the game is paused: F-63362, 0x82007FA8)
+                // (the plants' half angle x the night factor, both distances: F-63362)
+                let half_deg = half_deg * k.night;
+                let far = (2.0 * r / (half_deg * std::f32::consts::PI / 7200.0).tan().max(1e-6) * scale.min(2.0) * k.draw).min(cap);
+                // (the model's angle x 0.9 while the game is paused: F-63362, F-31789's flag)
                 let model = 2.0 * r / (half_deg * k.plant_angle * std::f32::consts::PI / 400.0).tan().max(1e-6) * scale.min(2.0);
                 ((model * k.detail).min(far), far)
             }
@@ -126,7 +128,7 @@ impl PropModel {
                 (0.0, far)
             }
             3 => {
-                let far = (by(7200.0) * k.draw).min(cap);
+                let far = (2.0 * r / (half_deg * k.night * std::f32::consts::PI / 7200.0).tan().max(1e-6) * scale.min(2.0) * k.draw).min(cap);
                 (0.0, far)
             }
             _ => {
@@ -149,6 +151,19 @@ pub struct Lod {
     /// is set - the game paused (F-23567 sets it with the pause, F-35144 puts the old
     /// value back) - else 1 (`set_paused`)
     pub plant_angle: f32,
+    /// the plants' night factor (the plant manager's +32, F-39007): it multiplies the half lens angle of the
+    /// plants' model and card distances (F-63362; not the hedges'), so both come in at night - 1 by day, 2 at night,
+    /// moved by 2 x the frame step a frame (`set_plant_night`)
+    pub night: f32,
+}
+
+/// The plants' night factor as main.rs moved it this frame (f32 bits).
+static PLANT_NIGHT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+
+/// main.rs, once a frame: the plants' night factor (F-39007's end: F-90102 towards 2.0 while IsNight F-47292, else 1.0,
+/// at the rate 2.0 x the frame step).
+pub fn set_plant_night(v: f32) {
+    PLANT_NIGHT.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
 }
 
 /// The renderer's paused-detail flag (renderer +373, read by F-31789).
@@ -160,11 +175,12 @@ pub fn set_paused(on: bool) {
 }
 
 impl Lod {
-    pub const ORIGINAL: Lod = Lod { draw: 1.0, detail: 1.0, plant_angle: 1.0 };
+    pub const ORIGINAL: Lod = Lod { draw: 1.0, detail: 1.0, plant_angle: 1.0, night: 1.0 };
     /// What the PERFORMANCE page has now (read once a frame by each user: the getters lock).
     pub fn now() -> Lod {
         let plant_angle = if PAUSED_DETAIL.load(std::sync::atomic::Ordering::Relaxed) { 0.9 } else { 1.0 };
-        Lod { draw: crate::hooks::draw_distance_scale().clamp(1.0, 4.0), detail: crate::hooks::detail_level_scale().clamp(1.0, 4.0), plant_angle }
+        let night = f32::from_bits(PLANT_NIGHT.load(std::sync::atomic::Ordering::Relaxed));
+        Lod { draw: crate::hooks::draw_distance_scale().clamp(1.0, 4.0), detail: crate::hooks::detail_level_scale().clamp(1.0, 4.0), plant_angle, night }
     }
 }
 
@@ -2563,6 +2579,11 @@ mod lod_option_tests {
         assert!((n3 - 3.0 * n).abs() < 0.01 && f3 == f);
         // paused (F-31789): the model angle x 0.9 (0x82007FA8) - 2R / tan(12.5 x 0.9 deg x pi/400)
         let (np, _) = m(1).reach(1.0, fov, Lod { plant_angle: 0.9, ..Lod::ORIGINAL });
+        // at night (the factor 2): both of a plant's distances from twice the half angle, the hedges' not
+        let (nn, fnn) = m(1).reach(1.0, fov, Lod { night: 2.0, ..Lod::ORIGINAL });
+        assert!((nn - 2.0 / (25.0f32 * std::f32::consts::PI / 400.0).tan()).abs() < 0.01 && (fnn - 2.0 / (25.0f32 * std::f32::consts::PI / 7200.0).tan()).abs() < 0.05, "{nn} {fnn}");
+        assert_eq!(m(3).reach(1.0, fov, Lod { night: 2.0, ..Lod::ORIGINAL }), (0.0, fnn));
+        assert_eq!(m(2).reach(1.0, fov, Lod { night: 2.0, ..Lod::ORIGINAL }), m(2).reach(1.0, fov, Lod::ORIGINAL));
         assert!((np - 2.0 / (11.25f32 * std::f32::consts::PI / 400.0).tan()).abs() < 0.01 && (np - 22.58).abs() < 0.02, "{np}");
         // hedges: high level to 2R / tan(h pi/600) (30.5 R), gone at 2R / tan(h pi/2400) (122.2 R)
         let (l, hf) = m(2).reach(1.0, fov, Lod::ORIGINAL);

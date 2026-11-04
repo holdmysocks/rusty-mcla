@@ -2599,17 +2599,45 @@ impl Game {
     }
 }
 
+/// HSV -> RGB as the original's F-61251 (in place on h, s, v): s = 0 gives v three times; else the sextant of
+/// fmod(h, 1) x 6 (the C library's double fmod, then single), cut towards zero (fctiwz) - a negative hue, NaN or the
+/// product rounded up to 6 leave the three numbers as they came; q and t are fnmsubs (one rounding, -0 when the
+/// product is 1). Checked on 3,000 cases against the original's code (test `hsv_rgb_is_the_originals`).
 fn hsv_rgb(h: [f32; 3]) -> [f32; 3] {
-    let x = h[0].rem_euclid(1.0) * 6.0;
-    let (i, f) = (x.floor() as i32 % 6, x - x.floor());
-    let (v, p, q, t) = (h[2], h[2] * (1.0 - h[1]), h[2] * (1.0 - h[1] * f), h[2] * (1.0 - h[1] * (1.0 - f)));
+    let (s, v) = (h[1], h[2]);
+    if s == 0.0 {
+        return [v, v, v];
+    }
+    let x = ((h[0] as f64) % 1.0) as f32 * 6.0;
+    let i = if x.is_nan() { -1 } else { x as i32 };
+    let f = x - i as f32;
+    let p = (1.0 - s) * v;
+    let q = -s.mul_add(f, -1.0) * v;
+    let t = -(1.0 - f).mul_add(s, -1.0) * v;
     match i {
         0 => [v, t, p],
         1 => [q, v, p],
         2 => [p, v, t],
         3 => [p, q, v],
         4 => [t, p, v],
-        _ => [v, p, q],
+        5 => [v, p, q],
+        _ => h,
+    }
+}
+
+#[cfg(test)]
+mod hsv_rgb_tests {
+    /// tools/hsv_rgb_reference.py: the original's F-61251 run offline, its output bits for 3,000 inputs.
+    #[test]
+    fn hsv_rgb_is_the_originals() {
+        let mut n = 0;
+        for l in include_str!("testdata/hsv_rgb_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let w: Vec<u32> = l.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let out = super::hsv_rgb([f32::from_bits(w[0]), f32::from_bits(w[1]), f32::from_bits(w[2])]);
+            assert_eq!([out[0].to_bits(), out[1].to_bits(), out[2].to_bits()], [w[3], w[4], w[5]], "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
     }
 }
 

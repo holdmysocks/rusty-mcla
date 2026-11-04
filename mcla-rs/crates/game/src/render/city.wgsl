@@ -33,6 +33,7 @@ struct Globals {
     car_key2_col: vec4<f32>, // ... its colour x strength
     car_amb: vec4<f32>,      // the garage: rgb = the cars' own ambient (ambYPos), w = 1: in force; car_key2 is then a position (its w = 2)
     lod: vec4<f32>,          // OPTIONS > PERFORMANCE: x = DRAW DISTANCE, y = DETAIL LEVEL (1 = the original), z = the plants' model angle factor (0.9 while paused, else 1) - props.rs `Lod`, w = the clock of the plants' wind
+    lod2: vec4<f32>,         // x = the plants' night factor (1 by day, 2 at night: props.rs `Lod::night`)
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(0) @binding(2) var t_shadow: texture_depth_2d;
@@ -1469,11 +1470,13 @@ fn vs_inst(in: VsIn, inst: InstIn) -> VsOut {
         // (the options' scales, props.rs `PropModel::reach`: x the far ends, y the model's end)
         let kd = max(g.lod.x, 1.0);
         let pa = select(1.0, g.lod.z, g.lod.z > 0.5);
-        let model = 2.0 * r / tan(half_deg * pa * 0.007853982) * s2 * max(g.lod.y, 1.0);
+        // (the plants' half angle x the night factor, both their distances - not the hedges' or the props')
+        let hp = half_deg * select(1.0, g.lod2.x, g.lod2.x > 0.5);
+        let model = 2.0 * r / tan(hp * pa * 0.007853982) * s2 * max(g.lod.y, 1.0);
         if (kind == 1) {
             fade = clamp((model - depth) * 0.25, 0.0, 1.0);
         } else if (kind == 3 || kind == 4) {
-            let far = min(2.0 * r / tan(half_deg * 0.000436332) * s2 * kd, 6000.0 * kd);
+            let far = min(2.0 * r / tan(hp * 0.000436332) * s2 * kd, 6000.0 * kd);
             fade = clamp((far - depth) / (far * 0.25), 0.0, 1.0);
             if (inst.rot_tint.w >= 0.0) { fade = min(fade, clamp((depth - (model - 8.0)) * 0.25, 0.0, 1.0)); }
         } else if (kind == 2) {

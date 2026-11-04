@@ -264,6 +264,8 @@ struct App {
     orbit: f32,
     /// the clock of the plants' wind: the original's clock object +24, which takes the scaled frame step and stands still while paused (F-49323). Test hook MCLA_WIND_CLOCK=<seconds>
     wind_clock: f32,
+    /// the plants' night factor (props.rs `set_plant_night`)
+    plant_night: f32,
     sim_time: f32,
     tick_no: u64,
     /// frames the race-over menu has offered RACE BACK (test hooks, althk.rs)
@@ -1038,6 +1040,7 @@ impl App {
             chase: ChaseCam::default(),
             orbit,
             wind_clock: 0.0,
+            plant_night: 1.0,
             sim_time: 0.0,
             tick_no: 0,
             alt_menu_frames: 0,
@@ -1359,6 +1362,11 @@ impl App {
         }
         let game_dt = dt * self.game.mc4_time_scale();
         if self.game.mode != Mode::Paused { self.wind_clock += game_dt; }
+        // The plants' night factor, at the end of the plants' draw (F-39007): towards 2.0 while IsNight (F-47292: not in
+        // the garage, the hour past the night's start or before its end), else 1.0, by 2.0 x the clock's step (F-90102).
+        let night_now = self.game.mode != Mode::Garage && (self.time_of_day > 18.0 || self.time_of_day < 6.0);
+        crate::caraudio::approach_fma(&mut self.plant_night, if night_now { 2.0 } else { 1.0 }, 2.0, dt);
+        crate::props::set_plant_night(self.plant_night);
         let update = self.opt.time.is_none() && scene.is_none();
         if std::env::var("MCLA_WEATHER_TRACE").is_ok() && self.tick_no % 120 == 0 {
             log::info!("weather: {} -> {} blend {:.3} timer {:.1} auto {} scene {:?} mode {:?} menu {}", self.weather.name(), target(self).name(), self.sky_next.as_ref().map_or(0.0, |n| n.2), self.weather_timer, self.weather_auto, scene, self.game.mode, self.game.in_menu());
@@ -1694,6 +1702,7 @@ impl App {
             cloud_color: [cloud_c.x, cloud_c.y, cloud_c.z, cover],
             cloud_shade: [cloud_s.x, cloud_s.y, cloud_s.z, self.sim_time * 0.0022],
             lod: { let k = crate::props::Lod::now(); [k.draw, k.detail, k.plant_angle, std::env::var("MCLA_WIND_CLOCK").ok().and_then(|v| v.parse().ok()).unwrap_or(self.wind_clock)] },
+            lod2: [crate::props::Lod::now().night, 0.0, 0.0, 0.0],
             ..Globals::default()
         }
     }

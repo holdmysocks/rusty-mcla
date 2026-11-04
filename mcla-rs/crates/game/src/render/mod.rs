@@ -115,6 +115,8 @@ pub struct Globals {
     pub car_amb: [f32; 4],
     /// OPTIONS > PERFORMANCE: x = DRAW DISTANCE, y = DETAIL LEVEL (1 = the original; props.rs `Lod`, city.wgsl `vs_inst`; w = the clock of the plants' wind)
     pub lod: [f32; 4],
+    /// x = the plants' night factor (props.rs `Lod::night`: 1 by day, 2 at night), yzw unused
+    pub lod2: [f32; 4],
 }
 
 pub const MAX_LIGHTS: usize = 48;
@@ -746,6 +748,7 @@ impl Default for Globals {
             car_key2_col: [0.0; 4],
             car_amb: [0.0; 4],
             lod: [1.0, 1.0, 1.0, 0.0],
+            lod2: [1.0, 0.0, 0.0, 0.0],
         }
     }
 }
