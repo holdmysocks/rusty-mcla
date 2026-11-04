@@ -79,6 +79,7 @@ mod part_audit;
 mod rain;
 mod halo;
 mod trail;
+mod cutlights;
 mod siglrefl;
 mod sunglow;
 mod ticktimes;
@@ -10472,8 +10473,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             night: hour > 18.0 || hour < 6.0,
             night_path: false,
             dynamic: None,
+            cine: self.cine.playing.is_some(),
+            scene_amb: false,
         };
-        self.cine.set_light(std::env::var("MCLA_CHAR_OLD").is_err().then_some(char_light));
+        // (at night the scenes' cast takes path A's night lights - the cutscene light list while a scene plays,
+        // cutlights.rs; MCLA_CHAR_NIGHT_OLD=1: the day's lights at night as before)
+        let night_cast = std::env::var("MCLA_CHAR_NIGHT_OLD").is_err();
+        self.cine.set_light(std::env::var("MCLA_CHAR_OLD").is_err().then_some(skin::CharLight { night_path: night_cast, scene_amb: true, dynamic: self.peds.night_lights.as_ref().map(|d| d.0).filter(|_| night_cast), ..char_light }));
         // (the drivers and riders are mcCharacterPlus instances: path A as the scenes' cast, by day and at night -
         // F-21528, recorded on the player's rider; MCLA_DRV_LIGHT_OLD=1: the city's object look as before)
         self.drivers.set_light(std::env::var("MCLA_DRV_LIGHT_OLD").is_err().then(|| skin::CharLight { night_path: true, dynamic: self.peds.night_lights.as_ref().map(|d| d.0), ..char_light }));
@@ -13511,6 +13517,7 @@ impl App {
             self.tyre_fx = Some(tyrefx::TyreFx::load(std::path::Path::new(&self.opt.data_dir), &self.fx));
             rain::load(&mut gpu, &self.opt.data_dir);
             halo::load(&mut gpu, &self.opt.data_dir);
+            cutlights::init(&self.opt.data_dir);
             siglrefl::load(&gpu, &self.opt.data_dir);
             sunglow::load(&mut gpu);
             pu_draw::load(&mut gpu, &self.opt.data_dir);

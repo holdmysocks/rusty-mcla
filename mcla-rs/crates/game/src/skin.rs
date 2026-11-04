@@ -159,11 +159,16 @@ pub struct CharLight {
     pub strength: f32,
     pub amb: Vec3,
     pub night: bool,
-    /// at night the lights of path A's night branch (`night_slots`) instead of the day's - the drivers and riders;
-    /// the scenes' characters keep the day's (not ported for them)
+    /// at night the lights of path A's night branch (`night_slots`) instead of the day's - the drivers, the riders
+    /// and the scenes' cast
     pub night_path: bool,
     /// the light manager's dynamic list at night (the player's head lamps, the key light, the fourth record)
     pub dynamic: Option<crate::figlight::Dynamic>,
+    /// the cine probe (F-22850: a scene plays): at night the cutscene light list comes before the lamp grid
+    pub cine: bool,
+    /// at night ambYPos stays the scene's ambient instead of the fill map's cube (the scenes' cast: whether the
+    /// draw hook's +24 is set for them, which chooses the cube in F-75930, was never recorded in a scene)
+    pub scene_amb: bool,
 }
 
 /// Path A at night (F-75930 with four = 0): the three slots when nothing lights the figure - place 0, colour 0,
@@ -179,7 +184,8 @@ impl CharLight {
     /// colour, strength = its score, range 1000 (a missing one empty). Then the dynamic list in order - the
     /// head lamps and the fourth record by their score, the key light by the luminance of its colour - takes
     /// slot 2 when it beats lum(slot 2's colour) x slot 2's strength: its place (the key light 100 km from the origin), its
-    /// colour, strength = that score, range 1e6.
+    /// colour, strength = that score, range 1e6. With the cine probe the candidates are the cutscene light list's
+    /// best four (`cutlights::best`) and the grid only when none of them scores.
     pub fn night_slots(&self, p: Vec3, t: Option<&crate::render::LampTables>) -> [[f32; 4]; 6] {
         use crate::render::{LampRec, LAMP_GRID};
         let mut cand: Vec<u16> = Vec::new();
@@ -201,9 +207,16 @@ impl CharLight {
             }
         }
         let rec = |i: u16| t.and_then(|t| t.recs.get(i as usize)).copied().unwrap_or_default();
-        let mut scored: Vec<(f32, LampRec)> = cand.iter().map(|&i| (crate::figlight::score(&rec(i), p), rec(i))).collect();
-        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-        scored.truncate(4);
+        // (with the cine probe the cutscene list's best four above 1e-6 - F-65001; none: the grid as without it)
+        let cut = if self.cine { crate::cutlights::LIST.get().map(|l| crate::cutlights::best(l, p)).unwrap_or_default() } else { Vec::new() };
+        let scored = if !cut.is_empty() {
+            cut
+        } else {
+            let mut scored: Vec<(f32, LampRec)> = cand.iter().map(|&i| (crate::figlight::score(&rec(i), p), rec(i))).collect();
+            scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+            scored.truncate(4);
+            scored
+        };
         let mut slots = [NIGHT_EMPTY; 3];
         if scored.iter().map(|s| s.0).sum::<f32>() > 0.0 {
             for (k, (s, l)) in scored.iter().take(3).enumerate() {
@@ -813,7 +826,7 @@ impl SkinBuffer {
                 }
                 // (ambYPos: the scene's ambient by day; at night the ambient cube's faces are the fill map's
                 // colour, map / 255 x 0.25 with no fade - F-35455, recorded on the rider)
-                let amb = if night { crate::fillmap::cube_at(p.x, p.z) } else { cl.amb };
+                let amb = if night && !cl.scene_amb { crate::fillmap::cube_at(p.x, p.z) } else { cl.amb };
                 u.area_a[3] = [amb.x, amb.y, amb.z, m.ambient_mod];
                 // (F-42959: outside a car the neon and gauge light colours 0 and the floor far below; a driver gets
                 // his car's - floorPlaneEq in area_b[3], gauge place / colour / cone direction and neon place / colour in
@@ -964,6 +977,8 @@ mod tests {
             night: false,
             night_path: false,
             dynamic: None,
+            cine: false,
+            scene_amb: false,
         };
         let want = [
             [-268.15, 64.034, -747.02, 1000.0],
