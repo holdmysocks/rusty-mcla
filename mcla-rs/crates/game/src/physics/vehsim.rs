@@ -690,6 +690,8 @@ pub struct VehState {
     pub stuck: u8,
     pub stuck_at: Vec3,
     pub stuck_timer: f32,
+    /// mcCarStuck +68: the time before it may right the car again (MinDropRetriggerTime from the last time)
+    pub stuck_cool: f32,
     pub still_timer: f32,
     pub last_speed: f32,
     /// the drift thrust's level (gyro +56)
@@ -818,7 +820,7 @@ pub struct VehState {
 
 impl Default for VehState {
     fn default() -> Self {
-        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, rider: None, rider_out: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, fric_boost: false, grip_h: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false, goal: 0.0 }, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default() }
+        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, rider: None, rider_out: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, stuck_cool: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, fric_boost: false, grip_h: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false, goal: 0.0 }, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default() }
     }
 }
 
@@ -5227,28 +5229,40 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     // (the turn as an angle about the world's up, for the body's rows in the original's own
     // operations below; where the body is not kept so, the car's quaternion is turned)
     let mut stuck_turn: Option<f32> = None;
-    if vs.stuck != 0 && !dbg_flag("MCLA_DBG_NOSTUCK") {
+    // (state 4, the righting: the car's new matrix - rows and the model's origin)
+    let mut righted: Option<[Vec3; 4]> = None;
+    if !dbg_flag("MCLA_DBG_NOSTUCK") {
         let pedal = if vs.gear < 0 { input.brake } else { input.throttle };
         let far2 = {
             let d = vs.stuck_at - body_at;
             super::exact::fma(d.x, d.x, super::exact::fma(d.z, d.z, d.y * d.y))
         };
-        if far2 > 25.0 && vs.stuck != 2 {
-            vs.stuck = 0;
-            vs.stuck_timer = 0.0;
-        } else if vs.stuck == 1 {
-            vs.stuck_timer += dt;
-            if far2 <= 3.5 * 3.5 && vs.stuck_timer >= 0.3 && pedal > 0.0 && vs.gear >= 1 && st.wheels.iter().any(|w| w.grounded) {
-                // (the turning begins with the next tick)
-                vs.stuck = 2;
-            } else if vs.stuck_timer >= 1.0 {
-                vs.stuck = 0;
-                vs.stuck_timer = 0.0;
+        // (the port's own test for the turning: under throttle in a driving gear with a wheel on the ground)
+        let turns = pedal > 0.0 && vs.gear >= 1 && st.wheels.iter().any(|w| w.grounded);
+        // (only with no wipeout or bust bit on the chassis, +592 & 0x30; the bust bit is not the port's car's)
+        let gate = vs.wipe.is_none();
+        let flips = !dbg_flag("MCLA_DBG_NOFLIP");
+        let was = vs.stuck;
+        let (state, timer, cool, right) = stuck_step(was, vs.stuck_timer, vs.stuck_cool, far2, body_rows[1].y, gate, flips, dt, turns);
+        (vs.stuck, vs.stuck_timer, vs.stuck_cool) = (state, timer, cool);
+        if right {
+            let city = super::camprobe::CamLevel::city(world);
+            let place = stuck_push_out(body_at, |c, r| if r == 1.0 { city.contacts(c, r, false, 1).first().map(|k| (k.normal, k.depth)) } else { None });
+            righted = Some(stuck_righted(body_rows[2], place));
+            // (F-59013: a forward gear past the first goes to the first)
+            if vs.gear >= 2 {
+                let was = vs.gear;
+                vs.gear = 1;
+                vs.shift_timer = 0.0;
+                vs.gear_change.start(was, 1, e.gcl);
             }
-        } else if vs.stuck == 2 {
+        } else if was == 2 {
+            // (the turning begins with the tick after the one that found it)
             if far2 > 25.0 || vs.gear == 0 || pedal <= 0.0 || input.handbrake {
+                // (through the reset F-80245, which clears the time to the next righting too)
                 vs.stuck = 0;
                 vs.stuck_timer = 0.0;
+                vs.stuck_cool = 0.0;
             } else {
                 // (the steering of the input object, +24 - the pad's value of the frame, not the
                 // chassis's product with the speed factor: A-26582, V s_rtv s256 - s270)
@@ -5261,7 +5275,15 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     if dbg_flag("MCLA_DBG_STUCK") {
         eprintln!("STUCK state {} timer {:.3} far {:.2} steer {:e} turn {:?} cg {:.4} walls {} tick {}", vs.stuck, vs.stuck_timer, (vs.stuck_at - (st.pos + rm * pivot_local)).length(), vs.steer, stuck_turn, vs.cg[0], super::hull::WALLS.with(|t| t.get()), super::loose::REPLAY_TICK.load(std::sync::atomic::Ordering::Relaxed));
     }
-    let frozen = vs.still_timer > 1.0;
+    // (the righting: the collider's freeze F-50121 - velocities, momenta, the tick's sums and pushes nothing, as
+    // the still car's - and its reset F-25840 from the instance's new matrix: the body's place through the bound's
+    // offset, the last matrix this one, the squaring count 0. For the port's older step the car itself.)
+    if let Some(m) = righted {
+        st.pos = m[3];
+        st.rot = Quat::from_mat3(&Mat3::from_cols(m[0], m[1], m[2])).normalize();
+        vs.hull_last = Some(m);
+    }
+    let frozen = vs.still_timer > 1.0 || righted.is_some();
     // (R4: and the sums a frozen tick leaves are nothing - what the recorder's hook at the integration reads)
     if frozen && exact_sums && !dbg_flag("MCLA_DBG_R4") {
         vs.last_force = Vec3::ZERO;
@@ -5318,6 +5340,13 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 let iw = ex::world_inertia(&rows0, inertia);
                 (v_in * mass, Vec3::new(ex::dot3(Vec3::new(iw[0].x, iw[1].x, iw[2].x), w_in), ex::dot3(Vec3::new(iw[0].y, iw[1].y, iw[2].y), w_in), ex::dot3(Vec3::new(iw[0].z, iw[1].z, iw[2].z), w_in)), 0)
             }
+        };
+        let (rows0, body_at, count) = match righted {
+            Some(m) => {
+                (pm, lm) = (Vec3::ZERO, Vec3::ZERO);
+                ([m[0], m[1], m[2]], super::loose::xf(&m, pivot_local), 0)
+            }
+            None => (rows0, body_at, count),
         };
         let exact_collide = !dbg_flag("MCLA_DBG_OLDCOLLIDE") && p.hull.is_some();
         let _ = momentum_carried;
@@ -6641,6 +6670,75 @@ pub fn set_pose(st: &mut CarState, vt: &VehTune, world: &WorldCollider, m: [Vec3
     vs.engine_w = (ratio * power).min(peak).max(e.idle_rpm * RPM);
 }
 
+/// mcCarStuck's righting (F-72170, state 4): the car's forwards kept, its up the world's - right = unit(up x
+/// back) as the vector unit makes it (vrsqrtefp, one step; no length gives 0), back = right x up - at
+/// `place` lifted by TransAmount (0.3 on every car). Rows and the model's origin: the matrix is written to the
+/// instance as it stands, so the body's place comes out a centre-of-mass offset above where it was.
+pub fn stuck_righted(back: Vec3, place: Vec3) -> [Vec3; 4] {
+    use super::artic::V4;
+    let v = |a: Vec3| V4::new(a.x, a.y, a.z, 0.0);
+    let up = V4::new(0.0, 1.0, 0.0, 0.0);
+    let f = v(back);
+    let x = f.yzx().nmsub(up.zxy(), f.zxy().mul(up.yzx()));
+    let s = x.dot3(x);
+    let y = s.rsqrte();
+    let y = V4(y.0.map(|e| if e == f32::INFINITY { 0.0 } else { e }));
+    let k = s.nmsub(y.mul(y), V4::splat(1.0)).madd(V4::splat(0.5).mul(y), y);
+    let right = x.mul(k);
+    let back = up.yzx().nmsub(right.zxy(), up.zxy().mul(right.yzx()));
+    let p = |a: V4| Vec3::new(a.0[0], a.0[1], a.0[2]);
+    [p(right), Vec3::Y, p(back), Vec3::new(place.x, place.y + 0.3, place.z)]
+}
+
+/// mcCarStuck's update F-72170 save the turning of state 2 (the port's own code): its time to the next righting run
+/// down (+68); a car more than MoveThresh (5 m) from where it was armed is let go; armed (1), its time counted and,
+/// within PosThresh (3.5 m), past TimeThresh (0.3 s) with `turns` it is to be turned (2), else past TimeFlipThresh
+/// (1 s) with its up under half way to the world's (row 1's y < 0.5), TransAmount (0.3) or RotAmount not zero and its
+/// time to the next righting run out, it is to be righted (4), else past both it is let go; to be righted with the
+/// `gate` open (no wipeout or bust bit), it is (the last: true), through its reset F-80245 and MinDropRetriggerTime
+/// (5 s). (state, timer, time to the next righting, righted now). The tune is the vehStuck defaults every car carries.
+pub fn stuck_step(state: u8, timer: f32, cool: f32, far2: f32, up_y: f32, gate: bool, flips: bool, dt: f32, turns: bool) -> (u8, f32, f32, bool) {
+    let cool = if cool > 0.0 { cool - dt } else { cool };
+    if far2 > 25.0 && state != 2 {
+        return (0, 0.0, cool, false);
+    }
+    match state {
+        1 => {
+            let timer = timer + dt;
+            if far2 <= 12.25 && timer >= 0.3 && turns {
+                // (the turning begins with the next tick)
+                (2, timer, cool, false)
+            } else if far2 <= 12.25 && timer >= 1.0 && up_y < 0.5 && cool <= 0.0 && flips {
+                (4, timer, cool, false)
+            } else if timer >= 1.0 {
+                (0, 0.0, cool, false)
+            } else {
+                (1, timer, cool, false)
+            }
+        }
+        4 if gate => (0, 0.0, 5.0, true),
+        _ => (state, timer, cool, false),
+    }
+}
+
+/// mcCarStuck's push-out F-51211 before a righting: three ball probes F-87651 at the place, one record
+/// each - the ambient traffic (radius 2), type 0x10 (radius 2), the city (radius 1); a hit (`probe`: normal and
+/// depth) moves the place out along its normal by its depth, a normal pointing down laid flat first (F-41334 with
+/// 1e-5, else +x). The port's car asks only the city: it has no traffic or type 0x10 bounds to probe (open).
+pub fn stuck_push_out(place: Vec3, mut probe: impl FnMut(Vec3, f32) -> Option<(Vec3, f32)>) -> Vec3 {
+    let mut place = place;
+    for r in [2.0, 2.0, 1.0] {
+        if let Some((mut n, depth)) = probe(place, r) {
+            if n.y < 0.0 {
+                n.y = 0.0;
+                n = crate::aiv::norm_or(n, f32::from_bits(0x3727_c5ac), Vec3::X);
+            }
+            place = n * depth + place;
+        }
+    }
+    place
+}
+
 /// R4: the level's probe as the stand-up asks it (F-20855), plainly written: the first polygon of the city
 /// a segment meets - the point, and the polygon's normal as the collision forms it.
 fn level_probe(world: &WorldCollider, from: Vec3, to: Vec3) -> Option<(Vec3, Vec3)> {
@@ -7333,3 +7431,50 @@ mod landing_friction_tests {
     }
 }
 
+
+#[cfg(test)]
+mod stuck_flip_tests {
+    use super::*;
+
+    /// mcCarStuck F-72170 run offline (tools/stuck_flip_reference.py): armed and righting cases - the state, its
+    /// time and the time to the next righting, and on a righting the push-out's probes, the instance's new matrix
+    /// and the gear set - against stuck_step, stuck_push_out and stuck_righted, to the bit.
+    #[test]
+    fn stuck_flip_matches_the_original() {
+        let text = include_str!("../testdata/stuck_flip_ref.txt");
+        let (mut n, mut flips) = (0, 0);
+        for line in text.lines() {
+            let (c, o) = line.split_once(" -> ").unwrap();
+            let c: Vec<u32> = c.split(' ').map(|w| u32::from_str_radix(w, 16).unwrap()).collect();
+            let o: Vec<u32> = o.split(' ').map(|w| u32::from_str_radix(w, 16).unwrap()).collect();
+            let f = |i: usize| f32::from_bits(c[i]);
+            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let (saved, pos) = (v(3), v(18));
+            let d = saved - pos;
+            let far2 = super::super::exact::fma(d.x, d.x, super::super::exact::fma(d.z, d.z, d.y * d.y));
+            let turns = c[23] != 0 && c[24] != 0 && c[25] >= 2;
+            let (state, timer, cool, right) = stuck_step(c[0] as u8, f(1), f(2), far2, f(11), c[22] & 0x30 == 0, true, f(26), turns);
+            assert_eq!((state as u32, timer.to_bits(), cool.to_bits()), (o[0], o[1], o[2]), "{line}");
+            assert_eq!(o[16], if right { 3 } else { 0 }, "{line}");
+            if right {
+                let mut k = 0;
+                let place = stuck_push_out(pos, |at, r| {
+                    let rec = &o[17 + 6 * k..];
+                    assert_eq!([at.x.to_bits(), at.y.to_bits(), at.z.to_bits(), r.to_bits()], [rec[0], rec[1], rec[2], rec[3]], "probe {k}: {line}");
+                    let p = 27 + 5 * k;
+                    k += 1;
+                    (c[p] != 0).then(|| (v(p + 1), f(p + 4)))
+                });
+                assert_eq!(k, 3);
+                let m = stuck_righted(v(14), place);
+                for (r, row) in m.iter().enumerate() {
+                    assert_eq!([row.x.to_bits(), row.y.to_bits(), row.z.to_bits()], [o[3 + 3 * r], o[4 + 3 * r], o[5 + 3 * r]], "row {r}: {line}");
+                }
+                assert_eq!(o[15], if c[25] >= 2 { 2 } else { u32::MAX }, "{line}");
+                flips += 1;
+            }
+            n += 1;
+        }
+        assert!(n == 4000 && flips > 500, "{n} {flips}");
+    }
+}
