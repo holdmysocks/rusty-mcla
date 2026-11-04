@@ -57,6 +57,7 @@ mod damageparts;
 mod damagemap;
 mod cutscene;
 mod drivers;
+mod drvmachine;
 mod game;
 mod glyphs;
 mod keybinds;
