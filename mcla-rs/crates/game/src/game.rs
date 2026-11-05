@@ -6994,7 +6994,9 @@ impl Game {
                     } else {
                         vec![It::Part("SIDESKIRTS", Slot::Skirts), It::RowAs("DOORS", 9969)]
                     }),
-                    ("NEON/WINDOW TINT", vec![It::RowAs("NEON", neon_row), It::RowAs("NEON COLOR", neon_row + 1), It::RowAs("WINDOW TINT", tint_row), It::RowAs("TINT COLOR", tint_row + 1)]),
+                    // (Colors.sc.xml ExtNeonColorMenu: ExtNeonOptions, ExtNeon_Closed, Tint_Closed, Tint_Opacity -
+                    // NEON, NEON COLOR, WINDOW TINT = the tint's colour, TINT OPACITY)
+                    ("NEON/WINDOW TINT", vec![It::RowAs("NEON", neon_row), It::RowAs("NEON COLOR", neon_row + 1), It::RowAs("WINDOW TINT", tint_row + 1), It::RowAs("TINT OPACITY", tint_row)]),
                     // (DimensionMenu of Wheels.sc.xml: axle, rim size, tyre profile, tyre width, ride height)
                     ("DIMENSIONS", if self.flash_garage.is_some() { vec![It::RowAs("AXLE", 9970), It::RowAs("RIMS SIZE", rim_row), It::RowAs("TIRE PROFILE", 9971), It::RowAs("TIRE WIDTH", 9972), It::RowAs("RIDE HEIGHT", 9973)] } else { vec![It::RowAs("RIMS SIZE", rim_row)] }),
                     // (Hydraulics.sc.xml: a flat page like the paint shop's. The port has the
@@ -7347,10 +7349,11 @@ impl Game {
                 // swatches, ACCEPT keeps, BACK puts the old colour back)
                 let (up, down, left, right, back, enter) = if let Some((k, saved)) = self.int_open {
                     let n = PALETTE.len();
-                    let cell = if k < 6 { &mut self.int_colors[k] } else if k < 9 { &mut self.rim_cols[k - 6] } else { &mut self.car_x.int_de_idx[(k - 9).min(1)].0 };
+                    let cell = if k == 11 { &mut self.neon_color } else if k == 12 { &mut self.tint_color } else if k < 6 { &mut self.int_colors[k] } else if k < 9 { &mut self.rim_cols[k - 6] } else { &mut self.car_x.int_de_idx[(k - 9).min(1)].0 };
                     if left || right {
                         *cell = (*cell + n + right as usize - left as usize) % n;
-                        if k < 9 { self.slot_hsv[k] = None; } else { self.car_x.int_de_hsv[(k - 9).min(1)] = None; }
+                        // (the neon's and the tint's own colour stays with the swatch it was kept on)
+                        if k < 9 { self.slot_hsv[k] = None; } else if k < 11 { self.car_x.int_de_hsv[(k - 9).min(1)] = None; }
                         self.dirty = true;
                     }
                     let swatch = *cell;
@@ -7360,16 +7363,26 @@ impl Game {
                     if hook || self.x_hit(ctx) {
                         // EDIT COLOR SLOT: the picker starts from the row's colour; the car's own paint
                         // is set aside meanwhile
-                        let from = (if k < 9 { self.slot_hsv[k] } else { self.car_x.int_de_hsv[(k - 9).min(1)] }).unwrap_or_else(|| paint_rgb_to_hsv(PALETTE[swatch % PALETTE.len()]));
-                        self.pick_slot = Some((k.min(10), self.paint_hsv));
+                        let own = match k {
+                            11 => self.car_x.neon_rgb.filter(|o| o.0 == swatch).map(|o| crate::mc4::to_linear(o.1)),
+                            12 => self.car_x.tint_rgb.filter(|o| o.0 == swatch).map(|o| crate::mc4::to_linear(o.1)),
+                            _ => None,
+                        };
+                        let from = (if k >= 11 { own.map(|c| paint_rgb_to_hsv([c[0], c[1], c[2], 1.0])) } else if k < 9 { self.slot_hsv[k] } else { self.car_x.int_de_hsv[(k - 9).min(1)] }).unwrap_or_else(|| paint_rgb_to_hsv(PALETTE[swatch % PALETTE.len()]));
+                        self.pick_slot = Some((k.min(12), self.paint_hsv));
                         self.paint_pick = Some(Some(from));
                         self.paint_hsv = Some(from);
                     } else if self.y_hit(ctx) {
                         // RESET COLOR SLOT
-                        if k < 9 { self.slot_hsv[k] = None; } else { self.car_x.int_de_hsv[(k - 9).min(1)] = None; }
+                        match k {
+                            11 => self.car_x.neon_rgb = None,
+                            12 => self.car_x.tint_rgb = None,
+                            _ if k < 9 => self.slot_hsv[k] = None,
+                            _ => self.car_x.int_de_hsv[(k - 9).min(1)] = None,
+                        }
                         self.dirty = true;
                     }
-                    let cell = if k < 6 { &mut self.int_colors[k] } else if k < 9 { &mut self.rim_cols[k - 6] } else { &mut self.car_x.int_de_idx[(k - 9).min(1)].0 };
+                    let cell = if k == 11 { &mut self.neon_color } else if k == 12 { &mut self.tint_color } else if k < 6 { &mut self.int_colors[k] } else if k < 9 { &mut self.rim_cols[k - 6] } else { &mut self.car_x.int_de_idx[(k - 9).min(1)].0 };
                     if back {
                         *cell = saved;
                         self.int_open = None;
@@ -7377,6 +7390,10 @@ impl Game {
                         self.int_open = None;
                     }
                     (false, false, false, false, false, false)
+                } else if self.garage_menu == 11 && self.garage_part.is_none() && self.flash_garage.is_some() && enter && (self.garage_row == neon_row + 1 || self.garage_row == tint_row + 1) {
+                    // NEON/WINDOW TINT: ExtNeon_Open / Tint_Open (11, 12 here)
+                    self.int_open = Some(if self.garage_row == neon_row + 1 { (11, self.neon_color) } else { (12, self.tint_color) });
+                    (up, down, left, right, back, false)
                 } else if self.garage_menu == 18 && self.garage_part.is_none() && enter && (9933..=9935).contains(&self.garage_row) {
                     let k = self.garage_row - 9933;
                     self.int_open = Some((6 + k, self.rim_cols[k]));
@@ -7392,7 +7409,15 @@ impl Game {
                 if let (Some((k, own)), None) = (self.pick_slot, self.paint_pick) {
                     // the picker has closed: what it holds is the row's colour (BACK left the old
                     // one there), and the car has its paint back
-                    if k < 9 { self.slot_hsv[k] = self.paint_hsv; } else { self.car_x.int_de_hsv[(k - 9).min(1)] = self.paint_hsv; }
+                    match k {
+                        // (the neon's and the tint's colour: the record keeps it free, as on screen - `mc4`)
+                        11 | 12 => if let Some(h) = self.paint_hsv {
+                            let rgb = crate::mc4::to_screen(paint_hsv_to_rgb(h));
+                            if k == 11 { self.car_x.neon_rgb = Some((self.neon_color, rgb)); } else { self.car_x.tint_rgb = Some((self.tint_color, rgb)); }
+                        },
+                        _ if k < 9 => self.slot_hsv[k] = self.paint_hsv,
+                        _ => self.car_x.int_de_hsv[(k - 9).min(1)] = self.paint_hsv,
+                    }
                     self.paint_hsv = own;
                     self.pick_slot = None;
                     self.dirty = true;
@@ -7784,6 +7809,8 @@ impl Game {
                     } else if self.garage_row == neon_row {
                         self.neon_on = !self.neon_on;
                         self.dirty = true;
+                    } else if (self.garage_row == neon_row + 1 || self.garage_row == tint_row + 1) && self.flash_garage.is_some() {
+                        // (ExtNeon_Closed / Tint_Closed: left and right are empty transitions; ACCEPT opens the strip)
                     } else if self.garage_row == neon_row + 1 {
                         self.neon_color = (self.neon_color as isize + d).rem_euclid(PALETTE.len() as isize) as usize;
                         self.dirty = true;
@@ -8372,7 +8399,30 @@ impl Game {
                             }
                             rows = out;
                         }
-                        let paint_page = paint_page || hyd_page || dim_page || int_page || mat_page;
+                        // NEON/WINDOW TINT (Colors.sc.xml ExtNeonColorMenu, template 42): NEON (ExtNeonOn, ExtNeonOff),
+                        // NEON COLOR and WINDOW TINT as swatch rows (ExtNeon_Closed / _Open, Tint_Closed / _Open:
+                        // `fs_type` 30 / 31), TINT OPACITY (Tint_1 .. Tint_10).
+                        let neon_page = title == "NEON/WINDOW TINT" && self.garage_part.is_none() && !listing_page;
+                        if neon_page {
+                            use crate::flash_ui::{choice_list, swatch_value};
+                            let row = |label: String, value: String| crate::flash_ui::MenuRow { label, value, enabled: true, part: None };
+                            // (a colour the record keeps free, on its swatch: `mc4` CarLive)
+                            let free = |c: [f32; 3]| { let l = crate::mc4::to_linear(c); rgb_of([l[0], l[1], l[2], 1.0]) };
+                            let swatch = |k: usize, idx: usize, own: Option<(usize, [f32; 3])>| {
+                                let idx = idx % strip.len();
+                                let shown = self.int_open.filter(|o| o.0 == k).map_or(idx, |o| o.1 % strip.len());
+                                let rgb = own.filter(|o| o.0 % strip.len() == shown).map_or(strip[shown], |o| free(o.1));
+                                swatch_value(rgb, if self.int_open.map(|o| o.0) == Some(k) { idx as i32 } else { -1 }, &strip)
+                            };
+                            let levels: Vec<String> = (1..=10).map(|k| st(&format!("Tint_{k}"), &if k == 1 { "STOCK".to_string() } else if k == 10 { "FULL".to_string() } else { format!("LEVEL {}", k - 1) })).collect();
+                            rows = vec![
+                                row(st("G_ExtNeon", "NEON"), choice_list(if self.neon_on { 0 } else { 1 }, &[st("G_On", "ON"), st("G_Off", "OFF")])),
+                                row(st("G_ExtNeonColor", "NEON COLOR"), swatch(11, self.neon_color, self.car_x.neon_rgb)),
+                                row(st("G_TintColor", "WINDOW TINT"), swatch(12, self.tint_color, self.car_x.tint_rgb)),
+                                row(st("G_TintTransparency", "TINT OPACITY"), choice_list(self.tint_level.min(9) as usize, &levels)),
+                            ];
+                        }
+                        let paint_page = paint_page || hyd_page || dim_page || int_page || mat_page || neon_page;
                         // (the vinyl editor's menu is one of the flat panels too: reference `t45`)
                         let mut vinyl_flat = false;
                         let vinyl_menu = title == "VINYL EDITOR" && self.garage_part.is_none() && !listing_page;
@@ -8702,6 +8752,17 @@ impl Game {
                                 prompts = if self.int_open.is_some() {
                                     vec![back, (st("VE_accept_color", "ACCEPT COLOR"), ICON_A), (st("VE_edit_color", "EDIT COLOR SLOT"), ICON_X), (st("G_ResetColorSlot", "RESET COLOR SLOT"), crate::flash_ui::ICON_Y)]
                                 } else if (9933..=9935).contains(&self.garage_row) {
+                                    vec![back, (st("VE_change_color", "CHANGE COLOR"), ICON_A)]
+                                } else {
+                                    vec![back]
+                                };
+                            }
+                            if self.garage_menu == 11 && self.garage_part.is_none() && self.paint_pick.is_none() {
+                                // (Colors.sc.xml: the colour rows' prompts 115 closed, 114 open, as ColorsInt.sc.xml's)
+                                let back = (st("prompt_back", "BACK"), ICON_B);
+                                prompts = if self.int_open.is_some() {
+                                    vec![back, (st("VE_accept_color", "ACCEPT COLOR"), ICON_A), (st("VE_edit_color", "EDIT COLOR SLOT"), ICON_X), (st("G_ResetColorSlot", "RESET COLOR SLOT"), crate::flash_ui::ICON_Y)]
+                                } else if self.garage_row == neon_row + 1 || self.garage_row == tint_row + 1 {
                                     vec![back, (st("VE_change_color", "CHANGE COLOR"), ICON_A)]
                                 } else {
                                     vec![back]
