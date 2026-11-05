@@ -10919,6 +10919,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // a long lens magnifies: scale the small-object culling with it
         let lens = ((self.cam.fov_y * 0.5).tan() / 0.637).clamp(0.3, 1.2);
         let cam_pos = self.cam.pos;
+        if let Some(path) = std::env::var_os("MCLA_DRAWLIST") {
+            let mut g = DRAWLIST.lock().unwrap();
+            if let Some(s) = g.take().filter(|s| !s.is_empty()) {
+                let _ = std::fs::write(path, s);
+            }
+            *g = Some(String::new());
+            DRAWLIST_ON.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         let mut draws = 0usize;
         let mut stat_props = 0usize;
         let mut stat_cars = 0usize;
@@ -14561,6 +14569,13 @@ fn begin_city_pass<'e>(enc: &'e mut wgpu::CommandEncoder, gpu: &Gpu, clear: [f32
 
 /// What the city pass's sector loop reads (`draw_sectors`), shared with the worker that records the first part of
 /// the pass (docs/PERFORMANCE.md 2026-10-24).
+/// MCLA_DRAWLIST=<file> (a test hook): the main view's sector draws of a frame written to the file at the next frame's
+/// start, one line a drawn batch (phase, shader, mode, box, sector, its parts' index counts, its count, the runs drawn) and
+/// one line a drawn far-model geometry (mode FAR, its index count) - the comparison with the original's draw list
+/// (work/performance/vis/match2.py).
+static DRAWLIST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static DRAWLIST_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 struct SectorView<'a> {
     gpu: &'a Gpu,
     occluded: &'a occluder::Selected,
@@ -14580,9 +14595,16 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
     // (a material's own pipeline is in force: `pipeline_opaque` is put back after the sectors)
     let mut mode_pipe = false;
     let mut runs: Vec<(u32, u32)> = Vec::new();
+    let mut far_drawn: Vec<(u32, Vec3, f32)> = Vec::new();
     for sec in secs {
         let (Some(vb), Some(ib)) = (sec.vb.as_ref(), sec.ib.as_ref()) else { continue };
-        if v.occluded.hides_all(sec.batches.iter().map(|b| (b.min, b.max))) {
+        // (a far model: the sector record's box against the view and the occluder volumes - its visible bit - then the
+        // model's whole sphere against the view; its geometries below by their own spheres alone - world::FarCull)
+        if let Some((bmin, bmax, c, r)) = sec.far {
+            if !v.frustum.intersects_aabb(bmin, bmax) || v.occluded.hides_aabb(bmin, bmax) || !v.frustum.intersects_sphere(c, r) {
+                continue;
+            }
+        } else if v.occluded.hides_all(sec.batches.iter().map(|b| (b.min, b.max))) {
             continue;
         }
         let mut bound = false;
@@ -14595,7 +14617,7 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
             if blend != (phase == 1) {
                 continue;
             }
-            if !v.frustum.intersects_aabb(b.min, b.max) {
+            if sec.far.is_none() && !v.frustum.intersects_aabb(b.min, b.max) {
                 continue;
             }
             if let Some(o) = sec.obj.as_ref() {
@@ -14605,10 +14627,12 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
                     last_obj = want;
                 }
             }
-            // contribution culling: skip what covers less than a few pixels
+            // contribution culling: skip what covers less than a few pixels - only for batches without the sector file's
+            // drawables (the interior sets); the original's walk (F-21213 / F-76875) and far draw (F-73936) have no size
+            // cut, and the cut on a merged batch's box dropped small signs the original draws (t1: 8 CityNeon / NeonTint)
             let ext = (b.max - b.min).length();
             let dist = ((b.min + b.max) * 0.5).distance(v.cam_pos);
-            if ext < dist * 0.012 * v.lens {
+            if b.parts.is_empty() && sec.far.is_none() && ext < dist * 0.012 * v.lens {
                 continue;
             }
             if let Some(o) = v.only {
@@ -14625,13 +14649,18 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
             // sphere of its box against the view, then its box against the view and the occluder volumes (F-92840). A
             // merged batch draws the runs of its parts that pass.
             runs.clear();
+            far_drawn.clear();
             if b.parts.is_empty() {
                 runs.push((b.first, b.count));
             } else {
                 for p in &b.parts {
                     let (mn, mx) = (p.2 - p.5, p.2 + p.5);
-                    if !v.frustum.intersects_sphere(p.2, p.3) || !v.frustum.intersects_aabb(mn, mx) || v.occluded.hides_aabb(mn, mx) {
+                    let far = sec.far.is_some();
+                    if !v.frustum.intersects_sphere(p.2, p.3) || (!far && (!v.frustum.intersects_aabb(mn, mx) || v.occluded.hides_aabb(mn, mx))) {
                         continue;
+                    }
+                    if far {
+                        far_drawn.push((p.1, p.2, p.3));
                     }
                     match runs.last_mut() {
                         Some(r) if r.0 + r.1 == p.0 => r.1 += p.1,
@@ -14673,6 +14702,20 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
             }
             if let Some(p) = probe.as_deref_mut() {
                 p.stamp(pass, || format!("{:?} {}", b.mode, b.shader));
+            }
+            if DRAWLIST_ON.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Some(l) = DRAWLIST.lock().unwrap().as_mut() {
+                    use std::fmt::Write as _;
+                    let (mn, mx) = (b.min, b.max);
+                    if sec.far.is_some() {
+                        for (n, c, r) in &far_drawn {
+                            let _ = writeln!(l, "{phase} {} FAR {:.1} {:.1} {:.1} {:.1} {:.1} {:.1} {:p} [] {n} [] {:.2} {:.2} {:.2} {r:.2}", b.shader, mn.x, mn.y, mn.z, mx.x, mx.y, mx.z, sec as *const _, c.x, c.y, c.z);
+                        }
+                    } else {
+                        let counts: Vec<u32> = b.parts.iter().map(|p| p.1).collect();
+                        let _ = writeln!(l, "{phase} {} {:?} {:.1} {:.1} {:.1} {:.1} {:.1} {:.1} {:p} {counts:?} {} {runs:?}", b.shader, b.mode, mn.x, mn.y, mn.z, mx.x, mx.y, mx.z, sec as *const _, b.count);
+                    }
+                }
             }
             for r in &runs {
                 pass.draw_indexed(r.0..r.0 + r.1, 0, 0..1);

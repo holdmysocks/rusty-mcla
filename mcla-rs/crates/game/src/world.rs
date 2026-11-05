@@ -91,7 +91,17 @@ pub struct CpuSector {
     pub collision_mat: Vec<u8>,
     /// `batches` put together for the buffers on the decoding worker (`prepare_geo`); None: done at upload
     pub geo: Option<Geo>,
+    /// a far model: how the original's far draw tests it (see [`FarCull`])
+    pub far: Option<FarCull>,
 }
+
+/// A far model's test as the original's: the sector record's box (+208 / +224) against the view and the occluder
+/// volumes gives the record's visible bit (F-56244 by F-60582), and the far draw F-73936 (from F-75080) tests the
+/// model's whole sphere, then each geometry's own sphere (the model's bounds table at +0x0C: the whole first, then one
+/// per geometry; a model of one geometry has only the whole), against the view (F-23007) - no occluder test and no size
+/// cut per geometry. Here: (box min, box max, whole centre, whole radius); the geometries' spheres are the batches'
+/// parts. A model matched to no sector has its own box.
+pub type FarCull = (Vec3, Vec3, Vec3, f32);
 
 /// A sector's batches put together for its two buffers - the vertices and the kept indices in draw order, each
 /// batch's place in them - on the worker that decoded it, so the main thread only makes the buffers and the bind
@@ -241,6 +251,8 @@ pub struct GpuSector {
     pub shown: f32,
     /// a detailed sector on its way out
     pub leaving: bool,
+    /// a far model: its test (see [`FarCull`])
+    pub far: Option<FarCull>,
 }
 
 /// Object uniform of a sector's batches: alpha of the cross-fade, interior or not.
@@ -948,7 +960,7 @@ pub fn decode_set(id: usize, path: &Path) -> Result<CpuSector> {
             textures.push((*h, t));
         }
     }
-    Ok(CpuSector { id, batches, textures, collision, collision_mat: Vec::new(), geo: None })
+    Ok(CpuSector { id, batches, textures, collision, collision_mat: Vec::new(), geo: None, far: None })
 }
 
 /// (diagnostics, MCLA_SECTOR_LIST: one line a stored batch, appended to work/lighting/out/sectorlist.txt -
@@ -1071,7 +1083,7 @@ pub fn decode_sector(id: usize, path: &Path) -> Result<CpuSector> {
     }
     let batches = merge_batches(batches);
     let textures = sec.textures.into_iter().collect();
-    Ok(CpuSector { id, batches, textures, collision, collision_mat, geo: None })
+    Ok(CpuSector { id, batches, textures, collision, collision_mat, geo: None, far: None })
 }
 
 /// Ids of the far city's sector models while they are shown (among `World::sets`):
@@ -1100,6 +1112,8 @@ pub fn decode_far(path: &Path, sectors: &[SectorInfo]) -> Result<Vec<CpuSector>>
         let Some(m) = rd.ptr(arr + i * 4) else { continue };
         let (Some(ga), gc) = (rd.ptr(m + 0x04), rd.u16(m + 0x08) as usize) else { continue };
         let si = rd.ptr(m + 0x10);
+        let bounds = rd.ptr(m + 0x0c);
+        let sphere = |k: usize| bounds.map(|b| (Vec3::new(rd.f32(b + k * 16), rd.f32(b + k * 16 + 4), rd.f32(b + k * 16 + 8)), rd.f32(b + k * 16 + 12)));
         let mut batches = Vec::new();
         for g in 0..gc {
             let Some(go) = rd.ptr(ga + g * 4) else { continue };
@@ -1126,7 +1140,9 @@ pub fn decode_far(path: &Path, sectors: &[SectorInfo]) -> Result<Vec<CpuSector>>
             mark_binormal(&mut vertices, &mesh.tangents, sh);
             mark_water(&mut vertices, mode);
             mark_pond(&mut vertices, sh, mode);
-            batches.push(CpuBatch { vertices, indices: mesh.indices, diffuse, second, third, fourth, mode, min: mn, max: mx, shader: sh.name.clone(), interior: false, parts: Vec::new() });
+            // (the geometry's own sphere: draw_sectors tests a far model's parts by it alone)
+            let parts = sphere(if gc > 1 { g + 1 } else { 0 }).map_or(Vec::new(), |(c, r)| vec![(0, mesh.indices.len() as u32, c, r, 0, Vec3::ZERO)]);
+            batches.push(CpuBatch { vertices, indices: mesh.indices, diffuse, second, third, fourth, mode, min: mn, max: mx, shader: sh.name.clone(), interior: false, parts });
         }
         let batches = merge_batches(batches);
         if batches.is_empty() {
@@ -1146,7 +1162,9 @@ pub fn decode_far(path: &Path, sectors: &[SectorInfo]) -> Result<Vec<CpuSector>>
                 best = (iou, j);
             }
         }
-        out.push(CpuSector { id: FAR_ID + i * FAR_SLOTS + best.1, batches, textures: Vec::new(), collision: Vec::new(), collision_mat: Vec::new(), geo: None });
+        let (bmin, bmax) = sectors.get(best.1).filter(|_| best.1 < FAR_SLOTS - 1).map_or((mn, mx), |s| (Vec3::from(s.min), Vec3::from(s.max)));
+        let (wc, wr) = sphere(0).unwrap_or(((mn + mx) * 0.5, (mx - mn).length() * 0.5));
+        out.push(CpuSector { id: FAR_ID + i * FAR_SLOTS + best.1, batches, textures: Vec::new(), collision: Vec::new(), collision_mat: Vec::new(), geo: None, far: Some((bmin, bmax, wc, wr)) });
     }
     Ok(out)
 }
@@ -1589,6 +1607,7 @@ impl World {
 
     fn upload(&mut self, gpu: &mut Gpu, mut cs: CpuSector) -> GpuSector {
         let sector_id = cs.id;
+        let far = cs.far;
         let Geo { mut verts, indices, items } = match cs.geo.take() {
             Some(g) => g,
             None => prepare_geo(std::mem::take(&mut cs.batches)),
@@ -1801,7 +1820,7 @@ impl World {
         let obj = Some((gpu.new_object(&sector_uniform(u, false)), gpu.new_object(&sector_uniform(u, true))));
         // (its CPU copy is many blocks: freed off the frame)
         rayon::spawn(move || drop(cs));
-        GpuSector { vb, ib, batches, caster_count, caster_min, caster_max, caster_batches, tris, obj, u, shown: u, leaving: false }
+        GpuSector { vb, ib, batches, caster_count, caster_min, caster_max, caster_batches, tris, obj, u, shown: u, leaving: false, far }
     }
 }
 

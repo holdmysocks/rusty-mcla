@@ -4284,6 +4284,11 @@ impl Frustum {
     pub fn points_outside(&self, pts: &[Vec3], margin: f32) -> bool {
         self.planes.iter().any(|p| pts.iter().all(|v| p.truncate().dot(*v) + p.w < -margin))
     }
+
+    /// One bit per plane the point lies more than `margin` outside of (the outside half of F-40381's clip codes).
+    pub fn outside_bits(&self, v: Vec3, margin: f32) -> u32 {
+        self.planes.iter().enumerate().fold(0, |m, (k, p)| if p.truncate().dot(v) + p.w < -margin { m | 1 << k } else { m })
+    }
 }
 
 /// `surface.configure` with its error caught (wgpu's default handler panics on it): false when the swap chain could not

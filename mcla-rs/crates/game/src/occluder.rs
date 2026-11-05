@@ -26,8 +26,8 @@
 //!
 //! What is the port's own: an axis-aligned box is tested by its farthest corner per plane (the
 //! original tests spheres and boxes the same way), the test keeps a 2 cm margin, and the frustum
-//! is the port's own view's. The original's leaving out of silhouette edges that are outside the
-//! frustum (at most 2 per volume) is not done; it only changes what is outside the view.
+//! is the port's own view's. Silhouette edges outside one side of the frustum are left out as the original does
+//! (at most 2 per volume, `EDGE_SKIPS`).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
@@ -60,6 +60,9 @@ const MAX_VOLUMES: usize = 64;
 const MAX_PLANES: usize = 16;
 /// A polygon faces the camera when the camera is at least this far in front of its plane.
 const FACING_EPS: f32 = 1.0e-6;
+/// How many silhouette edges outside one side of the view a volume leaves out (F-62084: the global at 0x828137F8 = 2).
+const EDGE_SKIPS: usize = 2;
+
 /// The w an occluder's vertices are tested with against the view's sides (F-40381): outside beyond it.
 const VERTEX_W: f32 = 1.0;
 /// Safety margin of the hidden test, metres (the port's own).
@@ -305,7 +308,7 @@ impl Occluders {
             if !o.in_range(eye, range) || frustum.points_outside(&o.verts, VERTEX_W) {
                 continue;
             }
-            if let Some(v) = o.volume(eye, PUSH) {
+            if let Some(v) = o.volume(eye, PUSH, Some(frustum)) {
                 sel.volumes.push(v);
                 sel.ids.push(i);
             }
@@ -330,7 +333,7 @@ impl Occluders {
             if !o.in_range(eye, range) {
                 continue;
             }
-            if let Some(v) = o.volume(eye, 0.0) {
+            if let Some(v) = o.volume(eye, 0.0, None) {
                 sel.volumes.push(v);
                 sel.ids.push(i);
             }
@@ -545,10 +548,11 @@ impl Occluder {
     /// * every edge toggled on (an odd number of facing polygons: the silhouette) adds the plane through
     ///   the camera, the edge's end and its start in the facing polygon's direction (F-12644); an edge
     ///   index of 32 or more has no bit (the shift gives 0) and is never one;
+    /// * the first [`EDGE_SKIPS`] silhouette edges whose two ends are outside the same side of the view (more than
+    ///   [`VERTEX_W`] beyond it: the clip codes of F-40381, both ends' codes sharing a bit of 0x00A0A0A0) add no plane;
+    ///   a view without a frustum (`None`, the spawner's view 2) skips none;
     /// * no facing polygon, or a silhouette plane due when 16 planes are taken: not used.
-    /// Not done: the original leaves out up to 2 silhouette edges whose ends are both outside the same
-    /// side of the view (clip codes of F-40381 / F-19231) - planes that only bound what is outside the view.
-    fn volume(&self, eye: Vec3, push: f32) -> Option<Vec<Vec4>> {
+    fn volume(&self, eye: Vec3, push: f32, frustum: Option<&Frustum>) -> Option<Vec<Vec4>> {
         let mut planes = Vec::with_capacity(MAX_PLANES);
         let (mut on, mut back) = (0u32, 0u32);
         let bit = |e: u16| if e < 32 { 1u32 << e } else { 0 };
@@ -575,14 +579,19 @@ impl Occluder {
         if planes.is_empty() {
             return None;
         }
+        let mut skipped = 0;
         for (e, &(a, b)) in self.edges.iter().enumerate() {
             if on & bit(e as u16) == 0 {
+                continue;
+            }
+            let (a, b) = (self.verts[a as usize], self.verts[b as usize]);
+            if skipped < EDGE_SKIPS && frustum.is_some_and(|f| f.outside_bits(a, VERTEX_W) & f.outside_bits(b, VERTEX_W) != 0) {
+                skipped += 1;
                 continue;
             }
             if planes.len() == MAX_PLANES {
                 return None;
             }
-            let (a, b) = (self.verts[a as usize], self.verts[b as usize]);
             planes.push(if back & bit(e as u16) != 0 { Self::plane(eye, a, b) } else { Self::plane(eye, b, a) });
         }
         Some(planes)
@@ -749,8 +758,12 @@ mod tests {
         // sideways, both ways
         assert!(!s.hides_aabb(Vec3::new(20.0, 1.0, 0.0), Vec3::new(22.0, 3.0, 30.0)));
         assert!(!s.hides_aabb(Vec3::new(20.0, 1.0, -30.0), Vec3::new(22.0, 3.0, 0.0)));
-        // above
-        assert!(!s.hides_aabb(Vec3::new(20.0, 1.0, -1.0), Vec3::new(22.0, 40.0, 1.0)));
+        // above: from 10 m in front the wall's top (10 m) is above the view's top (7.5 m there), its two silhouette edges
+        // are outside the view's top side and add no plane (F-62084, at most 2): what rises above the wall there is
+        // above the view too, and hidden; from 30 m back the top is in view and bounds the volume
+        assert!(s.hides_aabb(Vec3::new(20.0, 1.0, -1.0), Vec3::new(22.0, 40.0, 1.0)));
+        let back = wall_view(Vec3::new(-20.0, 2.0, 0.0));
+        assert!(!back.hides_aabb(Vec3::new(20.0, 1.0, -1.0), Vec3::new(22.0, 40.0, 1.0)));
         // below the wall's foot (the wall stands on y = 0, the camera is at y = 2)
         assert!(!s.hides_aabb(Vec3::new(20.0, -6.0, -1.0), Vec3::new(22.0, 3.0, 1.0)));
         // in front
@@ -824,7 +837,8 @@ mod tests {
     #[test]
     fn hidden_boxes_are_really_hidden() {
         // random boxes against random cameras: whatever is reported hidden must have every
-        // corner and many inner points behind the occluder as seen from the camera
+        // corner and many inner points behind the occluder as seen from the camera, or outside the view (the silhouette
+        // edges outside one side of the view bound nothing - F-62084 leaves up to 2 of them out)
         let mut seed = 0x1234_5678_u32;
         let mut rnd = move |lo: f32, hi: f32| {
             seed ^= seed << 13;
@@ -853,7 +867,7 @@ mod tests {
                     } else {
                         Vec3::new(rnd(mn.x, mx.x), rnd(mn.y, mx.y), rnd(mn.z, mx.z))
                     };
-                    assert!(blocked(eye, p, WALL), "eye {eye} box {mn} {mx} point {p}");
+                    assert!(blocked(eye, p, WALL) || f.points_outside(&[p], 0.0), "eye {eye} box {mn} {mx} point {p}");
                 }
             }
         }
@@ -986,7 +1000,7 @@ mod tests {
                 let f = Frustum::from_planes([0, 1, 2, 4, 5, 6].map(|j| -Vec4::new(pl[4 * j], pl[4 * j + 1], pl[4 * j + 2], pl[4 * j + 3])));
                 let b = &o.list[e.body.unwrap() as usize];
                 let pre = Selected { volumes: sel.volumes[..sel.ids.iter().position(|&x| want[..want.iter().position(|&w| w == i).unwrap()].last() == Some(&x)).map_or(0, |k| k + 1)].to_vec(), ids: Vec::new() };
-                println!("  missing {i}: in frustum {}, hidden by earlier {}, in range {}, outside {}, volume {:?}", f.intersects_sphere(e.centre, e.radius), pre.hides_sphere(e.centre, e.radius), b.in_range(eye, RANGE * RANGE_SCALE), f.points_outside(&b.verts, VERTEX_W), b.volume(eye, PUSH).map(|v| v.len()));
+                println!("  missing {i}: in frustum {}, hidden by earlier {}, in range {}, outside {}, volume {:?}", f.intersects_sphere(e.centre, e.radius), pre.hides_sphere(e.centre, e.radius), b.in_range(eye, RANGE * RANGE_SCALE), f.points_outside(&b.verts, VERTEX_W), b.volume(eye, PUSH, Some(&f)).map(|v| v.len()));
                 for (k, v) in pre.volumes.iter().enumerate() {
                     let worst = v.iter().map(|p| p.truncate().dot(e.centre) + p.w).fold(f32::MIN, f32::max);
                     if worst <= -e.radius + 1.0 {
