@@ -145,6 +145,24 @@ fn nav_pick_matches_the_original() {
     assert_eq!(n, 3000);
 }
 
+/// F-31695's 1 m dead band: whether the GPS map's cursor move is taken and the cursor stored, against the original's code
+/// run offline (its outline test stubbed to answer inside; tools/ui_nav_deadband_reference.py -> testdata/ui_nav_deadband_ref.txt)
+#[test]
+fn cursor_dead_band_matches_the_original() {
+    let mut n = 0;
+    for l in include_str!("testdata/ui_nav_deadband_ref.txt").lines() {
+        let (case, out) = l.split_once(" -> ").unwrap();
+        let w: Vec<f32> = case.split(' ').map(|v| f32::from_bits(v.parse().unwrap())).collect();
+        let o: Vec<u32> = out.split(' ').map(|v| v.parse().unwrap()).collect();
+        let (old, p) = (glam::Vec3::new(w[0], w[1], w[2]), glam::Vec3::new(w[3], w[4], w[5]));
+        let moved = !crate::hudmap::cursor_dead_band(old, p);
+        let kept = if moved { p } else { old };
+        assert_eq!((moved, [kept.x, kept.y, kept.z].map(f32::to_bits).to_vec()), (o[0] == 1, o[1..].to_vec()), "{l}");
+        n += 1;
+    }
+    assert_eq!(n, 4000);
+}
+
 /// F-70194: the ring colour of the GPS map's types 7 / 8 / 9 from the element's colour word, alpha kept, against the
 /// original's code run offline on every byte value and random words (tools/ui_element_colour_reference.py ->
 /// testdata/ui_element_colour_ref.txt)

@@ -25,9 +25,13 @@ pub struct Ctx {
     /// +36 ReadSmoothedSteeringDeltaToLimit, +40 ReadDSteeringDt
     pub to_limit: f32,
     pub dsteer: f32,
+    /// +44: the anim phase input, the smoothed steering the context step copies (F-71604)
+    pub phase_in: f32,
     /// +48 IsUpdateCulled, +49 IsOpponentDefined
     pub culled: bool,
     pub opponent: bool,
+    /// +52: the value the gatherer eases the driver's +408 toward (F-28290; its writer not found yet)
+    pub ease_to: f32,
     /// +56 / +60: the steering smoothing's parameters (the states write them, the context step reads them)
     pub smooth_k: [f32; 2],
     /// +64: the steering wheel's angle scale (ReadSteeringWheelAngle = +64 x +28)
@@ -35,18 +39,33 @@ pub struct Ctx {
     /// +73 IsSteeringToLeft, +74 IsSteeringToRight
     pub to_left: bool,
     pub to_right: bool,
+    /// +75: the steering changed side this frame (F-71604)
+    pub side_changed: bool,
     /// +76 ReadSkidTimer, +80 ReadSteeringNeutralTimer, +84 ReadSteeringMaxedTimer
     pub skid_timer: f32,
     pub neutral_timer: f32,
     pub maxed_timer: f32,
+    /// +88: the steering's turning point since it last changed side (F-71604)
+    pub peak: f32,
+    /// +92: the throttle (negated while reversing)
+    pub throttle: f32,
     /// +96 ReadSpeed, +108 ReadAcceleration, +112 ReadLateralAcceleration
     pub speed: f32,
     pub accel: f32,
     pub lat_accel: f32,
+    /// +100 / +104: the body velocity's x and y (the vector's first two words; +96 is its third)
+    pub vel_x: f32,
+    pub vel_y: f32,
+    /// +116: the vertical acceleration
+    pub vert_accel: f32,
+    /// +120: the look the pan-sweep overlay turns the head to
+    pub look: f32,
     /// +124: the shift (+1 up, -1 down)
     pub shift: i32,
     /// +128 ReadSkidValue
     pub skid: f32,
+    /// +132 .. +144: zeroed when the steering changes side (F-71604)
+    pub side_vals: [f32; 4],
     /// +148 / +152 / +156 ReadTimerA / B / C, +160 ReadRandomNum, +164 ReadDt
     pub timer_a: f32,
     pub timer_b: f32,
@@ -96,8 +115,12 @@ pub struct Tune {
     pub wind_k: [f32; 2],
     pub unwind_k: [f32; 2],
     pub slip_k: [f32; 2],
+    /// +88: the bike branch's scale on the steering part's +1176 (F-28290; the constructor's 2.5)
+    pub p88: f32,
     /// +136 / +140 / +144 Impact Hard / Soft / Side ThresholdAccel
     pub impact: [f32; 3],
+    /// +148 / +152: the impact divisor d = +148 + +152 |v| (clamped to [1, 100])
+    pub impact_d: [f32; 2],
 }
 
 /// What the machine reads of its driver (the driver's anim player) and of the game.
@@ -500,6 +523,518 @@ pub fn rpn(s: &str, c: &Ctx, k: &Tune, e: &Env) -> bool {
     st.pop().map_or(false, |v| v != 0.0)
 }
 
+// ---------------------------------------------------------------------------------------------- the context step
+
+/// What the vehicle gatherer (F-28290) hands the context step each frame.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CtxIn {
+    /// the event flags (the low four bits, the impacts, are the step's own)
+    pub flags: u32,
+    pub gesture: i32,
+    pub goal: f32,
+    pub steer: f32,
+    pub smooth: f32,
+    /// the steering addition's source (the context takes it negated)
+    pub add: f32,
+    pub to_limit: f32,
+    pub look: f32,
+    pub skid: f32,
+    /// the body velocity (x, y, z: +96 is the forward speed z) and the throttle
+    pub vel: [f32; 4],
+    pub shift: i32,
+}
+
+/// The context step F-71604: timers A / B / C gain dt (as given); dt <= 0 becomes 1 / 30. It takes the gatherer's
+/// inputs (the throttle negated while reversing, bit 7), the accelerations as the velocity's change x 1 / dt, the impact
+/// bits 0 - 3 from them (d = clamp(+148 + +152 |v|, 1, 100) with |v| over all four words, the lateral x / d against
+/// +-side, the forward z / d against -soft and -hard), the skid timer (reset at skid >= 0.51), the side-change tracker
+/// (+73 / +74 / +75 / +88, 0.05 hysteresis; +132 .. +144 zeroed on a change) and the neutral / maxed timers of the goal
+/// steering (|goal| > 0.05 resets the first, |goal| >= 0.95 runs the second).
+pub fn context_step(c: &mut Ctx, i: &CtxIn, k: &Tune, dt_in: f32) {
+    use crate::physics::exact::fma;
+    c.timer_a += dt_in;
+    c.timer_b += dt_in;
+    c.timer_c += dt_in;
+    let dt = if dt_in > 0.0 { dt_in } else { f32::from_bits(0x3D08_8889) };
+    let (old_z, old_x, old_y, old_steer) = (c.speed, c.vel_x, c.vel_y, c.steer);
+    c.throttle = if i.flags & 0x80 != 0 { -i.vel[3] } else { i.vel[3] };
+    c.speed = i.vel[2];
+    c.vel_x = i.vel[0];
+    c.vel_y = i.vel[1];
+    c.gesture = i.gesture;
+    c.shift = i.shift;
+    c.flags = i.flags;
+    let inv = 1.0 / dt;
+    c.skid = i.skid;
+    c.steer_add = -i.add;
+    c.look = i.look;
+    c.steer = i.steer;
+    c.dsteer = (i.steer - old_steer) * inv;
+    c.goal = i.goal;
+    c.smooth = i.smooth;
+    c.to_limit = i.to_limit;
+    let az = (c.speed - old_z) * inv;
+    let ax = (c.vel_x - old_x) * inv;
+    c.accel = az;
+    c.lat_accel = ax;
+    c.vert_accel = (c.vel_y - old_y) * inv;
+    let v = i.vel;
+    // (vmsum4fp128, then fsqrts)
+    let v4 = crate::physics::artic::V4::new(v[0], v[1], v[2], v[3]);
+    let len = v4.dot4(v4).x().sqrt();
+    let clamp = |d: f32| {
+        let d = if d - 1.0 >= 0.0 { d } else { 1.0 };
+        if d - 100.0 >= 0.0 { 100.0 } else { d }
+    };
+    let dx = clamp(fma(k.impact_d[1], len, k.impact_d[0]));
+    let x = ax / dx;
+    let z = az / dx;
+    let side = k.impact[2];
+    let mut f = c.flags & !0xF;
+    if x > side {
+        f |= 1;
+    }
+    if x < -side {
+        f |= 2;
+    }
+    if z < -k.impact[1] {
+        f |= 4;
+    }
+    if z < -k.impact[0] {
+        f |= 8;
+    }
+    c.flags = f;
+    if c.skid < f32::from_bits(0x3F02_8F5C) {
+        c.skid_timer += dt;
+    } else {
+        c.skid_timer = 0.0;
+    }
+    const H: f32 = f32::from_bits(0x3D4C_CCCD);
+    c.side_changed = false;
+    c.phase_in = c.smooth;
+    let s = c.steer;
+    let changed = if !c.to_left {
+        if s > old_steer {
+            c.peak = s;
+            false
+        } else if s >= c.peak - H {
+            false
+        } else {
+            c.to_left = true;
+            c.to_right = false;
+            true
+        }
+    } else if c.to_right {
+        false
+    } else if s < old_steer {
+        c.peak = s;
+        false
+    } else if s <= c.peak + H {
+        false
+    } else {
+        c.to_left = false;
+        c.to_right = true;
+        true
+    };
+    if changed {
+        c.side_vals = [0.0; 4];
+        c.side_changed = true;
+        c.peak = s;
+    }
+    let g = c.goal.abs();
+    if g <= H {
+        c.neutral_timer += dt;
+    } else {
+        c.neutral_timer = 0.0;
+    }
+    c.dt = dt;
+    if g >= f32::from_bits(0x3F73_3333) {
+        c.maxed_timer += dt;
+    } else {
+        c.maxed_timer = 0.0;
+    }
+}
+
+// ---------------------------------------------------------------------------------------------- the vehicle gatherer
+
+/// What the vehicle gatherer F-28290 reads of the game each frame: the racer (driver +96), its vehicle (+48), the chassis
+/// (vehicle +8), the steering part (vehicle +84) and the managers, each as the gatherer tests it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Gather {
+    /// the online test (the online stack is D7: false in the port)
+    pub online: bool,
+    /// the cine layer's +320 (set while the pause manager pauses)
+    pub pause_layer: bool,
+    pub racer: bool,
+    /// the camera's "valid local human player" test (vt+40 && vt+48) and the racer's vt+40 alone
+    pub human: bool,
+    pub player: bool,
+    /// racer +684
+    pub gesture: i32,
+    pub vehicle: bool,
+    /// the vehicle-ready test
+    pub ready: bool,
+    /// the two GPS-warp tests
+    pub gps: [bool; 2],
+    /// the current race's +3773, when a race exists
+    pub race: Option<bool>,
+    /// the steering part's mid-motion test (+352 inside (0, +372)) and the roof's shown test
+    pub mid_motion: bool,
+    pub roof_shown: bool,
+    pub chassis: bool,
+    /// the race manager's +564, when it exists
+    pub mgr: Option<bool>,
+    /// the first player's +880 view record (its camera's +40, its mode +80, its distance +112)
+    pub view: Option<View>,
+    /// chassis +588
+    pub idle: f32,
+    /// the cockpit tests: the player manager's, the global byte's
+    pub ck: [bool; 2],
+    /// the cine script running; the cine camera in control
+    pub cine_running: bool,
+    pub cine_cam: bool,
+    /// the global byte that skips the rival look, the global object's byte +76 (bit 0x40), the camera manager's test
+    pub look_off: bool,
+    pub g76: u8,
+    pub cam_test: bool,
+    /// the powerup test on the vehicle
+    pub powerup: bool,
+    /// chassis +592 (the impact word), +144 the handbrake, +580 the burnout charge, +136 the throttle, +140 the brake,
+    /// +624, +132 the steering
+    pub w592: u32,
+    pub handbrake: f32,
+    pub burn: f32,
+    pub throttle: f32,
+    pub brake: f32,
+    pub w624: u32,
+    pub steer: f32,
+    /// the fluid object's in-water bit, when chassis +12 exists
+    pub water: Option<bool>,
+    /// the nitrous's byte +32, when chassis +664 exists
+    pub nitro: Option<bool>,
+    /// the horn test
+    pub honk: bool,
+    /// chassis +24 (the wheel count) and the wheels' +520, the chassis's vt+44 (wheels down)
+    pub wheel_n: i32,
+    pub wheels: [Option<f32>; 4],
+    pub down: i32,
+    /// the transmission (chassis +20): its +24 shift, +20 gear
+    pub trans: Option<(i32, i32)>,
+    /// the body (chassis +128): rows 0 - 2 (+208 .. +248, x y z each) and the velocity (+272 .. +280)
+    pub body: Option<([f32; 9], [f32; 3])>,
+    /// the racer's vt+164 (the stick) and vt+172 (the goal steering)
+    pub stick: f32,
+    pub goal: f32,
+    /// the aero's byte +40, when chassis +8 exists
+    pub aero: Option<bool>,
+    /// the driver's byte +370: a motorcycle
+    pub bike: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct View {
+    pub cam: Option<f32>,
+    pub mode: i32,
+    pub dist: f32,
+}
+
+/// The steering part's fields the gatherer reads and writes (vehicle +84).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Parts {
+    pub b2153: bool,
+    pub b2154: bool,
+    pub f1108: f32,
+    pub f1112: f32,
+    pub f1116: f32,
+    pub f1124: f32,
+    pub f1128: f32,
+    pub f1132: f32,
+    pub f1136: f32,
+    pub f1140: f32,
+    pub f1144: f32,
+    pub f1148: f32,
+    pub f1152: f32,
+    pub f1156: f32,
+    pub f1164: f32,
+    pub f1176: f32,
+}
+
+/// What the gatherer keeps and writes besides the context step's arguments: the racer's +691 latch, the damage object's
+/// (vehicle +20) +44 / +48, the steering part, the driver's +408 and +421, and its bytes +422 .. +425.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GatherMut {
+    pub latch691: bool,
+    pub dmg: Option<[f32; 2]>,
+    pub parts: Option<Parts>,
+    pub drv408: f32,
+    pub drv421: bool,
+    pub hist: [u8; 4],
+}
+
+/// The vehicle gatherer F-28290: the context step's inputs (None when the context is culled: no step that frame). `rates`
+/// is the steering part's rescale on the car branch (with the driver's +408 x context +64), `bike` the bike branch's call
+/// (dt, smoothed, speed) -> (value, word), `look` the rival look (its start, dt). Without the body the vector is the
+/// stack's (0 here).
+#[allow(clippy::too_many_arguments)]
+pub fn gather(
+    g: &Gather,
+    c: &Ctx,
+    k: &Tune,
+    m: &mut GatherMut,
+    dt: f32,
+    rates: &mut dyn FnMut(&mut Parts, f32),
+    bike: &mut dyn FnMut(f32, f32, f32) -> (f32, f32),
+    look: &mut dyn FnMut(f32, f32) -> f32,
+) -> Option<CtxIn> {
+    use crate::physics::exact::fma;
+    // the stack bytes +112 .. +129 (index = byte - 112)
+    let mut b = [false; 18];
+    let mut gesture = 20;
+    let (mut shift, mut rev, mut nitro, mut honk, mut gps, mut nose, mut race_fin) = (0i32, false, false, false, false, false, false);
+    let (mut goal, mut steer, mut smooth, mut add, mut lim, mut lookv, mut skid) = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    let (mut tuck, mut down, mut burn) = (false, false, false);
+    let mut vec = [0.0f32; 4];
+    if dt > 0.0 && g.pause_layer {
+        b[3] = true;
+    }
+    'body: {
+        if !g.racer {
+            m.drv421 = false;
+            break 'body;
+        }
+        if g.human {
+            b[2] = m.latch691;
+            m.latch691 = false;
+        }
+        gesture = g.gesture;
+        if !g.vehicle || !g.ready {
+            break 'body;
+        }
+        m.drv421 = true;
+        if c.culled {
+            return None;
+        }
+        gps = g.gps[0] || g.gps[1];
+        if g.race == Some(true) && c.flags2 & 0x40 == 0 {
+            race_fin = true;
+        }
+        if let Some(d) = m.parts.as_mut() {
+            let w = c.flags2;
+            if w & 1 != 0 {
+                if !g.mid_motion {
+                    d.b2154 = true;
+                }
+            } else if w & 2 != 0 && !g.mid_motion && !g.roof_shown {
+                d.b2153 = true;
+            }
+            (d.f1148, d.f1152) = if w & 4 != 0 {
+                (25.0, 20.0)
+            } else if w & 8 != 0 {
+                (7.0, 10.0)
+            } else {
+                (0.0, 10.0)
+            };
+        }
+        if !g.chassis {
+            break 'body;
+        }
+        let view = if g.mgr.is_some() { g.view } else { None };
+        if g.human {
+            if let Some(v) = view {
+                if let Some(cam) = v.cam {
+                    if v.mode == 1 && g.idle + 1.25 > cam {
+                        b[10] = true;
+                    }
+                }
+            }
+            let mut r29 = g.ck[0] || g.ck[1];
+            let mut r30 = view.map_or(-1, |v| v.mode);
+            if g.online {
+                if g.cine_running {
+                    r29 = false;
+                    r30 = -1;
+                }
+            } else if g.cine_cam {
+                r30 = -1;
+            }
+            if !r29 && r30 == 1 {
+                b[1] = true;
+                if c.flags & 0x20_0000 == 0 {
+                    b[8] = true;
+                }
+            } else if c.flags & 0x20_0000 != 0 {
+                b[9] = true;
+            }
+            // the cockpit flag waits a frame unless the cockpit test changed (+422 .. +425)
+            let (o422, o424) = (m.hist[0], m.hist[2]);
+            m.hist[2] = r29 as u8;
+            m.hist[3] = o424;
+            m.hist[1] = o422;
+            m.hist[0] = b[1] as u8;
+            if m.hist[2] == m.hist[3] {
+                b[1] = o422 != 0;
+            }
+            lookv = view.map_or(0.0, |v| v.dist * 0.8);
+            if !g.look_off {
+                lookv = look(lookv, dt);
+            }
+            if view.is_some() && g.cam_test && g.g76 & 0x40 == 0 {
+                lookv = -1.0;
+            }
+        }
+        if let Some(dm) = m.dmg.as_mut() {
+            if !(dm[1] == 0.0) {
+                dm[1] = 0.0;
+                b[16] = true;
+            }
+            b[0] = (g.powerup && g.mgr == Some(true)) || dm[0] > 0.0;
+        }
+        let w = g.w592;
+        if w & 2 != 0 {
+            b[11] = true;
+        }
+        if w & 0x10 != 0 {
+            b[12] = true;
+            if c.flags & 0x4000 == 0 {
+                b[14] = true;
+            }
+        }
+        if w & 4 != 0 {
+            b[13] = true;
+            if c.flags & 0x1_0000 == 0 {
+                b[15] = true;
+            }
+        }
+        if g.water == Some(true) {
+            b[17] = true;
+        }
+        burn = !(g.handbrake <= 0.0) && g.burn >= 1.0;
+        if let Some(n) = g.nitro {
+            nitro = n;
+        }
+        honk = g.player && g.honk;
+        for wv in g.wheels.iter().take(g.wheel_n.clamp(0, 4) as usize).flatten() {
+            if !(skid >= *wv) {
+                skid = *wv;
+            }
+        }
+        shift = g.trans.map_or(0, |t| t.0);
+        if let Some((r, v)) = g.body {
+            vec[2] = -fma(r[6], v[0], fma(r[8], v[2], r[7] * v[1]));
+            vec[0] = fma(r[0], v[0], fma(r[2], v[2], r[1] * v[1]));
+            vec[1] = fma(r[3], v[0], fma(r[5], v[2], r[4] * v[1]));
+            vec[3] = g.throttle;
+            let s = crate::physics::exact::guest_sin(f64::from_bits(0x3FD6_5718_6000_0000)) as f32;
+            if !(r[7] >= -s) {
+                nose = true;
+                if !(g.stick <= 0.5) {
+                    b[4] = true;
+                }
+            }
+            if !(r[7] <= s) && !(g.stick >= -0.5) {
+                b[5] = true;
+            }
+            if !(r[4] > 0.0) {
+                b[7] = true;
+            }
+            if !(r[4] < 0.866) {
+                b[6] = true;
+            }
+        }
+        down = g.down == g.wheel_n;
+        let spd = vec[2];
+        if let Some((_, gear)) = g.trans {
+            if gear == 0 && !(spd >= -0.5) {
+                rev = true;
+            }
+        }
+        tuck = g.aero == Some(true) && !(spd <= 0.5) && g.brake <= 0.0;
+        goal = if g.w624 & 0x400 != 0 { 0.0 } else { g.goal };
+        steer = if !(g.steer.abs() <= 1.001) { 0.0 } else { g.steer };
+        if let Some(d) = m.parts.as_mut() {
+            if g.bike {
+                let f0 = if !(skid > 0.51) && c.flags2 & 0x20 != 0 {
+                    let f11 = -fma(1.0 - d.f1176, k.p88, -1.0);
+                    let f10 = f11 + 0.25;
+                    let f8 = fsel(f10 - 0.25, f10, 0.25);
+                    fsel(f8 - 1.0, 1.0, f8)
+                } else {
+                    1.0
+                };
+                let f12 = 1.0 / f0;
+                let f11 = 1.0 - d.f1132;
+                let f10 = d.f1124;
+                add = d.f1128;
+                let ws = c.wheel_scale;
+                d.f1112 = c.smooth_k[0];
+                d.f1156 = f0;
+                d.f1116 = f12 * c.smooth_k[1];
+                d.f1108 = ws;
+                smooth = (f11 / ws) * f10;
+                lim = (ws - f10.abs()).abs();
+                let (mut r, w140) = bike(dt, smooth, spd);
+                if !(c.side_vals[3] > 0.5) {
+                    r = 0.0;
+                }
+                if c.wheel_scale > k.start_steer {
+                    r = 0.0;
+                }
+                d.f1128 = r;
+                d.f1132 = w140;
+            } else {
+                d.f1144 = c.smooth_k[1];
+                d.f1140 = c.smooth_k[0];
+                let p = m.drv408;
+                let n = fma((c.ease_to - p) * dt, 9.0, p);
+                m.drv408 = n;
+                if n < 0.999 && n > 0.101 {
+                    shift = 0;
+                }
+                rates(d, n * c.wheel_scale);
+                smooth = d.f1164 / d.f1136;
+                if smooth.abs() > 0.501 {
+                    shift = 0;
+                }
+            }
+        }
+    }
+    if g.online && !g.bike && !b[0] {
+        b[3] = true;
+    }
+    let bits: [(bool, u32); 28] = [
+        (rev, 0x80),
+        (nitro, 0x10),
+        (honk, 0x0800_0000),
+        (gps, 0x0400_0000),
+        (nose, 0x1000),
+        (g.online, 0x0100_0000),
+        (race_fin, 0x0200_0000),
+        (tuck, 0x0080_0000),
+        (b[4], 0x20),
+        (down, 0x4000_0000),
+        (b[5], 0x40),
+        (burn, 0x100),
+        (b[6], 0x8000_0000),
+        (b[7], 0x800),
+        (b[8], 0x8_0000),
+        (b[9], 0x10_0000),
+        (b[1], 0x20_0000),
+        (b[10], 0x400),
+        (b[11], 0x2000),
+        (b[12], 0x4000),
+        (b[13], 0x1_0000),
+        (b[14], 0x8000),
+        (b[15], 0x2_0000),
+        (b[2], 0x1000_0000),
+        (b[3], 0x2000_0000),
+        (b[0], 0x4_0000),
+        (b[16], 0x200),
+        (b[17], 0x40_0000),
+    ];
+    let flags = bits.iter().filter(|x| x.0).fold(0, |a, x| a | x.1);
+    Some(CtxIn { flags, gesture, goal, steer, smooth, add, to_limit: lim, look: lookv, skid, vel: vec, shift })
+}
+
 // ---------------------------------------------------------------------------------------------- the step and its callbacks
 
 impl Tune {
@@ -518,6 +1053,8 @@ impl Tune {
             unwind_k: [4.5, 15.0],
             slip_k: [10.0, 20.0],
             impact: [100.0, 25.0, 25.0],
+            impact_d: [0.0, 0.05],
+            p88: 2.5,
         }
     }
 }
@@ -1101,6 +1638,228 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 7981);
+    }
+
+    /// The vehicle gatherer F-28290 against the original's code run offline with fake objects (`work/drvmachine/gather_ref.py`):
+    /// every callee answers a case input; compared: the calls it makes (rival look, steering rescale, bike branch) with their
+    /// arguments, what it hands the context step (dt, look, skid, the packed steering words, shift, flags, gesture, the
+    /// vector) and every store into its objects.
+    #[test]
+    fn the_gatherer_matches_the_original() {
+        let text = include_str!("testdata/drvmachine_gather_ref.txt");
+        let (mut n, mut bad) = (0, 0);
+        for line in text.lines() {
+            let (a, b) = line.split_once(" ->").unwrap();
+            let w: Vec<u32> = a.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let on = |i: usize| w[i] != 0;
+            let g = Gather {
+                online: on(1),
+                pause_layer: on(2),
+                racer: on(3),
+                human: on(4),
+                gesture: w[6] as i32,
+                vehicle: on(7),
+                ready: on(8),
+                gps: [on(10), on(11)],
+                race: on(12).then(|| on(13)),
+                mid_motion: on(16),
+                roof_shown: on(17),
+                chassis: on(18),
+                mgr: on(19).then(|| on(20)),
+                view: on(21).then(|| View { cam: on(22).then(|| f(25)), mode: w[23] as i32, dist: f(33) }),
+                idle: f(24),
+                ck: [on(26), on(27)],
+                cine_running: on(28),
+                cine_cam: on(29),
+                look_off: on(34),
+                g76: w[36] as u8,
+                cam_test: on(37),
+                powerup: on(40),
+                w592: w[42],
+                water: on(43).then(|| on(44)),
+                handbrake: f(45),
+                burn: f(46),
+                nitro: on(47).then(|| on(48)),
+                player: on(49),
+                honk: on(50),
+                wheel_n: w[51] as i32,
+                wheels: std::array::from_fn(|i| on(52 + i).then(|| f(56 + i))),
+                trans: on(60).then(|| (w[61] as i32, w[62] as i32)),
+                body: on(63).then(|| (std::array::from_fn(|i| f(64 + i)), std::array::from_fn(|i| f(73 + i)))),
+                throttle: f(76),
+                brake: f(77),
+                stick: f(78),
+                down: w[79] as i32,
+                aero: on(80).then(|| on(81)),
+                goal: f(82),
+                w624: w[83],
+                steer: f(84),
+                bike: on(85),
+            };
+            let mut c = Ctx { culled: on(9), flags2: w[14], flags: w[30], ease_to: f(87), smooth_k: [f(88), f(89)], wheel_scale: f(90), ..Ctx::default() };
+            c.side_vals[3] = f(100);
+            let k = Tune { p88: f(94), start_steer: f(101), ..Tune::original() };
+            let parts = Parts { f1176: f(93), f1132: f(95), f1124: f(96), f1128: f(97), ..Parts::default() };
+            let mut m = GatherMut {
+                latch691: on(5),
+                dmg: on(38).then(|| [f(41), f(39)]),
+                parts: on(15).then_some(parts),
+                drv408: f(86),
+                drv421: false,
+                hist: [w[31] as u8, 0, w[32] as u8, 0],
+            };
+            let mut log = String::new();
+            let r = {
+                let log = std::cell::RefCell::new(&mut log);
+                gather(
+                    &g,
+                    &c,
+                    &k,
+                    &mut m,
+                    f(0),
+                    &mut |d, x| {
+                        log.borrow_mut().push_str(&format!(" rates {:08x}", x.to_bits()));
+                        d.f1164 = f(91);
+                        d.f1136 = f(92);
+                    },
+                    &mut |x, y, z| {
+                        log.borrow_mut().push_str(&format!(" bike {:08x} {:08x} {:08x}", x.to_bits(), y.to_bits(), z.to_bits()));
+                        (f(98), f(99))
+                    },
+                    &mut |x, y| {
+                        log.borrow_mut().push_str(&format!(" look {:08x} {:08x}", x.to_bits(), y.to_bits()));
+                        f(35)
+                    },
+                )
+            };
+            if let Some(i) = r {
+                let p = |x: f32, y: f32| (x.to_bits() as u64) << 32 | y.to_bits() as u64;
+                log.push_str(&format!(
+                    " {:08x} {:08x} {:08x} {:016x} {:016x} {:016x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+                    w[0],
+                    i.look.to_bits(),
+                    i.skid.to_bits(),
+                    p(i.goal, i.steer),
+                    p(i.smooth, i.add),
+                    (i.to_limit.to_bits() as u64) << 32,
+                    i.shift as u32,
+                    i.flags,
+                    i.gesture as u32,
+                    i.vel[0].to_bits(),
+                    i.vel[1].to_bits(),
+                    i.vel[2].to_bits(),
+                    i.vel[3].to_bits()
+                ));
+            }
+            let d = m.parts.unwrap_or(parts);
+            let x = |v: f32| format!("{:08x}", v.to_bits());
+            log.push_str(&format!(
+                " | {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {:08x} {}",
+                d.b2153 as u8,
+                d.b2154 as u8,
+                x(d.f1148),
+                x(d.f1152),
+                x(d.f1144),
+                x(d.f1140),
+                x(d.f1112),
+                x(d.f1116),
+                x(d.f1108),
+                x(d.f1156),
+                x(d.f1128),
+                x(d.f1132),
+                x(m.drv408),
+                m.drv421 as u8,
+                m.hist[0],
+                m.hist[1],
+                m.hist[2],
+                m.hist[3],
+                m.latch691 as u8,
+                g.racer as u32,
+                x(m.dmg.map_or(f(39), |d| d[1]))
+            ));
+            n += 1;
+            if log.trim() != b.trim() {
+                if bad < 6 {
+                    eprintln!("{a}\n  got  {log}\n  want {b}");
+                }
+                bad += 1;
+            }
+        }
+        assert!(n > 5900, "{n} cases");
+        assert_eq!(bad, 0, "{bad} of {n} cases differ");
+    }
+
+    /// The context step F-71604 against the original's code run offline (`work/drvmachine/ctxstep_ref.py`): random old
+    /// fields, tunes and inputs near every threshold (dt 0 / negative, skid 0.51, goal 0.05 / 0.95, the steering at its turning
+    /// point +- 0.05, impact accelerations), every context word after the step.
+    #[test]
+    fn the_context_step_matches_the_original() {
+        let text = include_str!("testdata/drvmachine_ctxstep_ref.txt");
+        let (mut n, mut bad) = (0, 0);
+        for line in text.lines() {
+            let (a, b) = line.split_once(" ->").unwrap();
+            let w: Vec<u32> = a.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let want: Vec<u32> = b.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let mut c = Ctx {
+                steer: f(0),
+                to_left: (w[1] >> 16) & 0xFF != 0,
+                to_right: (w[1] >> 8) & 0xFF != 0,
+                skid_timer: f(2),
+                neutral_timer: f(3),
+                maxed_timer: f(4),
+                peak: f(5),
+                speed: f(6),
+                vel_x: f(7),
+                vel_y: f(8),
+                side_vals: [f(9), f(10), f(11), f(12)],
+                timer_a: f(13),
+                timer_b: f(14),
+                timer_c: f(15),
+                ..Ctx::default()
+            };
+            let k = Tune { impact: [f(16), f(17), f(18)], impact_d: [f(19), f(20)], ..Tune::original() };
+            let i = CtxIn {
+                flags: w[21],
+                gesture: w[22] as i32,
+                look: f(24),
+                skid: f(25),
+                goal: f(26),
+                steer: f(27),
+                smooth: f(28),
+                add: f(29),
+                to_limit: f(30),
+                vel: [f(31), f(32), f(33), f(34)],
+                shift: w[35] as i32,
+            };
+            context_step(&mut c, &i, &k, f(23));
+            let b = |x: bool| x as u32;
+            let got = [
+                c.gesture as u32, c.flags, 0, 0, c.goal.to_bits(), c.steer.to_bits(), c.smooth.to_bits(), c.steer_add.to_bits(),
+                c.to_limit.to_bits(), c.dsteer.to_bits(), c.phase_in.to_bits(), 0, 0, 0, 0, 0, 0,
+                b(c.to_left) << 16 | b(c.to_right) << 8 | b(c.side_changed), c.skid_timer.to_bits(), c.neutral_timer.to_bits(),
+                c.maxed_timer.to_bits(), c.peak.to_bits(), c.throttle.to_bits(), c.speed.to_bits(), c.vel_x.to_bits(),
+                c.vel_y.to_bits(), c.accel.to_bits(), c.lat_accel.to_bits(), c.vert_accel.to_bits(), c.look.to_bits(),
+                c.shift as u32, c.skid.to_bits(), c.side_vals[0].to_bits(), c.side_vals[1].to_bits(), c.side_vals[2].to_bits(),
+                c.side_vals[3].to_bits(), c.timer_a.to_bits(), c.timer_b.to_bits(), c.timer_c.to_bits(), 0, c.dt.to_bits(),
+            ];
+            assert_eq!(want.len(), got.len());
+            n += 1;
+            // (word 3, +16, is the tune's address)
+            let diff: Vec<usize> = (0..got.len()).filter(|&j| j != 3 && got[j] != want[j]).collect();
+            if !diff.is_empty() {
+                if bad < 8 {
+                    for &j in &diff {
+                        eprintln!("{a}
+  +{}: got {:08x} want {:08x}", 4 + 4 * j, got[j], want[j]);
+                    }
+                }
+                bad += 1;
+            }
+        }
+        assert!(n > 5900, "{n} cases");
+        assert_eq!(bad, 0, "{bad} of {n} cases differ");
     }
 
     /// The machine's step with its callbacks against the original's (its Init, the constructor's tune, then per frame the

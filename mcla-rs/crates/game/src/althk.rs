@@ -509,7 +509,13 @@ impl Game {
             AltKind::RedLight => {
                 // (the registry's raceBack = 1: RACE BACK is offered after this race, 0x461e)
                 self.althk.back_offer = true;
-                self.alt_redlight_start(def, data, redlights, pp, None, man)
+                let start = self.alt_redlight_start(def, data, redlights, pp, None, man);
+                if start.is_some() {
+                    // (Race_Create, then LaunchDynamicRace, which opens with xGAR + 1 - 0x18ac539b
+                    // 0x45d1; a race back goes back to 0x4657, past it)
+                    self.mc4_stat_add("xGAR", 0, 1.0);
+                }
+                start
             }
             AltKind::Freeway => {
                 let hook = vehicles.cars.iter().find(|c| c.racer && c.vinyl_name == man.config)?;

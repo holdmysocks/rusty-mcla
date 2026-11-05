@@ -1,10 +1,12 @@
 """The sound occlusion group run offline: the original's GLOBAL_OCCLUSION reader F-43021 (with F-44963 / F-80129 and the
 curve init F-57265), the group's init F-23776, set F-69008, smoothing F-80830 and latch F-43736, and the owner's update
 F-87712, the generated code whole and unchanged, on random tunes and op sequences; besides, the pow F-21955 on its own
-and the curve evaluation F-33490 of random Gauss curves (F-49411 / F-67749).
+and the curve evaluation F-33490 of random Gauss curves (F-49411 / F-67749); and the wiring: occluders built by their
+ctor F-49147, the manager's round-robin F-96474 with the radius test F-21927 and the update through the vtable, the
+immediate update F-65914 and the tick F-60633, on random listener moves.
 Stubbed, as inputs: the tune lookup F-86504 (GLOBAL_OCCLUSION from game.dat, or with random fields), the curve store
 F-67395 (the curves.dat object by hash, or a random Gauss curve), the group lock F-60674 / F-60333 / F-47330 (free), the
-owner's frame F-91345 (the case's frame), the world probe F-93873 (records its segment, flags and limit; writes the
+owner's frame F-91345 (+16 of the occluder), the world probe F-93873 (records its segment, flags and limit; writes the
 case's hits: +16 position, +72 material) and the material lookup (vtable +20 of the material manager: +60 -> +0 -> +226
 the factor of eight materials). The runtime vector constants (0,0,0,1) and the xyz mask, zero in the image, are filled.
 Writes <out-dir>/occlusion_ref.txt (each number led by a letter, so no column reads as an address)."""
@@ -20,6 +22,7 @@ from recomp_closure import index, run
 from music_play_reference import gamedat
 
 TUNE, CRV, GB, OWN, FRAME, OUTV, COBJ, IN = 0x40100000, 0x40110000, 0x40120000, 0x40200000, 0x40210000, 0x40220000, 0x40230000, 0x40400000
+OCC, OFR, MGR, LIST = 0x40500000, 0x40510000, 0x40520000, 0x40530000
 MMGR, MVT, MOBJ, MPTR, MREC = 0x40300000, 0x40301000, 0x40310000, 0x40320000, 0x40330000
 FM = 0x7F000010
 
@@ -97,6 +100,7 @@ def main():
     reader, init, setf, smooth, latch, update, pow_, cinit, ceval = (addr(a.tool, f) for f in (
         'F-43021', 'F-23776', 'F-69008', 'F-80830', 'F-43736', 'F-87712', 'F-21955', 'F-57265', 'F-33490'))
     lookup, store_, lk0, lk1, lk2, frame, probe = (addr(a.tool, f) for f in ('F-86504', 'F-67395', 'F-60674', 'F-60333', 'F-47330', 'F-91345', 'F-93873'))
+    ctor, mgr, rtest, tick, refresh = (addr(a.tool, f) for f in ('F-49147', 'F-96474', 'F-21927', 'F-60633', 'F-65914'))
     img = rd.load_image(a.image)
     idx = index(a.recomp)
     tune = bytearray(gamedat(a.game_dat, 'GLOBAL_OCCLUSION'))
@@ -174,6 +178,38 @@ def main():
             else:
                 ops.append((op, 0))
         cases.append((tw, ops))
+    # the wiring: n occluders, ops 0 manager (start index given), 1 immediate update k now local, 2 tick k dt, 3 move
+    # all frames' origins; each op then the listener and the hits of up to 8 probe calls
+    wcases = []
+    for c in range(200):
+        n = r.choice((1, 2, 3, 4, 5, 6, 6))
+        w = [n]
+        base = [r.uniform(-400, 400) for _ in range(3)]
+        for k in range(n):
+            ab = int(r.random() < 0.25)
+            pos = [base[i] + r.uniform(-900, 900) * r.choice((0.05, 0.3, 1.0)) for i in range(3)] + [1.0]
+            org = [base[i] + r.uniform(-900, 900) * r.choice((0.05, 0.3, 1.0)) for i in range(3)]
+            w += [ab, int(ab and r.random() < 0.4)] + [fb(v) for v in pos] + [fb(v) for v in org]   # (a frame gone only with +116: the engine frees the others first)
+        ops = []
+        for _ in range(14):
+            op = r.choice((0, 0, 0, 1, 1, 2, 2, 2, 3))
+            if op == 0:
+                ops.append([0, r.randrange(n)])
+            elif op == 1:
+                ops.append([1, r.randrange(n), int(r.random() < 0.8), int(r.random() < 0.3)])
+            elif op == 2:
+                ops.append([2, r.randrange(n), fb(r.choice((1 / 60, 1 / 30, 0.1, 0.5)))])
+            else:
+                ops.append([3] + [fb(base[i] + r.uniform(-900, 900) * r.choice((0.05, 0.3, 1.0))) for i in range(3)])
+            lis = [base[i] + r.uniform(-50, 50) for i in range(3)]
+            ops[-1] += [fb(v) for v in lis]
+            for _ in range(8):
+                h = [r.choice((0, 0, 1, 2, 3))]
+                for _ in range(3):
+                    h += [fb(lis[i] + r.uniform(-60, 60)) for i in range(3)] + [r.randrange(8)]
+                ops[-1] += h
+        wcases.append(w + [len(ops)] + [len(o) for o in ops] + [x for o in ops for x in o])
+    wdata = ','.join('%du' % v for wc in wcases for v in [len(wc)] + wc)
     cdata = ','.join('%du' % v for tw, ops in cases for v in tw + [len(ops)] + [w for o in ops for w in o])
     G = lambda hi, lo: ((hi << 16) + lo) & 0xffffffff     # the globals as the code builds them (lis / addi)
     stubs = {
@@ -181,7 +217,7 @@ def main():
         'sub_' + store_: '{uint32_t h=ctx.r4.u32,p=0;if(h==@HA@u)p=@CRV@u;else if(h==@HB@u)p=@CRV@u+0x100;else if(h>=0x1000u&&h<0x1000u+@NG@u)p=@GB@u+(h-0x1000u)*64;'
                          'store(ctx.r5.u32,p);ctx.r3.u32=p?1:0;}',
         'sub_' + lk0: '', 'sub_' + lk2: '', 'sub_' + lk1: 'ctx.r3.u32=1;',
-        'sub_' + frame: 'ctx.r3.u32=@FRAME@u;',
+        'sub_' + frame: 'ctx.r3.u32=load(ctx.r3.u32+16);',
         'sub_' + probe: '{uint32_t s=ctx.r3.u32,q=@IN@u+pc*0x400;printf(" Q");for(int k=0;k<8;k++)printf(" p%08x",load(s+4*k));'
                         'printf(" g%u n%u",ctx.r5.u32,ctx.r6.u32);uint32_t n=load(q);for(uint32_t k=0;k<n;k++){uint32_t t=ctx.r4.u32+96*k;'
                         'store(t+16,load(q+4+16*k));store(t+20,load(q+8+16*k));store(t+24,load(q+12+16*k));store(t+72,load(q+16+16*k));}'
@@ -198,6 +234,9 @@ static const uint8_t TB[]={@TB@};
 static const uint8_t CA[]={@CA@};
 static const uint8_t CB[]={@CB@};
 static const uint32_t FAC[]={@FAC@};
+static const uint32_t WD[]={@WD@};
+static void ostate(int n){for(int k=0;k<n;k++){uint32_t o=@OCC@u+256*k;printf(" | o%08x o%08x u%u",load(o+4),load(o+8),(unsigned)*pointer(o+119));
+ for(int j=0;j<6;j++)printf(" g%08x",load(o+52+4*j));}}
 static double dbl(uint32_t h,uint32_t l){uint64_t b=((uint64_t)h<<32)|l;double d;memcpy(&d,&b,8);return d;}
 static uint64_t dbits(double d){uint64_t b;memcpy(&b,&d,8);return b;}
 static void grp(){printf(" a%08x v%08x h%08x l%08x w%08x z%08x",load(@OWN@u+52),load(@OWN@u+56),load(@OWN@u+60),load(@OWN@u+64),load(@OWN@u+68),load(@OWN@u+72));}
@@ -232,19 +271,38 @@ size_t p=0;while(p<sizeof(CD)/4){const uint32_t*tw=CD+p;uint32_t n=CD[p+6];const
    for(int k=0;k<4;k++){store(@OWN@u+80+4*k,g[3+k]);store(@OWN@u+96+4*k,g[7+k]);}
    for(int k=0;k<16;k++)store(@FRAME@u+16+4*k,g[11+k]);for(int k=0;k<4;k++)store(@GLIS@u+48+4*k,g[27+k]);store(@OWN@u+76,g[31]);
    for(int s=0;s<2;s++){const uint32_t*h=g+32+25*s;store(@IN@u+s*0x400,h[0]);for(int k=0;k<24;k++)store(@IN@u+s*0x400+4+4*k,h[1+k]);}
-   pc=0;c2.r3.u32=@OWN@u;sub_@UPDATE@(c2,nullptr);
+   store(@OWN@u+16,@FRAME@u);pc=0;c2.r3.u32=@OWN@u;sub_@UPDATE@(c2,nullptr);
    printf(" W%08x W%08x W%08x W%08x b%u",load(@OWN@u+96),load(@OWN@u+100),load(@OWN@u+104),load(@OWN@u+108),(unsigned)*pointer(@OWN@u+118));grp();}
-  printf("\n");}}}
+  printf("\n");}}
+memcpy(pointer(@TUNE@u),TB,sizeof(TB));store(@GTUNE@u,@TUNE@u);{Context c{};c.r1.u32=@STACK@u;sub_@READER@(c,nullptr);}
+size_t q=0;while(q<sizeof(WD)/4){uint32_t len=WD[q];const uint32_t*w=WD+q+1;q+=1+len;uint32_t n=w[0];
+ memset(pointer(@OCC@u),0,256*8);memset(pointer(@MGR@u),0,64);printf("R n%u",n);
+ for(uint32_t k=0;k<n;k++){const uint32_t*d=w+1+9*k;uint32_t o=@OCC@u+256*k;Context c{};c.r1.u32=@STACK@u;c.r3.u32=o;c.r4.u32=0;sub_@CTOR@(c,nullptr);
+  *pointer(o+116)=(uint8_t)d[0];for(int j=0;j<4;j++)store(o+80+4*j,d[2+j]);
+  store(@OFR@u+256*k+64,d[6]);store(@OFR@u+256*k+68,d[7]);store(@OFR@u+256*k+72,d[8]);store(@OFR@u+256*k+76,0x3f800000u);
+  store(o+16,d[1]?0:@OFR@u+256*k);store(@LIST@u+4*k,o);printf(" A%u B%u P%08x P%08x P%08x P%08x E%08x E%08x E%08x",d[0],d[1],d[2],d[3],d[4],d[5],d[6],d[7],d[8]);}
+ ostate(n);printf("\n");
+ uint32_t no=w[1+9*n];const uint32_t*ol=w+2+9*n;const uint32_t*op=ol+no;
+ for(uint32_t j=0;j<no;j++){const uint32_t*x=op;op+=ol[j];uint32_t m=x[0];uint32_t na=(m==0?2:m==1?4:m==2?3:4);
+  const uint32_t*li=x+na;for(int i=0;i<3;i++)store(@GLIS@u+48+4*i,li[i]);store(@GLIS@u+60,0x3f800000u);
+  const uint32_t*h=li+3;for(int s=0;s<8;s++){const uint32_t*hh=h+13*s;store(@IN@u+s*0x400,hh[0]);for(int k=0;k<12;k++)store(@IN@u+s*0x400+4+4*k,hh[1+k]);}
+  printf("O m%u",m);for(uint32_t i=1;i<na+3;i++)printf(" x%08x",x[i]);pc=0;Context c{};c.r1.u32=@STACK@u;
+  if(m==0){store(@MGR@u+12,x[1]);c.r3.u32=@MGR@u;c.r4.u32=@LIST@u;c.r5.u32=n;c.r6.u32=0;sub_@MGRF@(c,nullptr);printf(" i%u",load(@MGR@u+12));}
+  else if(m==1){c.r3.u32=@OCC@u+256*x[1];c.r4.u32=x[2];c.r5.u32=x[3];sub_@REFRESH@(c,nullptr);}
+  else if(m==2){store(@GDT@u+808,x[2]);c.r3.u32=@OCC@u+256*x[1];sub_@TICK@(c,nullptr);}
+  else{for(uint32_t k=0;k<n;k++){store(@OFR@u+256*k+64,x[1]);store(@OFR@u+256*k+68,x[2]);store(@OFR@u+256*k+72,x[3]);}}
+  printf(" c%u",pc);for(uint32_t s=0;s<pc;s++){const uint32_t*hh=h+13*s;for(uint32_t k=0;k<1+4*hh[0];k++)printf(" h%08x",hh[k]);}ostate(n);printf("\n");}}}
 """
     recomp_closure.EXTRA += ('static uint32_t fbits(float f){uint32_t b;memcpy(&b,&f,4);return b;}' + chr(10) +
                              'static float fbits2(uint32_t b){float f;memcpy(&f,&b,4);return f;}' + chr(10))
     ga_bytes = b''.join(g.ljust(64, b'\0') for g in ga)
     glob = (('GV1', G(-32122, 2352)), ('GVM', G(-32122, 2384)), ('GMAT', G(-32114, -23464)), ('GSET', G(-32121, -11976)),
-            ('GLIS', G(-32121, -12352)))
+            ('GLIS', G(-32121, -12352)), ('GDT', G(-32125, 19856)), ('GTUNE', G(-32121, -11980)))
     for k, v in glob + (('PW', ','.join('%du' % w for w in pw)), ('GX', ','.join('%du' % w for w in gx)), ('GA', ','.join(str(b) for b in ga_bytes)),
                  ('CD', cdata), ('GEO', ','.join('%du' % w for w in geo) or '0'), ('TB', ','.join(str(b) for b in tune)),
                  ('CA', ','.join(str(b) for b in curves['OCCLUSION_FACTOR_TO_LINEAR_VOLUME'])), ('CB', ','.join(str(b) for b in curves['OCCLUSION_DEPTH_TO_FILTER'])),
-                 ('FAC', ','.join('%du' % fb(f) for f in FACTORS)), ('NG', len(ga)), ('GW', GW), ('HA', ha), ('HB', hb),
+                 ('FAC', ','.join('%du' % fb(f) for f in FACTORS)), ('WD', wdata),
+                 ('OCC', OCC), ('OFR', OFR), ('MGR', MGR), ('LIST', LIST), ('CTOR', ctor), ('MGRF', mgr), ('REFRESH', refresh), ('TICK', tick), ('NG', len(ga)), ('GW', GW), ('HA', ha), ('HB', hb),
                  ('TUNE', TUNE), ('CRV', CRV), ('GB', GB), ('OWN', OWN), ('FRAME', FRAME), ('OUTV', OUTV), ('COBJ', COBJ), ('IN', IN),
                  ('MMGR', MMGR), ('MVT', MVT), ('MOBJ', MOBJ), ('MPTR', MPTR), ('MREC', MREC), ('FM', FM), ('STACK', STACK),
                  ('READER', reader), ('INIT', init), ('SET', setf), ('SMOOTH', smooth), ('LATCH', latch), ('UPDATE', update),
@@ -252,16 +310,17 @@ size_t p=0;while(p<sizeof(CD)/4){const uint32_t*tw=CD+p;uint32_t n=CD[p+6];const
         c = c.replace('@%s@' % k, str(v))
         stubs = {n: b.replace('@%s@' % k, str(v)) for n, b in stubs.items()}
         fakes = {n: b.replace('@%s@' % k, str(v)) for n, b in fakes.items()}
-    roots = ['sub_' + f for f in (reader, init, setf, smooth, latch, update, pow_, cinit, ceval)]
-    exe = rd.build(idx, roots, c, a.out_dir, 'occlusion', stubs=stubs, image=img, fakes=fakes)
+    roots = ['sub_' + f for f in (reader, init, setf, smooth, latch, update, pow_, cinit, ceval, ctor, mgr, rtest, tick, refresh)]
+    exe = rd.build(idx, roots, c, a.out_dir, 'occlusion', stubs=stubs, image=img, fakes=fakes, targets=[int(update, 16)])
     out = run(exe, a.image)
     a.out_dir.mkdir(parents=True, exist_ok=True)
     cl = 'C h%08x c%s h%08x c%s' % (ha, curves['OCCLUSION_FACTOR_TO_LINEAR_VOLUME'].hex(), hb, curves['OCCLUSION_DEPTH_TO_FILTER'].hex())
-    out = cl + chr(10) + out
+    out = cl + chr(10) + 'B b' + bytes(tune).hex() + chr(10) + out
     (a.out_dir / 'occlusion_ref.txt').write_text(out)
     ls = out.split(chr(10))
     print(sum(l.startswith('P') for l in ls), 'pows,', sum(l.startswith('G') for l in ls), 'curves,', sum(l.startswith('T') for l in ls), 'tunes,',
-          sum(l[:1] in 'ISML' for l in ls if l), 'group ops,', sum(l.startswith('U') for l in ls), 'updates')
+          sum(l[:1] in 'ISML' for l in ls if l), 'group ops,', sum(l.startswith('U') for l in ls), 'updates,',
+          sum(l.startswith('R') for l in ls), 'wiring cases,', sum(l.startswith('O') for l in ls), 'wiring ops')
 
 
 if __name__ == '__main__':

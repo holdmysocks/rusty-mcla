@@ -308,6 +308,20 @@ impl SharedTextures {
 }
 
 /// MCLA_WATER_OLD=1: the sea as the generic blended material (before its own programs, 2026-10-14)
+/// MCLA_TEX_MISS=1: a line in the log for every texture the port cannot find and draws white instead (once per
+/// name; `kind` city / prop / car). The original binds no texture there (F-98834 returns null).
+pub fn note_tex_miss(kind: &str, name: &str) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var_os("MCLA_TEX_MISS").is_some()) {
+        return;
+    }
+    static SEEN: std::sync::Mutex<Option<std::collections::HashSet<String>>> = std::sync::Mutex::new(None);
+    let key = format!("{kind} {name}");
+    if SEEN.lock().unwrap().get_or_insert_with(Default::default).insert(key.clone()) {
+        log::info!("texture miss: {key}");
+    }
+}
+
 fn water_old() -> bool {
     static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *OLD.get_or_init(|| std::env::var("MCLA_WATER_OLD").map_or(false, |v| v == "1"))
@@ -1686,6 +1700,7 @@ impl World {
                 }
                 None => {
                     self.tex_fail.insert(h);
+                    note_tex_miss("city", &format!("{h:08x} (sector {sector_id})"));
                     gpu.white.clone()
                 }
             }

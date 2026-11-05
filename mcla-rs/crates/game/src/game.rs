@@ -4101,6 +4101,20 @@ impl Game {
                         c.engine_off = false;
                         c.deactivated = false;
                     }
+                    // (OrderedCheckpointCore 0x1058 / UnorderedCheckpointCore 0xde9, once Race_IsRaceTimerEnabled: each
+                    // racer's nitrous, Racer_LockFeature(racer, 8, ..) F-17816 - locked for a computer racer (record +8 = 2)
+                    // at difficulty 0 (+3100), free otherwise)
+                    if race.kind == RaceKind::Race {
+                        for &i in &race.participants {
+                            if let Some(c) = vehicles.cars.get_mut(i) {
+                                if !c.is_player && self.race_diff == 0 {
+                                    c.lock |= 0x8;
+                                } else {
+                                    c.lock &= !0x8;
+                                }
+                            }
+                        }
+                    }
                 }
             }
             // (N-VP-1: the grid is not frozen - the cars simulate, held by their brakes, so revving and
@@ -4111,7 +4125,6 @@ impl Game {
         }
         vehicles.frozen = false;
         vehicles.grid_hold = None;
-        race.time += dt;
         let n = race.checkpoints.len();
         while race.next.len() < vehicles.cars.len() {
             race.next.push(0);
@@ -4230,6 +4243,11 @@ impl Game {
             }
         }
         race.prev_pos = vehicles.cars.iter().map(|c| c.state.pos).collect();
+        // (the race clock steps after the tests: the original's timer (race +3748, F-54066 from the Player
+        // layer's F-343) steps after the frame's physics, and the scripts' HasHitCheckpoint and
+        // Race_GetTimer come later in that frame (System layer) - a finish over this way, which the port
+        // tests a tick later, before its physics, is stamped with the time before this tick's step)
+        race.time += dt;
         // (a computer racer over the line brakes to a stop)
         for (i, c) in vehicles.cars.iter_mut().enumerate() {
             if !c.is_player && race.finish_time.get(i).map_or(false, |t| t.is_some()) {
@@ -13641,12 +13659,17 @@ impl Game {
                 if payback {
                     self.mc4_stat_add("xGAK", 0, 1.0);
                     self.payback_keys = true;
+                } else {
+                    // (the tournament man's: form 66 closed, then xGAT + 1 - CruisingHookmen/0xdcd7fe26 0x6f6)
+                    self.mc4_stat_add("xGAT", 0, 1.0);
                 }
                 return Some(MenuAction::StartRace);
             }
         } else if enter && delivery {
             // the next delivery of the district's list, at the difficulty chosen
             if let Some(i) = self.delivery_pick(key.starts_with("sc_")) {
+                // (the delivery core: its panel closed, then xGAD + 1 - Hangouts/0x37c63b19 0x882)
+                self.mc4_stat_add("xGAD", 0, 1.0);
                 self.current_race = Some(i);
                 self.event_diff = Some(self.hangout_diff);
                 leave(self);
@@ -13672,6 +13695,9 @@ impl Game {
                 // (test hook: MCLA_SERIES_WINS=n starts the series with the player at n wins)
                 let wins = std::env::var("MCLA_SERIES_WINS").ok().and_then(|v| v.parse::<u32>().ok()).map(|n| vec![("YOU".to_string(), n)]).unwrap_or_default();
                 self.series = (!order.is_empty()).then(|| Series { key: format!("{}_series", key), races: order, at: first, wins, rivals: Vec::new(), diff: self.hangout_diff, story: None });
+                // (the warp, then the scene's release, which counts xGAS + 1 - Hangouts/0xe166126d 0x1556 ->
+                // 0x14db. Its two other calls, after the hangout's MISSION_EVENT (0x2271, 0x22ec), are not ported)
+                self.mc4_stat_add("xGAS", 0, 1.0);
                 leave(self);
                 return Some(MenuAction::StartRace);
             }
@@ -13698,21 +13724,11 @@ impl Game {
                 self.hangout_stake = 5;
             }
         } else if enter {
+            // (the original's boxes first: not enough money, or YES / NO - `mc4_wager_ask`)
             let (stake, _, _) = stake_of(self, self.hangout_diff, self.hangout_stake);
-            if self.money < stake {
-                let m = st("Dialog_Description_WagerInsufficientFunds", "You don't have enough money to wager.").to_uppercase();
-                self.show_message(&m);
-            } else {
-                self.money -= stake;
-                self.dirty = true;
-                self.wager = Some((stake, self.hangout_diff));
-                self.wager_key = Some(key.clone());
-                self.current_race = Some(self.mc4_wager_race(&key).unwrap_or(self.race_sel.min(self.race_defs.len().saturating_sub(1))));
-                self.wager_here = false;
-                log::info!("hangout: {} wager ${} at difficulty {}", key, stake, self.hangout_diff);
-                leave(self);
-                return Some(MenuAction::StartRace);
-            }
+            let diff = self.hangout_diff;
+            self.mc4_wager_ask(&key, stake, diff);
+            return None;
         }
         if back {
             if wager && page_no >= 1 {

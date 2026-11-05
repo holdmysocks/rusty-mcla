@@ -1,10 +1,10 @@
 //! The slipstream turbo, mcCarSSTurbo (vtable 0x820470E0; work/slipstream/report.txt): every car a
-//! mcPlayer drives (the player and the race opponents - mcPlayer::CreateCar, 0x822A6560, builds it)
+//! mcPlayer drives (the player and the race opponents - mcPlayer::CreateCar, F-51384, builds it)
 //! charges it in another such car's slipstream and fires it like a nitrous shot.
 //!
-//! One object per car, its update (0x823465C8) runs in the chassis update after mcCarNitro's: while it
+//! One object per car, its update (F-60935) runs in the chassis update after mcCarNitro's: while it
 //! burns the level runs down over turboUseTime and pushes the car; otherwise the strongest slipstream
-//! around (0x82346438 over the player manager's list, 0x82346140 for each car) charges it.
+//! around (F-69277 over the player manager's list, F-22877 for each car) charges it.
 
 use glam::Vec3;
 use mcla_formats::rage::simtune::SsTurboTune;
@@ -31,34 +31,34 @@ pub struct SsTurbo {
     /// +64: the slipstream's strength this tick (0 out of one)
     pub strength: f32,
     /// +72: the car whose slipstream this one is in (index in the vehicle list), -1 none - also what
-    /// picks the air's DragMin in mcCarSim::Update (0x82330024)
+    /// picks the air's DragMin in mcCarSim::Update (A-63908)
     pub leader: i32,
     /// +68: the car in this one's slipstream, -1 none
     pub drafter: i32,
     /// the sst_trail behind this car (mcCarModel +7972 block: +4 the target, +8 the faded value)
     pub trail_target: f32,
     pub trail: f32,
-    /// this tick's search (0x82346438), made for every car before the cars are stepped: the strongest
+    /// this tick's search (F-69277), made for every car before the cars are stepped: the strongest
     /// slipstream's strength and car
     pub found: (f32, i32),
     /// the drafter (+68) is still in a slipstream (its own search found one)
     pub drafter_drafting: bool,
-    /// chassis +576 bit 0x10, set and cleared only by the script native Racer_LockFeature (sub_822ADF90; hash
-    /// af5d85f0): the turbo neither charges, fades nor fires. None of the disc's 869 scripts calls it
-    /// (`lock_feature_calls_of_the_disc`), so it stays false.
+    /// chassis +576 bit 0x10, set and cleared only by the script native Racer_LockFeature (F-17816; hash
+    /// af5d85f0): the turbo neither charges, fades nor fires. The disc's only calls (the two checkpoint cores,
+    /// `lock_feature_calls_of_the_disc`) lock bit 0x8, the nitrous (`CarInstance::lock`), so this stays false.
     pub locked: bool,
-    /// the port's count of fires (0x82345E40), read for the player's stats gSST / nSST
+    /// the port's count of fires (F-68670), read for the player's stats gSST / nSST
     pub fires: u32,
 }
 
 impl Default for SsTurbo {
     fn default() -> Self {
-        // (0x82345CC8)
+        // (F-99345)
         SsTurbo { level: 0.0, burning: false, full: false, stay: 0.0, fov: 0.0, dist: 1.0, blur: 1.0, strength: 0.0, leader: -1, drafter: -1, trail_target: 0.0, trail: 0.0, found: (0.0, -1), drafter_drafting: false, locked: false, fires: 0 }
     }
 }
 
-/// What 0x82346140 needs of a car.
+/// What F-22877 needs of a car.
 #[derive(Clone, Copy, Debug)]
 pub struct DraftCar {
     /// the car's place (chassis matrix row 3)
@@ -72,7 +72,7 @@ pub struct DraftCar {
 }
 
 impl SsTurbo {
-    /// 0x82345E20 (the cine car's set-down and others): nothing charged, nothing burning.
+    /// F-74056 (the cine car's set-down and others): nothing charged, nothing burning.
     pub fn reset(&mut self) {
         self.burning = false;
         self.full = false;
@@ -80,7 +80,7 @@ impl SsTurbo {
         self.stay = 0.0;
     }
 
-    /// 0x82345D58 (mcCarSim's reset, slot +4; mcCar's update when a wiped-out car is set back, sim +592 bit
+    /// F-21020 (mcCarSim's reset, slot +4; mcCar's update when a wiped-out car is set back, sim +592 bit
     /// 0x10 with its damage timer run out): everything back to rest.
     pub fn reset_all(&mut self) {
         self.burning = false;
@@ -95,13 +95,13 @@ impl SsTurbo {
         self.blur = 1.0;
     }
 
-    /// 0x82345FE0: `answering` is the chassis's vfunc 12 (0x8232C368: car state +592 0, or 16 on a car); not
+    /// F-29462: `answering` is the chassis's vfunc 12 (F-71660: car state +592 0, or 16 on a car); not
     /// with chassis +576 bit 0x10 (`locked`).
     pub fn can_fire(&self, answering: bool) -> bool {
         !self.locked && answering && self.full && self.level >= 1.0 && !self.burning && self.fov == 0.0
     }
 
-    /// 0x82345E40: the level 1 and burning. (The camera's jolt, the pad's rumble 3 and the player's
+    /// F-68670: the level 1 and burning. (The camera's jolt, the pad's rumble 3 and the player's
     /// stats gSST / nSST are the callers' business.)
     pub fn fire(&mut self) {
         self.level = 1.0;
@@ -109,7 +109,7 @@ impl SsTurbo {
         self.fires = self.fires.wrapping_add(1);
     }
 
-    /// The burning half of 0x823465C8. `upset`: 0x823455B8 (air time <= 0 and up.y under 0.1). Returns
+    /// The burning half of F-60935. `upset`: F-75615 (air time <= 0 and up.y under 0.1). Returns
     /// -(turboBoostAmount x level^turboBoostExp), the factor of the push along the car's back row, before
     /// the throttle, the share of the wheels down and the mass.
     pub fn burn(&mut self, t: &SsTurboTune, upset: bool, dt: f32) -> f32 {
@@ -132,11 +132,11 @@ impl SsTurbo {
         k
     }
 
-    /// The charging half of 0x823465C8, with this tick's search in `found` / `drafter_drafting`.
+    /// The charging half of F-60935, with this tick's search in `found` / `drafter_drafting`.
     /// `speed`: chassis +224.
     pub fn charge(&mut self, t: &SsTurboTune, speed: f32, dt: f32) {
         self.strength = 0.0;
-        // (0x823467E4: with chassis +576 bit 0x10 the update ends here. Byte +48 - a forced full-strength charge
+        // (A-26634: with chassis +576 bit 0x10 the update ends here. Byte +48 - a forced full-strength charge
         // and the car's own trail at 1 - has no writer but the constructor, so it is left out.)
         if self.locked {
             return;
@@ -190,9 +190,9 @@ impl SsTurbo {
         }
     }
 
-    /// The trail's fade (mcCarModel 0x82379D48 -> 0x82375D90): towards its target at 4.5 a second
+    /// The trail's fade (mcCarModel F-66688 -> F-38786): towards its target at 4.5 a second
     /// (0x820317C8), not within 0.01 (0x82002C60); then the target is dropped unless the local player is
-    /// this car or the car in its slipstream (`keep`). Drawn above 0.001 (0x820022B4, 0x82379B30).
+    /// this car or the car in its slipstream (`keep`). Drawn above 0.001 (0x820022B4, F-44538).
     pub fn fade_trail(&mut self, keep: bool, dt: f32) {
         let d = self.trail - self.trail_target;
         if d.abs() > 0.01 {
@@ -205,7 +205,7 @@ impl SsTurbo {
     }
 }
 
-/// 0x82346140: the strength of `leader`'s slipstream where `me` is, with the leader's tuning. The envelope
+/// F-22877: the strength of `leader`'s slipstream where `me` is, with the leader's tuning. The envelope
 /// is laid along the leader's motion: rows right = cross(up, back) made unit, the car's own up, back = the
 /// velocity's opposite made unit, its place; `me` in it at z (behind) 0..envelopeLength, |x| and |y| within
 /// envelopeWidth2. Strength = (1 - (z/L)^2) (1 - min(|x| / w, 1)^2) times the leader's speed share, w
@@ -448,7 +448,8 @@ mod tests {
         fn walk(d: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
             for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
                 let p = e.path();
-                if p.is_dir() { walk(&p, out) } else if p.extension().map_or(false, |x| x == "sco") { out.push(p) }
+                // (every file: the script objects under script_obj have no extension)
+                if p.is_dir() { walk(&p, out) } else { out.push(p) }
             }
         }
         let mut files = Vec::new();

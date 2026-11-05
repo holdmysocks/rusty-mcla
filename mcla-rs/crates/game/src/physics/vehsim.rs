@@ -487,9 +487,11 @@ pub struct AirRide {
 /// The car's facts the air ride's switch tests (F-97237, F-36738)
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AirRideGate {
-    /// the local human's car (F-31409), its engine running (engine +46), not in the game's state 5 (and, for the
-    /// switch-on, F-36738's chassis +576 bit 0x20 clear: not traced, the port has no such flag)
+    /// the local human's car (F-31409), its engine running (engine +46), not in the game's state 5 (RaceEditor,
+    /// which the port has not)
     pub allowed: bool,
+    /// F-36738: chassis +576 bit 0x20 (Racer_LockFeature) - no switch-on
+    pub locked: bool,
     /// chassis +396, the automatic brake
     pub auto_brake: f32,
     /// chassis +224
@@ -511,7 +513,7 @@ impl AirRide {
         if g.allowed {
             if g.auto_brake == 1.0 && g.speed < f32::from_bits(0x400f_0a3d) && g.answers && !g.hydraulics {
                 // (F-32886: F-36738's test, then F-47200)
-                if !self.on && !self.moving.iter().any(|m| *m) {
+                if !g.locked && !self.on && !self.moving.iter().any(|m| *m) {
                     self.switch_on(pattern);
                 }
             } else if g.auto_brake == 0.0 || !g.answers || g.hydraulics {
@@ -2136,7 +2138,11 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     // recording that did not log its pad, VEH_NITRO. MCLA_DBG_RB3: this rule for everyone, as before.)
     let fire_exact = exact_nitro && !dbg_flag("MCLA_DBG_RB3");
     let fire_in_pad = fire_exact && pad_exact;
-    if !fire_in_pad && input.nitro && !vs.nitro_held && vs.nitro_level <= 0.0 && vs.nitro_rest <= 0.0 && st.nitro_shots > 0 && grounded_now > 0 {
+    if !fire_in_pad && input.nitro && !vs.nitro_held && vs.nitro_level <= 0.0 && vs.nitro_rest <= 0.0 && st.nitro_shots > 0 && grounded_now > 0 && input.lock & 0x8 == 0 {
+        // (test hook MCLA_NITRO_LOG=1: every nitrous fire of this path)
+        if dbg_flag("MCLA_NITRO_LOG") {
+            log::info!("nitrous fired ({}, shots left {})", if input_ai { "computer" } else { "player" }, st.nitro_shots - 1);
+        }
         vs.nitro_level = 1.0;
         vs.nitro_burning = true;
         vs.nitro_fires = vs.nitro_fires.wrapping_add(1);
@@ -2780,6 +2786,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
                 speed: vs.last_speed,
                 answers: !input.hold && !input.deactivated,
                 hydraulics: input.hyd & super::car::HYD_FITTED != 0 && vs.hyd.active(),
+                locked: input.lock & 0x20 != 0,
             };
             let offset = [t.wheel_front.suspension_offset, t.wheel_back.suspension_offset];
             vs.air.frame(&t.air_ride, &g, input.air & super::car::AIR_PATTERN, offset, dt + dt);
@@ -2911,7 +2918,8 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         st.rumble.play(3);
         log::info!("slipstream turbo fired ({})", if input_ai { "computer" } else { "player" });
     }
-    if nitro_try && !sst_go && !vs.sst.burning && vs.sst.fov == 0.0 && !vs.nitro_burning && vs.nitro_view == 0.0 && st.nitro_shots > 0 {
+    // (the fire F-62883 refuses while the chassis's +576 bit 0x8 is set, Racer_LockFeature)
+    if nitro_try && !sst_go && !vs.sst.burning && vs.sst.fov == 0.0 && !vs.nitro_burning && vs.nitro_view == 0.0 && st.nitro_shots > 0 && input.lock & 0x8 == 0 {
         vs.nitro_level = 1.0;
         vs.nitro_burning = true;
         vs.nitro_fires = vs.nitro_fires.wrapping_add(1);

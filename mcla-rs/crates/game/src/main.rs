@@ -431,6 +431,12 @@ struct App {
     cine_events: (String, Vec<(String, cinecar::CarEvent)>),
     /// tips waiting for a quiet moment: speech scenario, title, text
     tips: std::collections::VecDeque<(String, String, String)>,
+    /// the tip calls' scripts waiting at the cap (Sidekick_GetTypeCount(3) > 4): next wake (`tip_clock`), the call
+    tip_waiters: Vec<(f32, (String, String, String))>,
+    /// the waiters' unwarped clock, seconds
+    tip_clock: f32,
+    /// the call on the phone is one of `tips` (a type 3 call, counted by the cap until it is done)
+    tip_shown: bool,
     /// a mission's reminder (caller, text) waiting for its story scene to end
     pending_call: Option<(String, String)>,
     /// a mission whose READY_TO_START_ON_ENTER script plays its story scene first: it enters
@@ -761,6 +767,8 @@ struct App {
     /// the GPS camera of the last map frame (the exit flies from it)
     nav_rows: Option<hudmap::CamRows>,
     nav_free_moving: bool,
+    /// the left stick's clock on the GPS map: the cursor steps once a 30 Hz game frame (`F-62325`)
+    nav_stick_acc: f32,
     map_open: f32,
     map_vp: Option<glam::Mat4>,
     drivers: drivers::Drivers,
@@ -1133,6 +1141,9 @@ impl App {
             ticket_run: None,
             cine_events: (String::new(), Vec::new()),
             tips: Default::default(),
+            tip_waiters: Vec::new(),
+            tip_clock: 0.0,
+            tip_shown: false,
             pending_call: None,
             pending_log: None,
             whoosh: Default::default(),
@@ -1312,6 +1323,7 @@ impl App {
             arcade_climb: None,
             nav_rows: None,
             nav_free_moving: false,
+            nav_stick_acc: 0.0,
             map_open: 0.0,
             map_vp: None,
             drivers: drivers::Drivers::default(),
@@ -2624,13 +2636,13 @@ impl App {
             // (the air bags of the car's set-up, garage AIR BAGS, and the lowering pattern LocalOptions +1324; the
             // switch-on wants the local human's car with its engine running, engine +46: not a scene's car_off)
             player_input.air = 0;
-            // (test hook: MCLA_AIRBAGS=1 fits the air bags, MCLA_AIR_LOG logs them every 30 frames)
+            // (test hook: MCLA_AIRBAGS=1 fits the air bags, MCLA_AIR_LOG=<ticks> logs them every <ticks> ticks, 60 if not a number)
             if std::env::var("MCLA_AIRBAGS").is_ok() {
                 self.game.car_x.airbags = true;
             }
-            if std::env::var("MCLA_AIR_LOG").is_ok() && self.tick_no % 60 == 0 {
+            if std::env::var("MCLA_AIR_LOG").is_ok_and(|v| self.tick_no % v.parse::<u64>().unwrap_or(60).max(1) == 0) {
                 if let Some(v) = self.vehicles.player().and_then(|c| c.state.veh.as_deref()) {
-                    log::info!("air ride tick {}: {:?} auto brake {} speed {:.3} body y {:.4} comp {:?}", self.tick_no, v.air, v.auto_brake, v.last_speed, self.vehicles.player().map_or(0.0, |c| c.state.pos.y), v.wheels.iter().map(|w| w.comp).collect::<Vec<_>>());
+                    log::info!("air ride tick {} (scene {:?}): {:?} auto brake {} speed {:.3} body y {:.4} comp {:?}", self.tick_no, self.cine.playing.as_ref().map(|sc| sc.t), v.air, v.auto_brake, v.last_speed, self.vehicles.player().map_or(0.0, |c| c.state.pos.y), v.wheels.iter().map(|w| w.comp).collect::<Vec<_>>());
                 }
             }
             if self.game.car_x.airbags {
@@ -2697,6 +2709,11 @@ impl App {
         }
         if self.arrest_deact {
             player_input = CarInput { deactivated: true, ..Default::default() };
+        }
+        // (garage_core's Racer_Deactivate after the warp's end: the car does not answer its pad, F-71660, so its air
+        // bags stay off in the garage)
+        if self.garage_in.as_ref().is_some_and(|g| g.stage != garagein::Stage::Warp) {
+            player_input.deactivated = true;
         }
         // (the warp after START: the car is not the player's to drive until it lands - Racer_Activate)
         if self.startwarp.is_some() {
@@ -4953,10 +4970,25 @@ impl App {
                 let hit = self.barrels.iter().enumerate().find(|(i, b)| !self.game.collected.contains(&(*i as u16)) && Vec3::new(b.x - pp.x, (b.y - pp.y) * 0.5, b.z - pp.z).length() < 2.6).map(|(i, b)| (i, *b));
                 if let Some((i, b)) = hit {
                     self.game.collected.push(i as u16);
+                    // (the collectables' lesson the first time - xTCO, MiscTasks/Collectables 0x88d)
+                    self.game.mc4_tutorial("xTCO");
                     self.props_dirty = true;
                     self.fx.sparks(b + Vec3::Y * 0.6, Vec3::Y, 40);
-                    let msg = self.game.career.strings.get("COLLECTABLE_FOUND_MSG").map(|s| s.to_string()).unwrap_or_else(|| "COLLECTABLE FOUND".to_string());
-                    self.game.show_message(&format!("{}   {} / {}", msg.to_uppercase(), self.game.collected.len(), self.barrels.len()));
+                    // (MiscTasks/Collectables 0x986..0xa16: SplashManager_SplashDynamicInt(0, 3, NUM_COLLECTABLE_COLLECTED,
+                    // COLLECTABLE_FOUND_MSG, the count, 4.0, 0) - type 3 is the top slot (the splash manager's
+                    // constructor F-95802: types 0, 1 centre, 3, 4 top, 2 bottom), white, 4 s, cleared at a race's
+                    // end; every tenth one, Splash(0, 3, CHEAT_UNLOCKED, 2.0, 1, 0) behind it)
+                    let n = self.game.collected.len();
+                    let msg = self.game.career.strings.get("COLLECTABLE_FOUND_MSG").map(|s| s.replace("<D>NUM_COLLECTABLE_COLLECTED</D>", &n.to_string())).unwrap_or_else(|| format!("COLLECTABLE {} OF {} FOUND", n, self.barrels.len())).to_uppercase();
+                    let cheat = (n % 10 == 0).then(|| self.game.career.strings.get("CHEAT_UNLOCKED").map(|s| s.to_uppercase()).unwrap_or_else(|| "CHEAT UNLOCKED".to_string()));
+                    if let Some(fh) = self.game.flash_hud.as_mut() {
+                        fh.splash(crate::flash_ui::SPLASH_TOP, &msg, 0, 4.0, true);
+                        if let Some(c) = cheat.as_deref() {
+                            fh.splash(crate::flash_ui::SPLASH_TOP, c, 0, 2.0, true);
+                        }
+                    } else {
+                        self.game.show_message(&msg);
+                    }
                     if let Some(a) = self.audio.as_mut() {
                         // (MiscTasks/Collectables @0x7e3: AudioManager_PlayFrontendSound)
                         if !a.obj("COLLECTIBLES_PICKUP_MASTER") {
@@ -5206,7 +5238,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.vehicles.prop_objects = objs;
             }
             // the race's cop zone (F-88125, F-71212): one zone of the race's, on one lap; the first
-            // racer in it sets it off and the pursuit starts 5.5 s later (police.rs `zone_step`)
+            // racer in it sets it off and the pursuit starts 5.5 + 2 s later (police.rs `zone_step`)
             // (F-96166 / F-71212: the player's car's vehicle-table class, police or not - `Police::player_police`)
             self.police.player_police = self.player_police();
             if self.game.race.is_none() {
@@ -5219,10 +5251,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 if let Some((z, &(zp, zr, ..))) = self.police.zone.clone().filter(|_| race.countdown <= 0.0).and_then(|z| race.cop_zones.get(z.idx).map(|c| (z, c))) {
                     let lap = race.next.first().map_or(0, |&n| n / race.lap_len.max(1));
-                    let inside = race.participants.iter().find_map(|&ci| {
-                        self.vehicles.cars.get(ci).filter(|c| c.state.pos.distance_squared(zp) < zr * zr).map(|c| c.is_player)
-                    });
-                    if let Some(line) = self.police.zone_step(lap, inside, sim_dt) {
+                    let racers: Vec<(usize, bool, Vec3, bool)> = race.participants.iter()
+                        .filter_map(|&ci| self.vehicles.cars.get(ci).map(|c| (ci, c.is_player, c.state.pos, c.state.damage >= 0.999)))
+                        .collect();
+                    let inside = racers.iter().position(|r| r.2.distance_squared(zp) < zr * zr);
+                    if let Some(line) = self.police.zone_step(lap, &racers, inside, sim_dt) {
                         if !self.speech.busy() {
                             self.speech.say(line);
                         }
@@ -5527,6 +5560,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             // ("Reached neutral point": garage_core 0x517..0x52a sets the stat tGAR to 1 unless its place
                             // is element 506 - none of the three garages)
                             self.game.mc4_stat_set("tGAR", 0, 1.0);
+                            // (the car's reset F-46526 after the warp, before the `_ent` scene shows it on its spot:
+                            // mcCarSim::Reset F-47310 resets the air ride, F-80081 - bags at 0, off)
+                            if let Some(v) = self.vehicles.player_mut().and_then(|c| c.state.veh.as_deref_mut()) {
+                                v.air = physics::vehsim::AirRide::default();
+                            }
                             // (LOCATION_EVENT with the place's name: garage_core's static +4)
                             self.game.career.event(career::Ev::Str("LOCATION_EVENT", su.key));
                             let night = self.time_of_day > 18.5 || self.time_of_day < 5.5;
@@ -5836,7 +5874,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     career::News::Tip { key, title, text } => {
                         log::info!("career: tip {} ({} characters)", key, text.len());
-                        self.tips.push_back((key, title, text));
+                        // (the tip include: Sidekick_GetTypeCount(3) > 4 - the type's calls waiting or on screen, F-64477 -> F-93219
+                        // over the call list - sleeps WAITUNWARPED(100) and checks again)
+                        if self.tips.len() + self.tip_shown as usize > 4 {
+                            self.tip_waiters.push((self.tip_clock + 0.1, (key, title, text)));
+                        } else {
+                            self.tips.push_back((key, title, text));
+                        }
                     }
                     // (step 21b: a story scene played by a CORE at a completion / meeting, or by
                     // an event script - no call, no line)
@@ -5971,11 +6015,19 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.phone_hold |= std::mem::take(&mut self.phone_redelay);
                 }
             }
+            // (the waiters at the cap: each wakes every 100 ms from its own first check, so when a call is done the first
+            // to wake appends, not the first that came - scripts waking in the same frame in their start order)
+            if self.game.tip.is_none() {
+                self.tip_shown = false;
+            }
+            self.tip_clock += dt;
+            tip_waiters_wake(&mut self.tip_waiters, &mut self.tips, self.tip_shown, self.tip_clock);
             // the mechanic rings when nothing else is going on
             if career_up && !phone_held && self.news.is_empty() && self.game.tip.is_none() && self.news_timer <= -4.0 && matches!(self.game.mode, Mode::FreeRoam) {
                 if let Some((key, title, text)) = self.tips.pop_front() {
                     let secs = (6.0 + text.len() as f32 * 0.055).min(22.0);
                     self.game.tip = Some((title, text, secs));
+                    self.tip_shown = true;
                     self.game.phone_prompt.clear();
                     // (the call is the phone's: UI_CELLPHONE_RING when it comes up - sound.rs)
                     if let Some(a) = self.audio.as_mut().filter(|a| !a.has_objects()) {
@@ -6545,7 +6597,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 let frontend = self.vehicles.amb_frontend;
                 self.peds.set_frontend(frontend.is_some());
                 if matches!(self.game.mode, Mode::FreeRoam | Mode::Race) || frontend.is_some() {
-                    let threats: Vec<peds::Threat> = self.vehicles.cars.iter().filter(|c| c.parked.is_none() && c.placed).map(peds::Threat::from_car).collect();
+                    let threats = peds::Threat::all(&self.vehicles.cars, &mut self.peds.threat_prev);
                     let props = &self.props;
                     let signals = if self.vehicles.signals.junctions.is_empty() { None } else { Some((&self.vehicles.signals, self.vehicles.clock)) };
                     // the original's spawner looks along the player car (speed in mph)
@@ -9440,9 +9492,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if stick != glam::Vec2::ZERO && !fresh && !busy {
                     let before = self.nav.cursor;
                     self.nav.update(0.0, false, false, stick, aspect);
-                    let step = stick * 0.5 * self.nav.eye.y * dt;
                     self.nav.cursor = before;
-                    self.nav.move_cursor(before + Vec3::new(step.x, 0.0, step.y));
+                    // (`F-62325` steps once a 30 Hz game frame, 0.5 H x 1/30, from the cursor NM+448: a step within
+                    // 1 m on every axis is not taken - `F-31695`'s dead band - so the port steps on the same frames)
+                    let mut step = glam::Vec2::ZERO;
+                    self.nav_stick_acc += dt;
+                    while self.nav_stick_acc >= 1.0 / 30.0 {
+                        self.nav_stick_acc -= 1.0 / 30.0;
+                        let s = stick * 0.5 * self.nav.eye.y / 30.0;
+                        let c = self.nav.cursor;
+                        self.nav.move_cursor(c + Vec3::new(s.x, 0.0, s.y));
+                        step += s;
+                    }
                     // (at the screen's edge the view goes along - approx.: the inner 80 %; the
                     // game's limits NM+572..584 hold runtime values not read)
                     if let Some(q) = self.nav.ndc(self.nav.cursor, aspect) {
@@ -15380,6 +15441,52 @@ fn pick_two(cand: &[(i32, f32, Vec3, Vec3, f32)]) -> (i32, f32, i32, f32) {
 fn quick_fix_yaw(rot: glam::Quat) -> f32 {
     let z = rot * Vec3::Z;
     z.x.atan2(z.z)
+}
+
+type TipCall = (String, String, String);
+
+/// The tip include's wait at the cap: every waiter whose 100 ms sleep has ended checks Sidekick_GetTypeCount(3) > 4
+/// (`F-64477`: the calls waiting in `tips` and the one on screen, `shown`) in the order they wake, the same frame's in
+/// their start order; under the cap it appends its call, else it sleeps another 100 ms.
+fn tip_waiters_wake(waiters: &mut Vec<(f32, TipCall)>, tips: &mut std::collections::VecDeque<TipCall>, shown: bool, clock: f32) {
+    waiters.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut i = 0;
+    while i < waiters.len() {
+        if waiters[i].0 > clock {
+            i += 1;
+        } else if tips.len() + shown as usize > 4 {
+            while waiters[i].0 <= clock {
+                waiters[i].0 += 0.1;
+            }
+            i += 1;
+        } else {
+            tips.push_back(waiters.remove(i).1);
+        }
+    }
+}
+
+#[test]
+fn tip_waiters_first_to_wake_goes_first() {
+    let call = |k: &str| (k.to_string(), String::new(), String::new());
+    // 4 calls waiting and one on screen; two scripts at the gate: "first" came at 0.03 (wakes 0.13, 0.23, 0.33 ...),
+    // "second" at 0.08 (wakes 0.18, 0.28 ...)
+    let run = |end: f32| {
+        let mut tips: std::collections::VecDeque<TipCall> = (0..4).map(|i| call(&format!("q{i}"))).collect();
+        let mut w = vec![(0.13, call("first")), (0.18, call("second"))];
+        tip_waiters_wake(&mut w, &mut tips, true, end - 0.01);
+        assert_eq!((w.len(), tips.len()), (2, 4));
+        // the call on screen ends: the next to wake takes the one place, the other sleeps on
+        let mut t = end;
+        while tips.len() == 4 {
+            tip_waiters_wake(&mut w, &mut tips, false, t);
+            t += 0.01;
+        }
+        tip_waiters_wake(&mut w, &mut tips, false, t + 0.3);
+        assert_eq!((tips.len(), w.len()), (5, 1));
+        tips.back().unwrap().0.clone()
+    };
+    assert_eq!(run(0.20), "first");
+    assert_eq!(run(0.24), "second");
 }
 
 /// The slot keeping of F-99357 / F-56246: the best goes to the first slot and the second to the other,

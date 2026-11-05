@@ -131,6 +131,12 @@ fn ncross(p: Vec3, q: Vec3) -> Vec3 {
     Vec3::new(-(p.y * q.z - p.z * q.y), -(p.z * q.x - p.x * q.z), -(p.x * q.y - p.y * q.x))
 }
 
+/// A rail's pose from its slot 8 point and derivative: the point moved by the offset, c = -unit derivative (`Rails::pose`).
+pub fn pose_at(p: Vec3, d: Vec3, off: Vec3) -> (Vec3, Vec3) {
+    let (t, _) = normalize_or(d, NORM_EPS, Vec3::Z);
+    (offset_point(off, p, t), Vec3::ZERO - t)
+}
+
 /// F-14929: `p` moved by the brain's offset (+1632) in the frame of a rail running along `dir`: c = -dir normalised
 /// (fallback (0, 0, -1)), up = +y, a = up x c; each coordinate (p + oz c) + (oy up + ox a), the vector unit's sums.
 pub fn offset_point(off: Vec3, p: Vec3, dir: Vec3) -> Vec3 {
@@ -375,8 +381,7 @@ impl<'a> Rails<'a> {
     pub fn pose(&self, rp: &RailPos, off: Vec3) -> Option<(Vec3, Vec3)> {
         let lane = rp.lane?;
         let (p, d) = self.nav.curves[lane as usize].eval_pair(rp.t);
-        let (t, _) = normalize_or(d, NORM_EPS, Vec3::Z);
-        Some((offset_point(off, p, t), Vec3::ZERO - t))
+        Some(pose_at(p, d, off))
     }
 
     /// F-97236: the car placed on the nearest rail to `point` (any heading, radii 5 .. 80 m): the rail point moved by

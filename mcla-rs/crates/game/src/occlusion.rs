@@ -234,6 +234,137 @@ impl Owner {
     }
 }
 
+/// The occlusion factor of each physics material: +226 of its audio material object (MATERIALS_*, the .mtl's
+/// `AudioGameObject`; MATERIALS_DEFAULT without one), as F-87712 reads it through the hit's material; 0 when the
+/// object is missing.
+pub(crate) fn material_factors(data_dir: &std::path::Path, game: &mcla_formats::audcfg::Dat) -> std::collections::HashMap<u8, f32> {
+    use crate::physics::collision::Surface;
+    use mcla_formats::hash::joaat;
+    let dir = data_dir.join("tune").join("physics").join("materials");
+    let mut m = std::collections::HashMap::new();
+    for s in Surface::ALL {
+        let name = s.material();
+        let txt = [dir.join(format!("0x{:08x}", joaat(&format!("{name}.mtl")))), dir.join(format!("0x{:08x}", joaat(name)))]
+            .iter()
+            .find_map(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_default();
+        let obj = txt.lines().find_map(|l| l.trim().strip_prefix("AudioGameObject:").map(|v| v.trim().to_string())).unwrap_or_else(|| "MATERIALS_DEFAULT".into());
+        let f = game.get_name(&obj).and_then(|o| o.get(226..230)).map_or(0.0, |b| f32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+        m.insert(s as u8, f);
+    }
+    m
+}
+
+/// The world probe F-93873 on the port's city collision: the level's line probe with the city bound and city_roads
+/// only (include 0x800, fixed objects), one-sided faces, at most `max` records nearest the start; each hit's factor
+/// is its material's.
+pub(crate) struct CityProbe<'a> {
+    pub world: &'a crate::physics::collision::WorldCollider,
+    pub factors: &'a std::collections::HashMap<u8, f32>,
+}
+
+impl Probe for CityProbe<'_> {
+    fn probe(&mut self, from: [f32; 4], to: [f32; 4], _flags: u32, max: usize) -> Vec<Hit> {
+        let o = glam::Vec3::new(from[0], from[1], from[2]);
+        let d = glam::Vec3::new(to[0], to[1], to[2]) - o;
+        self.world
+            .probe_front_all(o, d, 1.0, max)
+            .into_iter()
+            .map(|h| Hit { pos: h.point.to_array(), factor: self.factors.get(&(h.surface as u8)).copied().unwrap_or(0.0) })
+            .collect()
+    }
+}
+
+/// An occluder as F-49147 builds it: its owner's group and position, the outputs (+4 the volume, +8 the cutoff in Hz),
+/// the frame of its audio entity (+16: the entity's matrix, None once the entity is gone) and +119 "not updated yet".
+/// A new one starts fully occluded (F-23776 into the outputs).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Occluder {
+    pub owner: Owner,
+    pub out: [f32; 2],
+    pub frame: Option<[[f32; 4]; 4]>,
+    pub fresh: bool,
+}
+
+impl Occluder {
+    pub fn new(t: &Tune, pos: [f32; 4], frame: Option<[[f32; 4]; 4]>) -> Occluder {
+        let (group, out) = Group::init(t);
+        Occluder { owner: Owner { group, pos, ..Default::default() }, out, frame, fresh: true }
+    }
+
+    /// F-21927: the listener within `r` (GLOBAL_OCCLUSION +10) of the position (+80 when it is the world's, else the
+    /// frame's origin; the offset is not added here); out of range the group starts over fully occluded.
+    pub fn in_range(&mut self, t: &Tune, l: [f32; 4], r: f32) -> bool {
+        let e = if self.owner.absolute { self.owner.pos } else { self.frame.map_or([0.0; 4], |f| f[3]) };
+        let (dx, dy, dz) = (e[0] - l[0], e[1] - l[1], e[2] - l[2]);
+        let d = fma32(dx, dx, fma32(dz, dz, dy * dy));
+        if d < r * r {
+            return true;
+        }
+        let (group, out) = Group::init(t);
+        self.owner.group = group;
+        self.out = out;
+        false
+    }
+
+    /// F-60633: the outputs step toward the group's targets by the frame's `dt`, once it has a frame and an update.
+    pub fn tick(&mut self, t: &Tune, dt: f32) {
+        if self.frame.is_some() && !self.fresh {
+            self.out = self.owner.group.smooth(t, dt);
+        }
+    }
+
+    /// F-65914: `local` into +117; with `now` and in range an update and the outputs straight to the targets; no longer
+    /// "not updated yet" in every case.
+    pub fn refresh(&mut self, t: &Tune, now: bool, local: bool, l: [f32; 4], r: f32, world: &mut impl Probe) {
+        self.owner.local = local;
+        if now && self.in_range(t, l, r) {
+            self.update(t, l, world);
+            self.out = self.owner.group.latch();
+        }
+        self.fresh = false;
+    }
+
+    fn update(&mut self, t: &Tune, l: [f32; 4], world: &mut impl Probe) {
+        let frame = self.frame.unwrap_or([[0.0; 4]; 4]);
+        self.owner.update(t, &frame, l, world);
+    }
+}
+
+/// The occlusion manager's update F-96474: from the index it stopped at, round the table of occluders (wrapping at its
+/// length), updating each one that is set, has had its first update and passes the radius test, at most 4 a frame;
+/// it stops once 4 are done or it is back where it started.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Mgr {
+    pub idx: usize,
+}
+
+impl Mgr {
+    pub fn update(&mut self, t: &Tune, list: &mut [Option<Occluder>], l: [f32; 4], r: f32, world: &mut impl Probe) {
+        if list.is_empty() {
+            return;
+        }
+        let mut i = self.idx;
+        let mut budget = 4;
+        loop {
+            if let Some(o) = list.get_mut(i).and_then(|o| o.as_mut()) {
+                if !o.fresh && o.in_range(t, l, r) {
+                    o.update(t, l, world);
+                    budget -= 1;
+                }
+            }
+            i += 1;
+            if i == list.len() {
+                i = 0;
+            }
+            if budget == 0 || i == self.idx {
+                break;
+            }
+        }
+        self.idx = i;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,14 +373,27 @@ mod tests {
     /// tools/occlusion_reference.py ran the original's code offline: the pow F-21955 on 6,000 inputs, F-33490 on 2,000
     /// random Gauss curves, and on 150 tunes (GLOBAL_OCCLUSION or random) the reader then 20 random group ops each
     /// (init, set, smoothing, latch, the owner's update with random frames, positions and probe hits); every result,
-    /// field, output and probe call as the original's
+    /// field, output and probe call as the original's; and the wiring on 200 cases of up to 6 occluders built by the
+    /// original's ctor F-49147 (GLOBAL_OCCLUSION as on the disc), 14 random ops each: the manager F-96474 from a given
+    /// index, the immediate update F-65914, the tick F-60633 and moves of the frames; every probe call, the manager's
+    /// index and each occluder's outputs, flag and group as the original's
     #[test]
     fn occlusion_matches_the_original() {
         let text = include_str!("testdata/occlusion_ref.txt");
         let hexw = |t: &str| u32::from_str_radix(&t[1..], 16).unwrap();
         let unhex = |s: &str| (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()).collect::<Vec<u8>>();
         let (mut curves, mut factors) = (Vec::new(), [0f32; 8]);
-        let (mut tune, mut owner, mut bad, mut n) = (None::<Tune>, Owner::default(), Vec::new(), [0usize; 4]);
+        let (mut tune, mut owner, mut bad, mut n) = (None::<Tune>, Owner::default(), Vec::new(), [0usize; 6]);
+        let (mut wtune, mut radius, mut occ) = (None::<Tune>, 0f32, Vec::<Option<Occluder>>::new());
+        let ostate = |s: &mut String, occ: &[Option<Occluder>]| {
+            for o in occ.iter().flatten() {
+                write!(s, " | o{:08x} o{:08x} u{}", o.out[0].to_bits(), o.out[1].to_bits(), o.fresh as u8).unwrap();
+                let g = &o.owner.group;
+                for v in [g.amount, g.vol, g.hz, g.hz_log, g.vol_to, g.hz_to] {
+                    write!(s, " g{:08x}", v.to_bits()).unwrap();
+                }
+            }
+        };
         let grp = |s: &mut String, g: &Group| {
             for v in [g.amount, g.vol, g.hz, g.hz_log, g.vol_to, g.hz_to].iter().zip("avhlwz".chars()) {
                 write!(s, " {}{:08x}", v.1, v.0.to_bits()).unwrap();
@@ -278,6 +422,95 @@ mod tests {
             match t[0] {
                 "C" => curves = vec![(hexw(t[1]), Curve::parse(&unhex(&t[2][1..]))), (hexw(t[3]), Curve::parse(&unhex(&t[4][1..])))],
                 "F" => factors = std::array::from_fn(|k| f32::from_bits(hexw(t[1 + k]))),
+                "B" => {
+                    let o = unhex(&t[1][1..]);
+                    radius = f32::from_bits(u32::from_be_bytes([o[10], o[11], o[12], o[13]]));
+                    wtune = Tune::read(&o, |h| curves.iter().find(|c| c.0 == h).map(|c| c.1.clone()));
+                }
+                "R" => {
+                    let tn = wtune.as_ref().unwrap();
+                    let k = t[1][1..].parse::<usize>().unwrap();
+                    occ.clear();
+                    s = t[..2 + 9 * k].join(" ");
+                    for j in 0..k {
+                        let w = |i: usize| t[2 + 9 * j + i];
+                        let f = |i: usize| f32::from_bits(hexw(w(i)));
+                        let mut frame = [[0f32; 4]; 4];
+                        frame[3] = [f(6), f(7), f(8), 1.0];
+                        let gone = w(1) != "B0";
+                        let mut o = Occluder::new(tn, [f(2), f(3), f(4), f(5)], (!gone).then_some(frame));
+                        o.owner.absolute = w(0) != "A0";
+                        occ.push(Some(o));
+                    }
+                    ostate(&mut s, &occ);
+                    n[4] += 1;
+                }
+                "O" => {
+                    let tn = wtune.as_ref().unwrap();
+                    let m = t[1][1..].parse::<u32>().unwrap();
+                    let na = [2, 4, 3, 4][m as usize];
+                    let x = |i: usize| hexw(t[1 + i]);
+                    let l = [f32::from_bits(x(na)), f32::from_bits(x(na + 1)), f32::from_bits(x(na + 2)), 1.0];
+                    // the probe hits the original's run used, in call order (after its count)
+                    let c_at = t.iter().position(|v| v.starts_with('c')).unwrap();
+                    let mut lists = Vec::new();
+                    let mut i = c_at + 1;
+                    while i < t.len() && t[i].starts_with('h') {
+                        let cnt = hexw(t[i]) as usize;
+                        let g = |k: usize| f32::from_bits(hexw(t[i + 1 + k]));
+                        lists.push((0..cnt).map(|k| Hit { pos: [g(4 * k), g(4 * k + 1), g(4 * k + 2)], factor: factors[(hexw(t[i + 4 + 4 * k]) & 7) as usize] }).collect::<Vec<_>>());
+                        i += 1 + 4 * cnt;
+                    }
+                    struct Seq<'a> {
+                        lists: Vec<Vec<Hit>>,
+                        calls: &'a mut String,
+                        k: usize,
+                    }
+                    impl Probe for Seq<'_> {
+                        fn probe(&mut self, from: [f32; 4], to: [f32; 4], flags: u32, max: usize) -> Vec<Hit> {
+                            *self.calls += " Q";
+                            for v in from.iter().chain(to.iter()) {
+                                write!(self.calls, " p{:08x}", v.to_bits()).unwrap();
+                            }
+                            write!(self.calls, " g{flags} n{max}").unwrap();
+                            self.k += 1;
+                            self.lists.get(self.k - 1).cloned().unwrap_or_default()
+                        }
+                    }
+                    s = t[..na + 4].join(" ");
+                    let mut world = Seq { lists, calls: &mut s, k: 0 };
+                    match m {
+                        0 => {
+                            let mut mgr = Mgr { idx: x(1) as usize };
+                            mgr.update(tn, &mut occ, l, radius, &mut world);
+                            let k = world.k;
+                            write!(s, " i{} c{k}", mgr.idx).unwrap();
+                        }
+                        1 => {
+                            occ[x(1) as usize].as_mut().unwrap().refresh(tn, x(2) != 0, x(3) != 0, l, radius, &mut world);
+                            let k = world.k;
+                            write!(s, " c{k}").unwrap();
+                        }
+                        2 => {
+                            occ[x(1) as usize].as_mut().unwrap().tick(tn, f32::from_bits(x(2)));
+                            s += " c0";
+                        }
+                        _ => {
+                            for o in occ.iter_mut().flatten() {
+                                if let Some(f) = o.frame.as_mut() {
+                                    f[3] = [f32::from_bits(x(1)), f32::from_bits(x(2)), f32::from_bits(x(3)), 1.0];
+                                }
+                            }
+                            s += " c0";
+                        }
+                    }
+                    for v in &t[c_at + 1..i] {
+                        s += " ";
+                        s += v;
+                    }
+                    ostate(&mut s, &occ);
+                    n[5] += 1;
+                }
                 "P" => {
                     let w = |k: usize| f64::from_bits(u64::from_str_radix(&t[k][1..], 16).unwrap());
                     n[0] += 1;
@@ -369,7 +602,7 @@ mod tests {
                 bad.push(format!("want {line}\n got {s}"));
             }
         }
-        assert_eq!(n, [6000, 2000, 150, 3000], "the reference's counts");
+        assert_eq!(n, [6000, 2000, 150, 3000, 200, 2800], "the reference's counts");
         assert!(bad.is_empty(), "{} lines differ, first:\n{}", bad.len(), bad[..bad.len().min(6)].join("\n"));
     }
 }

@@ -2138,6 +2138,18 @@ fn norm_or(v: [f32; 3], eps: f32, fallback: [f32; 3]) -> [f32; 3] {
 /// L = FL + 0.7071 SL, R = FR + 0.7071 SR; the voice's +176 factor, unset, is 1). Same operations in the same order
 /// as the original (verified bit for bit by `pan_gains_is_the_originals`).
 pub fn pan_gains(d: Vec3) -> (f32, f32) {
+    pan_gains_by(d, 1.0)
+}
+
+/// The voice's low-pass word with its occlusion pair's cutoff (F-56973 with +176 set): min(lpf, the cutoff truncated
+/// toward zero, low 32 bits), unsigned.
+pub fn occluded_lpf(lpf: u32, hz: f32) -> u32 {
+    lpf.min((hz as i64) as u32)
+}
+
+/// [`pan_gains`] with the voice's +176 factor `f` (the occlusion volume, F-56973): every speaker's gain times `f`
+/// before the stereo fold (verified bit for bit by `pan_occluded_is_the_originals`).
+pub fn pan_gains_by(d: Vec3, f: f32) -> (f32, f32) {
     let kn = -0.707_106_77_f32;
     let kp = 0.707_106_77_f32;
     let v = norm_or([d.x, 0.0, d.z], 9.999_999_7e-6, [1.0, 0.0, 0.0]);
@@ -2155,7 +2167,7 @@ pub fn pan_gains(d: Vec3) -> (f32, f32) {
     let fr = fmadds(m(b), h, e);
     let sl = fmadds(m(c), h, e);
     let sr = fmadds(m(dd), h, e);
-    (fmadds(sl * 1.0, kp, fl * 1.0), fmadds(sr * 1.0, kp, fr * 1.0))
+    (fmadds(sl * f, kp, fl * f), fmadds(sr * f, kp, fr * f))
 }
 
 struct Leaf {
@@ -2733,6 +2745,26 @@ mod tests {
             }
         }
         assert_eq!(bad, 0, "{first:?}");
+    }
+
+    /// F-56973 with the occlusion pair at +176 and the low-pass word +180, against the original's own code on 4000
+    /// cases (work/audio2/verify/ref7.py, vector shim): both gains and the word
+    #[test]
+    fn pan_occluded_is_the_originals() {
+        let h = |x: &str| u32::from_str_radix(x.trim_start_matches('x'), 16).unwrap();
+        let mut bad = Vec::new();
+        for line in include_str!("pan_occ_cases.txt").lines() {
+            let (i, o) = line.split_once(" => ").unwrap();
+            let v: Vec<u32> = i.split(' ').map(h).collect();
+            let w: Vec<u32> = o.split(' ').map(h).collect();
+            let d = Vec3::new(f32::from_bits(v[0]), f32::from_bits(v[1]), f32::from_bits(v[2]));
+            let (f, lpf) = if v[6] != 0 { (f32::from_bits(v[3]), occluded_lpf(v[5], f32::from_bits(v[4]))) } else { (1.0, v[5]) };
+            let (l, r) = pan_gains_by(d, f);
+            if [l.to_bits(), r.to_bits(), lpf] != [w[0], w[1], w[2]] {
+                bad.push(line.to_string());
+            }
+        }
+        assert!(bad.is_empty(), "{} differ, first: {:?}", bad.len(), bad.first());
     }
 
     /// F-31923 (release step) against the original's own code on 4000 cases (work/audio2/verify/ref4.py, vector shim)

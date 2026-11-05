@@ -358,6 +358,85 @@ fn pullover_machine(tac: &mut CopTac, s: &PullSees, dt: f32) -> f32 {
     factor
 }
 
+/// What the brain states' per-tick overrides read: the target moving (F-43975), ahead of the cop (F-99390), going the same
+/// way (F-80249), the brain's race flag (F-42951), the cop's and the target's speed (F-81535, F-41260), the squared
+/// distance cop - target (dy*dy, then dz, dx fused) and fSafeDist.
+#[derive(Clone, Copy, Debug, Default)]
+struct BrainSees {
+    moving: bool,
+    ahead: bool,
+    same_dir: bool,
+    ed78: bool,
+    cspeed: f32,
+    tspeed: f32,
+    d2: f32,
+    safe: f32,
+}
+
+/// The Stop command's parameters on the brain: +688 handbrake mode, +692 the amount, +696 the throttle (taken when >= 0),
+/// +700 the steer (-1000: none).
+#[derive(Clone, Copy, Debug)]
+struct StopParams {
+    hb: bool,
+    amount: f32,
+    throttle: f32,
+    steer: f32,
+}
+
+/// The overrides the cop's brain state puts over the driver's input each tick (vt slot 15), by the command it is in (+568:
+/// 1 Stopping, 4 Pursuit, 5 AlongSide; the others none); `side_d` is the AlongSide's distance (+712). Returns throttle
+/// (+744), brake (+748), handbrake (+752), steer (+756), as the setters F-50239 / F-39048 / F-10965 clamp them to 0..1
+/// (steer -1..1); -1 (steer -1000) is no override. Pursuit (F-68176): brake 1 when the target stands within fSafeDist, or
+/// it is ahead going the same way within 20 m and the cop is faster. AlongSide (F-33668): moving - the same way, not ahead,
+/// the cop faster and (no race flag or beyond 1.5 x the side distance): brake 1; standing - within the side distance + 1:
+/// brake 1. Stopping (F-87827, its tick F-10174 while the brain has a tactic): handbrake mode - the amount as handbrake,
+/// the throttle when >= 0; else the amount as brake; the steer unless -1000.
+fn brain_override(cmd: u8, side_d: f32, stop: &StopParams, s: &BrainSees) -> [f32; 4] {
+    // (fsel: NaN and below 0 -> 0, above 1 -> 1; the steer -1..1)
+    let c01 = |v: f32| {
+        let a = if v >= 0.0 { v } else { 0.0 };
+        if a - 1.0 >= 0.0 { 1.0 } else { a }
+    };
+    let cs = |v: f32| {
+        let a = if v - -1.0 >= 0.0 { v } else { -1.0 };
+        if a - 1.0 >= 0.0 { 1.0 } else { a }
+    };
+    let mut o = [-1.0, -1.0, -1.0, -1000.0];
+    match cmd {
+        4 => {
+            if (!s.moving && s.d2 < s.safe * s.safe) || (s.ahead && s.same_dir && s.d2 < 400.0 && s.cspeed > s.tspeed) {
+                o[1] = c01(1.0);
+            }
+        }
+        5 => {
+            let brake = if s.moving {
+                s.same_dir && !s.ahead && s.cspeed > s.tspeed && (!s.ed78 || { let r = side_d * 1.5; s.d2 > r * r })
+            } else {
+                let r = side_d + 1.0;
+                s.d2 < r * r
+            };
+            if brake {
+                o[1] = c01(1.0);
+            }
+        }
+        1 => {
+            if stop.hb {
+                o[2] = c01(stop.amount);
+                if stop.throttle >= 0.0 {
+                    o[0] = c01(stop.throttle);
+                }
+            } else {
+                o[1] = c01(stop.amount);
+            }
+            if stop.steer != -1000.0 {
+                o[3] = cs(stop.steer);
+            }
+        }
+        _ => {}
+    }
+    o
+}
+
 /// The searching cop's brain state 7, STATE_SEARCH (enter F-57507, tick F-15801; docs/reference/hookmen/search_and_connections.md 2):
 /// up to 10 points with the road or junction each lies on, driven by the racers' brain.
 #[derive(Clone, Debug, Default)]
@@ -813,10 +892,11 @@ struct Dispatch {
 pub struct CopZone {
     pub idx: usize,
     pub lap: usize,
-    /// 0 waiting for its lap, 1 armed, 2 set off
+    /// 0 waiting for its lap, 1 armed, 2 set off (5.5 s), 3 the radio delay (fCopZoneRdoDelayTime)
     pub state: u8,
     pub timer: f32,
-    /// the player set it off
+    /// the target (+200): its car index, and whether it is the player
+    pub target: Option<usize>,
     pub player: bool,
     /// a cruiser waits there (the port's: where the original's unit comes from was not read)
     pub stationed: bool,
@@ -1560,23 +1640,32 @@ impl Police {
             let idx = (self.rand() * zones as f32) as usize % zones;
             let lap = if laps > 1 { (self.rand() * laps as f32) as usize % laps } else { 0 };
             log::info!("police: cop zone {} enabled on lap {}", idx, lap);
-            CopZone { idx, lap, state: if lap == 0 { 1 } else { 0 }, timer: 0.0, player: false, stationed: false }
+            CopZone { idx, lap, state: if lap == 0 { 1 } else { 0 }, timer: 0.0, target: None, player: false, stationed: false }
         });
         if zones == 0 {
             log::info!("police: no cops in this race");
         }
     }
 
-    /// The zone machine of a race (F-71212), per frame: `lap` is the race's current lap, `inside`
-    /// whether a racer is in the zone (and whether it is the player). State 1 (armed): the first
-    /// racer in the zone sets it off (state 2, 5.5 s). State 2: when the time is up the pursuit
-    /// starts. (approx./not ported: the pursuit on an AI racer - the original's target is the racer
-    /// that set it off, or with iRaceTgtAiProbPrcnt the nearest AI racer; the port's police chase
-    /// only the player, so a zone set off for an AI racer starts nothing; the earlier start when the
-    /// target comes in range (F-12032) and the state 3 wait after it)
-    pub fn zone_step(&mut self, lap: usize, inside: Option<bool>, dt: f32) -> Option<&'static str> {
+    /// The zone machine of a race (F-71212), per frame: `lap` is the race's current lap, `racers` the race's racers in
+    /// order (car index, the player, position, damaged out), `inside` the first of them within the zone's radius.
+    /// State 1 (armed): that racer sets it off - state 2, 5.5 s, and the target (+200): the scripts' race chase target is
+    /// unset (SetRaceChaseTarget(0, 0), type 0), so with iRaceTgtAiProbPrcnt % the AI racer nearest to it (the first of
+    /// the AI list, then each nearer one; it may be itself) when within fRaceTgtAiDist (or that is negative), else the
+    /// racer itself. State 2: the target damaged out (F-12032) - the chase starts at once (state 0); else the 5.5 s down,
+    /// then state 3 for fCopZoneRdoDelayTime; state 3: the time down, and at < 0 or the target damaged out the chase
+    /// starts. (The chase is the Arrow Trap on the target, F-33550; the port's police chase only the player: a zone
+    /// whose target is an AI racer starts nothing - open. The roll draws the port's own random numbers, not the
+    /// game's multiply-with-carry.)
+    pub fn zone_step(&mut self, lap: usize, racers: &[(usize, bool, Vec3, bool)], inside: Option<usize>, dt: f32) -> Option<&'static str> {
+        let prob = self.tun.get("iRaceTgtAiProbPrcnt", 30.0) * 0.01;
+        let ai_r = self.tun.get("fRaceTgtAiDist", 150.0);
+        let delay = self.tun.get("fCopZoneRdoDelayTime", 2.0);
+        let roll = if matches!(self.zone.as_ref(), Some(z) if z.state == 1) && inside.is_some() { self.rand() } else { 1.0 };
         let Some(z) = self.zone.as_mut() else { return None };
         let mut say = None;
+        let wrecked = |z: &CopZone| z.target.and_then(|t| racers.iter().find(|r| r.0 == t)).map_or(false, |r| r.3);
+        let mut start = false;
         match z.state {
             0 if lap == z.lap => {
                 z.state = 1;
@@ -1585,34 +1674,71 @@ impl Police {
             // (F-71212: no racer sets it off while the player drives a police car)
             1 if self.player_police => {}
             1 => {
-                if let Some(player) = inside {
+                if let Some(k) = inside {
                     z.state = 2;
                     z.timer = 5.5;
-                    z.player = player;
-                    log::info!("police: cop zone {} set off by {}", z.idx, if player { "the player" } else { "an AI racer" });
                     say = Some("PLAYER_COPS_BEGIN_PURSUIT");
+                    let (_, _, sp, _) = racers[k];
+                    let mut tgt = k;
+                    let ais: Vec<usize> = (0..racers.len()).filter(|&i| !racers[i].1).collect();
+                    if !ais.is_empty() && roll < prob {
+                        let d2 = |i: usize| {
+                            let q = racers[i].2;
+                            let (dx, dy, dz) = (sp.x - q.x, sp.y - q.y, sp.z - q.z);
+                            fmas(dx, dx, fmas(dz, dz, dy * dy))
+                        };
+                        let (mut best, mut bd) = (ais[0], d2(ais[0]));
+                        for &i in &ais[1..] {
+                            let d = d2(i);
+                            if d < bd {
+                                (best, bd) = (i, d);
+                            }
+                        }
+                        if ai_r < 0.0 || bd < ai_r * ai_r {
+                            tgt = best;
+                        }
+                    }
+                    z.target = Some(racers[tgt].0);
+                    z.player = racers[tgt].1;
+                    log::info!("police: cop zone {} set off by {}, target {}", z.idx, if racers[k].1 { "the player" } else { "an AI racer" },
+                               if z.player { "the player" } else { "an AI racer" });
                 }
             }
             2 => {
-                z.timer -= dt;
-                if z.timer < 0.0 {
-                    z.state = 0;
-                    z.lap = usize::MAX;
-                    if z.player && matches!(self.heat, Heat::None | Heat::PullOver) {
-                        self.zone_go = true;
+                if z.target.is_some() && wrecked(z) {
+                    start = true;
+                } else {
+                    z.timer -= dt;
+                    if z.timer < 0.0 {
+                        z.state = 3;
+                        z.timer = delay;
                     }
                 }
             }
+            3 => {
+                z.timer -= dt;
+                if z.target.is_some() && (z.timer < 0.0 || wrecked(z)) {
+                    start = true;
+                }
+            }
             _ => {}
+        }
+        if start {
+            z.state = 0;
+            z.lap = usize::MAX;
+            if z.player && matches!(self.heat, Heat::None | Heat::PullOver) {
+                self.zone_go = true;
+            } else if !z.player {
+                log::info!("police: cop zone {}: the chase of an AI racer is not ported", z.idx);
+            }
         }
         say
     }
 
     /// PoliceManager_IsRacerPursued's zone clause (F-86429): the zone's state +196 is 2 or 3
-    /// and its target +200 is the player. (The port has no state 3 and sets the target to the racer
-    /// that set the zone off: `zone_step`.)
+    /// and its target +200 is the player.
     pub fn zone_on_player(&self) -> bool {
-        self.zone.as_ref().map_or(false, |z| z.state == 2 && z.player)
+        self.zone.as_ref().map_or(false, |z| matches!(z.state, 2 | 3) && z.player)
     }
 
     /// Test helper: start a pursuit right now with a cruiser close by.
@@ -3116,7 +3242,7 @@ impl Police {
                 let sent = squad_formation(&mut sq.hyst, &mut slots, arrow, &mut brains, &pos, &route, ppos, pright, -pfwd, along, dt, enter);
                 for k in (0..members.len()).filter(|&k| brains[k] != was[k]) {
                     let st = if brains[k].0 == 5 { Tac::AlongSide } else { Tac::CatchUp };
-                    *tacs.entry(members[k]).or_default() = CopTac { st, side: brains[k].1, ..Default::default() };
+                    *tacs.entry(members[k]).or_default() = CopTac { st, side: brains[k].1, cmd: brains[k].0, ..Default::default() };
                 }
                 sq.slots = slots.map(|k| k.map(|k| members[k]));
                 sent
@@ -3190,7 +3316,7 @@ impl Police {
                 for c in vehicles.cars.iter_mut().filter(|c| pursuer(c) && c.state.pos.distance(ppos) < safe) {
                     let tc = tacs.entry(c.uid).or_default();
                     if tc.st != Tac::Halt {
-                        *tc = CopTac { st: Tac::Halt, ..Default::default() };
+                        *tc = CopTac { st: Tac::Halt, cmd: 1, ..Default::default() };
                     }
                     if closing(c, 0.0) {
                         c.state.vel *= 0.5;
@@ -3356,6 +3482,8 @@ impl Police {
                     if r { true } else if l { false } else { !on_right }
                 };
                 let st = tac.st;
+                // (Halt's steer away as its tick writes it, F-84018: from the update after it was taken)
+                let halt_steer0 = if st == Tac::Halt { tac.halt_steer } else { 0.0 };
                 if searching || squad {
                     // (no tactic state changes during the Search; a squad's commands come from its FSM)
                     tac.t += dt;
@@ -3557,17 +3685,27 @@ impl Police {
                 ai.chase_exact = true;
                 ai.target_speed = 85.0;
                 // ---- the brain's overrides (F-88118 puts them over the driver's input) ----
-                let away = Some(if on_right { -1.0 } else { 1.0 });
-                ai.ovr = match (tac.st, pull) {
-                    (Tac::CatchUp, false) if (!t_moving && d < safe) || (ahead && same_dir && d < 20.0 && cspeed > speed) => Some(crate::ai::Overrides { brake: Some(1.0), ..Default::default() }),
-                    (Tac::AlongSide | Tac::Avoid, _) if (!t_moving && d < along + 1.0) || (t_moving && same_dir && !ahead && cspeed > speed && (!ed78 || d > 1.5 * along)) => Some(crate::ai::Overrides { brake: Some(1.0), ..Default::default() }),
-                    // Block (F-56982): handbrake, no throttle, full lock towards the target
-                    (Tac::Block, _) => Some(crate::ai::Overrides { handbrake: Some(true), throttle: Some(0.0), steer: Some(tac.block_steer), brake: None }),
-                    // Halt (F-29519): stopped beside the target; steering away while closing in
-                    // (Halt's steer away is taken once the cop closes in and kept, F-84018)
-                    (Tac::Halt, false) => Some(crate::ai::Overrides { brake: (d < safe).then_some(1.0), steer: (tac.halt_steer != 0.0).then_some(tac.halt_steer), ..Default::default() }),
-                    (Tac::Halt, true) => Some(crate::ai::Overrides { brake: Some(1.0), ..Default::default() }),
-                    _ => None,
+                ai.ovr = {
+                    // the brain state's overrides by its command (brain_override; the Search, 7, has none; a squad's cops get theirs
+                    // from the formation, AlongSide 5 / Pursue 4, and its Halt, Stop 1)
+                    let stop = if tac.hb {
+                        StopParams { hb: true, amount: 1.0, throttle: 0.0, steer: tac.block_steer }
+                    } else {
+                        StopParams { hb: false, amount: 1.0, throttle: -1.0, steer: -1000.0 }
+                    };
+                    let (dx, dy, dz) = (ppos.x - cpos.x, ppos.y - cpos.y, ppos.z - cpos.z);
+                    let bs = BrainSees { moving: t_moving, ahead, same_dir, ed78, cspeed, tspeed: speed, d2: fmas(dx, dx, fmas(dz, dz, dy * dy)), safe };
+                    let o = brain_override(if searching { 7 } else { tac.cmd }, along, &stop, &bs);
+                    let mut v = crate::ai::Overrides {
+                        throttle: (o[0] != -1.0).then_some(o[0]),
+                        brake: (o[1] != -1.0).then_some(o[1]),
+                        handbrake: (o[2] != -1.0).then_some(o[2] > 0.0),
+                        steer: (o[3] != -1000.0).then_some(o[3]),
+                    };
+                    if !pull && tac.st == Tac::Halt && halt_steer0 != 0.0 {
+                        v.steer = Some(halt_steer0);
+                    }
+                    (v.throttle.is_some() || v.brake.is_some() || v.handbrake.is_some() || v.steer.is_some()).then_some(v)
                 };
                 // (the squad's swipes and head-on blocks go over the brain's input)
                 if let Some(o) = swipes.get(&c.uid) {
@@ -4132,6 +4270,49 @@ mod tests {
     /// (tools/pullover_fsm_reference.py) against `pullover_machine` on the same inputs: at every recorded update the state,
     /// the asked state, the state's time, AvoidCollision's timer / Halt's squared distance and growing time, the brain's
     /// command fields and the velocity factor equal.
+    #[test]
+    fn brain_override_matches_the_original() {
+        // the original's Pursuit / AlongSide / Stopping ticks run offline (tools/brain_override_reference.py)
+        let txt = include_str!("testdata/brain_override_ref.txt");
+        let (mut n, mut bad) = (0, 0);
+        for line in txt.lines() {
+            let (inp, out) = line.split_once(" | ").unwrap();
+            let v: Vec<&str> = inp.split_whitespace().collect();
+            let i = |k: usize| v[k].parse::<i32>().unwrap();
+            let h = |k: usize| u32::from_str_radix(v[k], 16).unwrap();
+            let fl = h(0);
+            let q = |x: i32| x as f32 * 0.25;
+            let (cx, cy, cz) = (q(i(3)), q(i(4)), q(i(5)));
+            let (tx, ty, tz) = (q(i(3) + i(6)), q(i(4) + i(7)), q(i(5) + i(8)));
+            let (dx, dy, dz) = (tx - cx, ty - cy, tz - cz);
+            let s = BrainSees {
+                moving: fl & 1 != 0,
+                ahead: fl & 2 != 0,
+                same_dir: fl & 4 != 0,
+                ed78: fl & 8 != 0,
+                cspeed: q(i(1)),
+                tspeed: q(i(2)),
+                d2: fmas(dx, dx, fmas(dz, dz, dy * dy)),
+                safe: 30.0,
+            };
+            let stop = StopParams { hb: v[10] != "0", amount: f32::from_bits(h(11)), throttle: f32::from_bits(h(12)), steer: f32::from_bits(h(13)) };
+            let side = f32::from_bits(h(9));
+            let got: Vec<String> = [4u8, 5, 1]
+                .iter()
+                .map(|&c| brain_override(c, side, &stop, &s).iter().map(|f| format!("{:08x}", f.to_bits())).collect::<Vec<_>>().join(" "))
+                .collect();
+            n += 1;
+            if got.join(" | ") != out {
+                bad += 1;
+                if bad < 5 {
+                    eprintln!("{line}\n  port {}", got.join(" | "));
+                }
+            }
+        }
+        assert!(n > 3000, "{n}");
+        assert_eq!(bad, 0, "{bad} of {n} differ");
+    }
+
     #[test]
     fn pullover_machine_matches_the_original() {
         struct X(u32);
@@ -4832,6 +5013,44 @@ pub fn ticket_scene(car: &str, bike: bool) -> &'static str {
 #[cfg(test)]
 mod scene_tests {
     use super::*;
+
+    #[test]
+    fn the_cop_zone_waits_5_5_s_then_the_radio_delay() {
+        let dt = 1.0 / 30.0;
+        let racers = [(0usize, true, Vec3::ZERO, false), (1, false, Vec3::new(40.0, 0.0, 0.0), false), (2, false, Vec3::new(20.0, 0.0, 0.0), false)];
+        // never the AI (chance 0): the player is the target; 5.5 s, then fCopZoneRdoDelayTime 2 s
+        let mut p = Police::new();
+        p.tun.v.insert("iRaceTgtAiProbPrcnt".into(), 0.0);
+        p.pick_zone(1, 1);
+        p.zone_step(0, &racers, Some(0), dt);
+        assert_eq!(p.zone.as_ref().map(|z| (z.state, z.target, z.player)), Some((2, Some(0), true)));
+        let mut n = 0;
+        while !p.zone_go {
+            p.zone_step(0, &racers, None, dt);
+            n += 1;
+            assert!(p.zone_on_player() || p.zone_go);
+            assert!(n < 1000);
+        }
+        assert_eq!(n, 166 + 61, "{n}");
+        // always the AI (chance 100): the nearest AI racer within fRaceTgtAiDist; no chase of it in the port
+        let mut p = Police::new();
+        p.tun.v.insert("iRaceTgtAiProbPrcnt".into(), 100.0);
+        p.pick_zone(1, 1);
+        p.zone_step(0, &racers, Some(0), dt);
+        assert_eq!(p.zone.as_ref().map(|z| (z.target, z.player)), Some((Some(2), false)));
+        assert!(!p.zone_on_player());
+        // beyond fRaceTgtAiDist: the racer itself
+        let mut p = Police::new();
+        p.tun.v.insert("iRaceTgtAiProbPrcnt".into(), 100.0);
+        p.tun.v.insert("fRaceTgtAiDist".into(), 10.0);
+        p.pick_zone(1, 1);
+        p.zone_step(0, &racers, Some(0), dt);
+        assert_eq!(p.zone.as_ref().map(|z| z.target), Some(Some(0)));
+        // the target damaged out: the chase at once
+        let wrecked = [(0usize, true, Vec3::ZERO, true)];
+        p.zone_step(0, &wrecked, None, dt);
+        assert!(p.zone_go);
+    }
 
     #[test]
     fn a_tactic_start_puts_the_phone_away() {

@@ -202,15 +202,22 @@ impl Cruising {
         self.request = -1;
         match ghost.filter(|_| status == 0).and_then(|g| g.rail.map(|r| (g, r))) {
             Some((g, (rail, t))) => {
-                self.ghost = g.id;
                 let (p, tan) = env.rail_pose(rail, t);
-                self.rail_pt = p;
-                self.follow.way = tan;
-                self.state = 5;
-                self.follow.speed = g.speed;
+                self.attach_at(g, p, tan);
             }
             None => self.state = 4,
         }
+    }
+
+    /// The attach onto a made ghost with its rail's point and tangent there (a lane's, or the run-time rail of a route
+    /// lane change, F-32118, which is a rail object to the original's test [ghost+452]+188 as well).
+    pub fn attach_at(&mut self, g: &Ghost, p: Vec3, tan: Vec3) {
+        self.request = -1;
+        self.ghost = g.id;
+        self.rail_pt = p;
+        self.follow.way = tan;
+        self.state = 5;
+        self.follow.speed = g.speed;
     }
 
     /// The ghost's release (vt 15, F-95102): `reason` 1 at its route's end, 5 let go by the brain; `rail` where it
@@ -302,7 +309,7 @@ impl Default for Follow {
 }
 
 /// F-64718 in state 5 with a physical car: follow the ghost at `p` going `fwd` (its matrix's -c, or the rail's
-/// tangent) at `s` m/s; `k` the frame's time (the image's word 1/60). None: the ghost is more than 10 m away in XZ
+/// tangent) at `s` m/s; `k` the frame's time (1/30 in the running game; the image's word is 1/60). None: the ghost is more than 10 m away in XZ
 /// (F-12584 DriveToNearestRail takes over; the way and speed are still kept, as the original stores them after it).
 pub fn follow(st: &mut Follow, car: &FollowCar, p: Vec3, fwd: Vec3, s: f32, k: f32) -> Option<()> {
     let t = norm_or(Vec3::new(fwd.x, 0.0, fwd.z), 1e-5, Vec3::X);

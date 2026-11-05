@@ -1081,7 +1081,8 @@ pub fn run(v: &mut crate::vehicles::Vehicles, i: usize, brain: &mut Brain, to_go
     };
     let wheel_count = if c.model.bike { 2 } else { 4 };
     let wheels_down = st.wheels.iter().take(4).filter(|w| w.grounded).count().min(wheel_count);
-    let gravity_factor = vt.as_deref().map_or(1.4, |t| t.gravity);
+    // (the tune's BoundGravity, 1.4: `VehTune::gravity` is already 9.8 x it)
+    let gravity_factor = vt.as_deref().map_or(1.4, |t| t.t.s.bound_gravity);
     let car = BrainCar {
         pos: st.pos,
         forward: st.forward(),

@@ -980,7 +980,7 @@ impl Roamers {
                             if let (Some(ai), Some(t)) = (c.ai.as_mut(), c.model.aitunes.clone()) {
                                 ai.tune = Some(std::sync::Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&t.base, &t.mods, c.perf)));
                             }
-                            let cruising = std::env::var("MCLA_ROAM_OLD_AI").is_err() && crate::cruisedrive::setup(vehicles, &world.collider, idx, &m.pts, next, at_reset, at);
+                            let cruising = crate::cruisedrive::setup(vehicles, &world.collider, idx, &m.pts, next, at_reset, at);
                             let c = &mut vehicles.cars[idx];
                             if let (Some(ai), false) = (c.ai.as_mut(), cruising) {
                                 ai.link = Some(li);

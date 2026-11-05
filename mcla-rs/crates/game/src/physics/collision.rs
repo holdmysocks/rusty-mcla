@@ -569,6 +569,59 @@ impl WorldCollider {
         best
     }
 
+    /// The same level probe with up to `max` result records (the result list of the original's line probe keeps the
+    /// hits nearest the start): every one-sided hit of a city triangle on the segment o .. o + d max_t, each triangle
+    /// once, nearest first (on equal t, the order they were found in).
+    pub fn probe_front_all(&self, o: Vec3, d: Vec3, max_t: f32, max: usize) -> Vec<Hit> {
+        let mut hits: Vec<Hit> = Vec::new();
+        let end = o + d * max_t;
+        let mn = o.min(end);
+        let mx = o.max(end);
+        let (cx0, cz0) = cell_of(mn.x, mn.z);
+        let (cx1, cz1) = cell_of(mx.x, mx.z);
+        // the cells the segment crosses, with a one-cell margin (half-cell steps), or the whole box when it is small
+        let cells: Vec<(i32, i32)> = if (cx1 - cx0 + 1) * (cz1 - cz0 + 1) <= 400 {
+            (cx0..=cx1).flat_map(|cx| (cz0..=cz1).map(move |cz| (cx, cz))).collect()
+        } else {
+            let len = (end - o).length();
+            let steps = (len / (CELL * 0.5)).ceil().max(1.0) as i32;
+            let mut set = hashbrown::HashSet::new();
+            for k in 0..=steps {
+                let p = o.lerp(end, k as f32 / steps as f32);
+                let (cx, cz) = cell_of(p.x, p.z);
+                for dx in -1..=1 {
+                    for dz in -1..=1 {
+                        set.insert((cx + dx, cz + dz));
+                    }
+                }
+            }
+            set.into_iter().collect()
+        };
+        for s in self.sectors.values() {
+            if mx.x < s.min.x || mn.x > s.max.x || mx.z < s.min.z || mn.z > s.max.z || mx.y < s.min.y || mn.y > s.max.y {
+                continue;
+            }
+            let mut seen = hashbrown::HashSet::new();
+            for &(cx, cz) in &cells {
+                {
+                    if let Some(list) = s.grid.get(&(cx, cz)) {
+                        for &i in list {
+                            if !seen.insert(i) {
+                                continue;
+                            }
+                            if let Some((t, n)) = ray_tri_front(o, d, &s.tris[i as usize], max_t) {
+                                hits.push(Hit { t, point: o + d * t, normal: n, surface: Surface::from_u8(s.mats.get(i as usize).copied().unwrap_or(0)) });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        hits.sort_by(|a, b| a.t.total_cmp(&b.t));
+        hits.truncate(max);
+        hits
+    }
+
     fn raycast_coarse(&self, o: Vec3, d: Vec3, max_t: f32) -> Option<Hit> {
         // step along the ray cell by cell
         let mut best: Option<Hit> = None;

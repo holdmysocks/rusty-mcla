@@ -9925,6 +9925,9 @@ impl Game {
         self.career.tt_pick = row;
         self.current_race = Some(i);
         self.career.panel_ok = true;
+        // (the warp onto the run, then xGAM + 1 - 0xbb4f8a9f 0x9c3, 0xa38; a restart loops back
+        // to 0x14fc, past it)
+        self.mc4_stat_add("xGAM", 0, 1.0);
         true
     }
 }
@@ -11570,7 +11573,7 @@ pub const TUTORIAL_FORMS: [(u32, &str); 31] = [
 ];
 
 /// The tutorial flags of the save: (flag, form, speech scenario, slow motion, who shows it).
-pub const TUTORIAL_FLAGS: [(&str, u32, &str, bool, &str); 22] = [
+pub const TUTORIAL_FLAGS: [(&str, u32, &str, bool, &str); 23] = [
     ("tTBM", 102, "TUTORIAL_BEAT_ME_THERE", true, "generic_local_hookman 0xc0e (the first hookman flashed)"),
     ("tTFL", 82, "", false, "CruisingHookmanCore 0x8f0 (a hookman in reach; flag set when he is flashed, 0xd91)"),
     ("tTFB", 83, "", false, "CruisingHookmanCore 0x918 (the next hookman in reach after tTFL; 0xdbe)"),
@@ -11593,6 +11596,9 @@ pub const TUTORIAL_FLAGS: [(&str, u32, &str, bool, &str); 22] = [
     ("tTCH", 89, "", false, "TelephoneChallenge 0x2c4 (the first telephone challenge)"),
     ("tTPP", 103, "", false, "sub_82700108 from sub_82704228 (the first pursuit)"),
     ("tTPL", 104, "", false, "sub_82700108 (the second pursuit)"),
+    // (xTCO: the collectables' lesson - MiscTasks/Collectables 0x88d..0x962, at a pickup while xTCO is 0:
+    // form 94, no scenario, then xTCO set to 1)
+    ("xTCO", 94, "", false, "Collectables 0x88d (a collectable taken)"),
 ];
 
 /// The form's string keys.
@@ -11742,6 +11748,9 @@ pub struct S23Live {
     pub f02c_away: bool,
     /// (step 22b) the pink slip's confirmation box is up: the hangout and the profile chosen
     pub pink_ask: Option<(String, usize)>,
+    /// the wager's confirmation box is up: the hangout, the stake, the difficulty (wager_hangout_core
+    /// 0x194c..0x19bd - `Game::mc4_wager_ask`)
+    pub wager_ask: Option<(String, i64, usize)>,
     /// (step 22b) Downtown's scripted pink slip: its race runs (the steps before the
     /// opponent gives up), the frames without a scene after its scene, a race to start
     pub dt_pink: Option<i32>,
@@ -12279,7 +12288,7 @@ impl Game {
         if near && self.mode == crate::game::Mode::FreeRoam && !Self::mc4_no_tutorial() {
             let flag = match kind { 2 => "tTRL", 5 => "tTFR", 4 => "tTTO", 3 => "tTTT", _ => "" };
             if !flag.is_empty() && !self.mc4_tut_seen(flag) && self.opt_x.s23.run.is_none() {
-                let near_form = |g: &Game| [82u32, 83].iter().any(|f| tutorial_keys(*f).map_or(false, |k| g.tutorial_box.as_ref().map_or(false, |b| b.0 == k.0)));
+                let near_form = |g: &crate::game::Game| [82u32, 83].iter().any(|f| tutorial_keys(*f).map_or(false, |k| g.tutorial_box.as_ref().map_or(false, |b| b.0 == k.0)));
                 if near_form(self) {
                     self.tutorial_box = None;
                 }
@@ -12402,6 +12411,10 @@ impl Game {
         // (step 22b: the pink slip's YES stakes the vehicle before the race starts)
         if self.opt_x.s23.pink_ask.is_some() {
             self.mc4_pink_confirmed();
+        }
+        // (the wager's YES: the stake and the race - `mc4_wager_ask`)
+        if self.opt_x.s23.wager_ask.is_some() {
+            self.mc4_wager_confirmed();
         }
     }
 
@@ -12862,6 +12875,52 @@ impl Game {
         if self.opt_x.s23.pink_ask.is_some() && self.message_box.is_none() {
             self.opt_x.s23.pink_ask = None;
         }
+        // (the wager's NO: back on its panel - 0x19b4..0x19bd, the result not 3 goes back to 0x181c)
+        if self.opt_x.s23.wager_ask.is_some() && self.message_box.is_none() {
+            self.opt_x.s23.wager_ask = None;
+        }
+    }
+
+    /// ACCEPT on the WAGER AMOUNT panel (wager_hangout_core 0x1892..0x19bd): the stake into
+    /// nWagerAmount, the form closed; less money than the stake: MessageBox_ShowMessageBox(_,
+    /// `Dialog_Description_WagerInsufficientFunds`, <the hangout's key>, 1, 0) and the panel again
+    /// (0x18bf..0x1947); else the same helper with `Dialog_Description_WagerStartConfirm` and type 3
+    /// (YES / NO, 0x194c..0x197e): YES (result 3) starts the wager race (`mc4_wager_confirmed`), any
+    /// other answer goes back to the panel. False always: the race starts from the box.
+    pub fn mc4_wager_ask(&mut self, key: &str, stake: i64, diff: usize) -> bool {
+        if self.message_box.is_some() || self.opt_x.s23.wager_ask.is_some() {
+            return false;
+        }
+        if self.money < stake {
+            let def = crate::flash_ui::MessageBoxDef { title: key.to_string(), description: "Dialog_Description_WagerInsufficientFunds".into(), options: Vec::new() };
+            self.message_box = Some((def, 0, crate::game::MenuAction::None));
+            return false;
+        }
+        let def = crate::flash_ui::MessageBoxDef { title: key.to_string(), description: "Dialog_Description_WagerStartConfirm".into(), options: vec![("yes".into(), "Common_Yes".into()), ("no".into(), "Common_No".into())] };
+        self.message_box = Some((def, 0, crate::game::MenuAction::StartRace));
+        self.opt_x.s23.wager_ask = Some((key.to_string(), stake, diff));
+        false
+    }
+
+    /// The wager box's YES: the stake paid, the race, the panel left; the box's own action
+    /// starts the race.
+    fn mc4_wager_confirmed(&mut self) {
+        let Some((key, stake, diff)) = self.opt_x.s23.wager_ask.take() else { return };
+        self.money -= stake;
+        self.dirty = true;
+        self.wager = Some((stake, diff));
+        self.wager_key = Some(key.clone());
+        self.current_race = Some(self.mc4_wager_race(&key).unwrap_or(self.race_sel.min(self.race_defs.len().saturating_sub(1))));
+        self.wager_here = false;
+        // (the wager race's function opens with xGAW + 1 - Hangouts/0x16e89a34 0x19f0; REWAGER and
+        // NEXT WAGER loop inside it, past the count)
+        self.mc4_stat_add("xGAW", 0, 1.0);
+        log::info!("hangout: {} wager ${} at difficulty {} (confirmed)", key, stake, diff);
+        self.hangout_key = None;
+        self.hangout_page = (0, 0);
+        if let Some(fm) = self.flash_menu.as_mut() {
+            fm.hide();
+        }
     }
 }
 
@@ -13145,7 +13204,7 @@ mod tests {
         };
         let base = g.current_car;
         let model = g.model_name(base).to_ascii_lowercase();
-        let slots = |g: &Game| g.mc4.as_ref().unwrap().garage.iter().filter(|c| c.vehicle.eq_ignore_ascii_case(&model)).count();
+        let slots = |g: &crate::game::Game| g.mc4.as_ref().unwrap().garage.iter().filter(|c| c.vehicle.eq_ignore_ascii_case(&model)).count();
         assert_eq!(slots(&g), 1);
         g.money = 10_000_000;
         g.rep = 10_000_000;
@@ -16021,7 +16080,7 @@ mod tests {
         assert!(g.mc4_slots_apply(&mut m));
         assert_eq!(m.career.cruising_slots, g.mc4.as_ref().unwrap().career.cruising_slots);
         assert!(g.mc4_open_evaluates(0) && g.mc4_open_evaluates(3));
-        let rows = |g: &Game| DISTRICTS.iter().map(|d| g.mc4_district_open(d)).collect::<Vec<_>>();
+        let rows = |g: &crate::game::Game| DISTRICTS.iter().map(|d| g.mc4_district_open(d)).collect::<Vec<_>>();
         let saved = g.mc4.take();
         assert_eq!(rows(&g), vec![false; 5]);
         g.mc4 = saved;
@@ -16289,8 +16348,11 @@ mod tests {
         // hidden while its district is locked)
         let Some((mut g, dir, _)) = race_game("newgame_import.json", "s19hng") else { return };
         g.career.tt_pick = 0;
+        let n = g.mc4_stat("xGAM", 0);
         assert!(!g.mc4_tt_panel_accept("timetrial_hw", 1) && g.current_race.is_none());
         assert!(g.mc4_tt_panel_accept("timetrial_hw", 0) && g.current_race.is_some());
+        // (a time trial taken counts once in xGAM, a row refused does not)
+        assert_eq!(g.mc4_stat("xGAM", 0), n + 1.0);
         assert_eq!(g.mc4_tournament_man(0), None);
         assert_eq!((g.mc4_slot_hidden(0, 0), g.mc4_slot_hidden(1, 2)), (false, true));
         let _ = std::fs::remove_dir_all(&dir);
@@ -16620,7 +16682,7 @@ mod tests {
         let Some((mut g, dir, _)) = career_game("newgame_import.json", "s20exp") else { return };
         let i = g.career.mission_no("REP_ON_HW_STRIP").unwrap();
         assert_eq!(g.career.ext[i].obj_base[0], Some(260));
-        let line = |g: &Game| g.career.active().into_iter().find(|v| v.id == "REP_ON_HW_STRIP").map(|v| (v.objectives[0].cur, v.objectives[0].count.clone()));
+        let line = |g: &crate::game::Game| g.career.active().into_iter().find(|v| v.id == "REP_ON_HW_STRIP").map(|v| (v.objectives[0].cur, v.objectives[0].count.clone()));
         assert_eq!(line(&g), Some((0, Some("(0/400)".to_string()))));
         g.rep = 600;
         g.career.event(crate::career::Ev::Rep(600));
@@ -16926,7 +16988,7 @@ mod tests {
         let (races, need) = g.career.series_mission("BESTOF_GH_04").unwrap();
         assert_eq!((races[0].as_str(), races.len(), need), ("hollywood/ordered/hw_ordered_mb_02", 3, 2));
         let r: Vec<String> = races.iter().map(|r| format!("game/race/{}", r)).collect();
-        let progress = |g: &Game| g.career.save().missions["BESTOF_GH_04"].progress.clone();
+        let progress = |g: &crate::game::Game| g.career.save().missions["BESTOF_GH_04"].progress.clone();
         // (one win, the series given up: nothing kept - the condition is met by SERIES_COMPLETE
         // alone, the wins are the series' own)
         race(&mut g, &r[0], "YOU");
@@ -17023,7 +17085,7 @@ mod tests {
         s.order.push("CITY_CHAMP".to_string());
         g.career.restore(&s);
         let i = g.career.mission_no("CITY_CHAMP").unwrap();
-        let shown = |g: &Game| g.career.active().into_iter().find(|v| v.id == "CITY_CHAMP").map(|v| v.objectives.len()).unwrap_or(0);
+        let shown = |g: &crate::game::Game| g.career.active().into_iter().find(|v| v.id == "CITY_CHAMP").map(|v| v.objectives.len()).unwrap_or(0);
         assert_eq!(shown(&g), 1);
         assert_eq!((g.career.ext[i].obj_hidden.clone(), g.career.ext[i].obj_always.clone()), (vec![false, true], vec![false, true]));
         // (a won race before the meeting does nothing; the meeting is at the hookman's place,
@@ -17276,7 +17338,7 @@ mod tests {
         let owned = g.owned.len();
         assert!(g.mc4_pink_start("hw_wager_hangout1", 0));
         assert_eq!(g.mc4_pink_rival().map(|r| (r.1, r.2)), Some(("vp_pon_transam_79".to_string(), "pinkslip_vp_pon_transam_79".to_string())));
-        let lot = |g: &Game| g.mc4.as_ref().unwrap().career.pink_slips.held().iter().map(|s| (s.uid, s.kind, s.extra.get("vehicle_name").and_then(|v| v.as_str()).unwrap_or("").to_string())).collect::<Vec<_>>();
+        let lot = |g: &crate::game::Game| g.mc4.as_ref().unwrap().career.pink_slips.held().iter().map(|s| (s.uid, s.kind, s.extra.get("vehicle_name").and_then(|v| v.as_str()).unwrap_or("").to_string())).collect::<Vec<_>>();
         assert_eq!(lot(&g), vec![(17, 1, mine.clone())]);
         assert_eq!(g.mc4_pink_end(true), Some("PINKSLIP_SUCCESS"));
         assert!(lot(&g).is_empty() && g.owned.len() == owned);
@@ -17467,8 +17529,8 @@ mod tests {
         g.career = crate::career::Career::load(&data_dir());
         g.fresh_game = true;
         g.career.new_game();
-        let started = |g: &Game| g.career.news.iter().filter_map(|n| if let News::Started { id, .. } = n { Some(id.clone()) } else { None }).collect::<Vec<_>>();
-        let scenes = |g: &Game| g.career.news.iter().filter_map(|n| if let News::Scene(id) = n { Some(id.clone()) } else { None }).collect::<Vec<_>>();
+        let started = |g: &crate::game::Game| g.career.news.iter().filter_map(|n| if let News::Started { id, .. } = n { Some(id.clone()) } else { None }).collect::<Vec<_>>();
+        let scenes = |g: &crate::game::Game| g.career.news.iter().filter_map(|n| if let News::Scene(id) = n { Some(id.clone()) } else { None }).collect::<Vec<_>>();
         // RACE_GH_06's script switches the GPS button off as the career starts
         assert!(g.career.reached("RACE_GH_06"));
         assert!(!g.mc4_gps_enabled());
@@ -17855,6 +17917,11 @@ mod tests {
         // (the new game sample has seen tTBM, tTFB, tTFL only)
         assert!(g.mc4_tut_seen("tTBM") && !g.mc4_tut_seen("tTDE"));
         assert!(!g.mc4_tutorial("tTBM"));
+        // (the pickup's splash fills COLLECTABLE_FOUND_MSG's NUM_COLLECTABLE_COLLECTED - main.rs, Collectables 0x986)
+        assert!(g.career.strings.get("COLLECTABLE_FOUND_MSG").map_or(false, |s| s.contains("<D>NUM_COLLECTABLE_COLLECTED</D>")), "{:?}", g.career.strings.get("COLLECTABLE_FOUND_MSG"));
+        // (xTCO: the first collectable's lesson, form 94, once)
+        assert!(!g.mc4_tut_seen("xTCO") && g.mc4_tutorial("xTCO") && g.mc4_tut_seen("xTCO") && !g.mc4_tutorial("xTCO"));
+        assert_eq!(g.opt_x.s23.queue.pop().map(|t| (t.form, t.slow)), Some((94, false)));
         // (a delivery hangout's panel waits for its tutorial: form 100 in the slow motion)
         g.hangout_key = Some("hw_delivery".into());
         g.mode = crate::game::Mode::RaceSelect;
@@ -18058,6 +18125,36 @@ mod tests {
         assert!(g.mc4_pink_start("hw_wager_hangout1", 0));
         // (the hangout's own car first, then the held one: pick 1)
         let _ = g.mc4_pink_end(false);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The wager's start (wager_hangout_core 0x18bf..0x19bd): not enough money - an OK box, no race;
+    /// else WagerStartConfirm (YES / NO): NO leaves the money and the panel, YES pays and starts.
+    #[test]
+    fn wager_start_asks_first() {
+        let Some((mut g, dir, _)) = career_game("full_import.json", "wagerask") else { return };
+        g.hangout_key = Some("hw_wager_hangout1".into());
+        g.money = 100;
+        assert!(!g.mc4_wager_ask("hw_wager_hangout1", 500, 1));
+        let (def, _, act) = g.message_box.clone().unwrap();
+        assert_eq!((def.description.as_str(), def.options.len(), act), ("Dialog_Description_WagerInsufficientFunds", 0, crate::game::MenuAction::None));
+        assert!(g.opt_x.s23.wager_ask.is_none() && g.wager.is_none());
+        g.message_box = None;
+        g.money = 1000;
+        let n = g.mc4_stat("xGAW", 0);
+        // (NO: the box goes, nothing paid, the panel stays)
+        assert!(!g.mc4_wager_ask("hw_wager_hangout1", 500, 1));
+        assert_eq!(g.message_box.as_ref().map(|b| (b.0.description.as_str(), b.0.options.len(), b.2.clone())), Some(("Dialog_Description_WagerStartConfirm", 2, crate::game::MenuAction::StartRace)));
+        g.message_box = None;
+        g.mc4_pink_box_tick();
+        assert!(g.opt_x.s23.wager_ask.is_none() && g.money == 1000 && g.wager.is_none() && g.hangout_key.is_some());
+        // (YES: paid, the race, the count)
+        g.mc4_wager_ask("hw_wager_hangout1", 500, 1);
+        g.message_box = None;
+        g.mc4_s23_box_yes();
+        assert_eq!((g.money, g.wager, g.wager_key.as_deref(), g.hangout_key.is_none()), (500, Some((500, 1)), Some("hw_wager_hangout1"), true));
+        assert!(g.current_race.is_some());
+        assert_eq!(g.mc4_stat("xGAW", 0), n + 1.0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

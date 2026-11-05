@@ -23,6 +23,8 @@ pub struct GhostRequest {
 pub struct GhostView {
     pub matrix: [Vec3; 4],
     pub rail: Option<(u32, f32)>,
+    /// on a run-time rail (the route lane change's, F-32118): that rail's slot 8 at its phase - point and derivative
+    pub run_rail: Option<(Vec3, Vec3)>,
     pub speed: f32,
 }
 
@@ -81,7 +83,9 @@ pub struct Cruiser {
     /// not run yet)
     pub frame_acc: f32,
     pub held: Option<crate::physics::CarInput>,
-    /// the frame time the follow divides by (the image's word at the follow, 1/60)
+    /// the frame time the follow divides by: the word the follow reads is 1/60 in the image, but the running game's
+    /// cruising man shows the brain's game frame, 1/30 (bit for bit in his rail curvature, 813 of 815 updates:
+    /// cruisedrive.rs `follow_matches_the_capture`)
     pub k: f32,
     /// the car's engage rpm saved by the enable (+1692; 1000 from the constructor)
     pub saved_engage: f32,
@@ -169,6 +173,7 @@ impl<T: GhostTraffic, C: CruiseCar> CruiseEnv for World<'_, '_, T, C> {
         } else {
             crate::railroute::Route::default()
         };
+        log::debug!("cruiser {}: route from lane {} t {:.4} to {:?} (lane {:?} t {:.4}): {:?}", self.owner, lane, rp.t, b.dests[b.idx.max(0) as usize & 63], route.dest_lane, route.dest_t, route.nodes.iter().map(|n| (n.rec, n.lanes.clone())).collect::<Vec<_>>());
         b.request = self.traffic.request_ghost(GhostRequest {
             owner: self.owner,
             route,
@@ -251,7 +256,8 @@ impl<T: GhostTraffic, C: CruiseCar> CruiseEnv for World<'_, '_, T, C> {
     }
 
     fn rail_pose(&mut self, rail: u32, t: f32) -> (Vec3, Vec3) {
-        self.rails.pose(&RailPos { lane: rail.checked_sub(1), t }, Vec3::ZERO).unwrap_or((Vec3::ZERO, Vec3::X))
+        // (`pose` gives the c row, minus the tangent)
+        self.rails.pose(&RailPos { lane: rail.checked_sub(1), t }, Vec3::ZERO).map_or((Vec3::ZERO, Vec3::X), |(p, c)| (p, Vec3::ZERO - c))
     }
 
     /// rail slot 14 at the car's place (F-24415: 8 chords from 450 m, else 4; 10 halvings)
@@ -269,7 +275,14 @@ impl<T: GhostTraffic, C: CruiseCar> CruiseEnv for World<'_, '_, T, C> {
         let (p, fwd) = match g.rail {
             // (the rail's point and its tangent: `pose` gives the c row, minus the tangent)
             Some((lane, t)) => self.rails.pose(&RailPos { lane: Some(lane), t }, b.offset).map_or((g.matrix[3], Vec3::ZERO - g.matrix[2]), |(p, c)| (p, Vec3::ZERO - c)),
-            None => (g.matrix[3], Vec3::ZERO - g.matrix[2]),
+            None => match g.run_rail {
+                // (the ghost's rail is a run-time one: its slot 8 point and derivative, posed as a lane's)
+                Some((p, d)) => {
+                    let (p, c) = crate::cruiserail::pose_at(p, d, b.offset);
+                    (p, Vec3::ZERO - c)
+                }
+                None => (g.matrix[3], Vec3::ZERO - g.matrix[2]),
+            },
         };
         let m = self.car.matrix();
         let car = FollowCar { a: m.a, c: m.c, pos: m.pos, vel: self.car.vel(), yaw_rate: self.car.yaw_rate(), tune48: self.car.tune48() };
@@ -318,7 +331,7 @@ pub fn disable_car<C: CruiseCar>(saved: f32, car: &mut C) {
 
 impl Cruiser {
     pub fn new(owner: u32, reset_pos: Vec3) -> Cruiser {
-        Cruiser { owner, brain: Cruising::default(), reset_pos, frame_acc: 0.0, held: None, k: 1.0 / 60.0, saved_engage: 1000.0 }
+        Cruiser { owner, brain: Cruising::default(), reset_pos, frame_acc: 0.0, held: None, k: crate::brain::FRAME, saved_engage: 1000.0 }
     }
 
     /// One update (F-64718) and what drives the car after it (slot 11: the racing brain in states 1 / 2, else the
@@ -349,10 +362,18 @@ impl Cruiser {
 
     /// The ambient system's answer to the request: the ghost made (status 0) or not.
     pub fn attached<T: GhostTraffic, C: CruiseCar>(&mut self, rails: &Rails, traffic: &mut T, car: &mut C, racing: &mut Brain, status: i32, ghost: Option<u32>) {
-        let ghost = ghost.and_then(|id| traffic.ghost(id).map(|v| Ghost { id, rail: v.rail.map(|(l, t)| (l + 1, t)), speed: v.speed }));
-        let ghost = ghost.as_ref();
+        let view = ghost.and_then(|id| traffic.ghost(id).map(|v| (id, v)));
+        let ghost = view.as_ref().map(|(id, v)| Ghost { id: *id, rail: v.rail.map(|(l, t)| (l + 1, t)), speed: v.speed });
+        // (made on a route lane change's run-time rail: that rail's point and tangent)
+        if let (0, Some(g), Some((_, v))) = (status, ghost.as_ref(), view.as_ref()) {
+            if let (None, Some((p, d))) = (g.rail, v.run_rail) {
+                let (p, c) = crate::cruiserail::pose_at(p, d, Vec3::ZERO);
+                self.brain.attach_at(g, p, Vec3::ZERO - c);
+                return;
+            }
+        }
         let mut w = World { rails, traffic, car, racing, owner: self.owner, k: self.k, racer_ran: false, racer: None };
-        self.brain.attach(&mut w, status, ghost);
+        self.brain.attach(&mut w, status, ghost.as_ref());
     }
 
     /// The ghost's release: `reason` 1 at its route's end, `rail` the last lane it rode (None: none).
