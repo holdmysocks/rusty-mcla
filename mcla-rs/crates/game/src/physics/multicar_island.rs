@@ -32,6 +32,10 @@ pub(crate) struct RecBody {
     pub col1: Vec<u32>,
     pub matrix0: Vec<u32>,
     pub matrix1: Vec<u32>,
+    /// (RGCAR002) its collider and its instance's matrix after the push solve (kind 5: every island's push solve F-56590
+    /// done, no push applied yet)
+    pub col5: Option<Vec<u32>>,
+    pub matrix5: Option<Vec<u32>>,
 }
 
 /// An enabled row of a recorded island, in the A list's order: the rigid body of each side (None: the city, a fixed or
@@ -46,6 +50,9 @@ pub(crate) struct RecRow {
     pub w: [u32; 44],
     pub prev_tick: u32,
     pub prev: [u32; 12],
+    /// (RGCAR002) the record's +0 .. +15 after the push solve (the push multipliers, w the depth), and per side A, B its
+    /// whole bound's type (u32::MAX: no instance) and margin as F-49764 reads it (bits)
+    pub push: Option<([u32; 4], [(u32, u32); 2])>,
 }
 
 pub(crate) struct RecTick {
@@ -60,8 +67,15 @@ pub(crate) struct RecTick {
 /// Reads an RGCAR001 fixture (export_cars.py): per tick u32 words tick, isl +40, isl +52, the row count, per row 64
 /// words (body A, body B, part A, part B, from, level A, level B, the 44-word record, the warm start's tick and 12
 /// words), the body count, per body 386 words (level, class, collider at kind 3 and kind 4, matrix at both).
+/// RGCAR002 (work/ragdoll/carpush/export_cars2.py) adds per tick, after the bodies, per row 8 words (the record's +0 ..
+/// +15 at the push snapshot kind 5; per side the whole bound's type and margin) and per body 192 words (its collider and
+/// its instance's matrix at kind 5).
 pub(crate) fn rec_ticks(b: &[u8]) -> Vec<RecTick> {
-    assert_eq!(&b[..8], b"RGCAR001");
+    let v2 = match &b[..8] {
+        b"RGCAR001" => false,
+        b"RGCAR002" => true,
+        m => panic!("not an RGCAR fixture: {m:?}"),
+    };
     let w: Vec<u32> = b[8..].chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
     let (ticks, mut i) = (w[0] as usize, 1);
     let opt = |x: u32| if x == u32::MAX { None } else { Some(x) };
@@ -81,6 +95,7 @@ pub(crate) fn rec_ticks(b: &[u8]) -> Vec<RecTick> {
                 w: t[k + 7..k + 51].try_into().unwrap(),
                 prev_tick: t[k + 51],
                 prev: t[k + 52..k + 64].try_into().unwrap(),
+                push: None,
             });
             k += 64;
         }
@@ -88,8 +103,19 @@ pub(crate) fn rec_ticks(b: &[u8]) -> Vec<RecTick> {
         k += 1;
         let mut bodies = Vec::new();
         for _ in 0..nb {
-            bodies.push(RecBody { level: t[k], class: t[k + 1], col0: t[k + 2..k + 178].to_vec(), col1: t[k + 178..k + 354].to_vec(), matrix0: t[k + 354..k + 370].to_vec(), matrix1: t[k + 370..k + 386].to_vec() });
+            bodies.push(RecBody { level: t[k], class: t[k + 1], col0: t[k + 2..k + 178].to_vec(), col1: t[k + 178..k + 354].to_vec(), matrix0: t[k + 354..k + 370].to_vec(), matrix1: t[k + 370..k + 386].to_vec(), col5: None, matrix5: None });
             k += 386;
+        }
+        if v2 {
+            for r in rows.iter_mut() {
+                r.push = Some((t[k..k + 4].try_into().unwrap(), [(t[k + 4], t[k + 5]), (t[k + 6], t[k + 7])]));
+                k += 8;
+            }
+            for b in bodies.iter_mut() {
+                b.col5 = Some(t[k..k + 176].to_vec());
+                b.matrix5 = Some(t[k + 176..k + 192].to_vec());
+                k += 192;
+            }
         }
         assert_eq!(k, len);
         out.push(RecTick { tick: t[0], bounce: t[1], n: t[2], rows, bodies });
@@ -125,7 +151,8 @@ pub(crate) fn rec_body(b: &RecBody) -> solver::Body {
 pub(crate) fn rec_touch(t: &RecTick, r: &RecRow) -> solver::Touch {
     let f = |o: usize| f32::from_bits(r.w[o / 4]);
     let v = |o: usize| Vec3::new(f(o), f(o + 4), f(o + 8));
-    let side = |o: usize, s: usize| solver::Side { body: r.bodies[s], point: v(o), ..Default::default() };
+    // (each side's point in the world +48 / +64 and in its part's frame +16 / +32 - the push solve's thickness takes the latter)
+    let side = |o: usize, s: usize| solver::Side { body: r.bodies[s], point: v(o), local: v(o - 32), ..Default::default() };
     let pw = |i: usize| f32::from_bits(r.prev[i]);
     let d = v(16) - Vec3::new(pw(8), pw(9), pw(10));
     let near = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y)) < f32::from_bits(0x39d1_b717);
@@ -160,6 +187,12 @@ pub(crate) struct MultiBody {
     pub body: solver::Body,
     pub matrix: [Vec3; 4],
     pub share: [[u32; 3]; 2],
+    /// what +400 (push) and +416 (turn) hold as the push solve begins (kind 4, bits), and (RGCAR002) after it with the
+    /// deep byte +658
+    pub push_start: [[u32; 3]; 2],
+    pub push_end: Option<([[u32; 3]; 2], bool)>,
+    /// its instance's address (collider +16): the island's A / B lists are sorted by it
+    pub inst: u32,
 }
 
 /// What a row joins: one body and something without one (the city, a fixed or inactive object; `body_is_a`: the body is
@@ -181,6 +214,10 @@ pub(crate) struct MultiRow {
     pub touch: solver::Touch,
     pub kept: [u32; 3],
     pub impulse: [u32; 3],
+    /// (RGCAR002) the push multipliers +0 after the push solve (bits), and per side its whole bound's type (u32::MAX: no
+    /// instance) and margin
+    pub pushed: Option<[u32; 3]>,
+    pub bound: Option<[(u32, f32); 2]>,
 }
 
 impl MultiRow {
@@ -229,7 +266,8 @@ pub(crate) fn multicar_ticks(fixture: &[u8]) -> Vec<MultiTick> {
                 .iter()
                 .map(|b| {
                     let m = &b.matrix1;
-                    MultiBody { level: b.level, class: b.class, body: rec_body(b), matrix: [wv(m, 0), wv(m, 16), wv(m, 32), wv(m, 48)], share: [words3(&b.col1, 368), words3(&b.col1, 384)] }
+                    let push_end = b.col5.as_ref().map(|c| ([words3(c, 400), words3(c, 416)], (c[658 / 4] >> 8) & 0xff != 0));
+                    MultiBody { level: b.level, class: b.class, body: rec_body(b), matrix: [wv(m, 0), wv(m, 16), wv(m, 32), wv(m, 48)], share: [words3(&b.col1, 368), words3(&b.col1, 384)], push_start: [words3(&b.col1, 400), words3(&b.col1, 416)], push_end, inst: b.col1[4] & !15 }
                 })
                 .collect();
             let rows = t
@@ -243,7 +281,9 @@ pub(crate) fn multicar_ticks(fixture: &[u8]) -> Vec<MultiTick> {
                         [None, Some(b)] => RowJoin::Own { body: b, body_is_a: false },
                         [None, None] => panic!("tick {}: row {order} has no body", t.tick),
                     };
-                    MultiRow { order, join, levels: r.levels, parts: r.parts, touch: rec_touch(t, r), kept: words3(&r.w, 128), impulse: words3(&r.w, 112) }
+                    let pushed = r.push.map(|p| [p.0[0], p.0[1], p.0[2]]);
+                    let bound = r.push.map(|p| p.1.map(|(ty, m)| (ty, f32::from_bits(m))));
+                    MultiRow { order, join, levels: r.levels, parts: r.parts, touch: rec_touch(t, r), kept: words3(&r.w, 128), impulse: words3(&r.w, 112), pushed, bound }
                 })
                 .collect();
             MultiTick { tick: t.tick, bounce: t.bounce, dt: DT, bodies, rows }
@@ -361,13 +401,21 @@ mod tests {
     /// rows); then `islands_again`, `car_island` and `solve_island` as the stepping car's step runs them. Answers per
     /// fixture the ticks checked and the report: isl +40, every row's +128 / +112 in the solve's order against the
     /// recorded A list, the stepping car's +368 / +384 (`IslandOut`) and the lent car's (`return_extras`), word for word.
-    fn live_two_cars(fixture: &[u8], a_lent: bool) -> (usize, Vec<String>) {
+    ///
+    /// `push`: then also the island's push solve as the stepping car's step runs it (`push_island`, the stepping car's
+    /// push and turn as its +400 / +416 held at kind 4, the lent car's turn through `lend_extra`): every row's push
+    /// multipliers +0, both cars' +400 / +416 and deep byte +658 after it (kind 5, `return_extras` for the lent car), and
+    /// each side's whole bound as the thickness takes it (type 6 - 12: margin +112 about the origin, no core), word for
+    /// word; ticks without the push snapshot (RGCAR001) are not counted.
+    fn live_two_cars(fixture: &[u8], a_lent: bool, push: bool) -> (usize, Vec<String>) {
         use crate::physics::loose::{CarDyn, CarIn, ExtraCar, LooseState, LooseWorld, Mani, Obj, PBody, Slot2, VehObj, Who};
+        use crate::physics::solver::Pushed;
+        let vb = |w: [u32; 3]| Vec3::new(f32::from_bits(w[0]), f32::from_bits(w[1]), f32::from_bits(w[2]));
         let shape: &'static crate::physics::hull::HullShape = Box::leak(Box::new(crate::physics::hull::HullShape::new(vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z], &[[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]])));
         let mut report = Vec::new();
         let mut n = 0;
         for t in multicar_ticks(fixture) {
-            if t.bodies.len() != 2 || t.cars().len() != 2 {
+            if t.bodies.len() != 2 || t.cars().len() != 2 || (push && t.rows.iter().any(|r| r.pushed.is_none())) {
                 continue;
             }
             let Some(&RowJoin::Pair { a, b }) = t.pair_rows().first().map(|r| &r.join) else { continue };
@@ -387,8 +435,10 @@ mod tests {
             // (the lent car's level: the stepping car object 0, the lent car object 1; its part the pair's manifolds -
             // one per pair of parts, its own side the car)
             let mut ls = LooseState::default();
+            // (the stepping car's instance is at 0 - `car_place` with no hints - the lent car's below or above it as
+            // their instances' addresses are: the island's lists are sorted by them)
             ls.objs.push(obj(lead, 0));
-            ls.objs.push(obj(extra, 1));
+            ls.objs.push(obj(extra, if t.bodies[extra].inst < t.bodies[lead].inst { -1 } else { 1 }));
             let who = |k: usize| if k == extra { Who::Car } else { Who::Obj(0) };
             for r in t.pair_rows() {
                 let RowJoin::Pair { a, b } = r.join else { unreachable!() };
@@ -406,7 +456,8 @@ mod tests {
             let part = ls.take_car();
             let own = |k: usize| -> (Vec<solver::Contact>, Vec<u8>) { (t.own_rows(k).iter().map(|r| r.contact().unwrap()).collect(), t.own_rows(k).iter().map(|r| r.parts[0] as u8).collect()) };
             let (ecity, epart) = own(extra);
-            let mut e = ExtraCar::new(t.bodies[extra].body, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, ecity, epart);
+            // (its push solve's turn as it begins: what its +416 holds; its +400 is cleared by its own slot 14, F-32811)
+            let mut e = ExtraCar::new(t.bodies[extra].body, Vec3::ZERO, Vec3::ZERO, vb(t.bodies[extra].push_start[1]), ecity, epart);
             e.uid = t.bodies[extra].level;
             e.obj = 1;
             ls.lend_extra(e, part, Some(0));
@@ -422,9 +473,35 @@ mod tests {
             let (mut p, mut l) = (Vec3::ZERO, Vec3::ZERO);
             let mut dynm = CarDyn { p: &mut p, l: &mut l, mass: 0.0, inverse: Vec3::ZERO, rows: car.rows };
             let city_rows = vec![true; city.len()];
-            let out = ls.solve_island(&world, &car_in, &mut car, &mut dynm, &city, &city_rows, &city_part, &ids, t.dt, None);
-            ls.lead = None;
+            let mut out = ls.solve_island(&world, &car_in, &mut car, &mut dynm, &city, &city_rows, &city_part, &ids, t.dt, None);
             let mut bad = Vec::new();
+            let mut lead_pushed = None;
+            if push {
+                if t.bodies[extra].push_start[0] != [0; 3] {
+                    bad.push(format!("lent car: +400 {:08x?} as the push begins (lend_extra starts it from zero)", t.bodies[extra].push_start[0]));
+                }
+                // (each side's whole bound as F-49764 reads it: types 6 - 12 (a composite 12, the city's grid) the margin
+                // +112 about the bound's origin)
+                for (k, (x, r)) in out.touches.iter().zip(t.rows.iter()).enumerate() {
+                    for (name, side, (ty, margin)) in [("A", &x.a, r.bound.unwrap()[0]), ("B", &x.b, r.bound.unwrap()[1])] {
+                        // (0xfffffffe: the bound's page is in no snapshot - the city's grid; not checked)
+                        if ty == 0xffff_fffe {
+                            continue;
+                        }
+                        if !(6..=12).contains(&ty) || side.margin.to_bits() != margin.to_bits() || side.core != Vec3::ZERO {
+                            bad.push(format!("row {k} ({:?}) side {name}: bound type {ty} margin {margin:e}, port margin {:e} core {:?}", r.join, side.margin, side.core));
+                        }
+                    }
+                }
+                let start = Pushed { push: vb(t.bodies[lead].push_start[0]), turn: vb(t.bodies[lead].push_start[1]), deep: false };
+                lead_pushed = Some(ls.push_island(&mut out, &car, start, t.dt, None));
+                for (k, (x, r)) in out.touches.iter().zip(t.rows.iter()).enumerate() {
+                    if !vec_words(x.pushed, r.pushed.unwrap()) {
+                        bad.push(format!("row {k} ({:?}) pushed {:?} want {:08x?}", r.join, x.pushed, r.pushed.unwrap()));
+                    }
+                }
+            }
+            ls.lead = None;
             if out.solved.bounce.to_bits() != t.bounce {
                 bad.push(format!("bounce {:08x} want {:08x}", out.solved.bounce.to_bits(), t.bounce));
             }
@@ -441,6 +518,23 @@ mod tests {
             }
             let back = ls.return_extras(Some(0));
             let lent = back.iter().find(|(e, _)| e.obj == 1).map(|(e, _)| (e.impulse, e.turning));
+            if push {
+                let lent_pushed = back.iter().find(|(e, _)| e.obj == 1).map(|(e, _)| e.pushed);
+                for (who, k, got) in [("stepping car", lead, lead_pushed), ("lent car", extra, lent_pushed)] {
+                    let (Some(got), Some((want, deep))) = (got, t.bodies[k].push_end) else {
+                        bad.push(format!("{who}: no push"));
+                        continue;
+                    };
+                    for (name, g, w) in [("push +400", got.push, want[0]), ("turn +416", got.turn, want[1])] {
+                        if !vec_words(g, w) {
+                            bad.push(format!("{who} {name}: island {g:?}, recorded {w:08x?} (from {:08x?})", if name.starts_with("push") { t.bodies[k].push_start[0] } else { t.bodies[k].push_start[1] }));
+                        }
+                    }
+                    if got.deep != deep {
+                        bad.push(format!("{who} deep +658: island {}, recorded {deep}", got.deep));
+                    }
+                }
+            }
             for (who, k, got) in [("stepping car", lead, Some((out.impulse, out.turning))), ("lent car", extra, lent)] {
                 let Some(got) = got else {
                     bad.push(format!("{who}: no answer"));
@@ -452,7 +546,7 @@ mod tests {
                     }
                 }
             }
-            eprintln!("live two-car island, tick {}: {} rows ({} of the stepping car with the city, {} of the lent car), {} results differ", t.tick, t.rows.len(), city.len(), t.own_rows(extra).len(), bad.len());
+            eprintln!("live two-car island{}, tick {}: {} rows ({} of the stepping car with the city, {} of the lent car), {} results differ", if push { " (with the push)" } else { "" }, t.tick, t.rows.len(), city.len(), t.own_rows(extra).len(), bad.len());
             if !bad.is_empty() {
                 report.push(format!("tick {}: {} differences, first {:#?}", t.tick, bad.len(), &bad[..bad.len().min(12)]));
             }
@@ -460,11 +554,34 @@ mod tests {
         (n, report)
     }
 
+    /// carpush_pg (recorder kind 5, work/ragdoll/carpush/export_cars2.py, RGCAR002): pg.0 29 - 39, the player's R8 (mcCar,
+    /// level 0x5723) teleported against racer 53's standing car (AI mcCar 0x5733), 1 - 7 rows between them, on 36 - 38
+    /// also the racer's row with the city (the racer then the pair's B and the city row's A); pg.1 49 - 60, the R8
+    /// put 8 m in front of the racer's nose and driven into it, 1 - 4 rows. The push solve through the game's path
+    /// (`live_two_cars` with the push), with either car lent: every row's push multipliers +0 and both cars' +400 / +416 /
+    /// +658 after the push solve (kind 5 at the first slot 14 entry, F-32811), word for word on all 23 ticks; and the
+    /// velocity solve of the same ticks. (No tick has a contact deeper than the cars are thick: +658 stays clear, so
+    /// the thickness branch's direct push is not exercised.)
+    #[test]
+    fn two_car_live_island_push_is_the_originals() {
+        let fx = &include_bytes!("testdata/carpush_pg.bin")[..];
+        for a_lent in [true, false] {
+            let (n, report) = live_two_cars(fx, a_lent, true);
+            assert!(report.is_empty(), "carpush_pg (A lent {a_lent}): {}", report.join("\n"));
+            assert_eq!(n, 23, "carpush_pg");
+        }
+        // (and the velocity solve of the same ticks)
+        for a_lent in [true, false] {
+            let (_, report) = live_two_cars(fx, a_lent, false);
+            assert!(report.is_empty(), "carpush_pg velocity (A lent {a_lent}): {}", report.join("\n"));
+        }
+    }
+
     #[test]
     fn two_car_live_island_is_the_originals() {
         for (name, fx, want) in [("cd.0", &include_bytes!("testdata/carcar_cd0.bin")[..], 16), ("ce.0", &include_bytes!("testdata/carcar_ce0.bin")[..], 24), ("cc.4", &include_bytes!("testdata/carcar_cc4.bin")[..], 1)] {
             for a_lent in [true, false] {
-                let (n, report) = live_two_cars(fx, a_lent);
+                let (n, report) = live_two_cars(fx, a_lent, false);
                 assert!(report.is_empty(), "{name} (A lent {a_lent}): {}", report.join("\n"));
                 assert_eq!(n, want, "{name}");
             }

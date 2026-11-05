@@ -3866,7 +3866,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
         let phys_t0 = std::time::Instant::now();
         // (test hook MCLA_RAM_CAR=secs: at that time on the vehicles' clock the player's car is put 2.6 m to the right of the
         // nearest other placed car with the original's body, at its speed and 6 m/s towards it - a car x car contact for the
-        // level step)
+        // level step; MCLA_RAM_SIDE=<m> another distance, MCLA_RAM_WIPE=1 the player's wipeout blow with it)
         if let Some(at) = std::env::var("MCLA_RAM_CAR").ok().and_then(|v| v.parse::<f32>().ok()) {
             static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
             if self.clock >= at && !DONE.load(std::sync::atomic::Ordering::Relaxed) {
@@ -3880,8 +3880,12 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     let (tp, tr, tv) = (self.cars[j].state.pos, self.cars[j].state.rot, self.cars[j].state.vel);
                     let r = tr * Vec3::X;
                     let c = &mut self.cars[m];
-                    c.state.relocate(tp + r * 2.6, tr);
+                    let side = std::env::var("MCLA_RAM_SIDE").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(2.6);
+                    c.state.relocate(tp + r * side, tr);
                     c.state.vel = tv - r * 6.0;
+                    if std::env::var_os("MCLA_RAM_WIPE").is_some() {
+                        c.state.wipeout = 2.0;
+                    }
                     c.state.ang_vel = Vec3::ZERO;
                     c.pose_history.reset();
                     log::info!("MCLA_RAM_CAR: player put beside car {} (uid {})", j, self.cars[j].uid);
@@ -4434,7 +4438,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 shape: static_shape(hull),
                 class: if o.rail.is_some() || o.parked.is_some() { 6 } else { 8 },
                 inflict: o.inflict,
-                parked: o.parked.is_some(),
+                // (a parked car or a riding one the level does not hold as an ambient car - no ambient tune: inactive in the
+                // original (level state 1, no collider), immovable to the step's solve; F-27744)
+                parked: o.parked.is_some() || o.rail.is_some(),
                 player: o.is_player,
                 tune: (vt.t.s.bound_friction, vt.t.s.bound_elasticity, vt.t.s.head_on_cg_offset),
                 body,

@@ -1372,6 +1372,25 @@ const OTHER_LEVEL: i64 = -1;
 /// box cull decides
 const RIDER_PARTNER_REACH: f32 = 8.0;
 
+/// The thrown rider against the other vehicle he meets (artic_run.rs `collide_other`: F-82759 with its hull, as with the
+/// bike): his partner's object in the loose world, if any.
+fn rider_meets(loose: &super::loose::LooseState, rd: &mut super::artic_run::RiderRagdoll, world: bool) -> Option<usize> {
+    if !world {
+        rd.collide_other(None);
+        return None;
+    }
+    let at = super::artic_collide::rows3(&rd.rd16)[3];
+    let other = loose.rider_partner(at, RIDER_PARTNER_REACH);
+    match other.and_then(|o| loose.rider_side(o)) {
+        Some((shape, shape2, cg, now, last)) => {
+            let side = super::artic_collide::VehSide { hull: shape, hull_cg: cg, hull_margin: f32::from_bits(0x3d23_d70a), now, last, hull2: shape2, wheels: Vec::new() };
+            rd.collide_other(Some((&side, RIDER_LEVEL < OTHER_LEVEL)));
+        }
+        None => rd.collide_other(None),
+    }
+    other
+}
+
 /// What a car's step and the game's level step (vehicles.rs, one physics level for every car) hand each other at the
 /// step's yields - the original's order for several cars (F-93826: every car's update, F-38310: every body's move
 /// (F-44566), one collide over every pair, F-96487: each island solved once, every body integrated, the push solve):
@@ -5747,14 +5766,28 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                         vs.engine_w = e.idle_rpm * 0.104_719_76;
                         vs.aero_damp = 1.0;
                         stood = true;
-                        vs.set_down = true;
+                        // (F-68574 clears the collider's +660: the next deep push renews the last matrix, F-32811)
+                        vs.last_set = false;
+                        // (F-84012 then runs mcCarSim's slot 6, F-24284: each wheel's composite part = its world matrix,
+                        // as this update's F-17997 made it at the old pose, x the inverse of the new chassis matrix -
+                        // se.0 216: the parts at the wheels' old places. The step's collide and the next update's wheel
+                        // touch take them so)
+                        let chassis = [rows1[0], rows1[1], rows1[2], origin1];
+                        for w in vs.wheels.iter_mut() {
+                            if let Some(world) = w.world {
+                                w.part = Some(super::gjk::part_matrix(&world, &chassis));
+                            }
+                        }
                     }
                 }
                 _ => {}
             }
         }
         let (v_in, w_in) = if stood { (Vec3::ZERO, Vec3::ZERO) } else { (v_in, w_in) };
-        let exact_collide = exact_collide && !stood;
+        // (the step after the stand-up collides as any other (F-27744: the hull at its new place with no kept contacts,
+        // the wheels' parts as F-24284 left them): nothing makes a car skip a collide; se.0 216 has nothing near.
+        // MCLA_DBG_STOODSKIP: no collide on that tick, as before)
+        let exact_collide = exact_collide && !(stood && dbg_flag("MCLA_DBG_STOODSKIP"));
         // ---- the body against the city (F-82759, F-68442): what the hull touches where
         // the move has brought it, the contacts kept from earlier ticks, the car's callback,
         // and the velocity solve - whose impulses go into the momenta with the tick's forces ----
@@ -5785,7 +5818,8 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
         // (the game's level step, F-38310: every body moves before anything collides - this car's moved body, with this
         // tick's forces, for the other cars' collides and solves)
         if let (Some(x), true) = (x, exact_collide) {
-            let now = [rows0[0], rows0[1], rows0[2], body_rows[3]];
+            // (after the stand-up the last matrix is the new one too - F-68574: no sweep)
+            let now = if stood { [rows1[0], rows1[1], rows1[2], origin1] } else { [rows0[0], rows0[1], rows0[2], body_rows[3]] };
             let mut b = super::loose::PBody::of_car(at1, rows1, v_in, w_in, mass, inertia, vs.hull_last.unwrap_or(now), now, force, torque);
             b.p = pm;
             b.l = lm;
@@ -6111,6 +6145,16 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             // (the game's level step, F-96487: every car collided before any island is solved. This car's share for an island
             // of several cars (its solver body, momenta, contacts with the city); given back: the island's answer when
             // another car's step solves it, or the other cars of its island, lent into the level, when this step does)
+            // (the thrown rider's collide with the vehicle he meets is part of this car's collide - F-38310's one collide
+            // over every pair, before any island: a vehicle of the level's step his contact meets joins this car's island)
+            let mut rider_met: Option<Option<usize>> = None;
+            if let (Some(x), Some(rd)) = (x, rider_run.as_mut()) {
+                let o = rider_meets(&vs.loose, rd, loose_world.is_some());
+                if let Some(v) = o.filter(|_| rd.other.manifolds.iter().any(|m| !m.slots.is_empty())).and_then(|o| vs.loose.objs[o].veh).filter(|v| v.here) {
+                    x.borrow_mut().touch_veh.push(v.index);
+                }
+                rider_met = Some(o);
+            }
             if let (Some(x), Some(_)) = (x, loose_world) {
                 use super::loose::Who;
                 let mut body = super::solver::Body { at: at1, rows: rows1, vel: if frozen { Vec3::ZERO } else { v_in }, ang: if frozen { Vec3::ZERO } else { w_in }, inv_mass: 1.0 / mass, inv_moments: inverse, force: if frozen { Vec3::ZERO } else { force }, torque: if frozen { Vec3::ZERO } else { torque } };
@@ -6126,7 +6170,9 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                 {
                     let mut g = x.borrow_mut();
                     let sides: Vec<Who> = loose_ids.iter().flat_map(|&k| [vs.loose.manis[k].a, vs.loose.manis[k].b]).collect();
+                    let met: Vec<u32> = std::mem::take(&mut g.touch_veh);
                     g.touch_veh = sides.iter().filter_map(|w| if let Who::Obj(o) = *w { vs.loose.objs[o].veh.filter(|v| v.here && v.pair).map(|v| v.index) } else { None }).collect();
+                    g.touch_veh.extend(met);
                     g.touch_obj = sides.iter().filter_map(|w| if let Who::Obj(o) = *w { vs.loose.objs[o].veh.is_none().then_some(o) } else { None }).collect();
                     g.share = Some(super::loose::ExtraCar::new(body, pm, lm, turn_left, contacts.clone(), parts));
                 }
@@ -6158,38 +6204,34 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                 // mcCar that stepped before the bike is not in the bike's level. Rider and car solve as one island when
                 // the bike is not in it and the car is in no other pair of the loose world; otherwise the car's rows
                 // only join (unported: the three-body island, and the car's other rows with his))
-                let mut other_obj: Option<usize> = None;
-                if loose_world.is_some() {
-                    let at = super::artic_collide::rows3(&rd.rd16)[3];
-                    other_obj = vs.loose.rider_partner(at, RIDER_PARTNER_REACH);
-                    match other_obj.and_then(|o| vs.loose.rider_side(o)) {
-                        Some((shape, shape2, cg, now, last)) => {
-                            let side = super::artic_collide::VehSide { hull: shape, hull_cg: cg, hull_margin: f32::from_bits(0x3d23_d70a), now, last, hull2: shape2, wheels: Vec::new() };
-                            rd.collide_other(Some((&side, RIDER_LEVEL < OTHER_LEVEL)));
-                        }
-                        None => rd.collide_other(None),
-                    }
-                } else {
-                    rd.collide_other(None);
-                }
+                let other_obj = match rider_met.take() {
+                    Some(o) => o,
+                    None => rider_meets(&vs.loose, rd, loose_world.is_some()),
+                };
                 let other_joins = other_obj.is_some() && rd.other.manifolds.iter().any(|m| !m.slots.is_empty());
                 if let (Some(o), true) = (other_obj, other_joins) {
                     vs.loose.ambient_wake(o);
                 }
                 let bike_joins = !rd.veh_now.is_empty() && rd.veh.manifolds.iter().any(|m| !m.slots.is_empty());
-                let car_body = other_obj.filter(|&o| other_joins && !bike_joins && !vs.loose.in_pairs(o)).and_then(|o| vs.loose.objs[o].body.map(|b| (o, b)));
+                // (the vehicle he met another car of the level's step, lent into this one's (vehicles.rs `step_cars`): in the
+                // bike's island - his rows join it - or apart from it - one island of that car's and his, solved here with
+                // that car the island's car, its answer handed back to its own step)
+                let in_bike = |o: usize| loose_ids.iter().any(|&k| vs.loose.manis[k].a == super::loose::Who::Obj(o) || vs.loose.manis[k].b == super::loose::Who::Obj(o));
+                let lent = other_obj.filter(|&o| other_joins && vs.loose.is_extra(o));
+                let extra_r = lent.filter(|&o| !bike_joins && !in_bike(o) && loose_world.is_some() && !dbg_flag("MCLA_DBG_RIDER_APART"));
+                let car_body = other_obj.filter(|&o| other_joins && !bike_joins && lent.is_none() && !vs.loose.in_pairs(o)).and_then(|o| vs.loose.objs[o].body.map(|b| (o, b)));
                 // (the car in other pairs of the loose world - a semi's hitch, its contacts with the city or the props - and
                 // not in the bike's island: one island of the loose world's and his, built and solved with the islands no
                 // car is in (`LooseState::step_rest_rider`; the game: after every car's step). MCLA_DBG_RIDER_APART: his
                 // island apart, the car's rows not solved with his (the order before))
-                let merge_o = other_obj.filter(|&o| other_joins && !bike_joins && car_body.is_none() && vs.loose.in_pairs(o) && !loose_ids.iter().any(|&k| vs.loose.manis[k].a == super::loose::Who::Obj(o) || vs.loose.manis[k].b == super::loose::Who::Obj(o)) && !dbg_flag("MCLA_DBG_RIDER_APART"));
+                let merge_o = other_obj.filter(|&o| other_joins && !bike_joins && lent.is_none() && car_body.is_none() && vs.loose.in_pairs(o) && !loose_ids.iter().any(|&k| vs.loose.manis[k].a == super::loose::Who::Obj(o) || vs.loose.manis[k].b == super::loose::Who::Obj(o)) && !dbg_flag("MCLA_DBG_RIDER_APART"));
                 let other = other_joins.then(|| super::artic_run::OtherRows { level: OTHER_LEVEL, rider_level: RIDER_LEVEL, shared: car_body.is_some(), touch: other_obj.and_then(|o| vs.loose.objs[o].veh).and_then(|v| v.rider_touch) });
                 // (his pair with the bike holds contacts and the bike's island holds loose objects, or the vehicle he met is one:
                 // one island of the bike's, the loose world's and his (F-96487 / F-14298, one solve per island) - the bike the
                 // island's car, his rows and the loose world's in the merged order (artic_run.rs `cache_order` /
                 // `merged_rows`), the vehicle's own island taken in when it is apart from the bike's. MCLA_DBG_RIDER_APART:
                 // his island apart (the order before))
-                let step2 = bike_joins && loose_world.is_some() && (loose_touch || other_joins) && !dbg_flag("MCLA_DBG_RIDER_APART");
+                let step2 = (bike_joins || lent.is_some_and(|o| in_bike(o))) && loose_world.is_some() && (loose_touch || other_joins) && !dbg_flag("MCLA_DBG_RIDER_APART");
                 if step2 {
                     let mut ids = loose_ids.clone();
                     if let Some(o) = other_obj.filter(|_| other_joins) {
@@ -6211,6 +6253,69 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                     let isl = rd.build(&super::artic_run::Outside { others: (0, 0.0), parts: Vec::new(), bike: Some(bike2), other: other2, loose: Some(loose) });
                     log::debug!("rider: in the bike's island with the loose world, rows {}, manifolds {}, other vehicle {:?}", isl.rows.len(), ids.len(), o);
                     rider_step2 = Some((isl, slots, o.unwrap_or(usize::MAX), ids));
+                } else if let Some(o) = extra_r {
+                    // (his island and the other car's, apart from the bike's (F-96487: one island over every pair he and that
+                    // car are in): built and solved with that car the island's car - its contacts with the city its own rows,
+                    // his rows with it on its side (`RiderMerge::other` usize::MAX), its other manifolds the island's - then the
+                    // breaking pass, the push solve, and his post-solve / post-push; the car's answer (impulse, turn, momenta,
+                    // push, its contacts' results, the island as its callbacks see it) for its own step)
+                    use super::loose::Who;
+                    let lw = loose_world.unwrap();
+                    let k = vs.loose.extras.iter().position(|e| e.obj == o).unwrap();
+                    let tag = vs.loose.extras[k].uid + 1;
+                    let part = vs.loose.take_car();
+                    vs.loose.manis.retain(|m| !(m.owner == tag && m.b == Who::City && m.cell == usize::MAX));
+                    vs.loose.swap_who(Who::Obj(o), Who::Car);
+                    let (city, city_part) = (vs.loose.extras[k].city.clone(), vs.loose.extras[k].city_part.clone());
+                    let e = &vs.loose.extras[k];
+                    let (mut body, mut p_r, mut l_r, mass_r) = (e.body, e.p, e.l, e.mass);
+                    let start = super::solver::Pushed { push: Vec3::ZERO, turn: e.turn_left, deep: false };
+                    vs.loose.islands_again(!city.is_empty());
+                    let ids = vs.loose.car_island();
+                    let (nodes, slots) = vs.loose.rider_nodes(&ids);
+                    let (car_level, car_key) = vs.loose.car_place();
+                    let rl = super::loose::RIDER_LOOSE_LEVEL;
+                    let bike_r = super::artic_run::BikeRows { level: car_level, rider_level: rl, city: (!city.is_empty()).then(|| city.len()), rider: None, city_on: vec![true; city.len()], touch: None, shared: true };
+                    let other_r = other.map(|x| super::artic_run::OtherRows { level: car_level, rider_level: rl, shared: true, ..x });
+                    let loose = super::artic_run::LooseRows { nodes, rider_level: rl, rider_key: super::loose::RIDER_LOOSE_KEY, city_key: vs.loose.city_key(), other_key: car_key, bike_key: car_key };
+                    let isl = rd.build(&super::artic_run::Outside { others: (0, 0.0), parts: Vec::new(), bike: Some(bike_r), other: other_r, loose: Some(loose) });
+                    log::debug!("rider: in the island of car object {o} (not the bike's), rows {}, manifolds {}", isl.rows.len(), ids.len());
+                    let on = vec![true; city.len()];
+                    let mut dynm = super::loose::CarDyn { p: &mut p_r, l: &mut l_r, mass: mass_r, inverse: body.inv_moments, rows: body.rows };
+                    let mut mg = super::loose::RiderMerge { body: &mut rd.body, isl, slots, other: usize::MAX, rider_key: super::loose::RIDER_LOOSE_KEY };
+                    let solve_from = body;
+                    let mut out = vs.loose.solve_island(lw, &car_in, &mut body, &mut dynm, &city, &on, &city_part, &ids, dt, Some(&mut mg));
+                    let super::loose::RiderMerge { isl, slots, .. } = mg;
+                    let (fall, motion) = rd.after_solve(&isl, dt);
+                    rider_tick.island = true;
+                    rider_tick.contacts = isl.city_rows;
+                    rider_tick.body_fall = fall;
+                    rider_tick.motion = motion;
+                    let mut mg = super::loose::RiderMerge { body: &mut rd.body, isl, slots, other: usize::MAX, rider_key: super::loose::RIDER_LOOSE_KEY };
+                    let pushed = vs.loose.push_island(&mut out, &solve_from, start, dt, Some(&mut mg));
+                    let isl = mg.isl;
+                    rd.finish(&isl, dt);
+                    let mut city = city;
+                    for (l, t) in out.links.iter().zip(out.touches.iter()) {
+                        if l.from.is_none() && !l.rider {
+                            city[l.car_row].kept = t.kept;
+                            city[l.car_row].impulse = t.impulse;
+                            city[l.car_row].pushed = t.pushed;
+                        }
+                    }
+                    vs.loose.swap_who(Who::Obj(o), Who::Car);
+                    vs.loose.put_car(part);
+                    let e = &mut vs.loose.extras[k];
+                    e.impulse = out.impulse;
+                    e.turning = out.turning;
+                    e.p = p_r;
+                    e.l = l_r;
+                    e.pushed = pushed;
+                    e.city = city;
+                    e.view = Some(out);
+                    vs.loose.islands_again(car_city_pair);
+                    loose_ids = vs.loose.car_island();
+                    loose_touch = !loose_ids.is_empty();
                 } else if let Some(o) = merge_o {
                     rider_job = Some(super::loose::RiderJob { outside: super::artic_run::Outside { others: (0, 0.0), parts: Vec::new(), bike: Some(bike), other, loose: None }, other: o });
                 } else {

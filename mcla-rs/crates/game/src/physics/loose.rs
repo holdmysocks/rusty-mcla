@@ -2052,6 +2052,8 @@ pub struct ExtraCar {
     pub off: (Vec3, Vec3),
     pub view: Option<IslandOut>,
     pub pushed: Pushed,
+    /// its mass (the breaking pass's shares and the solve of an island it is the car of: the rider's partner)
+    pub mass: f32,
 }
 
 impl Clone for ExtraCar {
@@ -2068,7 +2070,7 @@ impl std::fmt::Debug for ExtraCar {
 
 impl ExtraCar {
     pub fn new(body: Body, p: Vec3, l: Vec3, turn_left: Vec3, city: Vec<solver::Contact>, city_part: Vec<u8>) -> ExtraCar {
-        ExtraCar { uid: 0, obj: usize::MAX, body, p, l, turn_left, city, city_part, city_order: None, impulse: Vec3::ZERO, turning: Vec3::ZERO, runs: Vec::new(), off: (Vec3::ZERO, Vec3::ZERO), view: None, pushed: Pushed::default() }
+        ExtraCar { uid: 0, obj: usize::MAX, body, p, l, turn_left, city, city_part, city_order: None, impulse: Vec3::ZERO, turning: Vec3::ZERO, runs: Vec::new(), off: (Vec3::ZERO, Vec3::ZERO), view: None, pushed: Pushed::default(), mass: 1.0 / body.inv_mass }
     }
 }
 
@@ -2200,6 +2202,11 @@ impl LooseState {
                     l
                 })
                 .collect();
+            // (a car whose rows are not in this island - joined to it through the thrown rider only, its own island solved
+            // apart: vehsim.rs - gets none here)
+            if !links.iter().any(|l| l.a == Some(Who::Car) || l.b == Some(Who::Car) || (l.from.is_none() && !l.rider && l.b.is_none())) {
+                continue;
+            }
             let x = &self.extras[e];
             let view = IslandOut { touches: out.touches.clone(), links, bodies: out.bodies.clone(), owners: out.owners.clone(), solved: solver::IslandSolved::empty(), impulse: Vec3::ZERO, turning: Vec3::ZERO, by_b: out.by_b.clone(), car_runs: x.runs.clone(), off_a: x.off.0, off_b: x.off.1, rider_rows: Vec::new() };
             self.extras[e].view = Some(view);
@@ -2432,6 +2439,9 @@ impl LooseState {
                 // (his vehicle side: the bike - the island's car, body 0 - or the other vehicle's object)
                 let who = match mg.isl.partner(j) {
                     Some(true) => Who::Car,
+                    // (`other` usize::MAX: his partner vehicle is the island's car - another car's island, solved in his
+                    // bike's step: vehsim.rs)
+                    _ if mg.other == usize::MAX => Who::Car,
                     _ => Who::Obj(mg.other),
                 };
                 let veh = |b: Option<usize>| if b.is_some() { Some(who) } else { None };
@@ -3921,6 +3931,20 @@ impl PBody {
 }
 
 impl LooseState {
+    /// Two objects' names swapped in every manifold (the island of another car solved in this car's step, that car the
+    /// island's `Car`: vehsim.rs).
+    pub fn swap_who(&mut self, a: Who, b: Who) {
+        for m in self.manis.iter_mut() {
+            for w in [&mut m.a, &mut m.b] {
+                if *w == a {
+                    *w = b;
+                } else if *w == b {
+                    *w = a;
+                }
+            }
+        }
+    }
+
     /// The stepping car's own part out of the level (before another car steps in it).
     pub fn take_car(&mut self) -> CarPart {
         let (mine, rest): (Vec<Mani>, Vec<Mani>) = std::mem::take(&mut self.manis).into_iter().partition(|m| m.a == Who::Car || m.b == Who::Car);
