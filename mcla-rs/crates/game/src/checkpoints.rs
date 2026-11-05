@@ -654,6 +654,23 @@ pub struct Shown {
     pub height: f32,
 }
 
+/// `F-64647`, run by `F-34461` after the ground probe whenever the checkpoint was moved (+160, set by
+/// `Checkpoint_SetPosition` / `SetPositionSecond`): +176 = 25 (overwriting the script's `Checkpoint_SetHeight`, which
+/// every race script calls before the core's `CheckpointManager_SetActiveCheckpointList` runs the probe), then the
+/// level probe from the marker (+112, on the ground) 25 m straight up (city bound, one-sided, one hit); on a hit +176 =
+/// the distance to it (dy, dz, dx summed as the code does).
+pub const CEILING_PROBE: f32 = 25.0;
+
+pub fn ceiling_height(marker: Vec3, hit: Option<Vec3>) -> f32 {
+    match hit {
+        Some(h) => {
+            let (dy, dz, dx) = (h.y - marker.y, h.z - marker.z, h.x - marker.x);
+            (fmadds(dx, dx, fmadds(dz, dz, dy * dy)) as f64).sqrt() as f32
+        }
+        None => CEILING_PROBE,
+    }
+}
+
 /// The flare's "Height" evolution value: (height - 13) / (34 - 13), 0..1 (`F-76770`
 /// A-21072..A-52077; 13 and 34 put at 0x8286EF90 / 0x827DD01C by `F-16373`).
 pub fn height_evo(height: f32) -> f32 {
@@ -1148,6 +1165,16 @@ mod tests {
         assert_eq!(t[16], CpTune::default());
         assert_eq!(t[4].inner1, [0.15, 0.95, 0.9, 0.25]);
         assert_eq!(t[3].outer1, [0.95, 0.95, 0.95, 0.25]);
+    }
+
+    /// F-64647: open sky gives 25 (the flare's Height evolution 12/21), a roof 8 m up gives 8.
+    #[test]
+    fn ceiling_probe_sets_the_flare_height() {
+        let m = Vec3::new(10.0, 3.0, -4.0);
+        assert_eq!(ceiling_height(m, None), 25.0);
+        assert_eq!(ceiling_height(m, Some(m + Vec3::Y * 8.0)), 8.0);
+        assert!((height_evo(ceiling_height(m, None)) - 12.0 / 21.0).abs() < 1e-6);
+        assert_eq!(height_evo(ceiling_height(m, Some(m + Vec3::Y * 8.0))), 0.0);
     }
 
     /// MCLA_CP_RACE=<race id>: print a race's checkpoints as its script sets them up.

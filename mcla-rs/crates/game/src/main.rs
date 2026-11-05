@@ -7506,18 +7506,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             let cp3_raw: Vec<Vec3> = shown.iter().map(|s| s.pos).collect();
-            // (the script's height of each - the flare's "Height" evolution - and +112: the marker
-            // stands on the ground found from 2 m above to 2 m below it, F-34461)
-            if let Some(race) = self.game.race.as_ref() {
-                for s in shown.iter_mut() {
-                    if let Some(sp) = checkpoints::spec_at(&race.cp_specs, s.pos + Vec3::Y * 0.2) {
-                        s.height = sp.height;
-                    }
-                }
-            }
+            // (+112: the marker stands on the ground found from 2 m above to 2 m below it, F-34461; then
+            // its height +176 - the flare's "Height" evolution - is the room above it, up to 25 m, F-64647:
+            // the script's Checkpoint_SetHeight is overwritten by it. The flag games' markers keep 100: their
+            // CTF objects' heights are not decoded)
+            let flags = self.game.flag.is_some();
             for s in shown.iter_mut() {
                 if let Some(h) = world.collider.raycast(s.pos + Vec3::Y * 2.0, -Vec3::Y, 4.0) {
                     s.pos = h.point;
+                }
+                if !flags {
+                    let up = world.collider.probe_front(s.pos, Vec3::Y, checkpoints::CEILING_PROBE).map(|h| h.point);
+                    s.height = checkpoints::ceiling_height(s.pos, up);
                 }
             }
             // (test hook MCLA_CP_KIND=<0..17>: every open checkpoint wears that look - screenshots)
