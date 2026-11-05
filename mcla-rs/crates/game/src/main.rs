@@ -6198,9 +6198,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     flash = false;
                 }
                 if flash && self.roam.near_is_rival && self.roam.challenge.is_none() && std::env::var("MCLA_ROAM_TEST").is_err() {
-                    if let Some(text) = self.game.class_restriction() {
-                        if pressed { refused(&format!("class restriction: {text}"), &self.roam, &self.vehicles, &world); }
-                        self.game.show_message(&text);
+                    if let Some((title, desc)) = self.game.class_restriction() {
+                        if pressed { refused(&format!("class restriction: {desc}"), &self.roam, &self.vehicles, &world); }
+                        // (the story script's OK box, waited on until it is closed: MessageBox_GetMessageBoxVisible /
+                        // _GetMessageBoxResult; then the hookman goes back to waiting - mcHookman_SetState(2))
+                        if pressed && self.game.message_box.is_none() {
+                            self.game.message_box = Some((crate::flash_ui::MessageBoxDef { title, description: desc, options: Vec::new() }, 0, MenuAction::None));
+                        }
                         flash = false;
                     }
                 }

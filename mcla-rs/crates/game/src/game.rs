@@ -2744,23 +2744,29 @@ impl Game {
     }
 
     /// A hookman's class restriction the player's car does not meet (the mission's id names
-    /// the class: BEAT_SH_02_BCLASS, MUSCLE_CHAMP ...): the game's sentence for it.
-    pub fn class_restriction(&self) -> Option<String> {
+    /// the class: BEAT_SH_02_BCLASS, MUSCLE_CHAMP ...): the box's title and sentence keys. The
+    /// story scripts show it as an OK box, MessageBox_ShowMessageBox(racer, "<ID>_RESTRICTION",
+    /// title, 1, 1): VEHICLE_CLASS_RESTRICTION for a performance class (Racer_GetPerformanceClass),
+    /// VEHICLE_TYPE_RESTRICTION for a type (Racer_GetVehicleClass: 1 muscle, 4 luxury, 6 SUV ...;
+    /// Racer_IsMotorcycle) - game/career/Story/*, e.g. 0x156c2b36 0x3c3..0x45d.
+    pub fn class_restriction(&self) -> Option<(String, String)> {
         let info = self.catalog.get(&self.dir_name(self.current_car))?;
         // (the rival on the road is the one of the oldest hookman mission: his rule counts)
         let rival = self.career.hookman_mission().map(|m| m.to_ascii_uppercase());
         for (id, text) in self.career.restrictions().into_iter().filter(|(id, _)| rival.as_deref() == Some(id.as_str())) {
-            let ok = if let Some(g) = ["ACLASS", "BCLASS", "CCLASS", "DCLASS"].iter().find(|g| id.contains(*g)) {
+            let by_class = ["ACLASS", "BCLASS", "CCLASS", "DCLASS"].iter().find(|g| id.contains(*g));
+            let ok = if let Some(g) = by_class {
                 info.group.to_ascii_uppercase().starts_with(&g[..1])
             } else if id.contains("MOTORCYCLE") {
                 info.class.eq_ignore_ascii_case("SPORTBIKE")
-            } else if let Some(c) = ["MUSCLE", "TUNER", "EXOTIC", "LUXURY"].iter().find(|c| id.contains(*c)) {
+            } else if let Some(c) = ["MUSCLE", "TUNER", "EXOTIC", "LUXURY", "SUV"].iter().find(|c| id.contains(*c)) {
                 info.class.eq_ignore_ascii_case(c)
             } else {
                 true
             };
             if !ok {
-                return Some(text.to_uppercase());
+                let _ = text;
+                return Some(restriction_box(&id));
             }
         }
         None
@@ -15114,6 +15120,14 @@ fn paint_rgb_to_hsv(c: [f32; 4]) -> [f32; 3] {
 }
 
 /// Hue, saturation, brightness (0..1) as RGB (0..1).
+/// A hookman mission's restriction box (title, sentence keys): a performance class (A..D) is
+/// VEHICLE_CLASS_RESTRICTION, a vehicle type VEHICLE_TYPE_RESTRICTION (the story scripts' pairs).
+pub fn restriction_box(id: &str) -> (String, String) {
+    let by_class = ["ACLASS", "BCLASS", "CCLASS", "DCLASS"].iter().any(|g| id.contains(*g));
+    let title = if by_class { "VEHICLE_CLASS_RESTRICTION" } else { "VEHICLE_TYPE_RESTRICTION" };
+    (title.to_string(), format!("{id}_RESTRICTION"))
+}
+
 fn paint_hsv_to_rgb(h: [f32; 3]) -> [f32; 3] {
     let x = h[0].rem_euclid(1.0) * 6.0;
     let (i, f) = (x.floor() as i32 % 6, x - x.floor());
@@ -15348,6 +15362,21 @@ mod ui_original_tests;
 #[cfg(test)]
 mod tests {
     use super::Game;
+
+    /// The restriction boxes as the story scripts show them (MessageBox_ShowMessageBox's sentence
+    /// and title strings, work/career2/re/dis game|sc__career__Story__*): the 17 distinct pairs of the 18 scripts.
+    #[test]
+    fn restriction_boxes_are_the_story_scripts() {
+        let pairs = [
+            ("BESTOF_SH_03_LUXURY", "TYPE"), ("MUSCLE_CHAMP", "TYPE"), ("LUXURY_CHAMP", "TYPE"), ("BEAT_SH_04_MOTORCYCLE", "TYPE"),
+            ("EXOTIC_CHAMP", "TYPE"), ("BEAT_SH_05_ACLASS", "CLASS"), ("MOTORCYCLE_CHAMP", "TYPE"), ("BEAT_SH_03_ACLASS", "CLASS"),
+            ("BEAT_SH_03_CCLASS", "CLASS"), ("BESTOF_SH_02_EXOTIC", "TYPE"), ("BEAT_SH_02_BCLASS", "CLASS"), ("BEAT_SH_04_BCLASS", "CLASS"),
+            ("BEAT_SH_02_CCLASS", "CLASS"), ("TUNER_CHAMP", "TYPE"), ("BEAT_SH_06_BCLASS", "CLASS"), ("BEAT_GH_26_SUV", "TYPE"), ("BEAT_SH_06_SUV", "TYPE"),
+        ];
+        for (id, kind) in pairs {
+            assert_eq!(super::restriction_box(id), (format!("VEHICLE_{kind}_RESTRICTION"), format!("{id}_RESTRICTION")), "{id}");
+        }
+    }
 
     /// The player's set-up carries the record's wide body kit (+2203) the BODY part sets, so the wheels stand at the
     /// wide fenders (WheelFit::fit takes FenderEdge[axle][+2203]); a car with no parts kept takes its `.xcc`'s.
