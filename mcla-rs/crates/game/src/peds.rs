@@ -1476,10 +1476,11 @@ fn dodge_frame(p: &mut Ped, ty: &PedType, threats: &[Threat], col: Option<&World
     if m.flags & 4 == 0 {
         return false;
     }
-    // the slide (F-56160)
+    // the slide (F-56160): M+240 += dt; the end (M+240 >= M+244) is not tested on the slide's first step (M+240 was 0.0
+    // before it), so a slide shorter than a frame still lasts two
     let time = m.time + dt;
     p.dodge.time = time;
-    let done = time >= m.len;
+    let done = m.time != 0.0 && time >= m.len;
     if done {
         p.dodge.clip = None;
         p.dodge.flags &= !4;
@@ -1579,8 +1580,8 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
     let (query_around, query) = (due & 2 != 0, due & 4 != 0);
     let ahead = p.pos + fwd * (AHEAD_MAX * rand());
     // sliding aside
-    if let Some((a, b, t, len)) = p.slide {
-        let t = t + dt;
+    if let Some((a, b, t0, len)) = p.slide {
+        let t = t0 + dt;
         p.pos = a.lerp(b, (t / len).min(1.0));
         // (the target faces the push while sliding aside: F-94626 builds T's r2 from behaviour +400, the push F-83234
         // stores there)
@@ -1589,7 +1590,8 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
         let s = slide_speed(a, b, len);
         let (st, want, lag) = locomotion(4, p.stop, true, p.scale, false, || s, &ty.a28, &ty.a36);
         p.speed += (want - p.speed) * (dt / lag).min(1.0);
-        p.slide = if t >= len { None } else { Some((a, b, t, len)) };
+        // (F-56160: no end on the slide's first step, when the time was 0.0)
+        p.slide = if t0 != 0.0 && t >= len { None } else { Some((a, b, t, len)) };
         return loco_clip(p, ty, st, 4, s);
     }
     // a reversed path: turn round as it is taken (F-95960; a Pivot clip beyond
@@ -4007,5 +4009,350 @@ mod tests {
         eprintln!("people room: {cases} cases ({blocked} no room), {bad} mismatches");
         assert!(cases >= 4000);
         assert_eq!(bad, 0);
+    }
+
+    /// One walker update of a recording of the running original (work/traffic-detail/fix37/tools/mkcases.py): the world's
+    /// answers in the order the original asked, every query the port makes checked against them.
+    struct ReplayWorld {
+        ins: Option<bool>,
+        sw: Vec<Vec<u32>>,
+        gr: Vec<Vec<u32>>,
+        ln: Vec<Vec<u32>>,
+        mv: Vec<Vec<u32>>,
+        ent: u32,
+        isw: usize,
+        igr: usize,
+        iln: usize,
+        bad: Vec<String>,
+        say: Option<u32>,
+    }
+
+    fn rv(c: &[u32], i: usize) -> Vec3 {
+        Vec3::new(f32::from_bits(c[i]), f32::from_bits(c[i + 1]), f32::from_bits(c[i + 2]))
+    }
+
+    fn same(a: Vec3, c: &[u32], i: usize) -> bool {
+        a.x.to_bits() == c[i] && a.y.to_bits() == c[i + 1] && a.z.to_bits() == c[i + 2]
+    }
+
+    impl DodgeWorld for ReplayWorld {
+        fn inside(&mut self, _c: Vec3, _r: f32) -> bool {
+            match self.ins.take() {
+                Some(v) => v,
+                None => {
+                    self.bad.push("inside: not asked in the original".into());
+                    false
+                }
+            }
+        }
+        fn sweep(&mut self, a: Vec3, b: Vec3, r: f32, car: bool) -> Option<(Vec3, u32)> {
+            let Some(s) = self.sw.get(self.isw).cloned() else {
+                self.bad.push(format!("sweep {}: not asked in the original", self.isw));
+                return None;
+            };
+            self.isw += 1;
+            if !(same(a, &s, 0) && same(b, &s, 3) && r.to_bits() == s[6]) {
+                self.bad.push(format!("sweep {} {a} -> {b} r {r} (car {car}), original {} -> {} r {}", self.isw - 1, rv(&s, 0), rv(&s, 3), f32::from_bits(s[6])));
+            }
+            (s[7] != 0).then(|| (rv(&s, 8), s[11]))
+        }
+        fn ground(&mut self, a: Vec3, b: Vec3) -> bool {
+            let Some(g) = self.gr.get(self.igr).cloned() else {
+                self.bad.push(format!("ground {}: not asked in the original", self.igr));
+                return false;
+            };
+            self.igr += 1;
+            if !(same(a, &g, 0) && same(b, &g, 3)) {
+                self.bad.push(format!("ground {} {a} -> {b}, original {} -> {}", self.igr - 1, rv(&g, 0), rv(&g, 3)));
+            }
+            g[6] != 0
+        }
+        fn lane(&mut self, x: Vec3, r: f32) -> Option<(Vec3, f32)> {
+            let Some(l) = self.ln.get(self.iln).cloned() else {
+                self.bad.push(format!("lane {}: not asked in the original", self.iln));
+                return None;
+            };
+            self.iln += 1;
+            if !(same(x, &l, 0) && r.to_bits() == l[3]) {
+                self.bad.push(format!("lane {} at {x} r {r}, original {} r {}", self.iln - 1, rv(&l, 0), f32::from_bits(l[3])));
+            }
+            (l[4] & 0xFF != 0).then(|| (rv(&l, 5), f32::from_bits(l[8])))
+        }
+        fn mover(&mut self, clip: usize, t: f32) -> Vec3 {
+            let e = self.ent + 20 * clip as u32;
+            // the sample of that entry at that time (F-37443's: at the floored time, site 0, and at the clip's end, site 1;
+            // the re path's, site 2)
+            // (site 2 records T, not the time + T the re path asks at: one per update)
+            let hit = self.mv.iter().find(|m| m[1] == e && ((m[0] == 0 && f32::from_bits(m[2]) == t) || m[0] == 2));
+            let end = self.mv.iter().find(|m| m[1] == e && m[0] == 1);
+            match (hit, end) {
+                (Some(m), _) => rv(m, 3),
+                (None, Some(m)) => rv(m, 3),
+                _ => {
+                    self.bad.push(format!("mover {clip} at {t}: not sampled in the original"));
+                    Vec3::ZERO
+                }
+            }
+        }
+        fn stop(&mut self) {}
+        fn speech(&mut self, kind: u32) {
+            self.say = Some(kind);
+        }
+        fn drop_rails(&mut self) {}
+    }
+
+    /// The avoidance part's words (M as u32 words) the dodge writes, as the port holds them; `cars` maps the threat index
+    /// to the recorded object, `ent` the avoid list entries to their addresses.
+    fn avoid_words(m: &Avoid, cars: &[u32], ent: u32) -> Vec<(usize, u32)> {
+        let mut o = Vec::new();
+        for (k, p) in m.pts.iter().enumerate() {
+            o.extend([(4 * k, p.x.to_bits()), (4 * k + 1, p.y.to_bits()), (4 * k + 2, p.z.to_bits())]);
+        }
+        o.push((20, m.car.map_or(0, |j| cars.get(j).copied().unwrap_or(0xFFFF_FFFF))));
+        for (w, v) in [(24, m.stop_at), (32, m.dir), (40, m.from), (44, m.to)] {
+            o.extend([(w, v.x.to_bits()), (w + 1, v.y.to_bits()), (w + 2, v.z.to_bits())]);
+        }
+        o.extend([(59, m.t.to_bits()), (60, m.time.to_bits()), (61, m.len.to_bits()), (62, m.clip.map_or(0, |e| ent + 20 * e as u32))]);
+        o.extend([(63, m.yaw.to_bits()), (64, m.stretch.to_bits()), (65, m.flags & 6)]);
+        o
+    }
+
+    fn avoid_of(w: &[u32], cars: &[u32], ent: u32) -> Avoid {
+        let f = |i: usize| f32::from_bits(w[i]);
+        Avoid {
+            pts: [rv(w, 0), rv(w, 4), rv(w, 8), rv(w, 12), rv(w, 16)],
+            car: (w[20] != 0).then(|| cars.iter().position(|&o| o == w[20]).unwrap_or(usize::MAX)),
+            stop_at: rv(w, 24),
+            dir: rv(w, 32),
+            from: rv(w, 40),
+            to: rv(w, 44),
+            t: f(59),
+            time: f(60),
+            len: f(61),
+            clip: (w[62] != 0).then(|| ((w[62] - ent) / 20) as usize),
+            yaw: f(63),
+            stretch: f(64),
+            flags: w[65],
+        }
+    }
+
+    fn word_name(w: usize) -> String {
+        match w {
+            0..=19 => format!("P{}.{}", w / 4, w % 4),
+            20 => "car".into(),
+            24..=26 => format!("stop_at.{}", w - 24),
+            32..=34 => format!("dir.{}", w - 32),
+            40..=42 => format!("from.{}", w - 40),
+            44..=46 => format!("to.{}", w - 44),
+            59 => "T".into(),
+            60 => "time".into(),
+            61 => "len".into(),
+            62 => "clip".into(),
+            63 => "yaw".into(),
+            64 => "stretch".into(),
+            65 => "flags".into(),
+            _ => format!("w{w}"),
+        }
+    }
+
+    /// The car dodge replayed on recordings of the running original (MCLA_DODGE_REPLAY = a case file of
+    /// work/traffic-detail/fix37/tools/mkcases.py; docs/reference/people/car_dodge_rule.md "Evidence vs the running
+    /// original"). (1) Each recorded walker update with a grid object past the moving test: the walker (P, r, U, rows, sex),
+    /// the avoidance part before, the objects as the original read them, the world's answers in the original's order;
+    /// `car_dodge` (F-15352 with F-94813 / F-78951 / F-50861 / F-83234 / F-37443) run on them; the words it writes compared
+    /// with the original's after the call, its queries with the original's. (2) The walker run free: the port's own
+    /// avoidance part carried from update to update with F-56160's step, against the recorded words before each update.
+    #[test]
+    #[ignore]
+    fn car_dodge_replays_the_recording() {
+        let Ok(path) = std::env::var("MCLA_DODGE_REPLAY") else { return };
+        let text = std::fs::read_to_string(&path).unwrap();
+        let h = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let mut items: Vec<AvoidItem> = Vec::new();
+        let mut durs: Vec<f32> = Vec::new();
+        let mut ent = 0u32;
+        let (mut cases, mut calls, mut equal, mut decided, mut dec_equal, mut q_bad) = (0, 0, 0, 0, 0, 0);
+        let mut shown = 0;
+        let mut free: HashMap<String, Avoid> = HashMap::new();
+        let (mut free_n, mut free_eq, mut free_first, mut free_own) = (0, 0, Vec::<String>::new(), 0);
+        let mut field_bad: HashMap<String, usize> = HashMap::new();
+        let mut free_bad: HashMap<String, usize> = HashMap::new();
+        let mut own_last: HashMap<String, bool> = HashMap::new();
+        let mut free_eq_ys = 0;
+        let mut free_seen: std::collections::HashSet<String> = Default::default();
+        let mut per_run: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
+        for line in text.lines() {
+            let mut kv: Vec<(&str, Vec<u32>)> = Vec::new();
+            let mut it = line.split(' ');
+            let kind = it.next().unwrap();
+            let mut head = String::new();
+            let mut run = String::new();
+            let mut wkey = String::new();
+            for t in it {
+                let (k, v) = t.split_once('=').unwrap();
+                match k {
+                    "run" | "f" | "w" => {
+                        head.push_str(&format!("{k}={v} "));
+                        if k == "run" {
+                            run = v.to_string();
+                        }
+                        if k == "w" {
+                            wkey = v.to_string();
+                        }
+                    }
+                    "e" => {
+                        let es: Vec<Vec<u32>> = v.split(';').map(|e| e.split(',').map(h).collect()).collect();
+                        items = es.iter().enumerate().map(|(i, e)| AvoidItem { ty: e[0], dir: e[1], clip: (e[2] != 0).then_some(i), audio: e[3] }).collect();
+                        durs = es.iter().map(|e| f32::from_bits(e[4])).collect();
+                    }
+                    _ => kv.push((k, v.split(',').map(h).collect())),
+                }
+            }
+            if kind == "avls" {
+                ent = kv.iter().find(|(k, _)| *k == "ent").unwrap().1[0];
+                continue;
+            }
+            let one = |k: &str| kv.iter().find(|(n, _)| *n == k).map(|x| x.1.clone());
+            let all = |k: &str| kv.iter().filter(|(n, _)| *n == k).map(|x| x.1.clone()).collect::<Vec<_>>();
+            cases += 1;
+            let c = |k: &str| one(k).unwrap();
+            let r = c("R");
+            let w = DodgeWalker { p: rv(&c("P"), 0), r: f32::from_bits(c("r")[0]), u: rv(&c("U"), 0), rows: [rv(&r, 0), rv(&r, 3), rv(&r, 6)], female: c("sex")[0] == 1 };
+            let dt = f32::from_bits(c("dt")[0]);
+            let objs = all("car");
+            let mut ptrs: Vec<u32> = objs.iter().map(|o| o[0]).collect();
+            let cars: Vec<DodgeCar> = objs
+                .iter()
+                .map(|o| DodgeCar {
+                    kind: o[1] as u8,
+                    rail: false,
+                    beh: true,
+                    active: true,
+                    a: rv(o, 2),
+                    c: rv(o, 5),
+                    q: rv(o, 8),
+                    // (the recorder reads the velocity of a racer's car from its body; for any other object (kind 2, the
+                    // ambient traffic) it has no known place, so the velocity the original used - v124 at the hook, flat -
+                    // stands in; kind 2 has no acceleration term)
+                    vel: if o[1] >= 2 { rv(o, 24) } else { rv(o, 11) },
+                    prev: if o[1] >= 2 { rv(o, 24) } else { rv(o, 14) },
+                    size: (f32::from_bits(o[17]), f32::from_bits(o[18])),
+                    rv: f32::from_bits(o[19]),
+                    burn: (o[20] != 0).then(|| f32::from_bits(o[21])),
+                    inst: o[22] != 0,
+                })
+                .collect();
+            let mi = c("Mi");
+            let mo = c("Mo");
+            // (a car the walker remembers - M+80 - that is not among this update's objects: an index past the objects, so
+            // it maps back to its pointer)
+            for w20 in [mi[20], mo[20]] {
+                if w20 != 0 && !ptrs.contains(&w20) {
+                    ptrs.push(w20);
+                }
+            }
+            let slid = one("slid");
+            let mwc = |k: usize| crate::vehicles::parked::Mwc { lo: slid.as_ref().map_or(0, |s| s[k]), carry: slid.as_ref().map_or(0, |s| s[k + 1]) };
+            let mk = || ReplayWorld { ins: one("ins").map(|v| v[0] != 0), sw: all("sw"), gr: all("gr"), ln: all("ln"), mv: all("mv"), ent, isw: 0, igr: 0, iln: 0, bad: Vec::new(), say: None };
+            let sp = one("sp").map(|v| v[0]);
+            if !cars.is_empty() {
+                let mut world = mk();
+                let mut m = avoid_of(&mi, &ptrs, ent);
+                let (mut speech, mut pick) = (mwc(11), mwc(13));
+                calls += 1;
+                car_dodge(&mut m, &w, &cars, dt, &items, &durs, &mut world, &mut speech, &mut pick);
+                let dec = one("ins").is_some() || one("srch").is_some();
+                decided += dec as usize;
+                let mut diff = Vec::new();
+                for (k, v) in avoid_words(&m, &ptrs, ent) {
+                    let o = if k == 65 { mo[k] & 6 } else { mo[k] };
+                    if o != v {
+                        *field_bad.entry(word_name(k)).or_default() += 1;
+                        diff.push(format!("{} port {:x} ({}) original {:x} ({})", word_name(k), v, f32::from_bits(v), o, f32::from_bits(o)));
+                    }
+                }
+                if world.isw != world.sw.len() || world.igr != world.gr.len() || world.iln != world.ln.len() || world.ins.is_some() {
+                    world.bad.push(format!("queries left: sweeps {}/{} grounds {}/{} lanes {}/{} inside {:?}", world.isw, world.sw.len(), world.igr, world.gr.len(), world.iln, world.ln.len(), world.ins));
+                }
+                if world.say != sp {
+                    diff.push(format!("speech port {:?} original {:?}", world.say, sp));
+                }
+                q_bad += (!world.bad.is_empty()) as usize;
+                let pr = per_run.entry(run.clone()).or_default();
+                pr.0 += 1;
+                pr.1 += (diff.is_empty() && world.bad.is_empty()) as usize;
+                let pr = *pr;
+                if diff.is_empty() && world.bad.is_empty() {
+                    equal += 1;
+                    dec_equal += dec as usize;
+                } else if pr.0 - pr.1 <= 3 {
+                    shown += 1;
+                    eprintln!("DIFF {head}(decision {dec}): {} | {}", diff.join("; "), world.bad.join("; "));
+                }
+            }
+            // (2) free run (resynced from the recording while a clip of the walker's own plays - M+260 bit 0x2, the turn to
+            // the car after a dodge and the like, not the dodge's: F-94431 / the clip timer of F-97113)
+            let rec_in = avoid_of(&mi, &ptrs, ent);
+            // (and at the update after one, which then runs from the recording: the clip's end - F-73407 - is not modelled)
+            let own = mi[65] & 2 != 0;
+            let after_own = own_last.insert(format!("{run}/{wkey}"), own).unwrap_or(false);
+            if own || after_own {
+                free.insert(format!("{run}/{wkey}"), rec_in);
+                free_own += 1;
+                if own {
+                    continue;
+                }
+            }
+            let fm = free.entry(format!("{run}/{wkey}")).or_insert(rec_in);
+            // (the bits other code sets - 0x1, 0x2 a clip of its own, 0x8 - from the recording; the port keeps 0x4)
+            fm.flags = (mi[65] & !4) | (fm.flags & 4);
+            free_n += (!after_own) as usize;
+            let mut d = Vec::new();
+            for ((k, a), (_, b)) in avoid_words(fm, &ptrs, ent).into_iter().zip(avoid_words(&rec_in, &ptrs, ent)) {
+                if a != b && k > 20 && !after_own {
+                    *free_bad.entry(word_name(k)).or_default() += 1;
+                    d.push(format!("{} port {} original {}", word_name(k), f32::from_bits(a), f32::from_bits(b)));
+                }
+            }
+            if !after_own && d.iter().all(|s| s.starts_with("yaw ") || s.starts_with("stretch ")) {
+                free_eq_ys += 1;
+            }
+            if after_own {
+            } else if d.is_empty() {
+                free_eq += 1;
+            } else if !d.iter().all(|s| s.starts_with("yaw ") || s.starts_with("stretch ")) && free_seen.insert(format!("{run}/{wkey}")) {
+                free_first.push(format!("{head}: {}", d.join("; ")));
+            }
+            let mut world = mk();
+            let (mut s2, mut p2) = (mwc(11), mwc(13));
+            let trace = std::env::var("MCLA_DODGE_REPLAY_W").is_ok_and(|v| v == wkey);
+            if trace {
+                eprintln!("TRACE {head}in port fl {:x} t {} len {} T {} | orig fl {:x} t {} len {} T {} | cars {}", fm.flags, fm.time, fm.len, fm.t, mi[65], f32::from_bits(mi[60]), f32::from_bits(mi[61]), f32::from_bits(mi[59]), cars.len());
+            }
+            car_dodge(fm, &w, &cars, dt, &items, &durs, &mut world, &mut s2, &mut p2);
+            if trace {
+                eprintln!("TRACE {head}out port fl {:x} t {} len {} T {} | orig fl {:x} t {} len {} T {} | {:?}", fm.flags, fm.time, fm.len, fm.t, mo[65], f32::from_bits(mo[60]), f32::from_bits(mo[61]), f32::from_bits(mo[59]), world.bad);
+            }
+            // F-56160 (the slide step) as dodge_frame does it
+            if fm.flags & 4 != 0 {
+                let first = fm.time == 0.0;
+                fm.time += dt;
+                if !first && fm.time >= fm.len {
+                    fm.clip = None;
+                    fm.flags &= !4;
+                }
+            }
+        }
+        let mut fb: Vec<_> = field_bad.into_iter().collect();
+        fb.sort();
+        eprintln!("replay {path}: {cases} walker updates, {calls} with objects past the moving test: {equal} equal (words written + queries + speech), {q_bad} with a query difference; {decided} with a decision (inside / search), {dec_equal} of them equal; words differing: {fb:?}");
+        eprintln!("per run (updates with objects, equal): {per_run:?}");
+        eprintln!("free run: {free_n} updates compared, {free_eq} with the avoidance part equal before the update; {free_own} updates during the walker's own clips (resynced)");
+        let mut fb: Vec<_> = free_bad.into_iter().collect();
+        fb.sort();
+        eprintln!("free run, words differing: {fb:?}; {free_eq_ys} equal but for yaw / stretch");
+        for l in free_first {
+            eprintln!("FREE {l}");
+        }
     }
 }
