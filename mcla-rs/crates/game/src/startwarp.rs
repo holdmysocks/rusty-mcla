@@ -51,6 +51,9 @@ pub const PRESTREAM_FRAMES: f32 = 3.0 / 30.0;
 pub const HANDOVER: f32 = 0.1;
 /// the career script's WAITUNWARPED(1000) after the flight, before 'loadSuccess' (LOADING away)
 pub const LOAD_SUCCESS_WAIT: f32 = 1.0;
+/// the career script's wait between its Warper_IsWarping polls (WAITUNWARPED(100), 0x67b..0x6a3); the first poll
+/// that finds the flight over calls Racer_Activate
+pub const ACTIVATE_POLL: f32 = 0.1;
 /// (port only: never hold longer than this for the world)
 const HOLD_CAP: f32 = 20.0;
 
@@ -71,6 +74,8 @@ pub struct StartWarp {
     ready_t: Option<f32>,
     hold_t: f32,
     down: Option<NavExit>,
+    /// time since the career script's Warper_Warp('USER_WAIT_NO_CUT_DOWN') (its IsWarping polls count from it)
+    call_t: Option<f32>,
     aspect: f32,
     /// a new career: the career script (local8 false, RACE_GH_06 not past state 2) never asks for
     /// USER_WAIT_NO_CUT_DOWN - UILogic_UnPauseCamera instead; the hold stays until CarSelection's black is up
@@ -84,7 +89,16 @@ impl StartWarp {
         climb.open(eye, look, car, aspect);
         let held = CamRows::look_at(eye, look, Vec3::Y);
         log::info!("start warp: Entering_Map_MaxHeight from {:?} lens {:.1}", eye, lens_deg);
-        StartWarp { phase: Phase::Climb, climb, lens: NavLens::between(lens_deg, MAP_LENS, 0.0, CLIMB_LENS_SHARE * CLIMB_T), t: 0.0, held, ready_t: None, hold_t: 0.0, down: None, aspect, stay: false }
+        StartWarp { phase: Phase::Climb, climb, lens: NavLens::between(lens_deg, MAP_LENS, 0.0, CLIMB_LENS_SHARE * CLIMB_T), t: 0.0, held, ready_t: None, hold_t: 0.0, down: None, call_t: None, aspect, stay: false }
+    }
+
+    /// Once the flight has landed: the time left until the career script's next Warper_IsWarping poll
+    /// (one every 0.1 s from its Warper_Warp), which finds the flight over and calls Racer_Activate.
+    /// Until then the player's car stays deactivated (the script's Racer_Deactivate after the load, 0x583).
+    pub fn activate_in(&self) -> f32 {
+        let c = self.call_t.unwrap_or(0.0);
+        let polls = (c / ACTIVATE_POLL - 1e-3).ceil().max(0.0);
+        (polls * ACTIVATE_POLL - c).max(0.0)
     }
 
     pub fn phase(&self) -> Phase {
@@ -106,6 +120,9 @@ impl StartWarp {
     /// flight has landed (the game camera takes over).
     pub fn step(&mut self, dt: f32, ready: bool, game: (Vec3, Vec3, Vec3)) -> Option<(Vec3, Vec3, Vec3, f32)> {
         self.t += dt;
+        if let Some(c) = self.call_t.as_mut() {
+            *c += dt;
+        }
         match self.phase {
             Phase::Climb => {
                 self.climb.update(dt, false, false, glam::Vec2::ZERO, self.aspect);
@@ -123,6 +140,10 @@ impl StartWarp {
                 self.hold_t += dt;
                 if !self.stay && (ready || self.hold_t > HOLD_CAP) {
                     *self.ready_t.get_or_insert(0.0) += dt;
+                }
+                if self.call_t.is_none() && self.ready_t.map_or(false, |r| r >= SCRIPT_WAIT - 1e-4) {
+                    // (the script's Warper_Warp, after its WAITUNWARPED(300))
+                    self.call_t = Some(self.ready_t.unwrap_or(0.0) - SCRIPT_WAIT);
                 }
                 if self.ready_t.map_or(false, |r| r >= SCRIPT_WAIT + PRESTREAM_FRAMES + HANDOVER - 1e-4) {
                     let e = CamRows::look_at(game.0, game.1, game.2);
@@ -178,5 +199,27 @@ mod tests {
         let last = frames.iter().filter(|f| f.1.is_some()).last().unwrap().1.unwrap();
         assert!((last.0 - game.0).length() < 0.5, "{:?}", last.0);
         assert!((last.3.to_degrees() - 25.0).abs() < 1e-3);
+    }
+
+    /// The career script's Racer_Activate: at its first Warper_IsWarping poll (every 0.1 s from Warper_Warp) that
+    /// finds the flight over - never before the landing, at most one poll after it
+    #[test]
+    fn activate_at_the_first_poll_after_the_landing() {
+        for (dt, ready_after) in [(1.0 / 30.0, 0usize), (1.0 / 60.0, 7), (1.0 / 45.0, 40)] {
+            let mut w = StartWarp::start(Vec3::new(0.0, 50.0, 0.0), Vec3::new(0.0, 0.0, 100.0), 40.0, Vec3::ZERO, 16.0 / 9.0);
+            let game = (Vec3::new(0.0, 3.0, -6.0), Vec3::ZERO, Vec3::Y);
+            let mut n = 0;
+            while w.step(dt, n >= ready_after, game).is_some() {
+                n += 1;
+                assert!(n < 2000);
+            }
+            let call = w.call_t.unwrap();
+            // Warper_Warp to the landing: state 14's 3 frames, state 26's 0.1 s and HighAltitude's 3.0 s
+            assert!((call - (PRESTREAM_FRAMES + HANDOVER + 3.0)).abs() < 2.0 * dt, "{call}");
+            let a = w.activate_in();
+            assert!((0.0..ACTIVATE_POLL + 1e-4).contains(&a), "{a}");
+            let polls = (call + a) / ACTIVATE_POLL;
+            assert!((polls - polls.round()).abs() < 1e-3, "{polls}");
+        }
     }
 }

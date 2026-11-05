@@ -689,6 +689,9 @@ struct App {
     startwarp: Option<startwarp::StartWarp>,
     /// its clock (s since START)
     startwarp_t: f32,
+    /// after the flight has landed: the time left until the career script's Racer_Activate (its next
+    /// Warper_IsWarping poll, `StartWarp::activate_in`); the player's car stays deactivated until then
+    load_activate: Option<f32>,
     /// the camera's outer wall rays: the distance each last found (infinite: nothing)
     cam_side_t: [f32; 4],
     /// the pad's buttons a frame ago (for presses), its right stick, its horn button
@@ -1273,6 +1276,7 @@ impl App {
             titlecam: Default::default(),
             startwarp: None,
             startwarp_t: 0.0,
+            load_activate: None,
             cam_side_t: [f32::INFINITY; 4],
             pad_prev: 0,
             pad_pending: 0,
@@ -2712,9 +2716,16 @@ impl App {
         if self.garage_in.as_ref().is_some_and(|g| g.stage != garagein::Stage::Warp) {
             player_input.deactivated = true;
         }
-        // (the warp after START: the car is not the player's to drive until it lands - Racer_Activate)
-        if self.startwarp.is_some() {
-            player_input = CarInput { handbrake: true, ..Default::default() };
+        // (the warp after START: the career script (game/career/0x62e9486d) deactivates the loaded car (0x583, when
+        // starting at the garage - not a new career) and calls Racer_Activate only at its first Warper_IsWarping poll
+        // after the flight (0x67b..0x6d8): until then the car does not answer its pad, and its air bags stay off)
+        if self.startwarp.is_some() || self.load_activate.is_some() {
+            player_input = if self.game.fresh_game { CarInput { handbrake: true, ..Default::default() } } else { CarInput { deactivated: true, air: player_input.air, hyd: player_input.hyd, ..Default::default() } };
+        }
+        // (under the start screen the original has no player's car at all - the career script loads it after START; the
+        // port's stands there deactivated, so nothing of it, the air bags included, moves before the load)
+        if self.game.mode == Mode::MainMenu && self.startwarp.is_none() {
+            player_input = CarInput { deactivated: true, air: player_input.air, hyd: player_input.hyd, ..Default::default() };
         }
         if menu_open && self.game.mode != Mode::Paused {
             // parked behind the menu (a held brake would select reverse at standstill)
@@ -9127,6 +9138,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 None => {
                     log::info!("start warp: landed at {:.3} s", t0 + dt);
+                    self.load_activate = Some(w.activate_in());
                     self.startwarp = None;
                     // (mc.loadSuccess: the career script's WAITUNWARPED(1000) after the flight)
                     self.game.loading_tag = startwarp::LOAD_SUCCESS_WAIT;
@@ -9142,6 +9154,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.photo_request = Some(format!("{prefix}_{x}.png"));
                     }
                 }
+            }
+        }
+        if let Some(a) = self.load_activate.as_mut() {
+            // (the IsWarping poll found the flight over: Racer_Activate)
+            if *a <= 1e-4 {
+                log::info!("start warp: Racer_Activate at {:.3} s", self.startwarp_t);
+                self.load_activate = None;
+            } else {
+                *a -= dt;
+                self.startwarp_t += dt;
             }
         }
         self.game.start_warp_on = self.startwarp.is_some();
@@ -11990,6 +12012,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let car = self.vehicles.player().map_or(eye, |c| c.state.pos);
                     self.startwarp = Some(startwarp::StartWarp::start(eye, look, lens, car, gpu.config.width as f32 / gpu.config.height.max(1) as f32));
                     self.startwarp_t = 0.0;
+                    // (the career script's LayerPlayer_LoadPlayer and Racer_Reset (0x4c3, 0x554) make the car anew:
+                    // mcCarSim::Reset F-47310 resets its air ride, F-80081 - bags at 0, off)
+                    if let Some(v) = self.vehicles.player_mut().and_then(|c| c.state.veh.as_deref_mut()) {
+                        v.air = physics::vehsim::AirRide::default();
+                    }
                 }
                 // (the race object goes: its destructor's Race_Reset, F-83102 - kMRS, xRRT)
                 if self.game.race.is_some() && !self.game.goal_attack {
