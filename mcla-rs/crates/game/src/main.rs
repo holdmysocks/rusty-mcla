@@ -153,6 +153,7 @@ mod cruising;
 mod railroute;
 mod ghostroute;
 mod cruiserail;
+mod navjob;
 mod brainturn;
 mod vehicle_model;
 mod vehicles;
@@ -8568,9 +8569,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             pan_pressed: self.pad_pan.0,
                             pan_side: self.pad_pan_side,
                             cam_pressed: self.pad_cam_ud,
-                            // (mcCarAirRide on: not in the port's sim yet - the Physics session ports
-                            // the air ride's on / off and the lowering; this reads its state then)
-                            air_on: false,
+                            // (mcCarAirRide +12 fitted and +13 on - physics::vehsim::AirRide)
+                            air_on: vs.map_or(false, |v| v.air.fitted && v.air.on),
                             air_held: self.pad_air,
                             reverse_gear: render_state.gear < 0,
                             air_time,
@@ -8664,7 +8664,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             o
                         };
                         if std::env::var("MCLA_EVENT_DEBUG").is_ok() && self.frame_no % 10 == 0 {
-                            log::info!("event cam: running {} allowed {} handbrake {} charge {:.2} yaw {:.2} cam {:.1} {:.1} {:.1}", self.event_dir.running(), allowed, car.input.handbrake, charge, render_state.ang_vel.y, out.pos.x, out.pos.y, out.pos.z);
+                            log::info!("event cam: event {:?} leaving {} air {} running {} allowed {} handbrake {} charge {:.2} yaw {:.2} cam {:.1} {:.1} {:.1}", self.event_dir.event(), self.event_dir.leaving(), vs.map_or(false, |v| v.air.fitted && v.air.on), self.event_dir.running(), allowed, car.input.handbrake, charge, render_state.ang_vel.y, out.pos.x, out.pos.y, out.pos.z);
                         }
                         if std::env::var("MCLA_CRASH_DEBUG").is_ok() && (self.crash_bits != 0 || self.frame_no % 30 == 0) {
                             log::info!("crash: bits {:#x} timer {:.2} exploding {} wipeout cam {} event {:?} scale {:.2} speed {:.1} damage {:.2} cam {:.1} {:.1} {:.1} car {:.1} {:.1} {:.1} fov {:.0}", self.crash_bits, self.crash_timer, self.crash_exploding, self.crash_cam.active(), self.event_dir.event(), self.wipe_scale, render_state.speed(), render_state.damage, out.pos.x, out.pos.y, out.pos.z, render_state.pos.x, render_state.pos.y, render_state.pos.z, out.fov);
