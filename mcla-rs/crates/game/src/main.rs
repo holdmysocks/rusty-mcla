@@ -2647,7 +2647,7 @@ impl App {
             }
             if std::env::var("MCLA_AIR_LOG").is_ok_and(|v| self.tick_no % v.parse::<u64>().unwrap_or(60).max(1) == 0) {
                 if let Some(v) = self.vehicles.player().and_then(|c| c.state.veh.as_deref()) {
-                    log::info!("air ride tick {} (scene {:?}): {:?} auto brake {} speed {:.3} body y {:.4} comp {:?}", self.tick_no, self.cine.playing.as_ref().map(|sc| sc.t), v.air, v.auto_brake, v.last_speed, self.vehicles.player().map_or(0.0, |c| c.state.pos.y), v.wheels.iter().map(|w| w.comp).collect::<Vec<_>>());
+                    log::info!("air ride tick {} (scene {:?}): {:?} auto brake {} speed {:.3} gear {} shaft {:.3} pedals {:?} body y {:.4} comp {:?}", self.tick_no, self.cine.playing.as_ref().map(|sc| sc.t), v.air, v.auto_brake, v.last_speed, v.gear, v.omega[0], self.vehicles.player().map(|c| (c.input.throttle, c.input.brake)), self.vehicles.player().map_or(0.0, |c| c.state.pos.y), v.wheels.iter().map(|w| w.comp).collect::<Vec<_>>());
                 }
             }
             if self.game.car_x.airbags {
@@ -4253,14 +4253,20 @@ impl App {
                             let c = &mut self.vehicles.cars[i];
                             if c.brain.is_none() {
                                 let tune = c.model.aitunes.as_ref().map(|a| Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&a.base, &a.mods, c.perf)));
-                                c.brain = Some(cinecar::AnimBrain { accel: 0.0, curv: 0.0, tune });
+                                c.brain = Some(cinecar::AnimBrain { accel: 0.0, curv: 0.0, tune, fresh: true, held: None });
                             }
                             let ev = &mut self.cine_events.1[k].1;
-                            if !ev.done {
-                                // (the event's update has the time before this frame's step - every port frame:
-                                // updated at 30 Hz with dt 1/30 the drive-out ends 0.46 m off the recording,
-                                // at the port's 60 Hz 0.21 m)
+                            // (the original's game runs at 30 fps, its physics two ticks a frame: the event's tick F-88076
+                            // updates with the time before the frame and that frame's dt, then advances, once per frame - on
+                            // the first of the port's two ticks; the brain's pedals are held for the second, vehicles.rs)
+                            let frame_tick = ev.ticks % 2 == 0;
+                            ev.ticks += 1;
+                            if let Some(b) = c.brain.as_mut() {
+                                b.fresh = frame_tick && !ev.done;
+                            }
+                            if !ev.done && frame_tick {
                                 let t0 = (t - dt).max(0.0);
+                                let dt = dt * 2.0;
                                 let idle0 = c.brain.as_ref().and_then(|b| b.tune.as_ref()).map_or(0.0, |a| a.idle_speed[0]);
                                 let (accel, curv, snap) = cinecar::update(ev, &anim, frame, t0, dt, &c.state, idle0);
                                 let snapped = snap.is_some();
@@ -4275,7 +4281,7 @@ impl App {
                                     b.accel = accel;
                                     b.curv = curv;
                                 }
-                                if anim.duration - t <= 0.0 {
+                                if anim.duration - (t0 + dt) <= 0.0 {
                                     ev.done = true;
                                 }
                                 if std::env::var_os("MCLA_CINE_CAR_TRACE").is_some() {

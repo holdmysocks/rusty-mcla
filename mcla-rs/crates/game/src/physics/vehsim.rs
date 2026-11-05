@@ -1108,8 +1108,11 @@ pub(super) fn synchronize_engine(current: f32, target: f32, torque: f32, inertia
 fn update_engine(vs: &mut VehState, vt: &VehTune, input: CarInput, pedal_released: (bool, bool), ratio: f32, dt: f32) {
     let e = &vt.t.engine.s;
     // (chassis +816, set on every car but the player's: its boost is never started - a recorded
-    // police cruiser's timer stays 0 - and, +817, the automatic brake does not act on it)
-    let computer = input.ai || REPLAY_AI.load(std::sync::atomic::Ordering::Relaxed);
+    // police cruiser's timer stays 0 - and, +817, the automatic brake does not act on it. A scene's
+    // animated brain sets both on its car too: the player's in the garage drive-out, recorded 2026-11-05,
+    // +816 / +817 = 1 from the scene's first frame to its last, +818 left 0; and the brain F-91361 writes
+    // the engine's IdleRPM over its EngageRPM on every update)
+    let computer = input.ai || input.animated || REPLAY_AI.load(std::sync::atomic::Ordering::Relaxed);
     // mcCarSim::Update (A-37124..A-11698), ahead of the engine: while a gear above first is
     // being changed the boost is cancelled and the transmission held off (the engine's
     // F-19727, then transmission +32 = 1), likewise in neutral; the frame that hold ends,
@@ -1949,7 +1952,8 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     // tyres' melt, engine, gyro - sees the cut pedal (chassis +136). MCLA_DBG_Y6: none. ----
     let mut input = input;
     if vs.by.exact {
-        let computer = input.ai || REPLAY_AI.load(std::sync::atomic::Ordering::Relaxed);
+        // (+817: a computer driver's or an animated brain's car is not held by the automatic brake)
+        let computer = input.ai || input.animated || REPLAY_AI.load(std::sync::atomic::Ordering::Relaxed);
         let held = (vs.gear_change.direction != 0 && vs.gear >= 2) || vs.gear == 0 || (vs.auto_brake > 0.0 && (!computer || input.hold)) || input.deactivated
             || (input.hold && vs.burn < 0.95 && !input.handbrake);
         let thr = if vs.gear < 0 { input.brake } else { input.throttle };
@@ -3629,7 +3633,8 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
         let w_before = vs.w_then[i];
         vs.w_then[i] = w_static;
         // (the automatic brake replaces the pedals' torque: vehWheel F-48988, no BrakeCoef)
-        if hold > 0.0 && !burnout_now && (input.hold || !(input.ai || REPLAY_AI.load(std::sync::atomic::Ordering::Relaxed))) {
+        // (not on a car with chassis +817 set: a computer driver's or an animated brain's, see update_engine)
+        if hold > 0.0 && !burnout_now && (input.hold || !(input.ai || input.animated || REPLAY_AI.load(std::sync::atomic::Ordering::Relaxed))) {
             // (RB2: A-45935 stands in mcCarSim::Update AHEAD of the centre of mass's way back
             // (A-88239 -> F-52728 weighs the wheels afresh): the weight in wheel +428 is still the
             // one of the tick before. Seen where a burnout is let go at a standstill - the centre of mass

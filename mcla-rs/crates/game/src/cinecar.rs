@@ -25,6 +25,11 @@ pub struct AnimBrain {
     pub accel: f32,
     pub curv: f32,
     pub tune: Option<Arc<AiTune>>,
+    /// The car event ran on this tick - the first of the original's two sim ticks per 30 fps frame: the
+    /// pedals are worked out now and `held` for the frame's second tick (the recorded chassis +136 / +140
+    /// change only every second tick)
+    pub fresh: bool,
+    pub held: Option<crate::physics::car::CarInput>,
 }
 
 /// The car event instance (mcCineCarInstance): +156, the path time its cut test last stood on; whether
@@ -34,6 +39,8 @@ pub struct CarEvent {
     prev: f32,
     pub started: bool,
     pub done: bool,
+    /// The port's ticks since the event's first: the event updates on the even ones, once per frame
+    pub ticks: u32,
 }
 
 /// The pose, velocity and turn the car is set down with (`F-86308`'s arguments).
@@ -301,7 +308,7 @@ mod tests {
             accel: Vec::new(), decel: vec![vec![2.0; 128]; 7], speed_high_curv: Vec::new(), speed_low_curv: Vec::new(),
             steer_scalar: vec![5.0; 128], drag: [0.0; 3], accel_rows: vec![vec![4.0; 128]; 8],
         };
-        let b = |accel: f32, curv: f32| AnimBrain { accel, curv, tune: Some(Arc::new(tune.clone())) };
+        let b = |accel: f32, curv: f32| AnimBrain { accel, curv, tune: Some(Arc::new(tune.clone())), fresh: true, held: None };
         let st = CarState::new(Vec3::ZERO, 0.0);
         let go = solve(&b(8.0, 0.0), &st, None);
         assert_eq!((go.throttle, go.brake, go.steer, go.animated), (1.0, 0.0, 0.0, true));
