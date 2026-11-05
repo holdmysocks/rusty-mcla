@@ -110,7 +110,7 @@ struct GeoItem {
     n: u32,
     first: u32,
     count: u32,
-    parts: Vec<(u32, u32, Vec3, f32, u32)>,
+    parts: Vec<Part>,
 }
 
 fn geo_rank(b: &CpuBatch) -> u32 {
@@ -152,7 +152,7 @@ pub fn prepare_geo(batches: Vec<CpuBatch>) -> Geo {
         }
         let count = indices.len() as u32 - first;
         let at = |i: u32| kept[((i / 3) as usize).min(kept.len() - 1)];
-        let parts: Vec<(u32, u32, Vec3, f32, u32)> = b.parts.iter().map(|p| (first + at(p.0), at(p.0 + p.1) - at(p.0), p.2, p.3, p.4)).filter(|p| p.1 > 0).collect();
+        let parts: Vec<Part> = b.parts.iter().map(|p| (first + at(p.0), at(p.0 + p.1) - at(p.0), p.2, p.3, p.4, p.5)).filter(|p| p.1 > 0).collect();
         verts.extend(std::mem::take(&mut b.vertices));
         b.indices = Vec::new();
         items.push(GeoItem { b, keep, base, n, first, count, parts });
@@ -180,8 +180,13 @@ pub struct CpuBatch {
     /// index, count, bounding sphere centre and radius - the box's centre and half diagonal, as the
     /// file's own sphere table has them -, the file's batch flags). The cars' environment map
     /// draws a sector batch by batch (main.rs, "environment, paraboloid half"). Empty: one run.
-    pub parts: Vec<(u32, u32, Vec3, f32, u32)>,
+    pub parts: Vec<Part>,
 }
+
+/// One batch of a sector file inside a merged batch: (first index, count, the centre and half diagonal of its box, the
+/// file's batch flags, the box's half size). The box is the file's own (`sector::Batch::bounds`); the main view tests each
+/// one by it as the original's visibility walk does (main.rs `draw_sectors`).
+pub type Part = (u32, u32, Vec3, f32, u32, Vec3);
 
 pub struct GpuBatch {
     pub shader: String,
@@ -211,7 +216,7 @@ pub struct SectorBatch {
     pub min: Vec3,
     pub max: Vec3,
     /// the sector file's batches inside this range (see `CpuBatch::parts`; first index absolute)
-    pub parts: Vec<(u32, u32, Vec3, f32, u32)>,
+    pub parts: Vec<Part>,
 }
 
 pub struct GpuSector {
@@ -803,7 +808,7 @@ fn merge_batches(batches: Vec<CpuBatch>) -> Vec<CpuBatch> {
                     }
                 }
                 if let [p] = b.parts[..] {
-                    acc.parts.push((run, acc.indices.len() as u32 - run, p.2, p.3, p.4));
+                    acc.parts.push((run, acc.indices.len() as u32 - run, p.2, p.3, p.4, p.5));
                 }
                 acc.min = acc.min.min(b.min);
                 acc.max = acc.max.max(b.max);
@@ -1017,7 +1022,9 @@ pub fn decode_sector(id: usize, path: &Path) -> Result<CpuSector> {
                 uv2: m.uv2.get(i).copied().unwrap_or(uv1).to_array(),
             });
         }
-        let (mn, mx) = m.bbox();
+        // (the file's box of the batch where it has one: equal to the mesh's bounds in all but 8 of 10,180 batches checked,
+        // which it encloses - `Part`)
+        let (mn, mx) = b.bounds.map_or(m.bbox(), |(a, z)| { let (ma, mz) = m.bbox(); (a.min(ma), z.max(mz)) });
         let sh = &sec.shaders[b.shader];
         let mode = classify(&sh.name, b.flags);
         let (diffuse, second) = pick_textures(sh, mode);
@@ -1059,7 +1066,7 @@ pub fn decode_sector(id: usize, path: &Path) -> Result<CpuSector> {
             max: mx,
             shader: sh.name.clone(),
             interior: b.flags & 4 != 0 && !matches!(mode, MatMode::Opaque | MatMode::AlphaTest),
-            parts: vec![(0, m.indices.len() as u32, (mn + mx) * 0.5, (mx - mn).length() * 0.5, b.flags)],
+            parts: vec![(0, m.indices.len() as u32, (mn + mx) * 0.5, (mx - mn).length() * 0.5, b.flags, (mx - mn) * 0.5)],
         });
     }
     let batches = merge_batches(batches);
@@ -1722,6 +1729,11 @@ impl World {
                 for v in verts[base as usize..(base + n) as usize].iter_mut() {
                     v.uv2[1] += 16384.0;
                 }
+            }
+            if b.diffuse == 0 {
+                // (a material without a texture: the port draws white; the original's binding there is open - its "none"
+                // is the texture factory's own Create("none"), F-98834)
+                note_tex_miss("city", &format!("no texture: {} (sector {sector_id})", b.shader));
             }
             // (a sign's textures: the raw copies, keyed apart - see `sign_raw` above)
             let is_sign = is_sign && sign_raw.contains_key(&b.diffuse) && sign_raw.contains_key(&b.second);

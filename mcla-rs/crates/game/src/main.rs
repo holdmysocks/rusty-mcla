@@ -10613,8 +10613,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                     continue;
                                 }
                                 let cutout = bi >= sec.caster_batches && world::shadow_cutout(b.mode);
-                                let whole = [(b.first, b.count, (b.min + b.max) * 0.5, (b.max - b.min).length() * 0.5, 0u32)];
-                                let parts: &[(u32, u32, Vec3, f32, u32)] = if b.parts.is_empty() { &whole } else { &b.parts };
+                                let whole = [(b.first, b.count, (b.min + b.max) * 0.5, (b.max - b.min).length() * 0.5, 0u32, (b.max - b.min) * 0.5)];
+                                let parts: &[world::Part] = if b.parts.is_empty() { &whole } else { &b.parts };
                                 let mut cut: Vec<(u32, u32)> = Vec::new();
                                 for p in parts {
                                     if !keep(p.2, p.3) {
@@ -14579,6 +14579,7 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
     let mut pane_pipe = false;
     // (a material's own pipeline is in force: `pipeline_opaque` is put back after the sectors)
     let mut mode_pipe = false;
+    let mut runs: Vec<(u32, u32)> = Vec::new();
     for sec in secs {
         let (Some(vb), Some(ib)) = (sec.vb.as_ref(), sec.ib.as_ref()) else { continue };
         if v.occluded.hides_all(sec.batches.iter().map(|b| (b.min, b.max))) {
@@ -14620,6 +14621,27 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
                     continue;
                 }
             }
+            // The original's visibility walk (F-21213) tests every batch of the sector file on its own (F-76875): the
+            // sphere of its box against the view, then its box against the view and the occluder volumes (F-92840). A
+            // merged batch draws the runs of its parts that pass.
+            runs.clear();
+            if b.parts.is_empty() {
+                runs.push((b.first, b.count));
+            } else {
+                for p in &b.parts {
+                    let (mn, mx) = (p.2 - p.5, p.2 + p.5);
+                    if !v.frustum.intersects_sphere(p.2, p.3) || !v.frustum.intersects_aabb(mn, mx) || v.occluded.hides_aabb(mn, mx) {
+                        continue;
+                    }
+                    match runs.last_mut() {
+                        Some(r) if r.0 + r.1 == p.0 => r.1 += p.1,
+                        _ => runs.push((p.0, p.1)),
+                    }
+                }
+                if runs.is_empty() {
+                    continue;
+                }
+            }
             if !bound {
                 pass.set_vertex_buffer(0, vb.slice(..));
                 pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
@@ -14652,8 +14674,10 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
             if let Some(p) = probe.as_deref_mut() {
                 p.stamp(pass, || format!("{:?} {}", b.mode, b.shader));
             }
-            pass.draw_indexed(b.first..b.first + b.count, 0, 0..1);
-            *draws += 1;
+            for r in &runs {
+                pass.draw_indexed(r.0..r.0 + r.1, 0, 0..1);
+                *draws += 1;
+            }
         }
     }
     if pane_pipe {

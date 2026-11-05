@@ -16,6 +16,10 @@ pub struct Batch {
     pub mesh: Mesh,
     /// low-nibble flags from the shader pointer (meaning TBD: 1/2/4 seen)
     pub flags: u32,
+    /// the batch's box from the file (min, max): the table at +0x1C holds a sphere (16 bytes) for
+    /// every batch, then a box (32 bytes) for every batch; the box is what the original's visibility
+    /// walk tests each batch by (F-76875, called per batch by F-21213)
+    pub bounds: Option<(glam::Vec3, glam::Vec3)>,
 }
 
 #[derive(Debug, Default)]
@@ -58,6 +62,7 @@ impl Sector {
             return Ok(sec);
         };
         let mut shader_index: HashMap<usize, usize> = HashMap::new();
+        let boxes = rd.ptr(0x1c).map(|b| b + count * 16);
         for i in 0..count {
             // low nibble of the shader pointer carries per-batch flags
             let flags = rd.u32(arr + i * 8) & 0xF;
@@ -84,7 +89,11 @@ impl Sector {
                 }
             };
             match parse_geometry(&rd, go) {
-                Ok(mesh) => sec.batches.push(Batch { shader: si, mesh, flags }),
+                Ok(mesh) => {
+                    let v = |o: usize| glam::Vec3::new(rd.f32(o), rd.f32(o + 4), rd.f32(o + 8));
+                    let bounds = boxes.map(|b| (v(b + i * 32), v(b + i * 32 + 16))).filter(|(mn, mx)| mn.is_finite() && mx.is_finite() && mn.cmple(*mx).all());
+                    sec.batches.push(Batch { shader: si, mesh, flags, bounds })
+                }
                 Err(e) => sec.errors.push(format!("batch {} geometry: {:#}", i, e)),
             }
         }
@@ -100,5 +109,46 @@ impl Sector {
         // try without extension
         let stem = name.rsplit_once('.').map(|(s, _)| s).unwrap_or(name);
         self.textures.get(&crate::hash::joaat(stem))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The file's batch boxes (+0x1C, after the spheres) against the meshes' own bounds, over every sector of
+    /// the city: equal to a few millimetres (the vertices are packed) except a handful, where the file's box
+    /// is larger and holds the mesh's.
+    #[test]
+    fn batch_boxes_hold_the_meshes() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Ok(dir) = std::fs::read_dir(std::path::Path::new(&root).join("resources/city/sc")) else { return };
+        let (mut n, mut larger) = (0, 0);
+        for e in dir.flatten() {
+            let Ok(d) = std::fs::read(e.path()) else { continue };
+            if d.len() < 16 || &d[0..4] != b"MCLR" {
+                continue;
+            }
+            let u = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+            let data = d[16..].to_vec();
+            let vs = (u(12) as usize).min(data.len());
+            let res = Resource { rtype: u(4), flags: u(8), virtual_size: vs, physical_size: data.len() - vs, data };
+            if Rd::new(&res).vtable(0) != vt::CITY_SECTOR {
+                continue;
+            }
+            let Ok(sec) = Sector::parse(&res) else { continue };
+            for b in &sec.batches {
+                let (mn, mx) = b.mesh.bbox();
+                let (fa, fz) = b.bounds.expect("a box for every batch");
+                let off = (fa - mn).abs().max((fz - mx).abs()).max_element();
+                assert!(fa.cmple(mn + 0.01).all() && fz.cmpge(mx - 0.01).all(), "{:?}: the file's box does not hold the mesh", e.path());
+                n += 1;
+                if off > 0.05 {
+                    larger += 1;
+                }
+            }
+        }
+        println!("{n} batches, {larger} with a larger box in the file");
+        assert!(n == 0 || (n > 10_000 && larger * 1000 < n));
     }
 }

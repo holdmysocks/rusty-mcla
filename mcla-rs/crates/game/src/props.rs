@@ -755,7 +755,10 @@ impl Props {
                 let tname = sh.and_then(|s| s.textures().next().map(|x| x.1.to_string()));
                 let (tex, k) = match tname {
                     Some(n) => texture(gpu, world, &n),
-                    None => (gpu.white.clone(), 0),
+                    None => {
+                        crate::world::note_tex_miss("prop", &format!("no texture: {sname}"));
+                        (gpu.white.clone(), 0)
+                    }
                 };
                 // Lamp glass and glow cards (PSPropLampGlassTint): the glass texture by day; from
                 // the material's OnTime to its OffTime the LitUp texture times NightIntensity,
@@ -897,8 +900,8 @@ impl Props {
                             // by day (its ReflectionSampler; the same texture the shop panes' draws bind), ReflectSphereNight.dds
                             // under the night program - second and third texture, as on the shop panes)
                             let (hd, hn) = (mcla_formats::hash::joaat("reflectsphereday.dds"), mcla_formats::hash::joaat("reflectspherenight.dds"));
-                            let day = world.texture_any(gpu, hd).unwrap_or_else(|| gpu.white.clone());
-                            let night = world.texture_any(gpu, hn).unwrap_or_else(|| gpu.white.clone());
+                            let day = world.texture_any(gpu, hd).unwrap_or_else(|| { crate::world::note_tex_miss("prop", "reflectsphereday.dds"); gpu.white.clone() });
+                            let night = world.texture_any(gpu, hn).unwrap_or_else(|| { crate::world::note_tex_miss("prop", "reflectspherenight.dds"); gpu.white.clone() });
                             (gpu.texture_bind_group3(&tex, &day, &night, k, hd, hn), MatMode::PropGlass)
                         }
                         _ => (gpu.texture_bind_group(&tex, &tex, k, k), prop_mode(sname)),
