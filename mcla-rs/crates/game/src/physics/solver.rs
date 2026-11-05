@@ -933,11 +933,29 @@ pub fn island_impulses(solved: &IslandSolved, touches: &mut [Touch]) {
         };
         let p = Vec3::ZERO - row.row.neg;
         c.kept = p;
-        let inv = inverse3(&row.row.bcol);
-        let j = (inv[0] * p.x + inv[1] * p.y) + inv[2] * p.z;
+        let j = rigid_impulse(&row.row.bcol, V4::ZERO.sub(v4(row.row.neg)));
         // (0x825919F8: a constraint's not times the island's elasticity)
-        c.impulse = if c.kind == 0 { j * solved.bounce } else { j };
+        c.impulse = v3(if c.kind == 0 { j.mul(V4::splat(solved.bounce)) } else { j });
     }
+}
+
+/// A rigid row's impulse as F-66979 makes it: the multipliers times the inverse of the row's 3 x 3, in the vector
+/// unit's own operations (its cofactors by vnmsubfp, the determinant by vmsum3fp, the reciprocal's Newton step, the
+/// transpose by merges, the sum by vmaddfp), with the unit's denormal flush - which decides the sign of a zero where a
+/// cofactor is a denormal (ce.0 86).
+fn rigid_impulse(m: &[Vec3; 3], p: V4) -> V4 {
+    let (r0, r1, r2) = (v4(m[0]), v4(m[1]), v4(m[2]));
+    let ab = r0.zxy().nmsub(r1.yzx(), r0.yzx().mul(r1.zxy()));
+    let bc = r1.zxy().nmsub(r2.yzx(), r1.yzx().mul(r2.zxy()));
+    let ca = r2.zxy().nmsub(r0.yzx(), r2.yzx().mul(r0.zxy()));
+    let det = ab.dot3(r2);
+    let e = det.recip();
+    let r = e.madd(e.nmsub(det, V4::splat(1.0)), e);
+    let (h, l) = (bc.mergeh(ab), ca.mergeh(V4::ZERO));
+    let rows = [h.mergeh(l).mul(r), h.mergel(l).mul(r), bc.mergel(ab).mergeh(ca.mergel(V4::ZERO)).mul(r)];
+    let j = p.lane(0).mul(rows[0]);
+    let j = p.lane(1).madd(rows[1], j);
+    p.lane(2).madd(rows[2], j)
 }
 
 /// The impulses given to the bodies' accumulators (0x825A20E8 -> 0x8259DE60): per body what

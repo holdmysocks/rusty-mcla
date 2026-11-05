@@ -3803,6 +3803,40 @@ if keep || c.state.pos.distance(center) < 450.0 {
         // before and after the cars, each car's step with the cars not yet stepped as bodies of its island
         // (each pair is solved in the earlier car's step) ----
         let phys_t0 = std::time::Instant::now();
+        // (test hook MCLA_RAM_CAR=secs: at that time on the vehicles' clock the player's car is put 2.6 m to the right of the
+        // nearest other placed car with the original's body, at its speed and 6 m/s towards it - a car x car contact for the
+        // level step)
+        if let Some(at) = std::env::var("MCLA_RAM_CAR").ok().and_then(|v| v.parse::<f32>().ok()) {
+            static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if self.clock >= at && !DONE.load(std::sync::atomic::Ordering::Relaxed) {
+                let me = self.cars.iter().position(|c| c.is_player);
+                let target = me.and_then(|m| {
+                    let p = self.cars[m].state.pos;
+                    (0..self.cars.len()).filter(|&j| j != m && self.cars[j].placed && self.cars[j].state.veh.is_some() && self.cars[j].rail.is_none() && self.cars[j].parked.is_none()).min_by(|&a, &b| (self.cars[a].state.pos - p).length().total_cmp(&(self.cars[b].state.pos - p).length()))
+                });
+                if let (Some(m), Some(j)) = (me, target) {
+                    DONE.store(true, std::sync::atomic::Ordering::Relaxed);
+                    let (tp, tr, tv) = (self.cars[j].state.pos, self.cars[j].state.rot, self.cars[j].state.vel);
+                    let r = tr * Vec3::X;
+                    let c = &mut self.cars[m];
+                    c.state.relocate(tp + r * 2.6, tr);
+                    c.state.vel = tv - r * 6.0;
+                    c.state.ang_vel = Vec3::ZERO;
+                    c.pose_history.reset();
+                    log::info!("MCLA_RAM_CAR: player put beside car {} (uid {})", j, self.cars[j].uid);
+                    RAM_TARGET.store(j * 1000 + m, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            let t = RAM_TARGET.load(std::sync::atomic::Ordering::Relaxed);
+            if t != usize::MAX {
+                static LEFT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(90);
+                if LEFT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) > 0 {
+                    let (j, m) = (t / 1000, t % 1000);
+                    let (a, b) = (&self.cars[m].state, &self.cars[j].state);
+                    log::info!("MCLA_RAM_CAR: distance {:.2} speeds {:.1} {:.1} player placed {}", (a.pos - b.pos).length(), a.vel.length(), b.vel.length(), self.cars[m].placed);
+                }
+            }
+        }
         let shared = world.collider.loose.clone().filter(|_| std::env::var_os("MCLA_DBG_NOSHARED").is_none());
         let step_dt = dt.min(1.0 / 30.0);
         if let Some(lw) = shared.as_deref() {
@@ -4045,7 +4079,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let us = SUM.fetch_add(ns, Ordering::Relaxed) + ns;
             let n = N.fetch_add(1, Ordering::Relaxed) + 1;
             if n % 1000 == 0 {
-                log::info!("phys timing: {} ticks, mean {:.1} us, cars {}", n, us as f64 / n as f64 / 1000.0, self.cars.iter().filter(|c| c.state.veh.is_some()).count());
+                log::info!("phys timing: {} ticks, mean {:.1} us, cars {}, islands of several cars {}", n, us as f64 / n as f64 / 1000.0, self.cars.iter().filter(|c| c.state.veh.is_some()).count(), ISLANDS_OF_CARS.load(Ordering::Relaxed));
             }
         }
         // car-car separation (soft spheres): the port's own rule, now only for a pair the shared level does
@@ -4493,6 +4527,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     }
                 }
                 level.lead = lead_obj.filter(|_| !lent.is_empty());
+                if !lent.is_empty() {
+                    ISLANDS_OF_CARS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    log::debug!("one island of {} cars, solved in car {}'s step", lent.len() + 1, jobs[lead].0);
+                }
                 poll(lead, &mut level, &mut steps);
                 level.lead = None;
                 for (uid, ..) in level.vehicle_answers() {
@@ -7012,3 +7050,9 @@ enum StepPost {
     /// a driven car (the MCLA_GRID_TRACE hook)
     Trace,
 }
+
+/// (MCLA_PHYS_TIMING) the islands of several cars solved so far (`step_cars`)
+static ISLANDS_OF_CARS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// (MCLA_RAM_CAR) the rammed car and the player's car, target x 1000 + player
+static RAM_TARGET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);

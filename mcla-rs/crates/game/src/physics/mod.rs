@@ -27,6 +27,7 @@ mod transmission;
 mod tyre;
 #[cfg(test)]
 mod original_math_tests;
+#[cfg(test)] mod multicar_island;
 
 pub use car::{CarInput, CarParams, CarState};
 pub use collision::{SectorMesh, WorldCollider};
