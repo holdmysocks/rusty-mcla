@@ -14,6 +14,10 @@ Modes (--mode, default all):
   that prints the request.
 - backing: the backing-up rail F-54867 (the four control points from the car's place and row 2, the pool index 0,
   speed 4, the attach at phase 1 reversed).
+- lanechange: the cruising ghost's route lane-change rail F-11487 (two lanes' points and unit derivatives, the four
+  control points P0, P0 + W T0, P1 - W T1, P1, the pool index 0 at the target lane's slot 17 speed, the attach).
+- lcinstall: its install F-32118 whole (F-11487 and the attach F-70405 inside it): the follower's old rail unloaded,
+  its attached holders released, the new rail set at phase 0, the holder's words copied into the follower (+36 ..).
 - join: a race path's join rail F-45519 (four rails, the shortest).
 - pass: the passing rail F-92334 whole (with the lane test F-50817 and the arc-line-arc class). Stubs: the obstacle's
   slots 1 / 4 / 6 (matrix, width, length) and the own obstacle's slot 4 (width) answer from the case; the sweep
@@ -262,6 +266,131 @@ def backing(a, idx, tool):
     return [' '.join('%08x' % x for x in r) + ' -> ' + o for r, o in zip(rows, out)]
 
 
+def lanechange(a, idx, tool):
+    """The cruising ghost's route lane-change rail F-11487 whole (called by F-32118 from F-24481): holder 0x1000, the
+    car 0x1200 (+496 its obstacle 0x1300, vtable 0x1380: slot 12 records lane and f1), the current lane 0x1700 and
+    the target lane 0x1740 (vtable 0x1680: slot 15 -> their curves 0x1780 / 0x17C0, slot 17 -> the target's speed from the
+    case), the curve's point and derivative F-71868 (`eval_pair`, proven) a stub answering the case's for (curve,
+    phase); the road of the lane (F-86691) and the cast (F-75805) stubs that
+    record their argument; the pool F-88792 and the attach F-70405 record their arguments. Stack: the pool pointer at
+    caller sp+92, the byte at caller sp+87. Prints the call log, the four control points and the holder's +32 .. +52."""
+    nm = {k: addr(tool, k) for k in ('F-11487', 'F-88792', 'F-70405', 'F-86691', 'F-75805', 'F-71868')}
+    ev = nm['F-71868']
+    rnd = random.Random(11487)
+    rows = []
+    for _ in range(3000):
+        p0 = [rnd.uniform(-3000, 3000), rnd.uniform(-20, 60), rnd.uniform(-3000, 3000)]
+        dist, ang = rnd.uniform(0, 80), rnd.uniform(-math.pi, math.pi)
+        p1 = [p0[0] + dist * math.cos(ang), p0[1] + rnd.choice((0.0, rnd.uniform(-3, 3))), p0[2] + dist * math.sin(ang)]
+
+        def tan():
+            y = rnd.uniform(-math.pi, math.pi)
+            s = rnd.choice((1.0, rnd.uniform(5, 300), rnd.uniform(0.001, 1)))
+            d = [math.sin(y) * s, rnd.choice((0.0, rnd.uniform(-0.1, 0.1))) * s, -math.cos(y) * s]
+            if rnd.random() < 0.02:
+                d = [0.0, 0.0, 0.0]
+            return d
+        d0, d1 = tan(), tan()
+        t = rnd.choice((0.0, 1.0, rnd.random(), rnd.random()))
+        ph = rnd.choice((0.0, 1.0, rnd.random(), rnd.random()))
+        w = rnd.choice((4.0, 10.0, rnd.uniform(4, 10), rnd.uniform(4, 10)))
+        sp = rnd.choice((rnd.uniform(4, 30), 13.4112, 0.0))
+        byte = rnd.choice((0, 0, 0, 1))
+        rows.append([fb(f32(x)) for x in p0 + d0 + p1 + d1 + [t, ph, w, sp]] + [byte])
+    data = ','.join('0x%08x' % x for r in rows for x in r)
+    disp = (r'''static void dispatch(Context&ctx,const uint8_t*base,uint32_t a){
+ if(a==0x82FF0700){printf(" S15 %d",ctx.r3.u32==0x1740);ctx.r3.u64=ctx.r3.u32+0x80;return;}
+ if(a==0x82FF0701){printf(" S17 %d",ctx.r3.u32==0x1740);ctx.f1.f64=bf(cur[15]);return;}
+ if(a==0x82FF0400){store(0x1D00+4,0x1C00);ctx.r3.u64=0x1D00;return;}
+ if(a==0x82FF0800){printf(" V %d %08x",int(ctx.r4.u32),fbits(ctx.f1.f64));return;}
+ throw std::runtime_error("unexpected indirect call");}
+''')
+    stubs = {
+        'sub_' + ev: ('{uint32_t c=ctx.r4.u32;const uint32_t*q=c==0x1780?cur:cur+6;printf(" E %d %08x",c==0x1780,fbits(ctx.f1.f64));'
+                      'vec(ctx.r3.u32,q);vec(ctx.r6.u32,q+3);}'),
+        'sub_' + nm['F-86691']: 'printf(" O %d",ctx.r3.u32==0x1700);ctx.r3.u64=0x1900;',
+        'sub_' + nm['F-75805']: 'printf(" C %d %d",ctx.r3.u32==0x1900,int(ctx.r4.u32));',
+        'sub_' + nm['F-88792']: ('printf(" A %d %d %08x",ctx.r3.u32==0x6000,int(ctx.r4.u32),fbits(ctx.f1.f64));memset(pointer(0x1A00),0,0x400);'
+                                 'store(0x1A00,0x1B80);store(0x1B80+64,0x82FF0400);ctx.r3.u64=0x1A00;'),
+        'sub_' + nm['F-70405']: ('printf(" X %d %d %d %d %d %d %08x %08x",ctx.r3.u32==0x1000,ctx.r4.u32==0x1A00,int(ctx.r6.u32==0x1740),int(ctx.r8.u32),'
+                                 'int(ctx.r9.u32==0x1900),int(ctx.r10.u32==0x6000),fbits(ctx.f1.f64),fbits(ctx.f2.f64));'),
+    }
+    body = ('static const uint32_t D[]={' + data + '};' + nl + 'consts();' +
+            'for(size_t i=0;i<sizeof(D)/4;i+=17){cur=D+i;memset(objects,0,0xE000);uint32_t car=0x1200;'
+            'store(car+496,0x1300);store(0x1300,0x1380);store(0x1380+48,0x82FF0800);'
+            'store(0x1700,0x1680);store(0x1740,0x1680);store(0x1680+60,0x82FF0700);store(0x1680+68,0x82FF0701);'
+            'store(0xF000+92,0x6000);*pointer(0xF000+87)=uint8_t(cur[16]);store(0x5000,0x5100);'
+            'Context ctx{};ctx.r1.u32=0xF000;ctx.r13.u32=0x5000;ctx.r3.u32=0x1000;ctx.r4.u32=car;ctx.r5.u32=0x1700;ctx.r7.u32=0x1740;'
+            'ctx.f1.f64=bf(cur[12]);ctx.f2.f64=bf(cur[13]);ctx.f3.f64=bf(cur[14]);ctx.f4.f64=bf(cur[14]);'
+            'sub_' + nm['F-11487'] + '(ctx,nullptr);printf(" R %d",int(ctx.r3.u32&0xFF));for(int k=0;k<4;k++)pv(0x1C00+16*k);'
+            'printf(" H %d %d %d %08x %08x %d",load(0x1000+32)==car,load(0x1000+36)==0x1700,load(0x1000+40)==0x1740,load(0x1000+44),load(0x1000+48),int(*pointer(0x1000+52)));'
+            'printf("' + NL + '");}' + nl)
+    main_src = disp + 'int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.assign(std::istreambuf_iterator<char>(bin),{});' + nl + body + '}' + nl
+    exe = build(idx, ['sub_' + nm['F-11487']], main_src, a.out_dir, 'rails_lanechange', stubs=stubs, vector=True)
+    out = [x.strip() for x in run(exe, a.image).split(nl) if x.strip()]
+    assert len(out) == len(rows), (len(out), len(rows))
+    return [' '.join('%08x' % x for x in r) + ' -> ' + o for r, o in zip(rows, out)]
+
+
+def lcinstall(a, idx, tool):
+    """The route lane change's install F-32118 whole with F-11487 and the attach F-70405 inside it (their world stubbed as
+    in `lanechange`): the follower 0x3000 (+168 the car 0x1200, +172 the pool 0x6000; its four rail holders +4 / +36 /
+    +92 / +124 with vtable 0x3800, the attached bit 0x80 of +32 / +64 / +120 / +152 from the case; +156 .. +164 from the
+    case). Stubs: the rail unload F-78813 and the set-rail F-48384 record their arguments, a holder's slot 1 (its
+    release) records which holder. Prints the call log and the follower's words +36 .. +88, +156 .. +164 after."""
+    nm = {k: addr(tool, k) for k in ('F-32118', 'F-88792', 'F-86691', 'F-75805', 'F-71868', 'F-78813', 'F-48384', 'F-65393')}
+    rnd = random.Random(32118)
+    rows = []
+    for _ in range(1000):
+        p0 = [rnd.uniform(-3000, 3000), rnd.uniform(-20, 60), rnd.uniform(-3000, 3000)]
+        p1 = [p0[0] + rnd.uniform(-60, 60), p0[1] + rnd.uniform(-2, 2), p0[2] + rnd.uniform(-60, 60)]
+        d0 = [rnd.uniform(-30, 30), rnd.uniform(-1, 1), rnd.uniform(-30, 30)]
+        d1 = [rnd.uniform(-30, 30), rnd.uniform(-1, 1), rnd.uniform(-30, 30)]
+        t, ph = rnd.random(), rnd.random()
+        ln, w, sp = rnd.uniform(15, 75), rnd.uniform(4, 10), rnd.uniform(4, 30)
+        bits = rnd.getrandbits(4)
+        old = [rnd.getrandbits(16), fb(f32(rnd.random())), rnd.getrandbits(16)]
+        rows.append([fb(f32(x)) for x in p0 + d0 + p1 + d1 + [t, ph, w, sp, ln]] + [bits] + old)
+    data = ','.join('0x%08x' % x for r in rows for x in r)
+    disp = (r'''static void dispatch(Context&ctx,const uint8_t*base,uint32_t a){
+ if(a==0x82FF0700){ctx.r3.u64=ctx.r3.u32+0x80;return;}
+ if(a==0x82FF0701){ctx.f1.f64=bf(cur[15]);return;}
+ if(a==0x82FF0400){store(0x1D00+4,0x1C00);ctx.r3.u64=0x1D00;return;}
+ if(a==0x82FF0800){printf(" V %d %08x",int(ctx.r4.u32),fbits(ctx.f1.f64));return;}
+ if(a==0x82FF0900){printf(" D %d",int(ctx.r3.u32-0x3000));return;}
+ throw std::runtime_error("unexpected indirect call");}
+''')
+    stubs = {
+        'sub_' + nm['F-71868']: '{const uint32_t*q=ctx.r4.u32==0x1780?cur:cur+6;vec(ctx.r3.u32,q);vec(ctx.r6.u32,q+3);}',
+        'sub_' + nm['F-86691']: 'ctx.r3.u64=0x1900;',
+        'sub_' + nm['F-75805']: '',
+        'sub_' + nm['F-88792']: ('printf(" A %d %08x",int(ctx.r4.u32),fbits(ctx.f1.f64));memset(pointer(0x1A00),0,0x400);'
+                                 'store(0x1A00,0x1B80);store(0x1B80+64,0x82FF0400);ctx.r3.u64=0x1A00;'),
+        'sub_' + nm['F-78813']: 'printf(" U %d",ctx.r3.u32==0x3000);',
+        'sub_' + nm['F-65393']: 'printf(" G");',
+        'sub_' + nm['F-48384']: 'printf(" B %d %d %08x",ctx.r3.u32==0x3000,ctx.r4.u32==0x1A00,fbits(ctx.f1.f64));',
+    }
+    body = ('static const uint32_t D[]={' + data + '};' + nl + 'consts();' +
+            'for(size_t i=0;i<sizeof(D)/4;i+=21){cur=D+i;memset(objects,0,0xE000);uint32_t car=0x1200,f=0x3000;'
+            'store(car+496,0x1300);store(0x1300,0x1380);store(0x1380+48,0x82FF0800);'
+            'store(0x1700,0x1680);store(0x1740,0x1680);store(0x1680+60,0x82FF0700);store(0x1680+68,0x82FF0701);'
+            'store(0x5000,0x5100);store(0x3800+4,0x82FF0900);'
+            'store(f+168,car);store(f+172,0x6000);int ho[4]={4,36,92,124};for(int k=0;k<4;k++){store(f+ho[k],0x3800);'
+            '*pointer(f+ho[k]+28)=((cur[17]>>k)&1)?0x80:0x05;}'
+            'store(f+156,cur[18]);store(f+160,cur[18]+1);store(f+164,cur[19]);store(f+176,cur[20]);'
+            'Context ctx{};ctx.r1.u32=0xF000;ctx.r13.u32=0x5000;ctx.r3.u32=f;ctx.r4.u32=0x1700;ctx.r5.u32=0;ctx.r6.u32=0x1740;ctx.r10.u32=0;'
+            'ctx.f1.f64=bf(cur[12]);ctx.f2.f64=bf(cur[13]);ctx.f3.f64=bf(cur[16]);'
+            'ctx.f4.f64=bf(cur[14]);'
+            'sub_' + nm['F-32118'] + '(ctx,nullptr);printf(" R %d",int(ctx.r3.u32&0xFF));for(int k=0;k<4;k++)pv(0x1C00+16*k);printf(" F");'
+            'for(int o=36;o<92;o+=4)printf(" %08x",load(f+o));printf(" %08x %08x %08x",load(f+156),load(f+160),load(f+164));'
+            'printf("' + NL + '");}' + nl)
+    main_src = disp + 'int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.assign(std::istreambuf_iterator<char>(bin),{});' + nl + body + '}' + nl
+    exe = build(idx, ['sub_' + nm['F-32118']], main_src, a.out_dir, 'rails_lcinstall', stubs=stubs, vector=True)
+    out = [x.strip() for x in run(exe, a.image).split(nl) if x.strip()]
+    assert len(out) == len(rows), (len(out), len(rows))
+    return [' '.join('%08x' % x for x in r) + ' -> ' + o for r, o in zip(rows, out)]
+
+
 def request(a, idx, tool):
     """The two request builders run whole, F-26466 a stub that prints the request (+16 P, +32 H0, +48 v, +52 the turn
     limit, +72 the flags). The passing / follower rail is a real arc-line-arc record built first by F-85722 at 0x2080 (the
@@ -445,7 +574,8 @@ def main():
     ap.add_argument('--mode', default='all')
     a = ap.parse_args()
     idx = index(a.recomp)
-    modes = {'recovery': recovery, 'join': join, 'backing': backing, 'request': request, 'pass': passing}
+    modes = {'recovery': recovery, 'join': join, 'backing': backing, 'request': request, 'pass': passing, 'lanechange': lanechange,
+             'lcinstall': lcinstall}
     for m, f in modes.items():
         if a.mode not in ('all', m):
             continue

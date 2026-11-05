@@ -23,6 +23,8 @@ pub struct GhostRequest {
 pub struct GhostView {
     pub matrix: [Vec3; 4],
     pub rail: Option<(u32, f32)>,
+    /// on a run-time rail (the route lane change's, F-32118): that rail's slot 8 at its phase - point and derivative
+    pub run_rail: Option<(Vec3, Vec3)>,
     pub speed: f32,
 }
 
@@ -270,7 +272,14 @@ impl<T: GhostTraffic, C: CruiseCar> CruiseEnv for World<'_, '_, T, C> {
         let (p, fwd) = match g.rail {
             // (the rail's point and its tangent: `pose` gives the c row, minus the tangent)
             Some((lane, t)) => self.rails.pose(&RailPos { lane: Some(lane), t }, b.offset).map_or((g.matrix[3], Vec3::ZERO - g.matrix[2]), |(p, c)| (p, Vec3::ZERO - c)),
-            None => (g.matrix[3], Vec3::ZERO - g.matrix[2]),
+            None => match g.run_rail {
+                // (the ghost's rail is a run-time one: its slot 8 point and derivative, posed as a lane's)
+                Some((p, d)) => {
+                    let (p, c) = crate::cruiserail::pose_at(p, d, b.offset);
+                    (p, Vec3::ZERO - c)
+                }
+                None => (g.matrix[3], Vec3::ZERO - g.matrix[2]),
+            },
         };
         let m = self.car.matrix();
         let car = FollowCar { a: m.a, c: m.c, pos: m.pos, vel: self.car.vel(), yaw_rate: self.car.yaw_rate(), tune48: self.car.tune48() };

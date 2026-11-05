@@ -2478,6 +2478,9 @@ fn integrate(r: &mut Rider, mut a: f32, dt: f32) {
 #[allow(clippy::too_many_arguments)]
 pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, dt: f32) -> (Vec3, Vec3) {
     let nav = env.nav;
+    if r.ghost.as_ref().is_some_and(|g| g.lc.is_some()) {
+        return step_lane_change(r, env, me, half_len, dt);
+    }
     let v = r.v;
     // (the cruising ghost's offset timer is the integrator's own, `car_speed`)
     if r.ghost.is_none() {
@@ -5095,6 +5098,70 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 2000);
+    }
+
+    /// The cruising ghost's lane-change rail F-11487 against the original's code run whole offline
+    /// (tools/traffic_rails_reference.py --mode lanechange -> testdata/traffic_rails_lanechange_ref.txt): the calls it
+    /// makes in order (the two curves' points at t and at the phase, the target's slot 17, the pool index 0 at that
+    /// speed, the road and cast, the attach from phase 0 with the target lane at the phase, the obstacle's slot 12 on both
+    /// lanes with -1), the four control points bit for bit and the holder's +32 .. +52.
+    #[test]
+    fn lane_change_rail_matches_the_original() {
+        let h = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
+        let x = |f: f32| format!("{:08x}", f.to_bits());
+        let xv = |v: Vec3| format!("{} {} {}", x(v.x), x(v.y), x(v.z));
+        let mut n = 0;
+        for line in include_str!("testdata/traffic_rails_lanechange_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = i.split_whitespace().collect();
+            let v3 = |k: usize| Vec3::new(h(w[k]), h(w[k + 1]), h(w[k + 2]));
+            let (t, ph, wd, sp, byte) = (h(w[12]), h(w[13]), h(w[14]), h(w[15]), w[16].trim_start_matches('0'));
+            let p = lane_change_path([v3(0), v3(3), v3(6), v3(9)], wd, sp, 1, ph);
+            let Geom::Curve(cv) = &p.geom else { panic!("{line}") };
+            let (to, end_t) = p.end.unwrap();
+            assert_eq!(to, 1);
+            let cps: Vec<String> = cv.pts.iter().map(|&q| xv(q)).collect();
+            let got = format!(
+                "S15 0 E 1 {} S15 1 E 0 {} S17 1 A 1 0 {} O 1 C 1 0 X 1 1 1 0 1 1 {} {} V 5888 bf800000 V 5952 bf800000 R 1 {} H 1 1 1 {} {} {}",
+                x(t), x(ph), x(p.speed), x(p.t), x(end_t), cps.join(" "), x(t), x(ph), if byte.is_empty() { "0" } else { byte }
+            );
+            assert_eq!(got, o, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
+
+    /// The install F-32118 run whole with F-11487 and the attach F-70405 inside it (tools/traffic_rails_reference.py
+    /// --mode lcinstall -> testdata/traffic_rails_lcinstall_ref.txt): the follower's rail unloaded (F-78813), each attached
+    /// holder released (+92, +4, +36, +124), the new rail set at the port's start phase (F-48384 with `Path::t`), the holder copied in (+40 the
+    /// pool, +44 the rail, +48 the target lane, +56 / +60 the start and end phases, +64 the attached bit, +68 .. +84 the
+    /// car, both lanes, t and the phase), the next rail +160 = the target lane at +164 = `Path::end`'s phase.
+    #[test]
+    fn lane_change_install_matches_the_original() {
+        let h = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
+        let u = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let x = |f: f32| format!("{:08x}", f.to_bits());
+        let xv = |v: Vec3| format!("{} {} {}", x(v.x), x(v.y), x(v.z));
+        let mut n = 0;
+        for line in include_str!("testdata/traffic_rails_lcinstall_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = i.split_whitespace().collect();
+            let v3 = |k: usize| Vec3::new(h(w[k]), h(w[k + 1]), h(w[k + 2]));
+            let (t, ph, wd, sp, bits) = (h(w[12]), h(w[13]), h(w[14]), h(w[15]), u(w[17]));
+            let p = lane_change_path([v3(0), v3(3), v3(6), v3(9)], wd, sp, 1, ph);
+            let Geom::Curve(cv) = &p.geom else { panic!("{line}") };
+            let (_, end_t) = p.end.unwrap();
+            let cps: Vec<String> = cv.pts.iter().map(|&q| xv(q)).collect();
+            // (released in the order +92, +4, +36, +124; the case's bit k belongs to holder [4, 36, 92, 124][k])
+            let released: String = [(2, 92), (0, 4), (1, 36), (3, 124)].iter().filter(|&&(k, _)| bits >> k & 1 != 0).map(|(_, o)| format!(" D {o}")).collect();
+            let got = format!(
+                "A 0 {} V 5888 bf800000 V 5952 bf800000 U 1{released} B 1 1 {} R 1 {} F 00003800 00006000 00001a00 00001740 00001900 {} {} {} 00001200 00001700 00001740 {} {} 00000000 {} 00001740 {}",
+                x(p.speed), x(p.t), cps.join(" "), x(p.t), x(end_t), if bits & 2 != 0 { "80000000" } else { "85000000" }, x(t), x(ph), w[18], x(end_t)
+            );
+            assert_eq!(got, o, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 1000);
     }
 
     /// The recovery request (F-26749) and the rejoin request (F-89026) against the original's builders run whole offline
@@ -8896,14 +8963,100 @@ pub struct GhostRide {
     /// the controller's entry 3 (F-25114): its hysteresis, and (speed, distance) this frame
     pub on3: bool,
     pub dest: Option<(f32, f32)>,
-    /// the route lane change's arguments this frame (F-24481; the lane-change rail F-32118 is not ported)
+    /// the route lane change's arguments this frame (F-24481), taken at once (F-32118)
     pub change: Option<crate::ghostroute::Change>,
+    /// the follower on the lane-change rail (F-32118 / F-11487: follower +156 the rail, +160 the target lane, +164 its
+    /// phase): ridden in state 1 until its end, then onto the target lane
+    pub lc: Option<Path>,
 }
 
 impl GhostRide {
     fn dest_entry(&self) -> Option<(f32, f32)> {
         self.dest
     }
+}
+
+/// F-11487's four control points: the two lanes' unit derivatives (the vector unit's normalisation) T0 at the
+/// current lane's point P0 and T1 at the target's P1; P0, P0 + W T0, P1 - W T1, P1 (vmaddfp: product, then sum).
+pub fn lane_change_cps(p0: Vec3, d0: Vec3, p1: Vec3, d1: Vec3, w: f32) -> [Vec3; 4] {
+    use crate::tcp_rail::{vmadd3, vnorm};
+    let (t0, t1) = (vnorm(d0), vnorm(d1));
+    [p0, vmadd3(t0, w, p0), vmadd3(t1, -w, p1), p1]
+}
+
+/// The route lane change F-32118 -> F-11487 (decode: docs/reference/people/cruise_ghost_hooks.md "Lane-change rail"):
+/// the current lane's point and derivative at t (slot 15's curve, F-71868) and the target's at its phase, the four
+/// control points (`lane_change_cps` with W = F-67514's), a rail of the pool's index 0 (mcRailAmbientDynamic: the B-spline
+/// over them, `path_curve`) at the target lane's slot 17 speed (F-27898, `rail_speed`), attached (F-70405) from phase 0
+/// with the target lane at the change's phase as the next rail. (L, F-36745, is passed but not read.)
+pub fn lane_change_rail(nav: &NavSys, lanes: &Lanes, c: &crate::ghostroute::Change) -> Option<Path> {
+    let (p0, d0) = nav.curves.get(c.from as usize)?.eval_pair(c.t);
+    let (p1, d1) = nav.curves.get(c.to as usize)?.eval_pair(c.phase);
+    let &link = lanes.links.get(c.to as usize)?.first()?;
+    Some(lane_change_path([p0, d0, p1, d1], c.w, rail_speed(nav, link).0, c.to as usize, c.phase))
+}
+
+/// F-11487's rail from the two lanes' points and derivatives `pd` (P0, D0, P1, D1): the pool's index 0 at `speed`, the
+/// four control points, attached from phase 0 with (`to`, `phase`) as the next rail.
+fn lane_change_path(pd: [Vec3; 4], w: f32, speed: f32, to: usize, phase: f32) -> Path {
+    let cps = lane_change_cps(pd[0], pd[1], pd[2], pd[3], w);
+    Path { geom: Geom::Curve(path_curve(&cps)), speed, end: Some((to, phase)), reverse: false, t: 0.0, ds: 0.0 }
+}
+
+/// The cruising ghost's place and unit heading: on the lane-change rail its point and unit derivative, else its lane's.
+fn ghost_point(r: &Rider, nav: &NavSys) -> (Vec3, Vec3) {
+    match r.ghost.as_ref().and_then(|g| g.lc.as_ref()) {
+        Some(p) => p.at(p.t),
+        None => (r.pos(nav), r.tangent(nav)),
+    }
+}
+
+/// State 1 of the cruising ghost while its follower is on the lane-change rail (F-50894 on a run-time rail): the wanted
+/// speed F-70324 from the rail's speed (+304, the target lane's) and the next rail's (the target lane), the car ahead
+/// along the rail and the target lane (F-47175's grid branch, as `step_route`), the destination entry, the integrator;
+/// past the rail's end the follower takes the target lane at the change's phase (follower +160 / +164) with the rest of
+/// the distance, and the route's next lane is asked (F-48618 -> F-74277, `turned`). (No stop-line or slower-lane entry
+/// on a run-time rail, as the port's other run-time rails.)
+fn step_lane_change(r: &mut Rider, env: &Env, me: usize, half_len: f32, dt: f32) -> (Vec3, Vec3) {
+    let nav = env.nav;
+    let path = r.ghost.as_ref().and_then(|g| g.lc.clone()).unwrap();
+    let (to, to_t) = path.end.unwrap();
+    let next_link = env.lanes.links.get(to).and_then(|l| l.first().copied());
+    let (want, _) = wanted((path.speed, false), next_link.map(|k| rail_speed(nav, k).0), r.off, (false, false));
+    let (q, dir) = path.at(path.t);
+    let ahead = {
+        let rails = vec![path.segs(), lane_segs(nav, env.lanes, to)];
+        let next_start = nav.curves.get(to).map(|c| c.eval(to_t).0);
+        search_ahead(r, env, me, q, dir, &rails, (None, Some(to)), next_start, [Some(GatherRail::RunTime), Some(GatherRail::Lane(to)), None])
+    };
+    let dest = r.ghost.as_ref().and_then(|g| g.dest_entry());
+    let (mut a, chosen) = control(r, r.v, want, half_len, &ahead, env.others, None, None, dest, dt);
+    r.slot = chosen;
+    if env.hold {
+        a = -r.ty.max_decel;
+    }
+    ghost_integrate(r, a, dt, env.clock);
+    let d = r.v * dt;
+    let g = r.ghost.as_mut().unwrap();
+    let p = g.lc.as_mut().unwrap();
+    let over = p.step(d);
+    let pose = p.pose();
+    let Some(rest) = over else { return pose };
+    g.lc = None;
+    g.turned = true;
+    r.next = None;
+    if let Some(k) = next_link {
+        r.link = k;
+        r.set_phase(nav, env.lanes, to_t);
+        let c = &nav.curves[to];
+        r.ds = c.speed(to_t);
+        r.ds_lane = to;
+        if rest > 0.0 {
+            let t1 = LaneCurve::advance(to_t, rest, r.ds).clamp(0.0, 1.0);
+            r.set_phase(nav, env.lanes, t1);
+        }
+    }
+    r.pose(nav)
 }
 
 /// What the cruising side is told (drained once a frame, `Vehicles::drain_ghost_events`).
@@ -9032,6 +9185,7 @@ impl PoolWorld for LiveWorld<'_> {
             on3: false,
             dest: None,
             change: None,
+            lc: None,
         };
         // behaviour slot 10 (F-28180) -> slot 16: the next lane by the route (F-74277), its indices -1
         let next = crate::ghostroute::route_next(&ride.route, net, nav, ride.track.last, o.start.0, &mut ride.rng, self.shared);
@@ -9139,7 +9293,7 @@ impl Vehicles {
             if r.state != 1 {
                 continue;
             }
-            let pos = owner_pos.unwrap_or_else(|| r.pos(nav));
+            let pos = owner_pos.unwrap_or_else(|| ghost_point(r, nav).0);
             if let Some(ride) = r.ghost.as_mut() {
                 ride.dest = (ride.flags & crate::ghostroute::FLAG_DEST_SPEED != 0 && crate::ghostroute::end_plane(&ride.route, pos) > 0.0).then(|| (ride.dest_speed, crate::ghostroute::dest_dist(&ride.route, pos)));
             }
@@ -9147,8 +9301,10 @@ impl Vehicles {
             step(r, &env, me, 0.0, true, dt);
             let lane = nav.links[r.link].lane as u32;
             let (t, v) = (r.t, r.v);
-            let pos = owner_pos.unwrap_or_else(|| r.pos(nav));
+            let pos = owner_pos.unwrap_or_else(|| ghost_point(r, nav).0);
             let Some(ride) = r.ghost.as_mut() else { continue };
+            // (on the lane-change rail the follower's rail is a run-time one: no node holds it, no change, not ordinary)
+            let cur = ride.lc.is_none().then_some(lane);
             if ride.turned {
                 ride.turned = false;
                 let mut m = shared.get();
@@ -9156,10 +9312,16 @@ impl Vehicles {
                 shared.set(m);
                 r.next = n.and_then(|l| lanes.links.get(l as usize).and_then(|x| x.first().copied()));
             }
-            crate::ghostroute::track(&ride.route, net, &mut ride.track, Some(lane));
+            crate::ghostroute::track(&ride.route, net, &mut ride.track, cur);
             let next = r.next.map(|n| nav.links[n].lane as u32);
-            ride.change = crate::ghostroute::lane_change(&ride.route, net, nav, &ride.track, lane, next, t, v);
-            let ordinary = net.lanes.get(lane as usize).is_some_and(|l| l.flags & 0x1800 == 0);
+            ride.change = cur.and_then(|l| crate::ghostroute::lane_change(&ride.route, net, nav, &ride.track, l, next, t, v));
+            // F-32118: the change taken at once - the follower on the lane-change rail from phase 0, the target lane its
+            // next rail (the pool's rail: none only when the pool is empty, the port's pool never is)
+            if let Some(p) = ride.change.as_ref().and_then(|c| lane_change_rail(nav, lanes, c)) {
+                r.next = p.end.and_then(|(l, _)| lanes.links.get(l).and_then(|x| x.first().copied()));
+                ride.lc = Some(p);
+            }
+            let ordinary = ride.lc.is_none() && net.lanes.get(lane as usize).is_some_and(|l| l.flags & 0x1800 == 0);
             let reason = if crate::ghostroute::route_end(&ride.route, ride.track.last, pos, ride.flags, ride.dest_speed, v) {
                 1
             } else if crate::ghostroute::off_route(&ride.route, &ride.track, ordinary) {
@@ -9186,11 +9348,19 @@ impl Vehicles {
         let g = self.ghosts.live.cars.iter().find(|g| g.id == ghost)?;
         let nav = rail_nav_made()?;
         let r = &g.rider;
+        let (p, f) = ghost_point(r, nav);
         let matrix = match self.cars.iter().find(|c| c.uid == g.owner) {
             Some(c) => instance_matrix(c),
-            None => spawn_pose(r.pos(nav), r.tangent(nav)),
+            None => spawn_pose(p, f),
         };
-        Some(crate::cruiser::GhostView { matrix, rail: Some((nav.links[r.link].lane as u32, r.t)), speed: r.v })
+        // (on the lane-change rail: no lane - the brain's state 5 reads that rail's slot 8 at its phase, `run_rail`)
+        let lc = r.ghost.as_ref().and_then(|x| x.lc.as_ref());
+        let rail = lc.is_none().then(|| (nav.links[r.link].lane as u32, r.t));
+        let run_rail = lc.map(|p| match &p.geom {
+            Geom::Curve(c) => c.eval_pair(p.t),
+            Geom::Tcp(_) => p.eval(p.t),
+        });
+        Some(crate::cruiser::GhostView { matrix, rail, run_rail, speed: r.v })
     }
 }
 
@@ -9398,10 +9568,67 @@ mod ghost_tests {
         Some((root, NavSys::parse(&res).ok()?))
     }
 
+    /// The play test's route (racer AI log c12, cruiser 1305): from lane 3542 at 0.5458 to (-129.559, 20.5996, -810.73),
+    /// 17 nodes, the first (record 1001) with lanes 3542 3543 3548 3549 3550, then record 1067 with the junction lane
+    /// 3890 - which starts only at the end of 3549. 3542 leads to 3548, whose end leads only to 3881 (off the route):
+    /// the ghost must change from 3548 to 3549 (F-24481 -> F-32118). Before the lane-change rail was ported it rode
+    /// 3542 -> 3548 -> 3881 and was released with reason 2; now it rides the rail onto 3549, then 3890, and reaches the
+    /// route's end (reason 1).
+    #[test]
+    fn the_ghost_changes_lane_onto_the_junction_lane() {
+        let Some((root, nav0)) = load() else { return };
+        let _ = AmbType::load(&root, PROXY_TYPE);
+        let nav = rail_nav(&nav0);
+        let Some(net) = ghost_net() else { return };
+        let col = WorldCollider::default();
+        let route = crate::railroute::route(net, nav, 3542, 0.5458, Vec3::new(-129.559, 20.5996, -810.73));
+        let firsts: Vec<(u32, Vec<u32>)> = route.nodes.iter().take(2).map(|n| (n.rec, n.lanes.clone())).collect();
+        assert_eq!(firsts, vec![(1001, vec![3542, 3543, 3548, 3549, 3550]), (1067, vec![3890])]);
+        assert_eq!(route.nodes.len(), 17);
+        let mut v = Vehicles::new();
+        v.ghosts.live.ground_always = true;
+        let id = v.request_ghost(crate::cruiser::GhostRequest { owner: 77, route: route.clone(), start: (3542, 0.5458), set_speed: None, dest_speed: None });
+        assert!(id >= 0);
+        let dt = 1.0 / 60.0;
+        let (mut ghost, mut done, mut lanes_seen, mut rail_frames) = (None, None, Vec::<u32>::new(), 0);
+        for _ in 0..60 * 600 {
+            v.clock += dt;
+            v.ghost_frame(&nav0, &col, dt);
+            for e in v.drain_ghost_events() {
+                match e {
+                    GhostEvent::Attached { ghost: g, .. } => ghost = g,
+                    GhostEvent::Released { reason, rail, .. } => done = Some((reason, rail)),
+                }
+            }
+            if done.is_some() {
+                break;
+            }
+            let Some(gv) = ghost.and_then(|g| v.ghost(g)) else { continue };
+            match gv.rail {
+                Some((l, _)) => {
+                    if lanes_seen.last() != Some(&l) {
+                        lanes_seen.push(l);
+                    }
+                }
+                None => {
+                    assert!(gv.run_rail.is_some());
+                    rail_frames += 1;
+                }
+            }
+        }
+        eprintln!("lanes {lanes_seen:?}, {rail_frames} frames on the lane-change rail, released {done:?}");
+        assert!(rail_frames > 0, "the change was taken");
+        let k = lanes_seen.iter().position(|&l| l == 3549).expect("onto 3549");
+        assert_eq!(lanes_seen.get(k + 1), Some(&3890));
+        assert!(!lanes_seen.contains(&3881));
+        let last = route.nodes.last().unwrap();
+        assert!(matches!(done, Some((1, Some(r))) if net.recs[last.rec as usize].lanes.contains(&r)), "{done:?}");
+    }
+
     /// A ghost on a route through the vehicles' hooks: requested, attached in the next frame, riding the route's lanes
     /// (every lane it takes is a lane of the route's records, F-74277 / F-18846) until released at the route's end
-    /// (reason 1, the rail its last lane) - or off the route (reason 2) where the route asks for a lane change, whose
-    /// rail (F-32118) is not ported.
+    /// (reason 1, the rail its last lane) - or off the route (reason 2); lane changes the route asks for are taken
+    /// (F-32118).
     #[test]
     fn a_ghost_follows_its_route_and_is_released_at_the_end() {
         let Some((root, nav0)) = load() else { return };
@@ -9466,7 +9693,8 @@ mod ghost_tests {
                 if start_v < 0.0 {
                     start_v = gv.speed;
                 }
-                let (lane, _) = gv.rail.unwrap();
+                // (on the route lane change's rail: no lane)
+                let Some((lane, _)) = gv.rail else { continue };
                 // (SetSpeed caps the integrator's acceleration only: the start speed is the rail's, F-30683)
                 assert!(gv.speed <= 15.0 || gv.speed <= start_v, "SetSpeed caps the speed");
                 // a lane it rides while the route holds it is a lane of a route node's record
