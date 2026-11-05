@@ -62,6 +62,19 @@ pub struct DrvIn {
     pub cutscene: bool,
     /// the local human's look (the view's +112 x 0.8 through the rival look, -1 looking back: main.rs `rider_look`)
     pub look: f32,
+    /// the damage object's +44 / +48 (the gatherer clears +48: `Drivers::hit_taken`)
+    pub dmg: [f32; 2],
+}
+
+/// What the gatherer reads outside the car (main.rs): the race's over byte (race +3773; None without a race), the human's
+/// horn sounding (the horn test F-26939: the car audio's +1404 slot, F-58539), the player's crash state (chassis +592's 0x10 / 0x04 bits and the damage
+/// object's +44 timer; None for another car) and the replay stream's byte (+76: 0x80 recording, 0x40 playing).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DrvWorld {
+    pub race_over: Option<bool>,
+    pub horn: bool,
+    pub crash: Option<(u8, f32)>,
+    pub replay: u8,
 }
 
 impl DrvIn {
@@ -70,7 +83,7 @@ impl DrvIn {
     /// grid and deactivated bits of chassis +592. Approximate (docs/reference/people/car_anim_machine.md "Wiring"): no
     /// race / GPS / damage / water / horn / powerup inputs, the view's camera test (0x400) off, the cockpit view as the
     /// view's mode 1 with the player manager's tests false, the racer's +656 and the sim's alarm value 0.
-    pub fn of(st: &crate::physics::CarState, input: &crate::physics::CarInput, sp: &crate::steer_parts::SteerParts, player: bool, cutscene: bool, ckpt: bool, look: f32) -> DrvIn {
+    pub fn of(st: &crate::physics::CarState, input: &crate::physics::CarInput, sp: &crate::steer_parts::SteerParts, player: bool, cutscene: bool, ckpt: bool, look: f32, w: &DrvWorld) -> DrvIn {
         let vs = st.veh.as_deref();
         let (r0, r1, r2) = (st.rot * Vec3::X, st.rot * Vec3::Y, st.rot * Vec3::Z);
         let stick = vs.filter(|v| v.pad.live).map_or(input.lean, |v| v.pad.stick_y);
@@ -85,13 +98,20 @@ impl DrvIn {
             mgr: Some(false),
             view: player.then_some(dm::View { cam: None, mode: if ckpt { 1 } else { 0 }, dist: 0.0 }),
             cine_cam: cutscene,
-            w592: input.deactivated as u32 | (input.hold as u32) << 1,
+            // (+592: 0x1 deactivated, 0x2 the grid hold, 0x4 damaged out, 0x10 wiped out - the player's from main.rs's
+            // crash state, another car's from its damage at the limit and its upset)
+            w592: input.deactivated as u32
+                | (input.hold as u32) << 1
+                | w.crash.map_or(((st.damage >= 0.999) as u32) << 2 | ((st.upset > 0.0 || vs.is_some_and(|v| v.wipe.is_some())) as u32) << 4, |c| (c.0 & 0x14) as u32),
             handbrake: if input.handbrake { 1.0 } else { 0.0 },
             burn: vs.map_or(0.0, |v| v.burn),
             throttle: input.throttle,
             brake: input.brake,
             steer: vs.map_or(input.steer, |v| v.steer),
-            water: Some(false),
+            water: vs.and_then(|v| v.fluid.as_ref()).map(|f| f.inside),
+            race: w.race_over,
+            honk: w.horn && player,
+            g76: w.replay,
             nitro: vs.map(|v| v.nitro_burning),
             wheel_n: 4,
             wheels: std::array::from_fn(|i| Some(vs.map_or(0.0, |v| v.wheels[i].slide))),
@@ -104,7 +124,9 @@ impl DrvIn {
             wheel: true,
             ..dm::Gather::default()
         };
-        DrvIn { g, needle: sp.needle, divisor: sp.divisor, out: sp.out, scale: sp.scale, racer: dm::Racer { human: player, ..dm::Racer::default() }, cutscene, look }
+        // (the damage object, vehicle +20: +44 the wipe-out / damage-out timer - the player's crash timer -, +48 the visible hit)
+        let dmg = [w.crash.map_or(0.0, |c| c.1), if st.visible_hit { 1.0 } else { 0.0 }];
+        DrvIn { g, needle: sp.needle, divisor: sp.divisor, out: sp.out, scale: sp.scale, racer: dm::Racer { human: player, ..dm::Racer::default() }, cutscene, look, dmg }
     }
 }
 
@@ -226,6 +248,7 @@ impl CarAnim {
     fn step(&mut self, rig: &Rig, d: &DrvIn, k: &dm::Tune, dt: f32, odd: bool, culled: bool, rng: &mut [u32; 2], car: &str) -> Option<SteerOut> {
         self.ctx.culled = culled;
         self.ctx.opponent = !d.racer.human;
+        self.gm.dmg = Some(d.dmg);
         self.gm.parts = Some(dm::Parts { f1124: d.needle, f1176: d.divisor, f1164: d.out, f1136: d.scale, f1128: self.parts.0, f1132: self.parts.1, ..dm::Parts::default() });
         let mut cc = self.ctx;
         let inp = dm::gather(
@@ -249,6 +272,12 @@ impl CarAnim {
             self.parts = (p.f1128, p.f1132);
             SteerOut { needle_rate: p.f1112, needle_scale: p.f1108, needle_scale2: p.f1156, hold_ease: p.f1148, hold_rate: p.f1152 }
         });
+        // (the driver's update F-83924: the anim update F-32205 - the machine, its clips, the pan smoother, the anim player's
+        // update - is not run on a frame of no time (dt under 1e-6) while the replay stream records or plays (+76 0x80 /
+        // 0x40), unless the context's flags hold 0x40000 or 0x80000)
+        if !(dt >= f32::from_bits(0x3586_37bd)) && self.ctx.flags & 0xC0000 == 0 && d.g.g76 & 0xC0 != 0 {
+            return out;
+        }
         let env = dm::Env { remaining: self.seq.remaining(), phase: self.seq.phase(), cutscene: d.cutscene };
         self.m.rng = *rng;
         let mut cmds = Vec::new();
@@ -1148,6 +1177,8 @@ pub struct Drivers {
     rng: [u32; 2],
     /// per car (`Seat::uid`): what its driver's gatherer wrote into the steering part this frame (main.rs hands it on)
     pub steer_out: HashMap<u32, SteerOut>,
+    /// the cars whose visible hit (mcCarDamage +48) a driver's gatherer took this frame
+    pub hit_taken: Vec<u32>,
 }
 
 /// What the drivers' distance LOD (F-12028) reads of one racer's driver.
@@ -1333,6 +1364,22 @@ fn car_key(name: &str) -> String {
     if n.starts_with("vpd") { n.to_string() } else { n.get(3..).unwrap_or("").to_string() }
 }
 
+/// A driver pack's dictionary (F-99427): the holder's name table (+780, count +1548) against its clips (+8 + 4i), the keys
+/// lower-cased (the lookup is case-blind), the first of equal keys kept.
+fn holder_keys(rd: &Rd) -> Vec<(String, usize)> {
+    let n = (rd.u32(1548) as usize).min(rd.u32(776) as usize).min(192);
+    let mut out: Vec<(String, usize)> = Vec::new();
+    for i in 0..n {
+        let k = rd.ptr(780 + 4 * i).and_then(|a| rd.ptr(a)).map(|s| rd.cstr(s)).unwrap_or_default().to_ascii_lowercase();
+        if let Some(o) = rd.ptr(8 + 4 * i) {
+            if !out.iter().any(|x| x.0 == k) {
+                out.push((k, o));
+            }
+        }
+    }
+    out
+}
+
 fn hash(a: u32) -> u32 {
     let mut h = a.wrapping_mul(0x9E37_79B9);
     h ^= h >> 15;
@@ -1480,20 +1527,12 @@ impl Drivers {
                 let bike = BikeClips::load(&clip);
                 let (mut dict, mut clips) = (HashMap::new(), Vec::new());
                 if !is_bike {
-                    let own = format!("{}_", key.0);
-                    let shared = "dge_challenger_70_";
-                    let mut order: Vec<(u8, &(usize, String))> = entries
-                        .iter()
-                        .map(|e| {
-                            let l = e.1.to_ascii_lowercase();
-                            (if l.starts_with(&own) { 2 } else if l.starts_with(shared) { 0 } else { 1 }, e)
-                        })
-                        .collect();
-                    order.sort_by_key(|x| x.0);
-                    for (_, (o, n)) in order {
-                        let l = n.to_ascii_lowercase();
-                        let k = l.strip_prefix(own.as_str()).or_else(|| l.strip_prefix(shared)).unwrap_or(&l).to_string();
-                        if let Some(a) = animation_named(&rd, *o) {
+                    // the pack's own dictionary (F-99427): the holder's name table (+780, count +1548) holds the keys
+                    // ("Drv_steer_sweep"), entry i the clip at +8 + 4i; compared case-blind, the first equal one wins. The
+                    // clips' own names carry the prefix of the car they were made for (the Police Car Pack's: CHV_IMPALA_96_ /
+                    // DGE_CHARGER_06_, the faces dge_challenger_70_), the keys none.
+                    for (k, o) in holder_keys(&rd) {
+                        if let Some(a) = animation_named(&rd, o) {
                             dict.insert(k, clips.len() as u32);
                             clips.push(Clip::bind(&Arc::new(a), &model.ids, false, false));
                         }
@@ -1599,6 +1638,7 @@ impl Drivers {
         let k = dm::Tune::original();
         self.cars.retain(|u, _| seats.iter().any(|s| s.uid == *u));
         self.steer_out.clear();
+        self.hit_taken.clear();
         if machines {
             for s in seats {
                 let (Some(d), false) = (s.drv.as_ref(), s.bike) else { continue };
@@ -1610,6 +1650,10 @@ impl Drivers {
                 let culled = self.frozen.get(&s.uid).copied().unwrap_or(false);
                 if let Some(o) = a.step(rig, d, &k, dt, self.frame & 1 == 1, culled, &mut self.rng, s.car) {
                     self.steer_out.insert(s.uid, o);
+                }
+                // (the gatherer took the damage object's +48: main.rs clears the car's visible hit)
+                if d.dmg[1] != 0.0 && a.gm.dmg.is_some_and(|x| x[1] == 0.0) {
+                    self.hit_taken.push(s.uid);
                 }
             }
         }
@@ -1851,6 +1895,26 @@ mod original_tests {
         assert_eq!(car_key("vp_chv_police_96"), "chv_police_96");
         // a woman's: the same name in the Female folder (the disc has every car's pack in both)
         assert!(pack_path(r, false, true, "dge_challenger_70").ends_with("resources/animation/0xe4f29864/opponent/female/0x953f13ee.r2"));
+    }
+
+    /// The pack's own dictionary keys the clips by their plain names: the Police Car Pack's packs (clips named for the
+    /// civilian Impala / Charger) give the machine every clip it asks for, as the civilian cars' do (GitHub #36).
+    #[test]
+    fn a_police_pack_keys_its_clips_by_plain_name() {
+        let r = Path::new("D:/MCLA/extracted/cache");
+        for (car, imp) in [("vp_se_chv_plc_96", "vp_chv_impala_96"), ("vp_se_dge_plc_06", "vp_dge_charger_06")] {
+            for pl in [true, false] {
+                let (Ok(a), Ok(b)) = (load_resource_file(&pack_path(r, pl, false, &car_key(car))), load_resource_file(&pack_path(r, pl, false, &car_key(imp)))) else {
+                    eprintln!("no disc data, skipped");
+                    return;
+                };
+                let (ka, kb) = (holder_keys(&Rd::new(&a)), holder_keys(&Rd::new(&b)));
+                assert!(ka.iter().any(|k| k.0 == "drv_steer_sweep") && ka.iter().any(|k| k.0 == "drv_idle_stp"), "{car}");
+                let names = |k: &[(String, usize)]| k.iter().map(|x| x.0.clone()).collect::<Vec<_>>();
+                assert_eq!(names(&ka), names(&kb), "{car} keys as {imp}'s");
+                assert_eq!(ka.len(), if pl { 182 } else { 38 });
+            }
+        }
     }
 
     /// SetCharName's (F-22036) renames and its "_f" test, on the names the scripts give (the hookmen's sets).

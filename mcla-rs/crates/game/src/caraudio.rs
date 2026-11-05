@@ -2074,6 +2074,12 @@ pub struct PlayerCtl {
 }
 
 impl Fleet {
+    /// The car's horn slot (car audio +1404) is taken - the driver gatherer's horn test F-26939 reads it (F-58539): the
+    /// player's horn sounds while its button is held.
+    pub fn horn_sounding(&self, uid: u32) -> bool {
+        self.cars.values().any(|e| e.uid == uid && e.sounds.as_ref().is_some_and(|s| s.horn.is_some()))
+    }
+
     /// The physics material's audio object (MATERIALS_*, from its .mtl `AudioGameObject`).
     pub fn material_object(&self, surface: u8) -> u32 {
         self.mats.get(surface).0

@@ -359,6 +359,11 @@ impl Sound {
 }
 
 impl Sound {
+    /// The car's horn sounds (its audio's +1404 slot, `Fleet::horn_sounding`).
+    pub fn horn_sounding(&self, uid: u32) -> bool {
+        self.fleet.as_ref().is_some_and(|f| f.horn_sounding(uid))
+    }
+
     #[allow(clippy::too_many_arguments)]
     /// `rain`: the weather's rain share (wet = not 0); `probe(from, to)`: the city's collision has something on that line.
     /// `probe_at(from, to)`: the material (Surface) of the nearest hit on that line.

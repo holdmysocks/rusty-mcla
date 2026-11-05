@@ -298,6 +298,9 @@ pub struct CarState {
     pub agro: bool,
     /// a hit above the wipeout threshold this frame, in thresholds (cleared by whoever acts on it)
     pub wipeout: f32,
+    /// mcCarDamage +48, the visible hit (set by the hit's outcome, cleared by the driver's gatherer F-28290, which
+    /// makes it the anim context's VisibleDamage bit 0x200)
+    pub visible_hit: bool,
     /// wiped out: 1 at the hit, running down to 0 over the tuning's WipeoutDelay (the centre
     /// of gravity is moved up for as long, see vehsim)
     pub upset: f32,
@@ -404,7 +407,7 @@ impl CarState {
             burnout: 0.0,
             launch: 0.0,
             damage: 0.0,
-            last_impact: 0.0, shake_dv: 0.0, last_hit: 0.0, head_on: false, agro: false, wipeout: 0.0, upset: 0.0, zones: [0.0; 4], zone_half: [0.9, 2.2], dmg: Default::default(),
+            last_impact: 0.0, shake_dv: 0.0, last_hit: 0.0, head_on: false, agro: false, wipeout: 0.0, visible_hit: false, upset: 0.0, zones: [0.0; 4], zone_half: [0.9, 2.2], dmg: Default::default(),
             engine_factor: 1.0,
             veh: None,
             touches: Vec::new(),
@@ -504,6 +507,12 @@ impl CarState {
         // (the car wrecked, F-74220: rumble 7)
         if !was_wreck && self.damage >= 1.0 {
             self.rumble.play(7);
+        }
+        // (the hit's outcome F-74220: neither destroying nor wiping out, over ImpactThreshold (tune +32) with chassis +592
+        // lacking 0x8: mcCarDamage +48 = 1.0 - the driver flinches. A car's hit never wipes it out here; a bike's
+        // wipeout by a hit is main.rs's, after this, and is not told apart)
+        if !(!was_wreck && self.damage >= 1.0) {
+            self.visible_hit = true;
         }
     }
 
