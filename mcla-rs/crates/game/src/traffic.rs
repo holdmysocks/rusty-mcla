@@ -4385,6 +4385,8 @@ mod verify_lanes_tests {
         let f12 = a[1] * n[1];
         let f7 = a[2].mul_add(n[2], f12);
         let f6 = a[0].mul_add(n[0], f7);
+        // (the port's lane_dot is this arithmetic)
+        assert_eq!(f6.to_bits(), crate::signals::lane_dot(Vec3::from(a), Vec3::from(e)).to_bits());
         timer < 6.5 && f6 > f32::from_bits(0x3f6803ca)
     }
 
@@ -4453,8 +4455,7 @@ mod verify_lanes_tests {
             assert!(j.demand.len() == o[3] as usize && j.demand.iter().all(|&d| d == 0) && o[5] == 1 && o[6] == 1 && o[7] == 0 && o[8] == 1);
         }
         assert_eq!(replica_bad, 0, "the replica of the original's arithmetic reproduces the original");
-        assert_eq!((n, d360.len() > 0), (17031, true));
-        let _ = d178;
+        assert_eq!((n, d178.len(), d360.len()), (17031, 0, 0), "the port's lane_state is the original's");
     }
 
     /// `snap_to_lane` is the original's F-59579 without a heading: on the city's lanes (as parsed and as `rail_nav`

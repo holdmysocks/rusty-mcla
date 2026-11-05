@@ -74,6 +74,27 @@ fn level(v: Vec3) -> Vec3 {
     Vec3::new(v.x, 0.0, v.z).normalize_or(Vec3::X)
 }
 
+/// The lane green tests' arm . entry (F-78185 / F-16432): the entry flattened (y = 0) and normalised as the vector
+/// unit does it (the three-lane dot, 1 / sqrt, one Newton step -(s y y - 1)(0.5 y) + y, denormals flushed), then
+/// fma(a.x, n.x, fma(a.z, n.z, a.y n.y)). Compared with the image's cos 25 degrees, `LANE_GREEN_COS`.
+pub(crate) fn lane_dot(a: Vec3, entry: Vec3) -> f32 {
+    let ftz = |x: f32| if x.is_subnormal() { 0.0f32.copysign(x) } else { x };
+    let (x, z) = (ftz(entry.x), ftz(entry.z));
+    let s = ftz(ftz(x * x) + ftz(z * z));
+    let r0 = ftz(1.0 / s.sqrt());
+    let v9 = ftz(r0 * r0);
+    let v8 = ftz(0.5 * r0);
+    let v7 = -ftz(ftz(s * v9) - 1.0);
+    let v6 = ftz(ftz(v7 * v8) + r0);
+    let n = [ftz(x * v6), ftz(0.0 * v6), ftz(z * v6)];
+    let f12 = a.y * n[1];
+    let f7 = a.z.mul_add(n[2], f12);
+    a.x.mul_add(n[0], f7)
+}
+
+/// cos 25 degrees as the image has it (0.9063078).
+pub(crate) const LANE_GREEN_COS: f32 = f32::from_bits(0x3F68_03CA);
+
 impl Junction {
     /// The arm a point (or, for `dir`, a direction from the centre) lies on.
     /// F-97162: the largest dot product, the first of equals (strict `>` from -FLT_MAX); 0 when there is no arm (the
@@ -110,7 +131,7 @@ impl Junction {
     /// May traffic enter a junction lane whose first two control points are P0, P1 (`entry` =
     /// P0 - P1, pointing back out along the street it comes from)? The original's test
     /// (sub_8273A178 / sub_8273A360): only while the phase is green (timer < 6.5) and the
-    /// current arm lies within 25 degrees of the lane's entry, `dot(arm, level(P0 - P1)) > cos 25`.
+    /// current arm lies within 25 degrees of the lane's entry, `lane_dot(arm, P0 - P1) > cos 25` (the image's 0.9063078).
     /// The car's own heading does not count: on a street that bends into the junction it can
     /// be far off the arm while the lane's first span still runs along it. 2 green, 1 yellow
     /// (the arm's yellow; traffic stops for it too), 0 red.
@@ -118,7 +139,7 @@ impl Junction {
     pub fn lane_state(&self, entry: Vec3) -> u8 {
         let (current, timer) = (self.current as usize, self.timer);
         match self.arms.get(current) {
-            Some(a) if a.dot(level(entry)) > 0.9063 && timer < GREEN + YELLOW => {
+            Some(a) if lane_dot(*a, entry) > LANE_GREEN_COS && timer < GREEN + YELLOW => {
                 if timer < GREEN {
                     2
                 } else {
