@@ -13677,6 +13677,9 @@ impl Game {
                 // (test hook: MCLA_SERIES_WINS=n starts the series with the player at n wins)
                 let wins = std::env::var("MCLA_SERIES_WINS").ok().and_then(|v| v.parse::<u32>().ok()).map(|n| vec![("YOU".to_string(), n)]).unwrap_or_default();
                 self.series = (!order.is_empty()).then(|| Series { key: format!("{}_series", key), races: order, at: first, wins, rivals: Vec::new(), diff: self.hangout_diff, story: None });
+                // (the warp, then the scene's release, which counts xGAS + 1 - Hangouts/0xe166126d 0x1556 ->
+                // 0x14db. Its two other calls, after the hangout's MISSION_EVENT (0x2271, 0x22ec), are not ported)
+                self.mc4_stat_add("xGAS", 0, 1.0);
                 leave(self);
                 return Some(MenuAction::StartRace);
             }
@@ -13714,6 +13717,9 @@ impl Game {
                 self.wager_key = Some(key.clone());
                 self.current_race = Some(self.mc4_wager_race(&key).unwrap_or(self.race_sel.min(self.race_defs.len().saturating_sub(1))));
                 self.wager_here = false;
+                // (the wager race's function opens with xGAW + 1 - Hangouts/0x16e89a34 0x19f0; REWAGER and
+                // NEXT WAGER loop inside it, past the count)
+                self.mc4_stat_add("xGAW", 0, 1.0);
                 log::info!("hangout: {} wager ${} at difficulty {}", key, stake, self.hangout_diff);
                 leave(self);
                 return Some(MenuAction::StartRace);
