@@ -418,6 +418,8 @@ pub struct RecordData {
     pub vertex_lanes: Vec<Vec<usize>>,
     /// per lane: the vertex index of its last control point (curve +0x20 [CVCount - 1]); u32::MAX none
     pub last_vertex: Vec<u32>,
+    /// per lane: the vertex index of its first control point (curve +0x20 [0]); u32::MAX none
+    pub first_vertex: Vec<u32>,
 }
 
 /// A road or a junction: an item of the connection list (root +0x3c) and of the quadtree.
@@ -960,6 +962,7 @@ impl NavSys {
             })
             .collect();
         rec.last_vertex = raw.iter().map(|l| if l.vi.1 == u16::MAX { u32::MAX } else { l.vi.1 as u32 }).collect();
+        rec.first_vertex = raw.iter().map(|l| if l.vi.0 == u16::MAX { u32::MAX } else { l.vi.0 as u32 }).collect();
         let nv = raw.iter().flat_map(|l| [l.vi.0, l.vi.1]).filter(|&v| v != u16::MAX).max().map_or(0, |v| v as usize + 1);
         if let Some(t) = rd.ptr(0x38) {
             for v in 0..nv {

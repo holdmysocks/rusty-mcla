@@ -747,8 +747,8 @@ pub struct Rider {
     stuck: (f32, f32, u8),
     /// what the passing rail goes round: its index and where it stood
     passing: Option<(usize, Vec3)>,
-    /// the car ahead kept while both stand: (index, its position)
-    kept: Option<(usize, Vec3)>,
+    /// the last obstacle search's nearest and blocking obstacles (behaviour +432 / +436), for F-47175's head
+    kept: Option<(usize, Option<usize>)>,
     /// seconds at rest while physical (the physics' sleep)
     rest: f32,
     /// a cab's trailer or a trailer's cab (their ids, +3604)
@@ -1087,7 +1087,8 @@ fn next_rail_seq() -> u64 {
 /// distance; F-80793).
 #[derive(Clone, Debug, Default)]
 pub struct DriverLanes {
-    list: Vec<(usize, f32)>,
+    /// (lane, phase, the order it was linked into the lane's car list: `next_rail_seq`)
+    list: Vec<(usize, f32, u64)>,
     pub best: Option<(usize, f32)>,
     /// the best lane's phase t (the report's +648)
     pub best_t: f32,
@@ -1539,6 +1540,8 @@ pub struct Other {
     pub cab_or_trailer: bool,
     /// (diagnostics) its rider's id
     pub key: u32,
+    /// its grid object's kind byte +6 (`brainturn::ObjectInfo::from_car`: 0 the player, 1 racers, 2 the others)
+    pub kind: u8,
 }
 
 impl Other {
@@ -1625,18 +1628,20 @@ struct Ahead {
 }
 
 /// Looks for the car ahead along `rails` (this rail and the next as segments), `lanes` the
-/// lanes those rails are (cars riding them count without a test).
+/// lanes those rails are (cars riding them count without a test), among the gather's candidates `cands` in their
+/// order (`gather_obstacles`; the selection after it is the port's, F-47175's loop not ported).
 #[allow(clippy::too_many_arguments)]
-fn find_ahead(nav: &NavSys, me: usize, pos: Vec3, fwd: Vec3, own_wid: f32, rails: &[Vec<(Vec3, Vec3)>], lanes: (Option<usize>, Option<usize>), next_start: Option<Vec3>, others: &[Other]) -> Ahead {
+fn find_ahead(nav: &NavSys, me: usize, pos: Vec3, fwd: Vec3, own_wid: f32, rails: &[Vec<(Vec3, Vec3)>], lanes: (Option<usize>, Option<usize>), next_start: Option<Vec3>, others: &[Other], cands: &[usize]) -> Ahead {
     let mut best: Option<(usize, f32)> = None;
     let mut block: Option<(usize, f32)> = None;
     let mut player_across = false;
-    for (j, o) in others.iter().enumerate() {
+    for &j in cands {
+        let Some(o) = others.get(j) else { continue };
         if j == me {
             continue;
         }
         let rel = o.pos - pos;
-        if rel.dot(fwd) < 0.0 || rel.y.abs() > 4.0 || rel.length_squared() > 150.0 * 150.0 {
+        if rel.dot(fwd) < 0.0 || rel.y.abs() > 4.0 {
             continue;
         }
         let d = rel.length();
@@ -1681,6 +1686,165 @@ fn find_ahead(nav: &NavSys, me: usize, pos: Vec3, fwd: Vec3, own_wid: f32, rails
     Ahead { j, d, vt: vt.max(0.0), blocking: block.map(|b| b.0), player_across }
 }
 
+/// A rail as the obstacle gather sees it (F-47175's context +12 / +16 / +20): a navsys lane (rail word +4 without
+/// 0x1800) or a run-time rail (with it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GatherRail {
+    Lane(usize),
+    RunTime,
+}
+
+/// What the obstacle gather (F-47175, F-14781, F-25797, F-44673) reads of the world.
+pub trait GatherWorld {
+    /// the navsys vertex table (root +0x38): the lanes listed at a vertex, in the table's order
+    fn vertex_lanes(&self, v: u32) -> &[usize];
+    /// a lane's first and last control points' vertex indices (its curve, slot 15: +0x20 [0] and [+0x1c])
+    fn lane_vertices(&self, lane: usize) -> (u32, u32);
+    /// a lane's slot 12 (control point 0) and slot 13 (its end), x / y / z
+    fn lane_ends(&self, lane: usize) -> ([f32; 3], [f32; 3]);
+    /// the obstacles on a lane's car list (rail +96), in the list's order
+    fn rail_cars(&self, lane: usize) -> &[usize];
+    /// the objects of the 3 x 3 grid cells round an obstacle's place (F-88455 / F-99153), each cell's list in order
+    fn grid_cells(&self, asker: usize) -> Vec<&[usize]>;
+    /// an object's kind byte +6 (0 the player, 1 racers, 2 ambient cars, ...)
+    fn kind(&self, o: usize) -> u8;
+    /// an obstacle's matrix (slot 1): row 2 (+32) and row 3, its place (+48)
+    fn rows(&self, o: usize) -> ([f32; 3], [f32; 3]);
+}
+
+/// The gather's room (F-47175's stack array: 64 obstacles).
+pub const GATHER_CAP: usize = 64;
+
+/// A VMX lane in the flush mode: a denormal is a zero of its sign.
+fn vmx_flush(x: f32) -> f32 {
+    if x.is_subnormal() {
+        0.0f32.copysign(x)
+    } else {
+        x
+    }
+}
+
+/// x / y / z equal as F-14781 / F-25797 compare two points (the mask of the image's run-time words = xyz, vcmpeqfp in
+/// the flush mode: -0 equals 0, a denormal equals 0, a NaN equals nothing).
+fn vmx_eq3(a: [f32; 3], b: [f32; 3]) -> bool {
+    (0..3).all(|i| vmx_flush(a[i]) == vmx_flush(b[i]))
+}
+
+/// F-44673: a rail's car list into the candidates. Each obstacle on the list but the asker: d = its place - the asker's
+/// (a vector subtract in the flush mode); skipped when fma(r2.x, d.x, fma(r2.y, d.y, r2.z d.z)) > 0 with r2 the asker's
+/// row 2 (the back axis: behind); skipped when already a candidate; the walk ends when `cap` are held; else appended.
+pub fn gather_rail<W: GatherWorld>(w: &W, lane: usize, asker: usize, out: &mut Vec<usize>, cap: usize) {
+    use crate::physics::exact::fma;
+    for &o in w.rail_cars(lane) {
+        if o == asker {
+            continue;
+        }
+        let (r2, pa) = w.rows(asker);
+        let (_, po) = w.rows(o);
+        let d: [f32; 3] = std::array::from_fn(|i| vmx_flush(vmx_flush(po[i]) - vmx_flush(pa[i])));
+        let f10 = r2[2] * d[2];
+        let f7 = fma(r2[1], d[1], f10);
+        let f6 = fma(r2[0], d[0], f7);
+        if f6 > 0.0 {
+            continue;
+        }
+        if out.contains(&o) {
+            continue;
+        }
+        if out.len() >= cap {
+            return;
+        }
+        out.push(o);
+    }
+}
+
+/// F-25797: one rail `r` (none: nothing) and its two vertices' lists: of the list at its start (`va`) the rails whose
+/// end differs from r's start (the rails leading into r skipped; r itself is taken), of the list at its end (`vb`) the
+/// rails but r whose start differs from r's end (r's successors skipped); each rail's car list by F-44673.
+fn gather_one<W: GatherWorld>(w: &W, r: Option<usize>, va: u32, vb: u32, asker: usize, out: &mut Vec<usize>) {
+    let Some(r) = r else { return };
+    for &x in w.vertex_lanes(va) {
+        if !vmx_eq3(w.lane_ends(r).0, w.lane_ends(x).1) {
+            gather_rail(w, x, asker, out, GATHER_CAP);
+        }
+    }
+    for &x in w.vertex_lanes(vb) {
+        if x != r && !vmx_eq3(w.lane_ends(r).1, w.lane_ends(x).0) {
+            gather_rail(w, x, asker, out, GATHER_CAP);
+        }
+    }
+}
+
+/// F-14781: the rail `a` and the next rail `b` that starts at a's end vertex: of a's start vertex list the rails whose
+/// end differs from a's start, of the shared vertex's list every rail but a, of b's end vertex list the rails but b
+/// whose start differs from b's end; each rail's car list by F-44673.
+#[allow(clippy::too_many_arguments)]
+fn gather_two<W: GatherWorld>(w: &W, a: usize, b: usize, l1: u32, l2: u32, l3: u32, asker: usize, out: &mut Vec<usize>) {
+    for &x in w.vertex_lanes(l1) {
+        if !vmx_eq3(w.lane_ends(a).0, w.lane_ends(x).1) {
+            gather_rail(w, x, asker, out, GATHER_CAP);
+        }
+    }
+    for &x in w.vertex_lanes(l2) {
+        if x != a {
+            gather_rail(w, x, asker, out, GATHER_CAP);
+        }
+    }
+    for &x in w.vertex_lanes(l3) {
+        if x != b && !vmx_eq3(w.lane_ends(b).1, w.lane_ends(x).0) {
+            gather_rail(w, x, asker, out, GATHER_CAP);
+        }
+    }
+}
+
+/// The candidates of the obstacle search (F-47175's gather), in its order. `cur` / `next` / `other`: the behaviour's
+/// rail (+188), next rail (+192) and the rail at +104 (its pass holder +92's +12). No current rail or a run-time one:
+/// first the objects of the 3 x 3 grid cells round the asker of kind 0 or 2, not the asker, while fewer than 64 (no
+/// duplicate test). Then the rail lists: A = the current rail if a lane, else `other` if a lane; B = the next rail if
+/// a lane. A and B with A's end vertex B's start vertex: F-14781(A, B); else F-25797 for A, then for B.
+pub fn gather_obstacles<W: GatherWorld>(w: &W, asker: usize, cur: Option<GatherRail>, next: Option<GatherRail>, other: Option<GatherRail>) -> Vec<usize> {
+    let mut out: Vec<usize> = Vec::new();
+    if !matches!(cur, Some(GatherRail::Lane(_))) {
+        for cell in w.grid_cells(asker) {
+            for &o in cell {
+                let k = w.kind(o);
+                if (k == 2 || k == 0) && o != asker && out.len() < GATHER_CAP {
+                    out.push(o);
+                }
+            }
+        }
+    }
+    let a = match (cur, other) {
+        (Some(GatherRail::Lane(l)), _) | (_, Some(GatherRail::Lane(l))) => Some(l),
+        _ => None,
+    };
+    let b = match next {
+        Some(GatherRail::Lane(l)) => Some(l),
+        _ => None,
+    };
+    let (a0, a1) = a.map_or((u32::MAX, u32::MAX), |l| w.lane_vertices(l));
+    let (b0, b1) = b.map_or((u32::MAX, u32::MAX), |l| w.lane_vertices(l));
+    match (a, b) {
+        (Some(a), Some(b)) if a1 == b0 && a1 != u32::MAX => gather_two(w, a, b, a0, a1, b1, asker, &mut out),
+        _ => {
+            gather_one(w, a, a0, a1, asker, &mut out);
+            gather_one(w, b, b0, b1, asker, &mut out);
+        }
+    }
+    out
+}
+
+/// F-47175's head: whether the last search stands this frame (no gather; the nearest and blocking words kept). Only
+/// with a last nearest obstacle, when the asker's slot 2 (its velocity) and the last nearest's are zero in x / y / z
+/// (flush mode: a denormal is zero): one draw of the shared MWC, kept when U23 x 2^-23 > 0.025 (0x3CCCCCCD).
+pub fn search_kept(asker_vel: [f32; 3], last_vel: Option<[f32; 3]>, shared: &mut super::parked::Mwc) -> bool {
+    let Some(lv) = last_vel else { return false };
+    if !vmx_eq3(asker_vel, [0.0; 3]) || !vmx_eq3(lv, [0.0; 3]) {
+        return false;
+    }
+    shared.float() > f32::from_bits(0x3CCC_CCCD)
+}
+
 /// The segments of a lane.
 fn lane_segs(nav: &NavSys, lanes: &Lanes, lane: usize) -> Vec<(Vec3, Vec3)> {
     lanes.links[lane].iter().map(|&k| (nav.links[k].a, nav.links[k].b)).collect()
@@ -1707,6 +1871,81 @@ pub struct Env<'a> {
     pub parity: bool,
     /// per car: its race path (behaviour +468) as (referenced +188, fired +189) - a layout item's path
     pub paths: &'a [Option<(bool, bool)>],
+    /// the game's shared MWC (`Vehicles::park_rng`, `parked::Mwc`), written back after the riders' step
+    pub shared: &'a std::cell::Cell<super::parked::Mwc>,
+    /// the obstacle gather's lists (`Vehicles::gather_lists`): the lanes' car lists, the grid's cells
+    pub rail_cars: &'a hashbrown::HashMap<usize, Vec<usize>>,
+    pub grid: &'a hashbrown::HashMap<(i32, i32), Vec<usize>>,
+}
+
+/// The world of one rider's obstacle gather: the frame's lists, the asker's matrix (its car's; a ghost without one: the
+/// rider's place and back axis).
+struct EnvGather<'e, 'a> {
+    env: &'e Env<'a>,
+    me: usize,
+    me_rows: ([f32; 3], [f32; 3]),
+}
+
+impl GatherWorld for EnvGather<'_, '_> {
+    fn vertex_lanes(&self, v: u32) -> &[usize] {
+        self.env.nav.records.vertex_lanes.get(v as usize).map_or(&[], |x| x.as_slice())
+    }
+    fn lane_vertices(&self, lane: usize) -> (u32, u32) {
+        let r = &self.env.nav.records;
+        (r.first_vertex.get(lane).copied().unwrap_or(u32::MAX), r.last_vertex.get(lane).copied().unwrap_or(u32::MAX))
+    }
+    fn lane_ends(&self, lane: usize) -> ([f32; 3], [f32; 3]) {
+        let c = &self.env.nav.curves[lane];
+        let (a, b) = (c.pts.first().copied().unwrap_or(Vec3::ZERO), c.pts.last().copied().unwrap_or(Vec3::ZERO));
+        (a.to_array(), b.to_array())
+    }
+    fn rail_cars(&self, lane: usize) -> &[usize] {
+        self.env.rail_cars.get(&lane).map_or(&[], |v| v.as_slice())
+    }
+    fn grid_cells(&self, asker: usize) -> Vec<&[usize]> {
+        let p = self.rows(asker).1;
+        let Some((ix, iz)) = CrossGrid::UNBOUNDED.cell(p[0], p[2]) else { return Vec::new() };
+        let mut out = Vec::with_capacity(9);
+        for z in iz - 1..=iz + 1 {
+            for x in ix - 1..=ix + 1 {
+                out.push(self.env.grid.get(&(x, z)).map_or(&[][..], |v| v.as_slice()));
+            }
+        }
+        out
+    }
+    fn kind(&self, o: usize) -> u8 {
+        self.env.others.get(o).map_or(2, |x| x.kind)
+    }
+    fn rows(&self, o: usize) -> ([f32; 3], [f32; 3]) {
+        if o == self.me {
+            return self.me_rows;
+        }
+        let x = &self.env.others[o];
+        (x.back.to_array(), x.pos.to_array())
+    }
+}
+
+/// The obstacle search's head and gather (F-47175) before the port's selection (`find_ahead`): the last search kept
+/// (`search_kept`: both stand, one draw of the shared MWC), else the candidates of `gather_obstacles` for the rails
+/// `g` (current, next, the pass holder's). The result is stored for the next frame's head.
+#[allow(clippy::too_many_arguments)]
+fn search_ahead(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, rails: &[Vec<(Vec3, Vec3)>], lanes: (Option<usize>, Option<usize>), next_start: Option<Vec3>, g: [Option<GatherRail>; 3]) -> Ahead {
+    let mine = env.others.get(me);
+    let me_rows = mine.map_or(((-fwd).to_array(), pos.to_array()), |o| (o.back.to_array(), o.pos.to_array()));
+    let vel = mine.map_or((fwd * r.v).to_array(), |o| o.vel.to_array());
+    let last = r.kept.and_then(|(j, _)| env.others.get(j)).map(|o| o.vel.to_array());
+    let mut m = env.shared.get();
+    let keep = search_kept(vel, last, &mut m);
+    env.shared.set(m);
+    let ahead = match r.kept {
+        Some((j, blocking)) if keep => Ahead { j, d: env.others[j].pos.distance(pos), vt: 0.0, blocking, player_across: false },
+        _ => {
+            let cands = gather_obstacles(&EnvGather { env, me, me_rows }, me, g[0], g[1], g[2]);
+            find_ahead(env.nav, me, pos, fwd, r.ty.width.max(1.6), rails, lanes, next_start, env.others, &cands)
+        }
+    };
+    r.kept = (ahead.j != usize::MAX).then_some((ahead.j, ahead.blocking));
+    ahead
 }
 
 /// Is a rail clear (F-23371 with the own half width): the city's bound and the cars.
@@ -2267,30 +2506,24 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
     let (want, next_want) = wanted(rail, r.next.map(|n| rail_speed(nav, n).0), r.off, holds);
     let pos = r.pos(nav);
     let fwd = r.tangent(nav);
-    // the car ahead: kept while both stand (searched again with p = 0.025), else searched
-    let kept = match r.kept.clone() {
-        Some((j, at)) if v == 0.0 && env.others.get(j).is_some_and(|o| o.vel == Vec3::ZERO && o.pos.distance_squared(at) < 1e-6) && r.rand() > 0.025 => Some(j),
-        _ => None,
-    };
-    let ahead = match kept {
-        Some(j) => Ahead { j, d: env.others[j].pos.distance(pos), vt: 0.0, blocking: blocking(&env.others[j], fwd).then_some(j), player_across: false },
-        None => {
-            let mut rails = vec![lane_segs(nav, env.lanes, lane)];
-            if let Some(nl) = next_lane {
-                rails.push(lane_segs(nav, env.lanes, nl));
-            }
-            // (on this rail only from where we are)
-            let here = env.lanes.project(nav, lane, pos);
-            let mut s0 = 0.0;
-            rails[0].retain(|&(a, b)| {
-                let keep = s0 + a.distance(b) > here;
-                s0 += a.distance(b);
-                keep
-            });
-            find_ahead(nav, me, pos, fwd, r.ty.width.max(1.6), &rails, (Some(lane), next_lane), r.next.map(|n| nav.links[n].a), env.others)
+    // the car ahead (F-47175): the last search kept while both stand (the shared MWC), else the gather's candidates
+    // of this lane (+188) and the next (+192)
+    let ahead = {
+        let mut rails = vec![lane_segs(nav, env.lanes, lane)];
+        if let Some(nl) = next_lane {
+            rails.push(lane_segs(nav, env.lanes, nl));
         }
+        // (on this rail only from where we are)
+        let here = env.lanes.project(nav, lane, pos);
+        let mut s0 = 0.0;
+        rails[0].retain(|&(a, b)| {
+            let keep = s0 + a.distance(b) > here;
+            s0 += a.distance(b);
+            keep
+        });
+        let g = [Some(GatherRail::Lane(lane)), next_lane.map(GatherRail::Lane), None];
+        search_ahead(r, env, me, pos, fwd, &rails, (Some(lane), next_lane), r.next.map(|n| nav.links[n].a), g)
     };
-    r.kept = (v == 0.0 && ahead.j != usize::MAX).then(|| (ahead.j, env.others[ahead.j].pos));
     // F-16850: go = green for the lane (or a car of the bIsProxy pool while the red light race byte is set) and the
     // junction's box not held by anything but this car (`Blockers`); a refused car stops at the line as at red (and
     // `waits` counts its demand)
@@ -2482,6 +2715,139 @@ pub(crate) fn trailer_cab(trailer: bool, cab_id: i32, lookup: impl FnOnce(i32) -
 mod drive_rule_tests {
     use super::*;
 
+    /// A case's world for the obstacle gather (tools/traffic_gather_reference.py's layout).
+    struct CaseWorld {
+        obs: Vec<(u8, [f32; 3], [f32; 3])>,
+        lanes: Vec<((u32, u32), [f32; 3], [f32; 3], Vec<usize>)>,
+        verts: Vec<Vec<usize>>,
+        grid: Vec<Vec<usize>>,
+    }
+
+    impl GatherWorld for CaseWorld {
+        fn vertex_lanes(&self, v: u32) -> &[usize] {
+            self.verts.get(v as usize).map_or(&[], |x| x.as_slice())
+        }
+        fn lane_vertices(&self, lane: usize) -> (u32, u32) {
+            self.lanes[lane].0
+        }
+        fn lane_ends(&self, lane: usize) -> ([f32; 3], [f32; 3]) {
+            (self.lanes[lane].1, self.lanes[lane].2)
+        }
+        fn rail_cars(&self, lane: usize) -> &[usize] {
+            &self.lanes[lane].3
+        }
+        fn grid_cells(&self, _asker: usize) -> Vec<&[usize]> {
+            self.grid.iter().map(|g| g.as_slice()).collect()
+        }
+        fn kind(&self, o: usize) -> u8 {
+            self.obs[o].0
+        }
+        fn rows(&self, o: usize) -> ([f32; 3], [f32; 3]) {
+            (self.obs[o].1, self.obs[o].2)
+        }
+    }
+
+    /// The spawner's lane pick against the original's code run offline (tools/spawn_lane_reference.py ->
+    /// testdata/spawn_lane_ref.txt): F-10273 whole with the record walks F-95725 / F-12622, the lanes' slots 18 / 20 and
+    /// the shared MWC from the case; the lane, the phase's bits and the MWC after equal in every case.
+    #[test]
+    fn spawn_lane_pick_matches_the_original() {
+        let (mut n, mut last, mut held) = (0, 0, 0);
+        for line in include_str!("testdata/spawn_lane_ref.txt").lines() {
+            let (input, want) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = input.split(' ').map(|x| u32::from_str_radix(&x.replace('_', ""), 16).unwrap()).collect();
+            let mut mwc = super::super::parked::Mwc { lo: w[0], carry: w[1] };
+            let m = w[2] as usize;
+            let lanes: Vec<usize> = (0..m).map(|i| w[3 + 3 * i] as usize).collect();
+            let wt = |l: usize| {
+                let i = lanes.iter().position(|&x| x == l).unwrap();
+                if w[4 + 3 * i] != 0 { 0.0 } else { f32::from_bits(w[5 + 3 * i]) }
+            };
+            let got = match pick_lane(&lanes, wt, &mut mwc) {
+                Some((i, t)) => {
+                    last += (i + 1 == m && m > 1) as usize;
+                    held += (w[4 + 3 * i] != 0) as usize;
+                    format!("{:x} {:x}", lanes[i], t.to_bits())
+                }
+                None => "ffffffff deadbeef".to_string(),
+            };
+            let got = format!("{got} {:04x}_{:04x} {:04x}_{:04x}", mwc.lo >> 16, mwc.lo & 0xFFFF, mwc.carry >> 16, mwc.carry & 0xFFFF);
+            assert_eq!(got, want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 5000);
+        assert!(last > 300 && held > 10, "{last} {held}");
+    }
+
+    /// The obstacle gather against the original's code run offline (tools/traffic_gather_reference.py ->
+    /// testdata/traffic_gather_ref.txt): F-47175 from its start through the gather (F-14781, F-25797, F-44673 inside),
+    /// the grid's cell lists from the case; kept or not, the candidates in order, the shared MWC after and the result's
+    /// two words equal in every case.
+    #[test]
+    fn gather_matches_the_original() {
+        let (mut n, mut kept, mut cands, mut full) = (0, 0, 0, 0);
+        for line in include_str!("testdata/traffic_gather_ref.txt").lines() {
+            let (input, want) = line.split_once(" -> ").unwrap();
+            let hw = |x: &str| u32::from_str_radix(&x.replace('_', ""), 16).unwrap();
+            let w: Vec<u32> = input.split(' ').map(hw).collect();
+            let mut k = 0;
+            let mut next = || {
+                k += 1;
+                w[k - 1]
+            };
+            let mut mwc = super::super::parked::Mwc { lo: next(), carry: next() };
+            let (nobs, asker, prev, prevb) = (next() as usize, next() as usize, next(), next());
+            let rail = |x: u32| match x {
+                0xFFFF_FFFF => None,
+                0xFFFF_FFFE => Some(GatherRail::RunTime),
+                l => Some(GatherRail::Lane(l as usize)),
+            };
+            let (cur, nxt, oth) = (rail(next()), rail(next()), rail(next()));
+            let (nl, nv) = (next() as usize, next() as usize);
+            let v3 = |f: &mut dyn FnMut() -> u32| [f32::from_bits(f()), f32::from_bits(f()), f32::from_bits(f())];
+            let mut obs = Vec::new();
+            let mut vel = Vec::new();
+            for _ in 0..nobs {
+                let kind = next() as u8;
+                let r2 = v3(&mut next);
+                let p = v3(&mut next);
+                vel.push(v3(&mut next));
+                obs.push((kind, r2, p));
+            }
+            let mut lanes = Vec::new();
+            for _ in 0..nl {
+                let (a, b) = (next(), next());
+                let s = v3(&mut next);
+                let e = v3(&mut next);
+                let nc = next() as usize;
+                lanes.push(((a, b), s, e, (0..nc).map(|_| next() as usize).collect()));
+            }
+            let verts: Vec<Vec<usize>> = (0..nv).map(|_| (0..next()).map(|_| next() as usize).collect()).collect();
+            let grid: Vec<Vec<usize>> = (0..9).map(|_| (0..next()).map(|_| next() as usize).collect()).collect();
+            let world = CaseWorld { obs, lanes, verts, grid };
+            let last = (prev != 0xFFFF_FFFF).then(|| vel[prev as usize]);
+            let ix = |x: u32| if x == 0xFFFF_FFFF { "ffffffff".to_string() } else { format!("{x:x}") };
+            let mut got = if search_kept(vel[asker], last, &mut mwc) {
+                kept += 1;
+                format!("k {:04x}_{:04x} {:04x}_{:04x} {} {}", mwc.lo >> 16, mwc.lo & 0xFFFF, mwc.carry >> 16, mwc.carry & 0xFFFF, ix(prev), ix(prevb))
+            } else {
+                let c = gather_obstacles(&world, asker, cur, nxt, oth);
+                cands += c.len();
+                full += (c.len() == GATHER_CAP) as usize;
+                let mut s = format!("g {}", c.len());
+                for o in c {
+                    s += &format!(" {o:x}");
+                }
+                s + &format!(" {:04x}_{:04x} {:04x}_{:04x} ffffffff ffffffff", mwc.lo >> 16, mwc.lo & 0xFFFF, mwc.carry >> 16, mwc.carry & 0xFFFF)
+            };
+            got = got.trim().to_string();
+            assert_eq!(got, want.trim(), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+        assert!(kept > 300 && cands > 5000 && full > 5, "{kept} {cands} {full}");
+    }
+
     /// The trailer's cab check against the original's code run offline (tools/trailer_cab_reference.py ->
     /// testdata/trailer_cab_ref.txt): every type byte / id / lookup combination, the answer, the id asked and the removal equal.
     #[test]
@@ -2671,12 +3037,15 @@ pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half
     let (q, d) = path.at(path.t);
     let dir = if path.reverse { -d } else { d };
     // the speed: the rail's, with the car ahead along the rail
+    let want = path.speed;
+    // (a run-time rail: F-47175's grid branch; the next rail +192 and the pass holder's +104 on these rails are not
+    // traced - taken as none)
     let ahead = if path.reverse {
         Ahead { j: usize::MAX, d: 0.0, vt: 0.0, blocking: None, player_across: false }
     } else {
-        find_ahead(env.nav, me, q, dir, r.ty.width.max(1.6), &[path.segs()], (None, None), None, env.others)
+        let segs = path.segs();
+        search_ahead(r, env, me, q, dir, &[segs], (None, None), None, [Some(GatherRail::RunTime), None, None])
     };
-    let want = path.speed;
     let (mut a, chosen) = control(r, r.v, want, half_len, &ahead, env.others, None, None, None, dt);
     r.slot = chosen;
     if env.hold {
@@ -3113,6 +3482,7 @@ impl Vehicles {
                     active: r.is_some_and(|r| r.state == 4) || (r.is_none() && c.parked.is_none()),
                     cab_or_trailer: r.is_some_and(|r| r.ty.cab || r.ty.trailer),
                     key: r.map_or(0, |r| r.rng_id()),
+                    kind: crate::brainturn::ObjectInfo::from_car(0, c).kind,
                 }
             })
             .collect();
@@ -3127,7 +3497,9 @@ impl Vehicles {
         let focus = self.amb_focus();
         let blockers = self.frame_blockers(nav);
         let paths: Vec<Option<(bool, bool)>> = self.cars.iter().map(|c| c.item.and_then(|h| self.layout.get(h as usize)?.as_ref()?.path.as_ref().map(|p| (p.referenced, p.fired)))).collect();
-        let env = Env { nav, lanes, col, others: &others, signals: &self.signals, blockers: &blockers, clock: self.clock, event, player_ahead, hold, parity, paths: &paths };
+        let shared = std::cell::Cell::new(self.park_rng);
+        let (rail_cars, grid) = self.gather_lists(nav);
+        let env = Env { nav, lanes, col, others: &others, signals: &self.signals, blockers: &blockers, clock: self.clock, event, player_ahead, hold, parity, paths: &paths, shared: &shared, rail_cars: &rail_cars, grid: &grid };
         // MCLA_TRAFFIC_TRACE=file: every riding car ten times a second (time, id, model, x, y,
         // z, speed, lane speed, junction lane, offset, entries on, standing gap, distance and
         // margin to the car ahead, acceleration, state, ...; the last column: the drawn heading in degrees)
@@ -3398,6 +3770,7 @@ impl Vehicles {
                 }
             }
         }
+        self.park_rng = shared.get();
         for (ji, p) in waits {
             self.signals.wait(ji, p);
         }
@@ -4881,7 +5254,7 @@ mod tests {
 
     #[test]
     fn corners_in_the_way() {
-        let o = |x: f32| Other { pos: Vec3::new(x, 0.0, -10.0), fwd: Vec3::NEG_Z, right: Vec3::X, back: Vec3::Z, vel: Vec3::ZERO, half_len: 2.2, half_wid: 0.9, on: None, railed: false, player: false, ambient: true, active: false, cab_or_trailer: false, key: 0 };
+        let o = |x: f32| Other { pos: Vec3::new(x, 0.0, -10.0), fwd: Vec3::NEG_Z, right: Vec3::X, back: Vec3::Z, vel: Vec3::ZERO, half_len: 2.2, half_wid: 0.9, on: None, railed: false, player: false, ambient: true, active: false, cab_or_trailer: false, key: 0, kind: 2 };
         let q = Vec3::new(0.0, 0.0, -10.0);
         // on the line, beside it within half our width, clear of it
         assert!(in_the_way(&o(0.0), q, 1.8));
@@ -4928,6 +5301,33 @@ impl Road {
         }
         self.lanes.iter().map(|&l| Road::lane_weight(nav, off, l)).sum()
     }
+}
+
+/// F-10273 as the traffic spawner calls it (no direction: every lane a candidate): the road record's lanes (`lanes`:
+/// its own, then its child's subtree - F-95725 / F-12622, `RecordData::road_lanes`) weighed by `weight` (slot 18 set -
+/// the race traffic clearing holds it - 0, else slot 20, the lane's length +0x0c), the total added in order; u = (U23 x
+/// total) x 2^-23 from the shared MWC; the first lane whose weight is not below what is left of u after the ones before
+/// are taken off (a NaN stops), at most the last; a second draw U23 x 2^-23 is the phase along it. None (no draw)
+/// without lanes. Returns the lane's index in `lanes` and the phase.
+pub fn pick_lane(lanes: &[usize], weight: impl Fn(usize) -> f32, mwc: &mut super::parked::Mwc) -> Option<(usize, f32)> {
+    if lanes.is_empty() {
+        return None;
+    }
+    let w: Vec<f32> = lanes.iter().map(|&l| weight(l)).collect();
+    let mut total = 0.0f32;
+    for &x in &w {
+        total = x + total;
+    }
+    let u23 = (mwc.next() & 0x7F_FFFF) as f32;
+    let mut u = u23 * total * f32::from_bits(0x3400_0000);
+    let mut i = 0;
+    while i < w.len() && u > w[i] {
+        u -= w[i];
+        i += 1;
+    }
+    let i = i.min(w.len() - 1);
+    let t = (mwc.next() & 0x7F_FFFF) as f32 * f32::from_bits(0x3400_0000);
+    Some((i, t))
 }
 
 /// `density_tuning.xml`.
@@ -5988,35 +6388,18 @@ impl Vehicles {
             if road.lanes.is_empty() {
                 continue;
             }
-            // a lane by length (one the race traffic clearing holds weighs 0, F-10273), a point along it
-            let u = self.rand();
-            let off = &self.race_clearing.off;
-            let mut x = u * road.open_len(nav, off);
-            let mut lane = road.lanes[0];
-            for &l in &road.lanes {
-                lane = l;
-                let w = Road::lane_weight(nav, off, l);
-                if x < w {
-                    break;
-                }
-                x -= w;
-            }
-            let mut s = self.rand() * lane.1;
-            let mut link = lane.0;
-            let lane_id = nav.links[link].lane;
-            while s > nav.links[link].len {
-                s -= nav.links[link].len;
-                match nav.links[link].next.first() {
-                    Some(&nk) if nav.links[nk].lane == lane_id => link = nk,
-                    _ => {
-                        s = nav.links[link].len;
-                        break;
-                    }
-                }
-            }
+            // a lane of the road and the phase along it (F-10273, `pick_lane`: the record's lanes by their length, the
+            // race traffic clearing's weighing 0, two draws of the shared MWC); the phase's place on the port's links. (The
+            // front-end mode has its point's lane and phase.)
             let (link, s) = match fe_at {
                 Some((_, k, sk)) => (k, sk),
-                None => (link, s),
+                None => {
+                    let off = &self.race_clearing.off;
+                    let rl = nav.records.road_lanes.get(ri as usize).map_or(&[][..], |v| v.as_slice());
+                    let Some((li, t)) = pick_lane(rl, |l| if off.contains(&l) { 0.0 } else { nav.lane_len(l) }, &mut self.park_rng) else { continue };
+                    let Some(at) = lane_link_at(nav, lanes(nav), rl[li], t) else { continue };
+                    at
+                }
             };
             let l = &nav.links[link];
             let pos = l.a + (l.b - l.a) * (s / l.len.max(1e-3));
@@ -6796,12 +7179,12 @@ pub fn step_route(r: &mut Rider, env: &Env, me: usize, half_len: f32, dt: f32) -
             rails.push(lane_segs(nav, env.lanes, rt.lane));
             (Some(rt.lane), nav.curves.get(rt.lane).map(|c| c.eval(rt.lane_t).0))
         };
-        find_ahead(nav, me, pos, fwd, r.ty.width.max(1.6), &rails, (None, next_lane), next_start, env.others)
+        // (the path's curve and join rails taken as run-time rails - F-47175's grid branch; the lane after them +192)
+        search_ahead(r, env, me, pos, fwd, &rails, (None, next_lane), next_start, [Some(GatherRail::RunTime), next_lane.map(GatherRail::Lane), None])
     };
     let want = (r.route.as_ref().unwrap().speed + r.off).max(MIN_WANT);
     let (mut a, chosen) = control(r, r.v, want, half_len, &ahead, env.others, None, None, None, dt);
     r.slot = chosen;
-    r.kept = None;
     if env.hold {
         a = -r.ty.max_decel;
     }
@@ -7187,6 +7570,34 @@ impl Vehicles {
         m
     }
 
+    /// What the obstacle gather (F-47175) reads, made once a frame: per lane its car list (rail +96) - the riders on it
+    /// (`rail_lists`) and the driver cars' entries (F-94578 links one in when it adds the lane), in the order they were
+    /// linked in; per grid cell (`CrossGrid::UNBOUNDED`, 40 m) its cars in the port's car order.
+    fn gather_lists(&self, nav: &NavSys) -> (hashbrown::HashMap<usize, Vec<usize>>, hashbrown::HashMap<(i32, i32), Vec<usize>>) {
+        let mut m = self.rail_lists(nav);
+        for (j, c) in self.cars.iter().enumerate() {
+            if let Some(dl) = self.driver_lanes.get(&c.uid) {
+                for &(lane, _, seq) in &dl.list {
+                    m.entry(lane).or_default().push((seq, j));
+                }
+            }
+        }
+        let lists = m
+            .into_iter()
+            .map(|(l, mut v)| {
+                v.sort();
+                (l, v.into_iter().map(|x| x.1).collect())
+            })
+            .collect();
+        let mut grid: hashbrown::HashMap<(i32, i32), Vec<usize>> = hashbrown::HashMap::new();
+        for (j, c) in self.cars.iter().enumerate() {
+            if let Some(cell) = CrossGrid::UNBOUNDED.cell(c.state.pos.x, c.state.pos.z) {
+                grid.entry(cell).or_default().push(j);
+            }
+        }
+        (lists, grid)
+    }
+
     /// The blockers of every junction that has a car on its lanes or the player's lane, once a
     /// frame, for the riders' light (F-16850 -> F-50959(J, car)).
     fn frame_blockers(&self, nav: &NavSys) -> hashbrown::HashMap<usize, Blockers> {
@@ -7358,14 +7769,14 @@ impl Vehicles {
                         }
                         None => {
                             if valid && dl.list.len() < 12 {
-                                dl.list.push((lane, t));
+                                dl.list.push((lane, t, next_rail_seq()));
                             }
                         }
                     }
                 }
             }
             let mut best: Option<(usize, f32)> = None;
-            for &(lane, t) in &dl.list {
+            for &(lane, t, _) in &dl.list {
                 let q = nav.curves[lane].eval(t).0;
                 let d2 = (q - p).length_squared();
                 if best.map_or(f32::MAX, |b| b.1) > d2 {
@@ -8674,6 +9085,7 @@ impl Vehicles {
                     active: r.is_some_and(|r| r.state == 4) || (r.is_none() && c.parked.is_none()),
                     cab_or_trailer: r.is_some_and(|r| r.ty.cab || r.ty.trailer),
                     key: r.map_or(0, |r| r.rng_id()),
+                    kind: crate::brainturn::ObjectInfo::from_car(0, c).kind,
                 }
             })
             .collect()
@@ -8715,7 +9127,9 @@ impl Vehicles {
         }
         let others = self.ghost_others(nav);
         let blockers = self.frame_blockers(nav);
-        let env = Env { nav, lanes, col, others: &others, signals: &self.signals, blockers: &blockers, clock, event: self.race_event, player_ahead: None, hold: self.frozen || self.grid_hold.is_some(), parity: false, paths: &[] };
+        let shared = std::cell::Cell::new(self.park_rng);
+        let (rail_cars, grid) = self.gather_lists(nav);
+        let env = Env { nav, lanes, col, others: &others, signals: &self.signals, blockers: &blockers, clock, event: self.race_event, player_ahead: None, hold: self.frozen || self.grid_hold.is_some(), parity: false, paths: &[], shared: &shared, rail_cars: &rail_cars, grid: &grid };
         let mut removes: Vec<(u32, u32, u32)> = Vec::new();
         for g in self.ghosts.live.cars.iter_mut() {
             // F-58860: the proxy car's place is its owner's vehicle's (none: its own)
@@ -8737,7 +9151,9 @@ impl Vehicles {
             let Some(ride) = r.ghost.as_mut() else { continue };
             if ride.turned {
                 ride.turned = false;
-                let n = crate::ghostroute::route_next(&ride.route, net, nav, ride.track.last, lane, &mut ride.rng, &mut self.park_rng);
+                let mut m = shared.get();
+                let n = crate::ghostroute::route_next(&ride.route, net, nav, ride.track.last, lane, &mut ride.rng, &mut m);
+                shared.set(m);
                 r.next = n.and_then(|l| lanes.links.get(l as usize).and_then(|x| x.first().copied()));
             }
             crate::ghostroute::track(&ride.route, net, &mut ride.track, Some(lane));
@@ -8758,6 +9174,7 @@ impl Vehicles {
                 removes.push((g.id, reason, g.owner));
             }
         }
+        self.park_rng = shared.get();
         for (id, reason, owner) in removes {
             self.ghosts.pool.submit_remove(id, reason, owner);
         }
