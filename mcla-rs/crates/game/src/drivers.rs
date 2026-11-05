@@ -75,14 +75,17 @@ pub struct DrvWorld {
     pub horn: bool,
     pub crash: Option<(u8, f32)>,
     pub replay: u8,
+    /// the human's view record (the race manager's first player +880): its mode +80 (the original's list place:
+    /// 0 bumper, 1 POV, 2 .. 4 the booms; `boomcam::VIEW_OF_PORT`) and its camFX's LookaroundDelayTime (+24 -> +40)
+    pub view: Option<(i32, f32)>,
 }
 
 impl DrvIn {
     /// The gatherer's reads from the port's car. The body rows and velocity, the pedals, the gearbox (+20 0 = reverse, the
     /// original's reverse-first order), the burnout charge, the nitrous, the wheels' slide (+520) and contact records, the
-    /// grid and deactivated bits of chassis +592. Approximate (docs/reference/people/car_anim_machine.md "Wiring"): no
-    /// race / GPS / damage / water / horn / powerup inputs, the view's camera test (0x400) off, the cockpit view as the
-    /// view's mode 1 with the player manager's tests false, the racer's +656 and the sim's alarm value 0.
+    /// grid and deactivated bits of chassis +592; the race, horn, crash, damage, water and replay inputs from `DrvWorld`, the
+    /// view's camera test from its view. Approximate (docs/reference/people/car_anim_machine.md "Wiring"): no GPS warp or
+    /// powerup inputs, the player manager's cockpit tests false, the racer's +656 and the sim's alarm value 0.
     pub fn of(st: &crate::physics::CarState, input: &crate::physics::CarInput, sp: &crate::steer_parts::SteerParts, player: bool, cutscene: bool, ckpt: bool, look: f32, w: &DrvWorld) -> DrvIn {
         let vs = st.veh.as_deref();
         let (r0, r1, r2) = (st.rot * Vec3::X, st.rot * Vec3::Y, st.rot * Vec3::Z);
@@ -96,7 +99,10 @@ impl DrvIn {
             ready: true,
             chassis: true,
             mgr: Some(false),
-            view: player.then_some(dm::View { cam: None, mode: if ckpt { 1 } else { 0 }, dist: 0.0 }),
+            // (the view's camera test 0x400, F-28290: mode 1 and chassis +588 - the sim's still timer, the same rule
+            // (A-39591) - + 1.25 past LookaroundDelayTime; 3.0 s and the mode read from the recorded original, 2026-11-05)
+            view: player.then_some(dm::View { cam: w.view.map(|v| v.1), mode: w.view.map_or(if ckpt { 1 } else { 0 }, |v| v.0), dist: 0.0 }),
+            idle: vs.map_or(0.0, |v| v.still_timer),
             cine_cam: cutscene,
             // (+592: 0x1 deactivated, 0x2 the grid hold, 0x4 damaged out, 0x10 wiped out - the player's from main.rs's
             // crash state, another car's from its damage at the limit and its upset)
@@ -229,6 +235,71 @@ fn finish(frame: &[FrameDof], bones: &[crate::skin::Bone], out: &mut Vec<(Quat, 
     }
 }
 
+/// The machine's commands into the sequencer (the anim player's play / pair / five / overlay builders and its setters),
+/// the clips found by the pack's dictionary (F-99427).
+fn apply_cmds(seq: &mut da::Seq, m: &dm::Machine, cmds: &[dm::Cmd], dict: &HashMap<String, u32>, dur: &dyn Fn(da::ClipId) -> f32, car: &str) {
+    let id = |n: &str| -> Option<da::ClipId> {
+        let r = dict.get(&n.to_ascii_lowercase()).copied();
+        if r.is_none() {
+            static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+            let key = format!("{car} {n}");
+            if let Ok(mut v) = SEEN.lock() {
+                if !v.contains(&key) {
+                    log::info!("drivers: {car} has no clip {n}");
+                    v.push(key);
+                }
+            }
+        }
+        r
+    };
+    let look = da::Look { face: m.face.as_deref().and_then(id), pan_spine: None, pan: m.overlay.and_then(id), filters: true };
+    for c in cmds {
+        let req = match c {
+            dm::Cmd::Play(n, b, l, nb) => id(n).map(|x| da::play(&look, dur, x, *b, *l, *nb)),
+            dm::Cmd::PlayCut(n, b, l, nb) => id(n).map(|x| da::play_cut(x, *b, *l, *nb)),
+            dm::Cmd::Pair(a, z, l, b) => id(a).zip(id(z)).map(|(x, y)| da::pair(&look, dur, x, y, *l, *b)),
+            dm::Cmd::Five(n, b, l) => {
+                let ids: Vec<_> = n.iter().filter_map(|x| id(x)).collect();
+                (ids.len() == 5).then(|| da::five(&look, dur, [ids[0], ids[1], ids[2], ids[3], ids[4]], *b, *l))
+            }
+            dm::Cmd::Overlay(n, b, l) => id(n).and_then(|x| da::overlay(seq, &look, x, *b, *l)),
+            dm::Cmd::Phase(v) => {
+                seq.set_phase(*v);
+                None
+            }
+            dm::Cmd::Rate(v) => {
+                seq.set_rate(*v);
+                None
+            }
+            dm::Cmd::Rate5(v) => {
+                seq.set_rate5(*v);
+                None
+            }
+            dm::Cmd::Phase2(v) => {
+                seq.set_phase2(*v);
+                None
+            }
+            dm::Cmd::Phase5(v) => {
+                seq.set_phase5(*v);
+                None
+            }
+            dm::Cmd::PhaseAll(v) => {
+                seq.set_phase_all(*v);
+                None
+            }
+            dm::Cmd::Weight(v) => {
+                seq.set_weight(*v);
+                None
+            }
+            // (the engine and camera calls: not the driver's pose)
+            dm::Cmd::EngineStart | dm::Cmd::EngineStop | dm::Cmd::HandBack => None,
+        };
+        if let Some(r) = req {
+            seq.submit(&r, dur);
+        }
+    }
+}
+
 impl CarAnim {
     fn new(set: &str, rng: [u32; 2]) -> CarAnim {
         CarAnim {
@@ -283,67 +354,7 @@ impl CarAnim {
         let mut cmds = Vec::new();
         self.m.step(&mut self.ctx, k, &env, &d.racer, &mut cmds);
         *rng = self.m.rng;
-        let id = |n: &str| -> Option<da::ClipId> {
-            let r = rig.dict.get(&n.to_ascii_lowercase()).copied();
-            if r.is_none() {
-                static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-                let key = format!("{car} {n}");
-                if let Ok(mut v) = SEEN.lock() {
-                    if !v.contains(&key) {
-                        log::info!("drivers: {car} has no clip {n}");
-                        v.push(key);
-                    }
-                }
-            }
-            r
-        };
-        let dur = |c: da::ClipId| rig.clips.get(c as usize).map_or(0.0, |c| c.anim.duration);
-        let look = da::Look { face: self.m.face.as_deref().and_then(id), pan_spine: None, pan: self.m.overlay.and_then(id), filters: true };
-        for c in &cmds {
-            let req = match c {
-                dm::Cmd::Play(n, b, l, nb) => id(n).map(|x| da::play(&look, &dur, x, *b, *l, *nb)),
-                dm::Cmd::PlayCut(n, b, l, nb) => id(n).map(|x| da::play_cut(x, *b, *l, *nb)),
-                dm::Cmd::Pair(a, z, l, b) => id(a).zip(id(z)).map(|(x, y)| da::pair(&look, &dur, x, y, *l, *b)),
-                dm::Cmd::Five(n, b, l) => {
-                    let ids: Vec<_> = n.iter().filter_map(|x| id(x)).collect();
-                    (ids.len() == 5).then(|| da::five(&look, &dur, [ids[0], ids[1], ids[2], ids[3], ids[4]], *b, *l))
-                }
-                dm::Cmd::Overlay(n, b, l) => id(n).and_then(|x| da::overlay(&mut self.seq, &look, x, *b, *l)),
-                dm::Cmd::Phase(v) => {
-                    self.seq.set_phase(*v);
-                    None
-                }
-                dm::Cmd::Rate(v) => {
-                    self.seq.set_rate(*v);
-                    None
-                }
-                dm::Cmd::Rate5(v) => {
-                    self.seq.set_rate5(*v);
-                    None
-                }
-                dm::Cmd::Phase2(v) => {
-                    self.seq.set_phase2(*v);
-                    None
-                }
-                dm::Cmd::Phase5(v) => {
-                    self.seq.set_phase5(*v);
-                    None
-                }
-                dm::Cmd::PhaseAll(v) => {
-                    self.seq.set_phase_all(*v);
-                    None
-                }
-                dm::Cmd::Weight(v) => {
-                    self.seq.set_weight(*v);
-                    None
-                }
-                // (the engine and camera calls: not the driver's pose)
-                dm::Cmd::EngineStart | dm::Cmd::EngineStop | dm::Cmd::HandBack => None,
-            };
-            if let Some(r) = req {
-                self.seq.submit(&r, &dur);
-            }
-        }
+        apply_cmds(&mut self.seq, &self.m, &cmds, &rig.dict, &|c| rig.clips.get(c as usize).map_or(0.0, |c| c.anim.duration), car);
         // the pan's smoother (driver +48, F-36491: centre 0.5, rate 5, hold 0.5) while +112 is set, then the pan clip's time
         if self.m.overlay.is_some() {
             let (p, hold) = self.pan_p.get_or_insert((0.5, -1.0));
@@ -2242,5 +2253,243 @@ mod ride_tests {
         assert_eq!((r.state, r.rate, r.fade2.map(|f| f.1)), (St::Reverse, 1.0 / 0.35, Some(4.0)));
         step(&mut r, RideIn { throttle: 1.0, ..go(0.5) });
         assert_eq!(r.state, St::Cruise);
+    }
+}
+
+/// The car driver against a recording of the original (work/recomp-trace `drv_trace.cpp`, the player's R8 driven by a pad
+/// script in the chase view and in POV; docs/reference/people/car_anim_machine.md "Recording"). Each recorded frame's
+/// context-step inputs (the gatherer's flag word and gesture, look, skid, velocity and throttle, shift; the steering words as
+/// the context kept them) and its random generator's state run through the port's context step, machine and sequencer
+/// (the R8's own pack); the context after the update, the state and every call to the anim player are compared. The
+/// fixtures (`work/driverlight/cmp/*.fix`, made by `fix.py`) are not in the repository: skipped without them.
+#[cfg(test)]
+mod recorded_tests {
+    use super::*;
+
+    fn ctx_of(w: &[u32]) -> dm::Ctx {
+        let f = |o: usize| f32::from_bits(w[o / 4]);
+        let b = |o: usize| (w[o / 4] >> (24 - 8 * (o % 4))) & 0xff != 0;
+        dm::Ctx {
+            gesture: w[1] as i32,
+            flags: w[2],
+            flags2: w[3],
+            goal: f(20),
+            steer: f(24),
+            smooth: f(28),
+            steer_add: f(32),
+            to_limit: f(36),
+            dsteer: f(40),
+            phase_in: f(44),
+            culled: b(48),
+            opponent: b(49),
+            ease_to: f(52),
+            smooth_k: [f(56), f(60)],
+            wheel_scale: f(64),
+            to_left: b(73),
+            to_right: b(74),
+            side_changed: b(75),
+            skid_timer: f(76),
+            neutral_timer: f(80),
+            maxed_timer: f(84),
+            peak: f(88),
+            throttle: f(92),
+            speed: f(96),
+            vel_x: f(100),
+            vel_y: f(104),
+            accel: f(108),
+            lat_accel: f(112),
+            vert_accel: f(116),
+            look: f(120),
+            shift: w[31] as i32,
+            skid: f(128),
+            side_vals: [f(132), f(136), f(140), f(144)],
+            timer_a: f(148),
+            timer_b: f(152),
+            timer_c: f(156),
+            random: f(160),
+            dt: f(164),
+        }
+    }
+
+    /// The modelled fields of `c` written over `base` (the recorded words), for a word-by-word compare.
+    fn words_of(c: &dm::Ctx, base: &[u32]) -> Vec<u32> {
+        let mut w = base.to_vec();
+        let put = |w: &mut Vec<u32>, o: usize, v: u32| w[o / 4] = v;
+        put(&mut w, 4, c.gesture as u32);
+        put(&mut w, 8, c.flags);
+        put(&mut w, 12, c.flags2);
+        put(&mut w, 124, c.shift as u32);
+        let fl = [
+            (20, c.goal), (24, c.steer), (28, c.smooth), (32, c.steer_add), (36, c.to_limit), (40, c.dsteer), (44, c.phase_in),
+            (52, c.ease_to), (56, c.smooth_k[0]), (60, c.smooth_k[1]), (64, c.wheel_scale), (76, c.skid_timer),
+            (80, c.neutral_timer), (84, c.maxed_timer), (88, c.peak), (92, c.throttle), (96, c.speed), (100, c.vel_x),
+            (104, c.vel_y), (108, c.accel), (112, c.lat_accel), (116, c.vert_accel), (120, c.look), (128, c.skid),
+            (132, c.side_vals[0]), (136, c.side_vals[1]), (140, c.side_vals[2]), (144, c.side_vals[3]), (148, c.timer_a),
+            (152, c.timer_b), (156, c.timer_c), (160, c.random), (164, c.dt),
+        ];
+        for (o, v) in fl {
+            put(&mut w, o, v.to_bits());
+        }
+        let byte = |w: &mut Vec<u32>, o: usize, v: bool| {
+            let sh = 24 - 8 * (o % 4);
+            w[o / 4] = (w[o / 4] & !(0xff << sh)) | ((v as u32) << sh);
+        };
+        byte(&mut w, 48, c.culled);
+        byte(&mut w, 49, c.opponent);
+        byte(&mut w, 73, c.to_left);
+        byte(&mut w, 74, c.to_right);
+        byte(&mut w, 75, c.side_changed);
+        w
+    }
+
+    struct Outcome {
+        states: usize,
+        frames: usize,
+        bad_state: usize,
+        bad_calls: usize,
+        calls: usize,
+        bad_words: std::collections::BTreeMap<usize, usize>,
+        notes: Vec<String>,
+    }
+
+    fn replay(fix: &str, dict: &HashMap<String, u32>, durs: &[f32], prefix: &str) -> Outcome {
+        let k = dm::Tune::original();
+        let mut m = dm::Machine::new("drv_mp_01_set", [0, 0]);
+        // (the human's pan overlay was set before the recordings began)
+        m.overlay = Some("DRV_PAN_SWEEP_OVERLAY");
+        let mut seq = da::Seq::default();
+        let dur = |c: da::ClipId| durs.get(c as usize).copied().unwrap_or(0.0);
+        let mut o = Outcome { states: 0, frames: 0, bad_state: 0, bad_calls: 0, calls: 0, bad_words: Default::default(), notes: Vec::new() };
+        let hex = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let lines: Vec<&str> = fix.lines().collect();
+        let (mut i, mut first, mut started) = (0, true, false);
+        while i + 3 < lines.len() {
+            let fw: Vec<u32> = lines[i].split_whitespace().skip(1).map(hex).collect();
+            let a: Vec<u32> = lines[i + 1].split_whitespace().skip(1).map(hex).collect();
+            let b: Vec<u32> = lines[i + 2].split_whitespace().skip(1).map(hex).collect();
+            let state = lines[i + 3][2..].to_string();
+            i += 4;
+            let mut want: Vec<String> = Vec::new();
+            while i < lines.len() && lines[i].starts_with("C ") {
+                want.push(lines[i][2..].to_ascii_lowercase());
+                i += 1;
+            }
+            let f = |x: u32| f32::from_bits(x);
+            let dt = f(fw[0]);
+            let mut c = ctx_of(&a);
+            if first {
+                m.state = dm::STATES.iter().find(|s| s.1 == state).map(|s| s.0).unwrap();
+                first = false;
+            }
+            let bf = |o: usize| f32::from_bits(b[o / 4]);
+            let inp = dm::CtxIn {
+                flags: fw[5],
+                gesture: fw[6] as i32,
+                goal: bf(20),
+                steer: bf(24),
+                smooth: bf(44),
+                add: -bf(32),
+                to_limit: bf(36),
+                look: f(fw[7]),
+                skid: f(fw[8]),
+                vel: [f(fw[9]), f(fw[10]), f(fw[11]), f(fw[12])],
+                shift: fw[13] as i32,
+            };
+            // (+132 .. +144: the gatherer's wheel shake writes them before the step, not replayed here; the step zeroes them
+            // on a change of side)
+            c.side_vals = [bf(132), bf(136), bf(140), bf(144)];
+            dm::context_step(&mut c, &inp, &k, dt);
+            let env = dm::Env { remaining: seq.remaining(), phase: seq.phase(), cutscene: false };
+            let r = dm::Racer { human: true, mode3: fw[3] == 3, alarm: 0.0, engine_off: fw[4] & 0x20 != 0 };
+            m.rng = [fw[1], fw[2]];
+            let overlay_was = m.overlay;
+            let mut cmds = Vec::new();
+            m.step(&mut c, &k, &env, &r, &mut cmds);
+            let b8 = |x: f32| format!("{:08x}", x.to_bits());
+            let name = |n: &str| format!("{prefix}{}", n.to_ascii_lowercase());
+            let mut got: Vec<String> = Vec::new();
+            for cmd in &cmds {
+                got.push(match cmd {
+                    dm::Cmd::Play(n, t, l, nb) => format!("play {} {} {} {}", name(n), b8(*t), *l as u8, *nb as u8),
+                    dm::Cmd::PlayCut(n, t, l, nb) => format!("play2 {} {} {} {}", name(n), b8(*t), *l as u8, *nb as u8),
+                    dm::Cmd::Pair(x, z, l, t) => format!("pair {} {} {} {}", name(x), name(z), b8(*t), *l as u8),
+                    dm::Cmd::Five(l, t, x) => format!("five {} {} {} {} {} {} {}", name(l[0]), name(l[1]), name(l[2]), name(l[3]), name(l[4]), b8(*t), *x as u8),
+                    dm::Cmd::Phase(v) => format!("set 0 {}", b8(*v)),
+                    dm::Cmd::Rate(v) => format!("set 1 {}", b8(*v)),
+                    dm::Cmd::Rate5(v) => format!("set 2 {}", b8(*v)),
+                    dm::Cmd::Phase2(v) => format!("set 3 {}", b8(*v)),
+                    dm::Cmd::Phase5(v) => format!("set 4 {}", b8(*v)),
+                    dm::Cmd::PhaseAll(v) => format!("set 5 {}", b8(*v)),
+                    dm::Cmd::Weight(v) => format!("set 6 {}", b8(*v)),
+                    dm::Cmd::Overlay(n, t, l) => format!("overlay {} {} {}", name(n), b8(*t), *l as u8),
+                    dm::Cmd::EngineStart | dm::Cmd::EngineStop | dm::Cmd::HandBack => continue,
+                });
+            }
+            if m.overlay != overlay_was {
+                got.push(format!("ovly {}", m.overlay.map_or("-".to_string(), name)));
+            }
+            apply_cmds(&mut seq, &m, &cmds, dict, &dur, "test");
+            seq.update(dt);
+            // (compared from the first clip the machine plays: before it the sequencer's clip is not known)
+            o.states += 1;
+            let st = dm::STATES.iter().find(|s| s.0 == m.state).map_or("?", |s| s.1);
+            if st != state {
+                o.bad_state += 1;
+                if o.notes.len() < 30 {
+                    o.notes.push(format!("frame {}: state {st} want {state}", o.states));
+                }
+            }
+            started |= want.iter().any(|w| w.starts_with("play") || w.starts_with("pair") || w.starts_with("five"));
+            if !started {
+                continue;
+            }
+            o.frames += 1;
+            o.calls += want.len();
+            let (mut gs, mut ws) = (got.clone(), want.clone());
+            gs.sort();
+            ws.sort();
+            if gs != ws {
+                o.bad_calls += 1;
+                if o.notes.len() < 30 {
+                    o.notes.push(format!("frame {}: calls {got:?} want {want:?}", o.frames));
+                }
+            }
+            let w = words_of(&c, &b);
+            for (j, (x, y)) in w.iter().zip(&b).enumerate() {
+                if x != y {
+                    *o.bad_words.entry(j * 4).or_insert(0) += 1;
+                }
+            }
+        }
+        o
+    }
+
+    #[test]
+    fn the_recorded_driver_matches_the_original() {
+        let dir = Path::new("D:/MCLA/work/driverlight/cmp");
+        let Ok(res) = load_resource_file(&pack_path(Path::new("D:/MCLA/extracted/cache"), true, false, "aud_r8_08")) else {
+            eprintln!("no disc data, skipped");
+            return;
+        };
+        let rd = Rd::new(&res);
+        let (mut dict, mut durs) = (HashMap::new(), Vec::new());
+        for (k, o) in holder_keys(&rd) {
+            if let Some(a) = animation_named(&rd, o) {
+                dict.insert(k, durs.len() as u32);
+                durs.push(a.duration);
+            }
+        }
+        for run in ["chase", "pov"] {
+            let Ok(fix) = std::fs::read_to_string(dir.join(format!("{run}.fix"))) else {
+                eprintln!("no {run}.fix, skipped");
+                continue;
+            };
+            let o = replay(&fix, &dict, &durs, "aud_r8_08_");
+            eprintln!("{run}: {} frames ({} from the first clip), {} calls; state differs on {}, calls on {}, context words {:?}", o.states, o.frames, o.calls, o.bad_state, o.bad_calls, o.bad_words);
+            for n in &o.notes {
+                eprintln!("  {n}");
+            }
+            assert!(o.bad_state == 0 && o.bad_calls == 0 && o.bad_words.is_empty(), "{run}");
+        }
     }
 }
