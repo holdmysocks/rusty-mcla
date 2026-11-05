@@ -256,7 +256,8 @@ impl<T: GhostTraffic, C: CruiseCar> CruiseEnv for World<'_, '_, T, C> {
     }
 
     fn rail_pose(&mut self, rail: u32, t: f32) -> (Vec3, Vec3) {
-        self.rails.pose(&RailPos { lane: rail.checked_sub(1), t }, Vec3::ZERO).unwrap_or((Vec3::ZERO, Vec3::X))
+        // (`pose` gives the c row, minus the tangent)
+        self.rails.pose(&RailPos { lane: rail.checked_sub(1), t }, Vec3::ZERO).map_or((Vec3::ZERO, Vec3::X), |(p, c)| (p, Vec3::ZERO - c))
     }
 
     /// rail slot 14 at the car's place (F-24415: 8 chords from 450 m, else 4; 10 halvings)
@@ -361,10 +362,18 @@ impl Cruiser {
 
     /// The ambient system's answer to the request: the ghost made (status 0) or not.
     pub fn attached<T: GhostTraffic, C: CruiseCar>(&mut self, rails: &Rails, traffic: &mut T, car: &mut C, racing: &mut Brain, status: i32, ghost: Option<u32>) {
-        let ghost = ghost.and_then(|id| traffic.ghost(id).map(|v| Ghost { id, rail: v.rail.map(|(l, t)| (l + 1, t)), speed: v.speed }));
-        let ghost = ghost.as_ref();
+        let view = ghost.and_then(|id| traffic.ghost(id).map(|v| (id, v)));
+        let ghost = view.as_ref().map(|(id, v)| Ghost { id: *id, rail: v.rail.map(|(l, t)| (l + 1, t)), speed: v.speed });
+        // (made on a route lane change's run-time rail: that rail's point and tangent)
+        if let (0, Some(g), Some((_, v))) = (status, ghost.as_ref(), view.as_ref()) {
+            if let (None, Some((p, d))) = (g.rail, v.run_rail) {
+                let (p, c) = crate::cruiserail::pose_at(p, d, Vec3::ZERO);
+                self.brain.attach_at(g, p, Vec3::ZERO - c);
+                return;
+            }
+        }
         let mut w = World { rails, traffic, car, racing, owner: self.owner, k: self.k, racer_ran: false, racer: None };
-        self.brain.attach(&mut w, status, ghost);
+        self.brain.attach(&mut w, status, ghost.as_ref());
     }
 
     /// The ghost's release: `reason` 1 at its route's end, `rail` the last lane it rode (None: none).
