@@ -2164,6 +2164,20 @@ impl Game {
         }
     }
 
+    /// The body's paint of `car` from its record (colour, type, fade of the first paint area), for a vehicle the port
+    /// keeps no paint of its own for; the colour as `mc4_sync_cars` reads it back (`hsv_rgb` of the linear colour), so
+    /// the record is not rewritten by it.
+    pub fn mc4_paint_from_record(&mut self, car: &str) {
+        let Some(p) = self.mc4.as_ref().and_then(|m| m.car(car)).and_then(|c| c.visual.paint.first()).cloned() else { return };
+        if let Some(a) = p.color_a() {
+            self.paint_hsv = Some(rgb_hsv(to_linear(a)));
+        }
+        if let Some(t) = p.paint_type() {
+            self.paint_type = t.min(5);
+        }
+        self.paint_fade = p.fade().unwrap_or(0).min(4);
+    }
+
     /// The vehicle in use is about to change: its state goes into its record.
     pub fn mc4_leave_car(&mut self) {
         if self.car_x.car.is_empty() {

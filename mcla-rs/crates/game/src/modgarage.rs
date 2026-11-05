@@ -557,4 +557,76 @@ mod tests {
         eprintln!("back: fade {} b {}", g2.paint_fade, g2.paint_b);
         assert_eq!((g2.paint_fade, g2.paint_b), (1, 7));
     }
+
+    /// The play-test save: the Veyron set two-tone, then a car never painted taken - it keeps its record's own paint.
+    #[test]
+    #[ignore]
+    fn a_car_taken_after_a_two_tone_keeps_its_own_paint() {
+        let d = dir("veyron_tt2");
+        std::fs::copy("D:/MCLA/work/mods/n14/save_veyron.json", std::path::Path::new(&d).join("mcla_save.json")).unwrap();
+        let s = file(&d);
+        let owned = names(&s["owned"]);
+        let all: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+        let mut g = game(&all, &d);
+        g.sync_car_paint();
+        // (a car bought since, never painted in the port: no `paints` entry, its record only)
+        let name = "vp_aud_r8_08".to_string();
+        g.paints.remove(&name);
+        let other = all.iter().position(|c| *c == name).unwrap();
+        eprintln!("taken: {name}");
+        let rec = |g: &Game, car: &str| g.mc4.as_ref().unwrap().car(car).map(|c| (c.visual.paint[0].fade(), c.visual.paint[0].color_a(), c.visual.paint[0].color_b()));
+        eprintln!("golf record {:?} in paints {:?}", rec(&g, &name), g.paints.get(&name));
+        g.mode = crate::game::Mode::Garage;
+        g.mc4_paint_sync();
+        g.paint_hsv = Some([0.0, 0.0, 0.0]);
+        g.paint_fade = 2;
+        g.paint_b = 7;
+        g.mc4_paint_sync();
+        g.mode = crate::game::Mode::FreeRoam;
+        g.current_car = other;
+        g.selected_car = other;
+        g.sync_car_paint();
+        eprintln!("golf now: fade {} b {} hsv {:?} idx {} out {:?}", g.paint_fade, g.paint_b, g.paint_hsv, g.color_idx, g.paint_color());
+        assert_eq!(Some(Some(g.paint_fade)), rec(&g, &name).map(|r| r.0), "{name}: its fade is its record's");
+        let a = rec(&g, &name).unwrap().1.unwrap();
+        let out = crate::mc4::to_screen([g.paint_color()[0], g.paint_color()[1], g.paint_color()[2]]);
+        assert!((0..3).all(|i| (out[i] - a[i]).abs() < 2e-3), "{name}: its colour is its record's: {out:?} {a:?}");
+    }
+
+    /// A rim colour picked from the strip (a swatch) is the car's own and comes back after a restart, the car left or not.
+    #[test]
+    fn a_rim_swatch_round_trips_per_car() {
+        let d = dir("rimswatch");
+        let all = ["vp_vw_golf_83", "vp_test_mod_01"];
+        let mut g = Game::new(all.iter().map(PathBuf::from).collect(), 1);
+        g.data_dir = d.clone();
+        g.owned = all.iter().map(|s| s.to_string()).collect();
+        for c in all {
+            g.mc4_car_added(c, None);
+        }
+        g.sync_car_paint();
+        // (red, swatch 0, on all three rim rows of the mod car, as the strip's left / right sets them)
+        for k in 6..9 {
+            g.slot_hsv[k] = Some(crate::game::rim_swatch_hsv(0));
+        }
+        let red = crate::vehicles::PALETTE[0];
+        let fin = g.rim_finish();
+        assert!((0..3).all(|z| (0..3).all(|i| (fin[z][i] - red[i]).abs() < 1e-3)), "on screen the swatch: {fin:?}");
+        // (another car taken: its own rims; then the save, a restart, the mod car again)
+        g.current_car = 0;
+        g.selected_car = 0;
+        g.sync_car_paint();
+        assert!(g.slot_hsv[6] != Some(crate::game::rim_swatch_hsv(0)), "the Golf does not wear the mod car's rim colour");
+        g.write_save(&d);
+        let mut g2 = game(&all, &d);
+        g2.sync_car_paint();
+        g2.current_car = 1;
+        g2.selected_car = 1;
+        g2.sync_car_paint();
+        let fin = g2.rim_finish();
+        assert!((0..3).all(|z| (0..3).all(|i| (fin[z][i] - red[i]).abs() < 1e-3)), "back after the restart: {fin:?}");
+        let rec = g2.mc4.as_ref().unwrap().car("vp_test_mod_01").unwrap().visual.RimColorA.iter().map(|f| f.0 as f32).collect::<Vec<_>>();
+        assert!((rec[0] - red[0].powf(1.0 / 2.2)).abs() < 2e-3, "the record holds it as on screen: {rec:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

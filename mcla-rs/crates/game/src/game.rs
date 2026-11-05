@@ -2467,6 +2467,10 @@ impl Game {
             self.color_idx = idx;
             self.paint_type = kind;
             self.paint_fade = fade;
+        } else if !self.paint_for.is_empty() {
+            // (a vehicle the port has no paint for yet - one bought since, a mod car - wears its record's body paint,
+            // not the last car's colour, type and fade)
+            self.mc4_paint_from_record(&name);
         }
         self.mc4_take_car(&name);
         // (a vehicle the port has no finish for yet - one just bought, a mod car - wears its record's rims, not the
@@ -7372,7 +7376,11 @@ impl Game {
                     if left || right {
                         *cell = (*cell + n + right as usize - left as usize) % n;
                         // (the neon's and the tint's own colour stays with the swatch it was kept on)
-                        if k < 9 { self.slot_hsv[k] = None; } else if k < 11 { self.car_x.int_de_hsv[(k - 9).min(1)] = None; }
+                        // (a rim row's swatch is its colour, as the record keeps it - `RimColorA..C`, RGB only - so it goes
+                        // per car into `finishes` and the record like a colour of the picker's; on screen as `rim_finish`)
+                        if (6..9).contains(&k) {
+                            self.slot_hsv[k] = Some(rim_swatch_hsv(*cell));
+                        } else if k < 9 { self.slot_hsv[k] = None; } else if k < 11 { self.car_x.int_de_hsv[(k - 9).min(1)] = None; }
                         self.dirty = true;
                     }
                     let swatch = *cell;
@@ -15133,6 +15141,12 @@ pub fn gps_panel_visible(x: f32, y: f32, width: i32, scale: f32) -> bool {
 }
 
 /// A colour (RGB 0..1) as hue, saturation, brightness (each 0..1).
+/// A rim row's swatch `k` as the row's colour (`slot_hsv` 6..8 hold the colour as the screen shows it: `rim_finish`).
+pub fn rim_swatch_hsv(k: usize) -> [f32; 3] {
+    let p = PALETTE[k % PALETTE.len()];
+    paint_rgb_to_hsv([p[0].powf(1.0 / 2.2), p[1].powf(1.0 / 2.2), p[2].powf(1.0 / 2.2), 1.0])
+}
+
 fn paint_rgb_to_hsv(c: [f32; 4]) -> [f32; 3] {
     let (mx, mn) = (c[0].max(c[1]).max(c[2]), c[0].min(c[1]).min(c[2]));
     let d = mx - mn;
