@@ -1989,12 +1989,46 @@ pub struct PoliceIn {
     pub goons: bool,
     pub score: f32,
     pub speech_busy: bool,
+    pub siren: SirenTune,
+}
+
+/// The police tune's five siren members (siren/RULE.md 1, 2): fMaxSirenDelayTime (F-60528's delayed start),
+/// fChirpSirenTime (F-22023's repeat, -1 on the disc = none), fWarnSirenDownTime, iWarnSirenIsectProbPrcnt and
+/// fWarnSirenIsectDist (the junction warn).
+#[derive(Clone, Copy)]
+pub struct SirenTune {
+    pub max_delay: f32,
+    pub chirp: f32,
+    pub warn_down: f32,
+    pub warn_prob: f32,
+    pub warn_dist: f32,
+}
+
+impl Default for SirenTune {
+    fn default() -> Self {
+        SirenTune { max_delay: 3.0, chirp: -1.0, warn_down: 15.0, warn_prob: 20.0, warn_dist: 10.0 }
+    }
+}
+
+impl SirenTune {
+    pub fn of(t: &crate::police::Tuning) -> Self {
+        let d = SirenTune::default();
+        SirenTune {
+            max_delay: t.get("fMaxSirenDelayTime", d.max_delay),
+            chirp: t.get("fChirpSirenTime", d.chirp),
+            warn_down: t.get("fWarnSirenDownTime", d.warn_down),
+            warn_prob: t.get("iWarnSirenIsectProbPrcnt", d.warn_prob),
+            warn_dist: t.get("fWarnSirenIsectDist", d.warn_dist),
+        }
+    }
 }
 
 #[derive(Default)]
 struct PoliceAudio {
     heat: u8,
     chirp_pending: bool,
+    /// cop 0's repeat-chirp timer (cop +1136), counted only while > 0 in a pull-over
+    chirp_t: f32,
     bullhorn_done: bool,
     /// the cruisers of the running tactic, and every chasing cruiser of the last update (spawn order, cop 0 leads)
     tactic: Vec<usize>,
@@ -2318,13 +2352,14 @@ impl Fleet {
             match (pa.heat, heat) {
                 (_, 1) => {
                     pa.chirp_pending = true;
+                    pa.chirp_t = 0.0;
                     pa.bullhorn_done = false;
                 }
                 // a pursuit begins: cop 0 at once, the others after their own rand x fMaxSirenDelayTime (3 s)
                 (0 | 1, 2) => {
                     pa.tactic = cops.clone();
                     for (k, &i) in cops.iter().enumerate() {
-                        starts.push((i, if k == 0 { 0.0 } else { lib.rand_float(0.0, 1.0) * 3.0 }));
+                        starts.push((i, if k == 0 { 0.0 } else { lib.rand_float(0.0, 1.0) * pol.siren.max_delay }));
                     }
                 }
                 // escaped, busted, ticket: the tactic ends and every siren stops (Search keeps them)
@@ -2341,12 +2376,14 @@ impl Fleet {
             for &i in &cops {
                 if !pa.tactic.contains(&i) {
                     pa.tactic.push(i);
-                    starts.push((i, lib.rand_float(0.0, 1.0) * 3.0));
+                    starts.push((i, lib.rand_float(0.0, 1.0) * pol.siren.max_delay));
                 }
             }
         }
         // the junction warn (F-63286): the cop nearest the player, inside a junction or within its size / 2 + 10 m of
         // the next one ahead (the port's signalled junctions: centre, radius), 20 % -> warn, else 15 s without
+        // (fWarnSirenIsectDist, iWarnSirenIsectProbPrcnt, fWarnSirenDownTime)
+        let st = pol.siren;
         let mut warn_on = None;
         let mut warn_off = None;
         {
@@ -2370,25 +2407,25 @@ impl Fleet {
                     let dir = if c.state.speed() >= 2.235 { c.state.vel } else { c.state.forward() };
                     inside || v.signals.ahead(p, dir, v.clock).is_some_and(|(ji, _, _)| {
                         let j = &v.signals.junctions[ji];
-                        Vec3::new(j.center.x - p.x, 0.0, j.center.z - p.z).length() < j.radius + 10.0
+                        Vec3::new(j.center.x - p.x, 0.0, j.center.z - p.z).length() < j.radius + st.warn_dist
                     })
                 };
                 if let Some(w) = pa.warn_cop {
                     if !can(w, &Vec::new()) {
                         warn_off = Some(w);
                         pa.warn_cop = None;
-                        pa.warn_down = 15.0;
+                        pa.warn_down = st.warn_down;
                         pa.warn_barred = cops.clone();
                     }
                 } else if let (Some(pp), true) = (pp, pa.warn_down <= 0.0) {
                     let near = cops.iter().copied().min_by(|a, b| v.cars[*a].state.pos.distance(pp).total_cmp(&v.cars[*b].state.pos.distance(pp)));
                     if let Some(l) = near.filter(|&l| can(l, &pa.warn_barred)) {
-                        if lib.rand_float(0.0, 1.0) < 0.2 {
+                        if lib.rand_float(0.0, 1.0) < st.warn_prob * 0.01 {
                             warn_on = Some(l);
                             pa.warn_cop = Some(l);
                             pa.warn_barred = cops.iter().copied().filter(|&c| c != l).collect();
                         } else {
-                            pa.warn_down = 15.0;
+                            pa.warn_down = st.warn_down;
                             pa.warn_barred = cops.clone();
                         }
                     }
@@ -2446,6 +2483,14 @@ impl Fleet {
                         if self.pol.chirp_pending && !pol.speech_busy {
                             s.siren_alert(lib, ci.pos);
                             self.pol.chirp_pending = false;
+                            self.pol.chirp_t = pol.siren.chirp;
+                        } else if self.pol.chirp_t > 0.0 {
+                            // (the repeat, cop vt+92: +1136 -= dt, at <= 0 chirp again and +1136 = fChirpSirenTime)
+                            self.pol.chirp_t -= dt;
+                            if self.pol.chirp_t <= 0.0 {
+                                s.siren_alert(lib, ci.pos);
+                                self.pol.chirp_t = pol.siren.chirp;
+                            }
                         }
                         if pol.score >= 500.0 && !self.pol.bullhorn_done {
                             self.pol.bullhorn_done = true;

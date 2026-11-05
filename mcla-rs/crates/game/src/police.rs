@@ -2570,17 +2570,19 @@ impl Police {
         // ---- what the cruisers can see ---------------------------------------
         let detect = t("fDetectDist", 40.0);
         let vision = t("fVisionDist", 500.0);
+        // (the half angle of F-24233 / F-87106's sight tests: the member, 180 on the disc = no cone in practice)
+        let det_half = t("fDetectHalfAngle", 180.0);
         let mut seen = false;
         let mut nearest_ok = f32::INFINITY;
         let mut n_cops = 0;
         // (F-94676 for a free cop - in no tactic, not the dispatch's -, F-52240: within fDetectDist in 3D and a clear
-        // line from 2 m above the cop to 2 m above the target, F-69576; the half angle fDetectHalfAngle 180 is no cone.
+        // line from 2 m above the cop to 2 m above the target, F-69576; within fDetectHalfAngle of its forward, F-24233.
         // The nearest such cop is the request cop of the tactic it starts or joins.)
         let dsp_cop = self.dsp.as_ref().map(|d| d.cop);
         let mut detector: Option<(f32, u32)> = None;
         for c in vehicles.cars.iter().filter(|c| c.cop && !c.goon && !pursuer(c) && Some(c.uid) != dsp_cop) {
             let d = c.state.pos.distance(ppos);
-            if d <= detect && cop_sees(world, c, ppos, detect, 0.0) && detector.map_or(true, |b| d < b.0) {
+            if d <= detect && cop_sees(world, c, ppos, detect, det_half) && detector.map_or(true, |b| d < b.0) {
                 detector = Some((d, c.uid));
             }
         }
@@ -2588,7 +2590,7 @@ impl Police {
         if detector.is_none() {
             if let Some(c) = vehicles.cars.iter().find(|c| Some(c.uid) == dsp_cop) {
                 let d = c.state.pos.distance(ppos);
-                if d <= detect && cop_sees(world, c, ppos, detect, 0.0) {
+                if d <= detect && cop_sees(world, c, ppos, detect, det_half) {
                     detector = Some((d, c.uid));
                 }
             }
@@ -3334,8 +3336,9 @@ impl Police {
             match cop {
                 None => result = 3,
                 Some(c) => {
-                    // (Respond / WaitAtLocation: the cop sees the target within fRdoVicinityDist, line of sight, over 0.5 s)
-                    if d.st >= 2 && cop_sees(world, c, ppos, t("fRdoVicinityDist", 100.0), 0.0) {
+                    // (Respond / WaitAtLocation: the cop sees the target within fRdoVicinityDist and fDetectHalfAngle,
+                    // line of sight, over 0.5 s; F-87106)
+                    if d.st >= 2 && cop_sees(world, c, ppos, t("fRdoVicinityDist", 100.0), t("fDetectHalfAngle", 180.0)) {
                         d.seen_t += dt;
                         if d.seen_t > 0.5 {
                             result = 1;

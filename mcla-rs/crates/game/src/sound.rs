@@ -984,6 +984,7 @@ impl Sound {
                 goons: police.goons,
                 score: police.score,
                 speech_busy: self.speech_busy,
+                siren: crate::caraudio::SirenTune::of(&police.tun),
             };
             fleet.update(lib, vehicles, cam_pos, ctl, wet, game.mode == Mode::Race, pol, dt);
             // (the slipstream burn's PLAYER_NITROUS)
