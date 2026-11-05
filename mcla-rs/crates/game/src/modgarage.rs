@@ -113,10 +113,8 @@ impl Game {
         }
         let taken = self.car_dirs.get(self.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
         let old = self.cfg.clone();
-        self.cfg = match self.cfgs.get(&taken) {
-            Some(c) => crate::vehicle_model::CarConfig { rim: old.rim, rim_name: old.rim_name.clone(), ..c.clone() },
-            None => crate::vehicle_model::CarConfig { rim: old.rim, rim_name: old.rim_name.clone(), ..Default::default() },
-        };
+        // (the car in use wears its own rims too, not the missing car's)
+        self.cfg = self.cfgs.get(&taken).cloned().unwrap_or_default();
         self.cfgs.insert(saved_car.to_ascii_lowercase(), old);
     }
 

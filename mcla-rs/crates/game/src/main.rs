@@ -548,6 +548,10 @@ struct App {
     garage_mask: boomcam::CutMask,
     /// leaving the garage for the street: seconds into the fade to black before the drive-out scene
     garage_out: Option<f32>,
+    /// out of a street garage: seconds since, until garage_core's CAREER_AUTOSAVE (`game/Garages/0x3487df6f`
+    /// 0x1522..0x15f6: Garage_TransitionOutOfGarage, then WAITUNWARPED(1000), then waits while a scene plays or a
+    /// menu is up, then the save - the career handler F-20860's CAREER_AUTOSAVE arm writes mc4.sav)
+    garage_save: Option<f32>,
     /// seconds of cruising until a racer rings with a challenge (`game/race/TelephoneChallenge`)
     phone_challenge_in: f32,
     /// the racer whose telephone challenge is up (GH_03 ..): his voice says the invite and the decline
@@ -1201,6 +1205,7 @@ impl App {
             payback_hold: false,
             garage_mask: Default::default(),
             garage_out: None,
+            garage_save: None,
             phone_challenge_in: 0.0,
             phone_caller: "",
             phone_challenge_due: false,
@@ -5693,6 +5698,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             if self.garage_in.is_none() && self.hangout_entry.is_none() && self.hangout_title.is_none() && self.payback_in.is_none() && !self.payback_hold {
                 self.place_view = None;
+                    self.garage_save = Some(0.0);
+                }
+            }
+            // garage_core's CAREER_AUTOSAVE after leaving a street garage: 1 s, then once no scene plays and no menu
+            // is up (NET_UNLOADCAREER, the online unload, is never set offline)
+            if let Some(t) = self.garage_save.as_mut() {
+                *t += dt;
+                if *t >= 1.0 && self.cine.playing.is_none() && self.game.mode == Mode::FreeRoam {
+                    self.garage_save = None;
+                    log::info!("garage: CAREER_AUTOSAVE after leaving the garage");
+                    self.game.write_save(&self.opt.data_dir);
                 self.game.place_title = None;
             }
             self.game.place_mask = self.garage_mask.update(dt).max(self.arrest_mask.update(dt)).max(self.f02c_mask.update(dt));
@@ -12650,16 +12666,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.crash_cam.new_car();
                 }
                 if car_changed {
-                    // each vehicle keeps its own parts: those of the one left are put by, the
-                    // taken one's brought out (a vehicle never fitted keeps the rim on, as before)
+                    // each vehicle keeps its own parts, its rims among them (each record has its own, `RimMdlIdx`):
+                    // those of the one left are put by, the taken one's brought out; a vehicle never fitted is
+                    // stock, on its own wheels
                     // (by garage key: a further copy of a model keeps its own - `Game::dir_name`)
                     let left = self.game.dir_name(self.game.current_car).to_ascii_lowercase();
                     let taken = self.game.dir_name(self.game.selected_car).to_ascii_lowercase();
                     let old = self.game.cfg.clone();
-                    self.game.cfg = match self.game.cfgs.get(&taken) {
-                        Some(c) => vehicle_model::CarConfig { rim: old.rim, rim_name: old.rim_name.clone(), ..c.clone() },
-                        None => vehicle_model::CarConfig { rim: old.rim, rim_name: old.rim_name.clone(), ..Default::default() },
-                    };
+                    self.game.cfg = self.game.cfgs.get(&taken).cloned().unwrap_or_default();
                     if !left.is_empty() {
                         self.game.cfgs.insert(left, old);
                     }
@@ -12718,7 +12732,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                         Mode::Garage
                     }
-                    Mode::Garage => self.game.prev_mode,
+                    Mode::Garage => {
+                        // (a street garage left without the drive-out scene: garage_core's save all the same)
+                        if self.game.prev_mode == Mode::FreeRoam && self.garage_return.is_some() {
+                            self.garage_save = Some(0.0);
+                        }
+                        self.game.prev_mode
+                    }
                     // (out of a place's own panel - a hangout's, the delivery's - back to the cruise)
                     Mode::RaceSelect if self.hangout_in.is_some() => Mode::FreeRoam,
                     Mode::RaceSelect => Mode::Paused,

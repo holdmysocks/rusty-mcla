@@ -997,6 +997,17 @@ impl FlashMenu {
         }
         p.set_global("cur_tab", Value::Int(page.cur_tab as i32 + 1));
         p.set_global("type", Value::Int(1));
+        // (the movies make 70 `menu.elements`, as many rows as the original ever lists; a longer list - the
+        // showroom or MANAGE VEHICLES with mod cars, MODS.md S3 / D27 - gets the rows past them as new objects,
+        // else what is written to them is lost and the movie shows 0)
+        if let Some(have) = (0..page.rows.len()).find(|i| p.get_path(&format!("menu.elements.{i}")).and_then(|v| v.obj()).is_none()) {
+            if p.get_path("menu.elements").and_then(|v| v.obj()).is_some() {
+                for i in have..page.rows.len() {
+                    let o = p.new_object();
+                    p.set_path(&format!("menu.elements.{i}"), o);
+                }
+            }
+        }
         let template = match &page.layout {
             MenuLayout::GarageLoop { names, index, flat } => {
                 p.set_global("glprompt_count", Value::Int(names.len() as i32));
@@ -2029,6 +2040,36 @@ mod tests {
         for s in 1..n {
             page.select = s;
             check(&mut menu, &page, s.saturating_sub(5));
+    /// The garage movie makes 70 `menu.elements`; a showroom of 74 (mod cars) gets the rows past them too.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn a_list_longer_than_the_movies_rows_keeps_its_texts() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let strings = StringTable::parse(&std::fs::read(Path::new(&dir).join("ui/0xa4c1e8fa")).unwrap()).unwrap();
+        let shared = UiShared { textures: Arc::new(HashMap::new()), strings: Arc::new(strings), logic: Arc::new(crate::menu3d::UiLogic::load(&dir)) };
+        let mut menu = FlashMenu::load(&dir, GARAGE_MOVIE, [0.0; 2], &shared).unwrap();
+        for _ in 0..10 { menu.movie.player.tick(); }
+        assert_eq!((0..1000).find(|i| menu.movie.player.get_path(&format!("menu.elements.{i}")).and_then(|v| v.obj()).is_none()), Some(70));
+        let n = 74usize;
+        let page = MenuPage {
+            layout: MenuLayout::Vehicles {
+                details: (0..n).map(|i| (format!("CLASS {i}"), "TUNER".into(), 1000)).collect(),
+                meters: [[0.0; 3]; 3],
+                value_label: "PRICE:".into(),
+                ids: (0..n).map(|i| (i as i32 + 1, true)).collect(),
+            },
+            title: "VEHICLE SHOWROOM".into(),
+            rows: (0..n).map(|i| MenuRow { label: format!("CAR {i}"), value: String::new(), enabled: true, part: None }).collect(),
+            select: n - 1,
+            ..MenuPage::default()
+        };
+        menu.show(&page);
+        let text = |m: &mut FlashMenu, p: &str| m.movie.player.get_path(p).map(|v| format!("{v:?}")).unwrap_or_default();
+        assert!(text(&mut menu, "menu.elements.73.text1").contains("CAR 73"));
+        assert!(text(&mut menu, "menu.elements.73.text2").contains("CLASS 73"));
+        assert!(text(&mut menu, "menu.elements.72.text3").contains("TUNER"));
+    }
+
         }
         // right off the end wraps to the first, the strip back at the start
         page.select = 0;

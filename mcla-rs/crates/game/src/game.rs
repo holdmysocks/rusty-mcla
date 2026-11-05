@@ -7074,7 +7074,13 @@ impl Game {
                     Some((showroom, _)) => {
                         let mut v: Vec<usize> = (0..n).filter(|i| if showroom { !self.dup_keys.contains_key(i) && self.price_of(*i).0 > 0 && crate::mc4b::vehicle_for_sale(&self.data_dir, &self.dir_name(*i)) && self.mc4_vehicle_available(&self.dir_name(*i)) } else { self.is_owned(*i) }).collect();
                         if showroom {
-                            v.sort_by_key(|&i| (crate::mc4::vehicle_index(&self.dir_name(i)) as u32, i));
+                            // (the cut GT-R has no table index: it stands right after the R8, whose row it takes -
+                            // DECISIONS.md D21 - not after the mod cars)
+                            v.sort_by_key(|&i| {
+                                let d = self.dir_name(i);
+                                let gtr = d.eq_ignore_ascii_case(crate::catalog::CUT_GTR);
+                                (crate::mc4::vehicle_index(if gtr { "vp_aud_r8_08" } else { &d }) as u32, gtr, i)
+                            });
                         }
                         v
                     }

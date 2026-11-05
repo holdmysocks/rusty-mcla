@@ -296,8 +296,9 @@ pub fn sound_car(car: &str) -> &str {
     if car.eq_ignore_ascii_case(CUT_GTR) {
         return "vp_nsn_350z_06";
     }
-    // (a mod car: its manifest's `donors.sound` - modcars.rs)
-    crate::modcars::car(car).and_then(|c| c.sound.as_deref()).unwrap_or(car)
+    // (a mod car stays itself: `modfs::car_names` tries its own `<CAR>_PROFILE` first, then its manifest's
+    // `donors.sound` - manifest.md section 7)
+    car
 }
 
 /// The model of a garage key: a second copy of a model in the garage is `<folder>#2`, a third `#3` (the
