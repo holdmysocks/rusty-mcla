@@ -358,6 +358,85 @@ fn pullover_machine(tac: &mut CopTac, s: &PullSees, dt: f32) -> f32 {
     factor
 }
 
+/// What the brain states' per-tick overrides read: the target moving (F-43975), ahead of the cop (F-99390), going the same
+/// way (F-80249), the brain's race flag (F-42951), the cop's and the target's speed (F-81535, F-41260), the squared
+/// distance cop - target (dy*dy, then dz, dx fused) and fSafeDist.
+#[derive(Clone, Copy, Debug, Default)]
+struct BrainSees {
+    moving: bool,
+    ahead: bool,
+    same_dir: bool,
+    ed78: bool,
+    cspeed: f32,
+    tspeed: f32,
+    d2: f32,
+    safe: f32,
+}
+
+/// The Stop command's parameters on the brain: +688 handbrake mode, +692 the amount, +696 the throttle (taken when >= 0),
+/// +700 the steer (-1000: none).
+#[derive(Clone, Copy, Debug)]
+struct StopParams {
+    hb: bool,
+    amount: f32,
+    throttle: f32,
+    steer: f32,
+}
+
+/// The overrides the cop's brain state puts over the driver's input each tick (vt slot 15), by the command it is in (+568:
+/// 1 Stopping, 4 Pursuit, 5 AlongSide; the others none); `side_d` is the AlongSide's distance (+712). Returns throttle
+/// (+744), brake (+748), handbrake (+752), steer (+756), as the setters F-50239 / F-39048 / F-10965 clamp them to 0..1
+/// (steer -1..1); -1 (steer -1000) is no override. Pursuit (F-68176): brake 1 when the target stands within fSafeDist, or
+/// it is ahead going the same way within 20 m and the cop is faster. AlongSide (F-33668): moving - the same way, not ahead,
+/// the cop faster and (no race flag or beyond 1.5 x the side distance): brake 1; standing - within the side distance + 1:
+/// brake 1. Stopping (F-87827, its tick F-10174 while the brain has a tactic): handbrake mode - the amount as handbrake,
+/// the throttle when >= 0; else the amount as brake; the steer unless -1000.
+fn brain_override(cmd: u8, side_d: f32, stop: &StopParams, s: &BrainSees) -> [f32; 4] {
+    // (fsel: NaN and below 0 -> 0, above 1 -> 1; the steer -1..1)
+    let c01 = |v: f32| {
+        let a = if v >= 0.0 { v } else { 0.0 };
+        if a - 1.0 >= 0.0 { 1.0 } else { a }
+    };
+    let cs = |v: f32| {
+        let a = if v - -1.0 >= 0.0 { v } else { -1.0 };
+        if a - 1.0 >= 0.0 { 1.0 } else { a }
+    };
+    let mut o = [-1.0, -1.0, -1.0, -1000.0];
+    match cmd {
+        4 => {
+            if (!s.moving && s.d2 < s.safe * s.safe) || (s.ahead && s.same_dir && s.d2 < 400.0 && s.cspeed > s.tspeed) {
+                o[1] = c01(1.0);
+            }
+        }
+        5 => {
+            let brake = if s.moving {
+                s.same_dir && !s.ahead && s.cspeed > s.tspeed && (!s.ed78 || { let r = side_d * 1.5; s.d2 > r * r })
+            } else {
+                let r = side_d + 1.0;
+                s.d2 < r * r
+            };
+            if brake {
+                o[1] = c01(1.0);
+            }
+        }
+        1 => {
+            if stop.hb {
+                o[2] = c01(stop.amount);
+                if stop.throttle >= 0.0 {
+                    o[0] = c01(stop.throttle);
+                }
+            } else {
+                o[1] = c01(stop.amount);
+            }
+            if stop.steer != -1000.0 {
+                o[3] = cs(stop.steer);
+            }
+        }
+        _ => {}
+    }
+    o
+}
+
 /// The searching cop's brain state 7, STATE_SEARCH (enter F-57507, tick F-15801; docs/reference/hookmen/search_and_connections.md 2):
 /// up to 10 points with the road or junction each lies on, driven by the racers' brain.
 #[derive(Clone, Debug, Default)]
@@ -3356,6 +3435,8 @@ impl Police {
                     if r { true } else if l { false } else { !on_right }
                 };
                 let st = tac.st;
+                // (Halt's steer away as its tick writes it, F-84018: from the update after it was taken)
+                let halt_steer0 = if st == Tac::Halt { tac.halt_steer } else { 0.0 };
                 if searching || squad {
                     // (no tactic state changes during the Search; a squad's commands come from its FSM)
                     tac.t += dt;
@@ -3558,7 +3639,27 @@ impl Police {
                 ai.target_speed = 85.0;
                 // ---- the brain's overrides (F-88118 puts them over the driver's input) ----
                 let away = Some(if on_right { -1.0 } else { 1.0 });
-                ai.ovr = match (tac.st, pull) {
+                ai.ovr = if !squad {
+                    // the brain state's overrides by its command (brain_override; the Search, 7, has none)
+                    let stop = if tac.hb {
+                        StopParams { hb: true, amount: 1.0, throttle: 0.0, steer: tac.block_steer }
+                    } else {
+                        StopParams { hb: false, amount: 1.0, throttle: -1.0, steer: -1000.0 }
+                    };
+                    let (dx, dy, dz) = (ppos.x - cpos.x, ppos.y - cpos.y, ppos.z - cpos.z);
+                    let bs = BrainSees { moving: t_moving, ahead, same_dir, ed78, cspeed, tspeed: speed, d2: fmas(dx, dx, fmas(dz, dz, dy * dy)), safe };
+                    let o = brain_override(if searching { 7 } else { tac.cmd }, along, &stop, &bs);
+                    let mut v = crate::ai::Overrides {
+                        throttle: (o[0] != -1.0).then_some(o[0]),
+                        brake: (o[1] != -1.0).then_some(o[1]),
+                        handbrake: (o[2] != -1.0).then_some(o[2] > 0.0),
+                        steer: (o[3] != -1000.0).then_some(o[3]),
+                    };
+                    if !pull && tac.st == Tac::Halt && halt_steer0 != 0.0 {
+                        v.steer = Some(halt_steer0);
+                    }
+                    (v.throttle.is_some() || v.brake.is_some() || v.handbrake.is_some() || v.steer.is_some()).then_some(v)
+                } else { match (tac.st, pull) {
                     (Tac::CatchUp, false) if (!t_moving && d < safe) || (ahead && same_dir && d < 20.0 && cspeed > speed) => Some(crate::ai::Overrides { brake: Some(1.0), ..Default::default() }),
                     (Tac::AlongSide | Tac::Avoid, _) if (!t_moving && d < along + 1.0) || (t_moving && same_dir && !ahead && cspeed > speed && (!ed78 || d > 1.5 * along)) => Some(crate::ai::Overrides { brake: Some(1.0), ..Default::default() }),
                     // Block (F-56982): handbrake, no throttle, full lock towards the target
@@ -3568,7 +3669,7 @@ impl Police {
                     (Tac::Halt, false) => Some(crate::ai::Overrides { brake: (d < safe).then_some(1.0), steer: (tac.halt_steer != 0.0).then_some(tac.halt_steer), ..Default::default() }),
                     (Tac::Halt, true) => Some(crate::ai::Overrides { brake: Some(1.0), ..Default::default() }),
                     _ => None,
-                };
+                } };
                 // (the squad's swipes and head-on blocks go over the brain's input)
                 if let Some(o) = swipes.get(&c.uid) {
                     let mut v = ai.ovr.unwrap_or_default();
@@ -4132,6 +4233,49 @@ mod tests {
     /// (tools/pullover_fsm_reference.py) against `pullover_machine` on the same inputs: at every recorded update the state,
     /// the asked state, the state's time, AvoidCollision's timer / Halt's squared distance and growing time, the brain's
     /// command fields and the velocity factor equal.
+    #[test]
+    fn brain_override_matches_the_original() {
+        // the original's Pursuit / AlongSide / Stopping ticks run offline (tools/brain_override_reference.py)
+        let txt = include_str!("testdata/brain_override_ref.txt");
+        let (mut n, mut bad) = (0, 0);
+        for line in txt.lines() {
+            let (inp, out) = line.split_once(" | ").unwrap();
+            let v: Vec<&str> = inp.split_whitespace().collect();
+            let i = |k: usize| v[k].parse::<i32>().unwrap();
+            let h = |k: usize| u32::from_str_radix(v[k], 16).unwrap();
+            let fl = h(0);
+            let q = |x: i32| x as f32 * 0.25;
+            let (cx, cy, cz) = (q(i(3)), q(i(4)), q(i(5)));
+            let (tx, ty, tz) = (q(i(3) + i(6)), q(i(4) + i(7)), q(i(5) + i(8)));
+            let (dx, dy, dz) = (tx - cx, ty - cy, tz - cz);
+            let s = BrainSees {
+                moving: fl & 1 != 0,
+                ahead: fl & 2 != 0,
+                same_dir: fl & 4 != 0,
+                ed78: fl & 8 != 0,
+                cspeed: q(i(1)),
+                tspeed: q(i(2)),
+                d2: fmas(dx, dx, fmas(dz, dz, dy * dy)),
+                safe: 30.0,
+            };
+            let stop = StopParams { hb: v[10] != "0", amount: f32::from_bits(h(11)), throttle: f32::from_bits(h(12)), steer: f32::from_bits(h(13)) };
+            let side = f32::from_bits(h(9));
+            let got: Vec<String> = [4u8, 5, 1]
+                .iter()
+                .map(|&c| brain_override(c, side, &stop, &s).iter().map(|f| format!("{:08x}", f.to_bits())).collect::<Vec<_>>().join(" "))
+                .collect();
+            n += 1;
+            if got.join(" | ") != out {
+                bad += 1;
+                if bad < 5 {
+                    eprintln!("{line}\n  port {}", got.join(" | "));
+                }
+            }
+        }
+        assert!(n > 3000, "{n}");
+        assert_eq!(bad, 0, "{bad} of {n} differ");
+    }
+
     #[test]
     fn pullover_machine_matches_the_original() {
         struct X(u32);
