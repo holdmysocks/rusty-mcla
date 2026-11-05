@@ -1180,6 +1180,93 @@ pub(crate) fn dodge_search(w: &DodgeWalker, car: bool, disp: &mut Vec3, near: f3
     false
 }
 
+/// The sidestep's constants (the image's words): |n.y| beyond this takes the walker's forward instead of the normal, and
+/// the sidestep's slide time.
+const SIDESTEP_STEEP: u32 = 0x3F7A_E148; // 0.98
+const SIDESTEP_T: f32 = 0.25;
+/// The type flags of a touching object that make the walker step aside (archetype +16).
+pub(crate) const SIDESTEP_MASK: u32 = 0x103A;
+
+/// One of the walker's 12 contact slots (I+2240, 96 bytes each) as the sidestep F-26402 reads it: the type flags of the
+/// object touched (slot+0 -> +4 -> +16; 0 for an empty slot or no archetype), the contact normal (slot+32) and the depth
+/// (slot+68).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SideSlot {
+    pub flags: u32,
+    pub n: Vec3,
+    pub depth: f32,
+}
+
+/// F-29590: the sidestep's way out. `dir` made flat and normalised (F-41334: eps 1e-5, else +x), turned by 0, -45 and
+/// +45 degrees about +y; each probed over l / cos by the ball of the walker's radius swept from U (r + 0.3) above the
+/// walker along the turned way laid in the ground's plane ((U x way) x U), the touching object (`obj`) left out (F-13499 /
+/// F-27454, as F-94813's probe but without the 10 m reach, the lane limit or the ground test). The first clear one
+/// gives `dir` = way x l / cos.
+pub(crate) fn sidestep_probe(w: &DodgeWalker, obj: bool, dir: &mut Vec3, l0: f32, world: &mut dyn DodgeWorld) -> bool {
+    use crate::physics::exact::{fma, guest_cos, guest_sin};
+    let d = crate::aiv::norm_or(Vec3::new(dir.x, 0.0, dir.z), f32::from_bits(DODGE_LANE_EPS), Vec3::X);
+    let from = vmadd(w.u, w.r + f32::from_bits(DODGE_LIFT), w.p);
+    let swz = |v: Vec3| (Vec3::new(v.y, v.z, v.x), Vec3::new(v.z, v.x, v.y));
+    for th in DODGE_TURNS {
+        let ang = th * f32::from_bits(DODGE_DEG);
+        let (sn, cs) = (guest_sin(ang as f64) as f32, guest_cos(ang as f64) as f32);
+        let way = Vec3::new(fma(d.z, sn, d.x * cs), d.y, fma(d.z, cs, -(d.x * sn)));
+        let l = l0 / cs;
+        let (u_yzx, u_zxy) = swz(w.u);
+        let (w_yzx, w_zxy) = swz(way);
+        let c1 = -vsub(vmul(w_yzx, u_zxy), vmul(w_zxy, u_yzx));
+        let (c_yzx, c_zxy) = swz(c1);
+        let n = -vsub(vmul(u_yzx, c_zxy), vmul(u_zxy, c_yzx));
+        let n2 = vdot3(n, n);
+        let y0 = vrsqrt(n2);
+        let y0 = if y0 == f32::INFINITY { 0.0 } else { y0 };
+        let n = vmul(n, Vec3::splat(vnr(n2, y0)));
+        let to = vadd(vmul(n, Vec3::splat(l)), from);
+        if world.sweep(from, to, w.r, obj).is_none() {
+            *dir = vmul(way, Vec3::splat(l));
+            return true;
+        }
+    }
+    false
+}
+
+/// F-26402: the sidestep, every frame unless sliding or a clip of the walker's own plays (M+260 bits 0x4 / 0x2): over
+/// the 12 contact slots in order, an object whose type flags have 0x103A is stepped away from - along the contact normal
+/// by its depth + 0.05, or, with the normal steeper than |n.y| 0.98, along the walker's forward (F-50349: 0 - matrix row 2)
+/// by its radius -, through F-29590; the first that finds a way starts the slide (F-83234: no car, T 0.25, clear 0.0, the
+/// sidestep's flag: no clip pick, no speech). Returns whether it did.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sidestep(m: &mut Avoid, w: &DodgeWalker, fwd: Vec3, slots: &[SideSlot], items: &[AvoidItem], durs: &[f32], world: &mut dyn DodgeWorld, speech: &mut crate::vehicles::parked::Mwc, pick: &mut crate::vehicles::parked::Mwc) -> bool {
+    if m.flags & 6 != 0 {
+        return false;
+    }
+    for s in slots.iter().take(12) {
+        if s.flags & SIDESTEP_MASK == 0 {
+            continue;
+        }
+        let (mut dir, depth) = if s.n.y.abs() > f32::from_bits(SIDESTEP_STEEP) { (fwd, w.r) } else { (s.n, s.depth) };
+        if sidestep_probe(w, true, &mut dir, depth + f32::from_bits(DODGE_INSIDE_R), world) {
+            slide_start(m, w, items, durs, None, dir, s.n, SIDESTEP_T, 0.0, true, world, speech, pick);
+            return true;
+        }
+    }
+    false
+}
+
+/// F-94626 (the walker's pose) in its one-off clip state (3): the turn taken off the clip's yaw correction M+252 this
+/// frame (clamped to +- the turn rate x dt by two fsel) and the move along M+128 taken off the stretch M+256 (its positive
+/// part x dt / max(T, dt), T = M+236). Returns ((the yaw left, the turn), (the stretch left, the move)); the walker's
+/// matrix (the clip's) is then turned by the turn about +y (F-53646) and moved by M+128 x the move.
+pub(crate) fn clip_correction(yaw: f32, stretch: f32, t: f32, dt: f32) -> ((f32, f32), (f32, f32)) {
+    let lim = TURN_RATE * dt;
+    let lo = if yaw - (-lim) >= 0.0 { yaw } else { -lim };
+    let turn = if lo - lim >= 0.0 { lim } else { lo };
+    let pos = if -stretch >= 0.0 { 0.0 } else { stretch };
+    let den = if t - dt >= 0.0 { t } else { dt };
+    let step = (pos * dt) / den;
+    ((yaw - turn, turn), (stretch - step, step))
+}
+
 /// F-83234: start the slide by `disp` (the car dodge: `car` its index and velocity, `v8` its place - the walker's; the
 /// sidestep F-26402: no car, `sidestep`). With an evade clip playing and no clip of its own, not a sidestep, the clip is
 /// re-aimed (M+252 / +256 from its mover at its time + T); else, not a sidestep, the evade clip is picked (F-37443: the
@@ -1489,7 +1576,8 @@ fn dodge_frame(p: &mut Ped, ty: &PedType, threats: &[Threat], col: Option<&World
         // (no clip: the sidestep slide moves the walker)
         return false;
     }
-    p.pos = m.from.lerp(m.to, (time / m.len).min(1.0));
+    // (with a clip the walker is not put at M+112: F-94626 poses it by the clip's matrix and the corrections - the
+    // caller's root motion)
     p.ground.t_face = flat(p.rot * -Vec3::Z).normalize_or(Vec3::Z);
     if done {
         // the clip ends with the slide: the caller's end of a one-off clip follows
@@ -2899,9 +2987,16 @@ impl Peds {
                     apply(p, 0.0, f1);
                 }
             } else {
-                // (a dodge's clip on the mesh: no root motion, the slide moves the walker - F-56160)
-                if !(on_mesh && matches!(p.state, State::Evade(_))) {
-                    apply(p, clip.frame(t0, false), clip.frame(p.time, false));
+                apply(p, clip.frame(t0, false), clip.frame(p.time, false));
+                // a dodge's clip on the mesh (F-94626 in the walker's one-off clip state): the clip's matrix turned about +y
+                // by what is left of the yaw correction M+252 (at most the turn rate x dt, F-53646 on its rows) and moved
+                // along M+128 by the stretch M+256's share (fix39; the slide's own place M+112 is not the walker's then)
+                if on_mesh && matches!(p.state, State::Evade(_)) {
+                    let ((yaw, turn), (stretch, step)) = clip_correction(p.dodge.yaw, p.dodge.stretch, p.dodge.t, dt);
+                    p.dodge.yaw = yaw;
+                    p.dodge.stretch = stretch;
+                    p.rot = (Quat::from_rotation_y(turn) * p.rot).normalize();
+                    p.pos += p.dodge.dir * step;
                 }
                 if let State::Turn(_) = p.state {
                     // what the clip does not turn, at most pi/4 per 8 frames
@@ -3701,6 +3796,157 @@ mod tests {
         assert_eq!(n, [3000, 500, 500]);
     }
 
+    /// The world of a sidestep reference case (tools/sidestep_reference.py): the swept balls' answers in order, every
+    /// call logged as the harness does; the object a sweep leaves out is the slot being probed (the eligible slots in
+    /// order, three turns each until a clear one).
+    struct SideCase<'a> {
+        c: &'a [u32],
+        log: Vec<String>,
+        sw: usize,
+        queue: Vec<u32>,
+        cur: usize,
+        k: usize,
+        mc: [u32; 8],
+    }
+
+    const SC_SW: usize = 44;
+    const SC_ENT: usize = 85;
+    const SC_SLOT: usize = 151;
+    const SC_X: usize = 247;
+
+    impl SideCase<'_> {
+        fn w(&mut self, t: u32, ws: &[u32]) {
+            self.log.push(format!("t{t}"));
+            self.log.extend(ws.iter().map(|w| format!("{w:x}")));
+        }
+        fn v(&self, i: usize) -> Vec3 {
+            Vec3::new(f32::from_bits(self.c[i]), f32::from_bits(self.c[i + 1]), f32::from_bits(self.c[i + 2]))
+        }
+    }
+
+    impl DodgeWorld for SideCase<'_> {
+        fn inside(&mut self, _c: Vec3, _r: f32) -> bool {
+            self.log.push("unexpected-inside".into());
+            false
+        }
+        fn sweep(&mut self, a: Vec3, b: Vec3, r: f32, car: bool) -> Option<(Vec3, u32)> {
+            let obj = if car { self.queue.get(self.cur).copied().unwrap_or(u32::MAX) } else { 0 };
+            self.w(3, &[a.x.to_bits(), a.y.to_bits(), a.z.to_bits(), b.x.to_bits(), b.y.to_bits(), b.z.to_bits(), r.to_bits(), obj]);
+            let hit = self.c[SC_SW + self.sw] != 0;
+            self.sw += 1;
+            self.k += 1;
+            if hit && self.k == 3 {
+                self.cur += 1;
+                self.k = 0;
+            }
+            hit.then_some((Vec3::ZERO, 0))
+        }
+        fn ground(&mut self, _a: Vec3, _b: Vec3) -> bool {
+            self.log.push("unexpected-ground".into());
+            false
+        }
+        fn lane(&mut self, _x: Vec3, _r: f32) -> Option<(Vec3, f32)> {
+            self.log.push("unexpected-lane".into());
+            None
+        }
+        fn mover(&mut self, clip: usize, t: f32) -> Vec3 {
+            self.w(6, &[clip as u32, t.to_bits()]);
+            let k = if self.mc[clip] > 0 { 1 } else { 0 };
+            self.mc[clip] += 1;
+            self.v(SC_ENT + 11 * clip + 5 + 3 * k)
+        }
+        fn stop(&mut self) {
+            self.log.push("unexpected-stop".into());
+        }
+        fn speech(&mut self, kind: u32) {
+            self.w(7, &[kind]);
+        }
+        fn drop_rails(&mut self) {
+            self.w(8, &[]);
+            self.w(9, &[]);
+        }
+    }
+
+    /// The walkers' sidestep against the original's code run offline (tools/sidestep_reference.py ->
+    /// testdata/sidestep_ref.txt): F-26402 whole on the 12 contact slots (empty, no archetype, type flags with and without
+    /// 0x103A, normals about |n.y| 0.98 a float step either side, zero normals, depths below zero), with the probe F-29590
+    /// and the slide start F-83234 inside it, the avoidance part's flags 0x2 / 0x4 set or not and an evade clip set or not;
+    /// F-29590 called on its own (zero and steep directions). Every sweep (its words, in order), the avoidance part's words
+    /// and the two MWCs must be equal.
+    #[test]
+    fn sidestep_matches_the_original() {
+        let h = |t: &str| u32::from_str_radix(&t.replace('_', ""), 16).unwrap();
+        let (mut n, mut slid, mut found) = ([0usize; 2], 0, 0);
+        for l in include_str!("testdata/sidestep_ref.txt").lines() {
+            let (ci, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<u32> = ci.split(' ').map(h).collect();
+            let want: Vec<String> = o.split(' ').map(|t| if t.starts_with('t') { t.to_string() } else { format!("{:x}", h(t)) }).collect();
+            let f = |i: usize| f32::from_bits(c[i]);
+            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let w = DodgeWalker { p: v(1), r: f(4), u: v(5), rows: [v(8), v(11), v(14)], female: c[17] != 0 };
+            let slots: Vec<SideSlot> = (0..12)
+                .map(|k| {
+                    let s = SC_SLOT + 8 * k;
+                    SideSlot { flags: if c[s] != 0 && c[s + 1] != 0 { c[s + 2] } else { 0 }, n: v(s + 3), depth: f(s + 7) }
+                })
+                .collect();
+            let queue = (0..12u32).filter(|&k| slots[k as usize].flags & SIDESTEP_MASK != 0).map(|k| k + 1).collect();
+            let mut world = SideCase { c: &c, log: Vec::new(), sw: 0, queue, cur: 0, k: 0, mc: [0; 8] };
+            let mut out: Vec<u32> = Vec::new();
+            let vw = |o: &mut Vec<u32>, v: Vec3| o.extend([v.x.to_bits(), v.y.to_bits(), v.z.to_bits()]);
+            if c[0] == 4 {
+                let x = SC_X;
+                world.queue = vec![1];
+                let mut dir = v(x);
+                let r = sidestep_probe(&w, c[x + 4] != 0, &mut dir, f(x + 3), &mut world);
+                found += r as usize;
+                out.push(r as u32);
+                vw(&mut out, dir);
+            } else {
+                let nent = c[84] as usize;
+                let items: Vec<AvoidItem> = (0..nent)
+                    .map(|i| {
+                        let e = SC_ENT + 11 * i;
+                        AvoidItem { ty: c[e], dir: c[e + 1], audio: c[e + 2], clip: (c[e + 3] != 0).then_some(i) }
+                    })
+                    .collect();
+                let durs: Vec<f32> = (0..6).map(|i| f(SC_ENT + 11 * i + 4)).collect();
+                let mut m = Avoid {
+                    car: Some(usize::MAX),
+                    dir: v(19),
+                    clip: (c[22] != u32::MAX).then_some(c[22] as usize),
+                    time: f(23),
+                    len: f(24),
+                    yaw: f(25),
+                    stretch: f(26),
+                    t: f(27),
+                    stop_at: v(28),
+                    from: v(31),
+                    to: v(34),
+                    flags: c[18],
+                    ..Default::default()
+                };
+                let mut speech = crate::vehicles::parked::Mwc { lo: c[37], carry: c[38] };
+                let mut pick = crate::vehicles::parked::Mwc { lo: c[39], carry: c[40] };
+                let r = sidestep(&mut m, &w, v(41), &slots, &items, &durs, &mut world, &mut speech, &mut pick);
+                slid += r as usize;
+                let car = m.car.map_or(0, |_| 0xABCD);
+                out.extend([(car == 0xABCD) as u32, car]);
+                vw(&mut out, m.stop_at);
+                vw(&mut out, m.dir);
+                vw(&mut out, m.from);
+                vw(&mut out, m.to);
+                out.extend([m.t.to_bits(), m.time.to_bits(), m.len.to_bits(), m.clip.map_or(u32::MAX, |e| e as u32)]);
+                out.extend([m.yaw.to_bits(), m.stretch.to_bits(), m.flags, speech.lo, speech.carry, pick.lo, pick.carry]);
+            }
+            let mut got: Vec<String> = out.iter().map(|w| format!("{w:x}")).collect();
+            got.extend(world.log);
+            assert_eq!(got.join(" "), want.join(" "), "{l}");
+            n[c[0] as usize - 3] += 1;
+        }
+        assert_eq!((n, slid, found), ([1600, 400], 699, 226));
+    }
+
     fn quad() -> NavPoly {
         NavPoly {
             chunk: 0,
@@ -4179,6 +4425,7 @@ mod tests {
         let mut free_bad: HashMap<String, usize> = HashMap::new();
         let mut own_last: HashMap<String, bool> = HashMap::new();
         let mut free_eq_ys = 0;
+        let mut free_side = 0;
         let mut free_seen: std::collections::HashSet<String> = Default::default();
         let mut per_run: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
         for line in text.lines() {
@@ -4333,6 +4580,15 @@ mod tests {
             if trace {
                 eprintln!("TRACE {head}out port fl {:x} t {} len {} T {} | orig fl {:x} t {} len {} T {} | {:?}", fm.flags, fm.time, fm.len, fm.t, mo[65], f32::from_bits(mo[60]), f32::from_bits(mo[61]), f32::from_bits(mo[59]), world.bad);
             }
+            // F-26402 (the sidestep, after the threat in F-97113, when not sliding and no clip of its own plays): its contact
+            // slots are not recorded, so its F-83234 call is replayed from the recorded arguments (the slide start's
+            // sidestep path); a recorded sidestep the port's flags would not have run counts as a difference
+            if let Some(s) = one("side") {
+                if fm.flags & 6 == 0 {
+                    slide_start(fm, &w, &items, &durs, None, rv(&s, 1), rv(&s, 4), f32::from_bits(s[7]), f32::from_bits(s[8]), true, &mut world, &mut s2, &mut p2);
+                    free_side += 1;
+                }
+            }
             // F-56160 (the slide step) as dodge_frame does it
             if fm.flags & 4 != 0 {
                 let first = fm.time == 0.0;
@@ -4341,6 +4597,13 @@ mod tests {
                     fm.clip = None;
                     fm.flags &= !4;
                 }
+            }
+            // the pose F-94626 while the walker's one-off clip plays (its state 3; here: an evade clip set): the yaw
+            // correction M+252 taken off by at most the turn rate x dt, the stretch M+256 by its positive part x dt / max(T, dt)
+            if fm.clip.is_some() {
+                let (yaw, stretch) = clip_correction(fm.yaw, fm.stretch, fm.t, dt);
+                fm.yaw = yaw.0;
+                fm.stretch = stretch.0;
             }
         }
         let mut fb: Vec<_> = field_bad.into_iter().collect();
@@ -4351,6 +4614,7 @@ mod tests {
         let mut fb: Vec<_> = free_bad.into_iter().collect();
         fb.sort();
         eprintln!("free run, words differing: {fb:?}; {free_eq_ys} equal but for yaw / stretch");
+        eprintln!("free run: {free_side} sidesteps replayed from their recorded slide start");
         for l in free_first {
             eprintln!("FREE {l}");
         }
