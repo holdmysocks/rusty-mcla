@@ -8713,7 +8713,7 @@ impl Vehicles {
         }
         let others = self.ghost_others(nav);
         let blockers = self.frame_blockers(nav);
-        let env = Env { nav, lanes, col, others: &others, signals: &self.signals, blockers: &blockers, clock, event: self.race_event, player_ahead: None, hold: self.frozen || self.grid_hold.is_some(), parity: false };
+        let env = Env { nav, lanes, col, others: &others, signals: &self.signals, blockers: &blockers, clock, event: self.race_event, player_ahead: None, hold: self.frozen || self.grid_hold.is_some(), parity: false, paths: &[] };
         let mut removes: Vec<(u32, u32, u32)> = Vec::new();
         for g in self.ghosts.live.cars.iter_mut() {
             // F-58860: the proxy car's place is its owner's vehicle's (none: its own)
