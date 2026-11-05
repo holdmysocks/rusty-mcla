@@ -9925,6 +9925,9 @@ impl Game {
         self.career.tt_pick = row;
         self.current_race = Some(i);
         self.career.panel_ok = true;
+        // (the warp onto the run, then xGAM + 1 - 0xbb4f8a9f 0x9c3, 0xa38; a restart loops back
+        // to 0x14fc, past it)
+        self.mc4_stat_add("xGAM", 0, 1.0);
         true
     }
 }
@@ -16289,8 +16292,11 @@ mod tests {
         // hidden while its district is locked)
         let Some((mut g, dir, _)) = race_game("newgame_import.json", "s19hng") else { return };
         g.career.tt_pick = 0;
+        let n = g.mc4_stat("xGAM", 0);
         assert!(!g.mc4_tt_panel_accept("timetrial_hw", 1) && g.current_race.is_none());
         assert!(g.mc4_tt_panel_accept("timetrial_hw", 0) && g.current_race.is_some());
+        // (a time trial taken counts once in xGAM, a row refused does not)
+        assert_eq!(g.mc4_stat("xGAM", 0), n + 1.0);
         assert_eq!(g.mc4_tournament_man(0), None);
         assert_eq!((g.mc4_slot_hidden(0, 0), g.mc4_slot_hidden(1, 2)), (false, true));
         let _ = std::fs::remove_dir_all(&dir);
