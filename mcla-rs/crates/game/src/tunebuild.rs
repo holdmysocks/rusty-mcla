@@ -91,7 +91,7 @@ pub struct VehMods {
 
 impl Default for VehMods {
     /// The table's constructor F-88535 (its element constructors): shares 0 / 50 / 100 / 100 (tires 0 / 33 / 67 / 100), every
-    /// value 0. `tune/vehicle/default.vehMods` is not on the disc, so the game keeps these.
+    /// value 0. The cars' real tables are in their `.r50` (`VehMods::parse`).
     fn default() -> Self {
         let rec = |kind: i16, n: usize| {
             let mut r = [0i16; 16];
@@ -110,6 +110,49 @@ impl Default for VehMods {
         cut(rec(2, 8), &mut m.brake[0]);
         cut(rec(4, 10), &mut m.tire[0]);
         m
+    }
+}
+
+impl VehMods {
+    /// The car's own table: its `.r50` holds the `vehMods` object ready-made as one of the root objects at +0x50
+    /// (class id 0x57CFE4, a name, a null type name - so no loader runs for it): +12 engine, +20 transmission,
+    /// +28 suspension, +36 brakes, +44 tires, +52 hydraulics, +60 the last list, each an array (pointer, u16 count,
+    /// u16 capacity) of records of 16 bit words (32 / 22 / 32 / 16 / 20 bytes). The live table the build reads is
+    /// this object at resource +0x55E0 (work/racerai/livehp/table_dump.txt, the R8 of the 100% save).
+    pub fn parse(res: &mcla_formats::rsc::Resource) -> Option<VehMods> {
+        let rd = mcla_formats::rage::Rd::new(res);
+        let mut o = 0x50;
+        let c = loop {
+            let c = rd.ptr(o)?;
+            if o > 0x200 {
+                return None;
+            }
+            o += 4;
+            if rd.vtable(c) == 0x0057_CFE4 && rd.u16(c + 16) == 7 {
+                break c;
+            }
+        };
+        let arr = |at: usize, n: usize| -> Option<usize> { (rd.u16(c + at + 4) as usize == n).then(|| rd.ptr(c + at)).flatten() };
+        let words = |p: usize, i: usize, out: &mut [i16]| {
+            let size = out.len() * 2;
+            for (k, w) in out.iter_mut().enumerate() {
+                *w = rd.u16(p + i * size + 2 * k) as i16;
+            }
+        };
+        let mut m = VehMods::default();
+        let (e, t, su, b, ti) = (arr(12, 7)?, arr(20, 2)?, arr(28, 2)?, arr(36, 1)?, arr(44, 1)?);
+        for (i, r) in m.engine.iter_mut().enumerate() {
+            words(e, i, r);
+        }
+        for (i, r) in m.trans.iter_mut().enumerate() {
+            words(t, i, r);
+        }
+        for (i, r) in m.suspension.iter_mut().enumerate() {
+            words(su, i, r);
+        }
+        words(b, 0, &mut m.brake[0]);
+        words(ti, 0, &mut m.tire[0]);
+        Some(m)
     }
 }
 
@@ -332,6 +375,37 @@ mod tests {
     use super::*;
     use mcla_formats::rage::simtune::SimTunes;
     use mcla_formats::rsc::Resource;
+
+    /// The R8's `.r50` table against the one read from the running original (work/racerai/livehp/table_dump.txt,
+    /// 2026-11-04: the R8 of the 100% save, the table at holder +0x55E0), every word.
+    #[test]
+    fn vehmods_from_the_r50_match_the_live_table() {
+        let Ok(dump) = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../work/racerai/livehp/table_dump.txt")) else { return };
+        let p = std::path::Path::new("D:/MCLA/extracted/cache/resources/vehicle/vp_aud_r8_08/0x44327b27.r50");
+        let Ok(res) = crate::assets::load_resource_file(p) else { return };
+        let m = VehMods::parse(&res).expect("vehMods");
+        let mut live: Vec<Vec<i16>> = Vec::new();
+        for l in dump.lines().map(str::trim).filter(|l| l.starts_with('(')) {
+            live.push(l.trim_matches(|c| c == '(' || c == ')').split(',').map(|x| x.trim().parse().unwrap()).collect());
+        }
+        let mine: Vec<Vec<i16>> = m.engine.iter().map(|r| r.to_vec()).chain(m.trans.iter().map(|r| r.to_vec())).chain(m.suspension.iter().map(|r| r.to_vec())).chain([m.brake[0].to_vec(), m.tire[0].to_vec()]).collect();
+        assert_eq!(&live[..mine.len()], &mine[..]);
+        assert_ne!(m, VehMods::default());
+    }
+
+    /// The R8 of the 100% save (every stage 2) built with its own table: the live engine tune of the running original
+    /// was the mods set word for word (MaxHP 675, MaxRPM 9000, EngageRPM 5200; livehp, 2026-11-04).
+    #[test]
+    fn full_stages_on_the_r8_give_its_mods_engine() {
+        let p = std::path::Path::new("D:/MCLA/extracted/cache/resources/vehicle/vp_aud_r8_08/0x44327b27.r50");
+        let Ok(res) = crate::assets::load_resource_file(p) else { return };
+        let (m, t) = (VehMods::parse(&res).unwrap(), SimTunes::parse(&res).unwrap());
+        let st = Stages { stages: [2; 13], percent: [100; 3] };
+        let b = build(&t.base, &t.mods, &st, &m, false, [t.fender_height[0][0], t.fender_height[1][0]], t.air_floor);
+        let e = |x: &SimTune| [x.engine.s.max_hp, x.engine.s.max_rpm, x.engine.s.engage_rpm].map(f32::to_bits);
+        assert_eq!(e(&b), e(&t.mods), "{:?} vs {:?}", [b.engine.s.max_hp, b.engine.s.max_rpm], [t.mods.engine.s.max_hp, t.mods.engine.s.max_rpm]);
+        assert_eq!(b.engine.s.max_hp, 675.0);
+    }
 
     /// F-19687 and F-69770 run offline on their own code (work/racerai/tunebuild/cpick: random maps of 1 - 40 characters
     /// in 1 - 13 buckets, random used marks and generator states): the place picked and the state after, bit for bit.
