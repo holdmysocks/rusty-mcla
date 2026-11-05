@@ -4111,7 +4111,6 @@ impl Game {
         }
         vehicles.frozen = false;
         vehicles.grid_hold = None;
-        race.time += dt;
         let n = race.checkpoints.len();
         while race.next.len() < vehicles.cars.len() {
             race.next.push(0);
@@ -4230,6 +4229,11 @@ impl Game {
             }
         }
         race.prev_pos = vehicles.cars.iter().map(|c| c.state.pos).collect();
+        // (the race clock steps after the tests: the original's timer (race +3748, F-54066 from the Player
+        // layer's F-343) steps after the frame's physics, and the scripts' HasHitCheckpoint and
+        // Race_GetTimer come later in that frame (System layer) - a finish over this way, which the port
+        // tests a tick later, before its physics, is stamped with the time before this tick's step)
+        race.time += dt;
         // (a computer racer over the line brakes to a stop)
         for (i, c) in vehicles.cars.iter_mut().enumerate() {
             if !c.is_player && race.finish_time.get(i).map_or(false, |t| t.is_some()) {
