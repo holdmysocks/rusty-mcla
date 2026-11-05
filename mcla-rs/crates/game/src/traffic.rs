@@ -1705,6 +1705,8 @@ pub struct Env<'a> {
     pub hold: bool,
     /// the frame's parity (the footprint probe's side, manager +0x6423C)
     pub parity: bool,
+    /// per car: its race path (behaviour +468) as (referenced +188, fired +189) - a layout item's path
+    pub paths: &'a [Option<(bool, bool)>],
 }
 
 /// Is a rail clear (F-23371 with the own half width): the city's bound and the cars.
@@ -2370,29 +2372,237 @@ fn nav_curve<'a>(nav: &'a NavSys, r: &Rider) -> Option<&'a LaneCurve> {
     nav.links.get(r.link).and_then(|l| nav.curves.get(l.lane)).filter(|c| c.pts.len() >= 2)
 }
 
+/// What the stuck test (F-14023) reads of the rider, its car and the world.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct StuckIn {
+    /// the race event byte (S +0x64251) and the network test (F-24338)
+    pub event: bool,
+    pub net: bool,
+    /// the car matrix's up y (F-33765 +20)
+    pub up_y: f32,
+    /// the speed controller's entry in charge (car +420)
+    pub slot: i32,
+    /// a cab (type +111) with a trailer id (+3604 >= 0); a trailer (type +112)
+    pub cab_hitched: bool,
+    pub trailer: bool,
+    /// behaviour +432 / +436: the nearest obstacle and the blocking one (0 none)
+    pub nearest: u32,
+    pub blocking: u32,
+    /// the car's behaviour (+452) holds a rail (+188)
+    pub rail: bool,
+    /// its next rail (+192): (has a junction (F-41621), green there (F-78185), its start - slot 12 - x and z)
+    pub next: Option<(bool, bool, f32, f32)>,
+    /// the car's place x, z (F-58860)
+    pub pos: (f32, f32),
+    /// speed (car +412)
+    pub v: f32,
+    /// the follower's reverse rail slot in use (behaviour +184 bit 0x80)
+    pub reversing: bool,
+    /// the car's body is active (F-17857)
+    pub active: bool,
+    /// the race path (behaviour +468): referenced (+188), fired (+189)
+    pub path: Option<(bool, bool)>,
+}
+
+/// The stuck test (F-14023), every frame after the state switch (F-87488), on the tracker (behaviour +532: standing
+/// time, backing time, tries). Refused, the tracker kept: the backing time running, a race event, a network game, the
+/// car upside down, the stop line's entry in charge (+420 == 1), a cab with its trailer or a trailer, a blocking obstacle
+/// that is not the nearest one (both set), the next rail's junction not green with its start within 50 m (squared
+/// flat distance < 2500, 0x8207D39C). Then it counts while it stands (+412 == 0) with a blocking obstacle - or, off its
+/// rail or on the reverse rail, with its body at rest - and its race path neither fired (F-60920) nor held (F-74273):
+/// + dt; past 2 s (0x820DB09C) with fewer than 3 tries, a try more and the backing time 0 -> true (the caller starts the
+/// 2 m reverse rail); the standing time is not reset here (the backing state F-82779 zeroes it). Otherwise the tracker
+/// is zeroed.
+pub(crate) fn stuck_test(st: &mut (f32, f32, u8), dt: f32, x: &StuckIn) -> bool {
+    if st.1 > 0.0 || x.event || x.net || x.up_y < 0.0 || x.slot == 1 || x.cab_hitched || x.trailer {
+        return false;
+    }
+    if x.blocking != 0 && x.nearest != 0 && x.blocking != x.nearest {
+        return false;
+    }
+    if let Some((true, false, sx, sz)) = x.next {
+        let (dx, dz) = (x.pos.0 - sx, x.pos.1 - sz);
+        if crate::physics::exact::fma(dz, dz, dx * dx) < 2500.0 {
+            return false;
+        }
+    }
+    let stood = x.v == 0.0;
+    let at_rest = stood && (!x.rail || x.reversing) && !x.active;
+    let fired = x.path.is_some_and(|p| p.1);
+    let held = x.path.is_some_and(|p| p.0 && !p.1);
+    if (x.blocking != 0 || at_rest) && stood && !fired && !held {
+        st.0 += dt;
+        if st.0 > 2.0 && st.2 < 3 {
+            st.1 = 0.0;
+            st.2 += 1;
+            return true;
+        }
+        return false;
+    }
+    *st = (0.0, 0.0, 0);
+    false
+}
+
+/// An ambient car's fade (F-82632, every frame; car +484, `rising` +500 bit 0x8 set by the set-up F-92604, `falling` bit
+/// 0x4 set by the mark F-79896): rising, + 2 dt (0x82040E94, fused) and at 1 or more 1 and the rise done; else falling,
+/// - 2 dt (fused) and at 0 or less 0, the fall done and the car removed (true; F-51512 with the reason +488). The value
+/// goes to the draw holder (+456, slot 11 + the view).
+pub(crate) fn fade_step(fade: &mut f32, rising: &mut bool, falling: &mut bool, dt: f32) -> bool {
+    use crate::physics::exact::fma;
+    if *rising {
+        *fade = fma(dt, 2.0, *fade);
+        if !(*fade < 1.0) {
+            *fade = 1.0;
+            *rising = false;
+        }
+    } else if *falling {
+        *fade = -fma(dt, 2.0, -*fade);
+        if !(*fade > 0.0) {
+            *fade = 0.0;
+            *falling = false;
+            return true;
+        }
+    }
+    false
+}
+
+/// A trailer's cab check (F-99638): not a trailer (type +112), nothing; else its cab id (+3604) looked up among the
+/// ambient cars (F-10061) when it is not negative; no id or no car -> (none, removed with reason 16 - F-51512).
+pub(crate) fn trailer_cab(trailer: bool, cab_id: i32, lookup: impl FnOnce(i32) -> Option<usize>) -> (Option<usize>, bool) {
+    if !trailer {
+        return (None, false);
+    }
+    match if cab_id < 0 { None } else { lookup(cab_id) } {
+        Some(c) => (Some(c), false),
+        None => (None, true),
+    }
+}
+
+#[cfg(test)]
+mod drive_rule_tests {
+    use super::*;
+
+    /// The trailer's cab check against the original's code run offline (tools/trailer_cab_reference.py ->
+    /// testdata/trailer_cab_ref.txt): every type byte / id / lookup combination, the answer, the id asked and the removal equal.
+    #[test]
+    fn trailer_cab_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/trailer_cab_ref.txt").lines() {
+            let (input, want) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = input.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let mut asked = None;
+            let (cab, gone) = trailer_cab(w[0] & 0xFF != 0, w[1] as i32, |id| {
+                asked = Some(id);
+                (w[2] != 0).then_some(1)
+            });
+            let got = format!("{} {} {}", cab.unwrap_or(0), asked.map_or("-".into(), |a| format!("{:x}", a as u32)), if gone { "10" } else { "-" });
+            assert_eq!(got, want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 48);
+    }
+
+    /// The fade against the original's code run offline (tools/traffic_fade_reference.py -> testdata/traffic_fade_ref.txt):
+    /// F-82632 whole, the removal stubbed; the flag byte, the fade, the removal and the holder's word equal in every case.
+    #[test]
+    fn fade_matches_the_original() {
+        let (mut n, mut removed) = (0, 0);
+        for line in include_str!("testdata/traffic_fade_ref.txt").lines() {
+            let (input, want) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = input.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let o: Vec<&str> = want.split(' ').collect();
+            let (mut fade, mut rising, mut falling) = (f32::from_bits(w[1]), w[0] & 8 != 0, w[0] & 4 != 0);
+            let gone = fade_step(&mut fade, &mut rising, &mut falling, f32::from_bits(w[2]));
+            let flags = (w[0] & !0xC) | if rising { 8 } else { 0 } | if falling { 4 } else { 0 };
+            assert_eq!(format!("{flags:x}"), o[0], "{line}");
+            assert_eq!(format!("{:x}", fade.to_bits()), o[1], "{line}");
+            assert_eq!(gone, o[2] != "-", "{line}");
+            let holder = if w[3] != 0 { fade.to_bits() } else { 0 };
+            assert_eq!(format!("{holder:x}"), o[3], "{line}");
+            n += 1;
+            removed += gone as usize;
+        }
+        assert_eq!(n, 5000);
+        assert!(removed > 500);
+    }
+
+    /// The stuck test against the original's code run offline (tools/traffic_stuck_reference.py ->
+    /// testdata/traffic_stuck_ref.txt): F-14023 whole with the rider's path getters F-60920 / F-74273, the world's
+    /// answers from the case; the answer and the tracker's three words equal in every case.
+    #[test]
+    fn stuck_test_matches_the_original() {
+        let (mut n, mut yes) = (0, 0);
+        for line in include_str!("testdata/traffic_stuck_ref.txt").lines() {
+            let (input, want) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = input.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let o: Vec<u32> = want.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let b = w[4];
+            let x = StuckIn {
+                event: b & 1 != 0,
+                net: b & 2 != 0,
+                up_y: f(5),
+                slot: w[6] as i32,
+                cab_hitched: b & 4 != 0 && (w[7] as i32) >= 0,
+                trailer: b & 8 != 0,
+                nearest: w[8],
+                blocking: w[9],
+                rail: b & 16 != 0 && b & 32 != 0,
+                next: (b & 16 != 0 && b & 64 != 0).then_some((b & 128 != 0, b & 256 != 0, f(11), f(12))),
+                pos: (f(13), f(14)),
+                v: f(10),
+                reversing: b & 512 != 0,
+                active: b & 1024 != 0,
+                path: (b & 2048 != 0).then_some((b & 4096 != 0, b & 8192 != 0)),
+            };
+            let mut st = (f(0), f(1), w[2] as u8);
+            let got = stuck_test(&mut st, f(3), &x);
+            assert_eq!((got as u32, st.0.to_bits(), st.1.to_bits(), st.2 as u32), (o[0], o[1], o[2], o[3]), "{line}");
+            n += 1;
+            yes += got as usize;
+        }
+        assert_eq!(n, 6000);
+        assert!(yes > 300);
+    }
+}
+
 /// The tests after the state switch (free roam only): stuck behind a blocker (state 8),
 /// passing it (state 7).
 #[allow(clippy::too_many_arguments)]
 fn after_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, ahead: &Ahead, chosen: Option<usize>, lane_speed: f32, upright: bool, dt: f32) {
     let semi = r.ty.trailer || (r.ty.cab && r.partner.is_some());
-    let light_near = signal_stop(env, r, pos).is_some_and(|x| x.1 < 50.0);
     let blocker = ahead.blocking.filter(|&b| b == ahead.j);
-    // stuck (F-14023): standing more than 2 s behind the blocker that limits us: back
-    // up 2 m at 4 m/s, three times at most until it is no longer stuck
-    let can_stuck = upright && chosen != Some(1) && !semi && blocker.is_some() && chosen == Some(0) && !light_near;
-    if can_stuck && r.v == 0.0 {
-        r.stuck.0 += dt;
-        if r.stuck.0 > 2.0 && r.stuck.2 < 3 {
-            r.stuck.2 += 1;
-            r.stuck.0 = 0.0;
-            r.stuck.1 = 0.0;
-            // (F-54867: from the instance matrix as the frame began)
-            let o = &env.others[me];
-            r.take_path(backing_rail(o.pos, o.back), 8);
-            return;
+    // stuck (F-14023): standing more than 2 s behind a blocking car: back up 2 m at 4 m/s, three tries at most.
+    // (the car's place and up as the frame began; the next rail is the next lane, its start its first control point)
+    let o = &env.others[me];
+    let next = r.next.map(|n| match lane_junction(env.nav, env.nav.links[n].lane) {
+        Some(j) => {
+            let (p0, _) = lane_entry(env.nav, n);
+            (true, junction_green(env.signals, env.nav, j, n), p0.x, p0.z)
         }
-    } else if !can_stuck {
-        r.stuck = (0.0, 0.0, 0);
+        None => (false, false, 0.0, 0.0),
+    });
+    let x = StuckIn {
+        event: env.event,
+        net: false,
+        up_y: if upright { 0.0 } else { -1.0 },
+        slot: chosen.map_or(-1, |s| s as i32),
+        cab_hitched: r.ty.cab && r.partner.is_some(),
+        trailer: r.ty.trailer,
+        nearest: if ahead.j == usize::MAX { 0 } else { ahead.j as u32 + 1 },
+        blocking: ahead.blocking.map_or(0, |b| b as u32 + 1),
+        rail: true,
+        next,
+        pos: (o.pos.x, o.pos.z),
+        v: r.v,
+        reversing: r.path.as_ref().is_some_and(|p| p.reverse),
+        active: r.active,
+        path: env.paths.get(me).copied().flatten(),
+    };
+    if stuck_test(&mut r.stuck, dt, &x) {
+        // (F-54867: from the instance matrix as the frame began)
+        r.take_path(backing_rail(o.pos, o.back), 8);
+        return;
     }
     // passing (F-72757 / F-28706)
     let Some(b) = blocker else {
@@ -2490,12 +2700,14 @@ pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half
         return None;
     }
     if r.state == 8 {
-        // (F-82779: the backing timer; past 4 s the car waits for a recovery rail)
+        // (F-82779: the standing time zeroed, the backing timer; past 4 s the car waits for a recovery rail and the
+        // tracker is zeroed, tries too - F-36541)
+        r.stuck.0 = 0.0;
         r.stuck.1 += dt;
         if r.stuck.1 > 4.0 {
             r.path = None;
             r.state = 6;
-            r.stuck.1 = 0.0;
+            r.stuck = (0.0, 0.0, 0);
         }
         return Some((p, f));
     }
@@ -2914,7 +3126,8 @@ impl Vehicles {
         let parity = frame & 1 == 1;
         let focus = self.amb_focus();
         let blockers = self.frame_blockers(nav);
-        let env = Env { nav, lanes, col, others: &others, signals: &self.signals, blockers: &blockers, clock: self.clock, event, player_ahead, hold, parity };
+        let paths: Vec<Option<(bool, bool)>> = self.cars.iter().map(|c| c.item.and_then(|h| self.layout.get(h as usize)?.as_ref()?.path.as_ref().map(|p| (p.referenced, p.fired)))).collect();
+        let env = Env { nav, lanes, col, others: &others, signals: &self.signals, blockers: &blockers, clock: self.clock, event, player_ahead, hold, parity, paths: &paths };
         // MCLA_TRAFFIC_TRACE=file: every riding car ten times a second (time, id, model, x, y,
         // z, speed, lane speed, junction lane, offset, entries on, standing gap, distance and
         // margin to the car ahead, acceleration, state, ...; the last column: the drawn heading in degrees)
@@ -3200,7 +3413,8 @@ impl Vehicles {
         let ids: hashbrown::HashMap<u32, usize> = self.cars.iter().enumerate().filter_map(|(i, c)| c.rail.as_ref().filter(|r| r.state != 0).map(|r| (r.rng_id(), i))).collect();
         for i in 0..self.cars.len() {
             let Some(r) = self.cars[i].rail.as_mut().filter(|r| r.state == 0) else { continue };
-            let Some(&cab) = r.partner.and_then(|id| ids.get(&id)) else {
+            // (F-99638: no cab id, or no car with it - removed, reason 16)
+            let (Some(cab), _) = trailer_cab(true, r.partner.map_or(-1, |id| id as i32), |id| ids.get(&(id as u32)).copied()) else {
                 r.partner = None;
                 continue;
             };
@@ -5490,14 +5704,24 @@ impl Vehicles {
         }
         // trailers whose cab is gone
         self.cars.retain(|c| c.rail.as_ref().map_or(true, |r| r.state != 0 || r.partner.is_some()));
-        // cars on their way out (car +500 bit 0x4, F-82632): the fade +484 falls by 2 a second
-        // (0x82040E94); at 0 the car is removed (F-51512 with its reason)
-        for c in self.cars.iter_mut() {
-            if let Some(f) = c.removing.as_mut() {
-                *f -= 2.0 * dt;
+        // the ambient cars' fade (F-82632, every car of the ambient update): up by 2 a second from the set-up, down by 2 a
+        // second once marked (car +500 bit 0x4, `removing` holds the fade then); at 0 the car is removed (F-51512 with
+        // its reason)
+        let mut gone = vec![false; self.cars.len()];
+        for (k, c) in self.cars.iter_mut().enumerate() {
+            if c.rail.is_none() && c.parked.is_none() {
+                continue;
             }
+            let (mut rising, mut falling) = (!c.amb_lamps.faded_in, c.removing.is_some());
+            gone[k] = fade_step(&mut c.amb_lamps.fade, &mut rising, &mut falling, dt);
+            c.amb_lamps.faded_in = !rising;
+            c.removing = falling.then_some(c.amb_lamps.fade);
         }
-        self.cars.retain(|c| c.removing.map_or(true, |f| f > 0.0));
+        let mut k = 0;
+        self.cars.retain(|_| {
+            k += 1;
+            !gone[k - 1]
+        });
         // roads a script set the density of (AmbientMgr_SetRoadDensity F-84942, the race scripts'
         // road density event F-36201): the road at the point (F-86195) gets the index as its +164,
         // -1 giving it back; no road there, nothing

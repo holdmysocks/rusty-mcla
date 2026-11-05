@@ -509,6 +509,10 @@ pub struct AmbLamps {
     pub blink: f32,
     pub blink_wrap: f32,
     pub blink_on: f32,
+    /// an ambient car's fade (car +484, 0 at its set-up F-92604) and its rise done (+500 bit 0x8 cleared): it rises by
+    /// 2 a second to 1 after the set-up (`traffic::fade_step`, F-82632); the fall of a marked car is `removing`
+    pub fade: f32,
+    pub faded_in: bool,
 }
 
 /// An ambient car's lights (F-75961, bit 2 of the render flags): on when the hour is past the
