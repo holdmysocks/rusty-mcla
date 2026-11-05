@@ -28,6 +28,7 @@ mod tyre;
 #[cfg(test)]
 mod original_math_tests;
 #[cfg(test)] mod multicar_island;
+#[cfg(test)] mod hyd_ref_tests;
 
 pub use car::{CarInput, CarParams, CarState};
 pub use collision::{SectorMesh, WorldCollider};

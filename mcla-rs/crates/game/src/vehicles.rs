@@ -1848,10 +1848,11 @@ fn drawn_wheel_pose(c: &CarInstance, i: usize) -> Option<(Quat, Vec3)> {
     };
     let front = i < 2;
     let wt = if front { &vt.t.wheel_front } else { &vt.t.wheel_back };
-    let hyd = if c.input.hyd & crate::physics::car::HYD_FITTED != 0 { vs.hyd.height[i] } else { 0.0 };
+    // (the wheel's +432: the hydraulics' or the air ride's last write, else the tune's SuspensionOffset)
+    let w432 = vs.hyd.ofs.map_or(wt.suspension_offset, |o| o[i]);
     let (rest, offset) = match vs.rest_exact {
         Some(r) => (Vec3::new(r[i][0], r[i][1], r[i][2]), r[i][4]),
-        None => (Vec3::new(p.wheel_pos[i].x, p.wheel_pos[i].y - p.susp_rest, p.wheel_pos[i].z), hyd + wt.suspension_offset),
+        None => (Vec3::new(p.wheel_pos[i].x, p.wheel_pos[i].y - p.susp_rest, p.wheel_pos[i].z), w432),
     };
     let w = crate::wheel_pose::WheelTerms {
         rest,
@@ -4258,7 +4259,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
                             let right = f.cross(n).normalize_or(Vec3::X);
                             c.state.rot = Quat::from_mat3(&glam::Mat3::from_cols(right, n, -f)).normalize();
                         }
-                        c.state.pos = g.point + Vec3::Y * 0.03;
+                        // (the player's car with its origin on the ground point itself: the original's after a load
+                        // stands at 17.59785, the port's ground hit there 17.5978 - recorded 2026-11-05, Impala at the
+                        // Hollywood garage; the 3 cm lift made it drop 6.8 cm and bounce 2.1 cm up, the original 2.9 / 0.8)
+                        c.state.pos = g.point + Vec3::Y * if c.is_player { 0.0 } else { 0.03 };
                         c.state.vel.y = 0.0;
                     }
                     c.placed = true;

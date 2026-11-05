@@ -316,96 +316,110 @@ pub struct BurnTick {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Hydraulics {
     pub on: bool,
-    buttons: u8,
+    pub(crate) buttons: u8,
     /// what a button asked for (1 up, 2 down), waiting for the ram to stand still
-    asked: [u8; 4],
-    queued: [u8; 4],
+    pub(crate) asked: [u8; 4],
+    pub(crate) queued: [u8; 4],
     /// the ram's order: 1 up, 0 middle, -1 down
     pub order: [i8; 4],
-    /// the ram's length against the stock ride height (m)
+    /// +72..+84: each ram's height, the wheel's +432 while the hydraulics work (SuspensionOffset in it: the middle)
     pub height: [f32; 4],
-    press_time: [f32; 4],
-    settle: [f32; 4],
-    moving: [bool; 4],
-    latched: [bool; 4],
+    pub(crate) press_time: [f32; 4],
+    pub(crate) settle: [f32; 4],
+    pub(crate) moving: [bool; 4],
+    pub(crate) latched: [bool; 4],
     /// for the sounds: rams that started up / down / came to rest, and the switch (cleared by the listener)
     pub ev_rise: u8,
     pub ev_drop: u8,
     pub ev_end: u8,
     pub ev_switch: i8,
+    /// (the port's: each wheel's +432 as its last writer left it - the hydraulics' F-42075 or the air ride's F-71524,
+    /// both through F-86255; None: the tune's SuspensionOffset)
+    pub(crate) ofs: Option<[f32; 4]>,
 }
 
 impl Hydraulics {
-    fn step(&mut self, t: &mcla_formats::rage::simtune::HydraulicsTune, input: u8, dt: f32) {
+    /// One update of the original's hydraulics: the pad's pass F-70414 (the switch against state +16: on F-71695, off
+    /// F-28175; then each wheel's pressed / released event to the button handler F-39230) and the chassis update's call
+    /// of F-93185 (the order step F-21741, asked to queued, the press timers, each ram by F-73777). `input`: the
+    /// HYD_FITTED / HYD_ON bits and the wheel buttons held (bits 0..3, their edges are the events); `wheel` each wheel's
+    /// +432 (what the switch-on copies); `offset` the front and back wheel tunes' SuspensionOffset (the middle's
+    /// target); `dt` the step. The dance patterns (+20) have no setter in the game and are not here.
+    pub(crate) fn step(&mut self, t: &mcla_formats::rage::simtune::HydraulicsTune, input: u8, wheel: [f32; 4], offset: [f32; 2], dt: f32) {
         use super::car::{HYD_FITTED, HYD_ON};
-        let fitted = input & HYD_FITTED != 0;
-        let want_on = fitted && input & HYD_ON != 0;
-        if want_on && !self.on {
-            // switched on: every ram goes up
-            let h = self.height;
-            *self = Hydraulics { on: true, height: h, order: [1; 4], moving: [true; 4], ev_switch: 1, ..Default::default() };
-        } else if !want_on && self.on {
+        if input & HYD_FITTED == 0 {
+            self.buttons = input & 0x0f;
+            return;
+        }
+        // (F-70414: the switch)
+        let flag = input & HYD_ON != 0;
+        if flag && !self.on {
+            self.on = true;
+            // (F-71695: every ram cleared, its height the wheel's +432, ordered up and moving; the settle timer kept)
+            self.asked = [0; 4];
+            self.queued = [0; 4];
+            self.press_time = [0.0; 4];
+            self.latched = [false; 4];
+            self.height = wheel;
+            self.order = [1; 4];
+            self.moving = [true; 4];
+            self.ev_switch = 1;
+        } else if !flag && self.on {
             self.on = false;
+            // (F-28175: every ram to the middle, moving)
             self.order = [0; 4];
             self.moving = [true; 4];
             self.ev_switch = -1;
         }
-        let any_moving = self.moving.iter().any(|m| *m);
-        if !self.on && !any_moving {
-            self.buttons = 0;
-            return;
+        // (the wheel events: F-39230 for each wheel, whether the hydraulics are on or not)
+        for i in 0..4 {
+            let (now, was) = (input >> i & 1 != 0, self.buttons >> i & 1 != 0);
+            if now && !was {
+                if self.latched[i] {
+                    self.asked[i] = 2;
+                    self.latched[i] = false;
+                } else {
+                    if self.asked[i] != 1 {
+                        self.press_time[i] = t.latch_time;
+                    }
+                    self.asked[i] = 1;
+                    self.latched[i] = true;
+                }
+            } else if !now && was {
+                self.latched[i] = self.press_time[i] < 0.0;
+                self.asked[i] = if self.latched[i] { 0 } else { 2 };
+            }
         }
-        // the wheel buttons
-        if self.on {
+        self.buttons = input & 0x0f;
+        // (F-93185: the order step F-21741 while on or a ram moves - an order changes only on a ram that stands)
+        if self.on || self.moving.iter().any(|m| *m) {
             for i in 0..4 {
-                let (now, was) = (input >> i & 1 != 0, self.buttons >> i & 1 != 0);
-                if now && !was {
-                    if self.latched[i] {
-                        self.asked[i] = 2;
-                        self.latched[i] = false;
-                    } else {
-                        if self.asked[i] != 1 {
-                            self.press_time[i] = t.latch_time;
-                        }
-                        self.asked[i] = 1;
-                        self.latched[i] = true;
+                if self.moving[i] {
+                    continue;
+                }
+                match self.order[i] {
+                    -1 if self.queued[i] == 1 => {
+                        self.order[i] = 1;
+                        self.moving[i] = true;
+                        self.queued[i] = 0;
+                        self.ev_rise |= 1 << i;
                     }
-                } else if !now && was {
-                    // let go late: the corner stays up until the next press
-                    if self.press_time[i] < 0.0 {
-                        self.latched[i] = true;
-                        self.asked[i] = 0;
-                    } else {
-                        self.asked[i] = 2;
-                        self.latched[i] = false;
+                    0 => {
+                        self.order[i] = -1;
+                        self.moving[i] = true;
                     }
+                    1 if self.queued[i] == 2 => {
+                        self.order[i] = -1;
+                        self.moving[i] = true;
+                        self.queued[i] = 0;
+                        self.ev_drop |= 1 << i;
+                    }
+                    _ => {}
                 }
-            }
-            self.buttons = input & 0x0f;
-        }
-        // orders change only while the ram stands still
-        for i in 0..4 {
-            match self.order[i] {
-                -1 if !self.moving[i] && self.queued[i] == 1 => {
-                    self.order[i] = 1;
-                    self.moving[i] = true;
-                    self.queued[i] = 0;
-                    self.ev_rise |= 1 << i;
-                }
-                0 if !self.moving[i] => {
-                    self.order[i] = -1;
-                    self.moving[i] = true;
-                }
-                1 if !self.moving[i] && self.queued[i] == 2 => {
-                    self.order[i] = -1;
-                    self.moving[i] = true;
-                    self.queued[i] = 0;
-                    self.ev_drop |= 1 << i;
-                }
-                _ => {}
             }
         }
         for i in 0..4 {
+            // (what a button asked for is taken by a ram that stands, on or off)
             if self.asked[i] != 0 && !self.moving[i] {
                 self.queued[i] = self.asked[i];
                 self.asked[i] = 0;
@@ -417,32 +431,39 @@ impl Hydraulics {
                 self.press_time[i] = 0.0;
             }
         }
-        // the rams
+        // (each ram by F-73777: up to the rise, down to the drop - one-sided stops, then a fifth of a second's settle -
+        // or to the middle, the wheel tune's SuspensionOffset; a move clears the settle; the moves fused as the approach does)
         for i in 0..4 {
-            let (rise, drop) = if i < 2 { (t.front_rise, t.front_drop) } else { (t.back_rise, t.back_drop) };
-            let h = &mut self.height[i];
+            let (rise, drop, off) = if i < 2 { (t.front_rise, t.front_drop, offset[0]) } else { (t.back_rise, t.back_drop, offset[1]) };
             let was_moving = self.moving[i];
-            let mut towards = |h: &mut f32, target: f32, rate: f32| {
-                *h = if *h < target { (*h + rate * dt).min(target) } else { (*h - rate * dt).max(target) };
-            };
-            let (target, rate) = match self.order[i] {
-                1 => (rise, t.rate_rise),
-                -1 => (-drop, t.rate_drop),
-                _ => (0.0, if *h < 0.0 { t.rate_rise } else { t.rate_drop }),
-            };
-            if (*h - target).abs() > 1e-6 {
-                towards(h, target, rate.max(0.05));
-                self.moving[i] = true;
-                self.settle[i] = 0.0;
-            } else if self.order[i] != 0 && self.settle[i] < 0.2 {
-                // (at its stop the ram counts as moving for a fifth of a second more)
-                self.moving[i] = true;
-                self.settle[i] += dt;
-            } else {
-                self.moving[i] = false;
-                if was_moving {
-                    self.ev_end |= 1 << i;
+            let h = self.height[i];
+            let settle = |s: &mut f32| if *s < 0.2 { *s += dt; true } else { false };
+            self.moving[i] = match self.order[i] {
+                1 if h < rise => {
+                    self.height[i] = t.rate_rise.mul_add(dt, h).min(rise);
+                    self.settle[i] = 0.0;
+                    true
                 }
+                -1 if h > -drop => {
+                    self.height[i] = (-t.rate_drop.mul_add(dt, -h)).max(-drop);
+                    self.settle[i] = 0.0;
+                    true
+                }
+                1 | -1 => settle(&mut self.settle[i]),
+                _ if h < off => {
+                    self.height[i] = t.rate_rise.mul_add(dt, h).min(off);
+                    self.settle[i] = 0.0;
+                    true
+                }
+                _ if h > off => {
+                    self.height[i] = (-t.rate_drop.mul_add(dt, -h)).max(off);
+                    self.settle[i] = 0.0;
+                    true
+                }
+                _ => false,
+            };
+            if was_moving && !self.moving[i] {
+                self.ev_end |= 1 << i;
             }
         }
     }
@@ -453,6 +474,12 @@ impl Hydraulics {
     /// the hydraulics' state +16 and rams +120..+123 so)
     pub fn active(&self) -> bool {
         self.on || self.moving.iter().any(|m| *m)
+    }
+
+    /// Each wheel's +432 as its last writer left it (the hydraulics' F-42075 or the air ride's F-71524, both by F-86255), or
+    /// the wheel tune's SuspensionOffset `so` the set-up wrote
+    pub fn wheel_offsets(&self, so: [f32; 4]) -> [f32; 4] {
+        self.ofs.unwrap_or(so)
     }
 }
 
@@ -2800,11 +2827,33 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
                 vs.wheels[i].comp += vs.air.heights[i] - vs.air.written[i];
                 vs.air.written[i] = vs.air.heights[i];
             }
+            vs.hyd.ofs = Some(vs.air.written);
         }
     } else if vs.air.fitted {
         vs.air = AirRide::default();
+        vs.hyd.ofs = None;
     }
-    vs.hyd.step(&t.hydraulics, if vt.bike { 0 } else { input.hyd }, dt);
+    // ---- the hydraulics: the pad's pass F-70414 and F-97237's call of the update F-93185, on every tick with the
+    // tick's step (recorded 2026-11-05: the rams of the running original step twice in each 30 fps frame, 0.0508 m a
+    // tick at RateRise 3.05) ----
+    let so = [t.wheel_front.suspension_offset, t.wheel_front.suspension_offset, t.wheel_back.suspension_offset, t.wheel_back.suspension_offset];
+    if input.hyd & super::car::HYD_FITTED != 0 && !vt.bike {
+        let wheel = vs.hyd.wheel_offsets(so);
+        vs.hyd.step(&t.hydraulics, input.hyd, wheel, [so[0], so[2]], dt);
+    } else {
+        vs.hyd.buttons = 0;
+    }
+    // (the tick's wheel writer F-53665: while the hydraulics work, F-42075 gives each wheel its ram's height through
+    // F-86255 - wheel +432 = the height, and the compression +496 moves with it by the change, as the air ride's writer;
+    // recorded 2026-11-05: +432 0 -> 0.0508 and the compression 0.0015 -> 0.0524 on the same tick)
+    if input.hyd & super::car::HYD_FITTED != 0 && vs.hyd.active() && !vt.bike {
+        let old = vs.hyd.wheel_offsets(so);
+        for i in 0..4 {
+            vs.wheels[i].comp += vs.hyd.height[i] - old[i];
+        }
+        vs.hyd.ofs = Some(vs.hyd.height);
+        vs.air.written = vs.hyd.height;
+    }
     st.upset = (st.upset - dt / t.damage.wipeout_delay.max(0.1)).max(0.0);
     // ---- A2: the pad's code (mcPlayerInput::Update F-56064), on the first of a frame's two ticks,
     // between this update and the physics step - with the frame's step, 0x827D7558 = two ticks. It
@@ -3297,13 +3346,12 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
         (fit(&t.wheel_front), fit(&t.wheel_back))
     });
     let hyd = vs.hyd;
-    // (the wheel's height +432 as the tick's writer F-53665 left it: the air ride's (F-71524) when the bags are fitted
-    // and the hydraulics do not work)
-    let air_ram = (vs.air.fitted && !(hyd_fitted && hyd.active())).then_some(vs.air.heights);
+    // (each wheel's height +432 as the tick's writer F-53665 left it - the hydraulics' or the air ride's, by F-86255 -
+    // `hyd.ofs`, or the wheel tune's SuspensionOffset)
     // (a live axle's bone pitches with the mean of how far its two wheels are pressed in)
     let rear_mean = (2..4).map(|i| {
         let wt = hyd_wheels.as_ref().map_or(&t.wheel_back, |w| &w.1);
-        match air_ram { Some(h) => vs.wheels[i].comp.clamp(-wt.travel_extent, wt.travel_limit) - h[i], None => vs.wheels[i].comp.clamp(-wt.travel_extent, wt.travel_limit) - if hyd_fitted { hyd.height[i] } else { 0.0 } - wt.suspension_offset }
+        vs.wheels[i].comp.clamp(-wt.travel_extent, wt.travel_limit) - hyd.ofs.map_or(wt.suspension_offset, |o| o[i])
     }).sum::<f32>() * 0.5;
     // (the body's matrix as the collision has it - rows and place)
     let seen_exact = vs.seen_exact.take();
@@ -3353,7 +3401,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
         // (the ram's length moves the wheel's place of rest)
         // (and so does the tuning's SuspensionOffset, wheel +432: a lowered car's wheels sit
         // that much higher in its body at the same load - A-57909, F-86255)
-        let ram = match air_ram { Some(h) => h[i], None => (if hyd_fitted { hyd.height[i] } else { 0.0 }) + wt.suspension_offset };
+        let ram = hyd.ofs.map_or(wt.suspension_offset, |o| o[i]);
         let radius = wt.radius.max(0.1);
         // (what the ground is measured with: the wheel's collision shape)
         let tyre_width = vt.tyre_width[if front { 0 } else { 1 }];
@@ -4076,7 +4124,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
     if !bike_old(vt) && !dbg_flag("MCLA_DBG_OLDWHEELPOSE") {
         let rear_mean = (2..4).map(|i| {
             let wt = hyd_wheels.as_ref().map_or(&t.wheel_back, |w| &w.1);
-            match air_ram { Some(h) => vs.wheels[i].comp.clamp(-wt.travel_extent, wt.travel_limit) - h[i], None => vs.wheels[i].comp.clamp(-wt.travel_extent, wt.travel_limit) - if hyd_fitted { hyd.height[i] } else { 0.0 } - wt.suspension_offset }
+            vs.wheels[i].comp.clamp(-wt.travel_extent, wt.travel_limit) - hyd.ofs.map_or(wt.suspension_offset, |o| o[i])
         }).sum::<f32>() * 0.5;
         for i in 0..4 {
             let front = i < 2;
@@ -4084,7 +4132,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                 Some((f, b)) => if front { f } else { b },
                 None => if front { &t.wheel_front } else { &t.wheel_back },
             };
-            let ram = match air_ram { Some(h) => h[i], None => (if hyd_fitted { hyd.height[i] } else { 0.0 }) + wt.suspension_offset };
+            let ram = hyd.ofs.map_or(wt.suspension_offset, |o| o[i]);
             let local = p.wheel_pos[i];
             let pivot_arm = if wt.steering_limit <= 0.0 { 0.0 } else if wt.pivot_offset > 0.0 { local.x * wt.pivot_offset } else if local.x.abs() > wt.width { local.x.signum() * wt.width * 0.25 } else { 0.0 };
             let axle = Quat::from_axis_angle(Vec3::Y, -st.wheels[i].steer) * Vec3::X;
@@ -7055,7 +7103,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             Some((f, b)) => if physical < 2 { f } else { b },
             None => if physical < 2 { &t.wheel_front } else { &t.wheel_back },
         };
-        let ram = match air_ram { Some(h) => h[physical], None => (if hyd_fitted { hyd.height[physical] } else { 0.0 }) + wt.suspension_offset };
+        let ram = hyd.ofs.map_or(wt.suspension_offset, |o| o[physical]);
         let local = attach - Vec3::Y * (p.susp_rest + ram - vs.wheels[physical].comp);
         st.wheels[i].world_pos = st.pos + st.rot * local;
     }
