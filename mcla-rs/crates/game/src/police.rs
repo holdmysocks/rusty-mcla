@@ -793,6 +793,25 @@ fn cop_sees(world: &World, cop: &crate::vehicles::CarInstance, tpos: Vec3, r: f3
     d < 1e-4 || world.collider.raycast(a, (b - a) / d, d).is_none()
 }
 
+/// The squared distance as the original's code forms it (F-39842 and the +144 test of F-63286): the y step squared, then
+/// the z and the x steps fused in (fmadds: the product and sum in double, rounded to single, as the recompiled code).
+pub(crate) fn arrest_d2(a: Vec3, b: Vec3) -> f32 {
+    let (dy, dz, dx) = (b.y - a.y, b.z - a.z, b.x - a.x);
+    let t = (dz as f64).mul_add(dz as f64, (dy * dy) as f64) as f32;
+    (dx as f64).mul_add(dx as f64, t as f64) as f32
+}
+
+/// "Within r" of F-39842 (F-29443's cop test): the squared distance strictly under r x r.
+pub(crate) fn within_sq(a: Vec3, b: Vec3, r: f32) -> bool {
+    arrest_d2(a, b) < r * r
+}
+
+/// The speed under which the arrest counts the target slow (F-29906) and the step under which it counts it barely moving
+/// (F-63286 x dt): fArrestTgtThresholdSpd x 0.447, a literal of the code (not 1 / 2.23694).
+pub(crate) fn arrest_ms(tune: f32) -> f32 {
+    tune * 0.447
+}
+
 /// A line of the tactic's radio: its scenario and the cars of its parties (no receiver: the dispatcher).
 pub struct RadioCall {
     pub name: &'static str,
@@ -2573,7 +2592,6 @@ impl Police {
         // (the half angle of F-24233 / F-87106's sight tests: the member, 180 on the disc = no cone in practice)
         let det_half = t("fDetectHalfAngle", 180.0);
         let mut seen = false;
-        let mut nearest_ok = f32::INFINITY;
         let mut n_cops = 0;
         // (F-94676 for a free cop - in no tactic, not the dispatch's -, F-52240: within fDetectDist in 3D and a clear
         // line from 2 m above the cop to 2 m above the target, F-69576; within fDetectHalfAngle of its forward, F-24233.
@@ -2610,20 +2628,10 @@ impl Police {
             level_probe_front(world, vehicles, &self.peds, t_uid, o, d, 7.0)
         };
         let seen_now = tvel.length() * MPH <= tun.get("fMovingSpeed", 1.0) || probe_hit;
-        self.t_seen_prev = self.t_seen;
-        if seen_now {
-            self.t_seen += dt;
-            self.t_unseen = 0.0;
-        } else {
-            self.t_unseen += dt;
-            self.t_seen = 0.0;
-        }
+        self.seen_update(seen_now, dt);
         for c in vehicles.cars.iter().filter(|c| pursuer(c)) {
             n_cops += 1;
             let d = c.state.pos.distance(tpos);
-            if c.state.damage < 0.999 {
-                nearest_ok = nearest_ok.min(d);
-            }
             if d < vision {
                 let from = c.state.pos + Vec3::Y * 1.2;
                 let to = tpos + Vec3::Y * 1.0;
@@ -2908,14 +2916,33 @@ impl Police {
         };
         let speed = pvel.length();
         let mph = speed * MPH;
-        let arrest_speed = t("fArrestTgtThresholdSpd", 10.0) / MPH;
+        let arrest_speed = arrest_ms(t("fArrestTgtThresholdSpd", 10.0));
         // (the tactic's radius vt+32: fPullOverDist in a pull-over (F-66453), fSafeDist in the others (F-54202))
         let arr_r = if self.heat == Heat::PullOver { t("fPullOverDist", 15.0) } else { t("fSafeDist", 30.0) };
         let bike_r = t("fBikerWipeoutArrestDist", 50.0);
         let seer = |r: f32| vehicles.cars.iter().filter(|c| pursuer(c)).any(|c| cop_sees(world, c, ppos, r, 0.0));
         let (seer_r1, seer_bike) = (seer(arr_r + 1.0), bike_down && seer(bike_r));
+        // (F-29443: some tactic cop not damaged out with its car strictly within the radius of the target, no sight needed)
+        let cop_in = vehicles.cars.iter().filter(|c| pursuer(c)).any(|c| c.state.damage < 0.999 && within_sq(ppos, c.state.pos, arr_r));
         let delay = self.kind == TacKind::Pursuit && self.flee_hold > 0.0;
-        let ain = |slow: bool, search: bool| ArrestIn { seer_r1, seer_bike, delay, search, nearest_ok, slow, bike_down, wrecked: damage >= 0.999, burning, pos: ppos };
+        // (the Delay's exit F-25831 runs the update the Delay ends; the Search's clock +16 > 0 is the target lost, F-77220)
+        let leaving = self.arrest_delay && !delay;
+        let lost = self.search > 0.0;
+        let ain = |slow: bool, search: bool| ArrestIn {
+            seer_r1,
+            seer_bike,
+            delay,
+            leaving,
+            search,
+            lost: search && lost,
+            cop_in,
+            refresh: true,
+            slow,
+            bike_down,
+            wrecked: damage >= 0.999,
+            burning,
+            pos: ppos,
+        };
         match self.heat {
             Heat::None => {
                 // (F-52240's ladder needs a detecting cop, the request cop: at iMaxLawBreakingScore an Arrow Trap, from
@@ -3960,6 +3987,19 @@ impl Police {
         event
     }
 
+    /// The tactic's seen update (F-74492, vt+16): +128 takes last frame's +124, then +124 grows and +132 zeroes when the
+    /// target is seen, else +132 grows and +124 zeroes.
+    fn seen_update(&mut self, seen_now: bool, dt: f32) {
+        self.t_seen_prev = self.t_seen;
+        if seen_now {
+            self.t_seen += dt;
+            self.t_unseen = 0.0;
+        } else {
+            self.t_unseen += dt;
+            self.t_seen = 0.0;
+        }
+    }
+
     /// The tactic's arrest timer +108 (F-29906) and its test (F-36806): set past fArrestTime at once for a wiped-out
     /// biker with a cop of the tactic within fBikerWipeoutArrestDist; else, with a cop of the tactic within the
     /// tactic's radius + 1 m (F-43276), it grows while the target is under fArrestTgtThresholdSpd and seen this frame
@@ -3968,20 +4008,22 @@ impl Police {
     /// not while the Pursuit's Delay runs, whose end zeroes all three (F-25831), nor in the Search (target lost).
     #[allow(clippy::too_many_arguments)]
     fn arrest_step(&mut self, a: ArrestIn, radius: f32, at: f32, bike_r: f32, still_d2: f32, dt: f32) -> bool {
-        let _ = bike_r;
-        // (the tactic's update runs the test before F-63286 steps the timers: last frame's values)
-        let fire = !a.delay && !a.search && (self.arrest > at || self.t_burn > 5.0 || self.t_still > 5.0);
-        if self.arrest_delay && !a.delay {
+        let _ = (radius, bike_r);
+        // (the tactic's update runs the test before F-63286 steps the timers: last frame's values; no test while the
+        // Delay runs or a state is asked (F-68032's gate), nor with the target lost (F-77220))
+        let fire = !a.delay && !a.lost && (self.arrest > at || self.t_burn > 5.0 || self.t_still > 5.0);
+        if a.leaving {
             // (the Pursuit's Delay exit, F-25831)
             self.arrest = 0.0;
             self.t_burn = 0.0;
             self.t_still = 0.0;
         }
         self.arrest_delay = a.delay;
-        // (F-29906: a damaged-out target first, with no distance test; then the downed biker seen by a cop within
-        // fBikerWipeoutArrestDist; then a cop seeing it within the radius + 1 (F-43276, a line of sight): grows while the
-        // target is seen this frame and slow, else holds; with no such cop zeroed once unseen over 0.5 s)
-        if a.search {
+        // (F-29906, behind vt+64 F-20593: not with the target lost; a damaged-out target first, with no distance test; then
+        // the downed biker seen by a cop within fBikerWipeoutArrestDist; then a cop seeing it within the radius + 1
+        // (F-43276, a line of sight): grows while the target is seen this frame and slow, else holds; with no such cop
+        // zeroed once unseen over 0.5 s)
+        if a.lost {
         } else if a.wrecked {
             self.arrest = at + 1.0;
         } else if a.bike_down && a.seer_bike {
@@ -3994,18 +4036,21 @@ impl Police {
             self.arrest = 0.0;
         }
         // (the common tactic update F-63286, after the timer: with a tactic cop strictly within the radius - F-29443, not
-        // damaged out - +140 counts while the target's burnout charge is up (F-25339) and +144 while it is barely moving
-        // (from last frame's place less than (fArrestTgtThresholdSpd x 0.447) x dt, only the left side squared, as
-        // coded); without one both are 0; then +48 = the target's place)
-        if a.nearest_ok < radius && !a.search {
+        // damaged out - and not in the Search (vt+40) +140 counts while the target's burnout charge is up (F-25339) and
+        // +144 while it is barely moving (from last frame's place less than (fArrestTgtThresholdSpd x 0.447) x dt, only
+        // the left side squared, as coded); without one both are 0; then +48 = the target's place, while the first cop
+        // has a brain with a target)
+        if a.cop_in && !a.search {
             self.t_burn = if a.burning { self.t_burn + dt } else { 0.0 };
-            let still = self.prev_pos.map_or(false, |q| (a.pos - q).length_squared() < still_d2);
+            let still = self.prev_pos.map_or(false, |q| arrest_d2(q, a.pos) < still_d2);
             self.t_still = if still { self.t_still + dt } else { 0.0 };
         } else {
             self.t_burn = 0.0;
             self.t_still = 0.0;
         }
-        self.prev_pos = Some(a.pos);
+        if a.refresh {
+            self.prev_pos = Some(a.pos);
+        }
         // (F-36806: +108 > fArrestTime, or either timer over 5 s - a literal)
         fire
     }
@@ -4015,7 +4060,10 @@ impl Police {
         self.arrest = 0.0;
         self.t_burn = 0.0;
         self.t_still = 0.0;
-        self.prev_pos = None;
+        self.prev_pos = Some(Vec3::ZERO);
+        self.t_seen = 0.0;
+        self.t_seen_prev = 0.0;
+        self.t_unseen = 0.0;
     }
 
     /// The fine (F-83946, the routine that fills the arrest form): the highest speed band's
@@ -4479,6 +4527,218 @@ mod tests {
         assert!(checked > 1000 && blocks > 0, "{checked} {blocks}");
     }
 
+    /// The arrest timers against the original's Pursuit tactic object run offline by tools/arrest_reference.py (F-68032's
+    /// gate with the arrest test F-36806, the FSM's Delay exit F-25831, the common update F-63286 with the seen update
+    /// F-74492, the +108 update F-29906, the cop query F-29443 / F-39842 and the +140 / +144 timers): the same inputs from the
+    /// same xorshift (the generator mirrors `gen_case` there); at every update the test's result, and at every recorded one
+    /// the bits of +108, +140, +144 and the seen timers +124 / +132 equal.
+    #[test]
+    fn arrest_timers_match_the_original() {
+        let (cases, ticks, fires, compared, cop_in_ticks, timer_ticks) = arrest_run(include_str!("testdata/arrest_ref.txt"), false);
+        assert!(cases == 40 && compared > 1500 && fires > 8 && cop_in_ticks > 3000 && timer_ticks > 3000, "{cases} {ticks} {fires} {compared} {cop_in_ticks} {timer_ticks}");
+    }
+
+    /// The same timers in the pull-over's and the arrow trap's classes (tools/arrest_reference.py, second run): their vt+32 /
+    /// +40 / +44 / +64 slots (F-66453, F-41284, F-33778, F-82134, F-77220) over the same common update F-63286, the seen
+    /// update and the arrest test called in order, the state set directly (the Search of the arrow trap is state 3; the
+    /// pull-over's slots 40 / 44 are false); the test's result is compared when the target is not lost.
+    #[test]
+    fn arrest_timers_match_the_original_in_the_other_classes() {
+        let (cases, ticks, fires, compared, cop_in_ticks, timer_ticks) = arrest_run(include_str!("testdata/arrest_vt_ref.txt"), true);
+        assert!(cases == 40 && compared > 1500 && fires > 8 && cop_in_ticks > 3000 && timer_ticks > 3000, "{cases} {ticks} {fires} {compared} {cop_in_ticks} {timer_ticks}");
+    }
+
+    fn arrest_run(reference: &str, vt: bool) -> (u32, u32, u32, u32, u32, u32) {
+        struct X(u32);
+        impl X {
+            fn next(&mut self) -> u32 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 17;
+                self.0 ^= self.0 << 5;
+                self.0
+            }
+            fn r(&mut self, a: i32, b: i32) -> i32 {
+                a + (self.next() % (b - a + 1) as u32) as i32
+            }
+        }
+        struct Cop {
+            o: [i32; 3],
+            ug: bool,
+            wr: i32,
+            br: bool,
+            s1: bool,
+            sb: bool,
+        }
+        const DT_BITS: [u32; 4] = [0x3C88_8889, 0x3D08_8889, 0x3C08_8889, 0x3C4A_11C1];
+        const SAFE: [i32; 4] = [30, 15, 30, 45];
+        const ARREST_T: [f32; 4] = [0.5, 1.0, 1.0, 2.5];
+        const THR: [i32; 4] = [5, 10, 10, 20];
+        const BIKER: [i32; 4] = [50, 50, 20, 70];
+        let allowed = |s: usize| -> &'static [i32] {
+            match s {
+                0 => &[1],
+                1 => &[2, 5, 6],
+                2 => &[1, 3, 5, 6],
+                3 => &[1, 6],
+                5 => &[1, 6],
+                _ => &[1],
+            }
+        };
+        let dwell = |s: usize| -> u32 { [40, 120, 90, 70, 1, 90, 150][s] };
+        let mut lines = reference.lines().peekable();
+        let (mut cases, mut ticks, mut fires, mut compared, mut cop_in_ticks, mut timer_ticks, mut fires_n) = (0, 0, 0, 0, 0, 0, 0);
+        while let Some(head) = lines.next() {
+            let mut hw = head.strip_prefix("CASE ").unwrap().split_whitespace();
+            let seed: u32 = hw.next().unwrap().parse().unwrap();
+            let cls: u32 = hw.next().map_or(2, |v| v.parse().unwrap());
+            let mut last_fire = false;
+            let mut g = X(seed);
+            let dt = f32::from_bits(DT_BITS[g.r(0, 3) as usize]);
+            let safe = SAFE[g.r(0, 3) as usize] as f32;
+            let at = ARREST_T[g.r(0, 3) as usize];
+            let thr = THR[g.r(0, 3) as usize] as f32;
+            let _biker = BIKER[g.r(0, 3) as usize];
+            let n = g.r(1, 3) as usize;
+            let bike = g.next() % 3 == 0;
+            let smax = g.r(2, 5);
+            let mut t = [g.r(-300, 300) * 8, g.r(0, 20) * 8, g.r(-300, 300) * 8];
+            if seed % 5 == 0 {
+                t = t.map(|v: i32| v.rem_euclid(5) - 2);
+            }
+            let mut spd = g.r(0, 120);
+            let mut go = g.r(0, 1) != 0;
+            let (mut cur, mut lostb, mut seen) = (0usize, false, g.r(0, 1) != 0);
+            let (mut burn, mut wreck, mut bdown) = (0, 0, false);
+            let lim = (safe as i32 + 20) * 16;
+            let mut cops: Vec<Cop> = Vec::new();
+            for _ in 0..n {
+                let o = [g.r(-20, 20) * 16, g.r(-20, 20) * 16, g.r(-20, 20) * 16];
+                let (s1, sb) = (g.r(0, 1) != 0, g.r(0, 1) != 0);
+                cops.push(Cop { o, ug: false, wr: 0, br: true, s1, sb });
+            }
+            let mut p = Police::new();
+            p.reset_arrest();
+            let mut fired = false;
+            for k in 0..1200usize {
+                let mut ask = -1;
+                if g.next() % dwell(cur) == 0 {
+                    let o = allowed(cur);
+                    ask = o[g.next() as usize % o.len()];
+                }
+                let post = if ask != -1 { ask as usize } else { cur };
+                if post == 6 && ask == -1 {
+                    if g.next() % 25 == 0 {
+                        lostb = !lostb;
+                    }
+                } else {
+                    lostb = false;
+                }
+                if g.next() % 12 == 0 {
+                    seen = !seen;
+                }
+                if g.next() % 40 == 0 {
+                    go = !go;
+                }
+                if go {
+                    t = [t[0] + g.r(-smax, smax), t[1] + g.r(-smax, smax), t[2] + g.r(-smax, smax)];
+                }
+                spd = (spd + g.r(-3, 3)).clamp(0, 280);
+                if g.next() % 30 == 0 {
+                    burn = g.r(0, 2);
+                }
+                if g.next() % 500 == 0 {
+                    wreck = g.r(0, 2);
+                }
+                if g.next() % 60 == 0 {
+                    bdown = !bdown;
+                }
+                for (ci, c) in cops.iter_mut().enumerate() {
+                    for i in 0..3 {
+                        c.o[i] = (c.o[i] + g.r(-8, 8)).clamp(-lim, lim);
+                    }
+                    if g.next() % 90 == 0 {
+                        let rr = [safe as i32 * 16, safe as i32 * 16 + 1, safe as i32 * 16 - 1, (safe as i32 + 1) * 16][g.r(0, 3) as usize];
+                        let ax = g.r(0, 2) as usize;
+                        let sg = if g.next() % 2 == 0 { 1 } else { -1 };
+                        c.o = [0, 0, 0];
+                        c.o[ax] = rr * sg;
+                    }
+                    if g.next() % 200 == 0 {
+                        c.ug = !c.ug;
+                    }
+                    if g.next() % 300 == 0 {
+                        c.wr = g.r(0, 2);
+                    }
+                    if g.next() % 500 == 0 && ci > 0 {
+                        c.br = !c.br;
+                    }
+                    if g.next() % 15 == 0 {
+                        c.s1 = !c.s1;
+                    }
+                    if g.next() % 15 == 0 {
+                        c.sb = !c.sb;
+                    }
+                }
+                // ---- the port, on the same inputs
+                let tp = Vec3::new(t[0] as f32 / 16.0, t[1] as f32 / 16.0, t[2] as f32 / 16.0);
+                let cop_in = cops.iter().any(|c| {
+                    let cp = Vec3::new((t[0] + c.o[0]) as f32 / 16.0, (t[1] + c.o[1]) as f32 / 16.0, (t[2] + c.o[2]) as f32 / 16.0);
+                    !c.ug && c.wr == 0 && c.br && within_sq(tp, cp, safe)
+                });
+                let a = ArrestIn {
+                    seer_r1: cops.iter().any(|c| c.s1),
+                    seer_bike: cops.iter().any(|c| c.sb),
+                    delay: !vt && (cur == 0 || ask != -1),
+                    leaving: !vt && cur == 0 && ask != -1,
+                    search: post == 6 && (!vt || cls == 1),
+                    lost: lostb && (!vt || cls == 1),
+                    cop_in,
+                    refresh: cops[0].br,
+                    slow: spd as f32 / 16.0 < arrest_ms(thr),
+                    bike_down: bike && bdown,
+                    wrecked: wreck >= 1,
+                    burning: burn == 1,
+                    pos: tp,
+                };
+                let lost_now = a.lost;
+                p.seen_update(seen, dt);
+                let fire = p.arrest_step(a, safe, at, 0.0, arrest_ms(thr) * dt, dt);
+                // ---- the reference
+                let row = lines.peek().filter(|l| !l.starts_with("CASE")).map(|l| l.split_whitespace().collect::<Vec<_>>()).filter(|v| v[0].parse::<usize>().unwrap() == k);
+                if let Some(v) = &row {
+                    last_fire = v[3] == "1";
+                }
+                let want_fire = if vt { last_fire } else { row.is_some() && last_fire };
+                if !(vt && lost_now) {
+                    assert_eq!(fire, want_fire, "case {seed} update {k}: the arrest test");
+                }
+                if let Some(v) = row {
+                    if vt || !fire {
+                        let (c1, c2) = if vt { (v[1].parse().unwrap(), v[2].parse().unwrap()) } else { (cur, post) };
+                        let got = format!("{} {} {} {:08x} {:08x} {:08x} {:08x} {:08x}", k, c1, c2, p.arrest.to_bits(), p.t_burn.to_bits(), p.t_still.to_bits(), p.t_seen.to_bits(), p.t_unseen.to_bits());
+                        let want = format!("{} {} {} {} {} {} {} {}", v[0], v[1], v[2], v[4], v[5], v[6], v[7], v[8]);
+                        assert_eq!(got, want, "case {seed} update {k}");
+                        compared += 1;
+                    }
+                    lines.next();
+                }
+                ticks += 1;
+                cop_in_ticks += cop_in as u32;
+                timer_ticks += (p.arrest > 0.0 || p.t_burn > 0.0 || p.t_still > 0.0) as u32;
+                fires_n += (vt && fire) as u32;
+                if fire && !vt {
+                    fired = true;
+                    break;
+                }
+                cur = post;
+            }
+            assert!(lines.peek().map_or(true, |l| l.starts_with("CASE")), "case {seed}: reference rows left over");
+            cases += 1;
+            fires += fired as u32;
+        }
+        (cases, ticks, fires + fires_n, compared, cop_in_ticks, timer_ticks)
+    }
+
     /// The original's pull-over tactic object (F-36876 with its FSM and states) run offline
     /// (tools/pullover_fsm_reference.py) against `pullover_machine` on the same inputs: at every recorded update the state,
     /// the asked state, the state's time, AvoidCollision's timer / Halt's squared distance and growing time, the brain's
@@ -4680,12 +4940,18 @@ struct ArrestIn {
     seer_r1: bool,
     /// the same within fBikerWipeoutArrestDist
     seer_bike: bool,
-    /// the Pursuit's Delay is running (no arrest from it, F-20593 / F-25831)
+    /// no arrest test this update: the Pursuit's Delay is running or a state is asked (F-68032's gate)
     delay: bool,
-    /// the Search: the target is lost (vt+44, F-77220) - no +108 step, no arrest, +140 / +144 zeroed
+    /// the Delay's exit runs this update, before the timers (F-25831 zeroes +108, +140, +144)
+    leaving: bool,
+    /// the Search state (vt+40, F-96991): +140 / +144 zeroed
     search: bool,
-    /// the nearest one not damaged out (F-29443's cop test)
-    nearest_ok: f32,
+    /// the Search's clock +16 is above 0: the target is lost (vt+44, F-77220) - no +108 step, no arrest
+    lost: bool,
+    /// some tactic cop not damaged out has its car strictly within the radius of the target (F-29443)
+    cop_in: bool,
+    /// the first cop has a brain with a target: the target's place +48 is refreshed
+    refresh: bool,
     slow: bool,
     bike_down: bool,
     /// damaged out (F-12032: damage >= MaxDamage)
