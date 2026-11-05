@@ -1117,6 +1117,9 @@ pub struct Vehicles {
     /// a race is on as the ambient manager's byte +0x64251 has it (F-86550): the current race (F-27863), not a payback
     /// (race type 0 - 4, race +3096), not over (+3773, `$IsRaceFinish`) - set by the game each frame
     pub race_event: bool,
+    /// the player's standing time (mcPlayer +872, F-16834: under 2.2352 m/s it gains the frame's time, else 0), read by
+    /// the traffic's blocking test F-70116 against +876 (`traffic::IDLE_BLOCKS`)
+    pub player_idle: f32,
     /// the navsys junction ahead of the player's lane (F-94775 + F-95137, the tracker +5888), as `step_signals` found it
     pub player_junction: Option<usize>,
     /// the same record with its direction (+5888 junction, +5872 the junction lane's unit direction; F-95137)

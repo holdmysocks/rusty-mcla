@@ -1545,15 +1545,22 @@ pub struct Other {
     pub right: Vec3,
     /// its instance matrix's row 2 (`instance_matrix`: the back axis)
     pub back: Vec3,
+    /// its instance matrix's row 0 (F-87404 reads it for the corners)
+    pub row0: Vec3,
     pub vel: Vec3,
     /// half its bound's length and width
     pub half_len: f32,
     pub half_wid: f32,
+    /// its rider's speed (car +412; 0 without a rider)
+    pub speed: f32,
+    /// its behaviour (car +452; none for a trailer or a parked car): its rails +188 / +192
+    pub beh: Option<(Option<SelRail>, Option<SelRail>)>,
+    /// a driver's car (the player): its lane +640 (`DriverLanes::best`) with that lane's freeway test (F-31543), and
+    /// its standing time +872 (F-16834)
+    pub lane640: Option<(usize, bool)>,
+    pub idle: f32,
     /// on a lane, kinematic: (its lane, its next lane, junction lane)
     pub on: Option<(usize, Option<usize>, bool)>,
-    /// on a rail off the lanes (states 6 - 8: run-time rails, flags 0x1800 - no lane in the
-    /// file carries those bits)
-    pub railed: bool,
     pub player: bool,
     /// ambient traffic (parked cars too); else the player, police, racers
     pub ambient: bool,
@@ -1567,10 +1574,6 @@ pub struct Other {
 }
 
 impl Other {
-    fn corners(&self) -> [Vec3; 4] {
-        let (x, z) = (self.right * self.half_wid, self.fwd * self.half_len);
-        [self.pos + x + z, self.pos + x - z, self.pos - x - z, self.pos - x + z]
-    }
     /// Distance in the ground plane from `q` to its box (0 inside).
     fn box_dist(&self, q: Vec3) -> f32 {
         let d = q - self.pos;
@@ -1581,50 +1584,210 @@ impl Other {
     }
 }
 
-/// Is the obstacle in the way of a rail point (F-87404; no lane width used): its corners'
-/// offsets along the line from it to the rail point straddle that point, or come within half
-/// our width of it.
-fn in_the_way(o: &Other, q: Vec3, own_wid: f32) -> bool {
-    let u = Vec2::new(q.x - o.pos.x, q.z - o.pos.z);
-    if u.length_squared() < 1e-8 {
-        return true;
-    }
-    let u = u.normalize();
-    let (mut mn, mut mx) = (f32::MAX, f32::MIN);
-    for c in o.corners() {
-        let s = u.dot(Vec2::new(c.x - q.x, c.z - q.z));
-        mn = mn.min(s);
-        mx = mx.max(s);
-    }
-    (mn < 0.0 && mx > 0.0) || mn.abs() < 0.5 * own_wid || mx.abs() < 0.5 * own_wid
+/// A rail as F-47175's selection compares them (its context +12 / +16, a behaviour's +188 / +192): a navsys lane, or a
+/// run-time rail (word +4 with 0x1800; each is one car's own, so it equals only itself: the owner's index).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelRail {
+    Lane(usize),
+    RunTime(u32),
 }
 
-/// Is it a "blocking" obstacle (F-70116): one that stands for good.
-fn blocking(o: &Other, fwd: Vec3) -> bool {
-    if o.vel.length_squared() > 4.99612 {
+/// The player's +876 (mcPlayer's set-up F-96799): the sum of the three signal words (1.5, 2.0,
+/// 6.5: the signal phase's lengths) times the image's 4.0, 40 s.
+pub const IDLE_BLOCKS: f32 = (6.5 + 2.0 + 1.5) * 4.0;
+
+/// What F-47175's selection, F-70116 and F-87404 read of an ambient obstacle's car (+16): its speed +412, its behaviour
+/// +452 (None: none) with the rails +188 / +192, its type's bytes +111 / +112 (cab, trailer), physics active (F-17857).
+#[derive(Clone, Copy, Debug)]
+pub struct SelCar {
+    pub speed: f32,
+    pub beh: Option<(Option<SelRail>, Option<SelRail>)>,
+    pub cab_or_trailer: bool,
+    pub active: bool,
+}
+
+/// What F-47175's selection loop (with F-70116 and F-87404) reads of the world.
+pub trait SelectWorld {
+    /// an obstacle's matrix (slot 1): rows 0, 2 and 3, x / y / z
+    fn rows(&self, o: usize) -> ([f32; 3], [f32; 3], [f32; 3]);
+    /// slot 2: its velocity
+    fn vel(&self, o: usize) -> [f32; 3];
+    /// slot 3 (F-46284): its bound's extent along x and along z
+    fn size(&self, o: usize) -> (f32, f32);
+    /// its kind byte +6 (0 the player, 1 racers, 2 ambient cars, 9 an object with a driver's car at +312)
+    fn kind(&self, o: usize) -> u8;
+    /// a kind 2 obstacle's car (+16)
+    fn ambient(&self, o: usize) -> Option<SelCar>;
+    /// a driver's car (kind 0: the obstacle itself; kind 9: its +312): its lane +640 with F-31543's freeway answer,
+    /// its standing time +872 and the limit +876
+    fn driver(&self, o: usize) -> Option<(Option<bool>, f32, f32)>;
+    /// a rail's slot 14 (a lane's F-24415) at an obstacle's place (slot 1 +48): the nearest point and its phase
+    fn nearest(&self, rail: SelRail, o: usize) -> ([f32; 3], f32);
+    /// a rail's slot 12 (a lane's first control point)
+    fn start(&self, rail: SelRail) -> [f32; 3];
+}
+
+/// F-87404 (`o` the obstacle, `point` a rail's nearest point to it, `asker`): is the obstacle clear of that point? Its
+/// corners (rows 0 and 2 times half its extents, y = 0: Z + X, Z - X, -Z + X, -Z - X) less (point - its place, y = 0),
+/// each along the unit vector from its place to the point (y = 0, the vector unit's normalisation): the running least
+/// and greatest of those; not clear (in the way) as soon as they straddle 0 or either is within half the asker's x
+/// extent of it.
+pub fn clear_of<W: SelectWorld>(w: &W, o: usize, point: [f32; 3], asker: usize) -> bool {
+    use crate::physics::exact::fma;
+    use crate::tcp_rail::{vadd3, vdiff, vmul3, vnorm};
+    let half = f32::from_bits(0x3F00_0000);
+    let (e0, e1) = w.size(o);
+    let (hx, hz) = (e0 * half, e1 * half);
+    let (r0, r2, r3) = w.rows(o);
+    let flat = |v: Vec3| Vec3::new(v.x, 0.0, v.z);
+    let z = flat(vmul3(Vec3::from(r2), hz));
+    let x = flat(vmul3(Vec3::from(r0), hx));
+    let nz = vdiff(Vec3::ZERO, z);
+    let corners = [vadd3(z, x), vdiff(z, x), vadd3(nz, x), vdiff(nz, x)];
+    let p = Vec3::from(point);
+    let q = flat(vdiff(p, Vec3::from(r3)));
+    let u = vnorm(q);
+    let hw = w.size(asker).0 * half;
+    let (mut mn, mut mx) = (f32::MAX, f32::MIN);
+    for c in corners {
+        let c = vdiff(c, q);
+        let s = fma(c.y, u.y, fma(c.z, u.z, u.x * c.x));
+        // (two `fsel`: a NaN difference takes s for the least, keeps the greatest)
+        mn = if s - mn >= 0.0 { mn } else { s };
+        mx = if s - mx >= 0.0 { s } else { mx };
+        if (mn < 0.0 && mx > 0.0) || mn.abs() < hw || mx.abs() < hw {
+            return false;
+        }
+    }
+    true
+}
+
+/// F-70116 (`o`, `asker`): is the obstacle a blocking one? Not when |velocity|^2 (z^2 + (x^2 + y^2), fused) > the
+/// image's 4.9961185. A driver's car (kind 0, kind 9's +312): its back axis within 70 degrees of the asker's (flat
+/// dot, fused, < 0.34202015), or its lane +640 a freeway lane, or standing longer than +876 (+872 > +876). An ambient
+/// car (kind 2, its +16): without a current rail (no behaviour or none at +188): standing (+412 == 0) and not physics
+/// active, or slower than 0.44704 (1 mph) and a cab or trailer; then only on a run-time rail (0x1800), standing, not
+/// active and its back axis against the asker's (dot < 0). Other kinds: no.
+pub fn blocking_of<W: SelectWorld>(w: &W, o: usize, asker: usize) -> bool {
+    use crate::physics::exact::fma;
+    let v = w.vel(o);
+    if fma(v[2], v[2], fma(v[0], v[0], v[1] * v[1])) > f32::from_bits(0x409F_E034) {
         return false;
     }
-    let speed = o.vel.length();
-    if !o.ambient {
-        // (the player and other drivers: turned more than 70 degrees off our heading; the
-        // vehicle-state test +640 / +872 / +876 is not decoded)
-        return o.fwd.dot(fwd) < 0.34202;
-    }
-    // (a car on its lane: never; on a rail off the lanes: standing and facing us)
-    match o.on {
-        Some(_) => false,
-        None if o.railed => speed == 0.0 && !o.active && o.fwd.dot(fwd) < 0.0,
-        None if o.active => speed < MPH && !o.cab_or_trailer,
-        None => speed == 0.0,
+    match w.kind(o) {
+        0 | 9 => {
+            let Some((lane, idle, limit)) = w.driver(o) else { return false };
+            let (_, ro, _) = w.rows(o);
+            let (_, ra, _) = w.rows(asker);
+            if fma(ro[2], ra[2], ro[0] * ra[0]) < f32::from_bits(0x3EAF_1D44) {
+                return true;
+            }
+            if lane == Some(true) {
+                return true;
+            }
+            idle > limit
+        }
+        2 => {
+            let Some(c) = w.ambient(o) else { return false };
+            let rail = c.beh.and_then(|b| b.0);
+            if rail.is_none() {
+                if c.speed == 0.0 && !c.active {
+                    return true;
+                }
+                if c.speed < f32::from_bits(0x3EE4_E26D) && c.cab_or_trailer {
+                    return true;
+                }
+            }
+            if !matches!(rail, Some(SelRail::RunTime(_))) || c.speed != 0.0 || c.active {
+                return false;
+            }
+            let (_, ra, _) = w.rows(asker);
+            let (_, ro, _) = w.rows(o);
+            fma(ra[0], ro[0], fma(ra[2], ro[2], ra[1] * ro[1])) < 0.0
+        }
+        _ => false,
     }
 }
 
-/// The nearest point of a rail (its segments) to `p`, unless it lies at the rail's start or
-/// end: (point, metres along).
-fn on_rail(segs: &[(Vec3, Vec3)], p: Vec3, open_start: bool) -> Option<(Vec3, f32)> {
-    let (mut best, mut at, mut s0) = (f32::MAX, None, 0.0);
-    let n = segs.len();
-    for (i, &(a, b)) in segs.iter().enumerate() {
+/// F-47175's take of a candidate that is ahead and nearer (the loop's tests after the distance): an ambient car riding
+/// a lane (F-96472) whose +188 is the asker's current or next rail - or whose +192 is the next rail, while it moves and
+/// the asker's place is within 75 m (flat, fused, < 5625) of that rail's start - is taken; else with no current rail
+/// it is taken; else the current rail's nearest point when its phase is in (0, 1), else the next rail's when in (0, 1)
+/// and not below `b_start` (context +32, the next rail's start phase +196), is tested with F-87404 (taken unless
+/// clear); otherwise not taken.
+fn takes<W: SelectWorld>(w: &W, o: usize, asker: usize, a: Option<SelRail>, b: Option<SelRail>, b_start: f32) -> bool {
+    use crate::physics::exact::fma;
+    if w.kind(o) == 2 {
+        if let Some(c) = w.ambient(o) {
+            if let Some((Some(r188 @ SelRail::Lane(_)), r192)) = c.beh {
+                if Some(r188) == a || Some(r188) == b {
+                    return true;
+                }
+                if r192.is_some() && r192 == b && c.speed != 0.0 {
+                    let (_, _, pa) = w.rows(asker);
+                    let s = w.start(r192.unwrap());
+                    let (dz, dx) = (s[2] - pa[2], s[0] - pa[0]);
+                    if fma(dx, dx, dz * dz) < 5625.0 {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    let Some(a) = a else { return true };
+    let (pt, t) = w.nearest(a, o);
+    if t > 0.0 && t < 1.0 {
+        return !clear_of(w, o, pt, asker);
+    }
+    let Some(b) = b else { return false };
+    let (pt, t) = w.nearest(b, o);
+    if !(t > 0.0 && t < 1.0 && !(t < b_start)) {
+        return false;
+    }
+    !clear_of(w, o, pt, asker)
+}
+
+/// F-47175's selection loop over the gather's candidates in their order: d = place - the asker's (vector, flushed),
+/// f = -(d . the asker's back axis) (x last, fused); behind (f < 0) skipped; nearer than the nearest so far (from
+/// FLT_MAX; `bge` skips, so a NaN is never nearer) and / or nearer than the blocking so far and blocking (F-70116); either:
+/// taken by `takes` -> the result's word(s) and distance(s). Returns (nearest, blocking).
+pub fn select_obstacles<W: SelectWorld>(w: &W, asker: usize, cands: &[usize], a: Option<SelRail>, b: Option<SelRail>, b_start: f32) -> (Option<usize>, Option<usize>) {
+    use crate::physics::exact::fma;
+    let (mut near_d, mut block_d) = (f32::MAX, f32::MAX);
+    let mut out = (None, None);
+    for &o in cands {
+        let (_, ra, pa) = w.rows(asker);
+        let (_, _, po) = w.rows(o);
+        let d = crate::tcp_rail::vdiff(Vec3::from(po), Vec3::from(pa));
+        let f = -fma(d.x, ra[0], fma(ra[1], d.y, ra[2] * d.z));
+        if f < 0.0 {
+            continue;
+        }
+        let near = f < near_d;
+        let block = f < block_d && blocking_of(w, o, asker);
+        if !near && !block {
+            continue;
+        }
+        if !takes(w, o, asker, a, b, b_start) {
+            continue;
+        }
+        if near {
+            out.0 = Some(o);
+            near_d = f;
+        }
+        if block {
+            out.1 = Some(o);
+            block_d = f;
+        }
+    }
+    out
+}
+
+/// The nearest point of a run-time rail given as segments (the port's stand-in for its slot 14, F-36154 not ported):
+/// (point, metres along / the length).
+fn seg_nearest(segs: &[(Vec3, Vec3)], p: Vec3) -> (Vec3, f32) {
+    let (mut best, mut at, mut s0) = (f32::MAX, (p, 0.0), 0.0);
+    for &(a, b) in segs {
         let d = b - a;
         let l2 = d.length_squared().max(1e-6);
         let t = ((p - a).dot(d) / l2).clamp(0.0, 1.0);
@@ -1632,12 +1795,11 @@ fn on_rail(segs: &[(Vec3, Vec3)], p: Vec3, open_start: bool) -> Option<(Vec3, f3
         let dd = q.distance_squared(p);
         if dd < best {
             best = dd;
-            let inside = !(i + 1 == n && t >= 1.0) && (open_start || !(i == 0 && t <= 0.0));
-            at = inside.then_some((q, s0 + t * l2.sqrt()));
+            at = (q, s0 + t * l2.sqrt());
         }
         s0 += l2.sqrt();
     }
-    at
+    (at.0, if s0 > 0.0 { at.1 / s0 } else { 0.0 })
 }
 
 /// The car ahead (F-47175): the nearest obstacle and the nearest "blocking" one.
@@ -1649,63 +1811,98 @@ struct Ahead {
     player_across: bool,
 }
 
-/// Looks for the car ahead along `rails` (this rail and the next as segments), `lanes` the
-/// lanes those rails are (cars riding them count without a test), among the gather's candidates `cands` in their
-/// order (`gather_obstacles`; the selection after it is the port's, F-47175's loop not ported).
+/// The world of F-47175's selection for a rider: the frame's cars (`Other`), the lanes' curves, the asker's own run-time
+/// rail as segments (states 6 - 9).
+struct EnvSelect<'e, 'a> {
+    env: &'e Env<'a>,
+    me: usize,
+    me_rows: ([f32; 3], [f32; 3], [f32; 3]),
+    me_size: (f32, f32),
+    me_segs: &'e [(Vec3, Vec3)],
+}
+
+impl SelectWorld for EnvSelect<'_, '_> {
+    fn rows(&self, o: usize) -> ([f32; 3], [f32; 3], [f32; 3]) {
+        match self.env.others.get(o) {
+            Some(x) if o != self.me => (x.row0.to_array(), x.back.to_array(), x.pos.to_array()),
+            _ => self.me_rows,
+        }
+    }
+    fn vel(&self, o: usize) -> [f32; 3] {
+        self.env.others.get(o).map_or([0.0; 3], |x| x.vel.to_array())
+    }
+    fn size(&self, o: usize) -> (f32, f32) {
+        match self.env.others.get(o) {
+            Some(x) if o != self.me => (2.0 * x.half_wid, 2.0 * x.half_len),
+            _ => self.me_size,
+        }
+    }
+    fn kind(&self, o: usize) -> u8 {
+        self.env.others.get(o).map_or(2, |x| x.kind)
+    }
+    fn ambient(&self, o: usize) -> Option<SelCar> {
+        let x = self.env.others.get(o)?;
+        x.ambient.then_some(SelCar { speed: x.speed, beh: x.beh, cab_or_trailer: x.cab_or_trailer, active: x.active })
+    }
+    fn driver(&self, o: usize) -> Option<(Option<bool>, f32, f32)> {
+        let x = self.env.others.get(o)?;
+        x.player.then_some((x.lane640.map(|l| l.1), x.idle, IDLE_BLOCKS))
+    }
+    fn nearest(&self, rail: SelRail, o: usize) -> ([f32; 3], f32) {
+        let p = Vec3::from(self.rows(o).2);
+        match rail {
+            SelRail::Lane(l) => {
+                let (t, _, q) = crate::railroute::nearest(&self.env.nav.curves[l], p, 4, 10);
+                (q.to_array(), t)
+            }
+            SelRail::RunTime(_) => {
+                let (q, t) = seg_nearest(self.me_segs, p);
+                (q.to_array(), t)
+            }
+        }
+    }
+    fn start(&self, rail: SelRail) -> [f32; 3] {
+        match rail {
+            SelRail::Lane(l) => self.env.nav.curves[l].pts.first().copied().unwrap_or(Vec3::ZERO).to_array(),
+            SelRail::RunTime(_) => self.me_segs.first().map_or(Vec3::ZERO, |s| s.0).to_array(),
+        }
+    }
+}
+
+/// The car ahead among the gather's candidates `cands` in their order (F-47175's selection, `select_obstacles`), on the
+/// rails `a` (current; `segs` its segments when it is a run-time rail) and `b` (next, entered at its start: phase 0).
+/// The distance and the speed along our heading are the port's (F-10623 reads them).
 #[allow(clippy::too_many_arguments)]
-fn find_ahead(nav: &NavSys, me: usize, pos: Vec3, fwd: Vec3, own_wid: f32, rails: &[Vec<(Vec3, Vec3)>], lanes: (Option<usize>, Option<usize>), next_start: Option<Vec3>, others: &[Other], cands: &[usize]) -> Ahead {
-    let mut best: Option<(usize, f32)> = None;
-    let mut block: Option<(usize, f32)> = None;
+fn find_ahead(env: &Env, me: usize, me_rows: ([f32; 3], [f32; 3], [f32; 3]), me_size: (f32, f32), pos: Vec3, fwd: Vec3, segs: &[(Vec3, Vec3)], a: Option<SelRail>, b: Option<SelRail>, cands: &[usize]) -> Ahead {
+    let w = EnvSelect { env, me, me_rows, me_size, me_segs: segs };
+    let (near, block) = select_obstacles(&w, me, cands, a, b, 0.0);
+    let others = env.others;
     let mut player_across = false;
     for &j in cands {
         let Some(o) = others.get(j) else { continue };
-        if j == me {
+        if !o.player || j == me {
             continue;
         }
         let rel = o.pos - pos;
-        if rel.dot(fwd) < 0.0 || rel.y.abs() > 4.0 {
+        if rel.dot(fwd) < 0.0 || rel.y.abs() > 4.0 || takes(&w, j, me, a, b, 0.0) {
             continue;
         }
-        let d = rel.length();
-        if d <= 0.0 {
-            continue;
-        }
-        let direct = match o.on {
-            Some((ol, onext, _)) => {
-                // (a car merging into our next rail: while it moves - its speed +412 - and we
-                // are within 75 m of that rail's start)
-                Some(ol) == lanes.0 || (lanes.1.is_some() && Some(ol) == lanes.1) || (o.vel != Vec3::ZERO && onext.is_some() && onext == lanes.1 && next_start.is_some_and(|s| s.distance_squared(pos) < 5625.0))
-            }
-            _ => false,
-        };
-        let mine = direct || rails.iter().enumerate().any(|(k, segs)| on_rail(segs, o.pos, k > 0).is_some_and(|(q, _)| in_the_way(o, q, own_wid)));
-        if o.player && !mine {
-            // (the player's car across our lane or the next: MaxDecel x 3; the original's test
-            // is on the lanes the player is registered on - here within 3 m of our way)
-            let side = (rel - fwd * rel.dot(fwd)).length();
-            if side < 3.0 && o.fwd.dot(fwd).abs() < 0.7071 {
-                player_across = true;
-            }
-        }
-        if !mine {
-            continue;
-        }
-        if best.map_or(true, |b| d < b.1) {
-            best = Some((j, d));
-        }
-        if blocking(o, fwd) && block.map_or(true, |b| d < b.1) {
-            block = Some((j, d));
+        // (the player's car across our lane or the next: MaxDecel x 3; the original's test
+        // is on the lanes the player is registered on - here within 3 m of our way)
+        let side = (rel - fwd * rel.dot(fwd)).length();
+        if side < 3.0 && o.fwd.dot(fwd).abs() < 0.7071 {
+            player_across = true;
         }
     }
-    let Some((j, d)) = best else { return Ahead { j: usize::MAX, d: 0.0, vt: 0.0, blocking: block.map(|b| b.0), player_across } };
+    let Some(j) = near else { return Ahead { j: usize::MAX, d: 0.0, vt: 0.0, blocking: block, player_across } };
     let o = &others[j];
+    let d = (o.pos - pos).length();
     // its speed along our heading, but not for a car turning through a junction
     let vt = match o.on {
         Some((_, _, true)) => o.vel.length(),
         _ => o.vel.dot(fwd),
     };
-    let _ = nav;
-    Ahead { j, d, vt: vt.max(0.0), blocking: block.map(|b| b.0), player_across }
+    Ahead { j, d, vt: vt.max(0.0), blocking: block, player_across }
 }
 
 /// A rail as the obstacle gather sees it (F-47175's context +12 / +16 / +20): a navsys lane (rail word +4 without
@@ -1963,7 +2160,15 @@ fn search_ahead(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, rails
         Some((j, blocking)) if keep => Ahead { j, d: env.others[j].pos.distance(pos), vt: 0.0, blocking, player_across: false },
         _ => {
             let cands = gather_obstacles(&EnvGather { env, me, me_rows }, me, g[0], g[1], g[2]);
-            find_ahead(env.nav, me, pos, fwd, r.ty.width.max(1.6), rails, lanes, next_start, env.others, &cands)
+            // (the selection's rails: context +12 / +16 as the gather has them; a run-time rail is the car's own)
+            let sel = |x: Option<GatherRail>| x.map(|x| match x {
+                GatherRail::Lane(l) => SelRail::Lane(l),
+                GatherRail::RunTime => SelRail::RunTime(me as u32),
+            });
+            let rows3 = mine.map_or((fwd.cross(Vec3::Y).to_array(), me_rows.0, me_rows.1), |o| (o.row0.to_array(), me_rows.0, me_rows.1));
+            let size = mine.map_or((r.ty.width, r.ty.length), |o| (2.0 * o.half_wid, 2.0 * o.half_len));
+            let _ = (lanes, next_start);
+            find_ahead(env, me, rows3, size, pos, fwd, rails.first().map_or(&[][..], |s| s.as_slice()), sel(g[0]), sel(g[1]), &cands)
         }
     };
     r.kept = (ahead.j != usize::MAX).then_some((ahead.j, ahead.blocking));
@@ -2873,6 +3078,131 @@ mod drive_rule_tests {
         assert!(kept > 300 && cands > 5000 && full > 5, "{kept} {cands} {full}");
     }
 
+    /// A case's world for the selection (tools/traffic_select_reference.py's layout).
+    struct SelCase {
+        /// per object: kind, rows 0 / 2 / 3, velocity, size, has a car (+16 / +312), car, driver lane (0 none, 1, 2
+        /// freeway), standing time, limit
+        objs: Vec<(u8, [[f32; 3]; 3], [f32; 3], (f32, f32), bool, SelCar, u32, f32, f32)>,
+        /// per rail: run-time, start, per object (nearest point, phase)
+        rails: Vec<(bool, [f32; 3], Vec<([f32; 3], f32)>)>,
+    }
+
+    impl SelCase {
+        fn rail(&self, r: u32) -> Option<SelRail> {
+            (r != 0xFFFF_FFFF).then(|| if self.rails[r as usize].0 { SelRail::RunTime(r) } else { SelRail::Lane(r as usize) })
+        }
+        fn index(r: SelRail) -> usize {
+            match r {
+                SelRail::Lane(l) => l,
+                SelRail::RunTime(k) => k as usize,
+            }
+        }
+    }
+
+    impl SelectWorld for SelCase {
+        fn rows(&self, o: usize) -> ([f32; 3], [f32; 3], [f32; 3]) {
+            let r = self.objs[o].1;
+            (r[0], r[1], r[2])
+        }
+        fn vel(&self, o: usize) -> [f32; 3] {
+            self.objs[o].2
+        }
+        fn size(&self, o: usize) -> (f32, f32) {
+            self.objs[o].3
+        }
+        fn kind(&self, o: usize) -> u8 {
+            self.objs[o].0
+        }
+        fn ambient(&self, o: usize) -> Option<SelCar> {
+            let x = &self.objs[o];
+            (x.0 == 2 && x.4).then_some(x.5)
+        }
+        fn driver(&self, o: usize) -> Option<(Option<bool>, f32, f32)> {
+            let x = &self.objs[o];
+            (x.0 == 0 || (x.0 == 9 && x.4)).then(|| ((x.6 != 0).then_some(x.6 == 2), x.7, x.8))
+        }
+        fn nearest(&self, rail: SelRail, o: usize) -> ([f32; 3], f32) {
+            self.rails[Self::index(rail)].2[o]
+        }
+        fn start(&self, rail: SelRail) -> [f32; 3] {
+            self.rails[Self::index(rail)].1
+        }
+    }
+
+    /// The choice of the car ahead against the original's code run offline (tools/traffic_select_reference.py ->
+    /// testdata/traffic_select_ref.txt): F-47175 from its start with the case's candidates in the gather's list (the
+    /// result's two words: nearest and blocking), F-70116 and F-87404 called alone; every answer equal.
+    #[test]
+    fn select_matches_the_original() {
+        let (mut n, mut near, mut block, mut btrue, mut clear) = (0, 0, 0, 0, 0);
+        for line in include_str!("testdata/traffic_select_ref.txt").lines() {
+            let (input, want) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = input.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let mut k = 0;
+            let mut next = || {
+                k += 1;
+                w[k - 1]
+            };
+            let (mode, nobj, asker, nr, ra, rb, bs) = (next(), next() as usize, next() as usize, next() as usize, next(), next(), f32::from_bits(next()));
+            let (mut cands, mut o, mut pt) = (Vec::new(), 0, [0.0; 3]);
+            if mode == 0 {
+                let c = next();
+                cands = (0..c).map(|_| next() as usize).collect();
+            } else {
+                o = next() as usize;
+                if mode == 2 {
+                    pt = [f32::from_bits(next()), f32::from_bits(next()), f32::from_bits(next())];
+                }
+            }
+            let v3 = |f: &mut dyn FnMut() -> u32| [f32::from_bits(f()), f32::from_bits(f()), f32::from_bits(f())];
+            let mut objs = Vec::new();
+            let mut behs = Vec::new();
+            for _ in 0..nobj {
+                let kind = next() as u8;
+                let rows = [v3(&mut next), v3(&mut next), v3(&mut next)];
+                let vel = v3(&mut next);
+                let size = (f32::from_bits(next()), f32::from_bits(next()));
+                let (hascar, speed, active, cab, trl, beh, r188, r192, lane, idle, limit) =
+                    (next() != 0, f32::from_bits(next()), next() != 0, next() != 0, next() != 0, next() != 0, next(), next(), next(), f32::from_bits(next()), f32::from_bits(next()));
+                behs.push((beh, r188, r192));
+                objs.push((kind, rows, vel, size, hascar, SelCar { speed, beh: None, cab_or_trailer: cab || trl, active }, lane, idle, limit));
+            }
+            let mut rails = Vec::new();
+            for _ in 0..nr {
+                let rt = next() == 0x1800;
+                let s = v3(&mut next);
+                rails.push((rt, s, (0..nobj).map(|_| (v3(&mut next), f32::from_bits(next()))).collect::<Vec<_>>()));
+            }
+            let mut case = SelCase { objs, rails };
+            for (i, &(beh, r188, r192)) in behs.iter().enumerate() {
+                case.objs[i].5.beh = beh.then(|| (case.rail(r188), case.rail(r192)));
+            }
+            let ix = |x: Option<usize>| x.map_or("ffffffff".to_string(), |x| format!("{x:x}"));
+            let got = match mode {
+                0 => {
+                    let (a, b) = select_obstacles(&case, asker, &cands, case.rail(ra), case.rail(rb), bs);
+                    near += a.is_some() as usize;
+                    block += b.is_some() as usize;
+                    format!("{} {}", ix(a), ix(b))
+                }
+                1 => {
+                    let b = blocking_of(&case, o, asker);
+                    btrue += b as usize;
+                    format!("{:x}", b as u8)
+                }
+                _ => {
+                    let c = clear_of(&case, o, pt, asker);
+                    clear += c as usize;
+                    format!("{:x}", c as u8)
+                }
+            };
+            assert_eq!(got, want.trim(), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 5500);
+        assert!(near > 500 && block > 100 && btrue > 150 && clear > 800 && clear < 2400, "{near} {block} {btrue} {clear}");
+    }
+
     /// The trailer's cab check against the original's code run offline (tools/trailer_cab_reference.py ->
     /// testdata/trailer_cab_ref.txt): every type byte / id / lookup combination, the answer, the id asked and the removal equal.
     #[test]
@@ -3475,6 +3805,11 @@ impl Vehicles {
     /// Move the traffic cars: along their lanes, on their rails, back from physics; the
     /// trailers behind their cabs.
     pub(super) fn ride_traffic(&mut self, nav: &NavSys, col: &WorldCollider, dt: f32) {
+        // the player's standing time (mcPlayer +872, F-16834: speed under 2.2352 m/s adds the frame's time, else 0;
+        // the port takes the car's |velocity| at the traffic's step)
+        if let Some(p) = self.cars.iter().find(|c| c.is_player) {
+            self.player_idle = if p.state.vel.length() < f32::from_bits(0x400F_0D84) { self.player_idle + dt } else { 0.0 };
+        }
         // the cruising ghosts: the request pool's step and their rides (not in `cars`: not drawn, no physics)
         self.ghost_frame(nav, col, dt);
         if !self.cars.iter().any(|c| c.rail.is_some()) {
@@ -3485,7 +3820,8 @@ impl Vehicles {
         let others: Vec<Other> = self
             .cars
             .iter()
-            .map(|c| {
+            .enumerate()
+            .map(|(k, c)| {
                 let (hl, hw) = half_size(c);
                 let r = c.rail.as_ref();
                 let on = r.filter(|r| r.state == 1).map(|r| {
@@ -3497,11 +3833,15 @@ impl Vehicles {
                     fwd: c.state.forward(),
                     right: c.state.right(),
                     back: glam::Mat3::from_quat(c.state.rot).z_axis,
+                    row0: glam::Mat3::from_quat(c.state.rot).x_axis,
                     vel: c.state.vel,
                     half_len: hl,
                     half_wid: hw,
+                    speed: r.map_or(0.0, |r| r.v),
+                    beh: self.sel_behaviour(nav, k, r),
+                    lane640: if c.is_player { self.driver_lanes.get(&c.uid).and_then(|d| d.best).map(|(l, _)| (l, self.lane_freeway(nav, l))) } else { None },
+                    idle: if c.is_player { self.player_idle } else { 0.0 },
                     on,
-                    railed: r.is_some_and(|r| matches!(r.state, 6..=9)),
                     player: c.is_player,
                     ambient: r.is_some() || c.parked.is_some(),
                     active: r.is_some_and(|r| r.state == 4) || (r.is_none() && c.parked.is_none()),
@@ -5368,16 +5708,6 @@ mod tests {
             n += 1;
         }
         assert_eq!((n, built, *calls.borrow(), tiers), (4000, 1394, [4323, 2625, 807, 589], [3194, 806]));
-    }
-
-    #[test]
-    fn corners_in_the_way() {
-        let o = |x: f32| Other { pos: Vec3::new(x, 0.0, -10.0), fwd: Vec3::NEG_Z, right: Vec3::X, back: Vec3::Z, vel: Vec3::ZERO, half_len: 2.2, half_wid: 0.9, on: None, railed: false, player: false, ambient: true, active: false, cab_or_trailer: false, key: 0, kind: 2 };
-        let q = Vec3::new(0.0, 0.0, -10.0);
-        // on the line, beside it within half our width, clear of it
-        assert!(in_the_way(&o(0.0), q, 1.8));
-        assert!(in_the_way(&o(1.5), q, 1.8));
-        assert!(!in_the_way(&o(2.5), q, 1.8));
     }
 }
 
@@ -9503,11 +9833,30 @@ impl Vehicles {
         std::mem::take(&mut self.ghosts.live.events)
     }
 
+    /// F-47175's view of a car's behaviour (+452: a trailer and a parked car have none): its rails +188 / +192 - a
+    /// lane rider its lane and next lane; a car on a run-time rail (states 6 - 9) that rail (its own: its index) and no
+    /// next (+192 there is not traced); otherwise none.
+    fn sel_behaviour(&self, nav: &NavSys, k: usize, r: Option<&Rider>) -> Option<(Option<SelRail>, Option<SelRail>)> {
+        let r = r.filter(|r| !r.ty.trailer)?;
+        Some(match r.state {
+            1 => (Some(SelRail::Lane(nav.links[r.link].lane)), r.next.map(|n| SelRail::Lane(nav.links[n].lane))),
+            6..=9 => (Some(SelRail::RunTime(k as u32)), None),
+            _ => (None, None),
+        })
+    }
+
+    /// F-31543 on a lane: its road (F-86691) a freeway (speed >= FREEWAY_SPEED).
+    fn lane_freeway(&self, nav: &NavSys, lane: usize) -> bool {
+        let (Some(sp), Some(&k)) = (self.spawner.as_ref(), lanes(nav).links.get(lane).and_then(|l| l.first())) else { return false };
+        sp.road_of(nav, k).is_some_and(|x| sp.roads[x as usize].speed >= FREEWAY_SPEED)
+    }
+
     /// The other cars as a rider looks at them (as `ride_traffic` makes them).
     fn ghost_others(&self, nav: &NavSys) -> Vec<Other> {
         self.cars
             .iter()
-            .map(|c| {
+            .enumerate()
+            .map(|(k, c)| {
                 let (hl, hw) = half_size(c);
                 let r = c.rail.as_ref();
                 let on = r.filter(|r| r.state == 1).map(|r| {
@@ -9519,11 +9868,15 @@ impl Vehicles {
                     fwd: c.state.forward(),
                     right: c.state.right(),
                     back: glam::Mat3::from_quat(c.state.rot).z_axis,
+                    row0: glam::Mat3::from_quat(c.state.rot).x_axis,
                     vel: c.state.vel,
                     half_len: hl,
                     half_wid: hw,
+                    speed: r.map_or(0.0, |r| r.v),
+                    beh: self.sel_behaviour(nav, k, r),
+                    lane640: if c.is_player { self.driver_lanes.get(&c.uid).and_then(|d| d.best).map(|(l, _)| (l, self.lane_freeway(nav, l))) } else { None },
+                    idle: if c.is_player { self.player_idle } else { 0.0 },
                     on,
-                    railed: r.is_some_and(|r| matches!(r.state, 6..=9)),
                     player: c.is_player,
                     ambient: r.is_some() || c.parked.is_some(),
                     active: r.is_some_and(|r| r.state == 4) || (r.is_none() && c.parked.is_none()),
