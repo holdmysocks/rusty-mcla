@@ -431,6 +431,12 @@ struct App {
     cine_events: (String, Vec<(String, cinecar::CarEvent)>),
     /// tips waiting for a quiet moment: speech scenario, title, text
     tips: std::collections::VecDeque<(String, String, String)>,
+    /// the tip calls' scripts waiting at the cap (Sidekick_GetTypeCount(3) > 4): next wake (`tip_clock`), the call
+    tip_waiters: Vec<(f32, (String, String, String))>,
+    /// the waiters' unwarped clock, seconds
+    tip_clock: f32,
+    /// the call on the phone is one of `tips` (a type 3 call, counted by the cap until it is done)
+    tip_shown: bool,
     /// a mission's reminder (caller, text) waiting for its story scene to end
     pending_call: Option<(String, String)>,
     /// a mission whose READY_TO_START_ON_ENTER script plays its story scene first: it enters
@@ -1135,6 +1141,9 @@ impl App {
             ticket_run: None,
             cine_events: (String::new(), Vec::new()),
             tips: Default::default(),
+            tip_waiters: Vec::new(),
+            tip_clock: 0.0,
+            tip_shown: false,
             pending_call: None,
             pending_log: None,
             whoosh: Default::default(),
@@ -5851,7 +5860,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     career::News::Tip { key, title, text } => {
                         log::info!("career: tip {} ({} characters)", key, text.len());
-                        self.tips.push_back((key, title, text));
+                        // (the tip include: Sidekick_GetTypeCount(3) > 4 - the type's calls waiting or on screen, F-64477 -> F-93219
+                        // over the call list - sleeps WAITUNWARPED(100) and checks again)
+                        if self.tips.len() + self.tip_shown as usize > 4 {
+                            self.tip_waiters.push((self.tip_clock + 0.1, (key, title, text)));
+                        } else {
+                            self.tips.push_back((key, title, text));
+                        }
                     }
                     // (step 21b: a story scene played by a CORE at a completion / meeting, or by
                     // an event script - no call, no line)
@@ -5986,11 +6001,19 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.phone_hold |= std::mem::take(&mut self.phone_redelay);
                 }
             }
+            // (the waiters at the cap: each wakes every 100 ms from its own first check, so when a call is done the first
+            // to wake appends, not the first that came - scripts waking in the same frame in their start order)
+            if self.game.tip.is_none() {
+                self.tip_shown = false;
+            }
+            self.tip_clock += dt;
+            tip_waiters_wake(&mut self.tip_waiters, &mut self.tips, self.tip_shown, self.tip_clock);
             // the mechanic rings when nothing else is going on
             if career_up && !phone_held && self.news.is_empty() && self.game.tip.is_none() && self.news_timer <= -4.0 && matches!(self.game.mode, Mode::FreeRoam) {
                 if let Some((key, title, text)) = self.tips.pop_front() {
                     let secs = (6.0 + text.len() as f32 * 0.055).min(22.0);
                     self.game.tip = Some((title, text, secs));
+                    self.tip_shown = true;
                     self.game.phone_prompt.clear();
                     // (the call is the phone's: UI_CELLPHONE_RING when it comes up - sound.rs)
                     if let Some(a) = self.audio.as_mut().filter(|a| !a.has_objects()) {
@@ -15404,6 +15427,52 @@ fn pick_two(cand: &[(i32, f32, Vec3, Vec3, f32)]) -> (i32, f32, i32, f32) {
 fn quick_fix_yaw(rot: glam::Quat) -> f32 {
     let z = rot * Vec3::Z;
     z.x.atan2(z.z)
+}
+
+type TipCall = (String, String, String);
+
+/// The tip include's wait at the cap: every waiter whose 100 ms sleep has ended checks Sidekick_GetTypeCount(3) > 4
+/// (`F-64477`: the calls waiting in `tips` and the one on screen, `shown`) in the order they wake, the same frame's in
+/// their start order; under the cap it appends its call, else it sleeps another 100 ms.
+fn tip_waiters_wake(waiters: &mut Vec<(f32, TipCall)>, tips: &mut std::collections::VecDeque<TipCall>, shown: bool, clock: f32) {
+    waiters.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut i = 0;
+    while i < waiters.len() {
+        if waiters[i].0 > clock {
+            i += 1;
+        } else if tips.len() + shown as usize > 4 {
+            while waiters[i].0 <= clock {
+                waiters[i].0 += 0.1;
+            }
+            i += 1;
+        } else {
+            tips.push_back(waiters.remove(i).1);
+        }
+    }
+}
+
+#[test]
+fn tip_waiters_first_to_wake_goes_first() {
+    let call = |k: &str| (k.to_string(), String::new(), String::new());
+    // 4 calls waiting and one on screen; two scripts at the gate: "first" came at 0.03 (wakes 0.13, 0.23, 0.33 ...),
+    // "second" at 0.08 (wakes 0.18, 0.28 ...)
+    let run = |end: f32| {
+        let mut tips: std::collections::VecDeque<TipCall> = (0..4).map(|i| call(&format!("q{i}"))).collect();
+        let mut w = vec![(0.13, call("first")), (0.18, call("second"))];
+        tip_waiters_wake(&mut w, &mut tips, true, end - 0.01);
+        assert_eq!((w.len(), tips.len()), (2, 4));
+        // the call on screen ends: the next to wake takes the one place, the other sleeps on
+        let mut t = end;
+        while tips.len() == 4 {
+            tip_waiters_wake(&mut w, &mut tips, false, t);
+            t += 0.01;
+        }
+        tip_waiters_wake(&mut w, &mut tips, false, t + 0.3);
+        assert_eq!((tips.len(), w.len()), (5, 1));
+        tips.back().unwrap().0.clone()
+    };
+    assert_eq!(run(0.20), "first");
+    assert_eq!(run(0.24), "second");
 }
 
 /// The slot keeping of F-99357 / F-56246: the best goes to the first slot and the second to the other,
