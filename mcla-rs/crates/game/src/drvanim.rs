@@ -538,6 +538,288 @@ impl Seq {
     }
 }
 
+// ---- the composer's per-DOF frame operations with a filter's weights (crFrame::Blend / AddSubtract through the
+// dispatcher F-63377 when the node has a filter). `dst` and `src` are frames of one layout (skin.rs `FrameDof`), `wts` the
+// filter's weight per DOF; DOFs whose weight is +-0 are skipped, as are sources without a value. Scalar multiply-adds are
+// fused (`fma`), the vector unit's steps flush denormals and are not fused.
+
+use crate::physics::exact::fma;
+use crate::skin::{FrameDof, DOF_FLOAT, DOF_NO_VALUE, DOF_QUATERNION, DOF_VECTOR3};
+
+const W_LO: f32 = f32::from_bits(0x3A83_126F); // 0.001
+const W_HI: f32 = f32::from_bits(0x3F7F_BE77); // 0.999
+/// the add's vector threshold on w squared (image constant, 1e-6)
+const W2_ADD: f32 = f32::from_bits(0x3586_37BE);
+/// the axis normalisation's epsilon (1e-5)
+const AXIS_EPS: f32 = f32::from_bits(0x3727_C5AC);
+
+#[inline]
+fn flush(x: f32) -> f32 {
+    if x.is_subnormal() { 0.0f32.copysign(x) } else { x }
+}
+#[inline]
+fn vmul(a: f32, b: f32) -> f32 {
+    flush(flush(a) * flush(b))
+}
+#[inline]
+fn vadd(a: f32, b: f32) -> f32 {
+    flush(flush(a) + flush(b))
+}
+#[inline]
+fn vsub(a: f32, b: f32) -> f32 {
+    flush(flush(a) - flush(b))
+}
+
+/// The estimate 1 / sqrt in single, two Newton steps in double, 0 when the squared length is not above 0 (fsel).
+fn rsqrt2(n2: f32) -> f32 {
+    if -(n2 as f64) >= 0.0 {
+        return 0.0;
+    }
+    let n = n2 as f64;
+    let mut y = (1.0 / n.sqrt()) as f32 as f64;
+    for _ in 0..2 {
+        let e = -(y * y).mul_add(n, -1.0);
+        y = e.mul_add(y * 0.5, y);
+    }
+    y as f32
+}
+
+/// The filtered blend F-18341: per DOF wi = weight x w; a Quaternion without a value takes the source's, else (z y x w dot
+/// not >= 0: the destination negated) d (1 - wi) + s wi normalised; a Vector3 is kept for wi <= 0.001, takes the source's
+/// from 0.999 or without a value, else the vector lerp; a Float lerps below 0.999 (fused), else takes the source's when wi >
+/// 0.001; other types take the source's word unless wi < 0.5. A written Vector3 / Float / other holds a value afterwards.
+pub fn frame_blend_filtered(dst: &mut [FrameDof], src: &[FrameDof], wts: &[f32], w: f32) {
+    for ((d, s), &k) in dst.iter_mut().zip(src.iter()).zip(wts.iter()) {
+        if s.flags & DOF_NO_VALUE != 0 || k.to_bits() & 0x7FFF_FFFF == 0 {
+            continue;
+        }
+        let wi = k * w;
+        let empty = d.flags & DOF_NO_VALUE != 0;
+        match d.flags & 0xF {
+            DOF_QUATERNION => {
+                if empty {
+                    d.v = s.v;
+                    d.flags &= !DOF_NO_VALUE;
+                    continue;
+                }
+                let (a, b) = (d.v, s.v);
+                let dot = fma(a[3], b[3], fma(a[0], b[0], fma(b[1], a[1], b[2] * a[2])));
+                if !(dot >= 0.0) {
+                    d.v = d.v.map(|x| -x);
+                }
+                let a = d.v;
+                let c = 1.0 - wi;
+                let q = [fma(a[0], c, wi * b[0]), fma(a[1], c, b[1] * wi), fma(b[2], wi, a[2] * c), fma(a[3], c, wi * b[3])];
+                let n2 = fma(q[3], q[3], fma(q[2], q[2], fma(q[0], q[0], q[1] * q[1])));
+                let r = rsqrt2(n2);
+                d.v = q.map(|x| x * r);
+            }
+            DOF_VECTOR3 => {
+                if wi <= W_LO {
+                    continue;
+                }
+                d.v = if !(wi >= W_HI) && !empty { std::array::from_fn(|i| vadd(vmul(vsub(s.v[i], d.v[i]), wi), d.v[i])) } else { s.v };
+                d.flags &= !DOF_NO_VALUE;
+            }
+            DOF_FLOAT => {
+                if !(wi >= W_HI) && !empty {
+                    d.v[0] = fma(s.v[0] - d.v[0], wi, d.v[0]);
+                } else if wi > W_LO {
+                    d.v[0] = s.v[0];
+                } else {
+                    continue;
+                }
+                d.flags &= !DOF_NO_VALUE;
+            }
+            _ => {
+                if wi < 0.5 {
+                    continue;
+                }
+                d.v[0] = s.v[0];
+                d.flags &= !DOF_NO_VALUE;
+            }
+        }
+    }
+}
+
+/// A quaternion scaled along its rotation (F-90945): angle = `quat_angle(w)`, the axis (x, y, z)
+/// normalised (F-41334: above eps 1e-5, else 0); when |axis|^2 > 0.999 and angle^2 > 0 it becomes the rotation of angle x
+/// k about the axis (F-25905: w = cos, xyz = axis sin of the half angle), else it is kept.
+fn quat_scaled(q: [f32; 4], k: f32) -> [f32; 4] {
+    use crate::physics::exact::{guest_cos, guest_sin};
+    let ang = crate::skin::quat_angle(q[3]);
+    let mut ax = [q[0], q[1], q[2]];
+    let n2 = fma(ax[2], ax[2], fma(ax[0], ax[0], ax[1] * ax[1]));
+    if n2 > AXIS_EPS {
+        let r = rsqrt2(n2);
+        ax = ax.map(|x| vmul(x, r));
+    } else {
+        ax = [0.0; 3];
+    }
+    let l2 = fma(ax[1], ax[1], fma(ax[0], ax[0], ax[2] * ax[2]));
+    if !(l2 > W_HI) || !(ang * ang > 0.0) {
+        return q;
+    }
+    let h = ang * k * 0.5;
+    let c = guest_cos(h as f64) as f32;
+    let s = guest_sin(h as f64) as f32;
+    [ax[0] * s, ax[1] * s, ax[2] * s, c]
+}
+
+/// `fnmsubs`: -(a c - b), fused, the negation after the rounding (an exact zero comes out -0).
+#[inline]
+fn fnms(a: f32, c: f32, b: f32) -> f32 {
+    -fma(a, c, -b)
+}
+
+/// The filtered add-subtract F-37398: per DOF wi = weight x w, nothing where the destination has no value. A Quaternion
+/// takes the source scaled along its rotation by |wi| (`quat_scaled`), then the destination times it (one product for wi
+/// > 0, another for wi < 0, nothing for 0); a Vector3 adds s wi when wi^2 > 1e-6; a Float adds s wi (fused); an integer
+/// adds the source's when |wi - 1| <= 0.001 (|wi| > 0.001).
+pub fn frame_add_filtered(dst: &mut [FrameDof], src: &[FrameDof], wts: &[f32], w: f32) {
+    for ((d, s), &k) in dst.iter_mut().zip(src.iter()).zip(wts.iter()) {
+        if s.flags & DOF_NO_VALUE != 0 || k.to_bits() & 0x7FFF_FFFF == 0 {
+            continue;
+        }
+        let wi = k * w;
+        let empty = d.flags & DOF_NO_VALUE != 0;
+        match d.flags & 0xF {
+            DOF_QUATERNION => {
+                if empty {
+                    continue;
+                }
+                let [dx, dy, dz, dw] = d.v;
+                if wi < 0.0 {
+                    let [sx, sy, sz, sw] = quat_scaled(s.v, -wi);
+                    let f2 = fma(dx, sw, -(dw * sx));
+                    let f1 = fma(dx, sx, dy * sy);
+                    let f8 = fma(dy, sw, -(dw * sy));
+                    let f7 = fma(dz, sw, -(dw * sz));
+                    let f5 = fnms(dy, sz, f2);
+                    let f3 = fma(dw, sw, f1);
+                    let f2 = fnms(dz, sx, f8);
+                    let f1 = fnms(dx, sy, f7);
+                    d.v = [fma(dz, sy, f5), fma(dx, sz, f2), fma(dy, sx, f1), fma(dz, sz, f3)];
+                } else if wi > 0.0 {
+                    let [sx, sy, sz, sw] = quat_scaled(s.v, wi);
+                    let f2 = fma(dy, sw, dw * sy);
+                    let f1 = fma(dw, sw, -(dx * sx));
+                    let f6 = fma(dy, sx, dz * sw);
+                    let f8 = fma(dw, sx, dz * sy);
+                    let f5 = fma(dx, sz, f2);
+                    let f3 = fnms(dy, sy, f1);
+                    let f1 = fma(dw, sz, f6);
+                    let f2 = fma(dx, sw, f8);
+                    d.v = [fnms(dy, sz, f2), fnms(dz, sx, f5), fnms(dx, sy, f1), fnms(dz, sz, f3)];
+                }
+            }
+            DOF_VECTOR3 => {
+                if wi * wi > W2_ADD && !empty {
+                    d.v = std::array::from_fn(|i| vadd(vmul(s.v[i], wi), d.v[i]));
+                }
+            }
+            DOF_FLOAT => {
+                if !empty {
+                    d.v[0] = fma(s.v[0], wi, d.v[0]);
+                }
+            }
+            _ => {
+                if wi.abs() > W_LO && !((wi - 1.0).abs() > W_LO) {
+                    d.v[0] = f32::from_bits(d.v[0].to_bits().wrapping_add(s.v[0].to_bits()));
+                }
+            }
+        }
+    }
+}
+
+// ---- the composer pass: the motion tree to one frame (crmtComposerOptimized, the tree's +12). The tree is walked post-order
+// into an op list (1 animation, 12 animation without a clip, 13 identity, 4 blend, 6 add-subtract), the optimizer drops
+// what a blend or add cannot show, then the ops run on a stack of frames.
+
+/// What the composer reads of the character. A frame is the skeleton's DOFs in a fixed layout (`len`).
+pub trait Poser {
+    fn len(&self) -> usize;
+    /// The clip's frame at time `t` into `out` (a fresh frame: DOFs the clip has no track for hold no value).
+    fn sample(&self, clip: ClipId, t: f32, out: &mut [FrameDof]);
+    /// The identity node's frame: the skeleton's rest pose.
+    fn rest(&self, out: &mut [FrameDof]);
+    /// A filter's weight per DOF (crFrameFilterBoneBasic: the bone's weight, 1 inside the set and 0 outside; 1 for DOFs
+    /// that are not a bone's).
+    fn weights(&self, f: Filter) -> &[f32];
+}
+
+impl Seq {
+    /// Op 12: an animation node without a clip (its frame holds no value).
+    fn no_clip(&self, n: usize) -> bool {
+        matches!(&self.nodes[n], Node::Anim(p) if p.clip.is_none())
+    }
+
+    /// The node whose op is on top of the stack for node `n` after the optimizer (F-94730): a
+    /// blend whose weight is <= 0.001 in size, or whose child 1 is op 12, leaves child 0; a blend without a filter whose
+    /// weight is >= 0.999, or whose child 0 is op 12, leaves child 1; an add-subtract of weight <= 0.001 in size or with
+    /// child 1 op 12 leaves child 0.
+    fn kept(&self, n: usize) -> usize {
+        match &self.nodes[n] {
+            Node::Blend { weight, filter, kids: [Some(a), Some(b)], .. } => {
+                let (a, b) = (self.kept(*a), self.kept(*b));
+                if weight.abs() <= W_LO || self.no_clip(b) {
+                    a
+                } else if filter.is_none() && (*weight >= W_HI || self.no_clip(a)) {
+                    b
+                } else {
+                    n
+                }
+            }
+            Node::Add { weight, kids: [Some(a), Some(b)], .. } => {
+                let (a, b) = (self.kept(*a), self.kept(*b));
+                if weight.abs() <= W_LO || self.no_clip(b) {
+                    a
+                } else {
+                    n
+                }
+            }
+            _ => n,
+        }
+    }
+
+    /// The composer pass: the tree's frame, or none without a root.
+    pub fn compose(&self, p: &dyn Poser) -> Option<Vec<FrameDof>> {
+        self.root.map(|r| self.frame(self.kept(r), p))
+    }
+
+    fn frame(&self, n: usize, p: &dyn Poser) -> Vec<FrameDof> {
+        let mut f = vec![FrameDof { flags: DOF_NO_VALUE, v: [0.0; 4] }; p.len()];
+        match &self.nodes[n] {
+            Node::Anim(pl) => {
+                if let Some(c) = pl.clip {
+                    p.sample(c.id, pl.t, &mut f);
+                }
+            }
+            Node::Identity => p.rest(&mut f),
+            // (a kept blend: the frame of child 1 blended onto child 0's; F-27951 clamps the weight)
+            Node::Blend { weight, filter, kids: [Some(a), Some(b)], .. } => {
+                f = self.frame(self.kept(*a), p);
+                let s = self.frame(self.kept(*b), p);
+                match filter {
+                    Some(x) => frame_blend_filtered(&mut f, &s, p.weights(*x), crate::skin::frame_weight(*weight)),
+                    None => crate::skin::frame_blend(&mut f, &s, *weight),
+                }
+            }
+            Node::Add { weight, filter, kids: [Some(a), Some(b)], .. } => {
+                f = self.frame(self.kept(*a), p);
+                let s = self.frame(self.kept(*b), p);
+                // (the unfiltered add F-89611 is the filtered one with every weight 1)
+                match filter {
+                    Some(x) => frame_add_filtered(&mut f, &s, p.weights(*x), *weight),
+                    None => frame_add_filtered(&mut f, &s, &vec![1.0; s.len()], *weight),
+                }
+            }
+            _ => {}
+        }
+        f
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -796,5 +1078,54 @@ mod tests {
         }
         assert_eq!(got.lines().count(), want.lines().count());
         assert!(updates > 3000, "{updates} updates");
+    }
+
+    /// The filtered blend F-18341 and add-subtract F-37398 against the original's code run offline
+    /// (work/drvmachine/composer_ref.py): 3,000 cases of up to 8 DOFs of every type.
+    #[test]
+    fn the_filtered_blend_and_add_match_the_original() {
+        let text = include_str!("testdata/drvanim_composer_ref.txt");
+        let (mut n, mut bad) = (0, 0);
+        for line in text.lines() {
+            let (case, want) = line.split_once(" ->").unwrap();
+            let mut it = case.split_whitespace();
+            let m = it.next().unwrap();
+            let w: Vec<u32> = it.map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let want: Vec<u32> = want.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let k = w[1] as usize;
+            let f = |x: u32| f32::from_bits(x);
+            let (mut d, mut s, mut wts) = (vec![], vec![], vec![]);
+            for i in 0..k {
+                let q = &w[2 + 11 * i..];
+                wts.push(f(q[0]));
+                d.push(FrameDof { flags: q[1] as u8, v: [f(q[2]), f(q[3]), f(q[4]), f(q[5])] });
+                s.push(FrameDof { flags: q[6] as u8, v: [f(q[7]), f(q[8]), f(q[9]), f(q[10])] });
+            }
+            if m == "L" {
+                frame_blend_filtered(&mut d, &s, &wts, f(w[0]));
+            } else {
+                frame_add_filtered(&mut d, &s, &wts, f(w[0]));
+            }
+            for i in 0..k {
+                let wi = wts[i] * f(w[0]);
+                // (the add's scaled integer path reads a stack word it never wrote: not compared)
+                if m == "A" && d[i].flags & 0xF > 2 && s[i].flags & DOF_NO_VALUE == 0 && wts[i].to_bits() & 0x7FFF_FFFF != 0
+                    && wi.abs() > W_LO && (wi - 1.0).abs() > W_LO
+                {
+                    continue;
+                }
+                let got = [d[i].flags as u32, d[i].v[0].to_bits(), d[i].v[1].to_bits(), d[i].v[2].to_bits(), d[i].v[3].to_bits()];
+                n += 1;
+                if got[..] != want[5 * i..5 * i + 5] {
+                    if bad < 8 {
+                        eprintln!("{line}
+  dof {i}: got {got:08x?}");
+                    }
+                    bad += 1;
+                }
+            }
+        }
+        assert_eq!(bad, 0, "{bad} of {n} DOFs differ");
+        assert!(n > 10_000, "{n}");
     }
 }
