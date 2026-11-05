@@ -254,6 +254,26 @@ impl System {
                 slots.push(Slot { taken: false, trail, shown });
             }
         }
+        // (MCLA_SKID_RINGS=<file>: rings read out of the running original - the 4 big trails' 1024 points, then the 28
+        // small ones' 128, 64 big-endian bytes a point - for the render comparison; a trail with a visible point is
+        // kept taken with that ring and no car writes it)
+        if let Some(data) = std::env::var("MCLA_SKID_RINGS").ok().and_then(|f| std::fs::read(f).ok()) {
+            let order: Vec<usize> = (SMALL.0..SMALL.0 + BIG.0).chain(0..SMALL.0).collect();
+            let mut at = 0;
+            for i in order {
+                let s = &mut slots[i];
+                for p in s.trail.ring.iter_mut() {
+                    for (k, w) in p.iter_mut().enumerate() {
+                        *w = data.get(at + 4 * k..at + 4 * k + 4).map_or(0, |b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+                    }
+                    at += 64;
+                }
+                if s.trail.ring.iter().any(|p| p[3] >> 24 != 0 || p[11] >> 24 != 0) {
+                    s.taken = true;
+                    s.shown = s.trail.ring.clone();
+                }
+            }
+        }
         System { slots, cars: Default::default(), mats, frame: 0 }
     }
 
