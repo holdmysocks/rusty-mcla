@@ -271,11 +271,14 @@ pub struct SimTune {
 }
 
 impl SimTune {
-    /// The air ride's FrontDrop / BackDrop as the tune build F-55728 writes them, from the wheels as the set-up
+    /// The air ride as the tune build F-55728 writes it: Rise, the rates (and the drops it then replaces) blended
+    /// base -> mods by its constant share of 0 (the base's), then FrontDrop / BackDrop from the wheels as the set-up
     /// left them (radius +4, SuspensionOffset +80) and mcCarModelTune's stock FenderHeight (+56 front, +64 back;
     /// never the wide body's) and +176 (`air_floor`): the smaller of FenderHeight - radius and radius - floor
     /// (the first unless it is greater), plus SuspensionOffset.
-    pub fn set_air_drop(&mut self, fender_height: [[f32; 2]; 2], floor: f32) {
+    pub fn set_air_ride(&mut self, s: &SimTunes) {
+        self.air_ride = AirRideTune::lerp(&s.base.air_ride, &s.mods.air_ride, 0.0);
+        let (fender_height, floor) = (s.fender_height, s.air_floor);
         for (axle, wt) in [&self.wheel_front, &self.wheel_back].into_iter().enumerate() {
             let (a, b) = (fender_height[axle][0] - wt.radius, wt.radius - floor);
             let d = if a > b { b } else { a } + wt.suspension_offset;
@@ -359,9 +362,9 @@ impl SimTune {
             damage: a.damage.clone(),
             ss_turbo: SsTurboTune::lerp(&a.ss_turbo, &b.ss_turbo, t),
             hydraulics: HydraulicsTune::lerp(&a.hydraulics, &b.hydraulics, t),
-            // (F-55728 blends the air ride's Rise and rates with a share of 0: the base's; its Drops it builds
-            // after the wheels, `set_air_drop`)
-            air_ride: AirRideTune::lerp(&a.air_ride, &b.air_ride, 0.0),
+            // (by the share, as every other field here; the car's tune build F-55728 then writes its own over it,
+            // `set_air_ride`)
+            air_ride: AirRideTune::lerp(&a.air_ride, &b.air_ride, t),
             // (a signed 16 bit word blended as an integer; its low half stored)
             nitro_shots: lerp_i(a.nitro_shots as u16 as i16 as i32, b.nitro_shots as u16 as i16 as i32, t) as u16 as f32,
             axle_bone_z: a.axle_bone_z,
@@ -832,7 +835,7 @@ mod air_drop_tests {
         cfg[2106..2114].copy_from_slice(&[3, 3, 2, 2, 16, 16, 7, 7]);
         s.fit(&cfg).unwrap();
         let mut t = s.base.clone();
-        t.set_air_drop(s.fender_height, s.air_floor);
+        t.set_air_ride(&s);
         assert_eq!((t.air_ride.front_drop.to_bits(), t.air_ride.back_drop.to_bits()), (0x3e2b9f56, 0x3e2b9f56));
     }
 }
