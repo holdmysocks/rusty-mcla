@@ -216,6 +216,9 @@ pub struct CarInput {
     /// player's chassis brake is also written 1 by the race code. A computer driver's pedals with it
     /// are the chassis's own (no coasting share).
     pub hold: bool,
+    /// the chassis's feature locks +576 (Racer_LockFeature, F-17816): bit 0x8 refuses the nitrous fire F-62883,
+    /// 0x20 the air ride's switch-on F-36738
+    pub lock: u16,
     /// a deactivated racer (Racer_Deactivate F-12981 -> F-30391(sim, 1): chassis +592 bit 0x1;
     /// the new career's three starters on VEHICLE SELECT, `game/career/0xebb682f7`): mcCarSim::Update writes
     /// the pedals 0 (A-14335) and the steering the default steer direction +656 (A-57251; the input's

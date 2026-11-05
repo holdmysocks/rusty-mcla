@@ -4101,6 +4101,20 @@ impl Game {
                         c.engine_off = false;
                         c.deactivated = false;
                     }
+                    // (OrderedCheckpointCore 0x1058 / UnorderedCheckpointCore 0xde9, once Race_IsRaceTimerEnabled: each
+                    // racer's nitrous, Racer_LockFeature(racer, 8, ..) F-17816 - locked for a computer racer (record +8 = 2)
+                    // at difficulty 0 (+3100), free otherwise)
+                    if race.kind == RaceKind::Race {
+                        for &i in &race.participants {
+                            if let Some(c) = vehicles.cars.get_mut(i) {
+                                if !c.is_player && self.race_diff == 0 {
+                                    c.lock |= 0x8;
+                                } else {
+                                    c.lock &= !0x8;
+                                }
+                            }
+                        }
+                    }
                 }
             }
             // (N-VP-1: the grid is not frozen - the cars simulate, held by their brakes, so revving and
