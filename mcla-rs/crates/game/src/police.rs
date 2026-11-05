@@ -4451,6 +4451,44 @@ mod tests {
         assert!(checked > 100, "{checked}");
     }
 
+    /// The Double Pursuit's machine (AlongSide, no Halt) against the original's tactic object run offline by
+    /// tools/pursuit_dbl_fsm_reference.py (ctor F-74544, reset F-92837, begin F-39789, update F-40655, AlongSide F-86874 /
+    /// F-41674): the same flags, state, asked state and AlongSide's lock bits equal at every recorded update.
+    #[test]
+    fn double_pursuit_machine_matches_the_original() {
+        let reference = include_str!("testdata/pursuit_dbl_fsm_ref.txt");
+        let (mut checked, mut flags, mut k) = (0, Vec::new(), 0usize);
+        let mut sq = Squad::default();
+        for line in reference.lines() {
+            let v: Vec<&str> = line.split_whitespace().collect();
+            if v[0] == "CASE" {
+                flags = v[1].chars().map(|c| c.to_digit(16).unwrap()).collect();
+                sq = Squad::default();
+                k = 0;
+                continue;
+            }
+            let v = if v[0] == "END" { &v[1..] } else { &v[..] };
+            let want: usize = v[0].parse().unwrap();
+            while k <= want {
+                let f = |b: u32| flags[k] & b != 0;
+                let send = f(8);
+                squad_machine(&mut sq, &mut (), false, f(4), f(2), f(1), 1.0 / 60.0, &mut |sq: &mut Squad, _: &mut (), d: f32, _| {
+                    if send || d == 0.0 {
+                        sq.slots = [Some(0), Some(1), None];
+                    }
+                    send
+                }, &mut |_: &mut Squad, _: &mut ()| {});
+                k += 1;
+            }
+            let st = if sq.halt { 2 } else { 0 };
+            let got = (st, sq.next.map_or(-1, |h| if h { 2 } else { 0 }), if st == 0 { sq.lock.to_bits() } else { 0 });
+            let exp = (v[1].parse().unwrap(), v[2].parse().unwrap(), u32::from_str_radix(v[3], 16).unwrap());
+            assert_eq!(got, exp, "update {want}");
+            checked += 1;
+        }
+        assert!(checked > 500, "{checked}");
+    }
+
     /// The squad formations against the original's (the Arrow Trap's F-80532, the Double Pursuit's F-21534, with the
     /// enters F-81752 / F-86874) run offline by tools/formation_reference.py: the same inputs from the same xorshift, every
     /// call's send, hysteresis bits, slots and brains equal.
