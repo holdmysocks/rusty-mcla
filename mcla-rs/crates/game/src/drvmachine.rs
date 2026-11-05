@@ -117,6 +117,15 @@ pub struct Tune {
     pub slip_k: [f32; 2],
     /// +88: the bike branch's scale on the steering part's +1176 (F-28290; the constructor's 2.5)
     pub p88: f32,
+    /// +12: the steering wheel's shake past three quarters lock (F-92324), +16: the steering-squared gain on the speed
+    /// shake's word (F-14810)
+    pub wheel_lock: f32,
+    pub wheel_gain: f32,
+    /// +20 / +24 / +28 the three waves' amplitudes, +32 / +36 / +40 their rates (radians per second), +44 the rate
+    /// scale (F-97508)
+    pub wave_amp: [f32; 3],
+    pub wave_rate: [f32; 3],
+    pub wave_k: f32,
     /// +136 / +140 / +144 Impact Hard / Soft / Side ThresholdAccel
     pub impact: [f32; 3],
     /// +148 / +152: the impact divisor d = +148 + +152 |v| (clamped to [1, 100])
@@ -727,8 +736,8 @@ pub struct Gather {
     pub goal: f32,
     /// the aero's byte +40, when chassis +8 exists
     pub aero: Option<bool>,
-    /// the driver's byte +370: a motorcycle
-    pub bike: bool,
+    /// the driver's byte +370: a driver with a steering wheel (a car; clear on a motorcycle)
+    pub wheel: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -772,10 +781,54 @@ pub struct GatherMut {
 }
 
 /// The vehicle gatherer F-28290: the context step's inputs (None when the context is culled: no step that frame). `rates`
-/// is the steering part's rescale on the car branch (with the driver's +408 x context +64), `bike` the bike branch's call
-/// (dt, smoothed, speed) -> (value, word), `look` the rival look (its start, dt). Without the body the vector is the
+/// is the steering part's rescale F-52244 on a rider's branch (with the driver's +408 x context +64), `wheel` the car's
+/// steering-wheel call (dt, smoothed, speed) -> (value, word), `look` the rival look (its start, dt). Without the body the vector is the
 /// stack's (0 here).
 #[allow(clippy::too_many_arguments)]
+/// The speed ramp both shake helpers use: clamp((speed - a) x b, 0, 1) by fsel.
+fn ramp(speed: f32, a: f32, b: f32) -> f32 {
+    let x = (speed - a) * b;
+    let x = if x >= 0.0 { x } else { 0.0 };
+    if x - 1.0 >= 0.0 { 1.0 } else { x }
+}
+
+/// F-92324: the wheel's lock shake: max(|smoothed| - 0.75, 0) x tune +12, its sign flipping every frame (the frame
+/// counter's bit 0: + on odd frames), x the 50 - 80 mph ramp (1 with the nitrous flag 0x10).
+fn wheel_lock_shake(c: &Ctx, k: &Tune, smooth: f32, speed: f32, odd: bool) -> f32 {
+    let r = if c.flags & 0x10 != 0 { 1.0 } else { ramp(speed, 22.352, 0.074564546) };
+    let sign = if odd { 1.0 } else { -1.0 };
+    let over = smooth.abs() - 0.75;
+    let over = if -over >= 0.0 { 0.0 } else { over };
+    over * k.wheel_lock * sign * r
+}
+
+/// F-97508: the three waves: the clock +144 += dt, the phases +132 / +136 / +140 += rate x dt x `rate`, the sum of
+/// amp x sin(phase) (the guest's sin in double, rounded once).
+fn wheel_waves(c: &mut Ctx, k: &Tune, dt: f32, rate: f32) -> f32 {
+    c.side_vals[3] = dt + c.side_vals[3];
+    for i in 0..3 {
+        c.side_vals[i] = (k.wave_rate[i] * dt).mul_add(rate, c.side_vals[i]);
+    }
+    let s = |x: f32| crate::physics::exact::guest_sin(f64::from(x)) as f32;
+    let (a, b, d) = (s(c.side_vals[0]), s(c.side_vals[1]), s(c.side_vals[2]));
+    k.wave_amp[0].mul_add(a, k.wave_amp[2].mul_add(d, k.wave_amp[1] * b))
+}
+
+/// F-14810: the car driver's steering-wheel shake, called by the gatherer's car branch (driver byte +370 set) with dt, the
+/// smoothed steering and the forward speed: the speed shake f30 (1 with the nitrous flag, else the 70 - 110 mph ramp),
+/// the lock shake, the word = (amp sum) x (steering-squared shake + f30) and the value = waves x that + the lock shake.
+/// `odd`: the original's frame counter (the timer object's +48) has bit 0 set.
+pub fn wheel_shake(c: &mut Ctx, k: &Tune, dt: f32, smooth: f32, speed: f32, odd: bool) -> (f32, f32) {
+    let f30 = if c.flags & 0x10 != 0 { 1.0 } else { ramp(speed, 31.292799, 0.055923402) };
+    let f4 = k.wheel_gain * smooth * smooth * 10.0;
+    let sq = ramp(speed, 22.352, 0.074564546) * f4;
+    let lock = wheel_lock_shake(c, k, smooth, speed, odd);
+    let f28 = sq + f30;
+    let word = (k.wave_amp[2] + k.wave_amp[1] + k.wave_amp[0]) * f28;
+    let w = wheel_waves(c, k, dt, f30.mul_add(0.5, 1.0) * k.wave_k);
+    (w.mul_add(f28, lock), word)
+}
+
 pub fn gather(
     g: &Gather,
     c: &Ctx,
@@ -783,7 +836,7 @@ pub fn gather(
     m: &mut GatherMut,
     dt: f32,
     rates: &mut dyn FnMut(&mut Parts, f32),
-    bike: &mut dyn FnMut(f32, f32, f32) -> (f32, f32),
+    wheel: &mut dyn FnMut(f32, f32, f32) -> (f32, f32),
     look: &mut dyn FnMut(f32, f32) -> f32,
 ) -> Option<CtxIn> {
     use crate::physics::exact::fma;
@@ -952,7 +1005,7 @@ pub fn gather(
         goal = if g.w624 & 0x400 != 0 { 0.0 } else { g.goal };
         steer = if !(g.steer.abs() <= 1.001) { 0.0 } else { g.steer };
         if let Some(d) = m.parts.as_mut() {
-            if g.bike {
+            if g.wheel {
                 let f0 = if !(skid > 0.51) && c.flags2 & 0x20 != 0 {
                     let f11 = -fma(1.0 - d.f1176, k.p88, -1.0);
                     let f10 = f11 + 0.25;
@@ -972,7 +1025,7 @@ pub fn gather(
                 d.f1108 = ws;
                 smooth = (f11 / ws) * f10;
                 lim = (ws - f10.abs()).abs();
-                let (mut r, w140) = bike(dt, smooth, spd);
+                let (mut r, w140) = wheel(dt, smooth, spd);
                 if !(c.side_vals[3] > 0.5) {
                     r = 0.0;
                 }
@@ -998,7 +1051,7 @@ pub fn gather(
             }
         }
     }
-    if g.online && !g.bike && !b[0] {
+    if g.online && !g.wheel && !b[0] {
         b[3] = true;
     }
     let bits: [(bool, u32); 28] = [
@@ -1055,6 +1108,11 @@ impl Tune {
             impact: [100.0, 25.0, 25.0],
             impact_d: [0.0, 0.05],
             p88: 2.5,
+            wheel_lock: 0.125,
+            wheel_gain: 1.0,
+            wave_amp: [0.00625; 3],
+            wave_rate: [18.0, 9.0, 7.0],
+            wave_k: 1.0,
         }
     }
 }
@@ -1695,7 +1753,7 @@ mod tests {
                 goal: f(82),
                 w624: w[83],
                 steer: f(84),
-                bike: on(85),
+                wheel: on(85),
             };
             let mut c = Ctx { culled: on(9), flags2: w[14], flags: w[30], ease_to: f(87), smooth_k: [f(88), f(89)], wheel_scale: f(90), ..Ctx::default() };
             c.side_vals[3] = f(100);
@@ -1782,6 +1840,51 @@ mod tests {
             if log.trim() != b.trim() {
                 if bad < 6 {
                     eprintln!("{a}\n  got  {log}\n  want {b}");
+                }
+                bad += 1;
+            }
+        }
+        assert!(n > 5900, "{n} cases");
+        assert_eq!(bad, 0, "{bad} of {n} cases differ");
+    }
+
+    /// The steering-wheel shake F-14810 (with F-97508, F-92324) against the original's code run offline
+    /// (`work/drvmachine/wheel_ref.py`): flags, phases, tunes, the frame word, dt, steering near 0.75 and speeds at the
+    /// ramps' ends; the value, the word and the four context words.
+    #[test]
+    fn the_wheel_shake_matches_the_original() {
+        let text = include_str!("testdata/drvmachine_wheel_ref.txt");
+        let (mut n, mut bad) = (0, 0);
+        for line in text.lines() {
+            let (a, b) = line.split_once(" ->").unwrap();
+            let w: Vec<u32> = a.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let mut c = Ctx { flags: w[0], ..Ctx::default() };
+            c.side_vals = [f(1), f(2), f(3), f(4)];
+            let k = Tune {
+                wheel_lock: f(5),
+                wheel_gain: f(6),
+                wave_amp: [f(7), f(8), f(9)],
+                wave_rate: [f(10), f(11), f(12)],
+                wave_k: f(13),
+                ..Tune::original()
+            };
+            let (v, word) = wheel_shake(&mut c, &k, f(15), f(16), f(17), w[14] & 1 != 0);
+            let got = format!(
+                "{:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+                v.to_bits(),
+                word.to_bits(),
+                c.side_vals[0].to_bits(),
+                c.side_vals[1].to_bits(),
+                c.side_vals[2].to_bits(),
+                c.side_vals[3].to_bits()
+            );
+            n += 1;
+            if got != b.trim() {
+                if bad < 6 {
+                    eprintln!("{a}
+  got  {got}
+  want {b}");
                 }
                 bad += 1;
             }
