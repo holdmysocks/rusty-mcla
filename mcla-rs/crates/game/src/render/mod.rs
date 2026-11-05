@@ -1048,6 +1048,33 @@ impl UniformBatch {
     }
 }
 
+/// DX12's compiled programs kept on disk (GitHub #33: DXC took 14 s for the city's general fragment program and so on,
+/// at every start): the patched wgpu-hal (vendor/wgpu-hal) reads and writes them in the folder `MCLA_DXIL_CACHE`
+/// names, here `<user folder>\shadercache\dx12-<version>`; the folders of other versions are removed. A set
+/// `MCLA_DXIL_CACHE` is kept (empty: no cache, a test hook).
+fn dxil_cache_dir() {
+    if std::env::var_os("MCLA_DXIL_CACHE").is_some() {
+        return;
+    }
+    let root = mcla_config::paths::user_data_dir().join("shadercache");
+    let name = concat!("dx12-", env!("CARGO_PKG_VERSION"));
+    if let Ok(list) = std::fs::read_dir(&root) {
+        for e in list.flatten() {
+            let n = e.file_name();
+            let n = n.to_string_lossy();
+            if n.starts_with("dx12-") && n != name {
+                match std::fs::remove_dir_all(e.path()) {
+                    Ok(()) => log::info!("shader cache: removed the old {n}"),
+                    Err(err) => log::warn!("shader cache: could not remove {}: {err}", e.path().display()),
+                }
+            }
+        }
+    }
+    let dir = root.join(name);
+    log::info!("shader cache: {}", dir.display());
+    std::env::set_var("MCLA_DXIL_CACHE", dir);
+}
+
 pub struct GpuTexture {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
@@ -1302,6 +1329,7 @@ impl Gpu {
             mcla_config::Backend::Vulkan => wgpu::Backends::VULKAN,
             mcla_config::Backend::Dx12 => wgpu::Backends::DX12,
         });
+        dxil_cache_dir();
         // (a swap chain that cannot be made: on DX12 in exclusive fullscreen the window goes borderless and it is tried
         // again; what still fails starts over on Vulkan - GitHub #12, `configure_checked`)
         loop {

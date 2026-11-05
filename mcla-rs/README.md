@@ -17,6 +17,7 @@ This file is only the guide to the workspace itself.
 | `crates/game` (`mcla`, `mcla.exe`) | The game: wgpu renderer, physics under `physics/`, shaders under `render/`, all gameplay modules. `hooks.rs` holds the launcher hooks (settings, log, crash report, F12) |
 | `crates/config` (`mcla-config`) | The `settings.toml` model, the key table (`schema()`, which keys the game implements), the data-folder resolution, `set_key` (one key written atomically), and the keyboard-binding model (`keybinds`: the 32 actions, defaults, reserved keys, conflicts, the save's `keyboard` member and an editor that changes only that member); no game dependencies, no winit, builds with GNU and MSVC (the launcher uses it by path; `crates/game/src/keybinds.rs` is the game's winit adapter) |
 | `tools/` | Python helpers: `xsh.py` (Xbox 360 shader microcode disassembler), `xs2wgsl.py` (both are the Python reference of `crates/shaders`), recomp readers (`recomp_*.py`, `gfx_trace.py`, `gpu_trace.py`, `guestmem.py`), vehicle reference models and comparers (`*_reference.py`, `veh_*.py`), save tools (`import_mc4_save.py`, `ps3dec.py`, `mc4save/`), audio/video converters (`convert_audio.py`, `convert_video.py`) |
+| `vendor/wgpu-hal` | wgpu-hal 24.0.4 (MIT / Apache-2.0) used through `[patch.crates-io]`, with a disk cache for DX12's compiled shaders; what changed: `vendor/wgpu-hal/MCLA_PATCH.md` |
 | `data/` | `tune_schema.txt`, `native_names.tsv`, `shader_param_names.json` |
 | `names.txt` | Recovered archive entry names (for `mcla-tool`) |
 

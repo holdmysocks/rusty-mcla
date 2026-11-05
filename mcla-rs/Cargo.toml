@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/formats", "crates/flash", "crates/tool", "crates/game", "crates/config", "crates/install", "crates/savedecode", "crates/shaders", "crates/mods"]
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.14.0"
@@ -34,3 +35,7 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# wgpu-hal 24.0.4 with a disk cache for DX12's compiled shaders (vendor/wgpu-hal/MCLA_PATCH.md, GitHub #33)
+[patch.crates-io]
+wgpu-hal = { path = "vendor/wgpu-hal" }
