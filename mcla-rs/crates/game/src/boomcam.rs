@@ -519,7 +519,15 @@ impl BoomTune {
 pub struct ViewBlend {
     from: Option<(BoomTune, BoomCam)>,
     blend: DirBlend,
+    /// the director's time (+20): the last push's
     time: f32,
+    /// the port views of the blend's source (+192) and target (+196)
+    src: u8,
+    dst: u8,
+    /// the queued camera (+200), a port view
+    queued: Option<u8>,
+    /// set when the blend ended with a camera queued (F-70013): the view the director cut to
+    finished: Option<u8>,
 }
 
 impl ViewBlend {
@@ -530,12 +538,51 @@ impl ViewBlend {
             self.from = Some((tune, cam));
             self.blend = DirBlend { weight: 0.0, goal, left: time, ..Default::default() };
             self.time = time;
+            self.queued = None;
         } else {
             self.stop();
         }
     }
     pub fn stop(&mut self) {
         self.from = None;
+        self.queued = None;
+    }
+    /// A push of `view` while the director shows the blend camera (F-98424 -> F-43758). The push
+    /// stores its time as the director's first (+20); with a time above 0: nothing when the
+    /// QUEUED camera is the target; when the queued camera is the source the blend turns round
+    /// (goal = the old source's BlendGoal, time left = the push's time x the weight, weight =
+    /// 1 - weight, source and target swapped, nothing queued); else `view` is queued. `cam` is
+    /// the running target camera; `dst_tune` its view's tune.
+    pub fn push(&mut self, view: u8, time: f32, dst_tune: &BoomTune, cam: &mut BoomCam) {
+        self.time = time;
+        if !(time > 0.0) {
+            return;
+        }
+        if self.queued == Some(self.dst) {
+            return;
+        }
+        if self.queued == Some(self.src) {
+            if let Some((src_tune, src_cam)) = self.from.take() {
+                self.blend.goal = src_tune.blend_goal();
+                self.blend.left = time * self.blend.weight;
+                self.blend.weight = 1.0 - self.blend.weight;
+                let old_dst = std::mem::replace(cam, src_cam);
+                self.from = Some((dst_tune.clone(), old_dst));
+                std::mem::swap(&mut self.src, &mut self.dst);
+            }
+            self.queued = None;
+        } else {
+            self.queued = Some(view);
+        }
+    }
+    /// The camera of `view` as the director runs it, for setView's reset (vt+36): the source's;
+    /// the target's is the caller's own.
+    pub fn source_cam(&mut self, view: u8) -> Option<&mut BoomCam> {
+        if self.src == view {
+            self.from.as_mut().map(|f| &mut f.1)
+        } else {
+            None
+        }
     }
     pub fn active(&self) -> bool {
         self.from.is_some()
@@ -552,7 +599,14 @@ impl ViewBlend {
         };
         let (a, b) = (dir_cam(&old), dir_cam(&out));
         if !self.blend.step(&a, &b, 3, self.time, dt) {
+            // the finish (F-70013): nothing queued, the director cuts to the target; a queued
+            // camera other than the target is cut to (type 4 makes the start F-41709 a cut)
             self.from = None;
+            if let Some(q) = self.queued.take() {
+                if q != self.dst {
+                    self.finished = Some(q);
+                }
+            }
             return out;
         }
         let m = &self.blend;
@@ -843,6 +897,9 @@ pub struct Switch {
     seed: u32,
     /// the look back went off this frame (F-39925: the look-back slow motion is released)
     pub look_off: bool,
+    /// the view the director shows when it is not the player's chosen one (a change pushed
+    /// while blending only queues the new view, or turns the blend round)
+    shown: Option<u8>,
 }
 
 impl Switch {
@@ -850,7 +907,14 @@ impl Switch {
     pub fn reset(&mut self) {
         self.last = None;
         self.blend.stop();
+        self.shown = None;
         self.pan = (0.0, 0.0);
+    }
+
+    /// The view whose camera runs (the blend's target, or the director's camera after it), for
+    /// the chosen view `view`.
+    pub fn shown(&self, view: u8) -> u8 {
+        self.shown.unwrap_or(view)
     }
 
     /// The original's random draw: 23 bits of a linear congruential generator.
@@ -865,12 +929,24 @@ impl Switch {
     /// blended out or the mask is put up.
     pub fn frame(&mut self, set: &BoomSet, view: u8, back: bool, cinematic: bool, moving: bool, cam: &mut BoomCam, dt: f32) {
         self.look_off = false;
-        let Some((was_view, was_back)) = self.last.replace((view, back)) else { return };
+        // (a blend that ended with a camera queued: the director cut to it - F-70013)
+        if let Some(q) = self.blend.finished.take() {
+            self.shown = Some(q);
+            cam.reset();
+        }
+        if self.shown == Some(view) && !self.blend.active() {
+            self.shown = None;
+        }
+        let Some((was_view, was_back)) = self.last.replace((view, back)) else {
+            self.shown = None;
+            return;
+        };
         let chase = VIEW_OF_PORT[(view as usize).min(5)] >= 2;
         self.look_off = was_back && !back;
         if back != was_back {
             // (both ways a cut with the mask's quick fade: 0.01, 0.1, 0.01)
             self.blend.stop();
+            self.shown = None;
             self.mask.start(0.01, 0.1, 0.01);
             cam.reset();
             self.pan = (0.0, 0.0);
@@ -883,13 +959,33 @@ impl Switch {
         } else if view != was_view && !back {
             if is_cut(was_view, view) {
                 self.blend.stop();
+                self.shown = None;
                 self.mask.start(0.01, 0.25, 0.01);
+                cam.reset();
+            } else if self.blend.active() {
+                // setView (F-41662) resets the new view's camera (vt+36) - the running target's or
+                // source's when it is one of them -, then pushes it (F-98424): the director is on
+                // the blend camera, so the push queues it or turns the blend round (F-43758)
+                let shown = self.shown(was_view);
+                if view == shown {
+                    cam.reset();
+                } else if let Some(c) = self.blend.source_cam(view) {
+                    c.reset();
+                }
+                let (dst, _) = tune_for(set, shown, false);
+                let (new, _) = tune_for(set, view, false);
+                self.blend.push(view, new.blend_time(), dst, cam);
+                self.shown = Some(self.blend.dst);
             } else {
-                let (old, _) = tune_for(set, was_view, false);
+                let from = self.shown(was_view);
+                let (old, _) = tune_for(set, from, false);
                 let (new, _) = tune_for(set, view, false);
                 self.blend.start(old.clone(), cam.clone(), new.blend_time(), old.blend_goal());
+                self.blend.src = from;
+                self.blend.dst = view;
+                self.shown = None;
+                cam.reset();
             }
-            cam.reset();
         }
         // turning the look-back camera with CAM_PAN_*: 2 rad/s round, 1.25 rad/s up, the
         // pitch kept in 0 .. 1.2566 (A-28508..A-14649)
@@ -3684,6 +3780,82 @@ mod original_osc_tests {
 #[cfg(test)]
 mod director_blend_tests {
     use super::*;
+
+    fn views() -> BoomSet {
+        let t = |z: f32, bt: f32| BoomTune::parse(&format!("camBoomCS\nBlendTime {bt}\nBlendGoal 1\nOffset 0 2 {z}\nFocus 0 1 0\n")).unwrap();
+        BoomSet { views: vec![t(5.0, 1.0), t(6.0, 1.0), t(7.0, 0.5), t(0.0, 1.0), t(0.0, 1.0)], reverse: None }
+    }
+
+    /// One frame as main.rs runs it: the switch, the shown view's camera, the blend.
+    fn run(sw: &mut Switch, set: &BoomSet, cam: &mut BoomCam, view: u8, dt: f32) {
+        let car = BoomTarget { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, ang_vel: Vec3::ZERO, grounded: 4, gear: 1, rev: false, nitro: false, nitro_fov: (0.0, 0.5, 1.0), ability: (0.0, 1.0), sst: (0.0, 1.0), pan: (0.0, 0.0), rise: 0.0, fixed_mount: false, model_offset: Vec3::ZERO };
+        sw.frame(set, view, false, false, false, cam, dt);
+        let (tune, _) = tune_for(set, sw.shown(view), false);
+        let out = cam.update(tune, &car, dt);
+        sw.blend.apply(&car, out, dt);
+    }
+
+    /// The director's queue and finish (F-98424 -> F-43758, F-70013): a view change while the views
+    /// blend only queues the new view (the blend keeps its target, its time becomes the push's); at
+    /// the blend's end the director cuts to the queued view.
+    #[test]
+    fn a_change_while_blending_is_queued_then_cut_to() {
+        let set = views();
+        let (mut sw, mut cam) = (Switch::default(), BoomCam::default());
+        let dt = 1.0 / 30.0;
+        for _ in 0..10 {
+            run(&mut sw, &set, &mut cam, 0, dt);
+        }
+        run(&mut sw, &set, &mut cam, 1, dt);
+        assert!(sw.blend.active() && sw.shown(1) == 1);
+        for _ in 0..6 {
+            run(&mut sw, &set, &mut cam, 1, dt);
+        }
+        run(&mut sw, &set, &mut cam, 2, dt);
+        assert_eq!((sw.shown(2), sw.blend.queued, sw.blend.time), (1, Some(2), 0.5));
+        let mut n = 0;
+        while sw.blend.active() {
+            run(&mut sw, &set, &mut cam, 2, dt);
+            assert_eq!(sw.shown(2), 1);
+            n += 1;
+            assert!(n < 60);
+        }
+        run(&mut sw, &set, &mut cam, 2, dt);
+        assert!(!sw.blend.active() && sw.shown(2) == 2 && sw.shown.is_none());
+    }
+
+    /// The turn-round (F-43758): back to the source queues it; the next change finds the source
+    /// queued and turns the blend round (weight 1 - w, time left = the push's time x w, goal the old
+    /// source's), whatever view was chosen - the director then ends on the old source.
+    #[test]
+    fn a_queued_source_turns_the_blend_round() {
+        let set = views();
+        let (mut sw, mut cam) = (Switch::default(), BoomCam::default());
+        let dt = 1.0 / 30.0;
+        for _ in 0..10 {
+            run(&mut sw, &set, &mut cam, 0, dt);
+        }
+        run(&mut sw, &set, &mut cam, 1, dt);
+        for _ in 0..8 {
+            run(&mut sw, &set, &mut cam, 1, dt);
+        }
+        run(&mut sw, &set, &mut cam, 0, dt);
+        assert_eq!((sw.shown(0), sw.blend.queued), (1, Some(0)));
+        let w = sw.blend.blend.weight;
+        assert!(w > 0.0 && w < 1.0);
+        run(&mut sw, &set, &mut cam, 1, dt);
+        assert_eq!((sw.blend.src, sw.blend.dst, sw.blend.queued, sw.shown(1)), (1, 0, None, 0));
+        let w2 = sw.blend.blend.weight;
+        assert!(w2 > 1.0 - w - 0.2 && w2 < 1.0);
+        let mut n = 0;
+        while sw.blend.active() {
+            run(&mut sw, &set, &mut cam, 1, dt);
+            n += 1;
+            assert!(n < 60);
+        }
+        run(&mut sw, &set, &mut cam, 1, dt);
+        assert_eq!(sw.shown(1), 0);
+    }
 
     #[test]
     fn director_blend_matches_the_original() {

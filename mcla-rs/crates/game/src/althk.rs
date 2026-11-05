@@ -326,8 +326,20 @@ pub fn redlight_spot(def: &AltDef, scenes: &[Scene], player: Vec3) -> Option<usi
 /// Yaw in the port's convention (the car faces (-sin, 0, -cos)).
 pub fn redlight_grid(s: &Scene) -> [(Vec3, f32); 2] {
     let h = s.heading.to_radians();
-    let right = Vec3::new(h.cos(), 0.0, -h.sin());
-    [(s.pos - right * 2.25, h), (s.pos + right * 2.25, h)]
+    [(s.pos + vec_rotate_y(Vec3::new(-2.25, 0.0, 0.0), h), h), (s.pos + vec_rotate_y(Vec3::new(2.25, 0.0, 0.0), h), h)]
+}
+
+/// The script native Math_VecRotateY (handler F-39460): `v` turned about Y by `a` radians, as the original
+/// computes it - the game's own sin / cos (rounded to single), x = x cos + z sin and z = z cos - x sin each
+/// one fused multiply-add on the single-rounded product, y kept. Bit-exact with the original's code run
+/// offline (test `vec_rotate_y_matches_the_original`).
+pub fn vec_rotate_y(v: Vec3, a: f32) -> Vec3 {
+    use crate::physics::exact::{guest_cos, guest_sin};
+    let s = guest_sin(a as f64) as f32 as f64;
+    let c = guest_cos(a as f64) as f32 as f64;
+    let zs = (v.z as f64 * s) as f32 as f64;
+    let xs = (v.x as f64 * s) as f32 as f64;
+    Vec3::new((v.x as f64).mul_add(c, zs) as f32, v.y, (v.z as f64).mul_add(c, -xs) as f32)
 }
 
 /// The landmark to race to (0x535d, "Goal selection at 45 / 65 / 90 degree view"): the
@@ -805,6 +817,22 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Math_VecRotateY against the original's handler F-39460 run offline on 5,120 cases
+    /// (work/cameras2/roty/roty_ref.py; `x y z angle -> x y z` as hex float bits).
+    #[test]
+    fn vec_rotate_y_matches_the_original() {
+        let h = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let mut n = 0;
+        for line in include_str!("testdata/vec_rotate_y_ref.txt").lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let r = vec_rotate_y(Vec3::new(h(w[0]), h(w[1]), h(w[2])), h(w[3]));
+            let want = [h(w[5]), h(w[6]), h(w[7])].map(f32::to_bits);
+            assert_eq!([r.x, r.y, r.z].map(f32::to_bits), want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 5120);
+    }
 
     fn square() -> Vec<Vec3> {
         vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(100.0, 0.0, 0.0), Vec3::new(100.0, 0.0, 100.0), Vec3::new(0.0, 0.0, 100.0)]
