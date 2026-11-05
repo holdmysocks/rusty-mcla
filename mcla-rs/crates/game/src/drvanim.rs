@@ -820,6 +820,80 @@ impl Seq {
     }
 }
 
+// ---- the clip sampler: a clip at time t into a frame (F-47152 -> F-40465 -> without a filter F-12216), DOF by track.
+
+/// The key index and the fraction for time `t` (F-47152, F-10710 / F-30330, F-12216): frame = (frames - 1) / duration x t,
+/// clamped to [0, frames - 1]; less the block's start (block 0 here), clamped to [0, block length + 1]; the key index the
+/// floor of it clamped to [0, block frames - 2], the fraction what is left clamped to [0, 1].
+pub fn sample_pos(a: &mcla_formats::rage::anim::Animation, t: f32) -> (usize, f32) {
+    let last = (a.frames as i64 - 1) as f32;
+    let pos = (last / a.duration) * t;
+    let pos = fsel(pos, pos, 0.0);
+    let pos = fsel(pos - last, last, pos);
+    let blk = 0.0f32;
+    let local = fnms(a.block_len as f32, blk, pos);
+    let local = fsel(local, local, 0.0);
+    let hi = (a.block_len as i64 + 1) as f32;
+    let local = fsel(local - hi, hi, local);
+    let fl = (local as f64).floor() as f32;
+    let fl = fsel(fl, fl, 0.0);
+    let top = (a.block0_frames as i64 - 2) as f32;
+    let fl = fsel(fl - top, top, fl);
+    let i = fl as i64 as i32;
+    let fr = local - i as f32;
+    let fr = fsel(fr, fr, 0.0);
+    (i.max(0) as usize, fsel(fr - 1.0, 1.0, fr))
+}
+
+/// A float channel at key `i` and fraction `fr`: a static float; a raw one a + (b - a) fr (fused); a quantised one the same on
+/// fma(q, scale, offset) of keys i and i + 1 (F-35923, F-53505, F-62929 / F-60697).
+fn chan_at(c: &mcla_formats::rage::anim::Chan, i: usize, fr: f32) -> f32 {
+    use mcla_formats::rage::anim::Chan;
+    let at = |v: usize, n: usize| v.min(n.saturating_sub(1));
+    match c {
+        Chan::Static(v) => *v,
+        Chan::Raw(v) if !v.is_empty() => {
+            let (a, b) = (v[at(i, v.len())], v[at(i + 1, v.len())]);
+            fma(b - a, fr, a)
+        }
+        Chan::Quant(q, sc, off) if !q.is_empty() => {
+            let a = fma(q[at(i, q.len())] as f32, *sc, *off);
+            let b = fma(q[at(i + 1, q.len())] as f32, *sc, *off);
+            fma(b - a, fr, a)
+        }
+        Chan::Static4(v) => v[0],
+        _ => 0.0,
+    }
+}
+
+/// One track into its DOF (F-12216): a Quaternion of one channel per component (track byte +1 high nibble 0x10) is the four
+/// channels normalised (z y w x order of the squares, the estimate rsqrt with two double Newton steps); of one channel, its
+/// 16-byte value (F-14184). A Vector3 of one channel per component sets x y z (w kept); of one channel, its 16 bytes. The DOF
+/// holds a value afterwards. (The three-channel quaternion with w rebuilt is not in the driver clips: not ported.)
+pub fn sample_track(tr: &mcla_formats::rage::anim::Track, i: usize, fr: f32, d: &mut FrameDof) {
+    use mcla_formats::rage::anim::Chan;
+    let per = tr.flags & 0xF0 == 0x10;
+    match d.flags & 0xF {
+        DOF_QUATERNION if per && tr.chans.len() >= 4 => {
+            let [x, y, z, w] = std::array::from_fn(|k| chan_at(&tr.chans[k], i, fr));
+            let n2 = fma(z, z, fma(y, y, fma(w, w, x * x)));
+            let r = rsqrt2(n2);
+            d.v = [r * x, r * y, r * z, r * w];
+        }
+        DOF_VECTOR3 if per && tr.chans.len() >= 3 => {
+            for k in 0..3 {
+                d.v[k] = chan_at(&tr.chans[k], i, fr);
+            }
+        }
+        DOF_QUATERNION | DOF_VECTOR3 if !per => match tr.chans.first() {
+            Some(Chan::Static4(v)) => d.v = *v,
+            _ => return,
+        },
+        _ => return,
+    }
+    d.flags &= !DOF_NO_VALUE;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1127,5 +1201,48 @@ mod tests {
         }
         assert_eq!(bad, 0, "{bad} of {n} DOFs differ");
         assert!(n > 10_000, "{n}");
+    }
+
+    /// The clip sampler (F-47152 -> F-12216) against the original's code run offline on the Challenger 70 player pack
+    /// (work/drvmachine/sample_ref.py): 720 samples of 180 clips, every DOF (vectors' x y z, quaternions' four words).
+    /// Skipped without the disc's data.
+    #[test]
+    fn the_clip_sampler_matches_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Ok(d) = std::fs::read(std::path::Path::new(&root).join("resources/animation/0xe4f29864/player/male/0x953f13ee.r2")) else {
+            return;
+        };
+        let vs = u32::from_le_bytes(d[12..16].try_into().unwrap()) as usize;
+        let data = d[16..].to_vec();
+        let res = mcla_formats::rsc::Resource { rtype: 2, flags: 0, virtual_size: vs, physical_size: data.len() - vs, data };
+        let rd = mcla_formats::rage::Rd::new(&res);
+        let text = include_str!("testdata/drvanim_sample_ref.txt");
+        let (mut n, mut bad) = (0, 0);
+        for line in text.lines() {
+            let (case, want) = line.split_once(" ->").unwrap();
+            let mut it = case.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap());
+            let (o, t) = (it.next().unwrap() as usize, f32::from_bits(it.next().unwrap()));
+            let want: Vec<u32> = want.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let a = mcla_formats::rage::anim::animation_named(&rd, o).unwrap();
+            let (i, fr) = sample_pos(&a, t);
+            assert_eq!(want.len(), 5 * a.tracks.len(), "{line}");
+            for (k, tr) in a.tracks.iter().enumerate() {
+                let quat = matches!(tr.kind, 1 | 6);
+                let mut dof = FrameDof { flags: quat as u8 | DOF_NO_VALUE, v: [0.0; 4] };
+                sample_track(tr, i, fr, &mut dof);
+                let w = &want[5 * k..5 * k + 5];
+                let got = [dof.flags as u32, dof.v[0].to_bits(), dof.v[1].to_bits(), dof.v[2].to_bits(), dof.v[3].to_bits()];
+                // (a vector's fourth word: the static channel's stored word, else what the frame held)
+                let m = if quat || tr.flags & 0xF0 != 0x10 { 5 } else { 4 };
+                n += 1;
+                if got[..m] != w[..m] {
+                    if bad < 8 {
+                        eprintln!("{case} track {k} kind {} flags {:x}: got {got:08x?} want {w:08x?}", tr.kind, tr.flags);
+                    }
+                    bad += 1;
+                }
+            }
+        }
+        assert_eq!(bad, 0, "{bad} of {n} DOFs differ");
     }
 }

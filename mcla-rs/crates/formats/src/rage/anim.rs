@@ -27,11 +27,26 @@ pub enum TrackData {
     Rot(Vec<Quat>),
 }
 
+/// One channel as the original's sampler reads it (F-12216 and the per-channel evaluators): type 4 one float, type 1 a float
+/// per frame, type 6 the quantised integers with their scale and offset (the value is fma(q, scale, offset)), types 9 / 13
+/// one 16-byte value (a quaternion, a vector and its fourth word).
+#[derive(Debug, Clone)]
+pub enum Chan {
+    Static(f32),
+    Raw(Vec<f32>),
+    Quant(Vec<u32>, f32, f32),
+    Static4([f32; 4]),
+}
+
 #[derive(Debug, Clone)]
 pub struct Track {
     pub kind: u8,
     pub bone_id: u16,
     pub data: TrackData,
+    /// the track's byte +1 (its high nibble 0x10: one channel per component)
+    pub flags: u8,
+    /// the channels (of the first block; empty for a clip of several blocks)
+    pub chans: Vec<Chan>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -41,6 +56,10 @@ pub struct Animation {
     pub duration: f32,
     pub looped: bool,
     pub tracks: Vec<Track>,
+    /// +0a frames per block, the block count (+18) and the first block's frame count (+10 of the block)
+    pub block_len: u16,
+    pub blocks: u16,
+    pub block0_frames: u16,
 }
 
 pub const KIND_TRANSLATION: u8 = 0;
@@ -82,6 +101,34 @@ fn channel(rd: &Rd, ch: usize, frames: usize) -> Option<Vec<f32>> {
     }
 }
 
+fn chan(rd: &Rd, ch: usize) -> Option<Chan> {
+    Some(match rd.u8(ch + 5) {
+        4 => Chan::Static(rd.f32(ch + 8)),
+        1 => {
+            let p = rd.ptr(ch + 8)?;
+            let cnt = rd.u16(ch + 0x0c) as usize;
+            if !rd.has(p, cnt * 4) {
+                return None;
+            }
+            Chan::Raw((0..cnt).map(|i| rd.f32(p + i * 4)).collect())
+        }
+        6 => {
+            let p = rd.ptr(ch + 8)?;
+            let nb = rd.u32(ch + 0x0c) as usize;
+            let cnt = rd.u32(ch + 0x10) as usize;
+            if nb == 0 || nb > 32 || !rd.has(p, (cnt * nb + 31) / 32 * 4) {
+                return None;
+            }
+            Chan::Quant((0..cnt).map(|i| bits(rd, p, i * nb, nb)).collect(), rd.f32(ch + 0x14), rd.f32(ch + 0x18))
+        }
+        9 | 0x0d => {
+            let p = rd.ptr(ch + 8)?;
+            Chan::Static4([rd.f32(p), rd.f32(p + 4), rd.f32(p + 8), rd.f32(p + 12)])
+        }
+        _ => return None,
+    })
+}
+
 fn track(rd: &Rd, tr: usize, frames: usize) -> Option<Track> {
     let kind = rd.u8(tr);
     let bone_id = rd.u16(tr + 2);
@@ -113,7 +160,8 @@ fn track(rd: &Rd, tr: usize, frames: usize) -> Option<Track> {
             return None;
         }
     };
-    Some(Track { kind, bone_id, data })
+    let chans = (0..n.min(4)).filter_map(|k| chan(rd, rd.ptr(tr + 4 + k * 4)?)).collect();
+    Some(Track { kind, bone_id, data, flags: rd.u8(tr + 1), chans })
 }
 
 /// Parse the animation object at `o` (found by scanning: the name has to be a path).
@@ -156,6 +204,7 @@ pub fn animation_named(rd: &Rd, o: usize) -> Option<Animation> {
     }
     let bl = rd.ptr(o + 0x14)?;
     let mut tracks: Vec<Track> = Vec::new();
+    let mut block0_frames = 0;
     for b in 0..nblk {
         let blk = rd.ptr(bl + b * 4)?;
         let ta = rd.ptr(blk + 4)?;
@@ -167,6 +216,9 @@ pub fn animation_named(rd: &Rd, o: usize) -> Option<Animation> {
             0 => frames,
             n => n,
         };
+        if b == 0 {
+            block0_frames = rd.u16(blk + 0x10);
+        }
         let cur: Vec<Track> = (0..nt).filter_map(|t| track(rd, rd.ptr(ta + t * 4)?, bf)).collect();
         if nblk == 1 {
             tracks = cur;
@@ -175,7 +227,7 @@ pub fn animation_named(rd: &Rd, o: usize) -> Option<Animation> {
         // several blocks: every track spelled out per frame, blocks joined at the shared frame
         let skip = if b == 0 { 0 } else { 1 };
         if b == 0 {
-            tracks = cur.iter().map(|t| Track { kind: t.kind, bone_id: t.bone_id, data: match t.data { TrackData::Vec(_) => TrackData::Vec(Vec::new()), TrackData::Rot(_) => TrackData::Rot(Vec::new()) } }).collect();
+            tracks = cur.iter().map(|t| Track { kind: t.kind, bone_id: t.bone_id, flags: t.flags, chans: Vec::new(), data: match t.data { TrackData::Vec(_) => TrackData::Vec(Vec::new()), TrackData::Rot(_) => TrackData::Rot(Vec::new()) } }).collect();
         }
         for t in tracks.iter_mut() {
             let src = cur.iter().find(|c| c.kind == t.kind && c.bone_id == t.bone_id);
@@ -193,7 +245,7 @@ pub fn animation_named(rd: &Rd, o: usize) -> Option<Animation> {
             }
         }
     }
-    Some(Animation { name, frames, duration, looped: rd.u16(o + 4) & 1 != 0, tracks })
+    Some(Animation { name, frames, duration, looped: rd.u16(o + 4) & 1 != 0, tracks, block_len: rd.u16(o + 0x0a), blocks: nblk as u16, block0_frames })
 }
 
 /// The animation called exactly `name` inside a resource whose animations carry plain names
