@@ -2898,7 +2898,8 @@ impl Gpu {
     /// RENDER SCALE: the scene drawn at window x `scale` (1.0 / 1.25 / 1.5 / 1.75 / 2.0 on the page; 0.5 - 2.0
     /// taken); the targets made again when it changes.
     pub fn set_render_scale(&mut self, scale: f32) {
-        let scale = scale.clamp(0.5, 2.0);
+        // (down to 0.25: a fullscreen fallen back to borderless at a small resolution - hooks::fallback_scale)
+        let scale = scale.clamp(0.25, 2.0);
         if (scale - self.render_scale).abs() > 1e-4 {
             self.render_scale = scale;
             self.resize_scene();
@@ -2911,6 +2912,9 @@ impl Gpu {
         let lim = self.device.limits().max_texture_dimension_2d;
         let sw = ((w as f32 * self.render_scale).round() as u32).clamp(1, lim);
         let sh = ((h as f32 * self.render_scale).round() as u32).clamp(1, lim);
+        if (sw, sh) != (self.scene_w, self.scene_h) {
+            log::info!("scene: {sw}x{sh} for the {w}x{h} window (render scale {:.3})", self.render_scale);
+        }
         self.scene_w = sw;
         self.scene_h = sh;
         self.depth = create_depth(&self.device, sw, sh);

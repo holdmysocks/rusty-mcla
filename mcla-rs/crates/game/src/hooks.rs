@@ -922,6 +922,21 @@ pub fn render_scale() -> f32 {
     display().render_scale.clamp(0.5, 2.0)
 }
 
+/// GitHub #33: a fullscreen that fell back to borderless (no swap chain on an exclusive-fullscreen window: DX12 always,
+/// some AMD Vulkan drivers) has a window at the monitor's size. The scene is then drawn with the pixel count of the chosen
+/// resolution and scaled to the window (`render::Gpu::set_render_scale`), as the exclusive mode would have shown it; 1.0
+/// in every other case (borderless chosen as such takes the monitor's size, windowed and exclusive are at the resolution).
+pub fn fallback_scale(win_w: u32, win_h: u32) -> f32 {
+    if window_mode() != WindowMode::Fullscreen || win_w == 0 || win_h == 0 {
+        return 1.0;
+    }
+    let r = display().resolution;
+    if (r.w, r.h) == (win_w, win_h) {
+        return 1.0;
+    }
+    (((r.w as f64 * r.h as f64) / (win_w as f64 * win_h as f64)).sqrt() as f32).min(1.0)
+}
+
 static GAME_LIVE: Mutex<Option<mcla_config::GameSettings>> = Mutex::new(None);
 
 /// The `game.*` performance settings in effect (the file's at the start, then what the PERFORMANCE page changed).

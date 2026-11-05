@@ -10232,7 +10232,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         let t_sim = now.elapsed().as_secs_f32() * 1000.0;
 
         // (RENDER SCALE: the scene at window x scale, filtered down by the post chain - render/post.rs)
-        gpu.set_render_scale(crate::hooks::render_scale());
+        // (GitHub #33: times the chosen resolution's share of a borderless window a fullscreen fell back to)
+        gpu.set_render_scale(crate::hooks::render_scale() * crate::hooks::fallback_scale(gpu.config.width, gpu.config.height));
         let frame = match gpu.surface.get_current_texture() {
             Ok(f) => f,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {

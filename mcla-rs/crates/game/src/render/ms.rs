@@ -194,14 +194,29 @@ pub fn build_behind(pipes: Vec<MsPipe>, variants: Vec<Variant>) {
         return;
     }
     let t = std::time::Instant::now();
-    let _ = std::thread::Builder::new().name("msaa behind".into()).spawn(move || {
-        for v in &variants {
-            for p in &pipes {
+    // (a quarter of the CPU's threads, 1 - 4: on DX12 each takes 1 - 2 s in DXC, 80 of them 97 s on one thread on a
+    // 12-thread i5 - GitHub #33; the game runs beside them, so not more. All but the first wait while `warm`'s threads
+    // build what the start-up movie's LOADING waits for, so that they do not slow those down.)
+    let threads = std::thread::available_parallelism().map_or(1, |n| (n.get() / 4).clamp(1, 4));
+    let jobs: Arc<Vec<(MsPipe, Variant)>> = Arc::new(variants.iter().flat_map(|&v| pipes.iter().map(move |p| (p.clone(), v))).collect());
+    let next = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let left = Arc::new(AtomicU32::new(threads as u32));
+    for k in 0..threads {
+        let (jobs, next, left) = (jobs.clone(), next.clone(), left.clone());
+        let _ = std::thread::Builder::new().name("msaa behind".into()).spawn(move || {
+            while k > 0 && warming() && next.load(Ordering::Relaxed) < jobs.len() {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                let Some((p, v)) = jobs.get(i) else { break };
                 p.inner.at(*v);
             }
-        }
-        log::info!("pipeline: {} built behind the loading in {} ms", pipes.len() * variants.len(), t.elapsed().as_millis());
-    });
+            if left.fetch_sub(1, Ordering::AcqRel) == 1 {
+                log::info!("pipeline: {} built behind the loading in {} ms ({} threads)", jobs.len(), t.elapsed().as_millis(), threads);
+            }
+        });
+    }
 }
 
 impl std::ops::Deref for MsPipe {
