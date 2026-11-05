@@ -48,6 +48,29 @@ fn is_null(h: u32) -> bool {
     h == 0 || h == joaat("NULL_SOUND")
 }
 
+/// The type-1 handler of a script's Sound event (F-77205; the city's WHOOSHES_* triggers): nothing when the player's
+/// speed in mph (the chassis speed x 2.237) is below the record's +14; else the sound +10 at the event's position with
+/// f = the smaller of (throttle - +22) / (+26 - +22) and (mph - +14) / (+18 - +14), neither clamped: volume
+/// (+30 + (+32 - +30) x f) x 0.01 dB and pitch +34 + (+36 - +34) x f cents (truncated). Speed and throttle are the
+/// player's, whichever racer crossed the line. Returns (sound hash, dB, cents).
+pub fn trigger_speed_sound(rec: &[u8], speed: f32, throttle: f32) -> Option<(u32, f32, i32)> {
+    let mph = speed * 2.237f32;
+    let lo = be_f32(rec, 14);
+    if mph < lo {
+        return None;
+    }
+    let ft = (throttle - be_f32(rec, 22)) / (be_f32(rec, 26) - be_f32(rec, 22));
+    let fs = (mph - lo) / (be_f32(rec, 18) - lo);
+    // fsel(ft - fs, fs, ft)
+    let f = if ft - fs >= 0.0 { fs } else { ft };
+    let (v0, v1, p0, p1) = (be_s16(rec, 30), be_s16(rec, 32), be_s16(rec, 34), be_s16(rec, 36));
+    let vol = (v1 - v0).mul_add(f, v0) * 0.01f32;
+    let p = (p1 - p0).mul_add(f, p0);
+    // fctiwz: saturating, NaN -> the most negative
+    let cents = if p.is_nan() { i32::MIN } else { p as i32 };
+    Some((be_u32(rec, 10), vol, cents))
+}
+
 /// Linear step toward a target, clamped there (F-90102).
 fn approach(p: &mut f32, target: f32, step: f32) {
     approach_fma(p, target, step, 1.0);
@@ -2793,6 +2816,31 @@ impl<H: Copy> AnimSound<H> {
 
 #[cfg(test)]
 mod tests {
+
+    /// tools/speed_sound_reference.py ran the original's handler F-77205 offline on 4,000 cases (the four WHOOSHES
+    /// records of game.dat and random ones; no player, no vehicle, random speeds and throttles): whether a sound is made,
+    /// its hash, volume and pitch as the original's
+    #[test]
+    fn trigger_speed_sound_is_the_originals() {
+        let hx = |t: &str| u32::from_str_radix(&t[1..], 16).unwrap();
+        let (mut n, mut sounds) = (0, 0);
+        for l in include_str!("testdata/speed_sound_ref.txt").lines().filter(|l| !l.is_empty()) {
+            let t: Vec<&str> = l.split_whitespace().collect();
+            let who = t[1][1..].parse::<u32>().unwrap();
+            let (speed, thr) = (f32::from_bits(hx(t[2])), f32::from_bits(hx(t[3])));
+            let mut rec = Vec::new();
+            for k in 0..9 {
+                rec.extend_from_slice(&hx(t[4 + k]).to_be_bytes());
+            }
+            rec.extend_from_slice(&(hx(t[13]) as u16).to_be_bytes());
+            let got = if who < 2 { None } else { super::trigger_speed_sound(&rec, speed, thr) };
+            let want = t.iter().position(|v| *v == "S").map(|i| (hx(t[i + 1]), hx(t[i + 2]), hx(t[i + 3]) as i32));
+            assert_eq!(got.map(|(h, v, p)| (h, v.to_bits(), p)), want, "{l}");
+            n += 1;
+            sounds += want.is_some() as usize;
+        }
+        assert_eq!((n, sounds), (4000, 2635));
+    }
 
     /// F-46044 against the original's own code on 20000 inputs (work/audio2/verify/ref6.py)
     /// The listener probe's material fields (F-26357, BUS_GRAPH_RULE.md 2.5) as the surfaces reach them: +230 bit 0 names

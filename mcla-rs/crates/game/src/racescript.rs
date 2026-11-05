@@ -270,34 +270,6 @@ fn parse_calls(calls: &[Call]) -> (Vec<(String, Vec3, Quat)>, Vec<Trigger>) {
     (props, triggers)
 }
 
-/// The sound triggers of the open city (`script_obj/game/race/global/0x2b7901de/*`):
-/// lines across the road under overpasses, gantry signs and in tunnel mouths where a
-/// car going past hears the whoosh. Returned as segments (cylinders as short ones).
-pub fn whoosh_lines(data_dir: &str) -> Vec<(Vec3, Vec3)> {
-    let dir = Path::new(data_dir).join("script_obj/game/race/global/0x2b7901de");
-    let mut out: Vec<(Vec3, Vec3)> = Vec::new();
-    let Ok(rd) = std::fs::read_dir(dir) else { return out };
-    for e in rd.flatten() {
-        let Some(sco) = std::fs::read(e.path()).ok().and_then(|d| mcla_formats::sco::decode(&d).ok()) else { continue };
-        let (_, triggers) = parse_calls(&sco.calls());
-        for t in triggers {
-            if !t.actions.iter().any(|a| matches!(a, Action::Sound { object, .. } if !object.starts_with("DISPATCH"))) {
-                continue;
-            }
-            let seg = match t.shape {
-                Shape::Line { a, b } => (a, b),
-                Shape::Cylinder { c, r, .. } | Shape::Ring { c, r, .. } => (c - Vec3::X * r, c + Vec3::X * r),
-                Shape::Timer(_) => continue,
-            };
-            // the files overlap: one of each
-            if !out.iter().any(|o| o.0.distance(seg.0) < 1.0 && o.1.distance(seg.1) < 1.0) {
-                out.push(seg);
-            }
-        }
-    }
-    out
-}
-
 /// A trigger line's centre (mcTriggerLine vtable slot 9, F-73482): the sum of its two ends
 /// times one half.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -313,66 +285,81 @@ pub fn line_half_length(a: Vec3, b: Vec3) -> f32 {
     d.z.mul_add(d.z, d.y.mul_add(d.y, d.x * d.x)).sqrt() * 0.5
 }
 
-/// The triggers of the open city's global scripts whose `Sound` is a `DISPATCH_REPORT_VIOLATION_*` call, armed.
-pub fn dispatch_zones(data_dir: &str) -> Vec<GlobalDispatch> {
+/// The six GlobalTriggers scripts (`0x2b7901de`) in the order SoundTriggers.sco starts them: be, dt, FW, hl, hw and
+/// hw_global_audio_interiors.
+const GLOBAL_SCRIPTS: [&str; 6] = ["0xda391e92", "0x04f8c8be", "0x7b905d04", "0xe041fe07", "0x4241a834", "0xd6161914"];
+
+/// Every trigger of the city's GlobalTriggers scripts, each with its one `Sound` event: the 1,131 WHOOSHES_* lines and
+/// radii (tunnels, overpasses, freeway signs, pillars) and the 271 DISPATCH_REPORT_VIOLATION_* lines, in the scripts'
+/// order. The files overlap in places; the original loads every trigger, so does this.
+pub fn global_sounds(data_dir: &str) -> Vec<GlobalSound> {
     let dir = Path::new(data_dir).join("script_obj/game/race/global/0x2b7901de");
-    let mut out: Vec<GlobalDispatch> = Vec::new();
-    let Ok(rd) = std::fs::read_dir(dir) else { return out };
-    for e in rd.flatten() {
-        let Some(sco) = std::fs::read(e.path()).ok().and_then(|d| mcla_formats::sco::decode(&d).ok()) else { continue };
+    let mut out: Vec<GlobalSound> = Vec::new();
+    for f in GLOBAL_SCRIPTS {
+        let Some(sco) = std::fs::read(dir.join(f)).ok().and_then(|d| mcla_formats::sco::decode(&d).ok()) else { continue };
         let (_, triggers) = parse_calls(&sco.calls());
         for t in triggers {
-            let Some(call) = t.actions.iter().find_map(|a| match a {
-                Action::Sound { object, .. } if object.starts_with("DISPATCH") => Some(object.clone()),
+            let Some((pos, object)) = t.actions.iter().find_map(|a| match a {
+                Action::Sound { pos, object } => Some((*pos, object.clone())),
                 _ => None,
             }) else { continue };
             if matches!(t.shape, Shape::Timer(_)) {
                 continue;
             }
-            out.push(GlobalDispatch { shape: t.shape.clone(), line_h: t.line_h, call, done: false });
+            out.push(GlobalSound { shape: t.shape.clone(), line_h: t.line_h, object, pos, done: false });
         }
     }
     out
 }
 
-/// A trigger of the city's GlobalTriggers scripts (`0x2b7901de`) with a DISPATCH sound: armed until it fires, then
-/// dead until the next ResetTriggers (F-55754: the scripts' start, every race's start, a replay restore). None of
+/// A trigger of the city's GlobalTriggers scripts with its Sound event's game object and position: armed until it fires,
+/// then dead until the next ResetTriggers (F-55754: the scripts' start, every race's start, a replay restore). None of
 /// them fires more than once (bTriggerMultipleTimes is never set).
 #[derive(Clone, Debug)]
-pub struct GlobalDispatch {
+pub struct GlobalSound {
     pub shape: Shape,
     pub line_h: f32,
-    pub call: String,
+    pub object: String,
+    pub pos: Vec3,
     pub done: bool,
 }
 
-/// The trigger manager's test (F-55598) of the global dispatch triggers for the player's move from `q` to `p`: a
-/// line fires when the move crosses it seen from above (both crossing points within their segments) at a height from
-/// the line's less 2 m to below the line's plus rHeight (F-37517); a cylinder when the player is within its radius
-/// and from its centre's height less 1 m to below it plus its height (F-94534). The call of the first one that fires.
-pub fn dispatch_test(zones: &mut [GlobalDispatch], q: Vec3, p: Vec3) -> Option<String> {
-    let mut out = None;
-    for z in zones.iter_mut().filter(|z| !z.done) {
-        let hit = match z.shape {
-            Shape::Line { a, b } => {
-                let (d, e) = (b - a, p - q);
-                let den = d.x * e.z - d.z * e.x;
-                if den.abs() < 1e-9 {
-                    false
-                } else {
-                    let w = q - a;
-                    let s = (w.x * e.z - w.z * e.x) / den;
-                    let u = (w.x * d.z - w.z * d.x) / den;
-                    let (ly, cy) = (a.y + d.y * s, q.y + e.y * u);
-                    (0.0..=1.0).contains(&s) && (0.0..=1.0).contains(&u) && cy >= ly - 2.0 && cy < ly + z.line_h
+/// The trigger manager's test (F-55598) of the global triggers for the racers' moves from `q` to `p` (the player
+/// first): a line fires when a move crosses it seen from above (both crossing points within their segments) at a height
+/// from the line's less 2 m to below the line's plus rHeight (F-37517), for any racer; a radius when a racer is within it
+/// and from its centre's height less 1 m to below it plus its height (F-94534) - fired only for the player, another
+/// racer inside consumes it unfired. The triggers fired, in order.
+pub fn global_test(zones: &mut [GlobalSound], moves: &[(Vec3, Vec3)]) -> Vec<usize> {
+    let mut out = Vec::new();
+    for (k, &(q, p)) in moves.iter().enumerate() {
+        for (i, z) in zones.iter_mut().enumerate().filter(|(_, z)| !z.done) {
+            let (hit, fire) = match z.shape {
+                Shape::Line { a, b } => {
+                    let (d, e) = (b - a, p - q);
+                    let den = d.x * e.z - d.z * e.x;
+                    let h = if den.abs() < 1e-9 {
+                        false
+                    } else {
+                        let w = q - a;
+                        let s = (w.x * e.z - w.z * e.x) / den;
+                        let u = (w.x * d.z - w.z * d.x) / den;
+                        let (ly, cy) = (a.y + d.y * s, q.y + e.y * u);
+                        (0.0..=1.0).contains(&s) && (0.0..=1.0).contains(&u) && cy >= ly - 2.0 && cy < ly + z.line_h
+                    };
+                    (h, h)
+                }
+                Shape::Cylinder { c, r, h } | Shape::Ring { c, r, h, .. } => {
+                    let h = p.y > c.y - 1.0 && p.y < c.y + h && Vec3::new(p.x - c.x, 0.0, p.z - c.z).length() < r;
+                    (h, h && k == 0)
+                }
+                Shape::Timer(_) => (false, false),
+            };
+            if hit {
+                z.done = true;
+                if fire {
+                    out.push(i);
                 }
             }
-            Shape::Cylinder { c, r, h } | Shape::Ring { c, r, h, .. } => p.y > c.y - 1.0 && p.y < c.y + h && Vec3::new(p.x - c.x, 0.0, p.z - c.z).length() < r,
-            Shape::Timer(_) => false,
-        };
-        if hit {
-            z.done = true;
-            out = out.or(Some(z.call.clone()));
         }
     }
     out
@@ -1039,6 +1026,30 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The global triggers' fire rule (global_triggers.md 2-3): a line fires for whichever racer crosses it, once until
+    /// the next reset; a radius fires only for the player, and another racer inside consumes it unfired; brushing past a
+    /// line without crossing it fires nothing.
+    #[test]
+    fn global_triggers_fire_once() {
+        let z = |shape: Shape| GlobalSound { shape, line_h: 20.0, object: "WHOOSHES_TUNNEL".into(), pos: Vec3::ZERO, done: false };
+        let mut zs = vec![
+            z(Shape::Line { a: Vec3::new(-10.0, 0.0, 0.0), b: Vec3::new(10.0, 0.0, 0.0) }),
+            z(Shape::Cylinder { c: Vec3::new(50.0, 0.0, 0.0), r: 5.0, h: 20.0 }),
+            z(Shape::Cylinder { c: Vec3::new(80.0, 0.0, 0.0), r: 5.0, h: 20.0 }),
+        ];
+        let v = |x: f32, z: f32| Vec3::new(x, 0.5, z);
+        // the player brushes along the line, an opponent stands in the second radius
+        assert_eq!(global_test(&mut zs, &[(v(-9.0, 0.5), v(9.0, 0.5)), (v(50.0, 0.0), v(50.0, 1.0))]), Vec::<usize>::new());
+        assert!(!zs[0].done && zs[1].done);
+        // an opponent crosses the line: it fires; the player then crosses it again and enters the third radius
+        assert_eq!(global_test(&mut zs, &[(v(0.0, 3.0), v(0.0, 2.0)), (v(1.0, 1.0), v(1.0, -1.0))]), vec![0]);
+        assert_eq!(global_test(&mut zs, &[(v(0.0, 1.0), v(0.0, -1.0)), (v(30.0, 0.0), v(30.0, 0.0))]), Vec::<usize>::new());
+        assert_eq!(global_test(&mut zs, &[(v(79.0, 0.0), v(80.0, 0.0))]), vec![2]);
+        // too low under the line (2 m below it) or above its height: nothing
+        zs[0].done = false;
+        assert!(global_test(&mut zs, &[(Vec3::new(0.0, -2.5, 1.0), Vec3::new(0.0, -2.5, -1.0)), (Vec3::new(0.0, 20.0, 1.0), Vec3::new(0.0, 20.0, -1.0))]).is_empty());
+    }
 
     /// F-35087: the bounds, the disarming draw, the count draw and the picks.
     #[test]

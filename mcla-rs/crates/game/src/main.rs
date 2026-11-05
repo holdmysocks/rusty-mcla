@@ -378,9 +378,10 @@ struct App {
     speech: speech::Speech,
     radio: radio::Radio,
     /// where the dispatcher reports reckless driving (centre, radius, call), and the pause between reports
-    dispatch_zones: Vec<racescript::GlobalDispatch>,
+    dispatch_zones: Vec<racescript::GlobalSound>,
     /// the player's place last frame (the global triggers' line test)
-    dispatch_prev: Option<Vec3>,
+    /// the racers' positions last frame (car index), for the global trigger lines
+    dispatch_prev: Vec<(usize, Vec3)>,
     /// seconds until the next bit of pursuit chatter
     /// the light manager's fourth record this frame (F-62430): the siren's nearest the camera, else the checkpoint's -
     /// place, colour, strength
@@ -442,11 +443,6 @@ struct App {
     /// a mission whose READY_TO_START_ON_ENTER script plays its story scene first: it enters
     /// the log (mcMission_ChangeState(3)) once the scene is over - RACE_GH_06 0xadb
     pending_log: Option<String>,
-    /// whoosh lines of the city, by 128 m cell; where the player was last frame
-    whoosh: hashbrown::HashMap<(i32, i32), Vec<(Vec3, Vec3)>>,
-    whoosh_prev: Vec3,
-    whoosh_cool: f32,
-    whooshes_heard: u32,
     /// the hidden collectable barrels (`script_obj/game/MiscTasks/Collectables.sco`)
     barrels: Vec<Vec3>,
     /// the placed props have to be rebuilt (a race began or ended, a barrel was taken)
@@ -1120,7 +1116,7 @@ impl App {
             speech: Default::default(),
             radio: radio::Radio::default(),
             dispatch_zones: Vec::new(),
-            dispatch_prev: None,
+            dispatch_prev: Vec::new(),
             record3: None,
             shape_lib: None,
             car_zones: Default::default(),
@@ -1150,10 +1146,6 @@ impl App {
             tip_shown: false,
             pending_call: None,
             pending_log: None,
-            whoosh: Default::default(),
-            whoosh_prev: Vec3::ZERO,
-            whoosh_cool: 0.0,
-            whooshes_heard: 0,
             barrels: Vec::new(),
             props_dirty: true,
             dress: None,
@@ -4892,98 +4884,40 @@ impl App {
             crate::ticktimes::mark(crate::ticktimes::S::Other);
             self.vehicles.manage_parked(&gpu, focus);
         }
-        if self.tick_no == 20 && std::env::var("MCLA_WHOOSH_STAT").is_ok() {
-            if let Some(nav) = world.nav.as_ref() {
-                let cross = |o: Vec3, u: Vec3, w: Vec3| (u.x - o.x) * (w.z - o.z) - (u.z - o.z) * (w.x - o.x);
-                let (mut n, mut crossing, mut along, mut lens) = (0, 0, 0, 0.0f32);
-                for list in self.whoosh.values() {
-                    for (a, b) in list {
-                        n += 1;
-                        lens += a.distance(*b);
-                        let m = (*a + *b) * 0.5;
-                        let d = (*b - *a).normalize_or(Vec3::X);
-                        let mut c = false;
-                        let mut al = false;
-                        for li in nav.links_near(m, a.distance(*b) * 0.5 + 30.0) {
-                            let l = &nav.links[li];
-                            if (l.a.y - a.y).abs() > 14.0 {
-                                continue;
-                            }
-                            if cross(*a, *b, l.a) * cross(*a, *b, l.b) < 0.0 && cross(l.a, l.b, *a) * cross(l.a, l.b, *b) < 0.0 {
-                                c = true;
-                            }
-                            if l.dir().dot(d).abs() > 0.9 && l.point_at(l.project(m)).distance(m) < 12.0 {
-                                al = true;
-                            }
-                        }
-                        crossing += c as i32;
-                        along += (al && !c) as i32;
+        // ---- the city's global triggers: rushing under an overpass, a gantry sign, into a tunnel, past a pillar (the
+        // whoosh), driving hard through one of the dispatcher's places (a report on the air) ----
+        // (the trigger manager runs them every frame, F-55598, for the racers of the racer list: the race's in a race, the
+        // player in free roam. A WHOOSHES object (type 1) plays its sound by the player's speed and throttle, F-77205; a
+        // DISPATCH object (type 3) always starts a Dispatch to Location on the player, F-94691 -> F-86831)
+        let racers: Vec<usize> = match (self.game.mode, self.game.race.as_ref()) {
+            (Mode::Race, Some(r)) => r.participants.clone(),
+            _ => self.vehicles.cars.iter().position(|c| c.is_player).into_iter().collect(),
+        };
+        let now: Vec<(usize, Vec3)> = racers.iter().filter_map(|&i| self.vehicles.cars.get(i).map(|c| (i, c.state.pos))).collect();
+        if matches!(self.game.mode, Mode::FreeRoam | Mode::Race) {
+            let moves: Vec<(Vec3, Vec3)> = now.iter().map(|&(i, p)| (self.dispatch_prev.iter().find(|e| e.0 == i).map(|e| e.1).unwrap_or(p), p)).collect();
+            let player = self.vehicles.player().map(|c| (c.state.speed(), c.input.throttle));
+            for z in racescript::global_test(&mut self.dispatch_zones, &moves) {
+                let z = &self.dispatch_zones[z];
+                let Some(lib) = self.sound.lib.as_mut() else { continue };
+                let kind = lib.game.get_name(&z.object).and_then(|o| o.first().copied());
+                match (kind, player) {
+                    (Some(3), Some(_)) if self.police.enabled => {
+                        log::info!("police radio: global trigger {}", z.object);
+                        self.police.dispatch_call = self.police.dispatch_call.take().or(Some(z.object.clone()));
                     }
-                }
-                log::info!("whoosh stat: {} lines, mean length {:.1}, {} cross a lane, {} only run along one", n, lens / n.max(1) as f32, crossing, along);
-            }
-        }
-        if self.tick_no % 120 == 0 && std::env::var("MCLA_WHOOSH_TEST").is_ok() {
-            if let Some(pp) = self.vehicles.player().map(|c| c.state.pos) {
-                let mut best = (f32::MAX, Vec3::ZERO, Vec3::ZERO);
-                for list in self.whoosh.values() {
-                    for (a, b) in list {
-                        let d = ((*a + *b) * 0.5).distance(pp);
-                        if d < best.0 {
-                            best = (d, *a, *b);
+                    (Some(1), Some((speed, thr))) => {
+                        let rec = lib.game.get_name(&z.object).map(|o| o.to_vec()).unwrap_or_default();
+                        if let Some((h, db, cents)) = caraudio::trigger_speed_sound(&rec, speed, thr) {
+                            log::debug!("global trigger {} at {:?}: {:.1} dB, {} cents", z.object, z.pos, db, cents);
+                            lib.play_hash(h, sndobj::Req::at(z.pos).vol(db).pitch(cents));
                         }
                     }
-                }
-                log::info!("whoosh test: player {:.0?} nearest line {:.0} m away: {:.0?} - {:.0?}; prev {:.0?} cool {:.1}", pp, best.0, best.1, best.2, self.whoosh_prev, self.whoosh_cool);
-            }
-        }
-        // ---- rushing under an overpass, a gantry sign, into a tunnel: the whoosh ----
-        // driving hard through one of the dispatcher's places puts a report on the air
-        // (the city's global triggers, run by the trigger manager every frame, F-55598: a DISPATCH sound of a type-3
-        // object always starts a Dispatch to Location on the player, F-94691 -> F-86831, which plays the call)
-        let pp = self.vehicles.player().map(|c| c.state.pos);
-        if let (Some(q), Some(pp)) = (self.dispatch_prev, pp) {
-            if self.police.enabled && matches!(self.game.mode, Mode::FreeRoam | Mode::Race) {
-                if let Some(call) = racescript::dispatch_test(&mut self.dispatch_zones, q, pp) {
-                    log::info!("police radio: global trigger {}", call);
-                    self.police.dispatch_call = Some(call);
+                    _ => {}
                 }
             }
         }
-        self.dispatch_prev = pp;
-        self.whoosh_cool -= dt;
-        if let Some((pp, speed)) = self.vehicles.player().map(|c| (c.state.pos, c.state.speed())) {
-            let q = self.whoosh_prev;
-            self.whoosh_prev = pp;
-            if (speed > 16.0 || (speed > 3.0 && std::env::var("MCLA_WHOOSH_TEST").is_ok())) && self.whoosh_cool <= 0.0 && q.distance(pp) < 12.0 && matches!(self.game.mode, Mode::FreeRoam | Mode::Race) {
-                let (cx, cz) = ((pp.x / 128.0).floor() as i32, (pp.z / 128.0).floor() as i32);
-                let cross = |o: Vec3, u: Vec3, w: Vec3| (u.x - o.x) * (w.z - o.z) - (u.z - o.z) * (w.x - o.x);
-                let mut hit = false;
-                for dx in -1..=1 {
-                    for dz in -1..=1 {
-                        if let Some(list) = self.whoosh.get(&(cx + dx, cz + dz)) {
-                            // crossing the line, or brushing past one that runs beside the road
-                            let near = |p: Vec3, a: Vec3, b: Vec3| {
-                                let ab = Vec3::new(b.x - a.x, 0.0, b.z - a.z);
-                                let t = (Vec3::new(p.x - a.x, 0.0, p.z - a.z).dot(ab) / ab.length_squared().max(0.01)).clamp(0.0, 1.0);
-                                Vec3::new(a.x + ab.x * t - p.x, 0.0, a.z + ab.z * t - p.z).length()
-                            };
-                            hit |= list.iter().any(|(a, b)| (pp.y - a.y).abs() < 12.0 && ((cross(*a, *b, q) * cross(*a, *b, pp) < 0.0 && cross(q, pp, *a) * cross(q, pp, *b) < 0.0) || (near(pp, *a, *b) < 3.5 && near(q, *a, *b) >= 3.5)));
-                        }
-                    }
-                }
-                if hit {
-                    self.whoosh_cool = 0.6;
-                    if let Some(a) = self.audio.as_mut() {
-                        if let Some(k) = a.pick("special_effects/bnk_special_effects", "whoosh_prop_large") {
-                            a.play_ex(&k, (0.25 + speed / 70.0).min(0.9), 0.9 + speed / 200.0);
-                        }
-                    }
-                    self.whooshes_heard += 1;
-                    log::debug!("whoosh at {:?} ({:.0} m/s)", pp, speed);
-                }
-            }
-        }
+        self.dispatch_prev = now;
         // ---- collectables: drive through a barrel to take it ----
         if matches!(self.game.mode, Mode::FreeRoam | Mode::Race) {
             if let Some(pp) = self.vehicles.player().map(|c| c.state.pos) {
@@ -5065,7 +4999,7 @@ impl App {
                 }
             }
             if self.tick_no % 600 == 0 {
-                log::info!("race script: {} scripted cars started, {} junctions held, {} nitro cues, {} whooshes", rt.started, rt.lights, rt.boosts, self.whooshes_heard);
+                log::info!("race script: {} scripted cars started, {} junctions held, {} nitro cues", rt.started, rt.lights, rt.boosts);
                 log::info!("race script: {} road densities set ({} roads with a script index)", rt.roads, self.vehicles.spawner.as_ref().map_or(0, |s| s.script.values().filter(|&&d| d != -1).count()));
             }
         }
@@ -13823,14 +13757,8 @@ impl App {
         self.game.vinyl_cats = vinyl::ShapeLib::categories(&self.opt.data_dir);
         self.game.data_dir = self.opt.data_dir.clone();
         {
-            self.dispatch_zones = racescript::dispatch_zones(&self.opt.data_dir);
-            log::info!("police radio: {} places with a dispatcher's report", self.dispatch_zones.len());
-            let lines = racescript::whoosh_lines(&self.opt.data_dir);
-            for (a, b) in &lines {
-                let m = (*a + *b) * 0.5;
-                self.whoosh.entry(((m.x / 128.0).floor() as i32, (m.z / 128.0).floor() as i32)).or_default().push((*a, *b));
-            }
-            log::info!("whoosh lines: {}", lines.len());
+            self.dispatch_zones = racescript::global_sounds(&self.opt.data_dir);
+            log::info!("global triggers: {} ({} with a dispatcher's report)", self.dispatch_zones.len(), self.dispatch_zones.iter().filter(|z| z.object.starts_with("DISPATCH")).count());
         }
         // collectables: the script fills an array of 60 positions (x, y, z, 3, index, 3, ...)
         if let Some(sco) = std::fs::read(std::path::Path::new(&self.opt.data_dir).join("script_obj/game/MiscTasks/Collectables.sco")).ok().and_then(|d| mcla_formats::sco::decode(&d).ok()) {
@@ -15211,6 +15139,13 @@ fn run_game() -> Result<()> {
                     };
                     c.step(&p, physics::CarInput { hyd, ..Default::default() }, &col, dt);
                     peak = peak.max(c.pos.y);
+                    // (MCLA_HYD_WHEEL: each wheel's foot against the ground, centre - radius, and its tick-to-tick move in the body)
+                    if std::env::var("MCLA_HYD_WHEEL").is_ok() {
+                        let v = c.veh.as_ref().unwrap();
+                        let foot = |i: usize| v.wheels[i].world.map_or(0.0, |w| w[3].y) - if i < 2 { vt.t.wheel_front.radius } else { vt.t.wheel_back.radius };
+                        let local = |i: usize| v.wheels[i].world.map_or(0.0, |w| (c.rot.inverse() * (w[3] - c.pos)).y);
+                        println!("  hw t {:.3} rams {:?} foot mm {:?} local mm {:?} comp mm {:?} grounded {:?} load {:?} y {:.4} vy {:.3}", tt, v.hyd.height.map(|h| (h * 1000.0).round()), [0, 1, 2, 3].map(|i| (foot(i) * 1000.0).round()), [0, 1, 2, 3].map(|i| (local(i) * 1000.0).round()), v.wheels.map(|w| (w.comp * 1000.0).round()), c.wheels.map(|w| w.grounded as u8), v.wheels.map(|w| w.load.round()), c.pos.y, c.vel.y);
+                    }
                     if std::env::var("MCLA_HYD_TRACE").is_ok() && f % 6 == 0 && tt > 5.9 && tt < 9.0 {
                         let v = c.veh.as_ref().unwrap();
                         println!("  t {:.1} y {:.3} vy {:.2} rams {:?} order {:?} loads {:?} comp {:?} grounded {:?}", tt, c.pos.y, c.vel.y, v.hyd.height.map(|h| (h * 100.0).round()), v.hyd.order, v.wheels.map(|w| w.load.round()), v.wheels.map(|w| (w.comp * 100.0).round()), c.wheels.map(|w| w.grounded as u8));
