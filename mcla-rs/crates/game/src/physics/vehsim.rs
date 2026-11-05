@@ -4233,8 +4233,11 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             ratio, speed: vs.engine_w, torque: vs.engine_torque, inertia: e.inertia,
             sync_torque: vt.sync_torque, idle_speed: e.idle_rpm * 0.104_719_76,
             // (the computer drivers' update, A-76185 and A-54822, writes IdleRPM over their
-            // car's EngageRPM every frame: their engines never get the converter's extra ratio)
-            max_speed: e.max_rpm * 0.104_719_76, engage_rpm: if input.ai || REPLAY_AI.load(std::sync::atomic::Ordering::Relaxed) { e.idle_rpm } else { e.engage_rpm }, cvt: e.engage_cvt,
+            // car's EngageRPM every frame: their engines never get the converter's extra ratio; so does a
+            // scene's animated brain F-91361 on its car - the engine update's `computer` above. The player's R8
+            // in the garage drive-out pulled on the converter's ratio here: 14.7 rad/s of engine speed on the
+            // first tick against the original's 4.9, recorded work/physics2/r8rec dr.1.bin samples 66-67)
+            max_speed: e.max_rpm * 0.104_719_76, engage_rpm: if input.ai || input.animated || REPLAY_AI.load(std::sync::atomic::Ordering::Relaxed) { e.idle_rpm } else { e.engage_rpm }, cvt: e.engage_cvt,
             pedal: thr_eng, gear_change_inertia: t.trans.s.gear_change_inertia,
             direction: vs.gear_change.direction, disconnected: vs.trans_inhibited,
         });
@@ -7179,6 +7182,25 @@ fn target_in_frame(rows: [Vec3; 3], lateral: Vec3, forward: Vec3, n: Vec3, depth
     fnms32(over, 0.0, fnms32(up, sink, fma32(depth, over, comp) - f32::from_bits(0x3be56042)))
 }
 
+/// mcCarSim::Reset (F-47310): the vehicle's re-set F-27947 - each part's own reset (engine, transmission,
+/// drivetrains, wheels, aero), the automatic brake (+396) and +548 cleared, the car set down at rest where it stands
+/// (F-72737: shafts and wheels still, first gear, the engine at idle) - then the nitrous (F-40379: level 0, not
+/// burning), the slipstream turbo (F-21020), the air ride (F-80081), the hydraulics (F-33184) and the chassis' own
+/// fields (F-41785: the steering's speed factor, the air time, ...). Recorded at the garage (work/physics2/r8rec,
+/// entry.bin, the player's R8 after the warp onto its spot): engine +28 boost 0.848 -> 0, +32 torque multiplier
+/// 1.0044 -> 1, +40 -> 0; transmission +28 -> 0, +72 / +148 -> 1; chassis +140 brake, +224 speed, +396, +548, +568
+/// -> 0; the body levelled about its heading. The port's state of a car that has not run yet is that state: a fresh
+/// one, set down level with no speed. (The car's nitrous shots stay where the game keeps them.)
+pub fn reset(st: &mut CarState, vt: &VehTune, world: &WorldCollider) {
+    let Some(old) = st.veh.as_deref() else { return };
+    log::info!("car reset at {:.2} {:.2} {:.2} (torque multiplier {:.4}, boost {:.3} were)", st.pos.x, st.pos.y, st.pos.z, old.torque_mult, old.boost_timer);
+    st.veh = Some(Box::new(VehState::default()));
+    let back = Mat3::from_quat(st.rot).z_axis;
+    let z = Vec3::new(back.x, 0.0, back.z).try_normalize().unwrap_or(Vec3::Z);
+    let x = Vec3::Y.cross(z);
+    set_pose(st, vt, world, [x, Vec3::Y, z, st.pos], Vec3::ZERO, Vec3::ZERO);
+}
+
 /// A car set down where a cine car event puts it, with a velocity (docs/reference/cutscenes/cine_car_event.md, snap):
 /// F-86308 with its probe - from a metre above the place to three below; on a hit the place is the hit, the up
 /// the polygon's normal and the rows made square about it (as the stand-up, R4) - the velocities as given, the still
@@ -7423,6 +7445,75 @@ mod crown_tests {
 #[cfg(test)]
 mod contact_integration_tests {
     use super::*;
+
+    /// The R8 on flat ground (tuned and hulled as the game sets it, vehicles.rs), after `ticks` of `input` from a car
+    /// set down at rest; `engage_idle` makes the tune's EngageRPM its IdleRPM
+    fn r8_driven(input: CarInput, ticks: usize, engage_idle: bool) -> (CarParams, VehTune, WorldCollider, CarState) {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR"));
+        let assets = crate::assets::Assets::new(&root);
+        let mut world = WorldCollider::default();
+        world.sectors.insert(0, super::super::collision::SectorMesh::build(vec![
+            [Vec3::new(-64.0, 0.0, -64.0), Vec3::new(-64.0, 0.0, 64.0), Vec3::new(64.0, 0.0, -64.0)],
+            [Vec3::new(64.0, 0.0, -64.0), Vec3::new(-64.0, 0.0, 64.0), Vec3::new(64.0, 0.0, 64.0)],
+        ]));
+        let car = crate::vehicle_model::load_car(&assets, &root.join("resources/vehicle/vp_aud_r8_08")).unwrap();
+        let mut params = crate::vehicles::car_params(&car);
+        let (s, h, hubs) = (car.simtune.as_ref().unwrap(), car.hull.as_ref().unwrap(), car.hubs.unwrap());
+        let mut base = s.base.clone();
+        if engage_idle {
+            base.engine.s.engage_rpm = base.engine.s.idle_rpm;
+        }
+        let mut tune = VehTune::new(base);
+        tune.seat((hubs[0].y + hubs[2].y) * 0.5);
+        params.veh = Some(std::sync::Arc::new(tune.clone()));
+        params.hull = Some(std::sync::Arc::new(super::super::hull::shaped(h, &s.base, (hubs[0].y + hubs[2].y) * 0.5, car.bike)));
+        let mut st = CarState::new(Vec3::new(0.0, 0.3, 0.0), 0.0);
+        for _ in 0..120 {
+            st.step(&params, CarInput { handbrake: true, ..Default::default() }, &world, crate::fixed_step::DT);
+        }
+        for _ in 0..ticks {
+            st.step(&params, input, &world, crate::fixed_step::DT);
+        }
+        (params, tune, world, st)
+    }
+
+    /// mcCarSim::Reset F-47310 at the garage (`reset`): a car that has been driven hard - the torque multiplier up from
+    /// DriftTorque, the boost re-armed - comes out with the multiplier 1 and the boost 0, as the recorded R8's (1.0044
+    /// -> 1, 0.848 -> 0), level, still, in first gear, and it stays where it is set down (the drive-in's car stood at
+    /// 861.80 -809.70 from the reset to the way out).
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR containing Complete Edition vehicle resources"]
+    fn reset_puts_the_car_at_rest() {
+        let (params, tune, world, mut st) = r8_driven(CarInput { throttle: 1.0, steer: 1.0, ..Default::default() }, 120, false);
+        let vs = st.veh.as_deref().unwrap();
+        assert!(vs.torque_mult > 1.01 && st.vel.length() > 3.0, "multiplier {} speed {}", vs.torque_mult, st.vel.length());
+        reset(&mut st, &tune, &world);
+        let vs = st.veh.as_deref().unwrap();
+        assert_eq!((vs.torque_mult, vs.boost_timer, vs.gear, vs.omega), (1.0, 0.0, 1, [0.0, 0.0]));
+        assert_eq!((st.vel, st.ang_vel), (Vec3::ZERO, Vec3::ZERO));
+        assert!((Mat3::from_quat(st.rot).y_axis - Vec3::Y).length() < 1e-5);
+        let at = st.pos;
+        for _ in 0..60 {
+            st.step(&params, CarInput { handbrake: true, ..Default::default() }, &world, crate::fixed_step::DT);
+        }
+        // (it settles onto its springs: a few centimetres down, not along)
+        let moved = st.pos - at;
+        assert!(moved.x.hypot(moved.z) < 0.001 && moved.y.abs() < 0.05, "moved {moved:?}");
+        assert_eq!(st.veh.as_deref().unwrap().torque_mult, 1.0);
+    }
+
+    /// A scene's animated brain writes IdleRPM over EngageRPM (F-91361), as a computer driver's update does: an animated
+    /// car drives the same with the tune's EngageRPM as with its IdleRPM - the converter gives it no extra ratio
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR containing Complete Edition vehicle resources"]
+    fn an_animated_car_has_no_engage_rpm() {
+        let drive = CarInput { throttle: 0.6, animated: true, ..Default::default() };
+        let (_, _, _, a) = r8_driven(drive, 30, false);
+        let (_, _, _, b) = r8_driven(drive, 30, true);
+        let (a, b) = (a.veh.as_deref().unwrap(), b.veh.as_deref().unwrap());
+        assert!(a.omega[0].abs() > 3.0, "shaft {}", a.omega[0]);
+        assert_eq!((a.engine_w.to_bits(), a.omega[0].to_bits()), (b.engine_w.to_bits(), b.omega[0].to_bits()), "engine {} / {}, shaft {} / {}", a.engine_w, b.engine_w, a.omega[0], b.omega[0]);
+    }
 
     #[test]
     #[ignore = "requires MCLA_DATA_DIR containing Complete Edition vehicle resources"]

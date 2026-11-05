@@ -349,6 +349,8 @@ struct App {
     garage_return: Option<(Vec3, f32)>,
     /// free radius around the car inside the garage
     garage_clear: f32,
+    /// the drive-in's reset F-47310 has set the player's car down on its garage spot (`vehsim::reset`)
+    garage_set_down: bool,
     /// the garage camera views of the car on the floor (its name, the views) and where the camera is between them
     garage_views: Option<(String, garagecam::Views)>,
     garage_cam: Option<(Vec3, Vec3, f32)>,
@@ -1102,6 +1104,7 @@ impl App {
             roam: roamers::Roamers::new(),
             garage_return: None,
             garage_clear: 0.0,
+            garage_set_down: false,
             garage_views: None,
             garage_cam: None,
             garage_tr: None,
@@ -5541,9 +5544,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             // is element 506 - none of the three garages)
                             self.game.mc4_stat_set("tGAR", 0, 1.0);
                             // (the car's reset F-46526 after the warp, before the `_ent` scene shows it on its spot:
-                            // mcCarSim::Reset F-47310 resets the air ride, F-80081 - bags at 0, off)
-                            if let Some(v) = self.vehicles.player_mut().and_then(|c| c.state.veh.as_deref_mut()) {
-                                v.air = physics::vehsim::AirRide::default();
+                            // mcCarSim::Reset F-47310: the whole car - engine, gearbox, wheels, air ride, hydraulics - at rest,
+                            // vehsim::reset; recorded: the R8's torque multiplier and boost back to 1 and 0)
+                            if let Some(c) = self.vehicles.player_mut() {
+                                if let Some(vt) = c.params().veh.clone() {
+                                    physics::vehsim::reset(&mut c.state, &vt, &world.collider);
+                                    self.garage_set_down = true;
+                                }
                             }
                             // (LOCATION_EVENT with the place's name: garage_core's static +4)
                             self.game.career.event(career::Ev::Str("LOCATION_EVENT", su.key));
@@ -5777,7 +5784,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.garage_tr = None;
                             self.garage_cam = None;
                             self.garage_clear = clear;
-                            if let Some(c) = self.vehicles.player_mut() {
+                            // (a drive-in - GO TO GARAGE's warp, the car's reset F-47310 and the `_ent` scene - has
+                            // already set the car down on its spot at rest: the original's car stays there untouched
+                            // until the way out, recorded work/physics2/r8rec entry.bin: still at 861.80 -809.70 from the
+                            // reset to the exit. Dropping it again from 0.6 m made it bounce, and the bounce's climb gave
+                            // the engine HillTorque's full extra (torque multiplier 1.4337) for the drive-out's first tick)
+                            let set_down = std::mem::take(&mut self.garage_set_down) && self.vehicles.player().is_some_and(|c| c.state.speed() < 0.05 && glam::Vec2::new(c.state.pos.x - p.x, c.state.pos.z - p.z).length() < 1.0);
+                            if set_down {
+                                log::info!("garage: the car stays where the drive-in set it down ({:.3?})", ppos);
+                            }
+                            if let Some(c) = self.vehicles.player_mut().filter(|_| !set_down) {
                                 // (the car goes in with the damage it has: the garage asks about it)
                                 let old = std::mem::replace(&mut c.state, physics::car::CarState::new(p + Vec3::Y * 0.6, 0.6));
                                 c.state.keep_damage(&old);
