@@ -811,6 +811,8 @@ pub struct Rider {
     rail_seq: u64,
     rail_key: Option<RailKey>,
     rail_fresh: bool,
+    /// the cruising ghost's route, its speeds and its own random numbers (None: an ordinary car; `GhostRide`)
+    pub ghost: Option<Box<GhostRide>>,
 }
 
 impl Rider {
@@ -866,6 +868,7 @@ impl Rider {
             rail_seq: next_rail_seq(),
             rail_key: None,
             rail_fresh: true,
+            ghost: None,
         };
         r.place(nav, link, s);
         r.life = 8.0 + 4.0 * r.rand();
@@ -2126,12 +2129,12 @@ pub fn brake_lamp(r: &Rider) -> bool {
 /// positive one with the smallest gap, else free driving towards `want`. Returns the
 /// acceleration and the entry chosen.
 #[allow(clippy::too_many_arguments)]
-fn control(r: &mut Rider, v: f32, want: f32, half_len: f32, ahead: &Ahead, others: &[Other], stop: Option<(usize, f32)>, slower: Option<(f32, f32)>, dt: f32) -> (f32, Option<usize>) {
+fn control(r: &mut Rider, v: f32, want: f32, half_len: f32, ahead: &Ahead, others: &[Other], stop: Option<(usize, f32)>, slower: Option<(f32, f32)>, dest: Option<(f32, f32)>, dt: f32) -> (f32, Option<usize>) {
     let ty = r.ty;
     let max_decel = if ahead.player_across { ty.max_decel * 3.0 } else { ty.max_decel };
     let up = ty.max_accel + r.bonus;
     let mph = v / MPH;
-    let mut entries: [Option<(f32, f32, bool)>; 3] = [None; 3];
+    let mut entries: [Option<(f32, f32, bool)>; 4] = [None; 4];
     // 0: the car ahead (F-10623): centre to centre, half lengths and the standing gap
     // stretched with speed
     let obst = (ahead.j != usize::MAX).then_some(ahead.j);
@@ -2159,22 +2162,27 @@ fn control(r: &mut Rider, v: f32, want: f32, half_len: f32, ahead: &Ahead, other
     if let Some((vt, d)) = slower {
         entries[2] = Some((needed(v, vt, d, 0.0, up, max_decel), d, false));
     }
+    // 3: the cruising ghost's destination speed (F-25114: reach it at the destination point, margin 0)
+    if let Some((vt, d)) = dest {
+        entries[3] = Some((needed(v, vt, d, 0.0, up, max_decel), d, false));
+    }
+    let mut on = [r.on[0], r.on[1], r.on[2], r.ghost.as_ref().is_some_and(|g| g.on3)];
     let (on_a, off_a) = (ty.min_accel + ty.min_accel_band * 0.5, ty.min_accel - ty.min_accel_band * 0.5);
     let (on_d, off_d) = (ty.min_decel + ty.min_decel_band * 0.5, ty.min_decel - ty.min_decel_band * 0.5);
     let mut best_neg: Option<(f32, usize)> = None;
     let mut best_pos: Option<(f32, f32, usize)> = None;
-    for k in 0..3 {
+    for k in 0..4 {
         let Some((mut a, gap, player)) = entries[k] else {
-            r.on[k] = false;
+            on[k] = false;
             continue;
         };
         // (F-49294; no room left forces it on)
-        if !r.on[k] {
-            r.on[k] = a > on_a || -a > on_d || gap <= 0.0;
+        if !on[k] {
+            on[k] = a > on_a || -a > on_d || gap <= 0.0;
         } else if gap > 0.0 && ((a >= 0.0 && a < off_a) || (a < 0.0 && -a < off_d)) {
-            r.on[k] = false;
+            on[k] = false;
         }
-        if !r.on[k] {
+        if !on[k] {
             continue;
         }
         if player && -a > 1.25 * max_decel {
@@ -2189,6 +2197,10 @@ fn control(r: &mut Rider, v: f32, want: f32, half_len: f32, ahead: &Ahead, other
         } else if best_pos.map_or(true, |b| gap < b.1) {
             best_pos = Some((a, gap, k));
         }
+    }
+    r.on = [on[0], on[1], on[2]];
+    if let Some(g) = r.ghost.as_mut() {
+        g.on3 = on[3];
     }
     let (mut a, chosen) = match (best_neg, best_pos) {
         (Some((n, k)), _) => (n, Some(k)),
@@ -2226,9 +2238,12 @@ fn integrate(r: &mut Rider, mut a: f32, dt: f32) {
 pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, dt: f32) -> (Vec3, Vec3) {
     let nav = env.nav;
     let v = r.v;
-    r.off_timer -= dt;
-    if r.off_timer <= 0.0 {
-        r.draw_offset();
+    // (the cruising ghost's offset timer is the integrator's own, `car_speed`)
+    if r.ghost.is_none() {
+        r.off_timer -= dt;
+        if r.off_timer <= 0.0 {
+            r.draw_offset();
+        }
     }
     let lane = nav.links[r.link].lane;
     let next_lane = r.next.map(|n| nav.links[n].lane);
@@ -2285,12 +2300,17 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
         let end = nav.links[r.lane_end(nav)].b;
         (next_want, if holds.0 { 0.0 } else { end.distance(pos) })
     });
-    let (mut a, chosen) = control(r, v, want, half_len, &ahead, env.others, stop, slower, dt);
+    let dest = r.ghost.as_ref().and_then(|g| g.dest_entry());
+    let (mut a, chosen) = control(r, v, want, half_len, &ahead, env.others, stop, slower, dest, dt);
     r.slot = chosen;
     if env.hold {
         a = -r.ty.max_decel;
     }
-    integrate(r, a, dt);
+    if r.ghost.is_some() {
+        ghost_integrate(r, a, dt, env.clock);
+    } else {
+        integrate(r, a, dt);
+    }
     // along the lane (F-50894): the phase moves by the distance over the curve speed
     // (+180, from the last pose); past the lane's end the rest of the distance goes on along
     // the next lane from its start, at that lane's speed there (vfunc 11), clamped to it
@@ -2317,7 +2337,14 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
                     r.link = n;
                     r.s = 0.0;
                     r.t = 0.0;
-                    r.choose_next(nav);
+                    // (the cruising ghost's next lane is the route's, F-74277: `Vehicles::ghost_frame` after the step)
+                    match r.ghost.as_mut() {
+                        Some(g) => {
+                            r.next = None;
+                            g.turned = true;
+                        }
+                        None => r.choose_next(nav),
+                    }
                     let nl = nav.links[n].lane;
                     let c = &nav.curves[nl];
                     r.ds = c.speed(0.0);
@@ -2331,7 +2358,8 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
         }
     }
     let (p, f) = r.pose(nav);
-    if !env.event {
+    // (not for the cruising ghost: its stuck and passing tests are open, docs/reference/people/cruise_ghost_hooks.md)
+    if !env.event && r.ghost.is_none() {
         after_switch(r, env, me, p, f, &ahead, chosen, cur, upright, dt);
     }
     (p, f)
@@ -2439,7 +2467,7 @@ pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half
         find_ahead(env.nav, me, q, dir, r.ty.width.max(1.6), &[path.segs()], (None, None), None, env.others)
     };
     let want = path.speed;
-    let (mut a, chosen) = control(r, r.v, want, half_len, &ahead, env.others, None, None, dt);
+    let (mut a, chosen) = control(r, r.v, want, half_len, &ahead, env.others, None, None, None, dt);
     r.slot = chosen;
     if env.hold {
         a = -r.ty.max_decel;
@@ -2841,6 +2869,8 @@ impl Vehicles {
     /// Move the traffic cars: along their lanes, on their rails, back from physics; the
     /// trailers behind their cabs.
     pub(super) fn ride_traffic(&mut self, nav: &NavSys, col: &WorldCollider, dt: f32) {
+        // the cruising ghosts: the request pool's step and their rides (not in `cars`: not drawn, no physics)
+        self.ghost_frame(nav, col, dt);
         if !self.cars.iter().any(|c| c.rail.is_some()) {
             return;
         }
@@ -3661,7 +3691,7 @@ mod tests {
     }
 
     fn vrider(ty: AmbType) -> Rider {
-        Rider { ty, link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true }
+        Rider { ty, link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None }
     }
 
     /// The brake lamp's flag (F-56024 with F-86955, F-17857 and F-59415) against the original's code run offline on 4,000
@@ -4289,7 +4319,7 @@ mod tests {
 
     #[test]
     fn offsets_are_minus_six_zero_plus_six() {
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None };
         let mut seen = [0usize; 3];
         for _ in 0..3000 {
             r.draw_offset();
@@ -4303,7 +4333,7 @@ mod tests {
     #[test]
     fn a_physical_or_resting_car_is_not_put_back_on_its_seat() {
         // (a seat from before the hit: physical or at rest the instance stays where the collider left it)
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None };
         r.seat = Some(Seat::new(Vec3::ZERO, Vec3::Y, Vec3::NEG_Z));
         assert!(seat_poses(&r));
         for (state, active) in [(4, false), (4, true), (5, false), (5, true), (1, true)] {
@@ -4331,7 +4361,7 @@ mod tests {
     /// its rail (slot 20 / F-86858: the follower has a rail).
     #[test]
     fn a_physical_path_car_pairs_only_while_on_a_rail() {
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None };
         assert!(!r.pairs_inactive());
         r.phys_pair = true;
         for (state, yes) in [(1u8, true), (9, true), (10, false), (0, false), (4, false), (5, false), (6, false)] {
@@ -6543,7 +6573,7 @@ pub fn step_route(r: &mut Rider, env: &Env, me: usize, half_len: f32, dt: f32) -
         find_ahead(nav, me, pos, fwd, r.ty.width.max(1.6), &rails, (None, next_lane), next_start, env.others)
     };
     let want = (r.route.as_ref().unwrap().speed + r.off).max(MIN_WANT);
-    let (mut a, chosen) = control(r, r.v, want, half_len, &ahead, env.others, None, None, dt);
+    let (mut a, chosen) = control(r, r.v, want, half_len, &ahead, env.others, None, None, None, dt);
     r.slot = chosen;
     r.kept = None;
     if env.hold {
@@ -7771,5 +7801,1050 @@ mod crossing_tests {
             n += 1;
         }
         assert!(n >= 2900 && removals > 300, "{n} cases, {removals} removals");
+    }
+}
+
+// =====================================================================================================================
+// The cruising ghost: the ambient request pool, the proxy car on its route, the release (the hooks of `cruiser.rs`'s
+// `GhostTraffic`). Rules: docs/reference/ai/cruise_ghost.md (the decode); signatures, evidence and what is open:
+// docs/reference/people/cruise_ghost_hooks.md.
+// =====================================================================================================================
+
+type GMwc = super::parked::Mwc;
+
+/// The proxy type the brain's requests name (F-62453: the manager's first bIsProxy type; the only one shipped).
+pub const PROXY_TYPE: &str = "0x0bccfb1d";
+
+/// F-37317: an MWC seeded from `x` (lo = x + (x == 0), carry = x ^ rotl16(x); its byte +8 and float +12 zeroed).
+pub fn mwc_seed(x: u32) -> GMwc {
+    GMwc { lo: x.wrapping_add((x == 0) as u32), carry: x ^ x.rotate_left(16) }
+}
+
+/// The car's speed fields the integrator works on: +412 speed, +424 offset, +432 offset timer (seconds of age), +464
+/// born (manager clock), +384 / +388 the car's own MWC.
+#[derive(Clone, Copy, Debug)]
+pub struct CarSpeed {
+    pub v: f32,
+    pub off: f32,
+    pub timer: f32,
+    pub born: f32,
+    pub rng: GMwc,
+}
+
+/// F-58614, the integrator: the cap is fMaxSpeed (type +124) or SetSpeed (behaviour +244 when its +256 has 0x40:
+/// `set_speed`); a > fMaxAccel (+136) is clamped when a > 0; v' = a dt + v fused; a < 0 and v' under the stop speed ->
+/// 0, a > 0 and v' over the cap -> the cap. Then the offset timer: when the car's age (manager clock - born) passes it,
+/// one draw of the car's MWC sets it to age + 3 + 3U, and the offset is 0 for a networked car or one of the proxy pool
+/// (`no_offset`: car +500 bit 0x20), else a second draw: -6, +6 or 0 by thirds.
+#[allow(clippy::too_many_arguments)]
+pub fn car_speed(s: &mut CarSpeed, a: f32, dt: f32, max_speed: f32, max_accel: f32, set_speed: Option<f32>, clock: f32, no_offset: bool) {
+    let cap = set_speed.unwrap_or(max_speed);
+    let a = if a > 0.0 && a > max_accel { max_accel } else { a };
+    let v = a.mul_add(dt, s.v);
+    s.v = if a < 0.0 && v < f32::from_bits(0x3E64_E26D) {
+        0.0
+    } else if a > 0.0 && v > cap {
+        cap
+    } else {
+        v
+    };
+    let age = clock - s.born;
+    if age > s.timer {
+        let u = (s.rng.next() & 0x7F_FFFF) as f32;
+        s.timer = u.mul_add(f32::from_bits(0x34C0_0000), age) + 3.0;
+        if no_offset {
+            s.off = 0.0;
+        } else {
+            let u = (s.rng.next() & 0x7F_FFFF) as f32 * f32::from_bits(0x3400_0000);
+            s.off = if u < f32::from_bits(0x3EAA_7EFA) {
+                -6.0
+            } else if u < f32::from_bits(0x3F2A_C083) {
+                6.0
+            } else {
+                0.0
+            };
+        }
+    }
+}
+
+/// The ghost rider's integrator: `car_speed` on its fields (proxy pool: no offset).
+fn ghost_integrate(r: &mut Rider, a: f32, dt: f32, clock: f32) {
+    r.a = a;
+    let (max_speed, max_accel) = (r.ty.max_speed, r.ty.max_accel);
+    let Some(g) = r.ghost.as_mut() else { return };
+    let mut s = CarSpeed { v: r.v, off: r.off, timer: r.off_timer, born: r.born, rng: g.rng };
+    car_speed(&mut s, a, dt, max_speed, max_accel, g.set_speed, clock, true);
+    r.v = s.v;
+    r.off = s.off;
+    r.off_timer = s.timer;
+    g.rng = s.rng;
+}
+
+/// The vector unit's flush of denormals (the recompiled code runs with FTZ / DAZ).
+fn ftz(x: f32) -> f32 {
+    if x.is_subnormal() {
+        0.0f32.copysign(x)
+    } else {
+        x
+    }
+}
+fn vm(a: f32, b: f32) -> f32 {
+    ftz(ftz(a) * ftz(b))
+}
+fn va(a: f32, b: f32) -> f32 {
+    ftz(ftz(a) + ftz(b))
+}
+fn vs(a: f32, b: f32) -> f32 {
+    ftz(ftz(a) - ftz(b))
+}
+
+/// The pose block's normalisation: l2 = z^2 + (y^2 + x^2), y0 = 1 / sqrt(l2) (0 where that is +inf), one Newton step
+/// s = (1 - l2 y0^2) (y0 / 2) + y0, each step rounded.
+fn pose_norm(v: [f32; 3]) -> [f32; 3] {
+    let l2 = va(vm(v[2], v[2]), va(vm(v[1], v[1]), vm(v[0], v[0])));
+    let mut y0 = ftz(1.0 / ftz(l2).sqrt());
+    if y0 == f32::INFINITY {
+        y0 = 0.0;
+    }
+    let k = -vs(vm(l2, vm(y0, y0)), 1.0);
+    let s = va(vm(k, vm(0.5, y0)), y0);
+    [vm(v[0], s), vm(v[1], s), vm(v[2], s)]
+}
+
+/// F-18708 from the route: the request's matrix (rows a, b, c, place) at the start lane's point `p` and tangent: c =
+/// (0 - tangent) with y = 0, normalised; b = (0, 1, 0); a = -(c.yzx b.zxy - c.zxy b.yzx), normalised; place = p.
+pub fn spawn_pose(p: Vec3, tangent: Vec3) -> [Vec3; 4] {
+    let c = pose_norm([vs(0.0, tangent.x), 0.0, vs(0.0, tangent.z)]);
+    let b = [0.0f32, 1.0, 0.0];
+    let m1 = [vm(c[1], b[2]), vm(c[2], b[0]), vm(c[0], b[1])];
+    let m2 = [vm(c[2], b[1]), vm(c[0], b[2]), vm(c[1], b[0])];
+    let a = pose_norm([-vs(m1[0], m2[0]), -vs(m1[1], m2[1]), -vs(m1[2], m2[2])]);
+    [Vec3::from_array(a), Vec3::from_array(b), Vec3::from_array(c), p]
+}
+
+/// What the brain's request asks for (F-25539 / F-45833): the route, its start lane and phase, SetSpeed (req+68, flag
+/// 0x40) and SetDestSpeed (req+76, flag 0x20).
+#[derive(Clone, Debug)]
+pub struct GhostOrder {
+    pub route: crate::railroute::Route,
+    pub start: (u32, f32),
+    pub set_speed: Option<f32>,
+    pub dest_speed: Option<f32>,
+}
+
+/// A record of the manager's request pool (manager +8800, 848 bytes; req+X = rec+16+X).
+#[derive(Clone, Debug)]
+pub struct PoolRec {
+    /// rec+4: 1 free (the pool's ctor F-57400), 2 pending, 0 made, 3 timed out, 5 no ground, 7 cancelled
+    pub state: u32,
+    /// rec+0, set while the record is stepped
+    pub busy: bool,
+    /// req+284: 0x80 a behaviour car, 0x40 a removal
+    pub kind: u8,
+    /// req+242 (rec+258) the steps wanted and rec+308 the steps done
+    pub wanted: u8,
+    pub done: u8,
+    /// rec+304 the pending time and req+0 its timeout (3.0 from the descriptor, else 0.0)
+    pub time: f32,
+    pub timeout: f32,
+    /// req+8 the owner (the racer; notified at the end, F-90613)
+    pub owner: u32,
+    pub order: Option<Box<GhostOrder>>,
+    /// rec+788 the car, rec+792 the behaviour
+    pub car: u32,
+    pub beh: u32,
+    /// a removal's car (req+256) and reason (req+260)
+    pub target: u32,
+    pub reason: u32,
+    /// rec+832: the shared MWC's draw at the spawn (the car's MWC is seeded from it, F-92604)
+    pub seed: u32,
+    /// rec+544: the spawn matrix (F-18708)
+    pub matrix: [Vec3; 4],
+}
+
+impl PoolRec {
+    fn free() -> PoolRec {
+        PoolRec { state: 1, busy: false, kind: 0, wanted: 0, done: 0, time: 0.0, timeout: 0.0, owner: 0, order: None, car: 0, beh: 0, target: 0, reason: 0, seed: 0, matrix: [Vec3::ZERO; 4] }
+    }
+}
+
+/// What the pool asks of the world, in the order the original's code does it (each is a call the offline harness
+/// logs: L, C, c, B, b, D, P, I, K, N).
+pub trait PoolWorld {
+    /// the shared MWC (`Vehicles::shared_mwc`)
+    fn shared(&mut self) -> &mut GMwc;
+    /// the route's start lane's slot 8 at `t`: point and tangent
+    fn lane_point(&mut self, lane: u32, t: f32) -> (Vec3, Vec3);
+    /// a car of the proxy pool (F-21879; 0: none) and one given back (F-73520)
+    fn car_get(&mut self) -> u32;
+    fn car_back(&mut self, car: u32);
+    /// a Drive2 behaviour (F-60281; 0: none) and one given back (F-24235)
+    fn beh_get(&mut self) -> u32;
+    fn beh_back(&mut self, beh: u32);
+    /// a car's behaviour (car +452) and its vfunc 0
+    fn car_beh(&mut self, car: u32) -> u32;
+    fn beh_drop(&mut self, beh: u32);
+    /// the type's slot 14 spawn probe (F-15062) at the record's matrix
+    fn probe(&mut self, car: u32, seed: u32, m: &[Vec3; 4]) -> bool;
+    /// car vfunc 5 (F-77422): the car made from the record
+    fn car_init(&mut self, rec: usize, r: &PoolRec);
+    /// the type's release of a car (F-38415 -> car vfunc 11, which tells the owner: vfunc 38)
+    fn car_release(&mut self, car: u32, reason: u32);
+    /// the owner's vfunc 35 (the attach: status, car) or 36 (a removal's: status, the car removed)
+    fn notify(&mut self, rec: usize, owner: u32, vf: u8, status: u32, car: u32);
+}
+
+/// The manager's request pool (F-13129, F-52865, F-29339, F-11284, F-51512) with the proxy type's budget (type +4 and
+/// +8, F-49084 / F-39893).
+#[derive(Clone, Debug)]
+pub struct GhostPool {
+    pub recs: Vec<PoolRec>,
+    /// pool +0 the pending count, +4 its most
+    pub count: i32,
+    pub max: i32,
+    /// the type's budget left (+4, iInstanceCount at the start) and in use (+8)
+    pub budget: i32,
+    pub used: i32,
+}
+
+impl Default for GhostPool {
+    fn default() -> Self {
+        GhostPool::new(0)
+    }
+}
+
+impl GhostPool {
+    /// F-57400: 256 free records.
+    pub fn new(budget: i32) -> GhostPool {
+        GhostPool { recs: vec![PoolRec::free(); 256], count: 0, max: 0, budget, used: 0 }
+    }
+
+    fn take_budget(&mut self) -> bool {
+        if self.budget > 0 {
+            self.budget -= 1;
+            self.used += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn give_budget(&mut self) {
+        self.used -= 1;
+        self.budget += 1;
+    }
+
+    /// F-13129 (with the record's init F-75521): a removal (0x40) of a car whose removal is pending gives that record
+    /// (F-83456); else the first record neither pending nor busy, made pending; -1 when none.
+    fn queue(&mut self, mut r: PoolRec) -> i32 {
+        if r.kind & 0x40 != 0 && r.target != 0 {
+            if let Some(i) = self.recs.iter().position(|o| o.state == 2 && o.target == r.target) {
+                return i as i32;
+            }
+        }
+        let Some(i) = self.recs.iter().position(|o| o.state != 2 && !o.busy) else { return -1 };
+        r.state = 2;
+        r.time = 0.0;
+        r.done = 0;
+        self.recs[i] = r;
+        self.count += 1;
+        self.max = self.max.max(self.count);
+        i as i32
+    }
+
+    /// The brain's request (F-25539: F-86587, F-45833, SetSpeed / SetDestSpeed; F-59429): a behaviour car (kind 0x80,
+    /// steps 0xA4, timeout 3 s) for `order`; None (the brain's idx -1) a request with neither descriptor nor route
+    /// (kind 0, owner 0, timeout 0: it times out at the first step with dt > 0, and nobody is told).
+    pub fn submit(&mut self, order: Option<GhostOrder>, owner: u32) -> i32 {
+        let mut r = PoolRec::free();
+        if let Some(o) = order {
+            r.kind = 0x80;
+            r.wanted = 0xA4;
+            r.timeout = 3.0;
+            r.owner = owner;
+            r.order = Some(Box::new(o));
+        }
+        self.queue(r)
+    }
+
+    /// F-51512 -> F-76814: a removal of `car` (owner `owner`, car +52) for `reason`, served at the next step.
+    pub fn submit_remove(&mut self, car: u32, reason: u32, owner: u32) -> i32 {
+        let mut r = PoolRec::free();
+        r.kind = 0x40;
+        r.wanted = 0x50;
+        r.target = car;
+        r.reason = reason;
+        r.owner = owner;
+        self.queue(r)
+    }
+
+    /// F-11284: the record cancelled (state 7) and stepped at once (dt 0: the cleanup and the owner's notify with 7).
+    pub fn cancel(&mut self, id: i32, w: &mut dyn PoolWorld) {
+        // (the original indexes the pool with any id; the brain only cancels a pending request it holds)
+        if !(0..256).contains(&id) {
+            return;
+        }
+        self.recs[id as usize].state = 7;
+        self.step_rec(id as usize, 0.0, w);
+        self.count -= 1;
+    }
+
+    /// F-52865: every pending record in slot order, until as many as were pending have been seen.
+    pub fn step(&mut self, dt: f32, w: &mut dyn PoolWorld) {
+        let n = self.count;
+        if n <= 0 {
+            return;
+        }
+        let mut seen = 0;
+        let mut i = 0;
+        loop {
+            if i >= 256 {
+                break;
+            }
+            if self.recs[i].state == 2 {
+                self.step_rec(i, dt, w);
+                seen += 1;
+                if self.recs[i].state != 2 {
+                    self.count -= 1;
+                }
+            }
+            i += 1;
+            if seen >= n {
+                break;
+            }
+        }
+    }
+
+    fn notify(&mut self, i: usize, w: &mut dyn PoolWorld) {
+        let r = &self.recs[i];
+        if r.owner == 0 {
+            return;
+        }
+        if r.kind & 0x80 != 0 {
+            w.notify(i, r.owner, 35, r.state, r.car);
+        } else if r.kind & 0x40 != 0 {
+            w.notify(i, r.owner, 36, r.state, r.target);
+        }
+    }
+
+    /// F-29339: the record's stages, each only while it is pending, its step wanted and not done; the timeout; the end.
+    fn step_rec(&mut self, i: usize, dt: f32, w: &mut dyn PoolWorld) {
+        self.recs[i].busy = true;
+        let pend = |r: &PoolRec, bit: u8| r.state == 2 && r.wanted & bit != 0 && r.done & bit == 0;
+        // 0x04 F-18708: the pose from the route's start lane at its t
+        if pend(&self.recs[i], 0x04) {
+            if let Some((lane, t)) = self.recs[i].order.as_ref().map(|o| o.start) {
+                let (p, tg) = w.lane_point(lane, t);
+                let r = &mut self.recs[i];
+                r.matrix = spawn_pose(p, tg);
+                r.done |= 0x04;
+            }
+        }
+        // 0x80 F-12577: one of the type's budget and a car of the proxy pool (none: the budget back, wait)
+        if pend(&self.recs[i], 0x80) && self.take_budget() {
+            let car = w.car_get();
+            self.recs[i].car = car;
+            if car != 0 {
+                self.recs[i].done |= 0x80;
+            } else {
+                self.give_budget();
+            }
+        }
+        // 0x20 F-19334: a behaviour (done even with none)
+        {
+            let r = &self.recs[i];
+            if r.kind & 0x80 != 0 && pend(r, 0x20) && r.done & 0x80 != 0 {
+                let b = w.beh_get();
+                let r = &mut self.recs[i];
+                r.beh = b;
+                r.done |= 0x20;
+            }
+        }
+        // F-42724: every wanted step done -> the shared MWC's draw, the probe (F-46111) and the car's init
+        {
+            let r = &self.recs[i];
+            if r.state == 2 && r.kind & 0x80 != 0 && r.done & r.wanted == r.wanted {
+                let seed = w.shared().next() & 0x7FFF_FFFF;
+                self.recs[i].seed = seed;
+                let (car, m) = (self.recs[i].car, self.recs[i].matrix);
+                if w.probe(car, seed, &m) {
+                    w.car_init(i, &self.recs[i]);
+                    self.recs[i].state = 0;
+                } else {
+                    self.recs[i].state = 5;
+                }
+            }
+        }
+        // a removal: F-10793 (the car), then its behaviour's vfunc 0 and the behaviour given back, then F-73806 (the
+        // type's release)
+        {
+            let r = &mut self.recs[i];
+            if r.kind & 0x40 != 0 && pend(r, 0x40) {
+                r.car = r.target;
+                r.done |= 0x40;
+            }
+        }
+        if self.recs[i].kind & 0x40 != 0 && pend(&self.recs[i], 0x10) {
+            let b = w.car_beh(self.recs[i].target);
+            if b != 0 {
+                w.beh_drop(b);
+                w.beh_back(b);
+            }
+            self.recs[i].done |= 0x10;
+        }
+        {
+            let r = &self.recs[i];
+            if r.state == 2 && r.kind & 0x40 != 0 && r.done & r.wanted == r.wanted && r.target != 0 {
+                w.car_release(r.target, r.reason);
+                self.recs[i].state = 0;
+            }
+        }
+        // still pending: the timeout (3 s for the brain's request)
+        {
+            let r = &mut self.recs[i];
+            if r.state == 2 {
+                r.time += dt;
+                if r.time > r.timeout {
+                    r.state = 3;
+                }
+            }
+        }
+        // made: F-31134 (a removal's car back with its budget), the owner told
+        if self.recs[i].state == 0 {
+            let r = &mut self.recs[i];
+            if r.kind & 0x80 != 0 {
+                r.order = None;
+            } else if r.kind & 0x40 != 0 && r.car != 0 {
+                let car = r.car;
+                w.car_back(car);
+                self.give_budget();
+            }
+            self.notify(i, w);
+        }
+        // failed (3 .. 7): F-92217 -> F-59370 (a request's route, behaviour and car given back), the owner told
+        if (3..=7).contains(&self.recs[i].state) {
+            if self.recs[i].kind & 0x70 == 0 {
+                self.recs[i].order = None;
+                let b = self.recs[i].beh;
+                w.beh_back(b);
+                self.recs[i].beh = 0;
+                let car = self.recs[i].car;
+                if car != 0 {
+                    w.car_back(car);
+                    self.give_budget();
+                    self.recs[i].car = 0;
+                }
+            }
+            self.notify(i, w);
+        }
+        self.recs[i].busy = false;
+    }
+}
+
+/// The cruising ghost's part of its rider (the behaviour's route object and flags, the car's own MWC).
+#[derive(Clone, Debug)]
+pub struct GhostRide {
+    /// the route (behaviour +288, F-28180) and its two indices (+128 / +132)
+    pub route: crate::railroute::Route,
+    pub track: crate::ghostroute::Track,
+    /// behaviour +256: 0x40 SetSpeed, 0x20 the destination speed
+    pub flags: u8,
+    /// SetSpeed (+244, with flag 0x40: the integrator's cap) and the destination speed (+252)
+    pub set_speed: Option<f32>,
+    pub dest_speed: f32,
+    /// the car's own MWC (+384 / +388; the integrator's offset timer and the route's strict pick, F-52442)
+    pub rng: GMwc,
+    /// a lane was taken this frame: its next lane is the route's (F-74277), chosen after the step
+    pub turned: bool,
+    /// the controller's entry 3 (F-25114): its hysteresis, and (speed, distance) this frame
+    pub on3: bool,
+    pub dest: Option<(f32, f32)>,
+    /// the route lane change's arguments this frame (F-24481; the lane-change rail F-32118 is not ported)
+    pub change: Option<crate::ghostroute::Change>,
+}
+
+impl GhostRide {
+    fn dest_entry(&self) -> Option<(f32, f32)> {
+        self.dest
+    }
+}
+
+/// What the cruising side is told (drained once a frame, `Vehicles::drain_ghost_events`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum GhostEvent {
+    /// the owner's attach (vfunc 35): the request made (status 0, with the ghost) or failed (3 timed out, 5 no ground)
+    Attached { owner: u32, request: i32, status: i32, ghost: Option<u32> },
+    /// the owner's event (vfunc 38, from the car's release): the ghost removed for `reason` (1 the route's end, 2 off
+    /// the route, 5 the brain's own), `rail` the last ordinary lane it was on (car +400; None: none)
+    Released { owner: u32, ghost: u32, reason: i32, rail: Option<u32> },
+}
+
+/// A ghost: a car of the proxy pool (not drawn, no collider, never unspawned) on its rider.
+#[derive(Clone, Debug)]
+pub struct GhostCar {
+    pub id: u32,
+    pub owner: u32,
+    pub rider: Rider,
+    /// car +400 (F-46062)
+    pub rail: Option<u32>,
+    /// made this frame: its start speed is still to be set (F-30683)
+    fresh: bool,
+}
+
+/// The ghosts' side of the vehicles.
+#[derive(Clone, Debug, Default)]
+pub struct GhostLive {
+    pub cars: Vec<GhostCar>,
+    pub events: Vec<GhostEvent>,
+    next_car: u32,
+    next_beh: u32,
+    ty: Option<AmbType>,
+    /// (tests) the spawn probe answered yes without a world
+    pub(crate) ground_always: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Ghosts {
+    pub pool: GhostPool,
+    pub live: GhostLive,
+}
+
+impl Ghosts {
+    /// The proxy type and its budget, once the data folder is known.
+    fn ensure_type(&mut self) {
+        if self.live.ty.is_none() {
+            if let Some(root) = DATA_ROOT.get() {
+                let t = AmbType::load(root, PROXY_TYPE);
+                self.pool.budget = t.instances as i32;
+                self.live.ty = Some(t);
+            }
+        }
+    }
+}
+
+/// The railnet tables of the city (for the route's lanes), made once the data folder is known.
+pub fn ghost_net() -> Option<&'static crate::railroute::RailNet> {
+    static NET: std::sync::OnceLock<Option<crate::railroute::RailNet>> = std::sync::OnceLock::new();
+    let root = DATA_ROOT.get()?;
+    NET.get_or_init(|| crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")).ok().map(|r| crate::railroute::RailNet::parse(&r))).as_ref()
+}
+
+/// The pool's world in the game.
+struct LiveWorld<'a> {
+    g: &'a mut GhostLive,
+    shared: &'a mut GMwc,
+    nav: Option<(&'static NavSys, &'static Lanes, &'static crate::railroute::RailNet)>,
+    col: Option<&'a WorldCollider>,
+    clock: f32,
+    /// inside the brain's cancel: its attach (status 7) is not sent (the brain sets its own state after it)
+    cancelling: bool,
+}
+
+impl PoolWorld for LiveWorld<'_> {
+    fn shared(&mut self) -> &mut GMwc {
+        self.shared
+    }
+    fn lane_point(&mut self, lane: u32, t: f32) -> (Vec3, Vec3) {
+        match self.nav.and_then(|(nav, _, _)| nav.curves.get(lane as usize)).filter(|c| c.pts.len() >= 2) {
+            Some(c) => (crate::railroute::point(c, t), crate::railroute::deriv(c, t)),
+            None => (Vec3::ZERO, Vec3::X),
+        }
+    }
+    fn car_get(&mut self) -> u32 {
+        // (the proxy pool's size is open: a car whenever the type's budget allows)
+        self.g.next_car += 1;
+        self.g.next_car
+    }
+    fn car_back(&mut self, _car: u32) {}
+    fn beh_get(&mut self) -> u32 {
+        self.g.next_beh += 1;
+        self.g.next_beh
+    }
+    fn beh_back(&mut self, _beh: u32) {}
+    fn car_beh(&mut self, car: u32) -> u32 {
+        self.g.cars.iter().any(|c| c.id == car) as u32
+    }
+    fn beh_drop(&mut self, _beh: u32) {}
+    fn probe(&mut self, _car: u32, _seed: u32, m: &[Vec3; 4]) -> bool {
+        self.g.ground_always || self.col.is_some_and(|c| probe_ground(c, m[3]).is_some())
+    }
+    fn car_init(&mut self, _rec: usize, r: &PoolRec) {
+        let (Some((nav, lanes, net)), Some(o)) = (self.nav, r.order.as_ref()) else { return };
+        let Some(&link) = lanes.links.get(o.start.0 as usize).and_then(|l| l.first()) else { return };
+        let ty = self.g.ty.unwrap_or_default();
+        let mut rider = Rider::new(nav, ty, link, 0.0, r.car);
+        rider.set_phase(nav, lanes, o.start.1);
+        // F-92604 for the proxy pool: the car's MWC seeded from the record's draw, its life 8 + 4U and offset timer
+        // 3 + 3U; no start delay, accel bonus or offset; the standing gap (2 + 5) / 2
+        let mut rng = mwc_seed(r.seed);
+        rider.life = ((rng.next() & 0x7F_FFFF) as f32).mul_add(f32::from_bits(0x3500_0000), 8.0);
+        rider.off_timer = ((rng.next() & 0x7F_FFFF) as f32).mul_add(f32::from_bits(0x34C0_0000), 3.0);
+        rider.off = 0.0;
+        rider.bonus = 0.0;
+        rider.wait = 0.0;
+        rider.gap = 3.5;
+        rider.born = self.clock;
+        let mut ride = GhostRide {
+            route: o.route.clone(),
+            track: crate::ghostroute::Track::default(),
+            flags: if o.set_speed.is_some() { 0x40 } else { 0 } | if o.dest_speed.is_some() { 0x20 } else { 0 },
+            set_speed: o.set_speed,
+            dest_speed: o.dest_speed.unwrap_or(0.0),
+            rng,
+            turned: false,
+            on3: false,
+            dest: None,
+            change: None,
+        };
+        // behaviour slot 10 (F-28180) -> slot 16: the next lane by the route (F-74277), its indices -1
+        let next = crate::ghostroute::route_next(&ride.route, net, nav, ride.track.last, o.start.0, &mut ride.rng, self.shared);
+        rider.next = next.and_then(|l| lanes.links.get(l as usize).and_then(|x| x.first().copied()));
+        rider.ghost = Some(Box::new(ride));
+        self.g.cars.push(GhostCar { id: r.car, owner: r.owner, rider, rail: None, fresh: true });
+    }
+    fn car_release(&mut self, car: u32, reason: u32) {
+        if let Some(k) = self.g.cars.iter().position(|c| c.id == car) {
+            let c = self.g.cars.remove(k);
+            self.g.events.push(GhostEvent::Released { owner: c.owner, ghost: c.id, reason: reason as i32, rail: c.rail });
+        }
+    }
+    fn notify(&mut self, rec: usize, owner: u32, vf: u8, status: u32, car: u32) {
+        // (vfunc 36, the removal's notify to the racer: its effect is open)
+        if vf == 35 && !self.cancelling {
+            self.g.events.push(GhostEvent::Attached { owner, request: rec as i32, status: status as i32, ghost: (status == 0 && car != 0).then_some(car) });
+        }
+    }
+}
+
+impl Vehicles {
+    /// The cruising side's events since the last call.
+    pub fn drain_ghost_events(&mut self) -> Vec<GhostEvent> {
+        std::mem::take(&mut self.ghosts.live.events)
+    }
+
+    /// The other cars as a rider looks at them (as `ride_traffic` makes them).
+    fn ghost_others(&self, nav: &NavSys) -> Vec<Other> {
+        self.cars
+            .iter()
+            .map(|c| {
+                let (hl, hw) = half_size(c);
+                let r = c.rail.as_ref();
+                let on = r.filter(|r| r.state == 1).map(|r| {
+                    let l = &nav.links[r.link];
+                    (l.lane, r.next.map(|n| nav.links[n].lane), rail_speed(nav, r.link).1)
+                });
+                Other {
+                    pos: c.state.pos,
+                    fwd: c.state.forward(),
+                    right: c.state.right(),
+                    back: glam::Mat3::from_quat(c.state.rot).z_axis,
+                    vel: c.state.vel,
+                    half_len: hl,
+                    half_wid: hw,
+                    on,
+                    railed: r.is_some_and(|r| matches!(r.state, 6..=9)),
+                    player: c.is_player,
+                    ambient: r.is_some() || c.parked.is_some(),
+                    active: r.is_some_and(|r| r.state == 4) || (r.is_none() && c.parked.is_none()),
+                    cab_or_trailer: r.is_some_and(|r| r.ty.cab || r.ty.trailer),
+                    key: r.map_or(0, |r| r.rng_id()),
+                }
+            })
+            .collect()
+    }
+
+    /// The ghosts' part of the ambient manager's frame: the request pool's step (F-52865, before the cars' updates),
+    /// the new ghosts' start speed (F-30683), then each ghost's update on its lane with the route's hooks: the next lane
+    /// at a change of rail (F-74277), the indices (F-18846), the route lane change's arguments (F-24481), the release
+    /// tests (F-35182: 1 the route's end F-44936, 2 off the route F-20872 -> F-51512) and car +400 (F-46062).
+    pub(super) fn ghost_frame(&mut self, nav: &NavSys, col: &WorldCollider, dt: f32) {
+        if self.ghosts.pool.count <= 0 && self.ghosts.live.cars.is_empty() {
+            return;
+        }
+        self.ghosts.ensure_type();
+        let nav = rail_nav(nav);
+        let lanes = lanes(nav);
+        let net = ghost_net();
+        let clock = self.clock;
+        {
+            let Vehicles { ghosts, park_rng, .. } = self;
+            let mut w = LiveWorld { g: &mut ghosts.live, shared: park_rng, nav: net.map(|n| (nav, lanes, n)), col: Some(col), clock, cancelling: false };
+            ghosts.pool.step(dt, &mut w);
+        }
+        for k in 0..self.ghosts.live.cars.len() {
+            if !self.ghosts.live.cars[k].fresh {
+                continue;
+            }
+            let r = &self.ghosts.live.cars[k].rider;
+            let pos = r.pos(nav);
+            // (bIsProxy: never removed by the rule; F-30683 on the ghost's own rail)
+            let v = self.path_start_speed(nav, r, pos, (0.0, 0.0), None, None).unwrap_or(0.0);
+            let g = &mut self.ghosts.live.cars[k];
+            g.rider.v = v;
+            g.fresh = false;
+        }
+        let Some(net) = net else { return };
+        if self.ghosts.live.cars.is_empty() {
+            return;
+        }
+        let others = self.ghost_others(nav);
+        let blockers = self.frame_blockers(nav);
+        let env = Env { nav, lanes, col, others: &others, signals: &self.signals, blockers: &blockers, clock, event: self.race_event, player_ahead: None, hold: self.frozen || self.grid_hold.is_some(), parity: false };
+        let mut removes: Vec<(u32, u32, u32)> = Vec::new();
+        for g in self.ghosts.live.cars.iter_mut() {
+            // F-58860: the proxy car's place is its owner's vehicle's (none: its own)
+            let me = self.cars.iter().position(|c| c.uid == g.owner).unwrap_or(usize::MAX);
+            let owner_pos = (me != usize::MAX).then(|| self.cars[me].state.pos);
+            let r = &mut g.rider;
+            if r.state != 1 {
+                continue;
+            }
+            let pos = owner_pos.unwrap_or_else(|| r.pos(nav));
+            if let Some(ride) = r.ghost.as_mut() {
+                ride.dest = (ride.flags & crate::ghostroute::FLAG_DEST_SPEED != 0 && crate::ghostroute::end_plane(&ride.route, pos) > 0.0).then(|| (ride.dest_speed, crate::ghostroute::dest_dist(&ride.route, pos)));
+            }
+            // (the proxy type has no bound: half length 0)
+            step(r, &env, me, 0.0, true, dt);
+            let lane = nav.links[r.link].lane as u32;
+            let (t, v) = (r.t, r.v);
+            let pos = owner_pos.unwrap_or_else(|| r.pos(nav));
+            let Some(ride) = r.ghost.as_mut() else { continue };
+            if ride.turned {
+                ride.turned = false;
+                let n = crate::ghostroute::route_next(&ride.route, net, nav, ride.track.last, lane, &mut ride.rng, &mut self.park_rng);
+                r.next = n.and_then(|l| lanes.links.get(l as usize).and_then(|x| x.first().copied()));
+            }
+            crate::ghostroute::track(&ride.route, net, &mut ride.track, Some(lane));
+            let next = r.next.map(|n| nav.links[n].lane as u32);
+            ride.change = crate::ghostroute::lane_change(&ride.route, net, nav, &ride.track, lane, next, t, v);
+            let ordinary = net.lanes.get(lane as usize).is_some_and(|l| l.flags & 0x1800 == 0);
+            let reason = if crate::ghostroute::route_end(&ride.route, ride.track.last, pos, ride.flags, ride.dest_speed, v) {
+                1
+            } else if crate::ghostroute::off_route(&ride.route, &ride.track, ordinary) {
+                2
+            } else {
+                0
+            };
+            if ordinary {
+                g.rail = Some(lane);
+            }
+            if reason != 0 {
+                removes.push((g.id, reason, g.owner));
+            }
+        }
+        for (id, reason, owner) in removes {
+            self.ghosts.pool.submit_remove(id, reason, owner);
+        }
+    }
+
+    /// A ghost as the brain reads it: the matrix (its owner's vehicle's, F-58860 / the proxy pool; without one the
+    /// spawn rule at its lane's point), the lane and phase it rides, its speed (+412).
+    pub fn ghost_view(&self, ghost: u32) -> Option<crate::cruiser::GhostView> {
+        let g = self.ghosts.live.cars.iter().find(|g| g.id == ghost)?;
+        let nav = rail_nav_made()?;
+        let r = &g.rider;
+        let matrix = match self.cars.iter().find(|c| c.uid == g.owner) {
+            Some(c) => instance_matrix(c),
+            None => spawn_pose(r.pos(nav), r.tangent(nav)),
+        };
+        Some(crate::cruiser::GhostView { matrix, rail: Some((nav.links[r.link].lane as u32, r.t)), speed: r.v })
+    }
+}
+
+/// The ambient traffic's side of the cruising brain (cruiser.rs): `owner` is the owner car's `uid` in the vehicles.
+impl crate::cruiser::GhostTraffic for Vehicles {
+    fn present(&self) -> bool {
+        ghost_net().is_some()
+    }
+    fn request_ghost(&mut self, r: crate::cruiser::GhostRequest) -> i32 {
+        self.ghosts.ensure_type();
+        let order = (!r.route.nodes.is_empty()).then(|| GhostOrder { route: r.route, start: r.start, set_speed: r.set_speed, dest_speed: r.dest_speed });
+        let owner = if order.is_some() { r.owner } else { 0 };
+        self.ghosts.pool.submit(order, owner)
+    }
+    fn cancel_request(&mut self, id: i32) {
+        let clock = self.clock;
+        let Vehicles { ghosts, park_rng, .. } = self;
+        let mut w = LiveWorld { g: &mut ghosts.live, shared: park_rng, nav: None, col: None, clock, cancelling: true };
+        ghosts.pool.cancel(id, &mut w);
+    }
+    fn release_ghost(&mut self, ghost: u32) {
+        if let Some(owner) = self.ghosts.live.cars.iter().find(|g| g.id == ghost).map(|g| g.owner) {
+            self.ghosts.pool.submit_remove(ghost, 5, owner);
+        }
+    }
+    fn ghost(&self, ghost: u32) -> Option<crate::cruiser::GhostView> {
+        self.ghost_view(ghost)
+    }
+    fn rng(&mut self) -> &mut GMwc {
+        &mut self.park_rng
+    }
+}
+
+#[cfg(test)]
+mod ghost_tests {
+    use super::*;
+    use crate::cruiser::GhostTraffic;
+
+    /// (a word that would read as a code address is split into 16-bit halves in the testdata: xxxx_xxxx)
+    fn hx(s: &str) -> u32 {
+        u32::from_str_radix(&s.replace('_', ""), 16).unwrap()
+    }
+    fn fx(s: &str) -> f32 {
+        f32::from_bits(hx(s))
+    }
+    fn v3(w: &[&str]) -> Vec3 {
+        Vec3::new(fx(w[0]), fx(w[1]), fx(w[2]))
+    }
+
+    /// The pool's world replayed from the original's log: each call takes the next line, which must be that call
+    /// with the same arguments; the answers (a car, a behaviour, the probe's, the lane's point) are the log's.
+    struct Replay<'a> {
+        lines: Vec<Vec<&'a str>>,
+        at: usize,
+        shared: GMwc,
+        beh: hashbrown::HashMap<u32, u32>,
+        owner: hashbrown::HashMap<u32, u32>,
+        calls: hashbrown::HashMap<&'static str, usize>,
+    }
+
+    impl<'a> Replay<'a> {
+        fn take(&mut self, tag: &'static str) -> Vec<&'a str> {
+            let l = self.lines.get(self.at).cloned().unwrap_or_default();
+            assert_eq!(l.first().copied(), Some(tag), "line {}: the port called {tag}, the original logged {:?}", self.at + 1, l);
+            self.at += 1;
+            *self.calls.entry(tag).or_default() += 1;
+            l
+        }
+    }
+
+    impl PoolWorld for Replay<'_> {
+        fn shared(&mut self) -> &mut GMwc {
+            &mut self.shared
+        }
+        fn lane_point(&mut self, lane: u32, t: f32) -> (Vec3, Vec3) {
+            let at = self.at + 1;
+            let l = self.take("L");
+            assert_eq!((l[1].parse::<u32>().unwrap(), hx(l[2])), (lane, t.to_bits()), "line {at}");
+            (v3(&l[3..6]), v3(&l[6..9]))
+        }
+        fn car_get(&mut self) -> u32 {
+            hx(self.take("C")[1])
+        }
+        fn car_back(&mut self, car: u32) {
+            let at = self.at + 1;
+            assert_eq!(hx(self.take("c")[1]), car, "line {at}");
+        }
+        fn beh_get(&mut self) -> u32 {
+            hx(self.take("B")[1])
+        }
+        fn beh_back(&mut self, beh: u32) {
+            let at = self.at + 1;
+            assert_eq!(hx(self.take("b")[1]), beh, "line {at}");
+        }
+        fn car_beh(&mut self, car: u32) -> u32 {
+            self.beh.get(&car).copied().unwrap_or(0)
+        }
+        fn beh_drop(&mut self, beh: u32) {
+            let at = self.at + 1;
+            assert_eq!(hx(self.take("D")[1]), beh, "line {at}");
+        }
+        fn probe(&mut self, car: u32, seed: u32, m: &[Vec3; 4]) -> bool {
+            let at = self.at + 1;
+            let l = self.take("P");
+            let got: Vec<u32> = m.iter().flat_map(|v| v.to_array()).map(f32::to_bits).collect();
+            let want: Vec<u32> = l[3..15].iter().map(|s| hx(s)).collect();
+            assert_eq!((hx(l[1]), hx(l[2]), &got), (car, seed, &want), "line {at}: car, seed, matrix");
+            l[15] == "1"
+        }
+        fn car_init(&mut self, _rec: usize, r: &PoolRec) {
+            let at = self.at + 1;
+            let l = self.take("I");
+            assert_eq!((hx(l[1]), hx(l[2]), hx(l[3])), (r.car, r.beh, r.seed), "line {at}");
+            self.beh.insert(r.car, r.beh);
+            self.owner.insert(r.car, r.owner);
+        }
+        fn car_release(&mut self, car: u32, reason: u32) {
+            let at = self.at + 1;
+            let l = self.take("K");
+            assert_eq!((hx(l[1]), hx(l[2])), (car, reason), "line {at}");
+        }
+        fn notify(&mut self, _rec: usize, owner: u32, vf: u8, status: u32, car: u32) {
+            let at = self.at + 1;
+            let l = self.take("N");
+            assert_eq!((hx(l[1]), l[2].parse::<u8>().unwrap(), hx(l[3]), hx(l[4])), (owner, vf, status, car), "line {at}");
+        }
+    }
+
+    /// The request pool against the original's code run offline (tools/ghost_pool_reference.py): 150 scenarios of
+    /// random requests, cancels, removals and steps with the world's answers drawn at random, every call the code made
+    /// with its arguments in order (the spawn matrix bit for bit, the shared MWC's draws) and the pool's count, most,
+    /// the type's budget and the shared MWC after each step; then the integrator F-58614 on 2,000 random cars and the
+    /// seed F-37317 on 500 values.
+    #[test]
+    fn ghost_pool_matches_the_original() {
+        let text = include_str!("testdata/ghost_pool_ref.txt");
+        let mut w = Replay { lines: text.lines().map(|l| l.split_whitespace().collect()).collect(), at: 0, shared: GMwc { lo: 0, carry: 0 }, beh: Default::default(), owner: Default::default(), calls: Default::default() };
+        let mut pool = GhostPool::new(0);
+        let (mut ops, mut steps, mut g_n, mut m_n) = (0usize, 0usize, 0usize, 0usize);
+        while w.at < w.lines.len() {
+            let n = w.at + 1;
+            let l = w.lines[w.at].clone();
+            w.at += 1;
+            match l[0] {
+                "Z" => {
+                    pool = GhostPool::new(hx(l[1]) as i32);
+                    w.shared = GMwc { lo: hx(l[2]), carry: hx(l[3]) };
+                    w.beh.clear();
+                    w.owner.clear();
+                }
+                "q" => {
+                    let opt = |s: &str| (hx(s) != 0xFFFF_FFFF).then(|| fx(s));
+                    let order = (l[2] == "1").then(|| GhostOrder { route: Default::default(), start: (l[3].parse().unwrap(), fx(l[4])), set_speed: opt(l[5]), dest_speed: opt(l[6]) });
+                    let id = pool.submit(order, hx(l[1]));
+                    assert_eq!(id, hx(l[9]) as i32, "line {n}");
+                    ops += 1;
+                }
+                "x" => {
+                    pool.cancel(hx(l[1]) as i32, &mut w);
+                    ops += 1;
+                }
+                "r" => {
+                    let car = hx(l[1]);
+                    let owner = w.owner.get(&car).copied().unwrap_or(0);
+                    pool.submit_remove(car, hx(l[2]), owner);
+                    ops += 1;
+                }
+                "s" => {
+                    pool.step(fx(l[1]), &mut w);
+                    let at = w.at + 1;
+                    let s = w.take("S");
+                    let want: Vec<u32> = s[1..7].iter().map(|x| hx(x)).collect();
+                    assert_eq!(vec![pool.count as u32, pool.max as u32, pool.budget as u32, pool.used as u32, w.shared.lo, w.shared.carry], want, "line {at}: count, max, budget, used, shared MWC");
+                    steps += 1;
+                }
+                "G" => {
+                    let i: Vec<u32> = l[1..16].iter().map(|x| if x.len() <= 2 { u32::from_str_radix(x, 16).unwrap() } else { hx(x) }).collect();
+                    let f = |k: usize| f32::from_bits(i[k]);
+                    let set = (i[5] != 0 && i[6] & 0x40 != 0).then(|| f(7));
+                    let mut s = CarSpeed { v: f(0), off: f(14), timer: f(10), born: f(9), rng: GMwc { lo: i[11], carry: i[12] } };
+                    car_speed(&mut s, f(1), f(2), f(3), f(4), set, f(8), i[13] & 0x20 != 0);
+                    let want: Vec<u32> = l[17..22].iter().map(|x| hx(x)).collect();
+                    assert_eq!(vec![s.v.to_bits(), s.off.to_bits(), s.timer.to_bits(), s.rng.lo, s.rng.carry], want, "line {n}: v, offset, timer, MWC");
+                    g_n += 1;
+                }
+                "M" => {
+                    let m = mwc_seed(hx(l[1]));
+                    assert_eq!((m.lo, m.carry, hx(l[5]), hx(l[6])), (hx(l[3]), hx(l[4]), 0, 0), "line {n}");
+                    m_n += 1;
+                }
+                t => panic!("line {n}: the original logged {t} where the port expected an operation"),
+            }
+        }
+        let c = |k: &str| w.calls.get(k).copied().unwrap_or(0);
+        eprintln!(
+            "ghost pool: {ops} ops, {steps} steps; calls L {} C {} c {} B {} b {} D {} P {} I {} K {} N {}; {g_n} integrator cases, {m_n} seeds",
+            c("L"), c("C"), c("c"), c("B"), c("b"), c("D"), c("P"), c("I"), c("K"), c("N")
+        );
+        assert!(steps > 1000 && c("P") > 400 && c("K") > 100 && g_n == 2000 && m_n == 500);
+    }
+
+    fn load() -> Option<(std::path::PathBuf, NavSys)> {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
+        let res = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")).ok()?;
+        Some((root, NavSys::parse(&res).ok()?))
+    }
+
+    /// A ghost on a route through the vehicles' hooks: requested, attached in the next frame, riding the route's lanes
+    /// (every lane it takes is a lane of the route's records, F-74277 / F-18846) until released at the route's end
+    /// (reason 1, the rail its last lane) - or off the route (reason 2) where the route asks for a lane change, whose
+    /// rail (F-32118) is not ported.
+    #[test]
+    fn a_ghost_follows_its_route_and_is_released_at_the_end() {
+        let Some((root, nav0)) = load() else { return };
+        let _ = AmbType::load(&root, PROXY_TYPE);
+        let nav = rail_nav(&nav0);
+        let lanes = lanes(nav);
+        let Some(net) = ghost_net() else { return };
+        let col = WorldCollider::default();
+        let (mut ends, mut offs, mut tried, mut lanes_ridden) = (0, 0, 0, 0usize);
+        let mut v = Vehicles::new();
+        v.ghosts.live.ground_always = true;
+        let mut shared = GMwc { lo: 0x1234_5678, carry: 0x9ABC };
+        for start in (0..nav.curves.len() as u32).step_by(97) {
+            if ends >= 5 || tried >= 60 {
+                break;
+            }
+            if lanes.links.get(start as usize).map_or(true, |l| l.is_empty()) || net.lanes[start as usize].flags & 0x1800 != 0 {
+                continue;
+            }
+            // the destination: four ordinary lanes on, half way along
+            let mut l = start;
+            for _ in 0..4 {
+                match crate::ghostroute::ordinary_next(net, nav, l, &mut shared) {
+                    Some(n) => l = n,
+                    None => break,
+                }
+            }
+            if l == start {
+                continue;
+            }
+            let dest = crate::railroute::point(&nav.curves[l as usize], 0.5);
+            let route = crate::railroute::route(net, nav, start, 0.1, dest);
+            if route.nodes.len() < 2 {
+                continue;
+            }
+            tried += 1;
+            let id = v.request_ghost(crate::cruiser::GhostRequest { owner: 77, route: route.clone(), start: (start, 0.1), set_speed: Some(15.0), dest_speed: None });
+            assert!(id >= 0);
+            let dt = 1.0 / 60.0;
+            let mut ghost = None;
+            let mut done = None;
+            let mut start_v = -1.0f32;
+            for _ in 0..60 * 120 {
+                v.clock += dt;
+                v.ghost_frame(&nav0, &col, dt);
+                for e in v.drain_ghost_events() {
+                    match e {
+                        GhostEvent::Attached { owner, request, status, ghost: g } => {
+                            assert_eq!((owner, request, status), (77, id, 0));
+                            ghost = g;
+                        }
+                        GhostEvent::Released { owner, ghost: g, reason, rail } => {
+                            assert_eq!((owner, Some(g)), (77, ghost));
+                            done = Some((reason, rail));
+                        }
+                    }
+                }
+                if done.is_some() {
+                    break;
+                }
+                let Some(gv) = ghost.and_then(|g| v.ghost(g)) else { continue };
+                if start_v < 0.0 {
+                    start_v = gv.speed;
+                }
+                let (lane, _) = gv.rail.unwrap();
+                // (SetSpeed caps the integrator's acceleration only: the start speed is the rail's, F-30683)
+                assert!(gv.speed <= 15.0 || gv.speed <= start_v, "SetSpeed caps the speed");
+                // a lane it rides while the route holds it is a lane of a route node's record
+                let g = v.ghosts.live.cars.iter().find(|c| Some(c.id) == ghost).unwrap();
+                let t = g.rider.ghost.as_ref().unwrap().track;
+                if t.cur >= 0 {
+                    assert!(net.recs[route.nodes[t.cur as usize].rec as usize].lanes.contains(&lane));
+                    lanes_ridden += 1;
+                }
+            }
+            match done {
+                Some((1, rail)) => {
+                    let last = route.nodes.last().unwrap();
+                    assert!(rail.is_some_and(|r| net.recs[last.rec as usize].lanes.contains(&r)), "released at the end on a lane of the last node");
+                    ends += 1;
+                }
+                Some((2, _)) => offs += 1,
+                other => panic!("route from lane {start}: {other:?}"),
+            }
+        }
+        eprintln!("ghost routes: {tried} tried, {ends} released at the end, {offs} off the route, {lanes_ridden} frames on route lanes");
+        assert!(ends >= 3, "{ends} of {tried} routes ended");
     }
 }

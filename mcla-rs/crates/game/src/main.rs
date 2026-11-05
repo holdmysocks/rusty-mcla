@@ -157,6 +157,7 @@ mod cruiser;
 mod oppmgr;
 mod propblast;
 mod navjob;
+mod cruiser;
 mod brainturn;
 mod vehicle_model;
 mod vehicles;

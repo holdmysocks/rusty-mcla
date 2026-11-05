@@ -1055,6 +1055,8 @@ pub struct Vehicles {
     pub parking: mcla_formats::rage::parking::ParkingTree,
     park_lists: Vec<u32>,
     park_rng: parked::Mwc,
+    /// the cruising ghosts: the ambient request pool and the proxy cars on their routes (traffic.rs `Ghosts`)
+    pub ghosts: traffic::Ghosts,
     park_dump_frame: u32,
     /// (diagnostics, MCLA_PARK_DUMP) parked spawn tries turned down, by reason
     park_why: [u32; 5],
