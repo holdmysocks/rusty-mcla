@@ -5,7 +5,9 @@
 
 use crate::assets::load_resource_file;
 use crate::render::{Frustum, Gpu};
-use crate::skin::{blend_pose, Clip, SkinBuffer, SkinModel};
+use crate::drvanim as da;
+use crate::drvmachine as dm;
+use crate::skin::{blend_pose, Clip, FrameDof, SkinBuffer, SkinModel, DOF_NO_VALUE, DOF_QUATERNION, DOF_VECTOR3};
 use glam::{Mat4, Quat, Vec3};
 use hashbrown::HashMap;
 use mcla_formats::rage::anim::{animation_named, pack_entries};
@@ -43,6 +45,304 @@ pub struct Seat<'a> {
     pub vel: Vec3,
     /// a rider's: what the bike pose machine reads of the bike (its `ck` and `x` are set here)
     pub ride: RideIn,
+    /// a car driver's: what the car machine's gatherer reads of the car (none for a rider)
+    pub drv: Option<DrvIn>,
+}
+
+/// What a car driver's gatherer (F-28290, `drvmachine::gather`) reads of the port's car this frame (main.rs fills it), and the
+/// steering part's fields it reads (D +1124 the wheel's eased angle, +1176 the racer's divisor, +1164 / +1136).
+#[derive(Clone, Copy, Default)]
+pub struct DrvIn {
+    pub g: dm::Gather,
+    pub needle: f32,
+    pub divisor: f32,
+    pub out: f32,
+    pub scale: f32,
+    pub racer: dm::Racer,
+    pub cutscene: bool,
+    /// the local human's look (the view's +112 x 0.8 through the rival look, -1 looking back: main.rs `rider_look`)
+    pub look: f32,
+}
+
+impl DrvIn {
+    /// The gatherer's reads from the port's car. The body rows and velocity, the pedals, the gearbox (+20 0 = reverse, the
+    /// original's reverse-first order), the burnout charge, the nitrous, the wheels' slide (+520) and contact records, the
+    /// grid and deactivated bits of chassis +592. Approximate (docs/reference/people/car_anim_machine.md "Wiring"): no
+    /// race / GPS / damage / water / horn / powerup inputs, the view's camera test (0x400) off, the cockpit view as the
+    /// view's mode 1 with the player manager's tests false, the racer's +656 and the sim's alarm value 0.
+    pub fn of(st: &crate::physics::CarState, input: &crate::physics::CarInput, sp: &crate::steer_parts::SteerParts, player: bool, cutscene: bool, ckpt: bool, look: f32) -> DrvIn {
+        let vs = st.veh.as_deref();
+        let (r0, r1, r2) = (st.rot * Vec3::X, st.rot * Vec3::Y, st.rot * Vec3::Z);
+        let stick = vs.filter(|v| v.pad.live).map_or(input.lean, |v| v.pad.stick_y);
+        let g = dm::Gather {
+            racer: true,
+            human: player,
+            player,
+            gesture: 20,
+            vehicle: true,
+            ready: true,
+            chassis: true,
+            mgr: Some(false),
+            view: player.then_some(dm::View { cam: None, mode: if ckpt { 1 } else { 0 }, dist: 0.0 }),
+            cine_cam: cutscene,
+            w592: input.deactivated as u32 | (input.hold as u32) << 1,
+            handbrake: if input.handbrake { 1.0 } else { 0.0 },
+            burn: vs.map_or(0.0, |v| v.burn),
+            throttle: input.throttle,
+            brake: input.brake,
+            steer: vs.map_or(input.steer, |v| v.steer),
+            water: Some(false),
+            nitro: vs.map(|v| v.nitro_burning),
+            wheel_n: 4,
+            wheels: std::array::from_fn(|i| Some(vs.map_or(0.0, |v| v.wheels[i].slide))),
+            down: vs.map_or(st.wheels.iter().filter(|w| w.grounded).count(), |v| v.wheels.iter().filter(|w| w.record).count()) as i32,
+            trans: Some((vs.map_or(0, |v| v.gear_change.direction as i32), st.gear + 1)),
+            body: Some(([r0.x, r0.y, r0.z, r1.x, r1.y, r1.z, r2.x, r2.y, r2.z], [st.vel.x, st.vel.y, st.vel.z])),
+            stick,
+            goal: vs.filter(|v| player && v.pad.live).map_or(input.steer, |v| v.pad.goal),
+            aero: Some(false),
+            wheel: true,
+            ..dm::Gather::default()
+        };
+        DrvIn { g, needle: sp.needle, divisor: sp.divisor, out: sp.out, scale: sp.scale, racer: dm::Racer { human: player, ..dm::Racer::default() }, cutscene, look }
+    }
+}
+
+/// What a car driver's gatherer wrote into the car's steering part (D +1112 / +1108 / +1156 the wheel pair's rate and scales,
+/// +1148 / +1152 the hold), for main.rs to hand the car's `SteerParts` before its next step.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SteerOut {
+    pub needle_rate: f32,
+    pub needle_scale: f32,
+    pub needle_scale2: f32,
+    pub hold_ease: f32,
+    pub hold_rate: f32,
+}
+
+impl SteerOut {
+    pub fn apply(&self, d: &mut crate::steer_parts::SteerParts) {
+        d.needle_rate = self.needle_rate;
+        d.needle_scale = self.needle_scale;
+        d.needle_scale2 = self.needle_scale2;
+        d.hold_ease = self.hold_ease;
+        d.hold_rate = self.hold_rate;
+    }
+}
+
+/// A car driver's machine (drvmachine) and anim player (drvanim): the gatherer's own state, the steering part's +1128 /
+/// +1132 (the gatherer's alone), the context, the machine, the sequencer and the pan smoother (driver +48).
+struct CarAnim {
+    gm: dm::GatherMut,
+    parts: (f32, f32),
+    ctx: dm::Ctx,
+    m: dm::Machine,
+    seq: da::Seq,
+    pan_p: Option<(f32, f32)>,
+}
+
+/// The composer's view of a rig (drvanim `Poser`): a frame is two DOFs per bone, the rotation (a Quaternion) and the
+/// translation (a Vector3).
+struct RigPoser<'a>(&'a Rig);
+
+impl da::Poser for RigPoser<'_> {
+    fn len(&self) -> usize {
+        2 * self.0.model.bones.len()
+    }
+
+    fn blank(&self) -> Vec<FrameDof> {
+        (0..self.len()).map(|i| FrameDof { flags: if i % 2 == 0 { DOF_QUATERNION } else { DOF_VECTOR3 } | DOF_NO_VALUE, v: [0.0; 4] }).collect()
+    }
+
+    fn sample(&self, clip: da::ClipId, t: f32, out: &mut [FrameDof]) {
+        let Some(c) = self.0.clips.get(clip as usize) else { return };
+        let a = &c.anim;
+        let (i, fr) = da::sample_pos(a, t);
+        let f = c.frame(t, false);
+        for b in 0..self.0.model.bones.len() {
+            for (slot, k) in [(2 * b, c.rot[b]), (2 * b + 1, c.pos[b])] {
+                let Some(k) = k else { continue };
+                let tr = &a.tracks[k];
+                let d = &mut out[slot];
+                if tr.chans.is_empty() {
+                    // (a clip of several blocks: the decoder's own sampling - the sampler's block step is not ported)
+                    d.v = if slot % 2 == 0 {
+                        tr.data.rot(f).to_array()
+                    } else {
+                        let v = tr.data.vec(f);
+                        [v.x, v.y, v.z, 0.0]
+                    };
+                    d.flags &= !DOF_NO_VALUE;
+                } else {
+                    da::sample_track(tr, i, fr, d);
+                }
+            }
+        }
+    }
+
+    fn rest(&self, out: &mut [FrameDof]) {
+        for (b, bone) in self.0.model.bones.iter().enumerate() {
+            out[2 * b] = FrameDof { flags: DOF_QUATERNION, v: bone.rot.to_array() };
+            out[2 * b + 1] = FrameDof { flags: DOF_VECTOR3, v: [bone.pos.x, bone.pos.y, bone.pos.z, 0.0] };
+        }
+    }
+
+    fn weights(&self, f: da::Filter) -> &[f32] {
+        &self.0.dofw[match f {
+            da::Filter::Spine => 0,
+            da::Filter::Neck => 1,
+            da::Filter::NoFace => 2,
+        }]
+    }
+}
+
+/// The finish into the skeleton: a DOF with a value is the bone's, one without shows the rest pose.
+fn finish(frame: &[FrameDof], bones: &[crate::skin::Bone], out: &mut Vec<(Quat, Vec3)>) {
+    out.clear();
+    for (b, bone) in bones.iter().enumerate() {
+        let (q, p) = (&frame[2 * b], &frame[2 * b + 1]);
+        out.push((
+            if q.flags & DOF_NO_VALUE == 0 { Quat::from_array(q.v) } else { bone.rot },
+            if p.flags & DOF_NO_VALUE == 0 { Vec3::new(p.v[0], p.v[1], p.v[2]) } else { bone.pos },
+        ));
+    }
+}
+
+impl CarAnim {
+    fn new(set: &str, rng: [u32; 2]) -> CarAnim {
+        CarAnim {
+            gm: dm::GatherMut::default(),
+            parts: (0.0, 0.0),
+            ctx: dm::Ctx { gesture: 20, wheel_scale: 1.0, ..dm::Ctx::default() },
+            m: dm::Machine::new(set, rng),
+            seq: da::Seq::default(),
+            pan_p: None,
+        }
+    }
+
+    /// One frame of the driver: the gatherer (with the car's steering-wheel shake), the context step, the machine, its
+    /// commands into the sequencer, the pan smoother, the motion tree's update. Returns what the gatherer wrote into the
+    /// steering part. (The order of these against each other and against the car's update is the harness's, not traced live.)
+    #[allow(clippy::too_many_arguments)]
+    fn step(&mut self, rig: &Rig, d: &DrvIn, k: &dm::Tune, dt: f32, odd: bool, culled: bool, rng: &mut [u32; 2], car: &str) -> Option<SteerOut> {
+        self.ctx.culled = culled;
+        self.ctx.opponent = !d.racer.human;
+        self.gm.parts = Some(dm::Parts { f1124: d.needle, f1176: d.divisor, f1164: d.out, f1136: d.scale, f1128: self.parts.0, f1132: self.parts.1, ..dm::Parts::default() });
+        let mut cc = self.ctx;
+        let inp = dm::gather(
+            &d.g,
+            &self.ctx,
+            k,
+            &mut self.gm,
+            dt,
+            &mut |_, _| {},
+            &mut |t, sm, v| {
+                let (x, w) = dm::wheel_shake(&mut cc, k, t, sm, v, odd);
+                (x, w, cc.side_vals[3])
+            },
+            &mut |_, _| d.look,
+        );
+        self.ctx.side_vals = cc.side_vals;
+        if let Some(i) = inp {
+            dm::context_step(&mut self.ctx, &i, k, dt);
+        }
+        let out = self.gm.parts.map(|p| {
+            self.parts = (p.f1128, p.f1132);
+            SteerOut { needle_rate: p.f1112, needle_scale: p.f1108, needle_scale2: p.f1156, hold_ease: p.f1148, hold_rate: p.f1152 }
+        });
+        let env = dm::Env { remaining: self.seq.remaining(), phase: self.seq.phase(), cutscene: d.cutscene };
+        self.m.rng = *rng;
+        let mut cmds = Vec::new();
+        self.m.step(&mut self.ctx, k, &env, &d.racer, &mut cmds);
+        *rng = self.m.rng;
+        let id = |n: &str| -> Option<da::ClipId> {
+            let r = rig.dict.get(&n.to_ascii_lowercase()).copied();
+            if r.is_none() {
+                static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+                let key = format!("{car} {n}");
+                if let Ok(mut v) = SEEN.lock() {
+                    if !v.contains(&key) {
+                        log::info!("drivers: {car} has no clip {n}");
+                        v.push(key);
+                    }
+                }
+            }
+            r
+        };
+        let dur = |c: da::ClipId| rig.clips.get(c as usize).map_or(0.0, |c| c.anim.duration);
+        let look = da::Look { face: self.m.face.as_deref().and_then(id), pan_spine: None, pan: self.m.overlay.and_then(id), filters: true };
+        for c in &cmds {
+            let req = match c {
+                dm::Cmd::Play(n, b, l, nb) => id(n).map(|x| da::play(&look, &dur, x, *b, *l, *nb)),
+                dm::Cmd::PlayCut(n, b, l, nb) => id(n).map(|x| da::play_cut(x, *b, *l, *nb)),
+                dm::Cmd::Pair(a, z, l, b) => id(a).zip(id(z)).map(|(x, y)| da::pair(&look, &dur, x, y, *l, *b)),
+                dm::Cmd::Five(n, b, l) => {
+                    let ids: Vec<_> = n.iter().filter_map(|x| id(x)).collect();
+                    (ids.len() == 5).then(|| da::five(&look, &dur, [ids[0], ids[1], ids[2], ids[3], ids[4]], *b, *l))
+                }
+                dm::Cmd::Overlay(n, b, l) => id(n).and_then(|x| da::overlay(&mut self.seq, &look, x, *b, *l)),
+                dm::Cmd::Phase(v) => {
+                    self.seq.set_phase(*v);
+                    None
+                }
+                dm::Cmd::Rate(v) => {
+                    self.seq.set_rate(*v);
+                    None
+                }
+                dm::Cmd::Rate5(v) => {
+                    self.seq.set_rate5(*v);
+                    None
+                }
+                dm::Cmd::Phase2(v) => {
+                    self.seq.set_phase2(*v);
+                    None
+                }
+                dm::Cmd::Phase5(v) => {
+                    self.seq.set_phase5(*v);
+                    None
+                }
+                dm::Cmd::PhaseAll(v) => {
+                    self.seq.set_phase_all(*v);
+                    None
+                }
+                dm::Cmd::Weight(v) => {
+                    self.seq.set_weight(*v);
+                    None
+                }
+                // (the engine and camera calls: not the driver's pose)
+                dm::Cmd::EngineStart | dm::Cmd::EngineStop | dm::Cmd::HandBack => None,
+            };
+            if let Some(r) = req {
+                self.seq.submit(&r, &dur);
+            }
+        }
+        // the pan's smoother (driver +48, F-36491: centre 0.5, rate 5, hold 0.5) while +112 is set, then the pan clip's time
+        if self.m.overlay.is_some() {
+            let (p, hold) = self.pan_p.get_or_insert((0.5, -1.0));
+            let target = crate::physics::exact::fma(-self.ctx.look, 0.5, 0.5);
+            let eps = f32::from_bits(0x3ba3_d70a);
+            if (target - 0.5).abs() < eps && (*p - 0.5).abs() < eps {
+                *hold = 0.5;
+            }
+            if *hold >= 0.0 {
+                *hold -= dt;
+            }
+            if *hold < 0.0 {
+                *p = crate::physics::exact::fma((target - *p) * 5.0, dt, *p);
+            }
+            self.seq.set_pan_time(*p);
+        }
+        self.seq.update(dt);
+        if std::env::var("MCLA_DRV_TRACE").is_ok() && d.racer.human {
+            log::info!(
+                "drvtrace {car} {:?} needle {:.3} div {:.3} add {:.4} speed {:.2} goal {:.3} steer {:.3} smooth {:.3} wheel {:.3} k {:?} flags {:08x} face {:?} cmds {:?}",
+                self.m.state,
+                d.needle,
+                d.divisor,
+                self.ctx.steer_add, self.ctx.speed, self.ctx.goal, self.ctx.steer, self.ctx.smooth, self.ctx.wheel_scale, self.ctx.smooth_k, self.ctx.flags, self.m.face, cmds
+            );
+        }
+        out
+    }
 }
 
 /// The wind on a rider's clothes (VSSkinned_Wind's windParams / windEmitterPlaneEq): what the draw hook keeps at +112 (the
@@ -156,6 +456,12 @@ struct Rig {
     ejects: HashMap<String, Clip>,
     /// a rider's clips of the bike pose machine's riding states (`BikeClips`)
     bike: Option<BikeClips>,
+    /// a car driver's dictionary (machine +24, its lookup F-66148 case-blind): every clip of the pack by its name after the
+    /// car's prefix (the car's own over the unprefixed ones over the Challenger's), and the clips
+    dict: HashMap<String, u32>,
+    clips: Vec<Clip>,
+    /// the filters' weight per DOF (two per bone): +92 spine00 down, +96 neck down, +100 all but Facial_root's subtree
+    dofw: [Vec<f32>; 3],
 }
 
 /// The clips of mcMotorcycleAnimMachine's riding states (`BikeClips::load` names them; `_ck`: the cockpit camera's
@@ -836,6 +1142,12 @@ pub struct Drivers {
     /// the unpaused clock (0x827D7518, `App::wind_clock`) and whether the game is paused - set before `prepare`
     pub clock: f32,
     pub paused: bool,
+    /// per car (`Seat::uid`): its driver's machine and anim player (`MCLA_DRV_OLD=1`: the old direct pose)
+    cars: HashMap<u32, CarAnim>,
+    /// the shared generator F-84930 the machines draw from (a global of the original; its start value is not read: approximate)
+    rng: [u32; 2],
+    /// per car (`Seat::uid`): what its driver's gatherer wrote into the steering part this frame (main.rs hands it on)
+    pub steer_out: HashMap<u32, SteerOut>,
 }
 
 /// What the drivers' distance LOD (F-12028) reads of one racer's driver.
@@ -1124,6 +1436,7 @@ impl Drivers {
     }
 
     fn rig(&mut self, gpu: &mut Gpu, car: &str, bike: bool, player: bool, female: bool, si: usize) -> bool {
+        let is_bike = bike;
         let key = (car_key(car), player, female, si);
         if !self.rigs.contains_key(&key) {
             let rig = (|| -> Option<Rig> {
@@ -1165,7 +1478,30 @@ impl Drivers {
                     }
                 }
                 let bike = BikeClips::load(&clip);
-                Some(Rig { steer, idle_stop: clip(&["drv_idle_stp"]), reverse: clip(&["drv_rev"]), model, gestures, hit_hard, ejects, bike })
+                let (mut dict, mut clips) = (HashMap::new(), Vec::new());
+                if !is_bike {
+                    let own = format!("{}_", key.0);
+                    let shared = "dge_challenger_70_";
+                    let mut order: Vec<(u8, &(usize, String))> = entries
+                        .iter()
+                        .map(|e| {
+                            let l = e.1.to_ascii_lowercase();
+                            (if l.starts_with(&own) { 2 } else if l.starts_with(shared) { 0 } else { 1 }, e)
+                        })
+                        .collect();
+                    order.sort_by_key(|x| x.0);
+                    for (_, (o, n)) in order {
+                        let l = n.to_ascii_lowercase();
+                        let k = l.strip_prefix(own.as_str()).or_else(|| l.strip_prefix(shared)).unwrap_or(&l).to_string();
+                        if let Some(a) = animation_named(&rd, *o) {
+                            dict.insert(k, clips.len() as u32);
+                            clips.push(Clip::bind(&Arc::new(a), &model.ids, false, false));
+                        }
+                    }
+                }
+                let per_dof = |m: &dyn Fn(usize) -> bool| -> Vec<f32> { (0..model.bones.len()).flat_map(|b| [if m(b) { 1.0 } else { 0.0 }; 2]).collect() };
+                let dofw = [per_dof(&|b| model.spine_bones[b]), per_dof(&|b| model.neck_bones[b]), per_dof(&|b| !model.face_bones[b])];
+                Some(Rig { steer, idle_stop: clip(&["drv_idle_stp"]), reverse: clip(&["drv_rev"]), model, gestures, hit_hard, ejects, bike, dict, clips, dofw })
             })();
             if rig.is_none() {
                 log::warn!("drivers: no animations for {}", car);
@@ -1258,6 +1594,25 @@ impl Drivers {
         for s in seats {
             self.wind.entry(s.uid).or_default().step(s.vel.length(), s.vel, s.bike, dt, self.paused);
         }
+        // (the car drivers' machines: every frame for each car whose rig is loaded, drawn or not)
+        let machines = std::env::var("MCLA_DRV_OLD").is_err();
+        let k = dm::Tune::original();
+        self.cars.retain(|u, _| seats.iter().any(|s| s.uid == *u));
+        self.steer_out.clear();
+        if machines {
+            for s in seats {
+                let (Some(d), false) = (s.drv.as_ref(), s.bike) else { continue };
+                let Some(si) = self.pick_set(s) else { continue };
+                let Some(Some(rig)) = self.rigs.get(&(car_key(s.car), s.player, is_female(s.set), si)) else { continue };
+                // (the racer's +144, the character's name: the faces are `<name>_<set>`; the hi-res model is the set's `_h`)
+                let set = self.sets[si].0.trim_end_matches("_h").to_string();
+                let a = self.cars.entry(s.uid).or_insert_with(|| CarAnim::new(&set, [0x2f6b_6f5d, 0x0000_3039]));
+                let culled = self.frozen.get(&s.uid).copied().unwrap_or(false);
+                if let Some(o) = a.step(rig, d, &k, dt, self.frame & 1 == 1, culled, &mut self.rng, s.car) {
+                    self.steer_out.insert(s.uid, o);
+                }
+            }
+        }
         let mut local: Vec<(Quat, Vec3)> = Vec::new();
         let mut other: Vec<(Quat, Vec3)> = Vec::new();
         for s in seats {
@@ -1296,6 +1651,8 @@ impl Drivers {
                 let ride = self.rides.entry(s.id).or_default();
                 let i = RideIn { ck: s.player && self.ckpt_view, ..s.ride };
                 ride_pose(ride, b, &rig.model.bones, &rig.model.neck_bones, &i, self.time, dt, &mut local, &mut other);
+            } else if let Some(fr) = self.cars.get(&s.uid).filter(|_| machines && !s.bike).and_then(|a| a.seq.compose(&RigPoser(rig))) {
+                finish(&fr, &rig.model.bones, &mut local);
             } else {
             // the sweep runs from full left lock to full right lock
             let last = rig.steer.last_frame();

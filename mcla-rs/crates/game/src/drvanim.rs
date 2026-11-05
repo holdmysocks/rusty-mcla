@@ -229,6 +229,15 @@ impl Seq {
         self.blend_weight(0, w);
     }
 
+    /// The pan clip's time (holder +76, F-47264 as docs/PEOPLE_TRAFFIC.md reads it): clamp(p x duration, 0, duration).
+    pub fn set_pan_time(&mut self, p: f32) {
+        if let Some(Node::Anim(pl)) = self.pan.map(|n| &mut self.nodes[n]) {
+            if let Some(c) = pl.clip {
+                pl.set_time(c.dur * p, c.dur);
+            }
+        }
+    }
+
     /// F-87745: the played clip's time left (in clip time, by the rate's sign), -1 when looping or without a clip.
     pub fn remaining(&mut self) -> f32 {
         match self.clipped(0) {
@@ -746,6 +755,10 @@ pub trait Poser {
     /// A filter's weight per DOF (crFrameFilterBoneBasic: the bone's weight, 1 inside the set and 0 outside; 1 for DOFs
     /// that are not a bone's).
     fn weights(&self, f: Filter) -> &[f32];
+    /// A fresh frame of the layout: every DOF without a value (its type kept, so a blend into it treats it by its type).
+    fn blank(&self) -> Vec<FrameDof> {
+        vec![FrameDof { flags: DOF_NO_VALUE, v: [0.0; 4] }; self.len()]
+    }
 }
 
 impl Seq {
@@ -788,7 +801,7 @@ impl Seq {
     }
 
     fn frame(&self, n: usize, p: &dyn Poser) -> Vec<FrameDof> {
-        let mut f = vec![FrameDof { flags: DOF_NO_VALUE, v: [0.0; 4] }; p.len()];
+        let mut f = p.blank();
         match &self.nodes[n] {
             Node::Anim(pl) => {
                 if let Some(c) = pl.clip {

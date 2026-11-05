@@ -10853,7 +10853,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let rider_look = {
                 let mut look = self.look.yaw * 0.8;
                 let cars = &self.vehicles.cars;
-                if let (Some(race), Some(me)) = (self.game.race.as_ref(), cars.iter().position(|c| c.is_player && c.model.bike)) {
+                if let (Some(race), Some(me)) = (self.game.race.as_ref(), cars.iter().position(|c| c.is_player)) {
                     let others = race.participants.iter().copied().filter(|&k| k != me && cars.get(k).is_some_and(|c| !c.deactivated)).map(|k| (k, cars[k].state.pos));
                     look = self.rider_look.step(look, dt, (cars[me].state.pos, cars[me].state.rot), others);
                 }
@@ -10901,7 +10901,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // trucks and SUVs seat their driver higher than the shared animation does
                         mat = mat * glam::Mat4::from_translation(Vec3::new(0.0, 0.3, 0.0));
                     }
-                    drivers::Seat { id: i, uid: c.uid, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str(), hi: c.is_player || c.hi_driver, lights: c.model.simtunes.as_ref().and_then(|t| t.driver_lights), colors: if c.is_player { Some(self.vehicles.player_cabin_light) } else { c.look.as_ref().map(|l| l.cabin_light) }, head: c.amb_lamps.s[0], vel: c.state.vel, ride: if c.model.bike { drivers::RideIn { look: if c.is_player { rider_look } else { 0.0 }, ..drivers::RideIn::of(&c.state, &c.input, &c.steer_parts, c.is_player, self.cine.playing.is_some()) } } else { Default::default() } }
+                    drivers::Seat { id: i, uid: c.uid, car: c.model.name.as_str(), mat, pos: pose.pos, steer: force.unwrap_or(c.input.steer), speed: c.state.fwd_speed(), reversing: c.state.gear < 0, player: c.is_player, cop: c.cop, bike: c.model.bike, set: c.driver_set.as_str(), hi: c.is_player || c.hi_driver, lights: c.model.simtunes.as_ref().and_then(|t| t.driver_lights), colors: if c.is_player { Some(self.vehicles.player_cabin_light) } else { c.look.as_ref().map(|l| l.cabin_light) }, head: c.amb_lamps.s[0], vel: c.state.vel, ride: if c.model.bike { drivers::RideIn { look: if c.is_player { rider_look } else { 0.0 }, ..drivers::RideIn::of(&c.state, &c.input, &c.steer_parts, c.is_player, self.cine.playing.is_some()) } } else { Default::default() }, drv: (!c.model.bike).then(|| drivers::DrvIn::of(&c.state, &c.input, &c.steer_parts, c.is_player, self.cine.playing.is_some(), self.drivers.ckpt_view, if c.is_player { rider_look } else { 0.0 })) }
                 })
                 .collect();
             // the distance LOD (F-12028): every seat here is drawn, so its draw-gate tests pass; the scene byte is a story
@@ -10926,6 +10926,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             });
             (self.drivers.clock, self.drivers.paused) = (self.wind_clock, self.game.mode == Mode::Paused);
             self.drivers.prepare(&mut gpu, &seats, self.cam.pos, &frustum, dt);
+            drop(seats);
+            // (what each car driver's gatherer wrote into its car's steering part, F-28290: for the part's next step)
+            for c in self.vehicles.cars.iter_mut() {
+                if let Some(o) = self.drivers.steer_out.get(&c.uid) {
+                    o.apply(&mut c.steer_parts);
+                }
+            }
         }
         passprof::mark("main setup");
         // --- main pass ----------------------------------------------------------

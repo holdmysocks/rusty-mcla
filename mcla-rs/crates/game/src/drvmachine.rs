@@ -780,11 +780,6 @@ pub struct GatherMut {
     pub hist: [u8; 4],
 }
 
-/// The vehicle gatherer F-28290: the context step's inputs (None when the context is culled: no step that frame). `rates`
-/// is the steering part's rescale F-52244 on a rider's branch (with the driver's +408 x context +64), `wheel` the car's
-/// steering-wheel call (dt, smoothed, speed) -> (value, word), `look` the rival look (its start, dt). Without the body the vector is the
-/// stack's (0 here).
-#[allow(clippy::too_many_arguments)]
 /// The speed ramp both shake helpers use: clamp((speed - a) x b, 0, 1) by fsel.
 fn ramp(speed: f32, a: f32, b: f32) -> f32 {
     let x = (speed - a) * b;
@@ -829,6 +824,12 @@ pub fn wheel_shake(c: &mut Ctx, k: &Tune, dt: f32, smooth: f32, speed: f32, odd:
     (w.mul_add(f28, lock), word)
 }
 
+/// The vehicle gatherer F-28290: the context step's inputs (None when the context is culled: no step that frame). `rates`
+/// is the steering part's rescale F-52244 on a rider's branch (with the driver's +408 x context +64), `wheel` the car's
+/// steering-wheel call (dt, smoothed, speed) -> (value, word, context +144 as the call leaves it: the gatherer reads it
+/// after the call; `wheel_shake` moves it), `look` the rival look (its start, dt). Without the body the vector is the
+/// stack's (0 here).
+#[allow(clippy::too_many_arguments)]
 pub fn gather(
     g: &Gather,
     c: &Ctx,
@@ -836,7 +837,7 @@ pub fn gather(
     m: &mut GatherMut,
     dt: f32,
     rates: &mut dyn FnMut(&mut Parts, f32),
-    wheel: &mut dyn FnMut(f32, f32, f32) -> (f32, f32),
+    wheel: &mut dyn FnMut(f32, f32, f32) -> (f32, f32, f32),
     look: &mut dyn FnMut(f32, f32) -> f32,
 ) -> Option<CtxIn> {
     use crate::physics::exact::fma;
@@ -1025,8 +1026,8 @@ pub fn gather(
                 d.f1108 = ws;
                 smooth = (f11 / ws) * f10;
                 lim = (ws - f10.abs()).abs();
-                let (mut r, w140) = wheel(dt, smooth, spd);
-                if !(c.side_vals[3] > 0.5) {
+                let (mut r, w140, clock) = wheel(dt, smooth, spd);
+                if !(clock > 0.5) {
                     r = 0.0;
                 }
                 if c.wheel_scale > k.start_steer {
@@ -1783,7 +1784,7 @@ mod tests {
                     },
                     &mut |x, y, z| {
                         log.borrow_mut().push_str(&format!(" bike {:08x} {:08x} {:08x}", x.to_bits(), y.to_bits(), z.to_bits()));
-                        (f(98), f(99))
+                        (f(98), f(99), f(100))
                     },
                     &mut |x, y| {
                         log.borrow_mut().push_str(&format!(" look {:08x} {:08x}", x.to_bits(), y.to_bits()));

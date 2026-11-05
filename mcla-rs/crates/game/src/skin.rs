@@ -257,6 +257,8 @@ pub struct SkinModel {
     pub face_bones: Vec<bool>,
     /// the bones of the neck subtree: a driver's filter +96 (F-29730: F-25694 at weight 1 on "neck" and its children), the pan-sweep overlay's
     pub neck_bones: Vec<bool>,
+    /// the bones of the spine00 subtree: a driver's filter +92 (F-29730)
+    pub spine_bones: Vec<bool>,
 }
 
 /// A character set's blend shapes bound to its high-detail parts: the `.r3` mesh record names the model
@@ -459,33 +461,24 @@ impl SkinModel {
         if binds4.is_empty() {
             binds4 = binds.clone();
         }
-        let facial = c.bone("Facial_root");
-        let neck = c.bone("neck");
-        let neck_bones = (0..bones.len())
-            .map(|i| {
-                let mut b = Some(i);
-                while let Some(j) = b {
-                    if Some(j) == neck {
-                        return true;
+        let under = |top: Option<usize>| -> Vec<bool> {
+            (0..bones.len())
+                .map(|i| {
+                    let mut b = Some(i);
+                    while let Some(j) = b {
+                        if Some(j) == top {
+                            return true;
+                        }
+                        b = bones[j].parent;
                     }
-                    b = bones[j].parent;
-                }
-                false
-            })
-            .collect();
-        let face_bones = (0..bones.len())
-            .map(|i| {
-                let mut b = Some(i);
-                while let Some(j) = b {
-                    if Some(j) == facial {
-                        return true;
-                    }
-                    b = bones[j].parent;
-                }
-                false
-            })
-            .collect();
-        Some(SkinModel { bones, ids, lods, cockpit, binds, binds4, mats, head: c.bone("head"), morph, face_bones, neck_bones })
+                    false
+                })
+                .collect()
+        };
+        let neck_bones = under(c.bone("neck"));
+        let face_bones = under(c.bone("Facial_root"));
+        let spine_bones = under(c.bone("spine00"));
+        Some(SkinModel { bones, ids, lods, cockpit, binds, binds4, mats, head: c.bone("head"), morph, face_bones, neck_bones, spine_bones })
     }
 }
 
