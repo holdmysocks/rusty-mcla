@@ -12279,7 +12279,7 @@ impl Game {
         if near && self.mode == crate::game::Mode::FreeRoam && !Self::mc4_no_tutorial() {
             let flag = match kind { 2 => "tTRL", 5 => "tTFR", 4 => "tTTO", 3 => "tTTT", _ => "" };
             if !flag.is_empty() && !self.mc4_tut_seen(flag) && self.opt_x.s23.run.is_none() {
-                let near_form = |g: &Game| [82u32, 83].iter().any(|f| tutorial_keys(*f).map_or(false, |k| g.tutorial_box.as_ref().map_or(false, |b| b.0 == k.0)));
+                let near_form = |g: &crate::game::Game| [82u32, 83].iter().any(|f| tutorial_keys(*f).map_or(false, |k| g.tutorial_box.as_ref().map_or(false, |b| b.0 == k.0)));
                 if near_form(self) {
                     self.tutorial_box = None;
                 }
@@ -13145,7 +13145,7 @@ mod tests {
         };
         let base = g.current_car;
         let model = g.model_name(base).to_ascii_lowercase();
-        let slots = |g: &Game| g.mc4.as_ref().unwrap().garage.iter().filter(|c| c.vehicle.eq_ignore_ascii_case(&model)).count();
+        let slots = |g: &crate::game::Game| g.mc4.as_ref().unwrap().garage.iter().filter(|c| c.vehicle.eq_ignore_ascii_case(&model)).count();
         assert_eq!(slots(&g), 1);
         g.money = 10_000_000;
         g.rep = 10_000_000;
@@ -16021,7 +16021,7 @@ mod tests {
         assert!(g.mc4_slots_apply(&mut m));
         assert_eq!(m.career.cruising_slots, g.mc4.as_ref().unwrap().career.cruising_slots);
         assert!(g.mc4_open_evaluates(0) && g.mc4_open_evaluates(3));
-        let rows = |g: &Game| DISTRICTS.iter().map(|d| g.mc4_district_open(d)).collect::<Vec<_>>();
+        let rows = |g: &crate::game::Game| DISTRICTS.iter().map(|d| g.mc4_district_open(d)).collect::<Vec<_>>();
         let saved = g.mc4.take();
         assert_eq!(rows(&g), vec![false; 5]);
         g.mc4 = saved;
@@ -16620,7 +16620,7 @@ mod tests {
         let Some((mut g, dir, _)) = career_game("newgame_import.json", "s20exp") else { return };
         let i = g.career.mission_no("REP_ON_HW_STRIP").unwrap();
         assert_eq!(g.career.ext[i].obj_base[0], Some(260));
-        let line = |g: &Game| g.career.active().into_iter().find(|v| v.id == "REP_ON_HW_STRIP").map(|v| (v.objectives[0].cur, v.objectives[0].count.clone()));
+        let line = |g: &crate::game::Game| g.career.active().into_iter().find(|v| v.id == "REP_ON_HW_STRIP").map(|v| (v.objectives[0].cur, v.objectives[0].count.clone()));
         assert_eq!(line(&g), Some((0, Some("(0/400)".to_string()))));
         g.rep = 600;
         g.career.event(crate::career::Ev::Rep(600));
@@ -16926,7 +16926,7 @@ mod tests {
         let (races, need) = g.career.series_mission("BESTOF_GH_04").unwrap();
         assert_eq!((races[0].as_str(), races.len(), need), ("hollywood/ordered/hw_ordered_mb_02", 3, 2));
         let r: Vec<String> = races.iter().map(|r| format!("game/race/{}", r)).collect();
-        let progress = |g: &Game| g.career.save().missions["BESTOF_GH_04"].progress.clone();
+        let progress = |g: &crate::game::Game| g.career.save().missions["BESTOF_GH_04"].progress.clone();
         // (one win, the series given up: nothing kept - the condition is met by SERIES_COMPLETE
         // alone, the wins are the series' own)
         race(&mut g, &r[0], "YOU");
@@ -17023,7 +17023,7 @@ mod tests {
         s.order.push("CITY_CHAMP".to_string());
         g.career.restore(&s);
         let i = g.career.mission_no("CITY_CHAMP").unwrap();
-        let shown = |g: &Game| g.career.active().into_iter().find(|v| v.id == "CITY_CHAMP").map(|v| v.objectives.len()).unwrap_or(0);
+        let shown = |g: &crate::game::Game| g.career.active().into_iter().find(|v| v.id == "CITY_CHAMP").map(|v| v.objectives.len()).unwrap_or(0);
         assert_eq!(shown(&g), 1);
         assert_eq!((g.career.ext[i].obj_hidden.clone(), g.career.ext[i].obj_always.clone()), (vec![false, true], vec![false, true]));
         // (a won race before the meeting does nothing; the meeting is at the hookman's place,
@@ -17276,7 +17276,7 @@ mod tests {
         let owned = g.owned.len();
         assert!(g.mc4_pink_start("hw_wager_hangout1", 0));
         assert_eq!(g.mc4_pink_rival().map(|r| (r.1, r.2)), Some(("vp_pon_transam_79".to_string(), "pinkslip_vp_pon_transam_79".to_string())));
-        let lot = |g: &Game| g.mc4.as_ref().unwrap().career.pink_slips.held().iter().map(|s| (s.uid, s.kind, s.extra.get("vehicle_name").and_then(|v| v.as_str()).unwrap_or("").to_string())).collect::<Vec<_>>();
+        let lot = |g: &crate::game::Game| g.mc4.as_ref().unwrap().career.pink_slips.held().iter().map(|s| (s.uid, s.kind, s.extra.get("vehicle_name").and_then(|v| v.as_str()).unwrap_or("").to_string())).collect::<Vec<_>>();
         assert_eq!(lot(&g), vec![(17, 1, mine.clone())]);
         assert_eq!(g.mc4_pink_end(true), Some("PINKSLIP_SUCCESS"));
         assert!(lot(&g).is_empty() && g.owned.len() == owned);
@@ -17467,8 +17467,8 @@ mod tests {
         g.career = crate::career::Career::load(&data_dir());
         g.fresh_game = true;
         g.career.new_game();
-        let started = |g: &Game| g.career.news.iter().filter_map(|n| if let News::Started { id, .. } = n { Some(id.clone()) } else { None }).collect::<Vec<_>>();
-        let scenes = |g: &Game| g.career.news.iter().filter_map(|n| if let News::Scene(id) = n { Some(id.clone()) } else { None }).collect::<Vec<_>>();
+        let started = |g: &crate::game::Game| g.career.news.iter().filter_map(|n| if let News::Started { id, .. } = n { Some(id.clone()) } else { None }).collect::<Vec<_>>();
+        let scenes = |g: &crate::game::Game| g.career.news.iter().filter_map(|n| if let News::Scene(id) = n { Some(id.clone()) } else { None }).collect::<Vec<_>>();
         // RACE_GH_06's script switches the GPS button off as the career starts
         assert!(g.career.reached("RACE_GH_06"));
         assert!(!g.mc4_gps_enabled());
