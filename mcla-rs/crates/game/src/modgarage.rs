@@ -496,4 +496,65 @@ mod tests {
         r.take_tags(&["rim:whl_am_sample_le28n".to_string()]);
         assert!(r.owned_parts.values().all(|v| v.is_empty()), "{:?}", r.owned_parts);
     }
+
+    /// A mod car's two-tone paint (fade type and second colour) comes back after a restart, in use or not at the save.
+    #[test]
+    fn a_mod_cars_two_tone_round_trips() {
+        for in_use in [true, false] {
+            let d = dir(if in_use { "twotone_a" } else { "twotone_b" });
+            let all = ["vp_vw_golf_83", "vp_test_mod_01"];
+            let mut g = Game::new(all.iter().map(PathBuf::from).collect(), 1);
+            g.data_dir = d.clone();
+            g.owned = all.iter().map(|s| s.to_string()).collect();
+            for c in all {
+                g.mc4_car_added(c, None);
+            }
+            g.mod_cars.insert("vp_test_mod_01".into(), ModCarSave { mod_id: "test.mod".into(), long_name: "2006 TEST MOD".into(), short_name: "06 TEST".into() });
+            g.sync_car_paint();
+            // (set in the paint shop: the six areas are in hand, `mc4_paint_sync` every frame)
+            g.mode = crate::game::Mode::Garage;
+            g.mc4_paint_sync();
+            g.paint_fade = 2;
+            g.paint_b = 7;
+            g.mc4_paint_sync();
+            g.mode = crate::game::Mode::FreeRoam;
+            if !in_use {
+                g.current_car = 0;
+                g.selected_car = 0;
+                g.sync_car_paint();
+            }
+            g.write_save(&d);
+            let mut g2 = game(&all, &d);
+            g2.sync_car_paint();
+            g2.current_car = 1;
+            g2.selected_car = 1;
+            g2.sync_car_paint();
+            eprintln!("in_use {in_use}: fade {} b {}", g2.paint_fade, g2.paint_b);
+            assert_eq!((g2.paint_fade, g2.paint_b), (2, 7), "in use at the save: {in_use}");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    /// The play-test save (work/mods/n14/save_veyron.json): the Veyron in use, two-tone set, saved and read again.
+    #[test]
+    #[ignore]
+    fn the_play_test_veyron_keeps_its_two_tone() {
+        let d = dir("veyron_tt");
+        std::fs::copy("D:/MCLA/work/mods/n14/save_veyron.json", std::path::Path::new(&d).join("mcla_save.json")).unwrap();
+        let s = file(&d);
+        let owned = names(&s["owned"]);
+        let all: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+        let mut g = game(&all, &d);
+        g.sync_car_paint();
+        eprintln!("car {} car_x {:?} fade {} b {}", g.dir_name(g.current_car), g.car_x.car, g.paint_fade, g.paint_b);
+        g.paint_fade = 1;
+        g.paint_b = 7;
+        g.write_save(&d);
+        let after = file(&d);
+        eprintln!("records: {:?}", after["mc4"]["garage"].as_array().unwrap().iter().map(|c| c["vehicle"].clone()).collect::<Vec<_>>());
+        let mut g2 = game(&all, &d);
+        g2.sync_car_paint();
+        eprintln!("back: fade {} b {}", g2.paint_fade, g2.paint_b);
+        assert_eq!((g2.paint_fade, g2.paint_b), (1, 7));
+    }
 }

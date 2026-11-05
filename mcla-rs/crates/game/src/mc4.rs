@@ -2053,8 +2053,31 @@ impl Game {
         if ability.is_some() && c.ability_idx() != ability {
             c.set_ability(ability);
         }
+        // (the six areas in hand - the paint shop was open on this vehicle - go into its record as the shop left
+        // them: type, fade and second colour; `mc4_sync_cars` does the same for the vehicle in use at a save, but a
+        // vehicle left before the save would keep its record's old second colour)
+        if let Some(live) = self.car_x.paint.as_ref().filter(|_| c.visual.paint.len() == 6) {
+            let mut colour_stored = false;
+            for (k, p) in c.visual.paint.iter_mut().enumerate() {
+                let a = live.areas[k];
+                if p.paint_type() != Some(a.ty) {
+                    p.set_paint_type(a.ty);
+                }
+                if p.fade() != Some(a.fade) {
+                    p.set_fade(a.fade);
+                }
+                if p.color_b().map_or(true, |b| !close(b, a.b)) {
+                    p.ColorB = vec![r6(a.b[0]), r6(a.b[1]), r6(a.b[2])];
+                    colour_stored = true;
+                }
+            }
+            // (a colour stored into a paint area takes the paint override off, as in `mc4_sync_cars`)
+            if colour_stored {
+                c.visual.m_iCarPaintOverride = -1;
+            }
+        }
         // (the second colour: the body's, and with it every area that had the body's -
-        // unless the six areas are in hand, which the record takes whole: `mc4_store`)
+        // unless the six areas are in hand, stored above)
         if fade != 0 && self.car_x.paint.is_none() {
             let old = c.visual.paint.first().and_then(|p| p.color_b());
             if old.map_or(true, |o| !close(o, paint_b)) {
