@@ -777,7 +777,10 @@ impl EngineSound {
             let cents = (self.pitch_off + crate::caraudio::pitch_cents_f32(x / r.reference) + lfo_cents) as i32;
             // F-74444 / F-17698: dry EFFECT_PARAMS +16, chain send +12; F-89149: record 0 pans the chain
             let (dry, fx_send) = if self.eff.is_empty() { (1.0, 0.0) } else { (be_f32(&self.eff, 16), be_f32(&self.eff, 12)) };
-            let req = Req { pos: Some(loop_pos), volume: vol, vol2: self.vol2, pitch: cents, doppler: self.doppler, player: self.player, dry, fx_send, chain: self.chain, pans_chain: i == 0, ..Default::default() };
+            // the loops' category (create params +28): the player's PLAYER_VEHICLES_ENGINES (entity +1696, set by F-30010),
+            // a computer racer's OPPONENT_VEHICLES_ENGINE (F-51617); recorded in the running original (category index 128 / 25)
+            let category = joaat(if self.player { "PLAYER_VEHICLES_ENGINES" } else { "OPPONENT_VEHICLES_ENGINE" });
+            let req = Req { pos: Some(loop_pos), volume: vol, vol2: self.vol2, pitch: cents, doppler: self.doppler, player: self.player, dry, fx_send, chain: self.chain, pans_chain: i == 0, category, ..Default::default() };
             match self.voices[i] {
                 Some(h) if lib.playing(h) => lib.set(h, req),
                 _ => self.voices[i] = lib.play_hash(r.sound, req),
@@ -1044,6 +1047,36 @@ mod tests {
             }
         }
         assert_eq!(bad, 0);
+    }
+
+    /// GitHub #33: the engine loops are in the request's category (PLAYER_VEHICLES_ENGINES for the player, as the running
+    /// original gives them), so the player vehicle slider (VOLUME_RULE.md 1.1) reaches them: at 0 the 350Z's loops
+    /// render below -80 dB of their level at 10; the music slider leaves them as they are.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn player_vehicle_slider_reaches_the_engine() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let rms = |sliders: [u8; 5]| {
+            let mut a = crate::audio::Audio::new_offline(&dir).expect("audio");
+            let mut lib = SoundLib::load(a.root(), &a.cfg.clone()).expect("sound objects");
+            lib.listener = (Vec3::new(0.0, 1.5, 6.0), Vec3::X, Vec3::NEG_Z);
+            lib.set_sliders(sliders);
+            let mut e = EngineSound::new(&lib, "vp_nsn_350z_06", false).expect("engine");
+            let dt = 1.0 / 60.0;
+            for f in 0..240 {
+                let inp = EngineIn { pos: Vec3::ZERO, rpm: 900.0 + 20.0 * f as f32, idle_rpm: 900.0, max_rpm: 7000.0, torque: 300.0, full_torque: 400.0, pedal: 1.0, throttle_in: 1.0, speed: 20.0, gear: 3, view: Some(2), ..Default::default() };
+                e.update(&mut lib, &inp, dt);
+                lib.update(dt, &mut a);
+                a.end_frame();
+                a.render(dt);
+            }
+            let c = a.captured();
+            (c.iter().map(|x| x * x).sum::<f32>() / c.len().max(1) as f32).sqrt()
+        };
+        let (on, off, music) = (rms([10; 5]), rms([10, 10, 10, 0, 10]), rms([10, 0, 10, 10, 10]));
+        assert!(on > 1e-3, "{on}");
+        assert!(off < on * 1e-4, "{off} against {on}");
+        assert_eq!(music, on);
     }
 
     /// F-90102 against the original's own code on 4000 cases (work/audio2/verify/ref1.py; evidence docs/reference/audio/verify_audio_b1.md)

@@ -63,11 +63,15 @@ pub struct Req {
     pub fx_send: f32,
     pub chain: u32,
     pub pans_chain: bool,
+    /// the request's category (create params +28, the category record; StartSound F-33564 stores its index at the root's
+    /// init +82): the root sound's parent category, which a header category under it overrides; 0 = none (BASE). The
+    /// engine loops are the only sounds that give one (their own headers have none)
+    pub category: u32,
 }
 
 impl Default for Req {
     fn default() -> Self {
-        Req { pos: None, volume: 0.0, vol2: 0.0, pitch: 0, pan: -1, doppler: 1.0, player: false, start_ms: 0.0, start_pct: 0.0, lpf: 23900, hpf: 0, dry: 1.0, fx_send: 0.0, chain: 0, pans_chain: false }
+        Req { pos: None, volume: 0.0, vol2: 0.0, pitch: 0, pan: -1, doppler: 1.0, player: false, start_ms: 0.0, start_pct: 0.0, lpf: 23900, hpf: 0, dry: 1.0, fx_send: 0.0, chain: 0, pans_chain: false, category: 0 }
     }
 }
 
@@ -1419,7 +1423,7 @@ impl SoundLib {
             inst.stop = false;
             stop_node(&mut inst.root, inst.stop_ms);
         }
-        let ctx = Ctx { vol: inst.req.volume, pitch: inst.req.pitch, pan: inst.req.pan, category: joaat("BASE"), curve: 0, curve_scale: 1.0, doppler: 1.0, mask: 0, positional: 2, lpf: inst.req.lpf.min(23900), hpf: inst.req.hpf };
+        let ctx = Ctx { vol: inst.req.volume, pitch: inst.req.pitch, pan: inst.req.pan, category: if inst.req.category != 0 { inst.req.category } else { joaat("BASE") }, curve: 0, curve_scale: 1.0, doppler: 1.0, mask: 0, positional: 2, lpf: inst.req.lpf.min(23900), hpf: inst.req.hpf };
         let mut out = Vec::new();
         self.step(&mut inst.root, dt * 1000.0, ctx, inst.req.offset(), &mut out);
         if inst.root.st != St::Done {
@@ -1472,7 +1476,7 @@ impl SoundLib {
                 inst.stop = false;
                 stop_node(&mut inst.root, inst.stop_ms);
             }
-            let ctx = Ctx { vol: inst.req.volume, pitch: inst.req.pitch, pan: inst.req.pan, category: joaat("BASE"), curve: 0, curve_scale: 1.0, doppler: 1.0, mask: 0, positional: 2, lpf: inst.req.lpf.min(23900), hpf: inst.req.hpf };
+            let ctx = Ctx { vol: inst.req.volume, pitch: inst.req.pitch, pan: inst.req.pan, category: if inst.req.category != 0 { inst.req.category } else { joaat("BASE") }, curve: 0, curve_scale: 1.0, doppler: 1.0, mask: 0, positional: 2, lpf: inst.req.lpf.min(23900), hpf: inst.req.hpf };
             let mut out = Vec::new();
             self.step(&mut inst.root, ms, ctx, inst.req.offset(), &mut out);
             for v in out {
