@@ -231,6 +231,10 @@ pub struct CarInput {
     /// a cine car event's mcBrainAnimated writes the chassis's inputs (F-91361): as they are - no pad
     /// code, no computer driver's pedal share - and the gearbox set to first out of reverse or neutral
     pub animated: bool,
+    /// the brain's no-line case (F-17058 case 5, at its gear write): the gear asked for is neutral while the chassis' +572
+    /// (the drive shaft's speed x its wheel's radius, the tick's entry) is under 8.94, else the gear it has - with
+    /// `animated`, which would otherwise ask for first out of neutral or reverse
+    pub neutral_slow: bool,
 }
 
 pub const HYD_FITTED: u8 = 0x40;

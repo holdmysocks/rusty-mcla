@@ -881,6 +881,8 @@ impl Brain {
         self.last = a;
         let mut t = Pedals { throttle: a.throttle, brake: a.brake, handbrake: 0.0, steer: a.steer };
         let mut reverse = false;
+        // (F-17058 case 5, the aiv invalid and not on its way at speed: the gear asked for is neutral below chassis +572 8.94)
+        let mut neutral_slow = false;
         if self.hold_still {
             t = Pedals { throttle: 0.0, brake: 0.0, handbrake: 1.0, steer: 0.0 };
         } else if self.rev.active() {
@@ -927,6 +929,8 @@ impl Brain {
             if self.nav.pending() && car.speed > 8.94 {
                 t.throttle = 1.0;
                 t.brake = 0.0;
+            } else {
+                neutral_slow = true;
             }
         }
         let p = self.input.update(t, self.collision > 0.0, dt);
@@ -936,7 +940,7 @@ impl Brain {
         out.input = if reverse {
             CarInput { throttle: 0.0, brake: p.throttle.max(0.11), steer: p.steer, handbrake: p.handbrake > 0.5, ai: true, ..Default::default() }
         } else {
-            CarInput { throttle: p.throttle, brake: p.brake, steer: p.steer, handbrake: p.handbrake > 0.5, ai: true, animated: true, ..Default::default() }
+            CarInput { throttle: p.throttle, brake: p.brake, steer: p.steer, handbrake: p.handbrake > 0.5, ai: true, animated: true, neutral_slow, ..Default::default() }
         };
         out
     }

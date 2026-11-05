@@ -750,6 +750,9 @@ pub fn bike_old(vt: &VehTune) -> bool {
     vt.bike && *V.get_or_init(|| std::env::var_os("MCLA_DBG_Z3").is_some())
 }
 
+/// The brain's no-line gear rule (F-17058 case 5): neutral below this chassis +572 (the original's float constant 8.94).
+pub const NEUTRAL_BELOW: f32 = 8.94;
+
 /// A-73788: the gear is not reverse (neutral counts) as the contact callbacks find it
 fn gear_not_reverse(gear: i32, way_after: i32) -> bool {
     if dbg_flag("MCLA_DBG_Y2") { return gear > 0; }
@@ -1758,7 +1761,16 @@ pub async fn step_async(st: &mut CarState, p: &CarParams, vt: &VehTune, input: C
     let old_gear = vs.gear;
     // (a replay goes the way its recording's gearbox did: choosing reverse is the pad code's)
     let replay_way = REPLAY_WAY.load(std::sync::atomic::Ordering::Relaxed);
-    if input.animated {
+    if input.animated && input.neutral_slow {
+        // (the brain with no line, F-17058 case 5: input +44 is neutral below 8.94 of chassis +572 - the f32 constant, the
+        // test `<` as the original's fcmpu/bge - else the gear the car has; mcOpponentInput hands it to the transmission,
+        // F-59013, which changes the gear only if it differs. The automatic leaves neutral alone: it works on gears
+        // above it only)
+        if vs.shaft_speed_in < NEUTRAL_BELOW && vs.gear != 0 {
+            vs.gear = 0;
+            vs.shift_timer = 0.0;
+        }
+    } else if input.animated {
         // (an mcBrainAnimated writes input +44 = max(gear, first) every time, F-91361)
         if vs.gear <= 0 {
             vs.gear = 1;

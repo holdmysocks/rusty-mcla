@@ -283,10 +283,9 @@ pub fn standing(c: &crate::vehicles::CarInstance) -> bool {
 
 /// The pedals of a standing car of a set-up ([`standing`]): the brain's with no line, written to the chassis as the
 /// port's brain writes its pedals (brain.rs: a computer driver's, `animated` - no coasting share, the gearbox out of
-/// reverse; the original's case 5 asks for neutral below 8.94 m/s where the port's brain keeps first - with no throttle
-/// and the brake on, the car stands either way).
+/// reverse), and case 5's gear write: neutral while the chassis' +572 is under 8.94 (`neutral_slow`).
 pub fn standing_input() -> crate::physics::CarInput {
-    crate::physics::CarInput { throttle: 0.0, brake: 1.0, handbrake: false, steer: 0.0, ai: true, animated: true, ..Default::default() }
+    crate::physics::CarInput { throttle: 0.0, brake: 1.0, handbrake: false, steer: 0.0, ai: true, animated: true, neutral_slow: true, ..Default::default() }
 }
 
 /// A car of a set-up standing still at its place (the driver off, deactivated).
@@ -708,5 +707,51 @@ mod tests {
         // (measured: the old input charge 1, back wheels 4.33 rad/s, 2.63 m crept; this one 0, 0 and 0.079 m - the locked car's own
         // settling on the test's flat ground; in the game the stand loop holds its place)
         assert!(spin < 0.05 && moved < 0.1, "the wheels and the car stand: spin {spin}, moved {moved} m");
+    }
+
+    /// F-17058 case 5's gear write: neutral while chassis +572 (the shaft speed x its wheel's radius, from the tick's entry)
+    /// is under the float 8.94, `<` as the original's fcmpu / bge; at 8.94 or above the gear it has stays. The standing car
+    /// is in neutral, with no burnout, and rolling at speed it keeps its gear.
+    #[test]
+    fn a_standing_car_asks_for_neutral_below_8_94() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
+        let dir = root.join("resources/vehicle/vp_chv_impala_96");
+        if !dir.is_dir() {
+            return;
+        }
+        let assets = crate::assets::Assets::new(&root);
+        let car = crate::vehicle_model::load_car(&assets, &dir).unwrap();
+        let mut params = crate::vehicles::car_params(&car);
+        params.veh = Some(std::sync::Arc::new(crate::physics::vehsim::VehTune::new(car.simtune.as_ref().unwrap().base.clone())));
+        let mut world = WorldCollider::default();
+        world.sectors.insert(0, SectorMesh::build(vec![
+            [Vec3::new(-64.0, 0.0, -512.0), Vec3::new(-64.0, 0.0, 512.0), Vec3::new(64.0, 0.0, -512.0)],
+            [Vec3::new(64.0, 0.0, -512.0), Vec3::new(-64.0, 0.0, 512.0), Vec3::new(64.0, 0.0, 512.0)],
+        ]));
+        let dt = 1.0 / 60.0;
+        // (the gear after one tick with chassis +572 as given at the tick's entry)
+        let gear_after = |shaft: f32| {
+            let mut st = CarState::new(Vec3::new(0.0, 0.02, 0.0), 0.0);
+            for _ in 0..30 {
+                st.step(&params, CarInput { throttle: 0.0, brake: 0.0, ai: true, animated: true, ..Default::default() }, &world, dt);
+            }
+            assert_eq!(st.veh.as_ref().unwrap().gear, 1, "an animated brain's car is in first");
+            st.veh.as_mut().unwrap().shaft_speed_in = shaft;
+            st.step(&params, standing_input(), &world, dt);
+            st.veh.as_ref().unwrap().gear
+        };
+        let below = f32::from_bits(crate::physics::vehsim::NEUTRAL_BELOW.to_bits() - 1);
+        assert_eq!(gear_after(0.0), 0, "at rest: neutral");
+        assert_eq!(gear_after(below), 0, "the float under 8.94: neutral");
+        assert_eq!(gear_after(8.94), 1, "8.94: the gear it has");
+        assert_eq!(gear_after(20.0), 1, "above: the gear it has");
+        assert_eq!(gear_after(-3.0), 0, "backwards (a negative +572): neutral");
+        assert_eq!(crate::physics::vehsim::NEUTRAL_BELOW.to_bits(), 0x410F_0A3D, "the original's constant: 8.94 as a float");
+        // (the standing car's 10 s: neutral, and it stays)
+        let mut st = CarState::new(Vec3::new(0.0, 0.02, 0.0), 0.0);
+        for _ in 0..600 {
+            st.step(&params, standing_input(), &world, dt);
+            assert_eq!(st.veh.as_ref().unwrap().gear, 0);
+        }
     }
 }
