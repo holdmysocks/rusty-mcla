@@ -302,7 +302,7 @@ impl Default for Follow {
 }
 
 /// F-64718 in state 5 with a physical car: follow the ghost at `p` going `fwd` (its matrix's -c, or the rail's
-/// tangent) at `s` m/s; `k` the frame's time (the image's word 1/60). None: the ghost is more than 10 m away in XZ
+/// tangent) at `s` m/s; `k` the frame's time (1/30 in the running game; the image's word is 1/60). None: the ghost is more than 10 m away in XZ
 /// (F-12584 DriveToNearestRail takes over; the way and speed are still kept, as the original stores them after it).
 pub fn follow(st: &mut Follow, car: &FollowCar, p: Vec3, fwd: Vec3, s: f32, k: f32) -> Option<()> {
     let t = norm_or(Vec3::new(fwd.x, 0.0, fwd.z), 1e-5, Vec3::X);

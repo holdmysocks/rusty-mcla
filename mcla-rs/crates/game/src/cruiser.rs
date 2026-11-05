@@ -83,7 +83,9 @@ pub struct Cruiser {
     /// not run yet)
     pub frame_acc: f32,
     pub held: Option<crate::physics::CarInput>,
-    /// the frame time the follow divides by (the image's word at the follow, 1/60)
+    /// the frame time the follow divides by: the word the follow reads is 1/60 in the image, but the running game's
+    /// cruising man shows the brain's game frame, 1/30 (bit for bit in his rail curvature, 813 of 815 updates:
+    /// cruisedrive.rs `follow_matches_the_capture`)
     pub k: f32,
     /// the car's engage rpm saved by the enable (+1692; 1000 from the constructor)
     pub saved_engage: f32,
@@ -328,7 +330,7 @@ pub fn disable_car<C: CruiseCar>(saved: f32, car: &mut C) {
 
 impl Cruiser {
     pub fn new(owner: u32, reset_pos: Vec3) -> Cruiser {
-        Cruiser { owner, brain: Cruising::default(), reset_pos, frame_acc: 0.0, held: None, k: 1.0 / 60.0, saved_engage: 1000.0 }
+        Cruiser { owner, brain: Cruising::default(), reset_pos, frame_acc: 0.0, held: None, k: crate::brain::FRAME, saved_engage: 1000.0 }
     }
 
     /// One update (F-64718) and what drives the car after it (slot 11: the racing brain in states 1 / 2, else the

@@ -14,6 +14,34 @@ use mcla_formats::rage::navmesh::NavMesh;
 
 thread_local! {
     static RAILS: Option<&'static Rails<'static>> = make_rails();
+    /// each cruiser's hold on the traffic as its last update left it: owner -> (state, request, ghost)
+    static HELD: std::cell::RefCell<std::collections::HashMap<u32, (u32, i32, u32)>> = Default::default();
+}
+
+fn note(cr: &Cruiser) {
+    HELD.with(|h| h.borrow_mut().insert(cr.owner, (cr.brain.state, cr.brain.request, cr.brain.ghost)));
+}
+
+/// A cruising car the port removed (its own spawn / despawn of the men, roamers.rs - the original keeps the brain
+/// while roaming): its brain's RemoveFromTraffic (F-12926: a pending request cancelled in state 3, the ghost let go
+/// in state 5), so no ghost rides on for an owner that is gone.
+fn removed(v: &mut Vehicles) {
+    let gone: Vec<(u32, (u32, i32, u32))> = HELD.with(|h| {
+        let mut h = h.borrow_mut();
+        let gone: Vec<u32> = h.keys().copied().filter(|&o| !v.cars.iter().any(|c| c.uid == o && is_cruiser(c))).collect();
+        gone.into_iter().filter_map(|o| h.remove(&o).map(|x| (o, x))).collect()
+    });
+    for (owner, (state, request, ghost)) in gone {
+        if !crate::cruiser::GhostTraffic::present(v) {
+            continue;
+        }
+        log::debug!("cruiser {owner}: car removed in state {state}: out of the traffic");
+        match state {
+            3 => crate::cruiser::GhostTraffic::cancel_request(v, request),
+            5 => crate::cruiser::GhostTraffic::release_ghost(v, ghost),
+            _ => {}
+        }
+    }
 }
 
 /// The city's rails (navsys lanes, railnet tables), read once.
@@ -140,6 +168,7 @@ fn put(v: &mut Vehicles, i: usize, c: Box<Cruiser>, b: Box<crate::brain::Brain>)
 /// The ambient system's answers since the last frame, each to its owner's brain (served in the manager's frame,
 /// before the brains run).
 pub fn events(v: &mut Vehicles, col: &WorldCollider) {
+    removed(v);
     let ev = v.drain_ghost_events();
     if ev.is_empty() {
         return;
@@ -163,6 +192,7 @@ pub fn events(v: &mut Vehicles, col: &WorldCollider) {
             log::debug!("cruiser {}: ghost at {:?} rail {:?} (point {:?}, {:.1} m) {:.1} m/s, car at {:?}", cr.owner, g.matrix[3], g.rail, rp, rp.map_or(-1.0, |p| p.distance(v.cars[i].state.pos)), g.speed, v.cars[i].state.pos);
         }
         let pose = car.pose.take();
+        note(&cr);
         put(v, i, cr, br);
         apply_pose(v, i, col, pose);
     }
@@ -216,6 +246,7 @@ pub fn tick(v: &mut Vehicles, col: &WorldCollider, i: usize, dt: f32) -> CarInpu
         }
     };
     cr.held = Some(input);
+    note(&cr);
     put(v, i, cr, br);
     apply_pose(v, i, col, pose);
     input
@@ -280,10 +311,134 @@ pub fn setup(v: &mut Vehicles, col: &WorldCollider, i: usize, pts: &[Vec3], firs
     log::debug!("cruiser {}: set up, {} points from {}, {} -> state {}", owner, n, first, if at_reset { "teleport" } else { "drive" }, cr.brain.state);
     cr.enable(&mut car);
     let pose = car.pose.take();
+    note(&cr);
     if let Some(a) = v.cars[i].ai.as_mut() {
         a.cruiser.0 = Some(cr);
         a.brain.0 = Some(br);
     }
     apply_pose(v, i, col, pose);
     true
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use crate::cruising::{follow, Follow, FollowCar};
+    use glam::Vec3;
+    use std::collections::HashMap;
+
+    type Rec = HashMap<String, Vec<u32>>;
+
+    /// The line's fields: `key=dec[hex,hex]` as the bit words, plain values as their own word (rail pointers etc.).
+    fn parse(line: &str) -> Rec {
+        let mut m = HashMap::new();
+        for tok in line.split_whitespace() {
+            let Some((k, v)) = tok.split_once('=') else { continue };
+            let w = match (v.find('['), v.ends_with(']')) {
+                (Some(i), true) => v[i + 1..v.len() - 1].split(',').map(|h| u32::from_str_radix(h, 16).unwrap_or(0)).collect(),
+                _ => vec![u32::from_str_radix(v, 16).ok().or_else(|| v.parse::<i64>().ok().map(|x| x as u32)).unwrap_or(0)],
+            };
+            if let Ok(d) = v.parse::<i64>() {
+                m.insert(format!("{k}_dec"), vec![d as u32]);
+            }
+            m.insert(k.to_string(), w);
+        }
+        m
+    }
+    fn f(r: &Rec, k: &str) -> f32 {
+        f32::from_bits(r[k][0])
+    }
+    fn v3(r: &Rec, k: &str) -> Vec3 {
+        let w = &r[k];
+        Vec3::new(f32::from_bits(w[0]), f32::from_bits(w[1]), f32::from_bits(w[2]))
+    }
+
+    /// State 5 of the cruising brain (F-64718 -> the follow) against a cruising man recorded in the original
+    /// (work/racerai/cruiserec/cruise_ref.txt, man 350): for each recorded update the follow from the previous
+    /// update's way / speed / curvature, the car as recorded, the ghost's rail point at its t ([ghost+452]+208) on the
+    /// lane the port's exact lane curve puts there, and the ghost's speed (+412); the speed demand +1676, the curvature
+    /// demand +1680 and the rail curvature +1688 compared bit for bit.
+    #[test]
+    fn follow_matches_the_capture() {
+        let path = std::env::var("MCLA_CRUISE_REF").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../../../work/racerai/cruiserec/cruise_ref2.txt").to_string());
+        let Ok(text) = std::fs::read_to_string(&path) else { return };
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
+        let res = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")).unwrap();
+        let nav = mcla_formats::rage::navsys::NavSys::parse(&res).unwrap();
+        let recs: Vec<Rec> = text.lines().filter(|l| l.starts_with("run=")).map(parse).filter(|r| r.contains_key("u1708")).collect();
+        let key = |r: &Rec| (r["f1672"][0], r["f1676"][0], r["f1680"][0], r["f1688"][0], r["g1616"].clone());
+                let (mut n, mut eqs, mut gated, mut skipped) = (0, [[0usize; 3]; 4], 0, 0);
+        let (mut n_same, mut near, mut worst) = (0usize, [0usize; 2], [0f32; 2]);
+        let mut first_diff = Vec::new();
+        for w in recs.windows(2) {
+            let (a, b) = (&w[0], &w[1]);
+            if a["u1708"][0] != 5 || b["u1708"][0] != 5 || a["run"] != b["run"] || key(a) == key(b) || a["i1648"] != b["i1648"] {
+                continue;
+            }
+            // (the ghost's rail [ghost+452]+188: a lane record, 112 bytes in lane order - cruiserec/rails.txt; -1: the
+            // records without control points seen at junctions, not decoded - left out)
+            let t = f(b, "gt208");
+            let lane = b["lane188_dec"][0];
+            if lane as i32 == -1 || lane as usize >= nav.curves.len() {
+                skipped += 1;
+                continue;
+            }
+            let pos = v3(b, "mx_pos");
+            let c = &nav.curves[lane as usize];
+            let p = crate::railroute::point(c, t) + v3(b, "g1632");
+            let fwd = crate::railroute::deriv(c, t);
+            // (the speed the update used is what it stored, +1672: the ghost is stepped after the brain in a frame)
+            let s = f(b, "f1672");
+            n += 1;
+            if f(b, "f1676") == -100.0 {
+                gated += 1;
+            }
+            let ta = f(a, "gt208");
+            let same_lane = a["lane188_dec"] == b["lane188_dec"];
+            for (k, (src, tt)) in [(b, t), (a, t), (b, ta), (a, ta)].into_iter().enumerate() {
+                if k >= 2 && !same_lane {
+                    continue;
+                }
+                let p = crate::railroute::point(c, tt) + v3(b, "g1632");
+                let fwd = crate::railroute::deriv(c, tt);
+                let car = FollowCar {
+                    a: v3(src, "mx_r"),
+                    c: v3(src, "mx_back"),
+                    pos: v3(src, "mx_pos"),
+                    vel: v3(src, "vel"),
+                    yaw_rate: v3(src, "angv").y,
+                    tune48: if f(b, "f1676") == -100.0 { 1e9 } else { 0.0 },
+                };
+                let mut st = Follow { way: v3(a, "g1616"), speed: f(a, "f1672"), curvature: f(a, "f1688"), steer: f(a, "f1680"), demand: f(a, "f1676") };
+                follow(&mut st, &car, p, fwd, s, crate::brain::FRAME);
+                let got = [st.demand.to_bits(), st.steer.to_bits(), st.curvature.to_bits()];
+                let want = [b["f1676"][0], b["f1680"][0], b["f1688"][0]];
+                let tally = &mut eqs[k];
+                for i in 0..3 {
+                    if got[i] == want[i] {
+                        tally[i] += 1;
+                    }
+                }
+                if k == 3 {
+                    n_same += 1;
+                    let e = [(st.demand - f32::from_bits(want[0])).abs(), (st.steer - f32::from_bits(want[1])).abs()];
+                    near[0] += (e[0] < 1e-3) as usize;
+                    near[1] += (e[1] < 1e-5) as usize;
+                    worst = [worst[0].max(e[0]), worst[1].max(e[1])];
+                    if got != want && first_diff.len() < 4 {
+                        first_diff.push(format!("seq {:?} lane {lane} t {tt}: got {:?} want {:?}", b["seq"], got.map(f32::from_bits), want.map(f32::from_bits)));
+                    }
+                }
+            }
+        }
+        eprintln!("follow vs capture: {n} updates ({gated} gated, {skipped} on rails without points); [demand, curvature demand, rail curvature] equal with (car, ghost t) of (b, b) {:?}, (a, b) {:?}, (b, a) {:?}, (a, a) {:?}", eqs[0], eqs[1], eqs[2], eqs[3]);
+        eprintln!("  car and ghost t of the update before (the brain runs before the ghost's step): {n_same} updates, rail curvature equal {}, speed demand within 1e-3 {} (worst {}), curvature demand within 1e-5 {} (worst {})", eqs[3][2], near[0], worst[0], near[1], worst[1]);
+        for d in &first_diff {
+            eprintln!("  {d}");
+        }
+        // (the reader samples the car after the tick, not where the brain reads it: the demands, which take the car's
+        // place and velocity, agree to the sampling; the rail curvature, from the ghost alone, bit for bit)
+        assert!(n_same > 500 && eqs[3][2] * 100 >= n_same * 99, "rail curvature");
+        // (97 %: 797 of 815 in the 2026-11-04 capture; the rest are pairs with an update missed between samples [I])
+        assert!(near[0] * 100 >= n_same * 97 && near[1] * 100 >= n_same * 97, "demands");
+    }
 }
