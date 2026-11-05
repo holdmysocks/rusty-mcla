@@ -974,7 +974,15 @@ impl Roamers {
                                 c.set_perf(m.mod_value.clamp(0, 100) as f32 / 100.0);
                             }
                             log::info!("roamers: {} ({:?}, {}, difficulty {}) in his {} {:.0} m away{}", m.name, m.kind, DISTRICTS[m.district.min(4)], m.difficulty, c.model.name, at.distance(pp), if at_reset { format!(" - put at point 0 of his loop ({:.1}, {:.1}, {:.1}), heading {:?}, first point {}", at.x, at.y, at.z, m.heading, next) } else { String::new() });
-                            if let Some(ai) = c.ai.as_mut() {
+                            // (his brain: CruisingHookmanCore's mcBrainCruising over a racing brain, on his car's aiv
+                            // tables at its state of tune - cruisedrive.rs; without the city's rails, the old route
+                            // follower)
+                            if let (Some(ai), Some(t)) = (c.ai.as_mut(), c.model.aitunes.clone()) {
+                                ai.tune = Some(std::sync::Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&t.base, &t.mods, c.perf)));
+                            }
+                            let cruising = std::env::var("MCLA_ROAM_OLD_AI").is_err() && crate::cruisedrive::setup(vehicles, &world.collider, idx, &m.pts, next, at_reset, at);
+                            let c = &mut vehicles.cars[idx];
+                            if let (Some(ai), false) = (c.ai.as_mut(), cruising) {
                                 ai.link = Some(li);
                                 ai.t = t;
                                 ai.target_speed = CRUISE;

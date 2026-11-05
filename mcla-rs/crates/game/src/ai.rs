@@ -126,6 +126,8 @@ pub struct AiDriver {
     pub rb: Option<RbState>,
     /// racing: the original's racer brain drives this car (brain.rs); the rest of this driver is unused
     pub brain: crate::brain::BrainSlot,
+    /// a cruising racer's mcBrainCruising (cruiser.rs; driven by cruisedrive.rs)
+    pub cruiser: crate::cruiser::CruiserSlot,
     /// racing: another car ran into this one (the contact walker's notify, `Vehicles::notify_contact`); the brain takes it as its
     /// 1.5 s collision timer at its next update
     pub hit_pending: bool,
