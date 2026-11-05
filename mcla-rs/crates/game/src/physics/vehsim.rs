@@ -448,6 +448,175 @@ impl Hydraulics {
     }
 }
 
+impl Hydraulics {
+    /// Switched on, or a ram still moving (the chassis update F-97237 and the tick's wheel writer F-53665 test
+    /// the hydraulics' state +16 and rams +120..+123 so)
+    pub fn active(&self) -> bool {
+        self.on || self.moving.iter().any(|m| *m)
+    }
+}
+
+/// The air ride (mcCarAirRide, chassis +672: ctor F-74609, reset F-80081): the air bags. Fitted, it switches on
+/// when the local human's car stands (F-97237: the automatic brake at 1, under 2.235 m/s, the car answering its
+/// pad, the engine running, the hydraulics off and still; F-32886 / F-36738: not on and no bag moving) and lowers
+/// the car by the lowering pattern; it switches off when the automatic brake lets go (the throttle), the car
+/// stops answering its pad or the hydraulics work (F-94916), and the bags go back to the ride height.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AirRide {
+    /// +12: the bags are fitted (F-57868)
+    pub fitted: bool,
+    /// +13: switched on
+    pub on: bool,
+    /// +14: the lowering pattern (LocalOptions +1324 at the switch-on): 0 all four, 1 the front then the back,
+    /// 2 the back then the front, 3 the left side then the right, 4 the right then the left
+    pub pattern: u8,
+    /// +16..+28: each bag's order (front left, front right, back left, back right): -1 up to Rise, 1 down to
+    /// -Drop, 0 back to the wheel's SuspensionOffset
+    pub orders: [i32; 4],
+    /// +32..+44: each wheel's height (wheel +432, the ride height with SuspensionOffset in it)
+    pub heights: [f32; 4],
+    /// +48..+51: the bag moved in its last update
+    pub moving: [bool; 4],
+    /// (the port's: the frame's tick, the heights last written into the wheels, and whether a bag or a hydraulic
+    /// ram was moving as the tick came in)
+    half: bool,
+    written: [f32; 4],
+    rams_before: bool,
+}
+
+/// The car's facts the air ride's switch tests (F-97237, F-36738)
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AirRideGate {
+    /// the local human's car (F-31409), its engine running (engine +46), not in the game's state 5 (and, for the
+    /// switch-on, F-36738's chassis +576 bit 0x20 clear: not traced, the port has no such flag)
+    pub allowed: bool,
+    /// chassis +396, the automatic brake
+    pub auto_brake: f32,
+    /// chassis +224
+    pub speed: f32,
+    /// the chassis's vt+48 (F-71660): the car answers its pad
+    pub answers: bool,
+    /// the hydraulics switched on or a ram moving
+    pub hydraulics: bool,
+}
+
+impl AirRide {
+    /// F-97237's air ride block, once a frame: the switch on / off, then the update F-89410. `pattern` is
+    /// LocalOptions +1324; `offset` the front and back wheels' SuspensionOffset; `dt` the frame's step
+    /// (0x827D7508).
+    pub fn frame(&mut self, t: &mcla_formats::rage::simtune::AirRideTune, g: &AirRideGate, pattern: u8, offset: [f32; 2], dt: f32) {
+        if !self.fitted {
+            return;
+        }
+        if g.allowed {
+            if g.auto_brake == 1.0 && g.speed < f32::from_bits(0x400f_0a3d) && g.answers && !g.hydraulics {
+                // (F-32886: F-36738's test, then F-47200)
+                if !self.on && !self.moving.iter().any(|m| *m) {
+                    self.switch_on(pattern);
+                }
+            } else if g.auto_brake == 0.0 || !g.answers || g.hydraulics {
+                self.switch_off();
+            }
+        }
+        self.update(t, offset, dt);
+    }
+
+    /// F-47200: every bag up to Rise first (from the wheel's height as it is), the pattern taken
+    fn switch_on(&mut self, pattern: u8) {
+        self.on = true;
+        self.orders = [-1; 4];
+        self.moving = [true; 4];
+        self.pattern = pattern;
+    }
+
+    /// F-94916
+    fn switch_off(&mut self) {
+        self.on = false;
+        self.orders = [0; 4];
+        self.moving = [true; 4];
+    }
+
+    /// F-89410: while on or a bag moves, the pattern sends the bags down once every bag stands still; then each
+    /// bag moves (F-30541)
+    fn update(&mut self, t: &mcla_formats::rage::simtune::AirRideTune, offset: [f32; 2], dt: f32) {
+        let still = !self.moving.iter().any(|m| *m);
+        if self.on && still {
+            let o = &mut self.orders;
+            let down = |o: &[i32; 4], i: usize| o[i] == 1;
+            // (bags 0 / 1 the front, 2 / 3 the back; 0 / 2 the left side, 1 / 3 the right)
+            match self.pattern {
+                0 => *o = [1; 4],
+                1 => {
+                    if down(o, 0) || down(o, 1) {
+                        if !down(o, 2) && !down(o, 3) {
+                            (o[2], o[3]) = (1, 1);
+                        }
+                    } else {
+                        (o[0], o[1]) = (1, 1);
+                    }
+                }
+                2 => {
+                    if down(o, 2) || down(o, 3) {
+                        if !down(o, 0) && !down(o, 1) {
+                            (o[0], o[1]) = (1, 1);
+                        }
+                    } else {
+                        (o[2], o[3]) = (1, 1);
+                    }
+                }
+                3 => {
+                    if down(o, 0) || down(o, 2) {
+                        if !down(o, 1) && !down(o, 3) {
+                            (o[1], o[3]) = (1, 1);
+                        }
+                    } else {
+                        (o[0], o[2]) = (1, 1);
+                    }
+                }
+                4 => {
+                    if down(o, 1) || down(o, 3) {
+                        if !down(o, 0) && !down(o, 2) {
+                            (o[0], o[2]) = (1, 1);
+                        }
+                    } else {
+                        (o[1], o[3]) = (1, 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for i in 0..4 {
+            let (rise, drop) = if i < 2 { (t.front_rise, t.front_drop) } else { (t.back_rise, t.back_drop) };
+            self.moving[i] = Self::bag(&mut self.heights[i], self.orders[i], rise, -drop, offset[i / 2], t, dt);
+        }
+    }
+
+    /// F-30541: the bag's height towards its order's target at the tune's rate (+20 up, +16 down), by F-90102;
+    /// true when it moved
+    fn bag(h: &mut f32, order: i32, rise: f32, low: f32, offset: f32, t: &mcla_formats::rage::simtune::AirRideTune, dt: f32) -> bool {
+        let (target, rate) = match order {
+            -1 if *h < rise => (rise, t.rate_rise),
+            0 if *h < offset => (offset, t.rate_rise),
+            0 if *h > offset => (offset, t.rate_drop),
+            1 if *h > low => (low, t.rate_drop),
+            _ => return false,
+        };
+        // (F-90102: x + rate dt fused up to the target, x - rate dt fused down to it)
+        if *h < target {
+            *h = fma32(rate, dt, *h);
+            if *h > target {
+                *h = target;
+            }
+        } else if *h > target {
+            *h = fnms32(rate, dt, *h);
+            if *h < target {
+                *h = target;
+            }
+        }
+        true
+    }
+}
+
 /// Engine-side gear-change latch (vehEngine +44/+48, transmission +24).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GearChange {
@@ -598,6 +767,8 @@ pub struct VehState {
     /// the pedal last frame (for the kick-down)
     pub pedal_was: f32,
     pub hyd: Hydraulics,
+    /// the air ride (chassis +672)
+    pub air: AirRide,
     /// spin of the powered and of the free wheels (rad/s, positive rolling forward)
     pub omega: [f32; 2],
     /// Differential: left wheels turn at omega * diff, right at omega / diff.
@@ -823,7 +994,7 @@ pub struct VehState {
 
 impl Default for VehState {
     fn default() -> Self {
-        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, rider: None, rider_out: None, rider_job: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, stuck_cool: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, fric_boost: false, grip_h: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false, goal: 0.0 }, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default() }
+        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, rider: None, rider_out: None, rider_job: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, stuck_cool: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), air: AirRide::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, fric_boost: false, grip_h: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false, goal: 0.0 }, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default() }
     }
 }
 
@@ -2518,6 +2689,34 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         vs.lean = 0.0;
     }
 
+    // (the rest rule A-39591 reads the bags' and the rams' moving bytes as the last updates left them)
+    vs.air.rams_before = vs.air.moving.iter().any(|m| *m) || vs.hyd.moving.iter().any(|m| *m);
+    // ---- the air ride (F-97237's block ahead of the hydraulics' update, once a frame: every other tick, with the
+    // frame's step); the tick's wheel writer F-53665 then gives each wheel the bag's height (F-71524 by F-86255:
+    // wheel +432 = h, and the compression +496 moves with it) while the hydraulics do not work ----
+    if input.air & super::car::AIR_FITTED != 0 && !vt.bike {
+        vs.air.fitted = true;
+        vs.air.half = !vs.air.half;
+        if vs.air.half {
+            let g = AirRideGate {
+                allowed: input.air & super::car::AIR_ALLOWED != 0,
+                auto_brake: vs.auto_brake,
+                speed: vs.last_speed,
+                answers: !input.hold && !input.deactivated,
+                hydraulics: input.hyd & super::car::HYD_FITTED != 0 && vs.hyd.active(),
+            };
+            let offset = [t.wheel_front.suspension_offset, t.wheel_back.suspension_offset];
+            vs.air.frame(&t.air_ride, &g, input.air & super::car::AIR_PATTERN, offset, dt + dt);
+        }
+        if !(input.hyd & super::car::HYD_FITTED != 0 && vs.hyd.active()) {
+            for i in 0..4 {
+                vs.wheels[i].comp += vs.air.heights[i] - vs.air.written[i];
+                vs.air.written[i] = vs.air.heights[i];
+            }
+        }
+    } else if vs.air.fitted {
+        vs.air = AirRide::default();
+    }
     vs.hyd.step(&t.hydraulics, if vt.bike { 0 } else { input.hyd }, dt);
     st.upset = (st.upset - dt / t.damage.wipeout_delay.max(0.1)).max(0.0);
     // ---- A2: the pad's code (mcPlayerInput::Update F-56064), on the first of a frame's two ticks,
@@ -2739,7 +2938,8 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     // counts the time; anything else starts the count again. Past one second its body is
     // frozen each tick, further down.)
     {
-        let still = input.throttle == 0.0 && input.brake == 0.0 && st.wheels.iter().enumerate().all(|(i, w)| w.grounded || (vt.bike && i % 2 == 1)) && vs.last_speed <= 0.05 && st.ang_vel.length() <= 0.5;
+        // (and no air bag, chassis +672 +48..+51, nor hydraulic ram, +676 +120..+123, moving)
+        let still = input.throttle == 0.0 && input.brake == 0.0 && st.wheels.iter().enumerate().all(|(i, w)| w.grounded || (vt.bike && i % 2 == 1)) && vs.last_speed <= 0.05 && st.ang_vel.length() <= 0.5 && !vs.air.rams_before;
         vs.still_timer = if still && !dbg_flag("MCLA_DBG_NOFREEZE") { vs.still_timer + dt } else { 0.0 };
         vs.last_speed = speed_in;
     }
@@ -3006,10 +3206,13 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         (fit(&t.wheel_front), fit(&t.wheel_back))
     });
     let hyd = vs.hyd;
+    // (the wheel's height +432 as the tick's writer F-53665 left it: the air ride's (F-71524) when the bags are fitted
+    // and the hydraulics do not work)
+    let air_ram = (vs.air.fitted && !(hyd_fitted && hyd.active())).then_some(vs.air.heights);
     // (a live axle's bone pitches with the mean of how far its two wheels are pressed in)
     let rear_mean = (2..4).map(|i| {
         let wt = hyd_wheels.as_ref().map_or(&t.wheel_back, |w| &w.1);
-        vs.wheels[i].comp.clamp(-wt.travel_extent, wt.travel_limit) - if hyd_fitted { hyd.height[i] } else { 0.0 } - wt.suspension_offset
+        match air_ram { Some(h) => vs.wheels[i].comp.clamp(-wt.travel_extent, wt.travel_limit) - h[i], None => vs.wheels[i].comp.clamp(-wt.travel_extent, wt.travel_limit) - if hyd_fitted { hyd.height[i] } else { 0.0 } - wt.suspension_offset }
     }).sum::<f32>() * 0.5;
     // (the body's matrix as the collision has it - rows and place)
     let seen_exact = vs.seen_exact.take();
@@ -3059,7 +3262,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
         // (the ram's length moves the wheel's place of rest)
         // (and so does the tuning's SuspensionOffset, wheel +432: a lowered car's wheels sit
         // that much higher in its body at the same load - A-57909, F-86255)
-        let ram = if hyd_fitted { hyd.height[i] } else { 0.0 } + wt.suspension_offset;
+        let ram = match air_ram { Some(h) => h[i], None => (if hyd_fitted { hyd.height[i] } else { 0.0 }) + wt.suspension_offset };
         let radius = wt.radius.max(0.1);
         // (what the ground is measured with: the wheel's collision shape)
         let tyre_width = vt.tyre_width[if front { 0 } else { 1 }];
@@ -3781,7 +3984,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
     if !bike_old(vt) && !dbg_flag("MCLA_DBG_OLDWHEELPOSE") {
         let rear_mean = (2..4).map(|i| {
             let wt = hyd_wheels.as_ref().map_or(&t.wheel_back, |w| &w.1);
-            vs.wheels[i].comp.clamp(-wt.travel_extent, wt.travel_limit) - if hyd_fitted { hyd.height[i] } else { 0.0 } - wt.suspension_offset
+            match air_ram { Some(h) => vs.wheels[i].comp.clamp(-wt.travel_extent, wt.travel_limit) - h[i], None => vs.wheels[i].comp.clamp(-wt.travel_extent, wt.travel_limit) - if hyd_fitted { hyd.height[i] } else { 0.0 } - wt.suspension_offset }
         }).sum::<f32>() * 0.5;
         for i in 0..4 {
             let front = i < 2;
@@ -3789,7 +3992,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
                 Some((f, b)) => if front { f } else { b },
                 None => if front { &t.wheel_front } else { &t.wheel_back },
             };
-            let ram = if hyd_fitted { hyd.height[i] } else { 0.0 } + wt.suspension_offset;
+            let ram = match air_ram { Some(h) => h[i], None => (if hyd_fitted { hyd.height[i] } else { 0.0 }) + wt.suspension_offset };
             let local = p.wheel_pos[i];
             let pivot_arm = if wt.steering_limit <= 0.0 { 0.0 } else if wt.pivot_offset > 0.0 { local.x * wt.pivot_offset } else if local.x.abs() > wt.width { local.x.signum() * wt.width * 0.25 } else { 0.0 };
             let axle = Quat::from_axis_angle(Vec3::Y, -st.wheels[i].steer) * Vec3::X;
@@ -6609,7 +6812,7 @@ fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: &VehTu
             Some((f, b)) => if physical < 2 { f } else { b },
             None => if physical < 2 { &t.wheel_front } else { &t.wheel_back },
         };
-        let ram = if hyd_fitted { hyd.height[physical] } else { 0.0 } + wt.suspension_offset;
+        let ram = match air_ram { Some(h) => h[physical], None => (if hyd_fitted { hyd.height[physical] } else { 0.0 }) + wt.suspension_offset };
         let local = attach - Vec3::Y * (p.susp_rest + ram - vs.wheels[physical].comp);
         st.wheels[i].world_pos = st.pos + st.rot * local;
     }
@@ -7561,5 +7764,49 @@ mod stuck_flip_tests {
             n += 1;
         }
         assert!(n == 4000 && flips > 500, "{n} {flips}");
+    }
+}
+
+#[cfg(test)]
+mod air_ride_tests {
+    use super::*;
+
+    /// The air ride's switch-on, switch-off and frame update against the original's code run offline
+    /// (tools/air_ride_reference.py: F-74609 / F-80081 / F-47200 / F-94916 / F-89410 with F-30541 and F-90102):
+    /// 200 sequences of 400 frames, every field after every frame equal.
+    #[test]
+    fn air_ride_matches_the_original() {
+        let text = include_str!("../testdata/air_ride_ref.txt");
+        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let (mut t, mut offs, mut air) = (mcla_formats::rage::simtune::AirRideTune::default(), [0.0f32; 2], AirRide::default());
+        let mut frames = 0;
+        for line in text.lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            if w[0] == "q" {
+                let v: Vec<f32> = w[1..].iter().map(|s| f32::from_bits(h(s))).collect();
+                t = mcla_formats::rage::simtune::AirRideTune { front_rise: v[0], front_drop: v[1], back_rise: v[2], back_drop: v[3], rate_drop: v[4], rate_rise: v[5] };
+                offs = [v[6], v[7]];
+                air = AirRide { fitted: true, ..Default::default() };
+                continue;
+            }
+            let (act, dt, pattern) = (w[1].parse::<u8>().unwrap(), f32::from_bits(h(w[2])), w[3].parse::<u8>().unwrap());
+            if act == 1 && !air.on && !air.moving.iter().any(|m| *m) {
+                air.switch_on(pattern);
+            }
+            if act == 2 {
+                air.switch_off();
+            }
+            air.update(&t, offs, dt);
+            let r = &w[5..];
+            let got = [air.on as u32, air.pattern as u32];
+            assert_eq!([h(r[0]), h(r[1])], got, "frame {frames}: {line}");
+            for i in 0..4 {
+                assert_eq!(h(r[2 + i]), air.orders[i] as u32, "frame {frames} order {i}: {line}");
+                assert_eq!(h(r[6 + i]), air.heights[i].to_bits(), "frame {frames} height {i}: {line}");
+                assert_eq!(h(r[10 + i]), air.moving[i] as u32, "frame {frames} moving {i}: {line}");
+            }
+            frames += 1;
+        }
+        assert_eq!(frames, 80_000);
     }
 }

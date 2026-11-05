@@ -2615,6 +2615,23 @@ impl App {
                 player_input.hyd = 0;
                 self.hyd_on = false;
             }
+            // (the air bags of the car's set-up, garage AIR BAGS, and the lowering pattern LocalOptions +1324; the
+            // switch-on wants the local human's car with its engine running, engine +46: not a scene's car_off)
+            player_input.air = 0;
+            // (test hook: MCLA_AIRBAGS=1 fits the air bags, MCLA_AIR_LOG logs them every 30 frames)
+            if std::env::var("MCLA_AIRBAGS").is_ok() {
+                self.game.car_x.airbags = true;
+            }
+            if std::env::var("MCLA_AIR_LOG").is_ok() && self.tick_no % 60 == 0 {
+                if let Some(v) = self.vehicles.player().and_then(|c| c.state.veh.as_deref()) {
+                    log::info!("air ride tick {}: {:?} auto brake {} speed {:.3} body y {:.4} comp {:?}", self.tick_no, v.air, v.auto_brake, v.last_speed, self.vehicles.player().map_or(0.0, |c| c.state.pos.y), v.wheels.iter().map(|w| w.comp).collect::<Vec<_>>());
+                }
+            }
+            if self.game.car_x.airbags {
+                let running = self.vehicles.player().is_some_and(|c| !c.engine_off);
+                let pattern = self.game.mc4.as_ref().map_or(0, |m| m.options.airride_pattern.min(4));
+                player_input.air = physics::car::AIR_FITTED | if running { physics::car::AIR_ALLOWED } else { 0 } | pattern;
+            }
         // (test hook MCLA_COP_TEST=bolt: the throttle alone from 2.5 s into the officer's walk - a burnout, a bolt -
         // then full throttle away)
         if std::env::var("MCLA_COP_TEST").is_ok_and(|v| v == "bolt") && self.ticket_run.is_some() && self.cine.playing.as_ref().is_some_and(|sc| sc.t >= 2.5) {

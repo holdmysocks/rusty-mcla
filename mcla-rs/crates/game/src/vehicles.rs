@@ -1761,6 +1761,8 @@ impl CarInstance {
                     }
                 }
             }
+            // (F-55728: the air ride's drops from the wheels as the set-up left them)
+            tune.set_air_drop(s.fender_height, s.air_floor);
             let mut vt = crate::physics::vehsim::VehTune::new(tune);
             vt.bike = self.model.bike;
             if let Some(h) = self.model.rest_height {
@@ -2093,7 +2095,10 @@ impl Vehicles {
         // cars with the original's tuning drive on the ported simulation (MCLA_OLD_PHYSICS keeps the simple model)
         let simtunes = if std::env::var("MCLA_OLD_PHYSICS").is_ok() { None } else { car.simtune.clone() };
         if let Some(s) = simtunes.as_ref() {
-            let mut vt = crate::physics::vehsim::VehTune::new(s.base.clone());
+            // (F-55728: the air ride's drops from the wheels)
+            let mut base = s.base.clone();
+            base.set_air_drop(s.fender_height, s.air_floor);
+            let mut vt = crate::physics::vehsim::VehTune::new(base);
             vt.bike = car.bike;
             if let Some(hubs) = car.hubs {
                 vt.seat((hubs[0].y + hubs[2].y) * 0.5);
