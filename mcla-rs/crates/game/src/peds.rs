@@ -1948,9 +1948,9 @@ impl Threat {
     /// A car as a grid object of the dodge (F-15352): the kinds as `brainturn::ObjectInfo::from_car` takes them (the
     /// player 0, racers 1, others 2), an ambient car on a lane rail passed over and off one active; the matrix's rows 0
     /// and 2 and its place; the size 2 x the tuning box's half extents (`body_half`; the original's from the bound box)
-    /// and vt+28 = sqrt(fma(hx, hx, hz hz)) as the racer's own extent writer has it; +416 taken as the velocity (its
-    /// writer is not found: no acceleration); the burnout charge `burn`.
-    pub fn from_car(c: &crate::vehicles::CarInstance) -> Threat {
+    /// and vt+28 = sqrt(fma(hx, hx, hz hz)) as the racer's own extent writer has it; +416 = `prev`, the velocity the car
+    /// had at the frame's start (`Threat::all`); the burnout charge `burn`.
+    pub fn from_car(c: &crate::vehicles::CarInstance, prev: Vec3) -> Threat {
         use crate::brainturn::ObjectInfo;
         let kind = ObjectInfo::from_car(0, c).kind;
         let h = c.params().body_half;
@@ -1964,13 +1964,32 @@ impl Threat {
             c: r * Vec3::Z,
             q,
             vel: c.state.vel,
-            prev: c.state.vel,
+            prev,
             size: (h.x * 2.0, h.z * 2.0),
             rv: crate::physics::exact::fma(h.x, h.x, h.z * h.z).sqrt(),
             burn: c.state.veh.as_ref().map(|v| v.burn),
             inst: true,
         };
         Threat { pos: q, vel: c.state.vel, car }
+    }
+
+    /// The frame's threats: every placed, non-parked car (`from_car`). Their +416 (the previous velocity) is what the
+    /// original's frame start F-13118 copies from +432 for every car on its lists before the frame's sub-steps run
+    /// (with +352 = +288, the previous matrix): the velocity at the previous frame's walker update. `prev` keeps it per
+    /// car slot; a car with none (new this frame) has prev = vel, as the original's reset / set pose (F-15222, F-86308)
+    /// copy +432 to +416.
+    pub fn all(cars: &[crate::vehicles::CarInstance], prev: &mut Vec<Option<Vec3>>) -> Vec<Threat> {
+        prev.resize(cars.len(), None);
+        let out = cars
+            .iter()
+            .zip(prev.iter())
+            .filter(|(c, _)| c.parked.is_none() && c.placed)
+            .map(|(c, p)| Threat::from_car(c, p.unwrap_or(c.state.vel)))
+            .collect();
+        for (c, p) in cars.iter().zip(prev.iter_mut()) {
+            *p = Some(c.state.vel);
+        }
+        out
     }
 }
 
@@ -2014,6 +2033,8 @@ pub struct Peds {
     /// the traffic region list's count (traffic.rs `Vehicles::traffic_regions`, M +1792; None: no traffic spawner):
     /// the unspawners' dispatcher F-75661 runs the people's unspawner F-39594 only while it is not 0
     pub traffic_regions: Option<usize>,
+    /// each car slot's velocity at the previous frame's walker update (the threats' +416, `Threat::all`)
+    pub threat_prev: Vec<Option<Vec3>>,
     /// spawner frames still to run at once (the front-end mode's loading wait, traffic.rs
     /// `FRONT_END_PREROLL`)
     preroll: u32,
@@ -2113,6 +2134,7 @@ impl Peds {
             frontend: false,
             preroll: 0,
             traffic_regions: None,
+            threat_prev: Vec::new(),
             districts: Distribution::default(),
             hour: 12.0,
             dirs: Vec::new(),

@@ -6584,7 +6584,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 let frontend = self.vehicles.amb_frontend;
                 self.peds.set_frontend(frontend.is_some());
                 if matches!(self.game.mode, Mode::FreeRoam | Mode::Race) || frontend.is_some() {
-                    let threats: Vec<peds::Threat> = self.vehicles.cars.iter().filter(|c| c.parked.is_none() && c.placed).map(peds::Threat::from_car).collect();
+                    let threats = peds::Threat::all(&self.vehicles.cars, &mut self.peds.threat_prev);
                     let props = &self.props;
                     let signals = if self.vehicles.signals.junctions.is_empty() { None } else { Some((&self.vehicles.signals, self.vehicles.clock)) };
                     // the original's spawner looks along the player car (speed in mph)
