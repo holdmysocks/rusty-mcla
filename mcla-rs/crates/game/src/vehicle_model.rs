@@ -87,6 +87,11 @@ pub struct CarAsset {
     pub cop_lights: Option<CopLights>,
     /// the auto spoiler's clip (`spoiler_raise` of the base fragment: the R8, the Gallardo, the Murcielagos)
     pub spoiler: Option<BoneClip>,
+    /// the convertible roof's two clips (bound by F-53023 to the car-parts object's players +480 and +576): `clamshell`
+    /// of the base fragment (the hatch over the folded roof, on the car's skeleton) and `skinned_top` of the skinned
+    /// roof's own file (`conv_top<n>`, on that part's skeleton) - the eight convertibles whose roof moves
+    pub clamshell: Option<BoneClip>,
+    pub skinned_top: Option<BoneClip>,
     /// the damage map's layout (`<car>_maxdamage`, the largest of the car's .r83 files, decoded RGBA8; the map's G
     /// and A after a reset - damagemap.rs)
     pub damage_layout: Option<(u32, u32, Vec<u8>)>,
@@ -388,6 +393,65 @@ pub fn roof_part(primary: &str) -> Option<u8> {
     }
 }
 
+/// The skinned roof's (`conv_top<n>`) vertices of mesh `mi`: each one's four bones of the roof part's own skeleton and
+/// weights - a skinned mesh's through its bone palette, as the characters' (skin.rs), the weights made to sum 1; a mesh
+/// on one bone, that bone whole. None: the part has no skeleton.
+pub fn roof_vertex_bones(part: &CarPart, mi: usize) -> Option<Vec<([u16; 4], [f32; 4])>> {
+    let sk = part.skeleton.as_deref()?;
+    let mesh = &part.meshes.get(mi)?.0;
+    let nb = sk.bones.len() as u16;
+    if mesh.blend_indices.is_empty() {
+        let b = part.mesh_tag.get(mi).and_then(|&t| sk.bone_by_tag(t)).unwrap_or(0) as u16;
+        return Some(vec![([b, 0, 0, 0], [1.0, 0.0, 0.0, 0.0]); mesh.positions.len()]);
+    }
+    Some((0..mesh.positions.len()).map(|vi| {
+        let mut w = mesh.blend_weights.get(vi).map(|w| w.to_array()).unwrap_or([1.0, 0.0, 0.0, 0.0]);
+        let bi = mesh.blend_indices.get(vi).copied().unwrap_or([0; 4]);
+        let mut b = [0u16; 4];
+        for k in 0..4 {
+            let s = mesh.bone_palette.get(bi[k] as usize).copied().unwrap_or(bi[k] as u16);
+            if s >= nb {
+                w[k] = 0.0;
+            } else {
+                b[k] = s;
+            }
+        }
+        let sum: f32 = w.iter().sum();
+        if sum > 1e-4 {
+            w.iter_mut().for_each(|x| *x /= sum);
+        } else {
+            w = [1.0, 0.0, 0.0, 0.0];
+        }
+        (b, w)
+    }).collect())
+}
+
+/// The skinned roof's bones moved in car space at the top's clip time `t`: per bone of its skeleton (`nb` of them) the
+/// part's placement P x (pose world x rest world^-1, `BoneClip::deltas`) x P^-1; identity for a bone the clip leaves.
+pub fn roof_bone_deltas(top: &BoneClip, place: Mat4, nb: usize, t: f32) -> Vec<Mat4> {
+    let pi = place.inverse();
+    let mut out = vec![Mat4::IDENTITY; nb.max(top.bones.iter().copied().max().map_or(0, |b| b + 1))];
+    for (d, &b) in top.deltas(t).iter().zip(&top.bones) {
+        out[b] = place * *d * pi;
+    }
+    out
+}
+
+/// A vertex of the skinned roof (car space at rest: `q`, normal `n`) posed by its bones' deltas, blended by its weights;
+/// the normal turned likewise, its length (the port's binormal mark) kept. The roof's root is the identity on all
+/// eight cars, so a skinned mesh's vertices at rest are its bind pose placed.
+pub fn skin_vertex(by_bone: &[Mat4], q: Vec3, n: Vec3, b: [u16; 4], w: [f32; 4]) -> (Vec3, Vec3) {
+    let (mut pq, mut pn) = (Vec3::ZERO, Vec3::ZERO);
+    for k in 0..4 {
+        if w[k] != 0.0 {
+            let m = by_bone.get(b[k] as usize).copied().unwrap_or(Mat4::IDENTITY);
+            pq += m.transform_point3(q) * w[k];
+            pn += m.transform_vector3(n) * w[k];
+        }
+    }
+    (pq, pn.normalize_or(Vec3::Y) * n.length())
+}
+
 /// If `primary` is a part of one of the `EXTRA_PARTS` kinds: its section and number.
 pub fn extra_part(primary: &str) -> Option<(&'static str, usize)> {
     let p = primary.to_ascii_lowercase();
@@ -671,6 +735,11 @@ fn catalog_names(res: &mcla_formats::rsc::Resource) -> Vec<String> {
 /// reads stray bytes into names (`aspoiler3`, `psubbumf0`) or meets a bone first (`nitro0` in
 /// the side exhausts), and such parts were never drawn.
 fn primary_name(names: &[String], root: &str) -> String {
+    // (a roof part is named by its root bone: the Solstice's skinned roof lists `roof_spine_null`, a bone, among its
+    // names, which the slot rule below would take)
+    if roof_part(root).is_some() {
+        return root.to_string();
+    }
     let slot_re = |s: &str| {
         let ok = s.starts_with("hood")
             || s.starts_with("door_")
@@ -951,6 +1020,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
     let mut windows: [Option<WindowClip>; 2] = [None, None];
     let mut cop_lights: Option<CopLights> = None;
     let mut spoiler: Option<BoneClip> = None;
+    let mut clamshell: Option<BoneClip> = None;
     if let Some(sk) = skeleton.as_ref() {
         for f in BASE_FRAGMENTS.iter().rev() {
             if windows.iter().all(|w| w.is_some()) {
@@ -965,6 +1035,9 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
             }
             if spoiler.is_none() {
                 spoiler = BoneClip::load(&res, sk, "spoiler_raise");
+            }
+            if clamshell.is_none() {
+                clamshell = BoneClip::load(&res, sk, "clamshell");
             }
             if cop_lights.is_none() {
                 cop_lights = CopLights::load(&res, sk);
@@ -1145,7 +1218,15 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
         max = max.max(p.max);
     }
     log::info!("car {}: {} shaders, {} textures, {} parts ({} stock)", name, shaders.len(), textures.len(), parts.len(), parts.iter().filter(|p| p.stock).count());
-    Ok(CarAsset { name, shaders, shaders_parent, textures, parts, lod_parts, min, max, skeleton, hubs, bike, tune, simtune, fit, aitune, hull, windows, cop_lights, spoiler, damage_layout })
+    // (the skinned roof's clip, in its own file, on its own skeleton: `skinned_top`, D+84 of the car-parts object, F-26362)
+    let skinned_top = parts.iter().filter(|p| roof_part(&p.primary) == Some(2)).max_by_key(|p| p.tris).and_then(|p| {
+        let sk = p.skeleton.as_deref()?;
+        BoneClip::load(&load_resource_file(&p.file).ok()?, sk, "skinned_top")
+    });
+    if let (Some(c), Some(t)) = (clamshell.as_ref(), skinned_top.as_ref()) {
+        log::info!("car {}: roof clips clamshell {:.3} s ({} bones), skinned_top {:.3} s ({} bones)", name, c.duration, c.bones.len(), t.duration, t.bones.len());
+    }
+    Ok(CarAsset { name, shaders, shaders_parent, textures, parts, lod_parts, min, max, skeleton, hubs, bike, tune, simtune, fit, aitune, hull, windows, cop_lights, spoiler, clamshell, skinned_top, damage_layout })
 }
 
 /// Display name of a part from its internal names, e.g. "exstPipe05_Borla_single_round"
@@ -1253,6 +1334,25 @@ impl CarAsset {
     /// Eclipse '09; the Cobra and the Murcielagos have a raised roof part only).
     pub fn has_roof_animation(&self) -> bool {
         self.parts.iter().any(|p| roof_part(&p.primary) == Some(2))
+    }
+
+    /// The roof parts `parts_for` leaves out on a convertible whose roof moves (the one at rest it takes is the option's;
+    /// the other and the skinned roof are drawn by the roof players' times, F-36938 / F-80163 / F-91671): each kind's
+    /// part with the most triangles, placed (`placed_parts_for`). The model holds all three, each its own draw group.
+    pub fn roof_rest(&self, cfg: &CarConfig) -> Vec<(&CarPart, Mat4)> {
+        if !self.has_roof_animation() {
+            return Vec::new();
+        }
+        let taken: Vec<String> = self.parts_for(cfg).iter().map(|p| p.primary.clone()).collect();
+        let mut out: Vec<(&CarPart, Mat4)> = Vec::new();
+        for kind in 0..3u8 {
+            if let Some(p) = self.parts.iter().filter(|p| p.placed && roof_part(&p.primary) == Some(kind)).max_by_key(|p| p.tris) {
+                if !taken.contains(&p.primary) {
+                    out.push((p, p.transform));
+                }
+            }
+        }
+        out
     }
 
     /// Parts for a configuration: customisable slots pick their variant, everything else stock.
@@ -1534,5 +1634,66 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 100, "{checked}");
+    }
+
+    /// The convertible roof's two clips (docs/reference/carparts/roof_fold_rule.md): on the eight convertibles both are
+    /// there; at clip time 0 neither moves a bone; the skinned roof posed as the port poses it (`roof_vertex_bones`,
+    /// `roof_bone_deltas`, `skin_vertex`) lies at 0 where the raised roof lies and at the end where the folded one does
+    /// (the Mustang: the one car with a folded part).
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn roof_fold_poses() {
+        use glam::{Mat4, Vec3};
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let assets = crate::assets::Assets::new(&dir);
+        let root = std::path::Path::new(&dir).join("resources/vehicle");
+        let bbox = |part: &super::CarPart, pose: Option<(&super::BoneClip, f32)>| -> (Vec3, Vec3) {
+            let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+            let nb = part.skeleton.as_ref().map_or(1, |s| s.bones.len());
+            let by_bone = pose.map(|(top, t)| super::roof_bone_deltas(top, part.transform, nb, t));
+            for (mi, (mesh, _)) in part.meshes.iter().enumerate() {
+                let xf = part.transform * part.mesh_bone.get(mi).copied().unwrap_or(Mat4::IDENTITY);
+                let skin = super::roof_vertex_bones(part, mi);
+                for (vi, p) in mesh.positions.iter().enumerate() {
+                    let mut q = xf.transform_point3(*p);
+                    if let (Some(bb), Some(sk)) = (by_bone.as_ref(), skin.as_ref()) {
+                        q = super::skin_vertex(bb, q, Vec3::Y, sk[vi].0, sk[vi].1).0;
+                    }
+                    lo = lo.min(q);
+                    hi = hi.max(q);
+                }
+            }
+            (lo, hi)
+        };
+        let ident = |m: &Mat4| m.to_cols_array().iter().zip(Mat4::IDENTITY.to_cols_array()).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        for name in ["vp_am_vantage_07", "vp_frd_mustang_06", "vp_lam_gallardo_06", "vp_mbz_sl65_07", "vp_nsn_350z_06", "vp_pon_solstice_06", "vpd_cad_xlrv_08", "vpd_mit_eclipse_09"] {
+            let car = super::load_car(&assets, &root.join(name)).unwrap();
+            let cl = car.clamshell.as_ref().expect("clamshell");
+            let Some(top) = car.skinned_top.as_ref() else {
+                let f: Vec<(String, Vec<String>, usize)> = car.parts.iter().filter(|p| p.file.to_string_lossy().contains("62e22e9a")).map(|p| (p.primary.clone(), p.names.iter().take(8).cloned().collect(), p.tris)).collect();
+                panic!("{name}: no skinned_top; the roof file's parts {f:?}");
+            };
+            let c0 = cl.deltas(0.0).iter().map(ident).fold(0.0f32, f32::max);
+            let t0 = top.deltas(0.0).iter().map(ident).fold(0.0f32, f32::max);
+            let kind = |k: u8| car.parts.iter().filter(|p| p.placed && super::roof_part(&p.primary) == Some(k)).max_by_key(|p| p.tris);
+            let skin = kind(2).expect("conv_top");
+            let (a0, b0) = bbox(skin, Some((top, 0.0)));
+            let (a1, b1) = bbox(skin, Some((top, top.duration)));
+            let up = kind(0).map(|p| bbox(p, None));
+            let down = kind(1).map(|p| bbox(p, None));
+            println!("{name}: clamshell {:.2} s {} bones, at 0 off rest {c0:.2e}; skinned_top {:.2} s {} bones, at 0 off rest {t0:.2e}", cl.duration, cl.bones.len(), top.duration, top.bones.len());
+            println!("   skinned at 0 {:?}..{:?}  raised {:?}", a0, b0, up);
+            println!("   skinned at end {:?}..{:?}  folded {:?}", a1, b1, down);
+            let off = |(a, b): (Vec3, Vec3), (c, d): (Vec3, Vec3)| (a - c).abs().max_element().max((b - d).abs().max_element());
+            assert!(c0 < 1e-3, "{name}: clamshell frame 0 {c0}");
+            // (the Eclipse '09's clip sets its bone 1 0.18 m off the rest at frame 0, bone 2 back by as much: the disc's)
+            if name != "vpd_mit_eclipse_09" {
+                assert!(t0 < 1e-3, "{name}: skinned_top frame 0 {t0}");
+                assert!(off((a0, b0), up.unwrap()) < 1e-3, "{name}: the skinned roof at 0 is not the raised one");
+            }
+            if let Some(d) = down {
+                assert!(off((a1, b1), d) < 0.025, "{name}: the skinned roof at the end is not the folded one");
+            }
+        }
     }
 }

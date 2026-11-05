@@ -95,6 +95,14 @@ pub struct CarModel {
     pub windows: [Option<vehicle_model::WindowClip>; 2],
     /// the auto spoiler's clip (vehicle_model::BoneClip); its moved bones' meshes and parts are the groups 21 + j
     pub spoiler: Option<Arc<vehicle_model::BoneClip>>,
+    /// the convertible roof's clips (`CarAsset::clamshell` / `skinned_top`): the three roof parts are the groups 29 (raised),
+    /// 30 (folded), 31 (the skinned roof), the clamshell's moved bones' meshes and parts the groups 32 + j
+    pub clamshell: Option<Arc<vehicle_model::BoneClip>>,
+    pub skinned_top: Option<Arc<vehicle_model::BoneClip>>,
+    /// the skinned roof's batches (group 31): batch index, the vertices at rest (car space) and each vertex's four bones of
+    /// the roof's skeleton and weights; and where the roof part stands (its placement in car space)
+    pub roof_skin: Vec<(usize, Vec<Vertex>, Vec<([u16; 4], [f32; 4])>)>,
+    pub roof_place: Mat4,
     /// the police light bar's beacons (vehicle_model::CopLights)
     pub cop_lights: Option<Arc<vehicle_model::CopLights>>,
     /// the damage map's layout texture (`<car>_maxdamage`: width, height, RGBA8), when the car has it
@@ -368,6 +376,8 @@ pub struct CarInstance {
     pub windows: [WindowCtl; 2],
     /// the auto spoiler's controller (D+864, the windows' class at rate 1.0)
     pub spoiler: WindowCtl,
+    /// the convertible roof's players and requests (`RoofCtl`)
+    pub roof: RoofCtl,
     /// the moving damage parts' objects (hood, trunk lid, rear bumper, front bumper): the body's, moved by
     /// the part; empty when the model has none of them
     pub part_bindings: Vec<ObjectBinding>,
@@ -754,6 +764,94 @@ pub const GLOW_FACTOR_PLAYER: [f32; 19] = [0.3, 1.004, 1.0, 2.0, 1.0, 1.0, 1.0, 
 
 /// How many of the auto spoiler clip's moved bones get a draw group of their own (21 ..): the Murcielago's clip moves 4.
 const SPOILER_GROUPS: usize = 8;
+
+/// The convertible roof's draw groups: 29 the raised roof (`conv_topup`), 30 the folded one (`conv_topdown`), 31 the skinned
+/// roof (`conv_top`); 32 + j the meshes and parts on the j-th bone the `clamshell` clip moves (at most CLAM_GROUPS).
+const ROOF_GROUP: u32 = 29;
+const CLAM_GROUP: u32 = 32;
+const CLAM_GROUPS: usize = 48;
+
+/// The convertible roof's two players on the car-parts object, both the windows' controller (vtable 0x82046958) at the
+/// constructor's rate 1.0: +480 the hatch (`clamshell`), +576 the top (`skinned_top`); and the requests +2159 raise /
+/// +2160 lower, which applying the options sets (F-87944: DOWN -> lower, UP -> raise) and the update F-35036 takes for
+/// the local player's car only, when both players stand at the request's start end. `opt`: the option as last seen
+/// (None: the car was just made - F-53023 then sets a lowered roof's players, and the side windows', at their end).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RoofCtl {
+    pub hatch: WindowCtl,
+    pub top: WindowCtl,
+    pub raise: bool,
+    pub lower: bool,
+    pub opt: Option<bool>,
+}
+
+impl RoofCtl {
+    /// One frame of F-35036's roof part, then both players' updates (vt+12). `down`: the option; `player`: the car is the
+    /// local human player's (F-65988 - the update's gate; the no-damage byte +435 is 0 off line); `lens`: the
+    /// clamshell's and the skinned roof's lengths; `windows`: the side windows' controllers and clip lengths, opened and
+    /// closed with the roof. (The port sets a request when the option changes; the original sets it at every apply of
+    /// the options - one asking for the end the roof stands at is never taken and is cleared by the next one taken.)
+    pub fn step(&mut self, down: bool, player: bool, dt: f32, lens: (f32, f32), windows: &mut [WindowCtl; 2], win_lens: [Option<f32>; 2]) {
+        match self.opt {
+            None => {
+                if down && player {
+                    self.hatch = WindowCtl { state: 2, time: lens.0 };
+                    self.top = WindowCtl { state: 2, time: lens.1 };
+                    for k in 0..2 {
+                        if let Some(l) = win_lens[k] {
+                            windows[k] = WindowCtl { state: 2, time: l };
+                        }
+                    }
+                }
+            }
+            Some(was) if was != down => {
+                if down {
+                    self.lower = true;
+                } else {
+                    self.raise = true;
+                }
+            }
+            _ => {}
+        }
+        self.opt = Some(down);
+        if player {
+            // (+2159: both at the open end -> close both, the windows up; +2160: both closed -> open both, the windows
+            // down; the bytes are cleared once both players took it)
+            let mut win: Option<bool> = None;
+            if self.raise && self.hatch.state == 2 && self.top.state == 2 {
+                self.top.request(false, lens.1);
+                self.hatch.request(false, lens.0);
+                win = Some(false);
+                self.raise = false;
+                self.lower = false;
+            }
+            if self.lower && self.hatch.state == 1 && self.top.state == 1 {
+                self.top.request(true, lens.1);
+                self.hatch.request(true, lens.0);
+                win = Some(true);
+                self.raise = false;
+                self.lower = false;
+            }
+            if let Some(open) = win {
+                for k in 0..2 {
+                    if let Some(l) = win_lens[k] {
+                        windows[k].request(open, l);
+                    }
+                }
+            }
+        }
+        self.hatch.update_at(WindowCtl::SPOILER_RATE, dt, lens.0);
+        self.top.update_at(WindowCtl::SPOILER_RATE, dt, lens.1);
+    }
+
+    /// Which roof shows (the body draw F-92759): the raised part while the top's time is below 0.01 (F-36938), the folded
+    /// one while it is above the length less 0.01 (F-80163), the skinned roof while either player is between its ends
+    /// (F-91671: 0 < time < length).
+    pub fn shown(&self, lens: (f32, f32)) -> [bool; 3] {
+        let moving = |c: &WindowCtl, l: f32| c.time > 0.0 && c.time < l;
+        [self.top.time < 0.01, self.top.time > lens.1 - 0.01, moving(&self.top, lens.1) || moving(&self.hatch, lens.0)]
+    }
+}
 
 /// A side window's controller as the original's (vtable 0x82046958; open F-85820, close
 /// F-82826, update F-27851): `state` 1 closed (up), 2 open (down), 3 opening,
@@ -1415,9 +1513,27 @@ fn face_normals(mesh: &mcla_formats::rage::geometry::Mesh) -> Vec<Vec3> {
     out.iter().map(|v| v.normalize_or(Vec3::Y)).collect()
 }
 
+/// The skinned roof posed at the top's clip time `t` into its batches' vertex buffers (`vehicle_model::skin_vertex`).
+fn roof_skin_write(gpu: &Gpu, model: &CarModel, top: &vehicle_model::BoneClip, t: f32) {
+    if model.roof_skin.is_empty() {
+        return;
+    }
+    let nb = model.roof_skin.iter().flat_map(|(_, _, s)| s.iter().flat_map(|(b, _)| b.iter())).copied().max().unwrap_or(0) as usize + 1;
+    let by_bone = vehicle_model::roof_bone_deltas(top, model.roof_place, nb, t);
+    for (bi, rest, skin) in &model.roof_skin {
+        let Some(batch) = model.batches.get(*bi) else { continue };
+        let out: Vec<Vertex> = rest.iter().zip(skin).map(|(v, (b, w))| {
+            let (q, n) = vehicle_model::skin_vertex(&by_bone, Vec3::from(v.pos), Vec3::from(v.normal), *b, *w);
+            Vertex { pos: q.to_array(), normal: n.to_array(), ..*v }
+        }).collect();
+        gpu.queue.write_buffer(&batch.vb, 0, bytemuck::cast_slice(&out));
+    }
+}
+
 /// CPU-side accumulator for meshes that share a material.
 struct MergeAcc {
     verts: Vec<Vertex>,
+    skin: Vec<([u16; 4], [f32; 4])>,
     indices: Vec<u32>,
     d: Arc<GpuTexture>,
     s2: Arc<GpuTexture>,
@@ -1435,6 +1551,7 @@ impl MergeAcc {
         self.min = self.min.min(g.min);
         self.max = self.max.max(g.max);
         self.verts.extend(g.verts);
+        self.skin.extend(g.skin);
         self.indices.extend(g.indices.iter().map(|i| i + base));
     }
 }
@@ -1443,6 +1560,8 @@ impl MergeAcc {
 /// (`Vehicles::prep_car`).
 struct MeshGeo {
     verts: Vec<Vertex>,
+    /// the skinned roof's vertices: each one's four bones of the roof's skeleton and weights (else empty)
+    skin: Vec<([u16; 4], [f32; 4])>,
     indices: Vec<u32>,
     min: Vec3,
     max: Vec3,
@@ -1480,11 +1599,12 @@ struct CarPrep {
     hood_slot: Option<Mat4>,
     trunk_bone: Option<Mat4>,
     slot_bones: [Option<Mat4>; 3],
+    roof_place: Mat4,
 }
 
 impl MeshGeo {
     fn new() -> MeshGeo {
-        MeshGeo { verts: Vec::new(), indices: Vec::new(), min: Vec3::splat(f32::INFINITY), max: Vec3::splat(f32::NEG_INFINITY) }
+        MeshGeo { verts: Vec::new(), skin: Vec::new(), indices: Vec::new(), min: Vec3::splat(f32::INFINITY), max: Vec3::splat(f32::NEG_INFINITY) }
     }
 
     fn push(&mut self, mesh: &mcla_formats::rage::geometry::Mesh, xf: Mat4, dark_above: Option<f32>, lens: f32, amb: u8) {
@@ -2006,7 +2126,7 @@ impl Vehicles {
         let t_load = std::time::Instant::now();
         let car = self.car_asset(world, dir)?;
         let ms_parse = t_load.elapsed().as_secs_f32() * 1000.0;
-        let CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones } = match self.take_prep(dir, cfg) {
+        let CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, roof_place } = match self.take_prep(dir, cfg) {
             Some(p) => p,
             None => Self::prep_car(&car, dir, cfg),
         };
@@ -2052,11 +2172,12 @@ impl Vehicles {
                 _ => m.geo,
             };
             let (sname, mode) = (m.sname, m.mode);
-            let acc = merged.entry((k0, k1, m.kbits)).or_insert_with(|| MergeAcc { verts: Vec::new(), indices: Vec::new(), d, s2, sname, mode, min: Vec3::splat(f32::INFINITY), max: Vec3::splat(f32::NEG_INFINITY) });
+            let acc = merged.entry((k0, k1, m.kbits)).or_insert_with(|| MergeAcc { verts: Vec::new(), skin: Vec::new(), indices: Vec::new(), d, s2, sname, mode, min: Vec3::splat(f32::INFINITY), max: Vec3::splat(f32::NEG_INFINITY) });
             acc.append(geo);
         }
         let mut keys: Vec<(u32, u32, u32)> = merged.keys().copied().collect();
         let mut batch_window: Vec<u8> = Vec::new();
+        let mut roof_skin: Vec<(usize, Vec<Vertex>, Vec<([u16; 4], [f32; 4])>)> = Vec::new();
         let mut lods: [(Vec<GpuBatch>, Vec<u8>); 2] = Default::default();
         keys.sort_by_key(|k| (k.2 & !0x7000, k.0, k.1, k.2 & 0x7000));
         if std::env::var("MCLA_WHEEL_DUMP").is_ok() {
@@ -2098,7 +2219,13 @@ impl Vehicles {
                 Some((t3, k2)) => gpu.texture_bind_group3(&acc.d, &acc.s2, &t3, k.0, k.1, k2),
                 None => gpu.texture_bind_group(&acc.d, &acc.s2, k.0, k.1),
             };
-            let vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&acc.verts), usage: wgpu::BufferUsages::VERTEX });
+            // (the skinned roof's vertices are written again while it moves: `Vehicles::upload_uniforms`)
+            let skinned = !acc.skin.is_empty() && acc.skin.len() == acc.verts.len() && (k.2 >> 24) & 3 == 0;
+            let usage = if skinned { wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST } else { wgpu::BufferUsages::VERTEX };
+            let vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&acc.verts), usage });
+            if skinned {
+                roof_skin.push((batches.len(), acc.verts.clone(), acc.skin.clone()));
+            }
             let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&acc.indices), usage: wgpu::BufferUsages::INDEX });
             // (bit 31: a traffic mesh of the blended bucket, bits 26 - 30 its place among them - `prep_car`)
             let (group, lod) = ((k.2 >> 16) as u8, ((k.2 >> 24) & 3) as usize);
@@ -2206,7 +2333,7 @@ impl Vehicles {
         // (F-74884, a bike's set-up: +4092 / +4096 = |max - min| of the translation limits, crBoneData +144 / +160, of the
         // first bone named wheel_0 / wheel_2 in the base fragment's skeleton, then the parts' - F-20921)
         let bike_wheel_width = ["wheel_0", "wheel_2"].map(|n| car.skeleton.as_ref().and_then(|s| s.bones.iter().find(|b| b.name == n)).map_or(params.wheel_width, |b| (b.trans_limits.1 - b.trans_limits.0).length()));
-        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, fx_anchors, fx_anchor_rear });
+        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, fx_anchors, fx_anchor_rear });
         self.models.push(m.clone());
         if self.wheels.is_none() {
             self.wheels = load_wheels(gpu, world).map(Arc::new);
@@ -2281,7 +2408,13 @@ impl Vehicles {
         // they move with that part - a hanging rear bumper takes them along)
         let outlet_src = car.outlet_part(cfg).map(|o| (o.primary.to_ascii_lowercase(), o.is_base, o.transform));
         let spoiler_bones: Vec<usize> = car.spoiler.as_ref().map(|c| c.bones.clone()).unwrap_or_default();
+        // (a convertible whose roof moves - both clips there: the three roof parts and the clamshell's bones are groups)
+        let roof_moves = car.clamshell.is_some() && car.skinned_top.is_some();
+        let clam_bones: Vec<usize> = car.clamshell.as_ref().filter(|_| roof_moves).map(|c| c.bones.clone()).unwrap_or_default();
         let part_group = |part: &vehicle_model::CarPart, part_xf: &Mat4, mi: usize| -> u32 {
+            if let Some(kind) = vehicle_model::roof_part(&part.primary).filter(|_| roof_moves) {
+                return ROOF_GROUP + kind as u32;
+            }
             let mut p = part.primary.to_ascii_lowercase();
             let mut part_xf = *part_xf;
             if p.starts_with("exh_pipe") {
@@ -2298,6 +2431,11 @@ impl Vehicles {
             let bone = if part.is_base { part.mesh_tag.get(mi).and_then(|&t| sk.and_then(|s| s.bone_by_tag(t))) } else { Some(part.matrix_index as usize) };
             if let Some(j) = bone.and_then(|b| spoiler_bones.iter().position(|&x| x == b)).filter(|&j| j < SPOILER_GROUPS) {
                 return 21 + j as u32;
+            }
+            // (on a bone the roof's clamshell moves; a bone of the spoiler's too - the Gallardo's spoiler bone - stays the
+            // spoiler's)
+            if let Some(j) = bone.and_then(|b| clam_bones.iter().position(|&x| x == b)).filter(|&j| j < CLAM_GROUPS) {
+                return CLAM_GROUP + j as u32;
             }
             if part.is_base {
                 return if part.mesh_tag.get(mi).map_or(false, |t| trunk_tags.contains(t)) { 4 } else { 0 };
@@ -2323,6 +2461,11 @@ impl Vehicles {
         let mut meshes: Vec<MeshPrep> = Vec::new();
         // (a traffic model's LOD 1 and LOD 2: its other two base fragments, built as LOD 0's body is)
         let mut todo: Vec<(&vehicle_model::CarPart, Mat4, u32)> = car.placed_parts_for(cfg).into_iter().map(|(p, x)| (p, x, 0)).collect();
+        // (the roof parts the configuration leaves out: drawn by the roof players' times - `RoofCtl::shown`)
+        if roof_moves {
+            todo.extend(car.roof_rest(cfg).into_iter().map(|(p, x)| (p, x, 0)));
+        }
+        let roof_place = todo.iter().find(|(p, _, _)| vehicle_model::roof_part(&p.primary) == Some(2)).map_or(Mat4::IDENTITY, |(_, x, _)| *x);
         if car_is_ambient {
             for (lod, h) in [(1u32, "7b0cd281"), (2, "0de3ddb3")] {
                 if let Some(p) = car.lod_parts.iter().find(|p| p.primary.contains(h)) {
@@ -2780,12 +2923,23 @@ impl Vehicles {
                     }
                     acc
                 };
-                let geo = make(lens_of(win_cand));
-                let geo_alt = (win_cand && lens_of(false) != lens_of(true)).then(|| make(lens_of(false)));
+                let mut geo = make(lens_of(win_cand));
+                let mut geo_alt = (win_cand && lens_of(false) != lens_of(true)).then(|| make(lens_of(false)));
+                // (the skinned roof: each vertex's bones of the roof's own skeleton)
+                if roof_moves && lod == 0 && vehicle_model::roof_part(&part.primary) == Some(2) {
+                    if let Some(skin) = vehicle_model::roof_vertex_bones(part, mi) {
+                        if geo.verts.len() == skin.len() {
+                            geo.skin = skin.clone();
+                        }
+                        if let Some(g) = geo_alt.as_mut().filter(|g| g.verts.len() == skin.len()) {
+                            g.skin = skin;
+                        }
+                    }
+                }
                 meshes.push(MeshPrep { sname: sname.to_string(), mode, dn, sn, plate, carbon, win_cand, kbits, geo, geo_alt });
             }
         }
-        CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones }
+        CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, roof_place }
     }
 
     /// Tyre + rim model for a rim directory, loaded once.
@@ -2953,7 +3107,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), spoiler: WindowCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), spoiler: WindowCtl::default(), roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
         self.cars.len() - 1
     }
 
@@ -3525,6 +3679,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
         // (test hook: MCLA_WINDOW_TEST=1 rolls the player's side windows down)
         static WINDOW_TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let window_test = *WINDOW_TEST.get_or_init(|| std::env::var("MCLA_WINDOW_TEST").is_ok_and(|v| v == "1"));
+        static ROOF_TEST: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+        let roof_test = *ROOF_TEST.get_or_init(|| std::env::var("MCLA_ROOF_TEST").ok().and_then(|v| v.parse::<f32>().ok()));
         static SPOILER_TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let spoiler_test = *SPOILER_TEST.get_or_init(|| std::env::var("MCLA_SPOILER_TEST").is_ok_and(|v| v == "1"));
         for c in self.cars.iter_mut() {
@@ -3534,6 +3690,17 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 c.light_t += dt;
                 if c.light_t >= cl.duration {
                     c.light_t = 0.0;
+                }
+            }
+            // (the convertible roof, F-35036: before the windows - it opens and closes them)
+            if let (Some(cl), Some(top)) = (c.model.clamshell.as_ref(), c.model.skinned_top.as_ref()) {
+                let down = c.model.cfg.extra.get(vehicle_model::ROOF_DOWN).copied().unwrap_or(0) != 0;
+                let win_lens = [0, 1].map(|k| c.model.windows[k].as_ref().map(|w| w.duration));
+                c.roof.step(down, c.is_player, dt, (cl.duration, top.duration), &mut c.windows, win_lens);
+                // (test hook: MCLA_ROOF_TEST=<s> holds every convertible's roof players at that time, moving)
+                if let Some(t) = roof_test {
+                    c.roof.hatch = WindowCtl { state: 3, time: t.min(cl.duration) };
+                    c.roof.top = WindowCtl { state: 3, time: t.min(top.duration) };
                 }
             }
             for k in 0..2 {
@@ -5071,9 +5238,23 @@ if keep || c.state.pos.distance(center) < 450.0 {
             }
             // (the moving damage parts: hood, trunk lid, rear and front bumper - damageparts.rs)
             let spoiler_d = c.model.spoiler.as_ref().map(|cl| cl.deltas(c.spoiler.clip_time(cl.duration))).unwrap_or_default();
+            // (the convertible roof: which of its three parts shows, the clamshell's bones at the hatch's time; a part not
+            // shown is drawn collapsed to a point)
+            let (roof_shown, clam_d) = match (c.model.clamshell.as_ref(), c.model.skinned_top.as_ref()) {
+                (Some(cl), Some(top)) => (c.roof.shown((cl.duration, top.duration)), cl.deltas(c.roof.hatch.clip_time(cl.duration))),
+                _ => ([true; 3], Vec::new()),
+            };
+            if roof_shown[2] {
+                if let Some(top) = c.model.skinned_top.as_ref() {
+                    roof_skin_write(gpu, &c.model, top, c.roof.top.clip_time(top.duration));
+                }
+            }
             for (k, pb) in c.part_bindings.iter().enumerate() {
                 let parts = &c.state.parts;
                 let pm = match k {
+                    // (the roof's parts and the clamshell's bones)
+                    r @ 26..=28 => if roof_shown[r - 26] { m } else { Mat4::ZERO },
+                    j if j >= 29 => clam_d.get(j - 29).map_or(m, |d| m * *d),
                     // (a bone the auto spoiler's clip moves)
                     s if s >= 18 => spoiler_d.get(s - 18).map_or(m, |d| m * *d),
                     // (the intercooler: the front bumper's pose, on its own bone)
@@ -7124,3 +7305,60 @@ static ISLANDS_OF_CARS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomic
 
 /// (MCLA_RAM_CAR) the rammed car and the player's car, target x 1000 + player
 static RAM_TARGET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
+
+#[cfg(test)]
+mod roof_tests {
+    use super::{RoofCtl, WindowCtl};
+
+    /// The three roof draw tests against the original's F-36938 / F-80163 / F-91671 run offline on 4000 random and edge
+    /// times (tools/roof_shown_reference.py): every answer equal.
+    #[test]
+    fn roof_shown_matches_the_original() {
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let mut n = 0;
+        for line in include_str!("testdata/roof_shown_ref.txt").lines() {
+            let (a, b) = line.split_once('|').unwrap();
+            let v: Vec<f32> = a.split_whitespace().map(f).collect();
+            let want: Vec<bool> = b.split_whitespace().map(|x| x != "0").collect();
+            let r = RoofCtl { top: WindowCtl { state: 3, time: v[0] }, hatch: WindowCtl { state: 3, time: v[2] }, ..Default::default() };
+            assert_eq!(r.shown((v[3], v[1])).to_vec(), want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
+    }
+
+    /// F-35036's roof part: a request is taken only when both players stand at its start end, opens or closes the side
+    /// windows with the roof, and waits otherwise; a lowered roof starts at its end with the windows down.
+    #[test]
+    fn roof_requests() {
+        let lens = (5.0, 7.0);
+        let wl = [Some(0.667), Some(0.667)];
+        let mut w = [WindowCtl::default(); 2];
+        // (made with the option down: at the end, windows down, no motion)
+        let mut r = RoofCtl::default();
+        r.step(true, true, 0.0, lens, &mut w, wl);
+        assert_eq!((r.hatch.state, r.top.state, r.top.time, w[0].state, w[1].time), (2, 2, 7.0, 2, 0.667));
+        // (not the player's car: nothing at the start)
+        let (mut r2, mut w2) = (RoofCtl::default(), [WindowCtl::default(); 2]);
+        r2.step(true, false, 0.0, lens, &mut w2, wl);
+        assert_eq!((r2.top.state, w2[0].state), (1, 1));
+        // (raised: both close, the windows go up; the hatch ends first)
+        r.step(false, true, 1.0, lens, &mut w, wl);
+        assert_eq!((r.hatch.state, r.top.state, r.raise, w[0].state), (4, 4, false, 4));
+        r.step(false, true, 4.5, lens, &mut w, wl);
+        assert_eq!((r.hatch.state, r.top.state), (1, 4));
+        // (lowered while the top still closes: the request waits for both at 1)
+        r.step(true, true, 0.5, lens, &mut w, wl);
+        assert!(r.lower);
+        assert_eq!(r.top.state, 4);
+        r.step(true, true, 2.0, lens, &mut w, wl);
+        assert_eq!((r.top.state, r.hatch.state), (1, 1));
+        w = [WindowCtl::default(); 2];
+        r.step(true, true, 0.1, lens, &mut w, wl);
+        assert_eq!((r.top.state, r.hatch.state, r.lower, w[0].state), (3, 3, false, 3));
+        // (the player's car only)
+        let mut r3 = RoofCtl { opt: Some(false), ..Default::default() };
+        r3.step(true, false, 0.1, lens, &mut w2, wl);
+        assert_eq!((r3.top.state, r3.lower), (1, true));
+    }
+}
