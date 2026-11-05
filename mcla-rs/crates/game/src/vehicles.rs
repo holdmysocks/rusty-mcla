@@ -3868,6 +3868,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     }
                 }
                 self.cars[i].ai.as_mut().unwrap().drive(nav, &st, dt)
+            } else if crate::hangout_scene::standing(&self.cars[i]) {
+                // (a hangout set-up's car: an opponent with no race - its brain's pedals with no line, hangout_scene.rs)
+                crate::hangout_scene::standing_input()
             } else {
                 CarInput::default()
             };
@@ -3982,7 +3985,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
             }
             let mut boxed_in = false;
             // (not on the grid: the field stands nose to tail there and the antics are the brain's own)
-            if !self.cars[i].is_player && self.cars[i].parked.is_none() && !pursuing && !passing && self.grid_hold.is_none() {
+            // (nor for a hangout set-up's standing car: the original's brain gives it no handbrake - hangout_scene.rs `standing`)
+            if !self.cars[i].is_player && self.cars[i].parked.is_none() && !pursuing && !passing && self.grid_hold.is_none() && !crate::hangout_scene::standing(&self.cars[i]) {
                 // brake for cars ahead
                 for j in 0..n {
                     if i == j {

@@ -270,6 +270,25 @@ pub const PAYBACK_CAR: (&str, [f32; 3], f32) = ("pyback_plr_vp_buk_grandnational
 
 const TAG: &str = "hangout:";
 
+/// A car a hangout's set-up stands there (its own cars, the pink slip profiles, the payback's client's car).
+/// The cores load them as opponents with the driver off and never give them a race (local_hangout_core
+/// 0x2a0..0x37b, wager_hangout_core 0x5d0.., 0xb80..): the opponent's brain has no line, so its driving output
+/// F-17058 hands on the aiv's invalid pedals F-65301 (throttle 0, brake 1, handbrake 0, steer 0) and
+/// mcOpponentInput F-94408 writes them to the chassis (a disabled input too: throttle 0, brake 1). No throttle,
+/// no handbrake: the car stands. (The pink slip profiles are Racer_Deactivate'd as well, 0xbc5 - the port does
+/// not set the deactivated bit on them; their pedals are the same.)
+pub fn standing(c: &crate::vehicles::CarInstance) -> bool {
+    c.driver.starts_with(TAG)
+}
+
+/// The pedals of a standing car of a set-up ([`standing`]): the brain's with no line, written to the chassis as the
+/// port's brain writes its pedals (brain.rs: a computer driver's, `animated` - no coasting share, the gearbox out of
+/// reverse; the original's case 5 asks for neutral below 8.94 m/s where the port's brain keeps first - with no throttle
+/// and the brake on, the car stands either way).
+pub fn standing_input() -> crate::physics::CarInput {
+    crate::physics::CarInput { throttle: 0.0, brake: 1.0, handbrake: false, steer: 0.0, ai: true, animated: true, ..Default::default() }
+}
+
 /// A car of a set-up standing still at its place (the driver off, deactivated).
 fn stand_car(game: &mut Game, vehicles: &mut Vehicles, gpu: &mut Gpu, world: &mut World, model: &str, setup: &str, pos: Vec3, heading: f32, tag: String) -> bool {
     let m = match vehicles.models.iter().find(|m| m.name.eq_ignore_ascii_case(model)).cloned() {
@@ -633,5 +652,61 @@ impl Game {
         self.hangout_page = (0, 0);
         self.mode = Mode::RaceSelect;
         log::info!("payback place: its panel, first leg {}", self.race_defs[first].id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::physics::{CarInput, CarState, SectorMesh, WorldCollider};
+
+    /// The play-test report "the AI in the hangout does a burnout": hw_local_hangout1's Impala, standing 5.7 m behind its
+    /// Cobalt, got the port's own queue rule (no brake, the handbrake) and the computer driver's coasting share (0.42) - its
+    /// burnout charge full, 5186 rpm, the back wheels spinning under the held body. The original's opponent with no line
+    /// (F-17058 / F-65301 / F-94408) has no throttle and no handbrake: brake 1. The Impala on flat ground with each.
+    #[test]
+    fn a_hangout_car_stands_without_a_burnout() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
+        let dir = root.join("resources/vehicle/vp_chv_impala_96");
+        if !dir.is_dir() {
+            return;
+        }
+        let assets = crate::assets::Assets::new(&root);
+        let car = crate::vehicle_model::load_car(&assets, &dir).unwrap();
+        let mut params = crate::vehicles::car_params(&car);
+        params.veh = Some(std::sync::Arc::new(crate::physics::vehsim::VehTune::new(car.simtune.as_ref().unwrap().base.clone())));
+        let mut world = WorldCollider::default();
+        world.sectors.insert(0, SectorMesh::build(vec![
+            [Vec3::new(-64.0, 0.0, -512.0), Vec3::new(-64.0, 0.0, 512.0), Vec3::new(64.0, 0.0, -512.0)],
+            [Vec3::new(64.0, 0.0, -512.0), Vec3::new(-64.0, 0.0, 512.0), Vec3::new(64.0, 0.0, 512.0)],
+        ]));
+        let dt = 1.0 / 60.0;
+        let run = |input: CarInput| {
+            let mut st = CarState::new(Vec3::new(0.0, 0.02, 0.0), 0.0);
+            let mut burn: f32 = 0.0;
+            let mut spin: f32 = 0.0;
+            let mut at = Vec3::ZERO;
+            for k in 0..600 {
+                st.step(&params, input, &world, dt);
+                let vs = st.veh.as_ref().unwrap();
+                if k == 300 {
+                    at = st.pos;
+                }
+                if k >= 300 {
+                    burn = burn.max(vs.burn);
+                    spin = spin.max(vs.wheels.iter().map(|w| w.spin_rate.abs()).fold(0.0, f32::max));
+                }
+            }
+            // (how far it went along the ground over the last five seconds)
+            (burn, spin, Vec3::new(st.pos.x - at.x, 0.0, st.pos.z - at.z).length())
+        };
+        // (the old input: the queue rule's handbrake, a computer driver's pedals - the coasting share drives)
+        let (burn, spin, moved) = run(CarInput { handbrake: true, ai: true, ..Default::default() });
+        assert!(burn >= 1.0 && spin > 1.0 && moved > 1.0, "the old input burns out: charge {burn}, spin {spin}, moved {moved} m");
+        let (burn, spin, moved) = run(standing_input());
+        assert_eq!(burn, 0.0, "no burnout charge");
+        // (measured: the old input charge 1, back wheels 4.33 rad/s, 2.63 m crept; this one 0, 0 and 0.079 m - the locked car's own
+        // settling on the test's flat ground; in the game the stand loop holds its place)
+        assert!(spin < 0.05 && moved < 0.1, "the wheels and the car stand: spin {spin}, moved {moved} m");
     }
 }
