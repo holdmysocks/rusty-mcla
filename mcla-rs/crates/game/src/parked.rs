@@ -188,6 +188,27 @@ pub fn node_limit(total: i32, density: f32) -> i32 {
 }
 
 impl Vehicles {
+    /// The traffic list's types' use for the type weights (F-83932, refreshed once a frame by
+    /// F-68379): the instances of each type in play (type +8: the ambient cars riding, parked
+    /// and towed - not the player's, the police's nor the racers') and its `bIsTrailer`.
+    pub(super) fn ambient_use(&mut self, root: &std::path::Path) {
+        let mut live: hashbrown::HashMap<String, i32> = hashbrown::HashMap::new();
+        for c in self.cars.iter().filter(|c| !c.is_player && !c.cop && !c.racer) {
+            *live.entry(c.model.name.to_ascii_lowercase()).or_insert(0) += 1;
+        }
+        for n in &self.ambient.all {
+            if let Some(m) = self.models.iter().find(|m| m.name.eq_ignore_ascii_case(n)) {
+                if !self.amb_types.contains_key(&m.name) {
+                    let t = super::traffic::AmbType::load(root, &m.name);
+                    self.amb_types.insert(m.name.clone(), t);
+                }
+            }
+        }
+        let types = &self.amb_types;
+        let trailer = |n: &str| types.iter().find(|(k, _)| k.eq_ignore_ascii_case(n)).is_some_and(|(_, t)| t.trailer);
+        self.ambient.set_use(&|n| live.get(n).copied().unwrap_or(0), &trailer);
+    }
+
     /// The spots' occupants: spot i is taken while a car stands on it.
     fn spots_taken(&self) -> Vec<bool> {
         let mut occ = vec![false; self.parking.spots.len()];

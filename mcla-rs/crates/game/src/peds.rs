@@ -2368,6 +2368,15 @@ impl Peds {
     /// One run of the original's pedestrian spawner (F-33044) and unspawner
     /// (F-39594, from F-75661) on the navigation mesh: every other 30 Hz frame.
     fn spawn_frame(&mut self, gpu: &mut Gpu, mesh: &NavMesh, col: &WorldCollider, focus: Vec3) {
+        // the type weights' use of the types (type +8, F-68379 -> F-83932): the walkers of each set;
+        // a person's type tune has no bIsTrailer (the type's +112 there was not traced: taken as 0)
+        let mut live: HashMap<String, i32> = HashMap::new();
+        for p in &self.list {
+            if let Some(d) = self.dirs.get(p.ty) {
+                *live.entry(d.0.to_ascii_lowercase()).or_insert(0) += 1;
+            }
+        }
+        self.districts.set_use(&|n| live.get(n).copied().unwrap_or(0), &|_| false);
         // unspawn: 30 random checks a frame, while the traffic's region list has roads (F-75661)
         for _ in 0..if self.traffic_regions == Some(0) { 0 } else { 30 } {
             if self.list.is_empty() {
