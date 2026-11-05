@@ -4974,8 +4974,21 @@ impl App {
                     self.game.mc4_tutorial("xTCO");
                     self.props_dirty = true;
                     self.fx.sparks(b + Vec3::Y * 0.6, Vec3::Y, 40);
-                    let msg = self.game.career.strings.get("COLLECTABLE_FOUND_MSG").map(|s| s.to_string()).unwrap_or_else(|| "COLLECTABLE FOUND".to_string());
-                    self.game.show_message(&format!("{}   {} / {}", msg.to_uppercase(), self.game.collected.len(), self.barrels.len()));
+                    // (MiscTasks/Collectables 0x986..0xa16: SplashManager_SplashDynamicInt(0, 3, NUM_COLLECTABLE_COLLECTED,
+                    // COLLECTABLE_FOUND_MSG, the count, 4.0, 0) - type 3 is the top slot (the splash manager's
+                    // constructor F-95802: types 0, 1 centre, 3, 4 top, 2 bottom), white, 4 s, cleared at a race's
+                    // end; every tenth one, Splash(0, 3, CHEAT_UNLOCKED, 2.0, 1, 0) behind it)
+                    let n = self.game.collected.len();
+                    let msg = self.game.career.strings.get("COLLECTABLE_FOUND_MSG").map(|s| s.replace("<D>NUM_COLLECTABLE_COLLECTED</D>", &n.to_string())).unwrap_or_else(|| format!("COLLECTABLE {} OF {} FOUND", n, self.barrels.len())).to_uppercase();
+                    let cheat = (n % 10 == 0).then(|| self.game.career.strings.get("CHEAT_UNLOCKED").map(|s| s.to_uppercase()).unwrap_or_else(|| "CHEAT UNLOCKED".to_string()));
+                    if let Some(fh) = self.game.flash_hud.as_mut() {
+                        fh.splash(crate::flash_ui::SPLASH_TOP, &msg, 0, 4.0, true);
+                        if let Some(c) = cheat.as_deref() {
+                            fh.splash(crate::flash_ui::SPLASH_TOP, c, 0, 2.0, true);
+                        }
+                    } else {
+                        self.game.show_message(&msg);
+                    }
                     if let Some(a) = self.audio.as_mut() {
                         // (MiscTasks/Collectables @0x7e3: AudioManager_PlayFrontendSound)
                         if !a.obj("COLLECTIBLES_PICKUP_MASTER") {

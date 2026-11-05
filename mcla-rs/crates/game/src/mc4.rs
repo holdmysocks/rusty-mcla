@@ -17917,6 +17917,8 @@ mod tests {
         // (the new game sample has seen tTBM, tTFB, tTFL only)
         assert!(g.mc4_tut_seen("tTBM") && !g.mc4_tut_seen("tTDE"));
         assert!(!g.mc4_tutorial("tTBM"));
+        // (the pickup's splash fills COLLECTABLE_FOUND_MSG's NUM_COLLECTABLE_COLLECTED - main.rs, Collectables 0x986)
+        assert!(g.career.strings.get("COLLECTABLE_FOUND_MSG").map_or(false, |s| s.contains("<D>NUM_COLLECTABLE_COLLECTED</D>")), "{:?}", g.career.strings.get("COLLECTABLE_FOUND_MSG"));
         // (xTCO: the first collectable's lesson, form 94, once)
         assert!(!g.mc4_tut_seen("xTCO") && g.mc4_tutorial("xTCO") && g.mc4_tut_seen("xTCO") && !g.mc4_tutorial("xTCO"));
         assert_eq!(g.opt_x.s23.queue.pop().map(|t| (t.form, t.slow)), Some((94, false)));
