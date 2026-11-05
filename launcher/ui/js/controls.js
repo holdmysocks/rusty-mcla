@@ -192,7 +192,7 @@
     const judder = d.vsync && d.fps_cap > 0 && hz > 0 && d.fps_cap < hz && hz % d.fps_cap !== 0;
     warn.hidden = !judder;
     warn.textContent = judder ? t('set.fps_judder', [d.fps_cap, hz]) : '';
-    const cur = { 'game.intro': d.intro, 'display.window_mode': d.window_mode, 'display.fps_monitor': d.fps_monitor, 'display.aa': d.aa, 'display.bloom': String(d.bloom), 'display.dof': String(d.dof), 'display.motion_blur': String(d.motion_blur), 'display.texture_filtering': d.texture_filtering, 'display.render_scale': String(d.render_scale), 'game.shadow_resolution': d.shadow_resolution, 'game.draw_distance': d.draw_distance, 'game.detail_level': d.detail_level };
+    const cur = { 'game.intro': d.intro, 'display.window_mode': d.window_mode, 'display.fps_monitor': d.fps_monitor, 'display.aa': d.aa, 'display.bloom': String(d.bloom), 'display.dof': String(d.dof), 'display.motion_blur': String(d.motion_blur), 'display.texture_filtering': d.texture_filtering, 'display.backend': d.backend, 'display.render_scale': String(d.render_scale), 'game.shadow_resolution': d.shadow_resolution, 'game.draw_distance': d.draw_distance, 'game.detail_level': d.detail_level };
     $$('.opt[data-dkey]').forEach((row) => {
       const key = row.dataset.dkey;
       const live = d.file !== 'broken' && (d.live_keys || []).includes(key);

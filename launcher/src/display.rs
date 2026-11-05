@@ -44,6 +44,8 @@ pub struct DisplayView {
     /// anti-aliasing: original | off | 2x | 4x, and the effect toggles (true = the original's)
     aa: &'static str,
     texture_filtering: &'static str,
+    /// the graphics API the game starts with: auto | vulkan | dx12 (read at the game's start)
+    backend: &'static str,
     render_scale: f32,
     shadow_resolution: &'static str,
     draw_distance: &'static str,
@@ -150,6 +152,7 @@ pub fn view(window: &WebviewWindow) -> DisplayView {
         fps_monitor: d.fps_monitor.word(),
         aa: d.aa.word(),
         texture_filtering: d.texture_filtering.word(),
+        backend: d.backend.word(),
         render_scale: d.render_scale,
         shadow_resolution: l.settings.game.shadow_resolution.word(),
         draw_distance: l.settings.game.draw_distance.word(),
@@ -164,18 +167,17 @@ pub fn view(window: &WebviewWindow) -> DisplayView {
 }
 
 /// The rows `set` writes (besides the monitor's own command).
-const LIVE_KEYS: [&str; 15] = ["game.intro", "display.window_mode", "display.resolution", "display.vsync", "display.fps_cap", "display.fps_monitor", "display.aa", "display.bloom", "display.dof", "display.motion_blur", "display.texture_filtering", "display.render_scale", "game.shadow_resolution", "game.draw_distance", "game.detail_level"];
+const LIVE_KEYS: [&str; 16] = ["game.intro", "display.window_mode", "display.resolution", "display.vsync", "display.fps_cap", "display.fps_monitor", "display.aa", "display.bloom", "display.dof", "display.motion_blur", "display.texture_filtering", "display.backend", "display.render_scale", "game.shadow_resolution", "game.draw_distance", "game.detail_level"];
 /// Window sizes offered beside the monitor's own (those that fit on it).
 const COMMON_RESOLUTIONS: [(u32, u32); 9] = [(1280, 720), (1366, 768), (1600, 900), (1920, 1080), (2560, 1080), (2560, 1440), (3440, 1440), (3840, 1600), (3840, 2160)];
 /// The caps the game's DISPLAY page steps through (crates/game/src/hooks.rs `FPS_CAPS`).
 const FPS_CAPS: [u32; 7] = [0, 30, 60, 120, 144, 165, 240];
 
-/// Writes one of the live rows' keys (only that key; atomic) after checking the value as the game's reader would. A
-/// broken file is not overwritten.
-pub fn set(window: &WebviewWindow, key: &str, value: serde_json::Value) -> Result<DisplayView, String> {
+/// The row's value as the game's reader would take it (the same words and ranges), or the reason it is refused.
+fn checked(key: &str, value: &serde_json::Value) -> Result<mcla_config::toml::Value, String> {
     use mcla_config::toml::Value;
     let text = || value.as_str().map(str::to_string).ok_or_else(|| "bad_value".to_string());
-    let v = match key {
+    Ok(match key {
         "game.intro" => Value::String(mcla_config::Intro::parse(&text()?).ok_or("bad_value")?.word().into()),
         "display.window_mode" => Value::String(mcla_config::WindowMode::parse(&text()?).ok_or("bad_value")?.word().into()),
         "display.resolution" => Value::String(mcla_config::Resolution::parse(&text()?).ok_or("bad_value")?.text()),
@@ -184,6 +186,7 @@ pub fn set(window: &WebviewWindow, key: &str, value: serde_json::Value) -> Resul
         "display.aa" => Value::String(mcla_config::Aa::parse_any(&text()?).ok_or("bad_value")?.word().into()),
         "display.bloom" | "display.dof" | "display.motion_blur" => Value::Boolean(value.as_bool().ok_or("bad_value")?),
         "display.texture_filtering" => Value::String(mcla_config::TexFilter::parse(&text()?).ok_or("bad_value")?.word().into()),
+        "display.backend" => Value::String(mcla_config::Backend::parse(&text()?).ok_or("bad_value")?.word().into()),
         "display.render_scale" => {
             let f = value.as_f64().ok_or("bad_value")?;
             if !(0.5..=2.0).contains(&f) {
@@ -201,7 +204,13 @@ pub fn set(window: &WebviewWindow, key: &str, value: serde_json::Value) -> Resul
             Value::Integer(n as i64)
         }
         _ => return Err("unknown_key".into()),
-    };
+    })
+}
+
+/// Writes one of the live rows' keys (only that key; atomic) after checking the value as the game's reader would. A
+/// broken file is not overwritten.
+pub fn set(window: &WebviewWindow, key: &str, value: serde_json::Value) -> Result<DisplayView, String> {
+    let v = checked(key, &value)?;
     let (table, name) = key.split_once('.').ok_or("unknown_key")?;
     let path = settings_path();
     let shown = v.to_string();
@@ -225,4 +234,38 @@ pub fn set_monitor(window: &WebviewWindow, index: u32) -> Result<DisplayView, St
     })?;
     logging::info(&format!("settings.toml: display.monitor = {index} ({})", path.display()));
     Ok(view(window))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn the_graphics_api_row_takes_the_games_three_words_and_nothing_else() {
+        for w in ["auto", "vulkan", "dx12"] {
+            assert_eq!(checked("display.backend", &json!(w)), Ok(mcla_config::toml::Value::String(w.into())));
+        }
+        assert_eq!(checked("display.backend", &json!("opengl")), Err("bad_value".to_string()));
+        assert_eq!(checked("display.backend", &json!(true)), Err("bad_value".to_string()));
+    }
+
+    #[test]
+    fn the_graphics_api_row_is_a_live_row_the_game_reads_and_auto_is_the_default() {
+        assert!(LIVE_KEYS.contains(&"display.backend"));
+        assert!(mcla_config::schema().iter().any(|k| k.key == "display.backend" && k.implemented));
+        assert_eq!(mcla_config::Settings::default().display.backend.word(), "auto");
+    }
+
+    #[test]
+    fn the_graphics_api_choice_is_written_to_the_games_own_key_and_read_back() {
+        let dir = std::env::temp_dir().join(format!("mcla-launcher-backend-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.toml");
+        let _ = std::fs::remove_file(&path);
+        let v = checked("display.backend", &json!("dx12")).unwrap();
+        mcla_config::set_key(&path, "display", "backend", v).unwrap();
+        assert_eq!(mcla_config::Settings::load(&path).settings.display.backend.word(), "dx12");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
