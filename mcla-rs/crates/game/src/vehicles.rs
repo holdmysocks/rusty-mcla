@@ -304,6 +304,9 @@ pub struct CarInstance {
     /// 8 + 4U s, F-92604)
     pub amb_born: f32,
     pub amb_life: f32,
+    /// a cab's or trailer's id draw (F-92604, offline: the shared MWC's (lo & 0x7FFFFFFF) % 512, the id made from it,
+    /// the type's index and the peer; `Vehicles::amb_id`), -1 for every other car
+    pub amb_id: i32,
     /// a car on its way out (car +500 bit 0x4, set with the reason at +488 by F-79896 - only the parked
     /// unspawner F-53207 does): its fade (+484), falling by 2 a second until the car is removed
     /// (F-82632 -> F-51512); meanwhile its LOD 1 is drawn as LOD 2 (`pick_lods`)
@@ -1163,6 +1166,9 @@ pub struct Vehicles {
     pub parking: mcla_formats::rage::parking::ParkingTree,
     park_lists: Vec<u32>,
     park_rng: parked::Mwc,
+    /// the second shared MWC (the 8 bytes 16 below `park_rng` in the image, a = 0x5CDCFAA7): F-77422 draws an ambient car's
+    /// hour and blink offsets from it (`traffic::init_draws`); its seed and its other users are not modelled
+    amb_rng2: parked::Mwc,
     /// the cruising ghosts: the ambient request pool and the proxy cars on their routes (traffic.rs `Ghosts`)
     pub ghosts: traffic::Ghosts,
     park_dump_frame: u32,
@@ -3111,7 +3117,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), spoiler: WindowCtl::default(), roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), spoiler: WindowCtl::default(), roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
         self.cars.len() - 1
     }
 

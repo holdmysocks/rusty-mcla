@@ -467,11 +467,9 @@ impl Vehicles {
             let idx = self.spawn(gpu, model, spot.pos, spot.heading, color, false);
             self.cars[idx].ai = None;
             self.cars[idx].parked = Some(si);
-            // its front wheels' random turn (sub_826E86C8; which random numbers the Gaussian
-            // takes was not traced: the port's own)
-            let u1 = 1.0 - self.rand();
-            let u2 = self.rand();
-            let steer = super::traffic::parked_steer(u1, u2);
+            // the request's seed and the init draws (`amb_init`, F-77422 with a spot): its life, the lights'
+            // offsets and its front wheels' random turn (the car MWC's Gaussian)
+            let steer = self.amb_init(idx, &ty, true).steer;
             self.cars[idx].park_steer = steer;
             for wh in self.cars[idx].state.wheels.iter_mut().take(2) {
                 wh.steer = steer;
@@ -521,15 +519,15 @@ impl Vehicles {
         let model = self.models[mi].clone();
         // (sub_826DF7F0: as a spot's car, sub_826DF700 - its place and heading the item's)
         let idx = self.spawn(gpu, model, item.pos, item.heading, color, false);
-        let born = self.clock;
-        let life = 8.0 + 4.0 * self.rand();
+        // (the request's seed and the init draws, `amb_init`: its life and lights' offsets. An item has no spot, so
+        // F-77422 draws no wheel turn and leaves +3584 as it was - what the pooled car holds there is not traced; the
+        // port's own draw stays)
+        self.amb_init(idx, &ty, false);
         let steer = super::traffic::parked_steer(1.0 - self.rand(), self.rand());
         let c = &mut self.cars[idx];
         c.ai = None;
         c.parked = Some(ITEM_SPOT);
         c.item = Some(h);
-        c.amb_born = born;
-        c.amb_life = life;
         c.park_steer = steer;
         for wh in c.state.wheels.iter_mut().take(2) {
             wh.steer = steer;

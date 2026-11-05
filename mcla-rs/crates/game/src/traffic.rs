@@ -65,6 +65,11 @@ pub struct AmbType {
     /// obstacle vfuncs 4 and 6, F-46284); 0: not read
     pub width: f32,
     pub length: f32,
+    /// the same bound's height (max.y - min.y) and its word +0x0C: the type's +100 is that bound (F-58444 stores it and
+    /// hands it to the physics archetype +104 as its bound +12); the traffic room test F-43944 adds +0x0C to a racer's
+    /// extent. 0: not read
+    pub height: f32,
+    pub bound_r: f32,
     /// `mcAmbientCarTypeColor.xml` (render type +236): the 20 colours times `fScale`, and
     /// `iPaintType` (the CarPaint record: 0 DirtyMatte, 1 Matte, 2 Gloss, 3 Metallic, 4 Pearl,
     /// 5 Sparkle)
@@ -75,7 +80,7 @@ pub struct AmbType {
 impl Default for AmbType {
     fn default() -> Self {
         // (the values every sedan of the set carries)
-        AmbType { max_speed: 40.0, min_accel_band: 1.0, min_accel: 1.0, max_accel: 5.0, min_decel_band: 0.2, min_decel: 3.0, max_decel: 22.5, min_turn: 5.0, pivot_turn: 3.0, instances: 20, bound_group: 0, freeway_only: false, cab: false, trailer: false, taxi: false, proxy: false, width: 0.0, length: 0.0, colors: None, paint_type: 2 }
+        AmbType { max_speed: 40.0, min_accel_band: 1.0, min_accel: 1.0, max_accel: 5.0, min_decel_band: 0.2, min_decel: 3.0, max_decel: 22.5, min_turn: 5.0, pivot_turn: 3.0, instances: 20, bound_group: 0, freeway_only: false, cab: false, trailer: false, taxi: false, proxy: false, width: 0.0, length: 0.0, height: 0.0, bound_r: 0.0, colors: None, paint_type: 2 }
     }
 }
 
@@ -84,8 +89,9 @@ impl AmbType {
         let _ = DATA_ROOT.set(root.to_path_buf());
         let d = AmbType::default();
         let (width, length) = bound_size(root, model).unwrap_or((0.0, 0.0));
+        let (height, bound_r) = bound_extra(root, model).unwrap_or((0.0, 0.0));
         let (colors, paint_type) = type_colors(root, model);
-        let Ok(t) = std::fs::read_to_string(root.join("tune/ambients/traffic").join(model).join("mcAmbientType.xml")) else { return AmbType { width, length, colors, paint_type, ..d } };
+        let Ok(t) = std::fs::read_to_string(root.join("tune/ambients/traffic").join(model).join("mcAmbientType.xml")) else { return AmbType { width, length, height, bound_r, colors, paint_type, ..d } };
         let v = |tag: &str, def: f32| crate::ambient::xml_value(&t, tag).unwrap_or(def);
         let flag = |tag: &str| t.contains(&format!("<{tag} value=\"true\""));
         AmbType {
@@ -107,6 +113,8 @@ impl AmbType {
             proxy: flag("bIsProxy"),
             width,
             length,
+            height,
+            bound_r,
             colors,
             paint_type,
         }
@@ -156,6 +164,20 @@ pub fn bound_size(root: &std::path::Path, model: &str) -> Option<(f32, f32)> {
             let o = rd.ptr(8)?;
             let (w, l) = (rd.f32(o + 0x10) - rd.f32(o + 0x20), rd.f32(o + 0x18) - rd.f32(o + 0x28));
             return (w.is_finite() && l.is_finite() && w > 0.5 && l > 1.0).then_some((w, l));
+        }
+    }
+    None
+}
+
+/// The type's bound (the `.r155` root's +8, as `bound_size`): its height (max +0x14 - min +0x24) and its word +0x0C.
+pub fn bound_extra(root: &std::path::Path, model: &str) -> Option<(f32, f32)> {
+    for e in std::fs::read_dir(root.join("resources/ambients").join(model)).ok()? {
+        let p = e.ok()?.path();
+        if p.extension().is_some_and(|x| x == "r155") {
+            let res = crate::assets::load_resource_file(&p).ok()?;
+            let rd = mcla_formats::rage::Rd::new(&res);
+            let o = rd.ptr(8)?;
+            return Some((rd.f32(o + 0x14) - rd.f32(o + 0x24), rd.f32(o + 0x0C)));
         }
     }
     None
@@ -3834,9 +3856,35 @@ impl Vehicles {
 
     /// Hitch a trailer to a cab just made (slot 5 F-77422 -> F-45988): with p 0.75
     /// one of the five trailers, its hitch on the cab's, facing the same way.
-    pub(super) fn hitch_trailer(&mut self, gpu: &crate::render::Gpu, root: &std::path::Path, nav: &NavSys, cab: usize) {
+    /// The pool's spawn step and the car's init for the ambient car `idx` just made (`spot`: a parked spot's car):
+    /// F-42724 draws the shared MWC (rec+832 = lo & 0x7FFFFFFF, the car MWC's seed); F-92604 gives a cab or trailer
+    /// (F-42724 sets rec+836 for type +111 / +112; the spawners' requests carry the id -1, rec+808) an id from the
+    /// same shared MWC: r = (lo & 0x7FFFFFFF) % 512, id = ((r << 7 | the type's index, F-54952) << 5) | the peer
+    /// (F-78245), drawn again while a car holds that id (F-10061; at most 20 draws) - here: a car of the same type with
+    /// the same r; then `init_draws` with the second shared MWC. Sets the car's life, id and lights' offsets.
+    pub(super) fn amb_init(&mut self, idx: usize, ty: &AmbType, spot: bool) -> InitDraws {
+        let seed = self.park_rng.next() & 0x7FFF_FFFF;
+        if ty.cab || ty.trailer {
+            let name = self.cars[idx].model.name.clone();
+            let cars = &self.cars;
+            let r = id_draws(&mut self.park_rng, |r| cars.iter().enumerate().any(|(k, c)| k != idx && c.amb_id == r && c.model.name == name));
+            self.cars[idx].amb_id = r;
+        }
+        // (the manager's byte +0x64234, read by F-60230: its writer is not traced; 0 as everywhere in the port)
+        let d = init_draws(seed, &mut self.amb_rng2, spot, ty.cab, ty.proxy, false);
+        let c = &mut self.cars[idx];
+        c.amb_born = self.clock;
+        c.amb_life = d.life;
+        c.amb_lamps.hour_offset = d.hour;
+        c.amb_lamps.blink_wrap = d.blink_wrap;
+        c.amb_lamps.blink_on = d.blink_on;
+        d
+    }
+
+    /// `hitch`: the cab's init draw (`InitDraws::hitch`, F-77422: the car MWC's U x 2^-23 < 0.75).
+    pub(super) fn hitch_trailer(&mut self, gpu: &crate::render::Gpu, root: &std::path::Path, nav: &NavSys, cab: usize, hitch: bool) {
         let Some(r) = self.cars[cab].rail.as_mut() else { return };
-        if !r.ty.cab || r.rand() >= 0.75 {
+        if !r.ty.cab || !hitch {
             return;
         }
         let name = TRAILERS[(r.rand() * 5.0) as usize % 5];
@@ -3859,6 +3907,9 @@ impl Vehicles {
         t.v = 0.0;
         t.partner = Some(cab_id);
         t.born = self.clock;
+        // (the trailer's request through the pool: its seed, id and init draws, F-42724 / F-92604 / F-77422)
+        let d = self.amb_init(idx, &ty, false);
+        (t.life, t.off_timer, t.wait, t.bonus) = (d.life, d.off_timer, d.wait, d.bonus);
         self.cars[idx].placed = true;
         self.cars[idx].rail = Some(t);
         if let Some(r) = self.cars[cab].rail.as_mut() {
@@ -6394,6 +6445,7 @@ impl Vehicles {
         let t = sp.tune;
         let occ = crate::occluder::city(&sp.data_dir).map(|c| c.select_around(focus + Vec3::Y * 1.75, OCC_RANGE));
         let total: f32 = sp.list.iter().map(|x| x.1).sum::<f32>() + sp.int_weight;
+        let mut made: Vec<(Vec3, Vec3, Vec3)> = Vec::new();
         for _ in 0..if fe { 1 } else { 60 } {
             if n <= 0 {
                 break;
@@ -6493,8 +6545,35 @@ impl Vehicles {
                     continue;
                 }
             }
-            // room: no car within the spacing
-            if self.cars.iter().any(|c| Vec3::new(c.state.pos.x - pos.x, 0.0, c.state.pos.z - pos.z).length() < t.spacing && (c.state.pos.y - pos.y).abs() < 5.0) {
+            // room (F-92144's tests in its order; docs/reference/people/ambient_spawn_rule.md): the junction ahead of the
+            // player (the tracker's record 0; record 1 is never written), the slot test (M+2115 is 1 from the ctor), this
+            // frame's earlier requests, the room test (racers only)
+            let size = Vec3::new(ty.width, ty.height, ty.length);
+            let jrec = if fe { None } else { self.player_record.map(|r| r.0) };
+            if jrec.is_some_and(|j| junction_ahead_blocks(pos, nav.junction_rects[j].c, nav.junction_centers[j].y, nav.junction_rects[j].len)) {
+                sp.why[5] += 1;
+                continue;
+            }
+            if !self.slot_clear(nav, &Rider::new(nav, ty, link, s, 1), (size.x, size.z), None) {
+                sp.why[5] += 1;
+                continue;
+            }
+            if made.iter().any(|&(d, sz, q)| {
+                let dy = q.y - pos.y;
+                !(dy > size.y || -sz.y > dy) && rects_meet(Vec2::new(pos.x, pos.z), Vec2::new(dir.x, dir.z), Vec2::new(0.5 * size.z, 0.5 * size.x), Vec2::new(q.x, q.z), Vec2::new(d.x, d.z), Vec2::new(0.5 * sz.z, 0.5 * sz.x))
+            }) {
+                sp.why[5] += 1;
+                continue;
+            }
+            let racers: Vec<RoomCar> = self
+                .cars
+                .iter()
+                .map(|c| {
+                    let h = c.params().body_half;
+                    RoomCar { kind: crate::brainturn::ObjectInfo::from_car(0, c).kind, pos: c.state.pos, vel: c.state.vel, extent: crate::physics::exact::fma(h.x, h.x, h.z * h.z).sqrt() }
+                })
+                .collect();
+            if traffic_room_blocked(&CrossGrid::UNBOUNDED, pos, &racers, ty.bound_r, t.spacing) {
                 sp.why[5] += 1;
                 continue;
             }
@@ -6511,6 +6590,8 @@ impl Vehicles {
                     continue;
                 }
             }
+            // (the request made: F-92144 lists its direction, size and point for the frame's later tries)
+            made.push((dir, size, pos));
             // on the ground: a probe +- 1.75 m at the point, none - no spawn ("could not spawn
             // on terrain", F-46111)
             let Some((ground, normal)) = probe_ground(&world.collider, pos) else {
@@ -6518,22 +6599,21 @@ impl Vehicles {
                 continue;
             };
             let model = self.models[mi].clone();
-            // its colour: one of the type's twenty (global RNG % 20)
-            let shade = test_shade((self.rand() * 20.0) as usize % 20);
+            // its colour: one of the type's twenty (F-92144: the shared MWC's (lo & 0x7FFFFFFF) % 20)
+            let shade = test_shade(self.park_rng.index(20) as usize);
             let color = ty.color(shade).unwrap_or(super::TRAFFIC_PALETTE[shade % super::TRAFFIC_PALETTE.len()]);
             let yaw = (-dir.x).atan2(-dir.z);
             let idx = self.spawn(gpu, model, ground, yaw, color, false);
-            // (its lights' hour offset, car +3568: 0 .. 0.25 h - F-77422)
-            self.cars[idx].amb_lamps.hour_offset = self.rand() * 0.25;
-            // (then the signal blink's two offsets, +3576 and +3580: 0.2 U - 0.1 s each; the blink +3572 starts at 0)
-            self.cars[idx].amb_lamps.blink_wrap = 0.2 * self.rand() - 0.1;
-            self.cars[idx].amb_lamps.blink_on = 0.2 * self.rand() - 0.1;
+            // (the request's seed and the car's init draws, `amb_init`: its life, start delay, the lights' hour offset
+            // +3568 and the signal blink's offsets +3576 / +3580 - the blink +3572 starts at 0 -, the bonus, the hitch)
+            let init = self.amb_init(idx, &ty, false);
             let f = (dir - normal * dir.dot(normal)).normalize_or(dir);
             let right = f.cross(normal).normalize_or(Vec3::X);
             self.cars[idx].state.relocate(ground, Quat::from_mat3(&glam::Mat3::from_cols(right, normal, -f)).normalize());
             let seed = (self.rand() * 16777216.0) as u32 | 1;
             let mut rider = Rider::new(nav, ty, link, s, seed);
             rider.born = self.clock;
+            (rider.life, rider.off_timer, rider.wait, rider.bonus) = (init.life, init.off_timer, init.wait, init.bonus);
             rider.seat = Some(Seat::new(ground, normal, f));
             // the start speed (vfunc 84 F-30683, called by the spawn slot 5 F-77422
             // for every ambient car, path = none): removed (reason 17) when the rule says so
@@ -6555,7 +6635,7 @@ impl Vehicles {
                 ai.t = s / l.len.max(1e-3);
             }
             // a cab: its trailer
-            self.hitch_trailer(gpu, &world.assets.root, nav, idx);
+            self.hitch_trailer(gpu, &world.assets.root, nav, idx, init.hitch);
             if std::env::var("MCLA_TRAFFIC_TRACE").is_ok() {
                 let v = pos - focus;
                 log::info!("traffic spawn {} dist {:.1} ahead {:.1} side {:.1} road {} target {:.2} current {}", self.cars[idx].model.name, Vec3::new(v.x, 0.0, v.z).length(), v.dot(view), (v.z * view.x - v.x * view.z).abs(), ri, sp.target, sp.current);
@@ -6733,6 +6813,111 @@ impl CrossGrid {
     fn holds(&self, ix: i32, iz: i32) -> bool {
         !self.bounded || (ix >= 0 && ix < self.n[0] && iz >= 0 && iz < self.n[1])
     }
+}
+
+/// F-92144's junction test: is the spawn point `p` within half the junction's length (rect +0x40) of the junction's
+/// point - its region's x / z (+0x50 / +0x58: in the file the bits of +0x34 / +0x38 for all 351 junctions) and its
+/// centre's y (+0x84) -, the height difference not over 5? The distance as the vector unit's: the squared length z^2 +
+/// (y^2 + x^2), its reciprocal root and one Newton step, 0 for a squared length of 0 (flush to zero on).
+pub fn junction_ahead_blocks(p: Vec3, c: [f32; 2], cy: f32, len: f32) -> bool {
+    let d = Vec3::new(p.x - c[0], p.y - cy, p.z - c[1]);
+    if d.y.abs() > 5.0 {
+        return false;
+    }
+    let l2 = crate::physics::exact::dot3(d, d);
+    let l2 = if l2.abs() < f32::MIN_POSITIVE { 0.0 } else { l2 };
+    let dist = if l2 == 0.0 {
+        0.0
+    } else {
+        let y = 1.0 / l2.sqrt();
+        l2 * (-(l2 * (y * y) - 1.0) * (0.5 * y) + y)
+    };
+    dist - 0.5 * len < 0.0
+}
+
+/// What the traffic room test (F-43944) reads of one object of the grid's cells: its kind (obstacle +6; only 0 the
+/// player and 1 the racers are looked at), its place (vfunc 1's matrix +48), its velocity (vfunc 2) and its extent
+/// (vfunc 7).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RoomCar {
+    pub kind: u8,
+    pub pos: Vec3,
+    pub vel: Vec3,
+    pub extent: f32,
+}
+
+/// The traffic room test F-43944 (docs/reference/people/ambient_spawn_rule.md): the objects of the 3 x 3 grid cells
+/// round the spawn point `p` (`CrossGrid::cell`, as the people's room test); of kind 0 / 1 only. Blocked by one within
+/// the flat `spacing` (fma(dz, dz, dx dx) < spacing^2, d = its place - p), or else by one whose one-second motion meets
+/// the sphere at `p` of radius its extent + `bound_r` (F-24126, `sphere_motion_hit`).
+pub fn traffic_room_blocked(grid: &CrossGrid, p: Vec3, cars: &[RoomCar], bound_r: f32, spacing: f32) -> bool {
+    use crate::physics::exact::fma;
+    let Some((cx, cz)) = grid.cell(p.x, p.z) else { return false };
+    cars.iter().any(|o| {
+        if o.kind > 1 {
+            return false;
+        }
+        match grid.cell(o.pos.x, o.pos.z) {
+            Some((ox, oz)) if (ox - cx).abs() <= 1 && (oz - cz).abs() <= 1 && grid.holds(ox, oz) => {}
+            _ => return false,
+        }
+        let (dx, dz) = (o.pos.x - p.x, o.pos.z - p.z);
+        if fma(dz, dz, dx * dx) < spacing * spacing {
+            return true;
+        }
+        sphere_motion_hit(p, o.extent + bound_r, o.pos, o.vel)
+    })
+}
+
+/// F-24126: does a point moving from `s` by `d` meet the sphere (centre `c`, radius `r`)? The start inside (|s - c|^2 <
+/// r^2, summed x^2 then z then y, fused), else the end s + d not outside (not >= r^2: a NaN counts as inside), else the
+/// segment's crossing (F-47913, `ray_sphere`, > 0).
+pub fn sphere_motion_hit(c: Vec3, r: f32, s: Vec3, d: Vec3) -> bool {
+    use crate::physics::exact::fma;
+    let rr = r * r;
+    let l2 = |a: Vec3| {
+        let (x, y, z) = (a.x - c.x, a.y - c.y, a.z - c.z);
+        fma(y, y, fma(z, z, x * x))
+    };
+    if l2(s) < rr {
+        return true;
+    }
+    if !(l2(s + d) >= rr) {
+        return true;
+    }
+    ray_sphere(s - c, d, rr) > 0
+}
+
+/// F-47913 with no outputs and its flag clear: the segment o .. o + d against the sphere of squared radius `rr` round the
+/// origin. 0: no meeting (d of no length, the discriminant below 0, from outside a crossing t1 outside [0, 1], from inside
+/// an end inside or d under 1e-12); from outside 1 when the far crossing t2 is past 1, else 2; from inside 1.
+pub fn ray_sphere(o: Vec3, d: Vec3, rr: f32) -> i32 {
+    use crate::physics::exact::fma;
+    let dd = fma(d.z, d.z, fma(d.x, d.x, d.y * d.y));
+    if dd <= 0.0 {
+        return 0;
+    }
+    let oo = fma(o.z, o.z, fma(o.x, o.x, o.y * o.y));
+    let od = fma(o.z, d.z, fma(o.x, d.x, o.y * d.y));
+    let disc = fma(rr - oo, dd, od * od);
+    if disc < 0.0 {
+        return 0;
+    }
+    if oo > rr {
+        let inv = 1.0 / dd;
+        let t1 = -((disc.sqrt() + od) * inv);
+        if t1 < 0.0 || t1 > 1.0 {
+            return 0;
+        }
+        let t2 = (disc.sqrt() - od) * inv;
+        return if t2 > 1.0 { 1 } else { 2 };
+    }
+    let e = o + d;
+    let ee = fma(e.z, e.z, fma(e.y, e.y, e.x * e.x));
+    if ee <= rr || dd < f32::from_bits(0x2B8C_BCCC) {
+        return 0;
+    }
+    1
 }
 
 /// What the crossing unspawner reads of one object of the grid's cells (an ambient car's obstacle and its car).
@@ -7963,6 +8148,9 @@ impl Vehicles {
         let right = f.cross(normal).normalize_or(Vec3::X);
         self.cars[idx].state.relocate(ground, Quat::from_mat3(&glam::Mat3::from_cols(right, normal, -f)).normalize());
         rider.seat = Some(Seat::new(ground, normal, f));
+        // (the request's seed and the init draws, `amb_init`)
+        let init = self.amb_init(idx, &ty, false);
+        (rider.life, rider.off_timer, rider.wait, rider.bonus) = (init.life, init.off_timer, init.wait, init.bonus);
         let c = &mut self.cars[idx];
         c.item = Some(h);
         c.rail = Some(rider);
@@ -7984,15 +8172,15 @@ impl Vehicles {
         let color = ty.color(shade).unwrap_or(super::TRAFFIC_PALETTE[shade % super::TRAFFIC_PALETTE.len()]);
         let model = self.models[mi].clone();
         let idx = self.spawn(gpu, model, item.pos, item.heading, color, false);
-        let born = self.clock;
-        let life = 8.0 + 4.0 * self.rand();
+        // (the request's seed and the init draws, `amb_init`: its life and lights' offsets. An item has no spot, so
+        // F-77422 draws no wheel turn and leaves +3584 as it was - what the pooled car holds there is not traced; the
+        // port's own draw stays)
+        self.amb_init(idx, &ty, false);
         let steer = parked_steer(1.0 - self.rand(), self.rand());
         let c = &mut self.cars[idx];
         c.ai = None;
         c.parked = Some(super::parked::ITEM_SPOT);
         c.item = Some(h);
-        c.amb_born = born;
-        c.amb_life = life;
         c.park_steer = steer;
         for wh in c.state.wheels.iter_mut().take(2) {
             wh.steer = steer;
@@ -8522,6 +8710,101 @@ pub const PROXY_TYPE: &str = "0x0bccfb1d";
 /// F-37317: an MWC seeded from `x` (lo = x + (x == 0), carry = x ^ rotl16(x); its byte +8 and float +12 zeroed).
 pub fn mwc_seed(x: u32) -> GMwc {
     GMwc { lo: x.wrapping_add((x == 0) as u32), carry: x ^ x.rotate_left(16) }
+}
+
+/// The low 23 bits of an MWC's next word as the original converts them (`clrlwi 9`, `fcfid`, `frsp`: exact).
+fn u23(m: &mut GMwc) -> f32 {
+    (m.next() & 0x7F_FFFF) as f32
+}
+
+/// An ambient car's init draws (F-77422, which runs slot 5 F-60230 first, which runs the base F-92604 first) in the
+/// original's order, from the car's own MWC (car +384 / +388, seeded by F-92604 from the pool record's draw rec+832)
+/// and the second shared MWC (the 8 bytes 16 below the shared `park_rng` in the image; `Vehicles::amb_rng2`). Every constant is the
+/// image's word.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InitDraws {
+    /// +468 = fma(U, 2^-21, 8): the life on a listed road (F-92604, the car MWC's first draw)
+    pub life: f32,
+    /// +432 = fma(U, 3 x 2^-23, 3): the speed offset's first timer (F-92604, the second)
+    pub off_timer: f32,
+    /// +444 = U x 0.8 x 2^-23 (`fmuls` by 0x33CCCCCD): the start delay (F-60230; 0 without a draw for a proxy car or
+    /// while the manager's byte +0x64234 is set)
+    pub wait: f32,
+    /// +3568 = U2 x 2^-25: the lights' hour offset (the second shared MWC)
+    pub hour: f32,
+    /// +3576 / +3580 = fmsubs(U2, 0x32CCCCCD, 0.1): the signal blink's offsets (the second shared MWC)
+    pub blink_wrap: f32,
+    pub blink_on: f32,
+    /// +428 = fmsubs(U, 2^-23, 0.5): the acceleration bonus (0 without a draw for a proxy car or networked)
+    pub bonus: f32,
+    /// +3584: a spot's car (request +252 set): F-66400 on the car MWC, mean 0, sd pi / 8, clamped by two `fsel` to
+    /// [-0.70685834, 0.70685834]; else not drawn (0)
+    pub steer: f32,
+    /// a cab (type +111, offline): U x 2^-23 < 0.75 hitches a trailer (F-45988)
+    pub hitch: bool,
+    /// the car's MWC after F-60230, and after F-77422
+    pub placed: GMwc,
+    pub car: GMwc,
+}
+
+/// F-66400 (`physics::vehsim::VehState::random_normal`, checked there against the original): the polar method on the
+/// car's MWC with its spare cleared (F-37317 zeroes it), the result fma(value, deviation, mean).
+fn car_normal(m: &mut GMwc, mean: f32, dev: f32) -> f32 {
+    loop {
+        let a = u23(m) * (1.0 / 4_194_304.0) - 1.0;
+        let b = u23(m) * (1.0 / 4_194_304.0) - 1.0;
+        let s = b.mul_add(b, a * a);
+        if s < 1.0 && s != 0.0 {
+            let f = ((crate::caraudio::ln_guest(s as f64) as f32 / s) * -2.0).sqrt();
+            return (f * b).mul_add(dev, mean);
+        }
+    }
+}
+
+/// F-92604's id loop for a cab or trailer (request id < 0, rec+836 set): up to 20 draws of the shared MWC, each
+/// r = (lo & 0x7FFFFFFF) % 512 (the id ((r << 7 | the type's index) << 5) | the peer), until `taken(r)` (F-10061 finds
+/// a car with that id) is false; the last r stays when all 20 are taken.
+pub fn id_draws(shared: &mut GMwc, mut taken: impl FnMut(i32) -> bool) -> i32 {
+    let mut r = 0;
+    for _ in 0..20 {
+        r = ((shared.next() & 0x7FFF_FFFF) % 512) as i32;
+        if !taken(r) {
+            break;
+        }
+    }
+    r
+}
+
+/// F-92604 + F-60230 + F-77422's draws (`InitDraws`): `seed` the pool record's rec+832, `spot` a parked spot's car,
+/// `cab` the type's +111, `proxy` car +500 bit 0x20 (the bIsProxy pool), `green` the manager's byte +0x64234.
+/// Offline: the networked tests are false. (Not here: the cab / trailer id draws of the shared MWC F-92604 makes
+/// between its two draws, `Vehicles::amb_id`.)
+pub fn init_draws(seed: u32, shared2: &mut GMwc, spot: bool, cab: bool, proxy: bool, green: bool) -> InitDraws {
+    use crate::physics::exact::{fma, fms};
+    let mut car = mwc_seed(seed);
+    let mut d = InitDraws::default();
+    // F-92604: +468, then +432
+    d.life = fma(u23(&mut car), f32::from_bits(0x3500_0000), 8.0);
+    d.off_timer = fma(u23(&mut car), f32::from_bits(0x34C0_0000), 3.0);
+    // F-60230: +444
+    d.wait = if green || proxy { 0.0 } else { u23(&mut car) * f32::from_bits(0x33CC_CCCD) };
+    d.placed = car;
+    // F-77422: the second shared MWC three times
+    d.hour = u23(shared2) * f32::from_bits(0x3300_0000);
+    d.blink_wrap = fms(u23(shared2), f32::from_bits(0x32CC_CCCD), f32::from_bits(0x3DCC_CCCD));
+    d.blink_on = fms(u23(shared2), f32::from_bits(0x32CC_CCCD), f32::from_bits(0x3DCC_CCCD));
+    d.bonus = if proxy { 0.0 } else { fms(u23(&mut car), f32::from_bits(0x3400_0000), 0.5) };
+    if spot {
+        let g = car_normal(&mut car, 0.0, f32::from_bits(0x3EC9_0FDB));
+        let (lo, hi) = (f32::from_bits(0xBF34_F4AB), f32::from_bits(0x3F34_F4AB));
+        let a = if g - lo >= 0.0 { g } else { lo };
+        d.steer = if a - hi >= 0.0 { hi } else { a };
+    }
+    if cab {
+        d.hitch = u23(&mut car) * f32::from_bits(0x3400_0000) < 0.75;
+    }
+    d.car = car;
+    d
 }
 
 /// The car's speed fields the integrator works on: +412 speed, +424 offset, +432 offset timer (seconds of age), +464
@@ -9123,6 +9406,8 @@ pub fn ghost_net() -> Option<&'static crate::railroute::RailNet> {
 struct LiveWorld<'a> {
     g: &'a mut GhostLive,
     shared: &'a mut GMwc,
+    /// the second shared MWC (F-77422's three draws for the ghost car too)
+    shared2: &'a mut GMwc,
     nav: Option<(&'static NavSys, &'static Lanes, &'static crate::railroute::RailNet)>,
     col: Option<&'a WorldCollider>,
     clock: f32,
@@ -9169,6 +9454,11 @@ impl PoolWorld for LiveWorld<'_> {
         let mut rng = mwc_seed(r.seed);
         rider.life = ((rng.next() & 0x7F_FFFF) as f32).mul_add(f32::from_bits(0x3500_0000), 8.0);
         rider.off_timer = ((rng.next() & 0x7F_FFFF) as f32).mul_add(f32::from_bits(0x34C0_0000), 3.0);
+        // F-77422's hour and blink offsets from the second shared MWC (a proxy car: no +444 / +428 draws; the ghost has
+        // no lamps in the port, the three draws keep that generator's order)
+        for _ in 0..3 {
+            self.shared2.next();
+        }
         rider.off = 0.0;
         rider.bonus = 0.0;
         rider.wait = 0.0;
@@ -9259,8 +9549,8 @@ impl Vehicles {
         let net = ghost_net();
         let clock = self.clock;
         {
-            let Vehicles { ghosts, park_rng, .. } = self;
-            let mut w = LiveWorld { g: &mut ghosts.live, shared: park_rng, nav: net.map(|n| (nav, lanes, n)), col: Some(col), clock, cancelling: false };
+            let Vehicles { ghosts, park_rng, amb_rng2, .. } = self;
+            let mut w = LiveWorld { g: &mut ghosts.live, shared: park_rng, shared2: amb_rng2, nav: net.map(|n| (nav, lanes, n)), col: Some(col), clock, cancelling: false };
             ghosts.pool.step(dt, &mut w);
         }
         for k in 0..self.ghosts.live.cars.len() {
@@ -9377,8 +9667,8 @@ impl crate::cruiser::GhostTraffic for Vehicles {
     }
     fn cancel_request(&mut self, id: i32) {
         let clock = self.clock;
-        let Vehicles { ghosts, park_rng, .. } = self;
-        let mut w = LiveWorld { g: &mut ghosts.live, shared: park_rng, nav: None, col: None, clock, cancelling: true };
+        let Vehicles { ghosts, park_rng, amb_rng2, .. } = self;
+        let mut w = LiveWorld { g: &mut ghosts.live, shared: park_rng, shared2: amb_rng2, nav: None, col: None, clock, cancelling: true };
         ghosts.pool.cancel(id, &mut w);
     }
     fn release_ghost(&mut self, ghost: u32) {
@@ -9717,5 +10007,90 @@ mod ghost_tests {
         }
         eprintln!("ghost routes: {tried} tried, {ends} released at the end, {offs} off the route, {lanes_ridden} frames on route lanes");
         assert!(ends >= 3, "{ends} of {tried} routes ended");
+    }
+}
+
+/// F-77422 (with F-60230, F-92604, F-37317, F-66400) run whole offline (tools/spawn_init_reference.py ->
+/// testdata/spawn_init_ref.txt): the car MWC's and the two shared MWCs' draws, every word and both generators equal.
+#[cfg(test)]
+mod spawn_init_tests {
+    use super::*;
+
+    #[test]
+    fn init_draws_match_the_original() {
+        let hx = |t: &str| u32::from_str_radix(&t.replace('_', ""), 16).unwrap();
+        let (mut n, mut spots, mut hitched, mut loops) = (0, 0, 0, 0);
+        for line in include_str!("testdata/spawn_init_ref.txt").lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let i: Vec<u32> = a.split(' ').map(hx).collect();
+            // (hex words; the hitch and the lookups decimal)
+            let mut o: Vec<u32> = b.split(' ').map(hx).collect();
+            o[19] = b.split(' ').nth(19).unwrap().parse().unwrap();
+            let (flags, given, b292, found) = (i[5], i[6], i[7], i[8]);
+            let mut shared2 = GMwc { lo: i[1], carry: i[2] };
+            let mut shared = GMwc { lo: i[3], carry: i[4] };
+            let (spot, cab, proxy, green) = (flags & 1 != 0, flags & 2 != 0, flags & 8 != 0, flags & 16 != 0);
+            // F-92604's id: given (>= 0), else drawn when rec+836 is set (here the case's byte), else -1
+            let mut looked = 0;
+            let id = if flags & 32 != 0 {
+                given
+            } else if b292 != 0 {
+                let r = id_draws(&mut shared, |_| {
+                    looked += 1;
+                    looked <= found
+                });
+                // (the stubs: type index 5, peer 0)
+                (((r as u32) << 7) | 5) << 5
+            } else {
+                u32::MAX
+            };
+            let d = init_draws(i[0], &mut shared2, spot, cab, proxy, green);
+            let want = [d.life.to_bits(), d.off_timer.to_bits(), d.wait.to_bits(), id, d.hour.to_bits(), 0, d.blink_wrap.to_bits(), d.blink_on.to_bits(), d.bonus.to_bits(), d.steer.to_bits(), d.hitch as u32, d.placed.lo, d.placed.carry, d.car.lo, d.car.carry, shared2.lo, shared2.carry, shared.lo, shared.carry, looked];
+            assert_eq!(o, want, "line {}: {line}", n + 1);
+            n += 1;
+            spots += spot as u32;
+            hitched += d.hitch as u32;
+            loops += (looked > 1) as u32;
+        }
+        assert_eq!(n, 3000);
+        eprintln!("spawn init: {n} cases, {spots} spots, {hitched} hitched, {loops} id loops past the first draw");
+    }
+    /// The traffic room test against the generated code run offline (tools/traffic_room_reference.py ->
+    /// testdata/traffic_room_ref.txt): 6,000 cases - grids of 1 .. 8 x 1 .. 8 cells, the point on and off the grid,
+    /// up to 16 objects of kinds 0 .. 7 about the spacing's edge or moving at, past, short of or along the sphere's edge
+    /// a float step or two either way. The answer equal in every case.
+    #[test]
+    fn traffic_room_matches_original() {
+        let txt = include_str!("testdata/traffic_room_ref.txt");
+        let hex = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let f = |s: &str| f32::from_bits(hex(s));
+        let (mut cases, mut bad, mut blocked, mut by_motion) = (0, 0, 0, 0);
+        for l in txt.lines().filter(|l| !l.is_empty()) {
+            let (head, rest) = l.split_once(" | ").unwrap();
+            let (objs, want) = rest.rsplit_once(" -> ").unwrap();
+            let h: Vec<&str> = head.split_whitespace().collect();
+            let grid = CrossGrid { min: [f(h[2]), f(h[3])], n: [hex(h[0]) as i32, hex(h[1]) as i32], bounded: true };
+            let p = Vec3::new(f(h[4]), f(h[5]), f(h[6]));
+            let o: Vec<&str> = objs.split_whitespace().collect();
+            let list: Vec<RoomCar> = o
+                .chunks(8)
+                .map(|c| RoomCar { kind: hex(c[0]) as u8, pos: Vec3::new(f(c[1]), f(c[2]), f(c[3])), vel: Vec3::new(f(c[4]), f(c[5]), f(c[6])), extent: f(c[7]) })
+                .collect();
+            assert_eq!(list.len(), hex(h[9]) as usize);
+            let got = traffic_room_blocked(&grid, p, &list, f(h[7]), f(h[8]));
+            cases += 1;
+            blocked += got as usize;
+            let flat: Vec<RoomCar> = list.iter().map(|c| RoomCar { vel: Vec3::ZERO, extent: 0.0, ..*c }).collect();
+            by_motion += (got && !traffic_room_blocked(&grid, p, &flat, 0.0, f(h[8]))) as usize;
+            if got != (want.trim() == "1") {
+                bad += 1;
+                if bad <= 5 {
+                    eprintln!("traffic room mismatch: {l} -> port {got}");
+                }
+            }
+        }
+        eprintln!("traffic room: {cases} cases ({blocked} no room, {by_motion} by a motion only), {bad} mismatches");
+        assert_eq!(cases, 6000);
+        assert_eq!(bad, 0);
     }
 }
