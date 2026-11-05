@@ -11573,7 +11573,7 @@ pub const TUTORIAL_FORMS: [(u32, &str); 31] = [
 ];
 
 /// The tutorial flags of the save: (flag, form, speech scenario, slow motion, who shows it).
-pub const TUTORIAL_FLAGS: [(&str, u32, &str, bool, &str); 22] = [
+pub const TUTORIAL_FLAGS: [(&str, u32, &str, bool, &str); 23] = [
     ("tTBM", 102, "TUTORIAL_BEAT_ME_THERE", true, "generic_local_hookman 0xc0e (the first hookman flashed)"),
     ("tTFL", 82, "", false, "CruisingHookmanCore 0x8f0 (a hookman in reach; flag set when he is flashed, 0xd91)"),
     ("tTFB", 83, "", false, "CruisingHookmanCore 0x918 (the next hookman in reach after tTFL; 0xdbe)"),
@@ -11596,6 +11596,9 @@ pub const TUTORIAL_FLAGS: [(&str, u32, &str, bool, &str); 22] = [
     ("tTCH", 89, "", false, "TelephoneChallenge 0x2c4 (the first telephone challenge)"),
     ("tTPP", 103, "", false, "sub_82700108 from sub_82704228 (the first pursuit)"),
     ("tTPL", 104, "", false, "sub_82700108 (the second pursuit)"),
+    // (xTCO: the collectables' lesson - MiscTasks/Collectables 0x88d..0x962, at a pickup while xTCO is 0:
+    // form 94, no scenario, then xTCO set to 1)
+    ("xTCO", 94, "", false, "Collectables 0x88d (a collectable taken)"),
 ];
 
 /// The form's string keys.
@@ -17861,6 +17864,9 @@ mod tests {
         // (the new game sample has seen tTBM, tTFB, tTFL only)
         assert!(g.mc4_tut_seen("tTBM") && !g.mc4_tut_seen("tTDE"));
         assert!(!g.mc4_tutorial("tTBM"));
+        // (xTCO: the first collectable's lesson, form 94, once)
+        assert!(!g.mc4_tut_seen("xTCO") && g.mc4_tutorial("xTCO") && g.mc4_tut_seen("xTCO") && !g.mc4_tutorial("xTCO"));
+        assert_eq!(g.opt_x.s23.queue.pop().map(|t| (t.form, t.slow)), Some((94, false)));
         // (a delivery hangout's panel waits for its tutorial: form 100 in the slow motion)
         g.hangout_key = Some("hw_delivery".into());
         g.mode = crate::game::Mode::RaceSelect;

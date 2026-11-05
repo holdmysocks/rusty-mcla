@@ -4961,6 +4961,8 @@ impl App {
                 let hit = self.barrels.iter().enumerate().find(|(i, b)| !self.game.collected.contains(&(*i as u16)) && Vec3::new(b.x - pp.x, (b.y - pp.y) * 0.5, b.z - pp.z).length() < 2.6).map(|(i, b)| (i, *b));
                 if let Some((i, b)) = hit {
                     self.game.collected.push(i as u16);
+                    // (the collectables' lesson the first time - xTCO, MiscTasks/Collectables 0x88d)
+                    self.game.mc4_tutorial("xTCO");
                     self.props_dirty = true;
                     self.fx.sparks(b + Vec3::Y * 0.6, Vec3::Y, 40);
                     let msg = self.game.career.strings.get("COLLECTABLE_FOUND_MSG").map(|s| s.to_string()).unwrap_or_else(|| "COLLECTABLE FOUND".to_string());
