@@ -1284,8 +1284,9 @@ impl FlashMenu {
                 let rgb: i32 = f.next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0) as i32;
                 let select: i32 = f.next().and_then(|v| v.parse().ok()).unwrap_or(-1);
                 let strip: Vec<i32> = f.next().unwrap_or("").split(',').filter_map(|v| v.parse::<u32>().ok()).map(|v| v as i32).collect();
-                // (the states say `fs_type` 30 / 31; the movie knows the row as `type` 3)
-                p.set_path(&format!("menu.elements.{}.type", i), Value::Int(3));
+                // (the states' `fs_type`: 30 closed, 31 open - Paint.sc.xml, Colors.sc.xml; the open row's strip shows
+                // `numswatches` 5 from its `offset`, which the movie moves to keep `select` in view)
+                p.set_path(&format!("menu.elements.{}.type", i), Value::Int(if select >= 0 { 31 } else { 30 }));
                 p.set_path(&format!("menu.elements.{}.color", i), Value::Int(rgb));
                 p.set_path(&format!("menu.elements.{}.select", i), Value::Int(select));
                 p.set_path(&format!("menu.elements.{}.count", i), Value::Int(strip.len() as i32));
@@ -1885,6 +1886,38 @@ mod tests {
         let t = StringTable::parse(&std::fs::read(Path::new(&dir).join("ui/0xa4c1e8fa")).unwrap()).unwrap();
         for k in ["G_RimSize", "G_TireProfile", "G_TireWidth", "G_RideHeight", "G_FrontAxle", "G_RearAxle", "G_BothAxle", "G_Install"] {
             println!("{k} = {:?}", t.get(k));
+        }
+    }
+
+    /// The paint shop's open colour row (`type` 31) shows five squares from its `offset` and keeps the
+    /// cursor on them, as the movie's own strip code does (offset kept between refreshes: 0 at select 0,
+    /// `select - 5` when select > 5 - offset, +1 when select >= offset + 5, -1 when select < offset)
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn paint_strip_keeps_the_cursor_on_the_five_squares() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let strings = StringTable::parse(&std::fs::read(Path::new(&dir).join("ui/0xa4c1e8fa")).unwrap()).unwrap();
+        let shared = UiShared { textures: Arc::new(HashMap::new()), strings: Arc::new(strings), logic: Arc::new(crate::menu3d::UiLogic::load(&dir)) };
+        let mut menu = FlashMenu::load(&dir, GARAGE_MOVIE, [0.0; 2], &shared).unwrap();
+        let n = 40i32;
+        let strip: Vec<u32> = (0..n as u32).map(|i| i * 65793).collect();
+        let row = |sel: i32| MenuRow { label: "PRIMARY COLOR".into(), value: swatch_value(16777215, sel, &strip), enabled: true, part: None };
+        let mut page = MenuPage { layout: MenuLayout::Paint, icon: 10, title: "PAINT SHOP".into(), rows: vec![row(-1)], select: 0, ..MenuPage::default() };
+        for _ in 0..45 { menu.show(&page); menu.movie.player.tick(); }
+        let mut o = 0i32;
+        for sel in (0..n).chain((0..n).rev()) {
+            if sel == 0 { o = 0; }
+            if sel > 5 - o { o = sel - 5; }
+            if sel >= o + 5 { o += 1; }
+            if sel < o && o > 0 { o -= 1; }
+            page.rows = vec![row(sel)];
+            for _ in 0..4 { menu.show(&page); menu.movie.player.tick(); }
+            let p = &mut menu.movie.player;
+            let off = match p.get_path("menu.elements.0.offset") { Some(Value::Int(v)) => v as f32, Some(Value::Float(v)) => v, v => panic!("offset {v:?}") };
+            assert_eq!(off as i32, o, "offset at select {sel}");
+            assert!((0..5).contains(&(sel - o)), "cursor off the strip at select {sel}");
+            let x = ["screen.menu.swatches01.swatch_cursor", "screen.swatches01.swatch_cursor", "screen.menu.slotsA.swatches01.swatch_cursor"].iter().find_map(|q| p.find(q)).and_then(|i| p.inst(i)).map(|i| i.x).expect("cursor");
+            assert!((x - 23.1 * (sel - o) as f32).abs() < 0.01, "cursor x {x} at select {sel}");
         }
     }
 

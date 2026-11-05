@@ -8253,14 +8253,22 @@ impl Game {
                                     }
                                     "PAINT TYPE" => r.value = choice_list((self.paint_type.clamp(1, 5) - 1) as usize, &types),
                                     "FADE TYPE" => r.value = choice_list(self.paint_fade.min(4) as usize, &fades),
-                                    "PRIMARY COLOR" => r.value = swatch_value(primary_rgb, if open == Some(prow) { (self.color_idx % strip.len()) as i32 } else { -1 }, &strip),
+                                    // (the open row's own square keeps the colour the car had when the strip opened - the car shows the one under
+                                    // the cursor: the original's captures, work/ui/ref t38 / t39)
+                                    "PRIMARY COLOR" => {
+                                        let rgb = match self.paint_open {
+                                            Some((row, idx, hsv)) if row == prow => hsv.map_or(strip[idx % strip.len()], |h| { let c = paint_hsv_to_rgb(h); rgb_of([c[0], c[1], c[2], 1.0]) }),
+                                            _ => primary_rgb,
+                                        };
+                                        r.value = swatch_value(rgb, if open == Some(prow) { (self.color_idx % strip.len()) as i32 } else { -1 }, &strip);
+                                    }
                                     "SECONDARY COLOR" => {
                                         // (the second colour is listed with a fade only)
                                         if self.paint_fade == 0 {
                                             continue;
                                         }
                                         r.enabled = true;
-                                        r.value = swatch_value(strip[self.paint_b % strip.len()], if open == Some(srow) { (self.paint_b % strip.len()) as i32 } else { -1 }, &strip);
+                                        r.value = swatch_value(strip[self.paint_open.filter(|o| o.0 == srow).map_or(self.paint_b, |o| o.1) % strip.len()], if open == Some(srow) { (self.paint_b % strip.len()) as i32 } else { -1 }, &strip);
                                     }
                                     _ => {}
                                 }
@@ -8315,13 +8323,15 @@ impl Game {
                             let mut out = vec![row(st("G_IntNeon", "INTERIOR NEON"), choice_list(self.int_neon as usize, &[st("G_Off", "OFF"), st("G_On", "ON")]))];
                             for (k, (key, d)) in labels.iter().enumerate() {
                                 let idx = self.int_colors[k] % strip.len();
-                                let rgb = self.slot_hsv[k].map_or(strip[idx], |h| { let c = paint_hsv_to_rgb(h); rgb_of([c[0], c[1], c[2], 1.0]) });
+                                let shown = self.int_open.filter(|o| o.0 == k).map_or(idx, |o| o.1 % strip.len());
+                                let rgb = self.slot_hsv[k].map_or(strip[shown], |h| { let c = paint_hsv_to_rgb(h); rgb_of([c[0], c[1], c[2], 1.0]) });
                                 out.push(row(st(key, d), swatch_value(rgb, if self.int_open.map(|o| o.0) == Some(k) { idx as i32 } else { -1 }, &strip)));
                             }
                             // (INTERIOR COLOR D, E: colour slots 12, 13 of ColorsInt.sc.xml - the vehicle's own, `mc4`)
                             for (k, (key, d)) in [("G_IntDColor", "INTERIOR COLOR D"), ("G_IntEColor", "INTERIOR COLOR E")].iter().enumerate() {
                                 let idx = self.car_x.int_de_idx[k].0 % strip.len();
-                                let rgb = self.car_x.int_de_hsv[k].map_or(strip[idx], |h| { let c = paint_hsv_to_rgb(h); rgb_of([c[0], c[1], c[2], 1.0]) });
+                                let shown = self.int_open.filter(|o| o.0 == 9 + k).map_or(idx, |o| o.1 % strip.len());
+                                let rgb = self.car_x.int_de_hsv[k].map_or(strip[shown], |h| { let c = paint_hsv_to_rgb(h); rgb_of([c[0], c[1], c[2], 1.0]) });
                                 out.push(row(st(key, d), swatch_value(rgb, if self.int_open.map(|o| o.0) == Some(9 + k) { idx as i32 } else { -1 }, &strip)));
                             }
                             rows = out;
@@ -8340,7 +8350,8 @@ impl Game {
                             }
                             for (k, (key, d)) in [("G_Rim1Color", "SPOKE A"), ("G_Rim2Color", "SPOKE B"), ("G_Rim3Color", "LIP")].iter().enumerate() {
                                 let idx = self.rim_cols[k] % strip.len();
-                                let rgb = self.slot_hsv[6 + k].map_or(strip[idx], |h| { let c = paint_hsv_to_rgb(h); rgb_of([c[0], c[1], c[2], 1.0]) });
+                                let shown = self.int_open.filter(|o| o.0 == 6 + k).map_or(idx, |o| o.1 % strip.len());
+                                let rgb = self.slot_hsv[6 + k].map_or(strip[shown], |h| { let c = paint_hsv_to_rgb(h); rgb_of([c[0], c[1], c[2], 1.0]) });
                                 out.push(row(st(key, d), swatch_value(rgb, if self.int_open.map(|o| o.0) == Some(6 + k) { idx as i32 } else { -1 }, &strip)));
                             }
                             rows = out;
@@ -8386,6 +8397,9 @@ impl Game {
                         // LICENSE PLATES (template 45, reference `g_lp_0`): the seven characters, the one
                         // under the cursor lit
                         let plate_layout = self.plate_edit.map(|(cur, idx)| {
+                            // (the state's seven children Letter1..Letter7 are the menu's elements, Main.sc.xml
+                            // `License_Plate`: the cursor runs over all seven - `menu.select` is kept within the rows)
+                            rows = (0..7).map(|_| crate::flash_ui::MenuRow { label: String::new(), value: String::new(), enabled: true, part: None }).collect();
                             flash_sel = cur;
                             MenuLayout::LicensePlate { chars: idx }
                         });
