@@ -2417,7 +2417,21 @@ impl Game {
         let file = crate::modcars::setup_file(&car).unwrap_or_else(|| std::path::Path::new(&self.data_dir).join("resources/vehicle/configs").join(format!("{car}.xcc")));
         let mut cfg = std::fs::read(file).ok()?;
         cfg.get_mut(0x83a..0x842)?.copy_from_slice(&self.car_dims(i));
+        // (and the record's wide body kit, +2203, which the garage's BODY part sets - F-20885's WideBodyKit; the fit takes
+        // the fenders' wide edge from it)
+        if let Some(w) = self.car_wide(i) {
+            *cfg.get_mut(2203)? = w;
+        }
         Some(cfg)
+    }
+
+    /// Car `i`'s wide body kit as its record holds it (`CarConfig::body`, the record's +2203): the vehicle in use's from
+    /// `cfg`, another's from `cfgs`; None for a vehicle the port keeps no parts for.
+    pub fn car_wide(&self, i: usize) -> Option<u8> {
+        if i == self.current_car {
+            return Some(self.cfg.body.min(255) as u8);
+        }
+        self.cfgs.get(&self.dir_name(i).to_ascii_lowercase()).map(|c| c.body.min(255) as u8)
     }
 
     /// Each vehicle has its own paint: when the vehicle in use changes, the paint of the one
@@ -15273,6 +15287,24 @@ mod ui_original_tests;
 #[cfg(test)]
 mod tests {
     use super::Game;
+
+    /// The player's set-up carries the record's wide body kit (+2203) the BODY part sets, so the wheels stand at the
+    /// wide fenders (WheelFit::fit takes FenderEdge[axle][+2203]); a car with no parts kept takes its `.xcc`'s.
+    #[test]
+    fn setup_takes_the_wide_body_kit() {
+        let dirs = ["vp_aud_r8_08", "vp_lam_gallardo_06", "vp_frd_mustang_06"].map(|n| std::path::PathBuf::from("v").join(n)).to_vec();
+        let mut g = Game::new(dirs, 0);
+        g.cfg.body = 1;
+        g.cfgs.insert("vp_lam_gallardo_06".into(), crate::vehicle_model::CarConfig::default());
+        assert_eq!((g.car_wide(0), g.car_wide(1), g.car_wide(2)), (Some(1), Some(0), None));
+        let data = std::path::Path::new("D:/MCLA/extracted/cache");
+        if data.join("resources/vehicle/configs/vp_aud_r8_08.xcc").exists() {
+            g.data_dir = data.to_string_lossy().into();
+            assert_eq!(g.car_setup_cfg(0).unwrap()[2203], 1);
+            g.cfg.body = 0;
+            assert_eq!(g.car_setup_cfg(0).unwrap()[2203], 0);
+        }
+    }
 
     /// MODS.md M-8: with `hide_empty_parts` a part kind or a list of XPARTS stays only when the car has it; other rows stay.
     #[test]
