@@ -257,8 +257,6 @@ const AHEAD_MAX: f32 = 2.5;
 /// mask 0x800), 1 around the walker, 2 ahead of it. The hits only last that frame.
 const AWARE_CHANCE: [(f32, f32); 2] = [(25.0, 0.4), (85.0, 0.15)];
 const AWARE_CHANCE_FAR: f32 = 0.1;
-/// Sidestep: 0.25 s, the push tried straight and 45 degrees either way (table 0x820da334).
-const SLIDE_TIME: f32 = 0.25;
 /// Clip blends are 8 frames (0x82830878).
 const BLEND_S: f32 = 8.0 / 30.0;
 /// Turning on the spot: at most pi/4 per 8 frames, the bits the original's static initialiser F-59108 stores
@@ -471,6 +469,10 @@ struct Ground {
     face: Vec3,
     /// this frame's target facing (the rail's, or the push's while sliding aside)
     t_face: Vec3,
+    /// sphere 1 (F-59837 with k = 1): its centre (+48, T's place at the draw) and pending flag (+20); tested at the next
+    /// manager frame's start, read by that frame's sidestep (F-26402)
+    centre1: Vec3,
+    pending1: bool,
 }
 
 /// F-49074 for a walker on the mesh, once per update of the port, after its behaviour step (`p.pos`, `p.ground.t_face`:
@@ -482,7 +484,7 @@ struct Ground {
 /// the centre is T's place) and reads sphere 0. So a draw is read once, in the next frame, against the centre of the
 /// draw. The port's update may cover no manager frame (no test, no ring step) or several (one test; the ring stepped
 /// once a frame).
-fn walker_ground(p: &mut Ped, col: &WorldCollider, cur: Vec3, frames: u32, draw0: bool, dt: f32) {
+fn walker_ground(p: &mut Ped, col: &WorldCollider, cur: Vec3, frames: u32, draw0: bool, draw1: bool, dt: f32) {
     let clip = matches!(p.state, State::Evade(_) | State::Angry(_) | State::Turn(_));
     let g = &mut p.ground;
     if clip {
@@ -503,6 +505,11 @@ fn walker_ground(p: &mut Ped, col: &WorldCollider, cur: Vec3, frames: u32, draw0
     if draw0 {
         g.centre = t_place;
         g.pending = true;
+    }
+    // (sphere 1 drawn by the same F-59837: T's place, radius 0.667, mask 0x103A)
+    if draw1 {
+        g.centre1 = t_place;
+        g.pending1 = true;
     }
     let pick = ground_pick(&g.hits, g.centre);
     g.hits.clear();
@@ -1253,6 +1260,216 @@ pub(crate) fn sidestep(m: &mut Avoid, w: &DodgeWalker, fwd: Vec3, slots: &[SideS
     false
 }
 
+// ---- The walker's sphere 1, the sidestep's contact fill (decode and evidence: docs/reference/people/car_dodge_rule.md
+// section 12; tools/sphere_fill_reference.py). F-59837 draws it (centre T's place, radius 0.667, include mask 0x103A,
+// material mask 512 << the material manager's flag shift, the walker's own instance left out); at the next frame's start
+// F-78763 clears its 12 slots (F-96720) and queues the test (F-66549), which a worker job runs (F-52180 -> F-49353):
+// every level object whose type flags meet 0x103A, in the level's cull order, is tested against its bound (F-75667;
+// a walker's capsule: F-15615 case 1), each contact allocated a slot (F-89028: the 12 deepest kept) and the object's
+// pending slots put into world space (F-77105 / F-57315). The sidestep F-26402 reads the slots in that frame.
+
+/// The walker's capsule bound (F-37628 -> F-25220 / F-77704): radius 0.3, length 0x3F999999 (the image's 1.2 less one
+/// step), centroid (0, 0.9, 0); its material (+208, F-60139) is 0.
+const CAPSULE_R: u32 = 0x3E99_999A;
+const CAPSULE_LEN: u32 = 0x3F99_9999;
+const CAPSULE_MID_Y: u32 = 0x3F66_6666;
+/// The walker's archetype type flags (0x20: what sphere 1's mask 0x103A selects of walkers).
+pub(crate) const WALKER_TYPE: u32 = 0x20;
+/// F-15615's guard on the squared distance before it divides (0x82008550) and its normal for a centre on the axis
+/// (0x827D8470: +x).
+const FILL_EPS: u32 = 0x2B8C_BCCC;
+/// The slots of a sphere (F-38096's max 12).
+pub(crate) const FILL_SLOTS: usize = 12;
+
+/// One hit slot (a 96-byte record, F-15615 / F-89028): the object (`obj`, the caller's index), +16 the contact, +32 the
+/// contact normal, +48 the bound's normal (the same for a capsule), +68 the depth, +76 the bound's part (capsule: 0 the
+/// bottom cap, 1 the top, 2 the side), +72 the material, +80 depth < radius.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct FillHit {
+    pub obj: usize,
+    pub pos: Vec3,
+    pub n: Vec3,
+    pub n2: Vec3,
+    pub depth: f32,
+    pub part: u16,
+    pub material: u32,
+    pub inside: bool,
+}
+
+/// A level object as the sphere test sees it: its instance matrix (rows and place, inst+16) and its capsule bound.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FillCapsule {
+    pub obj: usize,
+    pub rows: [Vec3; 3],
+    pub pos: Vec3,
+    pub r: f32,
+    pub len: f32,
+    pub mid: Vec3,
+    pub material: u32,
+}
+
+impl FillCapsule {
+    /// A walker's capsule at its instance matrix.
+    pub(crate) fn walker(obj: usize, rows: [Vec3; 3], pos: Vec3) -> FillCapsule {
+        let mid = Vec3::new(0.0, f32::from_bits(CAPSULE_MID_Y), 0.0);
+        FillCapsule { obj, rows, pos, r: f32::from_bits(CAPSULE_R), len: f32::from_bits(CAPSULE_LEN), mid, material: 0 }
+    }
+}
+
+/// The shape test's result list (F-96489 / F-16848 set it up): the slots, the committed count (+44), the pending count
+/// (+52) and slots (+64 bits), and the highest / lowest score held (+80 / +84).
+#[derive(Clone, Debug)]
+pub(crate) struct FillList {
+    pub slots: Vec<Option<FillHit>>,
+    done: usize,
+    pending: usize,
+    pend: u32,
+    hi: f32,
+    lo: f32,
+}
+
+impl FillList {
+    pub(crate) fn new(max: usize) -> FillList {
+        FillList { slots: vec![None; max], done: 0, pending: 0, pend: 0, hi: -f32::MAX, lo: f32::MAX }
+    }
+
+    /// F-89028: a slot for a contact of `depth` (the sphere's radius `cap`) at `at`, or none. Its score is the depth, or
+    /// cap - depth beyond the cap. A free slot while there is one; else the slot with the lowest score is overwritten
+    /// when the new score beats the lowest held (+84), which then becomes the second lowest of the scan (the scan's
+    /// second starts at the highest, +80; a list of one keeps the new score).
+    fn alloc(&mut self, depth: f32, cap: f32, at: Vec3) -> Option<usize> {
+        let max = self.slots.len();
+        if depth <= 0.0 {
+            return None;
+        }
+        // the point within the query's box (-FLT_MAX .. FLT_MAX: rejects NaN, and a point past it in all three)
+        let ge = at.x >= -f32::MAX && at.y >= -f32::MAX && at.z >= -f32::MAX;
+        if !ge || (at.x > f32::MAX && at.y > f32::MAX && at.z > f32::MAX) {
+            return None;
+        }
+        let score = if depth > cap { cap - depth } else { depth };
+        let n = self.done + self.pending;
+        if n < max {
+            self.pend |= 1 << n;
+            self.hi = if score - self.hi >= 0.0 { score } else { self.hi };
+            self.pending += 1;
+            self.lo = if score - self.lo >= 0.0 { self.lo } else { score };
+            return Some(n);
+        }
+        if score <= self.lo {
+            return None;
+        }
+        let (mut min, mut second, mut k) = (f32::MAX, self.hi, 0);
+        for (j, s) in self.slots.iter().enumerate() {
+            let d = s.map_or(0.0, |s| s.depth);
+            let d = if d > cap { cap - d } else { d };
+            if !(d >= min) {
+                second = min;
+                k = j;
+                min = d;
+            } else if !(d >= second) {
+                second = d;
+            }
+        }
+        if self.pend & (1 << k) == 0 {
+            self.pend |= 1 << k;
+            self.pending += 1;
+            // (+72's bit is never set for this query: a committed slot counts in +44)
+            self.done -= 1;
+        }
+        if max <= 1 {
+            self.hi = score;
+        }
+        self.lo = if max > 1 { second } else { score };
+        Some(k)
+    }
+
+    /// F-77105 (not counting only): the pending slots put into world space by the object's matrix (F-57315: the contact
+    /// x rows + place as SSE dot products of four, the normals x rows of three), then committed.
+    fn commit(&mut self, rows: &[Vec3; 3], pos: Vec3) {
+        let cols = [Vec3::new(rows[0].x, rows[1].x, rows[2].x), Vec3::new(rows[0].y, rows[1].y, rows[2].y), Vec3::new(rows[0].z, rows[1].z, rows[2].z)];
+        let place = [pos.x, pos.y, pos.z];
+        // dpps 0xFF of (x, y, z, 1) with (c0, c1, c2, place): (1 place + z c2) + (y c1 + x c0), each step rounded, flushed
+        let dot4 = |p: Vec3, c: Vec3, w: f32| {
+            let q = |a: f32, b: f32| vftz(vftz(a) * vftz(b));
+            vftz(vftz(q(1.0, w) + q(p.z, c.z)) + vftz(q(p.y, c.y) + q(p.x, c.x)))
+        };
+        for (i, s) in self.slots.iter_mut().enumerate() {
+            if self.pend & (1 << i) == 0 {
+                continue;
+            }
+            let Some(h) = s else { continue };
+            h.pos = Vec3::new(dot4(h.pos, cols[0], place[0]), dot4(h.pos, cols[1], place[1]), dot4(h.pos, cols[2], place[2]));
+            h.n = Vec3::new(vdot3(h.n, cols[0]), vdot3(h.n, cols[1]), vdot3(h.n, cols[2]));
+            h.n2 = Vec3::new(vdot3(h.n2, cols[0]), vdot3(h.n2, cols[1]), vdot3(h.n2, cols[2]));
+        }
+        let max = self.slots.len().max(1);
+        self.done = max.min(self.pending + self.done);
+        self.pending = 0;
+        self.pend = 0;
+    }
+}
+
+/// F-15615 for a capsule (case 1), in the bound's frame: `c` the sphere's centre there (F-51913), `big_r` its radius.
+/// d = c - centroid; the nearest axis point clamps d.y to +- half the length; within r + R of it a contact: normal =
+/// (d.x, d.y - clamp, d.z) normalised (vrefp and a Newton step; +x when the distance is 1e-12 or less), depth = r + R -
+/// distance, the contact c - n (R - depth), the part 1 above the axis' top, 2 along it, 0 below. The bound's material
+/// against the query's material mask (+88) drops it; else it takes a slot (F-89028). Returns whether depth > 0.
+fn capsule_hit(list: &mut FillList, c: Vec3, big_r: f32, cap: &FillCapsule, material_mask: u32) -> bool {
+    use crate::physics::exact::fma;
+    let d = vsub(c, cap.mid);
+    let rc = cap.r;
+    let h = cap.len * 0.5;
+    let reach = rc + big_r;
+    let lo = if d.y - -h >= 0.0 { d.y } else { -h };
+    let yc = if lo - h >= 0.0 { h } else { lo };
+    let dyr = d.y - yc;
+    let d2 = fma(d.z, d.z, fma(dyr, dyr, d.x * d.x));
+    let (depth, n, part) = if d2 > reach * reach {
+        (-1.0f32, d, 0u16)
+    } else {
+        let (dist, n) = if d2 > f32::from_bits(FILL_EPS) {
+            let dist = d2.sqrt();
+            // vrefp, then y + y (1 - y dist) (vnmsubfp, vmaddfp)
+            let y = vftz(1.0 / vftz(dist));
+            let k = -vftz(vftz(y * dist) - 1.0);
+            let inv = vftz(vftz(y * k) + y);
+            (dist, vmul(Vec3::new(d.x, dyr, d.z), Vec3::splat(inv)))
+        } else {
+            (0.0, Vec3::X)
+        };
+        let part = if !(d.y < h) { 1 } else if d.y > -h { 2 } else { 0 };
+        (reach - dist, n, part)
+    };
+    if cap.material & material_mask != 0 {
+        return false;
+    }
+    let at = vnmsub(n, big_r - depth, c);
+    if let Some(k) = list.alloc(depth, big_r, at) {
+        list.slots[k] = Some(FillHit { obj: cap.obj, pos: at, n, n2: n, depth, part, material: cap.material, inside: depth < big_r });
+    }
+    depth > 0.0
+}
+
+/// The sphere test (F-49353's loop for one query) over `objs` in the order given (the original's: the level's cull order,
+/// not decoded): each object's centre in its frame (F-51913: the dot products of centre - place with its rows), the
+/// bound test (F-75667 -> F-15615), the pending slots committed in world space (F-77105). Returns the 12 slots.
+pub(crate) fn sphere_fill(centre: Vec3, r: f32, objs: &[FillCapsule], material_mask: u32) -> Vec<Option<FillHit>> {
+    let mut list = FillList::new(FILL_SLOTS);
+    for o in objs {
+        let c = vlocal(&o.rows, vsub(centre, o.pos));
+        if capsule_hit(&mut list, c, r, o, material_mask) {
+            list.commit(&o.rows, o.pos);
+        }
+    }
+    list.slots
+}
+
+/// The sidestep's slots (F-26402's view) of a fill: the object's type flags (`flags_of`), the normal (+32), the depth.
+pub(crate) fn side_slots(hits: &[Option<FillHit>], flags_of: impl Fn(usize) -> u32) -> Vec<SideSlot> {
+    hits.iter().map(|h| h.map_or_else(SideSlot::default, |h| SideSlot { flags: flags_of(h.obj), n: h.n, depth: h.depth })).collect()
+}
+
 /// F-94626 (the walker's pose) in its one-off clip state (3): the turn taken off the clip's yaw correction M+252 this
 /// frame (clamped to +- the turn rate x dt by two fsel) and the move along M+128 taken off the stretch M+256 (its positive
 /// part x dt / max(T, dt), T = M+236). Returns ((the yaw left, the turn), (the stretch left, the move)); the walker's
@@ -1525,7 +1742,7 @@ pub(crate) struct DodgeRng {
 /// carries it. At the slide's end M+248 and bit 0x4 are cleared and the clip ends (the port's after-dodge: face the car,
 /// angry). Returns true while a dodge's clip plays.
 #[allow(clippy::too_many_arguments)]
-fn dodge_frame(p: &mut Ped, ty: &PedType, threats: &[Threat], col: Option<&WorldCollider>, nav: Option<&NavSys>, dt: f32, rand: &mut dyn FnMut() -> f32, rng: &mut DodgeRng, evades: &mut u32, speech: &mut Vec<Speech>) -> bool {
+fn dodge_frame(p: &mut Ped, ty: &PedType, threats: &[Threat], side: &[SideSlot], col: Option<&WorldCollider>, nav: Option<&NavSys>, dt: f32, rand: &mut dyn FnMut() -> f32, rng: &mut DodgeRng, evades: &mut u32, speech: &mut Vec<Speech>) -> bool {
     let m = &mut p.dodge;
     // M+260 bit 0x2: a clip of the walker's own (the port's angry and Pivot clips)
     m.flags = (m.flags & !2) | if matches!(p.state, State::Angry(_) | State::Turn(_)) { 2 } else { 0 };
@@ -1535,6 +1752,10 @@ fn dodge_frame(p: &mut Ped, ty: &PedType, threats: &[Threat], col: Option<&World
     let mut world = PedDodgeWorld { col, nav, evade: &ty.evade, stop: false, say: None, dropped: false };
     let re = m.clip.is_some() && m.flags & 2 == 0;
     car_dodge(m, &w, &cars, dt, &ty.avoid, &durs, &mut world, &mut rng.speech, &mut rng.pick);
+    // the sidestep F-26402 (F-97113's next call): sphere 1's slots of this frame; the walker's forward F-50349 = 0 - row 2
+    if !side.is_empty() {
+        sidestep(m, &w, vneg(w.rows[2]), side, &ty.avoid, &durs, &mut world, &mut rng.speech, &mut rng.pick);
+    }
     if world.stop {
         p.stop = stop_time(ty.idle.anim.duration, rand);
         p.stops += 1;
@@ -1644,14 +1865,14 @@ fn loco_clip(p: &mut Ped, ty: &PedType, st: u32, flags: u32, slide: f32) -> f32 
 /// reversed path (F-94431). Moves `p` and sets its state; returns the walk clip's
 /// playback rate.
 #[allow(clippy::too_many_arguments)]
-fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[Obst], col: Option<&WorldCollider>, nav: Option<&NavSys>, threats: &[Threat], due: u8, dt: f32, rand: &mut dyn FnMut() -> f32, rng: &mut DodgeRng, evades: &mut u32, speech: &mut Vec<Speech>) -> f32 {
+fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[Obst], col: Option<&WorldCollider>, nav: Option<&NavSys>, threats: &[Threat], side: &[SideSlot], due: u8, dt: f32, rand: &mut dyn FnMut() -> f32, rng: &mut DodgeRng, evades: &mut u32, speech: &mut Vec<Speech>) -> f32 {
     // (the behaviour's facing: the rail's, kept apart from the drawn one, which is the mean of the last 8 frames')
     let fwd = if p.ground.face != Vec3::ZERO { p.ground.face } else { flat(p.rot * -Vec3::Z).normalize_or(Vec3::Z) };
     p.ground.t_face = fwd;
     let set_state = set_clip_state;
     p.hold = (p.hold - dt).max(0.0);
     // the car dodge, every frame (F-15352 from F-97113, no gate of its own): a dodge's clip slides the walker here
-    if dodge_frame(p, ty, threats, col, nav, dt, rand, rng, evades, speech) {
+    if dodge_frame(p, ty, threats, side, col, nav, dt, rand, rng, evades, speech) {
         return 1.0;
     }
     // clips playing (angry, turn): the caller moves the walker by their root
@@ -1665,7 +1886,7 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
     }
     // the awareness spheres re-queried this frame (`due`: bit 1 around the walker, bit 2
     // ahead of it, 0 .. 2.5 m drawn anew); their hits are acted on in the same frame
-    let (query_around, query) = (due & 2 != 0, due & 4 != 0);
+    let query = due & 4 != 0;
     let ahead = p.pos + fwd * (AHEAD_MAX * rand());
     // sliding aside
     if let Some((a, b, t0, len)) = p.slide {
@@ -1709,26 +1930,8 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
         }
         expired = true;
     }
-    // something touching the walker: sidestep, which also drops the path
-    if let Some((o, who)) = sphere_hit(p.pos, AWARE_RADIUS, me, peds, props, false).filter(|_| query_around) {
-        let rel = flat(p.pos - o.0);
-        let dist = box_dist(&o, p.pos);
-        if std::env::var("MCLA_PED_DUMP").is_ok() {
-            log::info!("ped touch {} {} depth {:.2}", p.key.1, if who == usize::MAX { "prop" } else { "ped" }, AWARE_RADIUS - dist);
-        }
-        let (n, depth) = if rel.length() > 1e-3 && dist > 1e-3 { (rel.normalize(), AWARE_RADIUS - dist) } else { (fwd, PED_RADIUS) };
-        for a in [0.0f32, -std::f32::consts::FRAC_PI_4, std::f32::consts::FRAC_PI_4] {
-            let d = rotate_y(n, a);
-            let off = d * (depth + 0.05) / a.cos();
-            if way_clear(p.pos, p.pos + off, PED_RADIUS, me, usize::MAX, None, peds, props, col, true, true) {
-                // (the heading stays: the recorded walks keep their line through sidesteps)
-                p.slide = Some((p.pos, p.pos + off, 0.0, SLIDE_TIME));
-                p.rail = None;
-                p.path.clear();
-                return 1.0;
-            }
-        }
-    }
+    // (touching something: the sidestep F-26402 on sphere 1's slots, in `dodge_frame` after the car dodge; a slide it
+    // starts is carried by the slide above)
     // something ahead (F-10083, run every frame the walker is not waiting, on a detour
     // rail too): a rail round it, or stop. The candidates (F-92334): the corner of the
     // box furthest left as seen from the walker, pushed out to the left by half the walker's
@@ -2883,6 +3086,10 @@ impl Peds {
         let mut near: Vec<(Vec3, f32)> = Vec::new();
         let mut boxes: Vec<Obst> = Vec::new();
         let peds_pos: Vec<Vec3> = self.list.iter().map(|p| p.pos).collect();
+        // the walkers' capsules in the level at the frame's start (their instance matrices: the drawn rotation and place),
+        // what sphere 1's test meets (F-49353 at the next frame's start; the level's cull order is not decoded: list order)
+        let caps: Vec<FillCapsule> =
+            self.list.iter().enumerate().map(|(k, p)| FillCapsule::walker(k, [p.rot * Vec3::X, p.rot * Vec3::Y, p.rot * Vec3::Z], p.pos)).collect();
         let has_mesh = self.mesh.is_some();
         for i in 0..self.list.len() {
             let Some(Some(ty)) = self.types.get(&self.list[i].ty) else { continue };
@@ -2896,7 +3103,7 @@ impl Peds {
                 p.blend = (p.blend - dt).max(0.0);
                 // (its dodge: the same F-15352; a clip slides it, `dodge_frame`)
                 if p.state == State::Idle || matches!(p.state, State::Evade(_)) {
-                    dodge_frame(p, ty, threats, Some(col), Some(nav), dt, &mut rand, &mut self.dodge_rng, &mut self.evades, &mut self.speech);
+                    dodge_frame(p, ty, threats, &[], Some(col), Some(nav), dt, &mut rand, &mut self.dodge_rng, &mut self.evades, &mut self.speech);
                 }
                 let t0 = p.time;
                 p.time += dt;
@@ -2929,6 +3136,15 @@ impl Peds {
             let cur = p.pos;
             let mut due = 0u8;
             let frames = self.frame_no.wrapping_sub(frame0);
+            // sphere 1 (F-78763 at a new manager frame's start: the slots cleared, a pending draw tested - F-66549 / F-49353 -
+            // the walker's own instance left out; its capsule material 0 never meets the material mask)
+            let mut side: Vec<SideSlot> = Vec::new();
+            if frames > 0 && p.ground.pending1 {
+                p.ground.pending1 = false;
+                let c = p.ground.centre1;
+                let near: Vec<FillCapsule> = caps.iter().filter(|o| o.obj != i && o.pos.distance_squared(c) < 9.0).copied().collect();
+                side = side_slots(&sphere_fill(c, AWARE_RADIUS, &near, 0), |_| WALKER_TYPE);
+            }
             if on_mesh {
                 boxes.clear();
                 obstacles(p.pos, 4.0, &mut boxes);
@@ -2944,7 +3160,7 @@ impl Peds {
                         due |= 1 << (if clip { n & 1 } else { n % 3 });
                     }
                 }
-                rate = sidewalk_step(p, ty, i, &peds_pos, &boxes, Some(col), Some(nav), threats, due, dt, &mut rand, &mut self.dodge_rng, &mut self.evades, &mut self.speech);
+                rate = sidewalk_step(p, ty, i, &peds_pos, &boxes, Some(col), Some(nav), threats, &side, due, dt, &mut rand, &mut self.dodge_rng, &mut self.evades, &mut self.speech);
             }
             // a car about to pass too close?
             if !on_mesh && matches!(p.state, State::Walk | State::Idle) && p.calm <= 0.0 && !ty.evade.is_empty() {
@@ -3257,7 +3473,7 @@ impl Peds {
                     }
                 }
                 // the ground, U and the drawn matrix (F-49074)
-                walker_ground(p, col, cur, frames, due & 1 != 0, dt);
+                walker_ground(p, col, cur, frames, due & 1 != 0, due & 2 != 0, dt);
             } else if let Some(g) = col.ground(p.pos, 0.7, 1.5) {
                 // (kerb walkers, the port's own: eased onto the collision)
                 p.pos.y += (g.point.y - p.pos.y) * (dt * 12.0).min(1.0);
@@ -3895,6 +4111,56 @@ mod tests {
     /// and the slide start F-83234 inside it, the avoidance part's flags 0x2 / 0x4 set or not and an evade clip set or not;
     /// F-29590 called on its own (zero and steep directions). Every sweep (its words, in order), the avoidance part's words
     /// and the two MWCs must be equal.
+    /// The walkers' sphere-1 fill against the original's code run offline (tools/sphere_fill_reference.py: F-38096,
+    /// F-51913, F-15615 on capsule bounds, F-77105 / F-57315 / F-89028 inside, F-60139): every word of the 12 slots and the
+    /// list's counts and scores equal on 3,000 cases (274 with the list full).
+    #[test]
+    fn sphere_fill_matches_the_original() {
+        let h = |t: &str| u32::from_str_radix(&t.replace('_', ""), 16).unwrap();
+        let (mut cases, mut full, mut slots) = (0, 0, 0);
+        for l in include_str!("testdata/sphere_fill_ref.txt").lines() {
+            let (ci, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<u32> = ci.split(' ').map(h).collect();
+            let want: Vec<u32> = o.split(' ').map(h).collect();
+            let f = |i: usize| f32::from_bits(c[i]);
+            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let objs: Vec<FillCapsule> = (0..c[5] as usize)
+                .map(|k| {
+                    let o = 6 + 18 * k;
+                    FillCapsule { obj: k, rows: [v(o), v(o + 3), v(o + 6)], pos: v(o + 9), r: f(o + 12), len: f(o + 13), mid: v(o + 14), material: c[o + 17] }
+                })
+                .collect();
+            let mut list = FillList::new(FILL_SLOTS);
+            for o in &objs {
+                let lc = vlocal(&o.rows, vsub(v(0), o.pos));
+                if capsule_hit(&mut list, lc, f(3), o, c[4]) {
+                    list.commit(&o.rows, o.pos);
+                }
+            }
+            assert_eq!(sphere_fill(v(0), f(3), &objs, c[4]), list.slots);
+            let mut got = Vec::new();
+            let vw = |o: &mut Vec<u32>, v: Vec3| o.extend([v.x.to_bits(), v.y.to_bits(), v.z.to_bits()]);
+            for s in &list.slots {
+                match s {
+                    Some(s) => {
+                        got.push(s.obj as u32 + 1);
+                        vw(&mut got, s.pos);
+                        vw(&mut got, s.n);
+                        vw(&mut got, s.n2);
+                        got.extend([0, s.depth.to_bits(), s.material, s.part as u32, 2, s.inside as u32, 0]);
+                        slots += 1;
+                    }
+                    None => got.extend([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFFFF, 0, 0, 0]),
+                }
+            }
+            got.extend([list.done as u32, list.pending as u32, list.hi.to_bits(), list.lo.to_bits()]);
+            assert_eq!(got, want, "{l}");
+            full += list.slots.iter().all(|s| s.is_some()) as usize;
+            cases += 1;
+        }
+        assert_eq!((cases, full, slots), (3000, 274, 12276));
+    }
+
     #[test]
     fn sidestep_matches_the_original() {
         let h = |t: &str| u32::from_str_radix(&t.replace('_', ""), 16).unwrap();
@@ -4448,6 +4714,8 @@ mod tests {
         let mut own_last: HashMap<String, bool> = HashMap::new();
         let mut free_eq_ys = 0;
         let mut free_side = 0;
+        let mut free_fill = 0;
+        let mut side_cmp: Vec<String> = Vec::new();
         let mut free_seen: std::collections::HashSet<String> = Default::default();
         let mut per_run: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
         for line in text.lines() {
@@ -4602,12 +4870,37 @@ mod tests {
             if trace {
                 eprintln!("TRACE {head}out port fl {:x} t {} len {} T {} | orig fl {:x} t {} len {} T {} | {:?}", fm.flags, fm.time, fm.len, fm.t, mo[65], f32::from_bits(mo[60]), f32::from_bits(mo[61]), f32::from_bits(mo[59]), world.bad);
             }
-            // F-26402 (the sidestep, after the threat in F-97113, when not sliding and no clip of its own plays): its contact
-            // slots are not recorded, so its F-83234 call is replayed from the recorded arguments (the slide start's
-            // sidestep path); a recorded sidestep the port's flags would not have run counts as a difference
+            // F-26402 (the sidestep, after the threat in F-97113, when not sliding and no clip of its own plays) on sphere 1's
+            // slots from the port's fill: the other walkers' capsules at their recorded matrices of this frame (I+128 at their
+            // F-15352 entry; nb=, work/traffic-detail/fix42/tools/mkcases42.py), the centre the walker's place (T's place of
+            // the draw is not recorded). The draws are random (the walker's own MWC, not recorded), so the fill runs at the
+            // updates whose sidestep the original recorded (a draw the frame before is then certain). A case file without
+            // the neighbours (fix37's) replays the recorded slide start instead.
             if let Some(s) = one("side") {
                 if fm.flags & 6 == 0 {
-                    slide_start(fm, &w, &items, &durs, None, rv(&s, 1), rv(&s, 4), f32::from_bits(s[7]), f32::from_bits(s[8]), true, &mut world, &mut s2, &mut p2);
+                    if one("me").is_some() {
+                        let caps: Vec<FillCapsule> = all("nb")
+                            .iter()
+                            .enumerate()
+                            .map(|(k, o)| FillCapsule::walker(k, [rv(o, 1), rv(o, 4), rv(o, 7)], rv(o, 10)))
+                            .collect();
+                        let hits = sphere_fill(w.p, AWARE_RADIUS, &caps, 0);
+                        let slots = side_slots(&hits, |_| WALKER_TYPE);
+                        let did = sidestep(fm, &w, vneg(w.rows[2]), &slots, &items, &durs, &mut world, &mut s2, &mut p2);
+                        let (rd, rn) = (rv(&s, 1), rv(&s, 4));
+                        let pd = fm.to - w.p;
+                        let k = hits.iter().position(|h| h.is_some());
+                        let n = k.and_then(|k| hits[k]).map_or(Vec3::ZERO, |h| h.n);
+                        side_cmp.push(format!(
+                            "{head}: slots {} sidestep {did} | push port {pd:.4} original {rd:.4} (|d| {:.4}) | n port {n:.4} original {rn:.4} (|d| {:.4})",
+                            hits.iter().filter(|h| h.is_some()).count(),
+                            if did { (pd - rd).length() } else { f32::NAN },
+                            (n - rn).length()
+                        ));
+                        free_fill += did as usize;
+                    } else {
+                        slide_start(fm, &w, &items, &durs, None, rv(&s, 1), rv(&s, 4), f32::from_bits(s[7]), f32::from_bits(s[8]), true, &mut world, &mut s2, &mut p2);
+                    }
                     free_side += 1;
                 }
             }
@@ -4636,7 +4929,10 @@ mod tests {
         let mut fb: Vec<_> = free_bad.into_iter().collect();
         fb.sort();
         eprintln!("free run, words differing: {fb:?}; {free_eq_ys} equal but for yaw / stretch");
-        eprintln!("free run: {free_side} sidesteps replayed from their recorded slide start");
+        eprintln!("free run: {free_side} recorded sidesteps reached with the flags clear, {free_fill} started by the port from its fill");
+        for l in side_cmp {
+            eprintln!("SIDE {l}");
+        }
         for l in free_first {
             eprintln!("FREE {l}");
         }
