@@ -2343,6 +2343,12 @@ pub fn within_xz(a: Vec3, b: Vec3, r: f32) -> bool {
     dz.mul_add(dz, dx * dx).sqrt() <= r
 }
 
+/// `F-31695`'s first test: the new cursor `p` within 1 m of the old one on x, y and z (the mask the start-up fills,
+/// `F-50173` / `F-33402`): `p + 1 >= old` and `old >= p - 1`, in single precision.
+pub fn cursor_dead_band(old: Vec3, p: Vec3) -> bool {
+    (0..3).all(|k| p[k] + 1.0 >= old[k] && old[k] >= p[k] - 1.0)
+}
+
 /// `F-66209`: `g` (outside the outline) pulled back to it along the move from `prev` - the point where the move
 /// leaves through the edge found by `F-37810`, slid along that edge by the move's remaining length times the cosine
 /// of its angle to the edge; at 0.99 of the edge or more it starts again from the edge's end (twice at most, then
@@ -2673,8 +2679,12 @@ impl NavCam {
         self.look = look;
     }
 
-    /// The cursor moved to `p` (`F-31695`): outside the outline it is pulled back from where it was.
+    /// The cursor moved to `p` (`F-31695`): within 1 m of where it was on every axis nothing happens; outside the outline
+    /// it is pulled back from where it was.
     pub fn move_cursor(&mut self, p: Vec3) {
+        if cursor_dead_band(self.cursor, p) {
+            return;
+        }
         self.cursor = if in_outline(p.x, p.z) { p } else { outline_pull_back(self.cursor, p) };
     }
 

@@ -761,6 +761,8 @@ struct App {
     /// the GPS camera of the last map frame (the exit flies from it)
     nav_rows: Option<hudmap::CamRows>,
     nav_free_moving: bool,
+    /// the left stick's clock on the GPS map: the cursor steps once a 30 Hz game frame (`F-62325`)
+    nav_stick_acc: f32,
     map_open: f32,
     map_vp: Option<glam::Mat4>,
     drivers: drivers::Drivers,
@@ -1312,6 +1314,7 @@ impl App {
             arcade_climb: None,
             nav_rows: None,
             nav_free_moving: false,
+            nav_stick_acc: 0.0,
             map_open: 0.0,
             map_vp: None,
             drivers: drivers::Drivers::default(),
@@ -9450,9 +9453,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if stick != glam::Vec2::ZERO && !fresh && !busy {
                     let before = self.nav.cursor;
                     self.nav.update(0.0, false, false, stick, aspect);
-                    let step = stick * 0.5 * self.nav.eye.y * dt;
                     self.nav.cursor = before;
-                    self.nav.move_cursor(before + Vec3::new(step.x, 0.0, step.y));
+                    // (`F-62325` steps once a 30 Hz game frame, 0.5 H x 1/30, from the cursor NM+448: a step within
+                    // 1 m on every axis is not taken - `F-31695`'s dead band - so the port steps on the same frames)
+                    let mut step = glam::Vec2::ZERO;
+                    self.nav_stick_acc += dt;
+                    while self.nav_stick_acc >= 1.0 / 30.0 {
+                        self.nav_stick_acc -= 1.0 / 30.0;
+                        let s = stick * 0.5 * self.nav.eye.y / 30.0;
+                        let c = self.nav.cursor;
+                        self.nav.move_cursor(c + Vec3::new(s.x, 0.0, s.y));
+                        step += s;
+                    }
                     // (at the screen's edge the view goes along - approx.: the inner 80 %; the
                     // game's limits NM+572..584 hold runtime values not read)
                     if let Some(q) = self.nav.ndc(self.nav.cursor, aspect) {
