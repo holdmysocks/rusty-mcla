@@ -4258,7 +4258,14 @@ impl App {
                             };
                             let c = &mut self.vehicles.cars[i];
                             if c.brain.is_none() {
-                                let tune = c.model.aitunes.as_ref().map(|a| Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&a.base, &a.mods, c.perf)));
+                                // (the car's calibration as F-55004 blends it with the sim tune: by the car's mod value, the signed
+                                // byte +60 of its record x 0.01, not below 0 - none for a car without one. The player's car has none
+                                // (its tune is built from its parts' stages, F-55728): the stock calibration. Recorded garage
+                                // drive-out, the R8 fully upgraded (work/physics2/r8rec dr.1.bin, the brain run on the original's
+                                // state of every frame): stock gives the original's pedals to 0.0085 on average and its steering to
+                                // 0.6 %; the upgrade fraction 1.0 the port had, 0.064 and 3.8 % short)
+                                let level = if c.is_player && c.stages.is_some() { 0.0 } else { c.perf };
+                                let tune = c.model.aitunes.as_ref().map(|a| Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&a.base, &a.mods, level)));
                                 c.brain = Some(cinecar::AnimBrain { accel: 0.0, curv: 0.0, tune, fresh: true, held: None });
                             }
                             let ev = &mut self.cine_events.1[k].1;
