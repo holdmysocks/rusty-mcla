@@ -89,19 +89,23 @@ pub struct CarModel {
     pub extra_variants: std::collections::HashSet<(String, usize)>,
     /// per batch: 0, or 1 / 2 for the left / right side window's glass (drawn with the car's
     /// window object, `CarInstance::window_bindings`), 3 hood, 4 trunk lid, 5 rear bumper, 6 front
-    /// bumper and intercooler (drawn with the car's part objects, `CarInstance::part_bindings`)
+    /// bumper, 20 intercooler (drawn with the car's part objects, `CarInstance::part_bindings`)
     pub batch_window: Vec<u8>,
     /// the side windows' clips (left, right), where the base fragment has them
     pub windows: [Option<vehicle_model::WindowClip>; 2],
+    /// the auto spoiler's clip (vehicle_model::BoneClip); its moved bones' meshes and parts are the groups 21 + j
+    pub spoiler: Option<Arc<vehicle_model::BoneClip>>,
     /// the police light bar's beacons (vehicle_model::CopLights)
     pub cop_lights: Option<Arc<vehicle_model::CopLights>>,
     /// the damage map's layout texture (`<car>_maxdamage`: width, height, RGBA8), when the car has it
     pub damage_layout: Option<Arc<(u32, u32, Vec<u8>)>>,
     /// the moving damage parts (`damageparts.rs`): the car's movement settings and bumper slot bones, and the bones
-    /// the hood (slot "hood", tag 33332) and the trunk lid (`trunk_0`) turn about, in car space
+    /// the fitted hood (its matrix index; else the slot's tag 33332) and the trunk lid (`trunk_0`) turn about, in car space
     pub part_rig: crate::damageparts::PartRig,
     pub hood_slot: Option<Mat4>,
     pub trunk_bone: Option<Mat4>,
+    /// the bones the fitted rear bumper, front bumper and intercooler hang on (their matrix index, F-14987), in car space
+    pub slot_bones: [Option<Mat4>; 3],
     /// where the exhaust and nitrous effects come out (car space, at most two, each with whether it moves with the
     /// rear bumper) and whether the first is a
     /// bone of the rear bumper (`CarAsset::fx_anchors`, `carfx.rs`)
@@ -359,6 +363,8 @@ pub struct CarInstance {
     pub window_bindings: Vec<ObjectBinding>,
     /// the side windows' controllers (left, right)
     pub windows: [WindowCtl; 2],
+    /// the auto spoiler's controller (D+864, the windows' class at rate 1.0)
+    pub spoiler: WindowCtl,
     /// the moving damage parts' objects (hood, trunk lid, rear bumper, front bumper): the body's, moved by
     /// the part; empty when the model has none of them
     pub part_bindings: Vec<ObjectBinding>,
@@ -503,6 +509,10 @@ pub struct AmbLamps {
     pub blink: f32,
     pub blink_wrap: f32,
     pub blink_on: f32,
+    /// an ambient car's fade (car +484, 0 at its set-up F-92604) and its rise done (+500 bit 0x8 cleared): it rises by
+    /// 2 a second to 1 after the set-up (`traffic::fade_step`, F-82632); the fall of a marked car is `removing`
+    pub fade: f32,
+    pub faded_in: bool,
 }
 
 /// An ambient car's lights (F-75961, bit 2 of the render flags): on when the hour is past the
@@ -739,6 +749,9 @@ pub const TRAFFIC_LAMP_REACH: f32 = 125.0;
 pub const GLOW_FACTOR: [f32; 19] = [2.0, 2.0, 1.002, 2.0, 1.002, 1.0, 0.528, 1.0, 1.002, 1.0, 1.0, 1.0, 0.346, 1.002, 1.002, 0.728, 0.728, 0.3, 0.3];
 pub const GLOW_FACTOR_PLAYER: [f32; 19] = [0.3, 1.004, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
 
+/// How many of the auto spoiler clip's moved bones get a draw group of their own (21 ..): the Murcielago's clip moves 4.
+const SPOILER_GROUPS: usize = 8;
+
 /// A side window's controller as the original's (vtable 0x82046958; open F-85820, close
 /// F-82826, update F-27851): `state` 1 closed (up), 2 open (down), 3 opening,
 /// 4 closing; `time` runs at rate 0.5 (A-15115) over the clip, so rolling down takes twice
@@ -757,6 +770,8 @@ impl Default for WindowCtl {
 
 impl WindowCtl {
     pub const RATE: f32 = 0.5;
+    /// the auto spoiler's (+68 as the controller's constructor sets it; F-53023 sets 0.5 only on the two windows)
+    pub const SPOILER_RATE: f32 = 1.0;
 
     /// `open` only from closed, `close` only from fully open (an up request while the window is
     /// still going down is dropped, as the original's)
@@ -778,11 +793,16 @@ impl WindowCtl {
     /// original's fused operations and is set to the end it reaches. (The original holds the time while a motor
     /// sound flagged to be prepared is loading, +72; neither window's object has such a flag.)
     pub fn update(&mut self, dt: f32, duration: f32) {
+        self.update_at(Self::RATE, dt, duration)
+    }
+
+    /// The same at the controller's own rate (+68).
+    pub fn update_at(&mut self, rate: f32, dt: f32, duration: f32) {
         match self.state {
             1 => self.time = 0.0,
             2 => self.time = duration,
             3 => {
-                self.time = crate::sndobj::fmadds(Self::RATE, dt, self.time);
+                self.time = crate::sndobj::fmadds(rate, dt, self.time);
                 if self.time >= duration {
                     self.time = duration;
                     self.state = 2;
@@ -790,7 +810,7 @@ impl WindowCtl {
             }
             4 => {
                 // (fnmsubs: -(rate x dt - time), so an exact end is -0, not yet below 0)
-                self.time = -crate::sndobj::fmadds(Self::RATE, dt, -self.time);
+                self.time = -crate::sndobj::fmadds(rate, dt, -self.time);
                 if self.time < 0.0 {
                     self.time = 0.0;
                     self.state = 1;
@@ -1039,6 +1059,8 @@ pub struct Vehicles {
     pub parking: mcla_formats::rage::parking::ParkingTree,
     park_lists: Vec<u32>,
     park_rng: parked::Mwc,
+    /// the cruising ghosts: the ambient request pool and the proxy cars on their routes (traffic.rs `Ghosts`)
+    pub ghosts: traffic::Ghosts,
     park_dump_frame: u32,
     /// (diagnostics, MCLA_PARK_DUMP) parked spawn tries turned down, by reason
     park_why: [u32; 5],
@@ -1454,6 +1476,7 @@ struct CarPrep {
     part_rig: crate::damageparts::PartRig,
     hood_slot: Option<Mat4>,
     trunk_bone: Option<Mat4>,
+    slot_bones: [Option<Mat4>; 3],
 }
 
 impl MeshGeo {
@@ -1758,6 +1781,8 @@ impl CarInstance {
                     }
                 }
             }
+            // (F-55728: the air ride's drops from the wheels as the set-up left them)
+            tune.set_air_drop(s.fender_height, s.air_floor);
             let mut vt = crate::physics::vehsim::VehTune::new(tune);
             vt.bike = self.model.bike;
             if let Some(h) = self.model.rest_height {
@@ -1978,7 +2003,7 @@ impl Vehicles {
         let t_load = std::time::Instant::now();
         let car = self.car_asset(world, dir)?;
         let ms_parse = t_load.elapsed().as_secs_f32() * 1000.0;
-        let CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone } = match self.take_prep(dir, cfg) {
+        let CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones } = match self.take_prep(dir, cfg) {
             Some(p) => p,
             None => Self::prep_car(&car, dir, cfg),
         };
@@ -2090,7 +2115,10 @@ impl Vehicles {
         // cars with the original's tuning drive on the ported simulation (MCLA_OLD_PHYSICS keeps the simple model)
         let simtunes = if std::env::var("MCLA_OLD_PHYSICS").is_ok() { None } else { car.simtune.clone() };
         if let Some(s) = simtunes.as_ref() {
-            let mut vt = crate::physics::vehsim::VehTune::new(s.base.clone());
+            // (F-55728: the air ride's drops from the wheels)
+            let mut base = s.base.clone();
+            base.set_air_drop(s.fender_height, s.air_floor);
+            let mut vt = crate::physics::vehsim::VehTune::new(base);
             vt.bike = car.bike;
             if let Some(hubs) = car.hubs {
                 vt.seat((hubs[0].y + hubs[2].y) * 0.5);
@@ -2175,7 +2203,7 @@ impl Vehicles {
         // (F-74884, a bike's set-up: +4092 / +4096 = |max - min| of the translation limits, crBoneData +144 / +160, of the
         // first bone named wheel_0 / wheel_2 in the base fragment's skeleton, then the parts' - F-20921)
         let bike_wheel_width = ["wheel_0", "wheel_2"].map(|n| car.skeleton.as_ref().and_then(|s| s.bones.iter().find(|b| b.name == n)).map_or(params.wheel_width, |b| (b.trans_limits.1 - b.trans_limits.0).length()));
-        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, fx_anchors, fx_anchor_rear });
+        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, fx_anchors, fx_anchor_rear });
         self.models.push(m.clone());
         if self.wheels.is_none() {
             self.wheels = load_wheels(gpu, world).map(Arc::new);
@@ -2231,15 +2259,25 @@ impl Vehicles {
         let trunk_tag = trunk_i.and_then(|i| sk.map(|s| s.bones[i].tag)).filter(|t| *t != 0);
         let trunk_tags: Vec<u16> = trunk_set.iter().filter_map(|&i| sk.map(|s| s.bones[i].tag)).filter(|t| *t != 0).collect();
         let trunk_worlds: Vec<Mat4> = trunk_set.iter().filter_map(|&i| sk.map(|s| s.bones[i].world)).collect();
-        let hood_slot = bone_world(vehicle_model::slot_tag(Slot::Hood).unwrap_or(0));
+        // (each moved slot's part is moved about the bone it hangs on, its matrix index - F-14987; a part without
+        // one keeps the port's slot bone)
+        let fitted = car.placed_parts_for(cfg);
+        let own_bone = |f: &dyn Fn(&str) -> bool| fitted.iter().find(|(p, _)| !p.is_base && f(&p.primary.to_ascii_lowercase()) && sk.map_or(false, |s| (p.matrix_index as usize) < s.bones.len())).map(|(_, x)| *x);
+        let hood_slot = own_bone(&|p| p.starts_with("hood") && !p.contains("scoop")).or_else(|| bone_world(vehicle_model::slot_tag(Slot::Hood).unwrap_or(0)));
         let trunk_bone = trunk_i.and_then(|i| sk.map(|s| s.bones[i].world));
         let part_rig = crate::damageparts::PartRig {
             movement: car.simtune.as_ref().and_then(|s| s.part_movement).unwrap_or(crate::damageparts::DEFAULT_MOVEMENT),
             bumper_rest: [bone_world(13699), bone_world(13687)],
         };
+        let slot_bones = [
+            own_bone(&|p| p.starts_with("bumper_r")).or(part_rig.bumper_rest[0]),
+            own_bone(&|p| p.starts_with("bumper_f")).or(part_rig.bumper_rest[1]),
+            own_bone(&|p| p.starts_with("intercooler")).or(part_rig.bumper_rest[1]),
+        ];
         // (the exhaust tips are drawn at the outlet bones of the part that holds them, as those bones stand:
         // they move with that part - a hanging rear bumper takes them along)
         let outlet_src = car.outlet_part(cfg).map(|o| (o.primary.to_ascii_lowercase(), o.is_base, o.transform));
+        let spoiler_bones: Vec<usize> = car.spoiler.as_ref().map(|c| c.bones.clone()).unwrap_or_default();
         let part_group = |part: &vehicle_model::CarPart, part_xf: &Mat4, mi: usize| -> u32 {
             let mut p = part.primary.to_ascii_lowercase();
             let mut part_xf = *part_xf;
@@ -2253,6 +2291,11 @@ impl Vehicles {
                 }
             }
             let part_xf = &part_xf;
+            // (on a bone the auto spoiler's clip moves: a base mesh bound to it, a part hung on it by its matrix index)
+            let bone = if part.is_base { part.mesh_tag.get(mi).and_then(|&t| sk.and_then(|s| s.bone_by_tag(t))) } else { Some(part.matrix_index as usize) };
+            if let Some(j) = bone.and_then(|b| spoiler_bones.iter().position(|&x| x == b)).filter(|&j| j < SPOILER_GROUPS) {
+                return 21 + j as u32;
+            }
             if part.is_base {
                 return if part.mesh_tag.get(mi).map_or(false, |t| trunk_tags.contains(t)) { 4 } else { 0 };
             }
@@ -2260,8 +2303,10 @@ impl Vehicles {
                 3
             } else if p.starts_with("bumper_r") && part_rig.bumper_rest[0].is_some() {
                 5
-            } else if (p.starts_with("bumper_f") || p.starts_with("intercooler")) && part_rig.bumper_rest[1].is_some() {
+            } else if p.starts_with("bumper_f") && part_rig.bumper_rest[1].is_some() {
                 6
+            } else if p.starts_with("intercooler") && part_rig.bumper_rest[1].is_some() {
+                20
             } else if *part_xf != Mat4::IDENTITY && trunk_worlds.iter().any(|w| w.w_axis.distance(part_xf.w_axis) < 1e-3) {
                 4
             } else {
@@ -2737,7 +2782,7 @@ impl Vehicles {
                 meshes.push(MeshPrep { sname: sname.to_string(), mode, dn, sn, plate, carbon, win_cand, kbits, geo, geo_alt });
             }
         }
-        CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone }
+        CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones }
     }
 
     /// Tyre + rim model for a rim directory, loaded once.
@@ -2888,6 +2933,8 @@ impl Vehicles {
         let caliper_bindings = (0..4).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect();
         let window_bindings = if model.windows.iter().any(|w| w.is_some()) { (0..2).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect() } else { Vec::new() };
         let part_bindings = match model.batch_window.iter().copied().max().unwrap_or(0) {
+            g if g >= 21 => (0..g as usize - 2).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect(),
+            g if g >= 20 => (0..18).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect(),
             g if g >= 13 => (0..17).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect(),
             g if g >= 7 => (0..10).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect(),
             g if g >= 3 => (0..4).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect(),
@@ -2903,7 +2950,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), spoiler: WindowCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
         self.cars.len() - 1
     }
 
@@ -3475,6 +3522,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
         // (test hook: MCLA_WINDOW_TEST=1 rolls the player's side windows down)
         static WINDOW_TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let window_test = *WINDOW_TEST.get_or_init(|| std::env::var("MCLA_WINDOW_TEST").is_ok_and(|v| v == "1"));
+        static SPOILER_TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let spoiler_test = *SPOILER_TEST.get_or_init(|| std::env::var("MCLA_SPOILER_TEST").is_ok_and(|v| v == "1"));
         for c in self.cars.iter_mut() {
             // (the light bar's clip: its own time from the car's making, the game frame's step each frame, back to 0 at
             // its end - F-35036 / F-27851; docs/reference/hookmen/cop_lamps.md)
@@ -3491,6 +3540,13 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     }
                     c.windows[k].update(dt, clip.duration);
                 }
+            }
+            // (the auto spoiler, F-35036: raised while the speed - chassis +224 - x 2.237 is above 60 mph, else lowered; a
+            // request is taken only at the matching end, as the windows')
+            if let Some(clip) = c.model.spoiler.as_ref() {
+                // (test hook: MCLA_SPOILER_TEST=1 raises it at any speed)
+                c.spoiler.request(c.state.speed() * 2.237 > 60.0 || (spoiler_test && c.is_player), clip.duration);
+                c.spoiler.update_at(WindowCtl::SPOILER_RATE, dt, clip.duration);
             }
         }
         // (diagnostics, N-VP-3: MCLA_WHEEL_GROUND="<update>[;x,y,z,R...]" prints at that update the
@@ -5000,9 +5056,14 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 batch.push_object(wb, &ObjectUniform { model: wm.to_cols_array_2d(), ..body_u });
             }
             // (the moving damage parts: hood, trunk lid, rear and front bumper - damageparts.rs)
+            let spoiler_d = c.model.spoiler.as_ref().map(|cl| cl.deltas(c.spoiler.clip_time(cl.duration))).unwrap_or_default();
             for (k, pb) in c.part_bindings.iter().enumerate() {
                 let parts = &c.state.parts;
                 let pm = match k {
+                    // (a bone the auto spoiler's clip moves)
+                    s if s >= 18 => spoiler_d.get(s - 18).map_or(m, |d| m * *d),
+                    // (the intercooler: the front bumper's pose, on its own bone)
+                    17 => parts.bumpers[1].as_ref().map_or(m, |b| b.slot_draw(&m, c.model.slot_bones[2].as_ref().unwrap_or(&b.m_rest), b.detached.filter(|_| !(self.hide_player && c.is_player)).map(|l| Mat4::from_rotation_translation(l.rot, l.pos)))),
                     // (a light bar lens, on its turning pivot)
                     l if l >= 10 => c.model.cop_lights.as_ref().filter(|cl| l - 10 < cl.lamps.len()).map_or(m, |cl| m * cl.lens_delta(l - 10, c.light_t)),
                     0 => c.model.hood_slot.map_or(m, |s| m * parts.hood_delta(&s)),
@@ -5024,15 +5085,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         }
                         None => m,
                     },
-                    _ => match parts.bumpers[k - 2].as_ref() {
-                        // (the fallen piece is drawn where its body is: M_slot' = B * M_rest^-1 of the slot's mesh)
-                        Some(b) if b.detached.is_some() && !(self.hide_player && c.is_player) => {
-                            let l = b.detached.unwrap();
-                            Mat4::from_rotation_translation(l.rot, l.pos) * b.m_rest.inverse()
-                        }
-                        Some(b) => m * b.draw_delta(),
-                        None => m,
-                    },
+                    // (the fallen piece is drawn where its body is)
+                    _ => parts.bumpers[k - 2].as_ref().map_or(m, |b| b.slot_draw(&m, c.model.slot_bones[k - 2].as_ref().unwrap_or(&b.m_rest), b.detached.filter(|_| !(self.hide_player && c.is_player)).map(|l| Mat4::from_rotation_translation(l.rot, l.pos)))),
                 };
                 let mut pu = ObjectUniform { model: pm.to_cols_array_2d(), ..body_u };
                 // (a traffic model's own wheel: its rim's and matte's programs dent it too, the vertex taken in its

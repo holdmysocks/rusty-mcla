@@ -151,7 +151,6 @@ struct CopTac {
     far_t: f32,
     /// pull-over Halt: seconds the gap has been growing while the target moves
     grow_t: f32,
-    d_prev: f32,
     /// the plan's countdown (+588), its two goals and the speed to arrive with (-1: full pace)
     replan: f32,
     goals: [Vec3; 2],
@@ -168,6 +167,8 @@ struct CopTac {
     halt_steer: f32,
     cmd: u8,
     hb: bool,
+    /// pull-over Halt: the squared distance at its last update (+16)
+    halt_d2: f32,
 }
 
 /// What the pursuit's ticks read in one update: the brain's predicates (F-74140's helpers) - within fSafeDist, within 1.5 x
@@ -275,6 +276,86 @@ fn pursuit_machine(tac: &mut CopTac, s: &PursuitSees, thresh: f32, last_speed: f
         _ => {}
     }
     tac.t += dt;
+}
+
+/// What the pull-over's update and ticks read in one update: every cop within fPullOverDist - 1 (F-90575), the target
+/// moving (F-96080 / F-43975), closing in (F-32902) with no range / within 7 m / 50 m, within 50 m / fPullOverDist
+/// (F-29545), the side F-14848 picks, the re-pick gate (tactic +36 none or its +56 zero), the cop's speed (F-81535) and the
+/// squared distance cop - target (dy, dz, dx, fused: F-38149 / F-82776).
+#[derive(Clone, Copy, Debug, Default)]
+struct PullSees {
+    all_halt: bool,
+    moving: bool,
+    closing0: bool,
+    closing7: bool,
+    closing50: bool,
+    near50: bool,
+    near_pull: bool,
+    pick: bool,
+    gate: bool,
+    cspeed: f32,
+    d2: f32,
+}
+
+/// The pull-over's machine for its cop, one update (F-36876's CatchUp, AvoidCollision, Halt; Ticket is the port's heat);
+/// returns the factor the cop's velocity is scaled by. The begin (F-74547) enters CatchUp. The update asks Halt when every
+/// cop is within fPullOverDist - 1, the target stands and the cop is under 4.47 m/s or not closing in (not in Halt, none
+/// asked); then the FSM (F-95322; table F-20341): the asked state entered, the tick, the time + dt. Enters: CatchUp (F-50661)
+/// Pull Over (3); AvoidCollision (F-69591) the side picked, AlongSide (5) with it, its timer 1 s, the cop's velocity x 0.7;
+/// Halt (F-38149) Stop without handbrake, its growing time 0, the squared distance kept. Ticks: CatchUp (F-91234) - after
+/// 0.5 s and closing in within 50 m: AvoidCollision; AvoidCollision (F-18622) - the timer down, at < 0 with the gate the side
+/// again (AlongSide resent if it changed) and 1 s; after 0.5 s and not within 50 m: CatchUp; Halt (F-82776) - the gap growing while the
+/// target moves for > 0.5 s, or not within fPullOverDist: CatchUp. After the FSM: the target standing and the cop closing in
+/// within 7 m - its velocity x 0.5.
+fn pullover_machine(tac: &mut CopTac, s: &PullSees, dt: f32) -> f32 {
+    let mut factor = 1.0f32;
+    if !tac.begun {
+        (tac.begun, tac.st, tac.t, tac.cmd) = (true, Tac::CatchUp, 0.0, 3);
+    }
+    if tac.st != Tac::Halt && tac.next.is_none() && s.all_halt && !s.moving && (s.cspeed < 4.47 || !s.closing0) {
+        tac.next = Some(Tac::Halt);
+    }
+    if let Some(st) = tac.next.take() {
+        tac.st = st;
+        tac.t = 0.0;
+        match st {
+            Tac::CatchUp => tac.cmd = 3,
+            Tac::Avoid => {
+                (tac.side, tac.cmd, tac.replan, tac.side_t) = (s.pick, 5, 0.0, 1.0);
+                factor *= 0.7;
+            }
+            Tac::Halt => (tac.cmd, tac.hb, tac.grow_t, tac.halt_d2) = (1, false, 0.0, s.d2),
+            _ => {}
+        }
+    }
+    match tac.st {
+        Tac::CatchUp if tac.t > 0.5 && s.closing50 => tac.next = Some(Tac::Avoid),
+        Tac::Avoid => {
+            tac.side_t -= dt;
+            if tac.side_t < 0.0 && s.gate {
+                if s.pick != tac.side {
+                    (tac.side, tac.cmd) = (s.pick, 5);
+                }
+                tac.side_t = 1.0;
+            }
+            if tac.t > 0.5 && !s.near50 {
+                tac.next = Some(Tac::CatchUp);
+            }
+        }
+        Tac::Halt => {
+            tac.grow_t = if s.moving && s.d2 > tac.halt_d2 { tac.grow_t + dt } else { 0.0 };
+            tac.halt_d2 = s.d2;
+            if tac.grow_t > 0.5 || !s.near_pull {
+                tac.next = Some(Tac::CatchUp);
+            }
+        }
+        _ => {}
+    }
+    tac.t += dt;
+    if !s.moving && s.closing7 {
+        factor *= 0.5;
+    }
+    factor
 }
 
 /// The searching cop's brain state 7, STATE_SEARCH (enter F-57507, tick F-15801; docs/reference/hookmen/search_and_connections.md 2):
@@ -3136,7 +3217,8 @@ impl Police {
         self.last_tspeed = speed;
         // (every cop of the tactic within r of the target: F-90575, F-36876)
         let within = |r: f32| vehicles.cars.iter().filter(|c| pursuer(c)).all(|c| c.state.pos.distance(ppos) < r);
-        let (all_block, all_halt) = (within(0.5 * safe), within(safe - 1.0));
+        // (the pull-over's: within fPullOverDist - 1, the tactic's slot 8 F-66453 less 1.0)
+        let (all_block, all_halt) = (within(0.5 * safe), within(t("fPullOverDist", 15.0) - 1.0));
         let on_road = |q: Vec3| crate::offroad::mesh().map_or(true, |m| m.on_road(q));
         for c in vehicles.cars.iter_mut().filter(|c| pursuer(c) || Some(c.uid) == dsp_cop) {
             let is_dsp = Some(c.uid) == dsp_cop && !pursuer(c);
@@ -3273,54 +3355,28 @@ impl Police {
                     let (r, l) = (on_road(ppos + pright * along), on_road(ppos - pright * along));
                     if r { true } else if l { false } else { !on_right }
                 };
-                let enter = |tac: &mut CopTac, st: Tac| {
-                    tac.st = st;
-                    tac.t = 0.0;
-                    tac.far_t = 0.0;
-                    tac.side_t = 0.0;
-                    tac.grow_t = 0.0;
-                    tac.replan = 0.0;
-                };
                 let st = tac.st;
                 if searching || squad {
                     // (no tactic state changes during the Search; a squad's commands come from its FSM)
                     tac.t += dt;
                 } else if pull {
-                    tac.t += dt;
-                    // pull-over (F-36876; CatchUp F-91234, AvoidCollision F-18622 / F-69591, Halt F-82776)
-                    if st != Tac::Halt && all_halt && !t_moving && (cspeed < 4.47 || !closing(0.0)) {
-                        enter(tac, Tac::Halt);
-                    } else {
-                        match st {
-                            Tac::CatchUp if tac.t > 0.5 && closing(50.0) => {
-                                enter(tac, Tac::Avoid);
-                                tac.side = pick_side();
-                                // (on entering: the cop's velocity x 0.7, F-19124)
-                                c.state.vel *= 0.7;
-                            }
-                            Tac::Avoid => {
-                                tac.side_t += dt;
-                                if tac.side_t >= 1.0 {
-                                    tac.side_t = 0.0;
-                                    tac.side = pick_side();
-                                }
-                                if tac.t > 0.5 && d >= 50.0 {
-                                    enter(tac, Tac::CatchUp);
-                                }
-                            }
-                            Tac::Halt => {
-                                tac.grow_t = if t_moving && d > tac.d_prev { tac.grow_t + dt } else { 0.0 };
-                                if tac.grow_t > 0.5 || d >= safe {
-                                    enter(tac, Tac::CatchUp);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    // (every update: a stopped target and the cop closing in within 7 m - its velocity halved)
-                    if !t_moving && closing(7.0) {
-                        c.state.vel *= 0.5;
-                    }
+                    // pull-over (F-36876, pullover_machine; the re-pick gate's tactic +36 is not ported: open)
+                    let pull_r = t("fPullOverDist", 15.0);
+                    let (dx, dy, dz) = (ppos.x - cpos.x, ppos.y - cpos.y, ppos.z - cpos.z);
+                    let sees = PullSees {
+                        all_halt,
+                        moving: t_moving,
+                        closing0: closing(0.0),
+                        closing7: closing(7.0),
+                        closing50: closing(50.0),
+                        near50: d < 50.0,
+                        near_pull: d < pull_r,
+                        pick: pick_side(),
+                        gate: true,
+                        cspeed,
+                        d2: fmas(dx, dx, fmas(dz, dz, dy * dy)),
+                    };
+                    c.state.vel *= pullover_machine(tac, &sees, dt);
                 } else {
                     // pursuit (F-68032, pursuit_machine; the re-pick gate's tactic +36 is not ported: open)
                     let sees = PursuitSees {
@@ -3344,7 +3400,6 @@ impl Police {
                 if tac.st != st {
                     log::info!("police: cruiser {} {:?} -> {:?} ({:.0} m)", c.uid, st, tac.st, d);
                 }
-                tac.d_prev = d;
                 // ---- the goal plan (F-67303; docs/reference/hookmen/goal_speed.md). The cop is driven by the racers'
                 // brain (brain.rs, mcBrainPolice is an mcBrainRacing): its goals, a 5 m radius each, and the speed to
                 // reach the last with; the speed on the way is the race line's speed profile. Only the PullOver,
@@ -4071,6 +4126,88 @@ mod tests {
             }
         }
         assert!(checked > 1000 && blocks > 0, "{checked} {blocks}");
+    }
+
+    /// The original's pull-over tactic object (F-36876 with its FSM and states) run offline
+    /// (tools/pullover_fsm_reference.py) against `pullover_machine` on the same inputs: at every recorded update the state,
+    /// the asked state, the state's time, AvoidCollision's timer / Halt's squared distance and growing time, the brain's
+    /// command fields and the velocity factor equal.
+    #[test]
+    fn pullover_machine_matches_the_original() {
+        struct X(u32);
+        impl X {
+            fn next(&mut self) -> u32 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 17;
+                self.0 ^= self.0 << 5;
+                self.0
+            }
+            fn r(&mut self, a: i32, b: i32) -> i32 {
+                a + (self.next() % (b - a + 1) as u32) as i32
+            }
+        }
+        const ODDS: [u32; 9] = [200, 150, 60, 60, 120, 150, 200, 30, 60];
+        let reference = include_str!("testdata/pullover_fsm_ref.txt");
+        let mut lines = reference.lines().peekable();
+        let (mut checked, mut halts) = (0, 0);
+        while let Some(head) = lines.next() {
+            let seed: u32 = head.strip_prefix("CASE ").unwrap().parse().unwrap();
+            let mut g = X(seed);
+            let mut f: Vec<bool> = (0..9).map(|_| g.r(0, 1) != 0).collect();
+            let (mut speed, mut x, mut z) = (g.r(0, 60), g.r(-200, 200), g.r(-200, 200));
+            let mut tac = CopTac::default();
+            let mut factor = 1.0f32;
+            let mut k = 0usize;
+            while let Some(line) = lines.peek().filter(|l| !l.starts_with("CASE")) {
+                let v: Vec<&str> = line.split_whitespace().collect();
+                let want: usize = v[0].parse().unwrap();
+                while k <= want {
+                    for (i, b) in f.iter_mut().enumerate() {
+                        if g.next() % ODDS[i] == 0 {
+                            *b = !*b;
+                        }
+                    }
+                    speed = (speed + g.r(-2, 2)).clamp(0, 60);
+                    x = (x + g.r(-3, 3)).clamp(-400, 400);
+                    z = (z + g.r(-3, 3)).clamp(-400, 400);
+                    let (dx, dz) = (x as f32 * 0.25, z as f32 * 0.25);
+                    let s = PullSees {
+                        all_halt: f[0],
+                        moving: f[1],
+                        closing0: f[2],
+                        closing7: f[3],
+                        closing50: f[4],
+                        near50: f[5],
+                        near_pull: f[6],
+                        pick: f[7],
+                        gate: f[8],
+                        cspeed: speed as f32 * 0.25,
+                        d2: fmas(dx, dx, fmas(dz, dz, 0.0f32 * 0.0)),
+                    };
+                    factor = pullover_machine(&mut tac, &s, 1.0f32 / 60.0);
+                    k += 1;
+                }
+                let code = |t: Tac| match t {
+                    Tac::CatchUp => 0,
+                    Tac::Avoid => 1,
+                    Tac::Halt => 2,
+                    _ => 9,
+                };
+                let a = match tac.st {
+                    Tac::Avoid => tac.side_t.to_bits(),
+                    Tac::Halt => tac.halt_d2.to_bits(),
+                    _ => 0,
+                };
+                let w = if tac.st == Tac::Halt { tac.grow_t.to_bits() } else { 0 };
+                let got = format!("{} {} {} {:08x} {:08x} {:08x} {} {} {} {:08x}", want, code(tac.st), tac.next.map_or(-1, code), tac.t.to_bits(), a, w,
+                                  tac.cmd, tac.side as u8, tac.hb as u8, factor.to_bits());
+                assert_eq!(got, *line, "case {seed}");
+                checked += 1;
+                halts += (tac.st == Tac::Halt) as u32;
+                lines.next();
+            }
+        }
+        assert!(checked > 1000 && halts > 0, "{checked} {halts}");
     }
 
     /// F-83946: the sum over the offences, the pursuit's seconds, the flee fine, the career cut

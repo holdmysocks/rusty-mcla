@@ -546,8 +546,8 @@ pub struct Brain {
     pub cur: usize,
     pub next: usize,
     /// +128: 0 idle, 3 failed, 4 a path waiting for the line
-    nav_state: u8,
-    path: Option<QuickestPath>,
+    /// the nav query and its path (brain +128, F-49348; navjob.rs)
+    nav: crate::navjob::NavJob<QuickestPath>,
     /// +264 / +268
     off_corridor: i32,
     off_mesh: i32,
@@ -597,8 +597,7 @@ impl Brain {
             base: 0,
             cur: 0,
             next: 0,
-            nav_state: 0,
-            path: None,
+            nav: Default::default(),
             off_corridor: 30,
             off_mesh: 30,
             last: crate::aiv::AivOut { throttle: 0.0, steer: 0.0, brake: 1.0, handbrake: 0.0, valid: false },
@@ -666,6 +665,21 @@ impl Brain {
         self.final_heading = Vec3::ZERO;
     }
 
+    /// The cruising brain's rail goals (F-90991 / F-12584): the racing reset (F-69438), AppendGoal for each (point,
+    /// radius), MaxSpeed (+292), FinalHeading (+192, kept when none) and FinalSpeed (+208). AllowNitro stays as it is.
+    pub fn rail_goals(&mut self, goals: &[(Vec3, f32)], max_speed: f32, final_heading: Option<Vec3>, final_speed: f32) {
+        self.plan.goals.clear();
+        self.replan(0);
+        for &(p, r) in goals {
+            self.plan.append(p, r);
+        }
+        self.max_speed = max_speed;
+        if let Some(h) = final_heading {
+            self.final_heading = h;
+        }
+        self.final_speed = final_speed;
+    }
+
     /// The search route (F-55529: GoToPosition F-19329 for the first point, AppendGoal F-13831 for the others): the
     /// goals with a 5 m radius each, the final speed and the final heading (normalised; (1, 0, 0) when its
     /// length^2 is 1e-5 or less - the search passes none).
@@ -679,6 +693,11 @@ impl Brain {
         (self.cur, self.goal_at(self.cur).map(|g| g.pos))
     }
 
+    /// The last goal's place (+176 / +180: the vector of the goal count - 1), None without goals.
+    pub fn last_goal(&self) -> Option<Vec3> {
+        self.plan.goals.last().map(|g| g.pos)
+    }
+
     /// The goals the brain has (none: plan at once, F-67303's empty-route case).
     pub fn goal_count(&self) -> usize {
         self.plan.goals.len()
@@ -686,7 +705,7 @@ impl Brain {
 
     /// F-43234 HasReachedGoal: no route waiting (+128 == 0) and the line used up.
     pub fn route_done(&self) -> bool {
-        has_reached_goal(self.nav_state as u32, Some(self.aiv.line_ring()))
+        has_reached_goal(self.nav.state as u32, Some(self.aiv.line_ring()))
     }
 
     fn goal_at(&self, i: usize) -> Option<Goal> {
@@ -695,8 +714,7 @@ impl Brain {
 
     /// F-68035: plan again from the car (nav cancelled, the line reset, all three indices = `at`).
     fn replan(&mut self, at: usize) {
-        self.nav_state = 0;
-        self.path = None;
+        self.nav.finish();
         self.aiv.reset();
         self.base = at;
         self.cur = at;
@@ -771,19 +789,18 @@ impl Brain {
     pub fn update(&mut self, car: &BrainCar, turn: &crate::brainturn::TurnCar, mesh: &NavMesh, obstacles: &[crate::aiv::Obstacle], rb: Option<(&crate::rubber::RubberBand, crate::ai::RbState)>, dt: f32) -> BrainOut {
         let mut out = BrainOut::default();
         // ---- F-13552 ----
-        if self.nav_state == 4 && self.aiv.goal_count() < 8 {
-            if let Some(path) = self.path.take() {
+        self.nav.update();
+        if self.nav.state == 4 && self.aiv.goal_count() < 8 {
+            if let Some(path) = self.nav.take() {
                 let mut goals = std::mem::take(&mut self.plan.goals);
                 // (false: the line's portal ring has no room yet - the path waits, state 4)
                 let fed = crate::brainpath::path_to_aiv_at(&mut self.aiv, mesh, &path, &mut goals, self.cur, &mut self.next, self.looping, self.final_heading, self.final_speed);
                 self.plan.goals = goals;
                 if fed {
-                    self.nav_state = 0;
+                    self.nav.finish();
                 } else {
-                    self.path = Some(path);
+                    self.nav.put_back(path);
                 }
-            } else {
-                self.nav_state = 0;
             }
         }
         self.aiv.set_obstacles(obstacles);
@@ -842,7 +859,7 @@ impl Brain {
         }
         // the next goal's route over the mesh
         let ng = self.plan.goals.len();
-        if self.next < ng && (self.nav_state == 0 || self.nav_state == 3) {
+        if self.next < ng && (self.nav.state == 0 || self.nav.state == 3) {
             let goal = self.plan.goals[self.next].centre();
             let start = if self.cur == self.next && !self.aiv.has_path() {
                 car.pos
@@ -852,13 +869,8 @@ impl Brain {
                 self.plan.goals[self.next - 1].centre()
             };
             let cost = mcla_formats::rage::navmesh::racer_cost(mesh.point_flags(start), mesh.point_flags(goal));
-            match mesh.quickest_path(start, goal, &cost) {
-                Some(p) => {
-                    self.path = Some(p);
-                    self.nav_state = 4;
-                }
-                None => self.nav_state = 3,
-            }
+            // (F-36902: the search is the nav thread's; its result arrives at the next update)
+            self.nav.request(|| mesh.quickest_path(start, goal, &cost));
         }
         self.collision = (self.collision - dt).max(0.0);
         self.nitro_off = (self.nitro_off - dt).max(0.0);
@@ -912,7 +924,7 @@ impl Brain {
         } else {
             self.man.reverse = false;
             self.man.turn = 0;
-            if self.nav_state == 4 && car.speed > 8.94 {
+            if self.nav.pending() && car.speed > 8.94 {
                 t.throttle = 1.0;
                 t.brake = 0.0;
             }
@@ -1160,7 +1172,7 @@ pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt:
         if brain.dbg_t >= every {
             brain.dbg_t = 0.0;
             log::info!("brain {i}: pos ({:.0},{:.0},{:.0}) v {:.1} gear {} | goals {} cur {} next {} nav {} | aiv portals {} goals {} pts {} done {} valid {} thr {:.2} brk {:.2} st {:.2} | stuck {} man {:?} | rb {:?} | obst {} | in thr {:.2} brk {:.2} st {:.2} hb {}",
-                car.pos.x, car.pos.y, car.pos.z, car.speed, car.gear, brain.plan.goals.len(), brain.cur, brain.next, brain.nav_state,
+                car.pos.x, car.pos.y, car.pos.z, car.speed, car.gear, brain.plan.goals.len(), brain.cur, brain.next, brain.nav.state,
                 brain.aiv.portal_count(), brain.aiv.goal_count(), brain.aiv.point_count(), brain.aiv.goals_done(), brain.last.valid, brain.last.throttle, brain.last.brake, brain.last.steer,
                 brain.stuck.state, brain.man, rb.map(|r| (r.gap as i32, r.cap)), obstacles.len(), out.input.throttle, out.input.brake, out.input.steer, out.input.handbrake);
             if std::env::var("MCLA_BRAIN_SAMPLES").is_ok() {

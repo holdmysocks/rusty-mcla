@@ -9,12 +9,12 @@
 //!     (CVCount of them), +54 u16 knot vector index
 //! ```
 //! The vertex indices refer to the shared vec4 array at root+0x2c, the knot vectors to the
-//! table at root+0x30 (12 bytes each: vtable, -> f32 knots, count; sub_8224B2B8 stores both
-//! as globals 0x828DA6B4 / 0x828DA6B8 for the lane's vfuncs 2 / 1, sub_82244C80 /
-//! sub_82244C60). A lane is a clamped uniform B-spline of its degree through its first and
+//! table at root+0x30 (12 bytes each: vtable, -> f32 knots, count; F-15133 stores both
+//! as globals 0x828DA6B4 / 0x828DA6B8 for the lane's vfuncs 2 / 1, F-48295 /
+//! F-48224). A lane is a clamped uniform B-spline of its degree through its first and
 //! last control point (complete edition: 1106 lanes of degree 1, 4291 of 2, 4634 of 3); its
 //! last control point is another lane's first (every lane), and its stored length +0c is
-//! the curve's (sub_82244E10). See [`LaneCurve`]. Lanes are owned by road
+//! the curve's (F-50105). See [`LaneCurve`]. Lanes are owned by road
 //! sections (0x0047a13c, stride 0xb0: +14 lane array, +18 count, +1c total length,
 //! +24 centre/radius, +90 street name, +94 speed limit in m/s) or junction objects.
 //!
@@ -37,13 +37,13 @@ pub struct Link {
     pub flags: u32,
     pub zone: Option<usize>,
     /// the owner object's (road section or junction) flags word +04 and word +10: the
-    /// ambient traffic's rail speed reads them (sub_82245A28: 0x10 or 0x20 with +10 == 0
+    /// ambient traffic's rail speed reads them (F-27898: 0x10 or 0x20 with +10 == 0
     /// 15 mph, 0x20 10 mph, 0x40 6 mph, else the road's limit)
     pub owner_flags: u32,
     pub owner_w10: u32,
     /// the owner's speed word +94 (m/s; a road section's limit, 0 = the default)
     pub owner_speed: f32,
-    /// the flags of the owner's parent (owner +08 -> +04; sub_82245340 / sub_822452F8 look
+    /// the flags of the owner's parent (owner +08 -> +04; F-86691 / F-41621 look
     /// one level up for a road or a junction)
     pub parent_flags: u32,
     /// the road the owner belongs to when the owner is not a road itself (a connector lane
@@ -117,19 +117,19 @@ pub struct Zone {
     /// Authored road speed in m/s; zero selects the engine's default (40 mph).
     pub speed_limit: f32,
     /// the road's rectangle as the traffic spawner tests it (mcRnRoadAmbient +3c width, +40
-    /// length, +50 centre, +60 direction: sub_826F4E90 / sub_8261B200)
+    /// length, +50 centre, +60 direction: F-49549 / F-71037)
     pub width: f32,
     pub rect_len: f32,
     pub mid: Vec3,
     pub dir: Vec3,
     /// across the road (+70), its height range (+44 .. +48) and the byte that leaves it
-    /// without a box (+4c): the spawner's occlusion box (road vfunc 2, sub_8224D130)
+    /// without a box (+4c): the spawner's occlusion box (road vfunc 2, F-76320)
     pub side: Vec3,
     pub y_range: [f32; 2],
     pub no_box: bool,
     /// the road's traffic density index from data (+98; -1: the default, 3)
     pub density: i32,
-    /// the x / z the region's sphere test measures from (+34, +38: vfunc 3 sub_8224D4C0)
+    /// the x / z the region's sphere test measures from (+34, +38: vfunc 3 F-46547)
     pub rect_c: [f32; 2],
     /// one of the road's lanes (+0x24, a pointer: 1620 of 1663 roads; the police's junction
     /// prediction takes its point at t = 0.5, F-67303). (The word is not a centre: `center` reads it
@@ -141,7 +141,7 @@ pub const DEFAULT_ROAD_SPEED: f32 = 40.0 * 0.44704;
 
 impl Zone {
     pub fn speed_limit_mps(&self) -> f32 {
-        // sub_822447B8 uses 40 mph when +148 is zero. Reject corrupt values too.
+        // F-87157 uses 40 mph when +148 is zero. Reject corrupt values too.
         if self.speed_limit.is_finite() && self.speed_limit > 0.0 {
             self.speed_limit
         } else {
@@ -155,7 +155,7 @@ pub struct Street {
     pub name: String,
 }
 
-/// A lane's curve (lane +0x30, a rage cvCurve read by sub_82586388: Form, Degree, TRange,
+/// A lane's curve (lane +0x30, a rage cvCurve read by F-67525: Form, Degree, TRange,
 /// TMax, CVCount): a clamped B-spline of `degree` over its control points with the knot
 /// vector of the shared table.
 #[derive(Debug, Clone, Default)]
@@ -173,7 +173,7 @@ impl LaneCurve {
         self.degree <= 1 || self.knots.len() != self.pts.len() + self.degree as usize + 1
     }
 
-    /// The B-spline basis N(i, k) at u (sub_825870F0, Cox - de Boor; k = degree + 1; a
+    /// The B-spline basis N(i, k) at u (F-44250, Cox - de Boor; k = degree + 1; a
     /// zero knot span drops its term) and its derivative.
     fn basis(&self, i: usize, k: usize, u: f32) -> (f32, f32) {
         let kn = &self.knots;
@@ -195,8 +195,8 @@ impl LaneCurve {
         (n, d)
     }
 
-    /// The point at phase `t` (0 .. 1) and the derivative dP/dt (sub_82586A28; the point as
-    /// sub_82587390): u = min(t x TRange, TMax) in the knot span holding it, the sum of the
+    /// The point at phase `t` (0 .. 1) and the derivative dP/dt (F-87587; the point as
+    /// F-40353): u = min(t x TRange, TMax) in the knot span holding it, the sum of the
     /// degree + 1 control points weighted by the basis. Degree 1 is the control polygon
     /// (t x (CVCount - 1), t = 1 read as 0.9999).
     pub fn eval(&self, t: f32) -> (Vec3, Vec3) {
@@ -214,7 +214,7 @@ impl LaneCurve {
         }
         let d = self.degree as usize;
         let u = (t * self.t_range).min(self.t_max);
-        // the knot span (sub_82586510): the first j with K[j] <= u < K[j + 1]
+        // the knot span (F-85280): the first j with K[j] <= u < K[j + 1]
         let kn = &self.knots;
         let mut j = 0;
         while j + 2 < kn.len() && !(kn[j] <= u && u < kn[j + 1]) {
@@ -294,13 +294,13 @@ impl LaneCurve {
         (p, dp)
     }
 
-    /// |dP/dt| at `t` (lane vfunc 11, sub_82586CD0)
+    /// |dP/dt| at `t` (lane vfunc 11, F-75223)
     pub fn speed(&self, t: f32) -> f32 {
         self.eval(t).1.length()
     }
 
-    /// The phase after `d` metres at the curve speed `s` (lane vfunc 6 sub_82245CD0 ->
-    /// sub_82586598): t + d / s; s <= 1e-6: 0.01 the way of `d`.
+    /// The phase after `d` metres at the curve speed `s` (lane vfunc 6 F-77217 ->
+    /// F-34126): t + d / s; s <= 1e-6: 0.01 the way of `d`.
     pub fn advance(t: f32, d: f32, s: f32) -> f32 {
         if s > 1e-6 {
             t + d / s
@@ -312,7 +312,7 @@ impl LaneCurve {
     }
 
     /// The phase of the curve's point nearest to `p` between phases `t0` and `t1` (as lane
-    /// slot 3 sub_82245388 -> sub_825875F0 finds it: trial points, then 10 refinements;
+    /// slot 3 F-15621 -> F-53741 finds it: trial points, then 10 refinements;
     /// here 16 trial points and 10 halvings of the bracket round the best).
     pub fn nearest(&self, p: Vec3, t0: f32, t1: f32) -> f32 {
         let (t0, t1) = (t0.clamp(0.0, 1.0), t1.clamp(0.0, 1.0));
@@ -342,7 +342,7 @@ impl LaneCurve {
         (a + b) * 0.5
     }
 
-    /// The curve's length as the original measures it (sub_82244E10): 100 chords at
+    /// The curve's length as the original measures it (F-50105): 100 chords at
     /// t = 0.01 k for degree 2 and up, else the control polygon.
     pub fn length(&self) -> f32 {
         if self.linear() {
@@ -474,11 +474,11 @@ pub struct NavSys {
     /// per endpoint node: links starting / ending there
     starts_at: Vec<Vec<usize>>,
     ends_at: Vec<Vec<usize>>,
-    /// per lane, the junction it belongs to (sub_822452F8: the lane's owner +08 when the owner's
+    /// per lane, the junction it belongs to (F-41621: the lane's owner +08 when the owner's
     /// flags +04 have bit 4, else the owner's parent +08 when its flags have bit 4), as an index
     /// into the junction array (root +58, 0xc0 bytes each, count root +c8)
     pub lane_junction: Vec<Option<usize>>,
-    /// per junction of that array: its centre (+80) and its rails as sub_8273C1B8 walks them -
+    /// per junction of that array: its centre (+80) and its rails as F-42526 walks them -
     /// its own lanes (+14 array, +18 u16 count), then its first child (+0c) and, below the
     /// junction, each node's next sibling (+10), depth first
     pub junction_centers: Vec<Vec3>,
@@ -560,6 +560,11 @@ struct RawLane {
 }
 
 impl NavSys {
+    /// A lane's +4 flags, +0xc length and +0x10 / +0x20 box, as the file holds them.
+    pub fn lane_stored(&self, lane: usize) -> (u32, f32, Vec3, Vec3) {
+        self.raw.get(lane).map_or((0, 0.0, Vec3::ZERO, Vec3::ZERO), |l| (l.flags, l.len, l.min, l.max))
+    }
+
     /// The roads next to junction `j` (the police's junction prediction, F-67303): its connection list, in
     /// the file's order.
     pub fn junction_roads(&self, j: usize) -> Vec<usize> {
@@ -627,6 +632,72 @@ impl NavSys {
             }
         }
         best.map(|b| b.1)
+    }
+
+    /// F-35347 (vfunc 4 of a road and of a junction): `p`'s squared x / z distance from the
+    /// box's middle (+50 / +58) and whether `p` is inside the box - across along +70 strictly
+    /// within half of +3c, along +60 strictly within half of +40. Each product and sum rounded as
+    /// the code does (fmuls, fmadds; the y parts are multiplied by 0).
+    pub fn road_box(&self, road: usize, p: Vec3) -> (f32, bool) {
+        let z = &self.zones[road];
+        let (dx, dz) = (p.x - z.mid.x, p.z - z.mid.z);
+        let dist2 = dz.mul_add(dz, dx * dx);
+        let across = z.side.y.mul_add(0.0, z.side.z.mul_add(dz, z.side.x * dx));
+        let along = z.dir.y.mul_add(0.0, z.dir.z.mul_add(dz, z.dir.x * dx));
+        (dist2, across.abs() < z.width * 0.5 && along.abs() < z.rect_len * 0.5)
+    }
+
+    /// F-44023 with type mask 2 (the roads): the roads whose box holds `p`, at most `max`, in the
+    /// order the quadtree gives them - a node only when `p` is in its box (x and z from its least
+    /// inclusive to its greatest exclusive), its children first in the order the side of its
+    /// split `p` lies on picks (beyond the split by more than -1e-6 in x: 2, in z: 1), then its own
+    /// roads. Each hit with its squared distance from the road's middle.
+    pub fn road_hits(&self, p: Vec3, max: usize) -> Vec<(usize, f32)> {
+        const ORDER: [[usize; 4]; 4] = [[0, 1, 2, 3], [1, 3, 0, 2], [2, 0, 3, 1], [3, 2, 1, 0]];
+        const EPS: f32 = -1.0e-6;
+        fn walk(nav: &NavSys, q: usize, p: Vec3, max: usize, hits: &mut Vec<(usize, f32)>) {
+            let Some(n) = nav.quad.get(q) else { return };
+            if p.x < n.min[0] || !(p.x < n.max[0]) || p.z < n.min[1] || !(p.z < n.max[1]) {
+                return;
+            }
+            let code = (if p.x - n.split[0] > EPS { 2 } else { 0 }) | (if p.z - n.split[1] > EPS { 1 } else { 0 });
+            for &k in &ORDER[code] {
+                if hits.len() >= max {
+                    break;
+                }
+                if let Some(c) = n.kids[k] {
+                    walk(nav, c, p, max, hits);
+                }
+            }
+            for &r in &n.roads {
+                if hits.len() >= max {
+                    break;
+                }
+                let (d2, inside) = nav.road_box(r, p);
+                if inside {
+                    hits.push((r, d2));
+                }
+            }
+        }
+        let mut hits = Vec::new();
+        if !self.quad.is_empty() {
+            walk(self, 0, p, max, &mut hits);
+        }
+        hits
+    }
+
+    /// The road at `p` (F-86195, what AmbientMgr_SetRoadDensity F-84942 and the race scripts'
+    /// road density event F-36201 set the density of): of the first 8 roads whose box holds `p`
+    /// ([`NavSys::road_hits`]) the one nearest its middle, the first on ties; none when no box
+    /// holds it (or every distance is f32::MAX or more).
+    pub fn road_at(&self, p: Vec3) -> Option<usize> {
+        let mut best = (f32::MAX, None);
+        for (r, d2) in self.road_hits(p, 8) {
+            if d2 < best.0 {
+                best = (d2, Some(r));
+            }
+        }
+        best.1
     }
 
     pub fn parse(res: &Resource) -> Result<NavSys> {
@@ -754,7 +825,7 @@ impl NavSys {
         nav.curves = raw.iter().map(|l| l.curve.clone()).collect();
         nav.raw = raw.clone();
         nav.zone_lanes = zone_lanes.clone();
-        // the lanes' junctions (sub_822452F8) and the junctions' rails (sub_8273C1B8)
+        // the lanes' junctions (F-41621) and the junctions' rails (F-42526)
         let jarr = rd.ptr(0x58);
         let jn = (rd.u32(0xc8) as usize).min(4096);
         let jindex = |o: usize| -> Option<usize> {
@@ -913,8 +984,8 @@ impl NavSys {
 
     /// A copy of the graph whose links follow the lanes' curves (a new point wherever the
     /// tangent turned more than `max_turn` radians, with the curve's tangents at the points),
-    /// as the original's rail follower rides them (sub_827986C0: the lane's vfunc 9,
-    /// sub_82586A28, at the follower's phase). The lanes, their order and successors are
+    /// as the original's rail follower rides them (F-74567: the lane's vfunc 9,
+    /// F-87587, at the follower's phase). The lanes, their order and successors are
     /// those of this graph; the link indices are its own.
     pub fn curved(&self, max_turn: f32) -> NavSys {
         let raw: Vec<RawLane> = self
@@ -984,7 +1055,7 @@ impl NavSys {
             let s = l.pts[0];
             let last = *l.pts.last().unwrap();
             // the last control point; the successors: the lanes starting at its vertex (the
-            // original's graph node, sub_8273BD80). (Without the index: the corner of the
+            // original's graph node, F-20639). (Without the index: the corner of the
             // bounding box opposite the start, and lane starts near it.)
             let mut end = last;
             let mut found: Vec<usize> = by_first.get(&l.vi.1).map(|v| v.iter().copied().filter(|&j| j != i).collect()).unwrap_or_default();
@@ -1257,12 +1328,12 @@ impl NavSys {
     }
 
     /// (lanes, links, links with a successor)
-    /// The lanes near `p` as the lane quadtree answers (sub_82246DB8, from sub_82249210): a node
+    /// The lanes near `p` as the lane quadtree answers (F-58446, from F-53328): a node
     /// is entered when the x / z distance from `p` to its box, squared, is at most w^2
-    /// (sub_82246B78); its children first, in the order of the table at 0x827DC710 by p's
+    /// (F-80185); its children first, in the order of the table at 0x827DC710 by p's
     /// quadrant (q = 1 when p.z - split z > -1e-6, + 2 when p.x - split x > -1e-6; q 0: 0 1 2 3,
     /// 1: 1 3 0 2, 2: 2 0 3 1, 3: 3 2 1 0), then its own lanes whose flags (+4) meet `mask` and
-    /// whose box (+10 / +20) is within w in 3D (lane slot 5 sub_82244DC0: w^2 > the squared
+    /// whose box (+10 / +20) is within w in 3D (lane slot 5 F-56243: w^2 > the squared
     /// distance), until `max` are found.
     /// A lane's road (F-86691 by lane): its owner when that is a road (flags bit 2), else the owner's parent
     /// when that is one; a junction's lanes have none.
@@ -1381,7 +1452,7 @@ impl NavSys {
     }
 
     /// Speed of the road under the car. Junctions/off-road return None so cruise
-    /// can retain its previous limit, as sub_822A25E0 does without a road object.
+    /// can retain its previous limit, as F-43388 does without a road object.
     /// This proximity lookup substitutes for the original road occupancy system.
     pub fn speed_limit_at(&self, pos: Vec3) -> Option<f32> {
         let mut nearest = None;
@@ -2075,8 +2146,8 @@ mod speed_tests {
         }
         assert_eq!(parents.into_iter().collect::<Vec<_>>(), vec![((2, 128), 23480), ((4, 128), 5060), ((16, 2), 110), ((16, 4), 3511), ((32, 2), 1239), ((32, 4), 1859)]);
         assert!(nav.links.iter().all(|l| (l.parent_flags == 2) == l.parent_zone.is_some()));
-        // a lane's junction (sub_822452F8) for exactly the lanes flagged so, and every junction's
-        // walked rails (sub_8273C1B8) are the lanes whose junction it is
+        // a lane's junction (F-41621) for exactly the lanes flagged so, and every junction's
+        // walked rails (F-42526) are the lanes whose junction it is
         assert!(nav.links.iter().all(|l| ((l.owner_flags | l.parent_flags) & 4 != 0) == nav.lane_junction[l.lane].is_some()));
         assert_eq!(nav.junction_centers.len(), 351);
         for (j, ls) in nav.junction_lanes.iter().enumerate() {
@@ -2146,7 +2217,7 @@ mod speed_tests {
             *deg.entry(c.degree).or_insert(0usize) += 1;
         }
         assert_eq!(deg.into_iter().collect::<Vec<_>>(), vec![(1, 1106), (2, 4291), (3, 4634)]);
-        // every curve's length as sub_82244E10 measures it is the stored one (+0c)
+        // every curve's length as F-50105 measures it is the stored one (+0c)
         let worst = nav.raw.iter().map(|l| (l.curve.length() - l.len).abs()).fold(0.0f32, f32::max);
         assert!(worst < 0.05, "worst length error {worst}");
         // every lane's last control point is another lane's first
@@ -2216,7 +2287,7 @@ pub fn parse_intersections(res: &crate::rsc::Resource) -> Vec<(glam::Vec3, f32, 
 
 /// A region's rectangle and box as the ambient spawners test them (the region base shared by
 /// roads and junctions: +34 / +38 the sphere test's x / z, +3c width, +40 length, +44 / +48 the
-/// height range, +50 centre, +60 direction, +70 across; sub_8224D4C0, sub_826F4E90).
+/// height range, +50 centre, +60 direction, +70 across; F-46547, F-49549).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RegionRect {
     /// the junction's index in the file's array (as `NavSys::junction_lanes`)

@@ -292,6 +292,33 @@ pub struct PropLamp {
     pub back: Vec3,
     /// the cone: sat(cos x scale + bias)
     pub cone: [f32; 2],
+    /// the fog cone's radius per metre of its length (`cone_tan`; 0 for a lamp without a cone)
+    pub cone_tan: f32,
+}
+
+/// The fog cone's half width per metre of length (LightMatrix's side axes): F-46735 on the copy of the lamp the
+/// cone pass makes (F-19533: ConeAngle x 1.077, Penumbra + a global that reads 0 - every recorded cone fits it):
+/// tan((max(penumbra, 0) + cone x 1.077) x 6.28 / 720) - 2.388 for the 125 degree street lamps, 0.190 for the
+/// 20 degree flare. Every lamp with a cone takes it, the files of Type 0 as well (the recorded 10.72 m storm kind).
+pub fn cone_tan(cone: f32, penumbra: f32) -> f32 {
+    // (F-19533's copy: fmuls by its constant 1.077, fadds of the global; F-46735: fsel, fadds, x 1/720, x 6.28, the double tan, frsp)
+    let (c, p) = (cone * 1.077, penumbra + 0.0);
+    let p = if p >= 0.0 { p } else { 0.0 };
+    (((p + c) * 0.001_388_888_9 * 6.28) as f64).tan() as f32
+}
+
+#[cfg(test)]
+mod cone_tan_tests {
+    /// The recorded LightMatrix of the street lamps (38.21 m wide at 16 m) and of the storm's 10.72 m / 25.6 m and
+    /// 12.87 m / 30.74 m kinds (LIGHTING.md, the lamps' cones): all ConeAngle 125, Penumbra -50.
+    #[test]
+    fn the_recorded_cones() {
+        let t = super::cone_tan(125.0, -50.0);
+        for (w, l) in [(38.21f32, 16.0f32), (25.6, 10.72), (30.74, 12.87)] {
+            assert!((t * l - w).abs() < 0.02, "{} x {} against {}", t, l, w);
+        }
+        assert!((super::cone_tan(20.0, 0.0) - 0.190).abs() < 0.001);
+    }
 }
 
 /// A prop's light file: (colour, intensity, cone scale and bias).
@@ -300,7 +327,7 @@ pub struct PropLamp {
 /// the 75 spot light files has the same Direction.
 const LAMP_BACK: [f32; 2] = [0.147_949_35, 0.988_994_95];
 
-fn prop_light_file(data_dir: &str, name: &str) -> Option<(Vec3, f32, [f32; 2])> {
+fn prop_light_file(data_dir: &str, name: &str) -> Option<(Vec3, f32, [f32; 3])> {
     let file = Path::new(data_dir).join("tune/lighting").join(format!("0x{:08x}", mcla_formats::hash::joaat(&format!("{}.xml", name.to_ascii_lowercase()))));
     let x = std::fs::read_to_string(file).ok()?;
     if !x.contains("<Light>") {
@@ -321,14 +348,14 @@ fn prop_light_file(data_dir: &str, name: &str) -> Option<(Vec3, f32, [f32; 2])> 
     // (Type 0 files with a cone angle are cone lamps in the original's table as well: 196 lamps of the
     // Intensity 30 / 40 types read out of it - LIGHTING_WORK.md "The lamp slots' order")
     let cone = if outer >= 359.0 {
-        [0.0, 1.0]
+        [0.0, 1.0, 0.0]
     } else {
         // lit from the inner cone (ConeAngle + Penumbra, the penumbra being negative) out to
         // nothing at ConeAngle
         let inner = (outer + attr("Penumbra", "value").unwrap_or(0.0)).clamp(1.0, outer);
         let (co, ci) = ((outer.to_radians() * 0.5).cos(), (inner.to_radians() * 0.5).cos());
         let scale = 1.0 / (ci - co).max(1e-3);
-        [scale, -co * scale]
+        [scale, -co * scale, cone_tan(outer, attr("Penumbra", "value").unwrap_or(0.0))]
     };
     Some((color, intensity, cone))
 }
@@ -1140,7 +1167,7 @@ impl Props {
         // drawn with PropLampGlassTint), or of the topmost part of the model without one.
         // (Checked on the pedestrian light by the Hollywood garage: the original's table has its
         // lamp 10.3 m up and about 1.1 m out from the prop's origin.)
-        let mut lamp_of: HashMap<usize, (Vec3, Vec3, f32, [f32; 2])> = HashMap::new();
+        let mut lamp_of: HashMap<usize, (Vec3, Vec3, f32, [f32; 3])> = HashMap::new();
         let mut lamp_box: HashMap<usize, (Vec3, f32)> = HashMap::new();
         let mut lamp_heads: HashMap<usize, Vec<Vec3>> = HashMap::new();
         for (pi, mi) in &model_of {
@@ -1325,7 +1352,7 @@ impl Props {
                             continue;
                         }
                         // (the light files point their spot down but for 8.5 degrees - Direction 90, 0, 171.47 - towards the prop's own +x: the original's table shows the props' four headings for it)
-                        prop_lamps.push(PropLamp { pos, color: *color, intensity: *intensity, back: (q * Vec3::new(LAMP_BACK[0], LAMP_BACK[1], 0.0)).normalize(), cone: *cone });
+                        prop_lamps.push(PropLamp { pos, color: *color, intensity: *intensity, back: (q * Vec3::new(LAMP_BACK[0], LAMP_BACK[1], 0.0)).normalize(), cone: [cone[0], cone[1]], cone_tan: cone[2] });
                     }
                 }
                 if signal_models.contains(&mi) {

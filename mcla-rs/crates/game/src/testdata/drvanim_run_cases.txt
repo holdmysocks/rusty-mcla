@@ -1,0 +1,6239 @@
+= 1 1 0
+play 4 0 1 1
+upd 3d4ccccd
+upd 3d088889
+upd 3c888889
+pair a 3 0 0
+five 9 1 2 a 9 3f000000 1
+upd 3d088889
+upd 3e5c7617
+upd 0
+play 5 3f000000 1 0
+upd 3d088889
+five 8 9 a 1 b 3e800000 1
+upd 3c888889
+upd 3d088889
+phase5 0
+upd 3d088889
+upd 3d4ccccd
+upd 3d4ccccd
+rate5 bf800000
+upd 3e943c7d
+upd 3d4ccccd
+upd 3d088889
+= 1 0 0
+play 6 0 1 1
+upd 3d4ccccd
+play 9 3ef4a5b4 0 1
+upd 3d088889
+play 6 3f000000 1 0
+upd 0
+upd 3d2d1f0c
+pair a 7 1 3e800000
+upd 3d4ccccd
+upd 3c888889
+upd 3d4ccccd
+five b 4 b b 1 3f3d3a1e 1
+upd 3c888889
+play2 b 3e800000 1 0
+upd 3d4ccccd
+upd 3d4ccccd
+upd 0
+overlay 7 3e4ccccd 0
+weight bf800000
+five 7 8 3 a b 3f68a54e 0
+upd 0
+upd 3c888889
+phaseall 3f800000
+upd 3d4ccccd
+phase 3f973ea0
+upd 3c888889
+pair 8 6 1 3e4ccccd
+play2 b 3e800000 0 1
+five 8 2 6 7 6 3e4ccccd 0
+upd 0
+play 2 3e4ccccd 1 0
+upd 3c888889
+upd 0
+phase2 3f000000
+upd 0
+five 9 3 7 7 6 3e4ccccd 1
+upd 3e03c1b7
+upd 3de15d06
+upd 3d088889
+upd 3d4ccccd
+play2 8 3f000000 0 0
+upd 3afa4291
+pair 7 b 1 0
+phase 3f800000
+pair 2 6 1 3e4ccccd
+upd 3d4ccccd
+upd 3d79ae9b
+upd 0
+upd 0
+upd 3d088889
+upd 3e377a17
+overlay 4 0 0
+pair 8 1 1 3e800000
+upd 3d4ccccd
+upd 3dfbf925
+play 8 3f000000 1 0
+play 8 3e800000 1 0
+rate 3f800000
+upd 3d4ccccd
+play 3 3e800000 0 0
+upd 0
+play 5 3f000000 1 0
+upd 0
+play2 8 0 0 1
+upd 3d088889
+= 1 0 1
+play b 0 1 1
+five 2 3 5 7 9 3e4ccccd 1
+upd 3d088889
+upd 3d4ccccd
+upd 3d088889
+play2 4 3e800000 0 0
+play 1 3f000000 0 0
+upd 3cf0b26f
+upd 3c888889
+upd 3e4a7c59
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3c888889
+pair 8 2 0 3ee51ed1
+upd 3d088889
+upd 3c888889
+upd 3d088889
+weight 0
+upd 3d088889
+pair 7 a 0 3da29985
+upd 3d4ccccd
+upd 3e6a7116
+overlay 8 3e800000 0
+upd 3c888889
+phase2 3ea3215a
+upd 0
+upd 3d4ccccd
+upd 3d088889
+phase2 3f800000
+upd 3c888889
+upd 3d4ccccd
+upd 0
+upd 3d8438e5
+play a 0 1 1
+rate bf800000
+upd 3c888889
+upd 0
+play2 6 3e800000 0 0
+upd 3d4ccccd
+phaseall 3f000000
+upd 3d9e51a2
+upd 0
+play 1 3f499b0a 0 0
+play 2 0 0 0
+play 3 3e800000 0 0
+overlay 8 3f000000 0
+upd 0
+five b 5 6 7 7 3dd062f3 1
+upd 3c888889
+play 8 3e2ec8eb 0 1
+upd 3d4ccccd
+upd 3c888889
+upd 3d088889
+upd 3d088889
+= 0 0 0
+play 6 0 1 1
+phase5 3d88a7ee
+upd 3d4ccccd
+upd 3d088889
+upd 3c888889
+upd 3d088889
+upd 3d088889
+upd 3e23aaa3
+upd 0
+upd 3d4ccccd
+rate 0
+upd 3c888889
+upd 3d4ccccd
+five 9 5 a 1 3 3e4ccccd 1
+play a 0 0 0
+upd 3c888889
+upd 3c888889
+upd 3d088889
+upd 3d4ccccd
+five a 6 9 1 7 0 1
+upd 3c888889
+five 9 8 b 2 b 0 1
+upd 0
+upd 3d4ccccd
+upd 3ddd72a0
+upd 3e127271
+play a 3e7a5957 1 0
+pair 1 6 1 3f000000
+upd 3e21297d
+upd 0
+upd 3e7b6b11
+upd 0
+upd 3c888889
+overlay 8 3dbe387d 1
+five 5 a 1 4 a 3e800000 0
+five 9 1 6 1 3 3e4ccccd 1
+upd 0
+upd 0
+five 5 8 1 5 4 3e4ccccd 1
+upd 0
+upd 3c888889
+upd 3d4ccccd
+upd 3d088889
+upd 3d4ccccd
+upd 3d4ccccd
+play 7 3e4ccccd 1 0
+upd 3d816a33
+upd 3d4ccccd
+rate5 bf800000
+play2 8 3e800000 0 0
+upd 3d4ccccd
+weight 0
+five b 4 3 a 4 3e800000 1
+phase2 bf800000
+five 2 6 a 2 3 3f000000 0
+upd 3d4ccccd
+phase5 0
+upd 3c888889
+upd 3d088889
+upd 3d088889
+= 1 0 0
+play 1 0 1 1
+play 4 3e6c5a96 1 0
+phase bf800000
+phase2 3f7d5e60
+upd 3e5dba13
+upd 0
+upd 0
+upd 3d4ccccd
+overlay 3 0 0
+pair 5 a 1 3f000000
+phaseall 3f800000
+play a 3e800000 0 0
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3c888889
+upd 3c888889
+play2 a 3e800000 0 0
+upd 3d4ccccd
+phase5 0
+upd 0
+rate5 3f800000
+upd 0
+play 5 3f021446 1 0
+overlay 3 3f000000 0
+upd 3d4ccccd
+upd 3c888889
+upd 3d088889
+upd 3d4ccccd
+pair 9 4 1 0
+upd 3e551e80
+upd 0
+upd 3d088889
+play 3 3e800000 0 0
+upd 3d088889
+pair 4 6 0 3e4ccccd
+phase bf800000
+upd 3c888889
+upd 3e01b01a
+upd 3e692f4f
+pair 8 a 0 3e4ccccd
+upd 3e014c24
+upd 3d088889
+upd 3d088889
+play 6 3f000000 1 0
+upd 3d088889
+phase2 bf800000
+upd 3c888889
+pair 7 2 1 3f000000
+rate5 3f800000
+play 2 3f000000 1 0
+upd 0
+five 7 3 7 9 b 3edf78fd 1
+upd 3d088889
+= 0 1 1
+play 5 0 1 1
+upd 3e2365a6
+upd 3c888889
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3c888889
+upd 3c888889
+upd 3e48eaa6
+five a 6 3 8 4 3e800000 0
+overlay 4 3ea676b9 1
+upd 3d088889
+rate5 bf800000
+five a 8 8 8 6 3e800000 0
+upd 0
+upd 3d4ccccd
+overlay 5 3e800000 0
+play2 7 3f000000 0 0
+rate bf800000
+five a 8 6 2 2 3f6a00e6 1
+upd 3c888889
+five 9 8 3 8 3 3ecc17a3 1
+upd 0
+upd 3d4ccccd
+upd 3e0c4662
+upd 3d088889
+= 0 0 1
+play 1 0 1 1
+pair 6 7 1 3f000000
+upd 3d088889
+upd 0
+upd 3d4ccccd
+play 4 0 1 0
+upd 3d088889
+upd 3bcee32e
+upd 3c888889
+play 6 3f71c47f 0 0
+upd 0
+upd 3d7bef5d
+upd 3d4ccccd
+upd 0
+five 6 a 3 9 6 3e800000 0
+upd 3e43db85
+phase be0224a8
+phase 3d8a1911
+upd 3dd214f0
+upd 3c888889
+upd 3c888889
+upd 3d088889
+phaseall 3e7814f1
+five 8 7 8 3 1 3e800000 0
+rate bf800000
+five 8 a 2 7 5 0 1
+upd 3d4ccccd
+upd 0
+upd 3c888889
+overlay 6 3e800000 0
+upd 3c888889
+upd 3d088889
+= 0 0 0
+play 7 0 1 1
+upd 3d088889
+five 2 7 1 5 a 0 1
+play2 9 3e800000 1 0
+upd 0
+upd 3d088889
+pair 9 4 0 3f0132f0
+upd 3d4ccccd
+upd 3cc615d9
+upd 3c888889
+upd 0
+upd 3d4ccccd
+upd 3d088889
+phaseall 0
+upd 3c987768
+rate 3f000000
+pair 6 8 1 0
+upd 3c9cbc87
+five 7 4 4 2 3 0 1
+upd 3e989d1f
+upd 3c888889
+play2 2 3e4ccccd 0 0
+upd 3d088889
+upd 3e1eccbd
+upd 3e80e23e
+phase 3f000000
+rate5 3f800000
+upd 0
+upd 3c888889
+upd 3e9051a3
+phase2 0
+upd 3c888889
+upd 3ce855ef
+upd 3c888889
+upd 0
+overlay 6 3f318f30 0
+upd 3e7315cc
+upd 3d088889
+phase 3eb89a44
+upd 3b79701b
+upd 3d6d83e7
+upd 0
+upd 3d4ccccd
+play2 b 3f000000 0 0
+play 8 3f4a4f6e 0 0
+phase 3f800000
+upd 3d088889
+upd 3c888889
+upd 3e8314c0
+upd 0
+play 4 3f155c8d 0 0
+phaseall 3f5bf1d2
+upd 3d4ccccd
+pair 4 2 0 3d9eed63
+phase 3f491392
+upd 0
+upd 3d088889
+upd 3d4ccccd
+upd 3d088889
+play 1 3e4ccccd 1 0
+phase5 0
+upd 3e7b6447
+play 4 3f000000 1 0
+upd 3d088889
+pair 7 2 1 3e800000
+upd 3d088889
+= 1 1 0
+play 1 0 1 1
+upd 3d088889
+pair 6 3 0 3f000000
+upd 0
+upd 3c888889
+upd 3d5bd4bd
+phase5 3f1f66f2
+upd 3cf9cc12
+phaseall 0
+upd 3e86a29f
+upd 0
+overlay 1 0 0
+upd 3d088889
+upd 3c888889
+upd 3d088889
+upd 0
+upd 3d4ccccd
+upd 3e426aaa
+upd 3c888889
+overlay 8 3f000000 0
+upd 3c888889
+play 3 0 0 0
+play a 3eef8a94 1 0
+five 2 a 1 6 6 3e4ccccd 1
+upd 3d4ccccd
+upd 3d088889
+upd 3c888889
+five 3 9 a 9 4 3f0e74fe 1
+upd 3e6f6a77
+rate bf800000
+upd 3e30ac99
+upd 3d094d70
+upd 3d088889
+upd 3d4ccccd
+phaseall 0
+upd 0
+upd 3d088889
+five b 4 a b 9 3eb1479a 0
+five 9 a 6 7 4 3e4ccccd 0
+weight 0
+upd 3d4ccccd
+weight 3f416f1e
+play 2 3e800000 1 0
+upd 3d4ccccd
+upd 3d088889
+upd 3d088889
+= 1 0 1
+play 7 0 1 1
+rate5 3f800000
+play2 4 3e800000 1 0
+upd 3d088889
+weight 3f8886f4
+upd 3e44df0a
+upd 3d4ccccd
+upd 3c888889
+upd 3d4ccccd
+upd 3d4ccccd
+pair 4 6 0 3e800000
+upd 3d4ccccd
+overlay 4 0 1
+play 8 3e800000 1 0
+upd 3d4ccccd
+upd 0
+upd 3d088889
+upd 3c888889
+pair a 4 1 3e4ccccd
+phase5 3f800000
+upd 3d4ccccd
+pair 4 b 1 3ed7974a
+upd 3d4ccccd
+play b 3e9067fa 0 1
+pair b 5 0 3f000000
+upd 3bd7561b
+upd 0
+play b 3f000000 1 0
+upd 3c888889
+weight 3e8010b6
+upd 3d4ccccd
+upd 3d088889
+upd 3d088889
+upd 3e7059a3
+upd 3d088889
+upd 3c888889
+upd 3d4ccccd
+upd 3d088889
+five 3 9 8 1 5 0 0
+upd 3c888889
+upd 3e89ef49
+phase5 bf800000
+upd 0
+upd 3d0d576d
+five 6 8 b 1 6 3e800000 1
+rate5 3f000000
+upd 3d4ccccd
+upd 0
+pair 7 7 1 0
+upd 3d4ccccd
+upd 3e1d45fd
+upd 3c888889
+upd 3d4a3e3e
+upd 0
+phaseall 3ebf964c
+upd 3d088889
+upd 3c888889
+play 2 3e4ccccd 1 0
+play 7 3e800000 1 0
+upd 3d088889
+upd 3d088889
+upd 3d088889
+upd 3d4ccccd
+play2 9 3e800000 0 1
+upd 3d4ccccd
+five 7 2 a 6 b 3f4ade50 1
+upd 3d4ccccd
+pair 9 6 1 3e4ccccd
+upd 0
+upd 3d4ccccd
+upd 3d4ccccd
+five 3 a 6 6 8 3e4ccccd 1
+upd 3d088889
+five 1 a 5 b 2 3e4ccccd 1
+pair a 7 1 0
+upd 3c888889
+play 4 3e800000 1 1
+upd 3d088889
+= 0 0 0
+play 4 0 1 1
+upd 3d088889
+upd 3d4ccccd
+rate bf800000
+upd 3d4ccccd
+upd 3e0e2ebf
+upd 3d1b0412
+phaseall bf800000
+upd 0
+five 3 2 8 8 7 0 0
+upd 3d4ccccd
+upd 3d088889
+upd 0
+play 2 3f000000 1 0
+upd 0
+upd 0
+phase 3f000000
+upd 3e1ad3fd
+phase5 3f800000
+rate 3f800000
+upd 3e1f717d
+phase2 bf800000
+rate 3f000000
+play 3 3e800000 0 0
+phase2 3f82cc82
+phase5 3e90a63e
+weight 3f000000
+play b 3e800000 1 1
+pair 4 9 0 3f000000
+upd 0
+upd 3e75f7b8
+upd 3d088889
+upd 3e7b2647
+upd 0
+upd 3d088889
+play 3 3f2241fa 0 0
+upd 3d4ccccd
+play b 3ee70108 0 0
+upd 3d4ccccd
+upd 3d088889
+upd 3d4ccccd
+upd 3cc93290
+phase2 bf800000
+upd 0
+upd 3d4ccccd
+weight 3f800000
+upd 3e3cf10f
+play 5 3f08a892 0 1
+upd 3c888889
+play2 7 3f000000 0 1
+rate5 3f800000
+upd 3d088889
+upd 3d088889
+= 1 0 0
+play 5 0 1 1
+upd 3dc15694
+upd 3d088889
+upd 3c888889
+upd 3c888889
+play a 3e800000 0 0
+upd 0
+upd 3d4ccccd
+weight 3f800000
+play 2 3e800000 0 0
+upd 3c888889
+upd 3c888889
+upd 3e4a1134
+upd 3d4ccccd
+upd 3d088889
+upd 3c888889
+upd 3c888889
+play 4 0 1 1
+upd 3d088889
+upd 3d088889
+upd 0
+upd 0
+upd 3d4ccccd
+upd 3d4ccccd
+play 5 3e4ccccd 0 0
+upd 3d088889
+upd 3e89a9a5
+upd 3e1d6e08
+upd 3d088889
+upd 0
+upd 3d088889
+= 1 0 1
+play 9 0 1 1
+five 5 1 9 b a 0 1
+upd 3ca33520
+pair 8 8 1 0
+play 3 0 0 0
+upd 3cac2a69
+phase2 3f000000
+upd 3d088889
+upd 3e96b576
+phase bf800000
+pair 7 2 0 3e800000
+phase 3f800000
+upd 3d088889
+rate5 0
+upd 3d4ccccd
+rate bf800000
+upd 3d4ccccd
+pair 4 1 1 3f000000
+play 4 0 1 0
+play 4 3e800000 1 1
+weight 0
+upd 3de8b745
+upd 0
+upd 3d4ccccd
+play a 3f000000 1 0
+upd 0
+upd 3c888889
+upd 3d088889
+upd 3d088889
+upd 3d088889
+rate5 3f800000
+play2 b 3e800000 0 0
+play 5 3e4ccccd 0 0
+play 4 0 0 1
+upd 3d4ccccd
+upd 0
+upd 0
+overlay 1 3e4f6a2f 0
+upd 3e8396b8
+upd 3d088889
+play2 1 3f000000 0 0
+upd 3d64ccc0
+upd 3c888889
+play2 1 3e4ccccd 0 1
+upd 3d088889
+= 1 0 1
+play 7 0 1 1
+upd 3d4ccccd
+upd 0
+upd 0
+upd 3d4ccccd
+five 2 1 2 8 7 3f000000 0
+upd 0
+pair 1 3 0 3d9b2bf8
+upd 3d4ccccd
+upd 3d088889
+weight 3f000000
+five 5 8 9 9 4 3f5fc071 1
+upd 0
+upd 3e2e3538
+upd 3e09c55b
+overlay 3 0 0
+upd 3cb1859d
+overlay 4 3e800000 0
+phase2 3f000000
+upd 3c888889
+upd 3d4ccccd
+upd 3d088889
+upd 3d4ccccd
+upd 0
+five 2 1 7 9 b 3f000000 1
+phase5 3f2706de
+upd 3d088889
+upd 0
+phase5 3f800000
+upd 3c888889
+upd 0
+upd 3d4ccccd
+upd 0
+play2 6 3e800000 1 1
+upd 3c888889
+pair a 4 0 3e4ccccd
+phaseall bf800000
+play 2 3f000000 1 1
+upd 3d4ccccd
+upd 3d088889
+phase5 bf800000
+phase5 3f800000
+upd 3d088889
+= 0 0 0
+play 3 0 1 1
+upd 3d4ccccd
+upd 0
+phase bf800000
+upd 0
+upd 3e909271
+play 7 3e800000 1 1
+five 1 8 b 8 a 0 1
+pair 9 7 0 3ec7099b
+upd 3d088889
+upd 3e8092f4
+upd 3c888889
+upd 0
+play2 a 0 0 0
+upd 3c888889
+upd 3d088889
+weight 3f000000
+upd 3d83176a
+upd 3e327dd3
+upd 0
+overlay 8 0 0
+upd 3e295575
+play 8 3f000000 0 1
+upd 3e853fa6
+upd 3d088889
+upd 3c888889
+phaseall 3f000000
+upd 0
+upd 3d4ccccd
+play2 7 3f000000 1 0
+upd 3c888889
+upd 3c888889
+play 4 3e800000 0 0
+upd 3d088889
+pair 7 6 1 3e4ccccd
+upd 3e0c7f97
+upd 3c888889
+upd 3e62c916
+overlay 2 3e4ccccd 0
+pair 4 8 0 3e800000
+play 2 3e4ccccd 1 1
+phase2 3f800000
+upd 3d91bc4e
+upd 3d4ccccd
+play 5 3e800000 0 0
+upd 3d088889
+= 0 0 0
+play 6 0 1 1
+upd 3d4ccccd
+upd 3e13b64a
+upd 3de8e589
+upd 3e937242
+upd 0
+upd 0
+phase5 3f800000
+overlay 4 3e800000 1
+pair 3 a 1 3f3d5c24
+upd 3d4ccccd
+play 5 3ebd86a2 1 1
+upd 0
+upd 0
+upd 3d4ccccd
+pair 2 5 1 3dbdf9f6
+upd 0
+upd 0
+upd 0
+upd 0
+upd 3c888889
+phase bf800000
+upd 3d4ccccd
+play 1 3e800000 0 0
+upd 3e5a5695
+pair 9 a 0 3e800000
+upd 3d4ccccd
+upd 3c888889
+play 7 3e4ccccd 0 0
+upd 3dd8fa42
+rate 3f000000
+upd 3d088889
+upd 3d088889
+upd 3d4ccccd
+upd 3dab889b
+phase 0
+five 3 4 8 8 4 0 0
+overlay 8 0 0
+upd 3c888889
+upd 0
+upd 3c888889
+five 5 6 b 7 3 3e4ccccd 0
+upd 3e79045c
+five 2 4 5 a 4 3f000000 0
+overlay 1 3e800000 1
+upd 3d088889
+overlay 1 3e800000 1
+upd 3d4ccccd
+upd 3d088889
+upd 3d4ccccd
+upd 3d088889
+upd 3d088889
+upd 0
+upd 3c888889
+upd 0
+upd 0
+upd 3d4ccccd
+upd 3c888889
+upd 3d4ccccd
+upd 3d4ccccd
+weight 3f1bf734
+phase5 0
+play2 9 3e4ccccd 1 0
+upd 0
+five 5 9 7 4 8 3f000000 1
+upd 3d088889
+upd 3d088889
+= 0 0 1
+play 4 0 1 1
+upd 0
+upd 0
+play 4 3f000000 0 0
+play 8 3f000000 0 0
+upd 3d4ccccd
+phase5 3d834b2b
+upd 3c888889
+upd 3d4ccccd
+upd 3d4ccccd
+play 2 3e800000 0 0
+upd 3d088889
+play 6 3e800000 1 0
+five 7 5 b b 1 3f000000 0
+upd 3c888889
+upd 3e6c2712
+five 7 4 b 9 b 3e4ccccd 1
+five a b a 9 5 0 0
+upd 0
+upd 3e3d1193
+pair a 4 1 0
+upd 3c888889
+five 5 7 a b a 3eb4a12d 0
+upd 3d088889
+upd 3d088889
+= 1 0 0
+play 7 0 1 1
+upd 3d088889
+upd 3d4ccccd
+phase2 3f800000
+pair 9 3 1 3e800000
+upd 3d4ccccd
+upd 0
+upd 0
+play2 2 3d695d33 0 1
+play 3 3e4ccccd 1 0
+upd 0
+upd 3c888889
+rate 0
+upd 3d4ccccd
+overlay 9 3f000000 1
+rate5 3f000000
+play 7 3f000000 0 1
+rate5 3f800000
+pair 7 4 1 3e4ccccd
+phase 3f96f297
+upd 3d4ccccd
+phase5 3f800000
+upd 3c6da4b5
+upd 3d088889
+= 0 0 1
+play 9 0 1 1
+play 9 3e4ccccd 0 0
+upd 3c888889
+phase2 3ea26973
+play 9 3f3d8fa3 0 1
+upd 3d4ccccd
+upd 3c888889
+pair 2 a 1 3f7bf2b2
+upd 3d088889
+upd 3d088889
+play b 3f000000 1 0
+pair 7 a 0 3d961ab8
+pair 7 1 1 3f000000
+upd 3c888889
+play2 a 3e800000 1 0
+play 7 3e800000 0 0
+upd 0
+phase5 3f800000
+upd 3ccd64b5
+weight bf800000
+play 3 3e4ccccd 1 0
+upd 3c888889
+phase2 3f96a462
+upd 3c888889
+upd 3c888889
+upd 3d4ccccd
+upd 0
+upd 3c888889
+play a 3e4ccccd 1 0
+upd 3c888889
+upd 3c888889
+upd 3c888889
+upd 3c888889
+upd 3e255e5e
+pair 8 4 1 3e800000
+play2 8 0 0 0
+overlay 3 3f0ccccf 1
+phaseall 3f000000
+upd 3d4ccccd
+upd 0
+upd 3d4ccccd
+upd 3d088889
+upd 3d4ccccd
+upd 3c888889
+play 7 3e9edd33 0 1
+upd 3d088889
+upd 3d088889
+upd 3dcd9128
+phaseall bf800000
+upd 3d088889
+upd 3c888889
+upd 3c888889
+upd 3d4ccccd
+overlay 8 3e800000 0
+upd 3d4ccccd
+play 5 3f000000 1 0
+overlay 9 3efeeaeb 0
+upd 0
+upd 3c888889
+upd 3e9716e8
+upd 3d4ccccd
+upd 3c888889
+upd 3c888889
+upd 3d4ccccd
+rate bf800000
+upd 3d4ccccd
+upd 3d088889
+= 0 0 0
+play 4 0 1 1
+upd 3d4ccccd
+upd 0
+play 6 3f02303b 0 0
+upd 3d4ccccd
+phase2 3f5b4a47
+weight 3f800000
+pair 2 4 0 0
+upd 3c888889
+upd 3d088889
+upd 3c888889
+play 4 3f000000 0 0
+upd 3d864a5a
+play a 3f000000 1 1
+phase 3ecb7747
+upd 3d088889
+pair 1 a 1 3e4ccccd
+upd 3e3c2d19
+upd 0
+upd 3c888889
+upd 0
+rate5 0
+overlay 2 3e800000 0
+play 5 3e800000 0 0
+five 7 8 2 5 6 0 1
+upd 3c888889
+upd 3d4ccccd
+upd 3d088889
+phase 3f2a8d5d
+upd 3c888889
+pair 3 4 0 3f24811e
+upd 3d088889
+upd 3d4ccccd
+upd 3d088889
+= 1 0 0
+play b 0 1 1
+upd 3d4ccccd
+upd 0
+five 3 3 1 7 1 3e800000 1
+upd 3c888889
+upd 3dba0d27
+upd 3d088889
+play a 3e4ccccd 0 0
+rate5 3f000000
+upd 3d809721
+upd 0
+upd 3e5a870e
+upd 3e003d69
+play b 3e4ccccd 0 0
+upd 0
+upd 0
+upd 0
+rate5 bf800000
+upd 3d088889
+five a a 9 3 4 3dc68a1f 1
+upd 3d4ccccd
+upd 3e041f6c
+upd 3e82e4a4
+upd 0
+upd 3c888889
+upd 3c95c4bb
+upd 3c888889
+upd 0
+upd 3e0f3258
+upd 3d088889
+= 1 0 1
+play 8 0 1 1
+upd 3d4ccccd
+upd 3d088889
+overlay 5 3f000000 1
+upd 3d4ccccd
+pair 9 5 0 3f275567
+play 6 3e800000 0 1
+upd 0
+upd 3e23fff1
+upd 3e806978
+upd 3c888889
+upd 3e3a67f0
+upd 0
+upd 3d088889
+upd 0
+pair 7 b 1 3e800000
+pair b 9 0 3e800000
+upd 3d4ccccd
+play 7 0 1 0
+pair 1 b 0 3e4ccccd
+upd 0
+upd 3d088889
+= 1 0 0
+play a 0 1 1
+upd 3d088889
+pair 7 6 1 3e800000
+upd 3d4ccccd
+upd 3d088889
+upd 3c888889
+upd 3d088889
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3ddc303c
+pair 2 9 1 3f000000
+upd 0
+upd 3c888889
+upd 0
+rate 3f800000
+upd 3c888889
+upd 3d4ccccd
+pair 9 4 1 3f000000
+upd 0
+five 8 b 9 7 6 0 1
+upd 3e85401a
+upd 3d088889
+upd 0
+upd 0
+upd 0
+upd 0
+upd 3d820bf4
+phase5 3f098fd6
+upd 3dbf961e
+phase5 0
+rate5 3f7948b8
+upd 3c888889
+upd 3d088889
+upd 3e55dfd9
+upd 3d088889
+= 0 0 1
+play 1 0 1 1
+upd 0
+pair 9 a 0 3e800000
+pair 9 a 0 3e4ccccd
+upd 3d088889
+upd 3c888889
+phase bf800000
+five 5 2 b 5 4 3ecaea86 0
+upd 0
+weight 3f000000
+upd 3d088889
+upd 3d4ccccd
+upd 3d088889
+upd 3d4ccccd
+phase5 bf800000
+rate bf800000
+upd 3d4ccccd
+pair 6 4 1 3f076b21
+upd 3df68fbe
+upd 3d088889
+upd 3d4ccccd
+upd 3e81e372
+pair 5 3 1 3f000000
+upd 3d4ccccd
+upd 3c888889
+upd 0
+upd 3d19c0b0
+upd 3d088889
+five 5 5 4 4 2 3e800000 1
+phase2 bf800000
+play 6 3e4ccccd 0 1
+upd 3c888889
+upd 0
+play b 3e4ccccd 0 0
+phase5 0
+upd 0
+play 2 3e800000 0 0
+upd 3d4ccccd
+upd 3e3cfe95
+weight 3f800000
+upd 3d4ccccd
+upd 0
+upd 3d4ccccd
+upd 3c888889
+upd 3d4ccccd
+upd 3c888889
+play 2 3e4ccccd 1 0
+upd 3d4ccccd
+upd 0
+upd 3d088889
+upd 3e10768c
+play 2 0 1 0
+upd 3d4ccccd
+upd 0
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d96d2a5
+phaseall bf800000
+upd 3d088889
+play 9 0 0 1
+phase bf800000
+upd 3d4ccccd
+upd 3d088889
+= 0 0 1
+play 4 0 1 1
+upd 3d088889
+rate bf800000
+upd 0
+upd 3d4ccccd
+upd 3d088889
+upd 3c888889
+overlay 2 0 1
+upd 3bd2253f
+upd 3d088889
+upd 3c888889
+upd 3d4ccccd
+five 8 9 5 5 6 3e800000 0
+upd 3de5b8c2
+upd 0
+five 3 4 8 9 3 3e51e461 0
+upd 3d4ccccd
+play b 3f3e3895 0 1
+play2 1 3e800000 0 0
+upd 3e010955
+upd 3d4ccccd
+upd 3c888889
+rate5 3f800000
+upd 3d088889
+upd 3cf54c49
+upd 3d4ccccd
+weight bf800000
+play 9 3f000000 0 1
+upd 3d4ccccd
+upd 3d088889
+= 1 0 0
+play 9 0 1 1
+upd 3e81e8d4
+upd 3d4ccccd
+upd 3d088889
+upd 3c888889
+upd 3c888889
+weight 3f000000
+play 5 3f000000 1 0
+phase2 bf800000
+upd 0
+rate 3f000000
+phase 0
+pair 5 7 0 3e800000
+upd 3d435d32
+overlay 5 3f57e291 0
+upd 3c888889
+phase2 3dd4db42
+upd 3d088889
+play2 5 3e800000 1 1
+rate5 0
+pair 4 3 0 0
+five b 4 3 2 9 3e4ccccd 1
+pair a 5 0 3e800000
+upd 3e7f28e1
+play2 2 3f1d7d62 0 0
+overlay 6 3f000000 0
+upd 3c888889
+pair 6 6 0 3e800000
+upd 3d4ccccd
+upd 3c888889
+pair 8 1 1 3e4ccccd
+upd 3d320de4
+play 1 0 0 0
+pair 2 3 0 3f000000
+upd 3c888889
+upd 0
+play 8 3f67507d 0 1
+play 4 3f000000 0 1
+play 3 3f01dadf 0 0
+play 6 3f29b28c 1 0
+upd 0
+phaseall 3f72fb2f
+pair 6 1 0 3f000000
+phase5 3f800000
+play2 5 3f000000 1 0
+play b 3f000000 0 0
+pair 7 a 0 0
+upd 3d088889
+upd 3c888889
+upd 3d4ccccd
+phase2 0
+upd 3de939bd
+upd 0
+play 8 3e4ccccd 0 0
+upd 3c888889
+upd 3c888889
+upd 3dce603e
+rate5 3f000000
+five 8 2 3 a 1 3f000000 0
+play 7 3e3a58ac 0 0
+pair 9 8 0 3e255c38
+upd 3d7551c0
+upd 0
+pair 2 3 0 3e4ccccd
+upd 3d4ccccd
+overlay 8 0 0
+rate 3f000000
+pair 4 3 0 3e800000
+upd 3d088889
+upd 0
+upd 3c888889
+upd 3d088889
+= 0 0 1
+play 1 0 1 1
+weight 3f800000
+upd 3da3fc11
+pair a 7 1 3f000000
+upd 0
+overlay 3 3e4ccccd 0
+weight 3f800000
+pair 7 a 1 3f000000
+upd 3d4ccccd
+phase5 3f8d8cb1
+upd 3d088889
+upd 3c888889
+play 8 0 0 0
+upd 3d89aae0
+overlay 8 3f000000 0
+pair 4 a 1 3f000000
+rate5 3f000000
+upd 3c888889
+upd 3c888889
+upd 3e44fa5f
+upd 3d4ccccd
+upd 0
+upd 0
+overlay 7 0 1
+upd 3e70efd2
+upd 0
+upd 3d088889
+play2 7 3e800000 1 0
+five 8 5 a b a 3e49c67e 0
+upd 3c888889
+rate5 0
+play 8 3f0150b7 1 0
+overlay 7 3e800000 1
+upd 3db0bca7
+upd 3e63f1c0
+upd 3e8b2c19
+rate 3f000000
+play 4 3e800000 0 0
+upd 3d088889
+upd 3e84032d
+phaseall 3f800000
+upd 3d4ccccd
+pair 5 b 1 3f43a3b3
+play 1 3e4ccccd 1 1
+phase 3f340236
+upd 3d088889
+five b b 8 3 a 3f000000 0
+play 2 3e800000 0 0
+play 5 3e4ccccd 0 0
+pair b a 1 0
+five a 3 4 1 9 3ef6f057 1
+upd 3d275ecf
+upd 3d088889
+= 0 0 1
+play 6 0 1 1
+upd 0
+five 7 5 8 3 a 3f000000 1
+upd 3e807e2d
+play 1 3e800000 0 1
+overlay b 3f000000 0
+rate bf800000
+overlay 4 0 1
+upd 3d088889
+upd 3d4ccccd
+upd 3e633898
+five a 6 7 6 3 0 1
+five b 6 b 4 9 3f1b9faf 0
+upd 0
+play 2 3eb8285a 1 0
+overlay 5 3f000000 0
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d088889
+upd 3c888889
+upd 0
+play 3 0 0 0
+upd 3d088889
+play a 3f631466 1 0
+upd 3c888889
+upd 0
+upd 3e94ffe6
+phaseall 0
+rate bf800000
+upd 0
+upd 3d088889
+upd 3d088889
+pair 8 b 1 3f6f6660
+pair a 9 1 0
+play 4 3f000000 1 1
+upd 3c888889
+upd 3d4ccccd
+five 1 5 3 2 b 3f000000 0
+play 9 3f109fb9 1 0
+upd 3d4ccccd
+upd 0
+overlay a 3e4ccccd 1
+upd 3d088889
+= 0 0 1
+play 7 0 1 1
+phase5 3f7ff135
+pair 4 1 1 3f1e1590
+phaseall 0
+play 3 3e800000 1 1
+upd 3c888889
+overlay 7 3e800000 1
+pair 8 8 0 0
+five 3 6 b b b 3ebc7075 1
+play 4 0 0 0
+play2 3 3f48a58d 0 1
+upd 0
+upd 3c888889
+upd 3dc0a257
+play 8 3e800000 0 0
+upd 0
+overlay b 3e800000 0
+upd 3c888889
+upd 3d4ccccd
+upd 3c888889
+upd 3c888889
+play2 8 3f000000 0 1
+phase 3f000000
+upd 3d088889
+upd 0
+upd 3c888889
+play b 3e4ccccd 0 0
+five 4 6 5 2 b 3f000000 1
+upd 0
+upd 3d088889
+upd 3d4ccccd
+upd 3d088889
+upd 3c888889
+upd 3d088889
+upd 0
+upd 0
+upd 3d088889
+upd 3c888889
+overlay 2 3e4ccccd 0
+rate 3f800000
+upd 3c888889
+phaseall 3f000000
+play 9 3f000000 0 0
+upd 3d4ccccd
+play 7 3f43737f 0 0
+play 6 3e4ccccd 0 0
+five 1 6 7 9 5 3e800000 0
+upd 3d088889
+overlay 2 0 0
+play 9 3e800000 1 0
+upd 0
+upd 3e0cab74
+five 6 8 9 3 4 0 1
+upd 3d4ccccd
+upd 3d088889
+rate5 bf800000
+upd 3d088889
+= 0 0 1
+play a 0 1 1
+upd 3c888889
+overlay 2 3e4ccccd 0
+upd 3cd522a2
+play a 3e4ccccd 0 1
+upd 0
+upd 3c888889
+upd 0
+upd 3d4ccccd
+upd 3d088889
+upd 3c888889
+upd 3d088889
+five 1 4 1 9 5 0 0
+upd 3c888889
+pair 5 4 0 3f000000
+pair 2 9 0 3e800000
+upd 3c888889
+upd 3c888889
+play 5 0 0 1
+play 1 3e800000 1 0
+upd 3c888889
+upd 0
+play 9 3e800000 0 1
+five 6 5 8 8 b 3e800000 1
+upd 3d852738
+upd 3e23955f
+upd 0
+upd 3d4ccccd
+upd 3d4ccccd
+pair b 8 0 0
+upd 3d4ccccd
+play 8 3e4ccccd 1 0
+play2 7 3e800000 0 0
+upd 3e19152b
+upd 3d088889
+upd 3d4ccccd
+upd 3d088889
+upd 3d4ccccd
+upd 3d088889
+rate bd66ef60
+weight bf800000
+upd 3d088889
+upd 3e849f0a
+upd 3c888889
+upd 3d088889
+upd 0
+upd 3d4ccccd
+play 3 3f000000 0 0
+play 3 3e800000 1 1
+upd 0
+upd 3d088889
+upd 3d25b016
+upd 0
+upd 3d9b2968
+upd 3c888889
+play b 3f497867 0 0
+play b 3f000000 1 0
+rate 3f85705b
+upd 3d4ccccd
+pair 3 b 0 3f331c79
+play a 3e4ccccd 0 0
+upd 3d088889
+play2 7 3f000000 0 0
+rate5 3f000000
+play2 8 3e4ccccd 1 0
+pair 2 8 1 3db2c5b0
+five 6 a 5 6 a 3f1062f1 1
+upd 3d382bab
+upd 3d088889
+upd 3c888889
+upd 3e6ead17
+pair 1 1 0 0
+play2 1 3e4ccccd 0 0
+upd 3d4ccccd
+phaseall 3f000000
+upd 3d088889
+= 0 1 0
+play 7 0 1 1
+upd 3c888889
+upd 3e93ff72
+upd 3d4ccccd
+upd 3d088889
+upd 0
+five b 3 b 2 2 3f000000 1
+upd 3e030a74
+upd 3d4ccccd
+play b 3e4ccccd 0 0
+rate5 3f000000
+upd 0
+upd 0
+upd 3e650ed7
+upd 3d088889
+upd 3e8c6d78
+upd 3d088889
+pair 4 2 1 0
+five 3 b 6 4 7 3e800000 1
+play2 3 3f000000 0 0
+upd 3e7b31f6
+pair 3 8 0 3f000000
+upd 3d088889
+upd 0
+upd 3c888889
+upd 0
+play 3 3e4ccccd 0 0
+five 1 a b b 1 3e4ccccd 0
+upd 3c888889
+upd 3d4ccccd
+upd 0
+play 4 0 1 1
+upd 3e2ccb20
+upd 3e6c8dc1
+upd 3d4ccccd
+upd 3d4ccccd
+play 5 3f000000 1 1
+upd 3c888889
+upd 3c888889
+phaseall 3f000000
+upd 3d088889
+upd 3c888889
+upd 3c888889
+five a b a 6 7 0 0
+upd 3d4ccccd
+upd 3d088889
+upd 3d088889
+upd 3e1a5545
+upd 0
+play a 3f472512 0 0
+upd 3d088889
+upd 3d4ccccd
+upd 3d4ccccd
+play2 5 3f03f5c2 1 0
+weight 3f000000
+five 7 5 1 6 4 3f000000 0
+upd 3e528e85
+upd 0
+overlay 4 3e800000 1
+upd 3c888889
+phase2 3f689dda
+play 1 3f7f9123 0 1
+upd 3e20acfe
+upd 3d4ccccd
+upd 3e69b4e2
+five 5 6 2 9 a 3f000000 0
+phase2 3f000000
+upd 3d2808a6
+play b 3e800000 0 0
+upd 3d4ccccd
+upd 3d088889
+= 1 0 1
+play 1 0 1 1
+rate5 0
+upd 3d088889
+upd 3e84e26b
+weight 3f800000
+upd 0
+upd 0
+upd 3d4ccccd
+upd 3e6f35d3
+upd 3df63833
+upd 0
+upd 3e1c0722
+upd 0
+pair 7 7 0 0
+overlay 8 0 0
+play 4 0 1 1
+upd 3e31073e
+upd 0
+play2 3 3f000000 0 0
+upd 3d4ccccd
+upd 0
+play 5 3f000000 1 0
+upd 3ddde997
+upd 3d4ccccd
+upd 0
+upd 3d088889
+phase5 3f800000
+upd 3e4d4020
+play 4 3f5f120d 1 0
+play 9 3e800000 1 1
+upd 3c478e49
+rate5 bf800000
+upd 3d4ccccd
+phase2 3f800000
+phase5 3e1b0cbc
+upd 0
+rate5 3f0fed96
+rate 3e4918a2
+upd 3d088889
+upd 3c888889
+play 4 3f33d162 0 1
+phaseall 3f800000
+upd 3e1021a7
+play2 a 0 1 0
+upd 3d088889
+upd 3e9568c2
+five a 1 1 6 9 3e800000 1
+play 8 3e4ccccd 0 0
+upd 3d088889
+upd 3d088889
+upd 3c888889
+upd 3d088889
+play 6 3e800000 1 0
+upd 3e06a192
+upd 0
+pair a 6 1 3f000000
+five 1 6 4 5 1 3f7020e7 1
+pair 1 a 0 0
+play2 b 3f59c4d4 0 0
+upd 3c2287ce
+upd 3c888889
+upd 3d766a0a
+play2 b 0 0 0
+upd 0
+play 2 3e800000 1 0
+pair 9 6 0 3f21faf6
+pair 7 1 0 3f000000
+phase5 3f000000
+upd 3d4ccccd
+five b 3 4 2 6 3f000000 1
+upd 0
+upd 0
+upd 3d4ccccd
+upd 3d44eb00
+phaseall 0
+play 7 3e800000 1 0
+upd 3d088889
+= 0 0 1
+play 3 0 1 1
+upd 0
+play b 3f000000 0 0
+upd 3dafefb3
+play2 9 0 1 0
+upd 3c888889
+play 3 3d6f27a6 1 1
+play2 8 3e4ccccd 0 1
+play b 3f000000 0 0
+upd 3c888889
+play 3 3f000000 1 0
+upd 3e157574
+upd 3e639ee9
+play2 8 3e4ccccd 1 0
+play 9 3e4ccccd 1 0
+rate5 bf800000
+upd 0
+upd 3c888889
+upd 3c888889
+pair 4 a 1 3e4ccccd
+upd 3d4ccccd
+phaseall bf800000
+pair 7 5 1 3f17ebb5
+upd 0
+phase2 bf800000
+upd 3d088889
+upd 0
+upd 3cb3121c
+upd 3d248725
+play 8 3ebf55b5 0 0
+upd 3d088889
+pair 3 b 0 0
+upd 3d088889
+upd 3d088889
+pair a 9 1 3f000000
+upd 3d088889
+upd 3d3e5d22
+play b 3f000000 1 0
+upd 0
+upd 0
+phase2 3f000000
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d8d229f
+upd 3d088889
+upd 3e4388de
+upd 3d4ccccd
+upd 3c888889
+upd 0
+upd 3d4ccccd
+upd 3d8e3512
+upd 3d088889
+= 1 0 0
+play a 0 1 1
+upd 0
+phase 3f800000
+upd 3d088889
+phase5 bf800000
+five b 3 8 3 7 3e800000 1
+play2 6 3f000000 1 0
+upd 3c888889
+upd 3dcbd256
+upd 0
+upd 3d088889
+upd 0
+upd 3d4ccccd
+upd 3d4ccccd
+pair a 6 0 3f000000
+play 6 3e4ccccd 1 0
+upd 3b947daf
+phase 3f000000
+overlay b 3e4ccccd 1
+upd 3c888889
+upd 3e862d23
+play 3 3f000000 1 0
+upd 3d088889
+play b 3f000000 1 1
+upd 3d113471
+upd 3c888889
+pair 9 6 1 3f000000
+pair 9 6 0 0
+play 1 3e4ccccd 1 0
+play 6 3f540347 1 0
+play 3 3e800000 0 0
+upd 3d088889
+five a 1 8 3 7 3f000000 1
+upd 3c888889
+upd 3d4ccccd
+weight 3f800000
+upd 3c888889
+play 4 0 1 0
+five 8 2 8 3 a 3e4ccccd 1
+play 6 3f53ec73 1 0
+upd 3e88fe29
+upd 3e79f5da
+five b 6 8 3 6 0 0
+upd 3e462c8f
+pair 4 2 1 3e800000
+phaseall 0
+upd 3d4ccccd
+phase5 3f000000
+upd 3d4ccccd
+weight 3f800000
+upd 0
+phase 3f800000
+upd 3c888889
+pair 8 1 0 0
+upd 3d7ab815
+five 9 b 8 5 1 0 1
+upd 3d4ccccd
+five 2 2 b b b 3edc2aa2 1
+upd 3d0c22af
+phase 3f800000
+upd 3d4ccccd
+pair 2 9 0 3e83a1e7
+upd 3e8f4913
+upd 3e3782e8
+upd 3d088889
+upd 3d9c214a
+upd 3e51b504
+upd 3d4ccccd
+upd 3d088889
+upd 3c888889
+overlay 9 3e800000 1
+upd 3c888889
+upd 3c888889
+play 1 0 1 0
+upd 3d088889
+play 5 3f000000 1 0
+pair 8 8 1 3f000000
+upd 3d088889
+= 0 0 0
+play 3 0 1 1
+upd 0
+five 4 8 4 7 3 3e800000 0
+upd 3e4655f7
+upd 3c888889
+phaseall 3f800000
+phaseall bf800000
+play 1 3f0e41ef 1 0
+phaseall 3f000000
+pair 7 5 0 3e4ccccd
+upd 0
+upd 0
+upd 0
+rate 3f800000
+play 6 3e4ccccd 0 0
+pair b 1 1 3e4ccccd
+five a b 5 4 2 3e800000 0
+play a 3f000000 1 1
+upd 3d4ccccd
+rate5 3e772fb0
+rate 0
+upd 0
+upd 3d088889
+upd 0
+upd 3c888889
+upd 3d088889
+phase2 3f000000
+upd 3c888889
+upd 0
+upd 3d088889
+upd 3c888889
+upd 3d088889
+weight 3d42ccfc
+upd 3d088889
+upd 3d088889
+= 0 0 1
+play 3 0 1 1
+rate5 3f000000
+upd 3c888889
+play2 4 3e3d0289 0 0
+upd 3e68f515
+upd 3c888889
+upd 3d4ccccd
+upd 0
+upd 3d4ccccd
+upd 3d4ccccd
+five a 5 1 2 6 3eeae7bf 1
+rate 0
+upd 3d4ccccd
+upd 0
+play 9 3f727ec0 0 1
+upd 3d088889
+play 8 3e800000 0 1
+play2 a 3e800000 1 0
+upd 3e1d23aa
+rate 0
+upd 3d4ccccd
+rate5 3e864e37
+upd 0
+upd 3d088889
+upd 3d088889
+pair 2 b 0 3f000000
+upd 3e8e34b5
+play 2 3e800000 1 0
+upd 3d088889
+upd 3e61c495
+rate5 3f000000
+upd 3d088889
+upd 3c888889
+upd 3c888889
+upd 3c888889
+play 1 3f000000 1 0
+rate5 3f800000
+phase 3f800000
+upd 0
+play b 0 1 1
+upd 3c888889
+pair 5 3 0 3e4ccccd
+upd 3dda9ef5
+play a 3f000000 1 0
+upd 3e548715
+upd 3c888889
+overlay 1 3f000000 1
+play 3 3f1d8035 1 0
+phaseall 0
+upd 3d4ccccd
+play2 9 3f000000 1 0
+upd 3c888889
+phaseall 3f800000
+weight 0
+play 9 3f000000 1 0
+phase 3f800000
+upd 0
+upd 3c888889
+phase2 3f000000
+upd 3c888889
+play2 9 3f000000 0 0
+play 4 3e800000 0 1
+upd 3d088889
+upd 3b0cd9f4
+upd 3c888889
+upd 3d4ccccd
+upd 0
+weight 3f7fd893
+play 1 3e800000 1 1
+play 8 3f000000 0 0
+phaseall 3f800000
+upd 0
+play 8 3e4ccccd 1 0
+upd 3e07f6cd
+rate 0
+play2 2 3f000000 1 0
+phaseall 3f000000
+upd 3e5752c3
+rate5 bf800000
+upd 3e4d5fa4
+upd 3d088889
+= 0 0 1
+play 8 0 1 1
+phase2 bf800000
+upd 0
+upd 3c888889
+upd 3d088889
+upd 3e7b5dd9
+five 5 5 3 8 1 3f000000 1
+five 7 9 3 6 5 3f000000 1
+phase5 3f000000
+overlay 6 3e4ccccd 1
+upd 0
+upd 3e72d8cb
+rate 3f800000
+play b 0 1 0
+play 8 0 1 0
+upd 0
+upd 3d4ccccd
+phase2 bf800000
+upd 3c888889
+pair 3 b 1 3f0a3c03
+weight 3f000000
+upd 3ce456b6
+upd 0
+upd 3d088889
+upd 0
+upd 0
+upd 3d4ccccd
+pair 5 7 0 3e4ccccd
+upd 0
+phaseall bf800000
+upd 3d088889
+upd 3dc8d166
+overlay 2 3e800000 1
+upd 3e33e9e3
+play 4 3f21b8ac 1 0
+phase 3f800000
+upd 3c888889
+upd 3d4ccccd
+upd 3c888889
+play 5 0 0 0
+phase5 3f6bfd31
+play 1 0 1 0
+upd 3d4ccccd
+pair 1 6 1 3e4ccccd
+upd 3c888889
+upd 3c888889
+upd 3e932383
+upd 0
+phase5 bf800000
+pair 7 7 1 3ec2dbb1
+upd 3e330860
+play2 b 3e4ccccd 0 0
+upd 3d088889
+play 1 3e800000 0 0
+play 4 0 0 0
+five 7 7 3 1 b 3f000000 0
+upd 3c888889
+rate5 0
+weight 3f000000
+rate5 3f000000
+phase5 3d5c8a12
+upd 3d088889
+upd 3d4ccccd
+upd 3e8d03c9
+five b 6 2 4 3 0 1
+play2 7 3e800000 1 0
+upd 3d088889
+= 1 0 1
+play 4 0 1 1
+play 9 3f000000 1 0
+five 2 1 9 1 9 3e4ccccd 1
+five a 9 7 7 6 3e4ccccd 1
+upd 3c888889
+upd 3da7a4d3
+phase 3f800000
+pair 7 6 1 0
+upd 3d088889
+five 4 7 7 a 7 0 1
+upd 3d4ccccd
+upd 3dc3d970
+upd 3de8177b
+overlay 7 3e800000 0
+phase 3f1f5d32
+upd 3cdce482
+upd 3e95b678
+play 7 3f000000 1 0
+upd 0
+upd 0
+upd 3c888889
+phase2 3f000000
+upd 3d088889
+upd 3c888889
+upd 3d088889
+upd 3d4ccccd
+play 9 3f000000 0 1
+phase 3f800000
+play2 5 3f000000 0 0
+upd 0
+upd 3e066ca2
+phase2 3f800000
+upd 3db72e8c
+upd 3d088889
+five 3 5 1 6 7 3e4ccccd 0
+upd 3c888889
+upd 0
+upd 3c888889
+upd 3d088889
+upd 3d088889
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3b2027e4
+upd 3d088889
+upd 3d088889
+= 1 0 0
+play 9 0 1 1
+upd 3e403597
+upd 3e96188b
+upd 3d4ccccd
+rate 3cf169a0
+upd 3d4ccccd
+five a b b 4 7 3f000000 1
+upd 3d088889
+upd 3c888889
+upd 3e21056f
+upd 3d088889
+upd 0
+upd 3c888889
+upd 3cffec90
+upd 3d4ccccd
+upd 3d088889
+upd 0
+upd 3c888889
+play 8 3e4ccccd 1 1
+phase bf800000
+five a 8 3 a b 3e4ccccd 0
+upd 3d088889
+upd 3e07ffbd
+five 6 5 5 3 4 3e4ccccd 1
+upd 3ddc02fd
+upd 3d088889
+= 1 0 1
+play 5 0 1 1
+upd 3d088889
+rate5 3f800000
+play 7 3f000000 1 0
+phase2 bf800000
+upd 3c888889
+upd 3d4ccccd
+upd 3d088889
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3c888889
+weight 3f000000
+play 6 3f000000 0 1
+upd 3c888889
+play 2 3e9496ae 0 0
+upd 3d088889
+upd 0
+five 1 4 7 b a 3f000000 0
+upd 3d088889
+play 6 3e800000 0 0
+upd 3d4ccccd
+upd 0
+upd 0
+upd 3d4ccccd
+upd 3d088889
+phase2 0
+upd 3d4ccccd
+upd 0
+rate bf800000
+pair 2 2 0 3e4ccccd
+upd 3e54a44f
+upd 3c888889
+upd 3d6d7532
+upd 0
+upd 3c888889
+upd 3b031e79
+upd 0
+upd 3c888889
+play2 8 3e4ccccd 0 1
+play 9 3e4ccccd 1 1
+upd 3d088889
+pair 6 3 1 3e800000
+upd 3e023a94
+upd 3d4ccccd
+upd 3d088889
+play 1 0 0 0
+upd 3d4ccccd
+upd 3d088889
+upd 3e344fe3
+upd 3d088889
+= 0 0 0
+play 1 0 1 1
+upd 3e8d1830
+upd 3c888889
+rate 3f3b51e4
+upd 3d4ccccd
+upd 0
+rate 3f800000
+upd 3d088889
+five 5 9 9 9 8 3f000000 1
+upd 3e8126e8
+upd 3d08286f
+rate5 3f860ee7
+upd 3d088889
+play 6 3eae59ca 1 0
+play2 1 3f3bc6b1 1 0
+upd 3d088889
+upd 3d088889
+upd 3d088889
+upd 3d4ccccd
+play2 b 3e4ccccd 0 0
+upd 3d4ccccd
+upd 3e908e21
+upd 0
+upd 3db2c28e
+upd 3c888889
+pair b a 0 3e800000
+upd 3c591084
+upd 3c888889
+play2 4 3e4ccccd 0 0
+play a 3f000000 0 0
+upd 3e65dd52
+upd 3d088889
+upd 3d4ccccd
+phase5 3f000000
+upd 3deba8f8
+upd 3d8d4553
+upd 3d088889
+five 3 2 5 5 a 0 0
+upd 3e88d553
+upd 3dfa7494
+upd 3d088889
+upd 3d088889
+upd 3e4c292a
+five 2 3 a 2 5 3e9f706f 1
+upd 3d4ccccd
+upd 3c888889
+upd 3d4ccccd
+upd 3d4ccccd
+five 7 5 9 9 3 3f000000 1
+rate5 3f000000
+upd 3e92b63c
+upd 3d088889
+= 1 1 0
+play 8 0 1 1
+play 1 0 0 0
+upd 3d088889
+play 5 3f000000 0 1
+play 6 3e0d95b7 1 0
+upd 3d088889
+play2 5 3e4ccccd 1 0
+upd 3d088889
+play b 0 1 0
+upd 3d4ccccd
+five 4 b 8 b 6 3f000000 0
+play a 3ec28086 1 0
+play 8 0 0 0
+upd 0
+upd 3c888889
+upd 3c888889
+play 8 3f000000 0 0
+upd 3d4ccccd
+play 8 3e800000 0 0
+pair 7 b 0 0
+upd 0
+play 1 3f000000 0 1
+play b 3f000000 0 0
+upd 3d4ccccd
+play2 a 3ef6731d 1 0
+play2 5 3e800000 1 1
+five 9 b 9 7 b 3e876489 0
+upd 3d4ccccd
+upd 3d4ccccd
+upd 0
+upd 3d4ccccd
+upd 0
+upd 3d088889
+play 8 3f000000 0 0
+play2 8 3e800000 0 0
+upd 0
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d7d7b08
+upd 3e20cf99
+phase2 3f000000
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3c888889
+upd 3c5a8fa1
+play2 7 0 0 0
+play 8 3e800000 1 0
+upd 0
+upd 3d2a9e37
+upd 0
+upd 3a161b8d
+phase 3f000000
+upd 3d088889
+weight bf800000
+play b 3f580cca 0 0
+upd 0
+phase2 3f800000
+upd 3d088889
+weight 3f000000
+upd 0
+play 1 3e4ccccd 0 0
+upd 3d088889
+upd 3d4ccccd
+upd 3d088889
+upd 3c888889
+upd 3e2e18c5
+upd 0
+upd 3d4ccccd
+upd 3d9ae451
+phase2 bf800000
+play 4 3f000000 0 1
+upd 3e48d4a5
+play 5 3e800000 0 1
+upd 3d736a3f
+upd 3c888889
+upd 3d088889
+= 0 1 0
+play 5 0 1 1
+upd 3e75860d
+upd 3c888889
+upd 3dbb96b7
+pair 6 5 1 3efe61d0
+upd 3d4ccccd
+upd 0
+upd 0
+phase2 bf800000
+upd 3d4ccccd
+upd 3d4ccccd
+play2 8 3f000000 1 0
+upd 0
+upd 3d088889
+play 7 0 0 1
+upd 0
+play 1 3e800000 0 0
+play 1 3f000000 0 0
+upd 3d7f4a71
+play b 3e4ccccd 1 1
+upd 3d088889
+upd 3d088889
+pair 6 a 0 3f70f9bb
+phaseall 3ef510ea
+upd 3d088889
+upd 3d4ccccd
+upd 3d088889
+play 7 3e4ccccd 0 0
+upd 3d088889
+phase 3f800000
+upd 3d4ccccd
+upd 3d088889
+upd 3e42a26a
+upd 3e90b46d
+upd 0
+five 1 9 a a a 3f620aa7 1
+five 7 8 3 9 3 0 0
+upd 3c888889
+upd 3d4ccccd
+five 1 6 b b b 3e4ccccd 1
+five 7 8 9 3 3 3de1a7d4 1
+upd 3d088889
+upd 3dfb7b54
+upd 3d088889
+= 0 0 1
+play 4 0 1 1
+upd 0
+upd 0
+upd 3d088889
+upd 3d8f6415
+upd 3d088889
+phase 3f000000
+upd 3d088889
+upd 3c888889
+upd 3d088889
+overlay 2 0 0
+upd 3e9066e6
+upd 3d4ccccd
+upd 3c888889
+upd 3c888889
+upd 3d088889
+upd 3c888889
+upd 3d088889
+play 1 3f49a1be 0 0
+upd 3c888889
+upd 3c888889
+upd 3d088889
+pair 3 4 0 3e4ccccd
+play 9 0 0 1
+overlay 4 3ec2e276 0
+upd 3d088889
+upd 0
+upd 3c888889
+pair 3 9 1 3f4b73dc
+pair 6 2 0 3e4ccccd
+five a 3 6 2 5 3f000000 0
+upd 3c888889
+pair 8 1 0 3f0557df
+upd 3d088889
+upd 3e8810f0
+upd 3d4ccccd
+play b 3e800000 1 0
+upd 0
+rate5 0
+upd 0
+upd 3c888889
+upd 3e320578
+upd 3d2e86b0
+rate5 0
+upd 0
+five 4 3 4 1 9 3e800000 1
+upd 3d4ccccd
+upd 0
+upd 3d088889
+upd 0
+five 2 6 1 8 1 3eb0c30e 0
+upd 0
+upd 3d4ccccd
+upd 0
+play 8 3e800000 1 0
+upd 3c888889
+five a 3 8 b 7 3e4ccccd 1
+pair 4 9 1 3e800000
+overlay 8 3e4ccccd 1
+upd 3e42cffe
+upd 3d088889
+upd 3c888889
+upd 3d088889
+five 8 7 b 9 7 3e4ccccd 1
+play2 5 3f693a44 0 0
+upd 3b7fcf4c
+five 6 9 9 9 7 3f000000 1
+upd 3e67722e
+upd 3d088889
+upd 3d088889
+upd 3c888889
+upd 3d088889
+= 1 0 0
+play 2 0 1 1
+phase 3f800000
+play 7 0 1 0
+play 2 0 1 0
+upd 3e75d4f2
+rate5 3f000000
+play 9 3e800000 1 0
+upd 0
+pair 3 2 1 3f7b83fa
+upd 0
+upd 3d088889
+upd 0
+play2 9 3f07ce9d 1 0
+five 2 2 6 3 2 0 0
+upd 3e8cd5d1
+upd 0
+upd 3d088889
+upd 3d088889
+rate5 3f800000
+rate5 bf800000
+upd 3c888889
+upd 3d088889
+upd 3d088889
+= 0 0 0
+play 3 0 1 1
+play 3 3e18fdff 1 0
+rate5 bf800000
+upd 3c888889
+upd 3d088889
+upd 3c888889
+phase5 3f000000
+pair 4 1 1 3f7bf693
+pair 6 4 0 3e800000
+upd 3c888889
+play 2 3f216e28 1 0
+upd 3d4ccccd
+upd 3d088889
+upd 3d088889
+play 9 0 1 0
+play2 8 3e800000 0 0
+upd 0
+upd 3d088889
+upd 3d4ccccd
+upd 3d4ccccd
+play2 9 3f000000 0 0
+upd 3d088889
+overlay 3 0 0
+pair 7 a 1 0
+phase bf800000
+rate5 3f800000
+play 1 3eaccdfe 1 0
+phase2 3f000000
+upd 3c888889
+play 1 3e4ccccd 0 0
+upd 0
+overlay 4 3f7f51d0 1
+overlay 8 3e4ccccd 1
+upd 0
+upd 3d4ccccd
+overlay 1 3e800000 1
+pair b 3 1 3e4ccccd
+upd 3d541f2f
+upd 3c888889
+upd 0
+upd 3d4ccccd
+phase bf800000
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d088889
+upd 0
+upd 3d4ccccd
+upd 3c888889
+upd 0
+upd 3c888889
+upd 3c888889
+phase 3f800000
+upd 3e0bc649
+upd 3d4ccccd
+upd 3d088889
+overlay 6 0 1
+upd 0
+pair 7 b 1 3e4ccccd
+upd 3d088889
+rate 0
+phase2 bf800000
+upd 3c888889
+upd 3d4ccccd
+upd 0
+upd 3c888889
+upd 3c888889
+upd 3d088889
+upd 3d088889
+upd 3d088889
+upd 3d4ccccd
+pair a 9 0 0
+upd 3e1ac6de
+upd 3d088889
+upd 3d4ccccd
+five 8 9 1 9 2 3e30279e 0
+upd 3d088889
+upd 3d088889
+= 0 0 1
+play 2 0 1 1
+play 5 3f02b89b 1 0
+pair 5 8 0 0
+upd 3d088889
+play2 5 3f000000 0 1
+upd 3d088889
+play2 7 3e4ccccd 0 0
+upd 3d4ccccd
+upd 0
+upd 3ba326f6
+upd 3d088889
+upd 3d4ccccd
+upd 3c888889
+upd 3e986aa2
+rate5 3f800000
+upd 3c888889
+phaseall 3f000000
+pair a 9 0 3e800000
+upd 3c888889
+upd 3d4ccccd
+upd 3da777cb
+pair 9 3 0 3f000000
+play 3 3e4ccccd 0 0
+play2 2 3e800000 0 0
+upd 3d088889
+play b 3f000000 1 0
+upd 3d088889
+= 1 0 0
+play 7 0 1 1
+upd 3d4ccccd
+play 2 0 1 0
+upd 3df25c42
+upd 3d088889
+upd 3e0ca68c
+upd 3d088889
+upd 3e2aa23d
+play 2 3f774cf0 1 0
+upd 3d088889
+upd 3d088889
+upd 3d088889
+upd 0
+upd 3e726412
+upd 3d088889
+phase2 3efaa565
+upd 3e40574a
+upd 3d088889
+pair 5 7 0 3f000000
+upd 3d4ccccd
+play 7 3e1280fe 0 1
+pair b 5 1 3e2a8c0e
+play a 3e707d70 1 0
+upd 0
+upd 3d4ccccd
+play2 8 3f000000 1 0
+rate 3f800000
+upd 3d088889
+play 6 0 0 0
+upd 3dfcdca7
+pair 2 3 0 3ead39dd
+rate 3f800000
+phaseall 3f000000
+play 7 3e4ccccd 1 0
+upd 3d4ccccd
+upd 3c888889
+upd 3d4ccccd
+weight 0
+upd 3d088889
+= 0 0 1
+play 4 0 1 1
+upd 3d91d86b
+upd 3e24a419
+upd 0
+play2 9 3e800000 1 0
+play 3 3e800000 0 1
+upd 3d98d713
+upd 3d4ccccd
+phase2 3f1aede6
+upd 3c888889
+upd 3c888889
+upd 3d088889
+upd 3d088889
+upd 0
+upd 3d4ccccd
+play a 3f4da120 0 0
+play 6 3f5fbe66 1 0
+play2 5 0 1 0
+upd 0
+upd 3c888889
+upd 0
+upd 3d088889
+phase2 3f000000
+phase 3e0bf410
+pair 6 8 1 3f536bba
+upd 3e18feb2
+play 8 0 1 0
+weight 3f800000
+upd 0
+play a 3eb24d7e 1 0
+upd 3d4ccccd
+upd 3d088889
+phaseall 3ed88a51
+play2 9 3efd60db 0 0
+upd 3c888889
+upd 0
+upd 3d088889
+five a 2 3 3 8 0 0
+phase2 3f5b72d6
+upd 3c888889
+upd 3d4ccccd
+upd 0
+upd 3d088889
+phase2 3f000000
+upd 0
+upd 3d79ddd3
+phase5 3f000000
+play 3 3db2f7fa 1 0
+upd 3d4ccccd
+play 5 3e800000 1 0
+upd 0
+upd 3d088889
+upd 3d088889
+upd 0
+upd 3d4ccccd
+overlay 9 0 1
+phaseall 3f800000
+upd 3d088889
+= 0 0 1
+play 7 0 1 1
+upd 3d088889
+overlay 6 0 1
+upd 3e5f23d4
+play2 8 3f000000 1 0
+upd 3c888889
+overlay 3 0 1
+play 8 3e4ccccd 0 1
+upd 3c888889
+play2 9 3e4ccccd 1 0
+phase5 3f800000
+upd 3e4b5d18
+upd 3d088889
+five 1 b 4 8 4 0 0
+upd 3e603983
+phase5 3f800000
+upd 0
+weight be20b17e
+upd 0
+upd 3d8e8cfb
+upd 3e46e684
+upd 0
+upd 3c888889
+upd 3d088889
+= 1 1 0
+play b 0 1 1
+phase2 3f8cb87b
+overlay 6 3e4ccccd 0
+upd 3d9fa7db
+play 6 3d89bbb0 0 0
+upd 3d9d06a2
+upd 3c888889
+upd 3d466406
+upd 3d4ccccd
+overlay b 0 0
+upd 0
+phase2 3f000000
+upd 3d088889
+upd 3d4ccccd
+upd 3d088889
+rate 0
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d088889
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d088889
+phaseall 0
+upd 3c888889
+pair b 9 0 3e800000
+upd 3d088889
+upd 3c888889
+play 6 3e800000 0 0
+overlay 8 3f04b09e 0
+upd 0
+upd 3e9078d5
+upd 3c888889
+upd 3d4ccccd
+upd 3c888889
+upd 3d4ccccd
+play 8 3f390d15 1 0
+upd 3c888889
+rate5 3d31a5b6
+upd 3d088889
+upd 3c888889
+overlay 2 3f000000 0
+upd 3c888889
+five 4 4 1 8 4 3f000000 0
+upd 3d4ccccd
+play b 0 1 0
+five 8 1 6 a a 3e800000 0
+upd 3d4ccccd
+five 4 4 3 4 a 3f000000 1
+upd 3d4ccccd
+upd 3c888889
+rate 3f800000
+upd 3c888889
+upd 0
+play 3 0 1 0
+upd 3deb2dd9
+upd 3e001ca0
+upd 3c888889
+upd 3e13d845
+pair a 1 0 3f000000
+pair 8 a 0 3e4ccccd
+upd 3d4ccccd
+upd 3d088889
+upd 3e94609e
+upd 0
+upd 0
+upd 3e6303fd
+play 9 3f000000 1 0
+upd 3d088889
+= 0 0 0
+play 3 0 1 1
+upd 3d4ccccd
+weight 3f800000
+phase5 3dbbfd14
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3c888889
+upd 3e9588b2
+upd 3d088889
+play b 3e800000 1 1
+upd 3d088889
+upd 3e489b46
+upd 0
+weight 0
+upd 3d4ccccd
+play 7 3e800000 0 0
+overlay 5 3e4ccccd 1
+upd 0
+upd 3d4ccccd
+play2 6 3e4ccccd 1 1
+pair 5 7 0 0
+upd 0
+upd 3e0fc68d
+upd 3d4ccccd
+upd 3d088889
+= 1 0 1
+play 1 0 1 1
+play 5 0 1 0
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d088889
+play2 5 3e800000 1 1
+upd 3d088889
+upd 3d4ccccd
+upd 3e84392f
+upd 3d4ccccd
+upd 0
+upd 3d4ccccd
+upd 3d088889
+play 5 3f000000 1 0
+upd 0
+pair 4 4 0 3e4ccccd
+upd 3d4ccccd
+five 9 8 3 3 2 3e4ccccd 1
+upd 0
+pair a 9 0 3e4ccccd
+rate 3f000000
+upd 3d4ccccd
+upd 3d088889
+upd 3e1f1838
+upd 3e76411d
+play 9 0 0 0
+phase5 3f8439c6
+phase5 0
+overlay 8 0 1
+upd 3c888889
+upd 3e2424a0
+upd 3d088889
+upd 3d857f99
+upd 3d4ccccd
+upd 3e820455
+upd 0
+rate bf800000
+upd 0
+upd 3d088889
+upd 3d4ccccd
+phase 3f800000
+upd 3e8623d2
+play 2 0 0 0
+upd 0
+upd 3e7a061e
+pair 8 9 0 0
+upd 3d931df1
+upd 3d088889
+upd 3d088889
+upd 3d4ccccd
+upd 0
+upd 0
+overlay 6 0 0
+upd 3d4ccccd
+upd 3c888889
+upd 3e94517a
+upd 3d088889
+rate5 0
+upd 3d088889
+= 1 0 0
+play 8 0 1 1
+play 7 3e93d9f0 0 0
+upd 3c888889
+upd 3c888889
+play a 3f000000 1 0
+upd 0
+play2 5 0 1 1
+play 2 0 1 1
+upd 3d4ccccd
+play 7 0 1 0
+upd 3c888889
+upd 3c888889
+upd 3c888889
+upd 3e5e355f
+phase2 bf800000
+upd 3dd6ed97
+upd 3d088889
+upd 3c888889
+upd 0
+upd 0
+phase2 bf800000
+upd 3c888889
+upd 0
+upd 3d088889
+upd 3d3aff07
+upd 3c888889
+upd 3d4ccccd
+play b 0 0 0
+upd 3c888889
+upd 3d088889
+= 0 0 0
+play b 0 1 1
+rate 3f000000
+upd 0
+play2 5 0 0 1
+pair a 5 1 3f000000
+upd 0
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3c888889
+upd 0
+weight 0
+pair 1 8 1 3f000000
+upd 3c888889
+upd 3c888889
+upd 3d4ccccd
+rate5 3f6da7e5
+pair 7 4 1 3e800000
+upd 3d4ccccd
+play 4 3e4ccccd 1 1
+upd 3c888889
+upd 3d088889
+rate bf800000
+pair 1 2 0 3e4ccccd
+upd 0
+upd 3c888889
+upd 3c888889
+upd 3d088889
+play 7 3e4ccccd 1 0
+upd 3c888889
+upd 0
+upd 3d4ccccd
+upd 3d4ccccd
+rate5 3f000000
+five 4 8 1 1 b 3e800000 1
+upd 3d4ccccd
+upd 0
+upd 3d4ccccd
+play 8 3e4ccccd 0 0
+pair 2 2 0 3e4ccccd
+play 6 3f000000 0 0
+upd 0
+upd 3d088889
+upd 3c888889
+upd 0
+upd 3d088889
+= 1 0 1
+play 9 0 1 1
+upd 3db5e4f4
+rate5 3f000000
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d4ccccd
+five b 5 a a 4 3f000000 1
+rate bf800000
+upd 0
+five 1 2 1 a 8 3e4ccccd 1
+phaseall 3f800000
+upd 0
+play 8 3f000000 1 0
+upd 3e5ded05
+upd 3d4ccccd
+play 1 3f6d7c70 0 1
+upd 3e97cd71
+upd 3d088889
+upd 3d088889
+upd 3d088889
+upd 3d40d5a1
+play 3 3e4ccccd 1 0
+upd 3d088889
+upd 3c888889
+phaseall 3c3fff86
+pair 2 a 1 0
+overlay 8 3f000000 1
+play 7 3f000000 0 1
+upd 3e0c2796
+upd 0
+upd 3d088889
+play2 b 0 0 0
+upd 0
+upd 3d088889
+upd 3d4ccccd
+upd 0
+upd 3e43325d
+play 7 3e4ccccd 1 0
+upd 3d4ccccd
+upd 3e999835
+upd 3d088889
+= 0 0 1
+play 1 0 1 1
+upd 0
+play 3 0 0 1
+upd 3c888889
+upd 3d4ccccd
+upd 0
+upd 0
+upd 3d4ccccd
+overlay 4 3f000000 1
+overlay 3 3e800000 1
+play 6 3e800000 1 1
+upd 3c888889
+overlay a 3ef53d7b 0
+upd 0
+phase2 3f2a9119
+upd 3c888889
+phase 0
+upd 3c888889
+upd 3d4ccccd
+upd 3e7e250b
+upd 3e1af193
+pair 8 5 1 3e4ccccd
+upd 3e4a2bad
+upd 0
+overlay 3 3eb4a487 0
+upd 3ca1fbc1
+play 3 3f796f26 0 0
+upd 3e33dc75
+pair 5 b 1 3e4ccccd
+weight 0
+play 7 0 0 0
+upd 0
+upd 3d4ccccd
+upd 3de65c16
+play a 3f6709bf 1 0
+pair a 3 0 3e82258e
+pair 7 b 0 3e4ccccd
+play 1 0 0 0
+play 2 0 1 0
+phaseall 3f000000
+upd 0
+upd 0
+overlay 9 3f000000 0
+upd 3c888889
+upd 3d4ccccd
+upd 0
+play 2 3e800000 0 0
+five 1 5 2 6 1 0 0
+upd 3c888889
+phase 0
+upd 3d4ccccd
+play 5 3e800000 1 0
+upd 3c888889
+upd 3d088889
+upd 3df946f4
+overlay 4 3f000000 1
+play 2 3ea27fbd 1 0
+play a 0 1 0
+upd 3e215a26
+play 4 3e4ccccd 1 0
+pair 5 2 0 3e4ccccd
+upd 3d088889
+upd 3d088889
+upd 0
+upd 0
+play a 3ec0f94a 0 0
+upd 3df71290
+five a 5 7 3 a 0 0
+upd 3d4ccccd
+play 6 3e4ccccd 0 0
+pair 7 1 1 0
+upd 3e958780
+overlay 2 3f000000 0
+upd 3d088889
+upd 0
+play 6 3f000000 1 0
+upd 0
+overlay 3 3e800000 1
+upd 3d088889
+= 1 0 1
+play 8 0 1 1
+five 5 6 9 8 6 3e800000 1
+phase2 3f800000
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d088889
+play 8 3e800000 0 0
+play b 0 1 0
+five 4 6 9 4 4 3f000000 0
+play 8 3e4ccccd 1 0
+upd 3c989720
+play 4 3f5a5cba 1 0
+play 8 3e800000 1 1
+upd 3d4ccccd
+upd 3d088889
+pair 1 b 1 3e4ccccd
+overlay 5 3e800000 1
+upd 3c888889
+upd 3d088889
+phaseall 3f000000
+play 8 3e800000 0 0
+phase bf800000
+five 2 6 8 6 b 3e4ccccd 0
+upd 3c888889
+upd 3c888889
+rate bf800000
+upd 3e95e3a2
+play b 3e4ccccd 1 0
+upd 3d4ccccd
+play 7 3e4ccccd 0 0
+play 1 3e800000 1 0
+upd 3c888889
+play 3 3e4ccccd 1 0
+upd 3c888889
+phase5 3f800000
+upd 3e26f70c
+upd 3c888889
+upd 3dc5ad2a
+upd 0
+upd 3c3ed1d6
+upd 0
+upd 3d4ccccd
+pair 5 6 0 3eea1afc
+upd 3d4ccccd
+upd 0
+upd 3d088889
+upd 3d4ccccd
+upd 3c888889
+upd 3c888889
+five 4 9 6 2 a 3e7bd901 0
+upd 3d088889
+upd 3d088889
+= 1 1 1
+play b 0 1 1
+upd 3d088889
+phase 3e392b7d
+play 4 3e4ccccd 1 0
+rate 0
+upd 3d4ccccd
+play 6 3f000000 0 0
+upd 0
+upd 3e77bf20
+overlay 3 3f000000 0
+upd 3d86ed64
+play2 2 3f678294 0 0
+upd 3e0c07a3
+upd 3e928e83
+upd 3d0e1ab9
+play 2 3f000000 1 0
+five 1 8 6 7 6 3d5ff426 0
+phase bf800000
+upd 3c888889
+play2 7 3e4ccccd 1 0
+upd 0
+upd 3d088889
+upd 3c888889
+upd 3d088889
+play 3 0 0 1
+upd 3c10c5c1
+upd 3c888889
+upd 3c888889
+play 7 0 0 1
+upd 3da2fa3d
+upd 3d4ccccd
+play 5 3e800000 0 0
+upd 0
+upd 3d088889
+upd 3d088889
+upd 3d088889
+upd 0
+upd 3c524228
+play b 3f5b89d5 0 0
+play 7 3e4ccccd 0 1
+upd 3d4ccccd
+play2 4 0 0 0
+pair 4 3 1 3e87de14
+upd 3d088889
+upd 3c888889
+pair 2 b 0 0
+upd 3d088889
+upd 3c888889
+upd 3d4ccccd
+upd 3d4ccccd
+play a 0 1 0
+weight 0
+upd 3d4ccccd
+upd 0
+play 1 3f00ea98 1 0
+upd 3d4ccccd
+phaseall 0
+upd 3d088889
+weight 3f800000
+pair 2 7 1 3e88c49e
+pair 4 8 0 3e4ccccd
+upd 3c888889
+five 4 9 b 3 a 3e817325 1
+rate5 3f000000
+upd 3c888889
+upd 0
+play a 3f615035 0 0
+upd 0
+play 2 0 0 1
+upd 3e3143b3
+play 3 3e800000 0 0
+upd 3d088889
+= 0 0 0
+play b 0 1 1
+upd 3d088889
+upd 0
+upd 3d4ccccd
+upd 3d088889
+upd 3e4cf477
+phase5 0
+play a 3ec08472 1 0
+upd 3d295fcd
+upd 0
+upd 3e0f87f9
+upd 3d9478cc
+weight 3f800000
+upd 3d4ccccd
+upd 3d088889
+upd 3c888889
+upd 3c888889
+upd 3d4ccccd
+play b 3f000000 0 0
+upd 3d4ccccd
+upd 0
+upd 3d4ccccd
+pair 9 6 1 3ec81484
+upd 3d4ccccd
+upd 0
+upd 3d088889
+upd 3dfaae0b
+upd 3e709011
+overlay a 3e4ccccd 1
+upd 3d4ccccd
+phaseall 0
+phase5 3f800000
+upd 0
+phase2 3f19eec4
+five 2 7 5 7 4 3f63e6d2 0
+rate bf800000
+upd 3c888889
+upd 3c888889
+play 7 3edcdd60 0 0
+phaseall 3e6b03d8
+upd 3e46e48a
+five 5 5 8 6 4 3f43972d 1
+upd 3d088889
+play 6 0 1 0
+upd 0
+pair 1 8 0 3e4ccccd
+weight 0
+upd 3d4ccccd
+play2 9 3ee240f6 1 0
+pair 4 4 0 3f000000
+upd 3c888889
+upd 3e7c8e63
+pair 3 8 0 3ebf3910
+play 7 3f000000 0 0
+play a 3f000000 1 0
+rate5 3f20567d
+upd 3d4ccccd
+upd 0
+upd 3d9f61c4
+play 4 3e4ccccd 0 0
+upd 3d72cdd5
+upd 3c97f085
+rate5 0
+phaseall bf800000
+phase5 bf800000
+play 5 3f3d9511 0 1
+upd 0
+play2 4 3f000000 1 0
+upd 3c888889
+upd 0
+upd 3c888889
+play2 8 3e800000 0 0
+upd 3d4ccccd
+upd 3d088889
+= 0 0 1
+play b 0 1 1
+upd 0
+play 6 3e10d661 0 0
+upd 3d4ccccd
+upd 3c6ffb9e
+upd 0
+upd 3d4ccccd
+upd 3c888889
+upd 3d1e7d23
+upd 0
+upd 3d088889
+upd 0
+play b 0 1 0
+five 5 2 a a 6 3f000000 1
+upd 3c888889
+upd 0
+play 9 3e4ccccd 0 0
+upd 0
+upd 3d088889
+upd 3d4ccccd
+phaseall 3efe621f
+upd 3d4ccccd
+upd 0
+rate5 0
+five 1 3 9 a 4 3f3e7e93 0
+upd 3e5cecc8
+upd 3d4ccccd
+upd 3c888889
+upd 3e5ec50c
+upd 3d088889
+= 1 0 0
+play 4 0 1 1
+upd 3c888889
+upd 3d088889
+upd 0
+upd 3c888889
+play 9 3e998fb8 0 0
+upd 3d4ccccd
+upd 3d4ccccd
+phaseall 3f000000
+upd 3dac0e0a
+upd 3d4ccccd
+phase2 3f800000
+upd 3d088889
+upd 3c888889
+overlay 7 3f000000 1
+upd 3d4ccccd
+upd 3d088889
+rate5 0
+play b 3f000000 1 1
+upd 0
+play 4 3e4ccccd 1 0
+phase2 0
+play 7 3e4ccccd 1 0
+upd 3d4ccccd
+upd 3d088889
+phaseall 3f84e6b3
+pair 4 a 1 3e4ccccd
+phase5 3f000000
+play 6 3e4ccccd 1 0
+upd 0
+upd 3c888889
+upd 0
+phase2 0
+upd 3c888889
+upd 3c888889
+upd 0
+five 5 3 9 7 8 3e800000 0
+upd 3d4ccccd
+upd 3d4ccccd
+rate5 0
+play 8 3e4ccccd 1 0
+pair 2 5 0 3ed466fc
+phaseall 3f1aeab2
+play 2 3eaba146 1 0
+upd 3d088889
+upd 3d088889
+phase 3f000000
+upd 3d4ccccd
+rate 3f50aef3
+upd 3d088889
+upd 3d088889
+play2 6 0 1 0
+upd 3d4ccccd
+rate5 3f3e78c2
+upd 3c888889
+play 1 3e4ccccd 1 0
+upd 3e0b7564
+phase2 3f800000
+upd 0
+upd 3e94105d
+upd 3c888889
+phase 0
+upd 3d088889
+upd 3d4ccccd
+upd 3d088889
+play2 4 3e800000 1 0
+upd 3c888889
+upd 3da9edff
+upd 3e8496ae
+upd 3d088889
+upd 3d4ccccd
+upd 3c888889
+upd 3d4ccccd
+play a 3e800000 1 0
+overlay 7 3f000000 1
+upd 3d4ccccd
+upd 3c888889
+phase5 3f800000
+rate5 3ea671cb
+play 7 0 0 0
+upd 3d088889
+= 1 0 1
+play 9 0 1 1
+upd 3d088889
+play2 8 0 0 0
+upd 3c888889
+upd 3d088889
+upd 0
+upd 0
+play2 7 3ef22e42 0 0
+upd 3b5abc75
+upd 3e6f217e
+upd 3d4ccccd
+upd 3c888889
+upd 3d088889
+pair 9 6 0 3e800000
+upd 3c888889
+rate5 3f6a05c3
+upd 3c888889
+upd 0
+pair 2 3 1 3f000000
+upd 0
+play 2 3e4ccccd 1 0
+upd 0
+upd 3e904037
+rate 3f000000
+upd 3de9efd5
+rate 3f978649
+phase5 3f2d4bf6
+rate 3e772e52
+weight 0
+upd 3d088889
+= 1 0 0
+play 1 0 1 1
+phaseall bd20b7b0
+rate5 0
+phaseall 3f800000
+weight 3f800000
+upd 3e690bb2
+upd 3c888889
+upd 3c888889
+phaseall 3f800000
+upd 0
+upd 3c888889
+upd 3d088889
+upd 3dd4c65e
+upd 3d088889
+phase 3f800000
+upd 3d4ccccd
+play 5 3e800000 0 0
+five 1 a 6 7 b 3e800000 1
+upd 3d088889
+upd 3c888889
+play b 3e800000 0 0
+upd 3d088889
+= 0 0 0
+play 7 0 1 1
+upd 3c888889
+play b 3e800000 0 0
+upd 3d088889
+upd 3d4ccccd
+upd 3c888889
+play 8 3e800000 1 0
+upd 3c888889
+upd 3d088889
+upd 0
+play 6 3f000000 0 0
+upd 3d4ccccd
+upd 3c888889
+upd 3c888889
+upd 0
+upd 3d4ccccd
+phase bf800000
+upd 3c888889
+upd 0
+phaseall 3f800000
+upd 3d4ccccd
+upd 3d4ccccd
+play 5 3e4ccccd 0 0
+weight 0
+upd 3c888889
+rate 3f800000
+rate 3f800000
+pair 2 6 0 3f4593e2
+upd 3e8514de
+five a a 4 4 2 0 1
+upd 3e16b546
+pair 2 2 0 3f4d6680
+overlay 1 3e4ccccd 0
+upd 0
+play 5 3f000000 1 0
+overlay 5 3f000000 0
+play 5 3e4ccccd 1 0
+upd 3e8c8280
+upd 3d088889
+upd 3c888889
+upd 3d4ccccd
+upd 3c888889
+five 8 6 1 8 8 0 0
+five 6 6 8 1 a 3f000000 0
+upd 3d4ccccd
+upd 3d088889
+rate bf800000
+play 2 3f000000 1 0
+upd 0
+phase5 0
+upd 3c888889
+upd 3b12a1de
+play 4 3f000000 0 0
+upd 3d088889
+play2 6 3f000000 1 0
+upd 3d01273c
+phase5 0
+upd 3c888889
+upd 3c888889
+upd 3d088889
+play 6 3e800000 1 0
+upd 3d4ccccd
+pair 3 1 1 3f000000
+upd 3a30822c
+phase2 3f800000
+upd 3e0c517c
+pair 5 8 1 3e4ccccd
+upd 3d088889
+= 0 1 0
+play 2 0 1 1
+upd 3d088889
+upd 3d4ccccd
+upd 3d36daf5
+upd 0
+upd 3d4ccccd
+upd 3d088889
+upd 3d4ccccd
+upd 0
+upd 0
+upd 3d088889
+upd 0
+upd 3b2c208b
+upd 3d088889
+upd 3d088889
+play 7 3f000000 1 1
+phase bf800000
+upd 3d088889
+phase bf800000
+upd 3d088889
+upd 0
+upd 0
+upd 3d088889
+play 5 3e4ccccd 0 1
+upd 3c888889
+phase2 3f000000
+phase 3f800000
+upd 3d088889
+upd 3e365d5c
+phase2 3f93868e
+upd 3d088889
+upd 3d088889
+upd 3db315d3
+upd 3d088889
+play 8 0 1 1
+weight 0
+rate 3f000000
+upd 3c888889
+rate 3f000000
+upd 3d088889
+= 1 0 1
+play b 0 1 1
+upd 0
+upd 3d4ccccd
+upd 3d4ccccd
+phaseall bf800000
+upd 3d9a4c4c
+upd 3d4ccccd
+upd 3e96d726
+play 2 3f000000 1 0
+upd 3ddd9a53
+upd 3d4ccccd
+phaseall bf800000
+upd 3cdc1543
+upd 3d4ccccd
+upd 3e7cbba6
+pair 4 b 0 3f000000
+upd 0
+play 4 0 1 0
+upd 3e0f2c86
+upd 3d4ccccd
+upd 3d088889
+upd 0
+upd 3e5c8d85
+upd 3d088889
+rate5 bf800000
+upd 3d4ccccd
+play2 4 3e800000 1 0
+upd 3c888889
+upd 3e2b55a1
+upd 3d4ccccd
+pair 4 7 1 3e4ccccd
+upd 3e3a8ca8
+upd 0
+upd 0
+upd 3e6de67b
+play 3 3f000000 0 0
+upd 3e936a48
+upd 3d088889
+play 9 3f000000 0 0
+five 2 4 8 6 7 3e4ccccd 1
+play2 3 3f1656a1 1 0
+upd 3d4ccccd
+upd 3c888889
+upd 3c888889
+upd 0
+upd 3d088889
+= 0 0 0
+play 9 0 1 1
+upd 3d088889
+overlay 4 3f000000 0
+overlay 7 0 1
+upd 3bd6c918
+play 5 3e4ccccd 1 0
+upd 3d4ccccd
+pair 3 7 1 3f000000
+pair 2 3 0 3e800000
+play 9 3e97b6d4 1 0
+rate5 3f000000
+upd 3d088889
+phase2 bf800000
+pair 7 a 0 3e4ccccd
+upd 3e37c71f
+upd 3d088889
+play 6 3e800000 1 0
+play2 1 3e4ccccd 1 0
+upd 0
+play 9 3f000000 0 0
+upd 3dec6cd8
+upd 3c888889
+upd 3c888889
+five 1 5 1 8 1 3e800000 1
+pair 6 7 1 3f153cfa
+play 7 3e800000 1 1
+five 6 7 3 4 3 0 1
+overlay 4 3f712fe7 1
+upd 3d088889
+= 0 0 0
+play 8 0 1 1
+weight 3f000000
+upd 0
+upd 3c888889
+upd 0
+upd 3c888889
+upd 3e43779a
+upd 3d4ccccd
+phaseall 3f000000
+upd 3d088889
+upd 3d4ccccd
+upd 3c888889
+play 9 3e800000 0 1
+upd 0
+upd 0
+play 5 3e4ccccd 0 0
+upd 3d4ccccd
+upd 3d202e08
+rate5 3f800000
+upd 0
+upd 3d088889
+upd 3d088889
+upd 3db07fa6
+upd 3d088889
+upd 3c888889
+play 9 0 1 0
+upd 0
+upd 3d736820
+upd 3e93322d
+play 3 3e4ccccd 1 1
+play a 3e800000 1 1
+upd 0
+upd 3d088889
+= 0 1 0
+play a 0 1 1
+upd 3d4ccccd
+upd 0
+upd 3d088889
+upd 0
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3c888889
+upd 3e7dff44
+upd 3d4ccccd
+upd 3d088889
+upd 3d088889
+upd 3d4ccccd
+upd 3d088889
+upd 3d4ccccd
+upd 3d4ccccd
+upd 0
+upd 3c888889
+upd 3db21d93
+upd 3e594e82
+upd 0
+upd 3d088889
+upd 3c888889
+upd 3d4ccccd
+play 8 3f000000 0 0
+upd 0
+overlay 3 3f000000 1
+play 1 0 0 0
+five 1 3 a 8 2 3ee19ff8 0
+upd 3d4ccccd
+five 7 3 7 6 b 3e978f4f 1
+upd 0
+play 4 3e4ccccd 0 1
+upd 3d4ccccd
+upd 3d088889
+pair 3 9 0 3e800000
+upd 3d088889
+upd 0
+upd 3d088889
+weight 0
+upd 0
+play 5 0 1 0
+play2 1 3f000000 0 0
+upd 3e765b06
+play a 0 0 0
+play 4 3e4ccccd 1 0
+play 8 3f000000 1 1
+phase5 3ee77c14
+five 3 b b 6 1 3f000000 1
+upd 3d4ccccd
+pair 2 4 1 0
+five 3 b 5 7 5 3e4ccccd 0
+upd 3d088889
+play 3 3f000000 1 0
+upd 3e1cc512
+upd 3d4ccccd
+upd 3d4ccccd
+play 2 3f000000 0 0
+upd 3d088889
+= 1 1 1
+play b 0 1 1
+rate 3f0283a6
+upd 3d088889
+play a 3dca9d89 1 0
+play b 3e4ccccd 0 0
+pair 4 6 0 0
+phase5 be10e746
+upd 0
+upd 3c888889
+upd 3e89de34
+play 2 0 1 0
+upd 0
+upd 3d088889
+upd 3d088889
+upd 0
+play 1 3e800000 1 1
+pair 2 b 0 3e800000
+upd 3d088889
+upd 0
+upd 3d4ccccd
+upd 3c888889
+rate5 bf800000
+play2 6 3f000000 0 0
+upd 3d4ccccd
+upd 3c888889
+play2 4 3e4ccccd 1 0
+upd 3d088889
+five 3 a 4 9 9 3e800000 1
+upd 0
+play 1 3e4ccccd 1 1
+upd 3d4ccccd
+play2 4 3e4ccccd 1 1
+phase5 bf800000
+upd 3e036082
+upd 3c888889
+upd 3dfdce65
+upd 0
+upd 3d088889
+play2 5 3f370d1d 1 1
+rate5 3e825e16
+upd 3d088889
+upd 0
+rate 3f000000
+upd 0
+five 8 b 9 1 b 0 0
+phase2 be25d243
+five b 6 3 8 3 3f000000 1
+upd 3c888889
+phase 3eec546a
+upd 3c888889
+upd 3d4ccccd
+upd 3c888889
+play2 6 3f000000 1 0
+play 7 3e800000 1 0
+upd 3c888889
+overlay 7 3e4ccccd 0
+pair a b 0 3e4ccccd
+rate 3e88f995
+play 4 3e4ccccd 1 1
+upd 3d088889
+upd 3d4ccccd
+pair 6 2 0 3e4ccccd
+upd 3d1435b7
+upd 0
+upd 3d4ccccd
+upd 0
+upd 0
+upd 3d088889
+= 0 0 0
+play 4 0 1 1
+upd 3c888889
+upd 3b910a27
+play 9 3e4ccccd 0 0
+weight bf800000
+upd 0
+upd 0
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d088889
+upd 3d4ccccd
+upd 3e368f7a
+phase bf800000
+upd 3d4ccccd
+upd 3c888889
+play a 3e800000 1 0
+upd 3c888889
+upd 3e98626c
+play 3 3f000000 0 0
+play2 b 0 1 0
+upd 3e68b8f8
+play 5 3f000000 0 1
+upd 3d4ccccd
+upd 3d4ccccd
+play 1 3f51b006 0 0
+upd 3c888889
+upd 3c60c403
+pair 2 2 0 3f48c059
+five 3 1 3 9 4 3f23ddc4 0
+five 6 5 6 a a 3e4ccccd 1
+play 1 3f000000 1 0
+rate5 3f800000
+rate 3f000000
+play a 3f000000 0 0
+phaseall bf800000
+play 9 3e800000 0 0
+upd 3c888889
+upd 3d088889
+upd 3d4ccccd
+upd 3c888889
+rate bbeef78e
+phaseall bf800000
+upd 3d4ccccd
+overlay 1 3f7051d6 1
+upd 3c888889
+play2 4 3e800000 1 0
+upd 3d4ccccd
+upd 3d088889
+pair 8 7 1 3e71a6e9
+upd 3e2a0de9
+weight 3f800000
+upd 3d088889
+five 1 4 6 5 a 0 0
+upd 3d9d0032
+play 7 3f000000 1 0
+upd 3d4ccccd
+upd 3e63e245
+play2 7 0 1 0
+phase2 3f000000
+upd 3e98ed3c
+upd 3c888889
+play 1 3e993439 1 0
+upd 3d088889
+= 0 1 1
+play 3 0 1 1
+upd 3d4ccccd
+weight 3f800000
+phase2 bf800000
+play 1 3e4ccccd 0 0
+upd 3c888889
+pair 9 8 0 3e8fd176
+play2 1 3e800000 1 0
+upd 0
+rate5 3f1c64aa
+play b 0 1 0
+upd 3d4ccccd
+weight 3f000000
+play 2 0 0 0
+upd 3c888889
+pair 2 8 1 0
+upd 3e03dad6
+upd 3e6e9910
+upd 0
+upd 3d088889
+upd 3c888889
+phase2 0
+upd 3c888889
+phaseall 0
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d088889
+upd 3e833514
+upd 3d4ccccd
+upd 0
+rate 3f000000
+pair 1 4 0 3f000000
+upd 3d088889
+upd 0
+upd 3d088889
+upd 3e966834
+play 3 0 0 0
+upd 3d088889
+= 1 0 1
+play 6 0 1 1
+five 8 9 3 8 7 3f000000 1
+upd 0
+rate5 0
+play2 1 3e800000 0 0
+play 6 0 0 0
+upd 3d4ccccd
+phase2 3f800000
+upd 3d088889
+play 9 3e0abe1f 0 0
+upd 3e8e5a6a
+pair 4 7 0 3e8a7a15
+play 7 3e4ccccd 1 0
+rate5 0
+upd 0
+upd 0
+upd 0
+upd 3d4ccccd
+upd 3d088889
+upd 0
+upd 3c888889
+upd 3e478065
+upd 3cd32dcd
+upd 3c888889
+pair 1 3 0 0
+play 3 3f6b82f2 1 0
+play 7 3e800000 1 0
+play 9 3f000000 0 0
+upd 3c888889
+play 1 0 1 0
+pair b b 0 3e4ccccd
+upd 0
+upd 3d4ccccd
+upd 3c888889
+play a 0 1 1
+upd 3d4ccccd
+phase 0
+upd 3d795b0b
+upd 3d088889
+= 1 0 1
+play 9 0 1 1
+upd 3e92b0ea
+play 2 0 0 0
+play 9 3e800000 1 1
+upd 3d4ccccd
+upd 3c888889
+upd 0
+play 2 3e800000 1 0
+upd 3d4ccccd
+upd 3d6fc0ba
+overlay a 3e800000 1
+upd 3e4bfb04
+phase2 3c57be4e
+weight 3f800000
+upd 3d088889
+upd 3d088889
+upd 3c888889
+five 3 1 4 6 8 3f000000 0
+play 5 3f4fcd53 1 1
+play 4 3e800000 1 0
+upd 3c888889
+upd 3d088889
+upd 3d088889
+play 7 3f000000 1 0
+upd 3d088889
+play 1 3f000000 1 1
+upd 0
+play 1 3e4ccccd 1 0
+upd 3d088889
+upd 3e157310
+upd 0
+upd 3d088889
+overlay 5 0 1
+play b 0 1 0
+upd 3d4ccccd
+upd 3c888889
+upd 3c0976b2
+upd 3e2fc9ef
+weight 0
+upd 3c888889
+upd 3d088889
+upd 0
+upd 3d4ccccd
+upd 3e08582a
+upd 3e1f7e2e
+upd 3c888889
+five a 4 5 1 a 3e800000 1
+upd 3e90d7c4
+upd 3d4ccccd
+phase2 0
+upd 3d4ccccd
+upd 3d4ccccd
+five 7 1 6 a 8 0 1
+upd 3d088889
+play 3 3e4ccccd 0 0
+upd 3c888889
+upd 3e8f596e
+phaseall 3f800000
+pair 6 2 1 3e800000
+upd 3df4facf
+play a 0 0 0
+upd 3d088889
+play 9 3e4ccccd 1 0
+play 7 3f555a2d 0 0
+play a 3e800000 1 0
+phaseall bf800000
+pair 7 b 1 3f0eba5b
+upd 0
+upd 3e3fa85c
+play b 3e800000 1 0
+upd 3e918a9b
+pair 8 6 1 3eff1b19
+upd 3d4ccccd
+upd 3c888889
+play 6 3e4ccccd 1 0
+upd 0
+upd 0
+upd 3d088889
+= 1 0 1
+play 9 0 1 1
+upd 0
+upd 3dc7afc2
+phase2 bf800000
+phase 0
+play 8 3e5a0236 1 0
+upd 0
+overlay 1 3f000000 0
+upd 3e79d1ef
+upd 0
+upd 0
+upd 3e8de97f
+upd 3c888889
+upd 3c888889
+upd 3e95b260
+pair 1 b 0 3e800000
+upd 3d4ccccd
+upd 3d088889
+upd 3d4ccccd
+upd 3d088889
+pair 7 1 1 3e4ccccd
+upd 3d4ccccd
+play2 1 3f000000 1 1
+upd 3d088889
+play 2 3e800000 0 1
+upd 3c888889
+upd 3c888889
+upd 3d088889
+five 1 2 b 5 2 0 1
+pair 3 7 0 3f681c56
+upd 3d4ccccd
+upd 0
+play 7 0 0 0
+play 1 3f000000 1 0
+upd 0
+upd 3acf0705
+phase5 3f000000
+upd 3d088889
+play 7 3e20dc27 0 0
+upd 3c888889
+five 9 9 7 7 8 3f000000 0
+upd 3d4ccccd
+upd 3d088889
+pair 6 7 1 3f5f0076
+upd 3c888889
+overlay b 0 0
+phase5 3dddda5e
+phase5 3f800000
+upd 3d088889
+= 0 0 1
+play 5 0 1 1
+upd 3d088889
+upd 3d4ccccd
+five b 9 4 7 2 3e800000 0
+upd 3d4ccccd
+upd 3d4ccccd
+play 3 3f000000 0 0
+upd 3e3f036a
+five 8 5 a 6 2 3e800000 0
+upd 3e6526f8
+upd 3d4ccccd
+five 7 6 6 7 3 0 0
+upd 0
+play 9 3e4ccccd 1 0
+overlay 5 3e800000 1
+weight bf800000
+upd 3c888889
+upd 3c888889
+pair 5 7 1 3e800000
+overlay 9 0 0
+play 7 0 1 1
+upd 3daafb72
+pair 5 3 0 3f000000
+upd 3d088889
+upd 3c888889
+upd 3e3597fa
+five 6 6 a 5 7 3ec44798 0
+upd 3c888889
+play a 3f000000 0 0
+upd 3d4ccccd
+phaseall 3f800000
+upd 3e8b0195
+upd 0
+upd 0
+play 7 3f6586a6 0 0
+upd 3d4ccccd
+upd 3d088889
+play 9 0 0 1
+five 8 6 9 8 5 0 0
+upd 3c888889
+upd 0
+pair b 6 0 3e4ccccd
+upd 3c888889
+pair 7 5 0 3f000000
+upd 3d088889
+upd 3e4cbadc
+overlay 3 0 1
+upd 3d088889
+upd 3e658e1a
+upd 0
+upd 3e8dbd1a
+upd 3d4ccccd
+overlay b 3f000000 0
+play 6 3e800000 0 0
+upd 3c888889
+upd 0
+play a 3e800000 1 0
+upd 3d088889
+upd 3d4ccccd
+upd 3d088889
+pair 4 7 1 3d53416b
+upd 3e57fc9a
+upd 3d4ccccd
+upd 3d4ccccd
+upd 0
+upd 0
+phaseall bf800000
+upd 3e004ea2
+upd 3c888889
+upd 3d088889
+= 0 0 0
+play a 0 1 1
+upd 3c888889
+play 3 3e800000 1 0
+upd 3e521436
+five 9 1 a a 4 0 0
+upd 3d4ccccd
+upd 3e2a91d1
+pair 1 a 0 3eb96262
+upd 0
+five b 1 6 8 3 3f66cf31 1
+upd 3d4ccccd
+play 9 3e4ccccd 1 1
+upd 3d4ccccd
+upd 0
+phaseall be21cd53
+play 5 3e800000 1 0
+play 5 3f000000 1 0
+upd 3c888889
+upd 0
+upd 3d4ccccd
+upd 0
+phase bf800000
+upd 3e903046
+upd 3d088889
+upd 3d4ccccd
+five a 6 5 5 9 3f000000 0
+play2 5 3e4ccccd 0 0
+weight 3d0bf378
+upd 3d4ccccd
+pair 7 7 0 0
+play 2 3d6e8c5d 0 0
+upd 3d4ccccd
+five 4 3 a 5 8 3f4e27a1 1
+play 1 3ea8ae0b 0 0
+five 5 8 9 8 b 3e4ccccd 1
+weight 3f000000
+pair b a 1 3e800000
+upd 0
+upd 3c888889
+upd 3d088889
+= 1 0 0
+play 7 0 1 1
+weight 3f41a37e
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d088889
+play2 2 3e800000 1 1
+upd 0
+play a 3f000000 0 0
+upd 3e936d01
+upd 3d088889
+upd 3c888889
+overlay 2 3e800000 0
+upd 3d4ccccd
+weight 3ee0ab44
+play b 3f62bd0f 0 0
+phaseall 0
+play2 b 0 1 0
+overlay b 3e800000 1
+five 9 5 6 6 a 3f000000 0
+upd 3d4ccccd
+upd 3d7dac39
+play2 4 3e800000 1 1
+upd 3e0ff37f
+upd 3c888889
+upd 3c888889
+upd 3c888889
+upd 0
+play 4 3d9ffb96 1 0
+upd 3d088889
+upd 0
+upd 0
+upd 3e311b2a
+upd 3d4ccccd
+upd 3d088889
+upd 3c888889
+upd 0
+pair 8 2 1 3e4ccccd
+upd 3c888889
+upd 3d4ccccd
+rate5 3f000000
+upd 0
+five 2 1 4 8 2 3e800000 1
+play2 7 3f000000 1 0
+overlay 4 0 0
+upd 3c888889
+upd 3e0a3cfe
+play 3 3df777fb 0 0
+play 4 3f000000 0 0
+upd 3d088889
+upd 3d088889
+overlay 3 3f000000 1
+upd 3d4ccccd
+upd 3d088889
+= 0 0 1
+play 3 0 1 1
+upd 3c888889
+play 3 0 1 0
+upd 3d4ccccd
+play2 1 0 1 1
+weight bf800000
+upd 0
+weight 3f92dc07
+upd 0
+rate 3f800000
+play2 2 3e800000 1 1
+upd 3c888889
+upd 0
+upd 3c888889
+upd 3df6b5bf
+play 5 3e4ccccd 0 0
+upd 0
+upd 3c888889
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3c888889
+play 3 3f000000 0 0
+upd 3d4ccccd
+weight bf800000
+weight 3f000000
+rate5 0
+phase 3f0629a7
+upd 3e72d4ff
+overlay 5 0 0
+play 9 3eee57b4 1 0
+play2 7 0 0 0
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3e2d1a0c
+upd 3d088889
+= 0 0 1
+play 6 0 1 1
+pair 4 7 0 3f000000
+play2 3 3e4ccccd 1 0
+upd 3c888889
+upd 3d4ccccd
+upd 3c888889
+phaseall be0f1c92
+upd 3d4ccccd
+upd 3c888889
+rate bf800000
+phase2 3f000000
+play2 8 3e74ad4b 0 0
+phase2 0
+upd 3d088889
+upd 3c888889
+upd 3d088889
+play 6 0 1 0
+rate bf800000
+phase5 bf800000
+upd 0
+upd 3c888889
+play2 8 3f000000 1 1
+pair 2 b 1 3e4ccccd
+five b b 4 9 7 3f000000 1
+upd 3d088889
+= 0 1 0
+play b 0 1 1
+play2 4 0 1 0
+upd 3e85b9eb
+upd 0
+phase 3f4695cd
+upd 3c888889
+five a 7 a a 1 3e4ccccd 1
+upd 3d4ccccd
+upd 3e06e134
+upd 3d088889
+five 3 3 9 3 7 3e4ccccd 0
+overlay a 3e800000 0
+upd 3c888889
+upd 3c888889
+weight 3f800000
+play 4 3f000000 1 0
+upd 3d088889
+play 2 3e4ccccd 1 1
+upd 3d088889
+upd 3d088889
+rate5 bdf90e4c
+upd 3c888889
+upd 0
+upd 3d4ccccd
+play 2 3e800000 1 0
+upd 3d088889
+upd 3c888889
+phase2 3f000000
+upd 3c888889
+phase2 0
+upd 0
+upd 3d4ccccd
+weight bf800000
+upd 0
+upd 0
+upd 3e7dcec5
+pair 1 2 0 3f1c29f2
+upd 3e475d15
+play 1 3f000000 1 0
+upd 3e1dc93a
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3cce81ab
+five a 6 7 b 5 3e4ccccd 0
+upd 3d088889
+= 0 0 0
+play 4 0 1 1
+overlay 9 3e4ccccd 0
+upd 3d088889
+rate5 bf800000
+upd 3d4ccccd
+upd 3d088889
+upd 0
+phase 3f800000
+upd 3d4ccccd
+upd 3d4ccccd
+pair 7 b 0 3e4ccccd
+upd 3e667f8b
+upd 3d088889
+upd 3d088889
+upd 3c888889
+pair 5 a 1 0
+upd 3e37e528
+play2 9 3f53964e 1 0
+upd 3c888889
+upd 3c888889
+upd 3d088889
+upd 3d088889
+= 0 0 0
+play 8 0 1 1
+upd 0
+phaseall be1fa602
+overlay 9 3e4ccccd 0
+upd 3d4ccccd
+rate5 bf800000
+five a 4 4 4 b 3e800000 0
+pair 7 9 1 0
+pair 8 8 1 0
+upd 3c888889
+upd 3d4ccccd
+phase2 3f8bf5b6
+pair 2 8 1 0
+upd 0
+upd 3d088889
+upd 3d088889
+upd 3e2d1b14
+upd 3c660ff9
+upd 3c888889
+upd 3e316adc
+upd 3d4ccccd
+upd 3d088889
+upd 3c888889
+upd 3c888889
+pair 3 1 0 3f000000
+upd 3d4ccccd
+play2 6 3e4ccccd 0 0
+upd 3d4ccccd
+upd 3dc73f35
+upd 3d088889
+play2 1 3d83cc17 0 0
+upd 0
+overlay 6 3ebb7843 1
+play b 3f000000 1 0
+play 7 3e4ccccd 1 1
+upd 3c888889
+overlay 3 3f000000 1
+upd 3c888889
+upd 3d088889
+play2 3 3e0bfcf5 1 0
+pair 7 2 0 0
+pair 9 3 1 3f302db2
+upd 0
+play 5 3e800000 0 0
+overlay 2 0 1
+pair 4 1 1 3e800000
+upd 3d4ccccd
+play2 3 3e4ccccd 1 0
+upd 0
+phaseall 0
+upd 3e4e7d92
+upd 0
+upd 0
+play 9 3e800000 0 0
+rate 3f000000
+five 1 8 5 6 2 3e800000 1
+play a 3e4ccccd 0 0
+upd 3c888889
+upd 3d4ccccd
+five 9 8 6 a 7 3f19fb63 0
+overlay b 0 1
+upd 3d4ccccd
+upd 3d4ccccd
+upd 0
+upd 3c888889
+play 4 3e9eb81b 0 0
+phaseall 3f000000
+upd 0
+upd 3d088889
+= 0 0 1
+play 2 0 1 1
+upd 3d088889
+play a 0 0 0
+play 4 3ea92060 0 0
+upd 3d4ccccd
+pair 8 6 0 3f000000
+upd 3e46d92c
+upd 3d088889
+upd 0
+play 3 0 1 0
+pair 7 3 0 3e6b91c3
+upd 3d088889
+upd 3d4ccccd
+rate5 0
+upd 0
+upd 0
+upd 3c888889
+upd 3e68e5fd
+phase2 3f800000
+phase5 3f4348c1
+phase2 bf800000
+five 4 1 4 2 9 3e800000 0
+weight 0
+upd 3d088889
+upd 3d4ccccd
+upd 3d76aa01
+upd 3c888889
+upd 3d9de48a
+upd 3d088889
+upd 3d4ccccd
+upd 3d4ccccd
+upd 0
+upd 3e207fdf
+weight bf800000
+upd 0
+pair a 9 0 0
+upd 0
+upd 3d4ccccd
+upd 3c888889
+play 5 3e800000 0 0
+upd 3c888889
+play b 3f3af4ef 1 0
+weight 0
+play2 5 3ebe882a 1 0
+rate5 3f000000
+weight bf800000
+upd 3d279186
+upd 3e8c72bb
+upd 3d088889
+= 0 0 1
+play b 0 1 1
+upd 0
+upd 0
+five b 1 7 b 2 3f000000 0
+upd 0
+upd 0
+upd 0
+upd 3c888889
+upd 0
+overlay 8 3e4ccccd 1
+upd 0
+upd 3d088889
+rate 3f800000
+rate5 bf800000
+upd 0
+pair 2 4 0 3e4ccccd
+upd 3d088889
+five 2 8 8 4 4 3e4ccccd 1
+upd 0
+upd 3c888889
+upd 3d4ccccd
+upd 3c888889
+upd 0
+upd 3d880099
+play 9 0 1 0
+upd 0
+pair 3 6 0 3f166483
+upd 3e0c76c9
+upd 0
+upd 3d4ccccd
+pair 7 2 0 0
+upd 3d4ccccd
+upd 3d088889
+upd 3d4ccccd
+play 7 3f18a63f 1 0
+play 3 0 1 0
+upd 3c888889
+play a 3f000000 0 0
+upd 3c888889
+upd 3e839782
+pair 1 4 1 3ecab73f
+phase5 3f000000
+play2 8 0 0 0
+phase5 bf800000
+upd 3c888889
+upd 3c888889
+weight 3f000000
+upd 3c888889
+pair 2 1 1 0
+upd 3c888889
+upd 3d4ccccd
+phase bf800000
+play 2 3e800000 0 1
+upd 3d088889
+upd 3d088889
+upd 3d088889
+play2 6 3f000000 0 1
+upd 3c888889
+pair 9 8 1 3e9b1d00
+upd 3cfd892f
+upd 3c888889
+upd 3c888889
+upd 3c888889
+upd 3c564592
+upd 0
+pair 1 1 1 3eddf4c7
+overlay b 0 1
+upd 3d088889
+= 1 0 0
+play 5 0 1 1
+play 9 3e8ccd16 0 0
+upd 3c888889
+upd 0
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3e0c2f10
+rate5 3f800000
+overlay 4 0 0
+upd 3c888889
+upd 3d088889
+phase2 3f800000
+weight 3f800000
+play2 b 3f000000 0 0
+upd 3dcedfd6
+play 1 3e4ccccd 0 1
+upd 0
+upd 0
+upd 3e84ca94
+phase5 3f800000
+upd 3d088889
+upd 3d088889
+upd 3daecae9
+upd 3d088889
+pair 3 2 1 3e800000
+upd 0
+upd 3c888889
+phase2 bf800000
+upd 3c24ce11
+play 3 0 0 0
+play2 9 3e4ccccd 0 0
+upd 0
+upd 3c888889
+play a 3e4ccccd 0 0
+upd 3d088889
+play 8 3f000000 0 0
+upd 0
+upd 3d4ccccd
+phase2 3f884c65
+upd 3d088889
+upd 3d4ccccd
+overlay 9 3e4ccccd 0
+upd 3d088889
+play 7 3e800000 1 0
+upd 3c888889
+upd 3d4ccccd
+upd 3d4ccccd
+play b 3e4ccccd 0 0
+overlay 5 0 0
+phaseall 3f000000
+upd 3d4ccccd
+phaseall bf800000
+overlay 7 3f000000 1
+upd 3d088889
+upd 3d088889
+upd 3d4ccccd
+five 5 9 4 a 6 3e4ccccd 1
+upd 3d088889
+= 1 0 1
+play b 0 1 1
+upd 3d088889
+rate 3f1af9bf
+upd 3e0d7378
+upd 0
+rate5 3e1e0da5
+phase5 3dd154cc
+upd 3d088889
+upd 3dd7601f
+upd 3dd68718
+phase2 bf800000
+play a 3e4ccccd 1 1
+upd 0
+phase2 3f800000
+upd 3d4ccccd
+play2 7 3e800000 1 0
+five b 5 8 6 8 3e800000 0
+upd 3d088889
+upd 3c888889
+upd 3cc1360d
+upd 3d088889
+pair 2 6 0 3f000000
+upd 3dca1955
+upd 3d088889
+upd 3d4ccccd
+play 5 3f739915 0 1
+upd 3e552c35
+upd 3e09b3f1
+upd 0
+phase2 bf800000
+upd 3de044c8
+upd 3d4ccccd
+phase2 3f000000
+upd 0
+play2 8 3e800000 1 0
+overlay 5 0 1
+play 8 3f000000 0 1
+upd 3d4ccccd
+phase2 bf800000
+play a 3f000000 0 1
+upd 3d4ccccd
+upd 3e3686e9
+play2 a 3f21aa46 0 0
+overlay b 3e800000 0
+weight 3f83eb10
+upd 3c888889
+upd 3c888889
+upd 3e2f9c04
+upd 3c888889
+upd 3c888889
+upd 0
+play2 1 0 1 0
+play2 8 3e800000 0 0
+play 9 3f000000 1 0
+play 4 3e800000 0 0
+upd 3d4ccccd
+upd 3e562130
+phase5 3f90362d
+upd 0
+upd 3d4ccccd
+upd 0
+overlay 7 3f000000 1
+phase2 3f862e68
+upd 3d4ccccd
+upd 3d088889
+upd 3d088889
+overlay 8 3f000000 1
+play 8 3df85042 0 1
+upd 3d4ccccd
+upd 3d7a468b
+play 2 3e4ccccd 0 0
+five 5 9 6 7 a 3f16ecab 0
+upd 3d4ccccd
+upd 3d088889
+upd 0
+upd 3d088889
+= 0 1 0
+play 5 0 1 1
+five a 4 b 2 4 0 1
+upd 3e328902
+five b a 1 1 b 3e800000 1
+play b 3f000000 0 0
+upd 3d088889
+upd 3d4ccccd
+upd 3d088889
+upd 3d4ccccd
+upd 3c888889
+pair 5 6 0 0
+upd 3d088889
+play 9 3e800000 1 0
+upd 0
+upd 3d088889
+play 3 3f03f699 1 0
+play a 3e800000 0 0
+play 9 3e800000 1 1
+upd 3d088889
+upd 3d088889
+upd 0
+weight 0
+upd 3c888889
+upd 3c888889
+rate5 0
+upd 0
+upd 0
+five 9 4 8 6 3 3f0ca266 0
+upd 3d088889
+play 7 3f000000 1 0
+play 2 3f3670f3 1 0
+upd 3d4ccccd
+upd 3d4ccccd
+upd 0
+overlay 9 0 0
+rate 3f800000
+upd 3dcb8aaf
+pair 9 3 0 0
+upd 3d4ccccd
+rate5 3f000000
+upd 3d088889
+upd 3d4ccccd
+pair 4 6 0 3e831a9c
+play 5 3e800000 0 0
+upd 3d088889
+upd 3d088889
+upd 3cf3064c
+upd 3e85efd3
+upd 0
+play2 9 0 1 1
+upd 3dd5a6f5
+upd 3d088889
+play a 3e4ccccd 1 1
+upd 0
+pair 7 b 0 3e4ccccd
+upd 3d4ccccd
+play 5 3f31e1a5 0 0
+play 4 0 0 0
+upd 3d254319
+upd 3d088889
+upd 3e68695a
+upd 3a1a601d
+upd 3ceeb0ca
+upd 3e6cc2e5
+play 5 3e800000 1 0
+pair 5 1 0 3f4271a9
+upd 3e5a5dbb
+upd 3d088889
+pair 4 3 1 3eac4e5b
+phase2 bf800000
+upd 3e41f0b9
+upd 3d4ccccd
+upd 0
+upd 3d17e5f9
+play 7 0 0 0
+upd 0
+phase5 bf800000
+upd 3d088889
+= 1 0 0
+play 7 0 1 1
+overlay 6 3f000000 1
+weight bf800000
+upd 3e83dcf0
+pair 6 5 1 3e800000
+upd 3d4ccccd
+upd 3d088889
+upd 0
+upd 3ce63867
+overlay a 3e4975e3 1
+upd 3d4ccccd
+upd 0
+upd 3e7362f4
+phase 3f000000
+upd 3e7ff9b5
+play b 3f000000 1 0
+upd 3d088889
+rate 3f800000
+upd 3e0b9887
+pair 4 8 0 3edd2e73
+upd 3c888889
+play a 3f000000 1 0
+five 1 9 b 3 a 3e4ccccd 0
+upd 3c888889
+upd 0
+phase5 0
+phase 3f579fb6
+five 1 a 4 a 6 3e800000 1
+upd 3d6ede64
+upd 3c888889
+upd 3d4ccccd
+play 7 0 1 0
+upd 3c888889
+play b 3e793d7f 1 1
+play b 3e4ccccd 0 0
+upd 3d088889
+= 0 0 1
+play 3 0 1 1
+pair b 9 1 3f000000
+upd 0
+rate 3f051eff
+upd 3c888889
+five a 9 6 1 9 0 1
+upd 3c888889
+phase2 0
+upd 3c888889
+play2 b 3e800000 0 0
+play 9 3e8e0642 0 0
+five 4 3 8 9 4 3e800000 0
+pair 3 a 1 3e800000
+upd 3c888889
+upd 0
+upd 0
+play 1 3e4ccccd 1 0
+upd 3e6b031e
+rate5 3f800000
+pair 2 2 0 3f000000
+upd 3d4ccccd
+upd 3d088889
+upd 3d4ccccd
+play a 3f000000 0 0
+upd 3d088889
+play a 3e4ccccd 1 0
+upd 0
+pair b 3 1 3e800000
+play 6 3e800000 1 0
+upd 3c888889
+upd 3d088889
+upd 3d088889
+= 1 1 1
+play 3 0 1 1
+upd 3d4ccccd
+upd 3c5ff9fe
+upd 3dadebf4
+play 6 3f000000 1 0
+phase5 3edd56a9
+upd 3d4ccccd
+upd 3d088889
+play b 3e4ccccd 0 1
+upd 3d4ccccd
+play 2 3e772f70 0 1
+pair b 3 1 3f000000
+upd 0
+upd 3c888889
+phase5 bf800000
+play 7 3e4ccccd 1 0
+phase 3e354ca0
+five 1 3 5 8 6 3e800000 0
+play2 1 3f01185d 1 0
+play b 0 1 0
+play2 a 3f000000 0 0
+upd 3d088889
+rate 3f800000
+play 4 3e800000 0 0
+upd 3c888889
+five 7 a 7 1 3 3f000000 0
+upd 3d088889
+overlay 3 3e800000 0
+upd 3d088889
+upd 3d4ccccd
+pair 5 a 1 3f5df58b
+upd 3d088889
+play 3 3e800000 0 0
+play a 3e4ccccd 0 1
+upd 3e58e730
+upd 3d4ccccd
+upd 3e5fb384
+pair 5 6 1 3e800000
+upd 3c3df7b3
+upd 3c888889
+upd 0
+upd 3c888889
+upd 3c888889
+upd 0
+upd 3c888889
+rate5 bf800000
+upd 3e266ffa
+upd 3d088889
+= 0 1 1
+play 1 0 1 1
+upd 3c888889
+rate bf800000
+upd 3c888889
+upd 3d088889
+upd 3c888889
+upd 3d088889
+phase5 3f000000
+upd 3d088889
+five 4 8 a b 5 3f000000 1
+five 6 8 a b 3 3e4ccccd 0
+rate 3f800000
+upd 3b90689a
+overlay a 3e800000 1
+upd 3bda09b9
+play2 4 3f000000 1 0
+upd 3d4ccccd
+rate5 bf800000
+upd 0
+upd 3d4ccccd
+play 7 3e800000 1 0
+upd 3e18b85e
+overlay b 0 1
+upd 3d4ccccd
+upd 3d088889
+five 3 9 3 4 b 3f000000 1
+phaseall 3f800000
+play 6 3f000000 1 1
+upd 3c888889
+upd 3c888889
+upd 0
+upd 3c888889
+five 1 a 8 b 8 3f000000 1
+phase2 bf800000
+upd 3c888889
+play 9 3e4ccccd 0 0
+upd 3c888889
+upd 0
+upd 3d4ccccd
+play 3 3f02b4ca 0 0
+upd 3de68ded
+upd 0
+pair 5 2 0 3eef9a35
+upd 3d088889
+upd 3d088889
+rate5 0
+upd 3e46c35e
+pair a 7 0 3e800000
+upd 3c888889
+upd 3d4ccccd
+upd 3d088889
+phase2 3f000000
+play 3 3e800000 1 0
+upd 0
+five b 7 4 4 3 0 0
+upd 3d088889
+= 1 1 0
+play a 0 1 1
+upd 3e6b04a8
+overlay 8 3f000000 0
+upd 3c888889
+play a 3e4ccccd 0 0
+upd 3c888889
+upd 3d088889
+upd 3d088889
+pair 8 2 1 3f000000
+upd 3e8f24d4
+play a 3ecc0d04 0 1
+upd 0
+upd 3d088889
+play 9 3f000000 1 0
+upd 3d088889
+upd 3d088889
+upd 3c888889
+phase 3ebc6aea
+upd 3dd63f26
+play2 6 0 0 0
+upd 3d088889
+upd 3d4ccccd
+play b 3f378e13 1 0
+upd 0
+phase5 3f800000
+upd 0
+upd 0
+upd 3d4ccccd
+upd 3dc8a6b7
+upd 3e9638b8
+play 7 0 1 1
+upd 3e2c586c
+upd 3c888889
+upd 0
+upd 3d4ccccd
+five a 1 3 7 6 0 0
+upd 3d4ccccd
+upd 3d088889
+upd 3c888889
+upd 0
+overlay 4 0 0
+upd 3d088889
+upd 3c888889
+upd 3d4ccccd
+upd 3d088889
+upd 3c888889
+weight 0
+phase2 be2dfb35
+pair a 6 0 3f148352
+upd 3d088889
+upd 3c888889
+pair 7 2 1 3e4ccccd
+upd 3d088889
+upd 3d4ccccd
+play 6 3e75e068 1 1
+upd 3e6b3aed
+overlay 6 0 1
+pair 5 4 1 0
+upd 3c888889
+pair 1 7 0 3e4ccccd
+upd 3d088889
+five 7 2 1 2 5 3f38dfab 1
+upd 3c888889
+upd 3c888889
+upd 3d4ccccd
+upd 3e7964c2
+upd 3d088889
+upd 3d4ccccd
+upd 3d816ed5
+upd 3d4ccccd
+upd 3d088889
+= 0 0 0
+play 1 0 1 1
+play 8 3e4ccccd 0 0
+upd 3d088889
+upd 3c888889
+upd 3c888889
+play2 7 3f000000 0 1
+upd 3c888889
+phase 3f800000
+pair 4 9 0 3f000000
+upd 3c888889
+upd 0
+upd 3d088889
+upd 3c888889
+weight 0
+rate5 0
+upd 3c888889
+upd 3d4ccccd
+pair 6 a 0 3e2cc3ea
+play 8 3f38ecd7 0 1
+upd 0
+phaseall 0
+upd 3dada4f7
+pair 1 5 1 3e800000
+upd 3d088889
+upd 3c888889
+upd 3dd8c14c
+upd 0
+upd 3d088889
+upd 3e98e5ca
+five 9 3 4 1 8 3e800000 1
+pair 7 7 0 3e800000
+upd 3d4ccccd
+play 3 3e800000 0 1
+five 4 2 5 9 1 0 1
+pair 9 3 1 3f7a5315
+phase2 0
+overlay a 0 1
+play 5 3ea360e5 1 0
+five 1 3 4 4 b 0 0
+phase5 3f800000
+play2 5 3e4ccccd 1 0
+weight 3f800000
+upd 3d088889
+upd 3d088889
+= 0 0 1
+play b 0 1 1
+five 9 1 3 4 b 0 0
+upd 3c888889
+upd 3d4ccccd
+upd 0
+rate5 3f800000
+upd 3c888889
+upd 3d4ccccd
+play a 3e4ccccd 1 0
+overlay 2 3e800000 0
+upd 3d088889
+upd 3d088889
+upd 0
+pair a 6 1 3e800000
+upd 3d4ccccd
+phase5 0
+upd 0
+upd 3dec26b7
+upd 3e866c87
+upd 3d088889
+play a 3e4ccccd 0 0
+upd 3c888889
+phase5 bf800000
+play 9 3f000000 1 1
+upd 3d4ccccd
+upd 3d578e9a
+upd 3d088889
+phaseall 3f800000
+upd 3d4ccccd
+play 3 3e4ccccd 1 0
+upd 3c888889
+upd 3d4ccccd
+upd 3d088889
+= 0 0 1
+play b 0 1 1
+upd 3d4ccccd
+play 2 0 1 0
+play 7 3e4ccccd 0 0
+upd 3d088889
+upd 0
+upd 3e56c3cf
+upd 3c3d5a2f
+upd 3dffb0fb
+upd 3c888889
+upd 3d088889
+upd 0
+weight 0
+overlay 3 0 0
+upd 3c888889
+play 9 0 1 0
+pair 7 3 1 3e800000
+upd 3d088889
+upd 0
+upd 3d088889
+upd 3d088889
+upd 0
+upd 3d088889
+phaseall 3f000000
+five 9 1 8 9 8 3e4ccccd 1
+upd 3d088889
+upd 3d088889
+upd 3e97ff93
+upd 0
+play2 b 3e8c2249 1 0
+upd 3d088889
+play a 0 1 0
+play2 5 3e800000 1 0
+upd 3d088889
+phase2 3f800000
+upd 0
+upd 3c888889
+upd 0
+overlay 8 0 1
+weight 0
+five 2 4 7 2 3 0 0
+upd 0
+phase5 bf800000
+upd 3d088889
+upd 3c888889
+upd 0
+upd 3c888889
+upd 3d088889
+overlay b 3e4ccccd 0
+upd 3c888889
+phaseall 3f000000
+upd 3d088889
+upd 0
+upd 3d088889
+= 1 0 0
+play 2 0 1 1
+upd 3d10af63
+five 1 2 2 b 7 3f000000 1
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3de609a8
+upd 3c888889
+pair a 6 1 3e800000
+upd 0
+pair 4 1 1 3e4ccccd
+phase2 3ef61faf
+upd 3d6641d4
+upd 3c888889
+play 2 3d985ae5 0 0
+upd 3c888889
+upd 0
+play 8 0 1 1
+play 6 3f7f6168 0 0
+upd 3c888889
+play 5 3f76903a 1 0
+play b 3e4ccccd 0 0
+play 9 3e4ccccd 1 1
+pair 8 3 0 3eea911a
+five 4 1 8 4 3 3e4ccccd 0
+upd 3d4ccccd
+pair 7 4 1 0
+pair a 6 1 0
+upd 3d4ccccd
+upd 3d088889
+phaseall 0
+rate bf800000
+pair 8 1 1 3ea38b06
+upd 3d088889
+overlay 9 3e4ccccd 1
+play2 3 3e800000 1 1
+upd 0
+upd 0
+play 5 3eac43b0 0 0
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d4ccccd
+upd 0
+upd 3e8b553d
+upd 3c888889
+upd 3c888889
+five 5 3 3 7 2 3e800000 0
+upd 3c888889
+upd 3d088889
+play 8 3e800000 0 0
+five 2 4 b 7 1 3f000000 1
+overlay 4 3f000000 0
+upd 3c888889
+upd 3c888889
+upd 3d088889
+upd 3d4ccccd
+five 5 a 8 b b 3e800000 0
+upd 3d088889
+five 9 3 8 6 4 3f60fac3 1
+upd 3d088889
+= 0 0 0
+play 1 0 1 1
+rate5 bf800000
+upd 3e835e70
+upd 3d4ccccd
+upd 3d088889
+upd 3db8bd1e
+upd 3c888889
+upd 3c888889
+upd 3c888889
+upd 0
+upd 3d088889
+play2 8 0 1 0
+upd 3d4ccccd
+upd 3d4ccccd
+upd 0
+upd 0
+upd 3d088889
+play 6 3e800000 1 0
+upd 3c888889
+upd 3d088889
+upd 3d4ccccd
+play 1 0 0 0
+five 8 8 6 8 8 3ecbb35a 0
+upd 3e8c929b
+upd 3c888889
+pair 5 9 1 3e800000
+upd 3d088889
+upd 3c888889
+upd 3d088889
+upd 3d4ccccd
+upd 3d088889
+upd 0
+upd 3d088889
+play 8 3e800000 1 0
+upd 3c888889
+upd 3d088889
+play2 1 0 0 0
+upd 3d088889
+upd 3d4ccccd
+upd 3e54d8aa
+play 3 3e800000 0 1
+upd 3c888889
+upd 0
+play2 1 3ebaf9b4 1 0
+rate 3f000000
+upd 3c888889
+upd 3c888889
+play 6 3f000000 1 0
+upd 3d4ccccd
+upd 3d4ccccd
+five 6 a 3 3 3 3f6ad731 0
+play 4 3f4fa0ea 0 0
+upd 3d088889
+play 4 0 1 0
+phase bdfc86eb
+upd 3e2e6091
+upd 3caf94d7
+pair a 9 0 3e4ccccd
+upd 3c888889
+upd 3d088889
+overlay 1 3e800000 1
+weight 3f800000
+five 2 5 3 b 4 3e4ccccd 0
+phase 3f000000
+five 3 3 7 2 7 3e800000 1
+upd 3d088889
+upd 3d088889
+= 0 0 0
+play 7 0 1 1
+upd 3dd7ea94
+phase5 0
+pair 4 2 0 3e4ccccd
+five 8 4 5 1 6 3ed9a541 1
+upd 3d4ccccd
+upd 3d258b88
+upd 3c888889
+five 6 6 6 2 5 3e4ccccd 0
+pair 8 7 0 3e4ccccd
+upd 3d088889
+rate bf800000
+play 2 0 0 0
+phase2 3f800000
+upd 3e649fac
+upd 3c888889
+upd 3d4ccccd
+upd 0
+play 4 3f000000 0 0
+play 7 3e4ccccd 0 0
+upd 0
+pair 1 b 1 3f000000
+upd 3d088889
+upd 3d4ccccd
+phase5 0
+upd 3c888889
+play 4 0 0 1
+upd 3e19db97
+upd 3e41e91f
+upd 3d088889
+phase2 3f000000
+pair 2 a 0 3e4ccccd
+rate 3f7ea31e
+upd 3d4ccccd
+play2 9 3f0d6947 1 0
+upd 0
+five 4 7 a 4 6 3e4ccccd 1
+upd 3ccd7479
+play2 1 0 0 0
+upd 0
+upd 3d4ccccd
+five a 3 a a 1 3e800000 1
+upd 3c888889
+upd 0
+upd 3c888889
+upd 3c888889
+upd 3d088889
+upd 3c888889
+play 6 3f7a54c8 1 0
+upd 3d4ccccd
+five 1 7 b 8 3 3e0408c1 0
+five 3 a 1 2 a 0 1
+pair 1 2 1 0
+upd 3d088889
+upd 0
+upd 0
+rate5 bf800000
+upd 3c888889
+upd 0
+upd 3c888889
+phase5 0
+upd 3d088889
+upd 0
+play2 2 3e800000 0 0
+phase5 3f800000
+upd 3d4ccccd
+phase5 0
+phase 0
+weight 3f000000
+rate5 3f000000
+pair a 7 1 3f000000
+rate bf800000
+upd 3c888889
+upd 3d4ccccd
+upd 3dc05e4c
+pair 8 9 0 3e800000
+upd 3c888889
+upd 3d088889
+= 1 0 0
+play b 0 1 1
+upd 3c888889
+upd 3d8637dd
+upd 3d7d7e94
+upd 3e8f1ed2
+upd 3c888889
+pair 9 1 1 3e800000
+pair b 9 1 3e800000
+upd 3e0f07df
+upd 3db97de3
+upd 3d088889
+upd 3d088889
+upd 0
+play 8 3e800000 1 0
+upd 3df41fd3
+weight bf800000
+upd 3d4ccccd
+phase5 0
+rate5 3f800000
+rate 3f000000
+pair 8 b 1 3f000000
+overlay 4 3d6556f0 1
+play 9 3e3eb0cf 0 0
+upd 3d4ccccd
+upd 3d4ccccd
+upd 0
+upd 0
+play2 2 3e1b545b 1 0
+upd 3d088889
+play 9 3f000000 0 1
+upd 3e060748
+five 8 7 b 5 9 3f0703bc 0
+upd 3d4ccccd
+upd 3c888889
+upd 3e137bf0
+upd 0
+upd 3d088889
+upd 3d4ccccd
+upd 3d088889
+upd 0
+upd 3c888889
+upd 3d4ccccd
+upd 3d088889
+upd 3d088889
+= 0 0 0
+play 1 0 1 1
+upd 3d088889
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d088889
+upd 3c888889
+rate 0
+phase5 3f000000
+upd 3e76b172
+upd 3d4ccccd
+weight 3db5e00b
+five a 2 a 4 3 3e800000 0
+upd 3c888889
+play 4 3f000000 1 1
+upd 0
+play 7 3e800000 1 0
+upd 3c888889
+upd 3c888889
+overlay 2 3f000000 1
+upd 0
+upd 3d088889
+play 1 3e4ccccd 1 0
+upd 3e446628
+upd 3c888889
+upd 3d4ccccd
+play 9 3e4ccccd 0 0
+upd 3e826dc1
+upd 3d69e965
+upd 3d4ccccd
+upd 0
+upd 3e153e9b
+upd 3d088889
+play 7 3e4ccccd 0 0
+upd 3e52d6b8
+rate 0
+upd 3d088889
+upd 3d088889
+upd 3d4ccccd
+overlay 1 0 0
+upd 0
+upd 3d4ccccd
+upd 3c888889
+pair 5 b 0 0
+upd 0
+play 3 3e4ccccd 0 0
+play 7 3e4ccccd 0 0
+phase 3f8de4bd
+play b 3f4c6332 1 0
+upd 3d088889
+play a 3f096d13 1 0
+upd 3d088889
+pair b 4 1 0
+upd 3c888889
+pair 7 b 1 3e4ccccd
+upd 3d9dbc86
+upd 0
+upd 3d4ccccd
+play2 a 3f3d8693 1 0
+upd 0
+upd 3d088889
+pair 3 a 1 3f5f11a6
+play 8 3e800000 1 0
+pair 6 9 1 3e800000
+upd 3d4ccccd
+weight 0
+upd 3d4ccccd
+upd 3d088889
+= 1 0 1
+play 4 0 1 1
+upd 3d088889
+upd 3d4ccccd
+upd 3c888889
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3dd5dd6d
+upd 3d4ccccd
+upd 0
+upd 3b553933
+upd 3d4ccccd
+upd 3d088889
+five 6 3 4 3 6 3eefd895 1
+weight bf800000
+overlay 2 3e800000 1
+upd 3d088889
+upd 3c888889
+upd 3e93db07
+pair 1 b 0 3e800000
+upd 0
+phase5 0
+pair 1 3 1 3f7184e4
+upd 3c888889
+upd 3d4ccccd
+phase5 0
+upd 0
+phase5 3f894908
+upd 3d4ccccd
+upd 3e32c371
+upd 3e1ecf33
+upd 3d4ccccd
+play 9 3f000000 1 0
+play 5 0 0 0
+upd 0
+upd 3d4ccccd
+play 8 3ebf83bb 0 0
+upd 3c888889
+phase5 3f000000
+upd 3e03ef1d
+five 6 2 b 6 1 3e4ccccd 0
+upd 0
+rate 0
+five 3 2 1 6 3 3ebadb66 0
+upd 3d4ccccd
+upd 3d088889
+= 0 0 0
+play 4 0 1 1
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3d088889
+upd 3e965ce4
+play a 0 0 0
+upd 0
+upd 3d4ccccd
+phase5 3eefd37a
+play2 6 3e4ccccd 0 0
+pair 8 9 1 3e800000
+rate 3f000000
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3e986867
+upd 3d4ccccd
+upd 3b04565a
+pair 3 1 0 0
+play 3 3e4ccccd 1 0
+five a 4 a 6 b 0 0
+phase 0
+upd 3e586ff8
+upd 0
+phaseall 3f800000
+upd 3d5ac77e
+upd 3c888889
+play 4 0 1 0
+play 1 3f6b3a2d 0 1
+play2 1 3e4ccccd 0 0
+upd 3d4ccccd
+play a 3f000000 1 0
+upd 0
+five a 4 4 9 9 3f000000 0
+weight 3f800000
+play 2 3f000000 1 0
+upd 3d4ccccd
+five 4 7 9 b b 3e8f2516 0
+play 9 3e800000 0 0
+rate bf800000
+phase 3f57e77b
+play 7 3e800000 0 0
+upd 0
+upd 3c888889
+pair 5 8 1 3e4ccccd
+upd 0
+upd 3c888889
+overlay 1 3edae5c6 1
+upd 3e1d03ec
+upd 3e8b70b2
+pair 7 4 1 3f05911d
+play 9 3e4ccccd 0 1
+play 7 3e800000 1 0
+five 9 1 3 b 8 0 0
+upd 3c888889
+pair b 1 1 3e4861bd
+upd 3e2c16c9
+pair 3 6 1 3f000000
+upd 3d4ccccd
+upd 3dcad086
+upd 0
+upd 0
+upd 3d088889
+= 1 1 1
+play 9 0 1 1
+upd 3d088889
+upd 0
+upd 0
+play2 9 3e4ccccd 0 0
+upd 3d70fe2e
+upd 3d088889
+phaseall 3f000000
+upd 0
+upd 3c888889
+pair 7 7 1 3f000000
+pair 3 b 0 3e4ccccd
+upd 3d4ccccd
+play b 0 1 0
+pair b 6 0 3f000000
+upd 3d4ccccd
+upd 3d088889
+upd 3d088889
+upd 3d4ccccd
+upd 3d4ccccd
+phase5 bf800000
+upd 3d8a885e
+overlay 4 3f000000 1
+upd 3e046463
+upd 3c888889
+upd 3d4ccccd
+play2 b 3e800000 1 0
+upd 3d088889
+upd 3d088889
+upd 0
+upd 3c888889
+upd 3d4ccccd
+rate5 bf800000
+play2 1 3e800000 1 0
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3c888889
+upd 3d4ccccd
+upd 0
+upd 3d4689b3
+upd 3c888889
+upd 3d088889
+rate 3f800000
+upd 3d4ccccd
+upd 3d088889
+upd 0
+upd 0
+upd 0
+upd 3d088889
+= 0 0 0
+play 9 0 1 1
+upd 0
+upd 3d4ccccd
+play b 0 1 1
+upd 3c888889
+pair a 1 0 3d5506b0
+upd 0
+upd 0
+play 7 3f000000 1 1
+upd 3e7438fb
+play b 3f000000 1 0
+upd 3d4ccccd
+rate bdd7973e
+upd 3d4ccccd
+upd 0
+phase 3f8a42b1
+play 9 3e4ccccd 0 0
+upd 3e4f1e3e
+upd 0
+upd 3c888889
+phaseall 0
+upd 3e37e516
+upd 3d088889
+play 7 3eb8e84c 0 0
+five 3 6 6 b b 0 0
+rate 0
+upd 0
+play 9 0 0 0
+five 2 2 6 7 b 3edc5c69 0
+upd 3d9d6538
+upd 0
+upd 3d088889
+phaseall 3f71d158
+play 7 0 0 0
+five 4 1 6 3 5 0 1
+play 4 3f487b95 0 0
+upd 0
+upd 0
+phase5 0
+upd 3c888889
+upd 0
+upd 3d4ccccd
+play 3 3e800000 1 0
+upd 0
+upd 3d4ccccd
+play2 9 3e800000 0 1
+upd 3d088889
+five 1 1 a 6 8 3e800000 1
+pair 4 4 0 3e800000
+phase2 3f800000
+play 2 0 0 0
+upd 3c888889
+rate5 0
+phase 3f15bc5f
+upd 3d4ccccd
+pair 4 7 1 3e800000
+play 1 3e800000 1 0
+play a 0 0 0
+five 4 4 3 b 6 3e4ccccd 0
+play 1 3e800000 0 0
+play 3 0 1 1
+upd 3e2687f7
+weight 0
+play 9 3eca2a58 0 1
+rate5 bf800000
+phaseall 3f000000
+upd 3c888889
+play 7 3e4ccccd 1 1
+upd 0
+upd 0
+upd 3c32ebb4
+upd 3e8318c6
+upd 3d088889
+= 1 0 0
+play 1 0 1 1
+upd 3d088889
+upd 3e8cb415
+play2 b 3e800000 0 0
+upd 3d4ccccd
+pair a 3 0 3e800000
+phaseall 3f800000
+upd 3d088889
+upd 3c888889
+rate5 3f800000
+upd 3d088889
+upd 3d088889
+upd 3e1cc119
+play 9 3e800000 1 0
+upd 3c888889
+upd 3d088889
+phaseall 3f800000
+upd 3d088889
+pair 5 6 1 0
+rate bf800000
+upd 3c888889
+upd 3d4ccccd
+play2 b 3e800000 0 1
+upd 0
+phase 3f000000
+upd 3e34a4ec
+upd 3d4ccccd
+upd 3e0a09b7
+overlay b 3f000000 1
+play 9 3e800000 1 0
+upd 3d088889
+upd 3d315948
+pair 6 1 0 3e4ccccd
+play a 3f000000 0 0
+rate5 3eb77d62
+upd 3d088889
+upd 3e1739a9
+five 6 8 7 2 1 3e4ccccd 0
+phaseall 3f38edd4
+upd 0
+upd 3d4ccccd
+play 1 3e4ccccd 1 0
+rate 3f59c9f8
+upd 3c888889
+upd 3c888889
+phase2 0
+play b 3f1e03eb 1 0
+upd 0
+weight 3f800000
+upd 3d088889
+= 0 1 1
+play 5 0 1 1
+upd 3c888889
+phaseall 3ea63489
+upd 3d4ccccd
+upd 3d088889
+pair 3 a 0 3e4ccccd
+upd 3e54df5f
+upd 3d3f65d7
+play 8 3f000000 0 0
+upd 0
+phaseall 3ca8320b
+play 4 3f000000 1 0
+upd 3e58c612
+upd 3d979a10
+weight bf800000
+upd 3d4ccccd
+upd 0
+upd 3d7737c2
+upd 3d088889
+upd 3d385f07
+upd 3e783542
+upd 3c888889
+upd 0
+upd 0
+upd 3d4ccccd
+upd 0
+upd 3d088889
+upd 3d088889
+= 1 0 1
+play 5 0 1 1
+play2 8 3e4ccccd 0 1
+pair b 7 1 3f000000
+upd 3d4ccccd
+upd 3d088889
+upd 3c888889
+upd 0
+upd 3d088889
+upd 0
+play2 6 3f000000 0 0
+upd 0
+upd 3e851810
+phaseall bce7d986
+overlay 1 0 1
+weight 0
+upd 3d4ccccd
+upd 0
+upd 3c888889
+upd 3ddfad6f
+upd 3d4ccccd
+phase2 3f6030da
+upd 0
+upd 0
+upd 3c888889
+upd 3d088889
+phaseall 0
+upd 3c888889
+upd 3d4ccccd
+overlay a 0 1
+phase 0
+upd 3d4ccccd
+upd 3c888889
+play 2 0 1 1
+upd 3d4ccccd
+overlay a 3f16563e 0
+play 4 0 1 0
+upd 3d4ccccd
+five 5 6 9 9 5 3f000000 1
+upd 0
+upd 3ae131d2
+rate 3f000000
+upd 3d4ccccd
+phase 3f800000
+pair 4 9 0 0
+phase 3e7b3f96
+upd 0
+upd 3d4ccccd
+upd 0
+rate5 3f000000
+upd 3d4ccccd
+upd 3e233b6d
+play 5 3e800000 0 0
+upd 3d088889
+upd 3d088889
+upd 0
+upd 3d963b19
+rate5 bd801f4f
+upd 3e5c0c65
+upd 3d088889
+= 1 0 1
+play 9 0 1 1
+pair a 5 1 3f000000
+pair 7 7 0 3e800000
+play2 1 3e800000 0 0
+upd 3c888889
+five 2 b 3 3 a 0 0
+phase 3f000000
+upd 3d4ccccd
+phase2 0
+phase2 3f000000
+upd 3d4ccccd
+upd 3e4d4514
+upd 3d088889
+upd 3c888889
+phaseall bf800000
+upd 3d088889
+upd 3e340fcd
+play a 3f000000 1 0
+upd 3d088889
+weight 0
+play 2 3f000000 1 0
+play a 3e800000 1 0
+upd 3d088889
+phase2 3f000000
+upd 3e72c87e
+play 9 3f5c87ce 0 0
+upd 0
+play b 0 0 1
+upd 3d088889
+upd 3d088889
+upd 0
+upd 3dd56049
+pair 2 a 1 0
+upd 3d088889
+overlay 7 3e4ccccd 0
+upd 3c45a52d
+play2 2 3ee8eeab 0 0
+rate 3f000000
+rate5 3f800000
+upd 3d4ccccd
+weight 3df95f42
+pair 2 a 1 3e800000
+upd 3d4ccccd
+upd 3d088889
+upd 3e2df21b
+phaseall bf800000
+upd 3d4ccccd
+play a 3e4ccccd 0 0
+play2 4 3e892776 1 1
+upd 3c888889
+five 8 6 2 9 1 3f30b366 1
+five 3 9 1 6 7 3f000000 1
+play 7 3e800000 0 0
+pair 9 6 0 3e800000
+upd 0
+upd 3d4ccccd
+upd 0
+upd 3a9800c7
+upd 3c888889
+pair 2 4 0 3f6d57ff
+upd 3d088889
+upd 3d4ccccd
+upd 3c888889
+upd 3d4ccccd
+upd 3c888889
+play 4 3e800000 0 0
+rate5 bf800000
+upd 3d088889
+= 0 0 0
+play 9 0 1 1
+upd 0
+pair 5 3 0 0
+play2 5 3e800000 1 0
+upd 3d4ccccd
+upd 3d088889
+play a 0 1 1
+upd 0
+upd 3d4ccccd
+play2 9 3e800000 0 0
+five 6 5 3 a 7 3f000000 1
+upd 3d4ccccd
+upd 3c888889
+upd 3c888889
+upd 3d4ccccd
+weight 0
+upd 3e7c2b45
+upd 3dac77e6
+upd 3d4ccccd
+play 5 3f000000 0 0
+upd 3d088889
+play 4 0 0 0
+upd 3c888889
+pair 3 6 0 3e800000
+upd 3c888889
+upd 3c888889
+pair a 8 1 3f014d68
+upd 3e77323b
+five 2 7 1 3 b 3f2674f1 0
+upd 3d88fe6d
+upd 0
+upd 3d4ccccd
+upd 3c888889
+rate5 3f000000
+phase5 3f000000
+upd 3d088889
+upd 3d088889
+upd 3d088889
+upd 3c888889
+upd 3d4ccccd
+upd 3d088889
+rate 3f800000
+five 9 8 3 6 3 3f000000 1
+five 5 5 8 3 9 3e4ccccd 1
+upd 3e38022a
+play 4 3e4ccccd 0 0
+phaseall 3f000000
+upd 3d4ccccd
+upd 3d088889
+upd 3c888889
+upd 3d088889
+upd 3d088889
+= 1 0 1
+play 9 0 1 1
+phase2 0
+phase2 3f800000
+five 1 9 4 3 1 0 1
+upd 3e8b5749
+upd 0
+upd 3c888889
+upd 3c888889
+upd 3e4b4cff
+upd 3d4ccccd
+upd 3c888889
+five a a b 3 a 3f000000 1
+play2 2 0 0 0
+upd 0
+phase2 3f000000
+pair 3 a 0 3f07b11e
+play 4 0 1 1
+upd 3c888889
+upd 3d088889
+five 4 b 9 9 3 0 0
+upd 0
+upd 3d088889
+play 7 0 0 0
+upd 3e2afe39
+upd 3d088889
+upd 3d4ccccd
+pair 4 3 1 3f000000
+upd 0
+pair 6 6 0 3f000000
+five 2 b 1 9 7 3f000000 1
+play 2 3f4364b3 0 0
+phase bf800000
+phaseall 3f000000
+upd 3d4ccccd
+upd 3d088889
+phase 3f800000
+upd 3d4ccccd
+phase5 3f000000
+phase2 3f800000
+overlay 9 0 1
+upd 3c888889
+upd 3da5182b
+pair 2 2 1 3f000000
+upd 3d088889
+upd 3d088889
+pair 6 9 1 3ef8b2a1
+upd 3d088889
+upd 0
+upd 0
+upd 3d088889
+= 1 0 1
+play 6 0 1 1
+overlay a 3e911a0e 1
+pair 9 9 0 0
+upd 3e848462
+pair 2 7 1 3e800000
+pair 1 2 1 3e800000
+upd 3d088889
+overlay 4 3e4ccccd 0
+upd 0
+upd 3c888889
+upd 3db5b054
+phase2 0
+upd 3d8154f3
+upd 0
+play 8 3f000000 1 0
+upd 3d4ccccd
+upd 0
+upd 3d088889
+upd 0
+play b 3ef969c8 0 1
+play a 3f000000 1 0
+five 3 b 8 4 5 3e4ccccd 1
+phaseall bf800000
+upd 3c888889
+phase2 0
+upd 3d088889
+upd 3d4ccccd
+phase 3f800000
+play2 1 3f408d51 1 0
+upd 3d088889
+upd 3d4ccccd
+upd 3d088889
+= 1 1 1
+play 2 0 1 1
+phaseall 3f800000
+upd 3c888889
+upd 3d088889
+upd 0
+upd 3d088889
+upd 3db100b8
+upd 3c888889
+upd 0
+upd 3d4ccccd
+upd 3df6c8ce
+upd 3e8842b8
+upd 3d088889
+upd 3e2c9df7
+upd 3c888889
+upd 0
+upd 3c888889
+five 3 6 a b 9 3e800000 1
+upd 3c888889
+upd 3d4ccccd
+upd 3d4ccccd
+rate 3f73d151
+rate 3f76f342
+upd 3d4ccccd
+play 3 3e800000 0 0
+upd 0
+upd 0
+upd 0
+play 9 3e800000 0 1
+upd 3e128d01
+upd 3d088889
+pair 4 a 0 3f128a9c
+play b 0 1 0
+upd 3d4ccccd
+pair 1 5 0 3f6eb4b1
+upd 3d088889
+upd 0
+play2 4 0 1 1
+play 6 3e800000 0 0
+phase5 3e8ba93a
+play2 4 3e800000 1 0
+five 6 7 2 8 3 3e4ccccd 1
+upd 3d088889
+upd 3ded5b16
+play 3 3e800000 0 1
+upd 3d088889
+pair 3 6 1 3f000000
+upd 3d088889
+= 0 0 1
+play 5 0 1 1
+upd 3d4ccccd
+upd 0
+upd 0
+play 2 0 1 0
+pair 3 9 1 3e601d34
+upd 3c888889
+upd 3c888889
+upd 3c888889
+upd 0
+overlay 8 3e800000 0
+play 1 3f4a4162 1 0
+upd 3d088889
+play 9 3e4ccccd 1 0
+upd 3dee9c7e
+upd 3d4ccccd
+upd 0
+upd 3df142ca
+upd 3d4ccccd
+upd 3d088889
+upd 3e5651be
+upd 0
+upd 3c888889
+upd 3d979675
+overlay 1 3f000000 1
+pair 7 a 0 0
+upd 3d088889
+upd 3d088889
+pair 9 9 1 3f000000
+upd 3d4ccccd
+upd 3c888889
+upd 3e315d5e
+upd 0
+phase 0
+rate 3f000000
+upd 3d088889
+= 0 0 1
+play 7 0 1 1
+upd 3ddca504
+upd 3c888889
+upd 3c888889
+upd 0
+overlay 3 0 0
+pair 4 b 0 3e800000
+upd 3d4ccccd
+five 1 b 9 3 a 3e4ccccd 0
+upd 3e118ef3
+pair b 7 0 3f000000
+upd 3c888889
+weight bf800000
+upd 3d4ccccd
+upd 0
+play 9 3eb7c217 0 1
+phase 0
+upd 3e928a31
+five 2 b 4 8 3 3e4ccccd 1
+five 2 4 1 2 4 3e96cf5a 0
+play 2 0 0 0
+upd 3e8b79fb
+pair 9 8 0 3e4ccccd
+weight 3f000000
+rate5 bf800000
+phase2 0
+upd 3e57459f
+play 1 0 1 0
+upd 3d4ccccd
+five a 3 7 4 7 0 1
+phase2 0
+phase 0
+weight 0
+upd 3c888889
+upd 3d7e88fd
+phase 3f800000
+upd 3c888889
+upd 3e2ec848
+upd 3dc6b332
+play2 3 3e800000 1 0
+overlay 4 3e800000 1
+upd 0
+upd 3d4ccccd
+play b 3f6052ef 0 0
+upd 3c888889
+upd 3d088889
+upd 3c888889
+pair 8 3 1 3f6d1e3d
+upd 3d088889
+upd 0
+upd 0
+upd 3c888889
+upd 3e8a4079
+five 2 4 a 5 8 3f000000 1
+upd 0
+upd 3d088889
+upd 3c888889
+upd 3e636ecc
+phase 3f000000
+upd 3d088889
+upd 3e58c44e
+upd 3d088889
+five 8 4 8 4 1 3f000000 1
+play a 3f000000 1 0
+five 6 5 9 a 4 3f000000 0
+play 4 3f000000 0 0
+upd 3c888889
+play 8 3da0c16a 1 0
+five a 7 9 6 4 3f000000 1
+pair 3 5 0 0
+upd 3d088889
+= 1 0 1
+play 1 0 1 1
+upd 0
+five 1 7 5 a 9 3eb208c6 0
+upd 3c888889
+upd 3c888889
+play2 5 0 0 0
+upd 3d3b7150
+upd 3d4ccccd
+play 5 3f000000 0 0
+play 1 3e4ccccd 1 0
+upd 3d4ccccd
+upd 3d088889
+upd 3d088889
+play 9 3e800000 1 0
+upd 3d088889
+upd 3d4ccccd
+phase 0
+upd 3c888889
+pair 8 a 0 3f000000
+upd 3d088889
+upd 3c888889
+upd 3c888889
+upd 3c888889
+upd 3d4ad070
+upd 3d98469b
+overlay 5 3f000000 1
+upd 3d088889
+= 1 0 1
+play 3 0 1 1
+upd 3c888889
+five 3 9 7 b 2 0 1
+upd 3e8ce2a4
+play2 8 3e4ccccd 1 0
+upd 3d088889
+play2 7 3e63392c 1 0
+play2 2 3e800000 1 0
+phaseall 3f000000
+upd 3d4ccccd
+upd 3d088889
+pair 6 8 0 3e800000
+upd 3e17857c
+play a 3f000000 1 0
+upd 3d088889
+upd 3e7d7988
+upd 0
+upd 3d088889
+upd 0
+upd 0
+play 4 3e800000 0 0
+pair 7 8 0 0
+upd 3d4ccccd
+upd 3d4ccccd
+phaseall bf800000
+upd 3e5df6f4
+upd 3a54f5a5
+upd 3d4ccccd
+upd 3e8cc41e
+upd 3c888889
+play b 3e800000 1 0
+upd 0
+play2 6 3e800000 1 0
+rate be4a79b0
+upd 0
+upd 3d4ccccd
+upd 3d91dc27
+upd 3d088889
+play 7 3e4ccccd 0 1
+upd 3d088889
+weight 3f7456c5
+upd 3d4ccccd
+upd 3d4ccccd
+phase5 bf800000
+upd 3c888889
+play 7 3e4ccccd 1 0
+overlay 3 3e4ccccd 0
+upd 3c888889
+upd 3d4ccccd
+play2 9 0 1 1
+pair 3 7 1 3e4ccccd
+weight 3dfa3106
+upd 3d088889
+= 0 0 1
+play 1 0 1 1
+upd 0
+pair a 3 1 3f000000
+play 9 3f000000 0 0
+pair b 7 1 3e4ccccd
+play 6 3efe8880 0 0
+upd 3d088889
+upd 3c888889
+five a a 5 a 6 3f000000 1
+upd 3d088889
+play 7 3e800000 0 0
+play 9 3f000000 0 0
+play 8 3f000000 0 1
+upd 0
+upd 3c888889
+play 6 3f000000 1 1
+phaseall 3f000000
+upd 3d088889
+upd 3d4ccccd
+play 9 3e800000 1 0
+play 8 0 1 0
+upd 0
+pair 7 7 1 3e800000
+pair 3 4 1 3e800000
+upd 3c888889
+play 4 0 1 1
+rate 3f000000
+upd 3dc377a0
+phase 0
+upd 0
+phase 3f800000
+five 5 2 4 a 7 0 1
+upd 3c888889
+play 8 3ebe2d6b 1 0
+upd 3d088889
+upd 3c888889
+overlay a 3e020250 1
+upd 0
+upd 3d088889
+upd 3d4ccccd
+overlay 7 3e800000 0
+upd 3d088889
+upd 3c888889
+upd 0
+upd 3c888889
+upd 3c888889
+play 6 0 1 0
+upd 3d4ccccd
+upd 3d088889
+pair 4 3 1 0
+upd 3d088889
+upd 0
+upd 3d4ccccd
+pair 7 b 0 0
+upd 3e9599aa
+pair 7 1 1 3e800000
+upd 3d4ccccd
+upd 3c888889
+phase5 3e46d75c
+overlay 1 0 0
+upd 3e457cd8
+upd 3c888889
+play 4 3f000000 0 0
+upd 3c888889
+pair 6 3 1 3f000000
+upd 3d088889
+= 1 0 1
+play a 0 1 1
+play 5 3f000000 1 0
+play 1 3f000000 1 0
+upd 3d088889
+upd 3c888889
+upd 3cdda068
+upd 3d088889
+upd 3d088889
+rate 3f1755ec
+upd 3d088889
+upd 3d088889
+phase 3f5b9825
+play2 b 3f000000 0 0
+upd 3c888889
+upd 3d088889
+phase 3f000000
+upd 3c888889
+overlay 1 3e4ccccd 1
+overlay 7 3e59dc32 1
+upd 3c888889
+upd 3d4ccccd
+play2 7 3f000000 0 0
+play 3 3f614eb7 0 0
+play 5 3e2a3a41 0 1
+pair 2 9 0 3f000000
+play b 0 0 0
+play 9 3e800000 0 0
+play 6 3ef9a73f 1 0
+upd 3c888889
+upd 0
+phase 3f800000
+phaseall bf800000
+pair 8 5 1 0
+upd 3d088889
+play 1 0 1 0
+play 2 3e800000 0 0
+upd 3d4ccccd
+upd 3df9679c
+upd 3d088889
+play 9 0 0 1
+play2 2 3e4ccccd 0 0
+upd 0
+upd 3d4ccccd
+upd 3e935030
+upd 0
+upd 3d4ccccd
+upd 3d4ccccd
+upd 3e81d4c0
+upd 0
+play 5 3e800000 0 0
+upd 3c888889
+upd 3c888889
+upd 3d4ccccd
+upd 3d088889
+upd 0
+upd 3c888889
+upd 3d088889
+phaseall 3f800000
+upd 3d088889

@@ -127,6 +127,104 @@ pub(crate) fn ln_guest(x: f64) -> f64 {
     ef.mul_add(0.693359375, r)
 }
 
+/// The original's pow in double (F-21955, Cephes' pow: 2^(y log2 x) from a table of 2^(-k/16) with its correction table
+/// and two polynomials, the parts reduced to sixteenths with fctid), same operations, for positive normal x and finite
+/// y up to 1e20 (other inputs fall back to the library). An integer x to an integer power in (0, 128] goes by squaring
+/// the mantissa. Bit-exact offline (b1 evidence, batch 20).
+pub(crate) fn pow_guest(x: f64, y: f64) -> f64 {
+    const A: [u64; 17] = [
+        0x3ff0000000000000, 0x3feea4afa2a490da, 0x3fed5818dcfba487, 0x3fec199bdd85529c, 0x3feae89f995ad3ad, 0x3fe9c49182a3f090,
+        0x3fe8ace5422aa0db, 0x3fe7a11473eb0187, 0x3fe6a09e667f3bcd, 0x3fe5ab07dd485429, 0x3fe4bfdad5362a27, 0x3fe3dea64c123422,
+        0x3fe306fe0a31b715, 0x3fe2387a6e756238, 0x3fe172b83c7d517b, 0x3fe0b5586cf9890f, 0x3fe0000000000000,
+    ];
+    const B: [u64; 9] = [
+        0, 0xbc8ea00000000000, 0x3c71100000000000, 0x3c6c600000000000, 0xbc74100000000000, 0x3c86300000000000, 0x3c7ae00000000000,
+        0x3c89b00000000000, 0x3c88a80000000000,
+    ];
+    const P: [u64; 6] = [0x3ff71547652b82fe, 0x3fdc551d94ae0bf8, 0x3fb555555555554d, 0x3f899999999e080e, 0x3f6249242e278dac, 0x3f3c78fddb4afc28];
+    const Q: [u64; 7] = [0x3fe62e42fefa39ef, 0x3fcebfbdff82c4ce, 0x3fac6b08d703026d, 0x3f83b2ab6e131d98, 0x3f55d87e18d7cd9f, 0x3f242f7ae0384c74, 0x3eef4edde392cc80];
+    let (a, b, p, q) = (|k: usize| f64::from_bits(A[k]), |k: usize| f64::from_bits(B[k]), |k: usize| f64::from_bits(P[k]), |k: usize| f64::from_bits(Q[k]));
+    if y == 0.0 {
+        return 1.0;
+    }
+    if !(x >= f64::MIN_POSITIVE && x <= f64::MAX) || !(y.abs() <= 1e20) {
+        return x.powf(y);
+    }
+    // the exponent as frexp has it (F-91713 for a normal x, F-14642), and its set (F-34155)
+    let exp_of = |v: f64| ((v.to_bits() >> 52) & 0x7ff) as i32 - 1022;
+    let set_exp = |v: f64, n: i32| f64::from_bits((v.to_bits() & 0x800f_ffff_ffff_ffff) | (((n + 1022) as u64 & 0x7ff) << 52));
+    let finish = |v: f64, n: i32| if n > 1024 { f64::INFINITY } else if n < -1021 { 0.0 } else { set_exp(v, n) };
+    // fctid in the default rounding, saturating, then fcfid; an integer when that gives the value back (F-59716)
+    let rnd = |v: f64| if v.abs() < 9.2e18 { v.round_ties_even() } else { (if v > 0.0 { i64::MAX } else { i64::MIN }) as f64 };
+    let is_int = |v: f64| rnd(v) == v;
+    let e = exp_of(x);
+    let m = set_exp(x, 0);
+    if y <= 128.0 && is_int(x) && is_int(y) && y > 0.0 {
+        let mut n = y as i32;
+        let shift = n.wrapping_mul(e);
+        let (mut sq, mut r) = (m, 1.0f64);
+        loop {
+            if n & 1 != 0 {
+                r *= sq;
+            }
+            n >>= 1;
+            sq *= sq;
+            if n == 0 {
+                break;
+            }
+        }
+        let n = exp_of(r) + shift;
+        return if n > 2560 { f64::INFINITY * r } else if n < -2557 { r * 0.0 } else { finish(r, n) };
+    }
+    let mut i = 1usize;
+    if !(m > a(8)) {
+        i = 9;
+    }
+    if !(m > a(i + 3)) {
+        i += 4;
+    }
+    if !(m > a(i + 1)) {
+        i += 2;
+    }
+    let d = 16 * e - i as i32;
+    let (f, g) = if d.abs() == 1 {
+        (ln_guest(x) * p(0), 0.0)
+    } else {
+        let z = (((m - a(i)) - b((i + 1) >> 1)) / (a(i) + m)) * 2.0;
+        let w = z * z;
+        let u = w.mul_add(p(5), p(4)).mul_add(w, p(3)).mul_add(w, p(2)) * w * z;
+        (d as f64 * 0.0625, u.mul_add(p(0), z * p(1)) + z)
+    };
+    let red = |v: f64| rnd(v * 16.0) * 0.0625;
+    let ya = red(y);
+    let mut w = (y - ya).mul_add(f, g * y);
+    let wb = red(w);
+    let mut h = ya.mul_add(f, wb);
+    w -= wb;
+    let mut wa = red(h);
+    h -= wa;
+    h += w;
+    let hb = red(h);
+    wa += hb;
+    h -= hb;
+    let s = wa * 16.0;
+    if s > 40960.0 {
+        return f64::INFINITY;
+    }
+    if s < -40928.0 {
+        return 0.0;
+    }
+    let mut k = s as i32;
+    if h > 0.0 {
+        k += 1;
+        h -= 0.0625;
+    }
+    let poly = h.mul_add(q(6), q(5)).mul_add(h, q(4)).mul_add(h, q(3)).mul_add(h, q(2)).mul_add(h, q(1)).mul_add(h, q(0)).mul_add(h, 1.0);
+    let n = k / 16 + (k >= 0) as i32;
+    let r = poly * a((16 * n - k) as usize);
+    finish(r, exp_of(r) + n)
+}
+
 /// A pitch ratio as F-98474 turns it into the voice's cents (+80): log10 in double (F-46044 = ln x
 /// 0.4342944819032518, 0x8205D018), rounded to single, times 3.321928 (0x82002C44) and 1200 (0x82002C40) in single,
 /// truncated (fctiwz). (Recorded on the slipstream loop: 292 updates, every value equal - work/slipstream/audiorec.)
@@ -430,8 +528,8 @@ pub struct CarSounds {
     steam: [Option<Handle>; 2],
     /// the last window event heard (damagemap::CarDamage::glass)
     glass_seen: Option<u64>,
-    /// the side windows' motors (left, right): the car's ANIM_PACKAGE +26 / +30
-    window_snd: [AnimSound<Handle>; 2],
+    /// the side windows' motors (left, right) and the auto spoiler's: the car's ANIM_PACKAGE +26 / +30 / +50
+    window_snd: [AnimSound<Handle>; 3],
 }
 
 impl CarSounds {
@@ -1274,8 +1372,8 @@ impl CarSounds {
     /// A window's hit sum passing 1 or 2 (F-66214 -> `F-45199` on the car's sound entity): the
     /// entity's GLOBAL_CAR_PARTICLES (+1256) +18 - CAR_BANGERS_GLASS_LARGE - once at the window's place,
     /// 0 dB, LPF field 23900, flags 4; heard whether or not the car is drawn.
-    pub fn windows(&mut self, lib: &mut SoundLib, ctl: &[crate::vehicles::WindowCtl; 2], pos: Vec3, rot: glam::Quat) {
-        for (w, c) in self.window_snd.iter_mut().zip(ctl) {
+    pub fn windows(&mut self, lib: &mut SoundLib, ctl: &[crate::vehicles::WindowCtl; 2], spoiler: &crate::vehicles::WindowCtl, pos: Vec3, rot: glam::Quat) {
+        for (w, c) in self.window_snd.iter_mut().zip(ctl.iter().chain(std::iter::once(spoiler))) {
             // (the request's place is a pointer to the tracker's +48, the part's place under the car's matrix this frame)
             let Some(at) = w.obj.map(|o| o.at) else { continue };
             let req = Req { player: self.player, ..Req::at(pos + rot * at) };
@@ -2163,7 +2261,7 @@ impl Fleet {
                 }
                 s.damage_parts(lib, &p.state.parts);
                 s.glass(lib, &p.state.dmg, p.state.pos, p.state.rot);
-                s.windows(lib, &p.windows, p.state.pos, p.state.rot);
+                s.windows(lib, &p.windows, &p.spoiler, p.state.pos, p.state.rot);
                 // a police car's horn button chirps the siren (F-44589)
                 if (p.cop || ctl.police_class) && ctl.horn {
                     log::debug!("audio: the police car's horn button - the siren alert (slot free: {})", free(lib, &s.siren));
@@ -2306,7 +2404,7 @@ impl Fleet {
                 s.update(lib, &self.mats, &ci, -1, dt);
                 s.damage_parts(lib, &c.state.parts);
                 s.glass(lib, &c.state.dmg, c.state.pos, c.state.rot);
-                s.windows(lib, &c.windows, c.state.pos, c.state.rot);
+                s.windows(lib, &c.windows, &c.spoiler, c.state.pos, c.state.rot);
                 if c.cop && !c.goon {
                     if stop_all {
                         s.siren_stop(lib);
@@ -2580,11 +2678,12 @@ impl AnimObj {
     }
 }
 
-/// The side windows' objects of a car: its VP_ object's +58 is its ANIM_PACKAGE, whose +26 / +30 are
-/// VEH_ANIM_WINDOW_LEFT / RIGHT (F-53023; every car's package names the _DEFAULT ones).
-fn window_objects(lib: &SoundLib, def: &[u8]) -> [Option<AnimObj>; 2] {
+/// The side windows' and the auto spoiler's objects of a car: its VP_ object's +58 is its ANIM_PACKAGE, whose +26 / +30
+/// are VEH_ANIM_WINDOW_LEFT / RIGHT (F-53023; every car's package names the _DEFAULT ones) and +50 the spoiler's
+/// (VEH_ANIM_SPOILER on the Murcielago's, _SHORT on the R8's, none on the others).
+fn window_objects(lib: &SoundLib, def: &[u8]) -> [Option<AnimObj>; 3] {
     let pkg = lib.game.get(be_u32(def, 58));
-    [26, 30].map(|at| pkg.and_then(|p| lib.game.get(be_u32(p, at))).and_then(AnimObj::read))
+    [26, 30, 50].map(|at| pkg.and_then(|p| lib.game.get(be_u32(p, at))).and_then(AnimObj::read))
 }
 
 /// What a part's sound player asks of the voices: a one-shot (F-55796), a loop into the part's handle (F-30971),

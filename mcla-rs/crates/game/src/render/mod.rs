@@ -417,6 +417,37 @@ impl LampTables {
     pub fn cell(&self, p: Vec3) -> [u16; 4] {
         self.cells.get(lamp_cell_index(p)).copied().unwrap_or([0; 4])
     }
+
+    /// The lamps of the cells over [p - half, p + half] in x and z (F-79329): each corner `(v x scale - bias) x size`
+    /// with one rounding for the multiply-subtract, cut towards zero and clamped into the grid; rows z outer, a cell's
+    /// four in order, each index once (0 too), into a list of capacity `cap` that holds `cap - 1`. Checked on 3,000
+    /// cases against the original's code run offline (`lamp_query_reference.py`, test `lamp_query_matches_the_original`).
+    pub fn lamp_query(&self, p: Vec3, half: f32, cap: usize) -> Vec<u16> {
+        let axis = |v: f32, scale: f32, bias: f32, n: u32| ((v.mul_add(scale, bias) * n as f32) as i64).clamp(0, n as i64 - 1) as usize;
+        let (x0, x1) = (axis(p.x - half, 1.0 / 6320.0, 0.54857594, LAMP_GRID.0), axis(p.x + half, 1.0 / 6320.0, 0.54857594, LAMP_GRID.0));
+        let (z0, z1) = (axis(p.z - half, 1.0 / 4463.75, 0.5282554, LAMP_GRID.1), axis(p.z + half, 1.0 / 4463.75, 0.5282554, LAMP_GRID.1));
+        let mut cand: Vec<u16> = Vec::new();
+        for z in z0..=z1 {
+            for x in x0..=x1 {
+                for &i in self.cells.get(z * LAMP_GRID.0 as usize + x).unwrap_or(&[0; 4]) {
+                    if !cand.contains(&i) && cand.len() + 1 < cap {
+                        cand.push(i);
+                    }
+                }
+            }
+        }
+        cand
+    }
+
+    /// The light pickers' lamps at `p` (F-16230 / F-24398): the grid's lamps within 4 m (`lamp_query`, a list of 32),
+    /// each scored sat(strength / d^2) x its cone (F-60154), the best four kept (F-48037): (table index, score), best first.
+    pub fn best_four(&self, p: Vec3) -> Vec<(u16, f32)> {
+        let cand = self.lamp_query(p, 4.0, 32);
+        let mut scored: Vec<(u16, f32)> = cand.iter().map(|&i| (i, self.recs.get(i as usize).map_or(0.0, |l| crate::figlight::score(l, p)))).collect();
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+        scored.truncate(4);
+        scored
+    }
 }
 
 /// The cell index F-25968 reads for a place: `(p x scale - bias) x grid size` cut towards zero (a NaN cuts to
@@ -472,6 +503,28 @@ mod lamp_cell_tests {
             n += 1;
         }
         assert!(n > 1000);
+    }
+
+    #[test]
+    fn lamp_query_matches_the_original() {
+        // (the harness's cells: a hash of the cell index, few distinct ids)
+        let cells: Vec<[u16; 4]> = (0..LAMP_GRID.0 * LAMP_GRID.1)
+            .map(|i| {
+                let (h, g) = (i.wrapping_mul(2654435761), (i + 12345).wrapping_mul(2246822519));
+                [(h >> 7 & 63) as u16, (h >> 13 & 63) as u16, (g >> 7 & 63) as u16, (g >> 13 & 63) as u16]
+            })
+            .collect();
+        let t = LampTables { cells, recs: Vec::new() };
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let mut n = 0;
+        for l in include_str!("testdata/lamp_query_ref.txt").lines() {
+            let v: Vec<&str> = l.split_whitespace().collect();
+            let want: Vec<u16> = v[5..].iter().map(|x| x.parse().unwrap()).collect();
+            assert_eq!(want.len(), v[4].parse::<usize>().unwrap());
+            assert_eq!(t.lamp_query(Vec3::new(f(v[0]), 0.0, f(v[1])), f(v[2]), v[3].parse().unwrap()), want, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
     }
 }
 

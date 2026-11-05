@@ -451,6 +451,25 @@ enum CurveParams {
     None,
 }
 
+/// The vector powf (F-33229) of e (single, 0x402DF854) to `y` as the recomp computes it: vexptefp(log2f(e) * y) with
+/// denormals flushed - 2^floor times the SDK's fourth-order polynomial of the fraction, the power of two built in the
+/// exponent field (wrapping as the SDK's integer add and shift do) - and 1 for y == 0.
+fn vpow_e(y: f32) -> f32 {
+    let ftz = |v: f32| if v.is_subnormal() { 0.0f32.copysign(v) } else { v };
+    if y == 0.0 {
+        return 1.0;
+    }
+    let x = ftz(f32::from_bits(0x3FB8_AA3B) * ftz(y));
+    let n = x.floor();
+    let f = ftz(x - n);
+    let mut p = 1.877_576_7e-3f32;
+    for c in [8.989_339_7e-3f32, 5.582_631_8e-2, 2.401_536_1e-1, 6.931_530_8e-1, 1.0] {
+        p = ftz(ftz(p * f) + c);
+    }
+    let ni = if n >= -2147483648.0 && n < 2147483648.0 { n as i32 } else { i32::MIN };
+    ftz(p * ftz(f32::from_bits((ni.wrapping_add(127) as u32).wrapping_shl(23))))
+}
+
 /// The PowerPC `fsel`: `a` when `c >= 0`, else `b` (a NaN `c` picks `b`).
 pub fn fsel(c: f32, a: f32, b: f32) -> f32 {
     if c >= 0.0 {
@@ -566,9 +585,10 @@ impl Curve {
                 }
             }
             CurveParams::Gauss { k, norm } => {
-                let b = (-(k * x).powi(2)).exp();
+                // (F-49411: e^-(k x)^2 by the vector powf F-33229 of e in single; normalised by e^-k^2 when F-67749 set +8)
+                let a = vpow_e((k * k) * -1.0);
+                let b = vpow_e(((k * x) * (k * x)) * -1.0);
                 if *norm {
-                    let a = (-k * k).exp();
                     (b - a) / (1.0 - a)
                 } else {
                     b

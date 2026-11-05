@@ -194,6 +194,9 @@ pub struct CarInput {
     /// hydraulics: bits 0-3 the wheel buttons (front left, front right, back left, back right),
     /// `HYD_FITTED` the car has them, `HYD_ON` they are switched on
     pub hyd: u8,
+    /// the air ride: `AIR_FITTED` the bags are fitted, `AIR_ALLOWED` the local human's car with its engine running,
+    /// `AIR_PATTERN` the lowering pattern (LocalOptions +1324)
+    pub air: u8,
     /// in another car's slipstream: the air's drag falls to the tuning's DragMin
     pub draft: bool,
     /// a computer driver's flag 4 (F-94408): fire the slipstream turbo if it is ready
@@ -229,6 +232,9 @@ pub struct CarInput {
 
 pub const HYD_FITTED: u8 = 0x40;
 pub const HYD_ON: u8 = 0x80;
+pub const AIR_FITTED: u8 = 0x80;
+pub const AIR_ALLOWED: u8 = 0x40;
+pub const AIR_PATTERN: u8 = 0x07;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WheelState {

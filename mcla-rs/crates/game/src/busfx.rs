@@ -210,7 +210,7 @@ fn ftz(x: f32) -> f32 {
         x
     }
 }
-fn vadd(a: f32, b: f32) -> f32 {
+pub(crate) fn vadd(a: f32, b: f32) -> f32 {
     ftz(ftz(a) + ftz(b))
 }
 fn vsub(a: f32, b: f32) -> f32 {
@@ -220,7 +220,7 @@ fn vmul(a: f32, b: f32) -> f32 {
     ftz(ftz(a) * ftz(b))
 }
 /// vmsum4fp128 as the recomp's dpps: (p3 + p2) + (p1 + p0)
-fn dp4(v: &[f32; 4], x: &[f32]) -> f32 {
+pub(crate) fn dp4(v: &[f32; 4], x: &[f32]) -> f32 {
     let p: [f32; 4] = std::array::from_fn(|e| vmul(v[e], x[e]));
     vadd(vadd(p[3], p[2]), vadd(p[1], p[0]))
 }

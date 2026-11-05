@@ -75,6 +75,9 @@ pub struct CarEntry {
     /// no licence plate is drawn on this car (its `LicensePlate` meshes are left out), anywhere; default false
     #[serde(default)]
     pub hide_plate: bool,
+    /// the garage leaves out the part rows this car has nothing to choose in, instead of greying them (MODS.md M-8); default false
+    #[serde(default)]
+    pub hide_empty_parts: bool,
 }
 
 /// One car maker a mod declares (`[[manufacturer]]`, MODS.md M-7; format in docs/reference/mods/manifest.md section 11):

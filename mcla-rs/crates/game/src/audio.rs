@@ -707,6 +707,10 @@ pub struct Audio {
     pub music_volume: f32,
     /// the playing song's own level (its headroom)
     music_gain: f32,
+    /// the next start's predelay and start offset (ms), the music manager's request (F-62155)
+    start_delay: (u32, u32),
+    /// the music manager (MusicMgr): its Play / suspend state, run by `sound.rs` where the mixer is
+    pub(crate) mgr: MusicMgr,
     pub now_playing: String,
     /// per music file: the song's title and genre (0 eclectic .. 6 west coast rap) from the
     /// game's string table; None for what is not one of its songs
@@ -744,12 +748,17 @@ pub enum ObjCmd {
     /// a career speech line's take (`speech.rs`): played through `object` (the voice's Speech sound, or a category name)
     /// on the audio timer 0 (it holds while the game is paused); `player`: at the player's car, followed while it plays
     Line { key: String, object: String, player: bool },
+    /// the career speech's line on show stopped (the speech manager's stop, F-73277)
+    LineStop,
     /// a dynamic mixer scene on / off
     Scene { name: String, on: bool },
     /// the sound (or, for a type-23 object, the scene) whose hash sits at `offset` of a game.dat object
     Field { object: String, offset: usize, pos: Option<Vec3>, on: bool },
     /// a persistent sound by name, kept while it is asked for every frame (stopped in the first frame it is not)
     Loop { name: String },
+    /// the music manager's Play (its argument) or the race scene's suspend (racer_enablemusic): `MusicMgr`
+    MusicPlay { arg: u32 },
+    MusicSuspend,
     /// a story scene's audio (game.dat `CUTSCENES_<name>`: its dialogue and effects streams and its mixer scene)
     /// started (`sounds` false: its mixer scene only), or (`on` false) the scene's audio ended
     Cutscene { name: String, on: bool, sounds: bool },
@@ -847,6 +856,8 @@ impl Audio {
             music_on: true,
             music_volume: 0.35,
             music_gain: 1.0,
+            start_delay: (0, 0),
+            mgr: MusicMgr::default(),
             now_playing: String::new(),
             music_meta: Vec::new(),
             playlist: None,
@@ -935,6 +946,12 @@ impl Audio {
             self.obj_cmds.push(ObjCmd::Clip { key: key.to_string(), category, pos });
         }
         self.objects
+    }
+    /// The career speech line playing stopped (see [`ObjCmd::LineStop`]).
+    pub fn obj_line_stop(&mut self) {
+        if self.objects {
+            self.obj_cmds.push(ObjCmd::LineStop);
+        }
     }
     /// A career speech line's take (see [`ObjCmd::Line`]).
     pub fn obj_line(&mut self, key: &str, object: &str, player: bool) -> bool {
@@ -1078,6 +1095,11 @@ impl Audio {
     }
 
     /// The radio's song, if it plays (diagnostics).
+    /// A song in the sink, paused or not (the manager's +384).
+    pub(crate) fn song_live(&self) -> bool {
+        self.music.as_ref().is_some_and(|s| !s.empty())
+    }
+
     pub fn music_playing(&self) -> bool {
         self.music.as_ref().is_some_and(|s| !s.is_paused() && !s.empty())
     }
@@ -1474,6 +1496,14 @@ impl Audio {
                 return;
             }
         }
+        // (the radio's first start is the Boot script's mcMusicManager_Play(0), F-33831: its jingle, its song behind
+        // the predelay; after it a song that ended is followed by the next - the playing handler F-61726 is not ported)
+        if self.mgr.handler == Handler::None && self.objects {
+            if !self.obj_cmds.iter().any(|c| matches!(c, ObjCmd::MusicPlay { .. })) {
+                self.obj_cmds.push(ObjCmd::MusicPlay { arg: 0 });
+            }
+            return;
+        }
         self.next_track();
     }
 
@@ -1568,6 +1598,10 @@ impl Audio {
             self.music_next = f;
             self.start_track();
         }
+        // (the PLAY callback F-37737: Play(0) unless the manager is in its playing state)
+        if self.mgr.handler != Handler::Playing {
+            self.obj_cmds.push(ObjCmd::MusicPlay { arg: 0 });
+        }
     }
 
     pub fn next_track(&mut self) {
@@ -1615,7 +1649,8 @@ impl Audio {
         if let Ok(s) = Sink::try_new(handle) {
             self.music_gain = Self::stream_gain(&p);
             s.set_volume(self.music_volume * self.music_gain);
-            s.append(dec);
+            let (pre, off) = self.start_delay;
+            s.append(dec.skip_duration(std::time::Duration::from_millis(off as u64)).delay(std::time::Duration::from_millis(pre as u64)));
             s.play();
             self.now_playing = match self.music_meta.get(self.music_next).cloned().flatten() {
                 Some((title, _)) => title,
@@ -1631,10 +1666,341 @@ impl Audio {
             self.music = Some(s);
         }
     }
+
+    /// The music manager's song start (F-62155 -> F-21756): the song the lists or the radio's order pick (`next_track`), behind
+    /// `predelay_ms` of silence, from `offset_ms` in. False when it cannot start.
+    pub(crate) fn start_song(&mut self, predelay_ms: u32, offset_ms: u32) -> bool {
+        if self.music_files.is_empty() || self.handle.is_none() {
+            return false;
+        }
+        self.start_delay = (predelay_ms, offset_ms);
+        self.next_track();
+        self.start_delay = (0, 0);
+        self.music.is_some()
+    }
+
+    /// The song stops (the voice's release, F-63886).
+    pub(crate) fn stop_song(&mut self) {
+        if let Some(s) = self.music.take() {
+            s.stop();
+        }
+    }
+}
+
+/// The music manager's state handler (+376): none before the first start, F-14624's idle one, F-62155's playing one.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) enum Handler {
+    #[default]
+    None,
+    Idle,
+    Playing,
+}
+
+/// The music manager's fields the Play and suspend rules use (the original's offsets). The slots hold the port's
+/// sounds by token: the caller keeps the sounds.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct MusicMgr {
+    /// +24 == 1: the console's player (not on the PC)
+    pub console: bool,
+    /// +28 the console entry
+    pub entry: u32,
+    /// +384 the song, +388 the one before it
+    pub song: Option<u32>,
+    pub old: Option<u32>,
+    /// +500 the jingle; +508 / +512 two more of the manager's sounds
+    pub jingle: Option<u32>,
+    pub after: [bool; 2],
+    /// +516 the MUSIC_SUSPEND scene
+    pub suspend: Option<u32>,
+    /// +520 a song change callback is set
+    pub on_change: bool,
+    /// +526 the song restarts on the next start, +527 started once, +528 background play (the song starts below -95 dB)
+    pub restart: bool,
+    pub started: bool,
+    pub background: bool,
+    /// +496
+    pub state: u32,
+    /// +76 the start offset (ms)
+    pub offset: u32,
+    pub handler: Handler,
+    /// +72, +80, +84, +36, +40, +48 / +52
+    pub pos: f32,
+    pub w80: u32,
+    pub w84: u32,
+    pub f36: f32,
+    pub f40: f32,
+    pub list: (u32, u32),
+}
+
+/// MUSIC_0_MANAGER (game.dat): +10 the jingle (MUSIC_PLAYER_ON_MASTER), +14 / +26 / +32 the song's predelay (ms) behind
+/// the jingle / +508 / +512.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct MusicTune {
+    pub jingle: u32,
+    pub pre: [u16; 3],
+}
+
+impl MusicTune {
+    pub fn read(o: &[u8]) -> Option<MusicTune> {
+        let u16at = |at: usize| o.get(at..at + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
+        Some(MusicTune { jingle: u32::from_be_bytes(o.get(10..14)?.try_into().ok()?), pre: [u16at(14)?, u16at(26)?, u16at(32)?] })
+    }
+}
+
+/// What the music manager asks of the sounds, the mixer and the players.
+pub(crate) trait MusicEnv {
+    /// MUSIC_USER's resolved volume (dB)
+    fn music_user_db(&self) -> f32;
+    /// DYNAMIC_MIXER_MUSIC_SUSPEND at strength 1.0 (F-10644)
+    fn scene_start(&mut self) -> Option<u32>;
+    /// the scene stops with its exit (F-55770(h, 1))
+    fn scene_stop(&mut self, h: u32);
+    /// F-31667(h, 0)
+    fn sound_stop(&mut self, h: u32);
+    /// the jingle made and played into its slot at 0 dB (F-39054)
+    fn jingle(&mut self, hash: u32) -> Option<u32>;
+    /// the voice released (F-63886(h, 0)); it empties its slot
+    fn release(&mut self, h: u32);
+    /// the song to play (F-19761)
+    fn pick(&mut self) -> u32;
+    /// the song started (F-21756) with the request's start offset (+36), predelay (+40) and Play's argument (+44)
+    fn song_start(&mut self, hash: u32, offset: u32, predelay: u32, arg: u32) -> Option<u32>;
+    /// F-77135(+52, +48)
+    fn place(&mut self, a: u32, b: u32);
+    /// the console player's slots 52 (ready), 20 (start the entry), 32 (stop)
+    fn console_ready(&mut self) -> bool;
+    fn console_start(&mut self, entry: u32);
+    fn console_stop(&mut self);
+    /// the song change callback (+520)
+    fn changed(&mut self);
+}
+
+impl MusicMgr {
+    /// mcMusicManager_Play (F-33831): suspended, or no song with argument 0 and MUSIC_USER above -95 dB - the
+    /// suspend scene stops with its exit and the jingle plays (the old one stopped); the state goes to 0 and the song
+    /// starts (F-62155).
+    pub fn play(&mut self, t: &MusicTune, arg: u32, e: &mut impl MusicEnv) {
+        if (self.song.is_none() && arg == 0 && e.music_user_db() > -95.0) || self.suspend.is_some() {
+            if let Some(s) = self.suspend {
+                e.scene_stop(s);
+            }
+            if let Some(j) = self.jingle {
+                e.sound_stop(j);
+            }
+            self.jingle = e.jingle(t.jingle);
+        }
+        self.state = 0;
+        self.start(t, arg, e);
+    }
+
+    /// The race scene's racer_enablemusic (F-64824) and PlaySilently (F-60016): the suspend scene starts if it
+    /// is not on, background play is set and the song starts.
+    pub fn suspend(&mut self, t: &MusicTune, e: &mut impl MusicEnv) {
+        if self.suspend.is_none() {
+            self.suspend = e.scene_start();
+        }
+        self.background = true;
+        self.start(t, 0, e);
+    }
+
+    /// F-62155: the song before is released; a live song stays unless it is to restart (F-14624 first); the console's
+    /// player takes its entry; else the song starts if MUSIC_USER is above -95 dB or background play is set, behind
+    /// the jingle's predelay (or the +508 / +512 sound's). The playing handler, unless the song failed to start.
+    fn start(&mut self, t: &MusicTune, arg: u32, e: &mut impl MusicEnv) {
+        self.started = true;
+        if let Some(v) = self.old.take() {
+            e.release(v);
+        }
+        if self.song.is_some() {
+            if !self.restart {
+                return;
+            }
+            self.reset(e);
+        }
+        if self.console {
+            if e.console_ready() {
+                e.console_start(self.entry);
+                self.change(e);
+            }
+            self.handler = Handler::Playing;
+            return;
+        }
+        if e.music_user_db() > -95.0 || self.background {
+            let pre = if self.jingle.is_some() {
+                t.pre[0]
+            } else if self.after[0] {
+                t.pre[1]
+            } else if self.after[1] {
+                t.pre[2]
+            } else {
+                0
+            };
+            let h = e.pick();
+            self.song = e.song_start(h, self.offset, pre as u32, arg);
+            if self.song.is_none() {
+                return;
+            }
+            self.w84 = 0;
+            self.change(e);
+        }
+        self.handler = Handler::Playing;
+    }
+
+    /// F-14624: the song's clock and offset cleared, the idle handler, the song stopped: the console's player, or its
+    /// voice released and the restart cleared.
+    fn reset(&mut self, e: &mut impl MusicEnv) {
+        self.pos = 0.0;
+        self.offset = 0;
+        self.w84 = 0;
+        self.w80 = 0;
+        self.handler = Handler::Idle;
+        if let Some(s) = self.song {
+            if self.console {
+                e.console_stop();
+            } else {
+                e.release(s);
+                self.song = None;
+                self.restart = false;
+            }
+        }
+    }
+
+    /// F-17609: with a song and a callback, F-77135 and the callback, and +36 takes +40.
+    fn change(&mut self, e: &mut impl MusicEnv) {
+        if self.song.is_some() && self.on_change {
+            e.place(self.list.1, self.list.0);
+            e.changed();
+            self.f36 = self.f40;
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    /// verify_audio_b1.md batch 19: the music manager's Play (F-33831), the race scene's suspend (F-64824) and
+    /// PlaySilently (F-60016), with the song start F-62155, reset F-14624 and change F-17609 they reach, run offline
+    /// (tools/music_play_reference.py) on 1,500 random manager states: every call with its arguments in order and every
+    /// field after, as the original's
+    #[test]
+    fn music_play_matches_the_original() {
+        use super::{Handler, MusicEnv, MusicMgr, MusicTune};
+        use std::fmt::Write;
+        const SC_OLD: u32 = 0x4100_0010;
+        const SC_NEW: u32 = 0x4100_0020;
+        const J_OLD: u32 = 0x4100_0030;
+        const J_NEW: u32 = 0x4100_0040;
+        const S_OLD: u32 = 0x4100_0050;
+        const S_NEW: u32 = 0x4100_0060;
+        const V388: u32 = 0x4100_0070;
+        struct Rec<'a> {
+            out: String,
+            w: &'a [u32],
+        }
+        impl MusicEnv for Rec<'_> {
+            fn music_user_db(&self) -> f32 {
+                f32::from_bits(self.w[15])
+            }
+            fn scene_start(&mut self) -> Option<u32> {
+                self.out += " Mm DYNAMIC_MIXER_MUSIC_SUSPEND f3f800000 s516";
+                (self.w[16] != 0).then_some(SC_NEW)
+            }
+            fn scene_stop(&mut self, h: u32) {
+                write!(self.out, " S{h:08x} e1").unwrap();
+            }
+            fn sound_stop(&mut self, h: u32) {
+                write!(self.out, " K{h:08x} e0").unwrap();
+            }
+            fn jingle(&mut self, hash: u32) -> Option<u32> {
+                write!(self.out, " J{hash:08x} s500 f00000000 g0 g0 g0 g0 g0 g12 q0 q0 q1 q0 q0 q0").unwrap();
+                (self.w[17] != 0).then_some(J_NEW)
+            }
+            fn release(&mut self, h: u32) {
+                write!(self.out, " R{h:08x} e0").unwrap();
+            }
+            fn pick(&mut self) -> u32 {
+                self.out += " H";
+                self.w[19]
+            }
+            fn song_start(&mut self, hash: u32, offset: u32, predelay: u32, arg: u32) -> Option<u32> {
+                write!(self.out, " P{hash:08x} s384 s12 vv b-2 n0 n0 w00000000 w{offset} w{predelay} w{arg} w-1 w46bab800 w-1 w255 w0 w134").unwrap();
+                (self.w[18] != 0).then_some(S_NEW)
+            }
+            fn place(&mut self, a: u32, b: u32) {
+                write!(self.out, " G{a} {b}").unwrap();
+            }
+            fn console_ready(&mut self) -> bool {
+                self.out += " C52";
+                self.w[20] != 0
+            }
+            fn console_start(&mut self, entry: u32) {
+                write!(self.out, " C20 i{entry}").unwrap();
+            }
+            fn console_stop(&mut self) {
+                self.out += " C32";
+            }
+            fn changed(&mut self) {
+                self.out += " B";
+            }
+        }
+        let mut lines = include_str!("testdata/music_play_ref.txt").lines();
+        let mut n = 0;
+        while let Some(c) = lines.next() {
+            let w: Vec<u32> = c.split(' ').skip(1).map(|t| t[1..].parse().unwrap()).collect();
+            let (want_calls, want_after) = (lines.next().unwrap(), lines.next().unwrap());
+            let slot = |on: u32, v: u32| (on != 0).then_some(v);
+            let mut m = MusicMgr {
+                console: w[2] == 1,
+                entry: w[14],
+                song: slot(w[3], S_OLD),
+                old: slot(w[4], V388),
+                jingle: slot(w[5], J_OLD),
+                after: [w[6] != 0, w[7] != 0],
+                suspend: slot(w[8], SC_OLD),
+                on_change: w[9] != 0,
+                restart: w[10] != 0,
+                background: w[11] != 0,
+                state: w[12],
+                offset: w[13],
+                f36: f32::from_bits(w[25]),
+                f40: f32::from_bits(w[26]),
+                list: (3, 4),
+                ..MusicMgr::default()
+            };
+            let t = MusicTune { jingle: w[21], pre: [w[22] as u16, w[23] as u16, w[24] as u16] };
+            let mut e = Rec { out: "L".into(), w: &w };
+            if w[0] == 0 {
+                m.play(&t, w[1], &mut e);
+            } else {
+                m.suspend(&t, &mut e);
+            }
+            assert_eq!(e.out, want_calls.trim_end(), "case {n}: {c}");
+            let h = match m.handler {
+                Handler::None => 'n',
+                Handler::Idle => 'i',
+                Handler::Playing => 'p',
+            };
+            let after = format!(
+                "A h{h} h00000000 t{} j{:08x} m{:08x} s{:08x} v{:08x} b{} b{} b{} x{:08x} x{:08x} x{:08x} x{:08x} x{:08x}",
+                m.state,
+                m.jingle.unwrap_or(0),
+                m.suspend.unwrap_or(0),
+                m.song.unwrap_or(0),
+                m.old.unwrap_or(0),
+                m.restart as u8,
+                m.started as u8,
+                m.background as u8,
+                m.pos.to_bits(),
+                m.offset,
+                m.w80,
+                m.w84,
+                m.f36.to_bits()
+            );
+            assert_eq!(after, want_after, "case {n}: {c}");
+            n += 1;
+        }
+        assert_eq!(n, 1500);
+    }
+
     /// Issue #40: every cutoff the mixer can send (0..23900 Hz) gives a stable section at the mix rate
     /// (|a2| < 1, |a1| < 1 + a2), so a slewed LPF near the top no longer turns the mix to NaN; and the mix rate's
     /// 2 pi / rate is the original's 48 kHz word

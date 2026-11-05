@@ -150,6 +150,13 @@ tune_struct!(
 );
 
 tune_struct!(
+    /// mcCarAirRideTune (mcCarSimTune +204): the air ride's targets (m) and rates (m/s)
+    AirRideTune {
+        front_rise @ 0, front_drop @ 4, back_rise @ 8, back_drop @ 12, rate_drop @ 16, rate_rise @ 20,
+    }
+);
+
+tune_struct!(
     /// mcCarSSTurboTune: the slipstream turbo
     SsTurboTune {
         boost_exp @ 0, boost_amount @ 4, use_time @ 8, regen_time @ 12, falloff_time @ 16, charged_falloff_time @ 20,
@@ -250,6 +257,7 @@ pub struct SimTune {
     pub damage: DamageTune,
     pub ss_turbo: SsTurboTune,
     pub hydraulics: HydraulicsTune,
+    pub air_ride: AirRideTune,
     /// mcCarNitroTune's shot count (a 16 bit count in front of its floats)
     pub nitro_shots: f32,
     /// a car with a live rear axle: how far along the car its model's `axle0` bone stands
@@ -263,6 +271,22 @@ pub struct SimTune {
 }
 
 impl SimTune {
+    /// The air ride's FrontDrop / BackDrop as the tune build F-55728 writes them, from the wheels as the set-up
+    /// left them (radius +4, SuspensionOffset +80) and mcCarModelTune's stock FenderHeight (+56 front, +64 back;
+    /// never the wide body's) and +176 (`air_floor`): the smaller of FenderHeight - radius and radius - floor
+    /// (the first unless it is greater), plus SuspensionOffset.
+    pub fn set_air_drop(&mut self, fender_height: [[f32; 2]; 2], floor: f32) {
+        for (axle, wt) in [&self.wheel_front, &self.wheel_back].into_iter().enumerate() {
+            let (a, b) = (fender_height[axle][0] - wt.radius, wt.radius - floor);
+            let d = if a > b { b } else { a } + wt.suspension_offset;
+            if axle == 0 {
+                self.air_ride.front_drop = d;
+            } else {
+                self.air_ride.back_drop = d;
+            }
+        }
+    }
+
     /// Blend two sets (`t` = share of the upgrades fitted).
     pub fn lerp(a: &SimTune, b: &SimTune, t: f32) -> SimTune {
         let l2 = |x: [f32; 2], y: [f32; 2]| [lerp1(x[0], y[0], t), lerp1(x[1], y[1], t)];
@@ -335,6 +359,9 @@ impl SimTune {
             damage: a.damage.clone(),
             ss_turbo: SsTurboTune::lerp(&a.ss_turbo, &b.ss_turbo, t),
             hydraulics: HydraulicsTune::lerp(&a.hydraulics, &b.hydraulics, t),
+            // (F-55728 blends the air ride's Rise and rates with a share of 0: the base's; its Drops it builds
+            // after the wheels, `set_air_drop`)
+            air_ride: AirRideTune::lerp(&a.air_ride, &b.air_ride, 0.0),
             // (a signed 16 bit word blended as an integer; its low half stored)
             nitro_shots: lerp_i(a.nitro_shots as u16 as i16 as i32, b.nitro_shots as u16 as i16 as i32, t) as u16 as f32,
             axle_bone_z: a.axle_bone_z,
@@ -370,6 +397,8 @@ pub struct SimTunes {
     /// mcCarModelTune's fWindowClipPlaneHeight (+180): the side windows' clip plane, this high
     /// along the car's up axis from its origin (sub_82357DB8 -> ClipPlaneEq); None without a vehModel
     pub window_clip: Option<f32>,
+    /// mcCarModelTune +176: the floor the air ride's drop keeps the wheel's radius above (the tune build F-55728)
+    pub air_floor: f32,
     /// mcCarModelTune's bDoubleSidedTrunk (+200, a byte): the car's draw (F-92759) draws the base fragment's meshes on
     /// the `trunk_0` bone and the trunk_swap / trunk_wide slots without back-face culling; None without a vehModel
     pub double_sided_trunk: Option<bool>,
@@ -587,6 +616,7 @@ impl SimTunes {
                 out.tire_steer = [rd.f32(c + 136), rd.f32(c + 140)];
                 out.part_movement = Some([rd.u32(c + 184), rd.u32(c + 188), rd.u32(c + 192), rd.u32(c + 196)]);
                 out.window_clip = Some(rd.f32(c + 180));
+                out.air_floor = rd.f32(c + 176);
                 out.double_sided_trunk = Some(rd.u8(c + 200) != 0);
                 let v3 = |o: usize| [rd.f32(c + o), rd.f32(c + o + 4), rd.f32(c + o + 8)];
                 out.driver_lights = Some([v3(144), v3(160)]);
@@ -676,6 +706,9 @@ impl SimTune {
         }
         if let Some(p) = sub(200) {
             set.ss_turbo = SsTurboTune::read(rd, p);
+        }
+        if let Some(p) = sub(204) {
+            set.air_ride = AirRideTune::read(rd, p);
         }
         if let Some(p) = sub(208) {
             set.hydraulics = HydraulicsTune::read(rd, p);
@@ -782,6 +815,25 @@ mod movement_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod air_drop_tests {
+    use super::*;
+
+    /// The air ride's drops (F-55728) for the recorded Impala (vpd_chv_impala_64, the save's set-up: ride 3, width 2,
+    /// rim 16, profile 7; mcCarModelTune FenderHeight 0.47, +176 0.075): the original's live tune held 0x3e2b9f56 front
+    /// and back (work/physics2/air/rec/air.bin, the object's tune +4 / +12).
+    #[test]
+    fn the_impalas_drop_is_the_originals() {
+        let mut s = SimTunes { fender_height: [[0.47, 0.47], [0.47, 0.47]], air_floor: 0.075, ..Default::default() };
+        let mut cfg = vec![0u8; 8176];
+        cfg[2106..2114].copy_from_slice(&[3, 3, 2, 2, 16, 16, 7, 7]);
+        s.fit(&cfg).unwrap();
+        let mut t = s.base.clone();
+        t.set_air_drop(s.fender_height, s.air_floor);
+        assert_eq!((t.air_ride.front_drop.to_bits(), t.air_ride.back_drop.to_bits()), (0x3e2b9f56, 0x3e2b9f56));
     }
 }
 

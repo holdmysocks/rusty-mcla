@@ -48,6 +48,9 @@ pub struct CarPart {
     /// the part file's own skeleton, as parsed here (the glow places - vehicles.rs `load_model_cfg`, which had parsed
     /// the file again at every build: docs/PERFORMANCE.md 2026-10-27 (14))
     pub skeleton: Option<std::sync::Arc<Skeleton>>,
+    /// the part's matrix index (word +52 of the fragment's root): the bone of the car's skeleton whose global
+    /// the part's instance hangs on (F-14987); -1 or out of range = none
+    pub matrix_index: u32,
 }
 
 pub struct CarAsset {
@@ -82,6 +85,8 @@ pub struct CarAsset {
     pub windows: [Option<WindowClip>; 2],
     /// the police light bar's spin (`cop_lights` of the base fragment; the cruiser only)
     pub cop_lights: Option<CopLights>,
+    /// the auto spoiler's clip (`spoiler_raise` of the base fragment: the R8, the Gallardo, the Murcielagos)
+    pub spoiler: Option<BoneClip>,
     /// the damage map's layout (`<car>_maxdamage`, the largest of the car's .r83 files, decoded RGBA8; the map's G
     /// and A after a reset - damagemap.rs)
     pub damage_layout: Option<(u32, u32, Vec<u8>)>,
@@ -143,6 +148,70 @@ pub struct CopLights {
     /// per lamp: its pivot's tag, the pivot's parent in car space, the pivot's rest local matrix, the lamp bone's
     /// local matrix under the pivot and its rest place in car space
     pub lamps: Vec<(u16, Mat4, Mat4, Mat4, Vec3)>,
+}
+
+/// A clip of the base fragment that turns several bones of the car's skeleton (`spoiler_raise`: the R8's and the Gallardo's
+/// spoiler bone, which the spoiler part hangs on by its matrix index; the Murcielago's wing and side intakes, base meshes):
+/// the car's anim object plays it on the car's skeleton (F-53023 binds it to the controller D+864), so the bones it has
+/// tracks for take the clip's locals and their children follow. Tracks of bones the car's skeleton lacks (the part
+/// files' own) are not played.
+#[derive(Debug, Clone)]
+pub struct BoneClip {
+    pub duration: f32,
+    pub anim: mcla_formats::rage::anim::Animation,
+    /// the bones that move: those with a track and their descendants, parents first
+    pub bones: Vec<usize>,
+    /// per bone of `bones`: its tag, whether it has a track, its parent, the parent's rest world (identity for a
+    /// root), its rest local and its rest world in car space
+    rest: Vec<(u16, bool, usize, Mat4, Mat4, Mat4)>,
+}
+
+impl BoneClip {
+    pub fn load(res: &mcla_formats::rsc::Resource, sk: &Skeleton, name: &str) -> Option<BoneClip> {
+        let anim = mcla_formats::rage::anim::animation_by_name(res, name)?;
+        let tracked: Vec<usize> = anim.tracks.iter().filter_map(|t| sk.bone_by_tag(t.bone_id)).collect();
+        if tracked.is_empty() {
+            return None;
+        }
+        let moved = |mut i: usize| loop {
+            if tracked.contains(&i) {
+                return true;
+            }
+            match sk.bones.get(i) {
+                Some(b) if b.parent < sk.bones.len() => i = b.parent,
+                _ => return false,
+            }
+        };
+        // (a skeleton lists a parent before its children)
+        let bones: Vec<usize> = (0..sk.bones.len()).filter(|&i| moved(i)).collect();
+        let rest = bones.iter().map(|&i| {
+            let b = &sk.bones[i];
+            (b.tag, tracked.contains(&i), b.parent, sk.bones.get(b.parent).map_or(Mat4::IDENTITY, |p| p.world), b.local, b.world)
+        }).collect();
+        Some(BoneClip { duration: anim.duration, anim, bones, rest })
+    }
+
+    /// The moved bones' deltas in car space at a clip time (clamped, never wrapped): pose world x rest world^-1, in
+    /// the order of `bones` - what each bone's meshes and parts are moved by.
+    pub fn deltas(&self, time: f32) -> Vec<Mat4> {
+        use mcla_formats::rage::anim::{KIND_ROTATION, KIND_TRANSLATION};
+        let last = (self.anim.frames.max(1) - 1) as f32;
+        let f = if self.duration > 0.0 { (time / self.duration * last).clamp(0.0, last) } else { 0.0 };
+        let mut world: Vec<Mat4> = Vec::with_capacity(self.bones.len());
+        for (k, &(tag, tracked, parent, parent_rest, local, _)) in self.rest.iter().enumerate() {
+            let local = if tracked {
+                let (_, r, t) = local.to_scale_rotation_translation();
+                let t = self.anim.track(KIND_TRANSLATION, tag).map_or(t, |tr| tr.data.vec(f));
+                let r = self.anim.track(KIND_ROTATION, tag).map_or(r, |tr| tr.data.rot(f));
+                Mat4::from_rotation_translation(r, t)
+            } else {
+                local
+            };
+            let pw = self.bones[..k].iter().position(|&b| b == parent).map_or(parent_rest, |j| world[j]);
+            world.push(pw * local);
+        }
+        world.iter().zip(&self.rest).map(|(w, r)| *w * r.5.inverse()).collect()
+    }
 }
 
 impl CopLights {
@@ -854,7 +923,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
             let is_base = BASE_FRAGMENTS.contains(&fname.as_str());
             let stock = (!is_anim || is_base) && (is_base || names.iter().any(|n| n.ends_with("_stk") || n.to_ascii_lowercase().ends_with("_dub")) || BASE_PARTS.contains(&primary.as_str()));
             let sockets: Vec<(String, Mat4)> = frag_sk.as_ref().map(|s| s.bones.iter().filter(|b| { let n = b.name.to_ascii_lowercase(); n.starts_with("exh_primary") || n.starts_with("exh_secondary") }).map(|b| (b.name.to_ascii_lowercase(), b.world)).collect()).unwrap_or_default();
-            Some(CarPart { file: p.clone(), names, primary: if is_base { format!("body_{}", p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()) } else { primary }, stock, meshes, mesh_bone, mesh_tag, mesh_wheel, tris, min: mn, max: mx, transform: Mat4::IDENTITY, placed: true, is_base, bones: nbones, from_parent: parent_files.contains(p), sockets, skeleton: frag_sk.map(std::sync::Arc::new) })
+            Some(CarPart { file: p.clone(), names, primary: if is_base { format!("body_{}", p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()) } else { primary }, stock, meshes, mesh_bone, mesh_tag, mesh_wheel, tris, min: mn, max: mx, transform: Mat4::IDENTITY, placed: true, is_base, bones: nbones, from_parent: parent_files.contains(p), sockets, skeleton: frag_sk.map(std::sync::Arc::new), matrix_index: Rd::new(&res).u32(52) })
         })
         .collect();
     // skeleton: the LOD0 base fragment; otherwise the part file with the most bone matrices
@@ -881,6 +950,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
     // (the side windows' clips: in every base fragment; the LOD0 one first)
     let mut windows: [Option<WindowClip>; 2] = [None, None];
     let mut cop_lights: Option<CopLights> = None;
+    let mut spoiler: Option<BoneClip> = None;
     if let Some(sk) = skeleton.as_ref() {
         for f in BASE_FRAGMENTS.iter().rev() {
             if windows.iter().all(|w| w.is_some()) {
@@ -892,6 +962,9 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
                 if windows[k].is_none() {
                     windows[k] = WindowClip::load(&res, sk, n);
                 }
+            }
+            if spoiler.is_none() {
+                spoiler = BoneClip::load(&res, sk, "spoiler_raise");
             }
             if cop_lights.is_none() {
                 cop_lights = CopLights::load(&res, sk);
@@ -1017,7 +1090,14 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
         }
         let mut t = Mat4::IDENTITY;
         let mut placed = in_car_space || slot == Slot::CarSpace;
-        if !in_car_space {
+        // (the original's binding: the part's instance takes the global of the car skeleton's bone `matrix_index`
+        // as its parent, F-14987 - docs/reference/carparts/slot_pass_rule.md; the exhaust pipes are drawn at the
+        // outlets instead, their slot 23 is not enabled; the port's slot rules below stay for a part without one)
+        let bound = skeleton.as_ref().filter(|_| !part.is_base && !part.primary.to_ascii_lowercase().starts_with("exh_pipe")).and_then(|sk| sk.bones.get(part.matrix_index as usize));
+        if let Some(b) = bound {
+            t = b.world;
+            placed = true;
+        } else if !in_car_space {
             if let Some(sk) = skeleton.as_ref() {
                 // exact: the slot's global bone id
                 // (the add-on gauge - `post_gauge<n>`, a tachometer on a foot - stands on the bone
@@ -1065,7 +1145,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
         max = max.max(p.max);
     }
     log::info!("car {}: {} shaders, {} textures, {} parts ({} stock)", name, shaders.len(), textures.len(), parts.len(), parts.iter().filter(|p| p.stock).count());
-    Ok(CarAsset { name, shaders, shaders_parent, textures, parts, lod_parts, min, max, skeleton, hubs, bike, tune, simtune, fit, aitune, hull, windows, cop_lights, damage_layout })
+    Ok(CarAsset { name, shaders, shaders_parent, textures, parts, lod_parts, min, max, skeleton, hubs, bike, tune, simtune, fit, aitune, hull, windows, cop_lights, spoiler, damage_layout })
 }
 
 /// Display name of a part from its internal names, e.g. "exstPipe05_Borla_single_round"

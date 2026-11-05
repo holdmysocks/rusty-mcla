@@ -310,6 +310,18 @@ pub const VEHICLE_TABLE: [&str; 64] = [
 /// Extra garage lists: area row id, section of the car's part file, title and camera.
 /// The disc provides rows, brands and prices; the selected model fragment is previewed
 /// where one exists. Tires, brakes and door-opening choices have separate drawing paths.
+/// Does a garage row stay for a mod car with `hide_empty_parts` (MODS.md M-8)? A part kind (`slot`) only when the
+/// car has it, a list of `XPARTS` (`id`) only when the car has rows in it; every other row stays.
+fn keeps_part_row(slot: Option<Slot>, id: Option<usize>, slots: &std::collections::HashSet<Slot>, xparts: &std::collections::HashSet<usize>) -> bool {
+    if let Some(s) = slot {
+        return slots.contains(&s);
+    }
+    match id.and_then(|id| XPARTS.iter().position(|x| x.0 == id)) {
+        Some(k) => xparts.contains(&k),
+        None => true,
+    }
+}
+
 pub const XPARTS: [(usize, &str, &str, &str); 13] = [
     (9960, "headlight", "HEADLIGHTS", "FrontLowClose"),
     (9967, "taillight", "TAILLIGHTS", "RearLowClose"),
@@ -6906,7 +6918,7 @@ impl Game {
                 /// measures range about 10% either side of this; pinning the box here
                 /// keeps the panel from resizing as the tabs are stepped.
                 const RIM_PANEL_W: f32 = 456.0;
-                let menus: Vec<(&'static str, Vec<It>)> = vec![
+                let mut menus: Vec<(&'static str, Vec<It>)> = vec![
                     // (the original's four rows; the port's one vehicle list stands behind both MANAGE
                     // VEHICLES and VEHICLE SHOWROOM)
                     ("GARAGE", vec![It::RowAs("MANAGE VEHICLES", 0), It::Sub("CUSTOMIZE VEHICLE", 1), It::RowAs("VEHICLE SHOWROOM", 0), It::Exit]),
@@ -6964,6 +6976,26 @@ impl Game {
                     // (RimColorMatMenu of Wheels.sc.xml: reference `g_wh_mat`)
                     ("MATERIALS/PAINT", vec![It::RowAs("SPOKE A", 9930), It::RowAs("SPOKE B", 9931), It::RowAs("LIP", 9932), It::RowAs("SPOKE A", 9933), It::RowAs("SPOKE B", 9934), It::RowAs("LIP", 9935)]),
                 ];
+                // (a mod car with `hide_empty_parts` leaves out the area's rows it has nothing to choose in, where the
+                // original greys them, and an area left empty drops out of the ring: MODS.md M-8, DECISIONS.md D43)
+                let ring: Vec<usize> = if crate::modcars::hides_empty_parts(&garage_car) {
+                    for m in RING {
+                        menus[m].1.retain(|it| match it {
+                            It::Part(_, sl) => keeps_part_row(Some(*sl), None, &available_slots, &available_xparts),
+                            It::Row(id) | It::RowAs(_, id) => keeps_part_row(None, Some(*id), &available_slots, &available_xparts),
+                            _ => true,
+                        });
+                    }
+                    let ring: Vec<usize> = RING.iter().copied().filter(|m| !menus[*m].1.is_empty()).collect();
+                    menus[1].1[1] = It::Sub("EXTERIOR/INTERIOR", ring[0]);
+                    if menus.get(self.garage_menu).is_some_and(|m| m.1.is_empty()) {
+                        self.garage_menu = ring[0];
+                        self.garage_cur = 0;
+                    }
+                    ring
+                } else {
+                    RING.to_vec()
+                };
                 if self.selected_car != self.current_car || self.garage_menu >= menus.len() {
                     // (looking through the vehicles happens at the top)
                     self.garage_menu = 0;
@@ -6978,7 +7010,7 @@ impl Game {
                 // jump on the very first frame leaves the movie's move-in transition unfinished)
                 static HOOK_WAIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
                 let hook_due = std::env::var("MCLA_GARAGE_MENU").is_ok() && HOOK_WAIT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 400;
-                if let (true, Some(m)) = (hook_due && self.garage_stack.is_empty() && self.garage_menu == 0, std::env::var("MCLA_GARAGE_MENU").ok().and_then(|v| v.parse::<usize>().ok()).filter(|m| *m > 0 && *m < menus.len())) {
+                if let (true, Some(m)) = (hook_due && self.garage_stack.is_empty() && self.garage_menu == 0, std::env::var("MCLA_GARAGE_MENU").ok().and_then(|v| v.parse::<usize>().ok()).filter(|m| *m > 0 && *m < menus.len() && !menus[*m].1.is_empty())) {
                     self.garage_stack.push((0, 1));
                     self.garage_menu = m;
                     self.garage_cur = std::env::var("MCLA_GARAGE_CUR").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0).min(menus[m].1.len().saturating_sub(1));
@@ -7161,7 +7193,7 @@ impl Game {
                     }
                     // (paid, or emptied: on out of the areas)
                     (false, false, false, false, leave, false)
-                } else if back && RING.contains(&self.garage_menu) && self.garage_part.is_none() && self.garage_xpart.is_none() && self.plate_edit.is_none() && !unpaid.is_empty() {
+                } else if back && ring.contains(&self.garage_menu) && self.garage_part.is_none() && self.garage_xpart.is_none() && self.plate_edit.is_none() && !unpaid.is_empty() {
                     self.cart_open = Some(0);
                     (false, false, false, false, false, false)
                 } else {
@@ -7333,7 +7365,7 @@ impl Game {
                     self.paint_hsv = Some(hsv);
                     self.dirty = true;
                 }
-                let in_ring = RING.contains(&self.garage_menu);
+                let in_ring = ring.contains(&self.garage_menu);
                 let (mut went_in, mut went_back, mut exit_now) = (false, false, false);
                 if list_back {
                     went_back = true;
@@ -7447,7 +7479,7 @@ impl Game {
                     if back {
                         self.garage_part = None;
                         went_back = true;
-                        if self.flash_garage.is_some() && RING.contains(&self.garage_menu) {
+                        if self.flash_garage.is_some() && ring.contains(&self.garage_menu) {
                             self.garage_cur = 0;
                         }
                     } else if enter {
@@ -7465,8 +7497,8 @@ impl Game {
                         self.garage_cur = (self.garage_cur + 1) % ni;
                     }
                     if in_ring && (left || right) {
-                        let at = RING.iter().position(|m| *m == self.garage_menu).unwrap_or(0);
-                        self.garage_menu = RING[(at + RING.len() + right as usize - left as usize) % RING.len()];
+                        let at = ring.iter().position(|m| *m == self.garage_menu).unwrap_or(0);
+                        self.garage_menu = ring[(at + ring.len() + right as usize - left as usize) % ring.len()];
                         self.garage_cur = 0;
                     }
                     let items = &menus[self.garage_menu].1;
@@ -7959,9 +7991,9 @@ impl Game {
                     bp.rect_filled(panel, 10.0 * sc, egui::Color32::from_rgba_unmultiplied(8, 12, 14, 228));
                     bp.rect_stroke(panel, 10.0 * sc, egui::Stroke::new(2.5 * sc, egui::Color32::from_rgb(200, 206, 206)), egui::StrokeKind::Inside);
                     let tx = x0 + 26.0 * sc;
-                    if let Some(at) = RING.iter().position(|m| *m == self.garage_menu).filter(|_| self.garage_part.is_none() && self.garage_xpart.is_none() && self.plate_edit.is_none()) {
+                    if let Some(at) = ring.iter().position(|m| *m == self.garage_menu).filter(|_| self.garage_part.is_none() && self.garage_xpart.is_none() && self.plate_edit.is_none()) {
                         // (the ring of areas: the one before and the one after, dim, to either side)
-                        let (prev, next) = (menus[RING[(at + RING.len() - 1) % RING.len()]].0, menus[RING[(at + 1) % RING.len()]].0);
+                        let (prev, next) = (menus[ring[(at + ring.len() - 1) % ring.len()]].0, menus[ring[(at + 1) % ring.len()]].0);
                         let cx = panel.center().x;
                         let yel = egui::Color32::from_rgb(255, 205, 50);
                         let r = self.text(&bp, egui::pos2(cx, y0 + 14.0 * sc), egui::Align2::CENTER_TOP, title, 17.0 * sc, yel);
@@ -8364,18 +8396,19 @@ impl Game {
                                 l
                             } else if let Some(l) = plate_layout {
                                 l
-                            } else if paint_page || vinyl_flat {
+                            } else if paint_page || vinyl_flat || asking_cart.is_some() {
+                                // (the question is `INSTALL_CONF_MENU`'s template 42, type 1: Main.sc.xml)
                                 MenuLayout::Paint
                             } else if rim_open {
                                 MenuLayout::GarageRims
                             } else if flash_part_template {
                                 MenuLayout::GarageParts
-                            } else if let Some(at) = RING.iter().rev().position(|m| *m == self.garage_menu).filter(|_| self.garage_part.is_none() && self.garage_xpart.is_none() && self.plate_edit.is_none()) {
+                            } else if let Some(at) = ring.iter().rev().position(|m| *m == self.garage_menu).filter(|_| self.garage_part.is_none() && self.garage_xpart.is_none() && self.plate_edit.is_none()) {
                                 // title_loop puts index+1 to the left. Keep its names in
                                 // the reverse of the port's rightward navigation order.
-                                MenuLayout::GarageLoop { names: RING.iter().rev().map(|m| menus[*m].0.to_string()).collect(), index: at, flat: matches!(self.garage_menu, 7 | 16) }
+                                MenuLayout::GarageLoop { names: ring.iter().rev().map(|m| menus[*m].0.to_string()).collect(), index: at, flat: matches!(self.garage_menu, 7 | 16) }
                             } else { MenuLayout::List },
-                            icon: if self.cart_open.is_some() { std::env::var("MCLA_CART_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(12) } else if RING.contains(&self.garage_menu) && self.garage_part.is_none() && self.garage_xpart.is_none() && self.plate_edit.is_none() && !listing_page { 11 } else { 10 },
+                            icon: if self.cart_open.is_some() { std::env::var("MCLA_CART_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(12) } else if ring.contains(&self.garage_menu) && self.garage_part.is_none() && self.garage_xpart.is_none() && self.plate_edit.is_none() && !listing_page { 11 } else { 10 },
                             // the rim shop shows the maker of every brand in the tab strip,
                             // and the logo at tabs[cur_tab-1] + 1
                             tabs: if rim_open { rim_tabs.iter().map(|b| b.mfr.to_string()).collect() } else { Vec::new() },
@@ -9696,6 +9729,13 @@ impl Game {
                             crate::hudmap::paint_world(ctx, &ctx.layer_painter(layer), &mut hm.assets, &q, vp, ctx.screen_rect(), Some(ripple), hf.as_ref().map(|h| (h, hud.cam_pos)));
                         } else {
                             ctx.layer_painter(layer).add(crate::hudmap_gpu::icons(ctx.screen_rect(), &mut hm.assets, &q, vp, hud.cam_pos, Some(ripple)));
+                        }
+                        // (a screen wider than 16:9: the original's 16:9 view in the middle, black beside it - the
+                        // city ends there; the panels and the prompt bar stay over it)
+                        if let Some(bars) = crate::hudmap::nav_pillars(ctx.screen_rect()) {
+                            for r in bars {
+                                ctx.layer_painter(layer).rect_filled(r, 0.0, egui::Color32::BLACK);
+                            }
                         }
                     }
                     self.city_map(ctx, vehicles, world, hud);
@@ -14575,6 +14615,12 @@ impl Game {
             } else {
                 ctx.layer_painter(layer).add(crate::hudmap_gpu::icons(ctx.screen_rect(), &mut hm.assets, &q, vp, cam_pos, Some(ripple)));
             }
+            // (wider than 16:9: the 16:9 view in the middle, as on the GPS map - `nav_pillars`)
+            if let Some(bars) = crate::hudmap::nav_pillars(ctx.screen_rect()) {
+                for r in bars {
+                    ctx.layer_painter(layer).rect_filled(r, 0.0, egui::Color32::BLACK);
+                }
+            }
         }
         let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("flash_navsys"));
         ctx.move_to_top(layer);
@@ -15189,6 +15235,20 @@ mod ui_original_tests;
 #[cfg(test)]
 mod tests {
     use super::Game;
+
+    /// MODS.md M-8: with `hide_empty_parts` a part kind or a list of XPARTS stays only when the car has it; other rows stay.
+    #[test]
+    fn hide_empty_parts_keeps_only_what_the_car_has() {
+        use crate::vehicle_model::Slot;
+        let slots: std::collections::HashSet<Slot> = [Slot::Paint, Slot::Wheels, Slot::Hood].into_iter().collect();
+        let xparts: std::collections::HashSet<usize> = [super::XPARTS.iter().position(|x| x.1 == "tires").unwrap()].into_iter().collect();
+        let keeps = |s, id| super::keeps_part_row(s, id, &slots, &xparts);
+        assert!(keeps(Some(Slot::Hood), None) && keeps(Some(Slot::Wheels), None));
+        assert!(!keeps(Some(Slot::Spoiler), None) && !keeps(Some(Slot::BumperF), None));
+        assert!(keeps(None, Some(9963)), "TIRES: the car has rows");
+        assert!(!keeps(None, Some(9960)) && !keeps(None, Some(9966)), "HEADLIGHTS, GAUGES: none");
+        assert!(keeps(None, Some(9968)) && keeps(None, Some(9961)), "LICENSE PLATES and SOUTH CENTRAL RIMS are no part lists");
+    }
 
     /// F-75783 / F-97172: LT / RT on a race's or the collectables' statistics stop at the ends
     #[test]

@@ -348,6 +348,16 @@ impl Speech {
         self.queue.clear();
     }
 
+    /// mcCareerSpeech_Stop (F-90827 -> F-73277, while the speech system is the career speech's): everything stops -
+    /// the line on show, the lines to come, its wait; the scenario's mixer goes with the speech no longer busy.
+    pub fn stop_now(&mut self, a: &mut Audio) {
+        self.queue.clear();
+        self.wait = 0.0;
+        self.line_wait = false;
+        self.line = None;
+        a.obj_line_stop();
+    }
+
     /// Whose line is playing: Some(true) the player's, Some(false) the other speaker's.
     pub fn line(&self) -> Option<bool> {
         self.line.map(|l| l.0)
@@ -662,6 +672,20 @@ mod tests {
         // ForceVariation (at most n)
         assert!(sp.resolve("PLAYER_NITROUS", true, None, 9, 30).unwrap().ends_with(&file("PLAYER_NITROUS_22")));
         assert!(sp.resolve("PLAYER_NITROUS", true, None, 9, 3).unwrap().ends_with(&file("PLAYER_NITROUS_03")));
+    }
+
+    /// F-73277: the stop takes the line on show and all to come
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn stop_now_ends_the_line_and_the_rest() {
+        let data = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let mut a = crate::audio::Audio::new_offline(&data).expect("audio");
+        let mut sp = Speech::load(&data, a.root());
+        assert!(sp.say("TUTORIAL_SST_INGAME") && sp.say("TUTORIAL_SST_INGAME"));
+        sp.update(&mut a, 0.1);
+        assert!(sp.busy());
+        sp.stop_now(&mut a);
+        assert!(!sp.busy() && sp.line().is_none());
     }
 
     /// N-AU-2: the telephone invite / decline are `<SpecialCase>` scenarios; each caller of the challenge has all

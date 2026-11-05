@@ -101,6 +101,7 @@ mod skin;
 mod sky;
 mod sound;
 mod sndobj;
+mod occlusion;
 mod engaudio;
 mod collaudio;
 mod ambaudio;
@@ -138,6 +139,9 @@ const CARSELECT_MUSIC: &str = "MUSIC_CARSELECT_MASTER";
 /// CUTSCENES.md "The opening scenes' audio (session `cut-audio`, 2026-10-23)")
 const FILM_CUT_INTRO_AT: f32 = 58.2;
 const PAUSE_FRAME: Vec3 = Vec3::new(0.0, 1.42, 0.08);
+/// The point RACE_GH_06_READY_TO_START_ON_ENTER.sco gives AmbientMgr_SetRoadDensity (0x8be .. 0x8dc, 0xab1): the
+/// road of CUT_STORY_RACE_GH_06 (F-86195 finds it), index 0 for the scene, -1 after it.
+const GH_06_SCENE_ROAD: Vec3 = Vec3::new(-234.0, 21.0, -733.0);
 mod rivals;
 mod rubber;
 mod rumble;
@@ -148,6 +152,12 @@ mod brainpath;
 mod cruising;
 mod railroute;
 mod ghostroute;
+mod cruiserail;
+mod cruiser;
+mod oppmgr;
+mod propblast;
+mod navjob;
+mod tunebuild;
 mod brainturn;
 mod vehicle_model;
 mod vehicles;
@@ -693,6 +703,8 @@ struct App {
     /// CAM_PAN_LEFT held -1, CAM_PAN_RIGHT +1 (Hydraulics' look yaw, F-38892)
     pad_pan_side: f32,
     pad_cam_ud: bool,
+    /// a button that ends the AirRide view is held (boomcam::air_ride_buttons)
+    pad_air: bool,
     /// the player's own handbrake this frame (mcPlayerInput +20), before the port's parked hold
     own_handbrake: bool,
     /// mcCarSSTurbo +20: the turbo's lens ramp (F-60935)
@@ -1266,6 +1278,7 @@ impl App {
             pad_pan: (false, false),
             pad_pan_side: 0.0,
             pad_cam_ud: false,
+            pad_air: false,
             own_handbrake: false,
             sst_view: 0.0,
             cam_fx: None,
@@ -1848,33 +1861,19 @@ impl App {
     fn slot_candidates(&self, at: Vec3, nfl: f32, hour_light: (Vec3, Vec3), dynamic: Option<&figlight::Dynamic>) -> Vec<(i32, f32, Vec3, Vec3, f32)> {
         const HOUR: i32 = 65545;
         let mut cand: Vec<(i32, f32, Vec3, Vec3, f32)> = Vec::new();
+        // (the lamps: the lamp grid's best four within 4 m of the car (render::LampTables::best_four - F-24398 asks the
+        // grid as the figures' picker does), none when their scores add up to 0 - as F-16230; the id is the table's index. Recorded
+        // at the Selma / Highland crossing, car at (735.91, 20.77, -850.46): colour (1, 0.75, 0.55), strength 0.3847 -
+        // the lamp at (740.6, 31.6, -852.8), Intensity 55, 11.96 m off; at 02:00 the second slot a second one,
+        // (0.9, 0.8, 0.65) x 0.0983, Intensity 80 at 28.5 m.)
         if nfl > 0.0 {
-            for (i, l) in self.props.lights.iter().enumerate() {
-                let d = l.pos - at;
-                let d2 = d.length_squared();
-                if d2 > 6400.0 || d2 < 1e-4 {
-                    continue;
-                }
-                // (the weight takes the record's cone as the prop lamps' below - F-60154)
-                let cone = l.table_cone();
-                let s = if l.on() { (l.range / d2).clamp(0.0, 1.0) * ((d / d2.sqrt()).dot(-l.dir) * cone[0] + cone[1]).clamp(0.0, 1.0) } else { 0.0 };
-                cand.push((i as i32, s, d / d2.sqrt(), l.color.max(Vec3::ZERO), s));
-            }
-            // (the lamps the props carry - the street lights. Recorded at the Selma / Highland
-            // crossing, car at (735.91, 20.77, -850.46): colour (1, 0.75, 0.55), strength 0.3847,
-            // direction (0.382, 0.903, -0.196) - the lamp at (740.6, 31.6, -852.8), Intensity 55,
-            // 11.96 m off; at 02:00 the second slot holds a second one, (0.9, 0.8, 0.65) x 0.0983,
-            // Intensity 80 at 28.5 m. MCLA_CAR_LAMP_CITY=1: the baked lights only.)
-            if std::env::var("MCLA_CAR_LAMP_CITY").is_err() {
-                for (i, l) in self.props.prop_lamps.iter().enumerate() {
-                    let d = l.pos - at;
-                    let d2 = d.length_squared();
-                    if d2 > 6400.0 || d2 < 1e-4 || l.intensity <= 0.0 {
-                        continue;
+            if let Some(t) = crate::render::LAMP_TABLES.read().ok().and_then(|t| t.clone()) {
+                let best = t.best_four(at);
+                if best.iter().map(|b| b.1).sum::<f32>() > 0.0 {
+                    for (i, s) in best {
+                        let l = t.recs.get(i as usize).copied().unwrap_or_default();
+                        cand.push((i as i32, s, (l.pos - at).normalize_or(Vec3::Y), l.color.max(Vec3::ZERO), s));
                     }
-                    let dir = d / d2.sqrt();
-                    let s = (l.intensity / d2).clamp(0.0, 1.0) * (dir.dot(l.back) * l.cone[0] + l.cone[1]).clamp(0.0, 1.0);
-                    cand.push((30000 + i as i32, s, dir, l.color.max(Vec3::ZERO), s));
                 }
             }
         }
@@ -2369,6 +2368,7 @@ impl App {
             self.pad_pan = (pan && !self.pad_pan.1, pan);
             self.pad_pan_side = if pl { -1.0 } else if pr { 1.0 } else { 0.0 };
             self.pad_cam_ud = a(10) || a(11);
+            self.pad_air = boomcam::air_ride_buttons(&st, &live);
             self.pad_horn = down >> 18 & 1 != 0;
             self.pad_flash = down >> 9 & 1 != 0;
             self.pad_pending |= acted & 127;
@@ -2514,6 +2514,10 @@ impl App {
         // (CarSelection holds the clock - Graphics_GetAndSetAutoUpdateTimeOfDay(0) at its start, (1) once ACCEPT's
         // black is up - and the parked cars, AmbientMgr_SetParkedCarsEnable 0 / 1)
         let car_selection = (1..=3).contains(&self.intro_stage) || self.game.starter_pick.is_some();
+        if car_selection && !self.vehicles.parked_held {
+            // (AmbientMgr_SetParkedCarsEnable(0): the cars in spots go at once, F-54264 -> F-99126)
+            self.vehicles.ambient_disable(2);
+        }
         self.vehicles.parked_held = car_selection;
         if self.opt.time.is_none() && matches!(self.game.mode, Mode::FreeRoam | Mode::Race) && !car_selection {
             let dh = dt * sky::cloud_speed().hour_rate;
@@ -2615,6 +2619,23 @@ impl App {
             } else {
                 player_input.hyd = 0;
                 self.hyd_on = false;
+            }
+            // (the air bags of the car's set-up, garage AIR BAGS, and the lowering pattern LocalOptions +1324; the
+            // switch-on wants the local human's car with its engine running, engine +46: not a scene's car_off)
+            player_input.air = 0;
+            // (test hook: MCLA_AIRBAGS=1 fits the air bags, MCLA_AIR_LOG logs them every 30 frames)
+            if std::env::var("MCLA_AIRBAGS").is_ok() {
+                self.game.car_x.airbags = true;
+            }
+            if std::env::var("MCLA_AIR_LOG").is_ok() && self.tick_no % 60 == 0 {
+                if let Some(v) = self.vehicles.player().and_then(|c| c.state.veh.as_deref()) {
+                    log::info!("air ride tick {}: {:?} auto brake {} speed {:.3} body y {:.4} comp {:?}", self.tick_no, v.air, v.auto_brake, v.last_speed, self.vehicles.player().map_or(0.0, |c| c.state.pos.y), v.wheels.iter().map(|w| w.comp).collect::<Vec<_>>());
+                }
+            }
+            if self.game.car_x.airbags {
+                let running = self.vehicles.player().is_some_and(|c| !c.engine_off);
+                let pattern = self.game.mc4.as_ref().map_or(0, |m| m.options.airride_pattern.min(4));
+                player_input.air = physics::car::AIR_FITTED | if running { physics::car::AIR_ALLOWED } else { 0 } | pattern;
             }
         // (test hook MCLA_COP_TEST=bolt: the throttle alone from 2.5 s into the officer's walk - a burnout, a bolt -
         // then full throttle away)
@@ -3616,6 +3637,13 @@ impl App {
                         a.obj_cutscene(&name, false, false);
                     }
                     a.play_stream(None, 0.0);
+                }
+            }
+            // (the scene's music events, cutscene::STORY_MUSIC: racer_enablemusic the music manager's suspend, musicplay
+            // its Play(0))
+            for ev in std::mem::take(&mut self.cuts.music) {
+                if let Some(a) = self.audio.as_mut() {
+                    a.obj_cmds.push(if ev == 38 { audio::ObjCmd::MusicSuspend } else { audio::ObjCmd::MusicPlay { arg: 0 } });
                 }
             }
         }
@@ -4962,8 +4990,8 @@ impl App {
             }
             self.props_dirty = true;
             self.vehicles.signals.release();
-                self.vehicles.road_density.clear();
-                self.vehicles.road_density_new.clear();
+            // (the railnet's reset F-44338: every road's script density index back to -1, F-46490)
+            self.vehicles.reset_road_density();
             self.props.signals.release();
         }
         if let (Some(rt), Some(race), true) = (self.dress.as_mut(), self.game.race.as_ref(), self.game.mode == Mode::Race && sim_dt > 0.0) {
@@ -4985,7 +5013,7 @@ impl App {
             }
             if self.tick_no % 600 == 0 {
                 log::info!("race script: {} scripted cars started, {} junctions held, {} nitro cues, {} whooshes", rt.started, rt.lights, rt.boosts, self.whooshes_heard);
-                log::info!("race script: {} road densities set ({} lanes)", rt.roads, self.vehicles.road_density.len());
+                log::info!("race script: {} road densities set ({} roads with a script index)", rt.roads, self.vehicles.spawner.as_ref().map_or(0, |s| s.script.values().filter(|&&d| d != -1).count()));
             }
         }
         // (the red light / freeway man's taunts in the race, and RACE BACK - althk.rs)
@@ -5983,6 +6011,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // play no scene of their own)
                         let after_scene = c == "SIDEKICK_RACE_GH_06" && scene.is_some() && std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok());
                         if after_scene {
+                            // (its script clears the road of the scene first - AmbientMgr_SetRoadDensity((-234, 21,
+                            // -733), 0) at 0x8dc - and gives it back after the scene, 0xab1)
+                            self.vehicles.set_road_density(GH_06_SCENE_ROAD, 0);
                             self.pending_log = Some(c.trim_start_matches("SIDEKICK_").to_string());
                         } else {
                             self.game.career.call_delivered(c.trim_start_matches("SIDEKICK_"));
@@ -6080,6 +6111,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if self.pending_log.is_some() && self.cuts.idle() && self.game.movie.is_none() {
                 if let Some(id) = self.pending_log.take() {
                     log::info!("career: {} enters the log after its scene", id);
+                    if id == "RACE_GH_06" {
+                        // (RACE_GH_06_READY_TO_START_ON_ENTER 0xab1: the scene's road given back, -1)
+                        self.vehicles.set_road_density(GH_06_SCENE_ROAD, -1);
+                    }
                     self.game.career.call_delivered(&id);
                 }
             }
@@ -6476,7 +6511,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // (step 19d: what the rules of `mc4` want said and played)
             {
-                let (say, sounds, tick) = self.game.mc4_say_take();
+                let (over, say, sounds, tick) = self.game.mc4_say_take();
+                for s in over {
+                    if let Some(a) = self.audio.as_mut() {
+                        self.speech.stop_now(a);
+                    }
+                    if !self.speech.say(&s) {
+                        log::debug!("speech: no scenario {}", s);
+                    }
+                }
                 for s in say {
                     if !self.speech.say(&s) {
                         log::debug!("speech: no scenario {}", s);
@@ -6974,6 +7017,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 // mixer scenes, POLICE_SCRIPT_TRIGGERED only on the cops' path)
                                 self.arrest_traffic = Some(self.vehicles.traffic_target);
                                 self.vehicles.traffic_target = 0;
+                                // (the enable byte cleared: the riding and parked cars go at once, F-26788 -> F-99126)
+                                self.vehicles.ambient_disable(0);
                                 self.sound.arrest_mix = (!goons, true);
                                 if police::arrest_engine_off(scene) {
                                     if let Some(c) = self.vehicles.player_mut() {
@@ -7205,6 +7250,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 self.game.career.event(career::Ev::Str("MISSION_EVENT", "RED_LIGHT_GH_01_COMPLETE"));
                             }
                         } else if let Some(m) = s_man {
+                            // (the story CORE's race-over command: kHOK + 1 for the player's place 1 - 19 scripts alike,
+                            // e.g. 0x156c2b36 0x3f8a..0x3fab)
+                            if place == 1 {
+                                self.game.mc4_stat_add("kHOK", 0, 1.0);
+                            }
                             self.game.career.core_race_end(&m, place, clean, self.game.rep);
                         }
                     }
@@ -8523,6 +8573,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             pan_pressed: self.pad_pan.0,
                             pan_side: self.pad_pan_side,
                             cam_pressed: self.pad_cam_ud,
+                            // (mcCarAirRide +12 fitted and +13 on - physics::vehsim::AirRide)
+                            air_on: vs.map_or(false, |v| v.air.fitted && v.air.on),
+                            air_held: self.pad_air,
                             reverse_gear: render_state.gear < 0,
                             air_time,
                             idle: self.idle_time,
@@ -8615,7 +8668,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             o
                         };
                         if std::env::var("MCLA_EVENT_DEBUG").is_ok() && self.frame_no % 10 == 0 {
-                            log::info!("event cam: running {} allowed {} handbrake {} charge {:.2} yaw {:.2} cam {:.1} {:.1} {:.1}", self.event_dir.running(), allowed, car.input.handbrake, charge, render_state.ang_vel.y, out.pos.x, out.pos.y, out.pos.z);
+                            log::info!("event cam: event {:?} leaving {} air {} running {} allowed {} handbrake {} charge {:.2} yaw {:.2} cam {:.1} {:.1} {:.1}", self.event_dir.event(), self.event_dir.leaving(), vs.map_or(false, |v| v.air.fitted && v.air.on), self.event_dir.running(), allowed, car.input.handbrake, charge, render_state.ang_vel.y, out.pos.x, out.pos.y, out.pos.z);
                         }
                         if std::env::var("MCLA_CRASH_DEBUG").is_ok() && (self.crash_bits != 0 || self.frame_no % 30 == 0) {
                             log::info!("crash: bits {:#x} timer {:.2} exploding {} wipeout cam {} event {:?} scale {:.2} speed {:.1} damage {:.2} cam {:.1} {:.1} {:.1} car {:.1} {:.1} {:.1} fov {:.0}", self.crash_bits, self.crash_timer, self.crash_exploding, self.crash_cam.active(), self.event_dir.event(), self.wipe_scale, render_state.speed(), render_state.damage, out.pos.x, out.pos.y, out.pos.z, render_state.pos.x, render_state.pos.y, render_state.pos.z, out.fov);
@@ -12344,8 +12397,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 self.props_dirty = true;
                 self.vehicles.signals.release();
-                self.vehicles.road_density.clear();
-                self.vehicles.road_density_new.clear();
+                // (the railnet's reset F-44338: every road's script density index back to -1, F-46490)
+                self.vehicles.reset_road_density();
                 self.props.signals.release();
                 if started && std::env::var("MCLA_NO_DRESS").is_err() {
                     if let Some(d) = self.game.active_def.as_ref().or(self.game.current_race.and_then(|i| self.game.race_defs.get(i))).and_then(|def| racescript::load(&self.opt.data_dir, &def.id, def.checkpoints.first().copied())) {
@@ -12390,6 +12443,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if let Some(env) = self.game.mc4_arcade_env() {
                         if env.traffic == 0.0 {
                             self.vehicles.traffic_target = 0;
+                            self.vehicles.ambient_disable(0);
                         } else {
                             self.vehicles.density_scale = Some(env.traffic);
                         }

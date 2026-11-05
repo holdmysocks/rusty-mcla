@@ -8388,6 +8388,9 @@ pub struct S19d {
     pub inflict_on: bool,
     /// speech scenarios for the loop to say
     pub say: Vec<String>,
+    /// a tutorial's line with its box (the tutorial include: Form_ShowForm, then mcCareerSpeech_Stop and
+    /// PlayScenario, F-90827): said over whatever plays, the career speech stopped first
+    pub say_over: Vec<String>,
     /// frontend sounds for the loop to play (`AudioManager_PlayFrontendSound`), and a loop
     /// that is to run (the time trial's tick)
     pub sounds: Vec<&'static str>,
@@ -8673,14 +8676,14 @@ impl Game {
 
     /// The speech scenarios and frontend sounds the game's rules asked for since the last
     /// call, for the loop (which owns the voices).
-    pub fn mc4_say_take(&mut self) -> (Vec<String>, Vec<&'static str>, bool) {
+    pub fn mc4_say_take(&mut self) -> (Vec<String>, Vec<String>, Vec<&'static str>, bool) {
         // (the run to the line's thirty seconds - no race: the clock's sounds once a frame)
         if self.race.is_none() {
             let left = self.opt_x.arcade.bmt_left.get().map(|s| (s as f64 * 1000.0).round() as i64);
             self.mc4_clock_sounds(left);
         }
         let d = &mut self.opt_x.arcade.d;
-        (std::mem::take(&mut d.say), std::mem::take(&mut d.sounds), d.tick_loop)
+        (std::mem::take(&mut d.say_over), std::mem::take(&mut d.say), std::mem::take(&mut d.sounds), d.tick_loop)
     }
 
     /// `paybackisvisible` (HUD control 10's property 5): 1 from the leg's start, 2 once its
@@ -11967,6 +11970,8 @@ impl Game {
             let red = self.current_race.and_then(|i| self.race_defs.get(i)).map_or(false, |d| d.sub_type == "RedLight" || d.id.ends_with("red_light_race"));
             if red {
                 self.mc4_stat_add("kRLW", 0, 1.0);
+                // (and a hookman beaten: the red light scripts' kHOK after kRLW, `<d>_redlight_hk1`)
+                self.mc4_stat_add("kHOK", 0, 1.0);
             }
         } else {
             // (GOAL ATTACK's branch, A-77758..A-58950, counts no second or third place)
@@ -12112,7 +12117,7 @@ impl Game {
                         self.tutorial_box = Some((t, d, 0.0, 600.0));
                     }
                     if !run.speech.is_empty() {
-                        self.opt_x.arcade.d.say.push(run.speech.clone());
+                        self.opt_x.arcade.d.say_over.push(run.speech.clone());
                     }
                     run.phase = 2;
                 }
@@ -12185,7 +12190,7 @@ impl Game {
                     if let Some((t, d)) = tutorial_keys(78) {
                         self.tutorial_box = Some((t, d, 0.0, 600.0));
                     }
-                    self.opt_x.arcade.d.say.push("TUTORIAL_SST_INGAME".to_string());
+                    self.opt_x.arcade.d.say_over.push("TUTORIAL_SST_INGAME".to_string());
                     self.opt_x.s23.sst_tut = SstTut::Box78;
                 } else {
                     x.sst_tut = SstTut::Ease(t - dt);
@@ -17642,6 +17647,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A red light race won counts kRLW and a hookman beaten, kHOK (the red light scripts, `<d>_redlight_hk1`)
+    #[test]
+    fn red_light_win_counts_a_hookman_beaten() {
+        let mut g = Game::new(Vec::new(), 0);
+        g.fresh_game = false;
+        g.race_defs.push(crate::races::RaceDef { id: "x/red_light_race".into(), sub_type: "RedLight".into(), ..Default::default() });
+        g.current_race = Some(0);
+        g.mc4_race_stats(2, "Tuner", None);
+        assert_eq!(g.mc4_stat("kHOK", 0), 0.0);
+        g.mc4_race_stats(1, "Tuner", None);
+        assert_eq!((g.mc4_stat("kRLW", 0), g.mc4_stat("kHOK", 0)), (1.0, 1.0));
+    }
+
     /// Step 23: the achievements' rules (F-56238, F-98556, the purse, the tournaments,
     /// the police, the editor) and their record in the statistics and the block.
     #[test]
@@ -17793,7 +17811,7 @@ mod tests {
         step(&mut g, 27, 0.31, true);
         assert_eq!(g.opt_x.s23.sst_tut, SstTut::Box78);
         assert_eq!(g.tutorial_box.as_ref().map(|b| b.0.as_str()), Some("tutorial_slipstream_title"));
-        assert!(g.opt_x.arcade.d.say.contains(&"TUTORIAL_SST_INGAME".to_string()));
+        assert!(g.opt_x.arcade.d.say_over.contains(&"TUTORIAL_SST_INGAME".to_string()));
         assert_eq!(g.opt_x.s23.slow.global, 0.0);
         // (answered: the ease from pause; form 79 at a full charge, closed by the burn)
         g.tutorial_box = None;

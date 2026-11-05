@@ -13,9 +13,10 @@ fn fsel(a: f32, b: f32, c: f32) -> f32 {
     }
 }
 
-/// A clip as the player reads it: +12 the duration, +4 bit 0 loop by default.
+/// A clip as the player reads it: +12 the duration, +4 bit 0 loop by default (`id` the caller's index).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Clip {
+    pub id: ClipId,
     pub dur: f32,
     pub flags: u16,
 }
@@ -118,26 +119,38 @@ impl Player {
 pub enum Node {
     /// crmtNodeAnimation (type 4)
     Anim(Player),
-    /// crmtNodeBlend (type 5): +32 the weight
-    Blend { weight: f32 },
+    /// crmtNodeBlend (type 5): +32 the weight, +36 the rate a second, +48 destroy (keep the child it reaches), +40 the filter;
+    /// kids 0 / 1 (a crossfade's 0 is the tree it fades from)
+    Blend { weight: f32, rate: f32, destroy: bool, filter: Option<Filter>, kids: [Option<usize>; 2] },
+    /// crmtNodeAddSubtract (type 6): +32 the weight, +36 its rate (0 from every builder), +40 the filter; kid 1 added onto 0
+    Add { weight: f32, rate: f32, filter: Option<Filter>, kids: [Option<usize>; 2] },
+    /// crmtNodeIdentity (type 23): the rest pose
+    Identity,
+    /// a destroyed node's slot
+    Free,
 }
 
 impl Node {
     /// The blend node's set weight (vt+56, F-16851): clamped into 0 .. 1.
     fn set_weight(&mut self, w: f32) {
-        if let Node::Blend { weight } = self {
+        if let Node::Blend { weight, .. } = self {
             let a = fsel(w, w, 0.0);
             *weight = fsel(a - 1.0, 1.0, a);
         }
     }
 }
 
-/// The sequencer's holders: `blend[i]` +20 + 4 i (i < 5), `anim[i]` +44 + 4 i, each the index of its node.
+/// The sequencer's holders: `blend[i]` +20 + 4 i (i < 5), `anim[i]` +44 + 4 i, `pan` +76, `top` +84, each the index of its
+/// node (none once the node is destroyed), and its motion tree: `root` (crmtMotionTree +8) over `nodes`.
 #[derive(Clone, Debug, Default)]
 pub struct Seq {
     pub nodes: Vec<Node>,
     pub blend: [Option<usize>; 5],
     pub anim: [Option<usize>; 5],
+    pub pan: Option<usize>,
+    pub top: Option<usize>,
+    pub root: Option<usize>,
+    free: Vec<usize>,
 }
 
 impl Seq {
@@ -367,15 +380,162 @@ pub fn five(look: &Look, dur: &dyn Fn(ClipId) -> f32, c: [ClipId; 5], blend: f32
 /// Overlay F-19950: stops the body clip (+44 rate 0), then crossfades (always, at 1 / blend) onto the overlay clip blended
 /// fully over a copy of the body clip at its time (rate 1, once) with the face filter; the copy goes to +44, the overlay to
 /// +48. Nothing without the filters or without a body clip.
-pub fn overlay(s: &mut Seq, look: &Look, body: Option<ClipId>, clip: ClipId, blend: f32, looping: bool) -> Option<Req> {
+pub fn overlay(s: &mut Seq, look: &Look, clip: ClipId, blend: f32, looping: bool) -> Option<Req> {
     if !look.filters {
         return None;
     }
     s.set_rate(0.0);
-    let t = s.player(0)?.t;
-    let b = Req::new(Kind::Anim { clip: body?, t, rate: 1.0, looping: false }).held(44);
+    let p = s.player(0)?;
+    let (t, body) = (p.t, p.clip?.id);
+    let b = Req::new(Kind::Anim { clip: body, t, rate: 1.0, looping: false }).held(44);
     let p = Req::blend(1.0, 0.0, Some(Filter::NoFace), Some(Req::anim(clip, looping).held(48)), b);
     Some(Req::blend(0.0, 1.0 / blend, None, None, p).held(84))
+}
+
+impl Seq {
+    fn alloc(&mut self, n: Node) -> usize {
+        match self.free.pop() {
+            Some(i) => {
+                self.nodes[i] = n;
+                i
+            }
+            None => {
+                self.nodes.push(n);
+                self.nodes.len() - 1
+            }
+        }
+    }
+
+    fn holder(&mut self, h: u8) -> Option<&mut Option<usize>> {
+        match h {
+            20..=36 => Some(&mut self.blend[(h as usize - 20) / 4]),
+            44..=60 => Some(&mut self.anim[(h as usize - 44) / 4]),
+            76 => Some(&mut self.pan),
+            84 => Some(&mut self.top),
+            _ => None,
+        }
+    }
+
+    fn kids(&self, n: usize) -> [Option<usize>; 2] {
+        match &self.nodes[n] {
+            Node::Blend { kids, .. } | Node::Add { kids, .. } => *kids,
+            _ => [None; 2],
+        }
+    }
+
+    /// A node's destruction with its subtree (the replace F-54662 / F-91652, the children released); the holders on them let go.
+    fn destroy(&mut self, n: usize) {
+        for k in self.kids(n).into_iter().flatten() {
+            self.destroy(k);
+        }
+        self.nodes[n] = Node::Free;
+        self.free.push(n);
+        for h in self.blend.iter_mut().chain(self.anim.iter_mut()).chain([&mut self.pan, &mut self.top]) {
+            if *h == Some(n) {
+                *h = None;
+            }
+        }
+    }
+
+    /// The request's generate (F-14509 -> vt+8: animation F-26354 with the node init F-45890, blend F-82335 / add F-71347 through
+    /// F-69377, identity F-20211): the node it makes takes the place of `existing`
+    /// (the tree's root), which is destroyed, except under a crossfade (a blend without a first source), which keeps it as its
+    /// first child.
+    fn gen(&mut self, r: &Req, existing: Option<usize>, dur: &dyn Fn(ClipId) -> f32) -> usize {
+        let mut keep = false;
+        let n = match &r.kind {
+            Kind::Anim { clip, t, rate, looping } => {
+                let d = dur(*clip);
+                let mut p = Player { flags: 1 | (*looping as u32) << 1, rate: *rate, clip: Some(Clip { id: *clip, dur: d, flags: 0 }), ..Player::default() };
+                p.set_time(*t, d);
+                self.alloc(Node::Anim(p))
+            }
+            Kind::Identity => self.alloc(Node::Identity),
+            Kind::Add { w, filter, a, b } => {
+                let (a, b) = (self.gen(a, None, dur), self.gen(b, None, dur));
+                self.alloc(Node::Add { weight: *w, rate: 0.0, filter: *filter, kids: [Some(a), Some(b)] })
+            }
+            Kind::Blend { w, rate, filter, a, b } => {
+                let a = match a {
+                    Some(a) => Some(self.gen(a, None, dur)),
+                    None => {
+                        keep = true;
+                        existing
+                    }
+                };
+                let b = self.gen(b, None, dur);
+                self.alloc(Node::Blend { weight: *w, rate: *rate, destroy: *rate != 0.0, filter: *filter, kids: [a, Some(b)] })
+            }
+        };
+        if let (Some(e), false) = (existing, keep) {
+            self.destroy(e);
+        }
+        for h in &r.hold {
+            if let Some(x) = self.holder(*h) {
+                *x = Some(n);
+            }
+        }
+        n
+    }
+
+    /// The motion tree's submit F-47118 with no node named: the request's tree replaces (or crossfades from) the root.
+    pub fn submit(&mut self, r: &Req, dur: &dyn Fn(ClipId) -> f32) {
+        let n = self.gen(r, self.root, dur);
+        self.root = Some(n);
+    }
+
+    fn update_node(&mut self, n: usize, dt: f32) -> usize {
+        let mut kids = self.kids(n);
+        for k in kids.iter_mut() {
+            if let Some(c) = *k {
+                *k = Some(self.update_node(c, dt));
+            }
+        }
+        match &mut self.nodes[n] {
+            // F-57339
+            Node::Anim(p) => {
+                p.advance(dt);
+            }
+            // F-42325
+            Node::Add { weight, rate, kids: k, .. } => {
+                *k = kids;
+                *weight = dt.mul_add(*rate, *weight);
+            }
+            // F-51260
+            Node::Blend { weight, rate, destroy, kids: k, .. } => {
+                *k = kids;
+                let w = dt.mul_add(*rate, *weight);
+                let a = fsel(w, w, 0.0);
+                *weight = fsel(a - 1.0, 1.0, a);
+                let keep = if *rate > 0.0 && *weight == 1.0 {
+                    Some(1)
+                } else if *rate < 0.0 && *weight == 0.0 {
+                    Some(0)
+                } else {
+                    None
+                };
+                if let (Some(i), true) = (keep, *destroy) {
+                    if let Some(c) = kids[i] {
+                        if let Node::Blend { kids: k, .. } = &mut self.nodes[n] {
+                            k[i] = None;
+                        }
+                        self.destroy(n);
+                        return c;
+                    }
+                }
+            }
+            _ => {}
+        }
+        n
+    }
+
+    /// The tree's update F-72449 (its updater pass F-52503): post-order, a node's children first; animations advance by dt, blends move
+    /// their weight by rate x dt and a finished crossfade gives its place to the child it reached.
+    pub fn update(&mut self, dt: f32) {
+        if let Some(r) = self.root {
+            self.root = Some(self.update_node(r, dt));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -423,6 +583,8 @@ mod tests {
         let mut n = 0;
         for case in text.split("= ").skip(1) {
             let (head, want) = case.split_once('\n').unwrap();
+            // (a checkout with autocrlf has the file in CRLF)
+            let want = want.replace('\r', "");
             let mut it = head.split_whitespace();
             let op = it.next().unwrap();
             let w: Vec<u32> = it.map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
@@ -437,13 +599,13 @@ mod tests {
             let clip = |i: usize| w[6 + i];
             let mut s = Seq::default();
             s.anim[0] = Some(0);
-            s.nodes.push(Node::Anim(Player { t: f(11), rate: f(12), clip: Some(Clip { dur: f(13), flags: 0 }), ..Player::default() }));
+            s.nodes.push(Node::Anim(Player { t: f(11), rate: f(12), clip: Some(Clip { id: 12, dur: f(13), flags: 0 }), ..Player::default() }));
             let req = match op {
                 "play" => Some(play(&look, &dur, clip(0), f(3), w[4] != 0, w[5] != 0)),
                 "play2" => Some(play_cut(clip(0), f(3), w[4] != 0, w[5] != 0)),
                 "pair" => Some(pair(&look, &dur, clip(0), clip(1), w[4] != 0, f(3))),
                 "five" => Some(five(&look, &dur, [clip(0), clip(1), clip(2), clip(3), clip(4)], f(3), w[4] != 0)),
-                "overlay" => overlay(&mut s, &look, Some(12), clip(0), f(3), w[4] != 0),
+                "overlay" => overlay(&mut s, &look, clip(0), f(3), w[4] != 0),
                 _ => panic!("{op}"),
             };
             let mut got = format!("{op}\n");
@@ -482,7 +644,7 @@ mod tests {
             let mut s = Seq::default();
             for i in 0..5 {
                 s.blend[i] = Some(s.nodes.len());
-                s.nodes.push(Node::Blend { weight: 0.0 });
+                s.nodes.push(Node::Blend { weight: 0.0, rate: 0.0, destroy: false, filter: None, kids: [None; 2] });
             }
             for i in 0..5 {
                 let g = |k: usize| w[(6 * i + k) % 24];
@@ -492,7 +654,7 @@ mod tests {
                     t: f32::from_bits(g(1)),
                     rate: f32::from_bits(g(2)),
                     pending: f32::from_bits(g(5)),
-                    clip: Some(Clip { dur: f32::from_bits(g(4)), flags: (g(3) & 1) as u16 }),
+                    clip: Some(Clip { id: 0, dur: f32::from_bits(g(4)), flags: (g(3) & 1) as u16 }),
                     ..Player::default()
                 }));
             }
@@ -516,7 +678,7 @@ mod tests {
                 };
                 let mut o: Vec<String> = Vec::new();
                 for i in 0..5 {
-                    if let Node::Blend { weight } = s.nodes[s.blend[i].unwrap()] {
+                    if let Node::Blend { weight, .. } = s.nodes[s.blend[i].unwrap()] {
                         o.push(b(weight));
                     }
                 }
@@ -532,5 +694,107 @@ mod tests {
             n += 1;
         }
         assert!(n > 10_000, "{n} cases");
+    }
+
+    fn dump_node(s: &Seq, n: usize, ids: &mut Vec<usize>, o: &mut String) {
+        let b = |x: f32| format!("{:08x}", x.to_bits());
+        let fl = |f: &Option<Filter>| match f {
+            None => "-",
+            Some(Filter::Spine) => "F92",
+            Some(Filter::Neck) => "F96",
+            Some(Filter::NoFace) => "F100",
+        };
+        let id = ids.len();
+        ids.push(n);
+        match &s.nodes[n] {
+            Node::Anim(p) => {
+                *o += &format!(" #{id} t4({} {} {} {} c{})", p.flags & 3, b(p.t), b(p.delta), b(p.rate), p.clip.map_or(0, |c| c.id));
+                return;
+            }
+            Node::Blend { weight, rate, destroy, filter, .. } => *o += &format!(" #{id} t5({} {} {} {}", b(*weight), b(*rate), *destroy as u8, fl(filter)),
+            Node::Add { weight, rate, filter, .. } => *o += &format!(" #{id} t6({} {} {} 00000000", b(*weight), b(*rate), fl(filter)),
+            Node::Identity => *o += &format!(" #{id} t23("),
+            Node::Free => *o += " FREE(",
+        }
+        for k in s.kids(n).into_iter().flatten() {
+            dump_node(s, k, ids, o);
+        }
+        *o += ")";
+    }
+
+    /// The motion tree against the original's run whole offline (`work/drvmachine/tree_run.py`): real tree, holders, builders,
+    /// submit and updater; after every update the node tree (types, weights, rates, destroy flags, filters, clip players) and
+    /// the holders equal.
+    #[test]
+    fn the_motion_tree_matches_the_original() {
+        let want = include_str!("testdata/drvanim_run_ref.txt").replace('\r', "");
+        let f = |x: &str| f32::from_bits(u32::from_str_radix(x, 16).unwrap());
+        let u = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let dur = |c: ClipId| f32::from_bits(0x3f80_0000 + 0x0010_0000 * c);
+        let (mut s, mut look) = (Seq::default(), Look::default());
+        let mut got = String::new();
+        let mut updates = 0;
+        for line in include_str!("testdata/drvanim_run_cases.txt").lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            if w.is_empty() {
+                continue;
+            }
+            let op = w[0];
+            if op == "=" {
+                s = Seq::default();
+                look = Look {
+                    face: (w[1] == "1").then_some(14),
+                    pan_spine: (w[2] == "1").then_some(13),
+                    pan: (w[3] == "1").then_some(15),
+                    filters: true,
+                };
+                got += &format!("= {} {} {}\n", w[1], w[2], w[3]);
+                continue;
+            }
+            let req = match op {
+                "play" => Some(play(&look, &dur, u(w[1]), f(w[2]), w[3] == "1", w[4] == "1")),
+                "play2" => Some(play_cut(u(w[1]), f(w[2]), w[3] == "1", w[4] == "1")),
+                "pair" => Some(pair(&look, &dur, u(w[1]), u(w[2]), w[3] == "1", f(w[4]))),
+                "five" => Some(five(&look, &dur, [u(w[1]), u(w[2]), u(w[3]), u(w[4]), u(w[5])], f(w[6]), w[7] == "1")),
+                "overlay" => overlay(&mut s, &look, u(w[1]), f(w[2]), w[3] == "1"),
+                _ => None,
+            };
+            if let Some(r) = req {
+                s.submit(&r, &dur);
+            }
+            match op {
+                "phase" => s.set_phase(f(w[1])),
+                "rate" => s.set_rate(f(w[1])),
+                "rate5" => s.set_rate5(f(w[1])),
+                "phase2" => s.set_phase2(f(w[1])),
+                "phase5" => s.set_phase5(f(w[1])),
+                "phaseall" => s.set_phase_all(f(w[1])),
+                "weight" => s.set_weight(f(w[1])),
+                _ => {}
+            }
+            if op == "upd" {
+                s.update(f(w[1]));
+                let mut ids = Vec::new();
+                got += "tree";
+                match s.root {
+                    Some(r) => dump_node(&s, r, &mut ids, &mut got),
+                    None => got += " -",
+                }
+                got += "\nhold";
+                let hs = [s.blend[0], s.blend[1], s.blend[2], s.blend[3], s.blend[4], None, s.anim[0], s.anim[1], s.anim[2], s.anim[3], s.anim[4], s.pan, s.top];
+                for h in hs {
+                    got += &format!(" {}", h.map_or(-1, |n| ids.iter().position(|&x| x == n).map_or(-2, |i| i as i64)));
+                }
+                got += "\n";
+                updates += 1;
+            } else {
+                got += &format!("{op}\n");
+            }
+        }
+        for (i, (g, w)) in got.lines().zip(want.lines()).enumerate() {
+            assert_eq!(g, w, "line {}", i + 1);
+        }
+        assert_eq!(got.lines().count(), want.lines().count());
+        assert!(updates > 3000, "{updates} updates");
     }
 }
