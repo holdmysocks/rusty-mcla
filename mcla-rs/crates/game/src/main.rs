@@ -4743,7 +4743,8 @@ impl App {
             // (F-54212: a Pull Over tactic (type 1) or a pursuit (types 2 - 4) on the player - payback
             // goons' StartPursuit included; Search / Busted taken as the pursuit's tactic still running;
             // or a cop zone the player set off counting down to its pursuit)
-            self.game.police_on_player = matches!(self.police.heat, police::Heat::PullOver | police::Heat::Pursuit | police::Heat::Search | police::Heat::Busted) || self.police.zone_on_player();
+            // (a tactic on an AI racer - the cop zone's - is not on the player)
+            self.game.police_on_player = (matches!(self.police.heat, police::Heat::PullOver | police::Heat::Pursuit | police::Heat::Search | police::Heat::Busted) && self.police.target.is_none()) || self.police.zone_on_player();
             // (test hook MCLA_POLICE_AT_END=1: the police taken as on the player while a race runs - kept at its end, for the
             // race-over menus' chased rows)
             if std::env::var_os("MCLA_POLICE_AT_END").is_some() && self.game.race.is_some() {
@@ -5056,7 +5057,8 @@ impl App {
         }
         // (the red light / freeway man's taunts in the race, and RACE BACK - althk.rs)
         if self.game.mode == Mode::Race && sim_dt > 0.0 {
-            let chased = matches!(self.police.heat, police::Heat::PullOver | police::Heat::Pursuit | police::Heat::Search);
+            // (the first active tactic's target, F-28945: 1 the player, 2 an AI racer - the man)
+            let chased = if !matches!(self.police.heat, police::Heat::PullOver | police::Heat::Pursuit | police::Heat::Search) { 0 } else if self.police.target.is_none() { 1 } else { 2 };
             if let Some(sc) = self.game.alt_taunt_tick(&self.vehicles, chased, self.speech.busy()) {
                 if self.speech.say_as(sc, &self.game.althk.voice) {
                     self.game.alt_taunt_said(sc);
@@ -5256,9 +5258,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 if let Some((z, &(zp, zr, ..))) = self.police.zone.clone().filter(|_| race.countdown <= 0.0).and_then(|z| race.cop_zones.get(z.idx).map(|c| (z, c))) {
                     let lap = race.next.first().map_or(0, |&n| n / race.lap_len.max(1));
-                    let racers: Vec<(usize, bool, Vec3, bool)> = race.participants.iter()
-                        .filter_map(|&ci| self.vehicles.cars.get(ci).map(|c| (ci, c.is_player, c.state.pos, c.state.damage >= 0.999)))
+                    let racers: Vec<(u32, bool, Vec3, bool)> = race.participants.iter()
+                        .filter_map(|&ci| self.vehicles.cars.get(ci).map(|c| (c.uid, c.is_player, c.state.pos, c.state.damage >= 0.999)))
                         .collect();
+                    // (the in-race retarget's racers, the player first: F-22530)
+                    self.police.racer_uids = racers.iter().filter(|r| r.1).chain(racers.iter().filter(|r| !r.1)).map(|r| r.0).collect();
                     let inside = racers.iter().position(|r| r.2.distance_squared(zp) < zr * zr);
                     if let Some(line) = self.police.zone_step(lap, &racers, inside, sim_dt) {
                         if !self.speech.busy() {
@@ -5268,7 +5272,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (approx.: a cruiser waits at the armed zone once the player comes near - which
                     // unit the original sends, from where, was not read)
                     let pp = self.vehicles.player().map(|c| c.state.pos).unwrap_or(Vec3::ZERO);
-                    if z.state == 1 && !z.stationed && self.tick_no % 30 == 0 && zp.distance(pp) < 320.0 && zp.distance(pp) > 90.0 && world.ready_at(zp) {
+                    // (test hook MCLA_COP_ZONE_AI: no cruiser waits, so none pulls the player over before the zone's chase)
+                    if z.state == 1 && !z.stationed && std::env::var_os("MCLA_COP_ZONE_AI").is_none() && self.tick_no % 30 == 0 && zp.distance(pp) < 320.0 && zp.distance(pp) > 90.0 && world.ready_at(zp) {
                         let ok = self.police.station(&gpu, &world, &mut self.vehicles, zp, z.idx);
                         if let Some(zz) = self.police.zone.as_mut() {
                             zz.stationed = ok;
@@ -6923,6 +6928,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         Some(police::Event::Escaped) => {
                             self.radio.say("REPORT_END_PURSUIT", &rctx);
                         }
+                        // (F-22530's end of a type >= 1 tactic on an AI racer: the radio stopped, REPORT_END_PURSUIT and,
+                        // once the radio took it, the player's PLAYER_LOSE_POLICE)
+                        Some(police::Event::LostAi) => {
+                            self.radio.stop();
+                            if self.radio.say("REPORT_END_PURSUIT", &rctx) && !self.speech.busy() {
+                                self.speech.say("PLAYER_LOSE_POLICE");
+                            }
+                        }
                         // busted and ticket: the radio line is cut, no scenario
                         Some(police::Event::Ticket(_)) | Some(police::Event::Busted(_)) => {
                             self.radio.stop();
@@ -7042,7 +7055,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.game.arrest_scene = 0;
                         self.police.hold_busted(1.5);
                     }
-                    None => {}
+                    Some(police::Event::LostAi) | None => {}
                 }
             }
             if self.arrest_wait && (self.arrest_mask.full() || !self.arrest_mask.is_on()) {

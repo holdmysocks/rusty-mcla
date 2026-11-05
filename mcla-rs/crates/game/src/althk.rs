@@ -672,7 +672,7 @@ impl Game {
     /// otherwise by the player's place - first: TAUNT_RACE_IN_FIRST, last of more than two:
     /// TAUNT_RACE_IN_LAST, else TAUNT_RACE_NOT_IN_FIRST. Said by the man to the player; once it
     /// was said the next comes RAND_INT_RANGE(45000, 70000) ms on (`alt_taunt_said`).
-    pub fn alt_taunt_tick(&mut self, vehicles: &crate::vehicles::Vehicles, chased: bool, busy: bool) -> Option<&'static str> {
+    pub fn alt_taunt_tick(&mut self, vehicles: &crate::vehicles::Vehicles, chased: u8, busy: bool) -> Option<&'static str> {
         if !self.althk.taunt_on || !self.active_def.as_ref().map_or(false, |d| is_alt_race(&d.id)) {
             return None;
         }
@@ -687,8 +687,11 @@ impl Game {
         if busy || race.time < self.althk.taunt_at {
             return None;
         }
-        if chased {
+        // (chased 2: an AI racer the target - the scenario's Receiver voice, the chased man's)
+        if chased == 1 {
             return Some("TAUNT_RACE_COP_CHASING_PLAYER");
+        } else if chased == 2 {
+            return Some("TAUNT_RACE_COP_CHASING_HOOKMAN");
         }
         let (place, field) = self.player_position(vehicles);
         Some(if place <= 1 {

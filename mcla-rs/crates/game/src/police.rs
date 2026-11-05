@@ -116,6 +116,9 @@ pub enum Event {
     PullOver,
     Pursuit,
     Escaped,
+    /// a tactic on an AI racer ended by result 2 or 3 (escaped, a cop gone): the radio's REPORT_END_PURSUIT and the
+    /// player's PLAYER_LOSE_POLICE (F-22530, not gated by the target); nothing of the player's record, reward or grace
+    LostAi,
     /// stopped for the cruiser: fine
     Ticket(i64),
     /// arrested during a pursuit: fine
@@ -895,8 +898,8 @@ pub struct CopZone {
     /// 0 waiting for its lap, 1 armed, 2 set off (5.5 s), 3 the radio delay (fCopZoneRdoDelayTime)
     pub state: u8,
     pub timer: f32,
-    /// the target (+200): its car index, and whether it is the player
-    pub target: Option<usize>,
+    /// the target (+200): its car's uid, and whether it is the player
+    pub target: Option<u32>,
     pub player: bool,
     /// a cruiser waits there (the port's: where the original's unit comes from was not read)
     pub stationed: bool,
@@ -1011,6 +1014,14 @@ pub struct Police {
     pub zone: Option<CopZone>,
     /// the zone's chase is due: the pursuit starts on the next update
     zone_go: bool,
+    /// the cop zone's target when it is an AI racer (its uid): the chase on it starts at the next update
+    zone_target: Option<u32>,
+    /// the tactic's target (+32) when it is an AI racer (its uid); None: the player. An AI target has no law record
+    /// (F-50742 gives one only to the player), is never arrested (every tactic's Arrest / Ticket ask needs the
+    /// target's vt+40, the player), and its tactic ends by losing it or by the race (docs/reference/hookmen/cop_zone.md)
+    pub target: Option<u32>,
+    /// the race's racers (uids, the player first) for the in-race retarget (F-22530); set by main.rs each frame
+    pub racer_uids: Vec<u32>,
     /// the zone of the race running was picked
     pub zone_picked: bool,
     /// the pull-over's bullhorn (its tactic +92 = 2 at iBullhornLawBreakScore, F-22530): seconds left of
@@ -1169,6 +1180,9 @@ impl Police {
             arrest_over: false,
             zone: None,
             zone_go: false,
+            zone_target: None,
+            target: None,
+            racer_uids: Vec::new(),
             zone_picked: false,
             tacs: HashMap::new(),
             last_tspeed: 0.0,
@@ -1627,6 +1641,8 @@ impl Police {
     pub fn zone_clear(&mut self) {
         self.zone = None;
         self.zone_go = false;
+        self.zone_target = None;
+        self.racer_uids.clear();
         self.zone_picked = false;
     }
 
@@ -1648,18 +1664,18 @@ impl Police {
     }
 
     /// The zone machine of a race (F-71212), per frame: `lap` is the race's current lap, `racers` the race's racers in
-    /// order (car index, the player, position, damaged out), `inside` the first of them within the zone's radius.
+    /// order (uid, the player, position, damaged out), `inside` the first of them within the zone's radius.
     /// State 1 (armed): that racer sets it off - state 2, 5.5 s, and the target (+200): the scripts' race chase target is
     /// unset (SetRaceChaseTarget(0, 0), type 0), so with iRaceTgtAiProbPrcnt % the AI racer nearest to it (the first of
     /// the AI list, then each nearer one; it may be itself) when within fRaceTgtAiDist (or that is negative), else the
     /// racer itself. State 2: the target damaged out (F-12032) - the chase starts at once (state 0); else the 5.5 s down,
     /// then state 3 for fCopZoneRdoDelayTime; state 3: the time down, and at < 0 or the target damaged out the chase
-    /// starts. (The chase is the Arrow Trap on the target, F-33550; the port's police chase only the player: a zone
-    /// whose target is an AI racer starts nothing - open. The roll draws the port's own random numbers, not the
-    /// game's multiply-with-carry.)
-    pub fn zone_step(&mut self, lap: usize, racers: &[(usize, bool, Vec3, bool)], inside: Option<usize>, dt: f32) -> Option<&'static str> {
-        let prob = self.tun.get("iRaceTgtAiProbPrcnt", 30.0) * 0.01;
-        let ai_r = self.tun.get("fRaceTgtAiDist", 150.0);
+    /// starts: the Arrow Trap (type 4, StartTactic F-33550) on the target, player or AI racer. (The roll draws the
+    /// port's own random numbers, not the game's multiply-with-carry.)
+    pub fn zone_step(&mut self, lap: usize, racers: &[(u32, bool, Vec3, bool)], inside: Option<usize>, dt: f32) -> Option<&'static str> {
+        // (test hook MCLA_COP_ZONE_AI=1: the roll always picks the nearest AI racer, at any distance)
+        let prob = if std::env::var_os("MCLA_COP_ZONE_AI").is_some() { 1.0 } else { self.tun.get("iRaceTgtAiProbPrcnt", 30.0) * 0.01 };
+        let ai_r = if std::env::var_os("MCLA_COP_ZONE_AI").is_some() { -1.0 } else { self.tun.get("fRaceTgtAiDist", 150.0) };
         let delay = self.tun.get("fCopZoneRdoDelayTime", 2.0);
         let roll = if matches!(self.zone.as_ref(), Some(z) if z.state == 1) && inside.is_some() { self.rand() } else { 1.0 };
         let Some(z) = self.zone.as_mut() else { return None };
@@ -1729,7 +1745,8 @@ impl Police {
             if z.player && matches!(self.heat, Heat::None | Heat::PullOver) {
                 self.zone_go = true;
             } else if !z.player {
-                log::info!("police: cop zone {}: the chase of an AI racer is not ported", z.idx);
+                // (the Arrow Trap on the AI racer: started by the next update, `update`)
+                self.zone_target = z.target;
             }
         }
         say
@@ -1810,7 +1827,7 @@ impl Police {
             }
             // (the tactic's teleport, F-37056, brings it up out of the target's sight; the port does it at the engage -
             // a unit that finds no place leaves the tactic to be tried again next frame)
-            let Some(p) = vehicles.player() else { break };
+            let Some(p) = self.target_car(vehicles) else { break };
             let dims = vehicles.models.iter().find(|m| m.name == COP_CAR).map_or((2.5, 1.0, 1.5), |m| (0.5 * (m.max.z - m.min.z), 0.5 * (m.max.x - m.min.x), m.max.y - m.min.y));
             let tgt = (p.state.pos, p.state.vel, p.state.forward(), p.model.max.y - p.model.min.y);
             let Some((q, row2, vel)) = self.place_cop(world, tgt, d2, all_need, &mut junctions, dims, self.fw_road && self.offences & LAW_WRONG_WAY == 0) else { return None };
@@ -1976,7 +1993,7 @@ impl Police {
         if !gate || self.kind <= TacKind::Dispatch {
             return;
         }
-        let Some(p) = vehicles.player() else { return };
+        let Some(p) = self.target_car(vehicles) else { return };
         let tgt = (p.state.pos, p.state.vel, p.state.forward(), p.model.max.y - p.model.min.y);
         let all_need = cops.iter().all(|&u| needs(self, u));
         let far = tun.get("fTeleportDist", 250.0);
@@ -2056,6 +2073,14 @@ impl Police {
         self.srch.push(CopSearch { uid, no_goals: pts.is_empty(), pts, random: true, angle, ..Default::default() });
     }
 
+    /// The tactic's target car (+32): the AI racer the cop zone chose, else the player.
+    fn target_car<'a>(&self, vehicles: &'a Vehicles) -> Option<&'a crate::vehicles::CarInstance> {
+        match self.target {
+            Some(u) => vehicles.cars.iter().find(|c| c.uid == u),
+            None => vehicles.player(),
+        }
+    }
+
     /// StartTactic (F-33550): the old tactic ends with flag 0 (its cops lose their commands; lights kept), the score
     /// goes to the kind's floor; the base begin (F-82656): +136 = fTrackTgtTime (the manager's track byte, 1 by default -
     /// F-39756) for the kinds whose slot 7 reads it, -1 (never lost) for the pull-over.
@@ -2078,7 +2103,10 @@ impl Police {
         self.srch.clear();
         self.eyes.clear();
         self.sq = Squad { hyst: 2.0, lock: 0.0, ..Default::default() };
-        self.score = self.score.max(kind.floor());
+        // (the floor only with a law record, the player's: F-33550)
+        if self.target.is_none() {
+            self.score = self.score.max(kind.floor());
+        }
         self.track_t = if kind == TacKind::PullOver { -1.0 } else { track };
         if kind != TacKind::Dispatch {
             self.dsp = None;
@@ -2122,13 +2150,15 @@ impl Police {
         if !on || self.heat == Heat::Search || busy || self.cops.is_empty() {
             return None;
         }
-        let p = vehicles.player()?;
+        let p = self.target_car(vehicles)?;
         let (ppos, speed, nitro) = (p.state.pos, p.state.speed(), p.state.veh.as_deref().is_some_and(|v| v.nitro_burning));
         let cops = self.cops.clone();
         let n = cops.len();
         let mut call = None;
+        // (A and B read the target's law record: none for an AI racer - F-26639 skips them; C and D run on its car)
+        let record = self.target.is_none();
         // A: on to or off a freeway: the road the target's lane belongs to, stable for 1 s; said once, on the expiry frame
-        if let Some(nav) = world.nav.as_ref() {
+        if let (true, Some(nav)) = (record, world.nav.as_ref()) {
             let is_fw = |r: usize| nav.zones.get(r).is_some_and(|z| z.name.starts_with("FW") || z.name.starts_with("XT"));
             if let Some(r) = vehicles.driver_lanes.get(&p.uid).and_then(|d| d.best).and_then(|b| nav.lane_road(b.0)) {
                 if self.rdo_road == Some(r) {
@@ -2148,7 +2178,7 @@ impl Police {
             }
         }
         // B: a police car hit hard, from the cop hit hardest
-        if call.is_none() {
+        if call.is_none() && record {
             if let Some(c) = self.hard_cop {
                 call = Some(RadioCall { name: "REPORT_PURSUIT_HIT_COP_CAR_HARD", sender: c, receiver: None });
             }
@@ -2432,6 +2462,62 @@ impl Police {
         if goons {
             self.cops = vehicles.cars.iter().filter(|c| c.goon).map(|c| c.uid).collect();
         }
+        // ---- an AI racer as the tactic's target (docs/reference/hookmen/cop_zone.md) -------------------------
+        let mut pre_event = None;
+        // (the zone's start for an AI racer, F-71212 -> F-30913 -> StartTactic F-33550: the Arrow Trap on that racer, no
+        // request cop, no start report; it has no law record - F-50742 gives one only to the player - so no score floor)
+        if let Some(u) = self.zone_target.take() {
+            let at = vehicles.cars.iter().find(|c| c.uid == u).map(|c| (c.state.pos, c.state.forward(), c.state.vel));
+            if let (true, Some((pos, fwd, vel))) = (self.heat == Heat::None && self.in_race && !goons, at) {
+                let prev = self.target.replace(u);
+                if let Some(cops) = self.engage(gpu, world, vehicles, TacKind::ArrowTrap.cops(), None, pos, fwd) {
+                    let tt = self.tun.get("fTrackTgtTime", 25.0);
+                    self.start_tactic(TacKind::ArrowTrap, cops, true, tt);
+                    self.heat = Heat::Pursuit;
+                    self.last_known = pos;
+                    self.last_known_v = vel;
+                    self.lost = 0.0;
+                    log::info!("police: the cop zone's Arrow Trap on AI racer {}", u);
+                } else {
+                    self.target = prev;
+                    log::info!("police: the cop zone's Arrow Trap on AI racer {} found no three cruisers", u);
+                }
+            }
+        }
+        if let Some(u) = self.target {
+            let alive = vehicles.cars.iter().any(|c| c.uid == u);
+            let wrecked = vehicles.cars.iter().any(|c| c.uid == u && c.state.damage >= 0.999);
+            if alive && wrecked && self.heat == Heat::Search {
+                // (F-22530: the tactic lost and its target damaged out (F-12032) - F-41497 ends it, silently)
+                log::info!("police: AI racer {} lost and damaged out - its tactic ends", u);
+                self.end_tactic();
+            } else if !alive {
+                // (F-22530: the target's +656 no longer 3 - the tactic ends, silently)
+                log::info!("police: AI racer {} gone - its tactic ends", u);
+                self.end_tactic();
+            } else if !self.in_race {
+                // (F-22530: no race current and the target not the player - the tactic ends at once; a tactic cop seeing
+                // the player within fVisionDist, F-43276 (no cone), starts an Arrow Trap on the player with that cop
+                // as its request cop. The trap's delay 5.0 has no counterpart in the port's trap)
+                let vision = self.tun.get("fVisionDist", 500.0);
+                let seer = vehicles.player().and_then(|p| {
+                    self.cops.iter().filter_map(|k| vehicles.cars.iter().find(|c| c.uid == *k)).find(|c| cop_sees(world, c, p.state.pos, vision, 0.0)).map(|c| (c.uid, p.state.pos, p.state.forward(), p.state.vel))
+                });
+                log::info!("police: AI racer {} chased with no race - the tactic ends{}", u, if seer.is_some() { ", the player seen" } else { "" });
+                self.end_tactic();
+                if let Some((cop, pos, fwd, vel)) = seer {
+                    if let Some(cops) = self.engage(gpu, world, vehicles, TacKind::ArrowTrap.cops(), Some(cop), pos, fwd) {
+                        let tt = self.tun.get("fTrackTgtTime", 25.0);
+                        self.start_tactic(TacKind::ArrowTrap, cops, true, tt);
+                        self.heat = Heat::Pursuit;
+                        self.last_known = pos;
+                        self.last_known_v = vel;
+                        self.fine = self.law_fines();
+                        pre_event = Some(Event::Pursuit);
+                    }
+                }
+            }
+        }
         // (only the tactic's cops chase; F-76774 result 3: one of them gone - the police are lost)
         let gone = self.kind > TacKind::Dispatch && !goons && self.cops.iter().any(|u| !vehicles.cars.iter().any(|c| c.uid == *u));
         if self.kind > TacKind::Dispatch && !goons {
@@ -2451,9 +2537,17 @@ impl Police {
         let Some(p) = vehicles.player() else { return None };
         let ppos = p.state.pos;
         let pvel = p.state.vel;
+        // (the tactic's target, +32: the player, or the AI racer the cop zone chose. The law record and its offences are
+        // the player's; the tactic - sight, search, arrest tests, the cops' goals - looks at the target)
+        let ai_target = self.target.is_some();
+        let tc = self.target_car(vehicles).unwrap_or(p);
+        let (tpos, tvel, tfwd, tright, tdamage) = (tc.state.pos, tc.state.vel, tc.state.forward(), tc.state.right(), tc.state.damage);
+        let t_burning = tc.state.veh.as_ref().map_or(false, |v| v.burn > 0.0);
+        let t_bike_down = tc.model.bike && tc.state.wipeout > 0.0;
+        let (t_uid, t_half, t_rev) = (tc.uid, 0.5 * (tc.model.max.y - tc.model.min.y), tc.state.gear < 0);
         let prev_heat = std::mem::replace(&mut self.prev_heat, self.heat);
         if self.heat == Heat::Pursuit && !matches!(prev_heat, Heat::Pursuit | Heat::Search | Heat::Busted) {
-            self.last_known_v = pvel;
+            self.last_known_v = tvel;
         }
         // (F-63286: +136 runs down; at 0 the brains' lost flag +773 is set again)
         if self.track_t > 0.0 {
@@ -2464,7 +2558,6 @@ impl Police {
         }
         let track_flag = self.track_t <= 0.0;
         let pfwd = p.state.forward();
-        let pright = p.state.right();
         let speed = pvel.length();
         let mph = speed * MPH;
         let damage = p.state.damage;
@@ -2510,12 +2603,11 @@ impl Police {
         // (the probe, F-20855: one-sided, every level object - no instance excluded, include and type flags -1, states 7;
         // any hit counts: the city, the other cars, the props and the pedestrians' capsules - `level_probe_front`)
         let probe_hit = {
-            let o = ppos + Vec3::Y * (0.5 * (p.model.max.y - p.model.min.y));
-            let d = if p.state.gear < 0 { -pfwd } else { pfwd };
-            level_probe_front(world, vehicles, &self.peds, p.uid, o, d, 7.0)
+            let o = tpos + Vec3::Y * t_half;
+            let d = if t_rev { -tfwd } else { tfwd };
+            level_probe_front(world, vehicles, &self.peds, t_uid, o, d, 7.0)
         };
-        let bike_down = p.model.bike && p.state.wipeout > 0.0;
-        let seen_now = pvel.length() * MPH <= tun.get("fMovingSpeed", 1.0) || probe_hit;
+        let seen_now = tvel.length() * MPH <= tun.get("fMovingSpeed", 1.0) || probe_hit;
         self.t_seen_prev = self.t_seen;
         if seen_now {
             self.t_seen += dt;
@@ -2526,13 +2618,13 @@ impl Police {
         }
         for c in vehicles.cars.iter().filter(|c| pursuer(c)) {
             n_cops += 1;
-            let d = c.state.pos.distance(ppos);
+            let d = c.state.pos.distance(tpos);
             if c.state.damage < 0.999 {
                 nearest_ok = nearest_ok.min(d);
             }
             if d < vision {
                 let from = c.state.pos + Vec3::Y * 1.2;
-                let to = ppos + Vec3::Y * 1.0;
+                let to = tpos + Vec3::Y * 1.0;
                 let dir = (to - from).normalize_or(Vec3::X);
                 if d < 12.0 || world.collider.raycast(from, dir, (d - 2.0).max(0.1)).is_none() {
                     seen = true;
@@ -2547,7 +2639,8 @@ impl Police {
         detected |= touched.is_some();
         // (F-52240: with a tactic on the player that has a cop, offences count with no sight test; else only a
         // detecting cop counts them - and nothing is scored in the 5 s after a tactic on the player ended)
-        let in_tactic = n_cops > 0 && !matches!(self.heat, Heat::None);
+        // (a tactic on an AI racer is not one on the player: F-52240 asks for the player's own)
+        let in_tactic = n_cops > 0 && !matches!(self.heat, Heat::None) && !ai_target;
         // (F-54211 runs F-52240 only when F-96166 allows it: not while the player drives a police car)
         let scoring = self.grace <= 0.0 && !self.player_police;
         self.grace = (self.grace - dt).max(0.0);
@@ -2787,9 +2880,33 @@ impl Police {
         }
 
         // ---- state machine ----------------------------------------------------
-        let mut event = None;
+        let mut event = pre_event;
+        // (the hit-a-cop steal, the law step F-52240's race branch: in a race, the player in no tactic of his own and a
+        // police car hit this tick (record bits 0x20 / 0x40, scored only when watched) - the Arrow Trap that may retarget
+        // (+30) and chases an AI racer ends and a new one starts on the player, that trap's cop as its request cop)
+        if ai_target && self.in_race && hit_cop && self.kind == TacKind::ArrowTrap && !goons {
+            let first = self.units.iter().filter_map(|u| Self::unit_car(vehicles, u.id)).map(|i| vehicles.cars[i].uid).find(|u| self.cops.contains(u)).or(self.cops.first().copied());
+            log::info!("police: a police car hit - the Arrow Trap on AI racer {:?} turns on the player", self.target);
+            self.end_tactic();
+            if let Some(cops) = self.engage(gpu, world, vehicles, TacKind::ArrowTrap.cops(), first, ppos, pfwd) {
+                self.start_tactic(TacKind::ArrowTrap, cops, true, t("fTrackTgtTime", 25.0));
+                self.heat = Heat::Pursuit;
+                self.last_known = ppos;
+                self.last_known_v = pvel;
+                self.fine = self.law_fines();
+                self.lost = 0.0;
+                event = Some(Event::Pursuit);
+            }
+        }
+        // (from here on the tactic's target)
+        let ai_target = self.target.is_some();
+        let (ppos, pvel, pfwd, pright, damage, burning, bike_down) = match self.target_car(vehicles) {
+            Some(c) => (c.state.pos, c.state.vel, c.state.forward(), c.state.right(), c.state.damage, c.state.veh.as_ref().map_or(false, |v| v.burn > 0.0), c.model.bike && c.state.wipeout > 0.0),
+            None => (tpos, tvel, tfwd, tright, tdamage, t_burning, t_bike_down),
+        };
+        let speed = pvel.length();
+        let mph = speed * MPH;
         let arrest_speed = t("fArrestTgtThresholdSpd", 10.0) / MPH;
-        let burning = p.state.veh.as_ref().map_or(false, |v| v.burn > 0.0);
         // (the tactic's radius vt+32: fPullOverDist in a pull-over (F-66453), fSafeDist in the others (F-54202))
         let arr_r = if self.heat == Heat::PullOver { t("fPullOverDist", 15.0) } else { t("fSafeDist", 30.0) };
         let bike_r = t("fBikerWipeoutArrestDist", 50.0);
@@ -2809,7 +2926,10 @@ impl Police {
                 let tt = t("fTrackTgtTime", 25.0);
                 let kind = if detected && self.score >= max_score {
                     TacKind::ArrowTrap
-                } else if zone || (detected && self.score >= t("iPursuitLawBreakScore", 600.0)) {
+                } else if zone {
+                    // (the zone's start, F-71212 -> StartTactic type 4: the Arrow Trap, its floor 1000 on the player)
+                    TacKind::ArrowTrap
+                } else if detected && self.score >= t("iPursuitLawBreakScore", 600.0) {
                     TacKind::Pursuit
                 } else if detected && self.score >= pull {
                     TacKind::PullOver
@@ -2880,7 +3000,9 @@ impl Police {
                 }
             }
             Heat::Pursuit => {
-                self.fine = self.law_fines();
+                if !ai_target {
+                    self.fine = self.law_fines();
+                }
                 // (the lead's brain, F-54688 outside the search: seen within fVisionDist with a clear line - unseen 0
                 // and the last known place / velocity the target's; unseen with the lost flag +773: unseen time,
                 // the last known kept once it passes fLostTgtThresholdTime; else the last known follows the target)
@@ -2952,7 +3074,8 @@ impl Police {
                 // (the second-cop upgrade, F-22881: a free patrolling cop that detects the pursued target joins - a Pursuit
                 // becomes a Double Pursuit, a Double Pursuit an Arrow Trap, the joining cop first - when the tactic may
                 // escalate; at iMaxLawBreakingScore the ladder makes it an Arrow Trap with its own cop 0)
-                if self.heat == Heat::Pursuit && self.may_escalate && !goons {
+                // (the port's detecting cop is the player's: none for an AI racer's tactic, an Arrow Trap already)
+                if self.heat == Heat::Pursuit && self.may_escalate && !goons && !ai_target {
                     let up = if self.score >= max_score && self.kind != TacKind::ArrowTrap {
                         Some((TacKind::ArrowTrap, self.cops.first().copied()))
                     } else if let Some((_, u)) = detector.filter(|_| matches!(self.kind, TacKind::Pursuit | TacKind::PursuitDbl)) {
@@ -2966,8 +3089,9 @@ impl Police {
                         }
                     }
                 }
-                // (the pursuit's radius fSafeDist, F-54202)
-                if self.arrest_step(ain(speed < arrest_speed, false), t("fSafeDist", 30.0), t("fArrestTime", 1.0), t("fBikerWipeoutArrestDist", 50.0), arrest_speed * dt, dt) {
+                // (the pursuit's radius fSafeDist, F-54202; every tactic's Arrest ask needs the target's vt+40, the player:
+                // an AI racer is never arrested - F-68176 / the Arrow Trap's update)
+                if !ai_target && self.arrest_step(ain(speed < arrest_speed, false), t("fSafeDist", 30.0), t("fArrestTime", 1.0), t("fBikerWipeoutArrestDist", 50.0), arrest_speed * dt, dt) {
                     {
                         self.heat = Heat::Busted;
                         self.arrest_posted = false;
@@ -2981,10 +3105,12 @@ impl Police {
             }
             Heat::Search => {
                 // (the Pursuit's state 6: the target lost - no arrest, +140 / +144 zeroed and +48 kept, F-63286)
-                self.arrest_step(ain(speed < arrest_speed, true), t("fSafeDist", 30.0), t("fArrestTime", 1.0), t("fBikerWipeoutArrestDist", 50.0), arrest_speed * dt, dt);
+                if !ai_target {
+                    self.arrest_step(ain(speed < arrest_speed, true), t("fSafeDist", 30.0), t("fArrestTime", 1.0), t("fBikerWipeoutArrestDist", 50.0), arrest_speed * dt, dt);
+                }
                 // (the second-cop upgrade runs for a searching tactic too: F-22881 tests only the tactic's +28 - a free
                 // cop that sees the target makes the Pursuit a Double Pursuit, that an Arrow Trap, in CatchUp)
-                if let (true, Some((_, u))) = (self.may_escalate && !goons && matches!(self.kind, TacKind::Pursuit | TacKind::PursuitDbl), detector) {
+                if let (true, Some((_, u))) = (self.may_escalate && !goons && !ai_target && matches!(self.kind, TacKind::Pursuit | TacKind::PursuitDbl), detector) {
                     let kind = if self.kind == TacKind::Pursuit { TacKind::PursuitDbl } else { TacKind::ArrowTrap };
                     if let Some(cops) = self.engage(gpu, world, vehicles, kind.cops(), Some(u), ppos, pfwd) {
                         self.start_tactic(kind, cops, true, t("fTrackTgtTime", 25.0));
@@ -3059,9 +3185,67 @@ impl Police {
                         self.search += dt;
                     }
                     if self.search > t("fSearchMaxTime", 35.0) {
-                        self.clear();
-                        self.grace = 5.0;
-                        event = Some(Event::Escaped);
+                        // (result 2, F-22530: for an AI racer the radio's lines alone - no record to clear, no reward, no
+                        // grace; in a race SetAllPoliceUnderground(1, 1), F-36452, for any target)
+                        if ai_target {
+                            // (in a race F-36452 clears the player's record as well)
+                            if self.in_race { self.clear() } else { self.end_tactic() }
+                            event = Some(Event::LostAi);
+                        } else {
+                            self.clear();
+                            self.grace = 5.0;
+                            event = Some(Event::Escaped);
+                        }
+                        if self.in_race {
+                            self.units_down(vehicles);
+                        }
+                    }
+                }
+                // (the race retarget, F-22530: a race current, the tactic's +30 (the manager's +221, 1 - no script changes
+                // it) and the target lost - the clock running: the nearest racer a tactic cop sees within 300 m (F-94676,
+                // no cone), not the target - the players first, the AI racers only when no player is seen. The tactic
+                // ends with vt+12(0) and an Arrow Trap starts on that racer, the seeing cop its request cop,
+                // REPORT_VIOLATION_PURSUIT)
+                if self.heat == Heat::Search && self.in_race && self.search > 0.0 && !goons {
+                    let cur = self.target;
+                    let cops: Vec<(u32, Vec3, &crate::vehicles::CarInstance)> = self.cops.iter().filter_map(|u| vehicles.cars.iter().find(|c| c.uid == *u)).map(|c| (c.uid, c.state.pos, c)).collect();
+                    let pick = |want_player: bool| -> Option<(f32, u32, u32)> {
+                        let mut best: Option<(f32, u32, u32)> = None;
+                        for r in self.racer_uids.iter().filter_map(|u| vehicles.cars.iter().find(|c| c.uid == *u)) {
+                            if r.is_player != want_player || (if r.is_player { cur.is_none() } else { cur == Some(r.uid) }) {
+                                continue;
+                            }
+                            for &(cu, cp, c) in &cops {
+                                let d2 = cp.distance_squared(r.state.pos);
+                                if best.map_or(true, |b| d2 < b.0) && cop_sees(world, c, r.state.pos, 300.0, 0.0) {
+                                    best = Some((d2, cu, r.uid));
+                                }
+                            }
+                        }
+                        best
+                    };
+                    let found = pick(true).or_else(|| pick(false));
+                    if let Some((_, cop, r)) = found {
+                        let car = vehicles.cars.iter().find(|c| c.uid == r).map(|c| (c.is_player, c.state.pos, c.state.forward(), c.state.vel));
+                        if let Some((is_player, pos, fwd, vel)) = car {
+                            log::info!("police: the target lost - cruiser {} sees racer {} (player {}): a new Arrow Trap", cop, r, is_player);
+                            self.end_tactic();
+                            self.target = (!is_player).then_some(r);
+                            if let Some(cops) = self.engage(gpu, world, vehicles, TacKind::ArrowTrap.cops(), Some(cop), pos, fwd) {
+                                self.start_tactic(TacKind::ArrowTrap, cops, true, t("fTrackTgtTime", 25.0));
+                                self.heat = Heat::Pursuit;
+                                self.last_known = pos;
+                                self.last_known_v = vel;
+                                if is_player {
+                                    self.fine = self.law_fines();
+                                    event = Some(Event::Pursuit);
+                                } else {
+                                    self.radio_cue.push("REPORT_VIOLATION_PURSUIT".into());
+                                }
+                            } else {
+                                self.target = None;
+                            }
+                        }
                     }
                 }
             }
@@ -3095,9 +3279,17 @@ impl Police {
         // (result 3, a tactic cop gone: the manager loses the police, F-22530)
         if gone && matches!(self.heat, Heat::Pursuit | Heat::Search | Heat::PullOver) {
             log::info!("police: a cruiser of the {:?} is gone - the police are lost", self.kind);
-            self.clear();
-            self.grace = 5.0;
-            event = Some(Event::Escaped);
+            if ai_target {
+                if self.in_race { self.clear() } else { self.end_tactic() }
+                event = Some(Event::LostAi);
+            } else {
+                self.clear();
+                self.grace = 5.0;
+                event = Some(Event::Escaped);
+            }
+            if self.in_race {
+                self.units_down(vehicles);
+            }
         }
 
         // (a ticket or a lost pull-over: the tactic is over)
@@ -3884,8 +4076,26 @@ impl Police {
         f.min(self.tun.get("iMaxFine", 5000.0) as i32) as f32
     }
 
+    /// A tactic's end that leaves the player's law record as it is (F-41497 / the tactic's vt+12(0)): the tactic on an
+    /// AI racer, which has no record.
+    fn end_tactic(&mut self) {
+        self.heat = Heat::None;
+        self.target = None;
+        self.flee_hold = 0.0;
+        self.reset_arrest();
+        self.lost = 0.0;
+        self.search = 0.0;
+        self.srch.clear();
+        self.kind = TacKind::None;
+        self.cops.clear();
+        self.eyes.clear();
+        self.tacs.clear();
+        self.sq = Squad::default();
+    }
+
     fn clear(&mut self) {
         self.heat = Heat::None;
+        self.target = None;
         self.score = 0.0;
         self.fine = 0.0;
         self.offences = 0;
@@ -5017,13 +5227,13 @@ mod scene_tests {
     #[test]
     fn the_cop_zone_waits_5_5_s_then_the_radio_delay() {
         let dt = 1.0 / 30.0;
-        let racers = [(0usize, true, Vec3::ZERO, false), (1, false, Vec3::new(40.0, 0.0, 0.0), false), (2, false, Vec3::new(20.0, 0.0, 0.0), false)];
+        let racers = [(10u32, true, Vec3::ZERO, false), (11, false, Vec3::new(40.0, 0.0, 0.0), false), (12, false, Vec3::new(20.0, 0.0, 0.0), false)];
         // never the AI (chance 0): the player is the target; 5.5 s, then fCopZoneRdoDelayTime 2 s
         let mut p = Police::new();
         p.tun.v.insert("iRaceTgtAiProbPrcnt".into(), 0.0);
         p.pick_zone(1, 1);
         p.zone_step(0, &racers, Some(0), dt);
-        assert_eq!(p.zone.as_ref().map(|z| (z.state, z.target, z.player)), Some((2, Some(0), true)));
+        assert_eq!(p.zone.as_ref().map(|z| (z.state, z.target, z.player)), Some((2, Some(10), true)));
         let mut n = 0;
         while !p.zone_go {
             p.zone_step(0, &racers, None, dt);
@@ -5032,22 +5242,37 @@ mod scene_tests {
             assert!(n < 1000);
         }
         assert_eq!(n, 166 + 61, "{n}");
-        // always the AI (chance 100): the nearest AI racer within fRaceTgtAiDist; no chase of it in the port
+        // always the AI (chance 100): the nearest AI racer within fRaceTgtAiDist
         let mut p = Police::new();
         p.tun.v.insert("iRaceTgtAiProbPrcnt".into(), 100.0);
         p.pick_zone(1, 1);
         p.zone_step(0, &racers, Some(0), dt);
-        assert_eq!(p.zone.as_ref().map(|z| (z.target, z.player)), Some((Some(2), false)));
+        assert_eq!(p.zone.as_ref().map(|z| (z.target, z.player)), Some((Some(12), false)));
         assert!(!p.zone_on_player());
+        // its wait runs out: the chase is handed to the update as an AI target (no zone_go for the player)
+        for _ in 0..(166 + 61) {
+            p.zone_step(0, &racers, None, dt);
+        }
+        assert!(!p.zone_go);
+        assert_eq!(p.zone_target, Some(12));
+        // the Arrow Trap on an AI racer raises no score (no law record, F-33550); on the player its floor 1000
+        p.target = Some(12);
+        p.score = 40.0;
+        p.start_tactic(TacKind::ArrowTrap, vec![1, 2, 3], true, 25.0);
+        assert_eq!(p.score, 40.0);
+        p.end_tactic();
+        assert_eq!((p.target, p.score, p.heat), (None, 40.0, Heat::None));
+        p.start_tactic(TacKind::ArrowTrap, vec![1, 2, 3], true, 25.0);
+        assert_eq!(p.score, 1000.0);
         // beyond fRaceTgtAiDist: the racer itself
         let mut p = Police::new();
         p.tun.v.insert("iRaceTgtAiProbPrcnt".into(), 100.0);
         p.tun.v.insert("fRaceTgtAiDist".into(), 10.0);
         p.pick_zone(1, 1);
         p.zone_step(0, &racers, Some(0), dt);
-        assert_eq!(p.zone.as_ref().map(|z| z.target), Some(Some(0)));
+        assert_eq!(p.zone.as_ref().map(|z| z.target), Some(Some(10)));
         // the target damaged out: the chase at once
-        let wrecked = [(0usize, true, Vec3::ZERO, true)];
+        let wrecked = [(10u32, true, Vec3::ZERO, true)];
         p.zone_step(0, &wrecked, None, dt);
         assert!(p.zone_go);
     }
