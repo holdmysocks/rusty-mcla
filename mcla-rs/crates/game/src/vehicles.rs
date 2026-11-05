@@ -59,6 +59,8 @@ pub struct CarModel {
     pub params_mods: Option<CarParams>,
     /// the original's simulation tuning (base and mods), when the car has it
     pub simtunes: Option<Arc<mcla_formats::rage::simtune::SimTunes>>,
+    /// the car's upgrade table (vehicle_model.rs `CarAsset::vehmods`)
+    pub vehmods: Option<Arc<crate::tunebuild::VehMods>>,
     /// the wheels its own set-up gives it (`configs/<name>.xcc`, `CarAsset::fit`)
     pub fit: Option<mcla_formats::rage::simtune::WheelFit>,
     /// what the computer drivers know of the car (the game's own calibration tables)
@@ -334,6 +336,9 @@ pub struct CarInstance {
     vinyl_done: bool,
     /// the wheels of this car's own set-up (a rival's `.xcc`), where it has one
     pub setup: Option<mcla_formats::rage::simtune::WheelFit>,
+    /// a car with no mod value (the player's, a racer whose script gives none: set-up byte +60 = 255): its set-up's
+    /// stages, which F-55728 builds the tune from in place of the blend by `perf`
+    pub stages: Option<crate::tunebuild::Stages>,
     pub pose_history: crate::vehicle_pose::History,
     /// step 19d: the factor on the damage this vehicle inflicts on another it hits
     /// (mcCarDamage +20, Racer_SetDamageInflictedFactor; 1 by default)
@@ -1884,6 +1889,16 @@ impl CarInstance {
         }
     }
 
+    /// A car with no mod value: the tune is built from its set-up's stages (F-55728, tunebuild.rs); None goes back to
+    /// the blend by `perf`.
+    pub fn set_stages(&mut self, st: Option<crate::tunebuild::Stages>) {
+        if self.stages != st {
+            self.stages = st;
+            let perf = self.perf;
+            self.set_perf(perf);
+        }
+    }
+
     /// Fit performance upgrades: 0 = stock, 1 = everything.
     pub fn set_perf(&mut self, level: f32) {
         self.perf = level.clamp(0.0, 1.0);
@@ -1891,15 +1906,19 @@ impl CarInstance {
         if let Some(ai) = self.ai.as_mut() {
             ai.tune = None;
         }
-        if self.perf <= 0.0 && self.setup.is_none() {
+        if self.perf <= 0.0 && self.setup.is_none() && self.stages.is_none() {
             return;
         }
         let b = &self.model.params;
         let f = self.perf;
         let mut p = b.clone();
         if let Some(s) = self.model.simtunes.as_ref() {
-            // the game blends the base and the upgraded tuning field by field
-            let mut tune = mcla_formats::rage::simtune::SimTune::lerp(&s.base, &s.mods, f);
+            // the game blends the base and the upgraded tuning field by field (a mod value); a car with none (byte 255:
+            // the player's) is built from its set-up's stages with the car's own vehMods weights (F-19699 -> F-55728)
+            let mut tune = match (self.stages.as_ref(), self.model.vehmods.as_deref()) {
+                (Some(st), Some(vm)) => crate::tunebuild::build(&s.base, &s.mods, st, vm, self.model.bike, [s.fender_height[0][0], s.fender_height[1][0]], s.air_floor),
+                _ => mcla_formats::rage::simtune::SimTune::lerp(&s.base, &s.mods, f),
+            };
             // (and then writes the set-up's wheels over the blend)
             if let Some(fit) = self.setup {
                 for (axle, wt) in [&mut tune.wheel_front, &mut tune.wheel_back].into_iter().enumerate() {
@@ -2343,7 +2362,7 @@ impl Vehicles {
         // (F-74884, a bike's set-up: +4092 / +4096 = |max - min| of the translation limits, crBoneData +144 / +160, of the
         // first bone named wheel_0 / wheel_2 in the base fragment's skeleton, then the parts' - F-20921)
         let bike_wheel_width = ["wheel_0", "wheel_2"].map(|n| car.skeleton.as_ref().and_then(|s| s.bones.iter().find(|b| b.name == n)).map_or(params.wheel_width, |b| (b.trans_limits.1 - b.trans_limits.0).length()));
-        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, fx_anchors, fx_anchor_rear });
+        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, vehmods: car.vehmods.clone(), fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, fx_anchors, fx_anchor_rear });
         self.models.push(m.clone());
         if self.wheels.is_none() {
             self.wheels = load_wheels(gpu, world).map(Arc::new);
@@ -3117,7 +3136,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), spoiler: WindowCtl::default(), roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), spoiler: WindowCtl::default(), roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
         self.cars.len() - 1
     }
 
@@ -3169,6 +3188,7 @@ impl Vehicles {
             p.wheels = custom;
             p.tuned = None;
             p.setup = None;
+            p.stages = None;
             let perf = p.perf;
             p.set_perf(perf);
             p.color = color;

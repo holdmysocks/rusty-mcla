@@ -4008,8 +4008,9 @@ impl Game {
                 for i in ids {
                     let Some(c) = vehicles.cars.get(i) else { continue };
                     let man = self.man_mod.as_ref().filter(|(id, _)| !c.driver.is_empty() && id.eq_ignore_ascii_case(&c.driver)).map(|m| m.1);
-                    // (approx.: -1 builds the tunes part by part from the set-up's stages in the original,
-                    // F-55728, not decoded - here the set-up's upgrade percentage)
+                    // (-1: no mod value - the tune is built part by part from his set-up's stages, F-55728; the
+                    // set-up's upgrade percentage stays the share of the port's own blended figures)
+                    let stages = man.filter(|m| *m < 0).and_then(|_| crate::tunebuild::Stages::of_config(&self.data_dir, &c.vinyl_name));
                     let m = match man {
                         Some(m) if m >= 0 => Some(m),
                         Some(_) => Some(self.mc4_setup_percent(&c.model.name, &c.vinyl_name)),
@@ -4019,6 +4020,7 @@ impl Game {
                         log::info!("race: racer {} ({}) mod value {} (player {:.4}, difficulty {}{})", c.model.name, c.driver, m, player, desired, if man.is_some() { ", the hookman's own" } else { "" });
                         vehicles.cars[i].set_perf(m.clamp(0, 100) as f32 * 0.01);
                     }
+                    vehicles.cars[i].set_stages(stages);
                 }
             }
             self.rb_step = Some(step);

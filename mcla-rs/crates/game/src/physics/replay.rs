@@ -21,6 +21,14 @@ pub fn run(data_dir: &str, spec: &str) -> anyhow::Result<()> {
     let mut p = crate::vehicles::car_params(&car);
     let Some(st) = car.simtune.as_ref() else { anyhow::bail!("no simulation tuning") };
     let mut tune = mcla_formats::rage::simtune::SimTune::lerp(&st.base, &st.mods, share);
+    // (MCLA_REPLAY_STAGES=<13 stages, comma separated>: a car with no mod value - built from its stages with its
+    // own vehMods table, F-55728, as the player's car is - in place of the blend by the share)
+    if let (Some(sv), Some(vm)) = (std::env::var("MCLA_REPLAY_STAGES").ok(), car.vehmods.as_deref()) {
+        let v: Vec<u8> = sv.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        let s = crate::tunebuild::Stages::of_parts(&v);
+        tune = crate::tunebuild::build(&st.base, &st.mods, &s, vm, car.bike, [st.fender_height[0][0], st.fender_height[1][0]], st.air_floor);
+        println!("tune built from stages {:?}", s.stages);
+    }
     // (a sixth field "front,rear": the wheel radii of the recorded car - the garage's wheel
     // dimensions change them)
     if let Some(r) = f.get(5) {

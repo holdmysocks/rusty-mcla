@@ -3401,8 +3401,11 @@ impl App {
         // parts bought in the performance shop go onto the car at once
         if std::mem::take(&mut self.game.perf_dirty) {
             let tuned = self.game.perf_frac(self.game.current_car);
+            let stages = crate::tunebuild::Stages::of_parts(&self.game.perf_stages(self.game.current_car));
             if let Some(p) = self.vehicles.player_mut() {
                 p.set_perf(tuned);
+                // (the player's car has no mod value: built from its stages, F-55728)
+                p.set_stages(Some(stages));
             }
             self.game.write_save(&self.opt.data_dir);
         }
@@ -4818,8 +4821,11 @@ impl App {
                                     c.placed = true;
                                 }
                                 let tuned = self.game.perf_frac(self.game.current_car);
+                                let stages = crate::tunebuild::Stages::of_parts(&self.game.perf_stages(self.game.current_car));
                                 if let Some(p) = self.vehicles.player_mut() {
                                     p.set_perf(tuned);
+                                    // (the player's car has no mod value: built from its stages, F-55728)
+                                    p.set_stages(Some(stages));
                                 }
                             }
                         }
@@ -12007,8 +12013,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.vehicles.player_rim_inches = self.game.rim_inches;
                 let _ = self.vehicles.replace_player(gpu, world, &dir, color, &cfg, rim.as_deref());
                 let tuned = self.game.perf_frac(self.game.current_car);
+                let stages = crate::tunebuild::Stages::of_parts(&self.game.perf_stages(self.game.current_car));
                 if let Some(p) = self.vehicles.player_mut() {
                     p.set_perf(tuned);
+                    // (the player's car has no mod value: built from its stages, F-55728)
+                    p.set_stages(Some(stages));
                     p.state.damage = 0.0;
                 }
             }
@@ -12716,8 +12725,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.game.current_car = self.game.selected_car;
                         // performance package bought for this car (lower levels stay selectable)
                         let tuned = self.game.perf_frac(self.game.current_car);
+                        let stages = crate::tunebuild::Stages::of_parts(&self.game.perf_stages(self.game.current_car));
                         if let Some(p) = self.vehicles.player_mut() {
                             p.set_perf(tuned);
+                            // (the player's car has no mod value: built from its stages, F-55728)
+                            p.set_stages(Some(stages));
                         }
                         let n = self.game.car_name(self.game.current_car);
                         self.game.show_message(&format!("{} ready", n));
@@ -13706,8 +13718,11 @@ impl App {
                 }
             }
             let tuned = self.game.perf_frac(self.game.current_car);
+            let stages = crate::tunebuild::Stages::of_parts(&self.game.perf_stages(self.game.current_car));
             if let Some(p) = self.vehicles.player_mut() {
                 p.set_perf(tuned);
+                // (the player's car has no mod value: built from its stages, F-55728)
+                p.set_stages(Some(stages));
             }
         }
         if let Ok(v) = std::env::var("MCLA_PERF") {

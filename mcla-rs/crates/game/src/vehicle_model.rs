@@ -76,6 +76,8 @@ pub struct CarAsset {
     /// the wheels of the car's own set-up (`resources/vehicle/configs/<name>.xcc`), already
     /// written into `simtune`
     pub fit: Option<mcla_formats::rage::simtune::WheelFit>,
+    /// the car's upgrade table (the `vehMods` root object of its `.r50`; F-55728's weights)
+    pub vehmods: Option<std::sync::Arc<crate::tunebuild::VehMods>>,
     /// what the computer drivers know of the car (stock and fully upgraded)
     pub aitune: Option<std::sync::Arc<mcla_formats::rage::aitune::AiTunes>>,
     /// the body's collision hull as the fragment file has it
@@ -831,6 +833,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
     }
     let tune = r50.iter().find_map(|p| load_resource_file(p).ok().and_then(|res| mcla_formats::rage::vehtune::VehTune::parse(&res)));
     let mut simtune = r50.iter().find_map(|p| load_resource_file(p).ok().and_then(|res| mcla_formats::rage::simtune::SimTunes::parse(&res)));
+    let vehmods = r50.iter().find_map(|p| load_resource_file(p).ok().and_then(|res| crate::tunebuild::VehMods::parse(&res))).map(std::sync::Arc::new);
     // (the car's stock set-up decides its wheels, as it does in the original for every car)
     let fit = simtune.as_mut().and_then(|s| {
         let cfg = crate::modcars::setup_file(&name).or_else(|| car_dir.parent().map(|v| v.join("configs").join(format!("{name}.xcc")))).and_then(|p| std::fs::read(p).ok())?;
@@ -1226,7 +1229,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
     if let (Some(c), Some(t)) = (clamshell.as_ref(), skinned_top.as_ref()) {
         log::info!("car {}: roof clips clamshell {:.3} s ({} bones), skinned_top {:.3} s ({} bones)", name, c.duration, c.bones.len(), t.duration, t.bones.len());
     }
-    Ok(CarAsset { name, shaders, shaders_parent, textures, parts, lod_parts, min, max, skeleton, hubs, bike, tune, simtune, fit, aitune, hull, windows, cop_lights, spoiler, clamshell, skinned_top, damage_layout })
+    Ok(CarAsset { name, shaders, shaders_parent, textures, parts, lod_parts, min, max, skeleton, hubs, bike, tune, simtune, fit, vehmods, aitune, hull, windows, cop_lights, spoiler, clamshell, skinned_top, damage_layout })
 }
 
 /// Display name of a part from its internal names, e.g. "exstPipe05_Borla_single_round"

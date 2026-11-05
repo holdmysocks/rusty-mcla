@@ -972,6 +972,9 @@ impl Roamers {
                             // (step 19d: the vehicle's mod value is the hookman's - Racer_SetModValue)
                             if m.mod_value >= 0 {
                                 c.set_perf(m.mod_value.clamp(0, 100) as f32 / 100.0);
+                            } else {
+                                // (-1: no mod value - his tune is built part by part from his set-up's stages, F-55728)
+                                c.set_stages(crate::tunebuild::Stages::of_config(&game.data_dir, &m.config));
                             }
                             log::info!("roamers: {} ({:?}, {}, difficulty {}) in his {} {:.0} m away{}", m.name, m.kind, DISTRICTS[m.district.min(4)], m.difficulty, c.model.name, at.distance(pp), if at_reset { format!(" - put at point 0 of his loop ({:.1}, {:.1}, {:.1}), heading {:?}, first point {}", at.x, at.y, at.z, m.heading, next) } else { String::new() });
                             // (his brain: CruisingHookmanCore's mcBrainCruising over a racing brain, on his car's aiv

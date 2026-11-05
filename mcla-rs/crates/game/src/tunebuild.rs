@@ -165,6 +165,22 @@ pub struct Stages {
 }
 
 impl Stages {
+    /// The player's car: its fitted stages (the garage record's +28..+40, `Game::perf_stages`) and the record's
+    /// three percent bytes as the constructor leaves them (100; every garage record of the 100% save, read live).
+    pub fn of_parts(stages: &[u8]) -> Stages {
+        let mut s = Stages { stages: [0; 13], percent: [100; 3] };
+        for (d, v) in s.stages.iter_mut().zip(stages) {
+            *d = *v;
+        }
+        s
+    }
+
+    /// The set-up file `resources/vehicle/configs/<config>.xcc` of a racer with no mod value.
+    pub fn of_config(data_dir: &str, config: &str) -> Option<Stages> {
+        let p = crate::render::car_lamps::setup_file(std::path::Path::new(data_dir), config)?;
+        Stages::of_setup(&std::fs::read(p).ok()?)
+    }
+
     /// From a set-up record (the 8176-byte mcCarConfig of a `.xcc` or a garage slot).
     pub fn of_setup(cfg: &[u8]) -> Option<Stages> {
         if cfg.len() < 64 {
@@ -676,6 +692,68 @@ mod tests {
         let (cases, words, bad) = run_cases(&text);
         println!("tune build: {cases} cases, {words} words, {} differ", bad.len());
         assert!(bad.is_empty(), "{} of {words} words differ in {cases} cases:\n{}", bad.len(), bad.iter().take(40).cloned().collect::<Vec<_>>().join("\n"));
+    }
+
+    /// Every car read from the running original (work/racerai/tunelive/live_*.txt, `live_tunes.py`): its set-up's
+    /// stages and percent bytes, and each word of its live sim tune where the car's base and mods differ. A car with
+    /// no mod value (byte +60 = 255) is built by F-55728 with its own `.r50` table, one with a value is the blend at
+    /// value / 100 (F-55004); the port's tune must give every recorded word.
+    #[test]
+    fn live_tunes_match_the_original() {
+        let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../work/racerai/tunelive"));
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let (mut cars, mut words, mut bad) = (0, 0, Vec::new());
+        for f in rd.flatten().map(|e| e.path()).filter(|p| p.file_name().map_or(false, |n| n.to_string_lossy().starts_with("live_") && n.to_string_lossy().ends_with(".txt"))) {
+            let text = std::fs::read_to_string(&f).unwrap();
+            let mut lines = text.lines();
+            while let Some(head) = lines.next() {
+                let h: Vec<&str> = head.split_whitespace().collect();
+                if h.first() != Some(&"car") {
+                    continue;
+                }
+                let ws = lines.next().unwrap_or("");
+                let name = h[1];
+                let hex = |x: &str| -> Vec<u8> { (0..x.len() / 2).map(|i| u8::from_str_radix(&x[2 * i..2 * i + 2], 16).unwrap()).collect() };
+                let mut st = Stages::default();
+                st.stages.copy_from_slice(&hex(h[3]));
+                st.percent.copy_from_slice(&hex(h[7]));
+                let byte60: u8 = h[5].parse().unwrap();
+                let vdir = std::path::Path::new("D:/MCLA/extracted/cache/resources/vehicle").join(name.to_ascii_lowercase());
+                let Some(res) = std::fs::read_dir(&vdir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().map_or(false, |x| x == "r50")).find_map(|p| crate::assets::load_resource_file(&p).ok()) else { continue };
+                let (Some(t), Some(vm)) = (SimTunes::parse(&res), VehMods::parse(&res)) else { continue };
+                let bike = name.contains("_kaw_") || name.contains("_duc_") || name.contains("_hon_") || name.contains("_suz_") || name.contains("_yam_");
+                let built = if byte60 == 255 {
+                    build(&t.base, &t.mods, &st, &vm, bike, [t.fender_height[0][0], t.fender_height[1][0]], t.air_floor)
+                } else {
+                    SimTune::lerp(&t.base, &t.mods, (byte60 as i8).max(0) as f32 * 0.01)
+                };
+                cars += 1;
+                for w in ws.split_whitespace().skip(1) {
+                    let (k, v) = w.split_once('=').unwrap();
+                    let (region, off) = k.split_once(':').unwrap();
+                    let (off, mut v) = (off.parse::<u32>().unwrap(), v.parse::<u64>().unwrap() as u32);
+                    if region == "s196" && off == 0 {
+                        v >>= 16;
+                    }
+                    // (written after the build: the centre of mass's height by the seating, F-46526's caller -> vehsim
+                    // `VehTune::seat`; EngageRPM = IdleRPM by a computer-driven car's controller, slot 11)
+                    if (region, off) == ("sim", 52) || ((region, off) == ("s144", 20) && v == built.engine.s.idle_rpm.to_bits()) {
+                        continue;
+                    }
+                    let Ok(Some(p)) = std::panic::catch_unwind(|| word(&built, region, off)) else { continue };
+                    words += 1;
+                    if p != v {
+                        bad.push(format!("{name} (stages {}, byte60 {byte60}) {region}+{off}: port {p:08x} ({}) original {v:08x} ({})", h[3], f32::from_bits(p), f32::from_bits(v)));
+                    }
+                }
+            }
+        }
+        println!("live tunes: {cars} cars, {words} words, {} differ", bad.len());
+        // (2026-11-05, live_mix.txt: the R8 at stages 1 2 0 1 2 0 1 2 0 1 2 0 1 with no mod value, a stock Camaro SS with
+        // none, a Mustang at mod value 88 - 135 of 135 words)
+        assert!(bad.is_empty(), "{} of {words} words differ:
+{}", bad.len(), bad.iter().take(40).cloned().collect::<Vec<_>>().join("
+"));
     }
 
     /// With the constructor's records (the disc has no default.vehMods) every weight is 0: the build is the base set
