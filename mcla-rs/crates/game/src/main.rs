@@ -5225,7 +5225,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.vehicles.prop_objects = objs;
             }
             // the race's cop zone (F-88125, F-71212): one zone of the race's, on one lap; the first
-            // racer in it sets it off and the pursuit starts 5.5 s later (police.rs `zone_step`)
+            // racer in it sets it off and the pursuit starts 5.5 + 2 s later (police.rs `zone_step`)
             // (F-96166 / F-71212: the player's car's vehicle-table class, police or not - `Police::player_police`)
             self.police.player_police = self.player_police();
             if self.game.race.is_none() {
@@ -5238,10 +5238,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 if let Some((z, &(zp, zr, ..))) = self.police.zone.clone().filter(|_| race.countdown <= 0.0).and_then(|z| race.cop_zones.get(z.idx).map(|c| (z, c))) {
                     let lap = race.next.first().map_or(0, |&n| n / race.lap_len.max(1));
-                    let inside = race.participants.iter().find_map(|&ci| {
-                        self.vehicles.cars.get(ci).filter(|c| c.state.pos.distance_squared(zp) < zr * zr).map(|c| c.is_player)
-                    });
-                    if let Some(line) = self.police.zone_step(lap, inside, sim_dt) {
+                    let racers: Vec<(usize, bool, Vec3, bool)> = race.participants.iter()
+                        .filter_map(|&ci| self.vehicles.cars.get(ci).map(|c| (ci, c.is_player, c.state.pos, c.state.damage >= 0.999)))
+                        .collect();
+                    let inside = racers.iter().position(|r| r.2.distance_squared(zp) < zr * zr);
+                    if let Some(line) = self.police.zone_step(lap, &racers, inside, sim_dt) {
                         if !self.speech.busy() {
                             self.speech.say(line);
                         }
