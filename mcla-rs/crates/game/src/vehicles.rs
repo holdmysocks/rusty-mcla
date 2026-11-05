@@ -771,7 +771,7 @@ const ROOF_GROUP: u32 = 29;
 const CLAM_GROUP: u32 = 32;
 const CLAM_GROUPS: usize = 48;
 
-/// The convertible roof's two players on the car-parts object, both the windows' controller (vtable 0x82046958) at the
+/// The convertible roof's two players on the car-parts object, both the windows' controller (`WindowCtl`) at the
 /// constructor's rate 1.0: +480 the hatch (`clamshell`), +576 the top (`skinned_top`); and the requests +2159 raise /
 /// +2160 lower, which applying the options sets (F-87944: DOWN -> lower, UP -> raise) and the update F-35036 takes for
 /// the local player's car only, when both players stand at the request's start end. `opt`: the option as last seen
