@@ -780,6 +780,49 @@ fn primary_name(names: &[String], root: &str) -> String {
     names.iter().find(|s| slot_re(s)).cloned().unwrap_or_else(|| if root_ok { root.to_string() } else { names.first().cloned().unwrap_or_default() })
 }
 
+/// The body draw's two slot tables (F-92759, the same gate in F-14987 and F-19470), one byte a slot of the part
+/// name table (`mc4::PARTS`, 55 slots): a slot's part is drawn when the table the record's wide body kit picks has a 1
+/// there - the two tables the gate at A-85545 reads, the wide one 64 bytes after the other. Slots 23 / 24 (the exhaust
+/// tips, side exhaust) and 54
+/// (the occluder) are drawn elsewhere.
+pub const SLOT_TABLE_NORMAL: [u8; 55] = [
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0,
+];
+pub const SLOT_TABLE_WIDE: [u8; 55] = [
+    1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0,
+];
+
+/// The original's slot of a part, by the loader's `<slot name><index>` (F-29562 names every fragment so from the name
+/// table): the longest slot name the part's name starts with, a digit after it. The port's part names follow the
+/// fragments' own; two kits name their wide doors `door_l_widebody` / `door_r_widebody` (slots 41 / 42).
+pub fn original_slot(primary: &str) -> Option<usize> {
+    match primary {
+        "door_l_widebody" => return Some(41),
+        "door_r_widebody" => return Some(42),
+        _ => {}
+    }
+    let mut best: Option<(usize, usize)> = None;
+    for (i, s) in crate::mc4::PARTS.iter().take(55).enumerate() {
+        if let Some(rest) = primary.strip_prefix(s) {
+            if rest.bytes().next().is_some_and(|b| b.is_ascii_digit()) && best.map_or(true, |(_, l)| s.len() > l) {
+                best = Some((i, s.len()));
+            }
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+/// Whether the body draw shows a part with the wide body kit fitted (`wide`) or not: its slot's byte in the table
+/// the kit picks. Parts outside the 55 slots, the exhaust slots and the base body are always drawn here.
+pub fn kit_allows(primary: &str, wide: bool) -> bool {
+    match original_slot(primary) {
+        Some(s) if !matches!(s, 23 | 24 | 54) => (if wide { SLOT_TABLE_WIDE } else { SLOT_TABLE_NORMAL })[s] != 0,
+        _ => true,
+    }
+}
+
 pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
     let name = car_dir.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     let mut r83 = Vec::new();
@@ -1358,8 +1401,25 @@ impl CarAsset {
         out
     }
 
-    /// Parts for a configuration: customisable slots pick their variant, everything else stock.
+    /// Parts for a configuration: customisable slots pick their variant, everything else stock; of the body's part
+    /// slots only those the original's table for the wide body kit allows ([`kit_allows`]).
     pub fn parts_for(&self, cfg: &CarConfig) -> Vec<&CarPart> {
+        let wide = self.wide_kit(cfg);
+        let mut v = self.parts_for_any(cfg);
+        if std::env::var("MCLA_WIDE_OLD").is_err() {
+            v.retain(|p| kit_allows(&p.primary, wide));
+        }
+        v
+    }
+
+    /// The record's wide body kit (+2203, `CarConfig::body` on the BODY row): the body draw F-92759 picks its slot
+    /// table by it. A car whose BODY row is the wide body itself (the DUB editions, `widebody00_stk`) has it too.
+    pub fn wide_kit(&self, cfg: &CarConfig) -> bool {
+        let vs = self.variants(Slot::Body);
+        vs.get(cfg.body).or(vs.first()).is_some_and(|n| n.starts_with("widebody"))
+    }
+
+    fn parts_for_any(&self, cfg: &CarConfig) -> Vec<&CarPart> {
         let mut chosen: HashMap<String, &CarPart> = HashMap::new();
         let mut want: HashMap<Slot, String> = HashMap::new();
         let fitted_seat = self.variants(Slot::Seats).get(cfg.seats)
@@ -1381,8 +1441,10 @@ impl CarAsset {
                     want.insert(slot, p.primary.clone());
                 }
             }
+            // (slots 39 / 40 at the record's index, 0 on every record: the wide table has no hood or spoiler slot of
+            // the garage's lists, so the HOOD / SPOILER choice is not drawn with the kit)
             for (slot, primary) in [(Slot::Hood, "hood_wide0"), (Slot::Spoiler, "spoiler_wide0")] {
-                if cfg.get(slot) == 0 && self.parts.iter().any(|p| p.placed && p.primary == primary) {
+                if (cfg.get(slot) == 0 || std::env::var("MCLA_WIDE_OLD").is_err()) && self.parts.iter().any(|p| p.placed && p.primary == primary) {
                     want.insert(slot, primary.to_string());
                 }
             }
@@ -1637,6 +1699,47 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 100, "{checked}");
+    }
+
+    /// The body draw's two slot tables (F-92759) as the executable has them, and what they do with the wide body kit:
+    /// on the R8 the kit draws widebody0 and its own hood / spoiler / doors and none of the stock body's bumpers,
+    /// skirts, lights; without it none of the wide pieces. The image check runs where `work/2026-10-10/original-image.bin`
+    /// (the executable's image from its load address) is.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn wide_kit_slot_tables() {
+        let image = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../work/2026-10-10/original-image.bin");
+        if let Ok(d) = std::fs::read(&image) {
+            // (the normal table the gate at A-85545 reads, as an offset into the image)
+            let at = 0x50D9Cusize;
+            assert_eq!(&d[at..at + 55], &super::SLOT_TABLE_NORMAL[..]);
+            assert_eq!(&d[at + 0x40..at + 0x40 + 55], &super::SLOT_TABLE_WIDE[..]);
+        }
+        assert_eq!(super::original_slot("hood_wide0"), Some(40));
+        assert_eq!(super::original_slot("hood2"), Some(2));
+        assert_eq!(super::original_slot("door_l_int0"), Some(47));
+        assert_eq!(super::original_slot("door_r_widebody"), Some(42));
+        assert_eq!(super::original_slot("fenders00_stk"), Some(7));
+        assert_eq!(super::original_slot("interior_door_l"), None);
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let assets = crate::assets::Assets::new(&dir);
+        let car = super::load_car(&assets, &std::path::Path::new(&dir).join("resources/vehicle/vp_aud_r8_08")).unwrap();
+        let names = |body: usize, hood: usize| -> Vec<String> {
+            let mut cfg = super::CarConfig::default();
+            cfg.body = body;
+            cfg.hood = hood;
+            car.parts_for(&cfg).iter().map(|p| p.primary.clone()).collect()
+        };
+        let wide = names(1, 2);
+        for n in ["widebody0", "hood_wide0", "spoiler_wide0", "door_l_widebody", "door_r_widebody"] {
+            assert!(wide.contains(&n.to_string()), "{n} in {wide:?}");
+        }
+        for n in ["fenders0", "hood2", "bumper_f0", "bumper_r0", "headlight0", "taillight0", "skirts0", "subbumf0", "subbumr0"] {
+            assert!(!wide.contains(&n.to_string()), "{n} in {wide:?}");
+        }
+        let normal = names(0, 2);
+        assert!(normal.contains(&"hood2".to_string()) && normal.contains(&"taillight0".to_string()), "{normal:?}");
+        assert!(!normal.iter().any(|n| super::original_slot(n).is_some_and(|s| (38..44).contains(&s))), "{normal:?}");
     }
 
     /// The convertible roof's two clips (docs/reference/carparts/roof_fold_rule.md): on the eight convertibles both are
