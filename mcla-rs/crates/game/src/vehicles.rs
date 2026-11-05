@@ -3594,7 +3594,13 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let st = self.cars[i].state.clone();
             let mut input = if let Some(b) = self.cars[i].brain.as_ref() {
                 // (a scene's car: its animated brain's pedals and steering, cinecar.rs)
-                crate::cinecar::solve(b, &st, self.cars[i].params().veh.as_deref())
+                let mut s = crate::cinecar::solve(b, &st, self.cars[i].params().veh.as_deref());
+                // (the player's air bags stay fitted under the brain - the chassis update F-97237 runs on through the
+                // garage's drive-out; only the car's reset F-46526 resets the air ride, F-80081)
+                if self.cars[i].is_player {
+                    s.air = player_input.air;
+                }
+                s
             } else if self.cars[i].parked.is_some() {
                 CarInput { brake: 1.0, handbrake: true, ..Default::default() }
             } else if self.frozen {

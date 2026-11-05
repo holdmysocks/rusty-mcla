@@ -2624,13 +2624,13 @@ impl App {
             // (the air bags of the car's set-up, garage AIR BAGS, and the lowering pattern LocalOptions +1324; the
             // switch-on wants the local human's car with its engine running, engine +46: not a scene's car_off)
             player_input.air = 0;
-            // (test hook: MCLA_AIRBAGS=1 fits the air bags, MCLA_AIR_LOG logs them every 30 frames)
+            // (test hook: MCLA_AIRBAGS=1 fits the air bags, MCLA_AIR_LOG=<ticks> logs them every <ticks> ticks, 60 if not a number)
             if std::env::var("MCLA_AIRBAGS").is_ok() {
                 self.game.car_x.airbags = true;
             }
-            if std::env::var("MCLA_AIR_LOG").is_ok() && self.tick_no % 60 == 0 {
+            if std::env::var("MCLA_AIR_LOG").is_ok_and(|v| self.tick_no % v.parse::<u64>().unwrap_or(60).max(1) == 0) {
                 if let Some(v) = self.vehicles.player().and_then(|c| c.state.veh.as_deref()) {
-                    log::info!("air ride tick {}: {:?} auto brake {} speed {:.3} body y {:.4} comp {:?}", self.tick_no, v.air, v.auto_brake, v.last_speed, self.vehicles.player().map_or(0.0, |c| c.state.pos.y), v.wheels.iter().map(|w| w.comp).collect::<Vec<_>>());
+                    log::info!("air ride tick {} (scene {:?}): {:?} auto brake {} speed {:.3} body y {:.4} comp {:?}", self.tick_no, self.cine.playing.as_ref().map(|sc| sc.t), v.air, v.auto_brake, v.last_speed, self.vehicles.player().map_or(0.0, |c| c.state.pos.y), v.wheels.iter().map(|w| w.comp).collect::<Vec<_>>());
                 }
             }
             if self.game.car_x.airbags {
@@ -2697,6 +2697,11 @@ impl App {
         }
         if self.arrest_deact {
             player_input = CarInput { deactivated: true, ..Default::default() };
+        }
+        // (garage_core's Racer_Deactivate after the warp's end: the car does not answer its pad, F-71660, so its air
+        // bags stay off in the garage)
+        if self.garage_in.as_ref().is_some_and(|g| g.stage != garagein::Stage::Warp) {
+            player_input.deactivated = true;
         }
         // (the warp after START: the car is not the player's to drive until it lands - Racer_Activate)
         if self.startwarp.is_some() {
@@ -5527,6 +5532,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             // ("Reached neutral point": garage_core 0x517..0x52a sets the stat tGAR to 1 unless its place
                             // is element 506 - none of the three garages)
                             self.game.mc4_stat_set("tGAR", 0, 1.0);
+                            // (the car's reset F-46526 after the warp, before the `_ent` scene shows it on its spot:
+                            // mcCarSim::Reset F-47310 resets the air ride, F-80081 - bags at 0, off)
+                            if let Some(v) = self.vehicles.player_mut().and_then(|c| c.state.veh.as_deref_mut()) {
+                                v.air = physics::vehsim::AirRide::default();
+                            }
                             // (LOCATION_EVENT with the place's name: garage_core's static +4)
                             self.game.career.event(career::Ev::Str("LOCATION_EVENT", su.key));
                             let night = self.time_of_day > 18.5 || self.time_of_day < 5.5;
