@@ -220,7 +220,10 @@ fn load_brakes(gpu: &mut Gpu, world: &mut World, dir: &Path, k: f32, shift: f32)
         let key = own.map_or(keys[0], |o| o.0);
         let tex = match own {
             Some((k, t)) => car_upload(gpu, k, t).0,
-            None if !name.is_empty() => keys.iter().find_map(|k| car_any(gpu, world, *k)).unwrap_or_else(|| gpu.white.clone()),
+            None if !name.is_empty() => keys.iter().find_map(|k| car_any(gpu, world, *k)).unwrap_or_else(|| {
+                crate::world::note_tex_miss("car", &format!("{name} ({sname})"));
+                gpu.white.clone()
+            }),
             None => gpu.white.clone(),
         };
         if std::env::var("MCLA_WHEEL_DUMP").is_ok() {
@@ -2149,6 +2152,7 @@ impl Vehicles {
                     return (t, hk);
                 }
                 log::debug!("car texture miss: {} ({:#010x})", name, h);
+                crate::world::note_tex_miss("car", name);
                 (gpu.white.clone(), 0)
             };
             let (d, k0) = if m.plate { plate_texture(gpu, world) } else { resolve(gpu, world, m.dn.as_deref()) };
@@ -6677,7 +6681,10 @@ pub fn load_wheels_with(gpu: &mut Gpu, world: &mut World, rim_dir: &Path, tyre: 
             let k = own.map_or(k, |o| o.0);
             let tex = match own {
                 Some((key, t)) => car_upload(gpu, key, t).0,
-                None if k != 0 => car_any(gpu, world, k).unwrap_or_else(|| gpu.white.clone()),
+                None if k != 0 => car_any(gpu, world, k).unwrap_or_else(|| {
+                    crate::world::note_tex_miss("car part", &format!("{k:08x}"));
+                    gpu.white.clone()
+                }),
                 None => gpu.white.clone(),
             };
             if std::env::var("MCLA_WHEEL_DUMP").is_ok() {

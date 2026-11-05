@@ -712,6 +712,7 @@ impl Props {
                 return (t, h);
             }
             log::debug!("prop texture miss: {}", name);
+            crate::world::note_tex_miss("prop", name);
             (gpu.white.clone(), 0)
         };
         let mut all = parse_props(&pres);
