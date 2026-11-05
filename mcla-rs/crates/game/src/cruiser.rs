@@ -169,6 +169,7 @@ impl<T: GhostTraffic, C: CruiseCar> CruiseEnv for World<'_, '_, T, C> {
         } else {
             crate::railroute::Route::default()
         };
+        log::debug!("cruiser {}: route from lane {} t {:.4} to {:?} (lane {:?} t {:.4}): {:?}", self.owner, lane, rp.t, b.dests[b.idx.max(0) as usize & 63], route.dest_lane, route.dest_t, route.nodes.iter().map(|n| (n.rec, n.lanes.clone())).collect::<Vec<_>>());
         b.request = self.traffic.request_ghost(GhostRequest {
             owner: self.owner,
             route,
