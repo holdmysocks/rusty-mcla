@@ -11748,6 +11748,9 @@ pub struct S23Live {
     pub f02c_away: bool,
     /// (step 22b) the pink slip's confirmation box is up: the hangout and the profile chosen
     pub pink_ask: Option<(String, usize)>,
+    /// the wager's confirmation box is up: the hangout, the stake, the difficulty (wager_hangout_core
+    /// 0x194c..0x19bd - `Game::mc4_wager_ask`)
+    pub wager_ask: Option<(String, i64, usize)>,
     /// (step 22b) Downtown's scripted pink slip: its race runs (the steps before the
     /// opponent gives up), the frames without a scene after its scene, a race to start
     pub dt_pink: Option<i32>,
@@ -12409,6 +12412,10 @@ impl Game {
         if self.opt_x.s23.pink_ask.is_some() {
             self.mc4_pink_confirmed();
         }
+        // (the wager's YES: the stake and the race - `mc4_wager_ask`)
+        if self.opt_x.s23.wager_ask.is_some() {
+            self.mc4_wager_confirmed();
+        }
     }
 
     /// The box answered: YES pays and the meeting goes on.
@@ -12867,6 +12874,52 @@ impl Game {
     fn mc4_pink_box_tick(&mut self) {
         if self.opt_x.s23.pink_ask.is_some() && self.message_box.is_none() {
             self.opt_x.s23.pink_ask = None;
+        }
+        // (the wager's NO: back on its panel - 0x19b4..0x19bd, the result not 3 goes back to 0x181c)
+        if self.opt_x.s23.wager_ask.is_some() && self.message_box.is_none() {
+            self.opt_x.s23.wager_ask = None;
+        }
+    }
+
+    /// ACCEPT on the WAGER AMOUNT panel (wager_hangout_core 0x1892..0x19bd): the stake into
+    /// nWagerAmount, the form closed; less money than the stake: MessageBox_ShowMessageBox(_,
+    /// `Dialog_Description_WagerInsufficientFunds`, <the hangout's key>, 1, 0) and the panel again
+    /// (0x18bf..0x1947); else the same helper with `Dialog_Description_WagerStartConfirm` and type 3
+    /// (YES / NO, 0x194c..0x197e): YES (result 3) starts the wager race (`mc4_wager_confirmed`), any
+    /// other answer goes back to the panel. False always: the race starts from the box.
+    pub fn mc4_wager_ask(&mut self, key: &str, stake: i64, diff: usize) -> bool {
+        if self.message_box.is_some() || self.opt_x.s23.wager_ask.is_some() {
+            return false;
+        }
+        if self.money < stake {
+            let def = crate::flash_ui::MessageBoxDef { title: key.to_string(), description: "Dialog_Description_WagerInsufficientFunds".into(), options: Vec::new() };
+            self.message_box = Some((def, 0, crate::game::MenuAction::None));
+            return false;
+        }
+        let def = crate::flash_ui::MessageBoxDef { title: key.to_string(), description: "Dialog_Description_WagerStartConfirm".into(), options: vec![("yes".into(), "Common_Yes".into()), ("no".into(), "Common_No".into())] };
+        self.message_box = Some((def, 0, crate::game::MenuAction::StartRace));
+        self.opt_x.s23.wager_ask = Some((key.to_string(), stake, diff));
+        false
+    }
+
+    /// The wager box's YES: the stake paid, the race, the panel left; the box's own action
+    /// starts the race.
+    fn mc4_wager_confirmed(&mut self) {
+        let Some((key, stake, diff)) = self.opt_x.s23.wager_ask.take() else { return };
+        self.money -= stake;
+        self.dirty = true;
+        self.wager = Some((stake, diff));
+        self.wager_key = Some(key.clone());
+        self.current_race = Some(self.mc4_wager_race(&key).unwrap_or(self.race_sel.min(self.race_defs.len().saturating_sub(1))));
+        self.wager_here = false;
+        // (the wager race's function opens with xGAW + 1 - Hangouts/0x16e89a34 0x19f0; REWAGER and
+        // NEXT WAGER loop inside it, past the count)
+        self.mc4_stat_add("xGAW", 0, 1.0);
+        log::info!("hangout: {} wager ${} at difficulty {} (confirmed)", key, stake, diff);
+        self.hangout_key = None;
+        self.hangout_page = (0, 0);
+        if let Some(fm) = self.flash_menu.as_mut() {
+            fm.hide();
         }
     }
 }
@@ -18070,6 +18123,36 @@ mod tests {
         assert!(g.mc4_pink_start("hw_wager_hangout1", 0));
         // (the hangout's own car first, then the held one: pick 1)
         let _ = g.mc4_pink_end(false);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The wager's start (wager_hangout_core 0x18bf..0x19bd): not enough money - an OK box, no race;
+    /// else WagerStartConfirm (YES / NO): NO leaves the money and the panel, YES pays and starts.
+    #[test]
+    fn wager_start_asks_first() {
+        let Some((mut g, dir, _)) = career_game("full_import.json", "wagerask") else { return };
+        g.hangout_key = Some("hw_wager_hangout1".into());
+        g.money = 100;
+        assert!(!g.mc4_wager_ask("hw_wager_hangout1", 500, 1));
+        let (def, _, act) = g.message_box.clone().unwrap();
+        assert_eq!((def.description.as_str(), def.options.len(), act), ("Dialog_Description_WagerInsufficientFunds", 0, crate::game::MenuAction::None));
+        assert!(g.opt_x.s23.wager_ask.is_none() && g.wager.is_none());
+        g.message_box = None;
+        g.money = 1000;
+        let n = g.mc4_stat("xGAW", 0);
+        // (NO: the box goes, nothing paid, the panel stays)
+        assert!(!g.mc4_wager_ask("hw_wager_hangout1", 500, 1));
+        assert_eq!(g.message_box.as_ref().map(|b| (b.0.description.as_str(), b.0.options.len(), b.2.clone())), Some(("Dialog_Description_WagerStartConfirm", 2, crate::game::MenuAction::StartRace)));
+        g.message_box = None;
+        g.mc4_pink_box_tick();
+        assert!(g.opt_x.s23.wager_ask.is_none() && g.money == 1000 && g.wager.is_none() && g.hangout_key.is_some());
+        // (YES: paid, the race, the count)
+        g.mc4_wager_ask("hw_wager_hangout1", 500, 1);
+        g.message_box = None;
+        g.mc4_s23_box_yes();
+        assert_eq!((g.money, g.wager, g.wager_key.as_deref(), g.hangout_key.is_none()), (500, Some((500, 1)), Some("hw_wager_hangout1"), true));
+        assert!(g.current_race.is_some());
+        assert_eq!(g.mc4_stat("xGAW", 0), n + 1.0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

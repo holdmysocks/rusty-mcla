@@ -13724,24 +13724,11 @@ impl Game {
                 self.hangout_stake = 5;
             }
         } else if enter {
+            // (the original's boxes first: not enough money, or YES / NO - `mc4_wager_ask`)
             let (stake, _, _) = stake_of(self, self.hangout_diff, self.hangout_stake);
-            if self.money < stake {
-                let m = st("Dialog_Description_WagerInsufficientFunds", "You don't have enough money to wager.").to_uppercase();
-                self.show_message(&m);
-            } else {
-                self.money -= stake;
-                self.dirty = true;
-                self.wager = Some((stake, self.hangout_diff));
-                self.wager_key = Some(key.clone());
-                self.current_race = Some(self.mc4_wager_race(&key).unwrap_or(self.race_sel.min(self.race_defs.len().saturating_sub(1))));
-                self.wager_here = false;
-                // (the wager race's function opens with xGAW + 1 - Hangouts/0x16e89a34 0x19f0; REWAGER and
-                // NEXT WAGER loop inside it, past the count)
-                self.mc4_stat_add("xGAW", 0, 1.0);
-                log::info!("hangout: {} wager ${} at difficulty {}", key, stake, self.hangout_diff);
-                leave(self);
-                return Some(MenuAction::StartRace);
-            }
+            let diff = self.hangout_diff;
+            self.mc4_wager_ask(&key, stake, diff);
+            return None;
         }
         if back {
             if wager && page_no >= 1 {
