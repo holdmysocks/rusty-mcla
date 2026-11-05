@@ -3576,6 +3576,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 }
             }
         }
+        // (the ambient system's answers to the cruising brains, before they run)
+        crate::cruisedrive::events(self, &world.collider);
         let n = self.cars.len();
         // AI inputs (with simple car-ahead avoidance)
         let positions: Vec<(Vec3, Vec3, f32)> = self.cars.iter().map(|c| (c.state.pos, c.state.forward(), c.state.speed())).collect();
@@ -3638,6 +3640,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // (the steering is written 0 on the grid, A-88204 - only there)
                 let hold = self.grid_hold.is_some() || self.player_hold;
                 scramble(CarInput { hold, steer: if hold { 0.0 } else { player_input.steer }, ..player_input }, self.player_scramble)
+            } else if crate::cruisedrive::is_cruiser(&self.cars[i]) {
+                // (a cruising man: mcBrainCruising over his racing brain - cruisedrive.rs)
+                crate::cruisedrive::tick(self, &world.collider, i, dt)
             } else if self.cars[i].ai.as_ref().map_or(false, |a| a.brain.is_some()) {
                 // (a racer: the original's brain, aiv race line and mcOpponentInput - brain.rs)
                 crate::brain::tick(self, i, None, dt)

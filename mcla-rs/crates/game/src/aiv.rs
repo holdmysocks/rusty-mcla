@@ -1063,6 +1063,12 @@ impl Aiv {
         pedal_map(&self.veh, kappa, a_cmd, rpm_ratio, self.t1, self.b1[1], self.t2, self.b2[1], self.g, gear, self.vel, self.f, self.right)
     }
 
+    /// F-28541 with the car's state as its caller passes it (the cruising brain's slot 11, F-95280: velocity, forward,
+    /// the boost terms and gravity from the car, not this follower's state).
+    pub fn controller(&self, kappa: f32, a_cmd: f32, rpm_ratio: f32, boost: [f32; 4], g: f32, gear: i32, vel: Vec3, fwd: Vec3, right: Vec3) -> (f32, f32, f32) {
+        pedal_map(&self.veh, kappa, a_cmd, rpm_ratio, boost[0], boost[1], boost[2], boost[3], g, gear, vel, fwd, right)
+    }
+
     /// F-82077: nitro benefit (0..1) for the brain's nitro decision.
     pub fn nitro_benefit(&self) -> f32 {
         self.boost_benefit(self.b1[1], self.b1[2], false)

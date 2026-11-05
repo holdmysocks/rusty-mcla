@@ -256,6 +256,19 @@ impl Cruising {
             self.next_dest(env);
         }
     }
+
+    /// BrainCruising_TeleportToNearestRail (F-35641): the teleport F-90476 onto the rail nearest the car's own place, then route + request (F-25539).
+    pub fn teleport_to_nearest_rail(&mut self, env: &mut impl CruiseEnv) {
+        let p = env.car_pos();
+        if env.teleport(self, p) {
+            env.route(self);
+        }
+    }
+
+    /// BrainCruising_DriveToNearestRail (F-92832: F-12584)
+    pub fn drive_to_nearest_rail(&mut self, env: &mut impl CruiseEnv) {
+        env.drive_to_rail(self);
+    }
 }
 
 /// The physical car as state 5 reads it: its matrix rows a and c and its place (the matrix block, F-95017's car

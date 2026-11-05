@@ -153,6 +153,7 @@ mod cruising;
 mod railroute;
 mod ghostroute;
 mod cruiserail;
+mod cruisedrive;
 mod cruiser;
 mod oppmgr;
 mod propblast;

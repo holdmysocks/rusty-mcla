@@ -1034,8 +1034,21 @@ pub fn has_reached_goal(nav_state: u32, line: Option<(i32, i32, i32)>) -> bool {
 /// what it does to the car besides the pedals (nitrous, the off-mesh drop). `to_go`: seconds to GO
 /// while the grid holds the racers.
 pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt: f32) -> CarInput {
-    let Some(mesh) = crate::offroad::mesh() else { return CarInput { brake: 1.0, ai: true, ..Default::default() } };
+    if crate::offroad::mesh().is_none() {
+        return CarInput { brake: 1.0, ai: true, ..Default::default() };
+    }
     let Some(mut brain) = v.cars[i].ai.as_mut().and_then(|a| a.brain.0.take()) else { return CarInput::default() };
+    let input = run(v, i, &mut brain, to_go, dt);
+    if let Some(a) = v.cars[i].ai.as_mut() {
+        a.brain.0 = Some(brain);
+    }
+    input
+}
+
+/// `tick` with the brain held outside the car (the cruising brain runs its racing brain inside its own update,
+/// F-64718 -> F-13552).
+pub fn run(v: &mut crate::vehicles::Vehicles, i: usize, brain: &mut Brain, to_go: Option<f32>, dt: f32) -> CarInput {
+    let Some(mesh) = crate::offroad::mesh() else { return CarInput { brake: 1.0, ai: true, ..Default::default() } };
     // (the brain runs once per game frame, 1/30 s, with that dt: the chassis ticks twice in between - the original's aiv position,
     // mcOpponentInput targets and aiv dt (0.0333) change on every second chassis tick, work/ai-record. The pedals go on through the
     // other ticks; the one-shot nitrous / slingshot flags do not repeat.)
@@ -1044,9 +1057,6 @@ pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt:
             let mut input = held;
             input.nitro = false;
             input.sst = false;
-            if let Some(a) = v.cars[i].ai.as_mut() {
-                a.brain.0 = Some(brain);
-            }
             return input;
         }
     }
@@ -1055,7 +1065,7 @@ pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt:
         brain.hit();
     }
     let rb = v.cars[i].ai.as_ref().and_then(|a| a.rb);
-    script_grid(&mut brain, to_go);
+    script_grid(brain, to_go);
     let c = &v.cars[i];
     let st = &c.state;
     let vt = c.params().veh.clone();
@@ -1223,7 +1233,6 @@ pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt:
         // computer racer; it drives its finishing route (the final wrap's weight-0 alt paths) and, its line used up,
         // the "no line" branch above holds it on the brake - docs/reference/ai/after_finish.md. The port's own
         // "brake after the line" turned into reversing at a standstill: the racers wandered round the finish, AI.md NEW 4)
-        a.brain.0 = Some(brain);
     }
     input
 }
