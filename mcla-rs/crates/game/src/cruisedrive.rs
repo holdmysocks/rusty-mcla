@@ -266,7 +266,8 @@ fn demand(c: &CarInstance, br: &crate::brain::Brain, kappa: f32, a_cmd: f32) -> 
             if t.sync_torque > 0.0 { t.t.gyro.drift_torque / t.sync_torque } else { 0.0 },
             [t.t.nitro.boost_exp, t.t.nitro.boost_amount, t.t.nitro.boost_time],
             [t.t.ss_turbo.boost_exp, t.t.ss_turbo.boost_amount, t.t.ss_turbo.use_time],
-            t.gravity,
+            // (F-95280: -9.8 x the tune's BoundGravity; `VehTune::gravity` is already 9.8 x it)
+            t.t.s.bound_gravity,
         ),
         None => (0.0, [0.0; 3], [0.0; 3], 1.4),
     };
@@ -440,5 +441,80 @@ mod capture_tests {
         assert!(n_same > 500 && eqs[3][2] * 100 >= n_same * 99, "rail curvature");
         // (97 %: 797 of 815 in the 2026-11-04 capture; the rest are pairs with an update missed between samples [I])
         assert!(near[0] * 100 >= n_same * 97 && near[1] * 100 >= n_same * 97, "demands");
+    }
+
+    /// Slot 11 of the cruising brain in state 5 (F-95280 -> F-28541) against the same capture: the curvature and
+    /// speed demands of a recorded update, the car (velocity, rows) as recorded and its gear from the recorder file
+    /// (transmission +20) give the steer, throttle and brake the input object holds (+152 / +156 / +160). The man's
+    /// state of tune is not in the capture: every share 0..1 in hundredths is tried and the best one printed.
+    #[test]
+    fn pedals_match_the_capture() {
+        let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../work/racerai/cruiserec"));
+        let Ok(text) = std::fs::read_to_string(dir.join("cruise_ref2.txt")) else { return };
+        let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let assets = crate::assets::Assets::new(&data);
+        let car = crate::vehicle_model::load_car(&assets, &std::path::Path::new(&data).join("resources/vehicle/vp_dge_challenger_70")).unwrap();
+        let (Some(at), Some(st)) = (car.aitune.clone(), car.simtune.clone()) else { panic!("tunes") };
+        let recs: Vec<Rec> = text.lines().filter(|l| l.starts_with("run=")).map(parse).filter(|r| r.contains_key("u1708")).collect();
+        let files: Vec<Vec<u8>> = ["pc.bin", "p.0.bin", "p.0.bin"].iter().map(|n| std::fs::read(dir.join(n)).unwrap_or_default()).collect();
+        let gear_at = |run: usize, tick: i64| -> Option<i32> {
+            let d = files.get(run)?;
+            if d.len() < 16 || tick < 0 {
+                return None;
+            }
+            let size = u32::from_le_bytes(d[8..12].try_into().unwrap()) as usize;
+            let o = 16 + tick as usize * size + 8 + 1024 + 160 + 20;
+            d.get(o..o + 4).map(|b| u32::from_be_bytes(b.try_into().unwrap()) as i32)
+        };
+        let mut best = (0usize, 0.0f32, [0usize; 3], 0usize, Vec::new(), [0usize; 3]);
+        for pc in 0..=100 {
+            let share = pc as f32 / 100.0;
+            let aiv = crate::aiv::Aiv::new(std::sync::Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&at.base, &at.mods, share)));
+            let vt = crate::physics::vehsim::VehTune::new(mcla_formats::rage::simtune::SimTune::lerp(&st.base, &st.mods, share));
+            let drift = if vt.sync_torque > 0.0 { vt.t.gyro.drift_torque / vt.sync_torque } else { 0.0 };
+            let (mut n, mut eq, mut near, mut diffs) = (0usize, [0usize; 3], [0usize; 3], Vec::new());
+            for r in &recs {
+                if r["u1708"][0] != 5 || r["i1648"][0] == 0 {
+                    continue;
+                }
+                let run = r["run_dec"][0] as usize;
+                let Some(gear) = gear_at(run, r["tick_dec"][0] as i32 as i64) else { continue };
+                let back = v3(r, "mx_back");
+                let right = v3(r, "mx_r");
+                let (s, t, b) = aiv.controller(f(r, "f1680"), f(r, "f1676"), drift, [0.0, vt.t.nitro.boost_amount, 0.0, vt.t.ss_turbo.boost_amount], -9.8 * vt.t.s.bound_gravity, gear.max(2) - 2, v3(r, "vel"), Vec3::ZERO - back, right);
+                let got = [s, t, b];
+                let want = [f(r, "in152"), f(r, "in156"), f(r, "in160")];
+                n += 1;
+                for i in 0..3 {
+                    let e = (got[i] - want[i]).abs();
+                    if e < 1e-4 {
+                        eq[i] += 1;
+                    }
+                    if e < 1e-2 {
+                        near[i] += 1;
+                    }
+                }
+                if got.iter().zip(&want).any(|(g, w)| (g - w).abs() >= 1e-4) && diffs.len() < 6 {
+                    diffs.push(format!("run {run} seq {} gear {gear}: got {got:?} want {want:?}", r["seq_dec"][0]));
+                }
+            }
+            if pc % 10 == 0 {
+                eprintln!("  share {share}: within 1e-4 {eq:?}, within 1e-2 {near:?}");
+            }
+            if eq.iter().sum::<usize>() > best.2.iter().sum::<usize>() {
+                best = (pc, share, eq, n, diffs, near);
+            }
+        }
+        eprintln!("pedals vs capture: best share {} of 1: {} samples, [steer, throttle, brake] within 1e-4 {:?}", best.1, best.3, best.2);
+        for d in &best.4 {
+            eprintln!("  {d}");
+        }
+        // (2026-11-05: share 0.48 [I: fitted - the man's mod value is not in the capture]; 4488 / 3477 / 3137 of
+        // 4979 within 1e-4, 4978 / 4928 / 4971 within 1e-2: the car is sampled after the tick, not where slot 11
+        // read it)
+        let (n, eq, near) = (best.3, best.2, best.5);
+        assert!(n > 4000 && (best.0 as i32 - 48).abs() <= 2, "share {}", best.1);
+        assert!(eq[0] * 100 >= n * 85, "steer");
+        assert!(near[1] * 100 >= n * 98 && near[2] * 100 >= n * 98, "pedals");
     }
 }
