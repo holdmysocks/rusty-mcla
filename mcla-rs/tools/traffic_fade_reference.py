@@ -1,6 +1,6 @@
 """The ambient car's fade (F-82632) run offline: the generated code whole and unchanged on flat guest memory. The removal
 F-51512 is stubbed and prints its car and reason. Memory: the car 0x2000 (+484 the fade, +488 the reason, +500 the flag
-byte, +456 the draw holder 0x3000 or 0); the view index word (0x8288B9F0, zero in the image) is left as it is, so the
+byte, +456 the draw holder 0x3000 or 0); the view index word (zero in the image) is left as it is, so the
 holder's slot +44 gets the fade.
 
 Writes <out-dir>/traffic_fade_ref.txt, a case a line: flags fade dt holder (hex words; floats as bits) '->' the flag

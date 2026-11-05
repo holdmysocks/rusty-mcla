@@ -2408,9 +2408,9 @@ pub(crate) struct StuckIn {
 /// time, backing time, tries). Refused, the tracker kept: the backing time running, a race event, a network game, the
 /// car upside down, the stop line's entry in charge (+420 == 1), a cab with its trailer or a trailer, a blocking obstacle
 /// that is not the nearest one (both set), the next rail's junction not green with its start within 50 m (squared
-/// flat distance < 2500, 0x8207D39C). Then it counts while it stands (+412 == 0) with a blocking obstacle - or, off its
+/// flat distance < 2500, the image's word). Then it counts while it stands (+412 == 0) with a blocking obstacle - or, off its
 /// rail or on the reverse rail, with its body at rest - and its race path neither fired (F-60920) nor held (F-74273):
-/// + dt; past 2 s (0x820DB09C) with fewer than 3 tries, a try more and the backing time 0 -> true (the caller starts the
+/// + dt; past 2 s (the image's 2.0) with fewer than 3 tries, a try more and the backing time 0 -> true (the caller starts the
 /// 2 m reverse rail); the standing time is not reset here (the backing state F-82779 zeroes it). Otherwise the tracker
 /// is zeroed.
 pub(crate) fn stuck_test(st: &mut (f32, f32, u8), dt: f32, x: &StuckIn) -> bool {
@@ -2444,7 +2444,7 @@ pub(crate) fn stuck_test(st: &mut (f32, f32, u8), dt: f32, x: &StuckIn) -> bool 
 }
 
 /// An ambient car's fade (F-82632, every frame; car +484, `rising` +500 bit 0x8 set by the set-up F-92604, `falling` bit
-/// 0x4 set by the mark F-79896): rising, + 2 dt (0x82040E94, fused) and at 1 or more 1 and the rise done; else falling,
+/// 0x4 set by the mark F-79896): rising, + 2 dt (the image's 2.0, fused) and at 1 or more 1 and the rise done; else falling,
 /// - 2 dt (fused) and at 0 or less 0, the fall done and the car removed (true; F-51512 with the reason +488). The value
 /// goes to the draw holder (+456, slot 11 + the view).
 pub(crate) fn fade_step(fade: &mut f32, rising: &mut bool, falling: &mut bool, dt: f32) -> bool {

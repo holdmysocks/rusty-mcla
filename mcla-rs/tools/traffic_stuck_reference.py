@@ -122,7 +122,7 @@ def main():
     vt = None
     for off in range(0, len(img) - 4, 4):
         if struct.unpack_from('>I', img, off)[0] == upd and struct.unpack_from('>I', img, off + 68)[0] == int(held, 16):
-            vt = 0x82000000 + off - 12
+            vt = (0x8200 << 16) + off - 12
             break
     assert vt is not None
     rnd = random.Random(14023)
