@@ -909,6 +909,27 @@ struct Dispatch {
     next: Option<u8>,
 }
 
+/// A race launcher's EvaluatePolice arguments (docs/reference/hookmen/evaluate_police.md): the chance, the gate
+/// "more than 5 racers - chance 0" of the hookman / story cores and RaceWrapper, the chase properties and the chase type.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PoliceEval {
+    pub chance: f32,
+    pub gate5: bool,
+    pub props: [bool; 3],
+    pub chase_type: u8,
+}
+
+impl PoliceEval {
+    /// chance 0: wager / pink slip, delivery, time trial, tournament, series, red light, seven story cores
+    pub const NEVER: PoliceEval = PoliceEval { chance: 0.0, gate5: false, props: [true; 3], chase_type: 0 };
+    /// 25 % with the racers gate: generic_local_hookman, the *_CHAMP_CORE and BEAT_SH_0x cores, RaceWrapper
+    pub const GATED: PoliceEval = PoliceEval { chance: 0.25, gate5: true, props: [true; 3], chase_type: 0 };
+    /// 25 %, no gate: TelephoneChallenge
+    pub const PHONE: PoliceEval = PoliceEval { chance: 0.25, gate5: false, props: [true; 3], chase_type: 0 };
+    /// BEAT_SH_04B_CORE: always, the player the zone's target, no tracking, no race retarget
+    pub const SH_04B: PoliceEval = PoliceEval { chance: 1.0, gate5: false, props: [false, false, true], chase_type: 1 };
+}
+
 /// The race's cop zone (PoliceManager +188 zone, +192 lap, +196 state, +212 timer).
 #[derive(Clone, Debug)]
 pub struct CopZone {
@@ -1043,6 +1064,19 @@ pub struct Police {
     pub racer_uids: Vec<u32>,
     /// the zone of the race running was picked
     pub zone_picked: bool,
+    /// the launching script's EvaluatePolice for the race about to run (set at the race's start, taken on its first frame)
+    pub pending_eval: Option<PoliceEval>,
+    /// Registry nNumNoCopRaces: races in a row whose roll gave no police (session only, a missing key reads 0)
+    pub no_cop_races: u32,
+    /// the last EvaluatePolice destroyed every police car: no police while that race runs (and its restarts)
+    pub race_off: bool,
+    /// PoliceManager_SetChaseProperties (manager +220 / +221 / +222): a new tactic's +29 track the target, +30 may
+    /// retarget in a race, +31; and the running tactic's +30
+    chase_props: [bool; 3],
+    tac_retarget: bool,
+    /// PoliceManager_SetRaceChaseTarget's type (manager +204): 0 the zone's roll, 1 the racer that set it off, 2 the
+    /// nearest AI racer
+    chase_type: u8,
     /// the pull-over's bullhorn (its tactic +92 = 2 at iBullhornLawBreakScore, F-22530): seconds left of
     /// fBullhornTime; Some(0) = run out (the 599 cap is lifted)
     bullhorn: Option<f32>,
@@ -1203,6 +1237,12 @@ impl Police {
             target: None,
             racer_uids: Vec::new(),
             zone_picked: false,
+            pending_eval: None,
+            no_cop_races: 0,
+            race_off: false,
+            chase_props: [true; 3],
+            tac_retarget: true,
+            chase_type: 0,
             tacs: HashMap::new(),
             last_tspeed: 0.0,
             bullhorn: None,
@@ -1665,6 +1705,55 @@ impl Police {
         self.zone_picked = false;
     }
 
+    /// The launching script's EvaluatePolice(race, chance, chase type, racer, a, b, c) (the same function in all 41
+    /// launchers, e.g. TournamentCore 0x99e; docs/reference/hookmen/evaluate_police.md): a chance above 0 becomes 1 after
+    /// four no-cop races in a row; a roll RAND_FLOAT_RANGE(0, 1) above the chance, or a race without cop zones, destroys
+    /// every police car (DestroyAllPolice) and counts a no-cop race when the chance was above 0; else the script's three
+    /// CreatePolice (units 400 - 402) and the streak back to 0. Then SetChaseProperties(a, b, c), SetRaceChaseTarget.
+    /// `racers` is the race's racer count (+3080, the player included) for the launchers' gate: more than
+    /// mcRacerManager_GetNumRacersAllowedForPolice (5) - chance 0. (The roll draws the port's own random numbers.)
+    pub fn evaluate(&mut self, e: PoliceEval, racers: usize, zones: usize, unlocked: bool, vehicles: &mut Vehicles) {
+        let mut chance = if e.gate5 && racers > 5 { 0.0 } else { e.chance };
+        if chance > 0.0 && self.no_cop_races >= 4 {
+            chance = 1.0;
+        }
+        let r = self.rand();
+        if zones == 0 || r > chance {
+            self.destroy_all(vehicles);
+            if chance > 0.0 {
+                self.no_cop_races += 1;
+            }
+            self.race_off = true;
+        } else {
+            self.create_units(unlocked);
+            self.no_cop_races = 0;
+            self.race_off = false;
+        }
+        log::info!("police: EvaluatePolice chance {} (roll {:.3}, {} zones) - {}; {} no-cop races in a row", chance, r, zones,
+                   if self.race_off { "no police in this race" } else { "police" }, self.no_cop_races);
+        self.set_chase_properties(e.props);
+        self.chase_type = e.chase_type;
+    }
+
+    /// PoliceManager_SetChaseProperties (F-95292 -> F-39756): the running tactic gets +29 = a with its track time
+    /// F-79519(a ? (+136 > 0 ? +136 : 1) : -1), +30 = b, +31 = c; the manager keeps them for the next (+220..+222).
+    pub fn set_chase_properties(&mut self, p: [bool; 3]) {
+        if self.kind != TacKind::None {
+            self.track_t = if p[0] { if self.track_t > 0.0 { self.track_t } else { 1.0 } } else { -1.0 };
+            self.tac_retarget = p[1];
+        }
+        self.chase_props = p;
+    }
+
+    /// The free roam after a race: SetChaseProperties(1, 1, 1) (BEAT_SH_04B after its race, 0x35ff; the other launchers
+    /// never change them) and the zone's chase target back to the roll.
+    pub fn race_left(&mut self) {
+        if self.chase_props != [true; 3] {
+            self.set_chase_properties([true; 3]);
+        }
+        self.chase_type = 0;
+    }
+
     /// PoliceManager_EvaluateCopZones (F-88125): of the race's zones ONE is picked, and ONE lap
     /// (`rand % laps` when the race has more than one, else lap 0); lap 0's zone is armed at once,
     /// another's when the race's lap changes to it (F-82127, "[COP ZONE] lap [%d], cop zone enabled").
@@ -1696,7 +1785,8 @@ impl Police {
         let prob = if std::env::var_os("MCLA_COP_ZONE_AI").is_some() { 1.0 } else { self.tun.get("iRaceTgtAiProbPrcnt", 30.0) * 0.01 };
         let ai_r = if std::env::var_os("MCLA_COP_ZONE_AI").is_some() { -1.0 } else { self.tun.get("fRaceTgtAiDist", 150.0) };
         let delay = self.tun.get("fCopZoneRdoDelayTime", 2.0);
-        let roll = if matches!(self.zone.as_ref(), Some(z) if z.state == 1) && inside.is_some() { self.rand() } else { 1.0 };
+        let self_ct = self.chase_type;
+        let roll = if self_ct == 0 && matches!(self.zone.as_ref(), Some(z) if z.state == 1) && inside.is_some() { self.rand() } else { 1.0 };
         let Some(z) = self.zone.as_mut() else { return None };
         let mut say = None;
         let wrecked = |z: &CopZone| z.target.and_then(|t| racers.iter().find(|r| r.0 == t)).map_or(false, |r| r.3);
@@ -1716,7 +1806,8 @@ impl Police {
                     let (_, _, sp, _) = racers[k];
                     let mut tgt = k;
                     let ais: Vec<usize> = (0..racers.len()).filter(|&i| !racers[i].1).collect();
-                    if !ais.is_empty() && roll < prob {
+                    // (+204: 1 the racer itself, 2 the nearest AI racer without the roll, 0 the roll)
+                    if !ais.is_empty() && (self_ct == 2 || (self_ct == 0 && roll < prob)) {
                         let d2 = |i: usize| {
                             let q = racers[i].2;
                             let (dx, dy, dz) = (sp.x - q.x, sp.y - q.y, sp.z - q.z);
@@ -2126,7 +2217,9 @@ impl Police {
         if self.target.is_none() {
             self.score = self.score.max(kind.floor());
         }
-        self.track_t = if kind == TacKind::PullOver { -1.0 } else { track };
+        // (the base begin: F-79519(+29 ? fTrackTgtTime : -1); +29 / +30 from the manager's +220 / +221 via the request)
+        self.track_t = if kind == TacKind::PullOver || !self.chase_props[0] { -1.0 } else { track };
+        self.tac_retarget = self.chase_props[1];
         if kind != TacKind::Dispatch {
             self.dsp = None;
         }
@@ -2894,7 +2987,7 @@ impl Police {
         // (the hit-a-cop steal, the law step F-52240's race branch: in a race, the player in no tactic of his own and a
         // police car hit this tick (record bits 0x20 / 0x40, scored only when watched) - the Arrow Trap that may retarget
         // (+30) and chases an AI racer ends and a new one starts on the player, that trap's cop as its request cop)
-        if ai_target && self.in_race && hit_cop && self.kind == TacKind::ArrowTrap && !goons {
+        if ai_target && self.in_race && hit_cop && self.kind == TacKind::ArrowTrap && self.tac_retarget && !goons {
             let first = self.units.iter().filter_map(|u| Self::unit_car(vehicles, u.id)).map(|i| vehicles.cars[i].uid).find(|u| self.cops.contains(u)).or(self.cops.first().copied());
             log::info!("police: a police car hit - the Arrow Trap on AI racer {:?} turns on the player", self.target);
             self.end_tactic();
@@ -3230,12 +3323,12 @@ impl Police {
                         }
                     }
                 }
-                // (the race retarget, F-22530: a race current, the tactic's +30 (the manager's +221, 1 - no script changes
-                // it) and the target lost - the clock running: the nearest racer a tactic cop sees within 300 m (F-94676,
+                // (the race retarget, F-22530: a race current, the tactic's +30 (the manager's +221: 1 but in BEAT_SH_04B,
+                // `set_chase_properties`) and the target lost - the clock running: the nearest racer a tactic cop sees within 300 m (F-94676,
                 // no cone), not the target - the players first, the AI racers only when no player is seen. The tactic
                 // ends with vt+12(0) and an Arrow Trap starts on that racer, the seeing cop its request cop,
                 // REPORT_VIOLATION_PURSUIT)
-                if self.heat == Heat::Search && self.in_race && self.search > 0.0 && !goons {
+                if self.heat == Heat::Search && self.in_race && self.search > 0.0 && self.tac_retarget && !goons {
                     let cur = self.target;
                     let cops: Vec<(u32, Vec3, &crate::vehicles::CarInstance)> = self.cops.iter().filter_map(|u| vehicles.cars.iter().find(|c| c.uid == *u)).map(|c| (c.uid, c.state.pos, c)).collect();
                     let pick = |want_player: bool| -> Option<(f32, u32, u32)> {
@@ -4532,6 +4625,41 @@ mod tests {
     /// F-74492, the +108 update F-29906, the cop query F-29443 / F-39842 and the +140 / +144 timers): the same inputs from the
     /// same xorshift (the generator mirrors `gen_case` there); at every update the test's result, and at every recorded one
     /// the bits of +108, +140, +144 and the seen timers +124 / +132 equal.
+    #[test]
+    fn evaluate_police_by_the_launchers_rule() {
+        let mut v = Vehicles::default();
+        let mut p = Police::new();
+        // chance 0: always destroyed, the streak untouched
+        for _ in 0..10 {
+            p.evaluate(PoliceEval::NEVER, 2, 3, true, &mut v);
+            assert!(p.race_off && p.units.is_empty() && p.no_cop_races == 0);
+        }
+        // no zones: destroyed whatever the chance; a chance above 0 counts the streak
+        p.evaluate(PoliceEval::SH_04B, 2, 0, true, &mut v);
+        assert!(p.race_off && p.no_cop_races == 1);
+        // the gate: more than 5 racers - chance 0, the streak not counted
+        p.evaluate(PoliceEval::GATED, 6, 3, true, &mut v);
+        assert!(p.race_off && p.no_cop_races == 1);
+        // chance 1 with zones: the three units, the streak back to 0, SH_04B's chase properties and type
+        p.evaluate(PoliceEval::SH_04B, 2, 3, true, &mut v);
+        assert!(!p.race_off && p.units.len() == 3 && p.no_cop_races == 0);
+        assert!(p.chase_props == [false, false, true] && p.chase_type == 1);
+        p.race_left();
+        assert!(p.chase_props == [true; 3] && p.chase_type == 0);
+        // the streak: after four lost 25 % rolls the fifth race has police
+        let mut lost = 0;
+        for _ in 0..200 {
+            p.evaluate(PoliceEval::PHONE, 2, 3, true, &mut v);
+            if p.race_off {
+                lost += 1;
+                assert!(p.no_cop_races <= 4);
+            } else {
+                assert_eq!(p.no_cop_races, 0);
+            }
+        }
+        assert!(lost > 0);
+    }
+
     #[test]
     fn arrest_timers_match_the_original() {
         let (cases, ticks, fires, compared, cop_in_ticks, timer_ticks) = arrest_run(include_str!("testdata/arrest_ref.txt"), false);

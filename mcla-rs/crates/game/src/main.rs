@@ -5055,6 +5055,7 @@ impl App {
                 self.game.hookman_race = st.mission;
                 self.game.prerace_scene = st.scene;
                 self.game.menu_sel = 0;
+                self.game.police_eval = Some(police::PoliceEval::NEVER); // (RACE BACK of a red light man: his EvaluatePolice, chance 0)
                 self.pending_action = MenuAction::StartRace;
                 if let Some(t) = st.announce.and_then(|k| self.game.career.strings.get(&k).map(|s| s.to_string())) {
                     self.news.push_back((t.to_uppercase(), None));
@@ -5209,7 +5210,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.police.player_police = self.player_police();
             if self.game.race.is_none() {
                 self.police.zone_clear();
-            } else if self.police.enabled && !self.vehicles.frozen {
+                self.police.race_left();
+            } else {
+                // (the launcher's EvaluatePolice, before the race's zones are evaluated: `Police::evaluate`)
+                if let Some(e) = self.police.pending_eval.take() {
+                    let race = self.game.race.as_ref().unwrap();
+                    let (n, z) = (race.participants.len(), race.cop_zones.len());
+                    let unlocked = self.game.mc4_police_unlocked();
+                    self.police.evaluate(e, n, z, unlocked, &mut self.vehicles);
+                }
+            }
+            if self.game.race.is_some() && self.police.enabled && !self.police.race_off && !self.vehicles.frozen {
                 let race = self.game.race.as_mut().unwrap();
                 if !self.police.zone_picked {
                     self.police.zone_picked = true;
@@ -6255,6 +6266,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         if let Some(s) = self.roam.series_of.take() {
                             self.game.story_series_start(&s, race);
                         }
+                        // (the story cores' EvaluatePolice by mission - `mc4::story_police`; the cruising local hookman's is the
+                        // gated 25 %, 0x3230; a story series' OrderedSeriesCore passes chance 0, 0x27a4)
+                        self.game.police_eval = Some(if self.game.series.as_ref().is_some_and(|s| s.story.is_some()) {
+                            police::PoliceEval::NEVER
+                        } else if self.game.hookman_race {
+                            self.game.career.hookman_mission().map_or(police::PoliceEval::GATED, mc4::story_police)
+                        } else {
+                            police::PoliceEval::GATED
+                        });
                         self.pending_action = MenuAction::StartRace;
                         // (a story core that warps at once - `roamers::core_warp`, RACE_GH_06_CORE 0x4e4: its
                         // greeting, then Warper_Warp('DEFAULT_WITH_CUT'): the climb, the race set up after it)
@@ -6300,6 +6320,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 log::info!("red light warp: {:.0} m from the start, {}", d, if close { "close" } else { "climb (EXIT_TO_CUT)" });
                             }
                             self.game.prerace_scene = st.scene;
+                            // (the red light men's EvaluatePolice, chance 0: 0x3fce; the freeway men have none)
+                            self.game.police_eval = (man.kind != roamers::ManKind::Freeway).then_some(police::PoliceEval::NEVER);
                             self.pending_action = MenuAction::StartRace;
                             if let Some(t) = st.announce.and_then(|k| self.game.career.strings.get(&k).map(|s| s.to_string())) {
                                 self.news.push_back((t.to_uppercase(), None));
@@ -6332,6 +6354,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.game.current_race = self.game.race_defs.iter().position(|d| d.id.ends_with("red_light_race"));
                             self.game.hookman_race = true;
                             self.game.prerace_scene = Some(scene);
+                            self.game.police_eval = Some(police::PoliceEval::NEVER); // (the red light men's EvaluatePolice, chance 0: 0x3fce)
                             self.pending_action = MenuAction::StartRace;
                             // "Race to Tower Records"
                             if let Some(t) = self.redlights.announce.take().and_then(|id| self.game.career.strings.get(&id).map(|s| s.to_string())) {
@@ -7970,7 +7993,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         self.police.no_charges = self.game.cheats[5];
         // (and none before the career has unlocked them: `mc4`, flags.police_unlocked)
         // (and none in a red light race: its script destroys them all - althk.rs)
-        let police_on = !self.game.cheats[4] && self.game.mc4_police_unlocked() && !self.game.alt_police_off();
+        // (and none in a race whose launcher's EvaluatePolice destroyed them: `Police::evaluate`)
+        let police_on = !self.game.cheats[4] && self.game.mc4_police_unlocked() && !self.game.alt_police_off()
+            && !(self.game.race.is_some() && self.police.race_off);
         // (the player-load flow script's CreatePolice x 3, units 400 - 402, each sent underground: the free roam's police)
         if police_on && self.police.units.is_empty() {
             self.police.create_units(true);
@@ -12176,6 +12201,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.delivery_intro = None;
                 self.delivery_tail = None;
                 self.police.zone_clear();
+                // (the launcher's EvaluatePolice: a start runs the one its launcher set; a restart runs it again only
+                // in the hookman / story cores and RaceWrapper (25 %, gated) after the race had ended - their back-jumps
+                // to the argument block; the others keep the police as they were - docs/reference/hookmen/evaluate_police.md)
+                if action == MenuAction::StartRace {
+                    self.police.pending_eval = self.game.police_eval.take();
+                    self.game.police_eval_last = self.police.pending_eval;
+                } else {
+                    let ended = self.game.race.as_ref().map_or(false, |r| r.finish_time.first().map_or(false, |f| f.is_some()) || r.failed.is_some());
+                    if ended && self.game.police_eval_last == Some(police::PoliceEval::GATED) {
+                        self.police.pending_eval = self.game.police_eval_last;
+                    }
+                }
                 // (RESTART SERIES from a race's pause: its first race again, the tally at nought)
                 if action == MenuAction::RestartRace {
                     if let Some(sr) = self.game.series.as_mut() {
@@ -12777,6 +12814,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if self.game.tournament_restart() {
                     // (TournamentCore's `restart`: kTRS, xRRT, kARS)
                     self.game.mc4_restart_stats();
+                    self.game.police_eval = Some(police::PoliceEval::NEVER); // (TournamentCore's EvaluatePolice, chance 0: 0x999)
                     self.pending_action = MenuAction::StartRace;
                     // (TournamentCore `restart` 0x2191: Warper_Warp('DEFAULT_WITH_CUT'))
                     self.game.warp_with_cut = true;

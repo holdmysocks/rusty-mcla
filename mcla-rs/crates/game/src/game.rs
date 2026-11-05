@@ -499,6 +499,10 @@ pub struct Game {
     pub mode: Mode,
     pub prev_mode: Mode,
     pub race: Option<Race>,
+    /// the launching script's EvaluatePolice for the race being started (set by the launcher, taken by StartRace;
+    /// None: a launcher with no EvaluatePolice - the freeway hookmen - the police stay as they are) and the last one
+    pub police_eval: Option<crate::police::PoliceEval>,
+    pub police_eval_last: Option<crate::police::PoliceEval>,
     pub car_dirs: Vec<PathBuf>,
     /// garage keys of the indices past the models' own: a second copy of a model in the garage is an
     /// index of its own whose `car_dirs` entry is the model's folder and whose key is `<folder>#2`
@@ -1350,6 +1354,8 @@ impl Game {
             mode: Mode::MainMenu,
             prev_mode: Mode::FreeRoam,
             race: None,
+            police_eval: None,
+            police_eval_last: None,
             car_dirs,
             dup_keys: Default::default(),
             selected_car: current_car,
@@ -4867,6 +4873,8 @@ impl Game {
                         self.race_sel = next;
                         self.current_race = Some(next);
                         self.wager = None;
+                        // (NEXT RACE of an ARCADE race: RaceWrapper's EvaluatePolice, 0x757..0xd9e)
+                        self.police_eval = Some(self.race_launch_police());
                         action = MenuAction::StartRace;
                         self.next_race_start = true;
                         self.pause_page = 0;
@@ -6417,6 +6425,7 @@ impl Game {
                         action = a;
                     }
                 } else if n == 0 {
+                    self.police_eval = Some(self.race_launch_police());
                     action = MenuAction::StartRace;
                 } else {
                     if up {
@@ -6468,6 +6477,7 @@ impl Game {
                         if hovered && pointer.1 {
                             if self.race_sel == i {
                                 self.current_race = Some(i);
+                                self.police_eval = Some(self.race_launch_police());
                                 action = MenuAction::StartRace;
                             }
                             self.race_sel = i;
@@ -6501,6 +6511,7 @@ impl Game {
                             self.wager_pick = Some(0);
                         } else {
                             self.wager = None;
+                            self.police_eval = Some(self.race_launch_police());
                             action = MenuAction::StartRace;
                         }
                     }
@@ -6549,6 +6560,7 @@ impl Game {
                                 self.wager = None;
                                 self.wager_pick = None;
                                 self.wager_here = false;
+                                self.police_eval = Some(self.race_launch_police());
                                 action = MenuAction::StartRace;
                             } else {
                                 let stake = self.wager_amount(sel - 1);
@@ -6561,6 +6573,7 @@ impl Game {
                                     self.wager = Some((stake, sel - 1));
                                     self.wager_pick = None;
                                     self.wager_here = false;
+                                    self.police_eval = Some(crate::police::PoliceEval::NEVER); // wager_hangout_core's EvaluatePolice, chance 0: 0x2293
                                     action = MenuAction::StartRace;
                                 }
                             }
@@ -9225,6 +9238,7 @@ impl Game {
                                     self.wager = Some(w);
                                     self.current_race = Some(n);
                                     self.warp_with_cut = true;
+                                    self.police_eval = Some(crate::police::PoliceEval::NEVER); // NEXT WAGER re-runs wager_hangout_core's EvaluatePolice, chance 0: 0x2293
                                     action = MenuAction::StartRace;
                                 }
                             }
@@ -9237,6 +9251,7 @@ impl Game {
                                     sr.wins.clear();
                                     self.current_race = sr.races.first().copied();
                                     self.next_event_race = None;
+                                    self.police_eval = Some(crate::police::PoliceEval::NEVER); // OrderedSeriesCore's EvaluatePolice, chance 0: 0x27a4
                                     action = MenuAction::StartRace;
                                     self.warp_with_cut = true;
                                 }
@@ -9250,6 +9265,7 @@ impl Game {
                             _ => {
                                 if let Some(n) = self.next_event_race.take() {
                                     self.current_race = Some(n);
+                                    self.police_eval = Some(self.next_event_police());
                                     action = MenuAction::StartRace;
                                     // (NEXT RACE IN SERIES / CONTINUE TOURNAMENT: Warper_Warp('DEFAULT_WITH_CUT'))
                                     self.warp_with_cut = true;
@@ -9386,6 +9402,7 @@ impl Game {
                     Some(20) => {
                         if self.mc4_next_race_take().is_some() {
                             self.menu_sel = 0;
+                            self.police_eval = Some(crate::police::PoliceEval::GATED); // (generic_local_hookman's nextRace re-runs EvaluatePolice, 25 %, gated: 0x3230)
                             action = MenuAction::StartRace;
                         }
                     }
@@ -9460,6 +9477,7 @@ impl Game {
                         if let Some(i) = self.next_delivery() {
                             self.current_race = Some(i);
                             self.warp_with_cut = true;
+                            self.police_eval = Some(crate::police::PoliceEval::NEVER); // delivery_hangout_core's EvaluatePolice, chance 0: 0xa15
                             action = MenuAction::StartRace;
                         }
                     }
@@ -9531,6 +9549,7 @@ impl Game {
                             Some(n) => {
                                 self.current_race = Some(n);
                                 self.warp_with_cut = true;
+                                self.police_eval = Some(self.next_event_police());
                                 MenuAction::StartRace
                             }
                             None => MenuAction::RestartRace,
@@ -9652,6 +9671,7 @@ impl Game {
                                 self.current_race = Some(i);
                                 self.race_sel = i;
                                 self.show_map = false;
+                                self.police_eval = Some(crate::police::PoliceEval::NEVER); // RaceEditorTestRace's EvaluatePolice, chance 0: 0x16
                                 action = MenuAction::StartRace;
                             }
                         }
@@ -9671,6 +9691,7 @@ impl Game {
                                 self.current_race = Some(i);
                                 self.race_sel = i;
                                 self.show_map = false;
+                                self.police_eval = Some(self.race_launch_police());
                                 action = MenuAction::StartRace;
                             }
                         }
@@ -13766,6 +13787,9 @@ impl Game {
                     // (the tournament man's: form 66 closed, then xGAT + 1 - CruisingHookmen/0xdcd7fe26 0x6f6)
                     self.mc4_stat_add("xGAT", 0, 1.0);
                 }
+                if !payback {
+                    self.police_eval = Some(crate::police::PoliceEval::NEVER); // (TournamentCore's EvaluatePolice, chance 0: 0x999; the payback destroys the police itself)
+                }
                 return Some(MenuAction::StartRace);
             }
         } else if enter && delivery {
@@ -13776,6 +13800,7 @@ impl Game {
                 self.current_race = Some(i);
                 self.event_diff = Some(self.hangout_diff);
                 leave(self);
+                self.police_eval = Some(crate::police::PoliceEval::NEVER); // delivery_hangout_core's EvaluatePolice, chance 0: 0xa15
                 return Some(MenuAction::StartRace);
             }
         } else if (enter || std::env::var("MCLA_EVENT_ACCEPT").is_ok()) && !wager {
@@ -13802,6 +13827,7 @@ impl Game {
                 // 0x14db. Its two other calls, after the hangout's MISSION_EVENT (0x2271, 0x22ec), are not ported)
                 self.mc4_stat_add("xGAS", 0, 1.0);
                 leave(self);
+                self.police_eval = Some(crate::police::PoliceEval::NEVER); // OrderedSeriesCore's EvaluatePolice, chance 0: 0x27a4
                 return Some(MenuAction::StartRace);
             }
         } else if (enter || std::env::var("MCLA_PINK_ACCEPT").is_ok()) && wager && page_no == 2 {
@@ -13814,6 +13840,7 @@ impl Game {
                 self.wager_here = false;
                 log::info!("hangout: {} pink slip race", key);
                 leave(self);
+                self.police_eval = Some(crate::police::PoliceEval::NEVER); // wager_hangout_core's pink slip race, chance 0: 0x5735
                 return Some(MenuAction::StartRace);
             }
         } else if enter && page_no == 0 && self.hangout_page.1 == 1 && pink_open {
@@ -14879,6 +14906,7 @@ impl Game {
                     self.race_sel = i;
                     self.current_race = Some(i);
                     self.wager = None;
+                    self.police_eval = Some(self.race_launch_police());
                     out = Some(MenuAction::StartRace);
                 } else if back {
                     page_no = 0;
@@ -14940,6 +14968,7 @@ impl Game {
                         self.race_sel = *i;
                         self.current_race = Some(*i);
                         self.wager = None;
+                        self.police_eval = Some(self.race_launch_police());
                         out = Some(MenuAction::StartRace);
                     }
                 } else if back {

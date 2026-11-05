@@ -9951,6 +9951,7 @@ impl Game {
         // (the warp onto the run, then xGAM + 1 - 0xbb4f8a9f 0x9c3, 0xa38; a restart loops back
         // to 0x14fc, past it)
         self.mc4_stat_add("xGAM", 0, 1.0);
+        self.police_eval = Some(crate::police::PoliceEval::NEVER); // (generic_timetrial_hookman's EvaluatePolice, chance 0: 0xf2b)
         true
     }
 }
@@ -9968,6 +9969,47 @@ pub const STORY_LAYOUT: [(&str, bool); 7] = [
     ("BEAT_GH_04_MUSCLE", false),
     ("BEAT_GH_05_TUNER", false),
 ];
+
+/// The EvaluatePolice of a story core by its mission: the seven races and beats without the racers gate pass
+/// chance 0 (RACE_GH_02 0x2f5f, RACE_GH_06 0xa66, RACE_SH_01 0xcc9, BEAT_GH_04_MUSCLE 0x2658, BEAT_GH_05_TUNER
+/// 0x2657, BEAT_SH_04_BCLASS 0x285a, BEAT_SH_02_DCLASS 0x27a9), BEAT_SH_04B chance 1.0 chasing the player
+/// (0xc65), every other core (the *_CHAMP_CORE, BEAT_SH_0x, the South Central ones) the gated 25 %.
+pub fn story_police(mission: &str) -> crate::police::PoliceEval {
+    use crate::police::PoliceEval;
+    match mission {
+        "RACE_GH_02" | "RACE_GH_06" | "RACE_SH_01" | "BEAT_GH_04_MUSCLE" | "BEAT_GH_05_TUNER" | "BEAT_SH_04_BCLASS" | "BEAT_SH_02_DCLASS" => PoliceEval::NEVER,
+        "BEAT_SH_04B" => PoliceEval::SH_04B,
+        // (the red light men's scripts pass chance 0, 0x3fce)
+        m if m.starts_with("REDLIGHT_") => PoliceEval::NEVER,
+        _ => PoliceEval::GATED,
+    }
+}
+
+impl Game {
+    /// RaceWrapper's EvaluatePolice (0x757..0xd9e) for a race of the race list, the map, ARCADE and a career race
+    /// list: the gated 25 %, chance 0 for an arcade goal attack (race data +3152 / +3156); the telephone
+    /// challenge's own (0xb3a): 25 % without the racers gate.
+    pub fn race_launch_police(&self) -> crate::police::PoliceEval {
+        use crate::police::PoliceEval;
+        if self.phone_race {
+            PoliceEval::PHONE
+        } else if self.goal_attack {
+            PoliceEval::NEVER
+        } else {
+            PoliceEval::GATED
+        }
+    }
+
+    /// The next race of an event (NEXT RACE IN SERIES, CONTINUE TOURNAMENT, a career event's next race): a series'
+    /// core (OrderedSeriesCore 0x27a4) and a tournament's (0x999) pass chance 0, a career race list's is RaceWrapper's.
+    pub fn next_event_police(&self) -> crate::police::PoliceEval {
+        if self.series.is_some() || self.career.tour_table.is_some() {
+            crate::police::PoliceEval::NEVER
+        } else {
+            self.race_launch_police()
+        }
+    }
+}
 
 /// The objective a mission's script points at its man (mcRequirement_SetTarget(mcMission_GetObjective(m, k),
 /// mcHookman_GetId(h)) in `game/career/missions/*.sco`): objective 0 in all 53 scripts but BESTOF_SH_05 (1)
@@ -12881,6 +12923,7 @@ impl Game {
     /// hangout's panel left; the box's own action starts the race.
     fn mc4_pink_confirmed(&mut self) {
         let Some((key, pick)) = self.opt_x.s23.pink_ask.take() else { return };
+        self.police_eval = Some(crate::police::PoliceEval::NEVER); // (wager_hangout_core's pink slip race, chance 0: 0x5735)
         if self.mc4_pink_start(&key, pick) {
             self.current_race = self.mc4_pink_race(&key).or(Some(self.race_sel.min(self.race_defs.len().saturating_sub(1))));
             self.wager_here = false;
@@ -12929,6 +12972,7 @@ impl Game {
     /// starts the race.
     fn mc4_wager_confirmed(&mut self) {
         let Some((key, stake, diff)) = self.opt_x.s23.wager_ask.take() else { return };
+        self.police_eval = Some(crate::police::PoliceEval::NEVER); // (wager_hangout_core's EvaluatePolice, chance 0: 0x2293)
         self.money -= stake;
         self.dirty = true;
         self.wager = Some((stake, diff));
@@ -13004,6 +13048,7 @@ impl Game {
                     let n = 400 + (self.career.journal.len() as u32 * 7919 + self.money.unsigned_abs() as u32) % 201;
                     self.opt_x.s23.dt_pink = Some(n as i32);
                     self.opt_x.s23.start_race = true;
+                    self.police_eval = Some(crate::police::PoliceEval::NEVER); // (the Downtown pink slip's EvaluatePolice, chance 0: 0xb94)
                     log::info!("HANGOUT_PINKSLIP_DOWNTOWN: race {} against {} in {} ({} steps)", DT_PINK_RACE, DT_PINK_MAN, DT_PINK_SETUP, n);
                 }
             }
