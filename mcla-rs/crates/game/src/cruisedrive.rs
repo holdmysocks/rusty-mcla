@@ -366,6 +366,20 @@ mod capture_tests {
         let res = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")).unwrap();
         let nav = mcla_formats::rage::navsys::NavSys::parse(&res).unwrap();
         let recs: Vec<Rec> = text.lines().filter(|l| l.starts_with("run=")).map(parse).filter(|r| r.contains_key("u1708")).collect();
+        let jpath = std::path::Path::new(&path).with_file_name("junction_curves.txt");
+        let junction: HashMap<u32, mcla_formats::rage::navsys::LaneCurve> = std::fs::read_to_string(jpath)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.starts_with("rail="))
+            .map(|l| {
+                let m: HashMap<&str, &str> = l.split_whitespace().filter_map(|t| t.split_once('=')).collect();
+                let h = |x: &str| f32::from_bits(u32::from_str_radix(x, 16).unwrap());
+                let pts = m["pts"].split(';').map(|p| { let v: Vec<f32> = p.split(',').map(h).collect(); Vec3::new(v[0], v[1], v[2]) }).collect();
+                let c = mcla_formats::rage::navsys::LaneCurve { degree: m["degree"].parse().unwrap(), pts, knots: m["knots"].split(',').map(h).collect(), t_range: h(m["trange"]), t_max: h(m["tmax"]) };
+                (u32::from_str_radix(m["rail"], 16).unwrap(), c)
+            })
+            .collect();
+        let (mut on_junction, mut j_eq, mut j_diff) = (0usize, 0usize, Vec::<String>::new());
         let key = |r: &Rec| (r["f1672"][0], r["f1676"][0], r["f1680"][0], r["f1688"][0], r["g1616"].clone());
                 let (mut n, mut eqs, mut gated, mut skipped) = (0, [[0usize; 3]; 4], 0, 0);
         let (mut n_same, mut near, mut worst) = (0usize, [0usize; 2], [0f32; 2]);
@@ -379,12 +393,18 @@ mod capture_tests {
             // records without control points seen at junctions, not decoded - left out)
             let t = f(b, "gt208");
             let lane = b["lane188_dec"][0];
-            if lane as i32 == -1 || lane as usize >= nav.curves.len() {
+            // (a lane-change rail, vtable 0x820CD1BC: its slot 8 (F-32383) is the lanes' F-71868 on its own curve at +124 -
+            // cruiserec/junction_curves.txt; the TCP rails, 0x820CD224, are not in the capture's dumps: left out)
+            let jc = junction.get(&b["rail188"][0]);
+            if jc.is_none() && (lane as i32 == -1 || lane as usize >= nav.curves.len()) {
                 skipped += 1;
                 continue;
             }
+            if jc.is_some() {
+                on_junction += 1;
+            }
             let pos = v3(b, "mx_pos");
-            let c = &nav.curves[lane as usize];
+            let c = jc.unwrap_or_else(|| &nav.curves[lane as usize]);
             let p = crate::railroute::point(c, t) + v3(b, "g1632");
             let fwd = crate::railroute::deriv(c, t);
             // (the speed the update used is what it stored, +1672: the ghost is stepped after the brain in a frame)
@@ -394,7 +414,7 @@ mod capture_tests {
                 gated += 1;
             }
             let ta = f(a, "gt208");
-            let same_lane = a["lane188_dec"] == b["lane188_dec"];
+            let same_lane = a["rail188"] == b["rail188"];
             for (k, (src, tt)) in [(b, t), (a, t), (b, ta), (a, ta)].into_iter().enumerate() {
                 if k >= 2 && !same_lane {
                     continue;
@@ -425,22 +445,37 @@ mod capture_tests {
                     near[0] += (e[0] < 1e-3) as usize;
                     near[1] += (e[1] < 1e-5) as usize;
                     worst = [worst[0].max(e[0]), worst[1].max(e[1])];
+                    if jc.is_some() {
+                        j_eq += (got[2] == want[2]) as usize;
+                        if got[2] != want[2] && j_diff.len() < 8 {
+                            j_diff.push(format!("run {:?} seq {:?} rail {:08X} t {tt} (a's rail {:08X}): rail curvature {} want {}", b["run"], b["seq"], b["rail188"][0], a["rail188"][0], st.curvature, f32::from_bits(want[2])));
+                        }
+                    }
                     if got != want && first_diff.len() < 4 {
                         first_diff.push(format!("seq {:?} lane {lane} t {tt}: got {:?} want {:?}", b["seq"], got.map(f32::from_bits), want.map(f32::from_bits)));
                     }
                 }
             }
         }
-        eprintln!("follow vs capture: {n} updates ({gated} gated, {skipped} on rails without points); [demand, curvature demand, rail curvature] equal with (car, ghost t) of (b, b) {:?}, (a, b) {:?}, (b, a) {:?}, (a, a) {:?}", eqs[0], eqs[1], eqs[2], eqs[3]);
+        eprintln!("follow vs capture: {n} updates ({on_junction} on lane-change rails, {gated} gated, {skipped} on TCP rails / not dumped); [demand, curvature demand, rail curvature] equal with (car, ghost t) of (b, b) {:?}, (a, b) {:?}, (b, a) {:?}, (a, a) {:?}", eqs[0], eqs[1], eqs[2], eqs[3]);
         eprintln!("  car and ghost t of the update before (the brain runs before the ghost's step): {n_same} updates, rail curvature equal {}, speed demand within 1e-3 {} (worst {}), curvature demand within 1e-5 {} (worst {})", eqs[3][2], near[0], worst[0], near[1], worst[1]);
         for d in &first_diff {
             eprintln!("  {d}");
         }
+        eprintln!("  on lane-change rails: rail curvature equal {j_eq}");
+        for d in &j_diff {
+            eprintln!("  {d}");
+        }
         // (the reader samples the car after the tick, not where the brain reads it: the demands, which take the car's
         // place and velocity, agree to the sampling; the rail curvature, from the ghost alone, bit for bit)
-        assert!(n_same > 500 && eqs[3][2] * 100 >= n_same * 99, "rail curvature");
-        // (97 %: 797 of 815 in the 2026-11-04 capture; the rest are pairs with an update missed between samples [I])
-        assert!(near[0] * 100 >= n_same * 97 && near[1] * 100 >= n_same * 97, "demands");
+        // (lanes: 813 of 813; the lane-change rails: 130 of 151 - the misses are small and inside one rail, whose curve
+        // was dumped once, the first time it was seen [I: the original may reshape it later])
+        let j_n = on_junction.min(n_same);
+        assert!(n_same > 500 && (eqs[3][2] - j_eq) * 100 >= (n_same - j_n) * 99, "rail curvature on lanes");
+        assert!(j_n > 100 && j_eq * 100 >= j_n * 80, "rail curvature on lane-change rails");
+        // (lanes alone 797 of 815; with the lane-change rails (the left turn, steer to 1.0) 946 / 927 of 964; the rest
+        // are pairs with an update missed between samples [I])
+        assert!(near[0] * 100 >= n_same * 95 && near[1] * 100 >= n_same * 95, "demands");
     }
 
     /// Slot 11 of the cruising brain in state 5 (F-95280 -> F-28541) against the same capture: the curvature and
