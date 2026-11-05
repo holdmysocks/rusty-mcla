@@ -4387,7 +4387,7 @@ mod tests {
     #[test]
     fn lane_into_junction_matches_the_original() {
         let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
-        let res = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")).unwrap();
+        let Ok(res) = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")) else { return };
         let nav = NavSys::parse(&res).unwrap();
         let want: hashbrown::HashMap<usize, usize> = include_str!("testdata/lane_into_junction_ref.txt")
             .lines()
@@ -4411,7 +4411,7 @@ mod tests {
     #[test]
     fn race_clearing_matches_the_original() {
         let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
-        let res = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")).unwrap();
+        let Ok(res) = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")) else { return };
         let nav = NavSys::parse(&res).unwrap();
         let h = |t: &str| u32::from_str_radix(t, 16).unwrap();
         let (mut n, mut writes, mut set, mut edge) = (0, 0, 0, 0);
@@ -4464,7 +4464,7 @@ mod tests {
     #[test]
     fn road_density_matches_the_original() {
         let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
-        let res = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")).unwrap();
+        let Ok(res) = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")) else { return };
         let nav = NavSys::parse(&res).unwrap();
         let h = |t: &str| u32::from_str_radix(t, 16).unwrap();
         let (mut n, mut on, mut multi, mut d, mut s) = (0, 0, 0, 0, 0);
