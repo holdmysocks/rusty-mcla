@@ -13641,12 +13641,17 @@ impl Game {
                 if payback {
                     self.mc4_stat_add("xGAK", 0, 1.0);
                     self.payback_keys = true;
+                } else {
+                    // (the tournament man's: form 66 closed, then xGAT + 1 - CruisingHookmen/0xdcd7fe26 0x6f6)
+                    self.mc4_stat_add("xGAT", 0, 1.0);
                 }
                 return Some(MenuAction::StartRace);
             }
         } else if enter && delivery {
             // the next delivery of the district's list, at the difficulty chosen
             if let Some(i) = self.delivery_pick(key.starts_with("sc_")) {
+                // (the delivery core: its panel closed, then xGAD + 1 - Hangouts/0x37c63b19 0x882)
+                self.mc4_stat_add("xGAD", 0, 1.0);
                 self.current_race = Some(i);
                 self.event_diff = Some(self.hangout_diff);
                 leave(self);
