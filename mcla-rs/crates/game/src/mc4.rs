@@ -17870,7 +17870,7 @@ mod tests {
         assert_eq!(b.0, "tutorial_delivery_title");
         assert!(g.mc4_tut_continue(&b.0));
         assert_eq!(g.mc4_time_scale(), 0.0);
-        assert!(g.opt_x.arcade.d.say.contains(&"TUTORIAL_DELIVERY_INGAME".to_string()));
+        assert!(g.opt_x.arcade.d.say_over.contains(&"TUTORIAL_DELIVERY_INGAME".to_string()));
         g.tutorial_box = None;
         g.mc4_s23_tick(0.016, S23In::default());
         assert_eq!(g.mode, crate::game::Mode::RaceSelect, "the panel comes up");

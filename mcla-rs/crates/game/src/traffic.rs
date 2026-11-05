@@ -5797,6 +5797,8 @@ impl Vehicles {
             } else if !wiped {
                 // F-93348 (traffic, people, then the parked cars) and F-75661 (the
                 // unspawners, only while the region list has roads); none while wiped out
+                // (the type weights' use of the types, F-68379 -> F-83932: parked.rs)
+                self.ambient_use(&world.assets.root);
                 if enabled {
                     self.spawn_frame(&mut sp, gpu, world, nav, center, view, mph, player_link);
                 }

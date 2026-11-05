@@ -1815,6 +1815,36 @@ enum Plan {
     Cross(Vec3, usize, f32),
 }
 
+/// One object of the grid as the people spawner's room test reads it (F-70932): its kind (+6: 0 / 1
+/// racers, 2 ambient cars, 3 props, 4 people), its place (slot 1, +48) and whether its owner's type
+/// (+16 -> +448) is the spawner's.
+#[derive(Clone, Copy, Debug)]
+pub struct RoomObj {
+    pub kind: u8,
+    pub pos: Vec3,
+    pub same_type: bool,
+}
+
+/// F-70932: no room at `p` when an object of the 3 x 3 grid cells round p's cell (F-88455, F-99153;
+/// none when p is off the grid) of kind 0 .. 4 lies flat within `s1` (fMinSpawnPedSpacing), a person of
+/// the same type within `s2` (fMinSpawnPedTypeSpacing): (o - p) over x and z squared, the z term fused,
+/// below s x s.
+pub fn room_blocked(grid: &crate::vehicles::traffic::CrossGrid, p: Vec3, objs: &[RoomObj], s1: f32, s2: f32) -> bool {
+    let Some((cx, cz)) = grid.cell(p.x, p.z) else { return false };
+    objs.iter().any(|o| {
+        if o.kind > 4 {
+            return false;
+        }
+        match grid.cell(o.pos.x, o.pos.z) {
+            Some((ox, oz)) if (ox - cx).abs() <= 1 && (oz - cz).abs() <= 1 => {}
+            _ => return false,
+        }
+        let s = if o.kind == 4 && o.same_type { s2 } else { s1 };
+        let (dx, dz) = (o.pos.x - p.x, o.pos.z - p.z);
+        crate::physics::exact::fma(dz, dz, dx * dx) < s * s
+    })
+}
+
 /// A moving car the pedestrians have to watch out for.
 #[derive(Clone, Copy)]
 pub struct Threat {
@@ -1910,6 +1940,9 @@ pub struct Peds {
     /// the avoid list in file order (the manager's +0x64228 list): clip name, AvoidType, ApproachDir, AudioType
     avoid_list: Vec<(String, u32, u32, u32)>,
     list: Vec<Ped>,
+    /// the cars of the object grid for the spawn room test (F-70932): kind (0 the player, 1 racers, 2 the
+    /// others, as `Threat`) and place, taken from the threats each update
+    room_cars: Vec<(u8, Vec3)>,
     active: HashSet<(usize, u32)>,
     curb: HashMap<usize, Option<f32>>,
     tune: Tuning,
@@ -2002,6 +2035,7 @@ impl Peds {
             list: Vec::new(),
             active: HashSet::new(),
             curb: HashMap::new(),
+            room_cars: Vec::new(),
             tune: Tuning { spawn_inner: 95.0, spawn_outer: 140.0, unspawn: 150.0, density: 0.011, box_width: 100.0, ped_spacing: 1.0, type_spacing: 20.0, fov_mph: [25.0, 45.0], fov_deg: [89.9, 45.0] },
             timer: 0.0,
             filled: false,
@@ -2368,6 +2402,15 @@ impl Peds {
     /// One run of the original's pedestrian spawner (F-33044) and unspawner
     /// (F-39594, from F-75661) on the navigation mesh: every other 30 Hz frame.
     fn spawn_frame(&mut self, gpu: &mut Gpu, mesh: &NavMesh, col: &WorldCollider, focus: Vec3) {
+        // the type weights' use of the types (type +8, F-68379 -> F-83932): the walkers of each set;
+        // a person's type tune has no bIsTrailer: its +112 stays 0 from the type ctor F-63144
+        let mut live: HashMap<String, i32> = HashMap::new();
+        for p in &self.list {
+            if let Some(d) = self.dirs.get(p.ty) {
+                *live.entry(d.0.to_ascii_lowercase()).or_insert(0) += 1;
+            }
+        }
+        self.districts.set_use(&|n| live.get(n).copied().unwrap_or(0), &|_| false);
         // unspawn: 30 random checks a frame, while the traffic's region list has roads (F-75661)
         for _ in 0..if self.traffic_regions == Some(0) { 0 } else { 30 } {
             if self.list.is_empty() {
@@ -2435,11 +2478,11 @@ impl Peds {
                     continue;
                 }
             }
+            // room (F-70932; the gate M+2116 is 1 from the ctor F-10264, its only writer): the cars and
+            // the walkers of the grid's 3 x 3 cells round the point
             let (s1, s2) = (self.tune.ped_spacing, self.tune.type_spacing);
-            if self.list.iter().any(|p| {
-                let d = p.pos.distance_squared(pos);
-                d < s1 * s1 || (p.ty == ti && d < s2 * s2)
-            }) {
+            let objs: Vec<RoomObj> = self.room_cars.iter().map(|&(kind, pos)| RoomObj { kind, pos, same_type: false }).chain(self.list.iter().map(|p| RoomObj { kind: 4, pos: p.pos, same_type: p.ty == ti })).collect();
+            if room_blocked(&crate::vehicles::traffic::CrossGrid::UNBOUNDED, pos, &objs, s1, s2) {
                 continue;
             }
             // the collision's floor where it agrees with the mesh
@@ -2687,6 +2730,8 @@ impl Peds {
             return;
         }
         let mut frame0 = self.frame_no;
+        self.room_cars.clear();
+        self.room_cars.extend(threats.iter().map(|t| (t.car.kind, t.pos)));
         if let Some(mesh) = self.mesh.take() {
             // the original's 30 Hz frames
             self.step = (self.step + dt).min(FRAME * 4.0);
@@ -3928,5 +3973,39 @@ mod tests {
         let path = random_path(&mesh, start, mesh.polys[start as usize].center, Vec3::X, &mut rand);
         assert!(!path.is_empty());
         assert!(path.iter().all(|h| mesh.polys[h.2 as usize].sidewalk()));
+    }
+
+    /// F-70932 with the grid's cell code (F-88455, F-99153) run whole offline
+    /// (tools/people_room_reference.py -> testdata/people_room_ref.txt): 4,000 cases - grids of 1 .. 8 x 1 .. 8 cells,
+    /// the point on and off the grid and on cell edges, up to 24 objects of kinds 0 .. 7 a float step or two about
+    /// either spacing's edge, same and other types. The answer equal in every case.
+    #[test]
+    fn room_matches_original() {
+        let txt = include_str!("testdata/people_room_ref.txt");
+        let hex = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let f = |s: &str| f32::from_bits(hex(s));
+        let (mut cases, mut bad, mut blocked) = (0, 0, 0);
+        for l in txt.lines().filter(|l| !l.is_empty()) {
+            let (head, rest) = l.split_once(" | ").unwrap();
+            let (objs, want) = rest.rsplit_once(" -> ").unwrap();
+            let h: Vec<&str> = head.split_whitespace().collect();
+            let grid = crate::vehicles::traffic::CrossGrid { min: [f(h[2]), f(h[3])], n: [hex(h[0]) as i32, hex(h[1]) as i32], bounded: true };
+            let p = Vec3::new(f(h[4]), f(h[5]), f(h[6]));
+            let o: Vec<&str> = objs.split_whitespace().collect();
+            let list: Vec<RoomObj> = o.chunks(5).map(|c| RoomObj { kind: hex(c[0]) as u8, pos: Vec3::new(f(c[1]), f(c[2]), f(c[3])), same_type: c[4] == "1" }).collect();
+            assert_eq!(list.len(), hex(h[9]) as usize);
+            let got = room_blocked(&grid, p, &list, f(h[7]), f(h[8]));
+            cases += 1;
+            blocked += got as usize;
+            if got != (want.trim() == "1") {
+                bad += 1;
+                if bad <= 5 {
+                    eprintln!("room mismatch: {l} -> port {got}");
+                }
+            }
+        }
+        eprintln!("people room: {cases} cases ({blocked} no room), {bad} mismatches");
+        assert!(cases >= 4000);
+        assert_eq!(bad, 0);
     }
 }
