@@ -30,6 +30,13 @@ pub struct Challenge {
     pub diff: Option<usize>,
     /// the three races the hookman keeps (race table places): the one he goes to first
     pub races: Vec<usize>,
+    /// The meet-me-there include's countdown (local20 = 40, one turn a WAITUNWARPED(20); CruisingHookmen/0x897fb23f
+    /// 0xbc6..0xbcf, 0x1439..0x146b): below 0 it queues CANCEL_BEAT_ME_THERE for the info line, once
+    pub cancel_turns: i32,
+    /// time since the countdown's last turn (s)
+    pub cancel_wait: f32,
+    /// local19: the line was queued - only then is the flash to skip the run read (0x1371..0x137b)
+    pub cancel_shown: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1011,7 +1018,7 @@ impl Roamers {
             // player is not damaged out: the meet-me-there include tests Racer_IsDamagedOut first, F-36475 - e.g.
             // BEAT_GH_05_TUNER_CORE 0x10b2. Its Racer_SetInvincible(player, 1), F-87901, stands until the race core's
             // start clears it for every racer; the port starts the race from here at once - no invincible flag kept)
-            if flash && ch.time > 0.5 && vehicles.player().map_or(true, |c| c.state.damage < 1.0) {
+            if flash && ch.cancel_shown && vehicles.player().map_or(true, |c| c.state.damage < 1.0) {
                 log::info!("headlights flashed on the run to the line: straight to the race");
                 game.opt_x.arcade.bmt_left.set(None);
                 let race = ch.race;
@@ -1019,6 +1026,21 @@ impl Roamers {
                 self.won_against_rival = self.rival_challenged;
                 vehicles.cars.retain(|c| !c.racer);
                 return Some(race);
+            }
+            // (the countdown's turn, after the flash test as in the loop: a turn once WAITUNWARPED(20) is over)
+            if !ch.cancel_shown && vehicles.player().map_or(true, |c| c.state.damage < 1.0) {
+                ch.cancel_wait += dt;
+                if ch.cancel_wait >= 0.020 {
+                    ch.cancel_wait = 0.0;
+                    ch.cancel_turns -= 1;
+                    if ch.cancel_turns < 0 {
+                        ch.cancel_shown = true;
+                        let t = game.career.strings.get("CANCEL_BEAT_ME_THERE").unwrap_or("CANCEL_BEAT_ME_THERE").to_string();
+                        if let Some(fh) = game.flash_hud.as_mut() {
+                            fh.queue_info(&t);
+                        }
+                    }
+                }
             }
             // (damaged out on the run: Race_IsDamagedOut - no EndOfRaceSequence, no BEAT_ME_THERE_RACE_COMPLETE,
             // the race-over menu - game/race/0xb8b948b6 0x120a..0x1217, 0x1f9f..)
@@ -1294,7 +1316,7 @@ impl Roamers {
         // (step 19d: every police car goes underground for the run and the race -
         // PoliceManager_SetAllPoliceUnderground(1, 1))
         vehicles.cars.retain(|c| !c.cop);
-        self.challenge = Some(Challenge { race, goal, time: 0.0, dist, close: Default::default(), diff: man.as_ref().filter(|m| m.mission.is_empty()).map(|m| m.difficulty.clamp(0, 3) as usize), races: kept });
+        self.challenge = Some(Challenge { race, goal, time: 0.0, dist, close: Default::default(), diff: man.as_ref().filter(|m| m.mission.is_empty()).map(|m| m.difficulty.clamp(0, 3) as usize), races: kept, cancel_turns: 40, cancel_wait: 0.0, cancel_shown: false });
         None
     }
 }

@@ -10013,9 +10013,12 @@ impl Game {
                             self.song_line = Some((t, at + dt));
                             Some(shown)
                         });
-                        match song {
-                            Some(t) => fh.info_line(Some(t.as_str())),
-                            None => fh.info_line(road.as_ref().map(|r| r.0.as_str()).filter(|n| (moving || fresh) && !n.is_empty())),
+                        // (texts queued for the line - UIManager_QueueDisplay - have it first: `FlashHud::info_tick`)
+                        if !fh.info_tick() {
+                            match song {
+                                Some(t) => fh.info_line(Some(t.as_str())),
+                                None => fh.info_line(road.as_ref().map(|r| r.0.as_str()).filter(|n| (moving || fresh) && !n.is_empty())),
+                            }
                         }
                         // the boxed figure is the limit of the road the car is on (`t_speed_limit`;
                         // the movie starts on 55 and keeps the last road's between roads)

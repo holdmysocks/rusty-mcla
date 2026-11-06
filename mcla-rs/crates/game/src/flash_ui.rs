@@ -2164,6 +2164,9 @@ pub struct FlashHud {
     pub racer_found: bool,
     /// the camera bar: the view last seen (-1 at the start, as the game's own copy)
     camera_last: i32,
+    /// The HUD manager's info-text ring (`F-60548` pushes, at most fifteen; `F-72577` pops when the movie
+    /// sets `infoDone`): the texts, already looked up in the string table
+    pub info_queue: std::collections::VecDeque<String>,
 }
 
 /// Splash slots of the HUD movie (`SplashTypes` 5, 4, 10 for slots 0..2; slot 3
@@ -2175,7 +2178,7 @@ pub const SPLASH_BOTTOM: usize = 2;
 impl FlashHud {
     pub fn load(data_dir: &str, shared: &UiShared) -> Option<FlashHud> {
         let movie = FlashMovie::load(data_dir, "resources/ui/hud/0x1f0e1cda.r27", shared)?;
-        let mut h = FlashHud { movie, countdown_shown: false, splash_queue: Default::default(), racer_found: false, camera_last: -1 };
+        let mut h = FlashHud { movie, countdown_shown: false, splash_queue: Default::default(), racer_found: false, camera_last: -1, info_queue: Default::default() };
         // (the game drives the HUD from its start - the movie is up, hidden, long before it is first shown; driven
         // only from its first showing, its first frames were its placeholders: the race clock's "1:23.45.67.85")
         for _ in 0..30 {
@@ -2220,6 +2223,47 @@ impl FlashHud {
         let p = &mut self.movie.player;
         p.set_global("infotextHilight", Value::Int(0));
         p.set_global("d_selectedlevel_longname", Value::str(text.unwrap_or("")));
+    }
+
+    /// Queue a text for the line (`F-60548`, UIManager_QueueDisplay's body: its seconds argument is stored and not
+    /// read): a full ring (fifteen) drops it; the first one goes up at once, highlighted - the movie runs it across
+    /// the line and sets `infoDone` (hud.swf 0x3a39..0x3c3a).
+    pub fn queue_info(&mut self, text: &str) {
+        if self.info_queue.len() >= 15 {
+            return;
+        }
+        self.info_queue.push_back(text.to_string());
+        log::info!("info line: queued {text:?} ({} in the ring)", self.info_queue.len());
+        if self.info_queue.len() == 1 {
+            let p = &mut self.movie.player;
+            p.set_global("d_selectedlevel_longname", Value::str(text));
+            p.set_global("infotextHilight", Value::Int(1));
+        }
+    }
+
+    /// The ring's turn of the HUD update (`F-72577`): with texts queued, once the movie reports `infoDone` == 1 the
+    /// head goes; the next one's text is put up as it is (highlight and `infoDone` are left as the movie set them),
+    /// and after the last the line is cleared (highlight 0, `infoDone` 0, empty text). True while the ring owns
+    /// the line.
+    pub fn info_tick(&mut self) -> bool {
+        if self.info_queue.is_empty() {
+            return false;
+        }
+        let p = &mut self.movie.player;
+        if p.get_global("infoDone").map_or(0, |v| v.to_i32()) != 1 {
+            return true;
+        }
+        let gone = self.info_queue.pop_front();
+        log::info!("info line: infoDone, {gone:?} gone");
+        match self.info_queue.front() {
+            Some(t) => p.set_global("d_selectedlevel_longname", Value::str(t)),
+            None => {
+                p.set_global("infotextHilight", Value::Int(0));
+                p.set_global("infoDone", Value::Int(0));
+                p.set_global("d_selectedlevel_longname", Value::str(""));
+            }
+        }
+        true
     }
 
     /// Queue a splash message (F-71442). A slot's ring holds five, the one on show

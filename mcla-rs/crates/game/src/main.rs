@@ -6529,15 +6529,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             _ => None,
                         };
                     }
-                    if let Some(ch) = self.roam.challenge.as_ref() {
-                        if self.tick_no % 45 == 0 {
-                            let d = self.vehicles.player().map_or(0.0, |c| c.state.pos.distance(ch.goal));
-                            // (in the game's words: BEAT ME THERE - FLASH HEADLIGHTS TO MEET AT THE STARTING LINE)
-                            let st = |k: &str, fb: &str| self.game.career.strings.get(k).map(|s| s.to_uppercase()).unwrap_or_else(|| fb.to_string());
-                            let m = format!("{}   {:.1} KM   -   {}", st("raceToStart", "BEAT ME THERE"), d / 1000.0, st("CANCEL_BEAT_ME_THERE", "FLASH HEADLIGHTS TO MEET AT THE STARTING LINE"));
-                            self.game.show_message(&m);
-                        }
-                    }
+                    // (the run's CANCEL_BEAT_ME_THERE goes to the info line once - `Challenge::cancel_turns`)
                 } else if self.roam.challenge.is_some() {
                     self.roam.cancel(&mut self.vehicles);
                 }
