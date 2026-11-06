@@ -14,9 +14,9 @@
 //!   motorcycle in the original's sim keeps its wipeout timer there (vehsim's `wipe`). The wipeout's end
 //!   (A-23262) clears the bits and stands up a car lying over (up y under 0.7) where it is.
 //!
-//! - a damage-out's end (mcCar::Update F-53665 at 0x823363A0, once the timer is under 0): a car that is not
+//! - a damage-out's end (mcCar::Update F-53665, its damage-out branch, once the timer is under 0): a car that is not
 //!   the local player's and not a police car (racer byte +465, 1 for police: their brain teleports them,
-//!   F-14059) gets the car's vtable slot 1 (mcCar vtable 0x82045EE4 +4), the car reset F-46526 "Resetting car
+//!   F-14059) gets mcCar's vtable slot 1, the car reset F-46526 "Resetting car
 //!   %s": the tune blend and wheel fit again, every part's reset - the damage object's F-15879 (points, timer and
 //!   hit fields to 0), the chassis' (its +592 flags to 0, mcCarSim::Reset F-47310), the damage parts' repair
 //!   F-75221 - with its place and heading kept. Here: `Outcome::reset`, the caller runs `vehsim::reset`.
