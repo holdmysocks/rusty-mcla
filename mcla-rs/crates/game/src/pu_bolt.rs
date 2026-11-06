@@ -47,6 +47,27 @@ pub struct ArcTune {
     pub iterations: usize,
 }
 
+impl ArcTune {
+    /// What the style constructor (F-97066) leaves - every lightning type runs it on its ma_ and
+    /// mi_ styles before the tune file is read, so a key the file leaves out keeps this.
+    pub fn constructed() -> ArcTune {
+        let f = f32::from_bits;
+        ArcTune {
+            color_min: [f(0x3f19_999a), f(0x3f2b_851f), 1.0, 1.0],
+            color_max: [0.0, f(0x3f3c_ac08), 1.0, 1.0],
+            end_color: [1.0, 1.0, 1.0, f(0x3e4f_df3b)],
+            arc_growth: [f(0x3dcc_cccd), f(0x3f0c_cccd)],
+            growth_speed: [f(0x3dcc_cccd), 0.5],
+            flux_tangent: [f(0x3ccc_cccd), f(0x3f83_3333)],
+            flux_normal: [f(0x3ccc_cccd), f(0x3f06_6666)],
+            flicker_speed: [f(0x3dcc_cccd), 0.5],
+            thickness: 0.25,
+            tex_anim_rate: 3.0,
+            iterations: 10,
+        }
+    }
+}
+
 /// The game's random numbers (0x82860880): multiply with carry by 0x5CDCFAA7; a number is the
 /// low word's 23 bits x 2^-23.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -314,23 +335,25 @@ pub fn load_tune(v: &std::collections::HashMap<String, Vec<f32>>, section: &str)
         sample_range: f2("m_SampleRangeMinMax", [0.0, 180.0]),
         offset: off,
     };
+    // (a key the file leaves out keeps the style constructor's value, F-97066)
+    let d = ArcTune::constructed();
     let arc = |p: &str| {
         let k = |n: &str| format!("{section}.{p}_{n}");
-        let c4 = |n: &str| v.get(&k(n)).filter(|x| x.len() >= 4).map_or([0.0; 4], |x| [x[0], x[1], x[2], x[3]]);
-        let r = |n: &str| v.get(&k(n)).filter(|x| x.len() >= 2).map_or([0.0; 2], |x| [x[0], x[1]]);
-        let o = |n: &str| v.get(&k(n)).and_then(|x| x.first().copied()).unwrap_or(0.0);
+        let c4 = |n: &str, d: [f32; 4]| v.get(&k(n)).filter(|x| x.len() >= 4).map_or(d, |x| [x[0], x[1], x[2], x[3]]);
+        let r = |n: &str, d: [f32; 2]| v.get(&k(n)).filter(|x| x.len() >= 2).map_or(d, |x| [x[0], x[1]]);
+        let o = |n: &str| v.get(&k(n)).and_then(|x| x.first().copied());
         ArcTune {
-            color_min: c4("ColorMin"),
-            color_max: c4("ColorMax"),
-            end_color: c4("EndColor"),
-            arc_growth: r("ArcGrowthMinMax"),
-            growth_speed: r("GrowthSpeedMinMax"),
-            flux_tangent: r("FluxTangentRangeMinMax"),
-            flux_normal: r("FluxNormalRangeMinMax"),
-            flicker_speed: r("FlickerSpeedMinMax"),
-            thickness: o("Thickness"),
-            tex_anim_rate: o("TexAnimRate"),
-            iterations: o("Iterations").max(0.0) as usize,
+            color_min: c4("ColorMin", d.color_min),
+            color_max: c4("ColorMax", d.color_max),
+            end_color: c4("EndColor", d.end_color),
+            arc_growth: r("ArcGrowthMinMax", d.arc_growth),
+            growth_speed: r("GrowthSpeedMinMax", d.growth_speed),
+            flux_tangent: r("FluxTangentRangeMinMax", d.flux_tangent),
+            flux_normal: r("FluxNormalRangeMinMax", d.flux_normal),
+            flicker_speed: r("FlickerSpeedMinMax", d.flicker_speed),
+            thickness: o("Thickness").unwrap_or(d.thickness),
+            tex_anim_rate: o("TexAnimRate").unwrap_or(d.tex_anim_rate),
+            iterations: o("Iterations").map_or(d.iterations, |x| x.max(0.0) as usize),
         }
     };
     (bt, [arc("ma"), arc("mi")])
@@ -446,7 +469,9 @@ mod tests {
         }
         assert!(on >= 40, "{on} of 50 control points on the box");
         let s = l.strips(Vec3::new(0.0, 3.0, 10.0), 1.0);
-        assert_eq!(s.len(), 10);
+        // (ten bolts x both styles: the file has no mi_ keys, so the mi_ style keeps the constructor's
+        // 10 iterations, F-97066, and is drawn as well)
+        assert_eq!(s.len(), 20);
         assert_eq!(s[0].len(), 11);
         assert_eq!(s[0][0].2[3], 0.0);
     }
@@ -474,6 +499,28 @@ mod original_bezier_tests {
             n += 1;
         }
         assert_eq!(n, 120);
+    }
+
+    /// F-97066: the arc style constructor run offline (tools/pu_arc_style_reference.py -> testdata/pu_arc_style_ref.txt, the
+    /// 25 words of the object); a file without any ma_ / mi_ keys gives the port exactly these.
+    #[test]
+    fn arc_style_defaults_match_the_original() {
+        let w: Vec<u32> = include_str!("testdata/pu_arc_style_ref.txt").split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+        assert_eq!(w.len(), 25);
+        let (_, [ma, mi]) = load_tune(&std::collections::HashMap::new(), "Reverse");
+        for s in [ArcTune::constructed(), ma, mi] {
+            let b = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<u32>>();
+            let mut got = Vec::new();
+            got.extend(b(&s.color_min));
+            got.extend(b(&s.color_max));
+            got.extend(b(&s.end_color));
+            for r in [s.arc_growth, s.growth_speed, s.flux_tangent, s.flux_normal, s.flicker_speed] {
+                got.extend(b(&r));
+            }
+            got.extend(b(&[s.thickness, s.tex_anim_rate]));
+            got.push(s.iterations as u32);
+            assert_eq!(got, w);
+        }
     }
 
     /// F-49462: the arc's clock step against the original's own code run offline (tools/pu_arc_reference.py -> testdata/pu_arc_ref.txt:
