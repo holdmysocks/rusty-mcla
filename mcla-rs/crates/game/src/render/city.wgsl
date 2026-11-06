@@ -613,6 +613,8 @@ struct VsOut {
     @location(14) paint_s: f32,
     // car bodies: the damage map at the vertex (vs_body) - x the scrape (sat(b) x a), y the soot
     @location(15) dmg: vec2<f32>,
+    // story characters (vs_body): the vertex programs' car lights (rgb, `ch_vlights`) and the floor term h (w), per vertex
+    @location(16) cvl: vec4<f32>,
 };
 
 // The console's own decoding of a "gamma" texture: not the sRGB curve but four straight pieces
@@ -1241,6 +1243,10 @@ fn vs_body(in: VsIn) -> VsOut {
             var sg = 1.0;
             if (ox > 6.0) { ox = ox - 8.0; sg = 0.0; } else if (ox > 2.0) { ox = ox - 4.0; sg = -1.0; }
             o.fill = vec4<f32>(oct_dec(vec2<f32>(ox, in.uv2.y)), sg);
+            // (the programs' o3 / o5 / o7: the floor term h and the car lights at the vertex, with the skinned normal
+            // normalised - character_programs_rule.md section 3)
+            let fl = obj.area_b[3];
+            o.cvl = vec4<f32>(ch_vlights(o.wpos, o.normal, obj.interior[4].x > 8.5), clamp(dot(o.wpos, fl.xyz) - fl.w, 0.0, 1.0));
         }
         o.uv1.x = 0.0;
         o.uv2.y = 0.0;
@@ -1781,8 +1787,8 @@ fn ch_light(k: i32, pw: vec3<f32>) -> vec4<f32> {
 // The vertex programs' two car lights (character_programs_rule.md section 3; the driver's car: skin.rs puts them in
 // lamp_a[14..18], F-42959): gauge = colour x gain x sat(Lg . coneDir - cone) x sat(Lg . N) x (1 - sat(dg x 2/3))^gp,
 // neon = colour x sat(Ln . N) x (1 - sat(dn x 2/3))^4, screened together; cone 0.8 / gain 5 / gp 1, the skin_arm
-// programs (VS_Bump / VSSkinned_Bump) 0.9 / 10 / 2. The programs work them out per vertex; here per pixel with the
-// interpolated normal. MCLA_DEBUG_VIEW=763: none.
+// programs (VS_Bump / VSSkinned_Bump) 0.9 / 10 / 2. Per vertex, as the programs (vs_body -> VsOut.cvl).
+// MCLA_DEBUG_VIEW=763: none; 764: per pixel (char_shade).
 fn ch_vlights(pw: vec3<f32>, n: vec3<f32>, arm: bool) -> vec3<f32> {
     if (obj.lamp_a[14].w < 0.5 || (g.params.w > 762.5 && g.params.w < 763.5)) { return vec3<f32>(0.0); }
     let cone = select(0.8, 0.9, arm);
@@ -1813,7 +1819,7 @@ fn ch_nm(nn: vec3<f32>, t: vec3<f32>, b: vec3<f32>, x: f32, y: f32, m: f32) -> v
 // colour, d the diffuse (decoded), nm the normal map (stored), det the detail map (decoded, at
 // uv x scale), m4 the fourth map at uv (spec map), m4b at 20 uv (skin_arm's offset map), s the
 // shadow (the full-screen collector), fast the top-down mask's raw value, ff front facing.
-fn char_shade(fx: u32, pw: vec3<f32>, nv: vec3<f32>, tf: vec4<f32>, vcol: vec4<f32>, d: vec4<f32>, nm: vec4<f32>, det: f32, m4: vec4<f32>, m4b: vec4<f32>, s: f32, fast: f32, ff: bool, pedl: vec3<f32>) -> vec3<f32> {
+fn char_shade(fx: u32, pw: vec3<f32>, nv: vec3<f32>, tf: vec4<f32>, vcol: vec4<f32>, d: vec4<f32>, nm: vec4<f32>, det: f32, m4: vec4<f32>, m4b: vec4<f32>, s: f32, fast: f32, ff: bool, pedl: vec3<f32>, cvl: vec4<f32>) -> vec3<f32> {
     let k0 = obj.area_a[4];
     let k1 = obj.area_b[4];
     let k2 = obj.interior[0];
@@ -1833,8 +1839,10 @@ fn char_shade(fx: u32, pw: vec3<f32>, nv: vec3<f32>, tf: vec4<f32>, vcol: vec4<f
     let b = cross(t, nn) * tf.w;
     let v = normalize(g.cam_pos.xyz - pw);
     let ambp = obj.area_a[3];
+    // (MCLA_DEBUG_VIEW=764: the floor term and the car lights per pixel, as before 2026-11-06)
+    let px_old = g.params.w > 763.5 && g.params.w < 764.5;
     let fl = obj.area_b[3];
-    let h = clamp(dot(pw, fl.xyz) - fl.w, 0.0, 1.0);
+    let h = select(cvl.w, clamp(dot(pw, fl.xyz) - fl.w, 0.0, 1.0), px_old);
     let l0 = ch_light(0, pw);
     let l1 = ch_light(1, pw);
     let l2 = ch_light(2, pw);
@@ -1881,7 +1889,7 @@ fn char_shade(fx: u32, pw: vec3<f32>, nv: vec3<f32>, tf: vec4<f32>, vcol: vec4<f
     // h = sat(dot(Pw, floorPlaneEq.xyz) - floorPlaneEq.w); the gauge / neon light of a driver's car: `ch_vlights`)
     let amb = ambp.rgb * (0.1 * ambp.w / 0.66) * h;
     let ambw = h / 0.66;
-    let vl = ch_vlights(pw, nn, fx == 9u);
+    let vl = select(cvl.rgb, ch_vlights(pw, nn, fx == 9u), px_old);
     if (fx == 9u) {
         // PS_HighQualitySkin: its constants are literals but diffuseMod; the fast mask always
         let n = normalize(t * ((2.0 * nm.x - 1.0) + 1.5 * (m4b.x - 0.5)) + b * ((2.0 * nm.y - 1.0) + 1.5 * (m4b.y - 0.5)) + nn * (2.0 * nm.z - 1.0));
@@ -5070,7 +5078,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
         let ch_fast = fast_collector(in.wpos);
         let ch_s = select(clamp((ch_fast - 0.25) * 1.3333333, 0.0, 1.0), sun_shadow(in.wpos, ng), obj.interior[4].y > 0.5);
         let ch_dd = vec4<f32>(select(ch_d.rgb, xenos_gamma(ch_d.rgb), xenos_gamma_on()), ch_d.a);
-        lit = char_shade(u32(round(obj.interior[4].x)), in.wpos, in.normal, in.fill, in.color, ch_dd, second, ch_det, ch_m4, ch_m4b, ch_s, ch_fast, ff, in.fill.xyz);
+        lit = char_shade(u32(round(obj.interior[4].x)), in.wpos, in.normal, in.fill, in.color, ch_dd, second, ch_det, ch_m4, ch_m4b, ch_s, ch_fast, ff, in.fill.xyz, in.cvl);
         // (761: the shadow term; 762: sat(n.L) of the first light x its colour)
         if (g.params.w > 760.5 && g.params.w < 761.5) { lit = vec3<f32>(ch_s); }
         if (g.params.w > 761.5 && g.params.w < 762.5) { lit = obj.area_b[0].rgb * clamp(dot(normalize(in.normal), ch_light(0, in.wpos).xyz), 0.0, 1.0) * ch_light(0, in.wpos).w; }
