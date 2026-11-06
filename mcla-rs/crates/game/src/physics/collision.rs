@@ -310,6 +310,12 @@ pub struct SectorMesh {
     /// them - where the mesh is the city's own bound; empty otherwise
     pub faces: Vec<Vec3>,
     pub beside: Vec<[Option<u32>; 3]>,
+    /// each triangle's whole material id as the city's bound holds it (bound +208 [+216 [i]], what
+    /// the bound's material call F-10817 answers): the table number in the low byte, the
+    /// material flags above it (shifted by 8: 0x8000 terrain, 0x10000 buildings, 0x20000
+    /// push_sphere ..., what a query's material mask +88 tests) - where the mesh is the city's own
+    /// bound; empty otherwise
+    pub ids: Vec<u32>,
     /// where the mesh is one cell of the city's grid bound: which, and the grid's numbers
     pub cell: Option<GridCell>,
 }
@@ -368,7 +374,7 @@ impl SectorMesh {
                 }
             }
         }
-        SectorMesh { tris, mats, grid, min, max, faces: Vec::new(), beside: Vec::new(), cell: None }
+        SectorMesh { tris, mats, grid, min, max, faces: Vec::new(), beside: Vec::new(), ids: Vec::new(), cell: None }
     }
 
     /// The same with what the city's bound holds of each triangle: its area and neighbours.

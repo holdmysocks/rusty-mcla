@@ -920,6 +920,7 @@ pub fn city_bound(assets: &Assets) -> Option<Vec<SectorMesh>> {
             let tris = cell.tris.iter().map(|t| [Vec3::from(cell.verts[t[0] as usize]), Vec3::from(cell.verts[t[1] as usize]), Vec3::from(cell.verts[t[2] as usize])]).collect();
             let mats = cell.material.iter().map(|&id| table.get((id & 0xff) as usize).copied().unwrap_or(crate::physics::collision::Surface::Default) as u8).collect();
             let mut mesh = SectorMesh::of_bound(tris, mats, &cell.area, cell.neighbours.clone());
+            mesh.ids = cell.material.clone();
             mesh.cell = Some(crate::physics::collision::GridCell { x: cell.grid.0, z: cell.grid.1, inv_size: bound.inv_size, margin: bound.margin });
             mesh
         })

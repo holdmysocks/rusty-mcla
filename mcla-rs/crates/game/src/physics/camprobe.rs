@@ -6,7 +6,7 @@
 use glam::{Mat3, Quat, Vec3};
 
 use super::collision::WorldCollider;
-use super::exact::{dot3 as vdot, dot_xyz, fma, recip};
+use super::exact::{dot3 as vdot, dot_xyz, fma, fms, fnms, recip};
 use super::hull::HullShape;
 
 /// One car's hull in the world: its triangles in the file's order, their normals and the
@@ -107,67 +107,98 @@ impl List {
     }
 }
 
-/// A ball against one polygon (F-82650): both sides of the plane; the face, else an edge (taken
-/// only in front of the plane and only if the neighbour does not own it, F-38934), else a corner.
-/// `beside(e)` = the normal of the polygon across edge e.
-pub fn ball_polygon(c: Vec3, r: f32, v: &[Vec3; 3], n: Vec3, beside: impl Fn(usize) -> Option<Vec3>) -> Option<Contact> {
-    let d = n.dot(c - v[0]);
+/// A ball against one polygon (F-82650), operation for operation: both sides of the plane; the
+/// face, else an edge (taken only in front of the plane and only if the neighbour does not own
+/// it, F-38934), else a corner. `n` the polygon's normal as the bound forms it (from the area its
+/// record holds, `gjk::polygon_normal`); `own` the bound's normal of the query's polygon index (the
+/// same polygon: `n`; past the bound's count (0, 0, 1)); `beside(e)` the normal of the polygon its
+/// record names across edge e (None: none; past the count (0, 0, 1)). `flags` is the stack slot
+/// of the edge flags (1 inside the edge, -1 before its start, -2 past its end, 0 else): an edge its
+/// owner rejects leaves the later ones as the previous call left them, and the corner search reads
+/// them. Checked to the bit against the original run offline (`ball_polygon_matches_the_original`).
+pub fn ball_polygon(c: Vec3, r: f32, v: &[Vec3; 3], n: Vec3, own: Vec3, beside: impl Fn(usize) -> Option<Vec3>, flags: &mut [i32; 3]) -> Option<Contact> {
+    let w0 = c - v[0];
+    let d = fma(n.z, w0.z, fma(n.x, w0.x, n.y * w0.y));
     if d.abs() > r {
         return None;
     }
     let mut inside = true;
-    let mut flag = [0i8; 3];
-    let mut corner_search = false;
+    let mut corner = false;
     for i in 0..3 {
         let (a, b) = (v[i], v[(i + 1) % 3]);
+        let w = c - a;
+        flags[i] = 0;
         let e = b - a;
-        let (w, u) = (c - a, c - b);
-        if n.cross(e).dot(w) >= 0.0 {
-            flag[i] = 1;
+        let m = vcross(n, e);
+        if !(fma(m.z, w.z, fma(m.x, w.x, m.y * w.y)) < 0.0) {
+            flags[i] = 1;
             continue;
         }
         inside = false;
-        if e.dot(w) < 0.0 {
-            flag[i] = -1;
+        if fma(w.z, e.z, fma(e.x, w.x, e.y * w.y)) < 0.0 {
+            flags[i] = -1;
             continue;
         }
-        if e.dot(u) > 0.0 {
-            flag[i] = -2;
+        let u = c - b;
+        if fma(u.z, e.z, fma(u.x, e.x, u.y * e.y)) > 0.0 {
+            flags[i] = -2;
             continue;
         }
-        if n.dot(w) <= 0.0 {
+        if !(fma(n.z, w.z, fma(n.x, w.x, n.y * w.y)) > 0.0) {
             continue;
         }
         // the edge: the distance to its line, the point on it
-        let (ww, uu, ee) = (w.length_squared(), u.length_squared(), e.length_squared());
+        let ee = fma(e.z, e.z, fma(e.x, e.x, e.y * e.y));
+        let ww = fma(w.z, w.z, fma(w.x, w.x, w.y * w.y));
+        let uu = fma(u.z, u.z, fma(u.x, u.x, u.y * u.y));
         let inv = if ee == 0.0 { 1e8 } else { 1.0 / ee };
-        let d2 = (2.0 * (ww + uu) - ee - (ww - uu) * (ww - uu) * inv) * 0.25;
+        let dw = ww - uu;
+        let d2 = fnms(dw * dw, inv, fms(uu + ww, 2.0, ee)) * 0.25;
         if d2 > r * r {
             return None;
         }
-        let dist = if d2 <= 0.0 { 0.0 } else { d2.sqrt() };
-        let s = ((ww - dist * dist) * inv).max(0.0).sqrt();
-        let q = a + e * s;
-        let normal = if dist <= 1e-12 { n } else { (c - q) / dist };
-        // (the neighbour takes the edge when the contact faces it more)
-        if beside(i).is_some_and(|nn| normal.dot(nn) > normal.dot(n)) {
-            corner_search = true;
-            break;
+        let dist = if d2 > 0.0 { d2.sqrt() } else { 0.0 };
+        let depth = r - dist;
+        let s2 = (ww - d2) * inv;
+        let s = if s2 > 0.0 { s2.sqrt() } else { 0.0 };
+        let q = e * s + a;
+        let normal = if dist > 1e-12 { (c - q) * recip(dist) } else { n };
+        if !(edge_owner(normal, depth, beside(i), own) < 0.0) {
+            return Some(Contact { pos: q, normal, depth });
         }
-        return Some(Contact { pos: q, normal, depth: r - dist });
+        corner = true;
+        break;
     }
-    if inside && !corner_search {
-        return Some(Contact { pos: c - n * d, normal: n, depth: r - d });
+    if inside && !corner {
+        return Some(Contact { pos: -(n * d - c), normal: n, depth: r - d });
     }
     // the corner between the edges it is outside of
-    let i = (0..3).find(|&i| (flag[i] == -2 && flag[(i + 1) % 3] != -2) || (flag[i] != -1 && flag[(i + 1) % 3] == -1))?;
-    let p = v[(i + 1) % 3];
+    let j = (0..3).find(|&j| {
+        let (f, g) = (flags[j], flags[(j + 1) % 3]);
+        (f == -2 || g == -1) && f != g
+    })?;
+    let p = v[(j + 1) % 3];
     let dv = c - p;
-    if dv.length_squared() > r * r {
+    let d2 = fma(dv.x, dv.x, fma(dv.y, dv.y, dv.z * dv.z));
+    if d2 > r * r {
         return None;
     }
-    let dist = dv.length();
-    Some(Contact { pos: p, normal: if dist <= 1e-12 { n } else { dv / dist }, depth: r - dist })
+    let (dist, normal) = if d2 > 1e-12 {
+        let dist = d2.sqrt();
+        (dist, dv * recip(dist))
+    } else {
+        (0.0, n)
+    };
+    Some(Contact { pos: p, normal, depth: r - dist })
+}
+
+/// Who owns an edge (F-38934): the neighbour (-1) when the contact normal faces its normal `nn`
+/// more than the polygon's own `ns`; no neighbour: the depth as it is.
+fn edge_owner(normal: Vec3, depth: f32, nn: Option<Vec3>, ns: Vec3) -> f32 {
+    let Some(nn) = nn else { return depth };
+    let a = fma(normal.y, nn.y, fma(normal.z, nn.z, normal.x * nn.x));
+    let b = fma(normal.z, ns.z, fma(normal.x, ns.x, normal.y * ns.y));
+    if a > b { -1.0 } else { depth }
 }
 
 // The polygon sweep F-43031 (directed) as the original runs it, operation for operation (vector
@@ -412,11 +443,13 @@ impl<'a> CamLevel<'a> {
     pub fn contacts(&self, c: Vec3, r: f32, cars: bool, max: usize) -> Vec<Contact> {
         let mut list = List { max, cap: r, held: Vec::new() };
         let ext = Vec3::splat(r);
+        // (the edge flags' stack slot, as the previous polygon's call left it)
+        let mut flags = [0i32; 3];
         self.city.triangles_of_ball(c - ext, c + ext, Some((c, r)), |m, i| {
             let v = &m.tris[i];
             let n = m.faces.get(i).copied().unwrap_or_else(|| (v[1] - v[0]).cross(v[2] - v[0]).normalize_or_zero());
             let beside = |e: usize| m.beside.get(i).and_then(|b| b[e]).map(|j| m.faces.get(j as usize).copied().unwrap_or(Vec3::Z));
-            if let Some(k) = ball_polygon(c, r, v, n, beside) {
+            if let Some(k) = ball_polygon(c, r, v, n, n, beside, &mut flags) {
                 list.add(k);
             }
         });
@@ -427,7 +460,7 @@ impl<'a> CamLevel<'a> {
                 }
                 for (i, v) in o.tris.iter().enumerate() {
                     let beside = |e: usize| o.beside[i][e].map(|j| o.normals[j as usize]);
-                    if let Some(k) = ball_polygon(c, r, v, o.normals[i], beside) {
+                    if let Some(k) = ball_polygon(c, r, v, o.normals[i], o.normals[i], beside, &mut flags) {
                         list.add(k);
                     }
                 }
@@ -484,20 +517,20 @@ mod tests {
     fn ball_polygon_cases() {
         let n = Vec3::Y;
         // the face, both sides of the plane; behind it the normal is still the face's
-        let k = ball_polygon(Vec3::new(-2.0, 0.3, -2.0), 0.5, &FLOOR, n, |_| None).unwrap();
+        let k = ball_polygon(Vec3::new(-2.0, 0.3, -2.0), 0.5, &FLOOR, n, n, |_| None, &mut [0; 3]).unwrap();
         assert!((k.depth - 0.2).abs() < 1e-6 && k.normal == n && k.pos.y == 0.0);
-        let k = ball_polygon(Vec3::new(-2.0, -0.3, -2.0), 0.5, &FLOOR, n, |_| None).unwrap();
+        let k = ball_polygon(Vec3::new(-2.0, -0.3, -2.0), 0.5, &FLOOR, n, n, |_| None, &mut [0; 3]).unwrap();
         assert!((k.depth - 0.8).abs() < 1e-6 && k.normal == n);
-        assert!(ball_polygon(Vec3::new(-2.0, 0.6, -2.0), 0.5, &FLOOR, n, |_| None).is_none());
+        assert!(ball_polygon(Vec3::new(-2.0, 0.6, -2.0), 0.5, &FLOOR, n, n, |_| None, &mut [0; 3]).is_none());
         // an edge (x = -4) from in front: normal from the edge to the centre
-        let k = ball_polygon(Vec3::new(-4.3, 0.3, 0.0), 0.5, &FLOOR, n, |_| None).unwrap();
+        let k = ball_polygon(Vec3::new(-4.3, 0.3, 0.0), 0.5, &FLOOR, n, n, |_| None, &mut [0; 3]).unwrap();
         assert!((k.depth - (0.5 - 0.18f32.sqrt())).abs() < 1e-5 && (k.pos - Vec3::new(-4.0, 0.0, 0.0)).length() < 1e-5, "{k:?}");
         // the same edge, behind the plane: no edge contact, and outside the face: none
-        assert!(ball_polygon(Vec3::new(-4.3, -0.3, 0.0), 0.5, &FLOOR, n, |_| None).is_none());
+        assert!(ball_polygon(Vec3::new(-4.3, -0.3, 0.0), 0.5, &FLOOR, n, n, |_| None, &mut [0; 3]).is_none());
         // the neighbour across the edge owns it when the contact faces it more
-        assert!(ball_polygon(Vec3::new(-4.3, 0.3, 0.0), 0.5, &FLOOR, n, |e| (e == 0).then_some(Vec3::NEG_X)).is_none_or(|k| k.pos == FLOOR[0] || k.pos == FLOOR[1]));
+        assert!(ball_polygon(Vec3::new(-4.3, 0.3, 0.0), 0.5, &FLOOR, n, n, |e| (e == 0).then_some(Vec3::NEG_X), &mut [0; 3]).is_none_or(|k| k.pos == FLOOR[0] || k.pos == FLOOR[1]));
         // a corner
-        let k = ball_polygon(Vec3::new(-4.2, 0.1, -4.2), 0.5, &FLOOR, n, |_| None).unwrap();
+        let k = ball_polygon(Vec3::new(-4.2, 0.1, -4.2), 0.5, &FLOOR, n, n, |_| None, &mut [0; 3]).unwrap();
         assert!(k.pos == FLOOR[0] && (k.depth - (0.5 - 0.09f32.sqrt())).abs() < 1e-5, "{k:?}");
     }
 
@@ -526,6 +559,68 @@ mod tests {
         let (t, nr) = sweep_polygon(Vec3::new(-4.3, 2.0, 0.0), Vec3::new(0.0, -4.0, 0.0), 0.5, &FLOOR, n).unwrap();
         let y = (0.25f32 - 0.09).sqrt();
         assert!((t - (2.0 - y) / 4.0).abs() < 1e-5 && (nr - Vec3::new(-0.3, y, 0.0) / 0.5).length() < 1e-5, "{t} {nr}");
+    }
+
+    /// F-82650 with F-38934 run offline on the original's code (tools/ball_polygon_reference.py ->
+    /// testdata/ball_polygon_ref.txt): per line six vertices (the polygon's, then the apex of the
+    /// neighbour folded about each edge), the centre, the radius, the area word, the three
+    /// neighbour indices (1 .. 3, 0xFFFF none, 7 past the count 4) and the neighbours' area words,
+    /// the query's polygon index (5: past the count), the material mask and byte, the edge flags'
+    /// stale words, whether the list gives a record; then the original's result, the list's call
+    /// (depth, cap, point), the record and the flags after. 4,000 cases, every word equal.
+    #[test]
+    fn ball_polygon_matches_the_original() {
+        use super::super::gjk::polygon_normal;
+        let u = |h: &str| u32::from_str_radix(&h.replace('_', ""), 16).unwrap();
+        let mut seen = [0usize; 4];
+        for (k, line) in include_str!("../testdata/ball_polygon_ref.txt").lines().enumerate() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(u).collect();
+            let x: Vec<u32> = o.split_whitespace().map(u).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let p = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let vs: Vec<Vec3> = (0..6).map(|j| p(3 * j)).collect();
+            let v = [vs[0], vs[1], vs[2]];
+            let (c, r, area) = (p(18), f(21), f(22));
+            let n = polygon_normal(&v, area);
+            let own = if w[29] == 0 { n } else { Vec3::Z };
+            let beside = |e: usize| match w[23 + e] {
+                0xFFFF => None,
+                j @ 1..=3 => {
+                    let j = j as usize;
+                    Some(polygon_normal(&[vs[j % 3], vs[j - 1], vs[2 + j]], f(25 + j)))
+                }
+                _ => Some(Vec3::Z),
+            };
+            let mut flags = [w[32] as i32, w[33] as i32, w[34] as i32];
+            let got = ball_polygon(c, r, &v, n, own, beside, &mut flags);
+            let mat = w[31] << 8;
+            let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+            let (ret, called) = match got {
+                Some(h) if mat & w[30] == 0 => {
+                    assert_eq!([x[2], x[3]], [h.depth.to_bits(), r.to_bits()], "line {k}: depth, cap");
+                    assert_eq!(&x[4..7], &bits(h.pos), "line {k}: point");
+                    if w[35] != 0 {
+                        assert_eq!(&x[8..11], &bits(h.pos), "line {k}: contact");
+                        assert_eq!(&x[11..14], &bits(h.normal), "line {k}: normal");
+                        assert_eq!(&x[14..17], &bits(n), "line {k}: polygon normal");
+                        assert_eq!(&x[17..20], &[0, h.depth.to_bits(), mat], "line {k}: t, depth, material");
+                        assert_eq!(&x[20..24], &[w[29], 2, (h.depth < r) as u32, 0], "line {k}: index, kind, below, +82");
+                        assert_eq!(x[7], 0x1234, "line {k}: instance");
+                    }
+                    seen[if h.normal == n { 0 } else if v.contains(&h.pos) { 2 } else { 1 }] += 1;
+                    (if w[35] != 0 { 1 } else { (h.depth > 0.0) as i32 }, 1)
+                }
+                _ => {
+                    seen[3] += 1;
+                    (0, 0)
+                }
+            };
+            assert_eq!([x[0] as i32, x[1] as i32], [ret, called], "line {k}: result, list call");
+            assert_eq!(&x[24..27], &flags.map(|f| f as u32), "line {k}: flags after");
+        }
+        // (face, edge, corner, none or left out by the material)
+        assert_eq!(seen, [1564, 311, 305, 1820]);
     }
 
     /// F-43031 (directed) run offline on the original's code (work/cameras2/sweep/sweep_ref.py):
