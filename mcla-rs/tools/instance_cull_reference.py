@@ -8,7 +8,8 @@ type and include words (+16 / +20), its bound's centre (+48) and radius (+8) and
 rows and the place). Bounds about the query's surface, inside, far off; capsules without length; masks that pass and
 that fail each way. The start-up constants the image holds as zero are filled in (the xyz mask, (0, 0, 0, 1), +inf x4).
 Out per case: the culler's volume words (+0 .. +48, +80) and the result. Writes <out-dir>/instance_cull_ref.txt. Test
-`camprobe::tests::instance_cull_matches_the_original`."""
+`camprobe::tests::instance_cull_matches_the_original`. With --points: balls whose radius is not above 0 only (F-36470's
+point volume, type 5), written to <out-dir>/instance_cull_point_ref.txt (test `camprobe::tests::point_cull_matches_the_original`)."""
 import argparse
 import math
 import random
@@ -110,6 +111,7 @@ def main():
     ap.add_argument('--tool', default='mcla-tool')
     ap.add_argument('--cases', type=int, default=4000)
     ap.add_argument('--seed', type=int, default=62425)
+    ap.add_argument('--points', action='store_true', help='only balls of radius not above 0 (the point volume)')
     a = ap.parse_args()
     globals()['SDK_INTRINSICS'] = a.sdk
     cull = addr(a.tool, 'F-62425')
@@ -118,7 +120,7 @@ def main():
     rnd = random.Random(a.seed)
     cases = []
     while len(cases) < a.cases:
-        capsule = rnd.random() < 0.6
+        capsule = rnd.random() < 0.6 and not a.points
         sc = rnd.choice([0.5, 3.0, 20.0])
         A = [rnd.uniform(-1, 1) * sc for _ in range(3)]
         d = [rnd.gauss(0, 1) for _ in range(3)]
@@ -126,6 +128,8 @@ def main():
         dn = math.sqrt(sum(x * x for x in d)) or 1.0
         B = [A[j] + d[j] / dn * ln for j in range(3)] if capsule else A
         r = f32(rnd.choice([0.3, 1.0, rnd.uniform(0.05, 4.0)]))
+        if a.points:
+            r = f32(rnd.choice([0.0, -0.0, -1.0, -rnd.uniform(0.01, 3.0)]))
         br = f32(rnd.choice([0.5, 2.0, rnd.uniform(0.1, 6.0)]))
         # the bound's sphere: its centre about the query's surface (the sum of the radii from a point of the axis),
         # inside, or far
@@ -133,7 +137,7 @@ def main():
         on = [A[j] + (B[j] - A[j]) * t for j in range(3)]
         e = [rnd.gauss(0, 1) for _ in range(3)]
         en = math.sqrt(sum(x * x for x in e)) or 1.0
-        dist = (r + br) * rnd.choice([rnd.uniform(0.98, 1.02), rnd.uniform(0.999, 1.001), rnd.uniform(0, 1), rnd.uniform(1, 3)])
+        dist = ((0.0 if a.points else r) + br) * rnd.choice([rnd.uniform(0.98, 1.02), rnd.uniform(0.999, 1.001), rnd.uniform(0, 1), rnd.uniform(1, 3)])
         wc = [on[j] + e[j] / en * dist for j in range(3)]
         if rnd.random() < 0.25:
             rows = [[1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0]]
@@ -173,7 +177,7 @@ def main():
     assert not bad, bad[:3]
     lines = [' '.join('%08x' % x for x in c) + ' -> ' + o for c, o in zip(cases, out)]
     nl = chr(10)
-    (a.out_dir / 'instance_cull_ref.txt').write_text(re.sub(r'\b(82[0-9a-f]{2})([0-9a-f]{4})\b', r'\1_\2', nl.join(lines) + nl))
+    (a.out_dir / ('instance_cull_point_ref.txt' if a.points else 'instance_cull_ref.txt')).write_text(re.sub(r'\b(82[0-9a-f]{2})([0-9a-f]{4})\b', r'\1_\2', nl.join(lines) + nl))
     res = [o.split()[-1] for o in out]
     print(len(cases), 'cases;', sum(x == '1' for x in res), 'kept')
 

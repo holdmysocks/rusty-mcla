@@ -479,7 +479,7 @@ fn segment_params(p: Vec3, e: Vec3, a: Vec3, d: Vec3, slot: &mut u32) -> (bool, 
     #[cfg(test)]
     {
         let class = |x: f32| if zero(x) { 0 } else if one(x) { 1 } else { 2 };
-        tests::END_CASES[3 * class(tp) + class(tq)].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        tests::END_CASES.with(|c| c.borrow_mut()[3 * class(tp) + class(tq)] += 1);
     }
     let (s, t) = if zero(tp) {
         if zero(tq) {
@@ -859,16 +859,22 @@ fn out_of(p: Vec3, m: &[Vec3; 4]) -> Vec3 {
 }
 
 /// The level query's volume as its culler holds it (the query drivers' set-up): the sphere query's ball (F-36470: its
-/// centre and radius, type 0; a radius not above 0 gives type 5, not met here) or the swept capsule's (F-21683: the
-/// start, the unit direction - the rsqrt estimate with its zero guard and one Newton step - the length and the radius,
-/// type 3).
+/// centre and radius, type 0; a radius not above 0 (a NaN too) gives the point, type 5, its centre alone) or the swept
+/// capsule's (F-21683: the start, the unit direction - the rsqrt estimate with its zero guard and one Newton step - the
+/// length and the radius, type 3).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum CullVolume {
     Ball { centre: Vec3, r: f32 },
     Capsule { from: Vec3, dir: Vec3, len: f32, r: f32 },
+    Point { centre: Vec3 },
 }
 
 impl CullVolume {
+    /// F-36470: the sphere query's ball at `c` of radius `r`; a radius not above 0 is the point at `c`.
+    pub fn ball(c: Vec3, r: f32) -> CullVolume {
+        if r > 0.0 { CullVolume::Ball { centre: c, r } } else { CullVolume::Point { centre: c } }
+    }
+
     /// F-21683: the capsule from `a` to `b` of radius `r` as the sweep's culler takes it.
     pub fn capsule(a: Vec3, b: Vec3, r: f32) -> CullVolume {
         let d = b - a;
@@ -883,7 +889,8 @@ impl CullVolume {
 /// the type flags, its type not among the excluded types (always 0 for the queries here); then its bound's sphere - the
 /// bound's centre (+48) through the instance matrix (rows and place), its radius (+8) - meeting the volume: a ball when
 /// (R + r)^2 > |c - centre|^2, a capsule when (R + r)^2 > |q - centre|^2 for q the point of the axis nearest the centre
-/// (dir t + from with t the projection, 0 where not above 0, the length past it; products and sums rounded apart).
+/// (dir t + from with t the projection, 0 where not above 0, the length past it; products and sums rounded apart), a point
+/// when r^2 > |q - centre|^2.
 pub fn instance_culled_in(vol: &CullVolume, m: &[Vec3; 4], centre: Vec3, radius: f32) -> bool {
     let c = out_of(centre, m);
     match *vol {
@@ -898,6 +905,10 @@ pub fn instance_culled_in(vol: &CullVolume, m: &[Vec3; 4], centre: Vec3, radius:
             let d = (dir * t + from) - c;
             let s = radius + r;
             s * s > vdot(d, d)
+        }
+        CullVolume::Point { centre: q } => {
+            let d = q - c;
+            radius * radius > vdot(d, d)
         }
     }
 }
@@ -945,6 +956,13 @@ const BOX_FEATURE: [(i32, usize); 27] = [
     (1, 10), (2, 3), (1, 11), (2, 1), (-1, 0), (2, 0), (1, 9), (2, 2), (1, 8),
     (0, 2), (1, 2), (0, 3), (1, 1), (2, 4), (1, 3), (0, 1), (1, 0), (0, 0),
 ];
+
+/// F-25936: the box feature (kind, index) of the point `d` against the box of half sizes `half` about 0 - per axis 0 at
+/// or below -h (and a NaN), 1 inside, 2 at or above h, the code x + 3 y + 9 z read in the classifier's table.
+fn box_feature(d: Vec3, half: Vec3) -> (i32, usize) {
+    let region = |p: f32, h: f32| if !(p > -h) { 0 } else if p < h { 1 } else { 2 };
+    BOX_FEATURE[region(d.x, half.x) + 3 * region(d.y, half.y) + 9 * region(d.z, half.z)]
+}
 
 /// v x (1 / dist) as the vector unit gives it: the estimate (the recomp's exact division) and one Newton step, the
 /// products and sums rounded apart.
@@ -1051,8 +1069,8 @@ fn seg_axis(a: Vec3, d: Vec3, y0: f32, y1: f32) -> (f32, f32) {
 /// sphere: F-76120's clamped projection of the centroid; a capsule: F-40164 against its axis over -L/2 .. L/2), the
 /// bound's point there (the centroid, or the axis at -L/2 + s L), and within 1e-12 a normal of its own: across the
 /// query's axis for a sphere (F-95825's first direction across its unit direction), +x for a capsule (F-41334 with
-/// 1e-5 on a vector under 1e-12: its fallback). None for the other types (a box, type 3, is not ported). Rules in
-/// docs/reference/people/traffic_drive_rule.md 9.7; checked to the bit against the original run offline
+/// 1e-5 on a vector under 1e-12: its fallback). A box (type 3) is `capsule_box`; None where the original leaves no
+/// record and no list call (a box out of reach). Rules in docs/reference/people/traffic_drive_rule.md 9.7 / 9.8; checked to the bit against the original run offline
 /// (`capsule_primitive_matches_the_original`).
 pub fn capsule_primitive(a: Vec3, b: Vec3, big_r: f32, prim: &Primitive) -> Option<CapsulePrimHit> {
     let d = b - a;
@@ -1066,7 +1084,7 @@ pub fn capsule_primitive(a: Vec3, b: Vec3, big_r: f32, prim: &Primitive) -> Opti
             let (t, s) = seg_axis(a - centre, d, -h, h);
             (centre, r + big_r, t, Vec3::new(0.0, fnms(s, len, h), 0.0))
         }
-        Primitive::Box { .. } => return None,
+        Primitive::Box { centre, size } => return capsule_box(a, b, big_r, centre, size),
     };
     let a0 = a - centre;
     let p = d * t + a0;
@@ -1083,6 +1101,351 @@ pub fn capsule_primitive(a: Vec3, b: Vec3, big_r: f32, prim: &Primitive) -> Opti
     };
     // (the negation kept apart from the sum: folded into c - x, a NaN of a capsule without length would keep the sign the
     // vector unit's negation flips)
+    let point = std::hint::black_box(-(normal * (big_r - depth) - p)) + centre;
+    Some(CapsulePrimHit { depth, t, normal, point })
+}
+
+/// Each box edge's two corners (the image's table, indices into `BOX_CORNER`); the index -1 reads the word before it:
+/// 7 and 11.
+const EDGE_CORNERS: [(usize, usize); 12] = [(0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7)];
+
+/// F-21753: the face of the box (half sizes `half` about 0) nearest the point `p` from inside - the least of h - p and
+/// p + h per axis (+x -x +y -y +z -z), each strictly under the least before; -1 when none is under FLT_MAX.
+fn near_face(half: Vec3, p: Vec3) -> i32 {
+    let mut best = f32::MAX;
+    let mut face = -1;
+    for ax in 0..3 {
+        let a = half[ax] - p[ax];
+        if a < best {
+            best = a;
+            face = 2 * ax as i32;
+        }
+        let b = p[ax] + half[ax];
+        if b < best {
+            best = b;
+            face = 2 * ax as i32 + 1;
+        }
+    }
+    face
+}
+
+/// F-94282: the edge between the faces `fa` and `fb` (its index in the faces' table `BOX_EDGE`, either order), -1
+/// for none.
+fn edge_between(fa: i32, fb: i32) -> i32 {
+    BOX_EDGE
+        .iter()
+        .position(|&(a, b)| (a as i32 == fa && b as i32 == fb) || (a as i32 == fb && b as i32 == fa))
+        .map_or(-1, |k| k as i32)
+}
+
+/// F-79106, undirected (the query's byte +212 = 0): the piece `start` .. `end` (direction `dir`) of the capsule's axis
+/// cut where it crosses the box's face plane `code` (+x -x +y -y +z -z) at `t` of the piece. The crossing replaces the
+/// end when the start lies nearer the box along the region's axis (outside both other slabs: by the two others'
+/// squares), else the start; `dir` becomes end - start. Then the feature of the piece's middle (F-25936); for a middle
+/// inside the box the faces nearest the two ends (F-21753): the same face; opposite faces - the least of the four other
+/// faces' pushes (h - min, max + h); neighbours - their edge when the piece is longer than the difference of the ends'
+/// squared distances from that edge's line, else the face with the larger of the two least depths. (kind, index).
+fn box_clip(code: i32, half: Vec3, start: &mut Vec3, end: &mut Vec3, dir: &mut Vec3, t: f32) -> (i32, i32) {
+    let c = *dir * t + *start;
+    let axis = (code / 2) as usize;
+    let j1 = (axis + 1) % 3;
+    let j2 = (j1 + 1) % 3;
+    let ac = c.abs();
+    let (s, e) = (*start, *end);
+    let nearer_start = if !(ac[j1] < half[j1]) {
+        if ac[j2] < half[j2] {
+            s[j1].abs() < e[j1].abs()
+        } else {
+            fma(s[j2], s[j2], s[j1] * s[j1]) < fma(e[j2], e[j2], e[j1] * e[j1])
+        }
+    } else if ac[j2] < half[j2] {
+        s[axis].abs() < e[axis].abs()
+    } else {
+        s[j2].abs() < e[j2].abs()
+    };
+    if nearer_start {
+        *end = c;
+    } else {
+        *start = c;
+    }
+    let (s, e) = (*start, *end);
+    *dir = e - s;
+    let (kind, index) = box_feature((e + s) * 0.5, half);
+    if kind != -1 {
+        return (kind, index as i32);
+    }
+    let fa = near_face(half, s);
+    let fb = near_face(half, e);
+    if fa == fb {
+        #[cfg(test)]
+        tests::BOX_WAYS.with(|w| w.borrow_mut()[0] += 1);
+        return (2, fa);
+    }
+    if (fb == fa + 1 && fa % 2 == 0) || (fa == fb + 1 && fb % 2 == 0) {
+        let mut best = f32::MAX;
+        let mut face = 0;
+        for ax in 0..3 {
+            let (hi, lo) = if s[ax] > e[ax] { (s[ax], e[ax]) } else { (e[ax], s[ax]) };
+            let (f0, f1) = (2 * ax as i32, 2 * ax as i32 + 1);
+            if fa != f0 && fb != f0 {
+                let v = half[ax] - lo;
+                if v < best {
+                    best = v;
+                    face = f0;
+                }
+            }
+            if fa != f1 && fb != f1 {
+                let v = hi + half[ax];
+                if v < best {
+                    best = v;
+                    face = f1;
+                }
+            }
+        }
+        #[cfg(test)]
+        tests::BOX_WAYS.with(|w| w.borrow_mut()[1] += 1);
+        return (2, face);
+    }
+    let (dx, dy, dz) = (s.x - e.x, s.y - e.y, s.z - e.z);
+    let (gs1, ge1) = (half[j1] - s[j1].abs(), half[j1] - e[j1].abs());
+    let (gs2, ge2) = (half[j2] - s[j2].abs(), half[j2] - e[j2].abs());
+    let qs = fma(gs2, gs2, gs1 * gs1);
+    let qe = fma(ge2, ge2, ge1 * ge1);
+    let len = fma(dx, dx, fma(dz, dz, dy * dy)).sqrt();
+    #[cfg(test)]
+    tests::BOX_WAYS.with(|w| w.borrow_mut()[if len > (qs - qe).abs() { 2 } else { 3 }] += 1);
+    if len > (qs - qe).abs() {
+        return (1, edge_between(fa, fb));
+    }
+    let (a, b) = ((fa / 2) as usize, (fb / 2) as usize);
+    let least_b = if s[b].abs() - e[b].abs() >= 0.0 { e[b].abs() } else { s[b].abs() };
+    let least_a = if s[a].abs() - e[a].abs() >= 0.0 { e[a].abs() } else { s[a].abs() };
+    if half[a] - least_a < half[b] - least_b { (2, fa) } else { (2, fb) }
+}
+
+/// F-11472, the undirected branch, on a box bound (type 3: size +208, about the centroid +48): the query's capsule
+/// `a` .. `b` of radius `big_r`. The axis's crossings of the six face planes within [0, 1]; none: the feature of its
+/// middle (F-25936); one: the axis cut there (F-79106), the kept piece's range by whether its start stayed within 1e-6
+/// of the axis's start; more: the crossing whose point lies least outside its face (the distance in the face's plane,
+/// inside the larger gap), the piece between its neighbouring crossings cut there. By the feature: a corner (F-36467 on
+/// the piece, within R; the normal from the corner, within 1e-12 the corner's +-1 x 0.57735), an edge (F-45690 of the
+/// edge against the piece, the stack word holding 2; within 1e-12 the unit of axis x edge facing the point; t by the
+/// distance from the axis's start over its length), a face (the axis's end nearer it; the chosen crossing for a face of
+/// another axis), or the whole axis inside (the least push out through a face, t 0); a point inside the box adds the
+/// distance to R. None where the original makes no record (out of reach). Rules in
+/// docs/reference/people/traffic_drive_rule.md 9.8; checked to the bit against the original run offline
+/// (`capsule_primitive_matches_the_original`).
+fn capsule_box(a: Vec3, b: Vec3, big_r: f32, centre: Vec3, size: Vec3) -> Option<CapsulePrimHit> {
+    let eps = f32::from_bits(0x2B8C_BCCC);
+    let d = b - a;
+    let a0 = a - centre;
+    let half = size * 0.5;
+    let dd = fma(d.x, d.x, fma(d.y, d.y, d.z * d.z));
+    let dlen = if dd > 0.0 { dd.sqrt() } else { 0.0 };
+    // the frame's word +216: each axis's second crossing, then the cut's place; what it holds before (when no axis
+    // has a direction) is the caller's, read only for an edge under 1e-6
+    let mut s216 = 0u32;
+    // the face planes' crossings: t and the face's code
+    let mut ts: Vec<f32> = Vec::with_capacity(6);
+    let mut codes: Vec<i32> = Vec::with_capacity(6);
+    for ax in 0..3 {
+        if d[ax] == 0.0 {
+            continue;
+        }
+        let inv = 1.0 / d[ax];
+        for (k, plane) in [(0, half[ax]), (1, -half[ax])] {
+            let t = (plane - a0[ax]) * inv;
+            if k == 1 {
+                s216 = t.to_bits();
+            }
+            if !(t < 0.0) && !(t > 1.0) {
+                ts.push(t);
+                codes.push(2 * ax as i32 + k);
+            }
+        }
+    }
+    let n = ts.len();
+    let mut start = a0;
+    let mut end = a0 + d;
+    let mut dir = d;
+    let (mut t_lo, mut t_hi) = (0.0f32, 1.0f32);
+    let mut chosen = 0usize;
+    let (kind, index) = if n == 0 {
+        let (k, i) = box_feature(d * 0.5 + a0, half);
+        (k, i as i32)
+    } else if n == 1 {
+        let ki = box_clip(codes[0], half, &mut start, &mut end, &mut dir, ts[0]);
+        let tol = f32::from_bits(0x3586_37BD);
+        let kept = (0..3).all(|k| a0[k] + tol >= start[k] && start[k] >= a0[k] - tol);
+        #[cfg(test)]
+        tests::BOX_WAYS.with(|w| w.borrow_mut()[if kept { 4 } else { 5 }] += 1);
+        if kept {
+            t_hi = ts[0];
+        } else {
+            t_lo = ts[0];
+        }
+        ki
+    } else {
+        // how far outside its face each crossing lies
+        let mut out = [0.0f32; 6];
+        for i in 0..n {
+            let p = (d * ts[i] + a0).abs();
+            let j1 = ((codes[i] / 2 + 1) % 3) as usize;
+            let j2 = (j1 + 1) % 3;
+            let (h1, p1, p2, h2) = (half[j1], p[j1], p[j2], half[j2]);
+            out[i] = if p1 > h1 {
+                if p2 > h2 {
+                    let (u, v) = (p1 - h1, p2 - h2);
+                    fma(v, v, u * u).sqrt()
+                } else {
+                    p1 - h1
+                }
+            } else if p2 > h2 {
+                p2 - h2
+            } else {
+                let (g1, g2) = (p1 - h1, p2 - h2);
+                if !(g2.abs() < g1.abs()) { g1 } else { g2 }
+            };
+        }
+        for k in 1..n {
+            if out[k] < out[chosen] {
+                chosen = k;
+            }
+        }
+        let tr = ts[chosen];
+        for (k, &tk) in ts.iter().enumerate() {
+            if k == chosen {
+                continue;
+            }
+            if tk < tr {
+                if tk > t_lo {
+                    t_lo = tk;
+                }
+            } else if tk > tr && tk < t_hi {
+                t_hi = tk;
+            }
+        }
+        let rel = (tr - t_lo) / (t_hi - t_lo);
+        s216 = rel.to_bits();
+        start = d * t_lo + a0;
+        end = d * t_hi + a0;
+        dir = end - start;
+        box_clip(codes[chosen], half, &mut start, &mut end, &mut dir, rel)
+    };
+    #[cfg(test)]
+    tests::LAST_BOX.with(|c| c.set((kind, n)));
+    let inside = |p: Vec3| {
+        !(p.x > half.x) && !(p.x < -half.x) && !(p.y > half.y) && !(p.y < -half.y) && !(p.z > half.z) && !(p.z < -half.z)
+    };
+    let (depth, t, normal) = match kind {
+        0 => {
+            let corner = (Vec3::from(BOX_CORNER[index as usize]) * half) * 2.0;
+            let tc = clamp_param(0.0 - vdot(start - corner, dir), vdot(dir, dir));
+            let sp = dir * tc + start;
+            let w = sp - corner;
+            let w2 = fma(w.x, w.x, fma(w.z, w.z, w.y * w.y));
+            if w2 > big_r * big_r {
+                return None;
+            }
+            let t = fma(t_hi - t_lo, tc, t_lo);
+            if w2 > eps {
+                let dist = w2.sqrt();
+                (if inside(sp) { big_r + dist } else { big_r - dist }, t, unit_by(w, dist))
+            } else {
+                #[cfg(test)]
+                tests::BOX_WAYS.with(|w| w.borrow_mut()[6] += 1);
+                (big_r, t, (Vec3::from(BOX_CORNER[index as usize]) * 2.0) * f32::from_bits(0x3F13_CD3A))
+            }
+        }
+        1 => {
+            let (c0, c1) = if index < 0 { (7, 11) } else { EDGE_CORNERS[index as usize] };
+            let k = half * 2.0;
+            let p = Vec3::from(BOX_CORNER[c0]) * k;
+            let e = Vec3::from(BOX_CORNER[c1]) * k - p;
+            // (F-45690 with the piece first: the piece's parameter goes to the frame's word +216, which keeps what
+            // the crossings left there when the edge is shorter than 1e-6, the edge's to +184)
+            let mut slot = s216;
+            let (_, _, te) = segment_params(start, dir, p, e, &mut slot);
+            let ep = e * te + p;
+            let sp = dir * f32::from_bits(slot) + start;
+            let mut w = (Vec3::ZERO - ep) + sp;
+            let (fx, fy, fz) = (sp.x - a0.x, sp.y - a0.y, sp.z - a0.z);
+            let t = fma(fx, fx, fma(fz, fz, fy * fy)).sqrt() / dlen;
+            let w2 = fma(w.x, w.x, fma(w.z, w.z, w.y * w.y));
+            if w2 > eps {
+                let within = inside(sp);
+                if within {
+                    w = Vec3::ZERO - w;
+                } else if w2 > big_r * big_r {
+                    return None;
+                }
+                let dist = w2.sqrt();
+                (if within { big_r + dist } else { big_r - dist }, t, unit_by(w, dist))
+            } else {
+                #[cfg(test)]
+                tests::BOX_WAYS.with(|w| w.borrow_mut()[7] += 1);
+                let c = vcross(d, e);
+                let mut nrm = c * rsqrt0(vdot(c, c));
+                if fma(sp.x, nrm.x, fma(sp.z, nrm.z, sp.y * nrm.y)) < 0.0 {
+                    nrm = Vec3::ZERO - nrm;
+                }
+                (big_r, t, nrm)
+            }
+        }
+        2 => {
+            let ax = (index / 2) as usize;
+            let (mut t, mut base) = (0.0f32, a0);
+            if !(start[ax].abs() < end[ax].abs()) {
+                t = 1.0;
+                base = a0 + d;
+            }
+            let nrm = BOX_FACE[index as usize];
+            let q = -(nrm * big_r - base);
+            let depth = if nrm[ax] * q[ax] >= 0.0 { half[ax] - q[ax].abs() } else { q[ax].abs() + half[ax] };
+            if depth < 0.0 {
+                return None;
+            }
+            if n > 0 && codes[chosen] / 2 != ax as i32 {
+                #[cfg(test)]
+                tests::BOX_WAYS.with(|w| w.borrow_mut()[8] += 1);
+                t = ts[chosen];
+                let p = d * t + a0;
+                let dn = fma(p.x, nrm.x, fma(p.z, nrm.z, p.y * nrm.y));
+                ((half[ax] - dn) + big_r, t, nrm)
+            } else {
+                (depth, t, nrm)
+            }
+        }
+        _ => {
+            // the whole axis inside: the least push out through a face
+            let mut best = f32::MAX;
+            let mut face: Option<(usize, f32)> = None;
+            for ax in 0..3 {
+                let mut g = half[ax] - a0[ax];
+                if d[ax] < 0.0 {
+                    g = g - d[ax];
+                }
+                if g < best {
+                    best = g;
+                    face = Some((ax, 1.0));
+                }
+                let mut g = a0[ax] + half[ax];
+                if d[ax] > 0.0 {
+                    g = d[ax] + g;
+                }
+                if g < best {
+                    best = g;
+                    face = Some((ax, -1.0));
+                }
+            }
+            let mut nrm = Vec3::ZERO;
+            if let Some((ax, s)) = face {
+                nrm[ax] = s;
+            }
+            (big_r + best, 0.0, nrm)
+        }
+    };
+    let p = d * t + a0;
     let point = std::hint::black_box(-(normal * (big_r - depth) - p)) + centre;
     Some(CapsulePrimHit { depth, t, normal, point })
 }
@@ -1120,9 +1483,7 @@ pub fn ball_primitive(c: Vec3, big_r: f32, b: &Primitive) -> PrimContact {
         Primitive::Box { centre, size } => {
             let d = c - centre;
             let half = size * 0.5;
-            let region = |p: f32, h: f32| if !(p > -h) { 0 } else if p < h { 1 } else { 2 };
-            let code = region(d.x, half.x) + 3 * region(d.y, half.y) + 9 * region(d.z, half.z);
-            let (feature, id) = BOX_FEATURE[code];
+            let (feature, id) = box_feature(d, half);
             let corner = |k: usize| Vec3::from(BOX_CORNER[k]);
             match feature {
                 0 => {
@@ -1273,8 +1634,17 @@ impl<'a> CamLevel<'a> {
 mod tests {
     use super::*;
 
-    /// How often F-45690's table met each pair of the axis parameters of the edge's ends (0, 1, between).
-    pub(super) static END_CASES: [std::sync::atomic::AtomicUsize; 9] = [const { std::sync::atomic::AtomicUsize::new(0) }; 9];
+    std::thread_local! {
+        /// How often F-45690's table met each pair of the axis parameters of the edge's ends (0, 1, between), per
+        /// thread (the box test calls it too).
+        pub(super) static END_CASES: std::cell::RefCell<[usize; 9]> = const { std::cell::RefCell::new([0; 9]) };
+        /// The last box test's feature kind and crossing count (coverage of `capsule_box_matches_the_original`).
+        pub(super) static LAST_BOX: std::cell::Cell<(i32, usize)> = const { std::cell::Cell::new((0, 0)) };
+        /// How often the box test took its rarer ways: the cut's same face, opposite faces, neighbours' edge,
+        /// neighbours' face; the one-crossing piece kept from the start or not; a corner and an edge within 1e-12; a face
+        /// of another axis than the chosen crossing's.
+        pub(super) static BOX_WAYS: std::cell::RefCell<[usize; 9]> = const { std::cell::RefCell::new([0; 9]) };
+    }
 
     const FLOOR: [Vec3; 3] = [Vec3::new(-4.0, 0.0, -4.0), Vec3::new(-4.0, 0.0, 4.0), Vec3::new(4.0, 0.0, -4.0)];
 
@@ -1454,7 +1824,7 @@ mod tests {
                 seen[4] += 1;
             }
         }
-        let ends: Vec<usize> = END_CASES.iter().map(|c| c.load(std::sync::atomic::Ordering::Relaxed)).collect();
+        let ends: Vec<usize> = END_CASES.with(|c| c.borrow().to_vec());
         assert_eq!((seen, ends), ([506, 1430, 518, 1546, 283], vec![345, 90, 158, 89, 379, 135, 147, 152, 932]));
     }
 
@@ -1546,6 +1916,7 @@ mod tests {
                 CullVolume::Capsule { from, dir, len, r } => {
                     assert_eq!((&x[0..3], &x[4..7], [x[8], x[9]], x[12]), (&bits(from)[..], &bits(dir)[..], [len.to_bits(), r.to_bits()], 3), "line {k}: capsule");
                 }
+                CullVolume::Point { .. } => panic!("line {k}: no point in this set"),
             }
             let m = [p(19), p(22), p(25), p(28)];
             let pass = instance_masks_pass(w[11], w[12], w[8], w[10], w[9], w[13], w[14]);
@@ -1555,6 +1926,34 @@ mod tests {
             near += pass as usize;
         }
         assert_eq!((kept, near), (1011, 1871));
+    }
+
+    /// F-36470's point volume (a sphere query's radius not above 0: 0, -0, below) and F-92940's test of it, run offline
+    /// on the original's code whole (tools/instance_cull_reference.py --points --cases 1500 --seed 36470 ->
+    /// testdata/instance_cull_point_ref.txt, 1,500 cases, 675 pass the masks, 329 kept): the culler's centre and type and the
+    /// answer equal.
+    #[test]
+    fn point_cull_matches_the_original() {
+        let u = |h: &str| u32::from_str_radix(&h.replace('_', ""), 16).unwrap();
+        let (mut kept, mut near) = (0, 0);
+        for (k, line) in include_str!("../testdata/instance_cull_point_ref.txt").lines().enumerate() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(u).collect();
+            let x: Vec<u32> = o.split_whitespace().map(u).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let p = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let bits = |v: Vec3| vec![v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+            let vol = CullVolume::ball(p(1), f(7));
+            let CullVolume::Point { centre } = vol else { panic!("line {k}: not a point") };
+            assert_eq!((&x[0..3], x[12]), (&bits(centre)[..], 5), "line {k}: point");
+            let m = [p(19), p(22), p(25), p(28)];
+            let pass = instance_masks_pass(w[11], w[12], w[8], w[10], w[9], w[13], w[14]);
+            let meets = instance_culled_in(&vol, &m, p(15), f(18));
+            assert_eq!(x[13], (pass && meets) as u32, "line {k}: culled");
+            kept += (pass && meets) as usize;
+            near += pass as usize;
+        }
+        assert_eq!((kept, near), (329, 675));
     }
 
     /// F-15615 on spheres, capsules and boxes against the original's code run offline (tools/ball_primitive_reference.py
@@ -1666,6 +2065,58 @@ mod tests {
             "{(0, false, false, false): 267, (0, false, false, true): 486, (0, false, true, true): 576, (1, false, false, false): 671, \
              (1, false, false, true): 538, (1, false, true, true): 433, (1, true, false, false): 498, (1, true, false, true): 491, \
              (1, true, true, true): 40}"
+        );
+    }
+
+    /// F-11472 (undirected) on boxes against the original's code run offline (tools/capsule_box_reference.py ->
+    /// testdata/capsule_box_ref.txt; F-79106 with F-25936, F-21753, F-94282, F-36467, F-45690 with F-89261 whole; alloc
+    /// stubbed, the material call faked): whether a record is made, the result, the list call and the record - every
+    /// word equal. 4,000 cases by (feature, crossings 0 / 1 / more, a record with depth above 0): the whole axis inside
+    /// 252; corners 621, edges 1,676, faces 1,451; 721 without a list call; the rarer ways counted in `BOX_WAYS`.
+    #[test]
+    fn capsule_box_matches_the_original() {
+        let u = |h: &str| u32::from_str_radix(&h.replace('_', ""), 16).unwrap();
+        let mut seen = std::collections::BTreeMap::new();
+        for (k, line) in include_str!("../testdata/capsule_box_ref.txt").lines().enumerate() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(u).collect();
+            let x: Vec<u32> = o.split_whitespace().map(u).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let p = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let b = Primitive::Box { centre: p(1), size: p(4) };
+            let (a, bb, big_r) = (p(7), p(10), f(13));
+            let h = capsule_primitive(a, bb, big_r, &b);
+            let (kind, n) = LAST_BOX.with(|c| c.get());
+            *seen.entry((kind, n.min(2), h.map(|h| h.depth > 0.0))).or_insert(0) += 1;
+            let Some(h) = h else {
+                assert_eq!(&x[0..2], &[0, 0], "line {k}: no record");
+                continue;
+            };
+            let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+            if 256 & w[14] != 0 {
+                assert_eq!(&x[0..2], &[0, 0], "line {k}: material");
+                continue;
+            }
+            assert_eq!([x[0], x[1]], [(h.depth > 0.0) as u32, 1], "line {k}: result, list call");
+            assert_eq!([x[2], x[3]], [h.depth.to_bits(), big_r.to_bits()], "line {k}: depth, cap");
+            assert_eq!(&x[4..7], &bits(h.point), "line {k}: point");
+            if w[15] != 0 && h.depth > 0.0 {
+                assert_eq!(x[7], 0x1234, "line {k}: instance");
+                assert_eq!(&x[8..11], &bits(h.point), "line {k}: contact");
+                assert_eq!(&x[11..14], &bits(h.normal), "line {k}: normal");
+                assert_eq!(&x[14..17], &bits(h.normal), "line {k}: bound normal");
+                assert_eq!(&x[17..20], &[h.t.to_bits(), h.depth.to_bits(), 256], "line {k}: t, depth, material");
+                assert_eq!(&x[20..24], &[0, 2, 1, 0], "line {k}: part, kind, +80, +82");
+            }
+        }
+        assert_eq!(BOX_WAYS.with(|w| *w.borrow()), [275, 272, 554, 137, 469, 596, 134, 313, 662]);
+        assert_eq!(
+            format!("{seen:?}"),
+            "{(-1, 0, Some(true)): 252, (0, 0, None): 151, (0, 0, Some(true)): 133, (0, 1, None): 46, (0, 1, Some(true)): 66, \
+             (0, 2, None): 68, (0, 2, Some(true)): 157, (1, 0, None): 135, (1, 0, Some(true)): 163, (1, 1, None): 108, \
+             (1, 1, Some(true)): 396, (1, 2, None): 71, (1, 2, Some(true)): 803, (2, 0, None): 48, (2, 0, Some(true)): 188, \
+             (2, 1, None): 44, (2, 1, Some(false)): 41, (2, 1, Some(true)): 364, (2, 2, None): 50, (2, 2, Some(false)): 17, \
+             (2, 2, Some(true)): 699}"
         );
     }
 }

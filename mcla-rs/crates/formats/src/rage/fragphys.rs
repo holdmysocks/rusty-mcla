@@ -47,6 +47,10 @@ pub struct FragBound {
     pub scan: u16,
     /// material number: +0x90 of a sphere, +0xd0 of a capsule
     pub material: u32,
+    /// +0xd0 of a box: its size (the collision tests F-11472 / F-15615 read it with the centroid as its centre; the
+    /// box's resource placement F-14837 (from the bound factory F-77727) leaves it as the file holds it: the placement of
+    /// the prop file run offline writes nothing over it, docs/reference/people/traffic_drive_rule.md 9.8)
+    pub size: [f32; 3],
 }
 
 #[derive(Debug, Clone, Default)]
@@ -152,7 +156,12 @@ pub struct FragType {
     pub centroid: [f32; 3],
     pub cg: [f32; 3],
     pub margin: f32,
+    /// the composite's parts (+0x80, their number +0x90) and part matrices (+0x84)
     pub parts: Vec<FragPart>,
+    /// composite +0x92: how many parts the collision tests visit (F-35029 loops this count, the placement +0x90)
+    pub tested: u16,
+    /// composite +0x94: the per-part (type, include) pairs the tests check, when the file has them
+    pub part_masks: Vec<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -203,6 +212,9 @@ fn bound_at(rd: &Rd, o: usize) -> FragBound {
             b.material = rd.u32(o + 0xd0);
         }
         3 | 4 => {
+            if kind == 3 {
+                b.size = v3(rd, o + 0xd0);
+            }
             b.scan = rd.u16(o + 186);
             let (nv, nt) = (rd.u32(o + 0xc8) as usize, rd.u32(o + 0xcc) as usize);
             if let (Some(verts), Some(tris)) = (rd.ptr(o + 0x80), rd.ptr(o + 0x8c)) {
@@ -341,6 +353,12 @@ pub fn parse_frag_types(res: &Resource) -> Vec<FragType> {
                         t.parts.push(FragPart { bound: rd.ptr(arr + 4 * k).map(|o| bound_at(&rd, o)), matrix: [v3(&rd, m), v3(&rd, m + 16), v3(&rd, m + 32), v3(&rd, m + 48)] });
                     }
                 }
+                t.tested = rd.u16(b + 0x92);
+                if let Some(pm) = rd.ptr(b + 0x94) {
+                    for k in 0..t.tested as usize {
+                        t.part_masks.push((rd.u32(pm + 8 * k), rd.u32(pm + 8 * k + 4)));
+                    }
+                }
             }
         }
         out.push(t);
@@ -392,5 +410,35 @@ mod event_tests {
         assert_eq!(of("la_prop_gas_pump_76_01x").children[1].break_root_events[0].effect, "exp_gas_station");
         // 45 light / signal types play col_metal_pole on a hit
         assert!(types.iter().filter(|t| t.type_events.first().is_some_and(|e| e.effect == "col_metal_pole")).count() >= 40);
+    }
+
+    /// The parts' bounds as the collision tests read them: the composite's tested count, the kinds, a box's size.
+    #[test]
+    fn prop_bounds_of_the_types() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Ok(d) = std::fs::read(std::path::Path::new(&root).join("resources/prop/0x0e66973c.r131")) else { return };
+        if d.len() < 16 || &d[0..4] != b"MCLR" {
+            return;
+        }
+        let u = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let data = d[16..].to_vec();
+        let vs = (u(12) as usize).min(data.len());
+        let res = Resource { rtype: u(4), flags: u(8), virtual_size: vs, physical_size: data.len() - vs, data };
+        let types = parse_frag_types(&res);
+        let mut kinds = std::collections::BTreeMap::new();
+        let (mut differ, mut masks, mut boxes_off) = (0, 0, 0);
+        for t in &types {
+            differ += (t.tested as usize != t.parts.len()) as usize;
+            masks += (!t.part_masks.is_empty()) as usize;
+            for p in t.parts.iter().filter_map(|p| p.bound.as_ref()) {
+                *kinds.entry(p.kind).or_insert(0) += 1;
+                if p.kind == 3 {
+                    let ok = (0..3).all(|k| (p.max[k] - p.min[k] - p.size[k]).abs() < 1e-3 && ((p.max[k] + p.min[k]) * 0.5 - p.centroid[k]).abs() < 1e-3);
+                    boxes_off += (!ok) as usize;
+                }
+            }
+        }
+        eprintln!("kinds {kinds:?} tested != parts {differ} masks {masks} boxes off {boxes_off}");
+        assert_eq!((differ, masks, boxes_off), (0, 0, 0));
     }
 }
