@@ -1637,14 +1637,18 @@ impl TrackTune {
 /// The ability camera's place in the director (F-38892, r5_rules 5.2): with the ability running in a
 /// chase view and neither the reverse camera nor a blend under way it is pushed over InTime (the event
 /// camera's event cleared); when the ability stops it hands back to the view's camera over OutTime.
-/// The blends are the director's cosine orbit mix.
+/// The blends are the director's blend camera (`DirBlend`, type 3, goal 1). F-38892 pushes only while
+/// the director is not on its blend camera, and hands back only once the ability camera is current
+/// (the view's camera is the blend's source while it blends in: F-38782 nonzero), so a stop while
+/// blending in lets the blend in finish and then goes back over the whole OutTime.
 #[derive(Default)]
 pub struct AbilityCam {
     cam: TrackCam,
     /// 0 off, 1 blending in, 2 on, 3 blending out
     phase: u8,
-    left: f32,
-    time: f32,
+    blend: DirBlend,
+    /// the director's time (+20): the last push's
+    dir_time: f32,
 }
 
 impl AbilityCam {
@@ -1661,44 +1665,36 @@ impl AbilityCam {
     /// whether it was pushed this frame.
     pub fn frame(&mut self, push: bool, running: bool, times: (f32, f32), agro: bool, car: &TrackCar, drive: BoomOut, dt: f32, test: SphereTest, aspect: f32) -> (BoomOut, bool) {
         let mut pushed = false;
-        if push && !self.active() {
+        // (F-98424 type 3: a time above 0 begins a blend, else a cut)
+        if push && self.phase == 0 {
             let t = TrackTune::ability(agro);
-            // (a push while handing back turns the blend round)
-            let w = if self.phase == 3 { self.left / self.time.max(1e-4) } else { 0.0 };
-            if self.phase == 0 {
-                self.cam.set(&t, car, 99, 0.0);
-            }
-            self.phase = 1;
-            self.time = times.0;
-            self.left = times.0 * (1.0 - w);
+            self.cam.set(&t, car, 99, 0.0);
+            self.phase = if times.0 > 0.0 { 1 } else { 2 };
+            self.blend = DirBlend { weight: 0.0, goal: 1.0, left: times.0, ..Default::default() };
+            self.dir_time = times.0;
             pushed = true;
-        } else if !running && self.active() {
-            let w = if self.phase == 1 { 1.0 - self.left / self.time.max(1e-4) } else { 1.0 };
-            self.phase = 3;
-            self.time = times.1;
-            self.left = times.1 * w;
+        } else if !running && self.phase == 2 {
+            self.phase = if times.1 > 0.0 { 3 } else { 0 };
+            self.blend = DirBlend { weight: 0.0, goal: 1.0, left: times.1, ..Default::default() };
+            self.dir_time = times.1;
         }
         if self.phase == 0 {
             return (drive, pushed);
         }
         let t = TrackTune::ability(agro);
         let out = self.cam.update(&t, car, dt, dt, test, aspect);
-        self.left -= dt;
-        let w = match self.phase {
-            1 if self.left <= 0.0 => {
-                self.phase = 2;
-                1.0
-            }
-            1 => 1.0 - self.left / self.time.max(1e-4),
-            2 => 1.0,
-            _ if self.left <= 0.0 => {
-                self.phase = 0;
-                return (drive, pushed);
-            }
-            _ => self.left / self.time.max(1e-4),
-        };
-        let w = (1.0 - (std::f32::consts::PI * w.clamp(0.0, 1.0)).cos()) * 0.5;
-        (if w >= 1.0 { out } else { orbit_mix(&drive, &out, car.pos, w) }, pushed)
+        if self.phase == 2 {
+            return (out, pushed);
+        }
+        let (from, to) = if self.phase == 3 { (&out, &drive) } else { (&drive, &out) };
+        let (a, b, reach) = (dir_cam_of(from, car.pos), dir_cam_of(to, car.pos), (to.look - to.pos).length().max(1.0));
+        if !self.blend.step(&a, &b, 3, self.dir_time, dt) {
+            // the finish (F-70013): the director cuts to the target
+            self.phase = if self.phase == 1 { 2 } else { 0 };
+            return (if self.phase == 2 { out } else { drive }, pushed);
+        }
+        let m = &self.blend;
+        (BoomOut { pos: m.pos, look: m.pos - m.rows[2] * reach, up: m.rows[1], fov: m.lens[0] }, pushed)
     }
 }
 
@@ -1711,8 +1707,10 @@ pub struct CrashCam {
     tune: Option<TrackTune>,
     /// 0 off, 1 blending in from the drive view, 2 current
     phase: u8,
-    left: f32,
-    time: f32,
+    /// the director's blend camera from the drive view (F-98424 type 3, `DirBlend`, goal 1)
+    blend: DirBlend,
+    /// the director's time (+20): the push's
+    dir_time: f32,
     /// the place's XZ rate has its load value (5, vt+16) until the first wipeout of a car
     used: bool,
     /// F-37740 pointed the camera's matrix (+144) at the rider's copy (racer +704): a bike that
@@ -1728,7 +1726,7 @@ pub struct CrashCam {
 pub struct CrashStart {
     /// the Offset (+448): (0, 1, 7) behind, or (+-6, 0, 0) to the side the car slides toward
     pub offset: Vec3,
-    /// the director's orbit blend (mode 3), 0 = a cut (with the transition mask)
+    /// the director's blend (type 3), 0 = a cut (with the transition mask)
     pub blend: f32,
     /// ReverseOn -1 (an exploding car)
     pub exploding: bool,
@@ -1796,8 +1794,8 @@ impl CrashCam {
         self.cam.rev = how.exploding;
         self.tune = Some(t);
         self.phase = if how.blend > 0.0 { 1 } else { 2 };
-        self.time = how.blend;
-        self.left = how.blend;
+        self.blend = DirBlend { weight: 0.0, goal: 1.0, left: how.blend, ..Default::default() };
+        self.dir_time = how.blend;
     }
     /// One frame: `dt` the unscaled frame time (+184 = 1), `dt_game` the game's; `drive` the
     /// drive view's output (the blend's source).
@@ -1808,14 +1806,12 @@ impl CrashCam {
         }
         let out = self.cam.update(&t, &self.with_rider(car), dt, dt_game, test, aspect);
         if self.phase == 1 {
-            self.left -= dt;
-            if self.left <= 0.0 {
-                self.phase = 2;
-            } else {
-                let w = 1.0 - self.left / self.time.max(1e-4);
-                let w = (1.0 - (std::f32::consts::PI * w.clamp(0.0, 1.0)).cos()) * 0.5;
-                return orbit_mix(&drive, &out, car.pos, w);
+            let (a, b, reach) = (dir_cam_of(&drive, car.pos), dir_cam_of(&out, car.pos), (out.look - out.pos).length().max(1.0));
+            if self.blend.step(&a, &b, 3, self.dir_time, dt) {
+                let m = &self.blend;
+                return BoomOut { pos: m.pos, look: m.pos - m.rows[2] * reach, up: m.rows[1], fov: m.lens[0] };
             }
+            self.phase = 2;
         }
         out
     }
@@ -2424,23 +2420,6 @@ fn deflect(at: Vec3, want: Vec3, t: &TrackTune, test: SphereTest) -> Vec3 {
     let mut p = at + rel;
     p.y = p.y.max(at.y);
     p
-}
-
-/// The camera director's orbit blend (F-18583): the focus point (each camera's line of
-/// sight out to its distance from the car), the view's angles and the distance go from one
-/// camera to the other by w.
-pub fn orbit_mix(a: &BoomOut, b: &BoomOut, pivot: Vec3, w: f32) -> BoomOut {
-    let (da, db) = ((a.pos - pivot).length(), (b.pos - pivot).length());
-    let (ua, ub) = ((a.look - a.pos).normalize_or(Vec3::NEG_Z), (b.look - b.pos).normalize_or(Vec3::NEG_Z));
-    let (fa, fb) = (a.pos + ua * da, b.pos + ub * db);
-    let (ya, pa) = yaw_pitch(ua);
-    let (yb, pb) = yaw_pitch(ub);
-    let yaw = ya + wrap_pi(yb - ya) * w;
-    let pitch = pa + (pb - pa) * w;
-    let d = da + (db - da) * w;
-    let focus = fa.lerp(fb, w);
-    let dir = dir_of(yaw, pitch);
-    BoomOut { pos: focus - dir * d, look: focus, up: a.up.lerp(b.up, w).normalize_or(Vec3::Y), fov: a.fov + (b.fov - a.fov) * w }
 }
 
 /// What the event camera's chooser (F-24075) reads of the car, the pad and the camera
@@ -3405,6 +3384,29 @@ mod tests {
         assert_eq!(d.event(), Some(EV_WHEELIE));
         d.frame(&data, "vp_aud_r8_08", &EventIn { nitro_on: true, ..w }, &car, BoomOut { ..chase }, dt, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
         assert_eq!(d.event(), None);
+    }
+
+    /// The ability camera on the director (F-38892): a stop while it blends in lets the blend in
+    /// finish (the view's camera is the blend's source, so no hand-back push), then hands back over
+    /// the whole OutTime.
+    #[test]
+    fn ability_hands_back_after_its_blend_in() {
+        let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
+        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
+        let dt = 0.1;
+        let mut a = AbilityCam::default();
+        let f = |a: &mut AbilityCam, push: bool, running: bool| a.frame(push, running, (0.5, 0.3), false, &car, BoomOut { ..chase }, dt, &NO_WORLD, 16.0 / 9.0).1;
+        assert!(f(&mut a, true, true));
+        assert_eq!((a.phase, a.dir_time), (1, 0.5));
+        // stopped at once: still blending in for the rest of the 0.5 s
+        let mut n = 0;
+        while a.phase == 1 {
+            f(&mut a, false, false);
+            n += 1;
+        }
+        assert!((4..=5).contains(&n) && a.phase == 2, "{n}");
+        f(&mut a, false, false);
+        assert_eq!((a.phase, a.dir_time), (3, 0.3));
     }
 
     /// The event's off on the director (F-94591, F-29802, F-98424 -> F-43758): while blending in a
