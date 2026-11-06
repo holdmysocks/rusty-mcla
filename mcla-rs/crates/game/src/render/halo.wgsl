@@ -46,18 +46,20 @@ struct VsOut {
     @location(3) @interpolate(flat) kind: f32,
 };
 
-// The star quads' half diagonals in the camera's right / up plane: the table the game keeps at
-// 0x82880EB0 (twelve unit vectors, the same at every camera, hour and weather). A carries the
-// short one (uv 0,0 -> 1,1: the picture's bright line), B the long one.
+// The star quads' half diagonals in the camera's right / up plane: the table the game builds once
+// (F-18836, called only from the tune's set-up F-15091, before GlowTuning.xml is read) from the
+// constructor's StreakAngle defaults 1.83, 0.08, 1.39 (F-80296): A = (sin, cos), B = (-cos, sin) of each
+// angle in f32. The file's StreakAngle (0.829, 2.293, 0) never reaches it. A carries the short one
+// (uv 0,0 -> 1,1: the picture's bright line), B the long one.
 fn star_a(q: u32) -> vec2<f32> {
-    if (q == 0u) { return vec2<f32>(0.9666, -0.2563); }
-    if (q == 1u) { return vec2<f32>(0.0799, 0.9968); }
-    return vec2<f32>(0.9837, 0.1798);
+    if (q == 0u) { return vec2<f32>(0.9665944, -0.2563109); }
+    if (q == 1u) { return vec2<f32>(0.0799147, 0.9968017); }
+    return vec2<f32>(0.9837008, 0.1798130);
 }
 fn star_b(q: u32) -> vec2<f32> {
-    if (q == 0u) { return vec2<f32>(0.2563, 0.9666); }
-    if (q == 1u) { return vec2<f32>(-0.9968, 0.0799); }
-    return vec2<f32>(-0.1798, 0.9837);
+    if (q == 0u) { return vec2<f32>(0.2563109, 0.9665944); }
+    if (q == 1u) { return vec2<f32>(-0.9968017, 0.0799147); }
+    return vec2<f32>(-0.1798130, 0.9837008);
 }
 
 fn to_uv(c: vec4<f32>) -> vec2<f32> {
