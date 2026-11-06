@@ -785,10 +785,6 @@ pub struct Game {
     place_goto: Option<u32>,
     /// a pink slip race of a hangout is over: lost (`bFailure`) - its race-over tab (F-36093)
     pub pink_over: Option<bool>,
-    /// a won pink slip race's end scene still to play after the panels (scene, speech scenario) - wager_hangout_core
-    /// 0x5a07 (`mc4_pink_scene`); `pink_scene_on` while it plays: no panel and no race-over menu until its fade up
-    pub pink_scene: Option<(String, String)>,
-    pub pink_scene_on: bool,
     /// MISSION RESULTS after an event: the missions it finished (title, objectives)
     /// (title, objectives, done: false for a mission the event did not finish - stamped FAIL)
     pub mission_results: Vec<(String, Vec<String>, bool)>,
@@ -1520,8 +1516,6 @@ impl Game {
             place_own: None,
             place_goto: None,
             pink_over: None,
-            pink_scene: None,
-            pink_scene_on: false,
             mission_results: Vec::new(),
             mu_pending: false,
             rp_pending: false,
@@ -3327,7 +3321,6 @@ impl Game {
         }
         // (step 21: won - the car, lost - the stake stays in the lot)
         let pink_hangout = self.opt_x.arcade.pink.run.is_some();
-        self.pink_scene = self.mc4_pink_scene(place == 1);
         if let Some(key) = self.mc4_pink_end(place == 1) {
             self.pink_over = pink_hangout.then_some(place != 1);
             let m = self.career.strings.get(key).map(|s| s.to_uppercase()).unwrap_or_else(|| if place == 1 { "PINKSLIP WON".into() } else { "PINKSLIP LOST".into() });
@@ -9367,10 +9360,6 @@ impl Game {
                         self.mission_results.drain(..n);
                     }
                     (false, false, false, false)
-                } else if self.pink_scene_on || self.pink_scene.is_some() {
-                    // (a won pink slip race: its end scene after the panels, the race-over menu after its fade up -
-                    // wager_hangout_core 0x5a07 .. 0x5f2c, main.rs `pink_end_tick`)
-                    (false, false, false, false)
                 } else {
                     (up, down, enter, back)
                 };
@@ -11867,7 +11856,7 @@ impl Game {
     }
 
     /// RAND_INT_RANGE(lo, hi), both ends in, on the port's generator (the original's sequence is not reproduced)
-    pub(crate) fn rand_int_range(&mut self, lo: usize, hi: usize) -> usize {
+    fn rand_int_range(&mut self, lo: usize, hi: usize) -> usize {
         if hi <= lo {
             return lo;
         }
@@ -14267,10 +14256,6 @@ impl Game {
         }
         // (the race's end: nothing over the picture until WAITUNWARPED(200) is over)
         if self.race_end_t.map_or(false, |t| t < Self::RACE_END_PANEL) && self.replay.is_none() {
-            return true;
-        }
-        // (a won pink slip race's end scene: between the panels and the race-over menu)
-        if (self.pink_scene_on || self.pink_scene.is_some()) && !self.reward_panel && self.mission_results.is_empty() && self.replay.is_none() {
             return true;
         }
         // (step 19d: form 56's banner, after the place's splash - `mc4_banner_page`)
