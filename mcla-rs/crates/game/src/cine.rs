@@ -378,6 +378,8 @@ pub struct Cine {
     char_dir: PathBuf,
     /// the character sets the active racers wear (racer +144: the generic cast's in-use test F-68164), kept by `main`
     pub racer_sets: Vec<String>,
+    /// the local player's car is a motorcycle (F-17373: the racer's car config and its catalogue class 3), kept by `main`
+    pub player_bike: bool,
     /// scene ("story/cut_intro") -> (entry name, pack file)
     index: HashMap<String, Vec<(String, PathBuf)>>,
     models: HashMap<String, Option<Arc<SkinModel>>>,
@@ -485,9 +487,11 @@ const HACKED_SCALE: [&str; 14] = [
     "drv_mc_001_set", "drv_mc_003_set", "drv_mc_02_set", "drv_mh_006_set", "drv_mh_02_set", "drv_mp_01_set", "mec_mc_01_set",
 ];
 
-/// The set a cutscene draws for `set` (LookupDriverToCutscenePath / Name, F-58832 / F-81189). Not ported:
-/// a slot marked to use the unscaled character (CineScript_Characters_GetSlotToUseUnscaledCharacter) and the jacket
-/// copy (`drv_mp_jacket_01_set_hackedscale`, chosen by F-17373 - not decoded); GH_06 marks no slot.
+/// The set a cutscene draws for `set` (LookupDriverToCutscenePath / Name, F-58832 / F-81189): the character manager's
+/// map +116 (the HackedScale column of Boot.sco's RegisterDriverMappings), and when the local player's car is a motorcycle
+/// (F-17373, which with a player there stands for the script's own argument) the map +140 (the jacket column) - in the 45
+/// mappings they differ only for the player's `drv_mp_01_set`: `drv_mp_jacket_01_set_hackedscale` on a bike. Not ported: a
+/// slot marked to use the unscaled character (CineScript_Characters_GetSlotToUseUnscaledCharacter); GH_06 marks no slot.
 /// The officers' face table of LaunchAnimEventWithFace (F-45542): `cut_cop_faces/Entity/<n>/<n>` by the first
 /// entry containing the slot name.
 const COP_FACES: [&str; 5] = [
@@ -504,7 +508,10 @@ fn aux_pack(scene: &str) -> Option<&'static str> {
     scene.starts_with("cut_cop_arrest").then_some("cut_cop_faces")
 }
 
-fn cutscene_set(set: &str) -> String {
+fn cutscene_set(set: &str, bike: bool) -> String {
+    if bike && set.eq_ignore_ascii_case("drv_mp_01_set") {
+        return "drv_mp_jacket_01_set_hackedscale".to_string();
+    }
     if HACKED_SCALE.iter().any(|s| s.eq_ignore_ascii_case(set)) {
         format!("{}_hackedscale", set.to_ascii_lowercase())
     } else {
@@ -691,10 +698,10 @@ impl Cine {
                 // the actors, which only `start` knows. In the police scenes: every set the officers' counter could give it,
                 // the five - docs/PERFORMANCE.md 2026-10-27 (11))
                 if let Some((_, s)) = ent.split_once("_name_") {
-                    sets.push(cutscene_set(s));
+                    sets.push(cutscene_set(s, self.player_bike));
                 } else if key.contains("cut_cop") {
                     for c in COPS {
-                        let s = cutscene_set(c);
+                        let s = cutscene_set(c, self.player_bike);
                         if !sets.contains(&s) {
                             sets.push(s);
                         }
@@ -831,7 +838,7 @@ impl Cine {
                     // (the cutscene loader script, 0x95ca1d1b 0x4f - 0x1d8: a slot not marked for the unscaled
                     // character takes its set's cutscene copy - LookupDriverToCutscenePath / Name)
                     slot_sets.push((label.to_string(), set.clone()));
-                    let set = cutscene_set(&set);
+                    let set = cutscene_set(&set, self.player_bike);
                     let Some(model) = self.model(gpu, &set) else { continue };
                     let clip = Clip::bind(&anim, &model.ids, false, false);
                     sc.actors.push(Actor { label: label.to_string(), model, clip, t0: 0.0, face: None, shapes: None, root_add: None, fade: None, face_in: None });
@@ -1215,6 +1222,17 @@ impl Cine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// LookupDriverToCutsceneName's two maps as Boot.sco fills them: the HackedScale column, and on a bike the jacket one
+    /// (the player's set only differs).
+    #[test]
+    fn cutscene_set_by_the_mappings() {
+        assert_eq!(cutscene_set("drv_mp_01_set", false), "drv_mp_01_set_hackedscale");
+        assert_eq!(cutscene_set("drv_mp_01_set", true), "drv_mp_jacket_01_set_hackedscale");
+        assert_eq!(cutscene_set("drv_mb_001_set", true), "drv_mb_001_set_hackedscale");
+        assert_eq!(cutscene_set("drv_mb_009_set", true), "drv_mb_009_set");
+        assert_eq!(cutscene_set("pol_mc_01_set", false), "pol_mc_01_set");
+    }
 
     #[test]
     fn every_cop_set_has_its_face() {
