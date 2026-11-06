@@ -9178,6 +9178,63 @@ pub fn section_part_type(section: &str) -> Option<&'static str> {
     })
 }
 
+/// The garage's menu id -> the record's part index (F-92682; -1 = no part). The part index
+/// is the record getter's (F-20669, `Car::part`: 38 = WideBodyKit, 5 = UseIntercooler, else
+/// `PARTS[i]`).
+pub const MENU_PART: [i8; 49] = [
+    0, 2, 3, 6, 7, 8, 9, 11, 12, 14, 15, 16, 5, 17, 18, 19, 20, 21, 38, 39, 40, 41, 42, 44, 45, 49, 50, 51, 52, 53,
+    -1, -1, -1, -1, 23, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 24, -1,
+];
+
+/// The menus the part list (F-77984) still opens while the record's WideBodyKit is 1; any
+/// other (but the plate, 48) shows the garage's `Wide_Body_Error` box ("you must uninstall
+/// the widebody first") and opens no list.
+pub const WIDE_BODY_MENUS: [usize; 6] = [18, 28, 25, 29, 24, 34];
+
+/// The part list of the part named `part` (a `PARTS` name) is refused with the wide body kit
+/// fitted: true unless one of `WIDE_BODY_MENUS` leads to it.
+pub fn wide_body_refuses(part: &str) -> bool {
+    !WIDE_BODY_MENUS.iter().any(|&m| {
+        let i = MENU_PART[m];
+        i >= 0 && PARTS[i as usize].eq_ignore_ascii_case(part)
+    })
+}
+
+/// The `PARTS` name of a body slot's list (None: not a part list of F-77984 - paint, rims).
+pub fn slot_part_name(slot: crate::vehicle_model::Slot) -> Option<&'static str> {
+    use crate::vehicle_model::Slot;
+    Some(match slot {
+        Slot::Body => "widebody",
+        Slot::Hood => "hood",
+        Slot::Spoiler => "spoiler",
+        Slot::BumperF => "bumper_f",
+        Slot::BumperR => "bumper_r",
+        Slot::Skirts => "skirts",
+        Slot::Exhaust => "exh_pipe",
+        Slot::Seats => "seats_f",
+        _ => return None,
+    })
+}
+
+/// The same for a section of the vehicle's part file (`XPARTS`); the doors' list is menu 16
+/// (door_l), the side exhaust's menu 47; tires and brakes are Wheels.sc.xml's lists, not F-77984's.
+pub fn section_part_name(section: &str) -> Option<&'static str> {
+    Some(match section {
+        "headlight" => "headlight",
+        "taillight" => "taillight",
+        "steer_whl" => "steer_whl",
+        "post_gauge" => "post_gauge",
+        "scissor_door" => "door_l",
+        "blower" => "blower",
+        "side_exhaust" => "exh_side",
+        "intercooler" => "intercooler",
+        "bike_cowl" => "bike_cowl",
+        "bike_tail" => "bike_tail",
+        "bike_tank" => "bike_tank",
+        _ => return None,
+    })
+}
+
 /// A row of a part list is open (F-77984): every row of an unlocked type; of a
 /// locked one the first three when the list has more than three, else the first.
 pub fn part_row_open(locked: bool, row: usize, count: usize) -> bool {
@@ -15622,6 +15679,29 @@ mod tests {
         g.mc4_event_complete("hw_tournament1", 2, 1.5);
         assert_eq!(g.mc4_car_need("vp_chv_camaro_06_dub", "B0"), g.mc4_group_need("B0"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// F-77984's wide body test: with the kit only the lists of menus 18 / 24 / 25 / 28 / 29 / 34
+    /// open (widebody, seats_f, stereo, steer_whl, post_gauge, exh_pipe - by F-92682's table).
+    #[test]
+    fn wide_body_kit_refuses_part_lists() {
+        use crate::vehicle_model::Slot;
+        let open: Vec<&str> = WIDE_BODY_MENUS.iter().map(|&m| PARTS[MENU_PART[m] as usize]).collect();
+        assert_eq!(open, ["widebody", "steer_whl", "stereo", "post_gauge", "seats_f", "exh_pipe"]);
+        let refused: Vec<Slot> = crate::vehicle_model::CUSTOM_SLOTS.iter().copied()
+            .filter(|s| slot_part_name(*s).is_some_and(wide_body_refuses)).collect();
+        assert_eq!(refused, [Slot::Hood, Slot::Spoiler, Slot::BumperF, Slot::BumperR, Slot::Skirts]);
+        let sections = ["headlight", "taillight", "steer_whl", "post_gauge", "scissor_door", "blower", "side_exhaust", "tires", "brakes", "intercooler"];
+        let refused: Vec<&str> = sections.iter().copied().filter(|s| section_part_name(s).is_some_and(wide_body_refuses)).collect();
+        assert_eq!(refused, ["headlight", "taillight", "scissor_door", "blower", "side_exhaust", "intercooler"]);
+        // (the menu table: the part index of every menu that has one, in F-92682's order)
+        assert_eq!(MENU_PART.iter().filter(|&&i| i >= 0).count(), 32);
+        assert_eq!((MENU_PART[12], MENU_PART[16], MENU_PART[47]), (5, 20, 24));
+        // (the box the refusal opens, from the garage's state file)
+        if let Ok(dir) = std::env::var("MCLA_DATA_DIR") {
+            let def = crate::flash_ui::MessageBoxDef::load(&dir, "Wide_Body_Error").expect("Wide_Body_Error");
+            assert_eq!((def.title.as_str(), def.description.as_str()), ("G_WideBodyError", "G_YouMustUninstallWidebodyFirst"));
+        }
     }
 
     /// Step 16: the part lists' rows by the unlocked flag, the "new" marks, the rewards

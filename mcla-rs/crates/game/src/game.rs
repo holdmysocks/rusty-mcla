@@ -6957,6 +6957,8 @@ impl Game {
                 }
                 let slot_row = |s: Slot| CUSTOM_SLOTS.iter().position(|x| *x == s).map_or(0, |i| i + 1);
                 let garage_car = self.dir_name(self.current_car).to_ascii_lowercase();
+                // (the record's WideBodyKit, +2203, as F-77984 reads it: == 1)
+                let wide_kit = self.car_wide(self.current_car) == Some(1);
                 let model_variants = vehicles.player().map(|c| &c.model.variants);
                 let extra_variants = vehicles.player().map(|c| c.model.extra_variants.clone()).unwrap_or_default();
                 let available_xparts: std::collections::HashSet<usize> = XPARTS.iter().enumerate()
@@ -7611,6 +7613,16 @@ impl Game {
                             self.garage_menu = m;
                             self.garage_cur = 0;
                             went_in = true;
+                        }
+                        // (F-77984: with the wide body kit only the body, seats, stereo, steering
+                        // wheel, gauges and exhaust lists open; the others say Wide_Body_Error)
+                        (true, It::Part(_, slot)) if available_slots.contains(&slot) && wide_kit
+                            && crate::mc4::slot_part_name(slot).is_some_and(crate::mc4::wide_body_refuses) => {
+                            self.open_message_box("Wide_Body_Error", MenuAction::None);
+                        }
+                        (true, It::RowAs(_, id)) if self.flash_garage.is_some() && wide_kit && XPARTS.iter().position(|x| x.0 == id).map_or(false, |k| available_xparts.contains(&k)
+                            && crate::mc4::section_part_name(XPARTS[k].1).is_some_and(crate::mc4::wide_body_refuses)) => {
+                            self.open_message_box("Wide_Body_Error", MenuAction::None);
                         }
                         (true, It::Part(_, slot)) if available_slots.contains(&slot) => {
                             if slot == Slot::Wheels && self.rim_dlc {
