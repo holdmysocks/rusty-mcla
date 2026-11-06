@@ -1049,14 +1049,6 @@ impl Frame {
         project_point(&self.view_proj, p)
     }
 
-    /// The minimap's mesh cull (rmcDrawable slot 15 -> F-50958's sphere test): the mesh's bounding sphere centre
-    /// through `m`, its radius unscaled, against the map camera's frustum planes (F-53768's, ported as
-    /// `Frustum::from_view_proj`). False = culled.
-    fn visible(&self, mesh: Option<&IconMesh>, m: Mat4) -> bool {
-        let Some(mesh) = mesh else { return true };
-        let (c, r) = mesh.sphere;
-        crate::render::Frustum::from_view_proj(self.view_proj).intersects_sphere(m.transform_point3(c), r)
-    }
 
     /// `F-72569`: inside the map when |projected (x, y, z)| < RimIconRadius - the depth (0..1)
     /// counts in the length.
@@ -1078,6 +1070,9 @@ impl Frame {
 pub struct Queue {
     pub draws: Vec<Draw>,
     pub rim: Vec<Rim>,
+    /// the meshes' bounding spheres (`IconMesh::sphere`) and the map camera's planes, for the culls
+    spheres: HashMap<&'static str, (Vec3, f32)>,
+    frustum: Option<crate::render::Frustum>,
 }
 
 impl Queue {
@@ -1085,6 +1080,16 @@ impl Queue {
         // (a draw with alpha 0 is skipped, F-61799)
         if colour[3] > 0.0 {
             self.draws.push(Draw { mesh, m, colour });
+        }
+    }
+
+    /// The renderers' mesh cull (rmcDrawable slot 15 -> F-50958's sphere test): the mesh's bounding sphere centre
+    /// through `m`, its radius unscaled, against the map camera's frustum planes (F-53768's, ported as
+    /// `Frustum::from_view_proj`). False = culled; a mesh without a sphere is kept.
+    fn visible(&self, mesh: &str, m: Mat4) -> bool {
+        match (self.spheres.get(mesh), &self.frustum) {
+            (Some(&(c, r)), Some(fr)) => fr.intersects_sphere(m.transform_point3(c), r),
+            _ => true,
         }
     }
 
@@ -1103,6 +1108,13 @@ const PI: f32 = std::f32::consts::PI;
 /// drawn after the layers; `circuit` = `HudMap+28`.
 pub fn build(tune: &Tune, assets: &mut Assets, f: &Frame, elements: &[Element], checkpoints: &[Vec3], circuit: bool) -> Queue {
     let mut q = Queue::default();
+    q.frustum = Some(crate::render::Frustum::from_view_proj(f.view_proj));
+    let named = ["caricon", "checkpoint_sphere", "icon_flag", "icon_gasStation", "icon_ring_hangout", "icon_ring_car", "icon_series", "icon_payback"];
+    for name in named.into_iter().chain((0..19).map(ingame)) {
+        if let Some(m) = assets.mesh(name) {
+            q.spheres.insert(name, m.sphere);
+        }
+    }
     let mut f = *f;
     let mut cp_count = 0u32;
     for e in elements {
@@ -1153,7 +1165,7 @@ fn hidden_by_police(f: &Frame) -> bool {
     !f.race && f.police > 1
 }
 
-fn draw_element(tune: &Tune, assets: &mut Assets, f: &Frame, e: &Element, q: &mut Queue, cp_count: &mut u32) {
+fn draw_element(tune: &Tune, _assets: &mut Assets, f: &Frame, e: &Element, q: &mut Queue, cp_count: &mut u32) {
     let minimap = f.mode == 0;
     // (positions flatten to y = 0 off the GPS map; renderers lift by 1)
     let flat = |p: Vec3| if f.mode != 1 { Vec3::new(p.x, 0.0, p.z) } else { p };
@@ -1190,6 +1202,14 @@ fn draw_element(tune: &Tune, assets: &mut Assets, f: &Frame, e: &Element, q: &mu
                 q.rim(f, p, colour, ripple, 1);
                 return;
             }
+            let icon: &'static str = match e.kind {
+                Kind::PaybackCar => "icon_payback",
+                Kind::Racer(10) => "icon_series",
+                _ => ingame(e.icon),
+            };
+            if minimap && !(if mission { q.visible(icon, sub) } else { q.visible("icon_ring_car", ring) }) {
+                return;
+            }
             if ripple {
                 let rc = tune.c("RippleColor", [1.0; 4]);
                 q.mesh("target_ripple", diag(tune.f("RippleIconOtherScale", 12.0) * s0, lift(p)), mul(rc, colour));
@@ -1198,11 +1218,6 @@ fn draw_element(tune: &Tune, assets: &mut Assets, f: &Frame, e: &Element, q: &mu
                 colour[3] *= 0.8 + 0.2 * ((speed * 2.0 * t).sin() + 1.0) * 0.5;
             }
             q.mesh("icon_ring_car", ring, colour);
-            let icon: &'static str = match e.kind {
-                Kind::PaybackCar => "icon_payback",
-                Kind::Racer(10) => "icon_series",
-                _ => ingame(e.icon),
-            };
             if mission {
                 let a = ((speed * t).sin() + 1.0) * 0.5;
                 q.mesh(icon, sub, [1.0, 1.0, 1.0, a]);
@@ -1244,7 +1259,7 @@ fn draw_element(tune: &Tune, assets: &mut Assets, f: &Frame, e: &Element, q: &mu
             }
             let mesh = if matches!(e.kind, Kind::Flag) { "icon_flag" } else { "icon_flagBase" };
             // (the cull tests icon_flag for both types, before the lift: culled -> the rim dot only)
-            if minimap && !f.visible(assets.mesh("icon_flag").as_deref(), m) {
+            if minimap && !q.visible("icon_flag", m) {
                 q.rim(f, pos, colour, e.selected, e.kind.type_byte());
                 return;
             }
@@ -1258,6 +1273,9 @@ fn draw_element(tune: &Tune, assets: &mut Assets, f: &Frame, e: &Element, q: &mu
             let p = lift(flat(e.pos));
             let s = tune.f("IconGasStationScale", 100.0) * f.base(e.pos);
             let colour = tune.c("GasStationColor", [0.501961, 0.501961, 0.501961, 1.0]);
+            if minimap && !q.visible("icon_gasStation", rot_y(f.theta, s, p)) {
+                return;
+            }
             if e.selected {
                 q.mesh("target_ripple", diag(tune.f("RippleIconOtherScale", 12.0) * f.base(e.pos), p), mul(tune.c("RippleColor", [1.0; 4]), colour));
             }
@@ -1286,6 +1304,10 @@ fn draw_element(tune: &Tune, assets: &mut Assets, f: &Frame, e: &Element, q: &mu
             }
             let scale = if garage_colour { tune.f("IconGarageScale", 139.0) } else { tune.f("IconHangoutScale", 139.0) };
             let m = rot_y(f.theta, scale * s0, p);
+            if minimap && !q.visible("icon_ring_hangout", m) {
+                q.rim(f, p, colour, e.selected, e.kind.type_byte());
+                return;
+            }
             if e.selected {
                 q.mesh("target_ripple", diag(tune.f("RippleIconOtherScale", 12.0) * s0, p), mul(tune.c("RippleColor", [1.0; 4]), colour));
             }
@@ -1431,6 +1453,9 @@ fn vehicle_arrow_as(tune: &Tune, f: &Frame, e: &Element, q: &mut Queue, scale: f
         q.rim(f, p, e.colour, e.selected, 1);
         return;
     }
+    if f.mode == 0 && !q.visible("caricon", m) {
+        return;
+    }
     if e.selected {
         q.mesh("target_ripple", diag(tune.f("RippleIconOtherScale", 12.0) * s0, p + Vec3::Y), mul(tune.c("RippleColor", [1.0; 4]), e.colour));
     }
@@ -1531,11 +1556,15 @@ fn checkpoint(tune: &Tune, f: &Frame, mode: u8, e: &Element, provider: bool, q: 
     if fx == Fx::Ripple {
         q.mesh("target_ripple", diag(tune.f("RippleIconScale", 12.0) * b, p + Vec3::Y), mul(tune.c("RippleColor", [1.0; 4]), colour));
     }
-    if mode == 0 && !f.inside(tune, p) {
-        q.rim(f, p, colour, selected || fx == Fx::Ripple, 0);
-        return;
+    // (the draw helper culls first in every mode, draws when visible, and answers "inside" = not the minimap or
+    // inside(p); a culled or outside checkpoint on the minimap gets its rim dot - the mesh stays drawn when visible)
+    let visible = q.visible("checkpoint_sphere", diag(scale, p));
+    if visible {
+        q.mesh("checkpoint_sphere", diag(scale, p), colour);
     }
-    q.mesh("checkpoint_sphere", diag(scale, p), colour);
+    if mode == 0 && (!visible || !f.inside(tune, p)) {
+        q.rim(f, p, colour, selected || fx == Fx::Ripple, 0);
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
