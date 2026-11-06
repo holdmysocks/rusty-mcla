@@ -4386,13 +4386,19 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // (the crash flags of a car the game drives itself, as mcCar::Update keeps them for every car; the player's
             // are main.rs's)
             if !c.is_player && c.state.veh.is_some() {
-                let bike = c.model.bike;
+                let (bike, cop) = (c.model.bike, c.cop);
                 let CarInstance { state, tuned, model, crash, pose_history, .. } = c;
                 let p: &CarParams = tuned.as_deref().unwrap_or(&model.params);
                 // (stood up where it is, 0.8 m up, onto its wheels: not set down again by the port's placing, which
                 // would put a racer on a rail)
-                if crate::physics::wipeout::step(crash, state, p, bike, step_dt).stood_up {
+                let out = crate::physics::wipeout::step(crash, state, p, bike, cop, step_dt);
+                if out.stood_up {
                     pose_history.reset();
+                }
+                if out.reset {
+                    if let Some(vt) = p.veh.clone() {
+                        crate::physics::vehsim::reset(state, &vt, &world.collider);
+                    }
                 }
             }
             match post {

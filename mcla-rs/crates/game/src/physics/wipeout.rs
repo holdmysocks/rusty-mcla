@@ -14,8 +14,12 @@
 //!   motorcycle in the original's sim keeps its wipeout timer there (vehsim's `wipe`). The wipeout's end
 //!   (A-23262) clears the bits and stands up a car lying over (up y under 0.7) where it is.
 //!
-//! Not decoded for a computer car: what follows its damage-out timer (the player's wreck runs the menu); here
-//! the bits stay and the timer stops at 0.
+//! - a damage-out's end (mcCar::Update F-53665 at 0x823363A0, once the timer is under 0): a car that is not
+//!   the local player's and not a police car (racer byte +465, 1 for police: their brain teleports them,
+//!   F-14059) gets the car's vtable slot 1 (mcCar vtable 0x82045EE4 +4), the car reset F-46526 "Resetting car
+//!   %s": the tune blend and wheel fit again, every part's reset - the damage object's F-15879 (points, timer and
+//!   hit fields to 0), the chassis' (its +592 flags to 0, mcCarSim::Reset F-47310), the damage parts' repair
+//!   F-75221 - with its place and heading kept. Here: `Outcome::reset`, the caller runs `vehsim::reset`.
 
 use super::car::{CarParams, CarState};
 use glam::Vec3;
@@ -42,10 +46,13 @@ pub struct Outcome {
     pub damaged_out: bool,
     pub ended: bool,
     pub stood_up: bool,
+    /// the damage-out is over and the car was repaired (F-46526): the caller resets its sim (`vehsim::reset`)
+    pub reset: bool,
 }
 
 /// One step of a car's crash flags over `dt` seconds (the player's in main.rs, for every other car).
-pub fn step(crash: &mut Crash, st: &mut CarState, p: &CarParams, bike: bool, dt: f32) -> Outcome {
+/// `cop`: a police car (racer +465), which is not reset at its damage-out's end.
+pub fn step(crash: &mut Crash, st: &mut CarState, p: &CarParams, bike: bool, cop: bool, dt: f32) -> Outcome {
     let mut out = Outcome::default();
     let Some(vt) = p.veh.as_ref() else { return out };
     let dm = &vt.t.damage;
@@ -85,8 +92,17 @@ pub fn step(crash: &mut Crash, st: &mut CarState, p: &CarParams, bike: bool, dt:
         crash.timer -= dt;
     }
     if crash.bits & 4 != 0 {
-        if crash.timer < 0.0 {
-            crash.timer = 0.0;
+        if crash.timer < 0.0 && !cop {
+            *crash = Crash::default();
+            st.damage = 0.0;
+            st.last_hit = 0.0;
+            st.zones = [0.0; 4];
+            st.dmg.repair();
+            st.upset = 0.0;
+            st.wipeout = 0.0;
+            st.head_on = false;
+            st.visible_hit = false;
+            out.reset = true;
         }
     } else if crash.bits & 0x10 != 0 && crash.timer <= 0.0 {
         crash.bits = 0;
@@ -125,26 +141,35 @@ mod tests {
         let (p, mut st) = car();
         let mut c = Crash::default();
         st.head_on = true;
-        assert!(step(&mut c, &mut st, &p, false, 1.0 / 60.0).started);
+        assert!(step(&mut c, &mut st, &p, false, false, 1.0 / 60.0).started);
         assert_eq!((c.bits, c.timer, st.upset), (0x10, 3.0, 1.0));
         // (standing still: the timer runs down on real time)
         let mut ended = false;
         for _ in 0..181 {
-            ended |= step(&mut c, &mut st, &p, false, 1.0 / 60.0).ended;
+            ended |= step(&mut c, &mut st, &p, false, false, 1.0 / 60.0).ended;
         }
         assert!(ended && c.bits == 0 && st.upset == 0.0);
     }
 
     #[test]
-    fn a_wrecked_computer_car_damages_out_and_holds() {
+    fn a_wrecked_computer_car_is_reset_after_its_damage_out() {
         let (p, mut st) = car();
         let mut c = Crash::default();
         st.damage = 1.0;
-        assert!(step(&mut c, &mut st, &p, false, 0.1).damaged_out);
+        assert!(step(&mut c, &mut st, &p, false, false, 0.1).damaged_out);
         assert_eq!((c.bits, c.timer), (0x14, 5.0));
+        let mut reset = 0;
         for _ in 0..100 {
-            step(&mut c, &mut st, &p, false, 0.1);
+            reset += step(&mut c, &mut st, &p, false, false, 0.1).reset as u32;
         }
-        assert_eq!((c.bits, c.timer), (0x14, 0.0));
+        assert_eq!((reset, c, st.damage), (1, Crash::default(), 0.0));
+        // (a police car keeps its damage-out: its brain teleports it)
+        let (p, mut st) = car();
+        let mut c = Crash::default();
+        st.damage = 1.0;
+        for _ in 0..100 {
+            assert!(!step(&mut c, &mut st, &p, false, true, 0.1).reset);
+        }
+        assert_eq!(c.bits, 0x14);
     }
 }
