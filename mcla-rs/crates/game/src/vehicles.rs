@@ -5724,6 +5724,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
             };
             let has_bone = |id: u8| !old_rule && c.model.glow_bones.iter().any(|(k, _, _)| *k == id);
             let lamp = |n: usize| ((c.uid as u64) << 12) | n as u64;
+            // (the reflection pass, mode 2 of F-27833: a traffic car whose lights are on and whose LOD is not -1 -
+            // no 50 m rule - sets the world matrix to the mirror about its origin height and runs F-62563 ->
+            // F-96521 with refl = 1; the player's car has no reflection rectangles in the recordings)
+            let refl_y = (traffic.is_some() && self.lod_pick.get(ci).copied().unwrap_or(-1) >= 0).then_some(pose.pos.y);
             for (n, (id, local, facing)) in c.model.glow_bones.iter().enumerate() {
                 let k = level(*id);
                 if k <= 0.0 || old_rule {
@@ -5765,10 +5769,6 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// (+304) is set, one glow for every lamp of kinds 13 and 14 (the `coplightred0` / `coplightblue0` bones)
     /// with the kind's colour bulb x cover + 0.5 (cut to 1 when packed) and its siren state (+308); halo.rs
     /// `Tune::police` makes the glow. (place, facing, colour, state)
-            // (the reflection pass, mode 2 of F-27833: a traffic car whose lights are on and whose LOD is not -1 -
-            // no 50 m rule - sets the world matrix to the mirror about its origin height and runs F-62563 ->
-            // F-96521 with refl = 1; the player's car has no reflection rectangles in the recordings)
-            let refl_y = (traffic.is_some() && self.lod_pick.get(ci).copied().unwrap_or(-1) >= 0).then_some(pose.pos.y);
     pub fn police_glows(&self, cam: Vec3) -> Vec<(Vec3, Vec3, [f32; 3], f32)> {
         let mut out = Vec::new();
         for c in &self.cars {
