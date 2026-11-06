@@ -42,6 +42,7 @@ fn main() -> Result<()> {
         "sector" => cmd_sector(&args[2..]),
         "citymap" => cmd_citymap(&args[2..]),
         "drawable" => cmds::cmd_drawable(&args[2..]),
+        "fvfscan" => cmds::cmd_fvfscan(&args[2..]),
         "uimesh" => cmds::cmd_uimesh(&args[2..]),
         "shaders" => cmds::cmd_shaders(&args[2..]),
         "meshcol" => cmds::cmd_meshcol(&args[2..]),

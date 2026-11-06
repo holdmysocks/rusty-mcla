@@ -243,3 +243,83 @@ pub fn cmd_uimesh(a: &[String]) -> Result<()> {
     }
     Ok(())
 }
+
+/// mcla-tool fvfscan <dir>...: every geometry of every resource under the folders, one line each:
+/// shader name hash, shader name, the vertex buffer's fvf channel mask, the file (for checking the effects' `dcl` masks)
+pub fn cmd_fvfscan(a: &[String]) -> Result<()> {
+    use mcla_formats::rage::{drawable::Shader, scan, vt, Rd};
+    fn walk(p: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        if let Ok(rd) = std::fs::read_dir(p) {
+            for e in rd.flatten() {
+                let q = e.path();
+                if q.is_dir() {
+                    walk(&q, out);
+                } else if q.extension().and_then(|x| x.to_str()).map_or(false, |x| x.len() > 1 && x.starts_with('r') && x[1..].bytes().all(|b| b.is_ascii_digit())) {
+                    out.push(q);
+                }
+            }
+        }
+    }
+    let mut files = Vec::new();
+    for d in a {
+        walk(std::path::Path::new(d), &mut files);
+    }
+    let so = std::io::stdout();
+    let mut o = so.lock();
+    // (a fragment's models index the shader group of the folder's main drawable)
+    let mut folder: std::collections::HashMap<std::path::PathBuf, Vec<(String, u32)>> = std::collections::HashMap::new();
+    let mut group_of = |dir: &std::path::Path| -> Vec<(String, u32)> {
+        folder
+            .entry(dir.to_path_buf())
+            .or_insert_with(|| {
+                for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                    let q = e.path();
+                    if q.extension().and_then(|x| x.to_str()) == Some("r83") {
+                        if let Ok(d) = load_res(&q.to_string_lossy()).and_then(|r| Ok(Drawable::parse(&r)?)) {
+                            if !d.shader_group.shaders.is_empty() {
+                                return d.shader_group.shaders.iter().map(|s| (s.name.escape_default().to_string(), s.name_hash)).collect();
+                            }
+                        }
+                    }
+                }
+                Vec::new()
+            })
+            .clone()
+    };
+    for f in files {
+        let Ok(res) = load_res(&f.to_string_lossy()) else { continue };
+        let Ok(d) = Drawable::parse(&res) else { continue };
+        let rd = Rd::new(&res);
+        let mut done = std::collections::HashSet::new();
+        // sector batches: root +18 {shader, geometry} pairs, +24 count
+        let n = rd.u16(0x24) as usize;
+        if let Some(arr) = rd.ptr(0x18) {
+            if n > 0 && n < 100_000 && rd.has(arr, n * 8) {
+                for i in 0..n {
+                    let (Some(sp), Some(gp)) = (rd.res.ptr(rd.u32(arr + i * 8) & !0xF), rd.res.ptr(rd.u32(arr + i * 8 + 4) & !0xF)) else { continue };
+                    if rd.vtable(sp) != vt::SHADER || rd.vtable(gp) != vt::GEOMETRY {
+                        continue;
+                    }
+                    let (Ok(sh), Some(gr)) = (Shader::parse(&rd, sp), scan::geometry_at(&rd, gp)) else { continue };
+                    done.insert(gp);
+                    writeln!(o, "{:08x}	{}	{}	{}", sh.name_hash, sh.name.escape_default(), gr.vb.fvf.mask, f.display())?;
+                }
+            }
+        }
+        let own: Vec<(String, u32)> = d.shader_group.shaders.iter().map(|s| (s.name.escape_default().to_string(), s.name_hash)).collect();
+        let shaders = if own.is_empty() { f.parent().map(|p| group_of(p)).unwrap_or_default() } else { own };
+        for m in scan::scan_models(&rd) {
+            for (i, &g) in m.geometries.iter().enumerate() {
+                if done.contains(&g) {
+                    continue;
+                }
+                if let Some(gr) = scan::geometry_at(&rd, g) {
+                    let si = m.shader_index.get(i).copied().unwrap_or(0) as usize;
+                    let (name, h) = shaders.get(si).cloned().unwrap_or_default();
+                    writeln!(o, "{:08x}	{}	{}	{}", h, name, gr.vb.fvf.mask, f.display())?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
