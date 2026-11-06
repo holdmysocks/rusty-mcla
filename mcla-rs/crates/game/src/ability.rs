@@ -74,18 +74,29 @@ pub struct AbilityTune {
 }
 
 impl AbilityTune {
-    fn fallback(kind: Kind) -> AbilityTune {
-        let (drain, fov_offset, dist_scale, time_warp, in_time, out_time) = match kind {
-            Kind::Zone => (0.8, -5.0, 1.0, 0.239, 0.4, 2.0),
-            Kind::Agro => (0.25, 20.0, 0.65, 1.0, 0.8, 0.6),
-            Kind::Roar => (0.225, 10.0, 0.75, 1.0, 0.5, 0.8),
-            Kind::Emp => (0.225, 0.0, 1.0, 1.0, 1.0, 1.0),
-        };
-        AbilityTune { drain, in_time, out_time, fov_offset, dist_scale, time_warp, increase: 0.01, decrease: 0.15, threshold_speed: 20.0, threshold_factor: 10.0, strike: [0.2, 0.15, 0.05], strike_timer: 0.333, min_gauge: if matches!(kind, Kind::Roar | Kind::Emp) { 0.1 } else { 0.0 }, reach: match kind { Kind::Roar => 180.0, Kind::Emp => 60.0, _ => 0.0 }, agro: crate::physics::agro::Tune::FILE }
+    /// The static constructors' values (F-32980 and its four twins; the same for every ability, tools/pu_ability_tune_reference.py):
+    /// what a tune file that leaves a key out gets. The file's keys replace them in `parse`.
+    fn fallback(_kind: Kind) -> AbilityTune {
+        AbilityTune {
+            drain: 0.2,
+            in_time: 1.0,
+            out_time: 1.0,
+            fov_offset: 0.0,
+            dist_scale: 1.0,
+            time_warp: 0.239,
+            increase: 0.025,
+            decrease: 0.3,
+            threshold_speed: 13.41,
+            threshold_factor: 5.0,
+            strike: [0.5, 0.25, 0.05],
+            strike_timer: 0.25,
+            min_gauge: 0.1,
+            reach: 100.0,
+            agro: crate::physics::agro::Tune::CONSTRUCTED,
+        }
     }
 
     fn load(data_dir: &str, kind: Kind) -> AbilityTune {
-        let mut t = AbilityTune::fallback(kind);
         let name = match kind {
             Kind::Zone => "zone",
             Kind::Agro => "agro",
@@ -93,8 +104,14 @@ impl AbilityTune {
             Kind::Emp => "pulse",
         };
         let h = mcla_formats::hash::joaat(&format!("{name}.specialability"));
-        let Ok(text) = std::fs::read_to_string(std::path::Path::new(data_dir).join("tune/vehicle").join(format!("0x{h:08x}"))) else { return t };
-        let (mut ev, mut ed) = (0.0f32, 0.0f32);
+        let Ok(text) = std::fs::read_to_string(std::path::Path::new(data_dir).join("tune/vehicle").join(format!("0x{h:08x}"))) else { return AbilityTune::fallback(kind) };
+        AbilityTune::parse(kind, &text)
+    }
+
+    /// The tune file's text over the constructor's values (ExplosionVelocity 100 and ExplosionDuration 1 when a file leaves them out).
+    fn parse(kind: Kind, text: &str) -> AbilityTune {
+        let mut t = AbilityTune::fallback(kind);
+        let (mut ev, mut ed) = (100.0f32, 1.0f32);
         for l in text.lines() {
             let mut it = l.split_whitespace();
             let (Some(k), Some(v)) = (it.next(), it.next().and_then(|x| x.parse::<f32>().ok())) else { continue };
@@ -122,7 +139,7 @@ impl AbilityTune {
         if ev * ed > 1.0 && matches!(kind, Kind::Roar | Kind::Emp) {
             t.reach = ev * ed;
         }
-        t.agro = crate::physics::agro::Tune::read(&text, t.agro);
+        t.agro = crate::physics::agro::Tune::read(text, t.agro);
         t
     }
 }
@@ -454,5 +471,65 @@ impl Abilities {
             }
         }
         fired
+    }
+}
+
+#[cfg(test)]
+mod original_tune_tests {
+    use super::*;
+
+    /// The five static constructors (F-32980 and its twins) run offline: the 52 words of each tune object. A tune file that leaves
+    /// a key out gets these; an empty file's `parse` must equal them field by field.
+    #[test]
+    fn constructor_defaults_match_the_original() {
+        let text = include_str!("testdata/pu_ability_tune_ref.txt");
+        let mut n = 0;
+        for line in text.lines() {
+            let mut it = line.split_whitespace();
+            let _name = it.next().unwrap();
+            let w: Vec<u32> = it.map(|x| u32::from_str_radix(&x.replace('_', ""), 16).unwrap()).collect();
+            assert_eq!(w.len(), 52);
+            let f = |off: usize| f32::from_bits(w[off / 4]);
+            for kind in Kind::ALL {
+                let t = AbilityTune::parse(kind, "");
+                assert_eq!(t.increase, f(16));
+                assert_eq!(t.decrease, -f(20));
+                assert_eq!(t.strike_timer, f(24));
+                assert_eq!(t.strike[1], -f(28));
+                assert_eq!(t.strike[0], -f(32));
+                assert_eq!(t.strike[2], -f(36));
+                assert_eq!(t.drain, -f(40));
+                assert_eq!(t.threshold_speed, f(48));
+                assert_eq!(t.threshold_factor, f(52));
+                assert_eq!(t.min_gauge, f(148));
+                assert_eq!(t.reach, f(152) * f(156));
+                assert_eq!(t.fov_offset, f(164));
+                assert_eq!(t.dist_scale, f(168));
+                assert_eq!(t.in_time, f(172));
+                assert_eq!(t.out_time, f(176));
+                // the nested warp object at +180: m_rSlowMotionTimeWarp at its +16
+                assert_eq!(t.time_warp, f(196));
+                let a = &t.agro;
+                assert_eq!((a.force.x, a.force.y, a.force.z), (f(64), f(68), f(72)));
+                assert_eq!((a.strike_torque.x, a.strike_torque.y, a.strike_torque.z), (f(80), f(84), f(88)));
+                assert_eq!((a.variant.x, a.variant.y, a.variant.z), (f(96), f(100), f(104)));
+                assert_eq!((a.shake_time, a.shake_scale, a.player_accel, a.speed_force_scale), (f(112), f(116), f(120), f(124)));
+                assert_eq!((a.threshold_speed, a.delay), (f(48), f(128)));
+                let flags = w[33].to_be_bytes();
+                assert_eq!((a.scale_by_speed, a.random_side, a.feedback), (flags[0] != 0, flags[1] != 0, flags[2] != 0));
+                assert_eq!(flags[3], 0);
+            }
+            n += 1;
+        }
+        assert_eq!(n, 5);
+    }
+
+    /// A file's keys replace the defaults; a key it leaves out keeps the constructor's value.
+    #[test]
+    fn a_files_keys_replace_the_defaults() {
+        let t = AbilityTune::parse(Kind::Roar, "SpecialAbilityDecreaseRateWhenActive -0.5\nInTime 2\nExplosionVelocity 200\nExplosionDuration 0.9\nForce 1 2 3\n");
+        assert_eq!((t.drain, t.in_time, t.out_time, t.increase), (0.5, 2.0, 1.0, 0.025));
+        assert_eq!(t.reach, 200.0f32 * 0.9);
+        assert_eq!(t.agro.force, Vec3::new(1.0, 2.0, 3.0));
     }
 }

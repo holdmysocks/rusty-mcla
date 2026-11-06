@@ -54,6 +54,24 @@ impl Tune {
         scale_by_speed: false,
     };
 
+    /// The tune object's constructor values (F-32980 and its four twins, run offline: tools/pu_ability_tune_reference.py): what a
+    /// file that leaves a key out gets. Force (50, 25, -500), no torque, ShakeTime 0.5, ShakeScale 1, PlayerAccel 50,
+    /// SpeedAndForceScale 0, ThresholdSpeed 13.41, DelayBetweenAgroStrikes 1, and the three flag bytes +132..+134 set.
+    pub const CONSTRUCTED: Tune = Tune {
+        force: Vec3::new(50.0, 25.0, -500.0),
+        strike_torque: Vec3::ZERO,
+        variant: Vec3::ZERO,
+        shake_time: 0.5,
+        shake_scale: 1.0,
+        player_accel: 50.0,
+        speed_force_scale: 0.0,
+        threshold_speed: 13.41,
+        delay: 1.0,
+        random_side: true,
+        feedback: true,
+        scale_by_speed: true,
+    };
+
     /// The fields out of a tune file's text (`Name v` or `Name x y z`).
     pub fn read(text: &str, mut t: Tune) -> Tune {
         for l in text.lines() {
