@@ -454,8 +454,10 @@ pub const SCENE_AUDIO: &[&str] = &[
 /// F-91263 starts game/misctasks/screen_fade_to_black / _to_scene with the event's f3 as the speed (1.0 when <= 0):
 /// fade_speed_in = speed, held (fade_speed_out 0.01) / fade_speed_out = speed, which fades up only a fade that is down
 /// or held (the script's TransitionOut == 0 && (TransitionIn || TransitionOutisReady) test). A fade to black that ends a
-/// scene (held until the caller's own fade up) and a fade up with nothing down before it are not listed: the callers'
-/// fades are their own code. From work/driverlight/gen (docs/reference/cutscenes/generated_description.md).
+/// scene is held until the next scene's start (core_rolling_prototype fades up at its clock's start) or the caller's own
+/// fade up; it is listed only where that caller is ported: the pull-over's walk and ticket scenes (CopPullover.sco,
+/// `main.rs::ticket_tick`; the arrests' are `police::arrest_fade`). From work/driverlight/gen
+/// (docs/reference/cutscenes/generated_description.md).
 pub const SCENE_FADES: &[(&str, bool, f32, f32)] = &[
     ("story/cut_story_district_champs", true, 73.3, 1.0),
     ("story/cut_story_district_champs", false, 74.3333, 1.0),
@@ -469,6 +471,11 @@ pub const SCENE_FADES: &[(&str, bool, f32, f32)] = &[
     ("story/cut_story_hollywood_garage_intro", false, 2.0, 1.0),
     ("story/cut_story_payback_intro", true, 2.0, 1.0),
     ("story/cut_story_payback_intro", false, 3.66667, 1.0),
+    ("cut_cop_walk_02", true, 5.86667, 1.0),
+    ("cut_cop_fidget_02", true, 6.3, 1.0),
+    ("sc_cut_cop_ticket_suv", true, 6.3, 1.0),
+    ("cut_cop_fidget_bike", false, -9.03333, 1.0),
+    ("cut_cop_fidget_bike", true, 6.3, 1.0),
 ];
 
 /// The scenes whose script names a stream other than the scene's own name (the description's +8,

@@ -5665,12 +5665,25 @@ pub fn station_reset(vehicles: &mut Vehicles, world: &World, n: u32) -> Option<u
 /// own pitch or roll. (The nearest scene safezone or road point, FindClosestSceneSafezone, is not ported: the
 /// car's own place, the original's "none found".)
 pub fn scene_frame(vehicles: &mut Vehicles, world: &World, zones: &[(Vec3, f32)]) -> Option<glam::Mat4> {
-    let c = vehicles.player_mut()?;
-    // (CineScript_FindClosestSceneSafezone: the place and heading replace the car's - Racer_InitializeResetPosition
-    // and ResetWithDamageIntact put the car there upright; none found keeps the frame the script filled: the car's
-    // place and Racer_GetAngleY's heading, CopPullover.sco 0x129 / CopArrest.sco 0x95d)
+    let place = scene_place(vehicles, world, zones)?;
+    scene_frame_at(vehicles, world, place)
+}
+
+/// The scene's place and heading (degrees), taken where the car stands now: CineScript_FindClosestSceneSafezone, or
+/// none found the frame the script filled - the car's place and Racer_GetAngleY's heading (CopPullover.sco 0x129 /
+/// CopArrest.sco 0x95d). CopPullover takes it before its 1 s fade down (0x149) and moves the car there after (0x54c).
+pub fn scene_place(vehicles: &Vehicles, world: &World, zones: &[(Vec3, f32)]) -> Option<(Vec3, f32)> {
+    let c = vehicles.player()?;
     let own = (c.state.pos, crate::brain::racer_angle_y(Some([c.state.rot * Vec3::X, c.state.rot * Vec3::Y, c.state.rot * Vec3::Z])));
-    let (pos, f) = match closest_scene_safezone(world, zones, c.state.pos).or(Some(own)) {
+    closest_scene_safezone(world, zones, c.state.pos).or(Some(own))
+}
+
+/// `scene_frame` at a place `scene_place` gave.
+pub fn scene_frame_at(vehicles: &mut Vehicles, world: &World, place: (Vec3, f32)) -> Option<glam::Mat4> {
+    let c = vehicles.player_mut()?;
+    // (the place and heading replace the car's - Racer_InitializeResetPosition and ResetWithDamageIntact put the car
+    // there upright)
+    let (pos, f) = match Some(place) {
         Some((p, h)) => {
             let h = h.to_radians();
             log::info!("police: scene place {:?} heading {:.1} (car at {:?})", p, h.to_degrees(), c.state.pos);

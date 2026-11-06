@@ -432,6 +432,10 @@ struct App {
     police_acc: f32,
     /// CopPullover.sco running: (the fine, the walk's time of a bolt, the ticket scene begun)
     ticket_run: Option<(i64, Option<f32>, bool)>,
+    /// CopPullover's 1 s fade down before the walk (0x151, waited): the scene place taken before it (0x149)
+    ticket_wait: Option<(Vec3, f32)>,
+    /// CopPullover's ticket form (47) is up, over the ticket scene's held black (0xc45)
+    ticket_form: bool,
     /// the playing scene's car events (cinecar.rs): the scene's name and each moved car's event
     cine_events: (String, Vec<(String, cinecar::CarEvent)>),
     /// tips waiting for a quiet moment: speech scenario, title, text
@@ -883,6 +887,27 @@ impl App {
     /// (ResetAllPolice) and the car let go.
     fn ticket_tick(&mut self, gpu: &mut Gpu, world: &mut World) {
         let Some((fine, bolt, second)) = self.ticket_run else { return };
+        if let Some(place) = self.ticket_wait {
+            // (the fade down is waited: TRANSITIONMOVIE's StartOfTransitionin polled every 10 ms)
+            if self.scene_fade.is_on() && !self.scene_fade.full() {
+                return;
+            }
+            self.ticket_wait = None;
+            // (0x54c: Racer_InitializeResetPosition at the place, ResetWithDamageIntact, Deactivate, the coord binding)
+            let car = police::scene_frame_at(&mut self.vehicles, world, place);
+            if let (Some(car), true, true) = (car, self.cine.has("cut_cop_walk_02"), self.cine.playing.is_none() && std::env::var("MCLA_NO_CINE").is_err()) {
+                if self.cine.start_bound(gpu, "cut_cop_walk_02", car) {
+                    self.cine_spawn_cars(gpu, world);
+                    self.cine_free = true;
+                    self.cine_caption = None;
+                    self.vehicles.player_hold = true;
+                    // (CopPullover.sco after Racer_PreRaceBurnout: scramble 0x600 - the handbrake held on and no
+                    // steering, so the throttle alone spins the held car)
+                    self.vehicles.player_scramble = 0x600;
+                }
+            }
+            return;
+        }
         let playing = self.cine.playing.as_ref().map(|sc| (sc.name.clone(), sc.t, sc.camera_len()));
         match playing {
             Some((name, t, len)) if name.ends_with("cut_cop_walk_02") => {
@@ -918,6 +943,9 @@ impl App {
             Some(_) => {}
             None if bolt.is_some() => {
                 self.ticket_run = None;
+                // (0xb6c -> 0xcf8: the fade up fn 0x11a6(0, 1, 1.0, 0), not waited - it lifts the walk's own fade_to_black
+                // at 5.867 s, which the walk plays after a bolt too; Racer_Activate again, scramble 0)
+                self.scene_fade.release(1.0);
                 self.vehicles.player_scramble = 0;
                 // (the walk runs to its end after a bolt too: FinishScene stops its gesture)
                 if let Some(i) = self.vehicles.cars.iter().position(|c| c.is_player) {
@@ -945,16 +973,25 @@ impl App {
                     }
                 }
             }
-            None => {
-                // the ticket form: the TICKETED panel, the fine
-                self.ticket_run = None;
-                self.vehicles.player_hold = false;
-                self.vehicles.player_scramble = 0;
+            None if !self.ticket_form => {
+                // the ticket form (0xc45, Form_ShowForm 47 over the ticket scene's held fade_to_black): the TICKETED
+                // panel, the fine; the car stays deactivated until the form is closed
+                self.ticket_form = true;
                 self.game.money = (self.game.money - fine).max(0);
                 self.game.ticket_for = Some(self.police.ticket_for.max(1));
                 self.game.arrest_panel = Some((0.0, 0.0, fine));
-                self.police.ticket_done();
                 self.game.write_save(&self.opt.data_dir);
+            }
+            None if self.game.arrest_panel.is_some() => {}
+            None => {
+                // (the form closed, polled every 100 ms: 0xcf1 ResetAllPolice; 0xcf8 the fade up fn 0x11a6(0, 1, 1.0, 0), not
+                // waited; Racer_Activate and scramble 0 at once)
+                self.ticket_run = None;
+                self.ticket_form = false;
+                self.police.ticket_done();
+                self.scene_fade.release(1.0);
+                self.vehicles.player_hold = false;
+                self.vehicles.player_scramble = 0;
             }
         }
     }
@@ -1151,6 +1188,8 @@ impl App {
             arrest_deact: false,
             police_acc: 0.0,
             ticket_run: None,
+            ticket_wait: None,
+            ticket_form: false,
             cine_events: (String::new(), Vec::new()),
             tips: Default::default(),
             tip_waiters: Vec::new(),
@@ -5744,6 +5783,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             self.game.place_mask = self.garage_mask.update(dt).max(self.arrest_mask.update(dt)).max(self.f02c_mask.update(dt)).max(self.scene_fade.update(dt));
             // (test hook MCLA_ARREST_TRACE=1: the arrest's black each frame it is on)
+            if self.scene_fade.is_on() && std::env::var_os("MCLA_ARREST_TRACE").is_some() {
+                log::info!("scene fade tick {} opacity {:.3} full {} ticket wait {} scene {:?} form {} hold {}", self.tick_no, self.game.place_mask, self.scene_fade.full(), self.ticket_wait.is_some(), self.cine.playing.as_ref().map(|sc| (sc.name.clone(), sc.t)), self.game.arrest_panel.is_some(), self.vehicles.player_hold);
+            }
             if self.arrest_mask.is_on() && std::env::var_os("MCLA_ARREST_TRACE").is_some() {
                 log::info!("arrest mask tick {} opacity {:.3} full {} wait {} scene {:?} form {} station {:?} activate {}", self.tick_no, self.game.place_mask, self.arrest_mask.full(), self.arrest_wait, self.cine.playing.as_ref().map(|sc| (sc.name.clone(), sc.t)), self.game.arrest_panel.is_some(), self.arrest_station, self.arrest_activate);
             }
@@ -7073,18 +7115,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // COP_PULLOVER -> CopPullover.sco: the car put upright and held as on the grid, the officer's
                         // walk from the cruiser 10 m behind (always cut_cop_walk_02), no skipping; the ticket scene and
                         // the TICKETED panel (the ticket form) come after it - `ticket_tick`
-                        let car = police::scene_frame(&mut self.vehicles, &world, &self.police.safe_zones);
+                        // (CopPullover.sco 0x149: the scene place is taken where the car stands; 0x151: fn(1, 1, 1.0, 0), a 1 s
+                        // fade to black, waited - the car is moved there and the walk started under the full black,
+                        // `ticket_tick`)
                         self.ticket_run = Some((f, None, false));
-                        if let (Some(car), true, true) = (car, self.cine.has("cut_cop_walk_02"), self.cine.playing.is_none() && std::env::var("MCLA_NO_CINE").is_err()) {
-                            if self.cine.start_bound(&mut gpu, "cut_cop_walk_02", car) {
-                                self.cine_spawn_cars(&mut gpu, &mut world);
-                                self.cine_free = true;
-                                self.cine_caption = None;
-                                self.vehicles.player_hold = true;
-                                // (CopPullover.sco after Racer_PreRaceBurnout: scramble 0x600 - the handbrake held on and no
-                                // steering, so the throttle alone spins the held car)
-                                self.vehicles.player_scramble = 0x600;
-                            }
+                        self.ticket_form = false;
+                        self.ticket_wait = police::scene_place(&self.vehicles, &world, &self.police.safe_zones);
+                        if self.ticket_wait.is_some() {
+                            self.scene_fade.start(1.0, 0.01, f32::MAX);
                         }
                     }
                     Some(police::Event::Busted(_)) => {
@@ -13392,6 +13430,11 @@ impl App {
         }
         let Some((name, t)) = now else { return };
         if self.cine_lamps.is_none() {
+            // (core_rolling_prototype 0x1012, after EndDescriptionAndStartClock and WAITUNWARPED(10): the fade up
+            // fn(0, 1, 1.0, 0), not waited - a no-op unless a fade is down or held, e.g. the black CopPullover starts the
+            // walk under, or the walk's own fade_to_black before the ticket scene; the port lifts its scene mask here, the
+            // arrest's and the garage's have their own)
+            self.scene_fade.release(1.0);
             let kept = self.vehicles.cars.iter().map(|c| (c.uid, c.amb_lamps.off)).collect();
             // the clock's first step begins every event that starts before it (the EventTimeline step F-42389: an event
             // with no duration ends at FLT_MAX, so one whose script time is negative - the pre-roll rows - begins at once)
