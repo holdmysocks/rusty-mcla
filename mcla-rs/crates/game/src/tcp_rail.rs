@@ -262,6 +262,95 @@ impl TcpRail {
         }
     }
 
+    /// F-16977 (the rail's slot 14, the thunk F-36154 passing the record at +128): the point of the rail nearest to `q`, its
+    /// phase and the squared distance. Each part gives a candidate: on an arc the angle of the flat way from the centre
+    /// to `q` from the arc's start over the turn (by the 3D angles F-88594 to the start and end radials and which side
+    /// `q` is on, clamped to 0 - 1; past the arc the nearer end, 0 or 1), on the line the segment's t (F-17399); the
+    /// three phases (a1 R t1, a1 R + line t2, a1 R + line + a2 R t3 over the length), the three points (F-56929),
+    /// the first nearest by the scalar unit's squared distance wins.
+    pub(crate) fn nearest(&self, q: Vec3) -> (Vec3, f32, f32) {
+        use crate::aiv::ang3;
+        let flatn = |v: Vec3| vnorm(Vec3::new(v.x, 0.0, v.z));
+        let clamp = |x: f32| {
+            let a = if x >= 0.0 { x } else { 0.0 };
+            if a - 1.0 >= 0.0 { 1.0 } else { a }
+        };
+        let d2zx = |a: Vec3, b: Vec3| {
+            let (dy, dz, dx) = (a.y - b.y, a.z - b.z, a.x - b.x);
+            fma(dx, dx, fma(dz, dz, dy * dy))
+        };
+        let (u1, u2, u3, u4) = (flatn(vsub(self.p, self.c1)), flatn(vsub(self.a, self.c1)), flatn(vsub(self.b, self.c2)), flatn(vsub(self.t, self.c2)));
+        let (a1r, a2r, line) = ((self.a1 * self.r).abs(), (self.a2 * self.r).abs(), self.line());
+        // arc 1
+        let w = flatn(vsub(q, self.c1));
+        let (g0, g1) = (ang3(w, u1), ang3(w, u2));
+        let s0 = -fma(u1.y, w.y, fma(w.x, -u1.z, u1.x * w.z));
+        let s1 = -fma(-u2.z, w.x, fma(w.z, u2.x, u2.y * w.y));
+        let a1 = self.a1;
+        // past the arc: the nearer of its ends (by distances whose sums run in two orders)
+        let end1 = |zfirst: bool| {
+            let dp = if zfirst {
+                let (dz, dx, dy) = (q.z - self.p.z, q.x - self.p.x, q.y - self.p.y);
+                fma(dy, dy, fma(dx, dx, dz * dz))
+            } else {
+                d2zx(q, self.p)
+            };
+            if !(dp < d2zx(q, self.a)) { 1.0 } else { 0.0 }
+        };
+        let t1 = if !(a1 > 0.0) {
+            if !(g0 < g1) {
+                if !(s1 > 0.0) { end1(false) } else { clamp((-a1 - g1) * (-1.0 / a1)) }
+            } else if !(s0 < 0.0) {
+                end1(false)
+            } else {
+                clamp((-1.0 / a1) * g0)
+            }
+        } else if !(g0 < g1) {
+            if !(s1 < 0.0) { end1(true) } else { clamp((a1 - g1) / a1) }
+        } else if !(s0 > 0.0) {
+            end1(false)
+        } else {
+            clamp(g0 / a1)
+        };
+        // the line
+        let t2 = crate::peds::seg_t(self.a, self.b, q);
+        // arc 2
+        let w = flatn(vsub(q, self.c2));
+        let (g0, g1) = (ang3(w, u3), ang3(w, u4));
+        let s0 = -fma(u3.y, w.y, fma(w.z, u3.x, w.x * -u3.z));
+        let s1 = -fma(u4.y, w.y, fma(w.z, u4.x, w.x * -u4.z));
+        let a2 = self.a2;
+        let end2 = || if !(d2zx(q, self.t) < d2zx(q, self.b)) { 0.0 } else { 1.0 };
+        let t3 = if !(a2 > 0.0) {
+            if !(g0 < g1) {
+                if !(s1 > 0.0) { end2() } else { clamp((-a2 - g1) * (-1.0 / a2)) }
+            } else if !(s0 < 0.0) {
+                end2()
+            } else {
+                clamp((-1.0 / a2) * g0)
+            }
+        } else if !(g0 < g1) {
+            if !(s1 < 0.0) { end2() } else { clamp((a2 - g1) / a2) }
+        } else if !(s0 > 0.0) {
+            end2()
+        } else {
+            clamp(g0 / a2)
+        };
+        let inv = 1.0 / self.len();
+        let ph = [(t1 * a1r) * inv, fma(t2, line, a1r) * inv, (fma(t3, a2r, line) + a1r) * inv];
+        let mut best = (0usize, f32::MAX);
+        let pts = ph.map(|f| self.point(f));
+        for (k, p) in pts.iter().enumerate() {
+            let d = d2zx(*p, q);
+            if d < best.1 {
+                best = (k, d);
+            }
+        }
+        // (no finite distance: the original reads stack leftovers; the first candidate here)
+        let k = best.0;
+        (pts[k], ph[k], d2zx(pts[k], q))
+    }
+
     /// F-28568: the derivative at `phase`: on an arc the radial vector turned a quarter turn more
     /// (length R), on the line B - A (not unit).
     pub(crate) fn tangent(&self, phase: f32) -> Vec3 {
@@ -287,6 +376,32 @@ mod tests {
     /// circle, |c2 - c1| about 2R, coincident circles, equal / opposite senses, heights, odd headings), five phases a
     /// valid rail (0, -0, 1 and a step either side, out of range, the segment ends -2 .. +2 float steps) and two
     /// advances. Every word equal (xyz lanes; the w lanes hold stack leftovers in the original).
+    /// The nearest point F-16977 against the original's code run offline (tools/tcp_nearest_reference.py ->
+    /// testdata/tcp_nearest_ref.txt): 2,500 rails built by F-85722 (1,961 valid, the rest as the solver left them), 8
+    /// queries each - near P, A, B, T, on and off the arcs' circles, exactly on a centre (the zero flat way), far away,
+    /// with heights. The point, the phase and the squared distance must be equal word for word.
+    #[test]
+    fn tcp_nearest_matches_the_original() {
+        let h = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
+        let v = |w: &[&str]| Vec3::new(h(w[0]), h(w[1]), h(w[2]));
+        let x = |f: f32| format!("{:08x}", f.to_bits());
+        let mut n = 0;
+        for line in include_str!("testdata/tcp_nearest_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = i.split_whitespace().collect();
+            let o: Vec<&str> = o.split_whitespace().collect();
+            let q = build(v(&w[0..]), v(&w[3..]), v(&w[6..]), v(&w[9..]), h(w[12]), w[13] == "1", w[14] == "1");
+            assert_eq!(o[0], if q.valid() { "1" } else { "0" }, "{line}");
+            for k in 0..8 {
+                let (p, ph, d) = q.nearest(v(&w[15 + 3 * k..]));
+                let got = [x(p.x), x(p.y), x(p.z), x(ph), x(d)].join(" ");
+                assert_eq!(got, o[1 + 5 * k..6 + 5 * k].join(" "), "query {k} of {line}");
+                n += 1;
+            }
+        }
+        assert_eq!(n, 20_000);
+    }
+
     #[test]
     fn tcp_rail_matches_the_original() {
         let h = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
