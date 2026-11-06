@@ -891,6 +891,8 @@ impl Brain {
         let mut reverse = false;
         // (F-17058 case 5, the aiv invalid and not on its way at speed: the gear asked for is neutral below chassis +572 8.94)
         let mut neutral_slow = false;
+        // (in the air: input +40 bit 0, the weight button, and +32, the stick's pitch axis)
+        let mut air = (false, 0.0f32);
         if self.hold_still {
             t = Pedals { throttle: 0.0, brake: 0.0, handbrake: 1.0, steer: 0.0 };
         } else if self.rev.active() {
@@ -920,8 +922,19 @@ impl Brain {
                         out.nitro = self.aiv.nitro_benefit() > self.nitro_score;
                     }
                 }
-                // (approx.: in the air the original also hands the pitch control +32 to the input -
-                // the port's computer cars have no air control)
+                // (no wheel down, car vfunc 44 == 0: flags |= 1 and +32 = clamp(fma(-(s a), -2.5465, w -4), -1, 1), with
+                // s = the sign of up.y (0 at 0, -1 for NaN), a = asin(row 2 .y) - row 2 the back - and w = row 0 . the angular
+                // velocity (vmsum3fp), the clamps the original's fsel pair: the bike's in-air control levels it, vehsim section 12)
+                if car.wheels_down == 0 {
+                    use crate::physics::exact as ex;
+                    let uy = car.up.y;
+                    let s = if uy >= 0.0 { if -uy >= 0.0 { 0.0 } else { 1.0 } } else { -1.0 };
+                    let a = ex::guest_asin(-car.forward.y as f64) as f32;
+                    let w = ex::dot3(car.right, car.ang_vel);
+                    let v = ex::fma(-(s * a), f32::from_bits(0xc022_f983), w * -4.0);
+                    let v = if v - -1.0 >= 0.0 { v } else { -1.0 };
+                    air = (true, if v - 1.0 >= 0.0 { 1.0 } else { v });
+                }
             } else {
                 t = Pedals { throttle: 1.0, brake: 0.0, handbrake: 0.0, steer: match self.man.turn { 1 => -1.0, 2 => 1.0, _ => 0.0 } };
                 if self.man.reverse {
@@ -948,7 +961,7 @@ impl Brain {
         out.input = if reverse {
             CarInput { throttle: 0.0, brake: p.throttle.max(0.11), steer: p.steer, handbrake: p.handbrake > 0.5, ai: true, ..Default::default() }
         } else {
-            CarInput { throttle: p.throttle, brake: p.brake, steer: p.steer, handbrake: p.handbrake > 0.5, ai: true, animated: true, neutral_slow, ..Default::default() }
+            CarInput { throttle: p.throttle, brake: p.brake, steer: p.steer, handbrake: p.handbrake > 0.5, ai: true, animated: true, neutral_slow, xfer: air.0, lean: air.1, ..Default::default() }
         };
         out
     }
