@@ -954,6 +954,139 @@ fn unit_by(v: Vec3, dist: f32) -> Vec3 {
     v * (y * k + y)
 }
 
+/// What F-11472 (undirected, the query's byte +212 = 0) leaves for the result list on a sphere or capsule bound: the
+/// depth (+176 of its frame), the place along the query's capsule t (+180, the record's +64), the contact normal (+192)
+/// and the record's point (the query's axis point less the normal (R - depth), back about the centroid). The part index
+/// the material is asked for is 0.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CapsulePrimHit {
+    pub depth: f32,
+    pub t: f32,
+    pub normal: Vec3,
+    pub point: Vec3,
+}
+
+/// F-98480: the quick answer of the segment `a` + `d` u against the y axis over y0 .. y1 - (t, s) when it has one. A
+/// segment all but upright (|d|^2 across under |0.01 d.y|): the middle of the overlap of the two spans (where they
+/// overlap), t by division by d.y, s by y1 - y0 (0.5 when that is 1e-12 or less); else the segment's nearest approach
+/// to the axis across (0.5 without length across), s from the height there (0.5 for a span of 1e-6 or less), an answer
+/// only with both strictly inside (0, 1).
+fn axis_quick(a: Vec3, d: Vec3, y0: f32, y1: f32) -> Option<(f32, f32)> {
+    let dx2 = d.x * d.x;
+    let across = fma(d.z, d.z, dx2);
+    if !(across >= (d.y * 0.01).abs()) {
+        let (lo, hi) = if d.y > 0.0 { (a.y, a.y + d.y) } else { (a.y + d.y, a.y) };
+        let (top, bottom) = if y1 > y0 { (y1, y0) } else { (y0, y1) };
+        if !(hi > bottom) || !(lo < top) {
+            return None;
+        }
+        let lo = if lo >= bottom { lo } else { bottom };
+        let hi = if hi > top { top } else { hi };
+        let sum = lo + hi;
+        let span = y1 - y0;
+        let t = fms(sum, 0.5, a.y) / d.y;
+        let s = if span.abs() > f32::from_bits(0x2B8C_BCCC) { fms(sum, 0.5, y0) / span } else { 0.5 };
+        return Some((t, s));
+    }
+    let h2 = fma(d.z, d.z, dx2);
+    let t = if h2 > f32::from_bits(0x2B8C_BCCC) { -(fma(a.z, d.z, a.x * d.x) / h2) } else { 0.5 };
+    let span = y1 - y0;
+    let s = if span.abs() > f32::from_bits(0x3586_37BD) { (fma(d.y, t, a.y) - y0) / span } else { 0.5 };
+    (t > 0.0 && t < 1.0 && s > 0.0 && s < 1.0).then_some((t, s))
+}
+
+/// F-40164: the nearest places of the segment `a` + `d` t (t in [0, 1]) and the y axis over y0 .. y1 (s = 0 at y0, 1 at
+/// y1): the quick answer (F-98480) where it has one, else by where each end's height falls (below, within, above the
+/// span), comparing the line distances (F-43156) of the span's ends from the segment's line with the ends' distances
+/// across from the axis, each end's projection clamped as F-76120 forms it. (t, s).
+fn seg_axis(a: Vec3, d: Vec3, y0: f32, y1: f32) -> (f32, f32) {
+    if let Some(ts) = axis_quick(a, d, y0, y1) {
+        return ts;
+    }
+    let e = a + d;
+    let span = y1 - y0;
+    let inv = if span.abs() > f32::from_bits(0x2B8C_BCCC) { 1.0 / span } else { 0.0 };
+    let param = |y: f32| if !(y > y0) { 0.0 } else if !(y < y1) { 1.0 } else { (y - y0) * inv };
+    let (ta, tb) = (param(a.y), param(e.y));
+    let p = |w: Vec3| clamp_param(0.0 - vdot(w, d), vdot(d, d));
+    let at = |v: Vec3, y: f32| Vec3::new(v.x, v.y - y, v.z);
+    let ld = |w: Vec3| line_dist(w, d);
+    let across_b = || fma(e.x, e.x, e.z * e.z).sqrt();
+    if !(ta > 0.0) {
+        let w = at(a, y0);
+        if !(tb > 0.0) {
+            (p(w), 0.0)
+        } else if tb < 1.0 {
+            if ld(w) >= across_b() { (1.0, tb) } else { (p(w), 0.0) }
+        } else {
+            let w2 = at(a, y1);
+            if ld(w) >= ld(w2) { (p(w2), 1.0) } else { (p(w), 0.0) }
+        }
+    } else if !(ta < 1.0) {
+        let w2 = at(a, y1);
+        if !(tb > 0.0) {
+            let w = at(a, y0);
+            if ld(w) >= ld(w2) { (p(w2), 1.0) } else { (p(w), 0.0) }
+        } else if !(tb < 1.0) {
+            (p(w2), 1.0)
+        } else if ld(w2) >= across_b() {
+            (1.0, tb)
+        } else {
+            (p(w2), 1.0)
+        }
+    } else if !(tb > 0.0) {
+        let w = at(a, y0);
+        if ld(w) >= fma(a.x, a.x, a.z * a.z).sqrt() { (0.0, ta) } else { (p(w), 0.0) }
+    } else if tb == 1.0 {
+        let w2 = at(a, y1);
+        if ld(w2) >= fma(a.z, a.z, a.x * a.x).sqrt() { (0.0, ta) } else { (p(w2), 1.0) }
+    } else {
+        let (fb, fa) = (fma(e.x, e.x, e.z * e.z).sqrt(), fma(a.z, a.z, a.x * a.x).sqrt());
+        if fa >= fb { (1.0, tb) } else { (0.0, ta) }
+    }
+}
+
+/// F-11472, the undirected branch (the query's byte +212 = 0), on a sphere or capsule bound: the query's capsule `a` ..
+/// `b` (its +176 / +192 in the bound's frame) of radius `big_r` (+208). The query's axis point nearest the bound (a
+/// sphere: F-76120's clamped projection of the centroid; a capsule: F-40164 against its axis over -L/2 .. L/2), the
+/// bound's point there (the centroid, or the axis at -L/2 + s L), and within 1e-12 a normal of its own: across the
+/// query's axis for a sphere (F-95825's first direction across its unit direction), +x for a capsule (F-41334 with
+/// 1e-5 on a vector under 1e-12: its fallback). None for the other types (a box, type 3, is not ported). Rules in
+/// docs/reference/people/traffic_drive_rule.md 9.7; checked to the bit against the original run offline
+/// (`capsule_primitive_matches_the_original`).
+pub fn capsule_primitive(a: Vec3, b: Vec3, big_r: f32, prim: &Primitive) -> Option<CapsulePrimHit> {
+    let d = b - a;
+    let (centre, reach, t, q) = match *prim {
+        Primitive::Sphere { centre, r } => {
+            let a0 = a - centre;
+            (centre, r + big_r, clamp_param(0.0 - vdot(a0, d), vdot(d, d)), Vec3::ZERO)
+        }
+        Primitive::Capsule { centre, r, len } => {
+            let h = len * 0.5;
+            let (t, s) = seg_axis(a - centre, d, -h, h);
+            (centre, r + big_r, t, Vec3::new(0.0, fnms(s, len, h), 0.0))
+        }
+        Primitive::Box { .. } => return None,
+    };
+    let a0 = a - centre;
+    let p = d * t + a0;
+    let w = q + p;
+    let d2 = fma(w.x, w.x, fma(w.z, w.z, w.y * w.y));
+    let (depth, normal) = if d2 > f32::from_bits(0x2B8C_BCCC) {
+        let dist = d2.sqrt();
+        (reach - dist, unit_by(w, dist))
+    } else {
+        match *prim {
+            Primitive::Sphere { .. } => (reach, super::solver::basis(d * rsqrt0(vdot(d, d)))[1]),
+            _ => (reach, Vec3::X),
+        }
+    };
+    // (the negation kept apart from the sum: folded into c - x, a NaN of a capsule without length would keep the sign the
+    // vector unit's negation flips)
+    let point = std::hint::black_box(-(normal * (big_r - depth) - p)) + centre;
+    Some(CapsulePrimHit { depth, t, normal, point })
+}
+
 /// F-15615 on a sphere, capsule or box bound, in the bound's frame: the ball at `c` (the query's +160) of radius `big_r`
 /// (+176). Rules in docs/reference/people/traffic_drive_rule.md 9.7. The record's point is
 /// -(normal (R - depth) - c); a depth above 0 takes a slot. Checked to the bit against the original run offline
@@ -1482,6 +1615,57 @@ mod tests {
              (1, 9, true, true): 32, (3, -1, true, false): 466, (3, -1, true, true): 1, (3, 0, false, false): 227, (3, 0, true, false): 210, \
              (3, 0, true, true): 50, (3, 1, false, false): 195, (3, 1, true, false): 485, (3, 1, true, true): 94, (3, 2, false, false): 133, \
              (3, 2, true, false): 523, (3, 2, true, true): 25}"
+        );
+    }
+
+    /// F-11472 (undirected) on spheres and capsules against the original's code run offline
+    /// (tools/capsule_primitive_reference.py -> testdata/capsule_primitive_ref.txt; F-76120, F-40164 with F-98480 and
+    /// F-43156, F-95825 and F-41334 whole; alloc stubbed, the material call faked): the result, the list call and the
+    /// record - every word equal. 4,000 cases: 1,329 spheres, 2,671 capsules (1,029 by the quick axis test).
+    #[test]
+    fn capsule_primitive_matches_the_original() {
+        let u = |h: &str| u32::from_str_radix(&h.replace('_', ""), 16).unwrap();
+        let mut seen = std::collections::BTreeMap::new();
+        for (k, line) in include_str!("../testdata/capsule_primitive_ref.txt").lines().enumerate() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(u).collect();
+            let x: Vec<u32> = o.split_whitespace().map(u).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let p = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let b = match w[0] {
+                0 => Primitive::Sphere { centre: p(1), r: f(4) },
+                _ => Primitive::Capsule { centre: p(1), r: f(5), len: f(6) },
+            };
+            let (a, bb, big_r) = (p(7), p(10), f(13));
+            let h = capsule_primitive(a, bb, big_r, &b).unwrap();
+            let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+            // (coverage: the type, the quick answer of the capsule's axis test, a normal of its own, a hit)
+            let quick = match b {
+                Primitive::Capsule { centre, len, .. } => axis_quick(a - centre, bb - a, -(len * 0.5), len * 0.5).is_some(),
+                _ => false,
+            };
+            *seen.entry((w[0], quick, h.depth == f(if w[0] == 0 { 4 } else { 5 }) + big_r, h.depth > 0.0)).or_insert(0) += 1;
+            if 256 & w[14] != 0 {
+                assert_eq!(&x[0..2], &[0, 0], "line {k}: material");
+                continue;
+            }
+            assert_eq!([x[0], x[1]], [(h.depth > 0.0) as u32, 1], "line {k}: result, list call");
+            assert_eq!([x[2], x[3]], [h.depth.to_bits(), big_r.to_bits()], "line {k}: depth, cap");
+            assert_eq!(&x[4..7], &bits(h.point), "line {k}: point");
+            if w[15] != 0 && h.depth > 0.0 {
+                assert_eq!(x[7], 0x1234, "line {k}: instance");
+                assert_eq!(&x[8..11], &bits(h.point), "line {k}: contact");
+                assert_eq!(&x[11..14], &bits(h.normal), "line {k}: normal");
+                assert_eq!(&x[14..17], &bits(h.normal), "line {k}: bound normal");
+                assert_eq!(&x[17..20], &[h.t.to_bits(), h.depth.to_bits(), 256], "line {k}: t, depth, material");
+                assert_eq!(&x[20..24], &[0, 2, 1, 0], "line {k}: part, kind, +80, +82");
+            }
+        }
+        assert_eq!(
+            format!("{seen:?}"),
+            "{(0, false, false, false): 267, (0, false, false, true): 486, (0, false, true, true): 576, (1, false, false, false): 671, \
+             (1, false, false, true): 538, (1, false, true, true): 433, (1, true, false, false): 498, (1, true, false, true): 491, \
+             (1, true, true, true): 40}"
         );
     }
 }
