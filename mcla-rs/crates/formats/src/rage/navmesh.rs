@@ -26,6 +26,12 @@ use crate::rsc::Resource;
 use glam::Vec3;
 use hashbrown::HashMap;
 
+/// a*b+c with one rounding of the exact product (the PowerPC fmadd on single values: exact in f64, then to f32)
+#[inline]
+fn fma(a: f32, b: f32, c: f32) -> f32 {
+    (a as f64 * b as f64 + c as f64) as f32
+}
+
 /// i16 units per metre (the game sets its quantisation scale to 20 before loading the mesh).
 pub const SCALE: f32 = 20.0;
 /// Material flag bits, named as the game registers them.
@@ -317,7 +323,9 @@ impl NavMesh {
             if !rd.has(po, n_polys * 28) || !rd.has(ve, n_verts * 6) || !rd.has(lk, n_links * 12) {
                 continue;
             }
-            let lverts: Vec<Vec3> = (0..n_verts).map(|k| Vec3::new(i16at(ve + 6 * k), i16at(ve + 6 * k + 2), i16at(ve + 6 * k + 4))).collect();
+            // chunk-local vertices as the polygon tests read them: i16 x the mesh scale 0.05 (F-22664, F-93067)
+            let q16 = |o: usize| rd.u16(o) as i16 as f32 * 0.05;
+            let lverts: Vec<Vec3> = (0..n_verts).map(|k| Vec3::new(q16(ve + 6 * k), q16(ve + 6 * k + 2), q16(ve + 6 * k + 4))).collect();
             let verts: Vec<Vec3> = (0..n_verts).map(|k| world(Vec3::new(i16at(ve + 6 * k), i16at(ve + 6 * k + 2), i16at(ve + 6 * k + 4)))).collect();
             let base = mesh.polys.len() as u32;
             for k in 0..n_polys {
@@ -758,20 +766,28 @@ impl NavMesh {
         Vec3::new(r[0].dot(d), r[1].dot(d), r[2].dot(d))
     }
 
-    /// Plan-view inside test of sub_825500A0 (chunk-local, one winding, border included).
+    /// Plan-view inside test of F-22664 (chunk-local, edges from the last vertex on): no edge's cross above 2e-4 and
+    /// at least one below -2e-4 (a zero-area polygon contains nothing).
     fn plan_inside(&self, poly: u32, lp: Vec3) -> bool {
         let q = &self.local[poly as usize];
         let nv = self.polys[poly as usize].nv as usize;
-        (0..nv).all(|i| {
-            let (a, b) = (q.verts[i], q.verts[(i + 1) % nv]);
-            (lp.z - a.z) * (b.x - a.x) - (lp.x - a.x) * (b.z - a.z) <= 2e-4
-        })
+        let mut strict = false;
+        for i in 0..nv {
+            let (a, b) = (q.verts[(i + nv - 1) % nv], q.verts[i]);
+            // fnmsub: (p.z - a.z)(b.x - a.x) - (p.x - a.x)(b.z - a.z), the second product rounded first
+            let c = fma(lp.z - a.z, b.x - a.x, -((lp.x - a.x) * (b.z - a.z)));
+            if c > 2e-4 {
+                return false;
+            }
+            strict |= c < -2e-4;
+        }
+        strict
     }
 
-    /// Height of a chunk-local point over the polygon's plane along y (sub_82550658).
+    /// Height of a chunk-local point over the polygon's plane along y (F-10756): (n.p + d) / n.y, summed y, z, x.
     fn plane_h(&self, poly: u32, lp: Vec3) -> Option<f32> {
         let q = &self.local[poly as usize];
-        (q.n.y > 0.001).then(|| (q.n.dot(lp) + q.d) / q.n.y)
+        (q.n.y > 0.001).then(|| (fma(q.n.x, lp.x, fma(q.n.z, lp.z, q.n.y * lp.y)) + q.d) / q.n.y)
     }
 
     /// Polygons containing `p` in plan view with `lo <= height over the plane <= hi`, ascending.
@@ -803,38 +819,74 @@ impl NavMesh {
         cand.sort_unstable();
         let mut best = (max, None);
         for i in cand {
-            let q = &self.local[i as usize];
             let pl = &self.polys[i as usize];
             if (pl.area <= 0.0 && pl.n_links == 0) || !keep(pl) {
                 continue;
             }
             let lp = self.chunk_local(i, p);
-            let nl = q.n.length();
-            if nl < 1e-6 {
-                continue;
-            }
-            let dp = ((q.n.dot(lp) + q.d) / nl).abs();
-            if dp > best.0 {
-                continue;
-            }
-            let dist = if self.plan_inside(i, lp) {
-                dp
-            } else {
-                let nv = pl.nv as usize;
-                (0..nv)
-                    .map(|k| {
-                        let (a, b) = (q.verts[k], q.verts[(k + 1) % nv]);
-                        let ab = b - a;
-                        let t = if ab.length_squared() > 0.0 { ((lp - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
-                        (lp - (a + ab * t)).length()
-                    })
-                    .fold(f32::MAX, f32::min)
-            };
+            let Some(dist) = self.poly_dist(i, lp, best.0) else { continue };
             if dist < best.0 {
                 best = (dist, Some(i));
             }
         }
         best.1
+    }
+
+    /// Distance of a chunk-local point to polygon `poly` when it is within `max` (F-93067). The plane distance |n.p + d|
+    /// must be within `max`. Each edge a -> b (from the last vertex on) is classed by the point: on the inner side of the
+    /// edge's wall n x e, else before a, else beyond b, else beside the edge - which ends the test with the distance
+    /// to the edge's line (median formula). All edges inner (or none) gives the plane distance; otherwise the corner
+    /// where an edge's "beyond b" meets the next one's "before a" gives the distance to that corner, if within `max`.
+    fn poly_dist(&self, poly: u32, lp: Vec3, max: f32) -> Option<f32> {
+        let q = &self.local[poly as usize];
+        let nv = self.polys[poly as usize].nv as usize;
+        let n = q.n;
+        let plane = (fma(n.x, lp.x, fma(n.y, lp.y, n.z * lp.z)) + q.d).abs();
+        if plane > max || nv == 0 {
+            return None;
+        }
+        // vmsum3fp as the recompiled code has it: z + (y + x), each product rounded
+        let dot3 = |u: Vec3, v: Vec3| (u.z * v.z) + (u.y * v.y + u.x * v.x);
+        let (mut all_inner, mut none_inner) = (true, true);
+        let mut state = [0i8; 4];
+        for i in 0..nv {
+            let (a, b) = (q.verts[(i + nv - 1) % nv], q.verts[i]);
+            let (pa, e, pb) = (lp - a, b - a, lp - b);
+            // n x e: (e.z n.y - e.y n.z, e.x n.z - e.z n.x, e.y n.x - e.x n.y), each product rounded
+            let wall = Vec3::new(e.z * n.y - e.y * n.z, e.x * n.z - e.z * n.x, e.y * n.x - e.x * n.y);
+            let s = &mut state[(i + nv - 1) % nv];
+            if dot3(pa, wall) >= 0.0 {
+                *s = 1;
+                none_inner = false;
+                continue;
+            }
+            all_inner = false;
+            if !(dot3(pa, e) >= 0.0) {
+                *s = -1;
+            } else if dot3(pb, e) > 0.0 {
+                *s = -2;
+            } else {
+                let sq = |v: Vec3| fma(v.x, v.x, fma(v.y, v.y, v.z * v.z));
+                let (a2, b2, e2) = (sq(pa), sq(pb), sq(e));
+                let dd = a2 - b2;
+                let h = (fma(b2 + a2, 2.0, -e2) as f64 - (dd / e2) as f64 * dd as f64) as f32 * 0.25;
+                if h > max * max {
+                    return None;
+                }
+                return Some(if h > 0.0 { h.sqrt() } else { 0.0 });
+            }
+        }
+        if all_inner || none_inner {
+            return Some(plane);
+        }
+        let k = (0..nv).find(|&k| {
+            let (prev, cur) = (state[(k + nv - 1) % nv], state[k]);
+            (prev == -2 || cur == -1) && prev != cur
+        })?;
+        let v = q.verts[k];
+        let (dy, dz, dx) = (v.y - lp.y, v.z - lp.z, v.x - lp.x);
+        let d2 = fma(dx, dx, fma(dz, dz, dy * dy));
+        (d2 <= max * max).then(|| d2.sqrt())
     }
 
     /// Start / goal polygons of a point: all containing it (+-1 m of the plane), else the
@@ -1055,6 +1107,42 @@ mod tests {
         let data = d[16..].to_vec();
         let vs = (u(12) as usize).min(data.len());
         Some(Resource { rtype: u(4), flags: u(8), virtual_size: vs, physical_size: data.len() - vs, data })
+    }
+
+    /// The polygon tests run offline in the original's code (work/racerai/navq: F-22664 plan-view inside, F-10756
+    /// height over the plane, F-93067 point-to-polygon distance) on points near real polygons of the city mesh:
+    /// 2,000 cases here (testdata/nav_polytests_ref.txt), 100,000 in the harness, every answer and value bit-exact.
+    #[test]
+    fn polygon_tests_match_the_original() {
+        let Some(res) = file() else { return };
+        let m = NavMesh::parse(&res).unwrap();
+        let (mut n, mut bad) = (0, 0);
+        for l in include_str!("testdata/nav_polytests_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let (a, b) = l.split_once(" | ").unwrap();
+            let a: Vec<&str> = a.split(' ').collect();
+            let w: Vec<&str> = b.split(' ').collect();
+            let i: u32 = a[0].parse().unwrap();
+            let f = |k: usize| f32::from_bits(u32::from_str_radix(a[k], 16).unwrap());
+            let (lp, lo, hi, r) = (Vec3::new(f(1), f(2), f(3)), f(4), f(5), f(6));
+            let bits = |k: usize| u32::from_str_radix(w[k], 16).unwrap();
+            let (inside, hok, dok) = (w[0] == "1", w[1] == "1", w[3] == "1");
+            n += 1;
+            let got_in = m.plan_inside(i, lp);
+            let gh = m.plane_h(i, lp).filter(|h| got_in && *h >= -lo && *h <= hi);
+            let gd = m.poly_dist(i, lp, r);
+            let ok = got_in == inside
+                && gh.is_some() == hok
+                && (!hok || gh.unwrap().to_bits() == bits(2))
+                && gd.is_some() == dok
+                && (!dok || gd.unwrap().to_bits() == bits(4));
+            if !ok {
+                bad += 1;
+                if bad < 6 {
+                    eprintln!("{l}: got inside {got_in} height {gh:?} distance {gd:?}");
+                }
+            }
+        }
+        assert!(n == 2000 && bad == 0, "{bad} of {n} differ");
     }
 
     /// Counts of work/map/unknown_files.md (Puzzle 1) and the sanity of the adjacency.
