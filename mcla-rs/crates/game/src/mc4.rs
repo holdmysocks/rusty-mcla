@@ -6284,8 +6284,9 @@ pub const LAUNCHERS: [(&str, &[&str]); 22] = [
     ("sc_wager_hangout1_setup", &["game/Race/SouthCentral/Ordered/sc_ordered_dh_02", "game/Race/SouthCentral/Ordered/sc_ordered_jp_01", "game/Race/SouthCentral/Circuit/sc_circuit_cb_02", "game/Race/SouthCentral/Ordered/sc_ordered_mb_03"]),
 ];
 
-/// The mission scripts that start one of them: (mission, launcher).
-pub const MISSION_LAUNCHERS: [(&str, &str); 51] = [
+/// The mission scripts that start one of them: (mission, launcher) - every START_NEW_SCRIPT / mcCareer_StartNewScript(_SC)
+/// of `game/career/missions` and `sc/career/missions` whose script is one of `LAUNCHERS` (test mission_launchers_match_the_scripts).
+pub const MISSION_LAUNCHERS: [(&str, &str); 54] = [
     ("FIND_SH_04", "dt_wager_hangout1_setup"),
     ("FIND_SH_05", "dt_local_hangout1_setup"),
     ("HANGOUT_PINKSLIP_BEACHES", "be_wager_hangout1_setup"),
@@ -6327,6 +6328,7 @@ pub const MISSION_LAUNCHERS: [(&str, &str); 51] = [
     ("TIMETRIAL_HOLLYWOOD", "hw_time_trial_hk1"),
     ("TIMETRIAL_HOLLYWOODB", "hw_time_trial_hk1"),
     ("TIMETRIAL_HOLLYWOODC", "hw_time_trial_hk1"),
+    ("TIMETRIAL_SC", "sc_time_trial_hk1"),
     ("TIMETRIAL_SCB", "sc_time_trial_hk1"),
     ("TIMETRIAL_SCC", "sc_time_trial_hk1"),
     ("TOURNAMENT_BEACHES", "be_tournament_hk1"),
@@ -6337,6 +6339,8 @@ pub const MISSION_LAUNCHERS: [(&str, &str); 51] = [
     ("TOURNAMENT_HILLSB", "hl_tournament_hk1"),
     ("TOURNAMENT_HOLLYWOOD", "hw_tournament_hk1"),
     ("TOURNAMENT_HOLLYWOODB", "hw_tournament_hk1"),
+    ("TOURNAMENT_SC", "sc_tournament_hk1"),
+    ("TOURNAMENT_SCB", "sc_tournament_hk1"),
 ];
 
 /// The red light hookmen's ids by district (Hollywood, Beaches, Hills, Downtown, South
@@ -16066,6 +16070,37 @@ mod tests {
         g.event_diff = Some(0);
         assert_eq!(g.mc4_layout_easy(), Some(true));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// MISSION_LAUNCHERS is every launcher start of the mission scripts (the disassemblies of
+    /// `work/career2/re/dis`, MCLA_SCRIPT_DIS to override; skipped without them).
+    #[test]
+    fn mission_launchers_match_the_scripts() {
+        let dir = std::env::var("MCLA_SCRIPT_DIS").unwrap_or_else(|_| "D:/MCLA/work/career2/re/dis".to_string());
+        let Ok(rd) = std::fs::read_dir(&dir) else { return };
+        let names: std::collections::HashSet<&str> = LAUNCHERS.iter().map(|(n, _)| *n).collect();
+        let mut found = std::collections::BTreeSet::new();
+        for e in rd.flatten() {
+            let f = e.file_name().to_string_lossy().to_string();
+            let Some(m) = f.strip_prefix("game__career__missions__").or_else(|| f.strip_prefix("sc__career__missions__")).and_then(|m| m.strip_suffix(".sco.txt")) else { continue };
+            let mut last = String::new();
+            for l in std::fs::read_to_string(e.path()).unwrap_or_default().lines() {
+                if let Some(i) = l.find("string '") {
+                    last = l[i + 8..].trim_end_matches('\'').to_string();
+                }
+                if l.contains("native START_NEW_SCRIPT") || l.contains("native mcCareer_StartNewScript") {
+                    let script = last.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
+                    if names.contains(script.as_str()) {
+                        found.insert((m.to_ascii_uppercase(), script));
+                    }
+                }
+            }
+        }
+        if found.is_empty() {
+            return;
+        }
+        let port: std::collections::BTreeSet<(String, String)> = MISSION_LAUNCHERS.iter().map(|(m, l)| (m.to_string(), l.to_string())).collect();
+        assert_eq!(found, port);
     }
 
     /// Step 17b: the launchers' unlocks and the red light hookman's; the ARCADE menu's rows;
