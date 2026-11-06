@@ -10144,7 +10144,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 // (the cars' lamps: lights on as the sprites had them)
                 let lamp_night = if self.time_of_day > 18.0 || self.time_of_day < 6.0 { 1.0 } else { 0.0 };
-                for (p, f, c, k, lid) in self.vehicles.halo_lamps(lamp_night, cam) {
+                for (p, f, c, k, lid, oy) in self.vehicles.halo_lamps(lamp_night, cam) {
                     if (self.frame_no == 60 || self.frame_no == 280) && std::env::var("MCLA_GLOW_DUMP").is_ok() { eprintln!("carlamp {:.3} {:.3} {:.3} facing {:.3} {:.3} {:.3} col {:.3} {:.3} {:.3} k {:.3}", p.x, p.y, p.z, f.x, f.y, f.z, c[0], c[1], c[2], k); }
                     if let Some(g) = tune.car(w, p, f, c, k, cam, tan) {
                         // (ahead of the props for the cut at 96: the port's prop list is longer than the
@@ -10185,6 +10185,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         {
             // local lights: headlights of the cars around the camera + nearest street lamps (night only)
+                    // (F-96521's reflection branch, called by F-27833 with the world matrix the mirror about the car's
+                    // origin height: a rectangle 1 m under the lamp - one pixel of the 320 x 180 picture but in
+                    // Stormy - whether or not AddGlow keeps the glow)
+                    if let (true, Some(oy), Some((rp, ri, rs))) = (sig_refl.len() < siglrefl::MAX, oy, tune.car_reflection(w, p, f, k, cam)) {
+                        if let Some(r) = siglrefl::rect(vp, self.lod_near, oy, rp, cam, c, ri, rs, siglrefl::PICTURE) {
+                            if (self.frame_no == 60 || self.frame_no == 280) && std::env::var("MCLA_GLOW_DUMP").is_ok() { eprintln!("carrefl P {:.3} {:.3} {:.3} origin y {:.3} rect {:.5} {:.5} {:.5} {:.5} depth {:.5} I {:.4}", p.x, p.y, p.z, oy, r.r[0], r.r[1], r.r[2], r.r[3], r.z[0], r.z[1]); }
+                            sig_refl.push(r);
+                        }
+                    }
             // the player's lamp table is its garage record's - the save's copy of the set-up it was
             // made from (bought: `<car>.xcc`, a prize: the reward's set-up) - as the original draws it
             self.vehicles.player_lamps = self.vehicles.player().and_then(|p| {

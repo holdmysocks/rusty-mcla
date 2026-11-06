@@ -5662,7 +5662,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// tail 2, head 2, reversing 0.528, third brake 0.346; 0x827E76D8 the player's: brake 0.3,
     /// tail 1.004, head 2, the others 1).
     /// (place, facing, colour, level, the lamp's id for its light trail: the car's uid and the lamp's number)
-    pub fn halo_lamps(&self, night: f32, cam: Vec3) -> Vec<(Vec3, Vec3, [f32; 3], f32, u64)> {
+    pub fn halo_lamps(&self, night: f32, cam: Vec3) -> Vec<(Vec3, Vec3, [f32; 3], f32, u64, Option<f32>)> {
         let mut out = Vec::new();
         let old_rule = std::env::var("MCLA_GLOW_OLD").is_ok();
         for (ci, c) in self.cars.iter().enumerate() {
@@ -5737,7 +5737,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         .map_or((*local, *facing), |m| (m.w_axis.truncate(), -m.z_axis.truncate().normalize_or_zero())),
                     _ => (*local, *facing),
                 };
-                out.push((pose.pos + pose.rot * local, pose.rot * facing, colour(*id, dflt(*id)), k, lamp(n)));
+                out.push((pose.pos + pose.rot * local, pose.rot * facing, colour(*id, dflt(*id)), k, lamp(n), refl_y));
             }
             for (n, (id, local)) in c.model.lamps.iter().enumerate() {
                 if has_bone(*id) || !matches!(*id, 0 | 1 | 3 | 6 | 12) {
@@ -5751,11 +5751,11 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // (MCLA_GLOW_OLD: the R8's four brake glows from the recorded table, as until 2026-10-15)
                 if old_rule && *id == 0 && c.model.name == "vp_aud_r8_08" {
                     let sx = if local.x < 0.0 { -1.0 } else { 1.0 };
-                    out.push((pose.pos + pose.rot * Vec3::new(0.701 * sx, 0.747, 1.803), out_dir, colour(*id, dflt(*id)), k, lamp(2048 + 2 * n)));
-                    out.push((pose.pos + pose.rot * Vec3::new(0.526 * sx, 0.773, 1.902), out_dir, colour(*id, dflt(*id)), k, lamp(2049 + 2 * n)));
+                    out.push((pose.pos + pose.rot * Vec3::new(0.701 * sx, 0.747, 1.803), out_dir, colour(*id, dflt(*id)), k, lamp(2048 + 2 * n), refl_y));
+                    out.push((pose.pos + pose.rot * Vec3::new(0.526 * sx, 0.773, 1.902), out_dir, colour(*id, dflt(*id)), k, lamp(2049 + 2 * n), refl_y));
                     continue;
                 }
-                out.push((pose.pos + pose.rot * *local, out_dir, colour(*id, dflt(*id)), k, lamp(1024 + n)));
+                out.push((pose.pos + pose.rot * *local, out_dir, colour(*id, dflt(*id)), k, lamp(1024 + n), refl_y));
             }
         }
         out
@@ -5765,6 +5765,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// (+304) is set, one glow for every lamp of kinds 13 and 14 (the `coplightred0` / `coplightblue0` bones)
     /// with the kind's colour bulb x cover + 0.5 (cut to 1 when packed) and its siren state (+308); halo.rs
     /// `Tune::police` makes the glow. (place, facing, colour, state)
+            // (the reflection pass, mode 2 of F-27833: a traffic car whose lights are on and whose LOD is not -1 -
+            // no 50 m rule - sets the world matrix to the mirror about its origin height and runs F-62563 ->
+            // F-96521 with refl = 1; the player's car has no reflection rectangles in the recordings)
+            let refl_y = (traffic.is_some() && self.lod_pick.get(ci).copied().unwrap_or(-1) >= 0).then_some(pose.pos.y);
     pub fn police_glows(&self, cam: Vec3) -> Vec<(Vec3, Vec3, [f32; 3], f32)> {
         let mut out = Vec::new();
         for c in &self.cars {

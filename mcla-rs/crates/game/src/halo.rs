@@ -46,6 +46,10 @@ pub struct Tune {
     /// road's reflection picture (F-28456's reflection branch, siglrefl.rs)
     pub prop_refl_size: [f32; 2],
     pub prop_refl_intensity: f32,
+    /// sm_CarLightGlowReflectionSizess / sm_fCarGlowReflectionIntensity: the car lamps' rectangles in the
+    /// road's reflection picture (F-96521's reflection branch, siglrefl.rs)
+    pub car_refl_size: [[f32; 2]; 4],
+    pub car_refl_intensity: f32,
     /// MaxGlowDist, MaxGlowBias, MaxCarGlowBias, MinGlowBias
     pub max_dist: f32,
     pub max_bias: f32,
@@ -72,6 +76,8 @@ impl Default for Tune {
             car_trail: [0.5; 4],
             prop_refl_size: [100.0, 100.0],
             prop_refl_intensity: 3.8,
+            car_refl_size: [[0.0, 0.0], [0.0, 0.0], [20.0, 30.0], [0.0, 0.0]],
+            car_refl_intensity: 1.55,
             max_dist: 0.6,
             max_bias: 0.05,
             max_car_bias: 0.02,
@@ -140,6 +146,8 @@ impl Tune {
         };
         t.prop_refl_size = xy("sm_PropGlowReflectionSeedSize", t.prop_refl_size);
         t.prop_refl_intensity = one("sm_fPropGlowReflectionIntensity", t.prop_refl_intensity);
+        t.car_refl_size = pairs("sm_CarLightGlowReflectionSizess", t.car_refl_size);
+        t.car_refl_intensity = one("sm_fCarGlowReflectionIntensity", t.car_refl_intensity);
         t.max_dist = one("MaxGlowDist", t.max_dist);
         t.max_bias = one("MaxGlowBias", t.max_bias);
         t.max_car_bias = one("MaxCarGlowBias", t.max_car_bias);
@@ -178,7 +186,7 @@ impl Tune {
         for a in [&mut self.prop_intensity, &mut self.signal_size, &mut self.signal_intensity, &mut self.car_intensity, &mut self.streak, &mut self.bloom, &mut self.prop_trail, &mut self.car_trail] {
             l1(a, w, nw, f);
         }
-        for a in [&mut self.prop_size, &mut self.signal_refl, &mut self.car_size, &mut self.star] {
+        for a in [&mut self.prop_size, &mut self.signal_refl, &mut self.car_size, &mut self.car_refl_size, &mut self.star] {
             l2(a, w, nw, f);
         }
     }
@@ -365,6 +373,21 @@ impl Tune {
             return None;
         }
         Some((p, i, [self.signal_refl[w][0] * 0.01, self.signal_refl[w][1] * 0.01]))
+    }
+
+    /// A car lamp's reflection call (F-96521 with refl = 1, its caller F-27833 having set the world matrix to
+    /// the mirror about the car's origin height `origin_y`): the place 1 m under the lamp, mirrored, so the
+    /// rectangle rule's own mirror (siglrefl::rect) takes `origin_y`; the strength how squarely the lamp faces
+    /// the camera x `k` (its level x the kind's factor - not x sm_fCarGlowIntensitys) x
+    /// sm_fCarGlowReflectionIntensity; rsize = sm_CarLightGlowReflectionSizess / the picture's width and height.
+    /// None under 0.001, as the main glow. (place, strength, rsize)
+    pub fn car_reflection(&self, w: usize, pos: Vec3, facing: Vec3, k: f32, cam: Vec3) -> Option<(Vec3, f32, [f32; 2])> {
+        let i = k * (cam - pos).normalize_or_zero().dot(facing).clamp(0.0, 1.0);
+        if i <= 0.001 {
+            return None;
+        }
+        let rs = [self.car_refl_size[w][0] / crate::siglrefl::PICTURE.0, self.car_refl_size[w][1] / crate::siglrefl::PICTURE.1];
+        Some((pos - Vec3::Y, i * self.car_refl_intensity, rs))
     }
 }
 
@@ -624,5 +647,27 @@ mod tests {
         assert_eq!(t.prop_intensity[3], 2.0);
         assert_eq!(t.prop_refl_size, [100.0, 100.0]);
         assert_eq!(t.prop_refl_intensity, 3.8);
+        assert_eq!(t.car_refl_size[2], [20.0, 30.0]);
+        assert_eq!(t.car_refl_size[0], [0.0, 0.0]);
+        assert_eq!(t.car_refl_intensity, 1.55);
+    }
+
+    /// A car lamp's reflection call (F-96521, refl = 1): 1 m under the lamp, strength = facing x level x 1.55, the
+    /// size the weather's over 320 x 180 - zero but in Stormy, so the rectangle is the draw's one pixel (the
+    /// original's eight car rectangles of hl_L_23.5: 0.00312 x 0.00556 NDC = 1/320 x 1/180).
+    #[test]
+    fn car_reflection_call() {
+        let t = Tune::default();
+        let cam = Vec3::new(0.0, 1.0, -10.0);
+        let (p, i, rs) = t.car_reflection(0, Vec3::new(0.0, 1.0, 0.0), Vec3::NEG_Z, 0.5, cam).unwrap();
+        assert_eq!(p, Vec3::ZERO);
+        assert!((i - 0.5 * 1.55).abs() < 1e-6);
+        assert_eq!(rs, [0.0, 0.0]);
+        let (_, _, rs) = t.car_reflection(2, Vec3::new(0.0, 1.0, 0.0), Vec3::NEG_Z, 0.5, cam).unwrap();
+        assert!((rs[0] - 20.0 / 320.0).abs() < 1e-7 && (rs[1] - 30.0 / 180.0).abs() < 1e-7);
+        // (facing away: nothing)
+        assert!(t.car_reflection(0, Vec3::new(0.0, 1.0, 0.0), Vec3::Z, 0.5, cam).is_none());
+        let r = crate::siglrefl::rect(glam::Mat4::perspective_infinite_reverse_rh(1.0, 16.0 / 9.0, 0.2), 0.2, 0.0, Vec3::new(0.0, -2.0, -50.0), Vec3::ZERO, [1.0; 3], 1.0, rs.map(|_| 0.0), crate::siglrefl::PICTURE).unwrap();
+        assert!((r.r[2] - r.r[0] - 1.0 / 320.0).abs() < 1e-6 && (r.r[3] - r.r[1] - 1.0 / 180.0).abs() < 1e-6);
     }
 }
