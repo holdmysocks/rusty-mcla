@@ -10082,9 +10082,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     c.w > 0.0 && c.x.abs() <= c.w && c.y.abs() <= c.w
                 };
                 let hour = self.time_of_day;
-                let refl_night = hour > 18.0 || hour < 6.0;
                 if hour > 17.6 || hour < 6.4 {
                     let no_occ = globals.params[3] == 118.0;
+                    // (F-28456's reflection branch: every light of a lamp prop (kind 4) while IsNight - not the
+                    // lamp's own minute - adds a rectangle to the reflection list, F-44648: its place mirrored
+                    // about the prop's origin height, size sm_PropGlowReflectionSeedSize / the picture's
+                    // width and height, strength sm_fPropGlowReflectionIntensity, the lamp's colour)
+                    let refl_night = hour > 18.0 || hour < 6.0;
                     for (li, (((p, c, _), bx), (bc, bw, br, org))) in self.props.glow_lamps.iter().zip(self.props.glow_boxes.iter()).zip(self.props.glow_cull.iter()).enumerate() {
                         // (the occlusion test belongs to the rule's second branch alone - large
                         // props 200 .. 250 m off; MCLA_DEBUG_VIEW=118: without it)
@@ -10119,10 +10123,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // clause, 300 m, never decides inside the list's reach), or within 20 m)
                     if head_ok.map_or(true, |(k, _)| k != *h) {
                         let (o, bc, bw, br, bx) = self.props.signal_head_cull(*h);
-                    // (F-28456's reflection branch: every light of a lamp prop (kind 4) while IsNight - not the
-                    // lamp's own minute - adds a rectangle to the reflection list, F-44648: its place mirrored
-                    // about the prop's origin height, size sm_PropGlowReflectionSeedSize / the picture's
-                    // width and height, strength sm_fPropGlowReflectionIntensity, the lamp's colour)
                         let ok = lamp_list.holds(bc, bw, br, || occluded.hides_aabb(bx.0, bx.1)) && (lamp_list.sphere_in_view(o, 2.0) || o.distance_squared(cam) <= 400.0);
                         head_ok = Some((*h, ok));
                     }
@@ -11790,16 +11790,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (the slipstream trails: drawn by the original last of the cars' alpha draws - sst_trail.rs; they write
             // no depth or stencil, so the resolve before them holds for what follows)
             sst_trail::run(&gpu, &mut enc, &self.vehicles, globals.view_proj);
-        }
-        if !map3d {
-            // (the particles and the rain in a pass of their own, the depth read-only: the
-            // checkpoint smoke reads it for its soft fade - PSCheckpointProj)
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("particles"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.scene_color(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: gpu.scene_ds(), depth_ops: None, stencil_ops: None }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
             // (the player's car's cockpit readouts in the in-car view - readouts.rs, F-43500)
             if self.vehicles.interior_glass {
                 if let Some(c) = self.vehicles.cars.iter().find(|c| c.is_player && !c.model.font_bones.is_empty()) {
@@ -11822,6 +11812,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     readouts::run(&gpu, &mut enc, Some(&frame));
                 }
             }
+        }
+        if !map3d {
+            // (the particles and the rain in a pass of their own, the depth read-only: the
+            // checkpoint smoke reads it for its soft fade - PSCheckpointProj)
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("particles"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.scene_color(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: gpu.scene_ds(), depth_ops: None, stencil_ops: None }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
             });
             pass.set_bind_group(0, &gpu.globals_bg, &[]);
             if pic.is_none() {
@@ -13618,6 +13618,11 @@ impl App {
         if let (Some(t), Some(ci)) = (self.tyre_fx.as_mut(), self.vehicles.cars.iter().position(|c| c.is_player)) {
             t.kill(&mut self.fx, ci);
         }
+        // (the same restore F-11744 sets the trip's start, +4640, to the vehicle's distance stat - readouts.rs)
+        if let Some(c) = self.vehicles.cars.iter().find(|c| c.is_player) {
+            let car = self.game.car_dirs.get(self.game.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+            readouts::set_trip_start(c.uid, self.game.career.stat("vkDT", &car).unwrap_or(0.0) as f32);
+        }
     }
 
     fn start_at_once(&mut self, event_loop: &ActiveEventLoop) {
@@ -13628,11 +13633,6 @@ impl App {
         let gpu = pollster::block_on(Gpu::new(window.clone())).unwrap_or_else(|e| crate::hooks::gpu_init_failed(&e));
         log::info!("startup: gpu at {} ms", t0.elapsed().as_millis());
         self.egui = Some(App::make_egui(&window, &gpu.device, &gpu.queue, gpu.config.format));
-        // (the same restore F-11744 sets the trip's start, +4640, to the vehicle's distance stat - readouts.rs)
-        if let Some(c) = self.vehicles.cars.iter().find(|c| c.is_player) {
-            let car = self.game.car_dirs.get(self.game.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-            readouts::set_trip_start(c.uid, self.game.career.stat("vkDT", &car).unwrap_or(0.0) as f32);
-        }
         if self.opt.shot.is_none() {
             self.audio = audio::Audio::new(&self.opt.data_dir);
         } else if self.opt.audio_dump.is_some() {
@@ -14106,12 +14106,14 @@ impl App {
             rain::load(&mut gpu, &self.opt.data_dir);
             halo::load(&mut gpu, &self.opt.data_dir);
             cutlights::init(&self.opt.data_dir);
+            render::post::init(&self.opt.data_dir);
             sky::init_cloud_speed(&self.opt.data_dir);
             siglrefl::load(&gpu, &self.opt.data_dir);
             sunglow::load(&mut gpu);
             pu_draw::load(&mut gpu, &self.opt.data_dir);
             pu_fx::load(&mut gpu, &self.opt.data_dir);
             sst_trail::load(&mut gpu, &self.opt.data_dir);
+            readouts::load(&mut gpu, &self.opt.data_dir);
             skidmarks::load(&mut gpu, &self.opt.data_dir);
             carblob::load(&mut gpu);
             // (the scene's pipelines at the driving and the menus' sample counts, built ahead on a thread of their
@@ -14123,7 +14125,6 @@ impl App {
                 self.peds.load(&self.opt.data_dir);
                 self.drivers.load(&self.opt.data_dir);
             }
-            readouts::load(&mut gpu, &self.opt.data_dir);
             lap("effects, peds, drivers");
             self.props = props::Props::load(&mut gpu, &mut world, &self.opt.data_dir);
             lap("props");
@@ -14148,7 +14149,6 @@ impl App {
             lamps.extend(self.props.prop_lamps.iter().map(|l| render::Lamp { pos: l.pos, color: l.color, intensity: l.intensity, back: l.back, cone: l.cone }));
             gpu.set_lamps(&lamps);
             // (diagnostics: MCLA_FIGLIGHT_PROBE = "x,y,z;x,y,z..." prints the walkers' four grid lanes
-            render::post::init(&self.opt.data_dir);
             // there, as a walker that stood long enough has them - compared with the recordings,
             // work/lighting2/figprobe.py)
             if let (Ok(v), Some(t)) = (std::env::var("MCLA_FIGLIGHT_PROBE"), render::LAMP_TABLES.read().ok().and_then(|t| t.clone())) {
