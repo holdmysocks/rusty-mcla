@@ -6137,12 +6137,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             Some(i) => self.cuts.queue(i),
                             None if self.pending_call.is_some() => {}
                             None => {
-                                if !self.speech.say(&c) {
+                                // (the line the mission's script appends: `Career::call_line`)
+                                let line = career::Career::call_line(&c).to_string();
+                                if !self.speech.say(&line) {
                                     self.speech.say(&c.replace("SIDEKICK_", "REMINDER_"));
                                 }
                                 // the call on the phone: the caller, the game's `SIDEKICK_<mission>`
                                 // text and the way to the mission log
-                                let text = self.game.career.strings.get(&c).or_else(|| self.game.career.strings.get(&c.replace("SIDEKICK_", "REMINDER_"))).map(|s| s.to_string());
+                                let text = self.game.career.strings.get(&line).or_else(|| self.game.career.strings.get(&c.replace("SIDEKICK_", "REMINDER_"))).map(|s| s.to_string());
                                 if let (Some(text), true) = (text, self.game.flash_phone.is_some()) {
                                     let who = m.split("   ").next().unwrap_or("").to_string();
                                     let who = if who.starts_with("NEW MISSION") { self.game.career.strings.get("SIDEKICK_TITLE_TIP").map(|s| s.to_string()).unwrap_or_default() } else { who };

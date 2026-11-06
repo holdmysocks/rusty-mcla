@@ -2957,6 +2957,18 @@ impl Career {
     pub fn scene_elsewhere(id: &str) -> bool {
         SCENE_ELSEWHERE.contains(&id)
     }
+
+    /// The line a mission's call speaks and shows: its READY_TO_START_ON_ENTER script appends
+    /// `SIDEKICK_<mission>` - except BEAT_SH_02_EXOTIC's, which appends FIND_SH_02B's
+    /// (`SIDEKICK_FIND_SH_02B` at 0x23), and RACE_SH_01's, which appends RACE_GH_02's: the lines
+    /// with a voice (CareerScript.xml). Test call_lines_are_the_scripts.
+    pub fn call_line(key: &str) -> &str {
+        match key {
+            "SIDEKICK_BEAT_SH_02_EXOTIC" => "SIDEKICK_FIND_SH_02B",
+            "SIDEKICK_RACE_SH_01" => "SIDEKICK_RACE_GH_02",
+            k => k,
+        }
+    }
 }
 
 /// AddReward F-64223 on the pending list: a reward already in it is ignored; with
@@ -2994,6 +3006,25 @@ pub fn reward_shown<T>(list: &[T], hidden: impl Fn(&T) -> bool) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// Each READY_TO_START_ON_ENTER script's call line is `call_line` of its mission's key
+    /// (the disassemblies of `work/career2/re/dis`, MCLA_SCRIPT_DIS to override).
+    #[test]
+    fn call_lines_are_the_scripts() {
+        assert_eq!(Career::call_line("SIDEKICK_BEAT_SH_02_EXOTIC"), "SIDEKICK_FIND_SH_02B");
+        let dir = std::env::var("MCLA_SCRIPT_DIS").unwrap_or_else(|_| "D:/MCLA/work/career2/re/dis".to_string());
+        let Ok(rd) = std::fs::read_dir(&dir) else { return };
+        let mut n = 0;
+        for e in rd.flatten() {
+            let f = e.file_name().to_string_lossy().to_string();
+            let Some(id) = f.strip_prefix("game__career__events__").or_else(|| f.strip_prefix("sc__career__events__")).and_then(|m| m.strip_suffix("_READY_TO_START_ON_ENTER.sco.txt")) else { continue };
+            let text = std::fs::read_to_string(e.path()).unwrap_or_default();
+            let Some(line) = text.lines().filter_map(|l| l.split("string '").nth(1)).map(|v| v.trim_end_matches('\'')).find(|v| v.starts_with("SIDEKICK_") && *v != "SIDEKICK_TITLE_TIP") else { continue };
+            assert_eq!(Career::call_line(&format!("SIDEKICK_{}", id.to_ascii_uppercase())), line, "{id}");
+            n += 1;
+        }
+        assert!(n == 0 || n > 100, "{n} call scripts");
+    }
+
     /// Every career tip script's key is the SIDEKICK string the script itself shows (the
     /// disassemblies of `work/career2/re/dis`, MCLA_SCRIPT_DIS to override; the four
     /// VisualPartUnlockTip keys are checked without them).
