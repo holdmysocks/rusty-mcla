@@ -6,6 +6,7 @@
 use glam::{Mat3, Quat, Vec3};
 
 use super::collision::WorldCollider;
+use super::gjk;
 use super::exact::{dot3 as vdot, dot_xyz, fma, fms, fnms, recip};
 use super::hull::HullShape;
 
@@ -1534,6 +1535,123 @@ pub fn ball_primitive(c: Vec3, big_r: f32, b: &Primitive) -> PrimContact {
     }
 }
 
+/// The 42 directions F-96503 tries (the image's table, as `gjk` holds it for the vehicles' routine).
+const WAYS_OUT: [[u32; 3]; 42] = [
+    [0x00000000, 0x80000000, 0xbf800000], [0x3f393e60, 0xbf0695ea, 0xbee4f9e4], [0xbe8d82ba, 0xbf59c422, 0xbee4f9e4],
+    [0xbf64f91a, 0x80000000, 0xbee4f97f], [0xbe8d82ba, 0x3f59c422, 0xbee4fa05], [0x3f393e60, 0x3f0695ea, 0xbee4f9e4],
+    [0x3e8d82ba, 0xbf59c422, 0x3ee4fa05], [0xbf393e60, 0xbf0695ea, 0x3ee4f9e4], [0xbf393e60, 0x3f0695ea, 0x3ee4f9e4],
+    [0x3e8d82ba, 0x3f59c422, 0x3ee4f9e4], [0x3f64f91a, 0x00000000, 0x3ee4f97f], [0x80000000, 0x00000000, 0x3f800000],
+    [0x3ed9c3f0, 0xbe9e36b1, 0xbf59c476], [0xbe265ade, 0xbeffff58, 0xbf59c476], [0x3e8696c4, 0xbf4f1b69, 0xbf0696c4],
+    [0x3ed9c3f0, 0x3e9e36b1, 0xbf59c476], [0x3f59c411, 0x80000000, 0xbf0696a2], [0xbf06963e, 0x80000000, 0xbf59c454],
+    [0xbf302d38, 0xbeffff9b, 0xbf0696a2], [0xbe265ade, 0x3effff58, 0xbf59c476], [0xbf302d38, 0x3effff9b, 0xbf0696a2],
+    [0x3e8696c4, 0x3f4f1b69, 0xbf0696c4], [0x3f737889, 0x3e9e36f4, 0x00000000], [0x3f737889, 0xbe9e36f4, 0x00000000],
+    [0x3f167925, 0xbf4f1bbd, 0x00000000], [0x00000000, 0xbf800000, 0x00000000], [0xbf167925, 0xbf4f1bbd, 0x00000000],
+    [0xbf737889, 0xbe9e36f4, 0x80000000], [0xbf737889, 0x3e9e36f4, 0x80000000], [0xbf167925, 0x3f4f1bbd, 0x80000000],
+    [0x80000000, 0x3f800000, 0x80000000], [0x3f167925, 0x3f4f1bbd, 0x80000000], [0x3f302d38, 0xbeffff9b, 0x3f0696a2],
+    [0xbe8696c4, 0xbf4f1b69, 0x3f0696c4], [0xbf59c411, 0x00000000, 0x3f0696a2], [0xbe8696c4, 0x3f4f1b69, 0x3f0696c4],
+    [0x3f302d38, 0x3effff9b, 0x3f0696a2], [0x3f06963e, 0x00000000, 0x3f59c454], [0x3e265ade, 0xbeffff58, 0x3f59c476],
+    [0xbed9c3f0, 0xbe9e36b1, 0x3f59c476], [0xbed9c3f0, 0x3e9e36b1, 0x3f59c476], [0x3e265ade, 0x3effff58, 0x3f59c476],
+];
+
+/// F-96503, the convex-against-convex penetration routine, on the shapes `a` (margin `ma`) and `b` (`mb`), each at its
+/// own matrix: of the 42 directions d the one with the least d . (b's farthest along d - a's farthest against d) (strict
+/// <, from FLT_MAX); off = that + ((ma + mb) + 0.01), 0 where below 0; the detector (F-15933: first direction (0, 0, 1),
+/// no penetration routine of its own) and its loop F-33272 with `a` moved off along it; where the loop answers, the two
+/// points (on b's surface less the normal (off (d . n) - distance), and on b's surface).
+pub fn penetration(a: &impl gjk::Support, ma: f32, b: &impl gjk::Support, mb: f32) -> Option<(Vec3, Vec3)> {
+    let mut best = (f32::MAX, Vec3::ZERO);
+    for w in WAYS_OUT {
+        let d = Vec3::new(f32::from_bits(w[0]), f32::from_bits(w[1]), f32::from_bits(w[2]));
+        let (pa, pb) = (a.support(Vec3::ZERO - d), b.support(d));
+        let delta = vdot(d, pb - pa);
+        if best.0 > delta {
+            best = (delta, d);
+        }
+    }
+    let mut off = best.0 + ((ma + mb) + f32::from_bits(0x3C23_D70A));
+    if 0.0 > off {
+        off = 0.0;
+    }
+    let mut v = Vec3::Z;
+    let (inner, _) = gjk::loop_from(a, best.1 * off, Vec3::ZERO, b, &mut v, ma, mb);
+    inner.map(|r| {
+        let pen = off * vdot(best.1, r.normal) - r.distance;
+        (r.on_b - r.normal * pen, r.on_b)
+    })
+}
+
+/// F-15615 on a curved bound (case 5: a car's wheel, `wheel` at the bound's own frame, its centroid +48 and margin
+/// +112), in the bound's frame: the ball at `c` (the query's +160) of radius `big_r` (+176) made a sphere bound
+/// (F-80030) at `c`, and F-96503 between the two. Where it answers: n = (its point a - its point b); n . (c - centroid)
+/// < 0 gives depth -1 and that n; else |n| (fused z, x, y) when over 1e-12 with n by the estimate and one Newton step,
+/// otherwise depth 0 and (c - centroid)'s unit (the guarded rsqrt). No answer: depth -1, the normal c - centroid. The
+/// record as for the other primitives (part 0, kind 2). Checked to the bit against the original run offline
+/// (`ball_curved_matches_the_original`).
+pub fn ball_curved(c: Vec3, big_r: f32, wheel: &gjk::WheelCore, centroid: Vec3, margin: f32) -> PrimContact {
+    let ball = gjk::PartCore { kind: 0, centroid: Vec3::ZERO, half: Vec3::ZERO, rows: [Vec3::X, Vec3::Y, Vec3::Z], at: c };
+    let off = c - centroid;
+    let (depth, normal) = match penetration(wheel, margin, &ball, big_r) {
+        Some((pa, pb)) => {
+            let n = pa - pb;
+            if fma(n.x, off.x, fma(n.z, off.z, n.y * off.y)) < 0.0 {
+                (-1.0, n)
+            } else {
+                let l2 = fma(n.y, n.y, fma(n.x, n.x, n.z * n.z));
+                if l2 > f32::from_bits(0x2B8C_BCCC) {
+                    let dist = l2.sqrt();
+                    (dist, unit_by(n, dist))
+                } else {
+                    (0.0, off * rsqrt0(vdot(off, off)))
+                }
+            }
+        }
+        None => (-1.0, off),
+    };
+    PrimContact { depth, normal, part: 0, kind: 2 }
+}
+
+/// F-11472 undirected (the query's byte +212 = 0) on a curved bound (type 5: a car's wheel, `wheel` at the bound's own
+/// frame, its centroid +48 and margin +112): the query's capsule `a` .. `b` (radius `big_r`) made a capsule bound
+/// (F-25220 with F-77704: radius R, length L = |b - a| (fused y, z, x, no guard), along y of the frame [F-95825's third
+/// axis, the unit direction (by the estimate when L > 1e-12, else +x), its second axis] about (b + a) 0.5), and F-96503
+/// between the wheel and it. Where it answers: t = F-36467 (the segment from a - centroid along b - a, to its point b),
+/// n = its point a - its point b; n . ((b0 + a0) 0.5) < 0 leaves depth 0 and that n; else |n| (fused y, z, x) over 1e-12
+/// with n by the estimate and one Newton step, otherwise depth 0 and the unit (guarded rsqrt) of (b - a) t + a0 - point b.
+/// No answer: depth 0, t 0, the normal 0. The record's point -(n (R - depth) - p) + centroid, p = (b - a) t + a0.
+/// Checked to the bit against the original run offline (`capsule_curved_matches_the_original`).
+pub fn capsule_curved(a: Vec3, b: Vec3, big_r: f32, wheel: &gjk::WheelCore, centroid: Vec3, margin: f32) -> CapsulePrimHit {
+    let d = b - a;
+    let (a0, b0) = (a - centroid, b - centroid);
+    let len = fma(d.x, d.x, fma(d.y, d.y, d.z * d.z)).sqrt();
+    let dir = if len > f32::from_bits(0x2B8C_BCCC) { unit_by(d, len) } else { Vec3::X };
+    let [_, across, third] = super::solver::basis(dir);
+    let mid = (b + a) * 0.5;
+    let caps = gjk::PartCore { kind: 1, centroid: Vec3::ZERO, half: Vec3::splat(len), rows: [third, dir, across], at: mid };
+    let (depth, t, normal) = match penetration(wheel, margin, &caps, big_r) {
+        Some((pa, pb)) => {
+            let t = clamp_param(0.0 - vdot(a0 - pb, d), vdot(d, d));
+            let m = (b0 + a0) * 0.5;
+            let n = pa - pb;
+            if fma(n.y, m.y, fma(n.x, m.x, n.z * m.z)) < 0.0 {
+                (0.0, t, n)
+            } else {
+                let l2 = fma(n.x, n.x, fma(n.z, n.z, n.y * n.y));
+                if l2 > f32::from_bits(0x2B8C_BCCC) {
+                    let dist = l2.sqrt();
+                    (dist, t, unit_by(n, dist))
+                } else {
+                    let w = (d * t + a0) - pb;
+                    (0.0, t, w * rsqrt0(vdot(w, w)))
+                }
+            }
+        }
+        None => (0.0, 0.0, Vec3::ZERO),
+    };
+    let p = d * t + a0;
+    let point = std::hint::black_box(-(normal * (big_r - depth) - p)) + centroid;
+    CapsulePrimHit { depth, t, normal, point }
+}
+
 /// Whether the capsule `a` .. `b` (radius `r`, in the part's frame) misses the part bound's box `min` .. `max`
 /// (F-16177 -> F-81407 -> F-18932): the box's centre taken off both ends and `r` added to its half sizes, then the
 /// segment against the box grown by 1e-6 by separating axes - the three box axes (|mid| over half + |half segment|),
@@ -1954,6 +2072,104 @@ mod tests {
             near += pass as usize;
         }
         assert_eq!((kept, near), (329, 675));
+    }
+
+    /// F-15615 case 5 on a car's wheel against the original's code run offline (tools/ball_curved_reference.py ->
+    /// testdata/ball_curved_ref.txt; F-96503 whole with the detector, the curved bound's support and the simplex routines,
+    /// alloc stubbed, the material call faked as (index + 1) << 8): the result, the list call and the record equal.
+    #[test]
+    fn ball_curved_matches_the_original() {
+        let u = |h: &str| u32::from_str_radix(&h.replace('_', ""), 16).unwrap();
+        let (mut hits, mut deep, mut none, mut far) = (0, 0, 0, 0);
+        for (k, line) in include_str!("../testdata/ball_curved_ref.txt").lines().enumerate() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(u).collect();
+            let x: Vec<u32> = o.split_whitespace().map(u).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let (r, wd) = (f(0), f(1));
+            let shape = gjk::WheelShape::sized(&[(f32::from_bits(0x3e99_999a), f32::from_bits(0x3dcc_cccd)), (r, wd)]);
+            let wheel = gjk::WheelCore::of(&shape, Vec3::ZERO, [Vec3::X, Vec3::Y, Vec3::Z], r, wd);
+            let (c, big_r) = (Vec3::new(f(2), f(3), f(4)), f(5));
+            let h = ball_curved(c, big_r, &wheel, Vec3::ZERO, gjk::WHEEL_MARGIN);
+            match h.depth {
+                d if d == -1.0 => far += 1,
+                d if d == 0.0 => none += 1,
+                d if d > big_r => deep += 1,
+                _ => hits += 1,
+            }
+            let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+            let mat = 1u32 << 8;
+            if mat & w[6] != 0 {
+                assert_eq!(&x[0..2], &[0, 0], "line {k}: material");
+                continue;
+            }
+            let at = -(h.normal * (big_r - h.depth) - c);
+            assert_eq!([x[0], x[1]], [(h.depth > 0.0) as u32, 1], "line {k}: result, list call");
+            assert_eq!([x[2], x[3]], [h.depth.to_bits(), big_r.to_bits()], "line {k}: depth, cap");
+            assert_eq!(&x[4..7], &bits(at), "line {k}: point");
+            if w[7] != 0 && h.depth > 0.0 {
+                assert_eq!(x[7], 0x1234, "line {k}: instance");
+                assert_eq!(&x[8..11], &bits(at), "line {k}: contact");
+                assert_eq!(&x[11..14], &bits(h.normal), "line {k}: normal");
+                assert_eq!(&x[14..17], &bits(h.normal), "line {k}: bound normal");
+                assert_eq!(&x[17..20], &[0, h.depth.to_bits(), mat], "line {k}: t, depth, material");
+                assert_eq!(&x[20..24], &[0, 2, (h.depth < big_r) as u32, 0], "line {k}: part, kind, +80, +82");
+            }
+        }
+        eprintln!("ball_curved: {hits} touching, {deep} deeper than the radius, {none} at depth 0, {far} none or facing away");
+        assert_eq!((hits, deep, none, far), (1844, 1062, 0, 1094));
+    }
+
+    /// F-11472 undirected on a car's wheel against the original's code run offline (tools/capsule_curved_reference.py ->
+    /// testdata/capsule_curved_ref.txt; the capsule bound F-25220 / F-77704, F-96503 whole with the detector, the curved
+    /// bound's support, the capsule's and the simplex routines, F-36467; alloc stubbed, the material call faked as
+    /// (index + 1) << 8): the result, the list call (depth, cap, point) and the record equal.
+    #[test]
+    fn capsule_curved_matches_the_original() {
+        let u = |h: &str| u32::from_str_radix(&h.replace('_', ""), 16).unwrap();
+        let (mut hits, mut deep, mut none, mut zero_len) = (0, 0, 0, 0);
+        let mut zero_ways = std::collections::BTreeMap::new();
+        for (k, line) in include_str!("../testdata/capsule_curved_ref.txt").lines().enumerate() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(u).collect();
+            let x: Vec<u32> = o.split_whitespace().map(u).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let p = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let (r, wd) = (f(0), f(1));
+            let shape = gjk::WheelShape::sized(&[(f32::from_bits(0x3e99_999a), f32::from_bits(0x3dcc_cccd)), (r, wd)]);
+            let wheel = gjk::WheelCore::of(&shape, Vec3::ZERO, [Vec3::X, Vec3::Y, Vec3::Z], r, wd);
+            let (a, b, big_r) = (p(2), p(5), f(8));
+            let h = capsule_curved(a, b, big_r, &wheel, Vec3::ZERO, gjk::WHEEL_MARGIN);
+            zero_len += (a == b) as usize;
+            if h.depth == 0.0 {
+                // (which way to depth 0: F-96503 without an answer, its normal facing away, or its two points together)
+                let ways = if h.normal == Vec3::ZERO && h.t == 0.0 { 0 } else if h.normal.length_squared() > 1.5 || h.normal.length() < 0.5 { 1 } else { 2 };
+                *zero_ways.entry(ways).or_insert(0) += 1;
+            }
+            match h.depth {
+                d if d == 0.0 => none += 1,
+                d if d > big_r => deep += 1,
+                _ => hits += 1,
+            }
+            let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+            if 256 & w[9] != 0 {
+                assert_eq!(&x[0..2], &[0, 0], "line {k}: material");
+                continue;
+            }
+            assert_eq!([x[0], x[1]], [(h.depth > 0.0) as u32, 1], "line {k}: result, list call");
+            assert_eq!([x[2], x[3]], [h.depth.to_bits(), big_r.to_bits()], "line {k}: depth, cap");
+            assert_eq!(&x[4..7], &bits(h.point), "line {k}: point");
+            if w[10] != 0 && h.depth > 0.0 {
+                assert_eq!(x[7], 0x1234, "line {k}: instance");
+                assert_eq!(&x[8..11], &bits(h.point), "line {k}: contact");
+                assert_eq!(&x[11..14], &bits(h.normal), "line {k}: normal");
+                assert_eq!(&x[14..17], &bits(h.normal), "line {k}: bound normal");
+                assert_eq!(&x[17..20], &[h.t.to_bits(), h.depth.to_bits(), 256], "line {k}: t, depth, material");
+                assert_eq!(&x[20..24], &[0, 2, 1, 0], "line {k}: part, kind, +80, +82");
+            }
+        }
+        eprintln!("capsule_curved: {hits} touching, {deep} deeper than the radius, {none} at depth 0 ({zero_len} without length) {zero_ways:?}");
+        assert_eq!((hits, deep, none, zero_len), (1827, 1246, 927, 194));
     }
 
     /// F-15615 on spheres, capsules and boxes against the original's code run offline (tools/ball_primitive_reference.py
