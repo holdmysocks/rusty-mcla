@@ -2721,6 +2721,12 @@ impl App {
         if self.garage_in.as_ref().is_some_and(|g| g.stage != garagein::Stage::Warp) {
             player_input.deactivated = true;
         }
+        // (and it stays deactivated all through the garage, until the way out: recorded, the R8's visit (work/physics2/r8rec
+        // entry.bin, dr.1.bin): +592 bit 0x1 and the engine word 0 - the engine speed 0 - from the reset on the spot to 4 ticks
+        // before the `_ext` scene's set-down, where Racer_Activate (F-30391(0)) clears both)
+        if self.garage_return.is_some() {
+            player_input.deactivated = true;
+        }
         // (the warp after START: the career script (game/career/0x62e9486d) deactivates the loaded car (0x583, when
         // starting at the garage - not a new career) and calls Racer_Activate only at its first Warper_IsWarping poll
         // after the flight (0x67b..0x6d8): until then the car does not answer its pad, and its air bags stay off)
