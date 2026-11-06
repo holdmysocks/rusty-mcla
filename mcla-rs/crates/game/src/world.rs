@@ -1087,6 +1087,44 @@ pub fn decode_sector(id: usize, path: &Path) -> Result<CpuSector> {
 }
 
 /// Ids of the far city's sector models while they are shown (among `World::sets`):
+/// A record of the city's sector directory (`city/sc/0x03cdd416.r1`: root +0x14 -> 304-byte records, u16 count +0x18;
+/// F-40046 places them): +208 box min, +224 box max (the box F-56244 measures and tests), +240 -> name, +244 the far
+/// model's index. The sector's own file is `joaat(name + ".xcs")` (436 of the 439 records have one).
+pub struct SectorRecord {
+    pub name: String,
+    /// `0x%08x.r1` of the sector's file
+    pub file: String,
+    pub min: Vec3,
+    pub max: Vec3,
+    pub far: u32,
+}
+
+/// The sector file of a record: the one named by its hash; else (3 records: the install's name list has junk names that
+/// share these files' hashes - `/I8.wbn`, `0.004981`, `WholeCarViewDist 5.3249998.act` - so the files are `I8.r1`, `0.r1`,
+/// `WholeCarViewDist 5.3249998.r1`) the one whose mesh box is the record's box to 1 mm, as it is for every record found by
+/// name (test far_models_link_by_record).
+pub fn record_sector(r: &SectorRecord, sectors: &[SectorInfo]) -> Option<usize> {
+    let same = |s: &SectorInfo| (Vec3::from(s.min) - r.min).abs().max_element().max((Vec3::from(s.max) - r.max).abs().max_element()) < 0.001;
+    sectors.iter().position(|s| s.file.rsplit('/').next() == Some(r.file.as_str())).or_else(|| sectors.iter().position(same))
+}
+
+/// The sector directory's records (empty without the file).
+pub fn sector_records(assets: &Assets) -> Vec<SectorRecord> {
+    let Ok(res) = load_resource_file(&assets.path("resources/city/sc/0x03cdd416.r1")) else { return Vec::new() };
+    let rd = Rd::new(&res);
+    let (Some(arr), n) = (rd.ptr(0x14), rd.u16(0x18) as usize) else { return Vec::new() };
+    let v = |o: usize| Vec3::new(rd.f32(o), rd.f32(o + 4), rd.f32(o + 8));
+    (0..n)
+        .map(|i| arr + i * 304)
+        .filter(|&r| rd.has(r, 304))
+        .map(|r| {
+            let name = rd.cstr_ptr(r + 240).unwrap_or_default();
+            let file = format!("0x{:08x}.r1", mcla_formats::hash::joaat(&format!("{name}.xcs")));
+            SectorRecord { name, file, min: v(r + 208), max: v(r + 224), far: rd.u32(r + 244) }
+        })
+        .collect()
+}
+
 /// `FAR_ID + model * FAR_SLOTS + sector` (sector `FAR_SLOTS - 1`: none).
 pub const FAR_ID: usize = 1 << 42;
 const FAR_SLOTS: usize = 4096;
@@ -1094,9 +1132,9 @@ const FAR_SLOTS: usize = 4096;
 /// The far city, `city/sc/0xa6e77868.r1` (class 0x596410): root +08 -> shader group (625
 /// shaders: CityLOD with a day and a night picture of the sector from above, CityWindowLOD ...;
 /// the textures are in the shared city dictionary), +0c -> 439 model pointers (u16 count at
-/// +10; one is null), each one sector's simple shape in world coordinates. A model is matched to
-/// the sector it stands for by how far their boxes overlap. 382,734 triangles in all.
-pub fn decode_far(path: &Path, sectors: &[SectorInfo]) -> Result<Vec<CpuSector>> {
+/// +10; one is null), each one sector's simple shape in world coordinates. A model belongs to the sector
+/// record whose far index (+244) names it ([`sector_records`]); 382,734 triangles in all.
+pub fn decode_far(path: &Path, sectors: &[SectorInfo], records: &[SectorRecord]) -> Result<Vec<CpuSector>> {
     use mcla_formats::rage::drawable::Shader;
     let res = load_resource_file(path)?;
     let rd = Rd::new(&res);
@@ -1149,22 +1187,14 @@ pub fn decode_far(path: &Path, sectors: &[SectorInfo]) -> Result<Vec<CpuSector>>
             continue;
         }
         let (mn, mx) = batches.iter().fold((Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)), |a, b| (a.0.min(b.min), a.1.max(b.max)));
-        // the sector whose box (seen from above) shares the most with the model's
-        let mut best = (0.25f32, FAR_SLOTS - 1);
-        for (j, s) in sectors.iter().enumerate().take(FAR_SLOTS - 1) {
-            let (ix, iz) = (mx.x.min(s.max[0]) - mn.x.max(s.min[0]), mx.z.min(s.max[2]) - mn.z.max(s.min[2]));
-            if ix <= 0.0 || iz <= 0.0 {
-                continue;
-            }
-            let inter = ix * iz;
-            let iou = inter / ((mx.x - mn.x) * (mx.z - mn.z) + (s.max[0] - s.min[0]) * (s.max[2] - s.min[2]) - inter);
-            if iou > best.0 {
-                best = (iou, j);
-            }
-        }
-        let (bmin, bmax) = sectors.get(best.1).filter(|_| best.1 < FAR_SLOTS - 1).map_or((mn, mx), |s| (Vec3::from(s.min), Vec3::from(s.max)));
+        // the record whose far index is this model (F-75080: the model of a record is `models[record +244]`): its box is
+        // what F-56244 tests (+208 / +224) and its file the sector this model stands in for; a record without a sector
+        // file (3 of 439) has its far model only
+        let rec = records.iter().find(|r| r.far as usize == i);
+        let slot = rec.and_then(|r| record_sector(r, sectors)).filter(|&j| j < FAR_SLOTS - 1).unwrap_or(FAR_SLOTS - 1);
+        let (bmin, bmax) = rec.map_or((mn, mx), |r| (r.min, r.max));
         let (wc, wr) = sphere(0).unwrap_or(((mn + mx) * 0.5, (mx - mn).length() * 0.5));
-        out.push(CpuSector { id: FAR_ID + i * FAR_SLOTS + best.1, batches, textures: Vec::new(), collision: Vec::new(), collision_mat: Vec::new(), geo: None, far: Some((bmin, bmax, wc, wr)) });
+        out.push(CpuSector { id: FAR_ID + i * FAR_SLOTS + slot, batches, textures: Vec::new(), collision: Vec::new(), collision_mat: Vec::new(), geo: None, far: Some((bmin, bmax, wc, wr)) });
     }
     Ok(out)
 }
@@ -1255,8 +1285,9 @@ impl World {
         let (tx, rx) = channel();
         // the far city, read in the background (MCLA_NO_FARCITY leaves it out)
         if std::env::var("MCLA_NO_FARCITY").is_err() {
-            let (tx, path, sectors) = (tx.clone(), assets.path("resources/city/sc/0xa6e77868.r1"), index.sectors.clone());
-            std::thread::spawn(move || match decode_far(&path, &sectors) {
+            let (tx, path, sectors, records) = (tx.clone(), assets.path("resources/city/sc/0xa6e77868.r1"), index.sectors.clone(), sector_records(&assets));
+            log::info!("sector directory: {} records", records.len());
+            std::thread::spawn(move || match decode_far(&path, &sectors, &records) {
                 Ok(list) => {
                     log::info!("far city: {} sector models, {} triangles", list.len(), list.iter().flat_map(|c| c.batches.iter()).map(|b| b.indices.len() / 3).sum::<usize>());
                     for cs in list {
@@ -1863,5 +1894,60 @@ mod lod_option_tests {
         let d = super::World::detail_distance;
         assert_eq!([d(25.0, 1.0), d(37.5, 1.0), d(50.0, 1.0), d(70.0, 1.0)], [450.0, 375.0, 300.0, 300.0]);
         assert_eq!([d(25.0, 2.0), d(50.0, 3.0)], [900.0, 900.0]);
+    }
+}
+
+#[cfg(test)]
+mod sector_record_tests {
+    use super::*;
+
+    /// The sector directory against the disc's files: 439 records, each one's far index its own place, 436 with a sector
+    /// file, each such record's box the file's mesh box (to 1 mm), and the far models linked by record where the port's old
+    /// box-overlap match (IoU > 0.25 seen from above) chose other sectors - printed. Skipped without the extracted files.
+    #[test]
+    fn far_models_link_by_record() {
+        let assets = Assets::new("D:/MCLA/extracted/cache");
+        let recs = sector_records(&assets);
+        let Ok(index) = WorldIndex::load_or_build(&assets) else { return };
+        if recs.is_empty() {
+            return;
+        }
+        assert_eq!(recs.len(), 439);
+        assert!(recs.iter().enumerate().all(|(i, r)| r.far as usize == i));
+        let of = |r: &SectorRecord| index.sectors.iter().position(|s| s.file.rsplit('/').next() == Some(r.file.as_str()));
+        let with_file: Vec<(usize, usize)> = recs.iter().enumerate().filter_map(|(i, r)| of(r).map(|j| (i, j))).collect();
+        assert_eq!(with_file.len(), 436, "records without a file: {:?}", recs.iter().filter(|r| of(r).is_none()).map(|r| &r.name).collect::<Vec<_>>());
+        // the other 3 by their box, each to a sector no record names, all 439 sectors used once
+        let mut used: Vec<usize> = recs.iter().map(|r| record_sector(r, &index.sectors).expect(&r.name)).collect();
+        used.sort();
+        used.dedup();
+        assert_eq!(used.len(), index.sectors.len());
+        for &(i, j) in &with_file {
+            let (s, r) = (&index.sectors[j], &recs[i]);
+            let d = (Vec3::from(s.min) - r.min).abs().max_element().max((Vec3::from(s.max) - r.max).abs().max_element());
+            assert!(d < 0.001, "{}: record box {:?}..{:?}, mesh box {:?}..{:?}", r.name, r.min, r.max, s.min, s.max);
+        }
+        let far = decode_far(&assets.path("resources/city/sc/0xa6e77868.r1"), &index.sectors, &recs).unwrap();
+        let mut moved = 0;
+        for cs in &far {
+            let (m, slot) = ((cs.id - FAR_ID) / FAR_SLOTS, (cs.id - FAR_ID) % FAR_SLOTS);
+            let (mn, mx) = cs.batches.iter().fold((Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)), |a, b| (a.0.min(b.min), a.1.max(b.max)));
+            let mut best = (0.25f32, FAR_SLOTS - 1);
+            for (j, s) in index.sectors.iter().enumerate() {
+                let (ix, iz) = (mx.x.min(s.max[0]) - mn.x.max(s.min[0]), mx.z.min(s.max[2]) - mn.z.max(s.min[2]));
+                if ix > 0.0 && iz > 0.0 {
+                    let iou = ix * iz / ((mx.x - mn.x) * (mx.z - mn.z) + (s.max[0] - s.min[0]) * (s.max[2] - s.min[2]) - ix * iz);
+                    if iou > best.0 {
+                        best = (iou, j);
+                    }
+                }
+            }
+            if best.1 != slot {
+                moved += 1;
+                let name = |j: usize| index.sectors.get(j).map_or("-".to_string(), |s| s.file.rsplit('/').next().unwrap_or("").to_string());
+                eprintln!("M{m} {}: record's sector {} (box {:.0?}..{:.0?}), overlap chose {} (iou {:.2})", recs[m].name, name(slot), recs[m].min, recs[m].max, name(best.1), best.0);
+            }
+        }
+        eprintln!("{} far models, {} linked otherwise than by overlap", far.len(), moved);
     }
 }
