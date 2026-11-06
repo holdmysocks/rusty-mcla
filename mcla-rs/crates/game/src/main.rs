@@ -5931,6 +5931,26 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.tips.push_back((key, title, text));
                         }
                     }
+                    // (a mission's reward script that makes a call - `Career::reward_call`: the mechanic's or
+                    // GH_27's call, title and line, no prompt; INSTALL_ABILITY_CONFIRM's line is the player's
+                    // active ability's, and with none it splashes INSTALL_ABILITY_CONFIRM_SPLASH instead)
+                    career::News::Call(script) => {
+                        let ability = if self.game.mc4_ability_none() { None } else { ability::Kind::ALL.iter().position(|k| *k == self.ability.kind) };
+                        let st = |k: &str| self.game.career.strings.get(k).map(|s| s.to_string());
+                        match career::Career::reward_call(&script, ability) {
+                            Some((line, title)) => {
+                                log::info!("career: call of {} ({})", script, line);
+                                if let Some(text) = st(line) {
+                                    self.tips.push_back((line.to_string(), st(title).unwrap_or_default(), text));
+                                }
+                            }
+                            None => {
+                                if let Some(m) = st("INSTALL_ABILITY_CONFIRM_SPLASH") {
+                                    self.game.show_message(&m);
+                                }
+                            }
+                        }
+                    }
                     // (step 21b: a story scene played by a CORE at a completion / meeting, or by
                     // an event script - no call, no line)
                     career::News::Scene(id) => {

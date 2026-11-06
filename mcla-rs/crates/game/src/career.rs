@@ -41,6 +41,8 @@ enum Reward {
     Car(String),
     /// a call from the mechanic (`game/Career/<Name>Tip` scripts): the string key
     Tip(String),
+    /// a mission's mcRewardScript that makes a call (`Career::reward_call`): the script's name
+    Call(String),
 }
 
 #[derive(Debug, Clone)]
@@ -197,6 +199,8 @@ pub enum News {
     Money(i64),
     /// a tip over the phone: speech scenario, title and text
     Tip { key: String, title: String, text: String },
+    /// a mission's reward script that makes a call (`Career::reward_call`): the script's name
+    Call(String),
     /// (step 21b) a story scene a script plays (a CORE at a completion or a meeting, an event
     /// script at a garage / hangout): the mission whose scene it is (`Cutscenes::for_mission`)
     Scene(String),
@@ -513,6 +517,11 @@ impl Career {
                 match r.split('"').next().unwrap_or("") {
                     "Mission" => rewards.push(Reward::Mission { id: tag(r, "szMissionId").unwrap_or("").to_ascii_uppercase(), state: tag(r, "szTransitionState").unwrap_or("").to_ascii_uppercase().replace('_', "") }),
                     "Car" => rewards.push(Reward::Car(tag(r, "szCarName").unwrap_or("").to_ascii_lowercase())),
+                    // (the reward scripts that make a call: `reward_call`)
+                    "Script" => match tag(r, "szScriptName").and_then(|n| n.rsplit('/').next()).filter(|n| Self::reward_call(n, Some(0)).is_some()) {
+                        Some(n) => rewards.push(Reward::Call(n.to_ascii_uppercase())),
+                        None => continue,
+                    },
                     _ => continue,
                 }
                 reward_flags.push(flags);
@@ -1014,6 +1023,7 @@ impl Career {
                     }
                 }
             }
+            Reward::Call(script) => self.news.push(News::Call(script.clone())),
             Reward::Car(name) => {
                 let car = name.find("vpd_").or_else(|| name.find("vp_")).map(|i| name[i..].to_string()).unwrap_or_else(|| name.clone());
                 if car != *name {
@@ -1762,6 +1772,7 @@ impl Career {
                     News::Money(m) => format!("${}", m),
                     News::Tip { key, text, .. } => format!("tip {} [{}]", key, text.chars().take(50).collect::<String>()),
                     News::Scene(id) => format!("scene {}", id),
+                    News::Call(s) => format!("call {}", s),
                 })
                 .collect();
             if !news.is_empty() {
@@ -2958,6 +2969,23 @@ impl Career {
         SCENE_ELSEWHERE.contains(&id)
     }
 
+    /// The call a mission's reward script makes (mcRewardScript, bGiveImmediately): the line it
+    /// appends and the title key, each a type-1 call of the mechanic's (`mec_mc_01_set`) or GH_27's,
+    /// with no prompt, after the script's wait for Cruising_Offline and the police (activity > 1).
+    /// DELIVERY_CONFIRM: SIDEKICK_DELIVERY_POST (0x8c..0x11a). BESTOF_GH_27_POST (sc):
+    /// SIDEKICK_BESTOF_GH_27_POST, then it waits for the announcement. INSTALL_ABILITY_CONFIRM:
+    /// the player's active ability (Racer_GetActiveAbility, 0x0d0) picks SIDEKICK_ZONE / _AGRO /
+    /// _ROAR / _EMP (0 .. 3); with none it splashes INSTALL_ABILITY_CONFIRM_SPLASH for 2 s instead
+    /// (0x1f8..0x222): `None` here. `ability` is the index in that order.
+    pub fn reward_call(script: &str, ability: Option<usize>) -> Option<(&'static str, &'static str)> {
+        match script.to_ascii_uppercase().as_str() {
+            "DELIVERY_CONFIRM" => Some(("SIDEKICK_DELIVERY_POST", "DELIVERY_POST_TITLE")),
+            "BESTOF_GH_27_POST" => Some(("SIDEKICK_BESTOF_GH_27_POST", "SIDEKICK_BESTOF_GH_27_POST_TITLE")),
+            "INSTALL_ABILITY_CONFIRM" => ["SIDEKICK_ZONE", "SIDEKICK_AGRO", "SIDEKICK_ROAR", "SIDEKICK_EMP"].get(ability?).map(|l| (*l, "INSTALL_ABILITY_CONFIRM_TITLE")),
+            _ => None,
+        }
+    }
+
     /// The line a mission's call speaks and shows: its READY_TO_START_ON_ENTER script appends
     /// `SIDEKICK_<mission>` - except BEAT_SH_02_EXOTIC's, which appends FIND_SH_02B's
     /// (`SIDEKICK_FIND_SH_02B` at 0x23), and RACE_SH_01's, which appends RACE_GH_02's: the lines
@@ -3006,6 +3034,47 @@ pub fn reward_shown<T>(list: &[T], hidden: impl Fn(&T) -> bool) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// The three reward scripts that make a call append `reward_call`'s line and title (the
+    /// disassemblies of `work/career2/re/dis`, MCLA_SCRIPT_DIS to override), and the missions'
+    /// files name them as mcRewardScript.
+    #[test]
+    fn reward_calls_are_the_scripts() {
+        assert_eq!(Career::reward_call("INSTALL_ABILITY_CONFIRM", None), None);
+        assert_eq!(Career::reward_call("Police_Tutorial", Some(0)), None);
+        let dir = std::env::var("MCLA_SCRIPT_DIS").unwrap_or_else(|_| "D:/MCLA/work/career2/re/dis".to_string());
+        let strings = |f: &str| std::fs::read_to_string(format!("{dir}/{f}")).ok().map(|t| t.lines().filter_map(|l| l.split("string '").nth(1)).map(|v| v.trim_end_matches('\'').to_string()).collect::<Vec<_>>());
+        let Some(dc) = strings("game__career__events__DELIVERY_CONFIRM.sco.txt") else { return };
+        let (line, title) = Career::reward_call("DELIVERY_CONFIRM", None).unwrap();
+        assert!(dc.iter().any(|v| v == line) && dc.iter().any(|v| v == title));
+        let gh = strings("sc__career__events__BESTOF_GH_27_POST.sco.txt").unwrap();
+        let (line, title) = Career::reward_call("BESTOF_GH_27_POST", None).unwrap();
+        assert!(gh.iter().any(|v| v == line) && gh.iter().any(|v| v == title));
+        let ia = strings("game__career__events__INSTALL_ABILITY_CONFIRM.sco.txt").unwrap();
+        let lines: Vec<&String> = ia.iter().filter(|v| v.starts_with("SIDEKICK_")).collect();
+        for (k, l) in lines.iter().enumerate() {
+            assert_eq!(Career::reward_call("INSTALL_ABILITY_CONFIRM", Some(k)).map(|c| c.0), Some(l.as_str()));
+        }
+        assert_eq!(lines.len(), 4);
+        assert!(ia.iter().any(|v| v == "INSTALL_ABILITY_CONFIRM_TITLE"));
+        // (with the game's data: the three missions carry the call and each line has its text; the
+        // three title keys are in none of the string tables - what the phone shows then is open)
+        let data = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        let c = Career::load(&data);
+        if c.missions.is_empty() {
+            return;
+        }
+        let calls: Vec<&str> = c.missions.iter().flat_map(|m| m.rewards.iter()).filter_map(|r| if let Reward::Call(s) = r { Some(s.as_str()) } else { None }).collect();
+        assert_eq!(calls.len(), 3, "{calls:?}");
+        for s in ["DELIVERY_CONFIRM", "BESTOF_GH_27_POST", "INSTALL_ABILITY_CONFIRM"] {
+            assert!(calls.contains(&s), "{s}");
+            for k in 0..4 {
+                let (line, _title) = Career::reward_call(s, Some(k)).unwrap();
+                assert!(c.strings.get(line).is_some(), "{line}");
+            }
+        }
+        assert!(c.strings.get("INSTALL_ABILITY_CONFIRM_SPLASH").is_some());
+    }
+
     /// Each READY_TO_START_ON_ENTER script's call line is `call_line` of its mission's key
     /// (the disassemblies of `work/career2/re/dis`, MCLA_SCRIPT_DIS to override).
     #[test]
