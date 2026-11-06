@@ -465,6 +465,14 @@ fn brain_command(b: &mut BrainCmd, cmd: u32, blk: Option<&[u32; 8]>, machine_sta
     (route, reset, cmd)
 }
 
+/// A Pursuit's / Double Pursuit's may-escalate (vt+24; the Double Pursuit's F-73000): the radio's busy byte F-94735 clear, then
+/// the base test F-38605 - the may-escalate byte +28, not in Search (vt+40: the Double Pursuit's F-12623, its machine's state
+/// == 2), the arrest timer +108 not greater than +0.0 (fcmpu: NaN passes), not in Arrest (vt+36: F-48174, state == 1). The
+/// port's Search / Arrest are `Heat::Search` / `Heat::Busted`; the Pursuit's Delay test is the caller's.
+fn tactic_may_escalate(radio_busy: bool, may: bool, searching: bool, arresting: bool, arrest: f32) -> bool {
+    !radio_busy && may && !searching && !(f64::from(arrest) > 0.0) && !arresting
+}
+
 /// The Search state's clock test F-73289 (its vt+80, read by the tactics' vt+44 F-77220 as the target lost): the clock widened to
 /// double and compared greater than +0.0 by fcmpu - false for -0.0, +0.0, the negatives and NaN.
 fn search_clock_runs(clock: f32) -> bool {
@@ -3146,7 +3154,8 @@ impl Police {
         let pull = t("iPullOverLawBreakScore", 250.0);
         // (in a Pursuit or Double Pursuit 999 until it may escalate, vt+24: F-62213 / F-73000, F-38605 - not in its Delay, no radio line
         // playing, its may-escalate byte, not searching or arresting, no arrest timer running; 1000 in an Arrow Trap)
-        let escalates = !self.radio_busy && self.may_escalate && !matches!(self.heat, Heat::Search | Heat::Busted) && self.arrest <= 0.0 && (self.kind != TacKind::Pursuit || self.flee_hold <= 0.0);
+        let escalates = tactic_may_escalate(self.radio_busy, self.may_escalate, self.heat == Heat::Search, self.heat == Heat::Busted, self.arrest)
+            && (self.kind != TacKind::Pursuit || self.flee_hold <= 0.0);
         let cap = match self.heat {
             // (F-19359 / F-98647: 599 until the bullhorn has sounded and run out and no arrest timer runs, F-38605)
             Heat::PullOver if self.bullhorn != Some(0.0) || self.arrest > 0.0 => t("iPursuitLawBreakScore", 600.0) - 1.0,
@@ -4686,6 +4695,30 @@ mod tests {
         for b in probe {
             assert_eq!(search_clock_runs(f32::from_bits(b)), orig(b), "{b:08x}");
         }
+    }
+
+    /// The Double Pursuit's may-escalate against the original's F-73000 (with F-38605 and the state tests F-48174 / F-12623 on
+    /// the tactic's own vtable) run by tools/pursuit_dbl_escalate_reference.py: for each machine state, byte +28 and radio byte,
+    /// the results over the same 65,548 arrest-timer patterns give the same true count and FNV-1a hash.
+    #[test]
+    fn pursuit_dbl_escalate_matches_the_original() {
+        let reference = include_str!("testdata/pursuit_dbl_escalate_ref.txt");
+        const SP: [u32; 12] = [0, 0x8000_0000, 1, 0x8000_0001, 0x3F80_0000, 0xBF80_0000, 0x7F80_0000, 0xFF80_0000, 0x7FC0_0000, 0xFFC0_0000, 0x7F80_0001, 0x007F_FFFF];
+        let pats: Vec<u32> = SP.iter().copied().chain((0..65536u32).map(|k| k.wrapping_mul(65537))).collect();
+        let mut lines = 0;
+        for l in reference.lines() {
+            let v: Vec<&str> = l.split_whitespace().collect();
+            let (state, b28, radio): (i32, u32, u32) = (v[0].parse().unwrap(), v[1].parse().unwrap(), v[2].parse().unwrap());
+            let (mut n, mut h) = (0u32, 2_166_136_261u32);
+            for &p in &pats {
+                let t = tactic_may_escalate(radio & 0xFF != 0, b28 & 0xFF != 0, state == 2, state == 1, f32::from_bits(p)) as u32;
+                n += t;
+                h = (h ^ t).wrapping_mul(16_777_619);
+            }
+            assert_eq!(format!("{n} {h:08x}"), format!("{} {}", v[3], v[4]), "{l}");
+            lines += 1;
+        }
+        assert_eq!(lines, 72);
     }
 
     /// The brain command against the original's F-83687 run offline by tools/brain_command_reference.py: the same 4,000 calls
