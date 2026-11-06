@@ -1774,7 +1774,13 @@ impl App {
             // (with the weather's keys: x = gPropNFLColor.w = 1.5 x m_NFLFade, y = OcclusionInfo.x =
             // the camera's height + m_OcclusionHeights.x (5), z = m_OcclusionFades.y; w = -1 in the garage)
             ambient_ground: match tod {
-                Some(t) if !in_garage || gar.is_some() => [1.5 * t.nfl, self.cam.pos.y + 5.0, t.occlusion[1], 0.0],
+                // (gPropNFLColor.w, F-75018: m_NFLFade x sm_fGlobalNightLightIntensity while IsNight - F-47292, never
+                // under the garage's lighting, whose TOD files keep m_NFLFade at 1 - else m_NFLFade alone: recorded
+                // 1.5 at 23:30, 0.375 at 18:15, 1 in every garage capture)
+                Some(t) if !in_garage || gar.is_some() => {
+                    let night = gar.is_none() && (self.time_of_day > 18.0 || self.time_of_day < 6.0);
+                    [if night { halo::tune().map_or(1.5, |h| h.night_light) } else { 1.0 } * t.nfl, self.cam.pos.y + 5.0, t.occlusion[1], 0.0]
+                }
                 _ => [ground.x, ground.y, ground.z, if in_garage { -1.0 } else if st.shadow.is_some() { (sun_col * sun_int + sky_amb).dot(Vec3::new(0.2126, 0.7152, 0.0722)) } else { 0.0 }],
             },
             fog_color: [fog.x, fog.y, fog.z, fogp.2],

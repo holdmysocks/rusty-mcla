@@ -50,6 +50,10 @@ pub struct Tune {
     /// road's reflection picture (F-96521's reflection branch, siglrefl.rs)
     pub car_refl_size: [[f32; 2]; 4],
     pub car_refl_intensity: f32,
+    /// sm_fGlobalNightLightIntensity: gPropNFLColor.w (F-75018) and gPropNFLColorVS.w (F-40496) are m_NFLFade x this
+    /// while IsNight (F-47292: hour > 18 or < 6, never under the garage's lighting), m_NFLFade alone otherwise;
+    /// ShaderGlobals.w is 2 x this (F-45287)
+    pub night_light: f32,
     /// MaxGlowDist, MaxGlowBias, MaxCarGlowBias, MinGlowBias
     pub max_dist: f32,
     pub max_bias: f32,
@@ -78,6 +82,7 @@ impl Default for Tune {
             prop_refl_intensity: 3.8,
             car_refl_size: [[0.0, 0.0], [0.0, 0.0], [20.0, 30.0], [0.0, 0.0]],
             car_refl_intensity: 1.55,
+            night_light: 1.5,
             max_dist: 0.6,
             max_bias: 0.05,
             max_car_bias: 0.02,
@@ -148,6 +153,7 @@ impl Tune {
         t.prop_refl_intensity = one("sm_fPropGlowReflectionIntensity", t.prop_refl_intensity);
         t.car_refl_size = pairs("sm_CarLightGlowReflectionSizess", t.car_refl_size);
         t.car_refl_intensity = one("sm_fCarGlowReflectionIntensity", t.car_refl_intensity);
+        t.night_light = one("sm_fGlobalNightLightIntensity", t.night_light);
         t.max_dist = one("MaxGlowDist", t.max_dist);
         t.max_bias = one("MaxGlowBias", t.max_bias);
         t.max_car_bias = one("MaxCarGlowBias", t.max_car_bias);
@@ -650,6 +656,7 @@ mod tests {
         assert_eq!(t.car_refl_size[2], [20.0, 30.0]);
         assert_eq!(t.car_refl_size[0], [0.0, 0.0]);
         assert_eq!(t.car_refl_intensity, 1.55);
+        assert_eq!(t.night_light, 1.5);
     }
 
     /// A car lamp's reflection call (F-96521, refl = 1): 1 m under the lamp, strength = facing x level x 1.55, the
