@@ -305,6 +305,25 @@ fn quat_mat(m: &mut [f32; 16], q: [f32; 4]) {
     m[5] = 1.0 - (zz + xx);
 }
 
+/// `F-25555` after its cut test: the camera matrix `m` and its two lens values from the camera clip's samples, each
+/// left as it is when its track is missing: the translation is row 3, the rotation the rows by F-40856, the kind-10 focal
+/// length (mm on a 35 mm gate) the horizontal angle 2 atan(0.7085 / (v 0.03937)) through the CRT's double atan
+/// (cam+104), the kind-14 value cam+108 (`cam_sample_matches_the_original`).
+fn cam_sample(m: &mut [f32; 16], lens: &mut f32, k14: &mut f32, pos: Option<Vec3>, rot: Option<[f32; 4]>, focal: Option<f32>, f14: Option<f32>) {
+    if let Some(p) = pos {
+        m[12..15].copy_from_slice(&p.to_array());
+    }
+    if let Some(q) = rot {
+        quat_mat(m, q);
+    }
+    if let Some(v) = focal {
+        *lens = ((f32::from_bits(0x3f35_6042) / (v * f32::from_bits(0x3d21_4270))) as f64).atan() as f32 * 2.0;
+    }
+    if let Some(v) = f14 {
+        *k14 = v;
+    }
+}
+
 /// `F-20340`: spherical interpolation of two quaternions by `u` (the angle by F-94425), normalised by a reciprocal
 /// square root with two Newton steps (0 for a zero length); `a` itself when the angle's sine is 0.
 fn slerp(a: [f32; 4], b: [f32; 4], u: f32) -> [f32; 4] {
@@ -1126,15 +1145,18 @@ impl Cine {
         };
         let f = cam.frame_at(t);
         let pos = cam.track(KIND_TRANSLATION, 0)?.data.vec(f);
-        let rot = cam.track(KIND_ROTATION, 0).map(|t| t.data.rot(f)).unwrap_or(Quat::IDENTITY);
-        // (the lens track is a focal length in mm on a 35 mm gate: cam+104 = 2 atan(0.7085 in /
-        // (v mm * 0.03937)), the horizontal angle (F-25555); the render camera's vertical
-        // angle is that divided by the viewport's aspect, 16:9 (F-79297, the warp's
-        // target, cam_to_menu F-14139). Without the track the camera keeps its reset
+        // (the scene camera update F-40303 starts the matrix as identity each update; the lens
+        // track is a focal length in mm on a 35 mm gate, F-25555 (cam_sample); the render
+        // camera's vertical angle is that divided by the viewport's aspect, 16:9 (F-79297, the
+        // warp's target, cam_to_menu F-14139). Without the track the camera keeps its reset
         // lens, pi/4.)
-        let h = cam.track(KIND_FOV, 0).map(|t| t.data.vec(f).x).filter(|v| *v > 0.0).map_or(std::f32::consts::FRAC_PI_4, |v| 2.0 * (0.7085 / (v * 0.03937)).atan());
+        let mut m = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let (mut h, mut k14) = (std::f32::consts::FRAC_PI_4, 1.0);
+        let rot = cam.track(KIND_ROTATION, 0).map(|t| t.data.rot(f).to_array());
+        cam_sample(&mut m, &mut h, &mut k14, Some(pos), rot, cam.track(KIND_FOV, 0).map(|t| t.data.vec(f).x), None);
         let fov = h / (16.0 / 9.0);
-        Some((sc.origin.transform_point3(pos), sc.origin.transform_vector3(rot * -Vec3::Z).normalize_or(Vec3::Z), sc.origin.transform_vector3(rot * Vec3::Y).normalize_or(Vec3::Y), fov))
+        let row = |i: usize| Vec3::new(m[4 * i], m[4 * i + 1], m[4 * i + 2]);
+        Some((sc.origin.transform_point3(row(3)), sc.origin.transform_vector3(-row(2)).normalize_or(Vec3::Z), sc.origin.transform_vector3(row(1)).normalize_or(Vec3::Y), fov))
     }
 
     /// Labels of the cars the scene moves.
@@ -1380,6 +1402,30 @@ mod cam_blend_tests {
         }
         assert!(n == 3000 && runs > 1000, "{n} cases, {runs} blending");
         assert!(exact == n, "{exact} of {n} bit-exact, worst {worst} ulp: {first}");
+    }
+
+    /// F-25555 run offline (tools/cam_sample_reference.py) with its track reads answered from each case, as the scene
+    /// camera update F-40303 calls it (identity matrix in): matrix (the fourth entries of rows 0-2 and row 3's w aside,
+    /// which the port does not use), lens and kind-14 value, word for word.
+    #[test]
+    fn cam_sample_matches_the_original() {
+        let text = include_str!("testdata/cam_sample_ref.txt");
+        let mut n = 0;
+        for l in text.lines().filter(|l| l.starts_with("SMP")) {
+            let w: Vec<u32> = l.split(' ').skip(1).map(|h| u32::from_str_radix(h, 16).unwrap()).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let on = |b: u32| w[0] >> b & 1 != 0;
+            let mut m = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+            let (mut lens, mut k14) = (f32::from_bits(0x0badf00d), f32::from_bits(0x0badf00d));
+            super::cam_sample(&mut m, &mut lens, &mut k14, on(0).then(|| Vec3::new(f(1), f(2), f(3))), on(1).then(|| [f(4), f(5), f(6), f(7)]),
+                on(2).then(|| f(8)), on(3).then(|| f(9)));
+            for i in (0..15).filter(|i| !matches!(i, 3 | 7 | 11)) {
+                assert_eq!(m[i].to_bits(), w[10 + i], "word {i}: {l}");
+            }
+            assert_eq!((lens.to_bits(), k14.to_bits()), (w[26], w[27]), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
     }
 }
 
