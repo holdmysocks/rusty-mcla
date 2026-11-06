@@ -465,6 +465,12 @@ fn brain_command(b: &mut BrainCmd, cmd: u32, blk: Option<&[u32; 8]>, machine_sta
     (route, reset, cmd)
 }
 
+/// The Search state's clock test F-73289 (its vt+80, read by the tactics' vt+44 F-77220 as the target lost): the clock widened to
+/// double and compared greater than +0.0 by fcmpu - false for -0.0, +0.0, the negatives and NaN.
+fn search_clock_runs(clock: f32) -> bool {
+    f64::from(clock) > 0.0
+}
+
 /// A command's block as the port's senders build it: Stop (1) F-72181 (+12 1.0, +16 0, +20 1.0, +24 -1, +28 -1000) - Block's
 /// enter F-56982 sets the handbrake byte, +24 0 and its steer -, AlongSide (5) F-94949 (+12 1.0, +16 the side, +20
 /// fAlongSideDist), the others F-59773 (+12 1.0). No targets or tactic (the port's brains read none of them).
@@ -3207,7 +3213,7 @@ impl Police {
         let delay = self.kind == TacKind::Pursuit && self.flee_hold > 0.0;
         // (the Delay's exit F-25831 runs the update the Delay ends; the Search's clock +16 > 0 is the target lost, F-77220)
         let leaving = self.arrest_delay && !delay;
-        let lost = self.search > 0.0;
+        let lost = search_clock_runs(self.search);
         let ain = |slow: bool, search: bool| ArrestIn {
             seer_r1,
             seer_bike,
@@ -4653,6 +4659,33 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 500, "{checked}");
+    }
+
+    /// The Search clock test against the original's F-73289 run on all 2^32 clock patterns by tools/search_clock_reference.py:
+    /// every pattern in the true ranges and their neighbours, and every 4,099th pattern, give the original's answer.
+    #[test]
+    fn search_clock_matches_the_original() {
+        let reference = include_str!("testdata/search_clock_ref.txt");
+        let mut ranges = Vec::new();
+        let mut count = 0u64;
+        for l in reference.lines() {
+            if let Some(r) = l.strip_prefix("true ") {
+                let (a, b) = r.split_once('-').unwrap();
+                ranges.push((u32::from_str_radix(a, 16).unwrap(), u32::from_str_radix(b, 16).unwrap()));
+            } else if let Some(n) = l.strip_prefix("count ") {
+                count = n.parse().unwrap();
+            }
+        }
+        assert_eq!(ranges.iter().map(|&(a, b)| (b - a) as u64 + 1).sum::<u64>(), count);
+        let orig = |b: u32| ranges.iter().any(|&(lo, hi)| (lo..=hi).contains(&b));
+        let mut probe: Vec<u32> = (0..=u32::MAX / 4099).map(|i| i * 4099).collect();
+        for &(lo, hi) in &ranges {
+            probe.extend([lo.wrapping_sub(1), lo, lo.wrapping_add(1), hi.wrapping_sub(1), hi, hi.wrapping_add(1)]);
+        }
+        probe.extend([0x8000_0000, 0xFF80_0000, 0x7FC0_0000, 0xFFC0_0000, 0x7F80_0001]);
+        for b in probe {
+            assert_eq!(search_clock_runs(f32::from_bits(b)), orig(b), "{b:08x}");
+        }
     }
 
     /// The brain command against the original's F-83687 run offline by tools/brain_command_reference.py: the same 4,000 calls
