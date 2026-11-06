@@ -95,6 +95,7 @@ mod police;
 mod props;
 mod races;
 mod replay;
+mod replay_inputs;
 mod roamers;
 mod signals;
 mod skin;
