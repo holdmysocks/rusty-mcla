@@ -4868,6 +4868,18 @@ impl Game {
         [[g[0], g[1], g[2], rate], [n[0], n[1], n[2], if self.int_neon { 1.0 } else { 0.0 }]]
     }
 
+    /// The cockpit readouts' tune for `readouts.rs`, the record's GaugeText (0x190 + 0x20 k: colour, skew, font index;
+    /// F-43500 reads them at +400 + 32 k of the car's tune): rgba, skew, font. Without a record: white, 0, font 0.
+    pub fn gauge_texts(&self) -> [[f32; 6]; 5] {
+        let cur = if self.car_x.car.is_empty() { self.mc4_car_name(self.current_car) } else { self.car_x.car.clone() };
+        let rec = self.mc4.as_ref().and_then(|m| m.car(&cur));
+        std::array::from_fn(|k| {
+            let g = rec.and_then(|c| c.visual.gauge_text.get(k));
+            let c = g.map(|g| &g.m_fColor).filter(|v| v.len() >= 4).map_or([1.0; 4], |v| [v[0].0 as f32, v[1].0 as f32, v[2].0 as f32, v[3].0 as f32]);
+            [c[0], c[1], c[2], c[3], g.map_or(0.0, |g| g.m_fSkew.0 as f32), g.map_or(0.0, |g| g.m_iFontIdx as f32)]
+        })
+    }
+
     /// The cabin's five colour groups for the renderer (INTERIOR COLOR A..E; linear, w 1 =
     /// chosen, 0 = the stock cabin): `Vehicles::player_interior`. Which zones of the trim
     /// take which group is the vehicle's own table (`zone_groups`).

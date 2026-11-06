@@ -54,6 +54,10 @@ pub struct CarModel {
     /// record a bone, read out of the running game for the R8): the kind of the game's glow table
     /// and the bone's place in car space. Render only (the glow pass, `halo_lamps`).
     pub glow_bones: Vec<(u8, Vec3, Vec3)>,
+    /// the cockpit readouts' bones (F-10977: `fontspeedo0` .. `fontclock0` of the base fragment's or a fitted part's
+    /// skeleton, the first found): readout (0 speedo, 1 odometer, 2 trip, 3 gear, 4 clock), the bone's matrix in the
+    /// model's frame, the box's width and height (its translation limits, max - min of x and y) - `readouts.rs`
+    pub font_bones: Vec<(u8, Mat4, f32, f32)>,
     pub params: CarParams,
     /// the same car with every performance upgrade fitted (the tuning file's "mods" set)
     pub params_mods: Option<CarParams>,
@@ -1610,6 +1614,7 @@ struct CarPrep {
     lamp_acc: hashbrown::HashMap<(i32, bool), (Vec3, u32)>,
     own_hubs: [Option<Vec3>; 6],
     glow_bones: Vec<(u8, Vec3, Vec3)>,
+    font_bones: Vec<(u8, Mat4, f32, f32)>,
     variants: Vec<(Slot, Vec<String>)>,
     variant_labels: Vec<(Slot, Vec<String>)>,
     extra_variants: std::collections::HashSet<(String, usize)>,
@@ -2159,7 +2164,7 @@ impl Vehicles {
         let t_load = std::time::Instant::now();
         let car = self.car_asset(world, dir)?;
         let ms_parse = t_load.elapsed().as_secs_f32() * 1000.0;
-        let CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, roof_place } = match self.take_prep(dir, cfg) {
+        let CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, roof_place } = match self.take_prep(dir, cfg) {
             Some(p) => p,
             None => Self::prep_car(&car, dir, cfg),
         };
@@ -2367,7 +2372,7 @@ impl Vehicles {
         // (F-74884, a bike's set-up: +4092 / +4096 = |max - min| of the translation limits, crBoneData +144 / +160, of the
         // first bone named wheel_0 / wheel_2 in the base fragment's skeleton, then the parts' - F-20921)
         let bike_wheel_width = ["wheel_0", "wheel_2"].map(|n| car.skeleton.as_ref().and_then(|s| s.bones.iter().find(|b| b.name == n)).map_or(params.wheel_width, |b| (b.trans_limits.1 - b.trans_limits.0).length()));
-        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, batches, params, params_mods, simtunes, vehmods: car.vehmods.clone(), fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, fx_anchors, fx_anchor_rear });
+        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, font_bones, batches, params, params_mods, simtunes, vehmods: car.vehmods.clone(), fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, fx_anchors, fx_anchor_rear });
         self.models.push(m.clone());
         if self.wheels.is_none() {
             self.wheels = load_wheels(gpu, world).map(Arc::new);
@@ -2398,6 +2403,7 @@ impl Vehicles {
         let hide_part = std::env::var("MCLA_HIDE_PART").ok();
         let lamp_dump = std::env::var("MCLA_LAMP_DUMP").is_ok();
         let mut glow_bones: Vec<(u8, Vec3, Vec3)> = Vec::new();
+        let mut font_bones: Vec<(u8, Mat4, f32, f32)> = Vec::new();
         // (the moving damage parts, DAMAGE_PARTS_RULE.md 1.4 / 2.3: the slot pass moves the parts of the slots
         // hood / hood_wide (2, 40), bumper_r (3), intercooler and bumper_f (5, 6); the trunk_0 bone turns with
         // whatever hangs on it - the base fragment's meshes bound to it or to its children, the parts placed there)
@@ -2532,6 +2538,10 @@ impl Vehicles {
                     }
                     if let Some(kind) = glow_bone_kind(&b.name.to_ascii_lowercase()) {
                         glow_bones.push((kind, w, -(part_xf * b.world).z_axis.truncate().normalize_or_zero()));
+                    }
+                    if let Some(k) = crate::readouts::bone_kind(&b.name).filter(|k| !font_bones.iter().any(|f| f.0 == *k)) {
+                        let (lo, hi) = b.trans_limits;
+                        font_bones.push((k, part_xf * b.world, hi.x - lo.x, hi.y - lo.y));
                     }
                 }
             }
@@ -2973,7 +2983,7 @@ impl Vehicles {
                 meshes.push(MeshPrep { sname: sname.to_string(), mode, dn, sn, plate, carbon, win_cand, kbits, geo, geo_alt });
             }
         }
-        CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, roof_place }
+        CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, roof_place }
     }
 
     /// Tyre + rim model for a rim directory, loaded once.

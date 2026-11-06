@@ -40,6 +40,7 @@ mod pu_draw;
 mod pu_fx;
 mod skidmarks;
 mod sst_trail;
+mod readouts;
 mod pu_bolt;
 mod redlight;
 mod althk;
@@ -11789,6 +11790,28 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: gpu.scene_ds(), depth_ops: None, stencil_ops: None }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+            // (the player's car's cockpit readouts in the in-car view - readouts.rs, F-43500)
+            if self.vehicles.interior_glass {
+                if let Some(c) = self.vehicles.cars.iter().find(|c| c.is_player && !c.model.font_bones.is_empty()) {
+                    let pose = c.render_pose(self.vehicles.render_alpha);
+                    let car = self.game.car_dirs.get(self.game.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+                    let odo = self.game.career.stat("vkDT", &car).unwrap_or(0.0) as f32;
+                    let dash = self.vehicles.player_cabin_light[0];
+                    let head = c.amb_lamps.s[0];
+                    let frame = readouts::Frame {
+                        world: glam::Mat4::from_rotation_translation(pose.rot, pose.pos),
+                        bones: &c.model.font_bones,
+                        tune: self.game.gauge_texts(),
+                        emissive: [dash[0] * head, dash[1] * head, dash[2] * head],
+                        speed: c.state.speed(),
+                        odo,
+                        trip_start: readouts::trip_start(c.uid),
+                        gear: if c.state.gear < 0 { 0 } else { c.state.gear + 1 },
+                        hours: self.time_of_day,
+                    };
+                    readouts::run(&gpu, &mut enc, Some(&frame));
+                }
+            }
             });
             pass.set_bind_group(0, &gpu.globals_bg, &[]);
             if pic.is_none() {
@@ -13595,6 +13618,11 @@ impl App {
         let gpu = pollster::block_on(Gpu::new(window.clone())).unwrap_or_else(|e| crate::hooks::gpu_init_failed(&e));
         log::info!("startup: gpu at {} ms", t0.elapsed().as_millis());
         self.egui = Some(App::make_egui(&window, &gpu.device, &gpu.queue, gpu.config.format));
+        // (the same restore F-11744 sets the trip's start, +4640, to the vehicle's distance stat - readouts.rs)
+        if let Some(c) = self.vehicles.cars.iter().find(|c| c.is_player) {
+            let car = self.game.car_dirs.get(self.game.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+            readouts::set_trip_start(c.uid, self.game.career.stat("vkDT", &car).unwrap_or(0.0) as f32);
+        }
         if self.opt.shot.is_none() {
             self.audio = audio::Audio::new(&self.opt.data_dir);
         } else if self.opt.audio_dump.is_some() {
@@ -14085,6 +14113,7 @@ impl App {
                 self.peds.load(&self.opt.data_dir);
                 self.drivers.load(&self.opt.data_dir);
             }
+            readouts::load(&mut gpu, &self.opt.data_dir);
             lap("effects, peds, drivers");
             self.props = props::Props::load(&mut gpu, &mut world, &self.opt.data_dir);
             lap("props");
