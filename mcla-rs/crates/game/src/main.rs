@@ -442,6 +442,11 @@ struct App {
     ticket_form: bool,
     /// the time since the payback's intro ended, until its event script's fade up is over (`Game::payback_hold`)
     pb_intro_hold: Option<f32>,
+    /// a won pink slip race's end (wager_hangout_core 0x5a07 ..): 1 the fade down, 2 the scene (its speech said or
+    /// not), 3 the fade up; 0 none
+    pink_end: (u8, bool),
+    /// the scenario the pink slip end scene's playspeech says (PrepareSpeechScenarioForNextCutscene)
+    pink_speech: Option<String>,
     /// the playing scene's car events (cinecar.rs): the scene's name and each moved car's event
     cine_events: (String, Vec<(String, cinecar::CarEvent)>),
     /// tips waiting for a quiet moment: speech scenario, title, text
@@ -1005,6 +1010,108 @@ impl App {
         }
     }
 
+    /// A won pink slip race's end scene, between the race script's panels and the race-over menu (wager_hangout_core
+    /// 0x5a07 .. 0x5f2c, docs/reference/cutscenes/pinkslip_end_scenes.md, recorded in the original 2026-11-06):
+    /// fn 0x3b84(1, 1, 1.0, 0) - a 1 s fade down, waited; under the black the cars put in their slots (0 the player,
+    /// 1 the hookman: the port's stand-in is a copy of his racer's car) and the scene started in the game binding,
+    /// which no call of the core changes after the race's start: grid slot 0 and its heading (recorded: the binding
+    /// (-638.91, 18.21, -636.81, -90.24) of hw_ordered_jp_04 through the scene, the race won 1.2 km away); the core's
+    /// fade up at the scene's start lifts the black, the scene's playspeech says the prepared scenario, its
+    /// fade_to_black at 11.0 s is held; after it fn 0x3f1b(1, 1, 1.0, 0), waited, then the race-over menu. The player's
+    /// car stays where the scene's mover left it (recorded (-639.78, 18.21, -635.27)).
+    /// Approx.: the original's car first stands at a fixed point (-137.4, 9.4, -290.7) under the black, 0.2 s, not
+    /// seen; WAIT(1000) and the streaming poll before the scene are not modelled; the hookman's own racer is the one
+    /// the original moves (moved away at the scene's end), the port poses a copy and the copy leaves with the scene.
+    fn pink_end_tick(&mut self, gpu: &mut Gpu, world: &mut World) {
+        match self.pink_end.0 {
+            0 => {
+                let g = &self.game;
+                let due = g.pink_scene.is_some() && g.mode == Mode::Results && !g.reward_panel && g.mission_results.is_empty() && g.replay.is_none() && g.race_end_t.map_or(false, |t| t >= game::Game::RACE_END_PANEL);
+                if !due {
+                    return;
+                }
+                if self.cine.playing.is_some() || std::env::var("MCLA_NO_CINE").is_ok() || !self.game.pink_scene.as_ref().is_some_and(|(sc, _)| self.cine.has(sc)) {
+                    self.game.pink_scene = None;
+                    return;
+                }
+                self.game.pink_scene_on = true;
+                self.scene_fade.start(1.0, 0.01, f32::MAX);
+                self.pink_end = (1, false);
+            }
+            1 => {
+                if self.scene_fade.is_on() && !self.scene_fade.full() {
+                    return;
+                }
+                let plan = self.game.pink_scene.take();
+                let grid = self.game.current_race.and_then(|i| self.game.race_defs.get(i)).and_then(|d| d.grid.first().copied());
+                let hook = self.game.race.as_ref().and_then(|r| r.participants.get(1).copied()).filter(|&i| i < self.vehicles.cars.len());
+                let mut started = false;
+                if let (Some((scene, speech)), Some((pos, yaw))) = (plan, grid) {
+                    let origin = glam::Mat4::from_rotation_translation(glam::Quat::from_rotation_y(yaw), pos);
+                    if self.cine.start(gpu, &scene, origin) {
+                        started = true;
+                        self.cine_free = true;
+                        self.cine_caption = None;
+                        // (slot 1: the hookman's car - Cars_AssignIdToSlot(hookman's racer, 1), 0x5a22)
+                        if let (Some(h), Some((mp, mr))) = (hook, self.cine.mover("hookman")) {
+                            let src = &self.vehicles.cars[h];
+                            let (model, color, plate, config, set) = (src.model.clone(), src.color, src.plate_text.clone(), src.vinyl_name.clone(), src.driver_set.clone());
+                            let idx = self.vehicles.spawn(gpu, model, mp, 0.0, color, false);
+                            let c = &mut self.vehicles.cars[idx];
+                            c.driver = "cine:hookman".to_string();
+                            c.driver_set = set;
+                            c.plate_text = plate;
+                            c.vinyl_name = config;
+                            c.ai = None;
+                            self.vehicles.pose_car(idx, mp, mr);
+                            let game = &self.game;
+                            while !self.vehicles.cars[idx].dressed && !self.vehicles.cars[idx].vinyl_name.is_empty() {
+                                if self.vehicles.dress_setups(gpu, world, &mut |car, cfg| game.mc4_dress_of(car, cfg)).is_none() {
+                                    break;
+                                }
+                            }
+                        }
+                        log::info!("pink slip end: {scene} at grid slot 0 {pos:?} yaw {yaw:.4}, speech {speech}");
+                        self.pink_end = (2, false);
+                        self.pink_speech = Some(speech);
+                    }
+                }
+                if !started {
+                    self.scene_fade.release(1.0);
+                    self.pink_end = (3, false);
+                }
+            }
+            2 => {
+                match self.cine.playing.as_ref().map(|sc| sc.t) {
+                    Some(t) => {
+                        // (the scene's playspeech: PrepareSpeechScenarioForNextCutscene's scenario)
+                        let at = self.cine.playing.as_ref().and_then(|sc| mc4::PINK_REWARD_SCENES.iter().position(|n| sc.name.eq_ignore_ascii_case(n))).map_or(f32::MAX, |k| mc4::PINK_REWARD_SPEECH[k]);
+                        if !self.pink_end.1 && t >= at {
+                            self.pink_end.1 = true;
+                            if let Some(sp) = self.pink_speech.take() {
+                                self.speech.say(&sp);
+                            }
+                        }
+                    }
+                    None => {
+                        // (0x3f1b: the fade up over the scene's held fade_to_black, waited)
+                        self.scene_fade.release(1.0);
+                        self.pink_end = (3, false);
+                        self.pink_speech = None;
+                    }
+                }
+            }
+            _ => {
+                if self.scene_fade.is_on() {
+                    return;
+                }
+                // (Racer_Activate; won: raceEnd - the race-over menu)
+                self.game.pink_scene_on = false;
+                self.pink_end = (0, false);
+            }
+        }
+    }
+
     fn prerace_acts_tick(&mut self, dt: f32) {
         let Some(mut a) = self.prerace_acts.take() else { return };
         if self.game.race.is_none() {
@@ -1202,6 +1309,8 @@ impl App {
             ticket_wait: None,
             ticket_form: false,
             pb_intro_hold: None,
+            pink_end: (0, false),
+            pink_speech: None,
             cine_events: (String::new(), Vec::new()),
             tips: Default::default(),
             reminder_wait: None,
@@ -5489,6 +5598,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         } else {
             self.vehicles.frozen = false;
         }
+        // (a won pink slip race's end scene: after the panels, while the results freeze the world too)
+        self.pink_end_tick(&mut gpu, &mut world);
         if self.game.race.is_none() && self.tick_no % 60 == 0 {
             // cruisers still waiting for a race that is over go home
             self.vehicles.cars.retain(|c| !(c.cop && c.pinned && c.parked.is_some()));
@@ -7489,9 +7600,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.game.career_over = true;
                         }
                     }
-                    // (no scene after a race: the original's reward scenes - cut_reward_gen_01,
-                    // _marcel, _nikolai - are played by three story scripts for their own
-                    // missions only. The race ends in slow motion: `race_slow_tick`)
+                    // (the reward scenes after a race: a hangout's won pink slip race plays cut_reward_gen_0N after its
+                    // panels - `pink_end_tick`; _marcel and _nikolai are their story scripts' own. The race ends in slow
+                    // motion: `race_slow_tick`)
                     if std::env::var("MCLA_NO_RACE_SLOW").is_err() {
                         self.game.race_slow_wait = Some(game::Game::RACE_END_PANEL);
                         self.game.race_end_t = Some(0.0);
@@ -12434,6 +12545,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.game.mode = Mode::FreeRoam;
                 self.game.menu_sel = 0;
                 self.game.pink_over = None;
+                self.game.pink_scene = None;
                 self.game.wager_over = None;
             }
             // Warper_Warp('DEFAULT_WITH_CUT') (a series' / tournament's next race, its restart, a tournament's
@@ -12498,6 +12610,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.prerace_replay = action == MenuAction::RestartRace;
                 // (the last pink slip race's race-over tab is not this race's)
                 self.game.pink_over = None;
+                self.game.pink_scene = None;
                 self.game.wager_over = None;
                 // (a race started from another's results - NEXT RACE IN SERIES, CONTINUE, RESTART - never
                 // passes through `race == None`, so the last race's start plan and warp go here)

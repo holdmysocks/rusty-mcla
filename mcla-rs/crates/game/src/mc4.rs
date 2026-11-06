@@ -10967,6 +10967,11 @@ pub const PINK_HANGOUTS: [(&str, u32, &str, &str); 5] = [
     ("sc_wager_hangout1", 541, "HANGOUT_PINKSLIP_SC", "SC_pinkslip_vpd_pon_gto_66"),
 ];
 
+/// wager_hangout_core's reward scenes (the set-ups' block +1412, +1408 = 4)
+pub const PINK_REWARD_SCENES: [&str; 4] = ["cut_reward_gen_01", "cut_reward_gen_02", "cut_reward_gen_03", "cut_reward_gen_04"];
+/// their playspeech event's time (s): the generated scripts' event records
+pub const PINK_REWARD_SPEECH: [f32; 4] = [4.0, 2.46667, 3.66667, 3.66667];
+
 /// The career's pink slip lot: five profiles (manager + 50128, 8272 bytes each).
 pub const PINK_SLOTS: usize = 5;
 
@@ -11250,6 +11255,29 @@ impl Game {
 
     pub fn mc4_pink_on(&self) -> bool {
         self.opt_x.arcade.pink.run.is_some()
+    }
+
+    /// A hangout's pink slip race's end scene, picked before `mc4_pink_end` takes the run (wager_hangout_core 0x5a07,
+    /// docs/reference/cutscenes/pinkslip_end_scenes.md): won - +1412[RAND_INT_RANGE(0, +1408 - 1)], the set-ups' four
+    /// `cut_reward_gen_01` .. `_04` (all five hangouts), and the speech +1432[0] REWARD_PINKSLIP_<D> for the hangout's own
+    /// car (GetPinkSlipProfileType 0) or +1432[1] REWARD_PINKSLIP_PLAYER_CAR_<D> for a held one. Lost: None - the loss
+    /// scenes (cut_loss_*, cam_gps_warp_out) are not ported.
+    pub fn mc4_pink_scene(&mut self, won: bool) -> Option<(String, String)> {
+        let run = self.opt_x.arcade.pink.run.as_ref()?;
+        if !won {
+            return None;
+        }
+        let district = match run.key.get(..2)?.to_ascii_lowercase().as_str() {
+            "hw" => "HOLLYWOOD",
+            "be" => "BEACHES",
+            "hl" => "HILLS",
+            "dt" => "DOWNTOWN",
+            "sc" => "SC",
+            _ => return None,
+        };
+        let speech = if run.profile.kind == 0 { format!("REWARD_PINKSLIP_{district}") } else { format!("REWARD_PINKSLIP_PLAYER_CAR_{district}") };
+        let n = self.rand_int_range(0, PINK_REWARD_SCENES.len() - 1);
+        Some((PINK_REWARD_SCENES[n].to_string(), speech))
     }
 
     /// The race is over (0x5851..0x6037). Won: the player's vehicle back
@@ -12240,7 +12268,9 @@ impl Game {
     pub fn mc4_time_scale(&self) -> f32 {
         // (the race's end: the main loop never lets the scale under 0.1 - F-75502)
         // (and a second after its panels came up, form 60 pauses the game: UILogic_PauseGame)
-        if self.race_end_t.map_or(false, |t| t >= Self::RACE_END_FREEZE) && self.replay.is_none() {
+        // (not while a won pink slip race's end scene plays: the hookman drives off in it - recorded 2026-11-06; what lifts
+        // the pause in the original is not read, approx.)
+        if self.race_end_t.map_or(false, |t| t >= Self::RACE_END_FREEZE) && self.replay.is_none() && !self.pink_scene_on {
             return 0.0;
         }
         // (a hangout entry's ease to pause: held at the main loop's floor of 0.1 - F-75502 A-91484)
