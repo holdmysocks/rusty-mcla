@@ -806,7 +806,9 @@ fn add_pose(base: &mut [(Quat, Vec3)], ov: &[(Quat, Vec3)], clip: &Clip) {
 /// and its children (filter +96) at a phase the driver's smoother sets each frame (F-32205: F-36491 towards F-66750's
 /// 0.5 - ctx+120 x 0.5, then F-47264: time = clamp(p x duration, 0, duration)); the smoother runs only while it is armed.
 #[allow(clippy::too_many_arguments)]
-fn ride_pose<'a>(r: &mut Ride, b: &'a BikeClips, bones: &[crate::skin::Bone], neck: &[bool], i: &RideIn, time: f32, dt: f32, out: &mut Vec<(Quat, Vec3)>, tmp: &mut Vec<(Quat, Vec3)>) {
+/// The rider machine's frame without the pose (the graph's transitions in the builder's order, the enters' timers and the
+/// crossfade they start, the cruise update's timer B): what `ride_pose` poses from. `time`: the clock the start's idle runs on.
+fn ride_state(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32) {
     const STOPPED: f32 = 0.15 * 0.44704;
     let ck = i.ck;
     let ck_before = r.ck;
@@ -815,99 +817,109 @@ fn ride_pose<'a>(r: &mut Ride, b: &'a BikeClips, bones: &[crate::skin::Bone], ne
     r.timer_a += dt;
     r.timer_b += dt;
     r.t += dt;
-    let pick = |c: &'a Option<Clip>, d: &'a Option<Clip>| if ck { c.as_ref().or(d.as_ref()) } else { d.as_ref() };
     // what is left of the fidget's clip / the shift's overlay (ReadTimeRemaining / ReadTimeRemainingOverlay: -1 with none)
     let left = |c: Option<&Clip>, t: f32| c.map_or(-1.0, |c| (c.anim.duration - t).max(0.0));
     let look = |r: &Ride| b.look[(r.fidgets % 2) as usize].as_ref();
     let shift_over = |r: &Ride| if r.shift_ck { b.shft_low_ck.as_ref().or(b.shft_low.as_ref()) } else { b.shft_low.as_ref() };
     let rolling = i.speed > STOPPED + 0.5 && !i.burnout;
     let burn_side = |i: &RideIn| if i.burnout && i.goal_steer < -0.5 { Some(St::BurnL) } else if i.burnout && i.goal_steer > 0.5 { Some(St::BurnR) } else { None };
-    let next = match r.state {
-        St::Start => Some(St::Cruise),
-        St::Stopped => {
-            if let Some(s) = burn_side(i) {
-                Some(s)
-            } else if i.burnout {
-                Some(St::BurnC)
-            } else if i.reversing {
-                Some(St::Reverse)
-            } else if rolling {
-                Some(St::Cruise)
-            } else if r.timer_a > 15.0 && i.x.abs() < 0.1 && !i.cutscene && !i.opponent && !ck {
-                Some(St::Fidget)
-            } else if edge {
-                Some(St::Stopped)
-            } else {
-                None
+    let next_of = |r: &Ride| -> Option<St> {
+        match r.state {
+            St::Start => Some(St::Cruise),
+            St::Stopped => {
+                if let Some(s) = burn_side(i) {
+                    Some(s)
+                } else if i.burnout {
+                    Some(St::BurnC)
+                } else if i.reversing {
+                    Some(St::Reverse)
+                } else if rolling {
+                    Some(St::Cruise)
+                } else if r.timer_a > 15.0 && i.x.abs() < 0.1 && !i.cutscene && !i.opponent && !ck {
+                    Some(St::Fidget)
+                } else if edge {
+                    Some(St::Stopped)
+                } else {
+                    None
+                }
             }
-        }
-        St::Cruise => {
-            if i.nitro && r.timer_a > 0.25 && !i.opponent {
-                Some(St::Nos)
-            } else if i.wheelie {
-                Some(St::Wheelie)
-            } else if i.endo {
-                Some(St::Endo)
-            } else if i.tuck && r.timer_a > 1.5 {
-                Some(St::Tuck)
-            } else if let Some(s) = burn_side(i) {
-                Some(s)
-            } else if i.burnout {
-                Some(St::BurnC)
-            } else if i.shift != 0 && !ck {
-                Some(St::Shift)
-            } else if i.speed <= STOPPED {
-                Some(St::Stopped)
-            } else if edge {
-                Some(St::Cruise)
-            } else {
-                None
+            St::Cruise => {
+                if i.nitro && r.timer_a > 0.25 && !i.opponent {
+                    Some(St::Nos)
+                } else if i.wheelie {
+                    Some(St::Wheelie)
+                } else if i.endo {
+                    Some(St::Endo)
+                } else if i.tuck && r.timer_a > 1.5 {
+                    Some(St::Tuck)
+                } else if let Some(s) = burn_side(i) {
+                    Some(s)
+                } else if i.burnout {
+                    Some(St::BurnC)
+                } else if i.shift != 0 && !ck {
+                    Some(St::Shift)
+                } else if i.speed <= STOPPED {
+                    Some(St::Stopped)
+                } else if edge {
+                    Some(St::Cruise)
+                } else {
+                    None
+                }
             }
-        }
-        St::Tuck => if !i.tuck { Some(St::Cruise) } else if edge { Some(St::Tuck) } else { None },
-        St::Wheelie => if i.all_down { Some(St::Cruise) } else if edge { Some(St::Wheelie) } else { None },
-        St::Endo => if !i.endo { Some(St::Cruise) } else if edge { Some(St::Endo) } else { None },
-        St::BurnC => {
-            if i.burnout && i.goal_steer < -0.5 && r.timer_a > 0.75 {
-                Some(St::BurnL)
-            } else if i.burnout && i.goal_steer > 0.5 && r.timer_a > 0.75 {
-                Some(St::BurnR)
-            } else if !i.burnout && r.timer_b > 0.5 {
-                Some(St::Cruise)
-            } else if edge {
-                Some(St::BurnC)
-            } else {
-                None
+            St::Tuck => if !i.tuck { Some(St::Cruise) } else if edge { Some(St::Tuck) } else { None },
+            St::Wheelie => if i.all_down { Some(St::Cruise) } else if edge { Some(St::Wheelie) } else { None },
+            St::Endo => if !i.endo { Some(St::Cruise) } else if edge { Some(St::Endo) } else { None },
+            St::BurnC => {
+                if i.burnout && i.goal_steer < -0.5 && r.timer_a > 0.75 {
+                    Some(St::BurnL)
+                } else if i.burnout && i.goal_steer > 0.5 && r.timer_a > 0.75 {
+                    Some(St::BurnR)
+                } else if !i.burnout && r.timer_b > 0.5 {
+                    Some(St::Cruise)
+                } else if edge {
+                    Some(St::BurnC)
+                } else {
+                    None
+                }
             }
-        }
-        St::BurnL => if i.burnout && i.goal_steer > -0.5 { Some(St::BurnC) } else if !i.burnout { Some(St::Cruise) } else if edge { Some(St::BurnL) } else { None },
-        St::BurnR => if i.burnout && i.goal_steer < 0.5 { Some(St::BurnC) } else if !i.burnout { Some(St::Cruise) } else if edge { Some(St::BurnR) } else { None },
-        St::Nos => if !i.nitro { Some(St::Cruise) } else if edge { Some(St::Nos) } else { None },
-        St::Shift => if left(shift_over(r), r.t) < 0.25 || edge { Some(St::Cruise) } else { None },
-        St::Reverse => {
-            if i.throttle > 0.0 && i.speed > 0.0 {
-                Some(St::Cruise)
-            } else if !i.reversing && i.speed.abs() < 0.02 && i.x.abs() < 0.1 {
-                Some(St::Stopped)
-            } else if edge {
-                Some(St::Reverse)
-            } else {
-                None
+            St::BurnL => if i.burnout && i.goal_steer > -0.5 { Some(St::BurnC) } else if !i.burnout { Some(St::Cruise) } else if edge { Some(St::BurnL) } else { None },
+            St::BurnR => if i.burnout && i.goal_steer < 0.5 { Some(St::BurnC) } else if !i.burnout { Some(St::Cruise) } else if edge { Some(St::BurnR) } else { None },
+            St::Nos => if !i.nitro { Some(St::Cruise) } else if edge { Some(St::Nos) } else { None },
+            St::Shift => if left(shift_over(r), r.t) < 0.25 || edge { Some(St::Cruise) } else { None },
+            St::Reverse => {
+                if i.throttle > 0.0 && i.speed > 0.0 {
+                    Some(St::Cruise)
+                } else if !i.reversing && i.speed.abs() < 0.02 && i.x.abs() < 0.1 {
+                    Some(St::Stopped)
+                } else if edge {
+                    Some(St::Reverse)
+                } else {
+                    None
+                }
             }
-        }
-        St::Fidget => {
-            if i.reversing {
-                Some(St::Reverse)
-            } else if left(look(r), r.t) < 0.033 || i.x.abs() > 0.1 || i.cutscene {
-                Some(St::Stopped)
-            } else if rolling || edge {
-                Some(St::Cruise)
-            } else {
-                None
+            St::Fidget => {
+                if i.reversing {
+                    Some(St::Reverse)
+                } else if left(look(r), r.t) < 0.033 || i.x.abs() > 0.1 || i.cutscene {
+                    Some(St::Stopped)
+                } else if rolling || edge {
+                    Some(St::Cruise)
+                } else {
+                    None
+                }
             }
         }
     };
-    if let Some(n) = next {
+    // (the cruise update - the burnouts' too, centre, left and right: timer B held at 0 while IsBurnout, F-61324's tail)
+    let update = |r: &mut Ride| {
+        if matches!(r.state, St::Cruise | St::BurnC | St::BurnL | St::BurnR) && i.burnout {
+            r.timer_b = 0.0;
+        }
+    };
+    // (the machine's step F-58452: the state's update, then up to three transitions - exit, enter, the new state's update)
+    update(r);
+    for _ in 0..3 {
+        let Some(n) = next_of(r) else { break };
         // (the fidget's exit: timer A = 0)
         if r.state == St::Fidget {
             r.timer_a = 0.0;
@@ -937,8 +949,19 @@ fn ride_pose<'a>(r: &mut Ride, b: &'a BikeClips, bones: &[crate::skin::Bone], ne
             _ => {}
         }
         r.state = n;
-        r.pan = matches!(n, St::Cruise | St::Stopped | St::BurnC) && !ck && !i.opponent && b.pan.is_some();
+        // (the shift's enter F-54589 takes the pan out only in the cockpit, context +8 bit 21; outside it the pan stays
+        // as the cruise left it - recorded 2026-11-05)
+        r.pan = if n == St::Shift { r.pan && !ck } else { matches!(n, St::Cruise | St::Stopped | St::BurnC) && !ck && !i.opponent && b.pan.is_some() };
+        update(r);
     }
+}
+
+fn ride_pose<'a>(r: &mut Ride, b: &'a BikeClips, bones: &[crate::skin::Bone], neck: &[bool], i: &RideIn, time: f32, dt: f32, out: &mut Vec<(Quat, Vec3)>, tmp: &mut Vec<(Quat, Vec3)>) {
+    ride_state(r, b, i, time, dt);
+    let ck = i.ck;
+    let pick = |c: &'a Option<Clip>, d: &'a Option<Clip>| if ck { c.as_ref().or(d.as_ref()) } else { d.as_ref() };
+    let look = |r: &Ride| b.look[(r.fidgets % 2) as usize].as_ref();
+    let shift_over = |r: &Ride| if r.shift_ck { b.shft_low_ck.as_ref().or(b.shft_low.as_ref()) } else { b.shft_low.as_ref() };
     // the pan's smoother (F-36491 on the driver's +48: centre 0.5, rate 5, hold 0.5): back at the centre with the target there
     // the hold restarts; while it runs nothing moves
     let pan_t = if r.pan {
@@ -963,9 +986,6 @@ fn ride_pose<'a>(r: &mut Ride, b: &'a BikeClips, bones: &[crate::skin::Bone], ne
     } else {
         None
     };
-    if r.state == St::Cruise && i.burnout {
-        r.timer_b = 0.0;
-    }
     r.fade = (r.fade + r.rate * dt).min(1.0);
     if let Some((f, k)) = r.fade2.as_mut() {
         *f = (*f + *k * dt).min(1.0);
@@ -2197,8 +2217,9 @@ mod ride_tests {
         let dt = 1.0 / 30.0;
         let mut step = |r: &mut Ride, i: RideIn| ride_pose(r, &b, &bones, &[false], &i, 0.0, dt, &mut out, &mut tmp);
         let go = |v: f32| RideIn { speed: v, ..Default::default() };
+        // (start here -> cruise -> stopped idle in the one frame: the step makes up to three transitions)
         step(&mut r, go(0.0));
-        assert_eq!((r.state, r.rate), (St::Cruise, 1.0 / 0.45));
+        assert_eq!((r.state, r.rate), (St::Stopped, 1.0 / 0.35));
         step(&mut r, go(0.0));
         assert_eq!((r.state, r.rate), (St::Stopped, 1.0 / 0.35));
         step(&mut r, go(0.5));
@@ -2245,10 +2266,11 @@ mod ride_tests {
             step(&mut r, go(0.0));
             n += 1;
         }
-        // (after 15 s still: timer A over 15 - 450 frames of a float 1/30 s)
-        assert_eq!((r.state, n), (St::Fidget, 450));
+        // (after 15 s still: timer A over 15 - 450 frames of a float 1/30 s; the empty clip has no time left, so the fidget
+        // goes back to stopped idle in the same frame, its exit and the enter zeroing timer A)
+        assert_eq!((r.state, n, r.timer_a), (St::Stopped, 450, 0.0));
         step(&mut r, go(0.0));
-        assert_eq!((r.state, r.timer_a), (St::Stopped, 0.0));
+        assert_eq!((r.state, r.timer_a), (St::Stopped, dt));
         step(&mut r, RideIn { reversing: true, ..go(-1.0) });
         assert_eq!((r.state, r.rate, r.fade2.map(|f| f.1)), (St::Reverse, 1.0 / 0.35, Some(4.0)));
         step(&mut r, RideIn { throttle: 1.0, ..go(0.5) });
@@ -2491,5 +2513,188 @@ mod recorded_tests {
             }
             assert!(o.bad_state == 0 && o.bad_calls == 0 && o.bad_words.is_empty(), "{run}");
         }
+    }
+}
+
+/// The bike rider against a recording of the original (the player's ZX-14 on a pad script: idle and fidgets, riding, tuck,
+/// shifts, reverse, burnouts; docs/PEOPLE_TRAFFIC.md "Bike rider pose machine"). Each recorded frame's gatherer flags and the
+/// context words the machine reads (speed +96, smoothed steering +28, throttle +92, goal steering +20, shift +124, the
+/// opponent byte +49) run through `ride_state`; the state, timers A / B (+148 / +152), the crossfade each enter starts, the clip
+/// the state plays and the pan overlay's arming are compared with the original's calls to its anim player. The fixture
+/// (`work/driverlight/cmp/bike1.fix`, `fix.py`) is not in the repository: skipped without it.
+#[cfg(test)]
+mod ride_recorded_tests {
+    use super::*;
+
+    fn name(s: St) -> &'static str {
+        match s {
+            St::Start => "start here",
+            St::Stopped => "stopped idle",
+            St::Cruise => "cruise",
+            St::Tuck => "tuck",
+            St::Wheelie => "wheelie",
+            St::Endo => "endo",
+            St::BurnC => "burnout center",
+            St::BurnL => "burnout left",
+            St::BurnR => "burnout right",
+            St::Nos => "nos boost",
+            St::Shift => "shift",
+            St::Reverse => "reverse",
+            St::Fidget => "fidget",
+        }
+    }
+
+    /// The clip (or the pair's first clip) a state's enter asks for, outside the cockpit.
+    fn clip_of(r: &Ride) -> Option<&'static str> {
+        Some(match r.state {
+            St::Stopped | St::BurnC => "drv_idle_stp_sweep",
+            St::Cruise | St::Shift => "drv_low_lean_sweep",
+            St::Tuck => "drv_low_leanfwd_sweep",
+            St::Wheelie => "drv_wheelie",
+            St::Endo => "drv_endo",
+            St::BurnL => "drv_burnout_l",
+            St::BurnR => "drv_burnout_r",
+            St::Nos => "drv_nos_lean_sweep",
+            St::Reverse => "drv_rev_sweep",
+            St::Fidget => ["drv_gest_look_lft", "drv_gest_look_rgt"][(r.fidgets % 2) as usize],
+            St::Start => return None,
+        })
+    }
+
+    #[test]
+    fn the_recorded_rider_matches_the_original() {
+        let Ok(res) = load_resource_file(&pack_path(Path::new("D:/MCLA/extracted/cache"), true, false, "kaw_ninja_zx14_06")) else {
+            eprintln!("no disc data, skipped");
+            return;
+        };
+        let rd = Rd::new(&res);
+        let entries = pack_entries(&res);
+        let clip = |suffixes: &[&str]| -> Option<Clip> {
+            for s in suffixes {
+                let mut hit = entries.iter().filter(|(_, n)| n.to_ascii_lowercase().ends_with(s)).collect::<Vec<_>>();
+                hit.sort_by_key(|(_, n)| !n.to_ascii_lowercase().starts_with("kaw_ninja_zx14_06"));
+                if let Some((o, _)) = hit.first() {
+                    return animation_named(&rd, *o).map(|a| Clip::bind(&Arc::new(a), &[], false, false));
+                }
+            }
+            None
+        };
+        let b = BikeClips::load(&clip).unwrap();
+        let mut runs = 0;
+        for run in ["bike1", "bike2", "bike3"] {
+            let Ok(fix) = std::fs::read_to_string(format!("D:/MCLA/work/driverlight/cmp/{run}.fix")) else {
+                eprintln!("no {run}.fix, skipped");
+                continue;
+            };
+            runs += 1;
+            ride_run(run, &fix, &b);
+        }
+        eprintln!("{runs} rides compared");
+    }
+
+    fn ride_run(run: &str, fix: &str, b: &BikeClips) {
+        let hex = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let lines: Vec<&str> = fix.lines().collect();
+        let mut r = Ride::default();
+        // (the fidget counter before the recording, from the first fidget's clip: look left after an odd count - the
+        // picker pre-increments and takes counter % 2 of (look_lft, look_rgt))
+        r.fidgets = if lines.iter().find(|l| l.contains("_drv_gest_look_")).is_some_and(|l| l.to_ascii_lowercase().contains("look_lft")) { 1 } else { 0 };
+        // (and its pan overlay was armed: the stopped idle's enter outside the cockpit)
+        r.pan = true;
+        let riding = [St::Stopped, St::Cruise, St::Tuck, St::Wheelie, St::Endo, St::BurnC, St::BurnL, St::BurnR, St::Nos, St::Shift, St::Reverse, St::Fidget];
+        let (mut frames, mut bad_state, mut bad_timer, mut enters, mut bad_enter, mut bad_pan) = (0, 0, 0, 0, 0, 0);
+        let mut notes = Vec::new();
+        let mut rec_pan = true;
+        let (mut i, mut first, mut time) = (0, true, 0.0);
+        while i + 3 < lines.len() {
+            let fw: Vec<u32> = lines[i].split_whitespace().skip(1).map(hex).collect();
+            let a: Vec<u32> = lines[i + 1].split_whitespace().skip(1).map(hex).collect();
+            let w: Vec<u32> = lines[i + 2].split_whitespace().skip(1).map(hex).collect();
+            let state = lines[i + 3][2..].to_string();
+            i += 4;
+            // (an impact or a damage-out: the eject clips are rider_eject.rs's; the compare ends there)
+            if !riding.iter().any(|s| name(*s) == state) {
+                break;
+            }
+            let mut calls: Vec<String> = Vec::new();
+            while i < lines.len() && lines[i].starts_with("C ") {
+                calls.push(lines[i][2..].to_ascii_lowercase());
+                i += 1;
+            }
+            let f = |v: &[u32], o: usize| f32::from_bits(v[o / 4]);
+            let dt = f32::from_bits(fw[0]);
+            let fl = fw[5];
+            if first {
+                r.state = riding.into_iter().find(|s| name(*s) == state).unwrap();
+                r.ck = fl & 0x20_0000 != 0;
+                (r.timer_a, r.timer_b) = (f(&a, 148), f(&a, 152));
+                first = false;
+            }
+            let inp = RideIn {
+                ck: fl & 0x20_0000 != 0,
+                speed: f(&w, 96),
+                x: f(&w, 28),
+                throttle: f(&w, 92),
+                goal_steer: f(&w, 20),
+                tuck: fl & 0x80_0000 != 0,
+                wheelie: fl & 0x20 != 0,
+                endo: fl & 0x40 != 0,
+                burnout: fl & 0x100 != 0,
+                nitro: fl & 0x10 != 0,
+                reversing: fl & 0x80 != 0,
+                all_down: fl & 0x4000_0000 != 0,
+                shift: w[31] as i32 as i8,
+                cutscene: false,
+                opponent: (w[12] >> 16) & 0xff != 0,
+                look: f(&w, 120),
+            };
+            let was = r.state;
+            time += dt;
+            ride_state(&mut r, b, &inp, time, dt);
+            frames += 1;
+            for c in &calls {
+                if let Some(n) = c.strip_prefix("ovly ") {
+                    rec_pan = n != "-";
+                }
+            }
+            if name(r.state) != state {
+                bad_state += 1;
+                if notes.len() < 30 {
+                    notes.push(format!("frame {frames}: state {} want {state}", name(r.state)));
+                }
+            }
+            if r.timer_a.to_bits() != w[148 / 4] || r.timer_b.to_bits() != w[152 / 4] {
+                bad_timer += 1;
+                if notes.len() < 30 {
+                    notes.push(format!("frame {frames}: timers {} {} want {} {}", r.timer_a, r.timer_b, f(&w, 148), f(&w, 152)));
+                }
+            }
+            if r.pan != rec_pan {
+                bad_pan += 1;
+                if notes.len() < 30 {
+                    notes.push(format!("frame {frames}: pan {} want {rec_pan} ({})", r.pan, name(r.state)));
+                }
+            }
+            // the last clip the frame's enters asked for: the state's clip and its crossfade
+            // (the shift's own requests - F-42342's rebuilt pair and the overlay pair - are not among the recorded calls)
+            if let Some(c) = calls.iter().rev().find(|c| c.starts_with("play ") || c.starts_with("pair ")).filter(|_| r.state != St::Shift) {
+                enters += 1;
+                let v: Vec<&str> = c.split_whitespace().collect();
+                let (clip, blend) = if v[0] == "play" { (v[1], v[2]) } else { (v[1], v[3]) };
+                let blend = f32::from_bits(hex(blend));
+                let ok = clip_of(&r).is_some_and(|k| clip.ends_with(k)) && r.state != was && (1.0 / blend).to_bits() == r.rate.to_bits();
+                if !ok {
+                    bad_enter += 1;
+                    if notes.len() < 30 {
+                        notes.push(format!("frame {frames}: enter {} ({:?}, rate {}) want {c}", name(r.state), clip_of(&r), r.rate));
+                    }
+                }
+            }
+        }
+        eprintln!("{run}: {frames} frames, {enters} enters; state differs on {bad_state}, timers on {bad_timer}, enters on {bad_enter}, pan on {bad_pan}");
+        for n in &notes {
+            eprintln!("  {n}");
+        }
+        assert!(bad_state == 0 && bad_timer == 0 && bad_enter == 0 && bad_pan == 0, "{run}");
     }
 }
