@@ -1117,12 +1117,13 @@ pub fn run(v: &mut crate::vehicles::Vehicles, i: usize, brain: &mut Brain, to_go
         grid: to_go.is_some(),
     };
     // the obstacles near the line ahead (F-86521)
-    // (cars, then the fixed props the game gathered around the racers; approx.: no pedestrians - the
-    // brain ignores them anyway - and the grid without the level's bounds)
+    // (cars, then the fixed props the game gathered around the racers, on the city's grid; approx.: no
+    // pedestrians - the brain ignores them anyway)
     let objects: Vec<crate::brainturn::ObjectInfo> = v.cars.iter().enumerate().map(|(j, o)| crate::brainturn::ObjectInfo::from_car(j, o)).chain(v.prop_objects.iter().copied()).collect();
     let line: Vec<Vec3> = brain.aiv.points().collect();
-    let sel = crate::brainturn::SelCar { pos: car.pos, forward: car.forward, vel: car.vel, speed: car.speed, half_length: car.size.z * 0.5 };
-    let obstacles = crate::brainturn::select_obstacles_car(i, &objects, &line, &sel, brain.ignore, &crate::brainturn::ObjectGrid::unbounded(), &brain.aiv.tun);
+    // (half_length: F-98453(car + 8) +24, the composite bound box's max z)
+    let sel = crate::brainturn::SelCar { pos: car.pos, forward: car.forward, vel: car.vel, speed: car.speed, half_length: c.params().composite_box().1.z };
+    let obstacles = crate::brainturn::select_obstacles_car(i, &objects, &line, &sel, brain.ignore, &crate::brainturn::ObjectGrid::city(), &brain.aiv.tun);
     // (the chassis lists its wheels FL, RL, FR, RR at +412 .. +424; the port's order is FL, FR, RL, RR)
     let w = &v.cars[i].state.wheels;
     let turn = crate::brainturn::TurnCar {

@@ -40,6 +40,10 @@ pub struct Prop {
     /// named points of the type, in its frame (`light0` on lamps; `red`, `red1`, `yellow`,
     /// `yellow1`, `green`, `green1`, `walk`, `walk1` on signal heads; `break_ll` .. on panes)
     pub locators: Vec<(String, Vec3)>,
+    /// mcPropType +336 / +340 / +344: its obstacle extents for the racers' scan (full x size, full z size, the half
+    /// diagonal), as the resource stores them (written by the original's prop tool; F-34384 computes the same for the
+    /// types made at run time - 225 of the 230 city types equal it bit for bit, the other 5 in the last bit of the third)
+    pub obstacle: [f32; 3],
 }
 
 /// One part of a prop's composite collision bound, as a box in the prop's frame.
@@ -195,7 +199,8 @@ pub fn parse_props(res: &Resource) -> Vec<Prop> {
         let (center, radius) = if center.is_finite() && radius.is_finite() && radius > 0.0 { (center, radius) } else { (Vec3::ZERO, 0.0) };
         let (mass, parts) = physics(&rd, frag);
         let locators = locators(&rd, dr);
-        out.push(Prop { off: frag, name, hash: *h, meshes, lod1, shaders, min, max, center, radius, mass, parts, locators });
+        let obstacle = [rd.f32(frag + 336), rd.f32(frag + 340), rd.f32(frag + 344)];
+        out.push(Prop { off: frag, name, hash: *h, meshes, lod1, shaders, min, max, center, radius, mass, parts, locators, obstacle });
     }
     out
 }

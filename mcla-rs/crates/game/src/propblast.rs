@@ -277,3 +277,42 @@ mod tests {
         assert!(n >= 600);
     }
 }
+
+#[cfg(test)]
+mod stored_tests {
+    /// The city's prop types (`resources/prop/0x0e66973c.r131`): the obstacle extents the resource stores at
+    /// +336 / +340 / +344 (what the port reads, `Prop::obstacle`) against F-34384 run on each type's own bound
+    /// (`*(*(type + 228) + 12)`), with the fixed flag either way: 225 of 230 equal bit for bit, the other 5 (the
+    /// newspaper vending boxes) differ by one bit in the half diagonal only. Skipped without the data.
+    #[test]
+    fn stored_prop_extents_are_f34384s() {
+        let Ok(root) = std::env::var("MCLA_DATA_DIR") else { return };
+        let Ok(res) = crate::assets::load_resource_file(&std::path::Path::new(&root).join("resources/prop/0x0e66973c.r131")) else { return };
+        let props = mcla_formats::rage::props::parse_props(&res);
+        let rd = mcla_formats::rage::Rd::new(&res);
+        let (mut n, mut exact, mut near) = (0, 0, 0);
+        for p in &props {
+            let Some(b) = rd.ptr(p.off + 228).and_then(|a| rd.ptr(a + 12)) else { continue };
+            let kind = rd.u8(b + 4);
+            let (mut present, mut cap) = (0, None);
+            if kind == 12 {
+                if let Some(arr) = rd.ptr(b + 128) {
+                    present = (0..rd.u16(b + 146) as usize).filter(|i| rd.ptr(arr + 4 * i).is_some()).count();
+                    cap = rd.ptr(arr + 4).filter(|p1| rd.u8(p1 + 4) == 1).map(|p1| rd.f32(p1 + 128));
+                }
+            }
+            let bi = super::BoundIn { kind, radius: rd.f32(b + 128), min_x: rd.f32(b + 16), min_z: rd.f32(b + 24), max_x: rd.f32(b + 32), max_z: rd.f32(b + 40), parts_present: present, part1_capsule_radius: cap };
+            let st = p.obstacle;
+            let ways = [super::prop_extents(true, &bi), super::prop_extents(false, &bi)];
+            n += 1;
+            if ways.iter().any(|w| (0..3).all(|k| w[k].to_bits() == st[k].to_bits())) {
+                exact += 1;
+            } else if ways.iter().any(|w| w[0].to_bits() == st[0].to_bits() && w[1].to_bits() == st[1].to_bits() && w[2].to_bits().abs_diff(st[2].to_bits()) <= 1) {
+                near += 1;
+            } else {
+                panic!("{}: stored {:?}, F-34384 {:?}", p.name, st, ways);
+            }
+        }
+        assert_eq!((n, exact, near), (230, 225, 5));
+    }
+}

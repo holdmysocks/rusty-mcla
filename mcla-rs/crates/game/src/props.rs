@@ -231,6 +231,8 @@ struct Foot {
     /// deflecting posts, trees): mcCarDamage counts a contact with it 0.4 of itself (F-19931);
     /// state 1 (loose, the parked aircraft too) whole
     fixed: bool,
+    /// the type's obstacle extents (x size, z size; `Prop::obstacle`)
+    obst: Vec2,
 }
 
 struct Collider {
@@ -571,7 +573,7 @@ fn physics_foot(prop: &mcla_formats::rage::props::Prop, placed: Option<u32>) -> 
     if let Some(p) = prop.post() {
         let r = ((p.max.x - p.min.x) * 0.5).max(0.04);
         let y0 = p.min.y.max(0.0);
-        return Some(Foot { kind: Solidity::Solid, center: Vec2::new((p.min.x + p.max.x) * 0.5, (p.min.z + p.max.z) * 0.5), half: Vec2::splat(r), y0, height: (p.max.y - y0).max(0.1), mass: prop.mass, snd, audio: mcla_formats::hash::joaat(&name), wide: (prop.parts[0].max.x - prop.parts[0].min.x) * 0.5, fixed: placed != Some(1) });
+        return Some(Foot { kind: Solidity::Solid, center: Vec2::new((p.min.x + p.max.x) * 0.5, (p.min.z + p.max.z) * 0.5), half: Vec2::splat(r), y0, height: (p.max.y - y0).max(0.1), mass: prop.mass, snd, audio: mcla_formats::hash::joaat(&name), wide: (prop.parts[0].max.x - prop.parts[0].min.x) * 0.5, fixed: placed != Some(1), obst: Vec2::new(prop.obstacle[0], prop.obstacle[1]) });
     }
     if prop.parts.is_empty() {
         return None;
@@ -604,7 +606,7 @@ fn physics_foot(prop: &mcla_formats::rage::props::Prop, placed: Option<u32>) -> 
         }
     };
     let y0 = lo.max(0.0);
-    Some(Foot { kind, center: (mn + mx) * 0.5, half: ((mx - mn) * 0.5).max(Vec2::splat(0.04)), y0, height: (top - y0).max(0.1), mass: prop.mass.max(1.0), snd, audio: mcla_formats::hash::joaat(&name), wide: 0.0, fixed: placed == Some(2) || (placed.is_none() && kind == Solidity::Solid) })
+    Some(Foot { kind, center: (mn + mx) * 0.5, half: ((mx - mn) * 0.5).max(Vec2::splat(0.04)), y0, height: (top - y0).max(0.1), mass: prop.mass.max(1.0), snd, audio: mcla_formats::hash::joaat(&name), wide: 0.0, fixed: placed == Some(2) || (placed.is_none() && kind == Solidity::Solid), obst: Vec2::new(prop.obstacle[0], prop.obstacle[1]) })
 }
 
 /// The particle props have no model: each stands for effects of the disc's effect list
@@ -677,6 +679,7 @@ impl Props {
     pub fn load(gpu: &mut Gpu, world: &mut World, data_dir: &str) -> Props {
         let dir = Path::new(data_dir).join("resources/prop");
         crate::fillmap::init(data_dir);
+        crate::brainturn::ObjectGrid::init_city(data_dir);
         let (Ok(pres), Ok(fres)) = (load_resource_file(&dir.join("0x0e66973c.r131")), load_resource_file(&dir.join("0x982ff5e0.r134"))) else {
             log::warn!("props: resources missing");
             return Props::empty();
@@ -722,7 +725,7 @@ impl Props {
             for i in 0..all.len() {
                 if all[i].name.to_ascii_lowercase().contains("hedge") && !all[i].lod1.is_empty() {
                     let p = &all[i];
-                    let low = mcla_formats::rage::props::Prop { off: p.off, name: format!("{}#low", p.name), hash: p.hash, meshes: p.lod1.clone(), lod1: Vec::new(), shaders: p.shaders.clone(), min: p.min, max: p.max, center: p.center, radius: p.radius, mass: 0.0, parts: Vec::new(), locators: Vec::new() };
+                    let low = mcla_formats::rage::props::Prop { off: p.off, name: format!("{}#low", p.name), hash: p.hash, meshes: p.lod1.clone(), lod1: Vec::new(), shaders: p.shaders.clone(), min: p.min, max: p.max, center: p.center, radius: p.radius, mass: 0.0, parts: Vec::new(), locators: Vec::new(), obstacle: p.obstacle };
                     all.push(low);
                     m.insert(i, all.len() - 1);
                 }
@@ -1108,7 +1111,7 @@ impl Props {
             race_models.insert(name.to_string(), (mi, tris));
         }
         // collision footprint per model
-        let mut feet: Vec<Foot> = vec![Foot { kind: Solidity::None, center: Vec2::ZERO, half: Vec2::ZERO, y0: 0.0, height: 0.0, mass: 0.0, audio: 0, snd: 0, wide: 0.0, fixed: false }; models.len()];
+        let mut feet: Vec<Foot> = vec![Foot { kind: Solidity::None, center: Vec2::ZERO, half: Vec2::ZERO, y0: 0.0, height: 0.0, mass: 0.0, audio: 0, snd: 0, wide: 0.0, fixed: false, obst: Vec2::ZERO }; models.len()];
         for (&pi, mi) in model_of.iter() {
             let Some(mi) = *mi else { continue };
             let prop = &all[pi];
@@ -1159,7 +1162,7 @@ impl Props {
             let size = prop.max - prop.min;
             // thin panels (fences, signs) are light; boxes heavier
             let mass = (size.x.max(0.05) * size.y.max(0.05) * size.z.max(0.05) * 45.0).clamp(4.0, 350.0);
-            feet[mi] = Foot { kind, center, half: half.max(Vec2::splat(0.04)), y0: prop.min.y, height, mass, snd: crate::sound::prop_sound(&name), audio: mcla_formats::hash::joaat(&name), wide: 0.0, fixed: kind == Solidity::Solid };
+            feet[mi] = Foot { kind, center, half: half.max(Vec2::splat(0.04)), y0: prop.min.y, height, mass, snd: crate::sound::prop_sound(&name), audio: mcla_formats::hash::joaat(&name), wide: 0.0, fixed: kind == Solidity::Solid, obst: Vec2::new(prop.obstacle[0], prop.obstacle[1]) };
         }
         // ... which is only the fallback: the type's own collision shape and mass where it has one
         for (&pi, mi) in model_of.iter() {
@@ -1392,7 +1395,7 @@ impl Props {
                 let half = Vec2::new((p.max.x - p.min.x) * 0.5, (p.max.z - p.min.z) * 0.5).max(Vec2::splat(0.04));
                 let y0 = p.min.y.max(0.0);
                 let mass = if p.mass > 0.0 { p.mass } else { prop.mass / prop.parts.len() as f32 };
-                let foot = Foot { kind: Solidity::Dynamic, center: Vec2::new((p.min.x + p.max.x) * 0.5, (p.min.z + p.max.z) * 0.5), half, y0, height: (p.max.y - y0).max(0.1), mass, snd, audio: mcla_formats::hash::joaat(&prop.name), wide: 0.0, fixed: false };
+                let foot = Foot { kind: Solidity::Dynamic, center: Vec2::new((p.min.x + p.max.x) * 0.5, (p.min.z + p.max.z) * 0.5), half, y0, height: (p.max.y - y0).max(0.1), mass, snd, audio: mcla_formats::hash::joaat(&prop.name), wide: 0.0, fixed: false, obst: Vec2::new(prop.obstacle[0], prop.obstacle[1]) };
                 colliders.push(Collider { inst: u32::MAX, foot, pos: *pos, rot: *rot, scale: 1.0, knocked: false });
             }
         }
@@ -2012,7 +2015,7 @@ impl Props {
 
     /// The fixed props (level state 2) within `r` of `p` (plan distance) as the object grid's prop
     /// objects (mcProp, kind 3): the instance's place, its forward -(matrix row 2), velocity 0, the
-    /// footprint's full width and length. Each collider once (`seen` by collider index).
+    /// type's obstacle extents (+336 / +340, `Prop::obstacle`). Each collider once (`seen` by collider index).
     pub fn fixed_objects_near(&self, p: Vec3, r: f32, seen: &mut hashbrown::HashSet<u32>, out: &mut Vec<crate::brainturn::ObjectInfo>) {
         let (c0, c1) = (col_cell(p - Vec3::splat(r)), col_cell(p + Vec3::splat(r)));
         for cx in c0.0..=c1.0 {
@@ -2024,8 +2027,7 @@ impl Props {
                     if !c.foot.fixed || d.x * d.x + d.z * d.z > r * r || !seen.insert(i) {
                         continue;
                     }
-                    let half = c.foot.half * c.scale;
-                    out.push(crate::brainturn::ObjectInfo { pos: c.pos, vel: Vec3::ZERO, forward: -(c.rot * Vec3::Z), extent: (half.x * 2.0, half.y * 2.0), kind: crate::brainturn::KIND_PROP });
+                    out.push(crate::brainturn::ObjectInfo { pos: c.pos, vel: Vec3::ZERO, forward: -(c.rot * Vec3::Z), extent: (c.foot.obst.x, c.foot.obst.y), kind: crate::brainturn::KIND_PROP });
                 }
             }
         }

@@ -427,10 +427,13 @@ pub struct ObjectInfo {
 }
 
 impl ObjectInfo {
-    /// The port's car as the grid object it stands for.
-    /// (approx.: the extent is 2 x the tuning box's half extents (`body_half`), not the collision
-    /// bound's; police cars are taken as ambient cars; racers = cars with a brain or pinned to the
-    /// event with an AI driver)
+    /// The port's car as the grid object it stands for. Players and racers: the racer extent F-57218
+    /// (`oppmgr::racer_extent`) of the car's composite bound box (`CarParams::composite_box`, the box
+    /// F-98453(car + 8) answers); ambient cars: their type's bound box max - min (`traffic::bound_box`).
+    /// (approx.: the original measures the box once, when the car is made, with the wheel parts where
+    /// the suspension then holds them - the live box moves by ~1e-4 m from run to run; police cars are
+    /// taken as ambient cars, without a type box: 2 x the tuning box's half extents; racers = cars with
+    /// a brain or pinned to the event with an AI driver)
     pub fn from_car(_index: usize, c: &crate::vehicles::CarInstance) -> ObjectInfo {
         let kind = if c.is_player {
             KIND_PLAYER
@@ -439,8 +442,19 @@ impl ObjectInfo {
         } else {
             KIND_AMBIENT_CAR
         };
-        let h = c.params().body_half;
-        ObjectInfo { pos: c.state.pos, vel: c.state.vel, forward: c.state.forward(), extent: (h.x * 2.0, h.z * 2.0), kind }
+        let extent = match (kind, c.model.bound_box) {
+            (KIND_AMBIENT_CAR, Some((mn, mx))) => (mx.x - mn.x, mx.z - mn.z),
+            (KIND_AMBIENT_CAR, None) => {
+                let h = c.params().body_half;
+                (h.x * 2.0, h.z * 2.0)
+            }
+            _ => {
+                let (lo, hi) = c.params().composite_box();
+                let e = crate::oppmgr::racer_extent(lo.to_array(), hi.to_array());
+                (e.width, e.length)
+            }
+        };
+        ObjectInfo { pos: c.state.pos, vel: c.state.vel, forward: c.state.forward(), extent, kind }
     }
 }
 
@@ -454,6 +468,7 @@ pub struct ObjectGrid {
 }
 
 const CELL: f32 = 40.0;
+static CITY_GRID: std::sync::OnceLock<ObjectGrid> = std::sync::OnceLock::new();
 
 impl ObjectGrid {
     /// sub_8226AA98 from the level's bounds (min, max; x and z used): the box widened by 20 m along
@@ -475,6 +490,19 @@ impl ObjectGrid {
     }
     pub fn unbounded() -> ObjectGrid {
         ObjectGrid { min: [0.0; 2], n: [0; 2], bounded: false }
+    }
+    /// The city's grid: F-38432's caller (the city layer's set-up, F-67451) hands it the night-ambient map's extents,
+    /// the object's +0 / +16 vectors = `m_ext_Min` / `m_ext_Max` of `tune/city/sc/grid.aogrid` (the object read from
+    /// the running original: formats aomap.rs `grid_parse_matches_the_original`). Unbounded until `init_city` ran.
+    pub fn city() -> ObjectGrid {
+        CITY_GRID.get().copied().unwrap_or_else(ObjectGrid::unbounded)
+    }
+    /// Read the city's extents once (`<data>/tune/city/sc`).
+    pub fn init_city(data_dir: &str) {
+        CITY_GRID.get_or_init(|| match mcla_formats::rage::aomap::AoMap::load(&std::path::Path::new(data_dir).join("tune/city/sc")) {
+            Some(m) => ObjectGrid::from_bounds(m.min, m.max),
+            None => ObjectGrid::unbounded(),
+        });
     }
     /// sub_8226A6F8: the cell (ix, iz) of a point, `None` outside (the original then goes on with
     /// ix = iz = 0 for the neighbours).
