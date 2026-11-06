@@ -501,6 +501,18 @@ fn search_clock_runs(clock: f32) -> bool {
 
 /// The Search command's (7) block: F-60530 (+0..+8 0, +12 1.0, byte +16 0, +20 0.0), then the sender's byte +16 (search from the
 /// cop's own place with a random turn at every junction: the dispatch's searcher) and +20 (the turn at the first junction).
+/// Respond's block (command 8): F-11391 (+0..+8 0, +12 1.0, +16..+31 a global vector, zero in the image), then the sender
+/// (Respond's enter F-81858) stores the targets and the tactic (+0 / +4 / +8; the port's brains read none), +12 1.0 again
+/// and +16..+31 the place: the tactic's +176 when its y is not below -500, else the target's position. The dispatch's
+/// request (F-15449, -1000 x 3 at +32) gets the target's position from its one caller (no place given), so +176 is where the
+/// player was. (+28, the place's fourth word, is not read by any command: 0 here)
+fn respond_block(place: Vec3) -> [u32; 8] {
+    let mut b = [0u32; 8];
+    b[3] = 1.0f32.to_bits();
+    (b[4], b[5], b[6]) = (place.x.to_bits(), place.y.to_bits(), place.z.to_bits());
+    b
+}
+
 fn search_block(random: bool, angle: f32) -> [u32; 8] {
     let mut b = [0u32; 8];
     b[3] = 1.0f32.to_bits();
@@ -1150,6 +1162,9 @@ struct Dispatch {
     /// a state asked for (FSM +16, F-28114), entered at the start of the next FSM update (F-43677). (The machine is begun
     /// in state 0 by the engage itself, F-11097 / F-26187, as the dispatched cop is a car already in the world - loaded)
     next: Option<u8>,
+    /// the cop's brain words the commands write (Respond 8, the search 7): the tactic entries are cleared while no
+    /// pursuit runs, so the dispatch keeps its cop's own; handed to the Pursuit it turns into (the brain is the cop's)
+    brain: BrainCmd,
 }
 
 /// A race launcher's EvaluatePolice arguments (docs/reference/hookmen/evaluate_police.md): the chance, the gate
@@ -2417,7 +2432,7 @@ impl Police {
     /// The dispatch cop's search (cmd 7, +736 = 1: from its own place, a random turn at each junction, the first
     /// +-pi/2 at random; F-52732 / F-92001). The direction: the target's velocity now (the brain's last known
     /// velocity of a dispatch was not read).
-    fn dispatch_search(&mut self, world: &World, vehicles: &Vehicles, uid: u32, per: f32) {
+    fn dispatch_search(&mut self, world: &World, vehicles: &Vehicles, uid: u32, per: f32, brain: &mut BrainCmd) {
         let (Some(c), Some(nav)) = (vehicles.cars.iter().find(|c| c.uid == uid), world.nav.as_ref()) else { return };
         // (the search reads the brain's +624, never written during the dispatch - command 8 - so it is what this cop last
         // stored, zero for one whose first command is the dispatch: then (1, 0, 0) x 22.35 in search_points)
@@ -2430,9 +2445,7 @@ impl Police {
         self.srch.retain(|s| s.uid != uid);
         self.srch.push(CopSearch { uid, no_goals: pts.is_empty(), pts, random: true, angle, ..Default::default() });
         // (command 7 with +16 = 1 and the angle, F-60530's block, through the brain command F-83687)
-        if let Some(tc) = self.tacs.get_mut(&uid) {
-            brain_command(&mut tc.brain, 7, Some(&search_block(true, angle)), 0);
-        }
+        brain_command(brain, 7, Some(&search_block(true, angle)), 0);
     }
 
     /// The tactic's target car (+32): the AI racer the cop zone chose, else the player.
@@ -3700,7 +3713,7 @@ impl Police {
                     log::info!("police: dispatch {} - cruiser {}", call, cop);
                     self.kind = TacKind::Dispatch;
                     self.cops.clear();
-                    self.dsp = Some(Dispatch { cop, st: 0, t: 0.0, loc: ppos, call, crumbs: Vec::new(), crumb_t: 1.0, seen_t: 0.0, trail: false, routed: false, arrived: false, next: None });
+                    self.dsp = Some(Dispatch { cop, st: 0, t: 0.0, loc: ppos, call, crumbs: Vec::new(), crumb_t: 1.0, seen_t: 0.0, trail: false, routed: false, arrived: false, next: None, brain: BrainCmd::default() });
                 }
             }
         }
@@ -3745,9 +3758,12 @@ impl Police {
                     // (Dispatch F-44635: the DISPATCH line of the trigger's sound record)
                     Some(1) => self.radio_cue.push(d.call.clone()),
                     // (Respond F-81858: REPORT_ACCEPT_CALL, GoToPosition to the place, siren on)
-                    Some(2) => self.radio_cue.push("REPORT_ACCEPT_CALL".into()),
+                    Some(2) => {
+                        self.radio_cue.push("REPORT_ACCEPT_CALL".into());
+                        brain_command(&mut d.brain, 8, Some(&respond_block(d.loc)), 0);
+                    }
                     // (WaitAtLocation F-52732: along the player's trail, else a search at once, +-pi/2 at random)
-                    Some(3) if !d.trail => self.dispatch_search(world, vehicles, d.cop, t("fMinSetGoalTime", 1.0)),
+                    Some(3) if !d.trail => self.dispatch_search(world, vehicles, d.cop, t("fMinSetGoalTime", 1.0), &mut d.brain),
                     _ => {}
                 }
                 dispatch_ask(&mut d, t("fDispatchRdoDelayTime", 3.0), self.speech_busy);
@@ -3760,7 +3776,7 @@ impl Police {
                         if let Some(&last) = d.crumbs.last() {
                             self.last_known = last;
                         }
-                        self.dispatch_search(world, vehicles, d.cop, t("fMinSetGoalTime", 1.0));
+                        self.dispatch_search(world, vehicles, d.cop, t("fMinSetGoalTime", 1.0), &mut d.brain);
                     }
                 }
                 d.t += dt;
@@ -3771,6 +3787,7 @@ impl Police {
                     log::info!("police: dispatch cruiser {} sees the player - pursuit", d.cop);
                     self.srch.clear();
                     self.start_tactic(TacKind::Pursuit, vec![d.cop], true, t("fTrackTgtTime", 25.0));
+                    self.tacs.insert(d.cop, CopTac { brain: d.brain, ..Default::default() });
                     self.heat = Heat::Pursuit;
                     self.last_known = ppos;
                     self.fine = self.law_fines();
@@ -4644,7 +4661,7 @@ mod tests {
             if v[0] == "CASE" {
                 case = Some((v[1].parse().unwrap(), v[2].parse().unwrap(), v[3].parse().unwrap()));
                 d = Some(Dispatch { cop: 1, st: 0, t: 0.0, loc: Vec3::ZERO, call: String::new(), crumbs: Vec::new(), crumb_t: 1.0, seen_t: 0.0,
-                    trail: false, routed: false, arrived: false, next: None });
+                    trail: false, routed: false, arrived: false, next: None, brain: BrainCmd::default() });
                 k = 0;
                 continue;
             }
@@ -4947,18 +4964,21 @@ mod tests {
             }
         };
         let mut lines = reference.lines();
-        // (the blocks the senders build, against the original's initialisers F-59773 / F-72181 / F-94949 / F-60530 on 32 bytes of A5,
+        // (the blocks the senders build, against the original's initialisers F-59773 / F-72181 / F-94949 / F-60530 / F-11391 on 32 bytes of A5,
         // on the words F-83687 reads for that command: +0..+12, and Stop's byte +16 and +20..+28, AlongSide's byte +16 and +20;
         // the image's fAlongSideDist is the class default 3.5)
         for (name, blk, read) in [("basic", cmd_block(4, false, 0.0, false, 0.0), &[0, 1, 2, 3][..]),
                                   ("stop", cmd_block(1, false, 0.0, false, 0.0), &[0, 1, 2, 3, 4, 5, 6, 7][..]),
                                   ("along", cmd_block(5, false, 0.0, false, 3.5), &[0, 1, 2, 3, 4, 5][..]),
-                                  ("search", search_block(false, 0.0), &[0, 1, 2, 3, 4, 5][..])] {
+                                  ("search", search_block(false, 0.0), &[0, 1, 2, 3, 4, 5][..]),
+                                  // (Respond's F-11391: the vector +16..+31 is the global's, zero in the image - the sender
+                                  // writes the place over it; the port's block for a place at the origin)
+                                  ("respond", respond_block(Vec3::ZERO), &[0, 1, 2, 3, 4, 5, 6, 7][..])] {
             let v: Vec<&str> = lines.next().unwrap().split_whitespace().collect();
             assert_eq!((v[0], v[1]), ("BLOCK", name));
             for &i in read {
                 let want = u32::from_str_radix(v[2 + i], 16).unwrap();
-                let (want, got) = if i == 4 { (want >> 24, blk[i] >> 24) } else { (want, blk[i]) };
+                let (want, got) = if i == 4 && name != "respond" { (want >> 24, blk[i] >> 24) } else { (want, blk[i]) };
                 assert_eq!(got, want, "{name} word {i}");
             }
         }

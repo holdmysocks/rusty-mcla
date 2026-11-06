@@ -10,7 +10,7 @@ speed setter F-39608 (+292) runs. Blocks: 32 random words, commands 0..9 (9 is o
 previous command +568 random 0..8 (0 in a quarter of the calls), some calls with no block (r5 = 0: only reached for command 0).
 
 Inputs come from a 32-bit xorshift (seed 20261106) the port's test runs too: per call the command (0..9), for command 0 a third of
-the calls with no block, the 8 block words, the machine's state (0 / -1 / 3), the brain words, the previous command (0 in a quarter), +292. First the three blocks the port's senders build, from 32 bytes of A5 (BLOCK basic / stop / along <8 words>). Output per call:
+the calls with no block, the 8 block words, the machine's state (0 / -1 / 3), the brain words, the previous command (0 in a quarter), +292. First the blocks the port's senders build, from 32 bytes of A5 (BLOCK basic / stop / along <8 words>). Output per call:
   <k> <cmd> <offset>=<word> ... (every brain word that changed) [292=<word>] route=<0|1> reset=<the machine's reset argument, or -1> state=<asked or -1>
 """
 import argparse
@@ -23,7 +23,7 @@ import recomp_dispatch as rdisp
 N = 4000
 MAIN_IDS = ['F-83687']
 STUBS = ['F-69438', 'F-17363']
-BLOCKS = ['F-59773', 'F-72181', 'F-94949', 'F-60530']
+BLOCKS = ['F-59773', 'F-72181', 'F-94949', 'F-60530', 'F-11391']
 LO, HI = 568, 780   # the brain words compared
 
 MAIN = r'''
@@ -67,14 +67,14 @@ def main():
         sys.exit(r.stdout[-500:] + r.stderr[-1500:])
     # the command blocks the port's senders build (cmd_block): F-59773 (Pursue / Pull Over), F-72181 (Stop), F-94949
     # (AlongSide, +20 the tune's fAlongSideDist - in the image the class default 3.5), F-60530 (Search, before the caller's side
-    # and angle), each on 32 bytes of A5
+    # and angle), F-11391 (Respond, before the sender's targets and place), each on 32 bytes of A5
     bm = (r'''
 int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.assign(std::istreambuf_iterator<char>(bin),{});
- const uint32_t BL=0x40A20000u; void(*f[4])(Context&,const uint8_t*)={B0,B1,B2,B3}; const char*n[4]={"basic","stop","along","search"};
- for(int k=0;k<4;k++){ rt_reset(); for(int i=0;i<8;i++) store(BL+4*i,0xA5A5A5A5u); Context c=fresh(); c.r3.u32=BL; f[k](c,nullptr);
+ const uint32_t BL=0x40A20000u; void(*f[5])(Context&,const uint8_t*)={B0,B1,B2,B3,B4}; const char*n[5]={"basic","stop","along","search","respond"};
+ for(int k=0;k<5;k++){ rt_reset(); for(int i=0;i<8;i++) store(BL+4*i,0xA5A5A5A5u); Context c=fresh(); c.r3.u32=BL; f[k](c,nullptr);
   printf("BLOCK %s",n[k]); for(int i=0;i<8;i++) printf(" %08x",load(BL+4*i)); printf("\n"); }
 }
-'''.replace('B0', name('F-59773')).replace('B1', name('F-72181')).replace('B2', name('F-94949')).replace('B3', name('F-60530')))
+'''.replace('B0', name('F-59773')).replace('B1', name('F-72181')).replace('B2', name('F-94949')).replace('B3', name('F-60530')).replace('B4', name('F-11391')))
     bexe = rdisp.build(rdisp.index(a.recomp), [name(f) for f in BLOCKS], bm, a.out, 'cmd_blocks', image=img, limit=50)
     rb = subprocess.run([str(bexe), str(a.image)], capture_output=True, text=True, check=True)
     a.ref.write_text(rb.stdout + r.stdout)
