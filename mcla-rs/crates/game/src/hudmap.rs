@@ -195,8 +195,11 @@ pub struct Part {
 
 pub struct IconMesh {
     pub parts: Vec<Part>,
-    /// bounding radius in the xz plane (the culling test's sphere)
+    /// bounding radius in the xz plane
     pub radius: f32,
+    /// the drawable's bounding sphere (centre +16, radius +112 of the drawable), what the rmcDrawable visibility test
+    /// (slot 15) puts through the matrix and against the viewport's planes
+    pub sphere: (Vec3, f32),
 }
 
 /// The map's meshes and their textures (`resources/ui/meshes`, `resources/ui/meshtextures.r9`),
@@ -288,7 +291,10 @@ impl Assets {
         };
         let mut parts = Vec::new();
         let mut radius = 0.0f32;
+        let mut sphere = (Vec3::ZERO, 0.0f32);
         if let Ok(res) = crate::assets::load_resource_file(&path) {
+            let word = |o: usize| res.data.get(o..o + 4).map_or(0.0, |b| f32::from_bits(u32::from_be_bytes([b[0], b[1], b[2], b[3]])));
+            sphere = (Vec3::new(word(16), word(20), word(24)), word(112));
             if let Ok(d) = mcla_formats::rage::scan::Drawable::parse(&res) {
                 for model in &d.models {
                     for (mesh, si) in &model.parts {
@@ -306,7 +312,7 @@ impl Assets {
             log::warn!("hudmap: mesh {} not found", name);
             None
         } else {
-            Some(Arc::new(IconMesh { parts, radius }))
+            Some(Arc::new(IconMesh { parts, radius, sphere }))
         };
         self.meshes.insert(name.to_string(), m.clone());
         m
@@ -1043,6 +1049,15 @@ impl Frame {
         project_point(&self.view_proj, p)
     }
 
+    /// The minimap's mesh cull (rmcDrawable slot 15 -> F-50958's sphere test): the mesh's bounding sphere centre
+    /// through `m`, its radius unscaled, against the map camera's frustum planes (F-53768's, ported as
+    /// `Frustum::from_view_proj`). False = culled.
+    fn visible(&self, mesh: Option<&IconMesh>, m: Mat4) -> bool {
+        let Some(mesh) = mesh else { return true };
+        let (c, r) = mesh.sphere;
+        crate::render::Frustum::from_view_proj(self.view_proj).intersects_sphere(m.transform_point3(c), r)
+    }
+
     /// `F-72569`: inside the map when |projected (x, y, z)| < RimIconRadius - the depth (0..1)
     /// counts in the length.
     fn inside(&self, tune: &Tune, p: Vec3) -> bool {
@@ -1138,7 +1153,7 @@ fn hidden_by_police(f: &Frame) -> bool {
     !f.race && f.police > 1
 }
 
-fn draw_element(tune: &Tune, _assets: &mut Assets, f: &Frame, e: &Element, q: &mut Queue, cp_count: &mut u32) {
+fn draw_element(tune: &Tune, assets: &mut Assets, f: &Frame, e: &Element, q: &mut Queue, cp_count: &mut u32) {
     let minimap = f.mode == 0;
     // (positions flatten to y = 0 off the GPS map; renderers lift by 1)
     let flat = |p: Vec3| if f.mode != 1 { Vec3::new(p.x, 0.0, p.z) } else { p };
@@ -1224,11 +1239,16 @@ fn draw_element(tune: &Tune, _assets: &mut Assets, f: &Frame, e: &Element, q: &m
             let off = if matches!(e.kind, Kind::Flag) { tune.v3("FlagOffset", Vec3::new(1.4, 0.0, -1.0)) * s } else { Vec3::ZERO };
             let mut m = turn_y(diag(s, off), f.theta);
             m.w_axis = (m.w_axis.truncate() + pos).extend(1.0);
-            m.w_axis.y += lift(Vec3::ZERO).y;
             if e.selected {
                 colour[3] *= (guest_sin((5.0 * f.tg) as f64) as f32).abs();
             }
             let mesh = if matches!(e.kind, Kind::Flag) { "icon_flag" } else { "icon_flagBase" };
+            // (the cull tests icon_flag for both types, before the lift: culled -> the rim dot only)
+            if minimap && !f.visible(assets.mesh("icon_flag").as_deref(), m) {
+                q.rim(f, pos, colour, e.selected, e.kind.type_byte());
+                return;
+            }
+            m.w_axis.y += lift(Vec3::ZERO).y;
             q.mesh(mesh, m, colour);
             if minimap && !f.inside(tune, m.w_axis.truncate()) {
                 q.rim(f, pos, colour, e.selected, e.kind.type_byte());
