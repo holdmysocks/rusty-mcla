@@ -477,6 +477,8 @@ pub struct BrainCar {
     pub sling_active: bool,
     /// the grid flag (car +592 == 2: Racer_PreRaceBurnout)
     pub grid: bool,
+    /// chassis +592's crash bits and the damage object's timer +44 (`CarInstance::crash`)
+    pub crash: crate::physics::wipeout::Crash,
 }
 
 /// What the brain does with its car this frame.
@@ -872,6 +874,12 @@ impl Brain {
             // (F-36902: the search is the nav thread's; its result arrives at the next update)
             self.nav.request(|| mesh.quickest_path(start, goal, &cost));
         }
+        // (the end of F-13552: while the car is wiped out, chassis +592 0x10, +296 = fsel(+296 - x, +296, x) with
+        // x = the damage object's +44 + 1.0 - the collision timer holds at least 1 s past the wipeout)
+        if car.crash.wiped_out() {
+            let x = car.crash.timer + 1.0;
+            self.collision = if self.collision - x >= 0.0 { self.collision } else { x };
+        }
         self.collision = (self.collision - dt).max(0.0);
         self.nitro_off = (self.nitro_off - dt).max(0.0);
 
@@ -1115,6 +1123,7 @@ pub fn run(v: &mut crate::vehicles::Vehicles, i: usize, brain: &mut Brain, to_go
         sling_ready: vs.map_or(false, |s| s.sst.can_fire(to_go.is_none())),
         sling_active: vs.map_or(false, |s| s.sst.burning),
         grid: to_go.is_some(),
+        crash: c.crash,
     };
     // the obstacles near the line ahead (F-86521)
     // (cars, then the fixed props the game gathered around the racers, on the city's grid; approx.: no
