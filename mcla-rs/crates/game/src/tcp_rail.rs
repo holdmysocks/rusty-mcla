@@ -58,6 +58,12 @@ pub(crate) fn vnorm(v: Vec3) -> Vec3 {
     vmap(v, Vec3::splat(rsq(vdot(v))), |x, y| x * y)
 }
 
+/// vmsum3fp of two vectors: (0 + z z) + (y y + x x), each step flushed.
+pub(crate) fn vdot3(a: Vec3, b: Vec3) -> f32 {
+    let p = vmap(a, b, |x, y| x * y);
+    ftz(ftz(0.0 + p.z) + ftz(p.y + p.x))
+}
+
 /// vmaddfp a x splat(k) + c (the product rounded, then the sum).
 pub(crate) fn vmadd3(a: Vec3, k: f32, c: Vec3) -> Vec3 {
     vmadd(a, k, c)

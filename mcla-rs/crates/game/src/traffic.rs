@@ -28,6 +28,17 @@ const RAIL_TURN: f32 = f32::from_bits(0x401C_61AA);
 const PASS_TURN: f32 = f32::from_bits(0x4011_361E);
 /// The semi trailers (0x8282BDDC); a cab draws one of them.
 pub const TRAILERS: [&str; 5] = ["va_semitruck_00_trailer", "va_semitruck_00_tanker", "va_semitruck_00_flatbed", "va_semitruck_00_flatloaded", "va_semitruck_dub1_00_trailer"];
+/// F-45988's picks on the cab's MWC (+384, right after its hitch draw): (lo & 0x7FFFFFFF) mod 5 into the table of the
+/// five names (0x8282BDDC, `TRAILERS`' order), the type looked up by name (F-54839; none: nothing more), then mod 20 the
+/// shade.
+pub(crate) fn trailer_pick(mwc: &mut super::parked::Mwc, has: impl FnOnce(&str) -> bool) -> Option<(&'static str, usize)> {
+    let name = TRAILERS[mwc.index(5) as usize];
+    if !has(name) {
+        return None;
+    }
+    Some((name, mwc.index(20) as usize))
+}
+
 /// The "hitch" bones (F-19769): the cab's and every trailer's; the model's front is -z.
 const CAB_HITCH: Vec3 = Vec3::new(0.0, 1.132, 1.289);
 const TRAILER_HITCH: Vec3 = Vec3::new(0.0, 1.174, -5.219);
@@ -621,12 +632,6 @@ impl Path {
         let n = ((self.len() * (1.0 - from).max(0.0)) / 0.5).ceil().clamp(1.0, 4000.0) as usize;
         (0..=n).map(|k| self.eval(from + (1.0 - from) * k as f32 / n as f32).0).collect()
     }
-
-    /// The rail as segments from where the car is (the car-ahead search).
-    fn segs(&self) -> Vec<(Vec3, Vec3)> {
-        let p = self.pts(self.t.clamp(0.0, 1.0));
-        p.windows(2).map(|w| (w[0], w[1])).collect()
-    }
 }
 
 /// The turning radius of the recovery, rejoin and passing rails (F-36195): the pivot radius when the car has stood
@@ -769,6 +774,9 @@ pub struct Rider {
     passing: Option<(usize, Vec3)>,
     /// the last obstacle search's nearest and blocking obstacles (behaviour +432 / +436), for F-47175's head
     kept: Option<(usize, Option<usize>)>,
+    /// F-37525's mark (behaviour +444, the result +12): the nearest obstacle that had us as its nearest and that we
+    /// let go first (its rider's `rng_id`); F-10623 reads it the frame after
+    mark: Option<u32>,
     /// seconds at rest while physical (the physics' sleep)
     rest: f32,
     /// a cab's trailer or a trailer's cab (their ids, +3604)
@@ -864,6 +872,7 @@ impl Rider {
             stuck: (0.0, 0.0, 0),
             passing: None,
             kept: None,
+            mark: None,
             rest: 0.0,
             partner: None,
             seat: None,
@@ -903,7 +912,7 @@ impl Rider {
         // +432 = 3 + 3U s of age, F-58614)
         r.off = 0.0;
         r.off_timer = 3.0 + 3.0 * r.rand();
-        r.choose_next(nav);
+        // (the next lane: `choose_next` by the caller, with the shared MWC)
         // (the lane's speed; the spawner and the race paths set the first speed by the start
         // speed rule, `Vehicles::path_start_speed`)
         r.v = rail_speed(nav, link).0;
@@ -940,19 +949,28 @@ impl Rider {
         k
     }
 
-    /// Which lane follows this one, chosen on entering a lane (slot 16 F-48618 ->
-    /// F-20639): offline the route is empty, so any lane starting where this one ends
-    /// but itself, uniformly at random - no weighting, no look-ahead.
-    fn choose_next(&mut self, nav: &NavSys) {
+    /// Which lane follows this one, chosen on entering a lane (slot 16 F-48618 -> F-74277 on the behaviour's route
+    /// +288, empty for an ordinary rider -> F-20639 with the mask byte 0xE0, `ghostroute::ordinary_next`): a lane other
+    /// than this one at its end vertex (in the railnet's table order) that starts where it ends, by one index draw of the
+    /// shared MWC (0x82860890); none: no draw, no next lane. Without the railnet tables (no data folder: tests) the
+    /// port's link graph with the same draw.
+    pub(crate) fn choose_next(&mut self, nav: &NavSys, shared: &mut GMwc) {
         let end = self.lane_end(nav);
         let lane = nav.links[end].lane;
-        let mut succ: Vec<usize> = nav.links[end].next.iter().copied().filter(|&n| nav.links[n].lane != lane).collect();
-        if succ.is_empty() {
-            // (a lane end the port's graph left unconnected - the original's rails all join:
-            // the lane starts within reach of it)
-            succ = nav.links[end].hop.clone();
+        if let Some(net) = ghost_net() {
+            let l = crate::ghostroute::ordinary_next(net, nav, lane as u32, shared);
+            self.next = l.and_then(|l| lanes(nav).links.get(l as usize).and_then(|x| x.first().copied()));
+            return;
         }
-        self.next = if succ.is_empty() { None } else { Some(succ[(self.rand() * succ.len() as f32) as usize % succ.len()]) };
+        let succ: Vec<usize> = nav.links[end].next.iter().copied().filter(|&n| nav.links[n].lane != lane).collect();
+        self.next = if succ.is_empty() { None } else { Some(succ[shared.index(succ.len() as u32) as usize]) };
+    }
+
+    /// `choose_next` on the frame's shared MWC.
+    fn choose_next_env(&mut self, env: &Env) {
+        let mut m = env.shared.get();
+        self.choose_next(env.nav, &mut m);
+        env.shared.set(m);
     }
 
     /// The lane's phase where the car is (the follower's +176).
@@ -1568,6 +1586,8 @@ pub struct Other {
     pub key: u32,
     /// its grid object's kind byte +6 (`brainturn::ObjectInfo::from_car`: 0 the player, 1 racers, 2 the others)
     pub kind: u8,
+    /// its rider's nearest obstacle of the last search (behaviour +432) as that obstacle's `key`
+    pub nearest: Option<u32>,
 }
 
 impl Other {
@@ -1780,23 +1800,48 @@ pub fn select_obstacles<W: SelectWorld>(w: &W, asker: usize, cands: &[usize], a:
     out
 }
 
-/// The nearest point of a run-time rail given as segments (the port's stand-in for its slot 14, F-36154 not ported):
-/// (point, metres along / the length).
-fn seg_nearest(segs: &[(Vec3, Vec3)], p: Vec3) -> (Vec3, f32) {
-    let (mut best, mut at, mut s0) = (f32::MAX, (p, 0.0), 0.0);
-    for &(a, b) in segs {
-        let d = b - a;
-        let l2 = d.length_squared().max(1e-6);
-        let t = ((p - a).dot(d) / l2).clamp(0.0, 1.0);
-        let q = a + d * t;
-        let dd = q.distance_squared(p);
-        if dd < best {
-            best = dd;
-            at = (q, s0 + t * l2.sqrt());
+/// A run-time rail as the selection (F-47175) asks it: the arc-line-arc rail (mcRailAmbientTCP, vtable 0x820CD224:
+/// slot 14 the thunk F-36154 -> F-16977 on the record at rail +128, slot 12 F-55960 -> F-33742 the record's start P) or
+/// a pool curve (mcRailAmbientDynamic, vtable 0x820CD1BC: the lanes' slot 14 F-24415 and slot 12 F-88700, the curve's
+/// first control point).
+#[derive(Clone, Copy)]
+pub(crate) enum RunRail<'a> {
+    Tcp(&'a TcpRail),
+    Curve(&'a LaneCurve),
+}
+
+impl RunRail<'_> {
+    /// Slot 14 at a candidate's place (slot 1 +48): the nearest point and its phase (r3 out, r6 the phase; F-16977's
+    /// squared distance r7 is not read by the selection).
+    pub(crate) fn nearest(self, p: Vec3) -> ([f32; 3], f32) {
+        match self {
+            RunRail::Tcp(q) => {
+                let (pt, t, _) = q.nearest(p);
+                (pt.to_array(), t)
+            }
+            RunRail::Curve(c) => {
+                let (t, _, q) = crate::railroute::nearest(c, p, 4, 10);
+                (q.to_array(), t)
+            }
         }
-        s0 += l2.sqrt();
     }
-    (at.0, if s0 > 0.0 { at.1 / s0 } else { 0.0 })
+
+    /// Slot 12: the rail's start.
+    pub(crate) fn start(self) -> [f32; 3] {
+        match self {
+            RunRail::Tcp(q) => q.p.to_array(),
+            RunRail::Curve(c) => c.pts.first().copied().unwrap_or(Vec3::ZERO).to_array(),
+        }
+    }
+}
+
+impl Geom {
+    pub(crate) fn run(&self) -> RunRail<'_> {
+        match self {
+            Geom::Tcp(q) => RunRail::Tcp(q),
+            Geom::Curve(c) => RunRail::Curve(c),
+        }
+    }
 }
 
 /// The car ahead (F-47175): the nearest obstacle and the nearest "blocking" one.
@@ -1809,13 +1854,13 @@ struct Ahead {
 }
 
 /// The world of F-47175's selection for a rider: the frame's cars (`Other`), the lanes' curves, the asker's own run-time
-/// rail as segments (states 6 - 9).
+/// rail (states 6, 7, 9 and the ghost's lane change).
 struct EnvSelect<'e, 'a> {
     env: &'e Env<'a>,
     me: usize,
     me_rows: ([f32; 3], [f32; 3], [f32; 3]),
     me_size: (f32, f32),
-    me_segs: &'e [(Vec3, Vec3)],
+    me_rail: Option<RunRail<'e>>,
 }
 
 impl SelectWorld for EnvSelect<'_, '_> {
@@ -1852,26 +1897,23 @@ impl SelectWorld for EnvSelect<'_, '_> {
                 let (t, _, q) = crate::railroute::nearest(&self.env.nav.curves[l], p, 4, 10);
                 (q.to_array(), t)
             }
-            SelRail::RunTime(_) => {
-                let (q, t) = seg_nearest(self.me_segs, p);
-                (q.to_array(), t)
-            }
+            SelRail::RunTime(_) => self.me_rail.map_or((p.to_array(), 0.0), |q| q.nearest(p)),
         }
     }
     fn start(&self, rail: SelRail) -> [f32; 3] {
         match rail {
             SelRail::Lane(l) => self.env.nav.curves[l].pts.first().copied().unwrap_or(Vec3::ZERO).to_array(),
-            SelRail::RunTime(_) => self.me_segs.first().map_or(Vec3::ZERO, |s| s.0).to_array(),
+            SelRail::RunTime(_) => self.me_rail.map_or([0.0; 3], |q| q.start()),
         }
     }
 }
 
 /// The car ahead among the gather's candidates `cands` in their order (F-47175's selection, `select_obstacles`), on the
-/// rails `a` (current; `segs` its segments when it is a run-time rail) and `b` (next, entered at its start: phase 0).
+/// rails `a` (current; `run` the rail when it is a run-time rail) and `b` (next, entered at its start: phase 0).
 /// The distance and the speed along our heading are the port's (F-10623 reads them).
 #[allow(clippy::too_many_arguments)]
-fn find_ahead(env: &Env, me: usize, me_rows: ([f32; 3], [f32; 3], [f32; 3]), me_size: (f32, f32), pos: Vec3, fwd: Vec3, segs: &[(Vec3, Vec3)], a: Option<SelRail>, b: Option<SelRail>, b_start: f32, cands: &[usize]) -> Ahead {
-    let w = EnvSelect { env, me, me_rows, me_size, me_segs: segs };
+fn find_ahead(env: &Env, me: usize, me_rows: ([f32; 3], [f32; 3], [f32; 3]), me_size: (f32, f32), pos: Vec3, fwd: Vec3, run: Option<RunRail>, a: Option<SelRail>, b: Option<SelRail>, b_start: f32, cands: &[usize]) -> Ahead {
+    let w = EnvSelect { env, me, me_rows, me_size, me_rail: run };
     let (near, block) = select_obstacles(&w, me, cands, a, b, b_start);
     let others = env.others;
     let mut player_across = false;
@@ -2061,11 +2103,6 @@ pub fn search_kept(asker_vel: [f32; 3], last_vel: Option<[f32; 3]>, shared: &mut
     shared.float() > f32::from_bits(0x3CCC_CCCD)
 }
 
-/// The segments of a lane.
-fn lane_segs(nav: &NavSys, lanes: &Lanes, lane: usize) -> Vec<(Vec3, Vec3)> {
-    lanes.links[lane].iter().map(|&k| (nav.links[k].a, nav.links[k].b)).collect()
-}
-
 /// The world a rider looks at this frame.
 pub struct Env<'a> {
     pub nav: &'a NavSys,
@@ -2150,7 +2187,7 @@ impl GatherWorld for EnvGather<'_, '_> {
 /// behaviour's slot 16, F-48618: 0 for an ordinary next lane, the route lane's phase +296 after a race path's join rail,
 /// the override's +60 - a lane-change rail's target phase).
 #[allow(clippy::too_many_arguments)]
-fn search_ahead(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, rails: &[Vec<(Vec3, Vec3)>], lanes: (Option<usize>, Option<usize>), next_start: Option<Vec3>, g: [Option<GatherRail>; 3], b_start: f32) -> Ahead {
+fn search_ahead(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, run: Option<RunRail>, lanes: (Option<usize>, Option<usize>), next_start: Option<Vec3>, g: [Option<GatherRail>; 3], b_start: f32) -> Ahead {
     let mine = env.others.get(me);
     let me_rows = mine.map_or(((-fwd).to_array(), pos.to_array()), |o| (o.back.to_array(), o.pos.to_array()));
     let vel = mine.map_or((fwd * r.v).to_array(), |o| o.vel.to_array());
@@ -2170,11 +2207,59 @@ fn search_ahead(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, rails
             let rows3 = mine.map_or((fwd.cross(Vec3::Y).to_array(), me_rows.0, me_rows.1), |o| (o.row0.to_array(), me_rows.0, me_rows.1));
             let size = mine.map_or_else(|| obstacle_size_of(&r.ty), |o| o.size.unwrap_or((2.0 * o.half_wid, 2.0 * o.half_len)));
             let _ = (lanes, next_start);
-            find_ahead(env, me, rows3, size, pos, fwd, rails.first().map_or(&[][..], |s| s.as_slice()), sel(g[0]), sel(g[1]), b_start, &cands)
+            find_ahead(env, me, rows3, size, pos, fwd, run, sel(g[0]), sel(g[1]), b_start, &cands)
         }
     };
     r.kept = (ahead.j != usize::MAX).then_some((ahead.j, ahead.blocking));
+    // F-10623: a nearest equal to the mark of the frame before (result +12) is no nearest for the controller (the
+    // result words stay); then F-37525 (F-33409 calls it after F-10623) marks anew from the nearest (result +0)
+    let raw = ahead.j;
+    let mut ahead = ahead;
+    let key_of = |j: usize| env.others.get(j).filter(|o| o.ambient && o.beh.is_some()).map(|o| o.key);
+    if raw != usize::MAX && r.mark.is_some() && key_of(raw) == r.mark {
+        ahead = Ahead { j: usize::MAX, d: 0.0, vt: 0.0, blocking: ahead.blocking, player_across: ahead.player_across };
+    }
+    let our_lane = matches!(g[0], Some(GatherRail::Lane(_)));
+    r.mark = None;
+    if let (Some(o), Some(mine)) = (env.others.get(raw).filter(|o| o.kind == 2 && o.ambient), mine) {
+        // (the cast to the car wrapper and its car; a behaviour - the rider's slot 0 answers 0 -; its nearest +432 our
+        // obstacle)
+        if let Some((rail, _)) = o.beh.filter(|_| o.nearest.is_some() && o.nearest == Some(r.rng_id())) {
+            let other_lane = matches!(rail, Some(SelRail::Lane(_)));
+            if mutual_mark(our_lane, (mine.back, mine.pos), other_lane, (o.back, o.pos)) {
+                r.mark = Some(o.key);
+            }
+        }
+    }
     ahead
+}
+
+/// F-37525's choice for two cars that each have the other as nearest obstacle (the caller's tests: the other an
+/// ambient car with a behaviour whose nearest +432 is our obstacle): `our_lane` / `other_lane` the behaviours' +188 a
+/// lane (none or a run-time rail: not), the rows 2 and places (slot 1 +32 / +48). M = (P other + P ours, y = 0) x 0.5,
+/// D = the vector unit's normalisation of (row 2 other + row 2 ours, y = 0), c = fma(D.y, M.y, fma(M.z, D.z, M.x D.x)),
+/// a = D . (P other, y = 0) - c, b = D . (P ours, y = 0) - c (vmsum3fp). Off a lane: always marked; on a lane the other
+/// off one: not; else marked unless a > b (a NaN: marked).
+pub fn mutual_mark(our_lane: bool, ours: (Vec3, Vec3), other_lane: bool, other: (Vec3, Vec3)) -> bool {
+    use crate::physics::exact::fma;
+    use crate::tcp_rail::{vadd3, vdot3, vmul3, vnorm};
+    let mut m = vadd3(other.1, ours.1);
+    m.y = 0.0;
+    let m = vmul3(m, f32::from_bits(0x3F00_0000));
+    let mut s = vadd3(other.0, ours.0);
+    s.y = 0.0;
+    let d = vnorm(s);
+    let c = fma(d.y, m.y, fma(m.z, d.z, m.x * d.x));
+    let flat = |p: Vec3| Vec3::new(p.x, 0.0, p.z);
+    let a = vdot3(d, flat(other.1)) - c;
+    let b = vdot3(d, flat(ours.1)) - c;
+    if !our_lane {
+        return true;
+    }
+    if !other_lane {
+        return false;
+    }
+    !(a > b)
 }
 
 /// Is a rail clear (F-23371 with the own half width): the city's bound and the cars.
@@ -2778,20 +2863,8 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
     // the car ahead (F-47175): the last search kept while both stand (the shared MWC), else the gather's candidates
     // of this lane (+188) and the next (+192)
     let ahead = {
-        let mut rails = vec![lane_segs(nav, env.lanes, lane)];
-        if let Some(nl) = next_lane {
-            rails.push(lane_segs(nav, env.lanes, nl));
-        }
-        // (on this rail only from where we are)
-        let here = env.lanes.project(nav, lane, pos);
-        let mut s0 = 0.0;
-        rails[0].retain(|&(a, b)| {
-            let keep = s0 + a.distance(b) > here;
-            s0 += a.distance(b);
-            keep
-        });
         let g = [Some(GatherRail::Lane(lane)), next_lane.map(GatherRail::Lane), None];
-        search_ahead(r, env, me, pos, fwd, &rails, (Some(lane), next_lane), r.next.map(|n| nav.links[n].a), g, 0.0)
+        search_ahead(r, env, me, pos, fwd, None, (Some(lane), next_lane), r.next.map(|n| nav.links[n].a), g, 0.0)
     };
     // F-16850: go = green for the lane (or a car of the bIsProxy pool while the red light race byte is set) and the
     // junction's box not held by anything but this car (`Blockers`); a refused car stops at the line as at red (and
@@ -2850,7 +2923,7 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
                             r.next = None;
                             g.turned = true;
                         }
-                        None => r.choose_next(nav),
+                        None => r.choose_next_env(env),
                     }
                     let nl = nav.links[n].lane;
                     let c = &nav.curves[nl];
@@ -3127,6 +3200,8 @@ mod drive_rule_tests {
         objs: Vec<(u8, [[f32; 3]; 3], [f32; 3], (f32, f32), bool, SelCar, u32, f32, f32)>,
         /// per rail: run-time, start, per object (nearest point, phase)
         rails: Vec<(bool, [f32; 3], Vec<([f32; 3], f32)>)>,
+        /// rail 0 an arc-line-arc rail (tools/traffic_select_tcp_reference.py): its slots 12 / 14 are `RunRail`'s
+        tcp: Option<TcpRail>,
     }
 
     impl SelCase {
@@ -3164,10 +3239,16 @@ mod drive_rule_tests {
             (x.0 == 0 || (x.0 == 9 && x.4)).then(|| ((x.6 != 0).then_some(x.6 == 2), x.7, x.8))
         }
         fn nearest(&self, rail: SelRail, o: usize) -> ([f32; 3], f32) {
-            self.rails[Self::index(rail)].2[o]
+            match (&self.tcp, Self::index(rail)) {
+                (Some(q), 0) => RunRail::Tcp(q).nearest(Vec3::from(self.objs[o].1[2])),
+                (_, k) => self.rails[k].2[o],
+            }
         }
         fn start(&self, rail: SelRail) -> [f32; 3] {
-            self.rails[Self::index(rail)].1
+            match (&self.tcp, Self::index(rail)) {
+                (Some(q), 0) => RunRail::Tcp(q).start(),
+                (_, k) => self.rails[k].1,
+            }
         }
     }
 
@@ -3215,7 +3296,7 @@ mod drive_rule_tests {
                 let s = v3(&mut next);
                 rails.push((rt, s, (0..nobj).map(|_| (v3(&mut next), f32::from_bits(next()))).collect::<Vec<_>>()));
             }
-            let mut case = SelCase { objs, rails };
+            let mut case = SelCase { objs, rails, tcp: None };
             for (i, &(beh, r188, r192)) in behs.iter().enumerate() {
                 case.objs[i].5.beh = beh.then(|| (case.rail(r188), case.rail(r192)));
             }
@@ -3243,6 +3324,128 @@ mod drive_rule_tests {
         }
         assert_eq!(n, 5500);
         assert!(near > 500 && block > 100 && btrue > 150 && clear > 800 && clear < 2400, "{near} {block} {btrue} {clear}");
+    }
+
+    /// The selection with an arc-line-arc rail as the asker's current rail against the original's code run offline
+    /// (tools/traffic_select_tcp_reference.py -> testdata/traffic_select_tcp_ref.txt): F-47175 whose slot 14 / 12 calls on
+    /// that rail are the image's (F-36154 -> F-16977, F-55960 -> F-33742) on the record F-85722 built; the port's
+    /// `RunRail` on `tcp_rail::build`'s rail. Both result words and the rail's valid flag equal in every case.
+    #[test]
+    fn select_tcp_matches_the_original() {
+        let (mut n, mut near, mut block, mut valid) = (0, 0, 0, 0);
+        for line in include_str!("testdata/traffic_select_tcp_ref.txt").lines() {
+            let (input, want) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = input.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let mut k = 0;
+            let mut next = || {
+                k += 1;
+                w[k - 1]
+            };
+            let (mode, nobj, asker, nr, ra, rb, bs) = (next(), next() as usize, next() as usize, next() as usize, next(), next(), f32::from_bits(next()));
+            assert_eq!(mode, 3);
+            let c = next();
+            let cands: Vec<usize> = (0..c).map(|_| next() as usize).collect();
+            let v3 = |f: &mut dyn FnMut() -> u32| [f32::from_bits(f()), f32::from_bits(f()), f32::from_bits(f())];
+            let mut objs = Vec::new();
+            let mut behs = Vec::new();
+            for _ in 0..nobj {
+                let kind = next() as u8;
+                let rows = [v3(&mut next), v3(&mut next), v3(&mut next)];
+                let vel = v3(&mut next);
+                let size = (f32::from_bits(next()), f32::from_bits(next()));
+                let (hascar, speed, active, cab, trl, beh, r188, r192, lane, idle, limit) =
+                    (next() != 0, f32::from_bits(next()), next() != 0, next() != 0, next() != 0, next() != 0, next(), next(), next(), f32::from_bits(next()), f32::from_bits(next()));
+                behs.push((beh, r188, r192));
+                objs.push((kind, rows, vel, size, hascar, SelCar { speed, beh: None, cab_or_trailer: cab || trl, active }, lane, idle, limit));
+            }
+            let mut rails = Vec::new();
+            for _ in 0..nr {
+                let rt = next() == 0x1800;
+                let s = v3(&mut next);
+                rails.push((rt, s, (0..nobj).map(|_| (v3(&mut next), f32::from_bits(next()))).collect::<Vec<_>>()));
+            }
+            let (p, h0, t, h1) = (Vec3::from(v3(&mut next)), Vec3::from(v3(&mut next)), Vec3::from(v3(&mut next)), Vec3::from(v3(&mut next)));
+            let (r, s0, s1) = (f32::from_bits(next()), next() != 0, next() != 0);
+            let q = crate::tcp_rail::build(p, h0, t, h1, r, s0, s1);
+            let mut case = SelCase { objs, rails, tcp: Some(q) };
+            for (i, &(beh, r188, r192)) in behs.iter().enumerate() {
+                case.objs[i].5.beh = beh.then(|| (case.rail(r188), case.rail(r192)));
+            }
+            let ix = |x: Option<usize>| x.map_or("ffffffff".to_string(), |x| format!("{x:x}"));
+            let (a, b) = select_obstacles(&case, asker, &cands, case.rail(ra), case.rail(rb), bs);
+            near += a.is_some() as usize;
+            block += b.is_some() as usize;
+            valid += q.valid() as usize;
+            assert_eq!(format!("{} {} {}", ix(a), ix(b), q.valid() as u8), want.trim(), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+        assert!(near > 500 && block > 100 && valid > 2000, "{near} {block} {valid}");
+    }
+
+    /// The cab's trailer pick against the original's code run offline (tools/trailer_pick_reference.py ->
+    /// testdata/trailer_pick_ref.txt): F-45988 whole on the cab's MWC, the type lookup answered from the case; the name,
+    /// the shade and the MWC after equal in every case.
+    #[test]
+    fn trailer_pick_matches_the_original() {
+        let (mut n, mut shades) = (0, 0);
+        let h = |x: &str| u32::from_str_radix(&x.replace('_', ""), 16).unwrap();
+        for line in include_str!("testdata/trailer_pick_ref.txt").lines() {
+            let (input, want) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = input.split(' ').collect();
+            let mut m = super::GMwc { lo: h(w[0]), carry: h(w[1]) };
+            let mut asked = None;
+            let got = trailer_pick(&mut m, |name| {
+                asked = TRAILERS.iter().position(|&t| t == name);
+                w[2] == "1"
+            });
+            shades += got.is_some() as usize;
+            let k = asked.map_or(-1, |k| k as i32);
+            let shade = got.map_or(0xFFFF, |g| g.1);
+            let got = format!("{k} {shade:x} {:04x}_{:04x} {:04x}_{:04x}", m.lo >> 16, m.lo & 0xFFFF, m.carry >> 16, m.carry & 0xFFFF);
+            assert_eq!(got, want.trim(), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+        assert!(shades > 2000, "{shades}");
+    }
+
+    /// The pass tracker's test against the original's code run offline (tools/traffic_passmoved_reference.py ->
+    /// testdata/traffic_passmoved_ref.txt): F-73744 whole; the answer equal in every case.
+    #[test]
+    fn pass_moved_matches_the_original() {
+        let (mut n, mut moved) = (0, 0);
+        for line in include_str!("testdata/traffic_passmoved_ref.txt").lines() {
+            let (input, want) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = input.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let v = |i: usize| Vec3::new(f32::from_bits(w[i]), f32::from_bits(w[i + 1]), f32::from_bits(w[i + 2]));
+            let got = pass_moved(v(1), (w[0] != 0).then(|| v(4)));
+            moved += got as usize;
+            assert_eq!(format!("{}", got as u8), want.trim(), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+        assert!(moved > 800, "{moved}");
+    }
+
+    /// The mutual-nearest mark against the original's code run offline (tools/traffic_mark_reference.py ->
+    /// testdata/traffic_mark_ref.txt): F-37525 whole, the cast and our obstacle answered from the case; the mark (the other
+    /// or none) equal in every case.
+    #[test]
+    fn mutual_mark_matches_the_original() {
+        let (mut n, mut marked) = (0, 0);
+        for line in include_str!("testdata/traffic_mark_ref.txt").lines() {
+            let (input, want) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = input.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let v = |i: usize| Vec3::new(f32::from_bits(w[i]), f32::from_bits(w[i + 1]), f32::from_bits(w[i + 2]));
+            let pre = w[0] != 0 && w[1] != 0 && w[2] != 0 && w[3] != 0 && w[4] == 0 && w[5] != 0;
+            let got = pre && mutual_mark(w[6] == 3, (v(14), v(17)), w[7] == 3, (v(8), v(11)));
+            marked += got as usize;
+            assert_eq!(format!("{}", got as u8), want.trim(), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
+        assert!(marked > 1000, "{marked}");
     }
 
     /// The trailer's cab check against the original's code run offline (tools/trailer_cab_reference.py ->
@@ -3410,6 +3613,16 @@ fn after_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, ahead
     }
 }
 
+/// F-73744 (the pass tracker, behaviour +480): its obstacle (+0) when that moved more than 0.333 m from its place when the
+/// pass began (+16): the squared distance fma(dx, dx, fma(dz, dz, dy dy)) of (now - then) > 0.110889 (0x3DE319C6; a NaN:
+/// not); no obstacle (gone: the object-deleted clear F-57497 nulls +480): none.
+pub fn pass_moved(at: Vec3, now: Option<Vec3>) -> bool {
+    use crate::physics::exact::fma;
+    let Some(p) = now else { return false };
+    let (dy, dz, dx) = (p.y - at.y, p.z - at.z, p.x - at.x);
+    fma(dx, dx, fma(dz, dz, dy * dy)) > f32::from_bits(0x3DE3_19C6)
+}
+
 /// One frame on a rail off the lanes (states 6 - 8). Returns the new pose, or None when the
 /// car turns physical (the footprint probe hit something).
 pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half_len: f32, upright: bool, dt: f32) -> Option<(Vec3, Vec3)> {
@@ -3422,7 +3635,7 @@ pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half
     // state 7: what is being passed moved off - a recovery rail instead
     if r.state == 7 {
         if let Some((j, at)) = r.passing {
-            if env.others.get(j).map_or(true, |o| o.pos.distance_squared(at) > 0.110889) && try_recovery(r, env, me, pos, fwd, upright, dt) {
+            if pass_moved(at, env.others.get(j).map(|o| o.pos)) && try_recovery(r, env, me, pos, fwd, upright, dt) {
                 r.passing = None;
             }
         }
@@ -3441,8 +3654,8 @@ pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half
     let ahead = if path.reverse {
         Ahead { j: usize::MAX, d: 0.0, vt: 0.0, blocking: None, player_across: false }
     } else {
-        let segs = path.segs();
-        search_ahead(r, env, me, q, dir, &[segs], (None, None), None, [Some(GatherRail::RunTime), None, None], 0.0)
+        let geom = path.geom.clone();
+        search_ahead(r, env, me, q, dir, Some(geom.run()), (None, None), None, [Some(GatherRail::RunTime), None, None], 0.0)
     };
     let (mut a, chosen) = control(r, r.v, want, half_len, &ahead, env.others, None, None, None, dt);
     r.slot = chosen;
@@ -3513,7 +3726,7 @@ pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half
             }
         }
         r.on = [false; 3];
-        r.choose_next(env.nav);
+        r.choose_next_env(env);
         let (p, f) = r.pose(env.nav);
         return Some((p, f));
     }
@@ -3939,6 +4152,7 @@ impl Vehicles {
                     cab_or_trailer: r.is_some_and(|r| r.ty.cab || r.ty.trailer),
                     key: r.map_or(0, |r| r.rng_id()),
                     kind: crate::brainturn::ObjectInfo::from_car(0, c).kind,
+                    nearest: r.and_then(|r| r.kept).and_then(|(j, _)| self.cars.get(j)?.rail.as_ref().map(|x| x.rng_id())),
                 }
             })
             .collect();
@@ -4328,8 +4542,8 @@ impl Vehicles {
         if !r.ty.cab || !hitch {
             return;
         }
-        let name = TRAILERS[(r.rand() * 5.0) as usize % 5];
-        let shade = (r.rand() * 20.0) as usize % 20;
+        let models = &self.models;
+        let Some((name, shade)) = trailer_pick(&mut r.mwc, |n| models.iter().any(|m| m.name.eq_ignore_ascii_case(n))) else { return };
         let (cab_id, link, s) = (r.rng_id(), r.link, r.s);
         let Some(mi) = self.models.iter().position(|m| m.name.eq_ignore_ascii_case(name)) else { return };
         let (cp, cr) = (self.cars[cab].state.pos, self.cars[cab].state.rot);
@@ -4774,7 +4988,7 @@ mod tests {
     }
 
     fn vrider(ty: AmbType) -> Rider {
-        Rider { ty, link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, mwc: mwc_seed(7), ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None }
+        Rider { ty, link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, mwc: mwc_seed(7), ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None, mark: None }
     }
 
     /// The brake lamp's flag (F-56024 with F-86955, F-17857 and F-59415) against the original's code run offline on 4,000
@@ -5404,7 +5618,7 @@ mod tests {
     #[test]
     fn a_physical_or_resting_car_is_not_put_back_on_its_seat() {
         // (a seat from before the hit: physical or at rest the instance stays where the collider left it)
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, mwc: mwc_seed(7), ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, mwc: mwc_seed(7), ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None, mark: None };
         r.seat = Some(Seat::new(Vec3::ZERO, Vec3::Y, Vec3::NEG_Z));
         assert!(seat_poses(&r));
         for (state, active) in [(4, false), (4, true), (5, false), (5, true), (1, true)] {
@@ -5432,7 +5646,7 @@ mod tests {
     /// its rail (slot 20 / F-86858: the follower has a rail).
     #[test]
     fn a_physical_path_car_pairs_only_while_on_a_rail() {
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, mwc: mwc_seed(7), ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, mwc: mwc_seed(7), ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None, mark: None };
         assert!(!r.pairs_inactive());
         r.phys_pair = true;
         for (state, yes) in [(1u8, true), (9, true), (10, false), (0, false), (4, false), (5, false), (6, false)] {
@@ -7032,6 +7246,7 @@ impl Vehicles {
             self.cars[idx].state.relocate(ground, Quat::from_mat3(&glam::Mat3::from_cols(right, normal, -f)).normalize());
             let seed = (self.rand() * 16777216.0) as u32 | 1;
             let mut rider = Rider::new(nav, ty, link, s, seed);
+            rider.choose_next(nav, &mut self.park_rng);
             rider.born = self.clock;
             (rider.life, rider.off_timer, rider.wait, rider.bonus, rider.mwc) = (init.life, init.off_timer, init.wait, init.bonus, init.car);
             rider.seat = Some(Seat::new(ground, normal, f));
@@ -7714,12 +7929,7 @@ impl PathRails {
         let mut rails = Vec::new();
         if self.snapped.len() > 1 {
             if let Some(c) = &self.curve {
-                let n = (c.length().ceil() as usize).clamp(8, 800);
-                let pts: Vec<(Vec3, f32)> = (0..=n).map(|k| {
-                    let t = k as f32 / n as f32;
-                    (c.eval(t).0, t)
-                }).collect();
-                rails.push(RouteRail::Curve(c.clone(), pts));
+                rails.push(RouteRail::Curve(c.clone()));
             }
             if let Some(j) = &self.join {
                 rails.push(RouteRail::Turn(Path::tcp(*j, self.speed, None)));
@@ -7729,11 +7939,10 @@ impl PathRails {
     }
 }
 
-/// A rail of a path's route: the curve rail (with points along it for the car-ahead search) or
-/// the join rail.
+/// A rail of a path's route: the curve rail or the join rail.
 #[derive(Clone, Debug)]
 pub enum RouteRail {
-    Curve(LaneCurve, Vec<(Vec3, f32)>),
+    Curve(LaneCurve),
     Turn(Path),
 }
 
@@ -7767,7 +7976,7 @@ impl Route {
     /// The point and heading where the car is.
     fn peek(&self) -> (Vec3, Vec3) {
         match &self.rails[self.i] {
-            RouteRail::Curve(c, _) => {
+            RouteRail::Curve(c) => {
                 let (p, d) = c.eval(self.t);
                 (p, d.normalize_or(Vec3::NEG_Z))
             }
@@ -7779,7 +7988,7 @@ impl Route {
     /// of |dP/dt| here and the last value).
     fn pose(&mut self) -> (Vec3, Vec3) {
         let (p, d, sp) = match &mut self.rails[self.i] {
-            RouteRail::Curve(c, _) => {
+            RouteRail::Curve(c) => {
                 let (p, d) = c.eval(self.t);
                 (p, d.normalize_or(Vec3::NEG_Z), Some(d.length()))
             }
@@ -7797,20 +8006,8 @@ impl Route {
     /// The drawn steer's look on the rail the car is on (F-37033: slot 6 then slot 10).
     fn look(&self, hub_z: f32) -> Vec3 {
         match &self.rails[self.i] {
-            RouteRail::Curve(c, _) => c.eval(steer_look(self.t, self.ds, hub_z)).1,
+            RouteRail::Curve(c) => c.eval(steer_look(self.t, self.ds, hub_z)).1,
             RouteRail::Turn(p) => p.look(hub_z),
-        }
-    }
-
-    /// Rail `k` as segments (from where the car is when `k` is its rail).
-    fn segs(&self, k: usize) -> Vec<(Vec3, Vec3)> {
-        let here = k == self.i;
-        match &self.rails[k] {
-            RouteRail::Curve(_, pts) => pts.windows(2).filter(|w| !here || w[1].1 > self.t).map(|w| (w[0].0, w[1].0)).collect(),
-            RouteRail::Turn(p) => {
-                let q = p.pts(if here { p.t.clamp(0.0, 1.0) } else { 0.0 });
-                q.windows(2).map(|w| (w[0], w[1])).collect()
-            }
         }
     }
 }
@@ -7840,17 +8037,19 @@ pub fn step_route(r: &mut Rider, env: &Env, me: usize, half_len: f32, dt: f32) -
     let ahead = {
         let rt = r.route.as_ref().unwrap();
         let (pos, fwd) = rt.peek();
-        let mut rails = vec![rt.segs(rt.i)];
+        let cur = rt.rails[rt.i].clone();
         let (next_lane, next_start, b_start) = if rt.i + 1 < rt.rails.len() {
-            rails.push(rt.segs(rt.i + 1));
             (None, None, 0.0)
         } else {
-            rails.push(lane_segs(nav, env.lanes, rt.lane));
             (Some(rt.lane), nav.curves.get(rt.lane).map(|c| c.eval(rt.lane_t).0), rt.lane_t)
         };
         // (the path's curve and join rails taken as run-time rails - F-47175's grid branch; the lane after them +192 at
         // the route lane's phase +196 (F-48618's +296); between the path's own rails +196 is not traced: 0)
-        search_ahead(r, env, me, pos, fwd, &rails, (None, next_lane), next_start, [Some(GatherRail::RunTime), next_lane.map(GatherRail::Lane), None], b_start)
+        let run = match &cur {
+            RouteRail::Curve(c) => RunRail::Curve(c),
+            RouteRail::Turn(p) => p.geom.run(),
+        };
+        search_ahead(r, env, me, pos, fwd, Some(run), (None, next_lane), next_start, [Some(GatherRail::RunTime), next_lane.map(GatherRail::Lane), None], b_start)
     };
     let want = (r.route.as_ref().unwrap().speed + r.off).max(MIN_WANT);
     let (mut a, chosen) = control(r, r.v, want, half_len, &ahead, env.others, None, None, None, dt);
@@ -7865,7 +8064,7 @@ pub fn step_route(r: &mut Rider, env: &Env, me: usize, half_len: f32, dt: f32) -
             let rt = r.route.as_mut().unwrap();
             let i = rt.i;
             match &mut rt.rails[i] {
-                RouteRail::Curve(c, _) => {
+                RouteRail::Curve(c) => {
                     if rt.ds <= 0.0 {
                         rt.ds = c.speed(rt.t);
                     }
@@ -7911,7 +8110,7 @@ pub fn step_route(r: &mut Rider, env: &Env, me: usize, half_len: f32, dt: f32) -
             }
             r.state = 1;
             r.on = [false; 3];
-            r.choose_next(nav);
+            r.choose_next_env(env);
             return r.pose(nav);
         }
     }
@@ -8522,7 +8721,7 @@ impl Vehicles {
         let mut r = Rider::new(nav, ty, link, s, seed);
         r.set_phase(nav, lanes, route.lane_t);
         r.ds_lane = usize::MAX;
-        r.choose_next(nav);
+        r.choose_next(nav, &mut self.park_rng);
         r.born = self.clock;
         r.race_lane = (route.rails.len() < 2 && nav.links[link].flags & 0x1800 == 0).then_some(route.lane);
         if !route.rails.is_empty() {
@@ -8640,7 +8839,7 @@ impl Vehicles {
                             r.link = link;
                             r.set_phase(nav, lanes, rt.lane_t);
                             r.ds_lane = usize::MAX;
-                            r.choose_next(nav);
+                            r.choose_next(nav, &mut self.park_rng);
                         }
                         r.path = None;
                         r.quiet = pr.quiet;
@@ -9736,9 +9935,8 @@ fn step_lane_change(r: &mut Rider, env: &Env, me: usize, half_len: f32, dt: f32)
     let (want, _) = wanted((path.speed, false), next_link.map(|k| rail_speed(nav, k).0), r.off, (false, false));
     let (q, dir) = path.at(path.t);
     let ahead = {
-        let rails = vec![path.segs(), lane_segs(nav, env.lanes, to)];
         let next_start = nav.curves.get(to).map(|c| c.eval(to_t).0);
-        search_ahead(r, env, me, q, dir, &rails, (None, Some(to)), next_start, [Some(GatherRail::RunTime), Some(GatherRail::Lane(to)), None], to_t)
+        search_ahead(r, env, me, q, dir, Some(path.geom.run()), (None, Some(to)), next_start, [Some(GatherRail::RunTime), Some(GatherRail::Lane(to)), None], to_t)
     };
     let dest = r.ghost.as_ref().and_then(|g| g.dest_entry());
     let (mut a, chosen) = control(r, r.v, want, half_len, &ahead, env.others, None, None, dest, dt);
@@ -9992,6 +10190,7 @@ impl Vehicles {
                     cab_or_trailer: r.is_some_and(|r| r.ty.cab || r.ty.trailer),
                     key: r.map_or(0, |r| r.rng_id()),
                     kind: crate::brainturn::ObjectInfo::from_car(0, c).kind,
+                    nearest: r.and_then(|r| r.kept).and_then(|(j, _)| self.cars.get(j)?.rail.as_ref().map(|x| x.rng_id())),
                 }
             })
             .collect()
