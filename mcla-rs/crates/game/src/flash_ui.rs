@@ -2167,7 +2167,7 @@ pub struct FlashHud {
     /// The HUD manager's info-text ring (`F-60548` pushes, at most fifteen; `F-72577` pops when the movie
     /// sets `infoDone`): the texts, already looked up in the string table
     pub info_queue: std::collections::VecDeque<String>,
-    /// The song line (`F-50313`): its text (+0x1174C) while one waits for the line (+0x117CC != -1), and whether it
+    /// The song line (`F-73849`): its text (+0x1174C) while one waits for the line (+0x117CC != -1), and whether it
     /// is on show (+0x117D0)
     pub song: Option<String>,
     song_shown: bool,
@@ -2229,7 +2229,7 @@ impl FlashHud {
         p.set_global("d_selectedlevel_longname", Value::str(text.unwrap_or("")));
     }
 
-    /// The song line (`F-50313`, at a new song and every 15 s of it): the text waits for the line; with nothing
+    /// The song line (`F-73849`, at a new song and every 15 s of it): the text waits for the line; with nothing
     /// queued it goes up at once, highlighted, and the movie runs it across.
     pub fn song_info(&mut self, text: &str) {
         self.song = Some(text.to_string());
