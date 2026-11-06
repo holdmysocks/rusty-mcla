@@ -323,3 +323,19 @@ fn leftx_getter_matches_the_original() {
     let side = |b: u8| (crate::mc4::stick_float(b) < -0.5, crate::mc4::stick_float(b) > 0.5);
     assert_eq!((side(63), side(64), side(191), side(192)), ((true, false), (false, false), (false, false), (false, true)));
 }
+
+/// The wager form's amount set-up (F-19872) run offline on the original's code (tools/ui_wager_amount_reference.py):
+/// for each base and difficulty the range, the amount and the step equal `wager_range`.
+#[test]
+fn wager_range_matches_the_original() {
+    let mut n = 0;
+    for l in include_str!("testdata/ui_wager_amount_ref.txt").lines() {
+        let (case, out) = l.split_once(" -> ").unwrap();
+        let c: Vec<i64> = case.split(' ').map(|v| v.parse().unwrap()).collect();
+        let o: Vec<i32> = out.split(' ').map(|v| v.parse().unwrap()).collect();
+        let (lo, hi, mid, step) = crate::game::wager_range(c[0] as i32, c[1] as u32);
+        assert_eq!((lo, hi, mid, step), (o[0], o[1], o[2], o[3]), "{l}");
+        n += 1;
+    }
+    assert_eq!(n, 4000);
+}

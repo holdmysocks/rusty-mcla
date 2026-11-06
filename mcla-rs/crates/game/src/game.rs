@@ -785,6 +785,10 @@ pub struct Game {
     place_goto: Option<u32>,
     /// a pink slip race of a hangout is over: lost (`bFailure`) - its race-over tab (F-36093)
     pub pink_over: Option<bool>,
+    /// a won pink slip race's end scene still to play after the panels (scene, speech scenario) - wager_hangout_core
+    /// 0x5a07 (`mc4_pink_scene`); `pink_scene_on` while it plays: no panel and no race-over menu until its fade up
+    pub pink_scene: Option<(String, String)>,
+    pub pink_scene_on: bool,
     /// MISSION RESULTS after an event: the missions it finished (title, objectives)
     /// (title, objectives, done: false for a mission the event did not finish - stamped FAIL)
     pub mission_results: Vec<(String, Vec<String>, bool)>,
@@ -1516,6 +1520,8 @@ impl Game {
             place_own: None,
             place_goto: None,
             pink_over: None,
+            pink_scene: None,
+            pink_scene_on: false,
             mission_results: Vec::new(),
             mu_pending: false,
             rp_pending: false,
@@ -3321,6 +3327,7 @@ impl Game {
         }
         // (step 21: won - the car, lost - the stake stays in the lot)
         let pink_hangout = self.opt_x.arcade.pink.run.is_some();
+        self.pink_scene = self.mc4_pink_scene(place == 1);
         if let Some(key) = self.mc4_pink_end(place == 1) {
             self.pink_over = pink_hangout.then_some(place != 1);
             let m = self.career.strings.get(key).map(|s| s.to_uppercase()).unwrap_or_else(|| if place == 1 { "PINKSLIP WON".into() } else { "PINKSLIP LOST".into() });
@@ -9360,6 +9367,10 @@ impl Game {
                         self.mission_results.drain(..n);
                     }
                     (false, false, false, false)
+                } else if self.pink_scene_on || self.pink_scene.is_some() {
+                    // (a won pink slip race: its end scene after the panels, the race-over menu after its fade up -
+                    // wager_hangout_core 0x5a07 .. 0x5f2c, main.rs `pink_end_tick`)
+                    (false, false, false, false)
                 } else {
                     (up, down, enter, back)
                 };
@@ -11856,7 +11867,7 @@ impl Game {
     }
 
     /// RAND_INT_RANGE(lo, hi), both ends in, on the port's generator (the original's sequence is not reproduced)
-    fn rand_int_range(&mut self, lo: usize, hi: usize) -> usize {
+    pub(crate) fn rand_int_range(&mut self, lo: usize, hi: usize) -> usize {
         if hi <= lo {
             return lo;
         }
@@ -13508,14 +13519,12 @@ impl Game {
         let pink_profiles = if wager { self.mc4_pink_profiles(&key) } else { Vec::new() };
         let pink_open = !pink_profiles.is_empty() && self.owned.len() >= 2;
         let stake_of = |this: &Self, d: usize, place: usize| -> (i64, i64, i64) {
-            // (measured on the R8 at the top of the career: 5,000 / 9,100 / 14,560 / 21,840 in
-            // the middle, steps of 200 / 360 / 580 / 875 - the race money of the difficulty
-            // times 25/26, 7/5, 28/15, 12/5; other cars and ranks in proportion)
-            const MID: [f32; 4] = [25.0 / 26.0, 1.4, 28.0 / 15.0, 2.4];
-            const STEP: [f32; 4] = [200.0 / 5000.0, 360.0 / 9100.0, 580.0 / 14560.0, 875.0 / 21840.0];
-            let mid = (crate::rewards::race_money(this.rep, class, d, 10.0) * MID[d.min(3)] / 10.0).round() * 10.0;
-            let step = ((mid * STEP[d.min(3)]) / 5.0).round() * 5.0;
-            ((mid + (place as f32 - 5.0) * step) as i64, (mid - 5.0 * step) as i64, (mid + 5.0 * step) as i64)
+            // (the form's slider money, F-86598: a MEDIUM race's money for the car's class, rounded to 10, x 1.0;
+            // the amount and its range by the difficulty, F-19872 - `wager_range`; the slider's 11 places from lo
+            // to hi by the step, the middle the amount)
+            let base = (crate::rewards::race_money(this.rep, class, 1, 10.0) * 1.0f32) as i32;
+            let (lo, hi, mid, step) = wager_range(base, d as u32);
+            ((mid + (place as i32 - 5) * step) as i64, lo as i64, hi as i64)
         };
         let delivery = key.contains("delivery");
         // (the tournament's and the payback's panels - mcTournamentForm / mcPaybackForm: `mc4_event_panel`)
@@ -14258,6 +14267,10 @@ impl Game {
         }
         // (the race's end: nothing over the picture until WAITUNWARPED(200) is over)
         if self.race_end_t.map_or(false, |t| t < Self::RACE_END_PANEL) && self.replay.is_none() {
+            return true;
+        }
+        // (a won pink slip race's end scene: between the panels and the race-over menu)
+        if (self.pink_scene_on || self.pink_scene.is_some()) && !self.reward_panel && self.mission_results.is_empty() && self.replay.is_none() {
             return true;
         }
         // (step 19d: form 56's banner, after the place's splash - `mc4_banner_page`)
@@ -15715,4 +15728,23 @@ pub fn garage_uid(g: usize) -> u32 {
     use crate::hudmap::{Kind, PLACES};
     let door = crate::garagein::SETUPS[g.min(crate::garagein::SETUPS.len() - 1)].door;
     PLACES.iter().filter(|x| x.1 == Kind::Garage).min_by(|a, b| Vec3::from(a.2).distance(door).total_cmp(&Vec3::from(b.2).distance(door))).map_or(0, |x| x.0)
+}
+
+/// The wager form's amount and slider range (F-19872): `base` (the slider money, F-86598) x 1.4, then x 0.55 / 1.6 / 2.4
+/// for difficulty 0 / 2 / 3 (1 and any other value: none), each an f32 product, cut to an int and down to a multiple
+/// of 20 - the amount; the step is (amount - 20 x trunc(trunc(amount x -0.8) / -20)) / 25 x 5 and the range the
+/// amount -/+ 5 steps. Returns (lo, hi, amount, step). Run offline: tools/ui_wager_amount_reference.py.
+pub fn wager_range(base: i32, d: u32) -> (i32, i32, i32, i32) {
+    let cut = |v: f32| if v.is_nan() { i32::MIN } else { v as i32 };
+    let mut v = base as f32 * 1.4f32;
+    match d {
+        0 => v *= 0.55f32,
+        2 => v *= 1.6f32,
+        3 => v *= 2.4f32,
+        _ => {}
+    }
+    let mid = cut(v) / 20 * 20;
+    let t = cut(mid as f32 * -0.8f32) / -20 * 20;
+    let step = (mid - t) / 5 / 5 * 5;
+    (mid - 5 * step, mid + 5 * step, mid, step)
 }
