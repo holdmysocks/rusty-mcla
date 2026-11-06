@@ -905,6 +905,37 @@ pub struct Rim {
     pub selected: bool,
 }
 
+/// F-75199: (x, y, z) of `view_proj` times (p, 1), each row fused as the original's
+/// (m0 x + (m8 z + m4 y)) + m12, then times 1 / w on the vector unit (denormals flushed); no guard at w = 0.
+pub fn project_point(m: &Mat4, p: Vec3) -> Vec3 {
+    use crate::sndobj::fmadds;
+    let c = m.to_cols_array();
+    let row = |i: usize| fmadds(c[i], p.x, fmadds(c[8 + i], p.z, c[4 + i] * p.y)) + c[12 + i];
+    let ftz = |v: f32| if v.is_subnormal() { 0.0f32.copysign(v) } else { v };
+    let inv = ftz(1.0 / row(3));
+    Vec3::new(ftz(ftz(row(0)) * inv), ftz(ftz(row(1)) * inv), ftz(ftz(row(2)) * inv))
+}
+
+/// F-72569's length of a projected point: sqrt(z z + (y y + x x)), fused.
+pub fn projected_len(q: Vec3) -> f32 {
+    use crate::sndobj::fmadds;
+    fmadds(q.z, q.z, fmadds(q.y, q.y, q.x * q.x)).sqrt()
+}
+
+/// F-40572's angle of a rim dot from the projected point: pi / 2 - atan2(y, x) (F-65975, rounded to f32).
+pub fn rim_angle(q: Vec3) -> f32 {
+    std::f32::consts::FRAC_PI_2 - crate::physics::exact::guest_atan2(q.y as f64, q.x as f64) as f32
+}
+
+/// F-40572's colour word as bytes (A, R, G, B): each component times 255, truncated, and packed by adds and
+/// shifts - so nothing is clamped and a value past a byte carries into the next.
+pub fn rim_word(c: [f32; 4]) -> [u8; 4] {
+    let t = |x: f32| (x * 255.0) as i32 as u32;
+    let n = |x: f32| (x * -255.0) as i32 as u32;
+    let hi = ((n(c[3]) << 8).wrapping_add(n(c[0])) << 8).wrapping_add(n(c[1])) << 8;
+    t(c[2]).wrapping_sub(hi).to_be_bytes()
+}
+
 /// One rim dot's place and alpha (F-42900): (0, 0, 90) turned about y by the angle (F-86740, the C library's sine and
 /// cosine, fused), so x = 90 sin, z = 90 cos; the selected dot's alpha is (sin(8 x the UI clock) + 1) / 2, the others 1.
 /// (Its matrix scales the mesh by 6, 6, 6 - rows (6, 0, ~0), (0, -6, 0), (~0, 0, -6), the -5.2e-7 left by the half turn
@@ -987,17 +1018,13 @@ impl Frame {
     }
 
     fn project(&self, p: Vec3) -> Vec3 {
-        let c = self.view_proj * p.extend(1.0);
-        if c.w.abs() < 1e-6 {
-            return Vec3::splat(10.0);
-        }
-        c.truncate() / c.w
+        project_point(&self.view_proj, p)
     }
 
     /// `F-72569`: inside the map when |projected (x, y, z)| < RimIconRadius - the depth (0..1)
     /// counts in the length.
     fn inside(&self, tune: &Tune, p: Vec3) -> bool {
-        self.project(p).length() < tune.f("RimIconRadius", 1.25)
+        projected_len(self.project(p)) < tune.f("RimIconRadius", 1.25)
     }
 
     /// The per-icon base (`F+144`, or the GPS map's distance rule).
@@ -1026,9 +1053,9 @@ impl Queue {
 
     /// `F-40572`: a rim dot at the element's bearing.
     fn rim(&mut self, f: &Frame, p: Vec3, colour: [f32; 4], selected: bool, kind: u8) {
-        let q = f.project(p);
-        let angle = std::f32::consts::FRAC_PI_2 - q.y.atan2(q.x);
-        self.rim.push(Rim { angle, colour: word(colour), kind, selected });
+        let angle = rim_angle(f.project(p));
+        let [a, r, g, b] = rim_word(colour);
+        self.rim.push(Rim { angle, colour: [r, g, b, a].map(|v| v as f32 / 255.0), kind, selected });
     }
 }
 

@@ -257,3 +257,32 @@ fn rim_dot_matches_the_original() {
     }
     assert_eq!(n, 3000);
 }
+
+/// F-75199 (projection), F-72569 (inside) and F-40572 (the rim-dot queue: angle and colour word) run offline on the
+/// original's code (tools/ui_rim_queue_reference.py): every word equal.
+#[test]
+fn rim_queue_matches_the_original() {
+    let mut n = [0; 3];
+    for l in include_str!("testdata/ui_rim_queue_ref.txt").lines() {
+        let (case, out) = l.split_once(" -> ").unwrap();
+        let c: Vec<u32> = case.split(' ').map(|v| v.parse().unwrap()).collect();
+        let o: Vec<u32> = out.split(' ').map(|v| v.parse().unwrap()).collect();
+        let f = |i: usize| f32::from_bits(c[i]);
+        let m = glam::Mat4::from_cols_array(&std::array::from_fn(|i| f(1 + i)));
+        let q = crate::hudmap::project_point(&m, glam::Vec3::new(f(17), f(18), f(19)));
+        match c[0] {
+            0 => assert_eq!([q.x, q.y, q.z].map(f32::to_bits).to_vec(), o, "{l}"),
+            1 => assert_eq!((crate::hudmap::projected_len(q) < f(21)) as u32, o[0], "{l}"),
+            _ => {
+                let a = crate::hudmap::rim_angle(q);
+                let w = crate::hudmap::rim_word([f(22), f(23), f(24), f(25)]);
+                let same = a.to_bits() == o[0] || (a.is_nan() && f32::from_bits(o[0]).is_nan());
+                assert!(same, "{l}: angle {a}");
+                assert_eq!(w.map(u32::from).to_vec(), o[1..5].to_vec(), "{l}");
+                assert_eq!([o[5], o[6], o[7]], [100, c[27], c[26] & 255], "{l}");
+            }
+        }
+        n[c[0] as usize] += 1;
+    }
+    assert_eq!(n, [1000; 3]);
+}
