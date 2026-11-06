@@ -202,7 +202,9 @@ pub enum News {
     Scene(String),
 }
 
-/// `game\Career\CarsUnlockTip_02` -> `SIDEKICK_CARS_UNLOCK_TIP_02`
+/// `game\Career\CarsUnlockTip_02` -> `SIDEKICK_CARS_UNLOCK_TIP_02` - the string each tip script
+/// shows; only VisualPartUnlockTip_01..04 show `SIDEKICK_VISUAL_PART_TIP_0n` (no UNLOCK) - test
+/// tip_keys_are_the_scripts_strings
 fn tip_key(script: &str) -> String {
     let name = script.rsplit(|c| c == '\\' || c == '/').next().unwrap_or(script);
     let mut out = String::from("SIDEKICK");
@@ -212,7 +214,7 @@ fn tip_key(script: &str) -> String {
         }
         out.push(ch.to_ascii_uppercase());
     }
-    out.replace("__", "_")
+    out.replace("__", "_").replace("SIDEKICK_VISUAL_PART_UNLOCK_TIP", "SIDEKICK_VISUAL_PART_TIP")
 }
 
 pub struct ObjectiveView {
@@ -2992,6 +2994,27 @@ pub fn reward_shown<T>(list: &[T], hidden: impl Fn(&T) -> bool) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// Every career tip script's key is the SIDEKICK string the script itself shows (the
+    /// disassemblies of `work/career2/re/dis`, MCLA_SCRIPT_DIS to override; the four
+    /// VisualPartUnlockTip keys are checked without them).
+    #[test]
+    fn tip_keys_are_the_scripts_strings() {
+        assert_eq!(tip_key(r"game\Career\VisualPartUnlockTip_03"), "SIDEKICK_VISUAL_PART_TIP_03");
+        assert_eq!(tip_key(r"game\Career\CarsUnlockTip_02"), "SIDEKICK_CARS_UNLOCK_TIP_02");
+        let dir = std::env::var("MCLA_SCRIPT_DIS").unwrap_or_else(|_| "D:/MCLA/work/career2/re/dis".to_string());
+        let Ok(rd) = std::fs::read_dir(&dir) else { return };
+        let mut n = 0;
+        for e in rd.flatten() {
+            let f = e.file_name().to_string_lossy().to_string();
+            let Some(name) = f.strip_prefix("game__career__").and_then(|m| m.strip_suffix(".sco.txt")).filter(|m| m.contains("Tip") && !m.contains("__")) else { continue };
+            let text = std::fs::read_to_string(e.path()).unwrap_or_default();
+            let key = tip_key(name);
+            assert!(text.contains(&format!("string '{key}'")), "{name}: {key}");
+            n += 1;
+        }
+        assert!(n == 0 || n >= 40, "{n} tip scripts");
+    }
+
     use super::*;
 
     /// MISSION RESULTS' rules against the original's code run offline
