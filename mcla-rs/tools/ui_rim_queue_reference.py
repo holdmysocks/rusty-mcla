@@ -15,6 +15,24 @@ import subprocess
 import sys
 from pathlib import Path
 import recomp_dispatch as rd
+import recomp_closure
+
+# (the vector unit's flush mode as the SDK's: FTZ and DAZ on the host while the code has it on; the runner's
+# default shim makes it a no-op)
+_vshim = recomp_closure.vector_shim
+
+
+def vector_shim():
+    s = _vshim()
+    fp = ('struct { void disableFlushMode() {} void enableFlushMode() {} void disableFlushModeUnconditional() {}'
+          ' void enableFlushModeUnconditional() {} } fpscr;')
+    assert s.count(fp) == 1
+    on, off = '{_mm_setcsr(_mm_getcsr()|0x8040);}', '{_mm_setcsr(_mm_getcsr()&~0x8040u);}'
+    return s.replace(fp, 'struct { void disableFlushMode() %s void enableFlushMode() %s void disableFlushModeUnconditional() %s'
+                     ' void enableFlushModeUnconditional() %s } fpscr;' % (off, on, off, on), 1)
+
+
+recomp_closure.vector_shim = vector_shim
 
 TOOL = os.environ.get('MCLA_TOOL', 'mcla-tool')
 
@@ -81,6 +99,12 @@ def main():
             if r.random() < 0.2:
                 cols[3] = cols[7] = cols[11] = 0.0
                 cols[15] = r.choice([0.0, 1e-30, -1e-30, 1.0])
+            elif r.random() < 0.25:
+                # (denormal rows and a large w, so the flush is exercised)
+                for k in r.sample(range(16), 6):
+                    cols[k] = r.choice([1e-39, -1e-39, 3e-40])
+                cols[15] = r.choice([1e8, -1e8, 1.0])
+                cols[3] = cols[7] = cols[11] = 0.0
         w = r.choice([1.0, 0.0, r.uniform(-5, 5)])
         rad = r.choice([1.25, r.uniform(0.1, 3.0)])
         col = [r.choice([r.random(), 0.0, 1.0]) for _ in range(4)]

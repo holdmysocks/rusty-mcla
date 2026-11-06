@@ -286,3 +286,20 @@ fn rim_queue_matches_the_original() {
     }
     assert_eq!(n, [1000; 3]);
 }
+/// F-45776 (an icon matrix turned by the map angle, with F-92665's rotation) run offline on the original's code
+/// (tools/ui_turn_y_reference.py): x y z of every row equal.
+#[test]
+fn turn_y_matches_the_original() {
+    let mut n = 0;
+    for l in include_str!("testdata/ui_turn_y_ref.txt").lines() {
+        let (case, out) = l.split_once(" -> ").unwrap();
+        let c: Vec<u32> = case.split(' ').map(|v| v.parse().unwrap()).collect();
+        let o: Vec<u32> = out.split(' ').map(|v| v.parse().unwrap()).collect();
+        let m = glam::Mat4::from_cols_array(&std::array::from_fn(|i| f32::from_bits(c[i])));
+        let r = crate::hudmap::turn_y(m, f32::from_bits(c[16])).to_cols_array();
+        let got: Vec<u32> = (0..4).flat_map(|i| (0..3).map(move |k| (i, k))).map(|(i, k)| r[4 * i + k].to_bits()).collect();
+        assert_eq!(got, o, "{l}");
+        n += 1;
+    }
+    assert_eq!(n, 3000);
+}

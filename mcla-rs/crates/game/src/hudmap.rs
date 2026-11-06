@@ -916,6 +916,28 @@ pub fn project_point(m: &Mat4, p: Vec3) -> Vec3 {
     Vec3::new(ftz(ftz(row(0)) * inv), ftz(ftz(row(1)) * inv), ftz(ftz(row(2)) * inv))
 }
 
+/// F-45776: `m` times RotY(th) (F-92665: rows (c, 0, -s), (0, 1, 0), (s, 0, c) from the CRT cosine and sine) on the
+/// vector unit, denormals flushed: each row r becomes (R0 r.x + R1 r.y) + R2 r.z, the translation row
+/// ((R0 t.x + 0) + R1 t.y) + R2 t.z. Glam columns are the original's rows; the w lanes are kept (the original
+/// leaves the rotation's w lanes unwritten).
+pub fn turn_y(m: Mat4, th: f32) -> Mat4 {
+    use crate::physics::exact::{guest_cos, guest_sin};
+    let ftz = |v: f32| if v.is_subnormal() { 0.0f32.copysign(v) } else { v };
+    let mul = |a: f32, b: f32| ftz(ftz(a) * ftz(b));
+    let add = |a: f32, b: f32| ftz(ftz(a) + ftz(b));
+    let (c, s) = (guest_cos(th as f64) as f32, guest_sin(th as f64) as f32);
+    let rot = [[c, 0.0, -s], [0.0, 1.0, 0.0], [s, 0.0, c]];
+    let row = |v: Vec4, last: bool| {
+        let lane = |j: usize| {
+            let a = mul(rot[0][j], v.x);
+            let a = if last { add(a, 0.0) } else { a };
+            add(add(a, mul(rot[1][j], v.y)), mul(rot[2][j], v.z))
+        };
+        Vec4::new(lane(0), lane(1), lane(2), v.w)
+    };
+    Mat4::from_cols(row(m.x_axis, false), row(m.y_axis, false), row(m.z_axis, false), row(m.w_axis, true))
+}
+
 /// F-72569's length of a projected point: sqrt(z z + (y y + x x)), fused.
 pub fn projected_len(q: Vec3) -> f32 {
     use crate::sndobj::fmadds;
@@ -1182,31 +1204,35 @@ fn draw_element(tune: &Tune, _assets: &mut Assets, f: &Frame, e: &Element, q: &m
             } else {
                 tune.c("NeutralTeamColor", [1.0, 0.956863, 0.380392, 1.0])
             };
-            let p = lift(flat(e.pos));
+            // (F-94221: the element's position E+80, the scale, the pulse, diag(s) with the type-2 offset times s, turned
+            // by the map angle (F-45776), the position added, then y + 1; the mesh is drawn and, on the minimap, a
+            // flag outside the map gets a rim dot as well - at the element's position, not the flag's)
+            use crate::physics::exact::guest_sin;
+            use crate::sndobj::fmadds;
+            let pos = flat(e.pos);
             let mut s0 = f.base(e.pos);
             if e.flags & 0x20 != 0 {
-                let k = f.pulse.sin().abs();
+                let k = (guest_sin(f.pulse as f64) as f32).abs();
+                let add = tune.f("PulseColorFactor", 1.0) * k;
                 for c in 0..3 {
-                    colour[c] = (colour[c] + tune.f("PulseColorFactor", 1.0) * k).min(1.0);
+                    colour[c] = (colour[c] + add).min(1.0);
                 }
-                s0 *= 1.0 + tune.f("PulseSizeFactor", 0.25) * k;
+                colour[3] = colour[3].min(1.0);
+                s0 = fmadds(tune.f("PulseSizeFactor", 0.25), k, 1.0) * s0;
             }
             let s = tune.f("IconFlagScale", 60.0) * s0;
             let off = if matches!(e.kind, Kind::Flag) { tune.v3("FlagOffset", Vec3::new(1.4, 0.0, -1.0)) * s } else { Vec3::ZERO };
-            // (offset turned with the map, then the position added)
-            let (sn, cs) = f.theta.sin_cos();
-            let off = Vec3::new(off.x * cs + off.z * sn, off.y, -off.x * sn + off.z * cs);
-            let m = rot_y(f.theta, s, p + off);
+            let mut m = turn_y(diag(s, off), f.theta);
+            m.w_axis = (m.w_axis.truncate() + pos).extend(1.0);
+            m.w_axis.y += lift(Vec3::ZERO).y;
             if e.selected {
-                colour[3] *= (5.0 * f.tg).sin().abs();
+                colour[3] *= (guest_sin((5.0 * f.tg) as f64) as f32).abs();
             }
             let mesh = if matches!(e.kind, Kind::Flag) { "icon_flag" } else { "icon_flagBase" };
-            let kind = e.kind.type_byte();
-            if minimap && !f.inside(tune, p + off) {
-                q.rim(f, p + off, colour, e.selected, kind);
-                return;
-            }
             q.mesh(mesh, m, colour);
+            if minimap && !f.inside(tune, m.w_axis.truncate()) {
+                q.rim(f, pos, colour, e.selected, e.kind.type_byte());
+            }
         }
         Kind::Gas => {
             let p = lift(flat(e.pos));
