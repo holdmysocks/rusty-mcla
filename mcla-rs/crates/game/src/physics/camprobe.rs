@@ -908,6 +908,138 @@ pub fn instance_masks_pass(states: u32, state_bit: u32, include: u32, types: u32
     states & state_bit != 0 && arch_type & include != 0 && arch_include & types != 0 && arch_type & exclude == 0
 }
 
+/// A bound that is not made of polygons, in its own frame: a sphere (type 0: its centroid +48 and radius +8), a capsule
+/// (type 1: radius +128, length +144, along y about the centroid) or a box (type 3: size +208 about the centroid).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Primitive {
+    Sphere { centre: Vec3, r: f32 },
+    Capsule { centre: Vec3, r: f32, len: f32 },
+    Box { centre: Vec3, size: Vec3 },
+}
+
+/// What a primitive test leaves for the result list: the depth f31 (-1 for a capsule out of reach), the contact normal
+/// v127, the part index r31 the bound's material is asked for and the record names (+76; a capsule 0 its lower cap, 1 the
+/// upper, 2 the side; a box the vertex 0 .. 7 or the face 0 .. 5, +x -x +y -y +z -z) and the kind r29 (+78; a box's corner
+/// 0, else 2).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PrimContact {
+    pub depth: f32,
+    pub normal: Vec3,
+    pub part: u16,
+    pub kind: u16,
+}
+
+/// The box's corners as the original's table holds them (0x828123F0: +-0.5) and its faces' normals (0x82812470); a box
+/// edge's two faces (0x8207FC20); the classifier's (feature kind, index) for the code x + 3 y + 9 z of the three axes'
+/// regions (0 at or below -h, 1 inside, 2 at or above h) (F-25936's table).
+const BOX_CORNER: [[f32; 3]; 12] = [
+    [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5], [-0.5, -0.5, 0.5], [0.5, -0.5, 0.5],
+    [0.5, 0.5, -0.5], [-0.5, 0.5, -0.5], [-0.5, -0.5, -0.5], [0.5, -0.5, -0.5],
+    // (an edge's index past the corners reads on into the faces' table)
+    [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, -1.0, 0.0],
+];
+const BOX_FACE: [Vec3; 6] = [Vec3::X, Vec3::NEG_X, Vec3::Y, Vec3::NEG_Y, Vec3::Z, Vec3::NEG_Z];
+const BOX_EDGE: [(usize, usize); 12] = [(2, 4), (1, 4), (3, 4), (0, 4), (2, 5), (1, 5), (3, 5), (0, 5), (0, 2), (1, 2), (1, 3), (0, 3)];
+const BOX_FEATURE: [(i32, usize); 27] = [
+    (0, 6), (1, 6), (0, 7), (1, 5), (2, 5), (1, 7), (0, 5), (1, 4), (0, 4),
+    (1, 10), (2, 3), (1, 11), (2, 1), (-1, 0), (2, 0), (1, 9), (2, 2), (1, 8),
+    (0, 2), (1, 2), (0, 3), (1, 1), (2, 4), (1, 3), (0, 1), (1, 0), (0, 0),
+];
+
+/// v x (1 / dist) as the vector unit gives it: the estimate (the recomp's exact division) and one Newton step, the
+/// products and sums rounded apart.
+fn unit_by(v: Vec3, dist: f32) -> Vec3 {
+    let y = vrefp(dist);
+    let k = -(y * dist - 1.0);
+    v * (y * k + y)
+}
+
+/// F-15615 on a sphere, capsule or box bound, in the bound's frame: the ball at `c` (the query's +160) of radius `big_r`
+/// (+176). Rules in docs/reference/people/traffic_drive_rule.md 9.7. The record's point is
+/// -(normal (R - depth) - c); a depth above 0 takes a slot. Checked to the bit against the original run offline
+/// (`ball_primitive_matches_the_original`).
+pub fn ball_primitive(c: Vec3, big_r: f32, b: &Primitive) -> PrimContact {
+    let eps = f32::from_bits(0x2B8C_BCCC);
+    let sq = |w: Vec3| fma(w.y, w.y, fma(w.x, w.x, w.z * w.z));
+    match *b {
+        Primitive::Sphere { centre, r } => {
+            let d = c - centre;
+            let d2 = sq(d);
+            let (dist, normal) = if d2 > eps { (d2.sqrt(), unit_by(d, d2.sqrt())) } else { (0.0, Vec3::X) };
+            PrimContact { depth: (big_r + r) - dist, normal, part: 0, kind: 2 }
+        }
+        Primitive::Capsule { centre, r, len } => {
+            let d = c - centre;
+            let h = len * 0.5;
+            let lo = if d.y - -h >= 0.0 { d.y } else { -h };
+            let yc = if lo - h >= 0.0 { h } else { lo };
+            let dy = d.y - yc;
+            let d2 = fma(d.z, d.z, fma(dy, dy, d.x * d.x));
+            let reach = r + big_r;
+            if d2 > reach * reach {
+                return PrimContact { depth: -1.0, normal: d, part: 0, kind: 2 };
+            }
+            let w = Vec3::new(d.x, dy, d.z);
+            let (dist, normal) = if d2 > eps { (d2.sqrt(), unit_by(w, d2.sqrt())) } else { (0.0, Vec3::X) };
+            let part = if !(d.y < h) { 1 } else if d.y > -h { 2 } else { 0 };
+            PrimContact { depth: reach - dist, normal, part, kind: 2 }
+        }
+        Primitive::Box { centre, size } => {
+            let d = c - centre;
+            let half = size * 0.5;
+            let region = |p: f32, h: f32| if !(p > -h) { 0 } else if p < h { 1 } else { 2 };
+            let code = region(d.x, half.x) + 3 * region(d.y, half.y) + 9 * region(d.z, half.z);
+            let (feature, id) = BOX_FEATURE[code];
+            let corner = |k: usize| Vec3::from(BOX_CORNER[k]);
+            match feature {
+                0 => {
+                    let w = d - (corner(id) * 2.0) * half;
+                    let d2 = sq(w);
+                    if d2 > eps {
+                        let dist = d2.sqrt();
+                        PrimContact { depth: big_r - dist, normal: unit_by(w, dist), part: id as u16, kind: 0 }
+                    } else {
+                        let v = corner(id);
+                        PrimContact { depth: big_r, normal: v * rsqrt0(vdot(v, v)), part: id as u16, kind: 0 }
+                    }
+                }
+                1 => {
+                    let (fa, fb) = BOX_EDGE[id];
+                    let (a, bb) = (fa / 2, fb / 2);
+                    let third = 3 - bb - a;
+                    let mut p = d;
+                    p[a] = if d[a] > 0.0 { half[a] } else { -half[a] };
+                    p[bb] = if d[bb] > 0.0 { half[bb] } else { -half[bb] };
+                    let w = d - p;
+                    let d2 = sq(w);
+                    let (depth, normal) = if d2 > eps {
+                        let dist = d2.sqrt();
+                        (big_r - dist, unit_by(w, dist))
+                    } else {
+                        let mut v = corner(id);
+                        v[third] = 0.0;
+                        (big_r, v * rsqrt0(vdot(v, v)))
+                    };
+                    let (na, nb) = (BOX_FACE[fa], BOX_FACE[fb]);
+                    let da = fma(normal.x, na.x, fma(na.z, normal.z, na.y * normal.y));
+                    let db = fma(normal.x, nb.x, fma(nb.z, normal.z, nb.y * normal.y));
+                    PrimContact { depth, normal, part: if da > db { fa as u16 } else { fb as u16 }, kind: 2 }
+                }
+                2 => {
+                    let ax = id / 2;
+                    PrimContact { depth: (half[ax] - d[ax].abs()) + big_r, normal: BOX_FACE[id], part: id as u16, kind: 2 }
+                }
+                _ => {
+                    let g = half - d.abs();
+                    let ax = if g.x > g.y { if g.y > g.z { 2 } else { 1 } } else if g.x > g.z { 2 } else { 0 };
+                    let face = if d[ax] > 0.0 { 2 * ax } else { 2 * ax + 1 };
+                    PrimContact { depth: (half[ax] - d[ax].abs()) + big_r, normal: BOX_FACE[face], part: face as u16, kind: 2 }
+                }
+            }
+        }
+    }
+}
+
 /// Whether the capsule `a` .. `b` (radius `r`, in the part's frame) misses the part bound's box `min` .. `max`
 /// (F-16177 -> F-81407 -> F-18932): the box's centre taken off both ends and `r` added to its half sizes, then the
 /// segment against the box grown by 1e-6 by separating axes - the three box axes (|mid| over half + |half segment|),
@@ -1290,5 +1422,66 @@ mod tests {
             near += pass as usize;
         }
         assert_eq!((kept, near), (1011, 1871));
+    }
+
+    /// F-15615 on spheres, capsules and boxes against the original's code run offline (tools/ball_primitive_reference.py
+    /// -> testdata/ball_primitive_ref.txt; F-25936 whole, alloc stubbed, the material call faked as (index + 1) << 8): the
+    /// result, the list call (depth, cap, point) and the record - every word equal. 4,000 cases: 784 spheres, 807 capsules
+    /// (on the axis among them), boxes with the ball inside 467, by a corner 487 (50 on it), by an edge 774 (94 on its
+    /// line), over a face 681.
+    #[test]
+    fn ball_primitive_matches_the_original() {
+        let u = |h: &str| u32::from_str_radix(&h.replace('_', ""), 16).unwrap();
+        let mut seen = std::collections::BTreeMap::new();
+        for (k, line) in include_str!("../testdata/ball_primitive_ref.txt").lines().enumerate() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(u).collect();
+            let x: Vec<u32> = o.split_whitespace().map(u).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let p = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let b = match w[0] {
+                0 => Primitive::Sphere { centre: p(1), r: f(4) },
+                1 => Primitive::Capsule { centre: p(1), r: f(5), len: f(6) },
+                _ => Primitive::Box { centre: p(1), size: p(7) },
+            };
+            let (c, big_r) = (p(10), f(13));
+            let h = ball_primitive(c, big_r, &b);
+            let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+            let mat = (h.part as u32 + 1) << 8;
+            // (coverage: the box's feature by the classifier's regions; a ball on its feature)
+            let feature = match b {
+                Primitive::Box { centre, size } => {
+                    let (d, hh) = (c - centre, size * 0.5);
+                    let reg = |p: f32, h: f32| if !(p > -h) { 0 } else if p < h { 1 } else { 2 };
+                    BOX_FEATURE[reg(d.x, hh.x) + 3 * reg(d.y, hh.y) + 9 * reg(d.z, hh.z)].0
+                }
+                _ => 9,
+            };
+            let on = h.depth == big_r || h.normal == Vec3::X && h.depth > 0.0 && w[0] != 3;
+            *seen.entry((w[0], feature, h.depth > 0.0, on)).or_insert(0) += 1;
+            if mat & w[14] != 0 {
+                assert_eq!(&x[0..2], &[0, 0], "line {k}: material");
+                continue;
+            }
+            let at = -(h.normal * (big_r - h.depth) - c);
+            assert_eq!([x[0], x[1]], [(h.depth > 0.0) as u32, 1], "line {k}: result, list call");
+            assert_eq!([x[2], x[3]], [h.depth.to_bits(), big_r.to_bits()], "line {k}: depth, cap");
+            assert_eq!(&x[4..7], &bits(at), "line {k}: point");
+            if w[15] != 0 && h.depth > 0.0 {
+                assert_eq!(x[7], 0x1234, "line {k}: instance");
+                assert_eq!(&x[8..11], &bits(at), "line {k}: contact");
+                assert_eq!(&x[11..14], &bits(h.normal), "line {k}: normal");
+                assert_eq!(&x[14..17], &bits(h.normal), "line {k}: bound normal");
+                assert_eq!(&x[17..20], &[0, h.depth.to_bits(), mat], "line {k}: t, depth, material");
+                assert_eq!(&x[20..24], &[h.part as u32, h.kind as u32, (h.depth < big_r) as u32, 0], "line {k}: part, kind, +80, +82");
+            }
+        }
+        assert_eq!(
+            format!("{seen:?}"),
+            "{(0, 9, false, false): 306, (0, 9, true, false): 290, (0, 9, true, true): 188, (1, 9, false, false): 457, (1, 9, true, false): 318, \
+             (1, 9, true, true): 32, (3, -1, true, false): 466, (3, -1, true, true): 1, (3, 0, false, false): 227, (3, 0, true, false): 210, \
+             (3, 0, true, true): 50, (3, 1, false, false): 195, (3, 1, true, false): 485, (3, 1, true, true): 94, (3, 2, false, false): 133, \
+             (3, 2, true, false): 523, (3, 2, true, true): 25}"
+        );
     }
 }
