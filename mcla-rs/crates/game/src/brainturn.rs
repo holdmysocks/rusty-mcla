@@ -1,7 +1,7 @@
 //! Two pieces of the original's mcBrainRacing (decoded 2026-10-21, work/racerai/brain.md 2.7 / 2.8,
-//! raceline.md 4.7): the turnaround picker of a slow racer (sub_822BB6A8 with its arc test
-//! sub_822BA070 and the nav mesh's segment test, mesh vfunc 72 = sub_82762CA0), and the obstacle
-//! selection along the race line (sub_822BD9D8 -> sub_822BBB60 over the object grid 0x8286F1B4).
+//! raceline.md 4.7): the turnaround picker of a slow racer (F-67810 with its arc test
+//! F-38160 and the nav mesh's segment test, mesh vfunc 72 = F-87322), and the obstacle
+//! selection along the race line (F-86521 -> F-53450 over the object grid 0x8286F1B4).
 
 use crate::aiv::{AivTuning, Obstacle, OBST_FIRST_LEG, OBST_TYPE0};
 use crate::brain::Manoeuvre;
@@ -14,16 +14,16 @@ fn fsel(a: f32, b: f32, c: f32) -> f32 {
 }
 
 // =================================================================================================
-// the nav mesh's segment test (navSpaceMesh vtable 0x820D53C4, slot 72 = sub_82762CA0)
+// the nav mesh's segment test (navSpaceMesh vtable 0x820D53C4, slot 72 = F-87322)
 // =================================================================================================
 
-/// What sub_822BA070 gives the mesh for its arc test: navActorCapabilities (sub_8254AB98 defaults)
+/// What F-38160 gives the mesh for its arc test: navActorCapabilities (F-53025 defaults)
 /// with +8 min normal-y = -1.0 and +28 width = aiv+25168 (the car's width, 2 x its bound's half
 /// extent x), no filter; and navSpaceMesh +76 (height window above a polygon's plane) set to 100
 /// for the test (+80, the window below, stays 1.0).
 const ABOVE: f32 = 100.0;
 const BELOW: f32 = 1.0;
-/// sub_82762CA0's limits: 128 nodes per list, 201 nodes popped at most.
+/// F-87322's limits: 128 nodes per list, 201 nodes popped at most.
 const LIST: usize = 128;
 const MAX_POPS: i32 = 200;
 
@@ -36,8 +36,8 @@ fn chunk_local(mesh: &NavMesh, poly: u32, p: Vec3) -> Vec3 {
     Vec3::new(r[0].dot(d), r[1].dot(d), r[2].dot(d))
 }
 
-/// sub_8254F570 -> sub_82550658 (vfunc 68, and the point list of vfunc 32): `p` inside the polygon in
-/// plan (sub_825500A0: chunk-local, one winding, border included) and between `BELOW` under and
+/// F-11050 -> F-10756 (vfunc 68, and the point list of vfunc 32): `p` inside the polygon in
+/// plan (F-22664: chunk-local, one winding, border included) and between `BELOW` under and
 /// `ABOVE` over its plane (h = (n.p + d) / n.y, n.y > 0.001 required).
 fn inside(mesh: &NavMesh, poly: u32, p: Vec3) -> bool {
     let (Some(q), Some(pl)) = (mesh.local.get(poly as usize), mesh.polys.get(poly as usize)) else { return false };
@@ -54,8 +54,8 @@ fn inside(mesh: &NavMesh, poly: u32, p: Vec3) -> bool {
     h >= -BELOW && h <= ABOVE
 }
 
-/// mesh vfunc 24 (sub_82765820): the ends of the edge from `poly` into a neighbour, (Q, P) as
-/// sub_82762200 takes them. A local link's edge (Q = the vertex the link lists first for this
+/// mesh vfunc 24 (F-56129): the ends of the edge from `poly` into a neighbour, (Q, P) as
+/// F-77736 takes them. A local link's edge (Q = the vertex the link lists first for this
 /// polygon, P the other) is shortened when the car is wider than twice the clearance beyond an end:
 /// that end moves in so that half the car's width fits (from Q: w/2 - c_Q; to P: L + c_P - w/2, L
 /// the plan length); fails when L < 1e-6 or the two cross. A span record's edge is taken as it is.
@@ -89,7 +89,7 @@ fn edge_ends(l: &mcla_formats::rage::navmesh::NavLink, width: f32) -> Option<(Ve
     Some((v0, v1))
 }
 
-/// sub_82762200: does the plan segment s + t d (t in 0..1) leave through the edge P -> Q? Only
+/// F-77736: does the plan segment s + t d (t in 0..1) leave through the edge P -> Q? Only
 /// edges crossed one way count (cross(Q - P, d) >= 1e-5). Returns (crossed, beyond): beyond = the
 /// segment ends before it reaches the edge's line (its end lies on this side).
 #[allow(clippy::too_many_arguments)]
@@ -126,8 +126,8 @@ fn crosses(px: f32, pz: f32, qx: f32, qz: f32, sx: f32, sz: f32, dx: f32, dz: f3
     (s >= 0.0, false)
 }
 
-/// mesh vfunc 28 (sub_82762510) for one node: the neighbours the segment a -> b passes into (in the
-/// iterator's order, then sorted and made unique as sub_82761F20 does), and whether the segment ends
+/// mesh vfunc 28 (F-32987) for one node: the neighbours the segment a -> b passes into (in the
+/// iterator's order, then sorted and made unique as F-15132 does), and whether the segment ends
 /// inside this node. Neighbours (navSpaceMeshNeighborIterator): a polygon's local links that pass the
 /// width test (w^2 <= 1e-12 or (c_a + L + c_b)^2 >= w^2, L the edge's plan length; the min normal-y
 /// of -1 passes all), then its span records (no test); a span record's two polygons (A, then B).
@@ -174,12 +174,12 @@ fn step(mesh: &NavMesh, node: Node, a: Vec3, b: Vec3, width: f32, out: &mut Vec<
     ends
 }
 
-/// vfunc 68 (sub_82764D20): `p` inside the polygon node (span nodes: never).
+/// vfunc 68 (F-85002): `p` inside the polygon node (span nodes: never).
 fn node_has(mesh: &NavMesh, node: Node, p: Vec3) -> bool {
     (node as usize) < mesh.polys.len() && inside(mesh, node, p)
 }
 
-/// The segment test sub_822BA070 runs (mesh vfunc 72 = sub_82762CA0, filter off, the "use filter"
+/// The segment test F-38160 runs (mesh vfunc 72 = F-87322, filter off, the "use filter"
 /// flag 0): can a car of width `width` go straight from `a` to `b` over the mesh? A breadth-first
 /// walk from the polygons that contain `a` (vfunc 32, at most 128, ascending): each popped node (the
 /// last of the list first) is kept in the generation's done list (up to 128); if the segment ends in
@@ -188,12 +188,12 @@ fn node_has(mesh: &NavMesh, node: Node, p: Vec3) -> bool {
 /// than 201 nodes popped -> false. When nothing is left: true if `b` lies in a node done in the
 /// last generation, or in the one before it.
 pub fn segment_on_mesh(mesh: &NavMesh, a: Vec3, b: Vec3, width: f32) -> bool {
-    // vfunc 32 (sub_82767278 -> sub_82765F88 -> sub_82765C80): the point's polygons, sorted
+    // vfunc 32 (F-15418 -> F-43289 -> F-49070): the point's polygons, sorted
     let starts = mesh.sphere_query(a, 0.0, 1024, |i, _| inside(mesh, i, a));
     let mut open: [Vec<Node>; 2] = [starts.into_iter().take(LIST).collect(), Vec::new()];
     let mut done: [Vec<Node>; 2] = [Vec::new(), Vec::new()];
     let (mut cur, mut other) = (0usize, 1usize);
-    // (r14 / [r1+80] of sub_82762CA0: the generation before and the current one)
+    // (r14 / [r1+80] of F-87322: the generation before and the current one)
     let (mut prev_gen, mut this_gen) = (1usize, 0usize);
     let mut pops = 0i32;
     let mut nbs = Vec::new();
@@ -237,17 +237,17 @@ pub fn segment_on_mesh(mesh: &NavMesh, a: Vec3, b: Vec3, width: f32) -> bool {
 }
 
 // =================================================================================================
-// the turnaround picker (sub_822BB6A8) and its arc test (sub_822BA070)
+// the turnaround picker (F-67810) and its arc test (F-38160)
 // =================================================================================================
 
 /// What the arc test reads of the car.
 #[derive(Debug, Clone, Copy)]
 pub struct TurnCar {
-    /// the car matrix (sub_822A8108): +48 position, +0 row 0 (right), +32 row 2 (= -forward)
+    /// the car matrix (F-35658): +48 position, +0 row 0 (right), +32 row 2 (= -forward)
     pub pos: Vec3,
     pub right: Vec3,
     pub back: Vec3,
-    /// aiv+25168: 2 x the car's bound half extents (sub_8255B9A8(car+8)+16); x = width, z = length
+    /// aiv+25168: 2 x the car's bound half extents (F-98453(car+8)+16); x = width, z = length
     pub size: Vec3,
     /// the chassis' wheels as it lists them (chassis +412, +416, +420, +424): each wheel's +64
     /// position, world
@@ -259,8 +259,8 @@ pub struct TurnCar {
     pub drive: u32,
 }
 
-/// sub_822BA070(angle, reverse, pivot): can the car turn by `angle` (rad, + towards the left = the
-/// sign of sub_8216C9C0) over the mesh? A point Q is swung about a centre C in 4 steps of angle/4
+/// F-38160(angle, reverse, pivot): can the car turn by `angle` (rad, + towards the left = the
+/// sign of F-32060) over the mesh? A point Q is swung about a centre C in 4 steps of angle/4
 /// (Q rotated about y: x' = x cos + z sin, z' = z cos - x sin), each step's segment tested with the
 /// mesh (vfunc 72, width aiv+25168, navmesh +76 = 100 during the test). s = sign(angle) (0 for 0).
 /// - pivot: C = a wheel's position: wheel slot (2 wheels: +412 if the drive is 0 or 2, else +416;
@@ -309,9 +309,9 @@ pub fn arc_clear(mesh: &NavMesh, car: &TurnCar, backing_up: bool, max_curvature:
     true
 }
 
-/// sub_822BB6A8: the turnaround picker, run while the stuck detector is idle (+340 == 0).
-/// `angle_line` = sub_8216C9C0(forward, next line point - car) (sub_8254C888), `angle_corridor` the
-/// same to the corridor point ahead (sub_8254C8C0, read only when +332 is 0 and |angle_line| > 135
+/// F-67810: the turnaround picker, run while the stuck detector is idle (+340 == 0).
+/// `angle_line` = F-32060(forward, next line point - car) (F-28749), `angle_corridor` the
+/// same to the corridor point ahead (F-43876, read only when +332 is 0 and |angle_line| > 135
 /// degrees); `speed` = car +224; `avoid_handbrake` = +338.
 ///
 /// Faster than 10 m/s (0x82003A8C): +336 = +332 = 0. Else, with a = angle_line: handbrake turns are
@@ -391,24 +391,24 @@ pub fn turnaround(m: &mut Manoeuvre, avoid_handbrake: bool, angle_line: f32, ang
 }
 
 // =================================================================================================
-// obstacles (sub_822BD9D8 -> sub_822BBB60)
+// obstacles (F-86521 -> F-53450)
 // =================================================================================================
 
 /// mcObstacle +6, the kinds filed in the object grid 0x8286F1B4 (set by the root constructor
-/// sub_82740F18): 0 a player's car (mcPlayer, sub_822A6E88), 1 a computer racer (mcAiRacer,
-/// sub_826FC678), 2 an ambient car (mcAmbientObstacleCar, sub_826E7FB0, filed by sub_826EA190),
-/// 3 a prop (mcProp, sub_82735510; filed by sub_82735580 only while its physics state +128 is 2),
-/// 4 a pedestrian's (mcAmbientObstaclePed, sub_826D4A58). The brain always ignores kind 4.
+/// F-99762): 0 a player's car (mcPlayer, F-96799), 1 a computer racer (mcAiRacer,
+/// F-12035), 2 an ambient car (mcAmbientObstacleCar, F-60800, filed by F-27899),
+/// 3 a prop (mcProp, F-13009; filed by F-47614 only while its physics state +128 is 2),
+/// 4 a pedestrian's (mcAmbientObstaclePed, F-87033). The brain always ignores kind 4.
 pub const KIND_PLAYER: u8 = 0;
 pub const KIND_RACER: u8 = 1;
 pub const KIND_AMBIENT_CAR: u8 = 2;
 pub const KIND_PROP: u8 = 3;
 pub const KIND_PED: u8 = 4;
 
-/// One object of the grid as sub_822BBB60 reads it through its vtable.
+/// One object of the grid as F-53450 reads it through its vtable.
 #[derive(Debug, Clone, Copy)]
 pub struct ObjectInfo {
-    /// vfunc 1 -> matrix +48. Players / racers: the car's matrix (sub_822A8108); ambient cars: their
+    /// vfunc 1 -> matrix +48. Players / racers: the car's matrix (F-35658); ambient cars: their
     /// instance's matrix; props: the prop instance's (+16)
     pub pos: Vec3,
     /// vfunc 2. Players / racers: the car's collider linear velocity (chassis +128 -> +272; the
@@ -418,8 +418,8 @@ pub struct ObjectInfo {
     /// -(matrix row 2): the object's forward
     pub forward: Vec3,
     /// vfunc 3: the full (width, length). Players / racers: mcRacer +472 / +476 = 2 x max(|max.x|,
-    /// |min.x|), 2 x max(|max.z|, |min.z|) of the car's bound box (sub_8255B9A8(car+8) +16 / +32,
-    /// sub_822AEBE0); ambient cars and peds: the bound box's max - min in x and z (no bound: 3.0 and
+    /// |min.x|), 2 x max(|max.z|, |min.z|) of the car's bound box (F-98453(car+8) +16 / +32,
+    /// F-57218); ambient cars and peds: the bound box's max - min in x and z (no bound: 3.0 and
     /// 3e32); props: archetype +336 / +340
     pub extent: (f32, f32),
     /// mcObstacle +6 (KIND_*)
@@ -458,7 +458,7 @@ impl ObjectInfo {
     }
 }
 
-/// The object grid (0x8286F1B4, ctor sub_8226AE80, set up by sub_8226AA98): 40 m cells, x by z.
+/// The object grid (0x8286F1B4, ctor F-87945, set up by F-38432): 40 m cells, x by z.
 #[derive(Debug, Clone, Copy)]
 pub struct ObjectGrid {
     pub min: [f32; 2],
@@ -471,7 +471,7 @@ const CELL: f32 = 40.0;
 static CITY_GRID: std::sync::OnceLock<ObjectGrid> = std::sync::OnceLock::new();
 
 impl ObjectGrid {
-    /// sub_8226AA98 from the level's bounds (min, max; x and z used): the box widened by 20 m along
+    /// F-38432 from the level's bounds (min, max; x and z used): the box widened by 20 m along
     /// its diagonal each way, then out to whole 40 m cells from the origin.
     pub fn from_bounds(min: Vec3, max: Vec3) -> ObjectGrid {
         let (mut ax, mut az, mut bx, mut bz) = (min.x, min.z, max.x, max.z);
@@ -504,7 +504,7 @@ impl ObjectGrid {
             None => ObjectGrid::unbounded(),
         });
     }
-    /// sub_8226A6F8: the cell (ix, iz) of a point, `None` outside (the original then goes on with
+    /// F-59709: the cell (ix, iz) of a point, `None` outside (the original then goes on with
     /// ix = iz = 0 for the neighbours).
     fn cell(&self, x: f32, z: f32) -> Option<(i32, i32)> {
         if !self.bounded {
@@ -517,7 +517,7 @@ impl ObjectGrid {
         Some((((x - self.min[0]) * 0.025) as i32, ((z - self.min[1]) * 0.025) as i32))
     }
     /// The cell's key (the u16 cell number iz nx + ix of a bounded grid), `None` off the grid
-    /// (sub_8226A7C8 / sub_8226A798).
+    /// (F-74216 / F-37308).
     fn key(&self, ix: i32, iz: i32) -> Option<i64> {
         if !self.bounded {
             return Some(((ix as i64) << 32) | (iz as u32 as i64));
@@ -530,7 +530,7 @@ impl ObjectGrid {
     }
 }
 
-/// What sub_822BD9D8 reads of the brain's own car.
+/// What F-86521 reads of the brain's own car.
 #[derive(Debug, Clone, Copy)]
 pub struct SelCar {
     /// car matrix +48 and -(row 2)
@@ -540,15 +540,15 @@ pub struct SelCar {
     pub vel: Vec3,
     /// car +224
     pub speed: f32,
-    /// sub_8255B9A8(car+8) +24: the bound box's max z (half the length for a centred box)
+    /// F-98453(car+8) +24: the bound box's max z (half the length for a centred box)
     pub half_length: f32,
 }
 
-/// sub_822BD9D8 -> sub_822BBB60: the obstacles the brain hands the aiv (sub_8254B020 then
-/// sub_8254B030 for each), in order.
+/// F-86521 -> F-53450: the obstacles the brain hands the aiv (F-69761 then
+/// F-70624 for each), in order.
 ///
 /// `ignore` = brain +408 (bit k ignores kind k); bit 4 is set first, always. Car direction D =
-/// the velocity's direction when |vel|^2 > 1 (sub_82165300), else the forward; its speed V = vel.D.
+/// the velocity's direction when |vel|^2 > 1 (F-41334), else the forward; its speed V = vel.D.
 /// Walking the aiv's control points from the first (the ring at aiv+25440): for each point P, the
 /// grid cell under it, then (ix-1, iz-1), (ix-1, iz), (ix-1, iz+1), (ix, iz-1), (ix, iz+1),
 /// (ix+1, iz-1), (ix+1, iz), (ix+1, iz+1); per cell its objects (stopping at 32): not the brain's own
@@ -587,39 +587,8 @@ pub fn select_obstacles_car(me: usize, objects: &[ObjectInfo], line: &[Vec3], ca
             keys[k + 1] = grid.key(ix + dx, iz + dz);
         }
         for key in keys.into_iter().flatten() {
-            if out.len() == 32 {
-                break;
-            }
-            let Some(list) = cells.get(&key) else { continue };
-            for &j in list {
-                if out.len() == 32 {
-                    break;
-                }
-                let o = &objects[j];
-                if j == me || (o.kind < 32 && ignore >> o.kind & 1 != 0) {
-                    continue;
-                }
-                let vel = Vec3::new(o.vel.x, 0.0, o.vel.z);
-                let rel = o.pos - car.pos;
-                let d = rel.x * dir.x + rel.y * dir.y + rel.z * dir.z;
-                let v = vel.x * dir.x + vel.z * dir.z;
-                let r = o.extent.0.max(o.extent.1) * 0.5 + car.half_length;
-                if d < -r || (v > v_car && d > r) {
-                    continue;
-                }
-                let first_leg = v > v_car - 10.0;
-                let q = o.pos - p;
-                if q.y.abs() > tuning.max_obstacle_height_delta || q.z * q.z + q.x * q.x > tuning.max_obstacle_flat_delta * tuning.max_obstacle_flat_delta {
-                    continue;
-                }
-                if taken.contains(&j) {
-                    continue;
-                }
-                taken.push(j);
-                let f = Vec3::new(o.forward.x, 0.0, o.forward.z);
-                let f = if f.length_squared() > 1e-5 { f * (1.0 / f.length()) } else { Vec3::X };
-                let flags = if first_leg { OBST_FIRST_LEG } else { 0 } | if o.kind == KIND_PLAYER { OBST_TYPE0 } else { 0 };
-                out.push(Obstacle { pos: o.pos, vel, dir: -f, extent: o.extent, flags });
+            if let Some(list) = cells.get(&key) {
+                select_cell(list, me, objects, ignore, car.pos, dir, v_car, car.half_length, p, tuning, 0, &mut taken, &mut out);
             }
         }
         t += (car.pos - p).length() * inv;
@@ -628,6 +597,54 @@ pub fn select_obstacles_car(me: usize, objects: &[ObjectInfo], line: &[Vec3], ca
         }
     }
     out
+}
+
+/// F-53450 per cell: one grid cell's object list, in the list's order, as F-53450 walks it (the caller's
+/// direction D and speed V, the brain's half length, the line point P). `base` = the obstacles the aiv held before
+/// the selection (aiv +25104; the walk stops when base + out reaches 32). Products as the original's: d =
+/// fma(D.y, r.y, fma(D.z, r.z, D.x r.x)), v = fma(D.x, v.x, D.z v.z), R = fma(max(w, l), 0.5, half length), the plan
+/// distance fma(q.z, q.z, q.x q.x) against the rounded square of MaxObstacleFlatDelta; the direction 0 - n, n =
+/// (-forward_xz) times the vector unit's refined reciprocal root of its squared length (z + (y + x)) when that is >
+/// 1e-5, else (1, 0, 0).
+#[allow(clippy::too_many_arguments)]
+pub fn select_cell(list: &[usize], me: usize, objects: &[ObjectInfo], ignore: u32, car_pos: Vec3, dir: Vec3, v_car: f32, half_length: f32, p: Vec3, tuning: &AivTuning, base: usize, taken: &mut Vec<usize>, out: &mut Vec<Obstacle>) {
+    let fma = |a: f32, b: f32, c: f32| (a as f64).mul_add(b as f64, c as f64) as f32;
+    for &j in list {
+        if base + out.len() >= 32 {
+            return;
+        }
+        let o = &objects[j];
+        if j == me || (o.kind < 32 && ignore >> o.kind & 1 != 0) {
+            continue;
+        }
+        let rel = o.pos - car_pos;
+        let d = fma(dir.y, rel.y, fma(dir.z, rel.z, dir.x * rel.x));
+        let v = fma(dir.y, 0.0, fma(dir.x, o.vel.x, dir.z * o.vel.z));
+        let r = fma(fsel(o.extent.0 - o.extent.1, o.extent.0, o.extent.1), 0.5, half_length);
+        if d < -r || (v > v_car && d > r) {
+            continue;
+        }
+        let first_leg = v > v_car - 10.0;
+        let q = o.pos - p;
+        let fd = tuning.max_obstacle_flat_delta;
+        if q.y.abs() > tuning.max_obstacle_height_delta || fma(q.z, q.z, q.x * q.x) > fd * fd {
+            continue;
+        }
+        if taken.contains(&j) {
+            continue;
+        }
+        taken.push(j);
+        let f = Vec3::new(o.forward.x, 0.0, o.forward.z);
+        let l2 = f.z * f.z + (f.y * f.y + f.x * f.x);
+        let n = if l2 > 1e-5 {
+            let k = crate::aiv::vrsqrt1(l2);
+            Vec3::new(f.x * k, f.y * k, f.z * k)
+        } else {
+            Vec3::X
+        };
+        let flags = if first_leg { OBST_FIRST_LEG } else { 0 } | if o.kind == KIND_PLAYER { OBST_TYPE0 } else { 0 };
+        out.push(Obstacle { pos: o.pos, vel: Vec3::new(o.vel.x, 0.0, o.vel.z), dir: Vec3::ZERO - n, extent: o.extent, flags });
+    }
 }
 
 /// The selection with what brain.rs passes today.
@@ -646,7 +663,7 @@ mod tests {
 
     /// A flat mesh of `nx` x `nz` squares of `size` m from `origin`, minus `holes`; local links with
     /// clearance `cl` beyond both ends. Winding (x0,z0), (x0,z1), (x1,z1), (x1,z0) (inside for
-    /// sub_825500A0); a link leaving through the edge a -> b lists b first (pa) as the file does.
+    /// F-22664); a link leaving through the edge a -> b lists b first (pa) as the file does.
     fn grid_mesh(nx: i32, nz: i32, size: f32, origin: Vec3, holes: &[(i32, i32)], cl: f32) -> NavMesh {
         let mut m = NavMesh::default();
         let idx = |i: i32, j: i32| -> Option<u32> {
@@ -949,5 +966,55 @@ mod original_tests {
             }
         }
         assert_eq!((ce, ke), (800, 800));
+    }
+
+    /// F-53450 (one cell of the obstacle selection) against the original's code run offline (work/racerai/obsel:
+    /// synthetic objects on the real mcProp virtuals, the obstacle append replaced by a recorder of its arguments):
+    /// 2,000 cases (kinds 0 - 5, ignore masks, the brain's own object, pre-filled taken lists, the aiv's count near 32,
+    /// an empty cell, tiny forwards), every handed-on obstacle (pos, vel, dir, extent, both flags) and the taken
+    /// count bit for bit.
+    #[test]
+    fn obstacle_cell_matches_the_original() {
+        let fl = |w: &str| f32::from_bits(u32::from_str_radix(w, 16).unwrap());
+        let (mut cases, mut obst) = (0, 0);
+        for line in include_str!("testdata/obstacle_cell_ref.txt").lines() {
+            let (inp, rest) = line.split_once(" |").unwrap();
+            let (outs, taken_n) = rest.rsplit_once(" | ").unwrap();
+            let t: Vec<&str> = inp.split_whitespace().collect();
+            let (n, cnt0, cell_ok, me, ign): (usize, usize, bool, i32, u32) = (t[1].parse().unwrap(), t[2].parse().unwrap(), t[3] == "1", t[4].parse().unwrap(), t[5].parse().unwrap());
+            let f: Vec<f32> = t[6..22].iter().map(|w| fl(w)).collect();
+            let v3 = |a: usize| Vec3::new(f[a], f[a + 1], f[a + 2]);
+            let mut objects = Vec::new();
+            let mut k = 22;
+            for _ in 0..n {
+                let kind: u8 = t[k][1..].parse().unwrap();
+                let g: Vec<f32> = t[k + 1..k + 9].iter().map(|w| fl(w)).collect();
+                objects.push(ObjectInfo { pos: Vec3::new(g[0], g[1], g[2]), vel: v3(13), forward: -Vec3::new(g[3], g[4], g[5]), extent: (g[6], g[7]), kind });
+                k += 9;
+            }
+            let pre: usize = t[k][1..].parse().unwrap();
+            let mut taken: Vec<usize> = t[k + 1..k + 1 + pre].iter().map(|w| w.parse().unwrap()).collect();
+            let mut tun = AivTuning::default();
+            tun.max_obstacle_height_delta = f[11];
+            tun.max_obstacle_flat_delta = f[12];
+            let list: Vec<usize> = if cell_ok { (0..n).collect() } else { Vec::new() };
+            let mut out = Vec::new();
+            select_cell(&list, if me < 0 { usize::MAX } else { me as usize }, &objects, ign, v3(0), v3(3), f[6], f[7], v3(8), &tun, cnt0, &mut taken, &mut out);
+            let want: Vec<&str> = outs.split(" o").skip(1).collect();
+            assert_eq!(out.len(), want.len(), "case {cases}: obstacles");
+            for (o, w) in out.iter().zip(&want) {
+                let w: Vec<&str> = w.split_whitespace().collect();
+                let got = [o.pos.x, o.pos.y, o.pos.z, o.vel.x, o.vel.y, o.vel.z, o.dir.x, o.dir.y, o.dir.z, o.extent.0, 0.0, o.extent.1];
+                for (i, g) in got.iter().enumerate() {
+                    assert_eq!(g.to_bits(), u32::from_str_radix(w[i], 16).unwrap(), "case {cases} word {i}");
+                }
+                assert_eq!((o.flags & OBST_FIRST_LEG != 0) as u32, w[12].parse::<u32>().unwrap(), "case {cases} first leg");
+                assert_eq!((o.flags & OBST_TYPE0 != 0) as u32, w[13].parse::<u32>().unwrap(), "case {cases} kind 0");
+                obst += 1;
+            }
+            assert_eq!(taken.len(), taken_n.trim().parse::<usize>().unwrap(), "case {cases}: taken");
+            cases += 1;
+        }
+        assert_eq!((cases, obst), (2000, 986));
     }
 }

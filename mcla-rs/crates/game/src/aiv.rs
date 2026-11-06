@@ -515,7 +515,7 @@ fn sqrt_nr(x: f32) -> f32 {
 /// The vector unit's refined reciprocal root of a squared length: 1/sqrt, zero where that is infinite, then one Newton step
 /// (all single-precision, products rounded before the sums).
 #[inline]
-fn vrsqrt1(l2: f32) -> f32 {
+pub(crate) fn vrsqrt1(l2: f32) -> f32 {
     let y0 = 1.0 / l2.sqrt();
     let y = if y0 == f32::INFINITY { 0.0 } else { y0 };
     -(l2 * (y * y) - 1.0) * (0.5 * y) + y
