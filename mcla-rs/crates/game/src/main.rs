@@ -10078,6 +10078,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     c.w > 0.0 && c.x.abs() <= c.w && c.y.abs() <= c.w
                 };
                 let hour = self.time_of_day;
+                let refl_night = hour > 18.0 || hour < 6.0;
                 if hour > 17.6 || hour < 6.4 {
                     let no_occ = globals.params[3] == 118.0;
                     for (li, (((p, c, _), bx), (bc, bw, br, org))) in self.props.glow_lamps.iter().zip(self.props.glow_boxes.iter()).zip(self.props.glow_cull.iter()).enumerate() {
@@ -10118,7 +10119,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // lamp's own minute - adds a rectangle to the reflection list, F-44648: its place mirrored
                     // about the prop's origin height, size sm_PropGlowReflectionSeedSize / the picture's
                     // width and height, strength sm_fPropGlowReflectionIntensity, the lamp's colour)
-                    let refl_night = hour > 18.0 || hour < 6.0;
                         let ok = lamp_list.holds(bc, bw, br, || occluded.hides_aabb(bx.0, bx.1)) && (lamp_list.sphere_in_view(o, 2.0) || o.distance_squared(cam) <= 400.0);
                         head_ok = Some((*h, ok));
                     }

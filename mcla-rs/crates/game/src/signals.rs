@@ -74,6 +74,21 @@ fn level(v: Vec3) -> Vec3 {
     Vec3::new(v.x, 0.0, v.z).normalize_or(Vec3::X)
 }
 
+/// The vector unit's normalisation of the flattened vector as F-97162 does it for the arms and the point (compare
+/// `lane_dot`): s = x x + z z, r0 = 1 / sqrt(s), one Newton step -(s r0 r0 - 1)(0.5 r0) + r0, times x and z; denormals flushed.
+/// A zero vector gives NaN (no arm is greater than anything then).
+pub(crate) fn unit_exact(v: Vec3) -> Vec3 {
+    let ftz = |x: f32| if x.is_subnormal() { 0.0f32.copysign(x) } else { x };
+    let (x, z) = (ftz(v.x), ftz(v.z));
+    let s = ftz(ftz(x * x) + ftz(z * z));
+    let r0 = ftz(1.0 / s.sqrt());
+    let v9 = ftz(r0 * r0);
+    let v8 = ftz(0.5 * r0);
+    let v7 = -ftz(ftz(s * v9) - 1.0);
+    let v6 = ftz(ftz(v7 * v8) + r0);
+    Vec3::new(ftz(x * v6), 0.0, ftz(z * v6))
+}
+
 /// The lane green tests' arm . entry (F-78185 / F-16432): the entry flattened (y = 0) and normalised as the vector
 /// unit does it (the three-lane dot, 1 / sqrt, one Newton step -(s y y - 1)(0.5 y) + y, denormals flushed), then
 /// fma(a.x, n.x, fma(a.z, n.z, a.y n.y)). Compared with the image's cos 25 degrees, `LANE_GREEN_COS`.
@@ -100,7 +115,7 @@ impl Junction {
     /// F-97162: the largest dot product, the first of equals (strict `>` from -FLT_MAX); 0 when there is no arm (the
     /// original gives -1 and its callers skip it).
     pub fn arm_towards(&self, dir: Vec3) -> usize {
-        let d = level(dir);
+        let d = unit_exact(dir);
         let (mut best, mut at) = (f32::MIN, 0);
         for (k, a) in self.arms.iter().enumerate() {
             let x = a.dot(d);
@@ -308,7 +323,7 @@ impl Signals {
         }
         let mut out = Vec::with_capacity(junctions.len());
         for (ji, nj) in junctions.iter().enumerate() {
-            let arms: Vec<Vec3> = nj.arms.iter().map(|a| level(*a)).collect();
+            let arms: Vec<Vec3> = nj.arms.iter().map(|a| if a.x == 0.0 && a.z == 0.0 { Vec3::X } else { unit_exact(*a) }).collect();
             let reach = nj.half[1].max(1.0) * 0.66 + HEAD_REACH;
             let mut cand: Vec<usize> = Vec::new();
             let (c0, c1) = (cell(nj.center - Vec3::splat(reach)), cell(nj.center + Vec3::splat(reach)));
@@ -482,6 +497,31 @@ mod tests {
 
     fn cross() -> Junction {
         Junction { center: Vec3::ZERO, arms: vec![Vec3::X, Vec3::Z, -Vec3::X, -Vec3::Z], radius: 12.0, reach: 12.0, forced: -1, current: 0, timer: START, demand: vec![0; 4] }
+    }
+
+    /// F-97162 run offline on the original's code (tools/arm_towards_reference.py -> testdata/arm_towards_ref.txt): 6,000
+    /// junctions of 0 .. 6 raw arms (any length and slope, crossings with the point on a bisector, repeated arms) and a
+    /// point; the arm index must be equal (the port's arms are the build's, `unit_exact` of the raw arm; -1 is 0).
+    #[test]
+    fn arm_towards_matches_the_original() {
+        let h = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
+        let (mut n, mut bad) = (0, Vec::new());
+        for line in include_str!("testdata/arm_towards_ref.txt").lines() {
+            let line = line.replace('_', "");
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = i.split_whitespace().collect();
+            let k: usize = w[0].parse().unwrap();
+            let v = |at: usize| Vec3::new(h(w[at]), h(w[at + 1]), h(w[at + 2]));
+            let arms: Vec<Vec3> = (0..k).map(|a| unit_exact(v(1 + 4 * a))).collect();
+            let j = Junction { center: Vec3::ZERO, arms, radius: 12.0, reach: 12.0, forced: -1, current: 0, timer: START, demand: vec![0; k] };
+            let want: i32 = o.parse().unwrap();
+            if j.arm_towards(v(1 + 4 * k)) as i32 != want.max(0) {
+                bad.push(n);
+            }
+            n += 1;
+        }
+        assert_eq!(n, 6003);
+        assert!(bad.is_empty(), "{} of {n} differ, first cases {:?}", bad.len(), &bad[..bad.len().min(12)]);
     }
 
     /// F-23734 / F-23525 / F-59460 (green, yellow, red test of arm i) recorded in the running original by

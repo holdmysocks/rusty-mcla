@@ -1077,14 +1077,17 @@ fn way_clear(a: Vec3, b: Vec3, clear: f32, me: usize, ignore: usize, ignore_box:
     !props.iter().any(|o| Some(o.0) != ignore_box && seg(o) < clear)
 }
 
-/// The wait timer (F-84843) from the idle clip's length `v`.
-fn stop_time(v: f32, rand: &mut dyn FnMut() -> f32) -> f32 {
-    if v <= 0.0 {
-        2.0 + 2.0 * rand()
+/// The wait timer (F-84843) from the idle clip's length `v`, drawn from the walker's own MWC (ped +384) as the original
+/// does: `v` = 0 -> 2 + 2 u (u the 23-bit draw), 0 < v < 5 (and any v < 5 that is not 0) -> n v - 8 x 0.0333333351 with
+/// n = (31-bit draw mod 3) + 1 and the product fused, else v - 8 x 0.0333333351.
+fn stop_time(v: f32, mwc: &mut crate::vehicles::parked::Mwc) -> f32 {
+    let blend = 8.0 * f32::from_bits(0x3D08_8889);
+    if v == 0.0 {
+        2.0 + 2.0 * mwc.float()
     } else if v < 5.0 {
-        ((rand() * 3.0) as u32 % 3 + 1) as f32 * v - BLEND_S
+        crate::physics::exact::fma((mwc.index(3) + 1) as f32, v, -blend)
     } else {
-        v - BLEND_S
+        -crate::physics::exact::fma(8.0, f32::from_bits(0x3D08_8889), -v)
     }
 }
 
@@ -2034,7 +2037,7 @@ fn dodge_frame(p: &mut Ped, ty: &PedType, threats: &[Threat], side: &[SideSlot],
         sidestep(m, &w, vneg(w.rows[2]), side, &ty.avoid, &durs, &mut world, &mut rng.speech, &mut rng.pick);
     }
     if world.stop {
-        p.stop = stop_time(ty.idle.anim.duration, rand);
+        p.stop = stop_time(ty.idle.anim.duration, &mut p.mwc);
         p.stops += 1;
     }
     if let Some(k) = world.say {
@@ -2271,7 +2274,7 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
                 if std::env::var("MCLA_PED_DUMP").is_ok() {
                     log::info!("ped stop {} by {} at {:.1} m, half {:.2} {:.2} centre {:.1} {:.1}", p.key.1, if who == usize::MAX { "prop" } else { "ped" }, box_dist(&o, p.pos), o.2.x, o.2.y, o.0.x, o.0.z);
                 }
-                p.stop = stop_time(ty.idle.anim.duration, rand);
+                p.stop = stop_time(ty.idle.anim.duration, &mut p.mwc);
                 p.stops += 1;
                 if expired && p.stops > 1 {
                     p.rail = None;
@@ -2365,34 +2368,51 @@ pub(crate) fn spawn_candidates(mesh: &NavMesh, focus: Vec3, r: f32) -> Vec<(u32,
 
 /// A random point of a polygon as the original picks it (F-76960): a triangle of the
 /// fan from the first corner, chosen by area with `r1`, the rest of `r1` across it and
-/// sqrt(`r2`) from the first corner towards the far edge.
+/// sqrt(`r2`) from the first corner towards the far edge. The weights are the cross products' lengths
+/// (sqrt of the three squares fused, summed in order, each times 1 / the total), the pick the first triangle
+/// whose running sum is not below `r1`, t = (r1 - the sum before) / its weight, and the point
+/// fma(v0, 1 - s, fma(v[k+2], s t, v[k+1] (1 - t) s)). When the rounded weights sum to under `r1` the original goes past
+/// the last triangle and reads what the stack held; here that case takes the last (`random_point_k` says so).
 pub(crate) fn random_point(q: &NavPoly, r1: f32, r2: f32) -> Vec3 {
+    random_point_k(q, r1, r2).0
+}
+
+/// `random_point` and whether the original's pick ran off the end of the weights (its point is then not defined).
+pub(crate) fn random_point_k(q: &NavPoly, r1: f32, r2: f32) -> (Vec3, bool) {
+    use crate::physics::exact::fma;
     let v = q.points();
     if v.len() < 3 {
-        return q.center;
+        return (q.center, false);
     }
     let n = v.len() - 2;
     let mut w = [0.0f32; 2];
+    let mut total = 0.0f32;
     for k in 0..n {
-        w[k] = (v[k + 1] - v[0]).cross(v[k + 2] - v[0]).length();
+        let c = (v[k + 1] - v[0]).cross(v[k + 2] - v[0]);
+        w[k] = fma(c.z, c.z, fma(c.y, c.y, c.x * c.x)).sqrt();
+        total = w[k] + total;
     }
-    let total: f32 = w[..n].iter().sum();
-    if total <= 0.0 {
-        return q.center;
+    let inv = 1.0 / total;
+    for x in w[..n].iter_mut() {
+        *x = inv * *x;
     }
-    let mut acc = 0.0;
+    let mut acc = 0.0f32;
     let mut k = 0;
     while k < n {
-        acc += w[k] / total;
-        if acc >= r1 {
+        acc = w[k] + acc;
+        if !(acc < r1) {
             break;
         }
         k += 1;
     }
+    let off = k == n;
     let k = k.min(n - 1);
-    let t = ((r1 - (acc - w[k] / total)) / (w[k] / total)).clamp(0.0, 1.0);
+    let t = ((r1 - acc) + w[k]) / w[k];
     let s = r2.sqrt();
-    v[0] * (1.0 - s) + v[k + 1] * (s * (1.0 - t)) + v[k + 2] * (s * t)
+    let (a, b) = (1.0 - s, (1.0 - t) * s);
+    let c = s * t;
+    let at = |f: fn(Vec3) -> f32| fma(f(v[0]), a, fma(f(v[k + 2]), c, f(v[k + 1]) * b));
+    (Vec3::new(at(|p| p.x), at(|p| p.y), at(|p| p.z)), off)
 }
 
 #[derive(Clone, Copy)]
@@ -3533,7 +3553,7 @@ impl Peds {
                                 } else if !ty.angry.is_empty() {
                                     angry(rand())
                                 } else {
-                                    p.stop = stop_time(ty.idle.anim.duration, &mut rand);
+                                    p.stop = stop_time(ty.idle.anim.duration, &mut p.mwc);
                                     p.stops += 1;
                                     State::Idle
                                 }
@@ -3543,7 +3563,7 @@ impl Peds {
                                 if !ty.angry.is_empty() {
                                     angry(rand())
                                 } else {
-                                    p.stop = stop_time(ty.idle.anim.duration, &mut rand);
+                                    p.stop = stop_time(ty.idle.anim.duration, &mut p.mwc);
                                     p.stops += 1;
                                     State::Idle
                                 }
@@ -4636,6 +4656,41 @@ mod tests {
         }
     }
 
+    /// F-76960 run offline on the original's code (tools/random_point_reference.py -> testdata/random_point_ref.txt): 6,000
+    /// triangles and quads (1 - 60 m, tilted or flat) with a global MWC state each; the point (the function's two draws
+    /// are `Mwc::float` twice) and the MWC after must be equal bit for bit. A case whose rounded weights sum to under the
+    /// first draw makes the original read the stack past the last triangle (`random_point_k` flags it): skipped.
+    #[test]
+    fn random_point_matches_the_original() {
+        let u = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let (mut n, mut off) = (0, 0);
+        for line in include_str!("testdata/random_point_ref.txt").lines() {
+            let line = line.replace('_', "");
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = i.split_whitespace().collect();
+            let k: usize = w[0].parse().unwrap();
+            let v = |at: usize| Vec3::new(f32::from_bits(u(w[at])), f32::from_bits(u(w[at + 1])), f32::from_bits(u(w[at + 2])));
+            let mut q = quad();
+            q.nv = k as u8;
+            for c in 0..k {
+                q.verts[c] = v(1 + 3 * c);
+            }
+            let mut mwc = crate::vehicles::parked::Mwc { lo: u(w[1 + 3 * k]), carry: u(w[2 + 3 * k]) };
+            let (r1, r2) = (mwc.float(), mwc.float());
+            let (p, past) = random_point_k(&q, r1, r2);
+            let want: Vec<u32> = o.split_whitespace().map(u).collect();
+            assert_eq!((mwc.lo, mwc.carry), (want[3], want[4]), "{line}");
+            n += 1;
+            if past {
+                off += 1;
+                continue;
+            }
+            assert_eq!([p.x.to_bits(), p.y.to_bits(), p.z.to_bits()], want[..3], "{line}");
+        }
+        assert_eq!(n, 6000);
+        assert!(off < 10, "{off} cases past the last triangle");
+    }
+
     #[test]
     fn random_point_is_inside_and_even() {
         let q = quad();
@@ -4814,18 +4869,24 @@ mod tests {
 
     #[test]
     fn stop_timer_like_the_original() {
-        // F-84843 with the idle clip lengths seen live; the stop lengths recorded on the
-        // original were 2.07 / 2.40 / 4.40 / 4.73 / 6.73 / 25.4 s ...
-        let mut r = [0.0f32, 0.5, 0.9].into_iter().cycle();
-        let mut rand = || r.next().unwrap();
-        let v = 2.333;
-        let got: Vec<f32> = (0..3).map(|_| stop_time(v, &mut rand)).collect();
-        for (g, n) in got.iter().zip([1.0f32, 2.0, 3.0]) {
-            assert!((g - (n * v - 8.0 / 30.0)).abs() < 1e-4, "{got:?}");
+        // F-84843 run offline on the original's code (tools/stop_time_reference.py -> testdata/stop_time_ref.txt): 4,000
+        // cases of idle clip length (0, short, 5 and over, negative, tiny, huge, NaN) with the walker's MWC state and the
+        // M flags; the timer, the MWC after and the stop count (+1 in bits 3 and up, bits 0x4 / 0x2 cleared: p.stops += 1)
+        // must be equal bit for bit.
+        let u = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let mut n = 0;
+        for line in include_str!("testdata/stop_time_ref.txt").lines() {
+            let line = line.replace('_', "");
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(u).collect();
+            let r: Vec<u32> = o.split_whitespace().map(u).collect();
+            let mut mwc = crate::vehicles::parked::Mwc { lo: w[1], carry: w[2] };
+            let t = stop_time(f32::from_bits(w[0]), &mut mwc);
+            assert_eq!((t.to_bits(), mwc.lo, mwc.carry), (r[0], r[1], r[2]), "{line}");
+            assert_eq!((w[3] & !6) + 8, r[3], "{line}");
+            n += 1;
         }
-        assert!((stop_time(25.667, &mut rand) - 25.4).abs() < 1e-3);
-        let t = stop_time(0.0, &mut rand);
-        assert!((2.0..4.0).contains(&t));
+        assert_eq!(n, 4000);
     }
 
     #[test]
