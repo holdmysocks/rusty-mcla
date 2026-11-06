@@ -96,11 +96,11 @@ pub struct CpuSector {
 }
 
 /// A far model's test as the original's: the sector record's box (+208 / +224) against the view and the occluder
-/// volumes gives the record's visible bit (F-56244 by F-60582), and the far draw F-73936 (from F-75080) tests the
-/// model's whole sphere, then each geometry's own sphere (the model's bounds table at +0x0C: the whole first, then one
-/// per geometry; a model of one geometry has only the whole), against the view (F-23007) - no occluder test and no size
-/// cut per geometry. Here: (box min, box max, whole centre, whole radius); the geometries' spheres are the batches'
-/// parts. A model matched to no sector has its own box.
+/// volumes gives the record's visible bit (F-56244 by F-60582). The far draw F-73936 (from F-75080) has sphere tests
+/// (F-23007: the whole model's, then each geometry's, from the model's bounds table at +0x0C) that run only while a
+/// global byte is set; in the main view it is not - every far model of the 7 recorded views is drawn whole - so the box
+/// is the whole test there. Here: (box min, box max, whole centre, whole radius); the geometries' spheres are the
+/// batches' parts (kept for the draw-list dump). A model matched to no sector has its own box.
 pub type FarCull = (Vec3, Vec3, Vec3, f32);
 
 /// A sector's batches put together for its two buffers - the vertices and the kept indices in draw order, each
@@ -1140,7 +1140,7 @@ pub fn decode_far(path: &Path, sectors: &[SectorInfo]) -> Result<Vec<CpuSector>>
             mark_binormal(&mut vertices, &mesh.tangents, sh);
             mark_water(&mut vertices, mode);
             mark_pond(&mut vertices, sh, mode);
-            // (the geometry's own sphere: draw_sectors tests a far model's parts by it alone)
+            // (the geometry's own sphere - F-73936's test, not used in the main view; the draw-list dump prints it)
             let parts = sphere(if gc > 1 { g + 1 } else { 0 }).map_or(Vec::new(), |(c, r)| vec![(0, mesh.indices.len() as u32, c, r, 0, Vec3::ZERO)]);
             batches.push(CpuBatch { vertices, indices: mesh.indices, diffuse, second, third, fourth, mode, min: mn, max: mx, shader: sh.name.clone(), interior: false, parts });
         }

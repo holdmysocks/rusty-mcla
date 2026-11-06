@@ -14659,10 +14659,11 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
     let mut far_drawn: Vec<(u32, Vec3, f32)> = Vec::new();
     for sec in secs {
         let (Some(vb), Some(ib)) = (sec.vb.as_ref(), sec.ib.as_ref()) else { continue };
-        // (a far model: the sector record's box against the view and the occluder volumes - its visible bit - then the
-        // model's whole sphere against the view; its geometries below by their own spheres alone - world::FarCull)
-        if let Some((bmin, bmax, c, r)) = sec.far {
-            if !v.frustum.intersects_aabb(bmin, bmax) || v.occluded.hides_aabb(bmin, bmax) || !v.frustum.intersects_sphere(c, r) {
+        // (a far model: the sector record's box against the view and the occluder volumes - its visible bit - and nothing
+        // more: F-73936 tests the model's spheres only while a global byte is set, never in the main view, whose recorded
+        // far models are all drawn whole - every geometry, 36 / 46 / 32 / 40 / 58 / 6 models in the 7 views; world::FarCull)
+        if let Some((bmin, bmax, _, _)) = sec.far {
+            if !v.frustum.intersects_aabb(bmin, bmax) || v.occluded.hides_aabb(bmin, bmax) {
                 continue;
             }
         } else if v.occluded.hides_all(sec.batches.iter().map(|b| (b.min, b.max))) {
@@ -14717,7 +14718,7 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
                 for p in &b.parts {
                     let (mn, mx) = (p.2 - p.5, p.2 + p.5);
                     let far = sec.far.is_some();
-                    if !v.frustum.intersects_sphere(p.2, p.3) || (!far && (!v.frustum.intersects_aabb(mn, mx) || v.occluded.hides_aabb(mn, mx))) {
+                    if !far && (!v.frustum.intersects_sphere(p.2, p.3) || !v.frustum.intersects_aabb(mn, mx) || v.occluded.hides_aabb(mn, mx)) {
                         continue;
                     }
                     if far {
