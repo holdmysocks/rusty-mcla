@@ -68,28 +68,31 @@ impl CarParams {
         [(hi.x - lo.x) * 0.5, (hi.z - lo.z) * 0.5]
     }
 
-    /// The box of the car's composite bound (F-65996 / F-32566): the hull's, margin included,
-    /// and the wheels' crowned boxes. (lo, hi) in the car.
+    /// The box of the car's composite bound (F-65996 / F-32566) as the wheels' fit (F-55382) leaves it:
+    /// the hull's, margin included, and every wheel part's box swept over its travel, `vehsim::fit_box`
+    /// on the tuning's wheels at their places of rest. (lo, hi) in the car. Recorded ZX-14 2026-11-06
+    /// (work/physics2/bikebox): (-0.4270, -0.5947, -1.4291) .. (0.4270, 1.1482, 1.0534).
     pub fn composite_box(&self) -> (Vec3, Vec3) {
         let Some(h) = self.hull.as_ref() else { return (-self.body_half, self.body_half) };
-        // (the hull bound's own box, its 4 cm margin included: R8 1.0009, 2.1064 .. -2.3572)
-        let (mut hi, mut lo) = h.bbox.unwrap_or((h.max + Vec3::splat(0.041), h.min - Vec3::splat(0.041)));
-        if let Some(vt) = self.veh.as_ref() {
-            // (a wheel bound's box: half the crowned shape's width across, its round along - R8
-            // front 0.2024 x 0.3072, rear 0.2263 x 0.3190 - at the wheel's place)
-            let w = &self.wheel_pos;
-            let wheels = if vt.bike { vec![((w[0] + w[1]) * 0.5, 0), ((w[2] + w[3]) * 0.5, 1)] } else { vec![(w[0], 0), (w[1], 0), (w[2], 1), (w[3], 1)] };
-            for (at, k) in wheels {
-                let (radius, width) = (if k == 0 { vt.t.wheel_front.radius } else { vt.t.wheel_back.radius }.max(0.1), vt.tyre_width[k]);
-                if width <= 0.0 {
-                    continue;
-                }
-                let e = Vec3::new(super::vehsim::crown_half_width(radius, width), 0.0, super::vehsim::crown(radius, width, 0.0));
-                lo = lo.min(at - e);
-                hi = hi.max(at + e);
+        let bbox = h.bbox.map_or((h.min - Vec3::splat(0.041), h.max + Vec3::splat(0.041)), |(hi, lo)| (lo, hi));
+        let Some(vt) = self.veh.as_ref() else { return bbox };
+        let w = &self.wheel_pos;
+        let mut fit = Vec::new();
+        for i in 0..4 {
+            if vt.bike && i % 2 == 1 {
+                continue;
             }
+            let front = i < 2;
+            let wt = if front { &vt.t.wheel_front } else { &vt.t.wheel_back };
+            let width = vt.tyre_width[if front { 0 } else { 1 }];
+            if width <= 0.0 {
+                continue;
+            }
+            let local = if vt.bike { (w[i] + w[i + 1]) * 0.5 } else { w[i] };
+            let rest = Vec3::new(local.x, local.y - self.susp_rest, local.z);
+            fit.push(super::vehsim::FitWheel { front, radius: wt.radius.max(0.1), width, extent: wt.suspension_extent, limit: wt.suspension_limit, rest, steered: wt.steering_limit != 0.0 });
         }
-        (lo, hi)
+        super::vehsim::fit_box(bbox, &fit, vt.t.steer_axis.map(Vec3::from))
     }
 
     /// Derive the final drive from top speed / top gear / redline / wheel radius.
@@ -1100,6 +1103,38 @@ mod tests {
             eprintln!("piece {i}: {at:.4} (original {w:.3})");
             assert!(at.distance(w) < 0.003, "piece {i}: {at:.4} against {w:.3}");
         }
+    }
+
+    /// The composite bound's box as the original's wheel fit leaves it (one F-32566 call at the fit,
+    /// work/physics2/bikebox/box3.bin seq 144: max 3EDAA286 3F92F6D2 3F86D5B3) and the R8's (zone box record, x 1.0038,
+    /// z 2.1064 .. -2.3572).
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR containing Complete Edition vehicle resources"]
+    fn the_composite_box_is_the_originals() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR"));
+        let assets = crate::assets::Assets::new(&root);
+        let params = |name: &str| {
+            let car = crate::vehicle_model::load_car(&assets, &root.join("resources/vehicle").join(name)).unwrap();
+            let mut p = crate::vehicles::car_params(&car);
+            let (s, h, hubs) = (car.simtune.as_ref().unwrap(), car.hull.as_ref().unwrap(), car.hubs.unwrap());
+            let mut vt = super::super::vehsim::VehTune::new(s.base.clone());
+            vt.seat((hubs[0].y + hubs[2].y) * 0.5);
+            vt.bike = car.bike;
+            p.veh = Some(std::sync::Arc::new(vt));
+            p.hull = Some(std::sync::Arc::new(super::super::hull::shaped(h, &s.base, (hubs[0].y + hubs[2].y) * 0.5, car.bike)));
+            p
+        };
+        let (lo, hi) = params("vp_kaw_ninja_zx14_06").composite_box();
+        let bits = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+        eprintln!("ZX-14 {lo:?} {hi:?} {:08X?} {:08X?}", bits(lo), bits(hi));
+        let (rlo, rhi) = params("vp_aud_r8_08").composite_box();
+        eprintln!("R8 {rlo:?} {rhi:?}");
+        // (max bit for bit; min as the fit's wheel pose allows: the original's front part stood 0.57 mm
+        // back of its rest at the fit, rows 0.999999, x -0.000061 - four runs gave -1.42908, -1.42896 (twice),
+        // -1.42878; y -0.59474 in all)
+        assert_eq!(bits(hi), [0x3EDA_A286, 0x3F92_F6D2, 0x3F86_D5B3]);
+        assert!((lo.x + 0.4270).abs() < 1e-4 && (lo.y + 0.59474).abs() < 2e-5 && (lo.z + 1.4290).abs() < 7e-4, "{lo:?}");
+        assert!((rhi.x - 1.0038).abs() < 2e-4 && (rhi.z - 2.1064).abs() < 2e-4 && (rlo.z + 2.3572).abs() < 2e-4);
     }
 
     /// The R8 driven head-on into a wall at 26 m/s (recording sa.0 of the original, tick 153):

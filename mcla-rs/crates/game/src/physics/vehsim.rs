@@ -42,6 +42,68 @@ pub struct VehTune {
     idle_curve: Option<super::engine_curve::Curve>,
 }
 
+/// One wheel part of the composite bound as the wheels' fit (F-55382) leaves it: its shape (front,
+/// TireRadius, TireWidth), SuspensionExtent and SuspensionLimit, its place of rest in the car and
+/// whether it steers.
+#[derive(Clone, Copy, Debug)]
+pub struct FitWheel {
+    pub front: bool,
+    pub radius: f32,
+    pub width: f32,
+    pub extent: f32,
+    pub limit: f32,
+    pub rest: Vec3,
+    pub steered: bool,
+}
+
+/// The composite bound's box as the wheels' fit leaves it, F-55382's tail -> F-65996 -> F-32566: the
+/// union of the hull's box (`bbox`, its corners and 0.041) and every wheel part's own box swept from its
+/// "last" matrix to its current one, the part put at its place of rest less max(SuspensionExtent, 0.5)
+/// and its last matrix at (SuspensionLimit + rest) + 0.1. A wheel bound's box is its own support along
+/// each axis and the margin, F-63967. It stands as it is between fits. The fit keeps each wheel part's
+/// rows and x / z as the sim last left them and rewrites only y; here they are the place of rest (recorded
+/// 2026-11-06, ZX-14: one fit, by F-17293 42-62 ticks after the bike is made, its front part 0.57 mm
+/// further back - the fork a little compressed - and rows 0.999999: min z -1.42878 .. -1.42908 over four
+/// runs, this -1.42839; max and the rear bit for bit).
+pub fn fit_box(bbox: (Vec3, Vec3), wheels: &[FitWheel], steer_axis: Option<Vec3>) -> (Vec3, Vec3) {
+    use super::gjk::Support;
+    let (mut lo, mut hi) = bbox;
+    for w in wheels {
+        let (front, radius, width, extent, limit, rest) = (w.front, w.radius, w.width, w.extent, w.limit, w.rest);
+        let core = super::gjk::WheelCore::of(&super::gjk::wheel_shape(front, radius, width), Vec3::ZERO, [Vec3::X, Vec3::Y, Vec3::Z], radius, width);
+        let m = f32::from_bits(0x3d23_d70a);
+        let e = Vec3::new(core.support(Vec3::X).x + m, core.support(Vec3::Y).y + m, core.support(Vec3::Z).z + m);
+        let down = rest.y - if extent - 0.5 >= 0.0 { extent } else { 0.5 };
+        let up = (limit + rest.y) + 0.1;
+        // (R1: the part's own rows as the fit finds them. A car's wheel stands square in the car; a
+        // motorcycle's front wheel part has the fork's rake in its rows, and F-32566's two absolute-value
+        // passes - the last pose in the part's axes, then that box in the composite's - make its swept box
+        // larger than the true sweep. MCLA_DBG_R1: rows taken as square.)
+        let rows = match steer_axis {
+            Some(axis) if front && w.steered && !dbg_flag("MCLA_DBG_R1") => super::exact::steer_frame(axis),
+            _ => super::exact::IDENTITY,
+        };
+        if rows == super::exact::IDENTITY {
+            lo = lo.min(Vec3::new(rest.x - e.x, down - e.y, rest.z - e.z));
+            hi = hi.max(Vec3::new(rest.x + e.x, up + e.y, rest.z + e.z));
+        } else {
+            let (mp, lp) = (Vec3::new(rest.x, down, rest.z), Vec3::new(rest.x, up, rest.z));
+            let dp = lp - mp;
+            let r: [Vec3; 3] = std::array::from_fn(|j| Vec3::new(rows[0].dot(rows[j]), rows[1].dot(rows[j]), rows[2].dot(rows[j])));
+            let tr = Vec3::new(rows[0].dot(dp), rows[1].dot(dp), rows[2].dot(dp));
+            let e1 = r[0].abs() * e.x + r[1].abs() * e.y + r[2].abs() * e.z;
+            let (h1, l1) = (e.max(tr + e1), (-e).min(tr - e1));
+            let cs = (h1 + l1) * 0.5;
+            let hs = h1 - cs;
+            let c = rows[0] * cs.x + rows[1] * cs.y + rows[2] * cs.z + mp;
+            let ee = rows[0].abs() * hs.x + rows[1].abs() * hs.y + rows[2].abs() * hs.z;
+            lo = lo.min(c - ee);
+            hi = hi.max(ee + c);
+        }
+    }
+    (lo, hi)
+}
+
 /// The radius of a wheel's collision shape `aside` of its middle. The original's wheel is a
 /// curved bound (F-55382 scales a unit one to TireWidth and TireRadius - 0.04, its margin):
 /// across the tread an arc through the two shoulders about a point (sqrt 6 - 1) (r - 0.04)
@@ -5956,43 +6018,13 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                 // matrix at (SuspensionLimit + rest) + 0.1. A wheel bound's box is its own support along each
                 // axis and the margin, F-63967; the hull's its corners' box and 0.041. It stands as it is
                 // between fits. A decision only: written plainly.)
-                use super::gjk::Support;
-                let (mut lo, mut hi) = bbox;
-                for i in 0..4 {
-                    if let (Some((front, radius, width, _, _)), Some((extent, limit)), Some(rest)) = (wheel_geo[i], wheel_reach[i], wheel_rest[i]) {
-                        let core = super::gjk::WheelCore::of(&super::gjk::wheel_shape(front, radius, width), Vec3::ZERO, [Vec3::X, Vec3::Y, Vec3::Z], radius, width);
-                        let m = f32::from_bits(0x3d23_d70a);
-                        let e = Vec3::new(core.support(Vec3::X).x + m, core.support(Vec3::Y).y + m, core.support(Vec3::Z).z + m);
-                        let down = rest.y - if extent - 0.5 >= 0.0 { extent } else { 0.5 };
-                        let up = (limit + rest.y) + 0.1;
-                        // (R1: the part's own rows as the fit finds them. A car's wheel stands square in
-                        // the car; a motorcycle's front wheel part has the fork's rake in its rows, and
-                        // F-32566's two absolute-value passes - the last pose in the part's axes, then
-                        // that box in the composite's - make its swept box larger than the true sweep:
-                        // live ZX-14 min (-0.4270, -0.5947, -1.4288). MCLA_DBG_R1: rows taken as square.)
-                        let rows = if dbg_flag("MCLA_DBG_R1") || !(i < 2) { super::exact::IDENTITY } else {
-                            let f = super::exact::steer_frame(t.steer_axis.map_or(Vec3::Y, Vec3::from));
-                            if t.steer_axis.is_some() && wheel_steered[i] { f } else { super::exact::IDENTITY }
-                        };
-                        if rows == super::exact::IDENTITY {
-                            lo = lo.min(Vec3::new(rest.x - e.x, down - e.y, rest.z - e.z));
-                            hi = hi.max(Vec3::new(rest.x + e.x, up + e.y, rest.z + e.z));
-                        } else {
-                            let (mp, lp) = (Vec3::new(rest.x, down, rest.z), Vec3::new(rest.x, up, rest.z));
-                            let dp = lp - mp;
-                            let r: [Vec3; 3] = std::array::from_fn(|j| Vec3::new(rows[0].dot(rows[j]), rows[1].dot(rows[j]), rows[2].dot(rows[j])));
-                            let tr = Vec3::new(rows[0].dot(dp), rows[1].dot(dp), rows[2].dot(dp));
-                            let e1 = r[0].abs() * e.x + r[1].abs() * e.y + r[2].abs() * e.z;
-                            let (h1, l1) = (e.max(tr + e1), (-e).min(tr - e1));
-                            let cs = (h1 + l1) * 0.5;
-                            let hs = h1 - cs;
-                            let c = rows[0] * cs.x + rows[1] * cs.y + rows[2] * cs.z + mp;
-                            let ee = rows[0].abs() * hs.x + rows[1].abs() * hs.y + rows[2].abs() * hs.z;
-                            lo = lo.min(c - ee);
-                            hi = hi.max(ee + c);
-                        }
-                    }
-                }
+                let fit: Vec<FitWheel> = (0..4)
+                    .filter_map(|i| match (wheel_geo[i], wheel_reach[i], wheel_rest[i]) {
+                        (Some((front, radius, width, _, _)), Some((extent, limit)), Some(rest)) => Some(FitWheel { front, radius, width, extent, limit, rest, steered: wheel_steered[i] }),
+                        _ => None,
+                    })
+                    .collect();
+                let (lo, hi) = fit_box(bbox, &fit, t.steer_axis.map(Vec3::from));
                 car_box = (lo, hi);
                 // (the deform pieces' places from this box, once (F-10977, `F-98453(car + 8)`): V the R8's
                 // window pieces at mid y 0.4007 of the box -0.4759 .. 1.2772, work/dmgmap)
