@@ -284,8 +284,16 @@ impl Occluders {
         }
     }
 
-    /// The occlusion volumes for a camera at `eye` (F-38732).
+    /// The occlusion volumes for a camera at `eye` (F-38732), those F-21317 switches off left out.
     pub fn select_at(&self, eye: Vec3, frustum: &Frustum) -> Selected {
+        let mut sel = self.listed_at(eye, frustum);
+        let on = self.drop_hidden(&sel);
+        sel.keep(&on);
+        sel
+    }
+
+    /// The view's volume list as F-38732 builds it, before F-21317.
+    fn listed_at(&self, eye: Vec3, frustum: &Frustum) -> Selected {
         let mut sel = Selected::none();
         if !(eye.y <= MAX_CAM_Y) || !eye.is_finite() {
             return sel;
@@ -320,6 +328,14 @@ impl Occluders {
     /// F-75502 by F-38127 / F-62548): the tree's first 512 candidates within `range`,
     /// at most 64 volumes, the facing planes not moved.
     pub fn select_around(&self, eye: Vec3, range: f32) -> Selected {
+        let mut sel = self.listed_around(eye, range);
+        let on = self.drop_hidden(&sel);
+        sel.keep(&on);
+        sel
+    }
+
+    /// The spawner view's volume list before F-21317.
+    fn listed_around(&self, eye: Vec3, range: f32) -> Selected {
         let mut sel = Selected::none();
         if !(eye.y <= MAX_CAM_Y) || !eye.is_finite() {
             return sel;
@@ -339,6 +355,22 @@ impl Occluders {
             }
         }
         sel
+    }
+
+    /// F-21317, run on every view's volumes after the selection (both callers, while a global byte is set, which the
+    /// manager's constructor F-98372 sets to 1): in list order each volume's occluder vertices are tested against
+    /// the other volumes still in use (F-80920 with flags 0x800002: no frustum part, the volume's own occluder left
+    /// out); when every vertex lies inside every plane of one of them (`n . v - w <= -0.0` in the original's terms,
+    /// `<= 0` here) the volume is switched off (+288 bit 31), so it neither hides anything nor hides a later volume.
+    fn drop_hidden(&self, sel: &Selected) -> Vec<bool> {
+        let n = sel.volumes.len();
+        let mut on = vec![true; n];
+        for a in 0..n {
+            let Some(b) = self.entries[sel.ids[a] as usize].body else { continue };
+            let verts = &self.list[b as usize].verts;
+            on[a] = !(0..n).any(|k| k != a && on[k] && sel.volumes[k].iter().all(|p| verts.iter().all(|v| p.truncate().dot(*v) + p.w <= 0.0)));
+        }
+        on
     }
 
     /// The occluders whose box overlaps the box `eye` +- `range` (y +- `range` + 10000), in the
@@ -605,6 +637,14 @@ impl Selected {
 
     pub fn len(&self) -> usize {
         self.volumes.len()
+    }
+
+    /// Only the volumes whose `on` is set.
+    fn keep(&mut self, on: &[bool]) {
+        let mut k = 0;
+        self.volumes.retain(|_| (on[k], k += 1).0);
+        let mut k = 0;
+        self.ids.retain(|_| (on[k], k += 1).0);
     }
 
     /// True when the box is entirely behind one occluder (never true for something visible).
@@ -977,9 +1017,9 @@ mod tests {
                 // planes 0, 1 sides, 2 near, 4, 5 top and bottom, 6 far; the original's are
                 // positive outside (F-38575), the port's positive inside
                 let planes = [0, 1, 2, 4, 5, 6].map(|j| -Vec4::new(pl[4 * j], pl[4 * j + 1], pl[4 * j + 2], pl[4 * j + 3]));
-                o.select_at(eye, &Frustum::from_planes(planes))
+                o.listed_at(eye, &Frustum::from_planes(planes))
             } else {
-                o.select_around(eye, RANGE * RANGE_SCALE)
+                o.listed_around(eye, RANGE * RANGE_SCALE)
             };
             if head[0] == 0.0 {
                 let t = std::time::Instant::now();
@@ -1010,5 +1050,45 @@ mod tests {
             }
             assert_eq!(sel.ids, want);
         }
+    }
+
+    /// F-21317 against the running original: at the garage and at five places of the 2nd St tunnel / street (views 0 and
+    /// 2, work/performance/rec/livecap2.py: the volume list, each volume's active bit +288 and +268), the port's list
+    /// and which volumes it switches off.
+    #[test]
+    fn live_active() {
+        let Ok(text) = std::fs::read_to_string("D:/MCLA/extracted/cache/city/sc/city.occluder") else { return };
+        let Ok(live) = std::fs::read_to_string("D:/MCLA/work/performance/vis/live_active.txt") else { return };
+        let o = Occluders::parse(&text).unwrap();
+        let (mut views, mut vols, mut off) = (0, 0, 0);
+        let mut lines = live.lines();
+        while let Some(line) = lines.next() {
+            if line.starts_with('#') {
+                // (a second read that differed: the list was being rebuilt; the first read is the one compared)
+                lines.next();
+                lines.next();
+                continue;
+            }
+            let parts: Vec<&str> = line.split(" | ").collect();
+            let head: Vec<f32> = parts[0].split(' ').skip(1).map(|x| x.parse().unwrap()).collect();
+            let pl: Vec<f32> = parts[1].split(' ').map(|x| x.parse().unwrap()).collect();
+            let list = |k: usize| -> Vec<u32> { parts[k].split(' ').filter(|x| !x.is_empty()).map(|x| x.parse().unwrap()).collect() };
+            let (want, act, sw) = (list(2), list(3), list(4));
+            assert!(sw.iter().all(|&x| x == 0));
+            let eye = Vec3::new(head[1], head[2], head[3]);
+            let sel = if head[0] == 0.0 {
+                o.listed_at(eye, &Frustum::from_planes([0, 1, 2, 4, 5, 6].map(|j| -Vec4::new(pl[4 * j], pl[4 * j + 1], pl[4 * j + 2], pl[4 * j + 3]))))
+            } else {
+                o.listed_around(eye, RANGE * RANGE_SCALE)
+            };
+            assert_eq!(sel.ids, want, "view {} at {eye}", head[0]);
+            let on: Vec<u32> = o.drop_hidden(&sel).iter().map(|&b| b as u32).collect();
+            println!("view {} at {eye}: {} volumes, {} switched off; port {}", head[0], act.len(), act.iter().filter(|&&a| a == 0).count(), on.iter().filter(|&&a| a == 0).count());
+            assert_eq!(on, act, "view {} at {eye}", head[0]);
+            views += 1;
+            vols += act.len();
+            off += act.iter().filter(|&&a| a == 0).count();
+        }
+        println!("{views} views, {vols} volumes, {off} switched off, all as the original's");
     }
 }
