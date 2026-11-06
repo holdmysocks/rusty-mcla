@@ -473,6 +473,26 @@ fn tactic_may_escalate(radio_busy: bool, may: bool, searching: bool, arresting: 
     !radio_busy && may && !searching && !(f64::from(arrest) > 0.0) && !arresting
 }
 
+/// What StartTactic (F-33550) does with the tactic already on the target (its type and may-escalate byte +28), for an asked
+/// type: the same type - that tactic is returned as it is; a lower type whose byte is 0 - refused (nothing starts); else the
+/// old one ends (vt+12(0)) and the new one starts, taking the old one's duration +104 when the old type is above 1 and the new
+/// type above the old (a Pursuit's time goes on into the Double Pursuit and the Arrow Trap; a pull-over's does not).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum StartRule {
+    Keep,
+    Refuse,
+    Start { end_old: bool, carry: bool },
+}
+
+fn start_rule(kind: i32, old: Option<(i32, bool)>) -> StartRule {
+    match old {
+        None => StartRule::Start { end_old: false, carry: false },
+        Some((t, _)) if t == kind => StartRule::Keep,
+        Some((t, b28)) if t < kind && !b28 => StartRule::Refuse,
+        Some((t, _)) => StartRule::Start { end_old: true, carry: t > 1 && kind > t },
+    }
+}
+
 /// The Search state's clock test F-73289 (its vt+80, read by the tactics' vt+44 F-77220 as the target lost): the clock widened to
 /// double and compared greater than +0.0 by fcmpu - false for -0.0, +0.0, the negatives and NaN.
 fn search_clock_runs(clock: f32) -> bool {
@@ -1045,6 +1065,18 @@ pub enum TacKind {
 }
 
 impl TacKind {
+    /// the tactic's type (vt+56): 0 Dispatch to Location, 1 Pull Over, 2 Pursuit, 3 Double Pursuit, 4 Arrow Trap; -1 none
+    fn ty(self) -> i32 {
+        match self {
+            TacKind::None => -1,
+            TacKind::Dispatch => 0,
+            TacKind::PullOver => 1,
+            TacKind::Pursuit => 2,
+            TacKind::PursuitDbl => 3,
+            TacKind::ArrowTrap => 4,
+        }
+    }
+
     fn cops(self) -> usize {
         match self {
             TacKind::None => 0,
@@ -2413,6 +2445,7 @@ impl Police {
         log::info!("police: tactic {:?} -> {:?} with cruisers {:?}", self.kind, kind, cops);
         // (the interrupt comes before the same-kind test: every start of a kind other than Dispatch (type 0))
         self.phone_cut |= !matches!(kind, TacKind::None | TacKind::Dispatch);
+        let old = (self.kind != TacKind::None).then_some((self.kind.ty(), self.may_escalate));
         self.kind = kind;
         self.cops = cops;
         self.may_escalate = may_escalate;
@@ -2420,8 +2453,11 @@ impl Police {
         self.rdo_t = self.tun.get("fMinPerRdoTime", 15.0);
         self.rdo_nitro = 0;
         self.rdo_far = true;
-        // (F-63286: the duration +104 from 0; +120 = the request's +16 - 0 here)
-        self.tac_t = 0.0;
+        // (F-63286: the duration +104 from 0, unless StartTactic carries the old tactic's - F-33550, `start_rule`; +120 = the
+        // request's +16 - 0 here)
+        if !matches!(start_rule(kind.ty(), old), StartRule::Start { carry: true, .. }) {
+            self.tac_t = 0.0;
+        }
         self.tel_lock = 0.0;
         self.tel.clear();
         self.tacs.clear();
@@ -4726,6 +4762,84 @@ mod tests {
         for b in probe {
             assert_eq!(search_clock_runs(f32::from_bits(b)), orig(b), "{b:08x}");
         }
+    }
+
+    /// StartTactic against the original's F-33550 run by tools/start_tactic_reference.py over every asked kind, tactic already on
+    /// the target (none / its type, its byte +28), law record (none / score 0, 4002, 9999), show flag, racer and tutorial byte
+    /// (1,760 cases): kept / refused / started, the old one ended, the duration carried, and the floor - only on a start, kind 1
+    /// the table's entry 1 (iPullOverLawBreakScore), kinds 2 and 3 entry 3 (iPursuitLawBreakScore), kind 4 entry 0
+    /// (iMaxLawBreakingScore), the harness's table 4001 .. 4004.
+    #[test]
+    fn start_tactic_matches_the_original() {
+        let reference = include_str!("testdata/start_tactic_ref.txt");
+        let (mut n, mut carries, mut refusals) = (0, 0, 0);
+        // (the harness's loops: kind, old, b28, record (none / 0 / 4002 / 9999), show, racer, tutorial; no b28 without an old)
+        let mut ins = Vec::new();
+        for _kind in 0..5 {
+            for old in -1..5 {
+                for b28 in 0..2 {
+                    if old < 0 && b28 == 1 {
+                        continue;
+                    }
+                    for rs in [None, Some(0), Some(4002), Some(9999)] {
+                        for _ in 0..8 {
+                            ins.push(rs);
+                        }
+                    }
+                }
+            }
+        }
+        let mut inputs = ins.into_iter();
+        // (the port's floors are the tune's entries: PullOver iPullOverLawBreakScore, the pursuits iPursuitLawBreakScore,
+        // the Arrow Trap iMaxLawBreakingScore - as `TacKind::floor`'s defaults)
+        assert_eq!([TacKind::PullOver, TacKind::Pursuit, TacKind::PursuitDbl, TacKind::ArrowTrap].map(|k| k.floor()), [250.0, 600.0, 600.0, 1000.0]);
+        // (the request blocks the Start* callers build, F-86662 / F-37640 on 64 bytes of A5: no target, record or cop, the four
+        // flag bytes +12..+15 1 - the tactic's +28 may escalate, +29 track, +30 retarget, +31 - +16 the teleport lock 0.0, the
+        // Pursuit's +20 delay 0.0. The port: may_escalate true from the law ladder, the manager's chase properties all on,
+        // start_tactic's tel_lock 0 and no Delay unless a bolt from the ticket sets it)
+        let blk = |name: &str| -> Vec<u32> {
+            let l = reference.lines().find(|l| l.starts_with(&format!("BLOCK {name} "))).unwrap();
+            l.split_whitespace().skip(2).map(|x| u32::from_str_radix(x, 16).unwrap()).collect()
+        };
+        let p = Police::new();
+        for name in ["request", "pursuit"] {
+            let b = blk(name);
+            assert_eq!(&b[..3], &[0, 0, 0], "{name}");
+            assert_eq!(b[3], 0x0101_0101, "{name}");
+            assert_eq!(f32::from_bits(b[4]), p.tel_lock, "{name}");
+            assert_eq!(p.chase_props, [b[3] >> 16 & 1 != 0, b[3] >> 8 & 1 != 0, b[3] & 1 != 0]);
+        }
+        assert_eq!(f32::from_bits(blk("pursuit")[5]), p.flee_hold);
+        for l in reference.lines().filter(|l| !l.starts_with("BLOCK")) {
+            let parts: Vec<&str> = l.split('|').map(str::trim).collect();
+            let v: Vec<i32> = parts[0].split_whitespace().map(|x| x.parse().unwrap()).collect();
+            let (kind, old, b28, score) = (v[0], v[1], v[2] != 0, v[3]);
+            let ret: i32 = parts[1].strip_prefix("ret ").unwrap().parse().unwrap();
+            let log: Vec<u32> = parts[2].split_whitespace().skip(1).map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let carry_bits = u32::from_str_radix(parts[3].strip_prefix("+104 ").unwrap(), 16).unwrap();
+            let started = log.iter().any(|&c| c == 0x60 + kind as u32);
+            let ended = old >= 0 && log.contains(&(0x70 + old as u32));
+            let orig = if !started && ret == -1 {
+                StartRule::Refuse
+            } else if !started {
+                assert_eq!(ret, old, "{l}");
+                StartRule::Keep
+            } else {
+                StartRule::Start { end_old: ended, carry: carry_bits == 7.25f32.to_bits() }
+            };
+            let port = start_rule(kind, (old >= 0).then_some((old, b28)));
+            assert_eq!(port, orig, "{l}");
+            // (the floor on a start: the score after = max(input, the kind's entry); the input from the harness's loop order)
+            let input = inputs.next().unwrap();
+            if let Some(sc) = input {
+                let after = if matches!(port, StartRule::Start { .. }) && kind >= 1 { sc.max([0, 4002, 4004, 4004, 4001][kind as usize]) } else { sc };
+                assert_eq!(score, after, "{l}");
+            }
+            n += 1;
+            carries += matches!(port, StartRule::Start { carry: true, .. }) as u32;
+            refusals += (port == StartRule::Refuse) as u32;
+        }
+        assert!(n == 1760 && carries > 0 && refusals > 0, "{n} {carries} {refusals}");
     }
 
     /// The Double Pursuit's may-escalate against the original's F-73000 (with F-38605 and the state tests F-48174 / F-12623 on
