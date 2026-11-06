@@ -1150,6 +1150,9 @@ pub struct Game {
     pub arrest_scene: u8,
     /// PaybackCore 0xd50: the 1 s fade up that lifts the goons' walk-up's held black (main.rs releases the mask)
     pub pb_fade_up: bool,
+    /// GARAGE_BEACHES_PAYBACK_ON_ENTER after the payback's intro: its 3 s on the held black and its waited 1 s fade up
+    /// before be_payback_state 4 (main.rs); the place's panel waits for it
+    pub payback_hold: bool,
     /// the scene is still loading: all black
     pub cine_black: bool,
     /// results screen: state of the career event the race belonged to, and its next race
@@ -1674,6 +1677,7 @@ impl Game {
             prerace_args: None,
             arrest_scene: 2,
             pb_fade_up: false,
+            payback_hold: false,
             cine_black: false,
             event_line: String::new(),
             next_event_race: None,

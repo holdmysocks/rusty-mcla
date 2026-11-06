@@ -456,7 +456,8 @@ pub const SCENE_AUDIO: &[&str] = &[
 /// or held (the script's TransitionOut == 0 && (TransitionIn || TransitionOutisReady) test). A fade to black that ends a
 /// scene is held until the next scene's start (core_rolling_prototype fades up at its clock's start) or the caller's own
 /// fade up; it is listed only where that caller is ported: the pull-over's walk and ticket scenes (CopPullover.sco,
-/// `main.rs::ticket_tick`; the arrests' are `police::arrest_fade`). From work/driverlight/gen
+/// `main.rs::ticket_tick`; the arrests' are `police::arrest_fade`), the garage intro's (REDLIGHT_GH_01_GARAGE_ON_ENTER)
+/// and the payback intro's (GARAGE_BEACHES_PAYBACK_ON_ENTER; both `main.rs`). From work/driverlight/gen
 /// (docs/reference/cutscenes/generated_description.md).
 pub const SCENE_FADES: &[(&str, bool, f32, f32)] = &[
     ("story/cut_story_district_champs", true, 73.3, 1.0),
@@ -469,8 +470,10 @@ pub const SCENE_FADES: &[(&str, bool, f32, f32)] = &[
     ("story/cut_story_hangout_series_downtown", false, 2.26667, 2.0),
     ("story/cut_story_hollywood_garage_intro", true, 0.333333, 1.0),
     ("story/cut_story_hollywood_garage_intro", false, 2.0, 1.0),
+    ("story/cut_story_hollywood_garage_intro", true, 62.0, 1.0),
     ("story/cut_story_payback_intro", true, 2.0, 1.0),
     ("story/cut_story_payback_intro", false, 3.66667, 1.0),
+    ("story/cut_story_payback_intro", true, 65.3333, 1.0),
     ("cut_cop_walk_02", true, 5.86667, 1.0),
     ("cut_cop_fidget_02", true, 6.3, 1.0),
     ("sc_cut_cop_ticket_suv", true, 6.3, 1.0),

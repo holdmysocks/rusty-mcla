@@ -509,7 +509,7 @@ impl HangoutScene {
             1 => {
                 // (the scene, if one is due, comes up through the career's news; the panel after it)
                 self.pay_wait += dt;
-                if self.pay_wait > 1.0 && scene.is_none() && game.mode == Mode::FreeRoam {
+                if self.pay_wait > 1.0 && scene.is_none() && !game.payback_hold && game.mode == Mode::FreeRoam {
                     game.mc4_payback_place_panel(p);
                     self.pay_step = 2;
                 }

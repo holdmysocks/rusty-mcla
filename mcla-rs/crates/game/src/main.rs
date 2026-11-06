@@ -440,6 +440,8 @@ struct App {
     ticket_wait: Option<(Vec3, f32)>,
     /// CopPullover's ticket form (47) is up, over the ticket scene's held black (0xc45)
     ticket_form: bool,
+    /// the time since the payback's intro ended, until its event script's fade up is over (`Game::payback_hold`)
+    pb_intro_hold: Option<f32>,
     /// the playing scene's car events (cinecar.rs): the scene's name and each moved car's event
     cine_events: (String, Vec<(String, cinecar::CarEvent)>),
     /// tips waiting for a quiet moment: speech scenario, title, text
@@ -1196,6 +1198,7 @@ impl App {
             ticket_run: None,
             ticket_wait: None,
             ticket_form: false,
+            pb_intro_hold: None,
             cine_events: (String::new(), Vec::new()),
             tips: Default::default(),
             tip_waiters: Vec::new(),
@@ -5610,8 +5613,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             log::info!("garage entry: {} from {:?} (warp {}, climb {:?}, go to garage {})", garagein::SETUPS[g].key, s.eye, warp.is_some(), climb.as_ref().map(|c| c.kind()), goto.is_some());
                             self.garage_in = Some(garagein::Entry { garage: g, stage: garagein::Stage::Warp, t: 0.0, clock: 0.0, warp, hold: (c.state.pos, c.state.rot), opened: false, climb, dive: None });
                         } else if self.game.car_x.garage_after_scene && self.cuts.idle() {
-                            self.game.car_x.garage_after_scene = false;
-                            self.pending_action = MenuAction::OpenGarage;
+                            // (REDLIGHT_GH_01_GARAGE_ON_ENTER 0x34a after the intro: the fade up fn(1, 1, 1.0, 0), waited -
+                            // it lifts the intro's held fade_to_black at 62.0 s; then hw_garage_state 5 and garage_core's
+                            // poll opens the garage)
+                            self.scene_fade.release(1.0);
+                            if !self.scene_fade.is_on() {
+                                self.game.car_x.garage_after_scene = false;
+                                self.pending_action = MenuAction::OpenGarage;
+                            }
                         } else if at && c.state.speed() < 12.0 {
                             if want {
                                 self.pending_action = MenuAction::OpenGarage;
@@ -5803,6 +5812,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if self.garage_in.is_none() && self.hangout_entry.is_none() && self.hangout_title.is_none() && self.payback_in.is_none() && !self.payback_hold {
                 self.place_view = None;
                 self.game.place_title = None;
+            }
+            // (the payback intro's event script: 3 s, then its fade up, waited - `pb_intro_hold`)
+            if let Some(t) = self.pb_intro_hold.as_mut() {
+                *t += dt;
+                if *t >= 3.0 {
+                    self.scene_fade.release(1.0);
+                    if !self.scene_fade.is_on() {
+                        self.pb_intro_hold = None;
+                        self.game.payback_hold = false;
+                    }
+                }
             }
             self.game.place_mask = self.garage_mask.update(dt).max(self.arrest_mask.update(dt)).max(self.f02c_mask.update(dt)).max(self.scene_fade.update(dt));
             // (test hook MCLA_ARREST_TRACE=1: the arrest's black each frame it is on)
@@ -13455,6 +13475,13 @@ impl App {
             }
             if ended == "story/cut_story_find_sh_02c" {
                 self.f02c_fade = 1;
+            }
+            // (GARAGE_BEACHES_PAYBACK_ON_ENTER 0x6cd after the payback's intro: Racer_Activate, the opponents deleted,
+            // MISSION_EVENT GARAGE_BEACHES_OBJ_01_COMPLETE, 3000 ms in 100 ms waits, be_payback_state 4, then the fade up
+            // fn(1, 1, 1.0, 0), waited - the intro's fade_to_black at 65.333 s is held until then)
+            if ended == "story/cut_story_payback_intro" {
+                self.pb_intro_hold = Some(0.0);
+                self.game.payback_hold = true;
             }
         }
         let Some((name, t)) = now else { return };
