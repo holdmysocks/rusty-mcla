@@ -706,11 +706,8 @@ impl State {
     /// The map's tick; `checkpoints` = how many checkpoint elements there are (the strobe runs
     /// over them).
     pub fn tick(&mut self, dt: f32, checkpoints: usize) {
-        self.t += dt;
-        self.strobe += self.tune.f("StrobeSpeed", 4.6) * dt;
-        if self.strobe > (checkpoints as f32 + 1.0) * self.tune.f("StrobePeriod", 1.2) {
-            self.strobe = 0.0;
-        }
+        let (sp, per, ps) = (self.tune.f("StrobeSpeed", 4.6), self.tune.f("StrobePeriod", 1.2), self.tune.f("PulseSpeed", 4.0));
+        (self.t, self.strobe, self.pulse) = map_tick(self.t, self.strobe, self.pulse, dt, sp, per, ps, checkpoints);
         // (`HudMap+452` += 1 once per frame of the original, whose UI runs at 30 frames a second - the dt it
         // hands the map measured 0.033 s; counted here by time so the cop flash, 6 of these frames, keeps 0.2 s)
         self.frame_acc = (self.frame_acc + dt).min(0.25);
@@ -718,7 +715,6 @@ impl State {
             self.frame_acc -= 1.0 / 30.0;
             self.frame_no = self.frame_no.wrapping_add(1);
         }
-        self.pulse = (self.pulse + self.tune.f("PulseSpeed", 4.0) * dt) % PI;
     }
 
     /// `tick` once per egui pass.
@@ -907,6 +903,50 @@ pub struct Rim {
     /// 2 flag, 10 flag base, else the checkpoint sphere
     pub kind: u8,
     pub selected: bool,
+}
+
+/// One rim dot's place and alpha (F-42900): (0, 0, 90) turned about y by the angle (F-86740, the C library's sine and
+/// cosine, fused), so x = 90 sin, z = 90 cos; the selected dot's alpha is (sin(8 x the UI clock) + 1) / 2, the others 1.
+/// (Its matrix scales the mesh by 6, 6, 6 - rows (6, 0, ~0), (0, -6, 0), (~0, 0, -6), the -5.2e-7 left by the half turn
+/// F-92665 - which `Target::rim` draws as 6 px a unit; the second matrix of the draw is the same at 0.5.)
+pub fn rim_dot(angle: f32, selected: bool, clock: f32) -> (f32, f32, f32) {
+    use crate::physics::exact::{guest_cos, guest_sin};
+    use crate::sndobj::fmadds;
+    let (s, c) = (guest_sin(angle as f64) as f32, guest_cos(angle as f64) as f32);
+    let (x, z) = (fmadds(90.0, s, 0.0 * c), fmadds(90.0, c, -(0.0 * s)));
+    let a = if selected { (guest_sin((clock * 8.0) as f64) as f32 + 1.0) * 0.5 } else { 1.0 };
+    (x, z, a)
+}
+
+/// The map's tick (F-98009) on its clock +468, strobe +460 and pulse +464: the clock + dt; the strobe by its speed (fused),
+/// back to 0 once above (checkpoints + 1) x the period; the pulse by its speed (fused) wrapped into 0..pi (F-43389).
+/// (The frame count +452, + 1 a tick, is `State::frame_no`.)
+#[allow(clippy::too_many_arguments)]
+pub fn map_tick(t: f32, strobe: f32, pulse: f32, dt: f32, strobe_speed: f32, period: f32, pulse_speed: f32, checkpoints: usize) -> (f32, f32, f32) {
+    let mut s = crate::sndobj::fmadds(strobe_speed, dt, strobe);
+    if s > (checkpoints as f32 + 1.0) * period {
+        s = 0.0;
+    }
+    (t + dt, s, wrap(crate::sndobj::fmadds(pulse_speed, dt, pulse), 0.0, PI))
+}
+
+/// F-43389: `x` brought into lo..hi by the C library's fmod (in double) - below lo it comes down from hi, above hi up from
+/// lo; hi itself is kept, and hi below lo leaves `x` as it is, hi equal to lo gives lo.
+pub fn wrap(x: f32, lo: f32, hi: f32) -> f32 {
+    if hi < lo {
+        return x;
+    }
+    if hi == lo {
+        return lo;
+    }
+    let span = (hi - lo) as f64;
+    if x < lo {
+        hi - (((lo - x) as f64 % span) as f32)
+    } else if x > hi {
+        (((x - hi) as f64 % span) as f32) + lo
+    } else {
+        x
+    }
 }
 
 /// `RotY(a)` scaled by `s` with translation `t`: rows (cos a, 0, -sin a), (0, 1, 0), (sin a, 0, cos a).
@@ -1664,9 +1704,7 @@ impl Target {
                     _ => "checkpoint_sphere",
                 };
                 let Some(mesh) = assets.mesh(name) else { continue };
-                let (sn, cs) = r.angle.sin_cos();
-                let (ox, oz) = (90.0 * sn, 90.0 * cs);
-                let a = if r.selected { ((8.0 * tg).sin() + 1.0) * 0.5 } else { 1.0 };
+                let (ox, oz, a) = rim_dot(r.angle, r.selected, tg);
                 let colour = [r.colour[0], r.colour[1], r.colour[2], a];
                 for part in &mesh.parts {
                     let pts: Vec<(f32, f32, f32)> = part.pos.iter().map(|p| (cx + ox + 6.0 * p.x, cy - oz + 6.0 * p.z, 1.0)).collect();

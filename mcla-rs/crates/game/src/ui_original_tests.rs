@@ -214,3 +214,46 @@ fn hms_matches_the_original() {
     }
     assert_eq!(n, 1016);
 }
+
+/// F-98009, the HUD map's tick: clock, checkpoint strobe and pulse (fused steps, the pulse wrapped by F-43389, pi kept) against
+/// the original's code run offline on 5,000 cases, a third of them landing on pi or the strobe's bound
+/// (tools/ui_map_tick_reference.py -> testdata/ui_map_tick_ref.txt)
+#[test]
+fn map_tick_matches_the_original() {
+    let mut n = 0;
+    for l in include_str!("testdata/ui_map_tick_ref.txt").lines() {
+        let (case, out) = l.split_once(" -> ").unwrap();
+        let c: Vec<u32> = case.split(' ').map(|v| v.parse().unwrap()).collect();
+        let o: Vec<u32> = out.split(' ').map(|v| v.parse().unwrap()).collect();
+        let f = |i: usize| f32::from_bits(c[i]);
+        let (t, s, p) = crate::hudmap::map_tick(f(0), f(1), f(2), f(7), f(4), f(5), f(6), c[8] as usize);
+        assert_eq!([t, s, p].map(f32::to_bits).to_vec(), o[..3].to_vec(), "{l}");
+        assert_eq!(o[3], c[3].wrapping_add(1), "{l}");
+        n += 1;
+    }
+    assert_eq!(n, 5000);
+}
+
+/// F-42900, one minimap rim dot: its place (the translation of both matrices it hands the mesh draw), the selected dot's
+/// alpha, the mesh slot by kind (2 the flag +4, 10 the flag base +8, else the sphere +0) and the fixed 6-unit matrix, against
+/// the original's code run offline on 3,000 cases (tools/ui_rim_dot_reference.py -> testdata/ui_rim_dot_ref.txt)
+#[test]
+fn rim_dot_matches_the_original() {
+    let mut n = 0;
+    let e = 3037515234u32; // (-5.245e-7)
+    let six = [6.0f32.to_bits(), 0, e, 0, (-0.0f32).to_bits(), (-6.0f32).to_bits(), 0, 0, e, 0, (-6.0f32).to_bits(), 0];
+    for l in include_str!("testdata/ui_rim_dot_ref.txt").lines() {
+        let (case, out) = l.split_once(" -> ").unwrap();
+        let c: Vec<u32> = case.split(' ').map(|v| v.parse().unwrap()).collect();
+        let o: Vec<u32> = out.split(' ').map(|v| v.parse().unwrap()).collect();
+        let (x, z, a) = crate::hudmap::rim_dot(f32::from_bits(c[0]), c[2] == 1, f32::from_bits(c[3]));
+        let m = &o[7..];
+        assert_eq!([x.to_bits(), 0, z.to_bits()], [m[12], m[13], m[14]], "{l}");
+        assert_eq!([m[12], m[13], m[14]], [m[28], m[29], m[30]], "{l}");
+        assert_eq!(a.to_bits(), o[1], "{l}");
+        assert_eq!(o[0], match c[1] { 2 => 4, 10 => 8, _ => 0 }, "{l}");
+        assert_eq!(m[..12].to_vec(), six.to_vec(), "{l}");
+        n += 1;
+    }
+    assert_eq!(n, 3000);
+}
