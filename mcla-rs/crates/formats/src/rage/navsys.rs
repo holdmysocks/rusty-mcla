@@ -471,6 +471,8 @@ pub struct NavSys {
     pub curves: Vec<LaneCurve>,
     /// the lanes as read and the roads' lane lists (for [`NavSys::curved`])
     raw: Vec<RawLane>,
+    /// each lane's offset in the resource (the order of `raw`; the offline query test names the original's answers by it)
+    lane_off: Vec<usize>,
     zone_lanes: Vec<Vec<usize>>,
     grid: HashMap<(i32, i32), Vec<usize>>,
     /// per endpoint node: links starting / ending there
@@ -826,6 +828,7 @@ impl NavSys {
         }
         nav.curves = raw.iter().map(|l| l.curve.clone()).collect();
         nav.raw = raw.clone();
+        nav.lane_off = link_offs.clone();
         nav.zone_lanes = zone_lanes.clone();
         // the lanes' junctions (F-41621) and the junctions' rails (F-42526)
         let jarr = rd.ptr(0x58);
@@ -2095,6 +2098,42 @@ mod speed_tests {
         }
         assert_eq!(census.into_iter().collect::<Vec<_>>(), vec![(10, 1), (15, 3), (25, 1), (30, 133), (40, 646), (45, 356), (55, 37), (60, 2), (65, 484)]);
         assert!(nav.links.iter().enumerate().any(|(i, _)| nav.speed_limit_mps(i).is_some_and(|s| s > 29.0)));
+    }
+
+    /// The lane quadtree query against the original's F-58446 (with the node box test F-80185 and the lanes' sphere test
+    /// F-56243) run offline on this resource by tools/navsys_query_reference.py: 800 queries (points, radius, mask, cap), the
+    /// answer's count, its FNV-1a hash over the lanes' offsets in order and its first six offsets equal.
+    #[test]
+    #[ignore = "requires user's extracted Complete Edition data; set MCLA_DATA_DIR"]
+    fn lanes_near_matches_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").expect("set MCLA_DATA_DIR to extracted/cache");
+        let bytes = std::fs::read(std::path::Path::new(&root).join("resources/city/sc/0x9960fcd8.r66")).unwrap();
+        let data = bytes[16..].to_vec();
+        let virtual_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let res = Resource { rtype: 66, flags: 0, virtual_size, physical_size: data.len() - virtual_size, data };
+        let nav = NavSys::parse(&res).unwrap();
+        let (mut n, mut hits) = (0, 0);
+        for l in include_str!("../testdata/navsys_query_ref.txt").lines() {
+            let v: Vec<&str> = l.split_whitespace().collect();
+            let f = |k: usize| f32::from_bits(v[k].parse::<i32>().unwrap() as u32);
+            let (mask, max) = (u32::from_str_radix(v[4], 16).unwrap(), v[5].parse::<usize>().unwrap());
+            let got = nav.lanes_near(Vec3::new(f(0), f(1), f(2)), f(3), mask, max);
+            let offs: Vec<u32> = got.iter().map(|&l| nav.lane_off[l] as u32).collect();
+            let mut h = 2_166_136_261u32;
+            for o in &offs {
+                for b in o.to_le_bytes() {
+                    h = (h ^ b as u32).wrapping_mul(16_777_619);
+                }
+            }
+            let mut want = format!("{} {}", offs.len(), h);
+            for o in offs.iter().take(6) {
+                want += &format!(" {o:x}");
+            }
+            assert_eq!(want, v[6..].join(" "), "{l}");
+            n += 1;
+            hits += !offs.is_empty() as u32;
+        }
+        assert!(n == 800 && hits > 250, "{n} {hits}");
     }
 
     #[test]
