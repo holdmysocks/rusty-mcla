@@ -827,6 +827,107 @@ pub fn sweep_polygon(o: Vec3, d: Vec3, r: f32, v: &[Vec3; 3], n: Vec3) -> Option
     sweep_polygon_hit(o, d, r, v, n).map(|h| (h.t, h.normal))
 }
 
+// A composite bound's parts as the capsule query steps through them (F-35029, type 12; rules in
+// docs/reference/people/traffic_drive_rule.md 9.7): the query moved into the part's frame, the part dropped when the
+// capsule misses its box, and the query moved back after the part - by the matrix, not restored, so each part after
+// the first meets the capsule as the rounding of the way there and back left it. Checked to the bit against the
+// original's code run offline (`part_prune_matches_the_original`).
+
+/// The capsule query in a part's frame and its box (F-66128): each end less the part's place dotted with the rows `m[0..3]`
+/// (the vector unit's three-product sum), the box the ends' smaller values less `r` and larger plus `r`. (a, b, min, max).
+pub fn part_frame(a: Vec3, b: Vec3, r: f32, m: &[Vec3; 4]) -> (Vec3, Vec3, Vec3, Vec3) {
+    let to = |p: Vec3| {
+        let w = p - m[3];
+        Vec3::new(vdot(m[0], w), vdot(m[1], w), vdot(m[2], w))
+    };
+    let (a, b) = (to(a), to(b));
+    (a, b, a.min(b) - Vec3::splat(r), a.max(b) + Vec3::splat(r))
+}
+
+/// The capsule query back out of the part's frame (F-15412 -> F-53488): each end as (x, y, z, 1) times the matrix's
+/// columns, the vector unit's four-product sum (x m0 + y m1) + (z m2 + place); the box again as `part_frame`'s.
+pub fn part_unframe(a: Vec3, b: Vec3, r: f32, m: &[Vec3; 4]) -> (Vec3, Vec3, Vec3, Vec3) {
+    let (a, b) = (out_of(a, m), out_of(b, m));
+    (a, b, a.min(b) - Vec3::splat(r), a.max(b) + Vec3::splat(r))
+}
+
+/// A point of a frame in the frame's parent: (x, y, z, 1) times the columns of rows `m[0..3]` and place `m[3]`, the
+/// vector unit's four-product sum (x m0 + y m1) + (z m2 + place) (F-53488, F-62425).
+fn out_of(p: Vec3, m: &[Vec3; 4]) -> Vec3 {
+    let col = |k: usize| (p.x * m[0][k] + p.y * m[1][k]) + (p.z * m[2][k] + m[3][k]);
+    Vec3::new(col(0), col(1), col(2))
+}
+
+/// The level query's volume as its culler holds it (the query drivers' set-up): the sphere query's ball (F-36470: its
+/// centre and radius, type 0; a radius not above 0 gives type 5, not met here) or the swept capsule's (F-21683: the
+/// start, the unit direction - the rsqrt estimate with its zero guard and one Newton step - the length and the radius,
+/// type 3).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CullVolume {
+    Ball { centre: Vec3, r: f32 },
+    Capsule { from: Vec3, dir: Vec3, len: f32, r: f32 },
+}
+
+impl CullVolume {
+    /// F-21683: the capsule from `a` to `b` of radius `r` as the sweep's culler takes it.
+    pub fn capsule(a: Vec3, b: Vec3, r: f32) -> CullVolume {
+        let d = b - a;
+        let l2 = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y));
+        let len = if l2 > 0.0 { l2.sqrt() } else { 0.0 };
+        CullVolume::Capsule { from: a, dir: d * rsqrt0(vdot(d, d)), len, r }
+    }
+}
+
+/// What the culler asks of a level object before its bound is tested (F-62425, the culler's +100 = 0 -> F-92940): the
+/// object's state bit among the query's states, its archetype's type among the include mask and its include word among
+/// the type flags, its type not among the excluded types (always 0 for the queries here); then its bound's sphere - the
+/// bound's centre (+48) through the instance matrix (rows and place), its radius (+8) - meeting the volume: a ball when
+/// (R + r)^2 > |c - centre|^2, a capsule when (R + r)^2 > |q - centre|^2 for q the point of the axis nearest the centre
+/// (dir t + from with t the projection, 0 where not above 0, the length past it; products and sums rounded apart).
+pub fn instance_culled_in(vol: &CullVolume, m: &[Vec3; 4], centre: Vec3, radius: f32) -> bool {
+    let c = out_of(centre, m);
+    match *vol {
+        CullVolume::Ball { centre: q, r } => {
+            let d = q - c;
+            let s = r + radius;
+            s * s > vdot(d, d)
+        }
+        CullVolume::Capsule { from, dir, len, r } => {
+            let t = vdot(c - from, dir);
+            let t = if t > 0.0 { if t < len { t } else { len } } else { 0.0 };
+            let d = (dir * t + from) - c;
+            let s = radius + r;
+            s * s > vdot(d, d)
+        }
+    }
+}
+
+/// The culler's masks (F-92940): the object's state bit (1 active, 2 inactive, 4 fixed) in `states`, the archetype's type
+/// word in `include` and its include word in `types`, the type word not in `exclude`.
+pub fn instance_masks_pass(states: u32, state_bit: u32, include: u32, types: u32, exclude: u32, arch_type: u32, arch_include: u32) -> bool {
+    states & state_bit != 0 && arch_type & include != 0 && arch_include & types != 0 && arch_type & exclude == 0
+}
+
+/// Whether the capsule `a` .. `b` (radius `r`, in the part's frame) misses the part bound's box `min` .. `max`
+/// (F-16177 -> F-81407 -> F-18932): the box's centre taken off both ends and `r` added to its half sizes, then the
+/// segment against the box grown by 1e-6 by separating axes - the three box axes (|mid| over half + |half segment|),
+/// then the three crosses of a box axis with the segment (|mid x half segment| over the box's projection, fused in
+/// the original's orders). A NaN separates nowhere.
+pub fn part_dropped(a: Vec3, b: Vec3, r: f32, max: Vec3, min: Vec3) -> bool {
+    let centre = (max + min) * 0.5;
+    let half = (max + (Vec3::ZERO - min)) * 0.5 + Vec3::splat(r);
+    let (a, b) = (a - centre, b - centre);
+    let h = half + Vec3::splat(f32::from_bits(0x3586_37BD));
+    let mid = (b + a) * 0.5;
+    let seg = (b + (Vec3::ZERO - a)) * 0.5;
+    let (m, w) = (mid.abs(), seg.abs());
+    let c = (yzx(mid) * zxy(seg) - zxy(mid) * yzx(seg)).abs();
+    let axes = m.x > w.x + h.x || m.y > w.y + h.y || m.z > w.z + h.z;
+    let cx = c.x > fma(h.z, w.y, w.z * h.y);
+    let cyz = c.y > fma(w.z, h.x, h.z * w.x) || c.z > fma(w.y, h.x, h.y * w.x);
+    axes || cx || cyz
+}
+
 impl<'a> CamLevel<'a> {
     /// The city alone.
     pub fn city(city: &'a WorldCollider) -> CamLevel<'a> {
@@ -1124,5 +1225,70 @@ mod tests {
             }
         }
         assert_eq!((face, edge, none), (151, 340, 5138));
+    }
+
+    /// A composite's part as the capsule query steps through it, against the original's code run offline
+    /// (tools/part_prune_reference.py -> testdata/part_prune_ref.txt): F-66128 (into the part's frame), F-16177 with
+    /// F-81407 / F-18932 (the part dropped) and F-15412 with F-53488 (back out), 3,000 cases (boxes through, by and off
+    /// random capsules, turned and plain matrices, capsules without length): the ends and the box (x, y, z; the w lanes
+    /// are lane leftovers nothing reads), the drop and the ends and box after the way back - every word equal.
+    #[test]
+    fn part_prune_matches_the_original() {
+        let u = |h: &str| u32::from_str_radix(&h.replace('_', ""), 16).unwrap();
+        let mut dropped = 0;
+        for (k, line) in include_str!("../testdata/part_prune_ref.txt").lines().enumerate() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(u).collect();
+            let x: Vec<u32> = o.split_whitespace().map(u).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let p = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let m = [p(0), p(3), p(6), p(9)];
+            let (a, b, r) = (p(12), p(15), f(18));
+            let bits4 = |v: [Vec3; 4]| v.iter().flat_map(|q| [q.x.to_bits(), q.y.to_bits(), q.z.to_bits()]).collect::<Vec<u32>>();
+            let lanes = |o: usize| (0..4).flat_map(|q| x[o + 4 * q..o + 4 * q + 3].to_vec()).collect::<Vec<u32>>();
+            let (fa, fb, lo, hi) = part_frame(a, b, r, &m);
+            assert_eq!(bits4([fa, fb, lo, hi]), lanes(0), "line {k}: into the frame");
+            let drop = part_dropped(fa, fb, r, p(19), p(22));
+            assert_eq!(x[16], drop as u32, "line {k}: dropped");
+            dropped += drop as usize;
+            let (ba, bb, lo, hi) = part_unframe(fa, fb, r, &m);
+            assert_eq!(bits4([ba, bb, lo, hi]), lanes(17), "line {k}: back");
+        }
+        assert_eq!(dropped, 1349);
+    }
+
+    /// The culler of a level object against the original's code run offline (tools/instance_cull_reference.py ->
+    /// testdata/instance_cull_ref.txt): the culler set up from the query (F-36470 ball, F-21683 capsule) and F-62425 ->
+    /// F-92940 (with F-43536), 4,000 cases (bound spheres about the query's surface, inside, far; capsules without
+    /// length; masks failing each way; 1,871 pass the masks, 1,011 of them kept): the culler's volume words and the answer - every
+    /// word equal.
+    #[test]
+    fn instance_cull_matches_the_original() {
+        let u = |h: &str| u32::from_str_radix(&h.replace('_', ""), 16).unwrap();
+        let (mut kept, mut near) = (0, 0);
+        for (k, line) in include_str!("../testdata/instance_cull_ref.txt").lines().enumerate() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(u).collect();
+            let x: Vec<u32> = o.split_whitespace().map(u).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let p = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let bits = |v: Vec3| vec![v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+            let vol = if w[0] != 0 { CullVolume::capsule(p(1), p(4), f(7)) } else { CullVolume::Ball { centre: p(1), r: f(7) } };
+            match vol {
+                CullVolume::Ball { centre, r } => {
+                    assert_eq!((&x[0..3], &x[4..8], x[12]), (&bits(centre)[..], &[r.to_bits(); 4][..], 0), "line {k}: ball");
+                }
+                CullVolume::Capsule { from, dir, len, r } => {
+                    assert_eq!((&x[0..3], &x[4..7], [x[8], x[9]], x[12]), (&bits(from)[..], &bits(dir)[..], [len.to_bits(), r.to_bits()], 3), "line {k}: capsule");
+                }
+            }
+            let m = [p(19), p(22), p(25), p(28)];
+            let pass = instance_masks_pass(w[11], w[12], w[8], w[10], w[9], w[13], w[14]);
+            let meets = instance_culled_in(&vol, &m, p(15), f(18));
+            assert_eq!(x[13], (pass && meets) as u32, "line {k}: culled");
+            kept += (pass && meets) as usize;
+            near += pass as usize;
+        }
+        assert_eq!((kept, near), (1011, 1871));
     }
 }
