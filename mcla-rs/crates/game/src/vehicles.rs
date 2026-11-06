@@ -306,6 +306,9 @@ pub struct CarInstance {
     pub cop: bool,
     /// seconds the car is knocked out (EMP / Roar): no throttle, no steering
     pub stunned: f32,
+    /// a computer car's wipeout / damage-out (chassis +592 0x10 / 0x04 and its timer, physics::wipeout); the
+    /// player's are main.rs's `crash_bits` / `crash_timer`
+    pub crash: crate::physics::wipeout::Crash,
     /// parked at the kerb: index of its parking spot (`parked::ITEM_SPOT`: parked for a layout
     /// item, no spot)
     pub parked: Option<usize>,
@@ -3206,7 +3209,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), spoiler: WindowCtl::default(), roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, crash: Default::default(), parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), spoiler: WindowCtl::default(), roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
         self.cars.len() - 1
     }
 
@@ -4380,6 +4383,18 @@ if keep || c.state.pos.distance(center) < 450.0 {
         self.step_cars(&jobs, world, step_dt, shared.is_some());
         for &(idx, _, post) in &jobs {
             let c = &mut self.cars[idx];
+            // (the crash flags of a car the game drives itself, as mcCar::Update keeps them for every car; the player's
+            // are main.rs's)
+            if !c.is_player && c.state.veh.is_some() {
+                let bike = c.model.bike;
+                let CarInstance { state, tuned, model, crash, pose_history, .. } = c;
+                let p: &CarParams = tuned.as_deref().unwrap_or(&model.params);
+                // (stood up where it is, 0.8 m up, onto its wheels: not set down again by the port's placing, which
+                // would put a racer on a rail)
+                if crate::physics::wipeout::step(crash, state, p, bike, step_dt).stood_up {
+                    pose_history.reset();
+                }
+            }
             match post {
                 StepPost::Settle => {
                     c.state.vel.x = 0.0;

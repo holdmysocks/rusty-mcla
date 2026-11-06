@@ -14,6 +14,7 @@ pub mod exact;
 pub mod fluid;
 pub mod gjk;
 pub mod headon;
+pub mod wipeout;
 pub mod hull;
 pub mod loose;
 pub mod pad;
