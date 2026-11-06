@@ -1141,6 +1141,11 @@ pub struct Vehicles {
     pub driver_lanes: hashbrown::HashMap<u32, traffic::DriverLanes>,
     /// a scene or the vehicle pick: physics and AI are held
     pub frozen: bool,
+    /// mcOpponentManager +4 (F-28020): the racer the frame's per-racer step starts at; it moves on by one
+    /// every game frame (`oppmgr::update_order`)
+    pub opp_start: i32,
+    /// the game frame's clock of that step (`brain::frame_due`)
+    pub opp_frame: f32,
     /// a race is on as the ambient manager's byte +0x64251 has it (F-86550): the current race (F-27863), not a payback
     /// (race type 0 - 4, race +3096), not over (+3773, `$IsRaceFinish`) - set by the game each frame
     pub race_event: bool,
@@ -3846,7 +3851,17 @@ if keep || c.state.pos.distance(center) < 450.0 {
         let n = self.cars.len();
         // AI inputs (with simple car-ahead avoidance)
         let positions: Vec<(Vec3, Vec3, f32)> = self.cars.iter().map(|c| (c.state.pos, c.state.forward(), c.state.speed())).collect();
-        for i in 0..n {
+        // (the racers - cars with a racing brain, in the order they were added - in mcOpponentManager's order F-28020:
+        // from its start index round the list, the start moving on by one each game frame; they draw from the brains'
+        // shared generator, so the order decides who gets which draw. The other cars after them, in list order.
+        // approx.: the list's order taken as the cars' order; each brain keeps its own frame clock)
+        let racers: Vec<usize> = (0..n).filter(|&i| self.cars[i].ai.as_ref().map_or(false, |a| a.brain.0.is_some())).collect();
+        let (rot, next) = crate::oppmgr::update_order(self.opp_start, racers.len(), false);
+        if dt > 0.0 && !self.frozen && crate::brain::frame_due(&mut self.opp_frame, dt) {
+            self.opp_start = next;
+        }
+        let order: Vec<usize> = rot.iter().map(|&k| racers[k]).chain((0..n).filter(|i| !racers.contains(i))).collect();
+        for i in order {
             // (traffic has no pedals: on its lane it rides, physical it rolls to rest -
             // traffic.rs; the original's physical ambient car's brakes are not decoded)
             if let Some(r) = self.cars[i].rail.as_ref() {
