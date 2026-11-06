@@ -1021,4 +1021,59 @@ mod original_tests {
         }
         assert_eq!((cases, obst), (2000, 986));
     }
+
+    /// F-86521 whole (with the real F-53450, grid helpers and F-41334) run offline by
+    /// work/racerai/obsdrv on random cars, control-point rings and objects in a 10 x 8 grid.
+    #[test]
+    fn obstacle_scan_matches_the_original() {
+        let fl = |w: &str| f32::from_bits(u32::from_str_radix(w, 16).unwrap());
+        let (mut cases, mut obst) = (0, 0);
+        let grid = ObjectGrid { min: [-200.0, -160.0], n: [10, 8], bounded: true };
+        for line in include_str!("testdata/obstacle_scan_ref.txt").lines() {
+            let (inp, rest) = line.split_once(" |").unwrap();
+            let (outs, ign_after) = rest.rsplit_once(" | ").unwrap();
+            let t: Vec<&str> = inp.split_whitespace().collect();
+            let n: usize = t[1].parse().unwrap();
+            let me: i32 = t[2].parse().unwrap();
+            let np: usize = t[3].parse().unwrap();
+            let ign: u32 = t[6].parse().unwrap();
+            let f: Vec<f32> = t[7..24].iter().map(|w| fl(w)).collect();
+            let v3 = |a: usize| Vec3::new(f[a], f[a + 1], f[a + 2]);
+            let mut k = 24;
+            let mut pts = Vec::new();
+            for _ in 0..np {
+                pts.push(Vec3::new(fl(t[k + 1]), fl(t[k + 2]), fl(t[k + 3])));
+                k += 4;
+            }
+            let mut objects = Vec::new();
+            for _ in 0..n {
+                let kind: u8 = t[k][1..].parse().unwrap();
+                let g: Vec<f32> = t[k + 1..k + 9].iter().map(|w| fl(w)).collect();
+                objects.push(ObjectInfo { pos: Vec3::new(g[0], g[1], g[2]), vel: v3(14), forward: -Vec3::new(g[3], g[4], g[5]), extent: (g[6], g[7]), kind });
+                k += 9;
+            }
+            let mut tun = AivTuning::default();
+            tun.max_obstacle_height_delta = f[11];
+            tun.max_obstacle_flat_delta = f[12];
+            tun.obstacle_lookahead_time = f[13];
+            let car = SelCar { pos: v3(0), forward: -v3(3), vel: v3(6), speed: f[9], half_length: f[10] };
+            let got = select_obstacles_car(if me < 0 { usize::MAX } else { me as usize }, &objects, &pts, &car, ign, &grid, &tun);
+            let want: Vec<&str> = outs.split(" o").skip(1).collect();
+            assert_eq!(got.len(), want.len(), "case {cases}: obstacles");
+            for (o, w) in got.iter().zip(&want) {
+                let w: Vec<&str> = w.split_whitespace().collect();
+                let g = [o.pos.x, o.pos.y, o.pos.z, o.vel.x, o.vel.y, o.vel.z, o.dir.x, o.dir.y, o.dir.z, o.extent.0, 0.0, o.extent.1];
+                for (i, g) in g.iter().enumerate() {
+                    assert_eq!(g.to_bits(), u32::from_str_radix(w[i], 16).unwrap(), "case {cases} word {i}");
+                }
+                assert_eq!((o.flags & OBST_FIRST_LEG != 0) as u32, w[12].parse::<u32>().unwrap(), "case {cases} first leg");
+                assert_eq!((o.flags & OBST_TYPE0 != 0) as u32, w[13].parse::<u32>().unwrap(), "case {cases} kind 0");
+                obst += 1;
+            }
+            // brain +408 gains bit 4 for good
+            assert_eq!(ign_after.trim().parse::<u32>().unwrap(), ign | 16, "case {cases}: ignore");
+            cases += 1;
+        }
+        assert_eq!((cases, obst), (300, 654));
+    }
 }
