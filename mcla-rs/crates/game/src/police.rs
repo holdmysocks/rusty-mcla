@@ -3520,7 +3520,12 @@ impl Police {
                     if self.heat == Heat::Pursuit {
                         self.eyes.clear();
                         self.srch.clear();
-                        self.tacs.clear();
+                        // (the tactic's machine starts again; each cop's brain keeps what its last command wrote - Search's
+                        // 7 and its side / angle - until the next command, as the original's brains do: F-83687's previous
+                        // command and the machine reset read it)
+                        for tc in self.tacs.values_mut() {
+                            *tc = CopTac { brain: tc.brain, ..Default::default() };
+                        }
                         self.sq = Squad { hyst: 2.0, ..Default::default() };
                     }
                 } else {
@@ -4453,6 +4458,13 @@ impl Police {
         self.burnout_active = false;
         self.block_active = false;
         self.sec = [0.0; 7];
+        // (and F-88677's other fields: the roof-jump byte +44 (mgr +140), the last junction +56 (+152), the last road +60 and
+        // its timer +64 - the radio's road and the freeway test read it)
+        self.jump_paid = false;
+        self.last_junction = None;
+        self.rdo_road = None;
+        self.rdo_fw_t = 0.0;
+        self.fw_road = false;
         self.bullhorn = None;
         self.ticket_hold = None;
         self.ticketing = false;
