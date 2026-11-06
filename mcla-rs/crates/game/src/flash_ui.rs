@@ -2167,6 +2167,10 @@ pub struct FlashHud {
     /// The HUD manager's info-text ring (`F-60548` pushes, at most fifteen; `F-72577` pops when the movie
     /// sets `infoDone`): the texts, already looked up in the string table
     pub info_queue: std::collections::VecDeque<String>,
+    /// The song line (`F-50313`): its text (+0x1174C) while one waits for the line (+0x117CC != -1), and whether it
+    /// is on show (+0x117D0)
+    pub song: Option<String>,
+    song_shown: bool,
 }
 
 /// Splash slots of the HUD movie (`SplashTypes` 5, 4, 10 for slots 0..2; slot 3
@@ -2178,7 +2182,7 @@ pub const SPLASH_BOTTOM: usize = 2;
 impl FlashHud {
     pub fn load(data_dir: &str, shared: &UiShared) -> Option<FlashHud> {
         let movie = FlashMovie::load(data_dir, "resources/ui/hud/0x1f0e1cda.r27", shared)?;
-        let mut h = FlashHud { movie, countdown_shown: false, splash_queue: Default::default(), racer_found: false, camera_last: -1, info_queue: Default::default() };
+        let mut h = FlashHud { movie, countdown_shown: false, splash_queue: Default::default(), racer_found: false, camera_last: -1, info_queue: Default::default(), song: None, song_shown: false };
         // (the game drives the HUD from its start - the movie is up, hidden, long before it is first shown; driven
         // only from its first showing, its first frames were its placeholders: the race clock's "1:23.45.67.85")
         for _ in 0..30 {
@@ -2225,6 +2229,40 @@ impl FlashHud {
         p.set_global("d_selectedlevel_longname", Value::str(text.unwrap_or("")));
     }
 
+    /// The song line (`F-50313`, at a new song and every 15 s of it): the text waits for the line; with nothing
+    /// queued it goes up at once, highlighted, and the movie runs it across.
+    pub fn song_info(&mut self, text: &str) {
+        self.song = Some(text.to_string());
+        log::info!("info line: song {text:?} ({} queued ahead)", self.info_queue.len());
+        if self.info_queue.is_empty() {
+            self.song_shown = true;
+            let p = &mut self.movie.player;
+            p.set_global("infotextHilight", Value::Int(1));
+            p.set_global("d_selectedlevel_longname", Value::str(text));
+        }
+    }
+
+    /// The HUD update's song turn (`F-72577`, with the ring empty): a waiting song not on show goes up highlighted;
+    /// at `infoDone` == 1 it is over and the line is cleared. True while a song holds the line.
+    fn song_tick(&mut self) -> bool {
+        let Some(t) = self.song.clone() else { return false };
+        let p = &mut self.movie.player;
+        if !self.song_shown {
+            p.set_global("d_selectedlevel_longname", Value::str(&t));
+            p.set_global("infotextHilight", Value::Int(1));
+            self.song_shown = true;
+        }
+        if p.get_global("infoDone").map_or(0, |v| v.to_i32()) == 1 {
+            log::info!("info line: infoDone, song {t:?} gone");
+            self.song = None;
+            self.song_shown = false;
+            p.set_global("infotextHilight", Value::Int(0));
+            p.set_global("infoDone", Value::Int(0));
+            p.set_global("d_selectedlevel_longname", Value::str(""));
+        }
+        true
+    }
+
     /// Queue a text for the line (`F-60548`, UIManager_QueueDisplay's body: its seconds argument is stored and not
     /// read): a full ring (fifteen) drops it; the first one goes up at once, highlighted - the movie runs it across
     /// the line and sets `infoDone` (hud.swf 0x3a39..0x3c3a).
@@ -2234,6 +2272,12 @@ impl FlashHud {
         }
         self.info_queue.push_back(text.to_string());
         log::info!("info line: queued {text:?} ({} in the ring)", self.info_queue.len());
+        // (a song on show is cut: +0x117D0 = 0, +0x117CC = -1, highlight 0)
+        if self.song_shown {
+            self.song_shown = false;
+            self.song = None;
+            self.movie.player.set_global("infotextHilight", Value::Int(0));
+        }
         if self.info_queue.len() == 1 {
             let p = &mut self.movie.player;
             p.set_global("d_selectedlevel_longname", Value::str(text));
@@ -2247,7 +2291,7 @@ impl FlashHud {
     /// the line.
     pub fn info_tick(&mut self) -> bool {
         if self.info_queue.is_empty() {
-            return false;
+            return self.song_tick();
         }
         let p = &mut self.movie.player;
         if p.get_global("infoDone").map_or(0, |v| v.to_i32()) != 1 {

@@ -7892,8 +7892,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.game.songs = a.songs();
             }
             // (the music manager's playing state, F-61726: the song line's clock while its song plays)
-            if a.music_playing() && !a.track_changed {
-                self.game.mc4_song_tick(dt, a.song_place);
+            if a.music_playing() && !a.track_changed && self.game.mc4_song_tick(dt, a.song_place) {
+                if self.game.flash_hud.is_some() && matches!(self.game.mode, Mode::FreeRoam | Mode::Race) {
+                    self.game.song_line = Some((a.now_playing.to_uppercase(), 0.0));
+                }
             }
             if std::mem::take(&mut a.track_changed) && !a.now_playing.is_empty() {
                 let t = a.now_playing.clone();

@@ -9999,26 +9999,14 @@ impl Game {
                             self.info_road.1 += dt;
                         }
                         let fresh = self.info_road.1 < 8.0;
-                        // a new song runs across the line first: eighteen characters at a time,
-                        // five a second, with a pause at either end (approx.)
-                        let song = self.song_line.take().and_then(|(t, at)| {
-                            const WIDTH: usize = 18;
-                            let chars: Vec<char> = t.chars().collect();
-                            let travel = chars.len().saturating_sub(WIDTH) as f32 / 5.0;
-                            if at > travel + 4.0 {
-                                return None;
-                            }
-                            let first = (((at - 2.0).max(0.0) * 5.0) as usize).min(chars.len().saturating_sub(WIDTH));
-                            let shown: String = chars.iter().skip(first).take(WIDTH).collect();
-                            self.song_line = Some((t, at + dt));
-                            Some(shown)
-                        });
-                        // (texts queued for the line - UIManager_QueueDisplay - have it first: `FlashHud::info_tick`)
+                        // a song (F-73849, at a new song and every 15 s of it) waits for the line and the
+                        // movie runs it across, highlighted, until its infoDone; texts queued for the line
+                        // (UIManager_QueueDisplay) have it first and cut it: `FlashHud::song_info` / `info_tick`
+                        if let Some((t, _)) = self.song_line.take() {
+                            fh.song_info(&t);
+                        }
                         if !fh.info_tick() {
-                            match song {
-                                Some(t) => fh.info_line(Some(t.as_str())),
-                                None => fh.info_line(road.as_ref().map(|r| r.0.as_str()).filter(|n| (moving || fresh) && !n.is_empty())),
-                            }
+                            fh.info_line(road.as_ref().map(|r| r.0.as_str()).filter(|n| (moving || fresh) && !n.is_empty()));
                         }
                         // the boxed figure is the limit of the road the car is on (`t_speed_limit`;
                         // the movie starts on 55 and keeps the last road's between roads)

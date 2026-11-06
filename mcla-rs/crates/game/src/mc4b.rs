@@ -195,16 +195,19 @@ impl Game {
     }
 
     /// The music manager's playing state (F-61726), every frame while its song plays: the line's
-    /// clock runs down by the frame time and, below 0, the line comes again (F-17609).
-    pub fn mc4_song_tick(&mut self, dt: f32, place: Option<(usize, usize)>) {
+    /// clock runs down by the frame time and, below 0, the line comes again (F-17609). True when
+    /// it came (the caller puts the song on the HUD's info line again).
+    pub fn mc4_song_tick(&mut self, dt: f32, place: Option<(usize, usize)>) -> bool {
         self.opt_x.s23b.song_t -= dt;
         if self.opt_x.s23b.song_t < 0.0 {
             if let Some((g, t)) = place {
                 self.mc4_song_line(g as i32, t as i32);
+                return true;
             } else {
                 self.opt_x.s23b.song_t = SONG_LINE_EVERY;
             }
         }
+        false
     }
 }
 
