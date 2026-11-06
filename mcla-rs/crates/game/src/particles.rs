@@ -275,6 +275,8 @@ pub struct Particles {
     by_hash: HashMap<u32, usize>,
     effects: Vec<Effect>,
     rule_list: Vec<RuleParticle>,
+    /// the other effects' particles set aside while a starting effect is pre-updated (they count towards the cap)
+    set_aside: usize,
     frame: u64,
     next_id: u32,
     /// `MCLA_FX_STANDIN=1`: the effect rules are not played (the callers fall back)
@@ -421,6 +423,32 @@ const MAX_RULE: usize = 5000;
 /// most effects playing at once (69 particle props stand in the city, a few in reach; up to four
 /// tyre effects a car) - the port's own cap
 const MAX_EFFECTS: usize = 160;
+/// one slice of an effect's pre-update at its start (`F-55265` called with 0.25): see `Particles::pre_warm`
+const PRE_STEP: f32 = 0.25;
+
+/// How many slices `F-85947` steps for a PreUpdate of `pre` s: one, then more while the f32 sum of the slices is
+/// at most `pre` (none for 0 or less).
+fn pre_slices(pre: f32) -> usize {
+    if pre <= 0.0 {
+        return 0;
+    }
+    let (mut n, mut done) = (0usize, 0.0f32);
+    loop {
+        n += 1;
+        done += PRE_STEP;
+        if done > pre {
+            return n;
+        }
+    }
+}
+
+#[cfg(test)]
+mod pre_update_tests {
+    #[test]
+    fn pre_update_slices_as_the_original() {
+        assert_eq!((super::pre_slices(5.0), super::pre_slices(2.0), super::pre_slices(0.0), super::pre_slices(0.1)), (21, 9, 0, 1));
+    }
+}
 /// the effects whose sprites are loaded: the particle props' and the litter's
 // (step 19g: + the power-up shots' sparks, powerup_sparks - F-72989)
 const PLAYED: [&str; 19] = ["col_", "water_hydrant", "coin", "bang_concrete", "exp_gas", "tree_trunk", "damage_scrape", "water_fountain", "water_rings", "water_waterfall", "amb_steam", "amb_smoke", "wind_debris", "checkpoint_ctf_generic", "light_column", "powerup_sparks", "damage_glassbreak", "wheel_", "veh_"];
@@ -455,6 +483,7 @@ impl Particles {
             by_hash: HashMap::new(),
             effects: Vec::new(),
             rule_list: Vec::new(),
+            set_aside: 0,
             frame: 0,
             next_id: 1,
             standin: std::env::var("MCLA_FX_STANDIN").map_or(false, |v| v == "1"),
@@ -657,8 +686,34 @@ impl Particles {
         self.next_id += 1;
         // (for looking at an effect in a screenshot: where in its loop it starts, 0..1)
         let t = std::env::var("MCLA_FX_PHASE").ok().and_then(|v| v.parse::<f32>().ok()).map_or(0.0, |v| v.clamp(0.0, 0.99));
-        self.effects.push(Effect { key, id, effect: ei, pos, rot, vel, moved: Vec3::ZERO, t, dur, rate: if rate > 0.0 { rate } else { 1.0 }, loops: 0, done: false, seen: self.frame, fade, em: Vec::new(), kids: Vec::new(), tint, alpha, shadow, evo, arrow: false, zr, oneshot: false, flip });
+        let pre = rule.pre_update;
+        let mut e = Effect { key, id, effect: ei, pos, rot, vel, moved: Vec3::ZERO, t, dur, rate: if rate > 0.0 { rate } else { 1.0 }, loops: 0, done: false, seen: self.frame, fade, em: Vec::new(), kids: Vec::new(), tint, alpha, shadow, evo, arrow: false, zr, oneshot: false, flip };
+        if pre > 0.0 {
+            let fx = self.fx.clone().unwrap();
+            self.pre_warm(&fx, &mut e, pre);
+        }
+        self.effects.push(e);
         true
+    }
+
+    /// The timeline's `PreUpdate` at an effect's start (`F-85947`): when it is above 0 the instance is stepped
+    /// (`F-55265`: its timeline, then each emitter event's pre-update slot `F-51310` -> the emit rule's slot +56 ->
+    /// the particle rule's step `F-12752`, then the normal slot `F-97230` -> the emit rule's slot +60: post-step `F-11061` and the
+    /// spawn `F-63457`) in slices of 0.25 s while the slices' sum is at most PreUpdate: 21 slices (5.25 s) for
+    /// water_fountain's 5 s, 9 for amb_smoke_stack's 2 s. The port runs its own step of the effect and of the effect's
+    /// particles per slice, the other effects' particles set aside.
+    fn pre_warm(&mut self, fx: &FxList, e: &mut Effect, pre: f32) {
+        let others = std::mem::take(&mut self.rule_list);
+        self.set_aside = others.len();
+        for _ in 0..pre_slices(pre) {
+            let born_from = self.rule_list.len();
+            self.step_effect(fx, e, PRE_STEP, true);
+            e.moved = Vec3::ZERO;
+            self.step_rule_particles(fx, PRE_STEP, &[], born_from);
+        }
+        let mine = std::mem::replace(&mut self.rule_list, others);
+        self.rule_list.extend(mine);
+        self.set_aside = 0;
     }
 
     /// Start an effect of the disc's list once at a place, moving with `vel`, and let it run out on
@@ -880,7 +935,7 @@ impl Particles {
         let ncards = look.cards.len();
         let mut rng = Rng(self.rng);
         for k in 1..=n.min(64) {
-            if self.rule_list.len() >= MAX_RULE {
+            if self.rule_list.len() + self.set_aside >= MAX_RULE {
                 break;
             }
             // a point of the emitter domain; the velocity domain's point is the velocity, or
