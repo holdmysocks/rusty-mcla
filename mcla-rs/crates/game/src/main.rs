@@ -6814,6 +6814,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.peds.read_ahead_also(frontend.and(self.vehicles.player().map(|c| c.state.pos)).map(|p| (p, self.titlecam.saved_hour().unwrap_or(self.time_of_day))));
                     // (the people's unspawner runs only while the traffic's region list has roads, F-75661)
                     self.peds.traffic_regions = self.vehicles.traffic_regions();
+                    // (the player's car as the walkers' remark reads it, F-27362 / F-47522: the purchase record of
+                    // the garage's current slot number, the catalogue's price - the vehicle table's +44, default 12345)
+                    self.peds.remarks.car = self.vehicles.player().filter(|_| frontend.is_none()).map(|c| {
+                        let max = c.params().dmg[0];
+                        let slot = self.game.mc4.as_ref().map_or(-1, |m| m.garage_current_slot);
+                        let spent_word = self.game.mc4.as_ref().and_then(|m| m.vehicle_records.iter().find(|r| r.index == slot)).map_or(1, |r| r.spent_plus_1);
+                        let price = match self.game.price_of(self.game.current_car).0 { 0 => 12345, p => p as i32 };
+                        let unpainted = self.game.mc4_unpainted().map(u8::from);
+                        peds::RemarkCar { pos: c.state.pos, vel: c.state.vel, damage: Some((c.state.damage * max.max(1.0), max)), unpainted, price, spent_word }
+                    });
                     self.peds.update(&mut gpu, nav, &world.collider, &|p, r, out| props.obstacle_boxes_near(p, r, out), focus, &threats, signals, self.time_of_day, sim_dt);
                     // (the layout items' people: placed, removed, and what the spawners see next)
                     if frontend.is_none() {
@@ -7969,6 +7979,20 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.radio.update(a, dt);
             // pedestrians shouting as they jump clear (their speech banks looked up ahead)
             self.peds.scan_voices_ahead(a.root());
+            // (with the sound objects: F-39461 - the type's AMBIENT_PED object, the kind's sound, at the walker and
+            // following it; the bike byte is the player entity's)
+            let bike = self.vehicles.player().is_some_and(|c| c.model.bike);
+            if let Some(lib) = self.sound.lib.as_mut() {
+                let peds = &mut self.peds;
+                for sp in std::mem::take(&mut peds.speech) {
+                    if let Some(h) = lib.ped_reaction(&sp.audio, sp.female, sp.kind, bike) {
+                        peds.voices_playing.start(lib, sp.key, h, sp.pos);
+                    }
+                }
+                let mut v = std::mem::take(&mut peds.voices_playing);
+                v.follow(lib, |k| peds.pos_of(k));
+                peds.voices_playing = v;
+            }
             for sp in std::mem::take(&mut self.peds.speech) {
                 let root = a.root().to_path_buf();
                 if let Some(bank) = self.peds.voice_bank(&root, &sp.voice, sp.female) {

@@ -28,6 +28,9 @@ struct PedType {
     female: bool,
     /// speech bank key, e.g. "fh_006"
     voice: String,
+    /// the type's szAudioType (`mcAmbientType.xml`, the type's +176 hash): its sound object in game.dat, which F-39461
+    /// plays the reactions of ("AMBIENT_PED_FA_001")
+    audio: String,
     model: SkinModel,
     walk: Clip,
     idle: Clip,
@@ -2022,7 +2025,20 @@ pub(crate) struct DodgeRng {
 /// carries it. At the slide's end M+248 and bit 0x4 are cleared and the clip ends (the port's after-dodge: face the car,
 /// angry). Returns true while a dodge's clip plays.
 #[allow(clippy::too_many_arguments)]
-fn dodge_frame(p: &mut Ped, ty: &PedType, threats: &[Threat], side: &[SideSlot], col: Option<&WorldCollider>, nav: Option<&NavSys>, dt: f32, rand: &mut dyn FnMut() -> f32, rng: &mut DodgeRng, evades: &mut u32, speech: &mut Vec<Speech>) -> bool {
+fn dodge_frame(p: &mut Ped, ty: &PedType, threats: &[Threat], side: &[SideSlot], col: Option<&WorldCollider>, nav: Option<&NavSys>, dt: f32, rand: &mut dyn FnMut() -> f32, rng: &mut DodgeRng, evades: &mut u32, speech: &mut Vec<Speech>, remark: &mut Remarks) -> bool {
+    let clip = dodge_cars(p, ty, threats, side, col, nav, dt, rand, rng, evades, speech);
+    // F-97113's last call, F-27362: the remark on the player's car (M+260 as the slide left it); a remark draws the
+    // timer again (F-77233, the shared MWC)
+    if let Some(kind) = remark_kind(p.dodge.flags, remark.timer, remark.car.as_ref(), p.pos) {
+        speech.push(Speech { pos: p.pos, voice: ty.voice.clone(), female: ty.female, fast: false, kind, key: p.key, audio: ty.audio.clone() });
+        remark.timer = remark_timer(REMARK_MIN, REMARK_MAX, &mut rng.pick);
+    }
+    clip
+}
+
+/// `dodge_frame` up to the remark: the car dodge, the sidestep and the slide.
+#[allow(clippy::too_many_arguments)]
+fn dodge_cars(p: &mut Ped, ty: &PedType, threats: &[Threat], side: &[SideSlot], col: Option<&WorldCollider>, nav: Option<&NavSys>, dt: f32, rand: &mut dyn FnMut() -> f32, rng: &mut DodgeRng, evades: &mut u32, speech: &mut Vec<Speech>) -> bool {
     let m = &mut p.dodge;
     // M+260 bit 0x2: a clip of the walker's own (the port's angry and Pivot clips)
     m.flags = (m.flags & !2) | if matches!(p.state, State::Angry(_) | State::Turn(_)) { 2 } else { 0 };
@@ -2041,7 +2057,7 @@ fn dodge_frame(p: &mut Ped, ty: &PedType, threats: &[Threat], side: &[SideSlot],
         p.stops += 1;
     }
     if let Some(k) = world.say {
-        speech.push(Speech { pos: p.pos, voice: ty.voice.clone(), female: ty.female, fast: k == 0 });
+        speech.push(Speech { pos: p.pos, voice: ty.voice.clone(), female: ty.female, fast: k == 0, kind: k, key: p.key, audio: ty.audio.clone() });
     }
     let m = p.dodge;
     let clip = m.clip.and_then(|e| ty.avoid.get(e)?.clip);
@@ -2145,14 +2161,14 @@ fn loco_clip(p: &mut Ped, ty: &PedType, st: u32, flags: u32, slide: f32) -> f32 
 /// reversed path (F-94431). Moves `p` and sets its state; returns the walk clip's
 /// playback rate.
 #[allow(clippy::too_many_arguments)]
-fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[Obst], col: Option<&WorldCollider>, nav: Option<&NavSys>, threats: &[Threat], side: &[SideSlot], due: u8, dt: f32, rand: &mut dyn FnMut() -> f32, rng: &mut DodgeRng, evades: &mut u32, speech: &mut Vec<Speech>, frame: u32, stamp: &mut u32) -> f32 {
+fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[Obst], col: Option<&WorldCollider>, nav: Option<&NavSys>, threats: &[Threat], side: &[SideSlot], due: u8, dt: f32, rand: &mut dyn FnMut() -> f32, rng: &mut DodgeRng, evades: &mut u32, speech: &mut Vec<Speech>, remark: &mut Remarks, frame: u32, stamp: &mut u32) -> f32 {
     // (the behaviour's facing: the rail's, kept apart from the drawn one, which is the mean of the last 8 frames')
     let fwd = if p.ground.face != Vec3::ZERO { p.ground.face } else { flat(p.rot * -Vec3::Z).normalize_or(Vec3::Z) };
     p.ground.t_face = fwd;
     let set_state = set_clip_state;
     p.hold = (p.hold - dt).max(0.0);
     // the car dodge, every frame (F-15352 from F-97113, no gate of its own): a dodge's clip slides the walker here
-    let dodging = dodge_frame(p, ty, threats, side, col, nav, dt, rand, rng, evades, speech);
+    let dodging = dodge_frame(p, ty, threats, side, col, nav, dt, rand, rng, evades, speech, remark);
     // then the path (F-30466 from the behaviour's update F-72378): the request F-73065 - backwards after an even number
     // of stops in a row, more than one - and the take F-23649 of a path delivered; a path taken drops the rails, the
     // next rail F-95960 turns round when the stops ask backwards. M+260: bit 0x4 sliding, 0x2 a clip of its own.
@@ -2516,6 +2532,101 @@ pub struct Speech {
     pub voice: String,
     pub female: bool,
     pub fast: bool,
+    /// F-39461's kind: 0 the QUICK shout, 1 the SLOW one, 2 the expensive car / bike remark, 3 the damaged car one
+    pub kind: u32,
+    /// the walker (`Peds::pos_of`: the sound follows it, the entity's +116 pointer) and its type's sound object
+    pub key: (usize, u32),
+    pub audio: String,
+}
+
+/// The player's car as the walkers' remark reads it (F-27362, F-47522); main.rs fills it each frame, None while there
+/// is no player car (F-37636).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RemarkCar {
+    /// the car's matrix row 3 (F-35658 +48) and velocity (F-98427)
+    pub pos: Vec3,
+    pub vel: Vec3,
+    /// mcCarDamage +36 (the damage points) and its tune's +24 (MaxDamage); None without a damage object
+    pub damage: Option<(f32, f32)>,
+    /// the six paint areas' unpainted bytes (the set-up's look part +1608, stride 48; F-47522 counts a byte of 1 only)
+    pub unpainted: [u8; 6],
+    /// the vehicle table's +44 (Price) of the car's TypeName (F-45718)
+    pub price: i32,
+    /// the purchase record's +82 word (spent + 1) of the record at the garage's current slot (LocalOptions +1344, F-82698:
+    /// the slot number, not the model, indexes the records here)
+    pub spent_word: u32,
+}
+
+/// The remark timer's range, the manager's +0x64248 / +0x6424C as its constructor sets them.
+pub const REMARK_MIN: f32 = 15.0;
+pub const REMARK_MAX: f32 = 30.0;
+
+/// F-27362's state: the player's car and the manager's remark timer (+0x64244: 0 at the manager's reset).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Remarks {
+    pub car: Option<RemarkCar>,
+    pub timer: f32,
+}
+
+/// F-47522: the car is one to remark on - no paint area unpainted, and the parts bought (the record's word - 1) or
+/// the price over twice the price, at most 75000 (signed words; a price over 75000 always is).
+pub fn remark_expensive(unpainted: [u8; 6], price: i32, spent_word: u32) -> bool {
+    if unpainted.contains(&1) {
+        return false;
+    }
+    let spent = (spent_word & 0xFFFF) as i32 - 1;
+    let a = if spent > price { spent } else { price };
+    let b = price.wrapping_shl(1);
+    let b = if b > 75000 { 75000 } else { b };
+    a > b
+}
+
+/// F-27362's decision for a walker at `ped` whose M+260 is `flags`: None (no remark) or the kind, 3 the damaged car
+/// (points over a third of MaxDamage), 2 an expensive one (F-47522). The tests in the original's order and compares
+/// (a NaN passes the "greater than" gates).
+pub fn remark_kind(flags: u32, timer: f32, car: Option<&RemarkCar>, ped: Vec3) -> Option<u32> {
+    use crate::physics::exact::fma;
+    if flags & 4 != 0 {
+        return None;
+    }
+    let c = car?;
+    if timer != 0.0 {
+        return None;
+    }
+    // the flat speed^2 at most 44.957 (0x4233D3FE)
+    if fma(c.vel.x, c.vel.x, c.vel.z * c.vel.z) > f32::from_bits(0x4233_D3FE) {
+        return None;
+    }
+    // the flat distance^2 at most 20.903 (0x41A739B9, 4.57^2)
+    let dx = c.pos.x - ped.x;
+    let dz = c.pos.z - ped.z;
+    if fma(dz, dz, dx * dx) > f32::from_bits(0x41A7_39B9) {
+        return None;
+    }
+    if (c.pos.y - ped.y).abs() > 3.0 {
+        return None;
+    }
+    let (points, max) = c.damage?;
+    if points > max * f32::from_bits(0x3EAA_AA9F) {
+        Some(3)
+    } else if remark_expensive(c.unpainted, c.price, c.spent_word) {
+        Some(2)
+    } else {
+        None
+    }
+}
+
+/// F-77233: the remark timer drawn again from the shared MWC, min + (max - min) x u23 x 2^-23 (the product first,
+/// then one fused multiply-add).
+pub fn remark_timer(min: f32, max: f32, mwc: &mut crate::vehicles::parked::Mwc) -> f32 {
+    let u = (mwc.next() & 0x7F_FFFF) as f32;
+    crate::physics::exact::fma((max - min) * u, f32::from_bits(0x3400_0000), min)
+}
+
+/// The manager frame's countdown of the remark timer (inline in F-96156, an fsel): t - dt, held at 0.
+pub fn remark_countdown(t: f32, dt: f32) -> f32 {
+    let t = t - dt;
+    if -t >= 0.0 { 0.0 } else { t }
 }
 
 /// `tune/ambients/density_tuning.xml` (the original's density manager, vtable 0x820c39c4).
@@ -2579,6 +2690,10 @@ pub struct Peds {
     filled: bool,
     rng: u32,
     pub speech: Vec<Speech>,
+    /// the remark on the player's car (F-27362): main.rs sets `remarks.car` each frame
+    pub remarks: Remarks,
+    /// the reactions' sounds playing, each following its walker (main.rs)
+    pub voices_playing: crate::sndobj::PedVoices,
     /// streets crossed so far (diagnostics)
     pub crossings: u32,
     /// evades started so far (diagnostics)
@@ -2671,6 +2786,8 @@ impl Peds {
             filled: false,
             rng: 0x1234_5678,
             speech: Vec::new(),
+            remarks: Remarks::default(),
+            voices_playing: Default::default(),
             evades: 0,
             crossings: 0,
             evade_radius: std::env::var("MCLA_PED_EVADE").ok().and_then(|v| v.parse().ok()).unwrap_or(2.3),
@@ -2862,11 +2979,13 @@ impl Peds {
             let s = xml_value(&t, "fLodSwitchScale").unwrap_or(1.0);
             lod_switch = [xml_value(&t, "fHighToMedSwitch").unwrap_or(40.0) * s, xml_value(&t, "fMedToLowSwitch").unwrap_or(80.0) * s];
         }
-        let turn_radius = std::fs::read_to_string(self.tune_dir.join(name).join("mcAmbientType.xml")).ok().and_then(|t| xml_value(&t, "fMinTurningRadius")).unwrap_or(0.1);
+        let ambient_type = std::fs::read_to_string(self.tune_dir.join(name).join("mcAmbientType.xml")).ok();
+        let turn_radius = ambient_type.as_deref().and_then(|t| xml_value(t, "fMinTurningRadius")).unwrap_or(0.1);
+        let audio = ambient_type.as_deref().and_then(|t| Some(t.split("<szAudioType>").nth(1)?.split('<').next()?.trim().to_string())).unwrap_or_default();
         // the avoid list as the pick reads it: an entry's clip only when it is one of this sex's evades (the other
         // sex's entries and the angry / pivot ones fail the pick's type test anyway)
         let avoid = self.avoid_list.iter().map(|(n, ty, dir, audio)| AvoidItem { ty: *ty, dir: *dir, clip: evade_names.iter().position(|e| e == n), audio: *audio }).collect();
-        Some(PedType { female, voice: core, model, walk, idle, run, a28, a36, evade, avoid, angry, pivot, lod_switch, turn_radius })
+        Some(PedType { female, voice: core, audio, model, walk, idle, run, a28, a36, evade, avoid, angry, pivot, lod_switch, turn_radius })
     }
 
     /// The files of the types the spawner can draw around `focus` now, read and parsed on worker threads (two at a
@@ -2969,6 +3088,11 @@ impl Peds {
         let r = (h & 0xffffff) as f32 / 16777216.0;
         let name = self.districts.pick(pos, self.hour, r, &|n| n.starts_with("ped_"))?;
         self.dirs.iter().position(|d| d.0.eq_ignore_ascii_case(name))
+    }
+
+    /// Where walker `key` stands now (a sound of its reaction follows it).
+    pub fn pos_of(&self, key: (usize, u32)) -> Option<Vec3> {
+        self.list.iter().find(|p| p.key == key).map(|p| p.pos)
     }
 
     pub fn clear(&mut self) {
@@ -3326,6 +3450,8 @@ impl Peds {
             return;
         }
         let mut frame0 = self.frame_no;
+        // (the manager frame F-96156 counts the remark timer down before the walkers' updates)
+        self.remarks.timer = remark_countdown(self.remarks.timer, dt);
         self.room_cars.clear();
         self.room_cars.extend(threats.iter().map(|t| (t.car.kind, t.pos)));
         if let Some(mesh) = self.mesh.take() {
@@ -3383,7 +3509,7 @@ impl Peds {
                 p.blend = (p.blend - dt).max(0.0);
                 // (its dodge: the same F-15352; a clip slides it, `dodge_frame`)
                 if p.state == State::Idle || matches!(p.state, State::Evade(_)) {
-                    dodge_frame(p, ty, threats, &[], Some(col), Some(nav), dt, &mut rand, &mut self.dodge_rng, &mut self.evades, &mut self.speech);
+                    dodge_frame(p, ty, threats, &[], Some(col), Some(nav), dt, &mut rand, &mut self.dodge_rng, &mut self.evades, &mut self.speech, &mut self.remarks);
                 }
                 let t0 = p.time;
                 p.time += dt;
@@ -3448,7 +3574,7 @@ impl Peds {
                         due |= 1 << (if clip { n & 1 } else { n % 3 });
                     }
                 }
-                rate = sidewalk_step(p, ty, i, &peds_pos, &boxes, Some(col), Some(nav), threats, &side, due, dt, &mut rand, &mut self.dodge_rng, &mut self.evades, &mut self.speech, self.frame_no, &mut self.path_stamp);
+                rate = sidewalk_step(p, ty, i, &peds_pos, &boxes, Some(col), Some(nav), threats, &side, due, dt, &mut rand, &mut self.dodge_rng, &mut self.evades, &mut self.speech, &mut self.remarks, self.frame_no, &mut self.path_stamp);
             }
             // a car about to pass too close?
             if !on_mesh && matches!(p.state, State::Walk | State::Idle) && p.calm <= 0.0 && !ty.evade.is_empty() {
@@ -3485,7 +3611,8 @@ impl Peds {
                     p.state = State::Evade(best.1);
                     p.time = 0.0;
                     self.evades += 1;
-                    self.speech.push(Speech { pos: p.pos, voice: ty.voice.clone(), female: ty.female, fast: ty.evade[best.1].fast || speed > 18.0 });
+                    let fast = ty.evade[best.1].fast || speed > 18.0;
+                    self.speech.push(Speech { pos: p.pos, voice: ty.voice.clone(), female: ty.female, fast, kind: if fast { 0 } else { 1 }, key: p.key, audio: ty.audio.clone() });
                     break;
                 }
             }
@@ -4028,6 +4155,43 @@ mod tests {
     /// release F-75945 (the cancel F-39771) - and 1,000 seeds F-93347. Every logged call with its words and the whole
     /// state after each frame (R's count, flags, fraction, scale, age, points; the request's flags, start, filter, length;
     /// the stamp; the walker's MWC) must be equal.
+    /// The walker's remark on the player's car against the original's code run offline (tools/walker_remark_reference.py
+    /// -> testdata/walker_remark_ref.txt): 20,000 walker / car states, half past every gate, the others near each
+    /// (M+260 bit 0x4, the player, the timer 0 / -0 / tiny / running, the flat speed^2 by 44.957, the flat distance^2 by
+    /// 20.903, |dy| by 3, the car's damage object), the damage by a third of MaxDamage, the six unpainted bytes 0 / 1 / 2 /
+    /// 0xFF, prices and record words at F-47522's edges (signed words, 2 x price by 75000): the kind F-27362 asks of
+    /// F-39461 (with the walker as its object), the timer after (F-77233 from the shared MWC) and the MWC after equal.
+    #[test]
+    fn walker_remark_matches_the_original() {
+        let mut n = [0u32; 4];
+        for l in include_str!("testdata/walker_remark_ref.txt").lines() {
+            let (ci, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<u32> = ci.split(' ').map(ref_word).collect();
+            let want: Vec<u32> = o.split(' ').map(ref_word).collect();
+            let f = |i: usize| f32::from_bits(c[i]);
+            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let car = RemarkCar {
+                pos: v(8),
+                vel: v(5),
+                damage: (c[3] != 0 && c[4] != 0).then(|| (f(14), f(15))),
+                unpainted: [0, 1, 2, 3, 4, 5].map(|k| c[16 + k] as u8),
+                price: c[22] as i32,
+                spent_word: c[24] & 0xFFFF,
+            };
+            let mut timer = f(1);
+            let mut mwc = crate::vehicles::parked::Mwc { lo: c[25], carry: c[26] };
+            let kind = remark_kind(c[0], timer, (c[2] != 0).then_some(&car), v(11));
+            if kind.is_some() {
+                timer = remark_timer(REMARK_MIN, REMARK_MAX, &mut mwc);
+            }
+            let k = kind.unwrap_or(0);
+            n[k as usize] += 1;
+            assert_eq!(want, vec![k, kind.is_some() as u32, timer.to_bits(), mwc.lo, mwc.carry], "{l}");
+        }
+        assert_eq!(n.iter().sum::<u32>(), 20_000);
+        assert!(n[2] > 1000 && n[3] > 1000, "{n:?}");
+    }
+
     #[test]
     fn walker_path_matches_the_original() {
         let (mut frames, mut taken, mut deliv, mut seeds) = (0, 0, 0, 0);

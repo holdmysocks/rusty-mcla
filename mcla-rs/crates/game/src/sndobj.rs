@@ -533,6 +533,58 @@ pub const SLIDER_CATEGORIES: [&str; 5] = ["SFX", "MUSIC", "SPEECH", "PLAYER_VEHI
 /// Voice id bit for the player vehicle's sounds: the mixer's time-slow (Zone, race end) applies to them.
 pub const SLOWED: u64 = 1 << 40;
 
+/// F-39461's field of an AMBIENT_PED_<type> object for a reaction of `kind` (its switch): 0 +14 (QUICK), 1 +10 (SLOW),
+/// 2 +18 (EXPENSIVE_CAR) or, when the player's entity is a bike (+1945), +26 (EXPENSIVE_BIKE), 3 +22 (DAMAGED) or,
+/// on a bike, +30. Another kind plays the global default sound (not used: the callers pass 0 .. 3).
+pub fn ped_reaction_field(kind: u32, bike: bool) -> Option<usize> {
+    match kind {
+        0 => Some(14),
+        1 => Some(10),
+        2 => Some(if bike { 26 } else { 18 }),
+        3 => Some(if bike { 30 } else { 22 }),
+        _ => None,
+    }
+}
+
+/// F-39461's sound word from the object it found (its type's, else the fallback; none: the original reads through a
+/// null object, the port plays nothing): the object's unaligned big-endian word at `ped_reaction_field`.
+pub fn ped_reaction_pick(obj: Option<&[u8]>, kind: u32, bike: bool) -> Option<u32> {
+    let k = ped_reaction_field(kind, bike)?;
+    Some(u32::from_be_bytes(obj?.get(k..k + 4)?.try_into().ok()?))
+}
+
+/// The walkers' reaction sounds (F-39461's mcAmbientPedAudioEntity pool): each plays where its walker stands, the
+/// entity's position pointer (+116) followed every frame.
+#[derive(Default)]
+pub struct PedVoices {
+    playing: Vec<((usize, u32), Handle, Vec3)>,
+}
+
+impl PedVoices {
+    /// A walker's reaction sound started (the sound's hash, `SoundLib::ped_reaction`). F-48911 gives no entity to a
+    /// walker that has one: here while its sound plays (approximate - the pool's size, the sound manager's +4, and when
+    /// an entity lets its walker go are not decoded).
+    pub fn start(&mut self, lib: &mut SoundLib, key: (usize, u32), hash: u32, pos: Vec3) -> Option<Handle> {
+        if self.playing.iter().any(|(k, h, _)| *k == key && lib.playing(*h)) {
+            return None;
+        }
+        let h = lib.play_hash(hash, Req::at(pos))?;
+        self.playing.push((key, h, pos));
+        Some(h)
+    }
+
+    /// Each playing sound follows its walker (`pos_of`; a walker gone leaves its sound where it last stood).
+    pub fn follow(&mut self, lib: &mut SoundLib, pos_of: impl Fn((usize, u32)) -> Option<Vec3>) {
+        self.playing.retain(|(_, h, _)| lib.playing(*h));
+        for (k, h, at) in self.playing.iter_mut() {
+            if let Some(p) = pos_of(*k).filter(|p| p != at) {
+                *at = p;
+                lib.set(*h, Req::at(p));
+            }
+        }
+    }
+}
+
 const VOICE_BASE: u64 = 0x4000_0000;
 const NONE: u32 = 0xFFFF_FFFF;
 
@@ -622,6 +674,15 @@ impl SoundLib {
 
     pub fn exists(&self, name: &str) -> bool {
         self.snd.contains(joaat(name))
+    }
+
+    /// F-39461's sound for a walker's reaction of `kind`: its type's sound object in game.dat (the type's szAudioType,
+    /// +176; else AMBIENT_PED_FEMALE_01 / AMBIENT_PED_MALE_01 by the type's sex +109 - names game.dat does not have,
+    /// and every ambient type's own object is there) and that object's sound field `ped_reaction_field`.
+    pub fn ped_reaction(&self, audio_type: &str, female: bool, kind: u32, bike: bool) -> Option<u32> {
+        let own = Some(audio_type).filter(|t| !t.is_empty()).and_then(|t| self.game.get_name(t));
+        let fallback = || self.game.get_name(if female { "AMBIENT_PED_FEMALE_01" } else { "AMBIENT_PED_MALE_01" });
+        ped_reaction_pick(own.or_else(fallback), kind, bike)
     }
     pub fn exists_hash(&self, h: u32) -> bool {
         self.snd.contains(h)
@@ -2806,6 +2867,37 @@ mod tests {
     }
     use super::*;
 
+    /// A walker's reaction sound against F-39461 run offline (tools/ped_reaction_reference.py ->
+    /// testdata/ped_reaction_ref.txt): 4,000 cases of kind 0 .. 3, bike byte 0 / 1 / 2 / 0xFF, the type's sex byte
+    /// 0 / 1 / 0x80, with and without the type's object and the fallback: the lookups made (the type's name, then
+    /// AMBIENT_PED_FEMALE_01 when +109 is set, else AMBIENT_PED_MALE_01) and the sound word started equal; where the
+    /// original reads through a null object (66 cases) the port plays nothing.
+    #[test]
+    fn ped_reaction_matches_the_original() {
+        let (mut n, mut none) = (0, 0);
+        for l in include_str!("testdata/ped_reaction_ref.txt").lines() {
+            let (ci, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<u32> = ci.split(' ').map(|t| u32::from_str_radix(&t.replace('_', ""), 16).unwrap()).collect();
+            let (log, word) = o.split_once(' ').unwrap();
+            let bytes = |at: usize| c[at..at + 9].iter().flat_map(|w| w.to_be_bytes()).take(34).collect::<Vec<u8>>();
+            let (own, fb) = (bytes(6), bytes(15));
+            let (kind, bike, female, named, has_own, has_fb) = (c[0], c[1] != 0, c[2] != 0, c[3] != 0, c[4] != 0, c[5] != 0);
+            let own = (named && has_own).then_some(own.as_slice());
+            let want_log = format!("{}{}", if named { "T" } else { "" }, if own.is_some() { "" } else if female { "F" } else { "M" });
+            assert_eq!(log, want_log, "{l}");
+            let got = ped_reaction_pick(own.or(has_fb.then_some(fb.as_slice())), kind, bike);
+            match word {
+                "X" => {
+                    assert_eq!(got, None, "{l}");
+                    none += 1;
+                }
+                w => assert_eq!(got, Some(u32::from_str_radix(&w.replace('_', ""), 16).unwrap()), "{l}"),
+            }
+            n += 1;
+        }
+        assert_eq!((n, none), (4000, 66));
+    }
+
     /// The streamed decode gives the same samples as the whole decode (MCLA_AUDIO_DIR = the converted audio,
     /// `<data>/../audio_pc`): every 25th stream of the stream folders, and the landmark bells (4800 Hz on the disc,
     /// 8000 Hz in the MP3: their length had been taken at the disc's rate, so the end of every bell was cut off).
@@ -3068,5 +3160,67 @@ mod tests {
         assert!((pos(&lib) - p0 - 100.0).abs() < 1.0, "goes on after the pause");
         // (still playing)
         assert!(lib.playing(h));
+    }
+
+    /// F-39461's sounds: every ambient type's szAudioType (tune/ambients/peds/*/mcAmbientType.xml) has its AMBIENT_PED
+    /// object in game.dat, and each of its six fields names a sound of sounds.dat (<type>_QUICK / _SLOW /
+    /// _EXPENSIVE_CAR / _DAMAGED / _EXPENSIVE_BIKE / _DAMAGED) that starts with a wave of the converted banks.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn ped_reaction_sounds() {
+        fn waves(n: &Node) -> usize {
+            match &n.kind {
+                Kind::Wave { wave: Some(_), .. } => 1,
+                Kind::Group { children } | Kind::Twin { children, .. } => children.iter().map(waves).sum(),
+                Kind::Looping { child, .. } | Kind::Envelope { child, .. } | Kind::OnStop { child, .. } => waves(child),
+                Kind::Sequential { cur: Some(c), .. } => waves(c),
+                _ => 0,
+            }
+        }
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let mut types: Vec<String> = std::fs::read_dir(Path::new(&dir).join("tune/ambients/peds"))
+            .unwrap()
+            .flatten()
+            .filter_map(|e| std::fs::read_to_string(e.path().join("mcAmbientType.xml")).ok())
+            .filter_map(|t| Some(t.split("<szAudioType>").nth(1)?.split('<').next()?.trim().to_string()))
+            .collect();
+        types.sort();
+        types.dedup();
+        assert_eq!(types.len(), 39);
+        let (mut missing, mut odd) = (Vec::new(), Vec::new());
+        let tails = [(0, false, "QUICK"), (1, false, "SLOW"), (2, false, "EXPENSIVE_CAR"), (3, false, "DAMAGED"), (2, true, "EXPENSIVE_BIKE"), (3, true, "DAMAGED")];
+        for t in &types {
+            for (kind, bike, tail) in tails {
+                let h = lib.ped_reaction(t, false, kind, bike).unwrap_or_else(|| panic!("{t} {kind}"));
+                let name = lib.name_of(h).unwrap_or_else(|| panic!("{t} {tail}: not in sounds.dat")).to_string();
+                if name != format!("{}_{tail}", t.trim_start_matches("AMBIENT_PED_")) {
+                    odd.push(format!("{t} {tail} -> {name}"));
+                }
+                let s = lib.play_hash(h, Req::at(Vec3::ZERO)).unwrap_or_else(|| panic!("{t} {tail} plays"));
+                if waves(&lib.insts.iter().find(|i| i.id == s.0).unwrap().root) == 0 {
+                    missing.push(format!("{t} {tail}"));
+                }
+                lib.stop(s);
+            }
+        }
+        // (the data's own: five fields name another type's or a plural sound)
+        assert_eq!(
+            odd,
+            [
+                "AMBIENT_PED_FC_005 DAMAGED -> FC_001_DAMAGED",
+                "AMBIENT_PED_FC_006 EXPENSIVE_CAR -> FC_006_EXPENSIVE_CARS",
+                "AMBIENT_PED_FC_006 EXPENSIVE_BIKE -> FC_006_EXPENSIVE_BIKES",
+                "AMBIENT_PED_MC_003 QUICK -> MC_003_EXPENSIVE_QUICK",
+                "AMBIENT_PED_MC_003 SLOW -> MC_003_EXPENSIVE_SLOW"
+            ]
+        );
+        // (the disc has no AMBIENT_PEDS\FC_006 wave bank - 82 banks in sfx/AMBIENT_PEDS, none of them FC_006: its
+        // sounds play nothing in the original too)
+        assert!(missing.iter().all(|m| m.starts_with("AMBIENT_PED_FC_006 ")) && missing.len() == 6, "{missing:?}");
+        // (no type's object: the fallbacks, which game.dat has not got)
+        assert_eq!(lib.ped_reaction("", true, 2, false), None);
+        assert_eq!(lib.ped_reaction("AMBIENT_PED_NONE", false, 3, false), None);
     }
 }
