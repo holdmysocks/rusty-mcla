@@ -673,7 +673,7 @@ pub fn best_anchor(slot: Slot, cands: &[Vec3], pmin: Vec3, pmax: Vec3, body_min:
 
 /// The order in which the outlet bones are looked for (F-59267): the base body's skeleton first, then
 /// the drawn parts in the order of their slots (the part-name table 0x827E9608).
-fn outlet_rank(p: &CarPart) -> usize {
+pub(crate) fn outlet_rank(p: &CarPart) -> usize {
     if p.is_base {
         return 0;
     }
@@ -1814,6 +1814,71 @@ mod tests {
 
     /// The dashboard needles (docs/reference/carparts/gauge_needles_rule.md): where the base fragments have `tach` /
     /// `speedo`, the clip has 30 L + 1 frames; prints the needle bone's turn at frame 0 and at a few values.
+    /// The light set's bone tables (F-70785 -> F-27051, made by F-10977; 19 kinds of 8 each, F-36859): each kind takes the
+    /// bones named exactly `<kind>0`, base skeleton first, then the fitted parts. Scans every part file of every car: the
+    /// bones whose name is a lamp kind with another number, and the most bones of one kind a car's part files hold.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn lamp_bone_names() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let assets = crate::assets::Assets::new(&dir);
+        let root = std::path::Path::new(&dir).join("resources/vehicle");
+        let mut cars: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        cars.sort();
+        const KINDS: [&str; 14] = ["glowbrake", "glowtail", "glowsignal", "glowhead", "glowhigh", "glowreverse", "glowfog", "glowthirdbrake", "coplightred", "coplightblue", "signalfrontleft", "signalfrontright", "signalrearleft", "signalrearright"];
+        let (mut odd, mut most) = (Vec::new(), (0usize, String::new()));
+        for p in cars {
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            let Ok(car) = super::load_car(&assets, &p) else { continue };
+            let mut seen = std::collections::HashSet::new();
+            let mut count = [0usize; 14];
+            let mut per_part: Vec<(String, [usize; 14])> = Vec::new();
+            for pt in &car.parts {
+                if !seen.insert(pt.primary.clone()) {
+                    continue;
+                }
+                let Some(sk) = pt.skeleton.as_deref() else { continue };
+                let mut c = [0usize; 14];
+                for b in &sk.bones {
+                    let n = b.name.to_ascii_lowercase();
+                    let stem = n.trim_end_matches(|c: char| c.is_ascii_digit());
+                    if let Some(k) = KINDS.iter().position(|k| *k == stem) {
+                        if n != format!("{stem}0") {
+                            odd.push(format!("{name} {} {n}", pt.primary));
+                        } else {
+                            c[k] += 1;
+                        }
+                    }
+                }
+                for k in 0..14 {
+                    count[k] += c[k];
+                }
+                per_part.push((pt.primary.clone(), c));
+            }
+            // (a car fits one part of each slot: the most it can carry is the base's plus each slot's largest - a slot is
+            // the part's name less its number)
+            let _ = count;
+            for k in 0..14 {
+                let mut slot: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+                for (pn, c) in &per_part {
+                    let key = pn.trim_end_matches(|c: char| c.is_ascii_digit()).to_string();
+                    let e = slot.entry(key).or_default();
+                    *e = (*e).max(c[k]);
+                }
+                let fit: usize = slot.values().sum();
+                if fit > most.0 {
+                    most = (fit, format!("{name} {}", KINDS[k]));
+                }
+                if fit > 8 {
+                    let parts: Vec<String> = slot.iter().filter(|p| *p.1 > 0).map(|p| format!("{}:{}", p.0, p.1)).collect();
+                    println!("over 8: {name} {} {} in {}", KINDS[k], fit, parts.join(" "));
+                }
+            }
+        }
+        println!("other numbers: {} {:?}", odd.len(), odd.iter().take(20).collect::<Vec<_>>());
+        println!("most of one kind on a fitted car: {} ({})", most.0, most.1);
+    }
+
     #[test]
     #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
     fn needle_clips() {

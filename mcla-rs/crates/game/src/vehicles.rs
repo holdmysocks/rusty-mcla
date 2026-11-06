@@ -22,6 +22,9 @@ pub mod parked;
 /// 6 reversing, 8 fog, 12 third brake, 13 / 14 the police lamps, 15 .. 18 the turn signals front
 /// left, front right, rear left, rear right - the executable's names by kind at 0x827E7638 (5, 7,
 /// 9 .. 11 "noglow").
+/// The bones one kind of the light set holds (its constructor makes each table for 8)
+const LIGHT_SET_KIND_CAP: usize = 8;
+
 fn glow_bone_kind(name: &str) -> Option<u8> {
     let p = name.trim_end_matches(|c: char| c.is_ascii_digit());
     Some(match p {
@@ -2440,7 +2443,8 @@ impl Vehicles {
         let only_part = std::env::var("MCLA_ONLY_PART").ok();
         let hide_part = std::env::var("MCLA_HIDE_PART").ok();
         let lamp_dump = std::env::var("MCLA_LAMP_DUMP").is_ok();
-        let mut glow_bones: Vec<(u8, Vec3, Vec3)> = Vec::new();
+        // (the light set's order: its slot rank, then the skeleton's order - see the cap below)
+        let mut glow_ranked: Vec<(usize, u8, Vec3, Vec3)> = Vec::new();
         let mut font_bones: Vec<(u8, Mat4, f32, f32)> = Vec::new();
         // (the moving damage parts, DAMAGE_PARTS_RULE.md 1.4 / 2.3: the slot pass moves the parts of the slots
         // hood / hood_wide (2, 40), bumper_r (3), intercooler and bumper_f (5, 6); the trunk_0 bone turns with
@@ -2599,7 +2603,7 @@ impl Vehicles {
                         eprintln!("lampbone {} {} {} {} parent {} {:.4} {:.4} {:.4} z {:.3} {:.3} {:.3}", car.name, part.primary, bi, if b.name.is_empty() { "-" } else { b.name.as_str() }, if parent.is_empty() { "-" } else { parent.as_str() }, w.x, w.y, w.z, b.world.z_axis.x, b.world.z_axis.y, b.world.z_axis.z);
                     }
                     if let Some(kind) = glow_bone_kind(&b.name.to_ascii_lowercase()) {
-                        glow_bones.push((kind, w, -(part_xf * b.world).z_axis.truncate().normalize_or_zero()));
+                        glow_ranked.push((vehicle_model::outlet_rank(part), kind, w, -(part_xf * b.world).z_axis.truncate().normalize_or_zero()));
                     }
                     if let Some(k) = crate::readouts::bone_kind(&b.name).filter(|k| !font_bones.iter().any(|f| f.0 == *k)) {
                         let (lo, hi) = b.trans_limits;
@@ -3043,6 +3047,17 @@ impl Vehicles {
                     }
                 }
                 meshes.push(MeshPrep { sname: sname.to_string(), mode, dn, sn, plate, carbon, win_cand, kbits, geo, geo_alt });
+            }
+        }
+        // The light set's bone tables (F-70785: F-27051 for each of the 19 kinds, made by F-10977; the set's constructor
+        // F-36859 gives every kind a table of 8, F-14578): the bones named `<kind>0` (the base skeleton's, then the drawn slots' in
+        // slot order, each skeleton in its order - the iterator of the nitrous anchors), the first 8 kept. Three cars
+        // carry more brake glows than that with the wide body and a taillight fitted (disc test `lamp_bone_names`).
+        glow_ranked.sort_by_key(|g| g.0);
+        let mut glow_bones: Vec<(u8, Vec3, Vec3)> = Vec::new();
+        for (_, kind, w, facing) in glow_ranked {
+            if glow_bones.iter().filter(|g| g.0 == kind).count() < LIGHT_SET_KIND_CAP {
+                glow_bones.push((kind, w, facing));
             }
         }
         CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, roof_place, upgrade }
