@@ -516,6 +516,89 @@ fn squad_machine<C>(sq: &mut Squad, cx: &mut C, arrow: bool, any_safe: bool, t_m
     false
 }
 
+/// One cop brain's tests against its target as the squad's swipes read them (F-47983 / F-41674), in the original's float
+/// order. `pos` / `right` / `back` / `vel`: the cop car's matrix rows 3 / 0 / 2 and velocity, `tpos` / `tvel` the target's.
+/// `dsq`: the squared distance (F-39842: y y, then z, then x fused; within r when below r x r, F-29545); `ahead`: the third
+/// row against the target below 0 (F-53459 / F-99390); `same_dir`: the two velocities above 0 (F-80249); `on_right`: the
+/// first row against the target above 0 (F-57435 / F-30098); `bearing`: F-88594 of the first row and the target, x 57.2957...
+/// in single (F-90304; its cache at brain +760 / +764 is cleared by the brain update F-74140).
+#[derive(Clone, Copy, Debug)]
+struct SwipeGeo {
+    dsq: f32,
+    ahead: bool,
+    same_dir: bool,
+    on_right: bool,
+    bearing: f32,
+}
+
+fn swipe_geo(pos: Vec3, right: Vec3, back: Vec3, vel: Vec3, tpos: Vec3, tvel: Vec3) -> SwipeGeo {
+    use crate::physics::exact::{dot_xyz, dot_xzy};
+    let to = tpos - pos;
+    SwipeGeo {
+        dsq: arrest_d2(pos, tpos),
+        ahead: dot_xyz(back, to) < 0.0,
+        same_dir: dot_xzy(vel, tvel) > 0.0,
+        on_right: on_side(right, pos, tpos),
+        bearing: crate::aiv::ang3(right, to) * f32::from_bits(0x4265_2EE0),
+    }
+}
+
+/// The swipes of one CatchUp / AlongSide update (F-47983 / F-41674, after the lock and the formation), on the tactic's cops'
+/// tests `g` (`a` / `b`: the right / left flank's index, slots +164 / +168) and their brains' head-on flags (+774, F-48012).
+/// The right flank: within 10 m (the Double Pursuit's 15), the same way, the Arrow Trap's not ahead, not on its right,
+/// bearing 135 - 160 deg (160 - 180): the latch (+32) set, on setting it the line (returned true) and the Arrow Trap's wait
+/// +24 = 0.5 s; full lock left and full brake while the wait is 0; outside the window wait and latch 0. The left flank: on its
+/// right, 20 - 45 deg (0 - 20), full lock right and full brake (its wait +28 is never set). The wait then counts down to 0.
+/// Then every cop whose head-on flag is set within `head_on_dist`: the handbrake, full lock to the target's side (keeping a
+/// swipe's brake). Writes `ovr[k]` (steer F-77791, brake F-39048, handbrake F-10965).
+#[allow(clippy::too_many_arguments)]
+fn squad_swipes(sq: &mut Squad, arrow: bool, dt: f32, a: Option<usize>, b: Option<usize>, g: &[Option<SwipeGeo>], head_on: &[bool],
+                head_on_dist: f32, ovr: &mut [crate::ai::Overrides]) -> bool {
+    let (near, a_win, b_win) = if arrow { (10.0f32, (135.0, 160.0), (20.0, 45.0)) } else { (15.0f32, (160.0, 180.0), (0.0, 20.0)) };
+    let geo = |k: Option<usize>| k.and_then(|k| g.get(k).copied().flatten().map(|x| (k, x)));
+    let mut line = false;
+    match geo(a) {
+        Some((k, x)) if x.dsq < near * near && x.same_dir && !(arrow && x.ahead) && !x.on_right && x.bearing > a_win.0 && x.bearing < a_win.1 => {
+            if !sq.latch {
+                line = true;
+                if arrow {
+                    sq.swipe_t = 0.5;
+                }
+            }
+            if sq.swipe_t == 0.0 {
+                ovr[k].steer = Some(-1.0);
+                ovr[k].brake = Some(1.0);
+            }
+            sq.latch = true;
+        }
+        _ => {
+            sq.swipe_t = 0.0;
+            sq.latch = false;
+        }
+    }
+    if let Some((k, x)) = geo(b) {
+        if x.dsq < near * near && x.same_dir && !(arrow && x.ahead) && x.on_right && x.bearing > b_win.0 && x.bearing < b_win.1 {
+            ovr[k].steer = Some(1.0);
+            ovr[k].brake = Some(1.0);
+        }
+    }
+    if sq.swipe_t > 0.0 {
+        sq.swipe_t -= dt;
+        if sq.swipe_t < 0.0 {
+            sq.swipe_t = 0.0;
+        }
+    }
+    for (k, x) in g.iter().enumerate() {
+        if let (Some(x), true) = (x, head_on.get(k).copied().unwrap_or(false)) {
+            if x.dsq < head_on_dist * head_on_dist {
+                ovr[k].handbrake = Some(true);
+                ovr[k].steer = Some(if x.on_right { 1.0 } else { -1.0 });
+            }
+        }
+    }
+    line
+}
+
 /// fmadds: a x b + c in double, rounded once to single
 fn fmas(a: f32, b: f32, c: f32) -> f32 {
     (a as f64).mul_add(b as f64, c as f64) as f32
@@ -3564,14 +3647,10 @@ impl Police {
             };
             let mut sq = std::mem::take(&mut self.sq);
             let mut tacs = std::mem::take(&mut self.tacs);
-            // the flank swipes (only when F-42951 holds for cop A): the Arrow Trap's within 10 m, behind the
-            // target, A with it on its left 135 - 160 deg off its right axis (after REPORT_MANEUVER_CLOSE and
-            // 0.5 s), B with it on its right 20 - 45 deg; the Double Pursuit's within 15 m, 160 - 180 / 0 - 20 deg
-            let (near, a_win, b_win) = if arrow { (10.0, (135.0, 160.0), (20.0, 45.0)) } else { (15.0, (160.0, 180.0), (0.0, 20.0)) };
-            let geo = |u: Option<u32>| -> Option<(f32, bool, bool, bool, f32)> {
-                let c = vehicles.cars.iter().find(|c| Some(c.uid) == u)?;
-                let to = ppos - c.state.pos;
-                Some((to.length(), c.state.forward().dot(to) > 0.0, c.state.right().dot(to) > 0.0, pvel.dot(c.state.vel) > 0.0, crate::aiv::ang3(c.state.right(), to).to_degrees()))
+            // the flank swipes (only when F-42951 holds for cop A; squad_swipes), on each cop's tests against the target
+            let geo = |u: u32| -> Option<SwipeGeo> {
+                let c = vehicles.cars.iter().find(|c| c.uid == u)?;
+                Some(swipe_geo(c.state.pos, c.state.right(), -c.state.forward(), c.state.vel, ppos, pvel))
             };
             let head_on_dist = t("fHeadOnBlockDist", 60.0);
             let fast = mph > t("fArrestTgtThresholdSpd", 10.0);
@@ -3582,43 +3661,16 @@ impl Police {
                 if !ed78 {
                     return;
                 }
-                let mut a_in = false;
-                if let Some((d, ahead, on_right, same_dir, bearing)) = geo(sq.slots[0]) {
-                    if d < near && same_dir && !(arrow && ahead) && !on_right && bearing > a_win.0 && bearing < a_win.1 {
-                        a_in = true;
-                        // (the latch's update: the line, and the Arrow Trap's wait of 0.5 s, F-47983 - the Double
-                        // Pursuit's AlongSide, F-41674, sets none and swipes in the same update)
-                        if !sq.latch {
-                            sq.latch = true;
-                            sq.swipe_t = if arrow { 0.5 } else { 0.0 };
-                            if !goons {
-                                cx.2.push("REPORT_MANEUVER_CLOSE".into());
-                            }
-                        }
-                        if sq.swipe_t <= 0.0 {
-                            cx.1.insert(sq.slots[0].unwrap_or_default(), crate::ai::Overrides { steer: Some(-1.0), brake: Some(1.0), ..Default::default() });
-                        }
-                    }
+                let g: Vec<Option<SwipeGeo>> = members.iter().map(|&u| geo(u)).collect();
+                let head_on: Vec<bool> = members.iter().map(|u| cx.0.get(u).map_or(false, |tc| tc.head_on)).collect();
+                let index = |u: Option<u32>| u.and_then(|u| members.iter().position(|&m| m == u));
+                let mut ovr = vec![crate::ai::Overrides::default(); members.len()];
+                if squad_swipes(sq, arrow, dt, index(sq.slots[0]), index(sq.slots[1]), &g, &head_on, head_on_dist, &mut ovr) && !goons {
+                    cx.2.push("REPORT_MANEUVER_CLOSE".into());
                 }
-                if a_in {
-                    sq.swipe_t = (sq.swipe_t - dt).max(0.0);
-                } else {
-                    sq.swipe_t = 0.0;
-                    sq.latch = false;
-                }
-                if let Some((d, ahead, on_right, same_dir, bearing)) = geo(sq.slots[1]) {
-                    if d < near && same_dir && !(arrow && ahead) && on_right && bearing > b_win.0 && bearing < b_win.1 {
-                        cx.1.insert(sq.slots[1].unwrap_or_default(), crate::ai::Overrides { steer: Some(1.0), brake: Some(1.0), ..Default::default() });
-                    }
-                }
-                // (every cop head-on within fHeadOnBlockDist: handbrake, full lock to the target's side)
-                for u in &members {
-                    if let (Some(tc), Some((d, _, on_right, _, _))) = (cx.0.get(u), geo(Some(*u))) {
-                        if tc.head_on && d < head_on_dist {
-                            let o = cx.1.entry(*u).or_default();
-                            o.handbrake = Some(true);
-                            o.steer = Some(if on_right { 1.0 } else { -1.0 });
-                        }
+                for (k, o) in ovr.into_iter().enumerate() {
+                    if o.steer.is_some() || o.brake.is_some() || o.handbrake.is_some() {
+                        cx.1.insert(members[k], o);
                     }
                 }
             });
@@ -4487,6 +4539,60 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 500, "{checked}");
+    }
+
+    /// The squad swipes against the original's: the Arrow Trap's CatchUp update F-47983 and the Double Pursuit's AlongSide
+    /// update F-41674 run offline by tools/squad_swipe_reference.py on random cop geometry (testdata/squad_swipe_ref.txt):
+    /// every update's overrides (steer, brake, handbrake bits, or none), the wait +24's bits, the latch +32 and the line count
+    /// (4 of the 16 cases with cop 0's +872 = 0, as the payback's goons: no line).
+    #[test]
+    fn squad_swipes_match_the_original() {
+        let reference = include_str!("testdata/squad_swipe_ref.txt");
+        let hex = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let v3 = |v: &[&str]| Vec3::new(hex(v[0]), hex(v[1]), hex(v[2]));
+        let (mut checked, mut swiped) = (0, 0);
+        let (mut arrow, mut law, mut a, mut b, mut lines) = (false, true, 0, 0, 0u32);
+        let (mut cops, mut head_on): (Vec<[Vec3; 4]>, Vec<bool>) = (Vec::new(), Vec::new());
+        let (mut tpos, mut tvel) = (Vec3::ZERO, Vec3::ZERO);
+        let mut sq = Squad::default();
+        let mut want = String::new();
+        for line in reference.lines() {
+            let v: Vec<&str> = line.split_whitespace().collect();
+            match v[0] {
+                "CASE" => {
+                    (arrow, law) = (v[1] == "1", v[5] == "1");
+                    let n: usize = v[2].parse().unwrap();
+                    (a, b) = (v[3].parse().unwrap(), v[4].parse().unwrap());
+                    (cops, head_on, sq, lines) = (vec![[Vec3::ZERO; 4]; n], vec![false; n], Squad::default(), 0);
+                }
+                "G" => {
+                    let k: usize = v[1].parse().unwrap();
+                    cops[k] = [v3(&v[2..]), v3(&v[5..]), v3(&v[8..]), v3(&v[11..])];
+                    head_on[k] = v[14] == "1";
+                }
+                "T" => (tpos, tvel) = (v3(&v[1..]), v3(&v[4..])),
+                "END" => {}
+                _ => {
+                    if v[0] != "=" {
+                        want = line.to_string();
+                    }
+                    let g: Vec<Option<SwipeGeo>> = cops.iter().map(|c| Some(swipe_geo(c[0], c[1], c[2], c[3], tpos, tvel))).collect();
+                    let mut ovr = vec![crate::ai::Overrides::default(); cops.len()];
+                    // (the line only for a law tactic: F-37230, cop 0's +872 - the caller's `!goons`)
+                    lines += (squad_swipes(&mut sq, arrow, 1.0 / 60.0, Some(a), Some(b), &g, &head_on, 60.0, &mut ovr) && law) as u32;
+                    let bits = |o: Option<f32>| o.map_or(0xDEADBEEF, f32::to_bits);
+                    let mut got = String::new();
+                    for o in &ovr {
+                        got += &format!("{:08x} {:08x} {:08x} ", bits(o.steer), bits(o.brake), bits(o.handbrake.map(|_| 1.0)));
+                        swiped += o.brake.is_some() as u32;
+                    }
+                    got += &format!("{:08x} {} {}", sq.swipe_t.to_bits(), sq.latch as u8, lines);
+                    assert_eq!(got, want, "update {checked}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked == 4800 && swiped > 400, "{checked} {swiped}");
     }
 
     /// The squad formations against the original's (the Arrow Trap's F-80532, the Double Pursuit's F-21534, with the

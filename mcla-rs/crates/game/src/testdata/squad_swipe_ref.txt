@@ -1,0 +1,6152 @@
+CASE 1 3 1 0 1
+T c2d25a5f c1908c60 43a0a31c 414ff57d 00000000 419ad091
+G 0 c2ef9a92 c1894391 439f8f29 bf5ee742 bcd472e9 befbcb5a 3efbcb5a 3ba7458a bf5ee742 415193cc 3e681974 419d91f2 0
+G 1 c2c83826 c18d39ea 43a055a8 bf5faa01 3b8551cb bef914d4 3ef914d4 3be85eb7 bf5faa01 41894821 bc6afaca 41c7be46 0
+G 2 c2d4e16b c18f40f4 43a1b805 3e2e5609 bb616e7e 3f7c433c bf7c433c 3d2d710c 3e2e5609 4143eb88 3edf25e8 4186a1f1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+=
+=
+=
+G 0 c2ccb5dc c193324b 43a1bc0e 3ef9bc20 bd021cc4 3f5f7b59 bf5f7b59 bcb2a471 3ef9bc20 41b251d3 be31965a 4204f924 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 c2fae97d c18f27bd 439c05ce bf0e91c3 3c6a825f bf54a05a 3f54a05a 3d091279 bf0e91c3 4187d814 3f632606 41b3d250 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+G 1 c2ce7d93 c19080f7 439eb480 bf5771ee bb630e8a 3f0a45e7 bf0a45e7 3c7f5baa bf5771ee 40838b9f bfcb6176 40b8a6d8 0
+=
+G 0 c2e5bee9 c1bd3433 4381d108 3e6d4c18 38f3ac19 bf790808 3f790808 3cd801a9 3e6d4c18 417c8590 3fa77eda 41c74ad1 0
+=
+=
+G 2 c2fc5a84 c1a7559a 43bbce8c 3eb89115 bd3b83ed bf6ec9c4 3f6ec9c4 bd24c377 3eb89115 415b9947 3d05a164 41b7ee75 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c223029e c18e1b0b 43a4bc0d 3f59600a bcc427e9 bf0737f0 3f0737f0 3c313ce6 3f59600a 419698c3 3f5690cb 420200e1 0
+=
+=
+G 1 c2ef043f c18c43c3 43a4cf50 bf7fd6a6 3d43cf59 3d117ad8 bd117ad8 3aba9470 bf7fd6a6 c1a7325a bf91d3c8 c1f86f35 0
+=
+=
+G 0 c286b57a c17ae69e 43b5dc6d bf01ffcf bc4329cd 3f5c8942 bf5c8942 3a1bca2f bf01ffcf 400b259b 3ff8464b 406334c7 0
+=
+=
+=
+=
+=
+=
+=
+G 2 c2a84a67 c1837caf 43a4a1ba 3f7e3556 3b4e1202 bdf1e012 3df1e012 bcd141b8 3f7e3556 414f294d 3f9e51ed 41a68af0 0
+=
+=
+G 0 c2d5b10b c1916651 43a253b0 bf2bf149 bcf72926 3f3da989 bf3da989 3c235b6c bf2bf149 c15dea7d bf908a7c c19274e1 0
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c2ef24c1 c1941f87 4399e2f1 bf06797e 3c5d1fcb 3f59d60e bf59d60e bd0fcdff bf06797e 403d0f92 3fc05f35 40a6ba42 0
+=
+=
+=
+=
+=
+G 2 c2b57b7c c19025c6 43a19ffb 3f2ff6e6 bc3ff55b 3f39efd6 bf39efd6 3cc96480 3f2ff6e6 418ace02 3fb27fee 41b3cc18 0
+=
+=
+=
+=
+=
+G 0 c2e89837 c1925b92 439fe76b 3f3446c9 3be35a15 bf35c256 3f35c256 bd3d6705 3f3446c9 40d014c8 bf9dd944 40c2acc7 0
+G 1 c2edd31c c180c66e 43a1b50e bf78ef83 3d4b5097 3e6ee65f be6ee65f bcb55e2e bf78ef83 4110b944 bf9c9cee 418d3dde 0
+=
+=
+=
+=
+G 1 c2dc0990 c18f22dc 43a147fc bf53e94d 3d2cd1e4 3f0fa14a bf0fa14a bd3688e9 bf53e94d 41722b16 bfd75df8 41bc02c5 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c2ac7958 c197e44c 439deb6e 3f685aa0 bca11fe1 3ed6eb72 bed6eb72 3c9d6060 3f685aa0 4136aa90 bebcea05 419cf928 0
+=
+=
+=
+=
+=
+=
+G 0 c276de3c c1bdc5d9 43b60b0f 3f3db270 bcdc4593 3f2be777 bf2be777 bba96b7d 3f3db270 40d41399 bfa4fcc6 4123447e 0
+=
+G 0 c2eea549 c1967dc8 43992d26 bf0931b4 bd3ab59b bf582239 3f582239 3d4cbf90 bf0931b4 4105aea9 bfefe39d 416efa3c 0
+=
+=
+=
+=
+G 2 c2e466ae c18c7df9 43a0b085 3f2010ee 3cfb0f0c bf47c977 3f47c977 bc293722 3f2010ee 40b59990 3f81d211 4124f7c5 0
+=
+=
+=
+=
+=
+=
+=
+G 0 c2d674cd c1903e14 43a0f2ff bf79ee1f bbae4390 be5da9cf 3e5da9cf 3c424611 bf79ee1f 411ef335 3f20ddb7 414ed922 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+G 2 c2d39e26 c19c1ccb 4399d508 3f210cf1 3d3eefe3 3f46fe88 bf46fe88 bb99e216 3f210cf1 418586dd bf06336b 41c16801 0
+=
+=
+=
+=
+G 0 c2c4b711 c1941170 439d5978 bf6991c0 bca0c6f6 3ed19583 bed19583 3b175081 bf6991c0 40e2dae7 3f5473b4 410901ab 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+G 0 c2d17776 c18e50ce 439e6021 3edc8f25 3d20d71f 3f67076f bf67076f 3c1b323d 3edc8f25 402eca3d bfae7b29 40f2bb69 1
+3f800000 3f800000 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+G 2 c2f2ab92 c17c61be 43a86629 bf283fa0 3c92d447 3f40f25b bf40f25b 3c98272e bf283fa0 4164f09b 3faef64e 418da40f 0
+=
+=
+G 2 c2b91c63 c186c315 43a40c84 3f7c7480 3d3aa73f be29d1f8 3e29d1f8 bcda0c37 3f7c7480 407abf78 bfad2713 40e0884c 0
+=
+G 1 c2f25a07 c19547b1 43a32736 3f691a12 bd39ad19 bed3a7db 3ed3a7db 3d120586 3f691a12 4188929b bf81c09b 41c760c8 0
+=
+=
+=
+=
+G 0 c2ec27c9 c18fd34f 43a4077f bf7e3fe4 bd248959 3def15e5 bdef15e5 bb4b8b3b bf7e3fe4 41273546 3f8043f4 4170942e 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T 43b129f0 c0227cf9 c38ac61f bfb5bf55 00000000 413c35d7
+G 0 43b61ade c05ee34b c390581c 3f7d8835 bcc6e402 be0dd83e 3e0dd83e 3cc32aa1 3f7d8835 c0626852 3fc155b5 420bb561 1
+G 1 43a5f48e c010cb41 c38a8ebc bf5d5b83 bcde536a 3f009884 bf009884 bd0274a0 bf5d5b83 c069b46e 3fb2e9fe 4196639b 0
+G 2 43b0dfb3 c026f738 c38b0516 3f7e0cc4 3d12db62 bdfc4e93 3dfc4e93 3aef3c71 3f7e0cc4 c0ace9d9 bf9071d6 42158bc1 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 43af7a5e c015c356 c389a93d 3f7570e3 3cc1c64e be9187a3 3e9187a3 3d4c627c 3f7570e3 c07db996 3f22d711 41962927 0
+=
+G 2 43b07eee c027066f c38d6f42 be7958c8 bc6d4688 bf784b61 3f784b61 ba245b54 be7958c8 be76e145 bfbeaf0e 412f3e4c 0
+=
+=
+=
+=
+=
+G 0 43959046 c02af35f c38a7752 3f317c25 bd13fd7d 3f387c6d bf387c6d bc9c2f10 3f317c25 404101d6 3db57c5c c1be121e 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+G 2 43aa22cf bfc53e7a c3891e65 bef8714b 3d4754c4 3f5fd775 bf5fd775 3d12d3fd bef8714b 404bc8c4 3f7d2cf5 c1f05a68 0
+=
+=
+G 0 43a800e0 c09c0255 c3830cee 3f6db1f3 3d1d0344 bebe206a 3ebe206a 3c98e518 3f6db1f3 bfaddbea 3f693b9e 41d005ac 1
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 43b69061 c01b614f c3869cac bf4ac482 3caaabec bf1c45ed 3f1c45ed 3d2e7d3b bf4ac482 bf47190c bf763abf 410793c4 1
+=
+=
+=
+=
+=
+=
+T c3e89850 c0a6de8f 434d9202 4032da84 00000000 c206d596
+G 0 c3e8a25c c08ffb54 4353c88f 3f4a156e 3d14ac30 3f1d2812 bf1d2812 3c651e04 3f4a156e 3fe7433f 3fb30b26 c2167af4 1
+G 1 c3e86ecc c0a971c8 434c6f5c 3dbf160d 3cb4ce8e bf7ee21d 3f7ee21d bd064c4b 3dbf160d 40077fc7 3f85f6f8 c160b825 0
+G 2 c3e2eb57 c0a8aca2 43419d2a 3f4e1acc bc955abd bf17d84a 3f17d84a bd4a6efc 3f4e1acc 3f7ce44f bef67c20 c19174ac 0
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c3f13f8a bfe4936d 4382c2d4 be974b7c 3bf57f39 3f749163 bf749163 3d12aab1 be974b7c bfd9332e 3fbc767c 4208f62e 1
+=
+=
+G 1 c3e8c88c c0a04491 4358f282 3f650c3a 3cc39536 3ee4acef bee4acef bcc37200 3f650c3a be64a68f be0ffe51 c0fd45e0 0
+=
+=
+G 0 c3d534e3 c0a5fbfc 4321976c bf294e5e 3c9ed153 3f4004f5 bf4004f5 3c1efd9f bf294e5e 4086b955 3e83f105 c2012817 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+G 0 c3e4c147 c0a76348 433fa839 3f7e0500 3d41dc63 3dfe4104 bdfe4104 bd3c4e85 3f7e0500 bf7f2378 bff9009c c0e918b8 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+G 2 c3df15ae c0ab30b6 43501cde bf72e746 3c2d8bda 3ea1aa5d bea1aa5d bc790b8e bf72e746 40a04f95 beaa7e0b c21b44e6 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c3eb1de3 c09fcac3 434cbdc1 3f68ceb9 bcddc7d4 bed4f293 3ed4f293 bc143e71 3f68ceb9 404af430 3eb30030 c191cec4 0
+=
+=
+=
+=
+G 1 c400f7de c0c90792 43671adf be7aae7e 3bad72e2 3f7835df bf7835df 3d2ad0fc be7aae7e bef0e9d4 3d6ae140 41baafd5 0
+=
+=
+=
+G 0 c3e8adc1 c0897ee4 438362a2 bf30c3b9 3d132e36 3f392d28 bf392d28 3d3760c9 bf30c3b9 3f57444e bf85fe84 c202f7a3 1
+G 2 c3d32d1f c0f45198 437a13b0 3f2badfd bb9200d8 3f3de676 bf3de676 bc05bb68 3f2badfd 3fd96cff 3f58db55 c1da55dd 0
+=
+G 1 c3e01aac c0a365e1 435e99c9 3f3d217e bc2a597c 3f2c86e2 bf2c86e2 bc6090ad 3f3d217e 40269284 be071c7b c215cd5a 0
+=
+T 43986f7e c1253f89 c3b91145 41a48661 00000000 40e6e4b1
+G 0 4396683e c12a8ee8 c3bddeab 3e6ecef2 3bb42504 3f78f0ea bf78f0ea bb57ec2d 3e6ecef2 41be69c0 bf9752ec 411d16d6 1
+G 1 439c51c3 c12f7696 c3bc86c2 bee79363 3d351433 3f645171 bf645171 3d4bf2a0 bee79363 4119326e bfd12ae9 40908c67 0
+G 2 4398a4a3 c13cfd63 c3c1d31a bdb4b5bd 3cd8ef44 3f7f0060 bf7f0060 bd4109a0 bdb4b5bd 415ee594 bfdd2483 40bfce21 0
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+T 434bc94f bfbf94e9 43f9f842 41a9a46e 00000000 c1eb1fe3
+G 0 433e0f2d bf6a4096 43fd784a 3f51435c bcaad28d bf137630 3f137630 bcbbb039 3f51435c 419b0afc 3e566701 c1c82d54 1
+G 1 4341e2f5 c02b55e8 43f49bb2 3f6eeef7 3bd38458 3eb7d01e beb7d01e bcdf1ae5 3f6eeef7 40bad286 3fcd5926 c0b7595f 0
+G 2 435380aa c01a872d 43f7af1d bf5c3fab 3ca09117 3f027c54 bf027c54 3d4233f8 bf5c3fab 41576611 3eec3351 c1881d1b 0
+=
+=
+=
+=
+=
+=
+=
+=
+T c15642e3 c1921cf0 43c5e7f0 4085852a 00000000 bfbc2296
+G 0 c142575d c192c48f 43c66bf4 beb93c2b 3d3d9900 bf6ea8a3 3f6ea8a3 bd0ab937 beb93c2b 4218340a bf2c5042 c14196e2 1
+G 1 c1363679 c190bf0f 43c6d520 bdb97108 3c6dbe9a bf7ef2c9 3f7ef2c9 3d3b13eb bdb97108 41ce1739 3f1cbf27 c127b2f8 0
+G 2 bfbf7e6f c19ec867 43cf6bd5 bc835624 bd4270a2 3f7ff794 bf7ff794 bc2b95a1 bc835624 40ea929c 3eef3243 c0553e4a 0
+=
+=
+=
+=
+=
+G 0 c17c709b c1874c11 43caa619 be79cf5a 3d1fffe3 3f7843ee bf7843ee bd331c5f be79cf5a 41fc433e bdff47e4 c12d77b9 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 4194f349 c142df68 43e2205e be984c00 3d3aa029 3f746992 bf746992 bb840951 be984c00 40fd7c34 bf0835c4 bfd08c6f 0
+=
+T c374625b c126d919 4152e509 c00d4d02 00000000 c161b4e6
+G 0 c3958d17 c09daebb 423a4ad1 bf7f6331 3d01a828 bd8d96b0 3d8d96b0 bc701eaa bf7f6331 c093624a 3ffa3b09 c18b77fb 1
+G 1 c365a06d c130f7ec 41ab675c 3e82fee7 ba9ca90c 3f777ab7 bf777ab7 bd2e970c 3e82fee7 bffbe735 3f85dbf1 c1d1aacd 0
+G 2 c3720fd4 c12560d9 41505ad6 bf705d7d bd42a8b9 beb03032 3eb03032 3d4a8a7f bf705d7d c038fad0 3fef6002 c1d3afcb 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 c372827c c1243ebe 4156f52f 3f749746 bbaaa8ee be97256a 3e97256a 3d20e828 3f749746 3e6acdfa 3e9a963f c0b7d204 0
+=
+T c3655e0b 40b661ac c3f27f1c 3f7d4057 00000000 bef9b2e3
+G 0 c367910c 4088c9ed c3e7ba1e bede7e7d 3d169fa2 bf669092 3f669092 bd41b4c4 bede7e7d 410536b7 3ff9c431 c07d936e 1
+G 1 c3571fa3 409d3820 c3ed13c9 3f6e29ff 3d18e8d5 3ebbc3bd bebbc3bd bd4241ab 3f6e29ff 4103ebfe 3df18487 c0517c53 0
+G 2 c356d1f1 40ceacdb c3f1f5a0 bf207e99 bc628c06 bf477168 3f477168 bc7f69d8 bf207e99 41be889a bfefcdc2 c1332426 0
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+G 2 c36f13dd 409d6313 c3f2957d bf092228 bd467a2b 3f582c16 bf582c16 3cfb4a80 bf092228 418dba50 bff04738 c11f0ab1 0
+=
+=
+=
+G 1 c358321c 40a487e2 c3ea170f 3adbfd7b bc93a559 bf7fffe8 3f7fffe8 3c34a47f 3adbfd7b 40b61c42 be85831a c08bba63 1
+3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+G 1 c33549cc 403d7866 c3e2f770 3f494c18 bd325b89 3f1e29a3 bf1e29a3 bd1f99fd 3f494c18 41d2b01e 3df53375 c12a6ecd 1
+3f800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+G 2 c3677c7e 40dce7de c3f69a1c bdf3f5b2 3d3f01cd bf7e2d5e 3f7e2d5e bcf8abc2 bdf3f5b2 419069e7 beb78e4c c0e84ed2 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T c3b8bd20 bee5dcbf 432043c5 c1697a90 00000000 c170305b
+G 0 c3b2dea9 bff5621e 43279ae3 3ea2f8ec bcca73b8 3f72af5b bf72af5b 3bb82855 3ea2f8ec c11f808d 3dce3f7f c1206e7d 1
+G 1 c3b5071f 3ca79967 431a02d6 3f592572 bd183f86 bf0795f4 3f0795f4 3d3bbf57 3f592572 41aca66b 3edc0945 41ac1a14 1
+G 2 c3b99b4d be9de315 43215c11 3d923ca7 3d0f3c75 bf7f58b7 3f7f58b7 bd17c47b 3d923ca7 c1c5805f beda9aa4 c1cc1d00 0
+bf800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+G 2 c3b0de3b bfd166a4 43116917 bf7ff3e9 3d0e9a91 bc9d55bd 3c9d55bd bce8f36b bf7ff3e9 c1b95d18 bebe9129 c1c13e7b 0
+=
+=
+=
+=
+=
+=
+G 0 c3b70100 3f067047 430e43cb 3e41d2a3 bbc78860 bf7b5f51 3f7b5f51 bcf54f2d 3e41d2a3 c0e0530c bfc04655 c122324e 1
+G 2 c3b89195 3f6319ea 432ddabd be37cc45 3cc25066 3f7bd7ae bf7bd7ae bd09930d be37cc45 c1b31c8a be0ca4c0 c1c25765 0
+=
+=
+=
+=
+=
+=
+END
+CASE 0 2 0 1 1
+T c3bcefb7 41877624 43f81075 c0fa40e9 00000000 419c605f
+G 0 c3b9eafd 418e6a08 43fe3d67 3b17e349 b9b4db50 3f7fffd3 bf7fffd3 3d300ecc 3b17e349 c0067cb3 3fb0d940 41017442 0
+G 1 c3bcf320 41881afc 43f73382 3f63cf53 bd3f8701 3ee991c3 bee991c3 3c21dcee 3f63cf53 c0d77823 bfa46ccf 41a33b70 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+G 1 c3befc9f 4189b0dd 43f8a647 3f6feeb9 ba980795 3eb2881e beb2881e 3cee6d55 3f6feeb9 c00bf4a4 bf550905 40e6b07a 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T c12f26f1 c19ac451 c3c2b391 c1779d8d 00000000 40ccbb53
+G 0 c1560c38 c1955ff8 c3bf1225 bf4a84d4 bb8b50fd 3f1c986b bf1c986b bc86d37f bf4a84d4 c159e4f7 3f24dd09 40d86742 0
+G 1 c151f05f c199a881 c3be23de 3f39d4e7 3c95dfa2 bf301357 3f301357 bd3bcaef 3f39d4e7 c1fe9ec2 bed85c57 415cecb2 0
+=
+G 1 3fef0c1c c198eab8 c3b9fde2 3f70de40 bb94dcd2 3ead6b3c bead6b3c 3cfd74c4 3f70de40 41930a02 3f2a4cb5 c10a4c02 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+=
+G 0 c12eaaea c19a50d4 c3c1e13c bee900f5 bd14b015 bf63f463 3f63f463 3d3989ed bee900f5 c1ed5e48 3f866022 413118b5 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c28af395 c1baba9a c3ca54e1 3eed2630 3bd9d2bf 3f62e225 bf62e225 bc6fc5d2 3eed2630 c1ca92ef bfc70713 4123473b 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c1355383 c19bc93b c3c1fdf6 bf3021b5 bd13f696 3f39c749 bf39c749 bcb8452c bf3021b5 c0f5b670 bf23bc85 402d9a8a 0
+=
+=
+G 0 beffa894 c1992920 c3becb77 bf7fe3cc bbf9533f 3cf04d54 bcf04d54 bd32f8df bf7fe3cc 415ec2cc 3f9bbc34 c045cccc 0
+=
+=
+=
+=
+=
+=
+G 1 c0facd8b c18df75b c3b66761 3f278dea 3cb5d9dd 3f418cc2 bf418cc2 3c554d23 3f278dea c0d42e6a 3fcc47ae 406e1078 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+G 0 c05ffeac c1adb3d4 c3cc314b 3f572b5c 3cac3542 3f0ab39e bf0ab39e 3d366668 3f572b5c c1217e3e 3eaeca40 404dc8dd 0
+=
+G 0 407fd12a c1910fef c3bf9e14 3f443e6a 3b600563 3f246413 bf246413 bd2fb9f5 3f443e6a 414063b2 bfcabe22 c0999b05 0
+=
+=
+G 0 3ec5db00 c1932dc1 c3c0a4fd bf7ba973 bc237c6b be3bb6c8 3e3bb6c8 3c8da2e0 bf7ba973 c20f16c0 bf85d616 41801a2f 0
+=
+G 1 c0abacaa c199e251 c3c1c718 3f54d062 3d4307fb bf0e4a06 3f0e4a06 3cf7fd04 3f54d062 c20424c9 bf72bbea 414f6d93 1
+=
+T 43808f6c c17d8ecc 43ec9391 c0e7c162 00000000 bfee234d
+G 0 4380b128 c17e7b12 43ecd226 3eb3aac1 bd0a1c2a 3f6fb876 bf6fb876 3a9ef1b5 3eb3aac1 c1bd6b31 3ef570f2 c0b69ce9 0
+G 1 4361a1a2 c0fdb160 43d19c8a 3e9cb4b2 bd2d0197 3f73b6f2 bf73b6f2 bd369594 3e9cb4b2 c2048b22 bfc17515 c0fbcc69 1
+bf800000 3f800000 deadbeef deadbeef deadbeef deadbeef 00000000 1 1
+=
+=
+G 1 4377dad8 c17a3acf 43f2c544 3f6419dc bd1e3daf bee86e14 3ee86e14 3c9daa52 3f6419dc c20ae365 3fd363cd c0fc0470 1
+bf800000 3f800000 deadbeef 3f800000 deadbeef 3f800000 00000000 1 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 4381fbb6 c17d9273 43ef970c 3f19c572 bd1785fe 3f4cabe3 bf4cabe3 3d3dad49 3f19c572 c1bca528 3f9788cf c0d50c53 1
+bf800000 3f800000 deadbeef bf800000 deadbeef 3f800000 00000000 1 1
+=
+=
+G 1 4382c5da c1768957 43ed7383 bf6d0797 bd1d59ab bec16bda 3ec16bda bb8339a9 bf6d0797 c1abf78f bf0e30f3 c0a67114 1
+bf800000 3f800000 deadbeef 3f800000 3f800000 3f800000 00000000 1 1
+=
+=
+=
+=
+=
+=
+G 1 437d31a5 c18017bf 43ed1454 bf7b8e7d 3cc4fb8c be3df583 3e3df583 3b735145 bf7b8e7d c20ddf3a bf077287 c0fbc258 1
+bf800000 3f800000 deadbeef bf800000 deadbeef 3f800000 00000000 1 1
+=
+=
+=
+T 43e032b4 c12ad0c3 c1b7976a c03196ea 00000000 c21752d1
+G 0 43da68bd c11738aa c1c44aab bf7faf5a 3d49767e bd4b243c 3d4b243c 3c469b75 bf7faf5a c04cb9f4 bf209982 c21774f3 0
+G 1 43da71ce c12ac4fd c1aa44a1 3f7d578b bc4e866f be132dc9 3e132dc9 bd0a69cb 3f7d578b c04e7b1c bfc24920 c1dfea92 1
+bf800000 3f800000 deadbeef 3f800000 3f800000 3f800000 00000000 1 1
+=
+=
+G 1 43e58dda c12c26c2 c1c215ca 3f5c2a92 bd2228bb 3f029feb bf029feb bd45a0ff 3f5c2a92 bff671a4 3d51c285 c21098bc 1
+bf800000 3f800000 deadbeef bf800000 deadbeef 3f800000 00000000 1 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 43e1d908 c131be1c c1fc6abc 3f281741 bc19c7f9 bf411588 3f411588 bc01c89b 3f281741 bfc7786d bff6fb61 c19c5afa 0
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 1
+=
+=
+=
+G 0 43dffa1e c12a5a5e c1bacb67 bf79e304 3cb8d456 3e5e71c6 be5e71c6 bcba6b27 bf79e304 3f677ca2 bff61c0a c17c8d5a 0
+=
+=
+G 0 43dc9d24 c120c47e c0c1a7a9 3f5d391f bd0a41ac bf00d3a5 3f00d3a5 bd275d4a 3f5d391f 3dba53b0 3e774b12 c1bf95e3 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 43e505a6 c1170962 c1ee1f4e bf460e81 bd284a1b 3f2233c5 bf2233c5 bd38b2df bf460e81 bf1635c2 bf0c7404 c104baaa 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T 4383b68e 40885aa5 43c7b30d c0789ac7 00000000 4147e10f
+G 0 4383cb8c 408f68d4 43c94c3b 3f14816a 3d02a038 3f50860e bf50860e bcbfb640 3f14816a c1264b8a 3fc64b12 4210c798 0
+G 1 438143c7 4082a782 43c568fd 3d10cd43 3d2bdc88 bf7fd709 3f7fd709 3cf92e32 3d10cd43 c0dd0003 3e203fb1 4186bdfb 1
+=
+=
+=
+=
+G 1 4384461c 4051b430 43ccd76e 3e939e88 bcdf9054 3f7520fa bf7520fa bd2fdc39 3e939e88 c12dec94 3fca1a94 42122bc9 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T c31fcb5d 410ad179 43785b66 41230e9f 00000000 3f54b16b
+G 0 c30f8601 410410bf 4380f163 bf7e986c bd04eea5 3dd63e1e bdd63e1e 3c28a06d bf7e986c 41f8ff88 3fd9a633 3f232980 0
+G 1 c31452c6 41057f3b 437afd5f 3f7062e4 bbbc0142 3eb012b3 beb012b3 bd296f8a 3f7062e4 42236728 bf827ff8 40027dde 1
+=
+=
+=
+=
+=
+=
+G 1 c3279507 41063daf 4377d127 3f15d1f9 3cbb27a4 3f4f94c2 bf4f94c2 bc6e6ebd 3f15d1f9 41ef32c3 bfb59913 3fe09271 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 1
+=
+=
+G 0 c329a722 40ff62cc 4363474d bee34e81 bb058ebb bf65635e 3f65635e b9e1842c bee34e81 41a95994 3edf8920 403a0359 0
+=
+=
+G 1 c30f850a 40f3fcd6 436fa045 3eb3072b bd34702e bf6fd70d 3f6fd70d 3cfa5417 3eb3072b c21224ec 3fd809b4 c0946114 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 1
+=
+=
+G 0 c32a6bb4 410e41ec 4381c52d 3f35e475 bd43df7a bf34245c 3f34245c 3caaa0f9 3f35e475 4222e31e be863b8f 402e8b65 0
+=
+=
+=
+=
+=
+=
+G 1 c31d9757 4114b0a8 436624f9 3e65744e 3ac275b3 3f797d86 bf797d86 bd4a807d 3e65744e c21304ca 3eebec1f c077bd81 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c33500f3 40b6bd30 4380e24a bf71da12 bcf108d9 3ea7da76 bea7da76 3a43a788 bf71da12 41d53243 bfe6c9eb 4002a446 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c3228211 410b8c71 4378e776 3f6f2273 bbfd6b20 beb6c38f 3eb6c38f bcd7a670 3f6f2273 419c7fc4 bf8e2c21 400c0ed4 0
+=
+=
+=
+=
+=
+=
+G 0 c3120932 41188e7e 43811703 bf7fc289 bc86e2bf 3d315bc2 bd315bc2 bd22d532 bf7fc289 41ed4861 bffe2c2a 3f96be66 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c320ceeb 410b0d97 43811083 be192102 3d1563d2 3f7d1f18 bf7d1f18 3c600581 be192102 4090c78c 3fbfd299 4019ba3c 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c32a2e5c 41158f0e 436c72ca bf454efb bc45c873 bf231c89 3f231c89 bd484327 bf454efb 40c46cfa bf5327c0 bf3c293b 0
+=
+G 1 c31a87c7 410d1a90 4380d685 bee966d2 3c6c94b9 bf63da54 3f63da54 3c270b17 bee966d2 42199f00 bf84ed13 408cc256 1
+deadbeef deadbeef deadbeef 3f800000 3f800000 3f800000 00000000 0 1
+=
+=
+=
+=
+=
+G 0 c32689f9 40fa43ce 4381d1d6 3f551342 bd2788f3 bf0de5cd 3f0de5cd bc56bf14 3f551342 412dc95f bf034379 401544fc 0
+=
+=
+=
+=
+=
+=
+=
+T c38c2503 41936417 43365156 c18e06df 00000000 c10f2a81
+G 0 c38a6e44 4192d7e1 43349880 bf7c24f9 bcf7c993 be310d08 3e310d08 bd05f151 bf7c24f9 c1292db9 3e4f7619 c0cd61bc 0
+G 1 c395d895 4194559f 433925df bf7e9af8 3c3f04aa bdd57c13 3dd57c13 bd159ac7 bf7e9af8 c1216ba0 3e889268 c0979d53 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 1
+END
+CASE 1 3 2 0 0
+T c3d19b17 409f9618 42b7df42 c197f74a 00000000 c0f58b11
+G 0 c3d6dd7b 409fcbab 42adfddc 3f545fb1 3d3820dc 3f0ef202 bf0ef202 bd433aa6 3f545fb1 c12053e2 3ed38305 c0b79d45 0
+G 1 c3cedd4c 408977d9 42c32805 bf32687a 3d27c53f bf3797eb 3f3797eb bd4398d4 bf32687a c0b400f3 3ed2c467 bf914dfd 0
+G 2 c3d5182c 40924aa9 42cc45db bf71e7bb bd4a8bfb 3ea78ba5 bea78ba5 bd34ab6c bf71e7bb c20487cd befc8816 c143a388 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c3d8d2de 40a27262 42d02b33 3e2bc486 bcd2d276 bf7c5f6b 3f7c5f6b 3d1af84d 3e2bc486 c1ad2a5c bf18df14 c110be60 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+G 1 c3d2e158 40687125 4298231b bd645eb8 ba9a122f bf7f9a0f 3f7f9a0f bd0c294b bd645eb8 c1341e30 bf509b41 c086e816 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 00000000 0 0
+G 0 c3deb5b1 3ed54a17 43137cfd 3f611c2b bd3b29b5 bef3d0b8 3ef3d0b8 bca7af60 3f611c2b c14ac4bc 3f51b8bd c0aa7c40 0
+=
+=
+=
+=
+G 2 c3d1e404 409a4c1a 42bdc712 3f5efa5b 3c3a992d befb87ad 3efb87ad 3c85e8b6 3f5efa5b c1841597 3f9f0886 c0f73f76 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 0
+G 0 c3c76606 40ac3c7d 429dbdf3 bf7feda2 3c629c6e 3cc1f0a6 bcc1f0a6 3d011184 bf7feda2 c1ae5c1d 3e819b7e c0f4bfbb 0
+G 2 c3ceebc5 409a14d0 42ad248b 3f4352a0 bbec4e33 bf257bf4 3f257bf4 3bec65f3 3f4352a0 c0c0ebea 3e4ea285 bfccb567 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c3d1b8b3 409ea64c 42afb549 3f0d1403 3cd8c56e 3f559e63 bf559e63 3c14e559 3f0d1403 c209330d bfadb34e c173ef9d 0
+3f800000 3f800000 deadbeef bf800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 00000000 0 0
+G 1 c3d52688 40a4e49c 42ba8e5b bf7ffedc 3a33568e 3bc146c4 bbc146c4 bd3d2ce4 bf7ffedc c1ae23ff 3e887187 c0e1ea35 1
+=
+=
+G 1 c3d67e6a 408c4f7e 4297f775 3f05c2cc 3d007159 3f5a466d bf5a466d bd35196c 3f05c2cc c10e1290 bfe65cae c056f758 1
+3f800000 3f800000 deadbeef 3f800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 00000000 0 0
+G 1 c3d3414d 40a752fb 428d4de8 3e717675 bbe18d34 3f78c7ef bf78c7ef bce422a8 3e717675 c1b1ef11 bef8cc97 c1112d36 1
+=
+=
+=
+G 2 c3d0ba25 409f8a32 42b883ef bf7cbc03 3d22d35e be230973 3e230973 bc7384b1 bf7cbc03 c14a8d79 3fc62fed c0705a11 1
+3f800000 3f800000 deadbeef 3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 0
+=
+G 0 c3d6085b 40d654e0 42e1e6e8 be7ba532 3c882f6a bf782644 3f782644 bd104214 be7ba532 c13ce82d 3f7b883e c08e265b 0
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 0
+=
+=
+G 1 c3d181e9 409d6ad1 42bad3af bed56305 3cca6420 3f68b4fa bf68b4fa bc8e341f bed56305 c1fa9285 bd51bff9 c13b5919 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+G 2 c3c92d86 406dd3ed 42bddb3a 3f32d8d1 bcf45f52 3f372a7d bf372a7d bc9eb4e8 3f32d8d1 c1be6914 bec8c4f1 c123cb4b 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 0
+G 0 c3d30488 40a2dd79 42b43b75 3f572e15 bc21d25e 3f0aaf65 bf0aaf65 bd19500d 3f572e15 c136b9b8 bf1cdfc8 c0963412 0
+=
+=
+=
+=
+=
+=
+=
+G 1 c3ce1f3f 40bb139d 42a6f1c1 be816d7b 3cf43f48 3f77af7f bf77af7f bcb89ebc be816d7b c2109d4a 3f3abf16 c1846c57 0
+=
+=
+=
+=
+G 1 c3b575fe 40a363bb 42a40e96 bf7fffc4 3a910048 bb2f46df 3b2f46df 3c8457ac bf7fffc4 415f76b8 bfd8b1e1 40d6e9af 0
+=
+=
+=
+=
+=
+=
+G 0 c3d16d23 4098aa15 42c31009 bebaa659 bbe22748 3f6e620d bf6e620d 3c590029 bebaa659 c1bb5a3d 3f4970da c0f17502 0
+=
+=
+=
+=
+=
+T c34b35cc 4184ef26 c3996cd7 41531994 00000000 41200e3c
+G 0 c3560c27 41861cf6 c39360e1 be61ef26 bc4f4f6e bf79b0e7 3f79b0e7 3c11bbcf be61ef26 41eca7bb 3fd76223 41aa17bb 0
+G 1 c34a3718 4187d156 c395fd5e bf0b68a1 3d410164 3f56b641 bf56b641 3cbb5ef3 bf0b68a1 41bbabdc 3d530117 41a21b9a 0
+G 2 c310f3c5 4181b292 c3a6f779 3f267384 bc5cb00b bf427fd4 3f427fd4 3c61fe31 3f267384 4177a981 bfea3e65 41271fe1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+G 0 c33dd217 4194667b c38f5cd7 bf7fa094 ba98cd18 bd5cf3c3 3d5cf3c3 bcf690a2 bf7fa094 41bf4113 bf9e7dd4 419b6362 0
+=
+=
+=
+G 2 c3410a65 4183d92b c3980213 3f336791 3b2f3dc0 bf369eae 3f369eae ba9a59c4 3f336791 41947ce7 bf95e738 417a3ce1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+=
+=
+G 1 c3518b78 417e8f26 c39d9bec 3ed63d14 bd26e0ec bf6882de 3f6882de bb131b42 3ed63d14 41b2e994 be146f0c 41824c8e 0
+=
+=
+G 2 c34af4c5 4186aae5 c3985cda bdf31923 bd49d92f bf7e30ab 3f7e30ab 3bfe1728 bdf31923 4188775e bf747f5e 41531608 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+=
+=
+=
+G 0 c344a73e 419762d2 c3a420ce bf573732 39b09b4b bf0aa13f 3f0aa13f 3cb2ac25 bf573732 41afb4f0 3d92b2b9 418ea06f 0
+G 2 c3474028 417eae34 c3977ed6 bb2f4611 3d32a7d6 bf7fffc4 3f7fffc4 bd050ac1 bb2f4611 41a6cb1d bf6e1ec9 417ffec2 1
+=
+=
+=
+G 1 c35fecf6 418b687a c399dfdf 3eec453f 3c6cf43f 3f631cc9 bf631cc9 bd0495c5 3eec453f c1e17e01 3d5262a4 c1af97e7 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c34546c6 4181e0b6 c397f976 3f659b9e bcb1d710 3ee26ae3 bee26ae3 3d2aca28 3f659b9e 41f899f3 3fa8bc74 41a989e2 0
+=
+=
+G 2 c348b689 4184b10e c39821c9 3de65f66 bc96c26c bf7e600f 3f7e600f 3bc13516 3de65f66 4103b871 bf2cb7b2 40cb730c 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c34bc349 4185156e c3996ad0 3f136cde 3d13578d 3f5149ee bf5149ee bb7ada05 3f136cde 416b8328 3e0f2512 411f8df3 0
+=
+=
+G 0 c3548640 41857297 c39f57b0 be8fcb72 bd462104 bf75b24e 3f75b24e bd389722 be8fcb72 4189cbdd 3fea87a3 4173f431 0
+=
+=
+=
+G 0 c35a8f16 416ea44a c39d5273 3e981364 3d05e8ce 3f747262 bf747262 bc802012 3e981364 419798fb 3ebd4b27 41742200 0
+G 2 c34d9731 416faef7 c38dd1a0 3f11895d bc937816 3f529b45 bf529b45 bd341df8 3f11895d 410c80b4 3ead7b6c 40ca7807 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c3473be9 418253d8 c39f37db 3e05eaba bd2f1213 3f7dcd27 bf7dcd27 bbbeb30b 3e05eaba c0ee89db bee2637d c05c33cb 0
+=
+=
+=
+=
+G 1 c32a7e87 416d46d8 c3813e8d 3e968d29 3d44f034 bf74aebe 3f74aebe bcf0d25a 3e968d29 c12d965c bfd14474 c117430b 0
+=
+G 1 c351fd37 4184898b c3920d6b 3f34d40a 3d1dede2 bf3535cf 3f3535cf 3b3fc3d7 3f34d40a c1878a58 3fecc021 c14d312f 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c34838d5 418cc6f8 c39f2a79 3e80f4bd 3ceb2b1a bf77bf3d 3f77bf3d bc7e6c94 3e80f4bd 4143276b 3fbf3c08 40db51da 0
+=
+=
+=
+=
+=
+=
+=
+=
+T c3b6f097 412baf37 433e45b7 bf4e2cf6 00000000 403f0ba9
+G 0 c3b90e42 410bc6a4 43567328 3ee6fb5a 3bf1d0f7 bf6477ee 3f6477ee bcee0b14 3ee6fb5a c0515628 3ce77348 4111aace 0
+G 1 c3bba1fd 4133340a 4342736d 3f4e4224 bd03b3c6 bf17a2d3 3f17a2d3 bd387a5d 3f4e4224 bdf9b392 be4765dc c0f63017 0
+G 2 c3b63d8e 41428f2a 432f9001 bededdf6 bb6e7335 3f667984 bf667984 bc431c5a bededdf6 3fdbde57 3e0a39f1 c11ea585 0
+G 2 c3b5ea7d 413521e2 434f4c14 3f2b988d bc3c4188 3f3df9d5 bf3df9d5 3d00536b 3f2b988d c068873a bff2a54a 4186852c 0
+=
+=
+=
+G 1 c3b5b112 412e96bc 433d7d48 bf18d047 bd3fd49f bf4d6331 3f4d6331 bd36ddf8 bf18d047 c0e963ef bfadf1ae 41b71b2b 0
+=
+G 0 c3d606d0 41833514 4335bef4 bf3de25c 3b0623af bf2bb287 3f2bb287 bd456f83 bf3de25c 4129c78b 3fecc921 c1fa7e35 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c3b24967 413c1419 43450a91 bf2e84c7 3bb43ddb bf3b4b66 3f3b4b66 3cd8076a bf2e84c7 c06dd537 3f2ee0ce 410a3774 0
+=
+T 42f89ecb 40fdd068 c3204707 c09d7bf9 00000000 c0ce48ad
+G 0 4311859f 40c017a0 c32369f9 3f502caa bcab83a1 bf14fe9d 3f14fe9d 3b845d61 3f502caa c19ac9b8 3f39f502 c1b9e46d 0
+G 1 42fcad4c 40fbaeb8 c32594b1 3e6962c0 3d473f65 bf794326 3f794326 bc9b583a 3e6962c0 c1688d4c bcfffa9f c1a5ae2c 0
+G 2 42eb153a 4101c552 c31512fe be3edb19 38212794 3f7b83a1 bf7b83a1 3d4b989d be3edb19 40a92d2a 3fdae21e 40c4bc01 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 4300b07e 40f76119 c31ef467 3f26d8e6 bd325fc1 3f4228e2 bf4228e2 3d1d363c 3f26d8e6 c1adc3bb bf5a7422 c1e5c064 0
+=
+=
+G 2 42f5fa52 40fe374d c31f3940 3f0e8b67 3d31c0a5 bf54a49d 3f54a49d 3cd3c7dd 3f0e8b67 c08196df 3e2efac3 c10634c9 0
+=
+G 1 42e726a1 40e2d2b0 c331a2d1 beb65688 3ba7d5ca 3f6f3741 bf6f3741 bc3a415a beb65688 418b7a3a 3f2b4116 41caadb0 0
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 4333fdd8 40e8fc9d c30e0300 bf583221 bd26f6de 3f0918a1 bf0918a1 bc4e5791 bf583221 c0d462f2 bfa1d269 c0c694d7 0
+=
+=
+=
+=
+G 0 42fa11b8 40ff796e c31a9529 bf4e5402 3d1a6d05 bf178a83 3f178a83 bbd4a1e5 bf4e5402 c1a8af09 3fdc4544 c1dc040b 0
+=
+=
+=
+=
+=
+=
+G 1 42fcfd07 40fa40fd c31f8dda be05554f 3cb6435c 3f7dd212 bf7dd212 3c5c3253 be05554f c0a5d10a 3f498de3 c0d661a5 0
+=
+=
+=
+=
+=
+=
+=
+=
+T 43e993dc c1155bc5 437d3538 c0aaf900 00000000 41e5bca4
+G 0 43ea7cf6 c1119b8d 4371ee17 3f05d258 3ca66da5 3f5a3ce5 bf5a3ce5 3d3cbeb8 3f05d258 c0a16e6c bfc71bd8 41ad1d06 0
+G 1 43f500fb c12de008 4381a928 3f7dbcf0 3cf990b3 be07d2e8 3e07d2e8 bcc834e0 3f7dbcf0 c1066fbf 3dd6e9c7 421f88bf 0
+G 2 43e72a93 c10b194b 4377c89d bf3ce566 3ae96710 3f2cc8ac bf2cc8ac 3b7bcb6d bf3ce566 c09da45a 3fd5842c 41d07b72 0
+=
+=
+=
+=
+=
+=
+=
+G 1 43ddbac5 c1334f79 4381538a bf797f93 3a9991d3 3e65509a be65509a 3c27d86a bf797f93 c0a0e761 3fda0956 41fb338b 0
+=
+=
+=
+G 1 43eff10a c12cb86e 437c8511 3d6eae9e 3ca77407 bf7f90a3 3f7f90a3 bd461182 3d6eae9e 402d2d35 3fae4960 c141f532 0
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 43e4550c c109608a 43815faf 3f767ff3 bbe99fe5 be8a2fa3 3e8a2fa3 3cc813f9 3f767ff3 c039c717 bf3b8549 41858c80 0
+=
+=
+=
+=
+=
+=
+T 43c188e5 c1998795 c3872bb5 41873c4e 00000000 41f1cce0
+G 0 43c1b1a0 c18dff3e c3937def bf2b36d4 3cc19860 3f3e51ed bf3e51ed 3c41ed57 bf2b36d4 4101a493 3f6550d4 412d69d1 0
+G 1 43c153d0 c199f9bd c385e06f 3f191338 bd3d3418 3f4d3152 bf4d3152 3d49309f 3f191338 40b359d8 bf5a3329 41723d8a 0
+G 2 43c31a0b c1a8630d c37d3f9a bbf1f310 bd3d5153 3f7ffe37 bf7ffe37 3ba42564 bbf1f310 414f462b 3f8cbbe6 41d1a559 0
+=
+=
+=
+G 1 43b309c2 c1805d31 c39fcdf5 3f20e927 3cf40919 3f471b7b bf471b7b bce90cb6 3f20e927 419bdde1 3f51b9ea 41fec091 0
+=
+END
+CASE 0 2 0 1 0
+T c2bea3ec 4179a52f 43233c9c c1b63287 00000000 3f4ce9c4
+G 0 c2a83239 418322a6 4316b0bd 3f7fedf7 3c044d83 3cc02ae0 bcc02ae0 3c1fa393 3f7fedf7 c1abb578 3fd1bb41 bf5e6909 0
+G 1 c2c56e27 419401f8 430dc0dc 3e1fd658 bd475fb7 3f7cdcb4 bf7cdcb4 3c4cf09a 3e1fd658 c1c2da63 3fc900df 4023ae30 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+G 0 c2bce270 417a3e17 43225a19 3f7d60b4 bd16a997 be123093 3e123093 3cfcea21 3f7d60b4 c1f25e61 bdaf7245 3efe964a 1
+G 1 c2add131 41672533 431f575e 3ed966db bd2e33d8 bf67c6a8 3f67c6a8 3ba7f5a9 3ed966db c1f59c5b be81bcd9 3f936458 0
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+G 1 c2ec3628 413e801c 435f950b 3eb4dc60 bd051882 bf6f7efb 3f6f7efb bc72506b 3eb4dc60 c1c5d328 be558302 4016b018 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c2bad6e3 416ab78e 431aba52 be5f357d 3c066877 3f79d81c bf79d81c baab3e15 be5f357d c17a7134 3f96cb9e 3f0fbc14 0
+bf800000 deadbeef 3f800000 3f800000 3f800000 deadbeef 00000000 0 0
+G 1 c2b1a76c 41830f08 43116ee4 bf7f9ff4 bb98c494 bd5dac97 3d5dac97 3d3aaa28 bf7f9ff4 4110966d bf9d6ae2 bef23327 0
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T 43392fb9 4130d6b0 c32a2c77 bf684837 00000000 41e5fb06
+G 0 4335059b 413408f0 c332fe7d bedcf29b 3cd52447 bf66efab 3f66efab 3d0ccf04 bedcf29b c01ff5cb 3f0605c0 41c27e9c 1
+G 1 432ceee4 41408c10 c324f5fa beacaca9 bc298b00 3f710078 bf710078 3d128708 beacaca9 c025f8c0 3fecc24c 41c764e3 0
+bf800000 3f800000 3f800000 deadbeef deadbeef deadbeef 00000000 1 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T c37d79dc c0d04b19 43159072 4189e796 00000000 410e7bf6
+G 0 c38f4d76 c0eb83d0 43497524 be04df6c 3bd43482 bf7dd5ef 3f7dd5ef 3c9a184a be04df6c c1e51e1e 3fb33728 c1791a03 1
+G 1 c37c0650 c0cc7062 430f9a71 bf1656d0 bd4a8aef 3f4f34a1 bf4f34a1 3d0514b4 bf1656d0 41b831aa 3fdd010d 413800df 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+G 1 c389f1de c0ad5657 431f5517 3f43119d bc9bb332 bf25c892 3f25c892 bd15fb0a 3f43119d 41c71413 3fc462c2 4162ae0c 0
+=
+=
+G 0 c37c7157 c0bc2309 431ef9ba bda9e55c 3cf15fd8 3f7f1e1b bf7f1e1b bc91cf59 bda9e55c c1f1d476 bf8edabe c155a017 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+G 1 c36ee813 c0e4ac5c 430cd50f 3f7fc2e3 bc9dbab2 3d30d980 bd30d980 3d30f0bc 3f7fc2e3 41053a32 bdb61941 408051e7 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c37809a2 c0dc8e87 431e08f6 3f4ae380 3b230793 3f1c1dae bf1c1dae 3c6f6886 3f4ae380 41efe78d bf08b2b7 41706a65 1
+bf800000 3f800000 3f800000 deadbeef deadbeef deadbeef 00000000 1 0
+=
+=
+=
+G 0 c376019d c0e350bf 431b2bbd bf1fb7e2 3bf67be5 bf4810ae 3f4810ae bd012b7d bf1fb7e2 41ceffcc 3faf87c7 4168a7cb 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+G 0 c340c3ac c09270b6 430d93e9 3f7b0427 3c3e8f55 3e491250 be491250 bc17d789 3f7b0427 41a6830c 3fb056d4 412c1775 1
+G 1 c3819828 c0b611f2 4324b3f0 3f48b0e3 bcbe3903 bf1eee66 3f1eee66 3b3df039 3f48b0e3 41bb939e 3ea342ae 415f3620 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c3811c79 c09bd21a 43072eae bebab3d8 3ab79123 3f6e5f69 bf6e5f69 3cf67e6e bebab3d8 420631ee bf0dfa02 417a7940 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c3838c27 c0c86955 430ea1e7 bf7bfb17 bcc9ee09 3e34bd46 be34bd46 bd275a55 bf7bfb17 c1e00800 bfdb3dc5 c143dec9 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+G 1 c386ebbc c0bd7217 430333bc 3f4e6d6a bd2e0d25 3f1767e5 bf1767e5 3cebfc8f 3f4e6d6a c20923fd 3f43fc02 c18459c3 0
+=
+=
+=
+=
+=
+T 4324b295 40efe2cf 43135a9f c1f58141 00000000 412a72d5
+G 0 43150732 40fb7ca6 430f3172 bf3478eb 3d03b193 3f35908f bf35908f bd198f7a bf3478eb c20f0ff9 3c6ba62f 4162808e 1
+G 1 431d45e8 4102e881 431f10b9 beaa0600 3d209c29 bf7178fb 3f7178fb 3cb6f2a1 beaa0600 c158cd0a 3f12a29a 4063d2fe 0
+=
+=
+G 0 431fab5b 40be43c5 432bcc9c 3f3db0a4 3c8235e3 bf2be972 3f2be972 bcf8b9f0 3f3db0a4 c2153885 3fa61f32 416aa8c9 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+G 1 4362f2d1 40bfacb6 4307f1f0 3f48ec09 3d0c1d36 bf1ea398 3f1ea398 bb93383f 3f48ec09 c14ee730 bf3a80c0 407f1012 0
+=
+=
+=
+=
+=
+=
+G 1 43308360 40d785a8 43047737 beb8ffd6 bb7d7fd0 3f6eb456 bf6eb456 3b3d8c16 beb8ffd6 c18b4d3f 3f4da41e 40d55550 0
+=
+=
+=
+=
+=
+G 1 435eeefd 414bdfee 43160540 bf67c62e 3c44e855 3ed968e5 bed968e5 bc2adb6d bf67c62e c1377c93 3ec4a809 403f0be1 0
+=
+=
+=
+=
+=
+G 1 4315df20 41161c83 431005a4 3f6ec099 bcfb3246 3eb8c082 beb8c082 3d00aaad 3f6ec099 c064fdbe 3f800119 3f4c1018 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 43293a42 40f77f71 431c1ac5 bf4ff4a3 3b5c3d68 bf154cc7 3f154cc7 bd36ba07 bf4ff4a3 c15a05b0 3f0144ea 405240ec 0
+=
+=
+=
+=
+=
+G 0 43233150 40e1245c 430a82ad bf18fe06 3c98010d 3f4d411f bf4d411f bd1e9f79 bf18fe06 c17f3495 3f454f76 4101f15a 1
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 431e1187 40e78d5a 4313bc5b 3f445359 3d077fb6 3f244b12 bf244b12 3c1b13a9 3f445359 c16d7c88 beb6febb 40854147 1
+=
+G 0 432aa463 40e703f8 431334d6 3f4c2302 bd4c8d6e bf1a7afb 3f1a7afb 3d22193c 3f4c2302 41c1e0d0 bf510386 c1290e5b 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+G 1 431db2bd 40d688cd 4301e0e0 be91d085 bd08a910 3f756612 bf756612 3c25f6d9 be91d085 c134fcd1 3f4cf7bf 4091a225 0
+=
+=
+=
+=
+G 1 43381265 40f542a0 431ad734 bf5e1e24 bd2b71aa 3efe8e61 befe8e61 3cb10f67 bf5e1e24 c158624c 3f29b98d 40b03b93 0
+=
+=
+=
+=
+=
+=
+=
+T c26f36ff 4119c656 423c6176 c11a801f 00000000 421937aa
+G 0 c26cb40b 4117ebbb 42505c7e bed1ecc7 bcc3971b 3f697e27 bf697e27 bc2125c3 bed1ecc7 c1272c20 be8bf1a6 4208b296 1
+G 1 c2872257 4118cd3e 42347dfa 3ec25af5 bc05d7cc 3f6cd6ac bf6cd6ac bbb8ed42 3ec25af5 c0c81e51 bea0e302 41e16c9a 0
+=
+G 1 c26feee2 4117f276 42366ee1 3df58fe3 3b2247d9 3f7e2732 bf7e2732 bb0229bc 3df58fe3 40e02c38 bebc4255 c1b5bab1 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c24be6c6 4128d681 42240864 3f2f0f43 3c76a8fd bf3ac9fc 3f3ac9fc 3b9591e2 3f2f0f43 c0d507ca 3f85b7d7 41f75a9e 1
+bf800000 3f800000 3f800000 deadbeef deadbeef deadbeef 00000000 1 0
+=
+=
+=
+=
+=
+=
+G 1 c2a32e75 411e15e5 4234c81d bf7a5e02 3ba4214a 3e55a04c be55a04c bcec2950 bf7a5e02 c049f05c bfca3d2b 4121b0bd 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c25200b4 411438b2 424a1d50 3f7589aa 3d02a2ce be90e017 3e90e017 3d16b21a 3f7589aa 3e68ae5a 3ed07f85 c0c16e39 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+G 0 c244491b 411332f6 4286576d 3ef1627f 3d3bd993 3f61c391 bf61c391 3d3d6993 3ef1627f c10997b2 bfa25a38 41d772af 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+G 1 c2930433 41251bd7 423fa04f 3f7f8d71 3ba93ea6 bd721436 3d721436 bd40a436 3f7f8d71 411a6cad 3fdd2cf5 c1fb5d7a 0
+=
+=
+=
+T c2e03348 41712a32 c3ca1549 c033898e 00000000 c1be8f43
+G 0 c2cc670a 4160487c c3c386ca 3f07eeb8 bc8d8a52 3f58edec bf58edec 3c2fcc64 3f07eeb8 c0752905 3f5d4e9a c1e9a179 0
+G 1 c2d13c56 415c123d c3cde930 3ddfc02e bd23e4d0 bf7e77b3 3f7e77b3 3baec842 3ddfc02e c048cd8a 3e430537 c1b00acf 0
+=
+=
+=
+=
+G 1 c30138d8 416ae468 c3c976de 3f7f03d2 bd1c026e 3db37d70 bdb37d70 bccba60b 3f7f03d2 c0c78dfb bf91b5a0 c22346b3 0
+=
+=
+G 1 c2d4d70a 4166c75c c3c59755 3e50ca9c 3c3e8c2a bf7a9f3b 3f7a9f3b bd350f9c 3e50ca9c c0770ede bf25d5dd c1f047da 0
+=
+=
+=
+=
+=
+=
+=
+G 1 c2f8d291 416746af c3c4b7c3 3f719026 3a39e347 bea98228 3ea98228 3d2df1a1 3f719026 c04568ba 3f542e0a c18c4926 0
+=
+=
+=
+=
+=
+G 0 c2ef272f 41735ff8 c3cb3b58 bebf9c4d 3c060491 bf6d65a4 3f6d65a4 bc098027 bebf9c4d c068f86c bf88ac12 c206b173 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c2e2e8ff 416df36b c3c8fb10 3d2501f0 3cc5e4d7 bf7fcacd 3f7fcacd 3c888109 3d2501f0 c02ad601 3fa7af7c c1f86d54 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c2d669f2 416bcdb8 c3c7dc70 bf7fe2d1 3d23231a bcf47154 3cf47154 bcb677c6 bf7fe2d1 40427913 bf14f951 41d7445e 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T 42890f8f 40fa003a c2eb0ef2 4101fa21 00000000 c130c688
+G 0 4297ddd3 41070804 c30673ad 3d32af11 3ceef320 bf7fc19c 3f7fc19c 3d14cbb7 3d32af11 c1af1a5f bf73e1df 41f3371d 0
+G 1 429cd8d3 40ae36ae c25a7e6f 3ebcb892 bd20735b 3f6df999 bf6df999 3c996cd9 3ebcb892 c132a464 bf8c72f1 418c71ea 0
+=
+=
+=
+=
+=
+=
+T 439554c6 c183e1f9 bed254bd 3f850409 00000000 c02b6bb0
+G 0 4385e62e c19df3c8 424318b8 bf277b0c 3ceb8ec3 3f419d16 bf419d16 bce27e33 bf277b0c 40a36b74 3fc5dcdc c146e26f 0
+G 1 43949091 c18444fa bf25363f bf4014c1 3c880e8d bf293c72 3f293c72 bd41791c bf4014c1 4020657e bfd78618 c139669c 0
+=
+G 1 439ac9ff c19249f7 417dbeef 3f626dfa bcee284f 3eeee0af beeee0af 3bb23120 3f626dfa 41656cd8 bf1825f4 c2152e5b 0
+=
+G 0 43940eba c1786397 412c73fa bc889db1 bc911d3f 3f7ff6e3 bf7ff6e3 3c200385 bc889db1 c0971141 bed1d013 4108a64d 0
+=
+=
+=
+G 1 439c7e96 c18bd5f3 413372ac 3dcc0963 bd22f679 3f7eb9f2 bf7eb9f2 3bd2a617 3dcc0963 c12b2fc3 bef8d160 41af9919 0
+=
+=
+=
+=
+G 0 43991196 c178af7b c1808ef3 3f09674e 3d29c011 bf580029 3f580029 3d02b009 3f09674e c02f15d0 bf83344f 4110069f 0
+=
+=
+=
+=
+=
+=
+END
+CASE 1 3 2 0 1
+T c34f7147 3fcd8c6d 43eaa03d c1394057 00000000 417a1cf6
+G 0 c3442ba9 3f08cafe 43ee9111 bf7a01cd 3d0e0097 be5c45a5 3e5c45a5 bd1ba396 bf7a01cd c11a96c0 3f91e48d 412a4569 0
+G 1 c360e607 401d36b0 43e9412a bf4a310d bce57065 bf1d0487 3f1d0487 bd465cb4 bf4a310d 4199a119 bf0c5767 c1cc3e4b 0
+G 2 c34eccd0 3fd521d7 43ece7e3 beab0372 bb0e19ad 3f714c39 bf714c39 bc8b0c73 beab0372 c11136cc bf904943 412aeefd 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3ef77777 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3eeeeeee 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3ee66665 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3edddddc 1 1
+G 0 c34c9041 3fba35f5 43e9e577 3f722b24 bcb4acd5 3ea60459 bea60459 3d38fe20 3f722b24 c18c4788 3fe9b299 41c4fde5 0
+G 2 c34b8b6c 3fbdca16 43ebc519 bf7b8ec8 3b836c5a 3e3def50 be3def50 3a268710 bf7b8ec8 c08bbdb7 3fe480de 40d568b3 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+G 0 c32f3863 bfba236d 4403158d 3eaf709c bce3ded8 3f708083 bf708083 3aff8531 3eaf709c c18545a8 bf9cc9e0 41cbc592 0
+=
+=
+=
+=
+=
+=
+=
+G 1 c34be82d 3fe55f13 43ec0860 3f48502f bc09e2c6 3f1f6836 bf1f6836 3d14fd97 3f48502f c13aa281 bca26c76 41562925 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+G 2 c346cc44 3fcf446f 43ed9e83 3f72baa9 3ba19bcf 3ea2b58b bea2b58b bc896008 3f72baa9 c1bd69dd 3fb43e49 41f115b9 0
+=
+=
+=
+=
+=
+G 2 c342023c 4047a242 43e3e0e5 bf3f2b74 3c03b2e9 3f2a43cf bf2a43cf 3cf7f3f7 bf3f2b74 c1b939a6 3fb3c773 42061aea 0
+=
+=
+=
+=
+G 0 c3390304 401f098a 43e56b54 3e88fe51 3cd47ed7 bf76aa8a 3f76aa8a bd2c80c3 3e88fe51 c1b17eb9 bf2fb3ae 41e642b0 0
+=
+G 2 c35e6fdd 3f6cff49 43ebdda3 be57825a 3a3587cd bf7a442e 3f7a442e bcc998bc be57825a c0fa25c5 be71953c 41414dbd 0
+=
+=
+G 2 c354c226 3fbee544 43ea2ed8 3ee2da3f 3bf77530 3f658021 bf658021 3b2f658b 3ee2da3f c1133999 3fe99e6a 41110a46 0
+=
+G 0 c352ac54 3f9b9e21 43e940b9 3d3a70dd bd46f973 bf7fbc13 3f7fbc13 bc8c81cf 3d3a70dd c0e298d3 3f6c0f2d 41270466 1
+G 1 c3545c28 3fe84ac5 43ea418f beeaa498 3c42b4fe bf6388ad 3f6388ad bc1a9e7f beeaa498 c0ec12ee 3f5dd891 41363aeb 1
+bf800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+G 1 c3448acf 401a3d6b 43eb93be 3f09ccd7 3c7fa2ed 3f57bf70 bf57bf70 3bcb81ee 3f09ccd7 c1aef2d3 bffebf84 41f08b02 1
+G 2 c3803b31 c0cd2ff1 43fd09a6 bf79eb0f bd400a4a be5de101 3e5de101 3cd4482e bf79eb0f c177f1ed 3f6cff45 419a043f 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c3439ced 402dba01 43ebfa10 bf6f094b bd0d3d9e beb74701 3eb74701 bb0adcbf bf6f094b c1189faf 3f840f21 41438699 1
+bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+G 1 c348c3a2 401b46b8 43ebed39 bf6e8a8e bd04107d beb9d6ec 3eb9d6ec bd06ea69 bf6e8a8e 41457707 bf60da67 c17115ab 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T 43e0b2ad 41899bf3 c135b91a c18604ca 00000000 c20ffb00
+G 0 43e4a8ae 41756433 c1f85059 3f091472 3d33612c 3f5834c8 bf5834c8 bd3de642 3f091472 40c377f5 bf2962fc 41791f3d 1
+G 1 43e6d214 4179e14f c02eee03 be8bbfea 3d1a35f1 bf764782 3f764782 bce3b19a be8bbfea 40baac4c 3f2db455 4165bb85 1
+G 2 43e3c168 418d53db c15639aa bf6a1f3e 3b85312e 3ecf1a41 becf1a41 3b4fac92 bf6a1f3e c18b2dc6 bf461d24 c2135fd5 1
+3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 43e021d1 419b8ecd c208d7e0 be8512bb 3bb5adfa 3f7733bd bf7733bd 3d1a0bbf be8512bb 41240809 3fb0dc5d 41b2b951 0
+3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+G 1 43e04541 41886227 c1115d3a 3ee685fa bd273dc3 3f649590 bf649590 3d1b1c2e 3ee685fa 40e4dde0 3fa3e0cb 4172bf52 1
+3f800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+G 1 43da64c2 4183adbb c11f9c72 3f7f87f0 bc9184b5 3d77d2b1 bd77d2b1 3c0bb794 3f7f87f0 c165d3ef bd317067 c1e363d9 1
+3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+G 0 43e0a8bb 41897829 c12cb86f 3f0f05ec bbf4be1c 3f545249 bf545249 bd195b12 3f0f05ec c11b695b bf8d4a26 c184a57d 1
+bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+G 0 43e4c961 4184b783 c1f8fcd5 bf5347a7 3c028cf8 3f108ea9 bf108ea9 bb62c74d bf5347a7 c16171ce 3fc82380 c1ed1cfd 1
+3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+T 43dd21cf c1533a0f 43af5fcc 418abdfa 00000000 412f91cd
+G 0 43dcc1a6 c152ae01 43af85a9 bf5f753f bcc00e9c bef9d1f3 3ef9d1f3 3cd32270 bf5f753f 41f61ecd bf99691a 418d3d51 1
+G 1 43e84778 c1686fdf 43aa6f3c bf6d35fc 3d2a01f9 3ec087d2 bec087d2 3d4a770a bf6d35fc 41b41abf 3fd0903d 415a7721 1
+G 2 43dbb7c4 c1545012 43a8e04c bef474b8 bbe803c4 bf60efaf 3f60efaf 3b2345ae bef474b8 c1591658 3f28f5e7 c10a1cca 0
+bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+T c2491268 c160b5bd c38be7f9 c1cd0ded 00000000 be9ff61e
+G 0 c21d7a18 c163ef42 c38c4554 bf226cf4 3d35d2ff 3f45df9e bf45df9e bcdf69ed bf226cf4 c200ad23 bf4da3ed 3e8e2924 1
+G 1 c23d2669 c15cd8be c38acf86 bf2fef11 bca9011f bf39f73f 3f39f73f 3c20dcd7 bf2fef11 40f3450d 3fcdcf88 3f8754a9 1
+G 2 c227d093 c1596775 c3960d4e bd850a60 3d337448 bf7f7593 3f7f7593 3b5bbb71 bd850a60 c15a2a21 3ef672f4 be0304bb 0
+3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+T 4301eae9 3d53171b c3d120f4 3f81c3ec 00000000 40a16526
+G 0 43016cea 3e2e98e7 c3d1a230 3f7ffe25 3d25beb8 3bf6746f bbf6746f bcf429a5 3f7ffe25 40b5017d bdec58fd 41932b83 1
+G 1 43041334 be2b9503 c3c71a1c 3f7fa63b bd0a1b35 bd565071 3d565071 3c9efeed 3f7fa63b 40dd29b3 3f7a58c1 42170d7f 1
+G 2 42e68b0b 3ff18f0a c3d65d10 3e9922b4 3c4c9cdc 3f744806 bf744806 3ccc41c7 3e9922b4 40aa8718 3d38a192 42032837 0
+3f800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+G 0 430b650b 3dfc1663 c3d0b0bd bf5487a2 3d26c971 3f0eb698 bf0eb698 bcb4a3ab bf5487a2 40d3b3cb 3f247fc0 41ee92be 1
+3f800000 3f800000 3f800000 bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+=
+G 2 43113545 3f1f46d9 c3d49c05 3f75acdc 3d070969 be8ff0a2 3e8ff0a2 3caf0ee9 3f75acdc 3e36ad02 3f084acd 40afc46a 0
+=
+=
+=
+=
+G 0 42db57fb 3fdb73db c3d7cb4f 3ea01b7e bcbf285b bf732949 3f732949 bd247cdd 3ea01b7e 4003d634 bfe52a9f 415179d0 1
+bf800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+=
+G 2 42db0ee5 3fa0c5ab c3cf69f7 3f743e20 3d0dfd57 be9961d2 3e9961d2 3d4b80b1 3f743e20 40333b59 bf39dd48 4104dc50 0
+=
+G 0 42fedb70 3dbfb8d7 c3d55316 3f66c2f1 3d1f1bf5 3eddad39 beddad39 bcc12229 3f66c2f1 bef388e7 3ca4c6c3 c070c100 1
+G 2 430e09b8 3fb07860 c3dbe4f0 bf303c0e 3bfbf4b1 3f39ae4b bf39ae4b bc7814b5 bf303c0e c0babf04 3fc8b4ae c2069de3 0
+3f800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+G 1 42fb9998 3e5a1671 c3d15df1 3f6109bd bd170aad bef414bb 3ef414bb bc004815 3f6109bd 3fc84ed2 be15afee 40ec58f0 1
+3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 428a4122 4075c51e c3d5420d bf6041c0 3c449593 3ef6f0b6 bef6f0b6 3cad051c bf6041c0 410166d6 3fd57f2d 42156c29 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 428ebdb3 c02b746d c3d2af94 3f6146d4 3d05ca7c bef332ea 3ef332ea bd376f1e 3f6146d4 400e705c 3e298a25 410c9a68 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 1
+=
+=
+=
+G 1 433ef949 c039ca41 c3d8403f 3eeed798 bd301cbb bf627060 3f627060 bcb1f0f6 3eeed798 3f87ed66 3e921de2 414f9059 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 43037da0 bf9b107e c3c99bda 3f0ab9ac bbe879a4 3f572775 bf572775 3d320873 3f0ab9ac 40b5ecc4 bf865fe4 41ba7bdb 1
+3f800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+=
+=
+G 0 42eeff69 3f0ec6ae c3cb60a5 bf4ef08f 3d3912aa 3f16b474 bf16b474 3d2636aa bf4ef08f 40aab1a1 bf7b6fc4 4211cd99 1
+bf800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+=
+=
+G 1 42ba8939 40dadae4 c3ba83e1 3f0b86e8 bcdec660 bf56a295 3f56a295 3d476da8 3f0b86e8 410efef2 3fb6e05d 42117714 1
+bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+=
+=
+=
+G 0 42effcee 3fe5ca24 c3dafe1f 3d422f48 3cd024a4 3f7fb650 bf7fb650 3cf544cd 3d422f48 40adab21 bf9e84d9 421018c2 1
+3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+=
+G 0 430893d6 bf85bc9d c3cbee0e bf6638d6 bc8819b5 bedfe8bb 3edfe8bb 3d4a4f67 bf6638d6 c09a7add 3e924b05 c1c2dde1 1
+=
+=
+=
+=
+=
+G 2 4302ae3e 3d953450 c3d164d5 bf75011e bd069c21 be947185 3e947185 3d320565 bf75011e 409196db bd58a8f1 41bee082 1
+=
+=
+=
+=
+=
+G 1 429501ac 40c902f2 c3c3fcae bf609e3b 3c810d21 bef59f98 3ef59f98 3abb37de bf609e3b 40054f5a bff7c375 4167e64f 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 1
+=
+=
+=
+G 2 429775ae c0a0bcb2 c3c09199 3f337ecc bb86b616 bf3687d8 3f3687d8 3c1ad401 3f337ecc 40a303be 3de52655 41b288a7 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+G 0 430e44e3 3f247cef c3d19754 bf7948af 3cc14e44 3e690417 be690417 bcfcd42d bf7948af 3f5e6bcf bfca72c6 41451337 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 4307890b 3e611880 c3c9d8e9 bebc701a 3d134757 bf6e07f4 3f6e07f4 bd4aa148 bebc701a bfbb1445 3fd4a410 c155bb42 1
+3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+G 0 4301cd31 3de4da56 c3d1c7e6 bf4706f3 3d32b0a8 bf21028a 3f21028a 3d2d51c3 bf4706f3 40b1a6b8 bf07deff 41a307f2 1
+bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+G 0 4312be78 bead7e8c c3cf76d0 bf650bee 3d066305 bee4ae20 3ee4ae20 bc881a05 bf650bee c06daf41 3ec2733f c18b2a91 1
+3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+G 1 4301f011 3e025fc2 c3c99329 3df1795a bc2d8629 bf7e36dc 3f7e36dc 3c99e807 3df1795a 400de6c4 be948d31 40e3737f 1
+=
+=
+=
+=
+=
+=
+=
+=
+T c2d66c93 4141c9ab c345c3a0 c138782c 00000000 c1321784
+G 0 c2e371b0 413a52e0 c33ed08b 3f468dcd bd007899 bf2197d8 3f2197d8 bd130b52 3f468dcd c0c8e521 bee07f2e c0928aa3 1
+G 1 c2a4a0bf 41467a89 c3801fb9 bf0710b1 bc8dc9db 3f59786e bf59786e bbdb3ed4 bf0710b1 c13a5c99 bee75471 c120506e 1
+G 2 c2c90d61 41465d84 c345f735 bf55932f bd44c0dc bf0d24f8 3f0d24f8 bcadc785 bf55932f c0b2a37d 3fc8a1f2 c0a99bb2 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 1
+G 2 c2c6e095 41466a1a c34c7e6d bea1861c 3c71071b 3f72ed4e bf72ed4e bbc18fa6 bea1861c c1750e88 bf41aed6 c16db388 1
+=
+=
+G 1 c2db16d4 4140f513 c34632d2 bf7bac6a 3d3f064a be3b7721 3e3b7721 bbdad731 bf7bac6a c1bcc9c6 3ffeb4b8 c1bc3efc 1
+3f800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+T c3ac7386 c07a4e74 43ec60ea c0156a04 00000000 c17f383b
+G 0 c3a89ab2 c03fe460 43f4cb71 3f5e2987 3c2c797e 3efe669d befe669d bd44631a 3f5e2987 c097af8e bfc90404 c1ed11eb 1
+G 1 c3a66d2e c0a67d97 43e88bb0 3f7f4384 3d3041f7 3d9b36a0 bd9b36a0 3d4833de 3f7f4384 c089279b 3d74cf46 c1f98a20 1
+G 2 c3b0e198 c0ae2475 43f0dd33 3e1250a5 bd1b1889 3f7d5f8c bf7d5f8c bd136330 3e1250a5 40bf4a14 3fc658ea 421238bb 1
+G 0 c3ab4e84 c06e7a0b 43eb2cab be9b8023 bcfeadd1 3f73e856 bf73e856 3d00cb07 be9b8023 c0b4417f 3f52f9e4 c211e8a3 1
+3f800000 3f800000 3f800000 bf800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 00000000 0 1
+=
+=
+=
+=
+=
+=
+G 2 c3a4faec bf9b6a1c 43f4ade2 3f1f2ac5 3d08accf 3f488104 bf488104 3c2547c5 3f1f2ac5 40870ffc bea5775e 41914917 1
+=
+=
+=
+G 0 c3abf87b c07355ef 43ed6db6 3ed51b55 bd2fb041 3f68c566 bf68c566 3ca5a8bc 3ed51b55 c01212f4 3f8151ec c1b88ac0 1
+G 2 c3adb4ed c05c477e 43e1d84d bf50fa91 3becf5ca bf13dd47 3f13dd47 bc7a73ad bf50fa91 c0ccc8a3 bee2253b c20c7739 1
+bf800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c3a59295 c085c975 43f6c55f 3f7fe852 bcb94398 3cdc3217 bcdc3217 3cccbde9 3f7fe852 c04be5d5 bff96bfe c1cb34d9 1
+=
+=
+=
+=
+=
+=
+=
+G 0 c3b01759 c07b15ed 43ea9e42 bee58ded 3cd9bed3 bf64d3ef 3f64d3ef b8d5489b bee58ded c015043d bf375abd c1af31b9 1
+=
+=
+=
+=
+=
+=
+G 1 c3ac670c c080ebed 43e77271 be218828 bcb6ba6f bf7ccb79 3f7ccb79 bb1d2b75 be218828 3f9b7788 3fa7c394 418ba9dd 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 c394c737 c028ebb3 43d7c84f 3f57c6b1 3b0e46e4 bf09c17c 3f09c17c 3d427423 3f57c6b1 c0905f74 bfb51f04 c1b63dd6 1
+bf800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+G 1 c3abde75 c084927e 43edbf67 be53a13e 3c8a4771 bf7a7921 3f7a7921 bc5d4cb1 be53a13e c0724607 3fc48825 c194e92a 1
+bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+G 0 c3b70b4f c09ec5bf 43ee312d bf4354da 3bd28074 3f257954 bf257954 bd44fce2 bf4354da 40a56b94 bfeb7c5a 41b442c9 1
+G 2 c3b236e6 c05305e6 43eab989 3f7d4579 bcea1467 be151c24 3e151c24 3cf64401 3f7d4579 bfd841e7 3f9bef5b c1aab694 1
+bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+=
+T 411f075a 416b0f4d c3b5a315 c09592df 00000000 c1b3372b
+G 0 420171c2 417711e4 c3b1b36f bf50f805 bd05caa2 bf13e0e1 3f13e0e1 3c976d44 bf50f805 bf672ab4 3f106f6b c0d86d1c 1
+G 1 41105540 416a5f70 c3b56755 3ed9eaa0 bd21e403 bf67a7b7 3f67a7b7 3b96ed2d 3ed9eaa0 c0eb4b4d bf5d68ba c20d6a72 1
+G 2 41695b90 416ae5ca c3b61644 bf638cf6 bcb69966 3eea93f7 beea93f7 3d3d9ffe bf638cf6 c102b9da 3f7c0b96 c207743f 1
+G 0 c0c377c6 417b21e2 c3b6d62a bf5a1682 bc44b404 3f0610de bf0610de 3c5360ca bf5a1682 c08de507 bf228527 c1625df2 1
+=
+G 1 3fd15762 417730a4 c3b42812 bf6bb1a2 bd2cd1cb bec7d80a 3ec7d80a bcdb3e1c bf6bb1a2 bff70c61 3f511ec4 c19111c3 1
+bf800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+G 0 c1186a00 418bfb4b c39a5d37 bf7feaf1 3c7c0262 bccfa910 3ccfa910 3d26e3c7 bf7feaf1 c056a14f bfcbe5a7 c130dd4c 1
+=
+G 1 413103b3 415ddbd2 c3b0748b beac6a91 3c2fde0f 3f710c4c bf710c4c bc23a63b beac6a91 c1080323 bf87ccac c2203ca1 1
+G 2 c033cc09 4170d929 c3b3a3cf 3f6ecd88 3d0bfa5d beb87d98 3eb87d98 3d196170 3f6ecd88 c0ef475a bf807153 c1e8a019 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T c3abb100 be31ac32 432aa758 c1733557 00000000 40bb0bf2
+G 0 c3adad06 bf0780a8 43228d62 bee1407c 3c1b3ce6 bf65e4f2 3f65e4f2 bd349637 bee1407c c1de85a4 bf74043f 41235a0a 1
+G 1 c3aaa0e5 bf46dd09 4331ade2 be94492a 3d117105 bf75073a 3f75073a 3c62a411 be94492a c15df381 3fea3fc4 408aba1c 1
+G 2 c3a51468 3f811d2b 431e03f4 bf764244 3a354bba 3e8be4da be8be4da 3c8a90f4 bf764244 c13f86bc 3f82bd81 4086fefd 1
+bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+G 1 c3ae74ca bee5a7ec 43271826 3f79ba82 bc5ec49c 3e614509 be614509 3c37378c 3f79ba82 c1fca41f be519e5f 412eb77f 1
+=
+=
+END
+CASE 0 2 0 1 1
+T 43ebf612 40846e1b 4294c59e c1121b8f 00000000 c1162dcc
+G 0 43eacc91 40aa29e8 42678ac3 bef792d2 bd1b0b97 3f60150c bf60150c 3d069f18 bef792d2 c1aa05a7 bf9a36bf c1b8affe 0
+G 1 43ebd402 407bd1ec 428e8bbf bf1c438e 3c5acfe0 bf4ac655 3f4ac655 bbb02557 bf1c438e c197cbd9 3ee09e25 c1b066e8 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+G 0 4401fc3a 4102e8d3 42d9c9cc bf5c899b bc98ecce bf01ff37 3f01ff37 bcafd2b2 bf5c899b c1563890 3f5c4df9 c16d2bf5 0
+=
+=
+=
+=
+G 0 43e7993c 406b66c0 4281c09e 3e441eeb 3cb2ea7e bf7b42ca 3f7b42ca 3c90f236 3e441eeb c1c15d8c 3fad09be c1b40e87 0
+=
+=
+G 1 43e8b5ef 4097015e 42612dcc bf0ea600 bc8ad3cc 3f5492c6 bf5492c6 ba5d9683 bf0ea600 c1d05cd2 3ffcc842 c1c33b01 0
+=
+=
+=
+G 1 44016c16 40ad5e7e 42edbb4f bf621340 bd3cafd2 bef03773 3ef03773 bcd99cf8 bf621340 c196d011 3f14c3f2 c1956ba8 0
+=
+=
+=
+=
+G 0 43f30464 40b585b4 42b89fce 3f48317d 3d4c8190 3f1f8ec0 bf1f8ec0 bd17d99e 3f48317d c088214c 3f587cd7 c0afe2e8 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T 42caca9d 40b1dd53 c3e56003 41a0a7be 00000000 4201272e
+G 0 42b40cb7 40cb6d09 c3e5c20a be5874e4 3c9cb261 3f7a3719 bf7a3719 bce38186 be5874e4 407bbee4 3ed33a11 40a15b5b 0
+G 1 425fe399 413ad3d3 c3f6a1ed bf3ca922 3c864748 bf2d0a78 3f2d0a78 3d0399ea bf3ca922 c12a1fd9 3fe1fd7a c196a5c0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 42c5cff2 4090d527 c3dd6c44 3f3703b3 bc2e6ec4 3f330082 bf330082 bc5b9823 3f3703b3 417e30ba 3e59e635 41c0bc88 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 42bfcef7 40b1ae61 c3e78a8b 3f750e99 bcb351f2 3e941868 be941868 bb96ebbe 3f750e99 4053542a bf9c39a9 40dcdbe2 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 42d144d8 40a60143 c3e972f5 bf1ee66d bd2a2d85 3f48b732 bf48b732 38f05cc1 bf1ee66d 40ac8208 3fabd390 41522b67 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 42b62655 40ac84e0 c3e8d92b 3f693ea8 bcd7b596 3ed30663 bed30663 3cd6cc45 3f693ea8 4160ccac be52d09c 41c8193c 0
+deadbeef deadbeef deadbeef 3f800000 3f800000 deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 42a1cf6e 40ff10d6 c3eb8e78 bedf8126 3d04e470 bf6651ff 3f6651ff bc99cc48 bedf8126 41ad7ab9 bfff7a15 42036528 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 42b75f22 40b1a09d c3e43b46 bf792e70 3b025c99 3e6ac38a be6ac38a 3b980038 bf792e70 41801f6e 3d9a1c89 41b4a981 0
+bf800000 3f800000 deadbeef 3f800000 3f800000 deadbeef 00000000 1 1
+=
+=
+=
+T c3da5d31 4180f996 c30f3c5a c20d0eca 00000000 41873395
+G 0 c3d8232a 416a49a8 c3011ff0 3f1235b1 bd3a6e67 3f5223c7 bf5223c7 bd1df157 3f1235b1 41ea9311 3fb0706e c16139b3 0
+G 1 c3d553cb 41853088 c30cd2eb bf4756d5 3d2a0556 3f209f9a bf209f9a bd444258 bf4756d5 41d084eb 3ffb10ec c14ca1ef 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+T 431c7618 c146a5d3 408ce456 408d6854 00000000 c0fea0bc
+G 0 432f1a0c c15460e2 408b20aa bf259669 bd1bdf1e 3f433c33 bf433c33 3d19f29a bf259669 4012ef30 bffe6732 c094b805 0
+G 1 431dff9b c148919b 40e1c98b 3e5ce9ef 3bce4f8c 3f79f8bd bf79f8bd bce21a2a 3e5ce9ef 4108d210 3f8611d9 c181480b 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 43246541 c1469b90 3f82fde3 3ed6b41a bd03d432 bf68676a 3f68676a bcc627a0 3ed6b41a 4152796f bf3c9fd0 c1c878cb 0
+=
+=
+G 0 432133af c13a5161 c192fb2a be246aaf bd0a39cb 3f7cadb5 bf7cadb5 bd08df20 be246aaf 41092b21 3fd571cb c188d33a 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 43540dba c167b799 41de4d24 3ec5fc24 3ca592d7 3f6c15f5 bf6c15f5 3d07db38 3ec5fc24 40492198 bfb1fb42 c0a74ddb 1
+=
+=
+=
+=
+=
+=
+=
+G 1 430fa201 c139c9ad 402ad1f8 bf56e33a 3c14e16a 3f0b2345 bf0b2345 3cf067ee bf56e33a 41254f25 3f65f918 c15cbdd9 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 1
+=
+=
+=
+G 1 431825e1 c141fb67 403484b4 3f74d0b9 3bd20a41 3e95af8d be95af8d ba68d1c3 3f74d0b9 40bb20ff 3f7b306e c10a2ae6 1
+deadbeef deadbeef deadbeef 3f800000 3f800000 3f800000 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T 4326c9c2 c1505023 c3b59142 418d6ce6 00000000 c0392049
+G 0 431e8003 c153977d c3ae2ea2 be8ef605 3c5df356 bf75d16f 3f75d16f 3d47d652 be8ef605 c1eeda47 3fa250ec 4072bc91 0
+G 1 432446c1 c1391041 c3bf5bae be6b802e bb6e5b3d 3f792350 bf792350 3cd287de be6b802e 414bca86 bf311c69 c027963c 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 1
+G 0 432e7509 c145c7e8 c3b6c29e 3f6867fc 3c91ad96 3ed6b1a2 bed6b1a2 3cf1e3d7 3f6867fc 42166b75 3f066b1e c0e85f90 0
+G 1 433250e2 c14d5c17 c3bbb696 bf2f1fed bcab93fd 3f3aba5c bf3aba5c bd1c2dba bf2f1fed c1acc27d bed0bf86 40aa7944 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T 43c785bd c1723179 c30c789f c00f7d78 00000000 c1e8d449
+G 0 43bf9179 c164a00d c303dbcb 3f7e4fd1 3c796a03 3deacffa bdeacffa 3ad01a87 3f7e4fd1 c02c29d0 3fc60a93 c2013097 0
+G 1 43c0e3d3 c17e64e4 c3173f3e 3ebb1b6e 3d377841 bf6e4b1a 3f6e4b1a bcd23005 3ebb1b6e 40861f5e bfdc9087 4225f06b 1
+G 0 43c82b00 c171759d c30cdcff bf77c805 3d012bb8 3e80b12c be80b12c 3c0484a0 bf77c805 c02d81a1 be84939b c15542c2 0
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 1
+=
+=
+T 43825be9 c163da58 c3aa77eb 41c7fcd1 00000000 418d774e
+G 0 4381f76a c1764d2a c3b05f2f 3f2dc9e1 ba9bf673 3f3bf8de bf3bf8de 3b4ddc90 3f2dc9e1 411ebfa5 3fa08f53 40b881e3 0
+G 1 43836be0 c177d7eb c3a27a4c 3f4d14b7 3c8dc584 3f193988 bf193988 3c0fbbb1 3f4d14b7 4119865d 3fbd9f89 40b916db 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 43851cf6 c170fd64 c3af60d5 bf68a93b bd22d714 bed59639 3ed59639 bc12419e bf68a93b 41c07dce bffd579e 416f0fb2 0
+=
+=
+=
+=
+G 0 43859d3a c1627ed3 c3a54eff 3f089755 3d21cf08 3f5883e9 bf5883e9 bcbff321 3f089755 41b3c5ba 3fc55816 417dc843 0
+bf800000 3f800000 deadbeef bf800000 deadbeef 3f800000 00000000 1 2
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 4384e636 c16eeb3b c3b0c0a9 3f6a0df2 3d1e6b3b becf6868 3ecf6868 bc95f369 3f6a0df2 42002e01 3fc2db24 419f0db6 1
+=
+G 0 438aba0e c16addbe c3a7834c 3e94ca78 3c95536c 3f74f3a0 bf74f3a0 3cf573a0 3e94ca78 c14263f1 bed562f4 c11cea4d 0
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 2
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 4379a754 c15ec396 c3a5719d be0cc727 3cc79ca8 3f7d91b8 bf7d91b8 3c8e913b be0cc727 c201adbe 3f9b92c3 c1ac15cc 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 439c8b75 c14ee446 c399f9b1 bf74acc7 3cfce980 be9699ee 3e9699ee bd01d72a bf74acc7 419490ed bf571a90 417a8370 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 2
+=
+=
+=
+=
+=
+=
+=
+G 1 4382e236 c16fae6b c3a5f465 bdfac4e1 3a8bb289 bf7e12db 3f7e12db bd460102 bdfac4e1 41fa05e6 bfa6e81d 41af2721 0
+deadbeef deadbeef deadbeef 3f800000 3f800000 deadbeef 00000000 0 2
+G 0 437ba75a c14b179a c3ad97a4 3f7565aa bd286b57 3e91d343 be91d343 bd47dd98 3f7565aa 4193af59 bf34e25c 414e5e1e 0
+G 1 4370dde4 c1554f62 c3afd73d bf5f2f1f bd48b75b befacc37 3efacc37 bb6c397e bf5f2f1f 4126a3a6 bf7248f6 41189c22 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 2
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+END
+CASE 1 3 2 0 1
+T 43c23f9c 40e7b81c c390089b 411f76c8 00000000 c16ea02a
+G 0 43beb32d 40dceeec c39a5830 bf4c6bbc 3d1d32ec bf1a1ab1 3f1a1ab1 3d4a1230 bf4c6bbc 41544832 bf3eb0ef c1a6b653 0
+G 1 43c0b81a 40dd0ed9 c38f69dc 3f229d86 3d48ab55 bf45b7b6 3f45b7b6 bc9c0c6a 3f229d86 41a1017c 3ff428b0 c207ea2c 0
+G 2 43c2a450 40e65a55 c390bb0f 3ec435fe 3c49be2a 3f6c74ac bf6c74ac 3b9f8963 3ec435fe 41741b19 3f44a66d c1aa687f 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+G 1 43c3c232 40de698d c38d368c 3f36e2e9 bd299ab0 bf332202 3f332202 baf823cd 3f36e2e9 41a9234b 3ed15830 c1fa4104 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+G 1 43c86bb0 41075986 c38f78b2 3f7fea6f 3ca9bad3 3cd2265a bcd2265a 3bc9cbf0 3f7fea6f 40d8dd0c be916990 c0e377d8 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+G 2 43c4f1a5 40f076d0 c38e2b9a bf52954d 3c870e08 bf119200 3f119200 3c6ed105 bf52954d c0cd94f3 3fb61947 411201f1 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 43c17335 408e2e98 c3843475 3f310d2c 3d3d77eb bf38e6ef 3f38e6ef 3b955fd8 3f310d2c 41b93933 bf8147fe c1fb7223 0
+=
+=
+=
+=
+=
+G 0 43c25e7e 40cd47c0 c39955be 3d97bad9 bcc284db 3f7f4be5 bf7f4be5 bb849634 3d97bad9 c11e2907 bf9c94e3 414360ce 0
+=
+=
+=
+G 2 43c6ae65 40f875d1 c38f5b3a bf7d6ad6 3cd84b09 be11167a 3e11167a 3d1780a2 bf7d6ad6 40a4ad4d 3e805dda c10d5ea4 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 43b3f552 415c9779 c3a9cb40 3f5efe2d bd411e85 3efb7a22 befb7a22 bcaaf0a7 3f5efe2d 41493052 bfb5dfba c1994841 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+G 2 43bfea10 40d80194 c3926a22 bda83c65 bd3d3766 bf7f2282 3f7f2282 3b2b0e58 bda83c65 413abdba 3f9d6a8f c18af45c 0
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 3ef77777 1 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 3eeeeeee 1 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 3ee66665 1 1
+G 2 43c1536c 40e421ee c38c7ae4 3e80aa2e 3ca2beb9 bf77c8ee 3f77c8ee 3d4418b0 3e80aa2e 40f0ef58 3fda95b7 c0e15447 0
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+G 2 43c673d7 40d1de77 c396199a 3f11d0f1 bced2640 bf5269bc 3f5269bc 3cdff9d7 3f11d0f1 41b8f361 3fc524c2 c1f9eaf6 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T 437b7d6e 40dd3926 4209ba2c beba5816 00000000 41e1bc1c
+G 0 4388928b 411c7cc8 4221347d bf6e1580 bcc5b685 3ebc2b99 bebc2b99 bd0500df bf6e1580 c00c548b bff4d705 41f43433 0
+G 1 437a3c2d 40e72181 41d53333 3edd0323 ba9061fb bf66ebb7 3f66ebb7 3d36f87e 3edd0323 3c964d57 bf0ae25e 4206729d 1
+G 2 438405ac 40ad4577 41a5225d 3ea485e5 bca74a91 bf726c5c 3f726c5c 3d375146 3ea485e5 bf6610ec 3e370b8d 41bd59a8 0
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+T 433f0430 c14d2230 4299659d 410cf2c5 00000000 c1f75044
+G 0 4339fcab c14839f1 42918511 bf7b47a1 3d1aa726 be43bba2 3e43bba2 bc0d8349 bf7b47a1 c0f6be03 3fc43193 41deafb8 0
+G 1 4343bb05 c152bc8e 4287257c bf3e02a5 bd491d2f 3f2b8ecb bf2b8ecb bd3b9c5b bf3e02a5 409c1919 bfa00ca4 c146edca 1
+G 2 4338797d c1494fc7 42a505a3 3f1e9420 bd4c5cf1 3f48f83e bf48f83e 3c05018e 3f1e9420 be13c2ac 3fc78b6e 40edc2a0 0
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+G 2 433be23c c16edf1a 4255e596 3e2eaf08 3d41ffea 3f7c3f62 bf7c3f62 3c77a86e 3e2eaf08 3f7639a8 bf30ac24 c10cbdca 0
+=
+=
+=
+G 0 434a8ca8 c14c9ce5 42b06438 bbd22645 3c4de474 bf7ffea7 3f7ffea7 bd4bb077 bbd22645 40879c09 bfe909e7 c183568d 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 43460182 c1417bb2 428fb9e4 bf70fc45 bc926139 3eacc418 beacc418 3aa598b9 bf70fc45 41171ec7 3f4d4e68 c1f4c262 0
+=
+=
+=
+G 1 4348eb73 c15af860 4293d67c 3ef18c53 3ca91b80 3f61b861 bf61b861 3cf2f871 3ef18c53 40f6db72 bf44a2b4 c1bd67e4 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 433c1663 c15c582e 427498e3 3f162f71 3cc3e95d 3f4f512c bf4f512c 3cd9f6fb 3f162f71 409eb670 bf761930 c1c8f0fb 0
+=
+=
+=
+G 2 43481f27 c1412658 42aeec43 3f692f03 3d141a7c bed34b83 3ed34b83 bc02f9e4 3f692f03 408f5e2a bfe41757 c198d2bf 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 4332e02b c15efeab 4292dbed 3f7dce30 3cfba43c 3e05cb60 be05cb60 bc73aab4 3f7dce30 40a3f76b 3ff92af5 c16b986d 0
+=
+G 1 434d41a3 c15ae38a 42a3581b bf7eae41 bd3522f3 3dcfa74d bdcfa74d 3d1f7167 bf7eae41 411db7cd bfee9d07 c20ce310 0
+=
+G 1 4344e1ff c14b77ca 42846db9 bf51b4c5 bd232788 3f12d4bb bf12d4bb ba24d80c bf51b4c5 411e1753 bfad5c54 c20749d4 0
+=
+=
+=
+=
+=
+=
+G 2 43275452 c1824651 42901dd0 3f59eaad 3d342146 3f065811 bf065811 bc5c9ca9 3f59eaad 402e8a34 be3c45d0 c0a72711 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 4351cbbf c153d890 42afe470 3f5b9f10 3d4c61da 3f0389f1 bf0389f1 3ce8f64d 3f5b9f10 c10c0e93 bfcdbe2e 41eb8b5b 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+G 1 433cf1d8 c166afbf 42655df3 3f53a77b 3d0a0ae3 3f100237 bf100237 bc8aa9b2 3f53a77b 408d45f6 3e9af820 c14e60c4 0
+=
+=
+=
+=
+=
+=
+G 2 4347c648 c139e167 429d3e81 3f7f6d57 3d228992 3d88efa9 bd88efa9 3b5a1a11 3f7f6d57 40851cc4 3efe597c c1b115f7 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 43436bce c14a86e9 429234e3 bf044a85 bc85ac47 3f5b2b46 bf5b2b46 3c604a28 bf044a85 4066e120 be8abe82 c13d797b 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+T 435fc024 c0ed0c22 c39a3b88 40148ecf 00000000 3ed9752f
+G 0 438ecf64 c0d21e4f c39ca093 bf6a8da9 bd0e43ce becd2422 3ecd2422 3d285bd3 bf6a8da9 4215004b 3ed14e2c 40a34823 0
+G 1 435dba32 c0ff2b0d c39c54b9 3f2bfab0 3d10d5d1 3f3da103 bf3da103 3d2cf70d 3f2bfab0 40bdd32e 3fef6c7d 4047216a 1
+G 2 4380f856 c09ea625 c3b42f3f bf0cd2bb 3ceba312 3f55c972 bf55c972 3b645584 bf0cd2bb c1d5fe44 bfea280d c09bdbfe 0
+=
+T 424c99f9 4192f64f 435b52a4 408fa202 00000000 c119241b
+G 0 428ad2f6 4178d8e6 434e06c9 3f379243 bd0889e6 bf326e4b 3f326e4b 3cae1fc4 3f379243 c131c160 3fa2ac14 41c91bd4 0
+G 1 42282cd5 41968ffd 436c81ca 3ea9ea04 3d21ec32 bf717de8 3f717de8 3b9baa46 3ea9ea04 c11ab168 3d93964a 41b68853 1
+G 2 423fef2c 419a42d4 4342dcf7 bf659e90 bbf26cbe 3ee25eee bee25eee 3c1a36c4 bf659e90 c1602ca0 bf6db630 420730b5 0
+=
+=
+=
+G 2 428bdd7d 41a6c28d 436882e9 3f717918 3d1898c9 beaa055d 3eaa055d 3cebc960 3f717918 4008a7ae 3f7a95a6 c09d1a53 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 00000000 0 1
+G 0 426c1240 41887a4d 43523af1 bf21ea47 3cc04752 3f464a9a bf464a9a 3c654a9a bf21ea47 405cbbd0 3eff6c56 c1301dd5 0
+=
+=
+G 1 42171a89 4187b59f 436b8222 bf2311ba bcaf1543 3f4557ea bf4557ea 3c4e7e1f bf2311ba 410f0793 3f8942ed c1900ca5 1
+G 2 42220e8d 4191f9a1 43656005 3e5cc8e3 3b216fa9 bf79fa90 3f79fa90 bce2e753 3e5cc8e3 c0ff9988 bfe3d473 419d0d64 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+=
+=
+=
+G 1 4285406c 4197245f 435f0f8b 3f6859f6 3c1742e2 bed6ee4d 3ed6ee4d 3d476cef 3f6859f6 4099be0c 3fbfae97 c09bcaf6 1
+G 2 424be5b2 419277ca 43594029 3f5cd1df bbf0ebae 3f01844f bf01844f bcf7bc4e 3f5cd1df 4074082f bfb40f52 c09f192c 1
+=
+=
+=
+=
+G 1 4242f734 419056fe 435ce160 3f7e8fa5 39442f88 bdd8d55e 3dd8d55e bd3e150f 3f7e8fa5 4075e15b bfa0e6fe c0b34c9c 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+=
+=
+=
+G 2 424eadc6 418355d8 4344bcd3 bf4762b0 3cf0fad5 3f2090e1 bf2090e1 3c3511b1 bf4762b0 40ce76db bf55210b c1727a7f 1
+=
+=
+=
+=
+T c3f7f2ee 41593497 42b63afb c002897f 00000000 420ea71c
+G 0 c3f85fc2 4156e7cd 42ba3529 bec94757 bc8043a0 3f6b6372 bf6b6372 bc94b361 bec94757 bf07b71d 3ed1da01 42174bd5 0
+G 1 c3f53f26 415559de 4292c9a7 bbb28891 bd0dc02b 3f7fff07 bf7fff07 3820efbf bbb28891 bf0e1b9e bdd63224 41acca24 1
+G 2 c3fbc883 415ebfcc 42b4815c 3f348dfa 3bfe3a5e 3f357b9f bf357b9f bce5c3e8 3f348dfa bf1d059c 3fff215f 418b42eb 1
+=
+=
+G 0 c3fb58eb 4142f60a 42922fa2 3ef933ba 3d0d7ac7 bf5fa166 3f5fa166 3cee8812 3ef933ba 3e0eed2b bf02bbc7 c1cba477 0
+=
+=
+=
+G 0 c4006765 417bffdf 42acd856 bf2c693b bb9161a6 3f3d3c87 bf3d3c87 3d363a30 bf2c693b bf0eeccc bedd344f 417b6eac 0
+G 2 c3fd6539 4140c2b3 42cb8f39 bf50b3cf bcf187c1 3f144116 bf144116 bb95a124 bf50b3cf bf5ce034 bfe39ae2 417ab866 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+T 43f074f6 402a7320 42157eec 41d5a316 00000000 408784a3
+G 0 43f0806d 40238b54 41f208ea 3f1c5288 bd16c199 3f4abacb bf4abacb 3d0d9731 3f1c5288 41d5cb76 bfc1ddd0 409c19b1 0
+G 1 43f848f6 40006137 41cd559d 3f0eb9d0 bcf4a84b bf548579 3f548579 3c846f37 3f0eb9d0 4122af23 3feed3e3 3e9ace53 1
+G 2 43ec5865 40469136 424aa448 3eccd2c8 3c867f03 3f6a9f6e bf6a9f6e 3cb01279 3eccd2c8 418ae9a0 3f86f99a 403061a6 1
+3f800000 3f800000 deadbeef bf800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 00000000 0 1
+=
+=
+=
+=
+=
+=
+G 1 43f3775d 401a973c 421dd77e bf1b9b76 3b3d0827 bf4b4771 3f4b4771 3c574efc bf1b9b76 41922482 3e789f78 4070260a 1
+3f800000 3f800000 deadbeef 3f800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 00000000 0 1
+=
+=
+=
+=
+=
+G 0 43f06390 4026d0f9 4217ad37 3f4ad1fd 3cb3ae08 bf1c346d 3f1c346d bc51243a 3f4ad1fd 41835989 3fc798e3 404f5c73 0
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 00000000 0 1
+=
+T c3402cbc c04311f3 c272dd7a 40b2ed09 00000000 41382c3e
+G 0 c33525a5 c077a842 400cf08f 3f5e80dc b993d27c 3efd349a befd349a bc4be36d 3f5e80dc 414ba8ed 3f9ee1a9 41e97fe4 0
+G 1 c336d440 c0626caf c2802e7a bf70c8d2 3bba270b 3eade21c beade21c bca5a833 bf70c8d2 418b5c97 3f910ae9 420ae6df 1
+G 2 c34805dd c01d7f21 c288668f 3f354570 3d37e5e8 3f34c460 bf34c460 3d0cc991 3f354570 c18a873c 3ed16bf3 c20928c5 1
+G 1 c3412fab c04a2a9a c24c814d 3f7ffc46 bd10117d bc2ec2f2 3c2ec2f2 3d44ca95 3f7ffc46 41004a33 bf4076fa 419b8018 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+G 1 c336f557 c0483653 c285ab78 bf5cab1a 3d4ab298 3f01c652 bf01c652 bbb09621 bf5cab1a 409fd595 3fd13bc8 40bc3f32 1
+=
+=
+G 1 c342f199 c04d084d c25e020d bf6eadd8 bd31a74d 3eb92156 beb92156 bd0b852e bf6eadd8 4143c10b bf80a0aa 41ca38fe 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T c2ff69d6 3ebf76de 43d80563 c07cbe0a 00000000 c1d45e4c
+G 0 c306351d 3eb313b8 43dbddf5 bdf0f1ff 3cdc7324 bf7e38de 3f7e38de bd4bf85d bdf0f1ff bf7a4eb1 bfb3fd75 c0ed2b7d 0
+G 1 c2f1beb6 3e361c67 43d0b8c8 bed914a6 bcddcd7b 3f67d9eb bf67d9eb 3a27e563 bed914a6 c0962740 bf6f4f6b c20cefc5 1
+G 2 c2fc78e6 3e84b283 43d87bbf bf7b19e8 bce69a8c be475dce 3e475dce bc7af8fe bf7b19e8 bf9f3cd3 3e8e47f8 c113c382 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+=
+T c31dde50 c131aa05 c3ea9fa5 c1b12c88 00000000 418d9dd1
+G 0 c331e782 c13c19d0 c3f111a3 3d73ffcd bce40989 3f7f8b9e bf7f8b9e 3cfa3224 3d73ffcd 407b1b0d 3f6ef9ea c0a15525 0
+G 1 c326b57c c120a381 c3eeeccc 3f789173 3cf14a3f 3e74f1da be74f1da bcf36494 3f789173 c1e10984 3ebf559d 41b6392b 1
+G 2 c30cc236 c13c894d c3ed491f 3ec95c3f 3d0c471f bf6b5ef9 3f6b5ef9 bcc1d9b0 3ec95c3f c182f50d bfe19403 4171eaa7 1
+G 1 c30e2d1f c1362f02 c3eb01df bf6ee9b8 bc20511b 3eb7eb62 beb7eb62 bd2f6848 bf6ee9b8 c1a29e06 3e97f931 417e2a0c 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 00000000 0 1
+=
+=
+G 1 c3166013 c12d0722 c3ec1075 bf7fffc8 3d1a0a00 bb289e2a 3b289e2a 3b77bc13 bf7fffc8 c1becda9 bf5e5063 4188928e 1
+=
+=
+=
+=
+G 2 c32c55c2 c15d6a0c c3f3d87c 3efe0573 3cdc7d54 3f5e4551 bf5e4551 bce43e8d 3efe0573 c1dfa181 3f7da573 41c6ebb2 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+=
+T c394ad5f c0d82de1 43ccdba8 c0bb7c9b 00000000 c18f76ae
+G 0 c3996982 c0e0c47d 43cef713 3e0bd94f 3c6a709c bf7d99f2 3f7d99f2 3d1bf184 3e0bd94f c03d5720 3fca63d9 c127f153 0
+G 1 c392d3a9 c0d05a2f 43d0588b bf436ac9 bb645ce1 3f255f6d bf255f6d 3c7d5b60 bf436ac9 408ab3d7 3e72ec9f 41343073 1
+G 2 c3910b16 c0cb8306 43ca866b 3eb4ca23 bca04dcf bf6f826c 3f6f826c 3d12536b 3eb4ca23 408dbeb3 3ee16af6 414d27b0 1
+G 2 c39d207b c0ce02ed 43c7ca81 bf6fb64d 3d1109c5 beb3b646 3eb3b646 bd0dae52 bf6fb64d c1486482 3fc38df6 c21ce73f 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 00000000 0 1
+=
+=
+=
+=
+=
+=
+G 0 c380d8ea 3ef6f616 43e6831a bef3d2c0 bd0f0dfe bf611b9e 3f611b9e bb91deac bef3d2c0 c0517d35 be0a8baa c0cd0ba0 1
+=
+=
+=
+=
+G 2 c3920cc7 c0cc3a1a 43d7aeff 3d377cd4 bd247db0 bf7fbe36 3f7fbe36 bb74007c 3d377cd4 c0e99699 bfdd4bf0 c1c5201d 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c391e710 c0d74caf 43cf2d6e bf78dcc8 bd3f5226 be701dcb 3e701dcb 3cfccaf6 bf78dcc8 c0c2108f 3cb237c8 c1948795 1
+3f800000 3f800000 3f800000 bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+G 0 c396c74d c0e7594d 43cb625a 3e910e7a 3d3811d2 3f7582d1 bf7582d1 bb7c6024 3e910e7a c0982607 be19212e c10ed8cf 1
+3f800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+=
+T 4239ccf1 c082a2c0 430312c6 3f8efcc0 00000000 3eec8cc8
+G 0 425029d0 c0675860 430475d5 3f7fe790 bb0d90ae bcdfb0e9 3cdfb0e9 3c352403 3f7fe790 4153bd92 3ec33be4 407dc44f 1
+G 1 423724bb c083be4a 4303b232 bdb482fe 3cb4d7d9 bf7f00f0 3f7f00f0 bc7c7910 bdb482fe 41ab135f 3f918a6a 41203340 1
+G 2 4242a085 c079d10a 4303388e bf63a15f bcaaebf2 beea44b5 3eea44b5 3c9611e2 bf63a15f 42009b32 3f3ece0d 414a68a1 1
+bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+=
+=
+G 0 42450b1b c07360fa 430ac55e bec048b6 bc968073 3f6d42c7 bf6d42c7 3c94a2fb bec048b6 41a1140c 3fe595d3 41172335 1
+=
+=
+=
+=
+=
+G 0 41cce1b3 c06e436b 4303251f bf7c66a7 bc964ec7 be2b1a17 3e2b1a17 bd0f1bd3 bf7c66a7 c1ae7e73 3fa5353e c1032f20 1
+G 1 427ddc68 c044b8d5 42fdc0b3 bf68e917 bd220fd6 bed47f20 3ed47f20 bce1e5b7 bf68e917 4156ab14 3fa7eff8 409ebee9 1
+=
+=
+=
+=
+=
+T c3949806 41580478 431d62a6 407670d5 00000000 4182fa9d
+G 0 c38f625c 417641a8 432b2ba8 bf6db169 bce078f9 bebe231a 3ebe231a bb588155 bf6db169 40a040e3 3f0bfabf 41a783f8 1
+G 1 c38e7a52 415a4b34 431f5b2d 3f7e62e4 bd2401cb 3de596d4 bde596d4 bd150349 3f7e62e4 c011760d 3fabe549 c0a64ca1 1
+G 2 c39408ff 41584710 431fa4de bf7dc7d8 bcdbf1d4 be068b4f 3e068b4f 3d1cbbe9 bf7dc7d8 403ddd5a bf52d63b 419fb2c3 1
+3f800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+=
+G 0 c397d1d7 415360a4 4307dc42 bee82084 3cc640f5 bf642d9b 3f642d9b bba75702 bee82084 40c1b0f5 3f040cb6 41a1427d 0
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 1
+=
+G 2 c3936e96 415a3a1e 431ce35d 3f6e7742 3c8ad753 beba39e1 3eba39e1 bd34d815 3f6e7742 40c7dff4 3f816e23 4202a398 0
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+G 2 c396e790 413ea158 432e764e 3f67d4c7 3d4274ef bed92a9a 3ed92a9a 3d0777e9 3f67d4c7 40e8cb2e bf452d17 41d45b88 0
+=
+=
+G 1 c3960198 414fc6a6 4326e09a beb56e44 bd3f5e54 3f6f6363 bf6f6363 bd0ed6c6 beb56e44 c019c872 3e54eb0a c15b8222 1
+G 2 c3986c64 415eb6a3 430a4332 3f5d329e 3d006850 3f00ded0 bf00ded0 3c134952 3f5d329e 4098966b bfe27c61 41acd16b 0
+=
+=
+=
+=
+=
+T 439b8354 c0a0cdab c19198ec 40d76dbc 00000000 420a6649
+G 0 43a4ddbe c04c2e73 c0ffb427 3f7feb51 bc409c0e 3ccdce35 bccdce35 bb071a65 3f7feb51 407f4eb3 bfb2ae27 41b24a2a 0
+G 1 43975b34 c12f2249 c29c6ead 3ef024da bbf16e9b 3f621831 bf621831 3d4216b4 3ef024da 3e585701 bfc3eeca 411f3bd2 1
+G 2 43810515 c11c49dd c2244b7f 3f7bba1e 3d176aa4 be3a4fd3 3e3a4fd3 3cf6b7cb 3f7bba1e 40b9711f 3ffc5045 420988e9 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+T c3ecdc70 4187a170 c2c24473 c099f0f0 00000000 40329908
+G 0 c3edad4a 418f1730 c2931ef3 3eccb6d8 bb116b3e 3f6aa587 bf6aa587 bc560a86 3eccb6d8 c19db42f bf74a294 41460797 0
+G 1 c4048dd8 41a683e6 c2956126 bf7c0805 bc047e12 be339bd9 3e339bd9 bca96681 bf7c0805 c14548a2 bf502333 40c0b336 1
+G 2 c3e90656 4180f0e1 c2bfa992 bf766eb7 3cd397f5 3e8aaa60 be8aaa60 3d1e72e2 bf766eb7 c1fe3b3a 3ffe46d9 419adab0 0
+=
+=
+=
+=
+=
+=
+G 1 c3ec06b7 41890fc4 c2ca8fcd 3f79be30 bd1af4a0 3e6103c4 be6103c4 3d1f535c 3f79be30 c1f716db 3eeb3618 41869768 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+G 0 c3e50ea4 4188c0d2 c2d5aed8 3f255b56 3cbc080a bf436e3f 3f436e3f bb9b36f4 3f255b56 c13c936c 3b83f8a7 40f49100 0
+=
+G 0 c3ee8496 4186e6c5 c2c4605d bf7beb2b bd1fe1cd 3e361f04 be361f04 bb021dcd bf7beb2b c1d14188 3f27d03f 41690869 0
+=
+=
+=
+=
+T c32d50f2 bf4b4db6 4391fba8 c108a87e 00000000 41dbaf2a
+G 0 c3245494 bfb2c860 439328f0 bf7fc088 3d100fea bd34389f 3d34389f bd04395b bf7fc088 4121b672 3eb506a7 c1d111df 0
+G 1 c32d09b3 bf3fc5df 4393a881 bf0eef5e 3c8897d2 bf546178 3f546178 bd2c138c bf0eef5e c12e078b 3f6219db 420862ba 1
+G 2 c33f8381 3f2330fe 43948f70 3f5e000a 3c93c679 3efef754 befef754 3bbf6a1e 3f5e000a c0646032 3f994a9d 415154ff 0
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+T c25a747d c0ee52d8 43f94130 c1224014 00000000 bf455bd3
+G 0 c26ed311 c0eb9bef 43fce08e be383539 3d222968 3f7bd2e3 bf7bd2e3 bd09b44a be383539 c1abb894 bf9b5dcf 3e82d07c 0
+G 1 c1c7f885 c0b5a59b 43dfb925 bf16e53b 3d16d1a1 3f4ecd01 bf4ecd01 3cb330a8 bf16e53b c141beea 3ffb35f1 c00257c8 1
+G 2 c2400a33 c0e00e7e 43fcdb32 3d47aaf4 3d1668b2 bf7fb217 3f7fb217 3c8fdadb 3d47aaf4 c1bbd9de 3fc99e2e c068b73d 0
+=
+T 43b9f9b2 41248e4a c3267181 c1f9fe88 00000000 4102226b
+G 0 439d2bb5 41725f46 c32a8acf bf743a91 3cdef73f 3e997879 be997879 3cfa7c40 bf743a91 c183532d bffd77f6 4029bca0 0
+G 1 43b92967 413d7daa c319ec1b bb8cd95b bd1ee4ea bf7fff65 3f7fff65 bd106e2e bb8cd95b c13f2c90 bf8dd4f1 3ff2d5a2 1
+G 2 43b1da06 41378064 c32eba10 bf44c265 bc982295 bf23c603 3f23c603 3b4da990 bf44c265 420487ad 3f3c0b3d c0f8165a 0
+=
+=
+=
+END
+CASE 0 2 1 0 1
+T c32090a8 416ee07c 438abc97 3e4fd570 00000000 bc388651
+G 0 c321a9f9 415a569c 4384b178 3f42a8a2 3d082d92 3f2643ca bf2643ca 3d1ebf1d 3f42a8a2 4196f5f6 3fa983c2 bf9cff1a 0
+G 1 c2fa8359 415591dc 4365dab3 3d7df118 3c42d166 bf7f81ee 3f7f81ee 3d35c8f7 3d7df118 4208f55a 3f606287 c0214cf8 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+G 0 c323ddae 4173b2b9 438b0a8e bf548f33 3d4bd236 3f0eab54 bf0eab54 3d0425fd bf548f33 c2006ef2 3e3387b9 406f8c83 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c32dc787 41848267 43804981 3f25c6fe bd2ab8fa 3f4312f5 bf4312f5 3d4489d0 3f25c6fe 412e1b01 be478b3c bff1dedf 1
+bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 0
+G 1 c32b2eb5 415e4e79 438e2c56 3f7d5923 3d3770c8 3e1301d6 be1301d6 bce7581b 3f7d5923 41980b9b 3f6ecf61 bf7871a2 1
+=
+=
+G 1 c3186749 4160d5f6 4393fae3 3d9a43d8 bcd493cb bf7f45d1 3f7f45d1 3d41b93e 3d9a43d8 41d1d2bb 3f506cbb 3d8753be 1
+=
+G 0 c3119fe4 4149c9cd 4385cb10 3e0ddd9b 3b888c74 3f7d8805 bf7d8805 3d1a191c 3e0ddd9b c1c95a83 bfc7699d 3f0e10ad 1
+3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 0
+G 0 c31dfb02 4171218e 438d03ad 3f748a59 bbc666a9 3e9778f9 be9778f9 bd458cc7 3f748a59 41abfc0e be031911 be761795 1
+bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 0
+=
+G 1 c317b886 4180cff4 4394ffa3 3f10c285 3cf95952 3f532423 bf532423 3d20cbde 3f10c285 4214d095 3ddc8033 c002d5b4 1
+bf800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+T c3540d69 c0fee1d2 c3ce20ae c1fb80f7 00000000 c1ab4e8e
+G 0 c34cad0d c0b92ce7 c3d92e84 bf4fa2b8 bd209e1c 3f15be9f bf15be9f 3d07c252 bf4fa2b8 c0e0c4cb 3f535ab5 c096744e 1
+G 1 c33dab6e c12aff69 c3c9b354 3f59d0f3 bcdddc6c 3f0681c3 bf0681c3 bc3d554d 3f59d0f3 c17677ae 3d009faa c1395cd6 1
+3f800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c353f387 c1026d19 c3cd2d71 3f0de51c bd30968e 3f5513b8 bf5513b8 bcea9447 3f0de51c c1f70e82 3fe0191b c1a1f33a 1
+bf800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 00000000 0 0
+=
+=
+G 0 c354b7ff c0e9761f c3d37daf 3e124c69 bc8c6190 3f7d5fb3 bf7d5fb3 bcb55ce9 3e124c69 c18aa7ed bf617436 c15be2cf 1
+3f800000 3f800000 3f800000 bf800000 deadbeef 3f800000 00000000 0 0
+=
+G 1 c3443cdb c0b4497c c3d09afe bf62e58a bce03ce6 beed1933 3eed1933 3d1586ba bf62e58a c2018257 bf65017f c1c1d316 1
+3f800000 3f800000 3f800000 3f800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+=
+=
+=
+G 1 c34b9928 c0db011d c3d581c0 3f76f44b bc113f1f be86e6bc 3e86e6bc 3c73786d 3f76f44b c1b55b68 3f7f9ab8 c17d24c8 0
+3f800000 3f800000 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+G 0 c3284993 c0af9b05 c3e1a869 bf237a15 3b41b0fe 3f450180 bf450180 3cb026d8 bf237a15 41a13aa2 bfa6bbed 416304a9 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+T c3dfbad8 c0a28ee7 c3113e5a 40d93bd1 00000000 c0ed8e88
+G 0 c3d82ed8 c0a3c86d c3092fd6 3f7b23c5 3c6172b5 3e4696a7 be4696a7 3c7a63fb 3f7b23c5 c17f4391 bfa8656c 41856f84 1
+G 1 c3df76ff c0938f1f c3074107 3e8c9717 3d0055ef bf7628e2 3f7628e2 bb3846d4 3e8c9717 41c1a7e7 bf06332a c1bd02f7 0
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+G 0 c3db764a c0dac712 c30857e9 bf33c1ca 3d35a0cf bf3645e0 3f3645e0 3c8352fd bf33c1ca 4148d0b3 3f804abd c156ca9a 1
+3f800000 3f800000 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+G 1 c3df3328 c0828f0f c30359fe 3f26258a bba3af88 bf42c274 3f42c274 3c762f9b 3f26258a 40c18229 bfc1adfc c0cacde8 0
+=
+=
+=
+=
+=
+T c35e55c8 c0369ba2 435a1681 c21b209b 00000000 be4c9122
+G 0 c3672628 c01d4ab4 43505f9c bf7cbd73 bbb7812e be22e5c3 3e22e5c3 bd43af97 bf7cbd73 c1742c7f 3f37eea5 3f6c465d 1
+G 1 c3566b7f c007492f 436529a4 3deecc5e bca29a5c 3f7e40f8 bf7e40f8 bd3959f6 3deecc5e c221688d 3fe7e90b bf93b24f 0
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+T c346d81d c1775f7a c3447974 c19a2881 00000000 41ac5a5f
+G 0 c33d9479 c1681d28 c34d88e8 bf5c3554 bd195fd6 3f028dc7 bf028dc7 3cf945b7 bf5c3554 c1a0746d bf8517fb 41983791 1
+G 1 c34a1de2 c17338d2 c345cb44 be2db337 bbe586bd bf7c4a41 3f7c4a41 3cd06cd4 be2db337 c1a157c8 bf71ad5b 41a23149 0
+3f800000 3f800000 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c31aef5d c19efdd5 c31cccb3 bf5c9aab 3cb6de0c bf01e240 3f01e240 bd469cd1 bf5c9aab 414bc803 be82e372 c1605f39 0
+=
+=
+=
+=
+T 43a3ba21 c1929f45 439844d7 c1954da1 00000000 41e3517d
+G 0 4386f720 c185aeaa 43a14ffe bf7b1e82 bd0c06ee be470103 3e470103 bcd15b9b bf7b1e82 41020b07 3fcc25a7 c16063bf 1
+G 1 43a32664 c193a7cb 4395caf5 3eaeb2a5 bd2583d9 bf70a313 3f70a313 bc9360f8 3eaeb2a5 c13e54af 3f8b9306 4184cd1b 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+G 0 439fbd1e c196600d 4398a44a 3f31a078 bcc7c673 3f385974 bf385974 3ce99a50 3f31a078 418e3d81 be02bcfb c1cc5d22 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+G 0 43a0c548 c199eb62 439b0deb 3d5813b3 bd3240a2 3f7fa4bf bf7fa4bf 3c889210 3d5813b3 41a6d689 3cdb093c c1eb2753 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+G 0 43a257a6 c190a0c5 43901c5c befad90d bd1b58c4 3f5f2b84 bf5f2b84 ba1f94af befad90d c14748ed 3f541467 41b6abe8 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+G 1 43a511c5 c19564ef 43995760 beea315b 3d32c088 bf63a65a 3f63a65a bb3fb8d8 beea315b c143f4e4 bfc58b71 41a9a50e 0
+=
+=
+=
+=
+G 1 43a12b3a c1940c1b 439e5a6e bf1882c3 3c45627e 3f4d9cc6 bf4d9cc6 bcd82345 bf1882c3 c191ebe7 bf84f59f 41ec674f 0
+3f800000 deadbeef 3f800000 bf800000 3f800000 deadbeef 00000000 1 1
+G 1 43a30e58 c18f56c1 439d385d 3daece7c bc9f200c bf7f10d6 3f7f10d6 3d21c1a5 3daece7c c15df08b be81e0ab 41bf7979 0
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 439dec60 c19e5436 43a2ec58 3f69b20e 3c2515b0 bed10544 3ed10544 bcd525a3 3f69b20e c0a2fbd1 3ede9f21 413a86b0 0
+=
+G 0 43a33591 c191d4d8 43990ee9 bf34b205 bac2258a 3f3557bc bf3557bc bc4106a4 bf34b205 c0da2011 bfd72bdc 40e81f38 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 43aafae6 c188ee6d 439c9a37 bf3041a3 3cdb9974 bf39a8ff 3f39a8ff 3a90a9ef bf3041a3 c15f004f bfa33957 41a5c715 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+T c3b9294a c001b44b c378b020 c117789f 00000000 41081b04
+G 0 c3cb5e3c 3e9983de c3951fc7 3f1793b8 3c7d01bd 3f4e4d3e bf4e4d3e 3d1b9185 3f1793b8 41b2b4e0 3e4a9e24 c1957f2f 1
+G 1 c3b99a4f bff91cf0 c3790f31 bf44d7bf 3d426da6 bf23ac59 3f23ac59 3c88f05a bf44d7bf c1390988 be3fa933 41210087 0
+deadbeef deadbeef deadbeef bf800000 3f800000 deadbeef 00000000 1 2
+=
+=
+=
+=
+=
+G 1 c3b93f1d bffea83a c3761544 3bbcb397 3b487036 bf7ffeea 3f7ffeea bd49b03a 3bbcb397 c194be16 bfa85f3f 416b5c18 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 2
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T c29e38fb 419834c1 439b99ab 41cde92c 00000000 3f745c70
+G 0 c295d26c 419a758a 439aa79a bf74b9b3 3d44c26c be9645de 3e9645de 3d34553d bf74b9b3 4217d502 bea6c516 3f08d12e 1
+G 1 c2bf8f23 419f524c 439f0d72 3f54f6f3 bcc1a2d6 bf0e1047 3f0e1047 bbee0379 3f54f6f3 40a5bf58 bf33f945 bfba3285 0
+G 0 c28b704c 419b86c1 439c812f bf73e13f bd22fa88 3e9bac95 be9bac95 3c99e269 bf73e13f 420c700d 3ff55059 3fc05d77 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 2
+=
+=
+=
+=
+G 1 c2a6acf5 4195e3f9 43a2e7ca 3e12a477 bd209c30 3f7d5c85 bf7d5c85 3d271f9f 3e12a477 42168de8 be8f46e3 3f0743a8 0
+=
+=
+=
+=
+G 0 c29122e7 41a7148d 43b8cc69 3f247964 3bdf9ea1 bf442c8c 3f442c8c bd03db87 3f247964 41ecc63a 3fea8a28 3f015eb4 1
+=
+=
+G 1 c29f33f5 4198e101 4399c2bd bf43ae51 3c5a0399 bf250f7e 3f250f7e 3d4c555a bf43ae51 41f55412 3fa73661 3e699e99 0
+=
+G 1 c2a90ea3 41966f98 439a36a1 3ed9a436 bce36fc0 3f67b842 bf67b842 3d432d8d 3ed9a436 419a65ed 3fc1fa41 bf9890a0 0
+=
+=
+=
+G 1 c2a078c5 41979552 439b258f 3ea37fc2 3d04f374 3f7298ae bf7298ae 3c562faf 3ea37fc2 41cc8f54 bffc747e 3fb6e916 0
+=
+=
+=
+=
+G 1 c2c9096e 418a13a6 439e13a5 bf4ad24d bd047513 3f1c3406 bf1c3406 bcc5f2ec bf4ad24d 4210a6f4 bd83782b 404aecaa 0
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c2a052d8 419976b0 43967b42 3f5a0cee bc63b68e 3f062070 bf062070 3cf656c5 3f5a0cee 421a7a8b bfd5cf62 400a5cb0 1
+=
+=
+G 0 c2877f3b 418f4ee7 43a62c33 3e33c210 3d2a1495 bf7c0652 3f7c0652 bb11f5bc 3e33c210 41c47f40 bf689ad6 3fdc7755 1
+=
+=
+=
+G 1 c2b32e89 4192802b 4396b6ec 3f7e31f8 bd0939db bdf2c1fe 3df2c1fe 3d23a7c3 3f7e31f8 417a5099 bf3db3b8 bf118d6d 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c284853f 4196f3e0 439e3f6e bf4b96f0 bca0fce8 bf1b3365 3f1b3365 3c55a3e7 bf4b96f0 4181ff7c bc75fa0a 3fee5ca9 0
+=
+=
+G 0 c28f6d5f 4185ee32 4376d794 3f13dcf8 3ca5bc1e bf50fac9 3f50fac9 bd4338ed 3f13dcf8 42081c7e 3f493c8e 3f942303 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 2
+T 41cf331d c13c6c3c 42ba77de c0fbde96 00000000 c15a1c08
+G 0 418f7046 c13844b4 42b5a134 bf2ad1b3 3d4809eb bf3eacb6 3f3eacb6 3bf03d6c bf2ad1b3 c13991bc bf2202ea c1accd75 1
+G 1 419f1af7 c13f8587 42bf6d6b 3f7cd83f bc1b6032 be204707 3e204707 bca30d6c 3f7cd83f bfcdcf32 3f9a48a2 c0938009 0
+G 0 407047d2 c1427e64 4316f3a6 3dd20134 bd3e180b 3f7ea68b bf7ea68b bd2403ea 3dd20134 c1551005 3fbc0613 c1ca4f4c 0
+=
+=
+=
+=
+=
+G 1 416f0d23 c14ac340 42ae906b bf60f681 bcb26b86 bef45b9f 3ef45b9f bb92d9c3 bf60f681 c05ae707 3ffb5777 c0ebd689 0
+deadbeef deadbeef deadbeef bf800000 3f800000 deadbeef 00000000 1 3
+G 0 c1b05837 c14d666f 428218b7 3f0f8fc1 3d3f74c9 3f53f52e bf53f52e bd329c67 3f0f8fc1 416576bd 3f8b3a0e 41cc26cf 0
+=
+=
+G 0 427ace78 c144c471 424f01bc bef211d2 bcd0bd71 bf61949e 3f61949e bcf75989 bef211d2 c19af64c 3f1943e2 c1f95bb7 0
+=
+=
+=
+=
+G 0 41ddb95f c1363185 42a49dd2 bf63988b 3c9a6973 3eea6701 beea6701 bcce3b3c bf63988b c12a6673 3f840193 c19e868c 1
+3f800000 deadbeef 3f800000 bf800000 3f800000 deadbeef 00000000 1 3
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 417a1c1c c14d89cd 429cbe3a bf118349 3d1940b9 bf529f78 3f529f78 ba4205f7 bf118349 c10138f0 be6bb32f c1776a91 0
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 3
+=
+G 0 41bf34e8 c128e179 42971946 3e5fd11e bd01f2df 3f79cf68 bf79cf68 bc912b4f 3e5fd11e c169f1bb bfd5b1f3 c1c6eab2 1
+=
+G 0 41b9bc9f c13b97bd 42b96e3a 3f3430e9 b957f233 3f35d806 bf35d806 bc8e886a 3f3430e9 c0d92f0e 3f9714b8 c101b8c4 1
+G 1 420d68ed c12b7e96 42aad289 bf0a4945 3c3755a4 3f576fc4 bf576fc4 bcc7c3ea bf0a4945 c1204782 bfa3b4d8 c1a917dd 0
+=
+T 43f3ab54 412b2645 43eda151 c191cd75 00000000 41566618
+G 0 43ef73a8 4123e5d8 43f0937a 3f73b3b6 bc426034 be9cc8cf 3e9cc8cf bb22b845 3f73b3b6 c1ee0ee9 bfd53819 41a2f4e7 1
+G 1 43e8fe4c 413169eb 43f30130 3f2b1c64 3d1b3a3e bf3e69b1 3f3e69b1 3c89a1a2 3f2b1c64 c1b96e2c 3f8ceeb1 4189b935 0
+3f800000 3f800000 3f800000 deadbeef deadbeef deadbeef 00000000 0 3
+=
+=
+=
+=
+=
+=
+=
+T 43283ca9 c0f4ab0f 43c89ef2 c02302ea 00000000 41c707fc
+G 0 4318cd88 c1181f73 43c6fb86 beee966a bcaff6fd bf62818d 3f62818d 3d351f3e beee966a c0232f59 bfa058ac 4205356f 1
+G 1 4344a12b c16b1025 43e3b7d9 beed9abb 3cbb3b73 bf62c3a7 3f62c3a7 bc2a36ae beed9abb 3ef7cff5 3f8afc40 40bbc809 0
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 3
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T c38aecc2 4041fa7a 43f0e6b2 c176d451 00000000 413171e0
+G 0 c3840a02 4058bde5 43eec1d5 3f6e8a96 bce32e6c beb9d6c4 3eb9d6c4 bcdaaa1f 3f6e8a96 c1ec1b58 bf1b10eb 41b33ed1 1
+G 1 c3950764 4010ed28 43ee06fd 3f73d4ff bd0e1d69 3e9bf943 be9bf943 bd27fe46 3f73d4ff c1918aaf 3fae15d1 417452bb 0
+=
+=
+G 0 c39f1fdc bfb02b69 43d97fce be5ff60b 3d1130b8 bf79cd56 3f79cd56 3d2c5fb4 be5ff60b 41d096b2 3ffbbd78 c1992462 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 3
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c392746b 403f593a 43eb135a bf6d1abe 3c6f676c bec10ddc 3ec10ddc bcad554f bf6d1abe c0c71bf8 3f78cba3 40822ab4 1
+G 1 c387497c 40736f87 43ef3a31 3f688fee 3cedee50 bed60456 3ed60456 3bbc1c11 3f688fee c11060ba bfdc8dff 40a96be8 0
+bf800000 deadbeef 3f800000 bf800000 3f800000 deadbeef 00000000 1 4
+=
+=
+=
+=
+G 0 c380938c 3fbcb119 43eb33c2 3ecfcbe8 bb10f94b bf69f7e1 3f69f7e1 ba8e7609 3ecfcbe8 c0f6cb33 3fc5224a 40f9d497 1
+=
+=
+G 0 c3910a61 404c4e62 43e97731 3f229e7c 3ba9fa0c 3f45b6eb bf45b6eb bd222a34 3f229e7c c1407b73 bf8f3d3b 4131f0fc 1
+3f800000 deadbeef 3f800000 bf800000 3f800000 deadbeef 00000000 1 4
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+END
+CASE 1 3 0 1 1
+T 437df2c3 c0a1e274 c3b3d6c4 bf88df35 00000000 408d0ece
+G 0 437cd432 c0944910 c3bc4e95 bf46774a bb822ef1 bf21b37e 3f21b37e 3c71ba31 bf46774a c0ba219a bfaf8346 41d88fc6 0
+G 1 436f33a5 c0d12ac9 c3b482c6 3f7cb1e1 3d31c144 be2403f7 3e2403f7 bc89afa3 3f7cb1e1 beef64ab bfd9112c 410b7508 0
+G 2 437c53ff c0a6d564 c3b4210c bf6a4f25 bcd54dd0 3ece411e bece411e bcaaaab9 bf6a4f25 c11a52f1 bf57b4ff 42057f22 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+G 1 436e22ba c04ce449 c3acc2d6 3f7fa0ec 3cffb2a8 3d5c8e74 bd5c8e74 3cf68e86 3f7fa0ec c0b75c89 3e545378 41f86484 0
+=
+=
+=
+=
+G 2 4380178f c0a7d0e2 c3b3e85a bf39af1d bcd3ba72 3f303b31 bf303b31 3cc82597 bf39af1d c0c60769 3fa6184d 41d3915b 0
+=
+=
+=
+=
+G 0 4346efb6 c0867433 c3c1bea4 3e91a9f0 3d0b0921 3f756bcd bf756bcd 3bf72bd1 3e91a9f0 c11323e3 bf0359e5 4212a679 0
+=
+=
+=
+=
+G 0 4375dc14 c08adf45 c3ad7f07 be8b5811 bd11e0b3 3f765638 bf765638 3d2613ce be8b5811 c01db2f6 bcf0c3b7 413885d5 0
+=
+G 1 4387928a c0c09d55 c3b40e4c 3f34a360 bcc63b54 3f356652 bf356652 3d37d95e 3f34a360 c11ae85a 3f8abc39 42015fdb 0
+=
+=
+=
+G 2 436bc0a4 c0c2c4c1 c3ba183a bf52f1e5 3c5e5363 bf110bb1 3f110bb1 3b67d53f bf52f1e5 c11b4e01 3fd85abf 41fc8893 0
+=
+G 0 4384adbc c09ea487 c3b398d1 3f3e60e5 bd43b991 3f2b262f bf2b262f 3b96c8b6 3f3e60e5 c09d4bd6 bee29342 4148b5a0 0
+=
+G 2 4386b6fb c0adeb1b c3bc4e22 3f2cbdb7 bc3de392 bf3cef6b 3f3cef6b 3d440955 3f2cbdb7 c0703ac1 bfcad5d6 416049d7 0
+=
+=
+=
+=
+=
+G 1 437ee885 c10457fb c3d338b6 be9dbb73 bca8213d 3f738c8e bf738c8e 3cfd6ba4 be9dbb73 c01e1ad2 bff06834 410713a6 0
+=
+=
+=
+=
+G 1 43739c6d c0ac7d8e c3b73282 bf7c0a91 bc40b4a5 3e3362a8 be3362a8 3c63a984 bf7c0a91 c106e149 3fc3d239 41e478db 0
+G 2 437130d7 c0c6a84a c3b2aa18 bf7bc48e bd184fb5 3e396daa be396daa bc8d00c4 bf7bc48e 40ad982c bffa46bb c1a7aee4 0
+=
+=
+=
+T c34c9eb6 c0b62fa8 428c76e3 41db2153 00000000 413e6949
+G 0 c35b386d c0b6db7b 425ff5d4 3f23032e 3d1e285a 3f4563ee bf4563ee 3d350a5a 3f23032e 4207f7d7 bfad5683 41554c6b 0
+G 1 c34b05b9 c0af74d7 4291528f bf7e012f 3d08d254 bdff3488 3dff3488 3bf84b33 bf7e012f 41e7233e bfac43d3 4163ffd4 0
+G 2 c3411118 c0b0c525 425dc12d bf6cf6b8 3ce7334f 3ec1be77 bec1be77 bbef05b5 bf6cf6b8 41494ced bfc3cd8f 40d102d2 0
+=
+=
+=
+=
+G 0 c347e1d0 c0cf095a 424926a7 be0960c5 3c6b8cf4 3f7daf8d bf7daf8d bb0eb4a4 be0960c5 c1708e08 3f871c5a c0a01893 0
+=
+=
+G 2 c349227e c0b56a83 428e59ba 3f771d12 3d12c82c 3e85babc be85babc bc608a4e 3f771d12 41d4962d be076a6b 413fcfbd 0
+=
+=
+G 0 c3524e4c c0842f4b 42b780ef 3e3101c5 3c3acc15 3f7c2578 bf7c2578 3c7d3795 3e3101c5 41da6c09 3fae9913 4157c4ef 0
+=
+G 1 c344e571 c0b6e7fd 429413e7 bf7d8d0c 3cbb90d9 3e0d4d85 be0d4d85 3cc39a00 bf7d8d0c 41ab208d be5d9b69 410f230a 0
+deadbeef deadbeef deadbeef 3f800000 3f800000 deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+G 1 c34a0bb7 c0b169ca 428a4144 bf7c16d0 3d0edf18 3e324e7a be324e7a 3c5a3c88 bf7c16d0 420511ee 3fecf09a 416c0e50 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+G 1 c3493a73 c0c8b033 42461a78 bf150a93 bbcb22ef bf50241b 3f50241b 3cea30e4 bf150a93 c10dd241 3f0c5934 c083c036 0
+=
+=
+G 1 c3499b01 c0b53e55 428daa2b bdd51abb 3d0fe1ef bf7e9c3e 3f7e9c3e bd1ab396 bdd51abb 41786339 beba54c6 40ae12d3 0
+=
+=
+=
+=
+=
+G 0 c35bb079 c0c07336 4288153a 3f04c443 3cc9fa21 3f5ae19c bf5ae19c 3ca56c02 3f04c443 420c5a70 3fa6d517 415e331f 0
+=
+=
+=
+=
+=
+T c3d76a69 c17d1f17 43c36c06 c21ef471 00000000 3ffba19a
+G 0 c3d6eec7 c17bfd48 43c2e6a2 be2b03eb bd1cb29e 3f7c6798 bf7c6798 bd3cb4fe be2b03eb c20ce7ac 3f2de5ff 40696a9b 0
+G 1 c3d0c8e0 c18b431a 43c056d3 3e99c9a0 3cea2fa1 bf742dcd 3f742dcd bd43fd11 3e99c9a0 c1053e17 bfa64c4e 3f741dbf 0
+G 2 c3d609ed c17f4d08 43c8526d bf4d19d9 bd4bd922 bf1932a9 3f1932a9 bb2facb0 bf4d19d9 c2047284 bfffa93c be9425ca 0
+G 1 c3d87a31 c17c4080 43c0a508 3eb6d025 3cec108f 3f6f200b bf6f200b 3bfc9f85 3eb6d025 c0ac801b 3d8e46d0 bf85e74b 0
+=
+G 1 c3dcb8f7 c175b8a4 43c3a699 bf663456 3ce8cc92 3edffb3c bedffb3c bccefe8a bf663456 c11c73cd 3f0d19c9 3feb5e84 0
+=
+=
+G 0 c3c256fd c1a25df4 43d9318b bf6ce038 3cca6003 bec22c65 3ec22c65 3ce18501 bf6ce038 c20c543b 3fc9e92d 3fb69864 0
+=
+G 2 c3dadded c1761072 43c6fb20 3f7f9640 3d2fa379 3d6897e0 bd6897e0 3c3b92c7 3f7f9640 c21bdb56 bf017bb1 40596691 0
+=
+G 1 c3d4e847 c17bf586 43c59f17 bf53be21 3d28f69d bf0fe0e7 3f0fe0e7 b9f58e52 bf53be21 c1a520bf bf16292d bf5ba807 0
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c3d3b6b3 c17b62b0 43c32daa 3f6648db bd349622 3edfa6cc bedfa6cc 3a1634b1 3f6648db c1c1fa5f bf4bc62c 3ec44949 0
+G 2 c3d61ddb c17fd607 43c3ef8d bf62738d 3d438d11 3eeecb8b beeecb8b 3c74663c bf62738d c20b00a8 3f8e229f 3fed386e 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3ef77777 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3eeeeeee 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3ee66665 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3edddddc 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3ed55553 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3eccccca 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3ec44441 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3ebbbbb8 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3eb3332f 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3eaaaaa6 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3ea2221d 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3e999994 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3e91110b 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3e888882 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3e7ffff3 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3e6eeee2 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3e5dddd1 1 1
+G 1 c3d7df86 c17be700 43c317e7 3f7796cb 3c807d16 3e822a02 be822a02 3cd79238 3f7796cb c18773e4 becf472b 3f30fdf6 0
+deadbeef deadbeef deadbeef 3f800000 3f800000 deadbeef deadbeef deadbeef deadbeef 3e4cccc0 1 1
+deadbeef deadbeef deadbeef 3f800000 3f800000 deadbeef deadbeef deadbeef deadbeef 3e3bbbaf 1 1
+deadbeef deadbeef deadbeef 3f800000 3f800000 deadbeef deadbeef deadbeef deadbeef 3e2aaa9e 1 1
+G 0 c3d2c821 c17b4865 43c0025c 3f45adc9 3bc3c8d6 3f22a997 bf22a997 3a48b7da 3f45adc9 c1b28cc7 3fc1c52f 3f8b128a 0
+deadbeef deadbeef deadbeef 3f800000 3f800000 deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+G 0 c3c6658f c0e32834 43dc1bf1 be4b9017 bd48402b bf7ae404 3f7ae404 3d4a880b be4b9017 c11f6db4 bf36c996 bfbebdb3 0
+=
+=
+=
+=
+=
+G 1 c3d9ea20 c163a133 43bc662a 3efce2ed bc9f48a5 3f5e9814 bf5e9814 3d07c76c 3efce2ed 421b14f5 bfb4f5e2 bf0cb1df 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+G 1 c3d6d0b2 c1813eb1 43c4e629 bf6729a8 3bfb28d6 bedbff87 3edbff87 3d3b4fcd bf6729a8 c1ad1db0 bf20be1f beebd892 0
+deadbeef deadbeef deadbeef 3f800000 3f800000 deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+G 2 c3d94159 c1701c65 43cd1657 be1982e5 bd1bc4a8 bf7d1b63 3f7d1b63 bcb2f6da be1982e5 c2087fb2 bee19f64 3f679db9 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T c3ea696f 417cdca0 43056fbd c159a572 00000000 c1fa05f5
+G 0 c3f3247b 418a4066 430e9c18 3f153100 bcb537d7 bf500891 3f500891 3b62e720 3f153100 c1265972 bfbab393 c1a80a58 0
+G 1 c3e21789 4171aa74 43011500 bf6aa670 bcae04ed beccb2a9 3eccb2a9 3d39a536 bf6aa670 c169b448 3f7d7b5b c1e1ea15 0
+G 2 c3ee4550 41823a9f 43075f63 bf6ca5e8 3c992975 bec34800 3ec34800 bc6fa2a1 bf6ca5e8 c097c3e3 bee95376 c109fb86 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+G 0 c3dd3fe5 419ce60c 433fcc57 3f7fdfb5 3d09ce21 bd0090dd 3d0090dd ba87ce81 3f7fdfb5 c113e905 3fb6b10b c1bf00b7 0
+G 1 c3f4d524 4155ce24 430e8782 3f1f512b 3ceb4db5 bf486283 3f486283 3c7650fa 3f1f512b c034e083 be6ca857 c0f9c20d 1
+G 2 c3ee2523 417794c8 43004aad 3f7b1796 bd2b2042 3e478c8b be478c8b bd2f44dd 3f7b1796 4137a303 be851c1b 41c95307 0
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+G 1 c3ebc707 416efa54 431baf0f bf598c67 3cb1212b 3f06f084 bf06f084 3cadc177 bf598c67 c0b0ef66 bf512680 c117aa54 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+G 1 c3e37ae7 418225d8 430a459f 3f201dac 3d0e35ca 3f47bf41 bf47bf41 3c83ed2d 3f201dac c1454dc1 ba588c66 c1c0bae0 1
+=
+=
+T c2a1e85f 40d1b3b5 43881ef0 41846684 00000000 413d9053
+G 0 c2a1be2e 40d5cb17 43875b9d 3ec734ee bd193161 3f6bd424 bf6bd424 3d351a4a 3ec734ee 4180063d bdd14822 412dbfc4 0
+G 1 c29a552d 40cd8c71 43857123 be75a8dd bcb45f18 bf788629 3f788629 3d4592a8 be75a8dd 41784217 bf60c926 411f6a96 1
+G 2 c2ce7b89 40a83ec1 43885875 3f7ec020 bbd209a5 bdca194c 3dca194c 3bda2338 3f7ec020 41b8d20a 3fb3ced4 4198055e 0
+=
+=
+G 1 c2393f7d 40dfed92 43645968 bf5d6135 3d27c98d 3f008eb6 bf008eb6 3d36786e bf5d6135 c1f97be9 3f462d53 c1b28c0b 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+G 1 c295f741 40ca0d90 43799ca5 bec5e8b8 bafdae5d 3f6c1a07 bf6c1a07 3c81e6c6 bec5e8b8 41bb1f16 bfd1a154 4186dac1 1
+=
+=
+=
+=
+=
+G 0 c1b765ce 40da9295 43884410 3f5adf04 3d462ab8 bf04c88a 3f04c88a bc7a6fa8 3f5adf04 41983ed7 3fae5fba 4181fd7c 1
+bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c2b4856e 40bef92f 43896aaa bf5323da bccfb034 bf10c2ef 3f10c2ef bc6260e0 bf5323da c1c707f6 bfbf818a c184a742 1
+bf800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T c2959631 c14b56c5 c3c48075 41eff638 00000000 415865bb
+G 0 c27f1380 c14c1b96 c3c1d3bc bf347d8c baab9a62 bf358bf5 3f358bf5 3ccfd43c bf347d8c 42100607 bfde1410 4167ea89 1
+G 1 c27c6da3 c16d0677 c3c17898 bf7da0e5 3d437178 be0b0f0c 3e0b0f0c 3d3cce1e bf7da0e5 41959d36 3f1b9899 40f97c61 1
+G 2 c2847bff c134e2b8 c3bd4005 3e1a4603 bca3a5b9 bf7d13f9 3f7d13f9 3d3fe764 3e1a4603 c12f47bc bf9918a1 c0f0ff47 0
+3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+=
+T 43ec947d c1916d33 435182c5 3f88cfb3 00000000 3fd67698
+G 0 43eb931d c1992d13 4369380c 3ee378e5 3d055edd bf6558dc 3f6558dc bb485b0b 3ee378e5 419398c5 bff65bd7 41daa77a 1
+G 1 43e6ff1e c191a543 4359e74d 3f217f94 3cd44cb0 bf46a18b 3f46a18b 3d3edf32 3f217f94 4115e0b4 3f85b182 415056f4 1
+G 2 43ef6391 c18c9cb5 4351aac9 3f48dde0 3d0dafc5 bf1eb586 3f1eb586 bc4a8af7 3f48dde0 c1509c68 3f1bb102 c1ad0bca 0
+=
+=
+=
+=
+=
+G 0 43eb96c4 c19f954a 4365e295 3eeb32bd 3d30aaa6 bf6363fa 3f6363fa 3d0318df 3eeb32bd 41970a8a 3f13a0e4 41d3ddbd 1
+=
+G 0 43d99312 c19dea09 4325f970 bf7ffe31 bce2340a 3bf37f2e bbf37f2e bd21468e bf7ffe31 c1628441 bd52175d c1ad21a7 1
+bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+G 0 43e6ab11 c18c0538 434db5f0 3c937bb1 3d1d77e7 bf7ff561 3f7ff561 bd452448 3c937bb1 413e354f bf940e5b 4193bcdb 1
+=
+=
+=
+=
+G 0 43f4ad6b c18b2cc9 4359adaa bf2a7ef2 3b046890 bf3ef6b9 3f3ef6b9 bcf67da8 bf2a7ef2 411d36af 3e373e98 419bfc94 0
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+G 1 43e303fd c184a6a6 43437b53 bf66d883 3d45dae5 bedd5352 3edd5352 3c98a349 bf66d883 c116e6ea bea37dbf c1349590 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 43e7eb8f c188a293 434d4dcd bf318a13 3d3050f5 bf386f05 3f386f05 3c6a8c5b bf318a13 c19623bd bf99c432 c1d3f543 1
+=
+=
+=
+=
+=
+=
+=
+G 2 43ecf48b c19296fc 43538db6 beb08e92 3cece7d2 bf704c2c 3f704c2c 3d3d3ceb beb08e92 417b71b9 3f71cf30 41b4dcf3 0
+=
+=
+G 1 43e74d20 c19ba245 435b81f5 3f586a69 3cdeff04 bf08bfb8 3f08bfb8 bd35b7aa 3f586a69 c17979c0 bf02d2e1 c1ce1fa7 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+G 1 43e0e1d1 c19fe4af 43491ce8 3f290cf4 bd1fc302 3f403e8f bf403e8f bd1c7292 3f290cf4 411d255f 3f70bd89 41820efe 0
+=
+=
+=
+=
+G 1 4402790b c16ec10d 43378168 bf5002a9 b952f70d 3f15393c bf15393c 3c0fa793 bf5002a9 4125f65f bfab367c 4196a029 0
+=
+=
+G 1 43ef04fc c187cb31 435ef694 3f3ff8b1 3d33a679 3f295c46 bf295c46 3cc3d1cf 3f3ff8b1 418bf7a5 bfbe7faf 41f91909 0
+=
+G 0 43ec5564 c19146b6 4351c82b bf7224cf bd2dcd3a bea62949 3ea62949 bced91da bf7224cf 412e17eb bec835f0 418ee656 1
+G 1 43f3916a c198fbb4 4348f2b3 3f5a49af bd44b93e bf05bd7a 3f05bd7a bccaf604 3f5a49af 41a5c66d 3fe34923 41e0b42e 0
+G 2 43f64cdb c18099c8 435c30e3 bf7ae05d bd165a4a be4bd810 3e4bd810 bc4c9e2f bf7ae05d c0b5be22 3f514476 c151feb8 0
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+G 1 43f20302 c19332af 434933e4 3f7f4f98 3c815a7c 3d962a6d bd962a6d 3d1d386c 3f7f4f98 406fd6a6 3fa9df91 40e64571 0
+=
+=
+=
+=
+=
+T c37d309b 41841e7d c395bb5a c08e53e6 00000000 40a57376
+G 0 c37ddd45 41863a62 c3941ef7 be160d9c 3c66a70b 3f7d3c8f bf7d3c8f bbc6750a be160d9c c1968204 bdbfa6ab 41aa7147 1
+G 1 c385f13b 41908213 c39a0363 bf7f7adc 3c7509cb 3d827aa6 bd827aa6 bcad5897 bf7f7adc c1ac9c6e bfa36de9 41c49cde 0
+G 2 c37de73c 418466db c396f08a 3f2ca0a2 bd222814 3f3d09fe bf3d09fe bb98246a 3f2ca0a2 c1abf275 3deb5c3a 41b32926 0
+=
+=
+G 0 c379e4cd 4186e4e6 c39918aa 3f7e4424 3c4ce302 bdedf3e2 3dedf3e2 bcf0fd95 3f7e4424 418e90b6 bf3effee c1aa13cb 1
+=
+G 0 c37af4f3 418a7bcc c38e0490 be7b7e56 bc9fb222 bf7828bb 3f7828bb 3a31f531 be7b7e56 c09ea2f9 3caa6428 4068ad8e 1
+G 1 c37da1e3 4187f1dc c398bd50 bf772b6d bcfce5b9 be855075 3e855075 3c125a2b bf772b6d c13b10f7 bfbc8827 415b7167 0
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+=
+G 1 c381e78b 41735dbb c3900743 bed1f824 bcda4a5b 3f697b9a bf697b9a 3ca59f43 bed1f824 c10e4d4c bfe4d8e2 410d66cb 0
+=
+G 0 c384dc75 4179d5b1 c390b039 beabe4da 3b74a64b 3f71242b bf71242b 3d0ce422 beabe4da c19da66b bf8ca672 41c8f8b6 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+G 0 c388974f 418b5247 c399c6ed 3f7a93cc bce3a016 3e51a5b3 be51a5b3 3d1aacfd 3f7a93cc c19b1fe8 bf878c45 41ac9008 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+G 2 c37ce84b 4187b9cb c397a3d0 3f1650e3 3cf29af5 bf4f38ed 3f4f38ed 3c63c488 3f1650e3 c17dfc80 3f9255bd 419c9932 0
+=
+=
+=
+=
+G 1 c38419d2 418605ff c39337f9 bef09a60 bd2c6f00 bf61f8f2 3f61f8f2 3ba32200 bef09a60 419add50 3f9ad907 c1c31f87 0
+=
+=
+=
+G 0 c36f7a2b 417e28db c3910984 3ddb8670 3d0ef783 bf7e866b 3f7e866b bccdd3c5 3ddb8670 c17f42ea 3ee7b1e5 4188069c 1
+=
+G 0 c369a485 41880996 c393c4de 3e0ab0c1 3d459a9f bf7da41f 3f7da41f bc64dd05 3e0ab0c1 c1c46b87 3fb0cacd 41fac103 1
+=
+=
+G 0 c389849c 416bb864 c39577f9 bf13a351 bcd357f6 3f512388 bf512388 bc95feb0 bf13a351 c19e35a4 bfe272d6 4197f2db 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+G 0 c37ce03b 4183f0e1 c3964c54 be218082 bd47ff7b bf7ccbc7 3f7ccbc7 3c526c30 be218082 c156a28c bff90bef 4163c797 1
+=
+=
+G 1 c378bcd6 4184c698 c3944e52 bf75f3c6 3c8ae749 be8e0901 3e8e0901 3ce7b9c6 bf75f3c6 c0f2d2be 3fc01c5d 4123d41d 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c37d2264 4182b047 c3936bc3 bf0cc995 3d1a6fb9 3f55cf78 bf55cf78 bcc8241a bf0cc995 40d4001e 3fcd59ac c08a9a8a 1
+=
+=
+G 0 c384b3eb 41820166 c3981251 3f6f0f7d bd47ccc4 3eb726ab beb726ab bc6cfff2 3f6f0f7d c11d1b13 bf9d53f6 4168c533 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+=
+G 2 c36ecbbe 41869b39 c398151a 3ee06937 bb0d1890 bf66198e 3f66198e bcf44b23 3ee06937 c196ffa3 3fba78f7 41949957 0
+=
+=
+=
+=
+=
+=
+=
+END
+CASE 0 2 1 0 1
+T 43860e7c c0bb634a c3016b08 4135f6a8 00000000 40b469ed
+G 0 438a58f9 c11332f4 c33f368d bf0601f9 bd1f03af bf5a1fa9 3f5a1fa9 bc179356 bf0601f9 420a3057 3f92ce57 4179818d 0
+G 1 438c0c72 c0b611e8 c2faf4c4 bf7111dc bc78c9a9 beac4b72 3eac4b72 3d333bbf bf7111dc 4200692d 3f469c06 417c7c82 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+G 0 437cb24b c0e04e7e c2eb017c 3edb1c0b bc2f95a1 bf675fa6 3f675fa6 bbe0655c 3edb1c0b 41135f4f 3fb431dc 408eb218 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 438747e6 c0d55460 c31433a6 3f1975f4 bd061454 bf4ce784 3f4ce784 3d468790 3f1975f4 42034e40 bf82b3ea 41870955 0
+=
+G 1 4376a23f c0ce9246 c304e112 3f5d41aa 3c7134fe bf00c4f8 3f00c4f8 3c41a65e 3f5d41aa 41c38058 bf61de5e 412ee4ad 0
+=
+=
+T 435bdd9a c0824fd6 c1df693a 40d1ef7b 00000000 40dd88b7
+G 0 434f6521 c0ecfbe2 c2b1393c be4e7256 3cf10ba2 3f7abe4d bf7abe4d bd36b717 be4e7256 41c6a5b2 be6021b0 41c2a936 0
+G 1 43598dc6 c08ac3c0 c1ef3cc5 bf518e04 bcb6fba8 bf130c06 3f130c06 bce8b261 bf518e04 41c7602a bea15570 41d12d3c 0
+deadbeef deadbeef deadbeef bf800000 3f800000 deadbeef 00000000 1 1
+=
+=
+=
+=
+=
+T c2eb301b 4072104a c3850ea7 c102e018 00000000 c0a16d85
+G 0 c2e76d0d 407bb62f c38249f8 bea4b2c8 bbbcf93f bf7264bd 3f7264bd 3c3d8b87 bea4b2c8 c1f5d432 3fa44a3e c190e032 0
+G 1 c2e5e136 406c80f0 c3851208 bf78710e 3c8d68d6 3e76fd89 be76fd89 bd1a56a1 bf78710e c13c157c bffa7d19 c0ad6e42 0
+G 1 c2eb533d 406dfefb c38778c7 be729bef bc633583 3f78b616 bf78b616 3b013331 be729bef c1b29534 bfe36451 c154ffbf 0
+3f800000 3f800000 deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c2f06a5c 40721268 c38911f0 bf2fcabb 3c127543 bf3a1998 3f3a1998 bbc1fe15 bf2fcabb c17a4710 bfd94732 c11f935c 0
+=
+=
+=
+=
+=
+=
+=
+G 0 c2bafa03 409d9de1 c386f685 bf7fec5f bd3d82aa 3cc879bf bcc879bf 3c6c9201 bf7fec5f c0d59097 3ef94c41 c091e8d9 0
+G 1 c30861a5 40e449ca c37ace7e bf709a8f 3ce717de 3eaee188 beaee188 bd4966b8 bf709a8f c18fb685 3fede5f7 c13e3fd0 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 1
+=
+=
+=
+=
+G 0 c2e3f531 4083fa6a c383a72a 3f1816b7 3b64b242 3f4decbf bf4decbf bd0351f4 3f1816b7 c1c4aeae 3f82856d c1608284 1
+G 1 c2fd0f5c 407356bf c38879b5 bf0b5b82 bc1ef8de bf56bec5 3f56bec5 3c51b2e9 bf0b5b82 c115db66 bee60a76 c0dee842 1
+bf800000 deadbeef 3f800000 bf800000 3f800000 3f800000 00000000 1 2
+G 0 c302a3d8 4096eeba c384c8da 3f48a063 3b9a5b74 3f1f0339 bf1f0339 3d013497 3f48a063 c04e413e bf91a98a bf6367ac 1
+3f800000 deadbeef 3f800000 bf800000 3f800000 3f800000 00000000 1 2
+=
+=
+=
+=
+=
+=
+G 0 c307b139 401d05f9 c38ad728 3ef0fe09 3c95ce8f 3f61de64 bf61de64 3d20b90c 3ef0fe09 41315a1a 3f915d46 40efb421 1
+=
+=
+G 0 c2d361fc 408ec76d c389aa9b bf7f93ab 3d43fb1a bd6b69af 3d6b69af 3d1d1e09 bf7f93ab c0dee4d7 3c604b6c c0a3cced 1
+G 1 c2d3b7f4 4056a4ec c3835a80 3f75d860 3cdab361 3e8ec63d be8ec63d bd374158 3f75d860 c1d92468 bfd54401 c1827a10 1
+=
+G 1 c2deeda7 4042183f c37bb31d 3ef0b963 3d370d29 bf61f0b0 3f61f0b0 bd4b175d 3ef0b963 c185e1f1 bfde6c44 c10dafd5 1
+3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 00000000 0 2
+G 0 c3081990 4016a4e4 c3837adb 3f783d36 3c2a78df be7a3a16 3e7a3a16 bc94dbea 3f783d36 c18779fa 3ec7a0a6 c119defd 0
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 2
+=
+=
+=
+=
+G 1 c2f2b477 40772e17 c383aefb 3f4c82e3 bc9df652 bf19fbf5 3f19fbf5 3cd27ba5 3f4c82e3 c1b356e8 3f4307db c14de82c 1
+=
+=
+=
+=
+=
+=
+G 1 c2e97cd0 4053b179 c38d6e4c 3f6be2dc bcc55920 3ec6ef2d bec6ef2d 3c8d5bea 3f6be2dc c1ad5240 bede64a2 c137d81c 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c30a8aed 3fb0f016 c3869333 bf6b10c6 bc8762fa becac85d 3ecac85d 3d1ddc5d bf6b10c6 416c2b26 3f49a69e 41092aba 0
+G 1 c2f10769 40840894 c38b46ce bf094bfb bb91fc82 3f581188 bf581188 bb858d83 bf094bfb c17c11d0 bec92953 c12d9326 1
+=
+=
+=
+=
+=
+=
+T c3100d04 4146da94 43990302 4208e006 00000000 bff4e0e0
+G 0 c311745e 4151d7ea 438c937d beeb685c 3bad9755 bf63561a 3f63561a 3a4f0229 beeb685c 41f3215a 3e8642e3 c058b318 0
+G 1 c324e4e2 413660ff 439c68e8 bf0947ad bac8aea1 3f581444 bf581444 3cb62f9e bf0947ad 4147d271 3fc02c3a c02911b4 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 2
+=
+T 43b1fd2e 414108f2 43c6ec64 41990a73 00000000 c116d8e8
+G 0 43bb4361 41240df2 43c2653d 3f76efdb bd12b52c be870737 3e870737 3d4b891a 3f76efdb 41fbe84d 3fea02ad c15d116a 0
+G 1 43aef56e 413c3851 43c47514 beb14517 bd416de8 bf702a92 3f702a92 bd42f0e8 beb14517 c1a1ec9e 3f03f083 4120dd5e 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 43b605fb 4138e56f 43c663ea bf7fbe58 bc895e9e 3d374cb9 bd374cb9 3c69a1a3 bf7fbe58 c165a9e6 bef154b8 40fc8944 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 2
+G 0 43acd9f3 414ec101 43ce2a6d bf4ac6be 3cadade0 3f1c4307 bf1c4307 bd37e558 bf4ac6be 417844d8 3eeffae2 c0f2f0db 0
+=
+=
+=
+=
+=
+=
+G 0 43b6d625 4135d1c8 43c3a3cc bed3a2b2 3d18240f 3f691b3e bf691b3e bcb3f6a1 bed3a2b2 409ae004 bf21a921 c0730b44 0
+=
+=
+=
+=
+=
+T 424fa47a 402e0160 c065862d bfca9bd0 00000000 c085302c
+G 0 42187670 4043247f c10afbdc bf7fa05a bd4aa3d9 3d5d369b bd5d369b 3c99dfab bf7fa05a c060a17e 3ef00251 c10b7dc6 0
+G 1 4269c468 403526c5 40ec4bad 3f02f4be bb277b98 3f5bf828 bf5bf828 bce2fb54 3f02f4be c0f5d9af bf0a6a74 c1b2fab4 1
+deadbeef deadbeef deadbeef bf800000 3f800000 3f800000 00000000 1 3
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 4261abac 402527fd be2f5e9b bf79d1ef bc8cf622 3e5fa3f4 be5fa3f4 bd3356f9 bf79d1ef c0c1428e 3fc2f7ea c15cfca7 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 3
+=
+=
+=
+=
+G 1 4296ad36 3fd1b812 423b3385 bf163838 bcc7d809 bf4f4ad0 3f4f4ad0 3d019146 bf163838 c10dfad8 3ea56ef7 c198074e 1
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 426296a3 404b13e2 3dc99a67 3f5af631 3d445717 3f04a24e bf04a24e bcbb0059 3f5af631 bfda581e bf5bda3b c0eabd80 1
+deadbeef deadbeef deadbeef bf800000 3f800000 3f800000 00000000 1 4
+=
+=
+G 1 42aaa260 4112053f 424efc69 beb67140 bce6ec14 bf6f3229 3f6f3229 bbb3cb77 beb67140 c08b03f4 3ec45abb c14c7b48 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 4
+=
+=
+=
+=
+G 0 42628417 400b5af9 4077fc6d 3f7f4a64 bcb26e3c 3d985c58 bd985c58 bb6e8ea0 3f7f4a64 c0c7901f 3ff12b7e c15bfd4a 0
+=
+=
+=
+G 0 42767f20 4087c2a6 4097f020 beab1b44 3d2e14f2 3f714800 bf714800 bd0198c5 beab1b44 c1220f63 bf6bb67c c1d7e845 0
+=
+=
+G 0 4217e921 403b53c7 c10de070 3f07ba99 bc6c1754 3f590e8c bf590e8c bc75c107 3f07ba99 c14e57ab 3fe204ef c2136490 0
+=
+=
+G 1 422ddc26 3fbb4f68 c180c88c 3f0f3a7d 3d4942e3 3f542ed6 bf542ed6 3d229ecd 3f0f3a7d c1506919 3e96cb82 c20c1866 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 4
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 42117845 40a18df2 c09aaac6 3f5a9291 bd1757e3 3f05463c bf05463c 3d2ab241 3f5a9291 c11caa75 be02e2fc c1dd8aef 0
+=
+=
+T 424ab8ad c147bd9d c3d68d32 c1aa98ce 00000000 c0ebccdd
+G 0 422ab4c3 c15451d8 c3d9d124 bf7c1f85 bcfebf1d 3e318915 be318915 3d15c8c3 bf7c1f85 c2149dbc bf24a9ba c153b0d3 0
+G 1 423efd91 c14b36d2 c3d596cd 3f521f99 3c9ba947 bf123bb2 3f123bb2 bd243203 3f521f99 c1469cf9 bf649558 c086703d 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 4223a1d0 c15ea4ed c3d41431 3f638be6 bb79fa79 3eea9817 beea9817 bd421073 3f638be6 c1fa4032 bf9b92e1 c1351c25 0
+=
+=
+G 1 424e8fb9 c1472481 c3d5a2d3 bf203635 3cd8c0f7 bf47ab93 3f47ab93 bb509da8 bf203635 c18a9efe 3f946b9c c0a43e01 1
+=
+=
+=
+G 1 c139d887 c11b8b52 c3d10d1f 3f28e9e0 3d33e36d bf405d62 3f405d62 3c6cc0f9 3f28e9e0 c20438b5 3ffc1209 c148a556 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 4
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 423e6480 c1261c0c c3dffcad 3f2ac4d3 3d2c7797 bf3eb83e 3f3eb83e bd483e28 3f2ac4d3 418acd2d 3ece515b 4076d248 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 4
+=
+G 1 41f59920 c15d6323 c3d04108 3e25c68f bd251dc4 bf7c9f80 3f7c9f80 3c828406 3e25c68f c20323e7 3fb33575 c12abcfc 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 4
+=
+=
+=
+=
+=
+=
+G 1 41e28df6 c154f855 c3d9b794 3f475ebd 3cc285f4 3f2095ca bf2095ca bd350e91 3f475ebd c181ca31 3f9e6b19 c0ba84f4 1
+=
+=
+=
+T 43476aa4 bfccf992 4390bad5 bfac0476 00000000 4060a973
+G 0 435930bb 3e99a143 438ec98b 3effe114 3d14d343 bf5dbcc4 3f5dbcc4 3c2a6b32 3effe114 c128b5b2 3f5e6d79 41f212eb 0
+G 1 436ceecc 3f41bb37 436eda94 3f3427b8 3d2192ca 3f35e122 bf35e122 3c8cbdac 3f3427b8 c105cd6e 3f657a63 418563cc 1
+G 1 43448e26 bfa85da4 4391a457 bf45bcb1 3d1d9f46 3f229777 bf229777 3d03a5ec bf45bcb1 c0953461 bfbff842 4164cea2 1
+deadbeef deadbeef deadbeef bf800000 3f800000 3f800000 00000000 1 5
+=
+=
+=
+=
+=
+G 0 4348df79 bfedc73f 438fb029 3f7aae58 bd365e82 be4fa789 3e4fa789 3a167fd7 3f7aae58 c0f782c6 3f4bb78b 41961725 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 433e5f5a bfc1d650 4395eaa9 bdf81750 bd271d49 bf7e1d5f 3f7e1d5f baec121b bdf81750 4143ccb5 beb371f9 c20be884 0
+=
+G 1 435b58ba c05d913f 438eec06 bf0fd430 bcace67a 3f53c6c5 bf53c6c5 3d118da8 bf0fd430 c0f26870 bf711c86 41c3eee8 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 5
+=
+=
+=
+G 1 4349154f c00b9a0d 438bf8b6 be634fd1 bcef061f bf799ce5 3f799ce5 bb12e766 be634fd1 c11d6abf bf5e3063 41b8f6ff 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 5
+G 0 4350c3a4 bf4ad731 43918b07 bf7ca8b0 bc664350 3e24e5e0 be24e5e0 bd48202a bf7ca8b0 c10303a0 3fb99d37 41b68dd0 0
+3f800000 3f800000 deadbeef bf800000 deadbeef 3f800000 00000000 0 5
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 434a47b0 bfa5a1ff 4391c73a 3f340cda 3c73df03 3f35fbbb bf35fbbb bca66081 3f340cda c150627d 3f67c185 421655a7 0
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 5
+G 0 434472ca bf6160a9 438e51ec be4790bd bcda8513 3f7b1761 bf7b1761 3cf45c75 be4790bd 401fcdc7 3f36e4e3 c1480eb1 0
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 434a0e45 c0171add 4388c13c beb60993 3cff21c2 bf6f45e7 3f6f45e7 3cc1e258 beb60993 40f28a76 beb03154 c1652d4f 0
+=
+=
+=
+=
+G 1 435fa082 c0273040 43913afa 3f2698f0 bb557924 bf425fc7 3f425fc7 3cc239d2 3f2698f0 c1421d25 bfabb2b5 41e10e72 1
+=
+G 0 43465356 bfc38f18 43903965 be8c66af 3cdb3e77 bf762fca 3f762fca 3b3da367 be8c66af c14a6286 bfeaa051 41fd2793 0
+=
+=
+=
+G 0 434cd850 bf958d2e 43979255 bf231a87 3d3bc9e3 bf4550a4 3f4550a4 bd31fda5 bf231a87 c15f037a 3f8528a0 41ee469c 0
+3f800000 3f800000 deadbeef bf800000 deadbeef 3f800000 00000000 0 5
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+END
+CASE 1 3 0 1 0
+T c270351e c0a133d8 c3f17f8e 4183f637 00000000 bf834f8e
+G 0 c24f4a7b c08cc6a0 c3f09531 bf5b0618 bcd213e8 bf04880a 3f04880a bc9daa98 bf5b0618 411b9289 bf7d8de0 be93dce2 0
+G 1 c278698e c09f7010 c3f0a2bb 3c904efa 3c8e886e bf7ff5d5 3f7ff5d5 bd2a3c70 3c904efa 40e2b015 3f61acbe bffeae67 0
+G 2 c28e2958 c03a8e1f c3e9867c 3f10405a bc7f588b bf537d27 3f537d27 3cefc386 3f10405a 421064a6 bf2df7b0 c0432e72 0
+G 1 c244213e c0e5d7e0 c3d47d20 3edc0b2a bc2238a8 bf6726e3 3f6726e3 bbd8162e 3edc0b2a 416c4a1c 3fc71433 c03e3db1 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+G 2 c21db410 c07dfc52 c3ec0065 3edf2cff bcd29f60 3f666664 bf666664 3ce3b1e0 3edf2cff 4193e6c3 3f7a034a bfe82888 0
+=
+G 0 c2686b62 c0a9ccc5 c3efea7b 3f108034 bcac1daf 3f53518b bf53518b 3d2b2fa0 3f108034 416672aa 3fdc7d57 bf5694b4 0
+=
+=
+=
+=
+=
+=
+=
+=
+T 41f02f93 40869bb4 c394becd 3e9093ad 00000000 c1bae131
+G 0 4206dc47 4085707f c3970964 3f690a81 bc69d125 3ed3ec62 bed3ec62 3c51d9bd 3f690a81 beed2599 3dac1cd8 c1db5254 0
+G 1 41da52cb 40805a10 c394da0b 3f7f5d67 bcaf23ec 3d902d33 bd902d33 bd1c19d3 3f7f5d67 bf47b04a bf8ee7ee c0f1668e 0
+G 2 4203c7a5 404c7c4f c3999306 bf17a83c 3d4bf445 3f4e3e2a bf4e3e2a bd1520f1 bf17a83c bfbc61c3 3fa5d6d0 c10026d6 0
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c1c8bf42 3feca76c c39a175f 3f6ae23d bd17767d becb9f9a 3ecb9f9a bcce503a 3f6ae23d be8a9978 3f797397 c1ec49ff 0
+=
+=
+=
+=
+T 41a244e2 419e33c2 43872f2b c19cab12 00000000 41f26031
+G 0 41af033b 419887d7 438188c6 be892f62 babe8ffa 3f76a3b9 bf76a3b9 3ce22976 be892f62 c07ac905 bfba22dd 40dca3b2 0
+G 1 41b37765 419dd00e 4387ef21 3f43ad51 3bfc9685 3f2510ae bf2510ae bcf3ac85 3f43ad51 40aa9950 bf54c1b2 c10aab2d 0
+G 2 422e215f 419f3c73 43886e84 bf593501 bc56e480 3f077d07 bf077d07 3cc39ec0 bf593501 c06106ad 3f22a26e 410b695a 0
+=
+G 1 bfa85ff5 41d5c0c6 43a3bb82 3ef91d80 3cd0c8bc 3f5fa797 bf5fa797 3c021e1a 3ef91d80 c1817cd4 3fae2230 41ce5554 0
+=
+=
+G 2 41e01858 41a1df11 4387c159 bf522ecc bd23f8d8 bf1225d9 3f1225d9 3d2ed164 bf522ecc c193f01b bd3618b5 420038f8 0
+=
+=
+=
+=
+=
+G 0 4201593a 41a41371 438d4706 bf5ccbea bc46da0e bf018e77 3f018e77 3c9ae3fa bf5ccbea c11a2b01 bd0076cf 418de021 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T 42135a26 c1063c36 c2cd848d 41615518 00000000 c1a0067b
+G 0 41bd0957 c114fad3 c2f0d345 3eccb633 bb33e694 3f6aa5ab bf6aa5ab 3d418344 3eccb633 418eec45 bf76d03a c1ecf2cd 0
+G 1 423a68d2 c0fd4c30 c2f176b0 bf7206f3 bcdff7c3 3ea6d6ee bea6d6ee bc6e5fe9 bf7206f3 41483246 bf042c8a c1639e31 0
+G 2 42b512d6 c0b9be7d c2f2be36 3f7c1197 3c9fcb0f be32c47c 3e32c47c 3c69c120 3f7c1197 c0fe78ee 3fdc3623 415f09a9 0
+=
+=
+=
+=
+=
+T c37376bc 3fc18b70 c3a5ce30 4130ca2c 00000000 bf7ea835
+G 0 c3758445 3fcad29d c3a53e72 bf609781 3d023a9b 3ef5b830 bef5b830 bce0620b bf609781 418ef158 bff332f3 c06763e4 0
+G 1 c36325df 3fcbfa76 c3a5500b bf6e85ea bd18a86d beb9eebf 3eb9eebf bd0225ad bf6e85ea 41a4ad2f 3f441d0c c03bbe58 0
+G 2 c375a248 3f9a980f c39ebf20 3f1cc74c b939dae7 3f4a608b bf4a608b bd3ca36f 3f1cc74c 41afaad0 bf10e57b bf95bf94 0
+G 0 c3769274 3fa0a2f0 c3a2f008 be991cb7 bcf4bbf4 bf7448f6 3f7448f6 bd32b9ca be991cb7 413d1fe0 beeca4e0 bf1be5b5 0
+G 1 c37630b5 3ff69668 c3a287ac 3f768b56 bc6794d5 be89de4c 3e89de4c 3d26963e 3f768b56 411d4b02 3f3402d5 c0105332 0
+=
+=
+=
+=
+G 1 c36efdb1 bd5a1186 c39be694 be6188b8 bb81af8a bf79b6b1 3f79b6b1 ba98138a be6188b8 410aab4a 3fdae0fd c02955b6 0
+=
+=
+=
+=
+=
+G 1 c3626328 3fa30131 c3a80eb4 beecf114 bba037ac bf62f004 3f62f004 bcf4f36e beecf114 41e38054 bf6d85bc bfd0f000 0
+=
+=
+G 2 c3733b6e 3fc96434 c3a68d97 bf34fcfb bccfb296 3f350ceb bf350ceb 3cd4683b bf34fcfb c1ca0429 3db08c7c 3fe07b28 0
+=
+=
+G 1 c37a9036 3fd7d971 c3a12b31 3e746766 bc31031e 3f7899f7 bf7899f7 3d436360 3e746766 415ccf6d 3fac3bd9 bf8dd62d 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 c380b079 3ffb85f8 c3af3644 3f7d532a 3d0c09a7 3e13a627 be13a627 3cb99614 3f7d532a c2059cda bf9354db 40511a65 0
+=
+G 0 c372e966 3fbb7f00 c3a3f9d6 3f2a110a 3d1fd8a8 3f3f58a0 bf3f58a0 bd2067b5 3f2a110a 41dcee0c bf67c34c c07ecccc 0
+=
+G 1 c3673504 3fda1e77 c3a4dc94 3f1e4e13 3c2735c1 3f492f72 bf492f72 3d36820d 3f1e4e13 421d9cdb bf24b52c c0a13060 0
+=
+=
+=
+G 0 c3718d53 3fc705c7 c3a4938c 3f549d18 3cb34dea 3f0e969e bf0e969e bbb888b0 3f549d18 4106ff72 bfd42d0f bf55b701 0
+G 1 c372a41d 3fc906b7 c3a597ba bf675e7d bd18d903 3edb20f1 bedb20f1 3d4bf40c bf675e7d 4191198d bf02776e bfbf1274 0
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 c371082f 3feb8b19 c3a75a22 bf5ecb84 bd460f55 befc2d7d 3efc2d7d 3ab4d02b bf5ecb84 c04e102d be80e4d7 bebdb5f9 0
+=
+=
+G 2 c371f08a 3fb6c37e c3a644bd be84302a bceaea84 3f77521f bf77521f 3d1688ef be84302a 41e3975d bf701a4d bf3660b4 0
+=
+G 2 c33ac717 c0854fc8 c3a84a33 bf7fed22 3bafbdd3 3cc4901f bcc4901f 3ccba444 bf7fed22 40c22d5d be333e93 bfaa6ca9 0
+=
+=
+=
+G 0 c36e3ce1 40058808 c3a9c2ca 3eac9c1d bcd75799 3f71036f bf71036f 3c15669a 3eac9c1d 41eb9cf5 bfe07cd3 c06e5b70 0
+=
+=
+G 2 c36fce49 3ff05406 c3a9bf8b 3f1cbb08 3c35ca8b bf4a6a0b 3f4a6a0b bd11b3fa 3f1cbb08 415d5e81 3df384e1 bee23e75 0
+=
+=
+G 1 c3748076 3feccd72 c3a8ae38 bf0789da 3cd1f337 bf592d00 3f592d00 bb4272e7 bf0789da 420515cb 3ffa274d c0857f2d 0
+=
+=
+=
+=
+=
+G 2 c37bb4a9 4008df35 c3ad66c9 bef4266f 3cd23fef bf6104f0 3f6104f0 bc862fbe bef4266f 41debd76 3fc58e5c c01ee272 0
+=
+=
+=
+=
+=
+=
+G 2 c375e39a 3f95efc7 c3a480f7 3f7efa30 3c2f0d8e 3db6e14d bdb6e14d 3c55b34e 3f7efa30 41799eec 3efb1862 3e87d9a8 0
+=
+T c344b5d7 c13bc5ca c2e0d2ae 418fcad6 00000000 41131c97
+G 0 c3446bf0 c1375b8d c2e5a403 bf4eccc7 bd04e064 3f16e58a bf16e58a 3d0e675e bf4eccc7 41d2bcec bfb0772c 413af6bd 0
+G 1 c3301074 c164088a c2ccf73e becc9a4f 3b9441cc 3f6aabbf bf6aabbf 3d474aca becc9a4f 420caad2 bfda798e 418d79b5 0
+G 2 c34e23ee c12f9efa c2b8a22e 3f72441d 3c15bf0d bea5725c 3ea5725c bd30a542 3f72441d 41288518 3ff74120 4086d9d2 0
+G 0 c3444147 c137bbee c2e4343c 3f0b69de 3d47ceeb bf56b573 3f56b573 bd3851c8 3f0b69de 41b97065 be5b6676 41458b19 0
+=
+=
+=
+=
+=
+G 0 c34ca438 c135d112 c300c6ff 3ece7a97 3bb9eefd 3f6a427d bf6a427d bd0f7214 3ece7a97 4127b3c7 bfb34b61 409679b1 0
+=
+=
+=
+G 0 c3449aa2 c13d9bb7 c2e661c6 3f46228a bd0da36a 3f221b4b bf221b4b bd1e4a94 3f46228a 41dd5032 bf23ebc7 41458629 0
+=
+T 43320ae6 c0e40e49 426e927d 4090f5b2 00000000 411e9e45
+G 0 432ec8f0 c0d4b462 4226b300 3f1ae9c3 bad17442 bf4bcefd 3f4bcefd 3c0a7068 3f1ae9c3 40d38bea 3e0e9866 4175043c 0
+G 1 434763c5 c0bd2c4e 42407949 3f63986e 3d3351b3 beea6772 3eea6772 3b73a302 3f63986e 41314508 bfb36a10 41c56edf 0
+G 2 4335cb12 c0ece145 426a0636 beac37a9 bd379734 3f711565 bf711565 3bbb1ec2 beac37a9 40205a0b bfd872f2 40d5420b 0
+G 0 432c3b87 c0f71912 427c7ef9 be6b1e9f bb5c80e2 3f792912 bf792912 bcb85e59 be6b1e9f 4101bf30 3fedbce9 419dc605 0
+=
+=
+=
+=
+=
+=
+G 0 43389e21 c106f798 4231fb90 becbde50 bb174518 3f6ad4a3 bf6ad4a3 3b7f86bd becbde50 40b28bfa bdbd8ad8 414bb6a5 0
+=
+G 1 4332a607 c0cb52ea 424c92c6 bf2917be bb8c2e0c 3f403511 bf403511 bc984792 bf2917be 409d9fe8 bffa2e3b 416c88ac 0
+=
+=
+=
+=
+=
+=
+=
+G 2 4326ad9e c1013364 423a1a84 bf4ebbd6 bd3424ce bf16fcbf 3f16fcbf bd18ca12 bf4ebbd6 41846f0a 3ed810b9 420c8d93 0
+=
+=
+=
+=
+=
+=
+=
+=
+T c3d5c10f c0957d2c c3946218 40f1c58f 00000000 c1e396c3
+G 0 c3ca0220 c06fbb0a c39529fa 3f7f6faf 3ae65199 bd87d6b5 3d87d6b5 3cf2bf66 3f7f6faf c1179056 3f4ee42f 4213c7d2 0
+G 1 c3db7a27 c08b8be9 c38e2bd0 bd0c231c 3d04f568 bf7fd9a2 3f7fd9a2 bc4ee7f8 bd0c231c 40f20dc9 3f6c996b c1fb0261 0
+G 2 c3d2ac04 c0aa7fd9 c38ea398 bec3fe68 bd1d56df bf6c8032 3f6c8032 bcedde23 bec3fe68 40b8c331 3ed392fd c18c8f58 0
+=
+G 1 c3d5fb83 c0a2c45e c3915f6f 3ec96687 3cea54e8 bf6b5cc6 3f6b5cc6 bbcbd1e3 3ec96687 40e0521e 3ff563a1 c1c064c7 0
+=
+=
+=
+=
+=
+=
+G 0 c3cd717e c0449e98 c38e5b78 bf76919c 3cc88d31 3e89b161 be89b161 bcdec424 bf76919c 40438154 3eee812a c08408a9 0
+G 2 c3d43057 c08bdb9c c39327c6 be0be4b5 bd131c22 bf7d998d 3f7d998d 3d45a72d be0be4b5 40e523f3 3fe757b2 c1f48480 0
+=
+=
+=
+G 0 c3d7e9a2 c0835b86 c390d4f3 bf7b6c3c 3cb5c656 3e40c5d1 be40c5d1 bd029713 bf7b6c3c 4119fde8 3ff43bc0 c2163f17 0
+=
+=
+=
+=
+=
+=
+G 0 c3d34762 c0a0170b c392a85c 3f4aa694 3cfd0eb9 3f1c6cbb bf1c6cbb 3d181dea 3f4aa694 40ac3179 be93ab5a c1b1b58e 0
+=
+G 0 c3cd13ee c09f7139 c39ae2cb bf7ffc3b bad5b85d bc2fc4f1 3c2fc4f1 3c7b56df bf7ffc3b 40b3f044 3f2c1c69 c183794e 0
+=
+=
+G 0 c3dce5d8 c043d239 c38c901f 3f7fcdb1 bd276616 3d2076d1 bd2076d1 bd250792 3f7fcdb1 41081b86 bf9642e6 c1ef2782 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c3e08fdb bfe0b98b c39a4fc1 bf60736b 3cce840d bef63bf2 3ef63bf2 bb6a43ed bf60736b 40e4cd55 befab531 c2058221 0
+=
+=
+=
+=
+=
+=
+=
+G 0 c3d9723f c0665c5d c396fdf3 3f52935e bd0d988f 3f1194cc bf1194cc bb576594 3f52935e 40ac1e64 bf81e9e0 c1bdbbbb 0
+=
+G 2 c3d2d487 c0996a49 c391addb 3f7d67ea 3d1885ad be116810 3e116810 3bc7ac98 3f7d67ea 410a367f befdf0bc c1ebee20 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c3d5901b c09bf4d3 c391b99f bebfb30a 3d171df6 bf6d610d 3f6d610d bcee060c bebfb30a c0ebe203 bfa0a438 41d43eb4 0
+=
+G 2 c3cbe0d0 c088e95d c391defe 3f781976 3d4bdcd2 3e7c6ee3 be7c6ee3 bca6d1d9 3f781976 408ff634 3fdc2310 c1871f0a 0
+=
+=
+G 0 c3d746dd c096ca6d c392dce5 3ec97ebb 3d217421 bf6b5798 3f6b5798 bc422024 3ec97ebb c0cff037 3f5c1d05 41cf4aaf 0
+=
+G 2 c3d6f241 c0a2c812 c396d3c7 3e8fcacd 3a76dd12 3f75b266 bf75b266 3d109a7b 3e8fcacd 411711a5 3fb27da5 c1e46f94 0
+=
+=
+=
+=
+=
+=
+=
+G 0 c3d47fe9 c0a3a12f c39134dc be2e7bef 3a20e93c bf7c4198 3f7c4198 bbd335d3 be2e7bef 40657d5f 3f8de4bd c1a52fa7 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 c3d6a1e4 c0989001 c39436ac bf54849b 3d04c119 bf0ebb1b 3f0ebb1b 3cdb1124 bf54849b 411af37b 3eaa582b c20089b0 0
+=
+=
+G 1 c3d50b82 c09a6959 c3930f06 bf394399 bd23b9df bf30ac34 3f30ac34 3c9d947a bf394399 40d4840e 3f3d230f c1879d0e 0
+=
+G 2 c3cb2fb9 c0a8ea7f c398aa78 3f7875a5 bb034003 be76b394 3e76b394 3d10b0da 3f7875a5 c046323c bfefc075 4199ef1e 0
+=
+G 2 c3d9e4a1 bfcda7e9 c36d2e37 3eb12c18 ba83aadf bf702f2e 3f702f2e bcd1de8f 3eb12c18 c0f19c0d bfb9c85b 41b7c5c2 0
+=
+=
+G 0 c3d812e9 c0a5b0ab c39393fb 3f79332f 3d0cb301 be6a72f1 3e6a72f1 3be44231 3f79332f 3f4b8f87 bfa83faf c112b2cb 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c3e75f8d c0c1c66b c3a9d8dd 3f05716c 3d3ae20f 3f5a7835 bf5a7835 3d2c56b3 3f05716c 4110ff56 3cce1028 c20dd306 0
+=
+=
+=
+=
+G 1 c3d6bf55 c08f94e4 c39f3e8e 3c37d101 3d2850ef bf7ffbe0 3f7ffbe0 bb659b3e 3c37d101 c0b2a8ca bff66def 41882beb 0
+=
+=
+=
+=
+=
+=
+=
+T 435cdf0c 418e4e94 c2fe7ea5 41857608 00000000 c100fefb
+G 0 4368ae77 41839dc1 c2dd0c03 3f13ac77 bd0bbbb7 3f511d12 bf511d12 3b630784 3f13ac77 c1cf8a60 3fdd46f1 4140368e 0
+G 1 435a5d6a 418efdd8 c300cfda 3f7343db bd1720d4 be9f79bf 3e9f79bf 3d2e0d60 3f7343db 41c844f9 bf788da9 c148bfca 0
+G 2 435d5018 418f8fa3 c3054f76 bd94c466 3ce03805 3f7f52de bf7f52de 3a9b21c0 bd94c466 41fdeb90 3fd51d1a c16f21b6 0
+=
+=
+=
+=
+=
+G 1 435fd560 41918548 c2f550aa be35fd17 3cf25d37 bf7becb3 3f7becb3 3c8de1d0 be35fd17 414d813d 3f567f99 c0c81370 0
+=
+=
+=
+=
+=
+=
+=
+=
+T c28272a8 419acda2 c32de6a3 40644d57 00000000 415416dc
+G 0 c23bb5d2 415b8be4 c2efe75b bc800cdf bd27ce61 3f7ff7fe bf7ff7fe 3c039a27 bc800cdf 4109fb3c 3e2a8ba0 420dde92 0
+G 1 c294c871 4199e958 c32baa18 3ef7ef26 bcc99038 bf5ffb85 3f5ffb85 3b53664a 3ef7ef26 400ba85d bfa16471 415e5493 0
+G 2 c2a85760 419a5025 c33afb92 bf78d2a0 bc738d5a 3e70c5fb be70c5fb 3b3b7ada bf78d2a0 c08d4ef8 bf7c95f2 c18e5c2a 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 c263852f 419c2d7d c323e462 bed0aa5a 3d40df62 bf69c65d 3f69c65d bcd5d032 bed0aa5a c0129694 bfa87356 c084e877 0
+=
+=
+=
+=
+=
+G 0 c2693fed 419ef4c5 c32b1acc bebff0e5 3d14529d bf6d548e 3f6d548e 3d0a555c bebff0e5 40c94c85 bff893f7 41b7a02e 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 c25cffce 41987ffb c32eac02 3f61c972 3be0c582 3ef14c7e bef14c7e 3cec6560 3f61c972 408c89ba bfe69d1d 415503e4 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 0
+G 1 c244363a 4152c063 c2f0b41d bedbe850 bcc3381a 3f672f2e bf672f2e bc02c18b bedbe850 41222008 3f814fe1 420453d3 0
+=
+=
+G 2 c2550f37 419f91b2 c32f5c80 3f67eee2 3c11b5d2 3ed8baff bed8baff bd12dfa3 3f67eee2 40fd8846 bf92975b 420f3cfb 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+END
+CASE 0 2 1 0 0
+T 4278a9fa c14f94b4 42dc6f33 bfe4fd57 00000000 c1a2a13a
+G 0 425b9bb0 c14c229f 42c730ce bf72cea0 3c91539b bea23e35 3ea23e35 bc6cb1cb bf72cea0 c03e1bc7 3fe5d163 c1ae8b4e 0
+G 1 42915f77 c1533346 42cdd65e bf7f1832 3b971923 bdac198b 3dac198b 3cf0323a bf7f1832 c040783b bf89a736 c1b137f6 0
+G 1 42798fa5 c14f0a0b 42da69d3 3f24d539 bd22c5ec 3f43df69 bf43df69 bd2da2d9 3f24d539 c0181f78 bfd11391 c209217f 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+G 0 4295dae1 c146cab8 42ea52fa bf3dc995 bc0d0b94 bf2bcde9 3f2bcde9 bbdfd9c4 bf3dc995 c058878d bff90cb6 c1d547e6 0
+3f800000 3f800000 deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+G 1 4244712e c14e741b 42e48abf 3f777db3 bc9dbe39 3e82e858 be82e858 3c20d873 3f777db3 3f187168 bf0ed403 41bdcac0 0
+=
+=
+=
+=
+T 43a44fdf bf20c605 43eec920 c1a3f03b 00000000 4116f7c0
+G 0 43a4df42 bf8ed138 43ecd132 bf6630ca bc45f746 3ee009d2 bee009d2 bd42eb9a bf6630ca c1ece4a6 3f26beeb 418185cb 0
+G 1 43be95a8 c0abad36 43de47c6 3f782d88 bc1f56eb 3e7b3279 be7b3279 bce7af9c 3f782d88 c0f5d795 bf42045b 40a74c8e 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+G 1 43a8c0af bf6a12e8 43e985f0 3f242e79 bd310c10 bf446b44 3f446b44 bca73bf5 3f242e79 c201e8e8 be907e50 41795525 0
+deadbeef deadbeef deadbeef bf800000 3f800000 deadbeef 00000000 1 0
+=
+=
+G 1 43ac7d75 bf8c7b12 43edb9ba 3f768dd1 3ce0d8b1 3e89cc89 be89cc89 3cf12369 3f768dd1 41d4a67b bf0389c1 c16946c5 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 43a41df9 bf1ac1c9 43ee3162 3f462903 3af2c7d3 3f221362 bf221362 3ae9ba87 3f462903 c131ffdd bf0ecff4 40809db5 0
+=
+=
+G 0 43a7db6d bfae1d2c 43eddf19 3f77e416 bccbab98 be7fb085 3e7fb085 bd21dbb3 3f77e416 c1e31fc3 3f9a2c1f 41555596 0
+=
+=
+=
+=
+=
+=
+G 1 43b009d4 3fa9c61f 43ee84d5 3f17dd55 bce35113 bf4e1714 3f4e1714 3ce4db83 3f17dd55 c08a450a 3f8c9b95 400970de 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 439a4b36 bede42e9 43f0fccc bf7d5535 3d263bff 3e136e0b be136e0b bce19526 bf7d5535 411af8d1 3ff54b5c c02e5ed0 0
+=
+=
+=
+=
+=
+=
+T c3e9712c 40741f31 c38c8885 416e656d 00000000 418a742c
+G 0 c3f8f1d5 40627311 c3a5abe9 3da7ea2c bd394b13 bf7f235a 3f7f235a bcb0ba04 3da7ea2c 4184ef7d 3e022289 4185af9e 0
+G 1 c3ee59be 4050f9cf c38c7d17 bf6faa6c 3c0581b9 3eb3f59c beb3f59c bd0f6a48 bf6faa6c 41377015 3f133841 415e26e0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c3ea8451 40815814 c3898702 3dbd655e bc756c0d 3f7ee728 bf7ee728 3d16cb57 3dbd655e 41640382 3fb75119 4181b63b 0
+=
+=
+G 1 c40400e6 3fba442f c38e0727 becf194f 3bf4abb1 bf6a1f74 3f6a1f74 3d040bb8 becf194f 418b86c9 3ff7f989 41926513 0
+=
+G 0 c3e79c68 407b0f82 c38f2ef5 bf4cbedd 3cbc2718 3f19ac2d bf19ac2d 3c433e6a bf4cbedd 41760004 bf7b02a7 41998013 0
+3f800000 3f800000 deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+G 1 c3e81295 4075e316 c38c73db bdbcb6ba bd47d1ea 3f7ee92e bf7ee92e 3b6328ff bdbcb6ba 4175f648 bfe15b68 418204b2 0
+=
+=
+=
+=
+=
+=
+=
+G 0 c3f0c0d8 404f10a7 c39179ab bf366bad 3d187304 bf339b6d 3f339b6d bd07b9d5 bf366bad 41d2f8cd bfe63b4a 41e1b23f 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+G 0 c3e9b7ee 40591cf8 c38e33b7 bf7ba2e5 3c275abb 3e3c432b be3c432b bd06457f bf7ba2e5 411c785c bf9346b7 411f89e8 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c3e11973 4015ee72 c3934259 bf7ebb2e bb8c1678 3dcba6eb bdcba6eb bc484274 bf7ebb2e 414639a8 bf8cb9f5 41307a49 0
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c3e94e4b 40756f5c c38cc1aa be3e3bcc bd3a1289 3f7b8b2c bf7b8b2c 3cef7265 be3e3bcc 41611ec0 3fb60e90 417d1735 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c3eb4ea2 4080b562 c38f562a bf7294b9 3d39a8bb bea3973b 3ea3973b bd1d46b0 bf7294b9 41b58243 3ff28fab 41c623c3 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+=
+=
+G 1 c3f2ac00 40939344 c38dda27 bf4e0953 bcd896fc bf17effe 3f17effe bd3eee59 bf4e0953 c0e1454c bfa870d8 c0c414ea 1
+=
+G 0 c3e04bfe 40c61992 c38aaea6 3f7db3f2 3d209a5b be08deb3 3e08deb3 3d0dd5bc 3f7db3f2 4143ec00 3c847019 4183cdf1 0
+=
+T c3d605b8 412a1974 43efd796 c1e0a9fd 00000000 c195ead1
+G 0 c3c4ba61 40e2132b 43d5657d bebf7bd0 baf414fe 3f6d6c31 bf6d6c31 bd0de267 bebf7bd0 41fad6fb 3ffdd68c 419e8dc6 0
+G 1 c3f18215 408b0d83 43df2e79 bf7ff831 bc81c55c bc7cea1c 3c7cea1c 3cfcc6b9 bf7ff831 41198e83 bfc94af8 40dfe049 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+G 0 c3e13e28 4105234e 43f37722 3f553639 3c81683e bf0db13e 3f0db13e 3ce29994 3f553639 c1f98af8 bf98e39d c1aa20f6 0
+=
+=
+=
+=
+=
+=
+G 1 c3d57314 4118caf7 43ebb95b be21a315 3d20ed52 3f7cca65 bf7cca65 3ce9d96d be21a315 c1f50a78 3f321c1b c1a55137 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+=
+=
+=
+G 0 c3dd43a3 412d95c8 43f23b0a 3f7e4ae3 bd18fd73 bdec24b6 3dec24b6 3bbf7559 3f7e4ae3 c1e12dcf bfa61500 c1996db6 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c3dabcbc 4107abe0 43e658e9 3edc5625 3d4b7670 3f671507 bf671507 bc891ce0 3edc5625 c1c05818 3fa4e6bd c18a9dee 1
+=
+=
+=
+G 1 c3d82f0a 412a8667 43eef1dc 3e99111a bd3942cb bf744ac8 3f744ac8 3c170495 3e99111a c1c83e3a bfb90c7f c181e931 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 0
+=
+=
+G 1 c3d84b0e 411fb2d7 43ee8866 3f690e17 3cea2cd9 3ed3dc9b bed3dc9b bd04c70d 3f690e17 4157191a 3fc02e33 410b5129 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+=
+G 1 c3c5e380 4144f1c7 43d551e8 bf7606fa 3c01613b 3e8d83bc be8d83bc bd43ab43 bf7606fa c1973dd0 beb4001e c164620a 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+G 0 c3e24ebd 41381fbf 43ee24be bf598d81 3cd81767 3f06eebd bf06eebd bb9d2bf2 bf598d81 c1ec4a95 3e31d9e8 c1955e67 0
+=
+=
+=
+=
+=
+T 438c2475 415e413e c338521f c0bfaa86 00000000 c1b8450c
+G 0 438c3f57 4164ee8d c33e8f5c 3edf57d7 396bcbb8 bf665c03 3f665c03 3c3d887f 3edf57d7 c0d0b04b bfab1b35 c1cf4926 0
+G 1 438b5c38 4178b9e3 c34d0d9b 3f4678c9 3cdf5a0e 3f21b1a8 bf21b1a8 bc94d9b3 3f4678c9 c09c7987 3f71dc2e c13dea51 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+T 43858bd8 417bb08d c25a7368 419ceffe 00000000 40612606
+G 0 437cc9ea 415b1bee c275b627 3f7a5446 3d22ef31 3e56567f be56567f 3d209f9e 3f7a5446 41a19b77 bcc75f2e 4093e939 0
+G 1 4387632a 417021cf c277cfb5 bf601b0f bb876e42 bef77d0d 3ef77d0d bb43087a bf601b0f 4160073c be5e4a97 404d02ef 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 0
+=
+=
+G 1 4387fc38 417771a9 c2853af5 bedd22a3 3cc8a484 bf66e42d 3f66e42d 3d171d5d bedd22a3 4210d997 bf63794f 40eb9742 1
+=
+=
+=
+=
+=
+G 1 43812084 41721a16 c25120de 3f46138e 3d2596e4 bf222d9a 3f222d9a 3c381a8e 3f46138e 40b06a1d bf3b3f54 bf02a13e 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+=
+=
+G 0 4387df26 4172ef50 c2806779 3f413a8d bcce230b bf27ecb1 3f27ecb1 3cdd3aaa 3f413a8d 4188a38f bf5aec13 409001d9 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 4381cc3f 417eaf93 c271fda7 3f78cde4 3c94482b be711431 3e711431 bcf46ed2 3f78cde4 417dfa8b 3fa47d0a 4059d19c 0
+=
+G 1 43805c67 416a2909 c2809a93 bf5a2488 bc0a2fcd bf05fa0a 3f05fa0a b881d5a6 bf5a2488 411d713b 3f887a6a 3f141912 1
+deadbeef deadbeef deadbeef bf800000 3f800000 3f800000 00000000 1 0
+=
+=
+=
+=
+=
+T c32ca99e c141fa97 c3e38f00 40f165ca 00000000 40aa22e9
+G 0 c3296ca4 c150aadf c3e82a49 bf1f517d 3c0f33bb 3f486242 bf486242 3d010341 bf1f517d 41640caa bf272b54 411dd33a 0
+G 1 c333c67e c13dc561 c3d89d87 be9e3ed6 bc8f5980 3f73773e bf73773e bd41d97a be9e3ed6 40fffa10 3fcc6dbc 40a50667 1
+3f800000 3f800000 deadbeef bf800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+G 1 c33f0ee4 c156d15e c3e3102c 3f277d3b 3bcdc740 3f419b32 bf419b32 3d2b9ec3 3f277d3b 41ecb361 3fdd53bb 419cce7e 1
+3f800000 3f800000 deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+G 1 c3195086 c131e61b c3e3860e bf6890d4 bd482069 3ed6006e bed6006e 3d34a64d bf6890d4 c1ff61a0 be3831f9 c1b2916e 1
+=
+T c34fa9d1 c19d8d04 43c0064f c164b1a2 00000000 4045ea46
+G 0 c35ae8a9 c190349d 43b7d036 bc9dbb00 3d4c2866 bf7ff3da 3f7ff3da baa8b224 bc9dbb00 41f26bb5 3fdd255e c0a2182e 0
+G 1 c359ed9f c1a0f151 43bcc34e bf78d6fc 3be54dfc be707dd3 3e707dd3 bd41072f bf78d6fc c1806a7a beacf8b4 400a7732 1
+deadbeef deadbeef deadbeef bf800000 3f800000 3f800000 00000000 1 0
+=
+G 0 c35311b9 c19bad8f 43bfb8ff bf646033 3c275dda bee75928 3ee75928 3d1c7a31 bf646033 c1a8c298 be402e80 4090682e 0
+=
+=
+=
+=
+G 0 c34efe91 c191478b 43c7a28b 3e1a02e2 3cc4436f 3f7d1687 bf7d1687 bc936d1c 3e1a02e2 c1c9f956 bfdbb902 4094c82b 0
+=
+=
+=
+=
+G 1 c34f7efe c1a2ecd4 43bd465f bcf9141e 3d1da581 3f7fe1b3 bf7fe1b3 bd4ad069 bcf9141e c0868967 3f885c0c 4005a3c7 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+G 1 c357699b c1a5bc53 43c43a45 3ebc6b09 bc87b286 bf6e08f5 3f6e08f5 3cd00296 3ebc6b09 c1a4ffba bfb64c3b 405dee17 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c3242229 c1bd5666 43ae519f 3e9e1cb4 bcfa9440 bf737cca 3f737cca bc0f32fc 3e9e1cb4 c11e4c05 3f819258 40589cf4 1
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+G 0 c353a068 c19e2501 43b4b41c 3f203e7e 3cbd32ff bf47a4ee 3f47a4ee 3caf69a3 3f203e7e c2114e94 3e5b4ca8 40d97711 0
+=
+=
+=
+=
+=
+=
+G 0 c3403bfd c1937251 43c215db 3e6020bb bc677f6f bf79caf2 3f79caf2 3caa440b 3e6020bb c204830c be43e888 40b89228 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c34ea4ae c19e1912 43c09ca1 3f6f59b9 3c2c74f7 3eb5a13a beb5a13a bc4ed491 3f6f59b9 c0ed8396 bf9d3583 4067b66c 1
+=
+=
+=
+=
+=
+G 1 c353a783 c1a2be94 43c571e4 3eb0e3b5 3d3b38c0 bf703c85 3f703c85 3bb86e80 3eb0e3b5 c17385d3 3fbe58d2 4089cd3d 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+=
+G 1 c354e70c c19d3c22 43befa4d 3f774706 bd377f2a be84831d 3e84831d 3d22ca8e 3f774706 c20967ca bfe63fea 40d6ef1e 1
+=
+=
+=
+=
+=
+END
+CASE 1 3 1 2 1
+T 42670d05 c0a0d917 41c0398e c192e1cc 00000000 40d96b6d
+G 0 426b0612 c09e8cde 41afa9e3 3ef6e898 bce35281 3f6043fc bf6043fc 3c900dc9 3ef6e898 c1eb78e4 3fb1d47a 4140deb6 1
+G 1 426ae7b9 c088bd66 415c2578 bdbf54f7 3c51ffd5 3f7ee160 bf7ee160 38d912bf bdbf54f7 c2008421 bf618e5d 413e5db2 0
+G 2 429b489a c0ba0197 41bc542c 3f4c4aa3 3bc1a92d bf1a468e 3f1a468e 3ac6380c 3f4c4aa3 c1bbc51a 3f659ec7 41216544 0
+T c3efd828 4195c829 c358c352 41855f40 00000000 c1eaafef
+G 0 c3eff31e 4194c406 c356684d 3eeb84d5 bcf20fac 3f634eba bf634eba 3b6bded8 3eeb84d5 41083a2d 3e410320 c176c474 1
+G 1 c3f02b90 419584a1 c358f346 bf7fb909 bce579fc 3d3e900e bd3e900e bbe5b38b bf7fb909 41084db0 3fe7f27d c189afb7 0
+G 2 c3eee7c7 41a17c06 c368dea5 3e7a0bd4 bbb19e68 3f784020 bf784020 3bb8da8f 3e7a0bd4 41759b11 3fbe6ff1 c1d0cd55 0
+G 1 c3edf576 418f8439 c369a8df bddb88dd 3d1912b5 3f7e8663 bf7e8663 bd275e52 bddb88dd 4104eff7 be862340 c1804a21 0
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+G 0 c3e7daa3 418c5356 c34eda18 3eb2db50 3c52df75 3f6fdf3b bf6fdf3b 3d24d81e 3eb2db50 41694877 3fe425ed c1c541ab 1
+G 1 c3e630a2 41c364c1 c31d4a68 3f066605 bc36c039 bf59e212 3f59e212 3d1a08e8 3f066605 413409a7 bec037a1 c1bc1897 0
+=
+=
+G 2 c3eedbf7 4191dab3 c3524e93 3f09cd3f bcd55ea0 3f57bf2e bf57bf2e 3cc7dcb0 3f09cd3f 4117f885 3facff3e c13ee624 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 c3e63c8b 41a737e6 c360292f bf6ee804 bc7e23bd 3eb7f43d beb7f43d bccb6dac bf6ee804 40af905e bf18af47 c144bc7f 0
+=
+=
+=
+=
+=
+G 2 c3eaa4b4 418eed01 c3637a03 3f1ed573 bbd57ccb 3f48c4a2 bf48c4a2 bc5ee022 3f1ed573 404ac633 bfbe7acc c0f83f46 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T 43d696fd c0e7687d c3c2991c 42047c5b 00000000 c1afed2b
+G 0 43d53431 c10ce34d c3c95f0d be216e77 3bf7d54e 3f7ccc7f bf7ccc7f bc9f0c56 be216e77 41e197af bfcf028a c1a0e4ce 1
+G 1 43cd5643 c0f9f4df c3c6877a 3f652c1f 3c8d8846 3ee42cfa bee42cfa bcf00f18 3f652c1f 41a78209 bfa277b3 c143e394 0
+G 2 43f2f022 c135baec c3b5e386 bf73349e bd123721 3e9fd69a be9fd69a 3d4bec8d bf73349e 41b638b4 3f5b7f12 c15aaad5 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+G 0 43d94048 c0de9f51 c3bc2346 bf05061f 3c52e18b bf5ab99c 3f5ab99c 3cce5f13 bf05061f 41f4a389 bfaaf41f c197fefa 1
+G 1 43daac7a c0f4d673 c3c15a2b 3f76d560 bc1dca3d 3e87c853 be87c853 3d263dff 3f76d560 41d552d3 3fcd90e2 c1775c58 0
+=
+G 2 43d9184b c0cf4f1e c3ba99e9 bf0184d7 bd0b70f4 3f5cd190 bf5cd190 3c970c29 bf0184d7 41624e93 3fd232bd c105e907 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+=
+=
+T c38f5720 c07a697c c30f17d3 c127e51e 00000000 c1900f2f
+G 0 c38e2d11 c0b2ea75 c31e487d 3e933fc5 bd001368 bf752f3a 3f752f3a bd49b61b 3e933fc5 419fbebe 3e8d33fa 4201e93f 1
+G 1 c38f45ea c028e49d c2f3f3eb 3f02cd3b bc44dec3 3f5c0fa9 bf5c0fa9 bd1f4029 3f02cd3b c15e4560 bf9a88c7 c1d42af2 0
+G 2 c38ec872 c07680e6 c311cd4b 3f710a9e 3c85bfde beac73f9 3eac73f9 3d0b75a2 3f710a9e 4127c08a bfe958f3 41981080 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 0
+G 2 c394211c c0aee3df c3047c7b be61a33c bd390885 3f79b532 bf79b532 bc5b9682 be61a33c c053a74a bed87711 c070139a 1
+=
+=
+=
+=
+=
+T c3bc8824 bca29d94 c3cce84b c10e77aa 00000000 bf2207b3
+G 0 c3bcc645 bd9d2a79 c3cc441f 3f25d14b 3d31ad6b bf430a33 3f430a33 bcdabe8e 3f25d14b c1ed6a38 3fbd9b03 c01183a6 1
+G 1 c3b44024 bf9c007d c3d4899a bdff778f 3d23a238 3f7e0021 bf7e0021 bbc28013 bdff778f c197d0e9 3f7459b3 3ef09bcf 0
+G 2 c3cf1cb0 40bed83d c3b6bd95 3f48e39c bc93d5ea bf1eae44 3f1eae44 3bf09eda 3f48e39c 41a11c5f 3d9dc7e0 bed35aa1 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+T 4283e8e5 bfd669c2 c2b4c1bc 4092c26a 00000000 c0bd2aae
+G 0 424a7d41 c04643ae c2b19273 3f7fff45 bac63a9b bb9abbaa 3b9abbaa bd411fab 3f7fff45 402e6168 3ef754ec c02a920b 1
+G 1 426f6de1 c029572b c2866a0b bf5758f5 bbf8b82f 3f0a6cc7 bf0a6cc7 3d3cf0d4 bf5758f5 41c4482b bfd78e17 c1f75341 0
+G 2 426dd4aa bf729c7e c29fdabf be3b5ade bc08d62f 3f7badbb bf7badbb bcbce28f be3b5ade 4196522c bf13b34e c1ce766f 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 00000000 0 0
+=
+=
+T c2c56591 c183026a c38f2e79 c0d10027 00000000 41092fa3
+G 0 c2c9dec0 c183e64b c38f3d62 3f790668 3b453113 be6d6766 3e6d6766 3bc4c172 3f790668 c0eef7e5 bfa9dd8c 40d1799f 1
+G 1 c2a676ac c17d6607 c3923eb3 3f568186 3bd1e02d bf0bb9b7 3f0bb9b7 3c8872ae 3f568186 c0a54b51 bfb17da5 40da3bc2 0
+G 2 c2c064f8 c1808373 c38f95a0 bf2b689b bd318439 3f3e2519 bf3e2519 bc218c7e bf2b689b 40abcea2 3fcbc4d3 c0ffacf1 1
+G 1 c2bf3f9a c181c8cb c3936dab bf7ddd7a 3d1484a2 3e03f807 be03f807 bd0ef319 bf7ddd7a c18ff9a6 bfb2e91f 41c87a18 0
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+G 0 c2bfaa45 c189bd20 c384c463 bef7f478 3cc7cb5e bf5ffa0c 3f5ffa0c 3d3e441f bef7f478 c069937e 3faf0bd2 40af44ec 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c2f1fbd9 c192575c c38f3484 bf56a3df 3b26e87a 3f0b84ed bf0b84ed 3c92ffd3 bf56a3df 41856134 3f7fdc1d c19ff9b1 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+=
+G 0 c2dc186c c17cc028 c3856f9d 3e989f1b bce5a336 bf745c9c 3f745c9c 3d12e4f9 3e989f1b c1aee668 3ff0f3e1 41e83bba 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+G 1 c2bc40c7 c18f2960 c396f5da be905aef 3d48a569 3f759d44 bf759d44 bd23b277 be905aef c15df677 3ca138fa 41837553 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c2dfcaaa c18e871e c393a3b7 bf7f5a3e 3cb91c84 3d919172 bd919172 bce8215a bf7f5a3e c1aa3491 bfcf6818 41ef194b 1
+G 1 c2db489b c1862663 c3929bc3 bf15c9ff 3d115288 bf4f9a83 3f4f9a83 3b34b3aa bf15c9ff 41ad2e29 bf951464 c1f09060 0
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+=
+=
+G 1 c284eccd c1c81ddb c3ab2f48 bc716844 3d2abe01 3f7ff8e3 bf7ff8e3 3b26d89b bc716844 c191fef2 3f8594ab 41ccf8c5 0
+=
+=
+=
+G 1 c2bcb1bf c1858336 c389ac89 bbf99463 3d1745cf 3f7ffe19 bf7ffe19 bd06e433 bbf99463 c0941921 bfac0a46 40ebb47b 0
+=
+=
+T c2db6ff2 bfc9810a c3ea3170 bdb6e28a 00000000 402771f8
+G 0 c32b5ff4 c046871b c3e6bef6 bf7fb1f4 baa4ede9 3d47d68c bd47d68c 3ce819b8 bf7fb1f4 c00eca92 3fc846e3 417bebd9 1
+G 1 c2d8eb1c bfce89be c3e9018e bf06a00c bc1f727b bf59be3c 3f59be3c 3d0da74f bf06a00c c02286d4 bf0cd92a 41c0bd72 0
+G 2 c2bfafed c06a85bb c3eb7c58 bf7cf110 3d4c4fc2 3e1dcfa2 be1dcfa2 3ccea137 bf7cf110 c002959e bf86aca3 40d17b89 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 c2ce939a bfbc8c0e c3e9febb bf4e92f7 bb2f2170 3f1734a5 bf1734a5 bc859a49 bf4e92f7 4043b486 3f6924b7 c20fa87d 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c2b23230 bed81112 c3ef3707 bf75ba4f bd1fab0f be8f94b2 3e8f94b2 3ce08907 bf75ba4f 3f529574 bf7a81db 41b2e831 0
+=
+=
+G 0 c2d60514 bfd7edae c3e93390 3f7d27a7 3bb2010e be183de3 3e183de3 bd09b866 3f7d27a7 3f861eeb 3f93fecb c1c9149e 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+G 0 c2f02782 c003107a c3f4b6d1 3f70ee7d bcd17fd0 3ead10ea bead10ea bc5915b5 3f70ee7d bf763841 bef78af6 c0fb764d 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+G 2 c2e63a2a bfa756a7 c3e97c17 3f5c7ffc 3c9d746e 3f020f87 bf020f87 bd366f21 3f5c7ffc 3f7fce06 3dff1036 41605594 1
+=
+=
+G 1 c2e03107 bf99bc56 c3e739fe 3eb61227 3d022a61 3f6f4445 bf6f4445 bceed73f 3eb61227 bf4e3d7a beeffb0a 41b4cf27 0
+=
+G 0 c2df0ee7 bfcff1cb c3ec6d01 3ede1026 bc2fcccd bf66ab28 3f66ab28 3c99b6df 3ede1026 3edcec3e 3ea958fc 4196dd69 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+=
+G 0 c2e7b418 bfc170b8 c3f4eb69 bf36093a bc379a30 bf33ff34 3f33ff34 bd2e0a0d bf36093a 3f54cf1a 3f03edfc c1a51b99 1
+=
+=
+G 1 c2feda25 bf70bd24 c3e99b2f 3f05d3a5 bc7b9b11 bf5a3c19 3f5a3c19 3ca01599 3f05d3a5 c0175f89 3e5216f8 4201f05b 0
+=
+=
+=
+=
+=
+G 1 c2cbacc4 c01f1058 c3eab272 bf1a3385 3c82ce01 3f4c5901 bf4c5901 3c3ad98b bf1a3385 bfb1ac56 bf5c095c c1295dc9 0
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c2ebc36f c010653b c3ecd913 3f7fca42 3d2f49bf 3d25d8ff bd25d8ff bd07ebb7 3f7fca42 bf856596 bfab667f 4157cbb0 0
+=
+=
+=
+G 1 c2d7a933 bfab0279 c3ed5a0b bf62ac4a 3d11a6a6 3eedf3d8 beedf3d8 3c9a0b57 bf62ac4a 3ff74a93 3f1c9cbb c1868a30 0
+=
+G 0 c2cc47dd bf6812cd c3e9a4c7 3f73e46d bc6604e2 be9b98a8 3e9b98a8 3ca31aad 3f73e46d be574cdd bd8824ae 4215955e 1
+=
+=
+=
+=
+=
+G 1 c2d99ae9 bfa1d32c c3e84210 3f17ca1a 3d436285 3f4e253e bf4e253e bcbfc1be 3f17ca1a bfc3ae4f 3f25183f 41f471eb 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c2d33d09 c03d84ac c3e2b652 bf4d0f10 bd45af20 3f194118 bf194118 3c8a5d6d bf4d0f10 3ddbf3b9 3f6fd788 42070115 1
+=
+=
+G 0 c2e80b31 bf7a7867 c3e67c1d 3f20c2a3 bc9f7314 bf473a94 3f473a94 3c142c3c 3f20c2a3 bfb0feb7 3cb35e34 40fe455d 1
+G 1 c2cc535f bfa3d2a2 c3e773d2 beb9d081 3cecc88b 3f6e8bce bf6e8bce bd04a1e4 beb9d081 bfdebb44 3cebddb5 41fb5a76 0
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 00000000 0 0
+G 1 c2d7ea25 bfe96710 c3eb6aa0 3f5de0fd bd4749b0 beff635c 3eff635c 39c305d8 3f5de0fd 3d7f85c5 3f7edba9 c1bb67fd 0
+=
+=
+G 1 c2bdbd87 3e3f900e c3f252a6 bf2931ef 3d12a698 bf401e03 3f401e03 3bc8edb7 bf2931ef 3facab74 3f550124 4162d36a 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 c2fa9334 bf35c265 c3ec77e9 bf64bb26 3d0a1fe6 3ee5f0a6 bee5f0a6 3c8fd700 bf64bb26 3ffc9fe0 bf109491 c1ff9f20 0
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+G 1 c2e0274d bfe4140c c3eac77b bf61056f bc9fb18b 3ef42499 bef42499 bcb52628 bf61056f 3fd8cfcc bf86bc5f 40c14140 0
+=
+=
+=
+=
+=
+=
+=
+G 1 c2d9e7d7 bfc6c1a0 c3ea19ab bf2d5487 bd07a4af bf3c651a 3f3c651a bc88ef13 bf2d5487 3dc1e9bb 3f9b27d7 41865dc5 0
+G 2 c2ae1cac c04eef66 c3e54cc9 bf5df9a7 bd09c97f 3eff0d92 beff0d92 3c8586f9 bf5df9a7 bfa698f5 bf80218f 42125121 0
+=
+=
+=
+=
+G 1 c314dd0b bf209163 c3d3c216 bed1b4a0 3bf2618c 3f698ac4 bf698ac4 3cfd6324 bed1b4a0 c019769b bf2f240a 41f2b4b5 1
+3f800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+G 1 c322ceb7 c101cf98 c3e0289b bef9ba32 bc920de3 3f5f7be3 bf5f7be3 bc35892e bef9ba32 3c0a44b2 beb50d39 41951236 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c2abacab be8e3b35 c3ed2b20 bf163db6 bca0309b 3f4f46d5 bf4f46d5 3ce5a6db bf163db6 3f40bf0b 3fcbc67e 42086dbf 1
+3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c2e1a863 bfd9751f c3ea57f0 bf15bf4f bcff3a50 3f4fa239 bf4fa239 3c4ff6ce bf15bf4f bf602d19 3fce76e0 41beac22 1
+G 2 c2ea2e10 bf99e1cc c3e3a1f1 3efac63a 3d1a2d07 bf5f30cd 3f5f30cd bd10d888 3efac63a c02f2437 3f399c11 42169c18 0
+3f800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c2bb2196 3e9af3c6 c3e63fab 3f7eb656 3d2b542d 3dcd2919 bdcd2919 3d3cf155 3f7eb656 bf7bda59 3e8b96e8 41e26510 1
+bf800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+T 437dc3f3 c19e5750 c1b2c251 3f8c6d6a 00000000 3f7e6475
+G 0 43756bf4 c1a347ef c17e74ea 3e9bd17f bc184908 bf73db5a 3f73db5a 3d1c843b 3e9bd17f 40fab6b9 3f87f933 40b67587 1
+G 1 437ba0e8 c19c9629 c19e9bfa 3f7f73b0 bd077f93 bd85f13e 3d85f13e 3c3441bc 3f7f73b0 41c9c53f bfd88875 41a1f914 1
+G 2 43714735 c1a1383d c1ca261c bf7331b6 3d3a60f5 3e9fe845 be9fe845 bbcecbb2 bf7331b6 4151e172 bfcd1945 412a0f02 0
+3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+G 2 43865baf c1a817e1 c20286f9 bf1e0424 3d2c8d9d 3f496988 bf496988 bce8eaec bf1e0424 416cb85e bfdc93ce 41355f2a 0
+=
+=
+=
+=
+=
+=
+G 2 437796f9 c1a8f1bc c122485a 3eb84412 bc8f44c8 3f6ed8a2 bf6ed8a2 bba6db09 3eb84412 4127065c bea7c426 411f2702 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 4365350a c1b6c680 41ed9487 bed0d825 bd3f7667 bf69bc24 3f69bc24 3c43c9a7 bed0d825 41355177 bfd9a5fb 414af36b 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 4382bd56 c19b70c7 c1a75297 bf45ecb1 bd30f9df bf225d05 3f225d05 baa95bb4 bf45ecb1 4147c6ab 3fede432 41649bb8 1
+=
+G 0 437d560a c19411a3 c126f2f5 3f1e0f9f 3d2a260b 3f496086 bf496086 3d237d2b 3f1e0f9f 4101aaa7 3ffa7cb7 40edeb2f 1
+bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+G 0 4366c1e9 c1a5c07c c1779e3e 3f73a846 3c99b86c be9d0fdc 3e9d0fdc bd24bee1 3f73a846 417273e5 bd91d136 416f64dd 1
+3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T 43ab6896 c19bfa30 412bb1b8 c025f13d 00000000 c071ff39
+G 0 43be04d3 c15556c6 425a712e 3f259949 3ced6cd5 3f4339c3 bf4339c3 bd2b6852 3f259949 c10ae497 bfe1845c c162114d 1
+G 1 43a1184d c1aaaab8 41bb0036 bf21d1ca 3c73c7f2 3f465e97 bf465e97 3a5d2cf4 bf21d1ca c1884f16 bfa466b4 c1ca7d96 1
+G 2 43aad747 c195dc08 419883da bee170c4 3d12a142 3f65d91d bf65d91d 3d486667 bee170c4 c0decbe1 bf3ab156 c15faa04 0
+bf800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+END
+CASE 0 2 0 1 1
+T c3a360eb 4145cecf 433f3882 c148b6bd 00000000 41882d41
+G 0 c39ddb85 41424be8 433fb8a1 bf35d81c 3d025c46 3f3430d3 bf3430d3 3d3c7b6c bf35d81c c106028d bfe540f0 40fe2123 1
+G 1 c3a90457 413cd0fe 433ea17f 3f79514e bd0fcf73 3e687051 be687051 3ca29f3c 3f79514e c06c50e6 be3752ed 40fc0b81 0
+3f800000 deadbeef 3f800000 3f800000 3f800000 deadbeef 00000000 0 0
+=
+=
+=
+G 0 c3a755fe 414be179 43410625 3f799a79 3ccd1625 be637a58 3e637a58 bcfcf643 3f799a79 c123599e bf7c7d64 4178098e 1
+G 1 c3a31de7 414b16a0 433b5933 3e922989 3c8d3366 bf7558d5 3f7558d5 3cd4cddb 3e922989 c08217ba bf1fe208 40c20380 0
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+G 0 c3a9ff73 415c9656 4346fa84 bef8ffb9 3d204855 3f5fafe1 bf5fafe1 bbd09e94 bef8ffb9 41c14887 3fc88f4a c1f91947 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+G 0 c397e235 411880b3 4340c5fc bf7de5fb 3d2e6457 be02f13d 3e02f13d bd2f7349 bf7de5fb c1cba801 be360b3d 4205a8b4 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+G 0 c388c241 41725592 43543d53 bf6d10a1 bc857808 3ec13f84 bec13f84 bc1b96f5 bf6d10a1 c159c9be bf48915c 41879a74 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c39ec470 4150e9db 4338ebc1 bf5fec73 3a4ad869 3ef82593 bef82593 3ce8e6fa bf5fec73 c187fe01 bfaa9324 41b2ccd4 1
+=
+=
+T 43782dae c094dbdc c38a4dbb 40c75a6a 00000000 c13d44e4
+G 0 4373bf00 c099f6fa c389edf4 bf55251d 3c2c5b1b 3f0dcaf9 bf0dcaf9 3d1274c5 bf55251d 403f2de9 bfdf36c1 c0c15b65 1
+G 1 4373510c c08f6f7b c38d70e5 3ed03460 3cf2b23d bf69e0a8 3f69e0a8 bd252188 3ed03460 40f2eafd bc422914 c122b316 0
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 4377a7db c087a6df c3938349 bce8699f 3c2c6bf4 bf7fe59f 3f7fe59f 3d126b22 bce8699f c14e35ce 3fe5fa66 41e5eba3 0
+=
+=
+G 1 43791955 c0b55c03 c3923eb2 3ea0a7b4 3c7ac56d 3f73122a bf73122a bca2204d 3ea0a7b4 41291a7d 3fddb47b c1af26ed 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 4365b615 c0685503 c386d985 be9760af bd257e41 3f748e1c bf748e1c 3cc7a3f8 be9760af 41155a61 3d8f1e8d c17db7c7 0
+=
+=
+=
+=
+=
+=
+G 1 4376454c c0935869 c38953fb bf314ba9 3ce09455 3f38ab06 bf38ab06 bd14bf41 bf314ba9 c19c2414 3f93a5e6 4213ab3e 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 43849fee c0d48246 c38b0eb6 bf29ddc4 3d4c2290 3f3f8626 bf3f8626 bb6fe484 bf29ddc4 410de42b 3f7c17d7 c170c893 0
+=
+=
+=
+G 0 4380a9da c0bc798b c38a4c80 3f7ffff7 bd28f664 3a898d98 ba898d98 bca72677 3f7ffff7 418b6b15 be1b1121 c20b3c87 1
+bf800000 3f800000 3f800000 deadbeef deadbeef deadbeef 00000000 1 1
+=
+G 1 433eb60f bea923ac c386760f bf7ec52c 3c3494bb 3dc8807c bdc8807c 3d13ce84 bf7ec52c 407bf7b1 bfbd6084 c0a26972 0
+=
+=
+G 1 43727e33 c0bc38aa c386ff75 bf26ea2c bd2e9f1c 3f421a09 bf421a09 bb77b56e bf26ea2c 401110d6 3fee6d76 c0b8d79d 0
+=
+T c335227d 413069f9 43e4ff0a c1e115c6 00000000 c1ba83da
+G 0 c33e71ba 414102f2 43db2692 3ef1bc06 bd322c76 bf61ab9d 3f61ab9d 3cf466e1 3ef1bc06 c108154e bffe09c6 c0e02f17 1
+G 1 c33103e9 412cb334 43e495ef 3f441418 3c9fc4e9 bf24968a 3f24968a 3d1992df 3f441418 41aafdf2 3faff632 41995887 0
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+G 0 c33396dd 412b5b4a 43ec59c1 3ef92db2 bd294274 3f5fa314 bf5fa314 bd1bcbc5 3ef92db2 c1384138 3f2b3dd1 c12f399d 1
+=
+=
+=
+=
+G 1 c33437b9 41285a4e 43e29d94 3ef23f65 bd428d93 bf618862 3f618862 3d14cb4c 3ef23f65 c1fb3710 bf163efd c1ba5526 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c333f9a6 4132b983 43e48a0b be1d9741 bc903d4b 3f7cf342 bf7cf342 bd20b2f7 be1d9741 c0fbb5c3 3f8710b4 c09e585c 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T 43081a1c c18fe425 c37a80a5 3eb234f6 00000000 4004692c
+G 0 43100f78 c190507a c3847203 bd29568e 3cd1a9b9 bf7fc7f8 3f7fc7f8 3d1bbddb bd29568e 40c0fadd bfe7ab58 41e1238a 1
+G 1 43103f63 c18a81ee c37aef29 3dd8a61c 3d4a87a2 3f7e9046 bf7e9046 3c982b25 3dd8a61c 405d522a 3fb04265 4202ed2f 0
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+T c32a98ac 41484f22 43071cc8 3fb78ed5 00000000 c204e56f
+G 0 c3295aee 41320e10 42df34d5 3f09f383 bca65ca6 bf57a6b8 3f57a6b8 bc361878 3f09f383 bf125aaf bf4d42e5 c1d6dc2f 1
+G 1 c324b9e1 41446ae3 43117bd1 be1f9e6c 3d26bff3 bf7cdee9 3f7cdee9 bd266efb be1f9e6c c02f9c3f 3f1ff6b6 41d8cd33 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c338c395 415a3f44 42fe5b9a 3f76b80c bcca73bd be889ce3 3e889ce3 3d0f7ddd 3f76b80c be00ccea 3ff55044 408fe6a5 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+G 0 c3296be0 413cfba0 430ea32c 3e22e1fa 3aa9596f 3f7cbd9a bf7cbd9a 3cddee71 3e22e1fa 3d41c68c 3fa128ad c20205a3 1
+bf800000 3f800000 3f800000 deadbeef deadbeef deadbeef 00000000 1 2
+=
+=
+G 0 c32b51c4 414556a8 42f97ff2 bf243194 3b042ae6 3f4468ab bf4468ab bd3bcd12 bf243194 3f2d98fa be14d062 c161f1a5 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 2
+G 1 c3323fbc 4146c950 42e48b00 3dce8282 3cb34448 3f7eb1f9 bf7eb1f9 bd4a94fe 3dce8282 40229b25 3fd13cf8 c2203f4e 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c2e21cee 4140f092 42da55f2 3f41c604 3c644d69 bf274baf 3f274baf 3d16ab87 3f41c604 401450ad bf92e3ff c1bd0cc3 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 2
+=
+=
+G 1 c3282c50 4141215a 430cac61 be4c9768 3d12f393 bf7ad6a1 3f7ad6a1 bd011831 be4c9768 3e98570b 3fe0a319 c214e1a0 0
+deadbeef deadbeef deadbeef 3f800000 3f800000 deadbeef 00000000 0 2
+=
+=
+=
+=
+=
+=
+=
+=
+T 42d57702 40464277 424cffc2 c0ef00b2 00000000 c026217a
+G 0 42d23666 406291c5 4260205c bb7e3924 3b786594 bf7fff82 3f7fff82 bcc1e766 bb7e3924 c1ac87d3 bfe44f85 c10ef69b 1
+G 1 42a6c17a 4092b606 424285e8 3ee076a5 bc8ffdbb 3f661647 bf661647 bbf5b3fa 3ee076a5 c13e2c3a bf21a0b8 c0b371ef 0
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 2
+=
+=
+=
+=
+G 1 42d7aaab 40497c2e 423acb06 3e962e81 3c3b05b2 3f74bd48 bf74bd48 3d0f0b85 3e962e81 c1d32367 3f5bbba9 c10d5366 0
+=
+=
+=
+=
+T c26cde2f c0baf566 43910248 c18436a6 00000000 417d0a24
+G 0 c2712be9 c0b82fee 438e5a19 bf4fadb5 bd2403f0 bf15af62 3f15af62 bb4a76bc bf4fadb5 41c7ef3d 3fde8525 c1c50405 1
+G 1 c26d5b46 c0b0de1c 439747f2 bc1f8bcf bbb5b7f4 3f7ffce5 bf7ffce5 3d02cac6 bc1f8bcf 41b5fdb2 3f9cf0b7 c1a36094 0
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 2
+=
+=
+=
+=
+=
+=
+G 0 c264409a c0d9c128 438aed43 bdd27dba 3d2f4bae 3f7ea4f0 bf7ea4f0 3ce0b534 bdd27dba c1b03135 3f09cb69 41a19429 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 2
+=
+=
+=
+=
+=
+T 43dc1f4f 3f8b20d6 43d9352b c1ff4386 00000000 40990d94
+G 0 43dbbeb0 3f862fd0 43d8d6a6 3f392cb6 bc0bbf9d 3f30c431 bf30c431 3cfa2a3f 3f392cb6 c2029778 3e7fa142 40870931 1
+G 1 43dbc28c 3f76a56b 43d9a3bf 3f705459 3c638e37 beb0620c 3eb0620c bd004c33 3f705459 c1bd6643 3eb14bcf 402e5690 0
+=
+=
+=
+=
+=
+G 0 43d7cf9e 3f9d85fa 43d67890 3ec0c155 3af49474 bf6d2a4e 3f6d2a4e 3cf292d5 3ec0c155 c17a279f 3f89bc62 3f13e613 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 2
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 43dcf6f6 3f476f37 43e0b9b8 3f7fbbff bccbcf76 3d3a8bb8 bd3a8bb8 3d480927 3f7fbbff c1e21aa8 bf61b0bb 40747033 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 2
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T c2877b33 bfe7cdf8 c3c4b3a9 41bbfc63 00000000 404dec20
+G 0 c2886117 bf8ae380 c3b8989b bf0bc207 bbcad92f bf567c1b 3f567c1b 3d38d91f bf0bc207 41b1977c 3ede2cc6 40732263 0
+G 1 c27d072c c06d692a c3cf6767 3f40f611 3ce67307 3f283b5e bf283b5e 3b184289 3f40f611 41b7bdfc bedc982b 408cda7a 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c28a6e8c c03334bc c3b9bbf0 3f4ea96e 3c94dbd5 bf1715f0 3f1715f0 bc4268f4 3f4ea96e 42003531 bff30278 4036ecf1 0
+=
+=
+=
+=
+=
+=
+G 1 c28e9735 bf375494 c3cafcf9 bdb6e961 3c4982cf bf7efa19 3f7efa19 3cb74ff8 bdb6e961 c14e1569 3ff5c740 bfbc1e8f 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c2873087 bfeed404 c3c3a302 3f1801f1 3cba9a7b bf4dfc15 3f4dfc15 bcb2967d 3f1801f1 41bdca20 bfb2be07 3f9d1230 0
+=
+=
+=
+=
+=
+G 1 c2cd85ae bf16ad26 c3dfd48e 3e907f26 3d1fa00b 3f7597f1 bf7597f1 bca31c60 3e907f26 c0f903e6 bf176d29 3f08dc5f 0
+=
+=
+G 0 c29aa94d bf450b04 c3be2df9 bd38ffa2 3d4c4706 bf7fbd1f 3f7fbd1f bc59af16 bd38ffa2 418dbf29 3fb56859 3eca81f7 0
+=
+=
+=
+=
+G 1 c25ab44d bef19a09 c3c1d590 bebce209 3c61c132 3f6df160 bf6df160 bc10d272 bebce209 420253b5 bf9ccb58 40301a16 0
+=
+=
+G 1 c26c0955 bfcc5683 c3c19a34 bf7f5d1a bd3f7f4f bd904f20 3d904f20 3d18cb3d bf7f5d1a 41e816e0 3ee52d04 4098b588 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c2a224b8 c008e0a8 c3ca681b be8045fd bc9912b2 bf77d5ea 3f77d5ea 3cd275e9 be8045fd 41a48c3b bf9cceda 408d9c7b 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c29c23f6 bf8fe915 c3c14432 3f7569d4 3d335abe 3e91b738 be91b738 bbbdc724 3f7569d4 417336e3 bf844049 4039b4bc 0
+=
+=
+=
+=
+=
+G 1 c2854b90 bf6fdc28 c3c891d9 3ee5a91e 3bf768b9 3f64cd1d bf64cd1d bd05302b 3ee5a91e 411f309d bffa6d3d bed4690d 0
+=
+=
+G 0 c29db7aa c02121ce c3cf6507 3eec2be3 3d4c8bf6 3f632361 bf632361 3c3ddbcb 3eec2be3 c1e6b66b 3fca5fad c06fa76c 0
+=
+=
+=
+=
+=
+=
+G 0 c252a023 bfaccb96 c3cd025d 3e49cdeb bc7a9d35 3f7afabe bf7afabe 3d1ffbfa 3e49cdeb c1dcba41 3ff3c74d c0970627 0
+=
+END
+CASE 1 3 2 1 1
+T 4299b4dc 40c5c666 c385d9f4 c1a21e0e 00000000 410820f3
+G 0 42926018 40c34566 c384ad90 bf78c331 bc0ea639 3e71c49e be71c49e 3cc4b16a bf78c331 41c65faa bfbf5935 c1192f71 0
+G 1 42ca1c2a 40e2d90b c384dc7f bf0a54f6 3c317f19 bf576843 3f576843 3c1bbe5e bf0a54f6 c1e5be01 3f6f9e59 4126f7b5 0
+G 2 425c214d 40bb99f1 c384388e 3f7db41d 3c010d5f 3e08d9b6 be08d9b6 bcc64492 3f7db41d c139c5a3 3f763151 409989b8 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 0
+=
+G 2 4296178c 40c31aa1 c3863e4e bf2d9efc baa78a64 bf3c207e 3f3c207e bd03ee77 bf2d9efc c1b29592 3f7e0fe6 41094dbd 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3ef77777 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3eeeeeee 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3ee66665 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3edddddc 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3ed55553 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3eccccca 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3ec44441 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3ebbbbb8 1 1
+G 1 428d8c1d 40bd09ff c38422a9 bf70fc87 3cb595d9 beacc2a8 3eacc2a8 3c21e02b bf70fc87 c1d82996 3d045590 41281592 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3eb3332f 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3eaaaaa6 1 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3ea2221d 1 1
+G 0 427a7524 409dc7de c3900654 3e55e0d4 bbcb1dd7 3f7a5a90 bf7a5a90 3d0cb39e 3e55e0d4 c122c8ef bfc00e63 408eb52a 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3e999994 1 1
+T 43581ce5 41235827 c3701d83 40884a02 00000000 400c51e8
+G 0 4362bd6d 412203df c3764849 bf50f0d6 bca7cbfc 3f13eb06 bf13eb06 bc24f3d1 bf50f0d6 41d1d173 bff65597 41798a4b 1
+G 1 435ee032 41279fba c3715098 bf700588 3d4b7680 beb20d4e 3eb20d4e bc47e832 bf700588 419ee6f1 3fa4203a 411ae6c7 0
+G 2 435d5ff0 41120dab c3793b93 bf20bfc6 3d15ec11 3f473ce4 bf473ce4 bd1ade7c bf20bfc6 41c7e46d 3fd0a9d2 415e4d38 0
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+=
+G 2 435a81c1 411f9b52 c3707b7f 3f7cc36b bcd035a5 3e225148 be225148 3d1f32e9 3f7cc36b 419ee2a3 3fd9ef16 41035f30 0
+=
+=
+=
+G 1 436de220 4139999d c377b73c bec8dfa2 bd19d0be 3f6b7996 bf6b7996 3ce273f7 bec8dfa2 417eb1d8 bf035c95 4100c500 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 43453190 412fbdad c3690b21 bf2fc035 3ccf7c61 3f3a2389 bf3a2389 3c323d4d bf2fc035 4109929b bf6209bd 40373369 0
+=
+=
+=
+=
+G 0 4345342f 41354c35 c3708e98 3f64b996 bcc3b5d2 bee5f6e1 3ee5f6e1 bd3875e6 3f64b996 420a3e1a bfdf26c2 4186eaa8 1
+=
+G 2 435a6018 4122ac9b c36e4dec 3f7f2741 bc88dd0f 3da66d3b bda66d3b 3d106271 3f7f2741 c1a3a16a bff42d80 c132dd3d 0
+=
+G 1 43617b9f 411cec22 c36cd7cc 3ee3742e bd1eb230 3f655a07 bf655a07 3cf202a8 3ee3742e 4202ad5b 3db3109c 418c5f8b 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 4355a1ef 4122fa74 c370acd3 3f0bade1 bd1b6469 3f56893a bf56893a 3d251215 3f0bade1 c1e9a542 3e49e785 c166ba6b 1
+3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+G 1 436055fb 41189646 c35d68a3 3eb6f26d 3cccaae0 bf6f197d 3f6f197d 3c7be4df 3eb6f26d 41b24b30 bf648d05 411b6eda 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 435ba29d 4125624d c375284d 3ec6789c 3cc013cf bf6bfbd3 3f6bfbd3 bc0b0328 3ec6789c 4141ad77 bfd1db42 40ed4075 1
+bf800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+T 43c07ee6 c0db03b6 43a86266 41f7a388 00000000 c1085888
+G 0 43b80197 c075624b 439fa53b be107e8b 3c628f5f bf7d7043 3f7d7043 bcd213bb be107e8b 41be18dc bfc5e766 c0c9914d 1
+G 1 43bdf21f c0da43db 43ac2fa2 be9145f2 3c359fda bf757a9d 3f757a9d 3d1b8b73 be9145f2 41e4dbac bfc4b802 c0c2b9c8 1
+G 2 43b8a007 c1062734 43a468b4 bf7fd045 3b8f8513 bd1c4ca2 3d1c4ca2 bd02e33d bf7fd045 4134391f bfe6ee4b c0967f25 0
+=
+=
+=
+=
+G 0 43c04e92 c0dcab81 43a81278 3effad53 3c4c8500 3f5dcbb0 bf5dcbb0 3bd86675 3effad53 41d33be6 bfc43a5e c0bd0b30 1
+3f800000 deadbeef 3f800000 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+G 0 43ca9ef2 c0adfefe 43a59371 bf2b2781 3c5f5525 3f3e5fb4 bf3e5fb4 3cffa4ad bf2b2781 41bfc1de bf67af4a c0cc66da 0
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+T 43223ca0 c18f2b9d c34f2eb3 3f8ad5f2 00000000 c1a15790
+G 0 4326eb4c c18d86f3 c3598f3a beda41e7 bcfd80c0 bf67932b 3f67932b b95a8cf8 beda41e7 3f663499 bf1fe585 c1039355 0
+G 1 431ba20b c18ab78b c34826c8 3f7fc86a bd393007 3d28aa07 bd28aa07 3d0c3411 3f7fc86a bf9d95d1 bf8763ee c15eada2 1
+G 2 4318da7c c197b01e c35a7e2c 3f7dec71 3d146209 3e022840 be022840 3ca797c5 3f7dec71 3f18b2bc bf019216 41b98994 0
+=
+=
+=
+G 0 432c1432 c188826d c3606005 3f752786 3c2055de be937306 3e937306 bca7753d 3f752786 3fc51f9f 3e0ed02a c2124c6b 0
+=
+=
+=
+=
+=
+=
+=
+G 1 431d9767 c19af75b c33735c0 3f7ef5e1 3c567e10 bdb86044 3db86044 3cd4d91f 3f7ef5e1 be929c29 bf1dcfc1 c19499cd 1
+=
+=
+=
+T 438a2f84 410c0f5a c3c65ee0 c1a52c8f 00000000 41a3f221
+G 0 438f5d45 41138664 c3cda3db bf340f22 bc92704a 3f35f979 bf35f979 bcfba31f bf340f22 c170a6bf 3fa0a0d5 418d51ce 0
+G 1 438cf0fa 4118e017 c3c9d4ef bf38177b bc3e89be 3f31e4d6 bf31e4d6 3b450b58 bf38177b c0365678 be6160fe 40ac64e4 1
+G 2 438d6e75 40f45de4 c3cf1fe4 be5fadb6 bc9b404c 3f79d163 bf79d163 3c41bc18 be5fadb6 c0b6d607 bfc573b5 40c2297c 0
+=
+=
+=
+T 43323bd4 419b4d28 432227c4 be93527c 00000000 412843ee
+G 0 4367d9af 41d62b41 430bef41 bf3ca942 bc8e4529 3f2d0a55 bf2d0a55 bd47c80f bf3ca942 bfa3a281 bf92229f 4197acfa 0
+G 1 4343f358 41a97993 43299194 3defd5ab 3cb2d866 3f7e3d12 bf7e3d12 bd3c5d36 3defd5ab bfaaa1b5 bfb8e11b 41958b57 1
+G 2 434086d2 414bd1f7 435b22ef bf658388 3bfbd218 bee2cc79 3ee2cc79 3d1ef0a5 bf658388 3f34c44a 3e570c95 414e381e 0
+deadbeef deadbeef deadbeef bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+G 2 43291f5b 41a1bb15 431f128d 3f727eae 3c4c0c39 3ea419c3 bea419c3 3d179c70 3f727eae bebceca1 bfac8a53 41d2e55d 0
+=
+=
+=
+=
+=
+=
+G 2 4340cb90 4189b1ec 430ea6da be361569 3caf3e4d 3f7beb9a bf7beb9a 3d46ac7a be361569 3f7a1231 3fbbb6a0 4132b077 0
+=
+T 434e5558 4102cd8d 437f3675 408c45ac 00000000 3fdcaf68
+G 0 4344ccca 411486bf 43684cd6 bf784869 bcd6611f 3e798817 be798817 bcd4b2f7 bf784869 416f853f 3ed77eae 408fa89f 0
+G 1 434d3c80 4102916d 437ee8e1 3e9e6bc2 bd0cb54a 3f736ff1 bf736ff1 bca69ee2 3e9e6bc2 41c7879b bfa7d622 41233b7a 1
+G 2 434a772c 4111f24c 43740cc8 bf2a6625 baa80e6e bf3f0cda 3f3f0cda bd1cbe71 bf2a6625 41119d73 3f429324 401779e6 0
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+G 2 43621642 40e89351 437e2dba be96a27f bcd3b828 3f74ab76 bf74ab76 bc34a2a2 be96a27f c196166c bff306e5 c0facddf 0
+=
+=
+G 1 43502507 40ffa7e0 437430ed be89372c bcf8d018 bf76a2a4 3f76a2a4 bc5482e3 be89372c 4083f242 bf8039a7 3f9d9613 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+G 0 4353c280 40e2fb9a 436d6edb 3f1d5b79 bd4135fd 3f49ed6b bf49ed6b bac8bbc9 3f1d5b79 420768a8 3f3e8f64 4168e616 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 4339663f 41033c97 43788f16 bf5ed923 bd2ed3cc befbfd55 3efbfd55 3d14496d bf5ed923 41ce3b07 be9e2ec5 410c0173 0
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 43501e1c 4105c511 437e0486 3f382423 3d443794 bf31d7bd 3f31d7bd bbb5dbce 3f382423 420e300f bfc3de70 41611dd5 0
+=
+=
+T c20c82a8 40de5ac8 43af6ca7 3f5d5eae 00000000 406ea734
+G 0 c20cb2b7 40e0cdd2 43afe9bd bf1ece98 3cfd3b05 bf48ca0e 3f48ca0e bd33a96f bf1ece98 bfcf0af4 3fa6530d c10a31e8 0
+G 1 c24248ca 40e074b2 43af259a 3f111c45 3c9db6b0 bf52e67e 3f52e67e bb9cbf59 3f111c45 401fb5fb bfda5a4f 4172a7d9 0
+G 2 c23b81e0 40f5e97a 43b6126d bdaf8c49 bcadaf41 bf7f0ecc 3f7f0ecc 3cda66ed bdaf8c49 401aa147 bffb998b 4171d422 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c249081b 40bc879f 43b0e1d3 3f7b6040 bce342dc be41bf40 3e41bf40 3bcd8fe9 3f7b6040 3f31ab85 bfbfc163 4118cbb2 0
+G 2 c1915c53 40b13d5e 43b70e05 bf7ff936 bca7c8b2 3c6bd4d8 bc6bd4d8 baacf877 bf7ff936 3ff324c0 3c04a67d 4161b9b1 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+T 43564433 41247fd8 c3bc2ea6 41ca7878 00000000 41d2d5ac
+G 0 435d7fe8 41347894 c3b7d5d0 3f651423 3cc2f0b9 3ee48d3c bee48d3c baf4330a 3f651423 4103c87e 3f432a5a 411db881 0
+G 1 435261cb 41273712 c3bda9f3 3f7abf30 bd30b4e9 be4e6122 3e4e6122 3c0bd4a9 3f7abf30 417e82b5 bfefdb65 417be24e 0
+G 2 436d9234 41292434 c3c05f2b 3f7a60d6 bbe4c484 3e556b36 be556b36 3c08adcb 3f7a60d6 412d4c12 3f22b92a 413385b3 0
+=
+G 0 43514651 41276d49 c3bdf5ec bf377241 3d19f506 bf328f34 3f328f34 bba5a917 bf377241 c1338c95 bffcb730 c11bbe62 0
+=
+=
+=
+=
+=
+=
+=
+T 4188473d c0ff39b7 c3c2867d 3f8068c5 00000000 3d9870b2
+G 0 4183c3a8 c0e19380 c3ba2c4f bdf229a3 3ae7a4d8 3f7e343e bf7e343e 3cc30a40 bdf229a3 4108f506 3f2d4057 3d0bce0a 0
+G 1 41af4d3c c0fdea4f c3c57490 bd4e2484 3b5543d5 bf7facf3 3f7facf3 bd19a6ca bd4e2484 4179a2c3 bfe90717 3fd21a4e 0
+G 2 4186c7ae c0feb4cf c3c3080e 3eaa97f8 badefaf8 bf715f3d 3f715f3d 3b426a9c 3eaa97f8 414fa462 3f808c5e bd29e76e 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3ef77777 1 2
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3eeeeeee 1 2
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3ee66665 1 2
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3edddddc 1 2
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3ed55553 1 2
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3eccccca 1 2
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3ec44441 1 2
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3ebbbbb8 1 2
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3eb3332f 1 2
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3eaaaaa6 1 2
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 3ea2221d 1 2
+T 43229f30 4170a1c5 c312d0ac c04252a2 00000000 c2150a91
+G 0 43222859 4160dc9d c3088d93 3f259db4 bcffb1fd 3f433604 bf433604 bccaf514 3f259db4 be1b873e 3fcf97a1 c1cb3193 0
+G 1 4310af58 41884e92 c301e837 3f3a4878 3c16f408 bf2f990e 3f2f990e 3cda1447 3f3a4878 c09200ee 3feab8d6 c2235016 0
+G 2 4334a551 41774510 c31f44ee 3f7fdece bd4c375f bd025afd 3d025afd bd3ffc5e 3f7fdece bfcb29f3 3e15a104 c1f711fc 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 2
+=
+=
+G 1 4323a440 416f41ee c31408ac be19442f 3ca98576 3f7d1dc3 bf7d1dc3 bd36d1f6 be19442f 3f2d2657 3e25b24d c12342fb 0
+deadbeef deadbeef deadbeef 3f800000 3f800000 deadbeef deadbeef deadbeef deadbeef 00000000 0 2
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 432a85e6 416c6b72 c3137355 bf7f2d1e 38686c23 3da429d9 bda429d9 3c5a8009 bf7f2d1e c07c1197 bfb2cdc0 c1c8d9b3 0
+=
+G 2 43239a34 4171158c c313b1f7 3f1c15ac 3cefafb8 bf4ae9a9 3f4ae9a9 3d261159 3f1c15ac 40133319 3ec70fd0 41635f34 0
+=
+=
+G 0 4321fc10 41800a67 c308d024 3dc02a9d bd35605f bf7ededd 3f7ededd bcb86194 3dc02a9d c0537a95 bf837414 c201e801 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 43217a0b 417035dd c3109ec4 bec9015f 3d2d52ce bf6b7264 3f6b7264 3c894390 bec9015f bfccf86a beb50468 c21becc9 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 2
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 2 432e5670 41838538 c31e882d bf6c37ee bac60359 3ec559cc bec559cc 3d142111 bf6c37ee 4028b80f 3f9537ed 4131ab63 0
+=
+G 2 4320bbaf 416fac30 c3122822 3f7633ca 3d01602e 3e8c4a9e be8c4a9e bc9e42f2 3f7633ca c02db77e beddbea8 c1f81632 0
+=
+=
+=
+=
+=
+=
+G 2 436154d4 41221f3f c3192668 3f214510 bd324295 bf46d110 3f46d110 bc827fe9 3f214510 408faaaa 3fbd96dd 420bc996 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 432300ec 41715a14 c3122ecc 3f3c97a8 3d1f4988 bf2d1d84 3f2d1d84 3ce5c19c 3f3c97a8 bf94ac15 3fd93836 c209e5ac 0
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 2
+=
+=
+=
+=
+G 1 430d3e59 41989f9c c2b3695c beb37f59 3ce30fc2 3f6fc097 bf6fc097 3d131b20 beb37f59 3fd68e95 3f96a3fd 4172e49b 1
+=
+T 422e94e8 c0efb388 43a12fec c0c699a7 00000000 c11e4931
+G 0 421905ef c0e8e94b 43a52e96 bf3dc188 3ac63117 bf2bd6ce 3f2bd6ce 3ae8c4c3 bf3dc188 c19f6942 bf49fdb6 c1ddfd0d 0
+G 1 c16fd9bb c0ee43f9 439f83ee 3f5d769d bcd7d60f 3f0069d3 bf0069d3 bcc4ec06 3f5d769d c167b703 be5f2a1f c1c8b713 1
+G 2 42706dc1 c12902ec 4383c293 3f16c554 3c42fff4 bf4ee444 3f4ee444 3c8235d6 3f16c554 c13e98d8 bffce580 c1a98f66 0
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 2
+G 0 424c50d0 c0e436dd 43a8ab56 3f7fdb87 3b8b7733 3d08a18b bd08a18b 3c78767a 3f7fdb87 c1371b9d 3e951b33 c1706f0c 0
+=
+G 0 42549ddb c0ce9245 43a4ac8e bf5cc0b8 39d846ce bf01a189 3f01a189 bd3c10fc bf5cc0b8 c0baef6c bfad60e0 c1317c06 0
+G 2 426505ca c0da1b40 439e66c7 3f41237f bd485b18 bf280734 3f280734 3d3bc104 3f41237f 40b09186 bf2e0285 4120e8c8 0
+=
+=
+=
+=
+G 2 422cac3e c0edebb2 43a14a7d bf50df05 3cd54ed5 3f14042e bf14042e bd0ba22d bf50df05 c18fb7f4 bf9bd724 c1cea50e 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 00000000 0 2
+=
+=
+G 2 c05c8f7a c12cefe3 438c22c8 bf0399dc 3ab4aa9a bf5b9587 3f5b9587 bd43c386 bf0399dc c1a8cfd3 bfc5f59c c200ec19 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 2
+=
+=
+=
+G 2 4267b636 c1000790 43a15a25 3f7f2eed 3c74b885 bda3759c 3da3759c bca0cac5 3f7f2eed c10b488c 3ed0e6a7 c149b407 1
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 bf800000 deadbeef 3f800000 00000000 0 2
+=
+=
+=
+=
+G 2 41e72ae1 c0eece02 439b1fa4 3f7df6a6 3c28f1de be00e815 3e00e815 bb2776d4 3f7df6a6 417fb7ef bfbd0979 41c5f32f 0
+deadbeef deadbeef deadbeef 3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 2
+=
+=
+=
+=
+=
+=
+=
+END
+CASE 0 2 0 1 1
+T 43d3f9ae 40889aed 43dd06c9 c0e26d95 00000000 4207e3bb
+G 0 43c90b76 408bd49b 43dd5a14 bf535267 bb863a35 3f107ef3 bf107ef3 3cf3251a bf535267 c0e5f45e bd7ff049 41dec6dd 1
+G 1 43cda563 40a4fdca 43df5f8f bf01c227 3ca5c81b 3f5cad8e bf5cad8e bd40ef03 bf01c227 c0bd1a16 be6a87ad 4219bb0e 0
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+G 1 43b81dc1 bf54f4d7 43e489d1 3f452aa4 3b1e5ec6 3f234874 bf234874 bd1b979e 3f452aa4 c0d189c3 bfb519ec 41bb074c 0
+=
+=
+=
+G 1 43d41a9c 408c0bf8 43e46cc6 3f038f75 bb40837a bf5b9bc2 3f5b9bc2 3ca22be5 3f038f75 400e4e9c 3fd5aea3 c1568e45 0
+=
+T 43637701 41968c8c c33137ab c0c90e00 00000000 c1def9d4
+G 0 436c8579 41985c23 c3363ab8 bf5ffd0d bc6e2034 3ef7e99f bef7e99f bd0d05ae bf5ffd0d c08a7c87 bfdc7d57 c13e508e 1
+G 1 43662887 4198dba2 c32fb58a 3edddc77 3c6e8b19 3f66b797 bf66b797 3ba53e12 3edddc77 c0a2b385 bfa15598 c1a27d75 0
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+G 1 436dd05d 41976120 c32f3fbb bf7fa671 bc9035f8 bd560fa0 3d560fa0 3cb24db6 bf7fa671 c053d0f1 3fe04bb6 c180728a 0
+3f800000 deadbeef 3f800000 3f800000 3f800000 deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 435e1b16 41958806 c331d7e8 3f437afa 3d49469e 3f254c48 bf254c48 3d46ff4e 3f437afa beada746 3ea9c8f4 c11b0808 1
+=
+=
+=
+G 0 43698a2a 4196192c c33ca1ce bf51b416 bd279f77 3f12d5b6 bf12d5b6 bd237881 bf51b416 c10dd606 bf0ea650 c211ae41 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 435c948f 41928e81 c3276a03 bf5db16c bc37cc97 3f000430 bf000430 3be6da46 bf5db16c 40b09df3 bfd7c89b 41e3516d 0
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 435c5d01 419d5296 c334c29b 3f7cf474 bbbc60e8 3e1d78a3 be1d78a3 bd08ef72 3f7cf474 c011ea30 3e701e01 c112a946 0
+3f800000 deadbeef 3f800000 3f800000 3f800000 deadbeef 00000000 0 0
+=
+=
+=
+=
+G 1 4379b875 419ad572 c32a0fc4 bf01aa7c 3cc89b91 bf5cbb77 3f5cbb77 3d104a0b bf01aa7c c004755a 3fcbeb3d c1342c53 0
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+T 43a4460c 41628e05 c207cac6 c1bee7cc 00000000 413d8427
+G 0 4398f166 4150786d c1d1265c bf3fe7dd 3cda08fe 3f296f58 bf296f58 3983db40 bf3fe7dd c1e86706 bf436795 41647daf 1
+G 1 43b025ed 414c4fed c2055be5 bf3f30c9 3aa56169 bf2a3dd2 3f2a3dd2 bcb0cae7 bf3f30c9 c1b7e643 bfc817b1 411b6c78 0
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+T 439ad0f4 417aa64e 3ea7ec73 4103334b 00000000 3e19109c
+G 0 4394f4b8 4172380c c0f06bf3 bf4f0f6f bc9ef5d1 bf168a07 3f168a07 3cf9aa42 bf4f0f6f c1ab15e3 bffec956 3c99e1f6 1
+G 1 43797d79 415d7df3 4042a15f 3f782fe6 3ce669ef be7b0d0f 3e7b0d0f 3d09f240 3f782fe6 41a715c7 3fe619b7 3f843d90 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 43937f58 4187b851 c10db60d 3f4822a8 bc0a09e1 3f1fa15b bf1fa15b 3d10d64b 3f4822a8 c1fc3b76 bfb34d72 bf90f801 0
+=
+=
+=
+=
+T 43c4c9a6 417da925 c2a54a28 4109283a 00000000 c211798f
+G 0 43cd0522 41774ff5 c2b3aa08 bf750614 bd4a44c7 be9450be 3e9450be 3c423280 bf750614 410ac8fd be9fd3e7 c21ede3a 1
+G 1 43c5553d 41806eb6 c2a8ba7c 3f091e1b 3bcf7de8 bf582ea8 3f582ea8 bd187fc4 3f091e1b c0e480c0 3ef5a716 41cf933b 0
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+G 1 43c206bd 4175909f c2a96664 bf732ab7 3cba16a8 3ea012d0 bea012d0 bcea8850 bf732ab7 c10c4e82 3f91e206 4214e829 0
+=
+=
+=
+=
+=
+G 0 43c30a99 417e91ac c2a9bd25 3eb92eed bd47c44d 3f6eab35 bf6eab35 3ca2e01d 3eb92eed 40bc44d2 3f779b27 c1e98703 1
+=
+=
+=
+G 0 43cc7bdf 41898d66 c28e9658 bf7bc1b3 3b907144 be39aba5 3e39aba5 bb7c1ee6 bf7bc1b3 408a4329 3edaa8c6 c1b11e53 1
+=
+=
+=
+=
+=
+=
+G 1 43c6604c 417c3657 c2b69b76 bf623255 3d21f0ad 3eefc24e beefc24e 3d35a245 bf623255 40ce3971 bfcff83c c1abc1d1 0
+=
+=
+=
+=
+=
+T 43de41f2 409824fd 42dab61a 414ff5e2 00000000 412787f1
+G 0 43e42e1e 404ce101 42b4137e 3e2ccc5a bcd528be bf7c5429 3f7c5429 bd0c5921 3e2ccc5a 40b47f0e 3f878eae 408d9f07 1
+G 1 43e50694 40b9ce6c 42cd19ca bf4ea4d8 bc928e68 3f171c35 bf171c35 bc2d4b11 bf4ea4d8 413c35c0 bd002f6e 40ffb1aa 0
+G 1 43e827e2 409c7dfb 42df2fe4 bf617bca 3d2c1c9f 3ef26e45 bef26e45 bb56028b bf617bca 41bfcf28 3f1fc9f4 41a2d8e8 0
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+G 1 43df6bf5 41481de1 432c43c9 bf48d8e9 3d337c0b 3f1ebbce bf1ebbce bcf62645 bf48d8e9 41d046c8 3f522b94 41a92c9e 0
+=
+=
+=
+=
+=
+T c2c3d8dd 3f9278d4 4294a2a9 c1e566e7 00000000 c1716754
+G 0 c2be4347 3fd40209 42a3f1d2 bef7736b 3cfbc31d 3f601db8 bf601db8 bcd1cb4e bef7736b c1aa9b48 be74aacf c1399832 1
+G 1 c2a9c39a bf190653 425f5ea8 3f697756 bc7e3e23 bed20b1c 3ed20b1c 3d3080ee 3f697756 c12bf6d2 3f72ad0b c0d85da9 0
+=
+G 0 c2a8fcf9 3f5c0921 42607660 bf17fc8f b9e3eb8f 3f4e000e bf4e000e 3d04fafb bf17fc8f c20cc015 3f83cf52 c18aa271 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c2c163b0 3eae7530 424a897a 3ef4f113 3c5b9db1 bf60cddb 3f60cddb 3d3095e5 3ef4f113 c1a17c64 386ac55b c1107a52 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c2b68043 3fbe1693 4298b066 bf7af25e bc26f3b6 be4a7441 3e4a7441 3c3e456f bf7af25e c1960969 be5f28e9 c10e79df 0
+3f800000 deadbeef 3f800000 3f800000 3f800000 deadbeef 00000000 0 0
+=
+G 0 c2b372fd 4002d962 429f4be5 3f6ab70f bb1e3824 3ecc6665 becc6665 3c197520 3f6ab70f c20be5b2 3fb99424 c185960b 1
+bf800000 3f800000 3f800000 3f800000 3f800000 deadbeef 00000000 1 1
+=
+G 1 c2a544ff 3fad6d1d 4290dd50 3f7faa2c bc9117a8 3d518fbc bd518fbc 3c8c0bce 3f7faa2c c1a66a8c bed516ce c110ff66 0
+bf800000 3f800000 3f800000 deadbeef deadbeef deadbeef 00000000 1 1
+=
+G 1 c2b33960 3f191a2c 42910796 3f68d7ea bd2d5a7b 3ed4ca5c bed4ca5c bd399e47 3f68d7ea c202fc98 bfd2d9ac c183f7e2 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c2dbab2f 40033177 42a19545 bf7c1965 bb9cb4b2 be32141b 3e32141b bd3a1ccf bf7c1965 c107c5ea bf0af07e c07bd564 1
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c2ef63b4 401fcf7e 42a57465 3f7ff42a bd1dfd06 bc9bb04b 3c9bb04b bba4f24f 3f7ff42a c184f6fa 3fe642b5 c0f14648 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+=
+T c38a6de3 412321ac c30c5155 c125ae09 00000000 c1956961
+G 0 c38299d5 411923d6 c3021e2f bf387734 bccb8c8a bf318192 3f318192 bc59fd32 bf387734 c0416daa bf6bbe7d c0fb4d4e 1
+G 1 c3a833c1 417489a9 c312bce2 3f4c3bab bd1e2a25 3f1a5a5f bf1a5a5f bcaa273c 3f4c3bab c19309a9 bf657aef c2119683 0
+=
+=
+G 1 c38b6f1a 4125d8f2 c30cf473 3f5cae92 bc5ef62d bf01c06d 3f01c06d 3d1101a4 3f5cae92 40de9fa4 3e43cdcb 41431d5f 0
+=
+=
+=
+=
+=
+G 0 c3865f39 411e40ef c3036498 be25a9a9 bccd8594 bf7ca0af 3f7ca0af 3c07edcb be25a9a9 c146d9c3 bfa6a77c c1b05dc4 1
+=
+=
+=
+=
+G 1 c3a83f01 4170c9f5 c30f8299 3f7f8456 bd2f7d85 3d7b827c bd7b827c 3c1a40f6 3f7f8456 c1926c68 bf1b96eb c208f4b8 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c38bcfd1 41297705 c306065a 3f1029c3 bc2fb156 bf538c8d 3f538c8d 3c3765b1 3f1029c3 40e071ec 3f90c7ca 415981f8 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 c38bc043 41271774 c304d0ca 3f2912f0 3c82d26d bf40394c 3f40394c bd42f053 3f2912f0 c13408b5 bf951266 c1b38a2e 1
+G 1 c386ef89 40fe0a99 c31cde10 be320dc4 bd0add4d bf7c19ac 3f7c19ac bc977403 be320dc4 c111a66f bc8d5f1b c18a81d5 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 c3910f03 41493cb3 c3208cdc 3e9e63c1 bd355774 bf73713e 3f73713e bd1c61cf 3e9e63c1 c090d82b 3f2fbf0f c12c03fb 0
+=
+=
+=
+=
+=
+=
+G 0 c38c8c28 3fca2115 c29b4eb1 3e06eb38 3d221a4e bf7dc4aa 3f7dc4aa bb03ef45 3e06eb38 c141b4d9 3fc573b5 c19afabc 1
+deadbeef deadbeef deadbeef deadbeef deadbeef deadbeef 00000000 0 1
+=
+T 43e7613f c1748f5d 42a5947e c11424bd 00000000 c1122c6d
+G 0 43ddc1f5 c16ddfdd 42a62cca bf7f6232 bccab6ea bd8e09c1 3d8e09c1 3d16d07b bf7f6232 c192aa50 3ef19e10 c18c0ba0 1
+G 1 43ebada3 c16f3b37 42cb1608 bf255ac7 3c73a600 bf436eb8 3f436eb8 bca6cc40 bf255ac7 c1ad1b32 bf1280e2 c1a8f73b 0
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+G 0 43e24bba c16529a0 427e8407 beffb95d 3d1e2ce4 bf5dc838 3f5dc838 bb858453 beffb95d c16393fe bf874d4f c13c5abf 1
+=
+=
+=
+=
+=
+=
+G 0 43e6eda0 c1744653 42a5a6e7 bf52aa67 bbc29039 bf117374 3f117374 3c8e39fd bf52aa67 c0ebda74 3ff13a26 c0904410 1
+=
+G 1 43e8cb7f c170a09a 42839792 be955234 3b3e41d7 bf74def9 3f74def9 3d0405ad be955234 c0f0d4a8 3f3fd701 c110b514 0
+=
+=
+=
+=
+=
+=
+=
+=
+G 0 43edda48 c1587060 41de97f2 3f01a129 bb88fe7e 3f5cc0f1 bf5cc0f1 3b97457d 3f01a129 c15af931 bf4cb007 c1525133 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 1
+G 0 43e5a6ff c172bde5 42a2d1c1 bf41c233 3cce0143 bf27501b 3f27501b 3ca8285e bf41c233 c1ccffbb bf89b520 c1c93848 1
+bf800000 3f800000 3f800000 deadbeef deadbeef deadbeef 00000000 1 2
+=
+=
+=
+G 1 43e81662 c16ddb34 42afb392 be9843e1 bcee4cb4 bf746ad6 3f746ad6 bd470c5b be9843e1 c1e01795 3f70939c c1e49211 0
+bf800000 3f800000 3f800000 3f800000 3f800000 deadbeef 00000000 1 2
+=
+=
+=
+=
+=
+G 0 43ea17e0 c1711f60 42acf5ed 3f53b10a 3ad70c5c 3f0ff429 bf0ff429 3cd1acba 3f53b10a c1b5be77 bfd6b710 c1bf77c4 1
+=
+=
+=
+=
+=
+=
+=
+G 1 43e42581 c156697e 426fd156 3d9c3dee 3d325aac bf7f4102 3f7f4102 3c128e8a 3d9c3dee c1401ac4 3ef3538a c148e59b 0
+bf800000 3f800000 3f800000 deadbeef deadbeef deadbeef 00000000 1 2
+=
+=
+=
+=
+=
+=
+G 0 43eb73f9 c187d6af 4284c0d3 becd2347 3d059f15 3f6a8dd9 bf6a8dd9 bc8c68bf becd2347 c1c9d77e bf6c1193 c1dba0fc 1
+3f800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 2
+G 1 43e5bdae c16e5a03 42a2eaf5 bf3b6267 3d3ec6a2 bf2e6c14 3f2e6c14 bd1aebf9 bf3b6267 4153c3ca bfcbf78d 41460745 0
+=
+=
+=
+=
+=
+=
+=
+=
+G 1 43df99e0 c17e647a 42b5c89e 3f74ac39 bc2501ad 3e969d8c be969d8c bc829715 3f74ac39 c1d4de2c bf7180fb c1cd7f51 0
+=
+=
+=
+T 429f050b 418fc2f3 c2913e9d bf5706f4 00000000 c0c242f1
+G 0 4298a98f 419b61da c26ef6b0 bf3448d5 3d37df0f 3f35c04f bf35c04f 3c5aee9a bf3448d5 c054a292 3f1020f9 c21d5b6a 1
+G 1 429b5b4d 418e0781 c28c6334 bd422ec1 bc9f18cd 3f7fb650 bf7fb650 bc92b668 bd422ec1 4030a08e 3fc3a797 41ab0f00 0
+bf800000 deadbeef 3f800000 deadbeef deadbeef deadbeef 00000000 0 2
+=
+T 43aa1c47 c1080fc6 c3aaa70c 40ed59d1 00000000 41be0569
+G 0 43aabce0 c10853ba c3aa5e05 3e3d6948 3ca22ef7 3f7b9519 bf7b9519 3ca60a99 3e3d6948 407e9b01 bf03deba 40e8ef70 1
+G 1 43aa259e c108b83f c3aa0c5a 3eaa58e9 bcbb3991 bf716a5f 3f716a5f bc92e36e 3eaa58e9 412bea79 bfbcaa3e 4210fb75 0
+=
+=
+=
+=
+=
+=
+=
+=
+=
+END
