@@ -42,7 +42,6 @@ mod skidmarks;
 mod sst_trail;
 mod readouts;
 mod pu_bolt;
-mod pu_dust;
 mod redlight;
 mod althk;
 mod flags;
@@ -391,9 +390,6 @@ struct App {
     /// the light manager's fourth record this frame (F-62430): the siren's nearest the camera, else the checkpoint's -
     /// place, colour, strength
     record3: Option<(Vec3, [f32; 3], f32)>,
-    /// the Roar / EMP dust slots (F-85331) and the lights they added this tick (F-76537, the per-frame list)
-    pu_dust: pu_dust::Dust,
-    dust_lights: Vec<pu_dust::Light>,
     /// vinyl shapes (loaded when a livery is first painted) and the cars' zone layouts
     shape_lib: Option<vinyl::ShapeLib>,
     car_zones: hashbrown::HashMap<String, Option<Arc<vinyl::CarZones>>>,
@@ -1171,8 +1167,6 @@ impl App {
             dispatch_zones: Vec::new(),
             dispatch_prev: Vec::new(),
             record3: None,
-            pu_dust: pu_dust::Dust::new(),
-            dust_lights: Vec::new(),
             shape_lib: None,
             car_zones: Default::default(),
             cuts: Default::default(),
@@ -3017,20 +3011,6 @@ impl App {
                     ability::Kind::Emp => self.shake_jolts.push((0.5, 1.0)),
                     _ => {}
                 }
-                // (then F-77604's event record and F-85331: a dust slot, word 1 Roar / 2 EMP, the light flag 8; the
-                // effect at the car with its velocity, F-17154)
-                let word = match k {
-                    ability::Kind::Roar => Some(1),
-                    ability::Kind::Emp => Some(2),
-                    _ => None,
-                };
-                let pi = self.vehicles.cars.iter().position(|c| c.is_player);
-                if let (Some(word), Some(pi)) = (word, pi) {
-                    if let Some(name) = self.pu_dust.start(word, Some(pi), pu_dust::ABILITY_FLAGS).and_then(|s| s.effect) {
-                        let (p, v) = (self.vehicles.cars[pi].state.pos, self.vehicles.cars[pi].state.vel);
-                        self.fx.burst(mcla_formats::hash::joaat(name), p, v, p.distance(self.cam.pos));
-                    }
-                }
                 self.game.show_message(k.name());
                 let (system, stat) = k.system();
                 if let Some(level) = self.game.career.ability_used(system, stat) {
@@ -3048,9 +3028,6 @@ impl App {
                 self.game.mc4_stat_add("gAGH", 0, 1.0);
             }
         }
-        // (F-22666 in the physics layer's update F-93826: every dust slot's age, and the lights of the young ones)
-        let cars = &self.vehicles.cars;
-        self.dust_lights = self.pu_dust.tick(dt, &|o| cars.get(o).map(|c| c.state.pos));
         // (step 19e: the race's power-ups - gone with the race, the Racing state's RemovePowerUps)
         if self.game.race.is_none() || !matches!(self.game.mode, Mode::Race) {
             if let Some(mut pu) = self.powerups.take() {
@@ -7711,17 +7688,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         if let Some((p, c)) = hit {
             self.record3 = Some((p, c, pu_fx::HIT_LIGHT));
         } else if self.game.mode != Mode::Paused {
-            // (the per-frame list's record nearest the camera within 100 m: a siren or a dust slot's light, F-31349)
-            let cam = self.cam.pos;
-            let siren = self.vehicles.siren_light(cam).map(|p| {
-                let (c, s) = vehicles::siren_flash(siren_clock_ms());
-                (p, c, s)
-            });
-            let dust = self.dust_lights.iter().map(|l| (l.pos, l.color, l.strength)).filter(|l| l.0.distance_squared(cam) < 10000.0);
-            let near = siren.into_iter().chain(dust).min_by(|a, b| a.0.distance_squared(cam).total_cmp(&b.0.distance_squared(cam)));
-            self.record3 = match near {
-                Some(r) => Some(r),
-                None =>self.cp_markers.light.filter(|_| std::env::var("MCLA_NO_MARKERS").is_err()).map(|(p, c)| (p, c, checkpoints::LIGHT_INTENSITY)),
+            self.record3 = match self.vehicles.siren_light(self.cam.pos) {
+                Some(p) => {
+                    let (c, s) = vehicles::siren_flash(siren_clock_ms());
+                    Some((p, c, s))
+                }
+                None => self.cp_markers.light.filter(|_| std::env::var("MCLA_NO_MARKERS").is_err()).map(|(p, c)| (p, c, checkpoints::LIGHT_INTENSITY)),
             };
         }
         // (test hook MCLA_SIREN_TRACE=1: the record, off the beat of the 100 ms flash; =all: every tick)
@@ -10220,6 +10192,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             if (self.frame_no == 60 || self.frame_no == 280) && std::env::var("MCLA_GLOW_DUMP").is_ok() { eprintln!("carrefl P {:.3} {:.3} {:.3} origin y {:.3} rect {:.5} {:.5} {:.5} {:.5} depth {:.5} I {:.4}", p.x, p.y, p.z, oy, r.r[0], r.r[1], r.r[2], r.r[3], r.z[0], r.z[1]); }
                             sig_refl.push(r);
                         }
+                    }
                     if let Some(g) = tune.car(w, p, f, c, k, cam, tan) {
                         // (ahead of the props for the cut at 96: the port's prop list is longer than the
                         // game's - 74 props at the gate at 23:30, the car's four lamps at 74 .. 77 of 80 -
@@ -10259,7 +10232,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         {
             // local lights: headlights of the cars around the camera + nearest street lamps (night only)
-                    }
             // the player's lamp table is its garage record's - the save's copy of the set-up it was
             // made from (bought: `<car>.xcc`, a prize: the reward's set-up) - as the original draws it
             self.vehicles.player_lamps = self.vehicles.player().and_then(|p| {
