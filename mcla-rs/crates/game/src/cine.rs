@@ -351,8 +351,24 @@ fn matrix_blend(out: &mut [f32; 16], a: &[f32; 16], b: &[f32; 16], u: f32) {
 
 /// The race-start scenes that hand the picture back with `cam_to_game` (event 78: F-91263 calls F-45212 with no cut,
 /// so the viewport blends, `CamBlend`); the others' `bookmark_cut_to_game` cuts. From their generated scripts
-/// (`work/career2/events2.txt`: `bookmark` and `cam_to_game` at the scene's cut time).
-const BLEND_TO_GAME: [&str; 7] = ["gen_prerace_grid_4x2_01", "gen_prerace_starter_1x1_01", "gen_prerace_taunt_01", "gen_prerace_taunt_02", "gen_prerace_taunt_03", "gen_prerace_taunt_07", "gen_prerace_taunt_09"];
+/// (`work/driverlight/gen/compare.py` over all 200 race-start scripts, the hash-named ones too: every one with
+/// `cam_to_game` has its `bookmark` at the same time).
+const BLEND_TO_GAME: [&str; 68] = [
+    "cut_racestart_1x1_01", "cut_racestart_1x1_02", "cut_racestart_1x1_03", "cut_racestart_1x2_02", "cut_racestart_1x2_03",
+    "cut_racestart_1x2_04", "cut_racestart_1x2_05", "cut_racestart_1x8_01", "cut_racestart_1x8_02", "cut_racestart_2x4_split_01",
+    "cut_racestart_2x4_split_02", "cut_racestart_3x3_01", "cut_racestart_3x3_02", "cut_racestart_3x3_03", "cut_racestart_3x3_04",
+    "cut_racestart_3x3_split_01", "cut_racestart_3x3_split_02", "cut_racestart_taunt_hk_01", "cut_racestart_taunt_hk_plyr_01", "cut_racestart_taunt_hk_plyr_02",
+    "cut_racestart_taunt_plyr_hk_01", "cut_racestart_taunt_plyr_hk_02", "cut_racestarter_1x8_01", "cut_racestarter_1x8_02", "cut_racestarter_2x4_01",
+    "cut_racestarter_2x4_02", "cut_racestarter_2x4_03", "cut_racestarter_2x4_04", "cut_racestarter_2x4_split_01", "cut_racestarter_2x4_split_02",
+    "cut_racestarter_3x3_01", "cut_racestarter_3x3_02", "cut_racestarter_3x3_03", "cut_racestarter_3x3_04", "cut_racestarter_3x3_05",
+    "cut_racestarter_3x3_06", "cut_racestarter_3x3_split_01", "cut_racestarter_3x3_split_02", "cut_racestarter_4x2_01", "cut_racestarter_4x2_02",
+    "cut_redlight_01", "cut_redlight_be_00", "cut_redlight_be_01", "cut_redlight_dt_00", "cut_redlight_hl_00",
+    "cut_redlight_hl_01", "cut_redlight_hw_00", "cut_redlight_hw_01", "cut_redlight_hw_02", "cut_redlight_hw_03",
+    "cut_story_hangout_pinkslip_hills", "gen_prerace_grid_4x2_01", "gen_prerace_starter_01", "gen_prerace_starter_04", "gen_prerace_starter_05",
+    "gen_prerace_starter_07", "gen_prerace_starter_09", "gen_prerace_starter_1x1_01", "gen_prerace_taunt_01", "gen_prerace_taunt_02",
+    "gen_prerace_taunt_03", "gen_prerace_taunt_07", "gen_prerace_taunt_09", "taunt_01", "taunt_02",
+    "taunt_03", "taunt_04", "taunt_05",
+];
 
 /// Whether a scene hands the picture to the game camera by the 1 s blend (`BLEND_TO_GAME`).
 pub fn blends_to_game(scene: &str) -> bool {
@@ -487,11 +503,6 @@ const HACKED_SCALE: [&str; 14] = [
     "drv_mc_001_set", "drv_mc_003_set", "drv_mc_02_set", "drv_mh_006_set", "drv_mh_02_set", "drv_mp_01_set", "mec_mc_01_set",
 ];
 
-/// The set a cutscene draws for `set` (LookupDriverToCutscenePath / Name, F-58832 / F-81189): the character manager's
-/// map +116 (the HackedScale column of Boot.sco's RegisterDriverMappings), and when the local player's car is a motorcycle
-/// (F-17373, which with a player there stands for the script's own argument) the map +140 (the jacket column) - in the 45
-/// mappings they differ only for the player's `drv_mp_01_set`: `drv_mp_jacket_01_set_hackedscale` on a bike. Not ported: a
-/// slot marked to use the unscaled character (CineScript_Characters_GetSlotToUseUnscaledCharacter); GH_06 marks no slot.
 /// The officers' face table of LaunchAnimEventWithFace (F-45542): `cut_cop_faces/Entity/<n>/<n>` by the first
 /// entry containing the slot name.
 const COP_FACES: [&str; 5] = [
@@ -508,6 +519,11 @@ fn aux_pack(scene: &str) -> Option<&'static str> {
     scene.starts_with("cut_cop_arrest").then_some("cut_cop_faces")
 }
 
+/// The set a cutscene draws for `set` (LookupDriverToCutscenePath / Name, F-58832 / F-81189): the character manager's
+/// map +116 (the HackedScale column of Boot.sco's RegisterDriverMappings), and when the local player's car is a motorcycle
+/// (F-17373, which with a player there stands for the script's own argument) the map +140 (the jacket column) - in the 45
+/// mappings they differ only for the player's `drv_mp_01_set`: `drv_mp_jacket_01_set_hackedscale` on a bike. Not ported: a
+/// slot marked to use the unscaled character (CineScript_Characters_GetSlotToUseUnscaledCharacter); GH_06 marks no slot.
 fn cutscene_set(set: &str, bike: bool) -> String {
     if bike && set.eq_ignore_ascii_case("drv_mp_01_set") {
         return "drv_mp_jacket_01_set_hackedscale".to_string();

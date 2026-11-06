@@ -292,17 +292,17 @@ pub const DRIVER_EVENTS: &[(&str, bool, u8, f32)] = &[
     ("cut_cop_walk_plyr_bike", true, 0, 4.66667),
     ("racestart/cut_payback_get_keys", false, 0, 0.0),
     ("racestart/cut_payback_get_keys", true, 0, 12.3333),
-    ("story/cut_story_beat_sh_02_exotic", false, 0, 2.66667),
-    ("story/cut_story_beat_sh_02_exotic", false, 1, 2.66667),
+    ("story/cut_story_beat_sh_02_exotic", false, 0, -2.66667),
+    ("story/cut_story_beat_sh_02_exotic", false, 1, -2.66667),
     ("story/cut_story_find_sh_04_alt", false, 0, 0.0),
     ("story/cut_story_find_sh_04_alt", false, 0, 0.0),
-    ("story/cut_story_hangout_pinkslip_hills", false, 0, 8.33333),
-    ("story/cut_story_hangout_pinkslip_hills", false, 1, 8.33333),
-    ("story/cut_story_hangout_series_downtown", false, 0, 7.23333),
-    ("story/cut_story_motorcycle_rep", false, 1, 5.33333),
-    ("story/cut_story_motorcycle_rep", false, 0, 5.33333),
+    ("story/cut_story_hangout_pinkslip_hills", false, 0, -8.33333),
+    ("story/cut_story_hangout_pinkslip_hills", false, 1, -8.33333),
+    ("story/cut_story_hangout_series_downtown", false, 0, -7.23333),
+    ("story/cut_story_motorcycle_rep", false, 1, -5.33333),
+    ("story/cut_story_motorcycle_rep", false, 0, -5.33333),
     ("story/cut_story_motorcycle_rep", true, 1, 43.1333),
-    ("story/cut_story_races_in_beach", false, 0, 4.83333),
+    ("story/cut_story_races_in_beach", false, 0, -4.83333),
     ("story/cut_story_rep_on_strip_garage", false, 0, 12.0),
     ("story/cut_story_rep_on_strip_garage", true, 0, 76.9667),
 ];
@@ -737,6 +737,8 @@ mod tests {
         assert_eq!(native_slots("racestart/cut_racestarter_1x8_01"), 0xff);
         assert_eq!(native_slots("story/cut_story_race_gh_06"), 3);
         assert!(DRIVER_EVENTS.contains(&("cut_cop_walk_plyr_02", true, 0, 4.66667)));
+        // a pre-roll row keeps the script's negative time (`pushf 7.23333; fneg`): it begins at the clock's first step
+        assert!(DRIVER_EVENTS.contains(&("story/cut_story_hangout_series_downtown", false, 0, -7.23333)));
         assert_eq!(slot_label("story/cut_story_race_gh_06", 1), Some("henry"));
         assert_eq!(hookman_set("GH_06"), Some("drv_mb_02_set"));
         // the script's pushes (0x1529a945): GH_25 29, GH_26 32, GH_33 39, GH_34 41, GH_36 43; never registered 0

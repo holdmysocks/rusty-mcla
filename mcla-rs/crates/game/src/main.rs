@@ -13307,7 +13307,9 @@ impl App {
         let Some((name, t)) = now else { return };
         if self.cine_lamps.is_none() {
             let kept = self.vehicles.cars.iter().map(|c| (c.uid, c.amb_lamps.off)).collect();
-            self.cine_lamps = Some((name.clone(), -1.0, kept));
+            // the clock's first step begins every event that starts before it (the EventTimeline step F-42389: an event
+            // with no duration ends at FLT_MAX, so one whose script time is negative - the pre-roll rows - begins at once)
+            self.cine_lamps = Some((name.clone(), f32::NEG_INFINITY, kept));
             // EndDescription (F-39589): every UseRacerNativeCharacter slot's racer shows its driver (F-13669(racer, 1)),
             // and one that is damaged out is set to 0.95 of its MaxDamage (damage +36 / +40, the test F-98898 of
             // Racer_IsDamagedOut); UseRacerNativeCharacter itself (F-94066) raises slot 0 / 1's racer to the hi-res
