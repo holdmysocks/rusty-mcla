@@ -587,6 +587,16 @@ impl ViewBlend {
     pub fn active(&self) -> bool {
         self.from.is_some()
     }
+    /// The finish (F-70013): nothing queued, the director cuts to the target; a queued camera
+    /// other than the target is cut to (type 4 makes the start F-41709 a cut).
+    fn finish(&mut self) {
+        self.from = None;
+        if let Some(q) = self.queued.take() {
+            if q != self.dst {
+                self.finished = Some(q);
+            }
+        }
+    }
     /// Run the old view for this frame and mix it with `out` (the new view's output).
     pub fn apply(&mut self, car: &BoomTarget, out: BoomOut, dt: f32) -> BoomOut {
         let Some((tune, cam)) = self.from.as_mut() else { return out };
@@ -599,14 +609,7 @@ impl ViewBlend {
         };
         let (a, b) = (dir_cam(&old), dir_cam(&out));
         if !self.blend.step(&a, &b, 3, self.time, dt) {
-            // the finish (F-70013): nothing queued, the director cuts to the target; a queued
-            // camera other than the target is cut to (type 4 makes the start F-41709 a cut)
-            self.from = None;
-            if let Some(q) = self.queued.take() {
-                if q != self.dst {
-                    self.finished = Some(q);
-                }
-            }
+            self.finish();
             return out;
         }
         let m = &self.blend;
@@ -917,6 +920,21 @@ impl Switch {
         self.shown.unwrap_or(view)
     }
 
+    /// The chosen view becomes `view` while the director goes on showing `old` (CAM_UP over the
+    /// event camera, F-67519: the new view is queued behind the event's blend out, or dropped).
+    pub fn hold(&mut self, view: u8, back: bool, old: u8) {
+        self.last = Some((view, back));
+        self.shown = (old != view).then_some(old);
+    }
+
+    /// The director's finish cutting to the queued view (F-70013): no blend, no mask.
+    pub fn cut_to(&mut self, view: u8, back: bool, cam: &mut BoomCam) {
+        self.blend.stop();
+        self.last = Some((view, back));
+        self.shown = None;
+        cam.reset();
+    }
+
     /// The original's random draw: 23 bits of a linear congruential generator.
     fn rand23(&mut self) -> f32 {
         self.seed = self.seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
@@ -933,9 +951,6 @@ impl Switch {
         if let Some(q) = self.blend.finished.take() {
             self.shown = Some(q);
             cam.reset();
-        }
-        if self.shown == Some(view) && !self.blend.active() {
-            self.shown = None;
         }
         let Some((was_view, was_back)) = self.last.replace((view, back)) else {
             self.shown = None;
@@ -976,6 +991,12 @@ impl Switch {
                 let (new, _) = tune_for(set, view, false);
                 self.blend.push(view, new.blend_time(), dst, cam);
                 self.shown = Some(self.blend.dst);
+            } else if self.shown(was_view) == view {
+                // (the director's own camera pushed again - the old view stayed on after a drop or a
+                // turn-round: F-98424 makes it current with no blend, type 4)
+                self.blend.stop();
+                self.shown = None;
+                cam.reset();
             } else {
                 let from = self.shown(was_view);
                 let (old, _) = tune_for(set, from, false);
@@ -986,6 +1007,11 @@ impl Switch {
                 self.shown = None;
                 cam.reset();
             }
+        }
+        // (the director shows the chosen view again: nothing to tell apart - after the change test,
+        // which needs the shown view of the frame before)
+        if self.shown == Some(view) && !self.blend.active() {
+            self.shown = None;
         }
         // turning the look-back camera with CAM_PAN_*: 2 rad/s round, 1.25 rad/s up, the
         // pitch kept in 0 .. 1.2566 (A-28508..A-14649)
@@ -2531,6 +2557,13 @@ impl EventDirector {
     pub fn leave(&mut self) {
         self.quit = true;
     }
+    /// The director cut away from the event camera while it blended out (setView's type-4 cut
+    /// F-41662 -> F-53309 over the blend camera): the event view is gone at once.
+    pub fn cut_out(&mut self) {
+        self.cam.look_yaw = 0.0;
+        self.phase = 0;
+        self.quit = false;
+    }
     pub fn reset(&mut self) {
         self.phase = 0;
         self.quit = false;
@@ -3855,6 +3888,91 @@ mod director_blend_tests {
         }
         run(&mut sw, &set, &mut cam, 1, dt);
         assert_eq!(sw.shown(1), 0);
+    }
+
+    /// CAM_UP over the event camera (F-67519): the chosen view changes while the director keeps the
+    /// old one (hold), no blend starts, and the queued view is cut to when the event has gone.
+    #[test]
+    fn a_held_view_is_cut_to_without_a_blend() {
+        let set = views();
+        let (mut sw, mut cam) = (Switch::default(), BoomCam::default());
+        let dt = 1.0 / 30.0;
+        for _ in 0..10 {
+            run(&mut sw, &set, &mut cam, 1, dt);
+        }
+        sw.hold(2, false, sw.shown(1));
+        for _ in 0..5 {
+            run(&mut sw, &set, &mut cam, 2, dt);
+            assert!(!sw.blend.active() && !sw.mask.is_on());
+            assert_eq!(sw.shown(2), 1);
+        }
+        sw.cut_to(2, false, &mut cam);
+        run(&mut sw, &set, &mut cam, 2, dt);
+        assert!(!sw.blend.active() && !sw.mask.is_on() && sw.shown(2) == 2);
+        // (a dropped view: the director stays on the old one until the next change, which blends from it)
+        sw.hold(0, false, sw.shown(2));
+        run(&mut sw, &set, &mut cam, 0, dt);
+        assert_eq!(sw.shown(0), 2);
+        run(&mut sw, &set, &mut cam, 1, dt);
+        assert!(sw.blend.active());
+        assert_eq!((sw.blend.src, sw.blend.dst), (2, 1));
+    }
+
+    /// The director's push F-98424 with its queue F-43758, begin F-18878, cut F-53309 and finish
+    /// F-70013 run offline on the original's code (work/cameras2/dirq/dirq_ref.py: 1,000 runs of
+    /// view changes, blend progress and finishes over three chase views; BlendTime 1 / 0.7 / 0.25,
+    /// BlendGoal 1 / 0.8 / 0.9): after every step the director's camera, and while it blends the
+    /// source, target, queued camera, weight, goal, time left and push time to the bit.
+    #[test]
+    fn director_queue_matches_the_original() {
+        let t = |bt: &str, g: &str| BoomTune::parse(&format!("camBoomCS
+BlendTime {bt}
+BlendGoal {g}
+Offset 0 2 5
+Focus 0 1 0
+")).unwrap();
+        let set = BoomSet { views: vec![t("1", "1"), t("0.7", "0.8"), t("0.25", "0.9"), t("0", "1"), t("0", "1")], reverse: None };
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let (mut sw, mut cam, mut view) = (Switch::default(), BoomCam::default(), 0u8);
+        let mut steps = 0;
+        for (n, line) in include_str!("testdata/director_queue_ref.txt").lines().enumerate() {
+            let (op, want) = line.split_once('|').unwrap();
+            let op: Vec<&str> = op.split_whitespace().collect();
+            match op[0] {
+                "E" => continue,
+                "S" => {
+                    (sw, cam) = (Switch::default(), BoomCam::default());
+                    view = op[1].parse::<u8>().unwrap() - 1;
+                    sw.frame(&set, view, false, false, false, &mut cam, 1.0 / 60.0);
+                }
+                "P" => {
+                    view = op[1].parse::<u8>().unwrap() - 1;
+                    assert_eq!(set.views[view as usize].blend_time().to_bits(), h(op[2]));
+                    sw.frame(&set, view, false, false, false, &mut cam, 1.0 / 60.0);
+                }
+                "W" => sw.blend.blend.weight = f32::from_bits(h(op[1])),
+                _ => {
+                    if sw.blend.active() {
+                        sw.blend.finish();
+                        sw.frame(&set, view, false, false, false, &mut cam, 1.0 / 60.0);
+                    }
+                }
+            }
+            let w: Vec<&str> = want.split_whitespace().collect();
+            let num = |v: Option<u8>| v.map_or(0, |v| v as u32 + 1);
+            if w[0] == "9" {
+                assert!(sw.blend.active(), "line {}: {line}", n + 1);
+                let b = &sw.blend;
+                let got = (num(Some(b.src)), num(Some(b.dst)), num(b.queued), b.blend.weight.to_bits(), b.blend.goal.to_bits(), b.blend.left.to_bits(), b.time.to_bits());
+                let exp = (w[3].parse().unwrap(), w[4].parse().unwrap(), w[5].parse().unwrap(), h(w[6]), h(w[7]), h(w[8]), h(w[2]));
+                assert_eq!(got, exp, "line {}: {line}", n + 1);
+            } else {
+                assert!(!sw.blend.active(), "line {}: {line}", n + 1);
+                assert_eq!(num(Some(sw.shown(view))), w[0].parse::<u32>().unwrap(), "line {}: {line}", n + 1);
+            }
+            steps += 1;
+        }
+        assert_eq!(steps, 9132);
     }
 
     #[test]

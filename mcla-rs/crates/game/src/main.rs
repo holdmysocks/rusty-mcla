@@ -669,6 +669,8 @@ struct App {
     enter_garage: bool,
     /// 0 chase, 1 hood, 2 cockpit
     cam_mode: u8,
+    /// a view CAM_UP queued behind the event camera's blend out: cut to when it ends (F-70013)
+    view_after_event: Option<u8>,
     /// the driving cameras of each car (tune/camera) and the camera in use
     booms: std::collections::HashMap<String, Option<Arc<boomcam::BoomSet>>>,
     boom: boomcam::BoomCam,
@@ -1266,6 +1268,7 @@ impl App {
             flash: false,
             enter_garage: false,
             cam_mode: std::env::var("MCLA_CAM_MODE").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
+            view_after_event: None,
             booms: Default::default(),
             boom: Default::default(),
             lod_near: 0.3,
@@ -2121,15 +2124,38 @@ impl App {
         if self.look_back || self.crash_bits != 0 || self.ability_cam.active() {
             return;
         }
-        // (while the event camera runs CAM_UP only ends it and CAM_DOWN does nothing; the
-        // Hydraulics, AirRide and Idle views are ended by the chooser's own tests)
-        if self.event_dir.running() {
-            if up && !matches!(self.event_dir.event(), Some(11..=13)) {
-                self.event_dir.leave();
+        // (F-38782 on the event camera: 1 while it is the director's camera or the blend's target,
+        // -1 while it blends out. CAM_DOWN: nothing while it is either, nor while the director
+        // blends (F-65810). CAM_UP: nothing while it blends out, or while it runs the Hydraulics,
+        // AirRide or Idle view - the chooser's own tests end those)
+        let new = boomcam::next_view(self.cam_mode, up);
+        if !up {
+            if self.event_dir.running() || self.event_dir.leaving() || self.cam_switch.blend.active() {
+                return;
             }
+        } else if self.event_dir.leaving() {
             return;
+        } else if self.event_dir.running() {
+            if matches!(self.event_dir.event(), Some(11..=13)) {
+                return;
+            }
+            // CAM_UP ends any other event over 0.2 s (F-94591 pushes the view's camera; while the
+            // event still blends in, F-29802 turns that blend round first) and the view changes
+            // as well: a cut-type change (Bumper / POV) cuts over the blend at once (F-41662 ->
+            // F-53309); a blend-type one is queued behind the blend out and cut to at its end
+            // (F-43758, F-70013) - but while the event blended in, the queued camera is already
+            // the blend's target and the new view is dropped: the old view stays on.
+            let blending_in = !self.event_dir.shown();
+            self.event_dir.leave();
+            if boomcam::is_cut(self.cam_mode, new) {
+                self.event_dir.cut_out();
+            } else {
+                let old = self.cam_switch.shown(self.cam_mode);
+                self.cam_switch.hold(new, self.look_back, old);
+                self.view_after_event = (!blending_in).then_some(new);
+            }
         }
-        self.cam_mode = boomcam::next_view(self.cam_mode, up);
+        self.cam_mode = new;
     }
 
     /// The pad as the original's poll has it (`mc4::PadState`).
@@ -8532,6 +8558,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // (a change of view blends or cuts, a look back cuts - mcPlayerCamera; the
                         // CINEMATIC CAMERA option turns the look back of a moving car to one side)
                         let cinematic = self.game.mc4.as_ref().map_or(true, |m| m.options.idle_camera);
+                        // (the event camera's blend out ended with CAM_UP's view queued: the director cut to it)
+                        if self.view_after_event.is_some() && !self.event_dir.running() && !self.event_dir.leaving() {
+                            if self.view_after_event.take() == Some(mode) {
+                                self.cam_switch.cut_to(mode, self.look_back, &mut self.boom);
+                            }
+                        }
                         self.cam_switch.frame(&set, mode, self.look_back, cinematic, render_state.speed() > 0.0, &mut self.boom, dt);
                         // (the camera that runs: a change pushed while blending is queued or turns the blend
                         // round - the director's queue F-43758 / finish F-70013)
@@ -13915,7 +13947,9 @@ impl App {
                 log::info!("hangout entry line {}: scene {} car {:?} -> {:?}, crosses {:?}", su.key, su.scene, a, b, x);
             }
         }
-        self.game.mode = if self.opt.shot.is_some() && !self.opt.menu { Mode::FreeRoam } else { Mode::MainMenu };
+        // (test hook MCLA_START_ROAM=1: a windowed run starts in free roam as a headless one does)
+        let roam = (self.opt.shot.is_some() && !self.opt.menu) || std::env::var_os("MCLA_START_ROAM").is_some();
+        self.game.mode = if roam { Mode::FreeRoam } else { Mode::MainMenu };
         // the start-up movie before the start screen (boot.rs; behind the movie bootload.rs hands over its own)
         if self.game.mode == Mode::MainMenu {
             self.game.boot = boot::Boot::new(self.boot_mode());
