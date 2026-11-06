@@ -1532,7 +1532,7 @@ impl TrackTune {
             app_app: f(&b, "AppApp", 0.7),
             app_rot_min: f(&b, "AppRotMin", 0.01),
             look_at: f(&b, "LookAt", 1.0),
-            ss_speed: (f(&b, "SSSpeedMin", 0.0), f(&b, "SSSpeedMax", 50.0)),
+            ss_speed: (f(&b, "SSSpeedMin", 15.0), f(&b, "SSSpeedMax", 55.0)),
             ss_filter: f(&b, "SSFilter", 0.1),
             app_xz: (f(&e, "MinAppXZPos", 4.0), f(&e, "MaxAppXZPos", 9.0)),
             app_y: (f(&e, "MinAppYPos", 10.0), f(&e, "MaxAppYPos", 10.0)),
@@ -1541,8 +1541,10 @@ impl TrackTune {
             app_inc: f(&b, "AppInc", 3.0),
             app_dec: f(&b, "AppDec", 8.0),
             app_pos_min: f(&b, "AppPosMin", 0.25),
-            base_app_xz: f(&b, "MaxAppXZPos", 7.0),
-            hill: (f(&b, "HillMin", 0.0), f(&b, "HillMax", 0.0), f(&b, "HillLerp", 0.0)),
+            // (a base key the file leaves out keeps camTrackCS's constructor value, F-13135 run
+            // offline; every shipped file sets them all; the near plane is the load's 0.2, F-89557)
+            base_app_xz: f(&b, "MaxAppXZPos", 9.5),
+            hill: (f(&b, "HillMin", -0.8), f(&b, "HillMax", 1.25), f(&b, "HillLerp", 0.15)),
             approach_on: f(&e, "ApproachOn", 1.0) != 0.0,
             car_lens: true,
             collide_type: f(&b, "CollideType", 1.0) as i32,
@@ -3015,6 +3017,17 @@ impl EventCam {
 
 #[cfg(test)]
 mod tests {
+    /// camTrackCS's constructor F-13135 run offline (work/cameras2/d34/basector.py)
+    /// at the base keys the port reads: a file whose base block sets none of them gives these words.
+    #[test]
+    fn track_base_defaults_match_the_original() {
+        let t = super::TrackTune::from_text("type: a\ncamTrackCS {\n}\n", "SSTurbo");
+        let got = [t.app_rot, t.app_app, t.app_rot_min, t.look_at, t.app_inc, t.app_dec, t.app_pos_min, t.base_app_xz, t.hill.0, t.hill.1, t.hill.2, t.ss_speed.0, t.ss_speed.1, t.ss_filter];
+        let want = [0x42700000u32, 0x3f333333, 0x3c23d70a, 0x3f800000, 0x40400000, 0x41000000, 0x3e800000, 0x41180000, 0xbf4ccccd, 0x3fa00000, 0x3e19999a, 0x41700000, 0x425c0000, 0x3dcccccd];
+        assert_eq!(got.map(f32::to_bits), want);
+        assert_eq!(t.collide_type, 1);
+    }
+
     /// camDynamicBoomTune's constructor F-13319 and its loader's field table F-77242 run offline
     /// (work/cameras2/d34/boomtune.py): per registered key (82) its type and constructor words. A
     /// file that sets nothing gives the port the same value of every key.
