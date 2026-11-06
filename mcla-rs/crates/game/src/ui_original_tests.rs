@@ -72,6 +72,27 @@ fn one_gps_target() {
     assert_eq!(g.gps_target_pos(), None);
 }
 
+/// F-64065 -> F-94071: a race script's teardown takes the HUD arrow's target away; the map keeps its selection
+/// and only the next SET arms the arrow again
+#[test]
+fn race_teardown_clears_the_gps_arrow() {
+    let mut g = Game::new(Vec::new(), 0);
+    let p = glam::Vec3::new(10.0, 0.0, -20.0);
+    g.set_gps_target(Some(p), None);
+    g.gps_race_teardown();
+    assert_eq!(g.gps_target_pos(), Some(p));
+    g.bmt_goal = Some(glam::Vec3::ZERO);
+    g.gps_race_teardown();
+    assert!(g.gps_armed);
+    g.bmt_goal = None;
+    g.gps_race_teardown();
+    assert_eq!((g.gps_armed, g.gps_target_pos(), g.gps_pick), (false, None, Some(p)));
+    g.gps_race_teardown();
+    assert!(!g.gps_armed);
+    g.set_gps_target(Some(p), None);
+    assert_eq!(g.gps_target_pos(), Some(p));
+}
+
 /// F-71884 (with F-43310), F-51730, F-57096: the GPS map's bank and experience panel - every variable
 /// in order, both meters' bits, and `panelisvisible` against the original's code run offline
 /// (tools/ui_gps_panel_reference.py -> testdata/ui_gps_panel_ref.txt; the string table a stub giving "{key}")

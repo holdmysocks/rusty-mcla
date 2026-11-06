@@ -668,6 +668,12 @@ pub struct Game {
     pub gps_pick: Option<Vec3>,
     /// the mission made the GPS target in the mission log (its id)
     pub mission_target: Option<String>,
+    /// The HUD arrow has a target (byte +608 of the player's nav arrow object): set with every SET (map, mission
+    /// log, a hookman core's SetTargetByUID), cleared by UILogic_RemoveGPSDestination (`F-64065` -> `F-94071`),
+    /// which every race script calls in its race teardown; the map's selection (`gps_pick` / `mission_target`) stays
+    pub gps_armed: bool,
+    /// a race was current last tick (`gps_race_teardown`)
+    pub gps_was_racing: bool,
     /// where the map's cursor stands in the world (the map view follows it)
     pub map_cursor_pos: Option<Vec3>,
     /// the GPS cursor moved freely with the stick (`hudmap::NavCam`): where it is while it stands
@@ -1439,6 +1445,8 @@ impl Game {
             map_cursor: usize::MAX,
             gps_pick: None,
             mission_target: None,
+            gps_armed: false,
+            gps_was_racing: false,
             map_cursor_pos: None,
             map_free: None,
             map_free_release: false,
@@ -10115,7 +10123,7 @@ impl Game {
                             let over = fm.overhead;
                             let (vp, eye) = if over { (crate::hudmap::overhead_view_proj(fm.cam_eye, fm.cam_look, fm.cam_fovy, fm.aspect), fm.cam_eye) } else { crate::hudmap::minimap_view_proj(car.state.pos, h, fm.cam_eye, fm.cam_look, fm.cam_fovy) };
                             let racing = self.race.is_some() || self.bmt_goal.is_some();
-                            let target = (self.mission_target.is_some() || self.gps_pick.is_some()) && !racing;
+                            let target = self.gps_armed && (self.mission_target.is_some() || self.gps_pick.is_some()) && !racing;
                             let strobe_on = self.race.as_ref().map_or(true, |r| r.rivals_checkpoints.is_none());
                             let f = hm.frame(if over { 2 } else { 0 }, vp, eye, if over { 0.0 } else { h }, racing, hud.heat as i32, target, strobe_on);
                             hm.tick_once(ctx, dt, hm_els.iter().filter(|e| matches!(e.kind, crate::hudmap::Kind::Checkpoint(_))).count());
@@ -12566,6 +12574,7 @@ impl Game {
             prompts.insert(0, (st("Navmap_Prompt_SetTarget", "SET AS TARGET"), crate::flash_ui::ICON_A));
             if enter && !hidden && !guided {
                 (self.gps_pick, self.mission_target) = (None, views.get(sel).map(|v| v.id.clone()));
+                self.gps_armed = self.mission_target.is_some();
                 self.career.stats.entry("tut:target_set".into()).or_insert(1);
             }
         }
@@ -12574,6 +12583,7 @@ impl Game {
             if tab == 0 && enter && !views.is_empty() {
                 // the target set: the lesson is over, and the MINI MAP box follows
                 (self.gps_pick, self.mission_target) = (None, views.get(sel).map(|v| v.id.clone()));
+                self.gps_armed = self.mission_target.is_some();
                 self.mlog_guided = false;
                 self.show_map = false;
                 self.career.stats.insert("tut:target_set".into(), 1);
@@ -12669,9 +12679,11 @@ impl Game {
                 // SET AS TARGET / UNSET TARGET on the mission's man
                 let m = if self.gps_on_man() { None } else { self.career.rival_mission().or_else(|| self.career.hookman_mission().map(|m| m.to_string())) };
                 (self.gps_pick, self.mission_target) = (None, m);
+                self.gps_armed = self.mission_target.is_some();
                 self.career.stats.entry("tut:target_set".into()).or_insert(1);
             } else if enter && self.map_cursor > 0 {
                 (self.gps_pick, self.mission_target) = (Some(places[self.map_cursor].0), None);
+                self.gps_armed = true;
                 self.career.stats.entry("tut:target_set".into()).or_insert(1);
             }
             let (w, name, kind) = match (self.map_free, self.map_drift) {
@@ -15237,6 +15249,19 @@ impl Game {
     pub fn set_gps_target(&mut self, place: Option<Vec3>, mission: Option<String>) {
         self.gps_pick = place;
         self.mission_target = if place.is_some() { None } else { mission };
+        // (SET arms the arrow - `F-13265` / `F-31828` -> `F-55947`; UNSET clears it - `F-94071`)
+        self.gps_armed = self.gps_pick.is_some() || self.mission_target.is_some();
+    }
+
+    /// The race scripts' teardown (story, hookman and race cores, `Race_Finish` ... `WAITUNWARPED` then
+    /// UILogic_RemoveGPSDestination(0)): when a race stops being current the HUD arrow has no target until the next
+    /// SET; nothing re-arms it on its own (`F-61202` only clears). Called once a tick.
+    pub fn gps_race_teardown(&mut self) {
+        let racing = self.race_current();
+        if self.gps_was_racing && !racing {
+            self.gps_armed = false;
+        }
+        self.gps_was_racing = racing;
     }
 
     /// A race is current (Race_SetCurrentRace, F-94038: the word the map's frame and the icon manager read as
@@ -15382,6 +15407,9 @@ impl Game {
     /// man): the place picked on the map; for a mission its man while he is the one on the map (`rival_mark`), else the
     /// start of its first race still to win.
     pub fn gps_target_pos(&self) -> Option<Vec3> {
+        if !self.gps_armed {
+            return None;
+        }
         if let Some(p) = self.gps_pick {
             return Some(p);
         }

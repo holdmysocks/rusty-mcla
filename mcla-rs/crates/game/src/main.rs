@@ -2512,6 +2512,7 @@ impl App {
 
     fn update_gameplay(&mut self, dt: f32) {
         self.tick_no += 1;
+        self.game.gps_race_teardown();
         self.vehicles.begin_tick();
         // --- input / simulation -------------------------------------------------
         if self.input.rmb {
@@ -5875,7 +5876,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     career::News::Completed { id, title } => {
                         if self.game.mission_target.as_deref() == Some(id.as_str()) {
-                            self.game.mission_target = None;
+                            self.game.set_gps_target(None, None);
                         }
                         // (after an event the game says so on its MISSION RESULTS panel - filled
                         // from the missions' "updated" bytes when its turn comes: `mu_pending`)
