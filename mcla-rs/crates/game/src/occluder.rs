@@ -58,6 +58,8 @@ const MAX_CAM_Y: f32 = 1000.0;
 const MAX_VOLUMES: usize = 64;
 /// Planes per volume.
 const MAX_PLANES: usize = 16;
+/// List entries the sector tests take (F-54648 builds 32 sets, the first the frustum).
+const SECTOR_SETS: usize = 31;
 /// A polygon faces the camera when the camera is at least this far in front of its plane.
 const FACING_EPS: f32 = 1.0e-6;
 /// How many silhouette edges outside one side of the view a volume leaves out (F-62084: the global at 0x828137F8 = 2).
@@ -120,6 +122,8 @@ pub struct Selected {
     volumes: Vec<Vec<Vec4>>,
     /// the occluder (index in the file) of each volume
     ids: Vec<u32>,
+    /// each volume's place in the view's list (F-38732's order, before F-21317 switches any off)
+    pos: Vec<u8>,
 }
 
 struct Tokens<'a> {
@@ -317,6 +321,7 @@ impl Occluders {
                 continue;
             }
             if let Some(v) = o.volume(eye, PUSH, Some(frustum)) {
+                sel.pos.push(sel.volumes.len() as u8);
                 sel.volumes.push(v);
                 sel.ids.push(i);
             }
@@ -350,6 +355,7 @@ impl Occluders {
                 continue;
             }
             if let Some(v) = o.volume(eye, 0.0, None) {
+                sel.pos.push(sel.volumes.len() as u8);
                 sel.volumes.push(v);
                 sel.ids.push(i);
             }
@@ -632,7 +638,7 @@ impl Occluder {
 
 impl Selected {
     pub fn none() -> Selected {
-        Selected { volumes: Vec::new(), ids: Vec::new() }
+        Selected { volumes: Vec::new(), ids: Vec::new(), pos: Vec::new() }
     }
 
     pub fn len(&self) -> usize {
@@ -645,6 +651,19 @@ impl Selected {
         self.volumes.retain(|_| (on[k], k += 1).0);
         let mut k = 0;
         self.ids.retain(|_| (on[k], k += 1).0);
+        let mut k = 0;
+        self.pos.retain(|_| (on[k], k += 1).0);
+    }
+
+    /// The volumes the city's sector tests use (F-56244's box test F-60582 and the batches' F-92840): the plane sets
+    /// F-54648 builds each frame for the current view - with 32 sets (both callers, F-89368 / F-72386: set 0 the frustum)
+    /// it takes the first 31 entries of the view's list, each one still switched on (F-26279: +288 bit 31, +268 == 0);
+    /// one switched off keeps its place and is not replaced, the list's later volumes are not used.
+    pub fn sector_sets(&self) -> Selected {
+        let on: Vec<bool> = self.pos.iter().map(|&p| (p as usize) < SECTOR_SETS).collect();
+        let mut s = Selected { volumes: self.volumes.clone(), ids: self.ids.clone(), pos: self.pos.clone() };
+        s.keep(&on);
+        s
     }
 
     /// True when the box is entirely behind one occluder (never true for something visible).
@@ -1039,7 +1058,7 @@ mod tests {
                 let e = &o.entries[i as usize];
                 let f = Frustum::from_planes([0, 1, 2, 4, 5, 6].map(|j| -Vec4::new(pl[4 * j], pl[4 * j + 1], pl[4 * j + 2], pl[4 * j + 3])));
                 let b = &o.list[e.body.unwrap() as usize];
-                let pre = Selected { volumes: sel.volumes[..sel.ids.iter().position(|&x| want[..want.iter().position(|&w| w == i).unwrap()].last() == Some(&x)).map_or(0, |k| k + 1)].to_vec(), ids: Vec::new() };
+                let pre = Selected { volumes: sel.volumes[..sel.ids.iter().position(|&x| want[..want.iter().position(|&w| w == i).unwrap()].last() == Some(&x)).map_or(0, |k| k + 1)].to_vec(), ids: Vec::new(), pos: Vec::new() };
                 println!("  missing {i}: in frustum {}, hidden by earlier {}, in range {}, outside {}, volume {:?}", f.intersects_sphere(e.centre, e.radius), pre.hides_sphere(e.centre, e.radius), b.in_range(eye, RANGE * RANGE_SCALE), f.points_outside(&b.verts, VERTEX_W), b.volume(eye, PUSH, Some(&f)).map(|v| v.len()));
                 for (k, v) in pre.volumes.iter().enumerate() {
                     let worst = v.iter().map(|p| p.truncate().dot(e.centre) + p.w).fold(f32::MIN, f32::max);

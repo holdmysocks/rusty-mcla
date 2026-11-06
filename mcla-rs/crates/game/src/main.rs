@@ -11491,7 +11491,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // on the same targets: every draw of B sets its own bind groups and buffers, and B starts from the state A
         // leaves it (the globals, the identity object, the opaque pipeline). MCLA_CITY_ONE_PASS=1: one pass as before.)
         let split_city = std::env::var("MCLA_CITY_ONE_PASS").is_err();
-        let sector_view = SectorView { gpu: &gpu, occluded: &occluded, frustum: &frustum, cam_pos, lens, only: self.opt.only.as_deref(), hide: self.opt.hide.as_deref() };
+        // (the sectors are tested against the plane sets F-54648 makes of the list's first 31 entries, not the whole list)
+        let sector_occluded = occluded.sector_sets();
+        let sector_view = SectorView { gpu: &gpu, occluded: &sector_occluded, frustum: &frustum, cam_pos, lens, only: self.opt.only.as_deref(), hide: self.opt.hide.as_deref() };
         let (sky_bind, citymap, loaded, sets) = (self.sky_bind.as_ref(), self.citymap.as_ref(), &world.loaded, &world.sets);
         // (2026-10-27 (3): A in two halves of the sector list, A1 with the sky, and B's ground sheet and props (B1) each on
         // a worker too, each a pass of its own that loads what the one before stored; this thread records the rest of B.
