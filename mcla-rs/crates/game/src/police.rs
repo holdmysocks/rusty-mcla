@@ -1408,6 +1408,10 @@ pub struct Police {
     /// a tactic of kind 1 - 4 started (StartTactic F-33550 calls the phone's interrupt F-51256: the call on the
     /// phone is put away and dropped); the main loop takes it
     pub phone_cut: bool,
+    /// StartTactic (F-33550) asked for the pursuit tutorial (F-24639): a Pursuit started on the player, or a Double
+    /// Pursuit / Arrow Trap started with no tactic before it (one that ended - a Dispatch, a Pull-over - gives none);
+    /// the main loop takes it
+    pub pursuit_tut: bool,
     /// the player's car's vehicle-table class is the police's (F-96166: the camera target's car, F-10499 = 5): the law
     /// score step F-52240 does not run (no offences, no score, no score ladder) and an armed cop zone is not set off
     /// (F-71212's state 1). Set by the main loop each frame.
@@ -1533,6 +1537,7 @@ impl Police {
             last_junction: None,
             goons: false,
             phone_cut: false,
+            pursuit_tut: false,
             player_police: false,
             no_charges: false,
             units: Vec::new(),
@@ -2446,6 +2451,9 @@ impl Police {
         // (the interrupt comes before the same-kind test: every start of a kind other than Dispatch (type 0))
         self.phone_cut |= !matches!(kind, TacKind::None | TacKind::Dispatch);
         let old = (self.kind != TacKind::None).then_some((self.kind.ty(), self.may_escalate));
+        // (the tutorial F-24639: kind >= 2 on the player's car - the target's vt+40 - when the kind is 2 or no old tactic ended;
+        // every caller passes the show flag r6 = 1)
+        self.pursuit_tut |= self.target.is_none() && kind.ty() >= 2 && (kind.ty() == 2 || old.is_none());
         self.kind = kind;
         self.cops = cops;
         self.may_escalate = may_escalate;
@@ -4810,9 +4818,26 @@ mod tests {
             assert_eq!(p.chase_props, [b[3] >> 16 & 1 != 0, b[3] >> 8 & 1 != 0, b[3] & 1 != 0]);
         }
         assert_eq!(f32::from_bits(blk("pursuit")[5]), p.flee_hold);
+        let mut tuts = 0;
         for l in reference.lines().filter(|l| !l.starts_with("BLOCK")) {
             let parts: Vec<&str> = l.split('|').map(str::trim).collect();
             let v: Vec<i32> = parts[0].split_whitespace().map(|x| x.parse().unwrap()).collect();
+            // (the side calls the port carries: the phone interrupt (code 1) for every kind but 0, started or not; the
+            // tutorial (5) - every caller passes show 1, the target the player (racer 1), its +76 bit clear - as
+            // `pursuit_tut` on a start)
+            let log: Vec<&str> = parts[2].split_whitespace().skip(1).collect();
+            assert_eq!(log.contains(&"1"), v[0] != 0, "{l}");
+            if v[4] == 1 && v[5] == 1 && v[6] == 0 && log.iter().any(|c| c.starts_with('6')) {
+                let kinds = [TacKind::Dispatch, TacKind::PullOver, TacKind::Pursuit, TacKind::PursuitDbl, TacKind::ArrowTrap];
+                let mut p = Police::new();
+                if v[1] >= 0 {
+                    p.start_tactic(kinds[v[1] as usize], vec![], v[2] != 0, 25.0);
+                }
+                p.pursuit_tut = false;
+                p.start_tactic(kinds[v[0] as usize], vec![], true, 25.0);
+                assert_eq!(p.pursuit_tut, log.contains(&"5"), "{l}");
+                tuts += p.pursuit_tut as u32;
+            }
             let (kind, old, b28, score) = (v[0], v[1], v[2] != 0, v[3]);
             let ret: i32 = parts[1].strip_prefix("ret ").unwrap().parse().unwrap();
             let log: Vec<u32> = parts[2].split_whitespace().skip(1).map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
@@ -4839,7 +4864,7 @@ mod tests {
             carries += matches!(port, StartRule::Start { carry: true, .. }) as u32;
             refusals += (port == StartRule::Refuse) as u32;
         }
-        assert!(n == 1760 && carries > 0 && refusals > 0, "{n} {carries} {refusals}");
+        assert!(n == 1760 && carries > 0 && refusals > 0 && tuts > 0, "{n} {carries} {refusals} {tuts}");
     }
 
     /// The Double Pursuit's may-escalate against the original's F-73000 (with F-38605 and the state tests F-48174 / F-12623 on

@@ -11946,6 +11946,8 @@ pub struct S23Live {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct S23In {
     pub heat: u8,
+    /// StartTactic asked for the pursuit tutorial this frame (`Police::pursuit_tut`)
+    pub pursuit_tut: bool,
     pub near: bool,
     pub flashed: bool,
     /// (step 23b) the type of the hookman in reach (mcHookman_GetType; `Roamers::near_type`)
@@ -12675,9 +12677,9 @@ impl Game {
                 }
             }
             self.opt_x.s23.page_was = page;
-            // (the police: the first pursuit form 103, the second 104 - F-24639)
+            // (the police: the first pursuit form 103, the second 104 - F-24639, called by StartTactic F-33550)
             let heat_was = std::mem::replace(&mut self.opt_x.s23.heat_was, i.heat);
-            if i.heat == 2 && heat_was != 2 && heat_was != 3 {
+            if i.pursuit_tut {
                 if !self.mc4_tutorial("tTPP") {
                     self.mc4_tutorial("tTPL");
                 }
@@ -18208,14 +18210,14 @@ mod tests {
             g.mc4_s23_tick(0.016, S23In::default());
         }
         // (the first pursuit: 103; the second: 104 - no slow motion)
-        g.mc4_s23_tick(0.016, S23In { heat: 2, ..Default::default() });
+        g.mc4_s23_tick(0.016, S23In { heat: 2, pursuit_tut: true, ..Default::default() });
         assert!(g.mc4_tut_seen("tTPP") && !g.mc4_tut_seen("tTPL"));
         g.mc4_s23_tick(0.016, S23In { heat: 2, ..Default::default() });
         assert_eq!(g.tutorial_box.as_ref().map(|b| b.0.as_str()), Some("tutorial_police_pursuit_title"));
         assert_eq!(g.mc4_time_scale(), 1.0);
         g.tutorial_box = None;
         g.mc4_s23_tick(0.016, S23In { heat: 0, ..Default::default() });
-        g.mc4_s23_tick(0.016, S23In { heat: 2, ..Default::default() });
+        g.mc4_s23_tick(0.016, S23In { heat: 2, pursuit_tut: true, ..Default::default() });
         assert!(g.mc4_tut_seen("tTPL"));
         g.mc4_s23_tick(0.016, S23In { heat: 0, ..Default::default() });
         g.tutorial_box = None;
