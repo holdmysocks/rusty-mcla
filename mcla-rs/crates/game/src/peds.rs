@@ -103,11 +103,12 @@ struct Ped {
     poly: u32,
     /// direction of the stretch before
     travel: Vec3,
-    /// on the navigation mesh: the points of the random path held (on the edges crossed)
-    /// with the polygon behind each; empty once given up
-    path: Vec<(Vec3, u32)>,
-    /// 30 Hz frames since the last path request
-    since_plan: u32,
+    /// on the navigation mesh: the path request (ped +512) and the path held (behaviour +544), F-73065 / F-12434
+    wp: WalkPath,
+    /// the walker's own MWC (ped +384; the original's seed is not decoded: the port's from `seed`)
+    mwc: crate::vehicles::parked::Mwc,
+    /// the port's search of the request out: its nodes (empty: the search failed)
+    query: Option<Vec<PathNode>>,
     /// seconds still standing after appearing (the original's spawning state, flags 0x49)
     hold: f32,
     /// the sidewalk behaviour (mcAmbientBehaviorSidewalk, vtable 0x820da7f4):
@@ -207,11 +208,12 @@ pub(crate) fn random_path(mesh: &NavMesh, start: u32, pos: Vec3, heading: Vec3, 
         if cands.is_empty() {
             break;
         }
+        // (the query MWC's u x 2^-23 x total; the first whose running rest is <= 0, the last one untested)
         let mut x = rand() * total;
         let mut pick = cands[cands.len() - 1].1;
-        for (w, l) in &cands {
+        for (w, l) in &cands[..cands.len() - 1] {
             x -= w;
-            if x < 0.0 {
+            if x <= 0.0 {
                 pick = l;
                 break;
             }
@@ -243,6 +245,276 @@ pub(crate) fn random_path(mesh: &NavMesh, start: u32, pos: Vec3, heading: Vec3, 
         }
     }
     out
+}
+
+// ---- The walker's path from the path system and back: the request F-73065 and the take F-23649 in the walker's update
+// (F-30466), the request object's step F-12434 at the manager frame's start (F-12278: submit F-40518, poll F-88789,
+// fetch F-60370, deliver F-44435, release F-79836), its cancel F-39771 (slot 4) behind the give-up F-50795 and the
+// release F-75945, the path's init F-57015 and the search's seed F-93347. Decode and evidence:
+// docs/reference/people/walker_path_rule.md (tools/walker_path_reference.py).
+
+/// A node of a found path as F-44435 reads it (its type word +0): 0 / 1 a point (+4), 2 a shared edge (+4 a, +16 b),
+/// anything else no point.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum PathNode {
+    Point(Vec3),
+    Edge(Vec3, Vec3),
+    Other,
+}
+
+/// The most points a path holds (F-44435 stops at 48).
+const PATH_MAX: usize = 48;
+/// F-73065: at least 16 updates between two requests of a walker.
+const PATH_AGE: i32 = 16;
+
+/// The request object (ped +512) and the path R (behaviour +544).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct WalkPath {
+    /// asked for (+8), the search running or failed (+9: the step's result was 0), a path fetched and held (+10)
+    want: bool,
+    wait: bool,
+    got: bool,
+    /// the start (+16 .. +76: the walker's matrix as words, row 2 negated when asked backwards), the type's filter (+80),
+    /// the owner R set (+84), the length (+88: the type's +124 x the speed scale)
+    mat: [u32; 16],
+    filter: u32,
+    owner: bool,
+    len: f32,
+    /// R: the points (+0, count +768, at most 48), delivered and not taken yet (+784), the edge fraction (+788), the
+    /// speed scale (+792), the updates since the last request (+796)
+    pts: Vec<Vec3>,
+    fresh: bool,
+    frac: f32,
+    scale: f32,
+    age: i32,
+}
+
+/// The path system as the request object meets it: the query's submit (F-40518), its poll (F-88789: -1 not ready,
+/// 0 failed, 1 found), the found path (F-60370: `None` when the result has no path record) and the release (F-79836).
+pub(crate) trait PathSys {
+    fn submit(&mut self, filter: u32, len: f32, mat: &[u32; 16]);
+    fn poll(&mut self) -> i32;
+    fn fetch(&mut self) -> Option<Vec<PathNode>>;
+    fn release(&mut self);
+}
+
+/// A word of the 4-lane vector unit with denormals flushed.
+fn wflush(w: u32) -> u32 {
+    vftz(f32::from_bits(w)).to_bits()
+}
+
+impl WalkPath {
+    /// F-57015 (the Sidewalk behaviour's ctor): count, flags, age and fraction 0, the speed scale fmsubs(u, 0.3 x 2^-23,
+    /// 0.15) + 1 with u the walker's MWC (ped +384) draw.
+    pub(crate) fn new(mwc: &mut crate::vehicles::parked::Mwc) -> WalkPath {
+        let u = (mwc.next() & 0x7F_FFFF) as f32;
+        WalkPath { scale: u.mul_add(f32::from_bits(0x3319_999A), -f32::from_bits(0x3E19_999A)) + 1.0, ..Default::default() }
+    }
+
+    /// The path's points (R +0, +768).
+    pub(crate) fn points(&self) -> &[Vec3] {
+        &self.pts
+    }
+
+    /// F-73065: the request, from the walker's update. The age (+796) counts every call; asked only when no other walker
+    /// asked in this manager frame (`stamp`, the game-wide 0x8294A540 against the frame counter), 16 updates after the
+    /// last request, M+260 bits 0x4 (slide) and 0x2 (own clip) clear, and no path held (+10) nor a search failed (+9).
+    /// The start is the walker's matrix `mat` (row 2 negated - 0 - x in the vector unit - when `rev`), the filter the
+    /// type's +96, the length type +124 x the scale.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn request(&mut self, m_flags: u32, frame: u32, stamp: &mut u32, mat: &[u32; 16], rev: bool, filter: u32, max_speed: f32) {
+        self.age = self.age.wrapping_add(1);
+        if *stamp == frame || self.age < PATH_AGE || m_flags & 4 != 0 || m_flags & 2 != 0 || self.got || self.wait {
+            return;
+        }
+        let mut m = *mat;
+        if rev {
+            for w in &mut m[8..12] {
+                *w = wflush((0.0 - f32::from_bits(wflush(*w))).to_bits());
+            }
+        }
+        self.filter = filter;
+        self.mat = m;
+        self.len = max_speed * self.scale;
+        self.want = true;
+        self.owner = true;
+        *stamp = frame;
+        self.age = 0;
+    }
+
+    /// F-23649: a path delivered (+784) is taken once: true when M+260 bits 0x4 / 0x2 are clear (the caller then asks the
+    /// behaviour for the next rail F-95960, unloads the rails F-78813 and sets the new one F-48384); with a bit set it is
+    /// dropped (+784 cleared, the rails kept).
+    pub(crate) fn take(&mut self, m_flags: u32) -> bool {
+        if !self.fresh {
+            return false;
+        }
+        self.fresh = false;
+        m_flags & 4 == 0 && m_flags & 2 == 0
+    }
+
+    /// F-12434 (the request object's slot 3, from F-12278 at the manager frame's start): an asked request is submitted
+    /// (result 0), else the search is polled; +9 = (result == 0); a found one is fetched (+10 = a path record was there)
+    /// and delivered into R (F-44435 with the walker's MWC), then the query released.
+    pub(crate) fn step(&mut self, sys: &mut dyn PathSys, mwc: &mut crate::vehicles::parked::Mwc) {
+        let res = if self.want {
+            self.want = false;
+            sys.submit(self.filter, self.len, &self.mat);
+            0
+        } else {
+            sys.poll()
+        };
+        self.wait = res == 0;
+        if res > 0 {
+            let found = sys.fetch();
+            self.got = found.is_some();
+            if let Some(nodes) = found {
+                if self.owner {
+                    self.deliver(&nodes, mwc);
+                }
+            }
+            sys.release();
+        }
+    }
+
+    /// F-44435: the path into R: one fraction fmadds(u, 0.4 x 2^-23, 0.5) - 0.2 per path (u the walker's MWC draw), a
+    /// point node as it is, an edge a + (b - a) x the fraction (vector unit), other nodes nothing; at most 48 points;
+    /// +784 set.
+    fn deliver(&mut self, nodes: &[PathNode], mwc: &mut crate::vehicles::parked::Mwc) {
+        self.pts.clear();
+        let u = (mwc.next() & 0x7F_FFFF) as f32;
+        self.frac = u.mul_add(f32::from_bits(0x334C_CCCD), 0.5) - f32::from_bits(0x3E4C_CCCD);
+        for n in nodes {
+            match *n {
+                PathNode::Point(a) => self.pts.push(a),
+                PathNode::Edge(a, b) => self.pts.push(vmadd(vsub(b, a), self.frac, a)),
+                PathNode::Other => {}
+            }
+            if self.pts.len() == PATH_MAX {
+                break;
+            }
+        }
+        self.fresh = true;
+    }
+
+    /// F-39771 (the request object's slot 4): flags cleared, the query released, the start the identity rows with a
+    /// zero place, filter, owner and length 0.
+    fn cancel(&mut self, sys: &mut dyn PathSys) {
+        self.want = false;
+        self.got = false;
+        self.wait = false;
+        sys.release();
+        let one = 1.0f32.to_bits();
+        self.mat = [one, 0, 0, 0, 0, one, 0, 0, 0, 0, one, 0, 0, 0, 0, 0];
+        self.filter = 0;
+        self.len = 0.0;
+        self.owner = false;
+    }
+
+    /// F-50795: the path given up (a stop run out twice, the car dodge, no next rail): cancelled, no points, not fresh,
+    /// fraction 0.
+    pub(crate) fn give_up(&mut self, sys: &mut dyn PathSys) {
+        self.cancel(sys);
+        self.pts.clear();
+        self.fresh = false;
+        self.frac = 0.0;
+    }
+
+    /// F-75945 (the behaviour's deactivate): cancelled, no points, not fresh (the fraction kept).
+    pub(crate) fn release(&mut self, sys: &mut dyn PathSys) {
+        self.cancel(sys);
+        self.pts.clear();
+        self.fresh = false;
+    }
+}
+
+/// F-93347 (in the submit F-40518) with F-39482's reseed: two draws of the global MWC (0x82860890); the query's MWC
+/// (0x8290C340) = (first & 0x7FFFFFFF, second & 0x7FFFFFFF) as (multiplier word, carry). The replay flag 0x828608A4 that
+/// would take another source is 0 in play.
+pub(crate) fn path_seed(global: &mut crate::vehicles::parked::Mwc) -> crate::vehicles::parked::Mwc {
+    let a = global.next() & 0x7FFF_FFFF;
+    let b = global.next() & 0x7FFF_FFFF;
+    crate::vehicles::parked::Mwc { lo: a, carry: b }
+}
+
+/// The search's nodes from the port's walk (`random_path`): the shared edges, the 32nd hop's centre as a point.
+fn path_nodes(hops: &[(Vec3, Vec3, u32)]) -> Vec<PathNode> {
+    hops.iter().map(|&(a, b, _)| if a == b { PathNode::Point(a) } else { PathNode::Edge(a, b) }).collect()
+}
+
+/// The walker's MWC (ped +384). How the original seeds it is not decoded (open): the port's from the walker's hash.
+fn ped_mwc(seed: u32) -> crate::vehicles::parked::Mwc {
+    crate::vehicles::parked::Mwc { lo: seed & 0x7FFF_FFFF, carry: seed.rotate_left(16) | 1 }
+}
+
+/// The port's path system for one walker. The original's search runs on the nav thread: submitted at the manager frame's
+/// start after the request, it is polled from the next frame's start on - the earliest delivery, which the port takes
+/// (the thread's own time is not measured: open). The search F-28561 itself is the port's walk `random_path` from the
+/// request's place facing 0 - its row 2, seeded as F-93347 seeds the query's MWC (two draws of the global one), the
+/// query's u x 2^-23 its draws; filter and length are carried, the walk does not read them.
+struct PortPaths<'a> {
+    mesh: &'a NavMesh,
+    poly: &'a mut u32,
+    global: &'a mut crate::vehicles::parked::Mwc,
+    query: &'a mut Option<Vec<PathNode>>,
+}
+
+impl PathSys for PortPaths<'_> {
+    fn submit(&mut self, _filter: u32, _len: f32, mat: &[u32; 16]) {
+        let w = |k: usize| f32::from_bits(mat[k]);
+        let pos = Vec3::new(w(12), w(13), w(14));
+        let heading = -Vec3::new(w(8), w(9), w(10));
+        let start = if self.mesh.polys[*self.poly as usize].contains(pos.x, pos.z) { *self.poly } else { self.mesh.find(pos, AI_SIDEWALK, 2.0).unwrap_or(*self.poly) };
+        *self.poly = start;
+        let mut q = path_seed(self.global);
+        let hops = random_path(self.mesh, start, pos, heading, &mut || q.float());
+        *self.query = Some(path_nodes(&hops));
+    }
+    fn poll(&mut self) -> i32 {
+        match self.query {
+            None => -1,
+            Some(v) if v.is_empty() => 0,
+            Some(_) => 1,
+        }
+    }
+    fn fetch(&mut self) -> Option<Vec<PathNode>> {
+        self.query.take()
+    }
+    fn release(&mut self) {
+        *self.query = None;
+    }
+}
+
+/// The path system as a cancel meets it: only the query's release.
+struct QueryRelease<'a>(&'a mut Option<Vec<PathNode>>);
+
+impl PathSys for QueryRelease<'_> {
+    fn submit(&mut self, _: u32, _: f32, _: &[u32; 16]) {}
+    fn poll(&mut self) -> i32 {
+        -1
+    }
+    fn fetch(&mut self) -> Option<Vec<PathNode>> {
+        None
+    }
+    fn release(&mut self) {
+        *self.0 = None;
+    }
+}
+
+/// The walker's path given up (F-50795).
+fn give_up_path(p: &mut Ped) {
+    p.wp.give_up(&mut QueryRelease(&mut p.query));
+}
+
+/// The walker's matrix as the request copies it (rows X, Y, Z of the drawn rotation, the place; w lanes 0).
+fn ped_mat(p: &Ped) -> [u32; 16] {
+    let mut m = [0u32; 16];
+    for (r, v) in [p.rot * Vec3::X, p.rot * Vec3::Y, p.rot * Vec3::Z, p.pos].into_iter().enumerate() {
+        m[4 * r] = v.x.to_bits();
+        m[4 * r + 1] = v.y.to_bits();
+        m[4 * r + 2] = v.z.to_bits();
+    }
+    m
 }
 
 /// The pedestrian's own radius (ped +492, 0.3 on every ped live).
@@ -1056,6 +1328,11 @@ fn seg_nearest(a: Vec3, b: Vec3, w: Vec3) -> (f32, Vec3) {
     (t, vmadd(d, t, a))
 }
 
+/// F-17399's t alone (the arc-line-arc rail's nearest point F-16977 asks it for the line).
+pub(crate) fn seg_t(a: Vec3, b: Vec3, w: Vec3) -> f32 {
+    seg_nearest(a, b, w).0
+}
+
 /// F-50861: the lane limit at `x` along `dir`: the nearest lane point within 10 m (F-59579), the flat way to it
 /// normalised (F-41334, else `dir`); none when the lane is not ahead (cos < 1e-6), else how far along `dir` the walker
 /// may go to stay 3 m + its radius from the lane.
@@ -1767,7 +2044,7 @@ fn dodge_frame(p: &mut Ped, ty: &PedType, threats: &[Threat], side: &[SideSlot],
     let clip = m.clip.and_then(|e| ty.avoid.get(e)?.clip);
     if world.dropped {
         p.rail = None;
-        p.path.clear();
+        give_up_path(p);
         p.ride = None;
         p.dodged = m.car.and_then(|j| threats.get(j)).map(|t| t.pos);
         *evades += 1;
@@ -1865,14 +2142,28 @@ fn loco_clip(p: &mut Ped, ty: &PedType, st: u32, flags: u32, slide: f32) -> f32 
 /// reversed path (F-94431). Moves `p` and sets its state; returns the walk clip's
 /// playback rate.
 #[allow(clippy::too_many_arguments)]
-fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[Obst], col: Option<&WorldCollider>, nav: Option<&NavSys>, threats: &[Threat], side: &[SideSlot], due: u8, dt: f32, rand: &mut dyn FnMut() -> f32, rng: &mut DodgeRng, evades: &mut u32, speech: &mut Vec<Speech>) -> f32 {
+fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[Obst], col: Option<&WorldCollider>, nav: Option<&NavSys>, threats: &[Threat], side: &[SideSlot], due: u8, dt: f32, rand: &mut dyn FnMut() -> f32, rng: &mut DodgeRng, evades: &mut u32, speech: &mut Vec<Speech>, frame: u32, stamp: &mut u32) -> f32 {
     // (the behaviour's facing: the rail's, kept apart from the drawn one, which is the mean of the last 8 frames')
     let fwd = if p.ground.face != Vec3::ZERO { p.ground.face } else { flat(p.rot * -Vec3::Z).normalize_or(Vec3::Z) };
     p.ground.t_face = fwd;
     let set_state = set_clip_state;
     p.hold = (p.hold - dt).max(0.0);
     // the car dodge, every frame (F-15352 from F-97113, no gate of its own): a dodge's clip slides the walker here
-    if dodge_frame(p, ty, threats, side, col, nav, dt, rand, rng, evades, speech) {
+    let dodging = dodge_frame(p, ty, threats, side, col, nav, dt, rand, rng, evades, speech);
+    // then the path (F-30466 from the behaviour's update F-72378): the request F-73065 - backwards after an even number
+    // of stops in a row, more than one - and the take F-23649 of a path delivered; a path taken drops the rails, the
+    // next rail F-95960 turns round when the stops ask backwards. M+260: bit 0x4 sliding, 0x2 a clip of its own.
+    let m_flags = p.dodge.flags | if p.slide.is_some() { 4 } else { 0 } | if matches!(p.state, State::Evade(_) | State::Angry(_) | State::Turn(_)) { 2 } else { 0 };
+    let rev = p.stops > 1 && p.stops % 2 == 0;
+    let mat = ped_mat(p);
+    // (the filter type +96 and the length type +124 x scale are carried; the port's walk reads neither)
+    p.wp.request(m_flags, frame, stamp, &mat, rev, AI_SIDEWALK as u32, 0.0);
+    if p.wp.take(m_flags) {
+        p.rail = None;
+        p.ride = None;
+        p.turn_round = rev && !p.wp.points().is_empty();
+    }
+    if dodging {
         return 1.0;
     }
     // clips playing (angry, turn): the caller moves the walker by their root
@@ -1984,7 +2275,7 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
                 p.stops += 1;
                 if expired && p.stops > 1 {
                     p.rail = None;
-                    p.path.clear();
+                    give_up_path(p);
                 }
                 set_state(p, State::Idle);
                 p.speed = 0.0;
@@ -2006,14 +2297,18 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
         if p.rail.is_none() {
             // the next path rail (F-61656): an arc-line-arc rail to a segment's middle; none drops the path and the
             // walker stands until the next one
-            let pts: Vec<Vec3> = p.path.iter().map(|q| q.0).collect();
+            let pts: Vec<Vec3> = p.wp.points().to_vec();
             match next_rail(&pts, p.pos, heading, ty.turn_radius) {
                 Some(r) => {
                     p.rail = Some((r.t, false));
                     p.ride = Some((r, 0.0));
                 }
                 None => {
-                    p.path.clear();
+                    // (F-95960 gives up a path it cannot rail; with no points held nothing is given up, so a request
+                    // out is not cancelled - whether the follower asks F-95960 without a path is not decoded)
+                    if !p.wp.points().is_empty() {
+                        give_up_path(p);
+                    }
                     break;
                 }
             }
@@ -2050,7 +2345,7 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
         p.pos += heading * step;
         break;
     }
-    if p.rail.is_none() && p.path.is_empty() {
+    if p.rail.is_none() && p.wp.points().is_empty() {
         set_state(p, State::Idle);
         p.speed = 0.0;
         return 1.0;
@@ -2295,8 +2590,8 @@ pub struct Peds {
     step: f32,
     frame_no: u32,
     data_dir: String,
-    /// next pedestrian to be offered the frame's path request
-    plan_cursor: usize,
+    /// the manager frame of the last path request of any walker (0x8294A540, F-73065)
+    path_stamp: u32,
     /// this frame's spawn candidates (polygon, area) and the wanted count (diagnostics)
     cands: Vec<(u32, f32)>,
     pub target: f32,
@@ -2375,7 +2670,7 @@ impl Peds {
             step: 0.0,
             frame_no: 0,
             data_dir: String::new(),
-            plan_cursor: 0,
+            path_stamp: u32::MAX,
             cands: Vec::new(),
             target: 0.0,
             next_id: 0,
@@ -2808,11 +3103,13 @@ impl Peds {
             }
             let a = self.rand() * std::f32::consts::TAU;
             let face = Vec3::new(a.sin(), 0.0, a.cos());
-            // the walking speed factor, drawn once (F-57015)
-            let scale = 0.85 + 0.3 * self.rand();
             let id = self.next_id;
             self.next_id = self.next_id.wrapping_add(1);
             let seed = hash(id, pi);
+            // the walking speed factor, drawn once from the walker's MWC (F-57015)
+            let mut mwc = ped_mwc(seed);
+            let wp = WalkPath::new(&mut mwc);
+            let scale = wp.scale;
             if std::env::var("MCLA_PED_DUMP").is_ok() {
                 log::info!("ped spawn {} dist {:.1} ahead {:.1} lateral {:.1} target {:.2}", id, flat(v).length(), v.dot(dir), (v.z * dir.x - v.x * dir.z).abs(), self.target);
             }
@@ -2837,8 +3134,9 @@ impl Peds {
                 wait: 0.0,
                 poly: pi,
                 travel: face,
-                path: Vec::new(),
-                since_plan: 0,
+                wp,
+                mwc,
+                query: None,
                 scale,
                 speed: 0.0,
                 rail: None,
@@ -2863,44 +3161,6 @@ impl Peds {
         }
     }
 
-    /// The frame's one path request (F-73065 lets one through per frame, to a walker
-    /// without a path - it keeps one until it is cancelled - whose last request is at least
-    /// 16 frames old): a random walk from where it stands, the way it faces (backwards after
-    /// an even number of stops in a row, more than one), with the points on the edges `frac`
-    /// (0.3 .. 0.7, per path) along them (F-44435).
-    fn plan_frame(&mut self, mesh: &NavMesh) {
-        for p in self.list.iter_mut() {
-            p.since_plan = p.since_plan.saturating_add(1);
-        }
-        let n = self.list.len();
-        for k in 0..n {
-            let i = (self.plan_cursor + k) % n;
-            let p = &self.list[i];
-            if p.poly == NO_POLY || p.hold > 0.0 || p.since_plan < 16 || !p.path.is_empty() || !matches!(p.state, State::Walk | State::Idle | State::Run) {
-                continue;
-            }
-            let start = if mesh.polys[p.poly as usize].contains(p.pos.x, p.pos.z) { p.poly } else { mesh.find(p.pos, AI_SIDEWALK, 2.0).unwrap_or(p.poly) };
-            let rev = p.stops > 1 && p.stops % 2 == 0;
-            let (pos, heading) = (p.pos, p.rot * -Vec3::Z * if rev { -1.0 } else { 1.0 });
-            let mut rng = self.rng;
-            let mut rand = || {
-                rng = rng.wrapping_mul(1664525).wrapping_add(1013904223);
-                (rng >> 8) as f32 / 16777216.0
-            };
-            let hops = random_path(mesh, start, pos, heading, &mut rand);
-            let frac = 0.3 + 0.4 * rand();
-            self.rng = rng;
-            let p = &mut self.list[i];
-            p.poly = start;
-            p.path = hops.into_iter().map(|(a, b, q)| (a + (b - a) * frac, q)).collect();
-            p.since_plan = 0;
-            p.rail = None;
-            p.turn_round = rev && !p.path.is_empty();
-            self.plan_cursor = (i + 1) % n;
-            break;
-        }
-    }
-
     /// MCLA_PED_TRACE=file: the focus (F) and every pedestrian (P) ten times a second, as
     /// the recordings of the original are written (work/people2/re/peds_rec2.py).
     fn write_trace(&mut self, focus: Vec3, dt: f32) {
@@ -2921,7 +3181,7 @@ impl Peds {
                 State::Angry(_) => "angry",
                 State::Turn(_) => "turn",
             };
-            let _ = writeln!(w, "{:.2}	P	{}	{:.2}	{:.2}	{:.2}	{}	{}	{:.2}	{}	{}	{}	{}", t, p.key.1, p.pos.x, p.pos.y, p.pos.z, (p.state == State::Walk) as u8, st, p.stop, p.stops, p.path.len(), p.rail.map_or(0, |r| 1 + r.1 as u8), p.slide.is_some() as u8);
+            let _ = writeln!(w, "{:.2}	P	{}	{:.2}	{:.2}	{:.2}	{}	{}	{:.2}	{}	{}	{}	{}", t, p.key.1, p.pos.x, p.pos.y, p.pos.z, (p.state == State::Walk) as u8, st, p.stop, p.stops, p.wp.points().len(), p.rail.map_or(0, |r| 1 + r.1 as u8), p.slide.is_some() as u8);
         }
         let _ = w.flush();
     }
@@ -3010,8 +3270,9 @@ impl Peds {
                     wait: 0.0,
                     poly: NO_POLY,
                     travel: face,
-                    path: Vec::new(),
-                    since_plan: 0,
+                    wp: WalkPath { scale: 1.0, ..Default::default() },
+                    mwc: ped_mwc(h),
+                    query: None,
                     scale: 1.0,
                     speed: 0.0,
                     rail: None,
@@ -3067,7 +3328,6 @@ impl Peds {
                 if self.frame_no % 2 == 0 {
                     self.spawn_frame(gpu, &mesh, col, center);
                 }
-                self.plan_frame(&mesh);
             }
             self.mesh = Some(mesh);
             self.write_trace(center, dt);
@@ -3139,6 +3399,14 @@ impl Peds {
             // sphere 1 (F-78763 at a new manager frame's start: the slots cleared, a pending draw tested - F-66549 / F-49353 -
             // the walker's own instance left out; its capsule material 0 never meets the material mask)
             let mut side: Vec<SideSlot> = Vec::new();
+            // the path request object's step F-12434 (F-12278, before sphere 1's): submit what was asked, else poll the
+            // search; a path found is delivered into the walker's path with its MWC
+            if frames > 0 && on_mesh {
+                if let Some(mesh) = self.mesh.as_ref() {
+                    let mut sys = PortPaths { mesh, poly: &mut p.poly, global: &mut self.dodge_rng.pick, query: &mut p.query };
+                    p.wp.step(&mut sys, &mut p.mwc);
+                }
+            }
             if frames > 0 && p.ground.pending1 {
                 p.ground.pending1 = false;
                 let c = p.ground.centre1;
@@ -3160,7 +3428,7 @@ impl Peds {
                         due |= 1 << (if clip { n & 1 } else { n % 3 });
                     }
                 }
-                rate = sidewalk_step(p, ty, i, &peds_pos, &boxes, Some(col), Some(nav), threats, &side, due, dt, &mut rand, &mut self.dodge_rng, &mut self.evades, &mut self.speech);
+                rate = sidewalk_step(p, ty, i, &peds_pos, &boxes, Some(col), Some(nav), threats, &side, due, dt, &mut rand, &mut self.dodge_rng, &mut self.evades, &mut self.speech, self.frame_no, &mut self.path_stamp);
             }
             // a car about to pass too close?
             if !on_mesh && matches!(p.state, State::Walk | State::Idle) && p.calm <= 0.0 && !ty.evade.is_empty() {
@@ -3517,8 +3785,9 @@ impl Peds {
             wait: 0.0,
             poly: NO_POLY,
             travel: Vec3::new(-heading.sin(), 0.0, -heading.cos()),
-            path: Vec::new(),
-            since_plan: 0,
+            wp: WalkPath { scale: 1.0, ..Default::default() },
+            mwc: ped_mwc(hash(id, item)),
+            query: None,
             scale: 1.0,
             speed: 0.0,
             rail: None,
@@ -3698,6 +3967,123 @@ mod tests {
 
     fn ref_word(t: &str) -> u32 {
         u32::from_str_radix(&t.replace('_', ""), 16).unwrap()
+    }
+
+    /// The path system as the offline run stubs it: the case's poll answer while a query is out, -1 otherwise; the fetch
+    /// as the case's +188 / path words give it; each call logged as the harness logs it.
+    struct RefPathSys<'a> {
+        out: bool,
+        poll: i32,
+        found: Option<Vec<PathNode>>,
+        log: &'a mut Vec<String>,
+    }
+
+    impl PathSys for RefPathSys<'_> {
+        fn submit(&mut self, filter: u32, len: f32, mat: &[u32; 16]) {
+            self.log.push("t1".into());
+            self.log.push(format!("{filter:x}"));
+            self.log.push(format!("{:x}", len.to_bits()));
+            self.log.extend(mat.iter().map(|w| format!("{w:x}")));
+            self.out = true;
+        }
+        fn poll(&mut self) -> i32 {
+            self.log.push("t2".into());
+            if self.out { self.poll } else { -1 }
+        }
+        fn fetch(&mut self) -> Option<Vec<PathNode>> {
+            self.found.clone()
+        }
+        fn release(&mut self) {
+            self.log.push("t3".into());
+            self.out = false;
+        }
+    }
+
+    /// The walker's path request, delivery and release against the original's code run offline frame by frame
+    /// (tools/walker_path_reference.py -> testdata/walker_path_ref.txt): 600 walkers over 24 manager frames each - the
+    /// request object's step F-12434 at the frame's start (submit, poll -1 / 0 / 1, fetch with and without a path record,
+    /// delivery F-44435 of up to 52 nodes of every type into at most 48 points with the walker's MWC), the walker's
+    /// F-30466 (the request F-73065 under every gate: the frame's stamp taken by another walker, the age, M's bits, a
+    /// path held, a failed search; reversed; the take F-23649 with and without M's bits) and the give-up F-50795 /
+    /// release F-75945 (the cancel F-39771) - and 1,000 seeds F-93347. Every logged call with its words and the whole
+    /// state after each frame (R's count, flags, fraction, scale, age, points; the request's flags, start, filter, length;
+    /// the stamp; the walker's MWC) must be equal.
+    #[test]
+    fn walker_path_matches_the_original() {
+        let (mut frames, mut taken, mut deliv, mut seeds) = (0, 0, 0, 0);
+        for l in include_str!("testdata/walker_path_ref.txt").lines() {
+            let (ci, o) = l.split_once(" ->").unwrap();
+            let c: Vec<u32> = ci.split(' ').skip(1).map(ref_word).collect();
+            if l.starts_with('1') {
+                let want: Vec<u32> = o.split_whitespace().map(ref_word).collect();
+                let mut g = crate::vehicles::parked::Mwc { lo: c[0], carry: c[1] };
+                let q = path_seed(&mut g);
+                assert_eq!(want, vec![f32::MAX.to_bits(), c[2], q.lo, q.carry, g.lo, g.carry], "{l}");
+                seeds += 1;
+                continue;
+            }
+            let f = |i: usize| f32::from_bits(c[i]);
+            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let nn = c[22] as usize;
+            let nodes: Vec<PathNode> = (0..nn)
+                .map(|k| {
+                    let o = 23 + 7 * k;
+                    match c[o] {
+                        0 | 1 => PathNode::Point(v(o + 1)),
+                        2 => PathNode::Edge(v(o + 1), v(o + 4)),
+                        _ => PathNode::Other,
+                    }
+                })
+                .collect();
+            let fr0 = 23 + 7 * nn;
+            let mut mwc = crate::vehicles::parked::Mwc { lo: c[2], carry: c[3] };
+            let mut wp = WalkPath { scale: f(0), age: c[1] as i32, ..Default::default() };
+            let mat: [u32; 16] = c[6..22].try_into().unwrap();
+            let mut stamp = 0u32;
+            let mut out = false;
+            for (k, want) in o.split(" |").enumerate() {
+                let fr = &c[fr0 + 9 * k..fr0 + 9 * k + 9];
+                let mut log = Vec::new();
+                let found = (fr[1] != 0).then(|| if fr[8] != 0 { nodes.clone() } else { Vec::new() });
+                let mut sys = RefPathSys { out, poll: fr[0] as i32, found, log: &mut log };
+                wp.step(&mut sys, &mut mwc);
+                let frame = 100 + k as u32;
+                if fr[4] != 0 {
+                    stamp = frame;
+                }
+                wp.request(fr[2], frame, &mut stamp, &mat, fr[3] != 0, c[5], f(4));
+                if wp.take(fr[2]) {
+                    sys.log.push("t6".into());
+                    sys.log.push("t4".into());
+                    sys.log.push("t5".into());
+                    sys.log.push(format!("{:x}", fr[6]));
+                    sys.log.push(format!("{:x}", fr[7]));
+                    taken += 1;
+                }
+                if fr[5] == 1 {
+                    wp.give_up(&mut sys);
+                }
+                if fr[5] == 2 {
+                    wp.release(&mut sys);
+                }
+                out = sys.out;
+                deliv += (!wp.pts.is_empty()) as usize;
+                let mut got = log;
+                let w = |x: u32| format!("{x:x}");
+                got.extend([wp.pts.len() as u32, wp.fresh as u32, wp.frac.to_bits(), wp.scale.to_bits(), wp.age as u32].map(w));
+                got.extend([wp.want as u32, wp.wait as u32, wp.got as u32, wp.filter, wp.owner as u32, wp.len.to_bits(), 0].map(w));
+                got.extend(wp.mat.iter().map(|&x| w(x)));
+                got.extend([stamp, mwc.lo, mwc.carry].map(w));
+                for p in &wp.pts {
+                    got.extend([p.x.to_bits(), p.y.to_bits(), p.z.to_bits()].map(w));
+                }
+                let want: Vec<String> = want.split_whitespace().map(|t| if t.starts_with('t') { t.to_string() } else { w(ref_word(t)) }).collect();
+                assert_eq!(got, want, "frame {k} of {ci}");
+                frames += 1;
+            }
+        }
+        assert_eq!((frames, seeds), (600 * 24, 1000));
+        assert!(taken > 200 && deliv > 200, "{taken} {deliv}");
     }
 
     /// The walker's slot 80 (F-49074) whole against the original's code run offline on 3,000 cases
