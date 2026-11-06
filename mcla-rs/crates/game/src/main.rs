@@ -583,6 +583,8 @@ struct App {
     /// 1 the fade down asked, 2 the fade up, then Racer_PlayIgnition and Racer_Activate (0x1322 / 0x132c)
     f02c_fade: u8,
     f02c_mask: boomcam::CutMask,
+    /// a scene's own fade down and up (`cine::SCENE_FADES`)
+    scene_fade: boomcam::CutMask,
     /// the opening's `Graphics_WarpToTimeOfDay(17, 100)`: the hour aimed at, while the clock is moved there
     intro_tod: Option<f32>,
     /// VEHICLE SELECT: where the first of the three starters stands
@@ -1223,6 +1225,7 @@ impl App {
             intro_mask: Default::default(),
             f02c_fade: 0,
             f02c_mask: Default::default(),
+            scene_fade: Default::default(),
             intro_tod: None,
             starters_made: false,
             grid_warm: None,
@@ -5735,7 +5738,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.place_view = None;
                 self.game.place_title = None;
             }
-            self.game.place_mask = self.garage_mask.update(dt).max(self.arrest_mask.update(dt)).max(self.f02c_mask.update(dt));
+            self.game.place_mask = self.garage_mask.update(dt).max(self.arrest_mask.update(dt)).max(self.f02c_mask.update(dt)).max(self.scene_fade.update(dt));
             // (test hook MCLA_ARREST_TRACE=1: the arrest's black each frame it is on)
             if self.arrest_mask.is_on() && std::env::var_os("MCLA_ARREST_TRACE").is_some() {
                 log::info!("arrest mask tick {} opacity {:.3} full {} wait {} scene {:?} form {} station {:?} activate {}", self.tick_no, self.game.place_mask, self.arrest_mask.full(), self.arrest_wait, self.cine.playing.as_ref().map(|sc| (sc.name.clone(), sc.t)), self.game.arrest_panel.is_some(), self.arrest_station, self.arrest_activate);
@@ -13409,6 +13412,16 @@ impl App {
             }
         }
         // showdriver / hidedriver (events 11 / 12, F-91263 -> F-13669 on the event's car slot)
+        // the scene's own fades (F-91263: screen_fade_to_black / _to_scene at the event's f3)
+        for &(scene, black, at, speed) in cine::SCENE_FADES {
+            if scene == name && at > last && at <= t {
+                if black {
+                    self.scene_fade.start(speed, 0.01, f32::MAX);
+                } else {
+                    self.scene_fade.release(speed);
+                }
+            }
+        }
         for &(scene, show, slot, at) in cinedriver::DRIVER_EVENTS {
             if scene == name && at > last && at <= t {
                 if let Some(i) = self.cine_slot_car(slot) {

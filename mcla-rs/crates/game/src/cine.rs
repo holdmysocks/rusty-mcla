@@ -431,9 +431,41 @@ pub const SCENE_AUDIO: &[&str] = &[
     "gen_prerace_starter_2x4_11",
 ];
 
-/// The audio stream an in-game scene plays (`SCENE_AUDIO`), upper case as its script names it.
+/// A scene's own fades that go down and come back up inside it: (scene, to black, scene seconds, speed). The handler
+/// F-91263 starts game/misctasks/screen_fade_to_black / _to_scene with the event's f3 as the speed (1.0 when <= 0):
+/// fade_speed_in = speed, held (fade_speed_out 0.01) / fade_speed_out = speed, which fades up only a fade that is down
+/// or held (the script's TransitionOut == 0 && (TransitionIn || TransitionOutisReady) test). A fade to black that ends a
+/// scene (held until the caller's own fade up) and a fade up with nothing down before it are not listed: the callers'
+/// fades are their own code. From work/driverlight/gen (docs/reference/cutscenes/generated_description.md).
+pub const SCENE_FADES: &[(&str, bool, f32, f32)] = &[
+    ("story/cut_story_district_champs", true, 73.3, 1.0),
+    ("story/cut_story_district_champs", false, 74.3333, 1.0),
+    ("story/cut_story_district_champs_night", true, 73.3, 1.0),
+    ("story/cut_story_district_champs_night", false, 74.3333, 1.0),
+    ("story/cut_story_find_sh_04", true, 56.9333, 1.0),
+    ("story/cut_story_find_sh_04", false, 58.3333, 1.0),
+    ("story/cut_story_hangout_series_downtown", true, 1.26667, 1.0),
+    ("story/cut_story_hangout_series_downtown", false, 2.26667, 2.0),
+    ("story/cut_story_hollywood_garage_intro", true, 0.333333, 1.0),
+    ("story/cut_story_hollywood_garage_intro", false, 2.0, 1.0),
+    ("story/cut_story_payback_intro", true, 2.0, 1.0),
+    ("story/cut_story_payback_intro", false, 3.66667, 1.0),
+];
+
+/// The scenes whose script names a stream other than the scene's own name (the description's +8,
+/// docs/reference/cutscenes/generated_description.md): the payback goons' walk-ups, whose objects are
+/// CUTSCENES_CUT_PAYBACK_GOONS_WALKUP1 / 2 (game.dat; streams CUT_MISC_PAYBACK_GOONS_WALKUP1 / 2).
+const SCENE_STREAM: [(&str, &str); 2] = [
+    ("payback_goons_walkup_01", "CUT_PAYBACK_GOONS_WALKUP1"),
+    ("payback_goons_walkup_02", "CUT_PAYBACK_GOONS_WALKUP2"),
+];
+
+/// The audio stream an in-game scene plays (`SCENE_AUDIO`, `SCENE_STREAM`), upper case as its script names it.
 pub fn scene_audio(scene: &str) -> Option<String> {
     let n = scene.rsplit('/').next().unwrap_or(scene).to_ascii_lowercase();
+    if let Some(&(_, s)) = SCENE_STREAM.iter().find(|r| r.0 == n) {
+        return Some(s.to_string());
+    }
     SCENE_AUDIO.contains(&n.as_str()).then(|| n.to_ascii_uppercase())
 }
 
@@ -1305,6 +1337,11 @@ mod tests {
         assert_eq!(named, SCENE_AUDIO.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(scene_audio("cut_cop_arrest").as_deref(), Some("CUT_COP_ARREST"));
         assert_eq!(scene_audio("cut_cop_arrest_05"), None);
+    }
+
+    #[test]
+    fn goons_walkup_stream_by_its_script_name() {
+        assert_eq!(scene_audio("payback_goons_walkup_02").as_deref(), Some("CUT_PAYBACK_GOONS_WALKUP2"));
     }
 }
 
