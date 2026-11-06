@@ -8,6 +8,38 @@ use glam::{Mat3, Quat, Vec3};
 use std::collections::HashMap;
 use std::path::Path;
 
+/// camDynamicBoomTune's constructor values (F-13319) of the keys its loader registers (F-77242),
+/// where they are not 0: 15 shipped camera files leave out DirectionFilter, FishtailFactor and
+/// HillPitchDn, 2 the gear-shift terms. (The shift curve is 5 keys at 0, .25, .5, .75 and 1.)
+const BOOM_DEFAULTS: &[(&str, &[f32])] = &[
+    ("Offset", &[0.0, 2.0, 5.0]),
+    ("Focus", &[0.0, 1.25, -1.0]),
+    ("Collide", &[0.0, 1.0, 0.0]),
+    ("RevOffset", &[0.0, 2.0, -5.0]),
+    ("RevFocus", &[0.0, 1.25, 1.0]),
+    ("ApproachRate", &[20.0]),
+    ("CollideType", &[2.0]),
+    ("OrientationFactor", &[0.5]),
+    ("OrientationFilter", &[0.1]),
+    ("DirectionFilter", &[0.4]),
+    ("VelocityFilter", &[0.8]),
+    ("AccelFilter", &[0.15]),
+    ("FishtailFactor", &[1.0]),
+    ("HillPitchDn", &[2.5]),
+    ("LinVelRange", &[30.0, 10.0, 50.0, 50.0]),
+    ("LinAccRange", &[25.0, 10.0, 20.0, 20.0]),
+    ("AngVelRange", &[2.0, 2.0, 2.0]),
+    ("AngAccRange", &[2.0, 4.0, 10.0]),
+    ("SSFovMin", &[35.0]),
+    ("SSFovMax", &[50.0]),
+    ("SSDistScale", &[0.7]),
+    ("ShiftDuration", &[1.0]),
+    ("ShiftMagnitude", &[0.5]),
+    ("ShiftTime1", &[0.25]),
+    ("ShiftTime2", &[0.5]),
+    ("ShiftTime3", &[0.75]),
+];
+
 /// One camera's parameters (the text file's fields by name).
 #[derive(Clone, Debug)]
 pub struct BoomTune {
@@ -19,7 +51,9 @@ impl BoomTune {
         if !text.contains("camBoomCS") {
             return None;
         }
-        let mut f = HashMap::new();
+        // a key the file leaves out keeps the tune's constructor value (F-13319; every other
+        // registered key is 0 there)
+        let mut f: HashMap<String, Vec<f32>> = BOOM_DEFAULTS.iter().map(|(k, v)| (k.to_string(), v.to_vec())).collect();
         for l in text.lines() {
             let mut it = l.split_whitespace();
             let Some(k) = it.next() else { continue };
@@ -2981,6 +3015,26 @@ impl EventCam {
 
 #[cfg(test)]
 mod tests {
+    /// camDynamicBoomTune's constructor F-13319 and its loader's field table F-77242 run offline
+    /// (work/cameras2/d34/boomtune.py): per registered key (82) its type and constructor words. A
+    /// file that sets nothing gives the port the same value of every key.
+    #[test]
+    fn boom_tune_defaults_match_the_original() {
+        let t = super::BoomTune::parse("camBoomCS\n").unwrap();
+        let mut n = 0;
+        for line in include_str!("testdata/boom_tune_defaults_ref.txt").lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let (key, ty) = (w[0], w[1]);
+            for (i, h) in w[2..].iter().enumerate() {
+                let bits = u32::from_str_radix(h, 16).unwrap();
+                let want = if ty == "5" { bits as i32 as f32 } else { f32::from_bits(bits) };
+                assert_eq!(t.range(key, i).to_bits(), want.to_bits(), "{key}[{i}]");
+            }
+            n += 1;
+        }
+        assert_eq!(n, 82);
+    }
+
     /// F-28753 run offline on 4,128 angle triples (work/cameras2/euler/euler_ref.py; the bits as decimal words): every stored word equal.
     #[test]
     fn euler_xyz_matches_the_original() {
