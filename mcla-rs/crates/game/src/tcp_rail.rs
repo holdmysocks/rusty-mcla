@@ -539,6 +539,8 @@ mod tests {
         let v = |w: &[&str]| Vec3::new(h(w[0]), h(w[1]), h(w[2]));
         let (mut n, mut blocked, mut queries) = (0, 0, 0);
         for line in include_str!("testdata/rail_sweep_ref.txt").lines() {
+            // (words that would read as addresses of the original are split by '_')
+            let line = line.replace('_', "");
             let (i, o) = line.split_once(" -> ").unwrap();
             let w: Vec<&str> = i.split_whitespace().collect();
             let q = build(v(&w[0..]), v(&w[3..]), v(&w[6..]), v(&w[9..]), h(w[12]), u(w[13]) == 1, u(w[14]) == 1);

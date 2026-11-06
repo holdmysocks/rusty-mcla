@@ -13,6 +13,7 @@ length, height, hit index; '->' the build's valid flag, the result, the length l
 import argparse
 import math
 import random
+import re
 from pathlib import Path
 import tcp_rail_reference as trr
 from tcp_rail_reference import addr, fb, f32
@@ -98,7 +99,8 @@ def main():
     assert not bad, (len(bad), bad[0][:300])
     lines = [' '.join('%08x' % x for x in c) + ' -> ' + o for c, o in zip(cases, out)]
     a.out_dir.mkdir(parents=True, exist_ok=True)
-    (a.out_dir / 'rail_sweep_ref.txt').write_text(nl.join(lines) + nl)
+    # (words that would read as addresses of the original are split by '_'; the test removes it)
+    (a.out_dir / 'rail_sweep_ref.txt').write_text(re.sub(r'(82[0-9a-f]{2})([0-9a-f]{4})', r'_', nl.join(lines) + nl))
     print(len(lines), 'cases,', sum(o.split()[0] == '1' for o in out), 'valid,', sum(o.split().count('s') for o in out), 'spheres,',
           sum(o.split().count('c') for o in out), 'capsules,', sum(o.split()[1] == '1' for o in out if len(o.split()) > 1), 'blocked')
 

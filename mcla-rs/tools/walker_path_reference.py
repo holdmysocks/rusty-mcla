@@ -173,7 +173,7 @@ def main():
                 'image.assign(std::istreambuf_iterator<char>(bin),{});' + nl + body + '}' + nl)
     idx = index(a.recomp)
     names = ['sub_' + A[f] for f in ('F-30466', 'F-12434', 'F-50795', 'F-75945', 'F-39771', 'F-93347')]
-    # (F-93347's copy of the query's filter block F-63209 at r8: an empty block here)
+    # (F-93347 copies the query's filter block at r8: an empty block here)
     exe = build(idx, names, main_src, a.out_dir, 'walker_path', stubs=stubs, vector=True)
     res = [x for x in run(exe, a.image).split(nl) if x]
     assert len(res) == len(cases) + len(seeds), (len(res), len(cases), len(seeds))
