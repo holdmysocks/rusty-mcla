@@ -656,8 +656,6 @@ pub struct Holder {
     /// 0x10/0x20 steer full left/right, 0x40 steering reversed, 0x80 ice, 0x100/0x200 handbrake
     /// off/on, 0x400 steer centred, 0x800 throttle off, 0x1000 steering reversed)
     pub ctl: u32,
-    /// Shield: hits taken (the type's +104)
-    pub shield_hits: u32,
     /// Agro: the ability the car had (the type's +104)
     pub agro_prev: Option<crate::ability::Kind>,
     /// where the car was a frame ago (the racer's +400 as the source's test reads it: the
@@ -745,7 +743,7 @@ impl CarFx {
 
 impl Holder {
     pub fn new(car: usize) -> Holder {
-        Holder { car, slots: [NONE; 2], shot: None, effect: None, back: false, ctl: 0, shield_hits: 0, agro_prev: None, prev: None, finished: false, veh_ok: true, icon: None, bolts: None, lasers: Vec::new(), fx: CarFx { rng: (0x9e37_79b9 ^ (car as u32).wrapping_mul(0x85eb_ca6b)) | 1, ..Default::default() } }
+        Holder { car, slots: [NONE; 2], shot: None, effect: None, back: false, ctl: 0, agro_prev: None, prev: None, finished: false, veh_ok: true, icon: None, bolts: None, lasers: Vec::new(), fx: CarFx { rng: (0x9e37_79b9 ^ (car as u32).wrapping_mul(0x85eb_ca6b)) | 1, ..Default::default() } }
     }
 
     /// Two megas in hand (the manager's test, F-28572): slot 1 not empty and both >= 11.
@@ -1064,6 +1062,19 @@ pub struct PowerUps {
     /// rmptfx effect "powerup_sparks" at the target, (0, 0.5, 0) along its axes, with its
     /// velocity, tinted m_beamColor of the type's look; dropped 2 s after - F-97749)
     pub hits: Vec<Hit>,
+    /// The type objects' hit counts (+104, by type id): the game keeps ONE object per type, the
+    /// effect of every car that has it, so a Shield's or a MegaShield's count is shared by all the
+    /// cars under it (F-76553 adds, the type's end F-72255 clears; the start F-71747 leaves it).
+    pub type_hits: [u32; 24],
+}
+
+/// A shot lands on a shield (F-52298's Shield / MegaShield branch): the type object's count
+/// + 1 (F-76553), then the type's "broken" test, its vfunc +64 - the Shield's (F-89403) from 2
+/// hits, the MegaShield's (F-52925) from 4. True: broken, the effect ends.
+pub fn shield_hit(type_hits: &mut [u32; 24], kind: u8) -> bool {
+    let n = &mut type_hits[kind as usize];
+    *n += 1;
+    *n >= if kind == MEGA_SHIELD { 4 } else { 2 }
 }
 
 /// Step 19g: one landing (a target record of the shoot-effect manager).
@@ -1099,6 +1110,7 @@ impl PowerUps {
             notes: Vec::new(),
             bolt_tunes: load_bolt_tunes(data_dir),
             hits: Vec::new(),
+            type_hits: [0; 24],
         };
         p.reset();
         p
@@ -1188,10 +1200,9 @@ impl PowerUps {
             ICE => self.holders[hi].ctl = 0x80,
             REVERSE => self.holders[hi].ctl = 0x40,
             STOP => self.holders[hi].ctl = 6,
-            // (F-71747: the shield shown, its hits counted from 0; step 19g: its timers
-            // +384 .. +396 from 0 - the flash clock +376 is left as it is)
+            // (F-71747: the shield shown; step 19g: its timers +384 .. +396 from 0 - the flash
+            // clock +376 is left as it is, and so is the type's hit count: its end clears it)
             SHIELD => {
-                self.holders[hi].shield_hits = 0;
                 let fx = &mut self.holders[hi].fx;
                 fx.t2 = 0.0;
                 fx.t3_clock = 0.0;
@@ -1240,7 +1251,8 @@ impl PowerUps {
         let base = if (12..21).contains(&e.kind) { e.kind - 11 } else { e.kind };
         match base {
             ICE | REVERSE | STOP => self.holders[hi].ctl = 0,
-            SHIELD => self.holders[hi].shield_hits = 0,
+            // (F-72255: the Shield's / MegaShield's end, the type object's +104 = 0)
+            SHIELD => self.type_hits[e.kind as usize] = 0,
             AGRO => {
                 if let Some(k) = self.holders[hi].agro_prev.take() {
                     ability.powerup_stop(k);
@@ -1253,7 +1265,7 @@ impl PowerUps {
     }
 
     /// A shot lands (F-12528 for the shooter, F-52298 for the target): the
-    /// shooter's shot ends; a Shield takes it (and breaks at the second), Stealth lets it
+    /// shooter's shot ends; a Shield takes it (and breaks at the second hit, a MegaShield at the fourth - `shield_hit`), Stealth lets it
     /// pass, a Mirror sends it back (a MegaMirror to every car round it) and ends; else the
     /// target's effect ends and this one starts.
     fn land(&mut self, from: usize, to: usize, kind: u8, vehicles: &mut crate::vehicles::Vehicles, ability: &mut crate::ability::Abilities, depth: u32) {
@@ -1272,12 +1284,12 @@ impl PowerUps {
         let cur = self.holders[ti].effect.as_ref().map_or(NONE, |e| e.kind);
         match cur {
             SHIELD | MEGA_SHIELD => {
-                self.holders[ti].shield_hits += 1;
-                // (F-76553: +104 + 1 and the flash clock +376 back to 0)
+                // (F-76553: the type's +104 + 1 and the flash clock +376 back to 0; the racer's
+                // notification; then the type's vfunc +64 - see `shield_hit`)
+                let broken = shield_hit(&mut self.type_hits, cur);
                 self.holders[ti].fx.flash = 0.0;
                 self.notes.push(Note { car: to, kind: cur, snd: Snd::Shielded });
-                // (the Shield's vfunc +64, F-89403: broken from two hits)
-                if self.holders[ti].shield_hits >= 2 {
+                if broken {
                     self.end_effect(ti, ability);
                 }
             }
@@ -1890,7 +1902,9 @@ mod tests {
                     let u = |o: usize| u32::from_be_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
                     let h = Holder::new(0);
                     assert_eq!((u(136), u(140)), (h.slots[0] as u32, h.slots[1] as u32));
-                    assert_eq!((u(228) == 0, u(236) == 0, u(104)), (h.shot.is_none(), h.effect.is_none(), h.shield_hits as u32));
+                    // (the holder's +104 is the count of the cars a MegaMirror sent the shot on to, F-52298;
+                    // the port keeps no such list - 0 as constructed)
+                    assert_eq!((u(228) == 0, u(236) == 0, u(104)), (h.shot.is_none(), h.effect.is_none(), 0));
                     n[2] += 1;
                 }
                 "LOOK" => {
@@ -1965,6 +1979,42 @@ mod original_holder_tests {
             }
         }
         assert_eq!((acc, fire), (4180, 200));
+    }
+
+    /// The Shield / MegaShield hit count against the original's landing (F-52298) and effect start (F-63170) run offline
+    /// (tools/pu_shield_reference.py -> testdata/pu_shield_ref.txt: 306 cases of starts and landings on two cars). After each
+    /// operation: car 0 / car 1 has an effect, the Shield's and the MegaShield's count (one type object each, shared by the cars).
+    #[test]
+    fn shield_hit_counts_match_the_original() {
+        let mut ab = crate::ability::Abilities::new();
+        let mut ops_run = 0;
+        for line in include_str!("testdata/pu_shield_ref.txt").lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let want: Vec<&str> = b.split(" ; ").collect();
+            let mut p = PowerUps::new("", &[0; 28], Vec::new(), &[0, 1], 1);
+            for (op, want) in a.split(' ').zip(&want) {
+                let h = (op.as_bytes()[1] - b'0') as usize;
+                if op.starts_with('A') {
+                    // (F-63170: the type stored, whatever the car had - as `apply` does)
+                    let k: u8 = op[2..].parse().unwrap();
+                    p.holders[h].effect = Some(Effect { kind: k, left: 1.0, melted: false });
+                } else {
+                    let Some(cur) = p.holders[h].effect.as_ref().map(|e| e.kind) else {
+                        assert_eq!(*want, "-", "{line}");
+                        continue;
+                    };
+                    // (`land`'s Shield / MegaShield branch)
+                    if shield_hit(&mut p.type_hits, cur) {
+                        p.end_effect(h, &mut ab);
+                    }
+                }
+                let got = format!("{} {} {} {}", p.holders[0].effect.is_some() as u8, p.holders[1].effect.is_some() as u8, p.type_hits[SHIELD as usize], p.type_hits[MEGA_SHIELD as usize]);
+                assert_eq!(got, *want, "{op} of {line}");
+                ops_run += 1;
+            }
+        }
+        // (2,374 operations: 1,315 run, 1,059 landings on a car without an effect skipped)
+        assert_eq!(ops_run, 1315);
     }
 }
 
