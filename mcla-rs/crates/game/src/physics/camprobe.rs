@@ -6,6 +6,7 @@
 use glam::{Mat3, Quat, Vec3};
 
 use super::collision::WorldCollider;
+use super::exact::{dot3 as vdot, dot_xyz, fma, recip};
 use super::hull::HullShape;
 
 /// One car's hull in the world: its triangles in the file's order, their normals and the
@@ -169,84 +170,234 @@ pub fn ball_polygon(c: Vec3, r: f32, v: &[Vec3; 3], n: Vec3, beside: impl Fn(usi
     Some(Contact { pos: p, normal: if dist <= 1e-12 { n } else { dv / dist }, depth: r - dist })
 }
 
-fn inside_tri(p: Vec3, v: &[Vec3; 3], n: Vec3) -> bool {
-    (0..3).all(|i| n.cross(v[(i + 1) % 3] - v[i]).dot(p - v[i]) >= 0.0)
+// The polygon sweep F-43031 (directed) as the original runs it, operation for operation (vector
+// multiply-adds rounded twice, the vector unit's three-product sum, the scalar unit's fused dots;
+// checked to the bit on 43,280 random sweeps: `polygon_sweep_matches_the_original`).
+
+fn yzx(a: Vec3) -> Vec3 {
+    Vec3::new(a.y, a.z, a.x)
 }
 
-/// A ball moving from `o` by `d` against the capsule of radius `r` round a..b: the first touch
-/// (t in 0..1) and the normal there (F-58482 - approx.: the standard first touch, its own
-/// arithmetic not read).
-fn sweep_capsule(o: Vec3, d: Vec3, a: Vec3, b: Vec3, r: f32) -> Option<(f32, Vec3)> {
-    let mut best: Option<(f32, Vec3)> = None;
-    let mut take = |t: f32, nrm: Vec3| {
-        if (0.0..=1.0).contains(&t) && best.map_or(true, |b| t < b.0) {
-            best = Some((t, nrm));
+fn zxy(a: Vec3) -> Vec3 {
+    Vec3::new(a.z, a.x, a.y)
+}
+
+/// The vector unit's cross product of the sweep (a.yzx b.zxy - a.zxy b.yzx, the last step negated).
+fn vcross(a: Vec3, b: Vec3) -> Vec3 {
+    -(zxy(a) * yzx(b) - yzx(a) * zxy(b))
+}
+
+/// 1 / sqrt with the zero guard (the estimate's infinity becomes 0) and one Newton step.
+fn rsqrt0(x: f32) -> f32 {
+    let mut y = 1.0 / x.sqrt();
+    if y == f32::INFINITY {
+        y = 0.0;
+    }
+    (-(x * (y * y) - 1.0)) * (0.5 * y) + y
+}
+
+/// The one-sided crossing of the segment p..q with the triangle (F-25859 -> F-70302): the determinant at least
+/// 7.63e-6, both weights in range.
+fn crosses(v: &[Vec3; 3], p: Vec3, q: Vec3) -> bool {
+    let (e2, e1, seg) = (v[2] - v[0], v[1] - v[0], q - p);
+    let c = vcross(seg, e2);
+    let det = fma(c.z, e1.z, fma(e1.y, c.y, e1.x * c.x));
+    if !(det >= 7.629_394_5e-6) {
+        return false;
+    }
+    let w = p - v[0];
+    let u = dot_xyz(w, c);
+    if u < 0.0 || u > det {
+        return false;
+    }
+    let vv = dot_xyz(seg, vcross(w, e1));
+    vv >= 0.0 && !(vv + u > det)
+}
+
+/// The roots of x^2 + b x + c (F-64515): two by the stable form, one where the discriminant is within
+/// 1e-6 of the larger coefficient's size, else none.
+fn roots(b: f32, c: f32) -> (u32, f32, f32) {
+    let disc = b * b - (((c + c) + c) + c);
+    let th = 1e-6 * b.abs().max(c.abs());
+    if disc > th {
+        let sq = disc * rsqrt0(disc);
+        let s = if b > 0.0 { sq } else { 0.0 - sq };
+        let q = (0.0 - (b + s)) * 0.5;
+        return (2, q, c * recip(q));
+    }
+    if disc >= 0.0 - th {
+        return (1, (0.0 - b) * 0.5, 0.0);
+    }
+    (0, 0.0, 0.0)
+}
+
+/// Whether the ball moving from `o` along the unit `dr` first meets the ball round the corner `c`
+/// on the side away from the edge `e` (F-55914).
+fn meets_corner(o: Vec3, dr: Vec3, rr: f32, c: Vec3, e: Vec3) -> bool {
+    let w = c - o;
+    let b = vdot(dr, w);
+    let perp = -(dr * b - w);
+    let h2 = rr - vdot(perp, perp);
+    if !(h2 > 0.0) {
+        return false;
+    }
+    let t = b - h2 * rsqrt0(h2);
+    if !(t > 0.0) {
+        return false;
+    }
+    let p = dr * t + o;
+    vdot(e, c - p) > 0.0
+}
+
+/// The ball's touch of the corner `c` (F-43026): its depth (the distance it is carried past the touch, to
+/// the end `ep`) when deeper than `best`, the corner and the normal there.
+fn corner_hit(best: f32, o: Vec3, dr: Vec3, ep: Vec3, rr: f32, c: Vec3) -> Option<(f32, Vec3, Vec3)> {
+    let w = c - o;
+    let b = vdot(dr, w);
+    if !(b > 0.0) {
+        return None;
+    }
+    let perp = -(dr * b - w);
+    let p2 = vdot(perp, perp);
+    if p2 >= rr {
+        return None;
+    }
+    let h2 = rr - p2;
+    let q = ep - c;
+    let h = h2 * rsqrt0(h2);
+    let ahead = fma(q.x, dr.x, fma(q.y, dr.y, q.z * dr.z));
+    let qq = vdot(q, q);
+    let d = if ahead > 0.0 {
+        let x = qq - p2;
+        x * rsqrt0(x) + h
+    } else {
+        if qq > rr {
+            return None;
         }
+        let x = qq - p2;
+        h - x * rsqrt0(x)
     };
-    let ab = b - a;
-    let ab2 = ab.length_squared();
-    if ab2 > 1e-12 {
-        let ao = o - a;
-        let dp = d - ab * (d.dot(ab) / ab2);
-        let op = ao - ab * (ao.dot(ab) / ab2);
-        let qa = dp.length_squared();
-        let qb = 2.0 * dp.dot(op);
-        let qc = op.length_squared() - r * r;
-        let disc = qb * qb - 4.0 * qa * qc;
-        if qa > 1e-12 && disc >= 0.0 {
-            let t = (-qb - disc.sqrt()) / (2.0 * qa);
-            let p = o + d * t;
-            let s = (p - a).dot(ab) / ab2;
-            if (0.0..=1.0).contains(&s) {
-                take(t, (p - (a + ab * s)) / r);
-            }
-        }
+    if !(d > best) {
+        return None;
     }
-    let dd = d.length_squared();
-    if dd > 1e-12 {
-        for v in [a, b] {
-            let m = o - v;
-            let bb = m.dot(d);
-            let cc = m.length_squared() - r * r;
-            let disc = bb * bb - dd * cc;
-            if disc >= 0.0 {
-                let t = (-bb - disc.sqrt()) / dd;
-                take(t, (o + d * t - v) / r);
-            }
-        }
-    }
-    best
+    let e = -(dr * d - ep) - c;
+    Some((d, c, e * rsqrt0(vdot(e, e))))
 }
 
-/// A ball swept from `o` by `d` against one polygon, directed (F-43031): only against its front,
-/// from a start more than `r` in front of its plane (nearer, the polygon is left out, edges too);
-/// the face at the plane's touch, else the first touch of an edge or corner. Returns (t, normal).
-pub fn sweep_polygon(o: Vec3, d: Vec3, r: f32, v: &[Vec3; 3], n: Vec3) -> Option<(f32, Vec3)> {
-    let dn = n.dot(d);
+/// The ball (radius `r`, from `o` by `dd`, length `l`, end `ep`) against the edge from `a` by `e`
+/// (F-58482): the side of the capsule by its quadratic, else the two corners; (depth, contact,
+/// normal) when deeper than `best`. `n` is the polygon's normal.
+#[allow(clippy::too_many_arguments)]
+fn sweep_edge(best: f32, o: Vec3, dd: Vec3, ep: Vec3, a: Vec3, e: Vec3, r: f32, l: f32, n: Vec3) -> Option<(f32, Vec3, Vec3)> {
+    if !(l > 1e-6) {
+        return None;
+    }
+    let rr = r * r;
+    let ee = vdot(e, e);
+    if ee > 0.0 {
+        let de = vdot(dd, e);
+        let w = a - o;
+        let den = ee * (l * l) - de * de;
+        if den.abs() > 1e-6 {
+            let (we, ww, dw) = (vdot(w, e), vdot(w, w), vdot(dd, w));
+            let rd = recip(den);
+            let b = ((we * de - ee * dw) * 2.0) * rd;
+            let c = (ee * (ww - rr) - we * we) * rd;
+            let (k, r1, r2) = roots(b, c);
+            if k > 0 {
+                let t = if k == 2 && r1 >= r2 && (r1 < 0.0 || r2 >= 0.0) { r2 } else { r1 };
+                if t >= 0.0 && !(t > 1.0) {
+                    let dep = (1.0 - t) * l;
+                    if dep > best {
+                        let ct = dd * t + o;
+                        let s = (0.0 - vdot(a - ct, e)) * recip(ee);
+                        if s >= 0.0 && !(s > 1.0) {
+                            let p = e * s + a;
+                            let g = ct - p;
+                            let nn = g * rsqrt0(vdot(g, g));
+                            if !(vdot(dd, n) >= 0.0) || !(vdot(n, nn) >= 0.0) {
+                                return Some((dep, p, nn));
+                            }
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let dr = dd * recip(l);
+    if meets_corner(o, dr, rr, a, e) {
+        return corner_hit(best, o, dr, ep, rr, a);
+    }
+    let b = a + e;
+    if meets_corner(o, dr, rr, b, Vec3::ZERO - e) {
+        return corner_hit(best, o, dr, ep, rr, b);
+    }
+    None
+}
+
+/// The record of a touch: when (0..1 along the sweep), how deep (the distance carried past it),
+/// the contact point and the normal.
+#[derive(Clone, Copy, Debug)]
+pub struct SweepHit {
+    pub t: f32,
+    pub depth: f32,
+    pub contact: Vec3,
+    pub normal: Vec3,
+}
+
+/// A ball swept from `o` by `d` against one polygon, directed (F-43031), `n` its normal as the
+/// bound forms it (from the area its record holds): only against its front, from a start in front
+/// of its plane; the face where the ball's touch of the plane lies over it, else the deepest
+/// touch of an edge or corner whose normal does not face along the sweep.
+pub fn sweep_polygon_hit(o: Vec3, d: Vec3, r: f32, v: &[Vec3; 3], n: Vec3) -> Option<SweepHit> {
+    let dn = vdot(n, d);
     if dn >= 0.0 {
         return None;
     }
-    let s = n.dot(o - v[0]);
-    if !(s > 0.0) || s - r > dn.abs() {
+    let s = vdot(n, o - v[0]);
+    if !(s > 0.0) {
         return None;
     }
-    let t0 = (s - r) / -dn;
+    let inv = recip(dn);
+    let rinv = r * inv;
+    let sinv = (0.0 - s) * inv;
+    if sinv > 1.0 - rinv {
+        return None;
+    }
+    let t0 = sinv + rinv;
     if !(t0 >= 0.0) || t0 > 1.0 {
         return None;
     }
-    let ct = o + d * t0;
-    if inside_tri(ct, v, n) {
-        return Some((t0, n));
+    let rr = {
+        let f = r * 1.01;
+        if f - 0.01 >= 0.0 { f } else { 0.01 }
+    };
+    let l2 = vdot(-d, -d);
+    let l = l2 * rsqrt0(l2);
+    let tp = (l - (1.0 - t0) * l) * recip(l);
+    let ct = d * tp + o;
+    if crosses(v, ct + n * rr, ct - n * rr) {
+        let depth = (1.0 - t0) * l;
+        return (depth > 0.0).then(|| SweepHit { t: t0, depth, contact: -(n * r - ct), normal: n });
     }
-    let mut best: Option<(f32, Vec3)> = None;
+    let ep = o + d;
+    let mut best = -1.0f32;
+    let mut hit = None;
     for i in 0..3 {
-        if let Some((t, nrm)) = sweep_capsule(o, d, v[i], v[(i + 1) % 3], r) {
-            if nrm.dot(d) <= 0.0 && best.map_or(true, |b| t < b.0) {
-                best = Some((t, nrm));
-            }
+        let Some((dep, p, nn)) = sweep_edge(best, o, d, ep, v[i], v[(i + 1) % 3] - v[i], r, l, n) else { continue };
+        if fma(nn.z, d.z, fma(nn.x, d.x, nn.y * d.y)) > 0.0 || !(dep > best) || fma(n.z, d.z, fma(n.x, d.x, n.y * d.y)) > 0.0 {
+            continue;
         }
+        best = dep;
+        hit = Some(SweepHit { t: (l - dep) / l, depth: dep, contact: p, normal: nn });
     }
-    best
+    hit.filter(|_| best > 0.0)
+}
+
+/// The same as (t, normal).
+pub fn sweep_polygon(o: Vec3, d: Vec3, r: f32, v: &[Vec3; 3], n: Vec3) -> Option<(f32, Vec3)> {
+    sweep_polygon_hit(o, d, r, v, n).map(|h| (h.t, h.normal))
 }
 
 impl<'a> CamLevel<'a> {
@@ -375,5 +526,39 @@ mod tests {
         let (t, nr) = sweep_polygon(Vec3::new(-4.3, 2.0, 0.0), Vec3::new(0.0, -4.0, 0.0), 0.5, &FLOOR, n).unwrap();
         let y = (0.25f32 - 0.09).sqrt();
         assert!((t - (2.0 - y) / 4.0).abs() < 1e-5 && (nr - Vec3::new(-0.3, y, 0.0) / 0.5).length() < 1e-5, "{t} {nr}");
+    }
+
+    /// F-43031 (directed) run offline on the original's code (work/cameras2/sweep/sweep_ref.py):
+    /// per line the polygon, start, end, radius and the area word its record holds, then the
+    /// original's result, alloc call, depth and record (+16 contact, +32 normal, +48, +64 t, +68
+    /// depth). 5,629 random sweeps: 151 face touches, 340 edge or corner touches.
+    #[test]
+    fn polygon_sweep_matches_the_original() {
+        let f = |h: &str| f32::from_bits(u32::from_str_radix(h, 16).unwrap());
+        let (mut face, mut edge, mut none) = (0, 0, 0);
+        for (k, line) in include_str!("../testdata/polygon_sweep_ref.txt").lines().enumerate() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let p = |i: usize| Vec3::new(f(w[i]), f(w[i + 1]), f(w[i + 2]));
+            let v = [p(0), p(3), p(6)];
+            let (o, e, r, area) = (p(9), p(12), f(w[15]), f(w[16]));
+            let n = super::super::gjk::polygon_normal(&v, area);
+            let got = sweep_polygon_hit(o, e - o, r, &v, n);
+            let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+            let u = |i: usize| u32::from_str_radix(w[17 + i], 16).unwrap();
+            match got {
+                None => {
+                    assert_eq!(w[17], "0", "line {k}: the original touches");
+                    none += 1;
+                }
+                Some(h) => {
+                    assert_eq!(w[17], "1", "line {k}: the original does not touch");
+                    assert_eq!(bits(h.contact), [u(3), u(4), u(5)], "line {k} contact");
+                    assert_eq!(bits(h.normal), [u(6), u(7), u(8)], "line {k} normal");
+                    assert_eq!([h.t.to_bits(), h.depth.to_bits()], [u(12), u(13)], "line {k} t, depth");
+                    if h.normal == n { face += 1 } else { edge += 1 }
+                }
+            }
+        }
+        assert_eq!((face, edge, none), (151, 340, 5138));
     }
 }
