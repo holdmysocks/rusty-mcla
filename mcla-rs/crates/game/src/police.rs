@@ -172,6 +172,9 @@ struct CopTac {
     hb: bool,
     /// pull-over Halt: the squared distance at its last update (+16)
     halt_d2: f32,
+    /// a command sent this update (F-24671 -> F-83687, applied after the machines) and the brain's fields it wrote
+    sent: bool,
+    brain: BrainCmd,
 }
 
 /// What the pursuit's ticks read in one update: the brain's predicates (F-74140's helpers) - within fSafeDist, within 1.5 x
@@ -219,16 +222,16 @@ fn pursuit_machine(tac: &mut CopTac, s: &PursuitSees, thresh: f32, last_speed: f
         tac.st = st;
         tac.t = 0.0;
         match st {
-            Tac::CatchUp => tac.cmd = 4,
+            Tac::CatchUp => (tac.cmd, tac.sent) = (4, true),
             Tac::AlongSide => {
-                (tac.far_t, tac.side_t, tac.side, tac.cmd) = (0.0, 1.0, s.pick, 5);
+                (tac.far_t, tac.side_t, tac.side, tac.cmd, tac.sent) = (0.0, 1.0, s.pick, 5, true);
             }
             Tac::Block => {
-                (tac.cmd, tac.hb, tac.block_steer) = (1, true, if s.on_right { 1.0 } else { -1.0 });
+                (tac.cmd, tac.hb, tac.block_steer, tac.sent) = (1, true, if s.on_right { 1.0 } else { -1.0 }, true);
             }
             Tac::Halt => {
                 if s.near_safe {
-                    (tac.cmd, tac.hb) = (1, false);
+                    (tac.cmd, tac.hb, tac.sent) = (1, false, true);
                 }
                 tac.halt_steer = 0.0;
             }
@@ -254,7 +257,7 @@ fn pursuit_machine(tac: &mut CopTac, s: &PursuitSees, thresh: f32, last_speed: f
                 tac.far_t = 0.0;
                 if tac.side_t < 0.0 && s.gate {
                     if s.pick != tac.side {
-                        (tac.side, tac.cmd) = (s.pick, 5);
+                        (tac.side, tac.cmd, tac.sent) = (s.pick, 5, true);
                     }
                     tac.side_t = 1.0;
                 }
@@ -270,7 +273,7 @@ fn pursuit_machine(tac: &mut CopTac, s: &PursuitSees, thresh: f32, last_speed: f
             }
             if s.near_safe && s.speed * 2.237 < thresh {
                 if !(tac.cmd == 1 && !tac.hb) {
-                    (tac.cmd, tac.hb) = (1, false);
+                    (tac.cmd, tac.hb, tac.sent) = (1, false, true);
                 }
             } else {
                 tac.next = Some(Tac::CatchUp);
@@ -313,7 +316,7 @@ struct PullSees {
 fn pullover_machine(tac: &mut CopTac, s: &PullSees, dt: f32) -> f32 {
     let mut factor = 1.0f32;
     if !tac.begun {
-        (tac.begun, tac.st, tac.t, tac.cmd) = (true, Tac::CatchUp, 0.0, 3);
+        (tac.begun, tac.st, tac.t, tac.cmd, tac.sent) = (true, Tac::CatchUp, 0.0, 3, true);
     }
     if tac.st != Tac::Halt && tac.next.is_none() && s.all_halt && !s.moving && (s.cspeed < 4.47 || !s.closing0) {
         tac.next = Some(Tac::Halt);
@@ -322,12 +325,12 @@ fn pullover_machine(tac: &mut CopTac, s: &PullSees, dt: f32) -> f32 {
         tac.st = st;
         tac.t = 0.0;
         match st {
-            Tac::CatchUp => tac.cmd = 3,
+            Tac::CatchUp => (tac.cmd, tac.sent) = (3, true),
             Tac::Avoid => {
-                (tac.side, tac.cmd, tac.replan, tac.side_t) = (s.pick, 5, 0.0, 1.0);
+                (tac.side, tac.cmd, tac.replan, tac.side_t, tac.sent) = (s.pick, 5, 0.0, 1.0, true);
                 factor *= 0.7;
             }
-            Tac::Halt => (tac.cmd, tac.hb, tac.grow_t, tac.halt_d2) = (1, false, 0.0, s.d2),
+            Tac::Halt => (tac.cmd, tac.hb, tac.grow_t, tac.halt_d2, tac.sent) = (1, false, 0.0, s.d2, true),
             _ => {}
         }
     }
@@ -337,7 +340,7 @@ fn pullover_machine(tac: &mut CopTac, s: &PullSees, dt: f32) -> f32 {
             tac.side_t -= dt;
             if tac.side_t < 0.0 && s.gate {
                 if s.pick != tac.side {
-                    (tac.side, tac.cmd) = (s.pick, 5);
+                    (tac.side, tac.cmd, tac.sent) = (s.pick, 5, true);
                 }
                 tac.side_t = 1.0;
             }
@@ -374,6 +377,107 @@ struct BrainSees {
     tspeed: f32,
     d2: f32,
     safe: f32,
+}
+
+/// The cop brain's fields the brain command F-83687 writes (the command dispatcher F-24671 hands it every command but 2).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct BrainCmd {
+    /// +568 the command, +572 / +580 / +584 its timers, +576 a count, +588 the plan countdown (command 0 only)
+    cmd: u32,
+    t572: f32,
+    n576: u32,
+    t580: f32,
+    t584: f32,
+    t588: f32,
+    b592: u8,
+    b593: u8,
+    /// +596 the unseen time, +600 the time in the search cone (the port's `Eye`)
+    unseen: f32,
+    cone_t: f32,
+    b604: u8,
+    b605: u8,
+    /// +676 the block's tactic, +680 / +684 its two targets
+    tactic: u32,
+    tgt: [u32; 2],
+    /// +688..+700 Stop (1): handbrake mode, amount, throttle, steer
+    stop: [u32; 4],
+    /// +704 the block's +12 clamped to 0..1
+    scale: f32,
+    /// +708 / +712 AlongSide (5): the side, its distance
+    side: u8,
+    side_d: f32,
+    /// +716 AlignWithTarget (6), +720 Respond (8): the place, +736 / +740 Search (7): its side and angle
+    align: f32,
+    place: [u32; 4],
+    srch_side: u8,
+    srch_ang: f32,
+    b772: u8,
+    /// the racing brain's final speed (+292, F-39608)
+    final_speed: f32,
+}
+
+/// The brain command F-83687, one call: command 0 - the plan countdown 0, the route cleared (F-69438), no targets, +592 /
+/// +593 0; commands 1..8 - the block's targets (+0 / +4), +704 = its +12 clamped to 0..1 (by `fsel`), the final speed -1,
+/// and Stop's (1) byte +16 and floats +20..+28, AlongSide's (5) byte +16 and +20, AlignWithTarget's (6) +16, Search's (7)
+/// byte +16 and +20, Respond's (8) vector +16..+31. Then for every command: the timers 0, the command stored, **the unseen
+/// and cone times 0 unless it is Search (7)**, +604 / +605 0, +676 the block's +8 (0 without a block), +772 0; +592 0 when
+/// the previous command was 0 and this is not. Returns (the route cleared, the machine's reset asked - the command changed,
+/// not from 0 to 0, and the machine's state not 0 -, the state asked: the command).
+fn brain_command(b: &mut BrainCmd, cmd: u32, blk: Option<&[u32; 8]>, machine_state: i32) -> (bool, bool, u32) {
+    let w = |i: usize| blk.map_or(0, |k| k[i]);
+    let f = |i: usize| f32::from_bits(w(i));
+    let byte = |i: usize| (w(i) >> 24) as u8;
+    let mut route = false;
+    if cmd == 0 {
+        b.t588 = 0.0;
+        route = true;
+        b.tgt = [0, 0];
+        (b.b592, b.b593) = (0, 0);
+    } else if (1..9).contains(&(cmd as i32)) {
+        b.tgt = [w(0), w(1)];
+        let lo = if f(3) >= 0.0 { f(3) } else { 0.0 };
+        b.scale = if lo - 1.0 >= 0.0 { 1.0 } else { lo };
+        b.final_speed = -1.0;
+        match cmd {
+            1 => b.stop = [(b.stop[0] & 0x00FF_FFFF) | ((byte(4) as u32) << 24), w(5), w(6), w(7)],
+            5 => (b.side, b.side_d) = (byte(4), f(5)),
+            6 => b.align = f(4),
+            7 => (b.srch_side, b.srch_ang) = (byte(4), f(5)),
+            8 => b.place = [w(4), w(5), w(6), w(7)],
+            _ => {}
+        }
+    }
+    let prev = b.cmd;
+    (b.t572, b.t580, b.cmd, b.t584, b.n576) = (0.0, 0.0, cmd, 0.0, 0);
+    if cmd != 7 {
+        (b.cone_t, b.unseen) = (0.0, 0.0);
+    }
+    (b.b604, b.b605) = (0, 0);
+    b.tactic = w(2);
+    b.b772 = 0;
+    let mut reset = false;
+    if !(prev == 0 && cmd == 0) {
+        if prev == 0 {
+            b.b592 = 0;
+        }
+        reset = prev != cmd && machine_state != 0;
+    }
+    (route, reset, cmd)
+}
+
+/// A command's block as the port's senders build it: Stop (1) F-72181 (+12 1.0, +16 0, +20 1.0, +24 -1, +28 -1000) - Block's
+/// enter F-56982 sets the handbrake byte, +24 0 and its steer -, AlongSide (5) F-94949 (+12 1.0, +16 the side, +20
+/// fAlongSideDist), the others F-59773 (+12 1.0). No targets or tactic (the port's brains read none of them).
+fn cmd_block(cmd: u8, hb: bool, block_steer: f32, side: bool, along: f32) -> [u32; 8] {
+    let mut b = [0u32; 8];
+    b[3] = 1.0f32.to_bits();
+    match cmd {
+        1 if hb => (b[4], b[5], b[6], b[7]) = (1 << 24, 1.0f32.to_bits(), 0.0f32.to_bits(), block_steer.to_bits()),
+        1 => (b[5], b[6], b[7]) = (1.0f32.to_bits(), (-1.0f32).to_bits(), (-1000.0f32).to_bits()),
+        5 => (b[4], b[5]) = ((side as u32) << 24, along.to_bits()),
+        _ => {}
+    }
+    b
 }
 
 /// The Stop command's parameters on the brain: +688 handbrake mode, +692 the amount, +696 the throttle (taken when >= 0),
@@ -3640,7 +3744,8 @@ impl Police {
                 let sent = squad_formation(&mut sq.hyst, &mut slots, arrow, &mut brains, &pos, &route, ppos, pright, -pfwd, along, dt, enter);
                 for k in (0..members.len()).filter(|&k| brains[k] != was[k]) {
                     let st = if brains[k].0 == 5 { Tac::AlongSide } else { Tac::CatchUp };
-                    *tacs.entry(members[k]).or_default() = CopTac { st, side: brains[k].1, cmd: brains[k].0, ..Default::default() };
+                    let tc = tacs.entry(members[k]).or_default();
+                    *tc = CopTac { st, side: brains[k].1, cmd: brains[k].0, sent: true, brain: tc.brain, ..Default::default() };
                 }
                 sq.slots = slots.map(|k| k.map(|k| members[k]));
                 sent
@@ -3683,7 +3788,7 @@ impl Police {
                 for c in vehicles.cars.iter_mut().filter(|c| pursuer(c) && c.state.pos.distance(ppos) < safe) {
                     let tc = tacs.entry(c.uid).or_default();
                     if tc.st != Tac::Halt {
-                        *tc = CopTac { st: Tac::Halt, cmd: 1, ..Default::default() };
+                        *tc = CopTac { st: Tac::Halt, cmd: 1, sent: true, brain: tc.brain, ..Default::default() };
                     }
                     if closing(c, 0.0) {
                         c.state.vel *= 0.5;
@@ -3892,6 +3997,18 @@ impl Police {
                     };
                     pursuit_machine(tac, &sees, t("fArrestTgtThresholdSpd", 10.0), last_tspeed, dt);
                 }
+                // (a command sent this update - by the machines above or the squad's - goes through the brain command
+                // F-83687: its block as the senders build it (Stop F-72181, with Block's handbrake / no throttle / its steer;
+                // AlongSide F-94949 with the side and fAlongSideDist; the others F-59773), and every command but Search (7)
+                // zeroes the cop's unseen and cone times)
+                if std::mem::take(&mut tac.sent) {
+                    let blk = cmd_block(tac.cmd, tac.hb, tac.block_steer, tac.side, along);
+                    brain_command(&mut tac.brain, tac.cmd as u32, Some(&blk), 0);
+                    if tac.cmd != 7 {
+                        let e = self.eyes.entry(c.uid).or_default();
+                        (e.unseen, e.cone_t) = (tac.brain.unseen, tac.brain.cone_t);
+                    }
+                }
                 if tac.st != st {
                     log::info!("police: cruiser {} {:?} -> {:?} ({:.0} m)", c.uid, st, tac.st, d);
                 }
@@ -4055,14 +4172,11 @@ impl Police {
                 ai.ovr = {
                     // the brain state's overrides by its command (brain_override; the Search, 7, has none; a squad's cops get theirs
                     // from the formation, AlongSide 5 / Pursue 4, and its Halt, Stop 1)
-                    let stop = if tac.hb {
-                        StopParams { hb: true, amount: 1.0, throttle: 0.0, steer: tac.block_steer }
-                    } else {
-                        StopParams { hb: false, amount: 1.0, throttle: -1.0, steer: -1000.0 }
-                    };
+                    let w = tac.brain.stop;
+                    let stop = StopParams { hb: w[0] >> 24 != 0, amount: f32::from_bits(w[1]), throttle: f32::from_bits(w[2]), steer: f32::from_bits(w[3]) };
                     let (dx, dy, dz) = (ppos.x - cpos.x, ppos.y - cpos.y, ppos.z - cpos.z);
                     let bs = BrainSees { moving: t_moving, ahead, same_dir, ed78, cspeed, tspeed: speed, d2: fmas(dx, dx, fmas(dz, dz, dy * dy)), safe };
-                    let o = brain_override(if searching { 7 } else { tac.cmd }, along, &stop, &bs);
+                    let o = brain_override(if searching { 7 } else { tac.cmd }, tac.brain.side_d, &stop, &bs);
                     let mut v = crate::ai::Overrides {
                         throttle: (o[0] != -1.0).then_some(o[0]),
                         brake: (o[1] != -1.0).then_some(o[1]),
@@ -4539,6 +4653,106 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 500, "{checked}");
+    }
+
+    /// The brain command against the original's F-83687 run offline by tools/brain_command_reference.py: the same 4,000 calls
+    /// from the same xorshift (command, block, the machine's state, the brain's words before), every changed brain word, the
+    /// route clear, the machine's reset and the state asked equal.
+    #[test]
+    fn brain_command_matches_the_original() {
+        let reference = include_str!("testdata/brain_command_ref.txt");
+        let mut x = 20261106u32;
+        let mut nx = || {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x
+        };
+        const F: [u32; 8] = [0, 0x3F80_0000, 0xBF80_0000, 0xC47A_0000, 0x3F00_0000, 0x4020_0000, 0xBE80_0000, 0x3F00_0001];
+        const I: [u32; 4] = [0, 1, 0xFFFF_FFFF, 0x0100_0000];
+        let mut word = |nx: &mut dyn FnMut() -> u32| {
+            let r = nx();
+            match r % 10 {
+                0..=2 => F[((r >> 8) % 8) as usize],
+                3 | 4 => I[((r >> 8) % 4) as usize],
+                _ if r >> 24 == 0x82 => r ^ 0x0100_0000,
+                _ => r,
+            }
+        };
+        // (the brain's words +568..+776 and the fields F-83687 writes, by offset; bytes are the word's high bytes)
+        const LO: usize = 568;
+        let get = |m: &[u32], o: usize| m[(o - LO) / 4];
+        let byte = |m: &[u32], o: usize| (get(m, o & !3) >> (24 - 8 * (o & 3))) as u8;
+        let read = |m: &[u32], f292: u32| BrainCmd {
+            cmd: get(m, 568), t572: f32::from_bits(get(m, 572)), n576: get(m, 576), t580: f32::from_bits(get(m, 580)),
+            t584: f32::from_bits(get(m, 584)), t588: f32::from_bits(get(m, 588)), b592: byte(m, 592), b593: byte(m, 593),
+            unseen: f32::from_bits(get(m, 596)), cone_t: f32::from_bits(get(m, 600)), b604: byte(m, 604), b605: byte(m, 605),
+            tactic: get(m, 676), tgt: [get(m, 680), get(m, 684)], stop: [get(m, 688), get(m, 692), get(m, 696), get(m, 700)],
+            scale: f32::from_bits(get(m, 704)), side: byte(m, 708), side_d: f32::from_bits(get(m, 712)), align: f32::from_bits(get(m, 716)),
+            place: [get(m, 720), get(m, 724), get(m, 728), get(m, 732)], srch_side: byte(m, 736), srch_ang: f32::from_bits(get(m, 740)),
+            b772: byte(m, 772), final_speed: f32::from_bits(f292),
+        };
+        let write = |m: &mut [u32], b: &BrainCmd| {
+            let mut put = |o: usize, v: u32| m[(o - LO) / 4] = v;
+            for (o, v) in [(568, b.cmd), (572, b.t572.to_bits()), (576, b.n576), (580, b.t580.to_bits()), (584, b.t584.to_bits()),
+                           (588, b.t588.to_bits()), (596, b.unseen.to_bits()), (600, b.cone_t.to_bits()), (676, b.tactic), (680, b.tgt[0]),
+                           (684, b.tgt[1]), (688, b.stop[0]), (692, b.stop[1]), (696, b.stop[2]), (700, b.stop[3]), (704, b.scale.to_bits()),
+                           (712, b.side_d.to_bits()), (716, b.align.to_bits()), (720, b.place[0]), (724, b.place[1]), (728, b.place[2]),
+                           (732, b.place[3]), (740, b.srch_ang.to_bits())] {
+                put(o, v);
+            }
+            let mut putb = |o: usize, v: u8| {
+                let s = 24 - 8 * (o & 3);
+                let i = ((o & !3) - LO) / 4;
+                m[i] = (m[i] & !(0xFF << s)) | ((v as u32) << s);
+            };
+            for (o, v) in [(592, b.b592), (593, b.b593), (604, b.b604), (605, b.b605), (708, b.side), (736, b.srch_side), (772, b.b772)] {
+                putb(o, v);
+            }
+        };
+        let mut lines = reference.lines();
+        // (the blocks the senders build, against the original's initialisers F-59773 / F-72181 / F-94949 on 32 bytes of A5,
+        // on the words F-83687 reads for that command: +0..+12, and Stop's byte +16 and +20..+28, AlongSide's byte +16 and +20;
+        // the image's fAlongSideDist is the class default 3.5)
+        for (name, blk, read) in [("basic", cmd_block(4, false, 0.0, false, 0.0), &[0, 1, 2, 3][..]),
+                                  ("stop", cmd_block(1, false, 0.0, false, 0.0), &[0, 1, 2, 3, 4, 5, 6, 7][..]),
+                                  ("along", cmd_block(5, false, 0.0, false, 3.5), &[0, 1, 2, 3, 4, 5][..])] {
+            let v: Vec<&str> = lines.next().unwrap().split_whitespace().collect();
+            assert_eq!((v[0], v[1]), ("BLOCK", name));
+            for &i in read {
+                let want = u32::from_str_radix(v[2 + i], 16).unwrap();
+                let (want, got) = if i == 4 { (want >> 24, blk[i] >> 24) } else { (want, blk[i]) };
+                assert_eq!(got, want, "{name} word {i}");
+            }
+        }
+        let mut changed_any = 0;
+        for k in 0..4000 {
+            let cmd = nx() % 10;
+            let none = cmd == 0 && nx() % 3 == 0;
+            let cur = match nx() % 3 { 0 => 0, 1 => -1, _ => 3 };
+            let blk: Option<[u32; 8]> = (!none).then(|| std::array::from_fn(|_| word(&mut nx)));
+            let mut pre: Vec<u32> = (LO..780).step_by(4).map(|_| word(&mut nx)).collect();
+            let prev = if nx() % 4 == 0 { 0 } else { nx() % 9 };
+            pre[0] = prev;
+            let f292 = word(&mut nx);
+            let mut b = read(&pre, f292);
+            let (route, reset, st) = brain_command(&mut b, cmd, blk.as_ref(), cur);
+            let mut post = pre.clone();
+            write(&mut post, &b);
+            let mut got = format!("{k} {cmd}");
+            for (i, (p, q)) in pre.iter().zip(&post).enumerate() {
+                if p != q {
+                    got += &format!(" {}={q:08x}", LO + 4 * i);
+                    changed_any += 1;
+                }
+            }
+            if b.final_speed.to_bits() != f292 {
+                got += &format!(" 292={:08x}", b.final_speed.to_bits());
+            }
+            got += &format!(" route={} reset={} state={}", route as u8, if reset { 1 } else { -1 }, st as i32);
+            assert_eq!(got, lines.next().unwrap(), "call {k}");
+        }
+        assert!(changed_any > 30000, "{changed_any}");
     }
 
     /// The squad swipes against the original's: the Arrow Trap's CatchUp update F-47983 and the Double Pursuit's AlongSide
