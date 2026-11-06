@@ -73,6 +73,9 @@ struct Mission {
     on_enter_career: Option<String>,
     /// bRepeatable (+693)
     repeatable: bool,
+    /// the first mcMissionReminder's szReminderId (aReminders +744; F-88990 only ever takes
+    /// reminder[0]: the cursor +740 is never advanced)
+    reminder: Option<String>,
     /// bShouldUpdate (+691, the constructor's 1 when the file has none): MISSION RESULTS may
     /// list the mission once it is updated (F-78851 kind 4)
     should_update: bool,
@@ -252,6 +255,10 @@ pub struct Career {
     state: Vec<MState>,
     /// activation order of the active missions (oldest first)
     order: Vec<usize>,
+    /// the mission manager's reminder countdown in seconds (+84; None = the constructor's
+    /// 500, F-33894) and its round robin counter (+80)
+    reminder_t: Option<f32>,
+    reminder_rr: u32,
     pub strings: StringTable,
     thresholds: Vec<(f32, Reward)>,
     /// the id of each threshold's entry above in the progression tables (`Progression_7`,
@@ -547,6 +554,7 @@ impl Career {
                 on_enter: t.contains("_READY_TO_START_ON_ENTER</szEventDescription>"),
                 on_enter_career: t.split("<Item type=\"mcMissionEventScript\">").skip(1).find(|e| e.contains("_READY_TO_START_ON_ENTER</szEventDescription>")).filter(|e| e.contains("<bCareerScript value=\"true\"/>")).and_then(|e| e.split("<Item content=\"ascii\">").nth(1)).and_then(|s| s.split('<').next()).map(|s| s.trim().to_string()),
                 repeatable: val(&t, "bRepeatable") == Some("true"),
+                reminder: tag(&t, "szReminderId").map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
                 should_update: val(&t, "bShouldUpdate") != Some("false"),
                 events_at: t
                     .split("<Item type=\"mcMissionEventScript\">")
@@ -2768,6 +2776,50 @@ impl Career {
         &self.order
     }
 
+    /// The unhidden missions of the mission log (list 1: CHECKING_OBJECTIVES or
+    /// READY_TO_TURN_IN), in its order.
+    fn reminder_list(&self) -> Vec<usize> {
+        self.order.iter().copied().filter(|&i| self.state[i].stage == Stage::Active && matches!(self.state_id_of(i), 3 | 4) && !self.missions[i].hidden).collect()
+    }
+
+    /// F-12937's countdown, run on the frames its gates let through (the caller's: offline,
+    /// police activity <= 1, no warp, no cine script, Cruising_Offline, no reminder waiting):
+    /// with an unhidden mission in the log the timer (+84) goes down by `dt`; below 0 it is
+    /// drawn again from the career generator, min (+88, 400) + (max (+92, 500) - min) x
+    /// (lo & 0x7FFFFF) x 2^-23, and the (+80 mod n)-th unhidden logged mission is picked, +80
+    /// then counting on. The mission (index) and its reminder id.
+    pub fn reminder_tick(&mut self, dt: f32) -> Option<(usize, String)> {
+        let list = self.reminder_list();
+        if list.is_empty() {
+            return None;
+        }
+        let t = self.reminder_t.unwrap_or(500.0) - dt;
+        self.reminder_t = Some(t);
+        if !(t < 0.0) {
+            return None;
+        }
+        let r = crate::oppick::career_rng().next();
+        self.reminder_t = Some((100.0f32 * (r & 0x7F_FFFF) as f32).mul_add(1.0 / 8_388_608.0, 400.0));
+        let k = (self.reminder_rr as i32).wrapping_rem(list.len() as i32);
+        let i = list[k.max(0) as usize];
+        self.reminder_rr = self.reminder_rr.wrapping_add(1);
+        // (F-88990: no reminder -> "Invalid_Reminder")
+        Some((i, self.missions[i].reminder.clone().unwrap_or_else(|| "Invalid_Reminder".into())))
+    }
+
+    /// The career's load script (`game/career/0x62e9486d` 0x74c, after loadSuccess): with a
+    /// mission in the log, mcMissionManager_SetReminderCountdown(5.0) (F-41212: +84).
+    pub fn reminder_after_load(&mut self) {
+        if self.order.iter().any(|&i| self.state[i].stage == Stage::Active && matches!(self.state_id_of(i), 3 | 4)) {
+            self.reminder_t = Some(5.0);
+        }
+    }
+
+    /// The mission's caller (its hookman's name) for the phone card.
+    pub fn caller_of(&self, i: usize) -> String {
+        self.who(i)
+    }
+
     /// The mission log's order from a save: the missions named that are open, in that
     /// order, then the other open ones as they were.
     pub fn set_log_order(&mut self, ids: &[String]) {
@@ -3142,6 +3194,31 @@ mod tests {
         assert!(matches!(c.state_id_of(i), 2 | 3), "{}", c.state_id_of(i));
         assert!(c.uid_has_active_mission(500));
         assert!(!c.uid_has_active_mission(501));
+    }
+
+    /// The reminders: reminder[0] of the file (the three district championships share
+    /// REMINDER_DISTRICT_CHAMPS), the 400..500 s countdown and the round robin.
+    #[test]
+    fn reminders() {
+        let data = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        let mut c = Career::load(&data);
+        let Some(&b) = c.index.get("DISTRICT_CHAMPS_BEACHES") else { return };
+        assert_eq!(c.missions[b].reminder.as_deref(), Some("REMINDER_DISTRICT_CHAMPS"));
+        let h = c.index["HANGOUT_SERIES_HOLLYWOOD"];
+        assert_eq!(c.missions[h].reminder.as_deref(), Some("REMINDER_HANGOUT_SERIES_HOLLYWOOD"));
+        assert_eq!(c.reminder_tick(1000.0), None);
+        let i = c.missions.iter().position(|m| !m.hidden && m.reminder.is_some()).unwrap();
+        c.activate(i);
+        let id = c.missions[i].id.clone();
+        c.call_delivered(&id);
+        assert!(matches!(c.state_id_of(i), 3 | 4), "{} {}", id, c.state_id_of(i));
+        assert_eq!(c.reminder_tick(499.0), None);
+        let (k, r) = c.reminder_tick(2.0).unwrap();
+        assert_eq!((k, r.as_str()), (i, c.missions[i].reminder.as_deref().unwrap()));
+        let t = c.reminder_t.unwrap();
+        assert!((400.0..=500.0).contains(&t), "{t}");
+        c.reminder_after_load();
+        assert_eq!(c.reminder_t, Some(5.0));
     }
 
     /// The Progression table's script reward without a call: Progression_24 (50 %) carries

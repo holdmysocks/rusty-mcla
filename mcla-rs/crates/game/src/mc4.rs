@@ -10563,6 +10563,7 @@ impl Game {
         if !log.is_empty() {
             self.career.set_log_order(&log);
         }
+        self.career.reminder_after_load();
         self.career.set_done_order(&done);
         for rec in &recs {
             let Some(i) = self.career.mission_no(&rec.name) else { continue };

@@ -446,6 +446,9 @@ struct App {
     cine_events: (String, Vec<(String, cinecar::CarEvent)>),
     /// tips waiting for a quiet moment: speech scenario, title, text
     tips: std::collections::VecDeque<(String, String, String)>,
+    /// a mission reminder posted and not yet on the phone (F-12937's priority-2 entry: while
+    /// one waits, F-12937 does not count down): caller, reminder id, the MISSION LOG prompt
+    reminder_wait: Option<(String, String, bool)>,
     /// the tip calls' scripts waiting at the cap (Sidekick_GetTypeCount(3) > 4): next wake (`tip_clock`), the call
     tip_waiters: Vec<(f32, (String, String, String))>,
     /// the waiters' unwarped clock, seconds
@@ -1201,6 +1204,7 @@ impl App {
             pb_intro_hold: None,
             cine_events: (String::new(), Vec::new()),
             tips: Default::default(),
+            reminder_wait: None,
             tip_waiters: Vec::new(),
             tip_clock: 0.0,
             tip_shown: false,
@@ -6203,6 +6207,31 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.speech.say(&key);
                     self.news_timer = 0.0;
                 }
+            }
+            // (the mission reminders, F-12937 each frame offline: its gates - police activity <= 1, no warp,
+            // no cine script, Cruising_Offline, no reminder waiting - then Career::reminder_tick. *(approx.)* the
+            // navsys +628 / GPS-route gates, the flag at 0x828CCEA0 and F-42050's restart on a navigator
+            // event are not ported)
+            if career_up && cruising && self.reminder_wait.is_none() && self.police.activity().0 <= 1 && self.cuts.playing.is_none() && self.cine.playing.is_none() && matches!(self.game.mode, Mode::FreeRoam) {
+                if let Some((i, rem)) = self.game.career.reminder_tick(dt) {
+                    let id = self.game.career.mission_id(i).to_string();
+                    log::info!("career: reminder of {} ({})", id, rem);
+                    // (Sidekick_AppendData's F-45785 with (1, mission id, its man's flash id, 4, 10.0, charset,
+                    // 'Incoming Call!', reminder, 'Mission_Log' - '' for RACE_GH_06 -, 2, 1, reminder, charset, 'PLAYER'))
+                    self.reminder_wait = Some((self.game.career.caller_of(i), rem, id != "RACE_GH_06"));
+                }
+            }
+            if self.reminder_wait.is_some() && career_up && !phone_held && self.game.tip.is_none() && matches!(self.game.mode, Mode::FreeRoam) {
+                let (who, rem, log_prompt) = self.reminder_wait.take().unwrap();
+                if let Some(text) = self.game.career.strings.get(&rem).map(|s| s.to_string()).filter(|_| self.game.flash_phone.is_some()) {
+                    let secs = (6.0 + text.len() as f32 * 0.055).min(22.0);
+                    self.game.tip = Some((who, text, secs));
+                    self.game.phone_prompt = if log_prompt { self.mission_log_prompt() } else { String::new() };
+                    if let Some(a) = self.audio.as_mut().filter(|a| !a.has_objects()) {
+                        a.play("ui/menus/tutorial_window_fin", 0.7);
+                    }
+                }
+                self.speech.say(&rem);
             }
             self.news_timer = (self.news_timer - dt).max(-30.0);
             // (a splash line is no call: only the calls wait for the phone)
