@@ -10,6 +10,11 @@ use wgpu::util::DeviceExt;
 /// The scene's colour target: linear light, values above 1 kept.
 pub const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const LUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// The luminance history and the adapted luminance: 32_FLOAT as the original's (the history's gate compares
+/// values a few 1e-5 apart)
+const ADAPT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
+/// The history's size (the original's 4 x 4 target)
+const HIST: u32 = 4;
 
 /// What the tone map is tuned by: the weather's keys at the hour (`sky::Tod`).
 #[derive(Clone, Copy, Debug)]
@@ -22,8 +27,10 @@ pub struct Tune {
     pub bright: [f32; 3],
     /// lower and upper limit of the adapted luminance
     pub limits: [f32; 2],
-    /// adaption rate (Lambda)
+    /// adaption rate (Lambda = ln 2 / `m_LightAdaption`.x, F-31612)
     pub lambda: f32,
+    /// the luminance history's slots (`numofframesinlumhistory` of the post-processing settings)
+    pub lum_frames: u32,
     pub saturation: f32,
     pub color_correct: [f32; 3],
     /// seconds since the last frame
@@ -51,10 +58,23 @@ pub struct Tune {
     pub motion_blur: bool,
 }
 
+/// `numofframesinlumhistory` of the post-processing settings (`tune/lighting/0xa0829ade`, read by the settings loader F-15434):
+/// the slots of the luminance history the adapt pass compares
+pub static LUM_FRAMES: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+
+pub fn init(data_dir: &str) {
+    let n = std::fs::read_to_string(std::path::Path::new(data_dir).join("tune/lighting/0xa0829ade")).ok().and_then(|t| {
+        let i = t.find("<numofframesinlumhistory")?;
+        let r = &t[i..];
+        r[r.find('>')? + 1..r.find("</")?].trim().parse::<u32>().ok()
+    });
+    let _ = LUM_FRAMES.set(n.unwrap_or(5));
+}
+
 impl Default for Tune {
     fn default() -> Self {
         // noon in the Nice weather
-        Tune { middle_grey: 0.25, white: 0.21646, bright: [1.6203, 4.6213, 0.032782], limits: [0.15, 0.2], lambda: 3.7266, saturation: 0.9, color_correct: [0.5862, 0.53442, 0.43101], dt: 1.0 / 60.0, radial: 0.0, center: [0.5, 0.5], plain: false, force_lum: None, dof: [0.0; 4], inv_view_proj: [[0.0; 4]; 4], cam_pos: [0.0; 3], mb_mtx: [[[0.0; 4]; 4]; super::mb::RECORDS], bloom: true, dof_on: true, motion_blur: true }
+        Tune { middle_grey: 0.25, white: 0.21646, bright: [1.6203, 4.6213, 0.032782], limits: [0.15, 0.2], lambda: 3.7266, lum_frames: *LUM_FRAMES.get().unwrap_or(&5), saturation: 0.9, color_correct: [0.5862, 0.53442, 0.43101], dt: 1.0 / 60.0, radial: 0.0, center: [0.5, 0.5], plain: false, force_lum: None, dof: [0.0; 4], inv_view_proj: [[0.0; 4]; 4], cam_pos: [0.0; 3], mb_mtx: [[[0.0; 4]; 4]; super::mb::RECORDS], bloom: true, dof_on: true, motion_blur: true }
     }
 }
 
@@ -165,6 +185,11 @@ pub struct Post {
     lum: [Target; 4],
     /// the adapted luminance of the frame before and of this one (they swap)
     adapted: [Target; 2],
+    /// the luminance history (4 x 4): one frame's average a slot, F-31612's ring (`ring` = its count, column,
+    /// row: 1, 0, 0 in the image)
+    hist: Target,
+    ring: std::sync::Mutex<(u32, u32, u32)>,
+    pipe_lum_slot: wgpu::RenderPipeline,
     // (atomics: the frame's recording borrows the Gpu from several threads - docs/PERFORMANCE.md 2026-10-23 (4))
     flip: std::sync::atomic::AtomicUsize,
     first: std::sync::atomic::AtomicBool,
@@ -243,7 +268,13 @@ impl Post {
             label: Some("post layout"),
             entries: &[
                 tex_entry(0),
-                tex_entry(1),
+                // (the adapted luminance, R32Float: not filterable, read with textureLoad)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
                 wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
@@ -254,6 +285,12 @@ impl Post {
                 tex_entry(4),
                 tex_entry(5),
                 tex_entry(6),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
             ],
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("post pl"), bind_group_layouts: &[&layout], push_constant_ranges: &[] });
@@ -384,13 +421,16 @@ impl Post {
             dof_buf,
             pipe_dof,
             lum: [lum(128, "lum 128"), lum(64, "lum 64"), lum(16, "lum 16"), lum(4, "lum 4")],
-            adapted: [lum(1, "adapted a"), lum(1, "adapted b")],
+            adapted: [target(device, 1, 1, ADAPT_FORMAT, "adapted a"), target(device, 1, 1, ADAPT_FORMAT, "adapted b")],
+            hist: target(device, HIST, HIST, ADAPT_FORMAT, "lum history"),
+            ring: std::sync::Mutex::new((1, 0, 0)),
+            pipe_lum_slot: make("fs_lum_slot", ADAPT_FORMAT),
             flip: std::sync::atomic::AtomicUsize::new(0),
             first: std::sync::atomic::AtomicBool::new(true),
             pipe_scale: make("fs_scale", SCENE_FORMAT),
             pipe_lum_log: make("fs_lum_log", LUM_FORMAT),
             pipe_lum_down: make("fs_lum_down", LUM_FORMAT),
-            pipe_lum_adapt: make("fs_lum_adapt", LUM_FORMAT),
+            pipe_lum_adapt: make("fs_lum_adapt", ADAPT_FORMAT),
             pipe_bright: make("fs_bright", SCENE_FORMAT),
             pipe_gauss: make("fs_gauss", SCENE_FORMAT),
             pipe_tonemap: make("fs_tonemap", format),
@@ -409,7 +449,7 @@ impl Post {
     }
 
     fn rebuild_groups(&mut self, device: &wgpu::Device) {
-        let mk = |a: &wgpu::TextureView, b: &wgpu::TextureView, c: &wgpu::TextureView, buf: &wgpu::Buffer| {
+        let mk7 = |a: &wgpu::TextureView, b: &wgpu::TextureView, c: &wgpu::TextureView, buf: &wgpu::Buffer, h: &wgpu::TextureView| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("post bg"),
                 layout: &self.layout,
@@ -421,9 +461,11 @@ impl Post {
                     wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(c) },
                     wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.halo.view) },
                     wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&self.dof.view) },
+                    wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(h) },
                 ],
             })
         };
+        let mk = |a: &wgpu::TextureView, b: &wgpu::TextureView, c: &wgpu::TextureView, buf: &wgpu::Buffer| mk7(a, b, c, buf, &self.hist.view);
         let mut sets = Vec::new();
         for now in 0..2 {
             let (new, old) = (&self.adapted[now].view, &self.adapted[1 - now].view);
@@ -448,6 +490,8 @@ impl Post {
                 mk(&self.bloom_b.view, s, s, &self.bufs[9]),
                 // 10: tone map, scene + adapted luminance + bloom -> the display
                 mk(s, new, &self.bloom_a.view, &self.bufs[10]),
+                // 11: the frame's average into the history's slot (binding 7 must not be the target)
+                mk7(&self.lum[3].view, old, s, &self.bufs[11], new),
             ]);
         }
         let second = sets.pop().unwrap();
@@ -582,7 +626,7 @@ impl Post {
             only(texel(&self.lum[0])),
             only(texel(&self.lum[1])),
             only(texel(&self.lum[2])),
-            only([1.0 - (-t.dt.clamp(0.0, 0.5) * t.lambda).exp(), if first { 1.0 } else { 0.0 }, 0.0, 0.0]),
+            only([1.0 - (-t.dt.clamp(0.0, 0.5) * t.lambda).exp(), if first { 1.0 } else { 0.0 }, t.lum_frames.min(HIST * HIST) as f32, 0.0]),
             grade,
             only([1.0 / self.bloom_a.w as f32, 0.0, 0.0, 0.0]),
             only([0.0, 1.0 / self.bloom_b.h as f32, 0.0, 0.0]),
@@ -594,6 +638,20 @@ impl Post {
         for (b, p) in self.bufs.iter().zip(ps.iter()) {
             queue.write_buffer(b, 0, bytemuck::bytes_of(p));
         }
+        queue.write_buffer(&self.bufs[11], 0, bytemuck::bytes_of(&only(texel(&self.lum[3]))));
+        // F-31612's ring: after Frames frames back to slot (0, 0), else the next slot in raster order
+        let (sx, sy) = {
+            let mut r = self.ring.lock().unwrap();
+            let (n, x, y) = *r;
+            *r = if n >= t.lum_frames {
+                (1, 0, 0)
+            } else if x as f64 >= HIST as f64 - 1.0 {
+                (n + 1, 0, if y + 1 >= HIST { 0 } else { y + 1 })
+            } else {
+                (n + 1, x + 1, y)
+            };
+            (r.1, r.2)
+        };
         let steps: [(&wgpu::TextureView, &wgpu::RenderPipeline, usize); 11] = [
             (&self.half.view, &self.pipe_scale, 0),
             (&self.quarter.view, &self.pipe_scale, 1),
@@ -666,6 +724,20 @@ impl Post {
             pass.draw(0..3, 0..1);
         }
         for (view, pipe, g) in steps {
+            if g == 6 {
+                // PSReSampleAverageLuminanceExp into the one texel of the history (the other slots kept)
+                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("lum history slot"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &self.hist.view, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                pass.set_viewport(sx as f32, sy as f32, 1.0, 1.0, 0.0, 1.0);
+                pass.set_pipeline(&self.pipe_lum_slot);
+                pass.set_bind_group(0, &self.groups[now][11], &[]);
+                pass.draw(0..3, 0..1);
+            }
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("post"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment { view, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],

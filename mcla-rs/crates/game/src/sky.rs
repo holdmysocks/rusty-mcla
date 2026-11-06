@@ -297,7 +297,7 @@ pub struct Tod {
     pub bright: [f32; 4],
     /// `m_Luminance`: middle grey, white
     pub luminance: [f32; 2],
-    /// `m_LightAdaption`: rate (x 20 = Lambda), lower and upper limit of the adapted luminance
+    /// `m_LightAdaption`: half-life in s (Lambda = ln 2 / x), lower and upper limit of the adapted luminance
     pub adaption: [f32; 3],
     /// `m_Saturation`
     pub saturation: f32,

@@ -1468,7 +1468,8 @@ impl App {
             p.white = t.luminance[1] * t.luminance[1];
             p.bright = [t.bright[0], t.bright[1], t.bright[3] * t.bright[3]];
             p.limits = [t.adaption[1], t.adaption[2]];
-            p.lambda = t.adaption[0] * 20.0;
+            // (F-31612: Lambda = ln 2 / the track's x, the half-life in seconds)
+            p.lambda = if t.adaption[0] > 0.0 { std::f32::consts::LN_2 / t.adaption[0] } else { 0.0 };
             p.saturation = t.saturation;
             p.color_correct = [t.color_correct.x, t.color_correct.y, t.color_correct.z];
         }
@@ -14013,6 +14014,7 @@ impl App {
             lamps.extend(self.props.prop_lamps.iter().map(|l| render::Lamp { pos: l.pos, color: l.color, intensity: l.intensity, back: l.back, cone: l.cone }));
             gpu.set_lamps(&lamps);
             // (diagnostics: MCLA_FIGLIGHT_PROBE = "x,y,z;x,y,z..." prints the walkers' four grid lanes
+            render::post::init(&self.opt.data_dir);
             // there, as a walker that stood long enough has them - compared with the recordings,
             // work/lighting2/figprobe.py)
             if let (Ok(v), Some(t)) = (std::env::var("MCLA_FIGLIGHT_PROBE"), render::LAMP_TABLES.read().ok().and_then(|t| t.clone())) {

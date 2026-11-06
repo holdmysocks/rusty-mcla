@@ -7,7 +7,9 @@
 
 struct P {
     // blur passes: xy = one texel of the source
-    // adapt: x = 1 - exp(-dt * Lambda), y = 1 on the first frame (no history); b.xy = one texel of the source
+    // adapt: x = 1 - exp(-dt * Lambda), y = 1 on the first frame (no history), z = Frames (the history's slots);
+    // b.xy = one texel of the source
+    // history slot: xy = one texel of the source
     // bright / tone map: x = middle grey, y = threshold, z = offset, w = white (squared)
     a: vec4<f32>,
     // bright / tone map: x = lower, y = upper limit of the adapted luminance, z = tone map white (squared), w = saturation
@@ -25,7 +27,9 @@ struct P {
 };
 
 @group(0) @binding(0) var t0: texture_2d<f32>;
+// (t1: the adapted luminance, R32Float, read with textureLoad; hist: the 4 x 4 luminance history, R32Float)
 @group(0) @binding(1) var t1: texture_2d<f32>;
+@group(0) @binding(7) var hist: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
 @group(0) @binding(3) var<uniform> p: P;
 @group(0) @binding(4) var t2: texture_2d<f32>;
@@ -289,14 +293,38 @@ fn fs_lum_down(in: VsOut) -> @location(0) vec4<f32> {
     return vec4<f32>(lum_16(in.uv, p.a.xy), 0.0, 0.0, 1.0);
 }
 
-// PSReSampleAverageLuminanceExp followed by PSCalculateAdaptedLuminance: the scene's
-// luminance of this frame, and the adapted one moving towards it
+// PSCalculateAdaptedLuminance: the adapted luminance from the history (fs_lum_slot wrote this frame's slot);
+// on the first frame the frame's own average (t0 = the 4 x 4 log luminance)
 @fragment
 fn fs_lum_adapt(in: VsOut) -> @location(0) vec4<f32> {
-    let now = exp(lum_16(in.uv, p.b.xy));
-    let before = textureSampleLevel(t1, samp, vec2<f32>(0.5), 0.0).r;
-    let v = mix(before + (now - before) * p.a.x, now, p.a.y);
+    let before = textureLoad(t1, vec2<i32>(0, 0), 0).r;
+    if (p.a.y > 0.5) {
+        return vec4<f32>(clamp(exp(lum_16(in.uv, p.b.xy)), 0.0, 64.0), 0.0, 0.0, 1.0);
+    }
+    // PSCalculateAdaptedLuminance (F-31612 writes the slots): the first Frames slots of the history in raster order,
+    // how many lie above the adapted value; only when all or none do, the value moves towards slot (0, 0) -
+    // otherwise the original's program skips its export and the value stays (measured in the running original)
+    let frames = i32(p.a.z);
+    var above = 0;
+    for (var i = 0; i < 16; i = i + 1) {
+        if (i >= frames) {
+            break;
+        }
+        if (textureLoad(hist, vec2<i32>(i % 4, i / 4), 0).r > before) {
+            above = above + 1;
+        }
+    }
+    var v = before;
+    if (above == frames || above == 0) {
+        v = (textureLoad(hist, vec2<i32>(0, 0), 0).r - before) * p.a.x + before;
+    }
     return vec4<f32>(clamp(v, 0.0, 64.0), 0.0, 0.0, 1.0);
+}
+
+// PSReSampleAverageLuminanceExp: the frame's average luminance into the history's slot (drawn into that one texel)
+@fragment
+fn fs_lum_slot(in: VsOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(exp(lum_16(in.uv, p.a.xy)), 0.0, 0.0, 1.0);
 }
 
 // The game's RGB <-> XYZ (its literals)
@@ -314,7 +342,7 @@ fn adapted() -> f32 {
     if (p.d.w >= 2.0) {
         return clamp(p.d.w - 2.0, p.b.x, p.b.y);
     }
-    return clamp(textureSampleLevel(t1, samp, vec2<f32>(0.5), 0.0).r, p.b.x, p.b.y);
+    return clamp(textureLoad(t1, vec2<i32>(0, 0), 0).r, p.b.x, p.b.y);
 }
 
 // PSBrightPass
