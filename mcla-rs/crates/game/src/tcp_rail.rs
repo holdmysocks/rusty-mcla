@@ -365,6 +365,99 @@ impl TcpRail {
             rot_y(v, sgn(self.a2) * HALF_PI)
         }
     }
+
+    /// F-23371: the rail swept against the level's instances, from the phase `start` for `left` metres (`left` < 0:
+    /// to the rail's end; written back less what was swept, each part's whole rest taken off). The parts on the flat
+    /// length (|a1 R|, the line's x z length, |a2 R|): on arc 1 spheres of radius `width` / 2 about c1 from the start
+    /// radial turned to the start, n = (trunc(|span R / r|) + 1) >> 1 of them at turns 0, step .. (n - 1) step (the
+    /// rotation F-57591); on the line one capsule from the start point to min(1, ..) along it (F-27454); on arc 2 the
+    /// same about c2 at turns step .. n step (the rotation inline: x c + z s with x c rounded first); then while
+    /// length is left a capsule from T along H1 by it. Every centre `lift` + r above the rail. An invalid rail (flags
+    /// 0x20 clear) is clear. Returns true at the first hit.
+    pub(crate) fn sweep(&self, width: f32, start: f32, left: &mut f32, lift: f32, world: &mut dyn RailSweepWorld) -> bool {
+        if !self.valid() {
+            return false;
+        }
+        const MIN: f32 = f32::from_bits(0x3586_37BD);
+        let r = width * 0.5;
+        let (dx, dz) = (self.a.x - self.b.x, self.a.z - self.b.z);
+        let line = fma(dz, dz, dx * dx).sqrt();
+        let (a2r, a1r) = ((self.a2 * self.r).abs(), (self.a1 * self.r).abs());
+        let total = (line + a2r) + a1r;
+        let s0 = start * total;
+        if *left < 0.0 {
+            *left = total - s0;
+        }
+        let up = |mut c: Vec3| {
+            c.y = (lift + c.y) + r;
+            c
+        };
+        let count = |x: f32| {
+            let i = if x.is_nan() { i32::MIN } else { x.abs() as i32 };
+            i.wrapping_add(1) >> 1
+        };
+        if s0 < a1r && *left > MIN {
+            let rem = a1r - s0;
+            let inv = 1.0 / a1r;
+            let k = self.r / r;
+            let take = if *left - rem >= 0.0 { rem } else { *left };
+            let a0 = (inv * self.a1) * s0;
+            let span = (take * inv) * self.a1;
+            let n = count(k * span);
+            let v = rot_y(vsub(self.p, self.c1), a0);
+            let step = span / n as f32;
+            for i in 0..n.max(0) {
+                if world.sphere(up(vadd(self.c1, rot_y(v, i as f32 * step))), r) {
+                    return true;
+                }
+            }
+            *left -= rem;
+        }
+        let off = if -(s0 - a1r) >= 0.0 { 0.0 } else { s0 - a1r };
+        if off < line && *left > MIN {
+            let inv = 1.0 / line;
+            let d = vsub(self.b, self.a);
+            let p0 = vmadd(d, inv * off, self.a);
+            let t1 = (*left + off) * inv;
+            let p1 = vmadd(d, if 1.0 - t1 >= 0.0 { t1 } else { 1.0 }, self.a);
+            if world.capsule(up(p0), up(p1), r) {
+                return true;
+            }
+            *left -= line - off;
+        }
+        let off2 = if -(off - line) >= 0.0 { 0.0 } else { off - line };
+        if off2 < a2r && *left > MIN {
+            let rem = a2r - off2;
+            let inv = 1.0 / a2r;
+            let k = self.r / r;
+            let take = if *left - rem >= 0.0 { rem } else { *left };
+            let a0 = (inv * self.a2) * off2;
+            let span = (take * inv) * self.a2;
+            let n = count(k * span);
+            let v = rot_y(vsub(self.b, self.c2), a0);
+            let step = span / n as f32;
+            for i in 1..=n.max(0) {
+                let a = i as f32 * step;
+                let (s, c) = (guest_sin(a as f64) as f32, guest_cos(a as f64) as f32);
+                let w = Vec3::new(fma(v.z, s, v.x * c), v.y, fms(v.z, c, v.x * s));
+                if world.sphere(up(vadd(self.c2, w)), r) {
+                    return true;
+                }
+            }
+            *left -= rem;
+        }
+        if *left > MIN && world.capsule(up(self.t), up(vmadd(self.h1, *left, self.t)), r) {
+            return true;
+        }
+        false
+    }
+}
+
+/// The level as F-23371 meets it: the sphere query F-66549 and the swept capsule F-27454 (type 640, the params' mask -
+/// 0x812 for 0 - and excluded instances, the caller's).
+pub(crate) trait RailSweepWorld {
+    fn sphere(&mut self, c: Vec3, r: f32) -> bool;
+    fn capsule(&mut self, a: Vec3, b: Vec3, r: f32) -> bool;
 }
 
 #[cfg(test)]
@@ -400,6 +493,69 @@ mod tests {
             }
         }
         assert_eq!(n, 20_000);
+    }
+
+    struct RefSweep {
+        log: Vec<String>,
+        n: i32,
+        hit: i32,
+        excl: [u32; 3],
+        mask: u32,
+    }
+
+    impl RefSweep {
+        fn tail(&mut self) -> bool {
+            let x = |w: u32| format!("{w:08x}");
+            self.log.extend([x(640), x(if self.mask == 0 { 0x812 } else { self.mask })]);
+            self.log.extend(self.excl.map(x));
+            self.log.push(x(1));
+            self.n += 1;
+            self.n - 1 == self.hit
+        }
+    }
+
+    impl RailSweepWorld for RefSweep {
+        fn sphere(&mut self, c: Vec3, r: f32) -> bool {
+            self.log.push("s".into());
+            self.log.extend([c.x, c.y, c.z, r].map(|f| format!("{:08x}", f.to_bits())));
+            self.tail()
+        }
+        fn capsule(&mut self, a: Vec3, b: Vec3, r: f32) -> bool {
+            self.log.push("c".into());
+            self.log.extend([a.x, a.y, a.z, b.x, b.y, b.z, r].map(|f| format!("{:08x}", f.to_bits())));
+            self.tail()
+        }
+    }
+
+    /// The rail sweep F-23371 against the original's code run offline (tools/rail_sweep_reference.py ->
+    /// testdata/rail_sweep_ref.txt): 3,000 rails built by F-85722 (2,364 valid), widths 0.05 - 4 m, start phases 0 - 1,
+    /// the length left -1 (the rest), 0, about the 1e-6 floor, short and long, heights, masks (0 = 0x812), and the n-th
+    /// query hitting. Every sphere and capsule asked (centre / ends, radius, type, mask, excluded words, in order), the
+    /// result and the length left after must be equal.
+    #[test]
+    fn rail_sweep_matches_the_original() {
+        let h = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
+        let u = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let v = |w: &[&str]| Vec3::new(h(w[0]), h(w[1]), h(w[2]));
+        let (mut n, mut blocked, mut queries) = (0, 0, 0);
+        for line in include_str!("testdata/rail_sweep_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = i.split_whitespace().collect();
+            let q = build(v(&w[0..]), v(&w[3..]), v(&w[6..]), v(&w[9..]), h(w[12]), u(w[13]) == 1, u(w[14]) == 1);
+            let mut world = RefSweep { log: Vec::new(), n: 0, hit: u(w[23]) as i32, excl: [u(w[16]), u(w[17]), u(w[18])], mask: u(w[19]) };
+            let mut left = h(w[21]);
+            let hit = q.sweep(h(w[15]), h(w[20]), &mut left, h(w[22]), &mut world);
+            let mut got = vec![(q.valid() as u8).to_string()];
+            queries += world.n;
+            got.append(&mut world.log);
+            got.push((hit as u8).to_string());
+            got.push(format!("{:08x}", left.to_bits()));
+            assert_eq!(got.join(" "), o, "{line}");
+            blocked += hit as usize;
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+        assert_eq!((blocked, queries), (419, 8296));
     }
 
     #[test]
