@@ -2325,6 +2325,7 @@ impl App {
     /// left stick moves, A picks and B goes back.
     fn gamepad_buttons(&mut self) {
         self.pad_flash = false;
+        self.game.script_stick = [false; 2];
         let (now, look, pressed) = {
             let Some(g) = self.gamepad.as_mut() else { return };
             use pads::{Axis as A, Button as B, PadEvent as E};
@@ -2392,6 +2393,10 @@ impl App {
                 }
             }
             let (lx, ly) = (pad.axis(A::LeftX), pad.axis(A::LeftY));
+            // (VEHICLE SELECT and the pink slip choice read the stick's byte themselves, F-80539: past 0.5 either way -
+            // `Game::script_stick`)
+            let sx = crate::mc4::stick_float(crate::physics::pad::stick_byte(lx));
+            self.game.script_stick = [sx < -0.5, sx > 0.5];
             // (on the GPS map the left stick moves the cursor itself - not the d-pad's CHANGE TARGET)
             let stick_free = self.game.show_map && self.game.hm.is_some();
             for (i, on) in [ly > 0.6 && !stick_free, ly < -0.6 && !stick_free, lx < -0.6 && !stick_free, lx > 0.6 && !stick_free].into_iter().enumerate() {
@@ -2434,8 +2439,16 @@ impl App {
             self.game.nav_start |= p(7);
             self.game.nav_up |= p(10) || p(14);
             self.game.nav_down |= p(11) || p(15);
-            self.game.nav_left |= p(12) || p(16);
-            self.game.nav_right |= p(13) || p(17);
+            if self.game.script_lr > 0 {
+                // (VEHICLE SELECT, the pink slip choice: the d-pad or LB / RB (IS_BUTTON_DOWN 15 / 2, 13 / 3); the
+                // stick is `script_stick`)
+                self.game.script_lr -= 1;
+                self.game.nav_left |= p(12) || p(4);
+                self.game.nav_right |= p(13) || p(5);
+            } else {
+                self.game.nav_left |= p(12) || p(16);
+                self.game.nav_right |= p(13) || p(17);
+            }
             // LB / RB (the shoulder buttons, indices 4 and 5) step the rim shop's
             // brand tabs, as `uinput.l1` / `uinput.r1` do in the game's own Rim.sc.xml
             self.game.nav_tab_prev |= p(4);

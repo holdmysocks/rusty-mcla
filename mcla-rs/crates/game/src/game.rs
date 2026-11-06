@@ -836,6 +836,17 @@ pub struct Game {
     pub starter_pick: Option<usize>,
     /// the starter to stand there next (main puts it in the player's place)
     pub starter_swap: Option<String>,
+    /// The left stick as the scripts' choices read it (VEHICLE SELECT, the pink slip choice), left / right: the pad's
+    /// byte at 63 or below / 192 or above (GET_CONTROLLER_LEFTX < -0.5 / > 0.5, F-80539's (byte - 127.5) x 1/127 as
+    /// an f32 - main sets it each frame)
+    pub script_stick: [bool; 2],
+    /// Frames left in which one of those choices is up (main then gives `nav_left` / `nav_right` the d-pad and
+    /// LB / RB, IS_BUTTON_DOWN 15 / 2 and 13 / 3, and the stick goes by `script_stick`)
+    pub script_lr: u8,
+    /// CarSelection's static 87: the direction held at its last poll (13 right, 15 left, 9 none)
+    pub starter_latch: u8,
+    /// The pink slip choice's local 6 (wager_hangout_core): the same latch
+    pub pink_latch: u8,
     /// a race's opening shot from the air is on: how far through it is (0 = not)
     pub dive_k: f32,
     /// the next StartRace is a Warper_Warp('DEFAULT_WITH_CUT') - a series' / tournament's next race or
@@ -1525,6 +1536,10 @@ impl Game {
             tutorial_box: None,
             fresh_game: false,
             starter_pick: None,
+            script_stick: [false; 2],
+            script_lr: 0,
+            starter_latch: 9,
+            pink_latch: 9,
             starter_swap: None,
             dive_k: 0.0,
             warp_with_cut: false,
@@ -6431,7 +6446,7 @@ impl Game {
                         if let Some(a) = self.mc4_pink_choice_ui(ctx, &key, left, right, f_enter, f_back) {
                             action = a;
                         }
-                    } else if let Some(a) = self.hangout_ui(ctx, f_up, f_down, left, right, f_enter, f_back) {
+                    } else if let Some(a) = { self.pink_latch = 9; self.hangout_ui(ctx, f_up, f_down, left, right, f_enter, f_back) } {
                         action = a;
                     }
                 } else if arcade && self.nav_busy {
@@ -13944,12 +13959,30 @@ impl Game {
                 // (test hook MCLA_STARTER_PICK=<0..2>: the cursor starts on that starter - GitHub #14's 240SX is 1)
                 let first = std::env::var("MCLA_STARTER_PICK").ok().and_then(|v| v.trim().parse::<usize>().ok()).filter(|&i| i < n).unwrap_or(0);
                 self.starter_swap = Some(STARTERS[first].to_string());
+                // (static 87 starts at 9 when the loop is entered)
+                self.starter_latch = 9;
                 first
             }
         };
-        if left || right {
-            at = if right { (at + 1) % n } else { (at + n - 1) % n };
-            self.starter_swap = Some(STARTERS[at].to_string());
+        // (CarSelection's loop, polled after each WAITUNWARPED(30): right is IS_BUTTON_DOWN 13 or 3 (the d-pad's right,
+        // RB) or the stick past 0.5, left 15 or 2 or the stick under -0.5; a direction steps once, on the poll its
+        // latch (static 87) does not hold it already - a held stick does not repeat - and plays
+        // UI_CAR_SELECT_NAV_MASTER; right is asked first, and A only while neither is held; the cursor wraps.
+        // `left` / `right` are the pad's buttons' fresh presses and the keyboard's)
+        self.script_lr = 2;
+        let (right, left) = (right || self.script_stick[1], left || self.script_stick[0]);
+        let mut enter = enter;
+        if right || left {
+            let d = if right { 13 } else { 15 };
+            if self.starter_latch != d {
+                at = if right { (at + 1) % n } else { (at + n - 1) % n };
+                self.starter_swap = Some(STARTERS[at].to_string());
+                self.opt_x.s23b.ui_obj = Some("UI_CAR_SELECT_NAV_MASTER");
+            }
+            self.starter_latch = d;
+            enter = false;
+        } else if !enter {
+            self.starter_latch = 9;
         }
         self.starter_pick = Some(at);
         let st = |k: &str, d: &str| self.career.strings.get(k).map(|v| v.to_uppercase()).filter(|v| !v.contains('<')).unwrap_or_else(|| d.to_string());
@@ -13977,6 +14010,7 @@ impl Game {
             fp.movie.paint(ctx, &ctx.layer_painter(layer));
         }
         if enter {
+            self.opt_x.s23b.ui_obj = Some("UI_CAR_SELECT_ENTER_MASTER");
             // (the screen and the car stay as they are while ACCEPT's fade to black runs - CarSelection waits
             // for it, 0x13fd, before the two others go and the car is given: main.rs `opening_tick` lets
             // `starter_pick` go when the black is up)

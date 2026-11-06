@@ -303,3 +303,23 @@ fn turn_y_matches_the_original() {
     }
     assert_eq!(n, 3000);
 }
+
+/// GET_CONTROLLER_LEFTX's getter (F-80539) run offline on the original's code for every stick byte
+/// (tools/ui_leftx_reference.py): with the input open, (byte - 127.5) x 1/127 held to -1..1 equals `mc4::stick_float`
+/// bit for bit; while the UI captures input, 0. So VEHICLE SELECT's stick steps at byte 192 and up / 63 and down
+/// (191 and 64 give exactly 0.5 / -0.5, which CarSelection's > 0.5 / < -0.5 do not take).
+#[test]
+fn leftx_getter_matches_the_original() {
+    let mut n = 0;
+    for l in include_str!("testdata/ui_leftx_ref.txt").lines() {
+        let (case, out) = l.split_once(" -> ").unwrap();
+        let c: Vec<u32> = case.split(' ').map(|v| v.parse().unwrap()).collect();
+        let want: u32 = out.parse().unwrap();
+        let got = if c[0] == 1 { 0.0f32 } else { crate::mc4::stick_float(c[1] as u8) };
+        assert_eq!(got.to_bits(), want, "{l}");
+        n += 1;
+    }
+    assert_eq!(n, 512);
+    let side = |b: u8| (crate::mc4::stick_float(b) < -0.5, crate::mc4::stick_float(b) > 0.5);
+    assert_eq!((side(63), side(64), side(191), side(192)), ((true, false), (false, false), (false, false), (false, true)));
+}

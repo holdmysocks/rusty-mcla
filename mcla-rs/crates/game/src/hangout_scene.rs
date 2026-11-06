@@ -538,7 +538,10 @@ impl Game {
     /// between arrows, ACCEPT (A), BACK (B); 55 without the arrows when there is one profile);
     /// stick / d-pad right steps to the profile before, left to the one after (round); ACCEPT
     /// asks the confirmation box, BACK goes back to the panel's PINKSLIP RACE row. The camera
-    /// is `HangoutScene`'s.
+    /// is `HangoutScene`'s. Its loop (0x4cb8..0x4fe8, after each WAITUNWARPED(30)) asks right (IS_BUTTON_DOWN 13 or
+    /// 3 - the d-pad's right, RB - or GET_CONTROLLER_LEFTX > 0.5, F-80539), then left (15, 2, < -0.5), then BACK (5),
+    /// then ACCEPT (6): a direction steps once, on the poll its latch (local 6, 13 / 15, 9 when none is held) does not
+    /// hold it already - a held stick does not repeat; no sound on a step.
     pub fn mc4_pink_choice_ui(&mut self, ctx: &egui::Context, key: &str, left: bool, right: bool, enter: bool, back: bool) -> Option<crate::game::MenuAction> {
         use crate::flash_ui::{ICON_A, ICON_ARROWS, ICON_B};
         if let Some(fm) = self.flash_menu.as_mut() {
@@ -558,13 +561,22 @@ impl Game {
         }
         // (the box is up: the choice waits for its answer - 0x4ff8..0x5095)
         let asking = self.message_box.is_some() || self.opt_x.s23.pink_ask.is_some();
+        self.script_lr = 2;
+        let (right, left) = (right || self.script_stick[1], left || self.script_stick[0]);
+        let (mut enter, mut back) = (enter, back);
         let pick = &mut self.opt_x.arcade.pink.pick;
         if !asking {
-            if right {
-                *pick = (*pick + n - 1) % n;
-            }
-            if left {
-                *pick = (*pick + 1) % n;
+            if right || left {
+                let d = if right { 13 } else { 15 };
+                if self.pink_latch != d {
+                    *pick = if right { (*pick + n - 1) % n } else { (*pick + 1) % n };
+                }
+                self.pink_latch = d;
+                (enter, back) = (false, false);
+            } else if back {
+                enter = false;
+            } else if !enter {
+                self.pink_latch = 9;
             }
         }
         let pick = self.opt_x.arcade.pink.pick.min(n - 1);
