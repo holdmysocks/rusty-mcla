@@ -909,6 +909,21 @@ pub fn vehicle_lets_fire(flags592: u32, wheels: u32) -> bool {
     flags592 == 0 || (wheels == 2 && flags592 == 0x10)
 }
 
+/// The options record's bit-field copy (F-90625): byte 0 whole from the source, byte 1 only its top three bits
+/// (0xE0, the Mirror / Agro / RANDOM rows); the low five bits of byte 1 stay the destination's.
+pub fn assign_bits(dst: &mut [u8; 28], src: &[u8; 28]) {
+    dst[0] = src[0];
+    dst[1] = (src[1] & 0xe0) | (dst[1] & 0x1f);
+}
+
+/// The options record's operator= (F-37780): the bit-field copy, then the words +4, +8, +12, +16, the bytes +20, +21 and
+/// the word +24..27. Kept from the destination: byte 1's low five bits, bytes 2, 3, 22 and 23.
+pub fn assign(dst: &mut [u8; 28], src: &[u8; 28]) {
+    assign_bits(dst, src);
+    dst[4..22].copy_from_slice(&src[4..22]);
+    dst[24..28].copy_from_slice(&src[24..28]);
+}
+
 /// The types the sources get (F-18300 reads them from the session's options copy,
 /// (*0x8286D804 +48) +0x2ADE0 - step 19f): that copy is written only by three network
 /// message handlers (F-79553 and F-30469 through EventOptions' defaults F-87205,
@@ -1100,7 +1115,11 @@ impl PowerUps {
         let mut session = [0u8; 28];
         session[0] = SESSION_TYPES[0];
         session[1] = SESSION_TYPES[1];
-        let (bits, mystery_ok) = allowed(if std::env::var("MCLA_PU_RECORD_TYPES").map_or(false, |v| v == "1") { record } else { &session });
+        if std::env::var("MCLA_PU_RECORD_TYPES").map_or(false, |v| v == "1") {
+            // (the record copied as the original's operator= does: the bytes it keeps stay the session's)
+            assign(&mut session, record);
+        }
+        let (bits, mystery_ok) = allowed(&session);
         let mut p = PowerUps {
             types: load_types(data_dir),
             looks: load_looks(data_dir),
@@ -1854,6 +1873,36 @@ mod tests {
             assert_eq!(t.draw_icon, icon != 0, "type {id} DrawIcon");
             assert_eq!(t.fade.map(f32::to_bits), [0x3f333333, 0x41a00000, 0x40800000, 0x40000000], "type {id} fade");
         }
+    }
+
+    /// The options record's bit-field copy (F-90625) and operator= (F-37780) run on the original with 1024 random
+    /// source / destination records each (tools/pu_options_copy_reference.py): every byte of the result equal.
+    /// Evidence: docs/reference/powerups/fix57_options_copy_evidence.md.
+    #[test]
+    fn options_record_copy_matches_the_original() {
+        const REF: &str = include_str!("testdata/pu_options_copy_ref.txt");
+        let rec = |s: &str| -> [u8; 28] {
+            let v: Vec<u8> = s.split('-').map(|b| u8::from_str_radix(b, 16).unwrap()).collect();
+            v.try_into().unwrap()
+        };
+        let mut n = [0usize; 2];
+        for line in REF.lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let (mut dst, src, want) = (rec(w[1]), rec(w[2]), rec(w[3]));
+            match w[0] {
+                "BIT" => {
+                    assign_bits(&mut dst, &src);
+                    n[0] += 1;
+                }
+                "ASN" => {
+                    assign(&mut dst, &src);
+                    n[1] += 1;
+                }
+                k => panic!("kind {k}"),
+            }
+            assert_eq!(dst, want, "{line}");
+        }
+        assert_eq!(n, [1024, 1024]);
     }
 
     /// The original's options-record reader and the k-th-allowed-type helper, the two Stealth getters, the holder
