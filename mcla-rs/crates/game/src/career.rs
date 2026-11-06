@@ -33,6 +33,8 @@ struct Requirement {
     /// bAllowUpdate (+120, the constructor's 1 when the file has none): a condition's
     /// Condition_Updated marks the requirement updated and is passed on (F-64780)
     allow_update: bool,
+    /// nTargetId (+104): the uid of what the objective is about (a hangout, a racer)
+    target_id: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +45,9 @@ enum Reward {
     Tip(String),
     /// a mission's mcRewardScript that makes a call (`Career::reward_call`): the script's name
     Call(String),
+    /// a Progression threshold's script without a call (`game\Career\unlock_unordered_races`):
+    /// nothing to give here, its effect is read from the reached thresholds (`script_reached`)
+    Script(String),
 }
 
 #[derive(Debug, Clone)]
@@ -415,7 +420,7 @@ fn requirements(text: &str) -> Vec<Requirement> {
                 _ => Cond::Event { event: up(tag(c, "szEventId")), ident: tag(c, "szIdentifier").unwrap_or("").to_string() },
             });
         }
-        out.push(Requirement { desc: tag(chunk, "szDescriptionId").unwrap_or("").to_string(), hidden: val(chunk, "bAlwaysHidden") == Some("true"), conds, stat_types, allow_update: val(chunk, "bAllowUpdate") != Some("false") });
+        out.push(Requirement { desc: tag(chunk, "szDescriptionId").unwrap_or("").to_string(), hidden: val(chunk, "bAlwaysHidden") == Some("true"), conds, stat_types, allow_update: val(chunk, "bAllowUpdate") != Some("false"), target_id: val(chunk.split("<aConditions").next().unwrap_or(""), "nTargetId").and_then(|v| v.parse().ok()).unwrap_or(0) });
     }
     out
 }
@@ -632,6 +637,10 @@ impl Career {
                         c.threshold_gi.push(field("GiveImmediately") == "1");
                     } else if field("Type") == "Script" && field("ScriptName").to_ascii_lowercase().contains("tip") {
                         c.thresholds.push((crate::mc4::main_amount_at(pct) as f32, Reward::Tip(tip_key(&field("ScriptName")))));
+                        c.threshold_ids.push(th.split_whitespace().skip_while(|w| *w != "Id").nth(1).unwrap_or("").to_string());
+                        c.threshold_gi.push(field("GiveImmediately") == "1");
+                    } else if field("Type") == "Script" && field("ScriptName").eq_ignore_ascii_case(r"game\Career\unlock_unordered_races") {
+                        c.thresholds.push((crate::mc4::main_amount_at(pct) as f32, Reward::Script("unlock_unordered_races".into())));
                         c.threshold_ids.push(th.split_whitespace().skip_while(|w| *w != "Id").nth(1).unwrap_or("").to_string());
                         c.threshold_gi.push(field("GiveImmediately") == "1");
                     }
@@ -992,8 +1001,21 @@ impl Career {
         self.pending.clear();
     }
 
+    /// A Progression threshold with the script reward `script` has been reached: its id is
+    /// among the reached ones (a table without ids: the reputation is at its amount).
+    pub fn script_reached(&self, script: &str) -> bool {
+        (0..self.thresholds.len()).any(|k| {
+            matches!(&self.thresholds[k].1, Reward::Script(n) if n.eq_ignore_ascii_case(script))
+                && match self.threshold_ids.get(k).filter(|id| !id.is_empty()) {
+                    Some(id) => self.reached_ids.contains(id),
+                    None => self.thresholds[k].0 as i64 <= self.rep,
+                }
+        })
+    }
+
     fn give(&mut self, r: &Reward) {
         match r {
+            Reward::Script(_) => {}
             Reward::Mission { id, state } => {
                 let Some(&i) = self.index.get(id) else { return };
                 if self.state[i].stage != Stage::Locked {
@@ -1542,8 +1564,17 @@ impl Career {
     /// (F-44139).
     pub fn pulse_objective(&self, id: &str) -> Option<usize> {
         let &i = self.index.get(id)?;
+        if self.missions[i].hidden {
+            return None;
+        }
+        self.open_objective(i)
+    }
+
+    /// F-96100 on mission `i`: in state 2 READY_TO_START or 3 CHECKING_OBJECTIVES, the first
+    /// objective that is not satisfied (+116), not always hidden (+117) and not hidden (+118).
+    fn open_objective(&self, i: usize) -> Option<usize> {
         let m = &self.missions[i];
-        if m.hidden || self.state[i].stage != Stage::Active || !matches!(self.state_id_of(i), 2 | 3) {
+        if self.state[i].stage != Stage::Active || !matches!(self.state_id_of(i), 2 | 3) {
             return None;
         }
         let ext = self.ext.get(i).filter(|_| self.ext_ok(i));
@@ -1553,6 +1584,12 @@ impl Career {
             let met = self.state[i].progress.get(k).copied().unwrap_or(0) >= target;
             !hidden && !met
         })
+    }
+
+    /// mcMissionManager_DoesUIDHaveActiveMission (F-75396 -> F-93550): a mission of the
+    /// manager's list whose open objective (F-96100; none: 0) has the target id `uid`.
+    pub fn uid_has_active_mission(&self, uid: i32) -> bool {
+        (0..self.missions.len()).any(|i| self.open_objective(i).map_or(0, |k| self.missions[i].objectives[k].target_id) == uid)
     }
 
     /// Display name of a character id.
@@ -2987,6 +3024,13 @@ impl Career {
             "DELIVERY_CONFIRM" => Some(("SIDEKICK_DELIVERY_POST", "DELIVERY_POST_TITLE")),
             "BESTOF_GH_27_POST" => Some(("SIDEKICK_BESTOF_GH_27_POST", "SIDEKICK_BESTOF_GH_27_POST_TITLE")),
             "INSTALL_ABILITY_CONFIRM" => ["SIDEKICK_ZONE", "SIDEKICK_AGRO", "SIDEKICK_ROAR", "SIDEKICK_EMP"].get(ability?).map(|l| (*l, "INSTALL_ABILITY_CONFIRM_TITLE")),
+            // (`<d>_unlock_time_trial.sco` 0xa4..0x143: the district's time trial man calls before the
+            // unlock; the unlock and the hookman's script are COMPLETE_SCRIPTS / mc4_tt_apply_block)
+            "HW_UNLOCK_TIME_TRIAL" => Some(("SIDEKICK_TIMETRIAL_HOLLYWOOD_POST", "SIDEKICK_TIMETRIAL_HOLLYWOOD_POST_TITLE")),
+            "BE_UNLOCK_TIME_TRIAL" => Some(("SIDEKICK_TIMETRIAL_BEACHES_POST", "SIDEKICK_TIMETRIAL_BEACHES_POST_TITLE")),
+            "HL_UNLOCK_TIME_TRIAL" => Some(("SIDEKICK_TIMETRIAL_HILLS_POST", "SIDEKICK_TIMETRIAL_HILLS_POST_TITLE")),
+            "DT_UNLOCK_TIME_TRIAL" => Some(("SIDEKICK_TIMETRIAL_DOWNTOWN_POST", "SIDEKICK_TIMETRIAL_DOWNTOWN_POST_TITLE")),
+            "SC_UNLOCK_TIME_TRIAL" => Some(("SIDEKICK_TIMETRIAL_SC_POST", "SIDEKICK_TIMETRIAL_SC_POST_TITLE")),
             _ => None,
         }
     }
@@ -3061,6 +3105,11 @@ mod tests {
         }
         assert_eq!(lines.len(), 4);
         assert!(ia.iter().any(|v| v == "INSTALL_ABILITY_CONFIRM_TITLE"));
+        for (f, d) in [("game__career__hw_unlock_time_trial", "HW"), ("game__career__be_unlock_time_trial", "BE"), ("game__career__hl_unlock_time_trial", "HL"), ("game__career__dt_unlock_time_trial", "DT"), ("sc__career__sc_unlock_time_trial", "SC")] {
+            let v = strings(&format!("{f}.sco.txt")).unwrap();
+            let (line, title) = Career::reward_call(&format!("{d}_UNLOCK_TIME_TRIAL"), None).unwrap();
+            assert!(v.iter().any(|x| x == line) && v.iter().any(|x| x == title), "{f}");
+        }
         // (with the game's data: the three missions carry the call and each line has its text; the
         // three title keys are in none of the string tables - what the phone shows then is open)
         let data = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
@@ -3069,8 +3118,8 @@ mod tests {
             return;
         }
         let calls: Vec<&str> = c.missions.iter().flat_map(|m| m.rewards.iter()).filter_map(|r| if let Reward::Call(s) = r { Some(s.as_str()) } else { None }).collect();
-        assert_eq!(calls.len(), 3, "{calls:?}");
-        for s in ["DELIVERY_CONFIRM", "BESTOF_GH_27_POST", "INSTALL_ABILITY_CONFIRM"] {
+        assert_eq!(calls.len(), 8, "{calls:?}");
+        for s in ["DELIVERY_CONFIRM", "BESTOF_GH_27_POST", "INSTALL_ABILITY_CONFIRM", "HW_UNLOCK_TIME_TRIAL", "BE_UNLOCK_TIME_TRIAL", "HL_UNLOCK_TIME_TRIAL", "DT_UNLOCK_TIME_TRIAL", "SC_UNLOCK_TIME_TRIAL"] {
             assert!(calls.contains(&s), "{s}");
             for k in 0..4 {
                 let (line, _title) = Career::reward_call(s, Some(k)).unwrap();
@@ -3078,6 +3127,38 @@ mod tests {
             }
         }
         assert!(c.strings.get("INSTALL_ABILITY_CONFIRM_SPLASH").is_some());
+    }
+
+    /// The objectives' nTargetId and mcMissionManager_DoesUIDHaveActiveMission: the hangout's
+    /// uid 500 (hangout_series_hollywood.xml) once its mission checks objectives.
+    #[test]
+    fn uid_active_mission() {
+        let data = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        let mut c = Career::load(&data);
+        let Some(&i) = c.index.get("HANGOUT_SERIES_HOLLYWOOD") else { return };
+        assert_eq!(c.missions[i].objectives[0].target_id, 500);
+        assert!(!c.uid_has_active_mission(500));
+        c.activate(i);
+        assert!(matches!(c.state_id_of(i), 2 | 3), "{}", c.state_id_of(i));
+        assert!(c.uid_has_active_mission(500));
+        assert!(!c.uid_has_active_mission(501));
+    }
+
+    /// The Progression table's script reward without a call: Progression_24 (50 %) carries
+    /// `unlock_unordered_races`, reached with its id.
+    #[test]
+    fn unordered_races_threshold() {
+        let data = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        let mut c = Career::load(&data);
+        if c.missions.is_empty() {
+            return;
+        }
+        let k: Vec<usize> = (0..c.thresholds.len()).filter(|&k| matches!(&c.thresholds[k].1, Reward::Script(n) if n == "unlock_unordered_races")).collect();
+        assert_eq!(k.len(), 1);
+        assert_eq!(c.threshold_ids[k[0]], "Progression_24");
+        assert!(!c.script_reached("unlock_unordered_races"));
+        c.reached_ids.insert("Progression_24".into());
+        assert!(c.script_reached("unlock_unordered_races"));
     }
 
     /// Each READY_TO_START_ON_ENTER script's call line is `call_line` of its mission's key

@@ -7048,6 +7048,13 @@ impl Game {
                 }
             }
         }
+        // (Progression_24's script reward `game/career/unlock_unordered_races.sco` 0x4..0x7:
+        // mcCareer_UnlockDistrictRaces(6, 4, -1) - every race of type Unordered, all districts)
+        if self.career.script_reached("unlock_unordered_races") {
+            for r in self.mc4_district_races(6, 4, -1) {
+                changed |= m.career.unlock_race(&r);
+            }
+        }
         // (the launchers a mission's script starts unlock their races when they start - the
         // series and wager hangouts' core scripts, the tournament and time trial hookmen's:
         // step 17b)
