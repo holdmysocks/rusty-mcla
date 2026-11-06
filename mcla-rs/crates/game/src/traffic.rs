@@ -17,8 +17,6 @@ use mcla_formats::rage::navsys::{LaneCurve, NavSys, RegionRect, DEFAULT_ROAD_SPE
 const MPH: f32 = 0.44704;
 /// The slowest a car is ever asked to drive (F-70324: 10 mph).
 const MIN_WANT: f32 = 4.4704;
-/// Braking below this stops the car (F-58614: 0.5 mph).
-const STOP_SPEED: f32 = 0.22352;
 /// A freeway road's speed (F-31543 and the region list: road speed >= the image's word 0x41E81A69, 29.012896 m/s =
 /// 65 mph; the literal 29.0129 rounds to the next float but one)
 pub(super) const FREEWAY_SPEED: f32 = f32::from_bits(0x41E8_1A69);
@@ -736,7 +734,7 @@ pub struct Rider {
     pub next: Option<usize>,
     /// speed (car +412)
     pub v: f32,
-    /// the speed offset (car +424: -6, 0 or +6 m/s) and seconds to its next draw
+    /// the speed offset (car +424: -6, 0 or +6 m/s) and the car's age (manager clock - `born`) at its next draw (+432)
     pub off: f32,
     pub off_timer: f32,
     /// acceleration bonus (car +428: U - 0.5, drawn once)
@@ -788,6 +786,9 @@ pub struct Rider {
     pub wake: bool,
     rng: u32,
     id: u32,
+    /// the car's own MWC (car +384 / +388): after F-77422's init draws (`InitDraws::car`), drawn by the integrator's
+    /// offset timer (F-58614), the recovery try (F-15490) and its rail (F-26466) and the passing try (F-28706)
+    pub mwc: GMwc,
     /// the follower's curve speed |dP/dt| (+180) and the lane it was taken on (another
     /// lane: taken anew, as F-48384 does when it sets a rail)
     ds: f32,
@@ -872,6 +873,7 @@ impl Rider {
             wake: false,
             rng: seed.max(1),
             id: seed,
+            mwc: mwc_seed(seed),
             ds: 0.0,
             ds_lane: usize::MAX,
             t: 0.0,
@@ -923,13 +925,6 @@ impl Rider {
     pub fn rand(&mut self) -> f32 {
         // (the car's own MWC is not reproduced: any uniform draw)
         (xorshift(&mut self.rng) >> 8) as f32 / 16777216.0
-    }
-
-    /// F-58614: every 3 + 3U s a new offset, -6, +6 or 0 m/s by thirds.
-    fn draw_offset(&mut self) {
-        let u = self.rand();
-        self.off = if u < 1.0 / 3.0 { -6.0 } else if u < 2.0 / 3.0 { 6.0 } else { 0.0 };
-        self.off_timer = 3.0 + 3.0 * self.rand();
     }
 
     /// The last link of the lane the car is on.
@@ -1551,6 +1546,8 @@ pub struct Other {
     /// half its bound's length and width
     pub half_len: f32,
     pub half_wid: f32,
+    /// an ambient car's obstacle size (slot 3, F-46284: `obstacle_size`); None for the others
+    pub size: Option<(f32, f32)>,
     /// its rider's speed (car +412; 0 without a rider)
     pub speed: f32,
     /// its behaviour (car +452; none for a trailer or a parked car): its rails +188 / +192
@@ -1833,7 +1830,7 @@ impl SelectWorld for EnvSelect<'_, '_> {
     }
     fn size(&self, o: usize) -> (f32, f32) {
         match self.env.others.get(o) {
-            Some(x) if o != self.me => (2.0 * x.half_wid, 2.0 * x.half_len),
+            Some(x) if o != self.me => x.size.unwrap_or((2.0 * x.half_wid, 2.0 * x.half_len)),
             _ => self.me_size,
         }
     }
@@ -1873,9 +1870,9 @@ impl SelectWorld for EnvSelect<'_, '_> {
 /// rails `a` (current; `segs` its segments when it is a run-time rail) and `b` (next, entered at its start: phase 0).
 /// The distance and the speed along our heading are the port's (F-10623 reads them).
 #[allow(clippy::too_many_arguments)]
-fn find_ahead(env: &Env, me: usize, me_rows: ([f32; 3], [f32; 3], [f32; 3]), me_size: (f32, f32), pos: Vec3, fwd: Vec3, segs: &[(Vec3, Vec3)], a: Option<SelRail>, b: Option<SelRail>, cands: &[usize]) -> Ahead {
+fn find_ahead(env: &Env, me: usize, me_rows: ([f32; 3], [f32; 3], [f32; 3]), me_size: (f32, f32), pos: Vec3, fwd: Vec3, segs: &[(Vec3, Vec3)], a: Option<SelRail>, b: Option<SelRail>, b_start: f32, cands: &[usize]) -> Ahead {
     let w = EnvSelect { env, me, me_rows, me_size, me_segs: segs };
-    let (near, block) = select_obstacles(&w, me, cands, a, b, 0.0);
+    let (near, block) = select_obstacles(&w, me, cands, a, b, b_start);
     let others = env.others;
     let mut player_across = false;
     for &j in cands {
@@ -1884,7 +1881,7 @@ fn find_ahead(env: &Env, me: usize, me_rows: ([f32; 3], [f32; 3], [f32; 3]), me_
             continue;
         }
         let rel = o.pos - pos;
-        if rel.dot(fwd) < 0.0 || rel.y.abs() > 4.0 || takes(&w, j, me, a, b, 0.0) {
+        if rel.dot(fwd) < 0.0 || rel.y.abs() > 4.0 || takes(&w, j, me, a, b, b_start) {
             continue;
         }
         // (the player's car across our lane or the next: MaxDecel x 3; the original's test
@@ -2148,7 +2145,12 @@ impl GatherWorld for EnvGather<'_, '_> {
 /// (`search_kept`: both stand, one draw of the shared MWC), else the candidates of `gather_obstacles` for the rails
 /// `g` (current, next, the pass holder's). The result is stored for the next frame's head.
 #[allow(clippy::too_many_arguments)]
-fn search_ahead(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, rails: &[Vec<(Vec3, Vec3)>], lanes: (Option<usize>, Option<usize>), next_start: Option<Vec3>, g: [Option<GatherRail>; 3]) -> Ahead {
+/// `b_start`: the selection's context +32, the behaviour's +196 = the follower's +164: the start phase the follower took
+/// with its next rail +160 (F-63069 hands +192 / +196 out; written by the follower's step at a change of rail from the
+/// behaviour's slot 16, F-48618: 0 for an ordinary next lane, the route lane's phase +296 after a race path's join rail,
+/// the override's +60 - a lane-change rail's target phase).
+#[allow(clippy::too_many_arguments)]
+fn search_ahead(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, rails: &[Vec<(Vec3, Vec3)>], lanes: (Option<usize>, Option<usize>), next_start: Option<Vec3>, g: [Option<GatherRail>; 3], b_start: f32) -> Ahead {
     let mine = env.others.get(me);
     let me_rows = mine.map_or(((-fwd).to_array(), pos.to_array()), |o| (o.back.to_array(), o.pos.to_array()));
     let vel = mine.map_or((fwd * r.v).to_array(), |o| o.vel.to_array());
@@ -2166,9 +2168,9 @@ fn search_ahead(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, rails
                 GatherRail::RunTime => SelRail::RunTime(me as u32),
             });
             let rows3 = mine.map_or((fwd.cross(Vec3::Y).to_array(), me_rows.0, me_rows.1), |o| (o.row0.to_array(), me_rows.0, me_rows.1));
-            let size = mine.map_or((r.ty.width, r.ty.length), |o| (2.0 * o.half_wid, 2.0 * o.half_len));
+            let size = mine.map_or_else(|| obstacle_size_of(&r.ty), |o| o.size.unwrap_or((2.0 * o.half_wid, 2.0 * o.half_len)));
             let _ = (lanes, next_start);
-            find_ahead(env, me, rows3, size, pos, fwd, rails.first().map_or(&[][..], |s| s.as_slice()), sel(g[0]), sel(g[1]), &cands)
+            find_ahead(env, me, rows3, size, pos, fwd, rails.first().map_or(&[][..], |s| s.as_slice()), sel(g[0]), sel(g[1]), b_start, &cands)
         }
     };
     r.kept = (ahead.j != usize::MAX).then_some((ahead.j, ahead.blocking));
@@ -2231,9 +2233,10 @@ fn recovery_rail(r: &mut Rider, env: &Env, me: usize, req: &RailReq) -> Option<P
     }
     let hw = r.ty.width.max(1.8) * 0.5;
     let (min_turn, pivot) = (r.ty.min_turn, r.ty.pivot_turn);
-    let mut rng = r.rng;
-    let pick = rail_to_lane(req, min_turn, pivot, &cand, &mut || xorshift(&mut rng), &mut |lane, ph| nav.curves[lane].eval(ph), &mut |q| sweep_clear(env, me, &tcp_pts(q), hw));
-    r.rng = rng;
+    // (F-26466's draws: the car's MWC)
+    let mut rng = r.mwc;
+    let pick = rail_to_lane(req, min_turn, pivot, &cand, &mut || rng.next(), &mut |lane, ph| nav.curves[lane].eval(ph), &mut |q| sweep_clear(env, me, &tcp_pts(q), hw));
+    r.mwc = rng;
     let pick = pick?;
     Some(Path::tcp(pick.rail, pick.speed, Some((pick.lane, pick.phase))))
 }
@@ -2254,7 +2257,8 @@ fn try_recovery(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, uprig
         r.stand = 0.0;
     }
     let ready = r.stand > 2.0;
-    if r.rand() > 1.0 / 30.0 {
+    // (F-15490: one draw of the car's MWC, U x 2^-23 > 1/30 (0x3D088889): no try)
+    if u23(&mut r.mwc) * f32::from_bits(0x3400_0000) > f32::from_bits(0x3D08_8889) {
         return false;
     }
     let req = recovery_req(r.path.as_ref(), pos, fwd, r.v, ready);
@@ -2689,15 +2693,56 @@ fn control(r: &mut Rider, v: f32, want: f32, half_len: f32, ahead: &Ahead, other
     (a, chosen)
 }
 
-/// The integrator (F-58614).
-fn integrate(r: &mut Rider, mut a: f32, dt: f32) {
-    r.a = a;
-    a = a.min(r.ty.max_accel);
-    let mut nv = (r.v + a * dt).min(r.ty.max_speed);
-    if a < 0.0 && nv < STOP_SPEED {
-        nv = 0.0;
+/// The follower's rail for F-83943 (+156): its word +4, the follower's byte +152 and phase +176, the arc-line-arc length
+/// (F-62306, `tcp_rail::len`) and the points the rail's slots give: slot 7 at the phase, slots 12 / 13 its start / end,
+/// the curve's (slot 15) last vertex (its +28 index through the curve's slot 2).
+#[derive(Clone, Copy, Debug)]
+pub struct LeftRail {
+    pub flags: u32,
+    pub byte: u8,
+    pub phase: f32,
+    pub len: f32,
+    pub point: Vec3,
+    pub start: Vec3,
+    pub end: Vec3,
+    pub last: Vec3,
+}
+
+/// F-83943, the distance left on the follower's rail: none 100000 (0x47C35000); a curve rail (word +4 bit 0x1000) the
+/// length x (1 - phase); a reverse rail (byte +152 with 0x80 and 0x40) |end - start| x phase; else (a
+/// lane) |point - last vertex|. Each |d| = sqrt(fma(x, x, fma(z, z, y y))).
+pub fn distance_left(rail: Option<&LeftRail>) -> f32 {
+    use crate::physics::exact::fma;
+    let n = |d: Vec3| fma(d.x, d.x, fma(d.z, d.z, d.y * d.y)).sqrt();
+    let Some(r) = rail else { return f32::from_bits(0x47C3_5000) };
+    if r.flags & 0x1000 != 0 {
+        r.len * (1.0 - r.phase)
+    } else if r.byte & 0x80 != 0 && r.byte & 0x40 != 0 {
+        n(r.end - r.start) * r.phase
+    } else {
+        n(r.point - r.last)
     }
-    r.v = nv.max(0.0);
+}
+
+/// The integrator's speed (F-58614's first part, `speed_step`): the cap is fMaxSpeed (a race path's car: its
+/// fPathMaxSpeed, behaviour +244 with +256 bit 0x40, put in `ty.max_speed` by `path_rider`). Its offset timer is
+/// `rider_offset`, at the end of the car's frame.
+fn integrate(r: &mut Rider, a: f32, dt: f32) {
+    r.a = a;
+    r.v = speed_step(r.v, a, dt, r.ty.max_speed, r.ty.max_accel);
+}
+
+/// F-58614's offset timer for an ordinary rider (`offset_step` on the car's MWC; no offset for a car of the proxy pool,
+/// car +500 bit 0x20). The original runs F-58614 after the behaviour's update (F-50624's order: behaviour slot 3, the
+/// asked acceleration, then F-58614), so its draws follow the frame's recovery / passing draws of the same MWC. The
+/// cruising ghost's is in `ghost_integrate`.
+fn rider_offset(r: &mut Rider, clock: f32) {
+    if r.ghost.is_some() {
+        return;
+    }
+    let mut s = CarSpeed { v: r.v, off: r.off, timer: r.off_timer, born: r.born, rng: r.mwc };
+    offset_step(&mut s, clock, r.ty.proxy);
+    (r.off, r.off_timer, r.mwc) = (s.off, s.timer, s.rng);
 }
 
 /// One frame of a rider on its lane (state 1; F-87488 / F-30960 / F-58614),
@@ -2709,13 +2754,7 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
         return step_lane_change(r, env, me, half_len, dt);
     }
     let v = r.v;
-    // (the cruising ghost's offset timer is the integrator's own, `car_speed`)
-    if r.ghost.is_none() {
-        r.off_timer -= dt;
-        if r.off_timer <= 0.0 {
-            r.draw_offset();
-        }
-    }
+    // (the speed offset's timer: F-58614 after the frame's behaviour update, `rider_offset` in `ride_traffic`)
     let lane = nav.links[r.link].lane;
     let next_lane = r.next.map(|n| nav.links[n].lane);
     // wanted speed (F-70324): the lane's speed and the next lane's, with the offset, and in a race its holds (the
@@ -2752,7 +2791,7 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
             keep
         });
         let g = [Some(GatherRail::Lane(lane)), next_lane.map(GatherRail::Lane), None];
-        search_ahead(r, env, me, pos, fwd, &rails, (Some(lane), next_lane), r.next.map(|n| nav.links[n].a), g)
+        search_ahead(r, env, me, pos, fwd, &rails, (Some(lane), next_lane), r.next.map(|n| nav.links[n].a), g, 0.0)
     };
     // F-16850: go = green for the lane (or a car of the bIsProxy pool while the red light race byte is set) and the
     // junction's box not held by anything but this car (`Blockers`); a refused car stops at the line as at red (and
@@ -2762,8 +2801,11 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
         .map(|x| (x.0, x.1));
     // (entry 2: held where it is, its distance 0)
     let slower = (next_want <= v).then(|| {
-        let end = nav.links[r.lane_end(nav)].b;
-        (next_want, if holds.0 { 0.0 } else { end.distance(pos) })
+        // (F-83943 on the lane: the point at the phase to the curve's last vertex - its last control point; the graph's
+        // last link end when the lane has no curve)
+        let last = nav.curves.get(lane).and_then(|c| c.pts.last().copied()).unwrap_or(nav.links[r.lane_end(nav)].b);
+        let rail = LeftRail { flags: 0, byte: 0, phase: r.t, len: 0.0, point: pos, start: Vec3::ZERO, end: Vec3::ZERO, last };
+        (next_want, if holds.0 { 0.0 } else { distance_left(Some(&rail)) })
     });
     let dest = r.ghost.as_ref().and_then(|g| g.dest_entry());
     let (mut a, chosen) = control(r, v, want, half_len, &ahead, env.others, stop, slower, dest, dt);
@@ -3345,7 +3387,8 @@ fn after_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, ahead
         r.pass_stand = 0.0;
     }
     let ready = r.pass_stand > 2.0;
-    if o.ambient && r.rand() > 1.0 / 60.0 {
+    // (F-28706: one draw of the car's MWC, U x 2^-23 > 1/60 (0x3C888889): no try)
+    if o.ambient && u23(&mut r.mwc) * f32::from_bits(0x3400_0000) > f32::from_bits(0x3C88_8889) {
         return;
     }
     // (the start: the follower's lane at its phase, the derivative flattened and made unit - F-92334 as F-26749)
@@ -3399,7 +3442,7 @@ pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half
         Ahead { j: usize::MAX, d: 0.0, vt: 0.0, blocking: None, player_across: false }
     } else {
         let segs = path.segs();
-        search_ahead(r, env, me, q, dir, &[segs], (None, None), None, [Some(GatherRail::RunTime), None, None])
+        search_ahead(r, env, me, q, dir, &[segs], (None, None), None, [Some(GatherRail::RunTime), None, None], 0.0)
     };
     let (mut a, chosen) = control(r, r.v, want, half_len, &ahead, env.others, None, None, None, dt);
     r.slot = chosen;
@@ -3503,7 +3546,7 @@ pub struct Seat {
 /// when the speed controller's entry in charge is the car ahead (car +420 == 0), the mean of the
 /// last 4 updates' asked acceleration (car +2336: count, next, sum, 4 entries, pushed by
 /// F-60856 from F-43567 every update) is a deceleration of at least fMaxDecel, and
-/// |car +208|^2 >= 4.99612 ((5 mph)^2, the 30 Hz frame's position change). Kept per update index
+/// |car +208|^2 >= 4.9961185 (0x409FE034, (5 mph)^2; car +208 the velocity F-84582 makes, `newton_velocity`). Kept per update index
 /// (owner byte +557 + U, U flipping each update): the render update reads the byte of its index
 /// before it is written, so the drawn wheels see the bit of two updates before; while it is set
 /// they do not turn. The car's skid sound reads the rule directly (F-50163).
@@ -3529,7 +3572,7 @@ impl Lock {
         }
         let t = self.since;
         self.since = 0.0;
-        let v = self.prev.map_or(Vec3::ZERO, |p| (pos - p) / t);
+        let v = self.prev.map_or(Vec3::ZERO, |p| newton_velocity(p, pos, t));
         self.prev = Some(pos);
         // (F-60856)
         let i = self.i as usize;
@@ -3552,8 +3595,7 @@ impl Lock {
         if self.i >= 4 {
             self.i = 0;
         }
-        let mean = if self.n == 0 { 0.0 } else { self.sum / self.n as f32 };
-        self.now = slot == Some(0) && -mean >= max_decel && v.length_squared() >= 4.99612;
+        self.now = lock_rule(slot, self.sum, self.n, max_decel, v);
         self.buf[self.u] = self.now;
         self.u ^= 1;
     }
@@ -3565,6 +3607,32 @@ impl Lock {
     pub fn now(&self) -> bool {
         self.now
     }
+}
+
+/// F-37906's rule: the entry in charge is the car ahead (+420 == 0); the ring's mean (sum x 1 / count by `fdivs`, 0 with
+/// no entry) negated is not below fMaxDecel (type +148); |v|^2 = fma(z, z, fma(x, x, y y)) of the velocity +208 is not
+/// below 4.9961185 (0x409FE034). Both tests `fcmpu` + `blt` (a NaN passes them).
+pub fn lock_rule(slot: Option<usize>, sum: f32, n: u8, max_decel: f32, v: Vec3) -> bool {
+    use crate::physics::exact::fma;
+    if slot != Some(0) {
+        return false;
+    }
+    let mean = if n == 0 { 0.0 } else { sum / n as f32 };
+    if -mean < max_decel {
+        return false;
+    }
+    !(fma(v.z, v.z, fma(v.x, v.x, v.y * v.y)) < f32::from_bits(0x409F_E034))
+}
+
+/// F-84582: the velocity (car +208) from the position change over `dt` as the vector unit makes it - the change times
+/// the reciprocal of dt refined by one Newton step: r0 = 1 / dt (`vrefp`, the recompiled code's exact reciprocal), r =
+/// r0 (-(r0 dt - 1)) + r0 with 1.0, each product and sum rounded on its own (`vnmsubfp` / `vmaddfp` as
+/// the recompiled code computes them), denormals flushed. (dt <= 0: the original keeps the old velocity; never here.)
+pub fn newton_velocity(old: Vec3, new: Vec3, dt: f32) -> Vec3 {
+    let r0 = ftz(1.0 / ftz(dt));
+    let e = -vs(vm(r0, dt), 1.0);
+    let r = va(vm(r0, e), r0);
+    Vec3::new(vm(vs(new.x, old.x), r), vm(vs(new.y, old.y), r), vm(vs(new.z, old.z), r))
 }
 
 /// The drawn body's pitch and roll from the car's change of velocity (render update
@@ -3607,8 +3675,9 @@ impl Tilt {
         self.since = 0.0;
         let (vel, dv) = match self.prev {
             Some((p, v0)) => {
-                let v = (pos - p) / t;
-                (v, v - v0)
+                // (F-84582: +208 the velocity, +224 = +208 - the old one)
+                let v = newton_velocity(p, pos, t);
+                (v, Vec3::new(vs(v.x, v0.x), vs(v.y, v0.y), vs(v.z, v0.z)))
             }
             None => (Vec3::ZERO, Vec3::ZERO),
         };
@@ -3748,6 +3817,27 @@ pub fn facing(f: Vec3) -> Quat {
 
 /// Half a car's bound: length and width. Traffic: its type's bound (`.r155`); the player:
 /// the chassis bound; others: the model's extent.
+/// F-46284 (the ambient obstacle's slot 3, GetSize): the car's physics instance (car +112; a proxy car with its owner's
+/// instance: +52 +48 +28) -> its archetype (+4) -> the bound (+12): max (+16) - min (+32), x and z - the type's bound,
+/// `AmbType::width` / `length` (`bound_size`); no archetype: 3 x 6 (0x40400000, 0x40C00000).
+pub fn obstacle_size_of(ty: &AmbType) -> (f32, f32) {
+    // (`bound_size`'s max - min of the file's bound: `bound_extents` without the flush, which no type's bound needs)
+    if ty.width > 0.0 && ty.length > 0.0 {
+        (ty.width, ty.length)
+    } else {
+        (3.0, 6.0)
+    }
+}
+
+/// F-46284's arithmetic on the bound the instance's archetype holds (`Some((max, min))`; None: no archetype): the x and
+/// z of max - min (`vsubfp`, flushed), else 3 x 6.
+pub fn bound_extents(b: Option<(Vec3, Vec3)>) -> (f32, f32) {
+    match b {
+        Some((mx, mn)) => (vs(mx.x, mn.x), vs(mx.z, mn.z)),
+        None => (3.0, 6.0),
+    }
+}
+
 fn half_size(c: &super::CarInstance) -> (f32, f32) {
     if let Some(r) = c.rail.as_ref() {
         if r.ty.length > 0.0 {
@@ -3837,6 +3927,7 @@ impl Vehicles {
                     vel: c.state.vel,
                     half_len: hl,
                     half_wid: hw,
+                    size: self.obstacle_size(c),
                     speed: r.map_or(0.0, |r| r.v),
                     beh: self.sel_behaviour(nav, k, r),
                     lane640: if c.is_player { self.driver_lanes.get(&c.uid).and_then(|d| d.best).map(|(l, _)| (l, self.lane_freeway(nav, l))) } else { None },
@@ -3935,7 +4026,10 @@ impl Vehicles {
                     }
                     r.v = 0.0;
                     let fwd = c.state.forward();
-                    if !try_recovery(r, &env, i, c.state.pos, fwd, upright, dt) {
+                    let tried = try_recovery(r, &env, i, c.state.pos, fwd, upright, dt);
+                    // (F-58614 after the behaviour's update: the offset timer)
+                    rider_offset(r, env.clock);
+                    if !tried {
                         continue;
                     }
                     // back on a rail: kinematic from here
@@ -3943,7 +4037,9 @@ impl Vehicles {
                 }
                 6..=8 => {
                     let (pos, fwd) = (c.state.pos, c.state.forward());
-                    match step_path(r, &env, i, pos, fwd, half, upright, dt) {
+                    let stepped = step_path(r, &env, i, pos, fwd, half, upright, dt);
+                    rider_offset(r, env.clock);
+                    match stepped {
                         Some(p) => p,
                         None => {
                             let back = matches!(r.path.as_ref(), Some(p) if p.reverse);
@@ -3968,9 +4064,14 @@ impl Vehicles {
                     continue;
                 }
                 // a race path's car on the path's rails
-                9 => step_route(r, &env, i, half, dt),
+                9 => {
+                    let p = step_route(r, &env, i, half, dt);
+                    rider_offset(r, env.clock);
+                    p
+                }
                 _ => {
                     let p = step(r, &env, i, half, upright, dt);
+                    rider_offset(r, env.clock);
                     // refused by the light this frame (the stop entry is made only then): the
                     // junction counts it as waiting (F-16850)
                     if let Some(ji) = r.stop_id {
@@ -4249,7 +4350,7 @@ impl Vehicles {
         t.born = self.clock;
         // (the trailer's request through the pool: its seed, id and init draws, F-42724 / F-92604 / F-77422)
         let d = self.amb_init(idx, &ty, false);
-        (t.life, t.off_timer, t.wait, t.bonus) = (d.life, d.off_timer, d.wait, d.bonus);
+        (t.life, t.off_timer, t.wait, t.bonus, t.mwc) = (d.life, d.off_timer, d.wait, d.bonus, d.car);
         self.cars[idx].placed = true;
         self.cars[idx].rail = Some(t);
         if let Some(r) = self.cars[cab].rail.as_mut() {
@@ -4673,7 +4774,7 @@ mod tests {
     }
 
     fn vrider(ty: AmbType) -> Rider {
-        Rider { ty, link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None }
+        Rider { ty, link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, mwc: mwc_seed(7), ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None }
     }
 
     /// The brake lamp's flag (F-56024 with F-86955, F-17857 and F-59415) against the original's code run offline on 4,000
@@ -5118,8 +5219,8 @@ mod tests {
         }
         println!("  the rule read off the original's code (fused, cap only while accelerating): {} differ", bad_orig_rule);
         println!("integrate: {} cases, {} differ (max {} ulp; {} of them the port capping a non-positive acceleration at max speed, {} within 2.5e-7 relative)", inp.len(), bad, maxulp, cap_nonpos, fma_only);
-        // known difference, see the evidence file
-        assert_eq!((bad, bad_orig_rule), (270, 0));
+        // (270 before fix45: the port capped a non-positive acceleration; now `speed_step`, the original's rule)
+        assert_eq!((bad, bad_orig_rule), (0, 0));
     }
 
     /// The 4-ring (F-60856) and the lock predicate (F-37906) on 1500 cases: N pushes, then the predicate.
@@ -5174,8 +5275,8 @@ mod tests {
         println!("lock ring: {} cases, {} differ; predicate: {} differ ({} true, {} within 1e-4 of the speed threshold)", inp.len(), ring_bad, pred_bad, pred_true, pred_near);
         println!("  with the image's threshold 4.9961185: {} differ (fused |v|^2), {} differ (the port's own |v|^2)", diag_bad, diag_bad_plain);
         assert_eq!(ring_bad, 0);
-        // known difference (the port's threshold literal 4.99612 is one ulp above the original's 4.9961185), see the evidence file
-        assert_eq!((pred_bad, diag_bad, diag_bad_plain), (5, 0, 0));
+        // (5 before fix45: the port's literal 4.99612 was one ulp above the image's 4.9961185; now `lock_rule`)
+        assert_eq!((pred_bad, diag_bad, diag_bad_plain), (0, 0, 0));
     }
 
     /// The tilt's velocity step (F-84582) and 10-ring (F-14882). Step 1 (always rewrites the inputs,
@@ -5295,27 +5396,15 @@ mod tests {
         }
         println!("tilt: {} velocity steps, velocity differs {} (max {} ulp); the reciprocal-and-Newton form differs {}; dv->s checked on {} steps ({} unclamped), differs {}; ring: {} steps, {} differ", moving.len(), vel_bad, maxulp, newton_bad, dv_checked, dv_unclamped, dv_bad, steps.len(), ring_bad);
         assert_eq!(ring_bad, 0);
-        // known difference (true division in the port, reciprocal + Newton in the original), see the evidence file
-        assert_eq!((vel_bad, newton_bad, dv_bad), (1562, 0, 0));
-    }
-
-    #[test]
-    fn offsets_are_minus_six_zero_plus_six() {
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None };
-        let mut seen = [0usize; 3];
-        for _ in 0..3000 {
-            r.draw_offset();
-            assert!(r.off_timer >= 3.0 && r.off_timer <= 6.0);
-            seen[match r.off as i32 { -6 => 0, 6 => 1, 0 => 2, _ => unreachable!() }] += 1;
-        }
-        assert!(seen.iter().all(|&n| n > 850 && n < 1150), "{seen:?}");
+        // (1,562 before fix45: the port divided; now `newton_velocity`, the reciprocal and its Newton step)
+        assert_eq!((vel_bad, newton_bad, dv_bad), (0, 0, 0));
     }
 
     /// F-50959's box: |a70 . d| < 0.4 h3c and |a60 . d| < 0.4 h40, the height left out.
     #[test]
     fn a_physical_or_resting_car_is_not_put_back_on_its_seat() {
         // (a seat from before the hit: physical or at rest the instance stays where the collider left it)
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, mwc: mwc_seed(7), ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None };
         r.seat = Some(Seat::new(Vec3::ZERO, Vec3::Y, Vec3::NEG_Z));
         assert!(seat_poses(&r));
         for (state, active) in [(4, false), (4, true), (5, false), (5, true), (1, true)] {
@@ -5343,7 +5432,7 @@ mod tests {
     /// its rail (slot 20 / F-86858: the follower has a rail).
     #[test]
     fn a_physical_path_car_pairs_only_while_on_a_rail() {
-        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None };
+        let mut r = Rider { ty: AmbType::default(), link: 0, s: 0.0, next: None, v: 0.0, off: 0.0, off_timer: 0.0, bonus: 0.0, gap: 3.0, wait: 0.0, waited: 0.0, on: [false; 3], stop_id: None, obst_id: None, state: 1, physical: false, path: None, then: None, stand: 0.0, pass_stand: 0.0, stuck: (0.0, 0.0, 0), passing: None, kept: None, rest: 0.0, partner: None, seat: None, tilt: Tilt::default(), in_level: false, active: false, wake: false, rng: 7, id: 7, mwc: mwc_seed(7), ds: 0.0, ds_lane: usize::MAX, t: 0.0, ahead: (0.0, 0.0), a: 0.0, slot: None, lock: Lock::default(), born: 0.0, life: 8.0, route: None, race_lane: None, phys_pair: false, quiet: false, path_referenced: false, obst_v: None, steer: 0.0, rail_seq: 0, rail_key: None, rail_fresh: true, ghost: None };
         assert!(!r.pairs_inactive());
         r.phys_pair = true;
         for (state, yes) in [(1u8, true), (9, true), (10, false), (0, false), (4, false), (5, false), (6, false)] {
@@ -6944,7 +7033,7 @@ impl Vehicles {
             let seed = (self.rand() * 16777216.0) as u32 | 1;
             let mut rider = Rider::new(nav, ty, link, s, seed);
             rider.born = self.clock;
-            (rider.life, rider.off_timer, rider.wait, rider.bonus) = (init.life, init.off_timer, init.wait, init.bonus);
+            (rider.life, rider.off_timer, rider.wait, rider.bonus, rider.mwc) = (init.life, init.off_timer, init.wait, init.bonus, init.car);
             rider.seat = Some(Seat::new(ground, normal, f));
             // the start speed (vfunc 84 F-30683, called by the spawn slot 5 F-77422
             // for every ambient car, path = none): removed (reason 17) when the rule says so
@@ -7747,23 +7836,21 @@ fn lane_link_at(nav: &NavSys, lanes: &Lanes, lane: usize, t: f32) -> Option<(usi
 /// slower-lane entries are not made on these rails, as on the other run-time rails here.)
 pub fn step_route(r: &mut Rider, env: &Env, me: usize, half_len: f32, dt: f32) -> (Vec3, Vec3) {
     let nav = env.nav;
-    r.off_timer -= dt;
-    if r.off_timer <= 0.0 {
-        r.draw_offset();
-    }
+    // (the speed offset's timer: `rider_offset`, after the frame's step)
     let ahead = {
         let rt = r.route.as_ref().unwrap();
         let (pos, fwd) = rt.peek();
         let mut rails = vec![rt.segs(rt.i)];
-        let (next_lane, next_start) = if rt.i + 1 < rt.rails.len() {
+        let (next_lane, next_start, b_start) = if rt.i + 1 < rt.rails.len() {
             rails.push(rt.segs(rt.i + 1));
-            (None, None)
+            (None, None, 0.0)
         } else {
             rails.push(lane_segs(nav, env.lanes, rt.lane));
-            (Some(rt.lane), nav.curves.get(rt.lane).map(|c| c.eval(rt.lane_t).0))
+            (Some(rt.lane), nav.curves.get(rt.lane).map(|c| c.eval(rt.lane_t).0), rt.lane_t)
         };
-        // (the path's curve and join rails taken as run-time rails - F-47175's grid branch; the lane after them +192)
-        search_ahead(r, env, me, pos, fwd, &rails, (None, next_lane), next_start, [Some(GatherRail::RunTime), next_lane.map(GatherRail::Lane), None])
+        // (the path's curve and join rails taken as run-time rails - F-47175's grid branch; the lane after them +192 at
+        // the route lane's phase +196 (F-48618's +296); between the path's own rails +196 is not traced: 0)
+        search_ahead(r, env, me, pos, fwd, &rails, (None, next_lane), next_start, [Some(GatherRail::RunTime), next_lane.map(GatherRail::Lane), None], b_start)
     };
     let want = (r.route.as_ref().unwrap().speed + r.off).max(MIN_WANT);
     let (mut a, chosen) = control(r, r.v, want, half_len, &ahead, env.others, None, None, None, dt);
@@ -8481,7 +8568,7 @@ impl Vehicles {
         rider.seat = Some(Seat::new(ground, normal, f));
         // (the request's seed and the init draws, `amb_init`)
         let init = self.amb_init(idx, &ty, false);
-        (rider.life, rider.off_timer, rider.wait, rider.bonus) = (init.life, init.off_timer, init.wait, init.bonus);
+        (rider.life, rider.off_timer, rider.wait, rider.bonus, rider.mwc) = (init.life, init.off_timer, init.wait, init.bonus, init.car);
         let c = &mut self.cars[idx];
         c.item = Some(h);
         c.rail = Some(rider);
@@ -9156,16 +9243,26 @@ pub struct CarSpeed {
 /// (`no_offset`: car +500 bit 0x20), else a second draw: -6, +6 or 0 by thirds.
 #[allow(clippy::too_many_arguments)]
 pub fn car_speed(s: &mut CarSpeed, a: f32, dt: f32, max_speed: f32, max_accel: f32, set_speed: Option<f32>, clock: f32, no_offset: bool) {
-    let cap = set_speed.unwrap_or(max_speed);
+    s.v = speed_step(s.v, a, dt, set_speed.unwrap_or(max_speed), max_accel);
+    offset_step(s, clock, no_offset);
+}
+
+/// F-58614's first part: the new speed +412 from the speed `v`, the asked acceleration `a` (+408), the cap (fMaxSpeed
+/// or SetSpeed) and fMaxAccel.
+pub fn speed_step(v: f32, a: f32, dt: f32, cap: f32, max_accel: f32) -> f32 {
     let a = if a > 0.0 && a > max_accel { max_accel } else { a };
-    let v = a.mul_add(dt, s.v);
-    s.v = if a < 0.0 && v < f32::from_bits(0x3E64_E26D) {
+    let v = a.mul_add(dt, v);
+    if a < 0.0 && v < f32::from_bits(0x3E64_E26D) {
         0.0
     } else if a > 0.0 && v > cap {
         cap
     } else {
         v
-    };
+    }
+}
+
+/// F-58614's second part: the speed offset's timer and draws on the car's MWC.
+pub fn offset_step(s: &mut CarSpeed, clock: f32, no_offset: bool) {
     let age = clock - s.born;
     if age > s.timer {
         let u = (s.rng.next() & 0x7F_FFFF) as f32;
@@ -9641,7 +9738,7 @@ fn step_lane_change(r: &mut Rider, env: &Env, me: usize, half_len: f32, dt: f32)
     let ahead = {
         let rails = vec![path.segs(), lane_segs(nav, env.lanes, to)];
         let next_start = nav.curves.get(to).map(|c| c.eval(to_t).0);
-        search_ahead(r, env, me, q, dir, &rails, (None, Some(to)), next_start, [Some(GatherRail::RunTime), Some(GatherRail::Lane(to)), None])
+        search_ahead(r, env, me, q, dir, &rails, (None, Some(to)), next_start, [Some(GatherRail::RunTime), Some(GatherRail::Lane(to)), None], to_t)
     };
     let dest = r.ghost.as_ref().and_then(|g| g.dest_entry());
     let (mut a, chosen) = control(r, r.v, want, half_len, &ahead, env.others, None, None, dest, dt);
@@ -9852,6 +9949,16 @@ impl Vehicles {
         sp.road_of(nav, k).is_some_and(|x| sp.roads[x as usize].speed >= FREEWAY_SPEED)
     }
 
+    /// An ambient car's obstacle size (F-46284, `obstacle_size_of`: its type's bound - a rider's type, a parked car's by
+    /// its model); None for the player, police and racers (their obstacles' slot 3 is not decoded).
+    fn obstacle_size(&self, c: &super::CarInstance) -> Option<(f32, f32)> {
+        match (c.rail.as_ref(), c.parked) {
+            (Some(r), _) => Some(obstacle_size_of(&r.ty)),
+            (None, Some(_)) => Some(self.amb_types.get(&c.model.name).map_or((3.0, 6.0), obstacle_size_of)),
+            _ => None,
+        }
+    }
+
     /// The other cars as a rider looks at them (as `ride_traffic` makes them).
     fn ghost_others(&self, nav: &NavSys) -> Vec<Other> {
         self.cars
@@ -9873,6 +9980,7 @@ impl Vehicles {
                     vel: c.state.vel,
                     half_len: hl,
                     half_wid: hw,
+                    size: self.obstacle_size(c),
                     speed: r.map_or(0.0, |r| r.v),
                     beh: self.sel_behaviour(nav, k, r),
                     lane640: if c.is_player { self.driver_lanes.get(&c.uid).and_then(|d| d.best).map(|(l, _)| (l, self.lane_freeway(nav, l))) } else { None },
@@ -10446,5 +10554,116 @@ mod spawn_init_tests {
         eprintln!("traffic room: {cases} cases ({blocked} no room, {by_motion} by a motion only), {bad} mismatches");
         assert_eq!(cases, 6000);
         assert_eq!(bad, 0);
+    }
+}
+
+#[cfg(test)]
+mod speed_rule_tests {
+    use super::*;
+
+    fn hexf(t: &str) -> f32 {
+        f32::from_bits(u32::from_str_radix(t, 16).unwrap())
+    }
+
+    /// F-58614's speed part (`speed_step`, the riders' `integrate`) against the original's first block run offline on
+    /// 2,000 cases (work/verify-people/traffic run_traffic.py; accelerations -25 .. 12 and on the edges, speeds up to 1.3 x
+    /// the cap, the stop speed's edge, dt 1/120 .. 1/20). The +244 cap (SetSpeed) and the offset timer are in
+    /// `ghost_pool_matches_the_original` (`car_speed`, 2,000 more cases).
+    #[test]
+    fn integrator_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/traffic_integ_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<f32> = i.split_whitespace().map(hexf).collect();
+            let v = speed_step(w[1], w[0], w[2], w[3], w[4]);
+            assert_eq!(v.to_bits(), u32::from_str_radix(o, 16).unwrap(), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 2000);
+    }
+
+    /// F-37906 (`lock_rule`) against the original's code on 1,500 cases (764 within 1e-4 of the speed threshold, the
+    /// mean on fMaxDecel and one ulp either side, entries 0 / 1 / 2 / 7 in charge).
+    #[test]
+    fn lock_rule_matches_the_original() {
+        let (mut n, mut yes) = (0, 0);
+        for line in include_str!("testdata/traffic_lock_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = i.split_whitespace().collect();
+            let slot: usize = w[0].parse().unwrap();
+            let v = Vec3::new(hexf(w[4]), hexf(w[5]), hexf(w[6]));
+            let got = lock_rule(Some(slot), hexf(w[1]), w[2].parse().unwrap(), hexf(w[3]), v);
+            assert_eq!(got, o == "1", "{line}");
+            yes += got as u32;
+            n += 1;
+        }
+        assert_eq!(n, 1500);
+        assert!(yes > 100, "{yes}");
+    }
+
+    /// F-84582 (`newton_velocity`, the velocity +208 and its change +224) against the original's code on 3,520 steps
+    /// (random walks of speed 0 .. 3 m/s, dt 1/30 and 1/30 .. 1/20).
+    #[test]
+    fn newton_velocity_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/traffic_vel_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<f32> = i.split_whitespace().map(hexf).collect();
+            let want: Vec<u32> = o.split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let (old, new, v0) = (Vec3::new(w[0], w[1], w[2]), Vec3::new(w[3], w[4], w[5]), Vec3::new(w[6], w[7], w[8]));
+            let v = newton_velocity(old, new, w[9]);
+            let dv = Vec3::new(vs(v.x, v0.x), vs(v.y, v0.y), vs(v.z, v0.z));
+            let got = [v.x, v.y, v.z, dv.x, dv.y, dv.z].map(f32::to_bits);
+            assert_eq!(got.to_vec(), want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3520);
+    }
+
+    /// F-83943 (`distance_left`) against the original's code run whole (tools/traffic_left_reference.py) on 4,000 cases:
+    /// no rail, rails with the curve bit 0x1000, 0x800 / 0x1800 and random words, the follower's byte with 0x80 / 0x40 /
+    /// both / random, phases 0 / -0 / 1 / 1 - 1 ulp / out of range, lengths 0 .. 200, points equal and up to 150 m apart,
+    /// last indices 0 .. 0xFFFF (the index asked for is the curve's +28 sign-extended).
+    #[test]
+    fn distance_left_matches_the_original() {
+        let (mut n, mut lane) = (0, 0);
+        for line in include_str!("testdata/traffic_left_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let o: Vec<u32> = o.split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let f = |k: usize| f32::from_bits(w[k]);
+            let v = |k: usize| Vec3::new(f(k), f(k + 1), f(k + 2));
+            let rail = LeftRail { flags: w[1], byte: w[2] as u8, phase: f(3), len: f(4), point: v(5), start: v(8), end: v(11), last: v(14) };
+            let got = distance_left((w[0] != 0).then_some(&rail));
+            assert_eq!(got.to_bits(), o[0], "{line}");
+            // the lane branch asks the curve for its last index (+28, sign-extended)
+            let is_lane = w[0] != 0 && w[1] & 0x1000 == 0 && !(w[2] & 0xC0 == 0xC0);
+            assert_eq!(o[1], if is_lane { w[17] as u16 as i16 as i32 as u32 } else { u32::MAX }, "{line}");
+            lane += is_lane as u32;
+            n += 1;
+        }
+        assert_eq!((n, lane), (4000, 1670));
+    }
+
+    /// F-46284 (the ambient obstacle's slot 3) against the original's code run whole in vector mode
+    /// (tools/traffic_size_reference.py) on 2,000 cases: the proxy flag 0x20 with or without the holder (+52) and its
+    /// owner (+48 +28), with or without an archetype, bounds with -0 and denormal corners. The instance as the original
+    /// picks it, then `bound_extents`.
+    #[test]
+    fn obstacle_size_matches_the_original() {
+        let (mut n, mut dflt) = (0, 0);
+        for line in include_str!("testdata/traffic_size_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let o: Vec<u32> = o.split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let v = |k: usize| Vec3::new(f32::from_bits(w[k]), f32::from_bits(w[k + 1]), f32::from_bits(w[k + 2]));
+            let owner = w[0] & 0x20 != 0 && w[1] != 0 && w[2] != 0;
+            let b = if owner { (w[4] != 0).then(|| (v(11), v(14))) } else { (w[3] != 0).then(|| (v(5), v(8))) };
+            dflt += b.is_none() as u32;
+            let (x, z) = bound_extents(b);
+            assert_eq!(vec![x.to_bits(), z.to_bits()], o, "{line}");
+            n += 1;
+        }
+        assert_eq!((n, dflt), (2000, 572));
     }
 }
