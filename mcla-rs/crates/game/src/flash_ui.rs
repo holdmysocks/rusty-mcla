@@ -1514,6 +1514,9 @@ impl FlashPrompt {
             p.set_global("t_cart", Value::Int(c.clamp(0, i32::MAX as i64) as i32));
         }
         p.set_global("update", Value::Int(1));
+        // (the bar lays itself out in its frame script: run it before the bar is drawn - `Player::tick_due`; drawn
+        // first, the bar showed its template's yellow layout boxes for a frame)
+        p.tick_due();
         self.shown = Some(state);
     }
 

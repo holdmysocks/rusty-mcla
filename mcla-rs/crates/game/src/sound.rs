@@ -351,6 +351,11 @@ impl Sound {
         }
     }
 
+    /// Whether the sound library is there (the object sounds can play).
+    pub fn has_lib(&self) -> bool {
+        self.lib.is_some()
+    }
+
     /// A persistent object sound started outside the game loop (the start-up movie's loading music), kept as
     /// [`crate::audio::Audio::obj_loop`] keeps its own.
     pub fn keep_loop(&mut self, name: &str, h: crate::sndobj::Handle) {
@@ -419,6 +424,7 @@ impl Sound {
                         let alive = self.obj_loops.get(&name).is_some_and(|h| lib.playing(*h));
                         if !alive {
                             if let Some(h) = lib.play(&name, crate::sndobj::Req::default()) {
+                                log::info!("audio: loop {name} started");
                                 self.obj_loops.insert(name.clone(), h);
                             } else if self.obj_loops_missing.insert(name.clone()) {
                                 log::warn!("audio: no sound object {name} for a loop");

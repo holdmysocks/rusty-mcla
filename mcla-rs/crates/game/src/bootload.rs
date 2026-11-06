@@ -133,6 +133,10 @@ impl Runner {
         app.audio = l.audio.take();
         if let Some(a) = app.audio.as_mut() {
             a.set_music_catalog(&app.game.career.strings);
+            // (the sound library is the game's now: its object requests count from the first frame on. Left for the
+            // first `Sound::update` to say, the first frame's loading-music request was not taken, that update
+            // stopped the loop it no longer heard of and the next frame started the music over)
+            a.objects = app.sound.has_lib();
         }
         if let Some(g) = app.gpu.as_mut() {
             let s = l.window.inner_size();

@@ -588,6 +588,15 @@ impl Player {
         }
     }
 
+    /// The movie's next frame now, its time taken from the clock (`update` waits that much longer): the original
+    /// advances its movies once a 30 Hz game frame after the game has set their values, so what it draws has always
+    /// run the frame's script on them; the port draws more often than that, and a movie just handed new values runs
+    /// its frame before it is drawn again.
+    pub fn tick_due(&mut self) {
+        self.accum -= 1.0 / self.movie.fps.max(1) as f32;
+        self.tick();
+    }
+
     /// One frame of the whole movie.
     pub fn tick(&mut self) {
         let r = self.root;
