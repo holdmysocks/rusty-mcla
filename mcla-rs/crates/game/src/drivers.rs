@@ -682,6 +682,8 @@ struct Ride {
     /// the shift's base pair (the cruise pair's clips left in slots +44 / +48: their cockpit flag) and its overlay's flag
     shift_base_ck: bool,
     shift_ck: bool,
+    /// the pair's weight the shift's enter set (F-54589: the fast weight at the enter; its update sets only the phase)
+    shift_w: f32,
     /// the sequencer's +112: the pan-sweep overlay is part of the tree the last enter requested
     pan: bool,
     /// the driver's +48 smoother (F-45732: centre 0.5, rate 5, hold 0.5 s): its value +12 and hold timer +16, made on first use
@@ -945,6 +947,7 @@ fn ride_state(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32) {
                     r.shift_base_ck = ck_before;
                 }
                 r.shift_ck = ck;
+                r.shift_w = ride_speed_weight(i.speed);
             }
             _ => {}
         }
@@ -953,6 +956,26 @@ fn ride_state(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32) {
         // as the cruise left it - recorded 2026-11-05)
         r.pan = if n == St::Shift { r.pan && !ck } else { matches!(n, St::Cruise | St::Stopped | St::BurnC) && !ck && !i.opponent && b.pan.is_some() };
         update(r);
+    }
+}
+
+/// The sweep's phase and the pair's weight the state's update sets on the anim player this frame (phase: F-40742 /
+/// F-62772, weight: F-22341; none where the update sets nothing): the cruise update (cruise, burnouts) and tuck the remapped
+/// steering and the fast weight, the wheelie its timer's weight, the stopped idle clamp(x, -0.5, 0.5) + 0.5, the reverse
+/// (x + 1) x 0.5, the shift the remapped steering at the weight its enter set, endo and nos the remapped steering.
+fn ride_sets(r: &Ride, i: &RideIn) -> (Option<f32>, Option<f32>) {
+    let ph = ride_remap(i.x);
+    match r.state {
+        St::Start | St::Fidget => (None, None),
+        St::Cruise | St::BurnC | St::BurnL | St::BurnR | St::Tuck => (Some(ph), Some(ride_speed_weight(i.speed))),
+        St::Wheelie => {
+            let k = r.timer_a - 1.0;
+            (Some(ph), Some(if k > 0.0 { k.min(1.0) } else { 0.0 }))
+        }
+        St::Stopped => (Some(i.x.clamp(-0.5, 0.5) + 0.5), None),
+        St::Reverse => (Some((i.x + 1.0) * 0.5), None),
+        St::Shift => (Some(ph), Some(r.shift_w)),
+        St::Endo | St::Nos => (Some(ph), None),
     }
 }
 
@@ -990,8 +1013,9 @@ fn ride_pose<'a>(r: &mut Ride, b: &'a BikeClips, bones: &[crate::skin::Bone], ne
     if let Some((f, k)) = r.fade2.as_mut() {
         *f = (*f + *k * dt).min(1.0);
     }
-    let ph = ride_remap(i.x);
-    let w = ride_speed_weight(i.speed);
+    let (sp, sw) = ride_sets(r, i);
+    let ph = sp.unwrap_or(0.5);
+    let w = sw.unwrap_or(0.0);
     let pair = |a: &Clip, c: &Clip, w: f32, out: &mut Vec<(Quat, Vec3)>, tmp: &mut Vec<(Quat, Vec3)>| {
         a.local(bones, ph * a.last_frame(), out);
         c.local(bones, ph * c.last_frame(), tmp);
@@ -1006,7 +1030,7 @@ fn ride_pose<'a>(r: &mut Ride, b: &'a BikeClips, bones: &[crate::skin::Bone], ne
             let (lo, fs) = cruise_pair(ck);
             pair(lo, fs, w, out, tmp);
         }
-        St::Stopped => one(stp, i.x.clamp(-0.5, 0.5) + 0.5, out),
+        St::Stopped => one(stp, ph, out),
         St::BurnC => one(stp, ph, out),
         St::Tuck => {
             let (lo, fs) = if ck { cruise_pair(true) } else { (b.low_fwd.as_ref().unwrap_or(&b.low), b.fst_fwd.as_ref().unwrap_or(&b.fst)) };
@@ -1019,12 +1043,20 @@ fn ride_pose<'a>(r: &mut Ride, b: &'a BikeClips, bones: &[crate::skin::Bone], ne
             } else {
                 (b.wheelie.as_ref().unwrap_or(&b.low), &b.low)
             };
-            let k = r.timer_a - 1.0;
-            pair(a, c, if k > 0.0 { k.min(1.0) } else { 0.0 }, out, tmp);
+            pair(a, c, w, out, tmp);
         }
         St::Endo => one(pick(&b.endo_ck, &b.endo).unwrap_or(&b.low), ph, out),
-        St::BurnL => one(if ck { stp } else { b.burn_l.as_ref().unwrap_or(&b.low) }, ph, out),
-        St::BurnR => one(if ck { stp } else { b.burn_r.as_ref().unwrap_or(&b.low) }, ph, out),
+        // (the burnouts' enters F-13481 / F-26376 set no rate: the clip, played once, runs at 1 - the cruise update sets its
+        // time to phase x duration, then the anim player's update moves it on by dt: F-62772, F-57339)
+        St::BurnL | St::BurnR => {
+            let c = if ck { stp } else if r.state == St::BurnL { b.burn_l.as_ref().unwrap_or(&b.low) } else { b.burn_r.as_ref().unwrap_or(&b.low) };
+            let d = c.anim.duration;
+            let mut p = da::Player { flags: 1, rate: 1.0, clip: Some(da::Clip { id: 0, dur: d, flags: 0 }), ..da::Player::default() };
+            let a = if ph * d >= 0.0 { ph * d } else { 0.0 };
+            p.t = if a - d >= 0.0 { d } else { a };
+            p.advance(dt);
+            c.local(bones, c.frame(p.t, false), out)
+        }
         St::Nos => one(pick(&b.nos_ck, &b.nos).unwrap_or(&b.low), ph, out),
         St::Shift => {
             let (lo, fs) = cruise_pair(r.shift_base_ck);
@@ -1035,7 +1067,7 @@ fn ride_pose<'a>(r: &mut Ride, b: &'a BikeClips, bones: &[crate::skin::Bone], ne
             }
         }
         St::Reverse => {
-            one(pick(&b.rev_ck, &b.rev).unwrap_or(&b.low), (i.x + 1.0) * 0.5, out);
+            one(pick(&b.rev_ck, &b.rev).unwrap_or(&b.low), ph, out);
             under = Some(out.clone());
             if let Some(o) = b.rev_over.as_ref() {
                 o.local(bones, o.frame(r.t * 1.5, true), tmp);
@@ -2603,6 +2635,7 @@ mod ride_recorded_tests {
         r.pan = true;
         let riding = [St::Stopped, St::Cruise, St::Tuck, St::Wheelie, St::Endo, St::BurnC, St::BurnL, St::BurnR, St::Nos, St::Shift, St::Reverse, St::Fidget];
         let (mut frames, mut bad_state, mut bad_timer, mut enters, mut bad_enter, mut bad_pan) = (0, 0, 0, 0, 0, 0);
+        let (mut sets, mut bad_set) = (0, 0);
         let mut notes = Vec::new();
         let mut rec_pan = true;
         let (mut i, mut first, mut time) = (0, true, 0.0);
@@ -2675,6 +2708,47 @@ mod ride_recorded_tests {
                     notes.push(format!("frame {frames}: pan {} want {rec_pan} ({})", r.pan, name(r.state)));
                 }
             }
+            // the phase and weight the frame's last setters left (set 0 / set 3, set 6) against the state's update; where the
+            // port's update sets nothing, no setter may follow the frame's last request
+            let last_req = calls.iter().rposition(|c| c.starts_with("play ") || c.starts_with("pair ")).map_or(0, |k| k + 1);
+            let val = |k: &[&str], from: usize| calls[from..].iter().rev().find_map(|c| {
+                let v: Vec<&str> = c.split_whitespace().collect();
+                (v[0] == "set" && k.contains(&v[1])).then(|| hex(v[2]))
+            });
+            let (gp, gw) = ride_sets(&r, &inp);
+            for (got, kinds) in [(gp, &["0", "3"][..]), (gw, &["6"][..])] {
+                let want = match got {
+                    Some(_) => val(kinds, 0),
+                    None => val(kinds, last_req),
+                };
+                if got.is_none() && want.is_none() {
+                    continue;
+                }
+                // (the shift's weight is its enter's, held: its update sets only the phase)
+                if r.state == St::Shift && was == St::Shift && kinds == ["6"] {
+                    continue;
+                }
+                sets += 1;
+                if got.map(f32::to_bits) != want {
+                    bad_set += 1;
+                    if notes.len() < 30 {
+                        notes.push(format!("frame {frames}: {} set {kinds:?} {got:?} want {:?}", name(r.state), want.map(f32::from_bits)));
+                    }
+                }
+            }
+            // the enter's clip rate (set 1 / set 2 after the last request): 0 for the sweeps (their phase is set), none for the
+            // fidget's gesture and the burnouts left / right (they play at rate 1)
+            if r.state != was {
+                let want = val(&["1", "2"], last_req);
+                let got = (!matches!(r.state, St::Fidget | St::BurnL | St::BurnR)).then_some(0.0f32);
+                sets += 1;
+                if got.map(f32::to_bits) != want {
+                    bad_set += 1;
+                    if notes.len() < 30 {
+                        notes.push(format!("frame {frames}: {} enter rate {got:?} want {:?}", name(r.state), want.map(f32::from_bits)));
+                    }
+                }
+            }
             // the last clip the frame's enters asked for: the state's clip and its crossfade
             // (the shift's own requests - F-42342's rebuilt pair and the overlay pair - are not among the recorded calls)
             if let Some(c) = calls.iter().rev().find(|c| c.starts_with("play ") || c.starts_with("pair ")).filter(|_| r.state != St::Shift) {
@@ -2691,10 +2765,10 @@ mod ride_recorded_tests {
                 }
             }
         }
-        eprintln!("{run}: {frames} frames, {enters} enters; state differs on {bad_state}, timers on {bad_timer}, enters on {bad_enter}, pan on {bad_pan}");
+        eprintln!("{run}: {frames} frames, {enters} enters, {sets} phase / weight values; state differs on {bad_state}, timers on {bad_timer}, enters on {bad_enter}, pan on {bad_pan}, values on {bad_set}");
         for n in &notes {
             eprintln!("  {n}");
         }
-        assert!(bad_state == 0 && bad_timer == 0 && bad_enter == 0 && bad_pan == 0, "{run}");
+        assert!(bad_state == 0 && bad_timer == 0 && bad_enter == 0 && bad_pan == 0 && bad_set == 0, "{run}");
     }
 }
