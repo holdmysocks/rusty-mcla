@@ -201,6 +201,402 @@ fn edge_owner(normal: Vec3, depth: f32, nn: Option<Vec3>, ns: Vec3) -> f32 {
     if a > b { -1.0 } else { depth }
 }
 
+// The capsule against a polygon: F-43031's undirected branch (the query's byte +212 = 0) and its callees, written
+// out operation for operation (vector multiply-adds rounded twice, the vector unit's sum of three products, its
+// exact reciprocal / reciprocal square root estimates, the scalar unit's fused dots in the original's orders).
+// Rules: docs/reference/people/traffic_drive_rule.md 9.6; checked to the bit against the original's code run whole
+// offline (`capsule_polygon_matches_the_original`).
+
+/// The neighbour across one edge as the edge owner F-38934 meets it: its normal (as the bound forms it; past the
+/// bound's count (0, 0, 1)) and, for a polygon within the count, the x of its vertex at record +4 - the owner fetches
+/// it into the stack word the capsule's line test may read later (F-89261's stale parameter).
+#[derive(Clone, Copy, Debug)]
+pub struct Beside {
+    pub normal: Vec3,
+    pub v0x: Option<f32>,
+}
+
+/// What F-43031 (undirected) leaves for the result list: the depth f31 (-1 when nothing touched), the place along
+/// the capsule f24 (0 at its start, 1 at its end; the segment test's t), the point v126 (the capsule's direction
+/// when nothing touched) and the contact normal v125 (meaningful only for a depth above 0).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CapsuleHit {
+    pub depth: f32,
+    pub t: f32,
+    pub point: Vec3,
+    pub normal: Vec3,
+}
+
+/// 1 / x as the vector unit's estimate (the recomp's exact division), no Newton step.
+fn vrefp(x: f32) -> f32 {
+    1.0 / x
+}
+
+/// num / den clamped to [0, 1] as the original forms it: num x (1 / den), 1 from 1 up (vsel), then 0 where num is
+/// not at least 0 (vand with the compare's mask: NaN gives 0).
+fn clamp_param(num: f32, den: f32) -> f32 {
+    let q = num * vrefp(den);
+    let c = if q >= 1.0 { 1.0 } else { q };
+    if num >= 0.0 { c } else { 0.0 }
+}
+
+/// F-33142 as F-44891 calls it (no out pointer): the segment `a` .. `b` (direction `d`) against the triangle;
+/// (code, dA, dB, t): 3 both ends on one side, 4 t out of [0, 1], 1 the determinant under 7.63e-6, 5 / 6 outside
+/// the first / second weight, 0 a crossing.
+fn seg_triangle(a: Vec3, d: Vec3, b: Vec3, n: Vec3, v: &[Vec3; 3]) -> (u32, f32, f32, f32) {
+    let w = a - v[0];
+    let (e2, e1) = (v[2] - v[0], v[1] - v[0]);
+    let da = vdot(n, w);
+    let db = vdot(n, b - v[0]);
+    let pvec = vcross(d, e2);
+    let qvec = vcross(w, e1);
+    let det = vdot(pvec, e1);
+    let vv = vdot(d, qvec);
+    let uu = vdot(w, pvec);
+    let t = da * recip(da - db);
+    let sign = if det > 0.0 { 1.0 } else { -1.0 };
+    let (adet, u, vq) = (det * sign, uu * sign, vv * sign);
+    if db * da >= 0.0 {
+        return (3, da, db, t);
+    }
+    if !(t >= 0.0) || t > 1.0 {
+        return (4, da, db, t);
+    }
+    if !(adet >= f32::from_bits(0x3700_0000)) {
+        return (1, da, db, t);
+    }
+    if !(u >= 0.0) || u > adet {
+        return (5, da, db, t);
+    }
+    if !(vq >= 0.0) || vq + u > adet {
+        return (6, da, db, t);
+    }
+    (0, da, db, t)
+}
+
+/// F-70182 -> F-44891 (lower bound -1, upper 2): the capsule's axis crossing the triangle: (point, t, depth below the
+/// plane of the end that is behind it).
+fn segment_crossing(a: Vec3, b: Vec3, n: Vec3, v: &[Vec3; 3]) -> Option<(Vec3, f32, f32)> {
+    let d = b - a;
+    let (code, da, db, t) = seg_triangle(a, d, b, n, v);
+    if code != 0 || (t < -1.0 && t > 2.0) {
+        return None;
+    }
+    let depth = -(if da > 0.0 { db } else { da });
+    Some((d * t + a, t, depth))
+}
+
+/// F-17804 on a triangle: a ball against a convex polygon, both sides of the plane. (code, point, normal, depth, the
+/// edge or corner index): 2 the face, 1 an edge, 0 a corner, 3 none. Each edge's side vector's x goes to the stack
+/// word `slot` (its -192, F-65002's +128).
+fn ball_ngon(c: Vec3, r: f32, v: &[Vec3; 3], n: Vec3, slot: &mut u32) -> (u32, Vec3, Vec3, f32, usize) {
+    let none = (3, Vec3::ZERO, Vec3::ZERO, 0.0, 0);
+    let w0 = c - v[0];
+    let d = fma(n.z, w0.z, fma(n.x, w0.x, n.y * w0.y));
+    if d.abs() > r {
+        return none;
+    }
+    let mut inside = true;
+    let mut flags = [0i32; 3];
+    for i in 0..3 {
+        let (a, b) = (v[i], v[(i + 1) % 3]);
+        let w = c - a;
+        let e = b - a;
+        let m = vcross(n, e);
+        *slot = m.x.to_bits();
+        if !(fma(m.x, w.x, fma(m.y, w.y, m.z * w.z)) < 0.0) {
+            flags[i] = 1;
+            continue;
+        }
+        inside = false;
+        if fma(e.x, w.x, fma(e.y, w.y, e.z * w.z)) < 0.0 {
+            flags[i] = -1;
+            continue;
+        }
+        let u = c - b;
+        if fma(u.x, e.x, fma(u.y, e.y, u.z * e.z)) > 0.0 {
+            flags[i] = -2;
+            continue;
+        }
+        if !(fma(n.z, w.z, fma(n.x, w.x, n.y * w.y)) > 0.0) {
+            continue;
+        }
+        // the edge
+        let ww = fma(w.x, w.x, fma(w.y, w.y, w.z * w.z));
+        let uu = fma(u.x, u.x, fma(u.y, u.y, u.z * u.z));
+        let ee = fma(e.x, e.x, fma(e.y, e.y, e.z * e.z));
+        let inv = 1.0 / ee;
+        let dw = ww - uu;
+        let d2 = fnms(dw * dw, inv, fms(uu + ww, 2.0, ee)) * 0.25;
+        if d2 > r * r {
+            return none;
+        }
+        let dist = if d2 > 0.0 { d2.sqrt() } else { 0.0 };
+        let s2 = (ww - d2) * inv;
+        let q = if s2 > 0.0 { e * s2.sqrt() } else { Vec3::ZERO } + a;
+        let g = c - q;
+        let normal = if dist > f32::from_bits(0x2B8C_BCCC) { g * recip(dist) } else { n };
+        return (1, q, normal, r - dist, i);
+    }
+    if inside {
+        return (2, -(n * d - c), n, r - d, 0);
+    }
+    let Some(j) = (0..3).find(|&j| {
+        let (f, g) = (flags[j], flags[(j + 1) % 3]);
+        (f == -2 || g == -1) && f != g
+    }) else {
+        return none;
+    };
+    let k = (j + 1) % 3;
+    let p = v[k];
+    let dv = c - p;
+    let d2 = fma(dv.z, dv.z, fma(dv.x, dv.x, dv.y * dv.y));
+    if d2 > r * r {
+        return none;
+    }
+    let (dist, normal) = if d2 > f32::from_bits(0x2B8C_BCCC) {
+        let dist = d2.sqrt();
+        (dist, dv * recip(dist))
+    } else {
+        (0.0, n)
+    };
+    (0, p, normal, r - dist, k)
+}
+
+/// F-43156 (no out pointer): the distance of `w` from the line along `dir`, signed as the original's: the unit
+/// perpendicular (dir x w) x dir by a double-precision 1 / sqrt with two Newton steps, else -w's unit, else x.
+fn line_dist(w: Vec3, dir: Vec3) -> f32 {
+    let eps = f32::from_bits(0x2B8C_BCCC);
+    let rs = |l2: f32| {
+        let l = l2 as f64;
+        let x0 = (1.0 / l.sqrt()) as f32 as f64;
+        let f6 = -(x0 * x0).mul_add(l, -1.0);
+        let f5 = f6.mul_add(x0 * 0.5, x0);
+        let f2 = -(f5 * f5).mul_add(l, -1.0);
+        let f0 = f2.mul_add(f5 * 0.5, f5) as f32;
+        if -l2 >= 0.0 { 0.0 } else { f0 }
+    };
+    let len2 = |u: Vec3| fma(u.x, u.x, fma(u.y, u.y, u.z * u.z));
+    let c2 = vcross(vcross(w, dir), dir);
+    let u = if len2(c2) > eps {
+        c2 * rs(len2(c2))
+    } else {
+        let nw = Vec3::ZERO - w;
+        if len2(nw) > eps { nw * rs(len2(nw)) } else { Vec3::X }
+    };
+    -fma(w.x, u.x, fma(w.y, u.y, w.z * u.z))
+}
+
+/// F-68765: the distance of the point `w` from the line through 0 along `d` and the unit towards it (the
+/// perpendicular (w x d) x d, else -w's unit, else x; lengths from 1e-12).
+fn point_line(w: Vec3, d: Vec3) -> (f32, Vec3) {
+    let eps = f32::from_bits(0x2B8C_BCCC);
+    let nw = Vec3::ZERO - w;
+    let ww = vdot(nw, nw);
+    let c2 = vcross(vcross(w, d), d);
+    let cc = vdot(c2, c2);
+    let alt = if ww > eps { nw * rsqrt0(ww) } else { Vec3::X };
+    let u = if cc > eps { c2 * rsqrt0(cc) } else { alt };
+    (0.0 - vdot(w, u), u)
+}
+
+/// F-84741: the same for the point `a` - `p` from the line along `d`, without the guards.
+fn point_line_plain(p: Vec3, a: Vec3, d: Vec3) -> (f32, Vec3) {
+    let w = a - p;
+    let c2 = vcross(vcross(w, d), d);
+    let u = c2 * rsqrt0(vdot(c2, c2));
+    (0.0 - vdot(w, u), u)
+}
+
+/// F-96822: the separation of the edge line (p, e) and the capsule's axis (a, d) and the unit from the axis to the
+/// edge: the common perpendicular's (|C|^2 at least |e|^2 |d|^2 x 0.0012217 and above 0), else a point to a line.
+fn line_separation(p: Vec3, e: Vec3, a: Vec3, d: Vec3) -> (f32, Vec3) {
+    let dd = vdot(d, d);
+    let ee = vdot(e, e);
+    let c = vcross(d, e);
+    let cc = vdot(c, c);
+    if !(cc >= ee * dd * f32::from_bits(0x3AA0_2173)) {
+        return point_line_plain(p, a, d);
+    }
+    if !(cc > 0.0) {
+        if ee == 0.0 {
+            return point_line(a - p, d);
+        }
+        let (s, u) = point_line(p - a, e);
+        return (s, Vec3::ZERO - u);
+    }
+    let cn = c * rsqrt0(cc);
+    let s = vdot(p - a, cn);
+    if s >= 0.0 { (s, cn) } else { (0.0 - s, Vec3::ZERO - cn) }
+}
+
+/// F-89261: the lines' closest parameters, s on the edge p + e s, t on the axis a + d t; whether both lie strictly
+/// inside (0, 1) (integer compares of the bits). With the axis shorter than 1e-6 t is 0.5 and s is not written: the
+/// stack word `slot` holds what earlier calls left there.
+fn line_params(p: Vec3, e: Vec3, a: Vec3, d: Vec3, slot: &mut u32) -> (bool, f32) {
+    let eps = f32::from_bits(0x2B8C_BCCC);
+    let dd = vdot(d, d);
+    let t = if dd > eps {
+        let inv = vrefp(dd);
+        let k = vdot(d, e) * inv;
+        let e2 = -(d * k - e);
+        let ee2 = vdot(e2, e2);
+        let s = if ee2 > eps {
+            let w = p - a;
+            let w2 = -(d * (vdot(d, w) * inv) - w);
+            (0.0 - vdot(e2, w2)) * vrefp(ee2)
+        } else {
+            0.5
+        };
+        *slot = s.to_bits();
+        let x = e * s + p;
+        clamp_param(0.0 - vdot(a - x, d), dd)
+    } else {
+        0.5
+    };
+    let inner = |b: u32| (b as i32) > 0 && (b as i32) < 0x3F80_0000;
+    (inner(*slot) && inner(t.to_bits()), t)
+}
+
+/// F-45690: the closest points of the edge segment p .. p + e and the axis segment a .. a + d: (inside both, s, t);
+/// past an end the original's table of the clamped ends' parameters (exactly 0, exactly 1, between) and the
+/// distances F-43156 gives.
+fn segment_params(p: Vec3, e: Vec3, a: Vec3, d: Vec3, slot: &mut u32) -> (bool, f32, f32) {
+    let (inner, t) = line_params(p, e, a, d, slot);
+    if inner {
+        return (true, f32::from_bits(*slot), t);
+    }
+    let q = e + p;
+    let b = d + a;
+    let dd = vdot(d, d);
+    let tp = clamp_param(0.0 - vdot(a - p, d), dd);
+    let tq = clamp_param(0.0 - vdot(a - q, d), dd);
+    let ee = vdot(e, e);
+    let s_of = |base: Vec3| clamp_param(0.0 - vdot(base, e), ee);
+    let (pa, pb) = (p - a, p - b);
+    let zero = |x: f32| x.to_bits() & 0x7FFF_FFFF == 0;
+    let one = |x: f32| x.to_bits() == 0x3F80_0000;
+    #[cfg(test)]
+    {
+        let class = |x: f32| if zero(x) { 0 } else if one(x) { 1 } else { 2 };
+        tests::END_CASES[3 * class(tp) + class(tq)].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    let (s, t) = if zero(tp) {
+        if zero(tq) {
+            (s_of(pa), 0.0)
+        } else if one(tq) {
+            if !(line_dist(pa, e) < line_dist(pb, e)) { (s_of(pb), 1.0) } else { (s_of(pa), 0.0) }
+        } else if !(line_dist(pa, e) < line_dist(a - q, d)) {
+            (1.0, tq)
+        } else {
+            (s_of(pa), 0.0)
+        }
+    } else if one(tp) {
+        if zero(tq) {
+            if !(line_dist(pa, e) < line_dist(pb, e)) { (s_of(pb), 1.0) } else { (s_of(pa), 0.0) }
+        } else if one(tq) {
+            (s_of(pb), 1.0)
+        } else if !(line_dist(pb, e) < line_dist(a - q, d)) {
+            (1.0, tq)
+        } else {
+            (s_of(pb), 1.0)
+        }
+    } else if zero(tq) {
+        if !(line_dist(pa, e) < line_dist(a - p, d)) { (0.0, tp) } else { (s_of(pa), 0.0) }
+    } else if one(tq) {
+        if !(line_dist(pb, e) < line_dist(a - p, d)) { (0.0, tp) } else { (s_of(pb), 1.0) }
+    } else if line_dist(a - p, d) < line_dist(a - q, d) {
+        (0.0, tp)
+    } else {
+        (1.0, tq)
+    };
+    // (written through the s pointer: the stack word)
+    *slot = s.to_bits();
+    (false, s, t)
+}
+
+/// F-65002: the capsule a .. b (radius r) against the edge p .. q: (code, depth, normal, point, t); 3 none, 4 the
+/// closest point past an end of the axis (left to the end balls), 1 the two segments' inner points, 0 an end of
+/// the edge. A corner touch writes -distance to the stack word `slot`.
+fn edge_capsule(a: Vec3, b: Vec3, p: Vec3, q: Vec3, r: f32, slot: &mut u32) -> (u32, f32, Vec3, Vec3, f32) {
+    let none = (3, 0.0, Vec3::ZERO, Vec3::ZERO, 0.0);
+    let d = b - a;
+    let e = q - p;
+    let (sep, towards) = line_separation(p, e, a, d);
+    if sep > r {
+        return none;
+    }
+    let (inner, s, t) = segment_params(p, e, a, d, slot);
+    if inner {
+        return (1, r - sep, Vec3::ZERO - towards, d * t + a, t);
+    }
+    if !(t > 0.0 && t < 1.0) {
+        return if !(t < 0.5) { (4, 0.0, Vec3::ZERO, b, 1.0) } else { (4, 0.0, Vec3::ZERO, a, 0.0) };
+    }
+    let second = !(s < 0.5);
+    let corner = if second { q } else { p };
+    let point = d * t + a;
+    let cv = corner - point;
+    let d2 = fma(cv.z, cv.z, fma(cv.x, cv.x, cv.y * cv.y));
+    if d2 > r * r {
+        return none;
+    }
+    if d2 > 0.0 {
+        let dist = d2.sqrt();
+        *slot = (-dist).to_bits();
+        return (0, r - dist, cv * recip(-dist), point, t);
+    }
+    let nv = if second { Vec3::ZERO - (p - q) } else { p - q };
+    (0, r, nv * rsqrt0(vdot(nv, nv)), point, t)
+}
+
+/// F-38934 as the capsule test calls it: the neighbour's vertex fetch into the stack word, then the owner rule.
+fn owner_at(normal: Vec3, depth: f32, beside: Option<Beside>, own: Vec3, slot: &mut u32) -> f32 {
+    if let Some(Beside { v0x: Some(x), .. }) = beside {
+        *slot = x.to_bits();
+    }
+    edge_owner(normal, depth, beside.map(|b| b.normal), own)
+}
+
+/// A capsule from `a` to `b` of radius `r` against one polygon, undirected (F-43031 with byte +212 = 0): the axis
+/// crossing the face (depth r + the depth of the end behind the plane), else the deeper of the end balls (F-17804, an
+/// edge contact through its owner F-38934; the end ball at `b` gives t = 1), and only when neither touched (depth
+/// below 0) each edge's capsule test (F-65002), the last edge that touches deciding through its owner. `n` the
+/// polygon's normal as the bound forms it, `own` the bound's normal of the query's polygon index, `beside(e)` the
+/// neighbour across edge e (None: none). `slot` is the stack word F-44891 saves the caller's f30 in (its high word on
+/// entry) and that the capsule's line test reads when the axis has no length; on return as the original leaves it.
+#[allow(clippy::too_many_arguments)]
+pub fn capsule_polygon(a: Vec3, b: Vec3, r: f32, v: &[Vec3; 3], n: Vec3, own: Vec3, beside: impl Fn(usize) -> Option<Beside>, slot: &mut u32) -> CapsuleHit {
+    let mut hit = CapsuleHit { depth: -1.0, t: 0.0, point: b - a, normal: Vec3::ZERO };
+    if let Some((point, t, depth)) = segment_crossing(a, b, n, v) {
+        hit = CapsuleHit { depth: r + depth, t, point, normal: n };
+    }
+    for (end, t) in [(a, 0.0), (b, 1.0)] {
+        let (code, point, normal, mut depth, i) = ball_ngon(end, r, v, n, slot);
+        if code == 3 {
+            continue;
+        }
+        if code == 1 {
+            depth = owner_at(normal, depth, beside(i), own, slot);
+        }
+        if depth > hit.depth {
+            hit = CapsuleHit { depth, t, point, normal };
+        }
+    }
+    if !(hit.depth < 0.0) {
+        return hit;
+    }
+    for j in 0..3 {
+        let (code, depth, normal, point, t) = edge_capsule(a, b, v[j], v[(j + 1) % 3], r, slot);
+        if code == 3 || code == 4 {
+            continue;
+        }
+        let k = r - depth;
+        hit = CapsuleHit { depth: owner_at(normal, depth, beside(j), own, slot), t, point: -(normal * k - point), normal };
+    }
+    hit
+}
+
 // The polygon sweep F-43031 (directed) as the original runs it, operation for operation (vector
 // multiply-adds rounded twice, the vector unit's three-product sum, the scalar unit's fused dots;
 // checked to the bit on 43,280 random sweeps: `polygon_sweep_matches_the_original`).
@@ -511,6 +907,9 @@ impl<'a> CamLevel<'a> {
 mod tests {
     use super::*;
 
+    /// How often F-45690's table met each pair of the axis parameters of the edge's ends (0, 1, between).
+    pub(super) static END_CASES: [std::sync::atomic::AtomicUsize; 9] = [const { std::sync::atomic::AtomicUsize::new(0) }; 9];
+
     const FLOOR: [Vec3; 3] = [Vec3::new(-4.0, 0.0, -4.0), Vec3::new(-4.0, 0.0, 4.0), Vec3::new(4.0, 0.0, -4.0)];
 
     #[test]
@@ -621,6 +1020,76 @@ mod tests {
         }
         // (face, edge, corner, none or left out by the material)
         assert_eq!(seen, [1564, 311, 305, 1820]);
+    }
+
+    /// F-43031's undirected branch run offline on the original's code with every callee whole
+    /// (tools/capsule_polygon_reference.py -> testdata/capsule_polygon_ref.txt): per line six vertices (the polygon's,
+    /// then the apex of the neighbour folded about each edge), the capsule's ends and radius, the area word, the three
+    /// neighbour indices (1 .. 3, 0xFFFF none, 7 past the count 4) and their area words, the query's polygon index (5:
+    /// past the count), the material mask and byte, the caller's f30 (two words), whether the list gives a record;
+    /// then the original's result, the list's call (depth, cap, point), the record and the stale stack word after.
+    #[test]
+    fn capsule_polygon_matches_the_original() {
+        use super::super::gjk::polygon_normal;
+        let u = |h: &str| u32::from_str_radix(&h.replace('_', ""), 16).unwrap();
+        // (axis through the face, an end ball, the edge tests: touched / not; capsules without length)
+        let mut seen = [0usize; 5];
+        for (k, line) in include_str!("../testdata/capsule_polygon_ref.txt").lines().enumerate() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(u).collect();
+            let x: Vec<u32> = o.split_whitespace().map(u).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let p = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let vs: Vec<Vec3> = (0..6).map(|j| p(3 * j)).collect();
+            let v = [vs[0], vs[1], vs[2]];
+            let (a, b, r, area) = (p(18), p(21), f(24), f(25));
+            let n = polygon_normal(&v, area);
+            let own = if w[32] == 0 { n } else { Vec3::Z };
+            let beside = |e: usize| match w[26 + e] {
+                0xFFFF => None,
+                j @ 1..=3 => {
+                    let j = j as usize;
+                    Some(Beside { normal: polygon_normal(&[vs[j % 3], vs[j - 1], vs[2 + j]], f(28 + j)), v0x: Some(vs[j % 3].x) })
+                }
+                _ => Some(Beside { normal: Vec3::Z, v0x: None }),
+            };
+            let mut slot = w[35];
+            let h = capsule_polygon(a, b, r, &v, n, own, beside, &mut slot);
+            let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+            let mat = w[34] << 8;
+            if mat & w[33] != 0 {
+                assert_eq!(&x[0..2], &[0, 0], "line {k}: material");
+            } else {
+                assert_eq!([x[0], x[1]], [(h.depth > 0.0) as u32, 1], "line {k}: result, list call");
+                assert_eq!([x[2], x[3]], [h.depth.to_bits(), 0], "line {k}: depth, cap");
+                assert_eq!(&x[4..7], &bits(h.point), "line {k}: point");
+                if w[37] != 0 && h.depth > 0.0 {
+                    assert_eq!(x[7], 0x1234, "line {k}: instance");
+                    assert_eq!(&x[8..11], &bits(h.point), "line {k}: contact");
+                    assert_eq!(&x[11..14], &bits(h.normal), "line {k}: normal");
+                    assert_eq!(&x[14..17], &bits(n), "line {k}: polygon normal");
+                    assert_eq!(&x[17..20], &[h.t.to_bits(), h.depth.to_bits(), mat], "line {k}: t, depth, material");
+                    assert_eq!(&x[20..24], &[w[32], 2, 1, 0], "line {k}: index, kind, +80, +82");
+                }
+            }
+            assert_eq!(x[24], slot, "line {k}: stale word");
+            let mut s = 0;
+            if segment_crossing(a, b, n, &v).is_some() {
+                seen[0] += 1;
+            } else if [a, b].iter().any(|&c| {
+                let (code, _, _, d, _) = ball_ngon(c, r, &v, n, &mut s);
+                code != 3 && d >= 0.0
+            }) {
+                seen[1] += 1;
+            } else {
+                seen[if h.depth > 0.0 { 2 } else { 3 }] += 1;
+            }
+            if !(vdot(b - a, b - a) > f32::from_bits(0x2B8C_BCCC)) {
+                seen[4] += 1;
+            }
+        }
+        let ends: Vec<usize> = END_CASES.iter().map(|c| c.load(std::sync::atomic::Ordering::Relaxed)).collect();
+        assert_eq!((seen, ends), ([506, 1430, 518, 1546, 283], vec![345, 90, 158, 89, 379, 135, 147, 152, 932]));
     }
 
     /// F-43031 (directed) run offline on the original's code (work/cameras2/sweep/sweep_ref.py):
