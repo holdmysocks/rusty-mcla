@@ -479,6 +479,16 @@ fn search_clock_runs(clock: f32) -> bool {
     f64::from(clock) > 0.0
 }
 
+/// The Search command's (7) block: F-60530 (+0..+8 0, +12 1.0, byte +16 0, +20 0.0), then the sender's byte +16 (search from the
+/// cop's own place with a random turn at every junction: the dispatch's searcher) and +20 (the turn at the first junction).
+fn search_block(random: bool, angle: f32) -> [u32; 8] {
+    let mut b = [0u32; 8];
+    b[3] = 1.0f32.to_bits();
+    b[4] = (random as u32) << 24;
+    b[5] = angle.to_bits();
+    b
+}
+
 /// A command's block as the port's senders build it: Stop (1) F-72181 (+12 1.0, +16 0, +20 1.0, +24 -1, +28 -1000) - Block's
 /// enter F-56982 sets the handbrake byte, +24 0 and its steer -, AlongSide (5) F-94949 (+12 1.0, +16 the side, +20
 /// fAlongSideDist), the others F-59773 (+12 1.0). No targets or tactic (the port's brains read none of them).
@@ -2382,6 +2392,10 @@ impl Police {
         log::info!("police: dispatch cruiser {} searches: {} goals", uid, pts.len());
         self.srch.retain(|s| s.uid != uid);
         self.srch.push(CopSearch { uid, no_goals: pts.is_empty(), pts, random: true, angle, ..Default::default() });
+        // (command 7 with +16 = 1 and the angle, F-60530's block, through the brain command F-83687)
+        if let Some(tc) = self.tacs.get_mut(&uid) {
+            brain_command(&mut tc.brain, 7, Some(&search_block(true, angle)), 0);
+        }
     }
 
     /// The tactic's target car (+32): the AI racer the cop zone chose, else the player.
@@ -3392,6 +3406,11 @@ impl Police {
                             let pts = search_points(nav, world, self.last_known, self.last_known_v, t("fMinSetGoalTime", 1.0), true, false, angle, &mut rnd);
                             log::info!("police: cruiser {} search goals: {} (turn {:.2})", u, pts.len(), angle);
                             self.srch.push(CopSearch { uid: u, no_goals: pts.is_empty(), pts, angle, ..Default::default() });
+                            // (the Search state's enter sends command 7 with its block, F-60530 + the angle, through the brain
+                            // command F-83687; the unseen and cone times are kept)
+                            if let Some(tc) = self.tacs.get_mut(&u) {
+                                brain_command(&mut tc.brain, 7, Some(&search_block(false, angle)), 0);
+                            }
                         }
                     }
                 }
@@ -4777,12 +4796,13 @@ mod tests {
             }
         };
         let mut lines = reference.lines();
-        // (the blocks the senders build, against the original's initialisers F-59773 / F-72181 / F-94949 on 32 bytes of A5,
+        // (the blocks the senders build, against the original's initialisers F-59773 / F-72181 / F-94949 / F-60530 on 32 bytes of A5,
         // on the words F-83687 reads for that command: +0..+12, and Stop's byte +16 and +20..+28, AlongSide's byte +16 and +20;
         // the image's fAlongSideDist is the class default 3.5)
         for (name, blk, read) in [("basic", cmd_block(4, false, 0.0, false, 0.0), &[0, 1, 2, 3][..]),
                                   ("stop", cmd_block(1, false, 0.0, false, 0.0), &[0, 1, 2, 3, 4, 5, 6, 7][..]),
-                                  ("along", cmd_block(5, false, 0.0, false, 3.5), &[0, 1, 2, 3, 4, 5][..])] {
+                                  ("along", cmd_block(5, false, 0.0, false, 3.5), &[0, 1, 2, 3, 4, 5][..]),
+                                  ("search", search_block(false, 0.0), &[0, 1, 2, 3, 4, 5][..])] {
             let v: Vec<&str> = lines.next().unwrap().split_whitespace().collect();
             assert_eq!((v[0], v[1]), ("BLOCK", name));
             for &i in read {
