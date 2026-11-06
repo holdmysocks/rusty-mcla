@@ -573,8 +573,11 @@ impl Roamers {
                 let mut h = game.mc4_mission_hookman(row);
                 if row.2.is_empty() {
                     // (REPEAT_BESTOF_<D>: mcSlotSystem_FindRandomAvailableCharacter(d) and a
-                    // set-up of his)
-                    let Some(name) = self.sys.random_character(d) else { continue };
+                    // set-up of his. Around the pick the script marks the mission's own man -
+                    // mcMission_GetHookmanNameId, GH_10 / GH_21 / .. - in use and gives him his mark
+                    // back after it (IsCharacterUsed 0x033, ToggleCharacterUsed 0x040 / 0x0b7), so he
+                    // is never the one picked: `random_character_but`)
+                    let Some(name) = self.sys.random_character_but(d, game.career.hookman_name_id(row.0)) else { continue };
                     let Some((car, config, m)) = game.mc4_character_car(&name, row.5) else { continue };
                     h.difficulty = match crate::mc4::gap_difficulty(game.mc4_samples_of(&car).map_or(0.0, |s| crate::mc4::setup_perf(s, m)) - perf) { x if x <= 0 => 1, 5 => 3, x => x };
                     (h.name, h.car, h.config, h.mod_value) = (name, car, config, m);

@@ -780,6 +780,11 @@ impl Career {
         self.text(&format!("{}_TITLE", self.missions[i].id))
     }
 
+    /// The mission's szHookmanNameId (mcMission_GetHookmanNameId), "" for none.
+    pub fn hookman_name_id(&self, id: &str) -> &str {
+        self.mission_no(id).map_or("", |i| self.missions[i].hookman.as_str())
+    }
+
     fn who(&self, i: usize) -> String {
         let h = &self.missions[i].hookman;
         if h.is_empty() || h.eq_ignore_ascii_case("None") {

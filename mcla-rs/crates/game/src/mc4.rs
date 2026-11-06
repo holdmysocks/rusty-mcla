@@ -9513,6 +9513,11 @@ impl SlotSystem {
         at
     }
 
+    /// mcSlotSystem_IsCharacterUsed: the character's mark in the district's list (None: not in it).
+    pub fn character_used(&self, d: usize, name: &str) -> Option<bool> {
+        self.characters.get(d)?.iter().find(|c| c.0.eq_ignore_ascii_case(name)).map(|c| c.1)
+    }
+
     /// F-66870 (mcSlotSystem_ToggleCharacterUsed).
     pub fn toggle_character(&mut self, d: usize, name: &str, used: bool) {
         if let Some(c) = self.characters.get_mut(d).and_then(|l| l.iter_mut().find(|c| c.0.eq_ignore_ascii_case(name))) {
@@ -9535,6 +9540,16 @@ impl SlotSystem {
         }
         self.characters[d].iter_mut().for_each(|c| c.1 = false);
         Some(self.characters[d][r].0.clone())
+    }
+
+    /// REPEAT_BESTOF_<D>'s pick (`game/career/missions/repeat_bestof_<d>.sco` 0x027..0x0b7): the
+    /// mission's own man marked in use around `random_character` and his mark given back after it.
+    pub fn random_character_but(&mut self, d: usize, own: &str) -> Option<String> {
+        let was = self.character_used(d, own);
+        self.toggle_character(d, own, true);
+        let pick = self.random_character(d);
+        self.toggle_character(d, own, was.unwrap_or(false));
+        pick
     }
 
     fn put(&mut self, d: usize, i: usize, h: SlotHookman, priority: i32) {
@@ -16438,6 +16453,13 @@ mod tests {
         }
         assert!(s.random_character(4).is_some());
         assert!(s.characters[4].iter().all(|c| !c.1));
+        // (REPEAT_BESTOF's pick never gives the mission's own man while another is free, and
+        // leaves his mark as it was)
+        let own = s.characters[4][0].0.clone();
+        for _ in 0..20 {
+            assert_ne!(s.random_character_but(4, &own).as_deref(), Some(own.as_str()));
+            assert_eq!(s.character_used(4, &own), Some(false));
+        }
         // (the table of the missions: 63 requests, all of priority 1; the first mission's
         // man is asked for at Easy, the second's at Medium, the others at Hard)
         assert_eq!(MISSION_HOOKMEN.len(), 63);
