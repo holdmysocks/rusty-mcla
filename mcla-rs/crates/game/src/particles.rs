@@ -1413,6 +1413,21 @@ impl Particles {
             let mut inst_at: HashMap<u32, (Vec3, bool)> = HashMap::new();
             // (and its cull sphere's centre offset, turned with it: `F-66872`)
             let mut inst_cull: HashMap<u32, Vec3> = HashMap::new();
+            // (and the effect's colour tint at its loop time, by its evolutions: `F-92352`; children by their own rule)
+            let mut inst_tint: HashMap<u32, [f32; 4]> = HashMap::new();
+            fn tints(fx: &FxList, e: &Effect, m: &mut HashMap<u32, [f32; 4]>) {
+                let r = &fx.effects[e.effect];
+                if !r.tint.keys.is_empty() {
+                    let base = r.tint.eval(e.t);
+                    m.insert(e.id, r.evo.as_ref().map_or(base, |g| g.evolve(0, 0, base, e.t, &e.evo)));
+                }
+                for k in &e.kids {
+                    tints(fx, k, m);
+                }
+            }
+            for e in &self.effects {
+                tints(&fx, e, &mut inst_tint);
+            }
             for e in &self.effects {
                 inst.insert(e.id, (e.alpha, e.evo));
                 inst_at.insert(e.id, (e.pos, e.arrow));
@@ -1512,6 +1527,9 @@ impl Particles {
                 if pr.flags & if pr.sprite.is_some() { flag::RANDOM_COLOR } else { flag::MODEL_RANDOM_COLOR } != 0 {
                     c = c.lerp(v3(pev(1, pr.color_max.eval(p.t))), p.r[1]);
                 }
+                // (times the effect's tint, rgba, then the instance's colour where the rule allows it: `F-92352`)
+                let etint = inst_tint.get(&p.inst).copied().unwrap_or([1.0; 4]);
+                c *= v3(etint);
                 if pr.flags & 8 != 0 {
                     c *= Vec3::from(p.tint);
                 }
@@ -1527,7 +1545,7 @@ impl Particles {
                 let projected = pr.sprite.as_ref().map_or(false, |s| s.shader == "mc4_rmptfx_projected");
                 let night = (4.0 * ((self.hour / 12.0 - 1.0).abs() - 0.4)).clamp(0.0, 1.0);
                 let a = pev(19, pr.alpha.eval(p.t));
-                let alpha = ((lerp(a[0], a[1], p.r[2]) * p.fade * ialpha).clamp(0.0, 1.0) * 255.0).floor() / 255.0;
+                let alpha = ((lerp(a[0], a[1], p.r[2]) * etint[3] * p.fade * ialpha).clamp(0.0, 1.0) * 255.0).floor() / 255.0;
                 if alpha <= 0.002 {
                     continue;
                 }

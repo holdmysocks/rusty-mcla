@@ -821,6 +821,12 @@ pub struct EffectRule {
     /// +100 -> `PtxEvoGroup`: the effect's evolutions by name (the instance keeps a value for
     /// each, `F-38579`; "LOD" is set from the camera's distance, `F-11951`)
     pub evo_names: Vec<String>,
+    /// +0x08 `KFColorTint` (rgba, over the effect's loop): every particle's colour and alpha are multiplied by it at the
+    /// draw (`F-92352`, list 0 property 0 of `evo`); +0x30 `KFColorTintMax` is used only with byte +0x10d, which no rule
+    /// on the disc sets
+    pub tint: Keyframe,
+    /// the effect's evolution group (+0x100), for the tint's evolution overrides
+    pub evo: Option<EvoGroup>,
 }
 
 /// The whole effect list.
@@ -863,7 +869,7 @@ impl FxList {
                     events.push(Event { time: rd.f32(e + 0x08), cap: rd.u32(e + 0x18) as i32, kind, evo: rd.ptr(e + 0x0c).map(|g| EvoGroup::parse(&rd, g)) });
                 }
             }
-            effects.push(EffectRule { name: rd.cstr_ptr(o + 0xf8).unwrap_or_default(), duration: [rd.f32(o + 0x15c), rd.f32(o + 0x160)], time_scalar: [rd.f32(o + 0x164), rd.f32(o + 0x168)], pre_update: rd.f32(tl + 0x08), num_loops: rd.u32(tl + 0x0c) as i32, cull_distance: rd.f32(o + 0x14c), fade_distance: rd.f32(o + 0x144), lod_near: rd.f32(o + 0x150), lod_far: rd.f32(o + 0x154), zoom: Keyframe::parse(&rd, o + 0x58), cull_offset: [rd.f32(o + 0x180), rd.f32(o + 0x184), rd.f32(o + 0x188)], cull_radius: rd.f32(o + 0x148), sort_events: rd.u8(o + 0x178) != 0, events, evo_names: rd.ptr(o + 0x100).map(|g| EvoGroup::parse(&rd, g).names).unwrap_or_default() });
+            effects.push(EffectRule { name: rd.cstr_ptr(o + 0xf8).unwrap_or_default(), duration: [rd.f32(o + 0x15c), rd.f32(o + 0x160)], time_scalar: [rd.f32(o + 0x164), rd.f32(o + 0x168)], pre_update: rd.f32(tl + 0x08), num_loops: rd.u32(tl + 0x0c) as i32, cull_distance: rd.f32(o + 0x14c), fade_distance: rd.f32(o + 0x144), lod_near: rd.f32(o + 0x150), lod_far: rd.f32(o + 0x154), zoom: Keyframe::parse(&rd, o + 0x58), cull_offset: [rd.f32(o + 0x180), rd.f32(o + 0x184), rd.f32(o + 0x188)], cull_radius: rd.f32(o + 0x148), sort_events: rd.u8(o + 0x178) != 0, events, evo_names: rd.ptr(o + 0x100).map(|g| EvoGroup::parse(&rd, g).names).unwrap_or_default(), tint: Keyframe::parse(&rd, o + 0x08), evo: rd.ptr(o + 0x100).map(|g| EvoGroup::parse(&rd, g)) });
         }
         Ok(FxList { effects, emit_rules, particle_rules, effect_hashes: df.hashes.clone() })
     }
@@ -989,6 +995,11 @@ mod tests {
             }
         }
 
+        // the effect tints (`F-92352`): six rules are not white, fire orange and the exhaust 0.8 opaque
+        let tinted: Vec<&str> = fx.effects.iter().filter(|e| [0.0f32, 0.5, 1.0].iter().any(|t| e.tint.eval(*t) != [1.0; 4])).map(|e| e.name.as_str()).collect();
+        assert_eq!(tinted.len(), 6, "{tinted:?}");
+        assert_eq!(fx.effects[fx.effect("fire").unwrap()].tint.eval(0.5), [1.0, 0.842593, 0.509259, 1.0]);
+        assert_eq!(fx.effects[fx.effect("veh_exhaust").unwrap()].tint.eval(0.5)[3], 0.8);
         // water_fountain_beverly: every 4 s a spout (at once) and, 1.45 s later, its splash
         let bev = &fx.effects[fx.effect("water_fountain_beverly").unwrap()];
         assert_eq!((bev.duration, bev.num_loops, bev.events.len()), ([4.0, 4.0], -1, 2));
