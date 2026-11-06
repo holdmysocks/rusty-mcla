@@ -10038,12 +10038,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let mut sig_refl: Vec<siglrefl::Rect> = Vec::new();
             if let (Some(mut tune), false, false) = (halo::tune(), map_baked || matches!(self.game.mode, Mode::Garage), halo::old_look()) {
                 let w = match self.weather { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 };
-                // (StarSize is the one glow member the light manager blends by the weather weights, F-86405:
-                // a blend in progress moves it smoothly instead of at the blend's end)
+                // (the light manager sums every per-weather glow member by the weather weights, F-70200 /
+                // F-86405, and takes the nested arrays' night item when IsNight: a blend in progress moves
+                // sizes and intensities smoothly instead of at the blend's end)
+                tune.night_item(self.time_of_day > 18.0 || self.time_of_day < 6.0);
                 if let Some((_, nw, f)) = self.sky_next.as_ref() {
                     let nw = match nw { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 };
-                    let (a, b) = (tune.star[w], tune.star[nw]);
-                    tune.star[w] = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+                    tune.blend(w, nw, *f);
                 }
                 let cam = self.cam.pos;
                 // (a light whose place is off the screen has no quads - both vertex programs - and
@@ -10059,7 +10060,21 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     for (li, (((p, c, _), bx), (bc, bw, br, org))) in self.props.glow_lamps.iter().zip(self.props.glow_boxes.iter()).zip(self.props.glow_cull.iter()).enumerate() {
                         // (the occlusion test belongs to the rule's second branch alone - large
                         // props 200 .. 250 m off; MCLA_DEBUG_VIEW=118: without it)
-                        if !halo::lamp_lit(*org, hour) || !lamp_list.holds(*bc, *bw, *br, || !no_occ && occluded.hides_aabb(bx.0, bx.1)) {
+                        let lit = halo::lamp_lit(*org, hour);
+                        if !(lit || refl_night) || !lamp_list.holds(*bc, *bw, *br, || !no_occ && occluded.hides_aabb(bx.0, bx.1)) {
+                            continue;
+                        }
+                        if refl_night && sig_refl.len() < siglrefl::MAX && !self.props.glow_signal.get(li).copied().unwrap_or(false) {
+                            // (the size is over the width and height of the renderer's picture object (its
+                            // vfuncs 24 / 28: 320 x 180 - every prop rectangle of hl_L_23.5 has rsize 0.3125 x 0.5556)
+                            let rs = [tune.prop_refl_size[0] / siglrefl::PICTURE.0, tune.prop_refl_size[1] / siglrefl::PICTURE.1];
+                            let oy = (bx.0.y + bx.1.y) * 0.5;
+                            if let Some(r) = siglrefl::rect(vp, self.lod_near, oy, *p, cam, c.to_array(), tune.prop_refl_intensity, rs, siglrefl::PICTURE) {
+                                if (self.frame_no == 60 || self.frame_no == 280) && std::env::var("MCLA_GLOW_DUMP").is_ok() { eprintln!("proprefl P {:.2} {:.2} {:.2} origin y {:.2} rect {:.4} {:.4} {:.4} {:.4} depth {:.5} I {:.3}", p.x, p.y, p.z, oy, r.r[0], r.r[1], r.r[2], r.r[3], r.z[0], r.z[1]); }
+                                sig_refl.push(r);
+                            }
+                        }
+                        if !lit {
                             continue;
                         }
                         if let Some(g) = tune.prop(w, *p, *c, cam) {
@@ -10076,6 +10091,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // clause, 300 m, never decides inside the list's reach), or within 20 m)
                     if head_ok.map_or(true, |(k, _)| k != *h) {
                         let (o, bc, bw, br, bx) = self.props.signal_head_cull(*h);
+                    // (F-28456's reflection branch: every light of a lamp prop (kind 4) while IsNight - not the
+                    // lamp's own minute - adds a rectangle to the reflection list, F-44648: its place mirrored
+                    // about the prop's origin height, size sm_PropGlowReflectionSeedSize / the picture's
+                    // width and height, strength sm_fPropGlowReflectionIntensity, the lamp's colour)
+                    let refl_night = hour > 18.0 || hour < 6.0;
                         let ok = lamp_list.holds(bc, bw, br, || occluded.hides_aabb(bx.0, bx.1)) && (lamp_list.sphere_in_view(o, 2.0) || o.distance_squared(cam) <= 400.0);
                         head_ok = Some((*h, ok));
                     }

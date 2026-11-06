@@ -29,14 +29,23 @@ pub struct Tune {
     /// sm_fCarGlowIntensitys / sm_CarLightGlowSizess
     pub car_intensity: [f32; 4],
     pub car_size: [[f32; 2]; 4],
-    /// sm_fStreakIntensitys / sm_fBloomIntensitys (the star's and the seed's factor)
+    /// sm_fStreakIntensitys / sm_fBloomIntensitys (the star's and the seed's factor): the item in use
+    /// (`night_item`), a weather each
     pub streak: [f32; 4],
     pub bloom: [f32; 4],
+    /// the files' two items of those (0 by day, 1 at night: the light manager's weather sum, F-70200,
+    /// takes item IsNight)
+    pub streak_items: [[f32; 4]; 2],
+    pub bloom_items: [[f32; 4]; 2],
     /// StarSize
     pub star: [[f32; 2]; 4],
     /// sm_fPropTrailIntensitys / sm_fCarTrailIntensitys (the light trails' strength: trail.rs)
     pub prop_trail: [f32; 4],
     pub car_trail: [f32; 4],
+    /// sm_PropGlowReflectionSeedSize / sm_fPropGlowReflectionIntensity: the prop lamps' rectangles in the
+    /// road's reflection picture (F-28456's reflection branch, siglrefl.rs)
+    pub prop_refl_size: [f32; 2],
+    pub prop_refl_intensity: f32,
     /// MaxGlowDist, MaxGlowBias, MaxCarGlowBias, MinGlowBias
     pub max_dist: f32,
     pub max_bias: f32,
@@ -56,9 +65,13 @@ impl Default for Tune {
             car_size: [[6.0, 2.6]; 4],
             streak: [0.15; 4],
             bloom: [1.0, 1.0, 1.0, 2.0],
+            streak_items: [[0.15; 4]; 2],
+            bloom_items: [[1.0, 1.0, 1.0, 2.0]; 2],
             star: [[6.6, 3.85], [6.6, 3.85], [6.6, 3.85], [6.6, 3.2]],
             prop_trail: [0.5, 0.5, 0.55, 0.5],
             car_trail: [0.5; 4],
+            prop_refl_size: [100.0, 100.0],
+            prop_refl_intensity: 3.8,
             max_dist: 0.6,
             max_bias: 0.05,
             max_car_bias: 0.02,
@@ -102,16 +115,72 @@ impl Tune {
         t.signal_refl = pairs("sm_fSignalGlowReflectionSizes", t.signal_refl);
         t.car_intensity = four("sm_fCarGlowIntensitys", t.car_intensity);
         t.car_size = pairs("sm_CarLightGlowSizess", t.car_size);
-        t.streak = four("sm_fStreakIntensitys", t.streak);
-        t.bloom = four("sm_fBloomIntensitys", t.bloom);
+        // (two `<Item>`s: day, night; a file with one item uses it for both)
+        let items = |name: &str, d: [[f32; 4]; 2]| {
+            let v = floats(text, name);
+            match v.len() {
+                n if n >= 8 => [[v[0], v[1], v[2], v[3]], [v[4], v[5], v[6], v[7]]],
+                n if n >= 4 => [[v[0], v[1], v[2], v[3]]; 2],
+                _ => d,
+            }
+        };
+        t.streak_items = items("sm_fStreakIntensitys", t.streak_items);
+        t.bloom_items = items("sm_fBloomIntensitys", t.bloom_items);
+        t.streak = t.streak_items[0];
+        t.bloom = t.bloom_items[0];
         t.star = pairs("StarSize", t.star);
         t.prop_trail = four("sm_fPropTrailIntensitys", t.prop_trail);
         t.car_trail = four("sm_fCarTrailIntensitys", t.car_trail);
+        // (`<name x=".." y=".."/>`)
+        let xy = |name: &str, d: [f32; 2]| -> [f32; 2] {
+            let Some(i) = text.find(&format!("<{name} ")) else { return d };
+            let tag = &text[i..i + text[i..].find('>').unwrap_or(0)];
+            let at = |k: &str| tag.find(&format!(" {k}=\"")).and_then(|j| tag[j + k.len() + 3..].split('"').next()?.trim().parse().ok());
+            [at("x").unwrap_or(d[0]), at("y").unwrap_or(d[1])]
+        };
+        t.prop_refl_size = xy("sm_PropGlowReflectionSeedSize", t.prop_refl_size);
+        t.prop_refl_intensity = one("sm_fPropGlowReflectionIntensity", t.prop_refl_intensity);
         t.max_dist = one("MaxGlowDist", t.max_dist);
         t.max_bias = one("MaxGlowBias", t.max_bias);
         t.max_car_bias = one("MaxCarGlowBias", t.max_car_bias);
         t.min_bias = one("MinGlowBias", t.min_bias);
         t
+    }
+
+    /// The streak / bloom item the light manager's weather sum (F-70200) reads: the
+    /// nested arrays' item 1 when IsNight (hour past the manager's +14568 = 18 or before its +14564 = 6,
+    /// not in the garage), else item 0. (The disc's file has equal items.)
+    pub fn night_item(&mut self, night: bool) {
+        let i = night as usize;
+        self.streak = self.streak_items[i];
+        self.bloom = self.bloom_items[i];
+    }
+
+    /// F-70200's weather sum over every per-weather member it reads (sm_PropGlowSeedSizes,
+    /// sm_fPropGlowIntensitys, sm_fPropTrailIntensitys, sm_fCarGlowIntensitys, sm_fCarTrailIntensitys,
+    /// the streak / bloom items, sm_fSignalGlowSizes, sm_fSignalGlowReflectionSizes,
+    /// sm_fSignalGlowIntensitys, sm_CarLightGlowSizess, and StarSize through F-86405): weight x
+    /// member added over the weathers, the consumers (AddGlow F-92524) reading the sums. With the
+    /// port's two-weather cross-fade (weights 1 - f and f) that is entry `w` moved towards entry `nw`
+    /// by `f`; the sums are written into entry `w`, which the glow functions are then called with.
+    pub fn blend(&mut self, w: usize, nw: usize, f: f32) {
+        fn l1(a: &mut [f32; 4], w: usize, nw: usize, f: f32) {
+            a[w] += (a[nw] - a[w]) * f;
+        }
+        fn l2(a: &mut [[f32; 2]; 4], w: usize, nw: usize, f: f32) {
+            for k in 0..2 {
+                a[w][k] += (a[nw][k] - a[w][k]) * f;
+            }
+        }
+        if w == nw || w > 3 || nw > 3 {
+            return;
+        }
+        for a in [&mut self.prop_intensity, &mut self.signal_size, &mut self.signal_intensity, &mut self.car_intensity, &mut self.streak, &mut self.bloom, &mut self.prop_trail, &mut self.car_trail] {
+            l1(a, w, nw, f);
+        }
+        for a in [&mut self.prop_size, &mut self.signal_refl, &mut self.car_size, &mut self.star] {
+            l2(a, w, nw, f);
+        }
     }
 }
 
@@ -531,8 +600,29 @@ mod tests {
         let t = Tune::parse(x);
         assert_eq!(t.prop_intensity, [1.5, 2.0, 3.0, 4.0]);
         assert_eq!(t.bloom[3], 3.0);
+        assert_eq!(t.bloom_items[1], [1.0, 1.0, 1.0, 3.0]);
         assert_eq!(t.star[3], [6.0, 2.0]);
         assert_eq!(t.max_bias, 0.07);
         assert_eq!(t.min_bias, 0.009);
+    }
+
+    /// The disc's file: both items of the nested arrays, and the weather sum.
+    #[test]
+    fn glow_tune_items_and_weather_sum() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Ok(x) = std::fs::read_to_string(std::path::Path::new(&root).join("tune/lighting/GlowTuning.xml")) else { return };
+        let mut t = Tune::parse(&x);
+        assert_eq!(t.streak_items, [[0.15; 4]; 2]);
+        assert_eq!(t.bloom_items, [[1.0, 1.0, 1.0, 2.0]; 2]);
+        // nice -> foggy, half way: the prop glow's intensity, size and bloom between the two
+        t.night_item(true);
+        t.blend(0, 3, 0.5);
+        assert!((t.prop_intensity[0] - (4.35 + 2.0) / 2.0).abs() < 1e-6);
+        assert!((t.prop_size[0][1] - (13.8 + 14.9) / 2.0).abs() < 1e-5);
+        assert!((t.bloom[0] - 1.5).abs() < 1e-6);
+        assert!((t.star[0][1] - (3.85 + 3.2) / 2.0).abs() < 1e-6);
+        assert_eq!(t.prop_intensity[3], 2.0);
+        assert_eq!(t.prop_refl_size, [100.0, 100.0]);
+        assert_eq!(t.prop_refl_intensity, 3.8);
     }
 }

@@ -19,6 +19,10 @@ use std::sync::Mutex;
 
 /// most rectangles a frame (sub_822FB508: the count at 0x8287E360 against 96)
 pub const MAX: usize = 96;
+/// the width and height of the picture object the prop lamps' rectangles are sized by (F-28456: seed size x
+/// 1 / its vfuncs 24 and 28, the object the reflection draw takes its target size from); read off the six prop rectangles of hl_L_23.5 (rsize
+/// 0.3125 x 0.5556 = 100 / 320 x 100 / 180)
+pub const PICTURE: (f32, f32) = (320.0, 180.0);
 /// [0x828393D4], the integer the draw divides the strength by (recorded: StreakParams.y = I / 4)
 pub const DIVISOR: f32 = 4.0;
 /// the main view's far clip in the recordings (its projection's z column: near 0.2000, far 5994 .. 6000)
