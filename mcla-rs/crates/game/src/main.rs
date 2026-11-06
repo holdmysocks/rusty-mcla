@@ -2909,7 +2909,9 @@ impl App {
         }
         let t_stream = Instant::now();
         crate::ticktimes::mark(crate::ticktimes::S::World);
-        world.update(&mut gpu, focus, 6.0);
+        // (the city streams and picks each sector's detail or far model from the last main view's LOD view, as the
+        // original's F-50083 does: the camera moved back 10 m along its back axis, F-66201 - `World::set_view` in the render)
+        world.update(&mut gpu, world.view_point().unwrap_or(focus), 6.0);
         crate::ticktimes::mark(crate::ticktimes::S::Other);
         self.fl_stream_ms += t_stream.elapsed().as_secs_f32() * 1000.0;
         // special abilities (real time); Zone slows the whole simulation down
@@ -8184,7 +8186,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if let Some(car) = self.vehicles.player() {
                 let pos = car.state.pos;
                 let world = self.world.as_mut().unwrap();
-                if !world.ready_at(pos) { world.update(self.gpu.as_mut().unwrap(), pos, 6.0); }
+                if !world.ready_at(pos) { world.forget_view(); world.update(self.gpu.as_mut().unwrap(), pos, 6.0); }
                 !world.ready_at(pos)
             } else { false }
         } else { false };
@@ -11542,6 +11544,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         let split_city = std::env::var("MCLA_CITY_ONE_PASS").is_err();
         // (the sectors are tested against the plane sets F-54648 makes of the list's first 31 entries, not the whole list)
         let sector_occluded = occluded.sector_sets();
+        // (the city's LOD view for the next ticks, F-50083: this camera moved back 10 m along its back axis (F-66201),
+        // and which sector records are in view - the box against the frustum and the plane sets, record +292 bit 1, F-60582)
+        {
+            let view = if self.drive && self.vehicles.player().is_some() { self.chase.view() } else { self.cam.view() };
+            let point = view.inverse().transform_point3(Vec3::new(0.0, 0.0, 10.0));
+            let seen = world.record_boxes().iter().map(|&(a, b)| frustum.intersects_aabb(a, b) && !sector_occluded.hides_aabb(a, b)).collect();
+            world.set_view(point, seen);
+        }
         let sector_view = SectorView { gpu: &gpu, occluded: &sector_occluded, frustum: &frustum, cam_pos, lens, only: self.opt.only.as_deref(), hide: self.opt.hide.as_deref() };
         let (sky_bind, citymap, loaded, sets) = (self.sky_bind.as_ref(), self.citymap.as_ref(), &world.loaded, &world.sets);
         // (2026-10-27 (3): A in two halves of the sector list, A1 with the sky, and B's ground sheet and props (B1) each on

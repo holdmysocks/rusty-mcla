@@ -229,6 +229,64 @@ pub struct SectorBatch {
     pub parts: Vec<Part>,
 }
 
+/// A sector record's level-of-detail fade as F-89177 keeps it: +295 the state (1 steady, 2 fading to detail, 4 fading to
+/// far), +288 t, +296 the frame's choice (4 loaded, 2 detail, 1 far). The shipped game's settings: cross-fade on
+/// (0x827E0E26), detail models on (0x827E0E5C), no snap (0x8287C795), the far drawable present (0x8287C7D4), no forced
+/// fade (0x827E0E88 = -1), 3.0 a second (0x827E0E1C) - all read in the running original.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LodFade {
+    pub state: u8,
+    pub t: f32,
+    pub choice: u8,
+}
+
+impl Default for LodFade {
+    fn default() -> Self {
+        LodFade { state: 1, t: 0.0, choice: 0 }
+    }
+}
+
+impl LodFade {
+    /// One frame: `loaded` = record +252 is 3, `near` = +268 under the detail distance, `seen` = +292 bit 1.
+    pub fn step(&mut self, loaded: bool, near: bool, seen: bool, dt: f32) {
+        let detail = loaded && near;
+        if seen {
+            if self.choice == 0 || !loaded {
+                self.state = 1;
+            } else {
+                // (a fade starts when the choice differs from last frame's; one that runs goes on to its end whatever is
+                // chosen meanwhile)
+                let mut run = self.state != 1;
+                if !run && detail != (self.choice & 2 != 0) {
+                    self.state = if detail { 2 } else { 4 };
+                    self.t = 0.0;
+                    run = true;
+                }
+                if run {
+                    self.t += 3.0 * dt;
+                    if self.t > 1.0 {
+                        self.t = 1.0;
+                        self.state = 1;
+                    }
+                }
+            }
+        }
+        self.choice = if loaded { 4 } else { 0 } | if detail { 2 } else { 1 };
+    }
+
+    /// The (sector, far model) alphas F-75080 draws with, the sector loaded or not.
+    pub fn alphas(&self, loaded: bool) -> (f32, f32) {
+        if loaded && self.state != 1 {
+            let u = if self.state == 2 { self.t } else { 1.0 - self.t };
+            ((2.0 * u).min(1.0), 1.0 - 2.0 * (u - 0.5).max(0.0))
+        } else if loaded && self.choice & 2 != 0 {
+            (1.0, 0.0)
+        } else {
+            (0.0, 1.0)
+        }
+    }
+}
+
 pub struct GpuSector {
     /// all batches of the sector share one vertex and one index buffer
     pub vb: Option<wgpu::Buffer>,
@@ -249,8 +307,6 @@ pub struct GpuSector {
     pub u: f32,
     /// the alpha last written to `obj`
     pub shown: f32,
-    /// a detailed sector on its way out
-    pub leaving: bool,
     /// a far model: its test (see [`FarCull`])
     pub far: Option<FarCull>,
 }
@@ -1211,6 +1267,15 @@ pub struct World {
     /// the far city's sector models that are not shown now (their sector itself is loaded);
     /// the shown ones are among `sets`
     far_hidden: HashMap<usize, GpuSector>,
+    /// loaded sectors drawn by their far model now (record +252 = 3, not chosen for detail and not fading)
+    resident: HashMap<usize, GpuSector>,
+    /// each sector's record box (+208 / +224) and its level-of-detail fade (F-89177), by sector
+    rec_box: Vec<(Vec3, Vec3)>,
+    fades: Vec<LodFade>,
+    /// the lens scale (0x827E0DEC), eased to its target (F-50083)
+    lod_scale: f32,
+    /// the last main view's LOD view position and which records were in it ([`World::set_view`])
+    view: std::sync::Mutex<Option<(Vec3, Vec<bool>)>>,
     last_fade: std::time::Instant,
     /// what is left of this frame's upload time (`new_frame`), shared by the frame's ticks
     frame_left_ms: f32,
@@ -1320,6 +1385,13 @@ impl World {
                 own_bound = true;
             }
         }
+        // (each sector's record box: the directory's, which the mesh box matches to 1 mm)
+        let mut rec_box: Vec<(Vec3, Vec3)> = index.sectors.iter().map(|s| (Vec3::from(s.min), Vec3::from(s.max))).collect();
+        for r in sector_records(&assets) {
+            if let Some(j) = record_sector(&r, &index.sectors) {
+                rec_box[j] = (r.min, r.max);
+            }
+        }
         Ok(World {
             index,
             assets,
@@ -1328,6 +1400,11 @@ impl World {
             sets: HashMap::new(),
             set_bounds: HashMap::new(),
             far_hidden: HashMap::new(),
+            resident: HashMap::new(),
+            fades: vec![LodFade::default(); rec_box.len()],
+            rec_box,
+            lod_scale: 1.0,
+            view: std::sync::Mutex::new(None),
             last_fade: std::time::Instant::now(),
             frame_left_ms: f32::INFINITY,
             pending: Default::default(),
@@ -1403,7 +1480,7 @@ impl World {
 
     /// Are the sectors around `p` resident (so physics can run)?
     pub fn ready_at(&self, p: Vec3) -> bool {
-        self.index.sectors.iter().enumerate().all(|(id, s)| Self::dist_to(s, p) > 60.0 || self.loaded.contains_key(&id))
+        self.index.sectors.iter().enumerate().all(|(id, s)| Self::dist_to(s, p) > 60.0 || self.loaded.contains_key(&id) || self.resident.contains_key(&id))
     }
 
     fn dist_to(info: &SectorInfo, p: Vec3) -> f32 {
@@ -1422,7 +1499,45 @@ impl World {
     /// The original's detail-model distance of a sector (sub_822D5A30: `MaxHilodDrawDistance` 300 x the
     /// lens scale, 1.5 at a 25 degree lens .. 1.0 from 50 degrees) times the DETAIL LEVEL `detail`.
     pub fn detail_distance(lens_deg: f32, detail: f32) -> f32 {
-        300.0 * (1.5 - 0.5 * ((lens_deg - 25.0) * 0.04).clamp(0.0, 1.0)) * detail.max(1.0)
+        300.0 * Self::lens_scale(lens_deg) * detail.max(1.0)
+    }
+
+    /// The lens scale's target (F-50083): 1.5 at a 25 degree lens .. 1.0 from 50 degrees.
+    pub fn lens_scale(lens_deg: f32) -> f32 {
+        1.5 - 0.5 * ((lens_deg - 25.0) * 0.04).clamp(0.0, 1.0)
+    }
+
+    /// The original's sector distance (F-82919 from the LOD view's position, record +268): the larger of the x and z gaps from `p` to the
+    /// record's box, 0 inside. Its corner case never fires - the edge mask is made with float multiplies of the integer
+    /// flags (vmulfp128), which flush to 0 - so a point off a corner gets the larger gap, not the corner distance (all
+    /// 439 records' +268 in two live views of the original, work/performance/rec/recdist.py; `rearview::sector_distance`
+    /// is the same rule for the mirror).
+    pub fn lod_dist(b: &(Vec3, Vec3), p: Vec3) -> f32 {
+        let dx = (b.0.x - p.x).max(p.x - b.1.x).max(0.0);
+        let dz = (b.0.z - p.z).max(p.z - b.1.z).max(0.0);
+        dx.max(dz)
+    }
+
+    /// The main view of a rendered frame, for the next ticks' `update`: its LOD view's position (the camera moved back
+    /// 10 m along its back axis, F-66201) and, per sector, whether its record box is in view - against the frustum and the
+    /// occluder plane sets (record +292 bit 1, F-60582).
+    pub fn set_view(&self, point: Vec3, seen: Vec<bool>) {
+        *self.view.lock().unwrap() = Some((point, seen));
+    }
+
+    /// The LOD view's position of the last main view, if one was rendered since [`World::forget_view`].
+    pub fn view_point(&self) -> Option<Vec3> {
+        self.view.lock().unwrap().as_ref().map(|v| v.0)
+    }
+
+    /// No main view now (a load screen streams round its own place).
+    pub fn forget_view(&self) {
+        *self.view.lock().unwrap() = None;
+    }
+
+    /// Each sector's record box, by sector.
+    pub fn record_boxes(&self) -> &[(Vec3, Vec3)] {
+        &self.rec_box
     }
 
     /// A rendered frame starts: the uploads of its ticks share one `budget_ms` of `update` (each tick had its own: after a
@@ -1434,46 +1549,31 @@ impl World {
 
     pub fn update(&mut self, gpu: &mut Gpu, pos: Vec3, budget_ms: f32) {
         let budget_ms = budget_ms.min(self.frame_left_ms);
-        // The original draws a sector in detail while the level distance from the camera to its
-        // box is under 300 m times a lens scale - 1.5 at the 25 degree lens of a standing car,
-        // falling to 1 at 50 degrees (450 m .. 300 m) - and its far model beyond; it keeps
-        // sectors in memory to 600 m (sub_822D5A30 / sub_822D7D00, work/map/lod_rule.md). Here
-        // "loaded" is "drawn in detail", so the load distance is that rule (plus a margin before
-        // a sector is dropped again). The original cross-fades the two over a third of a second;
-        // here they swap. MCLA_SECTOR_DIST=<metres> overrides. OPTIONS > PERFORMANCE > DETAIL LEVEL
-        // multiplies the 300 m (MaxHilodDrawDistance, 0x827E0DE0) - and so what is loaded with it;
-        // ORIGINAL = 1. (DRAW DISTANCE has nothing to scale here: the far models are drawn at any distance.)
-        let lens_deg = crate::props::lens().to_degrees();
-        let detail = Self::detail_distance(lens_deg, crate::props::Lod::now().detail);
+        // The original draws a sector in detail while it is loaded and its distance (F-82919, the larger x / z gap from
+        // the LOD view's position - `pos`, the camera moved back 10 m along its back axis - to its record box) is under 300 m times the lens
+        // scale, which eases at 0.5 a second to 1.5 at the 25 degree lens of a standing car .. 1 from 50 degrees (F-50083),
+        // and its far model otherwise; a switch is a third of a second's cross-fade (F-89177, below). It keeps sectors in
+        // memory to 600 m while its streaming heap has room (lod_rule.md). Here sectors are loaded to that detail distance
+        // (plus a margin before they are dropped): the ones drawn far meanwhile wait in `resident`. MCLA_SECTOR_DIST=<metres>
+        // overrides. OPTIONS > PERFORMANCE > DETAIL LEVEL multiplies the 300 m (MaxHilodDrawDistance, 0x827E0DE0) - and so
+        // what is loaded with it; ORIGINAL = 1. (DRAW DISTANCE has nothing to scale here: the far models are drawn at any distance.)
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(self.last_fade).as_secs_f32().min(0.1);
+        self.last_fade = now;
+        let target = Self::lens_scale(crate::props::lens().to_degrees());
+        self.lod_scale = if self.lod_scale < target { (self.lod_scale + 0.5 * dt).min(target) } else { (self.lod_scale - 0.5 * dt).max(target) };
+        let detail = 300.0 * self.lod_scale * crate::props::Lod::now().detail.max(1.0);
         let detail = std::env::var("MCLA_SECTOR_DIST").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(detail);
         // (the lens widens with speed: keep to the larger distance for a while rather than drop and reload)
         self.load_radius = detail.max(self.load_radius - 2.0);
         self.unload_radius = self.load_radius + 90.0;
-        // unload
-        let far: Vec<usize> = self
-            .loaded
-            .keys()
-            .copied()
-            .filter(|&id| Self::dist_to(&self.index.sectors[id], pos) > self.unload_radius)
-            .collect();
-        // (a sector that is out of range fades out against its far model before it is dropped; one
-        // that comes back in range meanwhile stays)
-        for s in self.loaded.values_mut() {
-            s.leaving = false;
-        }
-        for id in far {
-            if let Some(s) = self.loaded.get_mut(&id) {
-                s.leaving = true;
-            }
-        }
         // request loads, nearest first
         let mut want: Vec<(f32, usize)> = self
-            .index
-            .sectors
+            .rec_box
             .iter()
             .enumerate()
-            .filter(|(id, _)| !self.loaded.contains_key(id) && !self.pending.contains(id))
-            .map(|(id, s)| (Self::dist_to(s, pos), id))
+            .filter(|(id, _)| !self.loaded.contains_key(id) && !self.resident.contains_key(id) && !self.pending.contains(id))
+            .map(|(id, b)| (Self::lod_dist(b, pos), id))
             .filter(|(d, _)| *d < self.load_radius)
             .collect();
         want.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
@@ -1521,7 +1621,7 @@ impl World {
                 }
                 Ok(mut cs) => {
                     self.pending.remove(&cs.id);
-                    if Self::dist_to(&self.index.sectors[cs.id], pos) <= self.unload_radius {
+                    if Self::lod_dist(&self.rec_box[cs.id], pos) <= self.unload_radius {
                         let id = cs.id;
                         let col = std::mem::take(&mut cs.collision);
                         let mats = std::mem::take(&mut cs.collision_mat);
@@ -1529,7 +1629,7 @@ impl World {
                         let gs = self.upload(gpu, cs);
                         ms_up += tu.elapsed().as_secs_f32() * 1000.0;
                         self.stats_tris += gs.tris as u64;
-                        self.loaded.insert(id, gs);
+                        self.resident.insert(id, gs);
                         if !self.own_bound {
                             let tc = std::time::Instant::now();
                             self.collider.sectors.insert(id, SectorMesh::build_with(col, mats));
@@ -1550,33 +1650,47 @@ impl World {
         if ms_up + ms_col > 8.0 {
             log::info!("streaming: {} sectors in, upload {:.1} ms, collision {:.1} ms", n_up, ms_up, ms_col);
         }
-        // The cross-fade of a sector with its far model, as the original times it (a third of a
-        // second; sub_822D7D00): with u running 0 -> 1 the sector's alpha is min(2u, 1) and the
-        // far model's 1 - 2 max(u - 0.5, 0) - the sector comes in over the far model, then the far
-        // model goes; the other way round on the way out.
-        let now = std::time::Instant::now();
-        let dt = now.duration_since(self.last_fade).as_secs_f32().min(0.1);
-        self.last_fade = now;
+        // The level-of-detail fade of every sector record (F-89177), then each model's alpha as the draw F-75080 takes it:
+        // while a loaded sector fades both models are drawn, u = t to detail or 1 - t to far, the sector's alpha min(2u, 1)
+        // and the far model's 1 - 2 max(u - 0.5, 0) - the sector comes in over the far model, then the far model goes;
+        // otherwise the one chosen now. A sector out of view keeps its fade where it is (record +292 bit 1).
+        let seen = self.view.lock().unwrap().as_ref().map(|v| v.1.clone()).unwrap_or_default();
         let mut gone: Vec<usize> = Vec::new();
-        for (id, s) in self.loaded.iter_mut() {
-            s.u = (s.u + if s.leaving { -3.0 } else { 3.0 } * dt).clamp(0.0, 1.0);
-            let alpha = (2.0 * s.u).min(1.0);
-            if alpha != s.shown {
-                if let Some(o) = s.obj.as_ref() {
-                    gpu.update_object(&o.0, &sector_uniform(alpha, false));
-                    gpu.update_object(&o.1, &sector_uniform(alpha, true));
-                }
-                s.shown = alpha;
+        for id in 0..self.rec_box.len() {
+            let loaded = self.loaded.contains_key(&id) || self.resident.contains_key(&id);
+            let d = Self::lod_dist(&self.rec_box[id], pos);
+            self.fades[id].step(loaded, d < detail, seen.get(id).copied().unwrap_or(false), dt);
+            if !loaded {
+                continue;
             }
-            if s.leaving && s.u <= 0.0 {
-                gone.push(*id);
+            let alpha = self.fades[id].alphas(true).0;
+            if alpha > 0.0 {
+                if let Some(s) = self.resident.remove(&id) {
+                    self.loaded.insert(id, s);
+                }
+            } else if let Some(s) = self.loaded.remove(&id) {
+                self.resident.insert(id, s);
+            }
+            if let Some(s) = self.loaded.get_mut(&id).or(self.resident.get_mut(&id)) {
+                if alpha != s.shown {
+                    if let Some(o) = s.obj.as_ref() {
+                        gpu.update_object(&o.0, &sector_uniform(alpha, false));
+                        gpu.update_object(&o.1, &sector_uniform(alpha, true));
+                    }
+                    s.shown = alpha;
+                    s.u = alpha;
+                }
+            }
+            // (dropped once it is drawn far and out of the margin)
+            if alpha <= 0.0 && d > self.unload_radius {
+                gone.push(id);
             }
         }
         // (what the sectors just dropped leave in the texture cache: this much stays for a quick return)
         const IDLE_TEXTURES: u64 = 512 << 20;
         let trim = !gone.is_empty();
         for id in gone {
-            if let Some(s) = self.loaded.remove(&id) {
+            if let Some(s) = self.resident.remove(&id) {
                 self.stats_tris -= s.tris as u64;
             }
             if !self.own_bound {
@@ -1586,23 +1700,26 @@ impl World {
         if trim {
             gpu.trim_textures(IDLE_TEXTURES);
         }
-        // The far city: a sector's simple model is drawn while the sector itself is not fully in.
+        // The far city: a sector's simple model is drawn while its far alpha is above 0.
         let sector_of = |id: usize| (id - FAR_ID) % FAR_SLOTS;
-        let alpha_of = |loaded: &HashMap<usize, GpuSector>, id: usize| loaded.get(&sector_of(id)).map_or(1.0, |s| 1.0 - 2.0 * (s.u - 0.5).max(0.0));
-        let show: Vec<usize> = self.far_hidden.keys().copied().filter(|id| alpha_of(&self.loaded, *id) > 0.0).collect();
+        let alpha_of = |fades: &[LodFade], loaded: &HashMap<usize, GpuSector>, resident: &HashMap<usize, GpuSector>, id: usize| {
+            let k = sector_of(id);
+            fades.get(k).map_or(1.0, |f| f.alphas(loaded.contains_key(&k) || resident.contains_key(&k)).1)
+        };
+        let show: Vec<usize> = self.far_hidden.keys().copied().filter(|id| alpha_of(&self.fades, &self.loaded, &self.resident, *id) > 0.0).collect();
         for id in show {
             if let Some(gs) = self.far_hidden.remove(&id) {
                 self.sets.insert(id, gs);
             }
         }
-        let hide: Vec<usize> = self.sets.keys().copied().filter(|id| *id >= FAR_ID && alpha_of(&self.loaded, *id) <= 0.0).collect();
+        let hide: Vec<usize> = self.sets.keys().copied().filter(|id| *id >= FAR_ID && alpha_of(&self.fades, &self.loaded, &self.resident, *id) <= 0.0).collect();
         for id in hide {
             if let Some(gs) = self.sets.remove(&id) {
                 self.far_hidden.insert(id, gs);
             }
         }
         for (id, gs) in self.sets.iter_mut().filter(|e| *e.0 >= FAR_ID) {
-            let alpha = alpha_of(&self.loaded, *id);
+            let alpha = alpha_of(&self.fades, &self.loaded, &self.resident, *id);
             if alpha != gs.shown {
                 if let Some(o) = gs.obj.as_ref() {
                     gpu.update_object(&o.0, &sector_uniform(alpha, false));
@@ -1851,7 +1968,7 @@ impl World {
         let obj = Some((gpu.new_object(&sector_uniform(u, false)), gpu.new_object(&sector_uniform(u, true))));
         // (its CPU copy is many blocks: freed off the frame)
         rayon::spawn(move || drop(cs));
-        GpuSector { vb, ib, batches, caster_count, caster_min, caster_max, caster_batches, tris, obj, u, shown: u, leaving: false, far }
+        GpuSector { vb, ib, batches, caster_count, caster_min, caster_max, caster_batches, tris, obj, u, shown: u, far }
     }
 }
 
@@ -1894,6 +2011,50 @@ mod lod_option_tests {
         let d = super::World::detail_distance;
         assert_eq!([d(25.0, 1.0), d(37.5, 1.0), d(50.0, 1.0), d(70.0, 1.0)], [450.0, 375.0, 300.0, 300.0]);
         assert_eq!([d(25.0, 2.0), d(50.0, 3.0)], [900.0, 900.0]);
+    }
+
+    /// F-82919 as read live: dt_bn_PaulHastings's record box from the LOD view position (2077.636, -303.634) - off a corner
+    /// of the box, x gap 397.26, z gap 238.93 - gives +268 = 0x43c6a131 (397.2593), the larger gap, not the 463.6 m to
+    /// the corner (work/performance/rec/recdist.py: all 439 records of two views the same).
+    #[test]
+    fn sector_distance_is_the_larger_gap() {
+        let b = (glam::Vec3::new(1408.3169, -4.171857, -64.70095), glam::Vec3::new(1680.3767, 233.76273, 206.63702));
+        let d = super::World::lod_dist(&b, glam::Vec3::new(2077.6362, -11.969, -303.6336));
+        assert!((d - f32::from_bits(0x43c6a131)).abs() < 2e-3, "{d}");
+        assert_eq!(super::World::lod_dist(&b, glam::Vec3::new(1500.0, 0.0, 0.0)), 0.0);
+    }
+
+    /// F-89177: a flip starts a third of a second's fade only in view; a running fade goes to its end; out of view the
+    /// state and t stay; a sector that is not loaded is steady and far.
+    #[test]
+    fn lod_fade_steps_as_the_original() {
+        let mut f = super::LodFade::default();
+        f.step(false, true, true, 0.1);
+        assert_eq!((f.state, f.choice, f.alphas(false)), (1, 1, (0.0, 1.0)));
+        // (loaded and near: fades in)
+        f.step(true, true, true, 0.1);
+        assert_eq!((f.state, f.choice), (2, 6));
+        assert!((f.t - 0.3).abs() < 1e-6);
+        let (da, fa) = f.alphas(true);
+        assert!((da - 0.6).abs() < 1e-6 && fa == 1.0);
+        // (the choice flips back meanwhile: the fade to detail goes on)
+        f.step(true, false, true, 0.1);
+        assert_eq!((f.state, f.choice), (2, 5));
+        // (out of view: kept)
+        f.step(true, false, false, 0.1);
+        assert!((f.t - 0.6).abs() < 1e-6 && f.state == 2);
+        f.step(true, false, true, 0.25);
+        f.step(true, false, true, 0.25);
+        assert_eq!((f.state, f.t), (1, 1.0));
+        // (steady, chosen far: no fade starts, last frame was far already)
+        assert_eq!(f.alphas(true), (0.0, 1.0));
+        // (a flip out of view: no fade, the new choice drawn at once)
+        f.step(true, true, false, 0.1);
+        assert_eq!((f.state, f.alphas(true)), (1, (1.0, 0.0)));
+        f.step(true, false, true, 0.1);
+        assert_eq!(f.state, 4);
+        let (da, fa) = f.alphas(true);
+        assert!((da - 1.0).abs() < 1e-6 && (fa - 0.6).abs() < 1e-5, "{da} {fa}");
     }
 }
 
