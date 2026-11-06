@@ -3723,7 +3723,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             // wheel's back meets the tyre's inside. The mesh's x from the wheel's matrix: rotation x scale, no shear)
             let ax18 = obj.model[0].xyz;
             let x18 = dot(in.wpos - obj.model[3].xyz, ax18) / max(dot(ax18, ax18), 1e-12);
-            if (!(g.params.w > 782.5 && g.params.w < 783.5)) { lit = lit * clamp(1.0 - 3.7037 * (x18 + 0.22), 0.0, 1.0); }
+            // (x' = x - useGradient.x: the rim's object carries it in params.y, 100 on a motorcycle - no fade there)
+            if (!(g.params.w > 782.5 && g.params.w < 783.5)) { lit = lit * clamp(1.0 - 3.7037 * (x18 - obj.params.y + 0.22), 0.0, 1.0); }
             base = vec3<f32>(0.0);
             emissive = vec3<f32>(0.0);
             spec_k = 0.0;

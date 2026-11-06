@@ -5430,7 +5430,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     let k = if c.model.bike { 0.0 } else { fit.map_or(w.tyre_bead - 0.406, |f| f.bead[(i >= 2) as usize]) };
                     finish[4] = [w.tyre_bead, k, 1.0, 0.0];
                 }
-                batch.push_object(b, &ObjectUniform { model: wm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: finish, fill: car_fill, ..Default::default() });
+                // (params.y: the rim effect's useGradient.x - F-91597 hands F-96332 "not a motorcycle" (F-54299): 100.0 on a
+                // motorcycle, 0.0 on a car: city.wgsl's fade along the axle is taken at x - useGradient.x, so a bike's rims never fade)
+                let use_gradient = if c.model.bike { 100.0 } else { 0.0 };
+                batch.push_object(b, &ObjectUniform { model: wm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, use_gradient, 0.0, 0.0], dents: finish, fill: car_fill, ..Default::default() });
                 // the caliper: with the wheel but for its turning, on the rear of the disc on
                 // both sides (the right ones turned over instead of around)
                 if let (Some(cb), true) = (c.caliper_bindings.get(i), c.model.brakes.is_some() || c.brake.is_some()) {
