@@ -53,6 +53,9 @@ struct State {
     laser: crate::render::ms::MsPipe,
     laser_bg: wgpu::BindGroup,
     laser_vb: wgpu::Buffer,
+    beam: crate::render::ms::MsPipe,
+    beam_bg: wgpu::BindGroup,
+    beam_vb: wgpu::Buffer,
     /// m_powerupColor of every type's look (powerup_<name>.mcpowerup, +112) - FX_Color
     pu_colors: [[f32; 4]; 24],
 }
@@ -298,6 +301,18 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
             }
         }
     };
+    // (the beam's DiffuseSampler: "__powerupbeam" = powerup_beam.dds of the cars' global textures)
+    let beam_tex = {
+        let base = std::path::Path::new(data_dir).join("textures/global/cars/globaltex");
+        let d = std::fs::read(base.join("powerup_beam.dds")).or_else(|_| std::fs::read(base.join(format!("0x{:08x}", mcla_formats::hash::joaat("powerup_beam.dds")))));
+        match d.ok().and_then(|d| mcla_formats::dds::parse_dds("powerup_beam.dds", &d).ok()) {
+            Some(t) => gpu.upload_texture(mcla_formats::hash::joaat("pu_fx/powerup_beam.dds"), &t).texture.create_view(&Default::default()),
+            None => {
+                log::warn!("pu_fx: powerup_beam.dds missing");
+                crate::render::create_rgba(&gpu.device, &gpu.queue, 1, 1, &[255, 255, 255, 255], "beam").view
+            }
+        }
+    };
     let device = &gpu.device;
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("pu_fx"),
@@ -345,6 +360,23 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
         layout: &layout,
         entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&laser_tex) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) }, wgpu::BindGroupEntry { binding: 2, resource: ice_ub.as_entire_binding() }],
     });
+    // (the beam's sampler states: address 2 on u, v, w - taken as the Xbox 360 clamp, the laser's 0 being wrap -, filters 1 as
+    // the laser's; the texture is constant along s and about 0 at both ends of t, so the address mode shows nowhere)
+    let beam_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("pu_fx beam"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+    let beam_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("pu_fx beam"),
+        layout: &layout,
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&beam_tex) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&beam_sampler) }, wgpu::BindGroupEntry { binding: 2, resource: ice_ub.as_entire_binding() }],
+    });
+    let beam_vb = device.create_buffer(&wgpu::BufferDescriptor { label: Some("pu_fx beam"), size: (BEAM_MAX * 36) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
     let laser_vb = device.create_buffer(&wgpu::BufferDescriptor { label: Some("pu_fx laser"), size: (LASER_MAX * 36) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
     let bolt_vb = device.create_buffer(&wgpu::BufferDescriptor { label: Some("pu_fx lightning"), size: (BOLT_MAX * 36) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
     let shield_bg = bg(&shield_tex, &shield_ub);
@@ -414,11 +446,13 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 24, shader_location: 2 },
     ];
     let laser = make("pu_fx laser", &pl, "vs_laser", "fs_laser", one, false, false, &[wgpu::VertexBufferLayout { array_stride: 36, step_mode: wgpu::VertexStepMode::Vertex, attributes: &lattrs }]);
+    // (the beam and the ribbon: PowerupShootEffect's "draw" / "drawRibbon" passes, the same states as the laser's)
+    let beam = make("pu_fx beam", &pl, "vs_beam", "fs_beam", one, false, false, &[wgpu::VertexBufferLayout { array_stride: 36, step_mode: wgpu::VertexStepMode::Vertex, attributes: &lattrs }]);
     let pu_colors: [[f32; 4]; 24] = {
         let l = crate::powerups::load_looks(data_dir);
         std::array::from_fn(|i| l[i].powerup_color)
     };
-    *STATE.lock().unwrap() = Some(State { ice_in, ice_out, shield_in, shield_out, stealth_solid, stealth_glass, ice, shield, ice_bg, shield_bg, ice_ub, shield_ub, looks: load_looks(data_dir), bolt, bolt_bg, bolt_vb, laser, laser_bg, laser_vb, pu_colors });
+    *STATE.lock().unwrap() = Some(State { ice_in, ice_out, shield_in, shield_out, stealth_solid, stealth_glass, ice, shield, ice_bg, shield_bg, ice_ub, shield_ub, looks: load_looks(data_dir), bolt, bolt_bg, bolt_vb, laser, laser_bg, laser_vb, beam, beam_bg, beam_vb, pu_colors });
 }
 
 /// The car's bound's box maximum z (the composite bound's +0x10 row, element z): the hull's
@@ -474,6 +508,11 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
     let nb = bolts.len().min(BOLT_MAX);
     let lasers = pu.map_or(Vec::new(), |pu| laser_vertices(pu, vehicles, &s.pu_colors));
     let nl = lasers.len().min(LASER_MAX);
+    let beams = pu.map_or(Vec::new(), |pu| beam_vertices(pu, vehicles));
+    let nbm = beams.len().min(BEAM_MAX);
+    if nbm > 0 {
+        gpu.queue.write_buffer(&s.beam_vb, 0, bytemuck::cast_slice(&beams[..nbm]));
+    }
     if nl > 0 {
         gpu.queue.write_buffer(&s.laser_vb, 0, bytemuck::cast_slice(&lasers[..nl]));
     }
@@ -488,7 +527,7 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
         gpu.queue.write_buffer(&s.bolt_vb, 0, bytemuck::cast_slice(&bolts[..nb]));
     }
     let stealth = vehicles.cars.iter().any(|c| c.pu_stealth);
-    if ice.is_empty() && shield.is_empty() && !stealth && nb == 0 && nl == 0 {
+    if ice.is_empty() && shield.is_empty() && !stealth && nb == 0 && nl == 0 && nbm == 0 {
         return;
     }
     if !ice.is_empty() {
@@ -558,6 +597,13 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
             pass.draw_indexed(0..m.count, 0, 0..n as u32);
         }
     }
+    // (the shoot-effect manager's draw F-97749: every target record's beam and ribbon, then the lasers)
+    if nbm > 0 {
+        pass.set_pipeline(&s.beam);
+        pass.set_bind_group(1, &s.beam_bg, &[]);
+        pass.set_vertex_buffer(0, s.beam_vb.slice(..(nbm * 36) as u64));
+        pass.draw(0..nbm as u32, 0..1);
+    }
     if nl > 0 {
         pass.set_pipeline(&s.laser);
         pass.set_bind_group(1, &s.laser_bg, &[]);
@@ -609,43 +655,342 @@ pub fn sparks(pu: &PowerUps, vehicles: &crate::vehicles::Vehicles, fx: &mut crat
 /// The hit light's strength (F-62430: all round, as the siren's).
 pub const HIT_LIGHT: f32 = 800.0;
 
-/// The hit light (F-24672): the target record nearest the camera within 1000 m, for its 2 s even when dark. x = 6 t - 1 from
-/// the record's start (mgr +40 = 32; (t 192 - 32) / 32). Place: the point (0, 0.5, 1.5) of the shooter and the target, blended
-/// by sat(x) (F-81450), 2 m up. Colour: 0.5 (a A + b B) sat(1 - 2 |(x + 0.5) / 2 - 0.5|), a (0.372, 0.702, 0.831), b (0.537,
-/// 0.569, 0.98), A = 0.8 g(3 x) + 0.2, B = 0.9 g(9 x) + 0.1.
-pub fn hit_light(pu: &PowerUps, vehicles: &crate::vehicles::Vehicles, cam: Vec3) -> Option<(Vec3, [f32; 3])> {
-    let mut best: Option<(f32, Vec3, f32)> = None;
-    for h in &pu.hits {
-        let (Some(a), Some(b)) = (vehicles.cars.get(h.from), vehicles.cars.get(h.to)) else { continue };
-        let x = (pu.time - h.start) * 6.0 - 1.0;
-        let local = Vec3::new(0.0, 0.5, 1.5);
-        let p = (a.state.pos + a.state.rot * local).lerp(b.state.pos + b.state.rot * local, x.clamp(0.0, 1.0));
-        let d = p.distance(cam);
-        if d < best.map_or(1000.0, |q| q.0) {
-            best = Some((d, p, x));
+/// The shoot-effect manager's +40 (its constructor: 32): the beam's travel, in units of 1/192 s.
+pub const BEAM_SPAN: f32 = 32.0;
+/// The manager's +48 / +64 (its constructor): the colours of the hit light's two flickers.
+pub const HIT_LIGHT_A: [f32; 3] = [0.372, 0.702, 0.831];
+pub const HIT_LIGHT_B: [f32; 3] = [0.537, 0.569, 0.98];
+
+/// A matrix as the original keeps it: four rows (x, y, z axes, position).
+pub type Rows = [Vec3; 4];
+
+/// The rows of a pose: the rotation's axes, the position.
+pub fn rows(rot: Quat, pos: Vec3) -> Rows {
+    [rot * Vec3::X, rot * Vec3::Y, rot * Vec3::Z, pos]
+}
+
+/// A target record as the hit light and the beam read it: its start (the clock at the landing), the shooter's and the
+/// target's matrices (F-72989 keeps pointers to them; read when drawn).
+#[derive(Clone, Copy, Debug)]
+pub struct BeamRecord {
+    pub start: f32,
+    pub shooter: Rows,
+    pub target: Rows,
+}
+
+/// The point (0, 0.5, 1.5) of a matrix as F-81450 forms it: row3 + (row2 z + (row0 x + row1 y)), the vector unit's
+/// products rounded before each sum.
+fn light_point(m: &Rows, l: Vec3) -> Vec3 {
+    let v = m[1] * l.y;
+    let v = m[0] * l.x + v;
+    let v = m[2] * l.z + v;
+    m[3] + v
+}
+
+/// The hit light (F-24672, its point F-81450): of the target records the one whose point is nearest the camera, closer than
+/// 1000 m (strictly, first wins a tie). x = fms(t, 192, 32) / 32 (t = clock - start); the point: (0, 0.5, 1.5) of the
+/// shooter and of the target, blended by sat(x); the light 2 m above it. Colour: (a A 0.5 + b B 0.5) sat(1 - 2 |(x + 0.5)
+/// 0.5 - 0.5|), a, b = HIT_LIGHT_A / B, A = 0.8 g(3 x) + 0.2, B = 0.9 g(9 x) + 0.1 (g the game's noise F-52219).
+pub fn hit_light_exact(recs: &[BeamRecord], clock: f32, cam: Vec3) -> Option<(Vec3, [f32; 3])> {
+    use crate::physics::exact::{fma, fms, fnms};
+    let sel = |a: f32, b: f32, c: f32| if a >= 0.0 { b } else { c };
+    let mut best: Option<(Vec3, f32)> = None;
+    let mut near = 1000.0f32;
+    let local = Vec3::new(0.0, 0.5, 1.5);
+    for r in recs {
+        let dt = clock - r.start;
+        let w = fms(dt, 192.0, BEAM_SPAN) * 0.03125;
+        let w0 = sel(w, w, 0.0);
+        let w = sel(w0 - 1.0, 1.0, w0);
+        let (ps, pt) = (light_point(&r.shooter, local), light_point(&r.target, local));
+        let p = (pt - ps) * w + ps;
+        let (dy, dz, dx) = (p.y - cam.y, p.z - cam.z, p.x - cam.x);
+        let d = fma(dx, dx, fma(dz, dz, dy * dy)).sqrt();
+        if d < near {
+            near = d;
+            best = Some((p, dt));
         }
     }
-    let (_, p, x) = best?;
-    Some((p + Vec3::Y * 2.0, hit_light_colour(x)))
+    let (p, dt) = best?;
+    let x = fms(dt, 192.0, BEAM_SPAN) * 0.03125;
+    let env = fnms(fms(x + 0.5, 0.5, 0.5).abs(), 2.0, 1.0);
+    let ka = fma(crate::damageparts::perlin(x * 3.0), 0.8, 0.2);
+    let kb = fma(crate::damageparts::perlin(x * 9.0), 0.9, 0.1);
+    let e0 = sel(env, env, 0.0);
+    let e = sel(e0 - 1.0, 1.0, e0);
+    let c: [f32; 3] = std::array::from_fn(|i| ((HIT_LIGHT_A[i] * ka) * 0.5 + (HIT_LIGHT_B[i] * kb) * 0.5) * e);
+    Some((Vec3::new(p.x, p.y + 2.0, p.z), c))
 }
 
-fn hit_light_colour(x: f32) -> [f32; 3] {
-    let env = (1.0 - 2.0 * ((x + 0.5) * 0.5 - 0.5).abs()).clamp(0.0, 1.0);
-    let (ka, kb) = (0.8 * noise1(3.0 * x) + 0.2, 0.9 * noise1(9.0 * x) + 0.1);
-    let mix = |a: f32, b: f32| 0.5 * (a * ka + b * kb) * env;
-    [mix(0.372, 0.537), mix(0.702, 0.569), mix(0.831, 0.98)]
+/// The hit light of the port's records: the cars' current matrices.
+pub fn hit_light(pu: &PowerUps, vehicles: &crate::vehicles::Vehicles, cam: Vec3) -> Option<(Vec3, [f32; 3])> {
+    let recs: Vec<BeamRecord> = pu
+        .hits
+        .iter()
+        .filter_map(|h| {
+            let (a, b) = (vehicles.cars.get(h.from)?, vehicles.cars.get(h.to)?);
+            Some(BeamRecord { start: h.start, shooter: rows(a.state.rot, a.state.pos), target: rows(b.state.rot, b.state.pos) })
+        })
+        .collect();
+    hit_light_exact(&recs, pu.time, cam)
 }
+
+// ---------------------------------------------------------------------------------------
+// The shot's ribbon beam (the target record's draw F-44101; geometry F-65991 / F-82152;
+// PowerupShootEffect.fxc cars/0xdf4fb56c: "draw" VS_Beam / PS_Beam, "drawRibbon" VS_Ribbon / PS_Ribbon)
+
+/// One immediate-mode vertex as the vertex call (F-97666) stores it: position, normal, colour (A R G B), s t.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImmVertex {
+    pub p: Vec3,
+    pub n: Vec3,
+    pub color: u32,
+    pub st: [f32; 2],
+}
+
+/// The colour of a strip's vertex i of n: white, alpha 0 at both ends (fctiwz(a 255) << 24 | 0xFFFFFF).
+fn strip_colour(i: usize, n: usize) -> u32 {
+    let a = if i == 0 || i == n - 1 { 0.0f32 } else { 1.0 };
+    (((a * 255.0) as i32 as u32) << 24) | 0x00FF_FFFF
+}
+
+/// The beam (F-65991): one strip of 128 - 32 pairs along local -z (u = i / 31, z = -u), across x, then 32 across y; the half
+/// width 0.3 ((1 - u) 0.9 + 0.1) (0.3 at the shooter, 0.03 at the target); s 0, t 0 / 1 across.
+pub fn beam_strip() -> Vec<ImmVertex> {
+    use crate::physics::exact::fma;
+    let mut out = Vec::with_capacity(128);
+    for across in 0..2 {
+        for i in 0..32 {
+            let u = i as f32 * f32::from_bits(0x3D04_2108);
+            let col = strip_colour(i, 32);
+            let w = fma(1.0 - u, 0.9, 0.1) * f32::from_bits(0xBE99_9999);
+            let z = u * -1.0;
+            for (k, h) in [(0.0f32, w * -1.0), (1.0, w)] {
+                let p = if across == 0 { Vec3::new(h, 0.0, z) } else { Vec3::new(0.0, h, z) };
+                out.push(ImmVertex { p, n: Vec3::ZERO, color: col, st: [0.0, k] });
+            }
+        }
+    }
+    out
+}
+
+/// The ribbon (F-82152): two strips of 256 - 128 pairs round the helix (0.75 e cos 4 pi u, 0.75 e sin 4 pi u, -u), u = i / 127,
+/// e = 1 - 2 |u - 0.5|; the pair 0.3 apart across x (the first strip) or y (the second); s 0, t 0 / 1.
+pub fn ribbon_strips() -> [Vec<ImmVertex>; 2] {
+    use crate::physics::exact::{fma, fms, fnms, guest_cos, guest_sin};
+    std::array::from_fn(|strip| {
+        let mut out = Vec::with_capacity(256);
+        for i in 0..128 {
+            let u = i as f32 * f32::from_bits(0x3C01_0204);
+            let col = strip_colour(i, 128);
+            let a = u * f32::from_bits(0x4149_0FDB);
+            let e = fnms((u - 0.5).abs(), 2.0, 1.0) * 0.75;
+            let (s, c) = (guest_sin(a as f64) as f32, guest_cos(a as f64) as f32);
+            let z = u * -1.0;
+            let b = Vec3::new(fms(c, e, s * 0.0), fma(e, s, c * 0.0), 0.0);
+            for (k, d) in [(0.0f32, f32::from_bits(0x3E19_9999)), (1.0, f32::from_bits(0xBE19_9999))] {
+                let off = if strip == 0 { Vec3::new(d, 0.0, z) } else { Vec3::new(0.0, d, z) };
+                out.push(ImmVertex { p: b + off, n: Vec3::ZERO, color: col, st: [0.0, k] });
+            }
+        }
+        out
+    })
+}
+
+/// AlphaFadeParams of a record at `dt` = clock - start seconds (F-44101): (T, 32, 0.8 g(3 T) + 0.2, 0.9 g(9 T) + 0.1),
+/// T = fms(dt, 192, 32). The beam's alpha takes .z, the ribbon's .w.
+pub fn beam_fade_params(dt: f32) -> [f32; 4] {
+    use crate::physics::exact::{fma, fms};
+    let t = fms(dt, 192.0, BEAM_SPAN);
+    let w = fma(crate::damageparts::perlin(t * 9.0), 0.9, 0.1);
+    let z = fma(crate::damageparts::perlin(t * 3.0), 0.8, 0.2);
+    [t, BEAM_SPAN, z, w]
+}
+
+/// The beam's world matrix (F-44101 with the look-at F-97951): P0 = the shooter's point (0, 0.5, 1.5), P1 = the target's
+/// (0, 0.5, 0), each ((row3 + row0 x) + row1 y) + row2 z; rows r0 = n(up x r2), r1 = r2 x r0 with r2 = n(P0 - P1) and up the
+/// world vector (0, 0.5, 1.5) (the landing's), each made unit by the vector unit (vmsum3fp, the refined reciprocal root);
+/// row 2 then times |P0 - P1| (the scalar unit's fused sum), row 3 = P0. So local z = -1 is the target's point.
+pub fn beam_matrix(shooter: &Rows, target: &Rows) -> Rows {
+    use crate::physics::exact::{dot3, fma};
+    let pt = |m: &Rows, l: Vec3| ((m[3] + m[0] * l.x) + m[1] * l.y) + m[2] * l.z;
+    let p0 = pt(shooter, Vec3::new(0.0, 0.5, 1.5));
+    let p1 = pt(target, Vec3::new(0.0, 0.5, 0.0));
+    let unit = |v: Vec3| v * crate::aiv::vrsqrt1(dot3(v, v));
+    let up = Vec3::new(0.0, 0.5, 1.5);
+    let r2 = unit(p0 - p1);
+    let cross = |a: Vec3, b: Vec3| {
+        // (vnmsubfp: -(a.yzx b.zxy - a.zxy b.yzx), each product rounded)
+        let p = Vec3::new(a.z * b.y, a.x * b.z, a.y * b.x);
+        Vec3::new(-(a.y * b.z - p.x), -(a.z * b.x - p.y), -(a.x * b.y - p.z))
+    };
+    let r0 = unit(cross(r2, up));
+    let r1 = cross(r0, r2);
+    let (dx, dz, dy) = (p0.x - p1.x, p0.z - p1.z, p0.y - p1.y);
+    let d = fma(dy, dy, fma(dz, dz, dx * dx)).sqrt();
+    [r0, r1, r2 * d, p0]
+}
+
+/// The beams this frame as triangles: (world xyz, s t 0, k rgb) - pu_fx.wgsl fs_beam: tex(s, t) k, added (the passes' states
+/// are the laser's: one / one, no z write, no culling). Per vertex k = 4 colour (alpha c fade), alpha the vertex's (0 at a
+/// strip's ends), c AlphaFadeParams .z (beam, m_beamColor) or .w (ribbon, m_ribbonColor), fade 1 - sat(|0 - T| / 32): the
+/// vertex's TEXCOORD0 is the declaration's float2 (s, t), so its z - the skinning index - is 0 for every vertex; there both
+/// skinning arrays are zero (testdata: every case), so the strips stand as made. Strips become lists (no culling).
+pub fn beam_vertices(pu: &PowerUps, vehicles: &crate::vehicles::Vehicles) -> Vec<[f32; 9]> {
+    let mut out = Vec::new();
+    let geo = BEAM_GEO.get_or_init(|| (beam_strip(), ribbon_strips()));
+    for h in &pu.hits {
+        let (Some(a), Some(b)) = (vehicles.cars.get(h.from), vehicles.cars.get(h.to)) else { continue };
+        let dt = pu.time - h.start;
+        let afp = beam_fade_params(dt);
+        let fade = 1.0 - (afp[0].abs() / afp[1]).clamp(0.0, 1.0);
+        if fade <= 0.0 {
+            continue;
+        }
+        let (pa, pb) = (a.render_pose(vehicles.render_alpha), b.render_pose(vehicles.render_alpha));
+        let m = beam_matrix(&rows(pa.rot, pa.pos), &rows(pb.rot, pb.pos));
+        let look = pu.looks.get(h.kind as usize);
+        let bc = look.map_or([0.372, 0.702, 0.831, 1.0], |l| l.beam_color);
+        let rc = look.map_or([0.537, 0.569, 0.98, 1.0], |l| l.ribbon_color);
+        let mut strip = |s: &[ImmVertex], col: [f32; 4], c: f32| {
+            let v: Vec<[f32; 9]> = s
+                .iter()
+                .map(|v| {
+                    let w = m[3] + m[0] * v.p.x + m[1] * v.p.y + m[2] * v.p.z;
+                    let al = (v.color >> 24) as f32 / 255.0 * c * fade;
+                    [w.x, w.y, w.z, v.st[0], v.st[1], 0.0, 4.0 * col[0] * al, 4.0 * col[1] * al, 4.0 * col[2] * al]
+                })
+                .collect();
+            for i in 0..v.len().saturating_sub(2) {
+                out.extend_from_slice(&[v[i], v[i + 1], v[i + 2]]);
+            }
+        };
+        strip(&geo.0, bc, afp[2]);
+        for s in &geo.1 {
+            strip(s, rc, afp[3]);
+        }
+    }
+    out
+}
+
+static BEAM_GEO: std::sync::OnceLock<(Vec<ImmVertex>, [Vec<ImmVertex>; 2])> = std::sync::OnceLock::new();
+
+/// most beam vertices a frame (8 records x (126 + 2 x 254) triangles)
+const BEAM_MAX: usize = 8 * (126 + 2 * 254) * 3;
 
 #[cfg(test)]
-mod hit_light_tests {
+mod beam_tests {
     use super::*;
 
-    /// Dark at x = -1 and x = 1.5, the envelope's ends; lit between.
+    const REF: &str = include_str!("testdata/pu_beam_ref.txt");
+
+    fn h(s: &str) -> u32 {
+        u32::from_str_radix(&s.replace('_', ""), 16).unwrap()
+    }
+    fn f(s: &str) -> f32 {
+        f32::from_bits(h(s))
+    }
+    fn rows_of(w: &[f32]) -> Rows {
+        std::array::from_fn(|r| Vec3::new(w[4 * r], w[4 * r + 1], w[4 * r + 2]))
+    }
+    fn vbits(v: Vec3) -> [u32; 3] {
+        [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()]
+    }
+
+    /// F-65991 / F-82152 against the original's own code (tools/pu_beam_reference.py): every vertex's 9 words, bit for bit,
+    /// and the begin calls (triangle strips - BeginVertices index 4 -, 128 and 2 x 256).
     #[test]
-    fn the_envelope() {
-        assert_eq!(hit_light_colour(-1.0), [0.0; 3]);
-        assert_eq!(hit_light_colour(1.5), [0.0; 3]);
-        assert!(hit_light_colour(0.3).iter().any(|c| *c != 0.0));
+    fn strips_match_the_original() {
+        let (beam, ribbon) = (beam_strip(), ribbon_strips());
+        let mut got = (Vec::new(), Vec::new(), Vec::new());
+        for line in REF.lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            match (w.first().copied(), w.get(1).copied()) {
+                (Some("BEAMGEOM"), Some("V")) => got.0.push(w[2..].iter().map(|x| h(x)).collect::<Vec<u32>>()),
+                (Some("RIBBONGEOM"), Some("V")) => got.1.push(w[2..].iter().map(|x| h(x)).collect::<Vec<u32>>()),
+                (Some(_), Some("BEGIN")) => got.2.push((w[2].parse::<u32>().unwrap(), w[3].parse::<u32>().unwrap())),
+                _ => {}
+            }
+        }
+        assert_eq!(got.2, vec![(4, 128), (4, 256), (4, 256)]);
+        let enc = |v: &ImmVertex| {
+            let mut x = vbits(v.p).to_vec();
+            x.extend(vbits(v.n));
+            x.push(v.color);
+            x.extend([v.st[0].to_bits(), v.st[1].to_bits()]);
+            x
+        };
+        assert_eq!(got.0.len(), 128);
+        for (i, (a, b)) in beam.iter().zip(&got.0).enumerate() {
+            assert_eq!(&enc(a), b, "beam vertex {i}");
+        }
+        let all: Vec<&ImmVertex> = ribbon[0].iter().chain(ribbon[1].iter()).collect();
+        assert_eq!(got.1.len(), 512);
+        for (i, (a, b)) in all.iter().zip(&got.1).enumerate() {
+            assert_eq!(&enc(a), b, "ribbon vertex {i}");
+        }
+    }
+
+    /// F-44101 against the original's own code: 240 records (random shooter / target matrices, times over the 2 s, the
+    /// look's colours): AlphaFadeParams bit for bit, beamColor / ribbonColor = the look's +192 / +208, skinning entry 0 zero,
+    /// and the world matrix (rows 0..3 xyz, row 3 w = 1), every word equal (the harness built with -msse4.1, as the recomp).
+    #[test]
+    fn beam_params_match_the_original() {
+        let mut n = 0;
+        for line in REF.lines().filter(|l| l.starts_with("BEAM ")) {
+            let (a, b) = line[5..].split_once(" -> ").unwrap();
+            let i: Vec<f32> = a.split_whitespace().map(f).collect();
+            let o: Vec<u32> = b.split_whitespace().map(h).collect();
+            let (start, clock) = (i[0], i[1]);
+            let afp = beam_fade_params(clock - start);
+            assert_eq!(afp.map(f32::to_bits), [o[0], o[1], o[2], o[3]], "{line}");
+            assert_eq!(&o[4..8], &i[34..38].iter().map(|x| x.to_bits()).collect::<Vec<_>>()[..]);
+            assert_eq!(&o[8..12], &i[38..42].iter().map(|x| x.to_bits()).collect::<Vec<_>>()[..]);
+            assert!(o[12..16].iter().chain(&o[16..18]).all(|x| x & 0x7fff_ffff == 0), "skinning entry 0: {line}");
+            let m = beam_matrix(&rows_of(&i[2..18]), &rows_of(&i[18..34]));
+            let want: Vec<f32> = o[20..36].iter().map(|x| f32::from_bits(*x)).collect();
+            for r in 0..4 {
+                for c in 0..3 {
+                    let (g, w) = (m[r][c], want[4 * r + c]);
+                    assert_eq!(g.to_bits(), w.to_bits(), "row {r} col {c}: {line}");
+                }
+            }
+            assert_eq!(want[15], 1.0);
+            n += 1;
+        }
+        assert_eq!(n, 240);
+    }
+
+    /// F-24672 / F-81450 against the original's own code: 400 cameras with up to 8 records each.
+    #[test]
+    fn hit_light_matches_the_original() {
+        let mut n = [0; 2];
+        for line in REF.lines().filter(|l| l.starts_with("LIGHT ")) {
+            let (a, b) = line[6..].split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split_whitespace().collect();
+            let (clock, cam) = (f(w[0]), Vec3::new(f(w[1]), f(w[2]), f(w[3])));
+            let recs: Vec<BeamRecord> = w[4..]
+                .iter()
+                .filter(|x| **x != "-")
+                .map(|x| {
+                    let (s, m) = x.split_once(':').unwrap();
+                    let m: Vec<f32> = m.split(',').map(f).collect();
+                    BeamRecord { start: f(s), shooter: rows_of(&m[..16]), target: rows_of(&m[16..]) }
+                })
+                .collect();
+            let o: Vec<&str> = b.split_whitespace().collect();
+            let got = hit_light_exact(&recs, clock, cam);
+            if o[0] == "0" {
+                assert!(got.is_none(), "{line}");
+                n[0] += 1;
+                continue;
+            }
+            let (p, c) = got.unwrap_or_else(|| panic!("{line}"));
+            assert_eq!(vbits(p).to_vec(), o[1..4].iter().map(|x| h(x)).collect::<Vec<_>>(), "position {line}");
+            assert_eq!(c.map(f32::to_bits).to_vec(), o[5..8].iter().map(|x| h(x)).collect::<Vec<_>>(), "colour {line}");
+            n[1] += 1;
+        }
+        assert_eq!(n, [10, 390]);
     }
 }
 

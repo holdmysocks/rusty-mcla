@@ -118,6 +118,8 @@ pub struct Look {
     pub ground_glow_color2: [f32; 4],
     /// step 19g: +192 m_beamColor (the shot's sparks' tint, the beam's colour)
     pub beam_color: [f32; 4],
+    /// +208 m_ribbonColor (the beam's ribbon, F-44101's ribbonColor)
+    pub ribbon_color: [f32; 4],
 }
 
 /// Values of a text tune file ("type: a", `Name { key v v .. }` blocks) by "section.key"
@@ -272,6 +274,7 @@ pub fn load_looks(data_dir: &str) -> [Look; 24] {
             ground_glow_color2: cd("m_groundGlowColor2", [0.0, 1.0, 1.0, 0.0]),
             // (the constructor F-88402's default; 5 look files have no m_beamColor)
             beam_color: cd("m_beamColor", [0.372, 0.702, 0.831, 1.0]),
+            ribbon_color: cd("m_ribbonColor", [0.537, 0.569, 0.98, 1.0]),
         }
     })
 }
@@ -1924,6 +1927,7 @@ mod tests {
                         assert_eq!(bits(l.ground_glow_color1), c(128));
                         assert_eq!(bits(l.ground_glow_color2), c(144));
                         assert_eq!(bits(l.beam_color), c(192));
+                        assert_eq!(bits(l.ribbon_color), c(208));
                     }
                     n[3] += 1;
                 }

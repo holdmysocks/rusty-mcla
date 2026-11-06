@@ -263,3 +263,28 @@ fn fs_laser(in: ZOut) -> @location(0) vec4<f32> {
     let rgb = in.k * f * (t + vec3<f32>(0.15)) * clamp(8.0 * (d - 0.08), 0.0, 1.0);
     return vec4<f32>(rgb, 1.0);
 }
+
+// The shot's ribbon beam (PowerupShootEffect.fxc, cars/0xdf4fb56c: "draw" VS_Beam / PS_Beam and "drawRibbon" VS_Ribbon /
+// PS_Ribbon; the passes' states are the laser's: one, one; no depth writes; no culling). pu_fx.rs places the strips in the
+// world and hands over (s, t) and k = 4 colour.rgb x the vertex's alpha (alpha x AlphaFadeParams.z / .w x fade).
+// PS_Beam / PS_Ribbon: rgb = DiffuseTex(s, t).rgb x 4 x colour.rgb x alpha.
+struct BOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) st: vec2<f32>,
+    @location(1) k: vec3<f32>,
+};
+
+@vertex
+fn vs_beam(@location(0) pos: vec3<f32>, @location(1) st: vec3<f32>, @location(2) k: vec3<f32>) -> BOut {
+    var o: BOut;
+    o.clip = g.view_proj * vec4<f32>(pos, 1.0);
+    o.st = st.xy;
+    o.k = k;
+    return o;
+}
+
+@fragment
+fn fs_beam(in: BOut) -> @location(0) vec4<f32> {
+    let t = textureSample(t_diff, s_diff, in.st).rgb;
+    return vec4<f32>(t * in.k, 1.0);
+}
