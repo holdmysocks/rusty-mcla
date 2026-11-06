@@ -5683,10 +5683,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.game.mode = self.game.prev_mode;
                     }
                     self.garage_mask.release(garagein::FADE_UP);
-                }
-            }
-            if self.garage_in.is_none() && self.hangout_entry.is_none() && self.hangout_title.is_none() && self.payback_in.is_none() && !self.payback_hold {
-                self.place_view = None;
                     self.garage_save = Some(0.0);
                 }
             }
@@ -5698,6 +5694,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.garage_save = None;
                     log::info!("garage: CAREER_AUTOSAVE after leaving the garage");
                     self.game.write_save(&self.opt.data_dir);
+                }
+            }
+            if self.garage_in.is_none() && self.hangout_entry.is_none() && self.hangout_title.is_none() && self.payback_in.is_none() && !self.payback_hold {
+                self.place_view = None;
                 self.game.place_title = None;
             }
             self.game.place_mask = self.garage_mask.update(dt).max(self.arrest_mask.update(dt)).max(self.f02c_mask.update(dt));
