@@ -3666,7 +3666,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rusty-mcla"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
