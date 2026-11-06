@@ -2129,6 +2129,23 @@ pub struct Env<'a> {
     /// the obstacle gather's lists (`Vehicles::gather_lists`): the lanes' car lists, the grid's cells
     pub rail_cars: &'a hashbrown::HashMap<usize, Vec<usize>>,
     pub grid: &'a hashbrown::HashMap<(i32, i32), Vec<usize>>,
+    /// the dynamic curve rails of the rail pool (F-76414 index 0) the other riders hold now (`holds_pool0`)
+    pub pool0: &'a std::cell::Cell<usize>,
+}
+
+/// The ambient manager's rail pools (F-76414): index 0 = 256 dynamic curve rails (the backing rail F-54867, the ghost's
+/// lane change), index 1 = 256 arc-line-arc rails (recovery, rejoin, passing). A take (F-88792) pops the free list's
+/// head and is null when it is empty, i.e. when all 256 are held (tools/rail_pool_reference.py).
+pub(crate) const RAIL_POOL: usize = 256;
+
+/// F-88792 with `held` of the pool's rails held: a rail.
+pub(crate) fn pool_take(held: usize) -> bool {
+    held < RAIL_POOL
+}
+
+/// Does the rider hold a rail of pool 0 (its backing rail, or a ghost's lane-change rail)?
+pub(crate) fn holds_pool0(r: &Rider) -> bool {
+    r.path.as_ref().is_some_and(|p| p.reverse) || r.ghost.as_ref().is_some_and(|g| g.lc.is_some())
 }
 
 /// The world of one rider's obstacle gather: the frame's lists, the asker's matrix (its car's; a ghost without one: the
@@ -2938,9 +2955,10 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
         }
     }
     let (p, f) = r.pose(nav);
-    // (not for the cruising ghost: its stuck and passing tests are open, docs/reference/people/cruise_ghost_hooks.md)
-    if !env.event && r.ghost.is_none() {
-        after_switch(r, env, me, p, f, &ahead, chosen, cur, upright, dt);
+    // F-87488's tail (in a race event too: the stuck test, the gate and the recovery try refuse there themselves); not
+    // for the cruising ghost: its stuck and passing tests are open, docs/reference/people/cruise_ghost_hooks.md
+    if r.ghost.is_none() {
+        after_switch(r, env, me, p, f, chosen, cur, upright, dt);
     }
     (p, f)
 }
@@ -3428,6 +3446,184 @@ mod drive_rule_tests {
         assert!(moved > 800, "{moved}");
     }
 
+    /// F-87488 against the original's code run offline (tools/rider_frame_reference.py -> testdata/rider_frame_ref.txt):
+    /// the frame whole, its callees answered from the case and logged in call order, for every state 0 - 10. The switch
+    /// part is written out here as decoded (states 1 - 3, 4, 5, 6, 7, 8; 0, 9 and 10 have none) with the port's
+    /// `switch_clears_tracker` for its tracker clears; the tail is the port's `frame_tail` with the case's answers. Every
+    /// call sequence and the state after equal.
+    #[test]
+    fn rider_frame_matches_the_original() {
+        const NAMES: [&str; 15] = ["follow", "search", "lane", "speed", "recovery", "clear_tracker", "clear_recovery", "back_step", "zero_stuck", "unload", "stuck", "back_start", "gate", "tracker", "pass"];
+        struct Log<'a> {
+            a: &'a [u32],
+            bt: f32,
+            nrec: usize,
+            out: Vec<usize>,
+        }
+        impl Log<'_> {
+            fn l(&mut self, k: &str) {
+                self.out.push(NAMES.iter().position(|n| *n == k).unwrap());
+            }
+            fn rec(&mut self) -> bool {
+                self.l("recovery");
+                let i = 1 + (self.nrec > 0) as usize;
+                self.nrec += 1;
+                self.a[i] != 0
+            }
+        }
+        impl TailSteps for Log<'_> {
+            fn stuck(&mut self) -> bool {
+                self.l("stuck");
+                self.a[4] != 0
+            }
+            fn back_start(&mut self) -> bool {
+                self.l("back_start");
+                self.a[5] != 0
+            }
+            fn backing_time(&self) -> f32 {
+                self.bt
+            }
+            fn gate(&mut self) -> Option<usize> {
+                self.l("gate");
+                (self.a[6] != 0).then_some(self.a[6] as usize)
+            }
+            fn tracker(&mut self) -> bool {
+                self.l("tracker");
+                self.a[7] != 0
+            }
+            fn pass(&mut self, o: usize) -> bool {
+                self.l("pass");
+                assert_eq!(o, self.a[6] as usize);
+                self.a[8] != 0
+            }
+            fn clear_recovery(&mut self) {
+                self.l("clear_recovery");
+            }
+            fn recovery(&mut self) -> bool {
+                self.rec()
+            }
+            fn clear_tracker(&mut self) {
+                self.l("clear_tracker");
+            }
+        }
+        let (mut n, mut tracked, mut cleared) = (0, [0usize; 11], 0);
+        for line in include_str!("testdata/rider_frame_ref.txt").lines() {
+            let (input, want) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = input.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let (mut st, ev) = (w[0] as u8, w[1] != 0);
+            let mut g = Log { a: &w[5..14], bt: f32::from_bits(w[4]), nrec: 0, out: Vec::new() };
+            let ended = g.a[0] != 0;
+            match st {
+                1..=3 => ["follow", "search", "lane", "speed"].iter().for_each(|k| g.l(k)),
+                4 => {
+                    assert!(switch_clears_tracker(4, ev, false));
+                    g.l("clear_tracker");
+                    g.l("clear_recovery");
+                }
+                5 if !ev => {
+                    g.l("speed");
+                    if g.rec() {
+                        st = 6;
+                    }
+                }
+                6 if !ev => {
+                    ["follow", "search", "speed"].iter().for_each(|k| g.l(k));
+                    if switch_clears_tracker(6, ev, ended) {
+                        g.l("clear_tracker");
+                        g.l("clear_recovery");
+                        st = 1;
+                    } else {
+                        g.rec();
+                    }
+                }
+                7 => {
+                    ["follow", "search", "speed"].iter().for_each(|k| g.l(k));
+                    if switch_clears_tracker(7, ev, ended) {
+                        g.l("clear_tracker");
+                        g.l("clear_recovery");
+                        st = 6;
+                    }
+                }
+                8 if !ev => {
+                    g.l("follow");
+                    g.l("speed");
+                    g.l("back_step");
+                    if g.a[3] != 0 {
+                        g.l("zero_stuck");
+                        g.l("unload");
+                        st = 6;
+                    }
+                }
+                _ => {}
+            }
+            cleared += g.out.contains(&5) as usize;
+            let (near, block) = (w[2], w[3]);
+            if let Some(s) = frame_tail(ev, near, block, &mut g) {
+                st = s;
+            }
+            if g.out.contains(&13) {
+                tracked[w[0] as usize] += 1;
+            }
+            let calls: String = g.out.iter().map(|k| format!("{k},")).collect();
+            let (want_calls, want_state) = want.trim().split_once(' ').unwrap();
+            assert_eq!(if calls.is_empty() { "-".to_string() } else { calls }, want_calls, "{line}");
+            assert_eq!(st.to_string(), want_state, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
+        // (the tracker after the switch in every state)
+        assert!(tracked.iter().all(|&t| t > 50), "{tracked:?}");
+        assert!(cleared > 500, "{cleared}");
+    }
+
+    /// The rail pools and the reverse rail's refusal against the original's code run offline
+    /// (tools/rail_pool_reference.py -> testdata/rail_pool_ref.txt): F-88792 on a free list of n rails gives n and then
+    /// null every time (`pool_take` with 256 - n held, the pool's 256 from F-76414); F-56052 with F-54867's answer 0
+    /// returns 0 after only the holder's destructor (the caller then keeps its state), with 1 returns 1 after the unload
+    /// and the rail set.
+    #[test]
+    fn rail_pool_matches_the_original() {
+        let (mut n, mut refused) = (0, 0);
+        for line in include_str!("testdata/rail_pool_ref.txt").lines() {
+            let (input, want) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = input.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let out: Vec<&str> = want.split_whitespace().collect();
+            if w[0] == 0 {
+                let free = w[1] as usize;
+                // (the original: `free` takes, then null every time; the pool holds 256, so `free` left = 256 - free held)
+                assert_eq!((out[0], out[1]), (free.to_string().as_str(), "1"), "{line}");
+                if free <= RAIL_POOL {
+                    let got = (0..free + 3).take_while(|&k| pool_take(RAIL_POOL - free + k)).count();
+                    assert_eq!(got, free, "{line}");
+                }
+            } else {
+                let built = w[1] != 0;
+                assert_eq!(out, if built { vec!["1", "us"] } else { vec!["0", "d"] }, "{line}");
+                refused += !built as usize;
+            }
+            n += 1;
+        }
+        assert_eq!((n, refused), (92, 20));
+    }
+
+    /// The region box getters F-81783 (length) and F-68633 (width) against the original's code run offline
+    /// (tools/region_box_reference.py -> testdata/region_box_ref.txt; "which flag mph a b -> result", the pair the flag
+    /// picks): `box_lerp(pair, box_t(mph))` equal to the bit in every case (the port's mph / 60 and unfused lerp differed
+    /// in 297).
+    #[test]
+    fn region_box_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/region_box_ref.txt").lines() {
+            let (input, want) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = input.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let got = super::box_lerp([f(3), f(4)], super::box_t(f(2)));
+            assert_eq!(format!("{:08x}", got.to_bits()), want.trim(), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
+
     /// The mutual-nearest mark against the original's code run offline (tools/traffic_mark_reference.py ->
     /// testdata/traffic_mark_ref.txt): F-37525 whole, the cast and our obstacle answered from the case; the mark (the other
     /// or none) equal in every case.
@@ -3532,85 +3728,240 @@ mod drive_rule_tests {
     }
 }
 
-/// The tests after the state switch (free roam only): stuck behind a blocker (state 8),
-/// passing it (state 7).
-#[allow(clippy::too_many_arguments)]
-fn after_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, ahead: &Ahead, chosen: Option<usize>, lane_speed: f32, upright: bool, dt: f32) {
-    let semi = r.ty.trailer || (r.ty.cab && r.partner.is_some());
-    let blocker = ahead.blocking.filter(|&b| b == ahead.j);
-    // stuck (F-14023): standing more than 2 s behind a blocking car: back up 2 m at 4 m/s, three tries at most.
-    // (the car's place and up as the frame began; the next rail is the next lane, its start its first control point)
-    let o = &env.others[me];
-    let next = r.next.map(|n| match lane_junction(env.nav, env.nav.links[n].lane) {
-        Some(j) => {
-            let (p0, _) = lane_entry(env.nav, n);
-            (true, junction_green(env.signals, env.nav, j, n), p0.x, p0.z)
+/// What F-87488's tail asks (`frame_tail`); the port's answers are `PortTail`'s.
+pub(crate) trait TailSteps {
+    /// the stuck test F-14023
+    fn stuck(&mut self) -> bool;
+    /// the backing rail F-56052 (through its thunk): taken
+    fn back_start(&mut self) -> bool;
+    /// the stuck tracker's backing time (behaviour +532 +4), read after the stuck test
+    fn backing_time(&self) -> f32;
+    /// the passing gate F-72757 on the blocking obstacle (+436): the obstacle when it is close
+    fn gate(&mut self) -> Option<usize>;
+    /// the pass tracker F-73744 (+480): its obstacle moved
+    fn tracker(&mut self) -> bool;
+    /// the passing try F-28706 round the gate's obstacle: taken
+    fn pass(&mut self, o: usize) -> bool;
+    /// the recovery's standing time (+472) zeroed
+    fn clear_recovery(&mut self);
+    /// the recovery try F-15490 (r5 = 0): taken
+    fn recovery(&mut self) -> bool;
+    /// the pass tracker (+480: obstacle, place, standing time) cleared
+    fn clear_tracker(&mut self);
+}
+
+/// F-87488's tail, after the switch in every state (states 0 - 10; tools/rider_frame_reference.py): the stuck test
+/// (a try: the backing rail, state 8 when it is taken, and nothing more this frame); the backing time running (> 0,
+/// F-87488's own test): nothing more; the passing gate when the blocking obstacle (+436) is set and is the nearest
+/// (+432) and no race event (S +0x64251); the pass tracker; with the gate's obstacle the passing try (taken: the recovery's
+/// time zeroed, state 7) and nothing more; else when the tracker's obstacle moved the recovery try (taken: the tracker
+/// cleared, state 6). Returns the state it sets.
+pub(crate) fn frame_tail(event: bool, near: u32, block: u32, h: &mut dyn TailSteps) -> Option<u8> {
+    if h.stuck() {
+        return h.back_start().then_some(8);
+    }
+    if h.backing_time() > 0.0 {
+        return None;
+    }
+    let gate = if block != 0 && near == block && !event { h.gate() } else { None };
+    let moved = h.tracker();
+    if let Some(o) = gate {
+        if h.pass(o) {
+            h.clear_recovery();
+            return Some(7);
         }
-        None => (false, false, 0.0, 0.0),
-    });
-    let x = StuckIn {
-        event: env.event,
-        net: false,
-        up_y: if upright { 0.0 } else { -1.0 },
-        slot: chosen.map_or(-1, |s| s as i32),
-        cab_hitched: r.ty.cab && r.partner.is_some(),
-        trailer: r.ty.trailer,
-        nearest: if ahead.j == usize::MAX { 0 } else { ahead.j as u32 + 1 },
-        blocking: ahead.blocking.map_or(0, |b| b as u32 + 1),
-        rail: true,
-        next,
-        pos: (o.pos.x, o.pos.z),
-        v: r.v,
-        reversing: r.path.as_ref().is_some_and(|p| p.reverse),
-        active: r.active,
-        path: env.paths.get(me).copied().flatten(),
-    };
-    if stuck_test(&mut r.stuck, dt, &x) {
+        return None;
+    }
+    if moved && h.recovery() {
+        h.clear_tracker();
+        return Some(6);
+    }
+    None
+}
+
+/// F-87488's switch where it clears the pass tracker (F-73744's +480; tools/rider_frame_reference.py): state 4 every
+/// frame; states 6 and 7 when the follower's step reaches the rail's end (state 6's case is skipped whole in a race
+/// event).
+pub(crate) fn switch_clears_tracker(state: u8, event: bool, ended: bool) -> bool {
+    match state {
+        4 => true,
+        6 => !event && ended,
+        7 => ended,
+        _ => false,
+    }
+}
+
+/// The passing gate F-72757 (r4 the car, r5 the blocking obstacle): the distance d = sqrt(fma(dx, dx, fma(dz, dz,
+/// dy dy))) from the car's place (F-58860) to the obstacle's (slot 1 +48); standing (+412 == 0): the obstacle when its
+/// velocity (slot 2) is shorter than 2.2352 (sqrt(fma(vz, vz, fma(vx, vx, vy vy)))); else when d < 12, or d / v under 4 s
+/// when the car's rail (behaviour +452 -> +188) has a speed (slot 17) above 26.8224, under 3 s otherwise. A NaN: none.
+pub(crate) fn pass_gate(our: Vec3, at: Vec3, v: f32, vel: Vec3, limit: Option<f32>) -> bool {
+    use crate::physics::exact::fma;
+    let (dy, dz, dx) = (our.y - at.y, our.z - at.z, our.x - at.x);
+    let d = fma(dx, dx, fma(dz, dz, dy * dy)).sqrt();
+    if v == 0.0 {
+        return fma(vel.z, vel.z, fma(vel.x, vel.x, vel.y * vel.y)).sqrt() < 2.2352;
+    }
+    if d < 12.0 {
+        return true;
+    }
+    let t = d / v;
+    match limit {
+        Some(s) if s > 26.8224 => t < 4.0,
+        _ => t < 3.0,
+    }
+}
+
+/// The pass tracker cleared (F-87488's +480 clear: the obstacle, its place and F-28706's standing time +32).
+fn clear_tracker(r: &mut Rider) {
+    r.passing = None;
+    r.pass_stand = 0.0;
+}
+
+/// The port's answers to F-87488's tail.
+struct PortTail<'a, 'e> {
+    r: &'a mut Rider,
+    env: &'a Env<'e>,
+    me: usize,
+    pos: Vec3,
+    fwd: Vec3,
+    chosen: Option<usize>,
+    /// the speed of the car's rail (slot 17: a lane's speed, a run-time rail's +304 / +156)
+    lane_speed: f32,
+    upright: bool,
+    dt: f32,
+    /// +432 / +436 as words (0 none, else the obstacle's index + 1)
+    near: u32,
+    block: u32,
+    /// the follower's rail at its phase: the passing request's start and heading (F-92334 as F-26749)
+    start: (Vec3, Vec3),
+    /// the stuck test's next rail (+192)
+    next: Option<(bool, bool, f32, f32)>,
+}
+
+impl TailSteps for PortTail<'_, '_> {
+    fn stuck(&mut self) -> bool {
+        let o = &self.env.others[self.me];
+        let r = &*self.r;
+        let x = StuckIn {
+            event: self.env.event,
+            net: false,
+            up_y: if self.upright { 0.0 } else { -1.0 },
+            slot: self.chosen.map_or(-1, |s| s as i32),
+            cab_hitched: r.ty.cab && r.partner.is_some(),
+            trailer: r.ty.trailer,
+            nearest: self.near,
+            blocking: self.block,
+            rail: r.path.is_some() || matches!(r.state, 1..=3),
+            next: self.next,
+            pos: (o.pos.x, o.pos.z),
+            v: r.v,
+            reversing: r.path.as_ref().is_some_and(|p| p.reverse),
+            active: r.active,
+            path: self.env.paths.get(self.me).copied().flatten(),
+        };
+        stuck_test(&mut self.r.stuck, self.dt, &x)
+    }
+    fn back_start(&mut self) -> bool {
+        // (F-56052: refused when F-54867's take from pool 0 is null - all 256 held)
+        if !pool_take(self.env.pool0.get() + holds_pool0(self.r) as usize) {
+            return false;
+        }
         // (F-54867: from the instance matrix as the frame began)
-        r.take_path(backing_rail(o.pos, o.back), 8);
-        return;
+        let o = &self.env.others[self.me];
+        self.r.take_path(backing_rail(o.pos, o.back), 8);
+        true
     }
-    // passing (F-72757 / F-28706)
-    let Some(b) = blocker else {
-        r.pass_stand = 0.0;
-        return;
+    fn backing_time(&self) -> f32 {
+        self.r.stuck.1
+    }
+    fn gate(&mut self) -> Option<usize> {
+        let b = self.block as usize - 1;
+        let (us, o) = (&self.env.others[self.me], self.env.others.get(b)?);
+        pass_gate(us.pos, o.pos, self.r.v, o.vel, Some(self.lane_speed)).then_some(b)
+    }
+    fn tracker(&mut self) -> bool {
+        self.r.passing.is_some_and(|(j, at)| pass_moved(at, self.env.others.get(j).map(|o| o.pos)))
+    }
+    fn pass(&mut self, b: usize) -> bool {
+        let (r, env) = (&mut *self.r, self.env);
+        let semi = r.ty.trailer || (r.ty.cab && r.partner.is_some());
+        if self.chosen == Some(1) || !self.upright || semi {
+            return false;
+        }
+        // (the next lane's light at stop within 50 m)
+        if signal_stop(env, r, self.pos).is_some_and(|x| x.2 != 2 && x.1 < 50.0) {
+            return false;
+        }
+        if r.v == 0.0 {
+            r.pass_stand += self.dt;
+        } else {
+            r.pass_stand = 0.0;
+        }
+        let ready = r.pass_stand > 2.0;
+        // (F-28706: one draw of the car's MWC, U x 2^-23 > 1/60 (0x3C888889): no try)
+        if env.others[b].ambient && u23(&mut r.mwc) * f32::from_bits(0x3400_0000) > f32::from_bits(0x3C88_8889) {
+            return false;
+        }
+        let (p, h0) = self.start;
+        // (F-28706: the clearances 1.1, 1.5, 0.8 m in turn, the first that gives a passing rail and its rejoin)
+        for c in [1.1f32, 1.5, 0.8] {
+            if let Some((pass, back)) = passing_rail(r, env, self.me, p, h0, b, c, ready) {
+                r.take_path(pass, 7);
+                r.then = Some(back);
+                r.passing = Some((b, env.others[b].pos));
+                return true;
+            }
+        }
+        false
+    }
+    fn clear_recovery(&mut self) {
+        self.r.stand = 0.0;
+    }
+    fn recovery(&mut self) -> bool {
+        try_recovery(self.r, self.env, self.me, self.pos, self.fwd, self.upright, self.dt)
+    }
+    fn clear_tracker(&mut self) {
+        clear_tracker(self.r);
+    }
+}
+
+/// F-87488's tail with the port's answers (`frame_tail`), after the switch: the obstacle words +432 / +436 from the
+/// last search (`Rider::kept`), the start of a passing rail the follower's rail at its phase (a lane's curve, or the
+/// run-time rail: slot 8's point and its derivative flattened and made unit), the stuck test's next rail the next lane
+/// (+192) while on a lane - none on a run-time rail (its +192 is not traced).
+#[allow(clippy::too_many_arguments)]
+fn after_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, chosen: Option<usize>, lane_speed: f32, upright: bool, dt: f32) {
+    let (near, block) = match r.kept {
+        Some((j, b)) => (j as u32 + 1, b.map_or(0, |b| b as u32 + 1)),
+        None => (0, 0),
     };
-    let o = &env.others[b];
-    let close = if r.v == 0.0 { o.vel.length() < 2.2352 } else { ahead.d < 12.0 || ahead.d / r.v < if lane_speed > 60.0 * MPH { 4.0 } else { 3.0 } };
-    if !close || chosen == Some(1) || !upright || semi {
-        return;
-    }
-    // (the next lane's light at stop within 50 m)
-    if signal_stop(env, r, pos).is_some_and(|x| x.2 != 2 && x.1 < 50.0) {
-        return;
-    }
-    if r.v == 0.0 {
-        r.pass_stand += dt;
+    let on_lane = r.path.is_none() && matches!(r.state, 1..=3);
+    let next = if on_lane {
+        r.next.map(|n| match lane_junction(env.nav, env.nav.links[n].lane) {
+            Some(j) => {
+                let (p0, _) = lane_entry(env.nav, n);
+                (true, junction_green(env.signals, env.nav, j, n), p0.x, p0.z)
+            }
+            None => (false, false, 0.0, 0.0),
+        })
     } else {
-        r.pass_stand = 0.0;
-    }
-    let ready = r.pass_stand > 2.0;
-    // (F-28706: one draw of the car's MWC, U x 2^-23 > 1/60 (0x3C888889): no try)
-    if o.ambient && u23(&mut r.mwc) * f32::from_bits(0x3400_0000) > f32::from_bits(0x3C88_8889) {
-        return;
-    }
-    // (the start: the follower's lane at its phase, the derivative flattened and made unit - F-92334 as F-26749)
-    let (p, h0) = match nav_curve(env.nav, r) {
-        Some(c) => {
+        None
+    };
+    let start = match (r.path.as_ref(), nav_curve(env.nav, r)) {
+        (Some(pp), _) => {
+            let (q, d) = pp.eval(pp.t);
+            (q, crate::tcp_rail::vnorm(Vec3::new(d.x, 0.0, d.z)))
+        }
+        (None, Some(c)) => {
             let (q, d) = c.eval(r.t);
             (q, crate::tcp_rail::vnorm(Vec3::new(d.x, 0.0, d.z)))
         }
-        None => (pos, fwd),
+        (None, None) => (pos, fwd),
     };
-    // (F-28706: the clearances 1.1, 1.5, 0.8 m in turn, the first that gives a passing rail and its rejoin)
-    for c in [1.1f32, 1.5, 0.8] {
-        if let Some((pass, back)) = passing_rail(r, env, me, p, h0, b, c, ready) {
-            r.take_path(pass, 7);
-            r.then = Some(back);
-            r.passing = Some((b, env.others[b].pos));
-            return;
-        }
-    }
+    let event = env.event;
+    let mut t = PortTail { r, env, me, pos, fwd, chosen, lane_speed, upright, dt, near, block, start, next };
+    frame_tail(event, near, block, &mut t);
 }
 
 /// F-73744 (the pass tracker, behaviour +480): its obstacle (+0) when that moved more than 0.333 m from its place when the
@@ -3626,19 +3977,23 @@ pub fn pass_moved(at: Vec3, now: Option<Vec3>) -> bool {
 /// One frame on a rail off the lanes (states 6 - 8). Returns the new pose, or None when the
 /// car turns physical (the footprint probe hit something).
 pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half_len: f32, upright: bool, dt: f32) -> Option<(Vec3, Vec3)> {
+    let out = step_path_switch(r, env, me, pos, fwd, half_len, upright, dt)?;
+    // F-87488's tail after the switch (the pass tracker F-73744 in every state); the rail's speed (slot 17)
+    if r.ghost.is_none() {
+        let speed = r.path.as_ref().map_or(0.0, |p| p.speed);
+        after_switch(r, env, me, out.0, out.1, r.slot, speed, upright, dt);
+    }
+    Some(out)
+}
+
+/// F-87488's switch in states 6 - 8 (the port's rail follower).
+#[allow(clippy::too_many_arguments)]
+fn step_path_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half_len: f32, upright: bool, dt: f32) -> Option<(Vec3, Vec3)> {
     let hw = r.ty.width.max(1.6) * 0.5;
     let semi = r.ty.trailer || r.ty.cab;
     // state 6: re-planned every frame (on a rail or standing with none)
     if r.state == 6 && !env.event {
         try_recovery(r, env, me, pos, fwd, upright, dt);
-    }
-    // state 7: what is being passed moved off - a recovery rail instead
-    if r.state == 7 {
-        if let Some((j, at)) = r.passing {
-            if pass_moved(at, env.others.get(j).map(|o| o.pos)) && try_recovery(r, env, me, pos, fwd, upright, dt) {
-                r.passing = None;
-            }
-        }
     }
     let Some(path) = r.path.as_ref() else {
         // standing, waiting for a rail
@@ -3707,8 +4062,12 @@ pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half
                 r.state = 6;
             }
         }
-        r.passing = None;
+        clear_tracker(r);
         return Some(r.path.as_mut().map_or((p, f), |q| q.pose()));
+    }
+    // (state 6 at its rail's end: the tracker cleared - F-87488's switch)
+    if switch_clears_tracker(r.state, env.event, true) {
+        clear_tracker(r);
     }
     if let Some((lane, t)) = r.path.as_ref().and_then(|p| p.end) {
         r.path = None;
@@ -4169,7 +4528,9 @@ impl Vehicles {
         let paths: Vec<Option<(bool, bool)>> = self.cars.iter().map(|c| c.item.and_then(|h| self.layout.get(h as usize)?.as_ref()?.path.as_ref().map(|p| (p.referenced, p.fired)))).collect();
         let shared = std::cell::Cell::new(self.park_rng);
         let (rail_cars, grid) = self.gather_lists(nav);
-        let env = Env { nav, lanes, col, others: &others, signals: &self.signals, blockers: &blockers, clock: self.clock, event, player_ahead, hold, parity, paths: &paths, shared: &shared, rail_cars: &rail_cars, grid: &grid };
+        let pool0 = std::cell::Cell::new(0);
+        let ghost_pool0 = self.ghosts.live.cars.iter().filter(|g| holds_pool0(&g.rider)).count();
+        let env = Env { nav, lanes, col, others: &others, signals: &self.signals, blockers: &blockers, clock: self.clock, event, player_ahead, hold, parity, paths: &paths, shared: &shared, rail_cars: &rail_cars, grid: &grid, pool0: &pool0 };
         // MCLA_TRAFFIC_TRACE=file: every riding car ten times a second (time, id, model, x, y,
         // z, speed, lane speed, junction lane, offset, entries on, standing gap, distance and
         // margin to the car ahead, acceleration, state, ...; the last column: the drawn heading in degrees)
@@ -4192,6 +4553,8 @@ impl Vehicles {
         let mut waits: Vec<(usize, Vec3)> = Vec::new();
         for i in 0..self.cars.len() {
             let (half, _) = half_size(&self.cars[i]);
+            // (the pool-0 rails the others hold as this car's update starts)
+            pool0.set(ghost_pool0 + self.cars.iter().enumerate().filter(|&(j, c)| j != i && c.rail.as_ref().is_some_and(holds_pool0)).count());
             let c = &mut self.cars[i];
             let upright = (c.state.rot * Vec3::Y).y >= 0.0;
             let Some(r) = c.rail.as_mut() else { continue };
@@ -4206,6 +4569,10 @@ impl Vehicles {
                     continue;
                 }
                 4 | 5 => {
+                    // (F-87488's switch: state 4 clears the pass tracker every frame)
+                    if switch_clears_tracker(r.state, env.event, false) {
+                        clear_tracker(r);
+                    }
                     if let Some(w) = trace.as_mut() {
                         use std::io::Write;
                         let p = c.state.pos;
@@ -6186,6 +6553,19 @@ fn lerp(a: [f32; 2], t: f32) -> f32 {
     a[0] + (a[1] - a[0]) * t
 }
 
+/// The region box getters' speed weight (F-81783 length, F-68633 width, F-97927 the centre's offset): mph x 0.016666668
+/// (0x3C888889, a multiply), clamped by the pair of fsel (below 0 or NaN: 0; 1 or more: 1).
+pub(crate) fn box_t(mph: f32) -> f32 {
+    let x = mph * f32::from_bits(0x3C88_8889);
+    let a = if x >= 0.0 { x } else { 0.0 };
+    if a - 1.0 >= 0.0 { 1.0 } else { a }
+}
+
+/// Those getters' value of a pair at `t`: fma(t, b - a, a), fused.
+pub(crate) fn box_lerp(p: [f32; 2], t: f32) -> f32 {
+    crate::physics::exact::fma(t, p[1] - p[0], p[0])
+}
+
 /// Does the segment (x1, z1) - (x2, z2) meet the box +-hx, +-hz (F-43122, the original's parametric
 /// clip: x then z, entry / exit parameters from -1 / 2, one flag set when an entry parameter is taken)?
 /// Written with the original's branch order and tests, so that unordered values (NaN) go the way
@@ -6626,7 +7006,7 @@ impl Spawner {
         // (the parked lists' own box, F-97927, at the mode's zero speed and M+324 = 0)
         let vx = glam::Vec2::new(fe.fwd.x, fe.fwd.z).normalize_or(glam::Vec2::NEG_Y);
         let fx = glam::Vec2::new(fe.eye.x, fe.eye.z);
-        self.region_box = (fx + vx * lerp(t.box_off, 0.0), vx, lerp(t.box_len, 0.0), lerp(t.box_width, 0.0));
+        self.region_box = (fx + vx * box_lerp(t.box_off, box_t(0.0)), vx, box_lerp(t.box_len, box_t(0.0)), box_lerp(t.box_width, box_t(0.0)));
         let d = fe.amb[3];
         let v = Vec3::new(fe.fwd.x * d, 0.0, fe.fwd.z * d);
         let l = (v.x * v.x + v.z * v.z).sqrt();
@@ -6990,12 +7370,13 @@ impl Vehicles {
             return;
         }
         let t = sp.tune;
-        let k = (mph / 60.0).clamp(0.0, 1.0);
+        let k = box_t(mph);
         let (fx, vx) = (glam::Vec2::new(focus.x, focus.z), glam::Vec2::new(view.x, view.z).normalize_or(glam::Vec2::NEG_Y));
         // the player's road; across the view at under 50 mph: the square box round the focus
         let player_road = sp.player_road;
         let perp = mph < 50.0 && player_road.is_some_and(|r| sp.roads[r as usize].dir.dot(view).abs() < 0.7071);
-        let (len, off, width) = if perp { (lerp(t.perp_len, k), lerp(t.perp_off, k), lerp(t.perp_width, k)) } else { (lerp(t.box_len, k), lerp(t.box_off, k), lerp(t.box_width, k)) };
+        // (F-81783 / F-68633 / F-97927's offset: `box_t`, `box_lerp`)
+        let (len, off, width) = if perp { (box_lerp(t.perp_len, k), box_lerp(t.perp_off, k), box_lerp(t.perp_width, k)) } else { (box_lerp(t.box_len, k), box_lerp(t.box_off, k), box_lerp(t.box_width, k)) };
         let bc = fx + vx * off;
         let bh = glam::Vec2::new(len * 0.5, width * 0.5);
         sp.region_box = (bc, vx, len, width);
@@ -10234,7 +10615,8 @@ impl Vehicles {
         let blockers = self.frame_blockers(nav);
         let shared = std::cell::Cell::new(self.park_rng);
         let (rail_cars, grid) = self.gather_lists(nav);
-        let env = Env { nav, lanes, col, others: &others, signals: &self.signals, blockers: &blockers, clock, event: self.race_event, player_ahead: None, hold: self.frozen || self.grid_hold.is_some(), parity: false, paths: &[], shared: &shared, rail_cars: &rail_cars, grid: &grid };
+        let pool0 = std::cell::Cell::new(self.cars.iter().filter(|c| c.rail.as_ref().is_some_and(holds_pool0)).count() + self.ghosts.live.cars.iter().filter(|g| holds_pool0(&g.rider)).count());
+        let env = Env { nav, lanes, col, others: &others, signals: &self.signals, blockers: &blockers, clock, event: self.race_event, player_ahead: None, hold: self.frozen || self.grid_hold.is_some(), parity: false, paths: &[], shared: &shared, rail_cars: &rail_cars, grid: &grid, pool0: &pool0 };
         let mut removes: Vec<(u32, u32, u32)> = Vec::new();
         for g in self.ghosts.live.cars.iter_mut() {
             // F-58860: the proxy car's place is its owner's vehicle's (none: its own)

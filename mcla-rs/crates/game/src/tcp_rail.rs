@@ -466,6 +466,42 @@ pub(crate) trait RailSweepWorld {
     fn capsule(&mut self, a: Vec3, b: Vec3, r: f32) -> bool;
 }
 
+/// What the sphere query F-66549 and the swept capsule F-27454 hand the level's query drivers, from F-23371's block
+/// (+4 the excluded count, +8 .. the words, +16 the type 640, +20 the include mask, +24 the states byte 7): the
+/// shape's material mask +88 = the type shifted by the material manager's flag shift (`MATERIAL_SHIFT`), the include
+/// mask, type flags -1, the states, then 0, 0, 1; at most 12 contacts for the sphere, 1 for the capsule, whose
+/// directed byte +212 is 0 (undirected); the excluded count copied as it is, but 64 when larger (signed), and that
+/// many words from the block's +8 on. The level's answer: blocked when the result's instance word is set.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LevelQuery {
+    pub material: u32,
+    pub include: u32,
+    pub types: u32,
+    pub states: u8,
+    pub max: u32,
+    pub directed: bool,
+    pub excluded: i32,
+}
+
+/// The material manager's flag shift: phMaterialMgrFlag's default, 8 (the run-time object is not traced; the
+/// offline check answers its cast with 8). 640 << 8 = 0x28000 skips the city's ground (0x8000) and walls (0x20000)
+/// flags - the ai_* / terrain / buildings / push_sphere flags registered by the material set-up.
+pub(crate) const MATERIAL_SHIFT: u32 = 8;
+
+/// F-66549 (`capsule` false) / F-27454 (true): the query words for F-23371's block (count, include mask; 0 already
+/// replaced by 0x812 in the block, as F-23371 does).
+pub(crate) fn level_query(capsule: bool, count: i32, include: u32) -> LevelQuery {
+    LevelQuery {
+        material: 640 << MATERIAL_SHIFT,
+        include,
+        types: u32::MAX,
+        states: 7,
+        max: if capsule { 1 } else { 12 },
+        directed: false,
+        excluded: if count > 64 { 64 } else { count },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,6 +600,87 @@ mod tests {
         }
         assert_eq!(n, 3000);
         assert_eq!((blocked, queries), (419, 8296));
+    }
+
+    struct QuerySweep {
+        log: Vec<String>,
+        n: i32,
+        hit: i32,
+        count: i32,
+        excl: [u32; 2],
+        include: u32,
+    }
+
+    impl QuerySweep {
+        fn tail(&mut self, capsule: bool) -> bool {
+            let x = |w: u32| format!("{w:08x}");
+            let q = level_query(capsule, self.count, self.include);
+            if capsule {
+                self.log.push(x(q.directed as u32));
+            }
+            self.log.extend([q.max, q.material, q.include, q.types, q.states as u32, 0, 0, 1].map(x));
+            self.log.push(x(q.excluded as u32));
+            // (the block's words from +8: the two excluded, the type, the mask; the offline log stops at 4 and, for a
+            // negative count, nothing is copied: the log shows the untouched zero memory)
+            let words = if q.excluded < 0 { [0; 4] } else { [self.excl[0], self.excl[1], 640, self.include] };
+            self.log.extend(words[..(q.excluded as u32).min(4) as usize].iter().map(|w| x(*w)));
+            self.n += 1;
+            self.n - 1 == self.hit
+        }
+    }
+
+    impl RailSweepWorld for QuerySweep {
+        fn sphere(&mut self, c: Vec3, r: f32) -> bool {
+            self.log.push("s".into());
+            self.log.extend([c.x, c.y, c.z, r].map(|f| format!("{:08x}", f.to_bits())));
+            self.tail(false)
+        }
+        fn capsule(&mut self, a: Vec3, b: Vec3, r: f32) -> bool {
+            self.log.push("c".into());
+            self.log.extend([a.x, a.y, a.z, b.x, b.y, b.z, r].map(|f| format!("{:08x}", f.to_bits())));
+            self.tail(true)
+        }
+    }
+
+    /// What F-23371's queries hand the level, against the original's F-23371 with F-66549 / F-27454 themselves run
+    /// offline and only the level's two query drivers logged (tools/rail_sweep_query_reference.py ->
+    /// testdata/rail_sweep_query_ref.txt): 1,000 rails (778 valid, 2,440 spheres, 401 capsules, 146 blocked); every
+    /// query's shape, material mask, include mask, type flags, states, contact cap, directed byte, excluded count and
+    /// words, the result and the length left must be equal (`level_query`).
+    #[test]
+    fn rail_sweep_query_matches_the_original() {
+        let h = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
+        let u = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let v = |w: &[&str]| Vec3::new(h(w[0]), h(w[1]), h(w[2]));
+        let (mut n, mut blocked, mut queries) = (0, 0, 0);
+        for line in include_str!("testdata/rail_sweep_query_ref.txt").lines() {
+            // (words that would read as addresses of the original are split by '_')
+            let line = line.replace('_', "");
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = i.split_whitespace().collect();
+            let q = build(v(&w[0..]), v(&w[3..]), v(&w[6..]), v(&w[9..]), h(w[12]), u(w[13]) == 1, u(w[14]) == 1);
+            let mask = u(w[19]);
+            let mut world = QuerySweep {
+                log: Vec::new(),
+                n: 0,
+                hit: u(w[23]) as i32,
+                count: u(w[16]) as i32,
+                excl: [u(w[17]), u(w[18])],
+                include: if mask == 0 { 0x812 } else { mask },
+            };
+            let mut left = h(w[21]);
+            let hit = q.sweep(h(w[15]), h(w[20]), &mut left, h(w[22]), &mut world);
+            let mut got = vec![(q.valid() as u8).to_string()];
+            queries += world.n;
+            got.append(&mut world.log);
+            got.push((hit as u8).to_string());
+            got.push(format!("{:08x}", left.to_bits()));
+            assert_eq!(got.join(" "), o, "{line}");
+            blocked += hit as usize;
+            n += 1;
+        }
+        assert_eq!(n, 1000);
+        assert_eq!((blocked, queries), (146, 2841));
     }
 
     #[test]
