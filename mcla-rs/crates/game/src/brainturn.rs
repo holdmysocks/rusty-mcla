@@ -566,8 +566,10 @@ pub fn select_obstacles_car(me: usize, objects: &[ObjectInfo], line: &[Vec3], ca
     let ignore = ignore | 16;
     let mut out: Vec<Obstacle> = Vec::new();
     let mut taken: Vec<usize> = Vec::new();
-    let dir = if car.vel.length_squared() > 1.0 { car.vel * (1.0 / car.vel.length()) } else { car.forward };
-    let v_car = car.vel.dot(dir);
+    let fma = |a: f32, b: f32, c: f32| (a as f64).mul_add(b as f64, c as f64) as f32;
+    // (F-41334 with eps 1.0 and the forward as fallback; V = fma(vel.x, D.x, fma(vel.y, D.y, vel.z D.z)))
+    let dir = crate::aiv::norm_or(car.vel, 1.0, car.forward);
+    let v_car = fma(car.vel.x, dir.x, fma(car.vel.y, dir.y, car.vel.z * dir.z));
     let inv = 1.0 / car.speed.max(10.0);
     // objects by cell key
     let mut cells: hashbrown::HashMap<i64, Vec<usize>> = hashbrown::HashMap::new();
@@ -591,7 +593,9 @@ pub fn select_obstacles_car(me: usize, objects: &[ObjectInfo], line: &[Vec3], ca
                 select_cell(list, me, objects, ignore, car.pos, dir, v_car, car.half_length, p, tuning, 0, &mut taken, &mut out);
             }
         }
-        t += (car.pos - p).length() * inv;
+        // (t = fma(sqrt(fma(dx, dx, fma(dz, dz, dy dy))), 1 / max(speed, 10), t), d = car - P)
+        let q = car.pos - p;
+        t = fma(fma(q.x, q.x, fma(q.z, q.z, q.y * q.y)).sqrt(), inv, t);
         if t > tuning.obstacle_lookahead_time {
             break;
         }
