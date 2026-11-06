@@ -151,9 +151,6 @@ pub struct CarModel {
 
 pub struct WheelModel {
     pub batches: Vec<GpuBatch>,
-    /// where the rim's spokes stand along the axle (the mean x of zone 1, in the unit
-    /// wheel's own measure: -0.25 is the outer face)
-    pub spoke_x: f32,
     /// `batches[rim_from..]` are the rim's (before them the tyre's)
     pub rim_from: usize,
     /// the wheel's back drawn in the rim's place when the camera is on the car's side of the wheel:
@@ -168,11 +165,21 @@ pub struct WheelModel {
     pub tyre_bead: f32,
 }
 
-/// How far a brake is moved in along the axle to stand behind the spokes of a rim
-/// (its own outer face is at -0.1875 of the unit wheel). (approx.) the game's rule for
-/// it was not read; the gap is by eye.
-fn brake_shift(spoke_x: f32) -> f32 {
-    (spoke_x + 0.07 + 0.1875).clamp(0.0, 0.30)
+/// A brake's place (F-43091, for the brake draw F-57869): the frame scaled by (0.625, 1.25, 1.25) x the rim's radius and
+/// moved 0.03 along its axle, inwards. The rotor's frame is its wheel's (turning, a right wheel's turned over), the
+/// caliper's its hub's (a right one's turned over). +4036 1.0 and +4040 0.03 as set at the car's make (the image's
+/// constants): x = 0.5 x +4036 x 1.25 rimR, y = z = 1.25 rimR. The move is along the caliper's scaled x row
+/// made unit by the vector unit's reciprocal square root and one Newton step, as the recomp has them (vmsum3fp's sum
+/// z^2 + (y^2 + x^2), 1 / sqrt, e + 0.5 e (1 - n e^2)), then times +4040 added to the place: unfused single steps.
+pub fn brake_place(frame: Mat4, rim_r: f32) -> Mat4 {
+    let sy = 1.25f32 * rim_r;
+    let sx = 0.5f32 * 1.0 * sy;
+    let x = frame.x_axis.truncate() * sx;
+    let n = x.z * x.z + (x.y * x.y + x.x * x.x);
+    let e = 1.0 / n.sqrt();
+    let k = -(n * (e * e) - 1.0) * (0.5 * e) + e;
+    let w = (x * k) * 0.03 + frame.w_axis.truncate();
+    Mat4::from_cols(x.extend(frame.x_axis.w * sx), frame.y_axis * sy, frame.z_axis * sy, w.extend(1.0))
 }
 
 /// A brake of `resources/brakes` (`brk_stk_<car>`, `brk_car_base` ...): the rotor, which
@@ -182,15 +189,12 @@ pub struct BrakeModel {
     pub caliper: Vec<GpuBatch>,
 }
 
-/// (approx.) the rotor's diameter against the rim's, measured on the capture `g_rm_0`
-const ROTOR_OF_RIM: f32 = 0.74;
-
 /// A parked car's `settle` while its ground probe is due / after it found no ground (dropped).
 const PARK_PROBE: f32 = -1.0;
 const PARK_NO_GROUND: f32 = -2.0;
 
-/// The brake model in `dir`, its unit-diameter meshes scaled to `k` of the wheel's.
-fn load_brakes(gpu: &mut Gpu, world: &mut World, dir: &Path, k: f32, shift: f32) -> Option<BrakeModel> {
+/// The brake model in `dir`, as modelled: `brake_place` puts it behind the wheel.
+fn load_brakes(gpu: &mut Gpu, world: &mut World, dir: &Path) -> Option<BrakeModel> {
     let (mut r63, mut r83) = (None, None);
     for e in std::fs::read_dir(dir).ok()?.flatten() {
         let p = e.path();
@@ -206,7 +210,7 @@ fn load_brakes(gpu: &mut Gpu, world: &mut World, dir: &Path, k: f32, shift: f32)
     if model.shaders.is_empty() {
         model.shaders = look.as_ref().map(|l| l.shaders.clone()).unwrap_or_default();
     }
-    let xf = Mat4::from_translation(Vec3::new(shift, 0.0, 0.0)) * Mat4::from_scale(Vec3::new(1.0, k, k));
+    let xf = Mat4::IDENTITY;
     let mut out = BrakeModel { rotor: Vec::new(), caliper: Vec::new() };
     let mut seen: Vec<(String, bool)> = Vec::new();
     for (mesh, si) in &model.meshes {
@@ -287,6 +291,8 @@ pub struct CarInstance {
     pub wheel_bindings: Vec<ObjectBinding>,
     /// the brake calipers' objects: as the wheels', without their turning
     pub caliper_bindings: Vec<ObjectBinding>,
+    /// the brake rotors' objects: with the wheels' turning (`brake_place`)
+    pub rotor_bindings: Vec<ObjectBinding>,
     pub state: CarState,
     pub input: CarInput,
     pub color: [f32; 4],
@@ -2380,14 +2386,12 @@ impl Vehicles {
             let own = [base_name.strip_prefix("vpd_").map(|n| format!("brkd_stk_{n}")), base_name.strip_prefix("vp_").map(|n| format!("brk_stk_{n}"))];
             // (a mod car: its manifest's `donors.brake` - modcars.rs)
             let dir = crate::modcars::brake_dir(&car.name).into_iter().chain(own.iter().flatten().map(|n| root.join(n))).find(|d| d.is_dir()).unwrap_or_else(|| root.join("brk_car_base"));
-            let k = rim_ratio * ROTOR_OF_RIM;
-            let shift = brake_shift(wheels.as_ref().map_or(-0.2, |w: &Arc<WheelModel>| w.spoke_x));
-            let key = (dir.clone(), (k * 200.0).round() as u32, (shift * 200.0).round() as i32);
+            let key = (dir.clone(), 0, 0);
             brake_dir = Some(dir.clone());
             match self.brake_cache.get(&key) {
                 Some(b) => Some(b.clone()),
                 None => {
-                    let b = load_brakes(gpu, world, &dir, k, shift).map(Arc::new);
+                    let b = load_brakes(gpu, world, &dir).map(Arc::new);
                     if let Some(b) = b.as_ref() {
                         self.brake_cache.insert(key, b.clone());
                     }
@@ -3048,19 +3052,17 @@ impl Vehicles {
     /// The garage's BRAKES choice on the player's car (`None`: the car's own).
     pub fn set_player_brake(&mut self, gpu: &mut Gpu, world: &mut World, name: Option<&str>) {
         // (the car's own brake too: it stands behind the spokes of the rim now fitted)
-        let Some((ratio, spoke_x, own)) = self.player().filter(|c| !c.model.bike).map(|c| (c.model.rim_ratio, c.wheels.as_ref().or(c.model.wheels.as_ref()).map_or(-0.2, |w| w.spoke_x), c.model.brake_dir.clone())) else { return };
-        let k = ratio * ROTOR_OF_RIM;
-        let shift = brake_shift(spoke_x);
+        let Some(own) = self.player().filter(|c| !c.model.bike).map(|c| c.model.brake_dir.clone()) else { return };
         let Some(dir) = name.map(|n| world.assets.root.join("resources/brakes").join(n)).or(own) else { return };
-        let tag = format!("{}@{:.3}@{:.3}", dir.display(), k, shift);
+        let tag = dir.display().to_string();
         if tag == self.player_brake_name {
             return;
         }
-        let key = (dir.clone(), (k * 200.0).round() as u32, (shift * 200.0).round() as i32);
+        let key = (dir.clone(), 0, 0);
         self.player_brake = match self.brake_cache.get(&key) {
             Some(b) => Some(b.clone()),
             None => {
-                let b = load_brakes(gpu, world, &dir, k, shift).map(Arc::new);
+                let b = load_brakes(gpu, world, &dir).map(Arc::new);
                 if let Some(b) = b.as_ref() {
                     self.brake_cache.insert(key, b.clone());
                 }
@@ -3146,15 +3148,12 @@ impl Vehicles {
                 wheels = self.wheel_set(gpu, world, &rd, "tir_car", ratio);
                 self.tire_now.clear();
             }
-            // (the brake stands behind the spokes of the rim fitted, as the player's)
-            let spoke_x = wheels.as_ref().or(model.wheels.as_ref()).map_or(-0.2, |w| w.spoke_x);
             if let Some(bdir) = d.brake.as_ref().map(|n| world.assets.root.join("resources/brakes").join(n)).filter(|p| p.is_dir()) {
-                let (k, shift) = (model.rim_ratio * ROTOR_OF_RIM, brake_shift(spoke_x));
-                let key = (bdir.clone(), (k * 200.0).round() as u32, (shift * 200.0).round() as i32);
+                let key = (bdir.clone(), 0, 0);
                 brake = match self.brake_cache.get(&key) {
                     Some(b) => Some(b.clone()),
                     None => {
-                        let b = load_brakes(gpu, world, &bdir, k, shift).map(Arc::new);
+                        let b = load_brakes(gpu, world, &bdir).map(Arc::new);
                         if let Some(b) = b.as_ref() {
                             self.brake_cache.insert(key, b.clone());
                         }
@@ -3190,6 +3189,7 @@ impl Vehicles {
         let binding = gpu.new_pooled_object(&ObjectUniform::default());
         let wheel_bindings = (0..4).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect();
         let caliper_bindings = (0..4).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect();
+        let rotor_bindings = (0..4).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect();
         let window_bindings = if model.windows.iter().any(|w| w.is_some()) { (0..2).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect() } else { Vec::new() };
         let part_bindings = match model.batch_window.iter().copied().max().unwrap_or(0) {
             g if g >= 21 => (0..g as usize - 2).map(|_| gpu.new_pooled_object(&ObjectUniform::default())).collect(),
@@ -3209,7 +3209,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, crash: Default::default(), parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), spoiler: WindowCtl::default(), roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, rotor_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, crash: Default::default(), parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), spoiler: WindowCtl::default(), roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
         self.cars.len() - 1
     }
 
@@ -5487,7 +5487,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 } else {
                     c.params().veh.as_ref().filter(|v| v.tyre_width[0] > 0.0).map(|v| if i < 2 { (v.tyre_width[0], v.t.wheel_front.radius + 0.00635) } else { (v.tyre_width[1], v.t.wheel_back.radius + 0.00635) }).unwrap_or((c.model.params.wheel_width, c.model.params.wheel_radius))
                 };
-                let wm = wheel_m * Mat4::from_translation(local) * Mat4::from_quat(steer * flip * spin) * Mat4::from_scale(Vec3::new(tyre_w * 2.0, tyre_r * 2.0, tyre_r * 2.0));
+                let frame = wheel_m * Mat4::from_translation(local) * Mat4::from_quat(steer * flip * spin);
+                let wm = frame * Mat4::from_scale(Vec3::new(tyre_w * 2.0, tyre_r * 2.0, tyre_r * 2.0));
                 // (F-57869: the rim is drawn only while the camera is outside the wheel - the way from the eye to the
                 // hub against the wheel's x axis, which points in on every wheel, over 0; at 0 or below the
                 // wheel's back takes its place. Not on a bike. The threshold is 0.04 only when the car job's byte +41
@@ -5539,15 +5540,28 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // motorcycle, 0.0 on a car: city.wgsl's fade along the axle is taken at x - useGradient.x, so a bike's rims never fade)
                 let use_gradient = if c.model.bike { 100.0 } else { 0.0 };
                 batch.push_object(b, &ObjectUniform { model: wm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, use_gradient, 0.0, 0.0], dents: finish, fill: car_fill, ..Default::default() });
-                // the caliper: with the wheel but for its turning, on the rear of the disc on
-                // both sides (the right ones turned over instead of around)
-                if let (Some(cb), true) = (c.caliper_bindings.get(i), c.model.brakes.is_some() || c.brake.is_some()) {
-                    let side = if left { Quat::IDENTITY } else { Quat::from_rotation_y(std::f32::consts::PI) * Quat::from_rotation_x(std::f32::consts::PI) };
-                    let cm = wheel_m * Mat4::from_translation(local) * Mat4::from_quat(steer * side) * Mat4::from_scale(Vec3::new(tyre_w * 2.0, tyre_r * 2.0, tyre_r * 2.0));
-                    // (the wheel's mark, no dirt: its maps are decoded as the wheel's, city.wgsl car_raw_tex)
-                    let mut mark = [[0.0; 4]; 6];
-                    mark[3] = [0.0, 1.0, 0.0, 0.0];
-                    batch.push_object(cb, &ObjectUniform { model: cm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: mark, fill: car_fill, ..Default::default() });
+                // the brake (F-43091 -> F-57869, `brake_place`): the rotor in the wheel's turning frame, the caliper in its
+                // hub's, both sized by the axle's rim radius - the set-up's (WheelFit::rim_radius). (approx.) a car without a
+                // set-up: the radius of the rim the port draws, its rim ratio of the tyre
+                if c.model.brakes.is_some() || c.brake.is_some() || (c.is_player && self.player_brake.is_some()) {
+                    let axle = (i >= 2) as usize;
+                    let rim_r = c.setup.or(c.model.fit).map_or(c.model.rim_ratio * tyre_r, |f| f.rim_radius[axle]);
+                    // (no bead pull and no tyre blur: those are the tyre's)
+                    let mut rf = finish;
+                    rf[3][2] = 0.0;
+                    rf[4] = [0.0; 4];
+                    if let Some(rb) = c.rotor_bindings.get(i) {
+                        batch.push_object(rb, &ObjectUniform { model: brake_place(frame, rim_r).to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: rf, fill: car_fill, ..Default::default() });
+                    }
+                    if let Some(cb) = c.caliper_bindings.get(i) {
+                        // (a right hub turned over: x and y reversed)
+                        let side = if left { Quat::IDENTITY } else { Quat::from_rotation_y(std::f32::consts::PI) * Quat::from_rotation_x(std::f32::consts::PI) };
+                        let cm = brake_place(wheel_m * Mat4::from_translation(local) * Mat4::from_quat(steer * side), rim_r);
+                        // (the wheel's mark, no dirt: its maps are decoded as the wheel's, city.wgsl car_raw_tex)
+                        let mut mark = [[0.0; 4]; 6];
+                        mark[3] = [0.0, 1.0, 0.0, 0.0];
+                        batch.push_object(cb, &ObjectUniform { model: cm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: mark, fill: car_fill, ..Default::default() });
+                    }
                 }
             }
         }
@@ -6124,7 +6138,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         }
                         // the brake behind the rim: the rotor with the wheel, the caliper still
                         if let Some(br) = self.player_brake.as_ref().filter(|_| c.is_player).or(c.brake.as_ref()).or(c.model.brakes.as_ref()) {
-                            for (list, bg) in [(&br.rotor, Some(&wb.bg)), (&br.caliper, c.caliper_bindings.get(wi).map(|b| &b.bg))] {
+                            for (list, bg) in [(&br.rotor, c.rotor_bindings.get(wi).map(|b| &b.bg)), (&br.caliper, c.caliper_bindings.get(wi).map(|b| &b.bg))] {
                                 let Some(bg) = bg else { continue };
                                 pass.set_bind_group(3, bg, &[]);
                                 for b in list {
@@ -6708,11 +6722,6 @@ pub fn load_wheels_with(gpu: &mut Gpu, world: &mut World, rim_dir: &Path, tyre: 
     let mut batches = Vec::new();
     let mut rim_from = usize::MAX;
     let mut tyre_bead = 0.406f32;
-    // (where the rim's spokes stand: the mean x of its zone 1)
-    let spoke_x = sources.last().filter(|_| sources.len() > 1).and_then(|m| m.meshes.iter().max_by_key(|(mesh, _)| mesh.indices.len())).map_or(-0.2, |(mesh, _)| {
-        let (sum, n) = mesh.positions.iter().zip(mesh.uv1.iter()).filter(|(_, u)| u.x.round() == 1.0).fold((0.0f32, 0u32), |a, (p, _)| (a.0 + p.x, a.1 + 1));
-        if n > 0 { sum / n as f32 } else { -0.2 }
-    });
     for (src_i, model) in sources.iter().enumerate() {
         // (per shader: the rim's badge, a few triangles on the hub with the rim's own texture, is not a
         // coarser level of the rim)
@@ -6880,7 +6889,7 @@ pub fn load_wheels_with(gpu: &mut Gpu, world: &mut World, rim_dir: &Path, tyre: 
     let backside = if rim_from < batches.len() { wheel_backside(gpu, &root, Mat4::from_scale(Vec3::new(1.0, rim_ratio, rim_ratio))) } else { Vec::new() };
     let rim_from = rim_from.min(batches.len());
     let blur = if rim_from < batches.len() { wheel_blur_disc(gpu, &root, Mat4::from_scale(Vec3::new(1.0, rim_ratio, rim_ratio))) } else { None };
-    Some(WheelModel { batches, spoke_x, rim_from, backside, blur, tyre_bead })
+    Some(WheelModel { batches, rim_from, backside, blur, tyre_bead })
 }
 
 /// `blur_wheel` of vehicle/shared_utility (F-31291): one material (TestRimBlur), the text mesh `blur_wheel.mesh` - 80
@@ -7474,6 +7483,38 @@ static ISLANDS_OF_CARS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomic
 
 /// (MCLA_RAM_CAR) the rammed car and the player's car, target x 1000 + player
 static RAM_TARGET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
+
+#[cfg(test)]
+mod brake_tests {
+    use super::brake_place;
+    use glam::{Mat4, Vec4};
+
+    /// The brake's place against F-43091 run offline on the recomp (testdata/brake_place_ref.txt, 40 cars x 4 wheels,
+    /// random rims, yaw / tilt and spin, right wheel bones turned over): the rotor (+1856) from the wheel_N matrix, the
+    /// caliper (+1600) from the hub_N matrix turned over on a right wheel - every word equal.
+    #[test]
+    fn brake_place_is_the_originals() {
+        let rows = |w: &[u32]| {
+            let f = |k: usize| f32::from_bits(w[k]);
+            Mat4::from_cols(Vec4::new(f(0), f(1), f(2), f(3)), Vec4::new(f(4), f(5), f(6), f(7)), Vec4::new(f(8), f(9), f(10), f(11)), Vec4::new(f(12), f(13), f(14), f(15)))
+        };
+        let mut n = 0;
+        for line in include_str!("testdata/brake_place_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let v: Vec<&str> = line.split_whitespace().collect();
+            let rim_r = mcla_formats::rage::simtune::rim_radius(v[0].parse().unwrap()).unwrap();
+            let left = v[1].parse::<usize>().unwrap() % 2 == 0;
+            let w: Vec<u32> = v[2..].iter().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let (wm, hub, cal, rot) = (rows(&w[0..16]), rows(&w[16..32]), rows(&w[32..48]), rows(&w[48..64]));
+            let side = if left { Mat4::IDENTITY } else { Mat4::from_diagonal(Vec4::new(-1.0, -1.0, 1.0, 1.0)) };
+            for (got, want, what) in [(brake_place(wm, rim_r), rot, "rotor"), (brake_place(hub * side, rim_r), cal, "caliper")] {
+                let (g, e) = (got.to_cols_array(), want.to_cols_array());
+                assert!(g.iter().zip(&e).all(|(a, b)| a == b), "{what} {line}: {g:?} != {e:?}");
+            }
+            n += 1;
+        }
+        assert_eq!(n, 160);
+    }
+}
 
 #[cfg(test)]
 mod needle_tests {

@@ -424,6 +424,11 @@ fn wheel_radius(d: &[u8; 8], axle: usize) -> (f32, f32) {
     (r, RIDE[ride])
 }
 
+/// A rim byte's (+2110 / +2111 of a set-up, 12..28) radius: its diameter of the table below x 0.5 (F-43091)
+pub fn rim_radius(rim: u8) -> Option<f32> {
+    RIM_DIAMETER.get((rim as usize).checked_sub(12)?).map(|d| f32::from_bits(*d) * 0.5)
+}
+
 /// The rims' diameters (m) for 12..28 inches, as the executable holds them (0x827E9A50)
 const RIM_DIAMETER: [u32; 17] = [
     0x3ea90ffa, 0x3eb61134, 0x3ec3126f, 0x3ed013a9, 0x3edd14e4, 0x3eea161f, 0x3ef71759, 0x3f020c4a, 0x3f088ce7, 0x3f0f0d84, 0x3f158e21,
@@ -441,6 +446,8 @@ pub struct WheelFit {
     /// the tyre's bead pull per axle, innerRadiusScale (F-43091 as the wheel draw F-11293 hands it to VS_ParallaxRubber2):
     /// (1 - sw / Rv) x 0.5 - 0.406, sw = profile x width - 0.0254, Rv = sw + rim diameter x 0.5 - the bead at the rim's radius
     pub bead: [f32; 2],
+    /// the rim's radius per axle (its diameter of the rim table x 0.5): F-43091 sizes the rim and the brake from it
+    pub rim_radius: [f32; 2],
     /// the set-up's wide body (its byte +2203): which of mcCarModelTune's stock / wide pairs the car takes
     pub wide: bool,
 }
@@ -479,6 +486,7 @@ impl SimTunes {
             fit.width[axle] = w;
             fit.radius[axle] = ((f32::from_bits(RIM[rim as usize - 12]) as f64).mul_add(0.5, t as f64)) as f32;
             fit.offset[axle] = RIDE[ride];
+            fit.rim_radius[axle] = rim_radius(rim as u8).unwrap_or_default();
             // (F-43091: f13 = fmsubs(p, w, 0.0254), f12 = f13 + D x 0.5, f9 = 2 f13 / 2 f12, fmsubs(1 - f9, 0.5, 0.406))
             let sw = ((p as f64).mul_add(w as f64, -(0.0254f32 as f64))) as f32;
             let rv = sw + f32::from_bits(RIM[rim as usize - 12]) * 0.5;
