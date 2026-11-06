@@ -52,6 +52,7 @@ def vector_shim() -> str:
         '#include <simde/x86/sse4.1.h>\n#include <simde/x86/ssse3.h>\n'
         'struct alignas(16) VReg { union { uint8_t u8[16]; int8_t s8[16]; uint16_t u16[8]; int16_t s16[8]; uint32_t u32[4];'
         ' int32_t s32[4]; float f32[4]; uint64_t u64[2]; double f64[2]; }; };\n'
+        'typedef VReg PPCVRegister;\n'   # (vupkd3d128's scratch register)
         'alignas(16) static uint8_t VectorMaskL[]={' + rows + '};\n')
     s = shim()
     s = s.replace('struct Context {', prelude + 'struct Context { VReg ' + ', '.join(f'v{i}' for i in range(128)) + ';', 1)

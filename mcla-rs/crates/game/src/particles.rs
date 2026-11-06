@@ -450,8 +450,8 @@ mod pre_update_tests {
     }
 }
 /// the effects whose sprites are loaded: the particle props' and the litter's
-// (step 19g: + the power-up shots' sparks, powerup_sparks - F-72989)
-const PLAYED: [&str; 19] = ["col_", "water_hydrant", "coin", "bang_concrete", "exp_gas", "tree_trunk", "damage_scrape", "water_fountain", "water_rings", "water_waterfall", "amb_steam", "amb_smoke", "wind_debris", "checkpoint_ctf_generic", "light_column", "powerup_sparks", "damage_glassbreak", "wheel_", "veh_"];
+// (step 19g: + the power-up shots' sparks, powerup_sparks - F-72989; + the Roar / EMP dust, roar_dust / emp_dust - F-17154)
+const PLAYED: [&str; 21] = ["col_", "water_hydrant", "coin", "bang_concrete", "exp_gas", "tree_trunk", "damage_scrape", "water_fountain", "water_rings", "water_waterfall", "amb_steam", "amb_smoke", "wind_debris", "checkpoint_ctf_generic", "light_column", "powerup_sparks", "damage_glassbreak", "wheel_", "veh_", "roar_dust", "emp_dust"];
 
 /// A vector of an effect's frame into the world: x negated first when the frame is a mirror image.
 fn turn(rot: Quat, flip: bool, v: Vec3) -> Vec3 {
