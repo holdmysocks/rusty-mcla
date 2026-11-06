@@ -9875,6 +9875,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         // (each traffic and parked car's light-slot order, F-99357)
         self.traffic_light_slots();
+        self.vehicles.player_tach_rpm = self.sound.tach_rpm();
         self.vehicles.upload_uniforms(&gpu, night);
         // --- camera / globals ---------------------------------------------------
         let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;

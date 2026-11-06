@@ -94,6 +94,9 @@ pub struct CarAsset {
     /// roof's own file (`conv_top<n>`, on that part's skeleton) - the eight convertibles whose roof moves
     pub clamshell: Option<BoneClip>,
     pub skinned_top: Option<BoneClip>,
+    /// the dashboard needles' clips of the base fragment (D+68 `tach`, D+76 `speedo`, bound by F-53023 to the gauge
+    /// records D+960 / D+992): one frame per 100 rpm / per mph (docs/reference/carparts/gauge_needles_rule.md)
+    pub needles: [Option<BoneClip>; 2],
     /// the damage map's layout (`<car>_maxdamage`, the largest of the car's .r83 files, decoded RGBA8; the map's G
     /// and A after a reset - damagemap.rs)
     pub damage_layout: Option<(u32, u32, Vec<u8>)>,
@@ -1067,6 +1070,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
     let mut cop_lights: Option<CopLights> = None;
     let mut spoiler: Option<BoneClip> = None;
     let mut clamshell: Option<BoneClip> = None;
+    let mut needles: [Option<BoneClip>; 2] = [None, None];
     if let Some(sk) = skeleton.as_ref() {
         for f in BASE_FRAGMENTS.iter().rev() {
             if windows.iter().all(|w| w.is_some()) {
@@ -1084,6 +1088,11 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
             }
             if clamshell.is_none() {
                 clamshell = BoneClip::load(&res, sk, "clamshell");
+            }
+            for (k, n) in ["tach", "speedo"].iter().enumerate() {
+                if needles[k].is_none() {
+                    needles[k] = BoneClip::load(&res, sk, n);
+                }
             }
             if cop_lights.is_none() {
                 cop_lights = CopLights::load(&res, sk);
@@ -1272,7 +1281,7 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
     if let (Some(c), Some(t)) = (clamshell.as_ref(), skinned_top.as_ref()) {
         log::info!("car {}: roof clips clamshell {:.3} s ({} bones), skinned_top {:.3} s ({} bones)", name, c.duration, c.bones.len(), t.duration, t.bones.len());
     }
-    Ok(CarAsset { name, shaders, shaders_parent, textures, parts, lod_parts, min, max, skeleton, hubs, bike, tune, simtune, fit, vehmods, aitune, hull, windows, cop_lights, spoiler, clamshell, skinned_top, damage_layout })
+    Ok(CarAsset { name, shaders, shaders_parent, textures, parts, lod_parts, min, max, skeleton, hubs, bike, tune, simtune, fit, vehmods, aitune, hull, windows, cop_lights, spoiler, clamshell, skinned_top, needles, damage_layout })
 }
 
 /// Display name of a part from its internal names, e.g. "exstPipe05_Borla_single_round"
@@ -1801,5 +1810,66 @@ mod tests {
                 assert!(off((a1, b1), d) < 0.025, "{name}: the skinned roof at the end is not the folded one");
             }
         }
+    }
+
+    /// The dashboard needles (docs/reference/carparts/gauge_needles_rule.md): where the base fragments have `tach` /
+    /// `speedo`, the clip has 30 L + 1 frames; prints the needle bone's turn at frame 0 and at a few values.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn needle_clips() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let assets = crate::assets::Assets::new(&dir);
+        let root = std::path::Path::new(&dir).join("resources/vehicle");
+        let mut cars: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        cars.sort();
+        let only = std::env::var("MCLA_NEEDLE_CAR").ok();
+        let (mut with, mut total, mut upgrades) = (0, 0, 0);
+        for p in cars {
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            if only.as_ref().is_some_and(|o| !name.contains(o.as_str())) {
+                continue;
+            }
+            let Ok(car) = super::load_car(&assets, &p) else { continue };
+            total += 1;
+            if car.needles.iter().any(|n| n.is_some()) {
+                with += 1;
+            }
+            for (k, n) in car.needles.iter().enumerate() {
+                let Some(cl) = n else { continue };
+                assert_eq!(cl.anim.frames as f32, (cl.duration * 30.0).round() + 1.0, "{name} needle {k}");
+                let ang = |t: f32| {
+                    let (_, r, _) = cl.deltas(t)[0].to_scale_rotation_translation();
+                    let (ax, a) = r.to_axis_angle();
+                    (ax, a.to_degrees())
+                };
+                let steps: Vec<String> = [0.0f32, 10.0, 20.0, 40.0, 80.0].iter().map(|&v| format!("{v}:{:.1}", ang(crate::vehicles::needle_time(cl.duration, v, false)).1)).collect();
+                println!("{name} {} {:.4} s {} frames, {} bones, frame-0 turn {:?}; value->deg {}", ["tach", "speedo"][k], cl.duration, cl.anim.frames, cl.bones.len(), ang(0.0), steps.join(" "));
+                // (the needle is drawn: a base mesh on a moved bone, or a part hung on one)
+                let sk = car.skeleton.as_ref().unwrap();
+                let hung = car.parts.iter().any(|pt| if pt.is_base {
+                    pt.mesh_tag.iter().any(|&t| sk.bone_by_tag(t).is_some_and(|b| cl.bones.contains(&b)))
+                } else {
+                    cl.bones.contains(&(pt.matrix_index as usize))
+                });
+                if !hung {
+                    println!("{name} {}: NO MESH on the needle's bones", ["tach", "speedo"][k]);
+                }
+            }
+            // (the add-on gauge: `tach_upgrade` of the post_gauge part's own file on its own skeleton, a mesh on its bone)
+            for pt in car.parts.iter().filter(|pt| pt.primary.to_ascii_lowercase().starts_with("post_gauge")) {
+                let Some(psk) = pt.skeleton.as_ref() else { continue };
+                let res = super::load_resource_file(&pt.file).unwrap();
+                let Some(cl) = super::BoneClip::load(&res, psk, "tach_upgrade") else {
+                    println!("{name} {}: no tach_upgrade", pt.primary);
+                    continue;
+                };
+                upgrades += 1;
+                let (_, r, _) = cl.deltas(0.0)[0].to_scale_rotation_translation();
+                assert!(r.to_axis_angle().1.to_degrees() < 0.05, "{name} {}", pt.primary);
+                let hung = pt.mesh_tag.iter().any(|&t| psk.bone_by_tag(t).is_some_and(|b| cl.bones.contains(&b)));
+                println!("{name} {} tach_upgrade {:.4} s {} frames, {} bones, mesh on it {hung}", pt.primary, cl.duration, cl.anim.frames, cl.bones.len());
+            }
+        }
+        println!("{with} of {total} cars have needle clips, {upgrades} add-on gauges with theirs");
     }
 }

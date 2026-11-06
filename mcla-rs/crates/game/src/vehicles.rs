@@ -105,6 +105,11 @@ pub struct CarModel {
     /// 30 (folded), 31 (the skinned roof), the clamshell's moved bones' meshes and parts the groups 32 + j
     pub clamshell: Option<Arc<vehicle_model::BoneClip>>,
     pub skinned_top: Option<Arc<vehicle_model::BoneClip>>,
+    /// the dashboard needles' clips (`CarAsset::needles`: tach, speedo; and the fitted add-on gauge's `tach_upgrade`, D+72,
+    /// on that part's own skeleton); the j-th moved bone of needle k is the group NEEDLE_GROUP + NEEDLE_BONES k + j
+    pub needles: [Option<Arc<vehicle_model::BoneClip>>; 3],
+    /// where the add-on gauge stands (its placement in car space): its needle's deltas are P x D x P^-1
+    pub needle_place: Mat4,
     /// the skinned roof's batches (group 31): batch index, the vertices at rest (car space) and each vertex's four bones of
     /// the roof's skeleton and weights; and where the roof part stands (its placement in car space)
     pub roof_skin: Vec<(usize, Vec<Vertex>, Vec<([u16; 4], [f32; 4])>)>,
@@ -787,6 +792,23 @@ const ROOF_GROUP: u32 = 29;
 const CLAM_GROUP: u32 = 32;
 const CLAM_GROUPS: usize = 48;
 
+/// The dashboard needles' draw groups (after the clamshell's): NEEDLE_GROUP + NEEDLE_BONES k + j the meshes on the j-th
+/// bone needle k's clip moves (k 0 the tach, 1 the speedo).
+const NEEDLE_GROUP: u32 = CLAM_GROUP + CLAM_GROUPS as u32;
+const NEEDLE_BONES: usize = 8;
+
+/// A needle's clip time from the update F-35036 (the gauge records D+960 tach / D+992 speedo, their time +972 / +1004
+/// written into the bound player and clamped to [0, the clip's length] there): the tach's phase is
+/// rpm / ((L x 30 + 1) x 100), the speedo's mph / (L x 30 + 1), the time L x phase - one frame of the 30 fps clip per
+/// 100 rpm or per mph. `len`: the clip's length L (the binder F-53023 copies it to the record's +8).
+pub fn needle_time(len: f32, value: f32, tach: bool) -> f32 {
+    let frames = len.mul_add(30.0, 1.0);
+    let phase = if tach { value / (frames * 100.0) } else { value / frames };
+    let t = len * phase;
+    let t = if t >= 0.0 { t } else { 0.0 };
+    if t - len >= 0.0 { len } else { t }
+}
+
 /// The convertible roof's two players on the car-parts object, both the windows' controller (`WindowCtl`) at the
 /// constructor's rate 1.0: +480 the hatch (`clamshell`), +576 the top (`skinned_top`); and the requests +2159 raise /
 /// +2160 lower, which applying the options sets (F-87944: DOWN -> lower, UP -> raise) and the update F-35036 takes for
@@ -1172,6 +1194,8 @@ pub struct Vehicles {
     /// the driver's camera (the original's POV view) is on: the player's windows are drawn with the
     /// in-car glass program (G+123 of the car's draw object; city.wgsl mode 12, `obj.params.w` bit 256)
     pub interior_glass: bool,
+    /// the player's engine sound's slewed rpm (`Sound::tach_rpm`), which the tach needle shows (F-35036)
+    pub player_tach_rpm: Option<f32>,
     /// the player's car is driven by the test driver (`--auto`): it passes traffic like the racers
     pub auto_player: bool,
     /// the city's parking spots and their quadtree (parked.rs), the active lists (M+1804) and
@@ -1623,6 +1647,8 @@ struct CarPrep {
     trunk_bone: Option<Mat4>,
     slot_bones: [Option<Mat4>; 3],
     roof_place: Mat4,
+    /// the fitted add-on gauge's needle clip and placement (CarModel::needles [2], needle_place)
+    upgrade: Option<(Arc<vehicle_model::BoneClip>, Mat4, std::path::PathBuf)>,
 }
 
 impl MeshGeo {
@@ -2164,7 +2190,7 @@ impl Vehicles {
         let t_load = std::time::Instant::now();
         let car = self.car_asset(world, dir)?;
         let ms_parse = t_load.elapsed().as_secs_f32() * 1000.0;
-        let CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, roof_place } = match self.take_prep(dir, cfg) {
+        let CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, roof_place, upgrade } = match self.take_prep(dir, cfg) {
             Some(p) => p,
             None => Self::prep_car(&car, dir, cfg),
         };
@@ -2372,7 +2398,7 @@ impl Vehicles {
         // (F-74884, a bike's set-up: +4092 / +4096 = |max - min| of the translation limits, crBoneData +144 / +160, of the
         // first bone named wheel_0 / wheel_2 in the base fragment's skeleton, then the parts' - F-20921)
         let bike_wheel_width = ["wheel_0", "wheel_2"].map(|n| car.skeleton.as_ref().and_then(|s| s.bones.iter().find(|b| b.name == n)).map_or(params.wheel_width, |b| (b.trans_limits.1 - b.trans_limits.0).length()));
-        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, font_bones, batches, params, params_mods, simtunes, vehmods: car.vehmods.clone(), fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, fx_anchors, fx_anchor_rear });
+        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, font_bones, batches, params, params_mods, simtunes, vehmods: car.vehmods.clone(), fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), needles: [car.needles[0].clone().map(Arc::new), car.needles[1].clone().map(Arc::new), upgrade.as_ref().map(|u| u.0.clone())], needle_place: upgrade.as_ref().map_or(Mat4::IDENTITY, |u| u.1), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, fx_anchors, fx_anchor_rear });
         self.models.push(m.clone());
         if self.wheels.is_none() {
             self.wheels = load_wheels(gpu, world).map(Arc::new);
@@ -2451,6 +2477,17 @@ impl Vehicles {
         // (a convertible whose roof moves - both clips there: the three roof parts and the clamshell's bones are groups)
         let roof_moves = car.clamshell.is_some() && car.skinned_top.is_some();
         let clam_bones: Vec<usize> = car.clamshell.as_ref().filter(|_| roof_moves).map(|c| c.bones.clone()).unwrap_or_default();
+        let needle_bones: [Vec<usize>; 2] = std::array::from_fn(|k| car.needles[k].as_ref().map(|c| c.bones.clone()).unwrap_or_default());
+        // (the fitted add-on gauge's needle: `tach_upgrade` of the post_gauge part's own file, on its own skeleton; of
+        // the gauge's two files only one has the clip)
+        let upgrade: Option<(Arc<vehicle_model::BoneClip>, Mat4, std::path::PathBuf)> = fitted.iter().filter(|(p, _)| !p.is_base && p.primary.to_ascii_lowercase().starts_with("post_gauge")).find_map(|(p, x)| {
+            let psk = p.skeleton.as_ref()?;
+            let res = crate::assets::load_resource_file(&p.file).ok()?;
+            vehicle_model::BoneClip::load(&res, psk, "tach_upgrade").map(|c| (Arc::new(c), *x, p.file.clone()))
+        });
+        if let Some(u) = upgrade.as_ref() {
+            log::info!("car {}: add-on gauge needle tach_upgrade {:.3} s, {} bones", car.name, u.0.duration, u.0.bones.len());
+        }
         let part_group = |part: &vehicle_model::CarPart, part_xf: &Mat4, mi: usize| -> u32 {
             if let Some(kind) = vehicle_model::roof_part(&part.primary).filter(|_| roof_moves) {
                 return ROOF_GROUP + kind as u32;
@@ -2467,6 +2504,13 @@ impl Vehicles {
                 }
             }
             let part_xf = &part_xf;
+            // (a mesh of the add-on gauge on a bone its `tach_upgrade` moves)
+            if let Some((cl, _, _)) = upgrade.as_ref().filter(|u| !part.is_base && u.2 == part.file) {
+                let b = part.mesh_tag.get(mi).and_then(|&t| part.skeleton.as_ref().and_then(|s| s.bone_by_tag(t)));
+                if let Some(j) = b.and_then(|b| cl.bones.iter().position(|&x| x == b)).filter(|&j| j < NEEDLE_BONES) {
+                    return NEEDLE_GROUP + (2 * NEEDLE_BONES + j) as u32;
+                }
+            }
             // (on a bone the auto spoiler's clip moves: a base mesh bound to it, a part hung on it by its matrix index)
             let bone = if part.is_base { part.mesh_tag.get(mi).and_then(|&t| sk.and_then(|s| s.bone_by_tag(t))) } else { Some(part.matrix_index as usize) };
             if let Some(j) = bone.and_then(|b| spoiler_bones.iter().position(|&x| x == b)).filter(|&j| j < SPOILER_GROUPS) {
@@ -2476,6 +2520,12 @@ impl Vehicles {
             // spoiler's)
             if let Some(j) = bone.and_then(|b| clam_bones.iter().position(|&x| x == b)).filter(|&j| j < CLAM_GROUPS) {
                 return CLAM_GROUP + j as u32;
+            }
+            // (on a bone a dashboard needle's clip moves)
+            for (k, nb) in needle_bones.iter().enumerate() {
+                if let Some(j) = bone.and_then(|b| nb.iter().position(|&x| x == b)).filter(|&j| j < NEEDLE_BONES) {
+                    return NEEDLE_GROUP + (k * NEEDLE_BONES + j) as u32;
+                }
             }
             if part.is_base {
                 return if part.mesh_tag.get(mi).map_or(false, |t| trunk_tags.contains(t)) { 4 } else { 0 };
@@ -2983,7 +3033,7 @@ impl Vehicles {
                 meshes.push(MeshPrep { sname: sname.to_string(), mode, dn, sn, plate, carbon, win_cand, kbits, geo, geo_alt });
             }
         }
-        CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, roof_place }
+        CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, roof_place, upgrade }
     }
 
     /// Tyre + rim model for a rim directory, loaded once.
@@ -5188,6 +5238,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
         blur_wheels.truncate(self.cars.len());
         blur_wheels.iter_mut().for_each(|w| w.clear());
         let eye = self.wheel_eye;
+        let player_tach_rpm = self.player_tach_rpm;
         for (ci, c) in self.cars.iter_mut().enumerate() {
             let pose = c.render_pose(self.render_alpha);
             let mut m = Mat4::from_rotation_translation(pose.rot, pose.pos);
@@ -5314,9 +5365,22 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     roof_skin_write(gpu, &c.model, top, c.roof.top.clip_time(top.duration));
                 }
             }
+            // (the dashboard needles, F-35036: the tach by the engine sound's slewed rpm - [[car +16] +204], the HUD's
+            // feed - the speedo by the chassis speed x 2.237)
+            let needle_d: [Vec<Mat4>; 3] = std::array::from_fn(|k| c.model.needles[k].as_ref().map(|cl| {
+                let rpm = if c.is_player { player_tach_rpm.unwrap_or(c.state.rpm) } else { c.state.rpm };
+                let d = if k == 1 { cl.deltas(needle_time(cl.duration, c.state.speed() * 2.237, false)) } else { cl.deltas(needle_time(cl.duration, rpm, true)) };
+                // (the add-on gauge's bones are its own skeleton's: moved about its placement)
+                if k == 2 { d.iter().map(|x| c.model.needle_place * *x * c.model.needle_place.inverse()).collect() } else { d }
+            }).unwrap_or_default());
             for (k, pb) in c.part_bindings.iter().enumerate() {
                 let parts = &c.state.parts;
                 let pm = match k {
+                    // (a bone of a dashboard needle)
+                    n if n + 3 >= NEEDLE_GROUP as usize => {
+                        let i = n + 3 - NEEDLE_GROUP as usize;
+                        needle_d[(i / NEEDLE_BONES).min(2)].get(i % NEEDLE_BONES).map_or(m, |d| m * *d)
+                    }
                     // (the roof's parts and the clamshell's bones)
                     r @ 26..=28 => if roof_shown[r - 26] { m } else { Mat4::ZERO },
                     j if j >= 29 => clam_d.get(j - 29).map_or(m, |d| m * *d),
@@ -7380,6 +7444,29 @@ static ISLANDS_OF_CARS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomic
 
 /// (MCLA_RAM_CAR) the rammed car and the player's car, target x 1000 + player
 static RAM_TARGET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
+
+#[cfg(test)]
+mod needle_tests {
+    use super::needle_time;
+
+    /// The needles' time rule of F-35036: one frame of the 30 fps clip per 100 rpm / per mph (L x 30 + 1 frames over L
+    /// seconds), clamped to [0, L]; the Vantage's 221-frame speedo at 220 mph and the 81-frame tach at 8000 rpm stand
+    /// at the last frame x 220 / 221 and x 80 / 81.
+    #[test]
+    fn needle_time_steps() {
+        let (speedo, tach) = (220.0f32 / 30.0, 80.0f32 / 30.0);
+        assert_eq!(needle_time(speedo, 0.0, false), 0.0);
+        assert_eq!(needle_time(speedo, -5.0, false), 0.0);
+        assert_eq!(needle_time(speedo, 220.0, false), speedo * (220.0 / speedo.mul_add(30.0, 1.0)));
+        assert!((needle_time(speedo, 220.0, false) * 30.0 - 220.0 * 220.0 / 221.0).abs() < 1e-3);
+        assert!((needle_time(tach, 8000.0, true) * 30.0 - 80.0 * 80.0 / 81.0).abs() < 1e-3);
+        assert_eq!(needle_time(speedo, 400.0, false), speedo);
+        assert_eq!(needle_time(tach, 20000.0, true), tach);
+        // (one mph / 100 rpm moves the needle by nearly one frame)
+        let df = (needle_time(speedo, 51.0, false) - needle_time(speedo, 50.0, false)) * 30.0;
+        assert!((df - 220.0 / 221.0).abs() < 1e-3, "{df}");
+    }
+}
 
 #[cfg(test)]
 mod roof_tests {
