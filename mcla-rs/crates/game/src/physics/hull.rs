@@ -178,6 +178,135 @@ pub fn shaped(file: &mcla_formats::rage::bound::Hull, t: &mcla_formats::rage::si
     shape
 }
 
+/// A polyhedron's own sphere as slot 40 F-38448 sets it after its box: F-96346 -> F-49283 hands the vertices (in order) to
+/// the move-to-front minimal sphere F-78217; the centroid +48 is its centre (F-67839), +8 its radius, +12 = |centre| +
+/// radius. Returns (centre, +8, +12). Equal to the original on every reshaped car hull (`reshape_matches_the_original`).
+pub fn hull_sphere(verts: &[Vec3]) -> (Vec3, f32, f32) {
+    let mut order: Vec<usize> = (0..verts.len()).collect();
+    let (mut c, mut r) = (Vec3::ZERO, 0.0f32);
+    sphere_mtf(verts, &mut order, 0, verts.len(), 0, &mut c, &mut r);
+    let far = fma(c.x, c.x, fma(c.y, c.y, c.z * c.z)).sqrt() + r;
+    (c, r, far)
+}
+
+fn yzx(v: Vec3) -> Vec3 {
+    Vec3::new(v.y, v.z, v.x)
+}
+
+fn zxy(v: Vec3) -> Vec3 {
+    Vec3::new(v.z, v.x, v.y)
+}
+
+/// -(a - b) lane by lane, as the vector unit's negated subtract leaves it (the sign of an exact zero included).
+fn negsub(a: Vec3, b: Vec3) -> Vec3 {
+    -(a - b)
+}
+
+/// One over `d` as the original forms it: the reciprocal, then one Newton step r + r (1 - r d).
+fn recip_newton(d: f32) -> f32 {
+    let r = 1.0 / d;
+    r * -(r * d - 1.0) + r
+}
+
+/// F-95825's unit vector at right angles to `v` (the degenerate triangle's way out): (-z, 0, x) when |x| >= |y|, else
+/// (0, z, -y), normalised by the reciprocal square root with one Newton step (the length as the dot unit sums it).
+fn perpendicular(v: Vec3) -> Vec3 {
+    let o = if !(v.x.abs() < v.y.abs()) { Vec3::new(-v.z, 0.0, v.x) } else { Vec3::new(0.0, v.z, -v.y) };
+    let d = o.z * o.z + (o.y * o.y + o.x * o.x);
+    let mut y = 1.0 / d.sqrt();
+    if y == f32::INFINITY {
+        y = 0.0;
+    }
+    let y1 = -(d * (y * y) - 1.0) * (0.5 * y) + y;
+    o * y1
+}
+
+/// F-78217: the sphere of the support (the `sup` points just before `start` in `order`), then every one of the `n` points
+/// from `start` outside it moved to the front and the sphere redone with it in the support.
+fn sphere_mtf(v: &[Vec3], order: &mut Vec<usize>, start: usize, n: usize, sup: usize, c: &mut Vec3, r: &mut f32) {
+    let s = |k: usize, order: &Vec<usize>| v[order[start - k]];
+    match sup {
+        0 => {
+            *r = 0.0;
+            *c = Vec3::ZERO;
+        }
+        1 => {
+            *r = 0.0;
+            *c = s(1, order);
+        }
+        2 => {
+            let (a, b) = (s(2, order), s(1, order));
+            *c = (a + b) * 0.5;
+            let (dy, dz, dx) = (b.y - a.y, b.z - a.z, b.x - a.x);
+            *r = fma(dx, dx, fma(dz, dz, dy * dy)).sqrt() * f32::from_bits(0x3f00_068e);
+        }
+        3 => {
+            let p3 = s(1, order);
+            let a = s(2, order) - p3;
+            let b = s(3, order) - p3;
+            let mut cr = negsub(yzx(b) * zxy(a), zxy(b) * yzx(a));
+            let len = |x: Vec3| fma(x.z, x.z, fma(x.x, x.x, x.y * x.y));
+            let mut d = len(cr) * 2.0;
+            let eps = f32::from_bits(0x2b8c_bccc);
+            while !(d.abs() > eps) {
+                cr = perpendicular(if len(a) > eps { a } else { b });
+                d = len(cr) * 2.0;
+            }
+            let bb = fma(b.z, b.z, fma(b.x, b.x, b.y * b.y));
+            let aa = fma(a.z, a.z, fma(a.x, a.x, a.y * a.y));
+            let rr = recip_newton(d);
+            let v5 = negsub(yzx(cr) * zxy(b), zxy(cr) * yzx(b));
+            let v4 = negsub(yzx(a) * zxy(cr), zxy(a) * yzx(cr));
+            let o = (v4 * bb + v5 * aa) * rr;
+            *r = fma(o.z, o.z, fma(o.x, o.x, o.y * o.y)).sqrt() * f32::from_bits(0x3f80_068e);
+            *c = o + p3;
+        }
+        _ => {
+            let p4 = s(1, order);
+            let u = s(3, order) - p4;
+            let vv = s(2, order) - p4;
+            let mut w = s(4, order) - p4;
+            let f5 = fma(vv.y, u.z, -(vv.z * u.y));
+            let det = |w: Vec3| {
+                let f3 = fma(vv.y, w.z, -(vv.z * w.y));
+                let f31 = fma(w.z, u.y, -(w.y * u.z));
+                let f1 = fma(f31, vv.x, -(f3 * u.x));
+                fma(f5, w.x, f1) * 2.0
+            };
+            let mut d = det(w);
+            if !(d.abs() > f32::from_bits(0x2b8c_bccc)) {
+                let vu = negsub(yzx(u) * zxy(vv), zxy(u) * yzx(vv));
+                w = vu * f32::from_bits(0x3dcc_cccd) + w;
+                d = det(w);
+            }
+            let ww = fma(w.z, w.z, fma(w.x, w.x, w.y * w.y));
+            let v2l = fma(vv.x, vv.x, fma(vv.z, vv.z, vv.y * vv.y));
+            let uu = fma(u.y, u.y, fma(u.x, u.x, u.z * u.z));
+            let v3 = negsub(yzx(vv) * zxy(w), zxy(vv) * yzx(w));
+            let v2 = negsub(yzx(u) * zxy(vv), zxy(u) * yzx(vv));
+            let v29 = negsub(yzx(w) * zxy(u), zxy(w) * yzx(u));
+            let rr = recip_newton(d);
+            let o = (v29 * v2l + (v2 * ww + v3 * uu)) * rr;
+            *r = fma(o.x, o.x, fma(o.y, o.y, o.z * o.z)).sqrt() * f32::from_bits(0x3f80_068e);
+            *c = o + p4;
+            return;
+        }
+    }
+    for i in 0..n {
+        let p = order[start + i];
+        let q = v[p];
+        let (dy, dz, dx) = (c.y - q.y, c.z - q.z, c.x - q.x);
+        if fma(dx, dx, fma(dz, dz, dy * dy)) < *r * *r {
+            continue;
+        }
+        for j in (start + 1..=start + i).rev() {
+            order[j] = order[j - 1];
+        }
+        order[start] = p;
+        sphere_mtf(v, order, start + 1, i, sup + 1, c, r);
+    }
+}
+
 /// The polyhedron's own box as F-90660 sets it (max, min): per axis the max / min over the vertices, -/+ 0.001, then -/+ the margin.
 pub fn reshaped_box(verts: &[Vec3], margin: f32) -> (Vec3, Vec3) {
     let (mut hi, mut lo) = (verts[0], verts[0]);
@@ -1982,6 +2111,9 @@ mod tests {
             let (hi, lo) = reshaped_box(&v, 0.04);
             assert_eq!([hi.x.to_bits(), hi.y.to_bits(), hi.z.to_bits(), lo.x.to_bits(), lo.y.to_bits(), lo.z.to_bits()],
                 [h[2], h[3], h[4], h[6], h[7], h[8]], "{} case {} box", a[0], cases);
+            let (c, r, far) = hull_sphere(&v);
+            assert_eq!([r.to_bits(), far.to_bits(), c.x.to_bits(), c.y.to_bits(), c.z.to_bits()], [h[0], h[1], h[10], h[11], h[12]],
+                "{} case {} sphere", a[0], cases);
             cases += 1;
         }
         assert_eq!(cases, 650);
