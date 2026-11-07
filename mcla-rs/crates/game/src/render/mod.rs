@@ -443,11 +443,19 @@ impl LampTables {
     /// each scored sat(strength / d^2) x its cone (F-60154), the best four kept (F-48037): (table index, score), best first.
     pub fn best_four(&self, p: Vec3) -> Vec<(u16, f32)> {
         let cand = self.lamp_query(p, 4.0, 32);
-        let mut scored: Vec<(u16, f32)> = cand.iter().map(|&i| (i, self.recs.get(i as usize).map_or(0.0, |l| crate::figlight::score(l, p)))).collect();
-        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
-        scored.truncate(4);
-        scored
+        pick_best(&cand, |i| self.recs.get(i as usize).map_or(0.0, |l| crate::figlight::score(l, p)), 4)
     }
+}
+
+/// F-48037's pick: the candidates' (score, index) pairs in candidate order, sorted ascending by score with the
+/// original's STLport introsort (F-39252, `<` on the score: equal scores and NaN fall as its steps leave them), then the
+/// best `cap` read from the top down. (The original fills the places left with the index "none", the lamp count,
+/// and score 0; the callers add the scores, so they are left out here.) Checked against F-48037 run offline on 3,102
+/// lists (`tools/lamp_pick_reference.py`, test `lamp_pick_matches_the_original`).
+pub fn pick_best(cand: &[u16], score: impl Fn(u16) -> f32, cap: usize) -> Vec<(u16, f32)> {
+    let mut pairs: Vec<(f32, u16)> = cand.iter().map(|&i| (score(i), i)).collect();
+    crate::physics::loose::stl_sort_by(&mut pairs, |a, b| a.0 < b.0);
+    pairs.iter().rev().take(cap).map(|&(s, i)| (i, s)).collect()
 }
 
 /// The cell index F-25968 reads for a place: `(p x scale - bias) x grid size` cut towards zero (a NaN cuts to
@@ -481,6 +489,34 @@ mod paint_file_tests {
 #[cfg(test)]
 mod lamp_cell_tests {
     use super::*;
+
+    /// F-48037 run offline (its sort and output as the generated code has them; the lamp fetch and the score stubbed
+    /// to the case's table): 3,000 candidate lists of 0 - 40 lamps with many equal, zero and NaN scores and 102 killers, organ pipes and near-killers (40 of their lists reach the depth limit and its heap sort).
+    #[test]
+    fn lamp_pick_matches_the_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/lamp_pick_reference.txt").lines() {
+            let (case, want) = l.split_once(" -> ").unwrap();
+            let t: Vec<&str> = case.split_whitespace().collect();
+            assert_eq!(t[0], "PICK");
+            let (lamps, cap, k): (usize, usize, usize) = (t[1].parse().unwrap(), t[2].parse().unwrap(), t[3].parse().unwrap());
+            let cand: Vec<u16> = t[4..4 + k].iter().map(|x| x.parse().unwrap()).collect();
+            let sc: Vec<u32> = t[4 + k..4 + k + lamps].iter().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let w: Vec<&str> = want.split_whitespace().collect();
+            let m: usize = w[0].parse().unwrap();
+            assert_eq!(m, cap, "{l:.80}");
+            let got = pick_best(&cand, |i| f32::from_bits(sc[i as usize]), cap);
+            for j in 0..m {
+                let (wi, ws): (u16, u32) = (w[1 + j].parse().unwrap(), u32::from_str_radix(w[1 + m + j], 16).unwrap());
+                match got.get(j) {
+                    Some(&(gi, gs)) => assert_eq!((gi, gs.to_bits()), (wi, ws), "{l:.120} place {j}"),
+                    None => assert_eq!((wi as usize, ws), (lamps, 0), "{l:.120} pad {j}"),
+                }
+            }
+            n += 1;
+        }
+        assert_eq!(n, 3102);
+    }
 
     /// F-25968 (the cell lookup) and its index arithmetic, run offline from the original's code on 1,114 places:
     /// the 14 of a recording of the open city, random places over and around the map, the places on cell edges

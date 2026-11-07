@@ -1897,17 +1897,22 @@ fn break_strength(t: &FragType, obj: &Obj, comp: &[Vec3]) -> Option<(f32, u8)> {
 /// limit is twice floor(log2 n); a range it reaches is heap sorted (the partial sort F-76221 over the whole range:
 /// make_heap F-28981, sort_heap F-78034, both through adjust_heap F-49539 and push_heap F-57527).
 pub fn stl_sort<T: Clone>(a: &mut Vec<T>, key: impl Fn(&T) -> i64) {
-    fn insertion<T: Clone>(a: &mut [T], lo: usize, hi: usize, key: &impl Fn(&T) -> i64) {
+    stl_sort_by(a, |x, y| key(x) < key(y));
+}
+
+/// [`stl_sort`] with the comparison itself (`less`, the original's `<` on the key: false both ways for a NaN).
+pub fn stl_sort_by<T: Clone>(a: &mut [T], less: impl Fn(&T, &T) -> bool) {
+    fn insertion<T: Clone>(a: &mut [T], lo: usize, hi: usize, less: &impl Fn(&T, &T) -> bool) {
         for i in lo + 1..hi {
             let v = a[i].clone();
-            if key(&v) < key(&a[lo]) {
+            if less(&v, &a[lo]) {
                 for j in (lo..i).rev() {
                     a[j + 1] = a[j].clone();
                 }
                 a[lo] = v;
             } else {
                 let mut j = i;
-                while key(&v) < key(&a[j - 1]) {
+                while less(&v, &a[j - 1]) {
                     a[j] = a[j - 1].clone();
                     j -= 1;
                 }
@@ -1915,11 +1920,11 @@ pub fn stl_sort<T: Clone>(a: &mut Vec<T>, key: impl Fn(&T) -> i64) {
             }
         }
     }
-    fn adjust<T: Clone>(b: &mut [T], mut hole: usize, bottom: usize, v: T, key: &impl Fn(&T) -> i64) {
+    fn adjust<T: Clone>(b: &mut [T], mut hole: usize, bottom: usize, v: T, less: &impl Fn(&T, &T) -> bool) {
         let top = hole;
         let mut i = 2 * hole + 2;
         while i < bottom {
-            if key(&b[i]) < key(&b[i - 1]) {
+            if less(&b[i], &b[i - 1]) {
                 i -= 1;
             }
             b[hole] = b[i].clone();
@@ -1932,7 +1937,7 @@ pub fn stl_sort<T: Clone>(a: &mut Vec<T>, key: impl Fn(&T) -> i64) {
         }
         while top < hole {
             let p = (hole - 1) / 2;
-            if !(key(&b[p]) < key(&v)) {
+            if !(less(&b[p], &v)) {
                 break;
             }
             b[hole] = b[p].clone();
@@ -1940,46 +1945,46 @@ pub fn stl_sort<T: Clone>(a: &mut Vec<T>, key: impl Fn(&T) -> i64) {
         }
         b[hole] = v;
     }
-    fn heap<T: Clone>(b: &mut [T], key: &impl Fn(&T) -> i64) {
+    fn heap<T: Clone>(b: &mut [T], less: &impl Fn(&T, &T) -> bool) {
         let n = b.len();
         if n >= 2 {
             for h in (0..=(n - 2) / 2).rev() {
                 let v = b[h].clone();
-                adjust(b, h, n, v, key);
+                adjust(b, h, n, v, less);
             }
         }
         for len in (2..=n).rev() {
             let v = b[len - 1].clone();
             b[len - 1] = b[0].clone();
-            adjust(b, 0, len - 1, v, key);
+            adjust(b, 0, len - 1, v, less);
         }
     }
-    fn quick<T: Clone>(a: &mut [T], first: usize, mut last: usize, mut depth: u32, key: &impl Fn(&T) -> i64) {
+    fn quick<T: Clone>(a: &mut [T], first: usize, mut last: usize, mut depth: u32, less: &impl Fn(&T, &T) -> bool) {
         while last - first > 16 {
             if depth == 0 {
-                heap(&mut a[first..last], key);
+                heap(&mut a[first..last], less);
                 return;
             }
             depth -= 1;
             let n = last - first;
-            let (ka, kb, kc) = (key(&a[first]), key(&a[first + n / 2]), key(&a[last - 1]));
-            let m = if ka < kb {
-                if kb < kc { first + n / 2 } else if ka < kc { last - 1 } else { first }
-            } else if ka < kc {
+            let (ka, kb, kc) = (a[first].clone(), a[first + n / 2].clone(), a[last - 1].clone());
+            let m = if less(&ka, &kb) {
+                if less(&kb, &kc) { first + n / 2 } else if less(&ka, &kc) { last - 1 } else { first }
+            } else if less(&ka, &kc) {
                 first
-            } else if kb < kc {
+            } else if less(&kb, &kc) {
                 last - 1
             } else {
                 first + n / 2
             };
-            let kp = key(&a[m]);
+            let kp = a[m].clone();
             let (mut f, mut l) = (first, last);
             loop {
-                while key(&a[f]) < kp {
+                while less(&a[f], &kp) {
                     f += 1;
                 }
                 l -= 1;
-                while kp < key(&a[l]) {
+                while less(&kp, &a[l]) {
                     l -= 1;
                 }
                 if !(f < l) {
@@ -1988,26 +1993,26 @@ pub fn stl_sort<T: Clone>(a: &mut Vec<T>, key: impl Fn(&T) -> i64) {
                 a.swap(f, l);
                 f += 1;
             }
-            quick(a, f, last, depth, key);
+            quick(a, f, last, depth, less);
             last = f;
         }
     }
     let n = a.len();
     if n > 16 {
-        quick(a, 0, n, 2 * n.ilog2(), &key);
-        insertion(a, 0, 16, &key);
+        quick(a, 0, n, 2 * n.ilog2(), &less);
+        insertion(a, 0, 16, &less);
         // (the rest without the guard: the least stands in the first sixteen)
         for i in 16..n {
             let v = a[i].clone();
             let mut j = i;
-            while j > 0 && key(&v) < key(&a[j - 1]) {
+            while j > 0 && less(&v, &a[j - 1]) {
                 a[j] = a[j - 1].clone();
                 j -= 1;
             }
             a[j] = v;
         }
     } else {
-        insertion(a, 0, n, &key);
+        insertion(a, 0, n, &less);
     }
 }
 
