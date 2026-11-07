@@ -1,0 +1,14 @@
+va_350z_04 physics2/rec/th.0.ext.bin 4 40146e83 40346e9e 3f776f18 3faaad75 400d128d bf762e08 3e8be2cd c0076db6 3b208800 3eff00c0 3d349b00
+va_cad_ctsv_04 physics2/rec/th.0.ext.bin 4 4023bdd4 4047403e 3f78cc0e 3fbd699b 401f71be bf7772bb 3e82fb3f c01530c9 3b2ca980 3f0c8c43 3da40f50
+va_cad_escalade_03 veh/fs.0.ext.bin 4 402c6a04 405baad4 3f8a7fad 3ff3706c 4025e7b7 bf89d302 3e82fb4b c0188f8c 3b2cab00 3f3b1e22 3dd582b0
+va_cad_ext_03 driverlight/rec/cap/p.2.ext.bin 4 403f4461 4071d996 3f856050 3ff37c5c 40447369 bf84b3a7 3e82fb3f c02492f8 3b2ca900 3f400606 3e7f0388
+va_cad_limo_07 driverlight/rec/cap/p.1.ext.bin 4 4071531a 408a09d0 3f855471 3fbf4ca0 407014d7 bf84a7c8 3e637c32 c0653036 3b2ca900 3f0949e8 3dae4a10
+va_chr_300c_05 traffic-detail/fix37/cap/p.3.ext.bin 4 4025c6bc 404a58ff 3f77d4d9 3fbe4f6f 4023ee1a bf767b87 3e82fb3f c01521dc 3b2ca900 3f0f4236 3decc3e0
+va_chv_cobalt_05 physics2/rec/th.0.ext.bin 4 401a4a39 4038701b 3f620bb3 3fb522ad 401414f3 bf60b261 3e05bec4 c00fd783 3b2ca900 3ef09541 3d07ade0
+va_chv_silverado_04 veh/fs.0.ext.bin 4 40395360 40635a8f 3f82edf8 3fe03ca5 40368af7 bf82414e 3e5addea c027d0db 3b2caa00 3f2582b1 3deba1c0
+va_dge_caravan_07 physics2/rec/th.0.ext.bin 4 40208528 40417899 3f84a5a6 3fd74b28 4013e0c8 bf83f8fe 3e4177d0 c015dd52 3b2ca400 3f03bdfd bc7e4500
+va_golfr32_04 dmgmap/cap/h/p.0.ext.bin 4 40109c1d 4031d308 3f6733be 3fb94117 40067b79 bf65e5d8 3e876d45 c008c7f8 3b26f300 3f04c6e6 bc931fc0
+va_mb_eclipse_04 partsrec/cap/f0.ext.bin 4 4014df88 402b5148 3f659abd 3fa6082b 400b63d4 bf64416a 3dc07e89 c00d6930 3b2cae00 3eb35e14 bc815700
+va_mbz_cl500_04 driverlight/rec/cap/p.1.ext.bin 4 402a1298 404d7b1f 3f71d952 3fb40c2b 402becdc bf737b86 3e82fb3f c0179410 bb511a00 3f07a8aa 3e22c660
+va_taxi_96 physics2/rec/th.0.ext.bin 4 4033b0ce 40565ee7 3f74e6da 3fbba5ac 40367df0 bf738d88 3e563c80 c020d652 3b2ca900 3f03c8d4 3e2d3cf0
+va_vw_jetta_03 traffic-detail/fix37/cap/p.1.ext.bin 4 4013b944 403691be 3f5d9191 3fbb6069 400ef695 bf5c383c 3e82fb4b c008838a 3b2caa80 3f0ac85c 3d4e6160

@@ -1983,22 +1983,7 @@ impl ProbeBound {
         let parts = t
             .parts
             .iter()
-            .map(|p| {
-                let b = p.bound.as_ref()?;
-                let shape = match b.kind {
-                    0 => ProbeShape::Prim(Primitive::Sphere { centre: v(b.centroid), r: b.radius }),
-                    1 => ProbeShape::Prim(Primitive::Capsule { centre: v(b.centroid), r: b.round, len: b.length }),
-                    3 => ProbeShape::Prim(Primitive::Box { centre: v(b.centroid), size: v(b.size) }),
-                    4 => ProbeShape::Poly {
-                        verts: b.verts.iter().map(|&x| v(x)).collect(),
-                        polys: (0..b.tris.len()).map(|i| ProbePolygon { area: b.areas[i], verts: b.tris[i], beside: b.beside[i] }).collect(),
-                        mats: b.poly_mats.clone(),
-                    },
-                    _ => return None,
-                };
-                let m = [v(p.matrix[0]), v(p.matrix[1]), v(p.matrix[2]), v(p.matrix[3])];
-                Some((ProbeBound { kind: b.kind, radius: b.radius, centroid: v(b.centroid), max: v(b.max), min: v(b.min), materials: materials(b), shape }, m))
-            })
+            .map(|p| Some((Self::of_frag_bound(p.bound.as_ref()?, materials)?, [v(p.matrix[0]), v(p.matrix[1]), v(p.matrix[2]), v(p.matrix[3])])))
             .collect();
         ProbeBound {
             kind: 12,
@@ -2009,6 +1994,57 @@ impl ProbeBound {
             materials: Vec::new(),
             shape: ProbeShape::Composite { parts, tested: t.tested as usize, masks: t.part_masks.clone() },
         }
+    }
+
+    /// One bound of a file as the dispatch reads it: a sphere by its centroid (+48) and radius (+8), a capsule by its
+    /// radius +128 and length +144, a box by its centroid and size (+208), a polyhedron by its vertices, polygon records
+    /// (area, vertices, neighbours) and material indices; None for the other types.
+    pub fn of_frag_bound(b: &mcla_formats::rage::fragphys::FragBound, materials: &dyn Fn(&mcla_formats::rage::fragphys::FragBound) -> Vec<u32>) -> Option<ProbeBound> {
+        let v = |x: [f32; 3]| Vec3::from_array(x);
+        let shape = match b.kind {
+            0 => ProbeShape::Prim(Primitive::Sphere { centre: v(b.centroid), r: b.radius }),
+            1 => ProbeShape::Prim(Primitive::Capsule { centre: v(b.centroid), r: b.round, len: b.length }),
+            3 => ProbeShape::Prim(Primitive::Box { centre: v(b.centroid), size: v(b.size) }),
+            4 => ProbeShape::Poly {
+                verts: b.verts.iter().map(|&x| v(x)).collect(),
+                polys: (0..b.tris.len()).map(|i| ProbePolygon { area: b.areas[i], verts: b.tris[i], beside: b.beside[i] }).collect(),
+                mats: b.poly_mats.clone(),
+            },
+            _ => return None,
+        };
+        Some(ProbeBound { kind: b.kind, radius: b.radius, centroid: v(b.centroid), max: v(b.max), min: v(b.min), materials: materials(b), shape })
+    }
+
+    /// An ambient (traffic) car's bound as the level holds it: its archetype's bound is the ambient file's own, unchanged
+    /// (every recorded 0x1100 object's bound header equals its model's file, traffic_drive_rule.md 9.19) - a polyhedron
+    /// with its material table (F-10817), or a semi's composite with its parts and their matrices.
+    pub fn of_ambient(a: &mcla_formats::rage::fragphys::AmbientFrag) -> Option<ProbeBound> {
+        let v = |x: [f32; 3]| Vec3::from_array(x);
+        if a.bound.kind == 4 {
+            return Self::of_frag_bound(&a.bound, &game_materials);
+        }
+        let parts = a.parts.iter().map(|(b, m)| Some((Self::of_frag_bound(b.as_ref()?, &game_materials)?, [v(m[0]), v(m[1]), v(m[2]), v(m[3])]))).collect();
+        let b = &a.bound;
+        Some(ProbeBound { kind: 12, radius: b.radius, centroid: v(b.centroid), max: v(b.max), min: v(b.min), materials: Vec::new(), shape: ProbeShape::Composite { parts, tested: a.tested as usize, masks: a.masks.clone() } })
+    }
+
+    /// A prop entry's composite (a prop once hit, or a piece broken off it): the entry's fill F-52007 copies the type's
+    /// composite (the same part bounds, the part matrices - current and last one array, as in the type -, the boxes),
+    /// the parts of the groups that left nulled (F-13753; `present` says which stay), then the mass-properties step
+    /// recomputes its centroid (F-64537, through slot 6) and extents (F-65996: F-32566 over the present parts among the
+    /// tested ones, each part's box swept from its matrix to itself; the centroid the box's middle, +8 the radius).
+    pub fn of_entry(t: &mcla_formats::rage::fragphys::FragType, materials: &dyn Fn(&mcla_formats::rage::fragphys::FragBound) -> Vec<u32>, present: &dyn Fn(usize) -> bool) -> ProbeBound {
+        let mut b = Self::of_prop(t, materials);
+        let ProbeShape::Composite { parts, tested, .. } = &mut b.shape else { unreachable!() };
+        for (c, p) in parts.iter_mut().enumerate() {
+            if !present(c) {
+                *p = None;
+            }
+        }
+        let boxes: Vec<(Vec3, Vec3)> = parts.iter().take(*tested).flatten().map(|(pb, m)| super::vehsim::swept_part_box(pb.min, pb.max, m, m)).collect();
+        let f = super::vehsim::composite_extents(&boxes);
+        (b.radius, b.centroid, b.max, b.min) = (f.radius, f.centroid, f.hi, f.lo);
+        b
     }
 
     /// The player car's composite bound (type 12) as the running game has it after a set-up: part 0 the hull with its
@@ -3702,6 +3738,64 @@ mod tests {
             }
         }
         assert_eq!(n, 14_246);
+    }
+
+    /// A prop entry's composite against the original's fill and mass-properties steps run offline
+    /// (tools/prop_entry_bound_reference.py -> testdata/prop_entry_bound_ref.txt): every composite prop type, with no part,
+    /// each single part and random sets of parts nulled; +8, +16 .. +24, +32 .. +40 and +48 .. +56 equal `of_entry`.
+    #[test]
+    fn prop_entry_bound_matches_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Ok(d) = std::fs::read(std::path::Path::new(&root).join("resources/prop/0x0e66973c.r131")) else { return };
+        let u32le = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let data = d[16..].to_vec();
+        let vs = (u32le(12) as usize).min(data.len());
+        let res = mcla_formats::rsc::Resource { rtype: u32le(4), flags: u32le(8), virtual_size: vs, physical_size: data.len() - vs, data };
+        let types = mcla_formats::rage::fragphys::parse_frag_types(&res);
+        let none = |_: &mcla_formats::rage::fragphys::FragBound| -> Vec<u32> { Vec::new() };
+        let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+        let mut n = 0;
+        for line in include_str!("../testdata/prop_entry_bound_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let mut it = i.split(' ');
+            let ty: usize = it.next().unwrap().parse().unwrap();
+            let mask = u64::from_str_radix(it.next().unwrap(), 16).unwrap();
+            let w: Vec<u32> = o.split(' ').map(|h| u32::from_str_radix(h, 16).unwrap()).collect();
+            let b = ProbeBound::of_entry(&types[ty], &none, &|c| mask >> c & 1 == 0);
+            let got = [b.radius.to_bits(), bits(b.max)[0], bits(b.max)[1], bits(b.max)[2], bits(b.min)[0], bits(b.min)[1], bits(b.min)[2], bits(b.centroid)[0], bits(b.centroid)[1], bits(b.centroid)[2]];
+            let want = [w[0], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10]];
+            assert_eq!(got, want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 1340);
+    }
+
+    /// Ambient traffic's level bounds against the running original: every distinct bound of a 0x1100 object the
+    /// instrumented recomp recorded in the level (testdata/ambient_bound_rec.txt: model, recording, type, +8, +12, the
+    /// box +16 / +32, the centroid +48) equals `of_ambient` of the model's file, word for word.
+    #[test]
+    fn ambient_bound_matches_the_recordings() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+        let mut n = 0;
+        for line in include_str!("../testdata/ambient_bound_rec.txt").lines() {
+            let w: Vec<&str> = line.split(' ').collect();
+            let dir = std::path::Path::new(&root).join("resources/ambients").join(w[0]);
+            let Ok(rd) = std::fs::read_dir(&dir) else { return };
+            let file = rd.filter_map(|e| e.ok().map(|e| e.path())).find(|p| p.extension().is_some_and(|x| x == "r155")).unwrap();
+            let res = crate::assets::load_resource_file(&file).unwrap();
+            let a = mcla_formats::rage::fragphys::ambient_frag(&res).unwrap();
+            let b = ProbeBound::of_ambient(&a).unwrap();
+            let h = |k: usize| u32::from_str_radix(w[3 + k], 16).unwrap();
+            assert_eq!(b.kind as u32, w[2].parse::<u32>().unwrap(), "{line}");
+            let got = [b.radius.to_bits(), bits(b.max)[0], bits(b.max)[1], bits(b.max)[2], bits(b.min)[0], bits(b.min)[1], bits(b.min)[2], bits(b.centroid)[0], bits(b.centroid)[1], bits(b.centroid)[2]];
+            let want = [h(0), h(2), h(3), h(4), h(5), h(6), h(7), h(8), h(9), h(10)];
+            assert_eq!(got, want, "{line}");
+            let ProbeShape::Poly { polys, .. } = &b.shape else { panic!("{line}") };
+            assert!(!polys.is_empty() && !b.materials.is_empty(), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 14);
     }
 
     /// A walker's bound as F-37628 makes it (tools/walker_bound_reference.py -> testdata/walker_bound_ref.txt, run whole

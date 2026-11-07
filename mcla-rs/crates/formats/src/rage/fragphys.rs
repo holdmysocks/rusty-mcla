@@ -439,6 +439,41 @@ pub fn car_composite(res: &Resource) -> Option<CarComposite> {
     None
 }
 
+/// An ambient (traffic) car's bound as its file (`resources/ambients/<model>/*.r155`, the resource's +8) has it - the
+/// archetype's bound the level holds: a polyhedron (type 4; `parts` empty), or a composite (type 12, a semi) with its
+/// parts and their matrices (+0x80 / +0x84) and the tested count (+0x92).
+#[derive(Debug, Clone)]
+pub struct AmbientFrag {
+    pub bound: FragBound,
+    pub parts: Vec<(Option<FragBound>, [[f32; 3]; 4])>,
+    pub tested: u16,
+    /// +0x94: the per-part (type, include) pairs, when the file has them
+    pub masks: Vec<(u32, u32)>,
+}
+
+pub fn ambient_frag(res: &Resource) -> Option<AmbientFrag> {
+    let rd = Rd::new(res);
+    let o = rd.ptr(8)?;
+    let bound = bound_at(&rd, o);
+    match bound.kind {
+        4 => Some(AmbientFrag { bound, parts: Vec::new(), tested: 0, masks: Vec::new() }),
+        12 => {
+            let n = rd.u16(o + 0x90) as usize;
+            let (list, mats) = (rd.ptr(o + 0x80)?, rd.ptr(o + 0x84)?);
+            if n == 0 || n > 64 || !rd.has(list, n * 4) || !rd.has(mats, n * 64) {
+                return None;
+            }
+            let parts = (0..n)
+                .map(|i| (rd.ptr(list + 4 * i).map(|p| bound_at(&rd, p)), [v3(&rd, mats + 64 * i), v3(&rd, mats + 64 * i + 16), v3(&rd, mats + 64 * i + 32), v3(&rd, mats + 64 * i + 48)]))
+                .collect();
+            let tested = rd.u16(o + 0x92);
+            let masks = rd.ptr(o + 0x94).map(|pm| (0..tested as usize).map(|k| (rd.u32(pm + 8 * k), rd.u32(pm + 8 * k + 4))).collect()).unwrap_or_default();
+            Some(AmbientFrag { bound, parts, tested, masks })
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod event_tests {
     use super::*;

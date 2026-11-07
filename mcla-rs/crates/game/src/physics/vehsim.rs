@@ -124,7 +124,7 @@ fn msum4(a: Vec3, aw: f32, b: Vec3, bw: f32) -> f32 {
 /// `m` (rows, place), as a box in the composite's frame: the last pose seen from the current one (m's transpose
 /// as its inverse), that pose's box in the current part's axes, its union with the box at the current pose, then
 /// that through the current matrix.
-fn swept_part_box(lo: Vec3, hi: Vec3, m: &[Vec3; 4], l: &[Vec3; 4]) -> (Vec3, Vec3) {
+pub(crate) fn swept_part_box(lo: Vec3, hi: Vec3, m: &[Vec3; 4], l: &[Vec3; 4]) -> (Vec3, Vec3) {
     let dp = l[3] - m[3];
     let r: [Vec3; 3] = std::array::from_fn(|j| Vec3::new(msum3(m[0], l[j]), msum3(m[1], l[j]), msum3(m[2], l[j])));
     let t = Vec3::new(msum3(m[0], dp), msum3(m[1], dp), msum3(m[2], dp));
@@ -162,7 +162,6 @@ pub fn wheel_bound(front: bool, radius: f32, width: f32) -> (Vec3, f32) {
 /// support along each axis and the margin, F-63967. Then the centroid (max + min) x 0.5 and the radii. It stands
 /// as it is between fits.
 pub fn fit_bound(hull: (Vec3, Vec3), wheels: &[(FitWheel, [Vec3; 3])]) -> FitBound {
-    use super::exact::fma;
     let ident = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO];
     let mut boxes = vec![swept_part_box(hull.0, hull.1, &ident, &ident)];
     for (w, rows) in wheels {
@@ -173,6 +172,14 @@ pub fn fit_bound(hull: (Vec3, Vec3), wheels: &[(FitWheel, [Vec3; 3])]) -> FitBou
         let last = [rows[0], rows[1], rows[2], Vec3::new(w.rest.x, up, w.rest.z)];
         boxes.push(swept_part_box(-e, e, &cur, &last));
     }
+    composite_extents(&boxes)
+}
+
+/// F-32566's tail and F-65996's radius: the union of the parts' swept boxes (`boxes` in part order, the null parts left
+/// out), taken from the last part down to 0 from (FLT_MAX, -FLT_MAX); the centroid its middle, +8 sqrt(d.z d.z + (d.y d.y +
+/// d.x d.x)) with d = max - centroid, +12 the larger squared corner's root.
+pub(crate) fn composite_extents(boxes: &[(Vec3, Vec3)]) -> FitBound {
+    use super::exact::fma;
     let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(-f32::MAX));
     for &(l, h) in boxes.iter().rev() {
         lo = lo.min(l);
