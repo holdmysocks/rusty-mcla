@@ -626,6 +626,15 @@ impl System {
         Some(i)
     }
 
+    /// A prop's entity follows its instance (F-20017: the instance's matrix into the entity's frame every frame).
+    pub fn prop_follow(&mut self, key: u64, origin: [f32; 3]) {
+        if let Some(i) = self.owner.iter().position(|o| *o == Some((2, key))) {
+            if let Some(o) = self.list[i].as_mut() {
+                o.frame = Some(Self::frame(origin));
+            }
+        }
+    }
+
     /// A map effect's entity (mcParticleAudioEntity, F-95929): its occluder at `place` (the PTX object's +26 / +30 /
     /// +34) on the instance's `origin`, not in the frame's space, and from "not updated yet" the immediate update
     /// F-65914 when `now` (the object has a start sound). (approx.) Made here when the entity is bound; the original's

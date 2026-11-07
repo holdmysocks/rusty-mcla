@@ -50,6 +50,8 @@ pub fn prop_sound(name: &str) -> u8 {
 #[derive(Clone, Copy, Debug)]
 pub struct PropHit {
     pub pos: Vec3,
+    /// the prop's instance (`Props::origin`), `u32::MAX` for none
+    pub inst: u32,
     pub kind: u8,
     /// the prop type's name hash (its game.dat audio object)
     pub model: u32,
@@ -173,7 +175,8 @@ pub struct Sound {
     occl: Option<crate::occlusion::System>,
     occ_slots: std::collections::HashMap<u32, u16>,
     /// the hit props' entities (their occluder keys) and the sounds they still play
-    prop_held: Vec<(u64, Vec<crate::sndobj::Handle>)>,
+    /// each hit prop's entity: key, instance, its sounds
+    prop_held: Vec<(u64, u32, Vec<crate::sndobj::Handle>)>,
     /// the map effects' sounds (ptxaudio.rs)
     ptx: crate::ptxaudio::PtxSounds,
     /// the player car's performance stages the sounds read: intake, turbo, nitrous
@@ -555,7 +558,7 @@ impl Sound {
         self.engine.as_ref().map(|(_, e)| e.smoothed_rpm())
     }
 
-    pub fn update(&mut self, a: &mut Audio, vehicles: &Vehicles, game: &Game, police: &Police, ability: &Abilities, prop_hits: &[PropHit], cam_pos: Vec3, cam_right: Vec3, cam_fwd: Vec3, rain: f32, horn: bool, night: bool, probe: &dyn Fn(Vec3, Vec3) -> bool, probe_at: &dyn Fn(Vec3, Vec3) -> Option<u8>, collider: Option<&crate::physics::collision::WorldCollider>, dt: f32) {
+    pub fn update(&mut self, a: &mut Audio, vehicles: &Vehicles, game: &Game, police: &Police, ability: &Abilities, prop_hits: &[PropHit], prop_origin: &dyn Fn(u32) -> Option<Vec3>, cam_pos: Vec3, cam_right: Vec3, cam_fwd: Vec3, rain: f32, horn: bool, night: bool, probe: &dyn Fn(Vec3, Vec3) -> bool, probe_at: &dyn Fn(Vec3, Vec3) -> Option<u8>, collider: Option<&crate::physics::collision::WorldCollider>, dt: f32) {
         let wet = rain > 0.0;
         a.set_listener(cam_pos, cam_right);
         if !self.lib_tried {
@@ -903,11 +906,16 @@ impl Sound {
             let l = lib.listener.0;
             let l4 = [l.x, l.y, l.z, 0.0];
             for h in prop_hits {
-                let key = ((h.model as u64) << 31) ^ (h.pos.x.to_bits() as u64) ^ ((h.pos.z.to_bits() as u64) << 7);
-                let key = key & !(1u64 << 63);
+                // one entity per prop instance (F-95562 binds the instance); a prop without one by its type and place
+                let key = if h.inst != u32::MAX {
+                    1u64 << 62 | h.inst as u64
+                } else {
+                    (((h.model as u64) << 31) ^ (h.pos.x.to_bits() as u64) ^ ((h.pos.z.to_bits() as u64) << 7)) & !(3u64 << 62)
+                };
+                let at = prop_origin(h.inst).unwrap_or(h.pos);
                 let obj = lib.game.get(h.model).filter(|o| o.first() == Some(&43)).or_else(|| lib.game.get_name("LA_PROP_DEFAULT")).map(|o| o.to_vec());
                 let slot = match (&mut self.occl, &obj) {
-                    (Some(oc), Some(o)) => oc.prop(key, h.pos.to_array(), prop_place(o), true, l4, &mut world),
+                    (Some(oc), Some(o)) => oc.prop(key, at.to_array(), prop_place(o), true, l4, &mut world),
                     _ => None,
                 };
                 if let (Some(oc), Some(i)) = (&self.occl, slot) {
@@ -917,11 +925,21 @@ impl Sound {
                 }
                 let hs = coll.prop(lib, h.model, h.pos, h.speed, h.knocked, slot.map_or(0, |i| (i + 1) as u16));
                 match self.prop_held.iter_mut().find(|e| e.0 == key) {
-                    Some(e) => e.1.extend(hs),
-                    None => self.prop_held.push((key, hs)),
+                    Some(e) => e.2.extend(hs),
+                    None => self.prop_held.push((key, h.inst, hs)),
                 }
             }
-            self.prop_held.retain_mut(|(key, hs)| {
+            // F-20017: every frame each entity takes its instance's matrix again, after the occluders' update (above,
+            // `occlude`), so the occluder of a knocked prop follows it a frame behind: recording q2, the emitter of an
+            // update in frame F is the origin the entity took in frame F - 1 plus the type's place
+            if let Some(oc) = &mut self.occl {
+                for (key, inst, _) in &self.prop_held {
+                    if let Some(now) = prop_origin(*inst) {
+                        oc.prop_follow(*key, now.to_array());
+                    }
+                }
+            }
+            self.prop_held.retain_mut(|(key, _, hs)| {
                 hs.retain(|h| lib.playing(*h));
                 let on = !hs.is_empty();
                 if !on {

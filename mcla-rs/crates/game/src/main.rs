@@ -8224,7 +8224,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.sound.racer_found |= self.game.flash_hud.as_mut().is_some_and(|h| std::mem::take(&mut h.racer_found));
             self.sound.menu_cam = self.game.flash_menu.as_ref().filter(|_| self.game.in_menu()).and_then(|m| m.movie.player.get_global("cur_camera")).map(|v| v.to_f32() as i32);
             crate::ticktimes::mark(crate::ticktimes::S::Sound);
-            self.sound.update(a, &self.vehicles, &self.game, &self.police, &self.ability, &self.props.hits, self.cam.pos, right, fwd, rain_snd, horn, self.time_of_day > 19.5 || self.time_of_day < 6.0, &|p: Vec3, q: Vec3| { let d = q - p; let l = d.length(); l > 0.0 && world.collider.raycast(p, d / l, l).is_some() }, &|p: Vec3, q: Vec3| { let d = q - p; let l = d.length(); if l > 0.0 { world.collider.raycast(p, d / l, l).map(|h| h.surface as u8) } else { None } }, Some(&world.collider), dt);
+            self.sound.update(a, &self.vehicles, &self.game, &self.police, &self.ability, &self.props.hits, &|i| self.props.origin(i), self.cam.pos, right, fwd, rain_snd, horn, self.time_of_day > 19.5 || self.time_of_day < 6.0, &|p: Vec3, q: Vec3| { let d = q - p; let l = d.length(); l > 0.0 && world.collider.raycast(p, d / l, l).is_some() }, &|p: Vec3, q: Vec3| { let d = q - p; let l = d.length(); if l > 0.0 { world.collider.raycast(p, d / l, l).map(|h| h.surface as u8) } else { None } }, Some(&world.collider), dt);
             // the map effects' sounds follow the effect instances (ptxaudio.rs)
             self.sound.effects(&self.fx.instances(), Some(&world.collider));
             crate::ticktimes::mark(crate::ticktimes::S::Other);
@@ -15128,9 +15128,17 @@ fn siren_clock_ms() -> u64 {
 fn radio_ctx(vehicles: &vehicles::Vehicles, world: &world::World, hour: f32) -> radio::Ctx {
     let mut ctx = radio::Ctx { hour, ..Default::default() };
     let Some(p) = vehicles.player() else { return ctx };
-    ctx.heading = p.state.forward();
+    // (F-78553: the velocity when the racer's +224 is at least 0.1, else the matrix's -z row; y = 0, made unit by the
+    // reciprocal square root estimate - here the exact one, which only a word on the 45 degree line could tell apart)
+    let v = if p.state.speed() >= 0.1 { p.state.vel } else { p.state.forward() };
+    ctx.heading = Vec3::new(v.x, 0.0, v.z).normalize_or_zero();
     ctx.car = p.model.name.clone();
     if let Some(nav) = world.nav.as_ref() {
+        // (+252: the road within 3 m of his place on the ground, F-55639)
+        ctx.road_dir = match nav.node_within(Vec3::new(p.state.pos.x, 0.0, p.state.pos.z), 3.0, false) {
+            Some(mcla_formats::rage::navsys::NavNode::Road(r)) => nav.zones.get(r).map(|z| z.dir),
+            _ => None,
+        };
         let zone_name = |li: usize| nav.links[li].zone.and_then(|z| nav.zones.get(z)).map(|z| z.name.clone()).filter(|n| !n.is_empty());
         if let Some((li, _, d)) = nav.nearest_link(p.state.pos) {
             if d < 40.0 {

@@ -37,8 +37,11 @@ enum Step {
 /// What a call may mention.
 #[derive(Clone, Debug, Default)]
 pub struct Ctx {
-    /// which way the suspect is heading
+    /// which way the suspect is heading (context +208, F-78553: his velocity on the ground, or his forward when he
+    /// is almost still, made unit)
     pub heading: Vec3,
+    /// the direction (zone +96) of the road within 3 m of him (F-55639 at his place on the ground), if any
+    pub road_dir: Option<Vec3>,
     /// zone names of the street he is on and of a street crossing nearby
     pub street: String,
     pub cross: String,
@@ -47,6 +50,21 @@ pub struct Ctx {
     pub hour: f32,
     /// the ramp under him, when he is on one (`XT_...`, dots out, spaces to _, upper case)
     pub ramp: String,
+}
+
+/// The DIRECTION special case's word (F-95031): north / south when the road under the suspect (the last one he was on;
+/// his heading before any) runs within 45 degrees of the z axis, by the sign of his heading's z (negative north),
+/// else west / east by the sign of its x (negative west). Both tests are dot products with the unit axes, so the
+/// components themselves; ties (0) go south / east.
+pub fn direction(heading: Vec3, road: Option<Vec3>) -> &'static str {
+    let a = road.unwrap_or(heading);
+    if a.z.abs() > 0.707_106_77 {
+        if heading.z < 0.0 { "NORTH" } else { "SOUTH" }
+    } else if heading.x < 0.0 {
+        "WEST"
+    } else {
+        "EAST"
+    }
 }
 
 #[derive(Default)]
@@ -70,6 +88,8 @@ pub struct Radio {
     clock: f32,
     /// the last ramp the suspect was on (context +124, F-21712)
     ramp: String,
+    /// the last road he was on (context +252, kept while no road is within 3 m)
+    road_dir: Option<Vec3>,
     /// clips to play, in order
     queue: VecDeque<(String, f32)>,
     wait: f32,
@@ -280,6 +300,9 @@ impl Radio {
         if !ctx.ramp.is_empty() {
             self.ramp = ctx.ramp.clone();
         }
+        if ctx.road_dir.is_some() {
+            self.road_dir = ctx.road_dir;
+        }
     }
 
     /// F-95157 with force 0: refused until the scenario's Frequency has run out; over a playing line only with a higher
@@ -309,13 +332,7 @@ impl Radio {
         let voice: [Option<String>; 2] = [Some(sv), rv];
         let disp: Vec<String> = self.dispatchers.iter().map(|d| d.0.clone()).collect();
         let is_dispatch = |v: &Option<String>| v.as_ref().is_some_and(|v| disp.contains(v));
-        let dir = if ctx.heading.x.abs() > ctx.heading.z.abs() {
-            if ctx.heading.x > 0.0 { "EAST" } else { "WEST" }
-        } else if ctx.heading.z < 0.0 {
-            "NORTH"
-        } else {
-            "SOUTH"
-        };
+        let dir = direction(ctx.heading, ctx.road_dir.or(self.road_dir));
         // (clip, role) in order; squelches are filled in afterwards
         let mut line: Vec<(Option<String>, u8, bool)> = Vec::new();
         let mut said: Vec<String> = Vec::new();
@@ -410,6 +427,22 @@ impl Radio {
 
 #[cfg(test)]
 mod tests {
+    /// F-95031 against the original's code run offline on 4,000 cases (tools/radio_direction_reference.py): headings
+    /// and road directions round the circle, on and off the 45 degree line, signed zeros, with and without a road.
+    #[test]
+    fn direction_matches_the_original() {
+        let f = |h: &str| f32::from_bits(u32::from_str_radix(h, 16).unwrap());
+        let mut n = 0;
+        for l in include_str!("testdata/radio_direction_ref.txt").lines() {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            let h = Vec3::new(f(w[0]), f(w[1]), f(w[2]));
+            let r = (w[3] == "1").then(|| Vec3::new(f(w[4]), f(w[5]), f(w[6])));
+            assert_eq!(direction(h, r), w[8], "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
+    }
+
     use super::*;
 
     /// A freeway report is all SpecialCase and names the last ramp; its Frequency of 15 s refuses it until it has run out.

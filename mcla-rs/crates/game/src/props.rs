@@ -2048,6 +2048,11 @@ impl Props {
             .collect()
     }
 
+    /// A prop instance's origin now (its matrix's translation; a knocked prop's as it falls), `None` for no instance.
+    pub fn origin(&self, inst: u32) -> Option<Vec3> {
+        self.insts.get(inst as usize).map(|i| i.pos())
+    }
+
     /// Everything solid (trees, posts, walls of props) standing in a box.
     pub fn solid_in(&self, mn: Vec3, mx: Vec3) -> Vec<Vec3> {
         self.colliders.iter().filter(|c| c.foot.kind == Solidity::Solid && !c.knocked && c.pos.x >= mn.x && c.pos.x <= mx.x && c.pos.z >= mn.z && c.pos.z <= mx.z).map(|c| c.pos).collect()
@@ -2241,7 +2246,7 @@ impl Props {
                             }
                             c.knocked = true;
                             self.knocked += 1;
-                            self.hits.push(crate::sound::PropHit { pos: c.pos, kind: c.foot.snd, model: c.foot.audio, speed, knocked: true });
+                            self.hits.push(crate::sound::PropHit { pos: c.pos, inst: c.inst, kind: c.foot.snd, model: c.foot.audio, speed, knocked: true });
                             st.vel *= 1.0 - ratio * 0.9;
                             st.last_impact = st.last_impact.max(speed * ratio * 2.0);
                             // (mcCarDamage's contact callback, world_damage_rule.md: the change of
@@ -2253,7 +2258,7 @@ impl Props {
                             // immovable: push the car out and bounce it off
                             st.correct_position(n3 * depth);
                             if vn < -1.5 {
-                                self.hits.push(crate::sound::PropHit { pos: c.pos, kind: c.foot.snd, model: c.foot.audio, speed: -vn, knocked: false });
+                                self.hits.push(crate::sound::PropHit { pos: c.pos, inst: c.inst, kind: c.foot.snd, model: c.foot.audio, speed: -vn, knocked: false });
                             }
                             if -vn > 0.1 {
                                 // (the impact report, `F-81755`: the type's events from their least speed, at the point on the prop
@@ -2377,7 +2382,7 @@ impl Props {
             if !c.knocked {
                 c.knocked = true;
                 self.knocked += 1;
-                self.hits.push(crate::sound::PropHit { pos: c.pos, kind: c.foot.snd, model: c.foot.audio, speed: o.body.map_or(0.0, |b| b.v.length()), knocked: true });
+                self.hits.push(crate::sound::PropHit { pos: c.pos, inst: c.inst, kind: c.foot.snd, model: c.foot.audio, speed: o.body.map_or(0.0, |b| b.v.length()), knocked: true });
             }
             let m = o.matrix;
             let rot = Quat::from_mat3(&glam::Mat3::from_cols(m[0].normalize_or(Vec3::X), m[1].normalize_or(Vec3::Y), m[2].normalize_or(Vec3::Z))).normalize();
