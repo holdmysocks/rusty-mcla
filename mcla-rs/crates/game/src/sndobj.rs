@@ -563,31 +563,53 @@ pub fn ped_reaction_pick(obj: Option<&[u8]>, kind: u32, bike: bool) -> Option<u3
 /// entity's position pointer (+116) followed every frame.
 #[derive(Default)]
 pub struct PedVoices {
-    playing: Vec<((usize, u32), Handle, Vec3)>,
+    /// (walker, sound, where it plays, the entity's occluder slot plus one)
+    playing: Vec<((usize, u32), Handle, Vec3, u16)>,
 }
 
 impl PedVoices {
-    /// A walker's reaction sound started (the sound's hash, `SoundLib::ped_reaction`). F-48911 gives no entity to a
-    /// walker that has one: here while its sound plays (approximate - the pool's size, the sound manager's +4, and when
-    /// an entity lets its walker go are not decoded).
-    pub fn start(&mut self, lib: &mut SoundLib, key: (usize, u32), hash: u32, pos: Vec3) -> Option<Handle> {
-        if self.playing.iter().any(|(k, h, _)| *k == key && lib.playing(*h)) {
+    /// Whether the walker has an entity: its sound still plays.
+    pub fn busy(&self, lib: &SoundLib, key: (usize, u32)) -> bool {
+        self.playing.iter().any(|(k, h, ..)| *k == key && lib.playing(*h))
+    }
+
+    /// A walker's reaction sound started (the sound's hash, `SoundLib::ped_reaction`) with its entity's occluder slot
+    /// plus one (the request template +96 carries it at +32). F-48911 gives no entity to a walker that has one: here
+    /// while its sound plays (approximate - the pool's size, the sound manager's +4, and when an entity lets its walker
+    /// go are not decoded).
+    pub fn start(&mut self, lib: &mut SoundLib, key: (usize, u32), hash: u32, pos: Vec3, occ: u16) -> Option<Handle> {
+        if self.busy(lib, key) {
             return None;
         }
-        let h = lib.play_hash(hash, Req::at(pos))?;
-        self.playing.push((key, h, pos));
+        let h = lib.play_hash(hash, Req { occluder: occ, ..Req::at(pos) })?;
+        self.playing.push((key, h, pos, occ));
         Some(h)
     }
 
-    /// Each playing sound follows its walker (`pos_of`; a walker gone leaves its sound where it last stood).
-    pub fn follow(&mut self, lib: &mut SoundLib, pos_of: impl Fn((usize, u32)) -> Option<Vec3>) {
-        self.playing.retain(|(_, h, _)| lib.playing(*h));
-        for (k, h, at) in self.playing.iter_mut() {
+    /// Each playing sound follows its walker (`pos_of`; a walker gone leaves its sound where it last stood). The
+    /// walkers whose sound is over are handed back.
+    pub fn follow(&mut self, lib: &mut SoundLib, pos_of: impl Fn((usize, u32)) -> Option<Vec3>) -> Vec<(usize, u32)> {
+        let mut gone = Vec::new();
+        self.playing.retain(|(k, h, ..)| {
+            let on = lib.playing(*h);
+            if !on {
+                gone.push(*k);
+            }
+            on
+        });
+        for (k, h, at, occ) in self.playing.iter_mut() {
             if let Some(p) = pos_of(*k).filter(|p| p != at) {
                 *at = p;
-                lib.set(*h, Req::at(p));
+                lib.set(*h, Req { occluder: *occ, ..Req::at(p) });
             }
         }
+        gone.retain(|k| !self.playing.iter().any(|(j, ..)| j == k));
+        gone
+    }
+
+    /// The walkers with an entity and where their sounds play.
+    pub fn live(&self) -> impl Iterator<Item = ((usize, u32), Vec3)> + '_ {
+        self.playing.iter().map(|(k, _, p, _)| (*k, *p))
     }
 }
 

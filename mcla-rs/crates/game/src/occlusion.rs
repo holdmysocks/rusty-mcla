@@ -397,10 +397,12 @@ pub(crate) struct System {
     pub radius: f32,
     /// GLOBAL_OCCLUSION +14 / +18 / +22: the car occluder's place, added to the car's origin (0, 0.9, 0)
     pub car_offset: [f32; 3],
+    /// GLOBAL_OCCLUSION +26 / +30 / +34: a walker's (0, 1.5, 0)
+    pub ped_offset: [f32; 3],
     pub factors: std::collections::HashMap<u8, f32>,
     pub list: Vec<Option<Occluder>>,
-    /// the car each slot belongs to (its `uid`)
-    owner: Vec<Option<u32>>,
+    /// whose each slot is: (0, a car's `uid`) or (1, a walker's key)
+    owner: Vec<Option<(u8, u64)>>,
     mgr: Mgr,
 }
 
@@ -410,7 +412,7 @@ pub(crate) const SLOTS: usize = 400;
 impl System {
     pub fn new(tune: Tune, o: &[u8], factors: std::collections::HashMap<u8, f32>) -> Option<System> {
         let f = |at: usize| o.get(at..at + 4).map(|b| f32::from_be_bytes([b[0], b[1], b[2], b[3]]));
-        Some(System { tune, radius: f(10)?, car_offset: [f(14)?, f(18)?, f(22)?], factors, list: vec![None; SLOTS], owner: vec![None; SLOTS], mgr: Mgr::default() })
+        Some(System { tune, radius: f(10)?, car_offset: [f(14)?, f(18)?, f(22)?], ped_offset: [f(26)?, f(30)?, f(34)?], factors, list: vec![None; SLOTS], owner: vec![None; SLOTS], mgr: Mgr::default() })
     }
 
     /// The car's frame: the port keeps only its origin (the car's place), the one row a car occluder reads (its
@@ -423,7 +425,7 @@ impl System {
     /// start does it (F-43725): the entity's occluder (F-37940 with F-49147) in the first free slot, its place
     /// `car_offset`, then the immediate update F-65914 (now, not local).
     pub fn car(&mut self, uid: u32, origin: [f32; 3], l: [f32; 4], world: &mut impl Probe) -> Option<usize> {
-        if let Some(i) = self.owner.iter().position(|o| *o == Some(uid)) {
+        if let Some(i) = self.owner.iter().position(|o| *o == Some((0, uid as u64))) {
             let (t, r) = (&self.tune, self.radius);
             if let Some(o) = self.list[i].as_mut() {
                 o.frame = Some(Self::frame(origin));
@@ -439,7 +441,7 @@ impl System {
         let mut o = Occluder::new(&self.tune, [x, y, z, 0.0], Some(Self::frame(origin)));
         o.refresh(&self.tune, true, false, l, self.radius, world);
         self.list[i] = Some(o);
-        self.owner[i] = Some(uid);
+        self.owner[i] = Some((0, uid as u64));
         Some(i)
     }
 
@@ -447,7 +449,7 @@ impl System {
     /// new one is the ambient entity's (F-37940 from the ctor F-15430): "not updated yet" and fully occluded, its place
     /// `car_offset` (the init F-89483), no update until the entity switches it on.
     pub fn ambient(&mut self, uid: u32, origin: [f32; 3]) -> Option<usize> {
-        if let Some(i) = self.owner.iter().position(|o| *o == Some(uid)) {
+        if let Some(i) = self.owner.iter().position(|o| *o == Some((0, uid as u64))) {
             if let Some(o) = self.list[i].as_mut() {
                 o.frame = Some(Self::frame(origin));
             }
@@ -456,7 +458,7 @@ impl System {
         let i = self.list.iter().position(|o| o.is_none())?;
         let [x, y, z] = self.car_offset;
         self.list[i] = Some(Occluder::new(&self.tune, [x, y, z, 0.0], Some(Self::frame(origin))));
-        self.owner[i] = Some(uid);
+        self.owner[i] = Some((0, uid as u64));
         Some(i)
     }
 
@@ -487,7 +489,7 @@ impl System {
     /// The cars whose audio is gone give their slots back (the entity's release takes it out of the table).
     pub fn keep(&mut self, live: &[u32]) {
         for (o, u) in self.list.iter_mut().zip(self.owner.iter_mut()) {
-            if u.is_some_and(|u| !live.contains(&u)) {
+            if u.is_some_and(|(k, u)| k == 0 && !live.contains(&(u as u32))) {
                 *o = None;
                 *u = None;
             }
@@ -503,9 +505,37 @@ impl System {
         }
     }
 
+    /// A walker's reaction entity's occluder (mcAmbientPedAudioEntity, F-39461), its frame moved to the walker's
+    /// `origin`. The reaction places it at `ped_offset`, its own instance excluded, and from "not updated yet" runs
+    /// the immediate update F-65914 (now, not local); here a new one is made when the walker's reaction starts.
+    pub fn person(&mut self, key: u64, origin: [f32; 3], l: [f32; 4], world: &mut impl Probe) -> Option<usize> {
+        if let Some(i) = self.owner.iter().position(|o| *o == Some((1, key))) {
+            if let Some(o) = self.list[i].as_mut() {
+                o.frame = Some(Self::frame(origin));
+            }
+            return Some(i);
+        }
+        let i = self.list.iter().position(|o| o.is_none())?;
+        let [x, y, z] = self.ped_offset;
+        let mut o = Occluder::new(&self.tune, [x, y, z, 0.0], Some(Self::frame(origin)));
+        o.refresh(&self.tune, true, false, l, self.radius, world);
+        self.list[i] = Some(o);
+        self.owner[i] = Some((1, key));
+        Some(i)
+    }
+
+    /// A walker's entity let go once its sound is over (F-33574: the occluder reset, F-65900; here the slot is given
+    /// back, which the manager skips the same way).
+    pub fn release_person(&mut self, key: u64) {
+        if let Some(i) = self.owner.iter().position(|o| *o == Some((1, key))) {
+            self.list[i] = None;
+            self.owner[i] = None;
+        }
+    }
+
     /// The slot of the car `uid`.
     pub fn slot_of(&self, uid: u32) -> Option<usize> {
-        self.owner.iter().position(|o| *o == Some(uid))
+        self.owner.iter().position(|o| *o == Some((0, uid as u64)))
     }
 
     /// The outputs (volume, cutoff in Hz) of a slot.
@@ -576,6 +606,16 @@ mod tests {
         assert!(!s.list[i].unwrap().fresh);
         assert_eq!(s.out(i), Some(s.list[i].unwrap().owner.group.latch()));
         assert_eq!(s.slot_of(7), Some(i));
+        // a walker's: (0, 1.5, 0), updated at once, its own key apart from the cars' uids; let go, the slot is free
+        assert_eq!(s.ped_offset, [0.0, 1.5, 0.0]);
+        let j = s.person(7, [0.0, 0.0, 5.0], l, &mut NoProbe).unwrap();
+        assert_ne!(i, j);
+        assert!(!s.list[j].unwrap().fresh);
+        assert_eq!(s.list[j].unwrap().owner.pos, [0.0, 1.5, 0.0, 0.0]);
+        s.keep(&[]);
+        assert!(s.list[j].is_some() && s.list[i].is_none());
+        s.release_person(7);
+        assert!(s.list[j].is_none());
     }
 
     /// tools/occlusion_reference.py ran the original's code offline: the pow F-21955 on 6,000 inputs, F-33490 on 2,000

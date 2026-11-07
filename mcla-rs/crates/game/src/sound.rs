@@ -412,6 +412,48 @@ impl Sound {
         }
     }
 
+    /// The walkers' reaction sounds (F-39461, the mcAmbientPedAudioEntity pool): the type's AMBIENT_PED object, the
+    /// kind's sound at the walker and following it (`bike`: the player entity's bike byte), each with its entity's
+    /// occluder (`occlusion::System::person`: placed (0, 1.5, 0) on the walker, the immediate update at the start; let
+    /// go once the sound is over).
+    pub fn ped_reactions(&mut self, peds: &mut crate::peds::Peds, bike: bool, collider: Option<&crate::physics::collision::WorldCollider>) {
+        let Some(lib) = self.lib.as_mut() else { return };
+        let key = |k: (usize, u32)| ((k.0 as u64) << 32) | k.1 as u64;
+        let l = lib.listener.0;
+        let l4 = [l.x, l.y, l.z, 0.0];
+        let factors = self.occl.as_mut().map(|o| std::mem::take(&mut o.factors)).unwrap_or_default();
+        for sp in std::mem::take(&mut peds.speech) {
+            let Some(h) = lib.ped_reaction(&sp.audio, sp.female, sp.kind, bike) else { continue };
+            if peds.voices_playing.busy(lib, sp.key) {
+                continue;
+            }
+            let p = sp.pos.to_array();
+            let slot = self.occl.as_mut().and_then(|oc| match collider {
+                Some(w) => oc.person(key(sp.key), p, l4, &mut crate::occlusion::CityProbe { world: w, factors: &factors }),
+                None => oc.person(key(sp.key), p, l4, &mut crate::occlusion::NoProbe),
+            });
+            let occ = slot.map_or(0, |i| (i + 1) as u16);
+            if let (Some(oc), Some(i)) = (&self.occl, slot) {
+                if let Some(o) = oc.out(i) {
+                    lib.set_occlusion(i, o);
+                }
+            }
+            peds.voices_playing.start(lib, sp.key, h, sp.pos, occ);
+        }
+        let mut v = std::mem::take(&mut peds.voices_playing);
+        let gone = v.follow(lib, |k| peds.pos_of(k));
+        if let Some(oc) = &mut self.occl {
+            for k in gone {
+                oc.release_person(key(k));
+            }
+            for (k, p) in v.live() {
+                oc.person(key(k), p.to_array(), l4, &mut crate::occlusion::NoProbe);
+            }
+            oc.factors = factors;
+        }
+        peds.voices_playing = v;
+    }
+
     /// Whether the sound library is there (the object sounds can play).
     pub fn has_lib(&self) -> bool {
         self.lib.is_some()

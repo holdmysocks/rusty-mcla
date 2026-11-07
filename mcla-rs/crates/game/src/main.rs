@@ -8110,16 +8110,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (with the sound objects: F-39461 - the type's AMBIENT_PED object, the kind's sound, at the walker and
             // following it; the bike byte is the player entity's)
             let bike = self.vehicles.player().is_some_and(|c| c.model.bike);
-            if let Some(lib) = self.sound.lib.as_mut() {
-                let peds = &mut self.peds;
-                for sp in std::mem::take(&mut peds.speech) {
-                    if let Some(h) = lib.ped_reaction(&sp.audio, sp.female, sp.kind, bike) {
-                        peds.voices_playing.start(lib, sp.key, h, sp.pos);
-                    }
-                }
-                let mut v = std::mem::take(&mut peds.voices_playing);
-                v.follow(lib, |k| peds.pos_of(k));
-                peds.voices_playing = v;
+            if self.sound.lib.is_some() {
+                self.sound.ped_reactions(&mut self.peds, bike, Some(&world.collider));
             }
             for sp in std::mem::take(&mut self.peds.speech) {
                 let root = a.root().to_path_buf();
