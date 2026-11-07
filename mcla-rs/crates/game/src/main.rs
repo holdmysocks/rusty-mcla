@@ -3153,6 +3153,10 @@ impl App {
         crate::ticktimes::mark(crate::ticktimes::S::World);
         // (the city streams and picks each sector's detail or far model from the last main view's LOD view, as the
         // original's F-50083 does: the camera moved back 10 m along its back axis, F-66201 - `World::set_view` in the render)
+        // (the press-start script locks the streaming at the default start once the warp is held -
+        // Warper_IsReadyToLoadStuff, startwarp.rs - so the player's car is streamed under the held camera; the port
+        // keeps the lock until the flight has landed)
+        world.lock_streaming(self.startwarp.as_ref().filter(|w| !w.climbing()).and(self.vehicles.player().map(|c| c.state.pos)));
         world.update(&mut gpu, world.view_point().unwrap_or(focus), 6.0);
         crate::ticktimes::mark(crate::ticktimes::S::Other);
         self.fl_stream_ms += t_stream.elapsed().as_secs_f32() * 1000.0;

@@ -12002,6 +12002,18 @@ impl Game {
                 if !saving && ready {
                     *self.save_box_t.1.get_or_insert(0.0) += dt;
                 }
+                // (what LOADING waits for, every 5 s while it waits)
+                let t = self.save_box_t.0;
+                if !saving && !ready && (t / 5.0).floor() != ((t - dt) / 5.0).floor() {
+                    let car = vehicles.player().map(|c| c.state.pos);
+                    log::info!(
+                        "save boxes: LOADING waits {:.0} s for the world at the car {:?}: {} sectors within 60 m not loaded, {} loading",
+                        t,
+                        car,
+                        car.map_or(0, |p| world.missing_at(p, 60.0)),
+                        world.streaming()
+                    );
+                }
                 if self.save_box_t.1.is_some_and(|t| t >= crate::startwarp::LOAD_SUCCESS_WAIT) {
                     log::info!("save boxes: loadSuccess after {:.2} s", self.save_box_t.0);
                     self.save_box = 2;

@@ -1291,6 +1291,9 @@ pub struct World {
     last_fade: std::time::Instant,
     /// what is left of this frame's upload time (`new_frame`), shared by the frame's ticks
     frame_left_ms: f32,
+    /// where the streaming is locked ([`World::lock_streaming`]): loads and drops are measured from here, the
+    /// detail / far choice still from the LOD view
+    stream_lock: Option<Vec3>,
     pub pending: hashbrown::HashSet<usize>,
     tx: Sender<Result<CpuSector>>,
     rx: Receiver<Result<CpuSector>>,
@@ -1421,6 +1424,7 @@ impl World {
             view: std::sync::Mutex::new(None),
             last_fade: std::time::Instant::now(),
             frame_left_ms: f32::INFINITY,
+            stream_lock: None,
             pending: Default::default(),
             tx,
             rx,
@@ -1544,6 +1548,25 @@ impl World {
         self.view.lock().unwrap().as_ref().map(|v| v.0)
     }
 
+    /// The press-start script's lock (startwarp.rs: after Warper_IsReadyToLoadStuff it locks the streaming at the
+    /// default start, where the player's car stands, while the held camera looks down from 9000 m): sectors are
+    /// loaded and kept round `p`, not round the LOD view. None: the streaming follows the LOD view again.
+    pub fn lock_streaming(&mut self, p: Option<Vec3>) {
+        self.stream_lock = p;
+    }
+
+    /// The sectors within `r` of `p` (the box's x / z gap, as [`World::ready_at`]) not loaded yet.
+    pub fn missing_at(&self, p: Vec3, r: f32) -> usize {
+        self.index.sectors.iter().enumerate().filter(|(id, s)| Self::dist_to(s, p) <= r && !self.loaded.contains_key(id) && !self.resident.contains_key(id)).count()
+    }
+
+    /// The sector records to load for a streaming point `p`, nearest first: not had (`have`), within `radius`.
+    pub fn wanted_loads(rec_box: &[(Vec3, Vec3)], have: impl Fn(usize) -> bool, p: Vec3, radius: f32) -> Vec<(f32, usize)> {
+        let mut want: Vec<(f32, usize)> = rec_box.iter().enumerate().filter(|(id, _)| !have(*id)).map(|(id, b)| (Self::lod_dist(b, p), id)).filter(|(d, _)| *d < radius).collect();
+        want.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        want
+    }
+
     /// No main view now (a load screen streams round its own place).
     pub fn forget_view(&self) {
         *self.view.lock().unwrap() = None;
@@ -1581,16 +1604,9 @@ impl World {
         // (the lens widens with speed: keep to the larger distance for a while rather than drop and reload)
         self.load_radius = detail.max(self.load_radius - 2.0);
         self.unload_radius = self.load_radius + 90.0;
-        // request loads, nearest first
-        let mut want: Vec<(f32, usize)> = self
-            .rec_box
-            .iter()
-            .enumerate()
-            .filter(|(id, _)| !self.loaded.contains_key(id) && !self.resident.contains_key(id) && !self.pending.contains(id))
-            .map(|(id, b)| (Self::lod_dist(b, pos), id))
-            .filter(|(d, _)| *d < self.load_radius)
-            .collect();
-        want.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        // request loads, nearest first (from the lock while the streaming is locked)
+        let spos = self.stream_lock.unwrap_or(pos);
+        let want = Self::wanted_loads(&self.rec_box, |id| self.loaded.contains_key(&id) || self.resident.contains_key(&id) || self.pending.contains(&id), spos, self.load_radius);
         let max_inflight: usize = 12;
         for (_, id) in want.into_iter().take(max_inflight.saturating_sub(self.pending.len())) {
             self.pending.insert(id);
@@ -1635,7 +1651,7 @@ impl World {
                 }
                 Ok(mut cs) => {
                     self.pending.remove(&cs.id);
-                    if Self::lod_dist(&self.rec_box[cs.id], pos) <= self.unload_radius {
+                    if Self::lod_dist(&self.rec_box[cs.id], spos) <= self.unload_radius {
                         let id = cs.id;
                         let col = std::mem::take(&mut cs.collision);
                         let mats = std::mem::take(&mut cs.collision_mat);
@@ -1695,8 +1711,9 @@ impl World {
                     s.u = alpha;
                 }
             }
-            // (dropped once it is drawn far and out of the margin)
-            if alpha <= 0.0 && d > self.unload_radius {
+            // (dropped once it is drawn far and out of the margin - of the lock, while there is one)
+            let d_keep = if self.stream_lock.is_some() { Self::lod_dist(&self.rec_box[id], spos) } else { d };
+            if alpha <= 0.0 && d_keep > self.unload_radius {
                 gone.push(id);
             }
         }
@@ -2014,6 +2031,29 @@ mod batch_tests {
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].vertices.len(), 6);
         assert_eq!(batches[0].indices, [0, 1, 2, 3, 4, 5]);
+    }
+}
+
+#[cfg(test)]
+mod stream_lock_tests {
+    use super::*;
+
+    /// Issue #44: with the camera held 9000 m over (-327, 111.5) after START and the new career's car at the
+    /// default start (819.61, -808.41), the car's sectors must be wanted from the lock (they were never loaded when
+    /// the loads followed the LOD view, so the LOADING box waited for ever).
+    #[test]
+    fn locked_streaming_loads_round_the_car_not_the_held_camera() {
+        let car = Vec3::new(819.61, 18.68, -808.41);
+        let held = Vec3::new(-327.0, 9000.0, 111.5);
+        let boxes = vec![
+            (Vec3::new(800.0, 0.0, -830.0), Vec3::new(840.0, 40.0, -790.0)),
+            (Vec3::new(-350.0, 0.0, 90.0), Vec3::new(-300.0, 40.0, 130.0)),
+        ];
+        let from_view = World::wanted_loads(&boxes, |_| false, held, 450.0);
+        let from_lock = World::wanted_loads(&boxes, |_| false, car, 450.0);
+        assert_eq!(from_view.iter().map(|w| w.1).collect::<Vec<_>>(), vec![1]);
+        assert_eq!(from_lock.iter().map(|w| w.1).collect::<Vec<_>>(), vec![0]);
+        assert!(World::wanted_loads(&boxes, |id| id == 0, car, 450.0).is_empty());
     }
 }
 
