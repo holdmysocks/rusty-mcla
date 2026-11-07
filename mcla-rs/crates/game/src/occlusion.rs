@@ -377,6 +377,30 @@ impl Mgr {
     }
 }
 
+/// The probe the game hands the occluders: the city's (`CityProbe`) when its collision is loaded, else none.
+pub(crate) enum WorldProbe<'a> {
+    City(CityProbe<'a>),
+    None,
+}
+
+impl<'a> WorldProbe<'a> {
+    pub fn of(world: Option<&'a crate::physics::collision::WorldCollider>, factors: &'a std::collections::HashMap<u8, f32>) -> WorldProbe<'a> {
+        match world {
+            Some(world) => WorldProbe::City(CityProbe { world, factors }),
+            None => WorldProbe::None,
+        }
+    }
+}
+
+impl Probe for WorldProbe<'_> {
+    fn probe(&mut self, from: [f32; 4], to: [f32; 4], flags: u32, max: usize) -> Vec<Hit> {
+        match self {
+            WorldProbe::City(c) => c.probe(from, to, flags, max),
+            WorldProbe::None => Vec::new(),
+        }
+    }
+}
+
 /// A probe that hits nothing (no city collision loaded): every amount is 0.
 pub(crate) struct NoProbe;
 
@@ -399,7 +423,7 @@ pub(crate) struct System {
     pub car_offset: [f32; 3],
     /// GLOBAL_OCCLUSION +26 / +30 / +34: a walker's (0, 1.5, 0)
     pub ped_offset: [f32; 3],
-    pub factors: std::collections::HashMap<u8, f32>,
+    pub factors: std::sync::Arc<std::collections::HashMap<u8, f32>>,
     pub list: Vec<Option<Occluder>>,
     /// whose each slot is: (0, a car's `uid`) or (1, a walker's key)
     owner: Vec<Option<(u8, u64)>>,
@@ -412,7 +436,7 @@ pub(crate) const SLOTS: usize = 400;
 impl System {
     pub fn new(tune: Tune, o: &[u8], factors: std::collections::HashMap<u8, f32>) -> Option<System> {
         let f = |at: usize| o.get(at..at + 4).map(|b| f32::from_be_bytes([b[0], b[1], b[2], b[3]]));
-        Some(System { tune, radius: f(10)?, car_offset: [f(14)?, f(18)?, f(22)?], ped_offset: [f(26)?, f(30)?, f(34)?], factors, list: vec![None; SLOTS], owner: vec![None; SLOTS], mgr: Mgr::default() })
+        Some(System { tune, radius: f(10)?, car_offset: [f(14)?, f(18)?, f(22)?], ped_offset: [f(26)?, f(30)?, f(34)?], factors: std::sync::Arc::new(factors), list: vec![None; SLOTS], owner: vec![None; SLOTS], mgr: Mgr::default() })
     }
 
     /// The car's frame: the port keeps only its origin (the car's place), the one row a car occluder reads (its
@@ -527,7 +551,40 @@ impl System {
     /// A walker's entity let go once its sound is over (F-33574: the occluder reset, F-65900; here the slot is given
     /// back, which the manager skips the same way).
     pub fn release_person(&mut self, key: u64) {
-        if let Some(i) = self.owner.iter().position(|o| *o == Some((1, key))) {
+        self.release(1, key);
+    }
+
+    /// A prop's entity (one of the 64 of F-44000) bound to a prop at `origin`: the bind F-95562 places its occluder at
+    /// the prop type's +69 / +73 / +77 (`place`), the instance excluded. From "not updated yet" its sounds run the
+    /// immediate update F-65914: `now` for a contact or pass-by one-shot (F-99417), with no update for the distance
+    /// loop (F-32775). (approx.) +62 bit 0x08 (the place in the prop's frame, 2 of the 282 types) is taken as the
+    /// world's: the port's props carry no rotation here.
+    pub fn prop(&mut self, key: u64, origin: [f32; 3], place: [f32; 3], now: bool, l: [f32; 4], world: &mut impl Probe) -> Option<usize> {
+        let i = match self.owner.iter().position(|o| *o == Some((2, key))) {
+            Some(i) => i,
+            None => {
+                let i = self.list.iter().position(|o| o.is_none())?;
+                self.list[i] = Some(Occluder::new(&self.tune, [place[0], place[1], place[2], 0.0], None));
+                self.owner[i] = Some((2, key));
+                i
+            }
+        };
+        let (t, r) = (&self.tune, self.radius);
+        let o = self.list[i].as_mut()?;
+        o.frame = Some(Self::frame(origin));
+        if o.fresh {
+            o.refresh(t, now, false, l, r, world);
+        }
+        Some(i)
+    }
+
+    /// A prop's entity let go (F-32518: the occluder reset when it has been updated; here the slot is given back).
+    pub fn release_prop(&mut self, key: u64) {
+        self.release(2, key);
+    }
+
+    fn release(&mut self, kind: u8, key: u64) {
+        if let Some(i) = self.owner.iter().position(|o| *o == Some((kind, key))) {
             self.list[i] = None;
             self.owner[i] = None;
         }
@@ -616,6 +673,15 @@ mod tests {
         assert!(s.list[j].is_some() && s.list[i].is_none());
         s.release_person(7);
         assert!(s.list[j].is_none());
+        // a prop's: the loop switches it on with no update (outputs kept), a hit latches at once; keys apart
+        let a = s.prop(7, [0.0, 0.0, 9.0], [0.0, 3.0, 0.0], false, l, &mut NoProbe).unwrap();
+        assert!(!s.list[a].unwrap().fresh);
+        assert_eq!((s.out(a), s.list[a].unwrap().owner.pos), (Some(init), [0.0, 3.0, 0.0, 0.0]));
+        let b = s.prop(8, [0.0, 0.0, 9.0], [0.0, 0.5, 0.0], true, l, &mut NoProbe).unwrap();
+        assert_ne!(a, b);
+        assert_eq!(s.out(b), Some(s.list[b].unwrap().owner.group.latch()));
+        s.release_prop(7);
+        assert!(s.list[a].is_none() && s.list[b].is_some());
     }
 
     /// tools/occlusion_reference.py ran the original's code offline: the pow F-21955 on 6,000 inputs, F-33490 on 2,000

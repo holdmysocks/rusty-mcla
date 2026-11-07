@@ -172,6 +172,8 @@ pub struct Sound {
     /// the sound occlusion's table of occluders (occlusion.rs, with `lib`) and each car's slot plus one by `uid`
     occl: Option<crate::occlusion::System>,
     occ_slots: std::collections::HashMap<u32, u16>,
+    /// the hit props' entities (their occluder keys) and the sounds they still play
+    prop_held: Vec<(u64, Vec<crate::sndobj::Handle>)>,
     /// the player car's performance stages the sounds read: intake, turbo, nitrous
     pub parts: [u8; 3],
     /// the countdown's last sounded step (3, 2, 1, 0 = GO; 4 = before it; -1 = no race)
@@ -287,6 +289,12 @@ fn occlude(oc: &mut crate::occlusion::System, lib: &mut crate::sndobj::SoundLib,
         }
     }
     slots
+}
+
+/// A prop type object's occluder place (+69 / +73 / +77, F-95562).
+fn prop_place(o: &[u8]) -> [f32; 3] {
+    let f = |at: usize| o.get(at..at + 4).map_or(0.0, |b| f32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+    [f(69), f(73), f(77)]
 }
 
 /// The ambient cars' switches (uid, on, the whoosh's immediate update) applied to their occluders, and every
@@ -421,17 +429,15 @@ impl Sound {
         let key = |k: (usize, u32)| ((k.0 as u64) << 32) | k.1 as u64;
         let l = lib.listener.0;
         let l4 = [l.x, l.y, l.z, 0.0];
-        let factors = self.occl.as_mut().map(|o| std::mem::take(&mut o.factors)).unwrap_or_default();
+        let factors = self.occl.as_ref().map(|o| o.factors.clone()).unwrap_or_default();
+        let mut world = crate::occlusion::WorldProbe::of(collider, &factors);
         for sp in std::mem::take(&mut peds.speech) {
             let Some(h) = lib.ped_reaction(&sp.audio, sp.female, sp.kind, bike) else { continue };
             if peds.voices_playing.busy(lib, sp.key) {
                 continue;
             }
             let p = sp.pos.to_array();
-            let slot = self.occl.as_mut().and_then(|oc| match collider {
-                Some(w) => oc.person(key(sp.key), p, l4, &mut crate::occlusion::CityProbe { world: w, factors: &factors }),
-                None => oc.person(key(sp.key), p, l4, &mut crate::occlusion::NoProbe),
-            });
+            let slot = self.occl.as_mut().and_then(|oc| oc.person(key(sp.key), p, l4, &mut world));
             let occ = slot.map_or(0, |i| (i + 1) as u16);
             if let (Some(oc), Some(i)) = (&self.occl, slot) {
                 if let Some(o) = oc.out(i) {
@@ -449,7 +455,6 @@ impl Sound {
             for (k, p) in v.live() {
                 oc.person(key(k), p.to_array(), l4, &mut crate::occlusion::NoProbe);
             }
-            oc.factors = factors;
         }
         peds.voices_playing = v;
     }
@@ -689,7 +694,10 @@ impl Sound {
                 log::info!("audio: {} props with a distance loop", v.len());
                 self.prop_loops = Some(v);
             }
-            for (pos, h, o, playing) in self.prop_loops.iter_mut().flatten() {
+            let factors = self.occl.as_ref().map(|o| o.factors.clone()).unwrap_or_default();
+            let mut world = crate::occlusion::WorldProbe::of(collider, &factors);
+            let l4 = [cam_pos.x, cam_pos.y, cam_pos.z, 0.0];
+            for (k, (pos, h, o, playing)) in self.prop_loops.iter_mut().flatten().enumerate() {
                 let f = |at: usize| f32::from_bits(u32::from_be_bytes(o[at..at + 4].try_into().unwrap()));
                 let u = |at: usize| u16::from_be_bytes([o[at], o[at + 1]]) as f32;
                 let d = pos.distance(cam_pos);
@@ -698,13 +706,23 @@ impl Sound {
                     let t = ((d - f(d0)) / (f(d1) - f(d0))).max(0.0).min(1.0);
                     (1.0 - t).mul_add(u(b) - u(a), u(a)) as i64 as u16
                 };
-                let req = crate::sndobj::Req { pos: Some(*pos), hpf: filt(94, 100, 98, 104), lpf: filt(106, 112, 110, 116), ..Default::default() };
+                // the prop entity's occluder while its loop plays (F-32775: switched on with no update)
+                let key = (1u64 << 63) | k as u64;
+                let occ = if near {
+                    self.occl.as_mut().and_then(|oc| oc.prop(key, pos.to_array(), prop_place(o), false, l4, &mut world)).map_or(0, |i| (i + 1) as u16)
+                } else {
+                    0
+                };
+                let req = crate::sndobj::Req { pos: Some(*pos), hpf: filt(94, 100, 98, 104), lpf: filt(106, 112, 110, 116), occluder: occ, ..Default::default() };
                 match (near, *playing) {
                     (true, Some(p)) if lib.playing(p) => lib.set(p, req),
                     (true, _) => *playing = lib.play_hash(*h, req),
                     (false, Some(p)) => {
                         lib.stop(p);
                         *playing = None;
+                        if let Some(oc) = &mut self.occl {
+                            oc.release_prop(key);
+                        }
                     }
                     (false, None) => {}
                 }
@@ -788,12 +806,8 @@ impl Sound {
         // ---- sound occlusion (occlusion.rs): the cars' occluders, the manager's updates and the ticks; their outputs go
         // to the voices whose requests name them
         if let (Some(lib), Some(oc)) = (&mut self.lib, &mut self.occl) {
-            let factors = std::mem::take(&mut oc.factors);
-            self.occ_slots = match collider {
-                Some(w) => occlude(oc, lib, vehicles, dt, &mut crate::occlusion::CityProbe { world: w, factors: &factors }),
-                None => occlude(oc, lib, vehicles, dt, &mut crate::occlusion::NoProbe),
-            };
-            oc.factors = factors;
+            let factors = oc.factors.clone();
+            self.occ_slots = occlude(oc, lib, vehicles, dt, &mut crate::occlusion::WorldProbe::of(collider, &factors));
             if let Some(f) = &mut self.fleet {
                 f.occ = self.occ_slots.iter().map(|(k, v)| (*k, *v)).collect();
             }
@@ -815,9 +829,40 @@ impl Sound {
                 coll.car(lib, i, &c.model.name, owner, c.model.bike, &c.state, c.is_player, self.occ_slots.get(&c.uid).copied().unwrap_or(0));
             }
             coll.retain(lib, |i| i < vehicles.cars.len());
+            // each hit prop's entity: its occluder updated at once (F-99417), let go when its sounds are over
+            let factors = self.occl.as_ref().map(|o| o.factors.clone()).unwrap_or_default();
+            let mut world = crate::occlusion::WorldProbe::of(collider, &factors);
+            let l = lib.listener.0;
+            let l4 = [l.x, l.y, l.z, 0.0];
             for h in prop_hits {
-                coll.prop(lib, h.model, h.pos, h.speed, h.knocked);
+                let key = ((h.model as u64) << 31) ^ (h.pos.x.to_bits() as u64) ^ ((h.pos.z.to_bits() as u64) << 7);
+                let key = key & !(1u64 << 63);
+                let obj = lib.game.get(h.model).filter(|o| o.first() == Some(&43)).or_else(|| lib.game.get_name("LA_PROP_DEFAULT")).map(|o| o.to_vec());
+                let slot = match (&mut self.occl, &obj) {
+                    (Some(oc), Some(o)) => oc.prop(key, h.pos.to_array(), prop_place(o), true, l4, &mut world),
+                    _ => None,
+                };
+                if let (Some(oc), Some(i)) = (&self.occl, slot) {
+                    if let Some(o) = oc.out(i) {
+                        lib.set_occlusion(i, o);
+                    }
+                }
+                let hs = coll.prop(lib, h.model, h.pos, h.speed, h.knocked, slot.map_or(0, |i| (i + 1) as u16));
+                match self.prop_held.iter_mut().find(|e| e.0 == key) {
+                    Some(e) => e.1.extend(hs),
+                    None => self.prop_held.push((key, hs)),
+                }
             }
+            self.prop_held.retain_mut(|(key, hs)| {
+                hs.retain(|h| lib.playing(*h));
+                let on = !hs.is_empty();
+                if !on {
+                    if let Some(oc) = &mut self.occl {
+                        oc.release_prop(*key);
+                    }
+                }
+                on
+            });
         }
         let in_menu = game.in_menu();
         let driving = matches!(game.mode, Mode::FreeRoam | Mode::Race);
@@ -1118,12 +1163,8 @@ impl Sound {
             // the ambient cars' occluder switches of their updates (F-70175, F-74101), their outputs again to the voices
             if let Some(oc) = &mut self.occl {
                 let sw = fleet.traffic_occ();
-                let factors = std::mem::take(&mut oc.factors);
-                match collider {
-                    Some(w) => switch_ambient(oc, lib, &sw, &mut crate::occlusion::CityProbe { world: w, factors: &factors }),
-                    None => switch_ambient(oc, lib, &sw, &mut crate::occlusion::NoProbe),
-                }
-                oc.factors = factors;
+                let factors = oc.factors.clone();
+                switch_ambient(oc, lib, &sw, &mut crate::occlusion::WorldProbe::of(collider, &factors));
             }
             // (the slipstream burn's PLAYER_NITROUS)
             if let Some(l) = fleet.want_speech.take() {

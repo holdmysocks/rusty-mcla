@@ -268,18 +268,20 @@ impl CollisionAudio {
         self.time += dt;
     }
 
-    /// A prop hit (3.1 / 3.4): the type's impact sound by speed; a break sound when it is knocked loose.
-    pub fn prop(&mut self, lib: &mut SoundLib, model: u32, pos: Vec3, speed: f32, knocked: bool) {
+    /// A prop hit (3.1 / 3.4): the type's impact sound by speed; a break sound when it is knocked loose. `occ`: the prop
+    /// entity's occluder slot plus one (its requests carry it at +32, F-99417). The sounds started.
+    pub fn prop(&mut self, lib: &mut SoundLib, model: u32, pos: Vec3, speed: f32, knocked: bool, occ: u16) -> Vec<Handle> {
+        let mut out = Vec::new();
         let o = match lib.game.get(model).filter(|o| o.first() == Some(&43)) {
             Some(o) => o.to_vec(),
             None => match lib.game.get_name("LA_PROP_DEFAULT") {
                 Some(o) => o.to_vec(),
-                None => return,
+                None => return out,
             },
         };
         let n = o.get(118).copied().unwrap_or(0) as usize;
         if n == 0 {
-            return;
+            return out;
         }
         // entry 0 (the bound material choice needs the prop's own bound: approximate)
         let (brk, impact) = (be_u32(&o, 123), be_u32(&o, 127));
@@ -290,10 +292,11 @@ impl CollisionAudio {
             let (lo, hi) = (be_f32(&o, 22), be_f32(&o, 28));
             let g = if s < hi { lerp(db2lin(base * 0.01), db2lin(top * 0.01), (s - lo) / (hi - lo)) } else { db2lin(top * 0.01) };
             let vol = lin2db(g) + base * 0.01;
-            lib.play_hash(impact, Req { pos: Some(pos), volume: vol, ..Default::default() });
+            out.extend(lib.play_hash(impact, Req { pos: Some(pos), volume: vol, occluder: occ, ..Default::default() }));
         }
         if knocked {
-            lib.play_hash(brk, Req::at(pos));
+            out.extend(lib.play_hash(brk, Req { occluder: occ, ..Req::at(pos) }));
         }
+        out
     }
 }
