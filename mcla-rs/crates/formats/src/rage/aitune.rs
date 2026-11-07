@@ -123,8 +123,9 @@ impl AiTune {
 
     /// F-83981: the blend of the stock and the upgraded tune by `t`: every float the original blends (words 0 .. 7, the 7 + 8 acceleration and
     /// deceleration rows, both curvature tables, SteerScalar) as one fused `fma(y - x, t, x)`, then F-49493's post-load step: the best-gear
-    /// row 0 is the element-wise maximum of 0 and rows 1 .. 7 of the blended tune. (The idle speeds, words 12 .. 18, are not part of the
-    /// original's blend - it leaves them as the destination held them, unknown here - and the port still blends them.)
+    /// row 0 is the element-wise maximum of 0 and rows 1 .. 7 of the blended tune. The idle speeds, words 12 .. 18, are not part of the
+    /// original's blend: the destination keeps what its constructor F-34959 stored there, 4.0 in each (the recorded R8, Murcielago and
+    /// Ford GT tunes of a race hold 4.0 in all seven; every other word equals this blend, docs/reference/ai/verify_aitune.md).
     pub fn lerp(a: &AiTune, b: &AiTune, t: f32) -> AiTune {
         fn fma(x: f32, y: f32, z: f32) -> f32 {
             (x as f64).mul_add(y as f64, z as f64) as f32
@@ -151,7 +152,7 @@ impl AiTune {
             max_curvature: l(a.max_curvature, b.max_curvature),
             max_total_accel: l(a.max_total_accel, b.max_total_accel),
             max_brake_decel: l(a.max_brake_decel, b.max_brake_decel),
-            idle_speed: std::array::from_fn(|i| l(a.idle_speed[i], b.idle_speed[i])),
+            idle_speed: [4.0; 7],
             accel: accel_rows.first().cloned().unwrap_or_else(|| lv(&a.accel, &b.accel)),
             decel: a.decel.iter().zip(&b.decel).map(|(p, q)| lv(p, q)).collect(),
             speed_high_curv: lv(&a.speed_high_curv, &b.speed_high_curv),
@@ -221,6 +222,49 @@ mod tests {
             accel: Vec::new(), decel: Vec::new(), speed_high_curv: Vec::new(), speed_low_curv: Vec::new(),
             steer_scalar: (0..128).map(|i| i as f32).collect(), drag: [0.0; 3], accel_rows: Vec::new(),
         }
+    }
+
+    /// The port's tune (`AiTunes::parse` of the car's `.r50`, `AiTune::lerp` at the racer's mod value) against the aivVehicleTuning
+    /// objects recorded in the running original during a race (work/ai-record/fixture/aivtune_{r8,mur,gt}.bin -> testdata/aitune_rec_ref.txt:
+    /// file, t, the 2195 words). Every word equals, except 8 .. 11 (derived by the brain's set-up, `aiv::Veh::new`; word 11 = 127 / MaxSpeed
+    /// is checked): the idle speeds 12 .. 18 hold the constructor's 4.0 (F-34959). Skipped without the game data (MCLA_DATA_DIR).
+    #[test]
+    fn blended_tunes_equal_the_recorded() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let mut n = 0;
+        for line in include_str!("testdata/aitune_rec_ref.txt").lines() {
+            let w: Vec<&str> = line.split(' ').collect();
+            let hx = |x: &str| u32::from_str_radix(x, 16).unwrap();
+            let Ok(d) = std::fs::read(std::path::Path::new(&root).join("resources/vehicle").join(w[0])) else { return };
+            let u = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+            let data = d[16..].to_vec();
+            let vs = (u(12) as usize).min(data.len());
+            let res = Resource { rtype: u(4), flags: u(8), virtual_size: vs, physical_size: data.len() - vs, data };
+            let tunes = AiTunes::parse(&res).unwrap();
+            let b = AiTune::lerp(&tunes.base, &tunes.mods, f32::from_bits(hx(w[1])));
+            let want: Vec<u32> = w[2..].iter().map(|x| hx(x)).collect();
+            assert_eq!(want.len(), N);
+            let mut got = vec![None; N];
+            let mut put = |at: usize, v: &[f32]| v.iter().enumerate().for_each(|(i, x)| got[at + i] = Some(x.to_bits()));
+            put(0, &[b.max_speed, b.min_curvature, b.max_curvature, b.max_total_accel, b.max_brake_decel]);
+            put(5, &b.drag);
+            put(11, &[b.speed_index()]);
+            put(12, &b.idle_speed);
+            for (r, row) in b.accel_rows.iter().enumerate() {
+                put(19 + 128 * r, row);
+            }
+            for (r, row) in b.decel.iter().enumerate() {
+                put(915 + 128 * r, row);
+            }
+            put(1939, &b.speed_high_curv);
+            put(2003, &b.speed_low_curv);
+            put(2067, &b.steer_scalar);
+            for i in (0..N).filter(|i| !(8..=10).contains(i)) {
+                assert_eq!(got[i], Some(want[i]), "word {i} of {}", w[0]);
+            }
+            n += 1;
+        }
+        assert_eq!(n, 3);
     }
 
     /// F-28541's read of a speed table: negative speeds at the start, the index held at 126 but

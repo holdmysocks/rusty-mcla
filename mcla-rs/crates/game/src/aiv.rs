@@ -2518,6 +2518,33 @@ fn pedal_map(veh: &Veh, kappa: f32, a_cmd: f32, f3: f32, t1: f32, c1: f32, t2: f
 mod tests {
     use super::*;
 
+    /// The aivRaceLineTuning (F-46101's defaults, aiv +25332, 108 bytes) as the running original holds it in a race: the R8's aiv
+    /// in all 202 recorded snapshots of work/ai-record/fixture/r7_r8_run0.bin (one block, these words; RestartEveryUpdate's byte 0,
+    /// the rest of its word padding). `AivTuning::default` equals it field by field (docs/reference/ai/verify_aitune.md).
+    #[test]
+    fn race_line_tuning_is_the_recorded() {
+        let t = AivTuning::default();
+        let rec: [u32; 27] = [
+            0x14, 0, 1, 0x3f000000, 0x41c80000, 3, 0x3e4ccccd, 0x3dcccccd, 0x40a00000, 0x3f800000, 0x41200000, 0x3dcccccd, 0x3f400000, 0x3dcccccd,
+            0x3f800000, 0x3dcac083, 0x3f800000, 0x40c00000, 0x3f800000, 0x3f800000, 0x3f400000, 0x3f800000, 0x3f000000, 0x40a00000, 0x41c80000,
+            0x42c80000, 0x40d68f5c,
+        ];
+        let f = [
+            t.recursive_falloff, t.initial_segment_length, t.length_variance_weight, t.off_road_weight, t.max_curvature_penalty, t.linear_adjustment,
+            t.angular_adjustment, t.angular_adjustment_threshold, t.angular_adjustment_falloff, t.adjustment_falloff, t.adjustment_falloff_trigger,
+            t.adjustment_reset_threshold, t.buffer_zone, t.obstacle_lookahead_time, t.max_speed_scalar, t.max_total_accel_scalar,
+            t.max_total_decel_scalar, t.max_brake_decel_scalar, t.average_speed_weight, t.max_obstacle_height_delta, t.max_obstacle_flat_delta,
+            t.max_obstacle_prediction_dist, t.collision_speed_penalty,
+        ];
+        let got: Vec<u32> = [t.max_steps_ahead as u32, t.restart_every_update as u32, t.max_steps_to_recurse as u32]
+            .into_iter()
+            .chain(f[..2].iter().map(|x| x.to_bits()))
+            .chain([t.samples_per_segment as u32])
+            .chain(f[2..].iter().map(|x| x.to_bits()))
+            .collect();
+        assert_eq!(got, rec);
+    }
+
     /// A plain car: tables flat so the decoded rules can be checked by hand.
     fn tune() -> Arc<AiTune> {
         let row = |v: f32| vec![v; 128];
