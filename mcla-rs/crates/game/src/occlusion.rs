@@ -425,9 +425,11 @@ pub(crate) struct System {
     pub ped_offset: [f32; 3],
     pub factors: std::sync::Arc<std::collections::HashMap<u8, f32>>,
     pub list: Vec<Option<Occluder>>,
-    /// whose each slot is: (0, a car's `uid`) or (1, a walker's key)
+    /// whose each slot is: (0, a car's `uid`), (1, a walker's key), (2, a prop entity's key) or (3, an ambience slot)
     owner: Vec<Option<(u8, u64)>>,
     mgr: Mgr,
+    /// the ambience's two location slots' occluders (manager +156 + 20 i + 16, made by its init F-20021)
+    amb: [Option<usize>; 2],
 }
 
 /// The table's size (F-18654 / F-96474: 400 entities).
@@ -436,7 +438,53 @@ pub(crate) const SLOTS: usize = 400;
 impl System {
     pub fn new(tune: Tune, o: &[u8], factors: std::collections::HashMap<u8, f32>) -> Option<System> {
         let f = |at: usize| o.get(at..at + 4).map(|b| f32::from_be_bytes([b[0], b[1], b[2], b[3]]));
-        Some(System { tune, radius: f(10)?, car_offset: [f(14)?, f(18)?, f(22)?], ped_offset: [f(26)?, f(30)?, f(34)?], factors: std::sync::Arc::new(factors), list: vec![None; SLOTS], owner: vec![None; SLOTS], mgr: Mgr::default() })
+        let mut sys = System { tune, radius: f(10)?, car_offset: [f(14)?, f(18)?, f(22)?], ped_offset: [f(26)?, f(30)?, f(34)?], factors: std::sync::Arc::new(factors), list: vec![None; SLOTS], owner: vec![None; SLOTS], mgr: Mgr::default(), amb: [None; 2] };
+        // the ambience's init F-20021 (at the title, before any car): one occluder from the pool for each of its two
+        // location slots (F-49147, no instance), its place the world's (+116 = 1), registered in the table (F-18654)
+        for k in 0..2 {
+            let mut o = Occluder::new(&sys.tune, [0.0; 4], None);
+            o.owner.absolute = true;
+            sys.list[k] = Some(o);
+            sys.owner[k] = Some((3, k as u64));
+            sys.amb[k] = Some(k);
+        }
+        Some(sys)
+    }
+
+    /// The ambience slot `k`'s occluder at `p` (F-80314: the emitter's place 2 m up, +80 / +84 / +88, for a record with
+    /// flag 0x2) and its table slot.
+    pub fn amb_place(&mut self, k: usize, p: [f32; 3]) -> Option<usize> {
+        let i = self.amb.get(k).copied().flatten()?;
+        let o = self.list[i].as_mut()?;
+        o.owner.pos = [p[0], p[1], p[2], o.owner.pos[3]];
+        Some(i)
+    }
+
+    /// The table slot of the ambience slot `k`'s occluder.
+    pub fn amb_place_slot(&self, k: usize) -> Option<usize> {
+        self.amb.get(k).copied().flatten()
+    }
+
+    /// Whether the ambience slot `k`'s occluder has been updated (+119 clear).
+    pub fn amb_updated(&self, k: usize) -> bool {
+        self.amb.get(k).copied().flatten().and_then(|i| self.list[i].as_ref()).is_some_and(|o| !o.fresh)
+    }
+
+    /// F-80314 after the slot's sound starts: the immediate update F-65914 (now, not local) while "not updated yet".
+    pub fn amb_now(&mut self, k: usize, l: [f32; 4], world: &mut impl Probe) {
+        if let Some(i) = self.amb.get(k).copied().flatten() {
+            self.now(i, l, world);
+        }
+    }
+
+    /// The slot stops or is not among the two nearest (F-10322 / F-12897 / F-10645): F-65900 when its occluder has been updated.
+    pub fn amb_reset(&mut self, k: usize) {
+        let t = &self.tune;
+        if let Some(o) = self.amb.get(k).copied().flatten().and_then(|i| self.list[i].as_mut()) {
+            if !o.fresh {
+                o.reset(t);
+            }
+        }
     }
 
     /// The car's frame: the port keeps only its origin (the car's place), the one row a car occluder reads (its
@@ -647,8 +695,28 @@ mod tests {
         let mut s = System::new(t.clone(), &o, Default::default()).unwrap();
         assert_eq!((s.radius, s.car_offset), (800.0, [0.0, 0.9, 0.0]));
         let l = [0.0, 0.0, 0.0, 0.0];
-        let i = s.ambient(7, [10.0, 0.0, 0.0]).unwrap();
+        // the ambience's two slot occluders take the first two slots, the world's place, "not updated yet"; placed 2 m
+        // above an emitter, updated at once after the start (the 0x2 record's path switch), reset when the slot is let go
         let init = Group::init(&t).1;
+        for k in 0..2 {
+            let o = s.list[k].unwrap();
+            assert!(o.fresh && o.owner.absolute && o.frame.is_none());
+            assert_eq!(s.amb_place_slot(k), Some(k));
+        }
+        assert_eq!(s.amb_place(1, [3.0, 2.0, 4.0]), Some(1));
+        assert_eq!(s.list[1].unwrap().owner.pos[..3], [3.0, 2.0, 4.0]);
+        assert!(!s.amb_updated(1));
+        s.amb_now(1, l, &mut NoProbe);
+        assert!(s.amb_updated(1) && !s.amb_updated(0));
+        s.amb_now(1, [900.0, 0.0, 0.0, 0.0], &mut NoProbe);
+        assert_eq!(s.out(1), Some(s.list[1].unwrap().owner.group.latch()));
+        s.amb_reset(1);
+        assert!(!s.amb_updated(1));
+        assert_eq!(s.out(1), Some(init));
+        s.keep(&[]);
+        assert!(s.list[0].is_some() && s.list[1].is_some());
+        let i = s.ambient(7, [10.0, 0.0, 0.0]).unwrap();
+        assert_eq!(i, 2);
         assert!(s.list[i].unwrap().fresh);
         assert_eq!(s.out(i), Some(init));
         s.switch(i, true, l, &mut NoProbe);

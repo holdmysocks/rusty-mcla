@@ -291,6 +291,29 @@ fn occlude(oc: &mut crate::occlusion::System, lib: &mut crate::sndobj::SoundLib,
     slots
 }
 
+/// The ambience's two slot occluders on the table (`occlusion::System::amb_*`) for its update.
+struct AmbOccluders<'a, 'w> {
+    oc: &'a mut crate::occlusion::System,
+    world: crate::occlusion::WorldProbe<'w>,
+    l: [f32; 4],
+}
+
+impl crate::ambaudio::SlotOccluders for AmbOccluders<'_, '_> {
+    fn place(&mut self, k: usize, p: Vec3) -> u16 {
+        self.oc.amb_place(k, p.to_array()).map_or(0, |i| (i + 1) as u16)
+    }
+    fn updated(&self, k: usize) -> bool {
+        self.oc.amb_updated(k)
+    }
+    fn now(&mut self, k: usize) {
+        let l = self.l;
+        self.oc.amb_now(k, l, &mut self.world);
+    }
+    fn reset(&mut self, k: usize) {
+        self.oc.amb_reset(k);
+    }
+}
+
 /// A prop type object's occluder place (+69 / +73 / +77, F-95562).
 fn prop_place(o: &[u8]) -> [f32; 3] {
     let f = |at: usize| o.get(at..at + 4).map_or(0.0, |b| f32::from_be_bytes([b[0], b[1], b[2], b[3]]));
@@ -1535,7 +1558,22 @@ impl Sound {
             let cores: Vec<(&str, Vec3, bool)> = crate::hangoutin::SETUPS.iter().filter(|s| game.mc4_hangout_core_running(s.key)).map(|s| (s.key, s.line[1], game.place_hold.contains_key(&s.uid))).collect();
             amb.hangouts(lib, &cores, game.hangout_audio.map(|(si, _)| crate::hangoutin::SETUPS[si].key));
             let mph = if game.mode == Mode::Paused { 0.0 } else { speed * 2.237 };
-            amb.update(lib, cam_pos, night, game.mode == Mode::Garage, forced, mph, game.mode == Mode::Race, dt);
+            let factors = self.occl.as_ref().map(|o| o.factors.clone()).unwrap_or_default();
+            let l = lib.listener.0;
+            match &mut self.occl {
+                Some(oc) => {
+                    let mut so = AmbOccluders { oc, world: crate::occlusion::WorldProbe::of(collider, &factors), l: [l.x, l.y, l.z, 0.0] };
+                    amb.update(lib, cam_pos, night, game.mode == Mode::Garage, forced, mph, game.mode == Mode::Race, dt, &mut so);
+                    for k in 0..2 {
+                        if let Some(i) = so.oc.amb_place_slot(k) {
+                            if let Some(o) = so.oc.out(i) {
+                                lib.set_occlusion(i, o);
+                            }
+                        }
+                    }
+                }
+                None => amb.update(lib, cam_pos, night, game.mode == Mode::Garage, forced, mph, game.mode == Mode::Race, dt, &mut crate::ambaudio::NoOccluders),
+            }
             // rain and thunder (WEATHER_AUDIO_RULE.md): the player's wheel cover probes, the listener's probe 50 m up
             let wheels: Vec<Vec3> = if p.model.bike { vec![st.wheels[0].world_pos, st.wheels[2].world_pos] } else { [0, 2, 1, 3].iter().map(|&i| st.wheels[i].world_pos).collect() };
             amb.cover_probe(wet, &wheels, probe);

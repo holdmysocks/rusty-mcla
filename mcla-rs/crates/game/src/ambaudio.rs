@@ -6,8 +6,8 @@
 //! starts its dynamic mixer scene and second bed. The hangout cores' landmark sets (HNG_LM_*) join the location emitters,
 //! and the nearest of them drives DYNAMIC_MIXER_POSITIONAL_MUSIC. Rules: `docs/reference/audio/AMBIENCE_RULE.md`.
 //!
-//! Not ported (open there): the district cross-fade and the switch's hold, the positional-music object of the records with
-//! flag 0x2 (Downtown's local hangout). Rain and thunder (here too): `docs/reference/audio/WEATHER_AUDIO_RULE.md`.
+//! The two slots' occluders (records with flag 0x2, Downtown's local hangout): `SlotOccluders`, `occlusion::System`.
+//! Not ported (open there): the district cross-fade. Rain and thunder (here too): `docs/reference/audio/WEATHER_AUDIO_RULE.md`.
 
 use crate::sndobj::{Handle, Req, SoundLib};
 use glam::Vec3;
@@ -155,6 +155,34 @@ struct Slot {
     key: Key,
     sound: Handle,
     companion: Option<Handle>,
+    /// which of the manager's two slots (+156 + 20 i) it is: the slot's own occluder (+16)
+    at: usize,
+}
+
+/// The ambience's two slot occluders as F-80314 and the slot stops use them (`occlusion::System`'s `amb_*`).
+pub trait SlotOccluders {
+    /// slot `k`'s occluder at `p`; its table slot + 1 for the requests (+32), 0 when there is none
+    fn place(&mut self, k: usize, p: Vec3) -> u16;
+    /// +119 clear
+    fn updated(&self, k: usize) -> bool;
+    /// the immediate update F-65914 (now, not local) while "not updated yet"
+    fn now(&mut self, k: usize);
+    /// F-65900 when updated
+    fn reset(&mut self, k: usize);
+}
+
+/// No occluders (the offline tests, or GLOBAL_OCCLUSION missing): no record takes the flag 0x2 path's switch.
+pub struct NoOccluders;
+
+impl SlotOccluders for NoOccluders {
+    fn place(&mut self, _: usize, _: Vec3) -> u16 {
+        0
+    }
+    fn updated(&self, _: usize) -> bool {
+        false
+    }
+    fn now(&mut self, _: usize) {}
+    fn reset(&mut self, _: usize) {}
 }
 
 pub struct Ambience {
@@ -522,7 +550,19 @@ impl Ambience {
     /// hangout (`hangouts`) their district, +152 (F-13171). `mph`: the player's speed (mixer +1748, F-99947: chassis
     /// +224 x 2.237); `racing`: DYNAMIC_MIXER_RACE runs (mixer +1740 bit 0x4000, a race under way).
     #[allow(clippy::too_many_arguments)]
-    pub fn update(&mut self, lib: &mut SoundLib, listener: Vec3, night: bool, in_garage: bool, forced: Option<u32>, mph: f32, racing: bool, dt: f32) {
+    pub fn update(&mut self, lib: &mut SoundLib, listener: Vec3, night: bool, in_garage: bool, forced: Option<u32>, mph: f32, racing: bool, dt: f32, occ: &mut dyn SlotOccluders) {
+        self.update_slots(lib, listener, night, in_garage, forced, mph, racing, dt, occ);
+        // the slot stops (F-10645, and F-10322 / F-12897 for a slot not among the two nearest, an empty one too):
+        // each slot holding no emitter has its occluder reset when it has been updated
+        for k in 0..2 {
+            if !self.slots.iter().any(|s| s.at == k) {
+                occ.reset(k);
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn update_slots(&mut self, lib: &mut SoundLib, listener: Vec3, night: bool, in_garage: bool, forced: Option<u32>, mph: f32, racing: bool, dt: f32, occ: &mut dyn SlotOccluders) {
         self.now += dt;
         let now = self.now;
         let forced = forced.and_then(|h| self.district_of(lib, h));
@@ -754,6 +794,11 @@ impl Ambience {
             }
             keep
         });
+        for k in 0..2 {
+            if !self.slots.iter().any(|s| s.at == k) {
+                occ.reset(k);
+            }
+        }
         let landmarks_db = lib.category("AMBIENCE_LANDMARKS").map_or(0.0, |c| c.volume);
         for (d2, key, pos, l) in cands {
             // (F-80314: off the positional-music path a slot plays only while the AMBIENCE_LANDMARKS category is above
@@ -775,6 +820,21 @@ impl Ambience {
             // inner with no guard: equal radii give NaN, which the curves turn into 0), slot 11 at 1 - DYNMIXER(t), started
             // when off, else its strength (+940) clamped to 0 .. 1 - each of the two slots sets it, the second one last -
             // and the emitter at 20 x 0.301 x log2(LANDMARK(t)) dB when that is >= 1e-5, else -100 dB)
+            // the slot (F-73347: the emitter's own, else the first empty one) and, for a record with flag 0x2, its
+            // occluder: placed 2 m above the emitter (+80 / +84 / +88, the world's), in the requests (+32), and the path's
+            // flag replaced by (updated and +112 < 10.0) - +112 is the ctor's 0.0, written by nothing else found - so such
+            // a record takes the curves only once its occluder has been updated, whatever the nearest's path
+            let at = self.slots.iter().find(|s| s.key == key).map(|s| s.at).or_else(|| (0..2).find(|k| !self.slots.iter().any(|s| s.at == *k))).unwrap_or(0);
+            let (pm, occluder) = if l.flags & 2 != 0 {
+                let o = occ.place(at, pos + Vec3::new(0.0, 2.0, 0.0));
+                if o != 0 {
+                    (occ.updated(at), o)
+                } else {
+                    (pm, 0)
+                }
+            } else {
+                (pm, 0)
+            };
             let vol = if pm {
                 let t = landmark_t(d2.sqrt(), l.inner, l.outer);
                 let a = lib.curve_eval(self.dynmixer_curve, t).unwrap_or(0.0);
@@ -788,7 +848,7 @@ impl Ambience {
             } else {
                 0.0
             };
-            let req = Req { pos: Some(pos), volume: vol, ..Default::default() };
+            let req = Req { pos: Some(pos), volume: vol, occluder, ..Default::default() };
             match self.slots.iter().find(|s| s.key == key) {
                 Some(s) => {
                     lib.set(s.sound, req);
@@ -800,7 +860,11 @@ impl Ambience {
                     let n = night as usize * 2;
                     if let Some(h) = lib.play_hash(l.sounds[n], req) {
                         let companion = (l.sounds[n + 1] != self.null).then(|| lib.play_hash(l.sounds[n + 1], req)).flatten();
-                        self.slots.push(Slot { key, sound: h, companion });
+                        self.slots.push(Slot { key, sound: h, companion, at });
+                        // (F-80314 after the start: the immediate update while "not updated yet")
+                        if occluder != 0 {
+                            occ.now(at);
+                        }
                     }
                 }
             }
@@ -904,6 +968,57 @@ mod tests {
         }
     }
 
+    /// Downtown's local hangout's records (flag 0x2) with their slot's occluder (F-80314): placed 2 m above the emitter
+    /// and in the requests; while "not updated yet" the record is off the curves' path (0 dB) and the start runs the
+    /// immediate update; once updated the path is on whatever the speed (here 60 mph, where another landmark's is off);
+    /// a slot let go has its occluder reset.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn downtown_landmark_occluder() {
+        #[derive(Default)]
+        struct Fake {
+            placed: [Option<Vec3>; 2],
+            updated: [bool; 2],
+            resets: usize,
+        }
+        impl SlotOccluders for Fake {
+            fn place(&mut self, k: usize, p: Vec3) -> u16 {
+                self.placed[k] = Some(p);
+                (k + 1) as u16
+            }
+            fn updated(&self, k: usize) -> bool {
+                self.updated[k]
+            }
+            fn now(&mut self, k: usize) {
+                self.updated[k] = true;
+            }
+            fn reset(&mut self, k: usize) {
+                if self.updated[k] {
+                    self.resets += 1;
+                }
+                self.updated[k] = false;
+            }
+        }
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let mut amb = Ambience::new(&lib).expect("ambience");
+        let dt = crate::hangoutin::SETUPS.iter().find(|s| s.key == "dt_local_hangout1").unwrap();
+        let lm = load_lm_set(&lib.game, dt.key, dt.line[1]).unwrap().recs[0].1;
+        assert_eq!(lm.flags & 2, 2);
+        amb.hangouts(&lib, &[(dt.key, dt.line[1], false)], None);
+        let at = lm.pos + Vec3::new(lm.inner, 0.0, 0.0);
+        let mut f = Fake::default();
+        amb.update(&mut lib, at, false, false, None, 60.0, false, 0.1, &mut f);
+        let s = amb.slots.iter().find(|s| matches!(s.key, Key::Lm(_, 0))).expect("the landmark's slot");
+        assert_eq!(f.placed[s.at], Some(lm.pos + Vec3::new(0.0, 2.0, 0.0)));
+        assert!(f.updated[s.at] && !amb.pos_music);
+        amb.update(&mut lib, at, false, false, None, 60.0, false, 0.1, &mut f);
+        assert!(amb.pos_music && lib.scene_on(POS_MUSIC));
+        amb.update(&mut lib, lm.pos + Vec3::new(5000.0, 0.0, 0.0), false, false, None, 60.0, false, 0.1, &mut f);
+        assert!(amb.slots.is_empty() && f.updated == [false; 2] && f.resets >= 1);
+    }
+
     /// The hangouts from the disc: each of the 12 hangout cores' location ids has its game.dat `HNG_DIS_<id>` district
     /// (scene DYNAMIC_MIXER_HANGOUT, beds, the crowd as second bed) and its landmark set `HNG_LM_<id>` + `_0` (the first with
     /// flag 0x4, played in a hangout too; `_0` without it; Downtown's local pair also 0x2, the positional-music object);
@@ -943,32 +1058,32 @@ mod tests {
         assert_eq!(amb.sets.len(), 1);
         // cruising past the hangout: the circles' district, the landmark's set the nearest emitter
         let at = lm.pos + Vec3::new(lm.inner, 0.0, 0.0);
-        amb.update(&mut lib, at, false, false, None, 30.0, false, 0.1);
+        amb.update(&mut lib, at, false, false, None, 30.0, false, 0.1, &mut NoOccluders);
         assert!(!amb.district_name().unwrap().starts_with("HNG_DIS"));
         assert!(amb.slots.iter().any(|s| matches!(s.key, Key::Lm(..))));
         assert!(amb.pos_music && lib.scene_on(POS_MUSIC));
         // too fast, then a race: slot 11 stops
-        amb.update(&mut lib, at, false, false, None, 60.0, false, 0.1);
+        amb.update(&mut lib, at, false, false, None, 60.0, false, 0.1, &mut NoOccluders);
         assert!(!amb.pos_music && !lib.scene_on(POS_MUSIC));
-        amb.update(&mut lib, at, false, false, None, 30.0, true, 0.1);
+        amb.update(&mut lib, at, false, false, None, 30.0, true, 0.1, &mut NoOccluders);
         assert!(!amb.pos_music);
         // suspended: not a candidate
         amb.hangouts(&lib, &[(hw.key, hw.line[1], true)], None);
-        amb.update(&mut lib, at, false, false, None, 30.0, false, 0.1);
+        amb.update(&mut lib, at, false, false, None, 30.0, false, 0.1, &mut NoOccluders);
         assert!(!amb.slots.iter().any(|s| matches!(s.key, Key::Lm(..))) && !amb.pos_music);
         // in the hangout: its district and scene (stepping past the last switch's 4 s hold, +828)
         amb.hangouts(&lib, &cores, Some(hw.key));
-        amb.update(&mut lib, at, false, false, None, 0.0, false, 4.1);
+        amb.update(&mut lib, at, false, false, None, 0.0, false, 4.1, &mut NoOccluders);
         assert_eq!(amb.district_name(), Some("HNG_DIS_HW_LOCAL_HANGOUT1"));
         assert!(lib.scene_on("DYNAMIC_MIXER_HANGOUT") && amb.pos_music);
         // out again: the circles' district, the hangout scene stopped
         amb.hangouts(&lib, &cores, None);
-        amb.update(&mut lib, at, false, false, None, 0.0, false, 4.1);
+        amb.update(&mut lib, at, false, false, None, 0.0, false, 4.1, &mut NoOccluders);
         assert!(!amb.district_name().unwrap().starts_with("HNG_DIS") && !lib.scene_on("DYNAMIC_MIXER_HANGOUT"));
         // an id with no HNG_DIS_ (and no DISTRICT_HANGOUT): the district stays
         let before = amb.district_name().map(|s| s.to_string());
         amb.hangouts(&lib, &[], Some("nowhere"));
-        amb.update(&mut lib, Vec3::ZERO, false, false, None, 0.0, false, 0.1);
+        amb.update(&mut lib, Vec3::ZERO, false, false, None, 0.0, false, 0.1, &mut NoOccluders);
         assert_eq!(amb.district_name().map(|s| s.to_string()), before);
         assert!(amb.sets.is_empty());
     }
@@ -988,7 +1103,7 @@ mod tests {
             Vec3::new(d.circles[0].0, 0.0, d.circles[0].1)
         };
         let (sm, skid) = (at(&amb, "DISTRICT_SANTA_MONICA"), at(&amb, "DISTRICT_SKID_ROW"));
-        let step = |amb: &mut Ambience, lib: &mut SoundLib, p: Vec3, t: f32| amb.update(lib, p, false, false, None, 0.0, false, t);
+        let step = |amb: &mut Ambience, lib: &mut SoundLib, p: Vec3, t: f32| amb.update(lib, p, false, false, None, 0.0, false, t, &mut NoOccluders);
         step(&mut amb, &mut lib, sm, 0.1);
         assert_eq!(amb.district_name(), Some("DISTRICT_SANTA_MONICA"));
         // 3.9 s after the switch: held
@@ -1005,7 +1120,7 @@ mod tests {
         assert_ne!(bed[0], bed[1]);
         assert_eq!(amb.bed_snd, bed[0]);
         for _ in 0..50 {
-            amb.update(&mut lib, skid, true, false, None, 0.0, false, 0.1);
+            amb.update(&mut lib, skid, true, false, None, 0.0, false, 0.1, &mut NoOccluders);
         }
         assert_eq!(amb.bed_snd, bed[0]);
     }
@@ -1023,7 +1138,7 @@ mod tests {
         let (at, bed) = (Vec3::new(d.circles[0].0, 0.0, d.circles[0].1), d.bed[0]);
         let mut step = |amb: &mut Ambience, lib: &mut SoundLib, a: &mut crate::audio::Audio| {
             lib.update(0.1, a);
-            amb.update(lib, at, false, false, None, 0.0, false, 0.1);
+            amb.update(lib, at, false, false, None, 0.0, false, 0.1, &mut NoOccluders);
         };
         step(&mut amb, &mut lib, &mut a);
         assert!(amb.bed.is_some() && amb.bed_snd == bed);
@@ -1052,10 +1167,10 @@ mod tests {
         let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
         let mut amb = Ambience::new(&lib).expect("ambience");
         let at = Vec3::new(819.6, 0.0, -808.4);
-        amb.update(&mut lib, at, false, true, None, 0.0, false, 0.1);
+        amb.update(&mut lib, at, false, true, None, 0.0, false, 0.1, &mut NoOccluders);
         assert_eq!(amb.district_name(), Some("DISTRICT_GARAGE"));
         assert!(lib.scene_on("DYNAMIC_MIXER_GARAGE") && amb.bed2.is_some());
-        amb.update(&mut lib, at, false, false, None, 0.0, false, 4.1);
+        amb.update(&mut lib, at, false, false, None, 0.0, false, 4.1, &mut NoOccluders);
         assert_eq!(amb.district_name(), Some("DISTRICT_OLD_HOLLYWOOD"));
         assert!(!lib.scene_on("DYNAMIC_MIXER_GARAGE") && amb.bed2.is_none());
     }
