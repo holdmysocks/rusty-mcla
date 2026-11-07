@@ -548,6 +548,20 @@ impl CarState {
         self.zones[..3].iter().map(|z| z.min(1.0)).sum::<f32>() / 3.0
     }
 
+    /// The delivery's damage meter as the HUD update F-86111 computes it (stored at the meter's +192):
+    /// the left, right and front zones each at most 1, summed (right + left, then + front),
+    /// times 1/3 (f32 0x3EAAAAAB), over the meter's maximum (+196, `limit`), at least 0 and at most 1.
+    /// With no maximum (0 or less) the original leaves the meter as it was: 0 here.
+    pub fn delivery_meter(&self, limit: f32) -> f32 {
+        if !(limit > 0.0) {
+            return 0.0;
+        }
+        let z = |i: usize| self.zones[i].min(1.0);
+        let m = ((z(1) + z(0)) + z(2)) * (1.0f32 / 3.0) / limit;
+        let m = if m >= 0.0 { m } else { 0.0 };
+        if m - 1.0 >= 0.0 { 1.0 } else { m }
+    }
+
     /// A blow of `hit` m/s landed at `point` (world): the zone damage there.
     pub fn add_dent(&mut self, point: Vec3, hit: f32) {
         // ((hit - 0.5) / 5, at most 1)
@@ -1067,6 +1081,33 @@ impl CarState {
 
 #[cfg(test)]
 mod tests {
+    /// The delivery meter as F-86111 computes it: (right + left) + front zones, each at most 1, x 1/3, over the
+    /// difficulty's maximum, clamped to [0, 1]; the rear zone and the damage points do not count.
+    #[test]
+    fn delivery_meter_is_the_hud_updates() {
+        let mut st = CarState::new(Vec3::ZERO, 0.0);
+        st.damage = 0.99;
+        st.zones = [0.3, 0.6, 0.0, 5.0];
+        assert_eq!(st.delivery_meter(1.0), ((0.6f32 + 0.3) + 0.0) * (1.0f32 / 3.0) / 1.0);
+        // MEDIUM (0.9): 0.3 / 0.9; HARDEST (0.6): 0.3 / 0.6 = 0.5
+        assert_eq!(st.delivery_meter(0.9), ((0.6f32 + 0.3) + 0.0) * (1.0f32 / 3.0) / 0.9);
+        assert!((st.delivery_meter(0.6) - 0.5).abs() < 1e-6);
+        // the zones over 1 count 1; the meter stops at 1
+        st.zones = [2.0, 2.0, 2.0, 0.0];
+        assert_eq!(st.delivery_meter(0.6), 1.0);
+        assert_eq!(st.delivery_meter(1.0), 1.0);
+        // no maximum: no meter
+        assert_eq!(st.delivery_meter(0.0), 0.0);
+        // the difficulties' maxima (the launchers' table at +3212)
+        assert_eq!([0, 1, 2, 3, 9].map(crate::game::Game::delivery_limit), [1.0, 0.9, 0.75, 0.6, 0.6]);
+        // a car with 0.99 damage points but clean zones is not DAMAGE EXCEEDED
+        st.zones = [0.0; 4];
+        assert!(st.delivery_meter(0.6) < 0.999);
+        // 0.6 of the three zones on HARDEST is (0.6 x 3 / 3) / 0.6 = 1: exceeded
+        st.zones = [0.6, 0.6, 0.6, 0.0];
+        assert!(st.delivery_meter(0.6) >= 0.999_f32);
+    }
+
     use super::*;
 
     /// The R8's deform pieces where the original has them (work/dmgmap, the DMAP record: hubs (+-0.782, 0.343,

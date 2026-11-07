@@ -4158,6 +4158,14 @@ impl Game {
     }
 
     /// Per-frame race logic. Returns true if the race just finished for the player.
+    /// A delivery's damage meter maximum (the meter's +196, meterMax: float property 1 of F-60465's
+    /// setter) by the panel's difficulty: the delivery hangouts' launchers (game/Hangouts/0x4dd86889,
+    /// sc/Hangouts/0xc8c6051d) fill the core's table at +3212 with 1.0, 0.9, 0.75, 0.6 and
+    /// delivery_hangout_core (0x37c63b19, 0x17fa..0x183b) sets the meter's maximum to table[difficulty].
+    pub fn delivery_limit(diff: usize) -> f32 {
+        [1.0, 0.9, 0.75, 0.6][diff.min(3)]
+    }
+
     pub fn update_race(&mut self, vehicles: &mut Vehicles, dt: f32, world_ready: bool) -> bool {
         let mut finished_now = false;
         if self.rb_step.is_none() && self.race.is_some() {
@@ -4327,7 +4335,10 @@ impl Game {
         // missions
         if race.kind != RaceKind::Race && race.failed.is_none() && race.finish_time.first().map_or(true, |t| t.is_none()) {
             // (a delivery is judged by what the customer sees: the body's zones)
-            let pdmg = vehicles.cars.iter().find(|c| c.is_player).map_or(0.0, |c| if race.kind == RaceKind::Delivery { c.state.damage.max(c.state.delivery_damage()) } else { c.state.damage });
+            // (a delivery: the HUD's meter alone, F-86111 - the zones over the difficulty's maximum, `delivery_limit`;
+            // the car's own damage points are not in its test)
+            let limit = Self::delivery_limit(self.delivery_diff);
+            let pdmg = vehicles.cars.iter().find(|c| c.is_player).map_or(0.0, |c| if race.kind == RaceKind::Delivery { c.state.delivery_meter(limit) } else { c.state.damage });
             // (step 19d: a payback leg's time-out does not fail it - the client's friends
             // give chase: `mc4_payback_tick`)
             if race.time_limit > 0.0 && race.time > race.time_limit && race.kind != RaceKind::Payback {
