@@ -604,6 +604,8 @@ pub struct Game {
     pub dirty: bool,
     /// original UI art (lazily loaded on first HUD draw)
     pub art: Option<crate::hud::UiArt>,
+    /// the subtitles' font, the original's Arial12 (subfont.rs)
+    pub subfont: Option<crate::subfont::SubFont>,
     pub art_tried: bool,
     /// the original HUD movie (gauge cluster, special ability and slipstream meters);
     /// `MCLA_FLASH_HUD=0` keeps the port's own drawing
@@ -1442,6 +1444,7 @@ impl Game {
             rim_pick: 0,
             dirty: false,
             art: None,
+            subfont: None,
             art_tried: false,
             flash_hud: None,
             hud_camera: -1,
@@ -4799,6 +4802,10 @@ impl Game {
         if !self.art_tried && !self.data_dir.is_empty() {
             self.art_tried = true;
             self.art = Some(crate::hud::UiArt::load(ctx, &self.data_dir));
+            self.subfont = crate::subfont::SubFont::load(ctx, &self.data_dir);
+            if self.subfont.is_none() {
+                log::warn!("subtitles: ui/fonts arial12 not found; the port's own font draws them");
+            }
             if std::env::var("MCLA_FLASH_HUD").map_or(true, |v| v != "0") {
                 let shared = crate::flash_ui::UiShared { textures: std::sync::Arc::new(crate::flash_ui::load_shared(&self.data_dir)), strings: std::sync::Arc::new(self.career.strings.clone()), logic: std::sync::Arc::new(crate::menu3d::UiLogic::load(&self.data_dir)) };
                 self.flash_hud = crate::flash_ui::FlashHud::load(&self.data_dir, &shared);
@@ -4959,7 +4966,12 @@ impl Game {
                 let screen = ctx.screen_rect();
                 let sc = (screen.height() / 900.0).clamp(0.5, 2.0);
                 let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("movie subs")));
-                if let Some(sub) = m.subtitle() {
+                if let Some(f) = self.subfont.as_ref() {
+                    // (the film's subtitles: cut_intro's table, position 0.1 / 0.83, size 0.8 / 0.5)
+                    if let Some(sub) = m.subtitle() {
+                        f.draw(&p, screen, ctx.pixels_per_point(), crate::subfont::INTRO_PLACE, sub, egui::Color32::WHITE);
+                    }
+                } else if let Some(sub) = m.subtitle() {
                     let lines = self.wrap(sub, 15.0 * sc, screen.width() * 0.8);
                     for (i, l) in lines.iter().enumerate() {
                         let pos = egui::pos2(screen.center().x, screen.bottom() - 70.0 * sc + (i as f32 - (lines.len() as f32 - 1.0) * 0.5) * 24.0 * sc);
@@ -10023,7 +10035,13 @@ impl Game {
                         p.rect_filled(egui::Rect::from_min_size(screen.min, egui::vec2(screen.width(), bar)), 0.0, egui::Color32::BLACK);
                         p.rect_filled(egui::Rect::from_min_size(egui::pos2(screen.left(), screen.bottom() - bar), egui::vec2(screen.width(), bar)), 0.0, egui::Color32::BLACK);
                     }
-                    let sub = if plain && !self.opts.subtitles { "" } else { sub.as_str() };
+                    // (diagnostics: MCLA_SUBTITLES=1 shows them whatever the option)
+                    let sub = if plain && !self.opts.subtitles && std::env::var("MCLA_SUBTITLES").is_err() { "" } else { sub.as_str() };
+                    // (the original's subtitle text: Arial12 in the table's rect - subfont.rs)
+                    if let Some(f) = self.subfont.as_ref().filter(|_| plain) {
+                        f.draw(&p, screen, ctx.pixels_per_point(), crate::subfont::STORY_PLACE, sub, egui::Color32::WHITE);
+                    }
+                    let sub = if plain && self.subfont.is_some() { "" } else { sub };
                     let lines = self.wrap(sub, 15.0 * sc, screen.width() * 0.8);
                     for (i, l) in lines.iter().enumerate() {
                         let pos = egui::pos2(screen.center().x, screen.bottom() - bar * 0.5 + (i as f32 - (lines.len() as f32 - 1.0) * 0.5) * 24.0 * sc);
