@@ -201,6 +201,28 @@ pub struct Trails {
     tick: bool,
 }
 
+/// F-40536's test of the camera (place, z axis) against the one saved last frame: a cut when the z axes'
+/// dot (z z' fused into y y', then x x') is under 0.2 or the place moved more than 4 m (the distance's squares
+/// x, then z, then y, fused); and the move's share sat(d x 1). Checked against the original's code run offline.
+pub fn camera_cut(saved: (Vec3, Vec3), cam: (Vec3, Vec3)) -> (bool, f32) {
+    use crate::physics::exact::fma;
+    let (s, c) = (saved.1, cam.1);
+    let dot = fma(c.x, s.x, fma(c.y, s.y, c.z * s.z));
+    let d = saved.0 - cam.0;
+    let dist = fma(d.y, d.y, fma(d.z, d.z, d.x * d.x)).sqrt();
+    let cut = dot < 0.2 || dist > 4.0;
+    let m = dist * 1.0;
+    let m = if m >= 0.0 { m } else { 0.0 };
+    (cut, if m - 1.0 >= 0.0 { 1.0 } else { m })
+}
+
+/// F-25303's place in view space: x r0 + (y r1 + (z r2 + r3)) by the vector unit (each product rounded),
+/// the rows of the original's matrix being `view`'s columns.
+pub fn view_point(view: &Mat4, p: Vec3) -> Vec3 {
+    let (r0, r1, r2, r3) = (view.x_axis.truncate(), view.y_axis.truncate(), view.z_axis.truncate(), view.w_axis.truncate());
+    r0 * p.x + (r1 * p.y + (r2 * p.z + r3))
+}
+
 impl Default for Trails {
     fn default() -> Self {
         Trails { recs: [Record::default(); RECORDS], slots: HashMap::new(), frame: 1, acc: 0.0, saved: None, moved: 0.0, cut: false, tick: false }
@@ -265,7 +287,7 @@ impl Trails {
             r.stamps[k] = r.stamps[k - 1];
             r.vals[k] = r.vals[k - 1];
         }
-        r.h[0] = view.transform_point3(place);
+        r.h[0] = view_point(view, place);
         r.stamps[0] = frame;
         r.vals[0] = trail * moved;
         r.count = (r.count + 1).min(POINTS as u32);
@@ -277,16 +299,14 @@ impl Trails {
     /// point less for a record not used this frame. `cam`: the camera's place and z axis.
     pub fn update(&mut self, cam: (Vec3, Vec3), paused: bool) {
         let saved = self.saved.unwrap_or(cam);
-        let d = cam.0 - saved.0;
-        let dist = ((d.x * d.x + d.y * d.y) + d.z * d.z).sqrt();
-        let cut = saved.1.dot(cam.1) < 0.2 || dist > 4.0;
+        let (cut, moved) = camera_cut(saved, cam);
         if cut {
             for r in self.recs.iter_mut() {
                 r.count = 0;
             }
         }
         self.saved = Some(cam);
-        self.moved = dist.clamp(0.0, 1.0);
+        self.moved = moved;
         self.cut = cut;
         if cut {
             return;
@@ -485,6 +505,34 @@ pub fn draw<'a>(gpu: &Gpu, pass: &mut wgpu::RenderPass<'a>) {
 
 #[cfg(test)]
 mod tests {
+    /// F-40536 and F-25303 against the original's code run offline (`tools/trail_small_reference.py`).
+    #[test]
+    fn camera_cut_and_push_as_the_original() {
+        let f = |h: &str| f32::from_bits(u32::from_str_radix(h, 16).unwrap());
+        let (mut cuts, mut pushes) = (0, 0);
+        for l in include_str!("render/testdata/trail_small_reference.txt").lines() {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            let v = |i: usize| glam::Vec3::new(f(w[i]), f(w[i + 1]), f(w[i + 2]));
+            match w[0] {
+                "CUT" => {
+                    let (cut, moved) = super::camera_cut((v(4), v(1)), (v(10), v(7)));
+                    assert_eq!((cut as u32, moved.to_bits()), (w[13].parse().unwrap(), f(w[14]).to_bits()), "{l}");
+                    cuts += 1;
+                }
+                "PUSH" => {
+                    let m: Vec<f32> = (1..17).map(|i| f(w[i])).collect();
+                    let view = glam::Mat4::from_cols_slice(&m);
+                    let h = super::view_point(&view, v(17));
+                    assert_eq!(h.to_array().map(f32::to_bits), v(22).to_array().map(f32::to_bits), "{l}");
+                    assert_eq!((f(w[20]) * f(w[21])).to_bits(), f(w[25]).to_bits(), "{l}");
+                    pushes += 1;
+                }
+                _ => panic!("{l}"),
+            }
+        }
+        assert_eq!((cuts, pushes), (4000, 4000));
+    }
+
     use super::*;
 
     #[test]
