@@ -777,11 +777,14 @@ pub fn traffic_ease(v: f32, on: bool, dt: f32) -> f32 {
 
 /// F-24995 with the state record's own rate (+0: 9; the siren's +300 18).
 pub fn ease_at(v: f32, on: bool, rate: f32, dt: f32) -> f32 {
+    use crate::physics::exact::{fma, fnms};
     if on {
-        let n = v + (1.0 - v) * rate * dt;
+        // fmadds((1 - v) rate, dt, v); over 0.99 it is 1
+        let n = fma((1.0 - v) * rate, dt, v);
         if n > 0.99 { 1.0 } else { n }
     } else {
-        let n = v - v * rate * dt;
+        // fnmsubs(rate dt, v, v); under 0.01 it is 0 (bge: a NaN stays)
+        let n = fnms(rate * dt, v, v);
         if n < 0.01 { 0.0 } else { n }
     }
 }

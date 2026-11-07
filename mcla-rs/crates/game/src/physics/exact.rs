@@ -759,6 +759,31 @@ mod tests {
         assert_eq!(n, 5000);
     }
 
+    /// A box's moments F-30573 and the world inverse inertia F-16702 run offline (tools/inertia_reference.py): 3,003
+    /// boxes and 3,000 bodies (rotations, some a little off square, and the identity) - every word equal.
+    #[test]
+    fn inertia_matches_the_original() {
+        use glam::Vec3;
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut n = 0;
+        for line in include_str!("../testdata/inertia_ref.txt").lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let mut w = case.split(' ');
+            let kind = w.next().unwrap();
+            let c: Vec<f32> = w.map(|x| f32::from_bits(h(x))).collect();
+            let want: Vec<u32> = want.split(' ').map(h).collect();
+            let got: Vec<u32> = if kind == "box" {
+                crate::physics::loose::box_inertia(c[0], Vec3::new(c[1], c[2], c[3])).iter().map(|x| x.to_bits()).collect()
+            } else {
+                let rows = [Vec3::new(c[0], c[1], c[2]), Vec3::new(c[3], c[4], c[5]), Vec3::new(c[6], c[7], c[8])];
+                super::world_inverse_inertia(&rows, Vec3::new(c[9], c[10], c[11])).iter().flat_map(|r| r.to_array()).map(|x| x.to_bits()).collect()
+            };
+            assert_eq!(got, want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 6003);
+    }
+
     #[test]
     fn stop_rate_matches_the_original() {
         let h = |x: &str| u32::from_str_radix(x, 16).unwrap();

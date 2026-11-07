@@ -194,15 +194,21 @@ impl SsTurbo {
     /// (0x820317C8), not within 0.01 (0x82002C60); then the target is dropped unless the local player is
     /// this car or the car in its slipstream (`keep`). Drawn above 0.001 (0x820022B4, F-44538).
     pub fn fade_trail(&mut self, keep: bool, dt: f32) {
-        let d = self.trail - self.trail_target;
-        if d.abs() > 0.01 {
-            let step = (4.5 * dt).min(d.abs());
-            self.trail = if d < 0.0 { self.trail + step } else { self.trail - step };
-        }
+        self.trail = fade(self.trail, self.trail_target, 4.5, dt);
         if !keep {
             self.trail_target = 0.0;
         }
     }
+}
+
+/// F-38786: `value` towards `target` by rate times dt, not past it; left as it is within 0.01 (or a NaN: blelr).
+pub fn fade(value: f32, target: f32, rate: f32, dt: f32) -> f32 {
+    let d = value - target;
+    if !(d.abs() > 0.01) {
+        return value;
+    }
+    let step = if rate * dt > d.abs() { d.abs() } else { rate * dt };
+    if d >= 0.0 { value - step } else { value + step }
 }
 
 /// F-22877: the strength of `leader`'s slipstream where `me` is, with the leader's tuning. The envelope
@@ -239,6 +245,29 @@ pub fn strength(t: &SsTurboTune, leader: &DraftCar, me: Vec3) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The lamp ease F-24995 and the trail's fade F-38786 run offline (tools/fades_reference.py): 6,000 records with
+    /// the rates the game uses and others, values at the 0.99 / 0.01 edges, NaN and infinities - every word equal (a
+    /// NaN as a NaN).
+    #[test]
+    fn fades_match_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let nan = |x: u32| if f32::from_bits(x).is_nan() { 0x7fc0_0000 } else { x };
+        let f = |x: &str| f32::from_bits(h(x));
+        let mut n = 0;
+        for line in include_str!("../testdata/fades_ref.txt").lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = case.split(' ').collect();
+            let got = if w[0] == "ease" {
+                crate::vehicles::ease_at(f(w[3]), w[2] == "1", f(w[1]), f(w[4]))
+            } else {
+                fade(f(w[3]), f(w[2]), f(w[1]), f(w[4]))
+            };
+            assert_eq!(nan(got.to_bits()), nan(h(want)), "{line}: {:08x}", got.to_bits());
+            n += 1;
+        }
+        assert_eq!(n, 6000);
+    }
 
     fn tune() -> SsTurboTune {
         // (every playable car's, base and upgraded alike - `ss_turbo_tunes_of_the_disc`; distance 0.8 here to see it

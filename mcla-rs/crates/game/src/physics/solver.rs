@@ -156,13 +156,18 @@ fn block_inverse(k: &[Vec3; 3]) -> [Vec3; 3] {
     [Vec3::new(r00, r01, p), Vec3::new(r01, r11, -q), Vec3::new(p, -q, i2)]
 }
 
+/// F-42768: the inverse mass times (1, 0, 0), (0, 1, 0), (0, 0, 1), each lane a product (vmulfp).
+pub fn mass_rows(m: f32) -> [Vec3; 3] {
+    [Vec3::X * m, Vec3::Y * m, Vec3::Z * m]
+}
+
 impl State {
     fn of(body: &Body) -> State {
         let m = body.inv_mass;
         State {
             vel: body.vel,
             ang: body.ang,
-            mcol: columns(&[Vec3::new(m, 0.0, 0.0), Vec3::new(0.0, m, 0.0), Vec3::new(0.0, 0.0, m)]),
+            mcol: columns(&mass_rows(m)),
             icol: columns(&world_inverse_inertia(&body.rows, body.inv_moments)),
         }
     }

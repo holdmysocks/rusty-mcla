@@ -8196,7 +8196,12 @@ mod primitive_reference_tests {
 /// collider (A-40484, vslot 21). MCLA_DBG_SCRAPEPOST: the velocity after the solve, as before 2026-10-20.
 fn start_velocity(body: Option<&super::solver::Body>, p: Vec3) -> Option<Vec3> {
     let b = body.filter(|_| !dbg_flag("MCLA_DBG_SCRAPEPOST"))?;
-    Some(b.vel + b.ang.cross(p - b.at))
+    Some(point_velocity(b.vel, b.ang, b.at, p))
+}
+
+/// F-67516: a body's velocity at `p`: v + w x (p - place), the cross as two rounded products and their difference.
+pub fn point_velocity(v: Vec3, w: Vec3, at: Vec3, p: Vec3) -> Vec3 {
+    super::gjk::cross_as_original(w, p - at) + v
 }
 
 /// F-66400: the normal-deviate generator against the original's own code run offline (tools/random_normal_reference.py ->
@@ -8458,5 +8463,37 @@ mod builtin_torque_tests {
             }
         }
         assert_eq!(n, 1500 * 24);
+    }
+}
+
+#[cfg(test)]
+mod vec_small_tests {
+    use super::*;
+
+    /// A triangle's normal F-13958, a body's velocity at a point F-67516 and the inverse mass rows F-42768 run offline
+    /// (tools/vec_small_reference.py): 3,000 triangles (areas exact, a little off and 0), 3,000 points (the place
+    /// itself among them), 504 masses - every word equal (a NaN as a NaN).
+    #[test]
+    fn small_vector_routines_match_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let nan = |x: u32| if f32::from_bits(x).is_nan() { 0x7fc0_0000 } else { x };
+        let v3 = |c: &[f32], i: usize| Vec3::new(c[i], c[i + 1], c[i + 2]);
+        let mut n = 0;
+        for line in include_str!("../testdata/vec_small_ref.txt").lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let mut w = case.split(' ');
+            let kind = w.next().unwrap();
+            let c: Vec<f32> = w.map(|x| f32::from_bits(h(x))).collect();
+            let got: Vec<Vec3> = match kind {
+                "normal" => vec![super::super::gjk::polygon_normal(&[v3(&c, 0), v3(&c, 3), v3(&c, 6)], c[9])],
+                "pointvel" => vec![point_velocity(v3(&c, 3), v3(&c, 6), v3(&c, 0), v3(&c, 9))],
+                _ => super::super::solver::mass_rows(c[0]).to_vec(),
+            };
+            let got: Vec<u32> = got.iter().flat_map(|v| v.to_array()).map(|x| nan(x.to_bits())).collect();
+            let want: Vec<u32> = want.split(' ').map(|x| nan(h(x))).collect();
+            assert_eq!(got, want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 6504);
     }
 }

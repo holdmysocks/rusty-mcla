@@ -4632,6 +4632,12 @@ fn ambient_wheels(a: &mut Amb, b: &mut PBody, m: &[Vec3; 4], city: &super::colli
 pub const PIECE_TYPE: &str = "mcCarAnimBreakablePartInst";
 
 /// The bumper's type as the loose bodies read a type.
+/// F-30573: a box's moments, ((y^2 + z^2) m) / 12 and the like (the twelfth as [0x8202E194]).
+pub fn box_inertia(mass: f32, s: Vec3) -> [f32; 3] {
+    let k = f32::from_bits(0x3daa_aaab);
+    [((s.z * s.z + s.y * s.y) * mass) * k, ((s.x * s.x + s.z * s.z) * mass) * k, ((s.x * s.x + s.y * s.y) * mass) * k]
+}
+
 pub fn piece_type() -> FragType {
     let size = Vec3::new(1.8, 0.333, 0.5);
     let half = size * 0.5;
@@ -4640,8 +4646,7 @@ pub fn piece_type() -> FragType {
     let mass = 4.0f32;
     // (F-30573: ((y^2 + z^2) m) / 12 ... of the box 1.25 x the bound; F-88418's floor leaves these as they are)
     let s = size * 1.25;
-    let k = f32::from_bits(0x3daa_aaab);
-    let inertia = [((s.z * s.z + s.y * s.y) * mass) * k, ((s.x * s.x + s.z * s.z) * mass) * k, ((s.x * s.x + s.y * s.y) * mass) * k];
+    let inertia = box_inertia(mass, s);
     let corners: Vec<[f32; 3]> = (0..8).map(|i| [if i & 1 == 0 { -half.x } else { half.x }, if i & 2 == 0 { -half.y } else { half.y }, if i & 4 == 0 { -half.z } else { half.z }]).collect();
     let bound = FragBound { kind: 3, flag6: true, radius, max: half.to_array(), min: (-half).to_array(), centroid: [0.0; 3], cg, volume: size.x * size.y * size.z, margin: 0.04, verts: corners, ..Default::default() };
     FragType {
