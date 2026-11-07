@@ -427,6 +427,8 @@ pub struct Props {
     pub signals: crate::signals::Signals,
     /// prop impacts of this frame (for the sound driver)
     pub hits: Vec<crate::sound::PropHit>,
+    /// the contacts of this frame that slide along a prop (the scrape of F-99417, for the sound driver)
+    pub scrapes: Vec<crate::sound::PropScrape>,
     /// the effects the props' events start this tick (the type collision sets of the posts, the deflection pass;
     /// propfx.rs plays them)
     pub fx: Vec<crate::physics::loose::FxPlay>,
@@ -676,7 +678,7 @@ fn prop_mode(shader: &str) -> MatMode {
 
 impl Props {
     pub fn empty() -> Props {
-        Props { hedge_low: HashMap::new(), impostors: None, signal_glows: SignalGlows::default(), glow_buf: None, glow_count: 0, lights: Vec::new(), prop_lamps: Vec::new(), glow_lamps: Vec::new(), glow_cull: Vec::new(), glow_signal: Vec::new(), glow_boxes: Vec::new(), light_grid: HashMap::new(), models: Vec::new(), inst_buf: None, cells: HashMap::new(), instances: 0, insts: Vec::new(), colliders: Vec::new(), gas_stations: Vec::new(), col_grid: HashMap::new(), debris: Vec::new(), hits: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, heads: Vec::new(), signals: Default::default(), race_models: HashMap::new(), race_buf: None, race_runs: Vec::new(), barriers: Vec::new(), barrier_buf: None, barrier_on: 0, emitters: Vec::new(), trash: Vec::new() }
+        Props { hedge_low: HashMap::new(), impostors: None, signal_glows: SignalGlows::default(), glow_buf: None, glow_count: 0, lights: Vec::new(), prop_lamps: Vec::new(), glow_lamps: Vec::new(), glow_cull: Vec::new(), glow_signal: Vec::new(), glow_boxes: Vec::new(), light_grid: HashMap::new(), models: Vec::new(), inst_buf: None, cells: HashMap::new(), instances: 0, insts: Vec::new(), colliders: Vec::new(), gas_stations: Vec::new(), col_grid: HashMap::new(), debris: Vec::new(), hits: Vec::new(), scrapes: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, heads: Vec::new(), signals: Default::default(), race_models: HashMap::new(), race_buf: None, race_runs: Vec::new(), barriers: Vec::new(), barrier_buf: None, barrier_on: 0, emitters: Vec::new(), trash: Vec::new() }
     }
 
     pub fn load(gpu: &mut Gpu, world: &mut World, data_dir: &str) -> Props {
@@ -1486,7 +1488,7 @@ impl Props {
             SignalGlows { lit: Vec::new(), cull, buf: None, count: 0, lamps, sizes: four("sm_fSignalGlowSizes", [4.52, 5.25, 8.7675, 10.0]), intensities: four("sm_fSignalGlowIntensitys", [4.52, 5.0, 5.0, 3.0]) }
         };
         let impostors = impostor::Impostors::new(gpu, data_dir, &mut models, &imp_types);
-        Props { hedge_low, impostors, signal_glows, glow_buf, glow_count: glows.len() as u32, lights, prop_lamps, glow_lamps, glow_boxes, glow_cull, glow_signal, light_grid, models, inst_buf, cells, instances: total, insts, colliders, gas_stations, col_grid, debris: Vec::new(), hits: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, heads, signals, race_models, race_buf: None, race_runs: Vec::new(), barriers, barrier_buf, barrier_on: 0, emitters, trash: load_resource_file(&Path::new(data_dir).join("resources/city/sc/0xad0a8b94.r66")).map(|r| trash_rails(&r)).unwrap_or_default() }
+        Props { hedge_low, impostors, signal_glows, glow_buf, glow_count: glows.len() as u32, lights, prop_lamps, glow_lamps, glow_boxes, glow_cull, glow_signal, light_grid, models, inst_buf, cells, instances: total, insts, colliders, gas_stations, col_grid, debris: Vec::new(), hits: Vec::new(), scrapes: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, heads, signals, race_models, race_buf: None, race_runs: Vec::new(), barriers, barrier_buf, barrier_on: 0, emitters, trash: load_resource_file(&Path::new(data_dir).join("resources/city/sc/0xad0a8b94.r66")).map(|r| trash_rails(&r)).unwrap_or_default() }
     }
 
     /// Keep the effects of the particle props near the camera playing, and the litter on the
@@ -2048,9 +2050,15 @@ impl Props {
             .collect()
     }
 
-    /// A prop instance's origin now (its matrix's translation; a knocked prop's as it falls), `None` for no instance.
-    pub fn origin(&self, inst: u32) -> Option<Vec3> {
-        self.insts.get(inst as usize).map(|i| i.pos())
+    /// A prop instance's matrix now as rows (x, y, z axes, origin; w 0 / 1): the port's instance turns by its unit
+    /// rotation and scales x / z by its width and y by its height, which is how it read the original's matrix.
+    pub fn matrix(&self, inst: u32) -> Option<[[f32; 4]; 4]> {
+        let i = self.insts.get(inst as usize)?;
+        let (q, k) = i.rot();
+        let w = i.pos_scale[3];
+        let (x, y, z) = (q * Vec3::X * w, q * Vec3::Y * (w * k), q * Vec3::Z * w);
+        let p = i.pos();
+        Some([[x.x, x.y, x.z, 0.0], [y.x, y.y, y.z, 0.0], [z.x, z.y, z.z, 0.0], [p.x, p.y, p.z, 1.0]])
     }
 
     /// Everything solid (trees, posts, walls of props) standing in a box.
@@ -2105,6 +2113,7 @@ impl Props {
     /// Collide the active cars with the props around them and advance knocked-over props.
     pub fn collide(&mut self, gpu: &Gpu, world: &World, cars: &mut [crate::vehicles::CarInstance], dt: f32) {
         self.hits.clear();
+        self.scrapes.clear();
         self.fx.clear();
         // (the type's event set of a collider: the fragment type of its name, `FragType::type_events`)
         let loose_types = world.collider.loose.clone();
@@ -2257,6 +2266,11 @@ impl Props {
                         } else {
                             // immovable: push the car out and bounce it off
                             st.correct_position(n3 * depth);
+                            // (F-99417 from the prop's side: v = prop - car, n from the prop into the car; a contact whose
+                            // n . v / |v| is under 0.1 slides - the scrape -, the others are impact candidates)
+                            if speed > 0.0 && -vn / speed < 0.1 {
+                                self.scrapes.push(crate::sound::PropScrape { inst: c.inst, pos: c.pos, model: c.foot.audio, rel: -st.vel });
+                            }
                             if vn < -1.5 {
                                 self.hits.push(crate::sound::PropHit { pos: c.pos, inst: c.inst, kind: c.foot.snd, model: c.foot.audio, speed: -vn, knocked: false });
                             }

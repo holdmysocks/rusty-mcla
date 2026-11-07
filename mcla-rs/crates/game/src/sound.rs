@@ -59,6 +59,27 @@ pub struct PropHit {
     pub knocked: bool,
 }
 
+/// A contact sliding along a prop this frame (F-99417's scrape): the prop's instance, place and type, the velocity of the
+/// prop less the car's.
+#[derive(Clone, Copy, Debug)]
+pub struct PropScrape {
+    pub inst: u32,
+    pub pos: Vec3,
+    pub model: u32,
+    pub rel: Vec3,
+}
+
+/// A prop's audio entity (160 bytes in the original, F-44000): its instance, its one-shots, the scrape loop (+136) and
+/// the age (+104) of its last update (+108).
+struct PropEnt {
+    key: u64,
+    inst: u32,
+    sounds: Vec<crate::sndobj::Handle>,
+    scrape: Option<crate::sndobj::Handle>,
+    scrape_age: f32,
+    age: f32,
+}
+
 const MUSIC_SUSPEND: &str = "DYNAMIC_MIXER_MUSIC_SUSPEND";
 
 /// The music manager's calls (audio.rs `MusicEnv`) on the port's mixer, sounds and radio: the song is the radio's
@@ -175,8 +196,8 @@ pub struct Sound {
     occl: Option<crate::occlusion::System>,
     occ_slots: std::collections::HashMap<u32, u16>,
     /// the hit props' entities (their occluder keys) and the sounds they still play
-    /// each hit prop's entity: key, instance, its sounds
-    prop_held: Vec<(u64, u32, Vec<crate::sndobj::Handle>)>,
+    /// each touched prop's entity (the pool of F-44000, here while its sounds play)
+    prop_held: Vec<PropEnt>,
     /// the map effects' sounds (ptxaudio.rs)
     ptx: crate::ptxaudio::PtxSounds,
     /// the player car's performance stages the sounds read: intake, turbo, nitrous
@@ -558,7 +579,7 @@ impl Sound {
         self.engine.as_ref().map(|(_, e)| e.smoothed_rpm())
     }
 
-    pub fn update(&mut self, a: &mut Audio, vehicles: &Vehicles, game: &Game, police: &Police, ability: &Abilities, prop_hits: &[PropHit], prop_origin: &dyn Fn(u32) -> Option<Vec3>, cam_pos: Vec3, cam_right: Vec3, cam_fwd: Vec3, rain: f32, horn: bool, night: bool, probe: &dyn Fn(Vec3, Vec3) -> bool, probe_at: &dyn Fn(Vec3, Vec3) -> Option<u8>, collider: Option<&crate::physics::collision::WorldCollider>, dt: f32) {
+    pub fn update(&mut self, a: &mut Audio, vehicles: &Vehicles, game: &Game, police: &Police, ability: &Abilities, prop_hits: &[PropHit], prop_scrapes: &[PropScrape], prop_matrix: &dyn Fn(u32) -> Option<[[f32; 4]; 4]>, cam_pos: Vec3, cam_right: Vec3, cam_fwd: Vec3, rain: f32, horn: bool, night: bool, probe: &dyn Fn(Vec3, Vec3) -> bool, probe_at: &dyn Fn(Vec3, Vec3) -> Option<u8>, collider: Option<&crate::physics::collision::WorldCollider>, dt: f32) {
         let wet = rain > 0.0;
         a.set_listener(cam_pos, cam_right);
         if !self.lib_tried {
@@ -780,7 +801,7 @@ impl Sound {
                 // the prop entity's occluder while its loop plays (F-32775: switched on with no update)
                 let key = (1u64 << 63) | k as u64;
                 let occ = if near {
-                    self.occl.as_mut().and_then(|oc| oc.prop(key, pos.to_array(), prop_place(o), false, l4, &mut world)).map_or(0, |i| (i + 1) as u16)
+                    self.occl.as_mut().and_then(|oc| oc.prop(key, crate::occlusion::System::frame(pos.to_array()), prop_place(o), false, false, l4, &mut world)).map_or(0, |i| (i + 1) as u16)
                 } else {
                     0
                 };
@@ -905,46 +926,74 @@ impl Sound {
             let mut world = crate::occlusion::WorldProbe::of(collider, &factors);
             let l = lib.listener.0;
             let l4 = [l.x, l.y, l.z, 0.0];
-            for h in prop_hits {
-                // one entity per prop instance (F-95562 binds the instance); a prop without one by its type and place
-                let key = if h.inst != u32::MAX {
-                    1u64 << 62 | h.inst as u64
+            // one entity per prop instance (F-95562 binds the instance); a prop without one by its type and place
+            let key_of = |inst: u32, model: u32, pos: Vec3| {
+                if inst != u32::MAX {
+                    1u64 << 62 | inst as u64
                 } else {
-                    (((h.model as u64) << 31) ^ (h.pos.x.to_bits() as u64) ^ ((h.pos.z.to_bits() as u64) << 7)) & !(3u64 << 62)
-                };
-                let at = prop_origin(h.inst).unwrap_or(h.pos);
-                let obj = lib.game.get(h.model).filter(|o| o.first() == Some(&43)).or_else(|| lib.game.get_name("LA_PROP_DEFAULT")).map(|o| o.to_vec());
-                let slot = match (&mut self.occl, &obj) {
-                    (Some(oc), Some(o)) => oc.prop(key, at.to_array(), prop_place(o), true, l4, &mut world),
+                    (((model as u64) << 31) ^ (pos.x.to_bits() as u64) ^ ((pos.z.to_bits() as u64) << 7)) & !(3u64 << 62)
+                }
+            };
+            let frame_of = |inst: u32, pos: Vec3| prop_matrix(inst).unwrap_or_else(|| crate::occlusion::System::frame(pos.to_array()));
+            // a contact's entity: bound (its occluder at the type's place, the immediate update with +62 bit 0x08 as the
+            // local flag, F-99417 -> F-65914), its occluder slot plus one
+            let mut bind = |occl: &mut Option<crate::occlusion::System>, lib: &mut crate::sndobj::SoundLib, held: &mut Vec<PropEnt>, inst: u32, model: u32, pos: Vec3| -> (usize, u16) {
+                let key = key_of(inst, model, pos);
+                let obj = lib.game.get(model).filter(|o| o.first() == Some(&43)).or_else(|| lib.game.get_name("LA_PROP_DEFAULT")).map(|o| o.to_vec());
+                let slot = match (occl.as_mut(), &obj) {
+                    (Some(oc), Some(o)) => oc.prop(key, frame_of(inst, pos), prop_place(o), true, o.get(62).is_some_and(|b| b & 0x08 != 0), l4, &mut world),
                     _ => None,
                 };
-                if let (Some(oc), Some(i)) = (&self.occl, slot) {
+                if let (Some(oc), Some(i)) = (occl.as_ref(), slot) {
                     if let Some(o) = oc.out(i) {
                         lib.set_occlusion(i, o);
                     }
                 }
-                let hs = coll.prop(lib, h.model, h.pos, h.speed, h.knocked, slot.map_or(0, |i| (i + 1) as u16));
-                match self.prop_held.iter_mut().find(|e| e.0 == key) {
-                    Some(e) => e.2.extend(hs),
-                    None => self.prop_held.push((key, h.inst, hs)),
+                let e = match held.iter().position(|e| e.key == key) {
+                    Some(e) => e,
+                    None => {
+                        held.push(PropEnt { key, inst, sounds: Vec::new(), scrape: None, scrape_age: 0.0, age: 0.0 });
+                        held.len() - 1
+                    }
+                };
+                (e, slot.map_or(0, |i| (i + 1) as u16))
+            };
+            for h in prop_hits {
+                let (e, occ) = bind(&mut self.occl, lib, &mut self.prop_held, h.inst, h.model, h.pos);
+                let hs = coll.prop(lib, h.model, h.pos, h.speed, h.knocked, occ);
+                self.prop_held[e].sounds.extend(hs);
+            }
+            // the scrapes (F-99417): the type's loop on the entity's slot +136 at the prop, +108 = its age
+            for sc in prop_scrapes {
+                let (e, occ) = bind(&mut self.occl, lib, &mut self.prop_held, sc.inst, sc.model, sc.pos);
+                let at = prop_matrix(sc.inst).map_or(sc.pos, |m| Vec3::new(m[3][0], m[3][1], m[3][2]));
+                let ent = &mut self.prop_held[e];
+                if coll.prop_scrape(lib, sc.model, sc.rel, at, occ, &mut ent.scrape) {
+                    ent.scrape_age = ent.age;
                 }
             }
-            // F-20017: every frame each entity takes its instance's matrix again, after the occluders' update (above,
-            // `occlude`), so the occluder of a knocked prop follows it a frame behind: recording q2, the emitter of an
-            // update in frame F is the origin the entity took in frame F - 1 plus the type's place
-            if let Some(oc) = &mut self.occl {
-                for (key, inst, _) in &self.prop_held {
-                    if let Some(now) = prop_origin(*inst) {
-                        oc.prop_follow(*key, now.to_array());
+            // F-20017, every frame after the occluders' update (above, `occlude`): age += dt, the instance's matrix again
+            // (so the occluder of a knocked prop follows it a frame behind: recording q2, the emitter of an update in
+            // frame F is the origin the entity took in frame F - 1 plus the type's place), the scrape loop stopped once
+            // the age is 0.1 s past its last update
+            for ent in self.prop_held.iter_mut() {
+                ent.age += dt;
+                if let (Some(oc), Some(m)) = (&mut self.occl, prop_matrix(ent.inst)) {
+                    oc.prop_follow(ent.key, m);
+                }
+                if let Some(h) = ent.scrape {
+                    if ent.age >= ent.scrape_age + 0.1 {
+                        lib.stop(h);
+                        ent.scrape = None;
                     }
                 }
             }
-            self.prop_held.retain_mut(|(key, _, hs)| {
-                hs.retain(|h| lib.playing(*h));
-                let on = !hs.is_empty();
+            self.prop_held.retain_mut(|ent| {
+                ent.sounds.retain(|h| lib.playing(*h));
+                let on = !ent.sounds.is_empty() || ent.scrape.is_some_and(|h| lib.playing(h));
                 if !on {
                     if let Some(oc) = &mut self.occl {
-                        oc.release_prop(*key);
+                        oc.release_prop(ent.key);
                     }
                 }
                 on

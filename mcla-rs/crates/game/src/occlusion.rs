@@ -489,7 +489,7 @@ impl System {
 
     /// The car's frame: the port keeps only its origin (the car's place), the one row a car occluder reads (its
     /// place is not in the frame's space and not the world's: the origin plus `car_offset`, F-87712).
-    fn frame(origin: [f32; 3]) -> [[f32; 4]; 4] {
+    pub(crate) fn frame(origin: [f32; 3]) -> [[f32; 4]; 4] {
         [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [origin[0], origin[1], origin[2], 1.0]]
     }
 
@@ -605,9 +605,10 @@ impl System {
     /// A prop's entity (one of the 64 of F-44000) bound to a prop at `origin`: the bind F-95562 places its occluder at
     /// the prop type's +69 / +73 / +77 (`place`), the instance excluded. From "not updated yet" its sounds run the
     /// immediate update F-65914: `now` for a contact or pass-by one-shot (F-99417), with no update for the distance
-    /// loop (F-32775). (approx.) +62 bit 0x08 (the place in the prop's frame, 2 of the 282 types) is taken as the
-    /// world's: the port's props carry no rotation here.
-    pub fn prop(&mut self, key: u64, origin: [f32; 3], place: [f32; 3], now: bool, l: [f32; 4], world: &mut impl Probe) -> Option<usize> {
+    /// loop (F-32775). `frame`: the entity's copy of the instance's matrix; `local` (a contact's, the type's +62 bit
+    /// 0x08) puts the place through the whole matrix once, as F-65914's local flag does.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prop(&mut self, key: u64, frame: [[f32; 4]; 4], place: [f32; 3], now: bool, local: bool, l: [f32; 4], world: &mut impl Probe) -> Option<usize> {
         let i = match self.owner.iter().position(|o| *o == Some((2, key))) {
             Some(i) => i,
             None => {
@@ -619,18 +620,18 @@ impl System {
         };
         let (t, r) = (&self.tune, self.radius);
         let o = self.list[i].as_mut()?;
-        o.frame = Some(Self::frame(origin));
+        o.frame = Some(frame);
         if o.fresh {
-            o.refresh(t, now, false, l, r, world);
+            o.refresh(t, now, local, l, r, world);
         }
         Some(i)
     }
 
     /// A prop's entity follows its instance (F-20017: the instance's matrix into the entity's frame every frame).
-    pub fn prop_follow(&mut self, key: u64, origin: [f32; 3]) {
+    pub fn prop_follow(&mut self, key: u64, frame: [[f32; 4]; 4]) {
         if let Some(i) = self.owner.iter().position(|o| *o == Some((2, key))) {
             if let Some(o) = self.list[i].as_mut() {
-                o.frame = Some(Self::frame(origin));
+                o.frame = Some(frame);
             }
         }
     }
@@ -858,10 +859,10 @@ mod tests {
         s.release_person(7);
         assert!(s.list[j].is_none());
         // a prop's: the loop switches it on with no update (outputs kept), a hit latches at once; keys apart
-        let a = s.prop(7, [0.0, 0.0, 9.0], [0.0, 3.0, 0.0], false, l, &mut NoProbe).unwrap();
+        let a = s.prop(7, System::frame([0.0, 0.0, 9.0]), [0.0, 3.0, 0.0], false, false, l, &mut NoProbe).unwrap();
         assert!(!s.list[a].unwrap().fresh);
         assert_eq!((s.out(a), s.list[a].unwrap().owner.pos), (Some(init), [0.0, 3.0, 0.0, 0.0]));
-        let b = s.prop(8, [0.0, 0.0, 9.0], [0.0, 0.5, 0.0], true, l, &mut NoProbe).unwrap();
+        let b = s.prop(8, System::frame([0.0, 0.0, 9.0]), [0.0, 0.5, 0.0], true, false, l, &mut NoProbe).unwrap();
         assert_ne!(a, b);
         assert_eq!(s.out(b), Some(s.list[b].unwrap().owner.group.latch()));
         s.release_prop(7);

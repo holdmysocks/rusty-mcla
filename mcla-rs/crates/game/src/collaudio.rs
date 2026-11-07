@@ -2,11 +2,11 @@
 //! contact picks an impact tier of the car's zone (roof / side / undercarriage / wheel by the car's own material), the
 //! zone's L/R bangs play across the car, a frontal hit adds the hood damage sound, and the fastest sliding contact
 //! drives a scrape loop chosen by the other side's material. Props: each type's game.dat object (impact by speed,
-//! break sound). Rules: `docs/reference/audio/COLLISION_AUDIO_RULE.md`.
+//! break sound, the scrape loop of a contact sliding along it). Rules: `docs/reference/audio/COLLISION_AUDIO_RULE.md`.
 //!
 //! Approximate (written down there): the port's car-to-car and car-to-prop contacts are not the original's (one
 //! point per pair, the prop's own footprint test), so those sounds follow the rule on the port's contacts; the prop
-//! scrape / deflection loops and the whoosh are not played yet.
+//! deflection loop and the whoosh are not played yet.
 
 use crate::physics::car::{AudioTouch, CarState};
 use crate::physics::collision::Surface;
@@ -266,6 +266,36 @@ impl CollisionAudio {
     pub fn begin_frame(&mut self, dt: f32) {
         self.frame += 1;
         self.time += dt;
+    }
+
+    /// A prop's scrape (F-99417, 3.1): a contact sliding along the prop at `rel` (prop - car), s = |rel| x 2.237 mph from
+    /// the type's [34]: t = (min(s, [44]) - [34]) / ([44] - [34]), gain = lerp(lin([38] / 100), lin([48] / 100), t) x the
+    /// other side's material +142, volume dB(gain) + [63] / 100, pitch 1200 log2(min(lerp([40], [50], t), [50])); its loop
+    /// [54] at the prop (`pos`), started in `slot` or updated there. False when too slow (no update).
+    #[allow(clippy::too_many_arguments)]
+    pub fn prop_scrape(&mut self, lib: &mut SoundLib, model: u32, rel: Vec3, pos: Vec3, occ: u16, slot: &mut Option<Handle>) -> bool {
+        let Some(o) = lib.game.get(model).filter(|o| o.first() == Some(&43)).or_else(|| lib.game.get_name("LA_PROP_DEFAULT")).map(|o| o.to_vec()) else { return false };
+        let len = crate::sndobj::fmadds(rel.x, rel.x, crate::sndobj::fmadds(rel.y, rel.y, rel.z * rel.z)).sqrt();
+        let s = len * MPH;
+        let (lo, hi) = (be_f32(&o, 34), be_f32(&o, 44));
+        if s < lo {
+            return false;
+        }
+        let t = (if s - hi >= 0.0 { hi } else { s } - lo) / (hi - lo);
+        let (rlo, rhi) = (be_f32(&o, 40), be_f32(&o, 50));
+        let ratio = crate::sndobj::fmadds(rhi - rlo, t, rlo);
+        let (g_hi, g_lo) = (db2lin(be_s16(&o, 48) * 0.01), db2lin(be_s16(&o, 38) * 0.01));
+        // (the other side - the car - by its body's material)
+        let m = self.materials.get(&(Surface::CarSide as u8)).and_then(|h| lib.game.get(*h)).map_or(1.0, |m| be_f32(m, 142));
+        let g = crate::sndobj::fmadds(g_hi - g_lo, t, g_lo) * m;
+        let volume = lin2db(g) + be_s16(&o, 63) * 0.01;
+        let pitch = (1200.0 * (if ratio - rhi >= 0.0 { rhi } else { ratio }).log2()) as i32;
+        let req = Req { pos: Some(pos), volume, pitch, occluder: occ, ..Default::default() };
+        match *slot {
+            Some(h) if lib.playing(h) => lib.set(h, req),
+            _ => *slot = lib.play_hash(be_u32(&o, 54), req),
+        }
+        true
     }
 
     /// A prop hit (3.1 / 3.4): the type's impact sound by speed; a break sound when it is knocked loose. `occ`: the prop
