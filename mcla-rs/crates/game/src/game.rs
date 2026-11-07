@@ -5819,7 +5819,7 @@ impl Game {
                         // OPTIONS (left and right change the row)
                         title = s("pause_options", "OPTIONS");
                         let bar = |v: u8| format!("{}{}", "|".repeat(v as usize), ".".repeat(10usize.saturating_sub(v as usize)));
-                        let onoff = |b: bool| if b { s("G_On", "ON") } else { s("G_Off", "OFF") };
+                        let onoff = |b: bool| if b { s("on", "ON") } else { s("G_Off", "OFF") };
                         if self.flash_menu.is_some() {
                             // the original's OPTIONS: four pages
                             items.push((s("controller", "CONTROLLER"), String::new(), Go::Page(5)));
@@ -5843,7 +5843,7 @@ impl Game {
                     PAGE_DISPLAY => {
                         // (the port's own page, D19; its first row the original's hidden rear-view mirror, D20)
                         title = "DISPLAY".to_string();
-                        let on = |b: bool| format!("{}{}", crate::flash_ui::CHOICE, if b { s("G_On", "ON") } else { s("G_Off", "OFF") });
+                        let on = |b: bool| format!("{}{}", crate::flash_ui::CHOICE, if b { s("on", "ON") } else { s("G_Off", "OFF") });
                         items.push(("REAR-VIEW MIRROR".to_string(), on(self.opts.rear_view), Go::Page(53)));
                         // (settings.toml's display keys, applied at once and written back - `hooks::display_step`)
                         for (label, row) in [("WINDOW MODE", crate::hooks::ROW_WINDOW_MODE), ("RESOLUTION", crate::hooks::ROW_RESOLUTION), ("MONITOR", crate::hooks::ROW_MONITOR), ("VSYNC", crate::hooks::ROW_VSYNC), ("FPS CAP", crate::hooks::ROW_FPS_CAP), ("FPS COUNTER", crate::hooks::ROW_FPS_MONITOR), ("RENDER SCALE", crate::hooks::ROW_RENDER_SCALE), ("TEXTURE FILTERING", crate::hooks::ROW_TEX_FILTER), ("ANTI-ALIASING", crate::hooks::ROW_AA), ("BLOOM", crate::hooks::ROW_BLOOM), ("DEPTH OF FIELD", crate::hooks::ROW_DOF), ("MOTION BLUR", crate::hooks::ROW_MOTION_BLUR)] {
@@ -5853,7 +5853,7 @@ impl Game {
                     PAGE_PERFORMANCE => {
                         // (the port's own page, D19)
                         title = "PERFORMANCE".to_string();
-                        let on = |b: bool| format!("{}{}", crate::flash_ui::CHOICE, if b { s("G_On", "ON") } else { s("G_Off", "OFF") });
+                        let on = |b: bool| format!("{}{}", crate::flash_ui::CHOICE, if b { s("on", "ON") } else { s("G_Off", "OFF") });
                         // (settings.toml game.*, applied at once and written back - `hooks::display_step`; DETAIL LEVEL 3X folds in the old HIGH-DETAIL TRAFFIC)
                         for (label, row) in [("SHADOW RESOLUTION", crate::hooks::ROW_SHADOW_RES), ("DRAW DISTANCE", crate::hooks::ROW_DRAW_DISTANCE), ("DETAIL LEVEL", crate::hooks::ROW_DETAIL_LEVEL)] {
                             items.push((label.to_string(), format!("{}{}", crate::flash_ui::CHOICE, crate::hooks::display_value(row)), Go::Page(row)));
@@ -5899,7 +5899,7 @@ impl Game {
                             }
                             6 => {
                                 title = s("Game_Options", "GAME OPTIONS");
-                                let on = |b: bool| format!("{}{}", CHOICE, if b { s("G_On", "ON") } else { s("G_Off", "OFF") });
+                                let on = |b: bool| format!("{}{}", CHOICE, if b { s("on", "ON") } else { s("G_Off", "OFF") });
                                 items.push((s("option_subtitles", "SUBTITLES"), on(self.opts.subtitles), Go::Page(42)));
                                 // (AUTO SAVE: the file manager's disable flag, the port's `no_save` - F-87944)
                                 items.push((s("option_autosave", "AUTO SAVE"), on(!self.no_save), Go::Page(PAGE_AUTOSAVE)));
@@ -5930,7 +5930,7 @@ impl Game {
                             _ => {
                                 // (DEFAULT CAMERA and CINEMATIC CAMERA are not options of the port: greyed)
                                 title = s("camera options", "CAMERA OPTIONS");
-                                let on = |b: bool| format!("{}{}", CHOICE, if b { s("G_On", "ON") } else { s("G_Off", "OFF") });
+                                let on = |b: bool| format!("{}{}", CHOICE, if b { s("on", "ON") } else { s("G_Off", "OFF") });
                                 // (both are the save's: `mc4`, options.camera and the "cinematics" word)
                                 let cam = self.mc4_camera_name();
                                 items.push((s("Default Camera", "DEFAULT CAMERA"), format!("{}{}", CHOICE, s(cam, &cam.to_uppercase())), Go::Page(48)));
@@ -6021,7 +6021,7 @@ impl Game {
                                     items.push((s("pause_view_replay", "VIEW REPLAY"), String::new(), if self.replay_rec.len() >= 1.0 && !chased { Go::Page(253) } else { Go::Off }));
                                 }
                                 if road_race && !arcade_race {
-                                    items.push((s("pause_save_game", "SAVE GAME"), String::new(), Go::Page(252)));
+                                    items.push((s("Common_SaveGame", "SAVE GAME"), String::new(), Go::Page(252)));
                                 }
                             } else {
                                 // The original's free-roam tab is CONTINUE and GO TO GARAGE (reference
@@ -6037,7 +6037,7 @@ impl Game {
                                     items.push((s("pause_go_to_garage", "GO TO GARAGE"), String::new(), Go::Act(MenuAction::GoToGarage)));
                                 }
                                 if self.flash_menu.is_some() {
-                                    items.push((s("pause_save_game", "SAVE GAME"), String::new(), Go::Page(252)));
+                                    items.push((s("Common_SaveGame", "SAVE GAME"), String::new(), Go::Page(252)));
                                 }
                                 if self.flash_menu.is_none() {
                                     items.push((s("pause_take_photo", "TAKE PHOTO"), String::new(), Go::Act(MenuAction::PhotoMode)));
@@ -6055,7 +6055,7 @@ impl Game {
                             if self.flash_menu.is_some() {
                                 items.push((s("pause_goalattack", "GOAL ATTACK"), String::new(), arcade(MenuAction::OpenArcade(true))));
                                 items.push((s("pause_play_online", "XBOX LIVE"), String::new(), Go::Off));
-                                items.push((s("pause_online_tournament", "ONLINE TOURNAMENT"), String::new(), Go::Off));
+                                items.push((s("ol_Tournament", "ONLINE TOURNAMENT"), String::new(), Go::Off));
                                 items.push((s("pause_play_lan", "SYSTEM LINK"), String::new(), Go::Off));
                             }
                             items.push((s("pause_race_editor", "RACE EDITOR"), String::new(), go(MenuAction::OpenEditor)));
@@ -8191,7 +8191,7 @@ impl Game {
                         if !bike_in_garage {
                             // (the disc's title is "Hydraulics/Air Bags"; the air bags have no travel in its tuning)
                             let label = self.career.strings.get("G_Hydraulics").map(|s| s.split('/').next().unwrap_or(s).trim().to_uppercase()).unwrap_or_else(|| "HYDRAULICS".into());
-                            let (on, off) = (self.career.strings.get("G_On").map(|s| s.to_uppercase()).unwrap_or_else(|| "ON".into()), self.career.strings.get("G_Off").map(|s| s.to_uppercase()).unwrap_or_else(|| "OFF".into()));
+                            let (on, off) = (self.career.strings.get("on").map(|s| s.to_uppercase()).unwrap_or_else(|| "ON".into()), self.career.strings.get("G_Off").map(|s| s.to_uppercase()).unwrap_or_else(|| "OFF".into()));
                             rows_v.push((hyd_row, label, if self.hydraulics { on } else { off }, 2));
                         }
                     }
@@ -8517,7 +8517,7 @@ impl Game {
                                 let mut r = r.clone();
                                 match r.label.as_str() {
                                     "PAINT OPTIONS" => {
-                                        r.label = st("G_PaintOptions", "PAINT OPTIONS");
+                                        r.label = st("Paint Options", "PAINT OPTIONS");
                                         r.value = choice_list(self.paint_parts as usize, &[st("P_WholeCar", "ALL PARTS"), st("P_PartsSeparately", "PARTS")]);
                                     }
                                     "PAINT AREA" => {
@@ -8552,7 +8552,7 @@ impl Game {
                         let hyd_page = title == "HYDRAULICS/AIR BAGS" && self.garage_part.is_none() && !listing_page;
                         if hyd_page {
                             use crate::flash_ui::choice_list;
-                            let onoff = [st("G_Off", "OFF"), st("G_On", "ON")];
+                            let onoff = [st("G_Off", "OFF"), st("on", "ON")];
                             let patterns: Vec<String> = [("G_patternTogether", "ALL"), ("G_patternFrontBack", "FRONT TO BACK"), ("G_patternBackFront", "BACK TO FRONT"), ("G_patternLeftRight", "LEFT TO RIGHT"), ("G_patternRightLeft", "RIGHT TO LEFT")].iter().map(|(k, d)| st(k, d)).collect();
                             let row = |label: String, value: String| crate::flash_ui::MenuRow { label, value, enabled: true, part: None };
                             rows = vec![
@@ -8593,7 +8593,7 @@ impl Game {
                             use crate::flash_ui::{choice_list, swatch_value};
                             let row = |label: String, value: String| crate::flash_ui::MenuRow { label, value, enabled: true, part: None };
                             let labels = [("G_IntNeonColor", "NEON COLOR"), ("G_GaugesColor", "GAUGE COLOR A"), ("G_GaugesBColor", "GAUGE COLOR B"), ("G_IntAColor", "INTERIOR COLOR A"), ("G_IntBColor", "INTERIOR COLOR B"), ("G_IntCColor", "INTERIOR COLOR C")];
-                            let mut out = vec![row(st("G_IntNeon", "INTERIOR NEON"), choice_list(self.int_neon as usize, &[st("G_Off", "OFF"), st("G_On", "ON")]))];
+                            let mut out = vec![row(st("G_IntNeon", "INTERIOR NEON"), choice_list(self.int_neon as usize, &[st("G_Off", "OFF"), st("on", "ON")]))];
                             for (k, (key, d)) in labels.iter().enumerate() {
                                 let idx = self.int_colors[k] % strip.len();
                                 let shown = self.int_open.filter(|o| o.0 == k).map_or(idx, |o| o.1 % strip.len());
@@ -8646,7 +8646,7 @@ impl Game {
                             };
                             let levels: Vec<String> = (1..=10).map(|k| st(&format!("Tint_{k}"), &if k == 1 { "STOCK".to_string() } else if k == 10 { "FULL".to_string() } else { format!("LEVEL {}", k - 1) })).collect();
                             rows = vec![
-                                row(st("G_ExtNeon", "NEON"), choice_list(if self.neon_on { 0 } else { 1 }, &[st("G_On", "ON"), st("G_Off", "OFF")])),
+                                row(st("G_ExtNeon", "NEON"), choice_list(if self.neon_on { 0 } else { 1 }, &[st("on", "ON"), st("G_Off", "OFF")])),
                                 row(st("G_ExtNeonColor", "NEON COLOR"), swatch(11, self.neon_color, self.car_x.neon_rgb)),
                                 row(st("G_TintColor", "WINDOW TINT"), swatch(12, self.tint_color, self.car_x.tint_rgb)),
                                 row(st("G_TintTransparency", "TINT OPACITY"), choice_list(self.tint_level.min(9) as usize, &levels)),
@@ -8759,7 +8759,7 @@ impl Game {
                                 let mut v = vec![(accept.clone(), ICON_A), (st("prompt_back", "BACK"), ICON_B)];
                                 v.push(if showroom { (st("G_TestDrive", "TEST DRIVE"), ICON_X) } else { (st("G_SellRide", "SELL RIDE"), ICON_X) });
                                 if showroom {
-                                    v.push((st("G_PurchaseTradeIn", "PURCHASE WITH TRADE-IN"), crate::flash_ui::ICON_Y));
+                                    v.push((st("G_PurchaseVehicleWithTrade", "PURCHASE WITH TRADE-IN"), crate::flash_ui::ICON_Y));
                                 }
                                 v
                             } else {
@@ -8965,7 +8965,7 @@ impl Game {
                                 prompts = vec![(st("prompt_back", "BACK"), ICON_B), (st("G_Pay_And_Checkout", "PAY AND CHECK OUT"), ICON_A), (st("G_Remove_Item", "REMOVE ITEM"), ICON_X), (st("G_Remove_All_Items", "REMOVE ALL ITEMS"), crate::flash_ui::ICON_Y)];
                             }
                             if self.pick_slot.is_some() && self.paint_pick.is_some() {
-                                prompts = vec![(st("prompt_back", "BACK"), ICON_B), (st("G_AcceptColor", "ACCEPT COLOR"), ICON_A), (st("G_ChangeColor", "CHANGE COLOR"), 11)];
+                                prompts = vec![(st("prompt_back", "BACK"), ICON_B), (st("VE_accept_color", "ACCEPT COLOR"), ICON_A), (st("VE_change_color", "CHANGE COLOR"), 11)];
                             }
                             if self.garage_menu == 12 && self.garage_part.is_none() {
                                 // (DIMENSIONS has BACK alone: reference `g_wh_2`)
@@ -8980,7 +8980,7 @@ impl Game {
                             if self.garage_menu == 18 && self.garage_part.is_none() && self.paint_pick.is_none() {
                                 let back = (st("prompt_back", "BACK"), ICON_B);
                                 prompts = if self.int_open.is_some() {
-                                    vec![back, (st("VE_accept_color", "ACCEPT COLOR"), ICON_A), (st("VE_edit_color", "EDIT COLOR SLOT"), ICON_X), (st("G_ResetColorSlot", "RESET COLOR SLOT"), crate::flash_ui::ICON_Y)]
+                                    vec![back, (st("VE_accept_color", "ACCEPT COLOR"), ICON_A), (st("VE_edit_color", "EDIT COLOR SLOT"), ICON_X), (st("VE_reset_to_default", "RESET COLOR SLOT"), crate::flash_ui::ICON_Y)]
                                 } else if (9933..=9935).contains(&self.garage_row) {
                                     vec![back, (st("VE_change_color", "CHANGE COLOR"), ICON_A)]
                                 } else {
@@ -8991,7 +8991,7 @@ impl Game {
                                 // (Colors.sc.xml: the colour rows' prompts 115 closed, 114 open, as ColorsInt.sc.xml's)
                                 let back = (st("prompt_back", "BACK"), ICON_B);
                                 prompts = if self.int_open.is_some() {
-                                    vec![back, (st("VE_accept_color", "ACCEPT COLOR"), ICON_A), (st("VE_edit_color", "EDIT COLOR SLOT"), ICON_X), (st("G_ResetColorSlot", "RESET COLOR SLOT"), crate::flash_ui::ICON_Y)]
+                                    vec![back, (st("VE_accept_color", "ACCEPT COLOR"), ICON_A), (st("VE_edit_color", "EDIT COLOR SLOT"), ICON_X), (st("VE_reset_to_default", "RESET COLOR SLOT"), crate::flash_ui::ICON_Y)]
                                 } else if self.garage_row == neon_row + 1 || self.garage_row == tint_row + 1 {
                                     vec![back, (st("VE_change_color", "CHANGE COLOR"), ICON_A)]
                                 } else {
@@ -9002,7 +9002,7 @@ impl Game {
                                 // (references `g_col1`, `g_col2`)
                                 let back = (st("prompt_back", "BACK"), ICON_B);
                                 prompts = if self.int_open.is_some() {
-                                    vec![back, (st("VE_accept_color", "ACCEPT COLOR"), ICON_A), (st("VE_edit_color", "EDIT COLOR SLOT"), ICON_X), (st("G_ResetColorSlot", "RESET COLOR SLOT"), crate::flash_ui::ICON_Y)]
+                                    vec![back, (st("VE_accept_color", "ACCEPT COLOR"), ICON_A), (st("VE_edit_color", "EDIT COLOR SLOT"), ICON_X), (st("VE_reset_to_default", "RESET COLOR SLOT"), crate::flash_ui::ICON_Y)]
                                 } else if (9941..=9948).contains(&self.garage_row) {
                                     vec![back, (st("VE_change_color", "CHANGE COLOR"), ICON_A)]
                                 } else {
@@ -9012,11 +9012,11 @@ impl Game {
                             if self.garage_menu == 3 && self.garage_part.is_none() {
                                 let back = (st("prompt_back", "BACK"), ICON_B);
                                 prompts = if self.paint_pick.is_some() {
-                                    vec![back, (st("G_AcceptColor", "ACCEPT COLOR"), ICON_A), (st("G_ChangeColor", "CHANGE COLOR"), 11)]
+                                    vec![back, (st("VE_accept_color", "ACCEPT COLOR"), ICON_A), (st("VE_change_color", "CHANGE COLOR"), 11)]
                                 } else if self.paint_open.is_some() {
-                                    vec![back, (st("G_AcceptColor", "ACCEPT COLOR"), ICON_A), (st("G_EditColorSlot", "EDIT COLOR SLOT"), ICON_X), (st("G_ResetColorSlot", "RESET COLOR SLOT"), crate::flash_ui::ICON_Y)]
+                                    vec![back, (st("VE_accept_color", "ACCEPT COLOR"), ICON_A), (st("VE_edit_color", "EDIT COLOR SLOT"), ICON_X), (st("VE_reset_to_default", "RESET COLOR SLOT"), crate::flash_ui::ICON_Y)]
                                 } else if colour_row {
-                                    vec![back, (st("G_ChangeColor", "CHANGE COLOR"), ICON_A)]
+                                    vec![back, (st("VE_change_color", "CHANGE COLOR"), ICON_A)]
                                 } else {
                                     vec![back]
                                 };
@@ -12781,7 +12781,7 @@ impl Game {
         // (the active missions can be made the GPS target; the port has no target to set yet)
         let mut prompts = prompts;
         if tab == 0 && !views.is_empty() {
-            prompts.insert(0, (st("Navmap_Prompt_SetTarget", "SET AS TARGET"), crate::flash_ui::ICON_A));
+            prompts.insert(0, (st("Nav_SetAsTarget", "SET AS TARGET"), crate::flash_ui::ICON_A));
             if enter && !hidden && !guided {
                 // (the mission log's A, F-31828: the row's open objective target (F-96100 ->
                 // F-49590) is the GPS map's target already -> GPS_UNSET_TARGET_GENERIC and it is
@@ -13000,7 +13000,7 @@ impl Game {
             if let (true, Some(id)) = (hidden, panel) {
                 use mcla_flash::value::Value;
                 let unset = self.map_cursor == 1 && self.rival_mark.is_some() && on_man_target;
-                fm.movie.player.set_path("menu.elements.0.text4", Value::str(&if unset { st("Nav_UnSetAsTarget", "UNSET TARGET") } else { st("Navmap_Prompt_SetTarget", "SET AS TARGET") }));
+                fm.movie.player.set_path("menu.elements.0.text4", Value::str(&if unset { st("Nav_UnSetAsTarget", "UNSET TARGET") } else { st("Nav_SetAsTarget", "SET AS TARGET") }));
                 fm.movie.player.set_global("cursorpanel_visibility", Value::Int(cursor_at.as_ref().map_or(false, |c| !c.1.is_empty()) as i32));
                 if let Some((q, _, _)) = cursor_at.as_ref() {
                     if let Some(i) = fm.movie.player.inst_mut(id) {
@@ -13434,8 +13434,8 @@ impl Game {
                 use crate::vinyl::Blend;
                 // (approx.) the figures as whole numbers, in the port's own measures
                 let (template, dims, colors, what): (i32, [i32; 2], Vec<u32>, Option<(String, i32)>) = match ed.tab {
-                    0 => (104, [(l.pos[0] * 100.0).round() as i32, (l.pos[1] * 100.0).round() as i32], Vec::new(), Some((st("VE_changePosition", "CHANGE POSITION"), 22))),
-                    1 => (104, [(l.scale[0] * 10.0).round() as i32, (l.scale[1] * 10.0).round() as i32], Vec::new(), Some((st("VE_changeScale", "CHANGE SCALE"), 11))),
+                    0 => (104, [(l.pos[0] * 100.0).round() as i32, (l.pos[1] * 100.0).round() as i32], Vec::new(), Some((st("VE_change_position", "CHANGE POSITION"), 22))),
+                    1 => (104, [(l.scale[0] * 10.0).round() as i32, (l.scale[1] * 10.0).round() as i32], Vec::new(), Some((st("VE_change_scale", "CHANGE SCALE"), 11))),
                     2 => (105, [l.rot.round() as i32, 0], Vec::new(), Some((st("Rotate", "ROTATE"), 11))),
                     3 => (105, [(l.skew * 10.0).round() as i32, 0], Vec::new(), Some((st("Skew", "SKEW"), 11))),
                     4 => (116, [match l.blend { Blend::Normal => 0, Blend::AlphaCutout => 1, _ => 2 }, 0], Vec::new(), Some((st("VE_changeMask", "CHANGE MASK"), 11))),
@@ -14316,7 +14316,7 @@ impl Game {
         let st = |k: &str, d: &str| self.career.strings.get(k).map(|v| v.to_uppercase()).filter(|v| !v.contains('<')).unwrap_or_else(|| d.to_string());
         let Some(pb) = self.replay.as_mut() else { return };
         if let Some(cur) = pb.menu {
-            let rows = [(st("replay_pause_continue_replay", "CONTINUE REPLAY"), 0u8), (st("replay_pause_exit_replay", "EXIT REPLAY"), 1), (st("replay_pause_restart_replay", "RESTART REPLAY"), 2), (st("pause_save_game", "SAVE GAME"), 3)];
+            let rows = [(st("replay_pause_continue_replay", "CONTINUE REPLAY"), 0u8), (st("replay_pause_exit_replay", "EXIT REPLAY"), 1), (st("replay_pause_restart_replay", "RESTART REPLAY"), 2), (st("Common_SaveGame", "SAVE GAME"), 3)];
             let mut cur = cur;
             if up && cur > 0 {
                 cur -= 1;
@@ -14516,7 +14516,7 @@ impl Game {
                 title: st("pause_tab_mainmenu", "PAUSE"),
                 rows: ro.iter().map(|(l, _)| MenuRow { label: l.clone(), value: String::new(), enabled: true, part: None }).collect(),
                 select: cur,
-                prompts: vec![(st("prompt_accept", "ACCEPT"), ICON_A), (st("prompt_back", "BACK"), ICON_B), (st("prompt_gps", "GPS"), crate::flash_ui::ICON_BACK_BUTTON)],
+                prompts: vec![(st("prompt_accept", "ACCEPT"), ICON_A), (st("prompt_back", "BACK"), ICON_B), (st("Navmap_Prompt_GPSMap", "GPS"), crate::flash_ui::ICON_BACK_BUTTON)],
                 list_max: 6,
                 ..MenuPage::default()
             }
@@ -14547,7 +14547,7 @@ impl Game {
             let mut rows = Vec::new();
             let mut props = Vec::new();
             if rep > 0 {
-                rows.push(MenuRow { label: format!("REP EARNED:  {}", rep), value: format!("{} {}", st("G_Rank", "RANK:"), st(RANKS[rank], "RANK").to_uppercase()), enabled: true, part: None });
+                rows.push(MenuRow { label: format!("REP EARNED:  {}", rep), value: format!("{} {}", st("Navmap_Rank", "RANK:"), st(RANKS[rank], "RANK").to_uppercase()), enabled: true, part: None });
                 props.push(11);
             }
             if money > 0 {
