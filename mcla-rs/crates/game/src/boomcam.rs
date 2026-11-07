@@ -621,6 +621,13 @@ impl ViewBlend {
     pub fn active(&self) -> bool {
         self.from.is_some()
     }
+    /// F-37740's head: the director on its blend camera finished at once (F-70013): the target is
+    /// current with no blend (a queued view is cut to on the next frame, `Switch::frame`).
+    pub fn finish_now(&mut self) {
+        if self.active() {
+            self.finish();
+        }
+    }
     /// The finish (F-70013): nothing queued, the director cuts to the target; a queued camera
     /// other than the target is cut to (type 4 makes the start F-41709 a cut).
     fn finish(&mut self) {
@@ -2516,6 +2523,9 @@ pub struct EventDirector {
     /// the drive view's camera queued (+200) by the off's push while the blend ran toward the
     /// event camera: the finish cuts to it
     queued_player: bool,
+    /// the wipeout camera queued (+200) behind the event's blend out (F-37740's push while the
+    /// director is on its blend camera, F-43758): the next finish cuts to it
+    wipe_queued: bool,
     quit: bool,
     /// the event on (cam +784)
     ev: usize,
@@ -2588,10 +2598,43 @@ impl EventDirector {
         self.cam.look_yaw = 0.0;
         self.phase = 0;
         self.quit = false;
+        self.wipe_queued = false;
     }
     pub fn reset(&mut self) {
         self.phase = 0;
         self.quit = false;
+        self.wipe_queued = false;
+    }
+    /// The head of the wipeout start (F-37740): a director on its blend camera is finished at once
+    /// (F-70013): the queued camera, else the target, becomes current with no blend. `Some(true)`:
+    /// it cut to the wipeout camera queued the frame before (the event view is gone); `Some(false)`:
+    /// it cut to the event camera (phase 2) or the drive view (phase 0); `None`: not on the blend.
+    pub fn finish_now(&mut self) -> Option<bool> {
+        if self.phase != 1 && self.phase != 3 {
+            return None;
+        }
+        if std::mem::take(&mut self.wipe_queued) {
+            self.phase = 0;
+            self.queued_player = false;
+            return Some(true);
+        }
+        let to_event = !self.src_event && !self.queued_player;
+        self.phase = if to_event { 2 } else { 0 };
+        self.queued_player = false;
+        Some(false)
+    }
+    /// The wipeout camera's push (F-98424, type 3, `t`) while the director is on the event's blend
+    /// camera: the push stores its time as the director's (+20) and F-43758 queues the camera
+    /// (nothing is queued: the off before it began a fresh blend).
+    pub fn queue_wipe(&mut self, t: f32) {
+        self.dir_time = t;
+        if t > 0.0 {
+            self.wipe_queued = true;
+        }
+    }
+    /// The wipeout camera is queued behind the blend.
+    pub fn wipe_queued(&self) -> bool {
+        self.wipe_queued
     }
     /// The Idle view is on (the HUD is put away while it is).
     pub fn idle(&self) -> bool {
@@ -2897,9 +2940,12 @@ impl EventDirector {
         let (a, b, reach) = (dir_cam_of(from, car.pos), dir_cam_of(to, car.pos), (to.look - to.pos).length().max(1.0));
         if !self.blend.step(&a, &b, 3, self.dir_time, dt) {
             // the finish (F-70013): the target, or a queued drive view other than the target
-            let to_event = !self.src_event && !self.queued_player;
+            // (approx.: a wipeout camera still queued here - the crash bits gone before the next
+            // frame's start - is taken as cut to and away again: the drive view)
+            let to_event = !self.src_event && !self.queued_player && !self.wipe_queued;
             self.phase = if to_event { 2 } else { 0 };
             self.queued_player = false;
+            self.wipe_queued = false;
             return if to_event { ev } else { chase };
         }
         let m = &self.blend;
@@ -3498,6 +3544,41 @@ camTrackCS {
             cases += 1;
         }
         assert_eq!((cases, steps), (5, 181));
+    }
+
+    /// A bust while the Idle view is shown, as the running original did it (recording c0, steps 226 / 227 -
+    /// docs/reference/cameras/recorded_blends_evidence.md): the wipeout start's off begins the event's
+    /// blend out over the record's 1.5 s, the wipeout camera's push (0.5 s) is queued and stores its time,
+    /// so the step keeps the weight at 0 (the event camera's own view); the next frame's start finishes the
+    /// blend at once and cuts to the queued wipeout camera.
+    #[test]
+    fn bust_while_the_event_is_shown_matches_the_recording() {
+        let mut t = TrackTune::from_text("type: a
+camTrackCS {
+}
+", "Idle");
+        (t.blend, t.ret) = (1.5, 0.0);
+        let o = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
+        let a = dir_cam_of(&o, Vec3::ZERO);
+        let h = |x: u32| f32::from_bits(x);
+        let mut d = EventDirector::default();
+        d.ev = EV_IDLE;
+        d.phase = 2;
+        d.dir_time = 1.5;
+        // frame 226: the head finds the event camera current (no finish), the off, the queued push
+        assert_eq!(d.finish_now(), None);
+        d.off(&t, -1.0);
+        assert!(d.leaving());
+        d.queue_wipe(0.5);
+        assert!(d.wipe_queued());
+        // the step of frame 227 at its entry: w 0, left 1.5 (the recorded 0x3FC00000); T 0.5 (0x3F000000)
+        assert_eq!((d.blend.weight.to_bits(), d.blend.left.to_bits(), d.dir_time.to_bits()), (0, 0x3FC0_0000, 0x3F00_0000));
+        assert!(d.blend.step(&a, &a, 3, d.dir_time, h(0x3D0E_8FE9)));
+        // the finish's record: w 0, left 0x3FBB8B81
+        assert_eq!((d.blend.weight.to_bits(), d.blend.left.to_bits()), (0, 0x3FBB_8B81));
+        // frame 227's head: the finish cuts to the queued wipeout camera; the event view is gone
+        assert_eq!(d.finish_now(), Some(true));
+        assert!(!d.running() && !d.leaving() && !d.wipe_queued());
     }
 
     /// AirRide (F-24075): it starts while the air ride is on (after Hydraulics, before the two-wheel
