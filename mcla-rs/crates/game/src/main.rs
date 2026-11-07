@@ -10753,6 +10753,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if self.opt.fixed_dt > 0.0 {
                 raw.time = None;
                 raw.predicted_dt = self.opt.fixed_dt;
+            } else {
+                ui_frame_clock(&mut raw, render_seconds as f32);
             }
             let fps = self.fps;
             let ms = self.frame_ms;
@@ -15050,6 +15052,53 @@ fn parse_options(args: &[String]) -> Options {
         }
     }
     o
+}
+
+/// The UI's clock is the frame's real time. Every menu and HUD movie steps its own frames from the UI's
+/// `stable_dt` (flash `Player::update`: one frame per 1 / fps of it, 60 a second for the pause menu), the way the
+/// original runs its movies at their own rate whatever the frame rate. Unless the last frame asked for a repaint,
+/// egui sets `stable_dt` to `predicted_dt`, which is 1/60 by default. At a 30 fps cap that made the menus run at
+/// half speed (GitHub #43), and at 144 fps 2.4 times too fast. So the frame's time is given as the prediction.
+fn ui_frame_clock(raw: &mut egui::RawInput, frame_seconds: f32) {
+    raw.predicted_dt = frame_seconds.clamp(1e-4, 0.1);
+}
+
+#[cfg(test)]
+mod ui_clock_tests {
+    /// One second of frames at the cap: the UI's `stable_dt` is the frame's time, and a 60 frames a second movie
+    /// clock (flash `Player::update`'s accumulator) runs 60 frames whatever the cap.
+    fn movie_frames_in_a_second(fps: u32, clock: bool) -> u32 {
+        let ctx = egui::Context::default();
+        let frame = 1.0 / fps as f32;
+        let (mut accum, mut frames) = (0.0f32, 0u32);
+        for i in 0..fps {
+            let mut raw = egui::RawInput { time: Some(i as f64 * frame as f64), ..Default::default() };
+            if clock {
+                super::ui_frame_clock(&mut raw, frame);
+            }
+            let mut dt = 0.0;
+            let _ = ctx.run(raw, |ctx| dt = ctx.input(|i| i.stable_dt).min(0.1));
+            if clock {
+                assert!((dt - frame).abs() < 1e-6, "{fps} fps: stable_dt {dt}");
+            }
+            accum += dt;
+            while accum >= 1.0 / 60.0 - 1e-6 {
+                accum -= 1.0 / 60.0;
+                frames += 1;
+            }
+        }
+        frames
+    }
+
+    #[test]
+    fn menu_movies_run_at_their_own_rate_at_any_fps_cap() {
+        // (without it, a 30 fps cap ran the pause menu's 60 frames a second at 30: GitHub #43)
+        assert!((29..=31).contains(&movie_frames_in_a_second(30, false)));
+        for fps in [30, 60, 144] {
+            let n = movie_frames_in_a_second(fps, true);
+            assert!((59..=60).contains(&n), "{fps} fps: {n} movie frames in a second");
+        }
+    }
 }
 
 #[cfg(test)]
