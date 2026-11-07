@@ -3435,6 +3435,71 @@ camTrackCS {
         assert_eq!(d.phase, 0);
     }
 
+    /// The director's blends recorded in the running original (work/recomp-trace cam_trace, the
+    /// R8 100 % save idling in the city; tools/cam_rec_cases.py): the Idle camera on (F-94591 ->
+    /// F-98424 type 3 over its BlendTime 1.5), off after it is shown, off 1.2 s and 0.2 s into the
+    /// blend in (F-29802 turns it round, the push's 0.7 s becomes the director's time), and the bust's
+    /// wipeout camera (F-37740, 0.5 s). The port's begin / off / CrashCam::start with the recorded frame
+    /// times give the recorded weight and time left at every step, bit for bit, and end where it
+    /// ended (on the event camera, or back on the drive view).
+    #[test]
+    fn event_blends_match_the_recording() {
+        let t = TrackTune::from_text("type: a
+camTrackCS {
+}
+", "Idle");
+        let (o1, o2) = (BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 }, BoomOut { pos: Vec3::new(3.0, 1.0, 4.0), look: Vec3::ZERO, up: Vec3::Y, fov: 50.0 });
+        let (a, b) = (dir_cam_of(&o1, Vec3::ZERO), dir_cam_of(&o2, Vec3::ZERO));
+        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
+        let h = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let text = include_str!("testdata/event_blend_rec.txt");
+        let (mut cases, mut steps) = (0, 0);
+        let mut lines = text.lines().filter(|l| !l.starts_with('#')).peekable();
+        while let Some(head) = lines.next() {
+            let wipe = head.ends_with("wipe");
+            let mut d = EventDirector::default();
+            let mut c = CrashCam::default();
+            let mut more = true;
+            while let Some(l) = lines.next_if(|l| !l.starts_with("case")) {
+                let w: Vec<&str> = l.split(' ').collect();
+                match w[0] {
+                    "push" if wipe => {
+                        let how = CrashStart { offset: Vec3::new(0.0, 1.0, 7.0), blend: 0.5, exploding: false };
+                        assert_eq!(how.blend, h(w[1]), "{head}");
+                        c.start(Vec3::ZERO, &car, how, None);
+                    }
+                    "push" => d.begin_in(h(w[1])),
+                    "off" => {
+                        assert!(more, "{head}: an off after the finish");
+                        d.off(&t, h(w[1]));
+                    }
+                    "s" => {
+                        assert!(more, "{head}: a step after the finish");
+                        let (bl, time) = if wipe { (&mut c.blend, c.dir_time) } else { (&mut d.blend, d.dir_time) };
+                        assert_eq!((bl.weight.to_bits(), bl.left.to_bits()), (h(w[2]).to_bits(), h(w[3]).to_bits()), "{head} {l}");
+                        more = bl.step(&a, &b, 3, time, h(w[1]));
+                        steps += 1;
+                    }
+                    "fin" => {
+                        assert!(!more, "{head}: no finish");
+                        if !wipe {
+                            // (show's finish)
+                            let to_event = !d.src_event && !d.queued_player;
+                            d.phase = if to_event { 2 } else { 0 };
+                            d.queued_player = false;
+                            more = true;
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            // events end back on the drive view (every case has its off), the wipeout camera on itself
+            assert!(wipe || d.phase == 0, "{head}");
+            cases += 1;
+        }
+        assert_eq!((cases, steps), (5, 181));
+    }
+
     /// AirRide (F-24075): it starts while the air ride is on (after Hydraulics, before the two-wheel
     /// views), ends over the record's 0.7 s when it goes off; a held camera / music button ends it
     /// and keeps it off while the air ride stays on; switched off, it may come again.
