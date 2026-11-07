@@ -1427,6 +1427,11 @@ pub struct Police {
     /// Pursuit / Arrow Trap started with no tactic before it (one that ended - a Dispatch, a Pull-over - gives none);
     /// the main loop takes it
     pub pursuit_tut: bool,
+    /// The manager's +84 (PoliceManager_GetLastPullOverPolice, F-66567): the first cop of the last pull-over started; never
+    /// cleared
+    pub last_pullover: Option<u32>,
+    /// Starts to count in the stat gCPA ("cops activated"; StartTactic's stats manager vt+48: add 1, sub 0), taken by the game
+    pub stat_cpa: u32,
     /// the player's car's vehicle-table class is the police's (F-96166: the camera target's car, F-10499 = 5): the law
     /// score step F-52240 does not run (no offences, no score, no score ladder) and an armed cop zone is not set off
     /// (F-71212's state 1). Set by the main loop each frame.
@@ -1553,6 +1558,8 @@ impl Police {
             goons: false,
             phone_cut: false,
             pursuit_tut: false,
+            last_pullover: None,
+            stat_cpa: 0,
             player_police: false,
             no_charges: false,
             units: Vec::new(),
@@ -1638,6 +1645,25 @@ impl Police {
                 u.under = true;
             }
         }
+    }
+
+    /// The car the police scripts put in a police scene's car slot `slot` (Cars_AssignIdToSlot): CopArrest.sco 0x357 /
+    /// 0xa1f slot k = unit 400 + k - 1 (FindFromUID(400) / (401)); CopPullover.sco 0x4b2 slot 1 = the racer of
+    /// GetLastPullOverPolice, else unit 400. None for any other scene (not a police script's); Some(None) when that car is
+    /// not on the road (an underground unit is brought from its slot place by the scene's mover).
+    pub fn scene_cop(&self, vehicles: &Vehicles, scene: &str, slot: u8) -> Option<Option<usize>> {
+        if slot == 0 {
+            return None;
+        }
+        let unit = |k: u32| Self::unit_car(vehicles, 400 + k);
+        if scene.eq_ignore_ascii_case("cut_cop_walk_02") && slot == 1 {
+            let last = self.last_pullover.and_then(|u| vehicles.cars.iter().position(|c| c.uid == u && c.cop));
+            return Some(last.or_else(|| unit(0)));
+        }
+        if scene.to_ascii_lowercase().starts_with("cut_cop_arrest") {
+            return Some(unit(slot as u32 - 1));
+        }
+        None
     }
 
     /// A unit's car (index) when it is up.
@@ -2467,6 +2493,15 @@ impl Police {
         // (the tutorial F-24639: kind >= 2 on the player's car - the target's vt+40 - when the kind is 2 or no old tactic ended;
         // every caller passes the show flag r6 = 1)
         self.pursuit_tut |= self.target.is_none() && kind.ty() >= 2 && (kind.ty() == 2 || old.is_none());
+        // (the stat gCPA + 1 for a kind >= 1 with no old tactic or an old Dispatch, any target; the event POLICE_PURSUIT
+        // for a kind >= 2 (F-41015) has no listener - no file of the disc and no other code of the image names it)
+        if kind.ty() >= 1 && old.map_or(true, |(t, _)| t == 0) {
+            self.stat_cpa += 1;
+        }
+        // (the manager's +84 on a pull-over start only: the tactic's first cop)
+        if kind == TacKind::PullOver {
+            self.last_pullover = cops.first().copied();
+        }
         self.kind = kind;
         self.cops = cops;
         self.may_escalate = may_escalate;
@@ -4835,7 +4870,7 @@ mod tests {
             assert_eq!(p.chase_props, [b[3] >> 16 & 1 != 0, b[3] >> 8 & 1 != 0, b[3] & 1 != 0]);
         }
         assert_eq!(f32::from_bits(blk("pursuit")[5]), p.flee_hold);
-        let mut tuts = 0;
+        let (mut tuts, mut cpas) = (0, 0);
         for l in reference.lines().filter(|l| !l.starts_with("BLOCK")) {
             let parts: Vec<&str> = l.split('|').map(str::trim).collect();
             let v: Vec<i32> = parts[0].split_whitespace().map(|x| x.parse().unwrap()).collect();
@@ -4854,6 +4889,20 @@ mod tests {
                 p.start_tactic(kinds[v[0] as usize], vec![], true, 25.0);
                 assert_eq!(p.pursuit_tut, log.contains(&"5"), "{l}");
                 tuts += p.pursuit_tut as u32;
+            }
+            // (the stat gCPA (code 2) and the event POLICE_PURSUIT (code 3) on every start: the port counts the stat; the
+            // event is posted for exactly the kinds >= 2)
+            if log.iter().any(|c| c.starts_with('6')) {
+                let kinds = [TacKind::Dispatch, TacKind::PullOver, TacKind::Pursuit, TacKind::PursuitDbl, TacKind::ArrowTrap];
+                let mut p = Police::new();
+                if v[1] >= 0 {
+                    p.start_tactic(kinds[v[1] as usize], vec![], v[2] != 0, 25.0);
+                }
+                p.stat_cpa = 0;
+                p.start_tactic(kinds[v[0] as usize], vec![], true, 25.0);
+                assert_eq!(p.stat_cpa == 1, log.contains(&"2"), "{l}");
+                assert_eq!(v[0] >= 2, log.contains(&"3"), "{l}");
+                cpas += p.stat_cpa;
             }
             let (kind, old, b28, score) = (v[0], v[1], v[2] != 0, v[3]);
             let ret: i32 = parts[1].strip_prefix("ret ").unwrap().parse().unwrap();
@@ -4881,7 +4930,7 @@ mod tests {
             carries += matches!(port, StartRule::Start { carry: true, .. }) as u32;
             refusals += (port == StartRule::Refuse) as u32;
         }
-        assert!(n == 1760 && carries > 0 && refusals > 0 && tuts > 0, "{n} {carries} {refusals} {tuts}");
+        assert!(n == 1760 && carries > 0 && refusals > 0 && tuts > 0 && cpas == 256, "{n} {carries} {refusals} {tuts} {cpas}");
     }
 
     /// The Double Pursuit's may-escalate against the original's F-73000 (with F-38605 and the state tests F-48174 / F-12623 on

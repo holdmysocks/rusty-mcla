@@ -5013,6 +5013,10 @@ impl App {
             }
             self.game.police_fine = if self.police.goons { 0 } else { self.police.fine as i64 };
             // (step 23: the slow motion, the tutorials, the statistics and achievements)
+            // (StartTactic's stat: gCPA + 1 a start, F-33550)
+            for _ in 0..std::mem::take(&mut self.police.stat_cpa) {
+                self.game.mc4_stat_add("gCPA", 0, 1.0);
+            }
             self.game.mc4_s23_tick(dt, mc4::S23In { heat: if self.police.goons { 0 } else { self.police.heat as u8 }, pursuit_tut: std::mem::take(&mut self.police.pursuit_tut) && !self.police.goons, near: self.roam.near.is_some(), flashed: self.roam.accepted, kind: self.roam.near_type, station: self.at_station.is_some(), drive: mc4b::drive_of(self.vehicles.player()), sst: self.vehicles.player().filter(|c| vehicles::Vehicles::has_sst(c)).and_then(|c| c.state.veh.as_ref()).map(|v| v.sst.level) });
             // (step 23b: AudioManager_SetActiveTimeSlow - the dynamic mixer's slow-down state while
             // a tutorial holds the game)
@@ -13861,7 +13865,18 @@ impl App {
                 continue;
             }
             let Some((pos, rot)) = self.cine.mover(&label) else { continue };
-            if label.starts_with("cop") {
+            // (a police script's scene: its slot's car is the one the script assigned - the unit or the last pull-over cop,
+            // police::scene_cop - posed at the mover; when that car is not up a cruiser is brought for it)
+            let scene = self.cine.playing.as_ref().map(|sc| sc.name.clone()).unwrap_or_default();
+            let slot = cinedriver::SLOT_MOVERS.iter().find(|r| r.0.eq_ignore_ascii_case(&scene) && r.2 == label).map(|r| r.1);
+            let scripted = slot.and_then(|k| self.police.scene_cop(&self.vehicles, &scene, k));
+            if let Some(Some(i)) = scripted {
+                self.vehicles.cars[i].driver = format!("cine:{label}");
+                self.vehicles.cars[i].ai = None;
+                self.vehicles.pose_car(i, pos, rot);
+                continue;
+            }
+            if label.starts_with("cop") && scripted.is_none() {
                 // a cruiser that is already here plays the part
                 let near = self.vehicles.cars.iter().enumerate().filter(|(_, c)| c.cop && c.driver.is_empty()).min_by(|a, b| a.1.state.pos.distance_squared(pos).partial_cmp(&b.1.state.pos.distance_squared(pos)).unwrap()).map(|(i, _)| i);
                 if let Some(i) = near {

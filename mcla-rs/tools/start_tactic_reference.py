@@ -5,7 +5,7 @@
 
 The manager's tactic slots (+44, one per type) are objects with fake vtables: start (vt+8: marks the slot active +20 and
 returns 1), end (vt+12: clears +20), type (vt+56). The tactic on the target (F-59036) is the slot of its type, active. Stubbed
-and recorded: the phone's interrupt F-51256, the radio line through the speech object's vt+48, the career flag F-41015, the
+and recorded: the phone's interrupt F-51256, the stat gCPA + 1 through the stats manager's vt+48 (logged as "radio", code 2), the event POLICE_PURSUIT F-41015 (code 3), the
 HUD text F-76838 (form 109 via F-53542), the pursuit tutorial F-24639. The gates at the top (network / camera / cutscene
 objects, the menu byte) are zero, so they pass. The kind's floor table (tune at the image's 8282CAC8 region) gets 4001 .. 4004.
 
