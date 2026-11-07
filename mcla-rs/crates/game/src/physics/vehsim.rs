@@ -56,52 +56,104 @@ pub struct FitWheel {
     pub steered: bool,
 }
 
-/// The composite bound's box as the wheels' fit leaves it, F-55382's tail -> F-65996 -> F-32566: the
-/// union of the hull's box (`bbox`, its corners and 0.041) and every wheel part's own box swept from its
-/// "last" matrix to its current one, the part put at its place of rest less max(SuspensionExtent, 0.5)
-/// and its last matrix at (SuspensionLimit + rest) + 0.1. A wheel bound's box is its own support along
-/// each axis and the margin, F-63967. It stands as it is between fits. The fit keeps each wheel part's
-/// rows and x / z as the sim last left them and rewrites only y; here they are the place of rest (recorded
-/// 2026-11-06, ZX-14: one fit, by F-17293 42-62 ticks after the bike is made, its front part 0.57 mm
-/// further back - the fork a little compressed - and rows 0.999999: min z -1.42878 .. -1.42908 over four
-/// runs, this -1.42839; max and the rear bit for bit).
+/// The composite bound as the wheels' fit (F-55382) leaves it: its box, centroid (+0x30) and two radii
+/// (+0x08 about the centroid, +0x0C about the car's origin).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FitBound {
+    pub lo: Vec3,
+    pub hi: Vec3,
+    pub centroid: Vec3,
+    pub radius: f32,
+    pub radius_far: f32,
+}
+
+/// The composite bound's box as the wheels' fit leaves it (`fit_bound`), each wheel part with its rows as the
+/// fit finds them: a car's wheel stands square in the car; a motorcycle's front wheel part has the fork's rake
+/// in its rows (R1; MCLA_DBG_R1: rows taken as square). The fit keeps each wheel part's rows and x / z as the sim
+/// last left them and rewrites only y; here they are the place of rest (recorded 2026-11-06, ZX-14: one fit, by
+/// F-17293 42-62 ticks after the bike is made, its front part 0.57 mm further back - the fork a little
+/// compressed - and rows 0.999999: min z -1.42878 .. -1.42908 over four runs, this -1.42839; max and the rear
+/// bit for bit). `bbox`: the hull bound's own box (min, max).
 pub fn fit_box(bbox: (Vec3, Vec3), wheels: &[FitWheel], steer_axis: Option<Vec3>) -> (Vec3, Vec3) {
+    let parts: Vec<(FitWheel, [Vec3; 3])> = wheels
+        .iter()
+        .map(|w| {
+            let rows = match steer_axis {
+                Some(axis) if w.front && w.steered && !dbg_flag("MCLA_DBG_R1") => super::exact::steer_frame(axis),
+                _ => super::exact::IDENTITY,
+            };
+            (*w, rows)
+        })
+        .collect();
+    let f = fit_bound(bbox, &parts);
+    (f.lo, f.hi)
+}
+
+/// F-32566's sum of three products, as the vector unit forms it: (0 + a.z b.z) + (a.y b.y + a.x b.x).
+fn msum3(a: Vec3, b: Vec3) -> f32 {
+    (0.0 + a.z * b.z) + (a.y * b.y + a.x * b.x)
+}
+
+/// The same with a fourth lane: (aw bw + a.z b.z) + (a.y b.y + a.x b.x).
+fn msum4(a: Vec3, aw: f32, b: Vec3, bw: f32) -> f32 {
+    (aw * bw + a.z * b.z) + (a.y * b.y + a.x * b.x)
+}
+
+/// F-32566 for one part: its box (`lo`, `hi` in its own frame) swept from its last matrix `l` to its current one
+/// `m` (rows, place), as a box in the composite's frame: the last pose seen from the current one (m's transpose
+/// as its inverse), that pose's box in the current part's axes, its union with the box at the current pose, then
+/// that through the current matrix.
+fn swept_part_box(lo: Vec3, hi: Vec3, m: &[Vec3; 4], l: &[Vec3; 4]) -> (Vec3, Vec3) {
+    let dp = l[3] - m[3];
+    let r: [Vec3; 3] = std::array::from_fn(|j| Vec3::new(msum3(m[0], l[j]), msum3(m[1], l[j]), msum3(m[2], l[j])));
+    let t = Vec3::new(msum3(m[0], dp), msum3(m[1], dp), msum3(m[2], dp));
+    let c = (lo + hi) * 0.5;
+    let h = hi - c;
+    let col = |k: usize| Vec3::new(r[0][k], r[1][k], r[2][k]);
+    let cc = Vec3::new(msum4(col(0), t.x, c, 1.0), msum4(col(1), t.y, c, 1.0), msum4(col(2), t.z, c, 1.0));
+    let ee = Vec3::new(msum3(col(0).abs(), h), msum3(col(1).abs(), h), msum3(col(2).abs(), h));
+    let hi1 = (c + h).max(cc + ee);
+    let lo1 = (c - h).min(cc - ee);
+    let cs = (hi1 + lo1) * 0.5;
+    let hs = hi1 - cs;
+    let mc = |k: usize| Vec3::new(m[0][k], m[1][k], m[2][k]);
+    let big_c = Vec3::new(msum4(mc(0), m[3].x, cs, 1.0), msum4(mc(1), m[3].y, cs, 1.0), msum4(mc(2), m[3].z, cs, 1.0));
+    let big_e = Vec3::new(msum3(mc(0).abs(), hs), msum3(mc(1).abs(), hs), msum3(mc(2).abs(), hs));
+    (big_c - big_e, big_e + big_c)
+}
+
+/// The composite bound as the wheels' fit leaves it, F-55382's tail -> F-65996 -> F-32566: the union of the hull's
+/// box (`hull`: (min, max) as its bound holds them; its matrices the identity) and every wheel part's own box swept
+/// from its last matrix to its current one, the part put at its place of rest less max(SuspensionExtent, 0.5) and
+/// its last matrix at (SuspensionLimit + rest) + 0.1, both with the part's `rows`. A wheel bound's box is its own
+/// support along each axis and the margin, F-63967. Then the centroid (max + min) x 0.5 and the radii. It stands
+/// as it is between fits.
+pub fn fit_bound(hull: (Vec3, Vec3), wheels: &[(FitWheel, [Vec3; 3])]) -> FitBound {
+    use super::exact::fma;
     use super::gjk::Support;
-    let (mut lo, mut hi) = bbox;
-    for w in wheels {
-        let (front, radius, width, extent, limit, rest) = (w.front, w.radius, w.width, w.extent, w.limit, w.rest);
-        let core = super::gjk::WheelCore::of(&super::gjk::wheel_shape(front, radius, width), Vec3::ZERO, [Vec3::X, Vec3::Y, Vec3::Z], radius, width);
+    let ident = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO];
+    let mut boxes = vec![swept_part_box(hull.0, hull.1, &ident, &ident)];
+    for (w, rows) in wheels {
+        let core = super::gjk::WheelCore::of(&super::gjk::wheel_shape(w.front, w.radius, w.width), Vec3::ZERO, [Vec3::X, Vec3::Y, Vec3::Z], w.radius, w.width);
         let m = f32::from_bits(0x3d23_d70a);
         let e = Vec3::new(core.support(Vec3::X).x + m, core.support(Vec3::Y).y + m, core.support(Vec3::Z).z + m);
-        let down = rest.y - if extent - 0.5 >= 0.0 { extent } else { 0.5 };
-        let up = (limit + rest.y) + 0.1;
-        // (R1: the part's own rows as the fit finds them. A car's wheel stands square in the car; a
-        // motorcycle's front wheel part has the fork's rake in its rows, and F-32566's two absolute-value
-        // passes - the last pose in the part's axes, then that box in the composite's - make its swept box
-        // larger than the true sweep. MCLA_DBG_R1: rows taken as square.)
-        let rows = match steer_axis {
-            Some(axis) if front && w.steered && !dbg_flag("MCLA_DBG_R1") => super::exact::steer_frame(axis),
-            _ => super::exact::IDENTITY,
-        };
-        if rows == super::exact::IDENTITY {
-            lo = lo.min(Vec3::new(rest.x - e.x, down - e.y, rest.z - e.z));
-            hi = hi.max(Vec3::new(rest.x + e.x, up + e.y, rest.z + e.z));
-        } else {
-            let (mp, lp) = (Vec3::new(rest.x, down, rest.z), Vec3::new(rest.x, up, rest.z));
-            let dp = lp - mp;
-            let r: [Vec3; 3] = std::array::from_fn(|j| Vec3::new(rows[0].dot(rows[j]), rows[1].dot(rows[j]), rows[2].dot(rows[j])));
-            let tr = Vec3::new(rows[0].dot(dp), rows[1].dot(dp), rows[2].dot(dp));
-            let e1 = r[0].abs() * e.x + r[1].abs() * e.y + r[2].abs() * e.z;
-            let (h1, l1) = (e.max(tr + e1), (-e).min(tr - e1));
-            let cs = (h1 + l1) * 0.5;
-            let hs = h1 - cs;
-            let c = rows[0] * cs.x + rows[1] * cs.y + rows[2] * cs.z + mp;
-            let ee = rows[0].abs() * hs.x + rows[1].abs() * hs.y + rows[2].abs() * hs.z;
-            lo = lo.min(c - ee);
-            hi = hi.max(ee + c);
-        }
+        let down = w.rest.y - if w.extent - 0.5 >= 0.0 { w.extent } else { 0.5 };
+        let up = (w.limit + w.rest.y) + 0.1;
+        let cur = [rows[0], rows[1], rows[2], Vec3::new(w.rest.x, down, w.rest.z)];
+        let last = [rows[0], rows[1], rows[2], Vec3::new(w.rest.x, up, w.rest.z)];
+        boxes.push(swept_part_box(-e, e, &cur, &last));
     }
-    (lo, hi)
+    let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(-f32::MAX));
+    for &(l, h) in boxes.iter().rev() {
+        lo = lo.min(l);
+        hi = hi.max(h);
+    }
+    let centroid = (hi + lo) * 0.5;
+    let d = hi - centroid;
+    let radius = fma(d.z, d.z, fma(d.y, d.y, d.x * d.x)).sqrt();
+    let a = fma(hi.z, hi.z, fma(hi.x, hi.x, hi.y * hi.y));
+    let b = fma(lo.z, lo.z, fma(lo.x, lo.x, lo.y * lo.y));
+    FitBound { lo, hi, centroid, radius, radius_far: if a - b >= 0.0 { a } else { b }.sqrt() }
 }
 
 /// The radius of a wheel's collision shape `aside` of its middle. The original's wheel is a
@@ -6001,7 +6053,9 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                     vs.loose.pre_collide(lw, dt);
                 }
             }
-            let bbox = (hull.min - Vec3::splat(0.041), hull.max + Vec3::splat(0.041));
+            // (the hull bound's own box, +0x20 / +0x10, as the file holds it: its corners' box less / plus 0.001,
+            // then the margin 0.04 - one step of 0.041 is a last bit off on 59 of the 65 cars)
+            let bbox = hull.bbox.map_or((hull.min - Vec3::splat(0.001) - Vec3::splat(0.04), hull.max + Vec3::splat(0.001) + Vec3::splat(0.04)), |(hi, lo)| (lo, hi));
             if dbg_flag("MCLA_DBG_HIT") {
                 static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
                 eprintln!("HULLTICK {}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
@@ -8276,5 +8330,65 @@ mod air_ride_tests {
             frames += 1;
         }
         assert_eq!(frames, 80_000);
+    }
+}
+
+#[cfg(test)]
+mod wheel_fit_tests {
+    use super::*;
+
+    /// F-55382 run whole offline on every vp_* car's composite bound (tools/wheel_fit_reference.py ->
+    /// testdata/wheel_fit_ref.txt): the fit twice, as a car is made (the wheel bounds at TireRadius 0.3 / TireWidth 0.1,
+    /// then a set-up's tyres), with each wheel's SuspensionExtent / SuspensionLimit, place of rest and rows. The port's
+    /// fit_bound from the hull bound's box and the wheels gives the composite's box (+0x10 / +0x20), centroid (+0x30),
+    /// radii (+0x08 / +0x0C) and its byte +5 word for word; the first wheel part (+392) is part 1 and every wheel part's
+    /// last matrix is its rows at (rest x, (SuspensionLimit + rest y) + 0.1, rest z), its current one back at its place.
+    #[test]
+    fn wheel_fit_matches_the_original() {
+        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let f = |s: &str| f32::from_bits(h(s));
+        let mut n = 0;
+        for (k, line) in include_str!("../testdata/wheel_fit_ref.txt").lines().enumerate() {
+            let at = format!("line {}", k + 1);
+            let (inp, out) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = inp.split(' ').collect();
+            assert_eq!(w.len(), 2 + 4 * 23, "{at}");
+            let nw = h(w[1]) as usize;
+            let g: Vec<Vec<&str>> = out.split(" | ").map(|x| x.split(' ').collect()).collect();
+            assert_eq!(g.len(), nw + 2, "{at}");
+            assert_eq!(g[0].len(), 17, "{at}");
+            assert_eq!(h(g[0][0]), 1, "{at}: +392");
+            let v3 = |s: &[&str]| Vec3::new(f(s[0]), f(s[1]), f(s[2]));
+            let hull = &g[1];
+            assert_eq!(hull.len(), 40, "{at}");
+            let hull_box = (v3(&hull[32..35]), v3(&hull[36..39]));
+            let mut parts = Vec::new();
+            for i in 0..nw {
+                let x = &w[2 + 23 * i..2 + 23 * (i + 1)];
+                let front = if nw == 4 { i < 2 } else { i == 0 };
+                let fw = FitWheel { front, radius: f(x[0]), width: f(x[1]), extent: f(x[2]), limit: f(x[3]), rest: v3(&x[4..7]), steered: false };
+                let rows = [v3(&x[7..10]), v3(&x[11..14]), v3(&x[15..18])];
+                let p = &g[2 + i];
+                assert_eq!(p.len(), 54, "{at} wheel {i}");
+                // (the current matrix back as it was, the last one at the top of the travel)
+                for j in 0..16 {
+                    assert_eq!(h(p[j]), h(x[7 + j]), "{at} wheel {i} current word {j}");
+                }
+                let up = (fw.limit + fw.rest.y) + 0.1;
+                assert_eq!([h(p[28]), h(p[29]), h(p[30])], [fw.rest.x.to_bits(), up.to_bits(), fw.rest.z.to_bits()], "{at} wheel {i} last place");
+                parts.push((fw, rows));
+            }
+            let b = fit_bound(hull_box, &parts);
+            let o = &g[0][3..];
+            let bits = |v: Vec3| [v.x, v.y, v.z].map(f32::to_bits);
+            assert_eq!(b.radius.to_bits(), h(o[0]), "{at}: radius");
+            assert_eq!(b.radius_far.to_bits(), h(o[1]), "{at}: far radius");
+            assert_eq!(bits(b.hi), [h(o[2]), h(o[3]), h(o[4])], "{at}: max");
+            assert_eq!(bits(b.lo), [h(o[6]), h(o[7]), h(o[8])], "{at}: min");
+            assert_eq!(bits(b.centroid), [h(o[10]), h(o[11]), h(o[12])], "{at}: centroid");
+            assert_eq!(h(g[0][2]), (b.centroid != Vec3::ZERO) as u32, "{at}: +5");
+            n += 1;
+        }
+        assert_eq!(n, 520);
     }
 }

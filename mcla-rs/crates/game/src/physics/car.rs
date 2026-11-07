@@ -74,7 +74,7 @@ impl CarParams {
     /// (work/physics2/bikebox): (-0.4270, -0.5947, -1.4291) .. (0.4270, 1.1482, 1.0534).
     pub fn composite_box(&self) -> (Vec3, Vec3) {
         let Some(h) = self.hull.as_ref() else { return (-self.body_half, self.body_half) };
-        let bbox = h.bbox.map_or((h.min - Vec3::splat(0.041), h.max + Vec3::splat(0.041)), |(hi, lo)| (lo, hi));
+        let bbox = h.bbox.map_or((h.min - Vec3::splat(0.001) - Vec3::splat(0.04), h.max + Vec3::splat(0.001) + Vec3::splat(0.04)), |(hi, lo)| (lo, hi));
         let Some(vt) = self.veh.as_ref() else { return bbox };
         let w = &self.wheel_pos;
         let mut fit = Vec::new();
