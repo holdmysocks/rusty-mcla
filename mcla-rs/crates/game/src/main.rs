@@ -707,7 +707,6 @@ struct App {
     /// 0 chase, 1 hood, 2 cockpit
     cam_mode: u8,
     /// a view CAM_UP queued behind the event camera's blend out: cut to when it ends (F-70013)
-    view_after_event: Option<u8>,
     /// the driving cameras of each car (tune/camera) and the camera in use
     booms: std::collections::HashMap<String, Option<Arc<boomcam::BoomSet>>>,
     boom: boomcam::BoomCam,
@@ -1470,7 +1469,6 @@ impl App {
             flash: false,
             enter_garage: false,
             cam_mode: std::env::var("MCLA_CAM_MODE").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
-            view_after_event: None,
             booms: Default::default(),
             boom: Default::default(),
             boom_frames: 0,
@@ -2334,7 +2332,7 @@ impl App {
     /// hold the buttons). The new view is the save's DEFAULT CAMERA as well (F-93502).
     fn camera_button(&mut self, up: bool) {
         // (and not while the ability camera has the view, F-38892)
-        if self.look_back || self.crash_bits != 0 || self.ability_cam.active() {
+        if self.look_back || self.crash_bits != 0 || self.ability_cam.active(&self.cam_switch.blend) {
             return;
         }
         // (F-38782 on the event camera: 1 while it is the director's camera or the blend's target,
@@ -2342,30 +2340,28 @@ impl App {
         // blends (F-65810). CAM_UP: nothing while it blends out, or while it runs the Hydraulics,
         // AirRide or Idle view - the chooser's own tests end those)
         let new = boomcam::next_view(self.cam_mode, up);
+        let dir = &mut self.cam_switch.blend;
         if !up {
-            if self.event_dir.running() || self.event_dir.leaving() || self.cam_switch.blend.active() {
+            if self.event_dir.running() || self.event_dir.leaving(dir) || dir.active() {
                 return;
             }
-        } else if self.event_dir.leaving() {
+        } else if self.event_dir.leaving(dir) {
             return;
         } else if self.event_dir.running() {
             if matches!(self.event_dir.event(), Some(11..=13)) {
                 return;
             }
             // CAM_UP ends any other event over 0.2 s (F-94591 pushes the view's camera; while the
-            // event still blends in, F-29802 turns that blend round first) and the view changes
-            // as well: a cut-type change (Bumper / POV) cuts over the blend at once (F-41662 ->
-            // F-53309); a blend-type one is queued behind the blend out and cut to at its end
-            // (F-43758, F-70013) - but while the event blended in, the queued camera is already
-            // the blend's target and the new view is dropped: the old view stays on.
-            let blending_in = !self.event_dir.shown();
-            self.event_dir.leave();
+            // event still blends in, F-29802 turns that blend round first), then the view changes
+            // on the same director (Switch::frame): a cut-type change (Bumper / POV) cuts over the
+            // blend at once (F-41662 -> F-53309); a blend-type one is queued behind the blend out
+            // and cut to at its end (F-43758, F-70013) - but while the event blended in, the queued
+            // camera is already the blend's target and the new view is dropped.
+            if let Some(name) = self.vehicles.player().map(|c| c.model.name.clone()) {
+                self.event_dir.leave(dir, &self.opt.data_dir, &name);
+            }
             if boomcam::is_cut(self.cam_mode, new) {
                 self.event_dir.cut_out();
-            } else {
-                let old = self.cam_switch.shown(self.cam_mode);
-                self.cam_switch.hold(new, self.look_back, old);
-                self.view_after_event = (!blending_in).then_some(new);
             }
         }
         self.cam_mode = new;
@@ -2694,7 +2690,7 @@ impl App {
             // (the idle camera is ended by the pad - F-24075, its Idle view - and the press of
             // CAM_UP / CAM_DOWN that ends it does not change the view as well: F-67519 runs
             // after it and passes the press over while that camera goes)
-            let woke = self.event_dir.idle() && crate::mc4::pad_wakes_idle(&st, &live);
+            let woke = self.event_dir.idle(&self.cam_switch.blend) && crate::mc4::pad_wakes_idle(&st, &live);
             if woke {
                 self.idle_time = 0.0;
             }
@@ -8981,23 +8977,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // camera over the director's blend: the event view is gone at once (recorded,
                         // docs/reference/cameras/recorded_blends_evidence.md)
                         if self.look_back && !was_back && replay_drive.is_none() {
-                            let refused = self.crash_cam.active() || matches!(self.event_dir.event(), Some(e) if e == 11 || e == 12 || e >= 14);
+                            let refused = self.crash_cam.active(&self.cam_switch.blend) || matches!(self.event_dir.event(), Some(e) if e == 11 || e == 12 || e >= 14);
                             if refused {
                                 self.look_back = false;
-                            } else if boomcam::VIEW_OF_PORT[(mode as usize).min(5)] >= 2 && (self.event_dir.running() || self.event_dir.leaving()) {
+                            } else if boomcam::VIEW_OF_PORT[(mode as usize).min(5)] >= 2 && (self.event_dir.running() || self.event_dir.leaving(&self.cam_switch.blend)) {
                                 self.event_dir.cut_out();
-                                self.view_after_event = None;
                             }
                         }
                         // (a change of view blends or cuts, a look back cuts - mcPlayerCamera; the
                         // CINEMATIC CAMERA option turns the look back of a moving car to one side)
                         let cinematic = self.game.mc4.as_ref().map_or(true, |m| m.options.idle_camera);
-                        // (the event camera's blend out ended with CAM_UP's view queued: the director cut to it)
-                        if self.view_after_event.is_some() && !self.event_dir.running() && !self.event_dir.leaving() {
-                            if self.view_after_event.take() == Some(mode) {
-                                self.cam_switch.cut_to(mode, self.look_back, &mut self.boom);
-                            }
-                        }
                         self.cam_switch.frame(&set, mode, self.look_back, cinematic, render_state.speed() > 0.0, &mut self.boom, dt);
                         // (the camera that runs: a change pushed while blending is queued or turns the blend
                         // round - the director's queue F-43758 / finish F-70013)
@@ -9016,7 +9005,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.warp_look.release(scale_now);
                             lookback_scene(&mut self.look_scene, self.audio.as_mut(), false);
                         }
-                        if self.look_back && chase && replay_drive.is_none() && self.crash_bits == 0 && !self.crash_cam.active() {
+                        if self.look_back && chase && replay_drive.is_none() && self.crash_bits == 0 && !self.crash_cam.active(&self.cam_switch.blend) {
                             let air = render_state.airborne_time;
                             if air > 0.25 {
                                 if cinematic && self.cam_switch.pan != (0.0, 0.0) {
@@ -9078,6 +9067,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 for _ in 0..frames.max(1) {
                                     self.boom.step(tune, &at, &g, 1.0 / 30.0, 30.0);
                                 }
+                                // (a view blend's source runs as well: F-18583 updates both cameras)
+                                if let Some((stune, scam)) = self.cam_switch.blend.source_view() {
+                                    let at = boomcam::BoomTarget { pan: (0.0, 0.0), ..at };
+                                    for _ in 0..frames.max(1) {
+                                        scam.step(stune, &at, &g, 1.0 / 30.0, 30.0);
+                                    }
+                                }
                             }
                             if self.boom.stepped() { self.boom.draw(tune, &target) } else { self.boom.update(tune, &target, dt) }
                         } else {
@@ -9086,20 +9082,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                             self.boom.update(tune, &target, dt)
                         };
-                        // (F-37740's head, before the wipeout camera is taken: a director on its view
-                        // blend is finished at once - F-70013 - so the drive view is current, no blend)
-                        if self.crash_bits != 0 && !self.crash_cam.active() && self.event_dir.event() != Some(boomcam::EV_DAMAGEOUT) {
-                            self.cam_switch.blend.finish_now();
-                        }
-                        let out = self.cam_switch.blend.apply(&boomcam::BoomTarget { pan: (0.0, 0.0), ..target }, out, dt);
+                        let drive_out = out;
                         // the burnout camera: with the CINEMATIC CAMERA option on and a chase view in
                         // use, a burnout spun on the handbrake brings in the event camera's Burnout
                         // view (F-24075; boomcam::EventDirector)
                         let allowed = cinematic
                             && boomcam::VIEW_OF_PORT[(mode as usize).min(5)] >= 2
                             && !self.look_back
-                            && !self.cam_switch.blend.active()
-                            && !self.ability_cam.active()
+                            && !self.cam_switch.blend.views_blending()
+                            && !self.ability_cam.active(&self.cam_switch.blend)
                             && matches!(self.game.mode, Mode::FreeRoam | Mode::Race);
                         let inv = render_state.rot.inverse();
                         let front_z = render_state.wheels.iter().map(|w| (inv * (w.world_pos - render_state.pos)).z).fold(f32::INFINITY, f32::min);
@@ -9180,21 +9171,25 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.pad_cam_ud = false;
                         // the wipeout camera (F-38892 / F-37740): taken while the crash bits
                         // are set (every frame until it is in use; not while Damageout is set). Its head
-                        // finishes a director on its blend camera (F-70013: the queued camera or the
-                        // target current, no blend); then the event is ended (F-94591(0, -1, -1)) and
+                        // finishes the director if it is on its blend camera (F-70013: the queued camera or
+                        // the target current, no blend); then the event is ended (F-94591(0, -1, -1)) and
                         // the camera pushed (type 3): when that off began the event's blend out, the push
                         // queues it (F-43758) and stores its time as the director's, and the next frame's
-                        // head cuts to it (recorded, docs/reference/cameras/recorded_blends_evidence.md)
+                        // head cuts to it (recorded, docs/reference/cameras/recorded_blends_evidence.md).
+                        // A blend from another camera (the ability's) starts from that camera.
                         let model_offset = car.model.simtunes.as_ref().map_or(Vec3::ZERO, |s| Vec3::new(s.base.s.model_offset_x, s.base.s.model_offset_y, s.base.s.model_offset_z));
                         let view_now = boomcam::VIEW_OF_PORT[(mode as usize).min(5)] as u8;
-                        if self.crash_bits != 0 && !self.crash_cam.active() && self.event_dir.event() != Some(boomcam::EV_DAMAGEOUT) {
-                            let queued = self.event_dir.finish_now() == Some(true);
+                        if self.crash_bits != 0 && !self.crash_cam.active(&self.cam_switch.blend) && self.event_dir.event() != Some(boomcam::EV_DAMAGEOUT) {
+                            let dir = &mut self.cam_switch.blend;
+                            dir.finish_now();
+                            // (the director cut to the wipeout camera it had queued)
+                            let queued = dir.is_current(boomcam::CamId::Wipeout);
                             if !queued {
-                                self.event_dir.end(&data_dir, &car.model.name);
+                                self.event_dir.end(dir, &data_dir, &car.model.name);
                             }
                             let mut how = boomcam::CrashStart::choose(view_now, self.crash_exploding, self.crash_bits & 0x20 != 0, render_state.up().y, render_state.rot * Vec3::X, render_state.vel);
-                            if self.event_dir.leaving() {
-                                self.event_dir.queue_wipe(how.blend);
+                            if dir.active() {
+                                dir.push(boomcam::CamId::Wipeout, how.blend, 1.0);
                             } else {
                                 if queued {
                                     how.blend = 0.0;
@@ -9203,6 +9198,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 // rider's matrix copy, racer +704 (F-17180); else at the body's matrix)
                                 let rider = (car.model.bike && !self.crash_exploding && !car.state.in_water()).then(|| self.rider_off.matrix(seat_matrix(car, self.vehicles.render_alpha)));
                                 self.crash_cam.start(model_offset, &track_car, how, rider);
+                                self.cam_switch.blend.push(boomcam::CamId::Wipeout, how.blend, 1.0);
                                 // (F-37740's tail: the look-back slow motion released)
                                 let now = self.wipe_scale.min(self.ability.time_scale());
                                 self.warp_look.release(now);
@@ -9218,65 +9214,70 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                         }
                         // the bits gone while it is the current camera: a cut to the drive view
-                        if self.crash_bits == 0 && self.crash_cam.active() {
+                        if self.crash_bits == 0 && (self.crash_cam.active(&self.cam_switch.blend) || self.cam_switch.blend.is_current(boomcam::CamId::Wipeout)) {
                             self.crash_cam.stop();
+                            self.cam_switch.blend.stop();
                             self.boom.reset();
                             let now = self.wipe_scale.min(self.ability.time_scale());
                             self.warp_look.release(now);
                             lookback_scene(&mut self.look_scene, self.audio.as_mut(), false);
                         }
                         // (F-32386 refreshes the copy at racer +704 every frame while the wipeout timer runs)
-                        if self.crash_cam.follows_rider() && self.crash_timer > 0.0 {
+                        if self.crash_cam.follows_rider(&self.cam_switch.blend) && self.crash_timer > 0.0 {
                             self.crash_cam.set_rider(self.rider_off.matrix(seat_matrix(car, self.vehicles.render_alpha)));
                         }
-                        let out = if self.crash_cam.active() {
-                            self.crash_cam.frame(&track_car, out, dt, sim_dt, &cam_level, gpu.config.width as f32 / gpu.config.height.max(1) as f32)
-                        } else {
-                            out
-                        };
+                        let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
+                        let mut others: Vec<(boomcam::CamId, boomcam::BoomOut)> = Vec::new();
+                        if let Some(o) = self.crash_cam.frame(&self.cam_switch.blend, &track_car, dt, sim_dt, &cam_level, aspect) {
+                            others.push((boomcam::CamId::Wipeout, o));
+                        }
                         let ein = boomcam::EventIn {
-                            crash: self.crash_cam.active(),
+                            crash: self.crash_cam.active(&self.cam_switch.blend),
                             damage_out: self.crash_bits & 4 != 0 && self.crash_timer <= 0.0 && !car.model.bike,
                             destroyed: self.crash_bits & 4 != 0,
                             ..ein
                         };
-                        let out = self.event_dir.frame(
+                        if let Some(o) = self.event_dir.frame(
+                            &mut self.cam_switch.blend,
                             &data_dir,
                             &car.model.name,
                             &ein,
                             &track_car,
-                            out,
                             dt,
                             &cam_level,
                             // (the line probe: one-sided, the fixed objects - F-20855)
                             &|a, b| cam_level.line(a, b),
-                            gpu.config.width as f32 / gpu.config.height.max(1) as f32,
-                        );
+                            aspect,
+                        ) {
+                            others.push((boomcam::CamId::Event, o));
+                        }
                         // the ability camera (F-38892): pushed over InTime while the ability runs in a
                         // chase view (no look back, no blend; the event camera's event cleared), handed
                         // back over OutTime when it stops; not while the wipeout camera has the view.
                         // (approx.: "Agro at the car's load" is taken as the ability equipped now)
-                        let out = if self.crash_cam.active() {
-                            self.ability_cam.reset();
-                            out
-                        } else {
+                        {
                             let running = self.ability.running();
-                            let push = running && boomcam::VIEW_OF_PORT[(mode as usize).min(5)] >= 2 && !self.look_back && !self.cam_switch.blend.active();
+                            let crash = self.crash_cam.active(&self.cam_switch.blend);
+                            let push = running && !crash && boomcam::VIEW_OF_PORT[(mode as usize).min(5)] >= 2 && !self.look_back && !self.cam_switch.blend.active();
                             let agro = self.ability.kind == ability::Kind::Agro;
-                            let (o, pushed) = self.ability_cam.frame(push, running, self.ability.cam_times(), agro, &track_car, out, dt, &cam_level, gpu.config.width as f32 / gpu.config.height.max(1) as f32);
+                            let (o, pushed) = self.ability_cam.frame(&mut self.cam_switch.blend, push, running, self.ability.cam_times(), agro, &track_car, dt, &cam_level, aspect);
                             if pushed {
                                 self.event_dir.reset();
                             }
-                            o
-                        };
+                            if let Some(o) = o {
+                                others.push((boomcam::CamId::Ability, o));
+                            }
+                        }
+                        // the director's step (F-18583): one blend for every camera
+                        let out = self.cam_switch.blend.apply(&boomcam::BoomTarget { pan: (0.0, 0.0), ..target }, drive_out, &others, dt);
                         if std::env::var("MCLA_EVENT_DEBUG").is_ok() && self.frame_no % 10 == 0 {
-                            log::info!("event cam: event {:?} leaving {} air {} running {} allowed {} handbrake {} charge {:.2} yaw {:.2} cam {:.1} {:.1} {:.1}", self.event_dir.event(), self.event_dir.leaving(), vs.map_or(false, |v| v.air.fitted && v.air.on), self.event_dir.running(), allowed, car.input.handbrake, charge, render_state.ang_vel.y, out.pos.x, out.pos.y, out.pos.z);
+                            log::info!("event cam: event {:?} leaving {} air {} running {} allowed {} handbrake {} charge {:.2} yaw {:.2} cam {:.1} {:.1} {:.1}", self.event_dir.event(), self.event_dir.leaving(&self.cam_switch.blend), vs.map_or(false, |v| v.air.fitted && v.air.on), self.event_dir.running(), allowed, car.input.handbrake, charge, render_state.ang_vel.y, out.pos.x, out.pos.y, out.pos.z);
                         }
                         if std::env::var("MCLA_CRASH_DEBUG").is_ok() && (self.crash_bits != 0 || self.frame_no % 30 == 0) {
-                            log::info!("crash: bits {:#x} timer {:.2} exploding {} wipeout cam {} event {:?} scale {:.2} speed {:.1} damage {:.2} cam {:.1} {:.1} {:.1} car {:.1} {:.1} {:.1} fov {:.0}", self.crash_bits, self.crash_timer, self.crash_exploding, self.crash_cam.active(), self.event_dir.event(), self.wipe_scale, render_state.speed(), render_state.damage, out.pos.x, out.pos.y, out.pos.z, render_state.pos.x, render_state.pos.y, render_state.pos.z, out.fov);
+                            log::info!("crash: bits {:#x} timer {:.2} exploding {} wipeout cam {} event {:?} scale {:.2} speed {:.1} damage {:.2} cam {:.1} {:.1} {:.1} car {:.1} {:.1} {:.1} fov {:.0}", self.crash_bits, self.crash_timer, self.crash_exploding, self.crash_cam.active(&self.cam_switch.blend), self.event_dir.event(), self.wipe_scale, render_state.speed(), render_state.damage, out.pos.x, out.pos.y, out.pos.z, render_state.pos.x, render_state.pos.y, render_state.pos.z, out.fov);
                         }
                         // (the Damageout view wholly in: the wipeout camera is out of the director)
-                        if self.crash_cam.active() && self.event_dir.event() == Some(boomcam::EV_DAMAGEOUT) && self.event_dir.shown() {
+                        if self.crash_cam.started() && self.event_dir.event() == Some(boomcam::EV_DAMAGEOUT) && self.event_dir.shown(&self.cam_switch.blend) {
                             self.crash_cam.stop();
                         }
                         self.chase.pos = out.pos;
@@ -9285,7 +9286,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // of the near plane's corner from the file's Collide point on the car to the
                         // camera; the camera stops where it touches, the look keeps its direction
                         // (the event camera has its own, not ported)
-                        if tune.collide_type() & 2 != 0 && !self.event_dir.running() && !self.crash_cam.active() && !self.ability_cam.active() {
+                        let view_cam = !self.event_dir.running() && !self.crash_cam.active(&self.cam_switch.blend) && !self.ability_cam.active(&self.cam_switch.blend);
+                        if tune.collide_type() & 2 != 0 && view_cam {
                             let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
                             let ty = (out.fov.to_radians() * 0.5).tan();
                             let corner = boomcam::DIRECTOR_NEAR * (ty * ty + (ty * aspect) * (ty * aspect)).sqrt();
@@ -9298,7 +9300,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                         }
                         self.boom_up = Some(out.up);
-                        self.cam.fov_y = (out.fov + if self.event_dir.running() || self.crash_cam.active() || self.ability_cam.active() { 0.0 } else { self.look.fov }).to_radians();
+                        self.cam.fov_y = (out.fov + if view_cam { self.look.fov } else { 0.0 }).to_radians();
                         boom_view = true;
                         if let Some(d) = self.game.replay.as_mut().and_then(|p| p.director.as_mut()) {
                             d.drive_eye = Some(self.chase.pos);
@@ -9312,7 +9314,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.cam_switch.reset();
                     self.event_dir.reset();
                     self.crash_cam.stop();
-                    self.ability_cam.reset();
                     self.look.reset();
                     self.view_mode = if own_view { 255 } else { self.cam_mode };
                 }
@@ -9435,7 +9436,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 {
                     let busy = car.input.throttle != 0.0 || car.input.brake != 0.0 || self.own_handbrake;
                     if self.frame_no % 120 == 0 && std::env::var("MCLA_IDLE_DEBUG").is_ok() {
-                        log::info!("idle: time {:.1} busy {} (gas {} brake {} handbrake {}) speed {:.2} boom {} idle view {}", self.idle_time, busy, car.input.throttle, car.input.brake, self.own_handbrake, render_state.speed(), boom_view, self.event_dir.idle());
+                        log::info!("idle: time {:.1} busy {} (gas {} brake {} handbrake {}) speed {:.2} boom {} idle view {}", self.idle_time, busy, car.input.throttle, car.input.brake, self.own_handbrake, render_state.speed(), boom_view, self.event_dir.idle(&self.cam_switch.blend));
                     }
                     if busy || !boom_view || !matches!(self.game.mode, Mode::FreeRoam | Mode::Race) {
                         self.idle_time = 0.0;
@@ -9448,9 +9449,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.idle_time = (60.0 - v.parse::<f32>().unwrap_or(60.0)).max(0.0);
                         }
                     }
-                    self.game.idle_cam = self.event_dir.idle();
+                    self.game.idle_cam = self.event_dir.idle(&self.cam_switch.blend);
                 }
-                self.hide_player = boom_view && self.view_mode == 4 && !self.look_back && !(self.crash_cam.active() || self.event_dir.event() == Some(boomcam::EV_DAMAGEOUT));
+                self.hide_player = boom_view && self.view_mode == 4 && !self.look_back && !(self.crash_cam.active(&self.cam_switch.blend) || self.event_dir.event() == Some(boomcam::EV_DAMAGEOUT));
                 // keep the camera out of walls and hillsides (camBoomCS CollideType): pull it in
                 // along the line from the car to where it wants to be
                 // (the driving views have the original's collision in the boom section; this
@@ -10219,13 +10220,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // and its windows take the in-car glass program; damage_map_rule.md Part C 6. The draw mode (racer
         // +680, F-60712): 5 in the POV view, forced to 3 while the wipeout camera or the Damageout event has
         // the view or a cutscene runs - the glass is bit 4 of it, looking back or not)
-        let pov = self.view_mode == 3 && !self.event_dir.idle() && !(self.crash_cam.active() || self.event_dir.event() == Some(boomcam::EV_DAMAGEOUT)) && self.cine.playing.is_none();
+        let pov = self.view_mode == 3 && !self.event_dir.idle(&self.cam_switch.blend) && !(self.crash_cam.active(&self.cam_switch.blend) || self.event_dir.event() == Some(boomcam::EV_DAMAGEOUT)) && self.cine.playing.is_none();
         self.vehicles.interior_glass = pov;
         // (the player's driver, F-60712 -> F-45131 -> F-14542 / F-56050: in the POV view the set's cockpit view
         // model (arms and hands), none at all while looking back from it; in the bumper view none either)
         // (the rider machine's CockpitCamActive, F-28290's view test: the camera manager's drive view +80 == 1, the cockpit)
         self.drivers.ckpt_view = self.view_mode == 3 && self.cine.playing.is_none();
-        self.drivers.cockpit = if pov { if self.look_back { 2 } else { 1 } } else if self.view_mode == 4 && self.cine.playing.is_none() && !self.crash_cam.active() { 2 } else { 0 };
+        self.drivers.cockpit = if pov { if self.look_back { 2 } else { 1 } } else if self.view_mode == 4 && self.cine.playing.is_none() && !self.crash_cam.active(&self.cam_switch.blend) { 2 } else { 0 };
         // (m_NFLFade for the night fill light the traffic cars add to their ambient - fillmap.rs)
         fillmap::set_fade(self.sky_now().tod.map_or(0.0, |t| t.nfl));
         // (the traffic cars' lamp states and glow levels, for the cars drawn now - vehicles.rs
@@ -13452,7 +13453,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // the form's close (F-81587): input back, the event camera off over 0.7 s, the
                 // Idle event's clock 0, the game resumed
                 if let Some(name) = self.vehicles.player().map(|c| c.model.name.clone()) {
-                    self.event_dir.off_with(&self.opt.data_dir, &name, 0.7);
+                    self.event_dir.off_with(&mut self.cam_switch.blend, &self.opt.data_dir, &name, 0.7);
                 }
                 self.idle_time = 0.0;
                 self.game.mode = if self.game.race.is_some() || self.game.flag.is_some() { Mode::Race } else { Mode::FreeRoam };

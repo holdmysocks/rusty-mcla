@@ -143,6 +143,7 @@ pub struct BoomTarget {
     pub model_offset: Vec3,
 }
 
+#[derive(Clone, Copy)]
 pub struct BoomOut {
     pub pos: Vec3,
     pub look: Vec3,
@@ -1047,110 +1048,252 @@ impl BoomTune {
     }
 }
 
-/// The blend from one view to the next: the director's blend camera (camTransitionCS,
-/// `DirBlend`): both cameras keep running and the blend's matrix is mixed from theirs each
-/// frame (F-18583), as an orbit about the followed car; the weight runs 0 -> the source's
-/// BlendGoal over the push's time, eased by the transition type (3 for a view change).
+/// A camera the director can show: one of the player's views (port view), the event camera
+/// (mcPlayerCamera +84), the wipeout camera (+72) or the ability camera.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CamId {
+    View(u8),
+    Event,
+    Wipeout,
+    Ability,
+}
+
+impl Default for CamId {
+    fn default() -> CamId {
+        CamId::View(0)
+    }
+}
+
+/// The director (camViewCS): one current camera (+48) or its blend camera (camTransitionCS,
+/// `DirBlend`) between a source (+192) and a target (+196) with one queued camera (+200), and
+/// the last push's time (+20). Every camera of the player goes through it - the views, the
+/// event, wipeout and ability cameras -, so a push that meets another camera's blend is queued
+/// (F-43758) and cut to at the blend's end (F-70013). While it blends both cameras keep running
+/// and the blend's matrix is mixed from theirs each frame (F-18583), as an orbit about the
+/// followed car; the weight runs 0 -> the source's BlendGoal over the push's time, eased by the
+/// transition type (3).
 #[derive(Default)]
-pub struct ViewBlend {
+pub struct Director {
+    /// the source view's camera when the blend runs from one view to another (the target view's
+    /// camera is the caller's own)
     from: Option<(BoomTune, BoomCam)>,
-    blend: DirBlend,
+    pub blend: DirBlend,
     /// the director's time (+20): the last push's
-    time: f32,
-    /// the port views of the blend's source (+192) and target (+196)
-    src: u8,
-    dst: u8,
-    /// the queued camera (+200), a port view
-    queued: Option<u8>,
-    /// set when the blend ended with a camera queued (F-70013): the view the director cut to
+    pub time: f32,
+    /// the director shows its blend camera
+    on: bool,
+    pub src: CamId,
+    pub dst: CamId,
+    pub queued: Option<CamId>,
+    /// the current camera when not blending; None: the drive view
+    cur: Option<CamId>,
+    /// the drive view: the view whose camera `Switch` runs (set each frame by `Switch::frame`)
+    pub view: u8,
+    /// set when the blend ended with a view queued (F-70013): the view the director cut to
     finished: Option<u8>,
 }
 
-impl ViewBlend {
-    /// `goal`: the SOURCE view's BlendGoal (F-41709 reads the blend's +192); `time`: the
-    /// push's time.
-    pub fn start(&mut self, tune: BoomTune, cam: BoomCam, time: f32, goal: f32) {
-        if time > 0.0 {
-            self.from = Some((tune, cam));
-            self.blend = DirBlend { weight: 0.0, goal, left: time, ..Default::default() };
-            self.time = time;
-            self.queued = None;
+/// What a push did (F-98424).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pushed {
+    Nothing,
+    Queued,
+    Turned,
+    Begun,
+    Cut,
+}
+
+impl Director {
+    /// The director shows its blend camera.
+    pub fn active(&self) -> bool {
+        self.on
+    }
+    /// It blends from one view to another.
+    pub fn views_blending(&self) -> bool {
+        self.on && matches!((self.src, self.dst), (CamId::View(_), CamId::View(_)))
+    }
+    /// The current camera (when not blending).
+    pub fn current(&self) -> CamId {
+        self.cur.unwrap_or(CamId::View(self.view))
+    }
+    pub fn is_current(&self, id: CamId) -> bool {
+        !self.on && self.current() == id
+    }
+    /// `id` is the current camera or the blend's source or target.
+    pub fn involves(&self, id: CamId) -> bool {
+        if self.on {
+            self.src == id || self.dst == id
         } else {
-            self.stop();
+            self.current() == id
         }
     }
+    /// `id` is the current camera or the blend's target (F-38782 nonzero).
+    pub fn current_or_target(&self, id: CamId) -> bool {
+        if self.on {
+            self.dst == id
+        } else {
+            self.current() == id
+        }
+    }
+    /// The view of the blend (its target's, else its source's).
+    pub fn view_in_blend(&self) -> Option<u8> {
+        match (self.on, self.dst, self.src) {
+            (true, CamId::View(v), _) | (true, _, CamId::View(v)) => Some(v),
+            _ => None,
+        }
+    }
+    /// The begin (F-18878) and start (F-41709): weight 0, the goal the SOURCE camera's
+    /// BlendGoal, the push's time.
+    fn begin(&mut self, src: CamId, dst: CamId, time: f32, goal: f32) {
+        self.on = true;
+        (self.src, self.dst) = (src, dst);
+        self.blend = DirBlend { weight: 0.0, goal, left: time, ..Default::default() };
+        self.time = time;
+        self.queued = None;
+        self.from = None;
+    }
+    /// A cut to the drive view (setView's type-4 push F-41662 -> F-53309): no blend, nothing queued.
     pub fn stop(&mut self) {
+        self.cut(CamId::View(self.view));
+    }
+    /// A cut (F-53309): `id` current with no blend.
+    pub fn cut(&mut self, id: CamId) {
+        self.on = false;
         self.from = None;
         self.queued = None;
+        self.cur = match id {
+            CamId::View(_) => None,
+            x => Some(x),
+        };
     }
-    /// A push of `view` while the director shows the blend camera (F-98424 -> F-43758). The push
-    /// stores its time as the director's first (+20); with a time above 0: nothing when the
-    /// QUEUED camera is the target; when the queued camera is the source the blend turns round
-    /// (goal = the old source's BlendGoal, time left = the push's time x the weight, weight =
-    /// 1 - weight, source and target swapped, nothing queued); else `view` is queued. `cam` is
-    /// the running target camera; `dst_tune` its view's tune.
-    pub fn push(&mut self, view: u8, time: f32, dst_tune: &BoomTune, cam: &mut BoomCam) {
-        self.time = time;
-        if !(time > 0.0) {
-            return;
+    /// The push F-98424 of `id` over `time` (a blend type; `src_goal` the BlendGoal of the camera
+    /// a begun blend starts from). On the blend camera it stores its time as the director's (+20)
+    /// and with a time above 0 (F-43758): nothing when the QUEUED camera is the target; when the
+    /// queued camera is the source the blend turns round (F-29802, nothing queued after); else
+    /// `id` is queued. Not blending: a time above 0 begins a blend from the current camera, else
+    /// (or `id` already current) a cut.
+    pub fn push(&mut self, id: CamId, time: f32, src_goal: f32) -> Pushed {
+        if self.on {
+            self.time = time;
+            if !(time > 0.0) || self.queued == Some(self.dst) {
+                return Pushed::Nothing;
+            }
+            if self.queued == Some(self.src) {
+                self.turn_round(src_goal);
+                self.queued = None;
+                return Pushed::Turned;
+            }
+            self.queued = Some(id);
+            return Pushed::Queued;
         }
-        if self.queued == Some(self.dst) {
-            return;
+        let cur = self.current();
+        if time > 0.0 && cur != id {
+            self.begin(cur, id, time, src_goal);
+            Pushed::Begun
+        } else {
+            self.cut(id);
+            Pushed::Cut
         }
-        if self.queued == Some(self.src) {
-            if let Some((src_tune, src_cam)) = self.from.take() {
-                self.blend.goal = src_tune.blend_goal();
-                self.blend.left = time * self.blend.weight;
-                self.blend.weight = 1.0 - self.blend.weight;
+    }
+    /// The turn-round F-29802: goal = the old source's BlendGoal, left = the director's time x
+    /// weight, weight = 1 - weight, source and target swapped (the queue kept).
+    pub fn turn_round(&mut self, src_goal: f32) {
+        self.blend.goal = src_goal;
+        self.blend.left = self.time * self.blend.weight;
+        self.blend.weight = 1.0 - self.blend.weight;
+        std::mem::swap(&mut self.src, &mut self.dst);
+    }
+    /// A view push (setView, F-41662 -> F-98424) while the director is on its blend camera: as
+    /// `push`; a turn-round between two views swaps the two views' cameras. `cam` is the running
+    /// (target view's) camera, `dst_tune` its view's tune.
+    pub fn push_view(&mut self, view: u8, time: f32, dst_tune: &BoomTune, cam: &mut BoomCam) -> Pushed {
+        let goal = self.from.as_ref().map_or(1.0, |f| f.0.blend_goal());
+        let r = self.push(CamId::View(view), time, goal);
+        if r == Pushed::Turned {
+            if let Some((_, src_cam)) = self.from.take() {
                 let old_dst = std::mem::replace(cam, src_cam);
                 self.from = Some((dst_tune.clone(), old_dst));
-                std::mem::swap(&mut self.src, &mut self.dst);
             }
-            self.queued = None;
+        }
+        r
+    }
+    /// A blend from the view `src` (its tune and camera) to the view `dst` over `time`.
+    pub fn begin_views(&mut self, src: u8, dst: u8, tune: BoomTune, cam: BoomCam, time: f32) {
+        if time > 0.0 {
+            let goal = tune.blend_goal();
+            self.begin(CamId::View(src), CamId::View(dst), time, goal);
+            self.from = Some((tune, cam));
         } else {
-            self.queued = Some(view);
+            self.stop();
         }
     }
     /// The camera of `view` as the director runs it, for setView's reset (vt+36): the source's;
     /// the target's is the caller's own.
     pub fn source_cam(&mut self, view: u8) -> Option<&mut BoomCam> {
-        if self.src == view {
+        if self.on && self.src == CamId::View(view) {
             self.from.as_mut().map(|f| &mut f.1)
         } else {
             None
         }
     }
-    pub fn active(&self) -> bool {
-        self.from.is_some()
+    /// The source view's tune and camera when two views blend (stepped by the caller as the
+    /// target's is).
+    pub fn source_view(&mut self) -> Option<(&BoomTune, &mut BoomCam)> {
+        let on = self.on;
+        self.from.as_mut().filter(|_| on).map(|f| (&f.0, &mut f.1))
     }
-    /// F-37740's head: the director on its blend camera finished at once (F-70013): the target is
-    /// current with no blend (a queued view is cut to on the next frame, `Switch::frame`).
-    pub fn finish_now(&mut self) {
-        if self.active() {
-            self.finish();
-        }
+    /// F-37740's head: the director on its blend camera finished at once (F-70013). Returns the
+    /// camera that is current now.
+    pub fn finish_now(&mut self) -> Option<CamId> {
+        self.on.then(|| self.finish())
     }
-    /// The finish (F-70013): nothing queued, the director cuts to the target; a queued camera
-    /// other than the target is cut to (type 4 makes the start F-41709 a cut).
-    fn finish(&mut self) {
+    /// The finish (F-70013): nothing queued, or the target queued, the target is current; a
+    /// queued camera other than the target is cut to (type 4 makes the start F-41709 a cut).
+    fn finish(&mut self) -> CamId {
+        self.on = false;
         self.from = None;
-        if let Some(q) = self.queued.take() {
-            if q != self.dst {
-                self.finished = Some(q);
-            }
+        let to = match self.queued.take() {
+            Some(q) if q != self.dst => q,
+            _ => self.dst,
+        };
+        if let (CamId::View(v), true) = (to, to != self.dst) {
+            self.finished = Some(v);
         }
+        self.cur = match to {
+            CamId::View(_) => None,
+            x => Some(x),
+        };
+        to
     }
-    /// Run the old view for this frame and mix it with `out` (the new view's output).
-    pub fn apply(&mut self, car: &BoomTarget, out: BoomOut, dt: f32) -> BoomOut {
-        let Some((tune, cam)) = self.from.as_mut() else { return out };
-        let old = cam.update(tune, car, dt);
-        let (a, b) = (dir_cam_of(&old, car.pos), dir_cam_of(&out, car.pos));
+    /// The director's output this frame: `drive` the drive view's camera's, `others` the event /
+    /// wipeout / ability cameras' that run; while blending the source view's camera (two views)
+    /// runs here and the blend steps (F-18583, type 3) about the followed car `car`.
+    pub fn apply(&mut self, car: &BoomTarget, drive: BoomOut, others: &[(CamId, BoomOut)], dt: f32) -> BoomOut {
+        let find = |id: CamId| match id {
+            CamId::View(_) => Some(drive),
+            x => others.iter().find(|o| o.0 == x).map(|o| o.1),
+        };
+        if !self.on {
+            return find(self.current()).unwrap_or(drive);
+        }
+        let src = match (&mut self.from, self.src) {
+            (Some((tune, cam)), CamId::View(_)) => {
+                if cam.stepped() {
+                    cam.draw(tune, car)
+                } else {
+                    cam.update(tune, car, dt)
+                }
+            }
+            (_, id) => find(id).unwrap_or(drive),
+        };
+        let dst = find(self.dst).unwrap_or(drive);
+        let (a, b) = (dir_cam_of(&src, car.pos), dir_cam_of(&dst, car.pos));
         if !self.blend.step(&a, &b, 3, self.time, dt) {
-            self.finish();
-            return out;
+            let to = self.finish();
+            return find(to).unwrap_or(dst);
         }
         let m = &self.blend;
-        BoomOut { pos: m.pos, look: m.pos - m.rows[2] * (out.look - out.pos).length().max(1.0), up: m.rows[1], fov: m.lens[0] }
+        BoomOut { pos: m.pos, look: m.pos - m.rows[2] * (dst.look - dst.pos).length().max(1.0), up: m.rows[1], fov: m.lens[0] }
     }
 }
 
@@ -1435,7 +1578,8 @@ pub fn tune_for(set: &BoomSet, view: u8, back: bool) -> (&BoomTune, bool) {
 /// F-67519 the buttons, F-39925 the look back, F-38892 its turning).
 #[derive(Default)]
 pub struct Switch {
-    pub blend: ViewBlend,
+    /// the director (every camera of the player goes through it)
+    pub blend: Director,
     pub mask: CutMask,
     last: Option<(u8, bool)>,
     /// the look-back camera's turn: yaw, pitch (+452, +456)
@@ -1465,21 +1609,6 @@ impl Switch {
         self.shown.unwrap_or(view)
     }
 
-    /// The chosen view becomes `view` while the director goes on showing `old` (CAM_UP over the
-    /// event camera, F-67519: the new view is queued behind the event's blend out, or dropped).
-    pub fn hold(&mut self, view: u8, back: bool, old: u8) {
-        self.last = Some((view, back));
-        self.shown = (old != view).then_some(old);
-    }
-
-    /// The director's finish cutting to the queued view (F-70013): no blend, no mask.
-    pub fn cut_to(&mut self, view: u8, back: bool, cam: &mut BoomCam) {
-        self.blend.stop();
-        self.last = Some((view, back));
-        self.shown = None;
-        cam.reset();
-    }
-
     /// The original's random draw: 23 bits of a linear congruential generator.
     fn rand23(&mut self) -> f32 {
         self.seed = self.seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
@@ -1497,8 +1626,10 @@ impl Switch {
             self.shown = Some(q);
             cam.reset();
         }
+        self.blend.view = self.shown(view);
         let Some((was_view, was_back)) = self.last.replace((view, back)) else {
             self.shown = None;
+            self.blend.view = view;
             return;
         };
         let chase = VIEW_OF_PORT[(view as usize).min(5)] >= 2;
@@ -1534,8 +1665,8 @@ impl Switch {
                 }
                 let (dst, _) = tune_for(set, shown, false);
                 let (new, _) = tune_for(set, view, false);
-                self.blend.push(view, new.blend_time(), dst, cam);
-                self.shown = Some(self.blend.dst);
+                self.blend.push_view(view, new.blend_time(), dst, cam);
+                self.shown = Some(self.blend.view_in_blend().unwrap_or(shown));
             } else if self.shown(was_view) == view {
                 // (the director's own camera pushed again - the old view stayed on after a drop or a
                 // turn-round: F-98424 makes it current with no blend, type 4)
@@ -1546,9 +1677,7 @@ impl Switch {
                 let from = self.shown(was_view);
                 let (old, _) = tune_for(set, from, false);
                 let (new, _) = tune_for(set, view, false);
-                self.blend.start(old.clone(), cam.clone(), new.blend_time(), old.blend_goal());
-                self.blend.src = from;
-                self.blend.dst = view;
+                self.blend.begin_views(from, view, old.clone(), cam.clone(), new.blend_time());
                 self.shown = None;
                 cam.reset();
             }
@@ -1558,6 +1687,7 @@ impl Switch {
         if self.shown == Some(view) && !self.blend.active() {
             self.shown = None;
         }
+        self.blend.view = self.shown(view);
         // turning the look-back camera with CAM_PAN_*: 2 rad/s round, 1.25 rad/s up, the
         // pitch kept in 0 .. 1.2566 (A-28508..A-14649)
         if back && chase {
@@ -2153,57 +2283,33 @@ impl TrackTune {
 #[derive(Default)]
 pub struct AbilityCam {
     cam: TrackCam,
-    /// 0 off, 1 blending in, 2 on, 3 blending out
-    phase: u8,
-    blend: DirBlend,
-    /// the director's time (+20): the last push's
-    dir_time: f32,
 }
 
 impl AbilityCam {
     /// The ability camera is current or the target of a blend (it holds the camera buttons and the
     /// event chooser).
-    pub fn active(&self) -> bool {
-        self.phase == 1 || self.phase == 2
+    pub fn active(&self, dir: &Director) -> bool {
+        dir.current_or_target(CamId::Ability)
     }
-    pub fn reset(&mut self) {
-        self.phase = 0;
-    }
-    /// One frame. `push`: the ability runs and the pushing gates hold; `running`: it runs at all;
-    /// (in, out): InTime / OutTime; `drive` the view's own output. Returns the camera to show and
-    /// whether it was pushed this frame.
-    pub fn frame(&mut self, push: bool, running: bool, times: (f32, f32), agro: bool, car: &TrackCar, drive: BoomOut, dt: f32, test: SphereTest, aspect: f32) -> (BoomOut, bool) {
+    /// One frame, before the director's step. `push`: the ability runs and the pushing gates hold;
+    /// `running`: it runs at all; (in, out): InTime / OutTime. Returns the ability camera's output
+    /// when the director runs it, and whether it was pushed this frame.
+    pub fn frame(&mut self, dir: &mut Director, push: bool, running: bool, times: (f32, f32), agro: bool, car: &TrackCar, dt: f32, test: SphereTest, aspect: f32) -> (Option<BoomOut>, bool) {
         let mut pushed = false;
         // (F-98424 type 3: a time above 0 begins a blend, else a cut)
-        if push && self.phase == 0 {
+        if push && !dir.involves(CamId::Ability) {
             let t = TrackTune::ability(agro);
             self.cam.set(&t, car, 99, 0.0);
-            self.phase = if times.0 > 0.0 { 1 } else { 2 };
-            self.blend = DirBlend { weight: 0.0, goal: 1.0, left: times.0, ..Default::default() };
-            self.dir_time = times.0;
+            dir.push(CamId::Ability, times.0, 1.0);
             pushed = true;
-        } else if !running && self.phase == 2 {
-            self.phase = if times.1 > 0.0 { 3 } else { 0 };
-            self.blend = DirBlend { weight: 0.0, goal: 1.0, left: times.1, ..Default::default() };
-            self.dir_time = times.1;
+        } else if !running && dir.is_current(CamId::Ability) {
+            dir.push(CamId::View(dir.view), times.1, 1.0);
         }
-        if self.phase == 0 {
-            return (drive, pushed);
+        if !dir.involves(CamId::Ability) {
+            return (None, pushed);
         }
         let t = TrackTune::ability(agro);
-        let out = self.cam.update(&t, car, dt, dt, test, aspect);
-        if self.phase == 2 {
-            return (out, pushed);
-        }
-        let (from, to) = if self.phase == 3 { (&out, &drive) } else { (&drive, &out) };
-        let (a, b, reach) = (dir_cam_of(from, car.pos), dir_cam_of(to, car.pos), (to.look - to.pos).length().max(1.0));
-        if !self.blend.step(&a, &b, 3, self.dir_time, dt) {
-            // the finish (F-70013): the director cuts to the target
-            self.phase = if self.phase == 1 { 2 } else { 0 };
-            return (if self.phase == 2 { out } else { drive }, pushed);
-        }
-        let m = &self.blend;
-        (BoomOut { pos: m.pos, look: m.pos - m.rows[2] * reach, up: m.rows[1], fov: m.lens[0] }, pushed)
+        (Some(self.cam.update(&t, car, dt, dt, test, aspect)), pushed)
     }
 }
 
@@ -2214,12 +2320,8 @@ impl AbilityCam {
 pub struct CrashCam {
     cam: TrackCam,
     tune: Option<TrackTune>,
-    /// 0 off, 1 blending in from the drive view, 2 current
-    phase: u8,
-    /// the director's blend camera from the drive view (F-98424 type 3, `DirBlend`, goal 1)
-    blend: DirBlend,
-    /// the director's time (+20): the push's
-    dir_time: f32,
+    /// set up by F-37740 for this wipeout (until the drive view comes back)
+    started: bool,
     /// the place's XZ rate has its load value (5, vt+16) until the first wipeout of a car
     used: bool,
     /// F-37740 pointed the camera's matrix (+144) at the rider's copy (racer +704): a bike that
@@ -2259,8 +2361,13 @@ impl CrashStart {
 }
 
 impl CrashCam {
-    pub fn active(&self) -> bool {
-        self.phase != 0
+    /// Set up for this wipeout and run by the director (current, or a blend's source or target).
+    pub fn active(&self, dir: &Director) -> bool {
+        self.started && dir.involves(CamId::Wipeout)
+    }
+    /// Set up for this wipeout (it may still wait in the director's queue).
+    pub fn started(&self) -> bool {
+        self.started
     }
     fn with_rider(&self, car: &TrackCar) -> TrackCar {
         match (self.rider, self.rider_mat) {
@@ -2270,22 +2377,23 @@ impl CrashCam {
     }
     /// The drive view comes back (a cut, F-53309), or the Damageout view has taken over.
     pub fn stop(&mut self) {
-        self.phase = 0;
+        self.started = false;
     }
     /// A new car: the place's XZ rate starts again at the load's 5.
     pub fn new_car(&mut self) {
         self.used = false;
     }
     /// Whether the camera follows the rider's matrix (F-37740's bike branch).
-    pub fn follows_rider(&self) -> bool {
-        self.active() && self.rider
+    pub fn follows_rider(&self, dir: &Director) -> bool {
+        self.active(dir) && self.rider
     }
     /// The rider's matrix copy (racer +704) refreshed (F-17180).
     pub fn set_rider(&mut self, m: (Mat3, Vec3)) {
         self.rider_mat = Some(m);
     }
     /// `rider`: F-37740's bike branch holds and F-17180 has a matrix (refreshed into racer +704
-    /// now); None: the body's matrix.
+    /// now); None: the body's matrix. The caller pushes the camera to the director (type 3 over
+    /// `how.blend`).
     pub fn start(&mut self, model_offset: Vec3, car: &TrackCar, how: CrashStart, rider: Option<(Mat3, Vec3)>) {
         self.rider = rider.is_some();
         if rider.is_some() {
@@ -2302,27 +2410,16 @@ impl CrashCam {
         self.cam.set(&t, car, 99, 0.0);
         self.cam.rev = how.exploding;
         self.tune = Some(t);
-        self.phase = if how.blend > 0.0 { 1 } else { 2 };
-        self.blend = DirBlend { weight: 0.0, goal: 1.0, left: how.blend, ..Default::default() };
-        self.dir_time = how.blend;
+        self.started = true;
     }
-    /// One frame: `dt` the unscaled frame time (+184 = 1), `dt_game` the game's; `drive` the
-    /// drive view's output (the blend's source).
-    pub fn frame(&mut self, car: &TrackCar, drive: BoomOut, dt: f32, dt_game: f32, test: SphereTest, aspect: f32) -> BoomOut {
-        let Some(t) = self.tune.clone() else { return drive };
-        if self.phase == 0 {
-            return drive;
+    /// One frame, before the director's step: `dt` the unscaled frame time (+184 = 1), `dt_game`
+    /// the game's. The wipeout camera's output when the director runs it.
+    pub fn frame(&mut self, dir: &Director, car: &TrackCar, dt: f32, dt_game: f32, test: SphereTest, aspect: f32) -> Option<BoomOut> {
+        if !self.active(dir) {
+            return None;
         }
-        let out = self.cam.update(&t, &self.with_rider(car), dt, dt_game, test, aspect);
-        if self.phase == 1 {
-            let (a, b, reach) = (dir_cam_of(&drive, car.pos), dir_cam_of(&out, car.pos), (out.look - out.pos).length().max(1.0));
-            if self.blend.step(&a, &b, 3, self.dir_time, dt) {
-                let m = &self.blend;
-                return BoomOut { pos: m.pos, look: m.pos - m.rows[2] * reach, up: m.rows[1], fov: m.lens[0] };
-            }
-            self.phase = 2;
-        }
-        out
+        let t = self.tune.clone()?;
+        Some(self.cam.update(&t, &self.with_rider(car), dt, dt_game, test, aspect))
     }
 }
 
@@ -3013,21 +3110,8 @@ pub type RayTest<'a> = &'a dyn Fn(Vec3, Vec3) -> bool;
 #[derive(Default)]
 pub struct EventDirector {
     cam: TrackCam,
-    /// 0 off, 1 blending in, 2 on, 3 blending out (the event cleared, the director still on its
-    /// blend camera)
-    phase: u8,
-    /// the director's blend camera between the drive view and the event camera (F-18583)
-    blend: DirBlend,
-    /// the director's time (+20): the last push's
-    dir_time: f32,
-    /// the blend's source is the event camera (+192 = mgr+84)
-    src_event: bool,
-    /// the drive view's camera queued (+200) by the off's push while the blend ran toward the
-    /// event camera: the finish cuts to it
-    queued_player: bool,
-    /// the wipeout camera queued (+200) behind the event's blend out (F-37740's push while the
-    /// director is on its blend camera, F-43758): the next finish cuts to it
-    wipe_queued: bool,
+    /// the event set (cam +784 holds it): it was pushed to the director and not turned off since
+    on: bool,
     quit: bool,
     /// the event on (cam +784)
     ev: usize,
@@ -3040,6 +3124,9 @@ pub struct EventDirector {
     fx: Option<CamFx>,
     /// the car whose event camera file was last loaded (F-67439 sets the XZ rate then)
     loaded: Option<String>,
+    /// (tests: the director the wrappers below run it on)
+    #[cfg(test)]
+    tdir: Director,
 }
 
 pub const EV_SSTURBO: usize = 0;
@@ -3057,90 +3144,62 @@ pub const EV_AIR_RIDE: usize = 12;
 pub const EV_DAMAGEOUT: usize = 17;
 
 impl EventDirector {
-    /// The event camera is running (or blending in): the camera buttons act on it.
+    /// The event is set (F-38782 nonzero while it is the director's camera or the blend's target):
+    /// the camera buttons act on it.
     pub fn running(&self) -> bool {
-        self.phase == 1 || self.phase == 2
+        self.on
     }
     /// The event running (cam +784), if any.
     pub fn event(&self) -> Option<usize> {
         self.running().then_some(self.ev)
     }
-    /// The event view is wholly in (no blend in or out).
-    pub fn shown(&self) -> bool {
-        self.phase == 2
+    /// The event view is wholly in (the director's current camera, no blend).
+    pub fn shown(&self, dir: &Director) -> bool {
+        self.on && dir.is_current(CamId::Event)
     }
-    /// Blending back to the drive view.
-    pub fn leaving(&self) -> bool {
-        self.phase == 3
+    /// Turned off, the director still blending from (or through) the event camera.
+    pub fn leaving(&self, dir: &Director) -> bool {
+        !self.on && dir.involves(CamId::Event)
     }
     /// F-94591(0, -1, -1): the running event goes back over the record's time.
-    pub fn end(&mut self, data_dir: &str, car_name: &str) {
+    pub fn end(&mut self, dir: &mut Director, data_dir: &str, car_name: &str) {
         if self.running() {
             if let Some(t) = self.tune(data_dir, car_name, self.ev) {
-                self.off(&t, -1.0);
+                self.off(dir, &t, -1.0);
             }
         }
     }
     /// F-94591(0, -1, b): the running (or leaving) event goes back over `b`; the event is cleared
     /// either way (the gas station's close asks 0.7, F-81587).
-    pub fn off_with(&mut self, data_dir: &str, car_name: &str, b: f32) {
-        if self.running() || self.leaving() {
+    pub fn off_with(&mut self, dir: &mut Director, data_dir: &str, car_name: &str, b: f32) {
+        if self.running() || self.leaving(dir) {
             if let Some(t) = self.tune(data_dir, car_name, self.ev) {
-                self.off(&t, b);
+                self.off(dir, &t, b);
             }
         }
     }
-    /// CAM_UP leaves it (F-67519: F-94591(0, -1, 0.2)).
-    pub fn leave(&mut self) {
-        self.quit = true;
+    /// CAM_UP leaves it (F-67519: F-94591(0, -1, 0.2)), before the view's own push.
+    pub fn leave(&mut self, dir: &mut Director, data_dir: &str, car_name: &str) {
+        if self.running() {
+            if let Some(t) = self.tune(data_dir, car_name, self.ev) {
+                self.off(dir, &t, 0.2);
+            }
+        }
     }
-    /// The director cut away from the event camera while it blended out (setView's type-4 cut
-    /// F-41662 -> F-53309 over the blend camera): the event view is gone at once.
+    /// The director cut away from the event camera (setView's type-4 cut F-41662 -> F-53309 over
+    /// the blend camera): the event view is gone at once.
     pub fn cut_out(&mut self) {
         self.cam.look_yaw = 0.0;
-        self.phase = 0;
+        self.on = false;
         self.quit = false;
-        self.wipe_queued = false;
     }
     pub fn reset(&mut self) {
-        self.phase = 0;
+        self.on = false;
         self.quit = false;
-        self.wipe_queued = false;
-    }
-    /// The head of the wipeout start (F-37740): a director on its blend camera is finished at once
-    /// (F-70013): the queued camera, else the target, becomes current with no blend. `Some(true)`:
-    /// it cut to the wipeout camera queued the frame before (the event view is gone); `Some(false)`:
-    /// it cut to the event camera (phase 2) or the drive view (phase 0); `None`: not on the blend.
-    pub fn finish_now(&mut self) -> Option<bool> {
-        if self.phase != 1 && self.phase != 3 {
-            return None;
-        }
-        if std::mem::take(&mut self.wipe_queued) {
-            self.phase = 0;
-            self.queued_player = false;
-            return Some(true);
-        }
-        let to_event = !self.src_event && !self.queued_player;
-        self.phase = if to_event { 2 } else { 0 };
-        self.queued_player = false;
-        Some(false)
-    }
-    /// The wipeout camera's push (F-98424, type 3, `t`) while the director is on the event's blend
-    /// camera: the push stores its time as the director's (+20) and F-43758 queues the camera
-    /// (nothing is queued: the off before it began a fresh blend).
-    pub fn queue_wipe(&mut self, t: f32) {
-        self.dir_time = t;
-        if t > 0.0 {
-            self.wipe_queued = true;
-        }
-    }
-    /// The wipeout camera is queued behind the blend.
-    pub fn wipe_queued(&self) -> bool {
-        self.wipe_queued
     }
     /// The Idle view is on (the HUD is put away while it is).
-    pub fn idle(&self) -> bool {
-        self.phase != 0 && self.ev == EV_IDLE
+    pub fn idle(&self, dir: &Director) -> bool {
+        (self.on || dir.involves(CamId::Event)) && self.ev == EV_IDLE
     }
 
     fn tune(&mut self, data_dir: &str, car_name: &str, ev: usize) -> Option<TrackTune> {
@@ -3274,49 +3333,39 @@ impl EventDirector {
     /// the director's and queues the drive view's camera (the finish cuts to it unless it is the
     /// target). Without a blend a cut ends the event view at once, a blend starts one from the
     /// event camera (F-18878, F-41709).
-    fn off(&mut self, t: &TrackTune, b: f32) {
+    fn off(&mut self, dir: &mut Director, t: &TrackTune, b: f32) {
         let back = if b >= 0.0 { b } else if t.ret > 0.0 { t.ret } else { t.blend };
         let blend = back > f32::from_bits(0x3a83_126f);
         // (the event's exit zeroes the look object, F-94591)
         self.cam.look_yaw = 0.0;
         self.quit = false;
-        if self.phase == 1 || self.phase == 3 {
-            // (every camera's BlendGoal is 1: the constructors' +164 and all 719 shipped keys)
-            self.blend.goal = 1.0;
-            self.blend.left = self.dir_time * self.blend.weight;
-            self.blend.weight = 1.0 - self.blend.weight;
-            self.src_event = !self.src_event;
+        self.on = false;
+        let view = CamId::View(dir.view);
+        // (every camera's BlendGoal is 1: the constructors' +164 and all 719 shipped keys)
+        if dir.active() {
+            dir.turn_round(1.0);
             if blend {
-                self.dir_time = back;
-                // (the queue holds only the drive view's camera: queued when it is not the
-                // source; a queued target ends the blend on it as without)
-                self.queued_player = !self.src_event;
+                dir.push(view, back, 1.0);
             }
-            self.phase = 3;
         } else if blend {
-            self.blend = DirBlend { weight: 0.0, goal: 1.0, left: back, ..Default::default() };
-            self.dir_time = back;
-            self.src_event = true;
-            self.queued_player = false;
-            self.phase = 3;
+            dir.push(view, back, 1.0);
         } else {
-            self.phase = 0;
+            dir.cut(view);
         }
     }
 
-    /// The event camera pushed over `time` (F-98424 type 3 from the drive view's camera; the
-    /// begin F-18878 and start F-41709): weight 0, goal 1, the director's time.
-    fn begin_in(&mut self, time: f32) {
-        self.blend = DirBlend { weight: 0.0, goal: 1.0, left: time, ..Default::default() };
-        self.dir_time = time;
-        self.src_event = false;
-        self.queued_player = false;
-        self.phase = 1;
+    /// The event camera pushed over `time` (F-98424 type 3 from the director's camera; the begin
+    /// F-18878 and start F-41709): weight 0, goal 1, the director's time - or queued behind a
+    /// blend the director runs (F-43758).
+    fn begin_in(&mut self, dir: &mut Director, time: f32) {
+        self.on = true;
+        dir.push(CamId::Event, time, 1.0);
     }
 
-    /// One frame (after the drive view's own). `chase`: the drive view's output this frame;
-    /// `test` the world's ball test, `ray` its segment probe.
-    pub fn frame(&mut self, data_dir: &str, car_name: &str, i: &EventIn, car: &TrackCar, chase: BoomOut, dt: f32, test: SphereTest, ray: RayTest, aspect: f32) -> BoomOut {
+    /// One frame (after the drive view's own), before the director's step: the event's start and
+    /// end tests and its pushes; the event camera's output when the director runs it. `test` the
+    /// world's ball test, `ray` its segment probe.
+    pub fn frame(&mut self, dir: &mut Director, data_dir: &str, car_name: &str, i: &EventIn, car: &TrackCar, dt: f32, test: SphereTest, ray: RayTest, aspect: f32) -> Option<BoomOut> {
         let fx = self.fx.get_or_insert_with(|| CamFx::load(data_dir)).clone();
         let fx = &fx;
         // the car's file loaded (F-67439): the place's XZ rate starts at the base block's
@@ -3331,25 +3380,23 @@ impl EventDirector {
         if self.running() && self.ev == EV_HYDRAULICS {
             self.cam.look_yaw += dt * i.pan_side * 2.0;
         }
+        let out_of_director = |s: &Self, dir: &Director| !s.on && !dir.involves(CamId::Event);
         // part 1: while the wipeout camera is in use the only start is Damageout, whatever the
         // option and the view, and nothing ends
         if i.crash {
-            if i.damage_out && self.phase == 0 {
+            if i.damage_out && out_of_director(self, dir) {
                 if let Some(t) = self.tune(data_dir, car_name, EV_DAMAGEOUT).filter(|t| t.blend > 0.0) {
                     self.off_bytes = [false; 18];
                     self.ev = EV_DAMAGEOUT;
                     self.cam.set(&t, car, EV_DAMAGEOUT, 0.0);
-                    self.begin_in(t.blend);
+                    self.begin_in(dir, t.blend);
                 }
             }
-            if self.phase == 0 {
-                return chase;
-            }
-            let Some(t) = self.tune(data_dir, car_name, self.ev) else { return chase };
-            return self.show(&t, car, chase, dt, test, aspect);
+            let t = self.tune(data_dir, car_name, self.ev)?;
+            return self.show(dir, &t, car, dt, test, aspect);
         }
         // part 2: an event starts only while the camera is wholly out of the director
-        if self.phase == 0 {
+        if out_of_director(self, dir) {
             self.quit = false;
             if i.allowed && i.view >= 2 {
                 if let Some(ev) = self.pick(data_dir, car_name, fx, i, car, test, ray).filter(|&e| !self.off_bytes[e]) {
@@ -3359,15 +3406,16 @@ impl EventDirector {
                         let side = self.side(ev, i, car);
                         self.ev = ev;
                         self.cam.set(&t, car, ev, side);
-                        self.begin_in(t.blend);
+                        self.begin_in(dir, t.blend);
                     }
                 }
             }
         }
-        if self.phase != 0 {
+        let mut out = None;
+        if !out_of_director(self, dir) {
             let Some(t) = self.tune(data_dir, car_name, self.ev) else {
-                self.phase = 0;
-                return chase;
+                self.on = false;
+                return None;
             };
             if self.running() {
                 // part 3, the pre-emption: in ACTION a wheelie ends the nitrous view; a slipstream
@@ -3390,15 +3438,15 @@ impl EventDirector {
                     pre.or_else(|| self.ends(fx, i, car, ray))
                 };
                 if let Some(b) = b {
-                    self.off(&t, b);
+                    self.off(dir, &t, b);
                 }
                 // Nitrous: the event camera pulled in from a wall ends it (0.2 s; 0 while still
                 // blending in: a cut push, so only F-29802's turn-round) and keeps it off until
                 // the shot ends
                 if self.ev == EV_NITROUS && self.cam.corrected {
                     if self.running() {
-                        let b = if self.phase == 1 { 0.0 } else { 0.2 };
-                        self.off(&t, b);
+                        let b = if dir.active() && dir.dst == CamId::Event { 0.0 } else { 0.2 };
+                        self.off(dir, &t, b);
                     }
                     self.off_bytes[EV_NITROUS] = true;
                 }
@@ -3406,52 +3454,54 @@ impl EventDirector {
                 // ends it and keeps it off until the air ride is switched off (F-24075)
                 if self.ev == EV_AIR_RIDE && i.air_held {
                     if self.running() {
-                        self.off(&t, -1.0);
+                        self.off(dir, &t, -1.0);
                     }
                     self.off_bytes[EV_AIR_RIDE] = true;
                 }
             }
-            // part 5: the AirRide byte comes back when the air ride is off, the Nitrous byte
-            // when the shot ends
-            if !i.air_on {
-                self.off_bytes[EV_AIR_RIDE] = false;
-            }
-            if !i.nitro_on {
-                self.off_bytes[EV_NITROUS] = false;
-            }
-            if self.phase != 0 {
-                return self.show(&t, car, chase, dt, test, aspect);
-            }
+            out = self.show(dir, &t, car, dt, test, aspect);
         }
+        // part 5: the AirRide byte comes back when the air ride is off, the Nitrous byte when the
+        // shot ends
         if !i.air_on {
             self.off_bytes[EV_AIR_RIDE] = false;
         }
         if !i.nitro_on {
             self.off_bytes[EV_NITROUS] = false;
         }
-        chase
+        out
     }
 
-    fn show(&mut self, t: &TrackTune, car: &TrackCar, chase: BoomOut, dt: f32, test: SphereTest, aspect: f32) -> BoomOut {
-        let ev = self.cam.update(t, car, dt, dt, test, aspect);
-        if self.phase == 2 {
-            return ev;
-        }
-        // the director's blend camera (F-18583, type 3), both cameras running
-        let (from, to) = if self.src_event { (&ev, &chase) } else { (&chase, &ev) };
-        let (a, b, reach) = (dir_cam_of(from, car.pos), dir_cam_of(to, car.pos), (to.look - to.pos).length().max(1.0));
-        if !self.blend.step(&a, &b, 3, self.dir_time, dt) {
-            // the finish (F-70013): the target, or a queued drive view other than the target
-            // (approx.: a wipeout camera still queued here - the crash bits gone before the next
-            // frame's start - is taken as cut to and away again: the drive view)
-            let to_event = !self.src_event && !self.queued_player && !self.wipe_queued;
-            self.phase = if to_event { 2 } else { 0 };
-            self.queued_player = false;
-            self.wipe_queued = false;
-            return if to_event { ev } else { chase };
-        }
-        let m = &self.blend;
-        BoomOut { pos: m.pos, look: m.pos - m.rows[2] * reach, up: m.rows[1], fov: m.lens[0] }
+    /// The event camera's update when the director runs it (current, or a blend's source or target).
+    fn show(&mut self, dir: &Director, t: &TrackTune, car: &TrackCar, dt: f32, test: SphereTest, aspect: f32) -> Option<BoomOut> {
+        dir.involves(CamId::Event).then(|| self.cam.update(t, car, dt, dt, test, aspect))
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn target_at(pos: Vec3) -> BoomTarget {
+    BoomTarget { pos, rot: Quat::IDENTITY, vel: Vec3::ZERO, ang_vel: Vec3::ZERO, grounded: 4, gear: 1, rev: false, nitro: false, nitro_fov: (0.0, 0.5, 1.0), ability: (0.0, 1.0), sst: (0.0, 1.0), pan: (0.0, 0.0), rise: 0.0, fixed_mount: false, model_offset: Vec3::ZERO }
+}
+
+#[cfg(test)]
+impl EventDirector {
+    /// One frame on its own director, `chase` the drive view's output, then the director's step.
+    fn frame_t(&mut self, data_dir: &str, car_name: &str, i: &EventIn, car: &TrackCar, chase: BoomOut, dt: f32, test: SphereTest, ray: RayTest, aspect: f32) -> BoomOut {
+        let mut dir = std::mem::take(&mut self.tdir);
+        let o = self.frame(&mut dir, data_dir, car_name, i, car, dt, test, ray, aspect);
+        let others: Vec<(CamId, BoomOut)> = o.map(|o| (CamId::Event, o)).into_iter().collect();
+        let out = dir.apply(&target_at(car.pos), chase, &others, dt);
+        self.tdir = dir;
+        out
+    }
+    fn shown_t(&self) -> bool {
+        self.shown(&self.tdir)
+    }
+    fn leaving_t(&self) -> bool {
+        self.leaving(&self.tdir)
+    }
+    fn idle_t(&self) -> bool {
+        self.idle(&self.tdir)
     }
 }
 
@@ -3863,7 +3913,7 @@ mod tests {
         let mut d = EventDirector::default();
         let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 25.0 };
         let mut car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
-        let o = d.frame(&data, "vp_aud_r8_08", &ein(1.0, 1.0, 2.0, 0.0), &car, BoomOut { ..chase }, 1.0 / 60.0, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
+        let o = d.frame_t(&data, "vp_aud_r8_08", &ein(1.0, 1.0, 2.0, 0.0), &car, BoomOut { ..chase }, 1.0 / 60.0, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
         assert!(d.running());
         // (blending in: between the chase view and the event view)
         assert!(o.pos.distance(chase.pos) < 1.0, "{:?}", o.pos);
@@ -3874,7 +3924,7 @@ mod tests {
         let mut held = None;
         for i in 0..150 {
             car.rot = Quat::from_rotation_y(i.min(59) as f32 * 2.0 / 60.0);
-            let o = d.frame(&data, "vp_aud_r8_08", &ein(1.0, 1.0, 2.0, 0.0), &car, BoomOut { ..chase }, 1.0 / 60.0, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
+            let o = d.frame_t(&data, "vp_aud_r8_08", &ein(1.0, 1.0, 2.0, 0.0), &car, BoomOut { ..chase }, 1.0 / 60.0, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
             if i >= 50 {
                 assert!((o.fov - 25.0).abs() < 1e-3);
             }
@@ -3890,7 +3940,7 @@ mod tests {
         }
         let p = held.unwrap();
         assert!((last - p).normalize().dot((Vec3::new(0.0, 1.0, 0.0) + Quat::from_rotation_y(59.0 * 2.0 / 60.0) * Vec3::new(0.0, 0.0, -1.3) - p).normalize()) > 0.99);
-        d.frame(&data, "vp_aud_r8_08", &ein(1.0, 1.0, 0.7, 0.0), &car, BoomOut { ..chase }, 1.0 / 60.0, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
+        d.frame_t(&data, "vp_aud_r8_08", &ein(1.0, 1.0, 0.7, 0.0), &car, BoomOut { ..chase }, 1.0 / 60.0, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
         assert!(!d.running());
     }
 
@@ -3915,7 +3965,7 @@ mod tests {
         let dt = 1.0 / 60.0;
         let run = |i: EventIn, ray: bool| {
             let mut d = EventDirector::default();
-            d.frame(&data, "vp_aud_r8_08", &i, &car, BoomOut { ..chase }, dt, &NO_WORLD, &|_, _| ray, 16.0 / 9.0);
+            d.frame_t(&data, "vp_aud_r8_08", &i, &car, BoomOut { ..chase }, dt, &NO_WORLD, &|_, _| ray, 16.0 / 9.0);
             d.event()
         };
         let base = EventIn { speed: 15.0, ..ein(0.0, 0.0, 0.0, 0.0) };
@@ -3928,9 +3978,9 @@ mod tests {
         assert_eq!(run(EventIn { air_time: 0.2, ..base }, true), None);
         let mut d = EventDirector::default();
         let w = EventIn { stunt: 1, front_down: false, view: 4, ..base };
-        d.frame(&data, "vp_aud_r8_08", &w, &car, BoomOut { ..chase }, dt, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
+        d.frame_t(&data, "vp_aud_r8_08", &w, &car, BoomOut { ..chase }, dt, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
         assert_eq!(d.event(), Some(EV_WHEELIE));
-        d.frame(&data, "vp_aud_r8_08", &EventIn { nitro_on: true, ..w }, &car, BoomOut { ..chase }, dt, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
+        d.frame_t(&data, "vp_aud_r8_08", &EventIn { nitro_on: true, ..w }, &car, BoomOut { ..chase }, dt, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
         assert_eq!(d.event(), None);
     }
 
@@ -3942,19 +3992,24 @@ mod tests {
         let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
         let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
         let dt = 0.1;
-        let mut a = AbilityCam::default();
-        let f = |a: &mut AbilityCam, push: bool, running: bool| a.frame(push, running, (0.5, 0.3), false, &car, BoomOut { ..chase }, dt, &NO_WORLD, 16.0 / 9.0).1;
-        assert!(f(&mut a, true, true));
-        assert_eq!((a.phase, a.dir_time), (1, 0.5));
+        let (mut a, mut dir) = (AbilityCam::default(), Director::default());
+        let f = |a: &mut AbilityCam, dir: &mut Director, push: bool, running: bool| {
+            let (o, pushed) = a.frame(dir, push, running, (0.5, 0.3), false, &car, dt, &NO_WORLD, 16.0 / 9.0);
+            let others: Vec<(CamId, BoomOut)> = o.map(|o| (CamId::Ability, o)).into_iter().collect();
+            dir.apply(&target_at(car.pos), chase, &others, dt);
+            pushed
+        };
+        assert!(f(&mut a, &mut dir, true, true));
+        assert!(dir.active() && dir.dst == CamId::Ability && dir.time == 0.5);
         // stopped at once: still blending in for the rest of the 0.5 s
         let mut n = 0;
-        while a.phase == 1 {
-            f(&mut a, false, false);
+        while dir.active() {
+            f(&mut a, &mut dir, false, false);
             n += 1;
         }
-        assert!((4..=5).contains(&n) && a.phase == 2, "{n}");
-        f(&mut a, false, false);
-        assert_eq!((a.phase, a.dir_time), (3, 0.3));
+        assert!((4..=5).contains(&n) && dir.is_current(CamId::Ability), "{n}");
+        f(&mut a, &mut dir, false, false);
+        assert!(dir.active() && dir.src == CamId::Ability && dir.time == 0.3);
     }
 
     /// The event's off on the director (F-94591, F-29802, F-98424 -> F-43758): while blending in a
@@ -3968,19 +4023,26 @@ mod tests {
 camTrackCS {
 }
 ", "SSTurbo");
-        let mut d = EventDirector::default();
-        d.begin_in(1.0);
-        d.blend.weight = 0.25;
-        d.off(&t, 0.0);
-        assert_eq!((d.phase, d.src_event, d.queued_player, d.blend.left, d.blend.weight, d.dir_time), (3, true, false, 0.25, 0.75, 1.0));
-        d.off(&t, 0.5);
-        assert_eq!((d.phase, d.src_event, d.queued_player, d.blend.left, d.blend.weight, d.dir_time), (3, false, true, 0.75, 0.25, 0.5));
-        let mut d = EventDirector { phase: 2, ..Default::default() };
-        d.off(&t, 0.4);
-        assert_eq!((d.phase, d.src_event, d.blend.left, d.blend.weight, d.dir_time), (3, true, 0.4, 0.0, 0.4));
-        let mut d = EventDirector { phase: 2, ..Default::default() };
-        d.off(&t, 0.001);
-        assert_eq!(d.phase, 0);
+        let (mut d, mut dir) = (EventDirector::default(), Director::default());
+        let ev = CamId::Event;
+        let queued_view = |dir: &Director| matches!(dir.queued, Some(CamId::View(_)));
+        d.begin_in(&mut dir, 1.0);
+        dir.blend.weight = 0.25;
+        d.off(&mut dir, &t, 0.0);
+        assert!(d.leaving(&dir));
+        assert_eq!((dir.src == ev, queued_view(&dir), dir.blend.left, dir.blend.weight, dir.time), (true, false, 0.25, 0.75, 1.0));
+        d.off(&mut dir, &t, 0.5);
+        assert!(d.leaving(&dir));
+        assert_eq!((dir.src == ev, queued_view(&dir), dir.blend.left, dir.blend.weight, dir.time), (false, true, 0.75, 0.25, 0.5));
+        let (mut d, mut dir) = (EventDirector { on: true, ..Default::default() }, Director::default());
+        dir.cut(ev);
+        d.off(&mut dir, &t, 0.4);
+        assert!(d.leaving(&dir));
+        assert_eq!((dir.src == ev, dir.blend.left, dir.blend.weight, dir.time), (true, 0.4, 0.0, 0.4));
+        let (mut d, mut dir) = (EventDirector { on: true, ..Default::default() }, Director::default());
+        dir.cut(ev);
+        d.off(&mut dir, &t, 0.001);
+        assert!(!d.running() && !dir.involves(ev));
     }
 
     /// The director's blends recorded in the running original (work/recomp-trace cam_trace, the
@@ -4007,6 +4069,7 @@ camTrackCS {
             let wipe = head.ends_with("wipe");
             let mut d = EventDirector::default();
             let mut c = CrashCam::default();
+            let mut dir = Director::default();
             let mut more = true;
             while let Some(l) = lines.next_if(|l| !l.starts_with("case")) {
                 let w: Vec<&str> = l.split(' ').collect();
@@ -4015,26 +4078,25 @@ camTrackCS {
                         let how = CrashStart { offset: Vec3::new(0.0, 1.0, 7.0), blend: 0.5, exploding: false };
                         assert_eq!(how.blend, h(w[1]), "{head}");
                         c.start(Vec3::ZERO, &car, how, None);
+                        dir.push(CamId::Wipeout, how.blend, 1.0);
                     }
-                    "push" => d.begin_in(h(w[1])),
+                    "push" => d.begin_in(&mut dir, h(w[1])),
                     "off" => {
                         assert!(more, "{head}: an off after the finish");
-                        d.off(&t, h(w[1]));
+                        d.off(&mut dir, &t, h(w[1]));
                     }
                     "s" => {
                         assert!(more, "{head}: a step after the finish");
-                        let (bl, time) = if wipe { (&mut c.blend, c.dir_time) } else { (&mut d.blend, d.dir_time) };
+                        let bl = &mut dir.blend;
                         assert_eq!((bl.weight.to_bits(), bl.left.to_bits()), (h(w[2]).to_bits(), h(w[3]).to_bits()), "{head} {l}");
-                        more = bl.step(&a, &b, 3, time, h(w[1]));
+                        more = bl.step(&a, &b, 3, dir.time, h(w[1]));
                         steps += 1;
                     }
                     "fin" => {
                         assert!(!more, "{head}: no finish");
                         if !wipe {
-                            // (show's finish)
-                            let to_event = !d.src_event && !d.queued_player;
-                            d.phase = if to_event { 2 } else { 0 };
-                            d.queued_player = false;
+                            // (the director's finish, F-70013)
+                            dir.finish();
                             more = true;
                         }
                     }
@@ -4042,7 +4104,7 @@ camTrackCS {
                 }
             }
             // events end back on the drive view (every case has its off), the wipeout camera on itself
-            assert!(wipe || d.phase == 0, "{head}");
+            assert!(wipe || (!d.running() && dir.is_current(CamId::View(0))), "{head}");
             cases += 1;
         }
         assert_eq!((cases, steps), (5, 181));
@@ -4063,24 +4125,25 @@ camTrackCS {
         let o = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
         let a = dir_cam_of(&o, Vec3::ZERO);
         let h = |x: u32| f32::from_bits(x);
-        let mut d = EventDirector::default();
+        let (mut d, mut dir) = (EventDirector::default(), Director::default());
         d.ev = EV_IDLE;
-        d.phase = 2;
-        d.dir_time = 1.5;
+        d.on = true;
+        dir.cut(CamId::Event);
+        dir.time = 1.5;
         // frame 226: the head finds the event camera current (no finish), the off, the queued push
-        assert_eq!(d.finish_now(), None);
-        d.off(&t, -1.0);
-        assert!(d.leaving());
-        d.queue_wipe(0.5);
-        assert!(d.wipe_queued());
+        assert_eq!(dir.finish_now(), None);
+        d.off(&mut dir, &t, -1.0);
+        assert!(d.leaving(&dir));
+        assert_eq!(dir.push(CamId::Wipeout, 0.5, 1.0), Pushed::Queued);
+        assert_eq!(dir.queued, Some(CamId::Wipeout));
         // the step of frame 227 at its entry: w 0, left 1.5 (the recorded 0x3FC00000); T 0.5 (0x3F000000)
-        assert_eq!((d.blend.weight.to_bits(), d.blend.left.to_bits(), d.dir_time.to_bits()), (0, 0x3FC0_0000, 0x3F00_0000));
-        assert!(d.blend.step(&a, &a, 3, d.dir_time, h(0x3D0E_8FE9)));
+        assert_eq!((dir.blend.weight.to_bits(), dir.blend.left.to_bits(), dir.time.to_bits()), (0, 0x3FC0_0000, 0x3F00_0000));
+        assert!(dir.blend.step(&a, &a, 3, dir.time, h(0x3D0E_8FE9)));
         // the finish's record: w 0, left 0x3FBB8B81
-        assert_eq!((d.blend.weight.to_bits(), d.blend.left.to_bits()), (0, 0x3FBB_8B81));
+        assert_eq!((dir.blend.weight.to_bits(), dir.blend.left.to_bits()), (0, 0x3FBB_8B81));
         // frame 227's head: the finish cuts to the queued wipeout camera; the event view is gone
-        assert_eq!(d.finish_now(), Some(true));
-        assert!(!d.running() && !d.leaving() && !d.wipe_queued());
+        assert_eq!(dir.finish_now(), Some(CamId::Wipeout));
+        assert!(!d.running() && !d.leaving(&dir) && dir.queued.is_none() && dir.is_current(CamId::Wipeout));
     }
 
     /// AirRide (F-24075): it starts while the air ride is on (after Hydraulics, before the two-wheel
@@ -4096,7 +4159,7 @@ camTrackCS {
         let dt = 1.0 / 60.0;
         let mut d = EventDirector::default();
         let step = |d: &mut EventDirector, i: EventIn| {
-            d.frame(&data, "vp_aud_r8_08", &i, &car, BoomOut { ..chase }, dt, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
+            d.frame_t(&data, "vp_aud_r8_08", &i, &car, BoomOut { ..chase }, dt, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
         };
         let on = EventIn { air_on: true, ..ein(0.0, 0.0, 0.0, 0.0) };
         // (Hydraulics comes first, two wheels after)
@@ -4105,7 +4168,7 @@ camTrackCS {
         let mut d = EventDirector::default();
         step(&mut d, EventIn { g18: 1, ..on });
         assert_eq!(d.event(), Some(EV_AIR_RIDE));
-        assert_eq!(d.dir_time, 0.7);
+        assert_eq!(d.tdir.time, 0.7);
         // (not in the bumper / cockpit views)
         let mut e = EventDirector::default();
         step(&mut e, EventIn { view: 1, ..on });
@@ -4114,20 +4177,20 @@ camTrackCS {
         for _ in 0..60 {
             step(&mut d, on);
         }
-        assert!(d.shown());
+        assert!(d.shown_t());
         step(&mut d, EventIn { air_on: false, ..on });
-        assert!(d.leaving() && d.dir_time == 0.7);
+        assert!(d.leaving_t() && d.tdir.time == 0.7);
         // a held button: off, and not again while the air ride stays on
         let mut d = EventDirector::default();
         for _ in 0..60 {
             step(&mut d, on);
         }
         step(&mut d, EventIn { air_held: true, ..on });
-        assert!(d.leaving());
+        assert!(d.leaving_t());
         for _ in 0..60 {
             step(&mut d, on);
         }
-        assert_eq!((d.phase, d.event()), (0, None));
+        assert_eq!((d.tdir.involves(CamId::Event), d.event()), (false, None));
         // switched off once, it starts again
         step(&mut d, EventIn { air_on: false, ..on });
         step(&mut d, on);
@@ -4197,20 +4260,26 @@ camTrackCS {
         let mo = Vec3::new(0.0, 0.708, 0.0);
         let mut car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: slide, speed: slide.length(), reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 0.3, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
         let drive = BoomOut { pos: Vec3::new(0.0, 2.0, 6.0), look: Vec3::ZERO, up: Vec3::Y, fov: 60.0 };
-        let mut c = CrashCam::default();
-        c.start(mo, &car, CrashStart::choose(3, false, false, 1.0, right, slide), None);
+        let (mut c, mut dir) = (CrashCam::default(), Director::default());
+        let how = CrashStart::choose(3, false, false, 1.0, right, slide);
+        c.start(mo, &car, how, None);
+        dir.push(CamId::Wipeout, how.blend, 1.0);
         let dt = 1.0 / 60.0;
-        let o = c.frame(&car, BoomOut { ..drive }, dt, dt, &NO_WORLD, 16.0 / 9.0);
+        let frame = |c: &mut CrashCam, dir: &mut Director, car: &TrackCar| {
+            let others: Vec<(CamId, BoomOut)> = c.frame(dir, car, dt, dt, &NO_WORLD, 16.0 / 9.0).map(|o| (CamId::Wipeout, o)).into_iter().collect();
+            dir.apply(&target_at(car.pos), drive, &others, dt)
+        };
+        let o = frame(&mut c, &mut dir, &car);
         assert!(o.pos.distance(drive.pos) < 1.0, "blending in: {:?}", o.pos);
         let mut o = o;
         for _ in 0..15 {
-            o = c.frame(&car, BoomOut { ..drive }, dt, dt, &NO_WORLD, 16.0 / 9.0);
+            o = frame(&mut c, &mut dir, &car);
         }
         let t = Vec3::new(0.0, 0.531, 0.0);
         assert!(o.pos.distance(t + Vec3::new(6.0, 0.0, 0.0)) < 1e-3 && o.fov == 40.0, "{:?}", o.pos);
         for _ in 0..120 {
             car.pos += car.vel * dt;
-            o = c.frame(&car, BoomOut { ..drive }, dt, dt, &NO_WORLD, 16.0 / 9.0);
+            o = frame(&mut c, &mut dir, &car);
         }
         let d = o.pos.distance(car.pos + t);
         assert!((6.0 - 1e-3..=10.0 + 1e-3).contains(&d), "{d}");
@@ -4281,8 +4350,8 @@ camTrackCS {
         let mut free = BoomOut { ..chase };
         let mut e = EventDirector::default();
         for i in 0..240 {
-            o = d.frame(&data, "vp_aud_r8_08", &ein(0.0, 0.0, 0.0, 60.0 + i as f32 / 60.0), &car, BoomOut { ..chase }, 1.0 / 60.0, &Balls(wall), &|_, _| false, 16.0 / 9.0);
-            free = e.frame(&data, "vp_aud_r8_08", &ein(0.0, 0.0, 0.0, 60.0 + i as f32 / 60.0), &car, BoomOut { ..chase }, 1.0 / 60.0, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
+            o = d.frame_t(&data, "vp_aud_r8_08", &ein(0.0, 0.0, 0.0, 60.0 + i as f32 / 60.0), &car, BoomOut { ..chase }, 1.0 / 60.0, &Balls(wall), &|_, _| false, 16.0 / 9.0);
+            free = e.frame_t(&data, "vp_aud_r8_08", &ein(0.0, 0.0, 0.0, 60.0 + i as f32 / 60.0), &car, BoomOut { ..chase }, 1.0 / 60.0, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
         }
         assert!(free.pos.z < -8.0, "{:?}", free.pos);
         assert!(o.pos.z > -5.0 && o.pos.distance(Vec3::new(0.0, 0.895, 0.55)) >= 2.0 - 1e-3, "{:?}", o.pos);
@@ -4361,12 +4430,12 @@ camTrackCS {
         let mut d = EventDirector::default();
         let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
         let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
-        let o = d.frame(&data, "vp_aud_r8_08", &ein(0.0, 0.0, 0.0, 59.9), &car, BoomOut { ..chase }, 1.0 / 60.0, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
-        assert!(!d.idle() && o.pos == chase.pos);
+        let o = d.frame_t(&data, "vp_aud_r8_08", &ein(0.0, 0.0, 0.0, 59.9), &car, BoomOut { ..chase }, 1.0 / 60.0, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
+        assert!(!d.idle_t() && o.pos == chase.pos);
         let mut held = Vec::new();
         for i in 0..240 {
-            let o = d.frame(&data, "vp_aud_r8_08", &ein(0.0, 0.0, 0.0, 60.0 + i as f32 / 60.0), &car, BoomOut { ..chase }, 1.0 / 60.0, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
-            assert!(d.idle());
+            let o = d.frame_t(&data, "vp_aud_r8_08", &ein(0.0, 0.0, 0.0, 60.0 + i as f32 / 60.0), &car, BoomOut { ..chase }, 1.0 / 60.0, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
+            assert!(d.idle_t());
             if i >= 100 {
                 held.push(o);
             }
@@ -4374,7 +4443,7 @@ camTrackCS {
         let p = held[0].pos;
         assert!((p.x.abs() - 2.525).abs() < 1e-3 && (p.y - 0.895).abs() < 1e-3 && (p.z - (0.55 - 9.0)).abs() < 1e-3, "{p:?}");
         assert!(held.iter().all(|o| o.pos.distance(p) < 1e-4 && (o.fov - 25.0).abs() < 1e-3));
-        d.frame(&data, "vp_aud_r8_08", &ein(0.0, 0.0, 0.0, 0.0), &car, BoomOut { ..chase }, 1.0 / 60.0, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
+        d.frame_t(&data, "vp_aud_r8_08", &ein(0.0, 0.0, 0.0, 0.0), &car, BoomOut { ..chase }, 1.0 / 60.0, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
         assert!(!d.running());
         // on a hill (the car's back axis 0.2 up the slope: facing downhill) the Idle camera's
         // place, ahead of the car, turns down with the ground by asin(0.2 * 0.8) about the
@@ -4384,7 +4453,7 @@ camTrackCS {
         let mut d = EventDirector::default();
         let mut o = BoomOut { ..chase };
         for i in 0..600 {
-            o = d.frame(&data, "vp_aud_r8_08", &ein(0.0, 0.0, 0.0, 60.0 + i as f32 / 60.0), &car, BoomOut { ..chase }, 1.0 / 60.0, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
+            o = d.frame_t(&data, "vp_aud_r8_08", &ein(0.0, 0.0, 0.0, 60.0 + i as f32 / 60.0), &car, BoomOut { ..chase }, 1.0 / 60.0, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
         }
         let at = Vec3::new(0.0, 0.895, 0.55);
         let rel = Vec3::new(2.525, 0.0, 9.0).length();
@@ -4692,7 +4761,7 @@ mod director_blend_tests {
         sw.frame(set, view, false, false, false, cam, dt);
         let (tune, _) = tune_for(set, sw.shown(view), false);
         let out = cam.update(tune, &car, dt);
-        sw.blend.apply(&car, out, dt);
+        sw.blend.apply(&car, out, &[], dt);
     }
 
     /// The director's queue and finish (F-98424 -> F-43758, F-70013): a view change while the views
@@ -4712,7 +4781,7 @@ mod director_blend_tests {
             run(&mut sw, &set, &mut cam, 1, dt);
         }
         run(&mut sw, &set, &mut cam, 2, dt);
-        assert_eq!((sw.shown(2), sw.blend.queued, sw.blend.time), (1, Some(2), 0.5));
+        assert_eq!((sw.shown(2), sw.blend.queued, sw.blend.time), (1, Some(CamId::View(2)), 0.5));
         let mut n = 0;
         while sw.blend.active() {
             run(&mut sw, &set, &mut cam, 2, dt);
@@ -4740,11 +4809,11 @@ mod director_blend_tests {
             run(&mut sw, &set, &mut cam, 1, dt);
         }
         run(&mut sw, &set, &mut cam, 0, dt);
-        assert_eq!((sw.shown(0), sw.blend.queued), (1, Some(0)));
+        assert_eq!((sw.shown(0), sw.blend.queued), (1, Some(CamId::View(0))));
         let w = sw.blend.blend.weight;
         assert!(w > 0.0 && w < 1.0);
         run(&mut sw, &set, &mut cam, 1, dt);
-        assert_eq!((sw.blend.src, sw.blend.dst, sw.blend.queued, sw.shown(1)), (1, 0, None, 0));
+        assert_eq!((sw.blend.src, sw.blend.dst, sw.blend.queued, sw.shown(1)), (CamId::View(1), CamId::View(0), None, 0));
         let w2 = sw.blend.blend.weight;
         assert!(w2 > 1.0 - w - 0.2 && w2 < 1.0);
         let mut n = 0;
@@ -4757,32 +4826,97 @@ mod director_blend_tests {
         assert_eq!(sw.shown(1), 0);
     }
 
-    /// CAM_UP over the event camera (F-67519): the chosen view changes while the director keeps the
-    /// old one (hold), no blend starts, and the queued view is cut to when the event has gone.
+    /// CAM_UP over the event camera (F-67519): the event's off (F-94591, 0.2 s) goes first, then the
+    /// view's push (F-41662 -> F-98424) on the one director. With the event shown the off begins the
+    /// blend out and the new view is queued behind it (F-43758), cut to at its end (F-70013); while
+    /// the event still blends in, the off turns the blend round (F-29802) and queues the old view -
+    /// the target -, so the new view's push is dropped and the old view stays on.
     #[test]
-    fn a_held_view_is_cut_to_without_a_blend() {
+    fn a_view_change_over_the_event_camera() {
         let set = views();
-        let (mut sw, mut cam) = (Switch::default(), BoomCam::default());
+        let t = TrackTune::from_text("type: a\ncamTrackCS {\n}\n", "Idle");
+        let ev_out = BoomOut { pos: Vec3::new(3.0, 1.0, 4.0), look: Vec3::ZERO, up: Vec3::Y, fov: 50.0 };
+        let car = target_at(Vec3::ZERO);
         let dt = 1.0 / 30.0;
-        for _ in 0..10 {
-            run(&mut sw, &set, &mut cam, 1, dt);
-        }
-        sw.hold(2, false, sw.shown(1));
+        let frame = |sw: &mut Switch, cam: &mut BoomCam, view: u8, ev: bool| {
+            sw.frame(&set, view, false, false, false, cam, dt);
+            let (tune, _) = tune_for(&set, sw.shown(view), false);
+            let out = cam.update(tune, &car, dt);
+            let others = if ev { vec![(CamId::Event, ev_out)] } else { vec![] };
+            sw.blend.apply(&car, out, &others, dt);
+        };
+        let (v1, v2) = (CamId::View(1), CamId::View(2));
+        // shown: queued, then cut to
+        let (mut sw, mut cam, mut d) = (Switch::default(), BoomCam::default(), EventDirector::default());
         for _ in 0..5 {
-            run(&mut sw, &set, &mut cam, 2, dt);
-            assert!(!sw.blend.active() && !sw.mask.is_on());
+            frame(&mut sw, &mut cam, 1, false);
+        }
+        d.begin_in(&mut sw.blend, 0.5);
+        let mut n = 0;
+        while sw.blend.active() {
+            frame(&mut sw, &mut cam, 1, true);
+            n += 1;
+            assert!(n < 60);
+        }
+        assert!(d.shown(&sw.blend));
+        d.off(&mut sw.blend, &t, 0.2);
+        frame(&mut sw, &mut cam, 2, true);
+        assert_eq!((sw.blend.src, sw.blend.dst, sw.blend.queued, sw.shown(2)), (CamId::Event, v1, Some(v2), 1));
+        while sw.blend.active() {
+            frame(&mut sw, &mut cam, 2, true);
             assert_eq!(sw.shown(2), 1);
         }
-        sw.cut_to(2, false, &mut cam);
-        run(&mut sw, &set, &mut cam, 2, dt);
-        assert!(!sw.blend.active() && !sw.mask.is_on() && sw.shown(2) == 2);
-        // (a dropped view: the director stays on the old one until the next change, which blends from it)
-        sw.hold(0, false, sw.shown(2));
-        run(&mut sw, &set, &mut cam, 0, dt);
-        assert_eq!(sw.shown(0), 2);
-        run(&mut sw, &set, &mut cam, 1, dt);
-        assert!(sw.blend.active());
-        assert_eq!((sw.blend.src, sw.blend.dst), (2, 1));
+        frame(&mut sw, &mut cam, 2, false);
+        assert!(sw.shown(2) == 2 && sw.blend.is_current(v2) && !d.leaving(&sw.blend));
+        // blending in: dropped
+        let (mut sw, mut cam, mut d) = (Switch::default(), BoomCam::default(), EventDirector::default());
+        for _ in 0..5 {
+            frame(&mut sw, &mut cam, 1, false);
+        }
+        d.begin_in(&mut sw.blend, 0.5);
+        for _ in 0..3 {
+            frame(&mut sw, &mut cam, 1, true);
+        }
+        d.off(&mut sw.blend, &t, 0.2);
+        frame(&mut sw, &mut cam, 2, true);
+        assert_eq!((sw.blend.src, sw.blend.dst, sw.blend.queued, sw.shown(2)), (CamId::Event, v1, Some(v1), 1));
+        while sw.blend.active() {
+            frame(&mut sw, &mut cam, 2, true);
+        }
+        frame(&mut sw, &mut cam, 2, false);
+        assert!(sw.shown(2) == 1 && sw.blend.is_current(v1));
+    }
+
+    /// One director for every camera: the wipeout camera pushed (F-37740, 0.25 s) while the ability
+    /// camera blends in (F-38892, 0.5 s) is queued (F-43758, its time the director's) and cut to at
+    /// the blend's end (F-70013) - not blended in from the drive view behind the ability's blend.
+    #[test]
+    fn a_push_during_another_cameras_blend_is_queued_then_cut_to() {
+        let car = target_at(Vec3::ZERO);
+        let drive = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
+        let ab = BoomOut { pos: Vec3::new(3.0, 1.0, 4.0), look: Vec3::ZERO, up: Vec3::Y, fov: 50.0 };
+        let wipe = BoomOut { pos: Vec3::new(-6.0, 0.5, 0.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
+        let others = [(CamId::Ability, ab), (CamId::Wipeout, wipe)];
+        let dt = 1.0 / 30.0;
+        let mut dir = Director::default();
+        assert_eq!(dir.push(CamId::Ability, 0.5, 1.0), Pushed::Begun);
+        for _ in 0..5 {
+            dir.apply(&car, drive, &others, dt);
+        }
+        let w = dir.blend.weight;
+        assert!(w > 0.0 && w < 1.0);
+        assert_eq!(dir.push(CamId::Wipeout, 0.25, 1.0), Pushed::Queued);
+        assert_eq!((dir.src, dir.dst, dir.queued, dir.time), (CamId::View(0), CamId::Ability, Some(CamId::Wipeout), 0.25));
+        let mut last = drive;
+        let mut n = 0;
+        while dir.active() {
+            last = dir.apply(&car, drive, &others, dt);
+            n += 1;
+            assert!(n < 60);
+        }
+        assert!(dir.is_current(CamId::Wipeout) && dir.queued.is_none());
+        assert_eq!(last.pos, wipe.pos);
+        assert_eq!(dir.apply(&car, drive, &others, dt).pos, wipe.pos);
     }
 
     /// The director's push F-98424 with its queue F-43758, begin F-18878, cut F-53309 and finish
@@ -4826,7 +4960,10 @@ Focus 0 1 0
                 }
             }
             let w: Vec<&str> = want.split_whitespace().collect();
-            let num = |v: Option<u8>| v.map_or(0, |v| v as u32 + 1);
+            let num = |v: Option<CamId>| match v {
+                Some(CamId::View(v)) => v as u32 + 1,
+                _ => 0,
+            };
             if w[0] == "9" {
                 assert!(sw.blend.active(), "line {}: {line}", n + 1);
                 let b = &sw.blend;
@@ -4835,7 +4972,7 @@ Focus 0 1 0
                 assert_eq!(got, exp, "line {}: {line}", n + 1);
             } else {
                 assert!(!sw.blend.active(), "line {}: {line}", n + 1);
-                assert_eq!(num(Some(sw.shown(view))), w[0].parse::<u32>().unwrap(), "line {}: {line}", n + 1);
+                assert_eq!(num(Some(CamId::View(sw.shown(view)))), w[0].parse::<u32>().unwrap(), "line {}: {line}", n + 1);
             }
             steps += 1;
         }
