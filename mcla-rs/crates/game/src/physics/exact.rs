@@ -734,6 +734,23 @@ pub fn axle_disp(comp: f32, travel_extent: f32, travel_limit: f32, offset: f32) 
 
 #[cfg(test)]
 mod tests {
+    /// F-89809 run offline (tools/stop_rate_reference.py): 6,000 cases with zeros, equal ends, opposite speeds, NaN
+    /// and infinities - every word equal (a NaN as a NaN: the harness's x86 default NaN is not the console's).
+    #[test]
+    fn stop_rate_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let nan = |x: u32| if f32::from_bits(x).is_nan() { 0x7fc0_0000 } else { x };
+        let mut n = 0;
+        for line in include_str!("../testdata/stop_rate_ref.txt").lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let c: Vec<f32> = case.split(' ').map(|x| f32::from_bits(h(x))).collect();
+            let got = super::stop_rate(c[0], c[1], c[2], c[3], c[4]).to_bits();
+            assert_eq!(nan(got), nan(h(want)), "{line}: {got:08x}");
+            n += 1;
+        }
+        assert_eq!(n, 6000);
+    }
+
     use super::*;
 
     #[test]
