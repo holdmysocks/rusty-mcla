@@ -1951,6 +1951,14 @@ pub fn game_materials(b: &mcla_formats::rage::fragphys::FragBound) -> Vec<u32> {
     }
 }
 
+/// A polygon's area as the original recomputes it when a car's hull is reshaped (F-89464 -> F-83274 -> F-12307): of its
+/// vertices `a` (+4), `b` (+6), `c` (+8), 0.5 x |(a - b) x (c - b)|, the length as sqrt(x x + (z z + y y)).
+pub fn poly_area(a: Vec3, b: Vec3, c: Vec3) -> f32 {
+    let n = (a - b).cross(c - b);
+    let l = (n.x as f64).mul_add(n.x as f64, (n.z as f64).mul_add(n.z as f64, (n.y * n.y) as f64) as f32 as f64) as f32;
+    l.sqrt() * 0.5
+}
+
 impl ProbeBound {
     fn material(&self, i: usize) -> u32 {
         self.materials.get(i).copied().unwrap_or(0)
@@ -3572,6 +3580,26 @@ mod tests {
         }
         // (sphere cases, dispatches that added records, lists left full, records, cells the records came from)
         assert_eq!((balls, hits, full, recs, cells_hit.len()), (1545, 1908, 1015, 1678, 54), "coverage");
+    }
+
+    /// F-89464 / F-83274 / F-12307 run offline (tools/poly_area_reference.py -> testdata/poly_area_ref.txt): random
+    /// polygons and every car's hull, as the file has it and moved a little; each polygon's area word equals poly_area.
+    #[test]
+    fn poly_area_matches_the_original() {
+        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let mut n = 0;
+        for (k, line) in include_str!("../testdata/poly_area_ref.txt").lines().enumerate() {
+            let (inp, out) = line.split_once(" -> ").unwrap();
+            let w: Vec<f32> = inp.split(' ').skip(1).map(|s| f32::from_bits(h(s))).collect();
+            let o: Vec<u32> = out.split(' ').map(h).collect();
+            assert_eq!(w.len(), 9 * o.len(), "line {}", k + 1);
+            for (i, &want) in o.iter().enumerate() {
+                let v = |j: usize| Vec3::new(w[9 * i + 3 * j], w[9 * i + 3 * j + 1], w[9 * i + 3 * j + 2]);
+                assert_eq!(poly_area(v(0), v(1), v(2)).to_bits(), want, "line {} polygon {i}", k + 1);
+                n += 1;
+            }
+        }
+        assert_eq!(n, 14_246);
     }
 
     /// The rail sweep's two level queries against the original's code run whole offline (tools/level_query_reference.py
