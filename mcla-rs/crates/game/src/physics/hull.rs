@@ -208,19 +208,6 @@ fn recip_newton(d: f32) -> f32 {
     r * -(r * d - 1.0) + r
 }
 
-/// F-95825's unit vector at right angles to `v` (the degenerate triangle's way out): (-z, 0, x) when |x| >= |y|, else
-/// (0, z, -y), normalised by the reciprocal square root with one Newton step (the length as the dot unit sums it).
-fn perpendicular(v: Vec3) -> Vec3 {
-    let o = if !(v.x.abs() < v.y.abs()) { Vec3::new(-v.z, 0.0, v.x) } else { Vec3::new(0.0, v.z, -v.y) };
-    let d = o.z * o.z + (o.y * o.y + o.x * o.x);
-    let mut y = 1.0 / d.sqrt();
-    if y == f32::INFINITY {
-        y = 0.0;
-    }
-    let y1 = -(d * (y * y) - 1.0) * (0.5 * y) + y;
-    o * y1
-}
-
 /// F-78217: the sphere of the support (the `sup` points just before `start` in `order`), then every one of the `n` points
 /// from `start` outside it moved to the front and the sphere redone with it in the support.
 fn sphere_mtf(v: &[Vec3], order: &mut Vec<usize>, start: usize, n: usize, sup: usize, c: &mut Vec3, r: &mut f32) {
@@ -249,7 +236,7 @@ fn sphere_mtf(v: &[Vec3], order: &mut Vec<usize>, start: usize, n: usize, sup: u
             let mut d = len(cr) * 2.0;
             let eps = f32::from_bits(0x2b8c_bccc);
             while !(d.abs() > eps) {
-                cr = perpendicular(if len(a) > eps { a } else { b });
+                cr = super::solver::basis(if len(a) > eps { a } else { b })[1]; // (F-95825: the unit vector across it)
                 d = len(cr) * 2.0;
             }
             let bb = fma(b.z, b.z, fma(b.x, b.x, b.y * b.y));
