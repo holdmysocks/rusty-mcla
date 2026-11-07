@@ -174,6 +174,8 @@ pub struct Sound {
     occ_slots: std::collections::HashMap<u32, u16>,
     /// the hit props' entities (their occluder keys) and the sounds they still play
     prop_held: Vec<(u64, Vec<crate::sndobj::Handle>)>,
+    /// the map effects' sounds (ptxaudio.rs)
+    ptx: crate::ptxaudio::PtxSounds,
     /// the player car's performance stages the sounds read: intake, turbo, nitrous
     pub parts: [u8; 3],
     /// the countdown's last sounded step (3, 2, 1, 0 = GO; 4 = before it; -1 = no race)
@@ -314,6 +316,29 @@ impl crate::ambaudio::SlotOccluders for AmbOccluders<'_, '_> {
     }
 }
 
+/// The map effects' entities' occluders on the table (`occlusion::System::effect*`).
+struct EffectOccluders<'a, 'w> {
+    oc: &'a mut crate::occlusion::System,
+    world: crate::occlusion::WorldProbe<'w>,
+    l: [f32; 4],
+}
+
+impl crate::ptxaudio::EffectOccluders for EffectOccluders<'_, '_> {
+    fn bind(&mut self, key: u64, origin: Vec3, place: [f32; 3], now: bool) -> u16 {
+        let l = self.l;
+        self.oc.effect(key, origin.to_array(), place, now, l, &mut self.world).map_or(0, |i| (i + 1) as u16)
+    }
+    fn follow(&mut self, key: u64, origin: Vec3) {
+        self.oc.effect_follow(key, origin.to_array());
+    }
+    fn volume(&self, key: u64) -> Option<f32> {
+        self.oc.effect_slot(key).and_then(|i| self.oc.out(i)).map(|o| o[0])
+    }
+    fn release(&mut self, key: u64) {
+        self.oc.release_effect(key);
+    }
+}
+
 /// A prop type object's occluder place (+69 / +73 / +77, F-95562).
 fn prop_place(o: &[u8]) -> [f32; 3] {
     let f = |at: usize| o.get(at..at + 4).map_or(0.0, |b| f32::from_be_bytes([b[0], b[1], b[2], b[3]]));
@@ -447,6 +472,26 @@ impl Sound {
     /// kind's sound at the walker and following it (`bike`: the player entity's bike byte), each with its entity's
     /// occluder (`occlusion::System::person`: placed (0, 1.5, 0) on the walker, the immediate update at the start; let
     /// go once the sound is over).
+    /// The map effects' sounds (mcParticleAudioEntity, F-83177 from the audio update): the effect instances playing now
+    /// (`Particles::instances`), each entity through its occluder.
+    pub fn effects(&mut self, live: &[(u32, String, Vec3)], collider: Option<&crate::physics::collision::WorldCollider>) {
+        let Some(lib) = self.lib.as_mut() else { return };
+        let l = lib.listener.0;
+        match &mut self.occl {
+            Some(oc) => {
+                let factors = oc.factors.clone();
+                let mut eo = EffectOccluders { oc, world: crate::occlusion::WorldProbe::of(collider, &factors), l: [l.x, l.y, l.z, 0.0] };
+                self.ptx.update(lib, live, &mut eo);
+                for i in 0..crate::occlusion::SLOTS {
+                    if let Some(o) = eo.oc.out(i) {
+                        lib.set_occlusion(i, o);
+                    }
+                }
+            }
+            None => self.ptx.update(lib, live, &mut crate::ptxaudio::NoOccluders),
+        }
+    }
+
     pub fn ped_reactions(&mut self, peds: &mut crate::peds::Peds, bike: bool, collider: Option<&crate::physics::collision::WorldCollider>) {
         let Some(lib) = self.lib.as_mut() else { return };
         let key = |k: (usize, u32)| ((k.0 as u64) << 32) | k.1 as u64;

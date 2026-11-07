@@ -425,7 +425,7 @@ pub(crate) struct System {
     pub ped_offset: [f32; 3],
     pub factors: std::sync::Arc<std::collections::HashMap<u8, f32>>,
     pub list: Vec<Option<Occluder>>,
-    /// whose each slot is: (0, a car's `uid`), (1, a walker's key), (2, a prop entity's key) or (3, an ambience slot)
+    /// whose each slot is: (0, a car's `uid`), (1, a walker's key), (2, a prop entity's key), (3, an ambience slot) or (4, a map effect's entity)
     owner: Vec<Option<(u8, u64)>>,
     mgr: Mgr,
     /// the ambience's two location slots' occluders (manager +156 + 20 i + 16, made by its init F-20021)
@@ -624,6 +624,49 @@ impl System {
             o.refresh(t, now, false, l, r, world);
         }
         Some(i)
+    }
+
+    /// A map effect's entity (mcParticleAudioEntity, F-95929): its occluder at `place` (the PTX object's +26 / +30 /
+    /// +34) on the instance's `origin`, not in the frame's space, and from "not updated yet" the immediate update
+    /// F-65914 when `now` (the object has a start sound). (approx.) Made here when the entity is bound; the original's
+    /// 64 entities keep theirs from the start.
+    pub fn effect(&mut self, key: u64, origin: [f32; 3], place: [f32; 3], now: bool, l: [f32; 4], world: &mut impl Probe) -> Option<usize> {
+        let i = match self.owner.iter().position(|o| *o == Some((4, key))) {
+            Some(i) => i,
+            None => {
+                let i = self.list.iter().position(|o| o.is_none())?;
+                self.list[i] = Some(Occluder::new(&self.tune, [place[0], place[1], place[2], 0.0], None));
+                self.owner[i] = Some((4, key));
+                i
+            }
+        };
+        let (t, r) = (&self.tune, self.radius);
+        let o = self.list[i].as_mut()?;
+        o.owner.pos = [place[0], place[1], place[2], 0.0];
+        o.frame = Some(Self::frame(origin));
+        if o.fresh {
+            o.refresh(t, now, false, l, r, world);
+        }
+        Some(i)
+    }
+
+    /// A map effect's entity follows its instance (F-19929: the instance's matrix into the entity's frame).
+    pub fn effect_follow(&mut self, key: u64, origin: [f32; 3]) {
+        if let Some(i) = self.owner.iter().position(|o| *o == Some((4, key))) {
+            if let Some(o) = self.list[i].as_mut() {
+                o.frame = Some(Self::frame(origin));
+            }
+        }
+    }
+
+    /// The table slot of a map effect's entity.
+    pub fn effect_slot(&self, key: u64) -> Option<usize> {
+        self.owner.iter().position(|o| *o == Some((4, key)))
+    }
+
+    /// A map effect's entity let go (F-83177: the occluder reset when updated; here the slot is given back).
+    pub fn release_effect(&mut self, key: u64) {
+        self.release(4, key);
     }
 
     /// A prop's entity let go (F-32518: the occluder reset when it has been updated; here the slot is given back).

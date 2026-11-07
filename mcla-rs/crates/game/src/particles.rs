@@ -807,6 +807,14 @@ impl Particles {
         }
     }
 
+    /// The effect instances playing now: their id, the effect rule's name and their place (inst +224) - what the
+    /// map effects' sounds (`ptxaudio.rs`) follow: an id seen for the first time is an instance's start, one gone is
+    /// its stop.
+    pub fn instances(&self) -> Vec<(u32, String, Vec3)> {
+        let Some(fx) = self.fx.as_ref() else { return Vec::new() };
+        self.effects.iter().map(|e| (e.id, fx.effects[e.effect].name.clone(), e.pos)).collect()
+    }
+
     /// Is the effect started under `key` still playing (or its particles alive)?
     pub fn is_alive(&self, key: u64) -> bool {
         self.effects.iter().any(|e| e.key == key)
