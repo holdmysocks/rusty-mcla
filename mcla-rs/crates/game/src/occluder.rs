@@ -67,8 +67,6 @@ const EDGE_SKIPS: usize = 2;
 
 /// The w an occluder's vertices are tested with against the view's sides (F-40381): outside beyond it.
 const VERTEX_W: f32 = 1.0;
-/// Safety margin of the hidden test, metres (the port's own).
-const MARGIN: f32 = 0.02;
 
 /// A polygon of an occluder as the file has it: its vertices in order, the file's edge of each side
 /// (side k runs from vertex k to vertex k + 1) and the sides whose edge runs the other way (F-45813).
@@ -674,22 +672,29 @@ impl Selected {
         s
     }
 
-    /// True when the box is entirely behind one occluder (never true for something visible).
+    /// True when the box is entirely behind one occluder: F-60582's (and F-92840's) test of the sets after the frustum
+    /// set. Each plane is tested at the corner F-32005 picks for it (the box's max on an axis whose plane component has
+    /// its sign bit clear, F-96918's corners), with the original's dot (`dpps`: (x + y) + (z + w x -1), its 4th word
+    /// being -w here). The planes go in groups of four (F-79439 pads the last group with copies of the last plane): the
+    /// group's largest dot (`vmaxfp`, NaN when one dot is NaN - a polygon of no area) > 0 shows the box past this volume;
+    /// when no group's is, the volume hides it. (A volume of no planes is never a set: F-54648 skips it.)
     pub fn hides_aabb(&self, mn: Vec3, mx: Vec3) -> bool {
-        'volume: for planes in &self.volumes {
-            for p in planes {
-                let v = Vec3::new(
-                    if p.x >= 0.0 { mx.x } else { mn.x },
-                    if p.y >= 0.0 { mx.y } else { mn.y },
-                    if p.z >= 0.0 { mx.z } else { mn.z },
-                );
-                if !(p.truncate().dot(v) + p.w <= -MARGIN) {
-                    continue 'volume;
-                }
-            }
-            return true;
-        }
-        false
+        let pick = |c: f32, lo: f32, hi: f32| if c.is_sign_negative() { lo } else { hi };
+        let dot = |p: &Vec4| {
+            let v = Vec3::new(pick(p.x, mn.x, mx.x), pick(p.y, mn.y, mx.y), pick(p.z, mn.z, mx.z));
+            (p.x * v.x + p.y * v.y) + (p.z * v.z + p.w)
+        };
+        self.volumes.iter().any(|planes| {
+            !planes.is_empty()
+                && !planes.chunks(4).any(|g| {
+                    let (mut nan, mut past) = (false, false);
+                    for x in g.iter().map(dot) {
+                        nan |= x.is_nan();
+                        past |= x > 0.0;
+                    }
+                    past && !nan
+                })
+        })
     }
 
     /// True when a sphere lies `r` or more behind every plane of one volume (F-38575,
@@ -1157,5 +1162,48 @@ mod tests {
         }
         println!("{cases} cases, {used} used, {planes} planes ({nan} NaN in both), all as the original's");
         assert!(cases > 12000);
+    }
+
+    /// F-60582 (the sector box test after F-54648's sets and F-96918's corners) run offline by
+    /// tools/occluder_hides_reference.py: an eye, a few occluders, 16 boxes each; the port's volumes and hides_aabb.
+    #[test]
+    fn hides_matches_the_original() {
+        let Ok(text) = std::fs::read_to_string("D:/MCLA/extracted/cache/city/sc/city.occluder") else { return };
+        let o = Occluders::parse(&text).unwrap();
+        let (mut cases, mut boxes, mut hidden, mut wrong) = (0, 0, 0, Vec::new());
+        for l in include_str!("testdata/occluder_hides_ref.txt").lines() {
+            let w: Vec<&str> = l.split(' ').collect();
+            let hex = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+            let eye = Vec3::new(hex(w[1]), hex(w[2]), hex(w[3]));
+            let mut sel = Selected::none();
+            for fi in w[4].split(',').map(|x| x.parse::<usize>().unwrap()) {
+                let occ = &o.list[o.entries[fi].body.expect("a body") as usize];
+                if let Some(v) = occ.in_range(eye, RANGE * RANGE_SCALE).then(|| occ.volume(eye, PUSH, None)).flatten() {
+                    sel.pos.push(sel.volumes.len() as u8);
+                    sel.volumes.push(v);
+                    sel.ids.push(fi as u32);
+                }
+            }
+            let (nvol, nsets): (usize, usize) = (w[5].parse().unwrap(), w[6].parse().unwrap());
+            assert_eq!((sel.volumes.len(), nsets), (nvol, nvol + 1), "{l}");
+            let sel = sel.sector_sets();
+            let bits = w.last().unwrap().as_bytes();
+            let f: Vec<f32> = w[7..w.len() - 1].iter().map(|x| x.parse().unwrap()).collect();
+            for (k, b) in f.chunks(6).enumerate() {
+                let (mn, mx) = (Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5]));
+                let want = bits[k] == b'1';
+                if sel.hides_aabb(mn, mx) != want {
+                    wrong.push(format!("case {cases} box {k}: want hidden {want}"));
+                }
+                hidden += want as usize;
+                boxes += 1;
+            }
+            cases += 1;
+        }
+        println!("{cases} cases, {boxes} boxes ({hidden} hidden), {} differ", wrong.len());
+        for x in wrong.iter().take(10) {
+            println!("  {x}");
+        }
+        assert!(wrong.is_empty() && cases > 1000);
     }
 }
