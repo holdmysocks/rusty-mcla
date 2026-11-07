@@ -5526,7 +5526,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if let Some((z, &(zp, zr, ..))) = self.police.zone.clone().filter(|_| race.countdown <= 0.0).and_then(|z| race.cop_zones.get(z.idx).map(|c| (z, c))) {
                     let lap = race.next.first().map_or(0, |&n| n / race.lap_len.max(1));
                     let racers: Vec<(u32, bool, Vec3, bool)> = race.participants.iter()
-                        .filter_map(|&ci| self.vehicles.cars.get(ci).map(|c| (c.uid, c.is_player, c.state.pos, c.state.damage >= 0.999)))
+                        .filter_map(|&ci| self.vehicles.cars.get(ci).map(|c| (c.uid, c.is_player, c.state.pos, police::damaged_out(c.state.damage))))  // (zone state 2's test, F-12032: the full MaxDamage)
                         .collect();
                     // (the in-race retarget's racers, the player first: F-22530)
                     self.police.racer_uids = racers.iter().filter(|r| r.1).chain(racers.iter().filter(|r| !r.1)).map(|r| r.0).collect();
