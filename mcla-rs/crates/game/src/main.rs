@@ -1043,6 +1043,13 @@ impl App {
                     return;
                 }
                 let plan = self.game.pink_scene.take();
+                // (0x5d76: under the black the player's car is put at local 847 (-137.4, 9.4, -290.7) and deactivated -
+                // recorded at (-137.40, 9.33, -290.70); so it is away from the grid when the scene's cars are put at their
+                // movers. Approx.: its heading is the car's own, the original's is the safezone frame's, not ported)
+                if let Some(pi) = self.vehicles.cars.iter().position(|c| c.is_player) {
+                    let rot = self.vehicles.cars[pi].state.rot;
+                    self.vehicles.pose_car(pi, glam::Vec3::new(-137.4, 9.4, -290.7), rot);
+                }
                 let grid = self.game.current_race.and_then(|i| self.game.race_defs.get(i)).and_then(|d| d.grid.first().copied());
                 let hook = self.game.race.as_ref().and_then(|r| r.participants.get(1).copied()).filter(|&i| i < self.vehicles.cars.len());
                 let mut started = false;
@@ -1056,7 +1063,9 @@ impl App {
                         if let (Some(h), Some((mp, mr))) = (hook, self.cine.mover("hookman")) {
                             let src = &self.vehicles.cars[h];
                             let (model, color, plate, config, set) = (src.model.clone(), src.color, src.plate_text.clone(), src.vinyl_name.clone(), src.driver_set.clone());
-                            let idx = self.vehicles.spawn(gpu, model, mp, 0.0, color, false);
+                            // (made facing the mover's way)
+                            let f = mr * glam::Vec3::NEG_Z;
+                            let idx = self.vehicles.spawn(gpu, model, mp, (-f.x).atan2(-f.z), color, false);
                             let c = &mut self.vehicles.cars[idx];
                             c.driver = "cine:hookman".to_string();
                             c.driver_set = set;
