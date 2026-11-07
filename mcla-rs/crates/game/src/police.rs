@@ -891,6 +891,57 @@ fn moving(speed: f32, moving_speed: f32) -> bool {
     speed > moving_speed * 0.447
 }
 
+/// The default final speed of a brain state (F-85634): the target car's speed (F-41260) when it is moving (F-43975), else 0.0;
+/// no target car - 0.0.
+fn default_final_speed(target_speed: Option<f32>, moving_speed: f32) -> f32 {
+    match target_speed {
+        Some(v) if moving(v, moving_speed) => v,
+        _ => 0.0,
+    }
+}
+
+/// A junction's arm vector while green (F-75755: the timer +164 < 6.5) / while yellow (F-93041: not < 6.5 and < 8.5): the arm
+/// at the junction's current index +160 when 0 <= it < the arm count, else the zero vector. A NaN timer is neither.
+fn arm_green(timer: f32, current: i32, arms: &[Vec3]) -> Vec3 {
+    let ok = timer < 6.5 && current >= 0 && (current as usize) < arms.len();
+    if ok { arms[current as usize] } else { Vec3::ZERO }
+}
+
+fn arm_yellow(timer: f32, current: i32, arms: &[Vec3]) -> Vec3 {
+    let ok = !(timer < 6.5) && timer < 8.5 && current >= 0 && (current as usize) < arms.len();
+    if ok { arms[current as usize] } else { Vec3::ZERO }
+}
+
+/// The running arm as the law checks take it (the red light, block traffic): the green arm, and when that is the zero vector
+/// the yellow one.
+fn running_arm(timer: f32, current: i32, arms: &[Vec3]) -> Vec3 {
+    let g = arm_green(timer, current, arms);
+    if g != Vec3::ZERO { g } else { arm_yellow(timer, current, arms) }
+}
+
+/// The pull-over's may-escalate (its vt+24, F-98647): false while the bullhorn timer +112 > 0 (fcmpu: NaN passes), else the base
+/// test F-38605 on the pull-over's slots - its Search test vt+40 is F-74264 (always false), its vt+36 F-33778 the FSM in
+/// state 3 (Ticket). AddPoints (F-19359) lifts a pull-over's 599 cap only when the bullhorn has sounded (+92 == 2) and this is true.
+fn pullover_may_escalate(may: bool, arrest: f32, bullhorn: f32, ticket: bool) -> bool {
+    !(f64::from(bullhorn) > 0.0) && tactic_may_escalate(false, may, false, ticket, arrest)
+}
+
+/// SetRaceChaseTarget (F-12315): the zone's chase type +204 - a racer given: 1 when it is the player (its vt+40), else 2;
+/// none: the type given.
+const fn race_chase_type(ty: u8, racer_is_player: Option<bool>) -> u8 {
+    match racer_is_player {
+        None => ty,
+        Some(true) => 1,
+        Some(false) => 2,
+    }
+}
+
+/// The cop unit's patrol setter (F-30531, (group, path)): a group >= 0 sets the hold +1128 to fPatrolTime (tune +316); a
+/// detach (-1) leaves it.
+fn patrol_hold(group: i32, hold: f32, patrol_time: f32) -> f32 {
+    if group >= 0 { patrol_time } else { hold }
+}
+
 /// F-43223: two frames face the same way - their forward rows dotted y, z, x (the y product rounded, the sums fused)
 /// over 0 (the port's forward is the row negated, which leaves the product's bits).
 fn same_facing(a: Vec3, b: Vec3) -> bool {
@@ -1192,13 +1243,14 @@ pub struct PoliceEval {
 
 impl PoliceEval {
     /// chance 0: wager / pink slip, delivery, time trial, tournament, series, red light, seven story cores
-    pub const NEVER: PoliceEval = PoliceEval { chance: 0.0, gate5: false, props: [true; 3], chase_type: 0 };
+    pub const NEVER: PoliceEval = PoliceEval { chance: 0.0, gate5: false, props: [true; 3], chase_type: race_chase_type(0, None) };
     /// 25 % with the racers gate: generic_local_hookman, the *_CHAMP_CORE and BEAT_SH_0x cores, RaceWrapper
-    pub const GATED: PoliceEval = PoliceEval { chance: 0.25, gate5: true, props: [true; 3], chase_type: 0 };
+    pub const GATED: PoliceEval = PoliceEval { chance: 0.25, gate5: true, props: [true; 3], chase_type: race_chase_type(0, None) };
     /// 25 %, no gate: TelephoneChallenge
-    pub const PHONE: PoliceEval = PoliceEval { chance: 0.25, gate5: false, props: [true; 3], chase_type: 0 };
+    pub const PHONE: PoliceEval = PoliceEval { chance: 0.25, gate5: false, props: [true; 3], chase_type: race_chase_type(0, None) };
     /// BEAT_SH_04B_CORE: always, the player the zone's target, no tracking, no race retarget
-    pub const SH_04B: PoliceEval = PoliceEval { chance: 1.0, gate5: false, props: [false, false, true], chase_type: 1 };
+    pub const SH_04B: PoliceEval =
+        PoliceEval { chance: 1.0, gate5: false, props: [false, false, true], chase_type: race_chase_type(1, Some(true)) };
 }
 
 /// The race's cop zone (PoliceManager +188 zone, +192 lap, +196 state, +212 timer).
@@ -1767,8 +1819,9 @@ impl Police {
                     }
                     if r == 0 {
                         self.units[ui].relocate = false;
-                        // (AssignPath, F-55649: +1128 = fPatrolTime, the hold before the next reassign)
-                        self.units[ui].cd = tun.get("fPatrolTime", 5.0);
+                        // (AssignPath, F-55649 -> F-30531: +1128 = fPatrolTime, the hold before the next reassign)
+                        let g = self.units[ui].path.map_or(-1, |g| g as i32);
+                        self.units[ui].cd = patrol_hold(g, self.units[ui].cd, tun.get("fPatrolTime", 5.0));
                     } else if let Some(i) = car.filter(|_| !self.units[ui].under) {
                         vehicles.cars.remove(i);
                         self.units[ui].under = true;
@@ -1798,7 +1851,8 @@ impl Police {
                     // (F-69094's end: the patrol loop finds the brain idle and assigns the patrol path again, F-90720
                     // without moving it)
                     if self.assign(gpu, world, vehicles, ui, true, false, vis) == 0 {
-                        self.units[ui].cd = tun.get("fPatrolTime", 5.0);
+                        let g = self.units[ui].path.map_or(-1, |g| g as i32);
+                        self.units[ui].cd = patrol_hold(g, self.units[ui].cd, tun.get("fPatrolTime", 5.0));
                     } else if let Some(path) = self.units[ui].path.and_then(|g| self.paths.get(g)) {
                         self.units[ui].pi = nearest_point(path, pos);
                     }
@@ -1809,7 +1863,10 @@ impl Police {
             if self.units[ui].cd <= 0.0 && pos.distance(pp) > vis {
                 // (assigned: AssignPath's fPatrolTime hold; the path taken: 5 s before the next try)
                 match self.assign(gpu, world, vehicles, ui, false, true, vis) {
-                    0 => self.units[ui].cd = tun.get("fPatrolTime", 5.0),
+                    0 => {
+                        let g = self.units[ui].path.map_or(-1, |g| g as i32);
+                        self.units[ui].cd = patrol_hold(g, self.units[ui].cd, tun.get("fPatrolTime", 5.0));
+                    }
                     4 => self.units[ui].cd = 5.0,
                     _ => {}
                 }
@@ -3283,7 +3340,7 @@ impl Police {
                 self.last_junction = j;
                 let sig = world.nav.as_ref().and_then(|nv| nv.junction_centers.get(n)).and_then(|c| vehicles.signals.junctions.iter().find(|s| (s.center - *c).length_squared() < 0.01));
                 // (the arm getters F-93041 / F-75755 read J +160 / +164 only: a forced arm or forced red reaches them through `step`)
-                let a = sig.and_then(|s| (s.timer < 8.5).then(|| s.arms.get(s.current as usize).copied()).flatten()).unwrap_or(Vec3::ZERO);
+                let a = sig.map_or(Vec3::ZERO, |s| running_arm(s.timer, s.current as i32, &s.arms));
                 let d = if speed > t("fMovingSpeed", 1.0) * 0.447 { -pvel / speed } else { Vec3::ZERO };
                 if watching && d.dot(a) < 0.9 {
                     breaking = true;
@@ -3331,8 +3388,15 @@ impl Police {
         let escalates = tactic_may_escalate(self.radio_busy, self.may_escalate, self.heat == Heat::Search, self.heat == Heat::Busted, self.arrest)
             && (self.kind != TacKind::Pursuit || self.flee_hold <= 0.0);
         let cap = match self.heat {
-            // (F-19359 / F-98647: 599 until the bullhorn has sounded and run out and no arrest timer runs, F-38605)
-            Heat::PullOver if self.bullhorn != Some(0.0) || self.arrest > 0.0 => t("iPursuitLawBreakScore", 600.0) - 1.0,
+            // (F-19359: 599 unless the bullhorn has sounded and F-98647 holds - its timer run out, the may-escalate byte, no
+            // arrest timer, not in Ticket)
+            Heat::PullOver
+                if !self.bullhorn.is_some_and(|b| {
+                    pullover_may_escalate(self.may_escalate, self.arrest, b, self.ticket_hold.is_some() || self.ticketing)
+                }) =>
+            {
+                t("iPursuitLawBreakScore", 600.0) - 1.0
+            }
             _ if matches!(self.kind, TacKind::Pursuit | TacKind::PursuitDbl) && !escalates => max_score - 1.0,
             _ => max_score,
         };
@@ -4310,7 +4374,7 @@ impl Police {
                         ([ppos, ppos], speed)
                     } else {
                         // the target's own speed when it is moving, else 0 (F-85634)
-                        let default_v = if t_moving { speed } else { 0.0 };
+                        let default_v = default_final_speed(Some(speed), t("fMovingSpeed", 1.0));
                         match (tac.st, pull) {
                             // Pursuit brain (F-15067): from the target, P and 2P (head-on 2P, 4P) along D; a stopped target:
                             // from fSafeDist off it towards the cop. Final speed (F-49680): 0 for a stopped target, full
@@ -4892,6 +4956,99 @@ mod tests {
         for b in probe {
             assert_eq!(search_clock_runs(f32::from_bits(b)), orig(b), "{b:08x}");
         }
+    }
+
+    /// tools/police_getters_reference.py's lines of one kind, as words (hex; a leading '-' negates)
+    fn getters_ref(kind: &str) -> Vec<Vec<u32>> {
+        let word = |x: &str| {
+            let v = i64::from_str_radix(x.trim_start_matches('-'), 16).unwrap();
+            (if x.starts_with('-') { -v } else { v }) as u32
+        };
+        include_str!("testdata/police_getters_ref.txt")
+            .lines()
+            .filter(|l| l.split_whitespace().next() == Some(kind))
+            .map(|l| l.split_whitespace().skip(1).map(word).collect())
+            .collect()
+    }
+
+    #[test]
+    fn running_arm_matches_the_original() {
+        // (F-75755 / F-93041 run offline: count 0, 1, 4 x index -1 .. 5 x the timer around 6.5 and 8.5, inf, NaN; arm k is
+        // (1, 2, -1) with k << 20 added to each word)
+        let mut n = 0;
+        for (kind, f) in [("G", arm_green as fn(f32, i32, &[Vec3]) -> Vec3), ("Y", arm_yellow)] {
+            for v in getters_ref(kind) {
+                let arms: Vec<Vec3> = (0..v[0])
+                    .map(|k| Vec3::new(f32::from_bits(0x3f800000 + (k << 20)), f32::from_bits(0x40000000 + (k << 20)), f32::from_bits(0xbf800000 + (k << 20))))
+                    .collect();
+                let a = f(f32::from_bits(v[2]), v[1] as i32, &arms);
+                assert_eq!([a.x.to_bits(), a.y.to_bits(), a.z.to_bits()], [v[3], v[4], v[5]], "{kind} {v:x?}");
+                n += 1;
+            }
+        }
+        assert_eq!(n, 330);
+        // (the callers' order: green, the yellow when green is the zero vector - one arm while green or yellow)
+        let arms = [Vec3::X, Vec3::Z];
+        assert_eq!(running_arm(1.0, 1, &arms), Vec3::Z);
+        assert_eq!(running_arm(7.0, 0, &arms), Vec3::X);
+        assert_eq!(running_arm(8.5, 0, &arms), Vec3::ZERO);
+    }
+
+    #[test]
+    fn default_final_speed_matches_the_original() {
+        // (F-85634 run offline: no target / no racer / no car / the car's speed around f32(fMovingSpeed x 0.447), 30, NaN)
+        let v = getters_ref("S");
+        for c in &v {
+            let sp = (c[1] == 3).then(|| f32::from_bits(c[2]));
+            assert_eq!(default_final_speed(sp, f32::from_bits(c[0])).to_bits(), c[3], "{c:x?}");
+        }
+        assert_eq!(v.len(), 18);
+    }
+
+    #[test]
+    fn pullover_cap_open_matches_the_original() {
+        // (F-98647 on the pull-over's own vtable run offline: +28 x the arrest timer +108 x the bullhorn timer +112 x the FSM
+        // state 0 .. 3, Ticket = 3)
+        let v = getters_ref("P");
+        for c in &v {
+            let r = pullover_may_escalate(c[0] == 1, f32::from_bits(c[1]), f32::from_bits(c[2]), c[3] == 3);
+            assert_eq!(r, c[4] == 1, "{c:x?}");
+        }
+        assert_eq!(v.len(), 128);
+    }
+
+    #[test]
+    fn race_chase_type_matches_the_original() {
+        // (F-12315 run offline with the manager set: type 0, 1, 2, 7 x no racer / the player / an AI racer; without the
+        // manager nothing is written)
+        let v = getters_ref("Z");
+        for c in &v {
+            if c[0] == 0 {
+                assert_eq!((c[3], c[4]), (0x85, 0), "{c:x?}");
+                continue;
+            }
+            let r = match c[2] {
+                0 => None,
+                1 => Some(true),
+                _ => Some(false),
+            };
+            assert_eq!(race_chase_type(c[1] as u8, r) as u32, c[3], "{c:x?}");
+            assert_eq!(c[4] == 1, r.is_some(), "{c:x?}");
+        }
+        assert_eq!(v.len(), 24);
+        assert_eq!(PoliceEval::SH_04B.chase_type, 1);
+        assert_eq!(PoliceEval::GATED.chase_type, 0);
+    }
+
+    #[test]
+    fn patrol_hold_matches_the_original() {
+        // (F-30531 run offline: group -1, 0, 3 x path -1, 0, 9 x fPatrolTime 5, 60; the hold +1128 starts at 0.5)
+        let v = getters_ref("A");
+        for c in &v {
+            assert_eq!((c[2], c[3]), (c[0], c[1]), "{c:x?}");
+            assert_eq!(patrol_hold(c[0] as i32, 0.5, f32::from_bits(c[5])).to_bits(), c[4], "{c:x?}");
+        }
+        assert_eq!(v.len(), 18);
     }
 
     #[test]
@@ -6165,8 +6322,10 @@ fn block_traffic_cond(world: &World, vehicles: &Vehicles, p: &crate::vehicles::C
         if d2 < reach * reach {
             // (green below 6.5, yellow to 8.5, red all round after; J +160 / +164 only, a forced arm or forced red through
             // `step`)
-            let arm = Some(j.current as usize).filter(|_| j.timer < 8.5).and_then(|c| j.arms.get(c));
-            let Some(arm) = arm else { return false };
+            let arm = running_arm(j.timer, j.current as i32, &j.arms);
+            if arm == Vec3::ZERO {
+                return false;
+            }
             let to = Vec3::new(j.center.x - pos.x, j.center.y, j.center.z - pos.z);
             if arm.dot(to.normalize_or_zero()).clamp(-1.0, 1.0).acos() < 2.61799 {
                 return false;
