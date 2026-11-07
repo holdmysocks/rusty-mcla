@@ -505,6 +505,8 @@ pub struct WorldCollider {
     pub sectors: std::collections::BTreeMap<usize, SectorMesh>,
     /// the level's props as the physics reads them (None: the cars' hulls meet the city only)
     pub loose: Option<std::sync::Arc<super::loose::LooseWorld>>,
+    /// the city's grid bound as the level queries meet it (`camprobe::ProbeBound::of_city`; None without the file)
+    pub city: Option<std::sync::Arc<super::camprobe::ProbeBound>>,
 }
 
 impl WorldCollider {

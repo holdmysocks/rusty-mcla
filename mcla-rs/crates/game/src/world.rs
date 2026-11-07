@@ -898,6 +898,12 @@ pub const BOUND_ID: usize = 1 << 41;
 /// The city's collision as the original has it (`rage::bound`): one mesh a cell, each triangle
 /// with its physics material. None when the file is not there.
 pub fn city_bound(assets: &Assets) -> Option<Vec<SectorMesh>> {
+    city_file(assets).map(|b| city_meshes(assets, &b))
+}
+
+/// The city's collision file read (`rage::bound::CityBound`), once: the collider's meshes (`city_meshes`) and the
+/// level queries' grid bound (`ProbeBound::of_city`) are both made from it.
+pub fn city_file(assets: &Assets) -> Option<mcla_formats::rage::bound::CityBound> {
     let dir = assets.path("resources/city/sc");
     // (the one resource of that class among the city's files)
     let file = std::fs::read_dir(&dir).ok()?.flatten().map(|e| e.path()).filter(|p| p.extension().map_or(false, |x| x == "r1")).find(|p| {
@@ -912,6 +918,11 @@ pub fn city_bound(assets: &Assets) -> Option<Vec<SectorMesh>> {
             return None;
         }
     };
+    Some(bound)
+}
+
+/// The collider's meshes of the city's collision: one mesh a cell, each triangle with its physics material.
+pub fn city_meshes(assets: &Assets, bound: &mcla_formats::rage::bound::CityBound) -> Vec<SectorMesh> {
     let table = crate::physics::collision::Surface::table(&assets.root.to_string_lossy());
     let meshes: Vec<SectorMesh> = bound
         .cells
@@ -942,7 +953,7 @@ pub fn city_bound(assets: &Assets) -> Option<Vec<SectorMesh>> {
         }
     }
     log::info!("city bound: {} cells, {} triangles", meshes.len(), bound.triangle_count());
-    Some(meshes)
+    meshes
 }
 
 /// Interior sets (`resources/cutsceneitems/*_set_items.r102`: the garages): drawables
@@ -1379,10 +1390,12 @@ impl World {
             collider.loose = Some(std::sync::Arc::new(crate::physics::loose::LooseWorld::new(Vec::new(), Vec::new())));
         }
         if std::env::var("MCLA_MESH_COLLISION").is_err() {
-            if let Some(cells) = city_bound(&assets) {
-                for (i, mesh) in cells.into_iter().enumerate() {
+            if let Some(bound) = city_file(&assets) {
+                for (i, mesh) in city_meshes(&assets, &bound).into_iter().enumerate() {
                     collider.sectors.insert(BOUND_ID + i, mesh);
                 }
+                // (the level queries' city: the grid bound F-23371's sphere and capsule meet, from the same read)
+                collider.city = Some(std::sync::Arc::new(crate::physics::camprobe::ProbeBound::of_city(&bound)));
                 own_bound = true;
             }
         }

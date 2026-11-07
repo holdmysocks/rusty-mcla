@@ -2066,6 +2066,27 @@ impl ProbeBound {
     /// at its place in the grid's list with its dequantized vertices, its polygon records as the file has them (area,
     /// vertices, neighbour words), its material numbers and table (the cell's material call F-10817 answers
     /// table[number]), its margin and its BVH.
+    /// A walker's physics bound as F-37628 makes it: a capsule (type 1) of radius 0.3 and length one step under 1.2
+    /// (F-77704: +128 / +144, +8 = L x 0.5 + R fused, the extents F-31102: max (R, +8, R), min = 0 - max), then the
+    /// offset (0, 0.9, 0) by F-76267 (F-67839: centroid +48, byte +5 set) and F-31102 again: the box moved by it. Its
+    /// material word +208 is 0 (slot 12 F-60139 answers it). (+12, |(c.x, |c.y| + L / 2, c.z)| + R, is not kept: the
+    /// level queries read +8 and +48.)
+    pub fn walker() -> ProbeBound {
+        let (r, len) = (f32::from_bits(0x3E99_999A), f32::from_bits(0x3F99_9999));
+        let c = Vec3::new(0.0, f32::from_bits(0x3F66_6666), 0.0);
+        let hl = (len as f64).mul_add(0.5, r as f64) as f32;
+        let max = Vec3::new(r, hl, r);
+        ProbeBound {
+            kind: 1,
+            radius: hl,
+            centroid: c,
+            max: max + c,
+            min: (Vec3::ZERO - max) + c,
+            materials: vec![0],
+            shape: ProbeShape::Prim(Primitive::Capsule { centre: c, r, len }),
+        }
+    }
+
     pub fn of_city(city: &mcla_formats::rage::bound::CityBound) -> ProbeBound {
         let v = |x: [f32; 3]| Vec3::from_array(x);
         let mut cells: Vec<Option<ProbeBound>> = vec![None; city.listed as usize];
@@ -2612,6 +2633,26 @@ pub fn ball_dispatch(q: &mut BallQuery, b: &ProbeBound, inst: u32, types: u32, i
         _ => {}
     }
     q.list.any_new()
+}
+
+/// The level objects' archetype words (type +16, include +20) and states as the running original has them. The city
+/// (F-75519): type 0x800 then | 0x100 (F-78656), include the archetype ctor's default -1 (F-14337 copies the image's
+/// word, no other writer found), state 2 (fixed), the instance matrix the identity. The others as the instrumented
+/// recomp recorded them in the level (every OBJ / CBND record of its recordings, traffic_drive_rule.md 9.18):
+/// the player's car 0x189 / -1 and racers 0x185 / 0xFFFFBFFF (composites, state 0), ambient traffic 0x1100 / 0x184E (a
+/// polyhedron, states 0 / 1), walkers 0x20 / 0x20 (the capsule, state 1), props 0x2 / 0xFFFFBFFF (composites or boxes,
+/// states 0 / 1; fixed props state 2).
+pub mod level_words {
+    pub const CITY: (u32, u32) = (0x900, u32::MAX);
+    pub const PLAYER_CAR: (u32, u32) = (0x189, u32::MAX);
+    pub const RACER: (u32, u32) = (0x185, 0xFFFF_BFFF);
+    pub const AMBIENT: (u32, u32) = (0x1100, 0x184E);
+    pub const WALKER: (u32, u32) = (0x20, 0x20);
+    pub const PROP: (u32, u32) = (0x2, 0xFFFF_BFFF);
+    /// the level's object states (the state bit 1 << state against the query's states 7)
+    pub const ACTIVE: u32 = 0;
+    pub const INACTIVE: u32 = 1;
+    pub const FIXED: u32 = 2;
 }
 
 /// One object of the level as the query drivers meet it (the culler's walk F-70638 / F-71552 hands the object; the
@@ -3661,6 +3702,24 @@ mod tests {
             }
         }
         assert_eq!(n, 14_246);
+    }
+
+    /// A walker's bound as F-37628 makes it (tools/walker_bound_reference.py -> testdata/walker_bound_ref.txt, run whole
+    /// with the start-up initialisers): type, radius +8, box, centroid, the capsule's radius / length and its material
+    /// word equal `ProbeBound::walker`.
+    #[test]
+    fn walker_bound_matches_the_original() {
+        // (tools/walker_bound_reference.py: F-37628 run whole; +0 .. +60, +128 .. +156, +208)
+        let w: Vec<u32> = include_str!("../testdata/walker_bound_ref.txt").split_whitespace().map(|h| u32::from_str_radix(&h.replace('_', ""), 16).unwrap()).collect();
+        assert_eq!(w.len(), 25);
+        let b = ProbeBound::walker();
+        let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+        assert_eq!(w[1] >> 24, b.kind as u32);
+        assert_eq!(w[2], b.radius.to_bits());
+        assert_eq!((&w[4..7], &w[8..11], &w[12..15]), (&bits(b.max)[..], &bits(b.min)[..], &bits(b.centroid)[..]));
+        let ProbeShape::Prim(Primitive::Capsule { centre, r, len }) = b.shape else { unreachable!() };
+        assert_eq!((w[16], w[20], &w[12..15]), (r.to_bits(), len.to_bits(), &bits(centre)[..]));
+        assert_eq!(w[24], b.material(0));
     }
 
     /// The rail sweep's two level queries against the original's code run whole offline (tools/level_query_reference.py
