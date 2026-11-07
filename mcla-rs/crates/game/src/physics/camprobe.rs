@@ -2029,7 +2029,7 @@ impl ProbeBound {
             rows: city.rows,
             axes: city.axes,
         };
-        ProbeBound { kind: 8, radius: 0.0, centroid: Vec3::ZERO, max: Vec3::ZERO, min: Vec3::ZERO, materials: Vec::new(), shape: ProbeShape::Grid(grid) }
+        ProbeBound { kind: 8, radius: city.radius, centroid: v(city.centroid), max: v(city.max), min: v(city.min), materials: Vec::new(), shape: ProbeShape::Grid(grid) }
     }
 }
 
@@ -2543,6 +2543,84 @@ pub fn ball_dispatch(q: &mut BallQuery, b: &ProbeBound, inst: u32, types: u32, i
         _ => {}
     }
     q.list.any_new()
+}
+
+/// One object of the level as the query drivers meet it (the culler's walk F-70638 / F-71552 hands the object; the
+/// object table's word gives its state 0 .. 3, the state bit 1 << state): its instance word (what the records' +0 and
+/// the excluded list hold), its archetype's type (+16) and include (+20) flags, its matrix (+16: rows, place) and its
+/// archetype's bound (+12).
+#[derive(Clone, Copy)]
+pub struct LevelObject<'a> {
+    pub inst: u32,
+    pub state: u32,
+    pub arch_type: u32,
+    pub arch_include: u32,
+    pub m: [Vec3; 4],
+    pub bound: &'a ProbeBound,
+}
+
+/// What the level queries of the rail sweep ask: the include mask (driver r5), the states (r7; the type flags r6 are
+/// -1 and the excluded types r8 0 for them) and the excluded instances (+2480 / +2448, at most 64, read by the filter
+/// callbacks F-53082 / F-19966: an object in the list is skipped).
+#[derive(Clone, Copy)]
+pub struct LevelFilter<'a> {
+    pub include: u32,
+    pub states: u32,
+    pub excluded: &'a [u32],
+}
+
+impl LevelFilter<'_> {
+    /// The culler's test F-62425 (first form: the masks F-92940 and the bound's sphere against `vol`) and the filter
+    /// callback.
+    fn takes(&self, o: &LevelObject, vol: &CullVolume) -> bool {
+        let state_bit = 1u32.checked_shl(o.state & 3).unwrap_or(0);
+        instance_masks_pass(self.states, state_bit, self.include, u32::MAX, 0, o.arch_type, o.arch_include)
+            && instance_culled_in(vol, &o.m, o.bound.centroid, o.bound.radius)
+            && !self.excluded.iter().take(64).any(|&w| w == o.inst)
+    }
+}
+
+/// F-91312, the swept capsule's driver (F-27454: `cap` 1 record, the material mask `mask`): the culler's volume F-21683
+/// from the world ends; the list reset (F-16848, `cap` records); per object the culler keeps and the excluded list lets
+/// through, in the walk's order: the ends into the object's frame (F-56283: the arithmetic of F-66128 on the world ends
+/// +144 / +160, the box the ends' smaller / larger less / plus the radius), F-35029 on its archetype's bound (r6 = the
+/// include mask, r7 = -1 for the part masks), and where that added records the commit F-77105 with r5 = 0 by the
+/// object's matrix - a list without records ends the walk. The answer F-72810 is the list's +44 (`list.done`); the
+/// sweep is blocked when the first record's instance word is set. `f30_high` is the caller's f30 (the polygon test's
+/// stack word, 9.7).
+pub fn capsule_level<'a>(a: Vec3, b: Vec3, r: f32, mask: u32, cap: usize, f30_high: u32, filter: &LevelFilter, objects: impl IntoIterator<Item = LevelObject<'a>>) -> CapsuleQuery {
+    let vol = CullVolume::capsule(a, b, r);
+    let mut q = CapsuleQuery { a, b, r, lo: Vec3::ZERO, hi: Vec3::ZERO, mask, index: 0xFFFF, f30_high, list: ResultList::new(cap) };
+    for o in objects {
+        if !filter.takes(&o, &vol) {
+            continue;
+        }
+        (q.a, q.b, q.lo, q.hi) = part_frame(a, b, r, &o.m);
+        if capsule_dispatch(&mut q, o.bound, o.inst, filter.include, u32::MAX) && q.list.commit(&o.m, false) {
+            break;
+        }
+    }
+    q
+}
+
+/// F-49353, the sphere query's driver (F-66549: 12 records): as `capsule_level` with the culler's ball F-36470, the
+/// centre into the object's frame by F-51913 (F-22102's arithmetic on the world centre +144: rows . (c - place), the
+/// box c' -/+ r) and F-75667. The edge flags' stack slot of the polygon test starts at `flags` and is carried on.
+pub fn ball_level<'a>(c: Vec3, r: f32, mask: u32, cap: usize, flags: [i32; 3], filter: &LevelFilter, objects: impl IntoIterator<Item = LevelObject<'a>>) -> BallQuery {
+    let vol = CullVolume::ball(c, r);
+    let mut q = BallQuery { c, r, lo: Vec3::ZERO, hi: Vec3::ZERO, mask, index: 0xFFFF, flags, list: ResultList::new(cap) };
+    for o in objects {
+        if !filter.takes(&o, &vol) {
+            continue;
+        }
+        let w = c - o.m[3];
+        q.c = Vec3::new(vdot(o.m[0], w), vdot(o.m[1], w), vdot(o.m[2], w));
+        q.boxed();
+        if ball_dispatch(&mut q, o.bound, o.inst, filter.include, u32::MAX) && q.list.commit(&o.m, false) {
+            break;
+        }
+    }
+    q
 }
 
 impl<'a> CamLevel<'a> {
@@ -3494,5 +3572,100 @@ mod tests {
         }
         // (sphere cases, dispatches that added records, lists left full, records, cells the records came from)
         assert_eq!((balls, hits, full, recs, cells_hit.len()), (1545, 1908, 1015, 1678, 54), "coverage");
+    }
+
+    /// The rail sweep's two level queries against the original's code run whole offline (tools/level_query_reference.py
+    /// -> testdata/level_query_ref.txt): F-66549 / F-27454 from F-23371's block, with their query objects, set-ups and
+    /// excluded-list callbacks (F-19966 / F-53082), the drivers F-49353 / F-91312 with the culler (F-33380, F-36470 /
+    /// F-21683, the level walk F-70638 / F-71552 over one root node, F-62425), the frame steps F-51913 / F-56283, the
+    /// dispatches and F-77105 / F-72810; objects the city's grid, prop composites and walker capsules with their states,
+    /// type and include flags and matrices. Only the props' material call faked ((index + 1) << 8) and the material
+    /// manager's cast answered (shift 8). The sphere's answer, the query's list and every record equal.
+    #[test]
+    fn level_query_matches_the_original() {
+        let Some(city) = city_probe() else { return };
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Ok(d) = std::fs::read(std::path::Path::new(&root).join("resources/prop/0x0e66973c.r131")) else { return };
+        let u32le = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let data = d[16..].to_vec();
+        let vs = (u32le(12) as usize).min(data.len());
+        let res = mcla_formats::rsc::Resource { rtype: u32le(4), flags: u32le(8), virtual_size: vs, physical_size: data.len() - vs, data };
+        let types = mcla_formats::rage::fragphys::parse_frag_types(&res);
+        let fake = |_: &mcla_formats::rage::fragphys::FragBound| -> Vec<u32> { (0..256).map(|j| (j + 1) << 8).collect() };
+        let props: Vec<ProbeBound> = types.iter().map(|t| ProbeBound::of_prop(t, &fake)).collect();
+        let u = |h: &str| u32::from_str_radix(&h.replace('_', ""), 16).unwrap();
+        let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+        const INST: u32 = 0x40D0_1000;
+        let (mut balls, mut blocked, mut kinds, mut excl_hit, mut recs) = (0, 0, [0usize; 3], 0, 0);
+        for (k, line) in include_str!("../testdata/level_query_ref.txt").lines().enumerate() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let mut groups = i.split(" | ");
+            let h: Vec<u32> = groups.next().unwrap().split_whitespace().map(u).collect();
+            let x: Vec<u32> = o.split_whitespace().map(u).collect();
+            let f = |i: usize| f32::from_bits(h[i]);
+            let ball = h[0] != 0;
+            let words: Vec<Vec<u32>> = groups.map(|g| g.split_whitespace().map(u).collect()).collect();
+            let walkers: Vec<Option<ProbeBound>> = words
+                .iter()
+                .map(|w| {
+                    (w[0] == 2).then(|| {
+                        let (r, l) = (f32::from_bits(w[1]), f32::from_bits(w[2]));
+                        let hl = l * 0.5 + r;
+                        ProbeBound {
+                            kind: 1,
+                            radius: hl,
+                            centroid: Vec3::ZERO,
+                            max: Vec3::new(r, hl, r),
+                            min: Vec3::new(-r, -hl, -r),
+                            materials: (0..64).map(|j| (j + 1) << 8).collect(),
+                            shape: ProbeShape::Prim(Primitive::Capsule { centre: Vec3::ZERO, r, len: l }),
+                        }
+                    })
+                })
+                .collect();
+            let objs: Vec<LevelObject> = words
+                .iter()
+                .enumerate()
+                .map(|(n, w)| {
+                    let p = |i: usize| Vec3::new(f32::from_bits(w[i]), f32::from_bits(w[i + 1]), f32::from_bits(w[i + 2]));
+                    kinds[w[0] as usize] += 1;
+                    let bound = match w[0] {
+                        0 => &city,
+                        1 => &props[w[2] as usize],
+                        _ => walkers[n].as_ref().unwrap(),
+                    };
+                    LevelObject { inst: INST + 0x100 * n as u32, state: w[3], arch_type: w[4], arch_include: w[5], m: [p(6), p(9), p(12), p(15)], bound }
+                })
+                .collect();
+            let excluded: Vec<u32> = (0..2).map(|j| if h[13 + j] < 0x100 { INST + 0x100 * h[13 + j] } else { h[13 + j] }).collect();
+            let n = (h[12] as i32).clamp(0, 2) as usize;
+            let filter = LevelFilter { include: h[10], states: h[11] & 0xFF, excluded: &excluded[..n] };
+            let mask = 640 << crate::tcp_rail::MATERIAL_SHIFT;
+            let (answer, l) = if ball {
+                balls += 1;
+                let q = ball_level(Vec3::new(f(3), f(4), f(5)), f(9), mask, 12, [0; 3], &filter, objs.iter().copied());
+                (q.list.done as u32, q.list)
+            } else {
+                (0, capsule_level(Vec3::new(f(3), f(4), f(5)), Vec3::new(f(6), f(7), f(8)), f(9), mask, 1, h[1], &filter, objs.iter().copied()).list)
+            };
+            let mut st = vec![answer, l.records.len() as u32, l.done as u32, l.level as u32, l.new as u32];
+            st.extend([l.new_bits as u32, (l.new_bits >> 32) as u32, l.level_bits as u32, (l.level_bits >> 32) as u32, l.high.to_bits(), l.low.to_bits()]);
+            assert_eq!(&x[..11], &st[..], "line {k}: answer and list");
+            for (j, r) in l.records.iter().enumerate() {
+                let y = &x[11 + 17 * j..28 + 17 * j];
+                let mut e = vec![r.instance];
+                for v in [r.point, r.normal, r.bound_normal] {
+                    e.extend(bits(v));
+                }
+                e.extend([r.t.to_bits(), r.depth.to_bits(), r.material, r.index as u32, r.kind as u32, r.below as u32, r.part as u32]);
+                assert_eq!(y, &e[..], "line {k}: record {j}");
+                recs += (r.instance != 0) as usize;
+            }
+            blocked += (l.records[0].instance != 0) as usize;
+            excl_hit += objs.iter().any(|o| excluded[..n].contains(&o.inst)) as usize;
+        }
+        // (sphere cases, cases blocked, objects by kind - city, props, walkers -, cases excluding one of their objects,
+        // records)
+        assert_eq!((balls, blocked, kinds, excl_hit, recs), (992, 729, [1174, 2935, 1632], 1295, 953), "coverage");
     }
 }

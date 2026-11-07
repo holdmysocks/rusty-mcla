@@ -98,6 +98,12 @@ pub struct CityBound {
     pub rows: i32,
     pub listed: u16,
     pub axes: (u8, u8),
+    /// the grid's own sphere and box as the bound header holds them: +8 the radius, +0x30 the centroid, +0x10 / +0x20
+    /// the box's max / min (what the level's culler F-62425 tests: the radius and the centroid through the matrix)
+    pub radius: f32,
+    pub centroid: [f32; 3],
+    pub max: [f32; 3],
+    pub min: [f32; 3],
 }
 
 impl CityBound {
@@ -120,6 +126,10 @@ impl CityBound {
             rows: rd.u32(grid + 0x9c) as i32,
             listed: rd.u16(grid + 0xa4),
             axes: (rd.u8(grid + 0xac), rd.u8(grid + 0xad)),
+            radius: rd.f32(grid + 8),
+            centroid: [rd.f32(grid + 0x30), rd.f32(grid + 0x34), rd.f32(grid + 0x38)],
+            max: [rd.f32(grid + 0x10), rd.f32(grid + 0x14), rd.f32(grid + 0x18)],
+            min: [rd.f32(grid + 0x20), rd.f32(grid + 0x24), rd.f32(grid + 0x28)],
         };
         let (first_x, columns, first_z) = (rd.u32(grid + 0x88) as i32, (rd.u32(grid + 0x90) as i32).max(1), rd.u32(grid + 0x94) as i32);
         let Some(list) = rd.ptr(grid + 0xa0) else {
