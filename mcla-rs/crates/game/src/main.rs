@@ -77,7 +77,6 @@ mod passprof;
 mod uipass;
 mod aamode;
 mod particles;
-mod ptxaudio;
 mod propfx;
 mod modelfx;
 mod tyrefx;
@@ -339,6 +338,8 @@ struct App {
     cp_markers: checkpoints::Markers,
     quit: bool,
     pending_action: MenuAction,
+    /// a cops' bust in a race: the StartFreeRoam it queues on the success frame keeps the police and the traffic
+    cruise_keep_police: bool,
     audio: Option<audio::Audio>,
     sound: sound::Sound,
     police: police::Police,
@@ -1263,6 +1264,7 @@ impl App {
             cp_markers: Default::default(),
             quit: false,
             pending_action: MenuAction::None,
+            cruise_keep_police: false,
             audio: None,
             sound: sound::Sound::default(),
             police: police::Police::new(),
@@ -7372,6 +7374,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // (F-22530 when the tactic succeeds: a cops' tactic - not the payback's goons, whose first car has
                         // no +872 - fills arrest_duration / cop_fine, takes the fine and opens form 46 after the scene)
                         let goons = self.police.goons;
+                        // (F-22530 on the success frame, before COP_ARREST: a cops' arrest with a race current sets the race
+                        // finished and arrested and raceOverCommand `returnToCruise`; the race scripts' cleanup removes the
+                        // opponents and resets the race 1 - 2 frames later, inside CopArrest's fade down (race_bust.md).
+                        // A borrowed car's hand-back is left to the after-scene path)
+                        if !goons && self.game.race.is_some() && !self.game.borrowed {
+                            log::info!("police: arrested during the race - back to the cruise (success frame)");
+                            self.pending_action = MenuAction::StartFreeRoam;
+                            self.cruise_keep_police = true;
+                        }
                         if !goons {
                             let f = self.police.fine as i64;
                             let chase = std::mem::take(&mut self.police.chase_time);
@@ -8168,8 +8179,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.sound.menu_cam = self.game.flash_menu.as_ref().filter(|_| self.game.in_menu()).and_then(|m| m.movie.player.get_global("cur_camera")).map(|v| v.to_f32() as i32);
             crate::ticktimes::mark(crate::ticktimes::S::Sound);
             self.sound.update(a, &self.vehicles, &self.game, &self.police, &self.ability, &self.props.hits, self.cam.pos, right, fwd, rain_snd, horn, self.time_of_day > 19.5 || self.time_of_day < 6.0, &|p: Vec3, q: Vec3| { let d = q - p; let l = d.length(); l > 0.0 && world.collider.raycast(p, d / l, l).is_some() }, &|p: Vec3, q: Vec3| { let d = q - p; let l = d.length(); if l > 0.0 { world.collider.raycast(p, d / l, l).map(|h| h.surface as u8) } else { None } }, Some(&world.collider), dt);
-            // the map effects' sounds follow the effect instances (ptxaudio.rs)
-            self.sound.effects(&self.fx.instances(), Some(&world.collider));
             crate::ticktimes::mark(crate::ticktimes::S::Other);
             if let Some(v) = self.vehicles.player_mut().and_then(|c| c.state.veh.as_mut()) {
                 (v.hyd.ev_rise, v.hyd.ev_drop, v.hyd.ev_end, v.hyd.ev_switch) = (0, 0, 0, 0);
@@ -12558,8 +12567,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         log::warn!("police car: {e}");
                     }
                 }
-                self.police.reset(&mut self.vehicles);
-                self.vehicles.cars.retain(|c| c.is_player);
+                if std::mem::take(&mut self.cruise_keep_police) {
+                    // (a cops' bust: the race's cleanup takes only its own entries; the police - their tactic over, the
+                    // arrest's scene to come - and the traffic stay)
+                    self.vehicles.cars.retain(|c| c.is_player || !(c.pinned && !c.cop && !c.goon));
+                } else {
+                    self.police.reset(&mut self.vehicles);
+                    self.vehicles.cars.retain(|c| c.is_player);
+                }
                 self.vehicles.traffic_target = self.opt.traffic.max(10);
                 self.vehicles.parked_target = 36;
                 self.game.mode = Mode::FreeRoam;

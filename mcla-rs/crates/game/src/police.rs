@@ -2574,7 +2574,9 @@ impl Police {
     /// its wait (tested first); then over the tactics on the player, 3 one in its Search with the clock running (vt+44, the
     /// target lost - F-63053), 2 one in its Search (vt+40, F-77780); then the tactic of type 4 / 3 / 2 / 1 (Arrow Trap,
     /// Double Pursuit, Pursuit, Pull-over: 7 / 6 / 5 / 4 - F-10826); else 0. (The manager's +56 byte -> 100, the +196 test
-    /// -> 7 and the units' test -> 1 give the strip's look 0 or 1 as their neighbours and are not reached by the port.)
+    /// -> 7 and the units' test -> 1 give the strip's look 0 or 1 as their neighbours; the +196 and units' tests are not
+    /// reached by the port.) +56 is the arrest's hold: F-22530 sets it on the success frame (on both of its arrest paths, before
+    /// COP_ARREST) and CutSceneDone clears it - the port's posted arrest, held as `Heat::Busted` through the scene.
     pub fn hud_state(&self) -> i32 {
         if self.dsp.as_ref().is_some_and(|d| d.st > 0) {
             return -1;
@@ -2584,6 +2586,10 @@ impl Police {
         }
         if self.heat == Heat::Search {
             return if search_clock_runs(self.search) { 3 } else { 2 };
+        }
+        // (after the Search tests, before the tactics' types, as F-35540 tests it)
+        if self.heat == Heat::Busted && self.arrest_posted {
+            return 100;
         }
         match self.kind {
             TacKind::ArrowTrap => 7,
@@ -4872,6 +4878,22 @@ mod tests {
         for b in probe {
             assert_eq!(search_clock_runs(f32::from_bits(b)), orig(b), "{b:08x}");
         }
+    }
+
+    #[test]
+    fn arrest_hold_strip_is_activity_100() {
+        // (F-35540: the manager's +56 - set by F-22530 on the arrest's success frame, cleared by CutSceneDone - is tested after
+        // the Search tests and gives 100, which the strip's table F-61846 shows as look 0; the tactic was ended there)
+        let mut p = Police::new();
+        p.start_tactic(TacKind::Pursuit, vec![], true, 25.0);
+        p.heat = Heat::Busted;
+        assert_eq!(p.hud_state(), 5);
+        p.arrest_posted = true;
+        assert_eq!(p.hud_state(), 100);
+        p.heat = Heat::None;
+        p.arrest_posted = false;
+        p.kind = TacKind::None;
+        assert_eq!(p.hud_state(), 0);
     }
 
     /// StartTactic against the original's F-33550 run by tools/start_tactic_reference.py over every asked kind, tactic already on
