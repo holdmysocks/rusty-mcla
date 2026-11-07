@@ -7,6 +7,7 @@ empty functions (use only for callees that touch fields the comparison ignores, 
 """
 import re
 import subprocess
+import memcap  # (caps every harness process at MCLA_HARNESS_MEM_GB, default 4 GB)
 from pathlib import Path
 from recomp_leaf import shim, extract
 
