@@ -209,21 +209,7 @@ impl Row {
         let u = (((ang - Vec3::ZERO) + lin) - Vec3::ZERO) - self.bias;
         let ku = Vec3::new(dot3(self.kcol[0], u), dot3(self.kcol[1], u), dot3(self.kcol[2], u));
         let x = ((Vec3::ZERO - ku) * omega) - self.neg;
-        let t = Vec3::new(x.x * 0.0, x.y, x.z);
-        let nn = dot3(self.c, x);
-        let d = x - Vec3::new(nn, nn * 0.0, nn * 0.0);
-        let t2 = dot3(t, t);
-        let len = if t2 == 0.0 {
-            0.0
-        } else {
-            let e = 1.0 / t2.sqrt();
-            t2 * ((-(t2 * (e * e) - 1.0)) * (0.5 * e) + e)
-        };
-        let lm = len * self.mu;
-        let g = Vec3::new(-(lm - t.x), -(lm * 0.0 - t.y), -(lm * 0.0 - t.z));
-        let (dg, xg) = (dot3(d, g), dot3(x, g));
-        let k = if xg > 0.0 { xg * recip(dg + TINY) } else { 0.0 };
-        let next = if 0.0 > nn { Vec3::ZERO } else { -(d * k - x) };
+        let next = cone(x, self.c, self.mu);
         let step = next + self.neg;
         s.give(self, step);
         self.neg = self.neg - step;
@@ -248,6 +234,27 @@ fn sweeps(rows: &mut [Row], s: &mut State, omega: f32) {
             break;
         }
     }
+}
+
+/// The friction cone a contact row's multipliers are projected on (F-48120; inline in the kernel F-18210):
+/// none when the normal part `c . x` is negative, else the tangent part `x * (0, 1, 1)` brought back to `mu` times the
+/// normal one along `x - (c . x, 0, 0)` when it lies outside (`|t|` from the estimate and one Newton step).
+pub(super) fn cone(x: Vec3, c: Vec3, mu: f32) -> Vec3 {
+    let t = Vec3::new(x.x * 0.0, x.y, x.z);
+    let nn = dot3(c, x);
+    let d = x - Vec3::new(nn, nn * 0.0, nn * 0.0);
+    let t2 = dot3(t, t);
+    let len = if t2 == 0.0 {
+        0.0
+    } else {
+        let e = 1.0 / t2.sqrt();
+        t2 * ((-(t2 * (e * e) - 1.0)) * (0.5 * e) + e)
+    };
+    let lm = len * mu;
+    let g = Vec3::new(-(lm - t.x), -(lm * 0.0 - t.y), -(lm * 0.0 - t.z));
+    let (dg, xg) = (dot3(d, g), dot3(x, g));
+    let k = if xg > 0.0 { xg * recip(dg + TINY) } else { 0.0 };
+    if 0.0 > nn { Vec3::ZERO } else { -(d * k - x) }
 }
 
 /// What the tick's forces will add to the velocity of the body's point `p` (0x8259D528).
@@ -634,21 +641,7 @@ impl Row2 {
         let u = (((ang_a - ang_b) + lin_a) - lin_b) - r.bias;
         let ku = Vec3::new(dot3(r.kcol[0], u), dot3(r.kcol[1], u), dot3(r.kcol[2], u));
         let x = ((Vec3::ZERO - ku) * omega) - r.neg;
-        let t = Vec3::new(x.x * 0.0, x.y, x.z);
-        let nn = dot3(r.c, x);
-        let d = x - Vec3::new(nn, nn * 0.0, nn * 0.0);
-        let t2 = dot3(t, t);
-        let len = if t2 == 0.0 {
-            0.0
-        } else {
-            let e = 1.0 / t2.sqrt();
-            t2 * ((-(t2 * (e * e) - 1.0)) * (0.5 * e) + e)
-        };
-        let lm = len * r.mu;
-        let g = Vec3::new(-(lm - t.x), -(lm * 0.0 - t.y), -(lm * 0.0 - t.z));
-        let (dg, xg) = (dot3(d, g), dot3(x, g));
-        let k = if xg > 0.0 { xg * recip(dg + TINY) } else { 0.0 };
-        let next = if 0.0 > nn { Vec3::ZERO } else { -(d * k - x) };
+        let next = cone(x, r.c, r.mu);
         let step = next + r.neg;
         self.give(states, step);
         self.row.neg = self.row.neg - step;
@@ -1201,5 +1194,28 @@ mod tests {
         }
         eprintln!("cases compared {all}, empty islands skipped {empty}, differing {bad}");
         assert_eq!(bad, 0, "{bad} of {all} cases differ");
+    }
+}
+
+#[cfg(test)]
+mod cone_tests {
+    use super::*;
+
+    /// The friction cone F-48120 run offline (tools/cone_reference.py): 6,000 multipliers (no tangent part, no normal
+    /// part, the normal row along x and not, mu 0 .. 2) - every word equal.
+    #[test]
+    fn cone_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut n = 0;
+        for line in include_str!("../testdata/cone_ref.txt").lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let c: Vec<f32> = case.split(' ').map(|x| f32::from_bits(h(x))).collect();
+            let got = cone(Vec3::new(c[0], c[1], c[2]), Vec3::new(c[3], c[4], c[5]), c[6]);
+            let got: Vec<u32> = got.to_array().iter().map(|x| x.to_bits()).collect();
+            let want: Vec<u32> = want.split(' ').map(h).collect();
+            assert_eq!(got, want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 6000);
     }
 }

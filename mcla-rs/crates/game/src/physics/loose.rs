@@ -5267,3 +5267,39 @@ mod piece_tests {
         assert!((m[3].y - h[1]).abs() < 0.01, "{:?}", m);
     }
 }
+
+#[cfg(test)]
+mod vec_small2_tests {
+    use super::*;
+
+    /// A part's matrix in the world F-35644, a bound's centre of gravity in the world F-86352, a rope's anchor carried
+    /// to the world F-36793 (through a composite's part first) and the tick's pending momentum change F-24169, run
+    /// offline (tools/vec_small2_reference.py): 2,000 / 2,000 / 2,000 / 1,000 cases, every word equal.
+    #[test]
+    fn small_vector_routines_2_match_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let v3 = |c: &[f32], i: usize| Vec3::new(c[i], c[i + 1], c[i + 2]);
+        let m4 = |c: &[f32], i: usize| [v3(c, i), v3(c, i + 3), v3(c, i + 6), v3(c, i + 9)];
+        let mut n = 0;
+        for line in include_str!("../testdata/vec_small2_ref.txt").lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let mut w = case.split(' ');
+            let kind = w.next().unwrap();
+            let c: Vec<f32> = w.map(|x| f32::from_bits(h(x))).collect();
+            let got: Vec<Vec3> = match kind {
+                "wm" => super::super::gjk::world_matrix(&m4(&c, 12), &m4(&c, 0)).to_vec(),
+                "cg" => vec![if c[0] != 0.0 { xf(&m4(&c, 1), v3(&c, 13)) } else { m4(&c, 1)[3] }],
+                "anchor" => {
+                    let (inst, part, p) = (m4(&c, 1), m4(&c, 13), v3(&c, 25));
+                    vec![if c[0] != 0.0 { xf(&inst, xf(&part, p)) } else { xf(&inst, p) }]
+                }
+                _ => vec![v3(&c, 0) * c[6] + v3(&c, 3)],
+            };
+            let got: Vec<u32> = got.iter().flat_map(|v| v.to_array()).map(f32::to_bits).collect();
+            let want: Vec<u32> = want.split(' ').map(h).collect();
+            assert_eq!(got, want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 7000);
+    }
+}

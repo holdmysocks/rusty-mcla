@@ -239,16 +239,11 @@ pub fn guest_atan2(y: f64, x: f64) -> f64 {
 }
 
 /// F-85884 / F-12566: `v` added to the body's pending turn (body +416) or push (+400):
-/// no longer than 100, and less its share along what is already pending.
+/// no longer than 100, and less its share along what is already pending. The two are one
+/// routine on two offsets (their code differs only in the `addi` of the offset), the push's
+/// being `solver::direct`.
 pub fn pending_add(pending: Vec3, v: Vec3) -> Vec3 {
-    let l2 = dot3(v, v);
-    let v = if l2 > 100.0f32 * 100.0 { (v * rsqrt(l2)) * 100.0 } else { v };
-    let have = dot3(pending, pending);
-    let r = 1.0 / have;
-    let inv = r * (1.0 - r * have) + r;
-    let along = dot3(pending, v);
-    let v = if along > 0.0 && inv > 0.0 { v - pending * (along * inv) } else { v };
-    pending + v
+    super::solver::direct(pending, v)
 }
 
 /// F-17888: nothing at or below 0, one at or above 1, between them the sine of that share
