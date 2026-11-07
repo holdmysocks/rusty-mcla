@@ -174,6 +174,22 @@ struct RuleParticle {
     /// its birth) and bit 1 (at rest after a collision)
     physical: bool,
     at_rest: bool,
+    /// the keys of the effects its rule's triggers started at its birth (node +124 / +128; 0: none)
+    attached: [u64; 2],
+}
+
+/// The turn of an effect a particle started (`F-95977` / `F-11061` with the instance's +592 bit 5, `F-97951`): its z
+/// along the particle's velocity, x = up x z with up (0, 1, 0), or (1, 0, 0) when |up . z| > 0.99; bit 6 turns both
+/// round. None: the velocity is zero (the original's matrix is then degenerate) and the effect keeps its turn.
+fn trigger_turn(vel: Vec3, mask: u32) -> Option<Quat> {
+    let mut z = vel.try_normalize()?;
+    let mut up = if Vec3::Y.dot(z).abs() > 0.99 { Vec3::X } else { Vec3::Y };
+    if mask & 0x40 != 0 {
+        z = -z;
+        up = -up;
+    }
+    let x = up.cross(z).try_normalize()?;
+    Some(Quat::from_mat3(&glam::Mat3::from_cols(x, z.cross(x), z)))
 }
 
 /// A particle's trail (`F-56257`).
@@ -277,6 +293,10 @@ pub struct Particles {
     rule_list: Vec<RuleParticle>,
     /// the other effects' particles set aside while a starting effect is pre-updated (they count towards the cap)
     set_aside: usize,
+    /// the effects particles started this step (`F-95977`), added to `effects` after the effects' step; and how many
+    /// effects play (the pool's cap counts both)
+    spawned: Vec<Effect>,
+    playing: usize,
     frame: u64,
     next_id: u32,
     /// `MCLA_FX_STANDIN=1`: the effect rules are not played (the callers fall back)
@@ -448,6 +468,19 @@ mod pre_update_tests {
     fn pre_update_slices_as_the_original() {
         assert_eq!((super::pre_slices(5.0), super::pre_slices(2.0), super::pre_slices(0.0), super::pre_slices(0.1)), (21, 9, 0, 1));
     }
+
+    #[test]
+    fn trigger_turn_as_the_original() {
+        use glam::Vec3;
+        // z along the velocity, x = (0, 1, 0) x z; straight up takes (1, 0, 0); bit 6 turns both round; none at rest
+        let q = super::trigger_turn(Vec3::new(0.0, 0.0, 5.0), 0x20).unwrap();
+        assert!((q * Vec3::Z - Vec3::Z).length() < 1e-6 && (q * Vec3::X - Vec3::X).length() < 1e-6);
+        let q = super::trigger_turn(Vec3::new(0.0, 3.0, 0.0), 0x20).unwrap();
+        assert!((q * Vec3::Z - Vec3::Y).length() < 1e-6 && (q * Vec3::X - Vec3::Z).length() < 1e-6);
+        let q = super::trigger_turn(Vec3::new(0.0, 0.0, 5.0), 0x60).unwrap();
+        assert!((q * Vec3::Z + Vec3::Z).length() < 1e-6 && (q * Vec3::X - Vec3::X).length() < 1e-6);
+        assert!(super::trigger_turn(Vec3::ZERO, 0x20).is_none());
+    }
 }
 /// the effects whose sprites are loaded: the particle props' and the litter's
 // (step 19g: + the power-up shots' sparks, powerup_sparks - F-72989; + the Roar / EMP dust, roar_dust / emp_dust - F-17154)
@@ -484,6 +517,8 @@ impl Particles {
             effects: Vec::new(),
             rule_list: Vec::new(),
             set_aside: 0,
+            spawned: Vec::new(),
+            playing: 0,
             frame: 0,
             next_id: 1,
             standin: std::env::var("MCLA_FX_STANDIN").map_or(false, |v| v == "1"),
@@ -1003,6 +1038,7 @@ impl Particles {
                 // for the rules that can collide, so the other effects' random numbers stay as they were)
                 physical: pr.physical_range != 0.0 && (rng.f() * 101.0) as u32 <= pr.percent_physical as u32,
                 at_rest: false,
+                attached: [0; 2],
             };
             for r in p.r.iter_mut() {
                 *r = rng.f();
@@ -1032,6 +1068,28 @@ impl Particles {
                 p.t = (age * p.inv_life).min(0.99);
             }
             p.sort_key = rng.f();
+            // its rule's triggers (`F-61736` / `F-34386` -> `F-95977`): an effect from the pool when the trigger's time
+            // is below the particle's clock at its birth (a one-shot emitter's particles are born at 0), at the
+            // particle, with the effect's tint, opacity and polygons, its 1 / duration the particle's 1 / life when +108
+            for (k, tr) in pr.triggers.iter().enumerate() {
+                let Some(tr) = tr.as_ref().filter(|tr| tr.time < p.t && self.playable[tr.effect]) else { continue };
+                if self.playing + self.spawned.len() >= MAX_EFFECTS {
+                    continue;
+                }
+                let kr = &fx.effects[tr.effect];
+                let (dur, rate) = (rng.range(kr.duration[0], kr.duration[1]).max(0.01), rng.range(kr.time_scalar[0], kr.time_scalar[1]));
+                let zr = rng.f();
+                self.next_id += 1;
+                let id = self.next_id;
+                let key = 0x5452_4947_0000_0000 | id as u64;
+                let dur = if tr.life { 1.0 / p.inv_life } else { dur };
+                let rot = if tr.mask & 0x20 != 0 { trigger_turn(p.vel, tr.mask).unwrap_or(Quat::IDENTITY) } else { Quat::IDENTITY };
+                if let Some(poly) = self.coll.get(&e.id).copied() {
+                    self.coll.insert(id, poly);
+                }
+                self.spawned.push(Effect { key, id, effect: tr.effect, pos: p.pos, rot, vel: p.vel, moved: Vec3::ZERO, t: 0.0, dur, rate: if rate > 0.0 { rate } else { 1.0 }, loops: 0, done: false, seen: self.frame, fade: e.fade, em: Vec::new(), kids: Vec::new(), tint: e.tint, alpha: e.alpha, shadow: e.shadow, evo: [0.0; 4], arrow: false, zr, oneshot: true, flip: false });
+                p.attached[k] = key;
+            }
             self.rule_list.push(p);
         }
         self.rng = rng.0;
@@ -1044,6 +1102,8 @@ impl Particles {
         // (the trails' history moves once a draw of the original's 30 Hz frame: every other step here)
         let shift = self.frame % 2 == 0;
         let coll = &self.coll;
+        // (the effects the particles started: (key, place, velocity, turn, stop) for `F-11061`)
+        let mut follow: Vec<(u64, Vec3, Vec3, Option<Quat>, bool)> = Vec::new();
         self.rule_list.retain_mut(|p| {
             let newborn = idx >= born_from;
             idx += 1;
@@ -1064,6 +1124,10 @@ impl Particles {
             let pb = pev(17, pr.playback_rate.eval(p.t), p.t);
             let t = p.t + lerp(pb[0], pb[1], p.r[5]) * p.inv_life * dt;
             if t > 1.0 {
+                // (its life passed 1: the effects it started are stopped at its place, `F-11877`)
+                for k in p.attached.iter().filter(|k| **k != 0) {
+                    follow.push((*k, p.pos, p.vel, None, true));
+                }
                 return false;
             }
             let mut acc = v3(pev(9, pr.accel_min.eval(t), t)).lerp(v3(pev(10, pr.accel_max.eval(t), t)), p.r[3]) * p.accel_ot;
@@ -1195,9 +1259,31 @@ impl Particles {
                 p.orient.step(pr, m, t, p.r[7], p.r[4], dt);
             }
             p.t = if killed { 1.0 } else { t };
+            // (`F-11061`: an effect it started is at its place with its velocity, turned along it again when bit 5)
+            for (k, key) in p.attached.iter().enumerate().filter(|(_, k)| **k != 0) {
+                let mask = pr.triggers[k].as_ref().map_or(0, |tr| tr.mask);
+                follow.push((*key, p.pos, p.vel, if mask & 0x20 != 0 { trigger_turn(p.vel, mask) } else { None }, false));
+            }
             true
         });
         self.rng = rng.0;
+        // (the started effects follow; at the particle's end `F-11877` stops one: its emitters let nothing more out and
+        // what they let out plays on)
+        for (key, pos, vel, rot, stop) in follow {
+            let Some(e) = self.effects.iter_mut().chain(self.spawned.iter_mut()).find(|e| e.key == key) else { continue };
+            e.moved += pos - e.pos;
+            e.pos = pos;
+            e.vel = vel;
+            if let Some(r) = rot {
+                e.rot = r;
+            }
+            if stop {
+                e.done = true;
+                for m in e.em.iter_mut() {
+                    m.playing = false;
+                }
+            }
+        }
     }
 
     fn rand(&mut self) -> f32 {
@@ -1324,6 +1410,8 @@ impl Particles {
         self.clock += dt;
         let Some(fx) = self.fx.clone() else { return };
         let mut effects = std::mem::take(&mut self.effects);
+        effects.append(&mut self.spawned);
+        self.playing = effects.len();
         let mut moved: Vec<(u32, Vec3)> = Vec::new();
         let frame = self.frame;
         // (the particles let out from here on are born at their emitter's new place: they do not follow its
@@ -1339,6 +1427,9 @@ impl Particles {
         }
         effects.retain(|e| frame - e.seen <= 3 || (e.oneshot && !(e.done && e.kids.is_empty() && e.em.iter().all(|m| !m.playing))));
         self.effects = effects;
+        // (the effects the particles let out this step started: they step from the next update on, as the
+        // original's pool instances do)
+        self.effects.append(&mut self.spawned);
         if !self.coll.is_empty() {
             let alive: Vec<u32> = self.effects.iter().map(|e| e.id).collect();
             self.coll.retain(|id, _| alive.contains(id));

@@ -430,6 +430,24 @@ pub struct ParticleRule {
     pub imp_var: Keyframe,
     pub sprite: Option<Sprite>,
     pub model: Option<Model>,
+    /// +20 / +90 `SpawnEffectA` / `B` (`ptxTrigger`, 112 bytes each): an effect each particle starts at its birth
+    pub triggers: [Option<Trigger>; 2],
+}
+
+/// A particle rule's trigger, read by `F-95977`: the particle births (`F-61736`, `F-34386`) start the effect when
+/// `time` is below the particle's clock at its birth; the post-step `F-11061` keeps it at the particle and stops it
+/// when the particle's life passes 1.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Trigger {
+    /// index into [`FxList::effects`] (+96: the effect rule; a trigger with +100 set starts nothing)
+    pub effect: usize,
+    /// +104
+    pub time: f32,
+    /// +108: the started instance's 1 / duration (+460) is the particle's 1 / life
+    pub life: bool,
+    /// +32: the overridables' field mask (`F-90031` copies it into the instance's +592); bit 5: the instance is
+    /// turned along the particle's velocity, bit 6: the other way
+    pub mask: u32,
 }
 
 fn parse_model_drawable(rd: &Rd, name: String, dr: Option<usize>) -> ModelDrawable {
@@ -599,6 +617,7 @@ impl ParticleRule {
             imp_var: kf(0x280),
             sprite,
             model,
+            triggers: [None, None],
         }
     }
 }
@@ -851,7 +870,19 @@ impl FxList {
         let (dp, de, df) = (dict(0x14)?, dict(0x1c)?, dict(0x20)?);
         let index = |d: &Dictionary| -> hashbrown::HashMap<usize, usize> { d.values.iter().enumerate().filter_map(|(i, v)| v.map(|o| (o, i))).collect() };
         let (ip, ie, ifx) = (index(&dp), index(&de), index(&df));
-        let particle_rules: Vec<ParticleRule> = dp.values.iter().map(|v| ParticleRule::parse(&rd, v.unwrap_or(0))).collect();
+        let mut particle_rules: Vec<ParticleRule> = dp.values.iter().map(|v| ParticleRule::parse(&rd, v.unwrap_or(0))).collect();
+        for (r, v) in particle_rules.iter_mut().zip(&dp.values) {
+            let o = v.unwrap_or(0);
+            for (k, at) in [0x20usize, 0x90].into_iter().enumerate() {
+                let t = o + at;
+                if rd.u32(t + 100) != 0 {
+                    continue;
+                }
+                if let Some(effect) = rd.ptr(t + 96).and_then(|p| ifx.get(&p).copied()) {
+                    r.triggers[k] = Some(Trigger { effect, time: rd.f32(t + 104), life: rd.u8(t + 108) != 0, mask: rd.u32(t + 32) });
+                }
+            }
+        }
         let emit_rules: Vec<EmitRule> = de.values.iter().map(|v| EmitRule::parse(&rd, v.unwrap_or(0))).collect();
         let mut effects = Vec::with_capacity(df.len());
         for v in &df.values {
@@ -995,6 +1026,11 @@ mod tests {
             }
         }
 
+        // the particles that start an effect (`F-95977`): the gas explosion's flame spawner (a one-shot emitter's
+        // particles are born at clock 0, so with time 0 it never starts) and the utility box's sparks
+        let trig: Vec<(&str, &str, f32, bool, u32)> = fx.particle_rules.iter().flat_map(|r| r.triggers.iter().flatten().map(move |t| (r, t))).map(|(r, t)| (r.name.as_str(), fx.effects[t.effect].name.as_str(), t.time, t.life, t.mask)).collect();
+        assert_eq!(trig, vec![("exp_gas_flame_spawner", "flaming_debris_trail", 0.0, false, 0x2c), ("col_electrical_SPAWN_sparks", "col_electrical_arc_explosion", 0.0, true, 0x20)]);
+        assert!(["flaming_debris_trail", "col_electrical_arc_explosion"].iter().all(|n| fx.effects[fx.effect(n).unwrap()].pre_update <= 0.0));
         // the effect tints (`F-92352`): six rules are not white, fire orange and the exhaust 0.8 opaque
         let tinted: Vec<&str> = fx.effects.iter().filter(|e| [0.0f32, 0.5, 1.0].iter().any(|t| e.tint.eval(*t) != [1.0; 4])).map(|e| e.name.as_str()).collect();
         assert_eq!(tinted.len(), 6, "{tinted:?}");
