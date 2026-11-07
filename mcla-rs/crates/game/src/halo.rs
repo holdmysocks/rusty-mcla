@@ -59,6 +59,8 @@ pub struct Tune {
     pub max_bias: f32,
     pub max_car_bias: f32,
     pub min_bias: f32,
+    /// RainGlowIntensity (+36, per weather): the factor of a glow's strength in the rain's list (F-92524)
+    pub rain_glow: [f32; 4],
 }
 
 impl Default for Tune {
@@ -87,6 +89,7 @@ impl Default for Tune {
             max_bias: 0.05,
             max_car_bias: 0.02,
             min_bias: 0.009,
+            rain_glow: [0.05; 4],
         }
     }
 }
@@ -158,6 +161,7 @@ impl Tune {
         t.max_bias = one("MaxGlowBias", t.max_bias);
         t.max_car_bias = one("MaxCarGlowBias", t.max_car_bias);
         t.min_bias = one("MinGlowBias", t.min_bias);
+        t.rain_glow = four("RainGlowIntensity", t.rain_glow);
         t
     }
 
@@ -189,7 +193,7 @@ impl Tune {
         if w == nw || w > 3 || nw > 3 {
             return;
         }
-        for a in [&mut self.prop_intensity, &mut self.signal_size, &mut self.signal_intensity, &mut self.car_intensity, &mut self.streak, &mut self.bloom, &mut self.prop_trail, &mut self.car_trail] {
+        for a in [&mut self.prop_intensity, &mut self.signal_size, &mut self.signal_intensity, &mut self.car_intensity, &mut self.streak, &mut self.bloom, &mut self.prop_trail, &mut self.car_trail, &mut self.rain_glow] {
             l1(a, w, nw, f);
         }
         for a in [&mut self.prop_size, &mut self.signal_refl, &mut self.car_size, &mut self.car_refl_size, &mut self.star] {
@@ -311,9 +315,6 @@ impl Tune {
     fn glow(&self, w: usize, pos: Vec3, color: [f32; 3], mut size: [f32; 2], intensity: f32, car: bool, cam: Vec3, tan_half_fov: f32) -> Option<Glow> {
         let d = pos.distance(cam);
         let (seed, star) = (alpha(self.bloom[w] * intensity), alpha(self.streak[w] * intensity));
-        if seed <= 0.0 && star <= 0.0 {
-            return None;
-        }
         let (mut hi, lo, reach) = if car { (self.max_car_bias * 0.5, 0.065, 10.0) } else { (self.max_bias, self.min_bias, self.max_dist) };
         if car {
             let k = d * tan_half_fov * (0.01 + 0.29 * (d / 400.0).clamp(0.0, 1.0));
@@ -325,6 +326,10 @@ impl Tune {
         let f = d.min(reach) / reach.max(1e-6);
         let bias = (f * f * (hi - lo) + lo) * (5.0 / 3.0);
         let p = pos + (cam - pos) * bias;
+        rain_add(cam - pos, p, intensity * self.rain_glow[w], color);
+        if seed <= 0.0 && star <= 0.0 {
+            return None;
+        }
         Some(Glow {
             pos_a: [p.x, p.y, p.z, seed],
             col_s: [color[0], color[1], color[2], star],
@@ -408,6 +413,46 @@ struct Halo {
 }
 
 static STATE: Mutex<Option<Halo>> = Mutex::new(None);
+
+/// The rain's four glow lights (F-92524): every AddGlow call offers its place (pulled towards the camera) with the
+/// key |camera - light|^2 (the light's own place, before the pull; y^2, then z and x fused on as the original sums
+/// them - the projection F-75199 made beside it writes elsewhere); a key below a
+/// slot's goes in there, the slots after it moving one on (the list stays sorted, four kept). Each slot: the
+/// place, w = the call's strength x RainGlowIntensity, the colour. The list starts zeroed (F-96527, at start-up:
+/// keys 0, so nothing goes in before the rain has read it once); the rain (F-58928) reads it and sets every
+/// key back to 1e6 and every w to 0.
+struct RainList {
+    key: [f32; 4],
+    pos: [[f32; 4]; 4],
+    col: [[f32; 4]; 4],
+}
+static RAIN: Mutex<RainList> = Mutex::new(RainList { key: [0.0; 4], pos: [[0.0; 4]; 4], col: [[0.0; 4]; 4] });
+
+fn rain_add(v: Vec3, p: Vec3, w: f32, color: [f32; 3]) {
+    use crate::sndobj::fmadds;
+    let mut l = RAIN.lock().unwrap();
+    let key = fmadds(v.x, v.x, fmadds(v.z, v.z, v.y * v.y));
+    let Some(i) = (0..4).find(|&i| key < l.key[i]) else { return };
+    for j in (i + 1..4).rev() {
+        l.key[j] = l.key[j - 1];
+        l.pos[j] = l.pos[j - 1];
+        l.col[j] = l.col[j - 1];
+    }
+    l.key[i] = key;
+    l.pos[i] = [p.x, p.y, p.z, w];
+    l.col[i] = [color[0], color[1], color[2], 1.0];
+}
+
+/// What the rain hands its programs as PointLights / PointLightColors; the list is then reset for the next frame.
+pub fn rain_take() -> ([[f32; 4]; 4], [[f32; 4]; 4]) {
+    let mut l = RAIN.lock().unwrap();
+    let out = (l.pos, l.col);
+    for i in 0..4 {
+        l.key[i] = 1e6;
+        l.pos[i][3] = 0.0;
+    }
+    out
+}
 
 /// MCLA_DEBUG_VIEW=115: the glows of before (the signal sprites in the scene pass, no halo pass).
 pub fn old_look() -> bool {

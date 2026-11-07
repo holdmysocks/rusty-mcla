@@ -12,8 +12,11 @@
 //!
 //! Not from the original: what stops a drop is the collision's highest face at its place, looked
 //! up once when it is born (the original tests against a depth picture taken from above every
-//! update); the four point lights of the effect (the player's
-//! tail lamps, reach 9 cm) are left out.
+//! update).
+//!
+//! The four point lights (PointLights / PointLightColors): AddGlow's list of the four glows nearest the
+//! camera (halo.rs `rain_take`, F-92524 / F-58928; in the recordings the player's tail lamps,
+//! reach 9 cm).
 //!
 //! `MCLA_DEBUG_VIEW=97`: the older stand-in (game.rs) instead. `MCLA_RAIN_CONES=0`,
 //! `MCLA_RAIN_DROPS=0`, `MCLA_RAIN_SPOT=0`: without the cones / the drops / the drops' spot.
@@ -441,6 +444,7 @@ impl Rain {
         let ambient = key + Vec3::new(self.t("RainAmbientRed", 0.292), self.t("RainAmbientGreen", 0.291), self.t("RainAmbientBlue", 0.293));
         let spot_on = !env_off("MCLA_RAIN_SPOT");
         let car = f.car.unwrap_or(Vec3::ZERO);
+        let (lights, light_cols) = crate::halo::rain_take();
         let u = RainU {
             global_light: [ambient.x, ambient.y, ambient.z, 1.0],
             scale_offset: [
@@ -457,8 +461,8 @@ impl Rain {
             spot_params: [if f.car.is_some() && spot_on { 10.0 } else { 0.0 }, 3.0, 0.0, 0.0],
             spot_color: [self.t("RainSpotLightRed", 0.364), self.t("RainSpotLightGreen", 0.315), self.t("RainSpotLightBlue", 0.279), 0.0],
             fade_sphere: [car.x, car.y, car.z, if f.car.is_some() { 1.5 } else { 0.0 }],
-            lights: [[0.0; 4]; 4],
-            light_cols: [[0.0; 4]; 4],
+            lights,
+            light_cols,
         };
         gpu.queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&u));
         if !env_off("MCLA_RAIN_DROPS") {
