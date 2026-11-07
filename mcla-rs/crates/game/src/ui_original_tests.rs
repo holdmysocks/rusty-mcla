@@ -355,3 +355,19 @@ fn slider_event_matches_the_original() {
     }
     assert_eq!(n, 6000);
 }
+
+/// The menu choice row's left / right (F-47154) run offline on 3,000 cases (tools/ui_combo_reference.py): handled or
+/// not, the index handed to the selection setter and the sound, all equal to `game::combo_event`.
+#[test]
+fn combo_event_matches_the_original() {
+    let mut n = 0;
+    for l in include_str!("testdata/ui_combo_ref.txt").lines() {
+        let (case, out) = l.split_once(" -> ").unwrap();
+        let c: Vec<i32> = case.split(' ').map(|v| v.parse().unwrap()).collect();
+        let o: Vec<&str> = out.split(' ').collect();
+        let (ret, set, snd) = crate::game::combo_event(c[1], c[2], c[3] != 0, c[0] as u32, c[4] != 0);
+        assert_eq!((ret as u32, set.unwrap_or(-1), snd.unwrap_or("-")), (o[0].parse().unwrap(), o[1].parse().unwrap(), o[2]), "{l}");
+        n += 1;
+    }
+    assert_eq!(n, 3000);
+}

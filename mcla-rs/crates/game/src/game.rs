@@ -13872,14 +13872,15 @@ impl Game {
             let cur = if up { 0 } else if down { 1 } else { cur.min(1) };
             self.hangout_page = (1, cur);
             if cur == 0 {
-                if left {
-                    self.hangout_diff = (self.hangout_diff + 3) % 4;
-                }
-                if right {
-                    self.hangout_diff = (self.hangout_diff + 1) % 4;
-                }
-                if left || right {
-                    self.hangout_stake = 5;
+                // (DIFFICULTY is a choice row of 4 that wraps, F-70207 with 1: `combo_event`; the new
+                // difficulty's F-19872 puts the slider back on its amount)
+                for (go, ev) in [(left, 51u32), (right, 52)] {
+                    if go {
+                        let (_, to, snd) = combo_event(self.hangout_diff as i32, 4, true, ev, true);
+                        self.opt_x.s23b.ui_obj = snd;
+                        self.hangout_diff = to.unwrap_or(1).clamp(0, 3) as usize;
+                        self.hangout_stake = 5;
+                    }
                 }
             } else {
                 // (the slider, F-59022 events 51 / 53 left, 52 / 54 right: the value -/+ the step held
@@ -15999,6 +16000,28 @@ pub fn slider_event(lo: i32, hi: i32, v: i32, step: i32, wrap: bool, ev: u32, li
     } else {
         (true, to, Some(if down { "UI_MENU_NAV_DOWN" } else { "UI_MENU_NAV_UP" }), true)
     }
+}
+
+/// A menu choice row's left / right (F-47154): events 51 / 53 the choice before, 52 / 54 the one after,
+/// of `n` choices; with `wrap` (+232, F-70207's last argument - 1 for the wager form's DIFFICULTY) it goes
+/// round with UI_MENU_NAV_DOWN (left) / UI_MENU_NAV_UP (right), else at an end it stays with
+/// UI_MENU_ERROR. The index is handed to the selection setter F-11092 every time (as the remainder by
+/// `n`). Nothing happens (false) unless the row is live and the event is one of the four. Returns
+/// (handled, index set, sound).
+pub fn combo_event(i: i32, n: i32, wrap: bool, ev: u32, live: bool) -> (bool, Option<i32>, Option<&'static str>) {
+    if !live || !(51..=54).contains(&ev) || n <= 0 {
+        return (false, None, None);
+    }
+    let left = ev == 51 || ev == 53;
+    let (mut t, snd) = if left {
+        let t = i.wrapping_sub(1);
+        if !wrap && t < 0 { (0, "UI_MENU_ERROR") } else { (if t < 0 { t.wrapping_add(n) } else { t }, "UI_MENU_NAV_DOWN") }
+    } else {
+        let t = i.wrapping_add(1);
+        if !wrap && t >= n { (n - 1, "UI_MENU_ERROR") } else { (t, "UI_MENU_NAV_UP") }
+    };
+    t = t.wrapping_rem(n);
+    (true, Some(t), Some(snd))
 }
 
 pub fn wager_range(base: i32, d: u32) -> (i32, i32, i32, i32) {
