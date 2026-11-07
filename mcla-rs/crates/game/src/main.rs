@@ -956,6 +956,7 @@ impl App {
                     }
                     if self.radio.loaded() {
                         let rctx = radio_ctx(&self.vehicles, world, self.time_of_day);
+                        self.radio.note(&rctx, world.nav.as_ref());
                         self.radio.say("REPORT_SUSPECT_FLEES", &rctx);
                     }
                 } else if bolt.is_some_and(|b| t >= b + 1.5) {
@@ -7290,7 +7291,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // ---- the radio traffic that goes with it ----
                 if self.radio.loaded() && !s19d_goons && !self.police.goons {
                     let rctx = radio_ctx(&self.vehicles, &world, self.time_of_day);
-                    self.radio.note_ramp(&rctx);
+                    self.radio.note(&rctx, world.nav.as_ref());
                     match ev {
                         Some(police::Event::PullOver) => {
                             self.radio.say("REPORT_PULL_SUSPECT_OVER", &rctx);
@@ -15132,33 +15133,14 @@ fn radio_ctx(vehicles: &vehicles::Vehicles, world: &world::World, hour: f32) -> 
     // reciprocal square root estimate - here the exact one, which only a word on the 45 degree line could tell apart)
     let v = if p.state.speed() >= 0.1 { p.state.vel } else { p.state.forward() };
     ctx.heading = Vec3::new(v.x, 0.0, v.z).normalize_or_zero();
+    ctx.pos = p.state.pos;
     ctx.car = p.model.name.clone();
     if let Some(nav) = world.nav.as_ref() {
         // (+252: the road within 3 m of his place on the ground, F-55639)
-        ctx.road_dir = match nav.node_within(Vec3::new(p.state.pos.x, 0.0, p.state.pos.z), 3.0, false) {
-            Some(mcla_formats::rage::navsys::NavNode::Road(r)) => nav.zones.get(r).map(|z| z.dir),
+        ctx.road = match nav.node_within(Vec3::new(p.state.pos.x, 0.0, p.state.pos.z), 3.0, false) {
+            Some(mcla_formats::rage::navsys::NavNode::Road(r)) => Some(r),
             _ => None,
         };
-        let zone_name = |li: usize| nav.links[li].zone.and_then(|z| nav.zones.get(z)).map(|z| z.name.clone()).filter(|n| !n.is_empty());
-        if let Some((li, _, d)) = nav.nearest_link(p.state.pos) {
-            if d < 40.0 {
-                ctx.street = zone_name(li).unwrap_or_default();
-            }
-            // (the radio's context, F-21712's: the segment's name when it starts "XT", kept otherwise: `Radio::note_ramp`)
-            ctx.ramp = zone_name(li).filter(|n| n.starts_with("XT")).map_or(String::new(), |n| n.replace('.', "").replace(' ', "_").to_ascii_uppercase());
-        }
-        // another street within a block
-        let own = ctx.street.splitn(3, '_').nth(2).unwrap_or("").to_string();
-        let mut best = (f32::INFINITY, String::new());
-        for li in nav.links_near(p.state.pos, 90.0) {
-            if let Some(n) = zone_name(li) {
-                let d = nav.links[li].a.distance(p.state.pos);
-                if n.splitn(3, '_').nth(2).unwrap_or("") != own && d < best.0 {
-                    best = (d, n);
-                }
-            }
-        }
-        ctx.cross = best.1;
     }
     ctx
 }

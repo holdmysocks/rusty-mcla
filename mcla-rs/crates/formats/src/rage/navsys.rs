@@ -491,6 +491,8 @@ pub struct NavSys {
     pub junction_lanes: Vec<Vec<usize>>,
     /// per junction: its rectangle (the same fields as a road's, F-46547)
     pub junction_rects: Vec<NodeRect>,
+    /// per junction: the +0x50 point (a road's `mid`; the radio's junction ahead test, F-78553)
+    pub junction_mid: Vec<Vec3>,
     /// the connection list (root +0x3c, 16 bytes per node id +0x20: -> u32 node pointers, u16 count;
     /// count root +0x4c), per road and per junction, in the file's order: a junction lists roads, a
     /// road junctions and roads (docs/reference/hookmen/search_and_connections.md 1)
@@ -871,6 +873,7 @@ impl NavSys {
             let Some(o) = jarr.map(|a| a + i * 0xc0).filter(|&o| rd.has(o, 0xc0)) else { break };
             nav.junction_centers.push(Vec3::new(rd.f32(o + 0x80), rd.f32(o + 0x84), rd.f32(o + 0x88)));
             nav.junction_c.push([rd.f32(o + 0x34), rd.f32(o + 0x38)]);
+            nav.junction_mid.push(Vec3::new(rd.f32(o + 0x50), rd.f32(o + 0x54), rd.f32(o + 0x58)));
             nav.junction_rects.push(NodeRect { lane: rd.ptr(o + 0x24).and_then(link_index), c: [rd.f32(o + 0x34), rd.f32(o + 0x38)], width: rd.f32(o + 0x3c), len: rd.f32(o + 0x40), dir: [rd.f32(o + 0x60), rd.f32(o + 0x68)] });
             let mut out = Vec::new();
             walk(&rd, o, false, &link_index, &mut out, 0);
@@ -1009,7 +1012,7 @@ impl NavSys {
         for z in &mut zones {
             z.links.clear();
         }
-        let mut nav = NavSys { zones, streets: self.streets.clone(), curves: self.curves.clone(), raw: self.raw.clone(), zone_lanes: self.zone_lanes.clone(), lane_junction: self.lane_junction.clone(), junction_centers: self.junction_centers.clone(), junction_c: self.junction_c.clone(), junction_lanes: self.junction_lanes.clone(), junction_rects: self.junction_rects.clone(), road_next: self.road_next.clone(), junction_next: self.junction_next.clone(), quad: self.quad.clone(), records: self.records.clone(), ..Default::default() };
+        let mut nav = NavSys { zones, streets: self.streets.clone(), curves: self.curves.clone(), raw: self.raw.clone(), zone_lanes: self.zone_lanes.clone(), lane_junction: self.lane_junction.clone(), junction_centers: self.junction_centers.clone(), junction_c: self.junction_c.clone(), junction_lanes: self.junction_lanes.clone(), junction_rects: self.junction_rects.clone(), junction_mid: self.junction_mid.clone(), road_next: self.road_next.clone(), junction_next: self.junction_next.clone(), quad: self.quad.clone(), records: self.records.clone(), ..Default::default() };
         nav.build_graph(raw, self.zone_lanes.clone());
         nav
     }
