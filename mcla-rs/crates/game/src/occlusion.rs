@@ -326,6 +326,17 @@ impl Occluder {
         self.fresh = false;
     }
 
+    /// F-65900: back to "not updated yet" and fully occluded (+118 / +117 cleared, +119 set, the group's init into
+    /// the outputs).
+    pub fn reset(&mut self, t: &Tune) {
+        self.owner.placed = false;
+        self.owner.local = false;
+        self.fresh = true;
+        let (group, out) = Group::init(t);
+        self.owner.group = group;
+        self.out = out;
+    }
+
     fn update(&mut self, t: &Tune, l: [f32; 4], world: &mut impl Probe) {
         let frame = self.frame.unwrap_or([[0.0; 4]; 4]);
         self.owner.update(t, &frame, l, world);
@@ -413,8 +424,13 @@ impl System {
     /// `car_offset`, then the immediate update F-65914 (now, not local).
     pub fn car(&mut self, uid: u32, origin: [f32; 3], l: [f32; 4], world: &mut impl Probe) -> Option<usize> {
         if let Some(i) = self.owner.iter().position(|o| *o == Some(uid)) {
+            let (t, r) = (&self.tune, self.radius);
             if let Some(o) = self.list[i].as_mut() {
                 o.frame = Some(Self::frame(origin));
+                // (an ambient car's switched-off occluder that has become a racer's: the car audio start's update)
+                if o.fresh {
+                    o.refresh(t, true, false, l, r, world);
+                }
             }
             return Some(i);
         }
@@ -425,6 +441,47 @@ impl System {
         self.list[i] = Some(o);
         self.owner[i] = Some(uid);
         Some(i)
+    }
+
+    /// The ambient car `uid`'s occluder slot (mcAmbientVehicleAudioEntity), its frame moved to the car's `origin`. A
+    /// new one is the ambient entity's (F-37940 from the ctor F-15430): "not updated yet" and fully occluded, its place
+    /// `car_offset` (the init F-89483), no update until the entity switches it on.
+    pub fn ambient(&mut self, uid: u32, origin: [f32; 3]) -> Option<usize> {
+        if let Some(i) = self.owner.iter().position(|o| *o == Some(uid)) {
+            if let Some(o) = self.list[i].as_mut() {
+                o.frame = Some(Self::frame(origin));
+            }
+            return Some(i);
+        }
+        let i = self.list.iter().position(|o| o.is_none())?;
+        let [x, y, z] = self.car_offset;
+        self.list[i] = Some(Occluder::new(&self.tune, [x, y, z, 0.0], Some(Self::frame(origin))));
+        self.owner[i] = Some(uid);
+        Some(i)
+    }
+
+    /// The ambient car's switch in its update (F-70175): on while one of its voices was placed within the last
+    /// 0.1333 s - from "not updated yet" the immediate update F-65914 with no update (the manager takes it from
+    /// there); off past it - F-65900 when it has been updated.
+    pub fn switch(&mut self, i: usize, on: bool, l: [f32; 4], world: &mut impl Probe) {
+        let (t, r) = (&self.tune, self.radius);
+        if let Some(o) = self.list.get_mut(i).and_then(|o| o.as_mut()) {
+            match (on, o.fresh) {
+                (true, true) => o.refresh(t, false, false, l, r, world),
+                (false, false) => o.reset(t),
+                _ => {}
+            }
+        }
+    }
+
+    /// The pass-by whoosh's immediate update (F-74101: F-65914 now, not local, while "not updated yet").
+    pub fn now(&mut self, i: usize, l: [f32; 4], world: &mut impl Probe) {
+        let (t, r) = (&self.tune, self.radius);
+        if let Some(o) = self.list.get_mut(i).and_then(|o| o.as_mut()) {
+            if o.fresh {
+                o.refresh(t, true, false, l, r, world);
+            }
+        }
     }
 
     /// The cars whose audio is gone give their slots back (the entity's release takes it out of the table).
@@ -444,6 +501,11 @@ impl System {
         for o in self.list.iter_mut().flatten() {
             o.tick(&self.tune, dt);
         }
+    }
+
+    /// The slot of the car `uid`.
+    pub fn slot_of(&self, uid: u32) -> Option<usize> {
+        self.owner.iter().position(|o| *o == Some(uid))
     }
 
     /// The outputs (volume, cutoff in Hz) of a slot.
@@ -481,6 +543,41 @@ mod tests {
         assert!(low > 0.0, "{low}");
     }
 
+    /// An ambient car's occluder (F-70175 / F-74101 on the reset F-65900 and the immediate update F-65914): made off and
+    /// fully occluded; switched on it is no longer "not updated yet" but keeps its outputs until the manager updates
+    /// it; switched off it is reset; the whoosh's update latches at once, only when off.
+    #[test]
+    fn ambient_switch() {
+        // the disc's GLOBAL_OCCLUSION and its two curves, as the reference file holds them
+        let text = include_str!("testdata/occlusion_ref.txt");
+        let hexw = |t: &str| u32::from_str_radix(&t[1..], 16).unwrap();
+        let unhex = |s: &str| (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()).collect::<Vec<u8>>();
+        let mut lines = text.lines();
+        let c: Vec<&str> = lines.next().unwrap().split(' ').collect();
+        let curves = [(hexw(c[1]), Curve::parse(&unhex(&c[2][1..]))), (hexw(c[3]), Curve::parse(&unhex(&c[4][1..])))];
+        let o = unhex(&lines.next().unwrap()[3..]);
+        let t = Tune::read(&o, |h| curves.iter().find(|c| c.0 == h).map(|c| c.1.clone())).unwrap();
+        let mut s = System::new(t.clone(), &o, Default::default()).unwrap();
+        assert_eq!((s.radius, s.car_offset), (800.0, [0.0, 0.9, 0.0]));
+        let l = [0.0, 0.0, 0.0, 0.0];
+        let i = s.ambient(7, [10.0, 0.0, 0.0]).unwrap();
+        let init = Group::init(&t).1;
+        assert!(s.list[i].unwrap().fresh);
+        assert_eq!(s.out(i), Some(init));
+        s.switch(i, true, l, &mut NoProbe);
+        assert!(!s.list[i].unwrap().fresh);
+        assert_eq!(s.out(i), Some(init));
+        s.step(l, 1.0 / 60.0, &mut NoProbe);
+        assert_ne!(s.out(i), Some(init));
+        s.switch(i, false, l, &mut NoProbe);
+        assert!(s.list[i].unwrap().fresh);
+        assert_eq!(s.out(i), Some(init));
+        s.now(i, l, &mut NoProbe);
+        assert!(!s.list[i].unwrap().fresh);
+        assert_eq!(s.out(i), Some(s.list[i].unwrap().owner.group.latch()));
+        assert_eq!(s.slot_of(7), Some(i));
+    }
+
     /// tools/occlusion_reference.py ran the original's code offline: the pow F-21955 on 6,000 inputs, F-33490 on 2,000
     /// random Gauss curves, and on 150 tunes (GLOBAL_OCCLUSION or random) the reader then 20 random group ops each
     /// (init, set, smoothing, latch, the owner's update with random frames, positions and probe hits); every result,
@@ -498,7 +595,7 @@ mod tests {
         let (mut wtune, mut radius, mut occ) = (None::<Tune>, 0f32, Vec::<Option<Occluder>>::new());
         let ostate = |s: &mut String, occ: &[Option<Occluder>]| {
             for o in occ.iter().flatten() {
-                write!(s, " | o{:08x} o{:08x} u{}", o.out[0].to_bits(), o.out[1].to_bits(), o.fresh as u8).unwrap();
+                write!(s, " | o{:08x} o{:08x} u{} f{}{}", o.out[0].to_bits(), o.out[1].to_bits(), o.fresh as u8, o.owner.local as u8, o.owner.placed as u8).unwrap();
                 let g = &o.owner.group;
                 for v in [g.amount, g.vol, g.hz, g.hz_log, g.vol_to, g.hz_to] {
                     write!(s, " g{:08x}", v.to_bits()).unwrap();
@@ -559,7 +656,7 @@ mod tests {
                 "O" => {
                     let tn = wtune.as_ref().unwrap();
                     let m = t[1][1..].parse::<u32>().unwrap();
-                    let na = [2, 4, 3, 4][m as usize];
+                    let na = [2, 4, 3, 4, 2][m as usize];
                     let x = |i: usize| hexw(t[1 + i]);
                     let l = [f32::from_bits(x(na)), f32::from_bits(x(na + 1)), f32::from_bits(x(na + 2)), 1.0];
                     // the probe hits the original's run used, in call order (after its count)
@@ -604,6 +701,10 @@ mod tests {
                         }
                         2 => {
                             occ[x(1) as usize].as_mut().unwrap().tick(tn, f32::from_bits(x(2)));
+                            s += " c0";
+                        }
+                        4 => {
+                            occ[x(1) as usize].as_mut().unwrap().reset(tn);
                             s += " c0";
                         }
                         _ => {

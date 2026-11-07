@@ -259,15 +259,23 @@ pub fn load_beds(root: &std::path::Path) -> hashbrown::HashMap<String, String> {
 }
 
 /// One frame of the sound occlusion: an occluder for each car with a car audio entity (the player's and the computer
-/// racers' and cruisers', `Fleet::opponent`; made at the car audio's start, F-43725), the slots of cars gone given back,
+/// racers' and cruisers', `Fleet::opponent`; made at the car audio's start, F-43725) and for each ambient car (made off,
+/// switched by its update: `switch_ambient`), the slots of cars gone given back,
 /// the manager's updates and the ticks (`occlusion::System::step`), every occluder's outputs to the voices (F-19918).
 /// The cars' slots plus one by `uid`.
 fn occlude(oc: &mut crate::occlusion::System, lib: &mut crate::sndobj::SoundLib, vehicles: &Vehicles, dt: f32, world: &mut impl crate::occlusion::Probe) -> std::collections::HashMap<u32, u16> {
     let l = lib.listener.0;
     let l4 = [l.x, l.y, l.z, 0.0];
     let mut slots = std::collections::HashMap::new();
-    for c in vehicles.cars.iter().filter(|c| c.is_player || crate::caraudio::Fleet::opponent(c)) {
-        if let Some(i) = oc.car(c.uid, c.state.pos.to_array(), l4, world) {
+    for c in &vehicles.cars {
+        let slot = if c.is_player || crate::caraudio::Fleet::opponent(c) {
+            oc.car(c.uid, c.state.pos.to_array(), l4, world)
+        } else {
+            // (approx.) every ambient car has its entity here; the original makes one for the cars the ambient
+            // manager gives audio to
+            oc.ambient(c.uid, c.state.pos.to_array())
+        };
+        if let Some(i) = slot {
             slots.insert(c.uid, (i + 1) as u16);
         }
     }
@@ -279,6 +287,26 @@ fn occlude(oc: &mut crate::occlusion::System, lib: &mut crate::sndobj::SoundLib,
         }
     }
     slots
+}
+
+/// The ambient cars' switches (uid, on, the whoosh's immediate update) applied to their occluders, and every
+/// occluder's outputs to the voices again.
+fn switch_ambient(oc: &mut crate::occlusion::System, lib: &mut crate::sndobj::SoundLib, sw: &[(u32, bool, bool)], world: &mut impl crate::occlusion::Probe) {
+    let l = lib.listener.0;
+    let l4 = [l.x, l.y, l.z, 0.0];
+    for &(uid, on, now) in sw {
+        if let Some(i) = oc.slot_of(uid) {
+            if now {
+                oc.now(i, l4, world);
+            }
+            oc.switch(i, on, l4, world);
+        }
+    }
+    for i in 0..crate::occlusion::SLOTS {
+        if let Some(o) = oc.out(i) {
+            lib.set_occlusion(i, o);
+        }
+    }
 }
 
 /// The sound library and what is made with it, read off the game loop (the start-up's loading thread,
@@ -1045,6 +1073,16 @@ impl Sound {
                 siren: crate::caraudio::SirenTune::of(&police.tun),
             };
             fleet.update(lib, vehicles, cam_pos, ctl, wet, game.mode == Mode::Race, pol, dt);
+            // the ambient cars' occluder switches of their updates (F-70175, F-74101), their outputs again to the voices
+            if let Some(oc) = &mut self.occl {
+                let sw = fleet.traffic_occ();
+                let factors = std::mem::take(&mut oc.factors);
+                match collider {
+                    Some(w) => switch_ambient(oc, lib, &sw, &mut crate::occlusion::CityProbe { world: w, factors: &factors }),
+                    None => switch_ambient(oc, lib, &sw, &mut crate::occlusion::NoProbe),
+                }
+                oc.factors = factors;
+            }
             // (the slipstream burn's PLAYER_NITROUS)
             if let Some(l) = fleet.want_speech.take() {
                 self.want_speech = Some(l);

@@ -1691,6 +1691,13 @@ struct TrafficType {
 
 /// One ambient car's sounds (mcAmbientVehicleAudioEntity; `reference/audio/TRAFFIC_AUDIO_RULE.md`).
 struct Traffic {
+    /// the entity's occluder (+80; its request template +96 carries it at +32, so every sound of the car does) as a
+    /// slot of the sound library's occlusion table plus one; E+276 the age when one of its voices was last placed
+    /// (-1 at the reset F-89483); whether the occluder is to be on, and the whoosh's immediate update asked for
+    pub occ: u16,
+    voice_age: f32,
+    occ_on: bool,
+    occ_now: bool,
     obj: Vec<u8>,
     ty: TrafficType,
     engine: Option<Handle>,
@@ -1729,6 +1736,20 @@ struct HornIn {
 }
 
 impl Traffic {
+    /// The entity's age steps by `dt` (F-70175), with the occluder's switch: a voice of the entity placed since the
+    /// last update (the voice callback F-18361 sets +276 = the age then; here: one of its sounds is playing) keeps it
+    /// on for 0.1333 s of age.
+    fn advance(&mut self, lib: &SoundLib, dt: f32) {
+        if dt == 0.0 {
+            return;
+        }
+        if [self.engine, self.tyre, self.wet_tyre, self.skid, self.horn, self.alarm, self.speech].iter().flatten().any(|h| lib.playing(*h)) {
+            self.voice_age = self.age;
+        }
+        self.age += dt;
+        self.occ_on = !(self.age > self.voice_age + f32::from_bits(0x3E08_8889));
+    }
+
     fn stop_all(&mut self, lib: &mut SoundLib) {
         for s in [&mut self.engine, &mut self.tyre, &mut self.wet_tyre, &mut self.skid, &mut self.horn, &mut self.alarm, &mut self.speech] {
             stop(lib, s);
@@ -1747,7 +1768,7 @@ impl Traffic {
         // E+240: mph gained over one frame (the original's 30 Hz frame)
         let acc = self.prev_v.map_or(0.0, |p| (v - p) / dt.max(1e-6) / 30.0);
         self.prev_v = Some(v);
-        self.age += dt;
+        self.advance(lib, dt);
         self.awake = true;
         // the commanded acceleration's 4-frame window (the port's brain commands pedals: full brake = fMaxDecel)
         let cmd = if c.input.brake > 0.0 { -c.input.brake * self.ty.max_decel } else { c.input.throttle };
@@ -1787,7 +1808,7 @@ impl Traffic {
                 _ => 0,
             };
             if let Some(h) = self.engine {
-                lib.set(h, Req::at(pos).pitch(pitch));
+                lib.set(h, at_occ(pos, self.occ).pitch(pitch));
             }
             // tyres
             let speed = st.speed() * MPH;
@@ -1796,10 +1817,10 @@ impl Traffic {
                 let t = (x - f(70)) / (f(74) - f(70)).max(1e-3);
                 let vol = (be_s16(&a, 62) + (be_s16(&a, 64) - be_s16(&a, 62)) * t) * 0.01;
                 let pitch = (be_s16(&a, 66) + (be_s16(&a, 68) - be_s16(&a, 66)) * t) as i32;
-                keep(lib, &mut self.tyre, be_u32(&a, 54), Req::at(pos).vol(vol).pitch(pitch));
+                keep(lib, &mut self.tyre, be_u32(&a, 54), at_occ(pos, self.occ).vol(vol).pitch(pitch));
                 // wet: the water tyre loop A+58 beside it with the same volume and pitch
                 if wet {
-                    keep(lib, &mut self.wet_tyre, be_u32(&a, 58), Req::at(pos).vol(vol).pitch(pitch));
+                    keep(lib, &mut self.wet_tyre, be_u32(&a, 58), at_occ(pos, self.occ).vol(vol).pitch(pitch));
                 } else {
                     stop(lib, &mut self.wet_tyre);
                 }
@@ -1833,7 +1854,7 @@ impl Traffic {
         let emergency = c.rail.as_ref().is_some_and(|r| r.lock.now());
         if emergency || s > 0.15 {
             let pitch = (be_s16(&a, 86) + (be_s16(&a, 88) - be_s16(&a, 86)) * s) as i32;
-            keep(lib, &mut self.skid, be_u32(&a, 78), Req::at(pos).pitch(pitch));
+            keep(lib, &mut self.skid, be_u32(&a, 78), at_occ(pos, self.occ).pitch(pitch));
         } else {
             stop(lib, &mut self.skid);
         }
@@ -1849,7 +1870,7 @@ impl Traffic {
         }
         for h in [self.horn, self.speech] {
             if let Some(h) = h {
-                lib.set(h, Req::at(pos));
+                lib.set(h, at_occ(pos, self.occ));
             }
         }
     }
@@ -1870,7 +1891,7 @@ impl Traffic {
         if self.age < self.next_horn || !free(lib, &self.horn) {
             return;
         }
-        self.horn = lib.play_hash(be_u32(&self.obj, at), Req::at(pos));
+        self.horn = lib.play_hash(be_u32(&self.obj, at), at_occ(pos, self.occ));
         self.next_horn = self.age + hold.unwrap_or_else(|| lib.rand_float(2.0, 6.0));
     }
 
@@ -1891,7 +1912,7 @@ impl Traffic {
                 self.honk(lib, pos, 90, None);
             }
             if lib.rand_int(0, 99) < speech_pct as i32 && st.vel.length_squared() < 244.81 && self.ty.bound_group < 2 && !is_null(self.voice) && free(lib, &self.speech) && self.age >= self.next_speech {
-                self.speech = lib.play_hash(self.voice, Req::at(pos));
+                self.speech = lib.play_hash(self.voice, at_occ(pos, self.occ));
                 self.next_speech = self.age + lib.rand_float(2.0, 6.0);
             }
             self.next_hit = self.age + 4.0;
@@ -1901,7 +1922,7 @@ impl Traffic {
             if free(lib, &self.alarm) && self.age >= self.next_hit {
                 let h = be_u32(&self.obj, 110);
                 if lib.rand_int(0, 99) < self.obj.get(114).copied().unwrap_or(0) as i32 && !is_null(h) {
-                    self.alarm = lib.play_hash(h, Req::at(pos));
+                    self.alarm = lib.play_hash(h, at_occ(pos, self.occ));
                 }
                 self.next_hit = self.age + 4.0;
             }
@@ -1913,10 +1934,12 @@ impl Traffic {
         if self.age < self.next_whoosh {
             return;
         }
+        // (the immediate update of the occluder first, while it is "not updated yet")
+        self.occ_now = true;
         let at = if c.state.speed() > 4.47 { 98 } else { 106 };
         let h = be_u32(&self.obj, at);
         if !is_null(h) {
-            lib.play_hash(h, Req::at(c.state.pos).vol(vol).pitch(pitch));
+            lib.play_hash(h, at_occ(c.state.pos, self.occ).vol(vol).pitch(pitch));
         }
         self.next_whoosh = self.age + 5.0;
     }
@@ -1945,10 +1968,15 @@ impl Traffic {
             _ => (34, ((v - be_f32(a, 42)) * 15.0).clamp(be_s16(a, 50), be_s16(a, 52)) as i32),
         };
         let h = be_u32(a, at);
-        self.engine = if is_null(h) { None } else { lib.play_hash(h, Req::at(pos).pitch(pitch)) };
+        self.engine = if is_null(h) { None } else { lib.play_hash(h, at_occ(pos, self.occ).pitch(pitch)) };
         self.state = s;
         self.in_state = 0.0;
     }
+}
+
+/// A request at `pos` with the occluder slot `occ` (an ambient entity's request template, +32).
+fn at_occ(pos: Vec3, occ: u16) -> Req {
+    Req { occluder: occ, ..Req::at(pos) }
 }
 
 /// The call signs the cruisers are given, in the order of the PoliceVoices OFFICER group (F-23825).
@@ -2139,6 +2167,11 @@ impl Fleet {
             want_speech: None,
             occ: HashMap::new(),
         }
+    }
+
+    /// The ambient cars' occluder switches of this frame: (uid, on, the whoosh's immediate update asked for).
+    pub fn traffic_occ(&mut self) -> Vec<(u32, bool, bool)> {
+        self.cars.values_mut().filter_map(|e| e.traffic.as_mut().map(|t| (e.uid, t.occ_on, std::mem::take(&mut t.occ_now)))).collect()
     }
 
     pub(crate) fn opponent(c: &CarInstance) -> bool {
@@ -2579,6 +2612,7 @@ impl Fleet {
             let selected = self.sel.contains(&i);
             let e = entry(&mut self.cars, &self.types, lib, i, c, false);
             if let Some(t) = &mut e.traffic {
+                t.occ = self.occ.get(&c.uid).copied().unwrap_or(0);
                 t.update(lib, c, selected, wet, horn, dt);
                 t.contacts(lib, c, speech_pct, true);
             }
@@ -2590,13 +2624,14 @@ impl Fleet {
             }
             let e = entry(&mut self.cars, &self.types, lib, i, c, false);
             if let Some(t) = &mut e.traffic {
+                t.occ = self.occ.get(&c.uid).copied().unwrap_or(0);
                 t.deselect(lib);
                 t.contacts(lib, c, speech_pct, false);
                 if t.awake {
-                    t.age += dt;
+                    t.advance(lib, dt);
                 }
                 if let Some(h) = t.alarm {
-                    lib.set(h, Req::at(c.state.pos));
+                    lib.set(h, at_occ(c.state.pos, t.occ));
                 }
             }
         }
@@ -2709,6 +2744,10 @@ fn entry<'a>(cars: &'a mut HashMap<usize, Entry>, types: &HashMap<String, Traffi
                     lib.game.get(be_u32(&mgr, 12 + 4 * k))
                 }.map_or(0, |o| be_u32(o, 10)) } else { 0 };
                 Traffic {
+                    occ: 0,
+                    voice_age: -1.0,
+                    occ_on: false,
+                    occ_now: false,
                     obj,
                     ty: tt,
                     engine: None,
