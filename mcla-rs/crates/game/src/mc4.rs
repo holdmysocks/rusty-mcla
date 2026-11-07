@@ -10583,6 +10583,8 @@ impl Game {
             let ob: Vec<Option<i64>> = if rec.objectives.len() == v.objectives.len() { rec.objectives.iter().map(base).collect() } else { Vec::new() };
             let pb: Vec<Option<i64>> = if rec.prerequisites.len() == v.prerequisites.len() { rec.prerequisites.iter().map(base).collect() } else { Vec::new() };
             self.career.ext_from_save(i, &hidden, &ob, &pb);
+            let tm: Vec<bool> = if rec.prerequisites.len() == v.prerequisites.len() { rec.prerequisites.iter().map(|r| r.conditions.first().map_or(false, |c| c.met)).collect() } else { Vec::new() };
+            self.career.tally_from_save(i, &tm);
             // (a met Stat condition's value stopped where it was met: step 20b)
             let last = |r: &Requirement| r.conditions.first().filter(|c| c.met && c.kind.as_str() == Some("Stat")).and_then(|c| c.value);
             let ol: Vec<Option<i64>> = if rec.objectives.len() == v.objectives.len() { rec.objectives.iter().map(last).collect() } else { Vec::new() };

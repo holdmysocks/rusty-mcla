@@ -35,6 +35,9 @@ struct Requirement {
     allow_update: bool,
     /// nTargetId (+104): the uid of what the objective is about (a hangout, a racer)
     target_id: i32,
+    /// bInitValidation (+119): the arming (F-19696) asks each condition to check at once
+    /// (F-97796 -> its update with no mission)
+    init_validation: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -427,9 +430,16 @@ fn requirements(text: &str) -> Vec<Requirement> {
                 _ => Cond::Event { event: up(tag(c, "szEventId")), ident: tag(c, "szIdentifier").unwrap_or("").to_string() },
             });
         }
-        out.push(Requirement { desc: tag(chunk, "szDescriptionId").unwrap_or("").to_string(), hidden: val(chunk, "bAlwaysHidden") == Some("true"), conds, stat_types, allow_update: val(chunk, "bAllowUpdate") != Some("false"), target_id: val(chunk.split("<aConditions").next().unwrap_or(""), "nTargetId").and_then(|v| v.parse().ok()).unwrap_or(0) });
+        out.push(Requirement { desc: tag(chunk, "szDescriptionId").unwrap_or("").to_string(), hidden: val(chunk, "bAlwaysHidden") == Some("true"), conds, stat_types, allow_update: val(chunk, "bAllowUpdate") != Some("false"), target_id: val(chunk.split("<aConditions").next().unwrap_or(""), "nTargetId").and_then(|v| v.parse().ok()).unwrap_or(0), init_validation: val(chunk.split("<aConditions").next().unwrap_or(""), "bInitValidation") == Some("true") });
     }
     out
+}
+
+/// A district's number (F-67263): "SC" and "South Central" are SouthCentral; Hollywood 0,
+/// Beaches 1, Hills 2, Downtown 3, SouthCentral 4, Unknown 5, All 6; anything else -1.
+fn district_no(s: &str) -> i32 {
+    let s = if s == "SC" || s == "South Central" { "SouthCentral" } else { s };
+    ["Hollywood", "Beaches", "Hills", "Downtown", "SouthCentral", "Unknown", "All"].iter().position(|d| *d == s).map_or(-1, |p| p as i32)
 }
 
 fn same_district(want: &str, got: &str) -> bool {
@@ -1215,6 +1225,7 @@ impl Career {
                 for k in 0..m.rewards.len() {
                     self.add_reward(i, k, &m);
                 }
+                self.mission_complete_event();
                 // what the event itself pays: prize cars from the reward tables, the rival's
                 // car for pink slips, prize money (amounts are ours: the original computes
                 // them in script)
@@ -2180,6 +2191,9 @@ pub struct MissionExt {
     /// a met Stat condition's last value, frozen at the moment it was met
     pub obj_last: Vec<Option<i64>>,
     pub pre_last: Vec<Option<i64>>,
+    /// a prerequisite's TallyMission LessThan condition met (+40, saved: F-63669 / F-78825):
+    /// cleared at the arming (F-42425), set when a check finds too few open missions
+    pub pre_tally: Vec<bool>,
 }
 
 /// The story missions whose CORE script shows the second objective once the hookman is met
@@ -2413,6 +2427,7 @@ impl Career {
                     state: Self::stage_state_id(stage) as u8,
                     obj_last: vec![None; m.objectives.len()],
                     pre_last: vec![None; m.prereq.len()],
+                    pre_tally: vec![false; m.prereq.len()],
                 }
             })
             .collect();
@@ -2479,6 +2494,34 @@ impl Career {
                 Some(Cond::Experience { .. }) => self.ext[i].pre_base[k] = Some(self.rep),
                 _ => {}
             }
+            self.ext[i].pre_tally[k] = false;
+            if r.init_validation {
+                self.tally_check(i, k);
+            }
+        }
+    }
+
+    /// The open missions of a district for a TallyMission LessThan condition (F-12302 ->
+    /// F-65871 with mask 28: states 2 READY_TO_START, 3 CHECKING_OBJECTIVES and 4
+    /// READY_TO_COMPLETE, a state's mask being 1 << its number - F-33894; the filter F-78851
+    /// of kind 0 passes all; the mission's district equal to the condition's, or the
+    /// condition's "All").
+    fn tally_open(&self, district: &str) -> u32 {
+        let want = district_no(district);
+        (0..self.missions.len()).filter(|&j| (2..=4).contains(&self.state_id_of(j)) && (want == 6 || district_no(&self.missions[j].district) == want)).count() as u32
+    }
+
+    /// A prerequisite's TallyMission LessThan check (F-12302, at the arming with
+    /// bInitValidation and on every MISSION_COMPLETE, which F-97326 posts once the mission is
+    /// in state 5 - F-58560, then F-63586): met, and kept, when fewer than nTally missions of
+    /// its district are open.
+    fn tally_check(&mut self, i: usize, k: usize) {
+        let Some(Cond::TallyMission { less_than: true, tally, district }) = self.missions[i].prereq[k].conds.first() else { return };
+        if !self.ext_ok(i) || self.ext[i].pre_tally[k] {
+            return;
+        }
+        if self.tally_open(district) < *tally {
+            self.ext[i].pre_tally[k] = true;
         }
     }
 
@@ -2489,6 +2532,18 @@ impl Career {
             self.done.push(i);
         }
         self.done_now.push(i);
+    }
+
+    /// MISSION_COMPLETE (F-63586, after the mission's state 5 and its rewards): the armed
+    /// missions' TallyMission conditions check.
+    fn mission_complete_event(&mut self) {
+        for j in 0..self.missions.len() {
+            if self.state[j].stage == Stage::Armed {
+                for k in 0..self.missions[j].prereq.len() {
+                    self.tally_check(j, k);
+                }
+            }
+        }
     }
 
     /// Experience baselines armed by a race take the reputation that race paid.
@@ -2551,9 +2606,12 @@ impl Career {
         let base = self.ext.get(i).and_then(|e| e.pre_base.get(k).copied()).flatten();
         r.conds.iter().enumerate().all(|(ci, c)| match c {
             Cond::Mission(id) => self.index.get(id).map_or(false, |&j| self.state[j].stage == Stage::Complete),
-            Cond::TallyMission { less_than, tally, district } => {
+            // (LessThan: the kept verdict of the checks, F-12302; without it the original counts
+            // the completions since the arming - no mission file has one)
+            Cond::TallyMission { less_than: true, .. } => self.ext.get(i).and_then(|e| e.pre_tally.get(k).copied()).unwrap_or(false),
+            Cond::TallyMission { less_than: false, tally, district } => {
                 let n = self.missions.iter().zip(self.state.iter()).filter(|(m, s)| s.stage == Stage::Complete && same_district(district, &m.district)).count() as u32;
-                if *less_than { n < *tally } else { n >= *tally }
+                n >= *tally
             }
             Cond::Experience { amount } => self.rep - base.unwrap_or(0) >= *amount,
             Cond::Stat { stat, value } => self.stat_since(stat, Self::purse(r, ci), base) >= *value,
@@ -2852,6 +2910,18 @@ impl Career {
     }
 
     /// A mission's requirements from its save record: the objectives' +118, the baselines.
+    /// A load: a prerequisite's TallyMission LessThan verdict is the record's (+40, F-78825).
+    pub fn tally_from_save(&mut self, i: usize, met: &[bool]) {
+        if !self.ext_ok(i) {
+            return;
+        }
+        for (k, m) in met.iter().enumerate().take(self.ext[i].pre_tally.len()) {
+            if matches!(self.missions[i].prereq[k].conds.first(), Some(Cond::TallyMission { less_than: true, .. })) {
+                self.ext[i].pre_tally[k] = *m;
+            }
+        }
+    }
+
     pub fn ext_from_save(&mut self, i: usize, obj_hidden: &[bool], obj_base: &[Option<i64>], pre_base: &[Option<i64>]) {
         if !self.ext_ok(i) {
             return;
@@ -3498,6 +3568,61 @@ mod tests {
         assert_eq!(v.len(), 1, "{v:?}");
         assert!(!v[0].2 && v[0].1.len() == 1 && v[0].1[0].ends_with("(1/6)") && !v[0].1[0].starts_with(crate::game::OBJ_DONE), "{v:?}");
         assert!(c.take_mission_updates().is_empty());
+    }
+
+    /// The repeat missions' TallyMission LessThan prerequisite (F-12302): met when fewer than
+    /// nTally (2) missions of the district are open - states 2 to 4 (mask 28) - checked at the
+    /// arming (bInitValidation) and on each MISSION_COMPLETE, kept once met; completed missions
+    /// do not count (the port had counted the completions).
+    #[test]
+    fn tally_mission_counts_the_open_missions() {
+        let dir = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        if !std::path::Path::new(&dir).join("tune/career").is_dir() {
+            return;
+        }
+        let mut c = Career::load(&dir);
+        let r = c.mission_no("REPEAT_BESTOF_HILLS").unwrap();
+        let hills: Vec<usize> = (0..c.missions.len()).filter(|&j| j != r && c.missions[j].district == "Hills" && !c.missions[j].repeatable).take(3).collect();
+        assert_eq!(hills.len(), 3);
+        assert_eq!(district_no("SC"), 4);
+        assert_eq!(district_no("South Central"), 4);
+        assert_eq!(district_no("All"), 6);
+        assert_eq!(district_no("Nowhere"), -1);
+        let set = |c: &mut Career, open: &[usize], done: &[usize]| {
+            let mut s = c.save();
+            s.missions.clear();
+            for &j in open {
+                s.missions.insert(c.missions[j].id.clone(), MState { stage: Stage::Active, ..Default::default() });
+            }
+            for &j in done {
+                s.missions.insert(c.missions[j].id.clone(), MState { stage: Stage::Complete, ..Default::default() });
+            }
+            c.restore(&s);
+            c.state[r].stage = Stage::Armed;
+            c.on_armed(r);
+        };
+        // two open: not met at the arming, though nothing of Hills is complete
+        set(&mut c, &hills[..2], &[]);
+        assert_eq!(c.tally_open("Hills"), 2);
+        assert!(!c.prereq_req_met(r, 0));
+        // one of them completes: MISSION_COMPLETE finds one open
+        c.state[hills[0]].stage = Stage::Complete;
+        c.mission_complete_event();
+        assert!(c.prereq_req_met(r, 0));
+        // kept when the count rises again before the mission steps on
+        c.state[hills[0]].stage = Stage::Active;
+        assert!(c.prereq_req_met(r, 0));
+        // one open, two complete: met at the arming
+        set(&mut c, &hills[..1], &hills[1..3]);
+        assert!(c.prereq_req_met(r, 0));
+        // the count is only checked at the arming and on MISSION_COMPLETE
+        set(&mut c, &hills[..2], &[]);
+        c.state[hills[0]].stage = Stage::Locked;
+        assert_eq!(c.tally_open("Hills"), 1);
+        assert!(!c.prereq_req_met(r, 0));
+        // a load takes the record's verdict
+        c.tally_from_save(r, &[true]);
+        assert!(c.prereq_req_met(r, 0));
     }
 
     /// Every mcConditionString of the missions is met by a string the port posts as the original
