@@ -1639,18 +1639,19 @@ impl FillList {
             self.lo = if score - self.lo >= 0.0 { self.lo } else { score };
             return Some(n);
         }
-        if score <= self.lo {
+        // (the original's compares: a NaN score or depth never takes a slot, as camprobe.rs::alloc - F-89028)
+        if !(score > self.lo) {
             return None;
         }
         let (mut min, mut second, mut k) = (f32::MAX, self.hi, 0);
         for (j, s) in self.slots.iter().enumerate() {
             let d = s.map_or(0.0, |s| s.depth);
             let d = if d > cap { cap - d } else { d };
-            if !(d >= min) {
+            if d < min {
                 second = min;
                 k = j;
                 min = d;
-            } else if !(d >= second) {
+            } else if d < second {
                 second = d;
             }
         }
