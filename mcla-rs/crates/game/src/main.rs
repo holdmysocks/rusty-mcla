@@ -5526,7 +5526,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if let Some((z, &(zp, zr, ..))) = self.police.zone.clone().filter(|_| race.countdown <= 0.0).and_then(|z| race.cop_zones.get(z.idx).map(|c| (z, c))) {
                     let lap = race.next.first().map_or(0, |&n| n / race.lap_len.max(1));
                     let racers: Vec<(u32, bool, Vec3, bool)> = race.participants.iter()
-                        .filter_map(|&ci| self.vehicles.cars.get(ci).map(|c| (c.uid, c.is_player, c.state.pos, c.state.damage >= 0.999)))
+                        .filter_map(|&ci| self.vehicles.cars.get(ci).map(|c| (c.uid, c.is_player, c.state.pos, police::damaged_out(c.state.damage))))  // (zone state 2's test, F-12032: the full MaxDamage)
                         .collect();
                     // (the in-race retarget's racers, the player first: F-22530)
                     self.police.racer_uids = racers.iter().filter(|r| r.1).chain(racers.iter().filter(|r| !r.1)).map(|r| r.0).collect();
@@ -11383,7 +11383,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // the distance LOD (F-12028): every seat here is drawn, so its draw-gate tests pass; the scene byte is a story
             // scene playing, the cine-script test the same (F-52539); the reference is the player's car, else the camera.
             // (approx.: the port keeps no wipeout state for other cars - "wrecked" is the damaged-out test alone, damage
-            // at its limit as the player's 0x04)
+            // at its limit as the player's 0x04: the full MaxDamage, police::damaged_out as F-12032)
             let reference = self.vehicles.player().filter(|c| c.placed).map(|c| [c.state.pos.x, c.state.pos.z]);
             let (scene, cam) = (self.cine.playing.is_some(), [self.cam.pos.x, self.cam.pos.z]);
             let cars = &self.vehicles.cars;
@@ -11394,7 +11394,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 car: true,
                 cine: scene,
                 player: s.player,
-                wrecked: cars.get(s.id).is_some_and(|c| c.state.damage >= 0.999),
+                wrecked: cars.get(s.id).is_some_and(|c| police::damaged_out(c.state.damage)),
                 reference,
                 camera: cam,
                 pos: cars.get(s.id).map_or([s.pos.x, s.pos.z], |c| [c.state.pos.x, c.state.pos.z]),
