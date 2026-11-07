@@ -985,7 +985,8 @@ pub fn targets(cars: &[(usize, Vec3, Quat, bool)], shooter: usize, kind: u8, bac
 // The sounds (game.dat PACKAGE_POWERUP_PLAYER: POWERUP_<X>_PLAYER per type; the computer
 // racers' package has none). Fields of the object as the car audio's notifications play them
 // (F-90757 .. F-96330): +10 picked up, +14 a hit landed, +18 / +22 fired (and its
-// loop), +30 / +34 in (and its loop), +38 out, +42 mirrored, +46 shielded, +54 melting.
+// loop), +26 the shot's end (F-23785; NULL_SOUND in every entry of both packages), +30 / +34 in (and its loop),
+// +38 out, +42 mirrored, +46 shielded, +54 melting.
 // The first wave of each object (sounds.dat), left channel.
 
 const BANK: &str = "special_effects/bnk_special_effects/";
@@ -1000,6 +1001,8 @@ pub enum Snd {
     Mirrored,
     Shielded,
     Melt,
+    /// the shot ends (F-79013 -> the car audio's slot 21, F-23785: the shot loop stops, field +26 plays)
+    ShotEnd,
 }
 
 /// The wave of a notification for a type (None: NULL_SOUND).
@@ -1017,6 +1020,8 @@ pub fn wave(kind: u8, s: Snd) -> Option<String> {
         Snd::Mirrored => matches!(base, ICE | MIRROR).then_some("electric_bolt_fire.l"),
         Snd::Shielded => None,
         Snd::Melt => (base == ICE).then_some("ice_melt_left"),
+        // (+26 is NULL_SOUND for every type: nothing to fall back to)
+        Snd::ShotEnd => None,
     };
     w.map(|w| format!("{BANK}{w}"))
 }
@@ -1036,6 +1041,7 @@ pub fn object(kind: u8, s: Snd) -> Option<(String, usize)> {
         Snd::Mirrored => 42,
         Snd::Shielded => 46,
         Snd::Melt => 54,
+        Snd::ShotEnd => 26,
     };
     Some((format!("POWERUP_{name}_PLAYER"), field))
 }
@@ -1300,9 +1306,8 @@ impl PowerUps {
         for l in self.holders[fi].lasers.iter_mut() {
             l.end = l.end.min(now);
         }
-        if self.holders[fi].shot.take().is_some() {
-            // (F-79013 with a shot: the type's +24, the notification +84 - no sound)
-        }
+        // (F-12528 ends the shot before the target's side: F-79013)
+        self.end_shot(fi);
         let cur = self.holders[ti].effect.as_ref().map_or(NONE, |e| e.kind);
         match cur {
             SHIELD | MEGA_SHIELD => {
@@ -1338,6 +1343,15 @@ impl PowerUps {
             }
         }
         self.notes.push(Note { car: from, kind, snd: Snd::Hit });
+    }
+
+    /// The shot's end (F-79013): with a shot (+228; its flag +232 is always set then - F-52079 is its only setter,
+    /// F-79013 and F-24971 its clearers), the type's +24 and the car audio's notification slot 21 (F-23785) with the
+    /// shot's type: the shot loop (+1376) stops and the entry's +26 plays. Without a shot nothing.
+    fn end_shot(&mut self, hi: usize) {
+        if let Some(s) = self.holders[hi].shot.take() {
+            self.notes.push(Note { car: self.holders[hi].car, kind: s.kind, snd: Snd::ShotEnd });
+        }
     }
 
     /// One frame: sources placed where the ground is there to probe, the cars' shots and
@@ -1390,6 +1404,8 @@ impl PowerUps {
                     // (F-52079 A-59766) and cleared only here and by the clear-out, so the
                     // branch that leaves the wasted shot's icon (+164 / +176 / +192) is never taken:
                     // no icon - 19f's reading of it was wrong)
+                    self.holders[hi].shot = Some(s);
+                    self.end_shot(hi);
                 } else {
                     let car = self.holders[hi].car;
                     if !s.found {
@@ -1559,7 +1575,7 @@ impl PowerUps {
     pub fn clear(&mut self, vehicles: &mut crate::vehicles::Vehicles, ability: &mut crate::ability::Abilities) {
         for hi in 0..self.holders.len() {
             self.end_effect(hi, ability);
-            self.holders[hi].shot = None;
+            self.end_shot(hi);
             self.holders[hi].slots = [NONE; 2];
             self.holders[hi].ctl = 0;
             if let Some(c) = vehicles.cars.get_mut(self.holders[hi].car) {
@@ -2068,6 +2084,42 @@ mod original_holder_tests {
         }
         // (2,374 operations: 1,315 run, 1,059 landings on a car without an effect skipped)
         assert_eq!(ops_run, 1315);
+    }
+
+    /// The shot's end against F-79013 + F-23785 run offline (tools/pu_shot_end_reference.py, testdata/pu_shot_end_ref.txt:
+    /// "shot flag kind loop found clock calls | +228 +232 +16 +164 +192"). With a shot and its flag set (the only state the
+    /// game reaches with a shot) the notification gets the shot's type and plays the entry's +26; without a shot nothing.
+    #[test]
+    fn shot_end_matches_the_original() {
+        let (mut run, mut skipped) = (0, 0);
+        for line in include_str!("testdata/pu_shot_end_ref.txt").lines() {
+            let (a, after) = line.split_once(" | ").unwrap();
+            let t: Vec<&str> = a.split(' ').collect();
+            let (shot, flag, kind) = (t[0] == "1", t[1] == "1", t[2].parse::<u8>().unwrap());
+            if shot && !flag {
+                skipped += 1;
+                continue;
+            }
+            let mut p = PowerUps::new("", &[0; 28], Vec::new(), &[0, 1], 1);
+            if shot {
+                p.holders[0].shot = Some(Shot { kind, left: 1.0, found: false, targets: Vec::new(), wait: 0.0 });
+            }
+            p.end_shot(0);
+            assert!(p.holders[0].shot.is_none(), "{line}");
+            assert!(after.starts_with("00000000 0 00000000"), "{line}");
+            let notified = t[6..].iter().any(|c| *c == format!("N:{kind}"));
+            assert_eq!(notified, shot, "{line}");
+            assert_eq!(p.notes, if shot { vec![Note { car: 0, kind, snd: Snd::ShotEnd }] } else { vec![] }, "{line}");
+            if shot && t[4] == "1" {
+                // the entry's word +26 played: the field the port plays (every shipped entry holds NULL_SOUND there)
+                assert!(t.iter().any(|c| *c == "P:1310:e38fcf16"), "{line}");
+                if let Some((_, f)) = object(kind, Snd::ShotEnd) {
+                    assert_eq!(f, 26);
+                }
+            }
+            run += 1;
+        }
+        assert_eq!((run, skipped), (384, 128));
     }
 }
 
