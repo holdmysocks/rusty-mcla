@@ -1427,6 +1427,9 @@ pub struct Police {
     /// Pursuit / Arrow Trap started with no tactic before it (one that ended - a Dispatch, a Pull-over - gives none);
     /// the main loop takes it
     pub pursuit_tut: bool,
+    /// The police strip's texts StartTactic asks for (F-76838's message kinds: 0 pull over, 1 pursuit, 2 investigation,
+    /// 3 searching), on every start, whatever the target (every caller passes the show flag 1); main hands them to the HUD
+    pub hud_msgs: Vec<u8>,
     /// The manager's +84 (PoliceManager_GetLastPullOverPolice, F-66567): the first cop of the last pull-over started; never
     /// cleared
     pub last_pullover: Option<u32>,
@@ -1558,6 +1561,7 @@ impl Police {
             goons: false,
             phone_cut: false,
             pursuit_tut: false,
+            hud_msgs: Vec::new(),
             last_pullover: None,
             stat_cpa: 0,
             player_police: false,
@@ -2505,6 +2509,14 @@ impl Police {
         // (the tutorial F-24639: kind >= 2 on the player's car - the target's vt+40 - when the kind is 2 or no old tactic ended;
         // every caller passes the show flag r6 = 1)
         self.pursuit_tut |= self.target.is_none() && kind.ty() >= 2 && (kind.ty() == 2 || old.is_none());
+        // (the strip's texts, F-76838: a Dispatch 2; a Pull-over 0 then 3; the others 1 then 3 - on a start only)
+        if kind != TacKind::None && matches!(start_rule(kind.ty(), old), StartRule::Start { .. }) {
+            self.hud_msgs.extend_from_slice(match kind {
+                TacKind::Dispatch => &[2][..],
+                TacKind::PullOver => &[0, 3],
+                _ => &[1, 3],
+            });
+        }
         // (the stat gCPA + 1 for a kind >= 1 with no old tactic or an old Dispatch, any target; the event POLICE_PURSUIT
         // for a kind >= 2 (F-41015) has no listener - no file of the disc and no other code of the image names it)
         if kind.ty() >= 1 && old.map_or(true, |(t, _)| t == 0) {
@@ -2556,6 +2568,30 @@ impl Police {
             Heat::PullOver => 1,
             Heat::Pursuit | Heat::Search | Heat::Busted => 2,
         }, 0)
+    }
+
+    /// PoliceManager_CheckPoliceActivity(1) (F-35540) in full for the strip's look: -1 a Dispatch (type 0) on the player past
+    /// its wait (tested first); then over the tactics on the player, 3 one in its Search with the clock running (vt+44, the
+    /// target lost - F-63053), 2 one in its Search (vt+40, F-77780); then the tactic of type 4 / 3 / 2 / 1 (Arrow Trap,
+    /// Double Pursuit, Pursuit, Pull-over: 7 / 6 / 5 / 4 - F-10826); else 0. (The manager's +56 byte -> 100, the +196 test
+    /// -> 7 and the units' test -> 1 give the strip's look 0 or 1 as their neighbours and are not reached by the port.)
+    pub fn hud_state(&self) -> i32 {
+        if self.dsp.as_ref().is_some_and(|d| d.st > 0) {
+            return -1;
+        }
+        if self.target.is_some() {
+            return 0;
+        }
+        if self.heat == Heat::Search {
+            return if search_clock_runs(self.search) { 3 } else { 2 };
+        }
+        match self.kind {
+            TacKind::ArrowTrap => 7,
+            TacKind::PursuitDbl => 6,
+            TacKind::Pursuit => 5,
+            TacKind::PullOver => 4,
+            _ => 0,
+        }
     }
 
     /// The radio's draw (F-26639): x = lo x 0x5CDCFAA7 + hi; low and high 32 bits the new state.
@@ -3760,6 +3796,8 @@ impl Police {
                     log::info!("police: dispatch {} - cruiser {}", call, cop);
                     self.kind = TacKind::Dispatch;
                     self.cops.clear();
+                    // (StartTactic's strip text for a Dispatch, F-76838 kind 2: the investigation)
+                    self.hud_msgs.push(2);
                     self.dsp = Some(Dispatch { cop, st: 0, t: 0.0, loc: ppos, call, crumbs: Vec::new(), crumb_t: 1.0, seen_t: 0.0, trail: false, routed: false, arrived: false, next: None, brain: BrainCmd::default() });
                 }
             }
@@ -4841,6 +4879,33 @@ mod tests {
     /// (1,760 cases): kept / refused / started, the old one ended, the duration carried, and the floor - only on a start, kind 1
     /// the table's entry 1 (iPullOverLawBreakScore), kinds 2 and 3 entry 3 (iPursuitLawBreakScore), kind 4 entry 0
     /// (iMaxLawBreakingScore), the harness's table 4001 .. 4004.
+    /// The police strip's texts StartTactic asks for (F-76838, logged by tools/start_tactic_reference.py as 4x): on every
+    /// start with the show flag (every caller passes 1), whatever the target - Dispatch 2, Pull-over 0 then 3, the others 1
+    /// then 3; none on a refused or kept start.
+    #[test]
+    fn start_tactic_hud_texts_match_the_original() {
+        let kinds = [TacKind::Dispatch, TacKind::PullOver, TacKind::Pursuit, TacKind::PursuitDbl, TacKind::ArrowTrap];
+        let mut n = 0;
+        for l in include_str!("testdata/start_tactic_ref.txt").lines().filter(|l| !l.starts_with("BLOCK")) {
+            let parts: Vec<&str> = l.split('|').map(str::trim).collect();
+            let v: Vec<i32> = parts[0].split_whitespace().map(|x| x.parse().unwrap()).collect();
+            if v[4] != 1 {
+                continue;
+            }
+            let log: Vec<&str> = parts[2].split_whitespace().skip(1).collect();
+            let want: Vec<u8> = log.iter().filter(|c| c.len() == 2 && c.starts_with('4')).map(|c| c[1..].parse().unwrap()).collect();
+            let mut p = Police::new();
+            if v[1] >= 0 {
+                p.start_tactic(kinds[v[1] as usize], vec![], v[2] != 0, 25.0);
+            }
+            p.hud_msgs.clear();
+            p.start_tactic(kinds[v[0] as usize], vec![], true, 25.0);
+            assert_eq!(p.hud_msgs, want, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 880);
+    }
+
     #[test]
     fn start_tactic_matches_the_original() {
         let reference = include_str!("testdata/start_tactic_ref.txt");

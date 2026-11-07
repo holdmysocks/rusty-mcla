@@ -2393,30 +2393,36 @@ impl FlashHud {
         self.movie.player.update(dt);
     }
 
+    /// A police strip text (F-76838, asked by StartTactic): kind 0 `cop_hud_msg_pullover` and 1 `cop_hud_msg_pursuit` into
+    /// `t_police_pursuit`, 2 `cop_hud_msg_investigation` and 3 `cop_hud_msg_searching` into `t_police_search` (the string
+    /// table's text as it is); other kinds nothing.
+    pub fn police_msg(&mut self, kind: u8) {
+        let (key, var) = match kind {
+            0 => ("cop_hud_msg_pullover", "t_police_pursuit"),
+            1 => ("cop_hud_msg_pursuit", "t_police_pursuit"),
+            2 => ("cop_hud_msg_investigation", "t_police_search"),
+            3 => ("cop_hud_msg_searching", "t_police_search"),
+            _ => return,
+        };
+        let text = self.movie.string(key);
+        self.movie.player.set_global(var, Value::str(&text));
+    }
+
     /// Write this frame's values (names and units from the movie's scripts:
     /// `d_Speedvalue` m/s (x2.237 for mph), `d_RPMvalue` rpm, `RPMopt` redline rpm,
     /// `GearValue` text, `Nitrovalue` and `SAvalue` 0..1).
     pub fn drive(&mut self, info: &HudInfo, race: Option<RaceHud>, dt: f32) {
-        // the police strip under the cluster. Text: `F-76838` writes per message
-        // kind (0 pull over, 1 pursuit -> t_police_pursuit; 2 investigation,
-        // 3 searching -> t_police_search). Mode: `F-61846` sets `policePursuit`
-        // from the police state (0 none, 1 and 2 the two flashing "pursuit" looks,
-        // 3 searching).
-        let police = match info.heat {
-            1 => Some(("cop_hud_msg_pullover", 2)),
-            2 => Some(("cop_hud_msg_pursuit", 1)),
-            3 => Some(("cop_hud_msg_searching", 3)),
-            _ => None,
+        // the police strip under the cluster: its look `policePursuit` from the police state each frame (F-61846, its
+        // jump table: states 2, 5, 6, 7 -> 1; 4 -> 2; -1, 3 -> 3; others 0); its texts only when a tactic starts
+        // (`police_msg`)
+        let mode = match info.police_state {
+            2 | 5 | 6 | 7 => 1,
+            4 => 2,
+            -1 | 3 => 3,
+            _ => 0,
         };
-        let police_text = police.map(|(k, _)| self.movie.string(k).to_uppercase());
         let p = &mut self.movie.player;
-        match (police, police_text) {
-            (Some((_, mode)), Some(text)) => {
-                p.set_global(if mode == 3 { "t_police_search" } else { "t_police_pursuit" }, Value::str(&text));
-                p.set_global("policePursuit", Value::Int(mode));
-            }
-            _ => p.set_global("policePursuit", Value::Int(0)),
-        }
+        p.set_global("policePursuit", Value::Int(mode));
         p.set_global("d_Speedvalue", Value::Float(info.speed_abs));
         p.set_global("Speedvalue", Value::Float(info.speed_abs));
         p.set_global("d_RPMvalue", Value::Float(info.rpm.max(0.0)));

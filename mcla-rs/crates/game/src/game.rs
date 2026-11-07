@@ -11794,6 +11794,8 @@ pub struct HudInfo {
     pub ability_tint: Option<([[f32; 4]; 2], f32)>,
     /// police: 0 none, 1 pull over, 2 pursuit, 3 search, 4 busted
     pub heat: u8,
+    /// the police state F-35540(1) as `Police::hud_state` (the strip's look, F-61846)
+    pub police_state: i32,
     pub fine: i64,
     /// law-breaking score 0..1 and search progress 0..1
     pub law: f32,
