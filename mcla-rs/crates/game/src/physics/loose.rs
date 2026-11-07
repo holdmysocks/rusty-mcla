@@ -259,7 +259,8 @@ pub struct PBody {
 /// F-80759 / F-29166: a velocity and its momentum cut back to the body's limit.
 fn capped(v: Vec3, p: Vec3, max: f32) -> (Vec3, Vec3) {
     let l2 = fma(v.y, v.y, fma(v.z, v.z, v.x * v.x));
-    if l2 <= max * max {
+    // (blelr: a NaN length is left as it is)
+    if !(l2 > max * max) {
         return (v, p);
     }
     let mut e = (1.0 / (l2 as f64).sqrt()) as f32;
@@ -5115,6 +5116,27 @@ mod piece_tests {
     /// The island lists' STLport sort F-52683 / F-18034 run offline whole (tools/stl_sort_reference.py): 3,068 lists
     /// of 0 .. 1,200 contacts by key A and by key B, with few or many equal keys, sorted, reversed, organ pipes and
     /// median-of-three killers that reach the depth limit's heap sort - the order the port leaves equals the original's.
+    /// The speed and spin caps F-80759 / F-29166 run offline (tools/capped_reference.py): 4,032 velocities or spins with
+    /// their momenta, under and over MaxSpeed 500 / MaxAngSpeed 2 pi and other limits - every word equal (the NaNs of an
+    /// overflowing length as NaNs).
+    #[test]
+    fn caps_match_the_original() {
+        let h = |x: &str| f32::from_bits(u32::from_str_radix(x, 16).unwrap());
+        let mut n = 0;
+        for line in include_str!("../testdata/capped_ref.txt").lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let w: Vec<f32> = case.split(' ').skip(1).map(h).collect();
+            let (v, p) = capped(Vec3::new(w[0], w[1], w[2]), Vec3::new(w[3], w[4], w[5]), w[6]);
+            // (a NaN only as a NaN: the harness runs on x86, whose default NaN ffc00000 the console's 7fc00000 is not)
+            let nan = |x: u32| if f32::from_bits(x).is_nan() { 0x7fc0_0000 } else { x };
+            let got = [v.x, v.y, v.z, p.x, p.y, p.z].map(|x| format!("{:08x}", nan(x.to_bits()))).join(" ");
+            let want = want.split(' ').map(|x| format!("{:08x}", nan(u32::from_str_radix(x, 16).unwrap()))).collect::<Vec<_>>().join(" ");
+            assert_eq!(got, want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 4032);
+    }
+
     #[test]
     fn stl_sort_matches_the_original() {
         let text = include_str!("../testdata/stl_sort_ref.txt");
