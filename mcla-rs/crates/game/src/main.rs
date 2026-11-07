@@ -711,6 +711,10 @@ struct App {
     /// the driving cameras of each car (tune/camera) and the camera in use
     booms: std::collections::HashMap<String, Option<Arc<boomcam::BoomSet>>>,
     boom: boomcam::BoomCam,
+    /// the chase camera runs once a 30 Hz game frame (camDynamicBoomCS F-14014, every second tick): the game frames
+    /// since it last ran and the player's sim pose and ground at the last one (place, turn, velocity, spin, ground)
+    boom_frames: u32,
+    boom_sample: Option<(Vec3, glam::Quat, Vec3, Vec3, boomcam::BoomGround)>,
     /// the near distance of this frame's view for the traffic's LOD (`Vehicles::pick_lods`): the boom file's
     /// `CameraNear` (base +172 - viewport +704) while a boom view drives the camera, else the port's own
     lod_near: f32,
@@ -1469,6 +1473,8 @@ impl App {
             view_after_event: None,
             booms: Default::default(),
             boom: Default::default(),
+            boom_frames: 0,
+            boom_sample: None,
             lod_near: 0.3,
             event_views: Default::default(),
             event_cam: Default::default(),
@@ -8579,6 +8585,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             crate::ticktimes::start();
             self.update_gameplay(fixed_step::DT);
             crate::ticktimes::end(self.vehicles.level.objs.len());
+            // (a game frame ends with every second tick: the chase camera's input of that frame)
+            if self.tick_no % 2 == 0 {
+                if let Some(c) = self.vehicles.player() {
+                    let g = boomcam::BoomGround::from_state(&c.state, c.model.bike, self.crash_bits as u32);
+                    self.boom_sample = Some((c.state.pos, c.state.rot, c.state.vel, c.state.ang_vel, g));
+                    self.boom_frames += 1;
+                }
+            }
         }
         // ---- the pad's rumble to the pad (crate::rumble): game.SetForceFeedback as the game state has it
         // (GameState.sc.xml: off in the hangout and the garage, on for its test drive), the stops while the
@@ -9052,7 +9066,26 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // (the director's lens, F-98562: near 0.2 in every view it shows, not the file's CameraNear)
                         self.cam.near = boomcam::DIRECTOR_NEAR;
                         self.lod_near = boomcam::DIRECTOR_NEAR;
-                        let out = self.boom.update(tune, &target, dt);
+                        // (a chase view: the original's update once a game frame on the sim's pose, drawn on the car as
+                        // it is drawn; the bumper and cockpit mounts keep the port's per-frame update)
+                        let out = if chase {
+                            if !self.boom.stepped() {
+                                self.boom.reset();
+                            }
+                            let frames = std::mem::take(&mut self.boom_frames).min(2);
+                            if let Some((pos, rot, vel, ang_vel, g)) = self.boom_sample.filter(|_| frames > 0 || !self.boom.stepped()) {
+                                let at = boomcam::BoomTarget { pos, rot, vel, ang_vel, ..target };
+                                for _ in 0..frames.max(1) {
+                                    self.boom.step(tune, &at, &g, 1.0 / 30.0, 30.0);
+                                }
+                            }
+                            if self.boom.stepped() { self.boom.draw(tune, &target) } else { self.boom.update(tune, &target, dt) }
+                        } else {
+                            if self.boom.stepped() {
+                                self.boom.reset();
+                            }
+                            self.boom.update(tune, &target, dt)
+                        };
                         // (F-37740's head, before the wipeout camera is taken: a director on its view
                         // blend is finished at once - F-70013 - so the drive view is current, no blend)
                         if self.crash_bits != 0 && !self.crash_cam.active() && self.event_dir.event() != Some(boomcam::EV_DAMAGEOUT) {
