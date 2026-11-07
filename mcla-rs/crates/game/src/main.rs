@@ -7344,7 +7344,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     Some(police::Event::Ticket(f)) => {
                         // (StateTicket's enter, F-14125: the bust bits 0x28 on a car not damaged out -
                         // the wipeout camera behind the car)
-                        if self.vehicles.player().is_some_and(|c| c.state.damage < 0.999) {
+                        if self.vehicles.player().is_some_and(|c| !police::damaged_out(c.state.damage)) {
                             self.crash_bits |= 0x28;
                         }
                         // COP_PULLOVER -> CopPullover.sco: the car put upright and held as on the grid, the officer's
@@ -7363,7 +7363,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     Some(police::Event::Busted(_)) => {
                         // (StateArrest's enter, F-14125: the bust bits 0x28 on a car not damaged out; the fine is taken
                         // when the tactic succeeds - COP_ARREST, below)
-                        if self.vehicles.player().is_some_and(|c| c.state.damage < 0.999) {
+                        if self.vehicles.player().is_some_and(|c| !police::damaged_out(c.state.damage)) {
                             self.crash_bits |= 0x28;
                         }
                     }

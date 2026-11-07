@@ -873,6 +873,13 @@ fn dispatch_ask(d: &mut Dispatch, delay: f32, speech_busy: bool) {
     }
 }
 
+/// Damaged out (F-12032, mcCarDamage +36 >= its tune's MaxDamage +24, as `!(points < max)`: a NaN is out). The port keeps
+/// damage as points / MaxDamage, capped at 1.0, and points == MaxDamage give exactly 1.0; a car one point - or a fraction of
+/// one - short is not out (the port had tested 0.999, which took points from 0.999 x MaxDamage).
+pub fn damaged_out(damage: f32) -> bool {
+    !(damage < 1.0)
+}
+
 /// "Moving" (F-43975 for the target, F-36212 for the cop's own car): the speed over fMovingSpeed x 0.447.
 fn moving(speed: f32, moving_speed: f32) -> bool {
     speed > moving_speed * 0.447
@@ -2385,7 +2392,7 @@ impl Police {
                 e.1 = if mesh.map_or(true, |m| m.on_mesh(c.state.pos)) { 0.0 } else { e.1 + dt };
                 // (the car's mcCarDamage: damaged out (+36 >= MaxDamage), then its DamageOutDelay countdown +44; -1 = not
                 // damaged out)
-                e.2 = if c.state.damage < 0.999 {
+                e.2 = if !damaged_out(c.state.damage) {
                     -1.0
                 } else if e.2 < 0.0 {
                     c.model.simtunes.as_ref().map_or(0.0, |s| s.base.damage.damage_out_delay)
@@ -2959,7 +2966,7 @@ impl Police {
         }
         if let Some(u) = self.target {
             let alive = vehicles.cars.iter().any(|c| c.uid == u);
-            let wrecked = vehicles.cars.iter().any(|c| c.uid == u && c.state.damage >= 0.999);
+            let wrecked = vehicles.cars.iter().any(|c| c.uid == u && damaged_out(c.state.damage));
             if alive && wrecked && self.heat == Heat::Search {
                 // (F-22530: the tactic lost and its target damaged out (F-12032) - F-41497 ends it, silently)
                 log::info!("police: AI racer {} lost and damaged out - its tactic ends", u);
@@ -3378,7 +3385,7 @@ impl Police {
         let seer = |r: f32| vehicles.cars.iter().filter(|c| pursuer(c)).any(|c| cop_sees(world, c, ppos, r, 0.0));
         let (seer_r1, seer_bike) = (seer(arr_r + 1.0), bike_down && seer(bike_r));
         // (F-29443: some tactic cop not damaged out with its car strictly within the radius of the target, no sight needed)
-        let cop_in = vehicles.cars.iter().filter(|c| pursuer(c)).any(|c| c.state.damage < 0.999 && within_sq(ppos, c.state.pos, arr_r));
+        let cop_in = vehicles.cars.iter().filter(|c| pursuer(c)).any(|c| !damaged_out(c.state.damage) && within_sq(ppos, c.state.pos, arr_r));
         let delay = self.kind == TacKind::Pursuit && self.flee_hold > 0.0;
         // (the Delay's exit F-25831 runs the update the Delay ends; the Search's clock +16 > 0 is the target lost, F-77220)
         let leaving = self.arrest_delay && !delay;
@@ -3394,7 +3401,7 @@ impl Police {
             refresh: true,
             slow,
             bike_down,
-            wrecked: damage >= 0.999,
+            wrecked: damaged_out(damage),
             burning,
             pos: ppos,
         };
@@ -3476,7 +3483,7 @@ impl Police {
                 } else if self.arrest_step(ain(speed < arrest_speed, false), t("fPullOverDist", 15.0), t("fArrestTime", 1.0), t("fBikerWipeoutArrestDist", 50.0), arrest_speed * dt, dt) {
                     // (the pull-over's radius fPullOverDist, F-66453)
                     if self.ticket_hold.is_none() {
-                        self.ticket_hold = Some(t("fArrestStateTime", 1.75) + if damage >= 0.999 { 0.5 } else { 0.0 });
+                        self.ticket_hold = Some(t("fArrestStateTime", 1.75) + if damaged_out(damage) { 0.5 } else { 0.0 });
                         // (what the ticket is for - the panel lists it: 1 reckless driving,
                         // 2 traffic violation, 4 destruction of property)
                         self.ticket_for = (if self.offences & (LAW_BURNOUT | LAW_VEHICLE | LAW_POLICE_VEHICLE) != 0 { 1 } else { 0 }) | (if self.offences & (LAW_SPEED | LAW_WRONG_WAY | LAW_RED_LIGHT) != 0 { 2 } else { 0 }) | (if self.offences & LAW_PROP != 0 { 4 } else { 0 });
@@ -3587,7 +3594,7 @@ impl Police {
                         // (F-56938: the arrest ends after fArrestStateTime, 0.5 s longer when the
                         // target is damaged out - the enter state F-69250 only stops a car whose damage
                         // points are under its MaxDamage and then sets the tactic byte +68)
-                        self.busted_timer = t("fArrestStateTime", 1.75) + if damage >= 0.999 { 0.5 } else { 0.0 };
+                        self.busted_timer = t("fArrestStateTime", 1.75) + if damaged_out(damage) { 0.5 } else { 0.0 };
                         event = Some(Event::Busted(self.fine as i64));
                     }
                 }
@@ -4881,6 +4888,32 @@ mod tests {
     }
 
     #[test]
+    fn damaged_out_matches_the_original() {
+        // (tools/police_predicates_reference.py: F-12032 run offline; the port's damage is points / MaxDamage capped at 1.0,
+        // as physics::car::CarState's hits store it)
+        let mut n = 0;
+        for l in include_str!("testdata/police_predicates_ref.txt").lines().filter(|l| l.starts_with("D ")) {
+            let v: Vec<u32> = l.split_whitespace().skip(1).map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let (max, points) = (f32::from_bits(v[0]), f32::from_bits(v[1]));
+            assert_eq!(damaged_out((points / max).min(1.0)), v[2] == 1, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 60);
+    }
+
+    #[test]
+    fn moving_target_matches_the_original() {
+        // (F-96080 run offline: the target car's speed over f32(fMovingSpeed x 0.447))
+        let mut n = 0;
+        for l in include_str!("testdata/police_predicates_ref.txt").lines().filter(|l| l.starts_with("M ")) {
+            let v: Vec<u32> = l.split_whitespace().skip(1).map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            assert_eq!(moving(f32::from_bits(v[1]), f32::from_bits(v[0])), v[2] == 1, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 24);
+    }
+
+    #[test]
     fn arrest_hold_strip_is_activity_100() {
         // (F-35540: the manager's +56 - set by F-22530 on the arrest's success frame, cleared by CutSceneDone - is tested after
         // the Search tests and gives 100, which the strip's table F-61846 shows as look 0; the tactic was ended there)
@@ -5990,7 +6023,7 @@ pub fn station_reset(vehicles: &mut Vehicles, world: &World, n: u32) -> Option<u
     c.show_driver = false;
     if n == 0 {
         log::info!("police: after the form - the car at the police station {:?} (damage {:.3})", pos, c.state.damage);
-        if c.state.damage >= 0.999 {
+        if damaged_out(c.state.damage) {
             c.state.damage = 0.95;
         }
     }
