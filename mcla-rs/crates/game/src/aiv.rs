@@ -477,11 +477,19 @@ fn seg_portal(p0: Vec3, p1: Vec3, q0: Vec3, q1: Vec3, one_sided: bool) -> Option
     Some((s, t))
 }
 
-/// the plane-normal construction of F-68053: v made perpendicular to e (when |e|^2 > 1e-4),
-/// normalised (fallback 0)
+/// the plane-normal construction of F-68053: v made perpendicular to e (when |e|^2 > 1e-4), normalised (fallback 0).
+/// As its vector code forms it: the dots by `vmsum3fp` (dot3), 1 / |e|^2 as the reciprocal estimate with one Newton step,
+/// v - e s as `vnmsubfp` (-(e s - v)).
 fn plane_n(v: Vec3, e: Vec3) -> Vec3 {
-    let l2 = e.length_squared();
-    let v = if l2 > 1e-4 { v - e * (v.dot(e) / l2) } else { v };
+    let l2 = dot3(e, e);
+    let v = if l2 > 1e-4 {
+        let r0 = 1.0 / l2;
+        let r = r0 * (-(r0 * l2 - 1.0)) + r0;
+        let s = dot3(v, e) * r;
+        Vec3::new(-(e.x * s - v.x), -(e.y * s - v.y), -(e.z * s - v.z))
+    } else {
+        v
+    };
     norm_or(v, 1e-12, Vec3::ZERO)
 }
 
@@ -721,13 +729,15 @@ impl Aiv {
         self.portals.base = bs;
         for slot in 0..128usize {
             let o = 16 + 176 * slot;
+            // (the six cell planes at +80 .. +176 as held: F-68053 builds them once per pair, so they can be those of a portal
+            // since popped and pushed again - F-82126 leaves the planes-built index past it)
             self.portals.d[slot] = Cell {
                 a: v3(o), b: v3(o + 16), sa: v3(o + 32), sb: v3(o + 48), n: v3(o + 64),
+                fwd: v3(o + 80), back: v3(o + 96), side_a: v3(o + 112), side_b: v3(o + 128), sside_a: v3(o + 144), sside_b: v3(o + 160),
                 offroad: b[22576 + slot] & 0x80 != 0,
-                ..Cell::default()
             };
         }
-        self.planes_upto = 0;
+        self.planes_upto = i(30832);
         // goals: 8 x 32 at +22720, header +22976, words +23008
         let (st, ct, bs) = ring_hdr(22976);
         self.goals.start = st;
@@ -975,13 +985,17 @@ impl Aiv {
         self.f = car.forward;
         self.vel = car.vel;
         self.ang_vel = car.ang_vel;
-        self.v_fwd = self.f.x * self.vel.x + self.f.y * self.vel.y + self.f.z * self.vel.z;
+        // (fused as F-12813 forms it: z product rounded, then y and x added in fmadds)
+        self.v_fwd = self.vel.x.mul_add(self.f.x, self.f.y.mul_add(self.vel.y, self.f.z * self.vel.z));
         self.dt = dt;
         self.t1 = car.nitro_t;
         self.t2 = car.sling_t;
         self.cap = car.speed_cap;
         self.right = car.right;
-        if self.h.dot(self.vel) < 1.0 || self.vel.length_squared() < 25.0 {
+        // heading reset: h . v below 1 or |v|^2 not at least 25 (a NaN resets), both fused in F-12813's order
+        let hv = self.h.x.mul_add(self.vel.x, self.h.z.mul_add(self.vel.z, self.h.y * self.vel.y));
+        let v2 = self.vel.z.mul_add(self.vel.z, self.vel.x.mul_add(self.vel.x, self.vel.y * self.vel.y));
+        if hv < 1.0 || !(v2 >= 25.0) {
             self.h = self.f;
         }
         self.build_line();
@@ -1023,7 +1037,8 @@ impl Aiv {
         self.point_height(k);
         let n = self.portals.get(self.ln.pp.get(k) >> 1).n;
         if n.y > 0.5 {
-            self.h = n.cross(self.h.cross(n));
+            // n x (h x n) in the vector unit's form (products rounded, vnmsubfp)
+            self.h = Self::vcross(n, Self::vcross(self.h, n));
         }
         // drop portals and goals behind everything still referenced
         let mut lo_portal = self.planes_upto;
@@ -1384,7 +1399,8 @@ impl Aiv {
         };
         let li = self.ln.pts.end() - 1;
         let l = self.ln.pts.get(li);
-        let d2 = (target - l).length_squared();
+        let d = target - l;
+        let d2 = d.x.mul_add(d.x, d.z.mul_add(d.z, d.y * d.y)); // (fused in F-85983's order)
         let tagged = g != -1 && self.pg.get(li) == -1 && li >= self.progress && !self.goals.get(g).gate() && d2 < self.goals.get(g).w * self.goals.get(g).w;
         if tagged {
             self.pg.set(li, g);
@@ -2457,9 +2473,9 @@ impl Aiv {
     }
 }
 
+/// F-68053's side planes: the edge p -> q, from its midpoint (a short edge keeps midpoint - c unprojected, as plane_n does).
 fn side_n(p: Vec3, q: Vec3, c: Vec3) -> Vec3 {
-    let e = q - p;
-    if e.length_squared() > 1e-4 { plane_n((p + q) * 0.5 - c, e) } else { norm_or(p - c, 1e-12, Vec3::ZERO) }
+    plane_n((p + q) * 0.5 - c, q - p)
 }
 
 /// F-96281 with the Catmull-Rom basis at 0x828386B0 (set up in F-86861).
@@ -2517,6 +2533,223 @@ fn pedal_map(veh: &Veh, kappa: f32, a_cmd: f32, f3: f32, t1: f32, c1: f32, t2: f
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every field the follower's per-frame update writes, as bit patterns, in the original's order of the aiv bytes.
+    fn follow_fields(a: &Aiv) -> Vec<(String, u32)> {
+        let mut o: Vec<(String, u32)> = Vec::new();
+        let mut v = |n: &str, x: Vec3| {
+            for (q, c) in [x.x, x.y, x.z].into_iter().enumerate() {
+                o.push((format!("{n}.{q}"), c.to_bits()));
+            }
+        };
+        v("pos", a.pos);
+        v("h", a.h);
+        v("f", a.f);
+        v("vel", a.vel);
+        v("ang_vel", a.ang_vel);
+        v("right", a.right);
+        v("last_reached", a.last_reached);
+        let mut s = |n: &str, x: u32| o.push((n.to_string(), x));
+        s("v_fwd", a.v_fwd.to_bits());
+        s("cap", a.cap.to_bits());
+        s("dt", a.dt.to_bits());
+        s("t1", a.t1.to_bits());
+        s("t2", a.t2.to_bits());
+        s("progress", a.progress as u32);
+        s("cursor", a.cursor as u32);
+        s("cached", a.cached as u32);
+        s("next_goal", a.next_goal as u32);
+        for (n, (st, ct, bs)) in [
+            ("portals", (a.portals.start, a.portals.count, a.portals.base)),
+            ("goals", (a.goals.start, a.goals.count, a.goals.base)),
+            ("pts", (a.ln.pts.start, a.ln.pts.count, a.ln.pts.base)),
+            ("pp", (a.ln.pp.start, a.ln.pp.count, a.ln.pp.base)),
+            ("pg", (a.pg.start, a.pg.count, a.pg.base)),
+        ] {
+            s(&format!("{n}.start"), st as u32);
+            s(&format!("{n}.count"), ct as u32);
+            s(&format!("{n}.base"), bs as u32);
+        }
+        for i in a.ln.pts.base..a.ln.pts.end() {
+            let p = a.ln.pts.get(i);
+            for (q, c) in [p.x, p.y, p.z].into_iter().enumerate() {
+                o.push((format!("pt[{i}].{q}"), c.to_bits()));
+            }
+            o.push((format!("pp[{i}]"), a.ln.pp.get(i) as u32));
+            o.push((format!("pg[{i}]"), a.pg.get(i) as u32));
+        }
+        o
+    }
+
+    /// The follower's per-frame update F-12813 (with F-85983 build_line, F-84385 add_leg, F-51411 furthest_visible,
+    /// F-42352 visible, the cell walk F-84189 / surface height F-84036 and F-77899) run offline on its generated code
+    /// (work/racerai/follow: follow.py, gen_in.py, run.py) on the 201 recorded R8 aiv states of the 1600 m bend, each with the car of the
+    /// next recorded frame, on 1,010 varied states (car moved along / off the line, slow, reversed, other caps / boost timers) and on
+    /// 603 recorded states with the point ring cut short (so the line is laid anew): every field it writes, bit for bit
+    /// (docs/reference/ai/verify_follower.md).
+    #[test]
+    fn follower_update_is_the_originals() {
+        let dir = "D:/MCLA/work/racerai/follow";
+        let tb = std::fs::read("D:/MCLA/work/ai-verify/scalar/tune_r8.bin");
+        let Ok(tb) = tb else {
+            println!("follower fixtures missing: skipped");
+            return;
+        };
+        let floats: Vec<f32> = tb.chunks_exact(4).map(|c| f32::from_be_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let tune = Arc::new(mcla_formats::rage::aitune::AiTune::from_floats(&floats).unwrap());
+        const BS: usize = 31232;
+        let mut fails = 0;
+        let mut ran = 0;
+        for set in ["rec", "var", "trim"] {
+            let (Ok(inp), Ok(out)) = (std::fs::read(format!("{dir}/in_{set}.bin")), std::fs::read(format!("{dir}/out_{set}.bin"))) else {
+                println!("{set}: fixtures missing: skipped");
+                continue;
+            };
+            let n = inp.len() / (BS + 96);
+            assert_eq!(out.len(), n * BS);
+            let (mut bad, mut first) = (0, String::new());
+            let mut per: std::collections::BTreeMap<String, usize> = Default::default();
+            for k in 0..n {
+                let r = &inp[k * (BS + 96)..(k + 1) * (BS + 96)];
+                let g = |i: usize| f32::from_le_bytes(r[BS + 4 * i..BS + 4 * i + 4].try_into().unwrap());
+                let v = |i: usize| Vec3::new(g(i), g(i + 1), g(i + 2));
+                let mut a = Aiv::new(tune.clone());
+                a.import_original(&r[..BS]);
+                a.planes();
+                // the harness hands the original the matrix row 2 = 0 - forward and stores 0 - row 2 (signed zeros as the original's)
+                let fw = v(4);
+                let fwd = Vec3::new(0.0 - (0.0 - fw.x), 0.0 - (0.0 - fw.y), 0.0 - (0.0 - fw.z));
+                let car = AivCar {
+                    pos: v(8), right: v(0), forward: fwd, vel: v(12), ang_vel: v(16), nitro_tune: a.b1, nitro_t: g(20),
+                    sling_tune: a.b2, sling_t: g(21), speed_cap: g(22), size: a.size, gravity: a.g,
+                };
+                a.update_state(&car, g(23));
+                let mut w = Aiv::new(tune.clone());
+                w.import_original(&out[k * BS..(k + 1) * BS]);
+                let (pf, wf) = (follow_fields(&a), follow_fields(&w));
+                if std::env::var("AIV_FOLLOW_CASE").ok() == Some(format!("{set}{k}")) {
+                    for (x, y) in pf.iter().zip(&wf) {
+                        if x != y {
+                            println!("  {} port {:08x} {} / original {} {:08x}", x.0, x.1, f32::from_bits(x.1), y.0, y.1);
+                        }
+                    }
+                }
+                if pf != wf {
+                    bad += 1;
+                    let names_p: Vec<&String> = pf.iter().map(|x| &x.0).collect();
+                    let names_w: Vec<&String> = wf.iter().map(|x| &x.0).collect();
+                    if names_p != names_w {
+                        *per.entry("(point count)".into()).or_default() += 1;
+                        if first.is_empty() {
+                            first = format!("case {k}: points port {} original {}", a.ln.pts.count, w.ln.pts.count);
+                        }
+                    } else {
+                        for (x, y) in pf.iter().zip(&wf) {
+                            if x.1 != y.1 {
+                                let key = x.0.split(['[', '.']).next().unwrap().to_string();
+                                *per.entry(key).or_default() += 1;
+                                if first.is_empty() {
+                                    first = format!("case {k}: {} port {:08x} original {:08x}", x.0, x.1, y.1);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            println!("{set}: {n} cases, {bad} differ; fields {per:?}; first {first}");
+            fails += bad;
+            ran += n;
+        }
+        assert!(ran == 0 || fails == 0);
+    }
+
+    /// The six cell planes F-68053 builds per portal pair (+80 .. +176 of each 176-byte portal: forward, back, side a / b, shrunk
+    /// side a / b), its generated code run offline (work/racerai/follow/planes.py) on the 201 recorded R8 aivs and the 1,010 varied
+    /// states with the planes-built index (+30832) reset to 0: `planes()` from the same state gives every plane's xyz and the
+    /// index bit for bit (docs/reference/ai/verify_follower.md section 6).
+    #[test]
+    fn cell_planes_are_the_originals() {
+        let dir = "D:/MCLA/work/racerai/follow";
+        let tune = tune();
+        let mut ran = 0;
+        for (set, inp, stride) in [("rec", format!("{dir}/in_rec.bin"), 31232 + 96), ("var", "D:/MCLA/work/ai-verify/scalar/chain_in_var.bin".to_string(), 31232)] {
+            let (Ok(inp), Ok(out)) = (std::fs::read(&inp), std::fs::read(format!("{dir}/planes_{set}.bin"))) else {
+                println!("{set}: fixtures missing: skipped");
+                continue;
+            };
+            let n = inp.len() / stride;
+            assert_eq!(out.len(), n * 31232);
+            let (mut cells, mut bad, mut first) = (0, 0, String::new());
+            for k in 0..n {
+                let mut a = Aiv::new(tune.clone());
+                a.import_original(&inp[k * stride..k * stride + 31232]);
+                a.planes_upto = 0;
+                a.planes();
+                let mut w = Aiv::new(tune.clone());
+                w.import_original(&out[k * 31232..(k + 1) * 31232]);
+                if a.planes_upto != w.planes_upto {
+                    bad += 1;
+                    if first.is_empty() {
+                        first = format!("case {k}: planes built to {} / {}", a.planes_upto, w.planes_upto);
+                    }
+                }
+                for i in a.portals.base..a.portals.end() - 1 {
+                    let (c, d) = (a.portals.get(i), w.portals.get(i));
+                    cells += 1;
+                    let pc = [c.fwd, c.back, c.side_a, c.side_b, c.sside_a, c.sside_b];
+                    let pd = [d.fwd, d.back, d.side_a, d.side_b, d.sside_a, d.sside_b];
+                    for j in 0..6 {
+                        if pc[j].to_array().map(f32::to_bits) != pd[j].to_array().map(f32::to_bits) {
+                            bad += 1;
+                            if first.is_empty() {
+                                first = format!("case {k} portal {i} plane {j}: port {:?} original {:?}", pc[j], pd[j]);
+                            }
+                        }
+                    }
+                }
+            }
+            println!("{set}: {n} states, {cells} cells x 6 planes, {bad} differ {first}");
+            assert_eq!(bad, 0);
+            ran += cells;
+        }
+        let _ = ran;
+    }
+
+    /// F-82126 (drop the last portal) run offline (work/racerai/follow/pop.py) on the 201 recorded R8 aivs and the 1,010 variants,
+    /// the planes-built index set to the portal end + 4 first: the ring's start / count / base and the built index equal
+    /// `pop_portal`'s, and the original's own tail words (portals +22544, flag bytes +22704 / +22712) stay the ring's start + count
+    /// (docs/reference/ai/verify_follower.md section 8).
+    #[test]
+    fn pop_portal_is_the_originals() {
+        let dir = "D:/MCLA/work/racerai/follow";
+        let tune = tune();
+        for (set, inp, stride) in [("rec", format!("{dir}/in_rec.bin"), 31232 + 96), ("var", "D:/MCLA/work/ai-verify/scalar/chain_in_var.bin".to_string(), 31232)] {
+            let (Ok(inp), Ok(out)) = (std::fs::read(&inp), std::fs::read(format!("{dir}/pop_{set}.bin"))) else {
+                println!("{set}: fixtures missing: skipped");
+                continue;
+            };
+            let n = inp.len() / stride;
+            assert_eq!(out.len(), n * 31232);
+            let mut bad = 0;
+            for k in 0..n {
+                let mut a = Aiv::new(tune.clone());
+                a.import_original(&inp[k * stride..k * stride + 31232]);
+                a.planes_upto = a.portals.end() + 4;
+                a.pop_portal();
+                let o = &out[k * 31232..(k + 1) * 31232];
+                let i = |off: usize| i32::from_be_bytes(o[off..off + 4].try_into().unwrap());
+                let mut w = Aiv::new(tune.clone());
+                w.import_original(o);
+                let same = (a.portals.start, a.portals.count, a.portals.base, a.planes_upto) == (w.portals.start, w.portals.count, w.portals.base, w.planes_upto);
+                let tails = i(22544) == (i(22548) + i(22552)).rem_euclid(128) && i(22704) == (i(22708) + i(22712)).rem_euclid(128) && i(22712) == i(22552);
+                if !(same && tails) {
+                    bad += 1;
+                }
+            }
+            println!("{set}: {n} cases, {bad} differ");
+            assert_eq!(bad, 0);
+        }
+    }
 
     /// The aivRaceLineTuning (F-46101's defaults, aiv +25332, 108 bytes) as the running original holds it in a race: the R8's aiv
     /// in all 202 recorded snapshots of work/ai-record/fixture/r7_r8_run0.bin (one block, these words; RestartEveryUpdate's byte 0,
@@ -2883,8 +3116,9 @@ mod tests {
             println!("k {k:3} t {:.3} progress {pra}/{prb} pts {}/{} first/end {fa}/{fb} {na}/{nb} J {ja:.4}/{jb:.4} max point err {pe:.4} max sample err {se:.4} cursor {}/{} mode {}/{}", snaps[k + 1].0, pa.len(), pb.len(), a.cursor, b.cursor, a.mode, b.mode);
         }
         println!("tested {tested} pairs: points equal {pts_equal}, J within 0.001 {j_close}, progress / window / cursor / mode equal {lockstep}, all equal {exact}");
-        // (2026-10-26, 191 pairs: 69 / 144 / 186. The other pairs hold a snapshot read between the original's asynchronous line job and its join:
-        // docs/reference/ai/ai_record.md)
+        // (2026-10-26, 191 pairs: 69 / 144 / 186. 2026-11-07, 194 pairs, with the follower update and the planes exact: 190 / 189 / 191,
+        // 189 all equal; of the 5 left 3 hold a snapshot read between the original's asynchronous line job and its join
+        // (docs/reference/ai/ai_record.md), 2 differ in the optimiser's moves: docs/reference/ai/verify_follower.md section 3)
         assert!(tested >= 150 && lockstep * 100 >= tested * 95 && j_close * 100 >= tested * 70 && pts_equal * 100 >= tested * 30);
     }
 
