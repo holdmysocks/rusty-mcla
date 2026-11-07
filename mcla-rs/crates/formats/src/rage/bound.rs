@@ -35,6 +35,50 @@ pub struct BoundCell {
     /// which square of the grid this cell is (x, z index: the grid's +88 / +94 firsts and the
     /// cell's place in the list, index = (z - first z) * columns + (x - first x), 0x825CE120)
     pub grid: (i32, i32),
+    /// the cell's place in the grid's list (+a0): (z - first z) * columns + (x - first x)
+    pub index: usize,
+    /// the material table (+d0, +dc words) and each triangle's number in it (+d8): what the bound's material call
+    /// F-10817 answers is table[number]
+    pub ids: Vec<u32>,
+    pub numbers: Vec<u8>,
+    /// each triangle's neighbour words as the file has them (0xffff none; a number past the triangles is kept)
+    pub beside_raw: Vec<[u16; 3]>,
+    /// the cell's +70: its margin, per axis
+    pub margin: [f32; 3],
+    /// the cell's BVH (+e0), as the polygon walks F-93593 / F-54895 read it
+    pub bvh: CellBvh,
+}
+
+/// A node of a cell's BVH (16 bytes): the quantized box +0 min / +6 max (i16 each), +12 the first polygon (a leaf) or
+/// the number of nodes to skip (an inner node), +14 the leaf's polygon count (0: an inner node).
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct BvhNode {
+    pub min: [i16; 3],
+    pub max: [i16; 3],
+    pub index: u16,
+    pub count: u8,
+}
+
+/// A subtree header of a cell's BVH (16 bytes): the quantized box, +12 its root node, +14 its node count.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct BvhSubtree {
+    pub min: [i16; 3],
+    pub max: [i16; 3],
+    pub root: u16,
+    pub size: u16,
+}
+
+/// A cell's BVH (the cell's +e0): +0 the nodes (+4 their number), +16 / +32 its box min / max, +48 the quantizing
+/// origin, +64 the scale into the grid, +80 the scale out of it, +96 the subtree headers (+102 their number).
+#[derive(Debug, Default, Clone)]
+pub struct CellBvh {
+    pub nodes: Vec<BvhNode>,
+    pub subtrees: Vec<BvhSubtree>,
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+    pub origin: [f32; 3],
+    pub scale: [f32; 3],
+    pub inv: [f32; 3],
 }
 
 #[derive(Debug, Default)]
@@ -44,6 +88,16 @@ pub struct CityBound {
     pub inv_size: f32,
     pub margin: f32,
     pub cells: Vec<BoundCell>,
+    /// the grid's +88 .. +9c: first / last column, columns, first / last row, rows; +a4 the length of the cell list;
+    /// +ac / +ad the two axes the grid spans (0 and 2)
+    pub first_x: i32,
+    pub last_x: i32,
+    pub columns: i32,
+    pub first_z: i32,
+    pub last_z: i32,
+    pub rows: i32,
+    pub listed: u16,
+    pub axes: (u8, u8),
 }
 
 impl CityBound {
@@ -53,7 +107,20 @@ impl CityBound {
         let Some(grid) = grid.filter(|&g| rd.has(g, 0xb0) && rd.u8(g + 4) == 8) else {
             bail!("no grid bound in this resource");
         };
-        let mut out = CityBound { cell_size: rd.f32(grid + 0x80), inv_size: rd.f32(grid + 0x84), margin: rd.f32(grid + 0x70), cells: Vec::new() };
+        let mut out = CityBound {
+            cell_size: rd.f32(grid + 0x80),
+            inv_size: rd.f32(grid + 0x84),
+            margin: rd.f32(grid + 0x70),
+            cells: Vec::new(),
+            first_x: rd.u32(grid + 0x88) as i32,
+            last_x: rd.u32(grid + 0x8c) as i32,
+            columns: rd.u32(grid + 0x90) as i32,
+            first_z: rd.u32(grid + 0x94) as i32,
+            last_z: rd.u32(grid + 0x98) as i32,
+            rows: rd.u32(grid + 0x9c) as i32,
+            listed: rd.u16(grid + 0xa4),
+            axes: (rd.u8(grid + 0xac), rd.u8(grid + 0xad)),
+        };
         let (first_x, columns, first_z) = (rd.u32(grid + 0x88) as i32, (rd.u32(grid + 0x90) as i32).max(1), rd.u32(grid + 0x94) as i32);
         let Some(list) = rd.ptr(grid + 0xa0) else {
             return Ok(out);
@@ -70,7 +137,38 @@ impl CityBound {
             }
             let scale = [rd.f32(c + 0x90), rd.f32(c + 0x94), rd.f32(c + 0x98)];
             let centre = [rd.f32(c + 0xa0), rd.f32(c + 0xa4), rd.f32(c + 0xa8)];
-            let mut cell = BoundCell { verts: Vec::with_capacity(nv), tris: Vec::with_capacity(nt), neighbours: Vec::with_capacity(nt), material: Vec::with_capacity(nt), area: Vec::with_capacity(nt), grid: (i as i32 % columns + first_x, i as i32 / columns + first_z) };
+            let mut cell = BoundCell { verts: Vec::with_capacity(nv), tris: Vec::with_capacity(nt), neighbours: Vec::with_capacity(nt), material: Vec::with_capacity(nt), area: Vec::with_capacity(nt), grid: (i as i32 % columns + first_x, i as i32 / columns + first_z), index: i, ..Default::default() };
+            cell.ids = (0..nm).map(|k| rd.u32(ids + k * 4)).collect();
+            cell.numbers = (0..nt).map(|t| rd.u8(numbers + t)).collect();
+            if let Some(b) = rd.ptr(c + 0xe0).filter(|&b| rd.has(b, 0x68)) {
+                let v3 = |o: usize| [rd.f32(b + o), rd.f32(b + o + 4), rd.f32(b + o + 8)];
+                let q3 = |o: usize| [rd.u16(o) as i16, rd.u16(o + 2) as i16, rd.u16(o + 4) as i16];
+                let (nn, ns) = (rd.u32(b + 4) as usize, rd.u16(b + 0x66) as usize);
+                let Some(nodes) = rd.ptr(b) else { bail!("cell {} of the city bound: a BVH without nodes", i) };
+                let subs = rd.ptr(b + 0x60).unwrap_or(0);
+                if !rd.has(nodes, nn * 16) || (ns > 0 && !rd.has(subs, ns * 16)) {
+                    bail!("cell {} of the city bound: its BVH runs past the resource", i);
+                }
+                cell.bvh = CellBvh {
+                    nodes: (0..nn)
+                        .map(|k| {
+                            let o = nodes + 16 * k;
+                            BvhNode { min: q3(o), max: q3(o + 6), index: rd.u16(o + 12), count: rd.u8(o + 14) }
+                        })
+                        .collect(),
+                    subtrees: (0..ns)
+                        .map(|k| {
+                            let o = subs + 16 * k;
+                            BvhSubtree { min: q3(o), max: q3(o + 6), root: rd.u16(o + 12), size: rd.u16(o + 14) }
+                        })
+                        .collect(),
+                    min: v3(0x10),
+                    max: v3(0x20),
+                    origin: v3(0x30),
+                    scale: v3(0x40),
+                    inv: v3(0x50),
+                };
+            }
             // (a triangle left out moves the ones after it up: the file's numbers to ours)
             let mut kept: Vec<Option<u32>> = Vec::with_capacity(nt);
             let mut raw: Vec<[u16; 3]> = Vec::with_capacity(nt);
@@ -93,6 +191,8 @@ impl CityBound {
                 cell.area.push(rd.f32(o));
                 cell.material.push(if number < nm { rd.u32(ids + number * 4) } else { 0 });
             }
+            cell.margin = [rd.f32(c + 0x70), rd.f32(c + 0x74), rd.f32(c + 0x78)];
+            cell.beside_raw = raw.clone();
             cell.neighbours = raw.iter().map(|n| n.map(|i| kept.get(i as usize).copied().flatten())).collect();
             out.cells.push(cell);
         }

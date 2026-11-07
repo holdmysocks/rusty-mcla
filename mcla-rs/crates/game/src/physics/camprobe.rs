@@ -1902,6 +1902,41 @@ pub enum ProbeShape {
     /// type 12: the parts (+128; none: a hole), their matrices (+132), the count the tests visit (+146) and the per-part
     /// (type, include) masks (+148; empty: none)
     Composite { parts: Vec<Option<(ProbeBound, [Vec3; 4])>>, tested: usize, masks: Vec<(u32, u32)> },
+    /// type 10 (a cell of the city's grid): the vertices (+176, quantized: the file's i16 by the scale +144 plus the
+    /// centre +160, F-92114 / F-54719), the polygons (+140), their material numbers (+216), the margin (+112) and the
+    /// BVH (+224)
+    Bvh { verts: Vec<Vec3>, polys: Vec<ProbePolygon>, mats: Vec<u8>, margin: Vec3, bvh: ProbeBvh },
+    /// type 8 (the city's grid): its cells by their place in the list (+160, +164 long; none: a hole)
+    Grid(ProbeGrid),
+}
+
+/// A cell's BVH as the walks F-93593 / F-54895 read it (`mcla_formats::rage::bound::CellBvh`).
+#[derive(Clone, Debug)]
+pub struct ProbeBvh {
+    pub nodes: Vec<mcla_formats::rage::bound::BvhNode>,
+    pub subtrees: Vec<mcla_formats::rage::bound::BvhSubtree>,
+    /// +16 / +32 the box, +48 the quantizing origin, +64 the scale into the grid, +80 the scale out of it
+    pub min: Vec3,
+    pub max: Vec3,
+    pub origin: Vec3,
+    pub scale: Vec3,
+    pub inv: Vec3,
+}
+
+/// The city's grid bound (type 8): +128 the cell size, +132 one over it, +136 / +140 the first / last column, +144 the
+/// columns, +148 / +152 the first / last row, +156 the rows, +160 the cells (+164 their number), +172 / +173 the axes.
+#[derive(Clone, Debug)]
+pub struct ProbeGrid {
+    pub cells: Vec<Option<ProbeBound>>,
+    pub size: f32,
+    pub inv: f32,
+    pub first_x: i32,
+    pub last_x: i32,
+    pub columns: i32,
+    pub first_z: i32,
+    pub last_z: i32,
+    pub rows: i32,
+    pub axes: (u8, u8),
 }
 
 impl ProbeBound {
@@ -1944,6 +1979,261 @@ impl ProbeBound {
             materials: Vec::new(),
             shape: ProbeShape::Composite { parts, tested: t.tested as usize, masks: t.part_masks.clone() },
         }
+    }
+
+    /// The city's grid bound (type 8) as the dispatches read it from the city's collision file: each cell (type 10)
+    /// at its place in the grid's list with its dequantized vertices, its polygon records as the file has them (area,
+    /// vertices, neighbour words), its material numbers and table (the cell's material call F-10817 answers
+    /// table[number]), its margin and its BVH.
+    pub fn of_city(city: &mcla_formats::rage::bound::CityBound) -> ProbeBound {
+        let v = |x: [f32; 3]| Vec3::from_array(x);
+        let mut cells: Vec<Option<ProbeBound>> = vec![None; city.listed as usize];
+        for c in &city.cells {
+            let Some(slot) = cells.get_mut(c.index) else { continue };
+            let polys = (0..c.tris.len())
+                .map(|i| ProbePolygon { area: c.area[i], verts: c.tris[i].map(|x| x as u16), beside: c.beside_raw[i] })
+                .collect();
+            let b = &c.bvh;
+            let bvh = ProbeBvh { nodes: b.nodes.clone(), subtrees: b.subtrees.clone(), min: v(b.min), max: v(b.max), origin: v(b.origin), scale: v(b.scale), inv: v(b.inv) };
+            *slot = Some(ProbeBound {
+                kind: 10,
+                radius: 0.0,
+                centroid: Vec3::ZERO,
+                max: Vec3::ZERO,
+                min: Vec3::ZERO,
+                materials: c.ids.clone(),
+                shape: ProbeShape::Bvh { verts: c.verts.iter().map(|&x| v(x)).collect(), polys, mats: c.numbers.clone(), margin: v(c.margin), bvh },
+            });
+        }
+        let grid = ProbeGrid {
+            cells,
+            size: city.cell_size,
+            inv: city.inv_size,
+            first_x: city.first_x,
+            last_x: city.last_x,
+            columns: city.columns,
+            first_z: city.first_z,
+            last_z: city.last_z,
+            rows: city.rows,
+            axes: city.axes,
+        };
+        ProbeBound { kind: 8, radius: 0.0, centroid: Vec3::ZERO, max: Vec3::ZERO, min: Vec3::ZERO, materials: Vec::new(), shape: ProbeShape::Grid(grid) }
+    }
+}
+
+// ---- The city's grid (type 8) and its cells' polygon walks (type 10) - docs/reference/people/traffic_drive_rule.md 9.11.
+// The sweep's queries (the capsule's ctor and the sphere's leave the walk cache key +2484 / +2452 and the polygon filter
+// +2504 / +2472 at 0) always take F-32549's reset: slot 0, from 0, the list the driver's 4096-entry scratch (+324 /
+// +292, +328 / +296 = 4096 when the query brings none).
+
+/// The polygon list's room (the drivers' scratch, F-91312 / the sphere's driver).
+pub const POLY_SCRATCH: usize = 4096;
+
+/// vctsxs then vpkswss: a float to i32 (NaN 0, saturated), then to i16 (saturated).
+fn quantum(x: f32) -> i16 {
+    let i = if x.is_nan() {
+        0
+    } else if x >= 2_147_483_648.0 {
+        i32::MAX
+    } else if x < -2_147_483_648.0 {
+        i32::MIN
+    } else {
+        x as i32
+    };
+    i.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+}
+
+/// The vector unit's min / max as the recompiled code runs them (minps / maxps: the second operand on a NaN).
+fn vmin(a: Vec3, b: Vec3) -> Vec3 {
+    let m = |x: f32, y: f32| if x < y { x } else { y };
+    Vec3::new(m(a.x, b.x), m(a.y, b.y), m(a.z, b.z))
+}
+fn vmax(a: Vec3, b: Vec3) -> Vec3 {
+    let m = |x: f32, y: f32| if x > y { x } else { y };
+    Vec3::new(m(a.x, b.x), m(a.y, b.y), m(a.z, b.z))
+}
+
+impl ProbeBvh {
+    /// F-26111 / F-95142's quantizing: the box lo .. hi into the BVH's grid, floor((lo - origin) * scale) and
+    /// ceil((hi - origin) * scale), each saturated to i16.
+    fn quantized(&self, lo: Vec3, hi: Vec3) -> ([i16; 3], [i16; 3]) {
+        let a = ((lo - self.origin) * self.scale).floor();
+        let b = ((hi - self.origin) * self.scale).ceil();
+        ([quantum(a.x), quantum(a.y), quantum(a.z)], [quantum(b.x), quantum(b.y), quantum(b.z)])
+    }
+
+    /// F-95864 / F-33493: the quantized boxes overlap on every axis (node min <= query max, query min <= node max).
+    fn overlaps(q: &([i16; 3], [i16; 3]), min: &[i16; 3], max: &[i16; 3]) -> bool {
+        (0..3).all(|k| min[k] <= q.1[k] && q.0[k] <= max[k])
+    }
+
+    /// F-88692: the query's quantized box lies within the node's (query min >= node min, query max <= node max).
+    fn holds(q: &([i16; 3], [i16; 3]), min: &[i16; 3], max: &[i16; 3]) -> bool {
+        (0..3).all(|k| q.0[k] >= min[k] && q.1[k] <= max[k])
+    }
+
+    /// F-67335: the node's box out of the grid (q * scale out + the BVH box's centre, (max + min) * 0.5, unfused)
+    /// against the capsule a .. b of radius r by F-81407 (`part_dropped`: overlapping when not dropped).
+    fn meets_capsule(&self, min: &[i16; 3], max: &[i16; 3], a: Vec3, b: Vec3, r: f32) -> bool {
+        let f = |q: &[i16; 3]| Vec3::new(q[0] as f32, q[1] as f32, q[2] as f32);
+        let centre = (self.max + self.min) * 0.5;
+        let (lo, hi) = (f(min) * self.inv + centre, f(max) * self.inv + centre);
+        !part_dropped(a, b, r, hi, lo)
+    }
+
+    /// The walk of every subtree header and the nodes of those the test lets through (F-93593 / F-54895): an inner
+    /// node that fails skips its +12 nodes, any other goes on to the next; a leaf that passes adds its polygons
+    /// (+12, +12 + 1 ..., +14 of them) while the list has room (F-44462 / F-63013).
+    fn walk(&self, pass: impl Fn(&[i16; 3], &[i16; 3]) -> bool, room: usize) -> Vec<u16> {
+        let mut out: Vec<u16> = Vec::new();
+        for s in &self.subtrees {
+            if !pass(&s.min, &s.max) {
+                continue;
+            }
+            let (mut i, end) = (s.root as i32, s.size as i32);
+            while i < end {
+                let Some(n) = self.nodes.get(i as usize) else { break };
+                let hit = pass(&n.min, &n.max);
+                if hit {
+                    for k in 0..n.count as u16 {
+                        if out.len() < room {
+                            out.push(n.index.wrapping_add(k));
+                        }
+                    }
+                }
+                if hit || n.count != 0 {
+                    i += 1;
+                } else {
+                    i += n.index as i32;
+                }
+            }
+        }
+        out
+    }
+
+    /// F-94830 (F-54631's walk for the capsule a .. b of radius r): the box of its ends less / plus r (vminfp /
+    /// vmaxfp), quantized; a header or node passes when the boxes overlap and the query's lies within it or the
+    /// capsule meets its box (F-67335).
+    pub fn capsule_polygons(&self, a: Vec3, b: Vec3, r: f32, room: usize) -> Vec<u16> {
+        let q = self.quantized(vmin(a, b) - Vec3::splat(r), vmax(a, b) + Vec3::splat(r));
+        self.walk(|mn, mx| Self::overlaps(&q, mn, mx) && (Self::holds(&q, mn, mx) || self.meets_capsule(mn, mx, a, b, r)), room)
+    }
+
+    /// F-33149 (F-20956's walk for the sphere c of radius r, as a box with the identity rows): the half sizes h = r +
+    /// the cell's margin, the extent ((|row0 h.x| + |row1 h.y|) + |row2 h.z|), the box c -/+ it quantized; a header
+    /// or node passes when the boxes overlap.
+    pub fn ball_polygons(&self, c: Vec3, r: f32, margin: Vec3, room: usize) -> Vec<u16> {
+        let h = Vec3::splat(r) + margin;
+        let e = ((Vec3::X * h.x).abs() + (Vec3::Y * h.y).abs()) + (Vec3::Z * h.z).abs();
+        let q = self.quantized(c - e, c + e);
+        self.walk(|mn, mx| Self::overlaps(&q, mn, mx), room)
+    }
+}
+
+/// fctiwz after the float floor: NaN the lowest word, saturated.
+fn floor_word(x: f32) -> i32 {
+    let f = x.floor();
+    if f.is_nan() {
+        i32::MIN
+    } else if f >= 2_147_483_647.0 {
+        i32::MAX
+    } else if f < -2_147_483_648.0 {
+        i32::MIN
+    } else {
+        f as i32
+    }
+}
+
+/// The cells F-22767 / F-30918 visit for the query box lo .. hi (the query's +96 / +112), in their order: columns
+/// first; the first one always, even where the box misses the grid.
+#[derive(Clone, Copy, Debug)]
+struct CellRange {
+    x0: i32,
+    z0: i32,
+    x1: i32,
+    z1: i32,
+}
+
+impl ProbeGrid {
+    /// F-22767: x0 = max(first column, floor(lo[a0] * (1 / size))), z0 = max(first row, .. lo[a1]), x1 = min(last
+    /// column, floor(hi[a0] ..)), z1 = min(last row, ..); the first cell (z0 - first row) * columns - first column + x0.
+    fn first_cell(&self, lo: Vec3, hi: Vec3) -> (CellRange, i32) {
+        let (a0, a1) = (self.axes.0 as usize, self.axes.1 as usize);
+        let w = |v: Vec3, k: usize| floor_word(v[k.min(2)] * self.inv);
+        let r = CellRange { x0: self.first_x.max(w(lo, a0)), z0: self.first_z.max(w(lo, a1)), x1: self.last_x.min(w(hi, a0)), z1: self.last_z.min(w(hi, a1)) };
+        (r, (r.z0.wrapping_sub(self.first_z)).wrapping_mul(self.columns).wrapping_sub(self.first_x).wrapping_add(r.x0))
+    }
+
+    /// F-30918: the next column, or the first column of the next row; -1 past the last row.
+    fn next_cell(&self, r: &CellRange, i: i32) -> i32 {
+        let row = i.wrapping_div(self.columns);
+        let (mut x, mut z) = (i.wrapping_sub(row.wrapping_mul(self.columns)).wrapping_add(self.first_x).wrapping_add(1), row.wrapping_add(self.first_z));
+        if x > r.x1 {
+            z = z.wrapping_add(1);
+            x = r.x0;
+            if z > r.z1 {
+                return -1;
+            }
+        }
+        (z.wrapping_sub(self.first_z)).wrapping_mul(self.columns).wrapping_sub(self.first_x).wrapping_add(x)
+    }
+
+    /// The cell at list place `i` (none past the grid or a hole).
+    fn cell(&self, i: i32) -> Option<&ProbeBound> {
+        if self.cells.is_empty() || i < 0 || i >= self.rows.wrapping_mul(self.columns) {
+            return None;
+        }
+        self.cells.get(i as usize).and_then(|c| c.as_ref())
+    }
+
+    /// F-78191: the cell's box - column * size .. + size and row * size .. + size on the grid's axes, -FLT_MAX ..
+    /// FLT_MAX on the third.
+    fn cell_box(&self, i: i32) -> (Vec3, Vec3) {
+        let row = i.wrapping_div(self.columns);
+        let (x, z) = (i.wrapping_sub(row.wrapping_mul(self.columns)).wrapping_add(self.first_x), row.wrapping_add(self.first_z));
+        let (fx, fz) = (x as f32 * self.size, z as f32 * self.size);
+        let (mut lo, mut hi) = (Vec3::ZERO, Vec3::ZERO);
+        let (a0, a1) = (self.axes.0 as usize, self.axes.1 as usize);
+        lo[a0] = fx;
+        hi[a0] = self.size + fx;
+        lo[a1] = fz;
+        hi[a1] = self.size + fz;
+        let third = 3usize.wrapping_sub(a1).wrapping_sub(a0).min(2);
+        lo[third] = -f32::MAX;
+        hi[third] = f32::MAX;
+        (lo, hi)
+    }
+
+    /// The list's box (+0 / +16) while cell `i` is dispatched: its box (F-78191) grown by 1e-6.
+    fn cell_list_box(&self, i: i32) -> (Vec3, Vec3) {
+        let (mn, mx) = self.cell_box(i);
+        let eps = Vec3::splat(f32::from_bits(0x3586_37BD));
+        (mn - eps, mx + eps)
+    }
+}
+
+impl ResultList {
+    /// F-15315 with 1: the new records counted into the composite level (+48 = min(max(n, 1) - +44, +48 + +52)),
+    /// +52 and the new bits 0 - F-77105's count without its frame or its answer.
+    pub fn count_level(&mut self) {
+        let most = (self.records.len() as i32).max(1);
+        self.level = (most - self.done).min(self.level + self.new);
+        self.new = 0;
+        self.new_bits = 0;
+    }
+
+    /// After a cell whose dispatch added records: the new bits into the level's, the records named the cell
+    /// (F-19693, as F-47011) and counted into the level (F-15315 with 1).
+    fn cell_done(&mut self, i: u16) {
+        self.level_bits |= self.new_bits;
+        self.mark_part(i);
+        self.count_level();
+    }
+
+    /// After the grid's last cell: the list's box back to (0 - FLT_MAX) .. FLT_MAX, then F-67153.
+    fn grid_done(&mut self) {
+        (self.min, self.max) = (Vec3::ZERO - Vec3::splat(f32::MAX), Vec3::splat(f32::MAX));
+        self.close_level();
     }
 }
 
@@ -2018,7 +2308,9 @@ fn capsule_poly_record(q: &mut CapsuleQuery, b: &ProbeBound, verts: &[Vec3], pol
 /// drops it the part by this dispatch, and where that added records the new bits into the level's, the records named
 /// the part (F-47011) and committed into the composite's frame (F-77105 with 1; no records: the loop ends there, the
 /// query left in the part's frame), back out (F-15412); at the end the level's records become the new ones (F-67153).
-/// Answers F-37493: whether new records were added. Types 8 / 10 (the city's grid and its cells) are not ported.
+/// Answers F-37493: whether new records were added. 8 the grid: each cell F-22767 / F-30918 name with the list box its own (F-78191, 1e-6 wider), by this dispatch, a cell that
+/// added records named and counted into the level (F-19693, F-15315), at the end the box back and F-67153; 10 a cell: each
+/// polygon its BVH walk lists (F-54631 / F-74304) by F-43031 (every city polygon is a triangle).
 pub fn capsule_dispatch(q: &mut CapsuleQuery, b: &ProbeBound, inst: u32, types: u32, include: u32) -> bool {
     match (&b.shape, b.kind) {
         (ProbeShape::Prim(_), 0 | 1 | 3) => capsule_prim_record(q, b, inst),
@@ -2048,6 +2340,29 @@ pub fn capsule_dispatch(q: &mut CapsuleQuery, b: &ProbeBound, inst: u32, types: 
                 (q.a, q.b, q.lo, q.hi) = part_unframe(q.a, q.b, q.r, m);
             }
             q.list.close_level();
+        }
+        (ProbeShape::Bvh { verts, polys, mats, bvh, .. }, 10) if !verts.is_empty() => {
+            // F-54631 / F-74304: the polygons the walk F-94830 lists, in its order (+60 each one's index); every
+            // polygon of the city is a triangle (kind byte +2 & 3 = 0): F-92114's vertices, F-43031 with the record
+            for i in bvh.capsule_polygons(q.a, q.b, q.r, POLY_SCRATCH) {
+                q.index = i;
+                if (i as usize) < polys.len() {
+                    capsule_poly_record(q, b, verts, polys, mats, i as usize, inst);
+                }
+            }
+        }
+        (ProbeShape::Grid(g), 8) => {
+            let (r, mut i) = g.first_cell(q.lo, q.hi);
+            while i != -1 {
+                if let Some(c) = g.cell(i) {
+                    (q.list.min, q.list.max) = g.cell_list_box(i);
+                    if capsule_dispatch(q, c, inst, types, include) {
+                        q.list.cell_done(i as u16);
+                    }
+                }
+                i = g.next_cell(&r, i);
+            }
+            q.list.grid_done();
         }
         _ => {}
     }
@@ -2153,6 +2468,8 @@ fn ball_poly_record(q: &mut BallQuery, b: &ProbeBound, verts: &[Vec3], polys: &[
 /// done records (+52 + +44) fill it; else the part by this dispatch, and where that added records the level's bits, the
 /// part named (F-47011) and the commit into the composite's frame (F-77105 with 1; no records: the loop ends there),
 /// back out (F-17013: (x, y, z, 1) by the columns) and the box; at the end F-67153. Answers F-37493.
+/// 8 the grid as in F-35029; 10 a cell: each polygon its BVH walk F-20956 / F-74304 lists (F-33149: the box c -/+ (r +
+/// the cell's margin), quantized overlap only) by F-82650.
 pub fn ball_dispatch(q: &mut BallQuery, b: &ProbeBound, inst: u32, types: u32, include: u32) -> bool {
     match (&b.shape, b.kind) {
         (ProbeShape::Prim(_), 0 | 1 | 3) => ball_prim_record(q, b, inst),
@@ -2188,6 +2505,28 @@ pub fn ball_dispatch(q: &mut BallQuery, b: &ProbeBound, inst: u32, types: u32, i
                 q.boxed();
             }
             q.list.close_level();
+        }
+        (ProbeShape::Bvh { verts, polys, mats, margin, bvh }, 10) if !verts.is_empty() => {
+            // F-20956 / F-74304: the polygons the walk F-33149 lists, in its order; each a triangle by F-82650
+            for i in bvh.ball_polygons(q.c, q.r, *margin, POLY_SCRATCH) {
+                q.index = i;
+                if (i as usize) < polys.len() {
+                    ball_poly_record(q, b, verts, polys, mats, i as usize, inst);
+                }
+            }
+        }
+        (ProbeShape::Grid(g), 8) => {
+            let (r, mut i) = g.first_cell(q.lo, q.hi);
+            while i != -1 {
+                if let Some(c) = g.cell(i) {
+                    (q.list.min, q.list.max) = g.cell_list_box(i);
+                    if ball_dispatch(q, c, inst, types, include) {
+                        q.list.cell_done(i as u16);
+                    }
+                }
+                i = g.next_cell(&r, i);
+            }
+            q.list.grid_done();
         }
         _ => {}
     }
@@ -3000,5 +3339,118 @@ mod tests {
         }
         // (dispatches that added records, lists left full, records, polygon records by an edge or a corner)
         assert_eq!((hits, full, recs, poly_recs), (1332, 654, 1425, 557), "coverage");
+    }
+
+    fn city_probe() -> Option<ProbeBound> {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let d = std::fs::read(std::path::Path::new(&root).join("resources/city/sc/0x3e5fd91d.r1")).ok()?;
+        if d.len() < 16 || &d[0..4] != b"MCLR" {
+            return None;
+        }
+        let u32le = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let data = d[16..].to_vec();
+        let vs = (u32le(12) as usize).min(data.len());
+        let res = mcla_formats::rsc::Resource { rtype: u32le(4), flags: u32le(8), virtual_size: vs, physical_size: data.len() - vs, data };
+        Some(ProbeBound::of_city(&mcla_formats::rage::bound::CityBound::parse(&res).unwrap()))
+    }
+
+    /// The cells' polygon walks against the original's F-54631 / F-20956 run on the city's collision file
+    /// (tools/city_walk_reference.py): the count, the slot, the first index and the whole list, in order.
+    #[test]
+    fn city_walk_matches_the_original() {
+        let Some(city) = city_probe() else { return };
+        let ProbeShape::Grid(g) = &city.shape else { panic!() };
+        let u = |h: &str| u32::from_str_radix(&h.replace('_', ""), 16).unwrap();
+        let (mut listed, mut most, mut cut) = (0usize, 0usize, 0usize);
+        for (k, line) in include_str!("../testdata/city_walk_ref.txt").lines().enumerate() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(u).collect();
+            let x: Vec<u32> = o.split_whitespace().map(u).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let p = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let cell = g.cells[w[1] as usize].as_ref().unwrap();
+            let ProbeShape::Bvh { margin, bvh, .. } = &cell.shape else { panic!() };
+            let list = if w[0] != 0 { bvh.ball_polygons(p(2), f(8), *margin, POLY_SCRATCH) } else { bvh.capsule_polygons(p(2), p(5), f(8), POLY_SCRATCH) };
+            let first = list.first().map_or(0xFFFF_FFFF, |&i| i as u32);
+            let mut e = vec![list.len() as u32, 0, list.first().copied().unwrap_or(0) as u32, first, list.len() as u32];
+            e.extend(list.iter().map(|&i| i as u32));
+            assert_eq!(x, e, "line {k}");
+            listed += list.len();
+            most = most.max(list.len());
+            // (cases where the capsule's float test, not the quantized overlap, decided)
+            if w[0] == 0 {
+                let (a, b, r) = (p(2), p(5), f(8));
+                let q = bvh.quantized(vmin(a, b) - Vec3::splat(r), vmax(a, b) + Vec3::splat(r));
+                cut += (bvh.walk(|mn, mx| ProbeBvh::overlaps(&q, mn, mx), POLY_SCRATCH).len() != list.len()) as usize;
+            }
+        }
+        assert_eq!((listed, most, cut), (100179, 288, 236), "coverage");
+    }
+
+    /// The city's grid with its cells and their BVH walks (types 8 / 10) against the original's F-35029 / F-75667 run
+    /// whole on the city's collision file (tools/city_dispatch_reference.py): every answer, the query, the list's box,
+    /// counts, bits and scores and every record equal.
+    #[test]
+    fn city_dispatch_matches_the_original() {
+        let Some(city) = city_probe() else { return };
+        let u = |h: &str| u32::from_str_radix(&h.replace('_', ""), 16).unwrap();
+        let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+        let id = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO];
+        let (mut hits, mut full, mut recs, mut cells_hit, mut balls) = (0, 0, 0, std::collections::BTreeSet::new(), 0);
+        for (k, line) in include_str!("../testdata/city_dispatch_ref.txt").lines().enumerate() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let mut groups = i.split(" | ");
+            let head: Vec<u32> = groups.next().unwrap().split_whitespace().map(u).collect();
+            let x: Vec<u32> = o.split_whitespace().map(u).collect();
+            let (ball, cap) = (head[0] != 0, head[1] as usize);
+            balls += ball as usize;
+            let mut cq = CapsuleQuery { a: Vec3::ZERO, b: Vec3::ZERO, r: 0.0, lo: Vec3::ZERO, hi: Vec3::ZERO, mask: 0, index: 0xFFFF, f30_high: head[2], list: ResultList::new(cap) };
+            let mut bq = BallQuery { c: Vec3::ZERO, r: 0.0, lo: Vec3::ZERO, hi: Vec3::ZERO, mask: 0, index: 0xFFFF, flags: [0; 3], list: ResultList::new(cap) };
+            let mut got = Vec::new();
+            for g in groups {
+                let w: Vec<u32> = g.split_whitespace().map(u).collect();
+                let f = |i: usize| f32::from_bits(w[i]);
+                let p = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+                let (r1, r2) = if ball {
+                    (bq.c, bq.r, bq.mask) = (p(0), f(6), w[7]);
+                    bq.boxed();
+                    let r1 = ball_dispatch(&mut bq, &city, 0x1234, u32::MAX, u32::MAX);
+                    (r1, r1 && bq.list.commit(&id, false))
+                } else {
+                    (cq.a, cq.b, cq.r, cq.mask) = (p(0), p(3), f(6), w[7]);
+                    (cq.lo, cq.hi) = (vmin(cq.a, cq.b) - Vec3::splat(cq.r), vmax(cq.a, cq.b) + Vec3::splat(cq.r));
+                    let r1 = capsule_dispatch(&mut cq, &city, 0x1234, u32::MAX, u32::MAX);
+                    (r1, r1 && cq.list.commit(&id, false))
+                };
+                got.extend([r1 as u32, r2 as u32]);
+                hits += r1 as usize;
+            }
+            let n = got.len();
+            assert_eq!(&x[..n], &got[..], "line {k}: answers");
+            let (l, ends, lo, hi) = if ball { (&bq.list, [bq.c, bq.c], bq.lo, bq.hi) } else { (&cq.list, [cq.a, cq.b], cq.lo, cq.hi) };
+            let mut st = Vec::new();
+            for v in [ends[0], ends[1], l.min, l.max, lo, hi] {
+                st.extend(bits(v));
+            }
+            st.extend([l.done as u32, l.level as u32, l.new as u32, l.new_bits as u32, (l.new_bits >> 32) as u32, l.level_bits as u32, (l.level_bits >> 32) as u32]);
+            st.extend([l.high.to_bits(), l.low.to_bits()]);
+            assert_eq!(&x[n..n + 27], &st[..], "line {k}: query and list");
+            full += (cap > 0 && l.done as usize == cap) as usize;
+            for (j, r) in l.records.iter().enumerate() {
+                let y = &x[n + 27 + 17 * j..n + 44 + 17 * j];
+                let mut e = vec![r.instance];
+                for v in [r.point, r.normal, r.bound_normal] {
+                    e.extend(bits(v));
+                }
+                e.extend([r.t.to_bits(), r.depth.to_bits(), r.material, r.index as u32, r.kind as u32, r.below as u32, r.part as u32]);
+                assert_eq!(y, &e[..], "line {k}: record {j}");
+                recs += (r.instance != 0) as usize;
+                if r.instance != 0 {
+                    cells_hit.insert(r.part);
+                }
+            }
+        }
+        // (sphere cases, dispatches that added records, lists left full, records, cells the records came from)
+        assert_eq!((balls, hits, full, recs, cells_hit.len()), (1545, 1908, 1015, 1678, 54), "coverage");
     }
 }
