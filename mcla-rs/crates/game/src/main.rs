@@ -13926,8 +13926,12 @@ impl App {
     }
 
     /// The car a cutscene's mover `label` is (car, colour, plate, set-up): "henry" -> the hookman called Henry in
-    /// his car; "hookman" / "drv01" -> the rival of the current mission; the bus and the police bring their own models.
-    fn cine_car_of(&mut self, label: &str) -> Option<(String, [f32; 4], String, String)> {
+    /// his car; "hookman" / "drv01" -> the rival of the current mission; the bus and the police bring their own models; a
+    /// car its caller loads from a fixed set-up is that set-up's car (`cinedriver::SCENE_SETUPS`, painted by its dressing).
+    fn cine_car_of(&mut self, scene: &str, label: &str) -> Option<(String, [f32; 4], String, String)> {
+        if let Some((car, config)) = cinedriver::scene_setup(scene, label) {
+            return Some((car.to_string(), [1.0; 4], String::new(), config.to_string()));
+        }
         let who = self.cine_hookman_of(label);
         let rival = who.and_then(|id| self.game.rivals.of(&id, 0));
         match (rival, label) {
@@ -13973,7 +13977,7 @@ impl App {
                     if cine::is_player_car(&label) {
                         continue;
                     }
-                    let Some((car, _, _, config)) = self.cine_car_of(&label) else { continue };
+                    let Some((car, _, _, config)) = self.cine_car_of(scene, &label) else { continue };
                     if !self.vehicles.models.iter().any(|m| m.name.eq_ignore_ascii_case(&car)) {
                         if let Some(d) = self.game.car_dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(&car))) {
                             self.vehicles.prefetch(world, d);
@@ -14016,7 +14020,7 @@ impl App {
                     continue;
                 }
             }
-            let Some((car, color, plate, config)) = self.cine_car_of(&label) else { continue };
+            let Some((car, color, plate, config)) = self.cine_car_of(&scene, &label) else { continue };
             let dirs = self.game.car_dirs.clone();
             if !self.vehicles.models.iter().any(|m| m.name.eq_ignore_ascii_case(&car)) {
                 if let Some(d) = dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(&car))) {

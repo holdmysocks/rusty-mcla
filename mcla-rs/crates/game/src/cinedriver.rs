@@ -641,6 +641,20 @@ pub fn no_driver(scene: &str, label: &str) -> bool {
     NO_DRIVER.iter().any(|&(s, l)| s == scene && l == label)
 }
 
+/// The scene cars whose caller loads a fixed set-up (OpponentManager_LoadOpponent with a literal config, put in the
+/// mover's slot by Cars_AssignIdToSlot): (scene, mover label, car, set-up). REDLIGHT_GH_01_GARAGE_ON_ENTER (0xd1 .. 0x147):
+/// CreateOpponent, LoadOpponent 'CIN_01_vp_chv_camaross_69' at the origin, AddOpponentToWorld, no driver, exhaust and
+/// headlights off, streaming locked in, waits for it to stream, slot 1 (0x221) - the car the mechanic works on.
+/// (RACE_GH_06's 'GH_06_0_vp_dsn_280z_75' and the strip garage's 'SH_01_0_vp_nsn_240sx_98' are their hookmen's own
+/// set-ups, brought through the rival.)
+pub const SCENE_SETUPS: &[(&str, &str, &str, &str)] =
+    &[("story/cut_story_hollywood_garage_intro", "repair", "vp_chv_camaross_69", "CIN_01_vp_chv_camaross_69")];
+
+/// The fixed set-up's (car, set-up) of the scene's car `label` (`SCENE_SETUPS`).
+pub fn scene_setup(scene: &str, label: &str) -> Option<(&'static str, &'static str)> {
+    SCENE_SETUPS.iter().find(|r| r.0.eq_ignore_ascii_case(scene) && r.1 == label).map(|r| (r.2, r.3))
+}
+
 /// The career script 0x1529a945's mcCareer_RegisterHookmanCharacterSet calls (41): hookman -> character set, what
 /// mcCareer_GetHookmanCharacterSet answers and the scripts give their racers (Racer_SetCharacterName).
 pub const HOOKMAN_SETS: &[(&str, &str)] = &[
@@ -756,6 +770,11 @@ mod tests {
         // every driverless scene car is a mover of its scene; GH_06's Henry keeps his driver
         assert!(NO_DRIVER.iter().all(|&(s, l)| SLOT_MOVERS.iter().any(|m| m.0 == s && m.2 == l)));
         assert!(no_driver("racestart/cut_delivery_get_keys", "delivery"));
+        // (the garage intro's car under repair: REDLIGHT_GH_01_GARAGE_ON_ENTER's CIN_01 Camaro in slot 1, driverless)
+        assert_eq!(scene_setup("story/cut_story_hollywood_garage_intro", "repair"), Some(("vp_chv_camaross_69", "CIN_01_vp_chv_camaross_69")));
+        assert_eq!(slot_label("story/cut_story_hollywood_garage_intro", 1), Some("repair"));
+        assert!(no_driver("story/cut_story_hollywood_garage_intro", "repair"));
+        assert_eq!(scene_setup("story/cut_story_race_gh_06", "henry"), None);
         assert!(!no_driver("story/cut_story_race_gh_06", "henry"));
     }
 }
