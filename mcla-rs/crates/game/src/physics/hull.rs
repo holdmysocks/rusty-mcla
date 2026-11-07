@@ -1957,7 +1957,8 @@ mod tests {
     /// The set-up's sort F-31335 and reshape F-89464 (with the box F-38448 -> F-90660) run offline on every vp_* car's hull
     /// bound (tools/hull_reshape_reference.py -> testdata/hull_reshape_ref.txt, ten random set-ups per car): per line the car,
     /// nv, the file's vertices, BoundClearance, BoundAngle, BoundBumper, BoundBumperWidth and the drop, then the original's
-    /// index lists and heights (14 words), the moved vertices and the bound's +8 .. +60. Every vertex word and the box equal.
+    /// index lists and heights (14 words), the moved vertices and the bound's +8 .. +60 (its sphere
+    /// +8 / +12 / +48 as F-96346 leaves it, kept for the sphere's port). Every vertex word and the box equal.
     #[test]
     fn reshape_matches_the_original() {
         let w = |s: &str| u32::from_str_radix(&s.replace('_', ""), 16).unwrap();

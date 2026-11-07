@@ -4,8 +4,9 @@ F-89464 with f1 = how much lower the car sits (moves each listed point by F-4663
 bound's own box / sphere, vtable slot 40 F-38448 -> F-90660). Run offline on every vp_* car's hull bound (the file's header,
 vertices and polygons) with random set-up values: tune +320 BoundClearance, +324 BoundAngle, +328 BoundBumper, +336
 BoundBumperWidth (+332 BoundWidebody only read when the wide body flag is set: left clear here, as the port has no kit).
-F-38448's sphere step (its first callee after the box, which works through the thread's allocator) is stubbed: the bound's
-radius / centroid words +8 / +12 / +48 .. in the output are not the original's; only the box +16 .. +40 is compared.
+F-38448's sphere step F-96346 (the Welzl sphere of the vertices, through the thread's scratch allocator +32, modelled here as
+the same bump allocator) runs too: the bound's +8 (radius), +12, +48 (centroid) in the output are the original's (not yet
+compared by the test: the sphere has no port).
 
 A case: nv nt, the header's 56 words, nv x 4 vertex words, nt x 4 polygon words, the 4 tune words, the drop word.
 Out: the car's +680 .. +732 (14 words), each vertex's x y z, the header's +8 .. +60 (14 words).
@@ -45,7 +46,8 @@ int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.
  FILE*f=fopen(argv[2],"r"); unsigned nv,nt;
  while(fscanf(f,"%x %x",&nv,&nt)==2){
   if(nv<4||nv>64||nt<1||nt>128){fprintf(stderr,"bad case file: %u vertices %u polygons\n",nv,nt); return 2;}
-  rt_reset(); for(uint32_t a=CAR;a<P+0x1000;a+=4) store(a,0);
+  rt_reset(); store(0x40000200u+32,load(0x40000200u+28));  // (the thread's scratch allocator +32: the same bump allocator)
+  for(uint32_t a=CAR;a<P+0x1000;a+=4) store(a,0);
   unsigned w;
   for(int k=0;k<56;k++){ if(fscanf(f,"%x",&w)!=1) return 1; store(B+4*k,w); }
   store(B+0,0x82081784u); store(B+128,V); store(B+132,0); store(B+136,0); store(B+140,P); store(B+176,0); store(B+180,0);
@@ -115,7 +117,7 @@ def main():
     rd.vector_shim = wfr._shim
     try:
         src = MAIN.replace('sub_SORT_', 'sub_' + sort).replace('sub_MOVE_', 'sub_' + move)
-        exe = rd.build(idx, ['sub_' + sort, 'sub_' + move], src, work, 'hull_reshape', image=img, vtables=[(VT_POLY, [40])], stubs={'sub_' + addr(a.tool, 'F-96346'): ''})
+        exe = rd.build(idx, ['sub_' + sort, 'sub_' + move], src, work, 'hull_reshape', image=img, vtables=[(VT_POLY, [40])])
     finally:
         subprocess.run = _run
         rd.vector_shim = wfr._vs
