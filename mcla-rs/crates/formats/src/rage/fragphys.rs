@@ -45,7 +45,9 @@ pub struct FragBound {
     pub beside: Vec<[u16; 3]>,
     /// bound +186: how many of a polyhedron's corners the detector's scan takes
     pub scan: u16,
-    /// material number: +0x90 of a sphere, +0xd0 of a capsule
+    /// the word the bound's material call answers for any index: +0x90 of a sphere (F-65278), +0xd0 of a capsule
+    /// (F-60139), +0x220 of a box (F-90738); the placements leave it as the file holds it (the capsule's F-73055 only
+    /// sets the vtable)
     pub material: u32,
     /// +0xd0 of a box: its size (the collision tests F-11472 / F-15615 read it with the centroid as its centre; the
     /// box's resource placement F-14837 (from the bound factory F-77727) leaves it as the file holds it: the placement of
@@ -220,6 +222,7 @@ fn bound_at(rd: &Rd, o: usize) -> FragBound {
         3 | 4 => {
             if kind == 3 {
                 b.size = v3(rd, o + 0xd0);
+                b.material = rd.u32(o + 0x220);
             }
             b.scan = rd.u16(o + 186);
             let (nv, nt) = (rd.u32(o + 0xc8) as usize, rd.u32(o + 0xcc) as usize);

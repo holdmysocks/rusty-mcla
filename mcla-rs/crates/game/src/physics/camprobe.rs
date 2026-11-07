@@ -1939,6 +1939,18 @@ pub struct ProbeGrid {
     pub axes: (u8, u8),
 }
 
+/// What a prop bound's material call (vtable +48) answers in the game, per index, as [`ProbeBound::of_prop`] takes it:
+/// a sphere F-65278 (+144), a capsule F-60139 (+208) and a box F-90738 (+544) answer their one word whatever the index
+/// (the vector repeats it past every part number the primitive tests give); a polyhedron F-10817 answers its table
+/// (+208) at the index. docs/reference/people/traffic_drive_rule.md 9.11.
+pub fn game_materials(b: &mcla_formats::rage::fragphys::FragBound) -> Vec<u32> {
+    match b.kind {
+        0 | 1 | 3 => vec![b.material; 64],
+        4 => b.mat_table.clone(),
+        _ => Vec::new(),
+    }
+}
+
 impl ProbeBound {
     fn material(&self, i: usize) -> u32 {
         self.materials.get(i).copied().unwrap_or(0)
@@ -3204,6 +3216,36 @@ mod tests {
     /// material mask, the commit's matrix), each committed with r5 = 0 when it answered; out every answer, the query's
     /// ends and box, the list's counts, bits and scores and every record - all equal. The prop file is read by the
     /// port's reader (fragphys), which the original reads in the reference laid out as it is.
+    /// The words the prop bounds' material calls answer (`game_materials`), read from the prop type file as the
+    /// original's getters read them (F-65278 +144, F-60139 +208, F-90738 +544, F-10817 the table +208): counted per class
+    /// and word, equal to an independent reading of the same bytes (work/traffic-detail/fix62/py/box544.py). The sweep's
+    /// mask 0x28000 drops only the 77 capsules whose word 0x2003A has 0x20000 (push_sphere << 8).
+    #[test]
+    fn prop_material_words_are_the_files() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Ok(d) = std::fs::read(std::path::Path::new(&root).join("resources/prop/0x0e66973c.r131")) else { return };
+        if d.len() < 16 || &d[0..4] != b"MCLR" {
+            return;
+        }
+        let u32le = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let data = d[16..].to_vec();
+        let vs = (u32le(12) as usize).min(data.len());
+        let res = mcla_formats::rsc::Resource { rtype: u32le(4), flags: u32le(8), virtual_size: vs, physical_size: data.len() - vs, data };
+        let types = mcla_formats::rage::fragphys::parse_frag_types(&res);
+        let mut got = std::collections::BTreeMap::new();
+        for t in &types {
+            for b in t.parts.iter().filter_map(|p| p.bound.as_ref()) {
+                let w = game_materials(b);
+                *got.entry((b.kind, w.first().copied().unwrap_or(u32::MAX))).or_insert(0) += 1;
+            }
+        }
+        println!("{got:?}");
+        let want = [((0u8, 0u32), 31), ((0, 0x1d), 63), ((1, 0), 11), ((1, 0x1d), 129), ((1, 0x2_003a), 77), ((3, 0), 11), ((3, 0x1d), 367), ((4, 0x1d), 15)];
+        assert_eq!(got.into_iter().collect::<Vec<_>>(), want.to_vec());
+        let dropped = types.iter().flat_map(|t| t.parts.iter().filter_map(|p| p.bound.as_ref())).filter(|b| game_materials(b).iter().any(|&w| w & 0x28000 != 0)).count();
+        assert_eq!(dropped, 77);
+    }
+
     #[test]
     fn capsule_dispatch_matches_the_original() {
         let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
