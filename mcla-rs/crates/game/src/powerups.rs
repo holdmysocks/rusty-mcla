@@ -43,6 +43,18 @@ pub const NAMES: [&str; 24] = [
     "MegaMirror", "MegaAgro", "MegaHotPotato", "Mystery", "HitByAgro",
 ];
 
+/// The types whose vtable +40 (the draw of an effect on a car) is the base one, F-30631: Nitro, Stealth, Pulse, Agro,
+/// HotPotato and their megas (their constructors F-86562, F-89556, F-62361, F-59527, F-77222, F-17229, F-44279, F-56106,
+/// F-98423 store the vtables that hold it); the others have their own (Ice, Reverse / Stop, Disrupter, Shield, Mirror).
+pub const BASE_DRAW: [u8; 9] = [NITRO, STEALTH, PULSE, AGRO, 10, MEGA_STEALTH, 18, MEGA_AGRO, 21];
+
+/// The base draw of an effect on a car (F-30631, from the holder's draw F-24071 with the holder's +208): with DrawIcon
+/// (+36) the source draw F-12500 at a matrix of no turn placed at `at`, the type's own look, 0.5 lower (f1 -0.5), sphere
+/// radius 0.25 (f2), no ground glow. (A mega type's branch after it only moves statics no other code reads.)
+pub fn base_card(at: Vec3, kind: u8, t: &TypeTune) -> Option<(Vec3, u8, f32, bool)> {
+    (BASE_DRAW.contains(&kind) && t.draw_icon).then_some((at, kind, -0.5, false))
+}
+
 /// One power-up type: the constructors' values (F-34625 and the per-type ones, called by
 /// the manager's constructor F-56926) with the tune file's (`tune/powerup/0xe49d3ba2`,
 /// mcPowerUpMgr, parsed by F-78177 / F-90605) laid over them.
@@ -1566,9 +1578,18 @@ impl PowerUps {
     /// What the original draws for the power-ups this frame (step 19f, pu_draw.rs):
     /// - every source that is there (F-12247 -> F-12500 with f1 = 0 and the ground
     ///   glow on): its look (22 for a Mystery one) at its place;
-    /// - (step 19g) NOT a wasted shot's icon: the holder's +164 is never set (see `update`).
+    /// - (step 19g) NOT a wasted shot's icon: the holder's +164 is never set (see `update`);
+    /// - the base draw's card of an effect on a car (`base_card`) at the holder's +208, which is always (0, 0, 0): the
+    ///   world origin. (The original draws it in the car's alpha pass, F-24071, so only while that car is drawn; here
+    ///   whenever the effect is on.)
     pub fn draw_list(&self) -> Vec<(Vec3, u8, f32, bool)> {
-        self.visible().map(|(p, k)| (p, k, 0.0, true)).collect()
+        let mut out: Vec<_> = self.visible().map(|(p, k)| (p, k, 0.0, true)).collect();
+        for h in &self.holders {
+            if let Some(e) = h.effect.as_ref() {
+                out.extend(self.types.get(e.kind as usize).and_then(|t| base_card(Vec3::ZERO, e.kind, t)));
+            }
+        }
+        out
     }
 
     /// Everything off at the end (the Racing state's `RemovePowerUps`, F-24971).
@@ -1856,6 +1877,60 @@ mod tests {
         }
         assert!(with > 200 && bad.is_empty(), "{with} scripts with a list, {read} read; not read: {:?}", &bad[..bad.len().min(8)]);
     }
+    /// The source list's capacity (F-12957: 5 x n for CreatePowerUpSources(n); F-28343: 5 x the checkpoints) is read only
+    /// by the two frees (F-27942 destroys and frees that many); the adders (F-59872's slot append, F-32756's ring / line of
+    /// AddPowerUpSource, the checkpoint layout) never test it. So it only matters if a list could pass it: here every
+    /// race script with a list asks for n >= 1 and adds n entries of at most 5 sources each, and a checkpoint gives 1 .. 5.
+    #[test]
+    fn source_list_never_passes_its_capacity() {
+        let dir = "D:/MCLA/extracted/cache";
+        let (mut scripts, mut most) = (0, 0usize);
+        for d in ["beaches", "downtown", "hills", "hollywood", "southcentral", "all", "global"] {
+            let Ok(kinds) = std::fs::read_dir(std::path::Path::new(dir).join("script_obj/game/race").join(d)) else { continue };
+            for k in kinds.flatten() {
+                let Ok(files) = std::fs::read_dir(k.path()) else { continue };
+                for f in files.flatten() {
+                    let Some(sco) = std::fs::read(f.path()).ok().and_then(|b| mcla_formats::sco::decode(&b).ok()) else { continue };
+                    let Some(n) = sco.calls().into_iter().find(|c| c.hash == 0x8a11_5016).and_then(|c| c.args.first().and_then(|a| a.num())) else { continue };
+                    let list = script_sources(&sco).expect("the race's list");
+                    let placed: usize = list.iter().map(|&(p, w, s)| hand_spots(p, w, s).len()).sum();
+                    assert!(n >= 1.0 && list.len() == n as usize && placed <= 5 * n as usize, "{}: n {n}, {} entries, {placed} sources", f.path().display(), list.len());
+                    most = most.max(placed * 100 / (5 * n as usize));
+                    scripts += 1;
+                }
+            }
+        }
+        // every width the ring / line can be given: at most 5
+        for i in 0..4000 {
+            let w = i as f32 * 0.01;
+            assert!(hand_spots(Vec3::ZERO, w, Vec3::ZERO).len() <= 5 && hand_spots(Vec3::ZERO, w, Vec3::X).len() <= 5);
+        }
+        // the checkpoint layout: 1 .. 5 per checkpoint, lines and rounds, ordered or not
+        let mut seed = 7u32;
+        let mut rnd = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed % 10000) as f32 * 0.01
+        };
+        for _ in 0..500 {
+            let cps: Vec<CpIn> = (0..12)
+                .map(|_| {
+                    let pos = Vec3::new(rnd(), 0.0, rnd());
+                    let line = rnd() < 30.0;
+                    CpIn { pos, line_end: line.then(|| pos + Vec3::new(rnd() - 50.0, 0.0, rnd() - 50.0)), radius: rnd() * 0.5, height: 0.0 }
+                })
+                .collect();
+            for ordered in [false, true] {
+                assert!(checkpoint_spots(&cps, ordered).len() <= 5 * cps.len());
+            }
+        }
+        if std::path::Path::new(dir).is_dir() {
+            assert!(scripts > 200, "{scripts} scripts");
+            eprintln!("{scripts} scripts with a list, fullest at {most} % of its capacity");
+        }
+    }
+
     /// The power-up type constructors run by the original's own code offline (tools/powerup_ctor_reference.py:
     /// the unchanged constructors and their direct callees on a flat guest memory, the two name callees
     /// - atString init and the string-table lookup, which only fill the name fields - stubbed). Per type:
@@ -2120,6 +2195,49 @@ mod original_holder_tests {
             run += 1;
         }
         assert_eq!((run, skipped), (384, 128));
+    }
+
+    /// The holder's draw F-24071 with the base draw F-30631 run offline (tools/pu_icon_card_reference.py,
+    /// testdata/pu_icon_card_ref.txt: "effect DrawIcon kind second DrawIcon2, +208 (4 words), car matrix (16), calls").
+    /// For the effect (+236): F-30631 gets the holder's +208, and with DrawIcon F-12500 gets the type's look, f1 -0.5,
+    /// f2 0.25, no glow, at a matrix of no turn whose place is that +208 - what `base_card` gives.
+    #[test]
+    fn base_card_matches_the_original() {
+        let (mut cards, mut lines) = (0, 0);
+        for line in include_str!("testdata/pu_icon_card_ref.txt").lines() {
+            let t: Vec<&str> = line.split(' ').collect();
+            let w = |s: &str| u32::from_str_radix(s, 16).unwrap();
+            let (eff, icon, kind) = (t[0] == "1", t[1] == "1", t[2].parse::<u8>().unwrap());
+            let at = Vec3::new(f32::from_bits(w(t[5])), f32::from_bits(w(t[6])), f32::from_bits(w(t[7])));
+            // (the calls for the effect: up to the second slot's base draw "B:1500")
+            let calls: Vec<&str> = t[25..].iter().copied().take_while(|c| !c.starts_with("B:1500")).collect();
+            if !eff {
+                assert!(calls.is_empty(), "{line}");
+                continue;
+            }
+            assert_eq!(calls[0], "B:1100:1200:10d0", "{line}");
+            let mut ty = TypeTune::constructed(PULSE);
+            ty.draw_icon = icon;
+            let kind_for_port = if BASE_DRAW.contains(&kind) { kind } else { PULSE };
+            let port = base_card(at, kind_for_port, &ty);
+            match calls.iter().find(|c| c.starts_with("S:")) {
+                None => assert!(port.is_none() && !icon, "{line}"),
+                Some(s) => {
+                    let f: Vec<&str> = s.split(':').collect();
+                    let (p, k, lift, glow) = port.expect(line);
+                    assert_eq!(f[2].parse::<u8>().unwrap(), kind, "{line}");
+                    assert_eq!(k, kind_for_port);
+                    assert_eq!((f32::from_bits(w(f[3])), f32::from_bits(w(f[4])), f[5]), (lift, 0.25, if glow { "1" } else { "0" }), "{line}");
+                    // the matrix: rows (1,0,0,0) (0,1,0,0) (0,0,1,0), then the place
+                    let m: Vec<u32> = f[6..22].iter().map(|x| w(x)).collect();
+                    assert_eq!(&m[..12], &[0x3f80_0000, 0, 0, 0, 0, 0x3f80_0000, 0, 0, 0, 0, 0x3f80_0000, 0], "{line}");
+                    assert_eq!([m[12], m[13], m[14]], [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()], "{line}");
+                    cards += 1;
+                }
+            }
+            lines += 1;
+        }
+        assert_eq!((lines, cards), (319, 194));
     }
 }
 
