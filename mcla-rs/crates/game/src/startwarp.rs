@@ -80,6 +80,9 @@ pub struct StartWarp {
     /// a new career: the career script (local8 false, RACE_GH_06 not past state 2) never asks for
     /// USER_WAIT_NO_CUT_DOWN - UILogic_UnPauseCamera instead; the hold stays until CarSelection's black is up
     pub stay: bool,
+    /// the eye of E at the career script's Warper_Warp('USER_WAIT_NO_CUT_DOWN') (F-32081 case 14 points the
+    /// streaming lock there)
+    warp_eye: Option<Vec3>,
 }
 
 impl StartWarp {
@@ -89,7 +92,7 @@ impl StartWarp {
         climb.open(eye, look, car, aspect);
         let held = CamRows::look_at(eye, look, Vec3::Y);
         log::info!("start warp: Entering_Map_MaxHeight from {:?} lens {:.1}", eye, lens_deg);
-        StartWarp { phase: Phase::Climb, climb, lens: NavLens::between(lens_deg, MAP_LENS, 0.0, CLIMB_LENS_SHARE * CLIMB_T), t: 0.0, held, ready_t: None, hold_t: 0.0, down: None, call_t: None, aspect, stay: false }
+        StartWarp { phase: Phase::Climb, climb, lens: NavLens::between(lens_deg, MAP_LENS, 0.0, CLIMB_LENS_SHARE * CLIMB_T), t: 0.0, held, ready_t: None, hold_t: 0.0, down: None, call_t: None, aspect, stay: false, warp_eye: None }
     }
 
     /// Once the flight has landed: the time left until the career script's next Warper_IsWarping poll
@@ -108,6 +111,21 @@ impl StartWarp {
     /// The climb runs (the press-start script's camera: the shot's hour and its streaming stay).
     pub fn climbing(&self) -> bool {
         self.phase == Phase::Climb
+    }
+
+    /// Where the city streams while the warp runs (the prestream manager's lock record, UILogic+0x10DA0: set by
+    /// F-23490, handed to the city each frame by F-18548 as its fixed streaming matrix, F-46479), given the
+    /// player's car: none during the climb; from the hold the career script's UILogic_LockStreamingPosHeading
+    /// (0x3c0, F-98635) at the player's load position (the car); from its Warper_Warp('USER_WAIT_NO_CUT_DOWN')
+    /// the eye of E (F-32081 case 14). The flight's end (F-99030, the transition F-18267 kept at warper+300)
+    /// releases it (F-19197 on both records): the caller drops the lock with the warp. A new career has no
+    /// flight: its lock goes at PrestreamManager_UnlockAll (F-66087, 0x758), right after loadSuccess.
+    pub fn stream_lock(&self, car: Vec3) -> Option<Vec3> {
+        if self.phase == Phase::Climb {
+            None
+        } else {
+            Some(self.warp_eye.unwrap_or(car))
+        }
     }
 
     /// The LOADING tag is up (from the climb's end; the caller keeps it 1 s after the landing).
@@ -144,6 +162,7 @@ impl StartWarp {
                 if self.call_t.is_none() && self.ready_t.map_or(false, |r| r >= SCRIPT_WAIT - 1e-4) {
                     // (the script's Warper_Warp, after its WAITUNWARPED(300))
                     self.call_t = Some(self.ready_t.unwrap_or(0.0) - SCRIPT_WAIT);
+                    self.warp_eye = Some(game.0);
                 }
                 if self.ready_t.map_or(false, |r| r >= SCRIPT_WAIT + PRESTREAM_FRAMES + HANDOVER - 1e-4) {
                     let e = CamRows::look_at(game.0, game.1, game.2);
@@ -166,6 +185,31 @@ impl StartWarp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// the streaming lock: none in the climb, the car while held, E's eye from the career script's Warper_Warp
+    /// (F-32081 case 14) through the flight
+    #[test]
+    fn stream_lock_follows_the_career_script() {
+        let s = crate::titlecam::SHOTS[1];
+        let eye = Vec3::from(s.eye);
+        let car = Vec3::new(820.0, 19.6, -808.0);
+        let mut w = StartWarp::start(eye, eye + Vec3::from(s.dir), s.lens, car, 16.0 / 9.0);
+        let game = (Vec3::new(823.773, 19.52, -816.039), Vec3::new(823.773, 19.52, -816.039) - Vec3::new(0.474, 0.070, -0.878) * 100.0, Vec3::Y);
+        let dt = 1.0 / 30.0;
+        let mut seen = Vec::new();
+        for _ in 0..200 {
+            let before = w.call_t.is_some();
+            if w.step(dt, true, game).is_none() {
+                break;
+            }
+            seen.push((w.phase(), before, w.stream_lock(car)));
+        }
+        assert!(seen.iter().filter(|f| f.0 == Phase::Climb).all(|f| f.2.is_none()));
+        let held: Vec<_> = seen.iter().filter(|f| f.0 == Phase::Hold).collect();
+        assert!(held.iter().any(|f| f.2 == Some(car)), "the car's load position while held");
+        assert!(seen.iter().filter(|f| f.1).all(|f| f.2 == Some(game.0)), "E's eye from the Warp on");
+        assert!(seen.iter().any(|f| f.0 == Phase::Down && f.2 == Some(game.0)));
+    }
 
     /// shot 1 (the Santa Monica pier) up to the whole city, held, then down onto a car's chase camera
     #[test]
