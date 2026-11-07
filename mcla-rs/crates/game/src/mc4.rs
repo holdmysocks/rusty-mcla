@@ -218,15 +218,17 @@ impl Default for Options {
             camera_name: Some(CAMERAS[4].into()),
             steering_sensitivity: F(0.0),
             convertible_top_down: false,
-            subtitles: false,
+            // (the console's language in the original - here the launcher's, settings.toml game.language; subtitles
+            // start on for every language but English: F-63809)
+            subtitles: mcla_formats::strtbl::language() != 0,
             volume_effects: F(1.0),
             volume_music: F(1.0),
             volume_voice: F(1.0),
             volume_player_vehicle: F(1.0),
             volume_cutscene: F(1.0),
             online_character: 0,
-            language: 0,
-            language_name: Some(LANGUAGES[0].into()),
+            language: mcla_formats::strtbl::language().min(LANGUAGES.len() - 1) as u32,
+            language_name: Some(LANGUAGES[mcla_formats::strtbl::language().min(LANGUAGES.len() - 1)].into()),
             airride_pattern: 0,
             music_shuffle: true,
             music_genre: 7,
@@ -2482,9 +2484,9 @@ impl Game {
         self.opts.subtitles = o.subtitles;
         self.opts.shake = o.camera_shake;
         self.opts.sens = ((o.sensitivity_step() + 10) as f32 / 2.0).round().clamp(0.0, 10.0) as u8;
-        // (the game's language: the string table's block. Test hook: MCLA_LANGUAGE=<0..4>)
-        let lang = std::env::var("MCLA_LANGUAGE").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(o.language as usize);
-        self.career.strings.set_lang(lang);
+        // (the game's language: the string table's block - the launcher's choice, not the save's (DECISIONS.md D49);
+        // mc4_options_out writes it into the save)
+        self.career.strings.set_lang(mcla_formats::strtbl::language());
         // (the port's list has ALL first: 7 -> 0, ECLECTIC .. WEST_RAP 0..6 -> 1..7; 8, the
         // custom playlist, plays as ALL)
         self.music_genre = if o.music_genre <= 6 { o.music_genre as u8 + 1 } else { 0 };
@@ -2504,6 +2506,12 @@ impl Game {
         }
         if o.subtitles != self.opts.subtitles {
             o.subtitles = self.opts.subtitles;
+        }
+        // (the run's language, settings.toml game.language: DECISIONS.md D49)
+        let lang = mcla_formats::strtbl::language().min(LANGUAGES.len() - 1);
+        if o.language as usize != lang {
+            o.language = lang as u32;
+            o.language_name = Some(LANGUAGES[lang].into());
         }
         if o.camera_shake != self.opts.shake {
             o.set_cinematics(o.idle_camera, self.opts.shake);
@@ -14411,7 +14419,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The language of a save: the string table's block, English where a block is not there.
+    /// The language: the string table's block, English where a block is not there; the run's language over the save's.
     #[test]
     fn language_of_the_save() {
         let Ok(d) = std::fs::read(std::path::Path::new(&data_dir()).join("ui/0xa4c1e8fa")) else { return };
@@ -14429,16 +14437,17 @@ mod tests {
         // (a block the table has not: English)
         assert_eq!(text(&mut t, 9), (0, "YES".into(), "ARROW".into()));
         assert_eq!(text(&mut t, 40).0, 0);
-        // (a save's language reaches the game's table; the 100 % save is English)
+        // (the run's language - settings.toml game.language, English in the tests - wins over a save's and is written
+        // into it: DECISIONS.md D49)
         let Some((mut g, dir, _)) = game_on("full_import.json", "lang") else { return };
-        assert_eq!((g.mc4.as_ref().unwrap().options.language, g.career.strings.lang), (0, 0));
+        assert_eq!(mcla_formats::strtbl::language(), 0);
         g.career.strings = t;
+        g.career.strings.set_lang(3);
         g.mc4_mut().options.language = 3;
         g.mc4_options_in();
-        assert_eq!((g.career.strings.lang, g.career.strings.get("Common_Yes")), (3, Some("JA")));
-        // (and it is kept)
+        assert_eq!((g.career.strings.lang, g.career.strings.get("Common_Yes")), (0, Some("YES")));
         g.write_save(&dir);
-        assert_eq!(saved_block(&dir)["options"]["language"], 3);
+        assert_eq!((saved_block(&dir)["options"]["language"].clone(), saved_block(&dir)["options"]["language_name"].clone()), (Value::from(0), Value::from("english")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

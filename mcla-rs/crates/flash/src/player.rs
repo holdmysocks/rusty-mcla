@@ -1664,7 +1664,7 @@ pub fn common_fscommand(p: &mut Player, cmd: &str, arg: &str) -> bool {
         "getvar" => match arg {
             "aspect" => p.set_global("aspect", Value::Int(1)),
             "platform" => p.set_global("platform", Value::Int(0)),
-            "lang" => p.set_global("lang", Value::Int(0)),
+            "lang" => p.set_global("lang", Value::Int(mcla_formats::strtbl::language() as i32)),
             _ => return false,
         },
         "measurestring" => {

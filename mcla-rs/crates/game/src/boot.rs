@@ -73,7 +73,7 @@ impl Boot {
         }
         let p = &mut m.player;
         p.set_global("aspect", Value::Int(1));
-        p.set_global("lang", Value::Int(0));
+        p.set_global("lang", Value::Int(mcla_formats::strtbl::language() as i32));
         // (zone 1 = the North American pages with the ESRB line, as recorded; the movie's own default)
         p.set_global("zone", Value::Int(1));
         p.set_global("platform", Value::Int(0));

@@ -81,6 +81,15 @@ pub fn init(data_flag: Option<&str>, settings_flag: Option<&str>, shot_run: bool
     })
 }
 
+/// The run's text language from `game.language` (the launcher writes it; the game has no row for it: DECISIONS.md D49),
+/// for every string table, the movies' `lang` and the subtitle column. Test hook: `MCLA_LANGUAGE=<0..4>` over it.
+pub fn language_apply() {
+    let set = get().filter(|r| !r.settings_ignored).map_or(mcla_config::Language::English, |r| r.settings.game.language);
+    let lang = std::env::var("MCLA_LANGUAGE").ok().and_then(|v| v.trim().parse::<usize>().ok()).filter(|&l| l < mcla_config::Language::ALL.len()).unwrap_or(set.index());
+    mcla_formats::strtbl::set_language(lang);
+    log::info!("language: {} ({})", lang, mcla_config::Language::ALL[lang].word());
+}
+
 /// The intro setting (`game.intro`); `normal` when settings were never loaded. After the OPTIONS > PERFORMANCE >
 /// INTRO row changed it, the row's value.
 pub fn intro_mode() -> Intro {

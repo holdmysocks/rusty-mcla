@@ -62,3 +62,34 @@ fn hud_shows_speed_and_gear_from_globals() {
     let gear = p.find("HUD.speedometer.gearindicator.slot").expect("gear field");
     assert_eq!(p.inst(gear).unwrap().text.as_deref(), Some("3"));
 }
+
+/// Opt-in: the letters the five text languages use (the string table `ui/0xa4c1e8fa`, blocks 0..4) against the glyphs
+/// of the movies' fonts. Prints, per font name, the letters some language uses that no instance of that font has.
+#[test]
+#[ignore]
+fn language_letters_in_the_fonts() {
+    let root = PathBuf::from(std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR"));
+    let t = mcla_formats::strtbl::StringTable::parse(&std::fs::read(root.join("ui/0xa4c1e8fa")).unwrap()).unwrap();
+    let mut list = Vec::new();
+    movies(&root.join("resources/ui"), &mut list);
+    let mut fonts: std::collections::BTreeMap<String, std::collections::BTreeSet<u16>> = Default::default();
+    for path in list {
+        let movie = Movie::parse(&load(&path)).unwrap();
+        for c in movie.chars.iter().flatten() {
+            if let mcla_formats::rage::swf::Character::Font(f) = c {
+                fonts.entry(f.name.clone()).or_default().extend(f.codes.iter().copied());
+            }
+        }
+    }
+    for lang in 0..5 {
+        let used: std::collections::BTreeSet<char> = t.langs[lang].values().flat_map(|s| s.chars()).filter(|&c| c as u32 > 127).collect();
+        eprintln!("language {lang}: {} letters above ASCII: {}", used.len(), used.iter().collect::<String>());
+        for (name, codes) in &fonts {
+            if codes.len() < 120 {
+                continue;
+            }
+            let miss: String = used.iter().filter(|&&c| !codes.contains(&(c as u16))).collect();
+            eprintln!("  {name} ({} glyphs) lacks: {miss:?}", codes.len());
+        }
+    }
+}

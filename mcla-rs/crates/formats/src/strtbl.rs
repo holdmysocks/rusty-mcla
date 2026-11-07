@@ -8,6 +8,21 @@
 use crate::hash::joaat;
 use crate::{bail, Result};
 use hashbrown::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// The game's language for this run (0 English .. 4 Italian), set once at start from settings.toml `game.language`
+/// (the launcher's choice). Every table read after that reads its block (`StringTable::parse`).
+static LANGUAGE: AtomicUsize = AtomicUsize::new(0);
+
+/// Set the run's language (the game's number, as the original's console query gives it).
+pub fn set_language(lang: usize) {
+    LANGUAGE.store(lang, Ordering::Relaxed);
+}
+
+/// The run's language (0 English, 1 Spanish, 2 French, 3 German, 4 Italian).
+pub fn language() -> usize {
+    LANGUAGE.load(Ordering::Relaxed)
+}
 
 #[derive(Default, Clone)]
 pub struct StringTable {
@@ -76,7 +91,9 @@ impl StringTable {
             }
             langs.push(m);
         }
-        Ok(StringTable { keys, langs, lang: 0 })
+        let mut t = StringTable { keys, langs, lang: 0 };
+        t.set_lang(language());
+        Ok(t)
     }
 
     /// Add the entries of another table (DLC and tip tables next to the main one).

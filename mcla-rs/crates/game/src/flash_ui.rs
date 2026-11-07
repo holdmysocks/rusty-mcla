@@ -1435,7 +1435,7 @@ impl FlashMenu {
             }
             p.set_global("showmoney", Value::Int(money.is_some() as i32));
             if let Some(m) = money {
-                p.set_global("lang", Value::Int(0));
+                p.set_global("lang", Value::Int(mcla_formats::strtbl::language() as i32));
                 // (this movie's own names for the money line: `bank` the figure, `t_banktxt`
                 // the word before it)
                 p.set_global("bank", Value::Int((*m).clamp(0, i32::MAX as i64) as i32));
@@ -1498,7 +1498,7 @@ impl FlashPrompt {
         p.set_global("cur_visibility", Value::Int(1));
         p.set_path("prompt.template", Value::Int(0));
         // the money's thousands separator goes by language; the movie starts on 2
-        p.set_global("lang", Value::Int(0));
+        p.set_global("lang", Value::Int(mcla_formats::strtbl::language() as i32));
         p.set_path("prompt.count", Value::Int(prompts.len() as i32));
         for (i, (t, icon)) in prompts.iter().enumerate() {
             let (t, icon) = crate::glyphs::prompt(t, *icon);

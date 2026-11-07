@@ -52,6 +52,15 @@ impl WindowMode {
 }
 
 words!(Intro { Normal = "normal", Fast = "fast", Skip = "skip" });
+// (the text language: the five the original takes from the console, in the game's own numbering 0..4 - the string
+// table's blocks, the subtitle column; docs/UI.md "Languages")
+words!(Language { English = "english", Spanish = "spanish", French = "french", German = "german", Italian = "italian" });
+impl Language {
+    /// The game's language number (0 English, 1 Spanish, 2 French, 3 German, 4 Italian).
+    pub fn index(self) -> usize {
+        Language::ALL.iter().position(|&l| l == self).unwrap_or(0)
+    }
+}
 words!(Aspect { Auto = "auto", Wide21x9 = "21:9", Wide32x9 = "32:9", Fit16x9 = "16:9" });
 words!(Upscaler { Off = "off", Bilinear = "bilinear", Fsr = "fsr" });
 // (anti-aliasing: "original" = the original's own sample counts; the old words msaa2 / msaa4 / fxaa are still read)
@@ -152,6 +161,8 @@ pub struct GameSettings {
     pub detail_level: Scale,
     /// the extra stick dead zone in percent, 0 .. 50 in steps of 5 (the port's own, DECISIONS.md D39; 0 = the original's)
     pub stick_dead_zone: u32,
+    /// the text language (string tables, subtitles), chosen in the launcher only (DECISIONS.md D49)
+    pub language: Language,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -201,7 +212,7 @@ impl Default for Settings {
                 texture_filtering: TexFilter::Original,
                 backend: Backend::Auto,
             },
-            game: GameSettings { intro: Intro::Normal, shadow_resolution: ShadowRes::Original, draw_distance: Scale::Original, detail_level: Scale::Original, stick_dead_zone: 0 },
+            game: GameSettings { intro: Intro::Normal, shadow_resolution: ShadowRes::Original, draw_distance: Scale::Original, detail_level: Scale::Original, stick_dead_zone: 0, language: Language::English },
             paths: Paths { data_dir: String::new(), screenshots: String::new() },
             launcher: LauncherSettings { language: String::new(), check_updates: true },
             extra: Table::new(),
@@ -292,6 +303,7 @@ impl Settings {
         s.game.shadow_resolution = r.word(gt, "game.shadow_resolution", "shadow_resolution", d.game.shadow_resolution, ShadowRes::parse, ShadowRes::WORDS);
         s.game.draw_distance = r.word(gt, "game.draw_distance", "draw_distance", d.game.draw_distance, Scale::parse, Scale::WORDS);
         s.game.detail_level = r.word(gt, "game.detail_level", "detail_level", d.game.detail_level, Scale::parse, Scale::WORDS);
+        s.game.language = r.word(gt, "game.language", "language", d.game.language, Language::parse, Language::WORDS);
         s.game.stick_dead_zone = r.uint(gt, "game.stick_dead_zone", "stick_dead_zone", d.game.stick_dead_zone, |n| n <= 50 && n % 5 == 0, "0 .. 50 in steps of 5");
         let pt = sub(t, "paths");
         s.paths.data_dir = r.string(pt, "paths.data_dir", "data_dir", &d.paths.data_dir);
@@ -340,6 +352,7 @@ impl Settings {
         put(&mut t, "game", "draw_distance", g.draw_distance.word().into());
         put(&mut t, "game", "detail_level", g.detail_level.word().into());
         put(&mut t, "game", "stick_dead_zone", Value::Integer(g.stick_dead_zone as i64));
+        put(&mut t, "game", "language", g.language.word().into());
         put(&mut t, "paths", "data_dir", p.data_dir.clone().into());
         put(&mut t, "paths", "screenshots", p.screenshots.clone().into());
         put(&mut t, "launcher", "language", l.language.clone().into());

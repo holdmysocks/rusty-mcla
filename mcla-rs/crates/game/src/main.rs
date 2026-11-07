@@ -197,6 +197,15 @@ struct Input {
     mouse_dx: f32,
     mouse_dy: f32,
     rmb: bool,
+    /// the window's mouse pointer as last set (`cursor_wanted`)
+    cursor_shown: Option<bool>,
+}
+
+/// Whether the window shows the mouse pointer (GitHub #45): the original, a console game, has none, so it is hidden
+/// while driving; it shows while a menu or a box that takes menu input is up (the port's menus also answer mouse
+/// clicks) and hides while the right button turns the free camera.
+fn cursor_wanted(menu: bool, rmb: bool) -> bool {
+    menu && !rmb
 }
 
 impl Input {
@@ -14887,13 +14896,17 @@ impl ApplicationHandler for App {
             }
             WindowEvent::MouseInput { state, button: MouseButton::Right, .. } => {
                 self.input.rmb = state == ElementState::Pressed;
-                if let Some(w) = self.window.as_ref() {
-                    w.set_cursor_visible(!self.input.rmb);
-                }
             }
             WindowEvent::RedrawRequested => {
                 self.render();
                 self.after_frame();
+                let show = cursor_wanted(self.game.in_menu() || self.game.takes_menu_input(), self.input.rmb);
+                if self.input.cursor_shown != Some(show) {
+                    if let Some(w) = self.window.as_ref() {
+                        w.set_cursor_visible(show);
+                        self.input.cursor_shown = Some(show);
+                    }
+                }
                 if let Some(w) = self.window.as_ref() {
                     w.request_redraw();
                 }
@@ -15070,6 +15083,8 @@ fn parse_options(args: &[String]) -> Options {
     }
     o.data_dir = hooks::init(data_flag.as_deref(), o.settings_file.as_deref(), o.shot.is_some()).data.path.to_string_lossy().into_owned();
     hooks::stick_dead_apply();
+    // (the text language: settings.toml game.language, the launcher's choice - DECISIONS.md D49)
+    hooks::language_apply();
     // (the anti-aliasing mode from the settings, for the renderer)
     hooks::apply_aa_at_start();
     if !o.fly {

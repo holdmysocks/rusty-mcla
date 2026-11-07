@@ -38,25 +38,56 @@ pub struct Cutscenes {
     pending: std::collections::VecDeque<usize>,
 }
 
-/// One CSV record: fields split on commas outside quotes.
-fn csv_fields(line: &str) -> Vec<String> {
+/// One record of a subtitle table as the original splits it (F-47413): fields end at `sep` outside quotes; a double
+/// quote toggles the quoting and is dropped.
+fn fields(line: &str, sep: char) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut quoted = false;
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
+    for c in line.chars() {
         match c {
-            '"' if quoted && chars.peek() == Some(&'"') => {
-                cur.push('"');
-                chars.next();
-            }
             '"' => quoted = !quoted,
-            ',' if !quoted => out.push(std::mem::take(&mut cur)),
-            _ => cur.push(c),
+            c if c == sep && !quoted => out.push(std::mem::take(&mut cur)),
+            c => cur.push(c),
         }
     }
     out.push(cur);
     out
+}
+
+/// A scene's subtitles in language `lang` (0 English, 1 Spanish, 2 French, 3 German, 4 Italian, 5 Japanese) as
+/// (start, end, text). The original's loader (F-99606) opens `subtitle.txt` (UTF-16, tab separated: time, English,
+/// French, German, Italian, Spanish, Japanese, thought, end time) and only without it `subtitle.csv` (Latin-1, comma
+/// separated, the same columns less Japanese); it keeps each record's texts in the game's language order and the
+/// subtitle draw (F-37072) shows the one of the language. The rows "time correction" / "position" / "size" hold the
+/// placing, not a line.
+pub fn subtitle_lines(dir: &Path, lang: usize) -> Option<Vec<(f32, f32, String)>> {
+    let (text, sep, cols): (String, char, &[usize]) = if let Ok(b) = std::fs::read(dir.join("subtitle.txt")) {
+        let units: Vec<u16> = b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        (String::from_utf16_lossy(&units).trim_start_matches('\u{feff}').to_string(), '\t', &[1, 5, 2, 3, 4, 6])
+    } else {
+        let b = std::fs::read(dir.join("subtitle.csv")).ok()?;
+        (b.iter().map(|&b| b as char).collect(), ',', &[1, 5, 2, 3, 4])
+    };
+    let col = cols.get(lang).copied().unwrap_or(1);
+    let mut subs = Vec::new();
+    for line in text.lines().skip(1) {
+        let f = fields(line.trim_end_matches('\r'), sep);
+        if f.len() < 2 {
+            continue;
+        }
+        let Ok(start) = f[0].trim().parse::<f32>() else { continue };
+        if matches!(f[1].trim(), "" | "time correction" | "position" | "size") {
+            continue;
+        }
+        let t = f.get(col).map_or("", |t| t.trim());
+        if t.is_empty() {
+            continue;
+        }
+        let end = f.last().and_then(|e| e.trim().parse::<f32>().ok()).filter(|e| *e > start).unwrap_or(start + 2.5);
+        subs.push((start, end, t.to_string()));
+    }
+    Some(subs)
 }
 
 impl Cutscenes {
@@ -69,23 +100,7 @@ impl Cutscenes {
             if !name.to_ascii_uppercase().starts_with("CUT_") {
                 continue;
             }
-            // the table is Latin-1
-            let Ok(bytes) = std::fs::read(dir.join(&name).join("subtitle.csv")) else { continue };
-            let text: String = bytes.iter().map(|&b| b as char).collect();
-            let mut subs = Vec::new();
-            for line in text.lines().skip(1) {
-                let f = csv_fields(line);
-                if f.len() < 2 {
-                    continue;
-                }
-                let Ok(start) = f[0].trim().parse::<f32>() else { continue };
-                let t = f[1].trim();
-                if t.is_empty() || matches!(t, "time correction" | "position" | "size") {
-                    continue;
-                }
-                let end = f.last().and_then(|e| e.trim().parse::<f32>().ok()).filter(|e| *e > start).unwrap_or(start + 2.5);
-                subs.push((start, end, t.to_string()));
-            }
+            let Some(subs) = subtitle_lines(&dir.join(&name), mcla_formats::strtbl::language()) else { continue };
             let mut length = subs.last().map_or(4.0, |s| s.1 + 1.5);
             let mut stream = None;
             if let Some(root) = audio_root {
@@ -177,5 +192,43 @@ impl Cutscenes {
     pub fn subtitle(&self) -> Option<&str> {
         let p = self.playing.as_ref()?;
         p.def.subs.iter().find(|s| p.t >= s.0 && p.t < s.1).map(|s| s.2.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The subtitle tables as the original reads them (F-99606): `subtitle.txt` first, the language's column. Every
+    /// scene's English from the .txt is the .csv's line for line (so the switch of file changes no English text), the
+    /// five languages give their own lines, and the Japanese column is there only in the .txt.
+    #[test]
+    fn subtitles_in_every_language() {
+        let Ok(dir) = std::env::var("MCLA_DATA_DIR") else { return };
+        let root = Path::new(&dir).join("tune/cutscene/Story");
+        let Ok(rd) = std::fs::read_dir(&root) else { return };
+        let mut scenes = 0;
+        for e in rd.flatten().filter(|e| e.path().join("subtitle.txt").exists()) {
+            let d = e.path();
+            let txt = subtitle_lines(&d, 0).unwrap();
+            // (the .csv alone: the same reader on a copy without the .txt)
+            let tmp = std::env::temp_dir().join(format!("mcla_subs_{}", e.file_name().to_string_lossy()));
+            let _ = std::fs::create_dir_all(&tmp);
+            std::fs::copy(d.join("subtitle.csv"), tmp.join("subtitle.csv")).unwrap();
+            let csv: Vec<Vec<(f32, f32, String)>> = (0..5).map(|l| subtitle_lines(&tmp, l).unwrap()).collect();
+            let _ = std::fs::remove_dir_all(&tmp);
+            assert_eq!(txt, csv[0], "{:?} English", d);
+            for l in 1..5 {
+                let t = subtitle_lines(&d, l).unwrap();
+                assert_eq!(t, csv[l], "{:?} language {l}: .txt and .csv", d);
+            }
+            assert!(!subtitle_lines(&d, 5).unwrap().is_empty());
+            scenes += 1;
+        }
+        assert_eq!(scenes, 19);
+        let one = |l: usize| subtitle_lines(&root.join("CUT_STORY_BESTOF_SH_05"), l).unwrap()[0].clone();
+        assert_eq!(one(0), (3.5, 5.0, "Wassup, esse?".to_string()));
+        let words: Vec<String> = (1..5).map(|l| one(l).2).collect();
+        assert_eq!(words, ["\u{bf}Qu\u{e9} pasa, pavo?", "H\u{e9}, la forme ?", "Was geht, Kumpel?", "Che si dice, ese?"]);
     }
 }

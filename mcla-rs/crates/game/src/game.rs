@@ -5641,13 +5641,25 @@ impl Game {
                                 _ => raw,
                             };
                             let v = raw as i64;
+                            // (the stat formatter F-25428: English in miles / feet / mph, every other language in
+                            // km / m / k/h, the factors as f32 products)
+                            let lang = self.career.strings.lang;
+                            let f = raw as f32;
                             let value = match code.as_bytes()[1] {
+                                b'$' if lang != 0 => crate::career::money_text_in(v, lang),
                                 b'$' => money(v),
                                 b'%' => format!("{}%", v),
                                 b':' => stat_time(v),
-                                b'h' => format!("{}:{:02}", raw.floor() as i64, (raw.fract() * 60.0) as i64),
-                                b'k' => format!("{:.1}MLS", raw),
-                                b'm' => format!("{:.1}FT", raw * 3.28084),
+                                b'h' => {
+                                    let m = (f * 60.0) as i32;
+                                    format!("{}:{:02}", m / 60, m % 60)
+                                }
+                                b'k' if lang != 0 => format!("{:.1}KM", f * 1.609344),
+                                b'k' => format!("{:.1}MLS", f),
+                                b'm' if lang != 0 => format!("{:.1}M", f),
+                                b'm' => format!("{:.1}FT", f * 3.281),
+                                b'v' if lang != 0 => format!("{:.1}K/H", f * 1.609344),
+                                b'v' => format!("{:.1}MPH", f),
                                 b's' => format!("{:.2}S", raw),
                                 _ => if raw.fract() != 0.0 { format!("{:.1}", raw) } else { v.to_string() },
                             };
