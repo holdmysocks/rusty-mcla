@@ -60,14 +60,17 @@ pub fn string_glyphs(s: &str) -> ([f32; GLYPHS], usize) {
     (out, s.len())
 }
 
-/// F-17778: a number's drum values, rightmost digit last: v = value x 10; the rightmost takes the fraction of v (with
-/// its digit only when `tenths`), each digit to its left its digit plus, while the digit to its right's fraction and
-/// the tenths' share are both at least 0.9, (share - 0.9) x 10 - the roll in the last tenth.
+/// F-17778: a number's drum values, rightmost digit last: v = value x 10; with `tenths` the rightmost cell is the tenths'
+/// digit plus the fraction of v, without it the tenths are not stored at all (the cell pointer steps only on a store) and
+/// the rightmost cell is the ones' digit; each digit takes, while the digit to its right's fraction and the tenths' share
+/// are both at least 0.9, (share - 0.9) x 10 - the roll in the last tenth. With `tenths` the last of the count + 1 stores
+/// falls before the 16 and is dropped. Bit for bit the original's (test drum_values_match_the_original).
 pub fn drum_values(value: f32, count: usize, tenths: bool) -> [f32; GLYPHS] {
     let mut out = [0.0f32; GLYPHS];
     let mut cur = value * 10.0;
     let frac0 = (cur as f64 % 1.0) as f32;
     let share = ((cur as f64 % 10.0) as f32) * STEP;
+    let mut at = 0usize;
     for i in 0..=count {
         let digit = ((cur as f64 % 10.0) as f32).trunc();
         let m = (cur as f64 % 1.0) as f32;
@@ -81,9 +84,11 @@ pub fn drum_values(value: f32, count: usize, tenths: bool) -> [f32; GLYPHS] {
         cur *= STEP;
         if i != 0 || tenths {
             x += digit;
-        }
-        if i < count && count <= GLYPHS {
-            out[count - 1 - i] = x;
+            // (the store and the pointer's step, r29 -= 4, together)
+            if at < count && count <= GLYPHS {
+                out[count - 1 - at] = x;
+            }
+            at += 1;
         }
     }
     out
@@ -324,9 +329,9 @@ mod tests {
         assert_eq!(&g[..5], &[1.0, 2.0, 63.0, 0.0, 5.0]);
         assert_eq!(string_glyphs("r").0[0], 27.0);
         assert_eq!(string_glyphs("N").0[0], 23.0);
-        // 123.45 miles: v = 1234.5; the rightmost the fraction 0.5 alone (odometer), the others their digits
+        // 123.45 miles: v = 1234.5; the odometer (no tenths) ends on the ones' digit, the trip on the tenths' with the fraction
         let d = drum_values(123.45, 6, false);
-        assert!((d[5] - 0.5).abs() < 1e-3 && d[4] == 3.0 && d[3] == 2.0 && d[2] == 1.0 && d[1] == 0.0, "{d:?}");
+        assert!(d[5] == 3.0 && d[4] == 2.0 && d[3] == 1.0 && d[2] == 0.0, "{d:?}");
         let t = drum_values(123.45, 6, true);
         assert!((t[5] - 4.5).abs() < 1e-3, "{t:?}");
         // 9.96: v = 99.6, share 0.96 >= 0.9: the digit left of a fraction >= 0.9 rolls by (0.96 - 0.9) x 10
@@ -338,6 +343,28 @@ mod tests {
         assert!((uv[0] - 0.0).abs() < 1e-6 && (uv[1] - (0.125 - 0.0625)).abs() < 1e-6, "{uv:?}");
         let uv = cell_uv(27.0, false);
         assert!((uv[0] - 0.375).abs() < 1e-6 && (uv[1] - 0.375).abs() < 1e-6, "{uv:?}");
+    }
+
+    /// F-17778 run in the original's code on 3,200 values, counts and both tenths (tools/drum_values_reference.py,
+    /// testdata/drum_values_ref.txt): every one of the 16 values the draw is handed equals the port's, bit for bit.
+    #[test]
+    fn drum_values_match_the_original() {
+        let text = include_str!("testdata/drum_values_ref.txt");
+        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let mut n = 0;
+        for l in text.lines() {
+            let (a, b) = l.split_once(" -> ").unwrap();
+            let a: Vec<&str> = a.split_whitespace().collect();
+            let b: Vec<u32> = b.split_whitespace().map(h).collect();
+            let (v, count, tenths) = (f32::from_bits(h(a[0])), a[1].parse::<usize>().unwrap(), a[2] == "1");
+            assert_eq!(b[0] as usize, count);
+            let got = drum_values(v, count, tenths);
+            for k in 0..GLYPHS {
+                assert_eq!(got[k].to_bits(), b[1 + k], "{l}: value {k} {} vs {}", got[k], f32::from_bits(b[1 + k]));
+            }
+            n += 1;
+        }
+        assert_eq!(n, 3200);
     }
 
     /// The clock in 12 hours with two-digit minutes, the gear by the table, the speed in mph.
