@@ -211,7 +211,14 @@ pub fn shaped(file: &mcla_formats::rage::bound::Hull, t: &mcla_formats::rage::si
     let mut shape = HullShape::new(v, &file.tris);
     shape.mats = file.material.clone();
     shape.cg = Vec3::from(file.cg);
-    shape.bbox = Some((Vec3::from(file.bbox.0), Vec3::from(file.bbox.1)));
+    // (the box as the reshape's end leaves it, F-38448 -> F-90660: min / max over the vertices as they now stand,
+    // -/+ 0.001, then -/+ the margin 0.04 - the file's box is that rule on the file's vertices, on all 65 cars)
+    shape.bbox = if bike || shape.verts.len() < 8 {
+        Some((Vec3::from(file.bbox.0), Vec3::from(file.bbox.1)))
+    } else {
+        let m = file.margin;
+        Some((shape.max + Vec3::splat(0.001) + Vec3::splat(m), shape.min - Vec3::splat(0.001) - Vec3::splat(m)))
+    };
     shape.wheel_parts = file.wheel_parts.iter().map(|p| Vec3::from(*p)).collect();
     shape.scan = if std::env::var_os("MCLA_DBG_OLDSCAN").is_some() { 0 } else { (file.scan as usize).min(shape.verts.len()) };
     shape
