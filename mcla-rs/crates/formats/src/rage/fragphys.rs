@@ -51,6 +51,12 @@ pub struct FragBound {
     /// box's resource placement F-14837 (from the bound factory F-77727) leaves it as the file holds it: the placement of
     /// the prop file run offline writes nothing over it, docs/reference/people/traffic_drive_rule.md 9.8)
     pub size: [f32; 3],
+    /// a box's or polyhedron's polygon records' +0: the area the collision forms each polygon's normal from
+    pub areas: Vec<f32>,
+    /// a polyhedron's material index per polygon (+216 -> one byte each, what F-43031 hands the bound's material call)
+    pub poly_mats: Vec<u8>,
+    /// a polyhedron's material table (+208 -> one word per index its polygons name; F-10817 answers table[index])
+    pub mat_table: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -224,8 +230,21 @@ fn bound_at(rd: &Rd, o: usize) -> FragBound {
                     }
                     for t in 0..nt {
                         let p = tris + t * 16;
+                        b.areas.push(rd.f32(p));
                         b.tris.push([rd.u16(p + 4), rd.u16(p + 6), rd.u16(p + 8)]);
                         b.beside.push([rd.u16(p + 10), rd.u16(p + 12), rd.u16(p + 14)]);
+                    }
+                }
+            }
+            if kind == 4 {
+                let np = rd.u32(o + 204) as usize;
+                if let (Some(m), Some(t)) = (rd.ptr(o + 216), rd.ptr(o + 208)) {
+                    if np < 8192 && rd.has(m, np) {
+                        b.poly_mats = (0..np).map(|i| rd.u8(m + i)).collect();
+                        let n = b.poly_mats.iter().map(|&x| x as usize + 1).max().unwrap_or(0);
+                        if rd.has(t, n * 4) {
+                            b.mat_table = (0..n).map(|i| rd.u32(t + 4 * i)).collect();
+                        }
                     }
                 }
             }

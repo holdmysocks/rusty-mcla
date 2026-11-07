@@ -1672,6 +1672,528 @@ pub fn part_dropped(a: Vec3, b: Vec3, r: f32, max: Vec3, min: Vec3) -> bool {
     axes || cx || cyz
 }
 
+// ---- The level query's result list and the capsule's dispatch F-35029 (docs/reference/people/traffic_drive_rule.md
+// 9.10). The list lives in the query: +0 / +16 the query's box, +32 the records (96 bytes each), +36 their number, +40
+// a scratch record (0 for every query the sweep makes: the reset F-16848 clears it), +44 the records of the objects
+// done, +48 those of this composite level, +52 the new ones (since the last commit), +64 / +68 the new records' bits,
+// +72 / +76 the level's, +80 / +84 the highest / lowest score held.
+
+/// One record of the result list as the narrow phases fill it: +0 the instance, +16 the contact, +32 its normal, +48
+/// the bound's normal, +64 the place along the capsule, +68 the depth, +72 the material, +76 the polygon / part index,
+/// +78 the kind, +80 the byte below the radius, +82 the composite's part (F-47011).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Record {
+    pub instance: u32,
+    pub point: Vec3,
+    pub normal: Vec3,
+    pub bound_normal: Vec3,
+    pub t: f32,
+    pub depth: f32,
+    pub material: u32,
+    pub index: u16,
+    pub kind: u16,
+    pub below: u8,
+    pub part: u16,
+}
+
+impl Record {
+    /// As the reset (F-16848 via the query's set-up) leaves a record: all 0 but the index 0xFFFF.
+    pub const RESET: Record = Record {
+        instance: 0,
+        point: Vec3::ZERO,
+        normal: Vec3::ZERO,
+        bound_normal: Vec3::ZERO,
+        t: 0.0,
+        depth: 0.0,
+        material: 0,
+        index: 0xFFFF,
+        kind: 0,
+        below: 0,
+        part: 0,
+    };
+}
+
+/// The result list of a level query (see above). `records.len()` is +36 (0: the list only notes that something
+/// touched, +52 = 1).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResultList {
+    pub min: Vec3,
+    pub max: Vec3,
+    pub records: Vec<Record>,
+    pub done: i32,
+    pub level: i32,
+    pub new: i32,
+    pub new_bits: u64,
+    pub level_bits: u64,
+    pub high: f32,
+    pub low: f32,
+}
+
+impl ResultList {
+    /// The reset the query's set-up runs: `cap` records reset, the box -FLT_MAX .. FLT_MAX, the counts and bits 0, the
+    /// scores -FLT_MAX / FLT_MAX.
+    pub fn new(cap: usize) -> ResultList {
+        assert!(cap <= 64, "the bits are two words");
+        ResultList {
+            min: Vec3::splat(-f32::MAX),
+            max: Vec3::splat(f32::MAX),
+            records: vec![Record::RESET; cap],
+            done: 0,
+            level: 0,
+            new: 0,
+            new_bits: 0,
+            level_bits: 0,
+            high: -f32::MAX,
+            low: f32::MAX,
+        }
+    }
+
+    /// F-89028: the slot for a contact of `depth` (the query's cap `cap`) at `at`, or none. Without records a depth above
+    /// 0 sets +52 = 1. Else a depth above 0 whose point is not below the box on some axis and not above it on all three;
+    /// its score the depth, or cap - depth when the depth is above the cap. A free slot (+48 + +44 + +52 under the
+    /// number) is taken and the scores held widened; a full list replaces its lowest score (the first of them, the
+    /// held records' depths scored the same way) when the new score is above +84, the slot made new (out of the level's
+    /// bits, or of the objects done), +80 kept and +84 the second lowest of the scan (from +80) - with one record both
+    /// the new score.
+    pub fn alloc(&mut self, depth: f32, cap: f32, at: Vec3) -> Option<usize> {
+        let n_cap = self.records.len();
+        if n_cap == 0 {
+            if depth > 0.0 {
+                self.new = 1;
+            }
+            return None;
+        }
+        if !(depth > 0.0) {
+            return None;
+        }
+        // (vcmpgefp / vcmpgtfp on (p, 1) against (box, 0): every lane, the w lane always true)
+        if !(at.x >= self.min.x && at.y >= self.min.y && at.z >= self.min.z) {
+            return None;
+        }
+        if at.x > self.max.x && at.y > self.max.y && at.z > self.max.z {
+            return None;
+        }
+        let score = if depth > cap { cap - depth } else { depth };
+        let n = self.level + self.done + self.new;
+        if n < n_cap as i32 {
+            self.new_bits |= 1 << n;
+            self.high = if score - self.high >= 0.0 { score } else { self.high };
+            self.new += 1;
+            self.low = if score - self.low >= 0.0 { self.low } else { score };
+            return Some(n as usize);
+        }
+        if !(score > self.low) {
+            return None;
+        }
+        let (mut second, mut k, mut lowest) = (self.high, 0usize, f32::MAX);
+        for (j, r) in self.records.iter().enumerate() {
+            let d = if r.depth > cap { cap - r.depth } else { r.depth };
+            if d < lowest {
+                second = lowest;
+                k = j;
+                lowest = d;
+            } else if d < second {
+                second = d;
+            }
+        }
+        let bit = 1u64 << k;
+        if self.new_bits & bit == 0 {
+            self.new_bits |= bit;
+            self.new += 1;
+            if self.level_bits & bit != 0 {
+                self.level_bits &= !bit;
+                self.level -= 1;
+            } else {
+                self.done -= 1;
+            }
+        }
+        if n_cap <= 1 {
+            self.high = score;
+        }
+        self.low = if n_cap > 1 { second } else { score };
+        Some(k)
+    }
+
+    /// F-47011: the new records named as the composite's part `i` (+82), while there are new ones.
+    pub fn mark_part(&mut self, i: u16) {
+        if self.new <= 0 {
+            return;
+        }
+        for (k, r) in self.records.iter_mut().enumerate() {
+            if self.new_bits & (1 << k) != 0 {
+                r.part = i;
+            }
+        }
+    }
+
+    /// F-77105: the new records carried out of the frame of rows `m[0..3]` and place `m[3]` (F-57315: the contact as
+    /// (x, y, z, 1) by the columns, the vector unit's four-product sum; the normals by the vector unit's three-product
+    /// sum), then counted - into this composite level (`level`: +48 = min(max(n, 1) - +44, +48 + +52)) or as done (+44 =
+    /// min(max(n, 1), +52 + +44)); +52 and the new bits 0. Answers whether the list has no records (the dispatch's loop
+    /// ends then).
+    pub fn commit(&mut self, m: &[Vec3; 4], level: bool) -> bool {
+        let col = |k: usize| Vec3::new(m[0][k], m[1][k], m[2][k]);
+        let (cx, cy, cz) = (col(0), col(1), col(2));
+        for (k, r) in self.records.iter_mut().enumerate() {
+            if self.new_bits & (1 << k) == 0 {
+                continue;
+            }
+            r.point = out_of(r.point, m);
+            r.normal = Vec3::new(vdot(r.normal, cx), vdot(r.normal, cy), vdot(r.normal, cz));
+            r.bound_normal = Vec3::new(vdot(r.bound_normal, cx), vdot(r.bound_normal, cy), vdot(r.bound_normal, cz));
+        }
+        let most = (self.records.len() as i32).max(1);
+        if level {
+            self.level = (most - self.done).min(self.level + self.new);
+        } else {
+            self.done = most.min(self.new + self.done);
+        }
+        self.new = 0;
+        self.new_bits = 0;
+        self.records.is_empty()
+    }
+
+    /// F-67153: the composite level's records become the new ones of the level above.
+    pub fn close_level(&mut self) {
+        self.new = self.level;
+        self.level = 0;
+        self.new_bits = self.level_bits;
+        self.level_bits = 0;
+    }
+
+    /// F-37493: whether new records were added.
+    pub fn any_new(&self) -> bool {
+        self.new > 0
+    }
+}
+
+/// One polygon of a polygon bound: its record's area (+0), its three vertices (+4) and the polygons across its edges
+/// (+10; 0xFFFF none).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProbePolygon {
+    pub area: f32,
+    pub verts: [u16; 3],
+    pub beside: [u16; 3],
+}
+
+/// A bound as F-35029 / F-75667 read it: its type byte (+4), its radius (+8) and centroid (+48) (the sphere's part
+/// prune), its box (+16 max, +32 min, the capsule's part prune), what its material call (vtable +48) answers for each
+/// index, and its shape.
+#[derive(Clone, Debug)]
+pub struct ProbeBound {
+    pub kind: u8,
+    pub radius: f32,
+    pub centroid: Vec3,
+    pub max: Vec3,
+    pub min: Vec3,
+    pub materials: Vec<u32>,
+    pub shape: ProbeShape,
+}
+
+#[derive(Clone, Debug)]
+pub enum ProbeShape {
+    /// types 0 / 1 / 3
+    Prim(Primitive),
+    /// type 4 (polyhedron): the vertices (+128), the polygons (+140, their number +204), each polygon's material index
+    /// (+216)
+    Poly { verts: Vec<Vec3>, polys: Vec<ProbePolygon>, mats: Vec<u8> },
+    /// type 5 (curved, a car's wheel; no polygons in the file): the wheel, its centroid and margin
+    Curved { wheel: gjk::WheelCore, centroid: Vec3, margin: f32 },
+    /// type 12: the parts (+128; none: a hole), their matrices (+132), the count the tests visit (+146) and the per-part
+    /// (type, include) masks (+148; empty: none)
+    Composite { parts: Vec<Option<(ProbeBound, [Vec3; 4])>>, tested: usize, masks: Vec<(u32, u32)> },
+}
+
+impl ProbeBound {
+    fn material(&self, i: usize) -> u32 {
+        self.materials.get(i).copied().unwrap_or(0)
+    }
+
+    /// A prop type's composite bound as the dispatch reads it from the type file: a sphere by its centroid (+48) and
+    /// radius (+8), a capsule by its radius +128 and length +144, a box by its centroid and size (+208), a polyhedron by
+    /// its vertices, polygon records (area, vertices, neighbours) and material indices; the composite's parts with their
+    /// matrices, the tested count and the part masks. `materials` gives what each bound's material call answers.
+    pub fn of_prop(t: &mcla_formats::rage::fragphys::FragType, materials: &dyn Fn(&mcla_formats::rage::fragphys::FragBound) -> Vec<u32>) -> ProbeBound {
+        let v = |x: [f32; 3]| Vec3::from_array(x);
+        let parts = t
+            .parts
+            .iter()
+            .map(|p| {
+                let b = p.bound.as_ref()?;
+                let shape = match b.kind {
+                    0 => ProbeShape::Prim(Primitive::Sphere { centre: v(b.centroid), r: b.radius }),
+                    1 => ProbeShape::Prim(Primitive::Capsule { centre: v(b.centroid), r: b.round, len: b.length }),
+                    3 => ProbeShape::Prim(Primitive::Box { centre: v(b.centroid), size: v(b.size) }),
+                    4 => ProbeShape::Poly {
+                        verts: b.verts.iter().map(|&x| v(x)).collect(),
+                        polys: (0..b.tris.len()).map(|i| ProbePolygon { area: b.areas[i], verts: b.tris[i], beside: b.beside[i] }).collect(),
+                        mats: b.poly_mats.clone(),
+                    },
+                    _ => return None,
+                };
+                let m = [v(p.matrix[0]), v(p.matrix[1]), v(p.matrix[2]), v(p.matrix[3])];
+                Some((ProbeBound { kind: b.kind, radius: b.radius, centroid: v(b.centroid), max: v(b.max), min: v(b.min), materials: materials(b), shape }, m))
+            })
+            .collect();
+        ProbeBound {
+            kind: 12,
+            radius: t.radius,
+            centroid: v(t.centroid),
+            max: v(t.max),
+            min: v(t.min),
+            materials: Vec::new(),
+            shape: ProbeShape::Composite { parts, tested: t.tested as usize, masks: t.part_masks.clone() },
+        }
+    }
+}
+
+/// The undirected capsule query as the dispatch sees it: its ends +176 / +192 and radius +208 in the current frame, its
+/// box +96 / +112 (the ends' smaller / larger values less / plus the radius; the list's box +0 / +16, which F-89028
+/// tests, is another, left as it is), the material mask +88, the polygon index +60, the caller's f30's high word (what F-44891 saves in the stack word the
+/// polygon test's line part reads), and the result list.
+#[derive(Clone, Debug)]
+pub struct CapsuleQuery {
+    pub a: Vec3,
+    pub b: Vec3,
+    pub r: f32,
+    pub lo: Vec3,
+    pub hi: Vec3,
+    pub mask: u32,
+    pub index: u16,
+    pub f30_high: u32,
+    pub list: ResultList,
+}
+
+/// F-11472 (undirected) on a primitive or curved bound with its record: no answer, no list call; the bound's material
+/// (index 0) against the mask; a slot by depth and the cap R at the contact; the record (part 0, kind 2, +80 1).
+fn capsule_prim_record(q: &mut CapsuleQuery, b: &ProbeBound, inst: u32) {
+    let h = match &b.shape {
+        ProbeShape::Prim(p) => capsule_primitive(q.a, q.b, q.r, p),
+        ProbeShape::Curved { wheel, centroid, margin } => Some(capsule_curved(q.a, q.b, q.r, wheel, *centroid, *margin)),
+        _ => None,
+    };
+    let Some(h) = h else { return };
+    let mat = b.material(0);
+    if mat & q.mask != 0 {
+        return;
+    }
+    if let Some(k) = q.list.alloc(h.depth, q.r, h.point) {
+        q.list.records[k] =
+            Record { instance: inst, point: h.point, normal: h.normal, bound_normal: h.normal, t: h.t, depth: h.depth, material: mat, index: 0, kind: 2, below: 1, part: 0 };
+    }
+}
+
+/// F-43031 (undirected) on polygon `i` of a polygon bound with its record: the polygon's normal from its area, the
+/// neighbours' from theirs (past the count: (0, 0, 1)); the material of its index against the mask; a slot by depth and
+/// the cap 0 at the point; the record (index i, kind 2, +80 1).
+fn capsule_poly_record(q: &mut CapsuleQuery, b: &ProbeBound, verts: &[Vec3], polys: &[ProbePolygon], mats: &[u8], i: usize, inst: u32) {
+    let p = polys[i];
+    let tri = |p: &ProbePolygon| [verts[p.verts[0] as usize], verts[p.verts[1] as usize], verts[p.verts[2] as usize]];
+    let v = tri(&p);
+    let n = gjk::polygon_normal(&v, p.area);
+    let beside = |e: usize| match p.beside[e] {
+        0xFFFF => None,
+        j if (j as usize) < polys.len() => {
+            let o = polys[j as usize];
+            let ov = tri(&o);
+            Some(Beside { normal: gjk::polygon_normal(&ov, o.area), v0x: Some(ov[0].x) })
+        }
+        _ => Some(Beside { normal: Vec3::Z, v0x: None }),
+    };
+    let mut slot = q.f30_high;
+    let h = capsule_polygon(q.a, q.b, q.r, &v, n, n, beside, &mut slot);
+    let mat = b.material(mats.get(i).copied().unwrap_or(0) as usize);
+    if mat & q.mask != 0 {
+        return;
+    }
+    if let Some(k) = q.list.alloc(h.depth, 0.0, h.point) {
+        q.list.records[k] =
+            Record { instance: inst, point: h.point, normal: h.normal, bound_normal: n, t: h.t, depth: h.depth, material: mat, index: i as u16, kind: 2, below: 1, part: 0 };
+    }
+}
+
+/// F-35029: the undirected capsule against a bound, by its type - 0 / 1 / 3 F-11472; 4 / 5 each polygon (the query's
+/// +60 its index) by F-43031, then for 5 F-11472 (the curved part); 12 each of the tested parts that is there and that
+/// the part masks let through (+4 & `include`, +0 & `types`): into the part's frame (F-66128), unless the prune F-16177
+/// drops it the part by this dispatch, and where that added records the new bits into the level's, the records named
+/// the part (F-47011) and committed into the composite's frame (F-77105 with 1; no records: the loop ends there, the
+/// query left in the part's frame), back out (F-15412); at the end the level's records become the new ones (F-67153).
+/// Answers F-37493: whether new records were added. Types 8 / 10 (the city's grid and its cells) are not ported.
+pub fn capsule_dispatch(q: &mut CapsuleQuery, b: &ProbeBound, inst: u32, types: u32, include: u32) -> bool {
+    match (&b.shape, b.kind) {
+        (ProbeShape::Prim(_), 0 | 1 | 3) => capsule_prim_record(q, b, inst),
+        (ProbeShape::Poly { verts, polys, mats }, 4) => {
+            for i in 0..polys.len() {
+                q.index = i as u16;
+                capsule_poly_record(q, b, verts, polys, mats, i, inst);
+            }
+        }
+        (ProbeShape::Curved { .. }, 5) => capsule_prim_record(q, b, inst),
+        (ProbeShape::Composite { parts, tested, masks }, 12) => {
+            for i in 0..*tested {
+                let Some(Some((part, m))) = parts.get(i) else { continue };
+                if let Some(&(t, inc)) = masks.get(i) {
+                    if inc & include == 0 || t & types == 0 {
+                        continue;
+                    }
+                }
+                (q.a, q.b, q.lo, q.hi) = part_frame(q.a, q.b, q.r, m);
+                if !part_dropped(q.a, q.b, q.r, part.max, part.min) && capsule_dispatch(q, part, inst, types, include) {
+                    q.list.level_bits |= q.list.new_bits;
+                    q.list.mark_part(i as u16);
+                    if q.list.commit(m, true) {
+                        break;
+                    }
+                }
+                (q.a, q.b, q.lo, q.hi) = part_unframe(q.a, q.b, q.r, m);
+            }
+            q.list.close_level();
+        }
+        _ => {}
+    }
+    q.list.any_new()
+}
+
+/// The sphere query as its dispatch sees it: its centre +160 and radius +176 in the current frame, its box +96 / +112
+/// (centre less / plus the radius), the material mask +88, the polygon index +60, the edge flags' stack slot of the
+/// polygon test (F-82650 leaves it for its next call; see `ball_polygon`), and the result list.
+#[derive(Clone, Debug)]
+pub struct BallQuery {
+    pub c: Vec3,
+    pub r: f32,
+    pub lo: Vec3,
+    pub hi: Vec3,
+    pub mask: u32,
+    pub index: u16,
+    pub flags: [i32; 3],
+    pub list: ResultList,
+}
+
+impl BallQuery {
+    /// F-22102 / F-17013's tail (the sphere's frame functions): the box +96 / +112 from the centre, per axis c - r and
+    /// r + c, single rounding.
+    fn boxed(&mut self) {
+        self.lo = self.c - Vec3::splat(self.r);
+        self.hi = Vec3::splat(self.r) + self.c;
+    }
+}
+
+/// F-15615 on a primitive or curved bound with its record: the material of the part it names against the mask; a slot
+/// by depth and the cap R at -(n (R - depth) - c); the record (part and kind as F-15615 names them, +80 depth < R).
+fn ball_prim_record(q: &mut BallQuery, b: &ProbeBound, inst: u32) {
+    let h = match &b.shape {
+        ProbeShape::Prim(p) => ball_primitive(q.c, q.r, p),
+        ProbeShape::Curved { wheel, centroid, margin } => ball_curved(q.c, q.r, wheel, *centroid, *margin),
+        _ => return,
+    };
+    let mat = b.material(h.part as usize);
+    if mat & q.mask != 0 {
+        return;
+    }
+    let at = -(h.normal * (q.r - h.depth) - q.c);
+    if let Some(k) = q.list.alloc(h.depth, q.r, at) {
+        q.list.records[k] = Record {
+            instance: inst,
+            point: at,
+            normal: h.normal,
+            bound_normal: h.normal,
+            t: 0.0,
+            depth: h.depth,
+            material: mat,
+            index: h.part,
+            kind: h.kind,
+            below: (h.depth < q.r) as u8,
+            part: 0,
+        };
+    }
+}
+
+/// F-82650 on polygon `i` of a polygon bound with its record: the polygon's normal from its area, the neighbours' from
+/// theirs (past the count: (0, 0, 1)); no contact, no list call; the material of its index against the mask; a slot by
+/// depth and the cap R at the contact; the record (index i, kind 2, +80 depth < R).
+fn ball_poly_record(q: &mut BallQuery, b: &ProbeBound, verts: &[Vec3], polys: &[ProbePolygon], mats: &[u8], i: usize, inst: u32) {
+    let p = polys[i];
+    let tri = |p: &ProbePolygon| [verts[p.verts[0] as usize], verts[p.verts[1] as usize], verts[p.verts[2] as usize]];
+    let v = tri(&p);
+    let n = gjk::polygon_normal(&v, p.area);
+    let beside = |e: usize| match p.beside[e] {
+        0xFFFF => None,
+        j if (j as usize) < polys.len() => {
+            let o = polys[j as usize];
+            Some(gjk::polygon_normal(&tri(&o), o.area))
+        }
+        _ => Some(Vec3::Z),
+    };
+    let Some(h) = ball_polygon(q.c, q.r, &v, n, n, beside, &mut q.flags) else { return };
+    let mat = b.material(mats.get(i).copied().unwrap_or(0) as usize);
+    if mat & q.mask != 0 {
+        return;
+    }
+    if let Some(k) = q.list.alloc(h.depth, q.r, h.pos) {
+        q.list.records[k] = Record {
+            instance: inst,
+            point: h.pos,
+            normal: h.normal,
+            bound_normal: n,
+            t: 0.0,
+            depth: h.depth,
+            material: mat,
+            index: i as u16,
+            kind: 2,
+            below: (h.depth < q.r) as u8,
+            part: 0,
+        };
+    }
+}
+
+/// F-75667: the sphere against a bound, the shape of F-35029 - 0 / 1 / 3 F-15615; 4 / 5 each polygon (+60 its index) by
+/// F-82650, then for 5 F-15615; 12 each tested part the masks let through: the centre into the part's frame (F-22102:
+/// the rows' three-product sums of c - place) and the box, dropped (F-14017) when (the part's radius + R)^2 is under the
+/// squared distance (fused z, x, then y) from its centroid - R less the lowest score held (+84) when the list's new and
+/// done records (+52 + +44) fill it; else the part by this dispatch, and where that added records the level's bits, the
+/// part named (F-47011) and the commit into the composite's frame (F-77105 with 1; no records: the loop ends there),
+/// back out (F-17013: (x, y, z, 1) by the columns) and the box; at the end F-67153. Answers F-37493.
+pub fn ball_dispatch(q: &mut BallQuery, b: &ProbeBound, inst: u32, types: u32, include: u32) -> bool {
+    match (&b.shape, b.kind) {
+        (ProbeShape::Prim(_), 0 | 1 | 3) => ball_prim_record(q, b, inst),
+        (ProbeShape::Poly { verts, polys, mats }, 4) => {
+            for i in 0..polys.len() {
+                q.index = i as u16;
+                ball_poly_record(q, b, verts, polys, mats, i, inst);
+            }
+        }
+        (ProbeShape::Curved { .. }, 5) => ball_prim_record(q, b, inst),
+        (ProbeShape::Composite { parts, tested, masks }, 12) => {
+            for i in 0..*tested {
+                let Some(Some((part, m))) = parts.get(i) else { continue };
+                if let Some(&(t, inc)) = masks.get(i) {
+                    if inc & include == 0 || t & types == 0 {
+                        continue;
+                    }
+                }
+                let w = q.c - m[3];
+                q.c = Vec3::new(vdot(m[0], w), vdot(m[1], w), vdot(m[2], w));
+                q.boxed();
+                let reach = if q.list.new + q.list.done >= q.list.records.len() as i32 { q.r - q.list.low } else { q.r };
+                let (reach, d) = (part.radius + reach, q.c - part.centroid);
+                let dropped = reach * reach < fma(d.y, d.y, fma(d.z, d.z, d.x * d.x));
+                if !dropped && ball_dispatch(q, part, inst, types, include) {
+                    q.list.level_bits |= q.list.new_bits;
+                    q.list.mark_part(i as u16);
+                    if q.list.commit(m, true) {
+                        break;
+                    }
+                }
+                q.c = out_of(q.c, m);
+                q.boxed();
+            }
+            q.list.close_level();
+        }
+        _ => {}
+    }
+    q.list.any_new()
+}
+
 impl<'a> CamLevel<'a> {
     /// The city alone.
     pub fn city(city: &'a WorldCollider) -> CamLevel<'a> {
@@ -2334,5 +2856,149 @@ mod tests {
              (2, 1, None): 44, (2, 1, Some(false)): 41, (2, 1, Some(true)): 364, (2, 2, None): 50, (2, 2, Some(false)): 17, \
              (2, 2, Some(true)): 699}"
         );
+    }
+
+    /// F-35029 with the result list against the original's code run offline on the props' composites (tools/
+    /// capsule_dispatch_reference.py -> testdata/capsule_dispatch_ref.txt; the list's reset F-16848, F-35029 with its
+    /// composite loop, F-11472, F-43031, F-89028 and F-77105 whole, only the material call faked as (index + 1) << 8):
+    /// per line the list's records, the caller's f30, then one to three dispatches (the type, the capsule, its box, the
+    /// material mask, the commit's matrix), each committed with r5 = 0 when it answered; out every answer, the query's
+    /// ends and box, the list's counts, bits and scores and every record - all equal. The prop file is read by the
+    /// port's reader (fragphys), which the original reads in the reference laid out as it is.
+    #[test]
+    fn capsule_dispatch_matches_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Ok(d) = std::fs::read(std::path::Path::new(&root).join("resources/prop/0x0e66973c.r131")) else { return };
+        if d.len() < 16 || &d[0..4] != b"MCLR" {
+            return;
+        }
+        let u32le = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let data = d[16..].to_vec();
+        let vs = (u32le(12) as usize).min(data.len());
+        let res = mcla_formats::rsc::Resource { rtype: u32le(4), flags: u32le(8), virtual_size: vs, physical_size: data.len() - vs, data };
+        let types = mcla_formats::rage::fragphys::parse_frag_types(&res);
+        let fake = |b: &mcla_formats::rage::fragphys::FragBound| -> Vec<u32> {
+            if b.kind == 4 { (0..256).map(|j| (j + 1) << 8).collect() } else { vec![256] }
+        };
+        let bounds: Vec<ProbeBound> = types.iter().map(|t| ProbeBound::of_prop(t, &fake)).collect();
+        let u = |h: &str| u32::from_str_radix(&h.replace('_', ""), 16).unwrap();
+        let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+        let (mut hits, mut full, mut polys, mut recs, mut poly_recs) = (0, 0, 0, 0, 0);
+        for (k, line) in include_str!("../testdata/capsule_dispatch_ref.txt").lines().enumerate() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let mut groups = i.split(" | ");
+            let head: Vec<u32> = groups.next().unwrap().split_whitespace().map(u).collect();
+            let x: Vec<u32> = o.split_whitespace().map(u).collect();
+            let cap = head[0] as usize;
+            let mut q = CapsuleQuery { a: Vec3::ZERO, b: Vec3::ZERO, r: 0.0, lo: Vec3::ZERO, hi: Vec3::ZERO, mask: 0, index: 0xFFFF, f30_high: head[1], list: ResultList::new(cap) };
+            let mut got = Vec::new();
+            for g in groups {
+                let w: Vec<u32> = g.split_whitespace().map(u).collect();
+                let f = |i: usize| f32::from_bits(w[i]);
+                let p = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+                (q.a, q.b, q.r, q.list.min, q.list.max, q.mask) = (p(1), p(4), f(7), p(8), p(11), w[14]);
+                let m = [p(15), p(18), p(21), p(24)];
+                let bound = &bounds[w[0] as usize];
+                polys += matches!(&bound.shape, ProbeShape::Composite { parts, .. } if parts.iter().flatten().any(|p| p.0.kind == 4)) as usize;
+                let r1 = capsule_dispatch(&mut q, bound, 0x1234, u32::MAX, u32::MAX);
+                let r2 = if r1 { q.list.commit(&m, false) } else { false };
+                got.extend([r1 as u32, r2 as u32]);
+                hits += r1 as usize;
+            }
+            let n = got.len();
+            assert_eq!(&x[..n], &got[..], "line {k}: answers");
+            let l = &q.list;
+            let mut st = Vec::new();
+            for v in [q.a, q.b, l.min, l.max, q.lo, q.hi] {
+                st.extend(bits(v));
+            }
+            st.extend([l.done as u32, l.level as u32, l.new as u32, l.new_bits as u32, (l.new_bits >> 32) as u32, l.level_bits as u32, (l.level_bits >> 32) as u32]);
+            st.extend([l.high.to_bits(), l.low.to_bits()]);
+            assert_eq!(&x[n..n + 27], &st[..], "line {k}: query and list");
+            full += (cap > 0 && l.done as usize == cap) as usize;
+            for (j, r) in l.records.iter().enumerate() {
+                let y = &x[n + 27 + 17 * j..n + 44 + 17 * j];
+                let mut e = vec![r.instance];
+                for v in [r.point, r.normal, r.bound_normal] {
+                    e.extend(bits(v));
+                }
+                e.extend([r.t.to_bits(), r.depth.to_bits(), r.material, r.index as u32, r.kind as u32, r.below as u32, r.part as u32]);
+                assert_eq!(y, &e[..], "line {k}: record {j}");
+                recs += (r.instance != 0) as usize;
+                poly_recs += (r.instance != 0 && r.index > 0) as usize;
+            }
+        }
+        // (dispatches that added records, lists left full, dispatches on a type with a polyhedron, records, records of a
+        // polygon past the first)
+        assert_eq!((hits, full, polys, recs, poly_recs), (2050, 1009, 1745, 2177, 967), "coverage");
+    }
+
+    /// F-75667 with the result list against the original's code run offline on the props' composites (tools/
+    /// ball_dispatch_reference.py -> testdata/ball_dispatch_ref.txt; F-16848, F-75667 with its composite loop, F-15615,
+    /// F-82650, F-89028 and F-77105 whole, the material call faked): the sphere's centre, radius, the list's box, the
+    /// mask and the commit's matrix per dispatch; every answer, the centre, both boxes, the list and every record equal.
+    /// The edge flags' stack slot starts at 0 (the harness's stack) and is carried from call to call.
+    #[test]
+    fn ball_dispatch_matches_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Ok(d) = std::fs::read(std::path::Path::new(&root).join("resources/prop/0x0e66973c.r131")) else { return };
+        if d.len() < 16 || &d[0..4] != b"MCLR" {
+            return;
+        }
+        let u32le = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let data = d[16..].to_vec();
+        let vs = (u32le(12) as usize).min(data.len());
+        let res = mcla_formats::rsc::Resource { rtype: u32le(4), flags: u32le(8), virtual_size: vs, physical_size: data.len() - vs, data };
+        let types = mcla_formats::rage::fragphys::parse_frag_types(&res);
+        let fake = |_: &mcla_formats::rage::fragphys::FragBound| -> Vec<u32> { (0..256).map(|j| (j + 1) << 8).collect() };
+        let bounds: Vec<ProbeBound> = types.iter().map(|t| ProbeBound::of_prop(t, &fake)).collect();
+        let u = |h: &str| u32::from_str_radix(&h.replace('_', ""), 16).unwrap();
+        let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+        let (mut hits, mut full, mut recs, mut poly_recs) = (0, 0, 0, 0);
+        for (k, line) in include_str!("../testdata/ball_dispatch_ref.txt").lines().enumerate() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let mut groups = i.split(" | ");
+            let head: Vec<u32> = groups.next().unwrap().split_whitespace().map(u).collect();
+            let x: Vec<u32> = o.split_whitespace().map(u).collect();
+            let cap = head[0] as usize;
+            let mut q = BallQuery { c: Vec3::ZERO, r: 0.0, lo: Vec3::ZERO, hi: Vec3::ZERO, mask: 0, index: 0xFFFF, flags: [0; 3], list: ResultList::new(cap) };
+            let mut got = Vec::new();
+            for g in groups {
+                let w: Vec<u32> = g.split_whitespace().map(u).collect();
+                let f = |i: usize| f32::from_bits(w[i]);
+                let p = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+                (q.c, q.r, q.list.min, q.list.max, q.mask) = (p(1), f(7), p(8), p(11), w[14]);
+                q.boxed();
+                let m = [p(15), p(18), p(21), p(24)];
+                let r1 = ball_dispatch(&mut q, &bounds[w[0] as usize], 0x1234, u32::MAX, u32::MAX);
+                let r2 = if r1 { q.list.commit(&m, false) } else { false };
+                got.extend([r1 as u32, r2 as u32]);
+                hits += r1 as usize;
+            }
+            let n = got.len();
+            assert_eq!(&x[..n], &got[..], "line {k}: answers");
+            let l = &q.list;
+            let mut st = Vec::new();
+            for v in [q.c, l.min, l.max, q.lo, q.hi] {
+                st.extend(bits(v));
+            }
+            st.extend([l.done as u32, l.level as u32, l.new as u32, l.new_bits as u32, (l.new_bits >> 32) as u32, l.level_bits as u32, (l.level_bits >> 32) as u32]);
+            st.extend([l.high.to_bits(), l.low.to_bits()]);
+            assert_eq!(&x[n..n + 24], &st[..], "line {k}: query and list");
+            full += (cap > 0 && l.done as usize == cap) as usize;
+            for (j, r) in l.records.iter().enumerate() {
+                let y = &x[n + 24 + 17 * j..n + 41 + 17 * j];
+                let mut e = vec![r.instance];
+                for v in [r.point, r.normal, r.bound_normal] {
+                    e.extend(bits(v));
+                }
+                e.extend([r.t.to_bits(), r.depth.to_bits(), r.material, r.index as u32, r.kind as u32, r.below as u32, r.part as u32]);
+                assert_eq!(y, &e[..], "line {k}: record {j}");
+                recs += (r.instance != 0) as usize;
+                poly_recs += (r.instance != 0 && r.bound_normal != r.normal) as usize;
+            }
+        }
+        // (dispatches that added records, lists left full, records, polygon records by an edge or a corner)
+        assert_eq!((hits, full, recs, poly_recs), (1332, 654, 1425, 557), "coverage");
     }
 }
