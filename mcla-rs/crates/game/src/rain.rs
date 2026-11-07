@@ -445,6 +445,14 @@ impl Rain {
         let spot_on = !env_off("MCLA_RAIN_SPOT");
         let car = f.car.unwrap_or(Vec3::ZERO);
         let (lights, light_cols) = crate::halo::rain_take();
+        if std::env::var("MCLA_RAIN_DUMP").is_ok() {
+            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 100 == 99 {
+                for (l, c) in lights.iter().zip(light_cols.iter()) {
+                    eprintln!("  rain light {:.3} {:.3} {:.3} w {:.5} colour {:.5} {:.5} {:.5}", l[0], l[1], l[2], l[3], c[0], c[1], c[2]);
+                }
+            }
+        }
         let u = RainU {
             global_light: [ambient.x, ambient.y, ambient.z, 1.0],
             scale_offset: [

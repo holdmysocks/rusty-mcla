@@ -1853,7 +1853,8 @@ impl Props {
     pub fn update_signal_glows(&mut self, gpu: &Gpu, cam: Vec3, night: f32) {
         const MAX: usize = 384;
         const REACH: f32 = 250.0;
-        const COLOURS: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.878, 0.502, 0.251], [0.0, 1.0, 0.0]];
+        // (F-79347's three packed words: 0xFFFF0000, 0xFFE08040, 0xFF00FF00)
+        const COLOURS: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [224.0 / 255.0, 128.0 / 255.0, 64.0 / 255.0], [0.0, 1.0, 0.0]];
         let g = &mut self.signal_glows;
         let n = night.clamp(0.0, 1.0);
         let size = (g.sizes[0] + (g.sizes[3] - g.sizes[0]) * n) * 0.16;

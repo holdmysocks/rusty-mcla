@@ -81,7 +81,7 @@ pub fn rect(view_proj: Mat4, near: f32, origin_y: f32, p: Vec3, cam: Vec3, colou
     if y1 - y0 < 1.0 / target.1 {
         y1 = y0 + 1.0 / target.1;
     }
-    Some(Rect { r: [x0, y0, x1, y1], z: [c.z / w, i / DIVISOR, u0, v0], col: [colour[0], colour[1], colour[2], 1.0] })
+    Some(Rect { r: [x0, y0, x1, y1], z: [c.z / w, i / DIVISOR, u0, v0], col: { let c = crate::halo::pack(colour); /* (F-44648 takes the packed word) */ [c[0], c[1], c[2], 1.0] } })
 }
 
 struct State {

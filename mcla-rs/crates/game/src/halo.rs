@@ -308,11 +308,20 @@ fn alpha(v: f32) -> f32 {
     if v < 0.001 { 0.0 } else { (v.min(10.0) * 25.5).floor().min(255.0) / 255.0 }
 }
 
+/// A glow's colour as AddGlow (F-92524) takes it: one packed word, made by its callers with F-59032 -
+/// each channel clamped to 0 .. 1, x 255 and cut to a whole byte (a car's red 3.73 is 255, its green
+/// 0.119 is 30). The draw, the trail and the rain's list read the bytes back as k / 255. (Packing k / 255
+/// again gives k for every byte, so a colour already in bytes passes as it is.)
+pub fn pack(c: [f32; 3]) -> [f32; 3] {
+    c.map(|v| ((v.clamp(0.0, 1.0) * 255.0) as u8) as f32 / 255.0)
+}
+
 impl Tune {
     /// What `AddGlow` makes of a light: `size` and `intensity` as its caller hands them over,
     /// `car` = its flag for the lights of cars and signals (the size grows with distance so
     /// they stay visible, and the pull towards the camera goes by other numbers).
     fn glow(&self, w: usize, pos: Vec3, color: [f32; 3], mut size: [f32; 2], intensity: f32, car: bool, cam: Vec3, tan_half_fov: f32) -> Option<Glow> {
+        let color = pack(color);
         let d = pos.distance(cam);
         let (seed, star) = (alpha(self.bloom[w] * intensity), alpha(self.streak[w] * intensity));
         let (mut hi, lo, reach) = if car { (self.max_car_bias * 0.5, 0.065, 10.0) } else { (self.max_bias, self.min_bias, self.max_dist) };
@@ -666,6 +675,18 @@ mod tests {
         }
         // seen from behind: none
         assert!(t.signal(0, Vec3::new(0.0, 0.0, 50.0), Vec3::Z, [1.0, 0.0, 0.0], Vec3::ZERO, tan).is_none());
+    }
+
+    /// F-59032's packing: clamp 0 .. 1, x 255, cut; the R8's tail lamp (3.729, 0.119, 0) is the
+    /// rf21w recording's rain light (1, 0.1176, 0); a packed colour passes unchanged.
+    #[test]
+    fn glow_colour_is_packed_to_bytes() {
+        assert_eq!(pack([3.729, 0.119, 0.0]), [1.0, 30.0 / 255.0, 0.0]);
+        assert_eq!(pack([-0.5, 0.999, 0.5]), [0.0, 254.0 / 255.0, 127.0 / 255.0]);
+        for k in 0..=255u8 {
+            let v = k as f32 / 255.0;
+            assert_eq!(pack([v; 3]), [v; 3]);
+        }
     }
 
     #[test]
