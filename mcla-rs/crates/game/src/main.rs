@@ -725,6 +725,9 @@ struct App {
     cam_side_t: [f32; 4],
     /// the pad's buttons a frame ago (for presses), its right stick, its horn button
     pad_prev: u32,
+    /// The menus' held-button repeat (F-68423): per pad bit the UI ticks held and the tick count that fires next
+    pad_rep: [(f32, f32); 18],
+    pad_rep_at: Option<std::time::Instant>,
     pad_pending: u32,
     pad_look: (f32, f32),
     /// the cruise assist: the speed it watches (smoothed), switched on, holding the limit now
@@ -1464,6 +1467,8 @@ impl App {
             load_activate: None,
             cam_side_t: [f32::INFINITY; 4],
             pad_prev: 0,
+            pad_rep: [(0.0, 7.0); 18],
+            pad_rep_at: None,
             pad_pending: 0,
             pad_look: (0.0, 0.0),
             cruise_v: 0.0,
@@ -2528,17 +2533,43 @@ impl App {
             }
             (now, (pad.axis(A::RightX), pad.axis(A::RightY)), pressed)
         };
-        let hit = (now & !self.pad_prev) | pressed;
+        let mut hit = (now & !self.pad_prev) | pressed;
+        let mut rep = 0u32;
+        // (the UI's per-tick input, F-68423: a uinput held past its press (F-70872) counts UI ticks and, at 7, sends
+        // its event again - "up", "left" ... and the form's action slot through F-83442 - then every +803 ticks (6, the
+        // uinput ctor F-17547; one garage native sets 1); a press (F-52044) or release (F-99209) starts the count over.
+        // Here for the d-pad, the stick's directions and LB / RB; the ticks at 30 a second.)
+        let rep_now = std::time::Instant::now();
+        let ticks = self.pad_rep_at.map_or(0.0, |t| rep_now.duration_since(t).as_secs_f32().min(0.25) * 30.0);
+        self.pad_rep_at = Some(rep_now);
+        for i in [4usize, 5, 10, 11, 12, 13, 14, 15, 16, 17] {
+            let held = now >> i & 1 != 0 && self.pad_prev >> i & 1 != 0;
+            let r = &mut self.pad_rep[i];
+            if !held {
+                *r = (0.0, 7.0);
+                continue;
+            }
+            r.0 += ticks;
+            if r.0 >= r.1 {
+                r.0 -= r.1;
+                r.1 = 6.0;
+                rep |= 1 << i;
+            }
+        }
         self.pad_prev = now;
         self.pad_look = look;
         self.pad_look_up = 0.0;
         self.pad_horn = now >> 9 & 1 != 0;
         self.pad_flash = now >> 3 & 1 != 0;
+        let watching = self.cine.playing.is_some() || self.cuts.playing.is_some() || self.game.movie.is_some();
+        // (the repeats are the UI's: only where the pad is read as a menu, below)
+        if self.game.in_menu() || self.game.show_map || watching || self.game.takes_menu_input() {
+            hit |= rep;
+        }
         let p = |i: u32| hit >> i & 1 != 0;
         if hit != 0 {
             self.idle = 0.0;
         }
-        let watching = self.cine.playing.is_some() || self.cuts.playing.is_some() || self.game.movie.is_some();
         self.game.nav_slow = (now >> 17 & 1) as f32 - (now >> 16 & 1) as f32;
         // (`mc4` step 13b: the pad as it stands, for the mapping editor)
         self.game.opt_x.pad = self.pad_state();
