@@ -12746,7 +12746,18 @@ impl Game {
         if tab == 0 && !views.is_empty() {
             prompts.insert(0, (st("Navmap_Prompt_SetTarget", "SET AS TARGET"), crate::flash_ui::ICON_A));
             if enter && !hidden && !guided {
-                (self.gps_pick, self.mission_target) = (None, views.get(sel).map(|v| v.id.clone()));
+                // (the mission log's A, F-31828: the row's open objective target (F-96100 ->
+                // F-49590) is the GPS map's target already -> GPS_UNSET_TARGET_GENERIC and it is
+                // cleared (F-26916); else MISSION_LOG_SELECT_CONFIRMATION_MASTER and it is set
+                // (F-83952). The port compares the missions, not their target uids)
+                let pick = views.get(sel).map(|v| v.id.clone());
+                if pick.is_some() && self.gps_pick.is_none() && self.mission_target == pick {
+                    (self.gps_pick, self.mission_target) = (None, None);
+                    self.opt_x.s23b.ui_obj = Some("GPS_UNSET_TARGET_GENERIC");
+                } else {
+                    (self.gps_pick, self.mission_target) = (None, pick);
+                    self.opt_x.s23b.ui_obj = Some("MISSION_LOG_SELECT_CONFIRMATION_MASTER");
+                }
                 self.gps_armed = self.mission_target.is_some();
                 self.career.stats.entry("tut:target_set".into()).or_insert(1);
             }
