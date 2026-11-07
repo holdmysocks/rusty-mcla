@@ -700,6 +700,70 @@ mod tests {
     /// The disc's GLOBAL_OCCLUSION as the wiring reads it: radius 800 m, the car occluder's place (0, 0.9, 0), and the
     /// volume never 0 at any depth (the lowest is the fully occluded 0.2), so the car update's stop at volume 0
     /// (F-36837) is never reached with the disc's tune. Needs MCLA_DATA_DIR (extracted\cache).
+    /// The probe and depth (F-87712 on `CityProbe`) against the original's: MCLA_OCC_REC = "<recording>;<data dir>",
+    /// a recording of the occlusion recorder (work/recomp-trace `MCLA_OCC_TRACE`: each update's listener, emitter and
+    /// the depth it gives the group's set). Prints how many depths are equal and the worst ones.
+    #[test]
+    #[ignore]
+    fn probe_against_recording() {
+        let Ok(spec) = std::env::var("MCLA_OCC_REC") else { return };
+        let (rec, dir) = spec.split_once(';').expect("<recording>;<data dir>");
+        let assets = crate::assets::Assets::new(dir);
+        crate::physics::collision::load_surfaces(dir);
+        let mut city = crate::physics::collision::WorldCollider::default();
+        for (i, mesh) in crate::world::city_bound(&assets).expect("city bound").into_iter().enumerate() {
+            city.sectors.insert(crate::world::BOUND_ID + i, mesh);
+        }
+        let a = crate::audio::Audio::new_offline(dir).expect("audio");
+        let lib = crate::sndobj::SoundLib::load(a.root(), &a.cfg.clone()).expect("sound objects");
+        let o = lib.game.get_name("GLOBAL_OCCLUSION").expect("GLOBAL_OCCLUSION").to_vec();
+        let t = Tune::read(&o, |h| lib.curve(h).cloned()).expect("tune");
+        let factors = material_factors(std::path::Path::new(dir), &lib.game);
+        let mut probe = CityProbe { world: &city, factors: &factors };
+        let f = |h: &str| f32::from_bits(u32::from_str_radix(h, 16).unwrap());
+        let (mut n, mut same, mut near, mut both_zero, mut zero_port, mut zero_orig) = (0, 0, 0, 0, 0, 0);
+        let mut worst: Vec<(f32, String)> = Vec::new();
+        let (mut max_near, mut max_ulps) = (0.0f32, 0i64);
+        for line in std::fs::read_to_string(rec).expect("recording").lines() {
+            let kv: std::collections::HashMap<&str, &str> = line.split_whitespace().filter_map(|w| w.split_once('=')).collect();
+            let (Some(l), Some(e), Some(d)) = (kv.get("L"), kv.get("E"), kv.get("d")) else { continue };
+            let v = |s: &str| -> Option<[f32; 4]> {
+                let p: Vec<&str> = s.split(',').collect();
+                (p.len() == 3 && p.iter().all(|x| x.len() == 8)).then(|| [f(p[0]), f(p[1]), f(p[2]), 0.0])
+            };
+            let (Some(l), Some(e)) = (v(l), v(e)) else { continue };
+            if d.len() != 8 {
+                continue;
+            }
+            let want = f(d);
+            let mut owner = Owner { absolute: true, pos: e, ..Default::default() };
+            let got = owner.update(&t, &[[0.0; 4]; 4], l, &mut probe);
+            n += 1;
+            match (got == 0.0, want == 0.0) {
+                (true, true) => both_zero += 1,
+                (true, false) => zero_port += 1,
+                (false, true) => zero_orig += 1,
+                _ => {}
+            }
+            if got.to_bits() == want.to_bits() {
+                same += 1;
+            } else if (got - want).abs() <= 1e-3 * want.abs().max(1.0) {
+                near += 1;
+                let ulps = (got.to_bits() as i64 - want.to_bits() as i64).abs();
+                max_near = max_near.max((got - want).abs());
+                max_ulps = max_ulps.max(ulps);
+            } else {
+                worst.push(((got - want).abs(), format!("L {:?} E {:?} original {want} port {got}", &l[..3], &e[..3])));
+            }
+        }
+        worst.sort_by(|a, b| b.0.total_cmp(&a.0));
+        println!("{n} updates: {same} equal, {near} within 1e-3, {} differ; zero in both {both_zero}, only the port {zero_port}, only the original {zero_orig}", worst.len());
+        println!("within 1e-3: largest difference {max_near} m, {max_ulps} ulps");
+        for (_, w) in worst.iter().take(25) {
+            println!("  {w}");
+        }
+    }
+
     #[test]
     #[ignore]
     fn disc_tune_for_the_wiring() {
