@@ -852,6 +852,7 @@ fn dispatch_enter(d: &mut Dispatch) -> Option<u8> {
     if n >= 2 {
         d.routed = false;
         d.arrived = false;
+        d.go_t = 0.0;
     }
     if n == 3 {
         d.trail = !d.crumbs.is_empty();
@@ -959,6 +960,20 @@ fn add_points(score: i32, points: i32, tac: Option<LawTactic>, max: i32, pursuit
     }
     let v = score.wrapping_add(points);
     Some(if v < 0 { 0 } else { v.min(cap) })
+}
+
+/// The brain's GoToPosition tick (F-16378, its state 8): the mode word +576 - what Dispatch's Respond reads as the arrival
+/// (F-98680 == 1) - is latched to 1 when the brain has been within 8 m of its goal for over 5 s (+580), or when the state's time
+/// is above 0 and the route is done (HasReachedGoal F-43234); else it is left. The time is counted after the tick (from 0 at the
+/// command), so the route is not tested on the state's first tick.
+fn go_to_arrived(arrived: bool, near_t: f32, state_t: f32, route_done: bool) -> bool {
+    arrived || near_t > 5.0 || (state_t > 0.0 && route_done)
+}
+
+/// A cop's brain Search starting: the state's reset F-97098 (no points, the route not set - its last index +344 is written only),
+/// then its enter's point list (F-57507 -> F-52110).
+fn search_start(uid: u32, pts: Vec<(Vec3, Option<NavNode>)>, random: bool, angle: f32) -> CopSearch {
+    CopSearch { uid, no_goals: pts.is_empty(), pts, random, angle, ..Default::default() }
 }
 
 /// SetRaceChaseTarget (F-12315): the zone's chase type +204 - a racer given: 1 when it is the player (its vt+40), else 2;
@@ -1255,9 +1270,12 @@ struct Dispatch {
     seen_t: f32,
     /// WaitAtLocation drives the trail (true) or searches
     trail: bool,
-    /// the brain's route is set; it has arrived (brain +576 == 1)
+    /// the brain's route is set; it has arrived (brain +576 == 1, latched by GoToPosition F-16378)
     routed: bool,
     arrived: bool,
+    /// the brain's +580 (within 8 m of its goal, F-74140) and its GoToPosition state's time (+8, from the command)
+    near_t: f32,
+    go_t: f32,
     /// a state asked for (FSM +16, F-28114), entered at the start of the next FSM update (F-43677). (The machine is begun
     /// in state 0 by the engage itself, F-11097 / F-26187, as the dispatched cop is a car already in the world - loaded)
     next: Option<u8>,
@@ -2591,7 +2609,7 @@ impl Police {
         let pts = search_points(nav, world, c.state.pos, v, per, true, true, angle, &mut rnd);
         log::info!("police: dispatch cruiser {} searches: {} goals", uid, pts.len());
         self.srch.retain(|s| s.uid != uid);
-        self.srch.push(CopSearch { uid, no_goals: pts.is_empty(), pts, random: true, angle, ..Default::default() });
+        self.srch.push(search_start(uid, pts, true, angle));
         // (command 7 with +16 = 1 and the angle, F-60530's block, through the brain command F-83687)
         brain_command(brain, 7, Some(&search_block(true, angle)), 0);
     }
@@ -3674,7 +3692,7 @@ impl Police {
                             let mut rnd = || crate::brain::rng().float();
                             let pts = search_points(nav, world, self.last_known, self.last_known_v, t("fMinSetGoalTime", 1.0), true, false, angle, &mut rnd);
                             log::info!("police: cruiser {} search goals: {} (turn {:.2})", u, pts.len(), angle);
-                            self.srch.push(CopSearch { uid: u, no_goals: pts.is_empty(), pts, angle, ..Default::default() });
+                            self.srch.push(search_start(u, pts, false, angle));
                             // (the Search state's enter sends command 7 with its block, F-60530 + the angle, through the brain
                             // command F-83687; the unseen and cone times are kept)
                             if let Some(tc) = self.tacs.get_mut(&u) {
@@ -3927,7 +3945,7 @@ impl Police {
                     self.cops.clear();
                     // (StartTactic's strip text for a Dispatch, F-76838 kind 2: the investigation)
                     self.hud_msgs.push(2);
-                    self.dsp = Some(Dispatch { cop, st: 0, t: 0.0, loc: ppos, call, crumbs: Vec::new(), crumb_t: 1.0, seen_t: 0.0, trail: false, routed: false, arrived: false, next: None, brain: BrainCmd::default() });
+                    self.dsp = Some(Dispatch { cop, st: 0, t: 0.0, loc: ppos, call, crumbs: Vec::new(), crumb_t: 1.0, seen_t: 0.0, trail: false, routed: false, arrived: false, near_t: 0.0, go_t: 0.0, next: None, brain: BrainCmd::default() });
                 }
             }
         }
@@ -4234,7 +4252,12 @@ impl Police {
                 }
                 let (_, goal) = ai.brain.0.as_ref().map_or((0, None), |b| b.heading_for());
                 let end = if d.st == 3 { d.crumbs.last().copied().unwrap_or(d.loc) } else { d.loc };
-                d.arrived = ai.brain.0.as_ref().map_or(c.state.pos.distance(end) < 8.0, |b| b.route_done());
+                // (GoToPosition's tick F-16378 on the brain's +580 and its state time, then the time; the port's own driver
+                // without a racing tune: within 8 m of the end)
+                d.near_t = if goal.is_some_and(|g| g.distance_squared(c.state.pos) < 64.0) { d.near_t + dt } else { 0.0 };
+                let done = ai.brain.0.as_ref().map_or(c.state.pos.distance(end) < 8.0, |b| b.route_done());
+                d.arrived = go_to_arrived(d.arrived, d.near_t, d.go_t, done);
+                d.go_t += dt;
                 ai.chase = Some((goal.unwrap_or(end), Vec3::ZERO));
                 ai.chase_exact = true;
                 ai.target_speed = 85.0;
@@ -4875,7 +4898,7 @@ mod tests {
             if v[0] == "CASE" {
                 case = Some((v[1].parse().unwrap(), v[2].parse().unwrap(), v[3].parse().unwrap()));
                 d = Some(Dispatch { cop: 1, st: 0, t: 0.0, loc: Vec3::ZERO, call: String::new(), crumbs: Vec::new(), crumb_t: 1.0, seen_t: 0.0,
-                    trail: false, routed: false, arrived: false, next: None, brain: BrainCmd::default() });
+                    trail: false, routed: false, arrived: false, near_t: 0.0, go_t: 0.0, next: None, brain: BrainCmd::default() });
                 k = 0;
                 continue;
             }
@@ -5122,6 +5145,50 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 4290);
+    }
+
+    #[test]
+    fn go_to_arrived_matches_the_original() {
+        // (tools/brain_states_reference.py: F-16378 with HasReachedGoal F-43234 run offline - +580 x the state time x the route
+        // (+128 set / no aiv / not done / done) x +576 before 0, 1, 7; the port's arrival is +576 == 1)
+        let mut n = 0;
+        for l in include_str!("testdata/brain_states_ref.txt").lines().filter(|l| l.starts_with("K ")) {
+            let w: Vec<&str> = l.split_whitespace().skip(1).collect();
+            let f = |i: usize| f32::from_bits(u32::from_str_radix(w[i], 16).unwrap());
+            let (route, before, after) = (w[2].parse::<u32>().unwrap(), w[3].parse::<i32>().unwrap(), w[4].parse::<i32>().unwrap());
+            let latched = go_to_arrived(false, f(0), f(1), route == 3);
+            assert_eq!(after, if latched { 1 } else { before }, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 300);
+    }
+
+    #[test]
+    fn brain_pieces_match_the_original() {
+        // (the same run: F-98680 the brain's +576 or 0 with no brain; F-55899 a zero splat - the planner's final heading, as
+        // brain::Brain::set_goals sets it; F-97098 Search's reset - count 0, the route flag 0, the ten points cleared - as a new
+        // CopSearch starts)
+        let ref_ = include_str!("testdata/brain_states_ref.txt");
+        let r: Vec<&str> = ref_.lines().filter(|l| l.starts_with("R ")).collect();
+        assert_eq!(r, ["R 0 0 0", "R 1 0 0", "R 1 1 1", "R 1 2 2", "R 1 -1 -1"]);
+        for l in ref_.lines().filter(|l| l.starts_with("H ")) {
+            assert!(l.split_whitespace().skip(2).all(|x| x == "00000000"), "{l}");
+        }
+        let q = |pat: u32, k: usize| -> u32 {
+            let l = ref_.lines().find(|l| l.starts_with(&format!("Q {pat} {k} "))).unwrap();
+            u32::from_str_radix(l.split_whitespace().nth(3).unwrap(), 16).unwrap()
+        };
+        let s = search_start(0, Vec::new(), false, 0.0);
+        for pat in 0..2 {
+            assert_eq!(q(pat, 84) as usize, s.pts.len());
+            assert_eq!((q(pat, 85) >> 24) != 0, s.routed);
+            for i in 0..10 {
+                // (each record's point +16 + 32 i and its node word +32 + 32 i)
+                for k in 0..5 {
+                    assert_eq!(q(pat, 4 + 8 * i + k), 0);
+                }
+            }
+        }
     }
 
     #[test]
