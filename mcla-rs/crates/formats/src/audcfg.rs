@@ -676,7 +676,8 @@ pub fn resolve_categories_with(cats: &Dat, runtime: &HashMap<u32, f32>) -> HashM
 /// The same with the controllers' pitch too: `cents[hash]` (trunc(1200 log2 of the product of the controllers'
 /// ratios), F-61464) is added to that category's own pitch and passed down.
 /// `filters`: the category's runtime LPF / HPF in Hz (+70 / +72: its controllers' minimum LPF and maximum HPF, F-61464),
-/// taken with the category's own as LPF min and HPF max.
+/// taken with the category's own as LPF min and HPF max (a category without an entry: 23900 / 0, the record's start values,
+/// F-26947). Pitch sums are s16 and wrap (F-52968).
 pub fn resolve_categories_rt(cats: &Dat, runtime: &HashMap<u32, f32>, cents: &HashMap<u32, i32>, filters: &HashMap<u32, (u16, u16)>) -> HashMap<u32, Category> {
     let mut out = HashMap::new();
     #[allow(clippy::too_many_arguments)]
@@ -688,16 +689,16 @@ pub fn resolve_categories_rt(cats: &Dat, runtime: &HashMap<u32, f32>, cents: &Ha
         let b9 = o.get(9).copied().unwrap_or(0);
         let (vol, scale) = category_record(be_i16(o, 11), be_i16(o, 13), be_u16(o, 21), be_u16(o, 23));
         let own_vol = vol + runtime.get(&h).copied().unwrap_or(0.0);
-        let own = Category { volume: own_vol, pitch: be_i16(o, 15) as i32 + cents.get(&h).copied().unwrap_or(0), lpf: be_u16(o, 17), hpf: be_u16(o, 19), rolloff_scale: scale, reverb_amount: be_u16(o, 25) as f32 * 0.01, reverb_dist: be_u16(o, 27) as f32 * 0.01 };
-        let own = match filters.get(&h) {
-            Some(&(l, hp)) => Category { lpf: own.lpf.min(l), hpf: own.hpf.max(hp), ..own },
-            None => own,
-        };
+        let own = Category { volume: own_vol, pitch: (be_u16(o, 15).wrapping_add(cents.get(&h).copied().unwrap_or(0) as u16)) as i16 as i32, lpf: be_u16(o, 17), hpf: be_u16(o, 19), rolloff_scale: scale, reverb_amount: be_u16(o, 25) as f32 * 0.01, reverb_dist: be_u16(o, 27) as f32 * 0.01 };
+        // (the record's runtime LPF / HPF start at 23900 / 0, F-26947, and the walk always takes them: F-52968)
+        let (l, hp) = filters.get(&h).copied().unwrap_or((23900, 0));
+        let own = Category { lpf: own.lpf.min(l), hpf: own.hpf.max(hp), ..own };
         let c = match parent {
             None => own,
             Some(p) => Category {
                 volume: own.volume + if b9 & 0x80 != 0 { 0.0 } else { p.volume },
-                pitch: own.pitch + if b9 & 0x40 != 0 { 0 } else { p.pitch },
+                // (s16 sums, F-52968: lhz / add / extsh)
+                pitch: (own.pitch as u16).wrapping_add(if b9 & 0x40 != 0 { 0 } else { p.pitch as u16 }) as i16 as i32,
                 lpf: if b9 & 0x20 != 0 { own.lpf } else { own.lpf.min(p.lpf) },
                 hpf: if b9 & 0x10 != 0 { own.hpf } else { own.hpf.max(p.hpf) },
                 rolloff_scale: own.rolloff_scale * if b9 & 0x08 != 0 { 1.0 } else { p.rolloff_scale },
@@ -890,6 +891,73 @@ mod tests {
         }
         assert_eq!((n, disc), (3146, 146));
         assert!(gains.len() <= 3, "{gains:x?}");
+    }
+
+    /// The category tree against the original's code run offline (tools/category_tree_reference.py): the loader F-45518 whole
+    /// (the .dat reader, the build from BASE F-48971 / F-31533 / F-26947 / F-41684, the sort) on the disc's categories.dat and
+    /// copies with random own fields, the runtime volume / pitch / LPF / HPF set through the setters F-87261 / F-60329 /
+    /// F-99639 / F-29180, the walk F-52968 through F-85160. Every resolved category's volume, rolloff scale, reverb sends,
+    /// pitch, LPF and HPF equal resolve_categories_rt's (volumes as category_record_is_the_originals: the log2 rounding).
+    #[test]
+    fn category_tree_is_the_originals() {
+        let t = include_str!("testdata/category_tree_ref.txt");
+        let hx = |w: &str| u32::from_str_radix(w, 16).unwrap();
+        let mut dat: Option<Dat> = None;
+        let (mut rt, mut cents, mut filt) = (HashMap::new(), HashMap::new(), HashMap::new());
+        let mut got: Option<HashMap<u32, Category>> = None;
+        let (mut n, mut near, mut bad) = (0, 0, Vec::new());
+        let mut objs: Vec<(u32, Vec<u8>)> = Vec::new();
+        for l in t.lines() {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            match w[0] {
+                "L" => {
+                    objs.clear();
+                    dat = None;
+                }
+                "O" => objs.push((hx(w[1]), (0..w[2].len() / 2).map(|i| u8::from_str_radix(&w[2][2 * i..2 * i + 2], 16).unwrap()).collect())),
+                "C" => {
+                    if dat.is_none() {
+                        let mut d = Dat { version: 15, data: Vec::new(), objects: Vec::new(), by_hash: HashMap::new(), banks: Vec::new() };
+                        for (h, b) in &objs {
+                            d.by_hash.insert(*h, d.objects.len());
+                            d.objects.push((String::new(), d.data.len(), b.len()));
+                            d.data.extend_from_slice(b);
+                        }
+                        dat = Some(d);
+                    }
+                    rt.clear();
+                    cents.clear();
+                    filt.clear();
+                    got = None;
+                }
+                "R" => {
+                    let h = hx(w[1]);
+                    rt.insert(h, f32::from_bits(hx(w[2])));
+                    cents.insert(h, w[3].parse::<u32>().unwrap() as u16 as i16 as i32);
+                    filt.insert(h, (w[4].parse().unwrap(), w[5].parse().unwrap()));
+                }
+                "T" => {
+                    let g = got.get_or_insert_with(|| resolve_categories_rt(dat.as_ref().unwrap(), &rt, &cents, &filt));
+                    let h = hx(w[1]);
+                    n += 1;
+                    let Some(c) = g.get(&h) else {
+                        bad.push(format!("missing {l}"));
+                        continue;
+                    };
+                    let want = (hx(w[3]), hx(w[4]), hx(w[5]), hx(w[9]) as u16 as i16 as i32, hx(w[10]) as u16, hx(w[11]) as u16);
+                    let have = (c.rolloff_scale.to_bits(), c.reverb_amount.to_bits(), c.reverb_dist.to_bits(), c.pitch, c.lpf, c.hpf);
+                    let dv = (c.volume.to_bits() as i64 - hx(w[2]) as i64).abs();
+                    if have != want || dv > 4 {
+                        bad.push(format!("{l} | port vol {:08x} {have:x?}", c.volume.to_bits()));
+                    } else if dv != 0 {
+                        near += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        eprintln!("{n} records, {near} volumes within 4 ulp, {} different", bad.len());
+        assert!(bad.is_empty(), "{} of {n}:\n{}", bad.len(), bad[..bad.len().min(20)].join("\n"));
     }
 
     /// Against the disc's own files (MCLA_DATA_DIR = extracted/cache), when present.
