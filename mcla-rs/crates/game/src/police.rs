@@ -873,6 +873,12 @@ fn dispatch_ask(d: &mut Dispatch, delay: f32, speech_busy: bool) {
     }
 }
 
+/// A cop needs a teleport (F-14059): underground (+880), or its brain over 5 s off the nav mesh (+584 > 5), or its car damaged
+/// out with the DamageOutDelay countdown (+44) not over 0.
+fn needs_teleport(under: bool, off_mesh_t: f32, out: bool, out_delay: f32) -> bool {
+    under || off_mesh_t > 5.0 || (out && !(out_delay > 0.0))
+}
+
 /// Damaged out (F-12032, mcCarDamage +36 >= its tune's MaxDamage +24, as `!(points < max)`: a NaN is out). The port keeps
 /// damage as points / MaxDamage, capped at 1.0, and points == MaxDamage give exactly 1.0; a car one point - or a fraction of
 /// one - short is not out (the port had tested 0.999, which took points from 0.999 x MaxDamage).
@@ -2407,7 +2413,8 @@ impl Police {
         let cops = self.cops.clone();
         // (F-14059: underground - no car here -, over 5 s off the nav mesh (brain +584), or damaged out with its
         // damage-out delay at or under 0 (car +20 -> +36 >= MaxDamage and +44 <= 0))
-        let needs = |s: &Self, u: u32| s.tel.get(&u).is_some_and(|e| e.1 > 5.0 || e.2 == 0.0);
+        // (the port's units underground have no car and so no entry here; e.2 >= 0 is the damaged-out countdown)
+        let needs = |s: &Self, u: u32| s.tel.get(&u).is_some_and(|e| needs_teleport(false, e.1, e.2 >= 0.0, e.2));
         let any_need = cops.iter().any(|&u| needs(self, u));
         let no_tel = tun.get("fNoTeleportTime", 60.0);
         let gate = self.tel_lock <= 0.0
@@ -4896,6 +4903,22 @@ mod tests {
             let v: Vec<u32> = l.split_whitespace().skip(1).map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
             let (max, points) = (f32::from_bits(v[0]), f32::from_bits(v[1]));
             assert_eq!(damaged_out((points / max).min(1.0)), v[2] == 1, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 60);
+    }
+
+    #[test]
+    fn needs_teleport_matches_the_original() {
+        // (F-14059 run offline: underground x brain none / off-mesh 0, 5, 5 + 1 ulp, 9 x car none / not out / out with its delay;
+        // the cars' MaxDamage 400, not out = 200 points)
+        let mut n = 0;
+        for l in include_str!("testdata/police_predicates_ref.txt").lines().filter(|l| l.starts_with("T ")) {
+            let v: Vec<u32> = l.split_whitespace().skip(1).map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let off = if v[1] == 1 { f32::from_bits(v[2]) } else { 0.0 };
+            let out = v[3] == 2 && damaged_out((400.0f32 / 400.0).min(1.0));
+            assert!(v[3] != 1 || !damaged_out(200.0 / 400.0));
+            assert_eq!(needs_teleport(v[0] == 1, off, out, f32::from_bits(v[4])), v[5] == 1, "{l}");
             n += 1;
         }
         assert_eq!(n, 60);
