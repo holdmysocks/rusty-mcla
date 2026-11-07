@@ -115,7 +115,7 @@ def main():
     rd.vector_shim = wfr._shim
     try:
         src = MAIN.replace('sub_SORT_', 'sub_' + sort).replace('sub_MOVE_', 'sub_' + move)
-        exe = rd.build(idx, ['sub_' + sort, 'sub_' + move], src, work, 'hull_reshape', image=img, vtables=[(VT_POLY, [40])], stubs={'sub_825CA278': ''})
+        exe = rd.build(idx, ['sub_' + sort, 'sub_' + move], src, work, 'hull_reshape', image=img, vtables=[(VT_POLY, [40])], stubs={'sub_' + addr(a.tool, 'F-96346'): ''})
     finally:
         subprocess.run = _run
         rd.vector_shim = wfr._vs
