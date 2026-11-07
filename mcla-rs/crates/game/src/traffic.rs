@@ -1584,17 +1584,6 @@ pub struct Other {
     pub nearest: Option<u32>,
 }
 
-impl Other {
-    /// Distance in the ground plane from `q` to its box (0 inside).
-    fn box_dist(&self, q: Vec3) -> f32 {
-        let d = q - self.pos;
-        let r = Vec3::new(self.right.x, 0.0, self.right.z).normalize_or(Vec3::X);
-        let f = Vec3::new(self.fwd.x, 0.0, self.fwd.z).normalize_or(Vec3::NEG_Z);
-        let (lx, lz) = ((d.dot(r).abs() - self.half_wid).max(0.0), (d.dot(f).abs() - self.half_len).max(0.0));
-        (lx * lx + lz * lz).sqrt()
-    }
-}
-
 /// A rail as F-47175's selection compares them (its context +12 / +16, a behaviour's +188 / +192): a navsys lane, or a
 /// run-time rail (word +4 with 0x1800; each is one car's own, so it equals only itself: the owner's index).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2529,20 +2518,28 @@ fn rail_blocked(env: &Env, me: usize, q: &TcpRail, width: f32, mask: u32, lift: 
     q.sweep(width, 0.0, &mut left, lift, &mut world)
 }
 
-/// The footprint probe (F-39379, states 6 and 7; F-82779 in state 8): a segment
-/// 0.75 m up, 0.675 of the half width to one side (the side alternates by frame), from -0.9
-/// to +0.9 of the half length. Does it hit anything?
+/// The footprint probe (F-39379, states 6 and 7; F-82779 in state 8): the level's segment query F-57005 (r4 = 1,
+/// `camprobe::segment_level`, traffic_drive_rule.md 9.20) from start to end of a segment 0.75 m up (row 1), 0.675 of
+/// the half width to one side (row 0; + on an odd frame, - on an even one), from +0.9 to -0.9 of the half length along
+/// row 2 (the back) - the madds unfused as the vector unit does them; the block's material word 512 (shifted by the
+/// material manager's flag shift), the include mask 14366, the states 7, the own car excluded. A hit is the record's
+/// instance word set. (The rows here are the port's rail pose - row 0 = fwd x Y, row 2 = -fwd -, not the instance
+/// matrix F-33765 reads; the early answer 0 on the car's +448 -> +111 / +112 flags and the other excluded word of a
+/// car with +500 & 0x20 are not ported.)
 fn probe_hit(env: &Env, me: usize, pos: Vec3, fwd: Vec3, hl: f32, hw: f32) -> bool {
-    let right = fwd.cross(Vec3::Y).normalize_or(Vec3::X);
-    let side = if env.parity { 1.0 } else { -1.0 };
-    let base = pos + Vec3::Y * 0.75 + right * (side * 0.675 * hw);
-    let (a, b) = (base - fwd * (0.9 * hl), base + fwd * (0.9 * hl));
-    let len = a.distance(b);
-    if len > 1e-3 && env.col.raycast(a, (b - a) / len, len).is_some() {
-        return true;
-    }
-    let n = (len / 0.25).ceil().max(1.0) as usize;
-    env.others.iter().enumerate().any(|(j, o)| j != me && (o.pos.y - pos.y).abs() < 2.0 && o.pos.distance_squared(pos) < (hl + o.half_len + o.half_wid + 2.0).powi(2) && (0..=n).any(|k| o.box_dist(a.lerp(b, k as f32 / n as f32)) < 0.01))
+    use crate::physics::camprobe::{segment_level, LevelFilter};
+    let row0 = fwd.cross(Vec3::Y).normalize_or(Vec3::X);
+    let row2 = -fwd;
+    let row1 = row2.cross(row0).normalize_or(Vec3::Y);
+    let side = if env.parity { 0.675 * hw } else { -(0.675 * hw) };
+    let base = row1 * 0.75 + pos;
+    let base = row0 * side + base;
+    let along = 0.9 * hl;
+    let (a, b) = (row2 * along + base, row2 * -along + base);
+    let excluded = [if me < env.level.ncars { rail_car_inst(me) } else { 0 }];
+    let filter = LevelFilter { include: 14366, states: 7, excluded: &excluded };
+    let mask = 512u32 << crate::tcp_rail::MATERIAL_SHIFT;
+    env.level.near((a + b) * 0.5, a.distance(b) * 0.5, &mut |objs| segment_level(a, b, mask, &filter, objs.iter().copied()).list.records[0].instance != 0)
 }
 
 /// The rail onto a lane (F-26466) for a request: the lanes within 25 m (the port's search, at most 48; the entry's

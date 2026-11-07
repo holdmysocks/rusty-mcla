@@ -868,6 +868,8 @@ pub enum CullVolume {
     Ball { centre: Vec3, r: f32 },
     Capsule { from: Vec3, dir: Vec3, len: f32, r: f32 },
     Point { centre: Vec3 },
+    /// the segment query's (F-33196: type 1, the world ends)
+    Segment { a: Vec3, b: Vec3 },
 }
 
 impl CullVolume {
@@ -911,6 +913,7 @@ pub fn instance_culled_in(vol: &CullVolume, m: &[Vec3; 4], centre: Vec3, radius:
             let d = q - c;
             radius * radius > vdot(d, d)
         }
+        CullVolume::Segment { a, b } => seg_culled_in(a, b, c, radius),
     }
 }
 
@@ -2769,6 +2772,651 @@ pub fn ball_level<'a>(c: Vec3, r: f32, mask: u32, cap: usize, flags: [i32; 3], f
     q
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// The level's segment query (F-57005 with r4 = 1 -> F-46779's set-up -> F-97077 -> F-29290), directed as F-46779 always
+// makes it (+160 = 1): what the traffic footprint probe F-39379 asks (traffic_drive_rule.md 9.20).
+
+/// The segment query as its dispatch sees it: the ends +128 / +144 in the current frame, the material mask +88, the
+/// polygon index +60 and the result list.
+#[derive(Clone, Debug)]
+pub struct SegQuery {
+    pub a: Vec3,
+    pub b: Vec3,
+    pub mask: u32,
+    pub index: u16,
+    pub list: ResultList,
+}
+
+/// 1 / x by the vector unit's estimate (the recomp's exact division) with one Newton step, r (1 - r x) + r.
+fn vrecip_nr(x: f32) -> f32 {
+    let r = 1.0 / x;
+    let e = -(r * x - 1.0);
+    r * e + r
+}
+
+/// The segment's frame step (F-58085: rows . (p - place) for both ends).
+fn seg_frame(a: Vec3, b: Vec3, m: &[Vec3; 4]) -> (Vec3, Vec3) {
+    let to = |p: Vec3| {
+        let w = p - m[3];
+        Vec3::new(vdot(m[0], w), vdot(m[1], w), vdot(m[2], w))
+    };
+    (to(a), to(b))
+}
+
+/// F-22117 (via F-62425's segment volume, type 1): the bound's sphere (world centre `c`, radius `r`) against the
+/// segment `a` .. `b`; culled only when both ends are outside (|p - c|^2 > r^2) and the line misses (the squared
+/// distance of the perpendicular over r^2) or the foot lies outside the segment (0 > ((c - b) . u) (u . (a - c))), u
+/// the unit of b - a by the plain rsqrt estimate.
+fn seg_culled_in(a: Vec3, b: Vec3, c: Vec3, radius: f32) -> bool {
+    let r2 = radius * radius;
+    let (bc, ac) = (b - c, a - c);
+    let cb = Vec3::ZERO - bc;
+    let ab = bc - ac;
+    let out_a = vdot(ac, ac) > r2;
+    let out_b = vdot(cb, cb) > r2;
+    let u = ab * (1.0 / vdot(ab, ab).sqrt());
+    let along = vdot(u, ac);
+    let prod = vdot(cb, u) * vdot(ac, u);
+    let perp = ac - u * along;
+    let miss = vdot(perp, perp) > r2;
+    let foot_out = 0.0 > prod;
+    !(out_a && out_b && (miss || foot_out))
+}
+
+/// F-20854's triangle test (F-30190 / F-99440 / F-73149): the directed segment `a` .. `b` against the triangle `v` (its
+/// record's area `area`): the face normal n = ((C - B) x (A - B)) by 1 / (2 area) with one Newton step; d0 = n . (a -
+/// A) and d1 = n . (b - A) (the vector unit's sums), t = d0 x (1 / (d0 - d1), one Newton step); code 2 unless d0 >= 0
+/// and not d1 >= 0, 3 unless 0 <= t <= 1, 1 unless det >= 7.63e-6, 4 / 5 the two weights (the vector unit's dot
+/// products). A crossing gives (the point (b - a) t + a, n, t).
+fn seg_triangle_front(a: Vec3, b: Vec3, v: &[Vec3; 3], area: f32) -> Option<(Vec3, Vec3, f32)> {
+    let n = vcross(v[2] - v[1], v[0] - v[1]) * vrecip_nr(area + area);
+    let d = b - a;
+    let (w, we, e1, e2) = (a - v[0], b - v[0], v[1] - v[0], v[2] - v[0]);
+    let d0 = vdot(n, w);
+    let d1 = vdot(n, we);
+    let t = d0 * vrecip_nr(d0 - d1);
+    let qvec = vcross(w, e1);
+    let pvec = vcross(d, e2);
+    let vv = vdot(d, qvec);
+    let uu = vdot(pvec, w);
+    let det = vdot(pvec, e1);
+    if !(d0 >= 0.0) || d1 >= 0.0 {
+        return None;
+    }
+    if !(t >= 0.0) || t > 1.0 {
+        return None;
+    }
+    if !(det >= f32::from_bits(0x3700_0000)) {
+        return None;
+    }
+    if !(uu >= 0.0) || uu > det {
+        return None;
+    }
+    if !(vv >= 0.0) || uu + vv > det {
+        return None;
+    }
+    Some((d * t + a, n, t))
+}
+
+/// |p - e| as the scalar unit forms it: sqrt(x x + (z z + y y)), fused.
+fn seg_depth(p: Vec3, e: Vec3) -> f32 {
+    let d = p - e;
+    fma(d.x, d.x, fma(d.z, d.z, d.y * d.y)).sqrt()
+}
+
+/// F-20854 on polygon `i` (the query's +60) of a polygon bound: the bound's material of its index against the mask;
+/// the directed triangle test; a slot by |hit - end| (cap FLT_MAX) at the hit; the record (the polygon's index, kind 2,
+/// +80 1, the face normal twice).
+fn seg_poly_record(q: &mut SegQuery, b: &ProbeBound, verts: &[Vec3], polys: &[ProbePolygon], mats: &[u8], i: usize, inst: u32) {
+    let mat = b.material(mats.get(q.index as usize).copied().unwrap_or(0) as usize);
+    if mat & q.mask != 0 {
+        return;
+    }
+    let p = polys[i];
+    let v = [verts[p.verts[0] as usize], verts[p.verts[1] as usize], verts[p.verts[2] as usize]];
+    let Some((at, n, t)) = seg_triangle_front(q.a, q.b, &v, p.area) else { return };
+    let depth = seg_depth(at, q.b);
+    if let Some(k) = q.list.alloc(depth, f32::MAX, at) {
+        q.list.records[k] = Record { instance: inst, point: at, normal: n, bound_normal: n, t, depth, material: mat, index: q.index, kind: 2, below: 1, part: 0 };
+    }
+}
+
+/// F-53035 directed: the segment from `w` (start less the centre) along `d` against the sphere of squared radius `r2`.
+/// a = d . d must be above 0; the discriminant a (r^2 - w . w) + (w . d)^2 not below 0; the start outside (w . w >
+/// r^2, else no hit for a directed query); t = -((sqrt + w . d) / a), the root and the reciprocal each by the estimate
+/// with one Newton step (sqrt 0 where the discriminant is 0); a hit when 0 <= t <= 1.
+fn seg_sphere(w: Vec3, d: Vec3, r2: f32) -> Option<f32> {
+    let a = vdot(d, d);
+    if !(a > 0.0) {
+        return None;
+    }
+    let c = vdot(w, w);
+    let b = vdot(w, d);
+    let disc = a * (r2 - c) + b * b;
+    if 0.0 > disc {
+        return None;
+    }
+    if !(c > r2) {
+        return None;
+    }
+    let y = 1.0 / disc.sqrt();
+    let ia = 1.0 / a;
+    let e3 = -(ia * a - 1.0);
+    let e2 = -(disc * (y * y) - 1.0);
+    let ia2 = ia * e3 + ia;
+    let y2 = e2 * (0.5 * y) + y;
+    let inv = 1.0 * ia2;
+    let s = if disc == 0.0 { 0.0 } else { disc * y2 };
+    let t = 0.0 - (s + b) * inv;
+    if 0.0 > t || t > 1.0 {
+        return None;
+    }
+    Some(t)
+}
+
+/// F-40312: the segment `a` .. `b` (from the capsule's centre) against the capsule of length `len` and radius `r` along
+/// y: (count, t0, t1, part0, part1) with the parts 0 the lower cap, 1 the upper, 2 the side (-1 none), in the order of t.
+/// The side by the xz quadratic (the line misses when (a.z d.x - a.x d.z)^2 > r^2 |d.xz|^2), the caps' spheres where an
+/// end of the side's span lies past a cap, a nearly vertical segment through the caps directly. Operation for operation.
+fn seg_capsule(a: Vec3, b: Vec3, len: f32, r: f32) -> (u32, f32, f32, i32, i32) {
+    let rr = r * r;
+    let (mut t0, mut t1, mut k0, mut k1) = (-1.0f32, -1.0f32, -1i32, -1i32);
+    let d = b - a;
+    let (dx, dy, dz) = (d.x, d.y, d.z);
+    let a2 = fma(dx, dx, dz * dz);
+    let h = len * 0.5;
+    let eps = f32::from_bits(0x3586_37BD);
+    let (y0, y1);
+    if a2 > eps {
+        let f7 = fms(a.z, dx, a.x * dz);
+        if f7 * f7 > rr * a2 {
+            return (0, -1.0, -1.0, -1, -1);
+        }
+        let c7 = fma(a.z, a.z, a.x * a.x);
+        let bq = fma(a.z, dz, a.x * dx);
+        let disc = fms(bq, bq, (c7 - rr) * a2);
+        let s = if disc > 0.0 { disc.sqrt() } else { 0.0 };
+        let inv = 1.0 / a2;
+        t0 = (-bq - s) * inv;
+        t1 = (s - bq) * inv;
+        y0 = fma(t0, dy, a.y);
+        y1 = fma(t1, dy, a.y);
+        if !(y0 < -h) && !(y0 > h) {
+            k0 = 2;
+        }
+        let both_side = if y1 < -h || y1 > h {
+            false
+        } else {
+            k1 = 2;
+            k0 == 2
+        };
+        if !both_side {
+            let a3 = fma(dy, dy, a2);
+            let ia3 = 1.0 / a3;
+            if y0 < -h || y1 < -h {
+                let wy = a.y + h;
+                let bq = fma(a.x, dx, fma(wy, dy, a.z * dz));
+                let cc = fma(a.x, a.x, fma(a.z, a.z, wy * wy)) - rr;
+                let disc = fms(bq, bq, cc * a3);
+                if disc > 0.0 {
+                    let s = disc.sqrt();
+                    if y0 < -h {
+                        k0 = 0;
+                        t0 = (-bq - s) * ia3;
+                    }
+                    if y1 < -h {
+                        k1 = 0;
+                        t1 = (s - bq) * ia3;
+                    }
+                }
+            }
+            if y0 > h || y1 > h {
+                let wy = a.y - h;
+                let bq = fma(a.x, dx, fma(wy, dy, a.z * dz));
+                let cc = fma(a.x, a.x, fma(a.z, a.z, wy * wy)) - rr;
+                let disc = fms(bq, bq, cc * a3);
+                if disc > 0.0 {
+                    let s = disc.sqrt();
+                    if y0 > h {
+                        k0 = 1;
+                        t0 = (-bq - s) * ia3;
+                    }
+                    if y1 > h {
+                        k1 = 1;
+                        t1 = (s - bq) * ia3;
+                    }
+                }
+            }
+        }
+    } else {
+        if !(dy.abs() > eps) {
+            return (0, -1.0, -1.0, -1, -1);
+        }
+        let q = rr - fma(b.x, b.x, b.z * b.z);
+        if !(q > 0.0) {
+            return (0, -1.0, -1.0, -1, -1);
+        }
+        let s = q.sqrt();
+        k0 = 0;
+        k1 = 1;
+        let (mut lo, mut hi) = (-(s + h), s + h);
+        if a.y > b.y {
+            std::mem::swap(&mut lo, &mut hi);
+            k0 = 1;
+            k1 = 0;
+        }
+        let inv = 1.0 / dy;
+        t0 = (lo - a.y) * inv;
+        t1 = (hi - a.y) * inv;
+        y0 = lo;
+        y1 = hi;
+    }
+    let _ = (y0, y1);
+    let first = k0 != -1 && !(t0 < 0.0) && !(t0 > 1.0);
+    if first {
+        let second = k1 != -1 && !(t1 < 0.0) && !(t1 > 1.0);
+        if !second {
+            return (1, t0, t1, k0, k1);
+        }
+        if t0 > t1 {
+            return (2, t1, t0, k1, k0);
+        }
+        return (2, t0, t1, k0, k1);
+    }
+    if k1 == -1 || t1 < 0.0 || t1 > 1.0 {
+        return (0, t0, t1, k0, k1);
+    }
+    (1, t1, t1, k1, k1)
+}
+
+/// F-54304: the segment from `p` (from the box's centre) along `d` against the box of half sizes `h` - the slabs per
+/// axis, t from -1 (entering) and 2 (leaving), the faces 2k (+axis k) / 2k + 1 (-axis). (code 0 none / 1 / 2, t in,
+/// face in, t out, face out); a start inside answers its leaving (code 1) as the first.
+fn seg_box(p: Vec3, d: Vec3, h: Vec3) -> (u32, f32, i32, f32, i32) {
+    let (mut tin, mut tout) = (-1.0f32, 2.0f32);
+    let (mut fin, mut fout) = (-1i32, -1i32);
+    for k in 0..3 {
+        let face = 2 * k as i32;
+        let (pk, dk, hk) = (p[k], d[k], h[k]);
+        let away = dk * pk >= 0.0;
+        let ad = dk.abs();
+        let gap = hk - pk.abs();
+        if !(gap >= 0.0) {
+            if away || gap < -ad {
+                return (0, tin, fin, tout, fout);
+            }
+            let inv = 1.0 / ad;
+            let te = -(inv * gap);
+            if te > tin {
+                fin = if pk > 0.0 { face } else { face + 1 };
+                tin = te;
+            }
+            let tl = fms(hk, 2.0, gap) * inv;
+            if !(tl >= tout) && !(tl >= 1.0) {
+                fout = if pk > 0.0 { face + 1 } else { face };
+                tout = tl;
+            }
+        } else {
+            let reach = if away { gap } else { fms(hk, 2.0, gap) };
+            if !(reach >= ad) && !(reach >= ad * tout) {
+                fout = if away {
+                    if pk > 0.0 {
+                        face
+                    } else if pk < 0.0 {
+                        face + 1
+                    } else if dk > 0.0 {
+                        face
+                    } else {
+                        face + 1
+                    }
+                } else if pk > 0.0 {
+                    face + 1
+                } else if pk >= 0.0 {
+                    if dk > 0.0 { face } else { face + 1 }
+                } else {
+                    face
+                };
+                tout = reach / ad;
+            }
+        }
+        if tin > tout {
+            return (0, tin, fin, tout, fout);
+        }
+    }
+    if fin < 0 {
+        if fout < 0 {
+            return (0, tin, fin, tout, fout);
+        }
+        return (1, tout, fout, tout, fout);
+    }
+    if fout >= 0 {
+        return (2, tin, fin, tout, fout);
+    }
+    (1, tin, fin, tout, fout)
+}
+
+/// F-54780's normal at a primitive's hit (`at`, the bound's centre `c`, the part `part` the test named): a sphere (and
+/// type 5) the unit of at - c, a capsule's side (x, 0, z) / its caps y -/+ len / 2 of at - c (F-18463), each by the
+/// guarded rsqrt with one Newton step; a box its face's normal (F-90488).
+fn seg_prim_normal(p: &Primitive, at: Vec3, c: Vec3, part: i32) -> Vec3 {
+    let unit = |v: Vec3| v * rsqrt0(vdot(v, v));
+    match *p {
+        Primitive::Sphere { .. } => unit(at - c),
+        Primitive::Capsule { len, .. } => {
+            let w = at - c;
+            match part {
+                2 => unit(Vec3::new(w.x, 0.0, w.z)),
+                1 => unit(Vec3::new(w.x, fnms(len, 0.5, w.y), w.z)),
+                _ => unit(Vec3::new(w.x, fma(len, 0.5, w.y), w.z)),
+            }
+        }
+        Primitive::Box { .. } => BOX_FACE.get(part as usize).copied().unwrap_or(Vec3::ZERO),
+    }
+}
+
+/// F-75650 directed on a primitive bound (types 0 / 1 / 3) or a curved one (type 5): the segment from the bound's
+/// centroid (+48) - a sphere of radius +8 (F-53035), a capsule (+128 radius, +144 length, F-40312), a box (+208 size by
+/// 0.5, F-54304); the first answer's part against the mask (its material); its point (b - a) t + a; its normal; a hit
+/// whose normal goes along the segment (d . n > 0) is dropped (directed); a slot by |hit - end| (cap FLT_MAX); the record
+/// (the part, kind 2, +80 1). A curved bound's cast (F-81943, a GJK cast of the point against the wheel) is NOT decoded:
+/// the port meets the bound's box (+16 / +32: the wheel's support box with its margin) instead - approximate.
+fn seg_prim_record(q: &mut SegQuery, b: &ProbeBound, inst: u32) {
+    let c = b.centroid;
+    let d = q.b - q.a;
+    let (sc, ec) = (q.a - c, q.b - c);
+    let (t, part, prim) = match &b.shape {
+        ProbeShape::Prim(p @ Primitive::Sphere { .. }) => match seg_sphere(sc, d, b.radius * b.radius) {
+            Some(t) => (t, 0, Some(*p)),
+            None => return,
+        },
+        ProbeShape::Prim(p @ Primitive::Capsule { r, len, .. }) => {
+            let (n, t0, _, k0, _) = seg_capsule(sc, ec, *len, *r);
+            if n == 0 {
+                return;
+            }
+            (t0, k0, Some(*p))
+        }
+        ProbeShape::Prim(p @ Primitive::Box { size, .. }) => {
+            let (n, tin, fin, _, _) = seg_box(sc, d, *size * 0.5);
+            if n == 0 {
+                return;
+            }
+            (tin, fin, Some(*p))
+        }
+        ProbeShape::Curved { .. } => {
+            // (approximate: the bound's box about its own frame, not F-81943's cast)
+            let centre = (b.max + b.min) * 0.5;
+            let (n, tin, fin, _, _) = seg_box(q.a - centre, d, b.max - centre);
+            if n == 0 {
+                return;
+            }
+            (tin, fin, None)
+        }
+        _ => return,
+    };
+    let mat = b.material(part.max(0) as usize);
+    if mat & q.mask != 0 {
+        return;
+    }
+    let at = d * t + q.a;
+    let n = match prim {
+        Some(p) => seg_prim_normal(&p, at, c, part),
+        None => BOX_FACE.get(part as usize).copied().unwrap_or(Vec3::ZERO),
+    };
+    let depth = seg_depth(at, q.b);
+    if vdot(d, n) > 0.0 {
+        return;
+    }
+    if let Some(k) = q.list.alloc(depth, f32::MAX, at) {
+        q.list.records[k] = Record { instance: inst, point: at, normal: n, bound_normal: n, t, depth, material: mat, index: part as u16, kind: 2, below: 1, part: 0 };
+    }
+}
+
+/// F-58997 (via its thunk F-71512): when the list is full (+52 + +44 not under +36), whether the bound's sphere (+48,
+/// +8) misses the line of the segment shortened to the best hit held (d (1 - +84 / |d|) with the double rsqrt of
+/// |d|^2 when |d|^2 > 1e-6): |w|^2 |d|^2 - (w . d)^2 > r^2 |d|^2, w = a - centre, the scalar unit's fused sums.
+fn seg_pruned(q: &SegQuery, b: &ProbeBound) -> bool {
+    let n = q.list.new + q.list.done;
+    if n < q.list.records.len() as i32 {
+        return false;
+    }
+    let mut d = q.b - q.a;
+    let w = q.a - b.centroid;
+    let l2 = fma(d.x, d.x, fma(d.y, d.y, d.z * d.z));
+    if l2 > f32::from_bits(0x3586_37BD) && n > 0 {
+        let inv = if -l2 >= 0.0 { 0.0 } else { (1.0 / (l2 as f64).sqrt()) as f32 };
+        d = d * fnms(inv, q.list.low, 1.0);
+    }
+    let dd = fma(d.x, d.x, fma(d.y, d.y, d.z * d.z));
+    let wd = fma(w.x, d.x, fma(w.y, d.y, w.z * d.z));
+    let ww = fma(w.x, w.x, fma(w.y, w.y, w.z * w.z));
+    let r2 = b.radius * b.radius;
+    fms(ww, dd, wd * wd) > r2 * dd
+}
+
+impl ProbeBvh {
+    /// F-27068 / F-21427 (F-51168's walk for the segment a .. b): the box of its ends (vminfp / vmaxfp) quantized; a
+    /// header or node passes when the boxes overlap and the query's lies within it or the segment meets the node's box
+    /// out of the grid (F-99013 -> F-78852: about its middle, F-54304 answering above 0).
+    pub fn segment_polygons(&self, a: Vec3, b: Vec3, room: usize) -> Vec<u16> {
+        let q = self.quantized(vmin(a, b), vmax(a, b));
+        let d = b - a;
+        let f = |q: &[i16; 3]| Vec3::new(q[0] as f32, q[1] as f32, q[2] as f32);
+        let centre = (self.max + self.min) * 0.5;
+        let meets = |mn: &[i16; 3], mx: &[i16; 3]| {
+            let (lo, hi) = (f(mn) * self.inv + centre, f(mx) * self.inv + centre);
+            let mid = (hi + lo) * 0.5;
+            seg_box(a - mid, d, hi - mid).0 > 0
+        };
+        self.walk(|mn, mx| Self::overlaps(&q, mn, mx) && (Self::holds(&q, mn, mx) || meets(mn, mx)), room)
+    }
+}
+
+impl ProbeGrid {
+    /// F-14271: the cell at `p` (column floor(p[a0] / size) less the first, row likewise on a1), -1 off the grid.
+    fn cell_at(&self, p: Vec3) -> i32 {
+        let (a0, a1) = (self.axes.0 as usize, self.axes.1 as usize);
+        let row = floor_word(p[a1.min(2)] * self.inv).wrapping_sub(self.first_z);
+        let col = floor_word(p[a0.min(2)] * self.inv).wrapping_sub(self.first_x);
+        if col < 0 || col >= self.columns || row < 0 || row >= self.rows {
+            return -1;
+        }
+        self.columns.wrapping_mul(row).wrapping_add(col)
+    }
+
+    /// F-94746 (via F-31396): the segment's first cell - the start's, else stepping by whole cells along the axis of
+    /// the larger step (over 1e-6) up to |d| / size + 1 times until a cell of the grid; -1 none.
+    fn seg_first(&self, a: Vec3, d: Vec3) -> i32 {
+        let c = self.cell_at(a);
+        if c != -1 {
+            return c;
+        }
+        let (a0, a1) = (self.axes.0 as usize, self.axes.1 as usize);
+        let (dx, dz) = (d[a0.min(2)], d[a1.min(2)]);
+        let eps = f32::from_bits(0x3586_37BD);
+        let (n, sx, sz);
+        if !(dx.abs() < dz.abs()) && dx.abs() > eps {
+            sx = if dx > 0.0 { self.size } else { -self.size };
+            n = floor_trunc(dx.abs() / self.size);
+            sz = (dz / dx) * sx;
+        } else if dz.abs() > eps {
+            sz = if dz > 0.0 { self.size } else { -self.size };
+            n = floor_trunc(dz.abs() / self.size);
+            sx = (dx / dz) * sz;
+        } else {
+            return -1;
+        }
+        let mut p = a;
+        let mut i = 0;
+        while i < n.wrapping_add(1) {
+            p[a0.min(2)] += sx;
+            p[a1.min(2)] += sz;
+            let c = self.cell_at(p);
+            i += 1;
+            if c != -1 {
+                return c;
+            }
+        }
+        -1
+    }
+
+    /// F-40600 (via F-87746): the next cell along the segment from cell `i` - the parameter at the cell's far edge on
+    /// each axis ((x + 1) size - a, or x size - a, over d; 2 for no step), -1 when both are at least 1; the axis of the
+    /// smaller one steps (refused at the grid's edge).
+    fn seg_next(&self, i: i32, a: Vec3, d: Vec3) -> i32 {
+        let (a0, a1) = (self.axes.0 as usize, self.axes.1 as usize);
+        let row = i.wrapping_div(self.columns);
+        let mut x = i.wrapping_sub(row.wrapping_mul(self.columns)).wrapping_add(self.first_x);
+        let mut z = row.wrapping_add(self.first_z);
+        let (dx, dz) = (d[a0.min(2)], d[a1.min(2)]);
+        let (sx, sz) = (a[a0.min(2)], a[a1.min(2)]);
+        let tx = if dx > 0.0 {
+            fms(x.wrapping_add(1) as f32, self.size, sx) / dx
+        } else if dx < 0.0 {
+            fms(self.size, x as f32, sx) / dx
+        } else {
+            2.0
+        };
+        let tz = if dz > 0.0 {
+            fms(z.wrapping_add(1) as f32, self.size, sz) / dz
+        } else if dz < 0.0 {
+            fms(self.size, z as f32, sz) / dz
+        } else {
+            2.0
+        };
+        if !(tx < 1.0) && !(tz < 1.0) {
+            return -1;
+        }
+        if tx < tz {
+            if dx > 0.0 {
+                if x >= self.last_x {
+                    return -1;
+                }
+                x += 1;
+            } else {
+                if x <= self.first_x {
+                    return -1;
+                }
+                x -= 1;
+            }
+        } else if dz > 0.0 {
+            if z >= self.last_z {
+                return -1;
+            }
+            z += 1;
+        } else {
+            if z <= self.first_z {
+                return -1;
+            }
+            z -= 1;
+        }
+        (z.wrapping_sub(self.first_z)).wrapping_mul(self.columns).wrapping_sub(self.first_x).wrapping_add(x)
+    }
+}
+
+/// fctiwz of a quotient (truncated toward 0, NaN the lowest word, saturated).
+fn floor_trunc(x: f32) -> i32 {
+    if x.is_nan() {
+        i32::MIN
+    } else if x >= 2_147_483_647.0 {
+        i32::MAX
+    } else if x < -2_147_483_648.0 {
+        i32::MIN
+    } else {
+        x as i32
+    }
+}
+
+/// F-29290: the directed segment against a bound, by its type - 0 / 1 / 3 F-75650; 4 / 5 each polygon (+60 its index)
+/// by F-20854, then for 5 F-75650; 10 a cell: each polygon its BVH walk lists (F-27068 / F-21427 -> F-51168) as a
+/// triangle by F-20854 (every city polygon is one); 8 the grid: the cells along the segment (F-31396 / F-87746) with
+/// the list box the cell's (F-78191, 1e-6 wider), a cell that added records named and counted into the level, at the
+/// end the box back and F-67153; 12 each tested part the part masks let through (+4 & `types`, +0 & `include`): the ends
+/// into its frame, unless F-58997 prunes it the part by this dispatch and where that added records the level's bits,
+/// the part named (F-47011) and the commit into the composite's frame (F-77105 with 1; no records: the loop ends), back
+/// out; at the end F-67153. Answers F-37493.
+pub fn seg_dispatch(q: &mut SegQuery, b: &ProbeBound, inst: u32, include: u32, types: u32) -> bool {
+    match (&b.shape, b.kind) {
+        (ProbeShape::Prim(_), 0 | 1 | 3) => seg_prim_record(q, b, inst),
+        (ProbeShape::Poly { verts, polys, mats }, 4) => {
+            for i in 0..polys.len() {
+                q.index = i as u16;
+                seg_poly_record(q, b, verts, polys, mats, i, inst);
+            }
+        }
+        (ProbeShape::Curved { .. }, 5) => seg_prim_record(q, b, inst),
+        (ProbeShape::Composite { parts, tested, masks }, 12) => {
+            for i in 0..*tested {
+                let Some(Some((part, m))) = parts.get(i) else { continue };
+                if let Some(&(t, inc)) = masks.get(i) {
+                    if inc & types == 0 || t & include == 0 {
+                        continue;
+                    }
+                }
+                (q.a, q.b) = seg_frame(q.a, q.b, m);
+                if !seg_pruned(q, part) && seg_dispatch(q, part, inst, include, types) {
+                    q.list.level_bits |= q.list.new_bits;
+                    q.list.mark_part(i as u16);
+                    if q.list.commit(m, true) {
+                        break;
+                    }
+                }
+                (q.a, q.b) = (out_of(q.a, m), out_of(q.b, m));
+            }
+            q.list.close_level();
+        }
+        (ProbeShape::Bvh { verts, polys, mats, bvh, .. }, 10) if !verts.is_empty() => {
+            for i in bvh.segment_polygons(q.a, q.b, POLY_SCRATCH) {
+                q.index = i;
+                if (i as usize) < polys.len() {
+                    seg_poly_record(q, b, verts, polys, mats, i as usize, inst);
+                }
+            }
+        }
+        (ProbeShape::Grid(g), 8) => {
+            let d = q.b - q.a;
+            let mut i = g.seg_first(q.a, d);
+            while i != -1 {
+                if let Some(c) = g.cell(i) {
+                    (q.list.min, q.list.max) = g.cell_list_box(i);
+                    if seg_dispatch(q, c, inst, include, types) {
+                        q.list.cell_done(i as u16);
+                    }
+                }
+                i = g.seg_next(i, q.a, d);
+            }
+            q.list.grid_done();
+        }
+        _ => {}
+    }
+    q.list.any_new()
+}
+
+/// F-97077, the segment query's driver as F-57005 runs it at once (r4 = 1): one record (F-46779: +36 = 1), the
+/// material mask `mask` (+88: the block's +16 shifted by the material manager's flag shift), the culler's segment
+/// volume (F-33196: type 1, the world ends) with F-62425's masks (`filter`: include r5, types -1, states r7), the
+/// excluded list's callback (F-58895: +1664, the count +2432); per object it keeps, in the walk's order: the ends into
+/// the object's frame (F-58085), unless F-58997 prunes its bound, F-29290 on it (r6 the include, r7 -1) and where
+/// that added records the commit F-77105 with r5 = 0 - a list without records ends the walk. A hit is the record's
+/// instance word set (F-39379 reads the block's +96 + 0).
+pub fn segment_level<'a>(a: Vec3, b: Vec3, mask: u32, filter: &LevelFilter, objects: impl IntoIterator<Item = LevelObject<'a>>) -> SegQuery {
+    let vol = CullVolume::Segment { a, b };
+    let mut q = SegQuery { a, b, mask, index: 0xFFFF, list: ResultList::new(1) };
+    for o in objects {
+        if !filter.takes(&o, &vol) {
+            continue;
+        }
+        (q.a, q.b) = seg_frame(a, b, &o.m);
+        if seg_pruned(&q, o.bound) {
+            continue;
+        }
+        if seg_dispatch(&mut q, o.bound, o.inst, filter.include, u32::MAX) && q.list.commit(&o.m, false) {
+            break;
+        }
+    }
+    q
+}
+
 impl<'a> CamLevel<'a> {
     /// The city alone.
     pub fn city(city: &'a WorldCollider) -> CamLevel<'a> {
@@ -3131,7 +3779,7 @@ mod tests {
                 CullVolume::Capsule { from, dir, len, r } => {
                     assert_eq!((&x[0..3], &x[4..7], [x[8], x[9]], x[12]), (&bits(from)[..], &bits(dir)[..], [len.to_bits(), r.to_bits()], 3), "line {k}: capsule");
                 }
-                CullVolume::Point { .. } => panic!("line {k}: no point in this set"),
+                CullVolume::Point { .. } | CullVolume::Segment { .. } => panic!("line {k}: no point in this set"),
             }
             let m = [p(19), p(22), p(25), p(28)];
             let pass = instance_masks_pass(w[11], w[12], w[8], w[10], w[9], w[13], w[14]);
@@ -4068,5 +4716,164 @@ mod tests {
         }
         // (cases, sphere cases, cases blocked, records, records on the car, of them on a wheel)
         assert_eq!((cases, balls, blocked, recs, car_recs, wheel_recs), (1500, 736, 527, 1242, 1078, 238), "coverage");
+    }
+
+    /// The traffic footprint probe's segment query (tools/level_segment_reference.py -> testdata/level_segment_ref.txt): F-57005
+    /// with r4 = 1 whole on levels of the city, props, walkers and the player car's composite (60 set-ups as
+    /// level_query_car_reference.py): the list's words and the record equal to `segment_level`, except where a curved
+    /// wheel's cast (F-81943, approximate: its box) gives the record on either side - those are counted.
+    #[test]
+    fn level_segment_matches_the_original() {
+        let Some(city) = city_probe() else { return };
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let read = |p: &std::path::Path| -> Option<mcla_formats::rsc::Resource> {
+            let d = std::fs::read(p).ok()?;
+            let u32le = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+            let data = d[16..].to_vec();
+            let vs = (u32le(12) as usize).min(data.len());
+            Some(mcla_formats::rsc::Resource { rtype: u32le(4), flags: u32le(8), virtual_size: vs, physical_size: data.len() - vs, data })
+        };
+        let Some(res) = read(&std::path::Path::new(&root).join("resources/prop/0x0e66973c.r131")) else { return };
+        let types = mcla_formats::rage::fragphys::parse_frag_types(&res);
+        let fake = |_: &mcla_formats::rage::fragphys::FragBound| -> Vec<u32> { (0..256).map(|j| (j + 1) << 8).collect() };
+        let props: Vec<ProbeBound> = types.iter().map(|t| ProbeBound::of_prop(t, &fake)).collect();
+        let u = |h: &str| u32::from_str_radix(&h.replace('_', ""), 16).unwrap();
+        let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+        const INST: u32 = 0x40D0_1000;
+        let text = include_str!("../testdata/level_segment_ref.txt");
+        let mut cars: Vec<ProbeBound> = Vec::new();
+        for line in text.lines().filter(|l| l.starts_with("S ")) {
+            let (i, o) = line[2..].split_once(" -> ").unwrap();
+            let mut it = i.split(' ');
+            let name = it.next().unwrap();
+            let sw: Vec<u32> = it.map(u).collect();
+            let x: Vec<u32> = o.split(' ').map(u).collect();
+            assert_eq!(sw.len(), 8 + 4 * 23, "{name}");
+            let f = |k: usize| f32::from_bits(sw[k]);
+            let dir = std::path::Path::new(&root).join("resources/vehicle").join(name);
+            let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().map_or(false, |e| e == "r83")).collect();
+            files.sort();
+            let cc = files.iter().find_map(|p| read(p).and_then(|r| mcla_formats::rage::fragphys::car_composite(&r))).expect(name);
+            let (flag, nw) = (sw[1], sw[2] as usize);
+            assert_eq!(cc.wheel_tables.len(), nw, "{name}");
+            assert_eq!(x.len(), 14 + 16 * (nw + 1) + 14, "{name}");
+            let v = |a: [f32; 3]| Vec3::from_array(a);
+            let reshaped: Option<Vec<Vec3>> = (nw == 4).then(|| {
+                let mut p: Vec<Vec3> = cc.hull.verts.iter().map(|&a| v(a)).collect();
+                super::super::hull::reshape(&mut p, f(3), f(4), f(5), f(6), f(7));
+                p
+            });
+            let file_box = (v(cc.hull.min), v(cc.hull.max));
+            let fit_box = match (&reshaped, flag) {
+                (Some(p), 1) => {
+                    let (hi, lo) = super::super::hull::reshaped_box(p, cc.hull.margin);
+                    (lo, hi)
+                }
+                _ => file_box,
+            };
+            let mut fws = Vec::new();
+            let mut wheels = Vec::new();
+            let mut mats = vec![[v(cc.matrices[0][0]), v(cc.matrices[0][1]), v(cc.matrices[0][2]), v(cc.matrices[0][3])]];
+            for i in 0..nw {
+                let w = &sw[8 + 23 * i..8 + 23 * (i + 1)];
+                let g = |k: usize| f32::from_bits(w[k]);
+                let front = if nw == 4 { i < 2 } else { i == 0 };
+                let fw = super::super::vehsim::FitWheel { front, radius: g(0), width: g(1), extent: g(2), limit: g(3), rest: Vec3::new(g(4), g(5), g(6)), steered: false };
+                fws.push((fw, [Vec3::X, Vec3::Y, Vec3::Z]));
+                wheels.push(CarWheel { front, radius: g(0), width: g(1), materials: cc.wheel_tables[i].clone() });
+                mats.push([Vec3::new(g(7), g(8), g(9)), Vec3::new(g(11), g(12), g(13)), Vec3::new(g(15), g(16), g(17)), Vec3::new(g(19), g(20), g(21))]);
+            }
+            let fit = super::super::vehsim::fit_bound(fit_box, &fws);
+            // (the composite's words, every part's current matrix, the hull's own words)
+            assert_eq!((x[0], x[1]), (fit.radius.to_bits(), fit.radius_far.to_bits()), "{name}: radii");
+            assert_eq!([&x[2..5], &x[6..9], &x[10..13]], [&bits(fit.hi)[..], &bits(fit.lo)[..], &bits(fit.centroid)[..]], "{name}: box");
+            for (p, m) in mats.iter().enumerate() {
+                let y = &x[14 + 16 * p..30 + 16 * p];
+                assert_eq!([&y[0..3], &y[4..7], &y[8..11], &y[12..15]], [&bits(m[0])[..], &bits(m[1])[..], &bits(m[2])[..], &bits(m[3])[..]], "{name}: part {p}");
+            }
+            let b = ProbeBound::of_car(&cc.hull, reshaped.as_deref(), &wheels, &mats, &fit);
+            let h = &x[14 + 16 * (nw + 1)..];
+            let ProbeShape::Composite { parts, .. } = &b.shape else { unreachable!() };
+            let hp = &parts[0].as_ref().unwrap().0;
+            let want = [hp.radius.to_bits(), bits(hp.max)[0], bits(hp.max)[1], bits(hp.max)[2], bits(hp.min)[0], bits(hp.min)[1], bits(hp.min)[2], bits(hp.centroid)[0], bits(hp.centroid)[1], bits(hp.centroid)[2]];
+            assert_eq!([h[0], h[2], h[3], h[4], h[6], h[7], h[8], h[10], h[11], h[12]], want, "{name}: hull");
+            cars.push(b);
+        }
+        assert_eq!(cars.len(), 60);
+        let (mut cases, mut hits, mut by_kind, mut wheel_hits, mut masked, mut wheel_diff) = (0, 0, [0usize; 4], 0, 0, 0);
+        for (k, line) in text.lines().filter(|l| !l.starts_with("S ") && !l.starts_with("C ")).enumerate() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let mut groups = i.split(" | ");
+            let h: Vec<u32> = groups.next().unwrap().split_whitespace().map(u).collect();
+            let x: Vec<u32> = o.split_whitespace().map(u).collect();
+            let f = |i: usize| f32::from_bits(h[i]);
+            assert_eq!(h[0], 2, "case {k}: the segment");
+            let words: Vec<Vec<u32>> = groups.map(|g| g.split_whitespace().map(u).collect()).collect();
+            let walkers: Vec<Option<ProbeBound>> = words
+                .iter()
+                .map(|w| {
+                    (w[0] == 2).then(|| {
+                        let (r, l) = (f32::from_bits(w[1]), f32::from_bits(w[2]));
+                        let hl = l * 0.5 + r;
+                        ProbeBound {
+                            kind: 1,
+                            radius: hl,
+                            centroid: Vec3::ZERO,
+                            max: Vec3::new(r, hl, r),
+                            min: Vec3::new(-r, -hl, -r),
+                            materials: (0..64).map(|j| (j + 1) << 8).collect(),
+                            shape: ProbeShape::Prim(Primitive::Capsule { centre: Vec3::ZERO, r, len: l }),
+                        }
+                    })
+                })
+                .collect();
+            let car_inst = words.iter().position(|w| w[0] == 3).map(|n| INST + 0x100 * n as u32).unwrap_or(0);
+            let objs: Vec<LevelObject> = words
+                .iter()
+                .enumerate()
+                .map(|(n, w)| {
+                    let p = |i: usize| Vec3::new(f32::from_bits(w[i]), f32::from_bits(w[i + 1]), f32::from_bits(w[i + 2]));
+                    let bound = match w[0] {
+                        0 => &city,
+                        1 => &props[w[2] as usize],
+                        3 => &cars[w[1] as usize],
+                        _ => walkers[n].as_ref().unwrap(),
+                    };
+                    LevelObject { inst: INST + 0x100 * n as u32, state: w[3], arch_type: w[4], arch_include: w[5], m: [p(6), p(9), p(12), p(15)], bound }
+                })
+                .collect();
+            let excluded: Vec<u32> = (0..2).map(|j| if h[13 + j] < 0x100 { INST + 0x100 * h[13 + j] } else { h[13 + j] }).collect();
+            let n = (h[12] as i32).clamp(0, 2) as usize;
+            let filter = LevelFilter { include: h[10], states: h[11] & 0xFF, excluded: &excluded[..n] };
+            let q = segment_level(Vec3::new(f(3), f(4), f(5)), Vec3::new(f(6), f(7), f(8)), h[1] << 8, &filter, objs.iter().copied());
+            let l = &q.list;
+            let mut st = vec![0, l.records.len() as u32, l.done as u32, l.level as u32, l.new as u32];
+            st.extend([l.new_bits as u32, (l.new_bits >> 32) as u32, l.level_bits as u32, (l.level_bits >> 32) as u32, l.high.to_bits(), l.low.to_bits()]);
+            let r = &l.records[0];
+            let mut e = vec![r.instance];
+            for v in [r.point, r.normal, r.bound_normal] {
+                e.extend(bits(v));
+            }
+            e.extend([r.t.to_bits(), r.depth.to_bits(), r.material, r.index as u32, r.kind as u32, r.below as u32, r.part as u32]);
+            st.extend(e);
+            cases += 1;
+            // (record words: +0 the instance, +76 / +82 the part)
+            let on_wheel = |w: &[u32]| car_inst != 0 && w[11] == car_inst && w[27] != 0;
+            if x[..28] != st[..] {
+                // (a curved wheel's cast is approximate: its box)
+                assert!(on_wheel(&x) || on_wheel(&st), "case {k}: {:x?} != {:x?}", &x[..28], &st[..]);
+                wheel_diff += 1;
+                continue;
+            }
+            hits += (r.instance != 0) as usize;
+            if let Some(n) = (r.instance != 0).then(|| words.iter().enumerate().position(|(n, _)| INST + 0x100 * n as u32 == r.instance)).flatten() {
+                by_kind[words[n][0] as usize] += 1;
+            }
+            wheel_hits += on_wheel(&st) as usize;
+            masked += (h[1] != 512) as usize;
+        }
+        // (cases, cases with every word equal and a hit, their records by object - city, prop, walker, car -, of them on a
+        // wheel, equal cases with another material mask, cases differing with the record on a wheel on either side)
+        assert_eq!((cases, hits, by_kind, wheel_hits, masked, wheel_diff), (4000, 488, [127, 103, 50, 208], 0, 1425, 111), "coverage");
     }
 }
