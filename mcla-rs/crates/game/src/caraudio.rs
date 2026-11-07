@@ -1607,7 +1607,8 @@ pub fn car_in(c: &CarInstance) -> CarIn {
         hyd_on: vs.is_some_and(|v| v.hyd.on),
         ang_vel: st.ang_vel,
         air_time: st.airborne_time,
-        damaged_out: st.damage >= 0.999,
+        // chassis +592 bit 0x04: F-12032's test, the full MaxDamage (drivers.rs sets the bit the same way)
+        damaged_out: crate::police::damaged_out(st.damage),
         back: st.rot * Vec3::Z,
         wiped: st.upset > 0.0 || vs.is_some_and(|v| v.wipe.is_some()),
         two_wheels: vs.is_some_and(|v| v.two != 0) && !c.model.bike,
