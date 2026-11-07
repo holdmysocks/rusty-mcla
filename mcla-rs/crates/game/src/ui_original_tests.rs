@@ -339,3 +339,19 @@ fn wager_range_matches_the_original() {
     }
     assert_eq!(n, 4000);
 }
+
+/// The menu slider's left / right (F-59022) run offline on 6,000 cases (tools/ui_slider_reference.py): handled or
+/// not, the value after, the sound played and the change delegate, all equal to `game::slider_event`.
+#[test]
+fn slider_event_matches_the_original() {
+    let mut n = 0;
+    for l in include_str!("testdata/ui_slider_ref.txt").lines() {
+        let (case, out) = l.split_once(" -> ").unwrap();
+        let c: Vec<i32> = case.split(' ').map(|v| v.parse().unwrap()).collect();
+        let o: Vec<&str> = out.split(' ').collect();
+        let (ret, v, snd, dl) = crate::game::slider_event(c[1], c[2], c[3], c[4], c[5] != 0, c[0] as u32, c[6] != 0);
+        assert_eq!((ret as u32, v, snd.unwrap_or("-"), dl as u32), (o[0].parse().unwrap(), o[1].parse().unwrap(), o[2], o[3].parse().unwrap()), "{l}");
+        n += 1;
+    }
+    assert_eq!(n, 6000);
+}

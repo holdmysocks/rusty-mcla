@@ -2785,11 +2785,13 @@ impl Game {
         (((price / 20) as f32 * damage.clamp(0.0, 1.0)) as i64).max(125)
     }
 
-    /// What can be wagered for a race of difficulty `d` (0 easy .. 2 hard): what such a race
-    /// is worth to the player's car (the amounts on the original's form come out of its
-    /// scripts' variables; this is the game's own prize formula).
+    /// What can be wagered for a race of difficulty `d` (0 easy .. 2 hard) on the port's own
+    /// fallback list: the middle amount of the original's form (F-86598's slider money, a MEDIUM
+    /// race's money for the car's class x 1.0, then F-19872's range by the difficulty - `wager_range`),
+    /// the same number the hangout's form starts on.
     pub fn wager_amount(&self, d: usize) -> i64 {
-        (crate::rewards::race_money(self.rep, crate::rewards::perf_class(self.player_perf()), d, 10.0) as i64).max(100)
+        let base = (crate::rewards::race_money(self.rep, crate::rewards::perf_class(self.player_perf()), 1, 10.0) * 1.0f32) as i32;
+        wager_range(base, d as u32).2 as i64
     }
 
     /// A hookman's class restriction the player's car does not meet (the mission's id names
@@ -13880,11 +13882,22 @@ impl Game {
                     self.hangout_stake = 5;
                 }
             } else {
-                if left {
-                    self.hangout_stake = self.hangout_stake.saturating_sub(1);
-                }
-                if right {
-                    self.hangout_stake = (self.hangout_stake + 1).min(10);
+                // (the slider, F-59022 events 51 / 53 left, 52 / 54 right: the value -/+ the step held
+                // to its 11 places - no wrap, the ctor F-39683 clears it -; a step plays the slider's
+                // +248 / +252 sounds, the menu table's UI_MENU_NAV_DOWN left and UI_MENU_NAV_UP right,
+                // a press at an end UI_MENU_ERROR and nothing moves; the form's close F-59190 hands
+                // the value to the script as nWagerAmount = `stake_of`)
+                let base = (crate::rewards::race_money(self.rep, class, 1, 10.0) * 1.0f32) as i32;
+                let (lo, hi, mid, step) = wager_range(base, self.hangout_diff as u32);
+                for (go, ev) in [(left, 51u32), (right, 52)] {
+                    if go {
+                        let v = mid + (self.hangout_stake as i32 - 5) * step;
+                        let (_, to, snd, _) = slider_event(lo, hi, v, step, false, ev, true);
+                        self.opt_x.s23b.ui_obj = snd;
+                        if step > 0 {
+                            self.hangout_stake = ((to - lo) / step).clamp(0, 10) as usize;
+                        }
+                    }
                 }
             }
             let (amount, lo, hi) = stake_of(self, self.hangout_diff, self.hangout_stake);
@@ -15959,6 +15972,35 @@ pub fn garage_uid(g: usize) -> u32 {
 /// for difficulty 0 / 2 / 3 (1 and any other value: none), each an f32 product, cut to an int and down to a multiple
 /// of 20 - the amount; the step is (amount - 20 x trunc(trunc(amount x -0.8) / -20)) / 25 x 5 and the range the
 /// amount -/+ 5 steps. Returns (lo, hi, amount, step). Run offline: tools/ui_wager_amount_reference.py.
+/// A menu slider's left / right (F-59022): events 51 / 53 take the step off the value, 52 / 54 add it;
+/// with `wrap` (+224) the value goes round lo..hi, else it is held to lo..hi. Nothing happens (false)
+/// unless the slider is live (its vt+72 and vt+60 gates) and the event is one of the four. A move plays
+/// the slider's +248 (left) / +252 (right) sound - UI_MENU_NAV_DOWN / UI_MENU_NAV_UP as the ctor F-39683
+/// sets them - and calls the change delegate; no move plays UI_MENU_ERROR. Returns (handled, value,
+/// sound, delegate called).
+pub fn slider_event(lo: i32, hi: i32, v: i32, step: i32, wrap: bool, ev: u32, live: bool) -> (bool, i32, Option<&'static str>, bool) {
+    if !live || !(51..=54).contains(&ev) {
+        return (false, v, None, false);
+    }
+    let down = ev == 51 || ev == 53;
+    let mut t = if down { v.wrapping_sub(step) } else { v.wrapping_add(step) };
+    let to = if wrap {
+        if down && t < lo {
+            t = hi.wrapping_sub(lo).wrapping_add(t).wrapping_add(1);
+        }
+        let n = hi.wrapping_sub(lo).wrapping_add(1);
+        t.wrapping_sub(lo).checked_rem(n).unwrap_or(0).wrapping_add(lo)
+    } else {
+        let t = if t >= hi { hi } else { t };
+        if t > lo { t } else { lo }
+    };
+    if to == v {
+        (true, v, Some("UI_MENU_ERROR"), false)
+    } else {
+        (true, to, Some(if down { "UI_MENU_NAV_DOWN" } else { "UI_MENU_NAV_UP" }), true)
+    }
+}
+
 pub fn wager_range(base: i32, d: u32) -> (i32, i32, i32, i32) {
     let cut = |v: f32| if v.is_nan() { i32::MIN } else { v as i32 };
     let mut v = base as f32 * 1.4f32;
