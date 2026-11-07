@@ -726,16 +726,39 @@ pub fn leaned(rows: &[Vec3; 3], axis: Vec3, angle: f32) -> [Vec3; 3] {
 /// How far a wheel is pressed in as the axle reads it (F-48387): within the travel, less
 /// the offset.
 pub fn axle_disp(comp: f32, travel_extent: f32, travel_limit: f32, offset: f32) -> f32 {
+    wheel_comp(comp, travel_extent, travel_limit) - offset
+}
+
+/// F-92300: the compression +496 held in [-TravelExtent, TravelLimit] by two fsel (a NaN gives -TravelExtent, and
+/// limits the wrong way round give TravelLimit, where `f32::clamp` would panic).
+pub fn wheel_comp(comp: f32, travel_extent: f32, travel_limit: f32) -> f32 {
     let low = -travel_extent;
     let a = if comp - low >= 0.0 { comp } else { low };
-    let b = if a - travel_limit >= 0.0 { travel_limit } else { a };
-    b - offset
+    if a - travel_limit >= 0.0 { travel_limit } else { a }
 }
 
 #[cfg(test)]
 mod tests {
     /// F-89809 run offline (tools/stop_rate_reference.py): 6,000 cases with zeros, equal ends, opposite speeds, NaN
     /// and infinities - every word equal (a NaN as a NaN: the harness's x86 default NaN is not the console's).
+    /// F-92300 and F-48387 run offline (tools/wheel_comp_reference.py): 5,000 wheels, limits the wrong way round, NaN
+    /// and infinities included - every word equal (a NaN as a NaN).
+    #[test]
+    fn wheel_comp_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let nan = |x: u32| if f32::from_bits(x).is_nan() { 0x7fc0_0000 } else { x };
+        let mut n = 0;
+        for line in include_str!("../testdata/wheel_comp_ref.txt").lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let c: Vec<f32> = case.split(' ').map(|x| f32::from_bits(h(x))).collect();
+            let w: Vec<u32> = want.split(' ').map(h).collect();
+            let got = [super::wheel_comp(c[0], c[1], c[2]).to_bits(), super::axle_disp(c[0], c[1], c[2], c[3]).to_bits()];
+            assert_eq!(got.map(nan), [nan(w[0]), nan(w[1])], "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 5000);
+    }
+
     #[test]
     fn stop_rate_matches_the_original() {
         let h = |x: &str| u32::from_str_radix(x, 16).unwrap();

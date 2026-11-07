@@ -1,7 +1,7 @@
 //! The tyres' particle effects of every car on the original's simulation (player, racers): the
 //! "tire particles" table `$/tune/rmptfx/tireptx` (12 rows of 4 effects), chosen per wheel by the
 //! ground's material (`ptxindex`, `ptxthreshold`), the slide, the burnout and the road's wetness,
-//! with the effects' evolution values - `sub_82351A70` / `sub_82748C48` / `sub_82748910`.
+//! with the effects' evolution values - `F-67671` / `F-42446` / `F-63975`.
 //! Rule: `docs/reference/map/tireptx_rule.md`.
 
 use crate::particles::Particles;
@@ -37,12 +37,12 @@ pub struct TyreFx {
     mats: HashMap<u8, ([i16; 2], [f32; 2])>,
     /// per car (its index and model, to notice another car in the slot): four states
     cars: HashMap<usize, (usize, [State; 4])>,
-    /// the road's wetness (0x8287E130), eased to the weather's at dt / 5 a frame (`sub_822E8BA8`)
+    /// the road's wetness (0x8287E130), eased to the weather's at dt / 5 a frame (`F-18159`)
     pub wet: f32,
 }
 
 /// The effect list's own names: the table's names are looked up as effect rules
-/// (`sub_821c9790`); one that is not in MC4.r107 (`test_smile`) gives none.
+/// (`F-58929`); one that is not in MC4.r107 (`test_smile`) gives none.
 fn rule(fx: &Particles, name: &str) -> Option<u32> {
     let h = joaat(name);
     (!name.eq_ignore_ascii_case("none") && fx.has_effect(h)).then_some(h)
@@ -151,13 +151,13 @@ impl TyreFx {
         }
     }
 
-    /// `sub_82748C48` for one wheel.
+    /// `F-42446` for one wheel.
     fn decide(&self, s: &mut State, w: &crate::physics::vehsim::WheelSim, wt: &mcla_formats::rage::simtune::WheelTune, flag_a: bool, drive: u8, vel: Vec3, dt: f32) {
         // (a wheel without a material - in the air - leaves its effect as it is)
         let Some(m) = w.ground.and_then(|g| self.mats.get(&g)) else { return };
         let (ix, thr) = *m;
-        // the suspension's compression over SuspensionLimit (sub_82564E28; 0 under rest)
-        let cc = w.comp.clamp(-wt.travel_extent, wt.travel_limit);
+        // the suspension's compression over SuspensionLimit (F-92300; 0 under rest)
+        let cc = crate::physics::exact::wheel_comp(w.comp, wt.travel_extent, wt.travel_limit);
         let comp = if cc < 0.0 || wt.suspension_limit == 0.0 { 0.0 } else { cc / wt.suspension_limit };
         let (slide, on, vlong) = (w.slide, w.record, w.velocity_long);
         let mut rule = None;

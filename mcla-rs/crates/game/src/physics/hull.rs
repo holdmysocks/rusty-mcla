@@ -2066,6 +2066,27 @@ mod tests {
     use super::*;
     use crate::physics::collision::SectorMesh;
 
+    /// The vector unit's cosine F-72452 and arc cosine F-49700 run offline (tools/vec_trig_reference.py): 8,008 of
+    /// each over turns, small angles, the ends of [-1, 1] and zero - every word equal (a NaN as a NaN).
+    #[test]
+    fn vec_trig_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let nan = |x: u32| if f32::from_bits(x).is_nan() { 0x7fc0_0000 } else { x };
+        let (mut bad, mut n) = (Vec::new(), 0);
+        for line in include_str!("../testdata/vec_trig_ref.txt").lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let (k, x) = case.split_once(' ').unwrap();
+            let x = f32::from_bits(h(x));
+            let got = if k == "cos" { vec_cos(x) } else { vec_acos(x) }.to_bits();
+            if nan(got) != nan(h(want)) {
+                bad.push(format!("{line}: {got:08x}"));
+            }
+            n += 1;
+        }
+        assert!(bad.is_empty(), "{} of {n}: {:?}", bad.len(), &bad[..bad.len().min(8)]);
+        assert_eq!(n, 16016);
+    }
+
     fn data() -> std::path::PathBuf {
         std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR"))
     }
