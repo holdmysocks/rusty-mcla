@@ -1892,7 +1892,9 @@ fn break_strength(t: &FragType, obj: &Obj, comp: &[Vec3]) -> Option<(f32, u8)> {
 
 /// The original's sort of an island's contact list (STLport std::sort, F-52683: the introsort loop
 /// F-98871 with the partition F-69639 while a range holds more than 16, then insertion sorts
-/// F-35665 / F-66880): ascending by `key`, stable up to 16 elements, above that as its steps fall.
+/// F-35665 / F-66880): ascending by `key`, stable up to 16 elements, above that as its steps fall. The loop's depth
+/// limit is twice floor(log2 n); a range it reaches is heap sorted (the partial sort F-76221 over the whole range:
+/// make_heap F-28981, sort_heap F-78034, both through adjust_heap F-49539 and push_heap F-57527).
 pub fn stl_sort<T: Clone>(a: &mut Vec<T>, key: impl Fn(&T) -> i64) {
     fn insertion<T: Clone>(a: &mut [T], lo: usize, hi: usize, key: &impl Fn(&T) -> i64) {
         for i in lo + 1..hi {
@@ -1912,8 +1914,52 @@ pub fn stl_sort<T: Clone>(a: &mut Vec<T>, key: impl Fn(&T) -> i64) {
             }
         }
     }
-    fn quick<T: Clone>(a: &mut [T], first: usize, mut last: usize, key: &impl Fn(&T) -> i64) {
+    fn adjust<T: Clone>(b: &mut [T], mut hole: usize, bottom: usize, v: T, key: &impl Fn(&T) -> i64) {
+        let top = hole;
+        let mut i = 2 * hole + 2;
+        while i < bottom {
+            if key(&b[i]) < key(&b[i - 1]) {
+                i -= 1;
+            }
+            b[hole] = b[i].clone();
+            hole = i;
+            i = 2 * i + 2;
+        }
+        if i == bottom {
+            b[hole] = b[bottom - 1].clone();
+            hole = bottom - 1;
+        }
+        while top < hole {
+            let p = (hole - 1) / 2;
+            if !(key(&b[p]) < key(&v)) {
+                break;
+            }
+            b[hole] = b[p].clone();
+            hole = p;
+        }
+        b[hole] = v;
+    }
+    fn heap<T: Clone>(b: &mut [T], key: &impl Fn(&T) -> i64) {
+        let n = b.len();
+        if n >= 2 {
+            for h in (0..=(n - 2) / 2).rev() {
+                let v = b[h].clone();
+                adjust(b, h, n, v, key);
+            }
+        }
+        for len in (2..=n).rev() {
+            let v = b[len - 1].clone();
+            b[len - 1] = b[0].clone();
+            adjust(b, 0, len - 1, v, key);
+        }
+    }
+    fn quick<T: Clone>(a: &mut [T], first: usize, mut last: usize, mut depth: u32, key: &impl Fn(&T) -> i64) {
         while last - first > 16 {
+            if depth == 0 {
+                heap(&mut a[first..last], key);
+                return;
+            }
+            depth -= 1;
             let n = last - first;
             let (ka, kb, kc) = (key(&a[first]), key(&a[first + n / 2]), key(&a[last - 1]));
             let m = if ka < kb {
@@ -1941,13 +1987,13 @@ pub fn stl_sort<T: Clone>(a: &mut Vec<T>, key: impl Fn(&T) -> i64) {
                 a.swap(f, l);
                 f += 1;
             }
-            quick(a, f, last, key);
+            quick(a, f, last, depth, key);
             last = f;
         }
     }
     let n = a.len();
     if n > 16 {
-        quick(a, 0, n, &key);
+        quick(a, 0, n, 2 * n.ilog2(), &key);
         insertion(a, 0, 16, &key);
         // (the rest without the guard: the least stands in the first sixteen)
         for i in 16..n {
@@ -5065,6 +5111,29 @@ pub fn hand_over_pieces(world: &LooseWorld, cars: &mut [CarLevel]) {
 mod piece_tests {
     use super::*;
     use crate::physics::collision::{SectorMesh, WorldCollider};
+
+    /// The island lists' STLport sort F-52683 / F-18034 run offline whole (tools/stl_sort_reference.py): 3,068 lists
+    /// of 0 .. 1,200 contacts by key A and by key B, with few or many equal keys, sorted, reversed, organ pipes and
+    /// median-of-three killers that reach the depth limit's heap sort - the order the port leaves equals the original's.
+    #[test]
+    fn stl_sort_matches_the_original() {
+        let text = include_str!("../testdata/stl_sort_ref.txt");
+        let mut n = 0;
+        for line in text.lines() {
+            let (case, want) = line.split_once(" ->").unwrap();
+            let mut w = case.split_whitespace();
+            w.next();
+            let len: usize = w.next().unwrap().parse().unwrap();
+            let keys: Vec<i64> = w.map(|x| i64::from_str_radix(x, 16).unwrap()).collect();
+            assert_eq!(keys.len(), len);
+            let want: Vec<usize> = want.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            let mut got: Vec<usize> = (0..len).collect();
+            stl_sort(&mut got, |&i| keys[i]);
+            assert_eq!(got, want, "{line:.80}");
+            n += 1;
+        }
+        assert_eq!(n, 3068);
+    }
 
     /// The bumper's type as F-48443 makes it.
     #[test]
