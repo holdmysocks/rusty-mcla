@@ -105,10 +105,11 @@ impl DrvIn {
             idle: vs.map_or(0.0, |v| v.still_timer),
             cine_cam: cutscene,
             // (+592: 0x1 deactivated, 0x2 the grid hold, 0x4 damaged out, 0x10 wiped out - the player's from main.rs's
-            // crash state, another car's from its damage at the limit and its upset)
+            // crash state, another car's from its damage at the limit and its upset; 0x4 is set by F-70073, which F-69183
+            // calls on !(damage +36 < MaxDamage +24) - F-12032's test, `police::damaged_out`)
             w592: input.deactivated as u32
                 | (input.hold as u32) << 1
-                | w.crash.map_or(((st.damage >= 0.999) as u32) << 2 | ((st.upset > 0.0 || vs.is_some_and(|v| v.wipe.is_some())) as u32) << 4, |c| (c.0 & 0x14) as u32),
+                | w.crash.map_or((crate::police::damaged_out(st.damage) as u32) << 2 | ((st.upset > 0.0 || vs.is_some_and(|v| v.wipe.is_some())) as u32) << 4, |c| (c.0 & 0x14) as u32),
             handbrake: if input.handbrake { 1.0 } else { 0.0 },
             burn: vs.map_or(0.0, |v| v.burn),
             throttle: input.throttle,
