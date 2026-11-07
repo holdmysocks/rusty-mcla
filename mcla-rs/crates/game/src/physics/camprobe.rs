@@ -1876,6 +1876,16 @@ pub struct ProbePolygon {
     pub beside: [u16; 3],
 }
 
+/// A wheel part of the car's composite for [`ProbeBound::of_car`]: which axle (the curved bound's past sizes,
+/// `gjk::wheel_shape`), the set-up's tyre and the curved bound's material table (+208).
+#[derive(Clone, Debug)]
+pub struct CarWheel {
+    pub front: bool,
+    pub radius: f32,
+    pub width: f32,
+    pub materials: Vec<u32>,
+}
+
 /// A bound as F-35029 / F-75667 read it: its type byte (+4), its radius (+8) and centroid (+48) (the sphere's part
 /// prune), its box (+16 max, +32 min, the capsule's part prune), what its material call (vtable +48) answers for each
 /// index, and its shape.
@@ -1999,6 +2009,57 @@ impl ProbeBound {
             materials: Vec::new(),
             shape: ProbeShape::Composite { parts, tested: t.tested as usize, masks: t.part_masks.clone() },
         }
+    }
+
+    /// The player car's composite bound (type 12) as the running game has it after a set-up: part 0 the hull with its
+    /// vertices as the reshape F-89464 leaves them (`reshaped`: `hull::reshape`; None for a motorcycle, which keeps the
+    /// file's) - its polygons' areas then recomputed (F-83274, `poly_area`), its box (F-90660, `hull::reshaped_box`) and
+    /// sphere (F-96346, `hull::hull_sphere`) -, the file's polygons, neighbours and material indices, its material call
+    /// F-10817 answering the table +208; then each wheel's curved bound (type 5) resized to the set-up's tyre (F-96106 /
+    /// F-63967: `vehsim::wheel_bound`, `gjk::wheel_shape`) with its table; every part's current matrix (`matrices`: the
+    /// hull's as the file has it, a wheel's as `gjk::part_matrix` or the fit leaves it); the composite's own box,
+    /// centroid and radius as the wheels' fit left them (`vehsim::fit_bound`). The parts are all tested (+146) and
+    /// unmasked (+148 0). docs/reference/people/traffic_drive_rule.md 9.17.
+    pub fn of_car(hull: &mcla_formats::rage::fragphys::FragBound, reshaped: Option<&[Vec3]>, wheels: &[CarWheel], matrices: &[[Vec3; 4]], fit: &super::vehsim::FitBound) -> ProbeBound {
+        let v = |x: [f32; 3]| Vec3::from_array(x);
+        let file: Vec<Vec3> = hull.verts.iter().map(|&x| v(x)).collect();
+        let verts = reshaped.map(|r| r.to_vec()).unwrap_or(file);
+        let polys = (0..hull.tris.len())
+            .map(|i| {
+                let t = hull.tris[i];
+                let area = if reshaped.is_some() { poly_area(verts[t[0] as usize], verts[t[1] as usize], verts[t[2] as usize]) } else { hull.areas[i] };
+                ProbePolygon { area, verts: t, beside: hull.beside[i] }
+            })
+            .collect();
+        let (radius, centroid, max, min) = if reshaped.is_some() {
+            let (c, r, _) = super::hull::hull_sphere(&verts);
+            let (hi, lo) = super::hull::reshaped_box(&verts, hull.margin);
+            (r, c, hi, lo)
+        } else {
+            (hull.radius, v(hull.centroid), v(hull.max), v(hull.min))
+        };
+        let mut parts = vec![Some((
+            ProbeBound { kind: 4, radius, centroid, max, min, materials: hull.mat_table.clone(), shape: ProbeShape::Poly { verts, polys, mats: hull.poly_mats.clone() } },
+            matrices[0],
+        ))];
+        for (i, w) in wheels.iter().enumerate() {
+            let (e, r) = super::vehsim::wheel_bound(w.front, w.radius, w.width);
+            let core = gjk::WheelCore::of(&gjk::wheel_shape(w.front, w.radius, w.width), Vec3::ZERO, [Vec3::X, Vec3::Y, Vec3::Z], w.radius, w.width);
+            parts.push(Some((
+                ProbeBound {
+                    kind: 5,
+                    radius: r,
+                    centroid: Vec3::ZERO,
+                    max: e,
+                    min: -e,
+                    materials: w.materials.clone(),
+                    shape: ProbeShape::Curved { wheel: core, centroid: Vec3::ZERO, margin: gjk::WHEEL_MARGIN },
+                },
+                matrices[i + 1],
+            )));
+        }
+        let tested = parts.len();
+        ProbeBound { kind: 12, radius: fit.radius, centroid: fit.centroid, max: fit.hi, min: fit.lo, materials: Vec::new(), shape: ProbeShape::Composite { parts, tested, masks: Vec::new() } }
     }
 
     /// The city's grid bound (type 8) as the dispatches read it from the city's collision file: each cell (type 10)
@@ -3695,5 +3756,164 @@ mod tests {
         // (sphere cases, cases blocked, objects by kind - city, props, walkers -, cases excluding one of their objects,
         // records)
         assert_eq!((balls, blocked, kinds, excl_hit, recs), (992, 729, [1174, 2935, 1632], 1295, 953), "coverage");
+    }
+
+    /// The two level queries against the player car's composite as the running game makes it (tools/level_query_car_reference.py
+    /// -> testdata/level_query_car_ref.txt): 60 set-ups of the vp_* cars (the fit F-55382 at 0.3 / 0.1, then the set-up's fit
+    /// and the reshape F-31335 / F-89464 in either order), each composite's words checked against `vehsim::fit_bound`,
+    /// `hull::reshape` / `reshaped_box` / `hull_sphere`; then F-66549 / F-27454 whole on levels holding the car (type 5 and 4
+    /// parts with their real vtables and material call F-10817) among the city, props and walkers: every answer, list and
+    /// record equal to `ProbeBound::of_car` in `ball_level` / `capsule_level`.
+    #[test]
+    fn level_query_car_matches_the_original() {
+        let Some(city) = city_probe() else { return };
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let read = |p: &std::path::Path| -> Option<mcla_formats::rsc::Resource> {
+            let d = std::fs::read(p).ok()?;
+            let u32le = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+            let data = d[16..].to_vec();
+            let vs = (u32le(12) as usize).min(data.len());
+            Some(mcla_formats::rsc::Resource { rtype: u32le(4), flags: u32le(8), virtual_size: vs, physical_size: data.len() - vs, data })
+        };
+        let Some(res) = read(&std::path::Path::new(&root).join("resources/prop/0x0e66973c.r131")) else { return };
+        let types = mcla_formats::rage::fragphys::parse_frag_types(&res);
+        let fake = |_: &mcla_formats::rage::fragphys::FragBound| -> Vec<u32> { (0..256).map(|j| (j + 1) << 8).collect() };
+        let props: Vec<ProbeBound> = types.iter().map(|t| ProbeBound::of_prop(t, &fake)).collect();
+        let u = |h: &str| u32::from_str_radix(&h.replace('_', ""), 16).unwrap();
+        let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+        const INST: u32 = 0x40D0_1000;
+        let text = include_str!("../testdata/level_query_car_ref.txt");
+        let mut cars: Vec<ProbeBound> = Vec::new();
+        for line in text.lines().filter(|l| l.starts_with("S ")) {
+            let (i, o) = line[2..].split_once(" -> ").unwrap();
+            let mut it = i.split(' ');
+            let name = it.next().unwrap();
+            let sw: Vec<u32> = it.map(u).collect();
+            let x: Vec<u32> = o.split(' ').map(u).collect();
+            assert_eq!(sw.len(), 8 + 4 * 23, "{name}");
+            let f = |k: usize| f32::from_bits(sw[k]);
+            let dir = std::path::Path::new(&root).join("resources/vehicle").join(name);
+            let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().map_or(false, |e| e == "r83")).collect();
+            files.sort();
+            let cc = files.iter().find_map(|p| read(p).and_then(|r| mcla_formats::rage::fragphys::car_composite(&r))).expect(name);
+            let (flag, nw) = (sw[1], sw[2] as usize);
+            assert_eq!(cc.wheel_tables.len(), nw, "{name}");
+            assert_eq!(x.len(), 14 + 16 * (nw + 1) + 14, "{name}");
+            let v = |a: [f32; 3]| Vec3::from_array(a);
+            let reshaped: Option<Vec<Vec3>> = (nw == 4).then(|| {
+                let mut p: Vec<Vec3> = cc.hull.verts.iter().map(|&a| v(a)).collect();
+                super::super::hull::reshape(&mut p, f(3), f(4), f(5), f(6), f(7));
+                p
+            });
+            let file_box = (v(cc.hull.min), v(cc.hull.max));
+            let fit_box = match (&reshaped, flag) {
+                (Some(p), 1) => {
+                    let (hi, lo) = super::super::hull::reshaped_box(p, cc.hull.margin);
+                    (lo, hi)
+                }
+                _ => file_box,
+            };
+            let mut fws = Vec::new();
+            let mut wheels = Vec::new();
+            let mut mats = vec![[v(cc.matrices[0][0]), v(cc.matrices[0][1]), v(cc.matrices[0][2]), v(cc.matrices[0][3])]];
+            for i in 0..nw {
+                let w = &sw[8 + 23 * i..8 + 23 * (i + 1)];
+                let g = |k: usize| f32::from_bits(w[k]);
+                let front = if nw == 4 { i < 2 } else { i == 0 };
+                let fw = super::super::vehsim::FitWheel { front, radius: g(0), width: g(1), extent: g(2), limit: g(3), rest: Vec3::new(g(4), g(5), g(6)), steered: false };
+                fws.push((fw, [Vec3::X, Vec3::Y, Vec3::Z]));
+                wheels.push(CarWheel { front, radius: g(0), width: g(1), materials: cc.wheel_tables[i].clone() });
+                mats.push([Vec3::new(g(7), g(8), g(9)), Vec3::new(g(11), g(12), g(13)), Vec3::new(g(15), g(16), g(17)), Vec3::new(g(19), g(20), g(21))]);
+            }
+            let fit = super::super::vehsim::fit_bound(fit_box, &fws);
+            // (the composite's words, every part's current matrix, the hull's own words)
+            assert_eq!((x[0], x[1]), (fit.radius.to_bits(), fit.radius_far.to_bits()), "{name}: radii");
+            assert_eq!([&x[2..5], &x[6..9], &x[10..13]], [&bits(fit.hi)[..], &bits(fit.lo)[..], &bits(fit.centroid)[..]], "{name}: box");
+            for (p, m) in mats.iter().enumerate() {
+                let y = &x[14 + 16 * p..30 + 16 * p];
+                assert_eq!([&y[0..3], &y[4..7], &y[8..11], &y[12..15]], [&bits(m[0])[..], &bits(m[1])[..], &bits(m[2])[..], &bits(m[3])[..]], "{name}: part {p}");
+            }
+            let b = ProbeBound::of_car(&cc.hull, reshaped.as_deref(), &wheels, &mats, &fit);
+            let h = &x[14 + 16 * (nw + 1)..];
+            let ProbeShape::Composite { parts, .. } = &b.shape else { unreachable!() };
+            let hp = &parts[0].as_ref().unwrap().0;
+            let want = [hp.radius.to_bits(), bits(hp.max)[0], bits(hp.max)[1], bits(hp.max)[2], bits(hp.min)[0], bits(hp.min)[1], bits(hp.min)[2], bits(hp.centroid)[0], bits(hp.centroid)[1], bits(hp.centroid)[2]];
+            assert_eq!([h[0], h[2], h[3], h[4], h[6], h[7], h[8], h[10], h[11], h[12]], want, "{name}: hull");
+            cars.push(b);
+        }
+        assert_eq!(cars.len(), 60);
+        let (mut balls, mut blocked, mut car_recs, mut wheel_recs, mut recs, mut cases) = (0, 0, 0, 0, 0, 0);
+        for (k, line) in text.lines().filter(|l| !l.starts_with("S ")).enumerate() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let mut groups = i.split(" | ");
+            let h: Vec<u32> = groups.next().unwrap().split_whitespace().map(u).collect();
+            let x: Vec<u32> = o.split_whitespace().map(u).collect();
+            let f = |i: usize| f32::from_bits(h[i]);
+            let ball = h[0] != 0;
+            let words: Vec<Vec<u32>> = groups.map(|g| g.split_whitespace().map(u).collect()).collect();
+            let walkers: Vec<Option<ProbeBound>> = words
+                .iter()
+                .map(|w| {
+                    (w[0] == 2).then(|| {
+                        let (r, l) = (f32::from_bits(w[1]), f32::from_bits(w[2]));
+                        let hl = l * 0.5 + r;
+                        ProbeBound {
+                            kind: 1,
+                            radius: hl,
+                            centroid: Vec3::ZERO,
+                            max: Vec3::new(r, hl, r),
+                            min: Vec3::new(-r, -hl, -r),
+                            materials: (0..64).map(|j| (j + 1) << 8).collect(),
+                            shape: ProbeShape::Prim(Primitive::Capsule { centre: Vec3::ZERO, r, len: l }),
+                        }
+                    })
+                })
+                .collect();
+            let car_inst = words.iter().position(|w| w[0] == 3).map(|n| INST + 0x100 * n as u32).unwrap();
+            let objs: Vec<LevelObject> = words
+                .iter()
+                .enumerate()
+                .map(|(n, w)| {
+                    let p = |i: usize| Vec3::new(f32::from_bits(w[i]), f32::from_bits(w[i + 1]), f32::from_bits(w[i + 2]));
+                    let bound = match w[0] {
+                        0 => &city,
+                        1 => &props[w[2] as usize],
+                        3 => &cars[w[1] as usize],
+                        _ => walkers[n].as_ref().unwrap(),
+                    };
+                    LevelObject { inst: INST + 0x100 * n as u32, state: w[3], arch_type: w[4], arch_include: w[5], m: [p(6), p(9), p(12), p(15)], bound }
+                })
+                .collect();
+            let excluded: Vec<u32> = (0..2).map(|j| if h[13 + j] < 0x100 { INST + 0x100 * h[13 + j] } else { h[13 + j] }).collect();
+            let n = (h[12] as i32).clamp(0, 2) as usize;
+            let filter = LevelFilter { include: h[10], states: h[11] & 0xFF, excluded: &excluded[..n] };
+            let mask = 640 << crate::tcp_rail::MATERIAL_SHIFT;
+            let (answer, l) = if ball {
+                balls += 1;
+                let q = ball_level(Vec3::new(f(3), f(4), f(5)), f(9), mask, 12, [0; 3], &filter, objs.iter().copied());
+                (q.list.done as u32, q.list)
+            } else {
+                (0, capsule_level(Vec3::new(f(3), f(4), f(5)), Vec3::new(f(6), f(7), f(8)), f(9), mask, 1, h[1], &filter, objs.iter().copied()).list)
+            };
+            let mut st = vec![answer, l.records.len() as u32, l.done as u32, l.level as u32, l.new as u32];
+            st.extend([l.new_bits as u32, (l.new_bits >> 32) as u32, l.level_bits as u32, (l.level_bits >> 32) as u32, l.high.to_bits(), l.low.to_bits()]);
+            assert_eq!(&x[..11], &st[..], "case {k}: answer and list");
+            for (j, r) in l.records.iter().enumerate() {
+                let y = &x[11 + 17 * j..28 + 17 * j];
+                let mut e = vec![r.instance];
+                for v in [r.point, r.normal, r.bound_normal] {
+                    e.extend(bits(v));
+                }
+                e.extend([r.t.to_bits(), r.depth.to_bits(), r.material, r.index as u32, r.kind as u32, r.below as u32, r.part as u32]);
+                assert_eq!(y, &e[..], "case {k}: record {j}");
+                recs += (r.instance != 0) as usize;
+                car_recs += (r.instance == car_inst) as usize;
+                wheel_recs += (r.instance == car_inst && r.part != 0) as usize;
+            }
+            blocked += (l.records[0].instance != 0) as usize;
+            cases += 1;
+        }
+        // (cases, sphere cases, cases blocked, records, records on the car, of them on a wheel)
+        assert_eq!((cases, balls, blocked, recs, car_recs, wheel_recs), (1500, 736, 527, 1242, 1078, 238), "coverage");
     }
 }

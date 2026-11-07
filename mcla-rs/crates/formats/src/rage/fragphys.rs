@@ -401,6 +401,44 @@ pub fn parse_frag_instances(res: &Resource) -> Vec<FragInstance> {
     out
 }
 
+/// A car's composite bound (type 12) as its fragment file (`.r83`) has it: part 0 the hull (a polyhedron, with its
+/// polygons, neighbours, material indices +216 and table +208), then 2 or 4 curved wheel bounds (type 5), each with its
+/// material table (+208, +220 words); every part's current matrix (+0x84, rows and the place).
+#[derive(Debug, Clone)]
+pub struct CarComposite {
+    pub hull: FragBound,
+    pub wheel_tables: Vec<Vec<u32>>,
+    pub matrices: Vec<[[f32; 3]; 4]>,
+}
+
+/// The first composite of the file whose parts are a hull and 2 or 4 curved wheel bounds.
+pub fn car_composite(res: &Resource) -> Option<CarComposite> {
+    let rd = Rd::new(res);
+    let virt = |o: usize| -> Option<usize> { let w = rd.u32(o); (w >> 28 == 5).then(|| (w & 0x0fff_ffff) as usize).filter(|&p| p < res.virtual_size) };
+    let mut o = 0;
+    while o + 0xa0 <= res.virtual_size {
+        let n = rd.u16(o + 0x92) as usize;
+        if rd.u8(o + 4) == 12 && (n == 3 || n == 5) {
+            if let (Some(list), Some(mats)) = (virt(o + 0x80), virt(o + 0x84)) {
+                let parts: Vec<Option<usize>> = (0..n).map(|i| virt(list + 4 * i)).collect();
+                if parts.iter().all(|p| p.is_some()) {
+                    let parts: Vec<usize> = parts.into_iter().map(|p| p.unwrap()).collect();
+                    if rd.u8(parts[0] + 4) == 4 && parts[1..].iter().all(|&p| rd.u8(p + 4) == 5) {
+                        let wheel_tables = parts[1..]
+                            .iter()
+                            .map(|&p| virt(p + 208).map(|t| (0..rd.u8(p + 220) as usize).map(|k| rd.u32(t + 4 * k)).collect()).unwrap_or_default())
+                            .collect();
+                        let matrices = (0..n).map(|i| [v3(&rd, mats + 64 * i), v3(&rd, mats + 64 * i + 16), v3(&rd, mats + 64 * i + 32), v3(&rd, mats + 64 * i + 48)]).collect();
+                        return Some(CarComposite { hull: bound_at(&rd, parts[0]), wheel_tables, matrices });
+                    }
+                }
+            }
+        }
+        o += 16;
+    }
+    None
+}
+
 #[cfg(test)]
 mod event_tests {
     use super::*;
