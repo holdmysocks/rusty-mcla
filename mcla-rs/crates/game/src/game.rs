@@ -1257,6 +1257,10 @@ pub struct Game {
     pub perf_shop: Option<usize>,
     /// parts were bought: the car has to be re-tuned
     pub perf_dirty: bool,
+    /// the performance shop's copy of the stages as they were (the garage's +49592 block, F-37077 / F-10450)
+    pub perf_undo: Option<Vec<u8>>,
+    /// the performance shop's box that is up: 1 checkout, 2 undo, 3 over budget (`perf_check_cart`)
+    pub perf_confirm: u8,
 }
 
 /// How a bought rim is remembered in `parts_owned` (MODS.md M-6 item 5): a disc rim by the game's rim-table index, as
@@ -1745,6 +1749,8 @@ impl Game {
             parts_owned: Default::default(),
             perf_shop: None,
             perf_dirty: false,
+            perf_undo: None,
+            perf_confirm: 0,
             borrowed: false,
             mission_diff: 0,
         }
@@ -2798,8 +2804,10 @@ impl Game {
         let rival = self.career.hookman_mission().map(|m| m.to_ascii_uppercase());
         for (id, text) in self.career.restrictions().into_iter().filter(|(id, _)| rival.as_deref() == Some(id.as_str())) {
             let by_class = ["ACLASS", "BCLASS", "CCLASS", "DCLASS"].iter().find(|g| id.contains(*g));
+            // (a class mission: Racer_GetPerformanceClass, F-69503 of the car's performance value at its
+            // upgrade percentage - the class the shop, the GPS map and MANAGE VEHICLES show, not the catalogue's)
             let ok = if let Some(g) = by_class {
-                info.group.to_ascii_uppercase().starts_with(&g[..1])
+                self.car_class_letter(self.current_car, false) == g.as_bytes()[0] as char
             } else if id.contains("MOTORCYCLE") {
                 info.class.eq_ignore_ascii_case("SPORTBIKE")
             } else if let Some(c) = ["MUSCLE", "TUNER", "EXOTIC", "LUXURY", "SUV"].iter().find(|c| id.contains(*c)) {
@@ -2891,6 +2899,112 @@ impl Game {
             self.dirty = true;
             self.mc4_perf_bought(&self.dir_name(i), &stages, spent);
         }
+    }
+
+    /// Which of part `k`'s three boxes (stock, stage 1, stage 2) the cursor can stand on - the list builder F-41623
+    /// enables them by the class's unlocked stages U (F-16396: 0, 1 or 2) and the model's owned stage O (F-32441):
+    /// stock always, stage 1 with U >= 1 or O >= 1 or for parts 0 / 6 / 12 (exhaust, nitrous, tyres), stage 2 with
+    /// U >= 2 or O >= 2; nothing at all with U = 0 and O = 0 on the other parts.
+    pub fn perf_boxes(&self, i: usize, k: usize) -> [bool; 3] {
+        let u = (self.rep >= self.perf_rep(i, 1)) as u8 + (self.rep >= self.perf_rep(i, 2)) as u8;
+        let o = self.perf_owned(&self.dir_name(i).to_ascii_lowercase(), k);
+        let starter = matches!(k, 0 | 6 | 12);
+        if u == 0 && o == 0 && !starter {
+            return [false; 3];
+        }
+        [true, u >= 1 || o >= 1 || starter, u >= 2 || o >= 2]
+    }
+
+    /// What box `b` of part `k` costs in the shop's total: the list's price of the stage, 0 for stock, for a stage
+    /// the model owns (F-41623) and under the free-parts flag.
+    pub fn perf_box_price(&self, list: &[(String, i64, i64)], k: usize, b: u8) -> i64 {
+        match (b, list.get(k)) {
+            (_, _) if self.parts_free() => 0,
+            (1, Some(r)) => r.1,
+            (2, Some(r)) => r.2,
+            _ => 0,
+        }
+    }
+
+    /// The shop's total (F-54140): the sum of every row's price at the box it stands on - the fitted stage, as
+    /// ChangePerformance (F-71685) fits the box the cursor goes to.
+    pub fn perf_total(&self, i: usize) -> i64 {
+        let list = self.perf_list(i);
+        self.perf_stages(i).iter().enumerate().take(list.len()).map(|(k, b)| self.perf_box_price(&list, k, *b)).sum()
+    }
+
+    /// LEFT / RIGHT on part `k` (PerformancePart.sc's three states, getRelativeWrap): the next box the cursor can
+    /// stand on, round the three, and ChangePerformance (F-71685) fits its stage at once - stock included.
+    pub fn perf_step(&mut self, k: usize, right: bool) {
+        let i = self.current_car;
+        let ok = self.perf_boxes(i, k);
+        let mut stages = self.perf_stages(i);
+        let Some(&have) = stages.get(k) else { return };
+        let mut b = have.min(2) as usize;
+        for _ in 0..3 {
+            b = if right { (b + 1) % 3 } else { (b + 2) % 3 };
+            if ok[b] {
+                break;
+            }
+        }
+        if !ok[b] || b as u8 == have {
+            return;
+        }
+        stages[k] = b as u8;
+        self.perf_parts.insert(self.dir_name(i).to_ascii_lowercase(), stages);
+        self.perf_dirty = true;
+        self.dirty = true;
+    }
+
+    /// ACCEPT (true) / BACK (false) in the shop, CheckPerformanceCart (F-37077): with a total of 0 what is fitted
+    /// stays (the copy takes it) and the shop closes; over budget (F-54140: the money short of the total, no free
+    /// flag) the G_PerformanceOverBudget box; else ACCEPT the checkout box, BACK the undo box.
+    pub fn perf_check_cart(&mut self, accept: bool) {
+        let total = self.perf_total(self.current_car);
+        if total == 0 {
+            self.perf_undo = None;
+            self.perf_shop = None;
+            return;
+        }
+        let def = |t: &str, d: &str, o: Vec<(&str, &str)>| crate::flash_ui::MessageBoxDef { title: t.into(), description: d.into(), options: o.into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect() };
+        let (box_def, kind) = if self.money < total && !self.parts_free() {
+            // (OK stays; UNDO AND EXIT is the box's answer that acts)
+            (def("G_PurchaseError", "G_YouDontHaveEnoughMoney", vec![("ok", "Common_Ok"), ("undo_yes", "Perf_OverBudget_UndoAndExit")]), 3)
+        } else if accept {
+            (def("G_Checkout", "G_DoYouWantToCheckout", vec![("checkout_yes", "Common_Yes"), ("checkout_no", "Common_No")]), 1)
+        } else {
+            (def("G_Warning", "G_LeavingWillUndoAllChanges_AreYouSure", vec![("undo_yes", "Common_Yes"), ("undo_no", "Common_No")]), 2)
+        };
+        self.message_box = Some((box_def, 0, MenuAction::None));
+        self.perf_confirm = kind;
+    }
+
+    /// YES in the shop's boxes: the checkout (SavePerformanceShopChanges, F-68300: the total charged unless the
+    /// parts are free, the fitted stages the model's, F-69428) or UNDO (UndoPerformanceShopChanges, F-10450: the
+    /// stages back as they were); either way the shop closes (stackPop).
+    pub fn perf_answer(&mut self, kind: u8) {
+        let i = self.current_car;
+        let key = self.dir_name(i).to_ascii_lowercase();
+        match kind {
+            1 => {
+                let total = self.perf_total(i);
+                let stages = self.perf_stages(i);
+                if !self.parts_free() {
+                    self.money -= total;
+                }
+                self.mc4_perf_bought(&self.dir_name(i), &stages, if self.parts_free() { 0 } else { total });
+            }
+            2 | 3 => {
+                if let Some(old) = self.perf_undo.clone() {
+                    self.perf_parts.insert(key, old);
+                }
+            }
+            _ => return,
+        }
+        self.perf_undo = None;
+        self.perf_dirty = true;
+        self.dirty = true;
+        self.perf_shop = None;
     }
 
     pub fn buy_perf_part(&mut self, k: usize) -> bool {
@@ -3117,10 +3231,22 @@ impl Game {
 
     /// Performance value of the player's car with its upgrades.
     pub fn player_perf(&self) -> f32 {
-        let i = self.current_car;
+        self.car_perf(self.current_car, false)
+    }
+
+    /// The performance class letter of car `i` (A .. D): F-69503 of `car_perf`. MANAGE VEHICLES and the
+    /// showroom show it in their "<class> / <group>" line (F-80069, which recounts the record's upgrade
+    /// percentage first, F-76051); the showroom's record is the table row's own, without parts (`stock`).
+    pub fn car_class_letter(&self, i: usize, stock: bool) -> char {
+        ['A', 'B', 'C', 'D'][crate::rewards::perf_class(self.car_perf(i, stock)).min(3)]
+    }
+
+    /// Performance value of car `i` (F-92180): its sample at its upgrade percentage, or at 0 for `stock`.
+    pub fn car_perf(&self, i: usize, stock: bool) -> f32 {
         // (the car's sample at its upgrade percentage as the original counts it - twelve parts,
         // a motorcycle's five: F-76051, `mc4_upgrade_share`)
-        self.samples.value(&self.model_name(i), self.mc4_upgrade_share(i)).unwrap_or_else(|| {
+        let share = if stock { 0.0 } else { self.mc4_upgrade_share(i) };
+        self.samples.value(&self.model_name(i), share).unwrap_or_else(|| {
             // (cars without a sample: the middle of their group)
             match self.catalog.get(&self.dir_name(i)).map(|c| c.group.clone()).unwrap_or_default().chars().next() {
                 Some('A') | Some('a') => 0.7,
@@ -5165,6 +5291,9 @@ impl Game {
             }
             // (YES in the garage's REPAIR box: `game.repairCar()`, then on)
             self.mc4_repair_finish();
+            // (YES in the performance shop's CHECKOUT / UNDO boxes, UNDO AND EXIT in OVER BUDGET: `perf_answer`)
+            let kind = std::mem::take(&mut self.perf_confirm);
+            self.perf_answer(kind);
             // (YES in REMOVE RACE FROM FAVORITES)
             if let Some(id) = self.fav_remove_pending.take() {
                 self.remove_favourite(&id);
@@ -6830,6 +6959,18 @@ impl Game {
                     sel = (sel + 1) % n;
                 }
                 self.perf_shop = Some(sel);
+                // (the copy the shop can go back to, taken as it opens: MatchPerformanceParts / EnterPerformance)
+                if self.perf_undo.is_none() {
+                    self.perf_undo = Some(stages.clone());
+                }
+                // (a box of the shop's answered NO / OK, or closed: nothing happens - `perf_answer` takes a YES)
+                if self.message_box.is_none() {
+                    self.perf_confirm = 0;
+                }
+                if (left || right) && sel < list.len() {
+                    self.perf_step(sel, right);
+                }
+                let stages = self.perf_stages(i);
                 let movie_drawn = self.perf_shop_movie(ctx, &list, &stages, sel);
                 if movie_drawn {
                     // The dyno graph: the movie only says where it goes (`dynopos`); the game
@@ -6900,7 +7041,6 @@ impl Game {
                     if pointer.0.map_or(false, |p| r.contains(p)) && pointer.1 {
                         sel = k;
                         self.perf_shop = Some(k);
-                        buy = true;
                     }
                     let selected = k == sel;
                     if selected {
@@ -6912,29 +7052,24 @@ impl Game {
                     let have = stages.get(k).copied().unwrap_or(0);
                     let fitted = ["STOCK", "STAGE 1", "STAGE 2"][have.min(2) as usize];
                     self.text(&painter, egui::pos2(x0 + 450.0 * sc, r.center().y), egui::Align2::LEFT_CENTER, fitted, 14.0 * sc, col);
-                    // what the next stage costs, or what it waits for
-                    let (next, vcol) = if have >= 2 {
-                        ("FITTED".to_string(), if selected { col } else { egui::Color32::from_gray(140) })
-                    } else {
-                        let need = self.perf_rep(i, have + 1);
-                        let price = if have == 0 { *p1 } else { *p2 };
-                        if self.rep < need {
-                            (format!("LOCKED  {} REP", need), if selected { col } else { egui::Color32::from_rgb(255, 90, 70) })
-                        } else {
-                            (format!("STAGE {}   ${}", have + 1, price), if selected { col } else if self.money >= price { accent } else { egui::Color32::from_gray(140) })
-                        }
-                    };
+                    // what the fitted stage costs in the total (owned and stock: ---)
+                    let _ = (p1, p2, accent);
+                    let price = self.perf_box_price(&list, k, have);
+                    let (next, vcol) = (if price > 0 { format!("${}", price) } else { "---".to_string() }, if selected { col } else { egui::Color32::from_gray(170) });
                     self.text(&painter, egui::pos2(r.right() - 28.0 * sc, r.center().y), egui::Align2::RIGHT_CENTER, &next, 14.0 * sc, vcol);
                 }
-                self.text(&painter, egui::pos2(tx, panel.bottom() - 46.0 * sc), egui::Align2::LEFT_TOP, "ENTER  BUY THE NEXT STAGE      ESC  BACK", 11.0 * sc, egui::Color32::from_gray(150));
+                self.text(&painter, egui::pos2(tx, panel.bottom() - 46.0 * sc), egui::Align2::LEFT_TOP, &format!("LEFT / RIGHT  STAGE      ENTER  ACCEPT      ESC  BACK      TOTAL: ${}", self.perf_total(i)), 11.0 * sc, egui::Color32::from_gray(150));
                 }
-                if enter || buy {
-                    self.buy_perf_part(sel);
+                let _ = buy;
+                if enter {
+                    self.perf_check_cart(true);
                 }
                 // AUTO UPGRADE (X, reference `n13`): every part to the last stage the career has
                 // opened and the money reaches, one after the other down the list
                 if self.flash_garage.is_some() && (self.x_hit(ctx) || std::env::var("MCLA_AUTO_UPGRADE").is_ok()) {
                     self.auto_upgrade();
+                    // (the port's AUTO UPGRADE pays at once: what it fitted is not undone by BACK)
+                    self.perf_undo = Some(self.perf_stages(i));
                 }
                 // CHANGE BRAND (LB / RB): the highlighted part's next maker, round its list
                 if self.flash_garage.is_some() && (tab_prev || tab_next) && sel < 13 {
@@ -6945,8 +7080,8 @@ impl Game {
                         self.dirty = true;
                     }
                 }
-                if back {
-                    self.perf_shop = None;
+                if back && self.perf_shop.is_some() {
+                    self.perf_check_cart(false);
                 }
             }
             Mode::Garage => {
@@ -8282,12 +8417,9 @@ impl Game {
                                     // the class the car races in now, and the group that unlocks it (D..A = 1..4)
                                     let group = c.as_ref().map(|c| c.unlock_group.clone()).unwrap_or_default();
                                     let gn = match group.chars().next().map(|x| x.to_ascii_uppercase()) { Some('A') => 4, Some('B') => 3, Some('C') => 2, _ => 1 };
-                                    let class = c.as_ref().and_then(|c| c.group.chars().next()).unwrap_or('D').to_ascii_uppercase();
-                                    // (approx.) upgrades move a car up the classes ("vehicles can be upgraded or
-                                    // downgraded to match a performance class"): the fully upgraded R8 of the 100 %
-                                    // save is A-CLASS where the catalogue has it in B (reference `g_mv0`). The game's
-                                    // rule was not read: a car with every part at its last stage counts one class up.
-                                    let class = if !showroom && self.perf_frac(i) > 0.999 { match class { 'D' => 'C', 'C' => 'B', _ => 'A' } } else { class };
+                                    // (F-80069: the performance class of the record - the garage slot's with its parts, the
+                                    // showroom's the table row's own record - the class the shop and the GPS map show)
+                                    let class = self.car_class_letter(i, showroom);
                                     // (fs_text3 is the class's identifier, F-31112, shown through the string tables:
                                     // SportBike reads SPORTS BIKE (reference `g_mv1`), Cop POLICE (the police pack))
                                     let kind = c.as_ref().map(|c| self.career.strings.get(&c.class).filter(|v| !v.contains('<')).map(|v| v.to_uppercase()).unwrap_or_else(|| c.class.to_uppercase())).unwrap_or_default();
@@ -12445,7 +12577,10 @@ impl Game {
         let mut rows = Vec::new();
         for (k, (id, p1, p2)) in list.iter().enumerate() {
             let have = stages.get(k).copied().unwrap_or(0).min(2);
-            let price = if have >= 2 || have + 1 >= unlocked || self.parts_free() { "---".to_string() } else { format!("${}", if have == 0 { *p1 } else { *p2 }) };
+            // (the row's price is the box it stands on, F-71685; owned, stock or free: 0, which reads ---)
+            let _ = (p1, p2);
+            let p = self.perf_box_price(list, k, have);
+            let price = if p > 0 { format!("${}", p) } else { "---".to_string() };
             details.push((have, unlocked, price, brand_at(k)));
             rows.push(MenuRow { label: self.career.strings.get(id).map(|s| s.to_uppercase()).unwrap_or_else(|| id.trim_start_matches("gp_").to_uppercase()), value: String::new(), enabled: true, part: None });
         }
@@ -12460,7 +12595,7 @@ impl Game {
             None => [[0.0, 0.0, 100.0]; 3],
         };
         let page = MenuPage {
-            layout: MenuLayout::PerfShop { details, class: crate::rewards::perf_class(self.player_perf()) as i32, total: 0, meters },
+            layout: MenuLayout::PerfShop { details, class: crate::rewards::perf_class(self.player_perf()) as i32, total: self.perf_total(i), meters },
             icon: 10,
             title: st("G_Performance", "PERFORMANCE SHOP"),
             rows,
@@ -15503,6 +15638,80 @@ mod tests {
         ];
         for (id, kind) in pairs {
             assert_eq!(super::restriction_box(id), (format!("VEHICLE_{kind}_RESTRICTION"), format!("{id}_RESTRICTION")), "{id}");
+        }
+    }
+
+    /// GitHub #42: a car is in the class of its performance value at its upgrade percentage (F-69503 / F-92180) in the
+    /// garage's line (F-80069), the shop, the GPS map and the class missions alike - a 240SX (catalogue D) tuned into
+    /// C reads C everywhere; the showroom's line is the stock record's.
+    #[test]
+    fn a_tuned_car_is_in_its_performance_class_everywhere() {
+        let data = std::path::Path::new("D:/MCLA/extracted/cache");
+        if !data.join("resources/vehicle/configs/vp_nsn_240sx_98.xcc").exists() {
+            return;
+        }
+        let mut g = Game::new(vec![std::path::PathBuf::from("v").join("vp_nsn_240sx_98")], 0);
+        g.data_dir = data.to_string_lossy().into();
+        g.catalog = crate::catalog::Catalog::load(&g.data_dir);
+        g.samples = crate::rewards::Samples::load(&g.data_dir);
+        assert!(g.catalog.get("vp_nsn_240sx_98").map_or(false, |c| c.group.starts_with('D')));
+        assert_eq!(g.car_class_letter(0, false), 'D');
+        // (every part at stage 2: the sample's top, well into C)
+        g.perf_parts.insert("vp_nsn_240sx_98".into(), vec![2; 13]);
+        let p = g.car_perf(0, false);
+        let tuned = ['A', 'B', 'C', 'D'][crate::rewards::perf_class(p)];
+        assert_ne!(tuned, 'D', "perf {p}");
+        assert_eq!((g.car_class_letter(0, false), g.car_class_letter(0, true)), (tuned, 'D'), "perf {p}");
+    }
+
+    /// GitHub #42: the performance shop as the original's cart (F-71685 / F-54140 / F-37077 / F-68300 / F-10450): LEFT
+    /// / RIGHT fit a box at once, stock included; with a total of 0 ACCEPT keeps it, a priced box asks for the
+    /// checkout, which pays and owns; BACK asks to undo, which puts the stages back.
+    #[test]
+    fn the_performance_shop_goes_back_to_stock() {
+        let mut g = Game::new(vec![std::path::PathBuf::from("v").join("vp_nsn_240sx_98")], 0);
+        g.perf_prices.insert('D', (0..13).map(|k| (format!("gp_{k}"), 100 + k as i64, 200 + k as i64)).collect());
+        g.money = 10_000;
+        let key = "vp_nsn_240sx_98".to_string();
+        // (a model that owns stage 2 of every part, fitted: the screenshot's rows)
+        g.parts_owned.insert(key.clone(), (0..13).flat_map(|k| [format!("performance:{}", k * 3 + 1), format!("performance:{}", k * 3 + 2)]).collect());
+        g.perf_parts.insert(key.clone(), vec![2; 13]);
+        g.perf_shop = Some(0);
+        g.perf_undo = Some(g.perf_stages(0));
+        assert_eq!(g.perf_boxes(0, 1), [true, true, true]);
+        g.perf_step(1, true);
+        assert_eq!(g.perf_stages(0)[1], 0, "RIGHT from stage 2 wraps to stock");
+        assert_eq!(g.perf_total(0), 0);
+        g.perf_check_cart(true);
+        assert!(g.perf_shop.is_none() && g.message_box.is_none());
+        assert_eq!((g.perf_stages(0)[1], g.money), (0, 10_000), "stock is kept, nothing paid");
+        // (a stage the model does not own: the checkout box, YES pays and owns it)
+        g.parts_owned.insert(key.clone(), Vec::new());
+        g.perf_parts.insert(key.clone(), vec![0; 13]);
+        g.perf_shop = Some(0);
+        g.perf_undo = Some(g.perf_stages(0));
+        let ok = g.perf_boxes(0, 0);
+        if ok[1] {
+            g.perf_step(0, true);
+            assert_eq!(g.perf_total(0), 100);
+            g.perf_check_cart(true);
+            assert_eq!((g.perf_confirm, g.message_box.as_ref().map(|b| b.0.title.clone())), (1, Some("G_Checkout".to_string())));
+            g.message_box = None;
+            let k = std::mem::take(&mut g.perf_confirm);
+            g.perf_answer(k);
+            assert_eq!((g.money, g.perf_owned(&key, 0), g.perf_shop), (9_900, 1, None));
+            // (BACK with a priced box: the undo box, YES puts the stages back)
+            g.perf_shop = Some(0);
+            g.perf_undo = Some(g.perf_stages(0));
+            g.perf_step(0, true);
+            if g.perf_stages(0)[0] == 2 {
+                g.perf_check_cart(false);
+                assert_eq!(g.perf_confirm, 2);
+                g.message_box = None;
+                let k = std::mem::take(&mut g.perf_confirm);
+            g.perf_answer(k);
+                assert_eq!((g.perf_stages(0)[0], g.money), (1, 9_900));
+            }
         }
     }
 
