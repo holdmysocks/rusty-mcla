@@ -568,13 +568,21 @@ impl Occluder {
         !(dx * dx + dz * dz > range * range)
     }
 
-    /// The plane through three points as F-78843 makes it: `n = normalize((b - a) x (c - a))`, the
-    /// offset `n . a`; a zero normal stays zero. Returned in the port's form (`n . p + w`, w = -offset).
+    /// The plane through three points as F-78843 makes it, in its arithmetic (each step rounded to f32):
+    /// `n = -((c - a) x (b - a))` (the products, then their difference negated: an exact zero is -0), `s = n . n`, the
+    /// estimate `y = 1 / sqrt(s)` and one Newton step `y + (1 - s y y) (y / 2)`, `n y`; the offset `n . a` as
+    /// `a.x n.x + (a.z n.z + a.y n.y)` with fused steps. Returned in the port's form (`n . p + w`, w = -offset).
     fn plane(a: Vec3, b: Vec3, c: Vec3) -> Vec4 {
-        let n = (b - a).cross(c - a);
-        let l = n.length();
-        let n = if l > 0.0 && l.is_finite() { n / l } else { Vec3::ZERO };
-        n.extend(-n.dot(a))
+        let (u, w) = (b - a, c - a);
+        let n = Vec3::new(-(w.y * u.z - w.z * u.y), -(w.z * u.x - w.x * u.z), -(w.x * u.y - w.y * u.x));
+        let s = n.z * n.z + (n.y * n.y + n.x * n.x);
+        let y = 1.0 / s.sqrt();
+        // (the select against the image's zero vector: only an infinite s makes y 0)
+        let y = if y == 0.0 { 0.0 } else { y };
+        let y = (1.0 - s * (y * y)) * (0.5 * y) + y;
+        let n = n * y;
+        let fma = |p: f32, q: f32, r: f32| (p as f64 * q as f64 + r as f64) as f32;
+        n.extend(-fma(a.x, n.x, fma(a.z, n.z, a.y * n.y)))
     }
 
     /// The planes behind which nothing can be seen from `eye` (`n . p + w <= 0` behind), the original's
@@ -1109,5 +1117,45 @@ mod tests {
             off += act.iter().filter(|&&a| a == 0).count();
         }
         println!("{views} views, {vols} volumes, {off} switched off, all as the original's");
+    }
+
+    /// The volume of one occluder against the original's F-62084 run offline (tools/occluder_volume_reference.py: the
+    /// city's occluders after F-45813 set their side directions, eyes around each one, near a corner, inside and about the
+    /// range; the view's clip planes zero, so no frustum part acts): used or not, the plane count and every plane's four
+    /// floats bit for bit.
+    #[test]
+    fn volume_matches_the_original() {
+        let Ok(text) = std::fs::read_to_string("D:/MCLA/extracted/cache/city/sc/city.occluder") else { return };
+        let o = Occluders::parse(&text).unwrap();
+        let (mut cases, mut used, mut planes, mut nan) = (0, 0, 0, 0);
+        for l in include_str!("testdata/occluder_volume_ref.txt").lines() {
+            let w: Vec<&str> = l.split(' ').collect();
+            let hex = |s: &str| u32::from_str_radix(s, 16).unwrap();
+            let fi: usize = w[1].parse().unwrap();
+            let eye = Vec3::new(f32::from_bits(hex(w[2])), f32::from_bits(hex(w[3])), f32::from_bits(hex(w[4])));
+            let (want_used, n): (u32, usize) = (w[5].parse().unwrap(), w[6].parse().unwrap());
+            let occ = &o.list[o.entries[fi].body.expect("a body") as usize];
+            let got = if occ.in_range(eye, RANGE * RANGE_SCALE) { occ.volume(eye, PUSH, None) } else { None };
+            assert_eq!(got.is_some() as u32, want_used, "{l}");
+            if let Some(v) = got {
+                assert_eq!(v.len(), n, "{l}");
+                for (k, p) in v.iter().enumerate() {
+                    let want: Vec<u32> = (0..4).map(|j| hex(w[7 + 4 * k + j])).collect();
+                    let mine = [p.x, p.y, p.z, -p.w];
+                    // (a polygon of no area: NaN in both, the port's with the sign its negation gives - no test can
+                    // tell them apart, every compare with either is false)
+                    if mine.iter().all(|f| f.is_nan()) && want.iter().all(|&b| f32::from_bits(b).is_nan()) {
+                        nan += 1;
+                        continue;
+                    }
+                    assert_eq!(mine.map(f32::to_bits), [want[0], want[1], want[2], want[3]], "plane {k}: {l}");
+                }
+                used += 1;
+                planes += v.len();
+            }
+            cases += 1;
+        }
+        println!("{cases} cases, {used} used, {planes} planes ({nan} NaN in both), all as the original's");
+        assert!(cases > 12000);
     }
 }
