@@ -1246,7 +1246,7 @@ fn vs_body(in: VsIn) -> VsOut {
             // (the programs' o3 / o5 / o7: the floor term h and the car lights at the vertex, with the skinned normal
             // normalised - character_programs_rule.md section 3)
             let fl = obj.area_b[3];
-            o.cvl = vec4<f32>(ch_vlights(o.wpos, o.normal, obj.interior[4].x > 8.5), clamp(dot(o.wpos, fl.xyz) - fl.w, 0.0, 1.0));
+            o.cvl = vec4<f32>(ch_vlights(o.wpos, o.normal, obj.interior[4].x > 8.5), ch_floor(o.wpos, fl));
         }
         o.uv1.x = 0.0;
         o.uv2.y = 0.0;
@@ -1807,6 +1807,12 @@ fn ch_vlights(pw: vec3<f32>, n: vec3<f32>, arm: bool) -> vec3<f32> {
     return ch_screen(gauge, neon);
 }
 
+// The vertex programs' floor term: h = sat(dot(Pw, floorPlaneEq.xyz) - floorPlaneEq.w) (c214; the driver's car's floor, F-42959),
+// the share of the ambient the character gets (o3). Checked with ch_vlights against the programs (drivers.rs cabin_tests).
+fn ch_floor(pw: vec3<f32>, fl: vec4<f32>) -> f32 {
+    return clamp(dot(pw, fl.xyz) - fl.w, 0.0, 1.0);
+}
+
 // The program's own normal-map rebuild: (2 a - 1) x mod and (2 b - 1) x mod along T and B, z from
 // the rest - Character family: map .y / .w; teeth: .x / .w.
 fn ch_nm(nn: vec3<f32>, t: vec3<f32>, b: vec3<f32>, x: f32, y: f32, m: f32) -> vec3<f32> {
@@ -1842,7 +1848,7 @@ fn char_shade(fx: u32, pw: vec3<f32>, nv: vec3<f32>, tf: vec4<f32>, vcol: vec4<f
     // (MCLA_DEBUG_VIEW=764: the floor term and the car lights per pixel, as before 2026-11-06)
     let px_old = g.params.w > 763.5 && g.params.w < 764.5;
     let fl = obj.area_b[3];
-    let h = select(cvl.w, clamp(dot(pw, fl.xyz) - fl.w, 0.0, 1.0), px_old);
+    let h = select(cvl.w, ch_floor(pw, fl), px_old);
     let l0 = ch_light(0, pw);
     let l1 = ch_light(1, pw);
     let l2 = ch_light(2, pw);

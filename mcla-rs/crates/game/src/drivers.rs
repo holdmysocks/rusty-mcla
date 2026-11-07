@@ -2067,6 +2067,123 @@ mod cabin_tests {
         (a - Vec3::from(b)).abs().max_element() < e
     }
 
+    /// The car's lights and floor on a driver as the GPU works them out: city.wgsl's own `ch_vlights` and `ch_floor`
+    /// (taken out of the file the game draws with, the object packed as skin.rs packs a driver's car) against the
+    /// character vertex programs' exports, run on the emulated microcode (tools/car_lights_vs_reference.py: 600 cases of
+    /// VSSkinned / VSSkinned_Bump / VSSkinned of _normalmap and the three static programs; the program's own world place
+    /// o2 and normal o0, its vertex lights o5 / o7 and its o3.w = h / 0.66). Skipped without a GPU adapter.
+    #[test]
+    fn car_lights_per_vertex_match_the_programs() {
+        let src = include_str!("render/city.wgsl");
+        let take = |name: &str| {
+            let i = src.find(&format!("fn {name}(")).unwrap();
+            let j = src[i..].find("\n}\n").unwrap();
+            src[i..i + j + 2].to_string()
+        };
+        let wgsl = format!(
+            "struct Obj {{ lamp_a: array<vec4<f32>, 19>, }}\nstruct G {{ params: vec4<f32>, }}\nvar<private> obj: Obj;\nvar<private> g: G;\n\
+             {}\n{}\n{}\n\
+             @group(0) @binding(0) var<storage, read> cases: array<vec4<f32>>;\n\
+             @group(0) @binding(1) var<storage, read_write> outv: array<vec4<f32>>;\n\
+             @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id: vec3<u32>) {{\n\
+               let i = id.x; if (i >= arrayLength(&outv)) {{ return; }}\n\
+               let b = i * 8u;\n\
+               obj.lamp_a[14] = vec4<f32>(cases[b].xyz, 1.0);\n\
+               obj.lamp_a[15] = vec4<f32>(cases[b + 1u].xyz, 1.0);\n\
+               obj.lamp_a[16] = vec4<f32>(cases[b + 2u].xyz, 0.0);\n\
+               obj.lamp_a[17] = vec4<f32>(cases[b + 3u].xyz, 1.0);\n\
+               obj.lamp_a[18] = vec4<f32>(cases[b + 4u].xyz, 1.0);\n\
+               g.params = vec4<f32>(0.0);\n\
+               let pw = cases[b + 6u].xyz;\n\
+               outv[i] = vec4<f32>(ch_vlights(pw, cases[b + 7u].xyz, cases[b + 6u].w > 0.5), ch_floor(pw, cases[b + 5u]));\n\
+             }}\n",
+            take("ch_screen"),
+            take("ch_vlights"),
+            take("ch_floor")
+        );
+        // (effect prog arm | c209 c210 c211 c212 c213 c214 | pw n | vlights h)
+        let rows: Vec<(String, Vec<f32>)> = include_str!("testdata/car_lights_vs_ref.txt")
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+            .map(|l| {
+                let f: Vec<&str> = l.split_whitespace().collect();
+                (format!("{} #{}", f[0], f[1]), f[2..].iter().map(|x| x.parse().unwrap()).collect())
+            })
+            .collect();
+        assert_eq!(rows.len(), 600);
+        let mut cases = Vec::<f32>::new();
+        for (_, v) in &rows {
+            // (v: arm, 6 x 4 constants, pw 3, n 3, vlights 3, h)
+            cases.extend_from_slice(&v[1..25]);
+            cases.extend_from_slice(&[v[25], v[26], v[27], v[0]]);
+            cases.extend_from_slice(&[v[28], v[29], v[30], 0.0]);
+        }
+        let Some(out) = pollster::block_on(run_compute(&wgsl, &cases, rows.len())) else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let (mut worst_l, mut worst_h, mut lit, mut mid) = (0.0f32, 0.0f32, 0, 0);
+        for (k, (name, v)) in rows.iter().enumerate() {
+            let (want, h) = ([v[31], v[32], v[33]], v[34]);
+            let got = &out[k * 4..k * 4 + 4];
+            for c in 0..3 {
+                worst_l = worst_l.max((got[c] - want[c]).abs() / want[c].abs().max(1.0));
+            }
+            worst_h = worst_h.max((got[3] - h).abs());
+            lit += want.iter().any(|x| *x > 1e-6) as usize;
+            mid += (h > 0.0 && h < 1.0) as usize;
+            assert!(
+                (0..3).all(|c| (got[c] - want[c]).abs() <= 1e-6 * want[c].abs().max(1.0)) && (got[3] - h).abs() <= 1e-6,
+                "{name} case {k}: port {got:?}, program {want:?} h {h}"
+            );
+        }
+        eprintln!("600 cases: {lit} lit, {mid} with 0 < h < 1; worst vlights {worst_l:.2e}, h {worst_h:.2e}");
+        assert!(lit > 150 && mid > 100);
+    }
+
+    /// One compute pass of `wgsl` over `cases` (8 vec4 a case), `n` vec4 back; None without an adapter.
+    async fn run_compute(wgsl: &str, cases: &[f32], n: usize) -> Option<Vec<f32>> {
+        use wgpu::util::DeviceExt;
+        let inst = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let ad = inst.request_adapter(&wgpu::RequestAdapterOptions::default()).await?;
+        let (dev, q) = ad.request_device(&wgpu::DeviceDescriptor::default(), None).await.ok()?;
+        let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(wgsl.into()) });
+        let pipe = dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None,
+            layout: None,
+            module: &module,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let inb = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(cases), usage: wgpu::BufferUsages::STORAGE });
+        let size = (n * 16) as u64;
+        let outb = dev.create_buffer(&wgpu::BufferDescriptor { label: None, size, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+        let rd = dev.create_buffer(&wgpu::BufferDescriptor { label: None, size, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let bg = dev.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipe.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: inb.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: outb.as_entire_binding() },
+            ],
+        });
+        let mut enc = dev.create_command_encoder(&Default::default());
+        {
+            let mut cp = enc.begin_compute_pass(&Default::default());
+            cp.set_pipeline(&pipe);
+            cp.set_bind_group(0, &bg, &[]);
+            cp.dispatch_workgroups(n.div_ceil(64) as u32, 1, 1);
+        }
+        enc.copy_buffer_to_buffer(&outb, 0, &rd, 0, size);
+        q.submit([enc.finish()]);
+        let sl = rd.slice(..);
+        sl.map_async(wgpu::MapMode::Read, |_| {});
+        dev.poll(wgpu::Maintain::Wait);
+        let v = bytemuck::cast_slice::<u8, f32>(&sl.get_mapped_range()).to_vec();
+        Some(v)
+    }
+
     /// F-31704 then F-42959 on the same hook, run offline on the original's code (tools/driver_wind_reference.py, 6,000
     /// cases): the hook's wind and the eight values the driver's draw is given, bit for bit.
     #[test]
