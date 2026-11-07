@@ -13,6 +13,27 @@ use glam::{Mat3, Quat, Vec3};
 use mcla_formats::rage::simtune::{SimTune, WheelTune};
 
 const RPM: f32 = 0.104_719_76; // original float at 0x8207D3E8: rpm -> rad/s
+
+/// The engine's built-in torque curve F-91323 (no control values: the ambient cars) around the speed of best power,
+/// with the golden ratio's terms of the engine's ctor F-48129 (+96 = (sqrt 5 - 1) / 2, +92 = (sqrt 5 + 1) / 2)
+/// and the reciprocals its Init F-23005 stores (+84 = 1 / (max - opt)^2, +88 = 1 / opt^3).
+pub fn builtin_torque(e: &mcla_formats::rage::simtune::EngineScalars, w: f32) -> f32 {
+    use super::exact::{fma, fms, fnms};
+    let (opt, max) = (e.opt_rpm * RPM, e.max_rpm * RPM);
+    let s5 = 5.0f32.sqrt();
+    let (a, b) = ((s5 - 1.0) * 0.5, (s5 + 1.0) * 0.5);
+    let span = max - opt;
+    let (c84, c88) = (1.0 / (span * span), 1.0 / ((opt * opt) * opt));
+    if !(w > opt) {
+        (((fma(a, opt, w) * fms(b, opt, w)) * c88) * e.max_hp) * 550.0
+    } else if w > max {
+        0.0
+    } else {
+        let t = ((((((fnms(opt, 2.0, max + w) * fma(a, opt, w)) * fms(b, opt, w)) * (max - w)) * c88) * c84) * e.max_hp) * 550.0;
+        // (bltlr: a NaN stays)
+        if t < 0.0 { 0.0 } else { t }
+    }
+}
 const MPH: f32 = 0.447_04;
 
 /// What `SimTune` implies for one car: gear ratios and per-wheel constants.
@@ -283,18 +304,8 @@ impl VehTune {
         if let Some(curve) = &self.torque_curve {
             return curve.evaluate(w);
         }
-        // no control values (the ambient cars): the engine's built-in curve around the
-        // speed of best power, shaped with the golden ratio
-        let (opt, max) = (e.opt_rpm * RPM, e.max_rpm * RPM);
-        let (a, b) = (0.618_034, 1.618_034);
-        let p = e.max_hp * 550.0;
-        if w <= opt {
-            (a * opt + w) * (b * opt - w) / (opt * opt * opt) * p
-        } else if w <= max {
-            ((max + w - 2.0 * opt) * (a * opt + w) * (b * opt - w) * (max - w) / (opt * opt * opt * (max - opt) * (max - opt)) * p).max(0.0)
-        } else {
-            0.0
-        }
+        // no control values (the ambient cars): the engine's built-in curve
+        builtin_torque(e, w)
     }
 
     fn idle_torque_at(&self, w: f32) -> f32 {
@@ -8409,5 +8420,32 @@ mod wheel_fit_tests {
             n += 1;
         }
         assert_eq!(n, 520);
+    }
+}
+
+#[cfg(test)]
+mod builtin_torque_tests {
+    use super::*;
+
+    /// The engine's built-in curve as the original sets it up and runs it (tools/builtin_torque_reference.py: the
+    /// ctor F-48129, Init F-23005 on a tune without control values, the curve F-91323): 1,500 tunes at 24 engine
+    /// speeds each - every word equal (a NaN as a NaN: the harness's x86 default NaN is not the console's).
+    #[test]
+    fn builtin_torque_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let nan = |x: u32| if f32::from_bits(x).is_nan() { 0x7fc0_0000 } else { x };
+        let mut n = 0;
+        for line in include_str!("../testdata/builtin_torque_ref.txt").lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let (tune, ws) = case.split_once(" | ").unwrap();
+            let t: Vec<f32> = tune.split(' ').map(|x| f32::from_bits(h(x))).collect();
+            let e = mcla_formats::rage::simtune::EngineScalars { max_hp: t[0], idle_rpm: t[1], opt_rpm: t[2], max_rpm: t[3], ..Default::default() };
+            for (w, want) in ws.split(' ').zip(want.split(' ')) {
+                let got = builtin_torque(&e, f32::from_bits(h(w))).to_bits();
+                assert_eq!(nan(got), nan(h(want)), "{tune} w {w}: {got:08x} vs {want}");
+                n += 1;
+            }
+        }
+        assert_eq!(n, 1500 * 24);
     }
 }
