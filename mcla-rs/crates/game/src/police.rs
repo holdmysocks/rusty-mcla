@@ -926,6 +926,41 @@ fn pullover_may_escalate(may: bool, arrest: f32, bullhorn: f32, ticket: bool) ->
     !(f64::from(bullhorn) > 0.0) && tactic_may_escalate(false, may, false, ticket, arrest)
 }
 
+/// A Pursuit's may-escalate (its vt+24): not in its Delay (state 0), then the radio's busy byte and the base test F-38605 on its
+/// slots (vt+40 state 6 Search, vt+36 state 4 Arrest).
+fn pursuit_may_escalate(in_delay: bool, radio_busy: bool, may: bool, searching: bool, arresting: bool, arrest: f32) -> bool {
+    !in_delay && tactic_may_escalate(radio_busy, may, searching, arresting, arrest)
+}
+
+/// The law tactic on the target as AddPoints reads it: its type (vt+56), the may-escalate byte +28, the pull-over's bullhorn
+/// sounded (+92 == 2) and its vt+24.
+#[derive(Clone, Copy, Debug)]
+struct LawTactic {
+    ty: i32,
+    may: bool,
+    sounded: bool,
+    escalates: bool,
+}
+
+/// AddPoints (F-19359): with a tactic on the target whose may-escalate byte is 0 the points are dropped (None). The cap is
+/// iMaxLawBreakingScore; a Pull Over's iPursuitLawBreakScore - 1 unless its bullhorn has sounded and its vt+24 holds; a Pursuit's /
+/// Double Pursuit's iMax - 1 unless its vt+24 holds. The sum is clamped to 0 .. cap (a score above the cap comes down to it).
+fn add_points(score: i32, points: i32, tac: Option<LawTactic>, max: i32, pursuit: i32) -> Option<i32> {
+    let mut cap = max;
+    if let Some(t) = tac {
+        if !t.may {
+            return None;
+        }
+        match t.ty {
+            1 if !(t.sounded && t.escalates) => cap = pursuit - 1,
+            2 | 3 if !t.escalates => cap = max - 1,
+            _ => {}
+        }
+    }
+    let v = score.wrapping_add(points);
+    Some(if v < 0 { 0 } else { v.min(cap) })
+}
+
 /// SetRaceChaseTarget (F-12315): the zone's chase type +204 - a racer given: 1 when it is the player (its vt+40), else 2;
 /// none: the type given.
 const fn race_chase_type(ty: u8, racer_is_player: Option<bool>) -> u8 {
@@ -3379,29 +3414,36 @@ impl Police {
         }
         self.last_damage = damage;
 
-        // (AddPoints, F-19359: the score is held to iMaxLawBreakingScore, in a pull-over to iPursuitLawBreakScore - 1
-        // until its bullhorn has run out, in a pursuit to iMax - 1)
+        // (AddPoints, F-19359, for every offence, the decay and the per-second growth: the law tactic on the player - none
+        // when the tactic is on an AI racer - drops the points when its may-escalate byte is 0, and caps the score: a pull-over
+        // at iPursuitLawBreakScore - 1 until its bullhorn has sounded and F-98647 holds, a Pursuit / Double Pursuit at iMax - 1
+        // until its vt+24 holds - not in its Delay, no radio line, the byte, not searching or arresting, no arrest timer)
         let max_score = t("iMaxLawBreakingScore", 1000.0);
         let pull = t("iPullOverLawBreakScore", 250.0);
-        // (in a Pursuit or Double Pursuit 999 until it may escalate, vt+24: F-62213 / F-73000, F-38605 - not in its Delay, no radio line
-        // playing, its may-escalate byte, not searching or arresting, no arrest timer running; 1000 in an Arrow Trap)
-        let escalates = tactic_may_escalate(self.radio_busy, self.may_escalate, self.heat == Heat::Search, self.heat == Heat::Busted, self.arrest)
-            && (self.kind != TacKind::Pursuit || self.flee_hold <= 0.0);
-        let cap = match self.heat {
-            // (F-19359: 599 unless the bullhorn has sounded and F-98647 holds - its timer run out, the may-escalate byte, no
-            // arrest timer, not in Ticket)
-            Heat::PullOver
-                if !self.bullhorn.is_some_and(|b| {
-                    pullover_may_escalate(self.may_escalate, self.arrest, b, self.ticket_hold.is_some() || self.ticketing)
-                }) =>
-            {
-                t("iPursuitLawBreakScore", 600.0) - 1.0
-            }
-            _ if matches!(self.kind, TacKind::Pursuit | TacKind::PursuitDbl) && !escalates => max_score - 1.0,
-            _ => max_score,
+        let (searching, arresting) = (self.heat == Heat::Search, self.heat == Heat::Busted);
+        let law_tac = (self.kind != TacKind::None && self.target.is_none()).then(|| LawTactic {
+            ty: self.kind.ty(),
+            may: self.may_escalate,
+            sounded: self.bullhorn.is_some(),
+            escalates: match self.kind {
+                TacKind::PullOver => pullover_may_escalate(
+                    self.may_escalate,
+                    self.arrest,
+                    self.bullhorn.unwrap_or(0.0),
+                    self.ticket_hold.is_some() || self.ticketing,
+                ),
+                TacKind::Pursuit => {
+                    pursuit_may_escalate(self.flee_hold > 0.0, self.radio_busy, self.may_escalate, searching, arresting, self.arrest)
+                }
+                _ => tactic_may_escalate(self.radio_busy, self.may_escalate, searching, arresting, self.arrest),
+            },
+        });
+        let (max_i, pursuit_i) = (max_score as i32, t("iPursuitLawBreakScore", 600.0) as i32);
+        let add_points_now = |score: f32, points: f32| {
+            add_points(score as i32, points as i32, law_tac, max_i, pursuit_i).map_or(score, |v| v as f32)
         };
         if breaking {
-            self.score = (self.score + add).clamp(0.0, cap);
+            self.score = add_points_now(self.score, add);
         }
         if scoring {
             // (F-52240 after the offences: under iPullOverLawBreakScore the score falls iNoLawBrokenPerSecPoints a
@@ -3409,7 +3451,10 @@ impl Police {
             // climbs iPullOverPerSecPoints a whole second, offences or not, and never falls)
             if self.score > 0.0 && self.score < pull {
                 if !breaking {
-                    self.score = (self.score - self.whole_seconds(5, dt) * t("iNoLawBrokenPerSecPoints", 10.0)).max(0.0);
+                    let n = self.whole_seconds(5, dt);
+                    if n > 0.0 {
+                        self.score = add_points_now(self.score, -n * t("iNoLawBrokenPerSecPoints", 10.0));
+                    }
                     if self.score <= 0.0 {
                         self.offences = 0;
                     }
@@ -3417,7 +3462,7 @@ impl Police {
             } else if self.score >= pull && self.score < max_score {
                 let n = self.whole_seconds(6, dt);
                 if n > 0.0 {
-                    self.score = (self.score + n * t("iPullOverPerSecPoints", 10.0)).clamp(0.0, cap);
+                    self.score = add_points_now(self.score, n * t("iPullOverPerSecPoints", 10.0));
                 }
             }
         }
@@ -5049,6 +5094,34 @@ mod tests {
             assert_eq!(patrol_hold(c[0] as i32, 0.5, f32::from_bits(c[5])).to_bits(), c[4], "{c:x?}");
         }
         assert_eq!(v.len(), 18);
+    }
+
+    #[test]
+    fn add_points_matches_the_original() {
+        // (tools/add_points_reference.py: F-19359 run whole offline - the racer list F-45642, the tactic lookup F-59036, the five
+        // tactic classes on their own vtables - over 143 tactic set-ups x 15 (score, points) x 2 tunes)
+        let mut n = 0;
+        for l in include_str!("testdata/add_points_ref.txt").lines() {
+            let w: Vec<&str> = l.split_whitespace().skip(1).collect();
+            let u = |i: usize| u32::from_str_radix(w[i], 16).unwrap();
+            let d = |i: usize| w[i].parse::<i32>().unwrap();
+            let (cls, may, b92, arrest, bullhorn, st, radio) = (d(0), d(1) == 1, d(2), f32::from_bits(u(3)), f32::from_bits(u(4)), d(5), d(6) == 1);
+            let tac = (cls <= 4).then(|| LawTactic {
+                ty: cls,
+                may,
+                sounded: b92 == 2,
+                escalates: match cls {
+                    1 => pullover_may_escalate(may, arrest, bullhorn, st == 3),
+                    2 => pursuit_may_escalate(st == 0, radio, may, st == 6, st == 4, arrest),
+                    3 => tactic_may_escalate(radio, may, st == 2, st == 1, arrest),
+                    _ => false,
+                },
+            });
+            let got = add_points(d(9), d(10), tac, d(7), d(8)).unwrap_or(d(9));
+            assert_eq!(got, d(11), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 4290);
     }
 
     #[test]
