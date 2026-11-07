@@ -332,7 +332,7 @@ pub enum Payload {
     /// 22: variables for the subtree (name hash, initial value)
     VariableBlock { child: u32, vars: Vec<(u32, f32)> },
     /// 25: per-update ops (opcode, 3 x (constant, variable hash))
-    MathOperation { child: u32, ops: Vec<(u8, [(f32, u32); 3])> },
+    MathOperation { child: u32, ops: Vec<(u8, [(f32, u32); 3], u32)> },
     Other(u8),
 }
 
@@ -376,8 +376,9 @@ pub fn parse_payload(kind: u8, pl: &[u8]) -> Payload {
             let n = pl.get(4).copied().unwrap_or(0) as usize;
             let ops = (0..n)
                 .map(|i| {
-                    let q = 5 + 25 * i;
-                    (pl.get(q).copied().unwrap_or(0), [0, 1, 2].map(|k| (be_f32(pl, q + 1 + 8 * k), be_u32(pl, q + 5 + 8 * k))))
+                    // 29-byte records (F-90822): opcode, 3 x {f32 constant, u32 variable hash}, u32 output variable hash.
+                    let q = 5 + 29 * i;
+                    (pl.get(q).copied().unwrap_or(0), [0, 1, 2].map(|k| (be_f32(pl, q + 1 + 8 * k), be_u32(pl, q + 5 + 8 * k))), be_u32(pl, q + 25))
                 })
                 .collect();
             Payload::MathOperation { child: be_u32(pl, 0), ops }
@@ -712,6 +713,16 @@ pub fn category_timers(cats: &Dat) -> HashMap<u32, u8> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn math_operation_records_are_29_bytes() {
+        // ZZZ_TEST_MATH's payload from sounds.dat: one op, opcode 12, output variable 0x49DC73B3.
+        let hex = "ffffffff010c00000000ffd9332d000000009bf98846000000000000000049dc73b3";
+        let pl: Vec<u8> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect();
+        let Payload::MathOperation { child, ops } = parse_payload(25, &pl) else { panic!() };
+        assert_eq!(child, 0xFFFF_FFFF);
+        assert_eq!(ops, vec![(12, [(0.0, 0xFFD9_332D), (0.0, 0x9BF9_8846), (0.0, 0)], 0x49DC_73B3)]);
+    }
+
 
     /// F-90404 (type 3 curve: segment, then dB) against the original's own code on 4000 cases, run with the
     /// vector shim (work/audio2/verify/ref3.py); the shim was checked against an independent f32 evaluation
