@@ -649,11 +649,15 @@ fn pow10_vec(y: f32) -> f32 {
 /// `scale = fmadds(+21 * 0.01 - +23 * 0.01, f, +23 * 0.01)`; dB2lin F-42985 with the vector powf, lin2dB the vector log2.
 /// (With the factor 1 the blend is not +11 itself: (a - b) + b rounds.)
 pub fn category_record(v11: i16, v13: i16, s21: u16, s23: u16) -> (f32, f32) {
+    let (k21, k23) = (s21 as f32 * 0.01, s23 as f32 * 0.01);
+    (lin2db(category_lin(v11, v13)), (k21 - k23).mul_add(1.0, k23))
+}
+
+/// The linear gain of [`category_record`]'s volume, before lin2dB.
+fn category_lin(v11: i16, v13: i16) -> f32 {
     let d2l = |db: f32| if db - (-100.0) >= 0.0 { pow10_vec(db * f32::from_bits(0x3D4C_CCCD)) } else { 0.0 };
     let (a11, a13) = (d2l(v11 as f32 * 0.01), d2l(v13 as f32 * 0.01));
-    let lin = (a11 - a13).mul_add(1.0, a13);
-    let (k21, k23) = (s21 as f32 * 0.01, s23 as f32 * 0.01);
-    (lin2db(lin), (k21 - k23).mul_add(1.0, k23))
+    (a11 - a13).mul_add(1.0, a13)
 }
 
 /// Resolve every category (by name hash) from BASE: volume and pitch add, LPF min, HPF max, rolloff scale multiplies;
@@ -856,11 +860,13 @@ mod tests {
     /// F-31694 against the original's code run offline (tools/category_record_reference.py, through the loader F-41684: every
     /// category of the disc and 3,000 random field sets): the record's +8 rolloff scale and +12 / +16 reverb sends bit for bit; the +4 volume bit for bit except where the
     /// harness's stand-in for the console's log instruction (the host log2f, not correctly rounded) and the port's
-    /// correctly rounded log2 part (36 random cases, 1 - 2 ulp; as curve3_log2_ambiguous_cases): those within 4 ulp.
+    /// correctly rounded log2 part (as curve3_log2_ambiguous_cases): 3 distinct gains (+11 = -1, 29, 404; -1 is an edge
+    /// value the random sets draw often, 43 cases), 1 - 2 ulp. For those the gain before the log is bit exact, and on the
+    /// host the harness ran on (windows-gnu) the f32 log2f path gives the reference word exactly.
     #[test]
     fn category_record_is_the_originals() {
         let t = include_str!("testdata/category_record_ref.txt");
-        let (mut n, mut near, mut disc) = (0, 0, 0);
+        let (mut n, mut disc, mut gains) = (0, 0, std::collections::HashSet::new());
         for l in t.lines() {
             let w: Vec<&str> = l.split_whitespace().collect();
             let num = |i: usize| w[i][1..].parse::<i64>().unwrap();
@@ -872,14 +878,18 @@ mod tests {
             if v.to_bits() != hex(7) {
                 assert!((v.to_bits() as i64 - hex(7) as i64).abs() <= 4, "{l}");
                 assert!(n >= 146, "a category of the disc: {l}");
-                near += 1;
+                let lin = category_lin(num(0) as i16, num(1) as i16);
+                if cfg!(all(target_os = "windows", target_env = "gnu")) {
+                    assert_eq!((lin.log2() * LOG10_2 * 20.0).to_bits(), hex(7), "only the log2 rounding differs: {l}");
+                }
+                gains.insert(lin.to_bits());
             } else if n < 146 {
                 disc += 1;
             }
             n += 1;
         }
         assert_eq!((n, disc), (3146, 146));
-        assert!(near <= 40, "{near}");
+        assert!(gains.len() <= 3, "{gains:x?}");
     }
 
     /// Against the disc's own files (MCLA_DATA_DIR = extracted/cache), when present.
