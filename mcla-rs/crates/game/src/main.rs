@@ -11383,7 +11383,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // the distance LOD (F-12028): every seat here is drawn, so its draw-gate tests pass; the scene byte is a story
             // scene playing, the cine-script test the same (F-52539); the reference is the player's car, else the camera.
             // (approx.: the port keeps no wipeout state for other cars - "wrecked" is the damaged-out test alone, damage
-            // at its limit as the player's 0x04)
+            // at its limit as the player's 0x04: the full MaxDamage, police::damaged_out as F-12032)
             let reference = self.vehicles.player().filter(|c| c.placed).map(|c| [c.state.pos.x, c.state.pos.z]);
             let (scene, cam) = (self.cine.playing.is_some(), [self.cam.pos.x, self.cam.pos.z]);
             let cars = &self.vehicles.cars;
@@ -11394,7 +11394,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 car: true,
                 cine: scene,
                 player: s.player,
-                wrecked: cars.get(s.id).is_some_and(|c| c.state.damage >= 0.999),
+                wrecked: cars.get(s.id).is_some_and(|c| police::damaged_out(c.state.damage)),
                 reference,
                 camera: cam,
                 pos: cars.get(s.id).map_or([s.pos.x, s.pos.z], |c| [c.state.pos.x, c.state.pos.z]),
