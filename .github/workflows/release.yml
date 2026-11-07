@@ -9,13 +9,11 @@ name: Release
 # your own machine; it signs RustyMCLA.exe, makes the real manifest.json and uploads it to the draft. Then review the draft and publish it.
 # Procedure: docs (LAUNCHER.md, "Release procedure") and BUILDING.md.
 #
-# Start it by pushing a tag (git tag v0.1.0 && git push origin v0.1.0), or by hand from the Actions tab with the version.
+# Start it by hand from the Actions tab with the version (not on a tag push: publishing the draft creates the tag, which would build a second, stale draft).
 # The version must equal the launcher's own version (launcher/Cargo.toml and launcher/tauri.conf.json): the launcher compares them
 # to decide whether a release is newer than itself.
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
       version:
