@@ -14442,6 +14442,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The controller list as the original holds it after loading it (F-94238 / F-42172's list, F-89070 per entry,
+    /// F-30955 / F-78219 per map: read from the running recomp, testdata/control_maps_ref.txt): every entry's file,
+    /// name and manual flag, and all 74 slots' device and key, equal the port's. The map reader fills only the 57
+    /// actions of its table (slot: name, from the image), from `<ACTION>_DVC` / `_KEY`, every other slot 0.
+    #[test]
+    fn controller_maps_match_the_original() {
+        let maps = control_maps(&data_dir());
+        if maps.is_empty() {
+            return;
+        }
+        const TABLE: [(usize, &str); 57] = [
+            (0, "STEER_AXIS"), (1, "STEER_AXIS_UP_DN"), (2, "GAS"), (3, "BRAKE"), (4, "SHIFT_UP"), (5, "SHIFT_DOWN"), (6, "HANDBRAKE"),
+            (7, "WEIGHT_XFER"), (8, "NITRO"), (9, "HEADLIGHTS"), (10, "HORN"), (11, "IN_ZONE"), (12, "CAM_UP"), (13, "CAM_DOWN"), (14, "MAP"),
+            (15, "CAM_ZOOM_IN"), (16, "CAM_ZOOM_OUT"), (17, "PAUSE"), (18, "TALK"), (19, "MUSIC_UP"), (20, "MUSIC_DOWN"), (21, "MUSIC_PAUSE"),
+            (22, "CAM_PAN_LEFT"), (23, "CAM_PAN_RIGHT"), (24, "CAM_PAN_UP"), (25, "CAM_PAN_DOWN"), (26, "LOOKBACK"), (27, "CAMERA_LEFT"),
+            (28, "CAMERA_RIGHT"), (29, "CAMERA_UP"), (30, "POPUP_LEFT"), (31, "POPUP_RIGHT"), (32, "POPUP_UP"), (33, "POPUP_DOWN"),
+            (34, "POPUP_ANALOG_LEFT_RIGHT"), (35, "POPUP_ANALOG_UP_DOWN"), (36, "POPUP_SELECT"), (37, "POPUP_BACK"), (38, "WHEEL_FRONT_LEFT"),
+            (39, "WHEEL_FRONT_RIGHT"), (40, "WHEEL_BACK_LEFT"), (41, "WHEEL_BACK_RIGHT"), (42, "HUD_PLAYERLIST"), (43, "CONVERTIBLE_UP_DN"),
+            (44, "HYDRAULICS"), (45, "UI_START"), (46, "HUD_CYCLE"), (64, "PHOTO_CAM_MOVE_UP"), (65, "PHOTO_CAM_MOVE_DN"),
+            (66, "PHOTO_CAM_MOVE_LT"), (67, "PHOTO_CAM_MOVE_RT"), (68, "PHOTO_CAM_ZOOM_IN"), (69, "PHOTO_CAM_ZOOM_OUT"),
+            (70, "PHOTO_CAM_PAN_UP"), (71, "PHOTO_CAM_PAN_DN"), (72, "PHOTO_CAM_PAN_LT"), (73, "PHOTO_CAM_PAN_RT"),
+        ];
+        let text = include_str!("testdata/control_maps_ref.txt");
+        let mut n = 0;
+        for line in text.lines().filter(|l| !l.starts_with('#')) {
+            let (head, slots) = line.split_once(" | ").unwrap();
+            let h: Vec<&str> = head.split_whitespace().collect();
+            let i: usize = h[0].parse().unwrap();
+            let m = &maps[i];
+            assert_eq!((m.file.as_str(), m.name.as_str(), m.manual), (h[1], h[2], h[3] == "1"), "entry {i}");
+            let v: Vec<u32> = slots.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            assert_eq!(v.len(), 148);
+            for s in 0..74 {
+                let port = TABLE.iter().find(|t| t.0 == s).and_then(|t| m.slots.get(t.1)).copied().unwrap_or((0, 0));
+                assert_eq!(port, (v[2 * s], v[2 * s + 1]), "entry {i} ({}) slot {s}", m.name);
+            }
+            n += 1;
+        }
+        assert_eq!(n, maps.len());
+    }
+
     /// The disc's controller list and maps.
     #[test]
     fn controller_maps_of_the_disc() {
