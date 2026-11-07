@@ -438,8 +438,9 @@ fn requirements(text: &str) -> Vec<Requirement> {
 /// A district's number (F-67263): "SC" and "South Central" are SouthCentral; Hollywood 0,
 /// Beaches 1, Hills 2, Downtown 3, SouthCentral 4, Unknown 5, All 6; anything else -1.
 fn district_no(s: &str) -> i32 {
-    let s = if s == "SC" || s == "South Central" { "SouthCentral" } else { s };
-    ["Hollywood", "Beaches", "Hills", "Downtown", "SouthCentral", "Unknown", "All"].iter().position(|d| *d == s).map_or(-1, |p| p as i32)
+    // (every compare F-40755: ASCII case folded, the CRT's _stricmp)
+    let s = if s.eq_ignore_ascii_case("SC") || s.eq_ignore_ascii_case("South Central") { "SouthCentral" } else { s };
+    ["Hollywood", "Beaches", "Hills", "Downtown", "SouthCentral", "Unknown", "All"].iter().position(|d| d.eq_ignore_ascii_case(s)).map_or(-1, |p| p as i32)
 }
 
 fn same_district(want: &str, got: &str) -> bool {
@@ -1036,8 +1037,12 @@ impl Career {
             Reward::Script(_) => {}
             Reward::Mission { id, state } => {
                 let Some(&i) = self.index.get(id) else { return };
-                if self.state[i].stage != Stage::Locked {
-                    return;
+                // (F-97457: a mission in states 1 .. 4 is left as it is; a COMPLETE one only
+                // when bRepeatable (+693) - the REPEAT_* missions hand each other on)
+                match self.state[i].stage {
+                    Stage::Locked => {}
+                    Stage::Complete if self.missions[i].repeatable => self.leave_complete(i),
+                    _ => return,
                 }
                 if state == "CHECKINGPREREQUISITES" {
                     self.state[i].stage = Stage::Armed;
@@ -2476,6 +2481,27 @@ impl Career {
         }
     }
 
+    /// A repeatable mission leaves COMPLETE (F-62492: the common exit, then F-10825 resets
+    /// every prerequisite and objective - F-22437 per requirement: each condition's reset,
+    /// met +116 and +140 cleared, hidden +118 set; +117 kept). It stays in the completed
+    /// list until it joins the log again (F-58560 -> `on_log`).
+    fn leave_complete(&mut self, i: usize) {
+        self.state[i] = MState { stage: Stage::Locked, progress: vec![0; self.missions[i].objectives.len()], won: Vec::new(), pts: Default::default() };
+        self.order.retain(|&x| x != i);
+        if !self.ext_ok(i) {
+            return;
+        }
+        let e = &mut self.ext[i];
+        e.obj_hidden.iter_mut().for_each(|h| *h = true);
+        e.obj_base.iter_mut().for_each(|b| *b = None);
+        e.obj_pending.iter_mut().for_each(|p| *p = false);
+        e.obj_last.iter_mut().for_each(|b| *b = None);
+        e.pre_base.iter_mut().for_each(|b| *b = None);
+        e.pre_last.iter_mut().for_each(|b| *b = None);
+        e.pre_tally.iter_mut().for_each(|t| *t = false);
+        e.state = 0;
+    }
+
     /// The mission enters CHECKING_PREREQUISITES (F-89508): its objectives are hidden
     /// unless always hidden (that is, they keep +118), its prerequisites armed.
     fn on_armed(&mut self, i: usize) {
@@ -3623,6 +3649,65 @@ mod tests {
         // a load takes the record's verdict
         c.tally_from_save(r, &[true]);
         assert!(c.prereq_req_met(r, 0));
+    }
+
+    /// The district lookup F-67263 run offline on 1,936 strings (tools/district_lookup_reference.py:
+    /// every name and short form in mixed case, the mission files' values, near misses, random
+    /// strings): `district_no` gives the same number for each.
+    #[test]
+    fn district_lookup_matches_the_original() {
+        let text = include_str!("testdata/career_district_ref.txt");
+        let mut n = 0;
+        for line in text.lines() {
+            let (h, want) = line.split_once(' ').unwrap();
+            let bytes: Vec<u8> = if h == "-" { Vec::new() } else { (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect() };
+            let s = String::from_utf8(bytes).unwrap();
+            assert_eq!(district_no(&s), want.parse::<i32>().unwrap(), "{:?}", s);
+            n += 1;
+        }
+        assert_eq!(n, 1936);
+    }
+
+    /// A mission reward moves a COMPLETE mission on only when it is repeatable (F-97457): the
+    /// REPEAT_BESTOF / REPEAT_HANGOUT_WAGER pair of a district hand each other back to
+    /// CHECKING_PREREQUISITES, reset (F-62492 -> F-10825), and with no other mission of the
+    /// district open the repeat opens again; a mission in states 1 .. 4 and a plain complete
+    /// one are left.
+    #[test]
+    fn repeat_missions_rearm_on_their_reward() {
+        let dir = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        if !std::path::Path::new(&dir).join("tune/career").is_dir() {
+            return;
+        }
+        let mut c = Career::load(&dir);
+        let b = c.mission_no("REPEAT_BESTOF_HILLS").unwrap();
+        let w = c.mission_no("REPEAT_HANGOUT_WAGER_HILLS").unwrap();
+        let plain = (0..c.missions.len()).find(|&j| c.missions[j].district == "Hills" && !c.missions[j].repeatable && !c.missions[j].prereq.is_empty()).unwrap();
+        let mut s = c.save();
+        s.missions.clear();
+        for j in [b, w, plain] {
+            s.missions.insert(c.missions[j].id.clone(), MState { stage: Stage::Complete, progress: vec![1; c.missions[j].objectives.len()], ..Default::default() });
+        }
+        c.restore(&s);
+        let rw = c.missions[b].rewards[0].clone();
+        assert!(matches!(&rw, Reward::Mission { id, state } if id == "REPEAT_HANGOUT_WAGER_HILLS" && state == "CHECKINGPREREQUISITES"));
+        c.give(&rw);
+        assert_eq!(c.state[w].stage, Stage::Armed);
+        assert!(c.state[w].progress.iter().all(|&p| p == 0));
+        assert!(c.ext[w].obj_hidden.iter().all(|&h| h));
+        // nothing of Hills open: its TallyMission (bInitValidation) is met at the arming
+        assert!(c.prereq_req_met(w, 0));
+        c.activate_met();
+        assert_eq!(c.state[w].stage, Stage::Active);
+        // given again while it is open: left as it is
+        let st = c.state_id_of(w);
+        c.give(&rw);
+        assert_eq!(c.state_id_of(w), st);
+        assert_eq!(c.state[w].stage, Stage::Active);
+        // a plain complete mission is not moved by a reward
+        let id = c.missions[plain].id.clone();
+        c.give(&Reward::Mission { id, state: "CHECKINGPREREQUISITES".into() });
+        assert_eq!(c.state[plain].stage, Stage::Complete);
     }
 
     /// Every mcConditionString of the missions is met by a string the port posts as the original
