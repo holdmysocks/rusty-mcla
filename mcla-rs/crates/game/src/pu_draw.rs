@@ -1,6 +1,6 @@
-//! Step 19f: the power-up sources drawn as the original draws them (sub_82682590 ->
-//! sub_82681760 the icon card, sub_82682318 the ground glow; textures and shader names from
-//! sub_82681CD8). The rules are in render/powerup.wgsl; SAVE_WORK.md "Step 19f".
+//! Step 19f: the power-up sources drawn as the original draws them (F-12500 ->
+//! F-11753 the icon card, F-50763 the ground glow; textures and shader names from
+//! F-19149). The rules are in render/powerup.wgsl; SAVE_WORK.md "Step 19f".
 
 use crate::render::Gpu;
 use glam::Vec3;
@@ -144,7 +144,7 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
     };
     // (the card: the two passes' source alpha / inverse source alpha put together - premultiplied)
     let over = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add };
-    // (the ground glow: blend mode 7 of sub_8217F768 - source alpha, one)
+    // (the ground glow: blend mode 7 of F-33110 - source alpha, one)
     let add = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
     let card = make("power-up card", "vs_card", "fs_card", wgpu::BlendState { color: over, alpha: over });
     let glow = make("power-up ground glow", "vs_glow", "fs_glow", wgpu::BlendState { color: add, alpha: add });
@@ -153,28 +153,44 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
     *STATE.lock().unwrap() = Some(State { card, glow, bind, cam, cards, glows, spin: 0.0 });
 }
 
-/// The ground glow's distance fade (sub_82682590 0x826825F0..0x82682640): full to 125 m,
-/// nothing from 250 m.
-pub fn fade(d: f32) -> f32 {
-    ((1.0 - d * 0.004) * 2.0).clamp(0.0, 1.0)
+/// The source draw F-12500's distance fade, from the place `p` to the camera `cam` (the viewport's +112): the squared
+/// distance dy dy, then dz dz and dx dx each added in one fused step, its square root, 1 - 0.004 d fused, times 2, then
+/// kept to 0 .. 1 (below 0 or NaN: 0): full to 125 m, nothing from 250 m. Each step rounded to a float as the original.
+pub fn fade_at(p: Vec3, cam: Vec3) -> f32 {
+    let (dy, dz, dx) = ((p.y - cam.y) as f64, (p.z - cam.z) as f64, (p.x - cam.x) as f64);
+    let s = (dy * dy) as f32 as f64;
+    let s = dz.mul_add(dz, s) as f32 as f64;
+    let s = dx.mul_add(dx, s) as f32 as f64;
+    let d = s.sqrt() as f32 as f64;
+    let f = (-d.mul_add(0.004f32 as f64, -1.0)) as f32 as f64;
+    let f = (f * 2.0) as f32;
+    let f = if f >= 0.0 { f } else { 0.0 };
+    if f - 1.0 >= 0.0 { 1.0 } else { f }
 }
 
-/// The cards' and glows' instance data for a draw list (`PowerUps::draw_list`): the card's
-/// middle and half width, m_powerupColor, (layer, half height); the glow's place and radius and
-/// its two colours with their alphas faded.
-pub fn instances(list: &[(Vec3, u8, f32, bool)], looks: &[crate::powerups::Look; 24], cam: Vec3) -> (Vec<[f32; 12]>, Vec<[f32; 12]>) {
+/// The source draw F-12500 for one draw list entry: a type 0 .. 23 (the draw init F-19149 gives each of the 24 a look),
+/// then the sphere test F-50958 of the place `p` with radius `r` against the frame's planes - outside (0): nothing, no
+/// card and no glow. Else the fade (`fade_at`) the card F-11753 and the glow F-50763 are given.
+pub fn source_draw(p: Vec3, kind: u8, r: f32, cam: Vec3, frustum: &crate::render::Frustum) -> Option<f32> {
+    let f = fade_at(p, cam);
+    (kind < 24 && frustum.sphere_class(p, r) != 0).then_some(f)
+}
+
+/// The cards' and glows' instance data for a draw list (`PowerUps::draw_list`: place, type, f1, sphere radius, glow),
+/// each entry as `source_draw` lets it: the card's middle and half width, m_powerupColor (its alpha times the fade, as
+/// F-11753 packs it), (layer, half height); with the glow flag the glow's place and radius and its two colours with
+/// their alphas faded (also at fade 0, as the original calls it).
+pub fn instances(list: &[(Vec3, u8, f32, f32, bool)], looks: &[crate::powerups::Look; 24], cam: Vec3, frustum: &crate::render::Frustum) -> (Vec<[f32; 12]>, Vec<[f32; 12]>) {
     let (mut cards, mut glows) = (Vec::new(), Vec::new());
-    for &(p, k, lift, ground) in list {
-        let Some(l) = looks.get(k as usize) else { continue };
+    for &(p, k, lift, r, ground) in list {
+        let Some(f) = source_draw(p, k, r, cam, frustum) else { continue };
+        let l = &looks[k as usize];
         let c = p + Vec3::new(0.0, l.icon_height + lift, 0.0);
         let col = l.powerup_color;
-        cards.push([c.x, c.y, c.z, l.powerup_width, col[0], col[1], col[2], col[3], k as f32, l.powerup_height, 0.0, 0.0]);
+        cards.push([c.x, c.y, c.z, l.powerup_width, col[0], col[1], col[2], col[3] * f, k as f32, l.powerup_height, 0.0, 0.0]);
         if ground {
-            let f = fade(p.distance(cam));
-            if f > 0.0 {
-                let (a, b) = (l.ground_glow_color1, l.ground_glow_color2);
-                glows.push([p.x, p.y, p.z, l.ground_glow_scale, a[0], a[1], a[2], a[3] * f, b[0], b[1], b[2], b[3] * f]);
-            }
+            let (a, b) = (l.ground_glow_color1, l.ground_glow_color2);
+            glows.push([p.x, p.y, p.z, l.ground_glow_scale, a[0], a[1], a[2], a[3] * f, b[0], b[1], b[2], b[3] * f]);
         }
     }
     (cards, glows)
@@ -210,7 +226,7 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, cards: &[[f32; 12]], glows
     });
     pass.set_bind_group(0, &gpu.globals_bg, &[]);
     pass.set_bind_group(1, &s.bind, &[]);
-    // (sub_82682590: the card first, then the source's ground glow)
+    // (F-12500: the card first, then the source's ground glow)
     if nc > 0 {
         pass.set_pipeline(&s.card);
         pass.set_vertex_buffer(0, s.cards.slice(..(nc * 48) as u64));
@@ -220,5 +236,50 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, cards: &[[f32; 12]], glows
         pass.set_pipeline(&s.glow);
         pass.set_vertex_buffer(0, s.glows.slice(..(ng * 48) as u64));
         pass.draw(0..93, 0..ng as u32);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::Frustum;
+    use glam::Vec4;
+
+    /// The source draw F-12500 with the real sphere test F-50958 run offline (tools/pu_source_draw_reference.py,
+    /// testdata/pu_source_draw_ref.txt: kind, f1, radius, glow flag, place, camera, six planes; then the card's and the
+    /// glow's calls with their f1, f2 and fade): `source_draw` draws exactly when the original calls the card, gives
+    /// the fade it is given bit for bit, and the glow follows the flag.
+    #[test]
+    fn source_draw_matches_the_original() {
+        let (mut n, mut cards, mut glows) = (0, 0, 0);
+        let mut class = [0u32; 3];
+        for line in include_str!("testdata/pu_source_draw_ref.txt").lines() {
+            let t: Vec<&str> = line.split(' ').collect();
+            assert!(t.len() >= 34, "{line}");
+            let w: Vec<u32> = t[..34].iter().map(|s| u32::from_str_radix(s, 16).unwrap()).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let (kind, lift, r, glow) = (w[0], f(1), f(2), w[3] != 0);
+            let (p, cam) = (Vec3::new(f(4), f(5), f(6)), Vec3::new(f(7), f(8), f(9)));
+            let fr = Frustum::from_planes(std::array::from_fn(|k| Vec4::new(f(10 + 4 * k), f(11 + 4 * k), f(12 + 4 * k), f(13 + 4 * k))));
+            class[fr.sphere_class(p, r) as usize] += 1;
+            let calls = &t[34..];
+            match source_draw(p, kind as u8, r, cam, &fr) {
+                None => assert!(calls.is_empty(), "{line}"),
+                Some(fade) => {
+                    let args = format!("{kind}:{:08x}:{:08x}:{:08x}", lift.to_bits(), r.to_bits(), fade.to_bits());
+                    assert_eq!(calls[0], format!("C:{args}"), "{line}");
+                    if glow {
+                        assert_eq!(calls[1..], [format!("G:{args}")], "{line}");
+                        glows += 1;
+                    } else {
+                        assert_eq!(calls.len(), 1, "{line}");
+                    }
+                    cards += 1;
+                }
+            }
+            n += 1;
+        }
+        eprintln!("sphere classes (outside, crossing, inside): {class:?}");
+        assert_eq!((n, cards, glows), (4000, 1547, 916));
     }
 }

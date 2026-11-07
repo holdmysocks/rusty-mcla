@@ -51,8 +51,22 @@ pub const BASE_DRAW: [u8; 9] = [NITRO, STEALTH, PULSE, AGRO, 10, MEGA_STEALTH, 1
 /// The base draw of an effect on a car (F-30631, from the holder's draw F-24071 with the holder's +208): with DrawIcon
 /// (+36) the source draw F-12500 at a matrix of no turn placed at `at`, the type's own look, 0.5 lower (f1 -0.5), sphere
 /// radius 0.25 (f2), no ground glow. (A mega type's branch after it only moves statics no other code reads.)
-pub fn base_card(at: Vec3, kind: u8, t: &TypeTune) -> Option<(Vec3, u8, f32, bool)> {
-    (BASE_DRAW.contains(&kind) && t.draw_icon).then_some((at, kind, -0.5, false))
+pub fn base_card(at: Vec3, kind: u8, t: &TypeTune) -> Option<(Vec3, u8, f32, f32, bool)> {
+    (BASE_DRAW.contains(&kind) && t.draw_icon).then_some((at, kind, -0.5, 0.25, false))
+}
+
+/// The render phase in which the car model draws its holder (F-10884's 0x2000000: the frame loop F-46159 runs the
+/// phase bits 1 .. 0x40000000 in turn).
+pub const ALPHA_PHASE: u32 = 0x0200_0000;
+
+/// Does the car model's draw by phase (F-10884, slot 2 of the car model, called by the type walker F-72175 for every
+/// car model in its type's list - linked once when the car is built, F-46993, unlinked only at its removal, F-60675;
+/// no camera, distance or LOD test on the way) reach the holder's draw F-24071 (and so the base card F-30631)? Only in
+/// `ALPHA_PHASE`, with a vehicle (+20) whose racer (+128) exists, the car model ready (F-78515: its part resources
+/// loaded), the racer's state +656 3 (a car set up, F-62032) and its observer byte +32 clear (F-61576; set only by
+/// Racer_EnterObserverMode F-11607, online). Every other phase and every failed test draws no holder.
+pub fn alpha_pass_draws_holder(phase: u32, vehicle: bool, racer: bool, ready: bool, state: u32, observer: bool) -> bool {
+    vehicle && racer && ready && state == 3 && !observer && phase == ALPHA_PHASE
 }
 
 /// One power-up type: the constructors' values (F-34625 and the per-type ones, called by
@@ -1575,16 +1589,19 @@ impl PowerUps {
         Vec::new()
     }
 
-    /// What the original draws for the power-ups this frame (step 19f, pu_draw.rs):
-    /// - every source that is there (F-12247 -> F-12500 with f1 = 0 and the ground
+    /// What the original draws for the power-ups this frame (step 19f, pu_draw.rs), as (place, look, f1, sphere radius,
+    /// ground glow) for F-12500 (`pu_draw::source_draw`, which culls by the sphere):
+    /// - every source that is there (F-12247 -> F-12500 with f1 = 0, radius 1 and the ground
     ///   glow on): its look (22 for a Mystery one) at its place;
     /// - (step 19g) NOT a wasted shot's icon: the holder's +164 is never set (see `update`);
     /// - the base draw's card of an effect on a car (`base_card`) at the holder's +208, which is always (0, 0, 0): the
-    ///   world origin. (The original draws it in the car's alpha pass, F-24071, so only while that car is drawn; here
-    ///   whenever the effect is on.)
-    pub fn draw_list(&self) -> Vec<(Vec3, u8, f32, bool)> {
-        let mut out: Vec<_> = self.visible().map(|(p, k)| (p, k, 0.0, true)).collect();
-        for h in &self.holders {
+    ///   world origin. The original draws it in the car model's alpha phase (`alpha_pass_draws_holder`), which has no
+    ///   camera, distance or LOD test: every frame for every racer's car with its model loaded - in the port every
+    ///   holder's car (models load at once, racers keep state 3, observer mode is online only, D7).
+    pub fn draw_list(&self) -> Vec<(Vec3, u8, f32, f32, bool)> {
+        let mut out: Vec<_> = self.visible().map(|(p, k)| (p, k, 0.0, 1.0, true)).collect();
+        let drawn = alpha_pass_draws_holder(ALPHA_PHASE, true, true, true, 3, false);
+        for h in self.holders.iter().filter(|_| drawn) {
             if let Some(e) = h.effect.as_ref() {
                 out.extend(self.types.get(e.kind as usize).and_then(|t| base_card(Vec3::ZERO, e.kind, t)));
             }
@@ -1818,8 +1835,9 @@ mod tests {
         rec[1] = SESSION_TYPES[1];
         assert_eq!(allowed(&rec), (0x3ff, true));
         // the ground glow's fade: full to 125 m, none from 250 m
-        assert_eq!((crate::pu_draw::fade(100.0), crate::pu_draw::fade(260.0)), (1.0, 0.0));
-        assert!((crate::pu_draw::fade(187.5) - 0.5).abs() < 1e-5);
+        let fade = |d: f32| crate::pu_draw::fade_at(Vec3::new(d, 0.0, 0.0), Vec3::ZERO);
+        assert_eq!((fade(100.0), fade(260.0)), (1.0, 0.0));
+        assert!((fade(187.5) - 0.5).abs() < 1e-5);
     }
 
     #[test]
@@ -2224,10 +2242,10 @@ mod original_holder_tests {
                 None => assert!(port.is_none() && !icon, "{line}"),
                 Some(s) => {
                     let f: Vec<&str> = s.split(':').collect();
-                    let (p, k, lift, glow) = port.expect(line);
+                    let (p, k, lift, r, glow) = port.expect(line);
                     assert_eq!(f[2].parse::<u8>().unwrap(), kind, "{line}");
                     assert_eq!(k, kind_for_port);
-                    assert_eq!((f32::from_bits(w(f[3])), f32::from_bits(w(f[4])), f[5]), (lift, 0.25, if glow { "1" } else { "0" }), "{line}");
+                    assert_eq!((w(f[3]), w(f[4]), f[5]), (lift.to_bits(), r.to_bits(), if glow { "1" } else { "0" }), "{line}");
                     // the matrix: rows (1,0,0,0) (0,1,0,0) (0,0,1,0), then the place
                     let m: Vec<u32> = f[6..22].iter().map(|x| w(x)).collect();
                     assert_eq!(&m[..12], &[0x3f80_0000, 0, 0, 0, 0, 0x3f80_0000, 0, 0, 0, 0, 0x3f80_0000, 0], "{line}");
@@ -2238,6 +2256,26 @@ mod original_holder_tests {
             lines += 1;
         }
         assert_eq!((lines, cards), (319, 194));
+    }
+
+    /// The car model's draw by phase F-10884 run offline (tools/pu_alpha_pass_reference.py, testdata/pu_alpha_pass_ref.txt:
+    /// phase, vehicle, racer, ready, racer +656, racer +32, the 0x180 phases' scene test, the car model's bytes and the
+    /// globals the other branches read, then the calls): the holder's draw F-24071 ("H:", with the vehicle's +68) comes
+    /// exactly when `alpha_pass_draws_holder` says, whatever the other inputs.
+    #[test]
+    fn alpha_pass_matches_the_original() {
+        let (mut n, mut drawn) = (0, 0);
+        for line in include_str!("testdata/pu_alpha_pass_ref.txt").lines() {
+            let t: Vec<&str> = line.split(' ').collect();
+            assert!(t.len() >= 18, "{line}");
+            let c: Vec<u32> = t[..18].iter().map(|s| u32::from_str_radix(s, 16).unwrap()).collect();
+            let port = alpha_pass_draws_holder(c[0], c[1] != 0, c[2] != 0, c[3] != 0, c[4], c[5] != 0);
+            let h: Vec<&str> = t[18..].iter().copied().filter(|x| x.starts_with("H:")).collect();
+            assert_eq!(h, if port { vec!["H:3400"] } else { vec![] }, "{line}");
+            drawn += port as u32;
+            n += 1;
+        }
+        assert_eq!((n, drawn), (3000, 533));
     }
 }
 

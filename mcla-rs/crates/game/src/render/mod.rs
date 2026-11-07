@@ -4280,6 +4280,14 @@ impl Frustum {
     pub fn intersects_sphere(&self, c: Vec3, r: f32) -> bool {
         self.planes.iter().all(|p| !(p.truncate().dot(c) + p.w < -r))
     }
+    /// The viewport's sphere test F-50958 (its planes as F-53768 lays them: six, two of them twice): per plane
+    /// d = x X + (y Y + (z Z + w)), a product then a sum each; 0 when some d is below -r (or NaN), 2 when every d is
+    /// at least r, else 1 (crossing).
+    pub fn sphere_class(&self, c: Vec3, r: f32) -> u32 {
+        let d = |p: &Vec4| c.x * p.x + (c.y * p.y + (c.z * p.z + p.w));
+        let nr = 0.0 - r;
+        self.planes.iter().all(|p| d(p) >= nr) as u32 + self.planes.iter().all(|p| d(p) >= r) as u32
+    }
     /// True when every point lies more than `margin` outside the same plane.
     pub fn points_outside(&self, pts: &[Vec3], margin: f32) -> bool {
         self.planes.iter().any(|p| pts.iter().all(|v| p.truncate().dot(*v) + p.w < -margin))

@@ -12230,7 +12230,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // (step 19f: the power-up sources' cards and ground glows - pu_draw.rs)
             if let Some(pu) = self.powerups.as_ref() {
-                let (cards, glows) = pu_draw::instances(&pu.draw_list(), &pu.looks, self.cam.pos);
+                // (each entry culled by its sphere against the frame's planes, F-50958 in F-12500)
+                let (cards, glows) = pu_draw::instances(&pu.draw_list(), &pu.looks, self.cam.pos, &frustum);
                 // (the camera's right and up: the rows of the view the frame is drawn with)
                 let v = if self.drive && self.vehicles.player().is_some() { self.chase.view() } else { self.cam.view() };
                 let (r, u) = (Vec3::new(v.x_axis.x, v.y_axis.x, v.z_axis.x), Vec3::new(v.x_axis.y, v.y_axis.y, v.z_axis.y));
