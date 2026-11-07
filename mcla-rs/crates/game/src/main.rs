@@ -8821,6 +8821,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
                 let mut boom_view = false;
+                // (the port's own near for the views the director does not show: cutscenes, garage, free camera;
+                // the director's views take boomcam::DIRECTOR_NEAR below)
+                self.cam.near = camera::Camera::default().near;
                 self.lod_near = if title_view.is_some() { titlecam::NEAR } else { self.cam.near };
                 self.boom_up = None;
                 if own_view {
@@ -9015,7 +9018,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             fixed_mount: !chase,
                             model_offset: car.model.simtunes.as_ref().map_or(Vec3::ZERO, |s| Vec3::new(s.base.s.model_offset_x, s.base.s.model_offset_y, s.base.s.model_offset_z)),
                         };
-                        self.lod_near = tune.near();
+                        // (the director's lens, F-98562: near 0.2 in every view it shows, not the file's CameraNear)
+                        self.cam.near = boomcam::DIRECTOR_NEAR;
+                        self.lod_near = boomcam::DIRECTOR_NEAR;
                         let out = self.boom.update(tune, &target, dt);
                         // (F-37740's head, before the wipeout camera is taken: a director on its view
                         // blend is finished at once - F-70013 - so the drive view is current, no blend)
@@ -9219,7 +9224,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         if tune.collide_type() & 2 != 0 && !self.event_dir.running() && !self.crash_cam.active() && !self.ability_cam.active() {
                             let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
                             let ty = (out.fov.to_radians() * 0.5).tan();
-                            let corner = tune.near() * (ty * ty + (ty * aspect) * (ty * aspect)).sqrt();
+                            let corner = boomcam::DIRECTOR_NEAR * (ty * ty + (ty * aspect) * (ty * aspect)).sqrt();
                             let inside_car = boomcam::VIEW_OF_PORT[(mode as usize).min(5)] < 2 && !self.look_back;
                             let r = if inside_car { corner * 2.0 } else { corner + 0.01 };
                             let from = self.boom.collide_from(tune, &target);

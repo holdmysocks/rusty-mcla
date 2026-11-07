@@ -80,15 +80,17 @@ impl BoomTune {
     fn range(&self, k: &str, i: usize) -> f32 {
         self.f.get(k).and_then(|v| v.get(i)).copied().unwrap_or(0.0)
     }
-    pub fn near(&self) -> f32 {
-        let n = self.s("CameraNear");
-        if n > 0.0 {
-            n
-        } else {
-            0.2
-        }
-    }
 }
+
+/// The near plane of every view the camera director shows (the drive views, the look back, the event,
+/// wipeout and ability cameras). The director's lens (F-98562, every frame) takes the current camera's
+/// CameraNear / CameraFar (+172 / +176) only while its byte +92 is clear. The manager's setup (F-82384)
+/// sets the main viewport's near 0.2 (the image constant 0x3E4CCCCD) and far 6000, then +92 = 1 with +88 / +84 = those two.
+/// F-38892 only ever writes 1 there; the director's constructor F-52855 is the one place that clears it.
+/// So a file's CameraNear (0.1 in the POV files, 0.2 in the rest) never reaches the lens: 0.2
+/// everywhere (read live: viewport +704 = 0.2, +708 = 6000). GitHub #43: the port drew the cockpit with
+/// its own 0.3, which cut the roof lining once speed moved the eye back under it.
+pub const DIRECTOR_NEAR: f32 = f32::from_bits(0x3E4C_CCCD);
 
 /// A car's cameras.
 pub struct BoomSet {
@@ -3934,6 +3936,27 @@ camTrackCS {
         };
         let (plain, boosted) = (run((0.0, 1.0), false), run((15.0, 0.8), true));
         assert!((plain.0 - boosted.0).length() < 1e-5 && plain.1 == boosted.1, "{plain:?} {boosted:?}");
+    }
+
+    /// GitHub #43: the director's lens near (F-82384 -> director +88 with +92 set, read by F-98562) is the
+    /// main viewport's 0.2 (0x3E4CCCCD), not a file's CameraNear: the POV files say 0.1 and
+    /// the rest 0.2, and none of them reaches the lens. The port used 0.3, which cut the roof lining.
+    #[test]
+    fn director_near_is_the_viewports() {
+        assert_eq!(DIRECTOR_NEAR.to_bits(), 0x3E4C_CCCD);
+        assert!(DIRECTOR_NEAR < crate::camera::Camera::default().near);
+        let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| r"D:\MCLA\extracted\cache".into());
+        let mut seen = 0;
+        for car in ["vp_nsn_240sx_98", "vp_vw_golf_83", "vp_aud_r8_08"] {
+            let Some(set) = BoomSet::load(&data, car) else { continue };
+            seen += 1;
+            assert_eq!(set.views.len(), 5, "{car}");
+            for (i, v) in set.views.iter().enumerate() {
+                let file = v.s("CameraNear");
+                assert_eq!(file, if i == 3 { 0.1 } else { 0.2 }, "{car} view {i}: the file's CameraNear");
+            }
+        }
+        eprintln!("{seen} cars' camera files read");
     }
 
     /// Photo mode's free camera reads PHOTO_CAM_* (DECISIONS.md D35): every one of the disc's
