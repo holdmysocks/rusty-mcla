@@ -599,6 +599,8 @@ pub struct RideIn {
     pub all_down: bool,
     /// ctx+124: the gearbox's shift direction (transmission +24), +1 up, -1 down
     pub shift: i8,
+    /// IsDriveableStart (bit 13): chassis +592 bit 0x2, the grid hold (F-28290; the burnout centre's turns wait for it to clear)
+    pub driveable_start: bool,
     /// IsCutscenePlaying
     pub cutscene: bool,
     /// IsOpponentDefined, ctx byte +49: the driver's record byte 0 is clear (taken as: not the local human)
@@ -635,6 +637,7 @@ impl RideIn {
             reversing,
             all_down: vs.map_or(st.wheels[0].grounded && st.wheels[2].grounded, |v| v.wheels[0].record && v.wheels[2].record),
             shift: vs.map_or(0, |v| v.gear_change.direction),
+            driveable_start: input.hold,
             cutscene,
             opponent: !player,
             look: 0.0,
@@ -809,10 +812,107 @@ fn add_pose(base: &mut [(Quat, Vec3)], ov: &[(Quat, Vec3)], clip: &Clip) {
 /// and its children (filter +96) at a phase the driver's smoother sets each frame (F-32205: F-36491 towards F-66750's
 /// 0.5 - ctx+120 x 0.5, then F-47264: time = clamp(p x duration, 0, duration)); the smoother runs only while it is armed.
 #[allow(clippy::too_many_arguments)]
+/// The riding states' transitions (F-71745's graph), each state's tests in the builder's order, the first true one taken. `ck`:
+/// CockpitCamActive (ctx+8 bit 21), `edge`: its rising or falling edge this frame (bits 19 / 20, F-71405), `ta` / `tb`: timers A / B
+/// (ctx+148 / +152), `left_clip` / `left_overlay`: ReadTimeRemaining / ReadTimeRemainingOverlay (-1 with no clip). The rolling
+/// cutoff is tune +48 (0.15 mph, the constructor's) x 0.44704. The graph's damage-out / impact / gesture / suspended transitions
+/// are not here (the ragdoll and the gestures are the port's own paths). Checked against the original's tests run offline
+/// (`ride_transitions_match_the_original`).
+#[allow(clippy::too_many_arguments)]
+fn ride_next(s: St, i: &RideIn, ck: bool, edge: bool, ta: f32, tb: f32, left_clip: f32, left_overlay: f32) -> Option<St> {
+    const STOPPED: f32 = 0.15 * 0.44704;
+    let rolling = i.speed > STOPPED + 0.5 && !i.burnout;
+    let burn_side = |i: &RideIn| if i.burnout && i.goal_steer < -0.5 { Some(St::BurnL) } else if i.burnout && i.goal_steer > 0.5 { Some(St::BurnR) } else { None };
+    match s {
+        St::Start => Some(St::Cruise),
+        St::Stopped => {
+            if let Some(s) = burn_side(i) {
+                Some(s)
+            } else if i.burnout {
+                Some(St::BurnC)
+            } else if i.reversing {
+                Some(St::Reverse)
+            } else if rolling {
+                Some(St::Cruise)
+            } else if ta > 15.0 && i.x.abs() < 0.1 && !i.cutscene && !i.opponent && !ck {
+                Some(St::Fidget)
+            } else if edge {
+                Some(St::Stopped)
+            } else {
+                None
+            }
+        }
+        St::Cruise => {
+            if i.nitro && ta > 0.25 && !i.opponent {
+                Some(St::Nos)
+            } else if i.wheelie {
+                Some(St::Wheelie)
+            } else if i.endo {
+                Some(St::Endo)
+            } else if i.tuck && ta > 1.5 {
+                Some(St::Tuck)
+            } else if let Some(s) = burn_side(i) {
+                Some(s)
+            } else if i.burnout {
+                Some(St::BurnC)
+            } else if (i.shift == 1 || i.shift == -1) && !ck {
+                Some(St::Shift)
+            } else if i.speed <= STOPPED {
+                Some(St::Stopped)
+            } else if edge {
+                Some(St::Cruise)
+            } else {
+                None
+            }
+        }
+        St::Tuck => if !i.tuck { Some(St::Cruise) } else if edge { Some(St::Tuck) } else { None },
+        St::Wheelie => if i.all_down { Some(St::Cruise) } else if edge { Some(St::Wheelie) } else { None },
+        St::Endo => if !i.endo { Some(St::Cruise) } else if edge { Some(St::Endo) } else { None },
+        St::BurnC => {
+            if i.burnout && i.goal_steer < -0.5 && ta > 0.75 && !i.driveable_start {
+                Some(St::BurnL)
+            } else if i.burnout && i.goal_steer > 0.5 && ta > 0.75 && !i.driveable_start {
+                Some(St::BurnR)
+            } else if !i.burnout && tb > 0.5 {
+                Some(St::Cruise)
+            } else if edge {
+                Some(St::BurnC)
+            } else {
+                None
+            }
+        }
+        St::BurnL => if i.burnout && i.goal_steer > -0.5 { Some(St::BurnC) } else if !i.burnout { Some(St::Cruise) } else if edge { Some(St::BurnL) } else { None },
+        St::BurnR => if i.burnout && i.goal_steer < 0.5 { Some(St::BurnC) } else if !i.burnout { Some(St::Cruise) } else if edge { Some(St::BurnR) } else { None },
+        St::Nos => if !i.nitro { Some(St::Cruise) } else if edge { Some(St::Nos) } else { None },
+        St::Shift => if left_overlay < 0.25 || edge { Some(St::Cruise) } else { None },
+        St::Reverse => {
+            if i.throttle > 0.0 && i.speed > 0.0 {
+                Some(St::Cruise)
+            } else if !i.reversing && i.speed.abs() < 0.02 && i.x.abs() < 0.1 {
+                Some(St::Stopped)
+            } else if edge {
+                Some(St::Reverse)
+            } else {
+                None
+            }
+        }
+        St::Fidget => {
+            if i.reversing {
+                Some(St::Reverse)
+            } else if left_clip < 0.033 || i.x.abs() > 0.1 || i.cutscene {
+                Some(St::Stopped)
+            } else if rolling || edge {
+                Some(St::Cruise)
+            } else {
+                None
+            }
+        }
+    }
+}
+
 /// The rider machine's frame without the pose (the graph's transitions in the builder's order, the enters' timers and the
 /// crossfade they start, the cruise update's timer B): what `ride_pose` poses from. `time`: the clock the start's idle runs on.
 fn ride_state(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32) {
-    const STOPPED: f32 = 0.15 * 0.44704;
     let ck = i.ck;
     let ck_before = r.ck;
     let edge = ck != r.ck && r.state != St::Start;
@@ -824,95 +924,7 @@ fn ride_state(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32) {
     let left = |c: Option<&Clip>, t: f32| c.map_or(-1.0, |c| (c.anim.duration - t).max(0.0));
     let look = |r: &Ride| b.look[(r.fidgets % 2) as usize].as_ref();
     let shift_over = |r: &Ride| if r.shift_ck { b.shft_low_ck.as_ref().or(b.shft_low.as_ref()) } else { b.shft_low.as_ref() };
-    let rolling = i.speed > STOPPED + 0.5 && !i.burnout;
-    let burn_side = |i: &RideIn| if i.burnout && i.goal_steer < -0.5 { Some(St::BurnL) } else if i.burnout && i.goal_steer > 0.5 { Some(St::BurnR) } else { None };
-    let next_of = |r: &Ride| -> Option<St> {
-        match r.state {
-            St::Start => Some(St::Cruise),
-            St::Stopped => {
-                if let Some(s) = burn_side(i) {
-                    Some(s)
-                } else if i.burnout {
-                    Some(St::BurnC)
-                } else if i.reversing {
-                    Some(St::Reverse)
-                } else if rolling {
-                    Some(St::Cruise)
-                } else if r.timer_a > 15.0 && i.x.abs() < 0.1 && !i.cutscene && !i.opponent && !ck {
-                    Some(St::Fidget)
-                } else if edge {
-                    Some(St::Stopped)
-                } else {
-                    None
-                }
-            }
-            St::Cruise => {
-                if i.nitro && r.timer_a > 0.25 && !i.opponent {
-                    Some(St::Nos)
-                } else if i.wheelie {
-                    Some(St::Wheelie)
-                } else if i.endo {
-                    Some(St::Endo)
-                } else if i.tuck && r.timer_a > 1.5 {
-                    Some(St::Tuck)
-                } else if let Some(s) = burn_side(i) {
-                    Some(s)
-                } else if i.burnout {
-                    Some(St::BurnC)
-                } else if i.shift != 0 && !ck {
-                    Some(St::Shift)
-                } else if i.speed <= STOPPED {
-                    Some(St::Stopped)
-                } else if edge {
-                    Some(St::Cruise)
-                } else {
-                    None
-                }
-            }
-            St::Tuck => if !i.tuck { Some(St::Cruise) } else if edge { Some(St::Tuck) } else { None },
-            St::Wheelie => if i.all_down { Some(St::Cruise) } else if edge { Some(St::Wheelie) } else { None },
-            St::Endo => if !i.endo { Some(St::Cruise) } else if edge { Some(St::Endo) } else { None },
-            St::BurnC => {
-                if i.burnout && i.goal_steer < -0.5 && r.timer_a > 0.75 {
-                    Some(St::BurnL)
-                } else if i.burnout && i.goal_steer > 0.5 && r.timer_a > 0.75 {
-                    Some(St::BurnR)
-                } else if !i.burnout && r.timer_b > 0.5 {
-                    Some(St::Cruise)
-                } else if edge {
-                    Some(St::BurnC)
-                } else {
-                    None
-                }
-            }
-            St::BurnL => if i.burnout && i.goal_steer > -0.5 { Some(St::BurnC) } else if !i.burnout { Some(St::Cruise) } else if edge { Some(St::BurnL) } else { None },
-            St::BurnR => if i.burnout && i.goal_steer < 0.5 { Some(St::BurnC) } else if !i.burnout { Some(St::Cruise) } else if edge { Some(St::BurnR) } else { None },
-            St::Nos => if !i.nitro { Some(St::Cruise) } else if edge { Some(St::Nos) } else { None },
-            St::Shift => if left(shift_over(r), r.t) < 0.25 || edge { Some(St::Cruise) } else { None },
-            St::Reverse => {
-                if i.throttle > 0.0 && i.speed > 0.0 {
-                    Some(St::Cruise)
-                } else if !i.reversing && i.speed.abs() < 0.02 && i.x.abs() < 0.1 {
-                    Some(St::Stopped)
-                } else if edge {
-                    Some(St::Reverse)
-                } else {
-                    None
-                }
-            }
-            St::Fidget => {
-                if i.reversing {
-                    Some(St::Reverse)
-                } else if left(look(r), r.t) < 0.033 || i.x.abs() > 0.1 || i.cutscene {
-                    Some(St::Stopped)
-                } else if rolling || edge {
-                    Some(St::Cruise)
-                } else {
-                    None
-                }
-            }
-        }
-    };
+    let next_of = |r: &Ride| ride_next(r.state, i, ck, edge, r.timer_a, r.timer_b, left(look(r), r.t), left(shift_over(r), r.t));
     // (the cruise update - the burnouts' too, centre, left and right: timer B held at 0 while IsBurnout, F-61324's tail)
     let update = |r: &mut Ride| {
         if matches!(r.state, St::Cruise | St::BurnC | St::BurnL | St::BurnR) && i.burnout {
@@ -2796,6 +2808,7 @@ mod ride_recorded_tests {
                 reversing: fl & 0x80 != 0,
                 all_down: fl & 0x4000_0000 != 0,
                 shift: w[31] as i32 as i8,
+                driveable_start: fl & 0x2000 != 0,
                 cutscene: false,
                 opponent: (w[12] >> 16) & 0xff != 0,
                 look: f(&w, 120),
@@ -2889,5 +2902,120 @@ mod ride_recorded_tests {
             eprintln!("  {n}");
         }
         assert!(bad_state == 0 && bad_timer == 0 && bad_enter == 0 && bad_pan == 0 && bad_set == 0, "{run}");
+    }
+}
+
+#[cfg(test)]
+mod ride_transition_tests {
+    use super::*;
+
+    /// The riding states' transitions against the original's own tests (the bike machine built by its Init with the bike's symbol
+    /// table and graph builder F-71745, every transition tested by F-15065 on 4,000 random contexts with the tune its constructor
+    /// F-40144 makes: `tools/bike_cond_reference.py`). Per riding state the first true transition's target is compared with
+    /// `ride_next`; the cases hold no gesture, no impact / damage-out rising edge and the update not culled, so the graph's
+    /// gesture / impact / damage-out / suspended transitions must test false (they are the port's own paths).
+    #[test]
+    fn ride_transitions_match_the_original() {
+        // (the states in the order the Init built them, each with its transitions' targets: `ride_graph_raw.txt`)
+        const GRAPH: &[(&str, &[&str])] = &[
+            ("start here", &["damageout switch", "impact switch", "cruise"]),
+            ("stopped idle", &["damageout switch", "impact switch", "gesture switch", "burnout left", "burnout right", "burnout center", "reverse", "cruise", "fidget", "stopped idle"]),
+            ("stopped idle instant", &["damageout switch", "impact switch", "stopped idle"]),
+            ("cruise", &["damageout switch", "impact switch", "suspended", "gesture switch", "nos boost", "wheelie", "endo", "tuck", "burnout left", "burnout right", "burnout center", "shift", "stopped idle", "cruise"]),
+            ("suspended", &["damageout switch", "impact switch", "cruise"]),
+            ("tuck", &["damageout switch", "impact switch", "cruise", "tuck"]),
+            ("wheelie", &["damageout switch", "impact switch", "cruise", "wheelie"]),
+            ("endo", &["damageout switch", "impact switch", "cruise", "endo"]),
+            ("burnout center", &["damageout switch", "impact switch", "burnout left", "burnout right", "cruise", "burnout center"]),
+            ("burnout left", &["damageout switch", "impact switch", "burnout center", "cruise", "burnout left"]),
+            ("burnout right", &["damageout switch", "impact switch", "burnout center", "cruise", "burnout right"]),
+            ("nos boost", &["damageout switch", "impact switch", "cruise", "nos boost"]),
+            ("impact switch", &["impact eject left", "impact eject right", "impact fall backward", "impact flip forward", "stopped idle instant"]),
+            ("impact flip forward", &["impact ragdoll"]),
+            ("impact eject left", &["impact ragdoll"]),
+            ("impact eject right", &["impact ragdoll"]),
+            ("impact fall backward", &["impact ragdoll"]),
+            ("impact ragdoll", &["impact ragdoll recovery", "damageout ragdoll recovery"]),
+            ("impact ragdoll recovery", &["stopped idle instant"]),
+            ("damageout switch", &["damageout eject left", "damageout eject right", "damageout fall backward", "damageout flip forward", "stopped idle instant"]),
+            ("damageout flip forward", &["damageout ragdoll"]),
+            ("damageout eject left", &["damageout ragdoll"]),
+            ("damageout eject right", &["damageout ragdoll"]),
+            ("damageout fall backward", &["damageout ragdoll"]),
+            ("damageout ragdoll", &["damageout ragdoll recovery"]),
+            ("damageout ragdoll recovery", &["stopped idle instant"]),
+            ("shift", &["damageout switch", "impact switch", "cruise", "cruise"]),
+            ("reverse", &["damageout switch", "impact switch", "cruise", "stopped idle", "reverse"]),
+            ("fidget", &["damageout switch", "impact switch", "gesture switch", "reverse", "stopped idle", "cruise", "cruise"]),
+            ("gesture switch", &["damageout switch", "impact switch", "stopped idle"]),
+        ];
+        let port = |n: &str| match n {
+            "start here" => Some(St::Start),
+            "stopped idle" => Some(St::Stopped),
+            "cruise" => Some(St::Cruise),
+            "tuck" => Some(St::Tuck),
+            "wheelie" => Some(St::Wheelie),
+            "endo" => Some(St::Endo),
+            "burnout center" => Some(St::BurnC),
+            "burnout left" => Some(St::BurnL),
+            "burnout right" => Some(St::BurnR),
+            "nos boost" => Some(St::Nos),
+            "shift" => Some(St::Shift),
+            "reverse" => Some(St::Reverse),
+            "fidget" => Some(St::Fidget),
+            _ => None,
+        };
+        let other = ["damageout switch", "impact switch", "gesture switch", "suspended"];
+        assert_eq!(GRAPH.iter().map(|g| g.1.len()).sum::<usize>(), 107);
+        let (mut n, mut compared, mut fired) = (0, 0, [0usize; 13]);
+        for line in include_str!("testdata/ride_cond_ref.txt").lines() {
+            let (a, bits) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = a.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let f = |k: usize| f32::from_bits(w[k]);
+            let fl = w[1];
+            let bit = |b: u32| fl >> b & 1 != 0;
+            let i = RideIn {
+                ck: bit(21),
+                speed: f(7),
+                x: f(4),
+                throttle: f(6),
+                goal_steer: f(3),
+                tuck: bit(23),
+                wheelie: bit(5),
+                endo: bit(6),
+                burnout: bit(8),
+                nitro: bit(4),
+                reversing: bit(7),
+                all_down: bit(30),
+                shift: w[8] as i32 as i8,
+                driveable_start: bit(13),
+                cutscene: w[13] != 0,
+                opponent: (w[5] >> 16) & 0xff != 0,
+                look: 0.0,
+            };
+            assert_eq!((w[0], w[5] >> 24), (20, 0), "{line}");
+            let edge = bit(19) || bit(20);
+            let bits = bits.as_bytes();
+            let mut k = 0;
+            for (s, ts) in GRAPH {
+                let seg = &bits[k..k + ts.len()];
+                k += ts.len();
+                let Some(st) = port(s) else { continue };
+                let first = seg.iter().position(|&c| c == b'1').map(|t| ts[t]);
+                assert!(first.map_or(true, |t| !other.contains(&t)), "{s}: {first:?} {line}");
+                let want = first.map(|t| port(t).unwrap());
+                let got = ride_next(st, &i, i.ck, edge, f(9), f(10), f(11), f(12));
+                assert_eq!(got, want, "{s}: {line}");
+                if want.is_some() {
+                    fired[st as usize] += 1;
+                }
+                compared += 1;
+            }
+            assert_eq!(k, bits.len());
+            n += 1;
+        }
+        assert_eq!((n, compared), (4000, 4000 * 13));
+        // (the start always leaves; every other riding state took a transition in some cases and kept its state in others)
+        assert!(fired[0] == 4000 && fired[1..].iter().all(|&c| c > 50 && c < 4000 - 50), "{fired:?}");
     }
 }
