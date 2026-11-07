@@ -10549,6 +10549,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             if (self.frame_no == 60 || self.frame_no == 280) && std::env::var("MCLA_GLOW_DUMP").is_ok() { eprintln!("carrefl P {:.3} {:.3} {:.3} origin y {:.3} rect {:.5} {:.5} {:.5} {:.5} depth {:.5} I {:.4}", p.x, p.y, p.z, oy, r.r[0], r.r[1], r.r[2], r.r[3], r.z[0], r.z[1]); }
                             sig_refl.push(r);
                         }
+                    }
                     if let Some(g) = tune.car(w, p, f, c, k, cam, tan) {
                         // (ahead of the props for the cut at 96: the port's prop list is longer than the
                         // game's - 74 props at the gate at 23:30, the car's four lamps at 74 .. 77 of 80 -
@@ -10588,7 +10589,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         {
             // local lights: headlights of the cars around the camera + nearest street lamps (night only)
-                    }
             // the player's lamp table is its garage record's - the save's copy of the set-up it was
             // made from (bought: `<car>.xcc`, a prize: the reward's set-up) - as the original draws it
             self.vehicles.player_lamps = self.vehicles.player().and_then(|p| {
