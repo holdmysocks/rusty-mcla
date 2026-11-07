@@ -16,7 +16,7 @@
 //! dynamic lanes of all 52 walkers recorded (work/lighting2/picker).
 
 use crate::render::{LampRec, LampTables};
-use glam::{Quat, Vec3};
+use glam::Vec3;
 
 /// The lights the walkers' picker lays over the grid lamps this frame.
 #[derive(Clone, Copy, Default)]
@@ -41,17 +41,24 @@ fn target(t: &LampTables, p: Vec3) -> [LampRec; 4] {
 }
 
 /// F-27981: `from` turned towards `to` by `frac` of the angle between them (to them at
-/// once when they stand at right angles: |cos| < 0.001).
+/// once when they stand at right angles: |cos| < 0.001), operation for operation: the cosine
+/// x x' + (z z' + y y') fused, clamped to -1 .. 1, the angle -acos x frac (the guest's acos),
+/// and F-80753: the rotation F-10410 about to x from (the vector unit's cross), `from` carried
+/// through its rows by the vector unit's sums and made a unit vector by one Newton step.
+/// Checked bit for bit against the original's code run offline (4,000 cases, test below).
 pub fn turn(from: Vec3, to: Vec3, frac: f32) -> Vec3 {
-    let c = from.dot(to);
+    use crate::physics::exact::{cross, dot3, dot_xzy, guest_acos, rotation_about, rsqrt};
+    let c = dot_xzy(from, to);
     if c.abs() < 0.001 {
         return to;
     }
-    let axis = from.cross(to);
-    if axis.length_squared() < 1e-12 {
-        return from;
-    }
-    (Quat::from_axis_angle(axis.normalize(), c.clamp(-1.0, 1.0).acos() * frac) * from).normalize_or(to)
+    let c = if c - -1.0 >= 0.0 { c } else { -1.0 };
+    let c = if c - 1.0 >= 0.0 { 1.0 } else { c };
+    let angle = -(guest_acos(c as f64) as f32) * frac;
+    let m = rotation_about(cross(to, from), angle);
+    let col = |i: usize| Vec3::new(m[0][i], m[1][i], m[2][i]);
+    let r = Vec3::new(dot3(from, col(0)), dot3(from, col(1)), dot3(from, col(2)));
+    r * rsqrt(dot3(r, r))
 }
 
 /// The score of a light at `p` (F-60154): sat(strength / d^2) x its cone.
@@ -156,6 +163,25 @@ impl FigureLight {
 
 #[cfg(test)]
 mod tests {
+    /// F-27981 against the original's code run offline (`tools/figlight_turn_reference.py`).
+    #[test]
+    fn turn_as_the_original() {
+        let f = |h: &str| f32::from_bits(u32::from_str_radix(h, 16).unwrap());
+        let (mut n, mut bad) = (0, 0);
+        for l in include_str!("render/testdata/figlight_turn_reference.txt").lines() {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            let v = |i: usize| glam::Vec3::new(f(w[i]), f(w[i + 1]), f(w[i + 2]));
+            let got = super::turn(v(1), v(4), f(w[7]));
+            let want = v(8);
+            if got.to_array().map(f32::to_bits) != want.to_array().map(f32::to_bits) {
+                if bad < 5 { eprintln!("{l} -> {got:?}"); }
+                bad += 1;
+            }
+            n += 1;
+        }
+        assert_eq!((n, bad), (4000, 0));
+    }
+
     use super::*;
 
     fn tables() -> LampTables {
