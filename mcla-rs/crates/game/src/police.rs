@@ -1623,6 +1623,18 @@ impl Police {
         vehicles.cars.retain(|c| !(c.cop && c.vinyl_name.starts_with("police_unit:")));
     }
 
+    /// CopArrest.sco's 0xaa8 SetAllPoliceUnderground(1, 1), before the scene's slots: every unit underground as
+    /// `units_down`, but the cars the scene cast (Cars_AssignIdToSlot then the mover snap bring them from the slot place
+    /// into the scene; the port keeps them where the scene posed them) stay; the rest leave the road now, not after the scene.
+    pub fn units_down_but_cast(&mut self, vehicles: &mut Vehicles) {
+        for u in self.units.iter_mut() {
+            u.under = true;
+            u.may_patrol = false;
+        }
+        self.units_held = true;
+        vehicles.cars.retain(|c| !(c.cop && c.vinyl_name.starts_with("police_unit:") && !c.driver.starts_with("cine:")));
+    }
+
     /// PoliceManager_SetAllPoliceUnderground(0, 1): the units come up at their surface place;
     /// the port puts each there (`update_units`) while the player is within streaming reach.
     pub fn units_up(&mut self) {

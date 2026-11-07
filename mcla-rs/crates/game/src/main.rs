@@ -7433,6 +7433,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 self.police.hold_busted(secs);
                             }
                         }
+                // (CopArrest.sco 0xa9f / 0xaa8 on the cops' path: SetAllPoliceActive(0), SetAllPoliceUnderground(1, 1) before the
+                // slots - the units the scene did not cast leave the road under the black; the Busted end's units_down
+                // takes the rest after the scene)
+                if !goons {
+                    self.police.units_down_but_cast(&mut self.vehicles);
+                }
                 // (core 0xfb3: EndDescriptionAndStartClock, WAITUNWARPED(10), the fade up (0, 1, 1.0, 0) not waited)
                 self.arrest_mask.release(1.0);
                 self.game.arrest_scene = if started_scene { 1 } else { 2 };
