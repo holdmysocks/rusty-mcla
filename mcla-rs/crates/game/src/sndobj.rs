@@ -162,6 +162,27 @@ pub fn audio_rand(lo: i32, hi: i32) -> i32 {
     SharedMwc.with(|m| lo + ((m.next() & 0x7FFF_FFFF) % (hi - lo + 1).max(1) as u32) as i32)
 }
 
+/// One Doppler sample (F-42745 and the 50/50 smoothing): distance `d` now, `pd` at the last sample `elapsed` seconds ago.
+fn doppler_step(ratio: f32, d: f32, pd: f32, factor: f32, elapsed: f32) -> f32 {
+    let v = ((d - pd) * factor / elapsed).clamp(-100.0, 100.0);
+    0.5 * ratio + 0.5 * (340.0 / (340.0 + v))
+}
+
+/// A new sound's variance draws (F-40563), each with F-62480 only when its variance is not 0, in this order: volume
+/// (fmadds(+15, 0.01, r x 0.01): the sound's +28), pitch (+19 + r, 16 bits: +32), pan (none when 0xFFFF and then no draw,
+/// else (s16(r) + s16(+23) + 360) % 360 truncating: +10), predelay (+27 + r: the word +88) and start offset (+31 + r: the
+/// word +104).
+fn variances(h: &SoundHeader) -> (f32, i16, i16, u32, u32) {
+    let draw = |v: u32| if v == 0 { 0 } else { SharedMwc.int(-(v as i32), v as i32) };
+    let r = draw(h.volume_var as u32);
+    let vol = (h.volume as f32).mul_add(0.01, r as f32 * 0.01);
+    let pitch = (h.pitch as u16 as i32).wrapping_add(draw(h.pitch_var as u32)) as i16;
+    let pan = if h.pan == -1 { -1 } else { ((draw(h.pan_var as u32) as i16 as i32 + h.pan as i32 + 360) % 360) as i16 };
+    let pd = (h.predelay as u32).wrapping_add(draw(h.predelay_var as u32) as u32);
+    let so = h.start_offset.wrapping_add(draw(h.start_offset_var) as u32);
+    (vol, pitch, pan, pd, so)
+}
+
 /// The shared audio generator's state (lo, carry), and setting it (tests against recorded states).
 #[cfg(test)]
 pub fn audio_rng_state() -> (u32, u32) {
@@ -1192,12 +1213,12 @@ impl SoundLib {
         let o = self.snd.get(hash)?.to_vec();
         let s = audcfg::parse_sound(&o);
         let h = s.header.clone();
-        // variances, drawn once (F-40563)
-        let vol = (h.volume as i32 + self.rng.int(-(h.volume_var as i32), h.volume_var as i32)) as f32 * 0.01;
-        let pitch = (h.pitch as i32 + self.rng.int(-(h.pitch_var as i32), h.pitch_var as i32)) as i16 as i32;
-        let pan = if h.pan == -1 { -1 } else { ((h.pan as i32 + self.rng.int(-(h.pan_var as i32), h.pan_var as i32) + 360).rem_euclid(360)) as i16 };
-        let predelay_ms = (h.predelay as i32 + self.rng.int(-(h.predelay_var as i32), h.predelay_var as i32)).max(0) as f32;
-        let start_ms = (h.start_offset as i64 + self.rng.int(-(h.start_offset_var.min(i32::MAX as u32) as i32), h.start_offset_var.min(i32::MAX as u32) as i32) as i64).max(0) as f32;
+        // variances, drawn once (F-40563); the predelay and start offset words are never negative on the disc's data (no
+        // variance exceeds its value; how a negative one would be read is not decoded, so it is kept at 0 here)
+        let (vol, pitch, pan, pd, so) = variances(&h);
+        let pitch = pitch as i32;
+        let predelay_ms = (pd as i32).max(0) as f32;
+        let start_ms = (so as i32).max(0) as f32;
         let mut ty_ms = 0;
         let kind = match s.payload {
             Payload::Simple { bank, wave } => {
@@ -1536,6 +1557,32 @@ impl SoundLib {
         self.chain_params.push((id, p));
     }
 
+    /// Doppler (F-42745), once per drawn frame (the original: once per update that brings the sound a new position, i.e.
+    /// once per game frame): the radial speed from the change of the distance to `listener` since the last
+    /// sample, ratio c / (c + v) with c 340 and v clamped to +-100, smoothed 50/50. `listener` is the frame's
+    /// camera and the sounds' positions are the ones it was made from (the ticks' last), so the two are of one moment -
+    /// sampled every 60 Hz tick against a camera that moves once per frame, the distance to a followed car jumped by a
+    /// frame's travel and back (#43: the engine warbled in the outside views at 30 fps). `elapsed`: the game time since the
+    /// last sample (no sample when 0: nothing moved). (The original divides by a constant 30 ms, its frame's; the port by
+    /// the time that passed, so the speed does not depend on the frame rate.)
+    pub fn doppler_frame(&mut self, listener: Vec3, elapsed: f32) {
+        if !(elapsed > 0.0) {
+            return;
+        }
+        for inst in self.insts.iter_mut() {
+            if inst.timer.is_some_and(|t| self.timer_paused[t as usize]) {
+                continue;
+            }
+            if let Some(p) = inst.req.pos {
+                let d = (p - listener).length();
+                if let Some(pd) = inst.prev_dist {
+                    inst.doppler = doppler_step(inst.doppler, d, pd, inst.req.doppler, elapsed);
+                }
+                inst.prev_dist = Some(d);
+            }
+        }
+    }
+
     pub fn update(&mut self, dt: f32, audio: &mut Audio) {
         self.step_scenes(dt);
         for (id, p) in std::mem::take(&mut self.chain_params) {
@@ -1558,17 +1605,6 @@ impl SoundLib {
                     }
                 });
                 continue;
-            }
-            // Doppler (F-42745): radial speed from the distance change, ratio c / (c + v), smoothed 50/50
-            if let Some(p) = inst.req.pos {
-                let d = (p - lp).length();
-                if let Some(pd) = inst.prev_dist {
-                    if dt > 0.0 {
-                        let v = ((d - pd) * inst.req.doppler / dt).clamp(-100.0, 100.0);
-                        inst.doppler = 0.5 * inst.doppler + 0.5 * (340.0 / (340.0 + v));
-                    }
-                }
-                inst.prev_dist = Some(d);
             }
             if inst.stop {
                 inst.stop = false;
@@ -2595,6 +2631,70 @@ fn decode_mp3_whole_from(dec: rodio::Decoder<std::io::BufReader<std::fs::File>>,
 
 #[cfg(test)]
 mod tests {
+
+    /// #43: a car at 40 m/s with the camera 6 m behind it, made once per drawn frame (30 fps: two 60 Hz ticks a frame).
+    /// Sampled once a frame against that frame's camera (doppler_frame) the distance never changes: the pitch stays put.
+    /// Sampled every tick against the frame's camera (the port before) the distance went 6 -> 6.67 -> 6 and the ratio swung
+    /// by several per cent each tick - the engine's warble in the outside views.
+    #[test]
+    fn a_followed_car_keeps_its_doppler() {
+        use super::*;
+        let (speed, tick) = (40.0f32, 1.0 / 60.0f32);
+        let (mut frame_ratio, mut frame_pd) = (1.0f32, None::<f32>);
+        let (mut tick_ratio, mut tick_pd) = (1.0f32, None::<f32>);
+        let (mut lo, mut hi) = (1.0f32, 1.0f32);
+        let mut car = 0.0f32;
+        let mut cam = car - 6.0;
+        for _frame in 0..60 {
+            // the frame's sample: the last frame's camera, the positions of its last tick
+            let d = car - cam;
+            if let Some(pd) = frame_pd {
+                frame_ratio = doppler_step(frame_ratio, d, pd, 1.0, 2.0 * tick);
+            }
+            frame_pd = Some(d);
+            for _ in 0..2 {
+                car += speed * tick;
+                let d = car - cam;
+                if let Some(pd) = tick_pd {
+                    tick_ratio = doppler_step(tick_ratio, d, pd, 1.0, tick);
+                    lo = lo.min(tick_ratio);
+                    hi = hi.max(tick_ratio);
+                }
+                tick_pd = Some(d);
+            }
+            cam = car - 6.0;
+            assert!((frame_ratio - 1.0).abs() < 1e-5, "{frame_ratio}");
+        }
+        assert!(hi - lo > 0.1, "{lo} .. {hi}");
+    }
+
+    /// A new sound's variance draws (F-40563) against the original's code run offline with the game's rand
+    /// (tools/sound_variance_reference.py): the 934 distinct field sets of the disc's sounds.dat and 3,000 random ones, the
+    /// generator's state chained through them - the sound's five values and the state after, bit for bit.
+    #[test]
+    fn variances_match_the_original() {
+        use super::*;
+        let t = include_str!("testdata/sound_variance_ref.txt");
+        let mut n = 0;
+        for l in t.lines() {
+            let w: Vec<u32> = l.split_whitespace().filter(|x| *x != "->").map(|x| u32::from_str_radix(&x[1..], 16).unwrap()).collect();
+            // an object with the ten fields present (mask bits 0 - 9), as parse_header reads it
+            let mut o = vec![0u8; 11];
+            o.extend_from_slice(&0x3FFu32.to_be_bytes());
+            for &f in &w[2..10] {
+                o.extend_from_slice(&(f as u16).to_be_bytes());
+            }
+            o.extend_from_slice(&w[10].to_be_bytes());
+            o.extend_from_slice(&w[11].to_be_bytes());
+            let (h, _) = audcfg::parse_header(&o);
+            set_audio_rng_state((w[0], w[1]));
+            let (v, p, pan, pd, so) = variances(&h);
+            let st = audio_rng_state();
+            assert_eq!((v.to_bits(), p as u16 as u32, pan as u16 as u32, pd, so, st.0, st.1), (w[12], w[13], w[14], w[15], w[16], w[17], w[18]), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 3934);
+    }
 
     /// The voice manager's ranking and pick (F-91203, F-96767) against the original's code run offline on random voice
     /// slots (tools/voice_rank_reference.py): the counts, the voices to start and to stop, in order

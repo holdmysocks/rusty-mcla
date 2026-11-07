@@ -289,6 +289,8 @@ struct App {
     /// the freeway men's scripts have made the police units (althk.rs)
     alt_units_made: bool,
     sim_clock: fixed_step::Clock,
+    /// the game ticks since the sounds' last Doppler sample (SoundLib::doppler_frame)
+    doppler_ticks: usize,
     /// Test-only render delta; still exercises the ordinary accumulator path.
     test_render_dt: Option<f64>,
     input: Input,
@@ -1250,6 +1252,7 @@ impl App {
             alt_menu_frames: 0,
             alt_units_made: false,
             sim_clock: fixed_step::Clock::default(),
+            doppler_ticks: 0,
             test_render_dt: std::env::var("MCLA_RENDER_HZ").ok().and_then(|s| s.parse::<f64>().ok()).filter(|v| v.is_finite() && *v >= 10.0).map(|hz| 1.0 / hz),
             input: Input::default(),
             last: Instant::now(),
@@ -8544,6 +8547,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         if let Some(w) = self.world.as_mut() {
             w.new_frame(6.0);
         }
+        // the Doppler sample of the last frame: its camera and the positions of its last tick (once per frame that moved
+        // anything, F-42745; the ticks since the last sample are its time)
+        if self.doppler_ticks > 0 {
+            if let Some(lib) = self.sound.lib.as_mut() {
+                lib.doppler_frame(self.cam.pos, self.doppler_ticks as f32 * fixed_step::DT);
+            }
+            self.doppler_ticks = 0;
+        }
+        self.doppler_ticks += ticks;
         for _ in 0..ticks {
             crate::ticktimes::start();
             self.update_gameplay(fixed_step::DT);

@@ -632,6 +632,30 @@ pub struct Category {
     pub reverb_dist: f32,
 }
 
+/// The inlined vector powf(10, y) (F-33229) as the recomp computes it (as busfx.rs): vexpte(f32(log2(10) * y)).
+fn pow10_vec(y: f32) -> f32 {
+    let x = f32::from_bits(0x4054_9A78) * y;
+    let n = (x as f64).floor();
+    let fr = (x as f64 - n) as f32;
+    let mut p = 1.877_576_7e-3f32;
+    for c in [8.989_339_7e-3f32, 5.582_631_8e-2, 2.401_536_1e-1, 6.931_530_8e-1, 1.0] {
+        p = p * fr + c;
+    }
+    (p as f64 * 2f64.powi(n as i32)) as f32
+}
+
+/// A category record's own volume (dB) and rolloff scale (F-31694, called by the loader F-41684 with the global blend factor,
+/// always 1.0 - SOUND_FORMAT.md 5.1): `vol = lin2dB(fmadds(dB2lin(+11 * 0.01) - dB2lin(+13 * 0.01), f, dB2lin(+13 * 0.01)))`,
+/// `scale = fmadds(+21 * 0.01 - +23 * 0.01, f, +23 * 0.01)`; dB2lin F-42985 with the vector powf, lin2dB the vector log2.
+/// (With the factor 1 the blend is not +11 itself: (a - b) + b rounds.)
+pub fn category_record(v11: i16, v13: i16, s21: u16, s23: u16) -> (f32, f32) {
+    let d2l = |db: f32| if db - (-100.0) >= 0.0 { pow10_vec(db * f32::from_bits(0x3D4C_CCCD)) } else { 0.0 };
+    let (a11, a13) = (d2l(v11 as f32 * 0.01), d2l(v13 as f32 * 0.01));
+    let lin = (a11 - a13).mul_add(1.0, a13);
+    let (k21, k23) = (s21 as f32 * 0.01, s23 as f32 * 0.01);
+    (lin2db(lin), (k21 - k23).mul_add(1.0, k23))
+}
+
 /// Resolve every category (by name hash) from BASE: volume and pitch add, LPF min, HPF max, rolloff scale multiplies;
 /// bits of +9 stop the parent's part (0x80 volume, 0x40 pitch, 0x20 LPF, 0x10 HPF, 0x08 rolloff scale).
 pub fn resolve_categories(cats: &Dat) -> HashMap<u32, Category> {
@@ -658,8 +682,9 @@ pub fn resolve_categories_rt(cats: &Dat, runtime: &HashMap<u32, f32>, cents: &Ha
             return;
         }
         let b9 = o.get(9).copied().unwrap_or(0);
-        let own_vol = lin2db(db2lin(be_i16(o, 11) as f32 * 0.01)) + runtime.get(&h).copied().unwrap_or(0.0);
-        let own = Category { volume: own_vol, pitch: be_i16(o, 15) as i32 + cents.get(&h).copied().unwrap_or(0), lpf: be_u16(o, 17), hpf: be_u16(o, 19), rolloff_scale: be_u16(o, 21) as f32 * 0.01, reverb_amount: be_u16(o, 25) as f32 * 0.01, reverb_dist: be_u16(o, 27) as f32 * 0.01 };
+        let (vol, scale) = category_record(be_i16(o, 11), be_i16(o, 13), be_u16(o, 21), be_u16(o, 23));
+        let own_vol = vol + runtime.get(&h).copied().unwrap_or(0.0);
+        let own = Category { volume: own_vol, pitch: be_i16(o, 15) as i32 + cents.get(&h).copied().unwrap_or(0), lpf: be_u16(o, 17), hpf: be_u16(o, 19), rolloff_scale: scale, reverb_amount: be_u16(o, 25) as f32 * 0.01, reverb_dist: be_u16(o, 27) as f32 * 0.01 };
         let own = match filters.get(&h) {
             Some(&(l, hp)) => Category { lpf: own.lpf.min(l), hpf: own.hpf.max(hp), ..own },
             None => own,
@@ -826,6 +851,35 @@ mod tests {
         assert_eq!(m.extend_from(&b), ["TWO"]);
         assert_eq!((m.get_name("TWO"), m.get_name("THREE"), m.get_name("ONE")), (Some(&[4u8][..]), Some(&[7u8, 8][..]), Some(&[1u8, 2, 3][..])));
         assert_eq!(m.banks, ["vehicles/vehicle_aux", "PLAYER_VEHICLES\\VP_X_08"], "the same bank by hash is not listed twice");
+    }
+
+    /// F-31694 against the original's code run offline (tools/category_record_reference.py, through the loader F-41684: every
+    /// category of the disc and 3,000 random field sets): the record's +8 rolloff scale and +12 / +16 reverb sends bit for bit; the +4 volume bit for bit except where the
+    /// harness's stand-in for the console's log instruction (the host log2f, not correctly rounded) and the port's
+    /// correctly rounded log2 part (36 random cases, 1 - 2 ulp; as curve3_log2_ambiguous_cases): those within 4 ulp.
+    #[test]
+    fn category_record_is_the_originals() {
+        let t = include_str!("testdata/category_record_ref.txt");
+        let (mut n, mut near, mut disc) = (0, 0, 0);
+        for l in t.lines() {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            let num = |i: usize| w[i][1..].parse::<i64>().unwrap();
+            let hex = |i: usize| u32::from_str_radix(&w[i][1..], 16).unwrap();
+            let (v, k) = category_record(num(0) as i16, num(1) as i16, num(2) as u16, num(3) as u16);
+            // (the loader's reverb sends, as resolve_categories_rt reads them)
+            let (ra, rd) = (num(4) as u16 as f32 * 0.01, num(5) as u16 as f32 * 0.01);
+            assert_eq!((k.to_bits(), ra.to_bits(), rd.to_bits()), (hex(8), hex(9), hex(10)), "{l}");
+            if v.to_bits() != hex(7) {
+                assert!((v.to_bits() as i64 - hex(7) as i64).abs() <= 4, "{l}");
+                assert!(n >= 146, "a category of the disc: {l}");
+                near += 1;
+            } else if n < 146 {
+                disc += 1;
+            }
+            n += 1;
+        }
+        assert_eq!((n, disc), (3146, 146));
+        assert!(near <= 40, "{near}");
     }
 
     /// Against the disc's own files (MCLA_DATA_DIR = extracted/cache), when present.
