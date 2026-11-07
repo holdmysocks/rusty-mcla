@@ -1740,7 +1740,7 @@ pub async fn step_async(st: &mut CarState, p: &CarParams, vt: &VehTune, input: C
     // grid hold, 0x2, and a deactivated racer, 0x1, come first. In this port's convention a pad car in reverse
     // has +136 in `brake`.)
     let reversed = if pad_exact { vs.pad.pedals.way < 0 } else { vs.gear < 0 };
-    if st.damage >= 0.999 && !input.deactivated && !input.hold {
+    if crate::police::damaged_out(st.damage) && !input.deactivated && !input.hold {
         let s = *vs.out_steer.get_or_insert(if vs.steer >= 0.0 { 1.0 } else { -1.0 });
         (input.throttle, input.brake) = if reversed { (1.0, 0.0) } else { (0.0, 1.0) };
         input.handbrake = false;
@@ -2303,7 +2303,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     {
         let a = if !vt.bike && t.s.tire_melt_damp_factor < 1.0 && melt_before > 0.01 { fma32(t.s.tire_melt_damp_factor - 1.0, melt_before, 1.0) } else { vs.aero_damp };
         vs.fric_boost = a > 1.0 && !dbg_flag("MCLA_DBG_OLDFRIC");
-        let flagged = !vt.bike && (st.damage >= 0.999 || st.upset > 0.0);
+        let flagged = !vt.bike && (crate::police::damaged_out(st.damage) || st.upset > 0.0);
         vs.grip_h = if flagged || dbg_flag("MCLA_DBG_OLDFRIC") {
             1.0
         } else if a >= 1.0 || melt_before > 0.01 {

@@ -8,7 +8,7 @@
 //! - not crashed: a head-on (physics::headon, F-43509), a roll onto the side or roof on the ground (A-72058,
 //!   0.2 of MaxDamage) or a motorcycle's blow of more than 1.8 WipeoutThresholds (F-54299) is a wipeout
 //!   (F-69183): bit 0x10, the timer WipeoutDelay, the car upset (its centre of gravity raised, vehsim). Damage
-//!   at 0.999 is a damage-out (F-70073): bits 0x14, the timer DamageOutDelay, or ExplosionDelay after a hit
+//!   at MaxDamage (points >= MaxDamage, F-69183 before F-70073; `police::damaged_out`) is a damage-out (F-70073): bits 0x14, the timer DamageOutDelay, or ExplosionDelay after a hit
 //!   over ExplodeThreshold.
 //! - crashed: the timer runs down while the car is under 4.47 m/s or all its wheels touch (F-32386); a
 //!   motorcycle in the original's sim keeps its wipeout timer there (vehsim's `wipe`). The wipeout's end
@@ -62,11 +62,11 @@ pub fn step(crash: &mut Crash, st: &mut CarState, p: &CarParams, bike: bool, cop
         // (read, not taken: the police's and the siren's "down" tests read it; it goes at the wipeout's end)
         let big = st.wipeout;
         let head_on = std::mem::take(&mut st.head_on);
-        let rolled = up_y <= 0.1 && st.airborne_time <= 0.0 && st.damage < 0.999;
+        let rolled = up_y <= 0.1 && st.airborne_time <= 0.0 && !crate::police::damaged_out(st.damage);
         if !head_on && rolled {
             st.damage = (st.damage + 0.2).min(1.0);
         }
-        if st.damage >= 0.999 {
+        if crate::police::damaged_out(st.damage) {
             let exploding = st.last_hit > dm.explode_threshold && dm.explode_threshold > 0.0;
             crash.bits = 0x14;
             crash.timer = if exploding { dm.explosion_delay } else { dm.damage_out_delay };
