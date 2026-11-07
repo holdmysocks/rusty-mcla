@@ -9,8 +9,8 @@
 //! a triangle's face, every one of its points that is through the face is a contact of its
 //! own - a bumper that meets a wall a little askew is held at both ends.
 //!
-//! The answer follows the original's solver (0x8258A300: collide once a tick, a velocity
-//! pass 0x825DE200, then a pass that only moves the body out, 0x82591108): four sweeps over
+//! The answer follows the original's solver (F-96487: collide once a tick, a velocity
+//! pass F-68693, then a pass that only moves the body out, F-56590): four sweeps over
 //! the contacts, each taking the closing speed at its point away and, across it, what
 //! friction's cone allows; shallower than 6 mm a contact may still close; the finished
 //! impulses are given once more times the contacts' mean elasticity; and whatever stands
@@ -45,7 +45,7 @@ pub struct HullShape {
 }
 
 impl HullShape {
-    /// The corners the detector's scan looks at (0x825E0418: the bound's count, +186).
+    /// The corners the detector's scan looks at (A-51822: the bound's count, +186).
     pub fn scanned(&self) -> &[Vec3] {
         let n = self.verts.len();
         &self.verts[..if self.scan > 0 { self.scan } else if n == 18 { 17 } else { n }]
@@ -149,18 +149,52 @@ impl HullShape {
 }
 
 /// A car's hull as the running game has it. The file's hull is reshaped when the car is set
-/// up (mcCarSim 0x8232D8C8 sorts its points by where they lie, 0x8232E238 moves them; bikes
+/// up (mcCarSim F-31335 sorts its points by where they lie, F-89464 moves them; bikes
 /// are left alone): the four lowest points become a floor at BoundClearance - lower by what
 /// the car sits lower on its tyres than it was modelled - drawn in so that the flank below
 /// the body's widest line leans in at BoundAngle; the points along the sides are set to that
 /// widest line on both sides; the two foremost become a bumper bar BoundBumper high and
-/// BoundBumperWidth to either side. Checked on three cars of a running game to 3e-8.
+/// BoundBumperWidth to either side. Checked on three cars of a running game to 3e-8; the moves (`reshape`) and the box
+/// (`reshaped_box`) equal the original word for word on every car's hull (`reshape_matches_the_original`).
 pub fn shaped(file: &mcla_formats::rage::bound::Hull, t: &mcla_formats::rage::simtune::SimTune, hub_height: f32, bike: bool) -> HullShape {
     let mut v: Vec<Vec3> = file.verts.iter().map(|p| Vec3::from(*p)).collect();
     if !bike && v.len() >= 8 {
+        // how much lower the car sits than its wheels were modelled (F-62931)
+        let f = (t.wheel_front.suspension_offset + t.wheel_back.suspension_offset) * 0.5 + (t.wheel_front.radius + t.wheel_back.radius) * 0.5 - hub_height;
+        reshape(&mut v, t.s.bound_clearance, t.s.bound_angle, t.s.bound_bumper, t.s.bound_bumper_width, (-f).max(0.0));
+    }
+    let mut shape = HullShape::new(v, &file.tris);
+    shape.mats = file.material.clone();
+    shape.cg = Vec3::from(file.cg);
+    // (the box as the reshape's end leaves it, F-38448 -> F-90660: min / max over the vertices as they now stand,
+    // -/+ 0.001, then -/+ the margin 0.04 - the file's box is that rule on the file's vertices, on all 65 cars)
+    shape.bbox = if bike || shape.verts.len() < 8 {
+        Some((Vec3::from(file.bbox.0), Vec3::from(file.bbox.1)))
+    } else {
+        Some(reshaped_box(&shape.verts, file.margin))
+    };
+    shape.wheel_parts = file.wheel_parts.iter().map(|p| Vec3::from(*p)).collect();
+    shape.scan = if std::env::var_os("MCLA_DBG_OLDSCAN").is_some() { 0 } else { (file.scan as usize).min(shape.verts.len()) };
+    shape
+}
+
+/// The polyhedron's own box as F-90660 sets it (max, min): per axis the max / min over the vertices, -/+ 0.001, then -/+ the margin.
+pub fn reshaped_box(verts: &[Vec3], margin: f32) -> (Vec3, Vec3) {
+    let (mut hi, mut lo) = (verts[0], verts[0]);
+    for p in verts {
+        hi = hi.max(*p);
+        lo = lo.min(*p);
+    }
+    (hi + Vec3::splat(0.001) + Vec3::splat(margin), lo - Vec3::splat(0.001) - Vec3::splat(margin))
+}
+
+/// The hull's points as the set-up's sort F-31335 and reshape F-89464 move them (`drop` is F-89464's f1: how much lower the
+/// car sits than modelled, never below 0). Equal to the original on every vp_* car's hull (`reshape_matches_the_original`).
+pub fn reshape(v: &mut [Vec3], clearance: f32, angle: f32, bumper: f32, bumper_width: f32, drop: f32) {
+    {
         const EPS: f32 = 0.05;
         let (mut min_y, mut min_x, mut max_x, mut min_z) = (1000.0f32, 0.0f32, 0.0f32, 0.0f32);
-        for p in &v {
+        for p in v.iter() {
             min_y = min_y.min(p.y);
             min_x = min_x.min(p.x);
             max_x = max_x.max(p.x);
@@ -182,16 +216,13 @@ pub fn shaped(file: &mcla_formats::rage::bound::Hull, t: &mcla_formats::rage::si
             }
         }
         let top = y2 - EPS;
-        // how much lower the car sits than its wheels were modelled (0x82363210)
-        let f = (t.wheel_front.suspension_offset + t.wheel_back.suspension_offset) * 0.5 + (t.wheel_front.radius + t.wheel_back.radius) * 0.5 - hub_height;
-        let drop = (-f).max(0.0);
         // (BoundWidebody is added for a car with the wide body kit: none here)
         let wide = half;
         for p in v.iter_mut() {
             if p.z > min_z - EPS && p.z < min_z + EPS {
-                if t.s.bound_bumper > 0.0 {
-                    p.x = if p.x > 0.0 { t.s.bound_bumper_width } else if p.x < 0.0 { -t.s.bound_bumper_width } else { 0.0 };
-                    p.y = t.s.bound_bumper;
+                if bumper > 0.0 {
+                    p.x = if p.x > 0.0 { bumper_width } else if p.x < 0.0 { -bumper_width } else { 0.0 };
+                    p.y = bumper;
                 }
             } else if p.x > min_x - EPS && p.x < min_x + EPS && p.y > y2 + EPS {
                 p.x = -wide;
@@ -200,28 +231,14 @@ pub fn shaped(file: &mcla_formats::rage::bound::Hull, t: &mcla_formats::rage::si
             }
         }
         // (the floor last, as the original's loops run)
-        let y = (t.s.bound_clearance + drop).min(top);
-        let inset = (top - y) * t.s.bound_angle.tan();
+        let y = (clearance + drop).min(top);
+        let inset = (top - y) * angle.tan();
         for &i in &bottom {
             let p = &mut v[i];
             p.x = if p.x < 0.0 { inset - wide } else { wide - inset };
             p.y = y;
         }
     }
-    let mut shape = HullShape::new(v, &file.tris);
-    shape.mats = file.material.clone();
-    shape.cg = Vec3::from(file.cg);
-    // (the box as the reshape's end leaves it, F-38448 -> F-90660: min / max over the vertices as they now stand,
-    // -/+ 0.001, then -/+ the margin 0.04 - the file's box is that rule on the file's vertices, on all 65 cars)
-    shape.bbox = if bike || shape.verts.len() < 8 {
-        Some((Vec3::from(file.bbox.0), Vec3::from(file.bbox.1)))
-    } else {
-        let m = file.margin;
-        Some((shape.max + Vec3::splat(0.001) + Vec3::splat(m), shape.min - Vec3::splat(0.001) - Vec3::splat(m)))
-    };
-    shape.wheel_parts = file.wheel_parts.iter().map(|p| Vec3::from(*p)).collect();
-    shape.scan = if std::env::var_os("MCLA_DBG_OLDSCAN").is_some() { 0 } else { (file.scan as usize).min(shape.verts.len()) };
-    shape
 }
 
 /// A wheel as the collision has it: a disc as wide as the tyre, its axle along x (a prism of
@@ -248,7 +265,7 @@ pub fn wheel_shape(radius: f32, half_width: f32) -> HullShape {
 }
 
 /// The box that decides which of the ground's triangles a wheel's shape is tried against at
-/// all (the original's convex-against-mesh routine 0x825D0C18, its test 0x825CE970): the box
+/// all (the original's convex-against-mesh routine F-29567, its test F-55826): the box
 /// around the wheel's shape in the wheel's own axes, grown to take in the same box at the
 /// part's "last" place - which for a wheel is never brought up to date and stays where the
 /// set-up left it, TravelLimit + 0.1 m above the wheel's place of rest in the car as the car
@@ -297,7 +314,7 @@ impl WheelBox {
     }
 }
 
-/// Whether a contact from the narrow phase is kept (0x825CEE38, after the detector and
+/// Whether a contact from the narrow phase is kept (F-35118, after the detector and
 /// before the 2 cm test - it runs on the penetration routine's answers too): for every edge
 /// with a neighbour that the contact's point, with its 5 mm, lies within 5.1 mm of, the
 /// contact's direction - taken across that edge - must lie no farther from the polygon's
@@ -323,7 +340,7 @@ fn edge_keeps(tri: &[Vec3; 3], face: Vec3, across: &[Option<Vec3>; 3], on_b: Vec
     true
 }
 
-/// 0x825CED90: is the point within 5.1 mm of the edge (the mesh's margin times 1.02)?
+/// F-96748: is the point within 5.1 mm of the edge (the mesh's margin times 1.02)?
 fn near_edge(e0: Vec3, e1: Vec3, p: Vec3) -> bool {
     let edge = e1 - e0;
     let t = (p - e0).dot(edge);
@@ -331,7 +348,7 @@ fn near_edge(e0: Vec3, e1: Vec3, p: Vec3) -> bool {
     (p - q).length_squared() <= 1.0404 * super::collision::WORLD_MARGIN * super::collision::WORLD_MARGIN
 }
 
-/// The contact's normal (0x825D0C18 with 0x825D0600 and 0x825D0950): a cone about the
+/// The contact's normal (F-29567 with F-12753 and F-99162): a cone about the
 /// polygon's normal, widened by the normal of every neighbour across an edge the contact's
 /// point lies near; the routine's own direction is kept if it is inside that cone, else
 /// turned to the cone's nearest rim; with no such edge it is the polygon's normal (unless
@@ -381,7 +398,7 @@ pub struct WheelTouch {
     pub deep: bool,
 }
 
-/// One contact a wheel (0x8255D028): of every triangle that touches the wheel shape's box, the
+/// One contact a wheel (F-50733): of every triangle that touches the wheel shape's box, the
 /// original's narrow phase (`gjk::contact`: the nearest-points loop as the original runs it,
 /// early stops and all, and its penetration routine) gives one contact if the surfaces are
 /// less than 2 cm apart; its normal is kept within what the polygon and its neighbours across
@@ -391,7 +408,7 @@ pub fn wheel_touch(world: &WorldCollider, core: &super::gjk::WheelCore, up: Vec3
     let reach = Vec3::splat(core.round() + CORE + 0.03);
     // (each: corners, normal, surface, and - where the mesh is the city's own bound - what its
     // record says of its neighbours across its three edges: their normals as the original's
-    // collision forms them, 0x825D0C18 / 0x82576FF8)
+    // collision forms them, F-29567 / F-23797)
     type Beside = [Option<Vec3>; 3];
     let mut tris: Vec<([Vec3; 3], Vec3, Surface, Option<Beside>)> = Vec::new();
     // (the grid's cells: by the ball of the wheel's box - its own, and the one at the part's last place)
@@ -461,7 +478,7 @@ pub fn wheel_touch(world: &WorldCollider, core: &super::gjk::WheelCore, up: Vec3
             }),
         };
         let Some(r) = super::gjk::contact(core, tri, face, bisectors, super::gjk::WHEEL_MARGIN, super::collision::WORLD_MARGIN) else { continue };
-        // (the sink, 0x825C65E8)
+        // (the sink, F-90136)
         if r.distance >= 0.02 {
             continue;
         }
@@ -487,7 +504,7 @@ pub fn wheel_touch(world: &WorldCollider, core: &super::gjk::WheelCore, up: Vec3
             continue;
         }
         let normal = if exact { cone_exact(tri, face, &beside, r.on_b, r.normal) } else { cone_normal(tri, face, &beside, r.on_b, r.normal) };
-        // (0x8255D028: only what faces up, for the car - as it stood at its last update -
+        // (F-50733: only what faces up, for the car - as it stood at its last update -
         // and for the world. On an upright wall the second test is on the sign of a rounding
         // error, in the original as here.)
         if normal.dot(up) < 0.0 || normal.y < 0.0 {
@@ -495,7 +512,7 @@ pub fn wheel_touch(world: &WorldCollider, core: &super::gjk::WheelCore, up: Vec3
         }
         let depth = -r.distance * normal.dot(up);
         if best.map_or(true, |b| depth > b.depth) {
-            // (0x8255D028: the record's point is the contact's point on the wheel moved out
+            // (F-50733: the record's point is the contact's point on the wheel moved out
             // along the normal by that depth - not the point on the polygon)
             let point = if std::env::var_os("MCLA_DBG_OLDTYREIN").is_some() { r.on_b } else { normal * depth + if std::env::var_os("MCLA_DBG_PB").is_some() { r.on_b } else { r.on_a } };
             best = Some(WheelTouch { depth, point, normal, surface: *surface, deep: r.deep });
@@ -582,17 +599,17 @@ pub fn wheel_rest(world: &WorldCollider, origin: Vec3, up: Vec3, along: Vec3, ax
         // (the end of a triangle: the original's contact there is the polygon's nearest point
         // and its depth the distance to the wheel's round as the wheel stands now - `centre`
         // below `origin` - not what the wheel would have to drop to sit on it: recorded on a
-        // lip 14 cm behind the axle, -0.0174 where the drop is -0.0204. Its normal (0x825CEE38,
-        // 0x825D0600): on an edge no other polygon shares, the polygon's own; on one that is
+        // lip 14 cm behind the axle, -0.0174 where the drop is -0.0204. Its normal (F-35118,
+        // F-12753): on an edge no other polygon shares, the polygon's own; on one that is
         // shared, the way from the edge to the wheel - if that lies between the two polygons'
         // normals, which it only can where they meet in a ridge (a kerb's corner); otherwise
         // the edge gives no contact. And what the wheel is told is the depth's share along
-        // the car's up (0x8255D028).)
+        // the car's up (F-50733).)
         for ((u, v), (q, i)) in p.into_iter().zip(ends) {
             let mut through = radius - (u * u + (v + centre) * (v + centre)).sqrt();
             // (where the shape's core - it without its 4 cm margin, the mesh's 5 mm off too -
             // reaches the polygon itself, the original measures as it does for a hull
-            // (0x825E2370): the shape backed out along the polygon's normal until its core is
+            // (F-25833): the shape backed out along the polygon's normal until its core is
             // clear by the margins and a centimetre, the nearest points found there, the depth
             // what was backed out along their line less their distance. Recorded on a kerb met
             // at 25 m/s, the axle 11 cm short of its edge: 0.1389, not the 0.132 the round is
@@ -720,9 +737,9 @@ pub fn contacts(hull: &HullShape, pos: Vec3, rm: Mat3, world: &WorldCollider, ou
         let local = [inv * (tri[0] - pos), inv * (tri[1] - pos), inv * (tri[2] - pos)];
         tris.push((local, (local[1] - local[0]).cross(local[2] - local[0]).normalize_or_zero(), surface));
     });
-    // The original's narrow phase for a convex part against one polygon (0x825CEE38): GJK
+    // The original's narrow phase for a convex part against one polygon (F-35118): GJK
     // between the hull's core and the bare triangle, the margins (4 cm and 5 mm) taken off
-    // afterwards. Where the cores overlap (0x825E2370) the hull is first backed out along the
+    // afterwards. Where the cores overlap (F-25833) the hull is first backed out along the
     // polygon's normal until its deepest point is clear by the margins and a centimetre, the
     // nearest points are found there, and the depth is what was backed out along their line
     // less their distance. ONE contact a polygon: on the triangle, at the point nearest the
@@ -803,12 +820,12 @@ pub fn contacts(hull: &HullShape, pos: Vec3, rm: Mat3, world: &WorldCollider, ou
             }
         };
         let (depth, line) = through;
-        // (the sink, 0x825C65E8: nothing farther than 2 cm)
+        // (the sink, F-90136: nothing farther than 2 cm)
         if depth <= -0.02 {
             continue;
         }
         let _ = on_hull;
-        // the normal (0x825D0600): the nearest points' line kept within what the polygon and
+        // the normal (F-12753): the nearest points' line kept within what the polygon and
         // the neighbours across the edges the point lies on allow - the polygon's own normal
         // where it has no such neighbour
         let mut normal = face;
@@ -912,10 +929,10 @@ struct Row {
 
 impl Row {
     fn new(n: Vec3, r: Vec3, inv_m: f32, inv_i: Mat3, mu: f32) -> Row {
-        // (0x821CE640)
+        // (F-95825)
         let b1 = if n.x.abs() >= n.y.abs() { Vec3::new(-n.z, 0.0, n.x) } else { Vec3::new(0.0, n.z, -n.y) }.normalize_or(Vec3::X);
         let basis = [n, b1, n.cross(b1)];
-        // (0x825E4C40: K[i][j] = basis[i] . (basis[j] / m + (I^-1 (r x basis[j])) x r))
+        // (F-91803: K[i][j] = basis[i] . (basis[j] / m + (I^-1 (r x basis[j])) x r))
         let cols: [Vec3; 3] = std::array::from_fn(|j| {
             let moved = basis[j] * inv_m + (inv_i * r.cross(basis[j])).cross(r);
             Vec3::new(basis[0].dot(moved), basis[1].dot(moved), basis[2].dot(moved))
@@ -936,7 +953,7 @@ impl Row {
 /// Returns what the rows together add to the body's velocity and turning.
 fn sweep(rows: &[Row], bias: &[Vec3], vel: Vec3, ang: Vec3, inv_m: f32, inv_i: Mat3, omega: f32, given: &mut [Vec3]) -> (Vec3, Vec3) {
     let (mut v, mut w) = (vel, ang);
-    // (0x825E8B90: what the rows start with - last tick's answers - is applied first)
+    // (F-64443: what the rows start with - last tick's answers - is applied first)
     for (row, p) in rows.iter().zip(given.iter()) {
         let push = row.world(*p);
         v += push * inv_m;
@@ -991,7 +1008,7 @@ pub fn resolve(st: &mut CarState, hull: &HullShape, world: &WorldCollider, mass:
     let rm = Mat3::from_quat(st.rot);
     let mut found: Vec<BodyContact> = Vec::new();
     contacts(hull, st.pos, rm, world, &mut found);
-    // (0x825CEE38, before its edge test: a contact whose point on the body has moved out
+    // (F-35118, before its edge test: a contact whose point on the body has moved out
     // along the polygon's normal since the last tick is none)
     if std::env::var_os("MCLA_DBG_NOAWAYTEST").is_none() {
         let centre = st.pos + rm * com_local;
@@ -1022,7 +1039,7 @@ pub fn resolve(st: &mut CarState, hull: &HullShape, world: &WorldCollider, mass:
     }
     let inv_i = rm * Mat3::from_diagonal(Vec3::ONE / inertia.max(Vec3::splat(1.0))) * rm.transpose();
     let inv_m = 1.0 / mass.max(1.0);
-    // (a head-on hit, 0x82332D30: faster than 22.35 m/s, against what faces the car's nose
+    // (a head-on hit, F-55998: faster than 22.35 m/s, against what faces the car's nose
     // within 25 degrees, the contact is the tuning's BoundFriction and BoundElasticity instead
     // of the materials', and it is taken HeadOnCGOffset lower than it is - which is what
     // brings a car's tail up off a wall)
@@ -1049,11 +1066,11 @@ pub fn resolve(st: &mut CarState, hull: &HullShape, world: &WorldCollider, mass:
     let literal = std::env::var_os("MCLA_DBG_OLDSOLVE").is_none();
     let (mut pv, mut pw) = (Vec3::ZERO, Vec3::ZERO);
     if literal {
-        // The original's contact solver (0x825E8F88 with the kernel 0x825E51E8): every contact
+        // The original's contact solver (F-67704 with the kernel F-18210): every contact
         // is a row of three - along its normal and two ways across it - solved as one block
         // so that the point would stick, then brought back on to friction's cone; four sweeps
         // over the rows, each step taken 1.1 times over; and what the rows have given is
-        // applied times 1 + the contacts' mean elasticity (0x825DCA18). A contact not yet
+        // applied times 1 + the contacts' mean elasticity (F-24076). A contact not yet
         // touching may close by what is left of its 6 mm in the tick.
         // (each at the BODY's point of it, contact +48 - the hull's own corner, as deep in
         // the wall as the contact is: 33 cm farther forward than the wall's face on an R8 that
@@ -1061,7 +1078,7 @@ pub fn resolve(st: &mut CarState, hull: &HullShape, world: &WorldCollider, mass:
         let rows: Vec<Row> = found.iter().zip(touch.iter()).map(|(c, m)| Row::new(c.normal, c.point - c.normal * c.depth - com, inv_m, inv_i, m.0)).collect();
         let bias: Vec<Vec3> = found.iter().map(|c| Vec3::new((0.007 - 0.001 - c.depth).max(0.0) / dt, 0.0, 0.0)).collect();
         // (each starts from what the same contact - the body's point of it within 2 cm -
-        // ended with last tick, 0x825A37A8)
+        // ended with last tick, F-74262)
         let inv = rm.transpose();
         let local: Vec<Vec3> = rows.iter().map(|r| inv * (r.r + com - st.pos)).collect();
         let warm = std::env::var_os("MCLA_DBG_NOWARM").is_none();
@@ -1075,11 +1092,11 @@ pub fn resolve(st: &mut CarState, hull: &HullShape, world: &WorldCollider, mass:
         let (dv, dw) = sweep(&rows, &bias, st.vel - pending.0 * less, st.ang_vel - pending.1 * less, inv_m, inv_i, 1.1, &mut given);
         st.vel += dv * (1.0 + bounce);
         st.ang_vel += dw * (1.0 + bounce);
-        // out of what it stands in - the push solve (0x825DCEB8 with the same kernel, from
+        // out of what it stands in - the push solve (F-49764 with the same kernel, from
         // rest, taken once over): every contact asks to be let out by D = its depth past
         // 7 mm, less half of that (7 mm of it at most); the answer MOVES the body and TURNS it
         // about its place, without touching its speeds
-        // (the deep case, 0x825DCEB8: a contact that asks for more than the body is thick
+        // (the deep case, F-49764: a contact that asks for more than the body is thick
         // beyond it along the normal moves the body out directly by all but half that
         // thickness, and asks only for the half)
         let mut direct = Vec3::ZERO;
@@ -1134,7 +1151,7 @@ pub fn resolve(st: &mut CarState, hull: &HullShape, world: &WorldCollider, mass:
                 }
             }
         }
-        // (0x825DCA18: the impulses are applied times 1 + the contacts' mean elasticity)
+        // (F-24076: the impulses are applied times 1 + the contacts' mean elasticity)
         if bounce > 0.0 {
             for (i, c) in found.iter().enumerate() {
                 let r = c.point - com;
@@ -1143,8 +1160,8 @@ pub fn resolve(st: &mut CarState, hull: &HullShape, world: &WorldCollider, mass:
                 st.ang_vel += inv_i * r.cross(extra);
             }
         }
-        // out of what it stands in - the push solve (0x82591108: rows 0x825DCEB8, the velocity
-        // pass's kernel again from rest, applied by 0x825DDCE8 / 0x8259E790): every contact asks
+        // out of what it stands in - the push solve (F-56590: rows F-49764, the velocity
+        // pass's kernel again from rest, applied by F-64140 / F-67019): every contact asks
         // to be let out by D = its depth past 7 mm, less half of that (7 mm of it at most), and
         // the answer is a push at the contact - which MOVES the body and TURNS it about its place,
         // without touching its speeds
@@ -1199,9 +1216,9 @@ pub fn resolve(st: &mut CarState, hull: &HullShape, world: &WorldCollider, mass:
 
 // ---------------------------------------------------------------------------------------
 // The hull against the city as the original collides it, operation for operation: the
-// polygons its bound is tried against and what each gives (0x825D0C18, 0x825CEE38, the sink
-// 0x825C65E8), the contacts it keeps from tick to tick (0x825A3070), and what the car's own
-// callback makes of them before the solver has them (0x82332D30). The solver: `solver.rs`.
+// polygons its bound is tried against and what each gives (F-29567, F-35118, the sink
+// F-90136), the contacts it keeps from tick to tick (F-26862), and what the car's own
+// callback makes of them before the solver has them (F-55998). The solver: `solver.rs`.
 // ---------------------------------------------------------------------------------------
 
 use super::exact::{dot3, fma, recip};
@@ -1238,7 +1255,7 @@ pub(crate) const POLYGON_MARGIN: f32 = f32::from_bits(0x3ba3_d70a);
 const PART_MARGIN: f32 = f32::from_bits(0x3d23_d70a);
 const MILLIONTH: f32 = f32::from_bits(0x3586_37bd);
 
-/// 0x825CED90: is `p` within the square root of `r2` of the edge from `a` to `b`?
+/// F-96748: is `p` within the square root of `r2` of the edge from `a` to `b`?
 fn beside_edge(a: Vec3, b: Vec3, p: Vec3, r2: f32) -> bool {
     let d = p - a;
     let ab = b - a;
@@ -1256,7 +1273,7 @@ fn beside_edge(a: Vec3, b: Vec3, p: Vec3, r2: f32) -> bool {
     r2 >= dot3(off, off)
 }
 
-/// The vector unit's arc cosine (0x825CEB68): sqrt(1 - |x|) times a polynomial of |x|, taken
+/// The vector unit's arc cosine (F-49700): sqrt(1 - |x|) times a polynomial of |x|, taken
 /// from pi for a negative x.
 pub fn vec_acos(x: f32) -> f32 {
     let f = f32::from_bits;
@@ -1270,7 +1287,7 @@ pub fn vec_acos(x: f32) -> f32 {
     if x.is_sign_negative() { f(0x4049_0fdb) - s * p } else { s * p }
 }
 
-/// The vector unit's cosine (0x825CEAC8): the sine of what is left of x past a half turn's middle.
+/// The vector unit's cosine (F-72452): the sine of what is left of x past a half turn's middle.
 pub fn vec_cos(x: f32) -> f32 {
     let f = f32::from_bits;
     let fl = (x * f(0x3ea2_f983)).floor();
@@ -1299,7 +1316,7 @@ fn quat_turned(v: Vec3, about: Vec3, half: f32) -> Vec3 {
     Vec3::new(d(conj, t), b(conj, t), cc(conj, t))
 }
 
-/// 0x825D0600: the cone (`axis`, cosine of its half angle) widened to hold the direction `other`.
+/// F-12753: the cone (`axis`, cosine of its half angle) widened to hold the direction `other`.
 pub fn cone_widen(cos: &mut f32, axis: Vec3, other: Vec3) -> Vec3 {
     let d = dot3(axis, other);
     if !(*cos > d) {
@@ -1320,7 +1337,7 @@ pub fn cone_widen(cos: &mut f32, axis: Vec3, other: Vec3) -> Vec3 {
     turned
 }
 
-/// 0x825D0950: `n` if it lies inside the cone, else the cone's rim nearest it.
+/// F-99162: `n` if it lies inside the cone, else the cone's rim nearest it.
 pub fn cone_clamp(cos: f32, n: Vec3, axis: Vec3) -> Vec3 {
     if !(cos - f32::from_bits(0x38d1_b717) > dot3(n, axis)) {
         return n;
@@ -1332,7 +1349,7 @@ pub fn cone_clamp(cos: f32, n: Vec3, axis: Vec3) -> Vec3 {
     quat_turned(axis, about, vec_acos(cos.max(-1.0).min(1.0)) * 0.5)
 }
 
-/// The contact's normal as 0x825D0C18 leaves it, operation for operation: `tri` the polygon's
+/// The contact's normal as F-29567 leaves it, operation for operation: `tri` the polygon's
 /// corners and `on_b` the contact's point on it, both in the world.
 pub fn cone_exact(tri: &[Vec3; 3], face: Vec3, across: &[Option<Vec3>; 3], on_b: Vec3, n: Vec3) -> Vec3 {
     let r2 = (f32::from_bits(0x3f85_2bd3) * POLYGON_MARGIN) * POLYGON_MARGIN;
@@ -1346,7 +1363,7 @@ pub fn cone_exact(tri: &[Vec3; 3], face: Vec3, across: &[Option<Vec3>; 3], on_b:
     cone_clamp(cos, n, axis)
 }
 
-/// 0x825CEE38's test of a contact against the polygon's edges, operation for operation:
+/// F-35118's test of a contact against the polygon's edges, operation for operation:
 /// `about` the corners about the first, `edge` per edge the direction between the two faces
 /// and the neighbour's normal where they meet in a ridge (else the face's own, twice),
 /// `on_b` the polygon's point about the first corner.
@@ -1398,11 +1415,11 @@ fn manifold_of(manifolds: &mut Vec<Manifold>, part: u8, cell: usize) -> usize {
 }
 
 /// Everything one wheel's shape touches, laid into `manifolds` as the hull's contacts are
-/// (0x825CCE00 for a wheel's part): the same narrow phase, edge test and cone as `wheel_touch`,
+/// (F-82759 for a wheel's part): the same narrow phase, edge test and cone as `wheel_touch`,
 /// every contact kept. `now`: the body's matrix (rows and the model's origin).
 pub fn wheel_collide(world: &WorldCollider, core: &super::gjk::WheelCore, part: u8, now: &[Vec3; 4], ball: Option<(Vec3, f32)>, manifolds: &mut Vec<Manifold>, moved: Option<([Vec3; 4], [Vec3; 4], Vec3, [Vec3; 4])>) {
     let reach = Vec3::splat(core.round() + CORE + 0.03);
-    // (RA6, 0x825CE970 as for the hull's part: the box a polygon has to cut - the wheel part's own box as it
+    // (RA6, F-55826 as for the hull's part: the box a polygon has to cut - the wheel part's own box as it
     // stands, grown to take in the same box at the part's "last" matrix, and the mesh's 5 mm)
     let cut = moved.as_ref().map(|(now, last, half, _)| {
         let (c, r) = (now[3], [now[0], now[1], now[2]]);
@@ -1441,7 +1458,7 @@ pub fn wheel_collide(world: &WorldCollider, core: &super::gjk::WheelCore, part: 
         if edge_test(&about, other.map(|o| o.is_some()), &edge, r.on_b - tri[0], r.normal).is_some() {
             return;
         }
-        // (RA6: the hull's "moving out" test, 0x825CEE38 (5), for the wheel's point as the CAR carries it: where
+        // (RA6: the hull's "moving out" test, F-35118 (5), for the wheel's point as the CAR carries it: where
         // that point of the body has gone since the car's last matrix, along the polygon's normal it must not
         // have come out. I + V sa.0 216..231: with the part's own "last" matrix - the top of its travel - the
         // recorded contacts of 223 / 225 would be refused.)
@@ -1492,8 +1509,8 @@ pub fn wheel_collide(world: &WorldCollider, core: &super::gjk::WheelCore, part: 
     manifolds.retain(|m| !m.slots.is_empty());
 }
 
-/// What one convex part of a loose body touches of the city (stage P; 0x825CCE00 -> 0x825D0C18 /
-/// 0x825CEE38 as for the hull's part): `core` the part's core at its matrix `now` (rows and
+/// What one convex part of a loose body touches of the city (stage P; F-82759 -> F-29567 /
+/// F-35118 as for the hull's part): `core` the part's core at its matrix `now` (rows and
 /// place), `margin` its own, `bbox` its bound's box in its own frame, `last` its matrix as the
 /// last collide is to have had it. Each contact is handed to `hit`.
 pub struct PartHit {
@@ -1510,7 +1527,7 @@ pub struct PartHit {
     pub corners: ([u32; 4], usize),
 }
 
-/// `swept`: the detector to use in place of the discrete one (0x825CEE38's swept branch, taken when the pair's
+/// `swept`: the detector to use in place of the discrete one (F-35118's swept branch, taken when the pair's
 /// flag byte is set - a loose prop): handed the polygon about its first corner, its normal, its edges' bisectors
 /// and that corner; it answers about the corner, as the discrete one does.
 pub fn part_touches(core: &impl super::gjk::Support, margin: f32, bbox: (Vec3, Vec3), now: &[Vec3; 4], last: &[Vec3; 4], world: &WorldCollider, swept: Option<&dyn Fn(&[Vec3; 3], Vec3, [Vec3; 3], Vec3) -> Option<super::gjk::Nearest>>, mut hit: impl FnMut(PartHit)) {
@@ -1579,10 +1596,10 @@ pub fn part_touches(core: &impl super::gjk::Support, margin: f32, bbox: (Vec3, V
     });
 }
 
-/// Everything the hull touches this tick is laid into `manifolds` (0x825CCE00 for the hull's
+/// Everything the hull touches this tick is laid into `manifolds` (F-82759 for the hull's
 /// part): `now` and `last` the body's matrix - rows and the model's origin - as it stands and
 /// as the last tick left it; `corners` the hull's corners, `bbox` its box in its own frame.
-/// The ball the city's grid picks its cells by (0x825CD184..0x825CD694): the car's whole box - `lo`..`hi`
+/// The ball the city's grid picks its cells by (A-42301..A-63770): the car's whole box - `lo`..`hi`
 /// in its own frame, hull and wheels - as it stands, grown to take in the same box at the body's last
 /// matrix; its middle in the world and the length of its half sizes. (A decision only: written plainly,
 /// not operation for operation.)
@@ -1602,7 +1619,7 @@ pub fn collide(hull: &HullShape, bbox: (Vec3, Vec3), now: &[Vec3; 4], last: &[Ve
     let corners = &hull.verts[..];
     let dbg = { static D: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *D.get_or_init(|| std::env::var_os("MCLA_DBG_HIT").is_some()) };
     let core = super::gjk::HullCore { corners: hull.scanned(), rows: [now[0], now[1], now[2]], at: now[3] };
-    // (the box a polygon has to cut, 0x825CE970: the hull's box as it stands grown to take in
+    // (the box a polygon has to cut, F-55826: the hull's box as it stands grown to take in
     // the same box where it stood, and the mesh's 5 mm)
     let (mid, half) = ((bbox.0 + bbox.1) * 0.5, (bbox.1 - bbox.0) * 0.5);
     let centre = |m: &[Vec3; 4]| m[3] + m[0] * mid.x + m[1] * mid.y + m[2] * mid.z;
@@ -1633,7 +1650,7 @@ pub fn collide(hull: &HullShape, bbox: (Vec3, Vec3), now: &[Vec3; 4], last: &[Ve
         if face == Vec3::ZERO || !reach.touches(&tri, face) {
             return;
         }
-        // (0x82576FF8: across each edge the neighbour's normal, and between the two where
+        // (F-23797: across each edge the neighbour's normal, and between the two where
         // they meet in a ridge)
         let other: [Option<Vec3>; 3] = mesh.beside[i].map(|n| n.map(|j| mesh.faces[j as usize]));
         let edge: [(Vec3, Vec3); 3] = std::array::from_fn(|e| match other[e] {
@@ -1696,7 +1713,7 @@ pub fn collide(hull: &HullShape, bbox: (Vec3, Vec3), now: &[Vec3; 4], last: &[Ve
         let fresh = Contact { depth: 0.0 - r.distance, local, on_body: on_a, on_world: on_b, normal, ..Default::default() };
         let at = manifold_of(manifolds, 0, cell);
         let m = &mut manifolds[at];
-        // (0x825A37A8: the contact it replaces - the nearest, by the body's point, within 2 cm
+        // (F-74262: the contact it replaces - the nearest, by the body's point, within 2 cm
         // among those a refresh has seen)
         let mut near = (f32::from_bits(0x39d1_b717), None);
         for (k, s) in m.slots.iter().enumerate() {
@@ -1707,7 +1724,7 @@ pub fn collide(hull: &HullShape, bbox: (Vec3, Vec3), now: &[Vec3; 4], last: &[Ve
             }
         }
         let surface = Surface::from_u8(mesh.mats.get(i).copied().unwrap_or(0));
-        // (which of the hull's triangles: by the corners the loop ended on, 0x825E1E10)
+        // (which of the hull's triangles: by the corners the loop ended on, F-26668)
         let back = Vec3::ZERO - r.normal;
         let element = hull.element(&r.corners.0[..r.corners.1], Vec3::new(dot3(now[0], back), dot3(now[1], back), dot3(now[2], back)));
         let slot = Slot { c: fresh, age: 0, enabled: true, surface, polygon: i as u32, element, part: 0 };
@@ -1718,7 +1735,7 @@ pub fn collide(hull: &HullShape, bbox: (Vec3, Vec3), now: &[Vec3; 4], last: &[Ve
                 m.slots[k] = Slot { c: Contact { kept: old.c.kept, pushed: old.c.pushed, ..fresh }, element: if old.c.depth >= fresh.depth { old.element } else { element }, ..slot };
             }
             None if m.slots.len() < 6 => m.slots.push(slot),
-            // (the seventh, 0x825A32C0: it takes the place of the kept one that spans least - or is not taken.
+            // (the seventh, F-55965: it takes the place of the kept one that spans least - or is not taken.
             // MCLA_DBG_RA3: never taken, as before.)
             None => {
                 let k = seventh_contact(std::array::from_fn(|i| m.slots[i].c.local), local);
@@ -1732,7 +1749,7 @@ pub fn collide(hull: &HullShape, bbox: (Vec3, Vec3), now: &[Vec3; 4], last: &[Ve
     manifolds.retain(|m| !m.slots.is_empty());
 }
 
-/// 0x825A32C0: a manifold holds six contacts and a seventh comes (`kept`, `new`: their points in side A's
+/// F-55965: a manifold holds six contacts and a seventh comes (`kept`, `new`: their points in side A's
 /// frame). Gives the number of the kept contact the new one takes the place of, or 6: it is not taken.
 /// The seven points are laid out around the one that lies farthest one way in their plane; the new one is
 /// dropped if it lies inside the others' outline, else the kept one whose corner spans the least goes.
@@ -1817,7 +1834,7 @@ impl HullShape {
         super::gjk::cross_as_original(c - b, a - b).normalize_or_zero()
     }
 
-    /// 0x825E10A0: the triangle a contact is on, from the corners (their numbers, each once)
+    /// F-48088: the triangle a contact is on, from the corners (their numbers, each once)
     /// the detector's simplex ended with and the contact's direction in the hull's frame: of
     /// one corner, the triangle about it that faces that way most; of two, the one of the two
     /// along that edge that does; of three, the triangle they are.
@@ -1837,7 +1854,7 @@ impl HullShape {
                 let v = ids[0];
                 let Some(first) = self.tris.iter().position(|t| has(t, v)) else { return 0 };
                 let mut best = (dot3(self.outward(first), dir), first);
-                // (round the corner, 0x8259F530: across the edge that ends in it, or - where
+                // (round the corner, F-58013: across the edge that ends in it, or - where
                 // that leads back - the edge that begins in it)
                 let (mut prev, mut at) = (usize::MAX, first);
                 for _ in 0..self.tris.len() {
@@ -1868,7 +1885,7 @@ impl HullShape {
                 }
             }
             3 => self.tris.iter().position(|t| ids.iter().all(|v| has(t, *v))).unwrap_or(0) as u16,
-            // (four corners, the jump table at 0x825E10F8: as three - the first triangle that holds three of them, 0x8259F4D8)
+            // (four corners, the jump table at A-14821: as three - the first triangle that holds three of them, F-61834)
             4 => self.tris.iter().position(|t| ids.iter().filter(|v| has(t, **v)).count() >= 3).unwrap_or(0) as u16,
             _ => 0,
         }
@@ -1885,7 +1902,7 @@ impl HullShape {
 }
 
 /// The contacts kept from earlier ticks brought up to the body's matrix as it stands
-/// (0x825A3070): their points, their depth; what has come 4 cm apart is dropped, and of those
+/// (F-26862): their points, their depth; what has come 4 cm apart is dropped, and of those
 /// a tick old or more the one that has slid farthest, if more than 2 cm.
 pub fn refresh(now: &[Vec3; 4], manifolds: &mut Vec<Manifold>) {
     for m in manifolds.iter_mut() {
@@ -1910,7 +1927,7 @@ pub fn refresh(now: &[Vec3; 4], manifolds: &mut Vec<Manifold>) {
                 m.slots.swap_remove(k);
                 continue;
             }
-            // (older than the count at 0x828127F0, which the game's own simulator sets to 1: 0x82740FB8)
+            // (older than the count at 0x828127F0, which the game's own simulator sets to 1: F-51097)
             if s.age > 1 {
                 let back = Vec3::ZERO - s.c.normal;
                 let slid = s.c.on_world - (-(back * s.c.depth - s.c.on_body));
@@ -1935,6 +1952,39 @@ mod tests {
 
     fn data() -> std::path::PathBuf {
         std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR"))
+    }
+
+    /// The set-up's sort F-31335 and reshape F-89464 (with the box F-38448 -> F-90660) run offline on every vp_* car's hull
+    /// bound (tools/hull_reshape_reference.py -> testdata/hull_reshape_ref.txt, ten random set-ups per car): per line the car,
+    /// nv, the file's vertices, BoundClearance, BoundAngle, BoundBumper, BoundBumperWidth and the drop, then the original's
+    /// index lists and heights (14 words), the moved vertices and the bound's +8 .. +60. Every vertex word and the box equal.
+    #[test]
+    fn reshape_matches_the_original() {
+        let w = |s: &str| u32::from_str_radix(&s.replace('_', ""), 16).unwrap();
+        let (mut n, mut cases) = (0usize, 0usize);
+        for line in include_str!("../testdata/hull_reshape_ref.txt").lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let a: Vec<&str> = a.split(' ').collect();
+            let b: Vec<u32> = b.split(' ').map(w).collect();
+            let nv = w(a[1]) as usize;
+            assert!((4..=64).contains(&nv) && a.len() == 2 + 3 * nv + 5 && b.len() == 14 + 3 * nv + 14, "{}", a[0]);
+            let f = |s: &str| f32::from_bits(w(s));
+            let mut v: Vec<Vec3> = (0..nv).map(|i| Vec3::new(f(a[2 + 3 * i]), f(a[3 + 3 * i]), f(a[4 + 3 * i]))).collect();
+            let t = &a[2 + 3 * nv..];
+            reshape(&mut v, f(t[0]), f(t[1]), f(t[2]), f(t[3]), f(t[4]));
+            for (i, p) in v.iter().enumerate() {
+                let want = [b[14 + 3 * i], b[15 + 3 * i], b[16 + 3 * i]];
+                assert_eq!([p.x.to_bits(), p.y.to_bits(), p.z.to_bits()], want, "{} case {} vertex {}", a[0], cases, i);
+                n += 1;
+            }
+            let h = &b[14 + 3 * nv..];
+            let (hi, lo) = reshaped_box(&v, 0.04);
+            assert_eq!([hi.x.to_bits(), hi.y.to_bits(), hi.z.to_bits(), lo.x.to_bits(), lo.y.to_bits(), lo.z.to_bits()],
+                [h[2], h[3], h[4], h[6], h[7], h[8]], "{} case {} box", a[0], cases);
+            cases += 1;
+        }
+        assert_eq!(cases, 650);
+        assert!(n > 10_000, "{}", n);
     }
 
     /// The Saleen S281's hull as read from the running game (0xBF50E120) with its fitted
