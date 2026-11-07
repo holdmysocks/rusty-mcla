@@ -7726,11 +7726,15 @@ mod contact_integration_tests {
         let gcl = tune.t.engine.s.gcl;
         params.veh = Some(std::sync::Arc::new(tune));
         let mut world = WorldCollider::default();
-        world.sectors.insert(0, super::super::collision::SectorMesh::build(vec![
-            [Vec3::new(-64.0, 0.0, -512.0), Vec3::new(-64.0, 0.0, 512.0), Vec3::new(64.0, 0.0, -512.0)],
-            [Vec3::new(64.0, 0.0, -512.0), Vec3::new(-64.0, 0.0, 512.0), Vec3::new(64.0, 0.0, 512.0)],
-        ]));
-        let mut state = CarState::new(Vec3::new(0.0, 0.02, 0.0), 0.0);
+        // (a floor of 8 m squares as the city's polygons are: on the two 128 x 1024 m triangles this test had, the
+        // wheel contact loses the driven wheels most ticks, and the upshift, which needs a gripping driven
+        // wheel on the ground, never came)
+        world.sectors.insert(0, super::super::collision::SectorMesh::build((-8..8).flat_map(|x| (-64..64).flat_map(move |z| {
+            let (x0, z0) = (x as f32 * 8.0, z as f32 * 8.0);
+            [[Vec3::new(x0, 0.0, z0), Vec3::new(x0, 0.0, z0 + 8.0), Vec3::new(x0 + 8.0, 0.0, z0)],
+             [Vec3::new(x0 + 8.0, 0.0, z0), Vec3::new(x0, 0.0, z0 + 8.0), Vec3::new(x0 + 8.0, 0.0, z0 + 8.0)]]
+        })).collect()));
+        let mut state = CarState::new(Vec3::new(0.0, 0.3, 0.0), 0.0);
         let dt = 1.0 / 60.0;
         for _ in 0..180 { state.step(&params, CarInput::default(), &world, dt); }
         let input = CarInput { throttle: 1.0, ..Default::default() };
