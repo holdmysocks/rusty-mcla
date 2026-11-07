@@ -2074,7 +2074,8 @@ mod cabin_tests {
     /// o2 and normal o0, its vertex lights o5 / o7 and its o3.w = h / 0.66). Skipped without a GPU adapter.
     #[test]
     fn car_lights_per_vertex_match_the_programs() {
-        let src = include_str!("render/city.wgsl");
+        // (line ends as checked out: a CRLF checkout has "\r\n}\r\n")
+        let src = include_str!("render/city.wgsl").replace("\r\n", "\n");
         let take = |name: &str| {
             let i = src.find(&format!("fn {name}(")).unwrap();
             let j = src[i..].find("\n}\n").unwrap();
