@@ -169,6 +169,9 @@ pub struct Sound {
     pub cam_audio: i32,
     /// every car's sounds beside the engine and collisions (caraudio.rs, with `lib`)
     fleet: Option<crate::caraudio::Fleet>,
+    /// the sound occlusion's table of occluders (occlusion.rs, with `lib`) and each car's slot plus one by `uid`
+    occl: Option<crate::occlusion::System>,
+    occ_slots: std::collections::HashMap<u32, u16>,
     /// the player car's performance stages the sounds read: intake, turbo, nitrous
     pub parts: [u8; 3],
     /// the countdown's last sounded step (3, 2, 1, 0 = GO; 4 = before it; -1 = no race)
@@ -255,6 +258,29 @@ pub fn load_beds(root: &std::path::Path) -> hashbrown::HashMap<String, String> {
     m
 }
 
+/// One frame of the sound occlusion: an occluder for each car with a car audio entity (the player's and the computer
+/// racers' and cruisers', `Fleet::opponent`; made at the car audio's start, F-43725), the slots of cars gone given back,
+/// the manager's updates and the ticks (`occlusion::System::step`), every occluder's outputs to the voices (F-19918).
+/// The cars' slots plus one by `uid`.
+fn occlude(oc: &mut crate::occlusion::System, lib: &mut crate::sndobj::SoundLib, vehicles: &Vehicles, dt: f32, world: &mut impl crate::occlusion::Probe) -> std::collections::HashMap<u32, u16> {
+    let l = lib.listener.0;
+    let l4 = [l.x, l.y, l.z, 0.0];
+    let mut slots = std::collections::HashMap::new();
+    for c in vehicles.cars.iter().filter(|c| c.is_player || crate::caraudio::Fleet::opponent(c)) {
+        if let Some(i) = oc.car(c.uid, c.state.pos.to_array(), l4, world) {
+            slots.insert(c.uid, (i + 1) as u16);
+        }
+    }
+    oc.keep(&slots.keys().copied().collect::<Vec<_>>());
+    oc.step(l4, dt, world);
+    for i in 0..crate::occlusion::SLOTS {
+        if let Some(o) = oc.out(i) {
+            lib.set_occlusion(i, o);
+        }
+    }
+    slots
+}
+
 /// The sound library and what is made with it, read off the game loop (the start-up's loading thread,
 /// boot.md "Loading behind the movie"; or at the first sound update as before).
 pub struct Preloaded {
@@ -262,6 +288,7 @@ pub struct Preloaded {
     coll: Option<crate::collaudio::CollisionAudio>,
     amb: Option<crate::ambaudio::Ambience>,
     fleet: Option<crate::caraudio::Fleet>,
+    occl: Option<crate::occlusion::System>,
     beds: Option<hashbrown::HashMap<String, String>>,
 }
 
@@ -270,20 +297,25 @@ impl Preloaded {
     /// (otherwise read when first needed).
     pub fn load(root: &std::path::Path, cfg: &std::path::Path, all: bool) -> Preloaded {
         let mut lib = crate::sndobj::SoundLib::load(root, cfg);
-        let (mut coll, mut amb, mut fleet) = (None, None, None);
+        let (mut coll, mut amb, mut fleet, mut occl) = (None, None, None, None);
         if let Some(l) = lib.as_mut() {
             // (cfg = <data>/audio/X360/config)
             let data = cfg.ancestors().nth(3).map(|p| p.to_path_buf()).unwrap_or_default();
             coll = Some(crate::collaudio::CollisionAudio::new(&data));
             amb = crate::ambaudio::Ambience::new(l);
             fleet = Some(crate::caraudio::Fleet::new(&data));
+            // GLOBAL_OCCLUSION as F-43021 reads it, and the materials' factors
+            occl = l.game.get_name("GLOBAL_OCCLUSION").map(|o| o.to_vec()).and_then(|o| {
+                let t = crate::occlusion::Tune::read(&o, |h| l.curve(h).cloned())?;
+                crate::occlusion::System::new(t, &o, crate::occlusion::material_factors(&data, &l.game))
+            });
             if all {
                 l.index_streams();
             }
         } else {
             log::warn!("audio: {} not loaded - the original's sound objects are not played", cfg.display());
         }
-        Preloaded { lib, coll, amb, fleet, beds: all.then(|| load_beds(root)) }
+        Preloaded { lib, coll, amb, fleet, occl, beds: all.then(|| load_beds(root)) }
     }
 }
 
@@ -346,6 +378,7 @@ impl Sound {
         self.coll = p.coll;
         self.amb = p.amb;
         self.fleet = p.fleet;
+        self.occl = p.occl;
         if p.beds.is_some() {
             self.beds = p.beds;
         }
@@ -379,7 +412,7 @@ impl Sound {
         self.engine.as_ref().map(|(_, e)| e.smoothed_rpm())
     }
 
-    pub fn update(&mut self, a: &mut Audio, vehicles: &Vehicles, game: &Game, police: &Police, ability: &Abilities, prop_hits: &[PropHit], cam_pos: Vec3, cam_right: Vec3, cam_fwd: Vec3, rain: f32, horn: bool, night: bool, probe: &dyn Fn(Vec3, Vec3) -> bool, probe_at: &dyn Fn(Vec3, Vec3) -> Option<u8>, dt: f32) {
+    pub fn update(&mut self, a: &mut Audio, vehicles: &Vehicles, game: &Game, police: &Police, ability: &Abilities, prop_hits: &[PropHit], cam_pos: Vec3, cam_right: Vec3, cam_fwd: Vec3, rain: f32, horn: bool, night: bool, probe: &dyn Fn(Vec3, Vec3) -> bool, probe_at: &dyn Fn(Vec3, Vec3) -> Option<u8>, collider: Option<&crate::physics::collision::WorldCollider>, dt: f32) {
         let wet = rain > 0.0;
         a.set_listener(cam_pos, cam_right);
         if !self.lib_tried {
@@ -682,6 +715,19 @@ impl Sound {
             // the songs: a MUSIC_USER stream at 0 dB (3.1), less their headroom (Audio::stream_gain)
             a.music_volume = lib.category("MUSIC_USER").map_or(0.0, |c| mcla_formats::audcfg::db2lin(c.volume));
         }
+        // ---- sound occlusion (occlusion.rs): the cars' occluders, the manager's updates and the ticks; their outputs go
+        // to the voices whose requests name them
+        if let (Some(lib), Some(oc)) = (&mut self.lib, &mut self.occl) {
+            let factors = std::mem::take(&mut oc.factors);
+            self.occ_slots = match collider {
+                Some(w) => occlude(oc, lib, vehicles, dt, &mut crate::occlusion::CityProbe { world: w, factors: &factors }),
+                None => occlude(oc, lib, vehicles, dt, &mut crate::occlusion::NoProbe),
+            };
+            oc.factors = factors;
+            if let Some(f) = &mut self.fleet {
+                f.occ = self.occ_slots.iter().map(|(k, v)| (*k, *v)).collect();
+            }
+        }
         // ---- collisions (collaudio.rs): every car's contacts of the frame, the props' hits
         if let (Some(lib), Some(coll)) = (&mut self.lib, &mut self.coll) {
             coll.begin_frame(dt);
@@ -696,7 +742,7 @@ impl Sound {
                 } else {
                     crate::collaudio::Owner::Ambient
                 };
-                coll.car(lib, i, &c.model.name, owner, c.model.bike, &c.state, c.is_player);
+                coll.car(lib, i, &c.model.name, owner, c.model.bike, &c.state, c.is_player, self.occ_slots.get(&c.uid).copied().unwrap_or(0));
             }
             coll.retain(lib, |i| i < vehicles.cars.len());
             for h in prop_hits {
@@ -950,6 +996,7 @@ impl Sound {
                 speed_ratio: 0.0,
                 rubber_hold: 0.0,
             };
+            eng.occ = self.occ_slots.get(&p.uid).copied().unwrap_or(0);
             eng.update(lib, &inp, dt);
             if eng.take_running() {
                 self.ignition = 0;

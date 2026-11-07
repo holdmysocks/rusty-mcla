@@ -3,11 +3,12 @@
 //! two world probes between the listener and the emitter (the material depth between them times the materials' factor).
 //! This file has the group's own rule: the tune (F-43021 with F-44963 / F-80129), the group's init F-23776, set F-69008,
 //! smoothing F-80830 and latch F-43736, and the owner's update F-87712 with the probes and the material factor as
-//! inputs. Bit-exact offline (tools/occlusion_reference.py, test `occlusion_matches_the_original`). Not here yet: the
-//! manager's round-robin over the groups, the listener radius test, the probe itself (F-93873) on the port's collision
-//! and the owners (car audio, ambience, ...) applying the outputs.
+//! inputs, the occluder F-49147, the manager's round-robin F-96474, the radius test F-21927, the tick F-60633 and the
+//! immediate update F-65914. Bit-exact offline (tools/occlusion_reference.py, test `occlusion_matches_the_original`).
+//! [`System`] keeps the cars' occluders (sound.rs moves them and hands their outputs to the voices); the probe on the
+//! port's collision (F-93873, `CityProbe`) is not compared with the original's yet.
 
-#![allow(dead_code)] // (not wired to the emitters yet)
+#![allow(dead_code)] // (the group's fields the tests read)
 
 use crate::busfx::{db2lin, dp4, vadd};
 use crate::caraudio::{ln_guest, pow_guest};
@@ -365,10 +366,120 @@ impl Mgr {
     }
 }
 
+/// A probe that hits nothing (no city collision loaded): every amount is 0.
+pub(crate) struct NoProbe;
+
+impl Probe for NoProbe {
+    fn probe(&mut self, _: [f32; 4], _: [f32; 4], _: u32, _: usize) -> Vec<Hit> {
+        Vec::new()
+    }
+}
+
+/// The occluders as the game keeps them: the audio engine's table of 400 entities (engine +10408; an entity's
+/// registration F-18654 takes the first free slot), each with the occluder its init F-37940 made, the manager
+/// F-96474 over the table, and the tick F-60633 on each. Only the cars' occluders are made here (the player's and
+/// the computer racers' car audio, the cars with `CarSounds`); the peds', props', map effects' and the ambience's
+/// are not (docs/AUDIO.md, open).
+pub(crate) struct System {
+    pub tune: Tune,
+    /// GLOBAL_OCCLUSION +10: the listener's radius (800 m)
+    pub radius: f32,
+    /// GLOBAL_OCCLUSION +14 / +18 / +22: the car occluder's place, added to the car's origin (0, 0.9, 0)
+    pub car_offset: [f32; 3],
+    pub factors: std::collections::HashMap<u8, f32>,
+    pub list: Vec<Option<Occluder>>,
+    /// the car each slot belongs to (its `uid`)
+    owner: Vec<Option<u32>>,
+    mgr: Mgr,
+}
+
+/// The table's size (F-18654 / F-96474: 400 entities).
+pub(crate) const SLOTS: usize = 400;
+
+impl System {
+    pub fn new(tune: Tune, o: &[u8], factors: std::collections::HashMap<u8, f32>) -> Option<System> {
+        let f = |at: usize| o.get(at..at + 4).map(|b| f32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+        Some(System { tune, radius: f(10)?, car_offset: [f(14)?, f(18)?, f(22)?], factors, list: vec![None; SLOTS], owner: vec![None; SLOTS], mgr: Mgr::default() })
+    }
+
+    /// The car's frame: the port keeps only its origin (the car's place), the one row a car occluder reads (its
+    /// place is not in the frame's space and not the world's: the origin plus `car_offset`, F-87712).
+    fn frame(origin: [f32; 3]) -> [[f32; 4]; 4] {
+        [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [origin[0], origin[1], origin[2], 1.0]]
+    }
+
+    /// The car `uid`'s occluder slot, its frame moved to the car's `origin`. A new one is made as the car audio's
+    /// start does it (F-43725): the entity's occluder (F-37940 with F-49147) in the first free slot, its place
+    /// `car_offset`, then the immediate update F-65914 (now, not local).
+    pub fn car(&mut self, uid: u32, origin: [f32; 3], l: [f32; 4], world: &mut impl Probe) -> Option<usize> {
+        if let Some(i) = self.owner.iter().position(|o| *o == Some(uid)) {
+            if let Some(o) = self.list[i].as_mut() {
+                o.frame = Some(Self::frame(origin));
+            }
+            return Some(i);
+        }
+        let i = self.list.iter().position(|o| o.is_none())?;
+        let [x, y, z] = self.car_offset;
+        let mut o = Occluder::new(&self.tune, [x, y, z, 0.0], Some(Self::frame(origin)));
+        o.refresh(&self.tune, true, false, l, self.radius, world);
+        self.list[i] = Some(o);
+        self.owner[i] = Some(uid);
+        Some(i)
+    }
+
+    /// The cars whose audio is gone give their slots back (the entity's release takes it out of the table).
+    pub fn keep(&mut self, live: &[u32]) {
+        for (o, u) in self.list.iter_mut().zip(self.owner.iter_mut()) {
+            if u.is_some_and(|u| !live.contains(&u)) {
+                *o = None;
+                *u = None;
+            }
+        }
+    }
+
+    /// One frame: the manager's round of updates (F-96474, the engine frame F-88094), then every occluder's tick
+    /// (F-60633). (approx.) The order of the two within the frame: the tick's caller is not found.
+    pub fn step(&mut self, l: [f32; 4], dt: f32, world: &mut impl Probe) {
+        self.mgr.update(&self.tune, &mut self.list, l, self.radius, world);
+        for o in self.list.iter_mut().flatten() {
+            o.tick(&self.tune, dt);
+        }
+    }
+
+    /// The outputs (volume, cutoff in Hz) of a slot.
+    pub fn out(&self, i: usize) -> Option<[f32; 2]> {
+        self.list.get(i).and_then(|o| o.as_ref()).map(|o| o.out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fmt::Write;
+
+    /// The disc's GLOBAL_OCCLUSION as the wiring reads it: radius 800 m, the car occluder's place (0, 0.9, 0), and the
+    /// volume never 0 at any depth (the lowest is the fully occluded 0.2), so the car update's stop at volume 0
+    /// (F-36837) is never reached with the disc's tune. Needs MCLA_DATA_DIR (extracted\cache).
+    #[test]
+    #[ignore]
+    fn disc_tune_for_the_wiring() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let lib = crate::sndobj::SoundLib::load(a.root(), &a.cfg.clone()).expect("sound objects");
+        let o = lib.game.get_name("GLOBAL_OCCLUSION").expect("GLOBAL_OCCLUSION").to_vec();
+        let t = Tune::read(&o, |h| lib.curve(h).cloned()).expect("tune");
+        let s = System::new(t.clone(), &o, Default::default()).expect("system");
+        assert_eq!((s.radius, s.car_offset), (800.0, [0.0, 0.9, 0.0]));
+        let mut low = f32::MAX;
+        for k in 0..=20000 {
+            let (mut g, _) = Group::init(&t);
+            g.set(&t, k as f32 * 0.01);
+            let v = g.latch()[0];
+            low = low.min(v);
+        }
+        println!("lowest volume {low}, init {:?}", Group::init(&t).1);
+        assert!(low > 0.0, "{low}");
+    }
 
     /// tools/occlusion_reference.py ran the original's code offline: the pow F-21955 on 6,000 inputs, F-33490 on 2,000
     /// random Gauss curves, and on 150 tunes (GLOBAL_OCCLUSION or random) the reader then 20 random group ops each

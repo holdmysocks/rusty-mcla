@@ -67,11 +67,15 @@ pub struct Req {
     /// init +82): the root sound's parent category, which a header category under it overrides; 0 = none (BASE). The
     /// engine loops are the only sounds that give one (their own headers have none)
     pub category: u32,
+    /// the request's occluder (+32; F-30479 keeps it in the voice entry +180): its slot in [`SoundLib::set_occlusion`]
+    /// plus one, 0 = none. Every frame the voice takes the occluder's volume and cutoff (F-19918 into entry +160 / +164),
+    /// which the pan applies (F-56973: the speaker gains times the volume, the low-pass at most the cutoff)
+    pub occluder: u16,
 }
 
 impl Default for Req {
     fn default() -> Self {
-        Req { pos: None, volume: 0.0, vol2: 0.0, pitch: 0, pan: -1, doppler: 1.0, player: false, start_ms: 0.0, start_pct: 0.0, lpf: 23900, hpf: 0, dry: 1.0, fx_send: 0.0, chain: 0, pans_chain: false, category: 0 }
+        Req { pos: None, volume: 0.0, vol2: 0.0, pitch: 0, pan: -1, doppler: 1.0, player: false, start_ms: 0.0, start_pct: 0.0, lpf: 23900, hpf: 0, dry: 1.0, fx_send: 0.0, chain: 0, pans_chain: false, category: 0, occluder: 0 }
     }
 }
 
@@ -410,6 +414,8 @@ pub struct SoundLib {
     /// the reverb level and room size (env +5100 / +5104, set every frame by the probes of F-26357 -
     /// BUS_GRAPH_RULE.md 2.5)
     pub reverb_env: (f32, f32),
+    /// the occluders' outputs this frame (volume, cutoff in Hz) by slot, as the requests name them (`Req::occluder`)
+    occlusion: Vec<[f32; 2]>,
     /// effect chain settings set this frame, handed to the mixer by `update`
     chain_params: Vec<(u32, crate::audio::ChainParams)>,
     /// categories.dat, and the run-time controllers on its categories (dB by category hash): the five volume
@@ -659,6 +665,7 @@ impl SoundLib {
             camera: Default::default(),
             camera_filt: Default::default(),
             reverb_env: (0.0, 0.0),
+            occlusion: Vec::new(),
             chain_params: Vec::new(),
             ramps: Default::default(),
             cam_mode: None,
@@ -1494,6 +1501,14 @@ impl SoundLib {
     }
 
     /// An effect chain's settings for this frame (the engine's PLAYER_WAVESHAPER, F-65630).
+    /// An occluder's outputs (volume, cutoff in Hz) for the voices whose request names its slot (F-19918, every frame).
+    pub fn set_occlusion(&mut self, slot: usize, out: [f32; 2]) {
+        if self.occlusion.len() <= slot {
+            self.occlusion.resize(slot + 1, [1.0, 23900.0]);
+        }
+        self.occlusion[slot] = out;
+    }
+
     pub fn set_chain(&mut self, id: u32, p: crate::audio::ChainParams) {
         self.chain_params.retain(|c| c.0 != id);
         self.chain_params.push((id, p));
@@ -1851,6 +1866,7 @@ impl SoundLib {
         let (lp, lr, lf) = listener;
         let k = std::f32::consts::FRAC_1_SQRT_2;
         let mut rolloff = 0.0;
+        let occ = inst.req.occluder.checked_sub(1).and_then(|i| self.occlusion.get(i as usize).copied());
         // positional: unset counts as positional unless a pan or speaker mask is set (A-47267)
         let positional = inst.req.pos.is_some() && if v.ctx.pan == -1 && v.ctx.mask == 0 { v.ctx.positional != 0 } else { v.ctx.positional == 1 };
         let rolloff_at = |d: f32, s: f32| match audcfg::scaled_distance(d, s) {
@@ -1898,7 +1914,7 @@ impl SoundLib {
             let bits = (m & 0x3F).count_ones().max(1) as f32;
             (l / bits.sqrt(), r / bits.sqrt())
         } else if let Some(d) = dir {
-            pan_gains(d)
+            pan_gains_by(d, occ.map_or(1.0, |o| o[0]))
         } else {
             (k, k)
         };
@@ -1908,7 +1924,12 @@ impl SoundLib {
         let amp = db2lin(a) * db2lin(b);
         let ratio = 2f32.powf((v.ctx.pitch + cat.pitch) as f32 / 1200.0) * if positional { inst.doppler } else { 1.0 };
         // the voice's filters (F-24161): LPF = max(100, min(chain, category)), HPF = max(chain, category)
-        let filt = (v.ctx.lpf.min(cat.lpf).max(100), v.ctx.hpf.max(cat.hpf));
+        // (the occluder's cutoff on the positional / pan path, F-56973: min(the chain's word, the cutoff truncated))
+        let lpf = match (occ, dir) {
+            (Some(o), Some(_)) if !v.stereo && !(v.ctx.mask != 0 && !positional) => occluded_lpf(v.ctx.lpf as u32, o[1]) as u16,
+            _ => v.ctx.lpf,
+        };
+        let filt = (lpf.min(cat.lpf).max(100), v.ctx.hpf.max(cat.hpf));
         // the levels (F-88152): dry = pan x B x G30, G30 = entry +76 x dB2lin(A); reverb s = send_s x pan x B x G30;
         // the chain send G28 = entry +72 x dB2lin(A) (no B); the chain's own output = pan x B (and its sends)
         let (level, size) = self.reverb_env;

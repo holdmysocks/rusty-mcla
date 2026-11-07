@@ -180,6 +180,9 @@ pub fn default_object<'a>(lib: &'a SoundLib, car: &str, bike: bool, player: bool
 static NEXT_CHAIN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 
 pub struct EngineSound {
+    /// the car's occluder (entity +96), which every request of the car audio carries at +32 (the loops: F-74444 /
+    /// F-51617 store it there): a slot of the sound library's occlusion table plus one, 0 = none
+    pub occ: u16,
     recs: Vec<Rec>,
     /// XF+12 cents, XF+14 mB as dB, EFFECT+10 mB as dB
     pitch_off: f32,
@@ -354,6 +357,7 @@ impl EngineSound {
         let s16 = |o: &[u8], at: usize| be_u16(o, at) as i16 as f32;
         log::info!("audio: engine {} - {} loops {}..{} rpm", lib.game.name_of(be_u32(def, 14)).unwrap_or("?"), n, recs[0].start, recs[n - 1].end);
         Some(EngineSound {
+            occ: 0,
             player,
             wobble_target: (be_f32(amp, 30), be_f32(amp, 34)),
             wobble_rate: (be_f32(amp, 38), be_f32(amp, 42)),
@@ -628,7 +632,7 @@ impl EngineSound {
         } else if a.play {
             // its Duration taken before its first step (the total with +80 / +84 still 0)
             self.revs_made = false;
-            self.revs = lib.play_hash(self.revs_sound, Req { pos: Some(e.pos), player: self.player, ..Default::default() });
+            self.revs = lib.play_hash(self.revs_sound, Req { pos: Some(e.pos), player: self.player, occluder: self.occ, ..Default::default() });
             self.revs_t = self.revs.map(|h| (0.0, lib.duration_ms(h)));
         } else if let Some((t, d)) = self.revs_t {
             self.revs_t = Some((t + dt * 1000.0, d));
@@ -651,7 +655,7 @@ impl EngineSound {
                     lib.stop(h);
                 }
                 if self.state == 0 {
-                    self.ign = lib.play_hash(self.ign_sound, Req { pos: Some(e.pos), player: self.player, ..Default::default() });
+                    self.ign = lib.play_hash(self.ign_sound, Req { pos: Some(e.pos), player: self.player, occluder: self.occ, ..Default::default() });
                     self.state = 1;
                     self.timer = lib.rand_int(self.crank.0, self.crank.1) as f32 * 0.001;
                     log::info!("engine: ignition at {:.3} s (one-shot {}), crank {:.3} s", self.clock, self.ign.is_some(), self.timer);
@@ -672,7 +676,7 @@ impl EngineSound {
                 if let Some(h) = self.ign.take() {
                     lib.stop(h);
                 }
-                self.ign = lib.play_hash(self.kaput_sound, Req { pos: Some(e.pos), player: self.player, ..Default::default() });
+                self.ign = lib.play_hash(self.kaput_sound, Req { pos: Some(e.pos), player: self.player, occluder: self.occ, ..Default::default() });
                 self.state = 3;
             }
             self.end_frame(lib, e, dt);
@@ -780,7 +784,7 @@ impl EngineSound {
             // the loops' category (create params +28): the player's PLAYER_VEHICLES_ENGINES (entity +1696, set by F-30010),
             // a computer racer's OPPONENT_VEHICLES_ENGINE (F-51617); recorded in the running original (category index 128 / 25)
             let category = joaat(if self.player { "PLAYER_VEHICLES_ENGINES" } else { "OPPONENT_VEHICLES_ENGINE" });
-            let req = Req { pos: Some(loop_pos), volume: vol, vol2: self.vol2, pitch: cents, doppler: self.doppler, player: self.player, dry, fx_send, chain: self.chain, pans_chain: i == 0, category, ..Default::default() };
+            let req = Req { pos: Some(loop_pos), volume: vol, vol2: self.vol2, pitch: cents, doppler: self.doppler, player: self.player, dry, fx_send, chain: self.chain, pans_chain: i == 0, category, occluder: self.occ, ..Default::default() };
             match self.voices[i] {
                 Some(h) if lib.playing(h) => lib.set(h, req),
                 _ => self.voices[i] = lib.play_hash(r.sound, req),
@@ -870,7 +874,7 @@ impl EngineSound {
         }
         if let Some((t, snd)) = self.pending_gear {
             if t <= 0.0 {
-                lib.play_hash(snd, Req { pos: Some(e.pos), volume: self.gear_vol, pitch: self.gear_pitch, player: self.player, ..Default::default() });
+                lib.play_hash(snd, Req { pos: Some(e.pos), volume: self.gear_vol, pitch: self.gear_pitch, player: self.player, occluder: self.occ, ..Default::default() });
                 self.pending_gear = None;
             } else {
                 self.pending_gear = Some((t - dt, snd));
@@ -884,7 +888,7 @@ impl EngineSound {
             if e.throttle_in <= 0.0 && e.rpm < self.prev_rpm {
                 let t = t - dt;
                 if t <= 0.0 {
-                    lib.play_hash(self.backfire, Req { player: self.player, ..Req::at(e.pos) });
+                    lib.play_hash(self.backfire, Req { player: self.player, occluder: self.occ, ..Req::at(e.pos) });
                     self.backfire_armed = None;
                 } else {
                     self.backfire_armed = Some(t);
@@ -1077,6 +1081,39 @@ mod tests {
         assert!(on > 1e-3, "{on}");
         assert!(off < on * 1e-4, "{off} against {on}");
         assert_eq!(music, on);
+    }
+
+    /// The loops carry the car's occluder (F-74444 stores entity +96 into request +32): with the slot's outputs at the
+    /// fully occluded pair of the disc's GLOBAL_OCCLUSION (volume 0.2, 4002 Hz) the engine is quieter than with the
+    /// open pair (1, 23900), the same as with no occluder. Needs MCLA_DATA_DIR (extracted\cache).
+    #[test]
+    #[ignore]
+    fn occluder_reaches_the_engine_loops() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let rms = |occ: Option<[f32; 2]>| {
+            let mut a = crate::audio::Audio::new_offline(&dir).expect("audio");
+            let mut lib = SoundLib::load(a.root(), &a.cfg.clone()).expect("sound objects");
+            lib.listener = (Vec3::new(0.0, 1.5, 6.0), Vec3::X, Vec3::NEG_Z);
+            let mut e = EngineSound::new(&lib, "vp_nsn_350z_06", false).expect("engine");
+            if let Some(o) = occ {
+                lib.set_occlusion(3, o);
+                e.occ = 4;
+            }
+            let dt = 1.0 / 60.0;
+            for f in 0..240 {
+                let inp = EngineIn { pos: Vec3::ZERO, rpm: 900.0 + 20.0 * f as f32, idle_rpm: 900.0, max_rpm: 7000.0, torque: 300.0, full_torque: 400.0, pedal: 1.0, throttle_in: 1.0, speed: 20.0, gear: 3, view: Some(2), ..Default::default() };
+                e.update(&mut lib, &inp, dt);
+                lib.update(dt, &mut a);
+                a.end_frame();
+                a.render(dt);
+            }
+            let c = a.captured();
+            (c.iter().map(|x| x * x).sum::<f32>() / c.len().max(1) as f32).sqrt()
+        };
+        let (none, open, shut) = (rms(None), rms(Some([1.0, 23900.0])), rms(Some([0.2, 4002.0])));
+        assert!(none > 1e-3, "{none}");
+        assert_eq!(open, none);
+        assert!(shut < open * 0.2, "{shut} against {open}");
     }
 
     /// F-90102 against the original's own code on 4000 cases (work/audio2/verify/ref1.py; evidence docs/reference/audio/verify_audio_b1.md)

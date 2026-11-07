@@ -103,9 +103,10 @@ impl CollisionAudio {
         })
     }
 
-    /// A frame's sounds of one car: every contact call's impact, then the scrape.
+    /// A frame's sounds of one car: every contact call's impact, then the scrape. `occ`: the car's occluder slot plus one
+    /// (the collision owner's +36, the car's occluder: F-24302 puts it into every request), 0 = none.
     #[allow(clippy::too_many_arguments)]
-    pub fn car(&mut self, lib: &mut SoundLib, idx: usize, car: &str, owner: Owner, bike: bool, st: &CarState, player: bool) {
+    pub fn car(&mut self, lib: &mut SoundLib, idx: usize, car: &str, owner: Owner, bike: bool, st: &CarState, player: bool, occ: u16) {
         let Some(mgr) = Self::manager(lib, car, owner, bike).map(|m| m.to_vec()) else { return };
         let zone_of = |own: Surface| -> u32 {
             // sub_82381D60: car_side -> SIDE, car_undercarriage -> UNDER, car_roof -> ROOF, car_wheel -> WHEEL
@@ -125,7 +126,7 @@ impl CollisionAudio {
         ca.bangs.retain(|(h, _)| lib.playing(*h));
         for (h, p) in ca.bangs.iter_mut() {
             *p += disp;
-            lib.set(*h, Req { pos: Some(*p), player, ..Default::default() });
+            lib.set(*h, Req { pos: Some(*p), player, occluder: occ, ..Default::default() });
         }
         let rot = Mat3::from_quat(st.rot);
         let mut calls: Vec<u32> = st.touches.iter().map(|t| t.call).collect();
@@ -174,7 +175,7 @@ impl CollisionAudio {
                             eprintln!("COLLAUDIO impact car {idx} {owner:?} zone {} {:.1} mph tier {k} gain {gain:.2} L {} R {}", lib.game.name_of(zone_of(t.own)).unwrap_or("?"), s, lib.name_of(be_u32(&z, b)).unwrap_or("?"), lib.name_of(be_u32(&z, b + 4)).unwrap_or("?"));
                         }
                         let vol = lin2db(gain);
-                        let req = |p: Vec3| Req { pos: Some(p), volume: vol, player, ..Default::default() };
+                        let req = |p: Vec3| Req { pos: Some(p), volume: vol, player, occluder: occ, ..Default::default() };
                         lib.play_hash(be_u32(&z, b + 8), req(t.pos));
                         // the hood: a hit ahead of the car (n against the rear axis)
                         if t.normal.dot(rot.z_axis) < -std::f32::consts::FRAC_1_SQRT_2 {
@@ -228,7 +229,7 @@ impl CollisionAudio {
                     ca.scrape = None;
                 }
             }
-            let req = Req { pos: Some(world), pitch: (1200.0 * ratio.log2()) as i32, player, ..Default::default() };
+            let req = Req { pos: Some(world), pitch: (1200.0 * ratio.log2()) as i32, player, occluder: occ, ..Default::default() };
             match ca.scrape {
                 Some(h) => lib.set(h, req),
                 None => {

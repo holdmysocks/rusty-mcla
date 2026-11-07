@@ -470,6 +470,9 @@ struct WheelRec {
 /// One racing car's sounds (player or computer racer).
 pub struct CarSounds {
     player: bool,
+    /// the car's occluder (entity +96; every request of the car audio carries it at +32: F-74444, F-51617, F-79321, F-50805, F-24302 ...)
+    /// as a slot of the sound library's occlusion table plus one, 0 = none
+    pub occ: u16,
     /// ONESHOT_PARAMS +92: the pass-by whoosh (F-50805) and when it last played (5 s apart)
     whoosh_hash: u32,
     whoosh_at: f32,
@@ -564,6 +567,7 @@ impl CarSounds {
         let oneshot = obj(18, "");
         CarSounds {
             player,
+            occ: 0,
             skid_db: be_s16(&skids, 10) * 0.01,
             skid_cents: be_s16(&skids, 12) as i32,
             susp: obj(26, "TUNERS_SUSPENSION"),
@@ -631,7 +635,7 @@ impl CarSounds {
     }
 
     fn req(&self, pos: Vec3) -> Req {
-        Req { player: self.player, ..Req::at(pos) }
+        Req { player: self.player, occluder: self.occ, ..Req::at(pos) }
     }
 
     /// Every sound of the car stops (the car left or its entity was released).
@@ -824,7 +828,7 @@ impl CarSounds {
             // skid_voice (F-75975): GLOBAL_SKIDS' offsets on top; the LPF (voice +88) = trunc(map(curve +218,
             // +206, +210, +222, 1, t)) - 8 kHz to 20 kHz on ROAD
             let lpf = map(lib, be_u32(&o, 218), f(206), f(210), f(222), 1.0, r.t) as u16;
-            let req = Req { volume: lin2db(r.gain) + self.skid_db, pitch: cents(r.ratio) + self.skid_cents, start_pct: if car_level { 0.0 } else { 25.0 * i as f32 }, player, lpf, ..Req::at(pos) };
+            let req = Req { volume: lin2db(r.gain) + self.skid_db, pitch: cents(r.ratio) + self.skid_cents, start_pct: if car_level { 0.0 } else { 25.0 * i as f32 }, player, lpf, occluder: self.occ, ..Req::at(pos) };
             keep(lib, &mut r.skid, hash, req);
         } else {
             stop(lib, &mut r.skid);
@@ -1025,7 +1029,7 @@ impl CarSounds {
             return;
         }
         self.whoosh_at = self.clock;
-        lib.play_hash(self.whoosh_hash, Req::at(pos).vol(vol).pitch(pitch));
+        lib.play_hash(self.whoosh_hash, Req { occluder: self.occ, ..Req::at(pos) }.vol(vol).pitch(pitch));
     }
 
     /// warn(cop, on) (F-12823): on - the INTERSECTION loop (+14) if the siren slot is free; off - the siren starts
@@ -1223,7 +1227,7 @@ impl CarSounds {
         }
         let (level, burning) = c.sst.unwrap_or((0.0, false));
         // every start: 0 dB at the entity (P+20 = this+80), flags |0x20
-        let at = Req { player: self.player, ..Req::at(c.pos) };
+        let at = Req { player: self.player, occluder: self.occ, ..Req::at(c.pos) };
         let live = |lib: &SoundLib, h: &Option<Handle>| h.is_some_and(|h| lib.playing(h));
         // a slot's stop (F-31667) is only made when the slot holds a handle
         let halt = |lib: &mut SoundLib, slot: &mut Option<Handle>, what: &str| {
@@ -1357,9 +1361,9 @@ impl CarSounds {
             let slots = self.nitro.get_or_insert((None, None));
             // both fire loops are emitter type 1 (F-96250, set by F-79321)
             let (fire_pos, fire_doppler) = self.loop_place.filter(|_| self.player).unwrap_or((c.pos, 1.0));
-            keep(lib, &mut slots.0, fire, Req { volume: world_db, doppler: fire_doppler, ..Req { player: self.player, ..Req::at(fire_pos) } });
+            keep(lib, &mut slots.0, fire, Req { volume: world_db, doppler: fire_doppler, ..Req { player: self.player, occluder: self.occ, ..Req::at(fire_pos) } });
             if self.player {
-                keep(lib, &mut slots.1, fire_fe, Req { volume: fe_db, doppler: fire_doppler, ..Req { player: true, ..Req::at(fire_pos) } });
+                keep(lib, &mut slots.1, fire_fe, Req { volume: fe_db, doppler: fire_doppler, ..Req { player: true, occluder: self.occ, ..Req::at(fire_pos) } });
             }
             if first && self.player {
                 self.launch_chirp(lib, mats, c);
@@ -1399,7 +1403,7 @@ impl CarSounds {
         for (w, c) in self.window_snd.iter_mut().zip(ctl.iter().chain([spoiler, &roof.hatch, &roof.top])) {
             // (the request's place is a pointer to the tracker's +48, the part's place under the car's matrix this frame)
             let Some(at) = w.obj.map(|o| o.at) else { continue };
-            let req = Req { player: self.player, ..Req::at(pos + rot * at) };
+            let req = Req { player: self.player, occluder: self.occ, ..Req::at(pos + rot * at) };
             let mut v = Voices { lib: &mut *lib, req };
             w.follow(&mut v, c.state);
             if let Some(h) = w.looping() {
@@ -1499,7 +1503,7 @@ impl CarSounds {
                         if slot.0.map_or(true, |s| !lib.playing(s)) {
                             let vol = lin2db(lerp(mph.min(scr_hi_mph), scr_lo_mph, scr_hi_mph, scr_lo, scr_hi));
                             let pitch = cents(lerp(mph, pit_lo_mph, pit_hi_mph, pit_lo, pit_hi));
-                            slot.0 = lib.play_hash(h, Req { player, ..Req::at(pos) }.vol(vol).pitch(pitch));
+                            slot.0 = lib.play_hash(h, Req { player, occluder: self.occ, ..Req::at(pos) }.vol(vol).pitch(pitch));
                         }
                     }
                 }
@@ -1979,6 +1983,9 @@ pub struct Fleet {
     player_siren: bool,
     /// a player line the cars' sounds ask for this frame (the game says it if no speech plays)
     pub want_speech: Option<&'static str>,
+    /// each car's occluder slot plus one by `uid` (sound.rs: the cars with a car audio entity, `Fleet::opponent` and
+    /// the player), handed to their sounds' requests
+    pub occ: HashMap<u32, u16>,
 }
 
 /// What the police tell the cars' sounds: heat 0 none, 1 pull-over, 2 pursuit, 3 search, 4 busted; the payback's
@@ -2130,10 +2137,11 @@ impl Fleet {
                 std::fs::read_to_string(p).ok().map(|t| (sst_replay_load(&t), -wait))
             }),
             want_speech: None,
+            occ: HashMap::new(),
         }
     }
 
-    fn opponent(c: &CarInstance) -> bool {
+    pub(crate) fn opponent(c: &CarInstance) -> bool {
         c.racer || c.pinned || c.cop || c.goon
     }
 
@@ -2314,6 +2322,9 @@ impl Fleet {
                 c.load_vol = l;
             }
             if let Some(s) = &mut e.sounds {
+                s.occ = self.occ.get(&p.uid).copied().unwrap_or(0);
+            }
+            if let Some(s) = &mut e.sounds {
                 s.loop_place = ctl.loop_place;
                 s.update(lib, &self.mats, &c, ctl.cam_mode, dt);
                 // the slipstream / nitrous burn's PLAYER_NITROUS request when no speech line plays (F-58518 @A-83150,
@@ -2446,6 +2457,8 @@ impl Fleet {
         for (rank, &(_, i)) in opp.iter().enumerate() {
             let c = &v.cars[i];
             let e = entry(&mut self.cars, &self.types, lib, i, c, false);
+            // the car's occluder (entity +96) into every request of its car audio
+            let occ = self.occ.get(&c.uid).copied().unwrap_or(0);
             let mut ci = car_in(c);
             ci.wet = wet;
             if rank < 7 {
@@ -2457,10 +2470,17 @@ impl Fleet {
                 }
                 if let Some(en) = &mut e.engine {
                     let inp = engine_in(c, racing && !c.cop && c.ai.is_some());
+                    en.occ = occ;
                     en.update(lib, &inp, dt);
                 }
             } else if let Some(mut en) = e.engine.take() {
                 en.stop(lib);
+            }
+            if let Some(s) = &mut e.sounds {
+                s.occ = occ;
+            }
+            if let Some(en) = &mut e.engine {
+                en.occ = occ;
             }
             if let Some(en) = &e.engine {
                 ci.rpm_s = en.smoothed_rpm();
