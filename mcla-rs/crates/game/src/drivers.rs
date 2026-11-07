@@ -3019,3 +3019,45 @@ mod ride_transition_tests {
         assert!(fired[0] == 4000 && fired[1..].iter().all(|&c| c > 50 && c < 4000 - 50), "{fired:?}");
     }
 }
+
+#[cfg(test)]
+mod bike_gesture_tests {
+    use super::*;
+
+    /// The bike gesture pickers against the original's run offline (`tools/bike_gesture_reference.py`: neutral F-38624 with the
+    /// respond flag 0 / 1, left F-24572, right F-99511, talk left F-44243, talk right F-57458, mild F-51244, win F-49380, ticket
+    /// fidget F-80672) from 29 counter values each: the clip name and the counter after equal `bike_gesture_clip`'s (the ticket
+    /// fidget keeps no counter in the port: its one name).
+    #[test]
+    fn bike_gesture_pickers_match_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/bike_gesture_ref.txt").lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let a: Vec<&str> = a.split_whitespace().collect();
+            let (name, after) = b.split_once(' ').unwrap();
+            let c: usize = a[1].parse().unwrap();
+            let after: usize = after.parse().unwrap();
+            let (g, k) = match a[0] {
+                "F-38624" => (Gesture::Neutral, Some(0)),
+                "F-24572" => (Gesture::Left, Some(1)),
+                "F-99511" => (Gesture::Right, Some(2)),
+                "F-44243" => (Gesture::TalkLeft, Some(3)),
+                "F-57458" => (Gesture::TalkRight, Some(4)),
+                "F-51244" => (Gesture::Mild, Some(5)),
+                "F-49380" => (Gesture::Win, Some(6)),
+                "F-80672" => (Gesture::CopFidget, None),
+                p => panic!("{p}"),
+            };
+            let mut rr = [0usize; 7];
+            if let Some(k) = k {
+                rr[k] = c;
+            }
+            assert_eq!(bike_gesture_clip(g, &mut rr), name, "{line}");
+            if let Some(k) = k {
+                assert_eq!(rr[k], after, "{line}");
+            }
+            n += 1;
+        }
+        assert_eq!(n, 261);
+    }
+}
