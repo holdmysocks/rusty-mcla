@@ -371,3 +371,38 @@ fn combo_event_matches_the_original() {
     }
     assert_eq!(n, 3000);
 }
+
+/// START held from the press that opens the pause menu, as recorded in the original (work/ui2/rep, 2026-11-07): held
+/// 3, 10, 11, 12, 13, 14 or 15 UI ticks the menu stays up; held 16, 17, 18, 19 or 21 ticks it is gone again (it went
+/// while START was still down in a 90-tick hold, and did not come back).
+#[test]
+fn pause_start_hold_matches_the_original() {
+    let run = |n: u32| {
+        // (the press is the call that opens the menu: hold 0; then a call a tick while START stays down, then its release)
+        let mut h = Some(0.0f32);
+        let mut closed = false;
+        for k in 1..=n + 1 {
+            let (h2, c) = crate::game::pause_start_hold(h, k < n, 1.0);
+            h = h2;
+            closed |= c;
+        }
+        closed
+    };
+    for n in [3, 10, 11, 12, 13, 14, 15] {
+        assert!(!run(n), "held {n}");
+    }
+    for n in [16, 17, 18, 19, 21, 90] {
+        assert!(run(n), "held {n}");
+    }
+    // (held on: it closes at 19 ticks after the press, while still down, and only once)
+    let mut h = Some(0.0f32);
+    let mut at = Vec::new();
+    for k in 1..=60 {
+        let (h2, c) = crate::game::pause_start_hold(h, true, 1.0);
+        h = h2;
+        if c {
+            at.push(k);
+        }
+    }
+    assert_eq!(at, vec![19]);
+}

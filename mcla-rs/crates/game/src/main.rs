@@ -728,6 +728,8 @@ struct App {
     /// The menus' held-button repeat (F-68423): per pad bit the UI ticks held and the tick count that fires next
     pad_rep: [(f32, f32); 18],
     pad_rep_at: Option<std::time::Instant>,
+    /// UI ticks START has stayed down since the press that opened the pause menu (`game::pause_start_hold`)
+    start_hold: Option<f32>,
     pad_pending: u32,
     pad_look: (f32, f32),
     /// the cruise assist: the speed it watches (smoothed), switched on, holding the limit now
@@ -1469,6 +1471,7 @@ impl App {
             pad_prev: 0,
             pad_rep: [(0.0, 7.0); 18],
             pad_rep_at: None,
+            start_hold: None,
             pad_pending: 0,
             pad_look: (0.0, 0.0),
             cruise_v: 0.0,
@@ -2556,6 +2559,10 @@ impl App {
                 rep |= 1 << i;
             }
         }
+        // (START held on from the press that opened the pause menu closes it again: `game::pause_start_hold`)
+        let (hold, start_close) = game::pause_start_hold(self.start_hold, now >> 7 & 1 != 0, ticks);
+        self.start_hold = hold;
+        let start_close = start_close && self.game.mode == Mode::Paused;
         self.pad_prev = now;
         self.pad_look = look;
         self.pad_look_up = 0.0;
@@ -2615,6 +2622,7 @@ impl App {
             // (on the GPS map Start is MAP MODE and backs out of nothing - #26)
             // (so is it in ARCADE's VIEW RACE)
             self.game.nav_back |= ((p(1) || (p(7) && !self.game.show_map && self.game.race_view.is_none())) && !title) && !watching;
+            self.game.nav_back |= start_close && !self.game.show_map;
             // (Back answers a call on the phone over a menu too - the keyboard's map key does)
             self.game.nav_map |= p(6) && (self.game.show_map || self.game.phone_call_up());
             return;
@@ -2649,6 +2657,9 @@ impl App {
                 return;
             }
             self.game.nav_back |= p(7);
+            if p(7) {
+                self.start_hold = Some(0.0);
+            }
             self.game.nav_map |= p(6);
             if a(7) {
                 self.game.map_button();
@@ -2704,6 +2715,9 @@ impl App {
             return;
         }
         self.game.nav_back |= p(7);
+        if p(7) {
+            self.start_hold = Some(0.0);
+        }
         self.game.nav_map |= p(6);
         if p(10) {
             self.game.map_button();

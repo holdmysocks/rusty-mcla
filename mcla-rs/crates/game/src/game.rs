@@ -16002,6 +16002,25 @@ pub fn slider_event(lo: i32, hi: i32, v: i32, step: i32, wrap: bool, ev: u32, li
     }
 }
 
+/// START held on from the press that opened the pause menu (seen in the original, work/ui2/rep: the pad script's
+/// polls are UI ticks - the d-pad's repeats land at 7 and 13 ticks after the press, F-68423). The menu, up from the
+/// press, takes no START for its first 16 ticks; after that START closes it - on its release (held 16 ticks or more)
+/// or, held on, at its repeat 19 ticks after the press (7 + 6 + 6). Once closed, START held on does not open it again
+/// (that takes a fresh press). `hold`: ticks since that press while START stays down (None: no such press);
+/// `down`: START down now; `ticks`: UI ticks since the last call. Returns (new hold, close now).
+pub fn pause_start_hold(hold: Option<f32>, down: bool, ticks: f32) -> (Option<f32>, bool) {
+    let Some(t) = hold else { return (None, false) };
+    if !down {
+        // (held 16 ticks: down at the press and 15 ticks after it)
+        return (None, t >= 15.0);
+    }
+    let t2 = t + ticks;
+    if t < 19.0 && t2 >= 19.0 {
+        return (None, true);
+    }
+    (Some(t2), false)
+}
+
 /// A menu choice row's left / right (F-47154): events 51 / 53 the choice before, 52 / 54 the one after,
 /// of `n` choices; with `wrap` (+232, F-70207's last argument - 1 for the wager form's DIFFICULTY) it goes
 /// round with UI_MENU_NAV_DOWN (left) / UI_MENU_NAV_UP (right), else at an end it stays with
