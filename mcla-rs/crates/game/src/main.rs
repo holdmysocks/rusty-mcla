@@ -289,7 +289,7 @@ struct App {
     /// the freeway men's scripts have made the police units (althk.rs)
     alt_units_made: bool,
     sim_clock: fixed_step::Clock,
-    /// the game ticks since the sounds' last Doppler sample (SoundLib::doppler_frame)
+    /// the game ticks of the frame drawn last (the sounds' frame sample, SoundLib::frame_sample)
     doppler_ticks: usize,
     /// Test-only render delta; still exercises the ordinary accumulator path.
     test_render_dt: Option<f64>,
@@ -8553,15 +8553,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         if let Some(w) = self.world.as_mut() {
             w.new_frame(6.0);
         }
-        // the Doppler sample of the last frame: its camera and the positions of its last tick (once per frame that moved
-        // anything, F-42745; the ticks since the last sample are its time)
-        if self.doppler_ticks > 0 {
-            if let Some(lib) = self.sound.lib.as_mut() {
-                lib.doppler_frame(self.cam.pos, self.doppler_ticks as f32 * fixed_step::DT);
-            }
-            self.doppler_ticks = 0;
+        // the sounds' frame sample: the camera drawn last and the places of its frame's last tick (heard there until the
+        // next frame; the Doppler every 1/30 s of game time, F-42745)
+        if let Some(lib) = self.sound.lib.as_mut() {
+            lib.frame_sample(self.cam.pos, self.doppler_ticks);
         }
-        self.doppler_ticks += ticks;
+        self.doppler_ticks = ticks;
         for _ in 0..ticks {
             crate::ticktimes::start();
             self.update_gameplay(fixed_step::DT);

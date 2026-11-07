@@ -162,10 +162,31 @@ pub fn audio_rand(lo: i32, hi: i32) -> i32 {
     SharedMwc.with(|m| lo + ((m.next() & 0x7FFF_FFFF) % (hi - lo + 1).max(1) as u32) as i32)
 }
 
-/// One Doppler sample (F-42745 and the 50/50 smoothing): distance `d` now, `pd` at the last sample `elapsed` seconds ago.
-fn doppler_step(ratio: f32, d: f32, pd: f32, factor: f32, elapsed: f32) -> f32 {
-    let v = ((d - pd) * factor / elapsed).clamp(-100.0, 100.0);
-    0.5 * ratio + 0.5 * (340.0 / (340.0 + v))
+/// The Doppler ratio (F-42745): v = (dd x factor) / (ms x 0.001) (the caller's 30 ms), clamped to +-100 by fsel, then
+/// 340 / (v + 340); 1.0 when `ms` is 0. (c = SpeedOfSound 340 and the limit MaxRelativeVelocityForDoppler 100 of the
+/// audio xml, env +3668 / +3672.)
+fn doppler_ratio(dd: f32, factor: f32, ms: u32) -> f32 {
+    if ms == 0 {
+        return 1.0;
+    }
+    let (c, vmax) = (340.0f32, 100.0f32);
+    let v = (dd * factor) / (ms as f32 * 0.001);
+    let hi = if vmax - v >= 0.0 { v } else { vmax };
+    let lo = if -vmax - v >= 0.0 { -vmax } else { v };
+    if v >= 0.0 { c / (hi + c) } else { c / (lo + c) }
+}
+
+/// A distance as the environment update measures it: sqrt(fmadds(x, x, fmadds(y, y, z z))).
+fn env_len(v: Vec3) -> f32 {
+    v.x.mul_add(v.x, v.y.mul_add(v.y, v.z * v.z)).sqrt()
+}
+
+/// One Doppler sample of the environment update (F-77682 at the call, F-42745, the smoothing in F-24161): `src` - `lis` = the source
+/// minus the listener now, `ms` / `ml` their motions since the last sample; the distance change |rel| - |(src - ms) -
+/// (lis - ml)| over 30 ms, and the voice's ratio = fmadds(old, 0.5, new x 0.5).
+fn doppler_sample(ratio: f32, src: Vec3, lis: Vec3, ms: Vec3, ml: Vec3, factor: f32) -> f32 {
+    let dd = env_len(src - lis) - env_len((src - ms) - (lis - ml));
+    ratio.mul_add(0.5, doppler_ratio(dd, factor, 30) * 0.5)
 }
 
 /// A new sound's variance draws (F-40563), each with F-62480 only when its variance is not 0, in this order: volume
@@ -388,7 +409,10 @@ struct Instance {
     hash: u32,
     root: Node,
     req: Req,
-    prev_dist: Option<f32>,
+    /// the source's place at the last Doppler sample, and the place the voice is heard at until the next drawn frame
+    /// (the frame's: what the frame's camera was made against - SoundLib::frame_sample)
+    prev_pos: Option<Vec3>,
+    frame_pos: Option<Vec3>,
     doppler: f32,
     stop: bool,
     /// the request's release override (the request entry +192, -1 = none): a stop takes it instead of each sound's own
@@ -432,6 +456,9 @@ pub struct SoundLib {
     /// each wave voice's slot state for the voice manager (1 playing, 2 stopping; waiting when absent)
     voice_state: HashMap<u64, u8>,
     pub listener: (Vec3, Vec3, Vec3),
+    /// the game ticks since the last Doppler sample and the camera at it (frame_sample)
+    sample_ticks: usize,
+    sample_cam: Option<Vec3>,
     /// the reverb level and room size (env +5100 / +5104, set every frame by the probes of F-26357 -
     /// BUS_GRAPH_RULE.md 2.5)
     pub reverb_env: (f32, f32),
@@ -703,6 +730,8 @@ impl SoundLib {
             next_voice: 0,
             voice_state: HashMap::new(),
             listener: (Vec3::ZERO, Vec3::X, Vec3::NEG_Z),
+            sample_ticks: 0,
+            sample_cam: None,
             cat_dat: cat,
             sliders: Default::default(),
             camera: Default::default(),
@@ -1382,7 +1411,7 @@ impl SoundLib {
         if std::env::var_os("MCLA_SOUND_STARTS").is_some() {
             log::info!("sound start: {} vol {:.2} pitch {}", self.snd.name_of(hash).unwrap_or("?"), req.volume, req.pitch);
         }
-        self.insts.push(Instance { id, hash, root, req, prev_dist: None, doppler: 1.0, stop: false, stop_ms: -1, timer });
+        self.insts.push(Instance { id, hash, root, req, prev_pos: None, frame_pos: None, doppler: 1.0, stop: false, stop_ms: -1, timer });
         Some(Handle(id))
     }
 
@@ -1416,7 +1445,7 @@ impl SoundLib {
         let id = self.next;
         self.next += 1;
         let timer = Some(self.timer_of(&root.h));
-        self.insts.push(Instance { id, hash: 0, root, req, prev_dist: None, doppler: 1.0, stop: false, stop_ms: -1, timer });
+        self.insts.push(Instance { id, hash: 0, root, req, prev_pos: None, frame_pos: None, doppler: 1.0, stop: false, stop_ms: -1, timer });
         Some(Handle(id))
     }
 
@@ -1557,28 +1586,37 @@ impl SoundLib {
         self.chain_params.push((id, p));
     }
 
-    /// Doppler (F-42745), once per drawn frame (the original: once per update that brings the sound a new position, i.e.
-    /// once per game frame): the radial speed from the change of the distance to `listener` since the last
-    /// sample, ratio c / (c + v) with c 340 and v clamped to +-100, smoothed 50/50. `listener` is the frame's
-    /// camera and the sounds' positions are the ones it was made from (the ticks' last), so the two are of one moment -
-    /// sampled every 60 Hz tick against a camera that moves once per frame, the distance to a followed car jumped by a
-    /// frame's travel and back (#43: the engine warbled in the outside views at 30 fps). `elapsed`: the game time since the
-    /// last sample (no sample when 0: nothing moved). (The original divides by a constant 30 ms, its frame's; the port by
-    /// the time that passed, so the speed does not depend on the frame rate.)
-    pub fn doppler_frame(&mut self, listener: Vec3, elapsed: f32) {
-        if !(elapsed > 0.0) {
+    /// Once per drawn frame, before its game ticks, with the camera of the frame drawn last (made after that frame's ticks
+    /// from their result): the sounds are heard at the places of that moment until the next frame (`frame_pos`: pan,
+    /// distance gain and reverb send in `emit` against `listener`, which is that camera), and every 1/30 s of game time
+    /// (two 60 Hz ticks: the original's frame, T+8 = 1/30) the Doppler sample of the original's environment update
+    /// (once per frame, on the update that brings the new position): `doppler_sample` with each source's and the
+    /// listener's motion since the last sample. `ticks`: the game ticks of the frame drawn last. Before (#43) both were
+    /// worked out every tick against a camera that moves once per frame: the distance to a followed car went up by a
+    /// tick's travel and back, which the Doppler made a warble in the outside views at 30 fps.
+    /// (A frame of more than two ticks - under 30 fps - gives one sample over all of them, its distance change scaled to
+    /// 1/30 s; I: the original's own frame then is 1/30 of game time all the same.)
+    pub fn frame_sample(&mut self, cam: Vec3, ticks: usize) {
+        for inst in self.insts.iter_mut() {
+            inst.frame_pos = inst.req.pos;
+        }
+        self.sample_ticks += ticks;
+        if self.sample_ticks < 2 {
             return;
         }
+        let scale = 2.0 / self.sample_ticks as f32;
+        self.sample_ticks = 0;
+        let ml = self.sample_cam.map_or(Vec3::ZERO, |p| cam - p);
+        self.sample_cam = Some(cam);
         for inst in self.insts.iter_mut() {
             if inst.timer.is_some_and(|t| self.timer_paused[t as usize]) {
                 continue;
             }
             if let Some(p) = inst.req.pos {
-                let d = (p - listener).length();
-                if let Some(pd) = inst.prev_dist {
-                    inst.doppler = doppler_step(inst.doppler, d, pd, inst.req.doppler, elapsed);
-                }
-                inst.prev_dist = Some(d);
+                let ms = inst.prev_pos.map_or(Vec3::ZERO, |q| p - q);
+                let (ms, ml) = if scale == 1.0 { (ms, ml) } else { (ms * scale, ml * scale) };
+                inst.doppler = doppler_sample(inst.doppler, p, cam, ms, ml, inst.req.doppler);
+                inst.prev_pos = Some(p);
             }
         }
     }
@@ -1926,7 +1964,9 @@ impl SoundLib {
         let mut rolloff = 0.0;
         let occ = inst.req.occluder.checked_sub(1).and_then(|i| self.occlusion.get(i as usize).copied());
         // positional: unset counts as positional unless a pan or speaker mask is set (A-47267)
-        let positional = inst.req.pos.is_some() && if v.ctx.pan == -1 && v.ctx.mask == 0 { v.ctx.positional != 0 } else { v.ctx.positional == 1 };
+        // (heard at the frame's place: frame_sample)
+        let heard = inst.req.pos.map(|p| inst.frame_pos.unwrap_or(p));
+        let positional = heard.is_some() && if v.ctx.pan == -1 && v.ctx.mask == 0 { v.ctx.positional != 0 } else { v.ctx.positional == 1 };
         let rolloff_at = |d: f32, s: f32| match audcfg::scaled_distance(d, s) {
             Some(dd) => match self.curves.get(&v.ctx.curve) {
                 Some(c) => c.eval(dd),
@@ -1938,7 +1978,7 @@ impl SoundLib {
         // dB2lin(rolloff at the reverb distance scale - rolloff), then x REVERB_SMALL / MEDIUM / LARGE (room size) x level
         let mut w = 0.0;
         let dir: Option<Vec3> = if positional {
-            let p = inst.req.pos.unwrap() - lp;
+            let p = heard.unwrap() - lp;
             let d = p.length();
             let s = cat.rolloff_scale * v.ctx.curve_scale;
             rolloff = rolloff_at(d, s);
@@ -2633,39 +2673,69 @@ fn decode_mp3_whole_from(dec: rodio::Decoder<std::io::BufReader<std::fs::File>>,
 mod tests {
 
     /// #43: a car at 40 m/s with the camera 6 m behind it, made once per drawn frame (30 fps: two 60 Hz ticks a frame).
-    /// Sampled once a frame against that frame's camera (doppler_frame) the distance never changes: the pitch stays put.
-    /// Sampled every tick against the frame's camera (the port before) the distance went 6 -> 6.67 -> 6 and the ratio swung
-    /// by several per cent each tick - the engine's warble in the outside views.
+    /// Sampled once per 1/30 s against that frame's camera with both motions (frame_sample) the distance never changes
+    /// and the ratio stays 1. Sampled every tick against the frame's camera (the port before) the ratio swung by
+    /// several per cent from tick to tick - the engine's warble in the outside views. The same at 60 fps (one tick a
+    /// frame, a sample every other frame).
     #[test]
     fn a_followed_car_keeps_its_doppler() {
         use super::*;
-        let (speed, tick) = (40.0f32, 1.0 / 60.0f32);
-        let (mut frame_ratio, mut frame_pd) = (1.0f32, None::<f32>);
-        let (mut tick_ratio, mut tick_pd) = (1.0f32, None::<f32>);
-        let (mut lo, mut hi) = (1.0f32, 1.0f32);
-        let mut car = 0.0f32;
-        let mut cam = car - 6.0;
-        for _frame in 0..60 {
-            // the frame's sample: the last frame's camera, the positions of its last tick
-            let d = car - cam;
-            if let Some(pd) = frame_pd {
-                frame_ratio = doppler_step(frame_ratio, d, pd, 1.0, 2.0 * tick);
-            }
-            frame_pd = Some(d);
-            for _ in 0..2 {
-                car += speed * tick;
-                let d = car - cam;
-                if let Some(pd) = tick_pd {
-                    tick_ratio = doppler_step(tick_ratio, d, pd, 1.0, tick);
-                    lo = lo.min(tick_ratio);
-                    hi = hi.max(tick_ratio);
+        let tick = 1.0 / 60.0f32;
+        let vel = Vec3::new(40.0, 0.0, 0.0);
+        for ticks_per_frame in [2usize, 1] {
+            let (mut car, mut ratio, mut acc) = (Vec3::new(3.0, 0.5, -2.0), 1.0f32, 0usize);
+            let mut cam = car - Vec3::new(6.0, -1.5, 0.0);
+            let (mut prev_car, mut prev_cam) = (None::<Vec3>, None::<Vec3>);
+            for _frame in 0..120 {
+                acc += ticks_per_frame;
+                if acc >= 2 {
+                    acc = 0;
+                    let ms = prev_car.map_or(Vec3::ZERO, |q| car - q);
+                    let ml = prev_cam.map_or(Vec3::ZERO, |q| cam - q);
+                    ratio = doppler_sample(ratio, car, cam, ms, ml, 1.0);
+                    (prev_car, prev_cam) = (Some(car), Some(cam));
                 }
-                tick_pd = Some(d);
+                for _ in 0..ticks_per_frame {
+                    car += vel * tick;
+                }
+                cam = car - Vec3::new(6.0, -1.5, 0.0);
+                assert!((ratio - 1.0).abs() < 2e-4, "{ticks_per_frame}: {ratio}");
+            }
+        }
+        // the port before: every tick against the frame's camera
+        let (mut car, mut ratio, mut lo, mut hi) = (0.0f32, 1.0f32, 1.0f32, 1.0f32);
+        let mut cam = car - 6.0;
+        let mut pd = None::<f32>;
+        for _frame in 0..60 {
+            for _ in 0..2 {
+                car += 40.0 * tick;
+                let d = car - cam;
+                if let Some(pd) = pd {
+                    let v = ((d - pd) / tick).clamp(-100.0, 100.0);
+                    ratio = 0.5 * ratio + 0.5 * (340.0 / (340.0 + v));
+                    (lo, hi) = (lo.min(ratio), hi.max(ratio));
+                }
+                pd = Some(d);
             }
             cam = car - 6.0;
-            assert!((frame_ratio - 1.0).abs() < 1e-5, "{frame_ratio}");
         }
         assert!(hi - lo > 0.1, "{lo} .. {hi}");
+    }
+
+    /// The Doppler ratio F-42745 against the original's code run offline (tools/doppler_ratio_reference.py: 4,000 distance
+    /// changes, factors and time steps, the clamp's edges and signed zeros), bit for bit.
+    #[test]
+    fn doppler_ratio_is_the_originals() {
+        use super::*;
+        let mut n = 0;
+        for l in include_str!("testdata/doppler_ratio_ref.txt").lines() {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            let h = |i: usize| u32::from_str_radix(&w[i][1..], 16).unwrap();
+            let t: u32 = w[2][1..].parse().unwrap();
+            assert_eq!(doppler_ratio(f32::from_bits(h(0)), f32::from_bits(h(1)), t).to_bits(), h(4), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
     }
 
     /// A new sound's variance draws (F-40563) against the original's code run offline with the game's rand
