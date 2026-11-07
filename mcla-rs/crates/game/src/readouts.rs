@@ -367,6 +367,31 @@ mod tests {
         assert_eq!(n, 3200);
     }
 
+    /// F-27249's cell remap run offline (`tools/drum_cells_reference.py`: 17 edge rows with -0, NaN, the infinities and
+    /// the range ends, then 2,000 random): every cell's bits equal.
+    #[test]
+    fn drum_cells_match_the_original() {
+        let text = include_str!("testdata/drum_cells_ref.txt");
+        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let mut n = 0;
+        for l in text.lines() {
+            let (a, b) = l.split_once(" -> ").unwrap();
+            let a: Vec<&str> = a.split_whitespace().collect();
+            let b: Vec<u32> = b.split_whitespace().map(h).collect();
+            let count = a[0].parse::<usize>().unwrap();
+            let mut v = [0.0f32; GLYPHS];
+            for k in 0..GLYPHS {
+                v[k] = f32::from_bits(h(a[1 + k]));
+            }
+            let got = drum_cells(&v, count);
+            for k in 0..GLYPHS {
+                assert_eq!(got[k].to_bits(), b[k], "{l}: cell {k} {} vs {}", got[k], f32::from_bits(b[k]));
+            }
+            n += 1;
+        }
+        assert_eq!(n, 2017);
+    }
+
     /// The clock in 12 hours with two-digit minutes, the gear by the table, the speed in mph.
     #[test]
     fn readout_texts() {
