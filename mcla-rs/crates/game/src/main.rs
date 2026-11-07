@@ -7019,6 +7019,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         peds::RemarkCar { pos: c.state.pos, vel: c.state.vel, damage: Some((c.state.damage * max.max(1.0), max)), unpainted, price, spent_word }
                     });
                     self.peds.update(&mut gpu, nav, &world.collider, &|p, r, out| props.obstacle_boxes_near(p, r, out), focus, &threats, signals, self.time_of_day, sim_dt);
+                    // (the walkers' matrices as this update left them: what the next frame's car sweeps meet, F-96156's order)
+                    self.vehicles.walkers = self.peds.instance_matrices();
                     // (the layout items' people: placed, removed, and what the spawners see next)
                     if frontend.is_none() {
                         layout::Layout::people(&mut self.vehicles, &mut self.peds, &mut gpu, &world);

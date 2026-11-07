@@ -96,7 +96,13 @@ pub struct FitBound {
 /// compressed - and rows 0.999999: min z -1.42878 .. -1.42908 over four runs, this -1.42839; max and the rear
 /// bit for bit). `bbox`: the hull bound's own box (min, max).
 pub fn fit_box(bbox: (Vec3, Vec3), wheels: &[FitWheel], steer_axis: Option<Vec3>) -> (Vec3, Vec3) {
-    let parts: Vec<(FitWheel, [Vec3; 3])> = wheels
+    let f = fit_bound(bbox, &fit_parts(wheels, steer_axis));
+    (f.lo, f.hi)
+}
+
+/// The wheel parts with the rows the fit finds them at (`fit_box`).
+pub fn fit_parts(wheels: &[FitWheel], steer_axis: Option<Vec3>) -> Vec<(FitWheel, [Vec3; 3])> {
+    wheels
         .iter()
         .map(|w| {
             let rows = match steer_axis {
@@ -105,9 +111,7 @@ pub fn fit_box(bbox: (Vec3, Vec3), wheels: &[FitWheel], steer_axis: Option<Vec3>
             };
             (*w, rows)
         })
-        .collect();
-    let f = fit_bound(bbox, &parts);
-    (f.lo, f.hi)
+        .collect()
 }
 
 /// F-32566's sum of three products, as the vector unit forms it: (0 + a.z b.z) + (a.y b.y + a.x b.x).

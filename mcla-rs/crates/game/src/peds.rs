@@ -3964,6 +3964,11 @@ impl Peds {
         self.list.iter().map(|p| (p.item, p.pos, p.age >= p.life)).collect()
     }
 
+    /// Every walker's instance matrix (rows, place: F-86858 sets it at the end of its update), in the list's order.
+    pub fn instance_matrices(&self) -> Vec<[Vec3; 4]> {
+        self.list.iter().map(|p| [p.rot * Vec3::X, p.rot * Vec3::Y, p.rot * Vec3::Z, p.pos]).collect()
+    }
+
     /// The items whose person stands.
     pub fn item_peds(&self) -> Vec<u32> {
         self.list.iter().filter_map(|p| p.item).collect()

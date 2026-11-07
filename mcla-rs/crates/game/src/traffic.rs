@@ -626,12 +626,6 @@ impl Path {
         };
         self.eval(steer_clamp(p)).1
     }
-
-    /// Points along the rail about every half metre from phase `from` (the sweep and the car-ahead search).
-    fn pts(&self, from: f32) -> Vec<Vec3> {
-        let n = ((self.len() * (1.0 - from).max(0.0)) / 0.5).ceil().clamp(1.0, 4000.0) as usize;
-        (0..=n).map(|k| self.eval(from + (1.0 - from) * k as f32 / n as f32).0).collect()
-    }
 }
 
 /// The turning radius of the recovery, rejoin and passing rails (F-36195): the pivot radius when the car has stood
@@ -2131,6 +2125,8 @@ pub struct Env<'a> {
     pub grid: &'a hashbrown::HashMap<(i32, i32), Vec<usize>>,
     /// the dynamic curve rails of the rail pool (F-76414 index 0) the other riders hold now (`holds_pool0`)
     pub pool0: &'a std::cell::Cell<usize>,
+    /// the level's objects F-23371's sweeps meet (`RailLevel`)
+    pub level: &'a RailLevel<'a>,
 }
 
 /// The ambient manager's rail pools (F-76414): index 0 = 256 dynamic curve rails (the backing rail F-54867, the ghost's
@@ -2279,21 +2275,258 @@ pub fn mutual_mark(our_lane: bool, ours: (Vec3, Vec3), other_lane: bool, other: 
     !(a > b)
 }
 
-/// Is a rail clear (F-23371 with the own half width): the city's bound and the cars.
-fn sweep_clear(env: &Env, me: usize, pts: &[Vec3], hw: f32) -> bool {
-    for (k, p) in pts.iter().enumerate() {
-        if k % 2 == 1 && k + 1 != pts.len() {
-            continue;
-        }
-        // (the bound swept above the kerbs: the sphere's bottom 0.35 m up)
-        if env.col.sphere(*p + Vec3::Y * (hw + 0.35), hw).is_some() {
-            return false;
-        }
-        if env.others.iter().enumerate().any(|(j, o)| j != me && (o.pos.y - p.y).abs() < 3.0 && o.box_dist(*p) < hw) {
-            return false;
+/// The level's objects as F-23371's queries meet them this frame (traffic_drive_rule.md 9.18 / 9.19): the city's grid
+/// bound (fixed, the identity matrix), every car placed in the level - the player's (0x189) and the other mcCars
+/// (racers, 0x185) with their composites as the set-up made them (`ProbeBound::of_car`), the ambient cars (0x1100,
+/// parked or on a rail, in the level) with their file's bound (`of_ambient`) at their instance matrix -, the walkers
+/// (0x20, `ProbeBound::walker`) at their matrices as the walkers' update of the frame before left them (the manager's
+/// frame F-96156 updates the walkers after the cars), and the props: an unhit instance by its file state (1
+/// inactive, 2 fixed, 3 not inserted) with its type's composite (`of_prop`), a hit one or a broken-off piece with its
+/// entry's (`of_entry`, the absent groups' parts nulled). Each object's instance word is the port's own (nonzero;
+/// the answer only asks whether the first record's is set); the own car's is the excluded one (count 1).
+pub struct RailLevel<'a> {
+    city: Option<&'a crate::physics::camprobe::ProbeBound>,
+    loose: Option<&'a crate::physics::loose::LooseWorld>,
+    /// the cars' count (instance words `rail_car_inst(0 ..)`)
+    ncars: usize,
+    built: RailObjs,
+}
+
+use std::sync::{Arc, Mutex};
+
+type RailObj = (u32, u32, (u32, u32), [Vec3; 4], Arc<crate::physics::camprobe::ProbeBound>);
+
+/// The objects F-23371 meets that are not the unhit props (those are looked up near each query).
+struct RailObjs {
+    objs: Vec<RailObj>,
+    /// the hit props (their instances)
+    moved: hashbrown::HashSet<u32>,
+    props: Option<Arc<PropBounds>>,
+}
+
+/// Every prop type's composite (`of_prop`) and the largest |centroid| + radius among them (the reach of the near
+/// search that finds every instance a query's culler could keep).
+struct PropBounds {
+    types: Vec<crate::physics::camprobe::ProbeBound>,
+    reach: f32,
+}
+
+const INST_CITY: u32 = 1;
+const INST_CAR: u32 = 0x1000;
+const INST_WALKER: u32 = 0x10_0000;
+const INST_PROP: u32 = 0x100_0000;
+const INST_PIECE: u32 = 0x800_0000;
+
+/// A car's instance word in the level of `RailLevel` (the excluded word of its own sweeps).
+pub(crate) fn rail_car_inst(k: usize) -> u32 {
+    INST_CAR + k as u32
+}
+
+/// The car file's composite (`fragphys::car_composite` of its `.r83`), read once a model.
+fn car_file_composite(root: &std::path::Path, model: &str) -> Option<Arc<mcla_formats::rage::fragphys::CarComposite>> {
+    type Kept = hashbrown::HashMap<String, Option<Arc<mcla_formats::rage::fragphys::CarComposite>>>;
+    static KEPT: std::sync::OnceLock<Mutex<Kept>> = std::sync::OnceLock::new();
+    let mut kept = KEPT.get_or_init(|| Mutex::new(hashbrown::HashMap::new())).lock().unwrap();
+    kept.entry(model.to_string())
+        .or_insert_with(|| {
+            let mut files: Vec<_> = std::fs::read_dir(root.join("resources/vehicle").join(model)).ok()?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|e| e == "r83")).collect();
+            files.sort();
+            files.iter().find_map(|p| mcla_formats::rage::fragphys::car_composite(&crate::assets::load_resource_file(p).ok()?)).map(Arc::new)
+        })
+        .clone()
+}
+
+/// An ambient model's level bound (`ProbeBound::of_ambient` of its `.r155`), read once a model.
+fn ambient_level_bound(root: &std::path::Path, model: &str) -> Option<Arc<crate::physics::camprobe::ProbeBound>> {
+    type Kept = hashbrown::HashMap<String, Option<Arc<crate::physics::camprobe::ProbeBound>>>;
+    static KEPT: std::sync::OnceLock<Mutex<Kept>> = std::sync::OnceLock::new();
+    let mut kept = KEPT.get_or_init(|| Mutex::new(hashbrown::HashMap::new())).lock().unwrap();
+    kept.entry(model.to_string())
+        .or_insert_with(|| {
+            let file = std::fs::read_dir(root.join("resources/ambients").join(model)).ok()?.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "r155"))?;
+            let res = crate::assets::load_resource_file(&file).ok()?;
+            crate::physics::camprobe::ProbeBound::of_ambient(&mcla_formats::rage::fragphys::ambient_frag(&res)?).map(Arc::new)
+        })
+        .clone()
+}
+
+/// The prop types' composites, made once a prop world.
+fn prop_bounds(lw: &crate::physics::loose::LooseWorld) -> Arc<PropBounds> {
+    static KEPT: std::sync::OnceLock<Mutex<Option<(usize, Arc<PropBounds>)>>> = std::sync::OnceLock::new();
+    let mut kept = KEPT.get_or_init(|| Mutex::new(None)).lock().unwrap();
+    let key = lw as *const _ as usize;
+    if let Some((k, b)) = kept.as_ref() {
+        if *k == key {
+            return b.clone();
         }
     }
-    true
+    let types: Vec<_> = lw.types.iter().map(|t| crate::physics::camprobe::ProbeBound::of_prop(t, &crate::physics::camprobe::game_materials)).collect();
+    let reach = types.iter().map(|b| b.centroid.length() + b.radius).fold(0.0f32, f32::max);
+    let b = Arc::new(PropBounds { types, reach });
+    *kept = Some((key, b.clone()));
+    b
+}
+
+/// A prop entry's composite (`of_entry`) for its type and absent groups, made once each.
+fn entry_bound(lw: &crate::physics::loose::LooseWorld, ty: usize, absent: u64) -> Arc<crate::physics::camprobe::ProbeBound> {
+    type Kept = hashbrown::HashMap<(usize, usize, u64), Arc<crate::physics::camprobe::ProbeBound>>;
+    static KEPT: std::sync::OnceLock<Mutex<Kept>> = std::sync::OnceLock::new();
+    let mut kept = KEPT.get_or_init(|| Mutex::new(hashbrown::HashMap::new())).lock().unwrap();
+    let t = &lw.types[ty];
+    kept.entry((lw as *const _ as usize, ty, absent))
+        .or_insert_with(|| Arc::new(crate::physics::camprobe::ProbeBound::of_entry(t, &crate::physics::camprobe::game_materials, &|c| crate::physics::loose::part_present(t, absent, c))))
+        .clone()
+}
+
+/// The player's or another mcCar's composite as the level holds it now (`ProbeBound::of_car`): the file's hull with
+/// the set-up's reshaped vertices (a motorcycle's as the file has them), the fit's wheels with their tables and
+/// their part matrices as the car's last update left them, the composite's box from the fit.
+fn car_level_bound(root: &std::path::Path, c: &super::CarInstance) -> Option<crate::physics::camprobe::ProbeBound> {
+    use crate::physics::camprobe::{CarWheel, ProbeBound};
+    let p = &c.model.params;
+    let vt = p.veh.as_ref()?;
+    let hull = p.hull.as_ref()?;
+    let cc = car_file_composite(root, &c.model.name)?;
+    let fit = p.fit_wheels();
+    if fit.len() != cc.wheel_tables.len() || cc.matrices.len() != fit.len() + 1 {
+        return None;
+    }
+    let bbox = hull.bbox.map(|(hi, lo)| (lo, hi))?;
+    let ws: Vec<_> = fit.iter().map(|x| x.1).collect();
+    let fb = crate::physics::vehsim::fit_bound(bbox, &crate::physics::vehsim::fit_parts(&ws, vt.t.steer_axis.map(Vec3::from)));
+    let v = |a: [f32; 3]| Vec3::from_array(a);
+    let mut mats = vec![cc.matrices[0].map(v)];
+    let mut wheels = Vec::with_capacity(fit.len());
+    for (j, (i, w)) in fit.iter().enumerate() {
+        let part = c.state.veh.as_ref().and_then(|vs| vs.wheels.get(*i)?.part);
+        mats.push(part.unwrap_or([Vec3::X, Vec3::Y, Vec3::Z, w.rest]));
+        wheels.push(CarWheel { front: w.front, radius: w.radius, width: w.width, materials: cc.wheel_tables[j].clone() });
+    }
+    let reshaped = (!vt.bike).then_some(hull.verts.as_slice());
+    Some(ProbeBound::of_car(&cc.hull, reshaped, &wheels, &mats, &fb))
+}
+
+impl<'a> RailLevel<'a> {
+    /// The frame's level: `cars` the vehicles' list, `walkers` the walkers' instance matrices, `state` the props' level.
+    pub fn new(col: &'a WorldCollider, cars: &[super::CarInstance], root: &std::path::Path, walkers: &[[Vec3; 4]], state: &crate::physics::loose::LooseState) -> RailLevel<'a> {
+        let loose = col.loose.as_deref();
+        RailLevel { city: col.city.as_deref(), loose, ncars: cars.len(), built: Self::objs(loose, cars, root, walkers, state) }
+    }
+
+    fn objs(loose: Option<&crate::physics::loose::LooseWorld>, cars: &[super::CarInstance], root: &std::path::Path, walkers: &[[Vec3; 4]], state: &crate::physics::loose::LooseState) -> RailObjs {
+        {
+            use crate::physics::camprobe::level_words as lw;
+            let mut objs: Vec<RailObj> = Vec::new();
+            for (k, c) in cars.iter().enumerate() {
+                let m = glam::Mat3::from_quat(c.state.rot);
+                if c.rail.is_some() || c.parked.is_some() {
+                    let in_level = c.rail.as_ref().map_or(c.park_held, |r| r.in_level);
+                    if !in_level {
+                        continue;
+                    }
+                    let Some(b) = ambient_level_bound(root, &c.model.name) else { continue };
+                    let state = if c.rail.as_ref().is_some_and(|r| r.state == 4) || c.amb_hit { lw::ACTIVE } else { lw::INACTIVE };
+                    objs.push((rail_car_inst(k), state, lw::AMBIENT, instance_matrix(c), b));
+                } else if c.placed {
+                    let Some(b) = car_level_bound(root, c) else { continue };
+                    objs.push((rail_car_inst(k), lw::ACTIVE, if c.is_player { lw::PLAYER_CAR } else { lw::RACER }, [m.x_axis, m.y_axis, m.z_axis, c.state.pos], Arc::new(b)));
+                }
+            }
+            static WALKER: std::sync::OnceLock<Arc<crate::physics::camprobe::ProbeBound>> = std::sync::OnceLock::new();
+            let wb = WALKER.get_or_init(|| Arc::new(crate::physics::camprobe::ProbeBound::walker()));
+            for (k, m) in walkers.iter().enumerate() {
+                objs.push((INST_WALKER + k as u32, lw::INACTIVE, lw::WALKER, *m, wb.clone()));
+            }
+            let mut moved = hashbrown::HashSet::new();
+            let props = loose.map(prop_bounds);
+            if let (Some(w), Some(pb)) = (loose, props.as_ref()) {
+                for (j, o) in state.objs.iter().enumerate() {
+                    if o.veh.is_some() || o.amb.is_some() || o.ty >= w.types.len() {
+                        continue;
+                    }
+                    let b = match o.entry {
+                        Some(e) => entry_bound(w, o.ty, e.absent),
+                        None => Arc::new(pb.types[o.ty].clone()),
+                    };
+                    let state = if o.body.is_some() && !o.dormant { lw::ACTIVE } else { lw::INACTIVE };
+                    let inst = match o.inst {
+                        Some(i) => {
+                            moved.insert(i);
+                            INST_PROP + i
+                        }
+                        None => INST_PIECE + j as u32,
+                    };
+                    objs.push((inst, state, lw::PROP, o.matrix, b));
+                }
+            }
+            RailObjs { objs, moved, props }
+        }
+    }
+
+    /// The objects a query about the ball (`c`, `r`) can meet: the city, the cars, walkers and hit props, then the unhit
+    /// props found near it (every one whose bound's ball can touch it); `f` answers from them.
+    fn near(&self, c: Vec3, r: f32, f: &mut dyn FnMut(&[crate::physics::camprobe::LevelObject<'_>]) -> bool) -> bool {
+        use crate::physics::camprobe::{level_words as lw, LevelObject};
+        let built = &self.built;
+        let mut out: Vec<LevelObject<'_>> = Vec::with_capacity(built.objs.len() + 16);
+        if let Some(b) = self.city {
+            out.push(LevelObject { inst: INST_CITY, state: lw::FIXED, arch_type: lw::CITY.0, arch_include: lw::CITY.1, m: [Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO], bound: b });
+        }
+        for (inst, state, words, m, b) in &built.objs {
+            out.push(LevelObject { inst: *inst, state: *state, arch_type: words.0, arch_include: words.1, m: *m, bound: b });
+        }
+        if let (Some(w), Some(pb)) = (self.loose, built.props.as_ref()) {
+            for i in w.near(c, r + pb.reach) {
+                let (fi, ty) = &w.instances[i as usize];
+                if built.moved.contains(&i) || fi.state == 3 || *ty >= pb.types.len() {
+                    continue;
+                }
+                let state = if fi.state == 2 { lw::FIXED } else { lw::INACTIVE };
+                out.push(LevelObject { inst: INST_PROP + i, state, arch_type: lw::PROP.0, arch_include: lw::PROP.1, m: crate::physics::loose::m4(&fi.matrix), bound: &pb.types[*ty] });
+            }
+        }
+        f(&out)
+    }
+}
+
+/// F-23371's level for one rider's sweep: the queries F-66549 / F-27454 (`tcp_rail::level_query`: the type 640's
+/// material flags, the include mask - 0 is 0x812 -, the states 7) against `RailLevel`, the own car excluded.
+struct LevelSweep<'e, 'a> {
+    level: &'e RailLevel<'a>,
+    include: u32,
+    excluded: [u32; 1],
+}
+
+impl crate::tcp_rail::RailSweepWorld for LevelSweep<'_, '_> {
+    fn sphere(&mut self, c: Vec3, r: f32) -> bool {
+        use crate::physics::camprobe::{ball_level, LevelFilter};
+        let q = crate::tcp_rail::level_query(false, 1, self.include);
+        let filter = LevelFilter { include: q.include, states: q.states as u32, excluded: &self.excluded };
+        self.level.near(c, r, &mut |objs| {
+            let l = ball_level(c, r, q.material, q.max as usize, [0; 3], &filter, objs.iter().copied()).list;
+            l.records.first().is_some_and(|x| x.instance != 0)
+        })
+    }
+    fn capsule(&mut self, a: Vec3, b: Vec3, r: f32, f30: f32) -> bool {
+        use crate::physics::camprobe::{capsule_level, LevelFilter};
+        let q = crate::tcp_rail::level_query(true, 1, self.include);
+        let filter = LevelFilter { include: q.include, states: q.states as u32, excluded: &self.excluded };
+        let f30_high = ((f30 as f64).to_bits() >> 32) as u32;
+        self.level.near((a + b) * 0.5, a.distance(b) * 0.5 + r, &mut |objs| {
+            let l = capsule_level(a, b, r, q.material, q.max as usize, f30_high, &filter, objs.iter().copied()).list;
+            l.records.first().is_some_and(|x| x.instance != 0)
+        })
+    }
+}
+
+/// F-23371 for one rider's rail: `width` the request's +0 (the car's own width), from phase 0 for the whole rail,
+/// `lift` (+32), the include `mask` (+16); the excluded word the rider's car (`me`; none for a ghost without one).
+/// True when it hits.
+fn rail_blocked(env: &Env, me: usize, q: &TcpRail, width: f32, mask: u32, lift: f32) -> bool {
+    let excl = if me < env.level.ncars { rail_car_inst(me) } else { 0 };
+    let mut world = LevelSweep { level: env.level, include: if mask == 0 { 0x812 } else { mask }, excluded: [excl] };
+    let mut left = -1.0;
+    q.sweep(width, 0.0, &mut left, lift, &mut world)
 }
 
 /// The footprint probe (F-39379, states 6 and 7; F-82779 in state 8): a segment
@@ -2312,13 +2545,8 @@ fn probe_hit(env: &Env, me: usize, pos: Vec3, fwd: Vec3, hl: f32, hw: f32) -> bo
     env.others.iter().enumerate().any(|(j, o)| j != me && (o.pos.y - pos.y).abs() < 2.0 && o.pos.distance_squared(pos) < (hl + o.half_len + o.half_wid + 2.0).powi(2) && (0..=n).any(|k| o.box_dist(a.lerp(b, k as f32 / n as f32)) < 0.01))
 }
 
-/// Points every half metre along an arc-line-arc rail (the port's sweep).
-fn tcp_pts(q: &TcpRail) -> Vec<Vec3> {
-    Path::tcp(*q, 0.0, None).pts(0.0)
-}
-
 /// The rail onto a lane (F-26466) for a request: the lanes within 25 m (the port's search, at most 48; the entry's
-/// phase t0 the lane's point nearest the start), the lane's curve as the target (slot 8), the port's sweep.
+/// phase t0 the lane's point nearest the start), the lane's curve as the target (slot 8), the sweep F-23371 (`rail_blocked`: the own width, mask 2106).
 fn recovery_rail(r: &mut Rider, env: &Env, me: usize, req: &RailReq) -> Option<Path> {
     let (nav, lanes) = (env.nav, env.lanes);
     let start = req.p;
@@ -2333,11 +2561,12 @@ fn recovery_rail(r: &mut Rider, env: &Env, me: usize, req: &RailReq) -> Option<P
             }
         }
     }
-    let hw = r.ty.width.max(1.8) * 0.5;
+    // (F-23371's request: the own width, mask 2106, no lift; the own car excluded - traffic_drive_rule.md 9.18)
+    let w_own = own_width(&r.ty);
     let (min_turn, pivot) = (r.ty.min_turn, r.ty.pivot_turn);
     // (F-26466's draws: the car's MWC)
     let mut rng = r.mwc;
-    let pick = rail_to_lane(req, min_turn, pivot, &cand, &mut || rng.next(), &mut |lane, ph| nav.curves[lane].eval(ph), &mut |q| sweep_clear(env, me, &tcp_pts(q), hw));
+    let pick = rail_to_lane(req, min_turn, pivot, &cand, &mut || rng.next(), &mut |lane, ph| nav.curves[lane].eval(ph), &mut |q| !rail_blocked(env, me, q, w_own, 2106, 0.0));
     r.mwc = rng;
     let pick = pick?;
     Some(Path::tcp(pick.rail, pick.speed, Some((pick.lane, pick.phase))))
@@ -2590,7 +2819,7 @@ fn lanes_near(env: &Env, at: Vec3, radius: f32) -> Vec<LaneNear> {
 /// The passing rail (F-28706 -> F-10687 -> F-92334) at clearance `c`, then the rejoin (F-89026 -> F-26466). The start
 /// and heading as the recovery request's (the follower's lane at its phase); the request as traffic's F-10687 makes it
 /// (left and right rails, the lane test, 130 degrees); the pick `pass_pick` with the port's world: the sweep its
-/// footprint test with half the own width, the lanes `lanes_near`, the pavement the navigation mesh's ai_sidewalk
+/// F-23371 against the level (`rail_blocked`: the own width, mask -1), the lanes `lanes_near`, the pavement the navigation mesh's ai_sidewalk
 /// polygons (F-50927's filter at the ambient manager +0x617F0 (F-24607), its slot 1 F-27305: material bit 0x1), the probe the
 /// city's bound. Speed `max(0.7 v, 4.4704)` (fsel), 1.1176 when ready.
 #[allow(clippy::too_many_arguments)]
@@ -2613,7 +2842,8 @@ fn passing_rail(r: &mut Rider, env: &Env, me: usize, p: Vec3, h0: Vec3, obst: us
     };
     let rail = pass_pick(
         &req,
-        &mut |q| !sweep_clear(env, me, &tcp_pts(q), w_own * 0.5),
+        // (F-23371's request: the own width, the request's mask -1 (+40) and its +32 word, 0 for cars)
+        &mut |q| rail_blocked(env, me, q, w_own, u32::MAX, 0.0),
         &mut |at, rad| lanes_near(env, at, rad),
         &mut |t| crate::offroad::mesh().is_some_and(|m| m.on_flag(t, 0x1)),
         &mut |top, bottom| env.col.probe_front(top, Vec3::NEG_Y, top.y - bottom.y).is_some(),
@@ -3077,6 +3307,26 @@ pub(crate) fn trailer_cab(trailer: bool, cab_id: i32, lookup: impl FnOnce(i32) -
 #[cfg(test)]
 mod drive_rule_tests {
     use super::*;
+
+    /// The wired F-23371 meets the level's walkers (their capsule at its matrix): a straight rail through one is
+    /// blocked, past one 20 m aside clear; an empty level is clear.
+    #[test]
+    fn rail_sweep_meets_the_level() {
+        let q = crate::tcp_rail::build(Vec3::ZERO, Vec3::Z, Vec3::new(0.0, 0.0, 12.0), Vec3::Z, 5.0, false, false);
+        let q = if q.valid() { q } else { crate::tcp_rail::build(Vec3::ZERO, Vec3::Z, Vec3::new(0.0, 0.0, 12.0), Vec3::Z, 5.0, true, true) };
+        assert!(q.valid());
+        let col = WorldCollider::default();
+        let state = crate::physics::loose::LooseState::default();
+        let at = |x: f32| [[Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(x, 0.0, 6.0)]];
+        for (walkers, want) in [(&at(0.0)[..], true), (&at(20.0)[..], false), (&[][..], false)] {
+            let level = RailLevel::new(&col, &[], std::path::Path::new(""), walkers, &state);
+            for (mask, lift) in [(2106, 0.0), (u32::MAX, 0.0)] {
+                let mut world = LevelSweep { level: &level, include: mask, excluded: [0] };
+                let mut left = -1.0;
+                assert_eq!(q.sweep(2.0, 0.0, &mut left, lift, &mut world), want, "{walkers:?} {mask:x}");
+            }
+        }
+    }
 
     /// A case's world for the obstacle gather (tools/traffic_gather_reference.py's layout).
     struct CaseWorld {
@@ -4477,6 +4727,8 @@ impl Vehicles {
         if !self.cars.iter().any(|c| c.rail.is_some()) {
             return;
         }
+        let root = self.data_root.clone();
+        let level = &RailLevel::new(col, &self.cars, &root, &self.walkers, &self.level);
         let nav = rail_nav(nav);
         let lanes = lanes(nav);
         let others: Vec<Other> = self
@@ -4530,7 +4782,7 @@ impl Vehicles {
         let (rail_cars, grid) = self.gather_lists(nav);
         let pool0 = std::cell::Cell::new(0);
         let ghost_pool0 = self.ghosts.live.cars.iter().filter(|g| holds_pool0(&g.rider)).count();
-        let env = Env { nav, lanes, col, others: &others, signals: &self.signals, blockers: &blockers, clock: self.clock, event, player_ahead, hold, parity, paths: &paths, shared: &shared, rail_cars: &rail_cars, grid: &grid, pool0: &pool0 };
+        let env = Env { nav, lanes, col, others: &others, signals: &self.signals, blockers: &blockers, clock: self.clock, event, player_ahead, hold, parity, paths: &paths, shared: &shared, rail_cars: &rail_cars, grid: &grid, pool0: &pool0, level };
         // MCLA_TRAFFIC_TRACE=file: every riding car ten times a second (time, id, model, x, y,
         // z, speed, lane speed, junction lane, offset, entries on, standing gap, distance and
         // margin to the car ahead, acceleration, state, ...; the last column: the drawn heading in degrees)
@@ -10616,7 +10868,9 @@ impl Vehicles {
         let shared = std::cell::Cell::new(self.park_rng);
         let (rail_cars, grid) = self.gather_lists(nav);
         let pool0 = std::cell::Cell::new(self.cars.iter().filter(|c| c.rail.as_ref().is_some_and(holds_pool0)).count() + self.ghosts.live.cars.iter().filter(|g| holds_pool0(&g.rider)).count());
-        let env = Env { nav, lanes, col, others: &others, signals: &self.signals, blockers: &blockers, clock, event: self.race_event, player_ahead: None, hold: self.frozen || self.grid_hold.is_some(), parity: false, paths: &[], shared: &shared, rail_cars: &rail_cars, grid: &grid, pool0: &pool0 };
+        let root = self.data_root.clone();
+        let level = &RailLevel::new(col, &self.cars, &root, &self.walkers, &self.level);
+        let env = Env { nav, lanes, col, others: &others, signals: &self.signals, blockers: &blockers, clock, event: self.race_event, player_ahead: None, hold: self.frozen || self.grid_hold.is_some(), parity: false, paths: &[], shared: &shared, rail_cars: &rail_cars, grid: &grid, pool0: &pool0, level };
         let mut removes: Vec<(u32, u32, u32)> = Vec::new();
         for g in self.ghosts.live.cars.iter_mut() {
             // F-58860: the proxy car's place is its owner's vehicle's (none: its own)

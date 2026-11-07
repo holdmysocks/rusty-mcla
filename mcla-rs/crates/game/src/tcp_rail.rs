@@ -426,14 +426,17 @@ impl TcpRail {
             let p0 = vmadd(d, inv * off, self.a);
             let t1 = (*left + off) * inv;
             let p1 = vmadd(d, if 1.0 - t1 >= 0.0 { t1 } else { 1.0 }, self.a);
-            if world.capsule(up(p0), up(p1), r) {
+            if world.capsule(up(p0), up(p1), r, s0) {
                 return true;
             }
             *left -= line - off;
         }
         let off2 = if -(off - line) >= 0.0 { 0.0 } else { off - line };
+        // (the tail capsule's polygon-test stack word: f30, s0 until the arc-2 branch sets it to its remainder)
+        let mut f30 = s0;
         if off2 < a2r && *left > MIN {
             let rem = a2r - off2;
+            f30 = rem;
             let inv = 1.0 / a2r;
             let k = self.r / r;
             let take = if *left - rem >= 0.0 { rem } else { *left };
@@ -452,7 +455,7 @@ impl TcpRail {
             }
             *left -= rem;
         }
-        if *left > MIN && world.capsule(up(self.t), up(vmadd(self.h1, *left, self.t)), r) {
+        if *left > MIN && world.capsule(up(self.t), up(vmadd(self.h1, *left, self.t)), r, f30) {
             return true;
         }
         false
@@ -460,10 +463,12 @@ impl TcpRail {
 }
 
 /// The level as F-23371 meets it: the sphere query F-66549 and the swept capsule F-27454 (type 640, the params' mask -
-/// 0x812 for 0 - and excluded instances, the caller's).
+/// 0x812 for 0 - and excluded instances, the caller's). `f30`: F-23371's f30 at the capsule's call, which the polygon
+/// test keeps as its stack word (traffic_drive_rule.md 9.7): s0 = start x total before the line capsule; before the tail
+/// one the arc-2 remainder when that branch ran, else s0.
 pub(crate) trait RailSweepWorld {
     fn sphere(&mut self, c: Vec3, r: f32) -> bool;
-    fn capsule(&mut self, a: Vec3, b: Vec3, r: f32) -> bool;
+    fn capsule(&mut self, a: Vec3, b: Vec3, r: f32, f30: f32) -> bool;
 }
 
 /// What the sphere query F-66549 and the swept capsule F-27454 hand the level's query drivers, from F-23371's block
@@ -562,7 +567,7 @@ mod tests {
             self.log.extend([c.x, c.y, c.z, r].map(|f| format!("{:08x}", f.to_bits())));
             self.tail()
         }
-        fn capsule(&mut self, a: Vec3, b: Vec3, r: f32) -> bool {
+        fn capsule(&mut self, a: Vec3, b: Vec3, r: f32, _f30: f32) -> bool {
             self.log.push("c".into());
             self.log.extend([a.x, a.y, a.z, b.x, b.y, b.z, r].map(|f| format!("{:08x}", f.to_bits())));
             self.tail()
@@ -635,7 +640,7 @@ mod tests {
             self.log.extend([c.x, c.y, c.z, r].map(|f| format!("{:08x}", f.to_bits())));
             self.tail(false)
         }
-        fn capsule(&mut self, a: Vec3, b: Vec3, r: f32) -> bool {
+        fn capsule(&mut self, a: Vec3, b: Vec3, r: f32, _f30: f32) -> bool {
             self.log.push("c".into());
             self.log.extend([a.x, a.y, a.z, b.x, b.y, b.z, r].map(|f| format!("{:08x}", f.to_bits())));
             self.tail(true)

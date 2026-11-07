@@ -76,6 +76,14 @@ impl CarParams {
         let Some(h) = self.hull.as_ref() else { return (-self.body_half, self.body_half) };
         let bbox = h.bbox.map_or((h.min - Vec3::splat(0.001) - Vec3::splat(0.04), h.max + Vec3::splat(0.001) + Vec3::splat(0.04)), |(hi, lo)| (lo, hi));
         let Some(vt) = self.veh.as_ref() else { return bbox };
+        let fit: Vec<super::vehsim::FitWheel> = self.fit_wheels().into_iter().map(|x| x.1).collect();
+        super::vehsim::fit_box(bbox, &fit, vt.t.steer_axis.map(Vec3::from))
+    }
+
+    /// The wheel parts the fit (F-55382) puts in the composite, in its parts' order (`composite_box`): the tuning's
+    /// wheels with a tyre, at their places of rest, each with its wheel's number.
+    pub fn fit_wheels(&self) -> Vec<(usize, super::vehsim::FitWheel)> {
+        let Some(vt) = self.veh.as_ref() else { return Vec::new() };
         let w = &self.wheel_pos;
         let mut fit = Vec::new();
         for i in 0..4 {
@@ -90,9 +98,9 @@ impl CarParams {
             }
             let local = if vt.bike { (w[i] + w[i + 1]) * 0.5 } else { w[i] };
             let rest = Vec3::new(local.x, local.y - self.susp_rest, local.z);
-            fit.push(super::vehsim::FitWheel { front, radius: wt.radius.max(0.1), width, extent: wt.suspension_extent, limit: wt.suspension_limit, rest, steered: wt.steering_limit != 0.0 });
+            fit.push((i, super::vehsim::FitWheel { front, radius: wt.radius.max(0.1), width, extent: wt.suspension_extent, limit: wt.suspension_limit, rest, steered: wt.steering_limit != 0.0 }));
         }
-        super::vehsim::fit_box(bbox, &fit, vt.t.steer_axis.map(Vec3::from))
+        fit
     }
 
     /// Derive the final drive from top speed / top gear / redline / wheel radius.

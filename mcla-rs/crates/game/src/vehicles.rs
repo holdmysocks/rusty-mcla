@@ -1246,6 +1246,11 @@ pub struct Vehicles {
     /// it removes
     pub ped_list: Vec<(Option<u32>, Vec3, bool)>,
     pub ped_remove: Option<u32>,
+    /// the walkers' instance matrices (rows, place) as their last update left them (main.rs sets them after
+    /// `Peds::update`): what the cars' rail sweeps meet in the next frame (F-96156 updates the walkers after the cars)
+    pub walkers: Vec<[Vec3; 4]>,
+    /// the data root the level's bound files are read from (`traffic::RailLevel`)
+    pub data_root: std::path::PathBuf,
     /// parked cars on (> 0) or off (0); the count itself is not used: the spawner fills a
     /// quarter of the spots of the nodes round the focus (parked.rs)
     pub parked_target: usize,
@@ -4171,6 +4176,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
         }
         // (a new traffic or parked car is bound to its pooled instance before its first render update: the activate hook)
         self.amb_pool_step();
+        if self.data_root != world.assets.root {
+            self.data_root = world.assets.root.clone();
+        }
         if let Some(nav) = world.nav.as_ref() {
             self.ride_traffic(nav, &world.collider, dt.min(1.0 / 30.0));
         }
