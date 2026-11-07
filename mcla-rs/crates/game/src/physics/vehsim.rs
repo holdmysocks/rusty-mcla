@@ -122,6 +122,18 @@ fn swept_part_box(lo: Vec3, hi: Vec3, m: &[Vec3; 4], l: &[Vec3; 4]) -> (Vec3, Ve
     (big_c - big_e, big_e + big_c)
 }
 
+/// A wheel bound's own box, centroid and radius as F-63967 makes them after the fit's resize: per axis the
+/// bound's support point along it plus the margin 0.04 (`e`; the box is -e .. e, its centroid (e + -e) x 0.5 = 0),
+/// and the radius sqrt(e.z e.z + (e.y e.y + e.x e.x)) about it. (e, radius).
+pub fn wheel_bound(front: bool, radius: f32, width: f32) -> (Vec3, f32) {
+    use super::exact::fma;
+    use super::gjk::Support;
+    let core = super::gjk::WheelCore::of(&super::gjk::wheel_shape(front, radius, width), Vec3::ZERO, [Vec3::X, Vec3::Y, Vec3::Z], radius, width);
+    let m = f32::from_bits(0x3d23_d70a);
+    let e = Vec3::new(core.support(Vec3::X).x + m, core.support(Vec3::Y).y + m, core.support(Vec3::Z).z + m);
+    (e, fma(e.z, e.z, fma(e.y, e.y, e.x * e.x)).sqrt())
+}
+
 /// The composite bound as the wheels' fit leaves it, F-55382's tail -> F-65996 -> F-32566: the union of the hull's
 /// box (`hull`: (min, max) as its bound holds them; its matrices the identity) and every wheel part's own box swept
 /// from its last matrix to its current one, the part put at its place of rest less max(SuspensionExtent, 0.5) and
@@ -130,13 +142,10 @@ fn swept_part_box(lo: Vec3, hi: Vec3, m: &[Vec3; 4], l: &[Vec3; 4]) -> (Vec3, Ve
 /// as it is between fits.
 pub fn fit_bound(hull: (Vec3, Vec3), wheels: &[(FitWheel, [Vec3; 3])]) -> FitBound {
     use super::exact::fma;
-    use super::gjk::Support;
     let ident = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO];
     let mut boxes = vec![swept_part_box(hull.0, hull.1, &ident, &ident)];
     for (w, rows) in wheels {
-        let core = super::gjk::WheelCore::of(&super::gjk::wheel_shape(w.front, w.radius, w.width), Vec3::ZERO, [Vec3::X, Vec3::Y, Vec3::Z], w.radius, w.width);
-        let m = f32::from_bits(0x3d23_d70a);
-        let e = Vec3::new(core.support(Vec3::X).x + m, core.support(Vec3::Y).y + m, core.support(Vec3::Z).z + m);
+        let (e, _) = wheel_bound(w.front, w.radius, w.width);
         let down = w.rest.y - if w.extent - 0.5 >= 0.0 { w.extent } else { 0.5 };
         let up = (w.limit + w.rest.y) + 0.1;
         let cur = [rows[0], rows[1], rows[2], Vec3::new(w.rest.x, down, w.rest.z)];
@@ -8376,6 +8385,12 @@ mod wheel_fit_tests {
                 }
                 let up = (fw.limit + fw.rest.y) + 0.1;
                 assert_eq!([h(p[28]), h(p[29]), h(p[30])], [fw.rest.x.to_bits(), up.to_bits(), fw.rest.z.to_bits()], "{at} wheel {i} last place");
+                // (the wheel bound's own box, centroid and radius, F-63967, and its copy in the composite's table +140)
+                let (e, r) = wheel_bound(front, fw.radius, fw.width);
+                let (eb, nb) = ([e.x, e.y, e.z].map(f32::to_bits), [-e.x, -e.y, -e.z].map(f32::to_bits));
+                assert_eq!((h(p[40]), [h(p[42]), h(p[43]), h(p[44])], [h(p[46]), h(p[47]), h(p[48])]), (r.to_bits(), eb, nb), "{at} wheel {i}: own bound");
+                assert_eq!([h(p[50]), h(p[51]), h(p[52])], [0; 3], "{at} wheel {i}: centroid");
+                assert_eq!(([h(p[32]), h(p[33]), h(p[34])], [h(p[36]), h(p[37]), h(p[38])]), (nb, eb), "{at} wheel {i}: table box");
                 parts.push((fw, rows));
             }
             let b = fit_bound(hull_box, &parts);
