@@ -1,4 +1,4 @@
-//! Nearest points of a convex shape and a triangle as the original finds them (0x825E0150):
+//! Nearest points of a convex shape and a triangle as the original finds them (F-33272):
 //! the Gilbert-Johnson-Keerthi loop over the shapes' cores - each shape without its margin -
 //! with the margins taken off the distance afterwards. The loop is iterative, and on a round
 //! shape it stops where its own tests say so, not where the true nearest points are: against
@@ -135,7 +135,7 @@ impl Support for Points<'_> {
     }
 }
 
-/// A car's hull as the detector has it (a polyhedron bound, type 4: 0x825E0418): its corners in
+/// A car's hull as the detector has it (a polyhedron bound, type 4: A-51822): its corners in
 /// the car's frame - all but the last, which the bound's count leaves out - and the body's
 /// matrix. The corner farthest along a direction is looked for from the last of them, then
 /// from the first on; a later one wins only by being farther.
@@ -224,7 +224,7 @@ fn unit_faces() -> [Face; 4] {
 
 /// The wheel bound's own numbers: its four corners, six curved edges and four curved faces.
 /// The original keeps one for every wheel and resizes it in place whenever the tyre's size is
-/// set (0x8255BB80), each time from what the last resizing left - so its last digits carry
+/// set (F-55382), each time from what the last resizing left - so its last digits carry
 /// the sizes it has had before.
 #[derive(Clone, Copy, Debug)]
 pub struct WheelShape {
@@ -248,9 +248,9 @@ impl WheelShape {
         shape
     }
 
-    /// 0x8255BB80: to a tyre of `radius` and `width` - unless it is that already to within a
+    /// F-55382: to a tyre of `radius` and `width` - unless it is that already to within a
     /// millimetre both ways. The factors from its first corner; the corners by plain
-    /// products (0x825A06F0), then every curved edge (0x825D19A0) and face (0x825D2878).
+    /// products (F-90069), then every curved edge (F-17852) and face (F-22892).
     pub fn resize(&mut self, radius: f32, width: f32) {
         let WheelShape { corners, edges, faces } = self;
         let v = corners[0];
@@ -301,7 +301,7 @@ impl WheelShape {
                 let axis = other.centre - first.centre;
                 let len = fma(axis.x, axis.x, fma(axis.y, axis.y, axis.z * axis.z)).sqrt();
                 let axis = axis * recip(len);
-                // (a direction across the axis, 0x821CE640)
+                // (a direction across the axis, F-95825)
                 let across = if axis.x.abs() >= axis.y.abs() { Vec3::new(-axis.z, 0.0, axis.x) } else { Vec3::new(0.0, axis.z, -axis.y) };
                 let across = across * rsqrt_or_zero(dot(across, across));
                 let a = across * f.inner + old;
@@ -332,8 +332,8 @@ pub fn wheel_shape(front: bool, radius: f32, width: f32) -> WheelShape {
     }
     let past = PAST.get_or_init(|| {
         // (what every wheel's bound has been before its fitted size: the size the wheel tuning
-        // is made with, TireRadius 0.3 and TireWidth 0.1 (0x82565348) - the car is built and
-        // its bounds sized, 0x8232D068, before its set-up is fitted, 0x8236BC20. The tuning
+        // is made with, TireRadius 0.3 and TireWidth 0.1 (F-60426) - the car is built and
+        // its bounds sized, F-50048, before its set-up is fitted, F-81364. The tuning
         // file's own TireRadius never reaches the bound. MCLA_DBG_OLDWHEELSIZES: no past.)
         let Ok(text) = std::env::var("MCLA_DBG_WHEELSIZES") else {
             if std::env::var_os("MCLA_DBG_OLDWHEELSIZES").is_some() {
@@ -354,9 +354,9 @@ pub fn wheel_shape(front: bool, radius: f32, width: f32) -> WheelShape {
 /// (0x820022B4)
 const MILLIMETRE: f32 = f32::from_bits(0x3a83126f);
 
-/// A wheel's core (the curved bound, type 5, scaled to the tyre by 0x825D30F8): a tread that
+/// A wheel's core (the curved bound, type 5, scaled to the tyre by F-96106): a tread that
 /// is a torus - round about the axle and an arc across - two rims, and sides that are caps of
-/// spheres. Exactly round: the support point (0x825D1EE8) is that of the true surface.
+/// spheres. Exactly round: the support point (F-20142) is that of the true surface.
 #[derive(Clone, Copy, Debug)]
 pub struct WheelCore {
     pub centre: Vec3,
@@ -401,7 +401,7 @@ impl WheelCore {
         [self.corners[0].x, self.edges[0].radius, self.faces[2].outer, self.faces[2].inner, self.faces[2].least, self.faces[0].centre.x, self.faces[0].outer, self.faces[0].least].map(f32::to_bits)
     }
 
-    /// 0x825D1EE8: the core's point farthest along `dir`, in the wheel's own frame. Corners,
+    /// F-20142: the core's point farthest along `dir`, in the wheel's own frame. Corners,
     /// then curved edges, then curved faces; a later candidate wins only by being farther.
     fn farthest(&self, dir: Vec3) -> Vec3 {
         let d = dir * rsqrt_or_zero(dot(dir, dir));
@@ -485,10 +485,11 @@ impl Support for WheelCore {
     }
 }
 
-/// A wheel's matrix among the car's parts (0x8255CEA0, the last thing a vehicle update does):
+/// A wheel's matrix among the car's parts (F-24284, the last thing a vehicle update does):
 /// the wheel's world rows and place `wheel` taken back through the chassis's matrix `car` of
 /// that update - rows by its transpose, the place by that and minus the car's own place so
-/// taken. This is what the car's bound keeps for the wheel's shape until the next update.
+/// taken. This is what the car's bound keeps for the wheel's shape until the next update. Equal to the
+/// original's in every x / y / z word (test part_matrix_matches_the_original).
 pub fn part_matrix(wheel: &[Vec3; 4], car: &[Vec3; 4]) -> [Vec3; 4] {
     let [c0, c1, c2, at] = *car;
     let (cx, cy, cz) = (Vec3::new(c0.x, c1.x, c2.x), Vec3::new(c0.y, c1.y, c2.y), Vec3::new(c0.z, c1.z, c2.z));
@@ -497,7 +498,7 @@ pub fn part_matrix(wheel: &[Vec3; 4], car: &[Vec3; 4]) -> [Vec3; 4] {
     [row(wheel[0]), row(wheel[1]), row(wheel[2]), cz * wheel[3].z + (cy * wheel[3].y + (cx * wheel[3].x + back))]
 }
 
-/// A part's matrix in the world as the collision forms it (0x82575450, from 0x825CCE00): the
+/// A part's matrix in the world as the collision forms it (F-35644, from F-82759): the
 /// part's matrix among the car's parts times the body's matrix `car` as it stands after the
 /// physics step.
 pub fn world_matrix(part: &[Vec3; 4], car: &[Vec3; 4]) -> [Vec3; 4] {
@@ -505,14 +506,14 @@ pub fn world_matrix(part: &[Vec3; 4], car: &[Vec3; 4]) -> [Vec3; 4] {
     [row(part[0]), row(part[1]), row(part[2]), car[2] * part[3].z + (car[1] * part[3].y + (car[0] * part[3].x + car[3]))]
 }
 
-/// A mesh triangle's normal as the collision forms it (0x825D0C18, 0x82576FF8): the cross
+/// A mesh triangle's normal as the collision forms it (F-29567, F-23797): the cross
 /// product of two of its sides over twice the area its record holds - a unit vector only as
 /// nearly as that area is the triangle's.
 pub fn polygon_normal(tri: &[Vec3; 3], area: f32) -> Vec3 {
     cross(tri[2] - tri[1], tri[0] - tri[1]) * recip(area + area)
 }
 
-/// 0x82576FF8: the direction between a triangle's normal `face` and its neighbour's `other`
+/// F-23797: the direction between a triangle's normal `face` and its neighbour's `other`
 /// across the edge `from` -> `to`, where the two meet in a ridge (and that they do); the
 /// triangle's own normal where they meet flat or in a hollow.
 pub fn edge_bisector(face: Vec3, other: Vec3, from: Vec3, to: Vec3) -> (Vec3, bool) {
@@ -524,7 +525,7 @@ pub fn edge_bisector(face: Vec3, other: Vec3, from: Vec3, to: Vec3) -> (Vec3, bo
     }
 }
 
-/// A triangle's corner farthest along `dir` (0x825E061C: of equals, the later one).
+/// A triangle's corner farthest along `dir` (A-65786: of equals, the later one).
 fn corner(tri: &[Vec3; 3], dir: Vec3) -> Vec3 {
     let t = [dot(dir, tri[0]), dot(dir, tri[1]), dot(dir, tri[2])];
     let (i, rest) = if t[0] - t[1] > 0.0 { (0, t[0] - t[2]) } else { (1, t[1] - t[2]) };
@@ -551,7 +552,7 @@ pub struct Nearest {
 
 /// The loop alone: `shape` (moved by `by`, then `then`) against `tri`, both in a frame whose
 /// origin is the triangle's first corner; `first` the first direction tried; the two margins.
-/// A polygon as the loop's second shape (bound type 13, 0x825E061C).
+/// A polygon as the loop's second shape (bound type 13, A-65786).
 pub struct Corners<'a>(pub &'a [Vec3; 3]);
 
 impl Support for Corners<'_> {
@@ -563,7 +564,7 @@ impl Support for Corners<'_> {
     }
 }
 
-/// The loop for any two convex cores (0x825E0150): the first's point farthest against `v`, the
+/// The loop for any two convex cores (F-33272): the first's point farthest against `v`, the
 /// second's farthest along it.
 pub fn loop_pair(shape: &impl Support, by: Vec3, then: Vec3, other: &impl Support, first: Vec3, margin_a: f32, margin_b: f32) -> (Option<Nearest>, bool) {
     let mut v = first;
@@ -671,9 +672,9 @@ fn record(shape: &impl Support, tri: &[Vec3; 3], face: Vec3, bisectors: &[Vec3; 
     let _ = writeln!(out.lock().unwrap(), "{}", line.trim_end());
 }
 
-/// One polygon against one shape (0x825CEE38's use of the detector): the loop, and where the
+/// One polygon against one shape (F-35118's use of the detector): the loop, and where the
 /// cores overlap - or the loop ended untrustworthy with the cores under a centimetre apart -
-/// the penetration routine (0x825E2370), whose answer is taken if it is the deeper.
+/// the penetration routine (F-25833), whose answer is taken if it is the deeper.
 /// `face`: the polygon's normal; `bisectors`: for each of its edges the direction between its
 /// normal and the neighbour's across that edge where they meet in a ridge, else its normal.
 /// The points are given about the polygon's first corner, as the routine itself has them.
@@ -686,7 +687,7 @@ pub fn contact_about(shape: &impl Support, tri: &[Vec3; 3], face: Vec3, bisector
 }
 
 /// `contact_about` with the polygon already about its first corner (`local`), the shape moved by `by`, and the
-/// detector's direction (+16) handed in and the one it ends with handed back: 0x825CEE38 sets it to (1, 0, 0) per
+/// detector's direction (+16) handed in and the one it ends with handed back: F-35118 sets it to (1, 0, 0) per
 /// polygon (0x827D8470), and the swept test keeps it from one of its calls to the next.
 pub fn contact_local(shape: &impl Support, by: Vec3, local: &[Vec3; 3], face: Vec3, bisectors: [Vec3; 3], margin_a: f32, margin_b: f32, dir: &mut Vec3) -> Option<Nearest> {
     let local = *local;
@@ -712,7 +713,7 @@ pub fn contact_local(shape: &impl Support, by: Vec3, local: &[Vec3; 3], face: Ve
         let mut first = Vec3::Z;
         let (inner, _, ends) = loop_ends(shape, by, best.1 * off, &Corners(&local), &mut first, margin_a, margin_b);
         // (the routine's inner detector works in the caller's simplex buffer: the element of whichever answer is
-        // kept is read from the corners that loop ended with, 0x825E1E10 after 0x825E2370)
+        // kept is read from the corners that loop ended with, F-26668 after F-25833)
         if let Some(r) = result.as_mut() {
             (r.corners, r.corners_b) = ends;
         }
@@ -734,7 +735,7 @@ pub fn contact_local(shape: &impl Support, by: Vec3, local: &[Vec3; 3], face: Ve
 }
 
 /// `contact_about` with the points given in the world (the polygon's first corner added back,
-/// as 0x825CEE38 hands them to the manifold).
+/// as F-35118 hands them to the manifold).
 pub fn contact(shape: &impl Support, tri: &[Vec3; 3], face: Vec3, bisectors: [Vec3; 3], margin_a: f32, margin_b: f32) -> Option<Nearest> {
     contact_about(shape, tri, face, bisectors, margin_a, margin_b).map(|mut r| {
         r.on_a += tri[0];
@@ -770,7 +771,7 @@ impl Default for Simplex {
 }
 
 impl Simplex {
-    /// 0x825E1660: is `w` one of the simplex's points or the last one tried - to within a
+    /// F-23669: is `w` one of the simplex's points or the last one tried - to within a
     /// 1024th of the simplex's reach, each component.
     fn has(&self, w: Vec3) -> bool {
         let reach = (0..self.count).map(|i| dot(self.w[i], self.w[i])).fold(1.0, f32::max);
@@ -802,7 +803,7 @@ impl Simplex {
         }
     }
 
-    /// 0x825E1F00: the simplex's point nearest the origin; the corners that do not carry it
+    /// F-69046: the simplex's point nearest the origin; the corners that do not carry it
     /// are dropped. False where four points lie all but flat (the loop stops there with what
     /// it had).
     fn closest(&mut self) -> bool {
@@ -843,7 +844,7 @@ impl Simplex {
                 ([b[0], b[1], b[2], 0.0], [b[0] > 0.0, b[1] > 0.0, b[2] > 0.0, false])
             }
             4 => {
-                // which faces the origin lies outside of (0x825E19B8)
+                // which faces the origin lies outside of (F-54004)
                 let outside = |a: Vec3, b: Vec3, c: Vec3, d: Vec3| -> Option<bool> {
                     let n = cross(b - a, c - a);
                     let sd = dot(d - a, n);
@@ -898,7 +899,7 @@ impl Simplex {
     }
 }
 
-/// 0x825E1768: a triangle's point nearest the origin and its weights on the corners
+/// F-74405: a triangle's point nearest the origin and its weights on the corners
 /// (Ericson's regions, as the simplex solver has them; divisions by the estimate of 1 / x).
 fn on_triangle(a: Vec3, b: Vec3, c: Vec3) -> (Vec3, [f32; 3]) {
     let (ab, ac) = (b - a, c - a);
@@ -948,6 +949,45 @@ mod tests {
         // sqrt(w^2/4 + 6 s^2) - (sqrt 6 - 1) s + 0.04
         let s = 0.3443f32 - 0.04;
         (0.245f32 * 0.245 * 0.25 + 6.0 * s * s).sqrt() - (6.0f32.sqrt() - 1.0) * s + 0.04
+    }
+
+    /// F-24284 run offline (tools/wheel_part_matrix_reference.py -> testdata/wheel_part_matrix_ref.txt): every wheel matrix
+    /// it writes into the composite equals part_matrix of the wheel's world matrix and the chassis's in every x / y / z word,
+    /// it writes only the set parts of the wheels below car +24 (from car +392 on) and clears their +530. The original's
+    /// w lanes (a row's -dot of the place, the place's sum) are a by-product the port does not keep.
+    #[test]
+    fn part_matrix_matches_the_original() {
+        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let (mut written, mut odd) = (0, 0);
+        for (k, line) in include_str!("../testdata/wheel_part_matrix_ref.txt").lines().enumerate() {
+            let (inp, out) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = inp.split(' ').map(h).collect();
+            assert_eq!(w.len(), 84, "line {}", k + 1);
+            let (cnt, first, mask) = (w[1] as i32, w[2] as i32, w[3]);
+            let m = |o: usize| -> [Vec3; 4] {
+                std::array::from_fn(|r| Vec3::new(f32::from_bits(w[o + 4 * r]), f32::from_bits(w[o + 4 * r + 1]), f32::from_bits(w[o + 4 * r + 2])))
+            };
+            let car = m(4);
+            for (i, g) in out.split(" | ").enumerate() {
+                let g: Vec<&str> = g.split(' ').collect();
+                let set = first >= 0 && (i as i32) < cnt && mask >> i & 1 == 1;
+                if !set {
+                    assert_eq!(g, ["-", "aa"], "line {} wheel {i}", k + 1);
+                    continue;
+                }
+                assert_eq!(g.len(), 17, "line {} wheel {i}", k + 1);
+                assert_eq!(g[16], "00", "line {} wheel {i}: +530", k + 1);
+                let p = part_matrix(&m(20 + 16 * i), &car);
+                for r in 0..4 {
+                    let got = [p[r].x, p[r].y, p[r].z].map(f32::to_bits);
+                    let want = [h(g[4 * r]), h(g[4 * r + 1]), h(g[4 * r + 2])];
+                    assert_eq!(got, want, "line {} wheel {i} row {r}", k + 1);
+                }
+                written += 1;
+                odd += w[0] as usize;
+            }
+        }
+        assert!(written > 1500 && odd > 300, "{written} {odd}");
     }
 
     #[test]
@@ -1026,8 +1066,8 @@ mod tests {
     }
 }
 
-/// A sphere, capsule or box part of a prop's bound as the detector has it (0x825E0384, 0x825E038C,
-/// 0x825E03D4): the core's point in the part's own frame, carried into the world by the part's
+/// A sphere, capsule or box part of a prop's bound as the detector has it (A-53236, A-14197,
+/// A-32016): the core's point in the part's own frame, carried into the world by the part's
 /// matrix. The margin (the sphere's or capsule's radius, the box's +0x70) is added by the loop.
 #[derive(Clone, Copy, Debug)]
 pub struct PartCore {
@@ -1115,10 +1155,10 @@ const WAYS_OUT: [[u32; 3]; 42] = [
     [0x3e265ade, 0x3effff58, 0x3f59c476],
 ];
 
-/// Two convex parts against each other (0x825E4970's use of the detector 0x825E0150, in the
+/// Two convex parts against each other (F-47540's use of the detector F-33272, in the
 /// world's own coordinates): the loop from the direction `dir` (left at the one it ended with),
 /// and where the cores overlap - or the loop ended untrustworthy with the cores under a
-/// centimetre apart - the routine 0x825C67E8: of 42 fixed directions the one along which the
+/// centimetre apart - the routine F-96503: of 42 fixed directions the one along which the
 /// first shape is soonest out, the loop again with it moved out that far, and the answer brought
 /// back; taken if it is the deeper. `routine`: whether the detector has that routine at all.
 /// The points are on the two surfaces (margins applied), the normal is the way the first is pushed.
@@ -1143,7 +1183,7 @@ pub fn convex_contact(a: &impl Support, margin_a: f32, b: &impl Support, margin_
         let mut v = Vec3::Z;
         let (inner, _, ends) = loop_ends(a, best.1 * off, Vec3::ZERO, b, &mut v, margin_a, margin_b);
         // (the inner detector works in the caller's simplex buffer: whichever answer is kept, its element is read
-        // from the corners this loop ended with, 0x825E1E10 after 0x825C67E8)
+        // from the corners this loop ended with, F-26668 after F-96503)
         if let Some(r) = result.as_mut() {
             (r.corners, r.corners_b) = ends;
         }
