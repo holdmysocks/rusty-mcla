@@ -412,6 +412,9 @@ impl SkinModel {
             let _ = si;
         }
         let nb = bones.len() as u16;
+        if nb == 0 {
+            log::info!("character set {}: no skeleton, drawn rigid at its root", name);
+        }
         let mut lods: [Vec<Part>; 4] = Default::default();
         for (l, models) in c.lods.iter().chain(std::iter::once(&c.cockpit)).enumerate() {
             for &mi in models {
@@ -1013,6 +1016,14 @@ impl SkinBuffer {
             self.hidden.push(gone);
             // the bind pose has no rotations: its inverse is a plain translation
             self.skin.push(if gone { Mat4::from_translation(w.w_axis.truncate()) * Mat4::from_scale(Vec3::ZERO) } else { w * Mat4::from_translation(-b.bind) });
+        }
+        // (a set without a skeleton - a scene's prop such as a door: every vertex names bone 0, which is the
+        // entity's root here, so the model is drawn rigid at the root its animation gives)
+        if model.bones.is_empty() {
+            self.world.push(root);
+            self.skin.push(root);
+            self.hidden.clear();
+            self.hidden.push(false);
         }
         self.hide_from = None;
         let stencil = std::mem::take(&mut self.next_stencil);
