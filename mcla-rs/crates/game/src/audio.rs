@@ -1608,6 +1608,12 @@ impl Audio {
         if self.music_files.is_empty() || self.handle.is_none() {
             return;
         }
+        // (a song put on by name: it, F-62155 plays +68)
+        if let Some(f) = self.lists.as_ref().and_then(|l| l.lock().ok().and_then(|mut l| std::mem::take(&mut l.cued).then(|| l.now_file()).flatten())).filter(|f| *f < self.music_files.len()) {
+            self.music_next = f;
+            self.start_track();
+            return;
+        }
         // (the original's lists: the next place of the playing list's order)
         if let Some(f) = self.lists.as_ref().and_then(|l| l.lock().ok().and_then(|mut l| l.next_file())).filter(|f| *f < self.music_files.len()) {
             self.music_next = f;
@@ -1677,6 +1683,34 @@ impl Audio {
         self.next_track();
         self.start_delay = (0, 0);
         self.music.is_some()
+    }
+
+    /// mcMusicManager_GotoAllGenreSong (F-40531): the song object of that name in the ALL list (+144; none: nothing, a log), the
+    /// list 7 put on (the one before kept, F-66833's rule), then F-89347: +72 = 0.0, +526 (restart) = 0, +76 (the start
+    /// offset) = +84 = +80 = 0, the order's player to it, +48 / +68; a live song's voice released (F-63886) and the song
+    /// start F-62155 run, which returns at once (+384 is still set): the song stops and the next Play starts this one.
+    pub(crate) fn goto_all_genre_song(&mut self, object: &str) -> bool {
+        let Some(lists) = self.lists.clone() else { return false };
+        {
+            let Ok(mut l) = lists.lock() else { return false };
+            let n = l.counts[7].min(l.lists[7].len());
+            let Some(index) = l.lists[7][..n].iter().position(|&s| l.songs.get(s).is_some_and(|s| s.object.eq_ignore_ascii_case(object))) else {
+                log::warn!("audio: GotoAllGenreSong: no song {object} in the ALL list");
+                return false;
+            };
+            l.set_genre(7);
+            l.cue(index);
+        }
+        self.mgr.pos = 0.0;
+        self.mgr.restart = false;
+        self.mgr.offset = 0;
+        self.mgr.w84 = 0;
+        self.mgr.w80 = 0;
+        if self.song_live() {
+            self.stop_song();
+            self.mgr.started = true;
+        }
+        true
     }
 
     /// The song stops (the voice's release, F-63886).

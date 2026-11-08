@@ -3242,6 +3242,8 @@ pub struct MusicLists {
     pub shuffle: bool,
     /// PLAY was chosen in the menu: the window's loop starts `now`
     pub play: bool,
+    /// a song was put on by name (GotoAllGenreSong): the next song start plays `now`, not the next of the order
+    pub cued: bool,
     /// the original's generator (F-62480): a multiply-with-carry pair
     rng: (u32, u32),
 }
@@ -3402,6 +3404,18 @@ impl MusicLists {
         self.cur = index;
         self.now = self.lists[g].get(index).copied();
         self.play = true;
+    }
+
+    /// The list part of F-89347 as GotoAllGenreSong (F-40531) runs it: the order's player moves to `index` (F-36254), +48 = index,
+    /// +68 = the song at it; no PLAY. The next song start takes it (`cued`).
+    pub fn cue(&mut self, index: usize) {
+        let g = self.genre;
+        if let Some(p) = self.order[g].arr.iter().position(|v| *v == index) {
+            self.order[g].pos = p;
+        }
+        self.cur = index;
+        self.now = self.lists[g].get(index).copied();
+        self.cued = self.now.is_some();
     }
 
     /// F-71612: the song is in the custom playlist.
@@ -14284,6 +14298,22 @@ mod tests {
         assert!(gps_button(None, false, false, false, false) && !gps_button(Some(false), false, false, false, false));
         // (a save without the block: the same rule from its career)
         assert_eq!((on(None, true, false, false), on(None, true, true, false)), (false, true));
+    }
+
+    /// GotoAllGenreSong's put-on (F-40531 -> F-89347) of RACE_GH_06's song: list 7 (ALL), the one before kept, the song at
+    /// its place in ALL cued, no PLAY.
+    #[test]
+    fn goto_all_genre_song_cues_gh06s_song() {
+        let Ok(bytes) = std::fs::read(std::path::Path::new(&data_dir()).join("audio/X360/config/game.dat")) else { return };
+        let mut l = MusicLists::from_game_dat(&bytes).expect("the songs");
+        l.set_genre(4);
+        let n = l.counts[7];
+        let i = l.lists[7][..n].iter().position(|&s| l.songs[s].object == "HIPHOP_MAINO_HIHATER").expect("in ALL");
+        l.set_genre(7);
+        l.cue(i);
+        assert_eq!((l.genre, l.prev_genre, l.cur, l.cued, l.play), (7, 4, i, true, false));
+        assert_eq!(l.songs[l.now.unwrap()].object, "HIPHOP_MAINO_HIHATER");
+        assert_eq!(l.lists[7][l.order[7].arr[l.order[7].pos]], l.now.unwrap());
     }
 
     /// The music lists: the disc's songs by genre, the orders, shuffle, the custom playlist

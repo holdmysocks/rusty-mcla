@@ -8421,6 +8421,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let first = cut.is_some() && cut != self.sound.story_cut;
             let gh06 = first && cut.as_deref() == Some("CUT_STORY_RACE_GH_06");
             self.sound.story_mix = (gh06 || cut.as_deref() == Some("CUT_STORY_REP_ON_STRIP_GARAGE"), gh06);
+            // (RACE_GH_06_READY_TO_START_ON_ENTER 0x95d..0x985, right before the scene: GotoAllGenreSong("HIPHOP_MAINO_HIHATER")
+            // and mcMusicManager_SetStartOffset(19940) (F-15734: +76 = ms) - the scene's musicplay at 63.1 s starts it there)
+            if gh06 {
+                a.goto_all_genre_song("HIPHOP_MAINO_HIHATER");
+                a.mgr.offset = 19940;
+            }
             self.sound.story_cut = cut;
             // SLOWMO_FORM (slot 17): the tutorial's form 108, a hangout entry until its MISSION_EVENT (local / wager cores
             // 0x87e / 0xa60 / 0x10f0, 0xd1f / 0x15d6)

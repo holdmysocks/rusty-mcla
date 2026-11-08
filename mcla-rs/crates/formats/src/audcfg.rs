@@ -961,6 +961,27 @@ mod tests {
         assert!(bad.is_empty(), "{} of {n}:\n{}", bad.len(), bad[..bad.len().min(20)].join("\n"));
     }
 
+    /// The Speech Play (F-31041: the instance start offset +84 to its voice): every Speech sound (type 4) of
+    /// sounds.dat has start offset 0 with no variance and no predelay, so the offset it passes is always 0 (F-40563 draws
+    /// nothing for a 0 variance).
+    #[test]
+    fn speech_sounds_start_at_their_beginning() {
+        let dir = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Some(snd) = Dat::load(&std::path::Path::new(&dir).join("audio/X360/config/sounds.dat")) else { return };
+        let mut n = 0;
+        for (name, _, _) in snd.objects.clone() {
+            let Some(o) = snd.get_name(&name) else { continue };
+            if o.first() != Some(&4) {
+                continue;
+            }
+            let h = parse_sound(o).header;
+            n += 1;
+            assert_eq!((h.start_offset, h.start_offset_var, h.start_offset_var_hash, h.predelay, h.predelay_var, h.predelay_var_hash), (0, 0, 0, 0, 0, 0), "{name}");
+        }
+        eprintln!("{n} speech sounds");
+        assert!(n > 0);
+    }
+
     /// Against the disc's own files (MCLA_DATA_DIR = extracted/cache), when present.
     #[test]
     fn disc_config() {
