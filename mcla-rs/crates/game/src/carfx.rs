@@ -39,10 +39,7 @@ pub fn step(fx: &mut Particles, cars: &[CarInstance], cam: Vec3, player_hidden: 
         // the pedal after the pad's dead zone and the rev limiter's cut, 1 while the nitrous burns; no velocity
         let drawn = !(c.is_player && player_hidden);
         let exhaust_on = !gate && !c.engine_off && !c.pu_stealth && drawn && st.speed() < EXHAUST_MAX_SPEED;
-        let throttle = match st.veh.as_deref() {
-            Some(v) if v.by.exact => if v.nitro_burning { 1.0 } else { v.rev.left },
-            _ => c.input.throttle,
-        };
+        let throttle = chassis_throttle(st, &c.input);
         let car_m = Mat4::from_rotation_translation(st.rot, st.pos);
         // (the original pushes a bone's matrix, one 60 Hz frame old, on by the body's velocity / 60 - with a side
         // exhaust it takes the car's matrix instead; both come to the car's matrix of this frame, which is what
@@ -63,5 +60,14 @@ pub fn step(fx: &mut Particles, cars: &[CarInstance], cam: Vec3, player_hidden: 
                 fx.play_evo(key | 2, nitro, pos, rot, false, st.vel, dist, &[]);
             }
         }
+    }
+}
+
+/// The chassis' throttle +136 as the sim's tick left it (F-21480 copies it as it is): the pedal after the pad's dead zone
+/// and the rev limiter's cut, 1 while the nitrous burns; the input handed to the sim where the exact sim does not run.
+pub fn chassis_throttle(st: &crate::physics::CarState, input: &crate::physics::CarInput) -> f32 {
+    match st.veh.as_deref() {
+        Some(v) if v.by.exact => if v.nitro_burning { 1.0 } else { v.rev.left },
+        _ => input.throttle,
     }
 }

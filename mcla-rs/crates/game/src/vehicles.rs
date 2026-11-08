@@ -136,6 +136,9 @@ pub struct CarModel {
     pub trunk_bone: Option<Mat4>,
     /// the bones the fitted rear bumper, front bumper and intercooler hang on (their matrix index, F-14987), in car space
     pub slot_bones: [Option<Mat4>; 3],
+    /// the bones the car-parts update F-98654 turns each frame, in car space (steer_parts.rs): the base skeleton's
+    /// `steer` (a motorcycle's bars and fork), the one the fitted steering wheel hangs on, the fitted blower's valve
+    pub turn_bones: [Option<Mat4>; 3],
     /// where the exhaust and nitrous effects come out (car space, at most two, each with whether it moves with the
     /// rear bumper) and whether the first is a
     /// bone of the rear bumper (`CarAsset::fx_anchors`, `carfx.rs`)
@@ -472,6 +475,8 @@ pub struct CarInstance {
     pub light_t: f32,
     /// the car-parts object's eased steering (steer_parts.rs): a motorcycle's front wheel is drawn turned by it
     pub steer_parts: crate::steer_parts::SteerParts,
+    /// the car-parts object's blower valve slew (D +1880, steer_parts.rs)
+    pub valve: crate::steer_parts::Valve,
     /// a traffic or parked car's two light slot ids (render instance + 612 / + 660, F-99357; -1 = empty,
     /// 65545 = the hour's light) - main.rs `traffic_light_slots`
     pub amb_slot: [i32; 2],
@@ -850,6 +855,24 @@ const CLAM_GROUPS: usize = 48;
 /// bone needle k's clip moves (k 0 the tach, 1 the speedo).
 const NEEDLE_GROUP: u32 = CLAM_GROUP + CLAM_GROUPS as u32;
 const NEEDLE_BONES: usize = 8;
+
+/// The draw groups of the bones the car-parts update F-98654 turns (after the needles'): + 0 the `steer` bone and
+/// below, + 1 the fitted steering wheel, + 2 the blower valve (`CarModel::turn_bones`).
+const TURN_GROUP: u32 = NEEDLE_GROUP + 3 * NEEDLE_BONES as u32;
+
+/// Bone j is `top` or below it.
+fn bone_under(s: &mcla_formats::rage::skeleton::Skeleton, mut j: usize, top: usize) -> bool {
+    for _ in 0..s.bones.len() + 1 {
+        if j == top {
+            return true;
+        }
+        if j >= s.bones.len() || s.bones[j].parent == j {
+            return false;
+        }
+        j = s.bones[j].parent;
+    }
+    false
+}
 
 /// A needle's clip time from the update F-35036 (the gauge records D+960 tach / D+992 speedo, their time +972 / +1004
 /// written into the bound player and clamped to [0, the clip's length] there): the tach's phase is
@@ -1711,6 +1734,7 @@ struct CarPrep {
     hood_slot: Option<Mat4>,
     trunk_bone: Option<Mat4>,
     slot_bones: [Option<Mat4>; 3],
+    turn_bones: [Option<Mat4>; 3],
     roof_place: Mat4,
     /// the fitted add-on gauge's needle clip and placement (CarModel::needles [2], needle_place)
     upgrade: Option<(Arc<vehicle_model::BoneClip>, Mat4, std::path::PathBuf)>,
@@ -2255,7 +2279,7 @@ impl Vehicles {
         let t_load = std::time::Instant::now();
         let car = self.car_asset(world, dir)?;
         let ms_parse = t_load.elapsed().as_secs_f32() * 1000.0;
-        let CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, roof_place, upgrade } = match self.take_prep(dir, cfg) {
+        let CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, roof_place, upgrade } = match self.take_prep(dir, cfg) {
             Some(p) => p,
             None => Self::prep_car(&car, dir, cfg),
         };
@@ -2459,7 +2483,7 @@ impl Vehicles {
         // (F-74884, a bike's set-up: +4092 / +4096 = |max - min| of the translation limits, crBoneData +144 / +160, of the
         // first bone named wheel_0 / wheel_2 in the base fragment's skeleton, then the parts' - F-20921)
         let bike_wheel_width = ["wheel_0", "wheel_2"].map(|n| car.skeleton.as_ref().and_then(|s| s.bones.iter().find(|b| b.name == n)).map_or(params.wheel_width, |b| (b.trans_limits.1 - b.trans_limits.0).length()));
-        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, glow_sides, font_bones, batches, params, params_mods, simtunes, vehmods: car.vehmods.clone(), fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), needles: [car.needles[0].clone().map(Arc::new), car.needles[1].clone().map(Arc::new), upgrade.as_ref().map(|u| u.0.clone())], needle_place: upgrade.as_ref().map_or(Mat4::IDENTITY, |u| u.1), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, fx_anchors, fx_anchor_rear });
+        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, glow_sides, font_bones, batches, params, params_mods, simtunes, vehmods: car.vehmods.clone(), fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), needles: [car.needles[0].clone().map(Arc::new), car.needles[1].clone().map(Arc::new), upgrade.as_ref().map(|u| u.0.clone())], needle_place: upgrade.as_ref().map_or(Mat4::IDENTITY, |u| u.1), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, fx_anchors, fx_anchor_rear });
         self.models.push(m.clone());
         if self.wheels.is_none() {
             self.wheels = load_wheels(gpu, world).map(Arc::new);
@@ -2532,6 +2556,20 @@ impl Vehicles {
             own_bone(&|p| p.starts_with("bumper_f")).or(part_rig.bumper_rest[1]),
             own_bone(&|p| p.starts_with("intercooler")).or(part_rig.bumper_rest[1]),
         ];
+        // (the bones F-98654 turns, steer_parts.rs: the base skeleton's `steer` - D +1216, by name - with whatever
+        // hangs on it or below; the bone the fitted `steer_whl` (slot 52) hangs on - D +1200, its matrix index -; the
+        // fitted blower's `blowervalve<n>` - D +1212 - in the part's own skeleton)
+        let steer_i = sk.and_then(|s| s.bones.iter().position(|b| b.name.eq_ignore_ascii_case("steer")));
+        let wheel_bone = own_bone(&|p| p.starts_with("steer_whl"));
+        let valve_of = |p: &vehicle_model::CarPart| -> Option<usize> {
+            if p.is_base || !p.primary.to_ascii_lowercase().starts_with("blower") {
+                return None;
+            }
+            p.skeleton.as_ref()?.bones.iter().position(|b| b.name.to_ascii_lowercase().starts_with("blowervalve"))
+        };
+        let valve_bone = fitted.iter().find_map(|(p, x)| valve_of(p).map(|i| *x * p.skeleton.as_ref().unwrap().bones[i].world));
+        let turn_bones = [steer_i.and_then(|i| sk.map(|s| s.bones[i].world)), wheel_bone, valve_bone];
+        log::info!("car {}: turned bones (steer, steering wheel, blower valve) at {:?}", car.name, turn_bones.map(|b| b.map(|m| m.w_axis.truncate())));
         // (the exhaust tips are drawn at the outlet bones of the part that holds them, as those bones stand:
         // they move with that part - a hanging rear bumper takes them along)
         let outlet_src = car.outlet_part(cfg).map(|o| (o.primary.to_ascii_lowercase(), o.is_base, o.transform));
@@ -2587,6 +2625,21 @@ impl Vehicles {
             for (k, nb) in needle_bones.iter().enumerate() {
                 if let Some(j) = bone.and_then(|b| nb.iter().position(|&x| x == b)).filter(|&j| j < NEEDLE_BONES) {
                     return NEEDLE_GROUP + (k * NEEDLE_BONES + j) as u32;
+                }
+            }
+            // (turned by F-98654: on the steer bone or below it - a base mesh by its bone, a part by its matrix index -,
+            // the fitted steering wheel, the blower valve's mesh)
+            if let (Some(si), Some(s)) = (steer_i, sk) {
+                if bone.map_or(false, |b| bone_under(s, b, si)) {
+                    return TURN_GROUP;
+                }
+            }
+            if !part.is_base && p.starts_with("steer_whl") && wheel_bone.is_some() {
+                return TURN_GROUP + 1;
+            }
+            if let (Some(vi), Some(psk)) = (valve_of(part), part.skeleton.as_ref()) {
+                if part.mesh_tag.get(mi).and_then(|&t| psk.bone_by_tag(t)).map_or(false, |b| bone_under(psk, b, vi)) {
+                    return TURN_GROUP + 2;
                 }
             }
             if part.is_base {
@@ -3112,7 +3165,7 @@ impl Vehicles {
                 glow_sides.push(side);
             }
         }
-        CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, roof_place, upgrade }
+        CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, roof_place, upgrade }
     }
 
     /// Tyre + rim model for a rim directory, loaded once.
@@ -3276,7 +3329,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, rotor_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, crash: Default::default(), parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), spoiler: WindowCtl::default(), roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, rotor_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, crash: Default::default(), parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), spoiler: WindowCtl::default(), roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), valve: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
         self.cars.len() - 1
     }
 
@@ -4678,6 +4731,16 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 (d.gate, d.value, d.divisor) = (d.pad_x, vs.pad_steer, crate::physics::pad::speed_factor(&vt.t.input, vs.last_speed));
             }
             d.step(vs.last_speed, false, dt);
+            // (test hook MCLA_FORCE_STEER_OUT=<v>: the player's two eased values set to v after the step)
+            if c.is_player {
+                if let Some(v) = std::env::var("MCLA_FORCE_STEER_OUT").ok().and_then(|v| v.parse::<f32>().ok()) {
+                    (d.out, d.needle) = (v, v);
+                }
+            }
+            // (the blower valve, D +1880: towards the chassis' throttle, while the car has one)
+            if c.model.turn_bones[2].is_some() {
+                c.valve.step(crate::carfx::chassis_throttle(&c.state, &c.input), dt);
+            }
         }
 
         // ---- the moving damage parts (F-24651: every car, every frame, after its impacts are queued) ----
@@ -4691,6 +4754,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // (the repair, F-75221, runs where the game fixes the car: here, a car whose damage is all gone)
             if st.damage == 0.0 && st.zones == [0.0; 4] && st.parts.damaged() {
                 st.parts.repair(&cm);
+                c.steer_parts.repair();
+                c.valve.repair();
             }
             let (speed, heavy) = (st.speed(), st.damage > 0.66);
             // (a torn-off bumper is a body of the loose-body level, damageparts.rs: the shared one when the cars
@@ -5483,6 +5548,16 @@ if keep || c.state.pos.distance(center) < 450.0 {
             for (k, pb) in c.part_bindings.iter().enumerate() {
                 let parts = &c.state.parts;
                 let pm = match k {
+                    // (a bone F-98654 turns: its local times the turn, steer_parts.rs)
+                    n if n + 3 >= TURN_GROUP as usize => {
+                        let i = n + 3 - TURN_GROUP as usize;
+                        let (x, a) = match i {
+                            0 => (false, c.steer_parts.steer_bone_angle()),
+                            1 => (false, c.steer_parts.steer_wheel_angle()),
+                            _ => (true, c.valve.angle()),
+                        };
+                        c.model.turn_bones.get(i).copied().flatten().map_or(m, |w| m * w * crate::steer_parts::turn(x, a) * w.inverse())
+                    }
                     // (a bone of a dashboard needle)
                     n if n + 3 >= NEEDLE_GROUP as usize => {
                         let i = n + 3 - NEEDLE_GROUP as usize;
