@@ -294,8 +294,8 @@ pub struct PropLamp {
     pub back: Vec3,
     /// the cone: sat(cos x scale + bias)
     pub cone: [f32; 2],
-    /// the fog cone's radius per metre of its length (`cone_tan`; 0 for a lamp without a cone)
-    pub cone_tan: f32,
+    /// the light file's ConeAngle and Penumbra (the fog cone's pass, `rain::cone_setup`, takes them)
+    pub cone_deg: [f32; 2],
 }
 
 /// The fog cone's half width per metre of length (LightMatrix's side axes): F-46735 on the copy of the lamp the
@@ -303,8 +303,40 @@ pub struct PropLamp {
 /// tan((max(penumbra, 0) + cone x 1.077) x 6.28 / 720) - 2.388 for the 125 degree street lamps, 0.190 for the
 /// 20 degree flare. Every lamp with a cone takes it, the files of Type 0 as well (the recorded 10.72 m storm kind).
 pub fn cone_tan(cone: f32, penumbra: f32) -> f32 {
-    // (F-19533's copy: fmuls by its constant 1.077, fadds of the global)
-    light_cone_tan(1, cone * 1.077, penumbra + 0.0)
+    // (F-19533's copy: fmuls by its constant 1.077, fadds of the global (never written: 0); F-25852's type 1 up to 359.99991)
+    let c = cone * 1.077;
+    light_cone_tan(if c > 359.999_908_4 { 0 } else { 1 }, c, penumbra + 0.0)
+}
+
+/// A float as the light table gives it back (direction, colour, cone angle and intensity): the packer F-49342 writes
+/// half floats with the vector unit's pack (vpkd3d128 5,2,2 as the recompiled code has it: the mantissa cut, below
+/// 2^-14 shifted into a subnormal or 0, NaN and beyond 65504 0x7FFF), the fetch F-31785 unpacks them (vupkd3d128 20:
+/// subnormals read as 0) - `render::half_value`.
+pub fn table_half(v: f32) -> f32 {
+    let b = v.to_bits();
+    let a = f32::from_bits(b & 0x7FFF_FFFF);
+    let h = if a.is_nan() || a > 65504.0 {
+        0x7FFF
+    } else {
+        let e = (b >> 23) & 0xFF;
+        let m = (b & 0x7F_E000) >> 13;
+        if e > 0x70 { ((e - 0x70) << 10) + m } else if 0x71 - e > 31 { 0 } else { (0x400 + m) >> (0x71 - e) }
+    };
+    crate::render::half_value((h | (b & 0x8000_0000) >> 16) as u16)
+}
+
+/// The penumbra as the light table gives it back: the packer F-49342 stores byte +22 = (Penumbra x 1/255 + 0.5,
+/// fused) x 255 cut to an integer (fctiwz, the low byte kept); the fetch F-31785 rebuilds (b x 1/255 - 0.5, fused)
+/// x 255. -50 (the street lamps) comes back as -50.5: the recorded cone edge (cos x 2.8058 - 1.0837) is the cone
+/// pass's F-51633 on 125 / -50.5, not on the file's -50.
+pub fn table_penumbra(p: f32) -> f32 {
+    use crate::physics::exact::{fma, fms};
+    let k = 0.003_921_568_9_f32;
+    let w = fma(p, k, 0.5) * 255.0;
+    // (fctiwz: cut towards zero, saturating; NaN -> 0x80000000)
+    let i = if w.is_nan() { i32::MIN } else { w as i32 };
+    let b = (i as u32 & 0xFF) as f32;
+    fms(b, k, 0.5) * 255.0
 }
 
 /// F-46735 on a lamp copy: its type byte (+88), cone angle (+68) and penumbra (+72). A type other than 1 gives the
@@ -321,6 +353,25 @@ pub fn light_cone_tan(kind: u8, cone: f32, penumbra: f32) -> f32 {
 
 #[cfg(test)]
 mod cone_tan_tests {
+    /// The light table's round trip run offline (`tools/lamp_table_reference.py`: the packer F-49342, then the fetch
+    /// F-31785 into the set F-25852): 4,000 lamps with special values (signed zeros, half float limits, subnormals,
+    /// NaN, huge) - direction, colour, intensity and cone through `table_half`, the penumbra through
+    /// `table_penumbra`, every word equal.
+    #[test]
+    fn the_light_tables_round_trip() {
+        let h = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let mut n = 0;
+        for l in include_str!("render/testdata/lamp_table_reference.txt").lines() {
+            let (a, b) = l.split_once(" -> ").unwrap();
+            let i: Vec<f32> = a.split_whitespace().skip(1).map(h).collect();
+            let o: Vec<u32> = b.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let got: Vec<u32> = (0..8).map(|k| super::table_half(i[k]).to_bits()).chain([super::table_penumbra(i[8]).to_bits()]).collect();
+            assert_eq!(got, o, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
+    }
+
     /// F-46735 run offline (`tools/cone_tan_reference.py`): the files' angles, random ones, near the tan's pole,
     /// signed zeros and large values, types 0 - 3; every result's bits equal.
     #[test]
@@ -355,7 +406,7 @@ mod cone_tan_tests {
 /// the 75 spot light files has the same Direction.
 const LAMP_BACK: [f32; 2] = [0.147_949_35, 0.988_994_95];
 
-fn prop_light_file(data_dir: &str, name: &str) -> Option<(Vec3, f32, [f32; 3])> {
+fn prop_light_file(data_dir: &str, name: &str) -> Option<(Vec3, f32, [f32; 4])> {
     let file = Path::new(data_dir).join("tune/lighting").join(format!("0x{:08x}", mcla_formats::hash::joaat(&format!("{}.xml", name.to_ascii_lowercase()))));
     let x = std::fs::read_to_string(file).ok()?;
     if !x.contains("<Light>") {
@@ -375,15 +426,16 @@ fn prop_light_file(data_dir: &str, name: &str) -> Option<(Vec3, f32, [f32; 3])> 
     let outer = attr("ConeAngle", "value").unwrap_or(360.0);
     // (Type 0 files with a cone angle are cone lamps in the original's table as well: 196 lamps of the
     // Intensity 30 / 40 types read out of it - LIGHTING_WORK.md "The lamp slots' order")
+    let penumbra = attr("Penumbra", "value").unwrap_or(0.0);
     let cone = if outer >= 359.0 {
-        [0.0, 1.0, 0.0]
+        [0.0, 1.0, outer, penumbra]
     } else {
         // lit from the inner cone (ConeAngle + Penumbra, the penumbra being negative) out to
         // nothing at ConeAngle
-        let inner = (outer + attr("Penumbra", "value").unwrap_or(0.0)).clamp(1.0, outer);
+        let inner = (outer + penumbra).clamp(1.0, outer);
         let (co, ci) = ((outer.to_radians() * 0.5).cos(), (inner.to_radians() * 0.5).cos());
         let scale = 1.0 / (ci - co).max(1e-3);
-        [scale, -co * scale, cone_tan(outer, attr("Penumbra", "value").unwrap_or(0.0))]
+        [scale, -co * scale, outer, penumbra]
     };
     Some((color, intensity, cone))
 }
@@ -1205,7 +1257,7 @@ impl Props {
         // drawn with PropLampGlassTint), or of the topmost part of the model without one.
         // (Checked on the pedestrian light by the Hollywood garage: the original's table has its
         // lamp 10.3 m up and about 1.1 m out from the prop's origin.)
-        let mut lamp_of: HashMap<usize, (Vec3, Vec3, f32, [f32; 3])> = HashMap::new();
+        let mut lamp_of: HashMap<usize, (Vec3, Vec3, f32, [f32; 4])> = HashMap::new();
         let mut lamp_box: HashMap<usize, (Vec3, f32)> = HashMap::new();
         let mut lamp_heads: HashMap<usize, Vec<Vec3>> = HashMap::new();
         for (pi, mi) in &model_of {
@@ -1392,7 +1444,7 @@ impl Props {
                             continue;
                         }
                         // (the light files point their spot down but for 8.5 degrees - Direction 90, 0, 171.47 - towards the prop's own +x: the original's table shows the props' four headings for it)
-                        prop_lamps.push(PropLamp { pos, color: *color, intensity: *intensity, back: (q * Vec3::new(LAMP_BACK[0], LAMP_BACK[1], 0.0)).normalize(), cone: [cone[0], cone[1]], cone_tan: cone[2] });
+                        prop_lamps.push(PropLamp { pos, color: *color, intensity: *intensity, back: (q * Vec3::new(LAMP_BACK[0], LAMP_BACK[1], 0.0)).normalize(), cone: [cone[0], cone[1]], cone_deg: [cone[2], cone[3]] });
                     }
                 }
                 if signal_models.contains(&mi) {

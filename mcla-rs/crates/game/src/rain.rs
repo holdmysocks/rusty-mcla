@@ -27,6 +27,81 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
 use std::sync::Mutex;
 
+/// What F-19533 sends the cone shader for one lamp (the shader variables in the order it sets them; LightInvMatrix,
+/// the general 4x4 inverse F-25750 of `matrix`, is left out).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConeSetup {
+    /// LightMatrix rows: the two side axes x tan x length, the direction x length, the apex (w 1); identity when the
+    /// length is not above 0
+    pub matrix: [[f32; 4]; 4],
+    /// LightPosition: the apex (the lamp pulled back along its direction by the pass's +52), w the edge's offset
+    pub pos: [f32; 4],
+    /// LightColor: the lamp's colour, w = 50 x the colour weight
+    pub colour: [f32; 4],
+    /// LightDirection: the lamp's direction, w the edge's factor
+    pub dir: [f32; 4],
+    /// LightVolume: (density, strength x fade, 0.2 / length, colour weight)
+    pub volume: [f32; 4],
+    /// LightFallOff
+    pub falloff: f32,
+    /// the cone's length (F-19533's min(sqrt(luma x intensity / edge), longest))
+    pub len: f32,
+    /// the half width per metre (F-46735 on the copy)
+    pub tan: f32,
+}
+
+/// F-19533 for one lamp (pos, colour, dir as the light record's vectors; intensity, ConeAngle, Penumbra), the pass's
+/// pull-back (+52, the original writes 0.2 there after each lamp), longest cone (+56) and edge brightness (+64), and
+/// its three arguments (density, strength x fade, colour weight). The copy F-10025 / set F-25852: cone x 1.077,
+/// penumbra + a global that is never written (0); type 1 while the cone is at most 359.99991. The edge F-51633 with
+/// the library cos; the luma fused 0.3 / 0.6 / 0.1; the axes by the vector unit (cross with (1, 0, 0), exact 1 / sqrt,
+/// the products not fused), the half width F-46735. Checked against F-19533 run offline on 1,500 lamps
+/// (`tools/cone_pass_reference.py`, test `cone_setup_matches_the_original`).
+pub fn cone_setup(pos: [f32; 4], colour: [f32; 4], dir: [f32; 4], intensity: f32, cone: f32, penumbra: f32, pass: [f32; 3], args: [f32; 3]) -> ConeSetup {
+    use crate::physics::exact::{dot3, fma, guest_cos};
+    let [pull, longest, edge] = pass;
+    let apex: [f32; 4] = std::array::from_fn(|i| pos[i] - dir[i] * pull);
+    let (c, p) = (cone * 1.077, penumbra + 0.0);
+    let kind = if c > 359.999_908_4 { 0 } else { 1 };
+    // (F-51633: the edge from the outer and inner angles, x 1/720 x 6.28)
+    let (mut outer, mut inner_add) = (c * 0.001_388_888_9 * 6.28, p * 0.001_388_888_9 * 6.28);
+    if !(p >= 0.0) {
+        outer = inner_add + outer;
+        inner_add = -inner_add;
+    }
+    let cos_in = guest_cos((inner_add + outer) as f64) as f32;
+    let cos_out = guest_cos(outer as f64) as f32;
+    let k = 1.0 / (cos_in - cos_out);
+    let (dir_w, pos_w) = (-k, 1.0 - -(k * cos_out));
+    let luma = fma(colour[2], 0.1, fma(colour[1], 0.6, colour[0] * 0.3));
+    let root = (luma * intensity / edge).sqrt();
+    let len = if longest - root >= 0.0 { root } else { longest };
+    let tan = crate::props::light_cone_tan(kind, c, p);
+    let mut matrix = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+    if len > 0.0 {
+        let d = Vec3::new(dir[0], dir[1], dir[2]);
+        // (vnmsubfp: -(a b - c), the product rounded)
+        let side = Vec3::new(-(0.0 * d.z - 0.0 * d.y), -(0.0 * d.x - 1.0 * d.z), -(1.0 * d.y - 0.0 * d.x));
+        let a = side * (1.0 / dot3(side, side).sqrt());
+        let b = Vec3::new(-(d.y * a.z - d.z * a.y), -(d.z * a.x - d.x * a.z), -(d.x * a.y - d.y * a.x));
+        let tl = tan * len;
+        let b = b * (1.0 / dot3(b, b).sqrt()) * tl;
+        let a = a * tl;
+        matrix = [[a.x, a.y, a.z, 0.0], [b.x, b.y, b.z, 0.0], [d.x * len, d.y * len, d.z * len, 0.0], [apex[0], apex[1], apex[2], 1.0]];
+    }
+    let [density, strength, colw] = args;
+    ConeSetup {
+        matrix,
+        pos: [apex[0], apex[1], apex[2], pos_w],
+        colour: [colour[0], colour[1], colour[2], colw * 50.0],
+        dir: [dir[0], dir[1], dir[2], dir_w],
+        volume: [density, strength, 0.2 / len, colw],
+        falloff: 1.4,
+        len,
+        tan,
+    }
+}
+
 /// particles of the original (a 128 x 64 target, 32768 vertices a draw)
 const DROPS: usize = 8192;
 /// most cones a frame: the original's list holds 256 (F-59499; it drew 79 at the reference spot,
@@ -357,17 +432,20 @@ impl Rain {
                 continue;
             }
             let dir = -l.back.normalize_or_zero();
-            let luma = 0.3 * l.color.x + 0.6 * l.color.y + 0.1 * l.color.z;
-            // (MCLA_DEBUG_VIEW=116: 16 m for every lamp, as before)
-            let len = if old { 16.0 } else { (luma * l.intensity / edge.max(1e-4)).sqrt().min(16.0) };
-            if len <= 0.0 {
+            // (F-19533 for the lamp - rain::cone_setup: the apex pulled back 0.2 m along the light (the pass's +52, which it
+            // sets to 0.2 after each lamp), the length min(sqrt(luma x Intensity / m_LampGlows.z), 16), the half width
+            // F-46735, the edge cos x LightDirection.w + LightPosition.w from the lamp's own ConeAngle and Penumbra;
+            // a length not above 0 = the identity LightMatrix = nothing drawn. MCLA_DEBUG_VIEW=116: 16 m and 2.388 for
+            // every lamp, as before.)
+            // (the lamp as the light table gives it back - packed by F-49342, fetched by F-31785: half floats for the
+            // direction, colour, cone and intensity, the penumbra a byte (-50 -> -50.5); the place's shorts not yet)
+            let (h, hc, hd) = (crate::props::table_half, l.color, dir);
+            let s = cone_setup([l.pos.x, l.pos.y, l.pos.z, 0.0], [h(hc.x), h(hc.y), h(hc.z), 0.0], [h(hd.x), h(hd.y), h(hd.z), 0.0], h(l.intensity), h(l.cone_deg[0]), crate::props::table_penumbra(l.cone_deg[1]), [0.2, 16.0, edge], [density, fade, colw]);
+            let (len, tan) = if old { (16.0, 38.21 / 16.0) } else { (s.len, s.tan) };
+            if !(len > 0.0) {
                 continue;
             }
-            // (LightMatrix: the lamp's own width, props.rs `cone_tan` - 38.21 m at the end of 16 m for the street lamps; the
-            // edge of the light, cos x 2.8058 - 1.0837 = 0; LightColor.w = 50 x m_LampGlows.w, LightFallOff 1.4;
-            // MCLA_DEBUG_VIEW=116: 2.388 for every lamp, as before)
-            let tan = if old { 38.21 / 16.0 } else { l.cone_tan };
-            cones.push((d, ConeInst { apex_h: [l.pos.x, l.pos.y, l.pos.z, len], dir_tan: [dir.x, dir.y, dir.z, tan], color_fade: [l.color.x, l.color.y, l.color.z, fade], lamp: [50.0 * colw, 2.8058, -1.0837, density] }));
+            cones.push((d, ConeInst { apex_h: [s.pos[0], s.pos[1], s.pos[2], len], dir_tan: [dir.x, dir.y, dir.z, tan], color_fade: [l.color.x, l.color.y, l.color.z, fade], lamp: [s.colour[3], s.dir[3], s.pos[3], density] }));
         }
         cones.sort_by(|a, b| b.0.total_cmp(&a.0));
         let skip = cones.len().saturating_sub(CONES);
@@ -516,5 +594,48 @@ pub fn draw(pass: &mut wgpu::RenderPass<'_>) {
         pass.set_pipeline(&r.drop_pipeline);
         pass.set_vertex_buffer(0, r.drop_buf.slice(..));
         pass.draw(0..4, 0..r.drop_count);
+    }
+}
+
+#[cfg(test)]
+mod cone_setup_tests {
+    /// F-19533 run offline whole (`tools/cone_pass_reference.py`; only the shader variable setter stubbed to print):
+    /// 1,500 lamps (the light files' direction and angles, random ones, cones past the 360 type limit, zero intensity),
+    /// every word of LightMatrix, LightPosition, LightColor, LightDirection, LightVolume and LightFallOff equal.
+    /// LightInvMatrix (F-25750's inverse) is not compared: the port's shader does not take it.
+    #[test]
+    fn cone_setup_matches_the_original() {
+        let h = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let text = include_str!("render/testdata/cone_pass_reference.txt");
+        let mut n = 0;
+        for case in text.split("CASE ").skip(1) {
+            let mut lines = case.lines();
+            let w: Vec<f32> = lines.next().unwrap().split_whitespace().map(h).collect();
+            let v4 = |i: usize| [w[i], w[i + 1], w[i + 2], w[i + 3]];
+            let got = super::cone_setup(v4(0), v4(4), v4(8), w[12], w[13], w[14], [w[15], w[16], w[17]], [w[18], w[19], w[20]]);
+            let mut sets = std::collections::HashMap::new();
+            for l in lines {
+                let t: Vec<&str> = l.split_whitespace().collect();
+                assert_eq!(t[0], "SET");
+                sets.insert(t[1].parse::<u32>().unwrap(), t[2..].iter().map(|x| u32::from_str_radix(x, 16).unwrap()).collect::<Vec<u32>>());
+            }
+            let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<u32>>();
+            let m: Vec<f32> = got.matrix.iter().flatten().copied().collect();
+            for (k, want) in [(40, bits(&m)), (8, bits(&got.pos)), (12, bits(&got.colour)), (16, bits(&got.dir)), (20, bits(&got.volume)), (48, bits(&[got.falloff]))] {
+                assert_eq!(sets[&k], want, "case {n} variable {k}: {case:.200}");
+            }
+            n += 1;
+        }
+        assert_eq!(n, 1500);
+    }
+
+    /// The street lamps' cone (ConeAngle 125, Penumbra -50, through the light table): the recorded edge
+    /// cos x 2.8058 - 1.0837 (LIGHTING.md, the lamps' cones).
+    #[test]
+    fn the_street_lamps_recorded_edge() {
+        let p = crate::props::table_penumbra(-50.0);
+        assert!((p + 50.5).abs() < 1e-4, "{p}");
+        let s = super::cone_setup([0.0; 4], [1.0, 0.75, 0.55, 0.0], [0.0, -1.0, 0.0, 0.0], 55.0, crate::props::table_half(125.0), p, [0.2, 16.0, 1.0], [1.0; 3]);
+        assert!((s.dir[3] - 2.8058).abs() < 1e-4 && (s.pos[3] + 1.0837).abs() < 1e-4, "{:?} {:?}", s.dir, s.pos);
     }
 }

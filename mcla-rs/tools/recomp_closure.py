@@ -49,12 +49,15 @@ SIMDE = Path('D:/MCLA-static/third_party/rexglue-sdk/thirdparty/simde')
 def vector_shim() -> str:
     # VectorMaskL as the SDK's intrinsics.h: row k = bytes 15..0 shifted right by k places, 0xFF filled in front
     rows = ',\n'.join(', '.join('0x%02X' % b for b in [0xFF] * k + list(range(15, k - 1, -1))) for k in range(16))
+    # VectorMaskR as the SDK's: row k = bytes k-1 .. 0, 0xFF filled behind (lvrx128 / stvrx128)
+    rows_r = ',\n'.join(', '.join('0x%02X' % b for b in list(range(k - 1, -1, -1)) + [0xFF] * (16 - k)) for k in range(16))
     prelude = (
         '#include <simde/x86/sse4.1.h>\n#include <simde/x86/ssse3.h>\n'
         'struct alignas(16) VReg { union { uint8_t u8[16]; int8_t s8[16]; uint16_t u16[8]; int16_t s16[8]; uint32_t u32[4];'
         ' int32_t s32[4]; float f32[4]; uint64_t u64[2]; double f64[2]; }; };\n'
         'typedef VReg PPCVRegister;\n'   # (vupkd3d128's scratch register)
-        'alignas(16) static uint8_t VectorMaskL[]={' + rows + '};\n')
+        'alignas(16) static uint8_t VectorMaskL[]={' + rows + '};\n'
+        'alignas(16) static uint8_t VectorMaskR[]={' + rows_r + '};\n')
     s = shim()
     s = s.replace('struct Context {', prelude + 'struct Context { VReg ' + ', '.join(f'v{i}' for i in range(128)) + ';', 1)
     s = s.replace('struct { void disableFlushMode() {} } fpscr;',
