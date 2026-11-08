@@ -106,28 +106,36 @@ pub fn parse_mesh(text: &str) -> Option<(Vec<[f32; 8]>, Vec<u32>)> {
 // ---------------------------------------------------------------------------------------
 // The rules
 
-/// A key curve as the types keep it (`rmPtfxKeyframe` at the type's +60: keys of 48 bytes, +0
-/// the time, +16 the value, +32 the slope to the next key - sub_824959F0), looked up as the draws
-/// do: the first key from the second on whose time is not below `t`, and the key before it plus
-/// its slope x (t - its time); past the last key, the last but one's line.
+/// A key curve as the types keep it (`rmPtfxKeyframe` at the type's +60: keys of 48 bytes, +0 the time, +16 the value,
+/// +32 the slope to the next key - F-18740, `key_slope`), looked up as the draws do (inline in the ice draw F-27984 and the shield draw F-17328): from the
+/// second key on, the first whose time is not below `t`; the key before it plus its slope x (t - its time), one fused
+/// multiply-add. The last key's slope is 0, so past the last key the curve holds its value.
 pub fn curve(keys: &[(f32, [f32; 2])], t: f32) -> [f32; 2] {
+    use crate::physics::exact::fma;
     let n = keys.len();
     if n == 0 {
         return [0.0; 2];
-    }
-    if n == 1 {
-        return keys[0].1;
     }
     let mut i = 1;
     while i < n && keys[i].0 < t {
         i += 1;
     }
-    let k = (i.min(n) - 1).min(n - 2);
+    let k = i - 1;
     let (t0, v0) = keys[k];
-    let (t1, v1) = keys[k + 1];
-    let d = t1 - t0;
-    let s = |a: f32, b: f32| if d > 0.0 { (b - a) / d } else { 0.0 };
-    [v0[0] + s(v0[0], v1[0]) * (t - t0), v0[1] + s(v0[1], v1[1]) * (t - t0)]
+    let s = if k + 1 < n { key_slope(t0, [v0[0], v0[1], 0.0, 0.0], keys[k + 1].0, [keys[k + 1].1[0], keys[k + 1].1[1], 0.0, 0.0]) } else { [0.0; 4] };
+    let d = t - t0;
+    [fma(s[0], d, v0[0]), fma(s[1], d, v0[1])]
+}
+
+/// The slope F-18740 stores at a key's +32: 0 unless the next key's time is above this one's, else
+/// (next value - value) x float(1 / float(t1 - t0)), channel by channel (the vector unit's subtract, then four single
+/// multiplies). `key_slope_matches_the_original`.
+pub fn key_slope(t0: f32, v0: [f32; 4], t1: f32, v1: [f32; 4]) -> [f32; 4] {
+    if !(t1 > t0) {
+        return [0.0; 4];
+    }
+    let r = 1.0 / (t1 - t0);
+    std::array::from_fn(|c| (v1[c] - v0[c]) * r)
 }
 
 /// The Ice's curve (sub_8237CCB8 0x8237CDE8..0x8237CE48): (0, 1), (0.5, 1), (1, 0) - the
@@ -1089,6 +1097,34 @@ pub fn laser_vertices(pu: &PowerUps, vehicles: &crate::vehicles::Vehicles, color
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F-18740 run offline (`tools/key_slope_reference.py`): 1,500 curves, 7,865 keys (times rising, equal, falling,
+    /// NaN / inf, values with NaN / inf): every slope word equal (the last key's and the non-rising ones cleared to 0).
+    #[test]
+    fn key_slope_matches_the_original() {
+        let t = include_str!("testdata/key_slope_reference.txt");
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let (mut curves, mut keys) = (0, 0);
+        for case in t.split("CASE ").skip(1) {
+            let lines: Vec<&str> = case.lines().collect();
+            let n: usize = lines[0].trim().parse().unwrap();
+            let k: Vec<(f32, [f32; 4])> = (0..n)
+                .map(|i| {
+                    let w: Vec<u32> = lines[1 + i].split_whitespace().skip(1).map(h).collect();
+                    (f32::from_bits(w[0]), std::array::from_fn(|c| f32::from_bits(w[1 + c])))
+                })
+                .collect();
+            for i in 0..n {
+                let w: Vec<u32> = lines[1 + n + i].split_whitespace().skip(1).map(h).collect();
+                let got = if i + 1 < n { key_slope(k[i].0, k[i].1, k[i + 1].0, k[i + 1].1) } else { [0.0; 4] };
+                let ok = got.iter().zip(&w).all(|(g, &w)| g.to_bits() == w || (g.is_nan() && f32::from_bits(w).is_nan()));
+                assert!(ok && w[4] == 0x5A5A5A5A, "curve {curves} key {i}: {:08x?} want {w:08x?}", got.map(f32::to_bits));
+                keys += 1;
+            }
+            curves += 1;
+        }
+        assert_eq!((curves, keys), (1500, 7865));
+    }
 
     #[test]
     fn curves_as_the_draws_read_them() {
