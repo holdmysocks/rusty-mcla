@@ -40,21 +40,31 @@ pub fn events(scene: &str) -> Option<PreraceEvents> {
 #[derive(Default)]
 pub struct GridTable {
     pub lists: Vec<(String, Vec<String>)>,
+    /// each grid's integer key (`Grid <name> <key>`), by place
+    pub keys: Vec<i32>,
+    /// the South Central table was loaded (the mapper's +28: the `_lr_` sub-lists apply)
+    pub sc: bool,
 }
 
 impl GridTable {
     pub fn load(data_dir: &str) -> GridTable {
         let dir = std::path::Path::new(data_dir).join("tune/cutscene");
-        let text = std::fs::read_to_string(dir.join("racestartgridmapping_sc.tbl")).or_else(|_| std::fs::read_to_string(dir.join("racestartgridmapping.tbl"))).unwrap_or_default();
-        GridTable::parse(&text)
+        match std::fs::read_to_string(dir.join("racestartgridmapping_sc.tbl")) {
+            Ok(t) => GridTable { sc: true, ..GridTable::parse(&t) },
+            Err(_) => GridTable::parse(&std::fs::read_to_string(dir.join("racestartgridmapping.tbl")).unwrap_or_default()),
+        }
     }
 
     pub fn parse(text: &str) -> GridTable {
         let mut lists: Vec<(String, Vec<String>)> = Vec::new();
+        let mut keys: Vec<i32> = Vec::new();
         for line in text.lines() {
             let mut w = line.split_whitespace();
             match (w.next(), w.next()) {
-                (Some("Grid"), Some(name)) => lists.push((name.to_string(), Vec::new())),
+                (Some("Grid"), Some(name)) => {
+                    keys.push(w.next().and_then(|k| k.parse().ok()).unwrap_or(lists.len() as i32));
+                    lists.push((name.to_string(), Vec::new()));
+                }
                 (Some("Cutscene"), Some(script)) => {
                     if let Some(l) = lists.last_mut() {
                         let name = script.rsplit('/').next().unwrap_or(script).to_ascii_lowercase();
@@ -64,7 +74,12 @@ impl GridTable {
                 _ => {}
             }
         }
-        GridTable { lists }
+        GridTable { lists, keys, sc: false }
+    }
+
+    /// The place of the grid with integer key `key` (F-24279 searches the entries for it).
+    pub fn place_of_key(&self, key: i32) -> Option<usize> {
+        self.keys.iter().position(|&k| k == key)
     }
 
     /// The table key of a grid name (its place in the table), case blind.
@@ -86,76 +101,148 @@ pub struct PickArgs {
     pub front_lr: bool,
 }
 
-/// The original's start-scene picker. Each list is a shuffle bag (sub_823BE020 / sub_823C01C8): every scene
-/// once per round, and a fresh round does not open with the scene that closed the last one. A taunt scene
-/// (table key 7) comes for a first race, otherwise on a draw <= 0.333 - never on grid key 0 (1x1); in the
-/// `_sc` table a `_lr_` car in front (and not camOnly) limits grids 1..5 to their first five scenes and the
-/// taunts to their first four. Nothing else filters (no racer count, time, weather, district).
+/// The original's start-scene picker (docs: cutscenes/prerace_pick.md). Each list is a shuffle bag (order,
+/// cursor), shuffled once at load in table order (F-75403 -> F-11038) and drawn by F-27986: every scene once
+/// per round, and a fresh round does not open with the scene that closed the last one. The taunt draw is
+/// always taken (one step of the generator, F-10331); a taunt (key 7) comes for a first race or a draw
+/// <= 0.333, never on key 0 (1x1); in the `_sc` table a `_lr_` car in front (and not camOnly) limits places
+/// 1..5 to their first five scenes and the taunts to their first four (F-24279 -> F-96888). camOnly skips
+/// names with `_racestarter_` (none in the tables). The generator is the original's MWC arithmetic
+/// (0x82860880, a = 0x5CDCFAA7); approx.: its seed and the other functions drawing from it in the original
+/// are not followed - the picker owns it.
 pub struct Picker {
     table: GridTable,
-    bags: std::collections::HashMap<usize, (Vec<usize>, usize)>,
-    rng: u32,
+    bags: Vec<(Vec<u32>, usize)>,
+    rng: crate::vehicles::parked::Mwc,
 }
 
 impl Picker {
     pub fn new(table: GridTable, seed: u32) -> Picker {
-        Picker { table, bags: Default::default(), rng: seed | 1 }
+        let bags = table.lists.iter().map(|l| ((0..l.1.len() as u32).collect(), 0)).collect();
+        let mut p = Picker { table, bags, rng: crate::vehicles::parked::Mwc { lo: seed, carry: 1 } };
+        for k in 0..p.bags.len() {
+            p.shuffle(k);
+        }
+        p
     }
 
-    fn rand(&mut self) -> f32 {
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 17;
-        self.rng ^= self.rng << 5;
-        (self.rng >> 8) as f32 / (1u32 << 24) as f32
+    /// F-11038: order[i] = i, then each order[i] swapped with order[(lo & 0x7FFFFFFF) % n]; cursor 0.
+    fn shuffle(&mut self, k: usize) {
+        let n = self.bags[k].0.len();
+        for i in 0..n {
+            self.bags[k].0[i] = i as u32;
+        }
+        for i in 0..n {
+            let j = self.rng.index(n as u32) as usize;
+            self.bags[k].0.swap(i, j);
+        }
+        self.bags[k].1 = 0;
     }
 
-    fn below(&mut self, n: usize) -> usize {
-        ((self.rand() * n as f32) as usize).min(n.saturating_sub(1))
+    /// F-14689: the first m = min(lim + 1, n) places set to 0 .. m - 1 and each swapped with one of them
+    /// (the places after keep what they held); cursor 0.
+    fn shuffle_first(&mut self, k: usize, lim: usize) {
+        let n = self.bags[k].0.len();
+        let m = (lim + 1).min(n);
+        for i in 0..m {
+            self.bags[k].0[i] = i as u32;
+        }
+        let d = lim.min(n - 1) + 1;
+        for i in 0..m {
+            let j = self.rng.index(d as u32) as usize;
+            self.bags[k].0.swap(i, j);
+        }
+        self.bags[k].1 = 0;
     }
 
-    /// The next scene of list `key` from its bag; `limit` draws among the first `limit` scenes instead
-    /// (the `_lr_` rule; how the original's bag serves it is not read - uniform here).
-    fn draw(&mut self, key: usize, limit: Option<usize>) -> Option<String> {
-        let n = self.table.lists.get(key)?.1.len();
+    fn name(&self, k: usize, i: u32) -> Option<String> {
+        self.table.lists[k].1.get(i as usize).cloned()
+    }
+
+    /// F-27986: the scene at the cursor; then (n > 1) the cursor steps on, and at the end of the round the bag
+    /// is shuffled again and, if it opens with the round's last scene, its first two swap.
+    fn draw(&mut self, k: usize) -> Option<String> {
+        let n = self.bags[k].0.len();
         if n == 0 {
             return None;
         }
-        if let Some(l) = limit {
-            let i = self.below(l.min(n));
-            return Some(self.table.lists[key].1[i].clone());
-        }
-        let (mut order, mut at) = self.bags.remove(&key).unwrap_or_default();
-        if order.len() != n || at >= n {
-            let last = if order.len() == n { order.last().copied() } else { None };
-            order = (0..n).collect();
-            for i in (1..n).rev() {
-                let j = self.below(i + 1);
-                order.swap(i, j);
+        let cur = self.bags[k].0[self.bags[k].1];
+        if n > 1 {
+            self.bags[k].1 += 1;
+            if self.bags[k].1 >= n {
+                let last = self.bags[k].0[n - 1];
+                self.shuffle(k);
+                if self.bags[k].0[0] == last {
+                    self.bags[k].0.swap(0, 1);
+                }
             }
-            if n > 1 && last == Some(order[0]) {
-                let j = 1 + self.below(n - 1);
-                order.swap(0, j);
-            }
-            at = 0;
         }
-        let i = order[at];
-        self.bags.insert(key, (order, at + 1));
-        Some(self.table.lists[key].1[i].clone())
+        self.name(k, cur)
+    }
+
+    /// F-96888: a draw among places 0 ..= lim. A scene at the cursor within them steps the cursor on (a round
+    /// of min(lim + 1, n)); one beyond them, or the round's end, shuffles the first places again (F-14689,
+    /// the swap against the old order[min(lim, n - 1)]), and a scene beyond them gives order[lim].
+    fn draw_limited(&mut self, k: usize, lim: usize) -> Option<String> {
+        let n = self.bags[k].0.len();
+        if n == 0 {
+            return None;
+        }
+        let cur = self.bags[k].0[self.bags[k].1];
+        if n <= 1 {
+            return self.name(k, cur);
+        }
+        let mut stay = false;
+        if cur as usize <= lim {
+            self.bags[k].1 += 1;
+            stay = self.bags[k].1 < (lim + 1).min(n);
+        }
+        if !stay {
+            let last = self.bags[k].0[lim.min(n - 1)];
+            self.shuffle_first(k, lim);
+            if self.bags[k].0[0] == last {
+                self.bags[k].0.swap(0, 1);
+            }
+        }
+        if cur as usize > lim {
+            let i = self.bags[k].0[lim];
+            return self.name(k, i);
+        }
+        self.name(k, cur)
     }
 
     /// The scene to play, or None (the original then runs `Game/RaceTypes/generic_countdown`: an unknown
-    /// grid such as `16_Race_Grid`).
+    /// grid such as `16_Race_Grid`). Safety (SafetyCam 1) is its own native (F-35574): a plain draw.
     pub fn pick(&mut self, a: &PickArgs) -> Option<String> {
-        let grid = self.table.key(&a.grid)?;
-        let safety = a.grid.eq_ignore_ascii_case("Safety");
-        let taunt = !safety && grid != 0 && (a.first_race || self.rand() <= 0.333);
-        let key = if taunt { self.table.key("Taunt").unwrap_or(grid) } else { grid };
-        let limit = if a.front_lr && !a.cam_only {
-            if taunt { Some(4) } else if (1..=5).contains(&grid) { Some(5) } else { None }
-        } else {
-            None
-        };
-        self.draw(key, limit)
+        if a.grid.eq_ignore_ascii_case("Safety") {
+            let k = self.table.key("Safety")?;
+            return self.draw(k);
+        }
+        // (F-10331: the draw first, whatever the grid; the debug params forcepreracetaunt /
+        // disablepreracetaunt are off and no network session runs)
+        let r = self.rng.float();
+        let grid = self.table.key(&a.grid).map(|p| self.table.keys[p]);
+        let taunt = (a.first_race || !(r > 0.333f32)) && grid.map_or(false, |g| g != 0);
+        let key = if taunt { 7 } else { grid? };
+        let k = self.table.place_of_key(key)?;
+        if a.cam_only {
+            for _ in 0..self.bags[k].0.len() {
+                let s = self.draw(k)?;
+                if !s.contains("_racestarter_") {
+                    return Some(s);
+                }
+            }
+            return None;
+        }
+        if self.table.sc && a.front_lr {
+            if (1..6).contains(&k) {
+                return self.draw_limited(k, 4);
+            }
+            if k == 7 {
+                return self.draw_limited(k, 3);
+            }
+        }
+        self.draw(k)
     }
 
     /// The list of a grid, as the table has it (test hooks).
@@ -854,6 +941,40 @@ pub const PRERACE_EVENTS: [PreraceEvents; 136] = [
 mod tests {
     use super::*;
 
+    /// The bags against the original run offline (tools/prerace_bag_reference.py: F-11038's shuffle, then 40
+    /// draws of F-27986 or F-96888 per case, 3,000 cases): every pick, the order words, the cursor and the
+    /// generator's two words equal.
+    #[test]
+    fn bags_match_the_original() {
+        let text = include_str!("testdata/prerace_bag_ref.txt");
+        let mut cases = 0;
+        for line in text.lines() {
+            let (head, tail) = line.split_once(" -> ").unwrap();
+            let h: Vec<&str> = head.split(' ').collect();
+            let n: usize = h[0].parse().unwrap();
+            let lo = u32::from_str_radix(h[1], 16).unwrap();
+            let carry = u32::from_str_radix(h[2], 16).unwrap();
+            let ops: Vec<i32> = h[3].split(',').map(|x| x.parse().unwrap()).collect();
+            let (picks, state) = tail.split_once(" | ").unwrap();
+            let want: Vec<usize> = picks.split(',').map(|x| x.parse().unwrap()).collect();
+            let st: Vec<&str> = state.split(' ').collect();
+            let order: Vec<u32> = st[0].split(',').map(|x| x.parse().unwrap()).collect();
+            let table = GridTable { lists: vec![("G".into(), (0..n).map(|i| format!("s{}", i)).collect())], keys: vec![0], sc: false };
+            let mut p = Picker { table, bags: vec![(vec![0; n], 0)], rng: crate::vehicles::parked::Mwc { lo, carry } };
+            p.shuffle(0);
+            let got: Vec<usize> = ops.iter().map(|&o| {
+                let s = if o < 0 { p.draw(0) } else { p.draw_limited(0, o as usize) };
+                s.unwrap()[1..].parse().unwrap()
+            }).collect();
+            assert_eq!(got, want, "{}", line);
+            assert_eq!(p.bags[0].0, order, "{}", line);
+            assert_eq!(p.bags[0].1, st[1].parse::<usize>().unwrap(), "{}", line);
+            assert_eq!((p.rng.lo, p.rng.carry), (u32::from_str_radix(st[2], 16).unwrap(), u32::from_str_radix(st[3], 16).unwrap()), "{}", line);
+            cases += 1;
+        }
+        assert_eq!(cases, 3000);
+    }
+
     #[test]
     fn prerace_scene_events() {
         // (values as in the scripts; the AROUND HOLLYWOOD recording's placement -> GO 11.7 s fits a
@@ -890,7 +1011,7 @@ mod tests {
         // the bag: every scene once per round, no repeat across the round's seam
         let mut q = Picker::new(GridTable::parse(tbl), 99);
         let k = q.table.key("4x2_Race_Grid").unwrap();
-        let seen: Vec<String> = (0..30).map(|_| q.draw(k, None).unwrap()).collect();
+        let seen: Vec<String> = (0..30).map(|_| q.draw(k).unwrap()).collect();
         for r in seen.chunks(3) {
             let mut v = r.to_vec();
             v.sort();
