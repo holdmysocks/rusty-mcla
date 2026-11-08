@@ -8529,7 +8529,7 @@ impl Game {
                                 None => [[0.0, 0.0, 100.0]; 3],
                             };
                             let names: Vec<crate::flash_ui::MenuRow> = list_cars.iter().map(|&i| if let Some(k) = crate::modgarage::placeholder(i) { crate::flash_ui::MenuRow { label: self.mod_missing_label(k), value: String::new(), enabled: false, part: None } } else { crate::flash_ui::MenuRow { label: { let d = self.dir_name(i).to_ascii_lowercase(); self.career.strings.get(&format!("{d}_shrt")).or_else(|| self.career.strings.get(&d)).map(|v| v.to_uppercase()).unwrap_or_else(|| self.car_name(i).to_uppercase()) }, value: String::new(), enabled: true, part: None } }).collect();
-                            let title = if showroom { st2("G_Showroom", "VEHICLE SHOWROOM") } else { st2("G_ManageRides", "MANAGE VEHICLES") };
+                            let title = if showroom { st2("gShowroom", "VEHICLE SHOWROOM") } else { st2("gManage", "MANAGE VEHICLES") };
                             // (the showroom's carousel wants each vehicle's id and whether it is for sale)
                             let ids: Vec<(i32, bool)> = if showroom && std::env::var("MCLA_SHOWROOM_LIST").is_err() { list_cars.iter().map(|&i| (mcla_formats::hash::joaat(&self.dir_name(i).to_ascii_lowercase()) as i32, self.rep >= self.price_of(i).1 || std::env::var("MCLA_UNLOCK_ALL").is_ok())).collect() } else { Vec::new() };
                             (MenuLayout::Vehicles { details, meters, value_label: if showroom { "PRICE:".to_string() } else { st2("G_Trade_In_Value", "TRADE IN VALUE:") }, ids }, names, sel, title)
@@ -8579,7 +8579,7 @@ impl Game {
                                         r.value = choice_list(self.paint_parts as usize, &[st("P_WholeCar", "ALL PARTS"), st("P_PartsSeparately", "PARTS")]);
                                     }
                                     "PAINT AREA" => {
-                                        r.label = st("G_PaintArea", "PAINT AREA");
+                                        r.label = st("Paint Area", "PAINT AREA"); // (Paint.sc.xml state PaintArea's desc)
                                         r.value = choice_list(self.paint_area.min(5), &areas);
                                     }
                                     "PAINT TYPE" => r.value = choice_list((self.paint_type.clamp(1, 5) - 1) as usize, &types),
@@ -8718,7 +8718,7 @@ impl Game {
                             let has = self.mc4_vinyl_has_layers();
                             let row = |k: &str, d: &str, on: bool| crate::flash_ui::MenuRow { label: st(k, d), value: String::new(), enabled: on, part: None };
                             vinyl_flat = true;
-                            rows = vec![row("VE_VinylPackages", "VINYL PACKAGES", true), row("VE_CreateEditVinyls", "CREATE/EDIT VINYLS", true), row("VE_RemoveAllVinyls", "REMOVE ALL VINYLS", has), row("VE_SaveAsVinylPackage", "STORE VINYL PACKAGES", has), row("VE_ExitVinylEditor", "EXIT VINYL EDITOR", true)];
+                            rows = vec![row("VE_SelectVinylPackage", "VINYL PACKAGES", true), row("VE_CreateEditVinyls", "CREATE/EDIT VINYLS", true), row("VE_RemoveAllVinyls", "REMOVE ALL VINYLS", has), row("VE_SaveAsVinylPackage", "STORE VINYL PACKAGES", has), row("VE_ExitVinylEditor", "EXIT VINYL EDITOR", true)];
                             // (step 22: the STORE VINYL PACKAGES page, `VinylPresetSave`)
                             if let Some(sel) = self.car_x.vinyl_save {
                                 rows = (1..=3).map(|k| row(&format!("VE_Preset{k}"), &format!("PACKAGE {k}"), true)).collect();
@@ -8732,7 +8732,7 @@ impl Game {
                             flash_sel = sel;
                             MenuLayout::VinylPackages { vehicle: mcla_formats::hash::joaat(&self.model_name(self.current_car).to_ascii_lowercase()) as i32 }
                         });
-                        let title = if pkg_layout.is_some() { "VINYL PACKAGES".to_string() } else if vinyl_menu && self.car_x.vinyl_save.is_some() { st("VE_SaveAsVinylPackage", "STORE VINYL PACKAGES") } else { title.to_string() };
+                        let title = if pkg_layout.is_some() { st("VE_SelectVinylPackage", "VINYL PACKAGES") } else if vinyl_menu && self.car_x.vinyl_save.is_some() { st("VE_SaveAsVinylPackage", "STORE VINYL PACKAGES") } else { title.to_string() };
                         let cart_layout = self.cart_open.map(|sel| {
                             let list: Vec<Slot> = CUSTOM_SLOTS.iter().copied().filter(|s| !self.part_is_owned(self.current_car, *s, self.cfg.get(*s))).collect();
                             let mut total = 0i64;
@@ -8745,7 +8745,7 @@ impl Game {
                                 })
                                 .collect();
                             flash_sel = sel.min(rows.len().saturating_sub(1));
-                            MenuLayout::Cart { total, label: st("G_Total", "TOTAL:") }
+                            MenuLayout::Cart { total, label: st("G_SC_Total", "TOTAL:") } // (`sc_totaltxt`, set by the cart fill F-65229)
                         });
                         let title = if cart_layout.is_some() { st("G_Shopping_Cart", "CART") } else { title };
                         // LICENSE PLATES (template 45, reference `g_lp_0`): the seven characters, the one
@@ -9018,7 +9018,7 @@ impl Game {
                             // (the paint shop: BACK alone; on a colour CHANGE COLOR, on its strip
                             // ACCEPT / EDIT / RESET COLOR SLOT, in the picker CHANGE COLOR on the stick)
                             if self.vinyl_pkg.is_some() {
-                                prompts = vec![(st("prompt_apply", "APPLY"), ICON_A), (st("prompt_back", "BACK"), ICON_B)];
+                                prompts = vec![(st("VE_ApplyPreset", "APPLY"), ICON_A), (st("prompt_back", "BACK"), ICON_B)]; // (prompt 147 of F-40654, Vinyls.sc.xml Vinyl_Preset_Selection)
                             }
                             if self.cart_open.is_some() {
                                 prompts = vec![(st("prompt_back", "BACK"), ICON_B), (st("G_Pay_And_Checkout", "PAY AND CHECK OUT"), ICON_A), (st("G_Remove_Item", "REMOVE ITEM"), ICON_X), (st("G_Remove_All_Items", "REMOVE ALL ITEMS"), crate::flash_ui::ICON_Y)];
@@ -14765,7 +14765,7 @@ impl Game {
             } else if series.is_some() {
                 vec![st("CURRENT_HEADER", "POS."), st("NAME_HEADER", "NAME"), st("TIME_HEADER", "TIME"), st("WINS_HEADER", "WINS")]
             } else {
-                vec![st("Leaderboard_Name", "NAME"), st("Leaderboard_Time", "TIME")]
+                vec![st("NAME_HEADER", "NAME"), st("TIME_HEADER", "TIME")] // (RaceoverMenu.sc.xml Local_RESULTS: fs_headers1 / 2)
             };
             MenuPage {
                 layout: MenuLayout::Results { headers, cells: cells.clone() },
@@ -14834,7 +14834,7 @@ impl Game {
 /// of a vehicle's record, in its order. (approx.) FRONT BUMPER's and REAR BUMPER's views
 /// are chosen by eye from the view list.
 pub const PAINT_AREAS: [(&str, &str, &[&str], &str); 6] = [
-    ("P_MainBody", "MAIN BODY", &[], "FrontHighClose"),
+    ("P_Body", "MAIN BODY", &[], "FrontHighClose"),
     ("P_Doors", "DOORS", &["doors"], "LeftFrontQuarter"),
     ("P_Hood", "HOOD", &["hood"], "FrontHighClose"),
     ("P_FrontBumper", "FRONT BUMPER", &["bumper_f"], "FrontLowClose"),
@@ -15342,7 +15342,7 @@ impl Game {
             0 => (
                 st("pause_choose_race_type", "Choose race type:"),
                 shown.iter().map(|i| TYPES[*i]).map(|(_, k, d)| MenuRow { label: up_st(k, d), value: String::new(), enabled: true, part: None }).collect(),
-                vec![(up_st("prompt_accept", "ACCEPT"), ICON_A), (up_st("prompt_back", "BACK"), ICON_B), (up_st("prompt_information", "INFORMATION"), ICON_BACK_BUTTON)],
+                vec![(up_st("prompt_accept", "ACCEPT"), ICON_A), (up_st("prompt_back", "BACK"), ICON_B), (up_st("prompt_GameMode_Info", "INFORMATION"), ICON_BACK_BUTTON)], // (prompt 59 of F-40654, ArcadeProxy.sc.xml)
             ),
             1 => (
                 st("pause_choose_race", "Choose race:"),
@@ -15461,6 +15461,7 @@ pub fn garage_key(menu: &str, label: &str) -> Option<&'static str> {
         ("", "COLOR") => "G_IntColor",
         ("", "INTERIOR COLORS") => "G_InteriorColors",
         ("", "MATERIALS/PAINT") => "G_RimMatColorMenu",
+        ("", "COLOR PICKER") => "Color Picker",
         // (GARAGE_TOP_MENU)
         ("GARAGE", "MANAGE VEHICLES") => "gManage",
         ("GARAGE", "CUSTOMIZE VEHICLE") => "gCustomize",
