@@ -183,13 +183,42 @@ impl Slots {
 /// 0.0884), (-0.6632, -0.1004, 1.2289), translation (844.8096, 21.7942, -819.5342) for the garage
 /// at (844.728, 18.28, -819.383).
 pub fn frame(t: &MarkTune, fwd: Vec3, pos: Vec3) -> Mat4 {
-    let f = fwd.normalize_or_zero();
-    let r = f.cross(Vec3::Y).normalize_or_zero();
-    let u = r.cross(f).normalize_or_zero();
-    let s = t.icon_scale;
-    let (x, y, z) = (r * s, u * s, f * s);
-    let p = pos + LIFT + x * t.icon_pivot.x + y * t.icon_pivot.y + z * t.icon_pivot.z;
-    Mat4::from_cols(x.extend(0.0), y.extend(0.0), z.extend(0.0), p.extend(1.0))
+    let p = pos + LIFT;
+    let o = frame_exact((-fwd).extend(0.0).to_array(), t.icon_scale, t.icon_pivot.extend(0.0).to_array(), p.extend(1.0).to_array());
+    let row = |i: usize, w: f32| Vec3::from_slice(&o[i][..3]).extend(w);
+    Mat4::from_cols(row(0, 0.0), row(1, 0.0), row(2, 0.0), row(3, 1.0))
+}
+
+/// F-90213 itself, lane for lane in the vector unit's arithmetic (`physics::artic::V4`: flushed, two roundings a
+/// vmaddfp): f = 0 - the camera's row +96, right = f x (0, 1, 0) and up = right x f in its permute / vnmsubfp form, each
+/// made unit by vmsum3fp, vrsqrtefp (an infinite estimate replaced by 0) and one Newton step (y + (1 - l2 y^2)(0.5 y));
+/// the rows (right, up, f) times the scale (slot +132), the last row the place plus the scaled pivot (slot +144) along
+/// them. Checked offline on 4,000 cases (tools/icon_frame_reference.py, test icon_frame_matches_the_original).
+pub fn frame_exact(row96: [f32; 4], scale: f32, pivot: [f32; 4], pos: [f32; 4]) -> [[f32; 4]; 4] {
+    use crate::physics::artic::V4;
+    let (zero, one, half, inf) = (V4::ZERO, V4::splat(1.0), V4::splat(0.5), V4::splat(f32::INFINITY));
+    let unit = |v: V4| {
+        let l2 = v.dot3(v);
+        let est = l2.rsqrte();
+        let e = est.sel(zero, est.eq(inf));
+        let k = l2.nmsub(e.mul(e), one).madd(half.mul(e), e);
+        v.mul(k)
+    };
+    let f = zero.sub(V4(row96));
+    let c = V4::new(0.0, 1.0, 0.0, 0.0);
+    let (f_yzx, f_zxy) = (f.permwi(99), f.permwi(135));
+    let r = unit(c.permwi(99).nmsub(f_zxy, c.permwi(135).mul(f_yzx)));
+    let u = unit(f_yzx.nmsub(r.permwi(135), f_zxy.mul(r.permwi(99))));
+    let s = V4::splat(scale);
+    let p = zero.add(V4(pivot)).mul(s);
+    let rows = [V4::new(1.0, 0.0, 0.0, 0.0).mul(s), V4::new(0.0, 1.0, 0.0, 0.0).mul(s), V4::new(0.0, 0.0, 1.0, 0.0).mul(s)];
+    let sp = |v: V4, i: usize| V4::splat(v.0[i]);
+    let mut out = [[0.0f32; 4]; 4];
+    for (k, m) in rows.iter().enumerate() {
+        out[k] = f.madd(sp(*m, 2), u.madd(sp(*m, 1), r.mul(sp(*m, 0)))).0;
+    }
+    out[3] = f.madd(sp(p, 2), u.madd(sp(p, 1), r.madd(sp(p, 0), V4(pos)))).0;
+    out
 }
 
 /// `F-44647` as the feeder uses it: the colour clamped to 0..1, times 255, truncated; the
@@ -548,6 +577,36 @@ mod tests {
         assert!((row(1) - Vec3::new(-0.0477, 1.3964, 0.0884)).length() < 2e-3, "{:?}", row(1));
         assert!((row(2) - Vec3::new(-0.6632, -0.1004, 1.2289)).length() < 2e-3, "{:?}", row(2));
         assert!((row(3) - Vec3::new(844.8096, 21.7942, -819.5342)).length() < 3e-3, "{:?}", row(3));
+    }
+
+    #[test]
+    fn icon_frame_matches_the_original() {
+        // (F-90213 run offline on 4,000 camera rows / scales / pivots / places: tools/icon_frame_reference.py)
+        let (mut n, mut skipped) = (0, 0);
+        let mut bad = Vec::new();
+        for line in include_str!("testdata/icon_frame_ref.txt").lines().filter(|l| l.starts_with("c ")) {
+            let (a, b) = line[2..].split_once(" | ").unwrap();
+            let w: Vec<u32> = a.split(' ').map(|h| h.parse().unwrap()).collect();
+            let want: Vec<u32> = b.split(' ').map(|h| h.parse().unwrap()).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            // (a camera row of 1e-20: right's squared length is subnormal - the console's vector unit flushes it to 0, the
+            // zero-length branch, which V4 models; the recomp's host runs without the flush and makes NaN. Never a camera's.)
+            if f(0).abs() < 1e-18 && f(1) == 0.0 && f(2) == 0.0 && f(0) != 0.0 {
+                skipped += 1;
+                continue;
+            }
+            let o = frame_exact([f(0), f(1), f(2), f(3)], f(4), [f(5), f(6), f(7), f(8)], [f(9), f(10), f(11), f(12)]);
+            let got: Vec<u32> = o.iter().flatten().map(|x| x.to_bits()).collect();
+            let same = got.iter().zip(&want).all(|(g, w)| g == w || (f32::from_bits(*g).is_nan() && f32::from_bits(*w).is_nan()));
+            if !same {
+                bad.push(format!("{line}
+  diff lanes {:?}", got.iter().zip(&want).enumerate().filter(|(_, (g, w))| g != w).map(|(i, (g, w))| (i, *g as i64 - *w as i64)).collect::<Vec<_>>()));
+            }
+            n += 1;
+        }
+        assert!(bad.is_empty(), "{} of {n}: {}", bad.len(), bad[..bad.len().min(3)].join("
+"));
+        assert_eq!((n, skipped), (3996, 4));
     }
 
     /// The movie in the port's player: the garage icon fed 25 m away for two seconds; prints the
