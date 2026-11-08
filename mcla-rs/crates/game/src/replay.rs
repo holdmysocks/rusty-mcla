@@ -406,12 +406,6 @@ impl CarView {
     fn c(&self) -> Vec3 {
         self.rot * Vec3::Z
     }
-    /// the heading the helicopter turns its offset by: acos(c.z), negative when c.x < 0
-    fn heading(&self) -> f32 {
-        let c = self.c();
-        let h = c.z.clamp(-1.0, 1.0).acos();
-        if c.x < 0.0 { -h } else { h }
-    }
 }
 
 /// The original's random numbers (0x82860880): a multiply-with-carry generator; a shot's
@@ -435,10 +429,6 @@ impl Mwc {
     }
     fn u23(&mut self) -> f32 {
         (self.next() & 0x7F_FFFF) as f32
-    }
-    /// [0, 1)
-    fn unit(&mut self) -> f32 {
-        self.u23() * 1.192_09e-7
     }
     /// F-66400 with its mean and deviation: the original's arithmetic (2^-22, s = fma(second, second, first^2), the game's own logarithm,
     /// the result fma(value, deviation, mean)); the same routine as `VehState::random_normal`, checked there against the original's code
@@ -491,6 +481,179 @@ fn stick_byte(b: u8) -> f32 {
     ((b as f32 - 127.5) * (1.0 / 127.0)).max(-1.0).min(1.0)
 }
 
+/// fmadds as the recomp evaluates it: the fused product-sum in double, then rounded to single
+fn fmadds(a: f32, b: f32, c: f32) -> f32 {
+    (a as f64).mul_add(b as f64, c as f64) as f32
+}
+
+/// vmsum3fp128 as the recomp's dpps: (0 + z) + (y + x)
+fn dp3(a: Vec3, b: Vec3) -> f32 {
+    (0.0 + a.z * b.z) + (a.y * b.y + a.x * b.x)
+}
+
+/// a point (w = 1) through matrix rows by vmsum4fp128 over the transposed rows: (place + z c) + (y b + x a)
+fn xform(p: Vec3, m: &[Vec3; 4]) -> Vec3 {
+    let k = |i: usize| (m[3][i] + p.z * m[2][i]) + (p.y * m[1][i] + p.x * m[0][i]);
+    Vec3::new(k(0), k(1), k(2))
+}
+
+/// a x b as the vector unit forms it: -(b.yzx a.zxy - b.zxy a.yzx) (vpermwi products, vnmsubfp: the difference negated,
+/// which keeps the original's signs of zero)
+fn vcross(a: Vec3, b: Vec3) -> Vec3 {
+    -(Vec3::new(b.y * a.z, b.z * a.x, b.x * a.y) - Vec3::new(b.z * a.y, b.x * a.z, b.y * a.x))
+}
+
+/// the scalar unit's reciprocal square root: the recomp's estimate (exact 1 / sqrt, single) and two Newton steps in double; 0 for x <= 0
+fn rsqrt2(x: f32) -> f32 {
+    let nd = x as f64;
+    let y0 = (1.0 / nd.sqrt()) as f32 as f64;
+    let y1 = (-(y0 * y0).mul_add(nd, -1.0)).mul_add(y0 * 0.5, y0);
+    let y2 = (-(y1 * y1).mul_add(nd, -1.0)).mul_add(y1 * 0.5, y1);
+    if -nd >= 0.0 { 0.0 } else { y2 as f32 }
+}
+
+/// F-97951 look-at (rows a, b, c from a direction and an up): c = dir by the vector unit's one-step reciprocal square root
+/// (render::plane_scale), a = up x c the same, b = c x a
+fn look_rows(dir: Vec3, up: Vec3) -> [Vec3; 3] {
+    let c = dir * crate::render::plane_scale(dp3(dir, dir));
+    let a0 = vcross(up, c);
+    let a = a0 * crate::render::plane_scale(dp3(a0, a0));
+    [a, vcross(c, a), c]
+}
+
+/// the squared length in the two orders the re-orthonormaliser uses: (y y, + x x, + z z) and (z z, + y y, + x x)
+fn len2_yxz(v: Vec3) -> f32 {
+    fmadds(v.z, v.z, fmadds(v.x, v.x, v.y * v.y))
+}
+fn len2_zyx(v: Vec3) -> f32 {
+    fmadds(v.x, v.x, fmadds(v.y, v.y, v.z * v.z))
+}
+
+/// F-41334: normalise with a floor (1e-5 on the squared length): `fallback` below it
+fn norm_or(v: Vec3, fallback: Vec3) -> Vec3 {
+    let n = len2_yxz(v);
+    if n > f32::from_bits(0x3727_c5ac) { v * rsqrt2(n) } else { fallback }
+}
+
+/// F-46571: the rows made orthonormal again: c normalised (else z), a = b x c normalised (else y x c, else b x z
+/// normalised, else x), b = c x a
+fn orthonormal(m: &mut [Vec3; 3]) {
+    let eps = f32::from_bits(0x3727_c5ac);
+    let c = norm_or(m[2], Vec3::Z);
+    let a0 = vcross(m[1], c);
+    let n = len2_yxz(a0);
+    let a = if n > eps {
+        a0 * rsqrt2(n)
+    } else {
+        let a1 = vcross(Vec3::Y, c);
+        let n1 = len2_zyx(a1);
+        if n1 > eps { a1 * rsqrt2(n1) } else { norm_or(vcross(m[1], Vec3::Z), Vec3::X) }
+    };
+    *m = [a, vcross(c, a), c];
+}
+
+/// the car as the helicopter reads it: its matrix rows (a, b, c, place) and velocity (car +400)
+struct HeliCar {
+    m: [Vec3; 4],
+    vel: Vec3,
+}
+
+impl HeliCar {
+    fn of(car: &CarView) -> HeliCar {
+        HeliCar { m: [car.rot * Vec3::X, car.rot * Vec3::Y, car.rot * Vec3::Z, car.pos], vel: car.vel }
+    }
+    /// acos(c.z) through the guest's double arccosine (F-68873), negative when c.x < 0
+    fn heading(&self) -> f32 {
+        let h = crate::physics::exact::guest_acos(self.m[2].z as f64) as f32;
+        if self.m[2].x < 0.0 { -h } else { h }
+    }
+}
+
+impl Heli {
+    fn rows16(&self) -> [f32; 16] {
+        let mut r = [0.0; 16];
+        for i in 0..3 {
+            r[4 * i..4 * i + 3].copy_from_slice(&self.m[i].to_array());
+        }
+        r[12..15].copy_from_slice(&self.place.to_array());
+        r
+    }
+
+    /// F-79727 (activate): the polar camera's activate on this object first (its two draws; what it sets is replaced),
+    /// the angle fma(u, k, pi/40), the lens fma((most - least) u, 2^-23, least), the side bit, the place about the target
+    /// along the car's heading, the look-at rows made orthonormal, then the zoom timer
+    fn activate(rng: &mut Mwc, tune: &CamTune, car: &HeliCar) -> Heli {
+        rng.next();
+        rng.next();
+        let t = xform(TARGET, &car.m);
+        let angle = fmadds(rng.u23(), f32::from_bits(0x34aa_e714), f32::from_bits(0x3da0_d97c));
+        let (lo, hi) = (tune.heli_fov[0], tune.heli_fov[1]);
+        let fov = fmadds((hi - lo) * rng.u23(), f32::from_bits(0x3400_0000), lo);
+        let side = rng.next() & 1 != 0;
+        let a = if side { angle } else { -angle };
+        let place = crate::aiv::rot_y(HELI_OFFSET, a + car.heading()) + t;
+        let mut m = look_rows(place - t, Vec3::Y);
+        orthonormal(&mut m);
+        let zoom = rng.length(tune.heli_cut);
+        Heli { m, place, vel: car.vel, fov, goal: fov, angle, side, zoom }
+    }
+
+    /// F-48462 (update): the zoom timer and a new lens goal, the side from the car's a row, the chase acceleration
+    /// capped at HELI_ACCEL, the turn as a slerp of the rows' quaternions towards the look-at, the lens towards its goal
+    fn update(&mut self, rng: &mut Mwc, tune: &CamTune, car: &HeliCar, dt: f32) {
+        self.zoom -= dt;
+        if self.zoom < 0.0 {
+            self.zoom = rng.length(tune.heli_cut);
+            let (lo, hi) = (tune.heli_fov[0], tune.heli_fov[1]);
+            let q = (hi - lo) * 0.25;
+            let half = q * 2.0;
+            let floor = self.goal - q;
+            let g = fmadds(((hi - half) - lo) * rng.u23(), f32::from_bits(0x3400_0000), lo);
+            self.goal = if g > floor { g + half } else { g };
+        }
+        let m = &car.m;
+        let d = self.place - m[3];
+        self.side = dp3(m[0], self.vel) + dp3(m[0], d) > 0.0;
+        let t = xform(TARGET, m);
+        let a = if self.side { self.angle } else { -self.angle };
+        let want = crate::aiv::rot_y(HELI_OFFSET, car.heading() + a) + t;
+        let k = tune.heli_match;
+        let acc = (want - self.place) * k[1] + (car.vel - self.vel) * k[0] - self.vel * k[2];
+        let n = fmadds(acc.x, acc.x, fmadds(acc.y, acc.y, acc.z * acc.z)).sqrt();
+        let s = HELI_ACCEL / if HELI_ACCEL - n >= 0.0 { HELI_ACCEL } else { n };
+        self.vel = (acc * s) * dt + self.vel;
+        self.place = self.vel * dt + self.place;
+        let q0 = crate::cine::mat_quat(&self.rows16());
+        let look = look_rows(self.place - t, Vec3::Y);
+        let mut r = self.rows16();
+        for i in 0..3 {
+            r[4 * i..4 * i + 3].copy_from_slice(&look[i].to_array());
+        }
+        let mut q1 = crate::cine::mat_quat(&r);
+        let u = tune.heli_rates[1] * dt;
+        let u = if 1.0 - u >= 0.0 { u } else { 1.0 };
+        // (F-37101: the shorter way: the goal negated when fma(x, x, fma(y, y, fma(w, w, z z))) < 0)
+        if fmadds(q0[0], q1[0], fmadds(q0[1], q1[1], fmadds(q0[3], q1[3], q0[2] * q1[2]))) < 0.0 {
+            q1 = q1.map(|v| -v);
+        }
+        crate::cine::quat_mat(&mut r, crate::cine::slerp(q0, q1, u));
+        self.m = [Vec3::new(r[0], r[1], r[2]), Vec3::new(r[4], r[5], r[6]), Vec3::new(r[8], r[9], r[10])];
+        orthonormal(&mut self.m);
+        let rate = tune.heli_rates[0];
+        if self.fov < self.goal {
+            self.fov = fmadds(rate, dt, self.fov);
+            if self.fov > self.goal {
+                self.fov = self.goal;
+            }
+        } else if self.fov > self.goal {
+            self.fov = fmadds(-rate, dt, self.fov);
+            if self.fov < self.goal {
+                self.fov = self.goal;
+            }
+        }
+    }
+}
+
 /// The camera's turn from its row c (the way it looks away from) and the world's up
 /// (F-97951: a = up x c, b = c x a).
 fn look_rot(c: Vec3) -> Quat {
@@ -526,12 +689,12 @@ const NEAR: f32 = 0.2;
 /// not read: taken as the sim's gravity scale 1.4)
 const HELI_ACCEL: f32 = 1.4 * 9.8;
 
-/// mcReplayCameraHeli (state 18).
+/// mcReplayCameraHeli (state 18): its matrix rows (+16 a, +32 b, +48 c, +64 place) as the original keeps them.
 #[derive(Clone, Debug, Default)]
 struct Heli {
+    m: [Vec3; 3],
     place: Vec3,
     vel: Vec3,
-    rot: Quat,
     fov: f32,
     goal: f32,
     angle: f32,
@@ -627,57 +790,18 @@ impl Director {
     }
 
     fn polar_activate(&mut self, tune: &CamTune) {
-        // (F-82095: a side, then 22.5 .. 67.5 degrees)
-        let sign = if self.rng.u23() * 2.384_19e-7 - 1.0 >= 0.0 { 1.0 } else { -1.0 };
-        let a = self.rng.u23() * 9.362_68e-8 + 0.392_699;
+        // (F-82095: a side from fms(u, 2^-22, 1), then 22.5 .. 67.5 degrees, fma(u, k, pi/8))
+        let sign = if fmadds(self.rng.u23(), f32::from_bits(0x3480_0000), -1.0) >= 0.0 { 1.0 } else { -1.0 };
+        let a = fmadds(self.rng.u23(), f32::from_bits(0x33c9_0fda), f32::from_bits(0x3ec9_0fdb));
         self.polar = Polar { pitch: 0.0, yaw: a * sign, fov: tune.polar_fov_range[2] };
     }
 
     fn heli_activate(&mut self, tune: &CamTune, car: &CarView) {
-        // (F-79727: the polar camera's first, then its own)
-        self.polar_activate(tune);
-        let t = car.at(TARGET);
-        let angle = 0.078_539_8 + self.rng.u23() * 3.183_31e-7;
-        let (lo, hi) = (tune.heli_fov[0], tune.heli_fov[1]);
-        let fov = lo + (hi - lo) * self.rng.unit();
-        let side = self.rng.next() & 1 != 0;
-        let a = if side { angle } else { -angle };
-        let place = t + rot_y(HELI_OFFSET, car.heading() + a);
-        let zoom = self.rng.length(tune.heli_cut);
-        self.heli = Heli { place, vel: car.vel, rot: look_rot(place - t), fov, goal: fov, angle, side, zoom };
+        self.heli = Heli::activate(&mut self.rng, tune, &HeliCar::of(car));
     }
 
     fn heli_update(&mut self, tune: &CamTune, car: &CarView, dt: f32) {
-        let h = &mut self.heli;
-        h.zoom -= dt;
-        if h.zoom < 0.0 {
-            h.zoom = self.rng.length(tune.heli_cut);
-            // (a new goal away from the old one: one of the lens range's halves)
-            let (lo, hi) = (tune.heli_fov[0], tune.heli_fov[1]);
-            let half = (hi - lo) * 0.5;
-            let mut g = lo + half * self.rng.unit();
-            if g > h.goal - (hi - lo) * 0.25 {
-                g += half;
-            }
-            h.goal = g;
-        }
-        let t = car.at(TARGET);
-        let a_row = car.rot * Vec3::X;
-        h.side = a_row.dot(h.vel + (h.place - car.pos)) > 0.0;
-        let a = if h.side { h.angle } else { -h.angle };
-        let want = t + rot_y(HELI_OFFSET, car.heading() + a);
-        let mut acc = (car.vel - h.vel) * tune.heli_match[0] + (want - h.place) * tune.heli_match[1] - h.vel * tune.heli_match[2];
-        let n = acc.length();
-        acc *= HELI_ACCEL / n.max(HELI_ACCEL);
-        h.vel += acc * dt;
-        h.place += h.vel * dt;
-        let goal = look_rot(h.place - t);
-        h.rot = h.rot.slerp(goal, (tune.heli_rates[1] * dt).min(1.0));
-        if h.fov < h.goal {
-            h.fov = (h.fov + tune.heli_rates[0] * dt).min(h.goal);
-        } else if h.fov > h.goal {
-            h.fov = (h.fov - tune.heli_rates[0] * dt).max(h.goal);
-        }
+        self.heli.update(&mut self.rng, tune, &HeliCar::of(car), dt);
     }
 
     /// the polar camera's place: about the car in the world's frame, pushed in by the city;
@@ -704,9 +828,9 @@ impl Director {
         }
         let p = &mut self.polar;
         // (the original's own order: fma(dt * -y, 1.25, pitch), fma(dt * x, 2, yaw), fma(dt, zoom, 1) * lens; the least first, then the most)
-        p.pitch = (dt * -y).mul_add(1.25, p.pitch).max(0.0).min(1.256_637_1);
-        p.yaw = (dt * x).mul_add(2.0, p.yaw);
-        p.fov = (dt.mul_add(zoom, 1.0) * p.fov).max(tune.polar_fov_range[0]).min(tune.polar_fov_range[1]);
+        p.pitch = fmadds(dt * -y, 1.25, p.pitch).max(0.0).min(1.256_637_1);
+        p.yaw = fmadds(dt * x, 2.0, p.yaw);
+        p.fov = (fmadds(dt, zoom, 1.0) * p.fov).max(tune.polar_fov_range[0]).min(tune.polar_fov_range[1]);
     }
 
     /// state 6..17: the place on the car and whether it looks back
@@ -728,7 +852,7 @@ impl Director {
                 let c = if back { -car.c() } else { car.c() };
                 Some((car.at(o), look_rot(c), tune.fixed_fov))
             }
-            HELI => Some((self.heli.place, self.heli.rot, self.heli.fov)),
+            HELI => Some((self.heli.place, Quat::from_mat3(&glam::Mat3::from_cols(self.heli.m[0], self.heli.m[1], self.heli.m[2])), self.heli.fov)),
             POLAR => {
                 let (p, r) = self.polar_place(car, probe);
                 Some((p, r, self.polar.fov))
@@ -1201,7 +1325,8 @@ mod original_normal_tests {
 
 /// The director's small routines against the original's code (tools/replay_director_reference.py, testdata/replay_director_ref.txt):
 /// the shot length F-66204 and the helicopter's zoom timer F-16218 (300 sequences of 12 calls, generator and spare after each),
-/// the k-th set bit F-48190 (4,000 masks) and the polar camera's stick F-63907 (6,000 cases from the pad's bytes).
+/// the k-th set bit F-48190 (4,000 masks), the polar camera's stick F-63907 (6,000 cases from the pad's bytes) and its activate
+/// F-82095 (3,000 generators).
 #[cfg(test)]
 mod original_director_tests {
     use super::*;
@@ -1212,7 +1337,7 @@ mod original_director_tests {
 
     #[test]
     fn director_routines_match_the_original() {
-        let (mut len, mut kth, mut pol) = (0, 0, 0);
+        let (mut len, mut kth, mut pol, mut pact) = (0, 0, 0, 0);
         for line in include_str!("testdata/replay_director_ref.txt").lines() {
             let (a, b) = line.split_once(" -> ").unwrap();
             let w: Vec<&str> = a.split(' ').collect();
@@ -1252,9 +1377,65 @@ mod original_director_tests {
                     assert_eq!([d.polar.fov.to_bits(), d.polar.pitch.to_bits(), d.polar.yaw.to_bits()], [o[0], o[1], o[2]], "{line}");
                     pol += 1;
                 }
+                "PACT" => {
+                    let mut tune = CamTune::default();
+                    tune.polar_fov_range[2] = f32::from_bits(h(w[3]));
+                    let car = CarView { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, top: 1.0 };
+                    let mut d = Director::new(&tune, 1, &car);
+                    d.rng = Mwc { x: h(w[1]), c: h(w[2]), spare: None };
+                    d.polar_activate(&tune);
+                    let o: Vec<u32> = b.split(' ').map(h).collect();
+                    assert_eq!([d.polar.fov.to_bits(), d.polar.pitch.to_bits(), d.polar.yaw.to_bits(), d.rng.x, d.rng.c], [o[0], o[1], o[2], o[3], o[4]], "{line}");
+                    pact += 1;
+                }
                 _ => panic!("{line}"),
             }
         }
-        assert!(len >= 290 && kth >= 3980 && pol >= 5990, "{len} {kth} {pol}");
+        assert!(len >= 290 && kth >= 3980 && pol >= 5990 && pact >= 2970, "{len} {kth} {pol} {pact}");
+    }
+
+    /// The helicopter's activate F-79727 and update F-48462 against the original's code (tools/replay_heli_reference.py,
+    /// testdata/replay_heli_ref.txt): a moving car, 25 steps a sequence, the camera's whole state and the generator after each.
+    #[test]
+    fn heli_matches_the_original() {
+        let mut seqs = 0;
+        for line in include_str!("testdata/replay_heli_ref.txt").lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split(' ').collect();
+            let f = |x: &str| f32::from_bits(h(x));
+            let mut g = Mwc { x: h(w[1]), c: h(w[2]), spare: None };
+            let t: Vec<f32> = w[3..14].iter().map(|x| f(x)).collect();
+            let mut tune = CamTune::default();
+            tune.heli_fov[0] = t[0];
+            tune.heli_fov[1] = t[1];
+            tune.heli_match = [t[2], t[3], t[4]];
+            tune.heli_rates = [t[5], t[6]];
+            tune.heli_cut = [t[7], t[8], t[9], t[10]];
+            let n: usize = w[14].parse().unwrap();
+            let mut heli = Heli::default();
+            for (s, row) in b.split(" | ").enumerate().take(n) {
+                let st: Vec<f32> = w[15 + 16 * s..15 + 16 * (s + 1)].iter().map(|x| f(x)).collect();
+                let v = |i: usize| Vec3::new(st[i], st[i + 1], st[i + 2]);
+                let car = HeliCar { m: [v(1), v(4), v(7), v(10)], vel: v(13) };
+                if s == 0 {
+                    heli = Heli::activate(&mut g, &tune, &car);
+                } else {
+                    heli.update(&mut g, &tune, &car, st[0]);
+                }
+                let o: Vec<&str> = row.split(' ').collect();
+                let mut got: Vec<u32> = Vec::new();
+                for r in heli.m.iter().chain([heli.place, heli.vel].iter()) {
+                    got.extend(r.to_array().map(f32::to_bits));
+                }
+                got.extend([heli.fov, heli.goal, heli.angle, heli.zoom].map(f32::to_bits));
+                let want: Vec<u32> = o[..19].iter().map(|x| h(x)).collect();
+                assert_eq!(got, want, "step {s} of sequence {seqs}");
+                assert_eq!(heli.side, o[19] == "1", "side, step {s} of sequence {seqs}");
+                assert_eq!((g.x, g.c), (h(o[20]), h(o[21])), "generator, step {s} of sequence {seqs}");
+                assert_eq!(g.spare.map(f32::to_bits), if o[22] == "1" { Some(h(o[23])) } else { None }, "spare, step {s} of sequence {seqs}");
+            }
+            seqs += 1;
+        }
+        assert!(seqs >= 110, "{seqs}");
     }
 }

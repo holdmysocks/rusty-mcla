@@ -244,7 +244,7 @@ fn ease(t: f32) -> f32 {
 }
 
 /// `F-50812`: a rotation (rows 0..2 of a 4x4) as a quaternion (x, y, z, w), from the largest of the trace and the diagonal.
-fn mat_quat(m: &[f32; 16]) -> [f32; 4] {
+pub(crate) fn mat_quat(m: &[f32; 16]) -> [f32; 4] {
     let (m00, m11, m22) = (m[0], m[5], m[10]);
     let tr = m00 + m11 + m22;
     let case = if tr < m00 {
@@ -288,7 +288,7 @@ fn mat_quat(m: &[f32; 16]) -> [f32; 4] {
 }
 
 /// `F-40856`: a quaternion as the rotation rows of `m` (each part scaled by sqrt 2 first; the fourth entries stay).
-fn quat_mat(m: &mut [f32; 16], q: [f32; 4]) {
+pub(crate) fn quat_mat(m: &mut [f32; 16], q: [f32; 4]) {
     let k = f32::from_bits(0x3fb5_04f3);
     let (x, y, z, w) = (q[0] * k, q[1] * k, q[2] * k, q[3] * k);
     let (xx, yy, zz) = (x * x, y * y, z * z);
@@ -326,7 +326,7 @@ fn cam_sample(m: &mut [f32; 16], lens: &mut f32, k14: &mut f32, pos: Option<Vec3
 
 /// `F-20340`: spherical interpolation of two quaternions by `u` (the angle by F-94425), normalised by a reciprocal
 /// square root with two Newton steps (0 for a zero length); `a` itself when the angle's sine is 0.
-fn slerp(a: [f32; 4], b: [f32; 4], u: f32) -> [f32; 4] {
+pub(crate) fn slerp(a: [f32; 4], b: [f32; 4], u: f32) -> [f32; 4] {
     let qa = Quat::from_array(a);
     let qb = Quat::from_array(b);
     let th = crate::cinecar::quat_angle(qa, qb) * 0.5;

@@ -10,6 +10,7 @@ Lines:  LEN <lo> <carry> | <mean> <dev> <min> <max> x12 -> per call: <result> <f
         ZOOM <same>                                     (the zoom timer, same layout)
         KTH <mask> <k> -> <bit>                           (bit as a signed decimal)
         POL <fov> <pitch> <yaw> <min> <max> <dt> <b18> <b19> <b20> <b21> -> <fov> <pitch> <yaw>
+        PACT <lo> <carry> <default lens> -> <lens> <pitch> <yaw> <lo> <carry>   (the polar camera's activate F-82095: +288 -> +168)
 (floats as hex bits)
 Usage: replay_director_reference.py --recomp D:/MCLA-static --image work/2026-10-10/original-image.bin --work DIR --out FILE [--tool mcla-tool]"""
 import argparse
@@ -20,7 +21,7 @@ import subprocess
 from pathlib import Path
 import recomp_dispatch as rd
 
-IDS = {'LEN': 'F-66204', 'ZOOM': 'F-16218', 'KTH': 'F-48190', 'POL': 'F-63907'}
+IDS = {'LEN': 'F-66204', 'ZOOM': 'F-16218', 'KTH': 'F-48190', 'POL': 'F-63907', 'PACT': 'F-82095'}
 
 MAIN = r'''
 int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.assign(std::istreambuf_iterator<char>(bin),{});
@@ -36,6 +37,8 @@ int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.
     printf("%08x %u %08x %08x %08x\n",load(O+r),load(G+8)>>24,load(G+12),load(G),load(G+4));}
    in>>std::dec;}
   else if(k=="KTH"){uint32_t m,n;in>>std::hex>>m>>n>>std::dec;store(O,m);Context c=fresh();c.r3.u32=O;c.r4.u32=n;sub_KTH(c,nullptr);printf("%d\n",int(c.r3.u32));}
+  else if(k=="PACT"){uint32_t lo,ca,df;in>>std::hex>>lo>>ca>>df>>std::dec;store(G,lo);store(G+4,ca);for(int j=0;j<0x200;j+=4)store(O+j,0xA5A5A5A5u);
+   store(O+288,df);Context c=fresh();c.r3.u32=O;sub_PACT(c,nullptr);printf("%08x %08x %08x %08x %08x\n",load(O+168),load(O+272),load(O+276),load(G),load(G+4));}
   else{uint32_t fov,pi,ya,mn,mx,dt,b[4];in>>std::hex>>fov>>pi>>ya>>mn>>mx>>dt>>b[0]>>b[1]>>b[2]>>b[3]>>std::dec;
    for(int j=0;j<0x200;j+=4)store(O+j,0);for(int j=0;j<32;j+=4)store(P+j,0);
    store(O+168,fov);store(O+272,pi);store(O+276,ya);store(O+280,mn);store(O+284,mx);store(GDT,dt);
@@ -90,6 +93,8 @@ def main():
         dt = rnd.choice([1 / 30, 1 / 60, rnd.uniform(0.001, 0.2)])
         b = [rnd.choice([0, 127, 128, 255, rnd.randrange(256)]) for _ in range(4)]
         lines.append('POL ' + ' '.join(f'{fb(x):08x}' for x in (fov, pitch, yaw, lo, hi, dt)) + ' ' + ' '.join(f'{x:x}' for x in b))
+    for _ in range(3000):
+        lines.append(f'PACT {rnd.getrandbits(32):08x} {rnd.getrandbits(32):08x} {fb(rnd.choice([47.0, rnd.uniform(10, 90)])):08x}')
     cases = a.work / 'replay_director_cases.txt'
     cases.write_text('\n'.join(lines) + '\n')
     p = subprocess.run([str(exe), str(a.image), str(cases)], capture_output=True, text=True)

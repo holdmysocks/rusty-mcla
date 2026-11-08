@@ -437,7 +437,7 @@ pub fn ang3(a: Vec3, b: Vec3) -> f32 {
 }
 
 /// F-57591: rotation about y.
-fn rot_y(v: Vec3, a: f32) -> Vec3 {
+pub(crate) fn rot_y(v: Vec3, a: f32) -> Vec3 {
     let s = guest_sin(a as f64) as f32;
     let c = guest_cos(a as f64) as f32;
     Vec3::new(fma(v.x, c, v.z * s), v.y, fms(v.z, c, v.x * s))
