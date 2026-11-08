@@ -169,6 +169,44 @@ pub fn entry_mass(t: &FragType, absent: u64) -> f32 {
     m
 }
 
+/// F-31082, the archetype's SetMass: the mass and its inverse (fdivs), 0 for a mass of 0.
+fn set_mass(mass: f32) -> (f32, f32) {
+    (mass, if mass == 0.0 { 0.0 } else { 1.0 / mass })
+}
+
+/// F-58768, the archetype's SetInertia: the inertia after the floor F-88418 and its inverse (the
+/// estimate and one Newton step), 0x7f7fffff where a lane is 0. The vector unit runs in flush
+/// mode: a subnormal lane compares equal to 0, and a subnormal inverse (an inertia above about
+/// 8.5e37) is 0 of its sign.
+fn set_inertia(i: [f32; 3]) -> ([f32; 3], [f32; 3]) {
+    let i = inertia_floor(i);
+    let inv = |x: f32| {
+        if x == 0.0 || x.is_subnormal() {
+            return f32::MAX;
+        }
+        let r = recip(x);
+        if r.is_subnormal() { 0.0f32.copysign(r) } else { r }
+    };
+    (i, i.map(inv))
+}
+
+/// F-72436, a rope's normal and stretch: d = B - A over its length (the estimate of 1 / length
+/// and one Newton step) where the squared length is above 0x2b8cbccc, else (0, 1, 0) and a
+/// length of 0; the stretch is the length less the rope's.
+fn rope_normal(a: Vec3, b: Vec3, len: f32) -> (Vec3, f32) {
+    let d = b - a;
+    let s2 = dot3(d, d);
+    let (n, l) = if s2 > f32::from_bits(0x2b8c_bccc) {
+        let l = s2.sqrt();
+        let e = 1.0 / l;
+        let e = e + e * (-(e * l - 1.0));
+        (d * e, l)
+    } else {
+        (Vec3::Y, 0.0)
+    };
+    (n, l - len)
+}
+
 /// F-88418: the largest of the three as its fcmpu / blt find it (x < y, then y < z or x < z: a
 /// tie or a NaN keeps the earlier one), then each other one whose 20 times is below it raised
 /// to the largest x 0.05.
@@ -204,8 +242,7 @@ pub fn entry_refresh(t: &FragType, e: &mut Entry, mass: f32) {
     if e.age < 0.25 {
         e.cg = e.cg + v(t.cg_shift);
     }
-    e.mass = mass;
-    e.inv_mass = if mass == 0.0 { 0.0 } else { 1.0 / mass };
+    (e.mass, e.inv_mass) = set_mass(mass);
     let mut sum = 0.0f32;
     let mut inertia = Vec3::ZERO;
     for (c, part) in t.parts.iter().enumerate() {
@@ -217,9 +254,9 @@ pub fn entry_refresh(t: &FragType, e: &mut Entry, mass: f32) {
         inertia = inertia + Vec3::new(fma(yy + zz, m, own.x), fma(xx + zz, m, own.y), fma(xx + yy, m, own.z));
     }
     if sum > f32::MIN_POSITIVE {
-        let i = inertia_floor(inertia.to_array());
+        let (i, inv) = set_inertia(inertia.to_array());
         e.inertia = Vec3::from_array(i);
-        e.inv_inertia = Vec3::new(if i[0] == 0.0 { f32::MAX } else { recip(i[0]) }, if i[1] == 0.0 { f32::MAX } else { recip(i[1]) }, if i[2] == 0.0 { f32::MAX } else { recip(i[2]) });
+        e.inv_inertia = Vec3::from_array(inv);
     }
 }
 
@@ -4488,18 +4525,7 @@ impl LooseState {
                 }
                 self.ambient_activate(ob);
             }
-            // (F-72436)
-            let d = pb - pa;
-            let s2 = dot3(d, d);
-            let (n, l) = if s2 > f32::from_bits(0x2b8c_bccc) {
-                let l = s2.sqrt();
-                let e = 1.0 / l;
-                let e = e + e * (-(e * l - 1.0));
-                (d * e, l)
-            } else {
-                (Vec3::Y, 0.0)
-            };
-            let err = l - r.len;
+            let (n, err) = rope_normal(pa, pb, r.len);
             if rope_dbg() {
                 eprintln!("ROPE tick {} {} -> {} len {} err {:.4} active {} {} island-to-be", self.tick, r.a, r.b, r.len, err, self.objs[oa].body.is_some(), self.objs[ob].body.is_some());
             }
@@ -5127,6 +5153,47 @@ pub fn hand_over_pieces(world: &LooseWorld, cars: &mut [CarLevel]) {
 #[cfg(test)]
 mod piece_tests {
     use super::*;
+
+    /// The rope's normal F-72436, SetMass F-31082 and SetInertia F-58768 run offline
+    /// (tools/loose_setters_reference.py, flush mode as the SDK sets it): n and -n, the stretch,
+    /// the mass and its inverse, the floored inertia and its inverse, every x / y / z word (NaN as
+    /// NaN).
+    #[test]
+    fn rope_normal_and_setters_match_the_original() {
+        let w = |s: &str| u32::from_str_radix(&s.replace('_', ""), 16).unwrap();
+        let f = |s: &str| f32::from_bits(w(s));
+        let same = |x: f32, o: u32| x.to_bits() == o || (x.is_nan() && f32::from_bits(o).is_nan());
+        let mut n = [0; 3];
+        for line in include_str!("../testdata/loose_setters_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let a: Vec<&str> = i.split_whitespace().collect();
+            let o: Vec<u32> = o.split_whitespace().map(w).collect();
+            match a[0] {
+                "rope" => {
+                    let (nn, err) = rope_normal(Vec3::new(f(a[1]), f(a[2]), f(a[3])), Vec3::new(f(a[5]), f(a[6]), f(a[7])), f(a[9]));
+                    let m = Vec3::ZERO - nn;
+                    for (k, x) in [nn.x, nn.y, nn.z, m.x, m.y, m.z].into_iter().enumerate() {
+                        assert!(same(x, o[if k < 3 { k } else { k + 1 }]), "{line} lane {k}");
+                    }
+                    assert!(same(err, o[8]), "{line}");
+                    n[0] += 1;
+                }
+                "mass" => {
+                    let (m, inv) = set_mass(f(a[1]));
+                    assert!(same(m, o[0]) && same(inv, o[1]), "{line}");
+                    n[1] += 1;
+                }
+                _ => {
+                    let (i, inv) = set_inertia([f(a[1]), f(a[2]), f(a[3])]);
+                    for k in 0..3 {
+                        assert!(same(i[k], o[k]) && same(inv[k], o[4 + k]), "{line} lane {k}");
+                    }
+                    n[2] += 1;
+                }
+            }
+        }
+        assert_eq!(n, [3000, 1500, 3000]);
+    }
 
     /// The type's mass F-25823 run offline (tools/entry_mass_reference.py): 3,000 child lists of
     /// 0 .. 255, the sum from 0.0 one child after another, every word (NaN as NaN).
