@@ -402,16 +402,9 @@ impl Mani {
     /// takes the place of the kept one within 2 cm of it, by A's point, that a refresh has seen -
     /// and its multipliers, and its element if that one was the deeper - or is added.
     fn insert(&mut self, fresh: Touch, element: u16, surface: Surface, surface_a: Surface) {
-        let mut nearest = (f32::from_bits(0x39d1_b717), None);
-        for (i, s) in self.slots.iter().enumerate() {
-            let d = s.t.a.local - fresh.a.local;
-            let d2 = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y));
-            if d2 < nearest.0 && s.age != 0 {
-                nearest = (d2, Some(i));
-            }
-        }
+        let nearest = super::hull::nearest_kept(self.slots.iter().map(|s| (s.t.a.local, s.age)), fresh.a.local);
         let slot = Slot2 { t: fresh, age: 0, enabled: true, element, surface, surface_a };
-        match nearest.1 {
+        match nearest {
             Some(i) => {
                 let old = self.slots[i];
                 self.slots[i] = Slot2 { t: Touch { kept: old.t.kept, pushed: old.t.pushed, ..fresh }, element: if old.t.depth >= fresh.depth { old.element } else { element }, surface: if old.t.depth >= fresh.depth { old.surface } else { surface }, surface_a: if old.t.depth >= fresh.depth { old.surface_a } else { surface_a }, ..slot };

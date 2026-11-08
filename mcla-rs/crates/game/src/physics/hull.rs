@@ -414,14 +414,18 @@ impl WheelBox {
         WheelBox { centre: c + r[0] * m.x + r[1] * m.y + r[2] * m.z, axes: r, half: (hi - lo) * 0.5 + Vec3::splat(super::collision::WORLD_MARGIN) }
     }
 
-    /// The four axes the original tries: the triangle's plane and the box's three.
+    /// The four axes the original tries (F-55826): the triangle's plane and the box's three. The second and third
+    /// corners are projected as the first's projection plus their edge's from the first, as the original does.
     pub fn touches(&self, tri: &[Vec3; 3], face: Vec3) -> bool {
         let reach = (0..3).map(|i| self.half[i] * face.dot(self.axes[i]).abs()).sum::<f32>();
-        if face.dot(tri[0] - self.centre).abs() > reach {
+        let d = tri[0] - self.centre;
+        if face.dot(d).abs() > reach {
             return false;
         }
+        let (e1, e2) = (tri[1] - tri[0], tri[2] - tri[0]);
         for i in 0..3 {
-            let p = tri.map(|v| (v - self.centre).dot(self.axes[i]));
+            let p0 = self.axes[i].dot(d);
+            let p = [p0, p0 + self.axes[i].dot(e1), p0 + self.axes[i].dot(e2)];
             if p[0].min(p[1]).min(p[2]) > self.half[i] || p[0].max(p[1]).max(p[2]) < -self.half[i] {
                 return false;
             }
@@ -1603,17 +1607,10 @@ pub fn wheel_collide(world: &WorldCollider, core: &super::gjk::WheelCore, part: 
         let fresh = Contact { depth: 0.0 - r.distance, local, on_body: r.on_a, on_world: r.on_b, normal, ..Default::default() };
         let at = manifold_of(manifolds, part, cell);
         let m = &mut manifolds[at];
-        let mut near = (f32::from_bits(0x39d1_b717), None);
-        for (k, s) in m.slots.iter().enumerate() {
-            let d = s.c.local - local;
-            let d2 = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y));
-            if d2 < near.0 && s.age != 0 {
-                near = (d2, Some(k));
-            }
-        }
+        let near = nearest_kept(m.slots.iter().map(|s| (s.c.local, s.age)), local);
         let surface = Surface::from_u8(mesh.mats.get(i).copied().unwrap_or(0));
         let slot = Slot { c: fresh, age: 0, enabled: true, surface, polygon: i as u32, element: 0, part };
-        match near.1 {
+        match near {
             Some(k) => {
                 let old = m.slots[k];
                 m.slots[k] = Slot { c: Contact { kept: old.c.kept, pushed: old.c.pushed, ..fresh }, ..slot };
@@ -1831,20 +1828,13 @@ pub fn collide(hull: &HullShape, bbox: (Vec3, Vec3), now: &[Vec3; 4], last: &[Ve
         let m = &mut manifolds[at];
         // (F-74262: the contact it replaces - the nearest, by the body's point, within 2 cm
         // among those a refresh has seen)
-        let mut near = (f32::from_bits(0x39d1_b717), None);
-        for (k, s) in m.slots.iter().enumerate() {
-            let d = s.c.local - local;
-            let d2 = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y));
-            if d2 < near.0 && s.age != 0 {
-                near = (d2, Some(k));
-            }
-        }
+        let near = nearest_kept(m.slots.iter().map(|s| (s.c.local, s.age)), local);
         let surface = Surface::from_u8(mesh.mats.get(i).copied().unwrap_or(0));
         // (which of the hull's triangles: by the corners the loop ended on, F-26668)
         let back = Vec3::ZERO - r.normal;
         let element = hull.element(&r.corners.0[..r.corners.1], Vec3::new(dot3(now[0], back), dot3(now[1], back), dot3(now[2], back)));
         let slot = Slot { c: fresh, age: 0, enabled: true, surface, polygon: i as u32, element, part: 0 };
-        match near.1 {
+        match near {
             Some(k) => {
                 // (the one it replaces hands on its multipliers, and - if it was the deeper - its element)
                 let old = m.slots[k];
@@ -1863,6 +1853,20 @@ pub fn collide(hull: &HullShape, bbox: (Vec3, Vec3), now: &[Vec3; 4], last: &[Ve
     });
     // (a cell's record that ends the pass with nothing in it is given up)
     manifolds.retain(|m| !m.slots.is_empty());
+}
+
+/// F-74262: the kept contact a new one takes the place of - the nearest by side A's point (`kept`: each one's point and
+/// age), strictly within 2 cm (squared 4e-4) and seen by a refresh (age not 0); the first of equals.
+pub fn nearest_kept(kept: impl Iterator<Item = (Vec3, u16)>, new: Vec3) -> Option<usize> {
+    let mut near = (f32::from_bits(0x39d1_b717), None);
+    for (k, (p, age)) in kept.enumerate() {
+        let d = p - new;
+        let d2 = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y));
+        if d2 < near.0 && age != 0 {
+            near = (d2, Some(k));
+        }
+    }
+    near.1
 }
 
 /// F-55965: a manifold holds six contacts and a seventh comes (`kept`, `new`: their points in side A's
@@ -2221,3 +2225,55 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod tri_box_tests {
+    use super::*;
+
+    /// The ground triangle against a wheel's box F-55826 run offline (tools/tri_box_reference.py): 24,000 boxes and
+    /// triangles, half of them with a corner (any of the three) on a face of the box to within a few ulps and a fifth with the box's
+    /// corner on the triangle's plane - every answer equal.
+    #[test]
+    fn tri_box_matches_the_original() {
+        let h = |x: &str| f32::from_bits(u32::from_str_radix(x, 16).unwrap());
+        let (mut n, mut bad) = (0, Vec::new());
+        for line in include_str!("../testdata/tri_box_ref.txt").lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let c: Vec<f32> = case.split(' ').map(h).collect();
+            let v = |i: usize| Vec3::new(c[i], c[i + 1], c[i + 2]);
+            let b = WheelBox { centre: v(12), axes: [v(18), v(21), v(24)], half: v(15) };
+            if b.touches(&[v(0), v(3), v(6)], v(9)) != (want == "1") {
+                bad.push(line);
+            }
+            n += 1;
+        }
+        assert_eq!(n, 24000);
+        assert!(bad.is_empty(), "{} differ, first {:?}", bad.len(), &bad[..bad.len().min(3)]);
+    }
+}
+
+#[cfg(test)]
+mod nearest_kept_tests {
+    use super::*;
+
+    /// The sink's search F-74262 run offline (tools/nearest_kept_reference.py): 20,000 manifolds of 0 .. 6 kept contacts
+    /// round a new one, at about the 2 cm reach (on it to an ulp, equal pairs, ages 0 and not) - every answer equal.
+    #[test]
+    fn nearest_kept_matches_the_original() {
+        let h = |x: &str| f32::from_bits(u32::from_str_radix(x, 16).unwrap());
+        let mut n = 0;
+        for line in include_str!("../testdata/nearest_kept_ref.txt").lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let (head, rest) = case.split_once(" | ").unwrap();
+            let w: Vec<&str> = head.split(' ').collect();
+            let p = Vec3::new(h(w[1]), h(w[2]), h(w[3]));
+            let r: Vec<&str> = rest.split(' ').filter(|x| !x.is_empty()).collect();
+            let kept: Vec<(Vec3, u16)> = r.chunks(4).map(|c| (Vec3::new(h(c[0]), h(c[1]), h(c[2])), c[3].parse().unwrap())).collect();
+            assert_eq!(kept.len(), w[0].parse::<usize>().unwrap());
+            let got = nearest_kept(kept.into_iter(), p).map_or(-1, |k| k as i32);
+            assert_eq!(got, want.parse::<i32>().unwrap(), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 20000);
+    }
+}

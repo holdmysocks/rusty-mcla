@@ -33,7 +33,7 @@
 use super::artic::V4;
 use super::artic_pose::{self, LinkFrame, Mat, Parts};
 use super::collision::{surface_touch, Surface, WorldCollider};
-use super::exact::{dot3, fma};
+use super::exact::dot3;
 use super::gjk::{world_matrix, PartCore};
 use super::hull::{part_touches, PartHit};
 use super::loose::xf;
@@ -708,15 +708,7 @@ fn self_pair_contact(m: &mut SelfManifold, sa: &PartShape, sb: &PartShape, a_now
 /// (its multipliers stay), else the new one is appended up to six, else F-55965 picks the one it replaces (or none).
 fn sink(slots: &mut Vec<RiderSlot>, slot: RiderSlot) {
     let fresh = slot.touch;
-    let mut near = (NEAR2, None);
-    for (i, o) in slots.iter().enumerate() {
-        let d = o.touch.a.local - fresh.a.local;
-        let d2 = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y));
-        if d2 < near.0 && o.age != 0 {
-            near = (d2, Some(i));
-        }
-    }
-    match near.1 {
+    match super::hull::nearest_kept(slots.iter().map(|o| (o.touch.a.local, o.age)), fresh.a.local) {
         Some(i) => {
             // (the element ids +168 / +170 - B's polygon and with it its material - stay the old contact's when it
             // was the deeper)
