@@ -1148,8 +1148,8 @@ fn vs_body(in: VsIn) -> VsOut {
     }
     // Car bodies (params.w carries 16): the vertex damage map (damagemap.rs; VS_CarPaint 22 - 49,
     // the same in every body program). The map is read at the vertex's direction from the car's
-    // origin, (x, z) / |p| x 0.5 + 0.5, one texel; the vertex moves dmgParams.w (0.2) x dent x
-    // layout towards dmgParams.xyz = (0, 1.3, 0). (The normal is bent there by the map's slope
+    // origin, (x, z) / |p| x 0.5 + 0.5, one texel; the vertex moves dmgParams.w x dent x layout towards
+    // dmgParams.xyz - the body's (0, 1.3, 0, 0.2), the hood's and bumpers' their own (dents[2]). (The normal is bent there by the map's slope
     // along the vertex's tangent and binormal: the port's vertex has neither - not done.)
     var dmg = vec2<f32>(0.0);
     var dmg_d = 0.0;
@@ -1192,9 +1192,12 @@ fn vs_body(in: VsIn) -> VsOut {
         let ts = textureDimensions(t_dmg);
         let tx = min(vec2<u32>(max(dd * 0.5 + vec2<f32>(0.5), vec2<f32>(0.0)) * vec2<f32>(ts)), ts - vec2<u32>(1u));
         let t = textureLoad(t_dmg, tx, 0);
-        let to = vec3<f32>(0.0, 1.3, 0.0) - in.pos;
+        // (dmgParams by the part's slot, dents[2] - vehicles.rs `dmg_params`: xyz, w = -(1 + depth); where not given
+        // the body's (0, 1.3, 0, 0.2))
+        let dp = select(vec4<f32>(0.0, 1.3, 0.0, 0.2), vec4<f32>(obj.dents[2].xyz, -1.0 - obj.dents[2].w), obj.dents[2].w < -0.5);
+        let to = dp.xyz - in.pos;
         if (dot(to, to) > 1e-12) {
-            lp = lp + normalize(to) * (t.r * t.g * 0.2);
+            lp = lp + normalize(to) * (t.r * t.g * dp.w);
         }
         // (o2.w: the scrape, sat(b) x a; o8.y's first factors: sat(r + b) x sat(1 - 2 p.y) - which
         // of the position's values it takes is not certain)

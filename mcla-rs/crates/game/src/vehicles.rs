@@ -861,6 +861,32 @@ const NEEDLE_BONES: usize = 8;
 /// below, + 1 the fitted steering wheel, + 2 the blower valve, + 3 the rest of the fitted blower (`CarModel::turn_bones`).
 const TURN_GROUP: u32 = NEEDLE_GROUP + 3 * NEEDLE_BONES as u32;
 
+/// Draw groups of parts whose vertex dent (dmgParams) the body pass F-92759 sets apart from the body's, not moved by
+/// anything of their own: + 0 the slots with no dent (conv_top, conv_topup, blower, the arms, shocks, guides and the
+/// axle), + 1 hood_wide on the hood's pose (the body's dent), + 2 / + 3 a rear / front bumper with no rest bone,
+/// + 4 a hood with no hood bone (`dmg_params`).
+const DENT_GROUP: u32 = TURN_GROUP + 4;
+
+/// The vertex-dent parameters of a car's draw, dmgParams (VS_CarPaint and the other body programs: the vertex moves
+/// dent x w towards xyz, in the car's rest space): the image words the car's draw object's constructor F-60786 puts
+/// at +4128 (the body), +4144 (the hood), +4160 (the front bumper), +4176 (the rear bumper). The body pass F-92759
+/// sets them per part slot in slot order, a slot without a case of its own keeping the last one: the base fragment
+/// and slots 4 .. 15, 17 .. 24, 36 .. the body's; 0, 1, 16, 25 .. 35 none (0, 0, 0, 0); 2 the hood's; 3 / 6 the
+/// rear / front bumper's while the model tune's movement of that bumper (+188 / +184) is not 0, else the body's; on a
+/// motorcycle (F-54299) none at all. The hanging bumper's own pass F-49350 sets +4160 / +4176 (a bumper hangs only
+/// with its movement not 0).
+pub const DMG_BODY: [f32; 4] = [0.0, 1.3, 0.0, 0.2];
+pub const DMG_HOOD: [f32; 4] = [0.0, 3.1, -0.4, 0.15];
+pub const DMG_BUMPER_F: [f32; 4] = [0.0, -0.2, -0.725, 0.15];
+pub const DMG_BUMPER_R: [f32; 4] = [0.0, 0.1, -2.8, 0.125];
+pub const DMG_NONE: [f32; 4] = [0.0; 4];
+
+/// dmgParams as a set-up car's object carries them (city.wgsl): xyz, and in w -(1 + the depth), so that a w below -0.5
+/// says they are given.
+fn dmg_slot(d: [f32; 4]) -> [f32; 4] {
+    [d[0], d[1], d[2], -1.0 - d[3]]
+}
+
 /// Bone j is `top` or below it.
 fn bone_under(s: &mcla_formats::rage::skeleton::Skeleton, mut j: usize, top: usize) -> bool {
     for _ in 0..s.bones.len() + 1 {
@@ -2662,8 +2688,10 @@ impl Vehicles {
             if part.is_base {
                 return if part.mesh_tag.get(mi).map_or(false, |t| trunk_tags.contains(t)) { 4 } else { 0 };
             }
+            // (the slot by the loader's `<name><index>`, for its dent - `dmg_params`)
+            let slot = p.trim_end_matches(|c: char| c.is_ascii_digit());
             if p.starts_with("hood") && !p.contains("scoop") && hood_slot.is_some() {
-                3
+                if slot == "hood_wide" { DENT_GROUP + 1 } else { 3 }
             } else if p.starts_with("bumper_r") && part_rig.bumper_rest[0].is_some() {
                 5
             } else if p.starts_with("bumper_f") && part_rig.bumper_rest[1].is_some() {
@@ -2672,6 +2700,14 @@ impl Vehicles {
                 20
             } else if *part_xf != Mat4::IDENTITY && trunk_worlds.iter().any(|w| w.w_axis.distance(part_xf.w_axis) < 1e-3) {
                 4
+            } else if matches!(slot, "conv_top" | "conv_topup" | "blower" | "armfl" | "armfr" | "armrl" | "armrr" | "shockfl" | "shockfr" | "shockrl" | "shockrr" | "guiderl" | "guiderr" | "axle") {
+                DENT_GROUP
+            } else if slot == "bumper_r" {
+                DENT_GROUP + 2
+            } else if slot == "bumper_f" {
+                DENT_GROUP + 3
+            } else if slot == "hood" {
+                DENT_GROUP + 4
             } else {
                 0
             }
@@ -5494,6 +5530,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // (a body's first dent slot: its four windows' states for the glass program - WindowDmgVal
             // slots 0 - 3, damagemap::CarDamage::window)
             let mut body_slots = [[0.0; 4]; 6];
+            // (the third: dmgParams of the base fragment's draw - `dmg_params`; a traffic car's own wheels put their hub there)
+            body_slots[2] = dmg_slot(if c.model.bike { DMG_NONE } else { DMG_BODY });
             body_slots[0] = c.state.dmg.windows();
             // (the fifth: the side windows' clip plane in the world, ClipPlaneEq of F-50822 - normal the
             // car's up, through its origin + up x h, h = mcCarModelTune fWindowClipPlaneHeight (-1 on a car
@@ -5565,6 +5603,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
             for (k, pb) in c.part_bindings.iter().enumerate() {
                 let parts = &c.state.parts;
                 let pm = match k {
+                    // (the dent groups: hood_wide on the hood's pose, the others the body's)
+                    n if n + 3 == DENT_GROUP as usize + 1 => c.model.hood_slot.map_or(m, |s| m * parts.hood_delta(&s)),
+                    n if n + 3 >= DENT_GROUP as usize => m,
                     // (a bone F-98654 turns: its local times the turn, steer_parts.rs)
                     n if n + 3 >= TURN_GROUP as usize => {
                         let i = n + 3 - TURN_GROUP as usize;
@@ -5617,6 +5658,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     _ => parts.bumpers[k - 2].as_ref().map_or(m, |b| b.slot_draw(&m, c.model.slot_bones[k - 2].as_ref().unwrap_or(&b.m_rest), b.detached.filter(|_| !(self.hide_player && c.is_player)).map(|l| Mat4::from_rotation_translation(l.rot, l.pos)))),
                 };
                 let mut pu = ObjectUniform { model: pm.to_cols_array_2d(), ..body_u };
+                pu.dents[2] = dmg_slot(dmg_params(k as u32 + 3, c.model.bike, c.model.part_rig.movement));
                 // (a traffic model's own wheel: its rim's and matte's programs dent it too, the vertex taken in its
                 // wheel bone's frame - every va_ wheel bone is its hub with no turn or scale, so p - hub; the third
                 // slot carries the hub)
@@ -8035,5 +8077,25 @@ mod roof_tests {
         let mut r3 = RoofCtl { opt: Some(false), ..Default::default() };
         r3.step(true, false, 0.1, lens, &mut w2, wl);
         assert_eq!((r3.top.state, r3.lower), (1, true));
+    }
+}
+
+/// The dmgParams of a set-up car's draw group (`DMG_BODY`): the hood (3, DENT_GROUP + 4) the hood's; a bumper (5 / 6,
+/// DENT_GROUP + 2 / + 3) its own while the tune moves it (`movement` = [front +184, rear +188, ..]); conv_topup
+/// (ROOF_GROUP), conv_top (ROOF_GROUP + 2), the blower (TURN_GROUP + 2 / + 3) and DENT_GROUP none; a motorcycle none;
+/// the rest the body's.
+pub fn dmg_params(group: u32, bike: bool, movement: [u32; 4]) -> [f32; 4] {
+    if bike {
+        return DMG_NONE;
+    }
+    match group {
+        3 => DMG_HOOD,
+        g if g == DENT_GROUP + 4 => DMG_HOOD,
+        5 => if movement[1] != 0 { DMG_BUMPER_R } else { DMG_BODY },
+        g if g == DENT_GROUP + 2 => if movement[1] != 0 { DMG_BUMPER_R } else { DMG_BODY },
+        6 => if movement[0] != 0 { DMG_BUMPER_F } else { DMG_BODY },
+        g if g == DENT_GROUP + 3 => if movement[0] != 0 { DMG_BUMPER_F } else { DMG_BODY },
+        g if g == ROOF_GROUP || g == ROOF_GROUP + 2 || g == TURN_GROUP + 2 || g == TURN_GROUP + 3 || g == DENT_GROUP => DMG_NONE,
+        _ => DMG_BODY,
     }
 }
