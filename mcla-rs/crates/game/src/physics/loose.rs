@@ -169,6 +169,19 @@ pub fn entry_mass(t: &FragType, absent: u64) -> f32 {
     m
 }
 
+/// F-88418: the largest of the three as its fcmpu / blt find it (x < y, then y < z or x < z: a
+/// tie or a NaN keeps the earlier one), then each other one whose 20 times is below it raised
+/// to the largest x 0.05.
+fn inertia_floor(mut i: [f32; 3]) -> [f32; 3] {
+    let big = if i[0] < i[1] { if i[1] < i[2] { 2 } else { 1 } } else if i[0] < i[2] { 2 } else { 0 };
+    for j in 0..3 {
+        if j != big && i[j] * 20.0 < i[big] {
+            i[j] = i[big] * 0.05;
+        }
+    }
+    i
+}
+
 /// F-13409: the entry's centre of gravity (by the parts' volumes; shifted by the type's +0x40
 /// while the entry is younger than a quarter of a second), its mass, and its moments (each
 /// part's own about its place, carried to the centre without its turn; no moment under a
@@ -204,14 +217,7 @@ pub fn entry_refresh(t: &FragType, e: &mut Entry, mass: f32) {
         inertia = inertia + Vec3::new(fma(yy + zz, m, own.x), fma(xx + zz, m, own.y), fma(xx + yy, m, own.z));
     }
     if sum > f32::MIN_POSITIVE {
-        // (F-88418)
-        let mut i = inertia.to_array();
-        let big = if i[0] >= i[1] { if i[0] >= i[2] { 0 } else { 2 } } else if i[1] >= i[2] { 1 } else { 2 };
-        for j in 0..3 {
-            if j != big && i[j] * 20.0 < i[big] {
-                i[j] = i[big] * 0.05;
-            }
-        }
+        let i = inertia_floor(inertia.to_array());
         e.inertia = Vec3::from_array(i);
         e.inv_inertia = Vec3::new(if i[0] == 0.0 { f32::MAX } else { recip(i[0]) }, if i[1] == 0.0 { f32::MAX } else { recip(i[1]) }, if i[2] == 0.0 { f32::MAX } else { recip(i[2]) });
     }
@@ -5121,6 +5127,25 @@ pub fn hand_over_pieces(world: &LooseWorld, cars: &mut [CarLevel]) {
 #[cfg(test)]
 mod piece_tests {
     use super::*;
+
+    /// The inertia floor F-88418 run offline (tools/inertia_floor_reference.py): 5,000 triples
+    /// with ties, zeros, negatives, NaN, inf and subnormals, every word.
+    #[test]
+    fn inertia_floor_matches_the_original() {
+        let w = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let mut n = 0;
+        for line in include_str!("../testdata/inertia_floor_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let a: Vec<f32> = i.split_whitespace().map(|x| f32::from_bits(w(x))).collect();
+            let o: Vec<u32> = o.split_whitespace().map(w).collect();
+            let r = inertia_floor([a[0], a[1], a[2]]);
+            for k in 0..3 {
+                assert!(r[k].to_bits() == o[k] || (r[k].is_nan() && f32::from_bits(o[k]).is_nan()), "{line}");
+            }
+            n += 1;
+        }
+        assert_eq!(n, 5000);
+    }
     use crate::physics::collision::{SectorMesh, WorldCollider};
 
     /// The island lists' STLport sort F-52683 / F-18034 run offline whole (tools/stl_sort_reference.py): 3,068 lists

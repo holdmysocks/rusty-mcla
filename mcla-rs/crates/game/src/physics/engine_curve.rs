@@ -10,9 +10,36 @@ pub(super) struct Curve {
     pub(super) coefficients: [[f32; 4]; 12],
 }
 
+/// F-46563's power at an engine speed from the torque there: (torque x speed) x 1/550 (0x3aee500f).
+pub(super) fn power(torque: f32, speed: f32) -> f32 {
+    (torque * speed) * f32::from_bits(0x3aee_500f)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The torque at a speed F-71482 and the power F-46563 run offline, their torque sources
+    /// stubbed (tools/engine_power_reference.py): the curve exactly when the count +120 and the
+    /// use-curve byte are both set (the boot sets the byte to 1, so the port's "a curve when
+    /// there is one"), else the built-in; the power every word (NaN as NaN).
+    #[test]
+    fn torque_and_power_at_a_speed_match_the_original() {
+        let w = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let mut n = 0;
+        for line in include_str!("../testdata/engine_power_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let a: Vec<u32> = i.split_whitespace().map(w).collect();
+            let o: Vec<&str> = o.split_whitespace().filter(|x| *x != "|").collect();
+            let which = if a[0] != 0 && a[1] != 0 { "1" } else { "2" };
+            assert_eq!((o[0], o[2]), (which, which), "{line}");
+            assert_eq!(w(o[1]), a[3], "{line}");
+            let p = power(f32::from_bits(a[3]), f32::from_bits(a[2]));
+            assert!(p.to_bits() == w(o[3]) || (p.is_nan() && f32::from_bits(w(o[3])).is_nan()), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
+    }
 
     #[test]
     fn endpoint_extrapolation_and_peak_match_original_vantage_capture() {
@@ -82,8 +109,8 @@ impl Curve {
         let (mut low, mut high) = (self.idle, self.max);
         while high - low > 1.0 {
             let middle = (high + low) * 0.5;
-            let mid_power = (self.evaluate(middle) * middle) * 0.001_818_181_8;
-            let low_power = (self.evaluate(low) * low) * 0.001_818_181_8;
+            let mid_power = power(self.evaluate(middle), middle);
+            let low_power = power(self.evaluate(low), low);
             if mid_power > low_power { low = middle; }
             else { high = middle; }
         }
