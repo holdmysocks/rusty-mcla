@@ -603,6 +603,40 @@ fn cmd_block(cmd: u8, hb: bool, block_steer: f32, side: bool, along: f32) -> [u3
     b
 }
 
+/// The patrol's path change F-84839 for a unit whose brain is the patrol's and that has a group: `group` = the group's paths,
+/// `own` = the unit's path in it (+1124), `timer` = +1128. A group of one path - every group of the disc's patrol file -
+/// changes nothing and draws no number. Else, with the timer <= 0 (NaN passes): one step of the shared MWC `rng`, its low 23
+/// bits x 2^-23 against `pct` (iChangePathProbPrcnt, an int) x 0.01; above it the timer becomes 1 s and nothing changes;
+/// at or under it the nearest point (dy dy, dz, dx fused; taken unless d >= the best so far, from 9999979520) over the
+/// group's other paths: Some((path, point)), (-1, -1) when there is none.
+fn path_change(group: &[Vec<Vec3>], own: i32, timer: &mut f32, pos: Vec3, pct: i32, rng: &mut (u32, u32)) -> Option<(i32, i32)> {
+    if group.len() == 1 || *timer > 0.0 {
+        return None;
+    }
+    let x = rng.0 as u64 * 0x5CDC_FAA7 + rng.1 as u64;
+    *rng = (x as u32, (x >> 32) as u32);
+    let r = ((x as u32) & 0x7F_FFFF) as f32 * f32::from_bits(872415232);
+    let p = pct as f32 * f32::from_bits(1008981770);
+    if !(r <= p) {
+        *timer = 1.0;
+        return None;
+    }
+    let (mut best, mut out) = (f32::from_bits(1343554277), (-1, -1));
+    for (j, path) in group.iter().enumerate() {
+        if j as i32 == own {
+            continue;
+        }
+        for (k, q) in path.iter().enumerate() {
+            let (dy, dz, dx) = (pos.y - q.y, pos.z - q.z, pos.x - q.x);
+            let d = fmas(dx, dx, fmas(dz, dz, dy * dy));
+            if !(d >= best) {
+                (best, out) = (d, (j as i32, k as i32));
+            }
+        }
+    }
+    Some(out)
+}
+
 /// The cop brain's Idle command handler F-44966 (vt+84; the brain command F-83687 reaches it through F-17363 after resetting the
 /// machine to Idle): the state it asks the machine for (SetNextState F-28114) for the brain's command, and whether it clears
 /// the machine's pending state (+16 = -1, command 0). 1 Stop -> 3 Stopping, 3 -> 1 PullOver, 4 -> 2 Pursuit, 5 -> 4 AlongSide,
@@ -1932,7 +1966,7 @@ impl Police {
     fn patrol(&mut self, gpu: &Gpu, world: &World, vehicles: &mut Vehicles, tun: &Tuning, busy: &[u32], dt: f32) {
         let Some(pp) = vehicles.player().map(|c| c.state.pos) else { return };
         let vis = tun.get("fCopHudIconVisibleDist", 800.0);
-        let change = tun.get("iChangePathProbPrcnt", 1.0) * 0.01;
+        let change = tun.get("iChangePathProbPrcnt", 1.0) as i32;
         let race_over = self.untimed_prev && !self.untimed_race;
         self.untimed_prev = self.untimed_race;
         for ui in 0..self.units.len() {
@@ -2031,9 +2065,14 @@ impl Police {
                 }
                 continue;
             }
-            if self.rand() < change {
-                if let Some(path) = self.units[ui].path.and_then(|g| self.paths.get(g)) {
-                    self.units[ui].pi = nearest_point(path, pos);
+            // (F-84839: the port's paths are the groups' paths - each group of the disc's file holds one, so the group is
+            // that one path and nothing changes; the general rule is `path_change`)
+            if let Some(g) = self.units[ui].path {
+                let group = std::slice::from_ref(&self.paths[g]);
+                if let Some((j, k)) = path_change(group, 0, &mut self.units[ui].cd, pos, change, &mut self.rdo_rng) {
+                    if j >= 0 {
+                        self.units[ui].pi = k as usize;
+                    }
                 }
             }
             // its route: the path's points in turn, wrapping (mcBrainCruising with looping waypoints and no speed of its
@@ -5371,6 +5410,38 @@ mod tests {
         p.arrest_posted = false;
         p.kind = TacKind::None;
         assert_eq!(p.hud_state(), 0);
+    }
+
+    #[test]
+    fn path_change_matches_the_original() {
+        // tools/path_change_reference.py: F-84839 on 4,000 cases (groups of 1 - 4 paths of 0 - 6 points, own index, timers,
+        // percents, MWC states): result, the outs (2004318071 = untouched), the timer and the MWC after
+        let mut n = 0;
+        for l in include_str!("testdata/path_change_ref.txt").lines() {
+            let (a, b) = l.split_once(" | ").unwrap();
+            let v: Vec<&str> = a.split_whitespace().collect();
+            let np: usize = v[0].parse().unwrap();
+            let cnt: Vec<usize> = v[1].split(',').map(|x| x.parse().unwrap()).collect();
+            let u = |i: usize| v[i].parse::<u32>().unwrap();
+            let own = u(2) as i32;
+            let mut timer = f32::from_bits(u(3));
+            let pct = u(4) as i32;
+            let mut rng = (u(5), u(6));
+            let pos = Vec3::new(f32::from_bits(u(7)), f32::from_bits(u(8)), f32::from_bits(u(9)));
+            let w: Vec<u32> = if v[10] == "-" { vec![] } else { v[10].split(',').map(|x| x.parse().unwrap()).collect() };
+            let mut group = Vec::new();
+            let mut q = 0;
+            for j in 0..np {
+                group.push((0..cnt[j]).map(|k| Vec3::new(f32::from_bits(w[3 * (q + k)]), f32::from_bits(w[3 * (q + k) + 1]), f32::from_bits(w[3 * (q + k) + 2]))).collect::<Vec<_>>());
+                q += cnt[j];
+            }
+            let r: Vec<i64> = b.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            let got = path_change(&group, own, &mut timer, pos, pct, &mut rng);
+            let (res, o1, o2) = match got { Some((j, k)) => (1, j as i64, k as i64), None => (0, 2004318071, 2004318071) };
+            assert_eq!((res, o1, o2, timer.to_bits() as i64, rng.0 as i64, rng.1 as i64), (r[0], r[1], r[2], r[3], r[4], r[5]), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
     }
 
     #[test]
