@@ -2346,6 +2346,60 @@ mod original_tests {
         }
     }
 
+    /// The filtered blend as the game runs it, against the original's code offline (work/driverlight/filt/blend_ref.py):
+    /// crFrame::Blend F-27951 (the weight clamped) -> the dispatcher F-63377 with the real filter and both frames bound to a
+    /// real accelerator -> F-61066 -> F-18341. Five sets' real skeletons, each filter three times, weights inside and outside
+    /// 0 .. 1; the port's blend with its own weights must give every DOF bit for bit.
+    #[test]
+    fn the_filtered_blend_matches_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let dir = Path::new(&root).join("resources/character");
+        let (mut calls, mut n, mut bad) = (0, 0, 0);
+        for line in include_str!("testdata/drv_filtblend_ref.txt").lines() {
+            let (head, body) = line.split_once(" -> ").unwrap();
+            let h: Vec<&str> = head.split_whitespace().collect();
+            let Some(c) = std::fs::read_dir(dir.join(h[0]))
+                .ok()
+                .and_then(|d| d.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "r6")).find_map(|p| crate::skin::SkinModel::read(&p)))
+            else {
+                eprintln!("no disc data for {}, skipped", h[0]);
+                continue;
+            };
+            let [face, neck, spine] = crate::skin::bone_masks(&c);
+            let nf: Vec<bool> = face.iter().map(|f| !f).collect();
+            let k = usize::from_str_radix(h[1], 16).unwrap();
+            let w = f32::from_bits(u32::from_str_radix(h[2], 16).unwrap());
+            let wts = dof_weights([&spine, &neck, &nf][k]);
+            let x = |s: &str| u32::from_str_radix(s, 16).unwrap();
+            let (mut d, mut s, mut want) = (vec![], vec![], vec![]);
+            for dof in body.split(" ; ") {
+                let (inp, out) = dof.split_once(" = ").unwrap();
+                let v: Vec<u32> = inp.split_whitespace().map(x).collect();
+                let f = |i: usize| f32::from_bits(v[i]);
+                d.push(crate::skin::FrameDof { flags: v[0] as u8, v: [f(1), f(2), f(3), f(4)] });
+                s.push(crate::skin::FrameDof { flags: v[5] as u8, v: [f(6), f(7), f(8), f(9)] });
+                want.push(out.split_whitespace().map(x).collect::<Vec<u32>>());
+            }
+            assert_eq!(d.len(), wts.len(), "{}", h[0]);
+            da::frame_blend_filtered(&mut d, &s, &wts, crate::skin::frame_weight(w));
+            for (i, (g, want)) in d.iter().zip(&want).enumerate() {
+                let got = [g.flags as u32, g.v[0].to_bits(), g.v[1].to_bits(), g.v[2].to_bits(), g.v[3].to_bits()];
+                n += 1;
+                if got[..] != want[..] {
+                    if bad < 8 {
+                        eprintln!("{} filter {k} dof {i}: got {got:08x?} want {want:08x?}", h[0]);
+                    }
+                    bad += 1;
+                }
+            }
+            calls += 1;
+        }
+        assert_eq!(bad, 0, "{bad} of {n} DOFs differ");
+        if calls > 0 {
+            assert!(calls == 45 && n > 7500, "{calls} {n}");
+        }
+    }
+
     /// The pack's own dictionary keys the clips by their plain names: the Police Car Pack's packs (clips named for the
     /// civilian Impala / Charger) give the machine every clip it asks for, as the civilian cars' do (GitHub #36).
     #[test]
