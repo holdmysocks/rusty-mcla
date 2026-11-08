@@ -148,6 +148,20 @@ fn delay_step(hold: &mut f32, t: &mut f32, ask: &mut bool, dt: f32) {
     *t += dt;
 }
 
+/// The AlongSide's side pick F-14848: true = the target's right. `a` / `b`: the points fAlongSideDist to the target's right /
+/// left over the nav mesh with the cop brain's filter (F-72689 with brain +164 = the police brain's mcCopFilter, which allows
+/// every material: `on_mesh`); `c` / `d`: the same points over a road (F-90092); `on_right`: the target on the cop's right
+/// (F-30098). One point over the mesh: that side; both: the road decides, the right first; else the side away from the cop.
+fn side_pick(a: bool, b: bool, c: bool, d: bool, on_right: bool) -> bool {
+    match (a, b) {
+        (true, false) => true,
+        (false, true) => false,
+        (true, true) if c => true,
+        (true, true) if d => false,
+        _ => !on_right,
+    }
+}
+
 /// A cruiser's state in the pull-over or pursuit tactic (GitHub #17; docs/reference/hookmen/pursuit_tactics.md).
 /// Pursuit (F-68032's FSM): CatchUp, AlongSide, Block, Halt (Delay is `flee_hold`, Search `Heat::Search`, Arrest the
 /// port's busted test); pull-over (F-36876's): CatchUp, AvoidCollision (`Avoid`), Halt.
@@ -4202,6 +4216,7 @@ impl Police {
         // (the pull-over's: within fPullOverDist - 1, the tactic's slot 8 F-66453 less 1.0)
         let (all_block, all_halt) = (within(0.5 * safe), within(t("fPullOverDist", 15.0) - 1.0));
         let on_road = |q: Vec3| crate::offroad::mesh().map_or(true, |m| m.on_road(q));
+        let on_mesh = |q: Vec3| crate::offroad::mesh().map_or(true, |m| m.on_mesh(q));
         for c in vehicles.cars.iter_mut().filter(|c| pursuer(c) || Some(c.uid) == dsp_cop) {
             let is_dsp = Some(c.uid) == dsp_cop && !pursuer(c);
             // (the head-on test's sight: this cop's own, 2 m up, no range and no cone)
@@ -4337,10 +4352,10 @@ impl Police {
                 let cdir = if cspeed > moving_v { cvel / cspeed } else { cfwd };
                 let was_head_on = tac.head_on;
                 tac.head_on = ahead && !same_dir && !same_facing && own_sight && tdir.angle_between(cdir).to_degrees() > t("fHeadOnAngle", 145.0);
-                // (F-14848: beside the target on the side over the road, the right first; else the side the cop is on)
+                // (F-14848: the points beside the target over the cop filter's mesh, then over the road; `side_pick`)
                 let pick_side = || {
-                    let (r, l) = (on_road(ppos + pright * along), on_road(ppos - pright * along));
-                    if r { true } else if l { false } else { !on_right }
+                    let (p1, p2) = (ppos + pright * along, ppos - pright * along);
+                    side_pick(on_mesh(p1), on_mesh(p2), on_road(p1), on_road(p2), on_right)
                 };
                 let st = tac.st;
                 // (Halt's steer away as its tick writes it, F-84018: from the update after it was taken)
@@ -5299,6 +5314,18 @@ mod tests {
         p.arrest_posted = false;
         p.kind = TacKind::None;
         assert_eq!(p.hud_state(), 0);
+    }
+
+    #[test]
+    fn side_pick_matches_the_original() {
+        // tools/side_pick_reference.py: F-14848 over all 32 answers of its five tests
+        let mut n = 0;
+        for l in include_str!("testdata/side_pick_ref.txt").lines() {
+            let v: Vec<bool> = l.split_whitespace().map(|x| x == "1").collect();
+            assert_eq!(side_pick(v[0], v[1], v[2], v[3], v[4]), v[5], "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 32);
     }
 
     #[test]
