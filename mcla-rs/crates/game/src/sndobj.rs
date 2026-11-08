@@ -232,6 +232,151 @@ struct Ctx {
     hpf: u16,
 }
 
+/// The runtime terms a node is updated with, its own (not inherited): +36 volume (the Envelope's, F-66882), +34 pitch,
+/// +124 pan, and at the root the request entry's pitch / pan / filters (+80 / +82 / +88 / +90). The port's request volume
+/// (entry +64) is taken as the root's +36 (I: where the original adds it is not decoded; it is a dB term either way).
+#[derive(Clone, Copy, Debug)]
+struct Rt {
+    vol: f32,
+    pitch: i32,
+    pan: i16,
+    rpan: i16,
+    lpf: Option<u16>,
+    hpf: Option<u16>,
+}
+
+impl Rt {
+    const NONE: Rt = Rt { vol: 0.0, pitch: 0, pan: -1, rpan: -1, lpf: None, hpf: None };
+}
+
+/// A root's parent (none: 0 dB, 0 cents, no pan, 23900 / 0 Hz; F-63029) and its runtime terms from the request.
+fn root_ctx(r: &Req) -> (Ctx, Rt) {
+    let ctx = Ctx { vol: 0.0, pitch: 0, pan: -1, category: if r.category != 0 { r.category } else { joaat("BASE") }, curve: 0, curve_scale: 1.0, doppler: 1.0, mask: 0, positional: 2, lpf: 23900, hpf: 0 };
+    (ctx, Rt { vol: r.volume, pitch: r.pitch, pan: r.pan, rpan: -1, lpf: Some(r.lpf), hpf: Some(r.hpf) })
+}
+
+/// The settings combine F-63029 of one node: volume = own (+28) + (runtime + the parent's unless do-not-inherit 0x80),
+/// pitch = own + runtime + request + the parent's unless 0x40, as an s16; pan = the parent's (none under 0x20), own,
+/// request, runtime pan combined (a sum where both are set, else the one set) and then mod 360 (truncating); LPF =
+/// min(the request's or 23900, the parent's), HPF = max(the request's, the parent's). Variables are not ported.
+fn settings(ni: u8, vol: f32, pitch: i32, pan: i16, p: &Ctx, rt: &Rt) -> (f32, i32, i16, u16, u16) {
+    let v = vol + if ni & 0x80 != 0 { rt.vol } else { rt.vol + p.vol };
+    let pi = (pitch + rt.pitch + if ni & 0x40 != 0 { 0 } else { p.pitch }) as i16 as i32;
+    let comb = |a: i32, b: i32| if a == -1 { b } else if b == -1 { a } else { a + b };
+    let mut c = if ni & 0x20 != 0 { -1 } else { p.pan as i32 };
+    for b in [pan, rt.pan, rt.rpan] {
+        c = comb(c, b as i32);
+    }
+    if c != -1 {
+        c %= 360;
+    }
+    let lpf = rt.lpf.map_or(23900, |l| if l < p.lpf { l } else { p.lpf });
+    let lpf = if lpf < p.lpf { lpf } else { p.lpf };
+    let hpf = rt.hpf.map_or(p.hpf, |h| if h > p.hpf { h } else { p.hpf });
+    (v, pi, c as i16, lpf, hpf)
+}
+
+/// The attack of F-37133: `ms` the AttackTime (+68), `po` the parent offset (+108, raw), `own_pd` the own predelay
+/// (+88), `ppd` the parent predelay (+96).
+#[derive(Clone, Copy, Debug)]
+struct Attack {
+    ms: u32,
+    po: u32,
+    own_pd: u32,
+    ppd: u32,
+}
+
+impl Attack {
+    /// The dB the attack adds at `now` to a sound played at `play_at`; `None` when it adds nothing: no attack, a parent
+    /// offset past it, past its end (`ppd - (po - own_pd) + ms` after the play), or before `ppd`. Its fraction is the
+    /// time since the play less `ppd`, plus `po - own_pd` (the start offset is not in it), taken as an unsigned 32-bit
+    /// number (so a time still in the predelay counts as full volume), over `ms`, clamped to [0, 1].
+    fn term(&self, play_at: u32, now: u32) -> Option<f32> {
+        self.frac(play_at, now).map(lin2db)
+    }
+
+    /// the clamped fraction `term` takes in dB
+    fn frac(&self, play_at: u32, now: u32) -> Option<f32> {
+        if self.ms == 0 {
+            return None;
+        }
+        let d = self.po.wrapping_sub(self.own_pd) as i32;
+        if d > 0 && d > self.ms as i32 {
+            return None;
+        }
+        let t = now.wrapping_sub(play_at);
+        if t >= self.ppd.wrapping_sub(d as u32).wrapping_add(self.ms) || t < self.ppd {
+            return None;
+        }
+        let x = (t.wrapping_sub(self.ppd).wrapping_add(d as u32) as f64 as f32) / (self.ms as f64 as f32);
+        Some(x.clamp(0.0, 1.0))
+    }
+}
+
+/// The timing of the original's sound object: +132 the play time, +66 waiting (1), +136 / +140 the release, +56 bit 0x04
+/// stopped.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Clock {
+    play_at: Option<u32>,
+    waiting: bool,
+    rel: Option<(u32, u32)>,
+    stopped: bool,
+}
+
+/// What a node's type does in an update: waits for its predelay, is played (its type's Play), runs (its Update), ends.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Act {
+    Wait,
+    Start,
+    Run,
+    End,
+}
+
+impl Clock {
+    /// The common Play F-91431 (the first call: the play time is `now`, the attack applied, played at once without a
+    /// total predelay `pd` (+80), else waiting) or the update driver F-68220: a stopped sound's release step
+    /// (`release_step`, the end ends it when `flags` (+58) has 0x10), else the attack; then a waiting sound is played
+    /// once `now >= play time + pd`. Returns what the type does and the volume after the attack or release.
+    fn tick(&mut self, now: u32, pd: u32, at: Attack, flags: u8, vol: f32) -> (Act, f32) {
+        let Some(t0) = self.play_at else {
+            self.play_at = Some(now);
+            self.waiting = pd != 0;
+            let vol = at.term(now, now).map_or(vol, |d| d + vol);
+            return (if self.waiting { Act::Wait } else { Act::Start }, vol);
+        };
+        let mut vol = vol;
+        if let Some((a, b)) = self.rel {
+            let (v, alive) = release_step(a, b, now, vol, flags);
+            if !alive {
+                return (Act::End, v);
+            }
+            vol = v;
+        } else if !self.stopped {
+            vol = at.term(t0, now).map_or(vol, |d| d + vol);
+        }
+        if self.waiting {
+            if t0.wrapping_add(pd) > now {
+                return (Act::Wait, vol);
+            }
+            self.waiting = false;
+            return (Act::Start, vol);
+        }
+        (Act::Run, vol)
+    }
+
+    /// The stop request F-58485 at `now` with the release `rel` (the request's override else the sound's own
+    /// ReleaseTime): from now to now + rel; true. Without one (-1): false (the sound ends once no child plays).
+    fn stop(&mut self, now: u32, rel: i32) -> bool {
+        self.stopped = true;
+        if rel >= 0 {
+            self.rel = Some((now, now.wrapping_add(rel as u32)));
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[derive(PartialEq, Clone, Copy, Debug)]
 enum St {
     Waiting,
@@ -388,14 +533,13 @@ struct Node {
     predelay_ms: f32,
     start_ms: f32,
     st: St,
-    /// ms since the node was made / since it started playing
+    /// ms since it was played (now - +132) / since it started playing (from its start offset)
     t: f32,
     play_t: f32,
-    /// set at the node's first update (F-90115, from the parent's offset then): the predelay to wait (ms of `t`),
-    /// the start offset, and the envelope's time origin in `t` (own predelay - the parent's offset, F-82485 +176)
-    wait: Option<(f32, f32, f32)>,
-    /// release: (start, end) in `t` ms
-    release: Option<(f32, f32)>,
+    /// the original object's timing (F-91431 / F-68220): play time, waiting, release, stopped
+    clock: Clock,
+    /// the envelope's time origin in `t` (own predelay - the parent's offset, F-82485 +176), set when it is played
+    env0: f32,
     /// the total predelay and start offset of the node's play (+80 / +84, F-90115; 0 until it plays)
     tot: (u32, u32),
     /// Streaming: its type duration (+200 when set, else the bank's longest wave, else -1; F-96939)
@@ -446,6 +590,8 @@ pub struct SoundLib {
     /// the audio controller's three timers (F-46276: engine+572 + 12 k: time, rate, paused): a sound on a paused timer is
     /// not updated (F-89113 skips it; its voice holds). Timer 0 is paused while the game is (F-99037, `sound.rs`).
     pub timer_paused: [bool; 3],
+    /// their times in ms (the sounds' `now`)
+    timer_ms: [f64; 3],
     /// each category's timer (`audcfg::category_timers`: categories.dat tristate pair 1 from BASE down)
     cat_timer: HashMap<u32, u8>,
     /// Randomized objects' history (kept per object, as the original writes it into the metadata)
@@ -723,6 +869,7 @@ impl SoundLib {
             clip_uses: 0,
             rng: SharedMwc,
             timer_paused: [false; 3],
+            timer_ms: [0.0; 3],
             cat_timer: audcfg::category_timers(&cat).into_iter().collect(),
             history: HashMap::new(),
             insts: Vec::new(),
@@ -1352,7 +1499,7 @@ impl SoundLib {
             },
             Payload::Speech | Payload::Other(_) => Kind::Empty,
         };
-        Some(Node { h, vol, pitch, pan, predelay_ms, start_ms, st: St::Waiting, t: 0.0, play_t: 0.0, wait: None, release: None, tot: (0, 0), ty_ms, kind })
+        Some(Node { h, vol, pitch, pan, predelay_ms, start_ms, st: St::Waiting, t: 0.0, play_t: 0.0, clock: Clock::default(), env0: 0.0, tot: (0, 0), ty_ms, kind })
     }
 
     fn voice_id(&mut self) -> u64 {
@@ -1441,7 +1588,7 @@ impl SoundLib {
         let (vol, pitch) = (h.volume as f32 * 0.01, h.pitch as i32);
         let dur_ms = clip.frames() as f32 * 1000.0 / clip.rate as f32;
         let voice = self.voice_id();
-        let root = Node { h, vol, pitch, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, wait: None, release: None, tot: (0, 0), ty_ms: 0, kind: Kind::Wave { wave: None, clip: Some(clip), voice, pos_ms: 0.0, dur_ms, looping: false } };
+        let root = Node { h, vol, pitch, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, clock: Clock::default(), env0: 0.0, tot: (0, 0), ty_ms: 0, kind: Kind::Wave { wave: None, clip: Some(clip), voice, pos_ms: 0.0, dur_ms, looping: false } };
         let id = self.next;
         self.next += 1;
         let timer = Some(self.timer_of(&root.h));
@@ -1559,13 +1706,16 @@ impl SoundLib {
     pub(crate) fn test_leaf_vols(&mut self, h: Handle, dt: f32) -> Vec<f32> {
         let Some(at) = self.insts.iter().position(|i| i.id == h.0) else { return Vec::new() };
         let mut inst = self.insts.remove(at);
+        let t = inst.timer.unwrap_or(0) as usize;
+        self.timer_ms[t] += dt as f64 * 1000.0;
+        let now = self.timer_ms[t] as u32;
         if inst.stop {
             inst.stop = false;
-            stop_node(&mut inst.root, inst.stop_ms);
+            stop_node(&mut inst.root, inst.stop_ms, now);
         }
-        let ctx = Ctx { vol: inst.req.volume, pitch: inst.req.pitch, pan: inst.req.pan, category: if inst.req.category != 0 { inst.req.category } else { joaat("BASE") }, curve: 0, curve_scale: 1.0, doppler: 1.0, mask: 0, positional: 2, lpf: inst.req.lpf.min(23900), hpf: inst.req.hpf };
+        let (ctx, rt) = root_ctx(&inst.req);
         let mut out = Vec::new();
-        self.step(&mut inst.root, dt * 1000.0, ctx, inst.req.offset(), &mut out);
+        self.step(&mut inst.root, dt * 1000.0, now, ctx, rt, inst.req.offset(), &mut out);
         if inst.root.st != St::Done {
             self.insts.insert(at, inst);
         }
@@ -1627,6 +1777,12 @@ impl SoundLib {
             audio.set_chain(id, &p);
         }
         let ms = dt * 1000.0;
+        // the timers' times (engine+572 + 12 k), in ms: a paused one stands
+        for t in 0..3 {
+            if !self.timer_paused[t] {
+                self.timer_ms[t] += ms as f64;
+            }
+        }
         let mut insts = std::mem::take(&mut self.insts);
         let (lp, lr, lf) = self.listener;
         let mut drives = Vec::new();
@@ -1644,13 +1800,14 @@ impl SoundLib {
                 });
                 continue;
             }
+            let now = self.timer_ms[inst.timer.unwrap_or(0) as usize] as u32;
             if inst.stop {
                 inst.stop = false;
-                stop_node(&mut inst.root, inst.stop_ms);
+                stop_node(&mut inst.root, inst.stop_ms, now);
             }
-            let ctx = Ctx { vol: inst.req.volume, pitch: inst.req.pitch, pan: inst.req.pan, category: if inst.req.category != 0 { inst.req.category } else { joaat("BASE") }, curve: 0, curve_scale: 1.0, doppler: 1.0, mask: 0, positional: 2, lpf: inst.req.lpf.min(23900), hpf: inst.req.hpf };
+            let (ctx, rt) = root_ctx(&inst.req);
             let mut out = Vec::new();
-            self.step(&mut inst.root, ms, ctx, inst.req.offset(), &mut out);
+            self.step(&mut inst.root, ms, now, ctx, rt, inst.req.offset(), &mut out);
             for v in out {
                 drives.push(self.emit(v, inst, (lp, lr, lf)));
             }
@@ -1697,52 +1854,36 @@ impl SoundLib {
     /// One node: timing, its type's rule, the settings handed down; playing waves are collected in `out`.
     /// `po`: the parent offset the node is played with and whether it is in percent (+108 and +57 bit 0x08): the parent's
     /// start offset, or the request's.
-    fn step(&mut self, n: &mut Node, ms: f32, parent: Ctx, po: (u32, bool), out: &mut Vec<Leaf>) {
+    fn step(&mut self, n: &mut Node, ms: f32, now: u32, parent: Ctx, rt: Rt, po: (u32, bool), out: &mut Vec<Leaf>) {
         if n.st == St::Done {
             return;
         }
-        n.t += ms;
-        if n.st == St::Waiting {
-            // predelay and start offset (F-90115): the parent's elapsed offset first eats the predelay - worked out
-            // once, when the sound is played (the wait then runs on the sound's own clock; recorded: SST_ENV_TAIL's 250 ms
-            // predelay under SST_MULTI starts its envelope 250 ms after the burn's start, work/slipstream/audiorec)
-            if n.wait.is_none() {
-                let (pd, so) = play_offsets(n, po);
-                n.tot = (pd, so);
-                n.wait = Some((pd as f32, so as f32, n.predelay_ms - po.0 as f32));
-            }
-            let (pd, so, _) = n.wait.unwrap();
-            if n.t < pd {
-                return;
-            }
-            n.st = St::Playing;
-            n.play_t = so;
-        } else {
-            n.play_t += ms;
+        // settings (F-63029)
+        let (vol, pitch, pan, lpf, hpf) = settings(n.h.no_inherit, n.vol, n.pitch, n.pan, &parent, &rt);
+        // the play (F-91431, the first update) or an update (F-68220): the release (F-31923) or the attack (F-37133), then
+        // the predelay wait; the play offsets (F-90115) from the parent's offset when it is played
+        if n.clock.play_at.is_none() {
+            n.tot = play_offsets(n, po);
+            n.env0 = n.predelay_ms - po.0 as f32;
         }
-        // settings (F-63029 / F-57176)
-        let h = &n.h;
-        let mut vol = n.vol + if h.no_inherit & 0x80 != 0 { 0.0 } else { parent.vol };
-        let pitch = n.pitch + if h.no_inherit & 0x40 != 0 { 0 } else { parent.pitch };
-        let ppan = if h.no_inherit & 0x20 != 0 { -1 } else { parent.pan };
-        let pan = match (ppan, n.pan) {
-            (-1, b) => b,
-            (a, -1) => a,
-            (a, b) => ((a as i32 + b as i32).rem_euclid(360)) as i16,
-        };
-        // attack (F-37133) and release (F-31923): linear amplitude, in dB
-        if h.attack > 0 && n.play_t < h.attack as f32 {
-            vol += lin2db((n.play_t / h.attack as f32).clamp(0.0, 1.0));
-        }
-        if let Some((a, b)) = n.release {
-            if n.t >= b {
+        let at = Attack { ms: n.h.attack as u32, po: po.0, own_pd: n.predelay_ms as u32, ppd: 0 };
+        // +58 bit 0x10 (the base constructor F-79360 sets it, OnStop's Init clears it): the release's end ends the sound
+        let flags = if matches!(n.kind, Kind::OnStop { .. }) { 0x40 } else { 0x50 };
+        let (act, vol) = n.clock.tick(now, n.tot.0, at, flags, vol);
+        match act {
+            Act::Wait => return,
+            Act::End => {
                 n.st = St::Done;
                 return;
             }
-            if b.is_finite() {
-                vol += lin2db(((b - n.t) / (b - a)).clamp(0.0, 1.0));
+            Act::Start => {
+                n.st = St::Playing;
+                n.play_t = n.tot.1 as f32;
             }
+            Act::Run => n.play_t += ms,
         }
+        n.t = now.wrapping_sub(n.clock.play_at.unwrap_or(now)) as f32;
+        let h = &n.h;
         let ctx = Ctx {
             vol,
             pitch,
@@ -1756,13 +1897,13 @@ impl SoundLib {
                 2 => parent.positional,
                 v => v,
             },
-            lpf: parent.lpf,
-            hpf: parent.hpf,
+            lpf,
+            hpf,
         };
         let offset = n.play_t;
         // what the node's children are played with: its start offset (+84, F-90115)
         let child_po = (n.tot.1, false);
-        let releasing = n.release.is_some();
+        let releasing = n.clock.stopped;
         let done = match &mut n.kind {
             Kind::Wave { clip, wave, voice, pos_ms, dur_ms, looping } => {
                 let Some(c) = clip.clone() else { n.st = St::Done; return };
@@ -1799,11 +1940,11 @@ impl SoundLib {
             }
             Kind::Group { children } => {
                 for c in children.iter_mut() {
-                    self.step(c, ms, ctx, child_po, out);
+                    self.step(c, ms, now, ctx, Rt::NONE, child_po, out);
                 }
                 // Multitrack with tristate 5: one finished child stops the others
                 if n.h.tristate(5) == 1 && n.h.kind == 13 && children.iter().any(|c| c.st == St::Done) {
-                    children.iter_mut().for_each(|c| stop_node(c, -1));
+                    children.iter_mut().for_each(|c| stop_node(c, -1, now));
                 }
                 children.iter().all(|c| c.st == St::Done)
             }
@@ -1820,7 +1961,7 @@ impl SoundLib {
                     if c.st != St::Done {
                         let mut c2 = ctx;
                         c2.vol += db;
-                        self.step(c, ms, c2, child_po, out);
+                        self.step(c, ms, now, c2, Rt::NONE, child_po, out);
                     }
                 }
                 children.iter().all(|c| c.st == St::Done)
@@ -1837,7 +1978,7 @@ impl SoundLib {
                 });
                 // a child still dead at the update is a remake that made nothing: it is not stepped
                 let r = (child.st != St::Done).then(|| {
-                    self.step(child, ms, ctx, (off, false), out);
+                    self.step(child, ms, now, ctx, Rt::NONE, (off, false), out);
                     child.st != St::Done
                 });
                 match looping_update(r, *count, plays) {
@@ -1881,7 +2022,7 @@ impl SoundLib {
                         continue;
                     }
                     let c = cur.as_mut().unwrap();
-                    self.step(c, ms, ctx, (*cur_off, false), out);
+                    self.step(c, ms, now, ctx, Rt::NONE, (*cur_off, false), out);
                     if c.st == St::Done {
                         *cur = None;
                         continue;
@@ -1899,7 +2040,7 @@ impl SoundLib {
                     *next_ms += delay_ms.max(1.0);
                 }
                 for c in live.iter_mut() {
-                    self.step(c, ms, ctx, (0, false), out);
+                    self.step(c, ms, now, ctx, Rt::NONE, (0, false), out);
                 }
                 live.retain(|c| c.st != St::Done);
                 live.is_empty() && *count != -1 && *made >= *count as i32
@@ -1909,7 +2050,7 @@ impl SoundLib {
                 // time + own predelay - the parent's offset (+176 = +88 - +108 + +96): the start offset is not in them
                 // (recorded: SST_ENV_TAIL, PreDelay 250, StartOffset 250, rises as sin((t - 250)/500 * pi/2) from the burn's
                 // start)
-                let t = n.t - n.wait.map_or(0.0, |w| w.2);
+                let t = n.t - n.env0;
                 let cv = |me: &SoundLib, k: usize, x: f32, default: f32| me.curves.get(&curves[k]).map(|c| c.eval(x)).unwrap_or(default);
                 let att = if *a > 0.0 { cv(self, 0, (t / *a).clamp(0.0, 1.0), (t / *a).clamp(0.0, 1.0)) } else { 1.0 };
                 let dec = if t <= *a {
@@ -1931,18 +2072,17 @@ impl SoundLib {
                     Some(_) => 0.0,
                     None => 1.0,
                 };
-                let mut c2 = ctx;
-                c2.vol += lin2db(att * dec * rel);
-                self.step(child, ms, c2, child_po, out);
+                // into the child's runtime volume +36 (F-66882): its own term, kept under its do-not-inherit 0x80
+                self.step(child, ms, now, ctx, Rt { vol: lin2db(att * dec * rel), ..Rt::NONE }, child_po, out);
                 child.st == St::Done || (rel_from.is_some() && rel <= 0.0)
             }
             Kind::OnStop { child, on_stop, stopped } => {
-                if n.release.is_some() && stopped.is_none() {
+                if n.clock.stopped && stopped.is_none() {
                     *stopped = self.make(*on_stop, 1).map(Box::new);
                 }
-                self.step(child, ms, ctx, child_po, out);
+                self.step(child, ms, now, ctx, Rt::NONE, child_po, out);
                 if let Some(s) = stopped {
-                    self.step(s, ms, ctx, (0, false), out);
+                    self.step(s, ms, now, ctx, Rt::NONE, (0, false), out);
                     s.st == St::Done
                 } else {
                     child.st == St::Done
@@ -2517,8 +2657,7 @@ pub(crate) fn rank_pick(banks: &[&[VoiceSlot]], budget: u32, free: u32) -> Picke
 /// The release ramp of F-31923 on the original's integer clock: `ratio = (end - now) / (end - start)` (0.0 when `end <= start`
 /// or `now >= end`, which also marks the sound ended: -100 dB), `vol += 20 * log2(ratio) * 0.301` in dB (-100 below 1e-5). Returns the
 /// new volume and whether the sound goes on (an ended sound stops only when `flags & 0x10` is clear in the original's +58).
-/// Verified bit for bit by `release_step_is_the_originals`; `step` still keeps its float clock and ends the sound at `now >= end`.
-#[allow(dead_code)]
+/// Verified bit for bit by `release_step_is_the_originals`; `Clock::tick` steps a stopped sound's release with it.
 pub(crate) fn release_step(start: u32, end: u32, now: u32, vol: f32, flags: u8) -> (f32, bool) {
     let (ratio, ended) = if end <= start || now >= end { (0.0, true) } else { ((end - now) as f32 / (end - start) as f32, false) };
     (vol + lin2db(ratio), !(ended && flags & 0x10 != 0))
@@ -2526,39 +2665,36 @@ pub(crate) fn release_step(start: u32, end: u32, now: u32, vol: f32, flags: u8) 
 
 /// A stop request down the tree (F-58485): the release time, or done at once without one. `ovr`: the request's release
 /// override (entry +192), which replaces the sound's own ReleaseTime unless -1.
-fn stop_node(n: &mut Node, ovr: i32) {
-    if n.st == St::Done || n.release.is_some() {
+fn stop_node(n: &mut Node, ovr: i32, now: u32) {
+    if n.st == St::Done || n.clock.stopped {
         return;
     }
     let rel = if ovr != -1 { ovr } else { n.h.release as i32 };
-    if rel >= 0 && n.st == St::Playing {
+    if n.clock.stop(now, rel) {
         // F-58485: a sound with a ReleaseTime only marks its own release (start = now, end = now + release) and
         // returns; its children are not stopped and play on under the fading parent until the release ends (recorded:
         // the slipstream burn SLIPSTREAM_NITROUS_MASTER, ReleaseTime 2000, kept both SST envelopes at their full value
         // for the 2 s after the stop - work/slipstream/audiorec)
-        n.release = Some((n.t, n.t + rel as f32));
         return;
     } else if !matches!(n.kind, Kind::OnStop { .. } | Kind::Envelope { .. }) {
         n.st = St::Done;
         return;
-    } else {
-        // no release time: OnStop plays its stop sound, Envelope its release stage; they end by themselves
-        n.release = Some((n.t, f32::INFINITY));
     }
+    // no release time: OnStop plays its stop sound, Envelope its release stage; they end by themselves
     match &mut n.kind {
-        Kind::Group { children } | Kind::Twin { children, .. } => children.iter_mut().for_each(|c| stop_node(c, ovr)),
+        Kind::Group { children } | Kind::Twin { children, .. } => children.iter_mut().for_each(|c| stop_node(c, ovr, now)),
         // Envelope: its own release stage fades the child (the step above starts it)
-        Kind::Looping { child, .. } => stop_node(child, ovr),
+        Kind::Looping { child, .. } => stop_node(child, ovr, now),
         Kind::Sequential { cur, .. } => {
             if let Some(c) = cur {
-                stop_node(c, ovr)
+                stop_node(c, ovr, now)
             }
         }
         Kind::Retrig { live, count, made, .. } => {
             *count = *made as i16;
-            live.iter_mut().for_each(|c| stop_node(c, ovr))
+            live.iter_mut().for_each(|c| stop_node(c, ovr, now))
         }
-        Kind::OnStop { child, .. } => stop_node(child, ovr),
+        Kind::OnStop { child, .. } => stop_node(child, ovr, now),
         _ => {}
     }
 }
@@ -2568,8 +2704,7 @@ fn reset_node(n: &mut Node) {
     n.st = St::Waiting;
     n.t = 0.0;
     n.play_t = 0.0;
-    n.wait = None;
-    n.release = None;
+    n.clock = Clock::default();
     n.tot = (0, 0);
     match &mut n.kind {
         Kind::Wave { pos_ms, .. } | Kind::Stream { pos_ms, .. } => *pos_ms = 0.0,
@@ -2938,7 +3073,7 @@ mod tests {
                 9 => Kind::Retrig { child_hash: 0, count: p[0] as i16, delay_ms: p[1] as f32, next_ms: 0.0, made: 0, live: ch.drain(..).collect() },
                 _ => Kind::Group { children: ch.drain(..).collect() },
             };
-            Node { h, vol: 0.0, pitch: 0, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, wait: None, release: None, tot: (f[1] as u32, f[2] as u32), ty_ms, kind }
+            Node { h, vol: 0.0, pitch: 0, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, clock: Clock::default(), env0: 0.0, tot: (f[1] as u32, f[2] as u32), ty_ms, kind }
         }
         let mut n = 0;
         for l in include_str!("testdata/sound_duration_ref.txt").lines() {
@@ -3043,6 +3178,126 @@ mod tests {
             }
         }
         assert!(bad.is_empty(), "{} differ, first: {:?}", bad.len(), bad.first());
+    }
+
+    /// A sound's play F-91431 and updates F-68220 (settings F-63029, play offsets F-90115, attack F-37133, release F-31923,
+    /// stop F-58485) against the original's own code (tools/sound_node_reference.py): per call the state, the waiting
+    /// flag, what the type does, the volume +40 and the pitch, pan, LPF and HPF handed down.
+    #[test]
+    fn node_play_and_updates_are_the_originals() {
+        use super::*;
+        let mut cases = 0;
+        let mut calls = 0;
+        let mut nears = 0;
+        let mut bad = Vec::new();
+        let mut lines = include_str!("testdata/sound_node_ref.txt").lines().peekable();
+        while let Some(l) = lines.next() {
+            let Some(nl) = l.strip_prefix("N") else { continue };
+            let f: HashMap<u32, u32> = nl
+                .split_whitespace()
+                .map(|kv| {
+                    let (k, v) = kv.split_once(':').unwrap();
+                    (k.parse().unwrap(), v.parse().unwrap())
+                })
+                .collect();
+            let g = |o: u32, d: u32| f.get(&(0x200000 + o)).copied().unwrap_or(d);
+            let gp = |o: u32, d: u32| f.get(&(0x200100 + o)).copied().unwrap_or(d);
+            let gr = |o: u32, d: u32| f.get(&(0x300000 + o)).copied().unwrap_or(d);
+            let has_par = g(5, 255) != 255;
+            let has_req = g(4, 255) != 255;
+            let b9 = g(8, 0) as u8;
+            let mut hb = vec![12u8, 0, 0, 0, 0];
+            hb.extend_from_slice(&0xaaaa_aaaau32.to_be_bytes());
+            hb.extend_from_slice(&[b9, 0, 0, 0, 0, 0]);
+            let (h, _) = audcfg::parse_header(&hb);
+            let (pd, so, po) = (g(88, 0), g(104, 0), g(108, 0));
+            let n = Node { h, vol: f32::from_bits(g(28, 0)), pitch: g(32, 0) as u16 as i16 as i32, pan: g(10, 0) as u16 as i16, predelay_ms: pd as f32, start_ms: so as f32, st: St::Waiting, t: 0.0, play_t: 0.0, clock: Clock::default(), env0: 0.0, tot: (0, 0), ty_ms: 0, kind: Kind::Empty };
+            let (mut parent, _) = root_ctx(&Req::default());
+            if has_par {
+                parent.vol = f32::from_bits(gp(40, 0));
+                parent.lpf = gp(48, 23900) as u16;
+                parent.hpf = gp(50, 0) as u16;
+                parent.pan = gp(52, 0xffff) as u16 as i16;
+                parent.pitch = gp(54, 0) as u16 as i16 as i32;
+            }
+            let rt = Rt {
+                vol: f32::from_bits(g(36, 0)),
+                pitch: g(34, 0) as u16 as i16 as i32 + if has_req { gr(80, 0) as u16 as i16 as i32 } else { 0 },
+                pan: if has_req { gr(82, 0) as u16 as i16 } else { -1 },
+                rpan: g(124, 0xffff) as u16 as i16,
+                lpf: has_req.then(|| gr(88, 0) as u16),
+                hpf: has_req.then(|| gr(90, 0) as u16),
+            };
+            let tot = play_offsets(&n, (po, false));
+            let at = Attack { ms: g(68, 0), po, own_pd: pd, ppd: 0 };
+            let flags = g(58, 0x50) as u8;
+            let rel = if has_req && gr(192, u32::MAX) as i32 != -1 { gr(192, 0) as i32 } else { g(136, u32::MAX) as i32 };
+            let mut clock = Clock::default();
+            let mut ended_at_stop = false;
+            cases += 1;
+            while let Some(&c) = lines.peek() {
+                if c == "=" {
+                    lines.next();
+                    break;
+                }
+                lines.next();
+                let (head, o) = c.split_once(" -> ").unwrap_or((c, ""));
+                let mut hw = head.split(' ');
+                let (k, now) = (hw.next().unwrap(), hw.next().unwrap().parse::<u32>().unwrap());
+                if k == "s" {
+                    ended_at_stop = !clock.stop(now, rel);
+                    continue;
+                }
+                calls += 1;
+                let w: Vec<&str> = o.split(' ').collect();
+                // (the play returns nothing: its r3 is whatever was left)
+                let (r, st, wt) = (if k == "p" { 1 } else { w[0].parse::<i32>().unwrap() }, w[1], w[2]);
+                let vol40 = u32::from_str_radix(w[3], 16).unwrap();
+                let called = w.get(9).copied().unwrap_or("");
+                let (v, pi, pa, lp, hp) = settings(b9, n.vol, n.pitch, n.pan, &parent, &rt);
+                let before = clock;
+                let (act, v) = if ended_at_stop { (Act::End, v) } else { clock.tick(now, tot.0, at, flags, v) };
+                // the one rounding the port may differ in: the recomp's vector log2 (vlogefp) is the platform's f32 log2,
+                // lin2db rounds the f64 one (correctly rounded everywhere); a mismatch must be exactly that
+                let f32db = |x: f32| if x - 1e-5 >= 0.0 { x.log2() * 0.301 * 20.0 } else { -100.0 };
+                let base = settings(b9, n.vol, n.pitch, n.pan, &parent, &rt).0;
+                let alt = match (before.play_at, before.rel) {
+                    (Some(_), Some((a, b))) if !ended_at_stop => {
+                        let x = if b <= a || now >= b { 0.0 } else { (b - now) as f32 / (b - a) as f32 };
+                        Some(base + f32db(x))
+                    }
+                    (Some(t0), None) if !before.stopped => at.frac(t0, now).map(|x| base + f32db(x)),
+                    (None, _) => at.frac(now, now).map(|x| base + f32db(x)),
+                    _ => None,
+                };
+                let near = v.to_bits() != vol40 && alt.is_some_and(|a| a.to_bits() == vol40);
+                if near {
+                    nears += 1;
+                }
+                let v = if near { f32::from_bits(vol40) } else { v };
+                let ok_act = match act {
+                    Act::Wait => r == 1 && wt == "1" && called.is_empty(),
+                    Act::Start => r == 1 && wt == "2" && called == "P",
+                    Act::Run => called == "U" && (r == 1 || st == "3"),
+                    Act::End => r == 0 && st == "3" && called.ends_with('K'),
+                };
+                let same = v.to_bits() == vol40
+                    && pi == w[5].parse::<i32>().unwrap()
+                    && pa as i32 == w[6].parse::<i32>().unwrap()
+                    && lp as u32 == w[7].parse::<u32>().unwrap()
+                    && hp as u32 == w[8].parse::<u32>().unwrap();
+                if !(ok_act && same) && bad.len() < 20 {
+                    bad.push(format!("{nl} | {c} | port {act:?} {:08x} {pi} {pa} {lp} {hp}", v.to_bits()));
+                }
+                if !(ok_act && same) && bad.len() >= 20 {
+                    bad.push(String::new());
+                }
+            }
+        }
+        assert!(cases > 1000 && calls > 40_000, "{cases} {calls}");
+        assert!(bad.is_empty(), "{} wrong of {calls}:\n{}", bad.len(), bad.join("\n"));
+        println!("{cases} cases, {calls} calls, {nears} differ only in the log2 rounding");
+        assert!(nears <= 40, "{nears}");
     }
 
     /// F-31923 (release step) against the original's own code on 4000 cases (work/audio2/verify/ref4.py, vector shim)

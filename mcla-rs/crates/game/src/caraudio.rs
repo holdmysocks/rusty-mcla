@@ -3305,7 +3305,8 @@ mod tests {
         let mut base: Option<(f32, f32)> = None;
         for t in 1..=1200 {
             let v = lib.test_leaf_vols(h, 0.001);
-            let tf = t as f32;
+            // the time since the play: the first update plays it (F-91431, play time = that update's now)
+            let tf = (t - 1) as f32;
             if t == 300 {
                 assert_eq!(v.len(), 2, "{v:?}");
                 base = Some((v[0] - lin2db(attack(tf)), v[1] - lin2db(tail(tf))));
