@@ -235,8 +235,8 @@ pub struct Frame<'a> {
     /// weathers' m_LampGlows, which feeds the cone pass of F-59499)
     pub next: Option<(usize, f32)>,
     pub hour: f32,
-    /// the city's collision, for what is over a drop's place
-    pub collider: Option<&'a crate::physics::collision::WorldCollider>,
+    /// the city's collision and the drawn garage rooms (`World::set_collider`), for what is over a drop's place
+    pub collider: Option<(&'a crate::physics::collision::WorldCollider, &'a crate::physics::collision::WorldCollider)>,
 }
 
 struct Rain {
@@ -489,7 +489,7 @@ impl Rain {
 
     /// One update of every particle (ParticleUpdatePS). `back`: the camera's z axis (it looks
     /// the other way), `limit`: a new drop lives if its three numbers add up to more.
-    fn tick(&mut self, cam: Vec3, cam_step: Vec3, back: Vec3, ground: f32, limit: f32, collider: Option<&crate::physics::collision::WorldCollider>) {
+    fn tick(&mut self, cam: Vec3, cam_step: Vec3, back: Vec3, ground: f32, limit: f32, collider: Option<(&crate::physics::collision::WorldCollider, &crate::physics::collision::WorldCollider)>) {
         // Acceleration_Delta: the executable's own (0, -0.98, 0) and 0.05 a frame
         let (acc, dt) = (Vec3::new(0.0, -0.98, 0.0), 0.05);
         let emit = Vec3::new(self.t("EmitterPosX", -17.0), self.t("EmitterPosY", 6.0), self.t("EmitterPosZ", -29.2));
@@ -510,7 +510,7 @@ impl Rain {
                 // (the original tests every update against a depth picture of the place taken from
                 // 58 m over the camera, 122 m deep: whatever is highest there stops the drop - a roof
                 // over it at once. Here: the collision's first face from that height, once a drop.)
-                d.floor = collider.and_then(|c| c.ground(Vec3::new(d.pos.x, cam.y, d.pos.z), 58.0, 64.0)).map_or(ground, |h| h.point.y);
+                d.floor = collider.and_then(|(c, sets)| c.ground_with(sets, Vec3::new(d.pos.x, cam.y, d.pos.z), 58.0, 64.0)).map_or(ground, |h| h.point.y);
             }
             if d.pos.y <= d.floor || d.state < 1.25 {
                 // on the ground: it stays, one step of the splash an update

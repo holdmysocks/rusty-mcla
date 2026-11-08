@@ -6240,7 +6240,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             Some(s) => *s,
                             None => {
                                 // (every tick while a drive-in waits on it: the fade up waits for the car's place)
-                                let s = if self.tick_no % 20 == 0 || self.garage_in.is_some() { garage_spot(&world.collider, mn, mx) } else { None };
+                                let s = if self.tick_no % 20 == 0 || self.garage_in.is_some() { garage_spot(&|o, d, t| world.collider.raycast_with(&world.set_collider, o, d, t), mn, mx) } else { None };
                                 if s.is_some() {
                                     self.garage_spots.insert(k, s);
                                 }
@@ -6257,7 +6257,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             let known = poses.iter().copied().filter(|q| q.0.distance(mid) < 80.0).min_by(|a, b| a.0.distance_squared(mid).partial_cmp(&b.0.distance_squared(mid)).unwrap());
                             let mut rot = glam::Quat::from_rotation_y(0.6);
                             if let Some((kp, kr)) = known {
-                                if let Some(g) = world.collider.raycast(kp + Vec3::Y * 1.5, -Vec3::Y, 4.0) {
+                                if let Some(g) = world.collider.raycast_with(&world.set_collider, kp + Vec3::Y * 1.5, -Vec3::Y, 4.0) {
                                     p = g.point;
                                     rot = kr;
                                     // (the game's own pose in the Hollywood garage, read from the running
@@ -6271,7 +6271,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                     clear = 9.0;
                                     for k in 0..12 {
                                         let a = k as f32 / 12.0 * std::f32::consts::TAU;
-                                        if let Some(hit) = world.collider.raycast(p + Vec3::Y * 0.9, Vec3::new(a.cos(), 0.0, a.sin()), clear) {
+                                        if let Some(hit) = world.collider.raycast_with(&world.set_collider, p + Vec3::Y * 0.9, Vec3::new(a.cos(), 0.0, a.sin()), clear) {
                                             clear = clear.min(hit.t);
                                         }
                                     }
@@ -11611,7 +11611,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         });
         self.fx.prepare(&gpu, self.cam.pos);
         // (the rain and the lamps' cones in it, as the original draws them - rain.rs)
-        rain::prepare(&gpu, &rain::Frame { cam_pos: globals.cam_pos, inv_view_proj: globals.inv_view_proj, rain: self.rain_amount(), light: self.sky_now().tod.map(|t| (t.light + t.ambient, t.nfl)), car: self.vehicles.player().filter(|_| self.drive).map(|c| c.render_pose(self.vehicles.render_alpha).pos), lamps: &self.props.prop_lamps, weather: match self.weather { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 }, next: self.sky_next.as_ref().map(|(_, w, f)| (match w { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 }, *f)), hour: self.time_of_day, collider: Some(&world.collider) });
+        rain::prepare(&gpu, &rain::Frame { cam_pos: globals.cam_pos, inv_view_proj: globals.inv_view_proj, rain: self.rain_amount(), light: self.sky_now().tod.map(|t| (t.light + t.ambient, t.nfl)), car: self.vehicles.player().filter(|_| self.drive).map(|c| c.render_pose(self.vehicles.render_alpha).pos), lamps: &self.props.prop_lamps, weather: match self.weather { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 }, next: self.sky_next.as_ref().map(|(_, w, f)| (match w { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 }, *f)), hour: self.time_of_day, collider: Some((&world.collider, &world.set_collider)) });
         // (the drivers and riders are mcCharacterPlus instances: path A as the scenes' cast, by day and at night -
         // F-21528, recorded on the player's rider; MCLA_DRV_LIGHT_OLD=1: the city's object look as before)
         self.drivers.set_light(std::env::var("MCLA_DRV_LIGHT_OLD").is_err().then(|| skin::CharLight { night_path: true, dynamic: self.peds.night_lights.as_ref().map(|d| d.0), ..char_light }));
@@ -16410,8 +16410,9 @@ fn run_game() -> Result<()> {
 }
 
 
-/// The most open piece of floor inside an interior set: (position, free radius).
-fn garage_spot(col: &physics::collision::WorldCollider, mn: Vec3, mx: Vec3) -> Option<(Vec3, f32)> {
+/// The most open piece of floor inside an interior set: (position, free radius). `ray`: the city's collision with the
+/// drawn rooms (`World::set_collider`).
+fn garage_spot(ray: &dyn Fn(Vec3, Vec3, f32) -> Option<physics::collision::Hit>, mn: Vec3, mx: Vec3) -> Option<(Vec3, f32)> {
     let mut best: Option<(Vec3, f32)> = None;
     let dirs: Vec<Vec3> = (0..12).map(|k| {
         let a = k as f32 / 12.0 * std::f32::consts::TAU;
@@ -16424,12 +16425,12 @@ fn garage_spot(col: &physics::collision::WorldCollider, mn: Vec3, mx: Vec3) -> O
             let zz = z;
             z += 1.5;
             // the floor may lie above the lowest point of the set (pits, ramps): probe a few levels
-            let floor = [1.6f32, 3.6, 5.6].iter().find_map(|h| col.raycast(Vec3::new(x, mn.y + h, zz), -Vec3::Y, 2.2).filter(|g| g.normal.y > 0.97 && col.raycast(g.point + Vec3::Y * 2.2, Vec3::Y, 40.0).is_some()));
+            let floor = [1.6f32, 3.6, 5.6].iter().find_map(|h| ray(Vec3::new(x, mn.y + h, zz), -Vec3::Y, 2.2).filter(|g| g.normal.y > 0.97 && ray(g.point + Vec3::Y * 2.2, Vec3::Y, 40.0).is_some()));
             let Some(g) = floor else { continue };
             let mut clear = 9.0f32;
             for h in [0.3f32, 0.9] {
                 for d in &dirs {
-                    if let Some(hit) = col.raycast(g.point + Vec3::Y * h, *d, clear) {
+                    if let Some(hit) = ray(g.point + Vec3::Y * h, *d, clear) {
                         clear = clear.min(hit.t);
                     }
                 }

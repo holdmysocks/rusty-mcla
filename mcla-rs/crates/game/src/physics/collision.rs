@@ -544,41 +544,99 @@ pub struct WorldCollider {
     pub city: Option<std::sync::Arc<super::camprobe::ProbeBound>>,
 }
 
-impl WorldCollider {
-    /// Cast a ray against all loaded sectors (walks the XZ cells along the ray).
-    pub fn raycast(&self, o: Vec3, d: Vec3, max_t: f32) -> Option<Hit> {
-        let mut best: Option<Hit> = None;
-        let end = o + d * max_t;
-        let mn = o.min(end);
-        let mx = o.max(end);
-        let (cx0, cz0) = cell_of(mn.x, mn.z);
-        let (cx1, cz1) = cell_of(mx.x, mx.z);
-        // limit the cell footprint for long near-horizontal rays
-        if (cx1 - cx0 + 1) * (cz1 - cz0 + 1) > 400 {
-            return self.raycast_coarse(o, d, max_t);
+/// Two colliders' sectors as one map would hold them: by id, `a`'s first on an equal id.
+fn merged<'a>(a: &'a std::collections::BTreeMap<usize, SectorMesh>, b: &'a std::collections::BTreeMap<usize, SectorMesh>) -> impl Iterator<Item = (&'a usize, &'a SectorMesh)> + 'a {
+    let (mut a, mut b) = (a.iter().peekable(), b.iter().peekable());
+    std::iter::from_fn(move || match (a.peek(), b.peek()) {
+        (Some(x), Some(y)) if y.0 < x.0 => b.next(),
+        (Some(_), _) => a.next(),
+        _ => b.next(),
+    })
+}
+
+/// `WorldCollider::raycast` over the sectors `sectors()` walks (in their id order): the nearest hit, the first found
+/// on an equal t.
+fn raycast_in<'a, I: Iterator<Item = (&'a usize, &'a SectorMesh)>>(sectors: impl Fn() -> I, o: Vec3, d: Vec3, max_t: f32) -> Option<Hit> {
+    let mut best: Option<Hit> = None;
+    let end = o + d * max_t;
+    let mn = o.min(end);
+    let mx = o.max(end);
+    let (cx0, cz0) = cell_of(mn.x, mn.z);
+    let (cx1, cz1) = cell_of(mx.x, mx.z);
+    // limit the cell footprint for long near-horizontal rays
+    if (cx1 - cx0 + 1) * (cz1 - cz0 + 1) > 400 {
+        return raycast_coarse(sectors, o, d, max_t);
+    }
+    for (_, s) in sectors() {
+        if mx.x < s.min.x || mn.x > s.max.x || mx.z < s.min.z || mn.z > s.max.z || mx.y < s.min.y || mn.y > s.max.y {
+            continue;
         }
-        for s in self.sectors.values() {
-            if mx.x < s.min.x || mn.x > s.max.x || mx.z < s.min.z || mn.z > s.max.z || mx.y < s.min.y || mn.y > s.max.y {
-                continue;
-            }
-            for cx in cx0..=cx1 {
-                for cz in cz0..=cz1 {
-                    if let Some(list) = s.grid.get(&(cx, cz)) {
-                        for &i in list {
-                            if !seen(s, i as usize) {
-                                continue;
-                            }
-                            let tri = &s.tris[i as usize];
-                            let lim = best.map_or(max_t, |h| h.t);
-                            if let Some((t, n)) = ray_tri(o, d, tri, lim) {
-                                best = Some(Hit { t, point: o + d * t, normal: n, surface: Surface::from_u8(s.mats.get(i as usize).copied().unwrap_or(0)) });
-                            }
+        for cx in cx0..=cx1 {
+            for cz in cz0..=cz1 {
+                if let Some(list) = s.grid.get(&(cx, cz)) {
+                    for &i in list {
+                        if !seen(s, i as usize) {
+                            continue;
+                        }
+                        let tri = &s.tris[i as usize];
+                        let lim = best.map_or(max_t, |h| h.t);
+                        if let Some((t, n)) = ray_tri(o, d, tri, lim) {
+                            best = Some(Hit { t, point: o + d * t, normal: n, surface: Surface::from_u8(s.mats.get(i as usize).copied().unwrap_or(0)) });
                         }
                     }
                 }
             }
         }
-        best
+    }
+    best
+}
+
+fn raycast_coarse<'a, I: Iterator<Item = (&'a usize, &'a SectorMesh)>>(sectors: impl Fn() -> I, o: Vec3, d: Vec3, max_t: f32) -> Option<Hit> {
+    // step along the ray cell by cell
+    let mut best: Option<Hit> = None;
+    let steps = (max_t / CELL).ceil().max(1.0) as i32;
+    let mut visited = hashbrown::HashSet::new();
+    for i in 0..=steps {
+        let p = o + d * (i as f32 * CELL).min(max_t);
+        let c = cell_of(p.x, p.z);
+        if !visited.insert(c) {
+            continue;
+        }
+        for (_, s) in sectors() {
+            if let Some(list) = s.grid.get(&c) {
+                for &ti in list {
+                    if !seen(s, ti as usize) {
+                        continue;
+                    }
+                    let lim = best.map_or(max_t, |h| h.t);
+                    if let Some((t, n)) = ray_tri(o, d, &s.tris[ti as usize], lim) {
+                        best = Some(Hit { t, point: o + d * t, normal: n, surface: Surface::from_u8(s.mats.get(ti as usize).copied().unwrap_or(0)) });
+                    }
+                }
+            }
+        }
+        if best.is_some() && best.unwrap().t < (i as f32 + 1.0) * CELL {
+            break;
+        }
+    }
+    best
+}
+
+impl WorldCollider {
+    /// Cast a ray against all loaded sectors (walks the XZ cells along the ray).
+    pub fn raycast(&self, o: Vec3, d: Vec3, max_t: f32) -> Option<Hit> {
+        raycast_in(|| self.sectors.iter(), o, d, max_t)
+    }
+
+    /// `raycast` against these sectors and `extra`'s together, in the order of their ids as one collider would hold
+    /// them: the port's own users that read the drawn garage rooms (`World::set_collider`) besides the city.
+    pub fn raycast_with(&self, extra: &WorldCollider, o: Vec3, d: Vec3, max_t: f32) -> Option<Hit> {
+        raycast_in(|| merged(&self.sectors, &extra.sectors), o, d, max_t)
+    }
+
+    /// `ground` against these sectors and `extra`'s together (`raycast_with`).
+    pub fn ground_with(&self, extra: &WorldCollider, p: Vec3, up: f32, down: f32) -> Option<Hit> {
+        self.raycast_with(extra, p + Vec3::Y * up, -Vec3::Y, up + down)
     }
 
     /// The level's probe against the city bound (sub_827974F0 -> sub_822C6110, include 0x800: the
@@ -671,37 +729,6 @@ impl WorldCollider {
         hits.sort_by(|a, b| a.0.t.total_cmp(&b.0.t).then(a.1.cmp(&b.1)));
         hits.truncate(max);
         hits.into_iter().map(|h| h.0).collect()
-    }
-
-    fn raycast_coarse(&self, o: Vec3, d: Vec3, max_t: f32) -> Option<Hit> {
-        // step along the ray cell by cell
-        let mut best: Option<Hit> = None;
-        let steps = (max_t / CELL).ceil().max(1.0) as i32;
-        let mut visited = hashbrown::HashSet::new();
-        for i in 0..=steps {
-            let p = o + d * (i as f32 * CELL).min(max_t);
-            let c = cell_of(p.x, p.z);
-            if !visited.insert(c) {
-                continue;
-            }
-            for s in self.sectors.values() {
-                if let Some(list) = s.grid.get(&c) {
-                    for &ti in list {
-                        if !seen(s, ti as usize) {
-                            continue;
-                        }
-                        let lim = best.map_or(max_t, |h| h.t);
-                        if let Some((t, n)) = ray_tri(o, d, &s.tris[ti as usize], lim) {
-                            best = Some(Hit { t, point: o + d * t, normal: n, surface: Surface::from_u8(s.mats.get(ti as usize).copied().unwrap_or(0)) });
-                        }
-                    }
-                }
-            }
-            if best.is_some() && best.unwrap().t < (i as f32 + 1.0) * CELL {
-                break;
-            }
-        }
-        best
     }
 
     /// Ground height below a point (looks up to `up` above and `down` below).
@@ -1051,6 +1078,71 @@ mod probe_all_tests {
         }
         eprintln!("{cases} segments, {with_hits} with hits, {big} past 400 cells, {ties} with equal t");
         assert!(with_hits > cases / 3 && big > 50);
+    }
+
+    /// `raycast_with` over two colliders gives what one collider holding all their sectors gives, to the bit: the
+    /// nearest hit, the first in id order on an equal t (sectors split between the two at random, ids interleaved;
+    /// short rays and long ones past 400 cells, which walk the coarse way; some vertices on the cell lines).
+    #[test]
+    fn raycast_with_is_one_colliders_raycast() {
+        let mut r = 0x1234_5679u32;
+        let mut f = move || {
+            r ^= r << 13;
+            r ^= r >> 17;
+            r ^= r << 5;
+            r as f32 / u32::MAX as f32
+        };
+        let (mut cases, mut hits, mut coarse, mut from_extra, mut ties) = (0, 0, 0, 0, 0);
+        for world in 0..8 {
+            let mut all = WorldCollider::default();
+            let (mut a, mut b) = (WorldCollider::default(), WorldCollider::default());
+            for si in 0..8usize {
+                let base = Vec3::new((si % 4) as f32 * 120.0 - 200.0, 0.0, (si / 4) as f32 * 150.0 - 80.0);
+                let mut tris = Vec::new();
+                let mut mats = Vec::new();
+                for k in 0..300 {
+                    let size = [0.5, 4.0, 12.0, 40.0][k % 4];
+                    let snap = |v: f32| if world % 2 == 0 { (v / 8.0).round() * 8.0 } else { v };
+                    let c = base + Vec3::new(snap(f() * 160.0 - 80.0), f() * 10.0, snap(f() * 160.0 - 80.0));
+                    let mut v = || c + Vec3::new(snap((f() - 0.5) * size), (f() - 0.5) * size * 0.3, snap((f() - 0.5) * size));
+                    tris.push([v(), v(), v()]);
+                    mats.push((k % 9) as u8);
+                }
+                // (a copy of a floor in another sector: equal t across the two colliders)
+                if si == 3 {
+                    tris.push([Vec3::new(-140.0, 2.0, -40.0), Vec3::new(-60.0, 2.0, -40.0), Vec3::new(-100.0, 2.0, 40.0)]);
+                    mats.push(1);
+                }
+                if si == 6 {
+                    tris.push([Vec3::new(-140.0, 2.0, -40.0), Vec3::new(-60.0, 2.0, -40.0), Vec3::new(-100.0, 2.0, 40.0)]);
+                    mats.push(2);
+                }
+                let id = si * 7 + 3;
+                all.sectors.insert(id, SectorMesh::build_with(tris.clone(), mats.clone()));
+                if f() < 0.5 { &mut a } else { &mut b }.sectors.insert(id, SectorMesh::build_with(tris, mats));
+            }
+            for k in 0..500 {
+                // (every fifth over the shared floor)
+                let o = if k % 5 == 0 { Vec3::new(f() * 40.0 - 120.0, 2.5 + f() * 10.0, f() * 40.0 - 20.0) } else { Vec3::new(f() * 600.0 - 300.0, f() * 20.0 - 2.0, f() * 600.0 - 300.0) };
+                let (d, t) = match k % 4 {
+                    0 => (-Vec3::Y, 30.0),
+                    1 => (Vec3::new(f() - 0.5, f() * 0.2 - 0.1, f() - 0.5).normalize(), 6.0 + f() * 40.0),
+                    2 => (Vec3::new(f() - 0.5, -0.05, f() - 0.5).normalize(), 600.0),
+                    _ => (Vec3::new(f() - 0.5, f() - 0.8, f() - 0.5).normalize(), 25.0),
+                };
+                let one = all.raycast(o, d, t);
+                let two = a.raycast_with(&b, o, d, t);
+                assert_eq!(fmt(&one.into_iter().collect::<Vec<_>>()), fmt(&two.into_iter().collect::<Vec<_>>()), "world {world} case {k}");
+                assert_eq!(fmt(&all.ground(o, 5.0, 20.0).into_iter().collect::<Vec<_>>()), fmt(&a.ground_with(&b, o, 5.0, 20.0).into_iter().collect::<Vec<_>>()), "world {world} ground {k}");
+                cases += 1;
+                hits += one.is_some() as usize;
+                coarse += (k % 4 == 2) as usize;
+                ties += matches!((a.raycast(o, d, t), b.raycast(o, d, t)), (Some(x), Some(y)) if x.t == y.t) as usize;
+                from_extra += (one.is_some() && a.raycast(o, d, t).map(|h| h.t.to_bits()) != one.map(|h| h.t.to_bits())) as usize;
+            }
+        }
+        eprintln!("{cases} rays, {hits} with a hit, {coarse} long, {from_extra} hit nearest in the second collider, {ties} with an equal t in both");
+        assert!(hits > 400 && from_extra > 200 && ties > 20);
     }
 
     fn fmt(h: &[Hit]) -> Vec<String> {

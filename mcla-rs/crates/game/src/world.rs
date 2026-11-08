@@ -1279,6 +1279,11 @@ pub struct World {
     pub sets: HashMap<usize, GpuSector>,
     /// bounding box of each interior set
     pub set_bounds: HashMap<usize, (Vec3, Vec3)>,
+    /// the interior sets' drawn triangles as collision, apart from `collider`: the original's garage rooms are set
+    /// dressing (`mcCinePropMgr`, F-46322: a render class holding `#dr` drawables, F-19063), with no bound - its cars,
+    /// sounds and people meet the city bound there. Only the port's own readers of the drawn rooms use them (the
+    /// garage's spot search, the rain's floor: `WorldCollider::raycast_with`).
+    pub set_collider: crate::physics::collision::WorldCollider,
     /// the far city's sector models that are not shown now (their sector itself is loaded);
     /// the shown ones are among `sets`
     far_hidden: HashMap<usize, GpuSector>,
@@ -1419,6 +1424,7 @@ impl World {
             loaded: HashMap::new(),
             sets: HashMap::new(),
             set_bounds: HashMap::new(),
+            set_collider: Default::default(),
             far_hidden: HashMap::new(),
             resident: HashMap::new(),
             fades: vec![LodFade::default(); rec_box.len()],
@@ -1650,7 +1656,7 @@ impl World {
                     let gs = self.upload(gpu, cs);
                     log::info!("interior set {}: {} batches, {} triangles, bounds {:.0?} .. {:.0?}", id - SET_ID, gs.batches.len(), gs.tris, gs.caster_min, gs.caster_max);
                     self.sets.insert(id, gs);
-                    self.collider.sectors.insert(id, SectorMesh::build(col));
+                    self.set_collider.sectors.insert(id, SectorMesh::build(col));
                 }
                 Ok(mut cs) => {
                     self.pending.remove(&cs.id);
