@@ -649,7 +649,10 @@ impl BoomCam {
         // sets its snap byte +664 where the game moves the car)
         // (the port's own restart: a fresh camera, or a car moved over 80 m - a teleport; the original's snap byte
         // +664 snaps the filters without clearing the state)
-        let restart = !self.started || (self.world - car.pos).length_squared() > 80.0 * 80.0;
+        // (compared with a recording - `recomp_timing` - the recorded snap byte stands for the teleport, so the port's
+        // 80 m rule is off there)
+        let far = self.recomp_timing.is_none() && (self.world - car.pos).length_squared() > 80.0 * 80.0;
+        let restart = !self.started || far;
         let snap = restart || std::mem::take(&mut self.snap);
         // (the frame's snap share: 1 on a snap; on a fixed mount (+668) the chassis's air time over 0.5 s, at most 1 -
         // F-75234 through the chassis's vt+52 - so the bumper / cockpit frame follows the car in a long jump)
@@ -4572,7 +4575,7 @@ camTrackCS {
     fn boom_step_matches_the_original() {
         let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| r"D:\MCLA\extracted\cache".into());
         let Some(set) = BoomSet::load(&data, "vp_aud_r8_08") else { return };
-        let (n, kicks) = boom_rec_check(&set.views[1], include_str!("testdata/boom_step_rec.txt"), false);
+        let (n, kicks) = boom_rec_check(&set.views[1], include_str!("testdata/boom_step_rec.txt"), false, false);
         assert_eq!(n, 1153);
         assert!(kicks > 20, "{kicks} frames of a shift kick");
     }
@@ -4585,16 +4588,29 @@ camTrackCS {
     fn fixed_mount_step_matches_the_original() {
         let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| r"D:\MCLA\extracted\cache".into());
         let Some(set) = BoomSet::load(&data, "vp_aud_r8_08") else { return };
-        let (n, _) = boom_rec_check(&set.views[3], include_str!("testdata/boom_step_pov_rec.txt"), true);
+        let (n, _) = boom_rec_check(&set.views[3], include_str!("testdata/boom_step_pov_rec.txt"), true, false);
         assert_eq!(n, 1016);
-        let (n, _) = boom_rec_check(&set.views[4], include_str!("testdata/boom_step_bumper_rec.txt"), true);
+        let (n, _) = boom_rec_check(&set.views[4], include_str!("testdata/boom_step_bumper_rec.txt"), true, false);
         assert_eq!(n, 1065);
     }
 
-    /// Runs `BoomCam::step` on every recorded call of `text` (boom_testdata.py lines; with `fixed` the fixed-mount
-    /// recording's air time as the last word) from its entry state and asserts every field within 1e-5 of its size;
-    /// returns the calls and those with a shift kick running.
-    fn boom_rec_check(t: &BoomTune, text: &str, fixed: bool) -> (usize, usize) {
+    /// The look-back branch (+208, vt+56): the chase views' reverse camera runs every frame with +208 set (RevOffset /
+    /// RevFocus, the hill pitch swapped and negated, no turbo / nitrous lens). 1,153 recorded calls of the R8's
+    /// `_reverse` camera beside the boom2 of recording c11.
+    #[test]
+    fn reverse_step_matches_the_original() {
+        let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| r"D:\MCLA\extracted\cache".into());
+        let Some(set) = BoomSet::load(&data, "vp_aud_r8_08") else { return };
+        let (n, _) = boom_rec_check(set.reverse.as_ref().unwrap(), include_str!("testdata/boom_step_reverse_rec.txt"), true, true);
+        assert_eq!(n, 1153);
+    }
+
+    /// Runs `BoomCam::step` on every recorded call of `text` (boom_testdata.py lines; `tail`: fixed_testdata.py lines,
+    /// with the chassis air time and the snap byte +664 as the last two words) from its entry state, on a fixed mount
+    /// (`fixed`) or with the look-back flag (`rev`), and asserts every field within 1e-5 of its size; returns the
+    /// calls and those with a shift kick running.
+    fn boom_rec_check(t: &BoomTune, text: &str, tail: bool, rev: bool) -> (usize, usize) {
+        let fixed = tail && !rev;
         let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
         let names = ["up", "dir", "tumble", "vel", "acc", "ang", "ang_acc", "off", "foc", "roll", "world", "rate", "gz", "shift", "lens"];
         let mut worst = vec![0.0f32; names.len()];
@@ -4606,7 +4622,7 @@ camTrackCS {
             let (dt, k8, fps) = (f(0), f(1), f(2));
             let nw = r[30] as usize;
             let mut g = BoomGround { count: nw, speed: f(3), flags: r[4], gear: r[5] as i32, shifting: r[6] as i32, ..Default::default() };
-            if fixed {
+            if tail {
                 g.air = f(r.len() - 2);
             }
             for k in 0..nw.min(4) {
@@ -4623,11 +4639,11 @@ camTrackCS {
                 started: true, up: v3(ci), dir: v3(ci + 3), tumble: f(ci + 6), vel: v3(ci + 7), acc: v3(ci + 10), ang: v3(ci + 13),
                 ang_acc: v3(ci + 16), off: v3(ci + 19), foc: v3(ci + 22), roll: f(ci + 25), world: v3(ci + 26), rate: f(ci + 29),
                 gz: f(ci + 30), shift: f(ci + 31), shift_val: f(ci + 32), shift_size: f(ci + 33), shift_armed: r[ci + 34] != 0,
-                recomp_timing: Some(k8), snap: fixed && r[r.len() - 1] != 0, ..Default::default()
+                recomp_timing: Some(k8), snap: tail && r[r.len() - 1] != 0, ..Default::default()
             };
             let rot = Quat::from_mat3(&Mat3::from_cols(v3(8), v3(12), v3(16))).normalize();
             let car = BoomTarget {
-                pos: v3(20), rot, vel: v3(24), ang_vel: v3(27), grounded: 0, gear: 0, rev: false, nitro: false, nitro_fov: (0.0, 0.5, 1.0),
+                pos: v3(20), rot, vel: v3(24), ang_vel: v3(27), grounded: 0, gear: 0, rev, nitro: false, nitro_fov: (0.0, 0.5, 1.0),
                 ability: (0.0, 1.0), sst: (0.0, 1.0), pan: (0.0, 0.0), rise: 0.0, fixed_mount: fixed, model_offset: Vec3::ZERO,
             };
             // (the followed matrix: T+144 x, +160 y, +176 z, +192 the place)
