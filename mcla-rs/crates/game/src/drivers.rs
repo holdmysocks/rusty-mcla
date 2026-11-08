@@ -359,17 +359,7 @@ impl CarAnim {
         // the pan's smoother (driver +48, F-36491: centre 0.5, rate 5, hold 0.5) while +112 is set, then the pan clip's time
         if self.m.overlay.is_some() {
             let (p, hold) = self.pan_p.get_or_insert((0.5, -1.0));
-            let target = crate::physics::exact::fma(-self.ctx.look, 0.5, 0.5);
-            let eps = f32::from_bits(0x3ba3_d70a);
-            if (target - 0.5).abs() < eps && (*p - 0.5).abs() < eps {
-                *hold = 0.5;
-            }
-            if *hold >= 0.0 {
-                *hold -= dt;
-            }
-            if *hold < 0.0 {
-                *p = crate::physics::exact::fma((target - *p) * 5.0, dt, *p);
-            }
+            pan_smooth(p, hold, pan_target(self.ctx.look), dt);
             self.seq.set_pan_time(*p);
         }
         self.seq.update(dt);
@@ -1003,6 +993,34 @@ fn ride_sets(r: &Ride, i: &RideIn) -> (Option<f32>, Option<f32>) {
     }
 }
 
+/// The pan's target (F-66750): -(ctx+120 x 0.5 - 0.5), fused (fnmsubs: a look of 1 gives -0).
+fn pan_target(look: f32) -> f32 {
+    crate::physics::exact::fnms(look, 0.5, 0.5)
+}
+
+/// The smoother on the driver's +48 (F-36491) with the constructor's centre 0.5, rate 5 and hold 0.5 s: target and value both
+/// within 0.005 of the centre restart the hold; a running hold counts down by dt; once it is below 0 the value moves at
+/// (target - value) x rate, fused with dt.
+fn pan_smooth(p: &mut f32, hold: &mut f32, target: f32, dt: f32) {
+    let eps = f32::from_bits(0x3ba3_d70a);
+    if (target - 0.5).abs() < eps && (*p - 0.5).abs() < eps {
+        *hold = 0.5;
+    }
+    if *hold >= 0.0 {
+        *hold -= dt;
+    }
+    if *hold < 0.0 {
+        *p = crate::physics::exact::fma((target - *p) * 5.0, dt, *p);
+    }
+}
+
+/// The pan clip's time (F-47264): duration x phase, clamped to [0, duration] as the two fsel do.
+fn pan_time(d: f32, p: f32) -> f32 {
+    let t = d * p;
+    let t = if t >= 0.0 { t } else { 0.0 };
+    if t - d >= 0.0 { d } else { t }
+}
+
 fn ride_pose<'a>(r: &mut Ride, b: &'a BikeClips, bones: &[crate::skin::Bone], neck: &[bool], i: &RideIn, time: f32, dt: f32, out: &mut Vec<(Quat, Vec3)>, tmp: &mut Vec<(Quat, Vec3)>) {
     ride_state(r, b, i, time, dt);
     let ck = i.ck;
@@ -1013,23 +1031,8 @@ fn ride_pose<'a>(r: &mut Ride, b: &'a BikeClips, bones: &[crate::skin::Bone], ne
     // the hold restarts; while it runs nothing moves
     let pan_t = if r.pan {
         let (p, hold) = r.pan_p.get_or_insert((0.5, -1.0));
-        let target = crate::physics::exact::fma(-i.look, 0.5, 0.5);
-        let eps = f32::from_bits(0x3ba3_d70a);
-        if (target - 0.5).abs() < eps && (*p - 0.5).abs() < eps {
-            *hold = 0.5;
-        }
-        if *hold >= 0.0 {
-            *hold -= dt;
-        }
-        if *hold < 0.0 {
-            *p = crate::physics::exact::fma((target - *p) * 5.0, dt, *p);
-        }
-        b.pan.as_ref().map(|c| {
-            let d = c.anim.duration;
-            let t = d * *p;
-            let t = if t >= 0.0 { t } else { 0.0 };
-            (c, if t - d >= 0.0 { d } else { t })
-        })
+        pan_smooth(p, hold, pan_target(i.look), dt);
+        b.pan.as_ref().map(|c| (c, pan_time(c.anim.duration, *p)))
     } else {
         None
     };
@@ -2378,6 +2381,24 @@ mod ride_tests {
         l.step(0.25, 0.25, me, std::iter::empty());
         assert_eq!(l.rival, None);
         assert_eq!(l.step(0.0, 0.25, me, [(5, Vec3::new(4.0, 0.0, 0.0))].into_iter()), -1.0);
+    }
+
+    /// The pan's smoother F-36491, target F-66750 and clip time F-47264 run offline on the original's code
+    /// (tools/pan_smooth_reference.py, 3,000 cases around the centre's 0.005 and the hold's 0): value, timer, target and time equal.
+    #[test]
+    fn pan_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/pan_smooth_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<f32> = i.split_whitespace().map(|t| f32::from_bits(u32::from_str_radix(t, 16).unwrap())).collect();
+            let e: Vec<u32> = o.split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let (mut p, mut hold) = (w[0], w[1]);
+            pan_smooth(&mut p, &mut hold, w[2], w[3]);
+            let got = [p.to_bits(), hold.to_bits(), pan_target(w[4]).to_bits(), pan_time(w[5], w[6]).to_bits()];
+            assert_eq!(got.as_slice(), e.as_slice(), "case {n}: {line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
     }
 
     /// F-70536 with F-48336 run offline on the original's code (tools/rival_look_reference.py): 1,500 cases of a held or free
