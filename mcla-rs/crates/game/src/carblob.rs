@@ -226,37 +226,84 @@ fn light_instance(r: &QuadRec) -> [[f32; 4]; 9] {
     [row(0, rad * 1.05), row(1, rad * 0.131_25), row(2, rad * 2.0 + len), r.m[3], r.c[0], r.c[1], r.c[2], r.c[3], r.colour]
 }
 
+/// F-63160's box (the body record's radius r = 0.64 X, F-17121): the car's base resource ((car+20)+80 -> +32, F-63160 /
+/// F-58...; the vehicle's .r83), its object at +16, the box max +16 / min +32; X = max.x - min.x (vsubfp). Both .r83 of a
+/// car hold the same box. Read from the files: R8 X 2.9444 -> r2 3.5511, ZX-14 1.3808 -> 0.7809, the recorded body
+/// quads' r2 (work/lighting-trails/neon/cap/n23, work/police17/cap/bike_move). None when the car has no .r83.
+fn drawable_box(root: &std::path::Path, model: &str) -> Option<[f32; 4]> {
+    static CACHE: Mutex<Option<std::collections::HashMap<String, Option<[f32; 4]>>>> = Mutex::new(None);
+    let mut g = CACHE.lock().unwrap();
+    let map = g.get_or_insert_with(Default::default);
+    if let Some(v) = map.get(model) {
+        return *v;
+    }
+    let read = || -> Option<[f32; 4]> {
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(root.join("resources/vehicle").join(model)).ok()?.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "r83")).collect();
+        files.sort();
+        let res = crate::assets::load_resource_file(files.first()?).ok()?;
+        let rd = mcla_formats::rage::Rd::new(&res);
+        let o = rd.ptr(16)?;
+        let v = |a: usize| [rd.f32(a), rd.f32(a + 4), rd.f32(a + 8), rd.f32(a + 12)];
+        let (mx, mn) = (v(o + 0x10), v(o + 0x20));
+        let d = v4(|i| mx[i] - mn[i]);
+        (d[0].is_finite() && d[0] > 0.0).then_some(d)
+    };
+    let v = read();
+    map.insert(model.to_string(), v);
+    v
+}
+
 /// The neon cars' records (F-17121) with the port's inputs: (the car's body matrix, its body record, its four neon records).
 /// The sizes W H L are the composite bound's box (F-98453, as the wheel fit leaves it - `CarParams::composite_box`); the
 /// player's car makes no ground probe (f28 = 1). (approx.) the ground frame F-88547 (a probe 1 m above to 3 m below the
-/// car: its hit normal and point) is the body matrix moved to the wheels' foot; the radius box F-63160 (its width X,
-/// r = 0.64 X) is the port's measured blob radius 0.99 x the model's width / 0.64 (the R8's recorded 1.8844); other
-/// cars' ground probe (f28 = sat(1 - T), with head lamps on) is not made (f28 = 1).
-fn neon_lights(vehicles: &crate::vehicles::Vehicles, night: bool) -> Vec<(Mat4, QuadRec, [QuadRec; 4])> {
+/// car: its hit normal and point) is the body matrix moved to the wheels' foot. The radius box F-63160 is
+/// `drawable_box` (the car's .r83; without one, the port's old blob radius 0.99 x the model's width / 0.64).
+/// f28 = sat(1 - T): a car other than the one the view follows ([0x8288DCF8], the player's) whose head state (+168) is
+/// over 0.001 probes (F-20855: include 0x800 = the city bound, states 4 = fixed, one result) from its origin + its
+/// up row x 2.0 ([0x827E6358]) 5.0 m ([0x82006BF8]) straight down; T = the hit's fraction (+64 of the result, 0.0
+/// before the call). On a miss F-17121 takes the join with T as the result left it - (approx.) 0.0, i.e. f28 = 1.
+/// The head state is the port's eased head lamp level `AmbLamps::s[0]`; the probe is the city's `probe_front`.
+fn neon_lights(vehicles: &crate::vehicles::Vehicles, cam: Vec3, night: bool, collider: Option<&crate::physics::collision::WorldCollider>) -> Vec<(Mat4, QuadRec, [QuadRec; 4])> {
     let mut out = Vec::new();
     let blobs = vehicles.blob_cars();
-    for (ci, m, n, _player) in vehicles.neon_cars(vehicles.interior_glass) {
+    for (ci, m, n, player) in vehicles.neon_cars(vehicles.interior_glass) {
+        // F-44722 calls F-17121 only for a car whose draw flag (+116) its visibility test set this frame: the
+        // light volumes off screen draw nothing, the 450 m reach is the one that counts (approx.: the port's reach,
+        // not the flag's own routine)
+        if m.w_axis.truncate().distance(cam) > 450.0 {
+            continue;
+        }
         let c = &vehicles.cars[ci];
-        let Some(b) = blobs.iter().find(|b| b.m == m) else { continue };
+        // (a bike is not in `blob_cars`: its wheels' foot from the model's box)
+        let (ground_y, width) = match blobs.iter().find(|b| b.m == m) {
+            Some(b) => (b.ground_y, b.max.x - b.min.x),
+            None => (c.model.min.y, c.model.max.x - c.model.min.x),
+        };
         let (lo, hi) = c.params().composite_box();
         let (x, y, z) = (m.x_axis.truncate(), m.y_axis.truncate(), m.z_axis.truncate());
-        let foot = m.w_axis.truncate() + y * b.ground_y;
+        let foot = m.w_axis.truncate() + y * ground_y;
         let input = NeonIn {
             g: [x.extend(0.0).to_array(), y.extend(0.0).to_array(), z.extend(0.0).to_array(), foot.extend(1.0).to_array()],
             size: (hi - lo).extend(0.0).to_array(),
-            box_: [0.99 * (b.max.x - b.min.x) / 0.64, 0.0, 0.0, 0.0],
+            box_: drawable_box(&vehicles.data_root, &c.model.name).unwrap_or([0.99 * width / 0.64, 0.0, 0.0, 0.0]),
             colour: n.color,
             intensity: n.intensity,
             pulse: n.pulse,
             scale: 1.0,
             up_y: m.y_axis.y,
-            t: 0.0,
+            t: match collider {
+                Some(w) if !player && c.amb_lamps.s[0] > 0.001 => {
+                    let start = m.w_axis.truncate() + y * 2.0;
+                    w.probe_front(start, Vec3::NEG_Y, 5.0).map_or(0.0, |h| h.t / 5.0)
+                }
+                _ => 0.0,
+            },
             night,
             b6477: false,
         };
         if let (body, Some(neon)) = neon_records(&input) {
             if std::env::var("MCLA_GLOW_DUMP").is_ok() {
-                eprintln!("neon car {ci} size {:?} body c0 {:?} c3 {:?} colour {:?}", input.size, body.c[0], body.c[3], body.colour);
+                eprintln!("neon car {ci} t {:.4} size {:?} body c0 {:?} c3 {:?} colour {:?}", input.t, input.size, body.c[0], body.c[3], body.colour);
             }
             out.push((m, body, neon));
         }
@@ -272,12 +319,12 @@ fn push(out: &mut Vec<f32>, rows: [[f32; 4]; 6]) {
 
 /// The pass: after the scene (its depth is read), before the glow passes and the tone map.
 /// `night`: the light quads' D (0.2 at night outside the garage, else 0.125).
-pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles::Vehicles, cam: Vec3, night: bool) {
+pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles::Vehicles, cam: Vec3, night: bool, collider: Option<&crate::physics::collision::WorldCollider>) {
     let guard = STATE.lock().unwrap();
     let Some(s) = guard.as_ref() else { return };
     let dbg = view();
     // (a car whose neon is on: its body record is the fifth light quad, not an occlusion quad - F-62149 sorts by +4)
-    let lights = if dbg != 275 { neon_lights(vehicles, night) } else { Vec::new() };
+    let lights = if dbg != 275 { neon_lights(vehicles, cam, night, collider) } else { Vec::new() };
     if !lights.is_empty() {
         let inst: Vec<[[f32; 4]; 9]> = lights.iter().flat_map(|(_, body, neon)| std::iter::once(body).chain(neon.iter()).map(light_instance)).take(MAX_LIGHT).collect();
         gpu.queue.write_buffer(&s.light_inst, 0, bytemuck::cast_slice(&inst));
@@ -519,6 +566,18 @@ pub fn neon_records(n: &NeonIn) -> (QuadRec, Option<[QuadRec; 4]>) {
 #[cfg(test)]
 mod neon_tests {
     use super::*;
+
+    /// F-63160's box from the .r83 against the body quads' r2 recorded in the original (R8 3.5511, ZX-14 0.781).
+    #[test]
+    fn drawable_box_gives_the_recorded_radius() {
+        let Ok(root) = std::env::var("MCLA_DATA_DIR") else { return };
+        let root = std::path::PathBuf::from(root);
+        for (car, r2) in [("vp_aud_r8_08", 3.5511f32), ("vp_kaw_ninja_zx14_06", 0.781)] {
+            let x = drawable_box(&root, car).expect(car)[0];
+            let got = (0.64 * x) * (0.64 * x);
+            assert!((got - r2).abs() < 1e-3, "{car}: {got} vs {r2}");
+        }
+    }
 
     /// tools/neon_records_reference.py: F-17121 run offline, 1,000 random cars (frames, boxes, colours,
     /// intensities round the 0.001 gate, the hour round 6 and 18, the garage byte, the probe and its hit fraction).

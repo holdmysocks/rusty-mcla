@@ -12515,7 +12515,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // the sun's glow quad over the finished scene (sunglow.rs), then the lamps' pass
             // the occlusion blobs under the cars (carblob.rs): over the finished scene, before the glow passes
             if !map3d && pic.is_none() {
-                carblob::run(&gpu, &mut enc, &self.vehicles, self.cam.pos, self.game.mode != Mode::Garage && (self.time_of_day > 18.0 || self.time_of_day < 6.0));
+                carblob::run(&gpu, &mut enc, &self.vehicles, self.cam.pos, self.game.mode != Mode::Garage && (self.time_of_day > 18.0 || self.time_of_day < 6.0), self.world.as_ref().map(|w| &w.collider));
             }
             // (step 19g: the effects on the cars - ice blocks, shields, stealth - pu_fx.rs)
             if !map3d {
