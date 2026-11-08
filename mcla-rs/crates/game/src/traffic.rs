@@ -12,7 +12,7 @@ use super::Vehicles;
 use crate::physics::collision::WorldCollider;
 use glam::{Quat, Vec2, Vec3};
 use crate::tcp_rail::TcpRail;
-use mcla_formats::rage::navsys::{LaneCurve, NavSys, RegionRect, DEFAULT_ROAD_SPEED};
+use mcla_formats::rage::navsys::{LaneCurve, NavNode, NavSys, RegionRect, DEFAULT_ROAD_SPEED};
 
 const MPH: f32 = 0.44704;
 /// The slowest a car is ever asked to drive (F-70324: 10 mph).
@@ -5532,7 +5532,7 @@ mod tests {
         assert!((e[0].0.x - x_edge).abs() < 2000.0 / 99.0, "{:?} {}", e[0], x_edge);
         assert!(lane_entries(&c, pl[2], 64).is_empty());
         // the region's sphere test: a 40 x 10 m road along +x, 30 m off a circle of 20 m
-        let r = RegionRect { index: 0, rect_c: [0.0, 0.0], width: 10.0, len: 40.0, y_range: [0.0, 1.0], mid: Vec3::ZERO, dir: Vec3::X, side: Vec3::Z };
+        let r = RegionRect { index: 0, rect_c: [0.0, 0.0], width: 10.0, len: 40.0, y_range: [0.0, 1.0], mid: Vec3::ZERO, dir: Vec3::X, side: Vec3::Z, no_box: false };
         assert!(region_meets_circle(&r, Vec3::new(0.0, 0.0, 24.9), 20.0));
         assert!(!region_meets_circle(&r, Vec3::new(0.0, 0.0, 25.1), 20.0));
         assert!(region_meets_circle(&r, Vec3::new(39.9, 0.0, 0.0), 20.0));
@@ -6677,7 +6677,6 @@ mod tests {
 pub struct Road {
     pub mid: Vec3,
     pub dir: Vec3,
-    pub half: glam::Vec2,
     pub speed: f32,
     pub density: i32,
     /// its lanes: first link and length
@@ -6686,7 +6685,6 @@ pub struct Road {
     /// the box the occluders are asked about (road vfunc 2 F-76320; empty: never hidden)
     pub bmin: Vec3,
     pub bmax: Vec3,
-    pub no_box: bool,
     /// the rectangle the front-end mode's sphere and frustum tests take (F-46547, F-49549)
     pub rect: RegionRect,
 }
@@ -6806,6 +6804,9 @@ pub struct Spawner {
     /// the region list: roads with their weight (target share), and the junctions' weight
     pub list: Vec<(u32, f32)>,
     pub int_weight: f32,
+    /// the whole region list in its order (M+1392): a road (Some) or a junction (None) and its weight - what a spawn
+    /// try picks from
+    pub order: Vec<(Option<u32>, f32)>,
     pub listed: Vec<bool>,
     pub target: f32,
     pub current: u32,
@@ -6818,6 +6819,9 @@ pub struct Spawner {
     pub why: [u32; 8],
     /// the player's road (M+320), kept while the player is on no road's lane
     pub player_road: Option<u32>,
+    /// M+324: the square box across the road on the next pass (set at the end of each region list from the nearest
+    /// listed road, F-49549)
+    pub perp_next: bool,
     /// this frame's region box: centre, unit length axis (x, z), full length and width
     /// (the parked-car lists take the same box, F-51021)
     pub region_box: (glam::Vec2, glam::Vec2, f32, f32),
@@ -6828,6 +6832,10 @@ pub struct Spawner {
     /// the junctions' rectangles (as `ints`), the junctions the front-end region list holds,
     /// and the front-end lane points (ambient S+48, F-56167)
     pub int_rects: Vec<RegionRect>,
+    /// a junction's place in `int_rects` / `ints` by its index in the file (NavNode::Junction), and its occluder box
+    /// (the roads' rule, F-76320)
+    pub int_of: hashbrown::HashMap<usize, usize>,
+    pub int_box: Vec<(Vec3, Vec3)>,
     pub fe_ints: Vec<usize>,
     pub fe_pts: FrontEndPoints,
     /// every lane's links on the rail graph, in order
@@ -6844,6 +6852,34 @@ pub(crate) fn box_t(mph: f32) -> f32 {
     let x = mph * f32::from_bits(0x3C88_8889);
     let a = if x >= 0.0 { x } else { 0.0 };
     if a - 1.0 >= 0.0 { 1.0 } else { a }
+}
+
+/// F-15989: the distance from `p` to a road's rectangle (centre `c`, unit direction `d`, `len` along it, `width`
+/// across) - the four edge midpoints c +- d len/2, c +- (-d.z, 0, d.x) width/2 by the vector unit's multiply then add,
+/// each edge's plane offset n . m by the scalar fmuls / fmadds (y, z, x for d and -d; x, z, y for the sides), the
+/// point's overshoot past each (vmsum3fp n . p - offset), the positive ones squared and summed (side, d, other side,
+/// -d), the root.
+pub(crate) fn road_box_dist(p: Vec3, c: Vec3, d: Vec3, len: f32, width: f32) -> f32 {
+    let fma = |a: f32, b: f32, c: f32| (a as f64).mul_add(b as f64, c as f64) as f32;
+    let (hw, hl) = (width * 0.5, len * 0.5);
+    let side = Vec3::new(-d.z, 0.0, d.x);
+    let nside = Vec3::new(d.z, 0.0, -d.x);
+    let nd = Vec3::new(vs(0.0, d.x), vs(0.0, d.y), vs(0.0, d.z));
+    let madd = |a: Vec3, k: f32, b: Vec3| Vec3::new(va(vm(a.x, k), b.x), va(vm(a.y, k), b.y), va(vm(a.z, k), b.z));
+    let dot = |a: Vec3, b: Vec3| va(va(0.0, vm(a.z, b.z)), va(vm(a.y, b.y), vm(a.x, b.x)));
+    let (m_d, m_nd, m_s, m_ns) = (madd(d, hl, c), madd(nd, hl, c), madd(side, hw, c), madd(nside, hw, c));
+    let o_s = fma(m_s.y, 0.0, fma(m_s.z, d.x, m_s.x * -d.z));
+    let o_d = fma(m_d.x, d.x, fma(m_d.z, d.z, m_d.y * d.y));
+    let o_ns = fma(m_ns.y, 0.0, fma(m_ns.z, -d.x, m_ns.x * d.z));
+    let o_nd = fma(m_nd.x, nd.x, fma(m_nd.z, nd.z, m_nd.y * nd.y));
+    let mut s2 = 0.0f32;
+    for (n, o) in [(side, o_s), (d, o_d), (nside, o_ns), (nd, o_nd)] {
+        let e = dot(n, p) - o;
+        if e > 0.0 {
+            s2 = fma(e, e, s2);
+        }
+    }
+    (s2 as f64).sqrt() as f32
 }
 
 /// The spawn box's centre (F-97927): focus + view x offset, the vector unit's multiply then add (not fused).
@@ -6994,6 +7030,17 @@ pub(super) fn rects_meet(c1: glam::Vec2, u1: glam::Vec2, h1: glam::Vec2, c2: gla
     false
 }
 
+/// A region's occluder box (road / junction vfunc 2, F-76320): x / z the extremes of the four edge midpoints (not the
+/// corners), y the region's range raised 2 m at the top.
+fn occluder_box(mid: Vec3, dir: Vec3, side: Vec3, len: f32, width: f32, y_range: [f32; 2]) -> (Vec3, Vec3) {
+    let (d, sd) = (dir * (len * 0.5), side * (width * 0.5));
+    let mids = [mid + d, mid - d, mid + sd, mid - sd];
+    let (mut bmin, mut bmax) = mids.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(a, b), p| (a.min(*p), b.max(*p)));
+    bmin.y = y_range[0];
+    bmax.y = y_range[1] + 2.0;
+    (bmin, bmax)
+}
+
 impl Spawner {
     pub fn new(nav: &NavSys, root: &std::path::Path) -> Spawner {
         let mut roads = Vec::with_capacity(nav.zones.len());
@@ -7012,16 +7059,9 @@ impl Spawner {
                 }
             }
             let lane_len = lanes.iter().map(|l| l.1).sum();
-            let half = glam::Vec2::new(z.rect_len * 0.5, z.width * 0.5);
-            // the occluder box: x / z the extremes of the four edge midpoints (not the
-            // corners), y the road's range raised 2 m at the top
-            let (d, sd) = (z.dir * (z.rect_len * 0.5), z.side * (z.width * 0.5));
-            let mids = [z.mid + d, z.mid - d, z.mid + sd, z.mid - sd];
-            let (mut bmin, mut bmax) = mids.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(a, b), p| (a.min(*p), b.max(*p)));
-            bmin.y = z.y_range[0];
-            bmax.y = z.y_range[1] + 2.0;
-            let rect = RegionRect { index: roads.len(), rect_c: z.rect_c, width: z.width, len: z.rect_len, y_range: z.y_range, mid: z.mid, dir: z.dir, side: z.side };
-            roads.push(Road { mid: z.mid, dir: z.dir, half, speed: z.speed_limit_mps(), density: z.density, lanes, lane_len, bmin, bmax, no_box: z.no_box, rect });
+            let (bmin, bmax) = occluder_box(z.mid, z.dir, z.side, z.rect_len, z.width, z.y_range);
+            let rect = RegionRect { index: roads.len(), rect_c: z.rect_c, width: z.width, len: z.rect_len, y_range: z.y_range, mid: z.mid, dir: z.dir, side: z.side, no_box: z.no_box };
+            roads.push(Road { mid: z.mid, dir: z.dir, speed: z.speed_limit_mps(), density: z.density, lanes, lane_len, bmin, bmax, rect });
         }
         let ints = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66"))
             .map(|r| mcla_formats::rage::navsys::parse_intersections(&r))
@@ -7029,6 +7069,8 @@ impl Spawner {
         let int_rects = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66"))
             .map(|r| mcla_formats::rage::navsys::parse_intersection_rects(&r))
             .unwrap_or_default();
+        let int_of: hashbrown::HashMap<usize, usize> = int_rects.iter().enumerate().map(|(k, r)| (r.index, k)).collect();
+        let int_box: Vec<(Vec3, Vec3)> = int_rects.iter().map(|r| occluder_box(r.mid, r.dir, r.side, r.len, r.width, r.y_range)).collect();
         let mut lane_links: Vec<Vec<usize>> = Vec::new();
         for (k, l) in nav.links.iter().enumerate() {
             if lane_links.len() <= l.lane {
@@ -7040,7 +7082,7 @@ impl Spawner {
             v.sort_by(|a, b| nav.links[*a].t[0].total_cmp(&nav.links[*b].t[0]));
         }
         let n = roads.len();
-        Spawner { roads, ints, tune: Tune::load(root), data_dir: root.to_string_lossy().into_owned(), list: Vec::new(), int_weight: 0.0, listed: vec![false; n], target: 0.0, current: 0, frame: 0, step: 0.0, script: Default::default(), why: [0; 8], player_road: None, region_box: (glam::Vec2::ZERO, glam::Vec2::NEG_Y, 0.0, 0.0), cutscene: false, frontend: None, int_rects, fe_ints: Vec::new(), fe_pts: FrontEndPoints::default(), lane_links }
+        Spawner { roads, ints, tune: Tune::load(root), data_dir: root.to_string_lossy().into_owned(), list: Vec::new(), int_weight: 0.0, listed: vec![false; n], target: 0.0, current: 0, frame: 0, step: 0.0, script: Default::default(), why: [0; 8], player_road: None, perp_next: false, order: Vec::new(), int_of, int_box, region_box: (glam::Vec2::ZERO, glam::Vec2::NEG_Y, 0.0, 0.0), cutscene: false, frontend: None, int_rects, fe_ints: Vec::new(), fe_pts: FrontEndPoints::default(), lane_links }
     }
 
     /// The road a link belongs to (F-86691): its lane's owner when that is a road (flag
@@ -7307,6 +7349,7 @@ impl Spawner {
         self.list.clear();
         self.listed.iter_mut().for_each(|x| *x = false);
         self.fe_ints.clear();
+        self.order.clear();
         self.int_weight = 0.0;
         let mut target = 0.0;
         let (mut found, mut kept) = (0usize, 0usize);
@@ -7329,11 +7372,13 @@ impl Spawner {
             if k < n_roads {
                 let w = self.roads[k].lane_len * 0.01 * self.value(k as u32, false) * speed_factor;
                 self.list.push((k as u32, w));
+                self.order.push((Some(k as u32), w));
                 self.listed[k] = true;
                 target += w;
             } else {
                 let j = k - n_roads;
                 let iw = self.ints.get(j).map_or(0.0, |x| x.1) * 0.01 * t.values[1] * speed_factor;
+                self.order.push((None, iw));
                 self.fe_ints.push(j);
                 self.int_weight += iw;
                 target += iw;
@@ -7662,9 +7707,9 @@ impl Vehicles {
         let t = sp.tune;
         let k = box_t(mph);
         let (fx, vx) = (glam::Vec2::new(focus.x, focus.z), glam::Vec2::new(view.x, view.z).normalize_or(glam::Vec2::NEG_Y));
-        // the player's road; across the view at under 50 mph: the square box round the focus
+        // the square box round the focus when the last pass's nearest listed road ran across the view (M+324)
         let player_road = sp.player_road;
-        let perp = mph < 50.0 && player_road.is_some_and(|r| sp.roads[r as usize].dir.dot(view).abs() < 0.7071);
+        let perp = sp.perp_next;
         // (F-81783 / F-68633 / F-97927's offset: `box_t`, `box_lerp`)
         let (len, off, width) = if perp { (box_lerp(t.perp_len, k), box_lerp(t.perp_off, k), box_lerp(t.perp_width, k)) } else { (box_lerp(t.box_len, k), box_lerp(t.box_off, k), box_lerp(t.box_width, k)) };
         let bc = box_centre(fx, vx, off);
@@ -7676,18 +7721,28 @@ impl Vehicles {
         let occ = crate::occluder::city(&sp.data_dir).map(|c| c.select_around(focus + Vec3::Y * 1.75, OCC_RANGE));
         let speed_factor = lerp(t.density_at, ((mph - t.density_mph[0]) / (t.density_mph[1] - t.density_mph[0])).clamp(0.0, 1.0));
         sp.list.clear();
+        sp.order.clear();
         sp.listed.iter_mut().for_each(|x| *x = false);
+        sp.int_weight = 0.0;
         let mut target = 0.0;
-        for ri in 0..sp.roads.len() {
-            let r = &sp.roads[ri];
-            let rc = glam::Vec2::new(r.mid.x, r.mid.z);
-            if rc.distance(bc) > bh.length() + r.half.length() {
-                continue;
-            }
-            let ru = glam::Vec2::new(r.dir.x, r.dir.z).normalize_or(glam::Vec2::X);
-            let overlap = rects_meet(bc, vx, bh, rc, ru, r.half);
-            let fw = r.speed >= FREEWAY_SPEED;
-            let hidden = || !r.no_box && occ.as_ref().is_some_and(|o| o.hides_aabb(r.bmin, r.bmax));
+        let mut nearest = (f32::MAX, None);
+        // the candidates: the roads and junctions within half the box's length of its centre, at most 200, in the
+        // region tree's order (F-30720 -> F-21575, mask 6)
+        for node in nav.regions_near(Vec3::new(bc.x, 0.0, bc.y), len * 0.5, 200) {
+            let (ri, jk, rect, (bmin, bmax), fw) = match node {
+                NavNode::Road(ri) => {
+                    let Some(r) = sp.roads.get(ri) else { continue };
+                    (Some(ri), 0, r.rect, (r.bmin, r.bmax), r.speed >= FREEWAY_SPEED)
+                }
+                NavNode::Junction(j) => {
+                    let Some(&k) = sp.int_of.get(&j) else { continue };
+                    (None, k, sp.int_rects[k], sp.int_box[k], false)
+                }
+            };
+            let rc = glam::Vec2::new(rect.mid.x, rect.mid.z);
+            let ru = glam::Vec2::new(rect.dir.x, rect.dir.z).normalize_or(glam::Vec2::X);
+            let overlap = rects_meet(bc, vx, bh, rc, ru, glam::Vec2::new(rect.len * 0.5, rect.width * 0.5));
+            let hidden = || !rect.no_box && occ.as_ref().is_some_and(|o| o.hides_aabb(bmin, bmax));
             let accept = if on_freeway && fw {
                 true
             } else if !overlap {
@@ -7696,7 +7751,7 @@ impl Vehicles {
                 !hidden()
             } else {
                 let near = rc.distance(fx) <= 200.0;
-                let aligned = r.dir.dot(view) > 0.6;
+                let aligned = rect.dir.dot(view) > 0.6;
                 if fw && !(near || aligned) {
                     false
                 } else {
@@ -7706,20 +7761,27 @@ impl Vehicles {
             if !accept {
                 continue;
             }
-            let w = r.open_len(nav, &self.race_clearing.off) * 0.01 * sp.value(ri as u32, free_fast) * speed_factor;
-            sp.list.push((ri as u32, w));
-            sp.listed[ri] = true;
-            target += w;
-        }
-        // the junctions in the box
-        sp.int_weight = 0.0;
-        for &(c, w, _) in &sp.ints {
-            let p = glam::Vec2::new(c.x, c.z) - bc;
-            if p.dot(vx).abs() <= bh.x && p.dot(vx.perp()).abs() <= bh.y {
-                let iw = w * 0.01 * t.values[1] * speed_factor;
+            let Some(ri) = ri else {
+                // a junction: its weight (vfunc 11, F-46871: (+1c x 0.01) x the density value 1 x the speed factor)
+                let iw = sp.ints.get(jk).map_or(0.0, |x| x.1) * 0.01 * t.values[1] * speed_factor;
+                sp.order.push((None, iw));
                 sp.int_weight += iw;
                 target += iw;
+                continue;
+            };
+            let r = &sp.roads[ri];
+            // under 50 mph the listed road nearest the focus (F-15989 from M+176 to its rectangle, strictly nearer)
+            if mph < 50.0 {
+                let d = road_box_dist(focus, r.mid, r.dir, r.rect.len, r.rect.width);
+                if d < nearest.0 {
+                    nearest = (d, Some(ri));
+                }
             }
+            let w = r.open_len(nav, &self.race_clearing.off) * 0.01 * sp.value(ri as u32, free_fast) * speed_factor;
+            sp.list.push((ri as u32, w));
+            sp.order.push((Some(ri as u32), w));
+            sp.listed[ri] = true;
+            target += w;
         }
         // (the density scale, A-74605: on the sum, before the clamp - not in the cutscene branch)
         if !sp.cutscene {
@@ -7729,6 +7791,16 @@ impl Vehicles {
             target = 1.0;
         }
         sp.target = target;
+        // the next pass's box: square when that road's direction is within 45 degrees of across the view (the view
+        // M+224 . direction +96 by fmuls / fmadds y, z, x; |.| < 0.7071)
+        sp.perp_next = nearest.1.is_some_and(|ri: usize| {
+            let d = sp.roads[ri].dir;
+            let fma = |a: f32, b: f32, c: f32| (a as f64).mul_add(b as f64, c as f64) as f32;
+            fma(view.x, d.x, fma(view.z, d.z, view.y * d.y)).abs() < f32::from_bits(0x3F35_0481)
+        });
+        if std::env::var("MCLA_TRAFFIC_TRACE").is_ok() && sp.frame % 300 == 1 {
+            log::info!("traffic region list: perp {} next {} nearest {:?} view {:?} mph {:.1} listed {} of {} roads {:.3} junctions {:.3} target {:.3} box {:?} order {:?}", perp, sp.perp_next, nearest.1.map(|ri| (ri, nearest.0, sp.roads[ri].dir, sp.roads[ri].mid)), view, mph, sp.list.len(), sp.order.len(), sp.list.iter().map(|x| x.1).sum::<f32>(), sp.int_weight, sp.target, sp.region_box, sp.order);
+        }
         // the cars on listed roads
         sp.current = (0..self.cars.len()).filter(|&i| self.ambient_car(i) && self.car_road(sp, nav, i).is_some_and(|r| sp.listed[r as usize])).count() as u32;
     }
@@ -7793,9 +7865,9 @@ impl Vehicles {
             // a region by weight (a junction wastes the try)
             let mut x = self.rand() * total;
             let mut pick = None;
-            for &(ri, w) in &sp.list {
+            for &(ri, w) in &sp.order {
                 if x < w {
-                    pick = Some(ri);
+                    pick = ri;
                     break;
                 }
                 x -= w;
@@ -8054,8 +8126,10 @@ impl Vehicles {
             }
             let road = self.car_road(sp, nav, i);
             let listed = road.is_some_and(|x| sp.listed[x as usize]);
-            // (the front-end mode: a listed car counts as seen - never removed - A-37258)
-            if if sp.frontend.is_some() { listed } else { seen(&sp.tune, focus, view, mph, pos, occ.as_ref()) } {
+            // (the front-end mode: a listed car counts as seen - never removed - A-37258); offline the seen test is asked
+            // only for a listed car (F-65438: r29 = listed, else the network test F-24338 decides) - one on a road off
+            // the list goes even in view
+            if if sp.frontend.is_some() { listed } else { listed && seen(&sp.tune, focus, view, mph, pos, occ.as_ref()) } {
                 continue;
             }
             let stuck = if r.physical { c.state.speed() < 6.7056 } else { r.v == 0.0 && r.next.is_none() && r.on == [false; 3] };
@@ -9596,6 +9670,27 @@ impl Vehicles {
             self.remove_layout_item(h);
         }
         self.item_followers_due.retain(|(h, _)| !handles.contains(h));
+    }
+}
+
+#[cfg(test)]
+mod road_box_dist_tests {
+    /// The road rectangle distance against the original's F-15989 (tools/road_box_dist_reference.py, run offline):
+    /// the result's bits equal.
+    #[test]
+    fn road_box_dist_matches_the_original() {
+        use glam::Vec3;
+        let f = |w: &str| f32::from_bits(u32::from_str_radix(&w.replace('_', ""), 16).unwrap());
+        let mut n = 0;
+        for line in include_str!("testdata/road_box_dist_ref.txt").lines() {
+            let (inp, out) = line.split_once(" -> ").unwrap();
+            let c: Vec<f32> = inp.split(' ').map(f).collect();
+            let v = |i: usize| Vec3::new(c[i], c[i + 1], c[i + 2]);
+            let got = super::road_box_dist(v(0), v(3), v(6), c[9], c[10]);
+            assert_eq!(got.to_bits(), f(out).to_bits(), "{line}: {got}");
+            n += 1;
+        }
+        assert!(n >= 4000);
     }
 }
 

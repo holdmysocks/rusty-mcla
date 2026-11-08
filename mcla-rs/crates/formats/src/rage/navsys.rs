@@ -527,6 +527,8 @@ pub struct QuadNode {
     /// its roads (flags +4 bit 2) and junctions (bit 4), in the node's item order
     pub roads: Vec<usize>,
     pub junctions: Vec<usize>,
+    /// the roads and junctions together, in the node's item order
+    pub items: Vec<NavNode>,
     pub kids: [Option<usize>; 4],
     pub split: [f32; 2],
     pub min: [f32; 2],
@@ -891,8 +893,14 @@ impl NavSys {
                         q.lanes.push(l);
                     } else {
                         match ni(it) {
-                            Some(NavNode::Road(r)) => q.roads.push(r),
-                            Some(NavNode::Junction(j)) => q.junctions.push(j),
+                            Some(NavNode::Road(r)) => {
+                                q.roads.push(r);
+                                q.items.push(NavNode::Road(r));
+                            }
+                            Some(NavNode::Junction(j)) => {
+                                q.junctions.push(j);
+                                q.items.push(NavNode::Junction(j));
+                            }
                             None => {}
                         }
                     }
@@ -1365,6 +1373,54 @@ impl NavSys {
     /// A lane's length (+0x0c).
     pub fn lane_len(&self, lane: usize) -> f32 {
         self.raw.get(lane).map_or(0.0, |r| r.len)
+    }
+
+    /// F-30720 -> F-21575 with mask 6 (the traffic region list's query): the roads and junctions whose rectangle is
+    /// within `r` of `p` (vfunc 3, F-46547: [`NodeRect::dist2_within`]), at most `max`, in the walk's order - a node
+    /// whose box is within r (F-80185, as [`NavSys::lanes_near`]), its children in the order the side of its
+    /// split `p` lies on picks, then its own items in their order.
+    pub fn regions_near(&self, p: Vec3, r: f32, max: usize) -> Vec<NavNode> {
+        const ORDER: [[usize; 4]; 4] = [[0, 1, 2, 3], [1, 3, 0, 2], [2, 0, 3, 1], [3, 2, 1, 0]];
+        fn go(nav: &NavSys, n: usize, p: Vec3, r: f32, max: usize, out: &mut Vec<NavNode>) {
+            let q = &nav.quad[n];
+            let mut d = 0.0f32;
+            if p.x < q.min[0] {
+                d = (p.x - q.min[0]) * (p.x - q.min[0]);
+            } else if p.x > q.max[0] {
+                d = (p.x - q.max[0]) * (p.x - q.max[0]);
+            }
+            if p.z < q.min[1] {
+                d = (p.z - q.min[1]).mul_add(p.z - q.min[1], d);
+            } else if p.z > q.max[1] {
+                d = (p.z - q.max[1]).mul_add(p.z - q.max[1], d);
+            }
+            if d > r * r {
+                return;
+            }
+            let k = -9.999_999_7e-7f32;
+            let quad = (if p.z - q.split[1] > k { 1 } else { 0 }) | (if p.x - q.split[0] > k { 2 } else { 0 });
+            for &slot in &ORDER[quad] {
+                if out.len() >= max {
+                    break;
+                }
+                if let Some(c) = q.kids[slot] {
+                    go(nav, c, p, r, max, out);
+                }
+            }
+            for &it in &q.items {
+                if out.len() >= max {
+                    break;
+                }
+                if nav.node_rect(it).dist2_within(p, r).is_some() {
+                    out.push(it);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        if !self.quad.is_empty() {
+            go(self, 0, p, r, max, &mut out);
+        }
+        out
     }
 
     pub fn lanes_near(&self, p: Vec3, w: f32, mask: u32, max: usize) -> Vec<usize> {
@@ -2344,6 +2400,8 @@ pub struct RegionRect {
     pub mid: glam::Vec3,
     pub dir: glam::Vec3,
     pub side: glam::Vec3,
+    /// +4c: no occluder box (road / junction vfunc 2, F-76320)
+    pub no_box: bool,
 }
 
 /// The junctions' rectangles, in the order (and with the filter) of [`parse_intersections`].
@@ -2358,7 +2416,7 @@ pub fn parse_intersection_rects(res: &crate::rsc::Resource) -> Vec<RegionRect> {
         if !rd.has(o, 0xc0) || rd.vtable(o) != 0x0047_a0c4 || !v(o + 0x80).is_finite() {
             continue;
         }
-        out.push(RegionRect { index: i, rect_c: [rd.f32(o + 0x34), rd.f32(o + 0x38)], width: rd.f32(o + 0x3c), len: rd.f32(o + 0x40), y_range: [rd.f32(o + 0x44), rd.f32(o + 0x48)], mid: v(o + 0x50), dir: v(o + 0x60), side: v(o + 0x70) });
+        out.push(RegionRect { index: i, rect_c: [rd.f32(o + 0x34), rd.f32(o + 0x38)], width: rd.f32(o + 0x3c), len: rd.f32(o + 0x40), y_range: [rd.f32(o + 0x44), rd.f32(o + 0x48)], mid: v(o + 0x50), dir: v(o + 0x60), side: v(o + 0x70), no_box: rd.u8(o + 0x4c) != 0 });
     }
     out
 }
