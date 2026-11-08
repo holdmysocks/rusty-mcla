@@ -205,6 +205,8 @@ pub struct Ambience {
     timers: Vec<f32>,
     quad_timers: Vec<f32>,
     shots: Vec<Handle>,
+    /// the quadshots' slots (mgr +296 / +300, F-73296), apart from the one-shots' (+288 / +292, F-57118)
+    quad_shots: Vec<Handle>,
     slots: Vec<Slot>,
     line: Option<Handle>,
     landmark_curve: u32,
@@ -254,11 +256,19 @@ struct Rain {
     mix: Option<(Option<usize>, bool)>,
 }
 
-/// Voices for the distant one-shots and quadshots at once (the manager's free-slot lists; size not decoded).
+/// The distant one-shots' slots (mgr +292, F-57118) and the quadshots' (+300, F-73296): F-20021 sizes them by the wave slot
+/// pools AMBIENCE_ONESHOT and AMBIENCE_STREAM, which F-22027 counts in waveslots.xml through F-97061 (`%s_%.2i` from _00, else from _01,
+/// while the next one exists): AMBIENCE_ONESHOT_01..04 and AMBIENCE_STREAM_01..04 (test `shot_pools_match_the_wave_slots`).
 const SHOT_SLOTS: usize = 4;
+const QUAD_SLOTS: usize = 4;
 
 /// MANAGER_MIXER entry 11, the slot the hangout landmarks drive
 const POS_MUSIC: &str = "DYNAMIC_MIXER_POSITIONAL_MUSIC";
+
+/// A distant one-shot's (list B) or quadshot's (list C) offset from the listener at `angle` (F-14965).
+fn shot_offset(quad: bool, angle: f32) -> Vec3 {
+    crate::aiv::rot_y(Vec3::new(0.0, 0.0, if quad { 6000.0 } else { -6000.0 }), angle)
+}
 
 impl Ambience {
     pub fn new(lib: &SoundLib) -> Option<Ambience> {
@@ -290,6 +300,7 @@ impl Ambience {
             timers: Vec::new(),
             quad_timers: Vec::new(),
             shots: Vec::new(),
+            quad_shots: Vec::new(),
             slots: Vec::new(),
             line: None,
             landmark_curve: joaat("MC4_HANGOUT_LANDMARK_APPLY"),
@@ -652,7 +663,7 @@ impl Ambience {
             // the playing one-shots stop with a 750 ms release (F-61925 lists +288 / +296), the next switch waits 4 s
             // (+828 = now + 4000 ms); then F-20727 sets every one-shot's and quadshot's timer to now + random(0, its
             // max interval)
-            for h in self.shots.drain(..) {
+            for h in self.shots.drain(..).chain(self.quad_shots.drain(..)) {
                 lib.stop_release(h, 750);
             }
             self.hold = now + 4.0;
@@ -681,7 +692,7 @@ impl Ambience {
                 }
             }
             self.stop_pos_music(lib);
-            for h in self.bed.take().into_iter().chain(self.bed2.take()).chain(self.shots.drain(..)) {
+            for h in self.bed.take().into_iter().chain(self.bed2.take()).chain(self.shots.drain(..)).chain(self.quad_shots.drain(..)) {
                 lib.stop(h);
             }
             return;
@@ -711,9 +722,10 @@ impl Ambience {
         // distant one-shots and quadshots (F-14965), while AMBIENCE_ONESHOTS is above -80 dB; else they stop with their
         // own release (F-61925(mgr, -1)) and the timers wait
         self.shots.retain(|h| lib.playing(*h));
+        self.quad_shots.retain(|h| lib.playing(*h));
         let shots_on = level(lib, "AMBIENCE_ONESHOTS") > -80.0;
         if !shots_on {
-            for h in self.shots.drain(..) {
+            for h in self.shots.drain(..).chain(self.quad_shots.drain(..)) {
                 lib.stop(h);
             }
         }
@@ -724,7 +736,8 @@ impl Ambience {
                     continue;
                 }
                 *t = now + lib.rand_float(s.min, s.max);
-                if self.shots.len() >= SHOT_SLOTS {
+                // a free slot of the list's own pool (F-57118 / F-73296); none -> this one is skipped
+                if if timers == 0 { self.shots.len() >= SHOT_SLOTS } else { self.quad_shots.len() >= QUAD_SLOTS } {
                     continue;
                 }
                 if s.flags & if night { 2 } else { 1 } == 0 {
@@ -734,9 +747,10 @@ impl Ambience {
                     Some(c) => (lib.rand_float(-s.spread, s.spread) + c).to_radians(),
                     None => lib.rand_float(-std::f32::consts::PI, std::f32::consts::PI),
                 };
-                let pos = listener + Vec3::new(-6000.0 * angle.sin(), 0.0, -6000.0 * angle.cos());
+                // F-14965: list B (0, 0, -6000) through F-57591, list C (0, 0, +6000) rotated inline by the same sin / cos
+                let pos = listener + shot_offset(timers == 1, angle);
                 if let Some(h) = lib.play_hash(s.sound, Req { pos: Some(pos), volume: s.volume, ..Default::default() }) {
-                    self.shots.push(h);
+                    if timers == 0 { self.shots.push(h) } else { self.quad_shots.push(h) }
                 }
             }
         }
@@ -924,6 +938,39 @@ mod tests {
         }
         eprintln!("speed fade: {exact} of {n} cases bit-equal, worst {worst} ulp");
         assert!(n > 40 && worst <= 1);
+    }
+
+    /// F-22027's pool count (F-97061: `%s_%.2i` from _00, or from _01 when _00 is missing, while the next one exists) over the
+    /// disc's waveslots.xml gives the two shot pools F-20021 sizes; and the two lists' offsets (F-14965): list B at
+    /// (0, 0, -6000) through F-57591, list C at (0, 0, +6000) - the quadshots sit opposite the one-shots at one angle.
+    #[test]
+    fn shot_pools_match_the_wave_slots() {
+        let dir = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        let Ok(x) = std::fs::read_to_string(std::path::Path::new(&dir).join("audio/X360/config/waveslots.xml")) else { return };
+        let names: Vec<&str> = x.split("<Name content=\"ascii\">").skip(1).filter_map(|t| t.split('<').next()).collect();
+        let count = |pool: &str| {
+            let has = |i: i32| names.iter().any(|n| *n == format!("{pool}_{i:02}"));
+            let (mut n, mut skip) = (0, 0);
+            let mut i = 0;
+            loop {
+                if has(i + skip) {
+                    n += 1;
+                } else if i == 0 && skip == 0 {
+                    skip = 1;
+                    continue;
+                } else {
+                    break;
+                }
+                i += 1;
+            }
+            n
+        };
+        assert_eq!(count("AMBIENCE_ONESHOT"), SHOT_SLOTS);
+        assert_eq!(count("AMBIENCE_STREAM"), QUAD_SLOTS);
+        let a = 0.7f32;
+        let (b, c) = (shot_offset(false, a), shot_offset(true, a));
+        assert_eq!((b.x, b.z), (-c.x, -c.z));
+        assert!((c.x - 6000.0 * a.sin()).abs() < 0.01 && (c.z - 6000.0 * a.cos()).abs() < 0.01);
     }
 
     /// The data's odd radii never panic: equal radii give NaN (silent through the LANDMARK curve), an inner radius
