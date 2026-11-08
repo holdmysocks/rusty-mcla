@@ -1209,7 +1209,7 @@ fn ball_project(p: V4, s: &[V4; 9], g: &[V4; 3], h: &[V4; 3]) -> [V4; 9] {
 }
 
 /// F-68966: the rotation (rows) taking `from` onto `to` by the shortest arc; identity when
-/// |from x to|^2 < 1e-12; the rows are built as F-38496's, from the sine and cosine of the arc.
+/// |from x to|^2 < 1e-12; the rows are built as F-38496's, from the sine and cosine of the arc (its tail F-28465).
 fn shortest_arc(from: V4, to: V4) -> [V4; 3] {
     let c = cross(from, to);
     let l2 = c.dot3(c);
@@ -2424,5 +2424,24 @@ mod tests {
     #[test]
     fn post_push_is_the_originals() {
         run(b'p', |a, c| a.post_push(c.f1));
+    }
+
+    /// The shortest-arc rotation F-68966 (with its axis-angle rows F-28465) run offline (tools/shortest_arc_reference.py):
+    /// 8,000 pairs (random, near-parallel and anti-parallel, equal, a zero `to`, garbage w lanes) - every word of the
+    /// three rows, w lanes too, equal to `shortest_arc`.
+    #[test]
+    fn shortest_arc_is_the_originals() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut n = 0;
+        for line in include_str!("testdata/shortest_arc_ref.txt").lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let c: Vec<f32> = case.split(' ').map(|x| f32::from_bits(h(x))).collect();
+            let r = super::shortest_arc(V4([c[0], c[1], c[2], c[3]]), V4([c[4], c[5], c[6], c[7]]));
+            let got: Vec<u32> = r.iter().flat_map(|v| v.0.map(f32::to_bits)).collect();
+            let want: Vec<u32> = want.split_whitespace().map(h).collect();
+            assert_eq!(got, want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 8000);
     }
 }
