@@ -5,8 +5,8 @@ Inputs: r4 the head's matrix (rows x, y, z, position at +16 / +32 / +48 / +64), 
 (w ignored: the code masks xyz and ors in 1), r6 the reflection flag; the camera at *(0x82839704) + 112, the signal glow
 strength 0x8287E254, size 0x8287E240 and the reflection sizes 0x8287E2D4 / D8 set per case. The start-up constants the
 image holds as zero are set as the running game has them (0x82860950 the xyz mask, 0x82860930 (0, 0, 0, 1),
-0x828609E0 +inf, 0x828608C0 0, 0x827D8450 1). The world-matrix set F-? (sub_8217C088) is stubbed empty; the glow add
-(sub_822FC250) and the reflection add (sub_822FB508) are stubbed to print their place (v1), f1, f2, r4's two floats and r7.
+0x828609E0 +inf, 0x828608C0 0, 0x827D8450 1). The world-matrix set F-60960 is stubbed empty; the glow add
+F-92524 and the reflection add F-44648 are stubbed to print their place (v1), f1, f2, r4's two floats and r7.
 
   CASE <rows 16 words> <locator xyz> <refl> <cam xyz> <strength size rsx rsy>
   GLOW <P xyz> <f1> <f2> <size x y> <r7>  |  REFL <P xyz> <f1> <rsize x y>  |  (nothing: under 0.001)
@@ -78,13 +78,13 @@ def main():
     ap.add_argument('--ref', type=Path, required=True)
     ap.add_argument('--tool', default='mcla-tool')
     a = ap.parse_args()
-    fn = addr(a.tool, 'F-39998')
+    fn, world, glow, refl = (addr(a.tool, f) for f in ('F-39998', 'F-60960', 'F-92524', 'F-44648'))
     cs = cases(random.Random(39))
     nl, NL = chr(10), chr(92) + 'n'
     pv = 'printf(" %08x %08x %08x",ctx.v1.u32[3],ctx.v1.u32[2],ctx.v1.u32[1]);float g1=float(ctx.f1.f64);uint32_t b1;memcpy(&b1,&g1,4);printf(" %08x",b1);'
-    stubs = {'sub_8217C088': '',
-             'sub_822FC250': 'printf("GLOW");' + pv + 'float g2=float(ctx.f2.f64);uint32_t b2;memcpy(&b2,&g2,4);printf(" %08x %08x %08x %d' + NL + '",b2,load(ctx.r4.u32),load(ctx.r4.u32+4),ctx.r7.s32);',
-             'sub_822FB508': 'printf("REFL");' + pv + 'printf(" %08x %08x' + NL + '",load(ctx.r4.u32),load(ctx.r4.u32+4));'}
+    stubs = {'sub_' + world: '',
+             'sub_' + glow: 'printf("GLOW");' + pv + 'float g2=float(ctx.f2.f64);uint32_t b2;memcpy(&b2,&g2,4);printf(" %08x %08x %08x %d' + NL + '",b2,load(ctx.r4.u32),load(ctx.r4.u32+4),ctx.r7.s32);',
+             'sub_' + refl: 'printf("REFL");' + pv + 'printf(" %08x %08x' + NL + '",load(ctx.r4.u32),load(ctx.r4.u32+4));'}
     body = ('static const uint32_t C[][27]={' + ','.join('{' + ','.join('0x%08xu' % v for v in c) + '}' for c in cs) + '};' + nl +
             'int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.assign(std::istreambuf_iterator<char>(bin),{});' + nl +
             'for(auto&c:C){memset(objects,0,sizeof(objects));' +
