@@ -24,6 +24,17 @@ fn be_f32(o: &[u8], at: usize) -> f32 {
     f32::from_bits(be_u32(o, at))
 }
 
+/// The start's tune words (F-44510): XF+99 the ignition delay (u16 ms) x 0.001 and XF+105 the start boost (s16 dB x 100)
+/// x 0.01, each converted to a float and multiplied in single precision.
+fn xf_start(xf: &[u8]) -> (f32, f32) {
+    (be_u16(xf, 99) as f32 * 0.001, be_u16(xf, 105) as i16 as f32 * 0.01)
+}
+
+/// The start's timer +288 (the delay with the ignition flag's low byte set, else 0) and boost +152 (dB to linear, F-42985).
+fn start_values(ign_delay: f32, boost_db: f32, ignition: bool) -> (f32, f32) {
+    (if ignition { ign_delay } else { 0.0 }, db2lin(boost_db))
+}
+
 /// Linear step toward a target, clamped there (F-90102).
 fn approach(p: &mut f32, target: f32, step: f32) {
     approach_fma(p, target, step, 1.0);
@@ -379,9 +390,9 @@ impl EngineSound {
             slew: (100.0 - be_f32(xf, 38)) * 100.0,
             gain_curve: be_u32(xf, 119),
             ign_sound: be_u32(xf, 95),
-            ign_delay: be_u16(xf, 99) as f32 * 0.001,
+            ign_delay: xf_start(xf).0,
             crank: (be_u16(xf, 101) as i32, be_u16(xf, 103) as i32),
-            boost_db: s16(xf, 105) * 0.01,
+            boost_db: xf_start(xf).1,
             flare: (be_u16(xf, 107) as f32, be_u16(xf, 109) as f32),
             settle: be_u16(xf, 111) as f32,
             kaput_sound: be_u32(xf, 113),
@@ -476,8 +487,7 @@ impl EngineSound {
     pub fn start(&mut self, lib: &mut SoundLib, ignition: bool) {
         self.state = 0;
         self.stop_loops(lib);
-        self.timer = if ignition { self.ign_delay } else { 0.0 };
-        self.boost = db2lin(self.boost_db);
+        (self.timer, self.boost) = start_values(self.ign_delay, self.boost_db, ignition);
     }
 
     /// The engine sound's stop (F-29108, vt+56): state 2, the loops stop, the wait XF+117 ms (2250 on every car) when
@@ -966,6 +976,27 @@ impl EngineSound {
 
 #[cfg(test)]
 mod tests {
+
+    /// The engine sound's start F-44510 against the original's code run offline (tools/engine_start_reference.py: XF+99 and
+    /// XF+105 over 3,868 values each, the ignition flag 0 and 1): state +1928 0, the loops stopped once, timer +288 and
+    /// boost +152 equal to the bit in every case (the boost through the shared db2lin, F-42985).
+    #[test]
+    fn engine_start_matches_the_original() {
+        use super::*;
+        let mut n = 0;
+        for line in include_str!("testdata/engine_start_ref.txt").lines() {
+            let w: Vec<&str> = line.split_whitespace().filter(|w| *w != "->").collect();
+            let h = |i: usize| u32::from_str_radix(w[i], 16).unwrap();
+            let mut xf = vec![0xABu8; 256];
+            xf[99..101].copy_from_slice(&(h(1) as u16).to_be_bytes());
+            xf[105..107].copy_from_slice(&(h(2) as u16).to_be_bytes());
+            let (d, b) = xf_start(&xf);
+            let (t, g) = start_values(d, b, w[0] == "1");
+            assert_eq!((h(3), t.to_bits(), g.to_bits(), w[6]), (0, h(4), h(5), "1"), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 7736);
+    }
 
     /// The revs machine F-74751 against the original's code run offline on random update sequences
     /// (tools/revs_machine_reference.py): every update's boost bits and its make / play / stop / end

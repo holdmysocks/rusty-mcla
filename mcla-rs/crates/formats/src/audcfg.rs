@@ -39,13 +39,27 @@ pub fn lin2db(x: f32) -> f32 {
     }
 }
 
-/// dB to linear gain (F-42985): `10^(dB * 0.05)`, 0 below -100 dB.
+/// dB to linear gain as the original computes it (F-42985): y = f32(dB x 0.05), then the vector powf F-33229
+/// `vexpte(f32(log2(10) x y))` (log2(10) = 0x40549A78; vexpte: n = floor, f = f32(x - n), the degree-5 polynomial in single
+/// precision, times 2^n); 0 below -100 dB (and for NaN). Not the host's powf: that differs in the last bits.
 pub fn db2lin(db: f32) -> f32 {
     if db - (-100.0) >= 0.0 {
-        10f32.powf(db * 0.05)
+        pow10(db * f32::from_bits(0x3D4C_CCCD))
     } else {
         0.0
     }
+}
+
+/// The original's vector powf(10, y) (F-33229): exp2 by the recomp's vexptefp of f32(log2(10) x y).
+pub fn pow10(y: f32) -> f32 {
+    let x = f32::from_bits(0x4054_9A78) * y;
+    let n = (x as f64).floor();
+    let fr = (x as f64 - n) as f32;
+    let mut p = 1.877_576_7e-3f32;
+    for c in [8.989_339_7e-3f32, 5.582_631_8e-2, 2.401_536_1e-1, 6.931_530_8e-1, 1.0] {
+        p = p * fr + c;
+    }
+    (p as f64 * 2f64.powi(n as i32)) as f32
 }
 
 /// One `.dat` file: `u32 version, u32 size, data[size], u32 strsize, strings, u32 count, u32 namebytes`, then per object

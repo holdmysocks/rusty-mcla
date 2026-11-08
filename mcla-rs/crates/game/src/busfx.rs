@@ -23,21 +23,14 @@ fn fsel(a: f32, b: f32, c: f32) -> f32 {
     }
 }
 
-/// The inlined vector powf(10, y) (F-33229) as the recomp computes it: vexpte(f32(log2(10) * y))
+/// The inlined vector powf(10, y) (F-33229) as the recomp computes it: vexpte(f32(log2(10) * y)) - one copy, in the formats crate
 fn pow10(y: f32) -> f32 {
-    let x = f32::from_bits(0x4054_9A78) * y;
-    let n = (x as f64).floor();
-    let fr = (x as f64 - n) as f32;
-    let mut p = 1.877_576_7e-3f32;
-    for c in [8.989_339_7e-3f32, 5.582_631_8e-2, 2.401_536_1e-1, 6.931_530_8e-1, 1.0] {
-        p = p * fr + c;
-    }
-    (p as f64 * 2f64.powi(n as i32)) as f32
+    mcla_formats::audcfg::pow10(y)
 }
 
-/// F-42985: 10^(dB/20), 0 below -100 dB
+/// F-42985: 10^(dB/20), 0 below -100 dB (the formats crate's, used by every sound)
 pub(crate) fn db2lin(db: f32) -> f32 {
-    fsel(db - -100.0, pow10(db * f32::from_bits(0x3D4C_CCCD)), 0.0)
+    mcla_formats::audcfg::db2lin(db)
 }
 
 /// zero or denormal (exponent field 0) -> +0.0
