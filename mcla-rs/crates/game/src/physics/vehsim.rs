@@ -1182,6 +1182,12 @@ impl Default for VehState {
 }
 
 impl VehState {
+    /// chassis +584, the air time (F-75234 hands it out; negative in the tick of a landing): the bumper and cockpit
+    /// cameras snap their frame by it (F-14014)
+    pub fn air584(&self) -> f32 {
+        self.air584
+    }
+
     /// 23 random bits (the original's generator at 0x82860890).
     fn random_bits(&mut self) -> f32 {
         let t = self.rng[0] as u64 * 0x5CDC_FAA7 + self.rng[1] as u64;

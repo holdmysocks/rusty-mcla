@@ -190,6 +190,9 @@ pub struct BoomCam {
     /// compare with recordings of the static recomp, which rescales the two filter factors by the frame time
     /// (its frame delta, the time word that rescale reads)
     recomp_timing: Option<f32>,
+    /// the snap byte (+664): set where the original cuts to this camera; the next `step` takes its filters at 1
+    /// and skips the approach rate, then clears it (it keeps the camera's state, unlike the port's own restart)
+    snap: bool,
 }
 
 fn norm_range(v: f32, range: f32) -> f32 {
@@ -531,6 +534,8 @@ pub struct BoomGround {
     /// 1 up, -1 down, 0 none)
     pub gear: i32,
     pub shifting: i32,
+    /// the chassis's air time (+584, F-75234): a fixed mount's frame snaps by min(air - 0.5, 1) above 0.5 s
+    pub air: f32,
 }
 
 /// the world's up as the frame takes it (a global vector; (0, 1, 0))
@@ -642,10 +647,23 @@ impl BoomCam {
         use crate::physics::exact::{cross, dot3, fma, fnms, guest_asin, guest_cos};
         // (the port's: a car moved over 80 m - a teleport - starts the camera afresh, as `update` does; the original
         // sets its snap byte +664 where the game moves the car)
-        let snap = !self.started || (self.world - car.pos).length_squared() > 80.0 * 80.0;
-        let k = if snap { 1.0 } else { 0.0 };
+        // (the port's own restart: a fresh camera, or a car moved over 80 m - a teleport; the original's snap byte
+        // +664 snaps the filters without clearing the state)
+        let restart = !self.started || (self.world - car.pos).length_squared() > 80.0 * 80.0;
+        let snap = restart || std::mem::take(&mut self.snap);
+        // (the frame's snap share: 1 on a snap; on a fixed mount (+668) the chassis's air time over 0.5 s, at most 1 -
+        // F-75234 through the chassis's vt+52 - so the bumper / cockpit frame follows the car in a long jump)
+        let k = if snap {
+            1.0
+        } else if car.fixed_mount && g.air > 0.5 {
+            let a = g.air - 0.5;
+            let a = if a >= 0.0 { a } else { 0.0 };
+            if a - 1.0 >= 0.0 { 1.0 } else { a }
+        } else {
+            0.0
+        };
         let car_m = Mat3::from_quat(car.rot);
-        if snap {
+        if restart {
             *self = BoomCam { started: true, stepped: true, last_gear: car.gear, up: BOOM_UP, dir: car_m.z_axis, ..Default::default() };
         }
         // ---- the lens, F-44852: from last call's filtered velocity (+464, +472) ----
@@ -662,7 +680,9 @@ impl BoomCam {
         let kk = (1.0 - cosv) * 0.5;
         let mut dist = fma(t.s("SSDistScale") - 1.0, kk, 1.0);
         let mut fov = fma(t.s("SSFovMax") - t.s("SSFovMin"), kk, t.s("SSFovMin"));
-        if !car.rev {
+        // (the slipstream turbo and the nitrous only on a chase view not looking back: F-44852 skips them on a fixed
+        // mount, +668, and while vt+56, +208, is set)
+        if !car.rev && !car.fixed_mount {
             fov = car.sst.0 + fov;
             dist = car.sst.1 * dist;
             // (approx.: the nitrous object's +24 lens is the port's ramp)
@@ -671,6 +691,16 @@ impl BoomCam {
                 fov = car.nitro_fov.0 * self.nitro + fov;
             }
         }
+        // (then every view: the ability's lens +224 added, its distance +228 multiplied; F-38892 writes them to the
+        // bumper and cockpit only, the lens held at its lowest since the view was set - the chase views get (0, 1))
+        let ab_fov = if car.fixed_mount {
+            self.ab_fov = self.ab_fov.min(car.ability.0);
+            self.ab_fov
+        } else {
+            car.ability.0
+        };
+        fov = ab_fov + fov;
+        dist = car.ability.1 * dist;
         let dist_scale = dist;
 
         // ---- the frame, F-90220 ----
@@ -694,7 +724,12 @@ impl BoomCam {
                 sum = vnorm(n) + sum;
             }
         }
-        let up_target = (vnorm(sum) - BOOM_UP) * s0 + BOOM_UP;
+        // (a fixed mount, +668: the up target is the followed matrix's own up row, the direction its back row as it
+        // is - no tumble, no heading filter, +384 left alone)
+        let up_target = if car.fixed_mount { (car_m.y_axis - BOOM_UP) * s0 + BOOM_UP } else { (vnorm(sum) - BOOM_UP) * s0 + BOOM_UP };
+        if car.fixed_mount {
+            self.up = vnorm((up_target - self.up) * s1 + self.up);
+        }
         let vh = Vec3::new(-car.vel.x, 0.0, -car.vel.z);
         let speed_h = fma(car.vel.x, car.vel.x, car.vel.z * car.vel.z).sqrt();
         let along = vnorm(car_m.z_axis + vh);
@@ -708,28 +743,42 @@ impl BoomCam {
         } else {
             None
         };
-        if let Some(goal) = goal {
-            self.tumble = boom_toward(self.tumble, goal, dt);
-        }
-        let heading = vnorm((along - car_m.z_axis) * self.tumble + car_m.z_axis);
-        // (while the state word's 0x10 is set the heading is followed only from 10 m/s)
-        if g.flags & 0x10 == 0 || g.speed >= 10.0 {
-            self.dir = vnorm((heading - self.dir) * s2 + self.dir);
-        }
-        self.up = vnorm((up_target - self.up) * s1 + self.up);
-        let x = vnorm(cross(self.up, self.dir));
+        let frame_dir = if car.fixed_mount {
+            car_m.z_axis
+        } else {
+            if let Some(goal) = goal {
+                self.tumble = boom_toward(self.tumble, goal, dt);
+            }
+            let heading = vnorm((along - car_m.z_axis) * self.tumble + car_m.z_axis);
+            // (while the state word's 0x10 is set the heading is followed only from 10 m/s)
+            if g.flags & 0x10 == 0 || g.speed >= 10.0 {
+                self.dir = vnorm((heading - self.dir) * s2 + self.dir);
+            }
+            self.up = vnorm((up_target - self.up) * s1 + self.up);
+            self.dir
+        };
+        let x = vnorm(cross(self.up, frame_dir));
         let z = vnorm(cross(x, self.up));
         let ctr = t.v3("Center");
         let col = |i: usize| Vec3::new(car_m.x_axis[i], car_m.y_axis[i], car_m.z_axis[i]);
         let origin = car.pos + Vec3::new(dot3(ctr, col(0)), dot3(ctr, col(1)), dot3(ctr, col(2)));
 
         // ---- the filters: velocity and turn rate (VelocityFilter), their changes (AccelFilter) ----
-        let half = if fps < 60.0 { 0.5 } else { 1.0 };
+        // (the frame rate rounded, fctiwz of fps + 0.5, below 60)
+        let half = if ((fps + 0.5) as i32) < 60 { 0.5 } else { 1.0 };
         let (mut kv, mut ka) = (t.s("VelocityFilter") * half, t.s("AccelFilter") * half);
         if let Some(rdt) = self.recomp_timing {
             // (the static recomp's own frame-time fix, not the original's: its hooks at these two factors make them
-            // 1 - (1 - f)^(30 dt) - the recomp's RescaleCameraFactor; only to compare with its recordings)
-            let per = |f: f32| if f > 0.0 && f < 1.0 && rdt > 0.0 { (1.0 - ((1.0 - f) as f64).powf(rdt as f64 * 30.0)) as f32 } else { f };
+            // 1 - (1 - f)^(30 dt) - the recomp's RescaleCameraFactor, which halves a factor the game left whole (at a
+            // rounded 60 frames a second or more) first; only to compare with its recordings)
+            let per = |f: f32| {
+                if f > 0.0 && f < 1.0 && rdt > 0.0 {
+                    let f = if half == 1.0 { 0.5 * f as f64 } else { f as f64 };
+                    (1.0 - (1.0 - f).powf(rdt as f64 * 30.0)) as f32
+                } else {
+                    f
+                }
+            };
             (kv, ka) = (per(kv), per(ka));
         }
         let up_now = self.up;
@@ -897,16 +946,20 @@ impl BoomCam {
         }
         let mut off = off + Vec3::new(xoff, yoff, zoff);
         let mut foc = foc0 + Vec3::new(xfoc, yfoc, zfoc);
-        // the hill pitch: asin of the frame's nose (F-80613), the boom turned about x (F-43547)
-        let (up_k, dn_k) = if car.rev { (-t.s("HillPitchDn"), -t.s("HillPitchUp")) } else { (t.s("HillPitchUp"), t.s("HillPitchDn")) };
-        let a = guest_asin(z.y as f64) as f32;
-        let swing = if a < 0.0 { a.abs() * up_k } else { a.abs() * dn_k };
-        off = boom_rot_x(off, -swing);
+        // the hill pitch: asin of the frame's nose (F-80613), the boom turned about x (F-43547); a chase view only
+        // (+668 skips it)
+        if !car.fixed_mount {
+            let (up_k, dn_k) = if car.rev { (-t.s("HillPitchDn"), -t.s("HillPitchUp")) } else { (t.s("HillPitchUp"), t.s("HillPitchDn")) };
+            let a = guest_asin(z.y as f64) as f32;
+            let swing = if a < 0.0 { a.abs() * up_k } else { a.abs() * dn_k };
+            off = boom_rot_x(off, -swing);
+        }
         off.y += car.rise;
         foc.y += car.rise;
-        // the look-around turns camera and focus about the car tune's ModelOffset (pitch, then yaw)
+        // the look-around turns camera and focus about the car tune's ModelOffset (pitch, then yaw); a fixed mount
+        // turns them about its own last offset (+416)
         if pan_yaw != 0.0 || pan_pitch != 0.0 {
-            let pivot = car.model_offset;
+            let pivot = if car.fixed_mount { self.off } else { car.model_offset };
             off = boom_rot_y(boom_rot_x(off - pivot, pan_pitch), pan_yaw) + pivot;
             foc = boom_rot_y(boom_rot_x(foc - pivot, pan_pitch), pan_yaw) + pivot;
         }
@@ -914,9 +967,9 @@ impl BoomCam {
         // ---- the homing: last call's place seen from the new frame goes HomingTime of the way ----
         let len = fma(off.y, off.y, fma(off.z, off.z, off.x * off.x)).sqrt();
         let homing = t.v3("HomingTime");
-        // (approx.: on the first call the original homes from its +64, the place the last view left there; the
-        // port has none and starts on the target)
-        if homing != Vec3::ZERO && !snap {
+        // (not gated by the snap; approx.: on a restart the original homes from its +64, the place the last view
+        // left there - the port has none and starts on the target)
+        if homing != Vec3::ZERO && !restart {
             let d = self.world - origin;
             let last = Vec3::new(dot3(x, d), dot3(self.up, d), dot3(z, d));
             off = (off - last) * homing + last;
@@ -969,7 +1022,8 @@ impl BoomCam {
         let ctr = t.v3("Center");
         let col = |i: usize| Vec3::new(car_m.x_axis[i], car_m.y_axis[i], car_m.z_axis[i]);
         let origin = car.pos + Vec3::new(dot3(ctr, col(0)), dot3(ctr, col(1)), dot3(ctr, col(2)));
-        let x = vnorm(cross(self.up, self.dir));
+        // (a fixed mount's frame takes the followed car's back axis itself: here the car as drawn)
+        let x = vnorm(cross(self.up, if car.fixed_mount { car_m.z_axis } else { self.dir }));
         let z = vnorm(cross(x, self.up));
         let frame = Mat3::from_cols(x, self.up, z);
         let pos = origin + frame * self.off;
@@ -1002,6 +1056,7 @@ impl BoomGround {
         if let Some(v) = st.veh.as_ref() {
             g.gear = v.gear + 1;
             g.shifting = v.gear_change.direction as i32;
+            g.air = v.air584();
         } else {
             g.gear = st.gear + 1;
         }
@@ -4517,18 +4572,43 @@ camTrackCS {
     fn boom_step_matches_the_original() {
         let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| r"D:\MCLA\extracted\cache".into());
         let Some(set) = BoomSet::load(&data, "vp_aud_r8_08") else { return };
-        let t = &set.views[1];
+        let (n, kicks) = boom_rec_check(&set.views[1], include_str!("testdata/boom_step_rec.txt"), false);
+        assert_eq!(n, 1153);
+        assert!(kicks > 20, "{kicks} frames of a shift kick");
+    }
+
+    /// The bumper and cockpit (+668, the fixed mount) through the same update (F-14014): the lens without the
+    /// slipstream / nitrous terms (F-44852), the frame's snap share from the chassis's air time over 0.5 s, the focus
+    /// height not scaled, no hill pitch. 1,016 recorded calls of the R8's POV and 1,065 of its bumper (recording c13:
+    /// throttle, steering, braking, coasting), each run from the recorded entry state.
+    #[test]
+    fn fixed_mount_step_matches_the_original() {
+        let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| r"D:\MCLA\extracted\cache".into());
+        let Some(set) = BoomSet::load(&data, "vp_aud_r8_08") else { return };
+        let (n, _) = boom_rec_check(&set.views[3], include_str!("testdata/boom_step_pov_rec.txt"), true);
+        assert_eq!(n, 1016);
+        let (n, _) = boom_rec_check(&set.views[4], include_str!("testdata/boom_step_bumper_rec.txt"), true);
+        assert_eq!(n, 1065);
+    }
+
+    /// Runs `BoomCam::step` on every recorded call of `text` (boom_testdata.py lines; with `fixed` the fixed-mount
+    /// recording's air time as the last word) from its entry state and asserts every field within 1e-5 of its size;
+    /// returns the calls and those with a shift kick running.
+    fn boom_rec_check(t: &BoomTune, text: &str, fixed: bool) -> (usize, usize) {
         let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
         let names = ["up", "dir", "tumble", "vel", "acc", "ang", "ang_acc", "off", "foc", "roll", "world", "rate", "gz", "shift", "lens"];
         let mut worst = vec![0.0f32; names.len()];
         let (mut n, mut kicks) = (0, 0);
-        for line in include_str!("testdata/boom_step_rec.txt").lines().filter(|l| !l.starts_with('#')) {
+        for line in text.lines().filter(|l| !l.starts_with('#')) {
             let r: Vec<u32> = line.split_whitespace().map(h).collect();
             let f = |k: usize| f32::from_bits(r[k]);
             let v3 = |k: usize| Vec3::new(f(k), f(k + 1), f(k + 2));
             let (dt, k8, fps) = (f(0), f(1), f(2));
             let nw = r[30] as usize;
             let mut g = BoomGround { count: nw, speed: f(3), flags: r[4], gear: r[5] as i32, shifting: r[6] as i32, ..Default::default() };
+            if fixed {
+                g.air = f(r.len() - 2);
+            }
             for k in 0..nw.min(4) {
                 let b = 31 + 7 * k;
                 if r[b] != 0 {
@@ -4543,12 +4623,12 @@ camTrackCS {
                 started: true, up: v3(ci), dir: v3(ci + 3), tumble: f(ci + 6), vel: v3(ci + 7), acc: v3(ci + 10), ang: v3(ci + 13),
                 ang_acc: v3(ci + 16), off: v3(ci + 19), foc: v3(ci + 22), roll: f(ci + 25), world: v3(ci + 26), rate: f(ci + 29),
                 gz: f(ci + 30), shift: f(ci + 31), shift_val: f(ci + 32), shift_size: f(ci + 33), shift_armed: r[ci + 34] != 0,
-                recomp_timing: Some(k8), ..Default::default()
+                recomp_timing: Some(k8), snap: fixed && r[r.len() - 1] != 0, ..Default::default()
             };
             let rot = Quat::from_mat3(&Mat3::from_cols(v3(8), v3(12), v3(16))).normalize();
             let car = BoomTarget {
                 pos: v3(20), rot, vel: v3(24), ang_vel: v3(27), grounded: 0, gear: 0, rev: false, nitro: false, nitro_fov: (0.0, 0.5, 1.0),
-                ability: (0.0, 1.0), sst: (0.0, 1.0), pan: (0.0, 0.0), rise: 0.0, fixed_mount: false, model_offset: Vec3::ZERO,
+                ability: (0.0, 1.0), sst: (0.0, 1.0), pan: (0.0, 0.0), rise: 0.0, fixed_mount: fixed, model_offset: Vec3::ZERO,
             };
             // (the followed matrix: T+144 x, +160 y, +176 z, +192 the place)
             let o = cam.step(t, &car, &g, dt, fps);
@@ -4566,11 +4646,10 @@ camTrackCS {
         for k in 0..names.len() {
             eprintln!("{:8} worst {:e}", names[k], worst[k]);
         }
-        assert_eq!(n, 1153);
-        assert!(kicks > 20, "{kicks} frames of a shift kick");
         for k in 0..names.len() {
             assert!(worst[k] < 1e-5, "{}: off by {:e} of its size", names[k], worst[k]);
         }
+        (n, kicks)
     }
 
     /// GitHub #43: the director's lens near (F-82384 -> director +88 with +92 set, read by F-98562) is the

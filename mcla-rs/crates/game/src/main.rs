@@ -9056,9 +9056,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // (the director's lens, F-98562: near 0.2 in every view it shows, not the file's CameraNear)
                         self.cam.near = boomcam::DIRECTOR_NEAR;
                         self.lod_near = boomcam::DIRECTOR_NEAR;
-                        // (a chase view: the original's update once a game frame on the sim's pose, drawn on the car as
-                        // it is drawn; the bumper and cockpit mounts keep the port's per-frame update)
-                        let out = if chase {
+                        // (every view, the chase views and the bumper / cockpit mounts: the original's update once a game
+                        // frame on the sim's pose, drawn on the car as it is drawn)
+                        let out = {
                             if !self.boom.stepped() {
                                 self.boom.reset();
                             }
@@ -9077,11 +9077,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 }
                             }
                             if self.boom.stepped() { self.boom.draw(tune, &target) } else { self.boom.update(tune, &target, dt) }
-                        } else {
-                            if self.boom.stepped() {
-                                self.boom.reset();
-                            }
-                            self.boom.update(tune, &target, dt)
                         };
                         let drive_out = out;
                         // the burnout camera: with the CINEMATIC CAMERA option on and a chase view in
