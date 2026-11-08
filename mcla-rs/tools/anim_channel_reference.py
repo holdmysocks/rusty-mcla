@@ -10,13 +10,14 @@ anim_channels_match_the_original (crates/formats/src/rage/anim.rs).
 import argparse
 import random
 import struct
+import subprocess
 from pathlib import Path
 from recomp_leaf import compile_and_run, extract, shim
 import memcap
 
 memcap.apply()
 
-FUNCS = ['sub_825460A0', 'sub_82546120', 'sub_82541688']
+FUNCS = ['F-89511', 'F-74386', 'F-18785']  # dequantise, quantised lerp, raw lerp -> eval0 / eval1 / eval2
 
 MAIN = r'''
 static uint64_t load64(uint32_t a) { return uint64_t(load(a)) << 32 | load(a + 4); }
@@ -43,11 +44,11 @@ int main(int argc, char **argv) {
         float frf; std::memcpy(&frf, &fr, 4); ctx.f1.f64 = frf;
         uint32_t out = 0;
         if (kind == 2) {
-            sub_82541688(ctx, nullptr); out = load(0x2f80);
+            eval2(ctx, nullptr); out = load(0x2f80);
         } else {
             store(0x100c, nb); store(0x1010, count); store(0x1014, sc); store(0x1018, off);
-            if (kind == 0) { sub_825460A0(ctx, nullptr); float v = float(ctx.f1.f64); std::memcpy(&out, &v, 4); }
-            else { sub_82546120(ctx, nullptr); out = load(0x2f80); }
+            if (kind == 0) { eval0(ctx, nullptr); float v = float(ctx.f1.f64); std::memcpy(&out, &v, 4); }
+            else { eval1(ctx, nullptr); out = load(0x2f80); }
         }
         std::printf("%d %x %x %09x %09x %x %09x %x", kind, nb, count, sc, off, i, fr, n);
         for (auto x : w) std::printf(" %09x", x);
@@ -55,6 +56,10 @@ int main(int argc, char **argv) {
     }
 }
 '''
+
+
+def addr(tool, fid):
+    return subprocess.run([tool, 'registry', 'addr', fid], capture_output=True, text=True, check=True).stdout.split()[2][4:]
 
 
 def f2u(v):
@@ -75,19 +80,21 @@ def main():
     for a in ['recomp', 'image', 'out']:
         ap.add_argument('--' + a, type=Path, required=True)
     ap.add_argument('--compiler', default='g++')
+    ap.add_argument('--tool', required=True, help='mcla-tool (registry addr resolves the IDs)')
     ap.add_argument('--cases', type=int, default=6000)
     args = ap.parse_args()
     gen = args.recomp / 'generated/default'
     funcs = ''
-    for f in FUNCS:
+    for k, fid in enumerate(FUNCS):
+        f = 'sub_' + addr(args.tool, fid)
         for p in sorted(gen.glob('mcla_recomp.*.cpp')):
             t = p.read_text()
             if f'DEFINE_REX_FUNC({f}) {{' in t:
-                funcs += extract(p, f)
+                funcs += extract(p, f).replace(f'DEFINE_REX_FUNC({f})', f'DEFINE_REX_FUNC(eval{k})')
                 break
         else:
-            raise SystemExit(f'{f} not found')
-    rng = random.Random(82546120)
+            raise SystemExit(f'{fid} not found')
+    rng = random.Random(8254612 * 10)  # the seed of the checked-in data
     lines = []
     for c in range(args.cases):
         kind = c % 3
