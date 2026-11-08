@@ -1417,15 +1417,15 @@ pub struct Vehicles {
     pub held_at_red: u64,
     pub stopped_at_red: u64,
     trace_car: Option<(usize, u32)>,
-    /// plate background and font (RGBA), and the finished plates by text (the cars hold them: every traffic car
+    /// plate background and font (RGBA; shared, not copied for each plate), and the finished plates by text (the cars hold them: every traffic car
     /// has a plate of its own, a plate of a car that has gone goes with `Gpu::trim_textures`)
-    plate_art: Option<(Option<PlateBg>, Vec<u8>)>,
+    plate_art: Option<(Option<Arc<PlateBg>>, Arc<Vec<u8>>)>,
     plates: hashbrown::HashMap<String, std::sync::Weak<wgpu::BindGroup>>,
     plate_serial: u32,
     /// the background of the player's plate (a name of `resources/license_plates/backgrounds`:
     /// the vehicle record's LicenseBG - `mc4`; none = the California plate), and those loaded
     pub player_plate_bg: Option<String>,
-    plate_bgs: hashbrown::HashMap<String, Option<PlateBg>>,
+    plate_bgs: hashbrown::HashMap<String, Option<Arc<PlateBg>>>,
     /// liveries of the named opponents: texture file by set-up name, loaded ones
     vinyl_index: Option<hashbrown::HashMap<String, std::path::PathBuf>>,
     vinyl_painted: hashbrown::HashSet<String>,
@@ -3862,8 +3862,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let root = &world.assets.root;
             let font = std::fs::read(root.join("vehicle/shared_font/fnt_license_plate.dds")).ok().and_then(|d| mcla_formats::dds::parse_dds("fnt_license_plate", &d).ok()).filter(|t| t.width == 256 && t.height == 256).map(|t| t.to_rgba8());
             self.plate_art = Some(match font {
-                Some(f) => (load_plate_bg(root, "plate_ca_00"), f),
-                None => (None, Vec::new()),
+                Some(f) => (load_plate_bg(root, "plate_ca_00").map(Arc::new), Arc::new(f)),
+                None => (None, Arc::new(Vec::new())),
             });
         }
         let Some((Some(ca), font)) = self.plate_art.clone() else {
@@ -3904,7 +3904,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let text = self.cars[i].plate_text.to_ascii_uppercase();
             // (the player's plate on its own background)
             let own_bg = self.player_plate_bg.clone().filter(|n| self.cars[i].is_player && n != "plate_ca_00").and_then(|n| {
-                let art = self.plate_bgs.entry(n.clone()).or_insert_with(|| load_plate_bg(&world.assets.root, &n));
+                let art = self.plate_bgs.entry(n.clone()).or_insert_with(|| load_plate_bg(&world.assets.root, &n).map(Arc::new));
                 art.clone().map(|a| (n, a))
             });
             let (slot, bg) = match own_bg {
