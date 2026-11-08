@@ -503,6 +503,23 @@ mod tests {
     }
 
     #[test]
+    fn colour_word_matches_the_original() {
+        // (F-44647 run offline on 6,000 colours with edge lanes: tools/colour_word_reference.py; the callers keep RGB)
+        let mut n = 0;
+        let mut bad = Vec::new();
+        for line in include_str!("testdata/colour_word_ref.txt").lines().filter(|l| l.starts_with("c ")) {
+            let w: Vec<u32> = line[2..].split(' ').map(|h| h.parse().unwrap()).collect();
+            let got = colour_word([f32::from_bits(w[0]), f32::from_bits(w[1]), f32::from_bits(w[2]), f32::from_bits(w[3])]) as u32;
+            if got != w[4] & 0xFF_FFFF {
+                bad.push(format!("{line}: {got:06x}"));
+            }
+            n += 1;
+        }
+        assert!(bad.is_empty(), "{} of {n}: {:?}", bad.len(), &bad[..bad.len().min(8)]);
+        assert_eq!(n, 6000);
+    }
+
+    #[test]
     fn nearest_three_and_slots_as_read_live() {
         // camera (824.29, 19.83, -816.99): slots 505 (20.6 m), 504 (28.3 m), 712 (314.6 m)
         let mk = |kind, p: [f32; 3], id| Candidate { kind, pos: Vec3::from(p), colour: [1.0; 4], id, racer: false, ripple: false, category: 1, flash: false };
