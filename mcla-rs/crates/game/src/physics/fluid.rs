@@ -78,33 +78,45 @@ impl Fluid {
 
     /// The update, F-84852, once a tick: the timer, then in the water the lattice's forces
     /// (F-87118) and the buoyancy's change. `rows`: the car's matrix (chassis +240..+288);
-    /// `centre`: its centre of mass (+112) through that matrix, what the torques turn about;
-    /// `place`: the chassis' copy of the body's place (+352), what the points' velocities are
-    /// taken about; the body's velocity and turning. Returns the force and torque it adds.
-    pub fn update(&mut self, rows: &[Vec3; 4], centre: Vec3, place: Vec3, vel: Vec3, ang_vel: Vec3, mass: f32) -> (Vec3, Vec3) {
+    /// `com`: its centre of mass in the car's frame (+112), what the torques turn about once
+    /// through that matrix; `place`: the chassis' copy of the body's place (+352), what the
+    /// points' velocities are taken about; the body's velocity and turning. Each point under
+    /// the level adds its force and torque into `force` / `torque` (the body's sums +336 / +352,
+    /// through its AddForce / AddTorque, F-17506 / F-93816) one point after another.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update(&mut self, rows: &[Vec3; 4], com: Vec3, place: Vec3, vel: Vec3, ang_vel: Vec3, mass: f32, force: &mut Vec3, torque: &mut Vec3) {
         if self.timer > 0.0 {
             self.timer -= STEP;
         }
-        let (mut force, mut torque) = (Vec3::ZERO, Vec3::ZERO);
         if !(self.inside && self.buoyancy > 0.0) {
-            return (force, torque);
+            return;
         }
-        let at = |p: Vec3| rows[0] * p.x + rows[1] * p.y + rows[2] * p.z + rows[3];
+        // (a point (x, y, z, 1) against the matrix's columns, vmsum4fp: (x r0 + y r1) + (z r2 + r3))
+        let at = |p: Vec3| {
+            let c = |k: usize| (p.x * rows[0][k] + p.y * rows[1][k]) + (p.z * rows[2][k] + rows[3][k]);
+            Vec3::new(c(0), c(1), c(2))
+        };
+        let centre = at(com);
         let up = Vec3::new(0.0, self.buoyancy * mass, 0.0);
         for &p in &self.points {
             let w = at(p);
             if w.y > self.level {
                 continue;
             }
-            let v = ang_vel.cross(w - place) + vel;
-            let f = up - (v - self.flow) * self.damp * mass;
-            force += f;
-            torque += (w - centre).cross(f);
+            let v = cross(ang_vel, w - place) + vel;
+            let f = up - ((v - self.flow) * self.damp) * mass;
+            *force += f;
+            *torque += cross(w - centre, f);
         }
         let b = self.tune.sink_rate.mul_add(STEP, self.buoyancy);
         self.buoyancy = b.max(self.tune.buoyancy_min).min(self.tune.buoyancy_max);
-        (force, torque)
     }
+}
+
+/// a x b as F-87118 forms it: lane x -(b.y a.z - b.z a.y) and so on (vnmsubfp as the generated
+/// code has it, the products and the subtraction each rounded, the sign flipped).
+fn cross(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3::new(-(b.y * a.z - b.z * a.y), -(b.z * a.x - b.x * a.z), -(b.x * a.y - b.y * a.x))
 }
 
 /// What F-58580 makes of the tick's contacts.
@@ -184,13 +196,39 @@ mod tests {
         f.inside = true;
         f.level = 10.0;
         let rows = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO];
-        let (force, torque) = f.update(&rows, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, 1000.0);
+        let (mut force, mut torque) = (Vec3::ZERO, Vec3::ZERO);
+        f.update(&rows, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, 1000.0, &mut force, &mut torque);
         // (all 64 points under the level: 64 x 0.2 x the mass, no turn about the box's centre)
         assert!((force.y - 64.0 * 0.2 * 1000.0).abs() < 1.0, "{force:?}");
         assert!(torque.length() < 1e-2, "{torque:?}");
         for _ in 0..120 {
-            f.update(&rows, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, 1000.0);
+            f.update(&rows, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, 1000.0, &mut force, &mut torque);
         }
         assert!((f.buoyancy - 0.1).abs() < 1e-7);
+    }
+
+    /// F-84852 with F-87118 and the body's AddForce / AddTorque run offline
+    /// (tools/fluid_reference.py): the sums, the buoyancy and the timer, every word.
+    #[test]
+    fn update_matches_the_original() {
+        let w = |s: &str| u32::from_str_radix(&s.replace('_', ""), 16).unwrap();
+        let f = |s: &str| f32::from_bits(w(s));
+        let v = |a: &[&str]| Vec3::new(f(a[0]), f(a[1]), f(a[2]));
+        let mut n = 0;
+        for line in include_str!("../testdata/fluid_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let a: Vec<&str> = i.split_whitespace().collect();
+            let o: Vec<u32> = o.split_whitespace().map(w).collect();
+            let t = FluidTune { damp: 0.0, current_scale: 0.0, buoyancy_max: f(a[9]), buoyancy_min: f(a[8]), sink_rate: f(a[10]) };
+            let points = (0..64).map(|p| v(&a[42 + 3 * p..])).collect();
+            let mut fl = Fluid { inside: w(a[0]) & 1 != 0, level: f(a[4]), flow: v(&a[5..]), points, buoyancy: f(a[1]), damp: f(a[2]), timer: f(a[3]), tune: t };
+            let rows = [v(&a[24..]), v(&a[27..]), v(&a[30..]), v(&a[33..])];
+            let (mut force, mut torque) = (v(&a[36..]), v(&a[39..]));
+            fl.update(&rows, v(&a[21..]), v(&a[18..]), v(&a[12..]), v(&a[15..]), f(a[11]), &mut force, &mut torque);
+            let got = [force.x, force.y, force.z, torque.x, torque.y, torque.z, fl.buoyancy, fl.timer].map(f32::to_bits);
+            assert_eq!(got.to_vec(), o, "{line:.120}");
+            n += 1;
+        }
+        assert_eq!(n, 1500);
     }
 }

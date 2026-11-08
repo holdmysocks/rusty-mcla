@@ -5687,9 +5687,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
     // (mcCarFluid's update, F-84852: in the water, the lattice's points under its level held up and
     // dragged towards the current, F-87118 - through the collider's AddForce / AddTorque into the same sums)
     if let Some(fl) = vs.fluid.as_mut() {
-        let (ff, fq) = fl.update(&body_rows, super::exact::point_through(com_local, &body_rows), chassis_at, st.vel, st.ang_vel, mass);
-        force += ff;
-        torque += fq;
+        fl.update(&body_rows, com_local, chassis_at, st.vel, st.ang_vel, mass, &mut force, &mut torque);
     }
     if let Some((pf, pt)) = vs.pulse.take() {
         force += pf * mass;
