@@ -2621,6 +2621,14 @@ impl Game {
         }
     }
 
+    /// The record's headlight glass, taillight glass, bumped headlight and bumped taillight colours as they are stored
+    /// (`CarLook::glass`); None without a record.
+    pub fn glass_rgba(&self) -> Option<[[f32; 4]; 4]> {
+        let v = &self.mc4.as_ref()?.car(&self.car_x.car)?.visual;
+        let g = |c: &Vec<F>| (c.len() >= 4).then(|| [c[0].0 as f32, c[1].0 as f32, c[2].0 as f32, c[3].0 as f32]);
+        Some([g(&v.m_vHeadlightGlassColorNew)?, g(&v.m_vTaillightGlassColorNew)?, g(&v.m_vBumpedHeadlightColor)?, g(&v.m_vBumpedTaillightColor)?])
+    }
+
     /// The exterior neon's colour, linear.
     pub fn neon_linear(&self) -> [f32; 3] {
         match self.car_x.neon_rgb {
@@ -8594,7 +8602,7 @@ pub fn setup_look(b: &[u8]) -> Option<SetupLook> {
     let body_a = rgb(0x660)?;
     let body = paint_as_drawn(area(0));
     let body_b = to_linear(body.b);
-    let mut look = crate::vehicles::CarLook { paint_type: body.ty, color2: [body_b[0], body_b[1], body_b[2], body.fade as f32], tint: [0.0, 0.0035, 0.005, 0.372], interior: [[0.0; 4]; 5], area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], rim_finish: [[0.0; 4]; 3], cabin_light: [[0.0; 4]; 2] };
+    let mut look = crate::vehicles::CarLook { paint_type: body.ty, color2: [body_b[0], body_b[1], body_b[2], body.fade as f32], tint: [0.0, 0.0035, 0.005, 0.372], interior: [[0.0; 4]; 5], area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], rim_finish: [[0.0; 4]; 3], cabin_light: [[0.0; 4]; 2], glass: [0x120, 0x130, 0x140, 0x150].map(|o| [f(o), f(o + 4), f(o + 8), f(o + 12)]) };
     // (the driver's gauge and interior neon colours, as the record holds them, IntNeonFlashRate and IntNeonIntensity in
     // w - F-42959)
     let raw = |o: usize| [f(o), f(o + 4), f(o + 8)];

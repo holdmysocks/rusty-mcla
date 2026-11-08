@@ -537,6 +537,8 @@ struct Object {
     area_a: array<vec4<f32>, 5>,  // the player's paint areas after the body (doors, hood, bumpers, skirts): first colour, w 1 = own paint
     area_b: array<vec4<f32>, 5>,  // and second colour, w = paint type + 8 x fade
     slots: array<vec4<f32>, 5>, // a traffic or parked car's own light slots (F-99357): [0].x = 1 the hour's light second, [0].w = 1 given; [1] / [2] the other slot's direction and colour x strength, [3] / [4] the hour's slot's
+    glass_tint: array<vec4<f32>, 9>,   // a car's TintColors by window zone 0 .. 8 (F-50822, damagemap::glass_vars) ...
+    glass_bumped: array<vec4<f32>, 9>, // ... and BumpedTintColors, the lamps' lenses'
 };
 @group(3) @binding(0) var<uniform> obj: Object;
 // Which of a car's two light slots holds the lamp first (the hour's light second): a traffic or parked
@@ -4393,20 +4395,18 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             //   rgb   = surroundings x m + tint.rgb x screen(the car's two lights, 2 x ambient)
             //   alpha = sat(tint.a + m)          (the program's alpha x 16: gInvColorExpBias)
             // windows 0.125 .. 0.85 by ^4.5, lenses 0.125 .. 0.875 by ^5; blended source alpha.
-            // The tint is a row of TintColors / BumpedTintColors (c209 + the zone of the second
-            // UV set), as recorded on the R8: (0, 0.0035, 0.005, 0.372) for zones 0 - 3 and 8,
-            // alpha 0.392 for 6 and 7, 0 (windows) / 0.196 (lenses) for 4 and 5. Both faces alike.
+            // The tint is a row of TintColors (the windows) / BumpedTintColors (the lenses) - c209 + the
+            // zone of the second UV set -, as F-50822 hands them on (obj.glass_tint / glass_bumped,
+            // damagemap::glass_vars): zones 4, 5 the record's taillight glass, 6, 7 its headlight glass,
+            // 1 - 3 the window tint, 0 (the windscreen) and 8 the stock glass (0, 0.0035, 0.005, 0.372) on
+            // a car whatever the tint, the tint on a motorcycle. Both faces alike.
             // The lenses are drawn twice where they face the eye (once unculled without depth
             // writes, once culled - registers 0x2205 / 0x2200 of the capture): a (2 - a) there.
             // (MCLA_DEBUG_VIEW 60: the older reading; 61 the zones)
             let lensg = in.uv2.y > 0.5;
             let zone = i32(round(in.uv1.x));
             var tint4 = vec4<f32>(0.0, 0.0035, 0.005, 0.372);
-            if (zone == 4 || zone == 5) { tint4 = vec4<f32>(0.0, 0.0, 0.0, select(0.0, 0.1961, lensg)); }
-            else if (zone == 6 || zone == 7) { tint4 = vec4<f32>(0.0, 0.0, 0.0, 0.3922); }
-            // (the windows' rows are the car's own m_vWindowTintColorNew: the garage's tint
-            // menu writes its darkness, 0.372 + 0.528 k, and colour slot 14 its colour)
-            if (!lensg && obj.tint.w > 0.0 && (zone <= 3 || zone == 8)) { tint4 = obj.tint; }
+            if (zone >= 0 && zone <= 8) { tint4 = select(obj.glass_tint[zone], obj.glass_bumped[zone], lensg); }
             if (g.params.w > 60.5 && g.params.w < 61.5) { return vec4<f32>(to_scene(vec3<f32>(f32(zone % 3) * 0.5, f32((zone / 3) % 3) * 0.5, f32(zone / 9) * 0.5 + select(0.0, 0.25, lensg)) + vec3<f32>(0.05)), 1.0); }
             let nv12 = clamp(abs(dot(n, v)), 0.0, 1.0);
             let fr12 = select(0.125 + 0.725 * pow(1.0 - nv12, 4.5), 0.125 + 0.75 * pow(1.0 - nv12, 5.0), lensg);

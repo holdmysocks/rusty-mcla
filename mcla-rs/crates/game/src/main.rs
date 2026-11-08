@@ -5342,6 +5342,7 @@ impl App {
             self.vehicles.player_area_a = po.area_a;
             self.vehicles.player_area_b = po.area_b;
             self.vehicles.player_tint = self.game.tint_rgba();
+            self.vehicles.player_glass = self.game.glass_rgba();
             if let Some((l, _, _)) = s19d_look.as_ref() {
                 self.vehicles.player_rim_finish = l.rim_finish;
                 self.vehicles.player_interior = l.interior;
@@ -5351,6 +5352,7 @@ impl App {
                 self.vehicles.player_area_a = l.area_a;
                 self.vehicles.player_area_b = l.area_b;
                 self.vehicles.player_tint = l.tint;
+                self.vehicles.player_glass = Some(l.glass);
             }
             crate::ticktimes::mark(crate::ticktimes::S::Traffic);
             self.vehicles.manage_traffic(&gpu, &world, focus, sim_dt);

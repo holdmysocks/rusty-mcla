@@ -1086,6 +1086,9 @@ pub struct CarLook {
     pub rim_finish: [[f32; 4]; 3],
     /// the driver's gauge colour A and interior neon colour as the record holds them (w: IntNeonFlashRate, IntNeonIntensity)
     pub cabin_light: [[f32; 4]; 2],
+    /// the record's headlight glass, taillight glass, bumped headlight and bumped taillight colours (record + 0x120 ..
+    /// + 0x150: the glass draw's TintColors / BumpedTintColors of zones 4 - 7, `damagemap::glass_vars`)
+    pub glass: [[f32; 4]; 4],
 }
 
 /// A set-up as `Vehicles::dress_setups` puts it on a car: the model's parts, the rim's
@@ -1413,6 +1416,8 @@ pub struct Vehicles {
     pub player_area_b: [[f32; 4]; 5],
     /// its window tint (colour, level 1..10 or 0)
     pub player_tint: [f32; 4],
+    /// its record's lamp glass colours (`CarLook::glass`; None: no record)
+    pub player_glass: Option<[[f32; 4]; 4]>,
     /// diagnostics: car-frames braking for / standing at a red light
     pub held_at_red: u64,
     pub stopped_at_red: u64,
@@ -2025,6 +2030,17 @@ fn drawn_wheel_pose(c: &CarInstance, i: usize) -> Option<(Quat, Vec3)> {
 }
 
 impl CarInstance {
+    /// mcCarNitro's reset (F-40379, run by mcCarSim's reset F-47310): count (+18) = most (+14) = the car's
+    /// nitro tune's shot count (s16 +0) where it is below the cap (+16, 100). A car without a sim tune keeps
+    /// what it has. (The original's racers in a race: 3 / 3 for the Ducati, Murcielago and R8, read from its
+    /// memory, docs/AI.md 2026-11-08.)
+    pub fn nitro_reset(&mut self) {
+        let Some(vt) = self.params().veh.as_ref() else { return };
+        let shots = (vt.t.nitro_shots as u16 as i16).min(100).max(0) as u8;
+        self.state.nitro_max = shots;
+        self.state.nitro_shots = shots;
+    }
+
     /// The parameters this car drives with (stock, or blended towards the upgrades).
     pub fn params(&self) -> &CarParams {
         self.tuned.as_deref().unwrap_or(&self.model.params)
@@ -5532,14 +5548,6 @@ if keep || c.state.pos.distance(center) < 450.0 {
             let mut body_slots = [[0.0; 4]; 6];
             // (the third: dmgParams of the base fragment's draw - `dmg_params`; a traffic car's own wheels put their hub there)
             body_slots[2] = dmg_slot(if c.model.bike { DMG_NONE } else { DMG_BODY });
-            body_slots[0] = c.state.dmg.windows();
-            // (the fifth: the side windows' clip plane in the world, ClipPlaneEq of F-50822 - normal the
-            // car's up, through its origin + up x h, h = mcCarModelTune fWindowClipPlaneHeight (-1 on a car
-            // without it: nothing cut); VS_Glass sends its distance for the windows 2 and 3 and
-            // PS_GlassFront drops what is below. The rolled-down glass, moved by its bone, sinks under it.)
-            let up = m.y_axis.truncate().normalize_or(Vec3::Y);
-            let h = c.model.simtunes.as_ref().and_then(|s| s.window_clip).unwrap_or(-1.0);
-            body_slots[4] = up.extend(-up.dot(m.w_axis.truncate() + up * h)).to_array();
             // (traffic and parked cars - their lamp rows marked ambient: F-73627 hands the type's
             // colour C = vColors[idx] x fScale on raised to 2.2 in both paint rows (c124 / c125), and
             // VSAmbientCarPaint paints with sat(4 x lerp(c124, c125, t)) = sat(4 C^2.2); the shader
@@ -5556,6 +5564,26 @@ if keep || c.state.pos.distance(center) < 450.0 {
             }
             // (+ 256: the in-car glass, only the player's car - the camera's target, F-95074)
             let int_glass = if self.interior_glass && c.is_player { 256.0 } else { 0.0 };
+            // (the glass draw's variables, F-50822 - damagemap::glass_vars: the four windows' states in the first dent
+            // slot (WindowDmgVal 0 - 3, 0 in the in-car view), the zones' glass colours (the record's; a car without
+            // one the R8's recorded), and in the fifth the side windows' clip plane ClipPlaneEq - normal the car
+            // matrix's up row, through its origin + up x h, h = mcCarModelTune fWindowClipPlaneHeight (-1 on a car
+            // without it: nothing cut); VS_Glass sends its distance for the windows 2 and 3 and PS_GlassFront drops
+            // what is below: the rolled-down glass, moved by its bone, sinks under it. The game's no-damage byte
+            // (G+6478) and the damage gate ((car+80)+41) as in the port's play: off / on.)
+            let glass4 = match (c.is_player, c.look.as_ref()) {
+                (true, _) => self.player_glass,
+                (false, Some(l)) => Some(l.glass),
+                (false, None) => None,
+            };
+            let mut gcol = glass4.map_or(crate::damagemap::RECORDED_GLASS, |g| crate::damagemap::GlassColours { head: g[0], tail: g[1], bumped_head: g[2], bumped_tail: g[3], tint: crate::damagemap::STOCK_GLASS });
+            if s19d_look.2[3] > 0.0 {
+                gcol.tint = s19d_look.2;
+            }
+            let h = c.model.simtunes.as_ref().and_then(|s| s.window_clip).unwrap_or(-1.0);
+            let gv = crate::damagemap::glass_vars(c.state.dmg.window_sums(), int_glass > 0.0, false, true, c.model.bike, &gcol, m.y_axis.truncate().to_array(), m.w_axis.truncate().to_array(), h, true);
+            body_slots[0] = [gv.dmg[0], gv.dmg[1], gv.dmg[2], gv.dmg[3]];
+            body_slots[4] = gv.plane;
             // (a traffic or parked car's own light-slot order, F-99357: x = 1 when the hour's light is in the
             // second slot, the first holding a lamp or nothing; w = 1: given. Other cars take the player's.)
             // (and its slots' lights, F-99357: row 1 / 2 the slot not holding the hour's light - direction from the
@@ -5571,7 +5599,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             } else {
                 [[0.0; 4]; 5]
             };
-            let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: body_color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32 + int_glass], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(c.amb_lamps.tint).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5, slots: amb_slots };
+            let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: body_color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32 + int_glass], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(c.amb_lamps.tint).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5, slots: amb_slots, glass_tint: gv.tint, glass_bumped: gv.bumped };
             batch.push_object(&c.binding, &body_u);
             // (the side windows: the body's object moved by the window bone's clip)
             for (k, wb) in c.window_bindings.iter().enumerate() {

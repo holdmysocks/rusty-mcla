@@ -137,11 +137,15 @@ impl CarDamage {
         }
     }
 
-    /// The window i (0 front, 1 rear, 2 left, 3 right) as the glass draw has it (0x82357DB8): 0
+    /// The window i (0 front, 1 rear, 2 left, 3 right) as the glass draw has it (F-50822, `window_state`): 0
     /// whole, 1 cracked (a quarter of its hit sum at least 1), 2 broken (1.5).
     pub fn window(&self, i: usize) -> u8 {
-        let s = 0.25 * self.pieces[8 + i.min(3)].hits;
-        if s >= 1.5 { 2 } else if s >= 1.0 { 1 } else { 0 }
+        window_state(self.pieces[8 + i.min(3)].hits)
+    }
+
+    /// The four windows' hit sums (pieces 8 .. 11, +52), as F-50822 reads them.
+    pub fn window_sums(&self) -> [f32; 4] {
+        [0, 1, 2, 3].map(|i| self.pieces[8 + i].hits)
     }
 
     /// The four windows' states as the glass program takes them (WindowDmgVal slots 0 - 3).
@@ -174,6 +178,95 @@ impl CarDamage {
         // (F-50602 also clears +2154, the map's "has been stamped")
         self.stamped = false;
     }
+}
+
+/// F-50822's window state from a window piece's hit sum: s = 0.25 x sum; 2 unless s < 1.5, else 1 unless s < 1.0,
+/// else 0 (fcmpu / blt: a NaN sum is broken).
+pub fn window_state(sum: f32) -> u8 {
+    let s = 0.25 * sum;
+    if !(s < 1.5) {
+        2
+    } else if !(s < 1.0) {
+        1
+    } else {
+        0
+    }
+}
+
+/// The glass colours of a car's record that the glass draw hands on (P = car +132, from P + 64: + 224 the
+/// headlight glass, + 240 the taillight glass, + 256 / + 272 the same for the lenses (bumped), + 288 the window
+/// tint - the record's `m_vHeadlightGlassColorNew`, `m_vTaillightGlassColorNew`, `m_vBumpedHeadlightColor`,
+/// `m_vBumpedTaillightColor`, `m_vWindowTintColorNew`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlassColours {
+    pub head: [f32; 4],
+    pub tail: [f32; 4],
+    pub bumped_head: [f32; 4],
+    pub bumped_tail: [f32; 4],
+    pub tint: [f32; 4],
+}
+
+/// The glass a car's windscreen (zone 0) and zone 8 always take, whatever the tint (F-50822's image vector; the
+/// record's constructor glass too).
+pub const STOCK_GLASS: [f32; 4] = [0.0, 0.0035, 0.005, 0.372];
+
+/// The glass colours of a car whose record the port does not have (traffic, parked, a player without a save): the
+/// 100 % save's R8 record's (the headlight glass and its lens 0.392157, the taillight glass 0 and its lens 0.196078,
+/// all black - what the capture of the original shows in TintColors / BumpedTintColors c209 + zone 4 - 7), the tint
+/// the stock glass.
+pub const RECORDED_GLASS: GlassColours = GlassColours {
+    head: [0.0, 0.0, 0.0, 0.392157],
+    tail: [0.0, 0.0, 0.0, 0.0],
+    bumped_head: [0.0, 0.0, 0.0, 0.392157],
+    bumped_tail: [0.0, 0.0, 0.0, 0.196078],
+    tint: STOCK_GLASS,
+};
+
+/// What F-50822 hands the glass programs, per window zone 0 .. 8 (the zone a vertex carries): WindowDmgVal,
+/// TintColors (the windows' program), BumpedTintColors (the lenses'), and ClipPlaneEq (gCarConstantBuffer +512).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlassVars {
+    pub dmg: [f32; 9],
+    pub tint: [[f32; 4]; 9],
+    pub bumped: [[f32; 4]; 9],
+    pub plane: [f32; 4],
+}
+
+/// F-50822 (checked against the original's code: `glass_vars_match_the_original`). `sums` the four windows' hit
+/// sums; `in_car` G+123 (the camera's in-car view); `no_damage` G+6478 (the game's byte +435); `gate` (car+80)+41
+/// (the damage gate the hood and trunk read); `bike` F-54299; `up` / `pos` rows 1 and 3 of the car's matrix; `h`
+/// the model tune's fWindowClipPlaneHeight; `clip` the draw's flag (-1 in place of h without it).
+/// - WindowDmgVal[i] = `window_state` for i < 4 outside the in-car view, else 0.
+/// - TintColors[i]: 4, 5 the taillight glass; 6, 7 the headlight glass; 0, 8 `STOCK_GLASS` on a car (the tint on a
+///   motorcycle); 1 .. 3 the window tint. BumpedTintColors the same with the bumped colours.
+/// - i < 4 with the gate off, or with `no_damage` outside the in-car view: the state clamped to 0 .. 1 (fsel) and
+///   TintColors[i].w = 1.
+/// - the plane: n = up, p = up x h + pos (vmaddfp: product and sum rounded apart), w = -(p.z n.z + (p.y n.y + p.x
+///   n.x)) fused (fmadds / fnmadds).
+#[allow(clippy::too_many_arguments)]
+pub fn glass_vars(sums: [f32; 4], in_car: bool, no_damage: bool, gate: bool, bike: bool, col: &GlassColours, up: [f32; 3], pos: [f32; 3], h: f32, clip: bool) -> GlassVars {
+    let mut v = GlassVars { dmg: [0.0; 9], tint: [[0.0; 4]; 9], bumped: [[0.0; 4]; 9], plane: [0.0; 4] };
+    for i in 0..9 {
+        if i < 4 && !in_car {
+            v.dmg[i] = window_state(sums[i]) as f32;
+        }
+        (v.tint[i], v.bumped[i]) = match i {
+            4 | 5 => (col.tail, col.bumped_tail),
+            6 | 7 => (col.head, col.bumped_head),
+            0 | 8 if !bike => (STOCK_GLASS, STOCK_GLASS),
+            _ => (col.tint, col.tint),
+        };
+        if i < 4 && (!gate || (no_damage && !in_car)) {
+            let a = if v.dmg[i] >= 0.0 { v.dmg[i] } else { 0.0 };
+            v.tint[i][3] = 1.0;
+            v.dmg[i] = if a - 1.0 >= 0.0 { 1.0 } else { a };
+        }
+    }
+    let x = if clip { h } else { -1.0 };
+    let p = [0, 1, 2].map(|k| up[k] * x + pos[k]);
+    let fma = |a: f32, b: f32, c: f32| (a as f64).mul_add(b as f64, c as f64) as f32;
+    v.plane = [up[0], up[1], up[2], -fma(p[2], up[2], fma(p[1], up[1], p[0] * up[0]))];
+    v
 }
 
 /// A stamp's shape: the red channel of `dmg_test_4.dds` (dents) or `dmg_test_3.dds` (scrapes).
@@ -366,6 +459,35 @@ impl MapPixels {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F-50822 against the original's code (tools/glass_vars_reference.py, testdata/glass_vars_ref.txt: 3,000 cases -
+    /// window sums at and an ulp under the steps, NaN, infinite and negative, random record colours, car matrices
+    /// with scaled up rows, clip heights, every in-car / no-damage / gate / motorcycle / flag / thread pick): every
+    /// word of WindowDmgVal, TintColors, BumpedTintColors and the plane equal.
+    #[test]
+    fn glass_vars_match_the_original() {
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let mut n = 0;
+        for line in include_str!("testdata/glass_vars_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let iv: Vec<&str> = i.split_whitespace().collect();
+            let w: Vec<f32> = iv[..57].iter().map(|x| f(x)).collect();
+            let b: Vec<u32> = iv[57..].iter().map(|x| x.parse().unwrap()).collect();
+            let ov: Vec<u32> = o.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let r = |k: usize| [w[4 + 4 * k], w[5 + 4 * k], w[6 + 4 * k], w[7 + 4 * k]];
+            let col = GlassColours { head: r(0), tail: r(1), bumped_head: r(2), bumped_tail: r(3), tint: r(4) };
+            // (the matrix: +208 with the thread byte, else +144; rows 1 and 3)
+            let m = if b[5] != 0 { &w[40..56] } else { &w[24..40] };
+            let g = glass_vars([w[0], w[1], w[2], w[3]], b[0] != 0, b[1] != 0, b[2] != 0, b[3] != 0, &col, [m[4], m[5], m[6]], [m[12], m[13], m[14]], w[56], b[4] & 0xFF != 0);
+            let mut got: Vec<u32> = g.dmg.iter().map(|x| x.to_bits()).collect();
+            got.extend(g.tint.iter().flatten().map(|x| x.to_bits()));
+            got.extend(g.bumped.iter().flatten().map(|x| x.to_bits()));
+            got.extend(g.plane.iter().map(|x| x.to_bits()));
+            assert_eq!(got, ov, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
 
     fn blob() -> Shape {
         let n = 32;
