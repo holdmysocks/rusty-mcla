@@ -298,7 +298,7 @@
   "set.o_lang_italian": "Italiano",
   "set.o_playername": "Player name",
   "set.o_playername_ph": "PLAYER",
-  "set.o_playername_note": "Shown in race results and on the Last Man Out line. Up to 15 letters, digits and spaces; other characters are dropped. Blank shows PLAYER. Applies the next time the game starts.",
+  "set.o_playername_note": "Shown in race results and on the Last Man Out line. Up to 15 letters (including accented ones), digits and spaces; other characters are dropped. Blank shows PLAYER. Applies the next time the game starts.",
   "set.o_language_note": "The text and subtitles of the game. The speech is English in every language on the disc. Applies the next time the game starts.",
   "set.o_normal": "Normal",
   "set.o_fast": "Fast",

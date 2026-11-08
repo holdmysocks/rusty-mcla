@@ -35,6 +35,8 @@ pub struct DisplayView {
     language: &'static str,
     /// `game.player_name`, as the game reads it (already cleaned; empty = the game shows PLAYER)
     player_name: String,
+    /// the non-ASCII letters a name may hold (the config crate's list); the page's typing filter mirrors the game's rule
+    player_name_letters: &'static str,
     window_mode: &'static str,
     resolution: String,
     /// the resolutions offered: common sizes up to the chosen monitor's, its own, and the one in the file
@@ -149,6 +151,7 @@ pub fn view(window: &WebviewWindow) -> DisplayView {
         intro: l.settings.game.intro.word(),
         language: l.settings.game.language.word(),
         player_name: l.settings.game.player_name.clone(),
+        player_name_letters: mcla_config::PLAYER_NAME_LETTERS,
         window_mode: d.window_mode.word(),
         resolution: d.resolution.text(),
         resolutions: res.into_iter().map(|(w, h)| format!("{w}x{h}")).collect(),
@@ -312,7 +315,7 @@ mod tests {
         let v = |t: &str| checked("game.player_name", &json!(t));
         let s = |t: &str| Ok(mcla_config::toml::Value::String(t.into()));
         assert_eq!(v("Sock  Master"), s("Sock Master"));
-        assert_eq!(v("  Zo\u{eb}_1! "), s("Zo1"));
+        assert_eq!(v("  Zo\u{11f}_1! "), s("Zo1"));
         assert_eq!(v("abcdefghijklmnopqrstuvwxyz"), s("abcdefghijklmno"));
         assert_eq!(v(""), s(""));
         assert_eq!(v("   "), s(""));
@@ -332,5 +335,15 @@ mod tests {
         mcla_config::set_key(&path, "game", "player_name", v).unwrap();
         assert_eq!(mcla_config::Settings::load(&path).settings.game.player_name, "Hold My Socks");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_player_name_row_keeps_the_accented_letters_the_fonts_draw() {
+        let v = |t: &str| checked("game.player_name", &json!(t));
+        let s = |t: &str| Ok(mcla_config::toml::Value::String(t.into()));
+        assert_eq!(v("Jos\u{e9}"), s("Jos\u{e9}"));
+        assert_eq!(v("\u{a1}Se\u{f1}or \u{d1}and\u{fa}!"), s("\u{a1}Se\u{f1}or \u{d1}and\u{fa}"));
+        assert_eq!(v("\u{c7}a\u{11f}"), s("\u{c7}a"));
+        assert_eq!(v("\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}").map(|x| x.as_str().map(|y| y.chars().count())), Ok(Some(15)));
     }
 }

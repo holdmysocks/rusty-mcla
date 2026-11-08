@@ -268,7 +268,9 @@
     // clean_player_name), saved when the box is left or Enter is pressed; the box then shows what was saved
     const pn = $('.opt[data-dkey="game.player_name"] input.textfield');
     if (pn) {
-      pn.addEventListener('input', () => { const c = pn.value.replace(/[^A-Za-z0-9 ]/g, ''); if (c !== pn.value) pn.value = c; });
+      // (the letters beyond ASCII come from the launcher: the config crate's PLAYER_NAME_LETTERS, so the filter cannot drift from the game's rule)
+      const okc = (ch) => /[A-Za-z0-9 ]/.test(ch) || ((st.display && st.display.player_name_letters) || '').includes(ch);
+      pn.addEventListener('input', () => { const c = [...pn.value].filter(okc).join(''); if (c !== pn.value) pn.value = c; });
       const save = async () => { if (!st.display || pn.value.trim().replace(/ +/g, ' ') === (st.display.player_name || '')) { pn.value = st.display ? st.display.player_name || '' : pn.value; return; } await setKey('game.player_name', pn.value); };
       pn.addEventListener('change', save);
       pn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); pn.blur(); } });
