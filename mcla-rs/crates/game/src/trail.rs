@@ -311,6 +311,13 @@ impl Trails {
         if cut {
             return;
         }
+        self.tick_records(paused);
+    }
+
+    /// F-89089 after the cut: paused, every record emptied; then each record not used this frame loses a
+    /// point and is marked drawn (+316; the original sets it after the record's strip, or at once with two
+    /// points or fewer - the ribbon of three or more always has two points or more, so every record).
+    pub fn tick_records(&mut self, paused: bool) {
         if paused {
             for r in self.recs.iter_mut() {
                 r.count = 0;
@@ -318,7 +325,7 @@ impl Trails {
         }
         let frame = self.frame;
         for r in self.recs.iter_mut() {
-            if r.stamp != frame && r.count > 0 {
+            if r.stamp != frame && r.count != 0 {
                 r.count -= 1;
             }
             r.drawn = true;
@@ -343,24 +350,7 @@ impl Trails {
             if m == 0 {
                 continue;
             }
-            let c = r.h[0];
-            let col = r.rgb.map(|b| b as f32 / 255.0);
-            let mut pair = Vec::with_capacity(m);
-            for j in 0..m {
-                let (u, f) = if j == 0 { (0.0, 0.0) } else if j == m - 1 { (1.0, 0.0) } else { (0.5, 1.0) };
-                let (mut a, mut b) = (rb.centre[j] - rb.side[j], rb.centre[j] + rb.side[j]);
-                if j == 0 {
-                    a += rb.start;
-                    b += rb.start;
-                }
-                if j == m - 1 {
-                    a += rb.end;
-                    b += rb.end;
-                }
-                let alpha = ((rb.alpha[j] * f * 255.0) as i32).clamp(0, 255) as f32 / 255.0;
-                let vx = |p: Vec3, x: f32| Vertex { pos: [p.x, p.y, p.z, 1.0], uv: [x, u, 0.0, 0.0], col: [col[0], col[1], col[2], alpha], centre: [c.x, c.y, c.z, 1.0] };
-                pair.push((vx(a, 0.0), vx(b, 1.0)));
-            }
+            let pair = pairs(&r, &rb);
             for j in 1..m {
                 let (a0, b0) = pair[j - 1];
                 let (a1, b1) = pair[j];
@@ -369,6 +359,35 @@ impl Trails {
         }
         v
     }
+}
+
+/// F-89089's strip of one record: two vertices a ribbon point, A = centre - across and B = centre + across
+/// (the vector unit), the start cap added to the first pair and the end cap to the last; u 0 (A) / 1 (B),
+/// v 0 / 0.5 / 1 (first / middle / last); alpha = the low byte of trunc((alpha x factor) x 255) (factor 1 in the
+/// middle, 0 at the ends; no clamp: 300 gives 44, a negative its two's complement byte, NaN and below -2^31 0,
+/// 2^31 up 255); the colour's three bytes as they are (+48's low three, trunc(float(b) x (1/255) x 255) = b);
+/// CentrePosition = the newest point. Checked against the original's code run offline.
+pub fn pairs(r: &Record, rb: &Ribbon) -> Vec<(Vertex, Vertex)> {
+    let m = rb.side.len();
+    let c = r.h[0];
+    let col = r.rgb.map(|b| b as f32 / 255.0);
+    let mut pair = Vec::with_capacity(m);
+    for j in 0..m {
+        let (v, f) = if j == 0 { (0.0, 0.0) } else if j == m - 1 { (1.0, 0.0) } else { (0.5, 1.0) };
+        let (mut a, mut b) = (vsub(rb.centre[j], rb.side[j]), vadd(rb.centre[j], rb.side[j]));
+        if j == 0 {
+            a = vadd(a, rb.start);
+            b = vadd(b, rb.start);
+        }
+        if j == m - 1 {
+            a = vadd(a, rb.end);
+            b = vadd(b, rb.end);
+        }
+        let alpha = ((rb.alpha[j] * f) * 255.0) as i32 as u8;
+        let vx = |p: Vec3, u: f32| Vertex { pos: [p.x, p.y, p.z, 1.0], uv: [u, v, 0.0, 0.0], col: [col[0], col[1], col[2], alpha as f32 / 255.0], centre: [c.x, c.y, c.z, 1.0] };
+        pair.push((vx(a, 0.0), vx(b, 1.0)));
+    }
+    pair
 }
 
 /// One vertex of a ribbon (trail.wgsl).
@@ -561,6 +580,113 @@ mod tests {
 
     /// The original's F-80988 run offline on 4,000 records (tools/trail_ribbon_reference.py): every output
     /// float bit for bit, the projection callee a stub both sides compute alike.
+    #[test]
+    fn the_draw_matches_the_original() {
+        // tools/trail_draw_reference.py: F-89089 run whole, the ribbon F-80988 a stub handing back chosen outputs
+        let text = include_str!("testdata/trail_draw_reference.txt");
+        let hx = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let mut cases: Vec<Vec<&str>> = Vec::new();
+        for l in text.lines() {
+            if l.starts_with("CASE") {
+                cases.push(Vec::new());
+            }
+            cases.last_mut().unwrap().push(l);
+        }
+        let (mut frames, mut strips, mut verts, mut fails) = (0, 0, 0, 0);
+        for c in &cases {
+            let w: Vec<&str> = c[0].split_whitespace().collect();
+            let (frame, cut, paused, passes): (u32, bool, bool, usize) = (w[3].parse().unwrap(), w[5] == "1", w[7] == "1", w[9].parse().unwrap());
+            let mut t = Trails { frame, ..Default::default() };
+            let mut out = Vec::new();
+            for l in c {
+                let w: Vec<&str> = l.split_whitespace().collect();
+                if w[0] == "IN" {
+                    let i: usize = w[1].parse().unwrap();
+                    let col: u32 = w[5].parse().unwrap();
+                    t.recs[i] = Record { count: w[2].parse().unwrap(), stamp: w[3].parse().unwrap(), drawn: w[4] == "1", rgb: [(col >> 16) as u8, (col >> 8) as u8, col as u8], ..Default::default() };
+                } else if w[0] == "OUT" {
+                    out.push((w[2].parse::<u32>().unwrap(), w[3] == "1"));
+                }
+            }
+            let before: Vec<(u32, bool)> = t.recs.iter().map(|r| (r.count, r.drawn)).collect();
+            let mut bad: Vec<String> = Vec::new();
+            if cut {
+                // (the cut empties the records itself, F-40536 - here a stub: nothing else is touched or drawn)
+                if c.iter().any(|l| l.starts_with("RIB") || l.starts_with("V ")) || out != before {
+                    bad.push("drew or changed a record on a cut".into());
+                }
+            } else {
+                t.tick_records(paused);
+                let after: Vec<(u32, bool)> = t.recs.iter().map(|r| (r.count, r.drawn)).collect();
+                if after != out {
+                    bad.push("counts / drawn".into());
+                }
+                let want: Vec<usize> = (0..RECORDS).filter(|&i| t.recs[i].count > 2).collect();
+                let mut k = 0;
+                let mut seen = Vec::new();
+                while k < c.len() {
+                    let w: Vec<&str> = c[k].split_whitespace().collect();
+                    k += 1;
+                    if w[0] != "RIB" {
+                        continue;
+                    }
+                    let i: usize = w[1].parse().unwrap();
+                    let m: usize = w[2].parse().unwrap();
+                    seen.push(i);
+                    let f = |n: usize| f32::from_bits(hx(w[3 + n]));
+                    let v3 = |n: usize| Vec3::new(f(n), f(n + 1), f(n + 2));
+                    let mut rb = Ribbon { start: v3(0), end: v3(3), ..Default::default() };
+                    for j in 0..m {
+                        rb.centre.push(v3(6 + 7 * j));
+                        rb.side.push(v3(9 + 7 * j));
+                        rb.alpha.push(f(12 + 7 * j));
+                    }
+                    let cp: Vec<u32> = c[k].split_whitespace().skip(1).map(hx).collect();
+                    k += 1;
+                    let mut r = t.recs[i];
+                    r.h[0] = Vec3::new(f32::from_bits(cp[0]), f32::from_bits(cp[1]), f32::from_bits(cp[2]));
+                    let pv = pairs(&r, &rb);
+                    let words = |v: &Vertex| {
+                        let b = |x: f32| (x * 255.0).round() as u32;
+                        let col = b(v.col[3]) << 24 | b(v.col[0]) << 16 | b(v.col[1]) << 8 | b(v.col[2]);
+                        [v.pos[0].to_bits(), v.pos[1].to_bits(), v.pos[2].to_bits(), 0, 0, 0, v.uv[0].to_bits(), v.uv[1].to_bits(), col]
+                    };
+                    let mine: Vec<[u32; 9]> = pv.iter().flat_map(|(a, b)| [words(a), words(b)]).collect();
+                    for _ in 0..passes {
+                        if c[k] != format!("B 4 {}", 2 * m) {
+                            bad.push(format!("record {i}: {}", c[k]));
+                        }
+                        k += 1;
+                        for (n, v) in mine.iter().enumerate() {
+                            let o: Vec<u32> = c[k + n].split_whitespace().skip(1).enumerate().map(|(q, x)| if q == 8 { x.parse().unwrap() } else { hx(x) }).collect();
+                            if o[..] != v[..] {
+                                bad.push(format!("record {i} vertex {n}: {:08x?} vs {:08x?}", v, o));
+                            }
+                        }
+                        k += mine.len();
+                        if c[k] != "E" {
+                            bad.push(format!("record {i}: no end"));
+                        }
+                        k += 1;
+                    }
+                    strips += 1;
+                    verts += mine.len();
+                }
+                if seen != want {
+                    bad.push(format!("ribbons for {seen:?} vs {want:?}"));
+                }
+            }
+            if !bad.is_empty() {
+                if fails < 4 {
+                    eprintln!("{}: {}", c[0], bad[..bad.len().min(4)].join("; "));
+                }
+                fails += 1;
+            }
+            frames += 1;
+        }
+        assert!(frames == 30 && strips > 1000 && fails == 0, "{fails} of {frames} frames differ ({strips} strips, {verts} vertices)");
+    }
+
     #[test]
     fn the_ribbon_matches_the_original() {
         let text = include_str!("testdata/trail_ribbon_ref.txt");
