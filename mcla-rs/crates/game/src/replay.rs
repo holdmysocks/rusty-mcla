@@ -911,7 +911,8 @@ impl Director {
     /// choose() (F-53721): NEXT CAMERA steps to the next state; otherwise any other
     /// state but the polar one with equal chance (a chase view never after a chase view),
     /// up to six tries until one passes its test.
-    fn choose(&mut self, tune: &CamTune, car: &CarView, dt: f32, probe: &mut dyn Probe) {
+    /// `test(self, ahead)` is the shot test F-51014.
+    fn choose(&mut self, tune: &CamTune, car: &CarView, test: &mut dyn FnMut(&mut Director, bool) -> bool) {
         let mut mask: u32 = 0xF_FFFF & !(1 << POLAR);
         if (2..=4).contains(&self.state) {
             mask &= !0b1_1100;
@@ -923,7 +924,7 @@ impl Director {
                 self.activate(tune, car);
             } else if self.state == POLAR && tries > 3 {
                 self.polar_activate(tune);
-            } else if self.state == HELI && tries > 3 && self.time >= 0.0 {
+            } else if self.state == HELI && tries > 3 && !(self.time < 0.0) {
                 self.heli_activate(tune, car);
             } else {
                 mask &= !(1 << self.state);
@@ -934,7 +935,9 @@ impl Director {
             }
             let t = tries;
             tries -= 1;
-            if t <= 0 || self.state < 5 || self.shot_ok(tune, car, true, dt, probe) {
+            // (a pick from an empty mask traps in the original - divw by 0 - and cannot happen: every state but the
+            // last one tried stays in it)
+            if t <= 0 || self.state < 5 || test(self, true) {
                 break;
             }
         }
@@ -942,18 +945,24 @@ impl Director {
         self.time = self.rng.length(tune.cut);
     }
 
-    /// One frame (F-19930); `dt` 0 while the replay is paused.
-    pub fn update(&mut self, tune: &CamTune, car: &CarView, dt: f32, probe: &mut dyn Probe) -> Shot {
+    /// The replay camera's frame update F-19930: the shot's time runs down while switching is on, NEXT CAMERA starts a
+    /// new one; a choice when NEXT CAMERA was asked, the time ran out, or a director's own shot fails its test.
+    fn direct(&mut self, tune: &CamTune, car: &CarView, dt: f32, test: &mut dyn FnMut(&mut Director, bool) -> bool) {
         self.cut = false;
         if self.switching && !self.next {
             self.time -= dt;
         } else if self.next {
             self.time = self.rng.length(tune.cut);
         }
-        let ok = !self.next && self.time >= 0.0 && (self.state < 5 || self.shot_ok(tune, car, false, dt, probe));
+        let ok = !self.next && !(self.time < 0.0) && (self.state < 5 || test(self, false));
         if !ok {
-            self.choose(tune, car, dt, probe);
+            self.choose(tune, car, test);
         }
+    }
+
+    /// One frame (F-19930); `dt` 0 while the replay is paused.
+    pub fn update(&mut self, tune: &CamTune, car: &CarView, dt: f32, probe: &mut dyn Probe) -> Shot {
+        self.direct(tune, car, dt, &mut |d: &mut Director, ahead| d.shot_ok(tune, car, ahead, dt, probe));
         // (the camera manager updates its camera as well: the helicopter takes two steps a
         // frame - its zoom measured at 37..40 degrees a second against FOVApproachRate 20,
         // `work/cameras2/cap2/replay3.txt`)
@@ -1433,6 +1442,80 @@ mod original_director_tests {
 
     /// The helicopter's activate F-79727 and update F-48462 against the original's code (tools/replay_heli_reference.py,
     /// testdata/replay_heli_ref.txt): a moving car, 25 steps a sequence, the camera's whole state and the generator after each.
+    /// The frame update F-19930 and choose F-53721 against the original's code (tools/replay_choose_reference.py,
+    /// testdata/replay_choose_ref.txt): 40 frames of a set-up director per case (the state, the shot's time, the generator,
+    /// the helicopter's and the polar camera's fields after each), with the shot test F-51014 answering from a list in both
+    /// (its calls and whether they look ahead compared), and the TRANSITIONMOVIE a cut to bumper / cockpit starts (main.rs).
+    #[test]
+    fn choose_matches_the_original() {
+        let mut cases = 0;
+        for line in include_str!("testdata/replay_choose_ref.txt").lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split_whitespace().collect();
+            let f = |x: &str| f32::from_bits(h(x));
+            let v: Vec<f32> = w[4..44].iter().map(|x| f(x)).collect();
+            let mut tune = CamTune::default();
+            tune.cut = [v[0], v[1], v[2], v[3]];
+            tune.heli_fov[0] = v[4];
+            tune.heli_fov[1] = v[5];
+            tune.heli_match = [v[6], v[7], v[8]];
+            tune.heli_rates = [v[9], v[10]];
+            tune.heli_cut = [v[11], v[12], v[13], v[14]];
+            tune.polar_fov_range[2] = v[15];
+            for k in 0..6 {
+                tune.mounts[k] = Vec3::new(v[22 + 3 * k], v[23 + 3 * k], v[24 + 3 * k]);
+            }
+            let car = CarView { pos: Vec3::new(v[16], v[17], v[18]), rot: Quat::IDENTITY, vel: Vec3::new(v[19], v[20], v[21]), top: 1.0 };
+            let mut d = Director::new(&tune, 1, &car);
+            d.rng = Mwc { x: h(w[1]), c: h(w[2]), spare: None };
+            d.polar_activate(&tune);
+            d.heli_activate(&tune, &car);
+            d.time = d.rng.length(tune.cut);
+            d.state = h(w[3]) as usize;
+            let n: usize = w[44].parse().unwrap();
+            let answers: Vec<bool> = w[45..45 + n].iter().map(|x| *x == "1").collect();
+            let mut qi = 0;
+            let nf: usize = w[45 + n].parse().unwrap();
+            let fr = &w[46 + n..];
+            let rows: Vec<&str> = b.split(" | ").collect();
+            assert_eq!(rows.len(), nf);
+            for (s, row) in rows.iter().enumerate() {
+                d.switching = fr[3 * s + 1] == "1";
+                if fr[3 * s + 2] == "1" {
+                    d.next = true;
+                }
+                let mut ev: Vec<String> = Vec::new();
+                d.direct(&tune, &car, f(fr[3 * s]), &mut |d: &mut Director, ahead| {
+                    ev.push(format!("S{},{}", d.state, ahead as u8));
+                    qi += 1;
+                    answers.get(qi - 1).copied().unwrap_or(true)
+                });
+                if d.cut && d.state < 2 {
+                    ev.push(format!("T{:08x},{:08x},{:08x}", 0.01f32.to_bits(), 0.25f32.to_bits(), 0.01f32.to_bits()));
+                }
+                let o: Vec<&str> = row.split(' ').filter(|x| !x.is_empty()).collect();
+                let want_ev: Vec<&str> = o.iter().copied().filter(|x| x.starts_with('S') || x.starts_with('T')).collect();
+                assert_eq!(ev, want_ev, "frame {s} of {line}");
+                let o: Vec<&str> = o.into_iter().filter(|x| !x.starts_with(['S', 'T', 'D', 'R'])).collect();
+                let hl = &d.heli;
+                let got = [
+                    d.state as u32, d.time.to_bits(), d.next as u32, d.rng.x, d.rng.c, d.rng.spare.is_some() as u32, d.rng.spare.map_or(0, f32::to_bits),
+                    hl.fov.to_bits(), hl.angle.to_bits(), hl.side as u32, hl.zoom.to_bits(), hl.place.x.to_bits(), hl.place.y.to_bits(), hl.place.z.to_bits(),
+                    d.polar.fov.to_bits(), d.polar.pitch.to_bits(), d.polar.yaw.to_bits(),
+                ];
+                let want: Vec<u32> = o.iter().map(|x| h(x)).collect();
+                // (the spare's value is only compared while it is held)
+                let mut want = want;
+                if want[5] == 0 {
+                    want[6] = 0;
+                }
+                assert_eq!(got.to_vec(), want, "frame {s} of {line}");
+            }
+            cases += 1;
+        }
+        assert!(cases >= 380, "{cases}");
+    }
+
     #[test]
     fn heli_matches_the_original() {
         let mut seqs = 0;
