@@ -1030,12 +1030,12 @@ impl Rider {
         }
     }
 
-    /// The physics level put the car to rest (F-38021 -> behaviour vfunc 13 F-58957: state 5).
+    /// The physics level put the car to rest (F-38021 -> behaviour vfunc 13 F-58957: state 5; the car's speed +412 is
+    /// left, the next update measures it).
     pub(super) fn came_to_rest(&mut self) {
         self.active = false;
         if self.state == 4 {
             self.state = 5;
-            self.v = 0.0;
             self.stand = 0.0;
             self.rest = 0.0;
         }
@@ -4398,14 +4398,7 @@ pub struct Lock {
 impl Lock {
     /// One 30 Hz update: push `x` (car +408), work the bit out with the car's place change.
     pub fn update(&mut self, pos: Vec3, x: f32, slot: Option<usize>, max_decel: f32, dt: f32) {
-        self.since += dt;
-        if self.since < 1.0 / 30.0 - 1e-4 {
-            return;
-        }
-        let t = self.since;
-        self.since = 0.0;
-        let v = self.prev.map_or(Vec3::ZERO, |p| newton_velocity(p, pos, t));
-        self.prev = Some(pos);
+        let Some(v) = self.track(pos, dt) else { return };
         // (F-60856)
         let i = self.i as usize;
         if self.n == 0 {
@@ -4431,6 +4424,19 @@ impl Lock {
         self.buf[self.u] = self.now;
         self.u ^= 1;
     }
+    /// The car's velocity +208 on a 30 Hz update (F-53150: F-84582 from the place change, in every state); None
+    /// between updates.
+    pub fn track(&mut self, pos: Vec3, dt: f32) -> Option<Vec3> {
+        self.since += dt;
+        if self.since < 1.0 / 30.0 - 1e-4 {
+            return None;
+        }
+        let t = self.since;
+        self.since = 0.0;
+        let v = self.prev.map_or(Vec3::ZERO, |p| newton_velocity(p, pos, t));
+        self.prev = Some(pos);
+        Some(v)
+    }
     /// The bit the render update sees (two updates old).
     pub fn drawn(&self) -> bool {
         self.buf[self.u]
@@ -4454,6 +4460,13 @@ pub fn lock_rule(slot: Option<usize>, sum: f32, n: u8, max_decel: f32, v: Vec3) 
         return false;
     }
     !(fma(v.z, v.z, fma(v.x, v.x, v.y * v.y)) < f32::from_bits(0x409F_E034))
+}
+
+/// |car +208| as the car update stores it in +412 with no rail (F-50624 with the body active, F-30960 without a rail):
+/// fsqrts(fmadds(z, z, fmadds(x, x, y y))).
+pub fn measured_speed(v: Vec3) -> f32 {
+    use crate::physics::exact::fma;
+    fma(v.z, v.z, fma(v.x, v.x, v.y * v.y)).sqrt()
 }
 
 /// F-84582: the velocity (car +208) from the position change over `dt` as the vector unit makes it - the change times
@@ -4841,12 +4854,22 @@ impl Vehicles {
                         let p = c.state.pos;
                         let _ = writeln!(w, "{:.2}	{}	{}	{:.2}	{:.2}	{:.2}	{:.3}	{:.2}	{}	0	000	{:.2}	0	0	0	{}	0	0", self.clock, r.rng_id(), c.model.name, p.x, p.y, p.z, c.state.speed(), c.input.brake, c.placed as u8, c.input.throttle, r.state);
                     }
+                    // (F-50624: states 4 / 5 have no rail - behaviour vfuncs 12 / 13, F-79450 / F-58957, clear it:
+                    // F-99671 -> F-78813, the follower's +156 -, so every update +412 = |car +208|: an active body
+                    // (F-17857) at once and nothing more that update; else after the behaviour's step, F-30960's
+                    // no-rail exit (a = 0, which F-58614 keeps))
+                    let measured = r.lock.track(c.state.pos, dt).map(measured_speed);
+                    if let Some(v) = measured.filter(|_| r.state == 4) {
+                        r.v = v;
+                    }
                     // physical: the physics level's rest rule takes it out (state 5: vehicles.rs,
                     // loose.rs `ambient_frame`); a contact makes it active again
-                    if r.in_level {
-                        if r.state == 4 {
-                            continue;
+                    if r.in_level && r.state == 4 {
+                        // (not active: the behaviour's state 4 and F-58614's offset timer)
+                        if !r.active {
+                            rider_offset(r, env.clock);
                         }
+                        continue;
                     }
                     // (without the level: under 0.1 m/s and 0.1 rad/s for 0.5 s - the port's own)
                     let (sp, w) = (c.state.speed(), c.state.ang_vel.length());
@@ -4855,22 +4878,27 @@ impl Vehicles {
                             r.rest += dt;
                             if r.rest > 0.5 {
                                 r.state = 5;
-                                r.v = 0.0;
                                 r.stand = 0.0;
                             }
                         } else {
                             r.rest = 0.0;
                         }
+                        // (no collider: never active, F-58614's offset timer)
+                        rider_offset(r, env.clock);
                         continue;
                     }
                     if sp > 0.3 && !r.in_level {
                         r.state = 4;
                         r.rest = 0.0;
+                        rider_offset(r, env.clock);
                         continue;
                     }
-                    r.v = 0.0;
                     let fwd = c.state.forward();
                     let tried = try_recovery(r, &env, i, c.state.pos, fwd, upright, dt);
+                    // (F-30960 after the behaviour's step: the measured speed; then F-58614's offset timer)
+                    if let Some(v) = measured.filter(|_| r.state == 5) {
+                        r.v = v;
+                    }
                     // (F-58614 after the behaviour's update: the offset timer)
                     rider_offset(r, env.clock);
                     if !tried {
@@ -11700,5 +11728,26 @@ mod speed_rule_tests {
             n += 1;
         }
         assert_eq!((n, dflt), (2000, 572));
+    }
+}
+
+#[cfg(test)]
+mod measured_speed_tests {
+    //! F-30960's no-rail exit run offline (tools/measured_speed_reference.py): +412 = |car +208| for 3,000 velocities.
+    use super::*;
+
+    #[test]
+    fn measured_speed_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/measured_speed_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let r: Vec<u32> = o.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let v = Vec3::new(f32::from_bits(w[0]), f32::from_bits(w[1]), f32::from_bits(w[2]));
+            assert_eq!(measured_speed(v).to_bits(), r[0], "{line}");
+            assert_eq!((r[1], r[2]), (0, 0), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
     }
 }
