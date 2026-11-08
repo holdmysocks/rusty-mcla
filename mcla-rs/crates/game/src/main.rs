@@ -8970,9 +8970,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // (and the watched car's own hull, for the polar camera's push-out)
                 let own_hull = car.tuned.as_deref().unwrap_or(&car.model.params).hull.as_ref().map(|h| physics::camprobe::CamObj::of_hull(h, render_state.pos, render_state.rot));
                 let mut probe = ReplayProbe(&cam_level, own_hull);
+                let pad_st = self.pad_state();
                 if let Some(p) = self.game.replay.as_mut() {
-                    // (the right stick turns the polar camera, F-79918; the triggers' zoom is not wired)
-                    p.stick(self.pad_look.0, self.pad_look.1, 0.0, dt);
+                    // (the polar camera reads the pad record's right stick and trigger bytes itself, F-63907; without a pad
+                    // the keyboard's look keys turn it)
+                    match pad_st {
+                        Some(st) => p.stick_bytes([st.sticks[2], st.sticks[3], st.triggers[0], st.triggers[1]], dt),
+                        None => p.stick(self.pad_look.0, self.pad_look.1, 0.0, dt),
+                    }
                 }
                 let was = self.game.replay.as_ref().and_then(|p| p.view());
                 // (test hook MCLA_REPLAY_SHOTS=<prefix>,t1,t2,..: a screenshot <prefix>_<t>.png as the

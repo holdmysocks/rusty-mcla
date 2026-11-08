@@ -481,6 +481,14 @@ fn stick_byte(b: u8) -> f32 {
     ((b as f32 - 127.5) * (1.0 / 127.0)).max(-1.0).min(1.0)
 }
 
+/// F-63907's reading of the pad bytes +18 .. +21: the right stick past the dead zone 0.3 (F-93983) and the triggers' zoom
+/// fma(LT, 1 / 255, -(RT / 255))
+fn pad_polar(b: [u8; 4]) -> (f32, f32, f32) {
+    let dead = |v: u8| crate::boomcam::dead_zone(stick_byte(v), 0.3);
+    let k = 1.0f32 / 255.0;
+    (dead(b[0]), dead(b[1]), (b[2] as f32).mul_add(k, -(b[3] as f32 * k)))
+}
+
 /// fmadds as the recomp evaluates it: the fused product-sum in double, then rounded to single
 fn fmadds(a: f32, b: f32, c: f32) -> f32 {
     (a as f64).mul_add(b as f64, c as f64) as f32
@@ -1077,6 +1085,15 @@ impl Playback {
         }
     }
 
+    /// The same from the pad record's bytes as the original reads them (F-63907): +18 / +19 the right stick
+    /// (x; y inverted, 0 = up) as (b - 127.5) / 127 kept in -1..1, +20 / +21 the left / right trigger, zoom = LT / 255 - RT / 255.
+    pub fn stick_bytes(&mut self, b: [u8; 4], dt: f32) {
+        if let Some(d) = self.director.as_mut() {
+            let (x, y, zoom) = pad_polar(b);
+            d.polar_stick(&self.tune, x, y, zoom, dt);
+        }
+    }
+
     /// The camera of this frame (None while the opening runs: the race start's own cameras).
     /// `car`: the player's car. The director's time is the replay clock's step since its last
     /// frame.
@@ -1402,10 +1419,8 @@ mod original_director_tests {
                     let mut d = Director::new(&tune, 1, &car);
                     d.state = POLAR;
                     d.polar = Polar { pitch: f[1], yaw: f[2], fov: f[0] };
-                    let dead = |b: u8| crate::boomcam::dead_zone(stick_byte(b), 0.3);
-                    let k = 1.0 / 255.0;
-                    let zoom = (by[2] as f32).mul_add(k, -(by[3] as f32 * k));
-                    d.polar_stick(&tune, dead(by[0]), dead(by[1]), zoom, f[5]);
+                    let (x, y, zoom) = pad_polar([by[0], by[1], by[2], by[3]]);
+                    d.polar_stick(&tune, x, y, zoom, f[5]);
                     let o: Vec<u32> = b.split(' ').map(h).collect();
                     assert_eq!([d.polar.fov.to_bits(), d.polar.pitch.to_bits(), d.polar.yaw.to_bits()], [o[0], o[1], o[2]], "{line}");
                     pol += 1;
