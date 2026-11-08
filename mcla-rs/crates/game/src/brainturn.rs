@@ -261,47 +261,80 @@ pub struct TurnCar {
 
 /// F-38160(angle, reverse, pivot): can the car turn by `angle` (rad, + towards the left = the
 /// sign of F-32060) over the mesh? A point Q is swung about a centre C in 4 steps of angle/4
-/// (Q rotated about y: x' = x cos + z sin, z' = z cos - x sin), each step's segment tested with the
-/// mesh (vfunc 72, width aiv+25168, navmesh +76 = 100 during the test). s = sign(angle) (0 for 0).
-/// - pivot: C = a wheel's position: wheel slot (2 wheels: +412 if the drive is 0 or 2, else +416;
-///   else drive 0 / 2: angle <= 0 -> +412, > 0 -> +420; other drives: angle >= 0 -> +416, < 0 ->
-///   +424); Q = car + back x length x (drive 0 / 2 ? 0.5 : -0.5) - right x 0.5 s width. The
-///   `reverse` argument is not read.
-/// - circle: radius R = (brain +336 ? 1.25 : 1) / MaxCurvature (aiv tuning +8); Q = car + back x
-///   length x (reverse ? 0.5 : -0.5); C = Q - right x s R x (reverse ? -1 : 1).
+/// (Q rotated about y: x' = fma(z, sin, x cos), z' = fma(z, cos, -(x sin)), sin / cos the guest's double routines
+/// F-72580 / F-63589 of the step angle (i x angle) x 0.25), each step's segment tested with the mesh (vfunc 72, width
+/// aiv+25168, navmesh +76 = 100 during the test). s = sign(angle) (0 for 0). The vector steps are the vector unit's
+/// (product and sum rounded apart, denormals flushed).
+/// - pivot: C = a wheel's position (+64 of the wheel): wheel slot (2 wheels: +412 if the drive is 0 or 2, else +416;
+///   else drive 0 / 2: angle not above 0 -> +412, else +420; other drives: angle not below 0 -> +416, else
+///   +424; a NaN angle takes +412 / +416); Q - C = (car - C) + back x length x (drive 0 / 2 ? 0.5 : -0.5), and for drive
+///   0 / 2 only also + right x (s x width) x -0.5. The `reverse` argument is not read.
+/// - circle: radius R = (brain +336 ? 1.25 : 1) / MaxCurvature (aiv tuning +8); Q - C = right x (s x (reverse ? -1 : 1)) x R;
+///   C = (car - (Q - C)) + back x length x (reverse ? 0.5 : -0.5).
 /// `backing_up` = brain +336 as the call finds it.
 pub fn arc_clear(mesh: &NavMesh, car: &TurnCar, backing_up: bool, max_curvature: f32, angle: f32, reverse: bool, pivot: bool) -> bool {
+    arc_test(car, backing_up, max_curvature, angle, reverse, pivot, &mut |a, b| segment_on_mesh(mesh, a, b, car.size.x))
+}
+
+/// vector unit ops (vsubfp / vaddfp / vmulfp / vmaddfp as generated: denormal operands and results read as 0, the
+/// product rounded before the sum)
+fn ftz(x: f32) -> f32 {
+    if x != 0.0 && x.abs() < f32::MIN_POSITIVE {
+        0.0f32.copysign(x)
+    } else {
+        x
+    }
+}
+fn vsub3(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3::new(ftz(ftz(a.x) - ftz(b.x)), ftz(ftz(a.y) - ftz(b.y)), ftz(ftz(a.z) - ftz(b.z)))
+}
+fn vadd3(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3::new(ftz(ftz(a.x) + ftz(b.x)), ftz(ftz(a.y) + ftz(b.y)), ftz(ftz(a.z) + ftz(b.z)))
+}
+fn vmul3(a: Vec3, k: f32) -> Vec3 {
+    let k = ftz(k);
+    Vec3::new(ftz(ftz(a.x) * k), ftz(ftz(a.y) * k), ftz(ftz(a.z) * k))
+}
+fn vmadd3(a: Vec3, k: f32, c: Vec3) -> Vec3 {
+    vadd3(vmul3(a, k), c)
+}
+
+/// F-38160 with the mesh's segment test given as `seg(from, to)` (called in the original's order).
+#[allow(clippy::too_many_arguments)]
+pub fn arc_test(car: &TurnCar, backing_up: bool, max_curvature: f32, angle: f32, reverse: bool, pivot: bool, seg: &mut dyn FnMut(Vec3, Vec3) -> bool) -> bool {
+    let s = fsel(angle, fsel(-angle, 0.0, 1.0), -1.0);
     let (c, off);
     if pivot {
         let rear = car.drive == 0 || car.drive == 2;
+        // (`ble` / `bge`: "not greater" / "not less", a NaN angle takes the first slot)
         let slot = if car.wheel_count == 2 {
             if rear { 0 } else { 1 }
         } else if rear {
-            if angle <= 0.0 { 0 } else { 2 }
-        } else if angle >= 0.0 {
+            if !(angle > 0.0) { 0 } else { 2 }
+        } else if !(angle < 0.0) {
             1
         } else {
             3
         };
         c = car.wheels[slot];
         let k = if rear { 0.5 } else { -0.5 };
-        let s = fsel(angle, fsel(-angle, 0.0, 1.0), -1.0);
-        off = (car.pos - c) + car.back * (car.size.z * k) + car.right * (s * car.size.x * -0.5);
+        let o = vmadd3(car.back, car.size.z * k, vsub3(car.pos, c));
+        off = if rear { vmadd3(car.right, (s * car.size.x) * -0.5, o) } else { o };
     } else {
         let r = if backing_up { 1.25 } else { 1.0 } / max_curvature;
         let dir = if reverse { -1.0 } else { 1.0 };
-        let s = fsel(angle, fsel(-angle, 0.0, 1.0), -1.0);
-        off = car.right * (s * dir * r);
+        off = vmul3(car.right, (s * dir) * r);
         let k = if reverse { 0.5 } else { -0.5 };
-        c = (car.pos - off) + car.back * (car.size.z * k);
+        c = vmadd3(car.back, car.size.z * k, vsub3(car.pos, off));
     }
-    let mut prev = c + off;
+    let mut prev = vadd3(c, off);
     for i in 1..=4 {
-        let phi = i as f32 * angle * 0.25;
-        let (sn, cs) = phi.sin_cos();
-        let v = Vec3::new(off.z * sn + off.x * cs, off.y, off.z * cs - off.x * sn);
-        let p = v + c;
-        if !segment_on_mesh(mesh, prev, p, car.size.x) {
+        let phi = (i as f32 * angle) * 0.25;
+        let sn = crate::physics::exact::guest_sin(phi as f64) as f32;
+        let cs = crate::physics::exact::guest_cos(phi as f64) as f32;
+        let v = Vec3::new(off.z.mul_add(sn, off.x * cs), off.y, off.z.mul_add(cs, -(off.x * sn)));
+        let p = vadd3(v, c);
+        if !seg(prev, p) {
             return false;
         }
         prev = p;
@@ -783,6 +816,49 @@ mod tests {
             wheel_count: 4,
             drive: 0,
         }
+    }
+
+    /// The arc test against the original's F-38160 run offline (tools/arc_reference.py, 6,000 cases): the mesh's segment
+    /// test an oracle answering a mask bit per call; the result and every segment (from, to) equal word for word, the
+    /// width the original queries with is the aiv's (= `size.x`) and the mesh's +76 is 100 during each call.
+    #[test]
+    fn arc_test_matches_the_original() {
+        let u = |s: &str| u32::from_str_radix(&s.replace('_', ""), 16).unwrap();
+        let f = |s: &str| f32::from_bits(u(s));
+        let v3 = |w: &[&str]| Vec3::new(f(w[0]), f(w[1]), f(w[2]));
+        let (mut n, mut bad) = (0, 0);
+        for l in include_str!("testdata/arc_ref.txt").lines() {
+            let (lhs, rhs) = l.split_once(" -> ").unwrap();
+            let s: Vec<&str> = lhs.split_whitespace().skip(1).collect();
+            let car = TurnCar {
+                pos: v3(&s[9..12]),
+                right: v3(&s[12..15]),
+                back: v3(&s[15..18]),
+                size: Vec3::new(f(s[7]), 0.0, f(s[8])),
+                wheels: std::array::from_fn(|k| v3(&s[18 + 3 * k..21 + 3 * k])),
+                wheel_count: u(s[5]) as usize,
+                drive: u(s[4]),
+            };
+            let mask = u(s[30]);
+            let mut log: Vec<u32> = Vec::new();
+            let mut k = 0;
+            let ok = arc_test(&car, u(s[3]) != 0, f(s[6]), f(s[0]), u(s[1]) != 0, u(s[2]) != 0, &mut |a, b| {
+                log.extend([a.x, a.y, a.z, b.x, b.y, b.z, 100.0, car.size.x].map(f32::to_bits));
+                k += 1;
+                (mask >> (k - 1)) & 1 != 0
+            });
+            let mut got = vec![ok as u32];
+            got.extend(log);
+            let want: Vec<u32> = rhs.split_whitespace().map(|w| u(w)).collect();
+            n += 1;
+            if got != want {
+                if bad < 5 {
+                    eprintln!("{l}\n   port {got:08x?}");
+                }
+                bad += 1;
+            }
+        }
+        assert_eq!((n, bad), (6000, 0));
     }
 
     /// The turnaround picker against the original's F-67810 run offline (tools/turnaround_reference.py, 6,000 cases): the
