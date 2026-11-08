@@ -8,7 +8,7 @@ use crate::render::{Frustum, Gpu};
 use crate::drvanim as da;
 use crate::drvmachine as dm;
 use crate::skin::{blend_pose, Clip, FrameDof, SkinBuffer, SkinModel, DOF_NO_VALUE, DOF_QUATERNION, DOF_VECTOR3};
-use glam::{Mat4, Quat, Vec3};
+use glam::{Mat3, Mat4, Quat, Vec3};
 use hashbrown::HashMap;
 use mcla_formats::rage::anim::{animation_named, pack_entries};
 use mcla_formats::rage::Rd;
@@ -711,28 +711,17 @@ impl RivalLook {
     /// held look for its first second, then `look`, and the racer is let go when it is below 0. `me`: the car's place and
     /// rotation; `others`: the race's other racers that drive (state +656 == 3, F-90764), in the race's order.
     pub fn step(&mut self, look: f32, dt: f32, me: (Vec3, Quat), others: impl Iterator<Item = (usize, Vec3)>) -> f32 {
+        let m = Mat3::from_quat(me.1);
+        self.step_rows(look, dt, me.0, m.x_axis, m.z_axis, others)
+    }
+
+    /// F-70536 on the car's matrix rows as the original reads them (`right` the first, `back` the third).
+    pub fn step_rows(&mut self, look: f32, dt: f32, pos: Vec3, right: Vec3, back: Vec3, others: impl Iterator<Item = (usize, Vec3)>) -> f32 {
         if self.rival.is_none() {
-            let (right, back) = (me.1 * Vec3::X, me.1 * Vec3::Z);
-            let near = |p: Vec3, side: f32| -> f32 {
-                let v = p - me.0;
-                let (x, z) = (right.dot(v), back.dot(v));
-                if x * side < 0.0 {
-                    return -1.0;
-                }
-                let d2 = crate::physics::exact::fma(v.z, v.z, v.x * v.x);
-                if d2 >= 20.0 * 20.0 {
-                    return -1.0;
-                }
-                let a = crate::physics::exact::guest_atan2(z.abs() as f64, x.abs() as f64) as f32;
-                if a.abs() >= f32::from_bits(0x3f49_0fdb) {
-                    return -1.0;
-                }
-                d2
-            };
             let (mut best, mut pick, mut out) = (f32::MAX, None, look);
             for (k, p) in others {
                 for (side, l) in [(-1.0, 1.0), (1.0, -1.0)] {
-                    let d = near(p, side);
+                    let d = rival_side(pos, right, back, p, side);
                     if d > -1.0 && d < best {
                         (best, pick, out) = (d, Some(k), l);
                     }
@@ -752,6 +741,28 @@ impl RivalLook {
         }
         look
     }
+}
+
+/// F-48336: the plan distance squared to a racer at `p` on the `side` (-1 left, +1 right) of the car at `pos` within 20 m and
+/// 45 degrees of its side axis (|atan2(|back . v|, |right . v|)| under the image's pi / 4), else -1; v = p - pos, the dots the
+/// vector unit's.
+fn rival_side(pos: Vec3, right: Vec3, back: Vec3, p: Vec3, side: f32) -> f32 {
+    use crate::physics::exact::{dot3, fma, guest_atan2};
+    let v = p - pos;
+    let (x, z) = (dot3(right, v), dot3(back, v));
+    if x * side < 0.0 {
+        return -1.0;
+    }
+    let (dx, dz) = (pos.x - p.x, pos.z - p.z);
+    let d2 = fma(dz, dz, dx * dx);
+    if d2 >= 20.0 * 20.0 {
+        return -1.0;
+    }
+    let a = guest_atan2(z.abs() as f64, x.abs() as f64) as f32;
+    if a.abs() >= f32::from_bits(0x3f49_0fdb) {
+        return -1.0;
+    }
+    d2
 }
 
 /// The cruise state's steering to sweep phase (F-25740): slope 0.75 within |x| <= 0.5, 0.25 outside.
@@ -2367,6 +2378,36 @@ mod ride_tests {
         l.step(0.25, 0.25, me, std::iter::empty());
         assert_eq!(l.rival, None);
         assert_eq!(l.step(0.0, 0.25, me, [(5, Vec3::new(4.0, 0.0, 0.0))].into_iter()), -1.0);
+    }
+
+    /// F-70536 with F-48336 run offline on the original's code (tools/rival_look_reference.py): 1,500 cases of a held or free
+    /// look state, 1 - 7 racers (some not driving, without an instance or an empty slot), random matrices; the look returned,
+    /// the racer held and the state's look and timer equal the original's bit for bit.
+    #[test]
+    fn rival_look_matches_the_original() {
+        let (mut n, mut picked) = (0, 0);
+        for line in include_str!("testdata/rival_look_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let f = |k: usize| f32::from_bits(w[k]);
+            let (held, me, nr) = (w[0], w[5] as usize, w[6] as usize);
+            let rec = |r: usize| &w[7 + 15 * r..7 + 15 * (r + 1)];
+            let v3 = |s: &[u32]| Vec3::new(f32::from_bits(s[0]), f32::from_bits(s[1]), f32::from_bits(s[2]));
+            let m = rec(me);
+            let others: Vec<(usize, Vec3)> =
+                (0..nr).filter(|&r| r != me && rec(r)[..3] == [1, 1, 1]).map(|r| (r, v3(&rec(r)[12..15]))).collect();
+            let mut l = RivalLook { rival: (held > 0).then(|| held as usize - 1), look: f(1), timer: f(2) };
+            let ret = l.step_rows(f(3), f(4), v3(&m[12..15]), v3(&m[3..6]), v3(&m[9..12]), others.into_iter());
+            let e: Vec<&str> = o.split_whitespace().collect();
+            let rival: i64 = e[1].parse().unwrap();
+            let got = (ret.to_bits(), l.rival.map_or(-1, |r| r as i64), l.look.to_bits(), l.timer.to_bits());
+            let want = (u32::from_str_radix(e[0], 16).unwrap(), rival, u32::from_str_radix(e[2], 16).unwrap(), u32::from_str_radix(e[3], 16).unwrap());
+            assert_eq!(got, want, "case {n}: {line}");
+            n += 1;
+            picked += (held == 0 && rival >= 0) as usize;
+        }
+        assert_eq!(n, 1500);
+        assert!(picked > 200, "{picked}");
     }
 
     #[test]
