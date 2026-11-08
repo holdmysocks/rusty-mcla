@@ -603,6 +603,18 @@ fn cmd_block(cmd: u8, hb: bool, block_steer: f32, side: bool, along: f32) -> [u3
     b
 }
 
+/// PoliceManager_IsAnyPoliceCloseToPlayer's body F-91297: with a player (`player`; none without the player manager or its
+/// racer), any of the manager's active units on the surface (mode +1152 0, not underground +880; in the port the cop cars on
+/// the road) whose squared distance to the player (dy dy, then dz and dx fused) is strictly under r x r.
+pub(crate) fn any_police_close(player: Option<Vec3>, units: impl IntoIterator<Item = Vec3>, r: f32) -> bool {
+    let Some(p) = player else { return false };
+    let r2 = r * r;
+    units.into_iter().any(|u| {
+        let (dy, dz, dx) = (u.y - p.y, u.z - p.z, u.x - p.x);
+        fmas(dx, dx, fmas(dz, dz, dy * dy)) < r2
+    })
+}
+
 /// The patrol's path change F-84839 for a unit whose brain is the patrol's and that has a group: `group` = the group's paths,
 /// `own` = the unit's path in it (+1124), `timer` = +1128. A group of one path - every group of the disc's patrol file -
 /// changes nothing and draws no number. Else, with the timer <= 0 (NaN passes): one step of the shared MWC `rng`, its low 23
@@ -5410,6 +5422,23 @@ mod tests {
         p.arrest_posted = false;
         p.kind = TacKind::None;
         assert_eq!(p.hud_state(), 0);
+    }
+
+    #[test]
+    fn police_close_matches_the_original() {
+        // tools/police_close_reference.py: F-91297 on 3,000 cases (empty slots, modes, underground flags, positions at the
+        // radius, r 250 / random / 0, no player)
+        let mut n = 0;
+        for l in include_str!("testdata/police_close_ref.txt").lines() {
+            let (a, b) = l.split_once(" | ").unwrap();
+            let v: Vec<u32> = a.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            let f = |i: usize| f32::from_bits(v[i]);
+            let player = (v[0] != 0).then(|| Vec3::new(f(2), f(3), f(4)));
+            let units: Vec<Vec3> = (0..v[5] as usize).map(|k| 6 + 6 * k).filter(|&o| v[o] == 0 && v[o + 1] == 0 && v[o + 2] == 0).map(|o| Vec3::new(f(o + 3), f(o + 4), f(o + 5))).collect();
+            assert_eq!(any_police_close(player, units, f(1)), b == "1", "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
     }
 
     #[test]

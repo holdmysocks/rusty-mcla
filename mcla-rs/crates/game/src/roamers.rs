@@ -1321,7 +1321,8 @@ impl Roamers {
         self.accepted = true;
         self.rival_challenged = !vehicles.cars[ri].driver.is_empty();
         // (MCLA_ROAM_TEST=nocops: the self-test runs to the line whatever police are about)
-        let s19d_cops = vehicles.cars.iter().any(|c| c.cop && c.state.pos.distance(pp) < 250.0) && std::env::var("MCLA_ROAM_TEST").map_or(true, |v| v != "nocops");
+        // (PoliceManager_IsAnyPoliceCloseToPlayer(250), F-91297: the units on the road, squared and fused, strictly under)
+        let s19d_cops = crate::police::any_police_close(Some(pp), vehicles.cars.iter().filter(|c| c.cop).map(|c| c.state.pos), 250.0) && std::env::var("MCLA_ROAM_TEST").map_or(true, |v| v != "nocops");
         let s19d_man = man.as_ref().map(|m| (m.name.clone(), m.car.clone(), m.config.clone()));
         game.man_mod = man.as_ref().map(|m| (m.name.clone(), m.mod_value));
         game.man_diff = man.as_ref().map(|m| m.difficulty);
