@@ -207,6 +207,48 @@ fn doppler_sample(ratio: f32, src: Vec3, lis: Vec3, ms: Vec3, ml: Vec3, factor: 
     ratio.mul_add(0.5, doppler_ratio(dd, factor, 30) * 0.5)
 }
 
+/// One listener's history in the environment (F-74282, called by the audio update F-99037 once a frame after SetListener
+/// F-92830 has put the listener's matrix and weight into the ring slot +3660): with this call's and the last call's weight
+/// set (not at the first call: the constructor F-36018 leaves them 0; the reset byte +3648 is never set) and the clock
+/// gone on (ms > the last call's), the velocity is d x (30 / dt ms) with d = place - the place stored at the last such
+/// call, the speed |d| x 60 (of the move, not the velocity; fmadds as `env_len`); a speed more than 50 away from the last call's keeps the last velocity (the
+/// speed is stored all the same) and the place is stored; otherwise velocity and speed are 0 and the stored place stays.
+/// The stored place starts at the origin, so the first moves after the start are held. (The ring copy to the next slot
+/// and the weights' scaling by the largest of the three listeners' are not needed with one listener.)
+#[derive(Clone, Copy, Default)]
+struct ListenerHist {
+    /// the last call's ms (None before the first)
+    ms: Option<u32>,
+    /// +3600: the place stored
+    at: Vec3,
+    /// +3136: the velocity
+    vel: Vec3,
+    /// +3424: the speed
+    speed: f32,
+}
+
+impl ListenerHist {
+    fn step(&mut self, pos: Vec3, ms: u32) -> Vec3 {
+        match self.ms.replace(ms) {
+            Some(last) if ms > last => {
+                let d = pos - self.at;
+                let v = d * (30.0 / (ms - last) as f32);
+                let speed = env_len(d) * 60.0;
+                if !((speed - self.speed).abs() > 50.0) {
+                    self.vel = v;
+                }
+                self.speed = speed;
+                self.at = pos;
+            }
+            _ => {
+                self.vel = Vec3::ZERO;
+                self.speed = 0.0;
+            }
+        }
+        self.vel
+    }
+}
+
 /// A new sound's variance draws (F-40563), each with F-62480 only when its variance is not 0, in this order: volume
 /// (fmadds(+15, 0.01, r x 0.01): the sound's +28), pitch (+19 + r, 16 bits: +32), pan (none when 0xFFFF and then no draw,
 /// else (s16(r) + s16(+23) + 360) % 360 truncating: +10), predelay (+27 + r: the word +88) and start offset (+31 + r: the
@@ -627,9 +669,12 @@ pub struct SoundLib {
     /// each wave voice's slot state for the voice manager (1 playing, 2 stopping; waiting when absent)
     voice_state: HashMap<u64, u8>,
     pub listener: (Vec3, Vec3, Vec3),
-    /// the game ticks since the last Doppler sample and the camera at it (frame_sample)
+    /// the game ticks since the last Doppler sample (frame_sample)
     sample_ticks: usize,
-    sample_cam: Option<Vec3>,
+    /// the audio frame clock in s (the audio update's 0x8286CF34 += the frame's seconds; frame_sample)
+    clock: f32,
+    /// listener 0's history (F-74282): its motion for the Doppler
+    lis_hist: ListenerHist,
     /// the reverb level and room size (env +5100 / +5104, set every frame by the probes of F-26357 -
     /// BUS_GRAPH_RULE.md 2.5)
     pub reverb_env: (f32, f32),
@@ -905,7 +950,8 @@ impl SoundLib {
             voice_state: HashMap::new(),
             listener: (Vec3::ZERO, Vec3::X, Vec3::NEG_Z),
             sample_ticks: 0,
-            sample_cam: None,
+            clock: 0.0,
+            lis_hist: ListenerHist::default(),
             cat_dat: cat,
             sliders: Default::default(),
             camera: Default::default(),
@@ -1803,16 +1849,18 @@ impl SoundLib {
             return;
         }
         let scale = 2.0 / self.sample_ticks as f32;
+        // the audio update F-99037: the clock adds the frame's seconds (I: the frame's game ticks / 60), its ms (x 1000,
+        // truncated) go to the listener history; the listener's motion is the history's velocity, already per 30 ms
+        self.clock += self.sample_ticks as f32 / 60.0;
         self.sample_ticks = 0;
-        let ml = self.sample_cam.map_or(Vec3::ZERO, |p| cam - p);
-        self.sample_cam = Some(cam);
+        let ml = self.lis_hist.step(cam, (self.clock * 1000.0) as i64 as u32);
         for inst in self.insts.iter_mut() {
             if inst.timer.is_some_and(|t| self.timer_paused[t as usize]) {
                 continue;
             }
             if let Some(p) = inst.req.pos {
                 let ms = inst.prev_pos.map_or(Vec3::ZERO, |q| p - q);
-                let (ms, ml) = if scale == 1.0 { (ms, ml) } else { (ms * scale, ml * scale) };
+                let ms = if scale == 1.0 { ms } else { ms * scale };
                 inst.doppler = doppler_sample(inst.doppler, p, cam, ms, ml, inst.req.doppler);
                 inst.prev_pos = Some(p);
             }
@@ -3041,6 +3089,30 @@ mod tests {
             cam = car - 6.0;
         }
         assert!(hi - lo > 0.1, "{lo} .. {hi}");
+    }
+
+    /// The listener history F-74282 against the original's code run offline (tools/listener_hist_reference.py: 600
+    /// sequences of 16 calls from the constructor's state - starts, teleports, 2 - 4 tick frames, repeated times): the
+    /// velocity and the speed of every call equal.
+    #[test]
+    fn listener_history_is_the_originals() {
+        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let mut hist = ListenerHist::default();
+        let mut n = 0;
+        for l in include_str!("testdata/listener_hist_ref.txt").lines() {
+            if l == "reset" {
+                hist = ListenerHist::default();
+                continue;
+            }
+            let (a, b) = l.split_once(" -> ").unwrap();
+            let a: Vec<&str> = a.split(' ').collect();
+            let b: Vec<u32> = b.split(' ').map(h).collect();
+            let pos = Vec3::new(f32::from_bits(h(a[1])), f32::from_bits(h(a[2])), f32::from_bits(h(a[3])));
+            let v = hist.step(pos, a[0].parse().unwrap());
+            assert_eq!([v.x.to_bits(), v.y.to_bits(), v.z.to_bits(), hist.speed.to_bits()], b[..], "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 9600);
     }
 
     /// The Doppler ratio F-42745 against the original's code run offline (tools/doppler_ratio_reference.py: 4,000 distance
