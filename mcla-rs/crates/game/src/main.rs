@@ -469,6 +469,10 @@ struct App {
     /// the wager hangout core's traffic setting saved for the pink slip's end scene (0x5e66 GetTrafficEnable into
     /// local 850, 0x5e72 / 0x5e7f SetTrafficEnable(0) when on); given back after the scene (0x5f1c / 0x5f8b)
     pink_traffic: Option<usize>,
+    /// the red light race's start scene runs with the traffic off (CruisingHookmen red light cores, e.g. 0x18ac539b
+    /// 0x5af0 AmbientMgr_DisableTraffic(1) + AmbientMgr_Reset, the scene, ReplayMgr_Begin, 0x5c05 DisableTraffic(0)):
+    /// the race's traffic target to give back after it
+    redlight_traffic: Option<usize>,
     /// the playing scene's car events (cinecar.rs): the scene's name and each moved car's event
     cine_events: (String, Vec<(String, cinecar::CarEvent)>),
     /// tips waiting for a quiet moment: speech scenario, title, text
@@ -1415,6 +1419,7 @@ impl App {
             pink_speech: None,
             pink_lost: false,
             pink_traffic: None,
+            redlight_traffic: None,
             cine_events: (String::new(), Vec::new()),
             tips: Default::default(),
             reminder_wait: None,
@@ -4536,6 +4541,14 @@ impl App {
                 if !scenes.is_empty() && std::env::var("MCLA_NO_CINE").is_err() && self.cuts.playing.is_none() && self.cine.start(&mut gpu, &scenes[pick % scenes.len()], origin) {
                     self.cine_free = true;
                     self.cine_prerace = true;
+                    // (a red light race: the traffic off - F-26788(0), the riding and parked cars go - and AmbientMgr_Reset
+                    // (message 0x40) before its start scene)
+                    if self.game.replay.is_none() && self.game.active_def.as_ref().is_some_and(|d| d.id == althk::REDLIGHT_RACE_ID) {
+                        self.redlight_traffic = Some(self.vehicles.traffic_target);
+                        self.vehicles.traffic_target = 0;
+                        self.vehicles.ambient_disable(0);
+                        self.vehicles.ambient_reset();
+                    }
                     self.prerace_acts_begin(&p080_sc);
                     self.cine_caption = self.game.race.as_ref().map(|r| r.name.to_uppercase().replace('_', " "));
                     // (p080: the walk to the delivery car has no badge - walkthrough 2:44:20; the intro
@@ -4548,6 +4561,13 @@ impl App {
                         sc.t = (self.warp_t - (w.total() - hudmap::CINE_HANDOVER)).max(0.0);
                     }
                 }
+            }
+        }
+        // (the red light's start scene over - 0x5b91 IsChildFinished, ReplayMgr_Begin, 0x5c05 DisableTraffic(0): the traffic
+        // on again)
+        if !self.cine_prerace {
+            if let Some(n) = self.redlight_traffic.take() {
+                self.vehicles.traffic_target = n;
             }
         }
         if self.cine.playing.is_some() {
