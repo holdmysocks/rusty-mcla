@@ -90,6 +90,12 @@ pub fn language_apply() {
     log::info!("language: {} ({})", lang, mcla_config::Language::ALL[lang].word());
 }
 
+/// The player's name where the original shows the Xbox gamertag (`game.player_name`, the launcher's: DECISIONS.md D53),
+/// as `mcla_config::clean_player_name` leaves it; empty = none. Test hook: `MCLA_PLAYER_NAME` over it.
+pub fn player_name() -> String {
+    std::env::var("MCLA_PLAYER_NAME").ok().map(|v| mcla_config::clean_player_name(&v)).unwrap_or_else(|| get().filter(|r| !r.settings_ignored).map_or_else(String::new, |r| r.settings.game.player_name.clone()))
+}
+
 /// The intro setting (`game.intro`); `normal` when settings were never loaded. After the OPTIONS > PERFORMANCE >
 /// INTRO row changed it, the row's value.
 pub fn intro_mode() -> Intro {

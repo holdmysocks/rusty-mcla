@@ -1998,6 +1998,16 @@ impl Game {
         }
     }
 
+    /// The player's name where the original shows the profile's gamertag - the player racer's name F-54117, its
+    /// buffer filled from the gamer info F-51232 / F-41776, shown by the results rows F-26903 and the Last Man Out
+    /// line: the launcher's `game.player_name` (DECISIONS.md D53), else `drv_mp_01_set` (PLAYER in the chosen
+    /// language, which the original shows signed out in the results' first row only) - upper case, as every racer's
+    /// name in those rows.
+    pub fn player_shown_name(&self) -> String {
+        let n = crate::hooks::player_name();
+        if n.is_empty() { self.career.strings.get("drv_mp_01_set").map(|s| s.to_uppercase()).unwrap_or_else(|| "PLAYER".to_string()) } else { n.to_uppercase() }
+    }
+
     /// The player's paint: the garage's own mix, else the chosen swatch.
     pub fn paint_color(&self) -> [f32; 4] {
         // (MCLA_COLOR=n: a palette swatch for screenshots)
@@ -6127,7 +6137,8 @@ impl Game {
                             items.push((s("pause_statistics", "STATISTICS"), String::new(), Go::Page(1)));
                             items.push((s("pause_cheat_codes", "CHEAT CODES"), String::new(), Go::Page(2)));
                             items.push((s("pause_playlists", "MUSIC PLAYLISTS"), String::new(), Go::Page(3)));
-                            items.push(("QUIT GAME".to_string(), String::new(), Go::Act(MenuAction::Quit)));
+                            // (the port's own row, DECISIONS.md D18: QUIT GAME in English, the table's `quit` in the other languages - D54)
+                            items.push((if mcla_formats::strtbl::language() == 0 { "QUIT GAME".to_string() } else { s("quit", "QUIT GAME") }, String::new(), Go::Act(MenuAction::Quit)));
                         }
                     },
                 }
@@ -9642,7 +9653,7 @@ impl Game {
                     let cy = list_y + row_h * (i as f32 + 0.5);
                     let col = if name.starts_with("YOU") { accent } else { egui::Color32::WHITE };
                     self.text(&painter, egui::pos2(tx, cy), egui::Align2::LEFT_CENTER, &format!("{}", i + 1), 16.0 * sc, col);
-                    self.text(&painter, egui::pos2(tx + 60.0 * sc, cy), egui::Align2::LEFT_CENTER, &name.to_uppercase(), 14.0 * sc, col);
+                    self.text(&painter, egui::pos2(tx + 60.0 * sc, cy), egui::Align2::LEFT_CENTER, &if name.starts_with("YOU") { self.player_shown_name() } else { name.to_uppercase() }, 14.0 * sc, col);
                     let value = if self.results_plain { t.map(|v| format!("{:.0}", v)).unwrap_or_default() } else { t.map(fmt_time).unwrap_or_else(|| "DNF".into()) };
                     self.text(&painter, egui::pos2(panel.right() - 40.0 * sc, cy), egui::Align2::RIGHT_CENTER, &value, 14.0 * sc, col);
                 }
@@ -14726,7 +14737,7 @@ impl Game {
             let cells: Vec<Vec<String>> = self
                 .last_results
                 .iter()
-                .map(|(name, t)| vec![if name.starts_with("YOU") { st("G_User", "USER") } else { name.split(" (").next().unwrap_or(name).to_uppercase() }, if plain { t.map(|v| format!("{:.0}", v)).unwrap_or_default() } else { t.map(|v| stat_time((v * 1000.0) as i64)).unwrap_or_else(|| st("RACE_RESULT_DNF", "DNF")) }])
+                .map(|(name, t)| vec![if name.starts_with("YOU") { self.player_shown_name() } else { name.split(" (").next().unwrap_or(name).to_uppercase() }, if plain { t.map(|v| format!("{:.0}", v)).unwrap_or_default() } else { t.map(|v| stat_time((v * 1000.0) as i64)).unwrap_or_else(|| st("RACE_RESULT_DNF", "DNF")) }])
                 .collect();
             // (a series: POS., NAME, TIME and WINS - "1 / 3" -, titled RACE RESULTS with the
             // series' flags: `sr_results`)

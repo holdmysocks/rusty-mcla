@@ -8172,7 +8172,7 @@ impl Game {
         let Some((k, ci)) = who else { return false };
         // (LMO_ELEMINATED: "<name> ELIMINATED!")
         let name = match vehicles.cars.get(ci) {
-            Some(c) if c.is_player => self.career.strings.get("G_User").map(|s| s.to_uppercase()).unwrap_or_else(|| "USER".to_string()),
+            Some(c) if c.is_player => self.player_shown_name(), // (Racer_GetName F-79035 -> the player's name, D53)
             Some(c) if !c.driver.is_empty() => self.career.name_of(&c.driver).to_uppercase(),
             Some(c) => crate::game::pretty_car_name(&c.model.name).to_uppercase(),
             None => String::new(),
