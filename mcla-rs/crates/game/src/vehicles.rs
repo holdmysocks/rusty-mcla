@@ -137,8 +137,9 @@ pub struct CarModel {
     /// the bones the fitted rear bumper, front bumper and intercooler hang on (their matrix index, F-14987), in car space
     pub slot_bones: [Option<Mat4>; 3],
     /// the bones the car-parts update F-98654 turns each frame, in car space (steer_parts.rs): the base skeleton's
-    /// `steer` (a motorcycle's bars and fork), the one the fitted steering wheel hangs on, the fitted blower's valve
-    pub turn_bones: [Option<Mat4>; 3],
+    /// `steer` (a motorcycle's bars and fork), the one the fitted steering wheel hangs on, the fitted blower's valve,
+    /// the fitted blower's own bone
+    pub turn_bones: [Option<Mat4>; 4],
     /// where the exhaust and nitrous effects come out (car space, at most two, each with whether it moves with the
     /// rear bumper) and whether the first is a
     /// bone of the rear bumper (`CarAsset::fx_anchors`, `carfx.rs`)
@@ -857,7 +858,7 @@ const NEEDLE_GROUP: u32 = CLAM_GROUP + CLAM_GROUPS as u32;
 const NEEDLE_BONES: usize = 8;
 
 /// The draw groups of the bones the car-parts update F-98654 turns (after the needles'): + 0 the `steer` bone and
-/// below, + 1 the fitted steering wheel, + 2 the blower valve (`CarModel::turn_bones`).
+/// below, + 1 the fitted steering wheel, + 2 the blower valve, + 3 the rest of the fitted blower (`CarModel::turn_bones`).
 const TURN_GROUP: u32 = NEEDLE_GROUP + 3 * NEEDLE_BONES as u32;
 
 /// Bone j is `top` or below it.
@@ -1734,7 +1735,7 @@ struct CarPrep {
     hood_slot: Option<Mat4>,
     trunk_bone: Option<Mat4>,
     slot_bones: [Option<Mat4>; 3],
-    turn_bones: [Option<Mat4>; 3],
+    turn_bones: [Option<Mat4>; 4],
     roof_place: Mat4,
     /// the fitted add-on gauge's needle clip and placement (CarModel::needles [2], needle_place)
     upgrade: Option<(Arc<vehicle_model::BoneClip>, Mat4, std::path::PathBuf)>,
@@ -2568,8 +2569,19 @@ impl Vehicles {
             p.skeleton.as_ref()?.bones.iter().position(|b| b.name.to_ascii_lowercase().starts_with("blowervalve"))
         };
         let valve_bone = fitted.iter().find_map(|(p, x)| valve_of(p).map(|i| *x * p.skeleton.as_ref().unwrap().bones[i].world));
-        let turn_bones = [steer_i.and_then(|i| sk.map(|s| s.bones[i].world)), wheel_bone, valve_bone];
-        log::info!("car {}: turned bones (steer, steering wheel, blower valve) at {:?}", car.name, turn_bones.map(|b| b.map(|m| m.w_axis.truncate())));
+        // (D +1208: the fitted blower's own `blower<n>` bone, the valve's parent)
+        let blower_of = |p: &vehicle_model::CarPart| -> Option<usize> {
+            if p.is_base || !p.primary.to_ascii_lowercase().starts_with("blower") {
+                return None;
+            }
+            p.skeleton.as_ref()?.bones.iter().position(|b| {
+                let n = b.name.to_ascii_lowercase();
+                n.starts_with("blower") && !n.starts_with("blowervalve")
+            })
+        };
+        let blower_bone = fitted.iter().find_map(|(p, x)| blower_of(p).map(|i| *x * p.skeleton.as_ref().unwrap().bones[i].world));
+        let turn_bones = [steer_i.and_then(|i| sk.map(|s| s.bones[i].world)), wheel_bone, valve_bone, blower_bone];
+        log::info!("car {}: turned bones (steer, steering wheel, blower valve, blower) at {:?}", car.name, turn_bones.map(|b| b.map(|m| m.w_axis.truncate())));
         // (the exhaust tips are drawn at the outlet bones of the part that holds them, as those bones stand:
         // they move with that part - a hanging rear bumper takes them along)
         let outlet_src = car.outlet_part(cfg).map(|o| (o.primary.to_ascii_lowercase(), o.is_base, o.transform));
@@ -2640,6 +2652,11 @@ impl Vehicles {
             if let (Some(vi), Some(psk)) = (valve_of(part), part.skeleton.as_ref()) {
                 if part.mesh_tag.get(mi).and_then(|&t| psk.bone_by_tag(t)).map_or(false, |b| bone_under(psk, b, vi)) {
                     return TURN_GROUP + 2;
+                }
+            }
+            if let (Some(bi), Some(psk)) = (blower_of(part), part.skeleton.as_ref()) {
+                if part.mesh_tag.get(mi).and_then(|&t| psk.bone_by_tag(t)).map_or(false, |b| bone_under(psk, b, bi)) {
+                    return TURN_GROUP + 3;
                 }
             }
             if part.is_base {
@@ -5551,12 +5568,17 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     // (a bone F-98654 turns: its local times the turn, steer_parts.rs)
                     n if n + 3 >= TURN_GROUP as usize => {
                         let i = n + 3 - TURN_GROUP as usize;
-                        let (x, a) = match i {
-                            0 => (false, c.steer_parts.steer_bone_angle()),
-                            1 => (false, c.steer_parts.steer_wheel_angle()),
-                            _ => (true, c.valve.angle()),
-                        };
-                        c.model.turn_bones.get(i).copied().flatten().map_or(m, |w| m * w * crate::steer_parts::turn(x, a) * w.inverse())
+                        // (the blower: about z by the engine's shake x 0.5 while its word +46 is set - the engine runs)
+                        let shake = c.state.veh.as_deref().filter(|v| !v.engine_stopped).map(|v| v.engine_shake);
+                        let turned = |i: usize, x: bool, a: f32| c.model.turn_bones.get(i).copied().flatten().map_or(Mat4::IDENTITY, |w| w * crate::steer_parts::turn(x, a) * w.inverse());
+                        let blower = shake.map_or(Mat4::IDENTITY, |s| turned(3, false, crate::steer_parts::blower_angle(s)));
+                        m * match i {
+                            0 => turned(0, false, c.steer_parts.steer_bone_angle()),
+                            1 => turned(1, false, c.steer_parts.steer_wheel_angle()),
+                            // (the valve hangs below the blower: its turn inside the blower's)
+                            2 => blower * turned(2, true, c.valve.angle()),
+                            _ => blower,
+                        }
                     }
                     // (a bone of a dashboard needle)
                     n if n + 3 >= NEEDLE_GROUP as usize => {

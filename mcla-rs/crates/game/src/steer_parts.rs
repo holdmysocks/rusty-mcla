@@ -150,8 +150,7 @@ impl SteerParts {
 }
 
 /// D +1208, the fitted blower's own bone (`blower<n>`): about z by the engine's shake angle (engine +40, kept by the
-/// engine update F-55648 - not ported: the port's blower stands still) x 0.5, only while the engine's word +46 is
-/// not 0.
+/// engine update F-55648: `VehState::engine_shake`) x 0.5, only while the engine's word +46 is not 0.
 pub fn blower_angle(shake: f32) -> f32 {
     shake * 0.5
 }
