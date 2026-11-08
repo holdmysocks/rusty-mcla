@@ -285,7 +285,7 @@ def build(idx, names, main, out: Path, tag, stubs=(), vector=True, scratch_end=0
     cpp.write_text(src)
     import subprocess
     exe = out / f'{tag}.exe'
-    r = subprocess.run(['g++', '-std=c++17', '-O2', '-ffp-contract=off', '-static', '-I' + str(rc.SIMDE), str(cpp), '-o', str(exe)],
+    r = subprocess.run(['g++', '-std=c++17', '-O2', '-ffp-contract=off', '-msse4.1', '-mssse3', '-static', '-I' + str(rc.SIMDE), str(cpp), '-o', str(exe)],
                        capture_output=True, text=True)
     if r.returncode:
         raise RuntimeError(r.stderr[:1500])
