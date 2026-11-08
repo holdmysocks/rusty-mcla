@@ -1000,6 +1000,10 @@ pub struct ObjectUniform {
     /// for the lamps' lenses, as F-50822 hands them on (`damagemap::glass_vars`)
     pub glass_tint: [[f32; 4]; 9],
     pub glass_bumped: [[f32; 4]; 9],
+    /// a set-up car's part bones' rest rotations (restMtx's 3 x 3, F-14987), up to `vehicles::REST_ROTS`, nine floats
+    /// each (three columns), packed: the vertex dent of a mesh whose index k > 0 (in its normal's length,
+    /// `vehicles::rest_mark`) is turned by rotation k - 1 (city.wgsl vs_body)
+    pub rest_rot: [[f32; 4]; 27],
 }
 
 impl Default for ObjectUniform {
@@ -1007,7 +1011,7 @@ impl Default for ObjectUniform {
         // (lamps without a table of their own: the Audi R8's, as before the tables were read)
         let (lamp_a, lamp_b) = car_lamps::R8.uniform();
         let g = crate::damagemap::glass_vars([0.0; 4], false, false, true, false, &crate::damagemap::RECORDED_GLASS, [0.0, 1.0, 0.0], [0.0; 3], -1.0, false);
-        ObjectUniform { model: Mat4::IDENTITY.to_cols_array_2d(), color: [1.0, 1.0, 1.0, 0.0], params: [0.0; 4], dents: [[0.0; 4]; 6], color2: [0.0; 4], fade_min: [0.0; 4], fade_size: [1.0; 4], tint: [0.0; 4], interior: [[0.0; 4]; 5], fill: [0.0; 4], lamp_a, lamp_b, area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], slots: [[0.0; 4]; 5], glass_tint: g.tint, glass_bumped: g.bumped }
+        ObjectUniform { model: Mat4::IDENTITY.to_cols_array_2d(), color: [1.0, 1.0, 1.0, 0.0], params: [0.0; 4], dents: [[0.0; 4]; 6], color2: [0.0; 4], fade_min: [0.0; 4], fade_size: [1.0; 4], tint: [0.0; 4], interior: [[0.0; 4]; 5], fill: [0.0; 4], lamp_a, lamp_b, area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], slots: [[0.0; 4]; 5], glass_tint: g.tint, glass_bumped: g.bumped, rest_rot: [[0.0; 4]; 27] }
     }
 }
 
@@ -4363,6 +4367,18 @@ impl Frustum {
     pub fn intersects_sphere(&self, c: Vec3, r: f32) -> bool {
         self.planes.iter().all(|p| !(p.truncate().dot(c) + p.w < -r))
     }
+    /// The viewport's sphere test F-29884: every plane's d = x X + (y Y + (z Z + w)) (a product then a sum each) at
+    /// least 0 - r (NaN: outside). Checked against the original's code run offline (`view_sphere_tests`).
+    pub fn sphere_touches(&self, c: Vec3, r: f32) -> bool {
+        let d = |p: &Vec4| c.x * p.x + (c.y * p.y + (c.z * p.z + p.w));
+        let nr = 0.0 - r;
+        self.planes.iter().all(|p| d(p) >= nr)
+    }
+    /// The viewport's sphere test F-91781: every plane's (d + r) at least 0, d as in `sphere_touches`.
+    pub fn sphere_plus(&self, c: Vec3, r: f32) -> bool {
+        let d = |p: &Vec4| c.x * p.x + (c.y * p.y + (c.z * p.z + p.w));
+        self.planes.iter().all(|p| d(p) + r >= 0.0)
+    }
     /// The viewport's sphere test F-50958 (its planes as F-53768 lays them: six, two of them twice): per plane
     /// d = x X + (y Y + (z Z + w)), a product then a sum each; 0 when some d is below -r (or NaN), 2 when every d is
     /// at least r, else 1 (crossing).
@@ -4423,5 +4439,35 @@ mod frustum_reference_tests {
             n += 1;
         }
         assert!(n > 0);
+    }
+}
+
+#[cfg(test)]
+mod view_sphere_tests {
+    use super::Frustum;
+    use glam::{Vec3, Vec4};
+
+    #[test]
+    fn view_sphere_tests_match_the_original() {
+        // tools/view_sphere_reference.py: F-29884 and F-91781 on 6,000 spheres against the 8 rows F-53768 lays out
+        let text = include_str!("../testdata/view_sphere_reference.txt");
+        let lines: Vec<&str> = text.lines().collect();
+        let (mut n, mut inside) = (0, 0);
+        for pair in lines.chunks(2) {
+            let w: Vec<f32> = pair[0].split_whitespace().skip(2).map(|x| f32::from_bits(u32::from_str_radix(x, 16).unwrap())).collect();
+            let o: Vec<&str> = pair[1].split_whitespace().collect();
+            let mut planes = [Vec4::ZERO; 6];
+            // (the original's planes P0..P5 in the port's order, as frustum_planes_match_the_original)
+            for (k, port) in [4usize, 0, 1, 5, 3, 2].into_iter().enumerate() {
+                planes[port] = Vec4::new(w[4 * k], w[4 * k + 1], w[4 * k + 2], w[4 * k + 3]);
+            }
+            let fr = Frustum::from_planes(planes);
+            let (c, r) = (Vec3::new(w[24], w[25], w[26]), w[27]);
+            let want: (u32, u32) = (o[1].parse().unwrap(), o[2].parse().unwrap());
+            assert_eq!((fr.sphere_touches(c, r) as u32, fr.sphere_plus(c, r) as u32), want, "{}", pair[0]);
+            inside += want.0;
+            n += 1;
+        }
+        assert_eq!((n, inside), (6000, 1271));
     }
 }

@@ -7,7 +7,7 @@ use crate::render::{Gpu, GpuTexture, MatMode, ObjectBinding, ObjectUniform, Vert
 use crate::vehicle_model::{self, CarAsset, CarConfig, Slot};
 use crate::world::{GpuBatch, World};
 use anyhow::Result;
-use glam::{Mat4, Quat, Vec3};
+use glam::{Mat3, Mat4, Quat, Vec3};
 use std::path::Path;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -145,6 +145,8 @@ pub struct CarModel {
     /// bone of the rear bumper (`CarAsset::fx_anchors`, `carfx.rs`)
     pub fx_anchors: Vec<(Mat4, bool)>,
     pub fx_anchor_rear: bool,
+    /// its part meshes' rest rotations as the uniform takes them (`rest_index`, `rest_table`)
+    pub rest_rot: [[f32; 4]; 27],
     /// a traffic model's own wheels (tyre, rim, disc in its body fragment, on its wheel
     /// bones `wheel_0` .. `wheel_5` - `CarPart::mesh_wheel`): their hubs; drawn as batch groups 7 - 12 turned about these -
     /// no rim set of `resources/rims` is put on
@@ -1750,9 +1752,76 @@ struct MeshPrep {
     geo_alt: Option<MeshGeo>,
 }
 
+/// The most rest rotations a set-up car's table holds (`ObjectUniform::rest_rot`; the 49 vp_ cars have at most 12).
+pub const REST_ROTS: usize = 12;
+
+#[cfg(test)]
+thread_local! {
+    /// (tests: `rest_index` as with MCLA_DENT_TURN_OLD=1, on this thread)
+    static REST_TEST_OLD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn mat3_bits_eq(a: &Mat3, b: &Mat3) -> bool {
+    a.to_cols_array().iter().zip(b.to_cols_array()).all(|(x, y)| x.to_bits() == y.to_bits())
+}
+
+/// The index of a part mesh's rest rotation in the car's table: the 3 x 3 of restMtx, its bone's matrix in the car's
+/// rest space (part placement x bone; the slot pass F-14987 copies the bone globals with each row's w cleared). 0 for
+/// none (the identity, bit for bit), else k with `tab[k - 1]` equal to it bit for bit, added when new; past REST_ROTS 0.
+/// VS_CarPaint (cars/0x0d96b4f8, 22 - 49) adds the vertex dent to the bone-space position before skinning, so the
+/// port, which draws the vertex in rest space, turns the dent by this rotation (city.wgsl vs_body).
+/// MCLA_DENT_TURN_OLD=1: always 0 (the dent not turned, as before).
+pub fn rest_index(tab: &mut Vec<Mat3>, r: Mat3) -> u32 {
+    static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    #[cfg(test)]
+    if REST_TEST_OLD.with(|c| c.get()) {
+        return 0;
+    }
+    if *OLD.get_or_init(|| std::env::var("MCLA_DENT_TURN_OLD").is_ok()) || mat3_bits_eq(&r, &Mat3::IDENTITY) {
+        return 0;
+    }
+    if let Some(k) = tab.iter().position(|t| mat3_bits_eq(t, &r)) {
+        return k as u32 + 1;
+    }
+    if tab.len() >= REST_ROTS {
+        log::warn!("vehicles: more than {} rest rotations, a mesh's dent is not turned", REST_ROTS);
+        return 0;
+    }
+    tab.push(r);
+    tab.len() as u32
+}
+
+/// The rest rotation index k carried in a vertex normal's length: 4 k added to the length of the marked normal (1 /
+/// 1.5 / 2, `car_binormal_mark`); k = 0 leaves the normal as it is, bit for bit.
+pub fn rest_mark(nrm: Vec3, k: u32) -> Vec3 {
+    if k == 0 {
+        return nrm;
+    }
+    let l = nrm.length();
+    if !(l > 0.0) {
+        return nrm;
+    }
+    nrm * ((l + 4.0 * k as f32) / l)
+}
+
+/// The table as the uniform takes it: nine floats a rotation (its columns), packed.
+pub fn rest_table(tab: &[Mat3]) -> [[f32; 4]; 27] {
+    let mut f = [0.0f32; 108];
+    for (k, r) in tab.iter().take(REST_ROTS).enumerate() {
+        f[9 * k..9 * k + 9].copy_from_slice(&r.to_cols_array());
+    }
+    let mut out = [[0.0; 4]; 27];
+    for (i, v) in out.iter_mut().enumerate() {
+        v.copy_from_slice(&f[4 * i..4 * i + 4]);
+    }
+    out
+}
+
 /// A car build's CPU part (`Vehicles::prep_car`): the meshes in build order and what is gathered with them.
 struct CarPrep {
     car_is_ambient: bool,
+    /// the rest rotations of its part meshes (`rest_index`)
+    rest_rot: Vec<Mat3>,
     meshes: Vec<MeshPrep>,
     lamp_acc: hashbrown::HashMap<(i32, bool), (Vec3, u32)>,
     own_hubs: [Option<Vec3>; 6],
@@ -1777,7 +1846,7 @@ impl MeshGeo {
         MeshGeo { verts: Vec::new(), skin: Vec::new(), indices: Vec::new(), min: Vec3::splat(f32::INFINITY), max: Vec3::splat(f32::NEG_INFINITY) }
     }
 
-    fn push(&mut self, mesh: &mcla_formats::rage::geometry::Mesh, xf: Mat4, dark_above: Option<f32>, lens: f32, amb: u8) {
+    fn push(&mut self, mesh: &mcla_formats::rage::geometry::Mesh, xf: Mat4, dark_above: Option<f32>, lens: f32, amb: u8, rest: u32) {
         let base = self.verts.len() as u32;
         let identity = xf == Mat4::IDENTITY;
         let n = mesh.positions.len();
@@ -1788,7 +1857,7 @@ impl MeshGeo {
             let (pos, nrm) = if identity { (mesh.positions[i], nrm0) } else { (xf.transform_point3(mesh.positions[i]), xf.transform_vector3(nrm0).normalize_or(Vec3::Y)) };
             self.min = self.min.min(pos);
             self.max = self.max.max(pos);
-            let nrm = car_binormal_mark(mesh, i, nrm);
+            let nrm = rest_mark(car_binormal_mark(mesh, i, nrm), rest);
             let uv0 = mesh.uv0.get(i).copied().unwrap_or_default();
             let uv1 = mesh.uv1.get(i).copied().unwrap_or_default();
             let c = mesh.colors.get(i).copied().unwrap_or([255, 255, 255, 255]);
@@ -2334,7 +2403,7 @@ impl Vehicles {
         let t_load = std::time::Instant::now();
         let car = self.car_asset(world, dir)?;
         let ms_parse = t_load.elapsed().as_secs_f32() * 1000.0;
-        let CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, roof_place, upgrade } = match self.take_prep(dir, cfg) {
+        let CarPrep { car_is_ambient, rest_rot, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, roof_place, upgrade } = match self.take_prep(dir, cfg) {
             Some(p) => p,
             None => Self::prep_car(&car, dir, cfg),
         };
@@ -2538,7 +2607,7 @@ impl Vehicles {
         // (F-74884, a bike's set-up: +4092 / +4096 = |max - min| of the translation limits, crBoneData +144 / +160, of the
         // first bone named wheel_0 / wheel_2 in the base fragment's skeleton, then the parts' - F-20921)
         let bike_wheel_width = ["wheel_0", "wheel_2"].map(|n| car.skeleton.as_ref().and_then(|s| s.bones.iter().find(|b| b.name == n)).map_or(params.wheel_width, |b| (b.trans_limits.1 - b.trans_limits.0).length()));
-        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, glow_sides, font_bones, batches, params, params_mods, simtunes, vehmods: car.vehmods.clone(), fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), needles: [car.needles[0].clone().map(Arc::new), car.needles[1].clone().map(Arc::new), upgrade.as_ref().map(|u| u.0.clone())], needle_place: upgrade.as_ref().map_or(Mat4::IDENTITY, |u| u.1), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, fx_anchors, fx_anchor_rear });
+        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, glow_sides, font_bones, batches, params, params_mods, simtunes, vehmods: car.vehmods.clone(), fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), needles: [car.needles[0].clone().map(Arc::new), car.needles[1].clone().map(Arc::new), upgrade.as_ref().map(|u| u.0.clone())], needle_place: upgrade.as_ref().map_or(Mat4::IDENTITY, |u| u.1), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, fx_anchors, fx_anchor_rear, rest_rot: rest_table(&rest_rot) });
         self.models.push(m.clone());
         if self.wheels.is_none() {
             self.wheels = load_wheels(gpu, world).map(Arc::new);
@@ -2760,6 +2829,7 @@ impl Vehicles {
             }
         }
         // (a traffic model's meshes of the blended bucket, counted per LOD: their draw order - `Vehicles::draw`)
+        let mut rest_rot: Vec<Mat3> = Vec::new();
         let mut b1_seq = [0u32; 4];
         let hide_plate = cfg.no_plate.unwrap_or_else(|| crate::modcars::hides_plate(&car.name));
         for (part, part_xf, lod) in todo {
@@ -3048,10 +3118,13 @@ impl Vehicles {
                     }
                 };
                 // (the mesh's vertices as the batch takes them: placed, then marked by its program's rules)
+                // (the mesh's rest rotation in the car's table, for its vertex dent - `rest_index`; a traffic car's
+                // programs have their own dent)
+                let rest_k = if car_is_ambient { 0 } else { rest_index(&mut rest_rot, Mat3::from_mat4(part_xf * bone_m)) };
                 let make = |lens: f32| -> MeshGeo {
                     let mut acc = MeshGeo::new();
                     let first = 0;
-                    acc.push(mesh, part_xf * bone_m, dark_above, lens, if !car_is_ambient { 0 } else if sname.eq_ignore_ascii_case("AmbientTire") { 2 } else { 1 });
+                    acc.push(mesh, part_xf * bone_m, dark_above, lens, if !car_is_ambient { 0 } else if sname.eq_ignore_ascii_case("AmbientTire") { 2 } else { 1 }, rest_k);
                     // (render only - car parts drawn by their own programs' rules in city.wgsl, see
                     // work/lighting bs3.py / bmprobe.py / cglassprobe.py: the material's terms ride in
                     // the vertices. BumpSpec family: uv2 = (-(1 + 200 smoothness + 256 x 200
@@ -3248,7 +3321,7 @@ impl Vehicles {
                 glow_sides.push(side);
             }
         }
-        CarPrep { car_is_ambient, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, roof_place, upgrade }
+        CarPrep { car_is_ambient, rest_rot, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, roof_place, upgrade }
     }
 
     /// Tyre + rim model for a rim directory, loaded once.
@@ -5616,7 +5689,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             } else {
                 [[0.0; 4]; 5]
             };
-            let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: body_color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32 + int_glass], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(c.amb_lamps.tint).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5, slots: amb_slots, glass_tint: gv.tint, glass_bumped: gv.bumped };
+            let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: body_color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32 + int_glass], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(c.amb_lamps.tint).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5, slots: amb_slots, glass_tint: gv.tint, glass_bumped: gv.bumped, rest_rot: c.model.rest_rot };
             batch.push_object(&c.binding, &body_u);
             // (the side windows: the body's object moved by the window bone's clip)
             for (k, wb) in c.window_bindings.iter().enumerate() {
@@ -8147,5 +8220,172 @@ pub fn dmg_params(group: u32, bike: bool, movement: [u32; 4]) -> [f32; 4] {
         g if g == DENT_GROUP + 3 => if movement[0] != 0 { DMG_BUMPER_F } else { DMG_BODY },
         g if g == ROOF_GROUP || g == ROOF_GROUP + 2 || g == TURN_GROUP + 2 || g == TURN_GROUP + 3 || g == DENT_GROUP => DMG_NONE,
         _ => DMG_BODY,
+    }
+}
+
+#[cfg(test)]
+mod rest_rot_tests {
+    use super::*;
+
+    /// (a small fixed generator: the tests' random cases)
+    fn lcg(s: &mut u64) -> f32 {
+        *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((*s >> 40) as f32) / (1u64 << 24) as f32
+    }
+
+    /// city.wgsl vs_body's decode of a set-up car's normal: (k, the length the binormal flip reads).
+    fn shader_decode(n: Vec3) -> (u32, f32) {
+        let l = n.length();
+        let k = (l * 0.25).floor() as u32;
+        (k, l - 4.0 * k as f32)
+    }
+
+    fn bflip(l: f32) -> f32 {
+        ((2.0 * (l - 1.0)).round() * 0.5).clamp(0.0, 1.0)
+    }
+
+    /// The index rides in the normal's length: k = 0 leaves it bit for bit; for k = 1 .. 12 and every binormal mark the
+    /// shader reads back k, the same binormal flip and the same direction.
+    #[test]
+    fn rest_mark_round_trips() {
+        let mut s = 7u64;
+        for _ in 0..20_000 {
+            let d = Vec3::new(lcg(&mut s) - 0.5, lcg(&mut s) - 0.5, lcg(&mut s) - 0.5).normalize_or(Vec3::Y);
+            for mark in [1.0f32, 1.5, 2.0] {
+                let n = d * mark;
+                let z = rest_mark(n, 0);
+                assert!(z.to_array().iter().zip(n.to_array()).all(|(a, b)| a.to_bits() == b.to_bits()));
+                for k in 1..=REST_ROTS as u32 {
+                    let m = rest_mark(n, k);
+                    let (kk, l) = shader_decode(m);
+                    assert_eq!(kk, k, "{n:?} {k}");
+                    assert_eq!(bflip(l), bflip(n.length()), "{n:?} {k}");
+                    assert!(m.normalize().distance(n.normalize()) < 1e-6);
+                }
+            }
+        }
+        // (a vertex without a normal stays without)
+        assert_eq!(rest_mark(Vec3::ZERO, 3), Vec3::ZERO);
+    }
+
+    /// The table: identity 0, a repeat its first index, at most REST_ROTS; packed as the shader unpacks it.
+    #[test]
+    fn rest_table_packs_as_the_shader_reads() {
+        let mut tab = Vec::new();
+        assert_eq!(rest_index(&mut tab, Mat3::IDENTITY), 0);
+        let rots: Vec<Mat3> = (0..14).map(|i| Mat3::from_rotation_y(0.1 + i as f32 * 0.2)).collect();
+        for (i, r) in rots.iter().enumerate() {
+            assert_eq!(rest_index(&mut tab, *r), if i < REST_ROTS { i as u32 + 1 } else { 0 });
+        }
+        assert_eq!(rest_index(&mut tab, rots[3]), 4);
+        assert_eq!(tab.len(), REST_ROTS);
+        let t = rest_table(&tab);
+        for k in 1..=REST_ROTS as u32 {
+            let b = (k - 1) * 9;
+            let rf: Vec<f32> = (0..9).map(|j| t[((b + j) / 4) as usize][((b + j) % 4) as usize]).collect();
+            let m = Mat3::from_cols(Vec3::new(rf[0], rf[1], rf[2]), Vec3::new(rf[3], rf[4], rf[5]), Vec3::new(rf[6], rf[7], rf[8]));
+            assert!(mat3_bits_eq(&m, &rots[k as usize - 1]));
+        }
+    }
+
+    /// Every car on the disc built with the turn and without (`rest_index` as MCLA_DENT_TURN_OLD=1): a mesh whose
+    /// rest rotation is the identity, every traffic car's mesh, and every vertex field but the normal are bit for bit
+    /// the same; a turned mesh's normal is `rest_mark(old, k)` with k its table entry; at most REST_ROTS a car.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn only_rotated_meshes_change() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let assets = crate::assets::Assets::new(&dir);
+        let root = std::path::Path::new(&dir).join("resources/vehicle");
+        let mut cars: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.path())
+            .filter(|p| p.is_dir() && p.file_name().map_or(false, |n| { let n = n.to_string_lossy(); n.starts_with("vp_") || n.starts_with("va_") })).collect();
+        cars.sort();
+        let (mut ncars, mut meshes, mut same, mut turned, mut vturned, mut vall, mut tabs, mut maxt) = (0, 0, 0, 0, 0usize, 0usize, 0, 0);
+        for p in cars {
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            let Ok(car) = vehicle_model::load_car(&assets, &p) else { continue };
+            REST_TEST_OLD.with(|c| c.set(true));
+            let old = Vehicles::prep_car(&car, &p, &CarConfig::default());
+            REST_TEST_OLD.with(|c| c.set(false));
+            let new = Vehicles::prep_car(&car, &p, &CarConfig::default());
+            assert!(old.rest_rot.is_empty());
+            assert!(new.rest_rot.len() <= REST_ROTS, "{name}");
+            if name.starts_with("va_") {
+                assert!(new.rest_rot.is_empty(), "{name}");
+            }
+            for (i, r) in new.rest_rot.iter().enumerate() {
+                assert!(!mat3_bits_eq(r, &Mat3::IDENTITY));
+                assert!(new.rest_rot[..i].iter().all(|q| !mat3_bits_eq(q, r)), "{name}");
+            }
+            tabs += new.rest_rot.len();
+            maxt = maxt.max(new.rest_rot.len());
+            assert_eq!(old.meshes.len(), new.meshes.len(), "{name}");
+            for (a, b) in old.meshes.iter().zip(&new.meshes) {
+                let geos = [(Some(&a.geo), Some(&b.geo)), (a.geo_alt.as_ref(), b.geo_alt.as_ref())];
+                let mut ks = std::collections::BTreeSet::new();
+                for (ga, gb) in geos {
+                    let (Some(ga), Some(gb)) = (ga, gb) else { assert!(ga.is_none() && gb.is_none(), "{name}"); continue };
+                    assert_eq!(ga.indices, gb.indices, "{name}");
+                    assert_eq!(ga.verts.len(), gb.verts.len(), "{name}");
+                    for (va, vb) in ga.verts.iter().zip(&gb.verts) {
+                        vall += 1;
+                        let mut vb2 = *vb;
+                        vb2.normal = va.normal;
+                        assert_eq!(bytemuck::bytes_of(va), bytemuck::bytes_of(&vb2), "{name}: not only the normal");
+                        let (na, nb) = (Vec3::from(va.normal), Vec3::from(vb.normal));
+                        if bytemuck::bytes_of(&va.normal) != bytemuck::bytes_of(&vb.normal) {
+                            let (k, _) = shader_decode(nb);
+                            assert!(k >= 1 && k as usize <= new.rest_rot.len(), "{name}: k {k}");
+                            assert_eq!(bytemuck::bytes_of(&rest_mark(na, k).to_array()), bytemuck::bytes_of(&vb.normal), "{name}");
+                            ks.insert(k);
+                            vturned += 1;
+                        } else {
+                            assert!(na.length() < 4.0, "{name}");
+                        }
+                    }
+                }
+                meshes += 1;
+                assert!(ks.len() <= 1, "{name}: one rotation a mesh");
+                if ks.is_empty() { same += 1 } else { turned += 1 }
+            }
+            ncars += 1;
+        }
+        println!("{ncars} cars, {meshes} meshes: {same} unchanged, {turned} turned; vertices {vturned} of {vall}; tables {tabs} (max {maxt})");
+        assert!(ncars > 80 && maxt <= REST_ROTS);
+    }
+
+    /// The original's move against the port's: VS_CarPaint moves the bone-space vertex by d x m (d = normalize(dmgParams
+    /// - restMtx x local)) and skins it with the bone's current matrix C; the port draws the rest-space vertex P =
+    /// restMtx x local moved by R d m with pm = C x restMtx^-1. Same place, on rotations of the kinds the disc's cars
+    /// have (a tilted steering wheel, a flipped bone, any) and random C, local, m; the unturned move is off.
+    #[test]
+    fn turned_move_equals_the_bone_space_move() {
+        let mut s = 11u64;
+        let mut worst = 0.0f32;
+        for i in 0..20_000 {
+            let r = match i % 4 {
+                0 => Mat3::from_rotation_x(1.0 + lcg(&mut s)),
+                1 => Mat3::from_diagonal(Vec3::new(-1.0, 1.0, -1.0)),
+                2 => Mat3::from_rotation_z(lcg(&mut s) * 3.0) * Mat3::from_rotation_y(lcg(&mut s)),
+                _ => Mat3::from_axis_angle(Vec3::new(lcg(&mut s), 1.0, lcg(&mut s)).normalize(), lcg(&mut s) * 6.0),
+            };
+            let rest = Mat4::from_translation(Vec3::new(lcg(&mut s), lcg(&mut s), lcg(&mut s)) - 0.5) * Mat4::from_mat3(r);
+            let cur = Mat4::from_rotation_translation(Quat::from_rotation_y(lcg(&mut s) * 6.0), Vec3::new(lcg(&mut s), 0.3, lcg(&mut s)) * 2.0);
+            let local = Vec3::new(lcg(&mut s), lcg(&mut s), lcg(&mut s)) * 2.0 - 1.0;
+            let dmg = Vec3::new(0.0, 1.3, 0.0);
+            let m = lcg(&mut s) * 0.2;
+            let p = rest.transform_point3(local);
+            let d = (dmg - p).normalize();
+            let orig = cur.transform_point3(local + d * m);
+            let port = (cur * rest.inverse()).transform_point3(p + r * d * m);
+            let unturned = (cur * rest.inverse()).transform_point3(p + d * m);
+            worst = worst.max(orig.distance(port));
+            assert!(orig.distance(port) < 1e-5, "{i}");
+            if i % 4 == 1 {
+                // (a flipped bone: the unturned move is off by twice its level part)
+                assert!((orig.distance(unturned) - 2.0 * m * Vec3::new(d.x, 0.0, d.z).length()).abs() < 1e-5, "{i}");
+            }
+        }
+        println!("worst {worst:e}");
     }
 }

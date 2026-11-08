@@ -539,6 +539,7 @@ struct Object {
     slots: array<vec4<f32>, 5>, // a traffic or parked car's own light slots (F-99357): [0].x = 1 the hour's light second, [0].w = 1 given; [1] / [2] the other slot's direction and colour x strength, [3] / [4] the hour's slot's
     glass_tint: array<vec4<f32>, 9>,   // a car's TintColors by window zone 0 .. 8 (F-50822, damagemap::glass_vars) ...
     glass_bumped: array<vec4<f32>, 9>, // ... and BumpedTintColors, the lamps' lenses'
+    rest_rot: array<vec4<f32>, 27>,    // a set-up car's rest rotations, 9 floats each (vehicles.rs rest_mark)
 };
 @group(3) @binding(0) var<uniform> obj: Object;
 // Which of a car's two light slots holds the lamp first (the hour's light second): a traffic or parked
@@ -1188,6 +1189,11 @@ fn vs_body(in: VsIn) -> VsOut {
         amb_n = normalize(amb_n - (t10 - t00) * tg - (t01 - t00) * cross(tg, amb_n) * wsg);
         if (in.uv2.x < 0.5) { lp = amb_lp; }
     }
+    // (a set-up car's vertex carries its mesh's rest rotation index k in its normal's length: 4 k on top of the
+    // binormal mark 1 / 1.5 / 2 - vehicles.rs `rest_mark`; no other vertex has a length of 4 or more)
+    let nlen = length(in.normal);
+    let rest_k = select(0u, u32(floor(nlen * 0.25)), obj.params.w > 15.5 && !amb_obj);
+    let nlen_b = nlen - 4.0 * f32(rest_k);
     if (obj.params.w > 15.5 && !amb_obj) {
         let pl = length(in.pos);
         let dd = select(vec2<f32>(0.0), in.pos.xz / pl, pl > 1e-6);
@@ -1199,7 +1205,17 @@ fn vs_body(in: VsIn) -> VsOut {
         let dp = select(vec4<f32>(0.0, 1.3, 0.0, 0.2), vec4<f32>(obj.dents[2].xyz, -1.0 - obj.dents[2].w), obj.dents[2].w < -0.5);
         let to = dp.xyz - in.pos;
         if (dot(to, to) > 1e-12) {
-            lp = lp + normalize(to) * (t.r * t.g * dp.w);
+            // (VS_CarPaint adds the move to the bone-space position before skinning (instruction 49), so in the
+            // car's rest space it is turned by restMtx's 3 x 3: the mesh's rest rotation rest_k of obj.rest_rot
+            // (0: none) - vehicles.rs `rest_index`)
+            var dir = normalize(to);
+            if (rest_k > 0u && rest_k <= 12u) {
+                let b = (rest_k - 1u) * 9u;
+                var rf: array<f32, 9>;
+                for (var j = 0u; j < 9u; j = j + 1u) { rf[j] = obj.rest_rot[(b + j) / 4u][(b + j) % 4u]; }
+                dir = mat3x3<f32>(vec3<f32>(rf[0], rf[1], rf[2]), vec3<f32>(rf[3], rf[4], rf[5]), vec3<f32>(rf[6], rf[7], rf[8])) * dir;
+            }
+            lp = lp + dir * (t.r * t.g * dp.w);
         }
         // (o2.w: the scrape, sat(b) x a; o8.y's first factors: sat(r + b) x sat(1 - 2 p.y) - which
         // of the position's values it takes is not certain)
@@ -1224,7 +1240,7 @@ fn vs_body(in: VsIn) -> VsOut {
     // (world.rs marks it: the vertical at a quarter of the length - x 1.5 or x 2 by world::mark_binormal)
     if (dot(in.normal, in.normal) < 0.3 && !(g.params.w > 399.5 && g.params.w < 400.5)) { o.normal = vec3<f32>(0.0); }
     if (amb_obj && !amb_tyre && dot(obj.dents[1], obj.dents[1]) > 0.0 && dot(in.color1.rgb, vec3<f32>(1.0)) > 0.001) { o.normal = normalize((obj.model * vec4<f32>(amb_n, 0.0)).xyz); }
-    o.bflip = clamp(round(2.0 * (length(in.normal) - 1.0)) * 0.5, 0.0, 1.0);
+    o.bflip = clamp(round(2.0 * (nlen_b - 1.0)) * 0.5, 0.0, 1.0);
     o.uv0 = in.uv0;
     o.uv1 = in.uv1;
     o.uv2 = in.uv2;
