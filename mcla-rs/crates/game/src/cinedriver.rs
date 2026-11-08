@@ -645,10 +645,24 @@ pub fn no_driver(scene: &str, label: &str) -> bool {
 /// mover's slot by Cars_AssignIdToSlot): (scene, mover label, car, set-up). REDLIGHT_GH_01_GARAGE_ON_ENTER (0xd1 .. 0x147):
 /// CreateOpponent, LoadOpponent 'CIN_01_vp_chv_camaross_69' at the origin, AddOpponentToWorld, no driver, exhaust and
 /// headlights off, streaming locked in, waits for it to stream, slot 1 (0x221) - the car the mechanic works on.
+/// GARAGE_BEACHES_PAYBACK_ON_ENTER (0x450 .. 0x617; the version GARAGE_BEACHES.xml's BE_PAYBACK_ENTER names - the two
+/// hash-named copies 0x31a79202 / 0xd2b2020c with other cars are named by no mission and no script): for i < 3
+/// CreateOpponent, LoadOpponent(config[i]) at the origin, AddOpponentToWorld, slot i, no driver, exhaust and headlights
+/// off - the cars of the paint booth and the two shop bays. The downtown hangouts load literal set-ups the same way, not
+/// the hookmen's own: HANGOUT_SERIES_DOWNTOWN_HANGOUT_ON_ENTER (0x340 .. 0x3cd, slots 1, 2 at 0x556 / 0x562) and
+/// HANGOUT_PINKSLIP_DOWNTOWN_HANGOUT_ON_ENTER (0x378 .. 0x3fd, slots 1, 2 at 0x583 / 0x58f).
 /// (RACE_GH_06's 'GH_06_0_vp_dsn_280z_75' and the strip garage's 'SH_01_0_vp_nsn_240sx_98' are their hookmen's own
 /// set-ups, brought through the rival.)
-pub const SCENE_SETUPS: &[(&str, &str, &str, &str)] =
-    &[("story/cut_story_hollywood_garage_intro", "repair", "vp_chv_camaross_69", "CIN_01_vp_chv_camaross_69")];
+pub const SCENE_SETUPS: &[(&str, &str, &str, &str)] = &[
+    ("story/cut_story_hollywood_garage_intro", "repair", "vp_chv_camaross_69", "CIN_01_vp_chv_camaross_69"),
+    ("story/cut_story_payback_intro", "paint", "vp_chv_impala_96", "vp_chv_impala_96_garish"),
+    ("story/cut_story_payback_intro", "shop1", "vp_frd_boss302_69", "sh_02_1_vp_frd_boss302_69"),
+    ("story/cut_story_payback_intro", "shop2", "vp_lam_murcielago_06", "vp_lam_murcielago_06"),
+    ("story/cut_story_hangout_series_downtown", "hugo", "vp_chv_cobalt_05", "SH_05_1_vp_chv_cobalt_05"),
+    ("story/cut_story_hangout_series_downtown", "miguel", "vp_dge_charger_06", "GH_25_2_vp_dge_charger_06"),
+    ("story/cut_story_hangout_pinkslip_downtown", "andrew", "vp_mzd_rx8_06", "SH_04_1_vp_mzd_rx8_06"),
+    ("story/cut_story_hangout_pinkslip_downtown", "jin", "vp_nsn_350z_06", "pinkslip_vp_nsn_350z_06"),
+];
 
 /// The fixed set-up's (car, set-up) of the scene's car `label` (`SCENE_SETUPS`).
 pub fn scene_setup(scene: &str, label: &str) -> Option<(&'static str, &'static str)> {
@@ -773,6 +787,11 @@ mod tests {
         // (the garage intro's car under repair: REDLIGHT_GH_01_GARAGE_ON_ENTER's CIN_01 Camaro in slot 1, driverless)
         assert_eq!(scene_setup("story/cut_story_hollywood_garage_intro", "repair"), Some(("vp_chv_camaross_69", "CIN_01_vp_chv_camaross_69")));
         assert_eq!(slot_label("story/cut_story_hollywood_garage_intro", 1), Some("repair"));
+        assert_eq!(scene_setup("story/cut_story_payback_intro", "shop1"), Some(("vp_frd_boss302_69", "sh_02_1_vp_frd_boss302_69")));
+        for (i, l) in ["paint", "shop1", "shop2"].iter().enumerate() {
+            assert_eq!(slot_label("story/cut_story_payback_intro", i as u8), Some(*l));
+            assert!(no_driver("story/cut_story_payback_intro", l) && scene_setup("story/cut_story_payback_intro", l).is_some());
+        }
         assert!(no_driver("story/cut_story_hollywood_garage_intro", "repair"));
         assert_eq!(scene_setup("story/cut_story_race_gh_06", "henry"), None);
         assert!(!no_driver("story/cut_story_race_gh_06", "henry"));
