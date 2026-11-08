@@ -8981,7 +8981,7 @@ impl Game {
                                 prompts = vec![(st("prompt_back", "BACK"), ICON_B), (st("G_Pay_And_Checkout", "PAY AND CHECK OUT"), ICON_A), (st("G_Remove_Item", "REMOVE ITEM"), ICON_X), (st("G_Remove_All_Items", "REMOVE ALL ITEMS"), crate::flash_ui::ICON_Y)];
                             }
                             if self.pick_slot.is_some() && self.paint_pick.is_some() {
-                                prompts = vec![(st("prompt_back", "BACK"), ICON_B), (st("VE_accept_color", "ACCEPT COLOR"), ICON_A), (st("VE_change_color", "CHANGE COLOR"), 11)];
+                                prompts = vec![(st("prompt_back", "BACK"), ICON_B), (st("VE_accept_color", "ACCEPT COLOR"), ICON_A), (st("VE_change_color", "CHANGE COLOR"), 14)];
                             }
                             if self.garage_menu == 12 && self.garage_part.is_none() {
                                 // (DIMENSIONS has BACK alone: reference `g_wh_2`)
@@ -9028,7 +9028,7 @@ impl Game {
                             if self.garage_menu == 3 && self.garage_part.is_none() {
                                 let back = (st("prompt_back", "BACK"), ICON_B);
                                 prompts = if self.paint_pick.is_some() {
-                                    vec![back, (st("VE_accept_color", "ACCEPT COLOR"), ICON_A), (st("VE_change_color", "CHANGE COLOR"), 11)]
+                                    vec![back, (st("VE_accept_color", "ACCEPT COLOR"), ICON_A), (st("VE_change_color", "CHANGE COLOR"), 14)]
                                 } else if self.paint_open.is_some() {
                                     vec![back, (st("VE_accept_color", "ACCEPT COLOR"), ICON_A), (st("VE_edit_color", "EDIT COLOR SLOT"), ICON_X), (st("VE_reset_to_default", "RESET COLOR SLOT"), crate::flash_ui::ICON_Y)]
                                 } else if colour_row {

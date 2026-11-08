@@ -238,7 +238,10 @@ pub struct Player {
     ret: Vec<Value>,
     pub fscommand: Option<FsCommand>,
     accum: f32,
+    /// the CRT rand() state Math.random draws from (F-37931; the original seeds it from the time base, the port from a constant)
     rng: u32,
+    /// RandomNumber's own state (F-24566: a word of its own, 1 at start, never reseeded)
+    rn_seed: u32,
     depth: u32,
     alloc_since_gc: usize,
     pub warnings: Vec<String>,
@@ -267,6 +270,7 @@ impl Player {
             fscommand: None,
             accum: 0.0,
             rng: 0x1234_5678,
+            rn_seed: 1,
             depth: 0,
             alloc_since_gc: 0,
             warnings: Vec::new(),
@@ -416,7 +420,8 @@ impl Player {
             Self::reg_native(m, MATH[5].0, |_, _, a| un(a, 5));
             Self::reg_native(m, MATH[6].0, |_, _, a| un(a, 6));
             Self::reg_native(m, MATH[7].0, |_, _, a| un(a, 7));
-            Self::reg_native(m, "random", |p, _, _| Value::Float(p.random() as f32 / 4_294_967_296.0));
+            // (Math.random, F-81154: rand() times the f32 1/32767 - 1.0 can come out)
+            Self::reg_native(m, "random", |p, _, _| Value::Float(p.random() as f32 * f32::from_bits(0x3800_0100)));
         }
         let key = self.alloc(ObjKind::Script);
         {
@@ -450,11 +455,21 @@ impl Player {
         Self::reg_native(&mut self.registry, name, f);
     }
 
+    /// CRT rand() (F-37931): state x 214013 + 2531011, bits 16..30.
     fn random(&mut self) -> u32 {
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 17;
-        self.rng ^= self.rng << 5;
-        self.rng
+        self.rng = self.rng.wrapping_mul(214013).wrapping_add(2531011);
+        (self.rng >> 16) & 0x7fff
+    }
+
+    /// The RandomNumber action (F-24566): the same step on its own state, then the state's high half as a signed
+    /// 16-bit number, C remainder by n (so it can be negative). n = 0 traps in the original; the port gives 0.
+    fn random_number(&mut self, n: i32) -> i32 {
+        if n == 0 {
+            self.warn("RandomNumber(0)".into());
+            return 0;
+        }
+        self.rn_seed = self.rn_seed.wrapping_mul(214013).wrapping_add(2531011);
+        ((self.rn_seed >> 16) as u16 as i16 as i32) % n
     }
 
     // ----------------------------------------------------------- host API
@@ -1452,8 +1467,8 @@ impl Player {
             }
             0x30 => {
                 let n = self.pop().to_i32();
-                let r = self.random();
-                self.stack.push(Value::Int(if n > 0 { (r % n as u32) as i32 } else { 0 }));
+                let r = self.random_number(n);
+                self.stack.push(Value::Int(r));
             }
             0x32 | 0x36 => {
                 let s = self.pop().to_string();
@@ -1755,6 +1770,18 @@ mod tests {
     fn push_int(code: &mut Vec<u8>, i: i32) {
         code.extend([0x96, 5, 0, 7]);
         code.extend(i.to_le_bytes());
+    }
+
+    /// RandomNumber (F-24566) from its start state 1: the high half of the LCG as a signed 16-bit number, C remainder -
+    /// (1, -1, 6, -268, 0) for n = 10, 100, 7, 1000, 3; Math.random's rand() (F-37931) from the port's seed.
+    #[test]
+    fn random_as_the_original() {
+        let mut p = Player::new(empty_movie());
+        let got: Vec<i32> = [10, 100, 7, 1000, 3].iter().map(|&n| p.random_number(n)).collect();
+        assert_eq!(got, [1, -1, 6, -268, 0]);
+        assert_eq!(p.random_number(0), 0);
+        assert_eq!((0..3).map(|_| p.random()).collect::<Vec<_>>(), [13289, 23359, 19469]);
+        assert_eq!(32767.0 * f32::from_bits(0x3800_0100), 1.0);
     }
 
     /// r = StringExtract(s, index, count) run by the interpreter
