@@ -197,7 +197,9 @@
       const key = row.dataset.dkey;
       const live = d.file !== 'broken' && (d.live_keys || []).includes(key);
       if (live) row.removeAttribute('aria-disabled'); else row.setAttribute('aria-disabled', 'true');
-      row.querySelectorAll('select, button').forEach((c) => { c.disabled = !live; });
+      row.querySelectorAll('select, button, input').forEach((c) => { c.disabled = !live; });
+      // (a text row: show what the game will read; leave the box alone while the player is typing in it)
+      row.querySelectorAll('input.textfield').forEach((i) => { if (document.activeElement !== i) i.value = key === 'game.player_name' ? d.player_name || '' : i.value; });
       row.querySelectorAll('.seg [data-v]').forEach((b) => {
         const on = b.dataset.v === cur[key];
         b.classList.toggle('on', on);
@@ -262,6 +264,15 @@
       b.addEventListener('click', pick);
       b.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } });
     });
+    // player name: only ASCII letters, digits and spaces while typing (the game's own rule, the config crate's
+    // clean_player_name), saved when the box is left or Enter is pressed; the box then shows what was saved
+    const pn = $('.opt[data-dkey="game.player_name"] input.textfield');
+    if (pn) {
+      pn.addEventListener('input', () => { const c = pn.value.replace(/[^A-Za-z0-9 ]/g, ''); if (c !== pn.value) pn.value = c; });
+      const save = async () => { if (!st.display || pn.value.trim().replace(/ +/g, ' ') === (st.display.player_name || '')) { pn.value = st.display ? st.display.player_name || '' : pn.value; return; } await setKey('game.player_name', pn.value); };
+      pn.addEventListener('change', save);
+      pn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); pn.blur(); } });
+    }
     load().catch((e) => Bridge.log('error', 'controls: ' + e));
     loadDisplay().catch((e) => Bridge.log('error', 'display: ' + e));
   }

@@ -33,6 +33,8 @@ pub struct DisplayView {
     intro: &'static str,
     /// `game.language`, the text and subtitles language (the game reads it once at start)
     language: &'static str,
+    /// `game.player_name`, as the game reads it (already cleaned; empty = the game shows PLAYER)
+    player_name: String,
     window_mode: &'static str,
     resolution: String,
     /// the resolutions offered: common sizes up to the chosen monitor's, its own, and the one in the file
@@ -146,6 +148,7 @@ pub fn view(window: &WebviewWindow) -> DisplayView {
         implemented: mcla_config::schema().iter().any(|k| k.key == "display.monitor" && k.implemented),
         intro: l.settings.game.intro.word(),
         language: l.settings.game.language.word(),
+        player_name: l.settings.game.player_name.clone(),
         window_mode: d.window_mode.word(),
         resolution: d.resolution.text(),
         resolutions: res.into_iter().map(|(w, h)| format!("{w}x{h}")).collect(),
@@ -170,7 +173,7 @@ pub fn view(window: &WebviewWindow) -> DisplayView {
 }
 
 /// The rows `set` writes (besides the monitor's own command).
-const LIVE_KEYS: [&str; 17] = ["game.intro", "game.language", "display.window_mode", "display.resolution", "display.vsync", "display.fps_cap", "display.fps_monitor", "display.aa", "display.bloom", "display.dof", "display.motion_blur", "display.texture_filtering", "display.backend", "display.render_scale", "game.shadow_resolution", "game.draw_distance", "game.detail_level"];
+const LIVE_KEYS: [&str; 18] = ["game.intro", "game.language", "game.player_name", "display.window_mode", "display.resolution", "display.vsync", "display.fps_cap", "display.fps_monitor", "display.aa", "display.bloom", "display.dof", "display.motion_blur", "display.texture_filtering", "display.backend", "display.render_scale", "game.shadow_resolution", "game.draw_distance", "game.detail_level"];
 /// Window sizes offered beside the monitor's own (those that fit on it).
 const COMMON_RESOLUTIONS: [(u32, u32); 9] = [(1280, 720), (1366, 768), (1600, 900), (1920, 1080), (2560, 1080), (2560, 1440), (3440, 1440), (3840, 1600), (3840, 2160)];
 /// The caps the game's DISPLAY page steps through (crates/game/src/hooks.rs `FPS_CAPS`).
@@ -183,6 +186,8 @@ fn checked(key: &str, value: &serde_json::Value) -> Result<mcla_config::toml::Va
     Ok(match key {
         "game.intro" => Value::String(mcla_config::Intro::parse(&text()?).ok_or("bad_value")?.word().into()),
         "game.language" => Value::String(mcla_config::Language::parse(&text()?).ok_or("bad_value")?.word().into()),
+        // the name as the game takes it: other characters dropped, spaces trimmed, at most PLAYER_NAME_MAX; empty is allowed (PLAYER)
+        "game.player_name" => Value::String(mcla_config::clean_player_name(&text()?)),
         "display.window_mode" => Value::String(mcla_config::WindowMode::parse(&text()?).ok_or("bad_value")?.word().into()),
         "display.resolution" => Value::String(mcla_config::Resolution::parse(&text()?).ok_or("bad_value")?.text()),
         "display.vsync" => Value::Boolean(value.as_bool().ok_or("bad_value")?),
@@ -299,6 +304,33 @@ mod tests {
         let v = checked("game.language", &json!("german")).unwrap();
         mcla_config::set_key(&path, "game", "language", v).unwrap();
         assert_eq!(mcla_config::Settings::load(&path).settings.game.language.word(), "german");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_player_name_row_saves_what_the_game_will_read() {
+        let v = |t: &str| checked("game.player_name", &json!(t));
+        let s = |t: &str| Ok(mcla_config::toml::Value::String(t.into()));
+        assert_eq!(v("Sock  Master"), s("Sock Master"));
+        assert_eq!(v("  Zo\u{eb}_1! "), s("Zo1"));
+        assert_eq!(v("abcdefghijklmnopqrstuvwxyz"), s("abcdefghijklmno"));
+        assert_eq!(v(""), s(""));
+        assert_eq!(v("   "), s(""));
+        assert_eq!(checked("game.player_name", &json!(7)), Err("bad_value".to_string()));
+        assert!(LIVE_KEYS.contains(&"game.player_name"));
+        assert!(mcla_config::schema().iter().any(|k| k.key == "game.player_name" && k.implemented));
+    }
+
+    #[test]
+    fn the_player_name_is_written_to_the_games_own_key_and_read_back_clean() {
+        let dir = std::env::temp_dir().join(format!("mcla-launcher-playername-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.toml");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(mcla_config::Settings::load(&path).settings.game.player_name, "");
+        let v = checked("game.player_name", &json!("  Hold  My Socks!! ")).unwrap();
+        mcla_config::set_key(&path, "game", "player_name", v).unwrap();
+        assert_eq!(mcla_config::Settings::load(&path).settings.game.player_name, "Hold My Socks");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
