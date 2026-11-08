@@ -967,6 +967,8 @@ pub struct Game {
     pub pick_slot: Option<(usize, Option<[f32; 3]>)>,
     /// the colour picker is up: the custom colour to go back to
     pub paint_pick: Option<Option<[f32; 3]>>,
+    /// the picker last closed by ACCEPT (SaveCustomColor F-53397 runs then), not BACK
+    pub pick_accepted: bool,
     /// a message box that the pause menu shows on its own panel this frame
     pub box_page: Option<crate::flash_ui::MenuPage>,
     /// the road the HUD's info line last named, and for how long
@@ -1612,6 +1614,7 @@ impl Game {
             slot_hsv: [None; 9],
             pick_slot: None,
             paint_pick: None,
+            pick_accepted: false,
             box_page: None,
             info_road: (String::new(), 0.0),
             buy_pending: None,
@@ -7574,9 +7577,11 @@ impl Game {
                     if back {
                         self.paint_hsv = saved;
                         self.paint_pick = None;
+                        self.pick_accepted = false;
                         self.dirty = true;
                     } else if enter {
                         self.paint_pick = None;
+                        self.pick_accepted = true;
                     }
                     (false, false, false, false, false, false)
                 } else if let Some((row, idx, hsv)) = self.paint_open {
@@ -7674,12 +7679,16 @@ impl Game {
                             12 => self.car_x.tint_rgb.filter(|o| o.0 == swatch).map(|o| crate::mc4::to_linear(o.1)),
                             _ => None,
                         };
-                        let from = (if k >= 11 { own.map(|c| paint_rgb_to_hsv([c[0], c[1], c[2], 1.0])) } else if k < 9 { self.slot_hsv[k] } else { self.car_x.int_de_hsv[(k - 9).min(1)] }).unwrap_or_else(|| if k >= 11 { let c = crate::mc4::to_linear(crate::mc4::misc_screen(swatch)); paint_rgb_to_hsv([c[0], c[1], c[2], 1.0]) } else { paint_rgb_to_hsv(PALETTE[swatch % PALETTE.len()]) });
+                        let from = (if k >= 11 { own.map(|c| paint_rgb_to_hsv([c[0], c[1], c[2], 1.0])) } else if k < 9 { self.slot_hsv[k] } else { self.car_x.int_de_hsv[(k - 9).min(1)] }).unwrap_or_else(|| if k >= 11 { let c = crate::mc4::to_linear(self.slot_screen(swatch)); paint_rgb_to_hsv([c[0], c[1], c[2], 1.0]) } else { paint_rgb_to_hsv(PALETTE[swatch % PALETTE.len()]) });
                         self.pick_slot = Some((k.min(12), self.paint_hsv));
                         self.paint_pick = Some(Some(from));
                         self.paint_hsv = Some(from);
                     } else if self.y_hit(ctx) {
                         // RESET COLOR SLOT
+                        // (ResetDefaultColor, kind 2, inline in F-96638: slot k of ColorData back to the table's, then the car takes it)
+                        if k >= 11 {
+                            self.mc4_mut().color_data_reset(swatch);
+                        }
                         match k {
                             11 => self.car_x.neon_rgb = None,
                             12 => self.car_x.tint_rgb = None,
@@ -7720,6 +7729,12 @@ impl Game {
                         11 | 12 => if let Some(h) = self.paint_hsv {
                             let rgb = crate::mc4::to_screen(paint_hsv_to_rgb(h));
                             if k == 11 { self.car_x.neon_rgb = Some((self.neon_color, rgb)); } else { self.car_x.tint_rgb = Some((self.tint_color, rgb)); }
+                            // (ACCEPT: SaveCustomColor F-53397 - the picked colour into the remembered slot of ColorData, so
+                            // every strip shows it there)
+                            if self.pick_accepted {
+                                let slot = if k == 11 { self.neon_color } else { self.tint_color };
+                                self.mc4_mut().color_data_set(slot, rgb);
+                            }
                         },
                         _ if k < 9 => self.slot_hsv[k] = self.paint_hsv,
                         _ => self.car_x.int_de_hsv[(k - 9).min(1)] = self.paint_hsv,
@@ -8721,7 +8736,7 @@ impl Game {
                             let row = |label: String, value: String| crate::flash_ui::MenuRow { label, value, enabled: true, part: None };
                             // (the strip: the original's 40 colours, `mc4::MISC_COLORS`; a colour the record keeps free,
                             // on its swatch - `mc4` CarLive - as its bytes, the record being byte / 255)
-                            let strip: Vec<u32> = crate::mc4::MISC_COLORS.to_vec();
+                            let strip: Vec<u32> = self.color_slots().iter().map(|c| c & 0xFF_FFFF).collect();
                             let free = |c: [f32; 3]| { let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32; b(c[0]) << 16 | b(c[1]) << 8 | b(c[2]) };
                             let swatch = |k: usize, idx: usize, own: Option<(usize, [f32; 3])>| {
                                 let idx = idx % strip.len();

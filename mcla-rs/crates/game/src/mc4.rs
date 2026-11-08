@@ -85,8 +85,47 @@ pub struct Mc4 {
     pub achievements: Vec<String>,
     pub tutorials_shown: Vec<String>,
     pub stats_summary: Extra,
+    /// ColorData: the 40 colour slots every colour strip of the garage shows (0xAARRGGBB as the save holds them: the
+    /// executable's table, `MISC_COLORS`, alpha 0; a slot the colour picker changed 0xFFRRGGBB). A block without it
+    /// (the port's saves before 2026-11-08) takes the table.
+    /// (written only when a slot differs from the table: a block of the table's keeps its old form)
+    #[serde(skip_serializing_if = "is_table_colors")]
+    pub color_data: Vec<u32>,
     #[serde(flatten)]
     pub extra: Extra,
+}
+
+fn is_table_colors(c: &Vec<u32>) -> bool {
+    c.iter().enumerate().all(|(k, w)| MISC_COLORS.get(k) == Some(w))
+}
+
+impl Mc4 {
+    /// ColorData with all 40 slots: a short one (an older port block) filled up from the executable's table.
+    fn color_data_full(&mut self) -> &mut Vec<u32> {
+        while self.color_data.len() < 40 {
+            let k = self.color_data.len();
+            self.color_data.push(MISC_COLORS[k]);
+        }
+        &mut self.color_data
+    }
+
+    /// SaveCustomColor (F-53397): slot k of ColorData = the picked colour after the gamut limit (F-52258,
+    /// `gamut_limit`), 0xFF000000 | R << 16 | G << 8 | B with each channel trunc(f32(c x 255)) (fctiwz of the f32
+    /// product).
+    pub fn color_data_set(&mut self, k: usize, mut rgb: [f32; 3]) {
+        if k < 40 {
+            gamut_limit(&mut rgb);
+            let b = |v: f32| ((v * 255.0f32) as i32 as u32) & 255;
+            self.color_data_full()[k] = 0xFF00_0000 | b(rgb[0]) << 16 | b(rgb[1]) << 8 | b(rgb[2]);
+        }
+    }
+
+    /// ResetDefaultColor (inline in the native dispatcher F-96638): slot k of ColorData = the executable's table.
+    pub fn color_data_reset(&mut self, k: usize) {
+        if k < 40 {
+            self.color_data_full()[k] = MISC_COLORS[k];
+        }
+    }
 }
 
 impl Default for Mc4 {
@@ -110,6 +149,7 @@ impl Default for Mc4 {
             achievements: Vec::new(),
             tutorials_shown: Vec::new(),
             stats_summary: Extra::new(),
+            color_data: MISC_COLORS.to_vec(),
             extra: Extra::new(),
         }
     }
@@ -1806,18 +1846,84 @@ pub const MISC_COLORS: [u32; 40] = [
     0xBFA624, 0xB2AC10, 0x93346F, 0x8C705C, 0x3A0808, 0x8A0B22, 0xAF2613, 0xDF2B12,
 ];
 
-/// A strip's colour as SetMiscColor (F-70456) writes it into the record: each byte x f32(1 / 255), no gamma.
+/// A table colour as SetMiscColor (F-70456) writes it into the record: each byte x f32(1 / 255), no gamma.
 pub fn misc_screen(k: usize) -> [f32; 3] {
-    let c = MISC_COLORS[k % MISC_COLORS.len()];
+    word_screen(MISC_COLORS[k % MISC_COLORS.len()])
+}
+
+/// A colour word (0x??RRGGBB) as SetMiscColor (F-70456) writes it: R = (c >> 16) & 255, G = (c >> 8) & 255,
+/// B = c & 255, each x f32(1 / 255).
+pub fn word_screen(c: u32) -> [f32; 3] {
     let f = 1.0f32 / 255.0;
     [((c >> 16) & 255) as f32 * f, ((c >> 8) & 255) as f32 * f, (c & 255) as f32 * f]
 }
 
+// (the chroma rotation of F-85014 / F-52258, the image's words 0x3F56B31D and 0x3F0B6D77)
+const GAMUT_C: f32 = f32::from_bits(0x3F56_B31D);
+const GAMUT_S: f32 = f32::from_bits(0x3F0B_6D77);
+// (the colour pickers' gamut limit: f32 operands, a fused multiply-add rounded to f64 then to f32 as the original's
+// fmadds runs in the recomp)
+fn fmadds(a: f32, c: f32, b: f32) -> f32 {
+    (a as f64).mul_add(c as f64, b as f64) as f32
+}
+fn fmsubs(a: f32, c: f32, b: f32) -> f32 {
+    (a as f64).mul_add(c as f64, -(b as f64)) as f32
+}
+fn fnmsubs(a: f32, c: f32, b: f32) -> f32 {
+    (-(a as f64).mul_add(c as f64, -(b as f64))) as f32
+}
+
+/// The gamut excess of a colour (F-85014): Y = .299 R + .587 G + .114 B, U = .492 (B - Y), V = .877 (R - Y), the
+/// chroma C = |(V .8387 - U .5446, V .5446 + U .8387)|; Y + C when that is above 1.1, else Y - C when below -0.1,
+/// else 0 (a NaN too).
+pub fn gamut_excess(c: [f32; 3]) -> f32 {
+    let [r, g, b] = c;
+    let y = fmadds(b, 0.114, fmadds(g, 0.587, r * 0.299));
+    let u = (b - y) * 0.492;
+    let v = (r - y) * 0.877;
+    let p = fmsubs(v, GAMUT_C, u * GAMUT_S);
+    let q = fmadds(v, GAMUT_S, u * GAMUT_C);
+    let chroma = (fmadds(q, q, p * p) as f64).sqrt() as f32;
+    let hi = chroma + y;
+    let lo = y - chroma;
+    // (the branches as the PowerPC takes them: ble = not greater, so a NaN falls through to 0)
+    if hi > 1.1 {
+        hi
+    } else if lo < -0.1 {
+        lo
+    } else {
+        0.0
+    }
+}
+
+/// The gamut limit (F-52258), in place: a colour whose excess (`gamut_excess`) is above 1e-4 or below -1e-4 has
+/// its chroma scaled to (1.099 - Y) / C (excess above 0) or (Y + 0.1 - 0.001) / C (else) and is turned back to RGB
+/// through the image's matrix (R = Y + .956 s + .62 t, G = Y - .272 s - .647 t, B = Y - 1.108 s + 1.705 t).
+pub fn gamut_limit(c: &mut [f32; 3]) {
+    let e = gamut_excess(*c);
+    // (bgt above 1e-4, else bge = not below -1e-4 returns: a NaN returns)
+    if !(e > 1.0e-4 || e < -1.0e-4) {
+        return;
+    }
+    let [r, g, b] = *c;
+    let y = fmadds(g, 0.587, fmadds(r, 0.299, b * 0.114));
+    let u = (b - y) * 0.492;
+    let v = (r - y) * 0.877;
+    let p = fmsubs(v, GAMUT_C, u * GAMUT_S);
+    let q = fmadds(v, GAMUT_S, u * GAMUT_C);
+    let chroma = (fmadds(q, q, p * p) as f64).sqrt() as f32;
+    let k = if e > 0.0 { (1.099 - y) / chroma } else { ((y - -0.1) - 0.001) / chroma };
+    let (s, t) = (k * p, k * q);
+    c[1] = fnmsubs(t, 0.647, fnmsubs(s, 0.272, y));
+    c[2] = fmadds(t, 1.705, fnmsubs(s, 1.108, y));
+    c[0] = fmadds(t, 0.62, s * 0.956) + y;
+}
+
 /// The strip's colour nearest a record's colour (the port's menu keeps the swatch beside the record's own colour).
-fn nearest_misc(c: [f32; 3]) -> usize {
+fn nearest_misc(slots: &[u32; 40], c: [f32; 3]) -> usize {
     let mut best = (0usize, f32::MAX);
-    for k in 0..MISC_COLORS.len() {
-        let s = misc_screen(k);
+    for k in 0..slots.len() {
+        let s = word_screen(slots[k]);
         let d = (0..3).map(|i| (s[i] - c[i]) * (s[i] - c[i])).sum::<f32>();
         if d < best.1 {
             best = (k, d);
@@ -1944,6 +2050,22 @@ impl Game {
         Some(m.to_value())
     }
 
+    /// ColorData now (`Mc4::color_data`): the save's 40 slots, the table's where the block has none or fewer.
+    pub fn color_slots(&self) -> [u32; 40] {
+        let mut out = MISC_COLORS;
+        if let Some(m) = &self.mc4 {
+            for (o, c) in out.iter_mut().zip(m.color_data.iter()) {
+                *o = *c;
+            }
+        }
+        out
+    }
+
+    /// Slot k of ColorData as SetMiscColor (F-70456) writes it into the record.
+    pub fn slot_screen(&self, k: usize) -> [f32; 3] {
+        word_screen(self.color_slots()[k % 40])
+    }
+
     /// The block, made if the save had none.
     pub fn mc4_mut(&mut self) -> &mut Mc4 {
         let fresh = self.fresh_game;
@@ -2037,11 +2159,11 @@ impl Game {
         let (hyd, tint_level, neon_on, int_neon) = (self.hydraulics, self.tint_level, self.neon_on, self.int_neon);
         let tint = match x.tint_rgb {
             Some((k, c)) if k == self.tint_color => c,
-            _ => misc_screen(self.tint_color),
+            _ => self.slot_screen(self.tint_color),
         };
         let neon = match x.neon_rgb {
             Some((k, c)) if k == self.neon_color => c,
-            _ => misc_screen(self.neon_color),
+            _ => self.slot_screen(self.neon_color),
         };
         let paint_b = match x.paint_b_rgb {
             Some((k, c)) if k == self.paint_b => c,
@@ -2155,13 +2277,13 @@ impl Game {
         self.car_x.airbags = c.airbags();
         self.tint_level = c.tint_row();
         if let Some(rgb) = c.tint_rgb() {
-            self.tint_color = nearest_misc(rgb);
+            self.tint_color = nearest_misc(&self.color_slots(), rgb);
             self.car_x.tint_rgb = Some((self.tint_color, rgb));
         }
         let (on, rgb) = c.neon_ext();
         self.neon_on = on;
         if let Some(rgb) = rgb {
-            self.neon_color = nearest_misc(rgb);
+            self.neon_color = nearest_misc(&self.color_slots(), rgb);
             self.car_x.neon_rgb = Some((self.neon_color, rgb));
         }
         self.int_neon = c.neon_int();
@@ -2648,7 +2770,7 @@ impl Game {
             // (stock glass and no record: the constructor's glass)
             _ if row == 0 => [0.0, 0.0035, 0.005, 0.372],
             _ => {
-                let c = misc_screen(self.tint_color);
+                let c = self.slot_screen(self.tint_color);
                 [c[0], c[1], c[2], a]
             }
         }
@@ -2672,7 +2794,7 @@ impl Game {
         let rec = self.mc4.as_ref().and_then(|m| m.car(&cur));
         let c = match self.car_x.neon_rgb {
             Some((k, c)) if k == self.neon_color => c,
-            _ => misc_screen(self.neon_color),
+            _ => self.slot_screen(self.neon_color),
         };
         let own = rec.map_or(0.0, |r| r.visual.ExtNeonIntensity.0 as f32);
         let i = if !self.neon_on { 0.0 } else if own > 0.0 { own } else { 1.0 };
@@ -2684,7 +2806,7 @@ impl Game {
     pub fn neon_linear(&self) -> [f32; 3] {
         match self.car_x.neon_rgb {
             Some((k, c)) if k == self.neon_color => to_linear(c),
-            _ => to_linear(misc_screen(self.neon_color)),
+            _ => to_linear(self.slot_screen(self.neon_color)),
         }
     }
 
@@ -13338,6 +13460,51 @@ impl Game {
 #[cfg(test)]
 mod tests {
     /// CHANGE STATE round the 77 plate backgrounds (F-31343): on from plate_ca_00, back from the first to the last.
+
+    /// The colour pickers' gamut limit (F-85014, F-52258) against the original run offline: tools/gamut_reference.py,
+    /// testdata/gamut_ref.txt (8,125 colours: the garage's bytes, random, saturated, corners, out of range, NaN).
+    #[test]
+    fn gamut_limit_matches_the_original() {
+        let f = |w: &str| f32::from_bits(u32::from_str_radix(w, 16).unwrap());
+        let mut n = 0;
+        for line in include_str!("testdata/gamut_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let i: Vec<f32> = i.split(' ').map(f).collect();
+            let o: Vec<u32> = o.split(' ').map(|w| u32::from_str_radix(w, 16).unwrap()).collect();
+            let mut c = [i[0], i[1], i[2]];
+            let e = gamut_excess(c);
+            gamut_limit(&mut c);
+            let got = [e.to_bits(), c[0].to_bits(), c[1].to_bits(), c[2].to_bits()];
+            // (NaN payloads aside: a NaN is a NaN)
+            let same = |g: u32, w: u32| g == w || (f32::from_bits(g).is_nan() && f32::from_bits(w).is_nan());
+            assert!((0..4).all(|k| same(got[k], o[k])), "{line}: got {:08x} {:08x} {:08x} {:08x}", got[0], got[1], got[2], got[3]);
+            n += 1;
+        }
+        assert_eq!(n, 8125);
+    }
+
+    /// ColorData: a block without it takes the executable's table; SaveCustomColor writes 0xFF | trunc(c x 255), a reset
+    /// puts the table's word back; both go through the block's JSON.
+    #[test]
+    fn color_data_slots() {
+        let old = Mc4::from_value(&serde_json::json!({ "container_version": 15 })).unwrap();
+        let mut full = old.clone();
+        assert_eq!(full.color_data_full().as_slice(), &MISC_COLORS[..]);
+        let mut m = Mc4::default();
+        m.color_data_set(3, [1.0, 0.5, 0.2]);
+        // (0.5 x 255 = 127.5 -> 127, 0.2 x 255 = 51.000004 in f32 -> 51)
+        assert_eq!(m.color_data[3], 0xFFFF_7F33);
+        m.color_data_set(40, [1.0; 3]);
+        let back = Mc4::from_value(&m.to_value()).unwrap();
+        assert_eq!(back.color_data[3], 0xFFFF_7F33);
+        assert_eq!(back.color_data[4], MISC_COLORS[4]);
+        let mut m = back;
+        m.color_data_reset(3);
+        assert_eq!(m.color_data[3], MISC_COLORS[3]);
+        let f = 1.0f32 / 255.0;
+        assert_eq!(word_screen(0xFFFF_7F33), [255.0 * f, 127.0 * f, 51.0 * f]);
+    }
+
     #[test]
     fn plate_backgrounds_go_round() {
         assert_eq!(super::plate_bg_step(4, 1, 77), 5);

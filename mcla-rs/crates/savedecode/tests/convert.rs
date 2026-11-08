@@ -114,7 +114,15 @@ fn the_real_saves_convert_to_what_the_python_importer_wrote() {
             };
             let got = convert(&sav, map(serde_json::from_slice(&basejson).unwrap()), &races).unwrap_or_else(|e| panic!("{name}/{base}: {e}"));
             let want: Value = serde_json::from_slice(&reference).unwrap();
-            let got = Value::Object(got.save);
+            let mut got = Value::Object(got.save);
+            // (ColorData, which the Python importer left out: the 40 slots, in every sample save the executable's table)
+            let cd = got["mc4"].as_object_mut().unwrap().remove("color_data").expect("color_data");
+            let want_cd: Vec<u32> = vec![
+                0x000000, 0xFFFFFF, 0xDDD8BC, 0xD8CFA0, 0x010032, 0x10186E, 0x204465, 0x6A777D, 0x85C2E5, 0x524636, 0x6B5945, 0x934C3C, 0x2D1111, 0x6D6164,
+                0x967886, 0x2F4432, 0x4C4900, 0x4D7569, 0x009B7F, 0x2A8400, 0x47484C, 0x595F65, 0x727272, 0x917F63, 0x93908B, 0xADA39A, 0xA3A3A3, 0xD8D8D8,
+                0xE24412, 0xC17A38, 0xE57D32, 0xEDBA36, 0xBFA624, 0xB2AC10, 0x93346F, 0x8C705C, 0x3A0808, 0x8A0B22, 0xAF2613, 0xDF2B12,
+            ];
+            assert_eq!(cd, json!(want_cd), "{name}/{base}: ColorData");
             if got != want {
                 // say where
                 let (g, w) = (got.as_object().unwrap(), want.as_object().unwrap());

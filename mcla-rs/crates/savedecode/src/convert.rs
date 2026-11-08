@@ -297,6 +297,9 @@ pub fn convert(sav: &[u8], base: Map<String, Value>, races: &[String]) -> Result
     let rubber = small::decode_rubberband(c.data("RubberbandMgr"));
     let (favs, favs_removed) = small::decode_favorites(c.data("RaceFavorites"));
     let enable_gps = c.data("enableGps")[0] != 0;
+    // (ColorData: the 40 colour slots every colour strip of the garage shows - the executable's table at first, a slot
+    // edited in the colour picker 0xFFRRGGBB - big-endian words; docs/UI.md "ColorData")
+    let color_data: Vec<u32> = c.data("ColorData").chunks_exact(4).take(40).map(|w| u32::from_be_bytes([w[0], w[1], w[2], w[3]])).collect();
     let lo = c.data("LocalOptions");
     let opt = options::decode(lo);
     let veh = vehicle::decode(lo);
@@ -603,6 +606,7 @@ pub fn convert(sav: &[u8], base: Map<String, Value>, races: &[String]) -> Result
         "options": strip(&opt.options, NOTES),
         "options_unknown": opt.unknown,
         "enable_gps": enable_gps,
+        "color_data": color_data,
         "garage_current_slot": opt.current_slot,
         "garage": garage_json,
         "vehicle_records": strip(&Value::Array(in_use_recs), NOTES),
