@@ -5325,3 +5325,26 @@ mod quarter_weight_tests {
         assert_eq!(n, 6000);
     }
 }
+
+#[cfg(test)]
+mod xf_tests {
+    use glam::Vec3;
+
+    /// The rider x vehicle collide's point transform F-88353 run offline (tools/xf_reference.py): 8,000 frames and
+    /// points, the inputs' w lanes filled with garbage - every word equal to `xf`.
+    #[test]
+    fn xf_matches_the_original() {
+        let h = |x: &str| f32::from_bits(u32::from_str_radix(x, 16).unwrap());
+        let mut n = 0;
+        for line in include_str!("../testdata/xf_ref.txt").lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let c: Vec<f32> = case.split(' ').map(h).collect();
+            let r = |i: usize| Vec3::new(c[3 * i], c[3 * i + 1], c[3 * i + 2]);
+            let got = super::xf(&[r(0), r(1), r(2), r(3)], r(4));
+            let want: Vec<u32> = want.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            assert_eq!(got.to_array().map(f32::to_bits).to_vec(), want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 8000);
+    }
+}
