@@ -3681,6 +3681,8 @@ impl App {
                             log::info!("crash: head-on wipeout at {:.2} s, speed {:.2}, damage {:.3}", self.sim_time, speed, c.state.damage);
                             let now = self.wipe_scale;
                             self.warp_wipe.start(now, 0.0);
+                            // (F-46437: then the player's audio entity vt+36, F-46824)
+                            self.sound.wipeout_warp(c.model.bike);
                         } else if rolled {
                             c.state.damage = (c.state.damage + 0.2).min(1.0);
                         }

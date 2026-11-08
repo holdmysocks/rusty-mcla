@@ -436,6 +436,17 @@ impl Sound {
         self.ignition = 1;
     }
 
+    /// The player's wipeout slow motion starts (F-46437, offline, the local player): its audio entity's vt+36 (F-46824)
+    /// sets +2200 = -1 (no PLAYER_WIPE_OUT from the wreck start's 0.25 s timer, which the port does not have) and,
+    /// unless a speech line plays (+2256 and +2260), asks for PLAYER_WIPE_OUT_TIMEWARP ("PLAYER") on a car, not a bike.
+    /// Not ported: then TAUNT_RACE_BIG_CRASH in a race of more than one racer through the race's +208 speaker (not
+    /// identified).
+    pub fn wipeout_warp(&mut self, bike: bool) {
+        if !self.speech_busy && !bike {
+            self.want_speech = Some("PLAYER_WIPE_OUT_TIMEWARP");
+        }
+    }
+
     /// The player engine's stop after a damage-out (the player's vt+56, F-17073, with 1): the engine sound's stop
     /// (engaudio.rs `stop_engine`: silent, IGNITION_KAPUT_MASTER after 2.25 s) and the DAMAGE_OUT speech request
     /// (F-30989, "PLAYER") unless a speech line plays (+2256 and +2260).
