@@ -400,6 +400,10 @@ pub struct CarInstance {
     pub vinyl_name: String,
     pub vinyl: Option<Arc<wgpu::BindGroup>>,
     vinyl_done: bool,
+    /// The low-res opponent vinyl slot the car took at its set-up (F-60786 -> +6496, F-95508): 0..14, -1 when none
+    /// was free (the car then draws without its livery), `VINYL_SLOT_NONE` before it took one or for a car that
+    /// takes none (the player, who has the hi-res pool, traffic and parked cars, which are not mcCars).
+    vinyl_slot: i8,
     /// the wheels of this car's own set-up (a rival's `.xcc`), where it has one
     pub setup: Option<mcla_formats::rage::simtune::WheelFit>,
     /// a car with no mod value (the player's, a racer whose script gives none: set-up byte +60 = 255): its set-up's
@@ -3492,7 +3496,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, rotor_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, crash: Default::default(), parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), spoiler: WindowCtl::default(), roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), valve: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, rotor_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, crash: Default::default(), parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, vinyl_slot: VINYL_SLOT_NONE, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), spoiler: WindowCtl::default(), roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), valve: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
         self.cars.len() - 1
     }
 
@@ -3910,6 +3914,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// texture per car set-up (stripes, sponsor logos), laid out in the body's unwrap
     /// (first UV set; unpainted-side parts all point at one empty corner texel).
     pub fn assign_vinyls(&mut self, gpu: &mut Gpu, world: &mut World) {
+        self.take_vinyl_slots();
         if !self.cars.iter().any(|c| !c.vinyl_done && !c.vinyl_name.is_empty()) {
             return;
         }
@@ -3931,6 +3936,11 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 if (ratio - model.rim_ratio).abs() > 0.01 {
                     self.cars[i].wheels = self.wheel_set(gpu, world, dir, "tir_car", ratio);
                 }
+            }
+            if self.cars[i].vinyl_slot == -1 {
+                // no low-res slot: the car takes +1016, 0 for a non-player car - no livery
+                self.cars[i].vinyl = None;
+                continue;
             }
             if !self.vinyls.contains_key(&name) {
                 let t_liv = std::time::Instant::now();
@@ -3957,6 +3967,21 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 self.vinyls.insert(name.clone(), bind);
             }
             self.cars[i].vinyl = self.vinyls.get(&name).cloned().flatten();
+        }
+    }
+
+    /// The opponents' low-res vinyl slots (F-95508): every non-player mcCar takes one at its set-up (F-60786 -> +6496)
+    /// whether or not it has a livery - the first of the 15 (`VINYL_SLOTS`, the part library's +24) not in use, -1
+    /// when all are taken - and gives it back when it goes (the mcCar destructor: F-80042 / F-99340). The original
+    /// reuses a slot only once its file is unloaded (+8 & 0x30000000 == 0); here it is free as soon as the car is gone.
+    fn take_vinyl_slots(&mut self) {
+        for i in 0..self.cars.len() {
+            let c = &self.cars[i];
+            if c.vinyl_slot != VINYL_SLOT_NONE || c.is_player || c.is_ambient() || c.parked.is_some() {
+                continue;
+            }
+            let used: Vec<i8> = self.cars.iter().map(|c| c.vinyl_slot).filter(|s| *s >= 0).collect();
+            self.cars[i].vinyl_slot = vinyl_slot_pick(&used);
         }
     }
 
@@ -6845,6 +6870,16 @@ impl Vehicles {
 
 /// A car's exterior neon as the original's mcCar keeps it (docs/reference/carparts/neon_rule.md): the record's
 /// ExtNeonColor (four floats as stored, no colour conversion), ExtNeonIntensity, the flash (car+404) and what follows.
+/// The number of low-res opponent vinyl slots (the part library's count of them, F-95508's +24).
+pub const VINYL_SLOTS: i8 = 15;
+/// `CarInstance::vinyl_slot` before a car took a slot, or for a car that takes none.
+pub const VINYL_SLOT_NONE: i8 = i8::MIN;
+
+/// F-95508: the first slot of `VINYL_SLOTS` that no car uses (its used byte +132[i] is 0), -1 when every one is taken.
+pub fn vinyl_slot_pick(used: &[i8]) -> i8 {
+    (0..VINYL_SLOTS).find(|i| !used.contains(i)).unwrap_or(-1)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExtNeon {
     pub color: [f32; 4],
@@ -8468,6 +8503,20 @@ mod rest_rot_tests {
             }
         }
         println!("worst {worst:e}");
+    }
+}
+
+#[cfg(test)]
+mod vinyl_slot_tests {
+    use super::*;
+    #[test]
+    fn first_free_then_none() {
+        assert_eq!(vinyl_slot_pick(&[]), 0);
+        assert_eq!(vinyl_slot_pick(&[0, 1, 3]), 2);
+        let all: Vec<i8> = (0..15).collect();
+        assert_eq!(vinyl_slot_pick(&all), -1);
+        let freed: Vec<i8> = (0..15).filter(|i| *i != 7).collect();
+        assert_eq!(vinyl_slot_pick(&freed), 7);
     }
 }
 
