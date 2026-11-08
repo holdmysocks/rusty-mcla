@@ -2768,7 +2768,7 @@ impl LooseState {
             let given = solver::island_apply(&bodies, &touches);
             for (k, o) in owners.iter().enumerate() {
                 let b = self.objs[*o].body.as_mut().unwrap();
-                b.jf = b.jf + given[k + 1].0;
+                apply_impulse(b, given[k + 1].0);
                 b.jt = b.jt + given[k + 1].1;
             }
             // (stage R, MCLA_DBG_VEHCON: every contact with a vehicle as it was solved, the numbers' bits -
@@ -3009,8 +3009,7 @@ impl LooseState {
             let pos = xf(&matrix, parent.cg);
             let r = matrix[3] - pos;
             let vel = cross(pb.w, r) + pb.v;
-            body.v = vel;
-            body.p = vel * body.mass;
+            set_velocity(&mut body, vel);
             body.w = pb.w;
             body.l = body.momentum_of(pb.w);
         }
@@ -4244,6 +4243,25 @@ pub struct Amb {
     pub posed: bool,
 }
 
+/// A vector float as the vector unit takes and gives it in flush mode: a denormal is a zero of its sign.
+fn flush(x: f32) -> f32 {
+    if x.is_subnormal() { 0.0f32.copysign(x) } else { x }
+}
+
+/// The body's SetVelocity F-64271 (vfunc 41 of the body class): +272 = v, +304 = v x the mass +192 (vmulfp,
+/// flush mode).
+fn set_velocity(b: &mut PBody, v: Vec3) {
+    let m = flush(b.mass);
+    b.v = v;
+    b.p = Vec3::new(flush(flush(v.x) * m), flush(flush(v.y) * m), flush(flush(v.z) * m));
+}
+
+/// The body's ApplyImpulse F-50175 (vfunc 35): +368 += J (vaddfp, flush mode).
+fn apply_impulse(b: &mut PBody, j: Vec3) {
+    let f = |a: f32, b: f32| flush(flush(a) + flush(b));
+    b.jf = Vec3::new(f(b.jf.x, j.x), f(b.jf.y, j.y), f(b.jf.z, j.z));
+}
+
 /// A constraint between two ambient cars (rage::phConstraint, max distance: F-44049): the
 /// owner (the car that was activated, +3592 .. +3600), its two cars, a point in each one's frame
 /// (+80 / +96) and the length (+160); +164 = 0.6 (F-31401), +320 = 0, +328 = -1 (never
@@ -4805,8 +4823,7 @@ impl LooseState {
         let a = &t.archetype;
         let e = Entry { absent: 0, age: 0.0, cg: self::v(t.cg), mass: a.mass, inv_mass: a.inv_mass, inertia: self::v(a.inertia), inv_inertia: self::v(a.inv_inertia), ..Default::default() };
         let mut body = PBody::new(&matrix, e.cg, &e, a.max_speed, a.max_spin);
-        body.v = v;
-        body.p = v * body.mass;
+        set_velocity(&mut body, v);
         body.w = w;
         body.l = body.momentum_of(w);
         let o = self.objs.len();
@@ -5156,6 +5173,47 @@ pub fn hand_over_pieces(world: &LooseWorld, cars: &mut [CarLevel]) {
 #[cfg(test)]
 mod piece_tests {
     use super::*;
+
+    /// SetVelocity F-64271 and ApplyImpulse F-50175 run offline (tools/body_setters_reference.py, flush mode as the
+    /// SDK sets it, testdata/body_setters_ref.txt): +272, +304 and +368 in x, y and z equal, NaN as NaN. (The
+    /// constraint's mode F-95940 is in the same file: the low two bits 2, the rest kept - every case.)
+    #[test]
+    fn body_setters_match_the_original() {
+        let m = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO];
+        let same = |g: f32, e: u32| g.to_bits() == e || (g.is_nan() && f32::from_bits(e).is_nan());
+        let (mut seen, mut bad) = ([0usize; 3], Vec::new());
+        for line in include_str!("testdata/body_setters_ref.txt").lines() {
+            let (lhs, rhs) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = lhs.split(' ').collect();
+            let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+            let o: Vec<u32> = rhs.split(' ').map(h).collect();
+            let f = |k: usize| f32::from_bits(h(w[k]));
+            let mut b = PBody::new(&m, Vec3::ZERO, &Entry::default(), 1.0, 1.0);
+            let ok = match w[0] {
+                "vel" => {
+                    seen[0] += 1;
+                    b.mass = f(5);
+                    set_velocity(&mut b, Vec3::new(f(1), f(2), f(3)));
+                    [b.v.x, b.v.y, b.v.z].iter().zip(&o[0..3]).all(|(g, e)| same(*g, *e))
+                        && [b.p.x, b.p.y, b.p.z].iter().zip(&o[4..7]).all(|(g, e)| same(*g, *e))
+                }
+                "imp" => {
+                    seen[1] += 1;
+                    b.jf = Vec3::new(f(1), f(2), f(3));
+                    apply_impulse(&mut b, Vec3::new(f(5), f(6), f(7)));
+                    [b.jf.x, b.jf.y, b.jf.z].iter().zip(&o[0..3]).all(|(g, e)| same(*g, *e))
+                }
+                "flag" => {
+                    seen[2] += 1;
+                    o[0] == (h(w[1]) & !3) | 2
+                }
+                k => panic!("{k}"),
+            };
+            if !ok { bad.push(line); }
+        }
+        assert_eq!(seen, [3000, 3000, 500]);
+        assert!(bad.is_empty(), "{} mismatches, first {:?}", bad.len(), &bad[..bad.len().min(3)]);
+    }
 
     /// The rope's normal F-72436, SetMass F-31082 and SetInertia F-58768 run offline
     /// (tools/loose_setters_reference.py, flush mode as the SDK sets it): n and -n, the stretch,
