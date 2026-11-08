@@ -129,33 +129,56 @@ impl PropFx {
     }
 }
 
-/// Does the segment a -> b cross the triangle (v0, v1, v2) (`F-65698`; either side)?
+/// Does the segment a -> b cross the triangle (v0, v1, v2) (`F-65698`; either side)? As the original: the normal
+/// n = e1 x e2 (e1 = v1 - v0, e2 = v2 - v0), t = -((a - v0) . n) / ((b - a) . n) in [0, 1] (the dot products fused,
+/// det exactly 0 refused), the point p = (b - a) t + (a - v0) projected on the plane of the normal's largest axis
+/// (y wins ties, then z over x), u and v the two area ratios times 1 / n on that axis, a hit when neither is below 0
+/// and v + u is not above 1 (so a NaN on the way is a hit). `seg_tri_matches_the_original`.
 fn seg_tri(a: Vec3, b: Vec3, v0: Vec3, v1: Vec3, v2: Vec3) -> bool {
-    let d = b - a;
-    let (e1, e2) = (v1 - v0, v2 - v0);
-    let p = d.cross(e2);
-    let det = e1.dot(p);
-    // (the original tests the determinant against exactly zero, not a threshold)
+    let fma = |x: f32, y: f32, z: f32| (x as f64).mul_add(y as f64, z as f64) as f32;
+    let (e1, e2, w, d) = (v1 - v0, v2 - v0, a - v0, b - a);
+    let n = Vec3::new(-(e2.y * e1.z - e2.z * e1.y), -(e2.z * e1.x - e2.x * e1.z), -(e2.x * e1.y - e2.y * e1.x));
+    let det = fma(d.x, n.x, fma(d.z, n.z, d.y * n.y));
     if det == 0.0 {
         return false;
     }
-    let inv = 1.0 / det;
-    let t0 = a - v0;
-    let u = t0.dot(p) * inv;
-    if !(0.0..=1.0).contains(&u) {
+    let t = -(fma(w.y, n.y, fma(w.x, n.x, w.z * n.z)) / det);
+    if t < 0.0 || t > 1.0 {
         return false;
     }
-    let q = t0.cross(e1);
-    let v = d.dot(q) * inv;
-    if v < 0.0 || u + v > 1.0 {
-        return false;
-    }
-    (0.0..=1.0).contains(&(e2.dot(q) * inv))
+    let p = Vec3::new(d.x * t + w.x, d.y * t + w.y, d.z * t + w.z);
+    let (ax, ay, az) = (n.x.abs(), n.y.abs(), n.z.abs());
+    let (u, v) = if !(ax > ay) && !(az > ay) {
+        let inv = 1.0 / n.y;
+        (fma(e2.x, p.z, -(p.x * e2.z)) * inv, fma(p.x, e1.z, -(e1.x * p.z)) * inv)
+    } else if ax > az {
+        let inv = 1.0 / n.x;
+        (fma(e2.z, p.y, -(e2.y * p.z)) * inv, fma(e1.y, p.z, -(e1.z * p.y)) * inv)
+    } else {
+        let inv = 1.0 / n.z;
+        (fma(p.x, e2.y, -(e2.x * p.y)) * inv, fma(e1.x, p.y, -(p.x * e1.y)) * inv)
+    };
+    !(u < 0.0) && !(v < 0.0) && !(v + u > 1.0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seg_tri_matches_the_original() {
+        // tools/seg_tri_reference.py: F-65698 run offline on 8,000 cases
+        let t = include_str!("testdata/seg_tri_reference.txt");
+        let mut n = 0;
+        for l in t.lines() {
+            let (a, b) = l.split_once(" -> ").unwrap();
+            let w: Vec<f32> = a.split_whitespace().skip(1).map(|x| f32::from_bits(u32::from_str_radix(x, 16).unwrap())).collect();
+            let v = |i: usize| Vec3::new(w[3 * i], w[3 * i + 1], w[3 * i + 2]);
+            assert_eq!(seg_tri(v(0), v(1), v(2), v(3), v(4)), b.trim() == "1", "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 8000);
+    }
 
     #[test]
     fn segment_through_the_underside() {
