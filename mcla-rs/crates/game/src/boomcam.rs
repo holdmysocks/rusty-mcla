@@ -1998,7 +1998,7 @@ pub fn euler_xyz(r: Vec3) -> [Vec3; 3] {
 }
 
 /// The original's dead zone with rescale (F-93983).
-fn dead_zone(v: f32, d: f32) -> f32 {
+pub(crate) fn dead_zone(v: f32, d: f32) -> f32 {
     if v > d {
         (v - d) / (1.0 - d)
     } else if v < -d {

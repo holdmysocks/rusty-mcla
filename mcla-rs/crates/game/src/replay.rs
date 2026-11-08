@@ -463,6 +463,34 @@ impl Mwc {
     }
 }
 
+/// The k-th set bit of a mask, counted from the lowest (F-48190: its bytes from the lowest, a byte's bits from the top down);
+/// -1 when the mask has k or fewer.
+fn kth_bit(mask: u32, k: u32) -> i32 {
+    let mut seen = 0u32;
+    for byte in 0..4 {
+        let b = (mask >> (8 * byte)) & 0xFF;
+        seen += b.count_ones();
+        if seen > k {
+            let mut left = seen - k;
+            for bit in (0..8).rev() {
+                if b & (1 << bit) != 0 {
+                    left -= 1;
+                    if left == 0 {
+                        return (8 * byte + bit) as i32;
+                    }
+                }
+            }
+        }
+    }
+    -1
+}
+
+/// The pad's stick byte as the original reads it (F-63907): (b - 127.5) / 127, within -1 .. 1.
+#[cfg(test)]
+fn stick_byte(b: u8) -> f32 {
+    ((b as f32 - 127.5) * (1.0 / 127.0)).max(-1.0).min(1.0)
+}
+
 /// The camera's turn from its row c (the way it looks away from) and the world's up
 /// (F-97951: a = up x c, b = c x a).
 fn look_rot(c: Vec3) -> Quat {
@@ -675,9 +703,10 @@ impl Director {
             return;
         }
         let p = &mut self.polar;
-        p.pitch = (p.pitch - y * 1.25 * dt).clamp(0.0, 1.256_64);
-        p.yaw += x * 2.0 * dt;
-        p.fov = (p.fov * (1.0 + zoom * dt)).clamp(tune.polar_fov_range[0], tune.polar_fov_range[1]);
+        // (the original's own order: fma(dt * -y, 1.25, pitch), fma(dt * x, 2, yaw), fma(dt, zoom, 1) * lens; the least first, then the most)
+        p.pitch = (dt * -y).mul_add(1.25, p.pitch).max(0.0).min(1.256_637_1);
+        p.yaw = (dt * x).mul_add(2.0, p.yaw);
+        p.fov = (dt.mul_add(zoom, 1.0) * p.fov).max(tune.polar_fov_range[0]).min(tune.polar_fov_range[1]);
     }
 
     /// state 6..17: the place on the car and whether it looks back
@@ -767,8 +796,7 @@ impl Director {
                 mask &= !(1 << self.state);
                 let n = mask.count_ones().max(1);
                 let k = (self.rng.next() & 0x7FFF_FFFF) % n;
-                let mut left = k;
-                self.state = (0..STATES).find(|&s| mask & (1 << s) != 0 && { let hit = left == 0; if !hit { left -= 1 } hit }).unwrap_or(0);
+                self.state = kth_bit(mask, k).max(0) as usize;
                 self.activate(tune, car);
             }
             let t = tries;
@@ -895,10 +923,7 @@ impl Playback {
     /// The right stick (x, y in -1..1) and the triggers (`zoom` = LT - RT): the polar camera
     /// turns and zooms (F-63907: past a dead zone of 0.3).
     pub fn stick(&mut self, x: f32, y: f32, zoom: f32, dt: f32) {
-        let dead = |v: f32| {
-            let v = v.clamp(-1.0, 1.0);
-            if v > 0.3 { (v - 0.3) / 0.7 } else if v < -0.3 { (v + 0.3) / 0.7 } else { 0.0 }
-        };
+        let dead = |v: f32| crate::boomcam::dead_zone(v.max(-1.0).min(1.0), 0.3);
         if let Some(d) = self.director.as_mut() {
             d.polar_stick(&self.tune, dead(x), dead(y), zoom, dt);
         }
@@ -1173,3 +1198,63 @@ mod original_normal_tests {
     }
 }
 
+
+/// The director's small routines against the original's code (tools/replay_director_reference.py, testdata/replay_director_ref.txt):
+/// the shot length F-66204 and the helicopter's zoom timer F-16218 (300 sequences of 12 calls, generator and spare after each),
+/// the k-th set bit F-48190 (4,000 masks) and the polar camera's stick F-63907 (6,000 cases from the pad's bytes).
+#[cfg(test)]
+mod original_director_tests {
+    use super::*;
+
+    fn h(x: &str) -> u32 {
+        u32::from_str_radix(x, 16).unwrap()
+    }
+
+    #[test]
+    fn director_routines_match_the_original() {
+        let (mut len, mut kth, mut pol) = (0, 0, 0);
+        for line in include_str!("testdata/replay_director_ref.txt").lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split(' ').collect();
+            match w[0] {
+                "LEN" | "ZOOM" => {
+                    let mut g = Mwc { x: h(w[1]), c: h(w[2]), spare: None };
+                    let calls = &w[4..];
+                    for (i, row) in b.split(" | ").enumerate() {
+                        let c = [0, 1, 2, 3].map(|j| f32::from_bits(h(calls[4 * i + j])));
+                        let r = g.length(c);
+                        let o: Vec<&str> = row.split(' ').collect();
+                        assert_eq!(r.to_bits(), h(o[0]), "call {i} of {line}");
+                        assert_eq!((g.x, g.c), (h(o[3]), h(o[4])), "generator, call {i} of {line}");
+                        assert_eq!(g.spare.map(f32::to_bits), if o[1] == "1" { Some(h(o[2])) } else { None }, "spare, call {i} of {line}");
+                    }
+                    len += 1;
+                }
+                "KTH" => {
+                    assert_eq!(kth_bit(h(w[1]), h(w[2])), b.parse::<i32>().unwrap(), "{line}");
+                    kth += 1;
+                }
+                "POL" => {
+                    let f: Vec<f32> = w[1..7].iter().map(|x| f32::from_bits(h(x))).collect();
+                    let by: Vec<u8> = w[7..11].iter().map(|x| h(x) as u8).collect();
+                    let mut tune = CamTune::default();
+                    tune.polar_fov_range[0] = f[3];
+                    tune.polar_fov_range[1] = f[4];
+                    let car = CarView { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, top: 1.0 };
+                    let mut d = Director::new(&tune, 1, &car);
+                    d.state = POLAR;
+                    d.polar = Polar { pitch: f[1], yaw: f[2], fov: f[0] };
+                    let dead = |b: u8| crate::boomcam::dead_zone(stick_byte(b), 0.3);
+                    let k = 1.0 / 255.0;
+                    let zoom = (by[2] as f32).mul_add(k, -(by[3] as f32 * k));
+                    d.polar_stick(&tune, dead(by[0]), dead(by[1]), zoom, f[5]);
+                    let o: Vec<u32> = b.split(' ').map(h).collect();
+                    assert_eq!([d.polar.fov.to_bits(), d.polar.pitch.to_bits(), d.polar.yaw.to_bits()], [o[0], o[1], o[2]], "{line}");
+                    pol += 1;
+                }
+                _ => panic!("{line}"),
+            }
+        }
+        assert!(len >= 290 && kth >= 3980 && pol >= 5990, "{len} {kth} {pol}");
+    }
+}
