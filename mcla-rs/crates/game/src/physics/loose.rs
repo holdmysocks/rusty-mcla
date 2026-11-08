@@ -5128,6 +5128,25 @@ pub fn hand_over_pieces(world: &LooseWorld, cars: &mut [CarLevel]) {
 mod piece_tests {
     use super::*;
 
+    /// The type's mass F-25823 run offline (tools/entry_mass_reference.py): 3,000 child lists of
+    /// 0 .. 255, the sum from 0.0 one child after another, every word (NaN as NaN).
+    #[test]
+    fn entry_mass_matches_the_original() {
+        let w = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let mut n = 0;
+        for line in include_str!("../testdata/entry_mass_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let a: Vec<u32> = i.split_whitespace().map(w).collect();
+            let children = a[1..].iter().map(|&m| mcla_formats::rage::fragphys::FragChild { mass: f32::from_bits(m), ..Default::default() }).collect();
+            assert_eq!(a.len() - 1, a[0] as usize);
+            let t = FragType { children, ..Default::default() };
+            let (m, r) = (entry_mass(&t, 0), f32::from_bits(w(o)));
+            assert!(m.to_bits() == w(o) || (m.is_nan() && r.is_nan()), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
+
     /// The inertia floor F-88418 run offline (tools/inertia_floor_reference.py): 5,000 triples
     /// with ties, zeros, negatives, NaN, inf and subnormals, every word.
     #[test]
