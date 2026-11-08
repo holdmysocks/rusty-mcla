@@ -2444,4 +2444,24 @@ mod tests {
         }
         assert_eq!(n, 8000);
     }
+
+    /// F-51707 run offline (tools/across_reference.py): 8,000 axes (random, the axes, lanes at 0.5 and one ulp either
+    /// side, tiny and zero ones, garbage w; NaN compared as NaN, the harness's sign bit being x86's) - every word equal to `across`.
+    #[test]
+    fn across_is_the_originals() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut n = 0;
+        for line in include_str!("testdata/across_ref.txt").lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let c: Vec<f32> = case.split(' ').map(|x| f32::from_bits(h(x))).collect();
+            let (one, two) = want.split_once(" | ").unwrap();
+            let axis = V4([c[0], c[1], c[2], c[3]]);
+            let canon = |w: u32| if f32::from_bits(w).is_nan() { 0x7fc0_0000 } else { w };
+            let got: Vec<u32> = super::across(axis).0.map(f32::to_bits).map(canon).to_vec();
+            let want: Vec<u32> = one.split_whitespace().map(h).map(canon).collect();
+            assert_eq!(got, want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 8000);
+    }
 }

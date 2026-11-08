@@ -844,6 +844,23 @@ mod tests {
         }
     }
 
+    /// The script native's arccosine F-62232 (through the C runtime's F-68873 -> F-11618) run offline
+    /// (tools/acos_reference.py): 8,000 floats (random, 0.5 and +-1 with ulps either side, +-0, tiny, NaN, the
+    /// infinities; NaN compared as NaN, the harness's sign bit being x86's) - the stored float equal to `guest_acos(x) as f32`.
+    #[test]
+    fn guest_acos_is_the_originals() {
+        let mut n = 0;
+        for line in include_str!("testdata/acos_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let x = f32::from_bits(u32::from_str_radix(i, 16).unwrap());
+            let canon = |w: u32| if f32::from_bits(w).is_nan() { 0x7fc0_0000 } else { w };
+            let got = canon((guest_acos(x as f64) as f32).to_bits());
+            assert_eq!(got, canon(u32::from_str_radix(o, 16).unwrap()), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 8000);
+    }
+
     #[test]
     fn guest_atan2_is_the_originals() {
         let mut bad = Vec::new();
