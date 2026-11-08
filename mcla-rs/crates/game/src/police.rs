@@ -603,6 +603,25 @@ fn cmd_block(cmd: u8, hb: bool, block_steer: f32, side: bool, along: f32) -> [u3
     b
 }
 
+/// The cop brain's Idle command handler F-44966 (vt+84; the brain command F-83687 reaches it through F-17363 after resetting the
+/// machine to Idle): the state it asks the machine for (SetNextState F-28114) for the brain's command, and whether it clears
+/// the machine's pending state (+16 = -1, command 0). 1 Stop -> 3 Stopping, 3 -> 1 PullOver, 4 -> 2 Pursuit, 5 -> 4 AlongSide,
+/// 6 -> 5 LeadTarget, 7 -> 7 Search, 8 -> 8 GoToPosition; 2 (Follow) and anything above 8 (unsigned) ask nothing. The ask is
+/// always made from Idle, whose row of the transition table F-77775 allows every state, so it always lands.
+fn idle_ask(cmd: u32) -> (Option<u32>, bool) {
+    match cmd {
+        0 => (None, true),
+        1 => (Some(3), false),
+        3 => (Some(1), false),
+        4 => (Some(2), false),
+        5 => (Some(4), false),
+        6 => (Some(5), false),
+        7 => (Some(7), false),
+        8 => (Some(8), false),
+        _ => (None, false),
+    }
+}
+
 /// The Stop command's parameters on the brain: +688 handbrake mode, +692 the amount, +696 the throttle (taken when >= 0),
 /// +700 the steer (-1000: none).
 #[derive(Clone, Copy, Debug)]
@@ -613,8 +632,8 @@ struct StopParams {
     steer: f32,
 }
 
-/// The overrides the cop's brain state puts over the driver's input each tick (vt slot 15), by the command it is in (+568:
-/// 1 Stopping, 4 Pursuit, 5 AlongSide; the others none); `side_d` is the AlongSide's distance (+712). Returns throttle
+/// The overrides the cop's brain state puts over the driver's input each tick (vt slot 15), by the state its command +568 asks
+/// (`idle_ask`: 1 -> 3 Stopping, 4 -> 2 Pursuit, 5 -> 4 AlongSide; the others' ticks put none); `side_d` is the AlongSide's distance (+712). Returns throttle
 /// (+744), brake (+748), handbrake (+752), steer (+756), as the setters F-50239 / F-39048 / F-10965 clamp them to 0..1
 /// (steer -1..1); -1 (steer -1000) is no override. Pursuit (F-68176): brake 1 when the target stands within fSafeDist, or
 /// it is ahead going the same way within 20 m and the cop is faster. AlongSide (F-33668): moving - the same way, not ahead,
@@ -632,13 +651,13 @@ fn brain_override(cmd: u8, side_d: f32, stop: &StopParams, s: &BrainSees) -> [f3
         if a - 1.0 >= 0.0 { 1.0 } else { a }
     };
     let mut o = [-1.0, -1.0, -1.0, -1000.0];
-    match cmd {
-        4 => {
+    match idle_ask(cmd as u32).0 {
+        Some(2) => {
             if (!s.moving && s.d2 < s.safe * s.safe) || (s.ahead && s.same_dir && s.d2 < 400.0 && s.cspeed > s.tspeed) {
                 o[1] = c01(1.0);
             }
         }
-        5 => {
+        Some(4) => {
             let brake = if s.moving {
                 s.same_dir && !s.ahead && s.cspeed > s.tspeed && (!s.ed78 || { let r = side_d * 1.5; s.d2 > r * r })
             } else {
@@ -649,7 +668,7 @@ fn brain_override(cmd: u8, side_d: f32, stop: &StopParams, s: &BrainSees) -> [f3
                 o[1] = c01(1.0);
             }
         }
-        1 => {
+        Some(3) => {
             if stop.hb {
                 o[2] = c01(stop.amount);
                 if stop.throttle >= 0.0 {
@@ -5352,6 +5371,21 @@ mod tests {
         p.arrest_posted = false;
         p.kind = TacKind::None;
         assert_eq!(p.hud_state(), 0);
+    }
+
+    #[test]
+    fn idle_ask_matches_the_original() {
+        // tools/idle_ask_reference.py: F-44966 for commands 0 - 12 and four large / negative words: the state asked
+        // (-2 none) and the machine's +16 after (-1 cleared, 7 untouched)
+        let mut n = 0;
+        for l in include_str!("testdata/idle_ask_ref.txt").lines() {
+            let v: Vec<i64> = l.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            let (ask, clear) = idle_ask(v[0] as u32);
+            assert_eq!(ask.map_or(-2, |s| s as i64), v[1], "{l}");
+            assert_eq!(if clear { -1 } else { 7 }, v[2], "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 17);
     }
 
     #[test]
