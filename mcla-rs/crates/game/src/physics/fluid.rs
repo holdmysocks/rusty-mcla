@@ -57,9 +57,16 @@ impl Fluid {
                 }
             }
         }
-        let mut f = Fluid { points, damp: tune.damp, tune: tune.clone(), ..Fluid::default() };
-        f.buoyancy = f.start();
+        let mut f = Fluid { points, tune: tune.clone(), ..Fluid::default() };
+        f.init();
         f
+    }
+
+    /// F-62399: the base's copy F-41261 (the tune's damping to +1076, its Buoyancy +8 to +1072),
+    /// then the buoyancy the car starts with over it - so the tune's +8 never shows.
+    fn init(&mut self) {
+        self.damp = self.tune.damp;
+        self.buoyancy = self.start();
     }
 
     /// The buoyancy on entering (F-62399, F-77072): BuoyancyMin when it rises, else BuoyancyMax.
@@ -205,6 +212,32 @@ mod tests {
             f.update(&rows, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, 1000.0, &mut force, &mut torque);
         }
         assert!((f.buoyancy - 0.1).abs() < 1e-7);
+    }
+
+    /// The init F-62399 and the enter F-77072 run offline (tools/fluid_enter_reference.py):
+    /// the buoyancy and damping, the in bit (the other bits of +12 stay), every word.
+    #[test]
+    fn init_and_enter_match_the_original() {
+        let w = |s: &str| u32::from_str_radix(&s.replace('_', ""), 16).unwrap();
+        let f = |s: &str| f32::from_bits(w(s));
+        let mut n = 0;
+        for line in include_str!("../testdata/fluid_enter_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let a: Vec<&str> = i.split_whitespace().collect();
+            let o: Vec<u32> = o.split_whitespace().filter(|x| *x != "|").map(w).collect();
+            let t = FluidTune { damp: f(a[0]), current_scale: 0.0, buoyancy_max: f(a[2]), buoyancy_min: f(a[3]), sink_rate: f(a[4]) };
+            let flags = w(a[6]);
+            let base = Fluid { inside: flags & 1 != 0, buoyancy: f(a[7]), damp: f32::from_bits(0x1234_5678), timer: f(a[5]), tune: t, ..Fluid::default() };
+            let mut fl = base.clone();
+            fl.init();
+            assert_eq!([fl.buoyancy.to_bits(), fl.damp.to_bits()], [o[0], o[1]], "init {line}");
+            let mut fl = base;
+            fl.enter();
+            assert_eq!(o[2] & !1, flags & !1, "{line}");
+            assert_eq!([fl.inside as u32, fl.buoyancy.to_bits()], [o[2] & 1, o[3]], "enter {line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
     }
 
     /// F-84852 with F-87118 and the body's AddForce / AddTorque run offline
