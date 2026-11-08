@@ -1980,7 +1980,8 @@ impl Props {
                 let dist = p.distance(cam);
                 let fade = ((REACH - dist) / 40.0).clamp(0.0, 1.0);
                 let c = COLOURS[state.min(2)];
-                g.lit.push((h.pos + rot * *l, z, c, k as u32));
+                // (the locator as F-39998 sums it from the head's rows)
+                g.lit.push((crate::halo::locator_place(&[rot * Vec3::X, rot * Vec3::Y, z, h.pos], *l), z, c, k as u32));
                 // (the sprites below: MCLA_DEBUG_VIEW=115, the look of before - tuning x 0.16 / x 0.5, 250 m)
                 if near && fade > 0.0 && out.len() < MAX {
                     // (a negative size: shown by day too)

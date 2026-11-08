@@ -376,22 +376,14 @@ impl Tune {
     /// the glow sits 0.3 m behind the locator and its strength goes by how squarely the lamp
     /// faces the camera).
     pub fn signal(&self, w: usize, pos: Vec3, facing: Vec3, color: [f32; 3], cam: Vec3, tan_half_fov: f32) -> Option<Glow> {
-        let p = pos - facing * 0.3;
-        let i = self.signal_intensity[w] * (cam - p).normalize_or_zero().dot(facing).clamp(0.0, 1.0);
-        if i <= 0.001 {
-            return None;
-        }
+        let (p, i) = signal_lamp(pos, facing, cam, self.signal_intensity[w])?;
         self.glow(w, p, color, [self.signal_size[w]; 2], i, true, cam, tan_half_fov)
     }
 
     /// The same lamp's reflection call (F-39998 with refl = 1, siglrefl.rs): the place P (0.3 m
     /// behind the locator), the strength I (as `signal`'s) and rsize = sm_fSignalGlowReflectionSizes x 0.01.
     pub fn signal_reflection(&self, w: usize, pos: Vec3, facing: Vec3, cam: Vec3) -> Option<(Vec3, f32, [f32; 2])> {
-        let p = pos - facing * 0.3;
-        let i = self.signal_intensity[w] * (cam - p).normalize_or_zero().dot(facing).clamp(0.0, 1.0);
-        if i <= 0.001 {
-            return None;
-        }
+        let (p, i) = signal_lamp(pos, facing, cam, self.signal_intensity[w])?;
         Some((p, i, [self.signal_refl[w][0] * 0.01, self.signal_refl[w][1] * 0.01]))
     }
 
@@ -409,6 +401,27 @@ impl Tune {
         let rs = [self.car_refl_size[w][0] / crate::siglrefl::PICTURE.0, self.car_refl_size[w][1] / crate::siglrefl::PICTURE.1];
         Some((pos - Vec3::Y, i * self.car_refl_intensity, rs))
     }
+}
+
+/// A signal head lamp's locator in the world as F-39998 makes it: the head's rows x, y, z and position summed as
+/// the vector unit's four-lane dot does, (1 pos + l.z z) + (l.y y + l.x x), per component.
+pub fn locator_place(rows: &[Vec3; 4], l: Vec3) -> Vec3 {
+    let c = |j: usize| (rows[3][j] + l.z * rows[2][j]) + (l.y * rows[1][j] + l.x * rows[0][j]);
+    Vec3::new(c(0), c(1), c(2))
+}
+
+/// F-39998's glow place and strength: P = the locator - 0.3 x the head's z axis; the strength how squarely the lamp
+/// faces the camera, the unit vector to the camera as the vector unit's estimate and Newton step (0 on the place
+/// itself), the dot summed x (y (z)) with fused adds, held in 0 .. 1 by two `fsel` (NaN gives 0), times `k`
+/// (sm_fSignalGlowIntensitys). None unless more than 0.001. Checked on 4,000 cases against the original's code run
+/// offline (`tools/signal_lamp_reference.py`, test `signal_lamp_matches_the_original`).
+pub fn signal_lamp(pos: Vec3, facing: Vec3, cam: Vec3, k: f32) -> Option<(Vec3, f32)> {
+    use crate::physics::exact;
+    let p = pos - facing * 0.3;
+    let d = exact::dot_xyz(exact::unit_or_zero(cam - p), facing);
+    let a = if d >= 0.0 { d } else { 0.0 };
+    let i = if a - 1.0 >= 0.0 { 1.0 } else { a } * k;
+    (i > 0.001).then_some((p, i))
 }
 
 struct Halo {
@@ -640,6 +653,48 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder) {
     }
     // (the light trails: drawn by the original after the glows, into the same picture)
     crate::trail::draw(gpu, &mut pass);
+}
+
+#[cfg(test)]
+mod signal_lamp_tests {
+    use super::*;
+
+    #[test]
+    fn signal_lamp_matches_the_original() {
+        let t = include_str!("testdata/signal_lamp_reference.txt");
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let f = |x: &str| f32::from_bits(h(x));
+        let lines: Vec<&str> = t.lines().collect();
+        let (mut n, mut calls) = (0, 0);
+        for (k, l) in lines.iter().enumerate() {
+            let Some(c) = l.strip_prefix("CASE ") else { continue };
+            let w: Vec<&str> = c.split_whitespace().collect();
+            let v = |i: usize| Vec3::new(f(w[i]), f(w[i + 1]), f(w[i + 2]));
+            let rows = [v(0), v(4), v(8), v(12)];
+            let t = locator_place(&rows, v(16));
+            let got = signal_lamp(t, rows[2], v(20), f(w[23]));
+            let next = lines.get(k + 1).filter(|x| !x.starts_with("CASE"));
+            match (got, next) {
+                (None, None) => {}
+                (Some((p, i)), Some(x)) => {
+                    let e: Vec<&str> = x.split_whitespace().collect();
+                    let want = [h(e[1]), h(e[2]), h(e[3]), h(e[4])];
+                    assert_eq!([p.x.to_bits(), p.y.to_bits(), p.z.to_bits(), i.to_bits()], want, "{l}");
+                    if h(w[19]) == 1 {
+                        assert_eq!(e[0], "REFL", "{l}");
+                        assert_eq!([(f(w[25]) * 0.01).to_bits(), (f(w[26]) * 0.01).to_bits()], [h(e[5]), h(e[6])], "{l}");
+                    } else {
+                        assert_eq!(e[0], "GLOW", "{l}");
+                        assert_eq!(([h(e[5]), h(e[6]), h(e[7])], e[8]), ([0x3f00_0000, h(w[24]), h(w[24])], "-3"), "{l}");
+                    }
+                    calls += 1;
+                }
+                (g, x) => panic!("{l}: port {g:?}, original {x:?}"),
+            }
+            n += 1;
+        }
+        assert_eq!((n, calls), (4000, 1604));
+    }
 }
 
 #[cfg(test)]
