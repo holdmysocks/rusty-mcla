@@ -3646,6 +3646,14 @@ impl Game {
         self.tip.is_some() && !self.phone_prompt.is_empty()
     }
 
+    /// NEON/WINDOW TINT without its tint rows: ChooseNeonState (F-96638) calls disable (state vtable +80, F-16887) on
+    /// Tint_Closed and Tint_Opacity when the car's name equals "vp_frd_cobra_04", enable (+84, F-90951) otherwise; a
+    /// disabled state is left out of the menu's row list (F-89146) and skipped by up / down (F-23552).
+    pub fn tint_rows_off(&self) -> bool {
+        let raw = self.car_dirs.get(self.current_car).and_then(|p| p.file_name()).map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        raw.split('#').next() == Some("vp_frd_cobra_04")
+    }
+
     pub fn car_name(&self, i: usize) -> String {
         let raw = self.car_dirs.get(i).and_then(|p| p.file_name()).map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         pretty_car_name(&raw)
@@ -7319,7 +7327,9 @@ impl Game {
                     }),
                     // (Colors.sc.xml ExtNeonColorMenu: ExtNeonOptions, ExtNeon_Closed, Tint_Closed, Tint_Opacity -
                     // NEON, NEON COLOR, WINDOW TINT = the tint's colour, TINT OPACITY)
-                    ("NEON/WINDOW TINT", vec![It::RowAs("NEON", neon_row), It::RowAs("NEON COLOR", neon_row + 1), It::RowAs("WINDOW TINT", tint_row + 1), It::RowAs("TINT OPACITY", tint_row)]),
+                    // (the Cobra '04: ChooseNeonState F-96638 disables Tint_Closed and Tint_Opacity, which leaves them out of
+                    // the list - `tint_rows_off`)
+                    ("NEON/WINDOW TINT", if self.tint_rows_off() { vec![It::RowAs("NEON", neon_row), It::RowAs("NEON COLOR", neon_row + 1)] } else { vec![It::RowAs("NEON", neon_row), It::RowAs("NEON COLOR", neon_row + 1), It::RowAs("WINDOW TINT", tint_row + 1), It::RowAs("TINT OPACITY", tint_row)] }),
                     // (DimensionMenu of Wheels.sc.xml: axle, rim size, tyre profile, tyre width, ride height)
                     ("DIMENSIONS", if self.flash_garage.is_some() { vec![It::RowAs("AXLE", 9970), It::RowAs("RIMS SIZE", rim_row), It::RowAs("TIRE PROFILE", 9971), It::RowAs("TIRE WIDTH", 9972), It::RowAs("RIDE HEIGHT", 9973)] } else { vec![It::RowAs("RIMS SIZE", rim_row)] }),
                     // (Hydraulics.sc.xml: a flat page like the paint shop's. The port has the
@@ -8784,9 +8794,11 @@ impl Game {
                             rows = vec![
                                 row(st("G_ExtNeon", "NEON"), choice_list(if self.neon_on { 0 } else { 1 }, &[st("on", "ON"), st("G_Off", "OFF")])),
                                 row(st("G_ExtNeonColor", "NEON COLOR"), swatch(11, self.neon_color, self.car_x.neon_rgb)),
-                                row(st("G_TintColor", "WINDOW TINT"), swatch(12, self.tint_color, self.car_x.tint_rgb)),
-                                row(st("G_TintTransparency", "TINT OPACITY"), choice_list(self.tint_level.min(9) as usize, &levels)),
                             ];
+                            if !self.tint_rows_off() {
+                                rows.push(row(st("G_TintColor", "WINDOW TINT"), swatch(12, self.tint_color, self.car_x.tint_rgb)));
+                                rows.push(row(st("G_TintTransparency", "TINT OPACITY"), choice_list(self.tint_level.min(9) as usize, &levels)));
+                            }
                         }
                         let paint_page = paint_page || hyd_page || dim_page || int_page || mat_page || neon_page;
                         // (the vinyl editor's menu is one of the flat panels too: reference `t45`)
