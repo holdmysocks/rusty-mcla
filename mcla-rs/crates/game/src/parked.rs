@@ -627,7 +627,7 @@ impl Vehicles {
     }
 
     /// In the system's ambient car list (list 0): riding traffic and parked cars.
-    fn ambient_listed(&self, i: usize) -> bool {
+    pub(super) fn ambient_listed(&self, i: usize) -> bool {
         let c = &self.cars[i];
         !c.is_player && !c.cop && !c.racer && !c.pinned && (c.rail.is_some() || c.parked.is_some())
     }

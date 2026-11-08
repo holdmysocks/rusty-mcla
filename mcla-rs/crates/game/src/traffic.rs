@@ -6805,9 +6805,9 @@ pub struct Spawner {
     /// the region list: roads with their weight (target share), and the junctions' weight
     pub list: Vec<(u32, f32)>,
     pub int_weight: f32,
-    /// the whole region list in its order (M+1392): a road (Some) or a junction (None) and its weight - what a spawn
-    /// try picks from
-    pub order: Vec<(Option<u32>, f32)>,
+    /// the whole region list in its order (M+1392): a road or a junction (by its index in the file) and its weight -
+    /// what a spawn try picks from
+    pub order: Vec<(NavNode, f32)>,
     pub listed: Vec<bool>,
     pub target: f32,
     pub current: u32,
@@ -7373,13 +7373,13 @@ impl Spawner {
             if k < n_roads {
                 let w = self.roads[k].lane_len * 0.01 * self.value(k as u32, false) * speed_factor;
                 self.list.push((k as u32, w));
-                self.order.push((Some(k as u32), w));
+                self.order.push((NavNode::Road(k), w));
                 self.listed[k] = true;
                 target += w;
             } else {
                 let j = k - n_roads;
                 let iw = self.ints.get(j).map_or(0.0, |x| x.1) * 0.01 * t.values[1] * speed_factor;
-                self.order.push((None, iw));
+                self.order.push((NavNode::Junction(self.int_rects[j].index), iw));
                 self.fe_ints.push(j);
                 self.int_weight += iw;
                 target += iw;
@@ -7509,6 +7509,45 @@ impl Vehicles {
     }
 
     /// Is car `i` ambient traffic the spawner owns?
+    /// The cars on each lane's follower list as the region count reads them (rail slot 21, F-90597): every follower
+    /// counted (t0), the ones with a layout item's car (+40) apart (t2). A port car is a follower of its navsys lane
+    /// while it rides it (state 1).
+    fn lane_cars(&self, nav: &NavSys) -> hashbrown::HashMap<usize, (i32, i32)> {
+        let mut m: hashbrown::HashMap<usize, (i32, i32)> = hashbrown::HashMap::new();
+        for c in &self.cars {
+            let Some(r) = c.rail.as_ref().filter(|r| r.state == 1) else { continue };
+            let Some(l) = nav.links.get(r.link) else { continue };
+            let e = m.entry(l.lane).or_default();
+            e.0 += 1;
+            if c.item.is_some() {
+                e.1 += 1;
+            }
+        }
+        m
+    }
+
+    /// A region's cars (its vfunc 10: road F-64556, junction F-31442, both over F-85484 - its lanes, then its child's
+    /// subtree; a road adds its +160, the lane changes it holds, which the port's ambient cars do not make): max(0, t0 -
+    /// t2).
+    fn region_cars(nav: &NavSys, lane_cars: &hashbrown::HashMap<usize, (i32, i32)>, node: NavNode) -> i32 {
+        let lanes = match node {
+            NavNode::Road(r) => nav.records.road_lanes.get(r),
+            NavNode::Junction(j) => nav.junction_lanes.get(j),
+        };
+        let (t0, t2) = lanes.map_or((0, 0), |ls| ls.iter().fold((0, 0), |a, l| lane_cars.get(l).map_or(a, |x| (a.0 + x.0, a.1 + x.1))));
+        (t0 - t2).max(0)
+    }
+
+    /// M+1800 (F-49549, every branch): the listed regions' cars summed in the list's order.
+    fn listed_cars(&self, sp: &Spawner, nav: &NavSys) -> u32 {
+        let lc = self.lane_cars(nav);
+        let mut cur = 0.0f32;
+        for &(node, _) in &sp.order {
+            cur += Self::region_cars(nav, &lc, node) as f32;
+        }
+        cur as u32
+    }
+
     fn ambient_car(&self, i: usize) -> bool {
         let c = &self.cars[i];
         // (a trailer has no behaviour: neither counted nor unspawned on its own)
@@ -7702,7 +7741,7 @@ impl Vehicles {
     fn region_list(&mut self, sp: &mut Spawner, nav: &NavSys, focus: Vec3, view: Vec3, mph: f32, free_fast: bool) {
         if let Some(f) = sp.frontend {
             sp.region_list_frontend(&f);
-            sp.current = (0..self.cars.len()).filter(|&i| self.ambient_car(i) && self.car_road(sp, nav, i).is_some_and(|r| sp.listed[r as usize])).count() as u32;
+            sp.current = self.listed_cars(sp, nav);
             return;
         }
         let t = sp.tune;
@@ -7765,7 +7804,7 @@ impl Vehicles {
             let Some(ri) = ri else {
                 // a junction: its weight (vfunc 11, F-46871: (+1c x 0.01) x the density value 1 x the speed factor)
                 let iw = sp.ints.get(jk).map_or(0.0, |x| x.1) * 0.01 * t.values[1] * speed_factor;
-                sp.order.push((None, iw));
+                sp.order.push((node, iw));
                 sp.int_weight += iw;
                 target += iw;
                 continue;
@@ -7780,7 +7819,7 @@ impl Vehicles {
             }
             let w = r.open_len(nav, &self.race_clearing.off) * 0.01 * sp.value(ri as u32, free_fast) * speed_factor;
             sp.list.push((ri as u32, w));
-            sp.order.push((Some(ri as u32), w));
+            sp.order.push((NavNode::Road(ri), w));
             sp.listed[ri] = true;
             target += w;
         }
@@ -7803,7 +7842,7 @@ impl Vehicles {
             log::info!("traffic region list: perp {} next {} nearest {:?} view {:?} mph {:.1} listed {} of {} roads {:.3} junctions {:.3} target {:.3} box {:?} order {:?}", perp, sp.perp_next, nearest.1.map(|ri| (ri, nearest.0, sp.roads[ri].dir, sp.roads[ri].mid)), view, mph, sp.list.len(), sp.order.len(), sp.list.iter().map(|x| x.1).sum::<f32>(), sp.int_weight, sp.target, sp.region_box, sp.order);
         }
         // the cars on listed roads
-        sp.current = (0..self.cars.len()).filter(|&i| self.ambient_car(i) && self.car_road(sp, nav, i).is_some_and(|r| sp.listed[r as usize])).count() as u32;
+        sp.current = self.listed_cars(sp, nav);
     }
 
     /// F-92144: up to 60 tries, at most min(target - current, 6) cars.
@@ -7866,9 +7905,12 @@ impl Vehicles {
             // a region by weight (a junction wastes the try)
             let mut x = self.rand() * total;
             let mut pick = None;
-            for &(ri, w) in &sp.order {
+            for &(node, w) in &sp.order {
                 if x < w {
-                    pick = ri;
+                    pick = match node {
+                        NavNode::Road(r) => Some(r as u32),
+                        NavNode::Junction(_) => None,
+                    };
                     break;
                 }
                 x -= w;
@@ -8083,70 +8125,69 @@ impl Vehicles {
         }
     }
 
-    /// F-65438: 30 cars looked at, at most one removed.
+    /// F-65438 (offline): 30 tries, at most one car removed (reason 8). Each try draws a car of the manager's list 0
+    /// (F-92034: the shared MWC's index into the ambient cars, riding and parked) and passes over one that is not an
+    /// mcAmbientCar's (obstacle +6 != 2), a proxy (+500 bit 0x20), another peer's (F-23063, offline never), without a
+    /// behaviour (+452: a parked car, a trailer), whose behaviour's slot 19, slot 18 or slot 22 says so, or a layout
+    /// item's (+40). Then: on a navsys lane (F-96472, r23): listed when the lane's region (F-17030: its road, else its
+    /// junction) is on the list (M+1392, or the cutscene's neighbours M+988); off a lane: listed within +16 (the outer
+    /// radius) of M+192. Stuck (r22): the stop line in charge (+420 == 1; its wanted speed +416 is 0) and the speed +412
+    /// below 6.7056 m/s (15 mph), not in the cutscene. r24: its lane held by the race clearing (rail slot 18, F-73172). Listed and not held: kept while younger
+    /// than its least life (+468). Crowded (r28): listed, on a lane of a region whose weight is above 0 and whose cars
+    /// over that weight are above 1.5. (r30, the two script spheres M+5888, needs the bytes M+2105 / 2106 that free
+    /// roam leaves clear.) The seen test F-92805 only for a listed car (the front-end mode: seen = listed). Removed
+    /// when not seen and not listed, held, stuck, crowded or off a lane.
     fn unspawn_frame(&mut self, sp: &Spawner, nav: &NavSys, focus: Vec3, view: Vec3, mph: f32) {
-        let amb: Vec<usize> = (0..self.cars.len()).filter(|&i| self.ambient_car(i)).collect();
-        if amb.is_empty() {
+        let pool: Vec<usize> = (0..self.cars.len()).filter(|&i| self.ambient_listed(i)).collect();
+        if pool.is_empty() {
             return;
         }
         let occ = crate::occluder::city(&sp.data_dir).map(|c| c.select_around(focus + Vec3::Y * 1.75, OCC_RANGE));
-        let mut road_cars: hashbrown::HashMap<u32, u32> = hashbrown::HashMap::new();
-        for &i in &amb {
-            if let Some(r) = self.car_road(sp, nav, i) {
-                *road_cars.entry(r).or_default() += 1;
-            }
-        }
-        let weight: hashbrown::HashMap<u32, f32> = sp.list.iter().copied().collect();
+        let lc = self.lane_cars(nav);
+        let listed_j: hashbrown::HashSet<usize> = sp.order.iter().filter_map(|&(n, _)| match n {
+            NavNode::Junction(j) => Some(j),
+            _ => None,
+        }).collect();
         for _ in 0..30 {
-            let i = amb[(self.rand() * amb.len() as f32) as usize % amb.len()];
+            let i = pool[self.park_rng.index(pool.len() as u32) as usize];
             let c = &self.cars[i];
-            // (a layout item's car is left to the parked unspawner's item branch: F-65438
-            // skips a car whose +40 is set)
-            if c.item.is_some() {
+            let Some(r) = c.rail.as_ref().filter(|r| r.state != 0) else { continue };
+            if r.ty.proxy || c.item.is_some() || r.quiet || r.state == 9 || r.path_referenced {
                 continue;
             }
             let pos = c.state.pos;
-            let Some(r) = c.rail.as_ref() else { continue };
-            if r.state != 1 && r.state != 0 {
-                // (a trailer, state 0, has no behaviour: left to the rule below as before)
-                // not on a navsys lane (F-96472 false: the detached, the physical, the
-                // recovery / passing / backing rails): listed when within +16 (the outer
-                // radius) of the focus, and then kept while seen or young; otherwise removed
-                // (reason 8) - F-65438: remove if !r27 || r24 || stuck || r30 || crowded || !r23
-                let near = Vec3::new(pos.x - focus.x, 0.0, pos.z - focus.z).length() < sp.tune.unspawn_outer;
-                // (the front-end mode: seen = listed, here within the outer radius, A-37258)
-                let seen_now = if sp.frontend.is_some() { near } else { seen(&sp.tune, focus, view, mph, pos, occ.as_ref()) };
-                if near && (self.clock - r.born < r.life || seen_now) {
-                    continue;
+            let on_lane = r.state == 1;
+            let region = if on_lane {
+                sp.road_of(nav, r.link).map(|x| NavNode::Road(x as usize)).or_else(|| nav.links.get(r.link).and_then(|l| nav.lane_junction.get(l.lane).copied().flatten()).map(NavNode::Junction))
+            } else {
+                None
+            };
+            let listed = if on_lane {
+                match region {
+                    Some(NavNode::Road(x)) => sp.listed[x],
+                    Some(NavNode::Junction(j)) => listed_j.contains(&j),
+                    None => false,
                 }
-                if std::env::var("MCLA_TRAFFIC_TRACE").is_ok() {
-                    log::info!("traffic unspawn {} off the lanes (state {}) near {}", c.model.name, r.state, near);
-                }
-                self.cars.remove(i);
-                return;
-            }
-            let road = self.car_road(sp, nav, i);
-            let listed = road.is_some_and(|x| sp.listed[x as usize]);
-            // (the front-end mode: a listed car counts as seen - never removed - A-37258); offline the seen test is asked
-            // only for a listed car (F-65438: r29 = listed, else the network test F-24338 decides) - one on a road off
-            // the list goes even in view
-            if if sp.frontend.is_some() { listed } else { listed && seen(&sp.tune, focus, view, mph, pos, occ.as_ref()) } {
+            } else {
+                Vec3::new(pos.x - focus.x, 0.0, pos.z - focus.z).length_squared() < sp.tune.unspawn_outer * sp.tune.unspawn_outer
+            };
+            let held = on_lane && nav.links.get(r.link).is_some_and(|l| self.race_clearing.off.contains(&l.lane));
+            if listed && !held && self.clock - r.born < r.life {
                 continue;
             }
-            let stuck = if r.physical { c.state.speed() < 6.7056 } else { r.v == 0.0 && r.next.is_none() && r.on == [false; 3] };
-            let crowded = road.is_some_and(|x| weight.get(&x).is_some_and(|w| road_cars.get(&x).copied().unwrap_or(0) as f32 > 1.5 * w));
-            let off_list = match road {
-                Some(_) => !listed,
-                None => Vec3::new(pos.x - focus.x, 0.0, pos.z - focus.z).length() >= sp.tune.unspawn_outer,
-            };
-            let mut remove = off_list || crowded || stuck;
-            if remove && listed && self.clock - r.born < r.life {
-                remove = false;
+            let crowded = listed && on_lane && region.is_some_and(|n| {
+                let w = sp.order.iter().find(|x| x.0 == n).map_or(0.0, |x| x.1);
+                w > 0.0 && (Self::region_cars(nav, &lc, n) as f32) / w > 1.5
+            });
+            let stuck = r.slot == Some(1) && r.v < 6.7056 && !sp.cutscene;
+            let seen_now = if sp.frontend.is_some() { listed } else { listed && seen(&sp.tune, focus, view, mph, pos, occ.as_ref()) };
+            if seen_now {
+                continue;
             }
-            if remove {
+            if !listed || held || stuck || crowded || !on_lane {
                 if std::env::var("MCLA_TRAFFIC_TRACE").is_ok() {
                     let v = pos - focus;
-                    log::info!("traffic unspawn {} dist {:.1} ahead {:.1} age {:.1} off_list {} crowded {} stuck {}", c.model.name, Vec3::new(v.x, 0.0, v.z).length(), v.dot(view), self.clock - r.born, off_list, crowded, stuck);
+                    log::info!("traffic unspawn {} dist {:.1} ahead {:.1} age {:.1} off_list {} crowded {} stuck {} off_lane {}", c.model.name, Vec3::new(v.x, 0.0, v.z).length(), v.dot(view), self.clock - r.born, !listed, crowded, stuck, !on_lane);
                 }
                 self.cars.remove(i);
                 return;
