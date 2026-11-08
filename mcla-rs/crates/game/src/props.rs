@@ -325,6 +325,25 @@ pub fn table_half(v: f32) -> f32 {
     crate::render::half_value((h | (b & 0x8000_0000) >> 16) as u16)
 }
 
+/// A lamp's place as the light table gives it back: the builder F-12750 sets, from the lamps' box (-3467, -31, -2358)
+/// - (2853, 79, 2105.75), 1 / extent and -min / extent for the packer F-49342 (the floats the running game was recorded
+/// with) and min and extent / 65536 for the fetch F-31785. Packer: (p x scale + bias) x 65536 (vector unit, not fused),
+/// clamped to 0 .. 65535 by fsel (NaN -> 65535), cut to a short; fetch: short x step + min. About 0.1 m in x and z.
+pub fn table_place(p: Vec3) -> Vec3 {
+    const SCALE: [u32; 3] = [0x3925_e9f7, 0x3c14_f20a, 0x396a_e8c2];
+    const BIAS: [u32; 3] = [0x3f0c_6f79, 0x3e90_4a7a, 0x3f07_3bbf];
+    const MIN: [f32; 3] = [-3467.0, -31.0, -2358.0];
+    const EXTENT: [f32; 3] = [6320.0, 110.0, 4463.75];
+    let lane = |v: f32, k: usize| {
+        let w = (v * f32::from_bits(SCALE[k]) + f32::from_bits(BIAS[k])) * 65536.0;
+        let c = if 65535.0 - w >= 0.0 { w } else { 65535.0 };
+        let c = if -c >= 0.0 { 0.0 } else { c };
+        let short = (c as i32 as u32 & 0xFFFF) as f32;
+        short * (EXTENT[k] * (1.0 / 65536.0)) + MIN[k]
+    };
+    Vec3::new(lane(p.x, 0), lane(p.y, 1), lane(p.z, 2))
+}
+
 /// The penumbra as the light table gives it back: the packer F-49342 stores byte +22 = (Penumbra x 1/255 + 0.5,
 /// fused) x 255 cut to an integer (fctiwz, the low byte kept); the fetch F-31785 rebuilds (b x 1/255 - 0.5, fused)
 /// x 255. -50 (the street lamps) comes back as -50.5: the recorded cone edge (cos x 2.8058 - 1.0837) is the cone
@@ -356,7 +375,7 @@ mod cone_tan_tests {
     /// The light table's round trip run offline (`tools/lamp_table_reference.py`: the packer F-49342, then the fetch
     /// F-31785 into the set F-25852): 4,000 lamps with special values (signed zeros, half float limits, subnormals,
     /// NaN, huge) - direction, colour, intensity and cone through `table_half`, the penumbra through
-    /// `table_penumbra`, every word equal.
+    /// `table_penumbra`, the place (inside, on and outside the box, NaN) through `table_place`, every word equal.
     #[test]
     fn the_light_tables_round_trip() {
         let h = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
@@ -365,7 +384,8 @@ mod cone_tan_tests {
             let (a, b) = l.split_once(" -> ").unwrap();
             let i: Vec<f32> = a.split_whitespace().skip(1).map(h).collect();
             let o: Vec<u32> = b.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
-            let got: Vec<u32> = (0..8).map(|k| super::table_half(i[k]).to_bits()).chain([super::table_penumbra(i[8]).to_bits()]).collect();
+            let pl = super::table_place(glam::Vec3::new(i[9], i[10], i[11]));
+            let got: Vec<u32> = (0..8).map(|k| super::table_half(i[k]).to_bits()).chain([super::table_penumbra(i[8]).to_bits(), pl.x.to_bits(), pl.y.to_bits(), pl.z.to_bits()]).collect();
             assert_eq!(got, o, "{l}");
             n += 1;
         }

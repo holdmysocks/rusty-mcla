@@ -438,9 +438,9 @@ impl Rain {
             // a length not above 0 = the identity LightMatrix = nothing drawn. MCLA_DEBUG_VIEW=116: 16 m and 2.388 for
             // every lamp, as before.)
             // (the lamp as the light table gives it back - packed by F-49342, fetched by F-31785: half floats for the
-            // direction, colour, cone and intensity, the penumbra a byte (-50 -> -50.5); the place's shorts not yet)
-            let (h, hc, hd) = (crate::props::table_half, l.color, dir);
-            let s = cone_setup([l.pos.x, l.pos.y, l.pos.z, 0.0], [h(hc.x), h(hc.y), h(hc.z), 0.0], [h(hd.x), h(hd.y), h(hd.z), 0.0], h(l.intensity), h(l.cone_deg[0]), crate::props::table_penumbra(l.cone_deg[1]), [0.2, 16.0, edge], [density, fade, colw]);
+            // direction, colour, cone and intensity, the penumbra a byte (-50 -> -50.5), the place shorts on the lamps' box)
+            let (h, hc, hd, at) = (crate::props::table_half, l.color, dir, crate::props::table_place(l.pos));
+            let s = cone_setup([at.x, at.y, at.z, 0.0], [h(hc.x), h(hc.y), h(hc.z), 0.0], [h(hd.x), h(hd.y), h(hd.z), 0.0], h(l.intensity), h(l.cone_deg[0]), crate::props::table_penumbra(l.cone_deg[1]), [0.2, 16.0, edge], [density, fade, colw]);
             let (len, tan) = if old { (16.0, 38.21 / 16.0) } else { (s.len, s.tan) };
             if !(len > 0.0) {
                 continue;
