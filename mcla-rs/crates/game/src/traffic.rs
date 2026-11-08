@@ -547,11 +547,15 @@ pub struct Path {
     /// the follower's phase (+176) and curve speed (+180; 0: taken anew from the curve at the phase)
     pub t: f32,
     ds: f32,
+    /// the attach's owner (holder +16, F-70405's r9): the road whose +160 counts the rail while it is
+    /// attached - the passing rail's and the lane change rail's (the road of the lane the car was on, F-86691 cast to a
+    /// road); none for the recovery, rejoin and backing rails
+    pub owner: Option<usize>,
 }
 
 impl Path {
     fn tcp(rail: TcpRail, speed: f32, end: Option<(usize, f32)>) -> Path {
-        Path { geom: Geom::Tcp(rail), speed, end, reverse: false, t: 0.0, ds: 0.0 }
+        Path { geom: Geom::Tcp(rail), speed, end, reverse: false, t: 0.0, ds: 0.0, owner: None }
     }
 
     /// The rail's length (slot 20: F-62306 for the arc-line-arc rail; the curve's chord length otherwise).
@@ -2863,7 +2867,9 @@ fn passing_rail(r: &mut Rider, env: &Env, me: usize, p: Vec3, h0: Vec3, obst: us
         let f12 = r.v * 0.7;
         if f12 - 4.4704 >= 0.0 { f12 } else { 4.4704 }
     };
-    let pass = Path::tcp(rail, speed, None);
+    let mut pass = Path::tcp(rail, speed, None);
+    // (F-92334's attach: the owner is the current lane's road, F-86691 -> F-75805's cast; the rejoin rail has none)
+    pass.owner = env.nav.links.get(r.link).and_then(|l| env.nav.lane_road(l.lane));
     let back = rejoin_rail(r, env, me, &pass)?;
     Some((pass, back))
 }
@@ -2884,7 +2890,7 @@ pub(crate) fn backing_rail(place: Vec3, row2: Vec3) -> Path {
     let e = vmadd3(row2, 2.0, place);
     let m = vmul3(vadd3(e, place), 0.5);
     let cps = [e, vmul3(vadd3(m, e), 0.5), vmul3(vadd3(m, place), 0.5), place];
-    Path { geom: Geom::Curve(path_curve(&cps)), speed: 4.0, end: None, reverse: true, t: 1.0, ds: 0.0 }
+    Path { geom: Geom::Curve(path_curve(&cps)), speed: 4.0, end: None, reverse: true, t: 1.0, ds: 0.0, owner: None }
 }
 
 /// The turn signals: the render flags' bits 0x20 (F-41231, the lamp state `s[2]`) and 0x10 (F-81289, `s[3]`), for
@@ -6495,7 +6501,7 @@ mod tests {
             let w: Vec<&str> = i.split_whitespace().collect();
             let v3 = |k: usize| Vec3::new(h(w[k]), h(w[k + 1]), h(w[k + 2]));
             let (t, ph, wd, sp, byte) = (h(w[12]), h(w[13]), h(w[14]), h(w[15]), w[16].trim_start_matches('0'));
-            let p = lane_change_path([v3(0), v3(3), v3(6), v3(9)], wd, sp, 1, ph);
+            let p = lane_change_path([v3(0), v3(3), v3(6), v3(9)], wd, sp, 1, ph, None);
             let Geom::Curve(cv) = &p.geom else { panic!("{line}") };
             let (to, end_t) = p.end.unwrap();
             assert_eq!(to, 1);
@@ -6527,7 +6533,7 @@ mod tests {
             let w: Vec<&str> = i.split_whitespace().collect();
             let v3 = |k: usize| Vec3::new(h(w[k]), h(w[k + 1]), h(w[k + 2]));
             let (t, ph, wd, sp, bits) = (h(w[12]), h(w[13]), h(w[14]), h(w[15]), u(w[17]));
-            let p = lane_change_path([v3(0), v3(3), v3(6), v3(9)], wd, sp, 1, ph);
+            let p = lane_change_path([v3(0), v3(3), v3(6), v3(9)], wd, sp, 1, ph, None);
             let Geom::Curve(cv) = &p.geom else { panic!("{line}") };
             let (_, end_t) = p.end.unwrap();
             let cps: Vec<String> = cv.pts.iter().map(|&q| xv(q)).collect();
@@ -7543,12 +7549,22 @@ impl Vehicles {
     /// The cars on each lane's follower list as the region count reads them (rail slot 21, F-90597): every follower
     /// counted (t0), the ones with a layout item's car (+40) apart (t2). A port car is a follower of its navsys lane
     /// while it rides it (state 1).
-    fn lane_cars(&self, nav: &NavSys) -> hashbrown::HashMap<usize, (i32, i32)> {
-        let mut m: hashbrown::HashMap<usize, (i32, i32)> = hashbrown::HashMap::new();
+    fn lane_cars(&self, nav: &NavSys) -> RegionCounts {
+        let mut m = RegionCounts::default();
         for c in &self.cars {
-            let Some(r) = c.rail.as_ref().filter(|r| r.state == 1) else { continue };
+            let Some(r) = c.rail.as_ref() else { continue };
+            // (a road's +160: the rails attached with it as their owner - a passing rail, a lane change rail -, +1 at
+            // the attach F-70405, -1 at the release F-29352)
+            let lc = r.ghost.as_ref().and_then(|g| g.lc.as_ref());
+            for owner in [r.path.as_ref().and_then(|p| p.owner), lc.and_then(|p| p.owner)].into_iter().flatten() {
+                *m.roads.entry(owner).or_default() += 1;
+            }
+            // (on a lane change rail the follower is off its lane's list)
+            if r.state != 1 || lc.is_some() {
+                continue;
+            }
             let Some(l) = nav.links.get(r.link) else { continue };
-            let e = m.entry(l.lane).or_default();
+            let e = m.lanes.entry(l.lane).or_default();
             e.0 += 1;
             if c.item.is_some() {
                 e.1 += 1;
@@ -7558,14 +7574,16 @@ impl Vehicles {
     }
 
     /// A region's cars (its vfunc 10: road F-64556, junction F-31442, both over F-85484 - its lanes, then its child's
-    /// subtree; a road adds its +160, the lane changes it holds, which the port's ambient cars do not make): max(0, t0 -
-    /// t2).
-    fn region_cars(nav: &NavSys, lane_cars: &hashbrown::HashMap<usize, (i32, i32)>, node: NavNode) -> i32 {
+    /// subtree; a road adds its +160 to t0, the rails it owns): max(0, t0 - t2).
+    fn region_cars(nav: &NavSys, counts: &RegionCounts, node: NavNode) -> i32 {
         let lanes = match node {
             NavNode::Road(r) => nav.records.road_lanes.get(r),
             NavNode::Junction(j) => nav.junction_lanes.get(j),
         };
-        let (t0, t2) = lanes.map_or((0, 0), |ls| ls.iter().fold((0, 0), |a, l| lane_cars.get(l).map_or(a, |x| (a.0 + x.0, a.1 + x.1))));
+        let (mut t0, t2) = lanes.map_or((0, 0), |ls| ls.iter().fold((0, 0), |a, l| counts.lanes.get(l).map_or(a, |x| (a.0 + x.0, a.1 + x.1))));
+        if let NavNode::Road(r) = node {
+            t0 += counts.roads.get(&r).copied().unwrap_or(0);
+        }
         (t0 - t2).max(0)
     }
 
@@ -8273,6 +8291,14 @@ impl CrossGrid {
     fn holds(&self, ix: i32, iz: i32) -> bool {
         !self.bounded || (ix >= 0 && ix < self.n[0] && iz >= 0 && iz < self.n[1])
     }
+}
+
+/// The counts a region's vfunc 10 reads: each lane's followers (rail slot 21, F-90597: all, those with a layout item's
+/// car) and each road's attached rails (+160).
+#[derive(Default)]
+struct RegionCounts {
+    lanes: hashbrown::HashMap<usize, (i32, i32)>,
+    roads: hashbrown::HashMap<usize, i32>,
 }
 
 /// F-65438's r30 test: the car at `p` within the junction's length (rect +0x40, the whole of it) of the junction's point
@@ -10785,14 +10811,15 @@ pub fn lane_change_rail(nav: &NavSys, lanes: &Lanes, c: &crate::ghostroute::Chan
     let (p0, d0) = nav.curves.get(c.from as usize)?.eval_pair(c.t);
     let (p1, d1) = nav.curves.get(c.to as usize)?.eval_pair(c.phase);
     let &link = lanes.links.get(c.to as usize)?.first()?;
-    Some(lane_change_path([p0, d0, p1, d1], c.w, rail_speed(nav, link).0, c.to as usize, c.phase))
+    // (the attach's owner: the current lane's road, F-86691 cast to a road)
+    Some(lane_change_path([p0, d0, p1, d1], c.w, rail_speed(nav, link).0, c.to as usize, c.phase, nav.lane_road(c.from as usize)))
 }
 
 /// F-11487's rail from the two lanes' points and derivatives `pd` (P0, D0, P1, D1): the pool's index 0 at `speed`, the
 /// four control points, attached from phase 0 with (`to`, `phase`) as the next rail.
-fn lane_change_path(pd: [Vec3; 4], w: f32, speed: f32, to: usize, phase: f32) -> Path {
+fn lane_change_path(pd: [Vec3; 4], w: f32, speed: f32, to: usize, phase: f32, owner: Option<usize>) -> Path {
     let cps = lane_change_cps(pd[0], pd[1], pd[2], pd[3], w);
-    Path { geom: Geom::Curve(path_curve(&cps)), speed, end: Some((to, phase)), reverse: false, t: 0.0, ds: 0.0 }
+    Path { geom: Geom::Curve(path_curve(&cps)), speed, end: Some((to, phase)), reverse: false, t: 0.0, ds: 0.0, owner }
 }
 
 /// The cruising ghost's place and unit heading: on the lane-change rail its point and unit derivative, else its lane's.
