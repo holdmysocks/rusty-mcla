@@ -6846,6 +6846,11 @@ pub(crate) fn box_t(mph: f32) -> f32 {
     if a - 1.0 >= 0.0 { 1.0 } else { a }
 }
 
+/// The spawn box's centre (F-97927): focus + view x offset, the vector unit's multiply then add (not fused).
+pub(crate) fn box_centre(focus: glam::Vec2, view: glam::Vec2, off: f32) -> glam::Vec2 {
+    view * off + focus
+}
+
 /// Those getters' value of a pair at `t`: fma(t, b - a, a), fused.
 pub(crate) fn box_lerp(p: [f32; 2], t: f32) -> f32 {
     crate::physics::exact::fma(t, p[1] - p[0], p[0])
@@ -7291,7 +7296,7 @@ impl Spawner {
         // (the parked lists' own box, F-97927, at the mode's zero speed and M+324 = 0)
         let vx = glam::Vec2::new(fe.fwd.x, fe.fwd.z).normalize_or(glam::Vec2::NEG_Y);
         let fx = glam::Vec2::new(fe.eye.x, fe.eye.z);
-        self.region_box = (fx + vx * box_lerp(t.box_off, box_t(0.0)), vx, box_lerp(t.box_len, box_t(0.0)), box_lerp(t.box_width, box_t(0.0)));
+        self.region_box = (box_centre(fx, vx, box_lerp(t.box_off, box_t(0.0))), vx, box_lerp(t.box_len, box_t(0.0)), box_lerp(t.box_width, box_t(0.0)));
         let d = fe.amb[3];
         let v = Vec3::new(fe.fwd.x * d, 0.0, fe.fwd.z * d);
         let l = (v.x * v.x + v.z * v.z).sqrt();
@@ -7662,7 +7667,7 @@ impl Vehicles {
         let perp = mph < 50.0 && player_road.is_some_and(|r| sp.roads[r as usize].dir.dot(view).abs() < 0.7071);
         // (F-81783 / F-68633 / F-97927's offset: `box_t`, `box_lerp`)
         let (len, off, width) = if perp { (box_lerp(t.perp_len, k), box_lerp(t.perp_off, k), box_lerp(t.perp_width, k)) } else { (box_lerp(t.box_len, k), box_lerp(t.box_off, k), box_lerp(t.box_width, k)) };
-        let bc = fx + vx * off;
+        let bc = box_centre(fx, vx, off);
         let bh = glam::Vec2::new(len * 0.5, width * 0.5);
         sp.region_box = (bc, vx, len, width);
         let on_freeway = player_road.is_some_and(|r| sp.roads[r as usize].speed >= FREEWAY_SPEED);
@@ -9591,6 +9596,30 @@ impl Vehicles {
             self.remove_layout_item(h);
         }
         self.item_followers_due.retain(|(h, _)| !handles.contains(h));
+    }
+}
+
+#[cfg(test)]
+mod box_centre_tests {
+    /// The spawn box's centre against the original's F-97927 (tools/box_centre_reference.py, 4,000 cases: speeds and the
+    /// clamp's edges, the across-the-road flag, shipped and random tune pairs, views of any length): the centre's x and z
+    /// bits equal (the port's box is flat: y is not kept).
+    #[test]
+    fn box_centre_matches_the_original() {
+        use super::{box_centre, box_lerp, box_t};
+        let f = |w: &str| f32::from_bits(u32::from_str_radix(&w.replace('_', ""), 16).unwrap());
+        let mut n = 0;
+        for line in include_str!("testdata/box_centre_ref.txt").lines() {
+            let (inp, out) = line.split_once(" -> ").unwrap();
+            let c: Vec<&str> = inp.split(' ').collect();
+            let o: Vec<f32> = out.split(' ').map(f).collect();
+            let pair = if c[1] == "00000001" { [f(c[4]), f(c[5])] } else { [f(c[2]), f(c[3])] };
+            let off = box_lerp(pair, box_t(f(c[0])));
+            let got = box_centre(glam::Vec2::new(f(c[9]), f(c[11])), glam::Vec2::new(f(c[6]), f(c[8])), off);
+            assert_eq!((got.x.to_bits(), got.y.to_bits()), (o[0].to_bits(), o[2].to_bits()), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
     }
 }
 
