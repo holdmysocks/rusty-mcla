@@ -1,8 +1,8 @@
 //! The signal lamps' glows in the wet road's reflection picture (work/map2/siglrefl/signal_reflection_rule.md).
 //!
-//! Every lit signal lamp the main glow takes (sub_82739F70 / sub_82739948, the prop manager's bucket 2 with
-//! refl = 1) also adds a rectangle to the list at 0x8287E3B0 (sub_822FB508, at most 96 a frame), drawn into the
-//! reflection picture after its city and sky (sub_822FBF00, render/siglrefl.wgsl):
+//! Every lit signal lamp the main glow takes (F-79347 / F-39998, the prop manager's bucket 2 with
+//! refl = 1) also adds a rectangle to the list at 0x8287E3B0 (F-44648, at most 96 a frame), drawn into the
+//! reflection picture after its city and sky (F-50970, render/siglrefl.wgsl):
 //!   - the lamp's place P (0.3 m behind its locator) mirrored about the horizontal plane through the head's
 //!     origin, projected with the main view's matrix: NDC (x, y, z), z in the D3D 0 .. 1 form;
 //!   - ny = max(normalize(C - P).y, 0), a = the main view's aspect;
@@ -17,7 +17,7 @@ use crate::render::Gpu;
 use glam::{Mat4, Vec3};
 use std::sync::Mutex;
 
-/// most rectangles a frame (sub_822FB508: the count at 0x8287E360 against 96)
+/// most rectangles a frame (F-44648: the count at 0x8287E360 against 96)
 pub const MAX: usize = 96;
 /// the width and height of the picture object the prop lamps' rectangles are sized by (F-28456: seed size x
 /// 1 / its vfuncs 24 and 28, the object the reflection draw takes its target size from); read off the six prop rectangles of hl_L_23.5 (rsize
@@ -40,7 +40,7 @@ pub struct Rect {
     pub col: [f32; 4],
 }
 
-/// The rectangle of one lamp (sub_822FB508 + the draw's part of sub_822FBF00).
+/// The rectangle of one lamp (F-44648 + the draw's part of F-50970).
 /// `view_proj`: the main view's (the port's reverse-Z form); `near`: its near clip; `origin_y`: the
 /// head's origin height; `p`, `i`, `rsize`: `halo::Tune::signal_reflection`; `cam`: the main camera;
 /// `target`: the reflection picture's size in pixels.
@@ -63,11 +63,19 @@ pub fn rect(view_proj: Mat4, near: f32, origin_y: f32, p: Vec3, cam: Vec3, colou
     let s = (1.0 - zc) * 100.0;
     let wx = s * rsize[0];
     let h = s * aspect * (1.0 - ny) * rsize[1];
-    let (mut x0, mut x1, mut y0, mut y1) = (x - wx, x + wx, y - 1.75 * h, y + 0.25 * h);
+    let (x0, x1, y0, y1) = (x - wx, x + wx, y - 1.75 * h, y + 0.25 * h);
     if (x0 < -1.0 && x1 < -1.0) || (x1 > 1.0 && x0 > 1.0) || (y0 < -1.0 && y1 < -1.0) || (y1 > 1.0 && y0 > 1.0) || z > 1.0 || z < 1.0e-7 {
         return None;
     }
-    // (the draw: corners in order, the texture turned with them; at least a pixel's worth across)
+    let (r, u0, v0) = draw_rect([x0, y0, x1, y1], target);
+    Some(Rect { r, z: [c.z / w, strength(i), u0, v0], col: { let c = crate::halo::pack(colour); /* (F-44648 takes the packed word) */ [c[0], c[1], c[2], 1.0] } })
+}
+
+/// The draw's part of a rectangle (F-50970): the corners put in order with the texture turned with them (u at x0, v at
+/// y0 become 1 when swapped), then at least 1 / the target's width (height) across, x1 (y1) moved; the target's size
+/// from the picture's vfuncs 24 / 28 as floats. `draw_rect_matches_the_original`.
+pub fn draw_rect(r: [f32; 4], target: (f32, f32)) -> ([f32; 4], f32, f32) {
+    let [mut x0, mut y0, mut x1, mut y1] = r;
     let (mut u0, mut v0) = (0.0, 0.0);
     if x0 > x1 {
         (x0, x1, u0) = (x1, x0, 1.0);
@@ -75,13 +83,19 @@ pub fn rect(view_proj: Mat4, near: f32, origin_y: f32, p: Vec3, cam: Vec3, colou
     if y0 > y1 {
         (y0, y1, v0) = (y1, y0, 1.0);
     }
-    if x1 - x0 < 1.0 / target.0 {
-        x1 = x0 + 1.0 / target.0;
+    let (mw, mh) = (1.0 / target.0, 1.0 / target.1);
+    if x1 - x0 < mw {
+        x1 = x0 + mw;
     }
-    if y1 - y0 < 1.0 / target.1 {
-        y1 = y0 + 1.0 / target.1;
+    if y1 - y0 < mh {
+        y1 = y0 + mh;
     }
-    Some(Rect { r: [x0, y0, x1, y1], z: [c.z / w, i / DIVISOR, u0, v0], col: { let c = crate::halo::pack(colour); /* (F-44648 takes the packed word) */ [c[0], c[1], c[2], 1.0] } })
+    ([x0, y0, x1, y1], u0, v0)
+}
+
+/// The strength the draw sends: the lamp's I times 1 / [0x828393D4] (the integer 4 as a float).
+pub fn strength(i: f32) -> f32 {
+    i * (1.0 / DIVISOR)
 }
 
 struct State {
@@ -205,6 +219,38 @@ pub fn draw(pass: &mut wgpu::RenderPass<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn draw_rect_matches_the_original() {
+        // tools/rect_draw_reference.py: F-50970 run offline, 600 lists, 12,995 records, 8,047 draws
+        let t = include_str!("testdata/rect_draw_reference.txt");
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut lines = t.lines().peekable();
+        let (mut lists, mut draws) = (0, 0);
+        while let Some(l) = lines.next() {
+            let c: Vec<u32> = l.split_whitespace().skip(1).map(|x| x.parse().unwrap()).collect();
+            let target = (c[0] as f32, c[1] as f32);
+            let recs: Vec<Vec<u32>> = (0..c[2]).map(|_| lines.next().unwrap().split_whitespace().skip(1).map(h).collect()).collect();
+            for q in &recs {
+                let f = |i: usize| f32::from_bits(q[i]);
+                // (a record is drawn when its +24 is above 0)
+                if !(f(0) > 0.0) {
+                    continue;
+                }
+                let d: Vec<u32> = lines.next().unwrap().strip_prefix("DRAW ").unwrap().split_whitespace().map(h).collect();
+                let (r, u0, v0) = draw_rect([f(1), f(2), f(3), f(4)], target);
+                let want = [r[0], r[1], r[2], r[3], f(0), u0, v0, 1.0 - u0, 1.0 - v0];
+                for (k, w) in want.iter().enumerate() {
+                    assert_eq!(w.to_bits(), d[k], "{l} word {k}");
+                }
+                assert_eq!((d[9], d[10], d[11]), (q[5], 0x7E57, strength(f(6)).to_bits()), "{l}");
+                draws += 1;
+            }
+            assert_eq!(lines.next(), Some("END 0"));
+            lists += 1;
+        }
+        assert_eq!((lists, draws), (600, 8047));
+    }
 
     #[test]
     fn the_rectangle_as_decoded() {
