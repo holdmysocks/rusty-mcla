@@ -11500,3 +11500,3091 @@ rate68 3e4ccccd
 = ovrem 0 0 0 0 0 0 7 9 4 8 2 3f2662d0 3f000000 402597bb 1 2 1 1
 ovrem
 rem68 3ff7fe0e
+= stopg 0 0 1 3e800000 0 0 3 1 8 2 4 3f3eda64 3f800000 3fa5e95e 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f3eda64 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 3f1999a5 0 0 2 4 3 5 3 3f688628 3f000000 3fa5452a 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 3fd55546 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f688628 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 1 1 0 0 0 a 4 1 7 5 3f1b4ed3 0 4038aadf 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f1b4ed3 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 2 4 1 1 4 3e6f8178 3f000000 3f530e60 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3e6f8178 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3ec881b1 0 0 4 a 5 5 9 3f18115e 3f000000 3f67d19d 0 2 1 1
+stopg
+submit 0 #0 blend(00000000 40236d11 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f18115e 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 5 6 4 6 8 3fd8a485 3f800000 3f8c5750 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fd8a485 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3e86b74a 0 0 4 2 9 6 7 3ff1799a 0 401efe73 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 40733cd8 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ff1799a 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3f32f4af 0 0 4 a 4 9 9 3ff7b000 0 3f8fff04 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 3fb71b4f 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ff7b000 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 3f6ceee1 0 0 a 8 8 5 2 3f76987b 3f000000 40370244 1 1 1 1
+stopg
+rate44 3f000000
+= stopg 1 0 0 0 0 0 6 1 5 1 7 3cbbfd43 3f000000 3fdad2a4 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3cbbfd43 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 5 6 6 a 1 3f637325 0 40322853 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f637325 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 0 0 0 8 4 3 3 9 3c32403d 0 3f5e61d8 0 2 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3c32403d 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 5 1 3 5 9 3fb98ef8 0 3f6ceb35 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fb98ef8 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3e85c759 0 0 7 a 2 7 a 3f9e27d2 0 4005a06c 1 1 1 0
+stopg
+rate44 00000000
+= stopg 0 0 1 3e2cdf6a 0 0 8 6 3 5 7 3d7ef605 0 402ccb28 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 40bd8cc4 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3d7ef605 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 2 4 4 9 6 3f9746ff 3f800000 3fb7f513 0 3 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f9746ff 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 1 6 2 1 4 3edee020 3f800000 3f9b7a41 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3edee020 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 9 4 a 1 6 3d34fc2d 3f800000 403ad772 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3d34fc2d 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 9 6 a 8 1 3fa30f7e 0 402911e8 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fa30f7e 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 1 5 4 7 4 3fe6e7d3 3f800000 3fa43fc4 1 1 1 1
+stopg
+rate44 3f800000
+= stopg 0 0 1 3dd0ec6d 0 0 9 5 3 4 8 3fbce24e 3f000000 40343679 0 0 1 1
+stopg
+submit 0 #0 blend(00000000 411cd792 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fbce24e 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 9 1 3 6 8 3fa9800d 0 3f45c75f 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fa9800d 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3ddba64b 0 0 4 3 7 3 7 3f7307b0 0 3f7cbeb0 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 41152ede 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f7307b0 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 4 5 1 8 9 3eded021 3f800000 40209ee9 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3eded021 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3e10dd5f 0 0 4 5 9 7 6 3eb354e8 0 4014125f 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 40e2327d 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3eb354e8 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 9 5 6 3 2 3ecee2f7 3f000000 40173b79 0 2 0 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ecee2f7 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 3f631eef 0 0 9 2 7 5 1 3d963e45 3f800000 403c4d2e 0 0 0 1
+stopg
+submit 0 #0 blend(00000000 3f90468f 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3d963e45 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 9 a 6 2 8 3f68d52f 3f800000 3f3824c2 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f68d52f 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 2 5 5 7 8 3f0f528b 0 40234ac5 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f0f528b 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 5 5 2 1 1 3ec5cb77 3f000000 400e439d 0 2 0 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ec5cb77 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 3f69535e 0 0 8 a 9 6 5 3eb11529 3f800000 3fc508c7 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 3f8c705c 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3eb11529 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3f48126e 0 0 a 3 a 2 1 3ff0e1b3 3f000000 403b8f8e 0 1 0 1
+stopg
+submit 0 #0 blend(00000000 3fa3c7f3 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ff0e1b3 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 1 4 7 5 5 3f91cabd 3f800000 4022d4c7 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f91cabd 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 8 8 2 4 1 3d12574e 3f000000 3f0bb3da 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3d12574e 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3f13465e 0 0 1 8 4 1 7 bc11aae1 3f800000 3f33af2f 0 2 1 1
+stopg
+submit 0 #0 blend(00000000 3fde7edb 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 00000000 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 3e121520 0 0 8 4 6 6 a 3feb3567 3f000000 402b26e8 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 40e04fc3 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3feb3567 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3ee978f1 0 0 2 4 9 a 4 3ed030e5 3f000000 3fdefbdb 0 2 1 1
+stopg
+submit 0 #0 blend(00000000 400c59c2 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ed030e5 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 7 1 a 9 5 3ec25f8a 3f800000 3f078239 0 0 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ec25f8a 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 5 5 2 9 3 3fa1e526 3f800000 3fe4b97b 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fa1e526 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 3 1 a 4 3 3f328f58 3f000000 3f94e653 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f328f58 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 2 2 9 a 2 3fd37832 3f000000 3feae3a8 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fd37832 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3f4d59ed 0 0 7 1 5 a 3 3ee8ef3f 3f800000 3fd5b0ec 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 3f9f920b 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ee8ef3f 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 1 2 8 3 4 3f7de3bc 3f800000 3fec2484 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f7de3bc 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 6 9 5 2 6 3fc9a50d 3f800000 3f5b9ac9 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fc9a50d 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 1 1 1 2 1 3fbc3396 3f000000 3fda9fd1 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fbc3396 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 3 1 5 a 8 3fce5f8b 3f800000 401e194c 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fce5f8b 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 3 3 4 5 1 3e16dd35 0 400d5108 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3e16dd35 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3dcae1f1 0 0 8 2 9 5 7 3f919976 3f000000 3f175351 1 1 1 1
+stopg
+rate44 3f000000
+= stopg 1 0 0 0 0 0 6 5 8 a 6 3f9c083d 3f800000 4024d740 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f9c083d 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 8 9 6 7 6 3f9e300a 3f800000 400f9c74 0 0 0 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f9e300a 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 6 5 7 8 2 3f2461fb 0 400236ed 1 1 1 1
+stopg
+rate44 00000000
+= stopg 0 0 1 3f4e8aae 0 0 8 6 1 2 2 3ffbe51b 3f800000 4028ac3c 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 3f9ea698 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ffbe51b 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 1 1 0 0 0 1 6 5 4 3 3fd48b12 0 3f102535 1 1 1 0
+stopg
+rate44 00000000
+= stopg 1 0 1 3f59805d 0 0 4 1 2 8 7 3fcd46f9 0 3f334692 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 3f96a810 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fcd46f9 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3f72aa43 0 0 3 6 2 8 9 3f42b6ca 3f800000 3f0dd747 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 3f8708aa 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f42b6ca 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 2 a 1 9 9 3ec7bfc8 3f000000 3f9788b0 1 1 1 1
+stopg
+rate44 3f000000
+= stopg 0 0 0 0 0 0 6 3 1 3 5 3e5055ea 3f800000 3f72070d 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3e5055ea 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3d83a93c 0 0 7 1 7 3 1 3f7bb136 3f800000 3f1f4acb 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 4178e1a7 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f7bb136 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3f7b40a9 0 0 3 1 6 8 7 3fcab6f4 3f800000 40235741 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 3f826b27 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fcab6f4 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 a 4 1 8 2 3fdffc8e 0 3fbfd890 0 2 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fdffc8e 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 4 5 5 a 1 3f664ad6 0 3fc0dff3 0 3 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f664ad6 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 7 3 1 2 4 3d554ebf 3f000000 400e294f 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3d554ebf 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 0 0 0 8 8 3 9 a 3f810544 0 40170e70 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f810544 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 5 4 5 a 7 3fe3acd7 3f800000 403e3008 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fe3acd7 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 8 3 5 2 8 3f1a39d4 3f800000 3fd773fb 0 2 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f1a39d4 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 1 1 3ebcf1b6 0 0 9 9 1 7 5 3f9ec727 3f000000 400a3563 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 402d6d48 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f9ec727 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 8 2 8 1 6 3d755ad7 0 3f3168c2 0 0 0 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3d755ad7 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3e98999b 0 0 2 7 4 2 1 3fc849a3 3f800000 40273ad3 0 0 1 1
+stopg
+submit 0 #0 blend(00000000 4056bb36 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fc849a3 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 9 2 2 6 8 3fc0644f 3f000000 40016d63 0 2 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fc0644f 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 3 a 2 a 2 3f33cd39 0 3fd5d397 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f33cd39 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3e9ad4f5 0 0 6 7 3 7 9 3f8d69ac 0 3f7d8387 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 4053a2d2 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f8d69ac 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 4 8 4 3 a 3fd4bf28 3f800000 3fe9d1a8 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fd4bf28 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 3e800000 0 0 9 7 2 6 9 3fe00598 3f000000 40350907 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fe00598 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 5 8 5 3 5 3f4b6996 3f800000 401e3ea4 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f4b6996 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 5 3 3 3 9 3f26ee1a 3f000000 401d10f2 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f26ee1a 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 9 a 1 5 8 3f5fe8aa 3f800000 3f0bd322 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f5fe8aa 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 6 6 a 6 3 3f8e3e95 0 3f8dcc9b 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f8e3e95 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 3 4 3 1 2 3ec5175c 3f800000 3fcf3cde 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ec5175c 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 1 1 0 0 0 9 5 6 1 a 3faa16a3 3f000000 40110c80 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3faa16a3 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 3 7 9 5 5 3fc6b0da 0 3f9982ec 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fc6b0da 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 a 3 2 9 8 3fa3a170 3f800000 403fb97c 0 0 0 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fa3a170 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 4 1 1 1 a 3faf4a2b 0 403e87bc 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3faf4a2b 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 1 1 3e800000 0 0 9 3 6 6 3 3fe4caf3 3f000000 3f882a29 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fe4caf3 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 9 6 2 3 a 3ef77848 0 400d916b 0 3 0 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ef77848 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 6 a 6 7 4 3d76d162 0 3fc3ca13 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3d76d162 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 3 2 6 3 7 3f6396cf 3f000000 4022ca24 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f6396cf 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 8 9 1 3 6 3fdff370 3f000000 4026a99e 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fdff370 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 8 2 a a 6 bef08d4f 3f000000 40358bb6 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 00000000 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 9 6 5 5 1 3f42186a 0 402ea797 0 0 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f42186a 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 4 8 7 4 9 3dfba1b0 3f800000 3f9b1409 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3dfba1b0 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 3e800000 0 0 5 3 a 9 a 3eeefb1b 3f000000 4032717d 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3eeefb1b 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3ec892da 0 0 5 8 8 7 9 3f191617 3f800000 40060e07 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 40235f15 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f191617 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 3f7c7c73 0 0 2 1 1 8 3 3f9be5c2 3f800000 3f8620aa 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 3f81c809 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f9be5c2 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3ed694fa 0 0 8 6 a 8 9 3fb1c6d5 0 3fb61af5 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 4018b4cc 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fb1c6d5 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 a 3 7 6 5 3fdaf866 3f800000 3fdfb3d0 0 2 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fdaf866 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 7 4 7 4 8 3f525633 3f000000 3fdacca4 1 3 0 1
+stopg
+rate44 3f000000
+= stopg 1 0 0 0 0 0 4 4 5 7 4 3fd0d946 3f800000 3f5cbaa8 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fd0d946 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 8 5 6 6 a 3f99ad09 3f000000 402683b9 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f99ad09 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 2 2 a 2 7 3f888ced 3f000000 4031973c 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f888ced 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3f10f314 0 0 6 1 1 2 1 3fb0b84a 0 3f749900 0 2 1 1
+stopg
+submit 0 #0 blend(00000000 3fe2109d 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fb0b84a 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 7 a 6 8 a 3ec0bcaf 3f800000 3f4021c1 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ec0bcaf 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 9 6 a 8 3 be849ff1 0 3fa85baa 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 00000000 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 0 0 0 7 9 9 1 5 3f136164 0 402ad5de 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f136164 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 0 0 0 6 4 7 4 a 3ff06343 3f000000 3fdb4ad1 1 2 0 1
+stopg
+rate44 3f000000
+= stopg 0 0 0 0 0 0 6 2 3 9 3 3f42b460 3f000000 3f91d184 0 1 0 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f42b460 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 a 6 3 8 6 3f01712c 3f000000 3fe75bc6 0 0 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f01712c 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 7 8 5 8 5 bb887072 3f800000 3f76d295 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 00000000 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 3e92bc41 0 0 1 1 a 2 a 3fb02353 0 401e320d 1 2 1 0
+stopg
+rate44 00000000
+= stopg 1 0 1 3e639511 0 0 6 a 7 a 8 3fce1902 0 3f81ff95 0 0 1 1
+stopg
+submit 0 #0 blend(00000000 408ffbab 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fce1902 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 1 1 0 0 0 5 7 8 1 3 3ff98276 3f800000 3f724c48 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ff98276 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 6 9 5 5 7 be03b7d5 3f000000 3fd48381 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 00000000 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 3 9 5 5 a 3fe12cb9 0 4001fe73 0 3 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fe12cb9 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 5 2 9 7 1 3dc70896 3f000000 400f31d7 0 0 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3dc70896 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 8 8 8 3 7 3fe30a13 0 3ffd0db8 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fe30a13 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 8 1 7 6 6 3f6068b7 3f000000 3fbeb0f1 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f6068b7 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 5 4 4 9 6 bdf1c86a 0 3f8acf66 0 1 0 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 00000000 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3dd83ebe 0 0 5 a 3 2 9 3f4f1fa5 0 4020c452 1 1 1 0
+stopg
+rate44 00000000
+= stopg 1 0 0 0 0 0 8 7 2 a 1 3ddc4e2a 3f000000 3f85b2b8 1 0 1 1
+stopg
+rate44 3f000000
+= stopg 1 0 0 0 0 0 a 4 5 8 5 3fda8f80 3f000000 3fc91b14 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fda8f80 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 2 9 3 5 9 3f89ece4 3f000000 3ff7accd 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f89ece4 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 3 4 5 2 3 3f47db36 3f800000 401e2a6f 0 3 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f47db36 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 1 8 6 1 8 3f44e82e 3f000000 3fd9e7f3 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f44e82e 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 9 9 2 3 9 3ec893ee 3f000000 401e47c1 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ec893ee 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 2 9 8 2 8 3f99c27e 0 3f6e8152 0 2 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f99c27e 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 9 4 2 5 8 3f5ddb56 0 3fe31858 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f5ddb56 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 a 4 6 2 5 3efe491c 3f000000 3f83df5d 1 2 1 1
+stopg
+rate44 3f000000
+= stopg 1 0 0 0 0 0 2 3 2 5 8 3e800751 0 3f78b918 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3e800751 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 5 5 3 9 2 3fb481d2 0 3f3a07fb 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fb481d2 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3f78daa3 0 0 a 8 9 6 6 3ff1f9e2 3f800000 3ff7ad98 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 3f83acf2 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ff1f9e2 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 a 9 1 3 5 3f2c44dd 3f800000 40020d22 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f2c44dd 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 1 9 a 7 6 3ffd4f92 0 4023bec7 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ffd4f92 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 5 5 5 7 8 3ff574fe 3f800000 3f4531b6 0 1 0 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ff574fe 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 5 4 5 9 3 bccc8bcb 3f800000 3facdb42 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 00000000 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3ed7395d 0 0 6 4 8 8 a 3d584f84 0 403d83fa 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 40184029 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3d584f84 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 9 1 7 7 a 3fa1215f 3f800000 3faed34e 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fa1215f 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 8 2 3 8 3 3e31ac89 3f800000 402394f9 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3e31ac89 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 8 2 8 8 3 3f07f366 3f800000 3fc14eae 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f07f366 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 6 4 a 1 1 3f89a1bf 3f000000 4023df44 0 2 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f89a1bf 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 1 0 0 0 0 2 2 7 8 7 3ff2e5c1 3f000000 4012d821 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ff2e5c1 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 1 1 0 0 0 2 3 8 8 a 3f60dca8 3f000000 3fe64c9a 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f60dca8 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 1 4 9 a a 3fcfe9f3 3f000000 3ffc244f 1 1 1 1
+stopg
+rate44 3f000000
+= stopg 0 0 0 3e800000 0 0 a 1 3 a 9 3e70484c 3f000000 40012baa 0 2 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3e70484c 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3e6b417a 0 0 6 8 5 3 3 bd53b30a 3f800000 403e57dc 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 408b4965 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 00000000 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 9 7 a a 5 3e4bd749 3f800000 3ff2741b 0 0 0 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3e4bd749 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 1 9 8 5 2 3f9fc007 3f000000 403a5420 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f9fc007 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e95fd88 0 0 8 1 5 4 4 3e72d40a 0 4039a787 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 405a77a6 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3e72d40a 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 1 4 8 a 4 3f9a0486 0 3fd60358 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f9a0486 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3ef5ff54 0 0 7 5 7 1 6 3f07fd64 3f000000 3fbd0459 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 40053465 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f07fd64 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 2 6 8 7 3 3f750f9b 0 3f6440f3 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f750f9b 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3f00addd 0 0 5 9 5 2 2 3f6c4a0a 3f800000 3f8077e0 0 1 0 1
+stopg
+submit 0 #0 blend(00000000 3ffea61c 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f6c4a0a 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 3 1 2 6 8 3f6f91ea 3f800000 3f26af1f 0 3 0 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f6f91ea 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 0 0 0 3 6 9 9 7 3fa0c14a 3f800000 401fb6f4 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fa0c14a 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 3e800000 0 0 a 9 2 a 6 3fbb1b2f 3f000000 40312b4d 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fbb1b2f 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3e85165b 0 0 9 6 1 1 7 3e8485f4 3f800000 3f5ad099 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 407636db 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3e8485f4 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 3ea63e6b 0 0 3 a 5 3 8 3f058bd9 3f800000 3fdd6a18 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 40451bab 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f058bd9 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 2 a 1 2 1 3f7f1c86 3f000000 3fb53624 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f7f1c86 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 6 4 2 a 7 3eaa52bf 3f800000 3fbbeb3d 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3eaa52bf 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3f4d06fc 0 0 8 8 8 2 8 3ee859b3 0 3f4e12b2 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 3f9fd298 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ee859b3 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 3 6 8 a 7 3ef846c1 3f000000 40084d5a 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ef846c1 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 0 0 0 6 6 7 3 2 3f8fab4b 0 3feee033 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f8fab4b 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3f371ba5 0 0 8 2 a 9 1 3e306fae 0 4019c1b1 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 3fb2f45b 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3e306fae 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 3f715894 0 0 3 6 1 8 9 3fb4e9bc 0 3fa4d001 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 3f87c59a 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fb4e9bc 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 7 3 8 4 3 3ef15a8f 0 3f9638ca 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ef15a8f 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 8 6 a 9 a 3f18a2b6 3f000000 4033e80b 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f18a2b6 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 3 5 9 1 5 3f426709 3f800000 4009550b 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f426709 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 4 8 2 8 1 3fdfd0b7 3f800000 3fff5de4 1 3 1 1
+stopg
+rate44 3f800000
+= stopg 1 0 0 3f31fc6d 0 0 8 6 2 6 9 3ea499a6 3f000000 3f811441 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 3fb81ab5 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ea499a6 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 4 5 5 8 2 3fe70a4b 3f000000 3fc73a3f 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fe70a4b 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 8 a a a 4 3fce040c 0 401318f0 0 0 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fce040c 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 1 7 a 1 5 3dd1df93 0 3fccaaf5 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3dd1df93 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 a 1 1 3 1 3f88a18d 0 3fbdc393 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f88a18d 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 6 3 8 6 5 3d1d692c 3f800000 3f85bd55 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3d1d692c 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3e602b40 0 0 8 5 4 a 6 3d625c1a 0 3f5faaab 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 40922ceb 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3d625c1a 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 9 3 6 a 2 3fcfd3a6 0 3f9d7879 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fcfd3a6 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 a 4 a a 6 3ed79f52 3f000000 3f5fdd3e 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ed79f52 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3f227613 0 0 6 5 2 9 9 3f93f858 0 403d4a4e 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 3fc9b286 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f93f858 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 8 6 7 4 8 3eb795e9 3f000000 3ff8f975 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3eb795e9 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 7 3 2 5 7 3fda3353 3f800000 401b5e21 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fda3353 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3f679a84 0 0 2 5 3 3 8 3ddb044c 0 3f8522a1 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 3f8d7baf 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ddb044c 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 3 3 7 1 2 3fe7833f 3f000000 3f5c9e01 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fe7833f 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 6 9 9 4 9 3fb7412f 0 3f6b872e 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fb7412f 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 4 9 5 6 6 3e16d029 3f800000 403975cd 1 3 1 0
+stopg
+rate44 3f800000
+= stopg 1 0 0 3e59ecc7 0 0 4 8 8 1 1 3fdf3d40 0 3f89a1a0 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 40965d1d 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fdf3d40 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 1 8 2 7 3 3fd46d46 3f800000 3fd0fbb4 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fd46d46 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 4 1 6 7 3 3f32d229 3f000000 402802de 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f32d229 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 1 0 3e23a5d3 0 0 1 9 6 2 9 3fb8246b 3f800000 4014206e 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 40c83c26 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fb8246b 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 2 2 5 5 1 3fc958a8 0 3f3db524 0 2 0 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fc958a8 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 1 1 0 0 0 8 9 5 6 7 3f8244f9 0 403b94b1 0 2 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f8244f9 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3f48b4de 0 0 1 9 7 1 3 3ff48973 0 3faf20ed 0 2 1 1
+stopg
+submit 0 #0 blend(00000000 3fa34365 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ff48973 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 3f602283 0 0 5 2 1 1 6 3fe0f754 3f000000 3fc3c05f 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 3f92329e 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fe0f754 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 1 0 0 0 0 8 5 5 a 3 3f3f63e1 3f800000 3f707b2c 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f3f63e1 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 6 a 7 4 2 3fb983fc 3f000000 3ff67756 0 2 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fb983fc 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 3e800000 0 0 2 4 9 a 8 3f7221a7 3f000000 3fa92ba1 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f7221a7 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 5 3 5 9 2 3fc2fae8 3f800000 40008887 0 3 0 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fc2fae8 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 8 8 4 2 3 3e383ba6 3f800000 4004bbdd 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3e383ba6 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 1 4 2 6 4 3f6cb755 3f800000 3fbae071 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f6cb755 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 6 7 a 5 2 3ff4adcf 3f800000 400c3ae1 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ff4adcf 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 8 7 9 7 3 3f413446 0 3fd3a5c2 1 2 1 1
+stopg
+rate44 00000000
+= stopg 0 0 1 3f2119f3 0 0 8 6 8 8 2 3f87b380 3f000000 4017912f 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 3fcb665f 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f87b380 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3e9680b0 0 0 2 3 a 4 4 3d93cf5d 3f000000 400ac589 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 4059b944 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3d93cf5d 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 7 1 5 2 8 3fec8e6f 3f000000 402106af 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fec8e6f 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 2 1 2 4 7 3f8e07c8 0 3ffdb104 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f8e07c8 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 4 3 4 6 2 3f63c5ce 3f800000 401c9e67 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f63c5ce 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 6 4 3 8 a 3fa14a9a 3f000000 3ffc4263 0 2 0 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fa14a9a 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 a 3 8 1 2 3e9318b6 0 3f9a3556 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3e9318b6 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 9 6 9 4 7 3fd06622 0 4031531a 0 0 0 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fd06622 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 5 1 8 8 8 3f8a4c85 3f000000 3f2f41aa 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f8a4c85 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 3e800000 0 0 5 7 1 4 3 3f163636 3f000000 3f390d63 0 0 0 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f163636 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 1 1 0 0 0 7 3 6 7 5 3fcf8256 3f800000 3fcaa483 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fcf8256 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 2 5 4 7 2 3f7e3d64 0 403123dc 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f7e3d64 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 4 8 6 3 6 3fe79ac1 0 40069bd7 0 3 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fe79ac1 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 3f24730e 0 0 1 1 2 9 9 3f308ff4 3f000000 400b4260 0 0 1 1
+stopg
+submit 0 #0 blend(00000000 3fc74242 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f308ff4 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 4 8 8 8 2 3fa0e63f 0 3f9e5d9b 0 2 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fa0e63f 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 a 1 8 1 6 3f32ba81 3f000000 3ffb7aff 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f32ba81 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 0 0 0 2 4 a 3 7 3f749666 0 3fb03485 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f749666 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 8 4 6 6 7 3febf928 0 402f4300 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3febf928 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 3 6 6 7 5 3e7f9d51 3f000000 3f42191d 0 0 0 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3e7f9d51 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 1 0 3e6628e4 0 0 5 7 9 3 1 3fa43a78 3f000000 3f40756a 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 408e5ee6 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fa43a78 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 1 1 3e800000 0 0 9 4 8 4 4 3f8ec243 3f000000 3f522140 0 2 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f8ec243 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3f07fb51 0 0 a 4 2 a 1 bda10921 0 401985a3 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 3ff0f93d 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 00000000 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 7 8 8 9 8 3fd8cbeb 3f000000 3fbdf4fd 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fd8cbeb 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 3 1 7 1 9 3ffab3b6 0 3fd1f6d7 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ffab3b6 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 8 2 8 8 2 3f3aa72e 3f800000 3fc39c54 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f3aa72e 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 3 6 4 6 5 3ea9ce40 0 401c2fe7 0 3 0 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ea9ce40 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 7 1 9 7 a 3f9e4805 3f800000 3f4d161b 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f9e4805 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 1 4 8 5 2 3f0d80d0 3f000000 3fbf53c2 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f0d80d0 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 1 0 3eb2c628 0 0 9 2 2 7 3 3ff6e02f 3f000000 3fdfc5c6 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 40374af6 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ff6e02f 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3dcdc304 0 0 6 7 7 1 7 3bebf67c 3f000000 4012a8b2 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 411f408b 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3bebf67c 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 1 1 0 0 0 5 1 4 6 9 3f5123fe 3f800000 3fe7569d 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f5123fe 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 0 0 0 2 2 6 1 6 3fe613ea 3f000000 400d6053 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fe613ea 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 0 0 0 5 a 2 4 1 3f2e80b0 0 402dad6b 0 2 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f2e80b0 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 1 0 3f462d08 0 0 7 3 5 5 4 3e78cbcc 3f800000 3fdd6a29 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 3fa5591a 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3e78cbcc 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 3 3 5 9 7 bee2ee70 3f000000 3ffd9a09 0 3 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 00000000 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 8 3 3 9 6 3fc3920a 0 4024a382 1 0 1 1
+stopg
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 a 5 7 5 8 bde5b5cf 3f800000 400ef649 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 00000000 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 2 1 9 5 5 3f31fba4 0 3f7cc95e 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f31fba4 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3dc6f622 0 0 a 4 9 5 8 3ff84ff7 3f800000 3f9aa659 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 4124b1fa 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ff84ff7 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 a 4 4 4 7 3d071f00 3f000000 3fb47130 0 1 0 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3d071f00 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 3 9 9 9 8 3f32aa77 3f000000 3fc8044f 1 3 1 0
+stopg
+rate44 3f000000
+= stopg 1 0 1 3f34ec57 0 0 2 8 4 7 a 3f28b782 3f800000 3fd1c22e 0 2 0 1
+stopg
+submit 0 #0 blend(00000000 3fb51d93 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f28b782 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 8 8 6 5 7 3fc1ba1d 0 40236c1f 0 3 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fc1ba1d 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 4 6 a 3 2 3f416a1b 3f800000 3f29e33c 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f416a1b 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 3e97a19b 0 0 7 6 3 4 4 3ffb55f7 3f000000 40286134 1 3 1 0
+stopg
+rate44 3f000000
+= stopg 1 0 0 3f55d064 0 0 7 a a 5 5 be743b97 3f800000 3fe0a882 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 3f994133 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 00000000 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 2 2 6 6 3 3f145ffe 3f800000 402cdc27 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f145ffe 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 6 6 7 6 3 3f5b9b47 0 3f7a2fdc 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f5b9b47 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 9 8 1 5 4 3d9bf129 0 402f5381 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3d9bf129 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 3f1e1e1c 0 0 6 3 4 a 2 3fcdac25 3f000000 3fe2e3cb 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 3fcf3cf7 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fcdac25 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 5 1 1 5 6 3e7d04cf 3f000000 400f26ff 0 0 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3e7d04cf 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 2 a 5 1 9 3ec3601f 3f800000 400aa236 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ec3601f 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 1 1 0 0 0 2 7 6 8 2 3e1c0f05 3f800000 3f771c3d 0 0 0 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3e1c0f05 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 2 1 5 8 9 3f623442 3f000000 3fe53b99 1 1 1 0
+stopg
+rate44 3f000000
+= stopg 1 0 0 3e8dc29b 0 0 8 6 2 6 5 3f6fa18a 3f800000 3fecee9b 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 406726a5 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f6fa18a 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 8 8 8 2 4 bed6a4f1 3f800000 4016da1e 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 00000000 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3f01e5e9 0 0 3 4 9 7 1 3fde3328 0 3f0cfe18 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 3ffc4261 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fde3328 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 1 1 9 7 8 3ece4f26 3f000000 40209cb0 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ece4f26 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 3e800000 0 0 5 6 3 5 5 3f585ba6 3f000000 4019d887 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f585ba6 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 9 5 3 5 2 3fdc1b34 0 40233775 0 3 0 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fdc1b34 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 1 0 3e800000 0 0 8 4 1 3 8 3f02c956 3f000000 3fcff18c 0 2 0 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f02c956 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 5 9 6 2 8 3f93b4e1 0 3fa849b1 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f93b4e1 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e8e0b18 0 0 7 7 5 5 5 3fc8c6da 0 400e709e 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 4066b0ae 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fc8c6da 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 6 6 3 7 6 3fe56f54 3f000000 4015e177 0 3 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fe56f54 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 5 2 5 2 2 3fec4df7 3f800000 40129175 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fec4df7 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 5 8 2 5 5 3fde70ce 3f000000 3f7af010 0 2 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fde70ce 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 1 1 0 0 0 3 9 6 7 8 3f2a5f24 0 4020d317 1 3 1 0
+stopg
+rate44 00000000
+= stopg 1 0 1 0 0 0 1 3 8 2 6 bef3ecd4 3f000000 3f8b389d 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 00000000 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 1 6 7 5 1 3fde9cb2 0 4031f6b2 1 0 1 0
+stopg
+rate44 00000000
+= stopg 0 1 0 3e800000 0 0 1 2 1 4 7 3fc0b5c7 0 3fd93e39 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fc0b5c7 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 6 3 1 7 8 3fd4c930 3f800000 3fee3ab2 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fd4c930 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 0 0 0 7 9 4 5 9 3ff9b749 3f000000 3ff43d7d 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ff9b749 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3f75a002 0 0 6 5 2 8 8 3fba7041 3f000000 3fe44b3e 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 3f856817 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fba7041 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 3e800000 0 0 1 6 8 5 8 3fee882b 3f000000 3fb80121 0 0 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fee882b 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 4 5 4 5 1 3fbe8260 3f000000 3fba462e 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fbe8260 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 0 0 0 4 4 4 6 2 3ff1cade 0 3fbe953a 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ff1cade 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e130f71 0 0 5 5 7 6 4 3fc7d060 3f800000 3fbd6f7c 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 40ded1f4 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fc7d060 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 8 6 6 4 2 3e29060e 3f800000 3f2bdeaf 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3e29060e 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 3e800000 0 0 4 4 a 8 7 3f45751b 3f800000 3f13f9cb 0 0 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f45751b 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 1 6 6 a 5 3f7b3a5c 0 402a88f6 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f7b3a5c 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 9 4 8 8 6 3fa1732b 3f000000 3f762bcb 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fa1732b 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 3 2 5 5 2 3fd23ee3 0 3fd3c840 0 3 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fd23ee3 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 0 0 0 8 6 9 5 1 3fc7a074 3f000000 403b4525 1 1 1 0
+stopg
+rate44 3f000000
+= stopg 0 0 0 0 0 0 a 4 5 4 4 3fed72bb 0 402c1e25 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fed72bb 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 0 0 0 8 3 4 9 2 3ff852dc 3f000000 3fd18a87 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ff852dc 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 a 1 4 3 4 3ff19919 0 403ca217 0 2 0 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ff19919 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 5 6 4 6 1 3d5e40d5 3f800000 4039e9ca 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3d5e40d5 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3ea8c5b6 0 0 4 6 2 1 6 3f3ed2c3 3f800000 3f62c915 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 404227b3 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f3ed2c3 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3f12c247 0 0 9 8 1 1 1 3f891dd4 3f800000 40210be5 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 3fdf471c 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f891dd4 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 3f587de1 0 0 a 4 8 3 5 bec4e1c9 3f000000 3f580d83 0 0 1 1
+stopg
+submit 0 #0 blend(00000000 3f975bf1 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 00000000 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 4 2 9 8 3 3f8658f9 3f800000 40158559 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f8658f9 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 0 0 0 6 8 3 2 3 3f8b7ced 0 3fb826e4 0 2 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f8b7ced 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 2 2 7 5 4 3ff27796 0 3f775cb6 0 2 0 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ff27796 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 9 3 9 3 1 3c858c62 3f800000 3f5ba8b9 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3c858c62 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 9 2 3 5 4 3ee14c5c 0 3f9d82d5 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ee14c5c 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 4 8 2 7 4 3fafc174 0 403bab96 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fafc174 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 1 1 0 0 0 6 a 7 9 5 3fd1c94b 3f800000 3f037388 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fd1c94b 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 8 4 4 3 9 3ffe6ba3 3f000000 3f714668 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ffe6ba3 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 9 4 3 8 a 3fecb9f7 3f000000 403ea1ee 0 3 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fecb9f7 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 2 1 4 1 2 3efecc18 3f000000 3fb39319 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3efecc18 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 0 0 0 6 6 3 7 a 3fee306f 0 3f7b5877 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fee306f 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 5 8 1 9 1 3fc3b3d1 3f000000 4002f278 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fc3b3d1 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 a 7 3 7 a 3d85cea0 0 3f2243b8 0 0 0 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3d85cea0 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3e60d187 0 0 9 2 1 5 6 3e2790cc 0 3fe611e0 0 2 1 1
+stopg
+submit 0 #0 blend(00000000 4091c0cf 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3e2790cc 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 1 1 0 0 0 1 3 4 2 7 3ec31c92 3f000000 3f6621a0 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ec31c92 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 7 9 4 4 6 3f4189d7 0 3fc48455 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f4189d7 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 8 a 2 a 7 3f39ea8f 3f800000 3ffd1c13 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f39ea8f 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 6 7 9 8 5 3ff706be 0 3fc83ee4 0 3 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ff706be 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 7 6 6 5 9 3fc3c004 0 40012529 0 1 0 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fc3c004 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3f157321 0 0 8 6 9 7 3 3ed0da32 3f800000 3fc7fd16 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 3fdb41f8 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ed0da32 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 5 3 9 4 2 3fbd5d51 3f000000 402a68cd 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fbd5d51 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 4 8 8 1 4 3f9dbb57 3f000000 403b0705 1 2 1 0
+stopg
+rate44 3f000000
+= stopg 1 0 1 0 0 0 6 2 3 7 7 3fb8928f 0 3fe30f5b 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fb8928f 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3f5da7fb 0 0 a 5 3 2 a 3f21d947 3f000000 3ffb3815 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 3f93d523 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f21d947 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 3ee05626 0 0 7 7 3 9 4 3f41a0de 3f000000 3ff8c2f6 0 0 1 1
+stopg
+submit 0 #0 blend(00000000 401210f8 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f41a0de 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 7 9 4 a 4 3f815b92 3f800000 3fd9ec03 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f815b92 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 1 4 1 9 5 3ea58826 3f800000 40037ddf 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ea58826 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 9 a 7 7 8 3d6b91f0 3f800000 3fdd2178 1 1 1 0
+stopg
+rate44 3f800000
+= stopg 1 0 1 3e800000 0 0 1 9 1 9 5 3f31611a 3f000000 3fd6b3af 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f31611a 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 4 2 6 9 6 3fb1c46e 3f000000 4024759c 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fb1c46e 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 1 0 0 0 0 5 1 8 8 5 3fa90971 3f800000 3faf1346 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fa90971 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 3e800000 0 0 6 6 7 6 4 3ec852fd 3f000000 40395d6b 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ec852fd 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 4 3 6 9 1 3e83de58 0 4004be84 0 3 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3e83de58 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 0 0 0 4 5 4 7 9 3fcb59db 3f000000 403df879 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fcb59db 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3f38755e 0 0 7 2 3 8 6 3ff4ec97 3f000000 403a3073 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 3fb1a4f3 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ff4ec97 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 3 8 3 6 5 3f8c753e 3f800000 40332271 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f8c753e 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 1 1 3e800000 0 0 8 2 6 4 6 3fc5d1f4 3f800000 3f30af62 0 3 0 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fc5d1f4 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 3e800000 0 0 7 2 3 4 1 3f973e2c 3f000000 3fe56ddf 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f973e2c 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 4 2 9 9 6 3f5cf396 0 3f89402c 0 0 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f5cf396 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3eb7cf06 0 0 a 1 2 6 1 3fae35fc 0 3ffb2b6e 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 403245b6 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fae35fc 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 3 7 5 a 2 3f28dd44 3f000000 401f80fd 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f28dd44 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 7 2 6 7 3 3e487579 3f800000 40375905 0 0 0 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3e487579 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 4 7 3 4 2 3feae314 0 40113f3a 1 3 1 0
+stopg
+rate44 00000000
+= stopg 1 0 0 0 0 0 6 9 1 4 8 3f99fefd 3f000000 3f901b52 0 2 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f99fefd 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 9 1 1 7 9 3f048069 3f800000 3f8ebb60 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f048069 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3f27b2e4 0 0 2 3 4 a 2 3fe78441 3f000000 3fa97312 0 0 1 1
+stopg
+submit 0 #0 blend(00000000 3fc365e0 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fe78441 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 1 0 0 0 0 7 5 7 5 9 3f2db98f 3f800000 402b85d4 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f2db98f 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 3 4 6 4 8 3fd9b011 3f800000 3fca64dc 0 2 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fd9b011 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3eb8203f 0 0 5 7 8 9 6 3fbd6511 3f000000 3f837540 1 2 1 0
+stopg
+rate44 3f000000
+= stopg 0 0 1 0 0 0 a a 9 2 6 3fa720b6 3f000000 40184b21 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fa720b6 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 8 9 1 5 a 3fc67b90 0 3fc5200a 1 2 1 0
+stopg
+rate44 00000000
+= stopg 1 0 0 0 0 0 5 6 1 4 a 3e0c8536 0 3f2c7247 0 0 0 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3e0c8536 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 7 9 9 a 9 3fc6f7f7 3f800000 402140fe 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fc6f7f7 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3f006336 0 0 1 9 4 4 7 3f88efbc 3f000000 3f834ffb 0 2 1 1
+stopg
+submit 0 #0 blend(00000000 3fff3a2d 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f88efbc 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 9 8 4 1 1 3f192874 3f800000 3f3238a4 0 3 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f192874 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 1 1 3ed18122 0 0 1 4 3 3 5 3fd2bb5f 0 3fd87a10 0 0 0 0
+stopg
+submit 0 #0 blend(00000000 401c683e 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fd2bb5f 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 8 5 5 2 9 3fe673a7 0 400d6eef 1 2 1 1
+stopg
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 7 9 5 2 3 3fa69261 3f000000 3fbd857a 0 2 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fa69261 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 4 1 6 6 9 3fd274d7 3f800000 3fbb3308 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fd274d7 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 1 7 2 5 1 3ecd22d5 3f800000 401ed8f8 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ecd22d5 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 a 7 1 5 9 3f9a4d1c 3f800000 401653a6 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f9a4d1c 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 3e800000 0 0 8 5 a 3 6 3f9137b0 3f800000 401768c4 0 3 0 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f9137b0 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 9 7 7 3 4 3eed8fab 3f800000 402da163 0 3 0 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3eed8fab 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e3219b0 0 0 8 2 6 3 9 3f4084f0 3f800000 400dc90a 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 40b7fc76 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f4084f0 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 1 4 1 2 5 be1d3044 3f800000 3fbd6249 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 00000000 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 5 5 4 2 2 3fc4270b 0 4013609a 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fc4270b 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 9 1 7 6 3 3f680fc6 3f800000 40132f83 1 0 1 1
+stopg
+rate44 3f800000
+= stopg 0 0 0 3f277970 0 0 3 7 3 a 4 3edd1b9b 3f000000 3f5542ee 0 1 0 1
+stopg
+submit 0 #0 blend(00000000 3fc3a8e8 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3edd1b9b 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 1 0 0 0 0 3 4 5 3 8 3fff98fb 0 400673b2 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fff98fb 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 5 1 9 7 3 3f84a08f 0 3fa8f2c0 1 3 1 0
+stopg
+rate44 00000000
+= stopg 0 0 0 0 0 0 a 9 4 8 1 3fd52a76 3f800000 400ef7d1 0 2 0 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fd52a76 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 3 5 2 5 3 3ed56633 0 402bbda9 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ed56633 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 2 1 1 8 4 3f24fe49 3f000000 3fc7284a 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f24fe49 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 1 1 8 8 7 3fcc6358 3f800000 3fc76efe 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fcc6358 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 3e800000 0 0 4 9 7 1 7 3fd3c590 3f000000 4012a03a 0 0 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fd3c590 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 9 5 2 4 1 3f24f16f 0 400251ec 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f24f16f 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3f2c8845 0 0 4 a a 3 1 3e306e78 3f800000 3fe79cac 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 3fbdec82 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3e306e78 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 8 5 1 6 4 3fb4b09a 3f800000 402b80fe 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fb4b09a 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3f1a67c0 0 0 4 6 7 5 4 3f9be5cf 3f800000 402a03bf 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 3fd43882 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f9be5cf 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 8 a 9 9 7 3f5f2c96 3f800000 40129be0 1 1 1 0
+stopg
+rate44 3f800000
+= stopg 0 0 0 3e800000 0 0 4 7 3 1 5 3edc81f2 3f800000 3f6d35b3 0 0 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3edc81f2 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 3 9 2 2 7 3f3aff01 3f000000 3f26374e 0 3 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f3aff01 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 1 1 3e800000 0 0 6 3 9 3 8 3f57580b 3f800000 3fcdc1d1 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f57580b 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 2 5 2 2 a 3ff45133 0 3f76be70 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ff45133 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3f160c59 0 0 2 1 6 2 7 3fd4381d 0 3ffdd6e2 0 0 1 1
+stopg
+submit 0 #0 blend(00000000 3fda6214 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fd4381d 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 4 3 3 1 9 3f13c701 3f800000 3f459c64 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f13c701 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 5 9 6 7 2 3ebf46c0 0 3f9a5ad1 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ebf46c0 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 1 1 3ea04c56 0 0 4 6 4 5 2 3f5c25dc 0 3f9cdbc2 1 1 1 0
+stopg
+rate44 00000000
+= stopg 1 0 1 0 0 0 4 3 8 8 5 3e329678 3f000000 401a1216 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3e329678 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 a 2 9 4 1 be2796d4 0 401b096a 1 1 0 1
+stopg
+rate44 00000000
+= stopg 1 0 0 0 0 0 2 7 5 6 8 3e68171f 3f000000 3fbcef95 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3e68171f 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 3 6 9 3 9 3fdfa002 0 40135bc3 0 2 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fdfa002 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 1 0 0 0 0 1 9 9 4 1 3eca5d6d 0 3f284323 1 2 1 1
+stopg
+rate44 00000000
+= stopg 0 0 0 0 0 0 4 5 1 5 7 3f98e86b 3f000000 3f3cada8 0 3 0 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f98e86b 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 5 9 9 9 8 3f619751 0 3f94e08b 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f619751 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 0 0 0 1 5 9 4 7 3fea2658 0 3f6a51b1 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fea2658 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 a 2 9 5 8 3fc970cf 0 403a36ed 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fc970cf 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 7 3 6 3 7 3fcaf091 0 3fc44139 0 0 0 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fcaf091 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 4 a 7 4 7 3f99d082 3f000000 403891fd 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f99d082 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 2 6 3 4 8 3ffd5555 3f800000 3fee6e85 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ffd5555 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3eb0d313 0 0 3 7 a 1 9 3fa76a3a 0 3f8a243b 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 4039504d 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fa76a3a 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 a a a 4 a 3f9e6a93 3f800000 3f856c12 0 3 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f9e6a93 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 3dd5507b 0 0 7 4 9 a 9 3eb0863d 0 4019d5ab 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 41199d18 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3eb0863d 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 4 6 1 4 7 3f5e18ca 0 3ff6fa20 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f5e18ca 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 0 0 0 4 7 a 3 7 3ff0d9c7 3f000000 3f1f8e97 0 2 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ff0d9c7 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 5 2 9 2 a 3e818892 0 4021e50f 0 3 0 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3e818892 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 8 4 9 7 5 3f89ed59 0 402cf5f0 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f89ed59 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 a a 9 8 2 3eac3a29 3f800000 402d9df8 0 0 0 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3eac3a29 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 a 8 8 7 8 3f47742b 3f000000 3fbc29da 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f47742b 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 1 a a 3 4 3d2c8968 3f800000 4022d0c1 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3d2c8968 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 1 2 4 3 a 3fcae43c 0 4032a0b8 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fcae43c 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 8 8 5 4 6 3f732150 0 3f07a23c 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f732150 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 3e800000 0 0 a 4 5 7 a 3dd14033 0 402ac9d7 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3dd14033 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 9 9 8 9 7 3f7bd906 3f800000 400f1876 0 2 0 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f7bd906 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3f006d5a 0 0 4 a 5 7 1 3fe4689a 3f000000 3fb42478 0 0 0 1
+stopg
+submit 0 #0 blend(00000000 3fff2606 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fe4689a 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3e9ea735 0 0 2 2 8 2 3 3f0ce537 3f000000 40184a7e 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 404e89e2 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f0ce537 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 3ec10ef0 0 0 6 7 1 5 6 3fe6d6c8 3f000000 4004ca8e 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 4029bb27 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fe6d6c8 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 4 6 8 3 4 3ec0ffad 0 3faa01bb 0 1 0 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ec0ffad 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 3 9 7 a 6 3f85e7b8 3f000000 3f3eed81 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f85e7b8 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 a 8 9 9 1 3f1cbcc2 3f800000 3fede39c 0 2 0 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f1cbcc2 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3f145ed9 0 0 5 7 9 6 6 3c1954e5 0 401563c6 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 3fdcda3f 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3c1954e5 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 2 8 8 2 3 bee0cac0 0 3f534b07 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 00000000 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 3 a 2 2 1 3fd1ff62 3f800000 3f1fbafd 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fd1ff62 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 1 1 3e800000 0 0 4 1 a 3 a 3e80d30b 0 40240908 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3e80d30b 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3ed122e9 0 0 7 9 4 6 6 3fed7e9e 0 3fbb64af 1 1 1 1
+stopg
+rate44 00000000
+= stopg 0 0 0 3f6409c8 0 0 8 1 3 5 8 3fca31ba 3f800000 3fcdcd0c 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 3f8fb1fa 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fca31ba 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 6 4 1 7 7 3f07f780 3f000000 3fb007a3 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f07f780 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 7 a 3 5 4 3f549eb9 3f800000 403af318 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f549eb9 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 3 5 1 8 7 3e0ca6e0 0 3ff45338 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3e0ca6e0 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 1 6 7 a 1 3e6538bc 3f000000 3f192059 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3e6538bc 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 3 a 1 6 a 3fb33a7b 3f800000 3ff4715d 0 0 0 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fb33a7b 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3ee14599 0 0 2 2 9 7 3 3ee2fbd0 0 40130e3a 0 0 0 0
+stopg
+submit 0 #0 blend(00000000 401175b5 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ee2fbd0 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 9 6 5 7 5 3f91c504 3f800000 3f3029c1 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f91c504 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 1 0 3e800000 0 0 8 4 3 6 1 3fab1534 3f800000 3f96f84e 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fab1534 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 8 3 8 2 4 3e9365cb 3f000000 4039b37f 1 0 1 1
+stopg
+rate44 3f000000
+= stopg 0 1 1 0 0 0 a 8 8 1 2 3f3b9957 0 3fe0f3f7 1 0 1 0
+stopg
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 6 6 6 7 3 3f1ae7c3 3f800000 3fb52544 0 0 0 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f1ae7c3 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 3e800000 0 0 a 8 5 6 8 3fb2bf47 0 40205ee8 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fb2bf47 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 1 1 0 0 0 9 9 a 6 4 3e935791 3f800000 401f2689 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3e935791 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 2 6 3 2 5 3f8b80fd 3f000000 3fd37d95 0 3 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f8b80fd 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 4 1 6 8 7 3fcc208d 3f800000 40075d61 0 3 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fcc208d 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 7 8 4 3 5 3ed6f8ff 3f000000 3f47d197 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ed6f8ff 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3f3a5b89 0 0 5 6 1 3 6 3fd633b4 3f000000 3f14f24e 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 3fafd583 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fd633b4 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 1 0 0 0 0 3 3 6 1 6 3e85f65e 3f800000 40364e78 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3e85f65e 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 3e800000 0 0 2 6 6 7 a 3c0fa9e0 3f800000 40283d91 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3c0fa9e0 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 1 0 3e800000 0 0 7 1 a 8 2 3f709898 0 3f3d490e 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f709898 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 1 0 0 0 0 4 7 6 6 7 3efaee22 3f000000 3f797a13 1 2 1 0
+stopg
+rate44 3f000000
+= stopg 1 0 1 3e800000 0 0 3 1 9 7 3 3fe93c12 0 3ffd1b6f 1 1 1 0
+stopg
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 a 4 3 4 7 3feb9770 3f000000 3f3cd361 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3feb9770 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 6 3 7 2 6 3fb34975 3f000000 403de5dc 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fb34975 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3eafa413 0 0 8 8 4 2 1 3fec8841 3f000000 403a9ed4 1 1 1 0
+stopg
+rate44 3f000000
+= stopg 1 0 0 3e800000 0 0 5 3 3 8 9 3fa3b28e 3f800000 3f857696 0 2 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fa3b28e 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 3 1 7 7 8 3f0618bf 0 3fa646ad 0 0 0 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f0618bf 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 9 2 a 4 8 3f10b0da 3f000000 40112322 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f10b0da 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3eb5b155 0 0 3 5 8 6 5 3ffbe9a6 3f000000 3fcc4e84 1 0 1 1
+stopg
+rate44 3f000000
+= stopg 1 0 0 3f074301 0 0 a 8 5 2 3 3f388414 0 401fb141 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 3ff24199 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f388414 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 1 1 0 0 0 1 a 1 2 4 beb5ffc7 3f000000 3f8ce7c3 0 2 0 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 00000000 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 1 1 0 0 0 8 7 9 7 9 3f0bcc00 0 402598e4 0 3 0 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f0bcc00 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 1 5 2 a 1 3fd59eec 3f000000 40056821 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fd59eec 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 8 2 4 1 8 3fb6e7b8 3f000000 3f5b635a 1 2 0 1
+stopg
+rate44 3f000000
+= stopg 1 0 0 3f6ab7f8 0 0 3 6 9 7 5 3f83f2bd 0 3fcfbbaa 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 3f8b9aff 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f83f2bd 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 9 3 3 5 1 3f8c173b 0 3f9fe26e 1 2 1 0
+stopg
+rate44 00000000
+= stopg 0 0 1 0 0 0 9 2 7 6 a 3ff2e68c 3f800000 3fb2304c 0 3 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ff2e68c 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 4 2 5 6 a 3f87166a 0 3f681128 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f87166a 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 1 0 0 0 0 9 6 8 8 2 3fd8df38 0 400ebb70 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fd8df38 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 3ec9a0ac 0 0 2 3 1 5 8 3de5b1db 0 3fb5f399 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 40228475 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3de5b1db 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 7 2 4 2 3 3fb9805b 3f000000 401afa24 0 2 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fb9805b 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 3f046081 0 0 8 5 9 5 5 3fcc0d42 0 3feb3ee7 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 3ff78917 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fcc0d42 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 5 a 6 4 6 3e2e4019 3f800000 3f8e9c8f 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3e2e4019 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3f3a278b 0 0 a 7 a a 1 3ea9d92d 0 3fa8691f 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 3fb0069f 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ea9d92d 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 6 8 a 5 5 3fd423c6 3f000000 3f92cc1f 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fd423c6 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 1 0 0 0 0 2 8 1 1 5 3fe137cf 0 400b370b 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fe137cf 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 a 9 8 8 a 3f498010 3f000000 40071e1a 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f498010 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 0 0 0 a 6 7 1 7 3fe4bd44 0 3f6322c9 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fe4bd44 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 0 0 0 2 7 9 1 4 3f410aa6 3f000000 3fe7f32d 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f410aa6 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 0 0 0 6 3 7 2 4 3fd9ead7 3f800000 402d8edf 0 1 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fd9ead7 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 2 1 6 3 7 3f0b28fc 0 3f134dd6 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f0b28fc 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 3e800000 0 0 1 7 a 4 9 3f94f1d5 3f000000 3fa356b9 1 3 1 0
+stopg
+rate44 3f000000
+= stopg 0 0 1 0 0 0 9 2 4 1 8 3e5f8d07 3f000000 4025f000 1 1 1 0
+stopg
+rate44 3f000000
+= stopg 0 1 1 3e308508 0 0 7 8 3 9 9 3ec41d91 3f800000 4021dce8 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 40b9a23c 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3ec41d91 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 2 8 7 9 4 3ecc9d76 3f000000 3fba8e98 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ecc9d76 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 1 2 5 8 9 3fed0f20 3f800000 3f7323f7 0 3 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fed0f20 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 7 3 7 1 1 3f844bd1 3f000000 402300f9 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f844bd1 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3f584a75 0 0 9 3 6 a 8 3fe1258b 0 402a5a7b 0 2 1 1
+stopg
+submit 0 #0 blend(00000000 3f977fed 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fe1258b 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 0 0 0 2 6 1 1 9 3f85c5c8 0 400892c7 1 3 1 0
+stopg
+rate44 00000000
+= stopg 1 0 1 0 0 0 a a 9 6 a 3fcb5cce 0 402f42f3 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fcb5cce 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 9 a 1 8 2 3f840d45 0 402580eb 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f840d45 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 6 a 3 a 1 3fe6caf5 3f000000 4003bc21 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fe6caf5 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3efc6287 0 0 2 a 4 4 a 3efe2e43 0 3fff349a 0 1 1 1
+stopg
+submit 0 #0 blend(00000000 4001d55d 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3efe2e43 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 8 4 1 1 6 3fa01495 3f800000 40160f1e 0 1 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fa01495 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 3f7589ca 0 0 7 6 5 1 6 3f90b9d6 3f800000 3fd481ec 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 3f857429 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f90b9d6 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 4 9 5 3 4 3dc3b8b0 3f800000 401f24d4 0 2 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3dc3b8b0 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 0 0 0 0 3 6 a 1 7 be9eca33 3f000000 3fd96ce2 0 2 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 00000000 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 8 4 5 9 9 3f3a9a84 3f000000 3f906fe7 0 0 0 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f3a9a84 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3ec81a57 0 0 1 3 1 8 8 3fa9a808 0 3f90135b 0 3 1 1
+stopg
+submit 0 #0 blend(00000000 4023c179 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fa9a808 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 7 a 4 9 1 3f0c89e0 3f800000 3fd0f828 0 3 0 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f0c89e0 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3dcaaab0 0 0 1 9 8 8 5 3f0d2f6a 3f800000 4011e420 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 4121af24 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f0d2f6a 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 3e800000 0 0 9 a 3 5 3 3f8598ba 3f000000 3f17cb7a 0 0 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f8598ba 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 1 3f7dd84d 0 0 6 5 6 9 8 3f1fafe2 0 401b8ff4 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 3f811631 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f1fafe2 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 6 6 1 6 8 3f612ec0 3f000000 400646e7 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f612ec0 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 0 0 0 8 9 8 6 8 3defbb89 3f000000 3fa8b6b7 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3defbb89 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 9 5 7 7 1 3ec0b6e5 3f800000 4017b8bc 0 0 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3ec0b6e5 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 a 8 1 5 1 3e3db8f5 3f000000 3feeee52 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3e3db8f5 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 0 0 0 3f731bf7 0 0 3 8 a 8 1 3f676a80 3f000000 40232aa8 1 2 1 0
+stopg
+rate44 3f000000
+= stopg 1 0 1 3e104291 0 0 8 2 4 5 9 3fd990ea 0 3f0db65f 0 2 1 0
+stopg
+submit 0 #0 blend(00000000 40e32538 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3fd990ea 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 3e800000 0 0 5 5 3 5 2 3f0063d5 3f000000 3f453262 0 1 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f0063d5 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 1 0 0 0 8 9 7 2 6 3e39693d 3f000000 3f2aaa21 0 3 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3e39693d 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 3e800000 0 0 8 4 6 4 4 3f4b49b2 3f000000 4007ffd9 0 3 1 0
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f4b49b2 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 3e800000 0 0 4 2 4 3 4 3f0d97ee 3f800000 3fb664d6 0 2 1 1
+stopg
+submit 0 #0 blend(00000000 40800000 1 - 00000000 null #1 blend(3f800000 00000000 0 F100 00000000 #2 identity #3 anim(c12 3f0d97ee 3f800000 1 0 0)))
+hold 84 0
+hold 44 3
+rate44 00000000
+= stopg 1 0 0 0 0 0 6 a 4 8 8 3f3c3a9f 3f000000 3fdbc9b1 0 0 1 0
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3f3c3a9f 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000
+= stopg 0 0 1 0 0 0 3 2 5 3 8 3f385739 0 3fff5215 1 2 1 1
+stopg
+rate44 00000000
+= stopg 0 0 1 0 0 0 6 8 1 7 1 3fd5cd71 3f800000 40015533 0 3 1 1
+stopg
+submit 0 #0 blend(3f800000 00000000 0 F100 00000000 #1 identity #2 anim(c12 3fd5cd71 3f800000 1 0 0))
+hold 84 0
+hold 44 1
+hold 44 2
+rate44 00000000

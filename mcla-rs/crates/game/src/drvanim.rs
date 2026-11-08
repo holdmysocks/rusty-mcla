@@ -427,6 +427,24 @@ pub fn one_overlay(s: &mut Seq, look: &Look, dur: &dyn Fn(ClipId) -> f32, clip: 
     Some(build(look, dur, Req::add(None, x, Req::anim(clip, looping).held(68)), blend, false))
 }
 
+/// The overlay's end F-72270 (the rider's fidget exit, blend 0): with the filters, the body clip (+44) is stopped (rate 0)
+/// and the tree rebuilt as that clip alone from its time (F-12110: max(t, 0)), playing at rate 1 once, under the face
+/// filter over the rest pose (+44); at a blend of 0 this is the new root at once (no crossfade), else it fades in at
+/// 1 / blend (+84). Nothing without the filters, or without a clip in +44 (the original builds with no clip then; no caller
+/// reaches it).
+pub fn stop_overlay(s: &mut Seq, look: &Look, blend: f32) -> Option<Req> {
+    if !look.filters {
+        return None;
+    }
+    s.set_rate(0.0);
+    let p = s.player(0)?;
+    let (t, body) = (p.t, p.clip?.id);
+    let t = fsel(-t, 0.0, t);
+    let b = Req::new(Kind::Anim { clip: body, t, rate: 1.0, looping: false, set: true }).held(44);
+    let p = Req::blend(1.0, 0.0, Some(Filter::NoFace), Some(Req::new(Kind::Identity)), b);
+    Some(if blend == 0.0 { p.held(84) } else { Req::blend(0.0, 1.0 / blend, None, None, p).held(84) })
+}
+
 impl Seq {
     /// The player of overlay holder +68 when it holds an animation node.
     fn over_player(&mut self) -> Option<&mut Player> {
@@ -1030,11 +1048,11 @@ mod tests {
             s.over[0] = Some(s.nodes.len());
             let oc = (w[16] != 0).then_some(Clip { id: 10, dur: f(13), flags: w[17] as u16 });
             s.nodes.push(Node::Anim(Player { flags: w[15], t: f(11), rate: f(12), clip: oc, ..Player::default() }));
-            let mut got = format!("{op}
-");
+            let mut got = format!("{op}\n");
             let req = match op {
                 "addpair" => pair_overlay(&mut s, &look, &dur, clip(0), clip(1), w[4] != 0, f(3)),
                 "addone" => one_overlay(&mut s, &look, &dur, clip(0), w[4] != 0, f(3)),
+                "stopg" => stop_overlay(&mut s, &look, f(3)),
                 "ovrate" => {
                     s.set_overlay_rate(f(3));
                     if let Some(Node::Anim(p)) = s.nodes.get(2) {
@@ -1053,19 +1071,31 @@ mod tests {
             if let Some(r) = &req {
                 let (mut ids, mut holds, mut o) = (0, Vec::new(), String::new());
                 dump(r, &mut ids, &mut holds, &mut o);
-                got += &format!("submit 0{o}
-");
+                got += &format!("submit 0{o}\n");
                 let order = [84u8, 76, 44, 48, 20, 68, 72, 36];
                 holds.sort_by_key(|(h, _)| order.iter().position(|x| x == h));
                 for (h, id) in holds {
-                    got += &format!("hold {h} {id}
-");
+                    got += &format!("hold {h} {id}\n");
                 }
             }
+            if op == "stopg" {
+                if let Some(Node::Anim(p)) = s.nodes.first() {
+                    got += &format!("rate44 {:08x}\n", p.rate.to_bits());
+                }
+            }
+            // (F-72270 at a blend of 0 hands +44 the rest pose's request, then the clip's: the last one holds)
+            let lines: Vec<&str> = want.lines().collect();
+            let want: String = lines
+                .iter()
+                .enumerate()
+                .filter(|(i, l)| !(l.starts_with("hold ") && lines[i + 1..].iter().any(|m| m.split(' ').nth(1) == l.split(' ').nth(1) && m.starts_with("hold "))))
+                .map(|(_, l)| format!("{l}
+"))
+                .collect();
             assert_eq!(got, want, "case {n}: {head}");
             n += 1;
         }
-        assert_eq!(n, 2000);
+        assert_eq!(n, 2500);
     }
 
     /// The tree builders against the original's run offline (`work/drvmachine/tree_ref.py`): every request, its fields and

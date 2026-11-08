@@ -683,6 +683,9 @@ struct Ride {
     pan: bool,
     /// the driver's +48 smoother (F-45732: centre 0.5, rate 5, hold 0.5 s): its value +12 and hold timer +16, made on first use
     pan_p: Option<(f32, f32)>,
+    /// the rider's anim player (`ride_step`) and its +112, the pan clip
+    seq: da::Seq,
+    pan_clip: Option<da::ClipId>,
 }
 
 /// The human rider's look at a racer beside him (the driver's +380 state; F-70536 with the test F-48336), which the gatherer
@@ -912,9 +915,153 @@ fn ride_next(s: St, i: &RideIn, ck: bool, edge: bool, ta: f32, tb: f32, left_cli
     }
 }
 
+/// What the riding states' callbacks ask of the anim player, in call order; clips by the pack dictionary's names (F-66148).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RCmd {
+    /// SetPanOverlay (+112): the pan-sweep overlay in the trees built from now on - F-56423's lookup, the local human's only -
+    /// or none (the enters' 0; with it +108 is set to 0, which no rider has set)
+    Pan(bool),
+    /// F-24441: clip, blend, looping, no blend
+    Play(&'static str, f32, bool, bool),
+    /// F-85393: A, B, looping, blend
+    Pair(&'static str, &'static str, bool, f32),
+    /// F-42342: the overlay pair A, B, looping, blend
+    PairOverlay(&'static str, &'static str, bool, f32),
+    /// F-85022: the overlay, looping, blend
+    OneOverlay(&'static str, bool, f32),
+    /// F-72270: the blend
+    StopOverlay(f32),
+    /// F-40742 / F-53423 / F-84631 / F-62772 / F-22341 / F-72214
+    Phase(f32),
+    Rate(f32),
+    Rate5(f32),
+    Phase2(f32),
+    Weight(f32),
+    OverlayRate(f32),
+}
+
+/// Where the riding states' commands go: the rider's anim player, or nowhere (`()`: the transitions alone, as the recorded
+/// tests run them).
+trait RideSink {
+    fn cmd(&mut self, c: RCmd);
+    /// ReadTimeRemaining (F-87745) and ReadTimeRemainingOverlay (F-70114) of the anim player, when there is one
+    fn left(&mut self) -> Option<(f32, f32)>;
+}
+
+impl RideSink for () {
+    fn cmd(&mut self, _: RCmd) {}
+    fn left(&mut self) -> Option<(f32, f32)> {
+        None
+    }
+}
+
+/// A riding state's enter (the callbacks of F-71745, listed at `BikeClips`), after the bookkeeping `ride_state` does. `pan`:
+/// F-56423 finds the pan clip (the local human, the clip in the pack); `edge`: a cockpit flag edge this frame (bits 19 / 20:
+/// the 0.01 s blend). The dev params `bikeforcelowturnsweep` / `bikefakehispeed` are off in play.
+fn ride_enter(n: St, ck: bool, edge: bool, pan: bool, fidgets: i32, speed: f32, o: &mut dyn RideSink) {
+    use RCmd::*;
+    let e = |b: f32| if edge { 0.01 } else { b };
+    let k = |a: &'static str, b: &'static str| if ck { a } else { b };
+    match n {
+        St::Start => {}
+        // F-27733 (the suspended state's enter too): in the cockpit the pan out, else F-56423's
+        St::Cruise => {
+            o.cmd(Pan(!ck && pan));
+            o.cmd(Pair(k("drv_low_lean_sweep_ckpt", "drv_low_lean_sweep"), k("drv_fst_lean_sweep_ckpt", "drv_fst_lean_sweep"), false, e(0.45)));
+            o.cmd(Rate5(0.0));
+            o.cmd(Phase2(0.5));
+            o.cmd(Weight(1.0));
+        }
+        // F-73617
+        St::Stopped | St::BurnC => {
+            o.cmd(Pan(!ck && pan));
+            o.cmd(Play(k("drv_idle_stp_sweep_ckpt", "drv_idle_stp_sweep"), e(0.35), false, false));
+            o.cmd(Rate(0.0));
+        }
+        // F-14953
+        St::Tuck => {
+            o.cmd(Pan(false));
+            o.cmd(Pair(k("drv_low_lean_sweep_ckpt", "drv_low_leanFwd_sweep"), k("drv_fst_lean_sweep_ckpt", "drv_fst_leanFwd_sweep"), false, e(0.25)));
+            o.cmd(Rate5(0.0));
+        }
+        // F-33885
+        St::Wheelie => {
+            o.cmd(Pan(false));
+            o.cmd(Pair(k("drv_wheelie_ckpt", "drv_wheelie"), k("drv_wheelie_ckpt", "drv_low_lean_sweep"), false, e(0.25)));
+            o.cmd(Rate5(0.0));
+        }
+        // F-23193, F-22152
+        St::Endo | St::Nos => {
+            o.cmd(Pan(false));
+            let c = if n == St::Endo { k("drv_endo_ckpt", "drv_endo") } else { k("drv_nos_lean_sweep_ckpt", "drv_nos_lean_sweep") };
+            o.cmd(Play(c, e(0.25), false, false));
+            o.cmd(Rate(0.0));
+        }
+        // F-13481 / F-26376: no rate (the clip plays at 1, the cruise update sets its phase)
+        St::BurnL | St::BurnR => {
+            o.cmd(Pan(false));
+            let c = if n == St::BurnL { "drv_burnout_L" } else { "drv_burnout_R" };
+            o.cmd(Play(k("drv_idle_stp_sweep_ckpt", c), e(0.25), false, false));
+        }
+        // F-54589: the pan out only in the cockpit; no edge blend
+        St::Shift => {
+            if ck {
+                o.cmd(Pan(false));
+            }
+            o.cmd(PairOverlay(k("drv_shft_low_ckpt_overlay", "drv_shft_low_overlay"), k("drv_shft_fst_ckpt_overlay", "drv_shft_fst_overlay"), false, 0.25));
+            o.cmd(Rate5(0.0));
+            o.cmd(Weight(ride_speed_weight(speed)));
+        }
+        // F-93384
+        St::Reverse => {
+            o.cmd(Pan(false));
+            o.cmd(Play(k("drv_rev_sweep_ckpt", "drv_rev_sweep"), e(0.35), false, false));
+            o.cmd(OneOverlay("drv_rev_overlay", true, 0.25));
+            o.cmd(Rate(0.0));
+            o.cmd(OverlayRate(1.5));
+        }
+        // F-87252 with the picker F-61316 (the counter already moved on)
+        St::Fidget => {
+            o.cmd(Pan(false));
+            o.cmd(Play(["drv_gest_look_lft", "drv_gest_look_rgt"][(fidgets % 2) as usize], 0.25, false, false));
+        }
+    }
+}
+
+/// A riding state's update: the cruise's F-61324 (the burnouts' too), stopped idle F-63745, tuck F-77590, wheelie F-56690,
+/// endo F-14383, nos F-23398, shift F-32007, reverse F-30945; the start and the fidget have none.
+fn ride_update(s: St, i: &RideIn, ta: f32, o: &mut dyn RideSink) {
+    use RCmd::*;
+    let ph = ride_remap(i.x);
+    match s {
+        St::Start | St::Fidget => {}
+        St::Cruise | St::BurnC | St::BurnL | St::BurnR | St::Tuck => {
+            o.cmd(Phase2(ph));
+            o.cmd(Weight(ride_speed_weight(i.speed)));
+        }
+        St::Wheelie => {
+            o.cmd(Phase2(ph));
+            let k = ta - 1.0;
+            o.cmd(Weight(if -k >= 0.0 { 0.0 } else { k }));
+        }
+        St::Stopped => {
+            let a = if i.x - -0.5 >= 0.0 { i.x } else { -0.5 };
+            o.cmd(Phase(if a - 0.5 >= 0.0 { 0.5 } else { a } + 0.5));
+        }
+        St::Endo | St::Nos => o.cmd(Phase(ph)),
+        St::Shift => o.cmd(Phase2(ph)),
+        St::Reverse => o.cmd(Phase2((i.x + 1.0) * 0.5)),
+    }
+}
+
 /// The rider machine's frame without the pose (the graph's transitions in the builder's order, the enters' timers and the
 /// crossfade they start, the cruise update's timer B): what `ride_pose` poses from. `time`: the clock the start's idle runs on.
 fn ride_state(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32) {
+    ride_state_to(r, b, i, time, dt, &mut ())
+}
+
+/// `ride_state` with the callbacks' anim player commands into `o` (and the time left read from it, when it has a player).
+fn ride_state_to(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32, o: &mut dyn RideSink) {
     let ck = i.ck;
     let ck_before = r.ck;
     let edge = ck != r.ck && r.state != St::Start;
@@ -926,20 +1073,39 @@ fn ride_state(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32) {
     let left = |c: Option<&Clip>, t: f32| c.map_or(-1.0, |c| (c.anim.duration - t).max(0.0));
     let look = |r: &Ride| b.look[(r.fidgets % 2) as usize].as_ref();
     let shift_over = |r: &Ride| if r.shift_ck { b.shft_low_ck.as_ref().or(b.shft_low.as_ref()) } else { b.shft_low.as_ref() };
-    let next_of = |r: &Ride| ride_next(r.state, i, ck, edge, r.timer_a, r.timer_b, left(look(r), r.t), left(shift_over(r), r.t));
-    // (the cruise update - the burnouts' too, centre, left and right: timer B held at 0 while IsBurnout, F-61324's tail)
-    let update = |r: &mut Ride| {
+    let pan = !i.opponent && b.pan.is_some();
+    let next_of = |r: &Ride, o: &mut dyn RideSink| {
+        let (lc, lo) = o.left().unwrap_or_else(|| (left(look(r), r.t), left(shift_over(r), r.t)));
+        ride_next(r.state, i, ck, edge, r.timer_a, r.timer_b, lc, lo)
+    };
+    // (the state's update; the cruise update's tail - the burnouts' too, centre, left and right: timer B held at 0 while
+    // IsBurnout, F-61324)
+    let update = |r: &mut Ride, o: &mut dyn RideSink| {
+        ride_update(r.state, i, r.timer_a, o);
         if matches!(r.state, St::Cruise | St::BurnC | St::BurnL | St::BurnR) && i.burnout {
             r.timer_b = 0.0;
         }
     };
     // (the machine's step F-58452: the state's update, then up to three transitions - exit, enter, the new state's update)
-    update(r);
+    update(r, o);
     for _ in 0..3 {
-        let Some(n) = next_of(r) else { break };
-        // (the fidget's exit: timer A = 0)
-        if r.state == St::Fidget {
-            r.timer_a = 0.0;
+        let Some(n) = next_of(r, o) else { break };
+        match r.state {
+            // (the stopped idle's exit F-63058: the pan back in)
+            St::Stopped => o.cmd(RCmd::Pan(pan)),
+            // (the fidget's exit F-53813: the overlay's end at once, the pan back in, timer A = 0; its branch for the
+            // global +300 flag - drv_idle_low looped with no blend - is not mapped)
+            St::Fidget => {
+                o.cmd(RCmd::StopOverlay(0.0));
+                o.cmd(RCmd::Pan(pan));
+                r.timer_a = 0.0;
+            }
+            // (the transition's action F-88016: the pan in, drv_idle_low looped with no blend)
+            St::Start => {
+                o.cmd(RCmd::Pan(pan));
+                o.cmd(RCmd::Play("drv_idle_low", 0.25, true, true));
+            }
+            _ => {}
         }
         let blend = match n {
             St::Cruise => 0.45,
@@ -969,9 +1135,92 @@ fn ride_state(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32) {
         r.state = n;
         // (the shift's enter F-54589 takes the pan out only in the cockpit, context +8 bit 21; outside it the pan stays
         // as the cruise left it - recorded 2026-11-05)
-        r.pan = if n == St::Shift { r.pan && !ck } else { matches!(n, St::Cruise | St::Stopped | St::BurnC) && !ck && !i.opponent && b.pan.is_some() };
-        update(r);
+        r.pan = if n == St::Shift { r.pan && !ck } else { matches!(n, St::Cruise | St::Stopped | St::BurnC) && !ck && pan };
+        ride_enter(n, ck, edge, pan, r.fidgets, i.speed, o);
+        update(r, o);
     }
+}
+
+/// The rider's anim player as the sink of its commands: the trees built with the pan clip of +112 (no face clip, no spine
+/// pan, the filters), the clips by the pack's dictionary, each request submitted at once.
+struct RideSeq<'a> {
+    seq: &'a mut da::Seq,
+    pan: &'a mut Option<da::ClipId>,
+    dict: &'a HashMap<String, u32>,
+    clips: &'a [Clip],
+    /// (the tests: every command, in order)
+    rec: Option<&'a mut Vec<RCmd>>,
+}
+
+impl RideSink for RideSeq<'_> {
+    fn cmd(&mut self, c: RCmd) {
+        if let Some(v) = self.rec.as_mut() {
+            v.push(c);
+        }
+        let (dict, clips) = (self.dict, self.clips);
+        let id = |n: &str| dict.get(&n.to_ascii_lowercase()).copied();
+        let dur = |c: da::ClipId| clips.get(c as usize).map_or(0.0, |c| c.anim.duration);
+        let looped = |c: da::ClipId| clips.get(c as usize).is_some_and(|c| c.anim.looped);
+        let look = da::Look { face: None, pan_spine: None, pan: *self.pan, filters: true };
+        let s = &mut *self.seq;
+        let req = match c {
+            RCmd::Pan(on) => {
+                *self.pan = if on { id("DRV_PAN_SWEEP_OVERLAY") } else { None };
+                None
+            }
+            RCmd::Play(n, b, l, nb) => id(n).map(|x| da::play(&look, &dur, x, b, l, nb)),
+            RCmd::Pair(a, z, l, b) => id(a).zip(id(z)).map(|(x, y)| da::pair(&look, &dur, x, y, l, b)),
+            RCmd::PairOverlay(a, z, l, b) => id(a).zip(id(z)).and_then(|(x, y)| da::pair_overlay(s, &look, &dur, x, y, l, b)),
+            RCmd::OneOverlay(n, l, b) => id(n).and_then(|x| da::one_overlay(s, &look, &dur, x, l, b)),
+            RCmd::StopOverlay(b) => da::stop_overlay(s, &look, b),
+            RCmd::Phase(v) => {
+                s.set_phase(v);
+                None
+            }
+            RCmd::Rate(v) => {
+                s.set_rate(v);
+                None
+            }
+            RCmd::Rate5(v) => {
+                s.set_rate5(v);
+                None
+            }
+            RCmd::Phase2(v) => {
+                s.set_phase2(v);
+                None
+            }
+            RCmd::Weight(v) => {
+                s.set_weight(v);
+                None
+            }
+            RCmd::OverlayRate(v) => {
+                s.set_overlay_rate(v);
+                None
+            }
+        };
+        if let Some(r) = req {
+            s.submit_with(&r, &dur, &looped);
+        }
+    }
+
+    fn left(&mut self) -> Option<(f32, f32)> {
+        Some((self.seq.remaining(), self.seq.overlay_remaining()))
+    }
+}
+
+/// One frame of a rider on the anim player (as `CarAnim::step` for a car driver): the riding states with their commands into
+/// the sequencer, the pan smoother (driver +48) while +112 holds the pan clip, then the motion tree's update.
+#[allow(clippy::too_many_arguments)]
+fn ride_step(r: &mut Ride, dict: &HashMap<String, u32>, clips: &[Clip], b: &BikeClips, i: &RideIn, time: f32, dt: f32, rec: Option<&mut Vec<RCmd>>) {
+    let (mut seq, mut pan) = (std::mem::take(&mut r.seq), r.pan_clip);
+    ride_state_to(r, b, i, time, dt, &mut RideSeq { seq: &mut seq, pan: &mut pan, dict, clips, rec });
+    if pan.is_some() {
+        let (p, hold) = r.pan_p.get_or_insert((0.5, -1.0));
+        pan_smooth(p, hold, pan_target(i.look), dt);
+        seq.set_pan_time(*p);
+    }
+    seq.update(dt);
+    (r.seq, r.pan_clip) = (seq, pan);
 }
 
 /// The sweep's phase and the pair's weight the state's update sets on the anim player this frame (phase: F-40742 /
@@ -1574,7 +1823,6 @@ impl Drivers {
     }
 
     fn rig(&mut self, gpu: &mut Gpu, car: &str, bike: bool, player: bool, female: bool, si: usize) -> bool {
-        let is_bike = bike;
         let key = (car_key(car), player, female, si);
         if !self.rigs.contains_key(&key) {
             let rig = (|| -> Option<Rig> {
@@ -1617,8 +1865,8 @@ impl Drivers {
                 }
                 let bike = BikeClips::load(&clip);
                 let (mut dict, mut clips) = (HashMap::new(), Vec::new());
-                if !is_bike {
-                    // the pack's own dictionary (F-99427): the holder's name table (+780, count +1548) holds the keys
+                {
+                    // the pack's own dictionary (F-99427; a rider's too, F-66148): the holder's name table (+780, count +1548) holds the keys
                     // ("Drv_steer_sweep"), entry i the clip at +8 + 4i; compared case-blind, the first equal one wins. The
                     // clips' own names carry the prefix of the car they were made for (the Police Car Pack's: CHV_IMPALA_96_ /
                     // DGE_CHARGER_06_, the faces dge_challenger_70_), the keys none.
@@ -1785,7 +2033,17 @@ impl Drivers {
             if let (true, Some(b)) = (s.bike, rig.bike.as_ref()) {
                 let ride = self.rides.entry(s.id).or_default();
                 let i = RideIn { ck: s.player && self.ckpt_view, ..s.ride };
-                ride_pose(ride, b, &rig.model.bones, &rig.model.neck_bones, &i, self.time, dt, &mut local, &mut other);
+                // (the anim player's tree, as the car drivers'; MCLA_DRV_OLD or a pack without its dictionary: the
+                // hand-built pose)
+                let fr = (machines && !rig.dict.is_empty()).then(|| {
+                    ride_step(ride, &rig.dict, &rig.clips, b, &i, self.time, dt, None);
+                    ride.seq.compose(&RigPoser(rig))
+                });
+                match fr {
+                    Some(Some(fr)) => finish(&fr, &rig.model.bones, &mut local),
+                    Some(None) => finish(&da::Poser::blank(&RigPoser(rig)), &rig.model.bones, &mut local),
+                    None => ride_pose(ride, b, &rig.model.bones, &rig.model.neck_bones, &i, self.time, dt, &mut local, &mut other),
+                }
             } else if let Some(fr) = self.cars.get(&s.uid).filter(|_| machines && !s.bike).and_then(|a| a.seq.compose(&RigPoser(rig))) {
                 finish(&fr, &rig.model.bones, &mut local);
             } else {
@@ -2806,6 +3064,14 @@ mod ride_recorded_tests {
             None
         };
         let b = BikeClips::load(&clip).unwrap();
+        // (the pack's dictionary, as the rig has it)
+        let (mut dict, mut clips) = (HashMap::new(), Vec::new());
+        for (k, o) in holder_keys(&rd) {
+            if let Some(a) = animation_named(&rd, o) {
+                dict.insert(k, clips.len() as u32);
+                clips.push(Clip::bind(&Arc::new(a), &[], false, false));
+            }
+        }
         let mut runs = 0;
         for run in ["bike1", "bike2", "bike3"] {
             let Ok(fix) = std::fs::read_to_string(format!("D:/MCLA/work/driverlight/cmp/{run}.fix")) else {
@@ -2813,12 +3079,29 @@ mod ride_recorded_tests {
                 continue;
             };
             runs += 1;
-            ride_run(run, &fix, &b);
+            ride_run(run, &fix, &b, &dict, &clips);
         }
         eprintln!("{runs} rides compared");
     }
 
-    fn ride_run(run: &str, fix: &str, b: &BikeClips) {
+    /// A command as the recorder writes it (the overlay builders, the overlay's end and its rate are not hooked).
+    fn rec_of(c: &RCmd) -> Option<String> {
+        let n = |x: &str| format!("kaw_ninja_zx14_06_{}", x.to_ascii_lowercase());
+        let set = |k: u8, v: f32| Some(format!("set {k} {:08x}", v.to_bits()));
+        match *c {
+            RCmd::Pan(on) => Some(format!("ovly {}", if on { n("drv_pan_sweep_overlay") } else { "-".into() })),
+            RCmd::Play(c, b, l, nb) => Some(format!("play {} {:08x} {} {}", n(c), b.to_bits(), l as u8, nb as u8)),
+            RCmd::Pair(a, z, l, b) => Some(format!("pair {} {} {:08x} {}", n(a), n(z), b.to_bits(), l as u8)),
+            RCmd::Phase(v) => set(0, v),
+            RCmd::Rate(v) => set(1, v),
+            RCmd::Rate5(v) => set(2, v),
+            RCmd::Phase2(v) => set(3, v),
+            RCmd::Weight(v) => set(6, v),
+            RCmd::PairOverlay(..) | RCmd::OneOverlay(..) | RCmd::StopOverlay(_) | RCmd::OverlayRate(_) => None,
+        }
+    }
+
+    fn ride_run(run: &str, fix: &str, b: &BikeClips, dict: &HashMap<String, u32>, clips: &[Clip]) {
         let hex = |s: &str| u32::from_str_radix(s, 16).unwrap();
         let lines: Vec<&str> = fix.lines().collect();
         let mut r = Ride::default();
@@ -2830,6 +3113,7 @@ mod ride_recorded_tests {
         let riding = [St::Stopped, St::Cruise, St::Tuck, St::Wheelie, St::Endo, St::BurnC, St::BurnL, St::BurnR, St::Nos, St::Shift, St::Reverse, St::Fidget];
         let (mut frames, mut bad_state, mut bad_timer, mut enters, mut bad_enter, mut bad_pan) = (0, 0, 0, 0, 0, 0);
         let (mut sets, mut bad_set) = (0, 0);
+        let (mut cmds, mut bad_cmds) = (0, 0);
         let mut notes = Vec::new();
         let mut rec_pan = true;
         let (mut i, mut first, mut time) = (0, true, 0.0);
@@ -2856,6 +3140,8 @@ mod ride_recorded_tests {
                 r.ck = fl & 0x20_0000 != 0;
                 (r.timer_a, r.timer_b) = (f(&a, 148), f(&a, 152));
                 first = false;
+                // (the anim player as the stopped idle's enter left it, outside the cockpit)
+                ride_enter(St::Stopped, r.ck, false, true, 0, 0.0, &mut RideSeq { seq: &mut r.seq, pan: &mut r.pan_clip, dict, clips, rec: None });
             }
             let inp = RideIn {
                 ck: fl & 0x20_0000 != 0,
@@ -2878,8 +3164,18 @@ mod ride_recorded_tests {
             };
             let was = r.state;
             time += dt;
-            ride_state(&mut r, b, &inp, time, dt);
+            let mut got = Vec::new();
+            ride_step(&mut r, dict, clips, b, &inp, time, dt, Some(&mut got));
             frames += 1;
+            // the frame's commands, every one, against the recorded calls in order
+            let got: Vec<String> = got.iter().filter_map(rec_of).collect();
+            cmds += calls.len();
+            if got != calls {
+                bad_cmds += 1;
+                if notes.len() < 30 {
+                    notes.push(format!("frame {frames} ({state}): commands {got:?} want {calls:?}"));
+                }
+            }
             for c in &calls {
                 if let Some(n) = c.strip_prefix("ovly ") {
                     rec_pan = n != "-";
@@ -2960,11 +3256,11 @@ mod ride_recorded_tests {
                 }
             }
         }
-        eprintln!("{run}: {frames} frames, {enters} enters, {sets} phase / weight values; state differs on {bad_state}, timers on {bad_timer}, enters on {bad_enter}, pan on {bad_pan}, values on {bad_set}");
+        eprintln!("{run}: {frames} frames, {enters} enters, {sets} phase / weight values, {cmds} calls; state differs on {bad_state}, timers on {bad_timer}, enters on {bad_enter}, pan on {bad_pan}, values on {bad_set}, the frame's calls on {bad_cmds}");
         for n in &notes {
             eprintln!("  {n}");
         }
-        assert!(bad_state == 0 && bad_timer == 0 && bad_enter == 0 && bad_pan == 0 && bad_set == 0, "{run}");
+        assert!(bad_state == 0 && bad_timer == 0 && bad_enter == 0 && bad_pan == 0 && bad_set == 0 && bad_cmds == 0, "{run}");
     }
 }
 
