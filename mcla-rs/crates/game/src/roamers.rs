@@ -963,22 +963,10 @@ impl Roamers {
                             dir = nav.links[li].dir();
                         }
                     }
-                    let n = m.pts.len();
-                    // three times round
-                    let stops: Vec<Vec3> = (0..n * 3).map(|j| m.pts[(next + j) % n]).collect();
-                    let key: Vec<u32> = [nav as *const _ as usize as u64 as u32, ((nav as *const _ as usize as u64) >> 32) as u32, 25f32.to_bits()]
-                        .into_iter()
-                        .chain([pos, dir].iter().chain(stops.iter()).flat_map(|v| v.to_array().map(f32::to_bits)))
-                        .collect();
-                    let (line, _) = match &self.route_memo {
-                        Some((k, r)) if *k == key => r.clone(),
-                        _ => {
-                            let r = nav.route_through(pos, dir, &stops, 25.0);
-                            self.route_memo = Some((key, r.clone()));
-                            r
-                        }
-                    };
-                    let at = if line.len() > 8 && !at_reset { line[0] } else { pos };
+                    // (the man is put down where he is: the old route follower's line starts at `pos` - `route_through`'s
+                    // first point is its start -, and the line is made only for that follower, when the cruising
+                    // brain is not set up; the cruising brain routes with the original's search, railroute)
+                    let at = pos;
                     // (set down on the nearest rail with ground under it, as the cruising brain's teleport - `rail_place`; the
                     // loop's point itself can be 30 m off the road, inside a block with no collision: the car fell through the
                     // map, AI.md NEW 6. No rail with ground within 80 m: not this time)
@@ -1017,6 +1005,21 @@ impl Roamers {
                                 ai.t = t;
                                 ai.target_speed = CRUISE;
                                 ai.aggression = 0.7;
+                                let n = m.pts.len();
+                                // three times round
+                                let stops: Vec<Vec3> = (0..n * 3).map(|j| m.pts[(next + j) % n]).collect();
+                                let key: Vec<u32> = [nav as *const _ as usize as u64 as u32, ((nav as *const _ as usize as u64) >> 32) as u32, 25f32.to_bits()]
+                                    .into_iter()
+                                    .chain([pos, dir].iter().chain(stops.iter()).flat_map(|v| v.to_array().map(f32::to_bits)))
+                                    .collect();
+                                let (line, _) = match &self.route_memo {
+                                    Some((k, r)) if *k == key => r.clone(),
+                                    _ => {
+                                        let r = nav.route_through(pos, dir, &stops, 25.0);
+                                        self.route_memo = Some((key, r.clone()));
+                                        r
+                                    }
+                                };
                                 if line.len() > 8 {
                                     ai.path = Some(std::sync::Arc::new(line));
                                     ai.path_i = 0;
