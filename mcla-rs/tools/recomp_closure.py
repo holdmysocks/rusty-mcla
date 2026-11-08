@@ -79,7 +79,7 @@ def build(idx, names, main, out: Path, tag, stubs=(), vector=False, scratch_end=
     cpp = out / f'{tag}.cpp'
     cpp.write_text((vector_shim() if vector else shim(scratch_end)) + EXTRA + protos + stubdefs + ''.join(fs.values()) + main)
     exe = out / f'{tag}.exe'
-    r = subprocess.run(['g++', '-std=c++17', '-O2', '-ffp-contract=off', '-static', *flags, '-I' + str(SIMDE), str(cpp), '-o', str(exe)],
+    r = subprocess.run(['g++', '-std=c++17', '-O2', '-ffp-contract=off', '-msse4.1', '-mssse3', '-static', *flags, '-I' + str(SIMDE), str(cpp), '-o', str(exe)],
                        capture_output=True, text=True)
     if r.returncode:
         raise RuntimeError(r.stderr[:800])
