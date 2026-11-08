@@ -162,6 +162,28 @@ fn side_pick(a: bool, b: bool, c: bool, d: bool, on_right: bool) -> bool {
     }
 }
 
+/// The tactics' closing-in test F-32902: B (the cop) heads at A (the target). With `r` != 0 the squared distance (dy dy, dz
+/// and dx fused) must be under r^2; B's chassis speed `sb` (+224) above fMovingSpeed x 0.447 and above A's `sa`; then the
+/// unit of A - B (F-41334, eps 1e-5, fallback (1, 0, 0)) dotted with B's velocity / `sb` over 0.9. The vector unit's
+/// subtract and multiply flush denormals.
+fn closing_in(a: Vec3, b: Vec3, sa: f32, sb: f32, vb: Vec3, r: f32, moving_speed: f32) -> bool {
+    if r != 0.0 {
+        let d2 = fmas(a.x - b.x, a.x - b.x, fmas(a.z - b.z, a.z - b.z, (a.y - b.y) * (a.y - b.y)));
+        if d2 >= r * r {
+            return false;
+        }
+    }
+    if sb <= moving_speed * 0.447 || sb <= sa {
+        return false;
+    }
+    let ftz = |x: f32| if x.abs() < f32::MIN_POSITIVE { 0.0 * x } else { x };
+    let d = Vec3::new(ftz(ftz(a.x) - ftz(b.x)), ftz(ftz(a.y) - ftz(b.y)), ftz(ftz(a.z) - ftz(b.z)));
+    let k = ftz(1.0 / sb);
+    let v = Vec3::new(ftz(ftz(vb.x) * k), ftz(ftz(vb.y) * k), ftz(ftz(vb.z) * k));
+    let n = crate::aiv::norm_or(d, 1e-5, Vec3::X);
+    fmas(n.x, v.x, fmas(n.y, v.y, n.z * v.z)) > 0.9
+}
+
 /// The police manager's detecting-cop pick F-76033 (PoliceManager_CanAnyPoliceDetectTarget's body; the law update F-52240
 /// asks it with need_check, need_free and group 1): the first of the manager's `n` units, in its order, that is there
 /// (`unit(i)` = Some((+1072 may check law breaking, in a tactic F-72241, +872 group))), may check when `need_check`, is in no
@@ -4137,11 +4159,7 @@ impl Police {
         if self.kind.squad() && self.heat == Heat::Pursuit && self.flee_hold <= 0.0 && self.cops.len() == self.kind.cops() {
             let arrow = self.kind == TacKind::ArrowTrap;
             // (closing(r): the cop moving, faster than the target and heading at it within 25.8 deg, within r)
-            let closing = |c: &crate::vehicles::CarInstance, r: f32| {
-                let (to, cv) = (ppos - c.state.pos, c.state.vel);
-                let cs = cv.length();
-                (r == 0.0 || to.length() < r) && cs > moving_v && cs > speed && to.normalize_or_zero().dot(cv / cs.max(1e-6)) > 0.9
-            };
+            let closing = |c: &crate::vehicles::CarInstance, r: f32| closing_in(ppos, c.state.pos, speed, c.state.vel.length(), c.state.vel, r, t("fMovingSpeed", 1.0));
             let any_safe = vehicles.cars.iter().filter(|c| pursuer(c)).any(|c| c.state.pos.distance(ppos) < safe);
             // (the formation, F-80532 / F-21534 in squad_formation: the cops' brains as their CopTac - AlongSide 5 with its
             // side, CatchUp the Pursue 4 - and the brains' route points; the target matrix's third row is -forward)
@@ -4366,7 +4384,7 @@ impl Police {
                 let same_dir = pvel.dot(cvel) > 0.0;
                 let same_facing = same_facing(pfwd, cfwd);
                 let bearing = crate::aiv::ang3(cright, to).to_degrees();
-                let closing = |r: f32| (r == 0.0 || d < r) && cspeed > moving_v && cspeed > speed && to.normalize_or_zero().dot(cvel / cspeed.max(1e-6)) > 0.9;
+                let closing = |r: f32| closing_in(ppos, cpos, speed, cspeed, cvel, r, t("fMovingSpeed", 1.0));
                 // (head-on, +774: in front, coming the other way, seen, travel directions more than fHeadOnAngle apart)
                 let tdir = if t_moving { pvel.normalize_or_zero() } else { pfwd };
                 let cdir = if cspeed > moving_v { cvel / cspeed } else { cfwd };
@@ -5334,6 +5352,21 @@ mod tests {
         p.arrest_posted = false;
         p.kind = TacKind::None;
         assert_eq!(p.hud_state(), 0);
+    }
+
+    #[test]
+    fn closing_matches_the_original() {
+        // tools/closing_reference.py: F-32902 on 6,000 cases (ranges 0 / 7 / 50 / at the distance, speeds at the floor, the
+        // 0.9 edge, A on B, tiny offsets)
+        let mut n = 0;
+        for l in include_str!("testdata/closing_ref.txt").lines() {
+            let w: Vec<u32> = l.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let v3 = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            assert_eq!(closing_in(v3(1), v3(4), f(7), f(8), v3(9), f(0), f(12)), w[13] == 1, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 6000);
     }
 
     #[test]
