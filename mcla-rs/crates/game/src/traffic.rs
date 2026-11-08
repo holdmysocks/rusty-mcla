@@ -8165,9 +8165,9 @@ impl Vehicles {
     /// radius) of M+192. Stuck (r22): the stop line in charge (+420 == 1; its wanted speed +416 is 0) and the speed +412
     /// below 6.7056 m/s (15 mph), not in the cutscene. r24: its lane held by the race clearing (rail slot 18, F-73172). Listed and not held: kept while younger
     /// than its least life (+468). Crowded (r28): listed, on a lane of a region whose weight is above 0 and whose cars
-    /// over that weight are above 1.5. (r30, the two script spheres M+5888, needs the bytes M+2105 / 2106 that free
-    /// roam leaves clear.) The seen test F-92805 only for a listed car (the front-end mode: seen = listed). Removed
-    /// when not seen and not listed, held, stuck, crowded or off a lane.
+    /// over that weight are above 1.5, not in the cutscene. r30: in a race, listed and within the junction ahead of the
+    /// player (`race_junction_holds`). The seen test F-92805 only for a listed car (the front-end mode: seen = listed).
+    /// Removed when not seen and not listed, held, stuck, at the junction, crowded or off a lane.
     fn unspawn_frame(&mut self, sp: &Spawner, nav: &NavSys, focus: Vec3, view: Vec3, mph: f32) {
         let pool: Vec<usize> = (0..self.cars.len()).filter(|&i| self.ambient_listed(i)).collect();
         if pool.is_empty() {
@@ -8175,6 +8175,7 @@ impl Vehicles {
         }
         let occ = crate::occluder::city(&sp.data_dir).map(|c| c.select_around(focus + Vec3::Y * 1.75, OCC_RANGE));
         let lc = self.lane_cars(nav);
+        let jrec = if sp.frontend.is_some() { None } else { self.player_record.map(|r| r.0) };
         let listed_j: hashbrown::HashSet<usize> = sp.order.iter().filter_map(|&(n, _)| match n {
             NavNode::Junction(j) => Some(j),
             _ => None,
@@ -8206,19 +8207,25 @@ impl Vehicles {
             if listed && !held && self.clock - r.born < r.life {
                 continue;
             }
-            let crowded = listed && on_lane && region.is_some_and(|n| {
+            // (r28 only outside the cutscene mode, F-97032)
+            let crowded = listed && on_lane && !sp.cutscene && region.is_some_and(|n| {
                 let w = sp.order.iter().find(|x| x.0 == n).map_or(0.0, |x| x.1);
                 w > 0.0 && (Self::region_cars(nav, &lc, n) as f32) / w > 1.5
             });
             let stuck = r.slot == Some(1) && r.v < 6.7056 && !sp.cutscene;
+            // r30, the race clearing's junction: listed, M+2105 (0 from the ctor F-10264) or M+2106 (1 from it) with the
+            // race byte S+0x64251, within the junction of one of the tracker's two records (only record 0 is written: the
+            // player's junction ahead) - |dy| not over 5, fsqrts(fmadds(dx, dx, fmadds(dz, dz, dy dy))) under the
+            // junction rect's length +0x40 -; not with -notrafficclearing (never set) nor in the cutscene mode (F-97032)
+            let at_junction = listed && self.race_event && !sp.cutscene && jrec.is_some_and(|j| race_junction_holds(pos, nav.junction_rects[j].c, nav.junction_centers[j].y, nav.junction_rects[j].len));
             let seen_now = if sp.frontend.is_some() { listed } else { listed && seen(&sp.tune, focus, view, mph, pos, occ.as_ref()) };
             if seen_now {
                 continue;
             }
-            if !listed || held || stuck || crowded || !on_lane {
+            if !listed || held || stuck || at_junction || crowded || !on_lane {
                 if std::env::var("MCLA_TRAFFIC_TRACE").is_ok() {
                     let v = pos - focus;
-                    log::info!("traffic unspawn {} dist {:.1} ahead {:.1} age {:.1} off_list {} crowded {} stuck {} off_lane {}", c.model.name, Vec3::new(v.x, 0.0, v.z).length(), v.dot(view), self.clock - r.born, !listed, crowded, stuck, !on_lane);
+                    log::info!("traffic unspawn {} dist {:.1} ahead {:.1} age {:.1} off_list {} crowded {} stuck {} off_lane {} junction {}", c.model.name, Vec3::new(v.x, 0.0, v.z).length(), v.dot(view), self.clock - r.born, !listed, crowded, stuck, !on_lane, at_junction);
                 }
                 self.cars.remove(i);
                 return;
@@ -8266,6 +8273,18 @@ impl CrossGrid {
     fn holds(&self, ix: i32, iz: i32) -> bool {
         !self.bounded || (ix >= 0 && ix < self.n[0] && iz >= 0 && iz < self.n[1])
     }
+}
+
+/// F-65438's r30 test: the car at `p` within the junction's length (rect +0x40, the whole of it) of the junction's point
+/// (x / z +0x50 / +0x58, y +0x84), the height difference not over 5.0 (`fcmpu` + `bgt`: a NaN passes); the distance
+/// fsqrts(fmadds(dx, dx, fmadds(dz, dz, dy dy))), `bge` (a NaN passes).
+pub fn race_junction_holds(p: Vec3, c: [f32; 2], cy: f32, len: f32) -> bool {
+    use crate::physics::exact::fma;
+    let (dx, dy, dz) = (p.x - c[0], p.y - cy, p.z - c[1]);
+    if dy.abs() > 5.0 {
+        return false;
+    }
+    !(fma(dx, dx, fma(dz, dz, dy * dy)).sqrt() >= len)
 }
 
 /// F-92144's junction test: is the spawn point `p` within half the junction's length (rect +0x40) of the junction's
