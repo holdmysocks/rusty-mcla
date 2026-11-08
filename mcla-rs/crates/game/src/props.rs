@@ -303,14 +303,40 @@ pub struct PropLamp {
 /// tan((max(penumbra, 0) + cone x 1.077) x 6.28 / 720) - 2.388 for the 125 degree street lamps, 0.190 for the
 /// 20 degree flare. Every lamp with a cone takes it, the files of Type 0 as well (the recorded 10.72 m storm kind).
 pub fn cone_tan(cone: f32, penumbra: f32) -> f32 {
-    // (F-19533's copy: fmuls by its constant 1.077, fadds of the global; F-46735: fsel, fadds, x 1/720, x 6.28, the double tan, frsp)
-    let (c, p) = (cone * 1.077, penumbra + 0.0);
-    let p = if p >= 0.0 { p } else { 0.0 };
-    (((p + c) * 0.001_388_888_9 * 6.28) as f64).tan() as f32
+    // (F-19533's copy: fmuls by its constant 1.077, fadds of the global)
+    light_cone_tan(1, cone * 1.077, penumbra + 0.0)
+}
+
+/// F-46735 on a lamp copy: its type byte (+88), cone angle (+68) and penumbra (+72). A type other than 1 gives the
+/// image's -1.001; type 1: fsel (penumbra below 0 or NaN -> 0), fadds the cone, x 1/720, x 6.28 (both fmuls), the
+/// library's double tan, frsp. Checked against F-46735 run offline on 6,000 cases (`tools/cone_tan_reference.py`,
+/// test `light_cone_tan_matches_the_original`).
+pub fn light_cone_tan(kind: u8, cone: f32, penumbra: f32) -> f32 {
+    if kind != 1 {
+        return -1.001;
+    }
+    let p = if penumbra >= 0.0 { penumbra } else { 0.0 };
+    (((p + cone) * 0.001_388_888_9 * 6.28) as f64).tan() as f32
 }
 
 #[cfg(test)]
 mod cone_tan_tests {
+    /// F-46735 run offline (`tools/cone_tan_reference.py`): the files' angles, random ones, near the tan's pole,
+    /// signed zeros and large values, types 0 - 3; every result's bits equal.
+    #[test]
+    fn light_cone_tan_matches_the_original() {
+        let h = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let mut n = 0;
+        for l in include_str!("render/testdata/cone_tan_reference.txt").lines() {
+            let t: Vec<&str> = l.split_whitespace().collect();
+            assert_eq!(t[0], "CONE");
+            let got = super::light_cone_tan(t[1].parse().unwrap(), h(t[2]), h(t[3]));
+            assert_eq!(got.to_bits(), h(t[4]).to_bits(), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 6000);
+    }
+
     /// The recorded LightMatrix of the street lamps (38.21 m wide at 16 m) and of the storm's 10.72 m / 25.6 m and
     /// 12.87 m / 30.74 m kinds (LIGHTING.md, the lamps' cones): all ConeAngle 125, Penumbra -50.
     #[test]
