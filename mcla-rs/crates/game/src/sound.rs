@@ -302,6 +302,11 @@ pub struct Sound {
     /// HENRY_DRIVEBY (RACE_GH_06_READY_TO_START_ON_ENTER: on at 0x910 / 0x938 right before the scene starts, off at 0x9fd /
     /// 0xa22 after the first 10 ms wait of its loop)
     pub story_mix: (bool, bool),
+    /// SLOWMO_FORM, mixer slot 17: mcSlowMotionForm (form 108) shown (vt+400, F-22641: started unless running) until
+    /// hidden (vt+756, F-21566: stopped if running), and AudioManager_SetActiveSlowMotionForm (1 starts / 0 stops the
+    /// same way); main: the tutorial's form 108 up, or a hangout entry from the line crossing (form 108 shown) until the
+    /// core's native (0) right after MISSION_EVENT (the hide at the ease from pause is followed at once by native (1))
+    pub slowmo_form: bool,
     /// the story scene of the last update (for the first frame of a scene)
     pub story_cut: Option<String>,
 }
@@ -1375,6 +1380,7 @@ impl Sound {
             lib.scene("DYNAMIC_MIXER_POLICE_SCRIPT_TRIGGERED", self.arrest_mix.0 || self.pullover_mix);
             lib.scene("DYNAMIC_MIXER_MUTE_SHENANIGANS", self.arrest_mix.1 || self.story_mix.0);
             lib.scene("DYNAMIC_MIXER_HENRY_DRIVEBY", self.story_mix.1);
+            lib.scene("DYNAMIC_MIXER_SLOWMO_FORM", self.slowmo_form);
             let press = p.input.nitro && !self.nitro_btn;
             let ctl = crate::caraudio::PlayerCtl {
                 horn: horn && !in_menu,
