@@ -14729,8 +14729,8 @@ impl Game {
             // series' flags: `sr_results`)
             let series = self.series.clone();
             let tour = self.career.tour_table.clone();
-            // (both sorted - F-33081 the series by wins, F-26722 the tournament by the total -,
-            // ties by the finishing time, a racer who did not finish after one who did)
+            // (the tournament sorted by the total - F-26722 -, ties by the finishing time, a racer who did not
+            // finish after one who did; the series by the place, below)
             let time_of = |k: usize| self.last_results.get(k).and_then(|r| r.1).unwrap_or(f32::MAX);
             let cells: Vec<Vec<String>> = if let Some(t) = tour.as_ref() {
                 let mut idx: Vec<(usize, i32, i32)> = (0..cells.len()).map(|k| t.rows.get(k).map_or((k, 0, 0), |r| (k, r.1, r.2))).collect();
@@ -14744,8 +14744,15 @@ impl Game {
                             let who = if r.0.starts_with("YOU") { "YOU" } else { r.0.as_str() };
                             sr.wins.iter().find(|w| w.0 == who).map_or(0, |w| w.1)
                         };
-                        let mut idx: Vec<usize> = (0..cells.len()).collect();
-                        idx.sort_by(|&a, &b| wins(b).cmp(&wins(a)).then(time_of(a).partial_cmp(&time_of(b)).unwrap_or(std::cmp::Ordering::Equal)));
+                        // (the rows F-23726: by this race's place - the entry's score F-66331 is 1 - place, F-33081 with the
+                        // CRT qsort -, not by the wins; the results are in finishing order, place = row + 1)
+                        let rows: Vec<crate::career::SeriesRow> = (0..cells.len()).map(|k| crate::career::SeriesRow {
+                            kind: if self.last_results[k].0.starts_with("YOU") { 0 } else { 2 },
+                            time: self.last_results[k].1.map_or(crate::career::UNFINISHED, |t| (t * 1000.0).round() as i32),
+                            place: k as i32 + 1,
+                            wins: wins(k) as i32,
+                        }).collect();
+                        let idx = crate::career::series_rows(&rows);
                         idx.iter().enumerate().map(|(i, &k)| vec![(i + 1).to_string(), cells[k][0].clone(), cells[k][1].clone(), format!("{} / {}", wins(k), sr.to_win())]).collect()
                     }
                     None => cells,

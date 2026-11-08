@@ -3381,6 +3381,42 @@ pub fn series_decision(types: &[i32], wins: &[i32], need: i32) -> Option<bool> {
     types.iter().zip(wins).find(|(_, w)| **w >= need).map(|(t, _)| *t == 0)
 }
 
+/// A row entry of the series' results (F-23726's 24-byte entry): the record's type (+16), finish time (+40) and place
+/// (+172), and the racer's nRacerWins_<i>.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SeriesRow {
+    pub kind: i32,
+    pub time: i32,
+    pub place: i32,
+    pub wins: i32,
+}
+
+/// The rows' comparator F-33081 on the entry's score F-66331 (1 - place): the higher score first; equal scores: two AI
+/// racers (type 2) -> -1 when the first's finish time is the larger, else 0; any other pair -1.
+pub fn series_row_cmp(a: &SeriesRow, b: &SeriesRow) -> i32 {
+    let (sa, sb) = (1i32.wrapping_sub(a.place), 1i32.wrapping_sub(b.place));
+    if sa == sb {
+        if a.kind == 2 && b.kind == 2 {
+            if a.time > b.time { -1 } else { 0 }
+        } else {
+            -1
+        }
+    } else if sa > sb {
+        -1
+    } else {
+        1
+    }
+}
+
+/// The Series_RESULTS rows' order (F-23726): the entries in record order, sorted by the CRT qsort (F-79639) with
+/// F-33081. Returns the record index of each row; row i shows position i + 1, "<wins> / <nRacesToWin>" and the
+/// player's property 22 (else 1).
+pub fn series_rows(rows: &[SeriesRow]) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..rows.len()).collect();
+    crate::racemark::crt_qsort(&mut idx, |a, b| series_row_cmp(&rows[*a], &rows[*b]));
+    idx
+}
+
 /// What a tournament's results decide (F-66541).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TourDecision {
@@ -4118,6 +4154,34 @@ mod tests {
                 None => format!("{zero} {zero}"),
             };
             assert_eq!(b, want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
+
+    #[test]
+    fn series_rows_match_the_original() {
+        let text = include_str!("testdata/series_rows_ref.txt");
+        let mut n = 0;
+        for line in text.lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split(' ').collect();
+            let (k, need) = (w[0].parse::<usize>().unwrap(), w[1].parse::<i32>().unwrap());
+            let rows: Vec<SeriesRow> = w[2..].iter().filter(|s| **s != "-").map(|s| {
+                let f: Vec<i32> = s.split(',').map(|x| x.parse().unwrap()).collect();
+                SeriesRow { kind: f[0], time: f[1], place: f[2], wins: f[3] }
+            }).collect();
+            assert_eq!(rows.len(), k);
+            let order = series_rows(&rows);
+            let mut want = String::new();
+            for (i, &r) in order.iter().enumerate() {
+                want.push_str(&format!("r{},{} RO_RESULTS_{}={}_/_{} ", r, i, i, rows[r].wins, need));
+            }
+            want.push_str("| ");
+            for (i, &r) in order.iter().enumerate() {
+                want.push_str(&format!("{},{},1 ", i + 1, if rows[r].kind == 0 { 22 } else { 1 }));
+            }
+            assert_eq!(b.split_whitespace().collect::<Vec<_>>(), want.split_whitespace().collect::<Vec<_>>(), "{line}");
             n += 1;
         }
         assert_eq!(n, 3000);
