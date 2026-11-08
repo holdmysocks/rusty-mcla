@@ -300,3 +300,21 @@ motion_blur = false
     assert_eq!(s.to_table()["display"]["aa"].as_str(), Some("original"));
     assert_eq!(s.to_table()["display"]["bloom"].as_bool(), Some(true));
 }
+
+#[test]
+fn the_player_name_rule() {
+    assert_eq!(clean_player_name(""), "");
+    assert_eq!(clean_player_name("   "), "");
+    assert_eq!(clean_player_name("  Sock  Master  "), "Sock Master");
+    assert_eq!(clean_player_name("Zoë_Ñ-1!"), "Zo1");
+    assert_eq!(clean_player_name("abcdefghijklmnopqrstuvwxyz"), "abcdefghijklmno");
+    assert_eq!(clean_player_name("abcdefghijklmn opq"), "abcdefghijklmn");
+    // (read and written through the file as cleaned)
+    let d = tmp("player-name");
+    let p = d.join("settings.toml");
+    std::fs::write(&p, "[game]\nplayer_name = \"  Hold  My Socks!! \"\n").unwrap();
+    let l = Settings::load(&p);
+    assert_eq!(l.settings.game.player_name, "Hold My Socks");
+    assert!(l.settings.to_toml().contains("player_name = \"Hold My Socks\""));
+    let _ = std::fs::remove_dir_all(&d);
+}
