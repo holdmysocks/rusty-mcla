@@ -228,8 +228,14 @@ impl CityBound {
 pub struct Hull {
     pub verts: Vec<[f32; 3]>,
     pub tris: Vec<[u16; 3]>,
+    /// each triangle's area as the file has it (its record's +0)
+    pub areas: Vec<f32>,
+    /// each triangle's neighbours across its edges (corner i to corner i + 1), as the file has them (+10; 0xffff none)
+    pub beside: Vec<[u16; 3]>,
     /// the material id of each triangle
     pub material: Vec<u32>,
+    /// how many materials the bound has (+0xdc)
+    pub material_count: u8,
     pub margin: f32,
     /// bound +0x50: its centre of gravity
     pub cg: [f32; 3],
@@ -343,7 +349,7 @@ fn hull_at(rd: &Rd, size: usize, o: usize) -> Option<Hull> {
                 if nv >= 4 && nv < 4096 && nt >= 4 && nt < 8192 && rd.has(verts, nv * 16) && rd.has(tris, nt * 16) {
                     let ids = rd.ptr(o + 0xd0).filter(|&p| rd.has(p, nm * 4));
                     let numbers = rd.ptr(o + 0xd8).filter(|&p| rd.has(p, nt));
-                    let mut hull = Hull { margin: rd.f32(o + 0x70), cg: [rd.f32(o + 0x50), rd.f32(o + 0x54), rd.f32(o + 0x58)], scan: rd.u16(o + 186), ..Default::default() };
+                    let mut hull = Hull { margin: rd.f32(o + 0x70), cg: [rd.f32(o + 0x50), rd.f32(o + 0x54), rd.f32(o + 0x58)], scan: rd.u16(o + 186), material_count: nm as u8, ..Default::default() };
                     for v in 0..nv {
                         hull.verts.push([rd.f32(verts + v * 16), rd.f32(verts + v * 16 + 4), rd.f32(verts + v * 16 + 8)]);
                     }
@@ -354,6 +360,8 @@ fn hull_at(rd: &Rd, size: usize, o: usize) -> Option<Hull> {
                             continue;
                         }
                         hull.tris.push(v);
+                        hull.areas.push(rd.f32(p));
+                        hull.beside.push([rd.u16(p + 10), rd.u16(p + 12), rd.u16(p + 14)]);
                         let number = numbers.map_or(0, |n| rd.u8(n + t) as usize);
                         hull.material.push(ids.filter(|_| number < nm).map_or(0, |i| rd.u32(i + number * 4)));
                     }

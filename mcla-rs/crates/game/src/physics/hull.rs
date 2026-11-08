@@ -32,6 +32,12 @@ pub struct HullShape {
     pub centre: Vec3,
     /// its faces as triangles
     pub tris: Vec<[u16; 3]>,
+    /// each triangle's area (a record's +0: the file's, or F-83274's after the reshape moved the corners)
+    pub areas: Vec<f32>,
+    /// each triangle's neighbour across its edge from corner i to corner i + 1 (a record's +10; 0xffff none)
+    pub beside: Vec<[u16; 3]>,
+    /// the bound's material count (+0xdc; None: the number of different materials in `mats`)
+    pub mat_count: Option<u8>,
     /// what each of them is made of (the bound's material numbers: 3 roof, 4 side, 5 undercarriage)
     pub mats: Vec<u32>,
     /// the bound's centre of gravity (+0x50), as the file has it
@@ -80,7 +86,17 @@ impl HullShape {
                 }
             }
         }
-        HullShape { verts, edge_dirs, face_normals, min, max, centre, tris: tris.to_vec(), mats: Vec::new(), cg: Vec3::ZERO, scan: 0, bbox: None, wheel_parts: Vec::new() }
+        // (a shape not read from a file: its areas as F-83274 gives them, its neighbours found by the edge they share)
+        let areas = tris.iter().map(|t| super::camprobe::poly_area(verts[t[0] as usize], verts[t[1] as usize], verts[t[2] as usize])).collect();
+        let beside = (0..tris.len())
+            .map(|i| {
+                std::array::from_fn(|k| {
+                    let (a, b) = (tris[i][k], tris[i][(k + 1) % 3]);
+                    tris.iter().enumerate().position(|(j, o)| j != i && o.contains(&a) && o.contains(&b)).map_or(0xffff, |j| j as u16)
+                })
+            })
+            .collect();
+        HullShape { verts, edge_dirs, face_normals, min, max, centre, tris: tris.to_vec(), areas, beside, mat_count: None, mats: Vec::new(), cg: Vec3::ZERO, scan: 0, bbox: None, wheel_parts: Vec::new() }
     }
 
     /// The hull's reach along an axis: (least, most).
@@ -163,8 +179,18 @@ pub fn shaped(file: &mcla_formats::rage::bound::Hull, t: &mcla_formats::rage::si
         let f = (t.wheel_front.suspension_offset + t.wheel_back.suspension_offset) * 0.5 + (t.wheel_front.radius + t.wheel_back.radius) * 0.5 - hub_height;
         reshape(&mut v, t.s.bound_clearance, t.s.bound_angle, t.s.bound_bumper, t.s.bound_bumper_width, (-f).max(0.0));
     }
+    let reshaped = !bike && v.len() >= 8;
     let mut shape = HullShape::new(v, &file.tris);
     shape.mats = file.material.clone();
+    shape.mat_count = Some(file.material_count);
+    // (the file's neighbour record; the areas the file's unless the reshape moved the corners - then F-83274's, which
+    // HullShape::new has given)
+    if file.beside.len() == file.tris.len() {
+        shape.beside = file.beside.clone();
+    }
+    if !reshaped && file.areas.len() == file.tris.len() {
+        shape.areas = file.areas.clone();
+    }
     shape.cg = Vec3::from(file.cg);
     // (the box as the reshape's end leaves it, F-38448 -> F-90660: min / max over the vertices as they now stand,
     // -/+ 0.001, then -/+ the margin 0.04 - the file's box is that rule on the file's vertices, on all 65 cars)
@@ -1943,71 +1969,92 @@ pub fn seventh_contact(kept: [Vec3; 6], new: Vec3) -> usize {
 }
 
 impl HullShape {
-    /// A triangle's neighbour across the edge between two of its corners (the file's record
-    /// names it; here it is looked for).
-    fn across(&self, t: usize, a: u16, b: u16) -> Option<usize> {
-        self.tris.iter().enumerate().position(|(k, o)| k != t && o.contains(&a) && o.contains(&b))
+    /// A triangle's normal as the contact's element test forms it (F-48088): the cross of its corners (2 - 1) x (0 - 1)
+    /// over twice its area (the record's +0, the refined reciprocal); (0, 0, 1) for a number past the triangles.
+    fn element_normal(&self, t: usize) -> Vec3 {
+        let (Some(tri), Some(&area)) = (self.tris.get(t), self.areas.get(t)) else { return Vec3::Z };
+        let [a, b, c] = tri.map(|i| self.verts[i as usize]);
+        super::gjk::cross_as_original(c - b, a - b) * super::gjk::recip_as_original(area + area)
     }
 
-    fn outward(&self, t: usize) -> Vec3 {
-        let [a, b, c] = self.tris[t].map(|i| self.verts[i as usize]);
-        super::gjk::cross_as_original(c - b, a - b).normalize_or_zero()
+    /// F-58013: the triangle round a corner from `t` - across `t`'s edge that ends in `v` (the first i with corner
+    /// i + 1 = v), or, where that one is `prev`, across the edge after it; 0xffff where `v` is not a corner of `t`.
+    pub fn round_corner(&self, t: usize, v: u16, prev: u16) -> u16 {
+        let (Some(tri), Some(nb)) = (self.tris.get(t), self.beside.get(t)) else { return 0xffff };
+        let Some(i) = (0..3).find(|&i| tri[(i + 1) % 3] == v) else { return 0xffff };
+        if nb[i] != prev {
+            nb[i]
+        } else {
+            nb[(i + 1) % 3]
+        }
     }
 
-    /// F-48088: the triangle a contact is on, from the corners (their numbers, each once)
-    /// the detector's simplex ended with and the contact's direction in the hull's frame: of
-    /// one corner, the triangle about it that faces that way most; of two, the one of the two
-    /// along that edge that does; of three, the triangle they are.
+    /// F-61834: how many of `corners` (each one's low 16 bits) are corners of triangle `t`.
+    pub fn corners_in(&self, t: usize, corners: &[u32]) -> usize {
+        corners.iter().filter(|&&c| self.tris[t].contains(&(c as u16))).count()
+    }
+
+    /// F-48088: the triangle a contact is on, from the corners the detector's simplex ended with (each once: the
+    /// caller's list, F-37693; F-48088 itself takes them as they come, `element_of`) and the contact's direction in the hull's frame - 0 where the bound has one
+    /// material (+0xdc). Of one corner: from the first triangle that has it round the corner by the neighbour record
+    /// (F-58013) till it comes back, the one that faces that way most (the first of equals); of two: the first
+    /// triangle that has both, or the one across their edge (F-13453) unless the first faces that way
+    /// more; of three or four: the first triangle that has three of them (F-61834).
     pub fn element(&self, corners: &[u32], dir: Vec3) -> u16 {
-        if self.mats.iter().collect::<std::collections::BTreeSet<_>>().len() <= 1 {
+        // (the caller's list, each corner once in the order they came, F-37693)
+        let mut ids: Vec<u32> = Vec::with_capacity(corners.len());
+        for &c in corners {
+            if !ids.contains(&c) {
+                ids.push(c);
+            }
+        }
+        self.element_of(&ids, dir)
+    }
+
+    /// F-48088 itself, on the corner list as given.
+    pub fn element_of(&self, corners: &[u32], dir: Vec3) -> u16 {
+        let count = self.mat_count.map_or_else(|| self.mats.iter().collect::<std::collections::BTreeSet<_>>().len(), |n| n as usize);
+        if count <= 1 || corners.is_empty() || corners.len() > 4 {
             return 0;
         }
-        let mut ids: Vec<u16> = Vec::new();
-        for c in corners {
-            if !ids.contains(&(*c as u16)) {
-                ids.push(*c as u16);
-            }
-        }
-        let has = |t: &[u16; 3], v: u16| t.contains(&v);
-        match ids.len() {
+        let n = self.tris.len();
+        let face = |t: usize| dot3(self.element_normal(t), dir);
+        match corners.len() {
             1 => {
-                let v = ids[0];
-                let Some(first) = self.tris.iter().position(|t| has(t, v)) else { return 0 };
-                let mut best = (dot3(self.outward(first), dir), first);
-                // (round the corner, F-58013: across the edge that ends in it, or - where
-                // that leads back - the edge that begins in it)
-                let (mut prev, mut at) = (usize::MAX, first);
-                for _ in 0..self.tris.len() {
-                    let t = self.tris[at];
-                    let Some(i) = (0..3).find(|i| t[(i + 1) % 3] == v) else { break };
-                    let mut next = self.across(at, t[i], t[(i + 1) % 3]);
-                    if next.map_or(usize::MAX, |n| n) == prev {
-                        next = self.across(at, t[(i + 1) % 3], t[(i + 2) % 3]);
-                    }
-                    let Some(next) = next else { break };
-                    if next == first {
+                let v = corners[0] as u16;
+                let Some(first) = (0..n & 0xffff).find(|&t| self.tris[t].contains(&v)) else { return 0 };
+                let (mut best, mut best_t) = (face(first), first as u16);
+                let mut next = self.round_corner(first, v, 0xffff);
+                let mut prev = first as u16;
+                // (the original walks till it is back at the first; the guard only keeps a broken record from hanging)
+                for _ in 0..0x10000 {
+                    if next as usize == first || next == 0xffff {
                         break;
                     }
-                    let d = dot3(self.outward(next), dir);
-                    if d > best.0 {
-                        best = (d, next);
+                    let d = face(next as usize);
+                    if d > best {
+                        (best, best_t) = (d, next);
                     }
-                    prev = at;
-                    at = next;
+                    let after = self.round_corner(next as usize, v, prev);
+                    prev = next;
+                    next = after;
                 }
-                best.1 as u16
+                best_t
             }
             2 => {
-                let Some(first) = self.tris.iter().position(|t| has(t, ids[0]) && has(t, ids[1])) else { return 0 };
-                match self.across(first, ids[0], ids[1]) {
-                    Some(other) if !(dot3(self.outward(first), dir) > dot3(self.outward(other), dir)) => other as u16,
-                    _ => first as u16,
+                let (c0, c1) = (corners[0] as u16, corners[1] as u16);
+                let Some(first) = (0..n).find(|&t| self.corners_in(t, corners) == 2) else { return 0 };
+                // (the neighbour across the edge c0 - c1, either way round, F-13453)
+                let tri = self.tris[first];
+                let Some(i) = (0..3).find(|&i| (tri[i] == c0 && tri[(i + 1) % 3] == c1) || (tri[i] == c1 && tri[(i + 1) % 3] == c0)) else { return first as u16 };
+                let other = self.beside[first][i];
+                if other == 0xffff || face(first) > face(other as usize) {
+                    first as u16
+                } else {
+                    other
                 }
             }
-            3 => self.tris.iter().position(|t| ids.iter().all(|v| has(t, *v))).unwrap_or(0) as u16,
-            // (four corners, the jump table at A-14821: as three - the first triangle that holds three of them, F-61834)
-            4 => self.tris.iter().position(|t| ids.iter().filter(|v| has(t, **v)).count() >= 3).unwrap_or(0) as u16,
-            _ => 0,
+            _ => (0..n).find(|&t| self.corners_in(t, corners) >= 3).unwrap_or(0) as u16,
         }
     }
 
@@ -2275,5 +2322,45 @@ mod nearest_kept_tests {
             n += 1;
         }
         assert_eq!(n, 20000);
+    }
+}
+
+#[cfg(test)]
+mod element_tests {
+    use super::*;
+
+    /// The contact's triangle F-48088 with F-61834 / F-13453 / F-58013 run offline (tools/hull_element_reference.py):
+    /// every car's hull as filed and moved a little, 0 .. 5 corners (repeats, one past the vertices), directions random
+    /// and along a face, the material count as filed and 1 / 2 - 39,000 answers, every one equal.
+    #[test]
+    fn element_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut hull: Option<HullShape> = None;
+        let mut n = 0;
+        for line in include_str!("../testdata/hull_element_ref.txt").lines() {
+            if let Some(rest) = line.strip_prefix("H ") {
+                let parts: Vec<&str> = rest.split(" | ").collect();
+                let vs: Vec<u32> = parts[1].split(' ').map(h).collect();
+                let ps: Vec<u32> = parts[2].split(' ').map(h).collect();
+                let verts: Vec<Vec3> = vs.chunks(4).map(|c| Vec3::new(f32::from_bits(c[0]), f32::from_bits(c[1]), f32::from_bits(c[2]))).collect();
+                let tris: Vec<[u16; 3]> = ps.chunks(4).map(|c| [(c[1] >> 16) as u16, c[1] as u16, (c[2] >> 16) as u16]).collect();
+                let mut s = HullShape::new(verts, &tris);
+                s.areas = ps.chunks(4).map(|c| f32::from_bits(c[0])).collect();
+                s.beside = ps.chunks(4).map(|c| [c[2] as u16, (c[3] >> 16) as u16, c[3] as u16]).collect();
+                hull = Some(s);
+                continue;
+            }
+            let (case, want) = line.strip_prefix("C ").unwrap().split_once(" -> ").unwrap();
+            let (head, dir) = case.split_once(" | ").unwrap();
+            let w: Vec<u32> = head.split(' ').filter(|x| !x.is_empty()).map(h).collect();
+            let corners = &w[2..2 + w[1] as usize];
+            let d: Vec<f32> = dir.split(' ').map(|x| f32::from_bits(h(x))).collect();
+            let s = hull.as_mut().unwrap();
+            s.mat_count = Some(w[0] as u8);
+            let got = s.element_of(corners, Vec3::new(d[0], d[1], d[2]));
+            assert_eq!(got as u32, want.parse::<u32>().unwrap(), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 39000);
     }
 }

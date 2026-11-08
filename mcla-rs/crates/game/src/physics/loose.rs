@@ -4581,8 +4581,8 @@ fn ambient_wheels(a: &mut Amb, b: &mut PBody, m: &[Vec3; 4], city: &super::colli
         let rate = if d_old == 0.0 { 0.0 } else { (d - d_old) * inv_dt };
         let cosn = fma(u.x, n.x, fma(u.z, n.z, u.y * n.y));
         let mut f = n * (cosn * fma(t.k, d, t.c * rate));
-        // (F-60791: a quarter of the archetype's weight, no gravity factor)
-        let sup = (t.mass * f32::from_bits(0x411c_cccd)) * 0.25;
+        // (a quarter of the archetype's weight, no gravity factor)
+        let sup = quarter_weight(Some(t.mass));
         f.y = sup + f.y;
         b.force = b.force + f;
         let r = u * (t.cog_sim * u.y) + (contact - p);
@@ -4631,6 +4631,12 @@ pub const PIECE_TYPE: &str = "mcCarAnimBreakablePartInst";
 
 /// The bumper's type as the loose bodies read a type.
 /// F-30573: a box's moments, ((y^2 + z^2) m) / 12 and the like (the twelfth as [0x8202E194]).
+/// F-60791: an ambient car's quarter weight - its archetype's mass (the archetype's mass call: +40; 500 kg with no
+/// archetype) x 9.8 x 0.25.
+pub fn quarter_weight(mass: Option<f32>) -> f32 {
+    (mass.unwrap_or(f32::from_bits(0x43fa_0000)) * f32::from_bits(0x411c_cccd)) * 0.25
+}
+
 pub fn box_inertia(mass: f32, s: Vec3) -> [f32; 3] {
     let k = f32::from_bits(0x3daa_aaab);
     [((s.z * s.z + s.y * s.y) * mass) * k, ((s.x * s.x + s.z * s.z) * mass) * k, ((s.x * s.x + s.y * s.y) * mass) * k]
@@ -5294,5 +5300,28 @@ mod vec_small2_tests {
             n += 1;
         }
         assert_eq!(n, 7000);
+    }
+}
+
+#[cfg(test)]
+mod quarter_weight_tests {
+    /// F-60791 run offline (tools/quarter_weight_reference.py): 6,000 masses with each archetype class (Phys / Damp read
+    /// +40, the base class's call answers 1.0) and none - every word equal.
+    #[test]
+    fn quarter_weight_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut n = 0;
+        for line in include_str!("../testdata/quarter_weight_ref.txt").lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let (kind, mass) = case.split_once(' ').unwrap();
+            let mass = match kind {
+                "0" => None,
+                "3" => Some(1.0),
+                _ => Some(f32::from_bits(h(mass))),
+            };
+            assert_eq!(super::quarter_weight(mass).to_bits(), h(want), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 6000);
     }
 }
