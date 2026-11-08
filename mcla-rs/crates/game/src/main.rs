@@ -953,6 +953,8 @@ impl App {
             }
             // (0x54c: Racer_InitializeResetPosition at the place, ResetWithDamageIntact, Deactivate, the coord binding)
             let car = police::scene_frame_at(&mut self.vehicles, world, place);
+            // (0x7b5..0x88c, with the walk's start: DYNAMICMIXER_TriggerState("DYNAMIC_MIXER_POLICE_SCRIPT_TRIGGERED"))
+            self.sound.pullover_mix = true;
             if let (Some(car), true, true) = (car, self.cine.has("cut_cop_walk_02"), self.cine.playing.is_none() && std::env::var("MCLA_NO_CINE").is_err()) {
                 if self.cine.start_bound(gpu, "cut_cop_walk_02", car) {
                     self.cine_spawn_cars(gpu, world);
@@ -977,6 +979,8 @@ impl App {
                     // (the bail: Racer_SetScrambleInputFlags 0x100, the handbrake let off, Racer_Activate)
                     self.vehicles.player_scramble = 0x100;
                     self.cine.reanimate("cut_drv01", "cut_cop_alert_02", "cut_drv01");
+                    // (then StopStreamPrimary, PlayStreamSecondary and DeTriggerState(POLICE_SCRIPT_TRIGGERED))
+                    self.sound.pullover_mix = false;
                     let at = self.vehicles.player().map(|c| c.state.pos).unwrap_or_default();
                     self.police.suspect_fled(t, at);
                     // (StopStreamPrimary, PlayStreamSecondary: the walk's stream stops and CUT_COP_ALERT, prepared before the
@@ -1042,6 +1046,8 @@ impl App {
                 // the ticket form (0xc45, Form_ShowForm 47 over the ticket scene's held fade_to_black): the TICKETED
                 // panel, the fine; the car stays deactivated until the form is closed
                 self.ticket_form = true;
+                // (0xc3e: the ticket scene over, DeTriggerState(POLICE_SCRIPT_TRIGGERED) before the form)
+                self.sound.pullover_mix = false;
                 self.game.money = (self.game.money - fine).max(0);
                 self.game.ticket_for = Some(self.police.ticket_for.max(1));
                 self.game.arrest_panel = Some((0.0, 0.0, fine));
@@ -8376,6 +8382,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.sound.near_props = self.vehicles.player().map(|c| self.props.near_props(c.state.pos, 6.0)).unwrap_or_default();
             // the posts the deflection pass steered a car round (F-35508 -> the prop's deflection loop)
             self.sound.prop_deflects = self.props.deflects.clone();
+            // the story scripts' mixer states (DYNAMICMIXER_TriggerState F-13109 / DeTriggerState F-52510), by the scene
+            let cut = self.cuts.playing.as_ref().map(|p| p.def.name.to_ascii_uppercase());
+            let first = cut.is_some() && cut != self.sound.story_cut;
+            let gh06 = first && cut.as_deref() == Some("CUT_STORY_RACE_GH_06");
+            self.sound.story_mix = (gh06 || cut.as_deref() == Some("CUT_STORY_REP_ON_STRIP_GARAGE"), gh06);
+            self.sound.story_cut = cut;
             self.sound.update(a, &self.vehicles, &self.game, &self.police, &self.ability, &self.props.hits, &self.props.scrapes, &|i| self.props.matrix(i), self.cam.pos, right, fwd, rain_snd, horn, self.time_of_day > 19.5 || self.time_of_day < 6.0, &|p: Vec3, q: Vec3| { let d = q - p; let l = d.length(); l > 0.0 && world.collider.raycast(p, d / l, l).is_some() }, &|p: Vec3, q: Vec3| { let d = q - p; let l = d.length(); if l > 0.0 { world.collider.raycast(p, d / l, l).map(|h| h.surface as u8) } else { None } }, Some(&world.collider), dt);
             // the map effects' sounds follow the effect instances (ptxaudio.rs)
             self.sound.effects(&self.fx.instances(), Some(&world.collider));

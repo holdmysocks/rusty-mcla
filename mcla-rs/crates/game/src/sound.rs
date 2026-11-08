@@ -293,6 +293,17 @@ pub struct Sound {
     /// CopArrest.sco's mixer scenes (0x1010 / 0x1038, detriggered at 0x14f3 / 0x151b): POLICE_SCRIPT_TRIGGERED (not for
     /// the payback's goons) and MUTE_SHENANIGANS, from the arrest scene's start to the end of the script
     pub arrest_mix: (bool, bool),
+    /// CopPullover.sco's POLICE_SCRIPT_TRIGGERED (DYNAMICMIXER_TriggerState F-13109 at 0x7b5..0x88c, as the walk starts;
+    /// DeTriggerState F-52510 at the bolt 0x9a7.. or once the ticket scene has ended 0xb8b..0xc3e)
+    pub pullover_mix: bool,
+    /// the story scripts' states, by the story scene that plays (main): MUTE_SHENANIGANS through
+    /// CUT_STORY_REP_ON_STRIP_GARAGE (Story cores of RACE_GH_02 0x44e3..0x480f and RACE_SH_01 0x2506..0x265b: on before
+    /// the warp to it, off once it has ended) and, for the first frame of CUT_STORY_RACE_GH_06, MUTE_SHENANIGANS +
+    /// HENRY_DRIVEBY (RACE_GH_06_READY_TO_START_ON_ENTER: on at 0x910 / 0x938 right before the scene starts, off at 0x9fd /
+    /// 0xa22 after the first 10 ms wait of its loop)
+    pub story_mix: (bool, bool),
+    /// the story scene of the last update (for the first frame of a scene)
+    pub story_cut: Option<String>,
 }
 
 /// The ambience beds' streams: bed name -> stream file (relative to the audio root).
@@ -1361,8 +1372,9 @@ impl Sound {
         if let (Some(lib), Some(fleet)) = (&mut self.lib, &mut self.fleet) {
             // COP_FORM (F-37653): the ticket form with its prepared audio stream (CopPullover); the arrest form has none
             lib.scene("DYNAMIC_MIXER_COP_FORM", game.ticket_for.is_some() && game.arrest_panel.is_some_and(|p| p.0 <= 0.0));
-            lib.scene("DYNAMIC_MIXER_POLICE_SCRIPT_TRIGGERED", self.arrest_mix.0);
-            lib.scene("DYNAMIC_MIXER_MUTE_SHENANIGANS", self.arrest_mix.1);
+            lib.scene("DYNAMIC_MIXER_POLICE_SCRIPT_TRIGGERED", self.arrest_mix.0 || self.pullover_mix);
+            lib.scene("DYNAMIC_MIXER_MUTE_SHENANIGANS", self.arrest_mix.1 || self.story_mix.0);
+            lib.scene("DYNAMIC_MIXER_HENRY_DRIVEBY", self.story_mix.1);
             let press = p.input.nitro && !self.nitro_btn;
             let ctl = crate::caraudio::PlayerCtl {
                 horn: horn && !in_menu,
