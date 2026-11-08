@@ -49,9 +49,9 @@ int main(int argc, char **argv) {
             if (kind == 0) { sub_825460A0(ctx, nullptr); float v = float(ctx.f1.f64); std::memcpy(&out, &v, 4); }
             else { sub_82546120(ctx, nullptr); out = load(0x2f80); }
         }
-        std::printf("%d %x %x %08x %08x %x %08x %x", kind, nb, count, sc, off, i, fr, n);
-        for (auto x : w) std::printf(" %08x", x);
-        std::printf(" -> %08x\n", out);
+        std::printf("%d %x %x %09x %09x %x %09x %x", kind, nb, count, sc, off, i, fr, n);
+        for (auto x : w) std::printf(" %09x", x);
+        std::printf(" -> %09x\n", out);
     }
 }
 '''
@@ -110,8 +110,8 @@ def main():
                 sc, off = f2u(rnd_float(rng)), f2u(rnd_float(rng))
             i = rng.randint(0, count + 3) if kind == 0 else rng.randint(0, count - 2)
         fr = rng.choice([0.0, 1.0, 0.5, rng.random(), rng.random(), rng.random()])
-        lines.append(f'{kind} {nb:x} {count:x} {sc:08x} {off:08x} {i:x} {f2u(fr):08x} {len(words):x} '
-                     + ' '.join(f'{w:08x}' for w in words))
+        lines.append(f'{kind} {nb:x} {count:x} {sc:09x} {off:09x} {i:x} {f2u(fr):09x} {len(words):x} '
+                     + ' '.join(f'{w:09x}' for w in words))
     src = shim().replace('#include <vector>', '#include <vector>\n#include <ios>') + MAIN.replace('FUNCS', funcs)
     out = compile_and_run(args.compiler, src, '\n'.join(lines) + '\n', args.image, args.out, 'anim_channel')
     print(f'ran the three evaluators on {len(lines)} cases -> {out}')
