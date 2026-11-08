@@ -45,7 +45,10 @@ def _shim():
     # (the ball's radius is splatted from an unaligned load: the right-hand mask table of the recomp's intrinsics)
     header = Path(SDK_INTRINSICS).read_text()
     mask = re.search(r'inline uint8_t VectorMaskR\[\] = \{.*?\};', header, re.S).group()
-    return _vs() + mask.replace('inline uint8_t', 'alignas(16) static uint8_t') + chr(10)
+    base = _vs()
+    if 'VectorMaskR[]' in base:      # (the shared shim has it since the SSE-flag change)
+        return base
+    return base + mask.replace('inline uint8_t', 'alignas(16) static uint8_t') + chr(10)
 
 
 def _gpp(cmd, *a, **k):
