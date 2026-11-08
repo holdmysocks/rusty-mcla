@@ -7895,7 +7895,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if let Some((id, _)) = self.game.series.as_ref().filter(|s| s.wins.is_empty()).and_then(|s| s.story.clone()) {
                         self.game.career.series_drop(&id);
                     }
-                    let tournament = if self.game.mc4_pink_was() { None } else { self.game.career.tournament_race(&race_id, &order).or_else(|| order.first().and_then(|w| self.game.career.series_race(&race_id, w))) };
+                    let tournament = if self.game.mc4_pink_was() { None } else { self.game.career.tournament_race(&race_id, &order).or_else(|| {
+                        // (the series' winner F-37351: the lowest place of the finishing order; a damaged-out player is already last)
+                        let mut rec: Vec<(i32, i32)> = order.iter().enumerate().map(|(p, w)| (if w == "YOU" { 0 } else { 1 }, p as i32 + 1)).collect();
+                        career::series_winner(&mut rec, &vec![false; order.len()], false).and_then(|i| self.game.career.series_race(&race_id, &order[i]))
+                    }) };
                     // (TournamentCore's EndOfRaceSequence: the standings (form 49) after every race,
                     // before REWARDS, until CONTINUE - as a series' results)
                     if self.game.career.tour_table.is_some() {

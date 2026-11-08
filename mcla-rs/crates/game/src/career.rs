@@ -3416,6 +3416,27 @@ pub fn tournament_points(rec: &mut [(i32, i32)], damaged: &[bool], replay: bool,
     }
 }
 
+/// The race winner of a series' results (F-37351) on (type, place) per racer slot: on a replay the player is put
+/// last first (F-87120); then per slot the player's slot put last when it is damaged out, and the slot with the
+/// lowest place below count + 1 (the first of equal ones) wins - its nRacerWins_<i> gets one more.
+pub fn series_winner(rec: &mut [(i32, i32)], damaged: &[bool], replay: bool) -> Option<usize> {
+    if replay {
+        put_player_last(rec);
+    }
+    let mut best = (rec.len() as i32).wrapping_add(1);
+    let mut win = None;
+    for i in 0..rec.len() {
+        if rec[i].0 == 0 && damaged[i] {
+            put_player_last(rec);
+        }
+        if rec[i].1 < best {
+            win = Some(i);
+            best = rec[i].1;
+        }
+    }
+    win
+}
+
 /// A series' or tournament's results putting the player last (F-87120), on (type, place) per racer
 /// (type 0 = the player): the first player's place becomes the racer count, and every other non-player
 /// racer placed behind the player's old place (-1 if there is no player) moves up one.
@@ -4028,6 +4049,42 @@ mod tests {
             want.push_str("| ");
             for i in 0..k {
                 want.push_str(&format!("{},{} ", set[i], pts[i]));
+            }
+            assert_eq!(b.split_whitespace().collect::<Vec<_>>(), want.split_whitespace().collect::<Vec<_>>(), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
+
+    #[test]
+    fn series_winner_matches_the_original() {
+        let text = include_str!("testdata/series_wins_ref.txt");
+        let list = |s: &str| -> Vec<i32> { s.split(',').map(|x| x.parse().unwrap()).collect() };
+        let mut n = 0;
+        for line in text.lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split(' ').collect();
+            let num = |i: usize| w[i].parse::<i32>().unwrap();
+            let (null, trig, replay, k) = (num(0), num(1), num(2), num(3) as usize);
+            let (types, places, dmg, mut wins) = (list(w[4]), list(w[5]), list(w[6]), list(w[7]));
+            let mut rec: Vec<(i32, i32)> = types.iter().zip(&places).take(k).map(|(t, p)| (*t, *p)).collect();
+            let mut set = vec![0u32; k];
+            let mut want = String::new();
+            if null == 0 {
+                let damaged: Vec<bool> = dmg.iter().take(k).map(|d| *d != 0).collect();
+                if let Some(i) = series_winner(&mut rec, &damaged, trig == 1 && replay == 1) {
+                    wins[i] += 1;
+                    set[i] = 1;
+                }
+                want.push_str("est dec fill ");
+            }
+            want.push_str("| ");
+            for r in &rec {
+                want.push_str(&format!("{} ", r.1));
+            }
+            want.push_str("| ");
+            for i in 0..k {
+                want.push_str(&format!("{},{} ", set[i], wins[i]));
             }
             assert_eq!(b.split_whitespace().collect::<Vec<_>>(), want.split_whitespace().collect::<Vec<_>>(), "{line}");
             n += 1;
