@@ -7183,39 +7183,56 @@ pub fn compose_plate(bg: &PlateBg, font: &[u8], text: &str) -> Vec<u8> {
     }
     let (fx, fy) = (bg.pos[0] + 0.03, -bg.pos[1] + 0.37);
     let (sx, sy) = (1.0 / bg.div[0], 1.0 / bg.div[1]);
-    // (the atlas sampled bilinearly, clamped at its edges)
-    let alpha = |u: f32, v: f32| -> f32 {
-        let (x, y) = (u * 256.0 - 0.5, v * 256.0 - 0.5);
-        let (x0, y0) = (x.floor(), y.floor());
-        let (tx, ty) = (x - x0, y - y0);
-        let at = |x: f32, y: f32| font[((y.clamp(0.0, 255.0) as usize) * 256 + x.clamp(0.0, 255.0) as usize) * 4 + 3] as f32 / 255.0;
-        let top = at(x0, y0) * (1.0 - tx) + at(x0 + 1.0, y0) * tx;
-        let bot = at(x0, y0 + 1.0) * (1.0 - tx) + at(x0 + 1.0, y0 + 1.0) * tx;
-        top * (1.0 - ty) + bot * ty
-    };
+    // (the atlas sampled bilinearly, clamped at its edges. What depends on the column alone - the cell, the atlas
+    // column, its weight - and on the row alone is worked out once, the texels' alpha / 255 read from a table: the
+    // same operations in the same order as per pixel, so the same bytes - 1.4 ms a traffic car's plate before)
+    let fa: Vec<f32> = (0..256 * 256).map(|i| font[i * 4 + 3] as f32 / 255.0).collect();
+    let idx = |c: f32| c.clamp(0.0, 255.0) as usize;
+    // per column: the cell's row in the atlas, the two texel columns and the weight
+    let cols: Vec<Option<(usize, usize, usize, f32)>> = (0..bg.w)
+        .map(|x| {
+            let u = (x as f32 + 0.5) / bg.w as f32;
+            if u - fx < 0.0 {
+                return None;
+            }
+            let ru = 7.4 * sx * (u - fx).min(1.0);
+            if !(ru.trunc() <= 6.0) {
+                return None;
+            }
+            let cell = cells[ru.trunc() as usize];
+            let ax = ((cell % 8) as f32 / 8.0 + 0.125 * ru.fract()) * 256.0 - 0.5;
+            let x0 = ax.floor();
+            Some((cell / 8, idx(x0), idx(x0 + 1.0), ax - x0))
+        })
+        .collect();
+    let btab: Vec<f32> = (0..256).map(|b| b as f32 / 255.0).collect();
     for y in 0..bg.h {
         let v = (y as f32 + 0.5) / bg.h as f32;
         if v - fy < 0.0 {
             continue;
         }
         let rv = 2.0 * sy * (v - fy).min(1.0);
-        for x in 0..bg.w {
-            let u = (x as f32 + 0.5) / bg.w as f32;
-            if u - fx < 0.0 {
-                continue;
-            }
-            let ru = 7.4 * sx * (u - fx).min(1.0);
-            if !(ru.trunc() <= 6.0 && rv.trunc() <= 0.0) {
-                continue;
-            }
-            let cell = cells[ru.trunc() as usize];
-            let a = alpha((cell % 8) as f32 / 8.0 + 0.125 * ru.fract(), (cell / 8) as f32 / 8.0 + 0.125 * rv.fract());
+        if !(rv.trunc() <= 0.0) {
+            continue;
+        }
+        // per atlas row of a cell: the two texel rows and the weight
+        let rows: [(usize, usize, f32); 8] = std::array::from_fn(|cr| {
+            let ay = (cr as f32 / 8.0 + 0.125 * rv.fract()) * 256.0 - 0.5;
+            let y0 = ay.floor();
+            (idx(y0) * 256, idx(y0 + 1.0) * 256, ay - y0)
+        });
+        for (x, col) in cols.iter().enumerate() {
+            let Some((cr, x0, x1, tx)) = *col else { continue };
+            let (y0, y1, ty) = rows[cr];
+            let top = fa[y0 + x0] * (1.0 - tx) + fa[y0 + x1] * tx;
+            let bot = fa[y1 + x0] * (1.0 - tx) + fa[y1 + x1] * tx;
+            let a = top * (1.0 - ty) + bot * ty;
             if a <= 0.0 {
                 continue;
             }
             let o = (y * bg.w + x) * 4;
             for j in 0..3 {
-                let b = px[o + j] as f32 / 255.0;
+                let b = btab[px[o + j] as usize];
                 px[o + j] = ((b + a * (bg.tint[j] - b)) * 255.0).round().clamp(0.0, 255.0) as u8;
             }
         }
@@ -7306,6 +7323,112 @@ mod plate_tests {
         assert_eq!(at(10, 29), &[255, 255, 255]);
         let sp = compose_plate(&b, &font(), " AAAAAA");
         assert_eq!(&sp[(16 * 64 + 4) * 4..(16 * 64 + 4) * 4 + 3], &[255, 255, 255]);
+    }
+
+    /// Time of one plate on the disc's own art (plate_ca_00, fnt_license_plate); `MCLA_DATA_DIR` or extracted/cache.
+    #[test]
+    #[ignore = "timing; needs the extracted disc"]
+    fn plate_time_on_the_disc_art() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string()));
+        let b = load_plate_bg(&root, "plate_ca_00").expect("plate_ca_00");
+        let d = std::fs::read(root.join("vehicle/shared_font/fnt_license_plate.dds")).unwrap();
+        let f = mcla_formats::dds::parse_dds("fnt_license_plate", &d).unwrap().to_rgba8();
+        let t = std::time::Instant::now();
+        let mut sum = 0u64;
+        for k in 0..50 {
+            let px = compose_plate(&b, &f, &format!("{}ABC{:03}", k % 8 + 1, k));
+            sum += px[(100 * b.w + 200) * 4] as u64;
+            assert!(px == compose_plate_whole(&b, &f, &format!("{}ABC{:03}", k % 8 + 1, k)));
+        }
+        eprintln!("plate {}x{} pos {:?} div {:?}: {:.3} ms a plate (incl. the reference) ({sum})", b.w, b.h, b.pos, b.div, t.elapsed().as_secs_f64() * 1e3 / 50.0);
+        let t = std::time::Instant::now();
+        for k in 0..50 {
+            sum += compose_plate(&b, &f, &format!("{}ABC{:03}", k % 8 + 1, k))[0] as u64;
+        }
+        eprintln!("compose_plate alone: {:.3} ms a plate ({sum})", t.elapsed().as_secs_f64() * 1e3 / 50.0);
+    }
+
+    /// The loop over the letters' box only gives the same pixels as the loop over the whole plate.
+    #[test]
+    fn letter_box_loop_is_the_whole_loop() {
+        let mut r = 0x9E37_79B9u32;
+        let mut next = move || {
+            r ^= r << 13;
+            r ^= r >> 17;
+            r ^= r << 5;
+            r
+        };
+        let mut f = font();
+        for k in 0..256 * 256 {
+            f[k * 4 + 3] = (next() % 256) as u8;
+        }
+        let picks = [0.0f32, -1.0, 1.0, 0.015, 0.085, 0.3, 0.97, 1.2, -0.4, 2.5];
+        for case in 0..400 {
+            let mut b = bg([picks[(next() % 10) as usize], picks[(next() % 10) as usize]], [picks[(next() % 10) as usize], picks[(next() % 10) as usize]]);
+            (b.w, b.h) = ([64, 512, 37][case % 3], [32, 256, 19][case % 3]);
+            b.px = (0..b.w * b.h * 4).map(|_| (next() % 256) as u8).collect();
+            let text: String = (0..7).map(|_| b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ [\\]^:;<=*"[(next() % 46) as usize] as char).collect();
+            assert!(compose_plate(&b, &f, &text) == compose_plate_whole(&b, &f, &text), "case {case}: {:?} {:?} {text}", b.pos, b.div);
+        }
+    }
+
+    fn compose_plate_whole(bg: &PlateBg, font: &[u8], text: &str) -> Vec<u8> {
+        let mut px = bg.px.clone();
+        if font.len() < 256 * 256 * 4 {
+            return px;
+        }
+        let mut cells = [63usize; 7];
+        for (k, c) in text.chars().take(7).enumerate() {
+            cells[k] = match c.to_ascii_uppercase() {
+                c @ '0'..='9' => c as usize - '0' as usize,
+                c @ 'A'..='Z' => 10 + c as usize - 'A' as usize,
+                '[' | ':' => 36,
+                '\\' | ';' => 37,
+                ']' | '<' => 38,
+                '^' | '=' => 39,
+                _ => 63,
+            };
+        }
+        let (fx, fy) = (bg.pos[0] + 0.03, -bg.pos[1] + 0.37);
+        let (sx, sy) = (1.0 / bg.div[0], 1.0 / bg.div[1]);
+        // (the atlas sampled bilinearly, clamped at its edges)
+        let alpha = |u: f32, v: f32| -> f32 {
+            let (x, y) = (u * 256.0 - 0.5, v * 256.0 - 0.5);
+            let (x0, y0) = (x.floor(), y.floor());
+            let (tx, ty) = (x - x0, y - y0);
+            let at = |x: f32, y: f32| font[((y.clamp(0.0, 255.0) as usize) * 256 + x.clamp(0.0, 255.0) as usize) * 4 + 3] as f32 / 255.0;
+            let top = at(x0, y0) * (1.0 - tx) + at(x0 + 1.0, y0) * tx;
+            let bot = at(x0, y0 + 1.0) * (1.0 - tx) + at(x0 + 1.0, y0 + 1.0) * tx;
+            top * (1.0 - ty) + bot * ty
+        };
+        for y in 0..bg.h {
+            let v = (y as f32 + 0.5) / bg.h as f32;
+            if v - fy < 0.0 {
+                continue;
+            }
+            let rv = 2.0 * sy * (v - fy).min(1.0);
+            for x in 0..bg.w {
+                let u = (x as f32 + 0.5) / bg.w as f32;
+                if u - fx < 0.0 {
+                    continue;
+                }
+                let ru = 7.4 * sx * (u - fx).min(1.0);
+                if !(ru.trunc() <= 6.0 && rv.trunc() <= 0.0) {
+                    continue;
+                }
+                let cell = cells[ru.trunc() as usize];
+                let a = alpha((cell % 8) as f32 / 8.0 + 0.125 * ru.fract(), (cell / 8) as f32 / 8.0 + 0.125 * rv.fract());
+                if a <= 0.0 {
+                    continue;
+                }
+                let o = (y * bg.w + x) * 4;
+                for j in 0..3 {
+                    let b = px[o + j] as f32 / 255.0;
+                    px[o + j] = ((b + a * (bg.tint[j] - b)) * 255.0).round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+        px
     }
 
     /// The Rockstar plates (pos -1, 1, divisors 0): no letters at all.
