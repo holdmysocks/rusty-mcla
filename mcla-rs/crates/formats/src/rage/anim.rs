@@ -76,6 +76,39 @@ fn bits(rd: &Rd, p: usize, bit: usize, n: usize) -> u32 {
     (((lo | (hi << 32)) >> s) & ((1u64 << n) - 1)) as u32
 }
 
+/// a x b + c, one rounding to single (the scalar fmadds).
+fn fma(a: f32, b: f32, c: f32) -> f32 {
+    (a as f64).mul_add(b as f64, c as f64) as f32
+}
+
+/// A quantised channel's value: fma(q, scale, offset), q converted exactly (F-89511).
+pub fn dequant(q: u32, sc: f32, off: f32) -> f32 {
+    fma(q as f32, sc, off)
+}
+
+/// A float channel between keys a and b at fraction fr: fma(b - a, fr, a) (F-18785, F-74386).
+pub fn lerp_key(a: f32, b: f32, fr: f32) -> f32 {
+    fma(b - a, fr, a)
+}
+
+/// A quaternion of one channel per component normalised as the sampler does (F-12216): the squares in the order
+/// z y w x, the estimate 1 / sqrt in single with two Newton steps in double, 0 when the squared length is not above 0.
+pub fn normalise4([x, y, z, w]: [f32; 4]) -> [f32; 4] {
+    let n2 = fma(z, z, fma(y, y, fma(w, w, x * x)));
+    let r = if -(n2 as f64) >= 0.0 {
+        0.0
+    } else {
+        let n = n2 as f64;
+        let mut e = (1.0 / n.sqrt()) as f32 as f64;
+        for _ in 0..2 {
+            let d = -(e * e).mul_add(n, -1.0);
+            e = d.mul_add(e * 0.5, e);
+        }
+        e as f32
+    };
+    [r * x, r * y, r * z, r * w]
+}
+
 fn channel(rd: &Rd, ch: usize, frames: usize) -> Option<Vec<f32>> {
     match rd.u8(ch + 5) {
         4 => Some(vec![rd.f32(ch + 8)]),
@@ -95,7 +128,7 @@ fn channel(rd: &Rd, ch: usize, frames: usize) -> Option<Vec<f32>> {
             if nb == 0 || nb > 32 || !rd.has(p, (cnt * nb + 31) / 32 * 4) {
                 return None;
             }
-            Some((0..cnt).map(|i| off + sc * bits(rd, p, i * nb, nb) as f32).collect())
+            Some((0..cnt).map(|i| dequant(bits(rd, p, i * nb, nb), sc, off)).collect())
         }
         _ => None,
     }
@@ -141,7 +174,8 @@ fn track(rd: &Rd, tr: usize, frames: usize) -> Option<Track> {
     } else if n == 1 {
         let p = rd.ptr(c0 + 8)?;
         match rd.u8(c0 + 5) {
-            9 => TrackData::Rot(vec![Quat::from_xyzw(rd.f32(p), rd.f32(p + 4), rd.f32(p + 8), rd.f32(p + 12)).normalize()]),
+            // the 16 bytes as they are (the sampler copies them)
+            9 => TrackData::Rot(vec![Quat::from_xyzw(rd.f32(p), rd.f32(p + 4), rd.f32(p + 8), rd.f32(p + 12))]),
             0x0d => TrackData::Vec(vec![Vec3::new(rd.f32(p), rd.f32(p + 4), rd.f32(p + 8))]),
             _ => return None,
         }
@@ -153,7 +187,8 @@ fn track(rd: &Rd, tr: usize, frames: usize) -> Option<Track> {
         let len = ch.iter().map(|c| c.len()).max().unwrap_or(1);
         let at = |k: usize, i: usize| -> f32 { ch[k][i.min(ch[k].len() - 1)] };
         if rot && n == 4 {
-            TrackData::Rot((0..len).map(|i| Quat::from_xyzw(at(0, i), at(1, i), at(2, i), at(3, i)).normalize()).collect())
+            // the channels' keys as they are: the sampler lerps each channel, then normalises
+            TrackData::Rot((0..len).map(|i| Quat::from_xyzw(at(0, i), at(1, i), at(2, i), at(3, i))).collect())
         } else if n == 3 {
             TrackData::Vec((0..len).map(|i| Vec3::new(at(0, i), at(1, i), at(2, i))).collect())
         } else {
@@ -306,28 +341,37 @@ impl Animation {
 }
 
 impl TrackData {
+    /// The value at frame position `f`: key i = floor(f) (at most the last), fraction f - i.
     pub fn vec(&self, f: f32) -> Vec3 {
+        let i = f as usize;
+        self.vec_at(i, f - i as f32)
+    }
+    /// The value between keys i and i + 1 at fraction fr, each component as the float channel's evaluator
+    /// (fma(b - a, fr, a)); one key: that key.
+    pub fn vec_at(&self, i: usize, fr: f32) -> Vec3 {
         match self {
             TrackData::Vec(v) if v.len() == 1 => v[0],
-            TrackData::Vec(v) => {
-                let i = (f as usize).min(v.len() - 1);
-                let j = (i + 1).min(v.len() - 1);
-                v[i].lerp(v[j], f - i as f32)
+            TrackData::Vec(v) if !v.is_empty() => {
+                let i = i.min(v.len() - 1);
+                let (a, b) = (v[i], v[(i + 1).min(v.len() - 1)]);
+                Vec3::new(lerp_key(a.x, b.x, fr), lerp_key(a.y, b.y, fr), lerp_key(a.z, b.z, fr))
             }
             _ => Vec3::ZERO,
         }
     }
     pub fn rot(&self, f: f32) -> Quat {
+        let i = f as usize;
+        self.rot_at(i, f - i as f32)
+    }
+    /// The rotation between keys i and i + 1 at fraction fr: each of the four channels lerped as a float channel,
+    /// then normalised (normalise4); no sign flip (F-12216). One key (a static quaternion): its 16 bytes.
+    pub fn rot_at(&self, i: usize, fr: f32) -> Quat {
         match self {
             TrackData::Rot(v) if v.len() == 1 => v[0],
-            TrackData::Rot(v) => {
-                let i = (f as usize).min(v.len() - 1);
-                let j = (i + 1).min(v.len() - 1);
-                let (a, mut b) = (v[i], v[j]);
-                if a.dot(b) < 0.0 {
-                    b = -b;
-                }
-                a.lerp(b, f - i as f32).normalize()
+            TrackData::Rot(v) if !v.is_empty() => {
+                let i = i.min(v.len() - 1);
+                let (a, b) = (v[i].to_array(), v[(i + 1).min(v.len() - 1)].to_array());
+                Quat::from_array(normalise4(std::array::from_fn(|k| lerp_key(a[k], b[k], fr))))
             }
             _ => Quat::IDENTITY,
         }
@@ -336,6 +380,41 @@ impl TrackData {
 
 #[cfg(test)]
 mod tests {
+    /// The float-channel evaluators against the original's (tools/anim_channel_reference.py, 6,000 random channels): a
+    /// quantised value of frame i clamped to the count (F-89511), a quantised and a raw channel lerped between keys i and
+    /// i + 1 (F-74386, F-18785); every result's bits equal.
+    #[test]
+    fn anim_channels_match_the_original() {
+        use super::{bits, dequant, Rd, TrackData};
+        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let mut n = 0;
+        for line in include_str!("testdata/anim_channel_ref.txt").lines() {
+            let (inp, out) = line.split_once(" -> ").unwrap();
+            let t: Vec<u32> = inp.split(' ').map(h).collect();
+            let (kind, nb, count, sc, off, i, fr) =
+                (t[0], t[1] as usize, t[2] as usize, f32::from_bits(t[3]), f32::from_bits(t[4]), t[5] as usize, f32::from_bits(t[6]));
+            let words = &t[8..8 + t[7] as usize];
+            let res = crate::rsc::Resource {
+                rtype: 0,
+                flags: 0,
+                virtual_size: words.len() * 4,
+                physical_size: 0,
+                data: words.iter().flat_map(|w| w.to_be_bytes()).collect(),
+            };
+            let rd = Rd::new(&res);
+            let q = |k: usize| dequant(bits(&rd, 0, k * nb, nb), sc, off);
+            let got = match kind {
+                0 => q(i.min(count - 1)),
+                1 => TrackData::Vec((0..count).map(|k| glam::Vec3::splat(q(k))).collect()).vec_at(i, fr).x,
+                _ => TrackData::Vec(words[..count].iter().map(|w| glam::Vec3::splat(f32::from_bits(*w))).collect()).vec_at(i, fr).x,
+            };
+            let want = h(out);
+            assert!(got.to_bits() == want || (got.is_nan() && f32::from_bits(want).is_nan()), "{line}: {:08x}", got.to_bits());
+            n += 1;
+        }
+        assert_eq!(n, 6000);
+    }
+
     /// The side windows' clips of a car's base fragment (DB9): 21 frames over 0.667 s, a
     /// translation and a rotation track on the window bone (tag 0x4137 left, 0xd554 right),
     /// starting at the bone's rest place; the glass ends 0.32 m lower.
