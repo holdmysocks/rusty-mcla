@@ -1548,7 +1548,7 @@ mod original_director_tests {
         }
         impl Probe for Rec<'_> {
             fn sweep(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
-                let k = if self.calls.is_empty() { format!("P{:08x},{:08x},{:08x},{:08x}", a.x.to_bits(), a.y.to_bits(), a.z.to_bits(), r.to_bits()) } else {
+                let k = if a.to_array().map(f32::to_bits) == b.to_array().map(f32::to_bits) { format!("P{:08x},{:08x},{:08x},{:08x}", a.x.to_bits(), a.y.to_bits(), a.z.to_bits(), r.to_bits()) } else {
                     format!("W{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x}", a.x.to_bits(), a.y.to_bits(), a.z.to_bits(), b.x.to_bits(), b.y.to_bits(), b.z.to_bits(), r.to_bits())
                 };
                 self.calls.push(k);
@@ -1556,6 +1556,10 @@ mod original_director_tests {
             }
             fn heli(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
                 self.calls.push(format!("H{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x}", a.x.to_bits(), a.y.to_bits(), a.z.to_bits(), b.x.to_bits(), b.y.to_bits(), b.z.to_bits(), r.to_bits()));
+                self.take(a)
+            }
+            fn own(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
+                self.calls.push(format!("O{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x}", a.x.to_bits(), a.y.to_bits(), a.z.to_bits(), b.x.to_bits(), b.y.to_bits(), b.z.to_bits(), r.to_bits()));
                 self.take(a)
             }
         }
@@ -1584,6 +1588,9 @@ mod original_director_tests {
             if state == HELI {
                 d.heli_activate(&tune, &car);
             }
+            if state == POLAR {
+                d.polar_activate(&tune);
+            }
             d.state = state;
             d.lens = v[0];
             d.aspect = v[1];
@@ -1594,9 +1601,9 @@ mod original_director_tests {
             let ok = d.shot_ok(&tune, &car, ahead, ht[11], &mut rec);
             let o: Vec<&str> = b.split_whitespace().collect();
             // (the original's calls without their include masks)
-            let want: Vec<String> = o.iter().filter(|x| x.starts_with(['P', 'W', 'H'])).map(|x| x.rsplit_once(',').unwrap().0.to_string()).collect();
+            let want: Vec<String> = o.iter().filter(|x| x.starts_with(['P', 'W', 'H', 'O'])).map(|x| x.rsplit_once(',').unwrap().0.to_string()).collect();
             assert_eq!(rec.calls, want, "{line}");
-            let rest: Vec<u32> = o.iter().filter(|x| !x.starts_with(['P', 'W', 'H'])).map(|x| h(x)).collect();
+            let rest: Vec<u32> = o.iter().filter(|x| !x.starts_with(['P', 'W', 'H', 'O'])).map(|x| h(x)).collect();
             let got = [ok as u32, d.rng.x, d.rng.c, if state == HELI { d.heli.fov.to_bits() } else { 0 }, if state == HELI { d.heli.zoom.to_bits() } else { 0 }];
             assert_eq!(got.to_vec(), rest, "{line}");
             cases += 1;
@@ -1607,7 +1614,7 @@ mod original_director_tests {
     /// The polar camera's update F-72161 with its world collision F-67414 against the original's code
     /// (tools/replay_polar_reference.py, testdata/replay_polar_ref.txt): 6,000 car matrices, lenses, pitches and yaws, the
     /// sweep answering with a contact and normal (or nothing) in both; the sweep's arguments, whether the push-out F-38041 is
-    /// asked, the rows shown and the place. (The push-out itself is stubbed: it leaves the place.)
+    /// asked, the rows shown and the place; the push-out F-38041 runs too, its car-bound test answering from the case.
     #[test]
     fn polar_update_matches_the_original() {
         struct W {
