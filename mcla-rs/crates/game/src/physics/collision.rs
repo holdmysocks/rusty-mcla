@@ -348,6 +348,31 @@ fn cell_of(x: f32, z: f32) -> (i32, i32) {
     ((x / CELL).floor() as i32, (z / CELL).floor() as i32)
 }
 
+/// The cells of the box (c0 ..= c1) that the segment a .. b comes within 5 cm of on x / z, column by column (x, then z
+/// ascending): for each column the z range of the segment's part over it (the column widened by 5 cm), widened again.
+fn segment_cells(a: Vec3, b: Vec3, c0: (i32, i32), c1: (i32, i32)) -> Vec<(i32, i32)> {
+    const EPS: f64 = 0.05;
+    let (ax, az, bx, bz) = (a.x as f64, a.z as f64, b.x as f64, b.z as f64);
+    let cell = CELL as f64;
+    let mut out = Vec::new();
+    for cx in c0.0..=c1.0 {
+        let (zl, zh) = if (bx - ax).abs() < 1e-9 {
+            (az.min(bz), az.max(bz))
+        } else {
+            let t = |x: f64| ((x - ax) / (bx - ax)).clamp(0.0, 1.0);
+            let (t0, t1) = (t(cx as f64 * cell - EPS), t((cx + 1) as f64 * cell + EPS));
+            let (z0, z1) = (az + (bz - az) * t0, az + (bz - az) * t1);
+            (z0.min(z1), z0.max(z1))
+        };
+        let lo = (((zl - EPS) / cell).floor() as i32).max(c0.1);
+        let hi = (((zh + EPS) / cell).floor() as i32).min(c1.1);
+        for cz in lo..=hi {
+            out.push((cx, cz));
+        }
+    }
+    out
+}
+
 impl SectorMesh {
     pub fn build(tris: Vec<[Vec3; 3]>) -> SectorMesh {
         Self::build_with(tris, Vec::new())
@@ -581,53 +606,40 @@ impl WorldCollider {
     /// hits nearest the start): every one-sided hit of a city triangle on the segment o .. o + d max_t, each triangle
     /// once, nearest first (on equal t, the order they were found in).
     pub fn probe_front_all(&self, o: Vec3, d: Vec3, max_t: f32, max: usize) -> Vec<Hit> {
-        let mut hits: Vec<Hit> = Vec::new();
         let end = o + d * max_t;
         let mn = o.min(end);
         let mx = o.max(end);
         let (cx0, cz0) = cell_of(mn.x, mn.z);
         let (cx1, cz1) = cell_of(mx.x, mx.z);
-        // the cells the segment crosses, with a one-cell margin (half-cell steps), or the whole box when it is small
-        let cells: Vec<(i32, i32)> = if (cx1 - cx0 + 1) * (cz1 - cz0 + 1) <= 400 {
-            (cx0..=cx1).flat_map(|cx| (cz0..=cz1).map(move |cz| (cx, cz))).collect()
-        } else {
-            let len = (end - o).length();
-            let steps = (len / (CELL * 0.5)).ceil().max(1.0) as i32;
-            let mut set = hashbrown::HashSet::new();
-            for k in 0..=steps {
-                let p = o.lerp(end, k as f32 / steps as f32);
-                let (cx, cz) = cell_of(p.x, p.z);
-                for dx in -1..=1 {
-                    for dz in -1..=1 {
-                        set.insert((cx + dx, cz + dz));
-                    }
-                }
-            }
-            set.into_iter().collect()
-        };
-        for s in self.sectors.values() {
+        // Only the cells the segment comes within 5 cm of (a hit lies on the segment and inside its triangle's box,
+        // so in one of them), not every cell of its box: the sounds' occlusion rays run to 400 m and met ~50,000
+        // triangles each (1.4 ms). Equal t keep the order the whole box gave: the sector, the triangle's first cell
+        // of the box (column, then row), its index - the same hits in the same order.
+        let cells = segment_cells(o, end, (cx0, cz0), (cx1, cz1));
+        let mut hits: Vec<(Hit, (usize, i32, i32, u32))> = Vec::new();
+        for (si, s) in self.sectors.values().enumerate() {
             if mx.x < s.min.x || mn.x > s.max.x || mx.z < s.min.z || mn.z > s.max.z || mx.y < s.min.y || mn.y > s.max.y {
                 continue;
             }
             let mut seen = hashbrown::HashSet::new();
             for &(cx, cz) in &cells {
-                {
-                    if let Some(list) = s.grid.get(&(cx, cz)) {
-                        for &i in list {
-                            if !seen.insert(i) {
-                                continue;
-                            }
-                            if let Some((t, n)) = ray_tri_front(o, d, &s.tris[i as usize], max_t) {
-                                hits.push(Hit { t, point: o + d * t, normal: n, surface: Surface::from_u8(s.mats.get(i as usize).copied().unwrap_or(0)) });
-                            }
-                        }
+                let Some(list) = s.grid.get(&(cx, cz)) else { continue };
+                for &i in list {
+                    if !seen.insert(i) {
+                        continue;
+                    }
+                    let tri = &s.tris[i as usize];
+                    if let Some((t, n)) = ray_tri_front(o, d, tri, max_t) {
+                        let lo = tri[0].min(tri[1]).min(tri[2]);
+                        let (x0, z0) = cell_of(lo.x, lo.z);
+                        hits.push((Hit { t, point: o + d * t, normal: n, surface: Surface::from_u8(s.mats.get(i as usize).copied().unwrap_or(0)) }, (si, x0.max(cx0), z0.max(cz0), i)));
                     }
                 }
             }
         }
-        hits.sort_by(|a, b| a.t.total_cmp(&b.t));
+        hits.sort_by(|a, b| a.0.t.total_cmp(&b.0.t).then(a.1.cmp(&b.1)));
         hits.truncate(max);
-        hits
+        hits.into_iter().map(|h| h.0).collect()
     }
 
     fn raycast_coarse(&self, o: Vec3, d: Vec3, max_t: f32) -> Option<Hit> {
@@ -877,4 +889,135 @@ pub fn closest_point_tri(p: Vec3, t: &[Vec3; 3]) -> Vec3 {
     let v = vb * denom;
     let w = vc * denom;
     a + ab * v + ac * w
+}
+
+#[cfg(test)]
+mod probe_all_tests {
+    use super::*;
+
+    /// `probe_front_all` before 2026-11-08: every cell of the segment's box (or, past 400 cells, a hash set of cells
+    /// sampled along it).
+    fn probe_front_all_box(w: &WorldCollider, o: Vec3, d: Vec3, max_t: f32, max: usize) -> Vec<Hit> {
+        let mut hits: Vec<Hit> = Vec::new();
+        let end = o + d * max_t;
+        let mn = o.min(end);
+        let mx = o.max(end);
+        let (cx0, cz0) = cell_of(mn.x, mn.z);
+        let (cx1, cz1) = cell_of(mx.x, mx.z);
+        // the cells the segment crosses, with a one-cell margin (half-cell steps), or the whole box when it is small
+        let cells: Vec<(i32, i32)> = if (cx1 - cx0 + 1) * (cz1 - cz0 + 1) <= 400 {
+            (cx0..=cx1).flat_map(|cx| (cz0..=cz1).map(move |cz| (cx, cz))).collect()
+        } else {
+            let len = (end - o).length();
+            let steps = (len / (CELL * 0.5)).ceil().max(1.0) as i32;
+            let mut set = hashbrown::HashSet::new();
+            for k in 0..=steps {
+                let p = o.lerp(end, k as f32 / steps as f32);
+                let (cx, cz) = cell_of(p.x, p.z);
+                for dx in -1..=1 {
+                    for dz in -1..=1 {
+                        set.insert((cx + dx, cz + dz));
+                    }
+                }
+            }
+            set.into_iter().collect()
+        };
+        for s in w.sectors.values() {
+            if mx.x < s.min.x || mn.x > s.max.x || mx.z < s.min.z || mn.z > s.max.z || mx.y < s.min.y || mn.y > s.max.y {
+                continue;
+            }
+            let mut seen = hashbrown::HashSet::new();
+            for &(cx, cz) in &cells {
+                {
+                    if let Some(list) = s.grid.get(&(cx, cz)) {
+                        for &i in list {
+                            if !seen.insert(i) {
+                                continue;
+                            }
+                            if let Some((t, n)) = ray_tri_front(o, d, &s.tris[i as usize], max_t) {
+                                hits.push(Hit { t, point: o + d * t, normal: n, surface: Surface::from_u8(s.mats.get(i as usize).copied().unwrap_or(0)) });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        hits.sort_by(|a, b| a.t.total_cmp(&b.t));
+        hits.truncate(max);
+        hits
+    }
+
+
+    /// The walk over the segment's cells gives the hits the walk over its whole box gave: random sectors of triangles
+    /// (tiny to 120 m, both faces, in some worlds with the vertices on the cell lines) and segments (short, to 700 m,
+    /// along x / z, on a cell line). Where the box was walked whole (up to 400 cells): the same hits in the same order,
+    /// to the bit; past that the old order came from a hash set, so there the same hits in any order.
+    #[test]
+    fn segment_cells_give_the_box_walks_hits() {
+        let mut r = 0x2545_F491u32;
+        let mut f = move || {
+            r ^= r << 13;
+            r ^= r >> 17;
+            r ^= r << 5;
+            r as f32 / u32::MAX as f32
+        };
+        let (mut cases, mut with_hits, mut big, mut ties) = (0, 0, 0, 0);
+        for world in 0..12 {
+            let mut w = WorldCollider { sectors: Default::default(), loose: None, city: None };
+            for si in 0..3usize {
+                let base = Vec3::new(si as f32 * 120.0 - 150.0, 0.0, (si % 2) as f32 * 90.0 - 60.0);
+                let mut tris = Vec::new();
+                let mut mats = Vec::new();
+                for k in 0..900 {
+                    let size = [0.3, 4.0, 8.0, 30.0, 120.0][k % 5];
+                    let snap = |v: f32| if world % 3 == 0 { (v / 8.0).round() * 8.0 } else { v };
+                    let c = base + Vec3::new(snap(f() * 200.0 - 100.0), f() * 20.0 - 5.0, snap(f() * 200.0 - 100.0));
+                    let mut v = || c + Vec3::new(snap((f() - 0.5) * size), (f() - 0.5) * size * 0.5, snap((f() - 0.5) * size));
+                    let t = [v(), v(), v()];
+                    tris.push(t);
+                    tris.push([t[0], t[2], t[1]]);
+                    mats.push((k % 7) as u8);
+                    mats.push((k % 5) as u8);
+                }
+                w.sectors.insert(si, SectorMesh::build_with(tris, mats));
+            }
+            for k in 0..400 {
+                let mut o = Vec3::new(f() * 500.0 - 250.0, f() * 20.0 - 5.0, f() * 500.0 - 250.0);
+                let mut e = Vec3::new(f() * 500.0 - 250.0, f() * 20.0 - 5.0, f() * 500.0 - 250.0);
+                match k % 6 {
+                    0 => e.x = o.x,
+                    1 => e.z = o.z,
+                    2 => e = o + Vec3::new(f() * 6.0 - 3.0, f() - 0.5, f() * 6.0 - 3.0),
+                    3 => {
+                        let x = (o.x / 8.0).round() * 8.0;
+                        o.x = x;
+                        e.x = x;
+                    }
+                    _ => {}
+                }
+                let d = e - o;
+                let a = w.probe_front_all(o, d, 1.0, 16);
+                let b = probe_front_all_box(&w, o, d, 1.0, 16);
+                let ((cx0, cz0), (cx1, cz1)) = (cell_of(o.min(e).x, o.min(e).z), cell_of(o.max(e).x, o.max(e).z));
+                cases += 1;
+                with_hits += (!b.is_empty()) as usize;
+                ties += b.windows(2).any(|p| p[0].t == p[1].t) as usize;
+                if (cx1 - cx0 + 1) * (cz1 - cz0 + 1) <= 400 {
+                    assert_eq!(fmt(&a), fmt(&b), "world {world} case {k}");
+                } else {
+                    big += 1;
+                    let (mut sa, mut sb) = (fmt(&a), fmt(&b));
+                    sa.sort();
+                    sb.sort();
+                    assert_eq!(sa, sb, "world {world} case {k} (large box)");
+                }
+            }
+        }
+        eprintln!("{cases} segments, {with_hits} with hits, {big} past 400 cells, {ties} with equal t");
+        assert!(with_hits > cases / 3 && big > 50);
+    }
+
+    fn fmt(h: &[Hit]) -> Vec<String> {
+        h.iter().map(|h| format!("{:08x} {:?} {:?} {:?}", h.t.to_bits(), h.point.to_array().map(f32::to_bits), h.normal.to_array().map(f32::to_bits), h.surface)).collect()
+    }
 }
