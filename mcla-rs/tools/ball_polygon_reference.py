@@ -41,9 +41,13 @@ _vs = rd.vector_shim
 
 def _shim():
     # (the vertex fetch's unaligned load needs the right-hand mask table of the recomp's intrinsics)
+    # (the shared shim defines it itself now; add it only where it does not)
+    s = _vs()
+    if 'VectorMaskR[]' in s:
+        return s
     header = Path(SDK_INTRINSICS).read_text()
     mask = re.search(r'inline uint8_t VectorMaskR\[\] = \{.*?\};', header, re.S).group()
-    return _vs() + mask.replace('inline uint8_t', 'alignas(16) static uint8_t') + chr(10)
+    return s + mask.replace('inline uint8_t', 'alignas(16) static uint8_t') + chr(10)
 
 
 rd.vector_shim = _shim
