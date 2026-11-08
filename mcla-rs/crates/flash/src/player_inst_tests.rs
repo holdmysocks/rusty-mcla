@@ -33,7 +33,7 @@ fn traced_movie(n: usize) -> Arc<Movie> {
         stage: [0.0, 1280.0, 0.0, 720.0],
         fps: 30,
         root: Sprite { frames },
-        chars: vec![None, Some(Character::Sprite(Sprite { frames: Vec::new() })), Some(Character::Button(Button { records: Vec::new() }))],
+        chars: vec![None, Some(Character::Sprite(Sprite { frames: Vec::new() })), Some(Character::Button(Button { records: Vec::new(), conditions: 0, condition_actions: Vec::new() }))],
         exports: Vec::new(),
     })
 }
