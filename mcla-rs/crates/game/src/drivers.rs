@@ -407,12 +407,13 @@ impl Wind {
         self.vel = vel;
     }
 
-    /// F-42959's windEmitterPlaneEq: the velocity made unit by the vector unit (vmsum3fp as x + (y + z), vrsqrtefp - infinity to 0 - and
+    /// F-42959's windEmitterPlaneEq: the velocity made unit by the vector unit (vmsum3fp as (0 + z z) + (y y + x x), vrsqrtefp - infinity to 0 - and
     /// one Newton step) when its square is over 1e-5, else (0, 0, -1); w = that . the car matrix's place (fused as
     /// x (z (y))).
     pub fn plane(&self, at: Vec3) -> [f32; 4] {
         let v = self.vel;
-        let d = v.x * v.x + (v.y * v.y + v.z * v.z);
+        // (the vector unit's dot: (0 + z z) + (y y + x x))
+        let d = crate::physics::exact::dot3(v, v);
         let n = if d > f32::from_bits(0x3727_c5ac) {
             let e = 1.0 / d.sqrt();
             let e = if e == f32::INFINITY { 0.0 } else { e };
