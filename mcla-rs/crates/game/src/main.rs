@@ -462,6 +462,8 @@ struct App {
     pink_end: (u8, bool),
     /// the scenario the pink slip end scene's playspeech says (PrepareSpeechScenarioForNextCutscene)
     pink_speech: Option<String>,
+    /// the playing pink slip end scene is a loss scene (cut_loss_*): Garage_WarpTo after it
+    pink_lost: bool,
     /// the playing scene's car events (cinecar.rs): the scene's name and each moved car's event
     cine_events: (String, Vec<(String, cinecar::CarEvent)>),
     /// tips waiting for a quiet moment: speech scenario, title, text
@@ -1079,14 +1081,21 @@ impl App {
                 let mut started = false;
                 if let (Some((scene, speech)), Some((pos, yaw))) = (plan, grid) {
                     let origin = glam::Mat4::from_rotation_translation(glam::Quat::from_rotation_y(yaw), pos);
+                    // (lost, 0x5b31: car slot 0 the hookman's racer after Racer_ChangeCarByConfig(hookman, the player's car
+                    // config) - he drives off in the player's car; the scene's mover_hookmans_car)
+                    let lost = mc4::PINK_LOSS_SCENES.iter().any(|n| scene.eq_ignore_ascii_case(n));
+                    self.pink_lost = lost;
+                    let player = self.vehicles.cars.iter().position(|c| c.is_player);
                     if self.cine.start(gpu, &scene, origin) {
                         started = true;
                         self.cine_free = true;
                         self.cine_caption = None;
                         // (slot 1: the hookman's car - Cars_AssignIdToSlot(hookman's racer, 1), 0x5a22)
-                        if let (Some(h), Some((mp, mr))) = (hook, self.cine.mover("hookman")) {
-                            let src = &self.vehicles.cars[h];
-                            let (model, color, plate, config, set) = (src.model.clone(), src.color, src.plate_text.clone(), src.vinyl_name.clone(), src.driver_set.clone());
+                        let (label, src) = if lost { ("hookmans", player) } else { ("hookman", hook) };
+                        if let (Some(h), Some(s), Some((mp, mr))) = (hook, src, self.cine.mover(label)) {
+                            let src = &self.vehicles.cars[s];
+                            let set = self.vehicles.cars[h].driver_set.clone();
+                            let (model, color, plate, config) = (src.model.clone(), src.color, src.plate_text.clone(), src.vinyl_name.clone());
                             // (made facing the mover's way)
                             let f = mr * glam::Vec3::NEG_Z;
                             let idx = self.vehicles.spawn(gpu, model, mp, (-f.x).atan2(-f.z), color, false);
@@ -1118,7 +1127,11 @@ impl App {
                 match self.cine.playing.as_ref().map(|sc| sc.t) {
                     Some(t) => {
                         // (the scene's playspeech: PrepareSpeechScenarioForNextCutscene's scenario)
-                        let at = self.cine.playing.as_ref().and_then(|sc| mc4::PINK_REWARD_SCENES.iter().position(|n| sc.name.eq_ignore_ascii_case(n))).map_or(f32::MAX, |k| mc4::PINK_REWARD_SPEECH[k]);
+                        let at = self.cine.playing.as_ref().and_then(|sc| {
+                            let won = mc4::PINK_REWARD_SCENES.iter().position(|n| sc.name.eq_ignore_ascii_case(n)).map(|k| mc4::PINK_REWARD_SPEECH[k]);
+                            won.or_else(|| mc4::PINK_LOSS_SCENES.iter().position(|n| sc.name.eq_ignore_ascii_case(n)).map(|k| mc4::PINK_LOSS_SPEECH[k]))
+                        });
+                        let at = at.unwrap_or(f32::MAX);
                         if !self.pink_end.1 && t >= at {
                             self.pink_end.1 = true;
                             if let Some(sp) = self.pink_speech.take() {
@@ -1138,9 +1151,17 @@ impl App {
                 if self.scene_fade.is_on() {
                     return;
                 }
-                // (Racer_Activate; won: raceEnd - the race-over menu)
+                // (Racer_Activate; won: raceEnd - the race-over menu. Lost: no raceEnd (0x5fb6), raceOverCommand is not
+                // 'replay', and off line (NET_UNLOADCAREER < 1) Garage_WarpTo (0x6207, F-16942 -> GO TO GARAGE's pick
+                // F-17595) with the player's current vehicle profile; then the race's clean-up, the fade up and
+                // CAREER_AUTOSAVE - the port's GO TO GARAGE after the race's end)
                 self.game.pink_scene_on = false;
                 self.pink_end = (0, false);
+                if std::mem::take(&mut self.pink_lost) {
+                    log::info!("pink slip lost: Garage_WarpTo after the loss scene");
+                    self.game.go_garage = true;
+                    self.pending_action = MenuAction::StartFreeRoam;
+                }
             }
         }
     }
@@ -1346,6 +1367,7 @@ impl App {
             pb_intro_hold: None,
             pink_end: (0, false),
             pink_speech: None,
+            pink_lost: false,
             cine_events: (String::new(), Vec::new()),
             tips: Default::default(),
             reminder_wait: None,
