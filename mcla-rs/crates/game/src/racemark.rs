@@ -238,7 +238,119 @@ pub fn box_bottom(wheel_parts: &[Vec3], r: [f32; 2], w: [f32; 2]) -> f32 {
     }).fold(f32::MAX, f32::min) - WHEEL_BOX_DROP
 }
 
-/// This frame's markers, far first (`F-13438` sorts the queue by distance, descending).
+/// The C runtime's qsort (F-79639) as the original links it: a quicksort on the median of three
+/// with the middle element tracked through the swaps, runs of keys equal to it skipped, the
+/// smaller side first and pieces of 8 or fewer by the max-to-the-end selection. Not stable: equal
+/// keys come out in its order, which this keeps.
+pub fn crt_qsort<T>(v: &mut [T], cmp: impl Fn(&T, &T) -> i32) {
+    if v.len() < 2 {
+        return;
+    }
+    let c = |v: &[T], a: isize, b: isize| cmp(&v[a as usize], &v[b as usize]);
+    let sw = |v: &mut [T], a: isize, b: isize| v.swap(a as usize, b as usize);
+    let mut stack: Vec<(isize, isize)> = Vec::new();
+    let (mut lo, mut hi) = (0isize, v.len() as isize - 1);
+    loop {
+        let size = hi - lo + 1;
+        if size <= 8 {
+            let mut h = hi;
+            while h > lo {
+                let mut max = lo;
+                for p in lo + 1..=h {
+                    if c(v, p, max) > 0 {
+                        max = p;
+                    }
+                }
+                sw(v, max, h);
+                h -= 1;
+            }
+        } else {
+            let mut mid = lo + size / 2;
+            if c(v, lo, mid) > 0 {
+                sw(v, lo, mid);
+            }
+            if c(v, lo, hi) > 0 {
+                sw(v, lo, hi);
+            }
+            if c(v, mid, hi) > 0 {
+                sw(v, mid, hi);
+            }
+            let (mut loguy, mut higuy) = (lo, hi);
+            loop {
+                if mid > loguy {
+                    loop {
+                        loguy += 1;
+                        if !(loguy < mid && c(v, loguy, mid) <= 0) {
+                            break;
+                        }
+                    }
+                }
+                if mid <= loguy {
+                    loop {
+                        loguy += 1;
+                        if !(loguy <= hi && c(v, loguy, mid) <= 0) {
+                            break;
+                        }
+                    }
+                }
+                loop {
+                    higuy -= 1;
+                    if !(higuy > mid && c(v, higuy, mid) > 0) {
+                        break;
+                    }
+                }
+                if higuy < loguy {
+                    break;
+                }
+                sw(v, loguy, higuy);
+                if mid == higuy {
+                    mid = loguy;
+                }
+            }
+            higuy += 1;
+            if mid < higuy {
+                loop {
+                    higuy -= 1;
+                    if !(higuy > mid && c(v, higuy, mid) == 0) {
+                        break;
+                    }
+                }
+            }
+            if mid >= higuy {
+                loop {
+                    higuy -= 1;
+                    if !(higuy > lo && c(v, higuy, mid) == 0) {
+                        break;
+                    }
+                }
+            }
+            if higuy - lo >= hi - loguy {
+                if lo < higuy {
+                    stack.push((lo, higuy));
+                }
+                if loguy < hi {
+                    lo = loguy;
+                    continue;
+                }
+            } else {
+                if loguy < hi {
+                    stack.push((loguy, hi));
+                }
+                if lo < higuy {
+                    hi = higuy;
+                    continue;
+                }
+            }
+        }
+        match stack.pop() {
+            Some((l, h)) => (lo, hi) = (l, h),
+            None => return,
+        }
+    }
+}
+
+/// This frame's markers, far first (F-34858: the queue in its order, then `crt_qsort` with the
+/// compare F-13438 on the distance).
 /// `cam_z` is the camera matrix's z row (pointing back).
 pub fn marks(t: &MarkTune, cam: Vec3, cam_z: Vec3, racers: &[Racer]) -> Vec<Mark> {
     let mut out: Vec<Mark> = racers
@@ -252,7 +364,7 @@ pub fn marks(t: &MarkTune, cam: Vec3, cam_z: Vec3, racers: &[Racer]) -> Vec<Mark
             Some(Mark { m, colour, dist: distance(cam, m.w_axis.truncate()) })
         })
         .collect();
-    out.sort_by(|a, b| b.dist.partial_cmp(&a.dist).unwrap_or(std::cmp::Ordering::Equal));
+    crt_qsort(&mut out, |a, b| crate::hookicons::far_first(a.dist, b.dist));
     out
 }
 
@@ -338,6 +450,26 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 4000);
+    }
+
+    /// F-34858 with the qsort F-79639 and the compare F-13438 run offline
+    /// (tools/marker_sort_reference.py, 3,000 queues of 0..64 entries, many ties, +-0, inf, NaN):
+    /// the order of the entries equal.
+    #[test]
+    fn marker_sort_matches_the_original() {
+        let text = include_str!("testdata/marker_sort_ref.txt");
+        let mut n = 0;
+        for line in text.lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let d: Vec<f32> = if a == "-" { vec![] } else { a.split(' ').map(|x| f32::from_bits(x.parse().unwrap())).collect() };
+            let o: Vec<usize> = b.split(' ').map(|x| x.parse().unwrap()).collect();
+            let mut v: Vec<(usize, f32)> = d.iter().copied().enumerate().collect();
+            crt_qsort(&mut v, |a, b| crate::hookicons::far_first(a.1, b.1));
+            assert_eq!(o[0], v.len(), "{line}");
+            assert_eq!(v.iter().map(|x| x.0).collect::<Vec<_>>(), o[1..].to_vec(), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
     }
 
     #[test]
