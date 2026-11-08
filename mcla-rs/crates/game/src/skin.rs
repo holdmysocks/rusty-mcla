@@ -464,23 +464,7 @@ impl SkinModel {
         if binds4.is_empty() {
             binds4 = binds.clone();
         }
-        let under = |top: Option<usize>| -> Vec<bool> {
-            (0..bones.len())
-                .map(|i| {
-                    let mut b = Some(i);
-                    while let Some(j) = b {
-                        if Some(j) == top {
-                            return true;
-                        }
-                        b = bones[j].parent;
-                    }
-                    false
-                })
-                .collect()
-        };
-        let neck_bones = under(c.bone("neck"));
-        let face_bones = under(c.bone("Facial_root"));
-        let spine_bones = under(c.bone("spine00"));
+        let [face_bones, neck_bones, spine_bones] = bone_masks(&c);
         Some(SkinModel { bones, ids, lods, cockpit, binds, binds4, mats, head: c.bone("head"), morph, face_bones, neck_bones, spine_bones })
     }
 }
@@ -523,6 +507,27 @@ fn load_morph(path: &Path, c: &Character, high: &[Part]) -> Option<Morph> {
         parts.push(g);
     }
     Some(Morph { shapes, parts })
+}
+
+/// The bones under Facial_root, neck and spine00 (each with the bone itself): the driver's frame filters as F-29730 builds
+/// them (F-73047, F-25694 / F-16979 with the subtree walk F-10233). NoFace = id 0's subtree (every bone: each set has one root,
+/// id 0) minus Facial_root's; the -maskneck switch (neck's instead) is off in the retail game.
+pub fn bone_masks(c: &Character) -> [Vec<bool>; 3] {
+    let under = |top: Option<usize>| -> Vec<bool> {
+        (0..c.bones.len())
+            .map(|i| {
+                let mut b = Some(i);
+                while let Some(j) = b {
+                    if Some(j) == top {
+                        return true;
+                    }
+                    b = c.bones[j].parent;
+                }
+                false
+            })
+            .collect()
+    };
+    [under(c.bone("Facial_root")), under(c.bone("neck")), under(c.bone("spine00"))]
 }
 
 /// An animation bound to one skeleton: track index per bone.

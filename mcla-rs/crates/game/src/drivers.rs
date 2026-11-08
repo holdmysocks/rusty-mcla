@@ -2246,6 +2246,40 @@ mod original_tests {
         assert!(pack_path(r, false, true, "dge_challenger_70").ends_with("resources/animation/0xe4f29864/opponent/female/0x953f13ee.r2"));
     }
 
+    /// The frame filters' bone masks against the original's own filter build run offline on every character set's skeleton
+    /// (work/driverlight/filt/filter_ref.py: F-73047, F-25694, F-16979, F-10233 as F-29730 calls them, then F-40876 asked per
+    /// bone as a vector and a quaternion DOF; every answer 1 / 1.0 or 0 / 0.0, an integer kind 1, a missing id 0). Per set:
+    /// the root alone, spine00's subtree, neck's, and id 0's minus Facial_root's - the port's Spine, Neck and NoFace.
+    #[test]
+    fn the_frame_filters_match_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let dir = Path::new(&root).join("resources/character");
+        let (mut sets, mut bones) = (0, 0);
+        for line in include_str!("testdata/drv_filter_ref.txt").lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let Some(f) = std::fs::read_dir(dir.join(w[0])).ok().and_then(|d| {
+                d.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "r6"))
+            }) else {
+                eprintln!("no disc data for {}, skipped", w[0]);
+                continue;
+            };
+            let c = crate::skin::SkinModel::read(&f).expect("set");
+            let n: usize = w[1].parse().unwrap();
+            assert_eq!(c.bones.len(), n, "{}", w[0]);
+            let [face, neck, spine] = crate::skin::bone_masks(&c);
+            let mask = |m: &dyn Fn(usize) -> bool| -> String { (0..n).map(|i| if m(i) { '1' } else { '0' }).collect() };
+            assert_eq!(mask(&|i| c.bones[i].id == 0 && c.bones[i].parent.is_none()), w[2], "{} root", w[0]);
+            assert_eq!(mask(&|i| spine[i]), w[3], "{} spine", w[0]);
+            assert_eq!(mask(&|i| neck[i]), w[4], "{} neck", w[0]);
+            assert_eq!(mask(&|i| !face[i]), w[5], "{} no face", w[0]);
+            sets += 1;
+            bones += n;
+        }
+        if sets > 0 {
+            assert!(sets > 250 && bones > 19_000, "{sets} {bones}");
+        }
+    }
+
     /// The pack's own dictionary keys the clips by their plain names: the Police Car Pack's packs (clips named for the
     /// civilian Impala / Charger) give the machine every clip it asks for, as the civilian cars' do (GitHub #36).
     #[test]
