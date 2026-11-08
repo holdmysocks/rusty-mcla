@@ -7719,16 +7719,36 @@ mod amb_pool_tests {
     }
 }
 
-/// The siren light's colour and strength (F-72231), by the wall clock in ms: t = ms x 0.01; red when fmod(t, 6) > 3, else
-/// blue; strength 0 when fmod(t, 1) > 0.5, else 200.
+/// The siren light's colour and strength (F-72231), by the wall clock in ms (the 32-bit tick): t = ms as a float x 0.01
+/// (a float product); red when fmod(t, (0.5 + 0.5) x 3 x 2) > (0.5 + 0.5) x 3, else blue; strength 0 when
+/// fmod(t, 0.5 + 0.5) > 0.5, else 200 (the manager ctor's values; fmod in double, its answer made a float). Checked on
+/// 4,661 clocks against the original's code run offline (`tools/siren_flash_reference.py`, test `siren_flash_matches_the_original`).
 pub fn siren_flash(ms: u64) -> ([f32; 3], f32) {
-    let t = ms as f64 * 0.01;
-    (if t % 6.0 > 3.0 { [1.0, 0.0, 0.0] } else { [0.0, 0.0, 1.0] }, if t % 1.0 > 0.5 { 0.0 } else { 200.0 })
+    let t = (ms as u32) as f32 * 0.01;
+    let (on, cycle) = (0.5f32 + 0.5, (0.5f32 + 0.5) * 3.0);
+    let red = ((t as f64) % ((cycle * 2.0) as f64)) as f32 > cycle;
+    let off = ((t as f64) % (on as f64)) as f32 > 0.5;
+    (if red { [1.0, 0.0, 0.0] } else { [0.0, 0.0, 1.0] }, if off { 0.0 } else { 200.0 })
 }
 
 #[cfg(test)]
 mod siren_tests {
     use super::siren_flash;
+
+    #[test]
+    fn siren_flash_matches_the_original() {
+        let t = include_str!("testdata/siren_flash_reference.txt");
+        let mut n = 0;
+        for l in t.lines() {
+            let (a, b) = l.split_once(" -> ").unwrap();
+            let ms: u64 = a.trim_start_matches("CASE ").parse().unwrap();
+            let w: Vec<u32> = b.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let (c, i) = siren_flash(ms);
+            assert_eq!([i.to_bits(), c[0].to_bits(), c[1].to_bits(), c[2].to_bits()], [w[0], w[1], w[2], w[3]], "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 4661);
+    }
 
     #[test]
     fn the_flash_by_the_clock() {
