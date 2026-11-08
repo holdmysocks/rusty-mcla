@@ -483,6 +483,12 @@ struct App {
     /// a mission reminder posted and not yet on the phone (F-12937's priority-2 entry: while
     /// one waits, F-12937 does not count down): caller, reminder id, the MISSION LOG prompt
     reminder_wait: Option<(String, String, bool)>,
+    /// the reminder's entry still in the phone list after its card came up (byte +25 clear): the consumer F-37697
+    /// marks it done only when the call is over - its speech (+20) no longer the speech manager's current line
+    /// (+2260), or with no line its timer (+6116) run down - and until then Sidekick_GetTypeCount(2) (F-87869 -> F-93219)
+    /// counts it, so F-12937 still does not count down. true: its line was started (over when the speech is
+    /// done); false: no line (over when the card is gone - approx., the +6116 timer's start is not read)
+    reminder_on: Option<bool>,
     /// the tip calls' scripts waiting at the cap (Sidekick_GetTypeCount(3) > 4): next wake (`tip_clock`), the call
     tip_waiters: Vec<(f32, (String, String, String))>,
     /// the waiters' unwarped clock, seconds
@@ -1434,6 +1440,7 @@ impl App {
             cine_events: (String::new(), Vec::new()),
             tips: Default::default(),
             reminder_wait: None,
+            reminder_on: None,
             tip_waiters: Vec::new(),
             tip_clock: 0.0,
             tip_shown: false,
@@ -6552,7 +6559,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // no cine script, Cruising_Offline, no reminder waiting - then Career::reminder_tick. *(approx.)* the
             // navsys +628 / GPS-route gates, the flag at 0x828CCEA0 and F-42050's restart on a navigator
             // event are not ported)
-            if career_up && cruising && self.reminder_wait.is_none() && self.police.activity().0 <= 1 && self.cuts.playing.is_none() && self.cine.playing.is_none() && matches!(self.game.mode, Mode::FreeRoam) {
+            if let Some(spoke) = self.reminder_on {
+                if if spoke { !self.speech.busy() } else { self.game.tip.is_none() } {
+                    self.reminder_on = None;
+                }
+            }
+            if career_up && cruising && self.reminder_wait.is_none() && self.reminder_on.is_none() && self.police.activity().0 <= 1 && self.cuts.playing.is_none() && self.cine.playing.is_none() && matches!(self.game.mode, Mode::FreeRoam) {
                 if let Some((i, rem)) = self.game.career.reminder_tick(dt) {
                     let id = self.game.career.mission_id(i).to_string();
                     log::info!("career: reminder of {} ({})", id, rem);
@@ -6571,7 +6583,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         a.play("ui/menus/tutorial_window_fin", 0.7);
                     }
                 }
-                self.speech.say(&rem);
+                self.reminder_on = Some(self.speech.say(&rem));
             }
             self.news_timer = (self.news_timer - dt).max(-30.0);
             // (a splash line is no call: only the calls wait for the phone)
