@@ -291,16 +291,24 @@ fn segment_crossing(a: Vec3, b: Vec3, n: Vec3, v: &[Vec3; 3]) -> Option<(Vec3, f
 /// edge or corner index): 2 the face, 1 an edge, 0 a corner, 3 none. Each edge's side vector's x goes to the stack
 /// word `slot` (its -192, F-65002's +128).
 fn ball_ngon(c: Vec3, r: f32, v: &[Vec3; 3], n: Vec3, slot: &mut u32) -> (u32, Vec3, Vec3, f32, usize) {
+    ball_ngon_n(c, r, v, n, slot)
+}
+
+/// F-17804 on a polygon of any number of corners (its r6; at most 8 here), the edges i -> i + 1 mod the count: the
+/// triangles of the bounds and the quads of the effect instances (F-99991). See `ball_ngon`.
+pub(crate) fn ball_ngon_n(c: Vec3, r: f32, v: &[Vec3], n: Vec3, slot: &mut u32) -> (u32, Vec3, Vec3, f32, usize) {
     let none = (3, Vec3::ZERO, Vec3::ZERO, 0.0, 0);
+    let m = v.len();
+    assert!((1..=8).contains(&m));
     let w0 = c - v[0];
     let d = fma(n.z, w0.z, fma(n.x, w0.x, n.y * w0.y));
     if d.abs() > r {
         return none;
     }
     let mut inside = true;
-    let mut flags = [0i32; 3];
-    for i in 0..3 {
-        let (a, b) = (v[i], v[(i + 1) % 3]);
+    let mut flags = [0i32; 8];
+    for i in 0..m {
+        let (a, b) = (v[i], v[(i + 1) % m]);
         let w = c - a;
         let e = b - a;
         let m = vcross(n, e);
@@ -342,13 +350,13 @@ fn ball_ngon(c: Vec3, r: f32, v: &[Vec3; 3], n: Vec3, slot: &mut u32) -> (u32, V
     if inside {
         return (2, -(n * d - c), n, r - d, 0);
     }
-    let Some(j) = (0..3).find(|&j| {
-        let (f, g) = (flags[j], flags[(j + 1) % 3]);
+    let Some(j) = (0..m).find(|&j| {
+        let (f, g) = (flags[j], flags[(j + 1) % m]);
         (f == -2 || g == -1) && f != g
     }) else {
         return none;
     };
-    let k = (j + 1) % 3;
+    let k = (j + 1) % m;
     let p = v[k];
     let dv = c - p;
     let d2 = fma(dv.z, dv.z, fma(dv.x, dv.x, dv.y * dv.y));

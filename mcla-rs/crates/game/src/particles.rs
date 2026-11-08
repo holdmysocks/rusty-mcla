@@ -268,6 +268,15 @@ impl Rng {
     fn range(&mut self, a: f32, b: f32) -> f32 {
         a + (b - a) * self.f()
     }
+    /// the next word (for the original's draws that take the generator's word: the port's stream, not the game's)
+    fn u(&mut self) -> u32 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.0 = x;
+        x
+    }
 }
 
 pub struct Particles {
@@ -322,71 +331,154 @@ pub struct Poly {
     pub n: Vec3,
 }
 
-/// The point of the triangle (a, b, c) nearest to `p`.
-fn tri_nearest(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
-    let (ab, ac, ap) = (b - a, c - a, p - a);
-    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
-    if d1 <= 0.0 && d2 <= 0.0 {
-        return a;
-    }
-    let bp = p - b;
-    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
-    if d3 >= 0.0 && d4 <= d3 {
-        return b;
-    }
-    let vc = d1 * d4 - d3 * d2;
-    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
-        return a + ab * (d1 / (d1 - d3));
-    }
-    let cp = p - c;
-    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
-    if d6 >= 0.0 && d5 <= d6 {
-        return c;
-    }
-    let vb = d5 * d2 - d1 * d6;
-    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
-        return a + ac * (d2 / (d2 - d6));
-    }
-    let va = d3 * d6 - d5 * d4;
-    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
-        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
-    }
-    let den = 1.0 / (va + vb + vc);
-    a + ab * (vb * den) + ac * (vc * den)
+/// -(p x q) as the vector unit forms it (p.yzx q.zxy - p.zxy q.yzx, the products rounded, negated).
+fn xneg(p: Vec3, q: Vec3) -> Vec3 {
+    Vec3::new(-(p.y * q.z - p.z * q.y), -(p.z * q.x - p.x * q.z), -(p.x * q.y - p.y * q.x))
 }
 
-/// Is the point (on the polygon's plane) inside the triangle?
-fn in_tri(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> bool {
-    let n = (b - a).cross(c - a);
-    (b - a).cross(p - a).dot(n) >= 0.0 && (c - b).cross(p - b).dot(n) >= 0.0 && (a - c).cross(p - c).dot(n) >= 0.0
+/// F-22746: the segment from `a` along `d` (ending at `e`) against the polygon (v0 v1 v2) or the quad (v0 v1 v2 v3)
+/// of plane normal `n`. (code, d0, d1, t): d0 / d1 the ends' plane distances (fused), t = d0 / (d0 - d1); code 3 the
+/// ends on one side (d0 d1 not below 0), 4 t outside [0, 1], 1 the first triangle edge-on (|det| < 2^-17), 0 a hit
+/// in (v0 v1 v2) or (v0 v2 v3); else for a triangle 5 / 6 (u / v out), for a quad 2 (the second edge-on), 7 / 8.
+/// The barycentrics are not divided: u, v against |det| with the sign of det. `particle_collide_matches_the_original`.
+pub(crate) fn swept_poly(a: Vec3, d: Vec3, e: Vec3, n: Vec3, v0: Vec3, v1: Vec3, v2: Vec3, v3: Option<Vec3>) -> (u32, f32, f32, f32) {
+    use crate::physics::exact::fma;
+    const EPS: f32 = 7.629_394_5e-6;
+    let w = a - v0;
+    let d0 = fma(w.x, n.x, fma(n.z, w.z, n.y * w.y));
+    let pe = e - v0;
+    let d1 = fma(pe.x, n.x, fma(n.y, pe.y, n.z * pe.z));
+    if !(d0 * d1 < 0.0) {
+        return (3, d0, d1, 0.0);
+    }
+    let t = d0 / (d0 - d1);
+    if t < 0.0 || t > 1.0 {
+        return (4, d0, d1, t);
+    }
+    let signed = |det: f32| if det > 0.0 { (det, 1.0f32) } else { (-det, -1.0) };
+    let (e1, e2) = (v1 - v0, v2 - v0);
+    let c = xneg(e2, d);
+    let (det, s) = signed(fma(e1.x, c.x, fma(e1.y, c.y, e1.z * c.z)));
+    if det < EPS {
+        return (1, d0, d1, t);
+    }
+    let u = fma(c.x, w.x, fma(c.z, w.z, c.y * w.y)) * s;
+    let code = if u < 0.0 || u > det {
+        5
+    } else {
+        let q = xneg(e1, w);
+        let v = fma(d.x, q.x, fma(d.y, q.y, d.z * q.z)) * s;
+        if v < 0.0 || v + u > det { 6 } else { 0 }
+    };
+    let Some(v3) = v3.filter(|_| code != 0) else {
+        return (code, d0, d1, t);
+    };
+    let c2 = xneg(v3 - v0, d);
+    let (det2, s2) = signed(fma(e2.x, c2.x, fma(e2.y, c2.y, e2.z * c2.z)));
+    if det2 < EPS {
+        return (2, d0, d1, t);
+    }
+    let u2 = fma(c2.x, w.x, fma(c2.z, w.z, c2.y * w.y)) * s2;
+    if u2 < 0.0 || u2 > det2 {
+        return (7, d0, d1, t);
+    }
+    let q2 = xneg(e2, w);
+    let v2 = fma(d.x, q2.x, fma(d.y, q2.y, d.z * q2.z)) * s2;
+    (if v2 < 0.0 || v2 + u2 > det2 { 8 } else { 0 }, d0, d1, t)
 }
 
-impl Poly {
-    /// The depth of a particle's contact with the polygon, or none (`F-22746` for a swept
-    /// particle, `F-17804` for a sphere): the polygon is two triangles (v0 v1 v2) (v0 v2 v3).
-    fn depth(&self, pos: Vec3, vel: Vec3, dt: f32, radius: f32) -> Option<f32> {
-        let swept = vel.length() * dt > 0.7 * radius;
-        let v = &self.v;
-        if swept {
-            let (start, end) = (pos - vel * dt, pos);
-            let (ds, de) = ((start - v[0]).dot(self.n), (end - v[0]).dot(self.n));
-            if !(ds * de < 0.0) {
-                return None;
-            }
-            let t = ds / (ds - de);
-            if !(0.0..=1.0).contains(&t) {
-                return None;
-            }
-            let at = start + (end - start) * t;
-            (in_tri(at, v[0], v[1], v[2]) || in_tri(at, v[0], v[2], v[3])).then(|| radius - de)
-        } else {
-            let a = tri_nearest(pos, v[0], v[1], v[2]);
-            let b = tri_nearest(pos, v[0], v[2], v[3]);
-            let d = (pos - a).length().min((pos - b).length());
-            (d <= radius).then(|| radius - d)
+/// A polygon of an effect instance's collision list (96 bytes: corners +0 .. +48, the normal +64, the corner count +80).
+#[derive(Clone, Copy)]
+pub(crate) struct CollPoly {
+    pub v: [Vec3; 4],
+    pub n: Vec3,
+    pub corners: u32,
+}
+
+/// What a sprite rule gives the collision: StopVel (+280), PercentKill (+307) when its flag bit 0 (+284) is set, and
+/// the two properties' (lo, hi) at the particle's life with the particle's weight and the property's invert byte (+49).
+pub(crate) struct CollRule<'a> {
+    pub stop_vel: f32,
+    pub kill: Option<u8>,
+    pub vel_dmp: &'a dyn Fn(f32) -> [f32; 2],
+    pub dmp_w: (f32, bool),
+    pub imp_var: &'a dyn Fn(f32) -> [f32; 2],
+    pub imp_w: (f32, bool),
+}
+
+/// The vector unit's 1 / sqrt: the estimate (0 for +inf) and one Newton step.
+fn rsq_sel(l: f32) -> f32 {
+    let y0 = 1.0 / l.sqrt();
+    let y = if y0 == f32::INFINITY { 0.0 } else { y0 };
+    (-(l * (y * y) - 1.0)) * (0.5 * y) + y
+}
+
+/// F-99991, a sprite particle against its effect instance's polygons: swept (F-22746 from pos - vel dt) when
+/// |vel| dt > 0.7 radius, else the ball test F-17804; per polygon it faces (n . vel's unit < 0) and hits: VelDmp and
+/// ImpVar at the life, the normal turned by ImpVar's random vector (three 23-bit draws, mirrored in the plane, added,
+/// made unit), the velocity mirrored about it times 1 - VelDmp x 0.01, at rest below StopVel (flags +132 | 2),
+/// PercentKill against a draw mod 101 (life := 1), the place pushed out along the polygon's normal by the depth.
+/// `draw`: the generator's next word. Returns whether any polygon was hit. `particle_collide_matches_the_original`.
+pub(crate) fn collide(polys: &[CollPoly], rule: &CollRule, radius: f32, dt: f32, pos: &mut Vec3, vel: &mut Vec3, life: &mut f32, at_rest: &mut bool, draw: &mut dyn FnMut() -> u32) -> bool {
+    use crate::physics::exact::{dot3, fma};
+    let sp = fma(vel.z, vel.z, fma(vel.x, vel.x, vel.y * vel.y)).sqrt();
+    let swept = sp * dt > radius * 0.7;
+    let dir = *vel * rsq_sel(dot3(*vel, *vel));
+    let mut any = false;
+    for poly in polys {
+        let pn = poly.n;
+        if !(fma(pn.x, dir.x, fma(pn.y, dir.y, pn.z * dir.z)) < 0.0) {
+            continue;
         }
+        let depth = if swept {
+            let a = (Vec3::ZERO - *vel) * dt + *pos;
+            let (code, _, d1, _) = swept_poly(a, *pos - a, *pos, pn, poly.v[0], poly.v[1], poly.v[2], (poly.corners == 4).then_some(poly.v[3]));
+            if code != 0 {
+                continue;
+            }
+            radius - d1
+        } else {
+            let mut slot = 0;
+            let (code, _, _, depth, _) = crate::physics::camprobe::ball_ngon_n(*pos, radius, &poly.v[..poly.corners as usize], pn, &mut slot);
+            if code == 3 {
+                continue;
+            }
+            depth
+        };
+        any = true;
+        let w = |(w, inv): (f32, bool)| if inv { 1.0 - w } else { w };
+        let dm = (rule.vel_dmp)(*life);
+        let dmp = fma(dm[1] - dm[0], w(rule.dmp_w), dm[0]);
+        let keep = -((dmp as f64).mul_add(0.01f32 as f64, -1.0) as f32);
+        let iv = (rule.imp_var)(*life);
+        let imp = fma(iv[1] - iv[0], w(rule.imp_w), iv[0]);
+        let mut n = pn;
+        if imp != 0.0 {
+            let range = imp - -imp;
+            let mut g = || ((draw() & 0x7F_FFFF) as f32 * range) as f32;
+            let (x, y, z) = (g(), g(), g());
+            let k = f32::from_bits(0x3400_0000);
+            let r = Vec3::new(fma(x, k, -imp), fma(y, k, -imp), fma(z, k, -imp));
+            let s = fma(r.z, n.z, fma(r.x, n.x, r.y * n.y)) * 2.0;
+            let m = n + (r - n * s);
+            n = m * rsq_sel(dot3(m, m));
+        }
+        let s = fma(vel.z, n.z, fma(vel.x, n.x, vel.y * n.y)) * 2.0;
+        *vel = (*vel - n * s) * keep;
+        if fma(vel.z, vel.z, fma(vel.x, vel.x, vel.y * vel.y)) < rule.stop_vel * rule.stop_vel {
+            *vel = Vec3::ZERO;
+            *at_rest = true;
+        }
+        if let Some(pct) = rule.kill {
+            if ((draw() & 0x7FFF_FFFF) % 101) as i32 <= pct as i32 {
+                *life = 1.0;
+            }
+        }
+        *pos = pn * depth + *pos;
     }
+    any
 }
+
 
 const MAX: usize = 3000;
 /// The particle shader's mode for the programs ported as the original draws them (the scene's
@@ -501,6 +593,55 @@ pub fn cull_box(rows: &[Vec3; 4], centre: Vec3, radius: f32, ev_zoom: f32, inst_
     let c = crate::halo::locator_place(rows, o);
     let r = if radius > 0.0 { radius * ev_zoom * inst_zoom } else { 1.0 }.abs();
     ([c.x - r, c.y - r, c.z - r, o.x - r], [c.x + r, c.y + r, c.z + r, o.x + r])
+}
+
+#[cfg(test)]
+mod collide_tests {
+    use super::*;
+
+    /// F-99991 run offline (`tools/particle_collide_reference.py`): the swept test F-22746 and the ball test F-17804
+    /// whole, the keyframe evaluation stubbed to the case's pairs; 3,000 particles against 1 .. 3 quads / triangles.
+    /// Every word of the place, velocity, life and flags, the hit byte and the generator's state after, equal.
+    #[test]
+    fn particle_collide_matches_the_original() {
+        let t = include_str!("testdata/particle_collide_reference.txt");
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let f = |x: u32| f32::from_bits(x);
+        let mut lines = t.lines();
+        let (mut n, mut hits) = (0, 0);
+        while let Some(l) = lines.next() {
+            // (the generator's words, 13 and 14, in decimal after a g)
+            let q: Vec<u32> = l.split_whitespace().skip(1).enumerate().map(|(i, w)| if i == 13 || i == 14 { w[1..].parse().unwrap() } else { h(w) }).collect();
+            let polys: Vec<CollPoly> = (0..q[22])
+                .map(|_| {
+                    let e: Vec<u32> = lines.next().unwrap().split_whitespace().skip(1).map(h).collect();
+                    let v = |i: usize| Vec3::new(f(e[3 * i]), f(e[3 * i + 1]), f(e[3 * i + 2]));
+                    CollPoly { v: [v(0), v(1), v(2), v(3)], n: v(4), corners: e[15] }
+                })
+                .collect();
+            let (dmp, imp) = ([f(q[5]), f(q[6])], [f(q[9]), f(q[10])]);
+            let rule = CollRule { stop_vel: f(q[2]), kill: (q[3] & 1 != 0).then_some(q[4] as u8), vel_dmp: &|_| dmp, dmp_w: (f(q[7]), q[8] != 0), imp_var: &|_| imp, imp_w: (f(q[11]), q[12] != 0) };
+            let (mut x, mut c) = (q[13], q[14]);
+            let mut draw = || {
+                let t = x as u64 * 0x5CDC_FAA7 + c as u64;
+                (x, c) = (t as u32, (t >> 32) as u32);
+                x
+            };
+            let mut pos = Vec3::new(f(q[15]), f(q[16]), f(q[17]));
+            let mut vel = Vec3::new(f(q[18]), f(q[19]), f(q[20]));
+            let (mut life, mut rest) = (f(q[21]), false);
+            let hit = collide(&polys, &rule, f(q[0]), f(q[1]), &mut pos, &mut vel, &mut life, &mut rest, &mut draw);
+            let got = format!(
+                "OUT {} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} g{x} g{c}",
+                hit as u32, pos.x.to_bits(), pos.y.to_bits(), pos.z.to_bits(), vel.x.to_bits(), vel.y.to_bits(), vel.z.to_bits(), life.to_bits(), if rest { 2 } else { 0 }
+            );
+            assert_eq!(got, lines.next().unwrap(), "{l}");
+            n += 1;
+            hits += hit as u32;
+        }
+        assert_eq!(n, 3000);
+        assert!(hits > 400);
+    }
 }
 
 #[cfg(test)]
@@ -1228,29 +1369,28 @@ impl Particles {
                 if let (Some(poly), Some(s)) = (coll.get(&p.inst), pr.sprite.as_ref()) {
                     let sz = s.size.eval(t);
                     let radius = (lerp(sz[0], sz[2], p.r[0]) * p.size_ot[0] * p.zoom).max(lerp(sz[1], sz[3], p.r[0]) * p.size_ot[1] * p.zoom);
-                    let sp = p.vel.length();
-                    if sp > 0.0 && poly.n.dot(p.vel / sp) < 0.0 {
-                        if let Some(depth) = poly.depth(p.pos, p.vel, dt, radius) {
-                            let dm = pr.vel_dmp.eval(t);
-                            let dmp = lerp(dm[0], dm[1], p.r[4]);
-                            let iv = pr.imp_var.eval(t);
-                            let imp = lerp(iv[0], iv[1], p.r[5]);
-                            let mut n = poly.n;
-                            if imp != 0.0 {
-                                let mut r = Vec3::new(rng.f() * 2.0 * imp - imp, rng.f() * 2.0 * imp - imp, rng.f() * 2.0 * imp - imp);
-                                r -= n * (2.0 * r.dot(n));
-                                n = (n + r).normalize_or_zero();
-                            }
-                            p.vel = (p.vel - n * (2.0 * p.vel.dot(n))) * (1.0 - dmp * 0.01);
-                            if p.vel.length_squared() < pr.stop_vel * pr.stop_vel {
-                                p.vel = Vec3::ZERO;
-                                p.at_rest = true;
-                            }
-                            if pr.flags & 1 != 0 && (rng.f() * 101.0) as u32 <= pr.percent_kill as u32 {
-                                killed = true;
-                            }
-                            p.pos += poly.n * depth;
-                        }
+                    // (F-99991 on the instance's quad; the weights p.r[4] / p.r[5] stand for the particle's random bytes
+                    // +138 / +137 through the random table - that mapping is the birth's, not checked here)
+                    let polys = [CollPoly { v: poly.v, n: poly.n, corners: 4 }];
+                    let (dk, ik) = (&pr.vel_dmp, &pr.imp_var);
+                    let rule = CollRule {
+                        stop_vel: pr.stop_vel,
+                        kill: (pr.flags & 1 != 0).then_some(pr.percent_kill),
+                        vel_dmp: &|t| {
+                            let k = dk.eval(t);
+                            [k[0], k[1]]
+                        },
+                        dmp_w: (p.r[4], pr.vel_dmp_inv),
+                        imp_var: &|t| {
+                            let k = ik.eval(t);
+                            [k[0], k[1]]
+                        },
+                        imp_w: (p.r[5], pr.imp_var_inv),
+                    };
+                    let mut life = t;
+                    collide(&polys, &rule, radius, dt, &mut p.pos, &mut p.vel, &mut life, &mut p.at_rest, &mut || rng.u());
+                    if life != t {
+                        killed = true;
                     }
                 }
             }

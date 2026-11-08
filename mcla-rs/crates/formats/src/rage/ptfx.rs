@@ -428,6 +428,10 @@ pub struct ParticleRule {
     pub percent_kill: u8,
     pub vel_dmp: Keyframe,
     pub imp_var: Keyframe,
+    /// the two properties' invert bytes (+49 of each 52-byte property): the particle's weight w is taken as 1 - w
+    /// (F-99991 reads them at +1029 / +1081 of a sprite rule)
+    pub vel_dmp_inv: bool,
+    pub imp_var_inv: bool,
     pub sprite: Option<Sprite>,
     pub model: Option<Model>,
     /// +20 / +90 `SpawnEffectA` / `B` (`ptxTrigger`, 112 bytes each): an effect each particle starts at its birth
@@ -615,6 +619,8 @@ impl ParticleRule {
             percent_kill: rd.u8(o + 0x133),
             vel_dmp: kf(0x24c),
             imp_var: kf(0x280),
+            vel_dmp_inv: rd.u8(pl + 0x24c + 49) != 0,
+            imp_var_inv: rd.u8(pl + 0x280 + 49) != 0,
             sprite,
             model,
             triggers: [None, None],
