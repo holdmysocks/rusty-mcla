@@ -4055,12 +4055,13 @@ impl LooseState {
         out
     }
 
-    /// What mcCarDamage multiplies the car's blow from `other` by (F-61340): a vehicle's "damage
-    /// inflicted" factor (its mcCarDamage +20; the car's own +16 is 1), anything else +12 = 1.
-    pub fn vehicle_factor(&self, other: Option<Who>) -> f32 {
+    /// What mcCarDamage multiplies the car's blow from `other` by (F-61340): against a vehicle the car's own +16
+    /// (`blow[1]`) times the vehicle's "damage inflicted" factor (its mcCarDamage +20), against anything else the
+    /// car's own +12 (`blow[0]`; `CarState::blow`).
+    pub fn vehicle_factor(&self, other: Option<Who>, blow: [f32; 2]) -> f32 {
         match other {
-            Some(Who::Obj(o)) => self.objs.get(o).and_then(|o| o.veh).map_or(1.0, |v| v.inflict),
-            _ => 1.0,
+            Some(Who::Obj(o)) => self.objs.get(o).and_then(|o| o.veh).map_or(blow[0], |v| v.inflict * blow[1]),
+            _ => blow[0],
         }
     }
 

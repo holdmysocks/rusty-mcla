@@ -2358,9 +2358,9 @@ impl Props {
                             st.last_impact = st.last_impact.max(speed * ratio * 2.0);
                             // (mcCarDamage's contact callback, world_damage_rule.md: the change of
                             // velocity the touch gave the car, whole - a loose prop is not fixed -
-                            // at the first contact's point, times +12 = 1)
+                            // at the first contact's point, times its +12, `blow`)
                             let at = Vec3::new(c.pos.x, st.pos.y + 0.5, c.pos.z);
-                            st.contact_hit(car.tuned.as_deref().unwrap_or(&car.model.params), speed * ratio * 0.9, 1.0, at);
+                            st.contact_hit(car.tuned.as_deref().unwrap_or(&car.model.params), speed * ratio * 0.9, st.blow[0], at);
                         } else {
                             // immovable: push the car out and bounce it off
                             st.correct_position(n3 * depth);
@@ -2393,7 +2393,7 @@ impl Props {
                                 // a loose one that stands - the parked aircraft - whole)
                                 let at = Vec3::new(cb.x, st.pos.y + 0.5, cb.y);
                                 let k = if c.foot.fixed { f32::from_bits(0x3ecc_cccd) } else { 1.0 };
-                                st.contact_hit(car.tuned.as_deref().unwrap_or(&car.model.params), (st.vel - before).length() * k, 1.0, at);
+                                st.contact_hit(car.tuned.as_deref().unwrap_or(&car.model.params), (st.vel - before).length() * k, st.blow[0], at);
                                 let arm = Vec3::new(cb.x - st.pos.x, 0.0, cb.y - st.pos.z);
                                 let j = n3 * (-vn);
                                 st.ang_vel.y += (arm.z * j.x - arm.x * j.z) * 0.28;

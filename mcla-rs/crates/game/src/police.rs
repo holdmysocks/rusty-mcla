@@ -1350,6 +1350,11 @@ pub struct Unit {
     pub fol_goal: Option<Vec3>,
     /// +1073: may patrol (off under SetAllPoliceActive(0) and after a failed assign; on again at the end of an untimed race)
     pub may_patrol: bool,
+    /// +1072: may check law breaking - written with +1073 by every writer (the unit reset F-82662 / F-22895 1, underground
+    /// F-97540 !a, SetAllPoliceActive F-75974, Engage's F-97878 1, a failed assign 0) except the patrol loop's race-end and
+    /// [8286E800] stores of +1073 alone. Read by the offence check F-52240 and the patrol loop F-24233 (the second-cop
+    /// upgrade and the Follow): a unit without it detects nothing and follows nobody.
+    pub may_check: bool,
 }
 
 /// The three of `red_light_hk1` 0x436e / `freeway_hookman<n>` 0x2c73: (home, heading, slot).
@@ -1717,7 +1722,7 @@ impl Police {
         for (i, (home, heading, slot)) in SCRIPT_UNITS.iter().enumerate() {
             let id = 400 + i as u32;
             self.units.retain(|u| u.id != id);
-            self.units.push(Unit { id, home: Vec3::from(*home), heading: *heading, slot: Vec3::from(*slot), under: true, at: Vec3::from(*home), path: None, pi: 0, cd: 0.0, relocate: true, follow: false, fol_t: 0.0, fol_tm: [0.0; 3], fol_goal: None, may_patrol: true });
+            self.units.push(Unit { id, home: Vec3::from(*home), heading: *heading, slot: Vec3::from(*slot), under: true, at: Vec3::from(*home), path: None, pi: 0, cd: 0.0, relocate: true, follow: false, fol_t: 0.0, fol_tm: [0.0; 3], fol_goal: None, may_patrol: true, may_check: true });
         }
         log::info!("police: units 400..402 made, underground");
     }
@@ -1738,6 +1743,7 @@ impl Police {
         for u in self.units.iter_mut() {
             u.under = true;
             u.may_patrol = false;
+            u.may_check = false;
         }
         self.units_held = true;
         // (an underground unit has no car on the road, and so none for IsAnyPoliceCloseToPlayer,
@@ -1752,6 +1758,7 @@ impl Police {
         for u in self.units.iter_mut() {
             u.under = true;
             u.may_patrol = false;
+            u.may_check = false;
         }
         self.units_held = true;
         vehicles.cars.retain(|c| !(c.cop && c.vinyl_name.starts_with("police_unit:") && !c.driver.starts_with("cine:")));
@@ -1764,6 +1771,7 @@ impl Police {
         self.units_held = false;
         for u in self.units.iter_mut() {
             u.may_patrol = true;
+            u.may_check = true;
         }
     }
 
@@ -1866,17 +1874,18 @@ impl Police {
                     if r != 0 && std::env::var_os("MCLA_PATROL_TRACE").is_some() {
                         log::info!("police: unit {} assign failed ({})", self.units[ui].id, r);
                     }
-                    if r == 2 {
-                        // (F-90720's failure: no path at all - no patrol until something allows it again)
-                        self.units[ui].may_patrol = false;
-                    }
                     if r == 0 {
                         self.units[ui].relocate = false;
                         // (AssignPath, F-55649 -> F-30531: +1128 = fPatrolTime, the hold before the next reassign)
                         let g = self.units[ui].path.map_or(-1, |g| g as i32);
                         self.units[ui].cd = patrol_hold(g, self.units[ui].cd, tun.get("fPatrolTime", 5.0));
                     } else if let Some(i) = car.filter(|_| !self.units[ui].under) {
+                        // (F-24233: any failure of F-90720 on the surface - 2 no path, 3 no controller, 4 group
+                        // taken - sends it underground with +1072 = +1073 = 0, no patrol until something allows it again;
+                        // an underground unit's failure changes nothing, it tries again next frame)
                         vehicles.cars.remove(i);
+                        self.units[ui].may_patrol = false;
+                        self.units[ui].may_check = false;
                         self.units[ui].under = true;
                     }
                     continue;
@@ -1899,7 +1908,13 @@ impl Police {
             let pos = vehicles.cars[i].state.pos;
             // (the cop's per-frame F-79540: +1104 counts down to 0)
             self.units[ui].fol_t = (self.units[ui].fol_t - dt).max(0.0);
-            if self.follow_step(world, vehicles, tun, ui, i, dt) {
+            // (F-24233: a unit without +1072 starts no Follow and leaves the one it is in, command 0)
+            let following = if self.units[ui].may_check {
+                self.follow_step(world, vehicles, tun, ui, i, dt)
+            } else {
+                std::mem::replace(&mut self.units[ui].follow, false)
+            };
+            if following {
                 if !self.units[ui].follow {
                     // (F-69094's end: the patrol loop finds the brain idle and assigns the patrol path again, F-90720
                     // without moving it)
@@ -2381,6 +2396,7 @@ impl Police {
         for u in self.units.iter_mut() {
             if Self::unit_car(vehicles, u.id).is_some_and(|ci| out.contains(&vehicles.cars[ci].uid)) {
                 u.may_patrol = true;
+                u.may_check = true;
             }
         }
         (out.len() >= n).then_some(out)
@@ -3183,7 +3199,9 @@ impl Police {
         // The nearest such cop is the request cop of the tactic it starts or joins.)
         let dsp_cop = self.dsp.as_ref().map(|d| d.cop);
         let mut detector: Option<(f32, u32)> = None;
-        for c in vehicles.cars.iter().filter(|c| c.cop && !c.goon && !pursuer(c) && Some(c.uid) != dsp_cop) {
+        // (F-52240's loop takes a unit only with +872 and +1072 set: a unit not allowed to check law breaking detects nothing)
+        let no_check: Vec<String> = self.units.iter().filter(|u| !u.may_check).map(|u| format!("police_unit:{}", u.id)).collect();
+        for c in vehicles.cars.iter().filter(|c| c.cop && !c.goon && !pursuer(c) && Some(c.uid) != dsp_cop && !no_check.contains(&c.vinyl_name)) {
             let d = c.state.pos.distance(ppos);
             if d <= detect && cop_sees(world, c, ppos, detect, det_half) && detector.map_or(true, |b| d < b.0) {
                 detector = Some((d, c.uid));

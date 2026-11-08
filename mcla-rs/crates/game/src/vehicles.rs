@@ -4562,7 +4562,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
                             let p = self.cars[mov].tuned.as_deref().unwrap_or(&self.cars[mov].model.params).clone();
                             let other = if pi { i } else { j };
                             let at = (self.cars[mov].state.pos + self.cars[other].state.pos) * 0.5 + Vec3::Y * 0.5;
-                            let mult = self.cars[other].inflict;
+                            // (F-61340: its own +16 x the other's +20)
+                            let mult = self.cars[other].inflict * self.cars[mov].state.blow[1];
                             self.cars[mov].state.contact_hit(&p, -vn * 1.3, mult, at);
                         }
                         continue;
@@ -4610,7 +4611,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                             if self.fragile == Some(k) {
                                 p.dmg[3] = p.dmg[2];
                             }
-                            let mult = self.cars[o].inflict;
+                            let mult = self.cars[o].inflict * self.cars[k].state.blow[1];
                             self.cars[k].state.contact_hit(&p, dv, mult, at);
                         }
                     }

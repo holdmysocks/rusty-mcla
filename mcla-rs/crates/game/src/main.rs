@@ -3368,6 +3368,14 @@ impl App {
         if let Some(c) = self.vehicles.cars.iter_mut().find(|c| c.is_player) {
             c.state.agro = self.ability.agro();
         }
+        // (mcCarDamage +88, the blow flags, and its multipliers F-19797: 0x2 while a Shield / MegaShield runs on the
+        // car - set by its start F-71747, cleared by its end F-72255 -, 0x4 while the player's Agro runs - the ability's
+        // state setter F-41976 / start F-77604 on state 3 with type 1, cleared on state 0)
+        for (ci, c) in self.vehicles.cars.iter_mut().enumerate() {
+            let shield = self.powerups.as_ref().and_then(|pu| pu.holder(ci)).and_then(|h| h.effect.as_ref()).map_or(false, |e| matches!(e.kind, powerups::SHIELD | powerups::MEGA_SHIELD));
+            let flags = (shield as u8) << 1 | ((c.is_player && self.ability.agro()) as u8) << 2;
+            c.state.blow = crate::physics::car::blow_mults(flags, 1.0);
+        }
         self.vehicles.draft = self.vehicles.player().and_then(|c| c.state.veh.as_ref()).map_or(0.0, |v| v.sst.strength);
         // mcCarSSTurbo::Fire F-68670: the player's car (F-14919, its player's +48) counts "gSST" and "nSST", 1 each
         let fires = self.vehicles.player().and_then(|c| c.state.veh.as_ref()).map_or(0, |v| v.sst.fires);

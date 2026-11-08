@@ -307,6 +307,13 @@ pub struct CarState {
     pub head_on: bool,
     /// the player's Agro is running (ability +52 == 1, +48 == 3): no head-on wipeout (main.rs sets it)
     pub agro: bool,
+    /// mcCarDamage +12 / +16, the blow multipliers (`blow_mults` of the flag byte +88): the damage points of a blow
+    /// against anything not a vehicle take +12, against a vehicle +16 (times the other car's +20). main.rs sets them each
+    /// frame from the flags: 0x2 while a Shield / MegaShield runs on the car (its start F-71747 sets it, its end F-72255
+    /// clears it), 0x4 while the player's Agro runs (the ability's state setter F-41976 sets it on entering state 3 with
+    /// type 1, and the ability start F-77604's inlined copy, and clears it on entering state 0). Nothing sets 0x1, 0x8, 0x10; the payback
+    /// scripts' Racer_SetDamageMultiplierFlag passes 0x20 (x +24, the difficulty factor, which nothing sets: 1).
+    pub blow: [f32; 2],
     /// a hit above the wipeout threshold this frame, in thresholds (cleared by whoever acts on it)
     pub wipeout: f32,
     /// mcCarDamage +48, the visible hit (set by the hit's outcome, cleared by the driver's gatherer F-28290, which
@@ -394,6 +401,27 @@ pub struct AudioTouch {
     pub vehicle: bool,
 }
 
+/// mcCarDamage's blow multipliers F-19797 from its flag byte +88 and +24 (the difficulty factor): [+12, +16], from 1.0
+/// each - 0x4 stores 0.0, 0x8 multiplies by 0.0, 0x1 by 4.8 / 10, 0x2 by 0.0, 0x10 by 16, 0x20 by +24, in that order.
+/// The flag setters F-65434 (OR) / F-43282 (clear) store the byte and call it. Checked offline on every byte x six +24
+/// values (tools/blow_mults_reference.py, test blow_mults_match_the_original).
+pub fn blow_mults(flags: u8, difficulty: f32) -> [f32; 2] {
+    let mut m = [1.0f32; 2];
+    if flags & 0x4 != 0 {
+        m = [0.0; 2];
+    }
+    let k: [(u8, [f32; 2]); 4] = [(0x8, [0.0; 2]), (0x1, [f32::from_bits(0x4099_999a), 10.0]), (0x2, [0.0; 2]), (0x10, [16.0; 2])];
+    for (bit, f) in k {
+        if flags & bit != 0 {
+            m = [m[0] * f[0], m[1] * f[1]];
+        }
+    }
+    if flags & 0x20 != 0 {
+        m = [difficulty * m[0], m[1] * difficulty];
+    }
+    m
+}
+
 impl CarState {
     /// a nitrous shot is burning
     pub fn nitro_on(&self) -> bool {
@@ -418,7 +446,7 @@ impl CarState {
             burnout: 0.0,
             launch: 0.0,
             damage: 0.0,
-            last_impact: 0.0, shake_dv: 0.0, last_hit: 0.0, head_on: false, agro: false, wipeout: 0.0, visible_hit: false, upset: 0.0, zones: [0.0; 4], zone_half: [0.9, 2.2], dmg: Default::default(),
+            last_impact: 0.0, shake_dv: 0.0, last_hit: 0.0, head_on: false, agro: false, blow: [1.0; 2], wipeout: 0.0, visible_hit: false, upset: 0.0, zones: [0.0; 4], zone_half: [0.9, 2.2], dmg: Default::default(),
             engine_factor: 1.0,
             veh: None,
             touches: Vec::new(),
@@ -584,17 +612,17 @@ impl CarState {
     /// same point in the car's pose after the tick's move (the instance's matrix then). A wrecked
     /// car takes nothing more. Over 0.1 m/s the zones and the bumpers' queue take
     /// clamp((sqrt dv - 0.5) x 0.2) at that point (A-46588, zone damage kind 0); then the
-    /// damage points take dv itself (F-96323: a city hit counts 1.0 of it, mcCarDamage +12).
+    /// damage points take dv times mcCarDamage +12 (F-96323 / F-61340: `blow[0]`, 1 but under a Shield or Agro).
     pub(super) fn world_hit(&mut self, p: &CarParams, dv: f32, at: Vec3, local: Vec3, scrape: Option<ScrapeIn>) {
-        self.damage_call(p, dv, 1.0, at, local, scrape);
+        self.damage_call(p, dv, self.blow[0], at, local, scrape);
     }
 
     /// The same callback for the car's contacts with another car or a loose prop (not fixed: their
     /// impulses count whole, F-19931): `dv` the change of velocity they gave this car, `at` the
     /// first contact's point (world, in the car's pose now). The damage points take dv x `mult`
-    /// (F-61340): against another car this car's own +16 (1: Racer_SetDamageMultiplierFlag's
-    /// factor, which nothing sets) times the other car's mcCarDamage +20 - its "damage inflicted"
-    /// factor (Racer_SetDamageInflictedFactor; 1 but in a payback); against anything else +12 = 1.
+    /// (F-61340): against another car this car's own +16 (`blow[1]`, the callers multiply it in)
+    /// times the other car's mcCarDamage +20 - its "damage inflicted"
+    /// factor (Racer_SetDamageInflictedFactor; 1 but in a payback); against anything else its +12 (`blow[0]`).
     /// Recorded: sa.0 (R8 among loose pieces, 40 ticks) and sd.3 (R8 ramming traffic, 340 ticks)
     /// - mcCarDamage +56 is exactly this dv; the points rise by it x 1.
     pub fn contact_hit(&mut self, p: &CarParams, dv: f32, mult: f32, at: Vec3) {
@@ -1089,6 +1117,40 @@ impl CarState {
 
 #[cfg(test)]
 mod tests {
+    use super::blow_mults;
+
+    #[test]
+    fn blow_mults_match_the_original() {
+        // (F-19797 and its setters run offline: tools/blow_mults_reference.py. A NaN the product makes is the recomp
+        // host's default NaN (ffc00000; the console's is 7fc00000): compared as NaN.)
+        let same = |a: f32, b: u32| a.to_bits() == b || (a.is_nan() && f32::from_bits(b).is_nan());
+        let (mut m, mut s) = (0, 0);
+        for line in include_str!("../testdata/blow_mults_ref.txt").lines() {
+            let w: Vec<&str> = line.split(' ').collect();
+            let h = |i: usize| u32::from_str_radix(w[i], 16).unwrap();
+            match w[0] {
+                "m" => {
+                    let got = blow_mults(w[1].parse().unwrap(), f32::from_bits(h(2)));
+                    assert!(same(got[0], h(3)) && same(got[1], h(4)), "{line}: {got:?}");
+                    m += 1;
+                }
+                "s" => {
+                    let k: u32 = w[1].parse().unwrap();
+                    let or = (k | (k * 37 & 255)) as u8;
+                    let clr = or & !((k * 91 & 255) as u8);
+                    assert_eq!((or as u32, clr as u32), (w[2].parse().unwrap(), w[5].parse().unwrap()), "{line}");
+                    for (f, i) in [(or, 3), (clr, 6)] {
+                        let got = blow_mults(f, 1.0);
+                        assert!(same(got[0], h(i)) && same(got[1], h(i + 1)), "{line}: {got:?}");
+                    }
+                    s += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!((m, s), (1536, 256));
+    }
+
     /// The delivery meter as F-86111 computes it: (right + left) + front zones, each at most 1, x 1/3, over the
     /// difficulty's maximum, clamped to [0, 1]; the rear zone and the damage points do not count.
     #[test]

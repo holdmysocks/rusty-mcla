@@ -6798,6 +6798,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             // (the thrown rider's rows with the bike left out of its runs: unverified, as the bike's shared island)
             let a_rows: Vec<usize> = (0..out.links.len()).filter(|&i| out.links[i].a == Some(super::loose::Who::Car) && !out.links[i].rider).collect();
             let b_rows: Vec<usize> = out.by_b.iter().copied().filter(|&i| out.links[i].b == Some(super::loose::Who::Car) && !out.links[i].rider).collect();
+            let blow = st.blow;
             for (rows, off) in [(a_rows, city_off_n + out.off_a), (b_rows, out.off_b)] {
                 let mut run: Option<DamageRun> = None;
                 for i in rows {
@@ -6808,7 +6809,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                     let (mine, point, n_car, other_side) = if car_a { (t.impulse, t.a.point, t.normal, &t.b) } else { (Vec3::ZERO - t.impulse, t.b.point, t.back, &t.a) };
                     let r = run.get_or_insert_with(|| {
                         let ob = other_side.body.and_then(|k| out.bodies.get(k));
-                        DamageRun { dv: Vec3::ZERO, first: point, last: point, mult: vs.loose.vehicle_factor(other), any: false, nsum: Vec3::ZERO, n0: n_car, v2: ob.map_or(Vec3::ZERO, |b| b.vel + b.ang.cross(point - b.at)), v2c: ob.map_or(Vec3::ZERO, |b| b.vel) }
+                        DamageRun { dv: Vec3::ZERO, first: point, last: point, mult: vs.loose.vehicle_factor(other, blow), any: false, nsum: Vec3::ZERO, n0: n_car, v2: ob.map_or(Vec3::ZERO, |b| b.vel + b.ang.cross(point - b.at)), v2c: ob.map_or(Vec3::ZERO, |b| b.vel) }
                     });
                     r.dv += if fixed { mine * body.inv_mass * f32::from_bits(0x3ecc_cccd) } else { mine * body.inv_mass };
                     r.any |= t.impulse != Vec3::ZERO;
