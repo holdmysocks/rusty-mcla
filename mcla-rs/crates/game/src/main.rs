@@ -6562,16 +6562,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.news_timer = 0.0;
                 }
             }
-            // (the mission reminders, F-12937 each frame offline: its gates - police activity <= 1, no warp,
-            // no cine script, Cruising_Offline, no reminder waiting - then Career::reminder_tick. *(approx.)* the
-            // navsys +628 / GPS-route gates, the flag at 0x828CCEA0 and F-42050's restart on a navigator
-            // event are not ported)
+            // (the mission reminders, F-12937 each frame offline: its gates - police activity <= 1, no map target
+            // (the nav map's +628, `map_target_selected`), its vt+104 (F-67356, bit 0x100 of its +16;
+            // not traced further - the free-roam mode here keeps the open map out), no warp, no cine script, Cruising_Offline, no reminder waiting - then Career::reminder_tick.
+            // *(approx.)* the global flag F-12937 also reads (CAREER_RACES reference) and F-42050's restart on a navigator event are not ported)
             if let Some(spoke) = self.reminder_on {
                 if if spoke { !self.speech.busy() } else { self.game.tip.is_none() } {
                     self.reminder_on = None;
                 }
             }
-            if career_up && cruising && self.reminder_wait.is_none() && self.reminder_on.is_none() && self.police.activity().0 <= 1 && self.cuts.playing.is_none() && self.cine.playing.is_none() && matches!(self.game.mode, Mode::FreeRoam) {
+            if career_up && cruising && self.reminder_wait.is_none() && self.reminder_on.is_none() && !self.game.map_target_selected() && self.police.activity().0 <= 1 && self.cuts.playing.is_none() && self.cine.playing.is_none() && matches!(self.game.mode, Mode::FreeRoam) {
                 if let Some((i, rem)) = self.game.career.reminder_tick(dt) {
                     let id = self.game.career.mission_id(i).to_string();
                     log::info!("career: reminder of {} ({})", id, rem);
@@ -6685,10 +6685,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (the script's rounds count only while (0x131..0x162) the game is not paused (Game_IsPaused F-49028:
                     // the pause manager's flag, F-50459), the police level is under 2, the idle camera is off
                     // (Player_IsInIdleCam F-80662: camera mode 13), no map target is selected (mcUINavMap_IsTargetSelected
-                    // F-15670: the nav map's +628, set only in its GPS selection - under the map's pause) and the camera
+                    // F-15670: the nav map's +628, standing while the map has a target) and the camera
                     // is not held (UILogic_IsCameraPaused F-23025); the call it appends then waits for the phone's gates)
                     let paused = self.game.mode == Mode::Paused || self.game.show_map || self.game.album.stage != crate::photoalbum::Stage::Off;
-                    if !self.phone_challenge_due && !paused && self.police.activity().0 < 2 && !self.game.idle_cam && !self.camera_held() {
+                    if !self.phone_challenge_due && !paused && self.police.activity().0 < 2 && !self.game.idle_cam && !self.game.map_target_selected() && !self.camera_held() {
                         self.phone_challenge_in -= sim_dt;
                         self.phone_challenge_due = self.phone_challenge_in <= 0.0;
                         self.phone_challenge_in = self.phone_challenge_in.max(f32::MIN_POSITIVE);

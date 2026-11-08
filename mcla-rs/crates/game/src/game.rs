@@ -15532,6 +15532,13 @@ impl Game {
         self.gps_armed = self.gps_pick.is_some() || self.mission_target.is_some();
     }
 
+    /// mcUINavMap_IsTargetSelected (F-15670): the nav map's +628, set by F-83952 with the target (SET AS TARGET
+    /// F-13265, the mission log's A, SetTargetByUID) and cleared with it (F-26916, F-24911) - so it stands while the
+    /// map has a target, the port's `gps_pick` / `mission_target`, not only while the map is open
+    pub fn map_target_selected(&self) -> bool {
+        self.gps_pick.is_some() || self.mission_target.is_some()
+    }
+
     /// The race scripts' teardown (story, hookman and race cores, `Race_Finish` ... `WAITUNWARPED` then
     /// UILogic_RemoveGPSDestination(0)): when a race stops being current the HUD arrow has no target until the next
     /// SET; nothing re-arms it on its own (`F-61202` only clears). Called once a tick.
