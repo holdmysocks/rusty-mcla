@@ -1869,6 +1869,12 @@ impl SoundLib {
         let at = Attack { ms: n.h.attack as u32, po: po.0, own_pd: n.predelay_ms as u32, ppd: 0 };
         // +58 bit 0x10 (the base constructor F-79360 sets it, OnStop's Init clears it): the release's end ends the sound
         let flags = if matches!(n.kind, Kind::OnStop { .. }) { 0x40 } else { 0x50 };
+        // stopped without a release: ends once no child plays (F-68220, F-13519), before its type's update
+        let ending = n.clock.stopped && n.clock.rel.is_none();
+        if ending && !matches!(n.kind, Kind::OnStop { .. } | Kind::Envelope { .. }) && !live_child(&n.kind) {
+            n.st = St::Done;
+            return;
+        }
         let (act, vol) = n.clock.tick(now, n.tot.0, at, flags, vol);
         match act {
             Act::Wait => return,
@@ -1984,6 +1990,7 @@ impl SoundLib {
                 match looping_update(r, *count, plays) {
                     LoopStep::Done => true,
                     LoopStep::Run => false,
+                    LoopStep::Remake if ending => true,
                     LoopStep::Remake => {
                         // made again from its reference (deferred to after the tree update, F-70509 / F-21229, so it
                         // first runs in the next update as here) and played with the restart offset as its parent
@@ -2006,6 +2013,9 @@ impl SoundLib {
                     *cur_off = off;
                 }
                 loop {
+                    if cur.is_none() && ending {
+                        break;
+                    }
                     if cur.is_none() {
                         // the next child is played without a parent offset (F-35671)
                         *cur_off = 0;
@@ -2676,11 +2686,14 @@ fn stop_node(n: &mut Node, ovr: i32, now: u32) {
         // the slipstream burn SLIPSTREAM_NITROUS_MASTER, ReleaseTime 2000, kept both SST envelopes at their full value
         // for the 2 s after the stop - work/slipstream/audiorec)
         return;
-    } else if !matches!(n.kind, Kind::OnStop { .. } | Kind::Envelope { .. }) {
+    } else if matches!(n.kind, Kind::Wave { .. } | Kind::Stream { .. } | Kind::Empty) {
         n.st = St::Done;
         return;
     }
-    // no release time: OnStop plays its stop sound, Envelope its release stage; they end by themselves
+    // no release time (F-58485: +57 bit 0x10, then F-84762 asks each playing child to stop - its ChildStop, by default a
+    // stop request of its own with its own release, F-58485 again): the children stop, the sound ends at the first update
+    // with none playing (F-68220 with F-13519) and makes none (Looping, Sequential and Retriggered test the bit); OnStop
+    // plays its stop sound, Envelope its release stage
     match &mut n.kind {
         Kind::Group { children } | Kind::Twin { children, .. } => children.iter_mut().for_each(|c| stop_node(c, ovr, now)),
         // Envelope: its own release stage fades the child (the step above starts it)
@@ -2696,6 +2709,20 @@ fn stop_node(n: &mut Node, ovr: i32, now: u32) {
         }
         Kind::OnStop { child, .. } => stop_node(child, ovr, now),
         _ => {}
+    }
+}
+
+/// Whether a node has a child still playing (F-13519: a direct child in state 2).
+fn live_child(k: &Kind) -> bool {
+    let up = |c: &Node| c.st != St::Done;
+    match k {
+        Kind::Group { children } | Kind::Twin { children, .. } => children.iter().any(up),
+        Kind::Looping { child, .. } => up(child),
+        Kind::Sequential { cur, .. } => cur.as_deref().is_some_and(up),
+        Kind::Retrig { live, .. } => live.iter().any(up),
+        Kind::Envelope { child, .. } => up(child),
+        Kind::OnStop { child, stopped, .. } => up(child) || stopped.as_deref().is_some_and(up),
+        _ => false,
     }
 }
 
@@ -3298,6 +3325,45 @@ mod tests {
         assert!(bad.is_empty(), "{} wrong of {calls}:\n{}", bad.len(), bad.join("\n"));
         println!("{cases} cases, {calls} calls, {nears} differ only in the log2 rounding");
         assert!(nears <= 40, "{nears}");
+    }
+
+    /// A stop without a release (F-58485 with F-84762 / F-13519): the group's children stop with their own releases, the
+    /// group ends at the first update with none playing.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn a_stop_without_release_waits_for_the_children() {
+        use super::*;
+        let node = |release: i16, kind: Kind| {
+            let mut hb = vec![12u8, 0, 0, 0, 0];
+            hb.extend_from_slice(&0xaaaa_aaaau32.to_be_bytes());
+            hb.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+            let (mut h, _) = audcfg::parse_header(&hb);
+            h.release = release;
+            Node { h, vol: 0.0, pitch: 0, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, clock: Clock::default(), env0: 0.0, tot: (0, 0), ty_ms: 0, kind }
+        };
+        // (the group's own update, F-29161, ends it in the update its last child ends)
+        // a child that plays until stopped: a Retriggered with no child to make and no end
+        let alive = |release: i16| node(release, Kind::Retrig { child_hash: 0, count: -1, delay_ms: 1e9, next_ms: 1e9, made: 0, live: Vec::new() });
+        let mut g = node(-1, Kind::Group { children: vec![alive(100), alive(-1)] });
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let (ctx, rt) = root_ctx(&Req::default());
+        let mut out = Vec::new();
+        for now in (0..200).step_by(10) {
+            if now == 50 {
+                stop_node(&mut g, -1, now);
+            }
+            lib.step(&mut g, 10.0, now, ctx, rt, (0, false), &mut out);
+            let Kind::Group { children } = &g.kind else { unreachable!() };
+            let st: Vec<St> = children.iter().map(|c| c.st).collect();
+            match now {
+                0..=40 => assert!(g.st == St::Playing && st == [St::Playing, St::Playing], "{now} {st:?}"),
+                // the release-less child ends at the stop's update, the other releases until 150
+                50..=140 => assert!(g.st == St::Playing && st == [St::Playing, St::Done], "{now} {:?} {st:?}", g.st),
+                _ => assert_eq!(g.st, St::Done, "{now}"),
+            }
+        }
     }
 
     /// F-31923 (release step) against the original's own code on 4000 cases (work/audio2/verify/ref4.py, vector shim)
