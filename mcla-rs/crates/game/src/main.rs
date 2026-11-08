@@ -10862,20 +10862,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let mut ls = render::LightSet::default();
             let dark = 1.0 - globals.sky_zenith[3];
             let mut k = 0usize;
-            // the player's neon (the garage's exterior neon): its colour on the road under
-            // the car, front and rear
-            // (MCLA_NEON=1: on for screenshots)
-            if let (true, Some(c)) = (self.game.neon_on || std::env::var("MCLA_NEON").is_ok(), self.vehicles.player()) {
-                let col = self.game.neon_linear();
-                let gain = 6.0 + 16.0 * dark;
-                for off in [-1.0f32, 1.0] {
-                    let pose = c.render_pose(self.vehicles.render_alpha);
-                    let p = pose.pos + pose.rot * Vec3::NEG_Z * off + pose.rot * Vec3::Y * 0.42;
-                    ls.pos_range[k] = [p.x, p.y, p.z, 3.0];
-                    ls.color[k] = [col[0] * gain, col[1] * gain, col[2] * gain, -1.0];
-                    k += 1;
-                }
-            }
+            // (the exterior neon is the light quads of carblob.rs and siColor2 on the cars, F-17121 / F-96984)
             // (under the weather's keys the player's head lamps light the world whenever the night
             // programs run - from 18:00 to 06:00, at full strength at 18:15 already - not only
             // once the sky has gone dark)
@@ -12528,7 +12515,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // the sun's glow quad over the finished scene (sunglow.rs), then the lamps' pass
             // the occlusion blobs under the cars (carblob.rs): over the finished scene, before the glow passes
             if !map3d && pic.is_none() {
-                carblob::run(&gpu, &mut enc, &self.vehicles, self.cam.pos);
+                carblob::run(&gpu, &mut enc, &self.vehicles, self.cam.pos, self.game.mode != Mode::Garage && (self.time_of_day > 18.0 || self.time_of_day < 6.0));
             }
             // (step 19g: the effects on the cars - ice blocks, shields, stealth - pu_fx.rs)
             if !map3d {

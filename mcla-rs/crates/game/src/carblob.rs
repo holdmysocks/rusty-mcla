@@ -16,7 +16,11 @@
 //! see the traffic branch in `run`); the player car's own producer is not decoded.
 //!
 //! `MCLA_DEBUG_VIEW=270`: the pass off; 271: wheels only; 272: bodies only; 273: without the
-//! cars' mask (the blobs darken the cars too).
+//! cars' mask (the blobs darken the cars too); 275: no neon light quads.
+//!
+//! The neon (F-17121 -> F-62149 -> F-35120 `quadlight`): a car whose ExtNeonIntensity is over 0.001 makes four
+//! light quads round its ground frame and its body quad turns into a fifth; each multiplies the frame by
+//! 1 + 12 shape x lightColor (PS_CalcShadowsLight: 0.75 shape colour + gInvColorExpBias, the target's x16) - `neon_records`.
 
 use crate::render::Gpu;
 use glam::{Mat4, Vec3};
@@ -45,6 +49,8 @@ struct State {
     one_d: crate::render::ms::MsPipe,
     cone: crate::render::ms::MsPipe,
     cone_inst: wgpu::Buffer,
+    light: crate::render::ms::MsPipe,
+    light_inst: wgpu::Buffer,
     cone_mesh: wgpu::Buffer,
     layout: wgpu::BindGroupLayout,
     inst: wgpu::Buffer,
@@ -120,6 +126,41 @@ pub fn load(gpu: &mut Gpu) {
     // zero - only where the stencil is 0 and in front of the scene, back faces culled)
     let cone_inst = device.create_buffer(&wgpu::BufferDescriptor { label: Some("car cones"), size: (64 * CONE_SIZE) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
     let cone_mesh = wgpu::util::DeviceExt::create_buffer_init(device, &wgpu::util::BufferInitDescriptor { label: Some("car cone mesh"), contents: bytemuck::cast_slice(&cone_mesh()), usage: wgpu::BufferUsages::VERTEX });
+    // (the light quads, `quadlight_draw`: the cone's states with the light program - the five recorded
+    // PS_CalcShadowsLight draws (work/lighting-trails/neon/cap/n23, n12) have RB_DEPTHCONTROL 0x708263,
+    // RB_BLENDCONTROL 0x80008 (source x destination colour), PA_SU_SC_MODE_CNTL 0x18002, RB_STENCILREFMASK 0xff00 -
+    // the occlusion quads' but for the blend - on the `ao_shadow` model, the same 16-sided cylinder)
+    let light_inst = device.create_buffer(&wgpu::BufferDescriptor { label: Some("car neon lights"), size: (MAX_LIGHT * LIGHT_SIZE) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+    let light = {
+        let (layout, shader) = (pl.clone(), shader.clone());
+        crate::render::ms::MsPipe::new(device, move |device, v| {
+            let attrs: Vec<wgpu::VertexAttribute> = (0..9).map(|i| wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 16 * i as u64, shader_location: i + 1 }).collect();
+            let pos = [wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 }];
+            let mut ds = v.ds(false, wgpu::CompareFunction::GreaterEqual, false, wgpu::DepthBiasState::default());
+            let face = wgpu::StencilFaceState { compare: wgpu::CompareFunction::Equal, fail_op: wgpu::StencilOperation::Keep, depth_fail_op: wgpu::StencilOperation::Keep, pass_op: wgpu::StencilOperation::Keep };
+            ds.stencil = wgpu::StencilState { front: face, back: face, read_mask: 0xff, write_mask: 0 };
+            let mult = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Dst, dst_factor: wgpu::BlendFactor::Zero, operation: wgpu::BlendOperation::Add };
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("car neon light"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_light"),
+                    buffers: &[
+                        wgpu::VertexBufferLayout { array_stride: 12, step_mode: wgpu::VertexStepMode::Vertex, attributes: &pos },
+                        wgpu::VertexBufferLayout { array_stride: LIGHT_SIZE as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &attrs },
+                    ],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_light"), targets: &[Some(wgpu::ColorTargetState { format: crate::render::post::SCENE_FORMAT, blend: Some(wgpu::BlendState { color: mult, alpha: mult }), write_mask: wgpu::ColorWrites::COLOR })], compilation_options: Default::default() }),
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, front_face: wgpu::FrontFace::Ccw, cull_mode: Some(wgpu::Face::Back), ..Default::default() },
+                depth_stencil: Some(ds),
+                multisample: v.ms(),
+                multiview: None,
+                cache: None,
+            })
+        })
+    };
     let cone = {
         let (layout, shader) = (pl.clone(), shader.clone());
         crate::render::ms::MsPipe::new(device, move |device, v| {
@@ -150,7 +191,7 @@ pub fn load(gpu: &mut Gpu) {
             })
         })
     };
-    *STATE.lock().unwrap() = Some(State { blob, one, mask, apply, one_d, cone, cone_inst, cone_mesh, layout, inst });
+    *STATE.lock().unwrap() = Some(State { blob, one, mask, apply, one_d, cone, cone_inst, light, light_inst, cone_mesh, layout, inst });
 }
 
 /// The `cone` model as read from the running original: 16 sides, radius 1 round z, z +-0.5, 180 indices.
@@ -170,6 +211,58 @@ fn cone_mesh() -> Vec<[f32; 3]> {
 }
 
 const CONE_SIZE: usize = 112;
+/// a light quad's instance: the volume's four rows, c0..c3, the colour
+const LIGHT_SIZE: usize = 144;
+const MAX_LIGHT: usize = 64;
+
+/// The light list's draw (F-35120, `quadlight`) of one record: the `ao_shadow` cylinder by the record's matrix, rows x
+/// (r x 1.05) ([0x8203BE78]), y (r x 0.13125) ([0x8203EA38]), z (r x 2.0 + |c0 - c3|), the origin +128; r = sqrt(+28);
+/// blockerPosQuad0..3 = c0..c3, lightColor = +144.
+fn light_instance(r: &QuadRec) -> [[f32; 4]; 9] {
+    let rad = r.c[0][3].sqrt();
+    let d = v4(|i| r.c[0][i] - r.c[3][i]);
+    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let row = |k: usize, s: f32| [r.m[k][0] * s, r.m[k][1] * s, r.m[k][2] * s, 0.0];
+    [row(0, rad * 1.05), row(1, rad * 0.131_25), row(2, rad * 2.0 + len), r.m[3], r.c[0], r.c[1], r.c[2], r.c[3], r.colour]
+}
+
+/// The neon cars' records (F-17121) with the port's inputs: (the car's body matrix, its body record, its four neon records).
+/// The sizes W H L are the composite bound's box (F-98453, as the wheel fit leaves it - `CarParams::composite_box`); the
+/// player's car makes no ground probe (f28 = 1). (approx.) the ground frame F-88547 (a probe 1 m above to 3 m below the
+/// car: its hit normal and point) is the body matrix moved to the wheels' foot; the radius box F-63160 (its width X,
+/// r = 0.64 X) is the port's measured blob radius 0.99 x the model's width / 0.64 (the R8's recorded 1.8844); other
+/// cars' ground probe (f28 = sat(1 - T), with head lamps on) is not made (f28 = 1).
+fn neon_lights(vehicles: &crate::vehicles::Vehicles, night: bool) -> Vec<(Mat4, QuadRec, [QuadRec; 4])> {
+    let mut out = Vec::new();
+    let blobs = vehicles.blob_cars();
+    for (ci, m, n, _player) in vehicles.neon_cars(vehicles.interior_glass) {
+        let c = &vehicles.cars[ci];
+        let Some(b) = blobs.iter().find(|b| b.m == m) else { continue };
+        let (lo, hi) = c.params().composite_box();
+        let (x, y, z) = (m.x_axis.truncate(), m.y_axis.truncate(), m.z_axis.truncate());
+        let foot = m.w_axis.truncate() + y * b.ground_y;
+        let input = NeonIn {
+            g: [x.extend(0.0).to_array(), y.extend(0.0).to_array(), z.extend(0.0).to_array(), foot.extend(1.0).to_array()],
+            size: (hi - lo).extend(0.0).to_array(),
+            box_: [0.99 * (b.max.x - b.min.x) / 0.64, 0.0, 0.0, 0.0],
+            colour: n.color,
+            intensity: n.intensity,
+            pulse: n.pulse,
+            scale: 1.0,
+            up_y: m.y_axis.y,
+            t: 0.0,
+            night,
+            b6477: false,
+        };
+        if let (body, Some(neon)) = neon_records(&input) {
+            if std::env::var("MCLA_GLOW_DUMP").is_ok() {
+                eprintln!("neon car {ci} size {:?} body c0 {:?} c3 {:?} colour {:?}", input.size, body.c[0], body.c[3], body.colour);
+            }
+            out.push((m, body, neon));
+        }
+    }
+    out
+}
 
 fn push(out: &mut Vec<f32>, rows: [[f32; 4]; 6]) {
     for r in rows {
@@ -178,10 +271,32 @@ fn push(out: &mut Vec<f32>, rows: [[f32; 4]; 6]) {
 }
 
 /// The pass: after the scene (its depth is read), before the glow passes and the tone map.
-pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles::Vehicles, cam: Vec3) {
+/// `night`: the light quads' D (0.2 at night outside the garage, else 0.125).
+pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles::Vehicles, cam: Vec3, night: bool) {
     let guard = STATE.lock().unwrap();
     let Some(s) = guard.as_ref() else { return };
     let dbg = view();
+    // (a car whose neon is on: its body record is the fifth light quad, not an occlusion quad - F-62149 sorts by +4)
+    let lights = if dbg != 275 { neon_lights(vehicles, night) } else { Vec::new() };
+    if !lights.is_empty() {
+        let inst: Vec<[[f32; 4]; 9]> = lights.iter().flat_map(|(_, body, neon)| std::iter::once(body).chain(neon.iter()).map(light_instance)).take(MAX_LIGHT).collect();
+        gpu.queue.write_buffer(&s.light_inst, 0, bytemuck::cast_slice(&inst));
+        let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("car neon lights"), layout: &s.layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&gpu.depth) }] });
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("car neon lights"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: gpu.scene_color(), resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: gpu.scene_ds(), depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }) }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_bind_group(0, &gpu.globals_bg, &[]);
+        pass.set_bind_group(1, &bind, &[]);
+        pass.set_pipeline(&s.light);
+        pass.set_stencil_reference(0);
+        pass.set_vertex_buffer(0, s.cone_mesh.slice(..));
+        pass.set_vertex_buffer(1, s.light_inst.slice(..(inst.len() * LIGHT_SIZE) as u64));
+        pass.draw(0..180, 0..inst.len() as u32);
+    }
     if !vehicles.cones.is_empty() && dbg != 274 {
         let n = vehicles.cones.len().min(64);
         gpu.queue.write_buffer(&s.cone_inst, 0, bytemuck::cast_slice(&vehicles.cones[..n]));
@@ -223,7 +338,7 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
                 n += 1;
             }
         }
-        if dbg != 271 && n < MAX_INST {
+        if dbg != 271 && n < MAX_INST && !lights.iter().any(|l| l.0 == c.m) {
             let (width, length) = (c.max.x - c.min.x, c.max.z - c.min.z);
             let r = if c.ambient { length / 3.0 } else { 0.99 * width };
             // (the R8's measured span is 2.2318 - half the length of its lowest level of detail,
@@ -300,5 +415,173 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
         pass.draw(0..3, 0..1);
         pass.set_pipeline(&s.one_d);
         pass.draw(0..3, 0..1);
+    }
+}
+
+/// One record of the blob manager as F-18380 fills it (F-35120 draws it): the four sphere middles c0..c3 (w = r
+/// squared), the volume's matrix (rows x, y, z, origin) and the colour; `light` = +4 (the light list, `quadlight`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QuadRec {
+    pub c: [[f32; 4]; 4],
+    pub m: [[f32; 4]; 4],
+    pub colour: [f32; 4],
+    pub light: bool,
+}
+
+/// What F-17121 reads of a car for its body record and its four neon records.
+#[derive(Clone, Copy, Debug)]
+pub struct NeonIn {
+    /// the ground frame car+4512 (F-88547): rows x, y, z, origin
+    pub g: [[f32; 4]; 4],
+    /// the chassis bound's box, max (+16) minus min (+32) (F-98453 on (car+20)+8): W, H, L
+    pub size: [f32; 4],
+    /// F-63160's box, max minus min (x: the body record's radius, w: the off record's colour w)
+    pub box_: [f32; 4],
+    /// ExtNeonColor (the record's floats as stored), ExtNeonIntensity, the pulse car+404, car+268
+    pub colour: [f32; 4],
+    pub intensity: f32,
+    pub pulse: f32,
+    pub scale: f32,
+    /// the body matrix's up row y ((car+20)+144, +20)
+    pub up_y: f32,
+    /// the ground probe's hit fraction (0.0 when no probe was made or it missed: always for the player's car)
+    pub t: f32,
+    /// D = 0.2 (not the garage, and the hour above +14568 or not at or above +14564) else 0.125
+    pub night: bool,
+    /// car+6477
+    pub b6477: bool,
+}
+
+fn v4(f: impl Fn(usize) -> f32) -> [f32; 4] {
+    [f(0), f(1), f(2), f(3)]
+}
+fn vmul(a: [f32; 4], k: f32) -> [f32; 4] {
+    v4(|i| a[i] * k)
+}
+fn vmad(a: [f32; 4], k: f32, b: [f32; 4]) -> [f32; 4] {
+    v4(|i| a[i] * k + b[i])
+}
+
+/// F-18380: c0 = A, c1 = A + (B - A) x 0.33333331, c2 = A + (B - A) x 0.66666663, c3 = B (xyz; w = r2), M copied.
+fn quad_rec(a: [f32; 4], b: [f32; 4], m: [[f32; 4]; 4], r2: f32, colour: [f32; 4], light: bool) -> QuadRec {
+    let d = v4(|i| b[i] - a[i]);
+    let c1 = vmad(d, 0.333_333_31, a);
+    let c2 = vmad(d, 0.666_666_63, a);
+    let w = |v: [f32; 4]| [v[0], v[1], v[2], r2];
+    QuadRec { c: [w(a), w(c1), w(c2), w(b)], m, colour, light }
+}
+
+/// F-17121's body record (car+560) and, when the neon is on, its four neon records (car+568), in the original's
+/// f32 order (the vector products unfused, as the generated code's vmaddfp). Test `neon_records_match_the_original`.
+pub fn neon_records(n: &NeonIn) -> (QuadRec, Option<[QuadRec; 4]>) {
+    let [gx, gy, gz, g0] = n.g;
+    let (w, h, l) = (n.size[0], n.size[1], n.size[2]);
+    // f28 = sat(1 - t) by two fsel
+    let f13 = 1.0 - n.t;
+    let f12 = if f13 >= 0.0 { f13 } else { 0.0 };
+    let f28 = if f12 - 1.0 >= 0.0 { 1.0 } else { f12 };
+    // the body record: A, B = g0 +- gz L / 4 + gy H / 4; the frame's rows x 1.0, its origin g0
+    let a = vmad(vmul(gy, h), 0.25, vmad(vmul(gz, l), 0.25, g0));
+    let gzl = vmul(vmul(gz, l), 0.25);
+    let b = vmad(vmul(gy, h), 0.25, v4(|i| g0[i] - gzl[i]));
+    let m = [vmul(gx, 1.0), vmul(gy, 1.0), vmul(gz, 1.0), g0];
+    // the strength k and the colour
+    let f29 = (((n.up_y + 1.0) * 0.5) * n.scale) * f28;
+    let f0 = f29 * if n.night { 0.2 } else { 0.125 };
+    let k = (n.intensity * n.pulse) * f0;
+    let col = vmul(n.colour, k);
+    let x = n.box_[0] * 0.64;
+    let r2 = (x * x) * f28;
+    let on = n.intensity > 0.001 && !n.b6477;
+    let body = if on { quad_rec(a, b, m, r2, col, true) } else { quad_rec(a, b, m, r2, [1.0, 1.0, 1.0, n.box_[3]], false) };
+    if !on {
+        return (body, None);
+    }
+    let rec = |p: [f32; 4], d: [f32; 4], ka: f32, kb: f32, mm: [[f32; 4]; 4]| {
+        let mm = [mm[0], mm[1], mm[2], p];
+        quad_rec(vmad(d, ka, p), vmad(d, kb, p), mm, 0.5, col, true)
+    };
+    // [0] / [1]: the sides, P = g0 + gx W x +-0.45, A / B = P + (gz L x 0.2) x +-0.5
+    let r0 = rec(vmad(vmul(gx, w), 0.45, g0), vmul(vmul(gz, l), 0.2), 0.5, -0.5, m);
+    let r1 = rec(vmad(vmul(gx, w), -0.45, g0), vmul(vmul(gz, l), 0.2), 0.5, -0.5, m);
+    // the matrix turned by pi / 2 (F-25963: row0' = row0 cos - row2 sin, row2' = row0 sin + row2 cos)
+    let ang = std::f32::consts::FRAC_PI_2 as f64;
+    let (c, s) = (ang.cos() as f32, ang.sin() as f32);
+    let t0 = v4(|i| m[0][i] * c - m[2][i] * s);
+    let t2 = v4(|i| m[0][i] * s + m[2][i] * c);
+    let mt = [t0, m[1], t2, g0];
+    // [2] / [3]: the ends, P = g0 + gz L x -+0.5, A / B = P + (gx W x 0.2) x +-0.75
+    let e2 = rec(vmad(vmul(gz, l), -0.5, g0), vmul(vmul(gx, w), 0.2), 0.75, -0.75, mt);
+    let e3 = rec(vmad(vmul(gz, l), 0.5, g0), vmul(vmul(gx, w), 0.2), 0.75, -0.75, mt);
+    (body, Some([r0, r1, e2, e3]))
+}
+
+#[cfg(test)]
+mod neon_tests {
+    use super::*;
+
+    /// tools/neon_records_reference.py: F-17121 run offline, 1,000 random cars (frames, boxes, colours,
+    /// intensities round the 0.001 gate, the hour round 6 and 18, the garage byte, the probe and its hit fraction).
+    #[test]
+    fn neon_records_match_the_original() {
+        let txt = include_str!("testdata/neon_records_reference.txt");
+        let f = |h: &str| f32::from_bits(u32::from_str_radix(h, 16).unwrap());
+        let mut lines = txt.lines().peekable();
+        let (mut cases, mut recs) = (0, 0);
+        while let Some(l) = lines.next() {
+            let Some(rest) = l.strip_prefix("CASE ") else { continue };
+            let w: Vec<&str> = rest.split_whitespace().skip(1).collect();
+            let u = |i: usize| u32::from_str_radix(w[i], 16).unwrap();
+            let v: Vec<f32> = w[12..].iter().map(|h| f(h)).collect();
+            let mut got = Vec::new();
+            while let Some(n) = lines.peek() {
+                if !n.starts_with("ADD ") {
+                    break;
+                }
+                got.push(lines.next().unwrap().to_string());
+            }
+            cases += 1;
+            if u(0) != 0 {
+                assert!(got.is_empty());
+                continue;
+            }
+            let probe = u(6) == 0 && f(w[1]) > 0.001 && u(9) != 0;
+            let up = if u(5) != 0 { v[16 + 5] } else { v[5] };
+            let hour = f(w[8]);
+            let row = |o: usize| [v[o], v[o + 1], v[o + 2], v[o + 3]];
+            let sub = |a: [f32; 4], b: [f32; 4]| v4(|i| a[i] - b[i]);
+            let input = NeonIn {
+                g: [row(116), row(120), row(124), row(128)],
+                size: sub(row(104), row(108)),
+                box_: sub(row(96), row(100)),
+                colour: row(112),
+                intensity: f(w[11]),
+                pulse: f(w[3]),
+                scale: f(w[2]),
+                up_y: up,
+                t: if probe { f(w[10]) } else { 0.0 },
+                night: u(7) == 0 && (hour > 18.0 || !(hour >= 6.0)),
+                b6477: u(4) != 0,
+            };
+            let (body, neon) = neon_records(&input);
+            let mut want = vec![(512, body)];
+            if let Some(n) = neon {
+                want.extend([1024, 1184, 1344, 1504].into_iter().zip(n));
+            }
+            assert_eq!(got.len(), want.len(), "case {cases}");
+            for (g, (off, r)) in got.iter().zip(&want) {
+                let p: Vec<&str> = g.split_whitespace().collect();
+                assert_eq!(p[1].parse::<i32>().unwrap(), *off, "case {cases}");
+                let words: Vec<u32> = p[2..].iter().map(|h| u32::from_str_radix(h, 16).unwrap()).collect();
+                assert_eq!(words[1] >> 24 != 0, r.light, "case {cases} rec {off} flag");
+                let mine: Vec<u32> = r.c.iter().chain(r.m.iter()).flatten().chain(r.colour.iter()).map(|x| x.to_bits()).collect();
+                for (i, (a, b)) in words[4..].iter().zip(&mine).enumerate() {
+                    let nan = f32::from_bits(*a).is_nan() && f32::from_bits(*b).is_nan();
+                    assert!(a == b || nan, "case {cases} rec {off} word {} want {a:08x} got {b:08x}", i + 4);
+                }
+                recs += 1;
+            }
+        }
+        assert!(cases > 900 && recs > 2000, "{cases} {recs}");
     }
 }

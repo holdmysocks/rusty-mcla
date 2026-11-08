@@ -235,3 +235,48 @@ fn fs_cone(in: ConeOut) -> @location(0) vec4<f32> {
     let s = clamp(k2 * k2, 0.0, 1.0) * 8.0;
     return vec4<f32>(vec3<f32>(1.0) + in.col.rgb * s, 1.0);
 }
+
+// The neon's light quads: VS_DrawQuad + PS_CalcShadowsLight (F-17121's records, drawn by F-35120 `quadlight`).
+struct LightOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) @interpolate(flat) c0: vec4<f32>,
+    @location(1) @interpolate(flat) c1: vec4<f32>,
+    @location(2) @interpolate(flat) c2: vec4<f32>,
+    @location(3) @interpolate(flat) c3: vec4<f32>,
+    @location(4) @interpolate(flat) col: vec4<f32>,
+};
+
+@vertex
+fn vs_light(@location(0) v: vec3<f32>, @location(1) x: vec4<f32>, @location(2) y: vec4<f32>, @location(3) z: vec4<f32>, @location(4) w: vec4<f32>, @location(5) c0: vec4<f32>, @location(6) c1: vec4<f32>, @location(7) c2: vec4<f32>, @location(8) c3: vec4<f32>, @location(9) col: vec4<f32>) -> LightOut {
+    var o: LightOut;
+    o.clip = g.view_proj * vec4<f32>(w.xyz + x.xyz * v.x + y.xyz * v.y + z.xyz * v.z, 1.0);
+    o.c0 = c0;
+    o.c1 = c1;
+    o.c2 = c2;
+    o.c3 = c3;
+    o.col = col;
+    return o;
+}
+
+fn light_term(p: vec3<f32>, c: vec4<f32>) -> f32 {
+    let d = p - c.xyz;
+    let s = clamp(dot(d, d) / c.w, 0.0, 1.0);
+    return 1.0 - (1.0 - s) * (1.0 - s);
+}
+
+// PS_CalcShadowsLight: the scene's point P; s_i = sat(|P - c_i|^2 / c_i.w); shape = 1 - prod (1 - (1 - s_i)^2);
+// out.rgb = 0.75 shape lightColor + gInvColorExpBias.x (1/16), the frame x out under the target's x16 bias:
+// the frame x (1 + 12 shape lightColor)
+@fragment
+fn fs_light(in: LightOut) -> @location(0) vec4<f32> {
+    let dims = vec2<i32>(textureDimensions(depth));
+    let px = clamp(vec2<i32>(in.clip.xy), vec2<i32>(0), dims - vec2<i32>(1));
+    let z = textureLoad(depth, px, 0);
+    if (z <= 0.0) {
+        discard;
+    }
+    let ndc = vec2<f32>((f32(px.x) + 0.5) / f32(dims.x) * 2.0 - 1.0, 1.0 - (f32(px.y) + 0.5) / f32(dims.y) * 2.0);
+    let p = unproject(ndc, z);
+    let q = light_term(p, in.c0) * light_term(p, in.c1) * light_term(p, in.c2) * light_term(p, in.c3);
+    return vec4<f32>(vec3<f32>(1.0) + in.col.rgb * (12.0 * (1.0 - q)), 1.0);
+}

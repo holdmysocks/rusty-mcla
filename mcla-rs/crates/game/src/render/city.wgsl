@@ -540,6 +540,7 @@ struct Object {
     glass_tint: array<vec4<f32>, 9>,   // a car's TintColors by window zone 0 .. 8 (F-50822, damagemap::glass_vars) ...
     glass_bumped: array<vec4<f32>, 9>, // ... and BumpedTintColors, the lamps' lenses'
     rest_rot: array<vec4<f32>, 27>,    // a set-up car's rest rotations, 9 floats each (vehicles.rs rest_mark)
+    neon_si: vec4<f32>,                // siColor2 (c59): the car's exterior neon, F-96984 (vehicles.rs ExtNeon::si_color)
 };
 @group(3) @binding(0) var<uniform> obj: Object;
 // Which of a car's two light slots holds the lamp first (the hour's light second): a traffic or parked
@@ -1768,8 +1769,10 @@ fn fresnel(n: vec3<f32>, v: vec3<f32>, f0: f32) -> f32 {
 // recorded (0.616, 0.796, 1) on the R8 with its lights on, zero with them off); it is what lights
 // the number plate's recess. siColor1 - byte 2 - is the brake lamps': bulb x cover of id 0 times
 // 2.44 x state^2.2 (two recorded states, 0.25 -> (0.431, 0.0138, 0) and 0.769 -> (5.112, 0.163, 0):
-// the exponent and the factor are a fit through those two). siColor2 (byte 3) was zero in every
-// recording. Which byte is which: the runtime fetch word of the draws (0x400600d1 on the BumpSpec
+// the exponent and the factor are a fit through those two). siColor2 (byte 3) is the exterior neon:
+// ExtNeonColor x ((pulse x ExtNeonIntensity) x 1.0 x 0.3) (F-96984 car+2656 / +2680, set per car draw by F-56246;
+// recorded (0.2631, 0.0768, 0.0768) on every R8 body draw with the colour (0.877, 0.256, 0.256), intensity 1,
+// work/lighting-trails/neon/cap/n23), screened in third (VS_CarPaint instr. 59 - 64, 106 - 111). Which byte is which: the runtime fetch word of the draws (0x400600d1 on the BumpSpec
 // family, 0x400602c2 on the paint), work/lighting/rtfetch.py. `wts` = the bytes 1, 2, 3 as the
 // car meshes carry them in the first colour. Traffic (their own programs) and cabin parts (whose
 // two colours are the gauge colours, not passed here; marked 32 in the colour's alpha) get none.
@@ -1780,7 +1783,9 @@ fn car_own_lamps(wts: vec4<f32>) -> vec3<f32> {
     let st0 = obj.lamp_a[1].w;
     let s0 = obj.lamp_a[3].rgb * obj.lamp_b[3].rgb * (obj.lamp_a[2].w * wts.r);
     let s1 = obj.lamp_a[0].rgb * obj.lamp_b[0].rgb * (2.44 * pow(st0, 2.2) * wts.g);
-    return s0 + s1 - clamp(s0 * s1, vec3<f32>(0.0), vec3<f32>(1.0));
+    let s01 = s0 + s1 - clamp(s0 * s1, vec3<f32>(0.0), vec3<f32>(1.0));
+    let s2 = obj.neon_si.rgb * wts.b;
+    return s01 + s2 - clamp(s01 * s2, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 
