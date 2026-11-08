@@ -8250,7 +8250,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 Some(startwarp::Phase::Down) => 3,
             };
             self.sound.damage_alpha = self.game.flash_hud.as_ref().and_then(|h| h.movie.player.get_global("damage_alpha")).map_or(0.0, |v| v.to_f32());
-            self.sound.racer_found |= self.game.flash_hud.as_mut().is_some_and(|h| std::mem::take(&mut h.racer_found));
+            // the sounds the movies started this frame (their Sound objects' start, F-92898): RACER_FOUND_MASTER from the
+            // HUD's splash queue 1, RANK_UP_MASTER / REP_BAR_FILL_MASTER from the pause page's AnimateReward
+            {
+                let g = &mut self.game;
+                let ps = [g.flash_hud.as_mut().map(|h| &mut h.movie.player), g.flash_menu.as_mut().map(|m| &mut m.movie.player), g.flash_garage.as_mut().map(|m| &mut m.movie.player), g.flash_popup.as_mut().map(|m| &mut m.movie.player), g.flash_navsys.as_mut().map(|m| &mut m.movie.player)];
+                for p in ps.into_iter().flatten() {
+                    self.sound.movie_sounds.append(&mut p.sounds_started);
+                }
+            }
             self.sound.menu_cam = self.game.flash_menu.as_ref().filter(|_| self.game.in_menu()).and_then(|m| m.movie.player.get_global("cur_camera")).map(|v| v.to_f32() as i32);
             crate::ticktimes::mark(crate::ticktimes::S::Sound);
             self.sound.update(a, &self.vehicles, &self.game, &self.police, &self.ability, &self.props.hits, &self.props.scrapes, &|i| self.props.matrix(i), self.cam.pos, right, fwd, rain_snd, horn, self.time_of_day > 19.5 || self.time_of_day < 6.0, &|p: Vec3, q: Vec3| { let d = q - p; let l = d.length(); l > 0.0 && world.collider.raycast(p, d / l, l).is_some() }, &|p: Vec3, q: Vec3| { let d = q - p; let l = d.length(); if l > 0.0 { world.collider.raycast(p, d / l, l).map(|h| h.surface as u8) } else { None } }, Some(&world.collider), dt);

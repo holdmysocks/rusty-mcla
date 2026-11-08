@@ -207,7 +207,6 @@ pub struct Sound {
     /// the end sequences seen (`Game::end_seq_n`)
     end_race: u32,
     /// the reward screen's rep bar sound waits 20 movie frames
-    rep_fill: Option<f32>,
     ability_snd: Option<crate::sndobj::Handle>,
     nitro_btn: bool,
     /// a speech or police radio line is playing (set by the game each frame)
@@ -221,7 +220,9 @@ pub struct Sound {
     /// set by the game each frame: the HUD movie's `damage_alpha`, a splash posted to the HUD's queue 1, the pause
     /// movie's `cur_camera`
     pub damage_alpha: f32,
-    pub racer_found: bool,
+    /// the names the UI movies started (`flash::Player::sounds_started`), played by name (F-42664: no position, the
+    /// default parameters)
+    pub movie_sounds: Vec<std::rc::Rc<str>>,
     pub menu_cam: Option<i32>,
     /// a speech line the sounds ask for (PLAYER_IN_AIR); the game says it if no speech plays
     pub want_speech: Option<&'static str>,
@@ -881,9 +882,10 @@ impl Sound {
                 self.dmg_armed = false;
             }
             self.dmg_prev = v;
-            // RACER_FOUND_MASTER: the HUD movie's splash queue 1 begins
-            if std::mem::take(&mut self.racer_found) {
-                lib.play("RACER_FOUND_MASTER", crate::sndobj::Req::default());
+            for n in std::mem::take(&mut self.movie_sounds) {
+                if lib.play(&n, crate::sndobj::Req::default()).is_none() {
+                    log::warn!("audio: no sound object {n} (started by a movie)");
+                }
             }
             // END_OF_RACE_CAMERA_PAN (F-63176): the menu camera changes while the end-race scene is on
             if self.menu_cam != self.pan_cam {
@@ -1024,12 +1026,6 @@ impl Sound {
             if game.hud_map_big != self.map_big {
                 self.ui(a, if game.hud_map_big { "UI_MENU_SELECT" } else { "UI_MENU_BACK" }, &format!("{MENUS}/{}", if game.hud_map_big { "ui_menu_select_l" } else { "ui_menu_back_l" }), 0.6);
             }
-            // the reward: a new rank RANK_UP_MASTER, else the bar filling, 20 movie frames in (AnimateReward)
-            if game.rep > self.rep && game.rep / 2000 != self.rep / 2000 {
-                self.ui(a, "RANK_UP_MASTER", &format!("{MENUS}/rank_up"), 0.7);
-            } else if game.rep > self.rep && self.lib.is_some() {
-                self.rep_fill = Some(20.0 / 30.0);
-            }
             if self.lib.is_some() {
                 // GARAGE_MONEY_MASTER at a purchase or sale in the garage
                 if game.money != self.money && game.mode == Mode::Garage {
@@ -1039,13 +1035,8 @@ impl Sound {
                 a.play(&format!("{MENUS}/ui_menu_select_l"), 0.7);
             }
         }
-        if let Some(t) = &mut self.rep_fill {
-            *t -= dt;
-            if *t <= 0.0 {
-                self.rep_fill = None;
-                self.ui(a, "REP_BAR_FILL_MASTER", "", 0.0);
-            }
-        }
+        // (without the sound library nothing plays them)
+        self.movie_sounds.clear();
         self.started = true;
         self.mode = Some(game.mode);
         self.menu_sel = game.menu_sel;

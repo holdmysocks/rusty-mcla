@@ -237,6 +237,9 @@ pub struct Player {
     stack: Vec<Value>,
     ret: Vec<Value>,
     pub fscommand: Option<FsCommand>,
+    /// the names a movie's `Sound` objects started (`start`, F-92898): the game plays each by name, as the original's
+    /// native hands it to the play-by-name function; the game takes them after the movie's tick
+    pub sounds_started: Vec<Rc<str>>,
     accum: f32,
     /// the CRT rand() state Math.random draws from (F-37931; the original seeds it from the time base, the port from a constant)
     rng: u32,
@@ -268,6 +271,7 @@ impl Player {
             stack: Vec::new(),
             ret: Vec::new(),
             fscommand: None,
+            sounds_started: Vec::new(),
             accum: 0.0,
             rng: 0x1234_5678,
             rn_seed: 1,
@@ -445,7 +449,7 @@ impl Player {
             mset(&mut reg, hash(n), &Rc::from(n), Value::Obj(Ref::Obj(o)));
         }
         Self::reg_native(&mut reg, "Array", native_array);
-        Self::reg_native(&mut reg, "Sound", |_, _, _| Value::Undef);
+        Self::reg_native(&mut reg, "Sound", native_sound);
         Self::reg_native(&mut reg, "Color", native_color);
         self.registry = reg;
     }
@@ -1863,6 +1867,27 @@ fn native_array(p: &mut Player, this: Ref, args: &[Value]) -> Value {
 fn native_color(p: &mut Player, this: Ref, args: &[Value]) -> Value {
     p.set_member(this, &Value::str("setRGB"), Value::Native(native_set_rgb));
     p.set_member(this, &Value::str("_target"), args.first().cloned().unwrap_or(Value::Int(0)));
+    Value::Undef
+}
+
+/// `new Sound()` (F-85719): an object with the natives `attachSound` and `start`.
+fn native_sound(p: &mut Player, this: Ref, _: &[Value]) -> Value {
+    p.set_member(this, &Value::str("attachSound"), Value::Native(native_attach_sound));
+    p.set_member(this, &Value::str("start"), Value::Native(native_sound_start));
+    Value::Undef
+}
+
+/// `attachSound(name)` (F-77232): keeps the name.
+fn native_attach_sound(p: &mut Player, this: Ref, args: &[Value]) -> Value {
+    p.set_member(this, &Value::str("_sound"), args.first().cloned().unwrap_or(Value::Undef));
+    Value::Undef
+}
+
+/// `start()` (F-92898): the kept name to the game's play-by-name F-42664 (its argument is not read).
+fn native_sound_start(p: &mut Player, this: Ref, _: &[Value]) -> Value {
+    if let Some(Value::Str(s)) = p.get_member(this, &Value::str("_sound")) {
+        p.sounds_started.push(s);
+    }
     Value::Undef
 }
 

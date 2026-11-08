@@ -1892,6 +1892,31 @@ mod tests {
         }
     }
 
+    /// The movies' own sounds (docs/reference/ui/movie_sounds.md): the HUD and pause movies make their `Sound` objects in
+    /// their first frame (attachSound F-77232 keeps the name) and `start` (F-92898) hands the name to the game.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn movie_sound_objects_start_their_sounds() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let strings = StringTable::parse(&std::fs::read(Path::new(&dir).join("ui/0xa4c1e8fa")).unwrap()).unwrap();
+        let shared = UiShared { textures: Arc::new(HashMap::new()), strings: Arc::new(strings), logic: Arc::new(crate::menu3d::UiLogic::load(&dir)) };
+        let mut hud = FlashHud::load(&dir, &shared).expect("hud");
+        let mut pause = FlashMenu::load(&dir, PAUSE_MOVIE, [0.0; 2], &shared).expect("pause");
+        for (p, names) in [(&mut hud.movie.player, &["RACER_FOUND_MASTER"][..]), (&mut pause.movie.player, &["REP_BAR_FILL_MASTER", "RANK_UP_MASTER"][..])] {
+            for _ in 0..3 {
+                p.tick();
+            }
+            p.sounds_started.clear();
+            for n in names {
+                let Some(Value::Obj(o)) = p.get_global(&format!("SND_{n}")) else { panic!("no SND_{n}") };
+                assert!(matches!(p.get_member(o, &Value::str("_sound")), Some(Value::Str(s)) if &*s == *n), "{n}");
+                let Some(Value::Native(start)) = p.get_member(o, &Value::str("start")) else { panic!("no start on SND_{n}") };
+                start(p, o, &[Value::Int(0)]);
+            }
+            assert_eq!(p.sounds_started.iter().map(|s| s.to_string()).collect::<Vec<_>>(), names.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        }
+    }
+
     /// The paint shop's open colour row (`type` 31) shows five squares from its `offset` and keeps the
     /// cursor on them, as the movie's own strip code does (offset kept between refreshes: 0 at select 0,
     /// `select - 5` when select > 5 - offset, +1 when select >= offset + 5, -1 when select < offset)
@@ -2163,8 +2188,6 @@ pub struct FlashHud {
     /// (text, colour, seconds, cleared by SplashManager_Cleanup: the item's +144, F-23140), posted when the movie
     /// has freed the slot
     splash_queue: [std::collections::VecDeque<(String, i32, f32, bool)>; 3],
-    /// a splash was posted to queue 1 (the movie then plays RACER_FOUND_MASTER)
-    pub racer_found: bool,
     /// the camera bar: the view last seen (-1 at the start, as the game's own copy)
     camera_last: i32,
     /// The HUD manager's info-text ring (`F-60548` pushes, at most fifteen; `F-72577` pops when the movie
@@ -2185,7 +2208,7 @@ pub const SPLASH_BOTTOM: usize = 2;
 impl FlashHud {
     pub fn load(data_dir: &str, shared: &UiShared) -> Option<FlashHud> {
         let movie = FlashMovie::load(data_dir, "resources/ui/hud/0x1f0e1cda.r27", shared)?;
-        let mut h = FlashHud { movie, countdown_shown: false, splash_queue: Default::default(), racer_found: false, camera_last: -1, info_queue: Default::default(), song: None, song_shown: false };
+        let mut h = FlashHud { movie, countdown_shown: false, splash_queue: Default::default(), camera_last: -1, info_queue: Default::default(), song: None, song_shown: false };
         // (the game drives the HUD from its start - the movie is up, hidden, long before it is first shown; driven
         // only from its first showing, its first frames were its placeholders: the race clock's "1:23.45.67.85")
         for _ in 0..30 {
@@ -2371,7 +2394,6 @@ impl FlashHud {
         p.set_path(&format!("SplashVisibles.{}", slot), Value::Int(1));
         p.set_path(&format!("duration.{}", slot), Value::Float(seconds.max(2.0)));
         p.set_path(&format!("SplashStrings.{}", slot), Value::str(&text));
-        self.racer_found |= slot == 1;
     }
 
     /// The start of a replay: nothing of the HUD but the race's 3-2-1 (reference `vr_2`).
