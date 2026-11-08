@@ -10194,6 +10194,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
                 let at = self.game.map_cursor_pos.or(self.vehicles.player().map(|c| c.state.pos)).unwrap_or(c);
                 if fresh {
+                    // (the activation F-13388: with a race current and the game state Racing active - every race
+                    // kind, beat me there too - it takes the map's target away, F-24911: arrow off, +628 / +616 clear)
+                    if self.game.race_current() && self.game.map_target_selected() {
+                        self.game.set_gps_target(None, None);
+                    }
                     self.nav.open(game_eye, game_look, at, aspect);
                     // (the lens goes from the game camera's to 25 degrees - NavLens)
                     // (only on the map's first frame: the second "fresh" one already has the map's lens)
