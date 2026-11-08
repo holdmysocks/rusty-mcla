@@ -147,6 +147,8 @@ pub struct Seq {
     pub nodes: Vec<Node>,
     pub blend: [Option<usize>; 5],
     pub anim: [Option<usize>; 5],
+    /// +68 / +72: the additive overlays' animation nodes (F-42342 / F-85022)
+    pub over: [Option<usize>; 2],
     pub pan: Option<usize>,
     pub top: Option<usize>,
     pub root: Option<usize>,
@@ -282,8 +284,9 @@ pub struct Req {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
-    /// crmtRequestAnimation (F-29648): the clip from time `t` at `rate`, +32 set by every builder, +33 loop
-    Anim { clip: ClipId, t: f32, rate: f32, looping: bool },
+    /// crmtRequestAnimation (F-29648): the clip from time `t` at `rate`; `set` its +32 (the loop mode given: +33 `looping`), else
+    /// the generated player takes the clip's own loop flag (the additive overlays' base requests, F-42342 / F-85022)
+    Anim { clip: ClipId, t: f32, rate: f32, looping: bool, set: bool },
     /// crmtRequestAddSubtract (F-75019): `b` added onto `a` by weight `w` on the filter's bones
     Add { w: f32, filter: Option<Filter>, a: Box<Req>, b: Box<Req> },
     /// crmtRequestBlend (F-63623): `b` over `a` by `w`, the weight moving at `rate` a second; no `a` blends from the tree in place (a
@@ -305,7 +308,7 @@ impl Req {
 
     /// An animation request as the builders make it (F-29648: time 0, rate 1; +32 = 1, +33 = loop).
     fn anim(clip: ClipId, looping: bool) -> Req {
-        Req::new(Kind::Anim { clip, t: 0.0, rate: 1.0, looping })
+        Req::new(Kind::Anim { clip, t: 0.0, rate: 1.0, looping, set: true })
     }
 
     /// A blend request (its ctor clamps the weight into 0 .. 1).
@@ -346,7 +349,7 @@ pub fn build(look: &Look, dur: &dyn Fn(ClipId) -> f32, d: Req, blend: f32, noble
     let root = if !look.filters {
         d
     } else {
-        let pan = |c: ClipId| Req::new(Kind::Anim { clip: c, t: dur(c) * 0.5, rate: 0.0, looping: false }).held(76);
+        let pan = |c: ClipId| Req::new(Kind::Anim { clip: c, t: dur(c) * 0.5, rate: 0.0, looping: false, set: true }).held(76);
         let face = || look.face.map_or(Req::new(Kind::Identity), |c| Req::anim(c, true));
         let nf = Some(Filter::NoFace);
         match (look.pan_spine, look.face, look.pan) {
@@ -396,12 +399,62 @@ pub fn overlay(s: &mut Seq, look: &Look, clip: ClipId, blend: f32, looping: bool
     s.set_rate(0.0);
     let p = s.player(0)?;
     let (t, body) = (p.t, p.clip?.id);
-    let b = Req::new(Kind::Anim { clip: body, t, rate: 1.0, looping: false }).held(44);
+    let b = Req::new(Kind::Anim { clip: body, t, rate: 1.0, looping: false, set: true }).held(44);
     let p = Req::blend(1.0, 0.0, Some(Filter::NoFace), Some(Req::anim(clip, looping).held(48)), b);
     Some(Req::blend(0.0, 1.0 / blend, None, None, p).held(84))
 }
 
+/// The pair's additive overlay F-42342: the pair rebuilt from the clips in +44 / +48 (from 0 at rate 1, the clips' own loop
+/// flags; blend +20 of weight 0) plus a second pair of the overlay clips `a` / `b` (+68 / +72, blend +36 of weight 0, `looping`),
+/// added at weight 1 with no filter, through the tree builder over `blend` seconds. Nothing without a clip in +44 or +48 (the
+/// original builds with no clip then; no caller reaches it).
+pub fn pair_overlay(s: &mut Seq, look: &Look, dur: &dyn Fn(ClipId) -> f32, a: ClipId, b: ClipId, looping: bool, blend: f32) -> Option<Req> {
+    let base = |s: &mut Seq, i: usize, h: u8| -> Option<Req> {
+        let c = s.clipped(i)?.1.id;
+        Some(Req::new(Kind::Anim { clip: c, t: 0.0, rate: 1.0, looping: false, set: false }).held(h))
+    };
+    let (x, y) = (base(s, 0, 44)?, base(s, 1, 48)?);
+    let p = Req::blend(0.0, 0.0, None, Some(x), y).held(20);
+    let o = Req::blend(0.0, 0.0, None, Some(Req::anim(a, looping).held(68)), Req::anim(b, looping).held(72)).held(36);
+    Some(build(look, dur, Req::add(None, p, o), blend, false))
+}
+
+/// The single additive overlay F-85022: the clip in +44 rebuilt (from 0 at rate 1, its own loop flag) plus the overlay clip
+/// (+68, `looping`) added at weight 1 with no filter, through the tree builder over `blend` seconds.
+pub fn one_overlay(s: &mut Seq, look: &Look, dur: &dyn Fn(ClipId) -> f32, clip: ClipId, looping: bool, blend: f32) -> Option<Req> {
+    let c = s.clipped(0)?.1.id;
+    let x = Req::new(Kind::Anim { clip: c, t: 0.0, rate: 1.0, looping: false, set: false }).held(44);
+    Some(build(look, dur, Req::add(None, x, Req::anim(clip, looping).held(68)), blend, false))
+}
+
 impl Seq {
+    /// The player of overlay holder +68 when it holds an animation node.
+    fn over_player(&mut self) -> Option<&mut Player> {
+        match self.over[0].map(|n| &mut self.nodes[n]) {
+            Some(Node::Anim(p)) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// F-72214: the rate of the overlay at +68 (no clip needed).
+    pub fn set_overlay_rate(&mut self, r: f32) {
+        if let Some(p) = self.over_player() {
+            p.rate = r;
+        }
+    }
+
+    /// F-70114: the overlay's (+68) time left, as F-87745 for +44: -1 when looping or without a clip.
+    pub fn overlay_remaining(&mut self) -> f32 {
+        match self.over_player() {
+            Some(pl) if pl.clip.is_some() && !pl.looping() => {
+                let c = pl.clip.unwrap();
+                let r = fsel(pl.rate, c.dur - pl.t, pl.t);
+                fsel(-r, 0.0, r)
+            }
+            _ => -1.0,
+        }
+    }
+
     fn alloc(&mut self, n: Node) -> usize {
         match self.free.pop() {
             Some(i) => {
@@ -419,6 +472,7 @@ impl Seq {
         match h {
             20..=36 => Some(&mut self.blend[(h as usize - 20) / 4]),
             44..=60 => Some(&mut self.anim[(h as usize - 44) / 4]),
+            68 | 72 => Some(&mut self.over[(h as usize - 68) / 4]),
             76 => Some(&mut self.pan),
             84 => Some(&mut self.top),
             _ => None,
@@ -439,7 +493,7 @@ impl Seq {
         }
         self.nodes[n] = Node::Free;
         self.free.push(n);
-        for h in self.blend.iter_mut().chain(self.anim.iter_mut()).chain([&mut self.pan, &mut self.top]) {
+        for h in self.blend.iter_mut().chain(self.anim.iter_mut()).chain(self.over.iter_mut()).chain([&mut self.pan, &mut self.top]) {
             if *h == Some(n) {
                 *h = None;
             }
@@ -450,29 +504,31 @@ impl Seq {
     /// F-69377, identity F-20211): the node it makes takes the place of `existing`
     /// (the tree's root), which is destroyed, except under a crossfade (a blend without a first source), which keeps it as its
     /// first child.
-    fn gen(&mut self, r: &Req, existing: Option<usize>, dur: &dyn Fn(ClipId) -> f32) -> usize {
+    fn gen(&mut self, r: &Req, existing: Option<usize>, dur: &dyn Fn(ClipId) -> f32, looped: &dyn Fn(ClipId) -> bool) -> usize {
         let mut keep = false;
         let n = match &r.kind {
-            Kind::Anim { clip, t, rate, looping } => {
+            Kind::Anim { clip, t, rate, looping, set } => {
                 let d = dur(*clip);
-                let mut p = Player { flags: 1 | (*looping as u32) << 1, rate: *rate, clip: Some(Clip { id: *clip, dur: d, flags: 0 }), ..Player::default() };
+                // (F-26354: the loop mode cleared, then 1 / 3 when +32 is set; mode 0 reads the clip's +4 bit 0)
+                let flags = if *set { 1 | (*looping as u32) << 1 } else { 0 };
+                let mut p = Player { flags, rate: *rate, clip: Some(Clip { id: *clip, dur: d, flags: looped(*clip) as u16 }), ..Player::default() };
                 p.set_time(*t, d);
                 self.alloc(Node::Anim(p))
             }
             Kind::Identity => self.alloc(Node::Identity),
             Kind::Add { w, filter, a, b } => {
-                let (a, b) = (self.gen(a, None, dur), self.gen(b, None, dur));
+                let (a, b) = (self.gen(a, None, dur, looped), self.gen(b, None, dur, looped));
                 self.alloc(Node::Add { weight: *w, rate: 0.0, filter: *filter, kids: [Some(a), Some(b)] })
             }
             Kind::Blend { w, rate, filter, a, b } => {
                 let a = match a {
-                    Some(a) => Some(self.gen(a, None, dur)),
+                    Some(a) => Some(self.gen(a, None, dur, looped)),
                     None => {
                         keep = true;
                         existing
                     }
                 };
-                let b = self.gen(b, None, dur);
+                let b = self.gen(b, None, dur, looped);
                 self.alloc(Node::Blend { weight: *w, rate: *rate, destroy: *rate != 0.0, filter: *filter, kids: [a, Some(b)] })
             }
         };
@@ -489,7 +545,12 @@ impl Seq {
 
     /// The motion tree's submit F-47118 with no node named: the request's tree replaces (or crossfades from) the root.
     pub fn submit(&mut self, r: &Req, dur: &dyn Fn(ClipId) -> f32) {
-        let n = self.gen(r, self.root, dur);
+        self.submit_with(r, dur, &|_| false);
+    }
+
+    /// The submit with the clips' own loop flags (+4 bit 0), which a request without its +32 leaves the player to.
+    pub fn submit_with(&mut self, r: &Req, dur: &dyn Fn(ClipId) -> f32, looped: &dyn Fn(ClipId) -> bool) {
+        let n = self.gen(r, self.root, dur, looped);
         self.root = Some(n);
     }
 
@@ -924,7 +985,7 @@ mod tests {
         *ids += 1;
         holds.extend(r.hold.iter().map(|&h| (h, id)));
         match &r.kind {
-            Kind::Anim { clip, t, rate, looping } => *o += &format!(" #{id} anim(c{clip} {} {} 1 {} 0)", b(*t), b(*rate), *looping as u8),
+            Kind::Anim { clip, t, rate, looping, set } => *o += &format!(" #{id} anim(c{clip} {} {} {} {} 0)", b(*t), b(*rate), *set as u8, (*looping && *set) as u8),
             Kind::Add { w, filter, a, b: x } => {
                 *o += &format!(" #{id} add({} {}", b(*w), fl(filter));
                 dump(a, ids, holds, o);
@@ -942,6 +1003,69 @@ mod tests {
             }
             Kind::Identity => *o += &format!(" #{id} identity"),
         }
+    }
+
+    /// The rider's additive overlays (F-42342 pair, F-85022 single), the overlay's rate (F-72214) and its time left (F-70114)
+    /// against the original's run offline (`work/driverlight/ovl/ovl_ref.py`, 2,000 cases): every request, its fields and the
+    /// holders, the rate and the time left equal.
+    #[test]
+    fn the_additive_overlays_match_the_original() {
+        let text = include_str!("testdata/drvanim_ovl_ref.txt");
+        let mut n = 0;
+        for case in text.split("= ").skip(1) {
+            let (head, want) = case.split_once('\n').unwrap();
+            let want = want.replace('\r', "");
+            let mut it = head.split_whitespace();
+            let op = it.next().unwrap();
+            let w: Vec<u32> = it.map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let look = Look { face: (w[0] != 0).then_some(14), pan_spine: (w[1] != 0).then_some(13), pan: (w[2] != 0).then_some(15), filters: w[14] == 0 };
+            let dur = |c: ClipId| if c == 13 || c == 15 || c == 12 || c == 11 || c == 10 { f(13) } else { f32::from_bits(0x3f80_0000 + 0x0010_0000 * c) };
+            let clip = |i: usize| w[6 + i];
+            let mut s = Seq::default();
+            for (i, c) in [12, 11].into_iter().enumerate() {
+                s.anim[i] = Some(s.nodes.len());
+                s.nodes.push(Node::Anim(Player { t: f(11), rate: f(12), clip: Some(Clip { id: c, dur: f(13), flags: 0 }), ..Player::default() }));
+            }
+            s.over[0] = Some(s.nodes.len());
+            let oc = (w[16] != 0).then_some(Clip { id: 10, dur: f(13), flags: w[17] as u16 });
+            s.nodes.push(Node::Anim(Player { flags: w[15], t: f(11), rate: f(12), clip: oc, ..Player::default() }));
+            let mut got = format!("{op}
+");
+            let req = match op {
+                "addpair" => pair_overlay(&mut s, &look, &dur, clip(0), clip(1), w[4] != 0, f(3)),
+                "addone" => one_overlay(&mut s, &look, &dur, clip(0), w[4] != 0, f(3)),
+                "ovrate" => {
+                    s.set_overlay_rate(f(3));
+                    if let Some(Node::Anim(p)) = s.nodes.get(2) {
+                        got += &format!("rate68 {:08x}
+", p.rate.to_bits());
+                    }
+                    None
+                }
+                "ovrem" => {
+                    got += &format!("rem68 {:08x}
+", s.overlay_remaining().to_bits());
+                    None
+                }
+                _ => panic!("{op}"),
+            };
+            if let Some(r) = &req {
+                let (mut ids, mut holds, mut o) = (0, Vec::new(), String::new());
+                dump(r, &mut ids, &mut holds, &mut o);
+                got += &format!("submit 0{o}
+");
+                let order = [84u8, 76, 44, 48, 20, 68, 72, 36];
+                holds.sort_by_key(|(h, _)| order.iter().position(|x| x == h));
+                for (h, id) in holds {
+                    got += &format!("hold {h} {id}
+");
+                }
+            }
+            assert_eq!(got, want, "case {n}: {head}");
+            n += 1;
+        }
+        assert_eq!(n, 2000);
     }
 
     /// The tree builders against the original's run offline (`work/drvmachine/tree_ref.py`): every request, its fields and
