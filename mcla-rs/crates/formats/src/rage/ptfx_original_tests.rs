@@ -62,3 +62,44 @@ fn evolution_modes_match_the_original() {
     }
     assert!(failed.is_empty(), "modes that differ: {failed:?}");
 }
+
+/// The effect colour tint `F-92352` against the original's code run offline (tools/ptfx_tint_reference.py; testdata/ptfx_tint_ref.txt):
+/// each case is an effect rule's KFColorTint at +0x08 and its evolution group at +0x100 in the original's layout, a loop time and the
+/// instance's evolution weights; the port parses the same rule and takes `EffectRule::tint_at`.
+#[test]
+fn tint_matches_the_original() {
+    let (mut n, mut bad, mut evolved, mut moved) = (0, Vec::new(), 0, 0);
+    for line in include_str!("testdata/ptfx_tint_ref.txt").lines() {
+        let t: Vec<&str> = line.split(' ').collect();
+        let hex = t[2];
+        let mut data: Vec<u8> = (0..hex.len() / 2).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap()).collect();
+        for p in t[3].split(',').filter(|s| !s.is_empty()) {
+            let off: usize = p.parse().unwrap();
+            let v = u32::from_be_bytes(data[off..off + 4].try_into().unwrap());
+            data[off..off + 4].copy_from_slice(&(0x5000_0000 + (v - 0x1000)).to_be_bytes());
+        }
+        let rule: usize = t[4].parse().unwrap();
+        let time = f32::from_bits(bits(t[5]));
+        let w: Vec<f32> = t[6..14].iter().map(|s| f32::from_bits(bits(s))).collect();
+        let want: Vec<u32> = t[15..19].iter().map(|s| bits(s)).collect();
+        let res = Resource { rtype: 0, flags: 0, virtual_size: data.len(), physical_size: 0, data };
+        let rd = Rd::new(&res);
+        let fx = super::EffectRule { tint: super::Keyframe::parse(&rd, rule + 0x08), evo: rd.ptr(rule + 0x100).map(|g| EvoGroup::parse(&rd, g)), ..Default::default() };
+        if fx.evo.as_ref().is_some_and(|g| mode_of(g, 0, 0).is_some()) {
+            evolved += 1;
+        }
+        n += 1;
+        if fx.tint.eval(time).iter().map(|x| x.to_bits()).collect::<Vec<_>>() != want {
+            moved += 1; // (the evolutions changed the key-frame's value)
+        }
+        let got: Vec<u32> = fx.tint_at(time, &w).unwrap().iter().map(|x| x.to_bits()).collect();
+        if got != want {
+            bad.push(format!("case {n}: t {time}: port {got:08x?} original {want:08x?}"));
+        }
+    }
+    eprintln!("{n} cases ({evolved} with the tint evolved, {moved} changed by it), {} differ", bad.len());
+    for b in bad.iter().take(5) {
+        eprintln!("  {b}");
+    }
+    assert!(n >= 400 && moved > 100 && bad.is_empty());
+}

@@ -65,11 +65,11 @@ class Mem:
         struct.pack_into('>H', self.d, off, v)
 
 
-def make_case(r, mode_pool):
+def make_case(r, mode_pool, force=()):
     m = Mem()
     g = m.alloc(48)
     n_e = r.randint(1, 4)
-    props = sorted(set((r.randint(0, 3), r.randint(0, 39)) for _ in range(r.randint(1, 3))))
+    props = sorted(set((r.randint(0, 3), r.randint(0, 39)) for _ in range(r.randint(1, 3))) | set(force))   # (force: properties always marked)
     modes = {p: r.choice(mode_pool) for p in props}
     n_lists = 4
     # modes table

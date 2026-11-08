@@ -808,7 +808,7 @@ impl EvoGroup {
 }
 
 /// `ptxEffectRuleStd` (416 bytes) with its `ptxTimeLine` (+120).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct EffectRule {
     pub name: String,
     /// +15c / +160 `DurationMin` / `Max` (s): length of one loop of the timeline
@@ -846,6 +846,18 @@ pub struct EffectRule {
     pub tint: Keyframe,
     /// the effect's evolution group (+0x100), for the tint's evolution overrides
     pub evo: Option<EvoGroup>,
+}
+
+impl EffectRule {
+    /// The colour tint at the effect's loop time `t` with the instance's evolution values (`F-92352` with no instance
+    /// override and byte +0x10d clear): the key-frame, then list 0 property 0 of the evolution group. None without keys.
+    pub fn tint_at(&self, t: f32, values: &[f32]) -> Option<[f32; 4]> {
+        if self.tint.keys.is_empty() {
+            return None;
+        }
+        let base = self.tint.eval(t);
+        Some(self.evo.as_ref().map_or(base, |g| g.evolve(0, 0, base, t, values)))
+    }
 }
 
 /// The whole effect list.

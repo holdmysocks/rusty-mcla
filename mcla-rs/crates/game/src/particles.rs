@@ -1515,10 +1515,8 @@ impl Particles {
             // (and the effect's colour tint at its loop time, by its evolutions: `F-92352`; children by their own rule)
             let mut inst_tint: HashMap<u32, [f32; 4]> = HashMap::new();
             fn tints(fx: &FxList, e: &Effect, m: &mut HashMap<u32, [f32; 4]>) {
-                let r = &fx.effects[e.effect];
-                if !r.tint.keys.is_empty() {
-                    let base = r.tint.eval(e.t);
-                    m.insert(e.id, r.evo.as_ref().map_or(base, |g| g.evolve(0, 0, base, e.t, &e.evo)));
+                if let Some(t) = fx.effects[e.effect].tint_at(e.t, &e.evo) {
+                    m.insert(e.id, t);
                 }
                 for k in &e.kids {
                     tints(fx, k, m);
