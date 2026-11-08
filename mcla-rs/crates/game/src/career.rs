@@ -1397,15 +1397,18 @@ impl Career {
             let st = &mut self.state[i];
             let mine = st.pts.get("YOU").copied().unwrap_or(0);
             let rival = st.pts.iter().filter(|(k, _)| k.as_str() != "YOU").map(|(_, v)| *v).max().unwrap_or(0);
+            // (the decision F-66541 on the points per racer slot, the player's first)
+            let pts: Vec<i32> = std::iter::once(mine).chain(st.pts.iter().filter(|(k, _)| k.as_str() != "YOU").map(|(_, v)| *v)).collect();
+            let decision = tournament_decision(st.won.len() as i32 - 1, races.len() as i32, &pts, 0);
             let set = |st: &mut MState, v: u32| {
                 if let Some(p) = st.progress.get_mut(oi) {
                     *p = v;
                 }
             };
-            if st.won.len() < races.len() {
+            if decision == TourDecision::Open {
                 return Some(format!("{} POINTS   BEST RIVAL {}", mine, rival));
             }
-            if mine >= rival {
+            if matches!(decision, TourDecision::Complete { .. }) {
                 st.pts.clear();
                 // (TOURNAMENT_COMPLETE with the event's name, and TOURNAMENT_COMPLETE_HARD as well
                 // when the tournament was entered on Hard: F-66541 A-25857..A-17203)
@@ -3234,6 +3237,48 @@ pub fn reward_shown<T>(list: &[T], hidden: impl Fn(&T) -> bool) -> bool {
     list.iter().any(|r| !hidden(r))
 }
 
+/// What a tournament's results decide (F-66541).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TourDecision {
+    /// not the last race: nothing set
+    Open,
+    /// bComplete = "1" and TOURNAMENT_COMPLETE posted, TOURNAMENT_COMPLETE_HARD as well when `hard`
+    Complete { hard: bool },
+    /// bFailure = "1"
+    Failure,
+}
+
+/// The tournament decision F-66541: on the last race (`index + 1 >= total`) the tournament is won when no
+/// racer slot 1..n has more points than the player's slot 0 (a tie goes to the player; one racer or none: won),
+/// else lost; HARD when the results' difficulty (+3100) is 2. Before the last race nothing is set.
+pub fn tournament_decision(index: i32, total: i32, pts: &[i32], difficulty: i32) -> TourDecision {
+    if index.wrapping_add(1) < total {
+        return TourDecision::Open;
+    }
+    let ahead = pts.iter().skip(1).filter(|&&p| pts[0] < p).count();
+    if ahead == 0 {
+        TourDecision::Complete { hard: difficulty == 2 }
+    } else {
+        TourDecision::Failure
+    }
+}
+
+/// A series' or tournament's results putting the player last (F-87120), on (type, place) per racer
+/// (type 0 = the player): the first player's place becomes the racer count, and every other non-player
+/// racer placed behind the player's old place (-1 if there is no player) moves up one.
+pub fn put_player_last(rec: &mut [(i32, i32)]) {
+    let n = rec.len() as i32;
+    let old = match rec.iter_mut().find(|r| r.0 == 0) {
+        Some(r) => std::mem::replace(&mut r.1, n),
+        None => -1,
+    };
+    for r in rec.iter_mut() {
+        if r.0 != 0 && r.1 > old {
+            r.1 -= 1;
+        }
+    }
+}
+
 /// A Stat condition's progress (F-13232) from the statistic's word `v`: a Purse condition's `v`
 /// as it is, any other `v - base` (32-bit) cut to 0 ..= `target`.
 pub fn stat_progress(purse: bool, v: i32, base: i32, target: i32) -> i32 {
@@ -3723,6 +3768,66 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 2996);
+    }
+
+    #[test]
+    fn tournament_decision_matches_the_original() {
+        let text = include_str!("testdata/tournament_decision_ref.txt");
+        let mut n = 0;
+        for line in text.lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split(' ').collect();
+            let num = |i: usize| w[i].parse::<i32>().unwrap();
+            let (null, ev, k) = (num(0), num(1), num(2) as usize);
+            let pts: Vec<i32> = w[6].split(',').map(|s| s.parse().unwrap()).collect();
+            let got = if null != 0 { TourDecision::Open } else { tournament_decision(num(3), num(4), &pts[..k.min(pts.len())], num(5)) };
+            let set = "1,12544,2";
+            let mut want = Vec::new();
+            match got {
+                TourDecision::Complete { hard } => {
+                    if ev != 0 {
+                        want.push("TOURNAMENT_COMPLETE:4956".to_string());
+                        if hard {
+                            want.push("TOURNAMENT_COMPLETE_HARD:4956".to_string());
+                        }
+                    }
+                    want.push(set.into());
+                    want.push("0,0,0".into());
+                }
+                TourDecision::Failure => {
+                    want.push("0,0,0".into());
+                    want.push(set.into());
+                }
+                TourDecision::Open => {
+                    want.push("0,0,0".into());
+                    want.push("0,0,0".into());
+                }
+            }
+            assert_eq!(b, want.join(" "), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
+
+    #[test]
+    fn put_player_last_matches_the_original() {
+        let text = include_str!("testdata/put_last_ref.txt");
+        let mut n = 0;
+        for line in text.lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let mut w = a.split(' ');
+            let k: usize = w.next().unwrap().parse().unwrap();
+            let mut rec: Vec<(i32, i32)> = w.filter(|s| *s != "-").map(|s| {
+                let (t, p) = s.split_once(',').unwrap();
+                (t.parse().unwrap(), p.parse().unwrap())
+            }).collect();
+            assert_eq!(rec.len(), k);
+            put_player_last(&mut rec);
+            let want: Vec<i32> = b.split(' ').filter(|s| *s != "-").map(|s| s.parse().unwrap()).collect();
+            assert_eq!(rec.iter().map(|r| r.1).collect::<Vec<_>>(), want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
     }
 
     #[test]

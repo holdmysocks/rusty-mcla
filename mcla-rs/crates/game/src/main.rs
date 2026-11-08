@@ -7822,10 +7822,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (approx.: a damaged-out player is put last in any race too - the ordinary core's calculateResults
                     // is not read; there the place only reaches the hookmen's branches below)
                     if (event || dmg_out) && self.vehicles.player().map_or(false, |p| p.state.damage >= 1.0) {
-                        if let Some(k) = standings.iter().position(|e| self.vehicles.cars.get(e.0).map_or(false, |c| c.is_player)) {
-                            let me = standings.remove(k);
-                            standings.push(me);
-                        }
+                        let mut rec: Vec<(i32, i32)> = standings.iter().enumerate()
+                            .map(|(i, e)| (if self.vehicles.cars.get(e.0).map_or(false, |c| c.is_player) { 0 } else { 1 }, i as i32 + 1))
+                            .collect();
+                        career::put_player_last(&mut rec);
+                        let mut keyed: Vec<_> = rec.iter().map(|r| r.1).zip(standings.drain(..)).collect();
+                        keyed.sort_by_key(|k| k.0);
+                        standings.extend(keyed.into_iter().map(|k| k.1));
                     }
                     let mut res = Vec::new();
                     for (ci, t, _) in standings {
