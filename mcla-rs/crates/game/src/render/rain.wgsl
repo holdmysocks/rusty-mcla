@@ -132,130 +132,98 @@ fn fs_drop(in: DropOut) -> @location(0) vec4<f32> {
 }
 
 // ---- the lamps' cones ------------------------------------------------------------------
-
-const CONE_SEGS: u32 = 24u;
+// rage_spotlightfog's vs_main_precal and ps_mainFast as their microcode reads (work/lighting/re/rain/spotlightfog_fx.txt;
+// LIGHTING.md "The lamps' cones"). The mesh is the original's unit cone (rain.rs cone_mesh): (cos a, y, sin a).
 
 struct ConeOut {
     @builtin(position) clip: vec4<f32>,
-    @location(0) world: vec3<f32>,
-    @location(1) @interpolate(flat) apex_h: vec4<f32>,
-    @location(2) @interpolate(flat) dir_tan: vec4<f32>,
-    @location(3) @interpolate(flat) color_fade: vec4<f32>,
-    @location(4) @interpolate(flat) lamp: vec4<f32>,
+    // o0: the four samples' cone terms, o1: their distances to the lamp, o3.x: the fade
+    @location(0) cone: vec4<f32>,
+    @location(1) dist: vec4<f32>,
+    @location(2) fade: f32,
+    @location(3) @interpolate(flat) colour: vec4<f32>,
+    @location(4) @interpolate(flat) volume_x: f32,
 };
 
 @vertex
 fn vs_cone(
-    @builtin(vertex_index) vi: u32,
-    @location(0) apex_h: vec4<f32>,      // the lamp, the cone's height
-    @location(1) dir_tan: vec4<f32>,     // the way it shines, radius / height
-    @location(2) color_fade: vec4<f32>,  // LightColor rgb, LightVolume.y (the lamp's fade)
-    @location(3) lamp: vec4<f32>,        // LightColor.w, cone scale, cone bias, LightVolume.x
+    @location(0) p: vec3<f32>,
+    @location(1) l0: vec4<f32>, @location(2) l1: vec4<f32>, @location(3) l2: vec4<f32>, @location(4) l3: vec4<f32>,
+    @location(5) m0: vec4<f32>, @location(6) m1: vec4<f32>, @location(7) m2: vec4<f32>, @location(8) m3: vec4<f32>,
+    @location(9) lpos: vec4<f32>,     // LightPosition (w: the edge's offset)
+    @location(10) ldir: vec4<f32>,    // LightDirection (w: the edge's factor)
+    @location(11) lvol: vec4<f32>,    // LightVolume
+    @location(12) lcol: vec4<f32>,    // LightColor
+    @location(13) misc: vec4<f32>,    // LightFallOff, gInvColorExpBias.x
 ) -> ConeOut {
     var o: ConeOut;
-    let tri = vi / 3u;
-    let k = vi % 3u;
-    let a = normalize(dir_tan.xyz);
-    var ex = cross(a, vec3<f32>(1.0, 0.0, 0.0));
-    if (dot(ex, ex) < 1e-4) {
-        ex = cross(a, vec3<f32>(0.0, 0.0, 1.0));
+    let cam = g.cam_pos.xyz;
+    // the camera in the light's frame (c15 x LightInvMatrix)
+    let e = cam.z * m2.xyz + m3.xyz + cam.y * m1.xyz + cam.x * m0.xyz;
+    // the vertex: (y + LightVolume.z) x (x row0 + z row1 + row2) + row3 (gWorld the identity)
+    let s = lvol.z + p.y;
+    let w = (s * p.x) * l0.xyz + ((s * p.z) * l1.xyz + (s * l2.xyz + l3.xyz));
+    o.clip = g.view_proj * vec4<f32>(w, 1.0);
+    // the view ray to it, in the world and in the light's frame
+    let dw = (w - cam) * inverseSqrt(dot(w - cam, w - cam));
+    let vl = dw.x * m0.xyz + (dw.y * m1.xyz + dw.z * m2.xyz);
+    let u = vl * inverseSqrt(dot(vl, vl));
+    // the ray e + t u against the cone x^2 + y^2 = z^2: a t^2 + b t + c
+    let a = (u.x * u.x + u.y * u.y) - u.z * u.z;
+    let b = (u.x * (e.x + e.x) + u.y * (e.y + e.y)) - u.z * (e.z + e.z);
+    let c = (e.x * e.x + e.y * e.y) - e.z * e.z;
+    let ac4 = (a * 4.0) * c;
+    var len = 0.0;
+    if (!(ac4 >= b * b) && !(a == 0.0)) {
+        let r = sqrt(abs(b * b - ac4));
+        let k = 1.0 / (a + a);
+        let t1 = (r - b) * k;
+        let t2 = (-b - r) * k;
+        let tmin = min(t1, t2);
+        let tmax = max(t1, t2);
+        let za = u.z * tmin + e.z;
+        let zb = u.z * tmax + e.z;
+        // where the ray crosses the cone's end (z = 1)
+        let t_end = (1.0 - e.z) * (1.0 / u.z);
+        // in: the nearer crossing, the end beyond it, the camera itself when that crossing is on the mirrored cone
+        var ta = select(tmin, t_end, za > 1.0);
+        if (!(za > 0.0)) {
+            ta = 0.0;
+        }
+        // out: the farther crossing, the end when that is beyond it or on the mirrored cone
+        let tb = select(t_end, select(tmax, t_end, zb > 1.0), zb > 0.0);
+        let pa = vec3<f32>(u.x * ta + e.x, u.y * ta + e.y, u.z * ta + e.z);
+        let pb = vec3<f32>(u.x * tb + e.x, u.y * tb + e.y, u.z * tb + e.z);
+        let wa = pa.x * l0.xyz + (pa.y * l1.xyz + (pa.z * l2.xyz + l3.xyz));
+        let wb = pb.x * l0.xyz + (pb.y * l1.xyz + (pb.z * l2.xyz + l3.xyz));
+        len = sqrt(abs(dot(wb - wa, wb - wa)));
     }
-    ex = normalize(ex);
-    let ez = cross(a, ex);
-    var wp = apex_h.xyz;
-    if (k != 0u) {
-        let step_a = 6.28318531 / f32(CONE_SEGS);
-        let ang = f32(tri + k - 1u) * step_a;
-        // (the flat sides stand outside the round cone)
-        let rad = apex_h.w * dir_tan.w / cos(0.5 * step_a);
-        wp = apex_h.xyz + a * apex_h.w + (ex * cos(ang) + ez * sin(ang)) * rad;
+    // four samples from the vertex along the view ray, at 1/8 .. 7/8 of the stretch
+    let ks = len * vec4<f32>(0.125, 0.375, 0.625, 0.875);
+    var dist: vec4<f32>;
+    var cone: vec4<f32>;
+    for (var i = 0; i < 4; i++) {
+        let q = lpos.xyz - (ks[i] * dw + w);
+        let d2 = dot(q, q);
+        dist[i] = sqrt(abs(d2));
+        let cs = (inverseSqrt(abs(d2)) * ldir.w) * dot(q, -ldir.xyz) + lpos.w;
+        cone[i] = exp2(log2(abs(cs)) * misc.x);
     }
-    o.world = wp;
-    o.apex_h = apex_h;
-    o.dir_tan = vec4<f32>(a, dir_tan.w);
-    o.color_fade = color_fade;
-    o.lamp = lamp;
-    o.clip = g.view_proj * vec4<f32>(wp, 1.0);
+    o.cone = cone;
+    o.dist = dist;
+    o.fade = misc.y * (lvol.y * clamp(8.0 * (1.0 - p.y), 0.0, 1.0));
+    o.colour = lcol;
+    o.volume_x = lvol.x;
     return o;
-}
-
-// One sample of the light inside the cone: min(cone ^ 1.4 x sat(1 / d^2) x LightColor.w, 0.3) x density.
-fn cone_sample(p: vec3<f32>, apex: vec3<f32>, a: vec3<f32>, lamp: vec4<f32>) -> f32 {
-    let l = p - apex;
-    let d2 = max(dot(l, l), 1e-6);
-    let c = dot(l, a) * inverseSqrt(d2) * lamp.y + lamp.z;
-    let spot = clamp(pow(abs(c), 1.4), 0.0, 1.0);
-    return min(spot * clamp(1.0 / d2, 0.0, 1.0) * lamp.x, 0.3) * lamp.w;
 }
 
 @fragment
 fn fs_cone(in: ConeOut) -> @location(0) vec4<f32> {
-    let cam = g.cam_pos.xyz;
-    let apex = in.apex_h.xyz;
-    let h_max = in.apex_h.w;
-    let a = in.dir_tan.xyz;
-    let ray = in.world - cam;
-    let t_frag = length(ray);
-    let v = ray / max(t_frag, 1e-4);
-    // the ray against the cone |q|^2 = (1 + tan^2) (q . a)^2, q from the lamp
-    let co = cam - apex;
-    let kk = 1.0 + in.dir_tan.w * in.dir_tan.w;
-    let ca = dot(co, a);
-    let va = dot(v, a);
-    let qa = 1.0 - kk * va * va;
-    let qb = 2.0 * (dot(co, v) - kk * ca * va);
-    let qc = dot(co, co) - kk * ca * ca;
-    let disc = qb * qb - 4.0 * qa * qc;
-    if (disc <= 0.0 || abs(qa) < 1e-6) {
-        discard;
-    }
-    let sq = sqrt(disc);
-    let r1 = (-qb - sq) / (2.0 * qa);
-    let r2 = (-qb + sq) / (2.0 * qa);
-    let t1 = min(r1, r2);
-    let t2 = max(r1, r2);
-    // the stretch of the ray inside the half of the cone below the lamp
-    var t_in = t1;
-    var t_out = t2;
-    if (qa < 0.0) {
-        if (va > 0.0) {
-            t_in = t2;
-            t_out = 1e9;
-        } else {
-            t_in = -1e9;
-            t_out = t1;
-        }
-    } else if (ca + va * 0.5 * (t1 + t2) <= 0.0) {
-        discard;
-    }
-    // ... and above its base
-    var through_base = false;
-    if (va > 1e-6) {
-        t_out = min(t_out, (h_max - ca) / va);
-    } else if (va < -1e-6) {
-        let tb = (h_max - ca) / va;
-        if (tb > t_in) {
-            t_in = tb;
-            through_base = true;
-        }
-    } else if (ca > h_max) {
-        discard;
-    }
-    // the original draws the cone's outer faces towards the camera: nothing from inside it,
-    // nothing through the base, and each ray once (the face nearer its way in)
-    if (through_base || t_in <= 0.0 || t_out <= t_in || abs(t_frag - t_in) > abs(t_frag - t_out)) {
-        discard;
-    }
-    let chord = t_out - t_in;
-    let e = cam + v * t_in;
-    let y = clamp(dot(e - apex, a) / h_max, 0.0, 1.0);
-    let s0 = cone_sample(e + v * (chord * 0.125), apex, a, in.lamp);
-    let s1 = cone_sample(e + v * (chord * 0.375), apex, a, in.lamp);
-    let s2 = cone_sample(e + v * (chord * 0.625), apex, a, in.lamp);
-    let s3 = cone_sample(e + v * (chord * 0.875), apex, a, in.lamp);
-    let q = 1.0 - in.lamp.w;
-    let sum = s0 + q * (s1 + q * (s2 + q * s3));
-    // (faded out over the last eighth towards the base, and by the lamp's own fade)
-    let alpha = clamp(sum * in.color_fade.w * clamp(8.0 * (1.0 - y), 0.0, 1.0), 0.0, 1.0);
-    return vec4<f32>(in.color_fade.rgb, alpha);
+    // s = min(sat(cone) x sat(1 / d^2) x LightColor.w, 0.3) x LightVolume.x; alpha = sat((s0 + q (s1 + q (s2 + q s3))) x fade)
+    let r = 1.0 / in.dist;
+    let near = clamp(r * r, vec4<f32>(0.0), vec4<f32>(1.0)) * in.colour.w;
+    let s = min(near * clamp(in.cone, vec4<f32>(0.0), vec4<f32>(1.0)), vec4<f32>(0.3)) * in.volume_x;
+    let q = 1.0 - in.volume_x;
+    let t = s.x + q * (s.y + q * (s.z + q * s.w));
+    return vec4<f32>(in.colour.rgb, clamp(t * in.fade, 0.0, 1.0));
 }

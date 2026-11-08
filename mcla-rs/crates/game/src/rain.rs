@@ -6,9 +6,10 @@
 //!   the executable's own: (0, -0.98, 0) and 0.05 an update). A drop is born in a box that
 //!   rides ahead of the camera, falls with the wind, and on the ground plays the four frames
 //!   of the splash picture before it is born again.
-//! - the street lamps' cones of light in the rain (`rage_spotlightfog`, ps_mainFast): one cone
+//! - the street lamps' cones of light in the rain (`rage_spotlightfog`, vs_main_precal + ps_mainFast): one cone
 //!   a lamp, only while it rains and the lamps are on; density and strength are the storm's
-//!   `m_LampGlows` (TODSunStormy).
+//!   `m_LampGlows` (TODSunStormy). The original's two unit cone meshes (`cone_mesh`: 16 x 32 up to 75 m, 12 x 24
+//!   beyond), drawn nearest first, the samples worked out per vertex as its vertex program does.
 //!
 //! Not from the original: what stops a drop is the collision's highest face at its place, looked
 //! up once when it is born (the original tests against a depth picture taken from above every
@@ -114,6 +115,50 @@ pub fn cone_setup(pos: [f32; 4], colour: [f32; 4], dir: [f32; 4], intensity: f32
     }
 }
 
+/// The unit cone mesh of F-90312 (the lamps' cones: 16 x 32 and 12 x 24, flag 0): F-78485's positions, (rings + 1) x
+/// slices of them, ring i, slice j at (cos a, i / rings, sin a), a = (j / slices) x 6.2831855 (the guest's own cos / sin,
+/// single precision; with the flag the last ring is the point (0, 1, 0)), and F-11042's index strip: per ring the pairs
+/// (i slices + j, (i + 1) slices + j), the pair of the ring's first slice again, then that ring's first upper vertex twice -
+/// except after the last ring but one, and after the last ring as well (in the buffer while rings >= 2: the count is
+/// 2 rings (slices + 2) - 2; with one ring the original writes two words past it, not modelled). The normals, tangents
+/// and texture coordinates F-78485 also writes are not read by the vertex program (it fetches the position only).
+/// `cone_mesh_matches_the_original`.
+pub fn cone_mesh(rings: u32, slices: u32, flag: bool) -> (Vec<[f32; 3]>, Vec<u16>) {
+    use crate::physics::exact::{guest_cos, guest_sin};
+    let mut pos = Vec::with_capacity(((rings + 1) * slices) as usize);
+    for i in 0..=rings {
+        let y = i as f32 / rings as f32;
+        for j in 0..slices {
+            let a = (j as f32 / slices as f32) * 6.283_185_5f32;
+            pos.push(if flag && i == rings { [0.0, 1.0, 0.0] } else { [guest_cos(a as f64) as f32, y, guest_sin(a as f64) as f32] });
+        }
+    }
+    let mut idx = Vec::with_capacity((2 * rings * (slices + 2)) as usize);
+    for r in 0..rings {
+        let (lo, hi) = (r * slices, (r + 1) * slices);
+        for j in 0..slices {
+            idx.push((lo + j) as u16);
+            idx.push((hi + j) as u16);
+        }
+        idx.push(lo as u16);
+        idx.push(hi as u16);
+        if r as i32 != rings as i32 - 2 {
+            idx.push(hi as u16);
+            idx.push(hi as u16);
+        }
+    }
+    idx.truncate((2 * rings * (slices + 2)).saturating_sub(2) as usize);
+    (pos, idx)
+}
+
+/// LightInvMatrix: the inverse of LightMatrix (rows: world = x row0 + y row1 + z row2 + row3). The original's general
+/// inverse F-25750 (by cofactors) is not ported word for word: glam's, within a few units in the last place of the
+/// recorded one (`light_inverse_is_near_the_original`); it only feeds the GPU's vertex program.
+fn light_inverse(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    let i = Mat4::from_cols(Vec4::from(m[0]), Vec4::from(m[1]), Vec4::from(m[2]), Vec4::from(m[3])).inverse();
+    [i.x_axis.to_array(), i.y_axis.to_array(), i.z_axis.to_array(), i.w_axis.to_array()]
+}
+
 /// particles of the original (a 128 x 64 target, 32768 vertices a draw)
 const DROPS: usize = 8192;
 /// most cones a frame: the original's list holds 256 (F-59499; it drew 79 at the reference spot,
@@ -121,8 +166,9 @@ const DROPS: usize = 8192;
 const CONES: usize = 256;
 /// how far a lamp's cone is drawn
 const CONE_REACH: f32 = 300.0;
-/// vertices of a cone (render/rain.wgsl CONE_SEGS x 3)
-const CONE_VERTS: u32 = 72;
+/// the pass's two meshes (F-71942: the second beyond 250 x 0.3 m)
+const CONE_NEAR: (u32, u32) = (16, 32);
+const CONE_FAR: (u32, u32) = (12, 24);
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -134,10 +180,17 @@ struct DropInst {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ConeInst {
-    apex_h: [f32; 4],
-    dir_tan: [f32; 4],
-    color_fade: [f32; 4],
-    lamp: [f32; 4],
+    /// LightMatrix rows
+    light: [[f32; 4]; 4],
+    /// LightInvMatrix rows
+    inv: [[f32; 4]; 4],
+    /// LightPosition, LightDirection, LightVolume, LightColor
+    pos: [f32; 4],
+    dir: [f32; 4],
+    volume: [f32; 4],
+    colour: [f32; 4],
+    /// LightFallOff, gInvColorExpBias.x
+    misc: [f32; 4],
 }
 
 #[repr(C)]
@@ -203,6 +256,10 @@ struct Rain {
     bind: wgpu::BindGroup,
     drop_pipeline: crate::render::ms::MsPipe,
     cone_pipeline: crate::render::ms::MsPipe,
+    /// the two meshes' positions and index strips (near first)
+    cone_mesh: (wgpu::Buffer, wgpu::Buffer),
+    /// the listed cones up to 75 m (drawn with the near mesh; the rest with the far one)
+    cone_near: u32,
     drop_count: u32,
     cone_count: u32,
     dumped: bool,
@@ -301,12 +358,17 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 0, shader_location: 0 },
         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 16, shader_location: 1 },
     ];
-    const CONE_ATTRS: [wgpu::VertexAttribute; 4] = [
-        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 0, shader_location: 0 },
-        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 16, shader_location: 1 },
-        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32, shader_location: 2 },
-        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 48, shader_location: 3 },
-    ];
+    const CONE_ATTRS: [wgpu::VertexAttribute; 13] = {
+        let mut a = [wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 0, shader_location: 1 }; 13];
+        let mut i = 0;
+        while i < 13 {
+            a[i].offset = 16 * i as u64;
+            a[i].shader_location = 1 + i as u32;
+            i += 1;
+        }
+        a
+    };
+    const MESH_ATTRS: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 }];
     // (the original: blend control 0x07060706 = source alpha / one minus source alpha, depth
     // tested and not written - register 0x2200 = 0x00700762)
     let make = |vs: &'static str, fs: &'static str, attrs: &'static [wgpu::VertexAttribute], stride: u64, topology: wgpu::PrimitiveTopology| {
@@ -329,7 +391,58 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
         }))
     };
     let drop_pipeline = make("vs_drop", "fs_drop", &DROP_ATTRS, std::mem::size_of::<DropInst>() as u64, wgpu::PrimitiveTopology::TriangleStrip);
-    let cone_pipeline = make("vs_cone", "fs_cone", &CONE_ATTRS, std::mem::size_of::<ConeInst>() as u64, wgpu::PrimitiveTopology::TriangleList);
+    // the cones: the mesh per vertex, the lamp per instance; a strip of u16 indices; the cone draws' PA_SU_SC_MODE_CNTL
+    // 0x00018002 is the set-up cars' own, which the port draws as clockwise front with Face::Front culled (render/mod.rs
+    // pipeline_opaque_cull): the cone's outer faces are drawn. Measured on wx2_21 (LIGHTING.md, the cone meshes, 2026-11-08):
+    // so the original's, the other side 15.8 levels darker in the sky. MCLA_RAIN_CONE_CULL=back / none: the other side / both.
+    let cone_pipeline = {
+        let (pl, shader) = (pl.clone(), shader.clone());
+        crate::render::ms::MsPipe::new(device, move |device, v| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("rain cones"),
+            layout: Some(&pl),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_cone"),
+                buffers: &[
+                    wgpu::VertexBufferLayout { array_stride: 12, step_mode: wgpu::VertexStepMode::Vertex, attributes: &MESH_ATTRS },
+                    wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<ConeInst>() as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &CONE_ATTRS },
+                ],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_cone"),
+                targets: &[Some(wgpu::ColorTargetState { format: crate::render::post::SCENE_FORMAT, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                strip_index_format: Some(wgpu::IndexFormat::Uint16),
+                front_face: wgpu::FrontFace::Cw,
+                cull_mode: match std::env::var("MCLA_RAIN_CONE_CULL").as_deref() {
+                    Ok("back") => Some(wgpu::Face::Back),
+                    Ok("none") => None,
+                    _ => Some(wgpu::Face::Front),
+                },
+                ..Default::default()
+            },
+            depth_stencil: Some(v.ds(false, wgpu::CompareFunction::GreaterEqual, false, Default::default())),
+            multisample: v.ms(),
+            multiview: None,
+            cache: None,
+        }))
+    };
+    let cone_mesh = {
+        use wgpu::util::DeviceExt;
+        let (np, ni) = cone_mesh(CONE_NEAR.0, CONE_NEAR.1, false);
+        let (fp, fi) = cone_mesh(CONE_FAR.0, CONE_FAR.1, false);
+        let pos: Vec<[f32; 3]> = np.into_iter().chain(fp).collect();
+        let idx: Vec<u16> = ni.into_iter().chain(fi).collect();
+        (
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("rain cone mesh"), contents: bytemuck::cast_slice(&pos), usage: wgpu::BufferUsages::VERTEX }),
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("rain cone strip"), contents: bytemuck::cast_slice(&idx), usage: wgpu::BufferUsages::INDEX }),
+        )
+    };
     let buf = |label: &str, size: usize| device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: size as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
     let rain = Rain {
         lamp_glows: [
@@ -353,6 +466,8 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
         cone_pipeline,
         drop_count: 0,
         cone_count: 0,
+        cone_near: 0,
+        cone_mesh,
         dumped: false,
     };
     *STATE.lock().unwrap() = Some(rain);
@@ -431,7 +546,6 @@ impl Rain {
             return;
         }
         let cam = Vec3::new(f.cam_pos[0], f.cam_pos[1], f.cam_pos[2]);
-        let old = std::env::var("MCLA_DEBUG_VIEW").map_or(false, |v| v.trim() == "116");
         let mut cones: Vec<(f32, ConeInst)> = Vec::new();
         for l in f.lamps {
             let d = l.pos.distance(cam);
@@ -448,26 +562,27 @@ impl Rain {
             // (F-19533 for the lamp - rain::cone_setup: the apex pulled back 0.2 m along the light (the pass's +52, which it
             // sets to 0.2 after each lamp), the length min(sqrt(luma x Intensity / m_LampGlows.z), 16), the half width
             // F-46735, the edge cos x LightDirection.w + LightPosition.w from the lamp's own ConeAngle and Penumbra;
-            // a length not above 0 = the identity LightMatrix = nothing drawn. MCLA_DEBUG_VIEW=116: 16 m and 2.388 for
-            // every lamp, as before.)
+            // a length not above 0 = the identity LightMatrix = nothing drawn.)
             // (the lamp as the light table gives it back - packed by F-49342, fetched by F-31785: half floats for the
             // direction, colour, cone and intensity, the penumbra a byte (-50 -> -50.5), the place shorts on the lamps' box)
             let (h, hc, hd, at) = (crate::props::table_half, l.color, dir, crate::props::table_place(l.pos));
             let s = cone_setup([at.x, at.y, at.z, 0.0], [h(hc.x), h(hc.y), h(hc.z), 0.0], [h(hd.x), h(hd.y), h(hd.z), 0.0], h(l.intensity), h(l.cone_deg[0]), crate::props::table_penumbra(l.cone_deg[1]), [0.2, 16.0, edge], [density, fade, colw]);
-            let (len, tan) = if old { (16.0, 38.21 / 16.0) } else { (s.len, s.tan) };
-            if !(len > 0.0) {
+            if !(s.len > 0.0) {
                 continue;
             }
-            cones.push((d, ConeInst { apex_h: [s.pos[0], s.pos[1], s.pos[2], len], dir_tan: [dir.x, dir.y, dir.z, tan], color_fade: [l.color.x, l.color.y, l.color.z, fade], lamp: [s.colour[3], s.dir[3], s.pos[3], density] }));
+            cones.push((d, ConeInst { light: s.matrix, inv: light_inverse(&s.matrix), pos: s.pos, dir: s.dir, volume: s.volume, colour: s.colour, misc: [s.falloff, 1.0, 0.0, 0.0] }));
         }
-        cones.sort_by(|a, b| b.0.total_cmp(&a.0));
-        let skip = cones.len().saturating_sub(CONES);
-        let insts: Vec<ConeInst> = cones[skip..].iter().map(|c| c.1).collect();
+        // (nearest first: the pass sorts its list by the CRT's qsort with F-88996, (int)(a - b) - lamps within a metre of
+        // each other come in the library's order, here by distance)
+        cones.sort_by(|a, b| a.0.total_cmp(&b.0));
+        cones.truncate(CONES);
+        self.cone_near = cones.iter().take_while(|c| !(c.0 > 250.0f32 * 0.3)).count() as u32;
+        let insts: Vec<ConeInst> = cones.iter().map(|c| c.1).collect();
         if !self.dumped && std::env::var("MCLA_RAIN_DUMP").is_ok() {
             self.dumped = true;
             eprintln!("rain: {} cones (of {} lamps), weather {}, hour {}, camera {:?}", insts.len(), f.lamps.len(), f.weather, f.hour, cam);
-            for c in cones.iter().rev().take(8) {
-                eprintln!("  cone {:.1} m at {:?} len {:.2} dir {:?} colour {:?}", c.0, &c.1.apex_h[..3], c.1.apex_h[3], &c.1.dir_tan[..3], c.1.color_fade);
+            for c in cones.iter().take(8) {
+                eprintln!("  cone {:.1} m at {:?} dir {:?} volume {:?} colour {:?}", c.0, &c.1.pos[..3], &c.1.dir, c.1.volume, c.1.colour);
             }
         }
         self.cone_count = insts.len() as u32;
@@ -599,9 +714,20 @@ pub fn draw(pass: &mut wgpu::RenderPass<'_>) {
     }
     pass.set_bind_group(1, &r.bind, &[]);
     if r.cone_count > 0 {
+        // (F-71942: each listed lamp's cone in the list's order, the near mesh up to 75 m - the list is nearest first, so
+        // the near ones come first)
+        let (ni, nv) = (2 * CONE_NEAR.0 * (CONE_NEAR.1 + 2) - 2, (CONE_NEAR.0 + 1) * CONE_NEAR.1);
+        let fi = 2 * CONE_FAR.0 * (CONE_FAR.1 + 2) - 2;
         pass.set_pipeline(&r.cone_pipeline);
-        pass.set_vertex_buffer(0, r.cone_buf.slice(..));
-        pass.draw(0..CONE_VERTS, 0..r.cone_count);
+        pass.set_vertex_buffer(0, r.cone_mesh.0.slice(..));
+        pass.set_vertex_buffer(1, r.cone_buf.slice(..));
+        pass.set_index_buffer(r.cone_mesh.1.slice(..), wgpu::IndexFormat::Uint16);
+        if r.cone_near > 0 {
+            pass.draw_indexed(0..ni, 0, 0..r.cone_near);
+        }
+        if r.cone_count > r.cone_near {
+            pass.draw_indexed(ni..ni + fi, nv as i32, r.cone_near..r.cone_count);
+        }
     }
     if r.drop_count > 0 {
         pass.set_pipeline(&r.drop_pipeline);
@@ -689,5 +815,72 @@ mod cone_setup_tests {
         assert!((p + 50.5).abs() < 1e-4, "{p}");
         let s = super::cone_setup([0.0; 4], [1.0, 0.75, 0.55, 0.0], [0.0, -1.0, 0.0, 0.0], 55.0, crate::props::table_half(125.0), p, [0.2, 16.0, 1.0], [1.0; 3]);
         assert!((s.dir[3] - 2.8058).abs() < 1e-4 && (s.pos[3] + 1.0837).abs() < 1e-4, "{:?} {:?}", s.dir, s.pos);
+    }
+}
+
+#[cfg(test)]
+mod cone_mesh_tests {
+    /// F-78485 and F-11042 run offline (`tools/cone_mesh_reference.py`; the buffers' create / lock and the vertex writer's
+    /// setters stubbed to print): the pass's two meshes 16 x 32 and 12 x 24, and 16 x 32 with the flag, 1 x 3, 2 x 5 with
+    /// the flag, 5 x 7, 3 x 1 - every position word and every index in the buffer equal.
+    #[test]
+    fn cone_mesh_matches_the_original() {
+        let t = include_str!("testdata/cone_mesh_reference.txt");
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut n = 0;
+        for case in t.split("CASE ").skip(1) {
+            let mut lines = case.lines();
+            let c: Vec<u32> = lines.next().unwrap().split_whitespace().map(|x| x.parse().unwrap()).collect();
+            let (pos, idx) = super::cone_mesh(c[0], c[1], c[2] != 0);
+            let mut k = 0;
+            for l in lines {
+                let w: Vec<&str> = l.split_whitespace().collect();
+                if w[0] == "POS" {
+                    assert_eq!(w[1].parse::<usize>().unwrap(), k);
+                    assert_eq!([h(w[2]), h(w[3]), h(w[4])], pos[k].map(f32::to_bits), "{c:?} vertex {k}");
+                    k += 1;
+                } else {
+                    assert_eq!(w[0], "IDX");
+                    let want: Vec<u16> = w[2..w.len() - 2].iter().map(|x| x.parse().unwrap()).collect();
+                    assert_eq!(w[1].parse::<usize>().unwrap(), want.len());
+                    assert_eq!(idx, want, "{c:?}");
+                }
+            }
+            assert_eq!(k, pos.len());
+            n += 1;
+        }
+        assert_eq!(n, 7);
+    }
+
+    /// glam's inverse of LightMatrix against the original's (F-25750, recorded in `cone_pass_reference.txt` as variable
+    /// 44) on the 1,500 lamps: within 2e-6 relative to the matrix's largest entry.
+    #[test]
+    fn light_inverse_is_near_the_original() {
+        let h = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let text = include_str!("render/testdata/cone_pass_reference.txt");
+        let (mut n, mut worst) = (0, 0.0f32);
+        for case in text.split("CASE ").skip(1) {
+            let (mut m, mut inv) = (None, None);
+            for l in case.lines().skip(1) {
+                let t: Vec<&str> = l.split_whitespace().collect();
+                let v: Vec<f32> = t[2..].iter().map(|x| h(x)).collect();
+                match t[1] {
+                    "40" => m = Some(v),
+                    "44" => inv = Some(v),
+                    _ => {}
+                }
+            }
+            let (m, want) = (m.unwrap(), inv.unwrap());
+            let rows: [[f32; 4]; 4] = std::array::from_fn(|r| std::array::from_fn(|c| m[4 * r + c]));
+            let got: Vec<f32> = super::light_inverse(&rows).iter().flatten().copied().collect();
+            let big = want.iter().fold(0.0f32, |a, x| a.max(x.abs())).max(1e-30);
+            for (g, w) in got.iter().zip(&want) {
+                worst = worst.max((g - w).abs() / big);
+            }
+            n += 1;
+        }
+        assert_eq!(n, 1500);
+        assert!(worst < 2e-6, "worst {worst}");
+        eprintln!("light inverse: worst relative difference {worst:e}");
     }
 }
