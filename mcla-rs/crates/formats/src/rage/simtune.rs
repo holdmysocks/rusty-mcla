@@ -374,6 +374,15 @@ impl SimTune {
     }
 }
 
+/// A motorcycle's disc tune (mcCarModelTune +120 .. +132, +201 .. +204): per axle (front, rear) fRotorSize and fRotorOffset,
+/// and whether the front-left, front-right, rear-left, rear-right disc is there (the ctor's 1, 1, 0, 1)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BikeRotors {
+    pub size: [f32; 2],
+    pub offset: [f32; 2],
+    pub has: [bool; 4],
+}
+
 /// Both sets of a car's `.r50`.
 #[derive(Clone, Debug, Default)]
 pub struct SimTunes {
@@ -393,6 +402,10 @@ pub struct SimTunes {
     /// mcCarModelTune's TireSteerLimit and TireSteerOffset (+136, +140; the ctor's 0, 0): the share of its turn a drawn
     /// steered wheel gives back, and the shift sideways with it (F-47822)
     pub tire_steer: [f32; 2],
+    /// mcCarModelTune's fRotorSize / fRotorOffset (+120 / +124, +128 / +132, front and rear) and bHasFrontLeftRotor ..
+    /// bHasRearRightRotor (bytes +201 .. +204): a motorcycle's brake discs (F-43091's bike branch scales and moves them,
+    /// F-57869 draws the disc on each side whose flag is set); None without a vehModel
+    pub rotor: Option<BikeRotors>,
     /// mcCarModelTune's cFrontBumperMovement, cRearBumperMovement (+184, +188: 0 NoMovement,
     /// 1 AllowLoose, 2 AllowBroken), cHoodMovement, cTrunkMovement (+192, +196: 0 NoMovement,
     /// 1 NormalMovement, 2 ReverseMovement) - sub_823404E0 @82340DB8; None without a vehModel
@@ -625,6 +638,7 @@ impl SimTunes {
                 (out.fender_height, out.fender_width, out.fender_floor) = (pair(56), pair(72), pair(104));
                 out.fender_ceiling = pair(40);
                 out.tire_steer = [rd.f32(c + 136), rd.f32(c + 140)];
+                out.rotor = Some(BikeRotors { size: [rd.f32(c + 120), rd.f32(c + 124)], offset: [rd.f32(c + 128), rd.f32(c + 132)], has: [rd.u8(c + 201) != 0, rd.u8(c + 202) != 0, rd.u8(c + 203) != 0, rd.u8(c + 204) != 0] });
                 out.part_movement = Some([rd.u32(c + 184), rd.u32(c + 188), rd.u32(c + 192), rd.u32(c + 196)]);
                 out.window_clip = Some(rd.f32(c + 180));
                 out.air_floor = rd.f32(c + 176);

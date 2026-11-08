@@ -1879,6 +1879,26 @@ mod tests {
         println!("most of one kind on a fitted car: {} ({})", most.0, most.1);
     }
 
+    /// The four motorcycles' disc tunes as shipped (mcCarModelTune +120 .. +132, +201 .. +204 of their `.r50`).
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn bike_rotor_tunes() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let assets = crate::assets::Assets::new(&dir);
+        use mcla_formats::rage::simtune::BikeRotors;
+        let want = [
+            ("vp_duc_999r_06", [1.0, 0.8], [0.0, 0.0], [true, true, false, true]),
+            ("vp_duc_monster_s4r_07", [1.0, 0.8], [0.0, -0.063], [true, true, true, false]),
+            ("vp_kaw_ninja_zx14_06", [1.0, 0.85], [0.0, 0.0], [true, true, false, true]),
+            ("vpd_duc_1098_07", [0.98, 0.88], [0.003, -0.15], [true, true, false, true]),
+        ];
+        for (n, size, offset, has) in want {
+            let car = super::load_car(&assets, &std::path::Path::new(&dir).join("resources/vehicle").join(n)).unwrap();
+            assert!(car.bike, "{n}");
+            assert_eq!(car.simtune.as_ref().and_then(|s| s.rotor), Some(BikeRotors { size, offset, has }), "{n}");
+        }
+    }
+
     /// The light set's +24 side (F-27051 / F-75563: 1 for a lamp bone of the part in slot 6 bumper_f, 2 in slot 3
     /// bumper_r): the glow list's name rule (`vehicles.rs`, `bumper_f*` / `bumper_r*`) gives every disc part the slot
     /// the part loader gives it, and bumper parts with lamp bones exist (their glows go out with a broken end).

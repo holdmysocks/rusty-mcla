@@ -193,6 +193,37 @@ pub fn brake_place(frame: Mat4, rim_r: f32) -> Mat4 {
     Mat4::from_cols(x.extend(frame.x_axis.w * sx), frame.y_axis * sy, frame.z_axis * sy, w.extend(1.0))
 }
 
+/// A motorcycle's brake places (F-43091's bike branch, F-54299 true): the caliper (+1600) is the hub frame scaled by
+/// (+4036 b, b, b), b = the axle's +4100 / +4104, unturned on either side; rotor A (+1856) the wheel frame's three rows
+/// scaled so, at the wheel's place; rotor B (+1920) rotor A with its x and y rows negated (the disc on the wheel's other
+/// side). All three move along the caliper's scaled x row made unit (as `brake_place`) by t = 2 d x 0.255 + offset fused
+/// (d = the axle's +4092 / +4096, the offset mcCarModelTune's fRotorOffset, front +128 / rear +132, on wheels 0 and 2),
+/// the caliper and A forwards, B back; then the rotors' rows are scaled by fRotorSize (+120 / +124 on wheels 0 and 2).
+/// Returns (caliper, rotor A, rotor B).
+pub fn bike_brake_place(hub: Mat4, wheel: Mat4, b: f32, d: f32, offset: f32, rotor_size: f32) -> (Mat4, Mat4, Mat4) {
+    let sx = 1.0f32 * b * 1.0;
+    let x = hub.x_axis.truncate() * sx;
+    let n = x.z * x.z + (x.y * x.y + x.x * x.x);
+    let e = 1.0 / n.sqrt();
+    let k = -(n * (e * e) - 1.0) * (0.5 * e) + e;
+    let t = (d * 2.0).mul_add(0.255, offset);
+    let u = (x * k) * t;
+    let cal = Mat4::from_cols(x.extend(hub.x_axis.w * sx), hub.y_axis * b, hub.z_axis * b, (hub.w_axis.truncate() + u).extend(1.0));
+    let (a0, a1, a2) = (wheel.x_axis * sx, wheel.y_axis * b, wheel.z_axis * b);
+    let w = wheel.w_axis.truncate();
+    let ra = Mat4::from_cols(a0 * rotor_size, a1 * rotor_size, a2 * rotor_size, (w + u).extend(1.0));
+    let rb = Mat4::from_cols(-a0 * rotor_size, -a1 * rotor_size, a2 * rotor_size, (w - u).extend(1.0));
+    (cal, ra, rb)
+}
+
+/// Which of a motorcycle's discs F-57869 draws on wheel `i` (0 front, 2 rear): [A, B] = [bHasFrontRight / RearRight,
+/// bHasFrontLeft / RearLeft] of mcCarModelTune (+202 / +204, +201 / +203); without a vehModel the ctor's 1, 1, 0, 1.
+fn bike_discs(m: &CarModel, i: usize) -> [bool; 2] {
+    let a = (i >= 2) as usize;
+    let has = m.simtunes.as_ref().and_then(|s| s.rotor).map_or([true, true, false, true], |r| r.has);
+    [has[2 * a + 1], has[2 * a]]
+}
+
 /// A brake of `resources/brakes` (`brk_stk_<car>`, `brk_car_base` ...): the rotor, which
 /// turns with the wheel, and the caliper, which does not.
 pub struct BrakeModel {
@@ -2399,9 +2430,7 @@ impl Vehicles {
         }
         // the brakes: the car's own where the disc has them, else the plain set
         let mut brake_dir = None;
-        let brakes = if car.bike {
-            None
-        } else {
+        let brakes = {
             let root = world.assets.root.join("resources/brakes");
             let own = [base_name.strip_prefix("vpd_").map(|n| format!("brkd_stk_{n}")), base_name.strip_prefix("vp_").map(|n| format!("brk_stk_{n}"))];
             // (a mod car: its manifest's `donors.brake` - modcars.rs)
@@ -5591,7 +5620,29 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // the brake (F-43091 -> F-57869, `brake_place`): the rotor in the wheel's turning frame, the caliper in its
                 // hub's, both sized by the axle's rim radius - the set-up's (WheelFit::rim_radius). (approx.) a car without a
                 // set-up: the radius of the rim the port draws, its rim ratio of the tyre
-                if c.model.brakes.is_some() || c.brake.is_some() || (c.is_player && self.player_brake.is_some()) {
+                // A motorcycle (F-43091's bike branch, `bike_brake_place`): on wheels 0 and 2 the caliper in the hub's frame and
+                // the two discs A / B either side of the wheel, b = +4100 / +4104 (the ctor's 0.35 / 0.31, never rewritten),
+                // d = the axle's bone span, the axle's fRotorOffset / fRotorSize; rotor B goes in the unused odd wheel's binding
+                if c.model.bike && i % 2 == 0 && (c.model.brakes.is_some() || c.brake.is_some() || (c.is_player && self.player_brake.is_some())) {
+                    let axle = (i >= 2) as usize;
+                    let tune = c.model.simtunes.as_ref().and_then(|s| s.rotor);
+                    let (size, off) = tune.map_or((1.0, 0.0), |r| (r.size[axle], r.offset[axle]));
+                    let hub = wheel_m * Mat4::from_translation(local) * Mat4::from_quat(steer);
+                    let (cal, ra, rb) = bike_brake_place(hub, frame, [0.35f32, 0.31][axle], c.model.bike_wheel_width[axle], off, size);
+                    let mut rf = finish;
+                    rf[3][2] = 0.0;
+                    rf[4] = [0.0; 4];
+                    for (k, m) in [(i, ra), (i + 1, rb)] {
+                        if let Some(rbd) = c.rotor_bindings.get(k) {
+                            batch.push_object(rbd, &ObjectUniform { model: m.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: rf, fill: car_fill, ..Default::default() });
+                        }
+                    }
+                    if let Some(cb) = c.caliper_bindings.get(i) {
+                        let mut mark = [[0.0; 4]; 6];
+                        mark[3] = [0.0, 1.0, 0.0, 0.0];
+                        batch.push_object(cb, &ObjectUniform { model: cal.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: mark, fill: car_fill, ..Default::default() });
+                    }
+                } else if !c.model.bike && (c.model.brakes.is_some() || c.brake.is_some() || (c.is_player && self.player_brake.is_some())) {
                     let axle = (i >= 2) as usize;
                     let rim_r = c.setup.or(c.model.fit).map_or(c.model.rim_ratio * tyre_r, |f| f.rim_radius[axle]);
                     // (no bead pull and no tyre blur: those are the tyre's)
@@ -6204,8 +6255,17 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         }
                         // the brake behind the rim: the rotor with the wheel, the caliper still
                         if let Some(br) = self.player_brake.as_ref().filter(|_| c.is_player).or(c.brake.as_ref()).or(c.model.brakes.as_ref()) {
-                            for (list, bg) in [(&br.rotor, c.rotor_bindings.get(wi).map(|b| &b.bg)), (&br.caliper, c.caliper_bindings.get(wi).map(|b| &b.bg))] {
-                                let Some(bg) = bg else { continue };
+                            // (a motorcycle, F-57869 with F-54299: the brake drawn once with [caliper, rotor B] when the tune's
+                            // bHasFrontLeftRotor / bHasRearLeftRotor is set, once with [caliper, rotor A] for the Right one; the
+                            // caliper's place is the same in both, so it is drawn once here)
+                            let [disc_a, disc_b] = bike_discs(&c.model, wi);
+                            let bike = c.model.bike;
+                            for (list, bg, on) in [
+                                (&br.rotor, c.rotor_bindings.get(wi).map(|b| &b.bg), !bike || disc_a),
+                                (&br.rotor, c.rotor_bindings.get(wi + 1).map(|b| &b.bg), bike && disc_b),
+                                (&br.caliper, c.caliper_bindings.get(wi).map(|b| &b.bg), !bike || disc_a || disc_b),
+                            ] {
+                                let (Some(bg), true) = (bg, on) else { continue };
                                 pass.set_bind_group(3, bg, &[]);
                                 for b in list {
                                     if own {
@@ -7630,6 +7690,31 @@ mod brake_tests {
             n += 1;
         }
         assert_eq!(n, 160);
+    }
+
+    /// A motorcycle's caliper and two discs against F-43091's bike branch run offline (tools/bike_brake_reference.py,
+    /// testdata/bike_brake_ref.txt: 60 bikes x 4 wheels, random turns and places, b, d, fRotorOffset and fRotorSize):
+    /// every word equal.
+    #[test]
+    fn bike_brake_place_is_the_originals() {
+        let rows = |w: &[u32]| {
+            let f = |k: usize| f32::from_bits(w[k]);
+            Mat4::from_cols(Vec4::new(f(0), f(1), f(2), f(3)), Vec4::new(f(4), f(5), f(6), f(7)), Vec4::new(f(8), f(9), f(10), f(11)), Vec4::new(f(12), f(13), f(14), f(15)))
+        };
+        let mut n = 0;
+        for line in include_str!("testdata/bike_brake_ref.txt").lines() {
+            let v: Vec<&str> = line.split_whitespace().filter(|x| *x != "->").collect();
+            let w: Vec<u32> = v[1..].iter().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let f = |k: usize| f32::from_bits(w[k]);
+            let (wm, hub) = (rows(&w[4..20]), rows(&w[20..36]));
+            let (cal, ra, rb) = super::bike_brake_place(hub, wm, f(0), f(1), f(2), f(3));
+            for (got, want, what) in [(cal, rows(&w[36..52]), "caliper"), (ra, rows(&w[52..68]), "rotor A"), (rb, rows(&w[68..84]), "rotor B")] {
+                let (g, e) = (got.to_cols_array(), want.to_cols_array());
+                assert!(g.iter().zip(&e).all(|(a, b)| a.to_bits() == b.to_bits()), "{what} {line}: {g:?} != {e:?}");
+            }
+            n += 1;
+        }
+        assert_eq!(n, 240);
     }
 }
 
