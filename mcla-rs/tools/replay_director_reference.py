@@ -10,6 +10,7 @@ Lines:  LEN <lo> <carry> | <mean> <dev> <min> <max> x12 -> per call: <result> <f
         ZOOM <same>                                     (the zoom timer, same layout)
         KTH <mask> <k> -> <bit>                           (bit as a signed decimal)
         POL <fov> <pitch> <yaw> <min> <max> <dt> <b18> <b19> <b20> <b21> -> <fov> <pitch> <yaw>
+        FIX <car rows a b c place (12)> <mount (3)> <look back> -> <rows a b c (9)> <eye (3)>   (fixed mount update F-77143)
         PACT <lo> <carry> <default lens> -> <lens> <pitch> <yaw> <lo> <carry>   (the polar camera's activate F-82095: +288 -> +168)
 (floats as hex bits)
 Usage: replay_director_reference.py --recomp D:/MCLA-static --image work/2026-10-10/original-image.bin --work DIR --out FILE [--tool mcla-tool]"""
@@ -20,14 +21,15 @@ import struct
 import subprocess
 from pathlib import Path
 import recomp_dispatch as rd
+import recomp_closure as rc
 
-IDS = {'LEN': 'F-66204', 'ZOOM': 'F-16218', 'KTH': 'F-48190', 'POL': 'F-63907', 'PACT': 'F-82095'}
+IDS = {'LEN': 'F-66204', 'ZOOM': 'F-16218', 'KTH': 'F-48190', 'POL': 'F-63907', 'PACT': 'F-82095', 'FIX': 'F-77143'}
 
 MAIN = r'''
 int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.assign(std::istreambuf_iterator<char>(bin),{});
  std::ifstream in(argv[2]);std::string k;
  const uint32_t G=uint32_t(-2105147392)+2176, GDT=uint32_t(-2105737216)+29952+88;
- const uint32_t O=0x40010000,P=0x40010400;
+ const uint32_t O=0x40010000,P=0x40010400,V=uint32_t(-2105147392);
  while(in>>k){rt_reset();
   if(k=="LEN"||k=="ZOOM"){uint32_t lo,ca;in>>std::hex>>lo>>ca;store(G,lo);store(G+4,ca);store(G+8,0);store(G+12,0);
    int b=k=="LEN"?160:348, r=k=="LEN"?32:364;
@@ -37,6 +39,13 @@ int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.
     printf("%08x %u %08x %08x %08x\n",load(O+r),load(G+8)>>24,load(G+12),load(G),load(G+4));}
    in>>std::dec;}
   else if(k=="KTH"){uint32_t m,n;in>>std::hex>>m>>n>>std::dec;store(O,m);Context c=fresh();c.r3.u32=O;c.r4.u32=n;sub_KTH(c,nullptr);printf("%d\n",int(c.r3.u32));}
+  else if(k=="FIX"){uint32_t r[15],bk;in>>std::hex;for(int i=0;i<15;i++)in>>r[i];in>>bk>>std::dec;
+   for(int i=0;i<3;i++){store(V+2384+4*i,0xFFFFFFFFu);store(V+2352+4*i,0);}store(V+2384+12,0);store(V+2352+12,0x3F800000u);
+   for(int i=0;i<4;i++){store(V+2240+4*i,0);store(V+2528+4*i,0x7F800000u);}
+   for(int j=0;j<0x200;j+=4){store(O+j,0);store(P+j,0);}
+   for(int row=0;row<4;row++){for(int i=0;i<3;i++)store(P+16*row+4*i,r[3*row+i]);store(P+16*row+12,row==3?0x3F800000u:0);}
+   store(O+144,P);for(int i=0;i<3;i++)store(O+192+4*i,r[12+i]);store(O+208,bk<<24);
+   Context c=fresh();c.r3.u32=O;sub_FIX(c,nullptr);for(int j=16;j<80;j+=4)if((j&15)!=12)printf("%08x ",load(O+j));printf("\n");}
   else if(k=="PACT"){uint32_t lo,ca,df;in>>std::hex>>lo>>ca>>df>>std::dec;store(G,lo);store(G+4,ca);for(int j=0;j<0x200;j+=4)store(O+j,0xA5A5A5A5u);
    store(O+288,df);Context c=fresh();c.r3.u32=O;sub_PACT(c,nullptr);printf("%08x %08x %08x %08x %08x\n",load(O+168),load(O+272),load(O+276),load(G),load(G+4));}
   else{uint32_t fov,pi,ya,mn,mx,dt,b[4];in>>std::hex>>fov>>pi>>ya>>mn>>mx>>dt>>b[0]>>b[1]>>b[2]>>b[3]>>std::dec;
@@ -70,7 +79,13 @@ def main():
     src = MAIN
     for k, v in names.items():
         src = src.replace('sub_' + k + '(', v + '(')
-    exe = rd.build(idx, list(names.values()), src, a.work, 'replay_director', image=rd.load_image(a.image))
+    rd.build(idx, list(names.values()), src, a.work, 'replay_director', image=rd.load_image(a.image))
+    # (built again with -msse4.1 like the recomp: vmsum*fp as dpps, whose sum order the port follows)
+    exe = a.work / 'replay_director_sse.exe'
+    r = subprocess.run(['g++', '-std=c++17', '-O2', '-msse4.1', '-ffp-contract=off', '-static', '-I' + str(rc.SIMDE), str(a.work / 'replay_director.cpp'), '-o', str(exe)],
+                       capture_output=True, text=True)
+    if r.returncode:
+        raise SystemExit(r.stderr[:1500])
     rnd = random.Random(2041)
     fb = f32bits
     lines = []
@@ -93,6 +108,19 @@ def main():
         dt = rnd.choice([1 / 30, 1 / 60, rnd.uniform(0.001, 0.2)])
         b = [rnd.choice([0, 127, 128, 255, rnd.randrange(256)]) for _ in range(4)]
         lines.append('POL ' + ' '.join(f'{fb(x):08x}' for x in (fov, pitch, yaw, lo, hi, dt)) + ' ' + ' '.join(f'{x:x}' for x in b))
+    import math
+    for _ in range(3000):
+        q = [rnd.gauss(0, 1) for _ in range(4)]
+        n = math.sqrt(sum(x * x for x in q))
+        x, y, z, w = (v / n for v in q)
+        m = [[1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y)], [2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)],
+             [2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)]]
+        if rnd.random() < 0.3:
+            m = [m[0], [0.0, 1.0, 0.0] if rnd.random() < 0.5 else m[1], [0.0, rnd.choice([1.0, -1.0]), 0.0] if rnd.random() < 0.3 else m[2]]
+        place = [rnd.uniform(-3000, 3000), rnd.uniform(-20, 100), rnd.uniform(-3000, 3000)]
+        mount = [rnd.uniform(-1.5, 1.5), rnd.uniform(0, 2), rnd.uniform(-3, 3)]
+        vals = [v for r in m for v in r] + place + mount
+        lines.append('FIX ' + ' '.join(f'{fb(v):08x}' for v in vals) + f' {rnd.choice([0, 0, 1])}')
     for _ in range(3000):
         lines.append(f'PACT {rnd.getrandbits(32):08x} {rnd.getrandbits(32):08x} {fb(rnd.choice([47.0, rnd.uniform(10, 90)])):08x}')
     cases = a.work / 'replay_director_cases.txt'

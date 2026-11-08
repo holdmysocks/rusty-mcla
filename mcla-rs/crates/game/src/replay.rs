@@ -552,6 +552,16 @@ fn orthonormal(m: &mut [Vec3; 3]) {
     *m = [a, vcross(c, a), c];
 }
 
+/// F-77143: a fixed mount's camera: the eye is the mount through the car's rows, the rows the look-at along the car's c row
+/// (0 - c when it looks back), made orthonormal
+fn fixed_rows(o: Vec3, back: bool, car: &HeliCar) -> ([Vec3; 3], Vec3) {
+    let eye = xform(o, &car.m);
+    let c = car.m[2];
+    let mut m = look_rows(if back { Vec3::ZERO - c } else { c }, Vec3::Y);
+    orthonormal(&mut m);
+    (m, eye)
+}
+
 /// the car as the helicopter reads it: its matrix rows (a, b, c, place) and velocity (car +400)
 struct HeliCar {
     m: [Vec3; 4],
@@ -847,10 +857,9 @@ impl Director {
     fn own(&self, tune: &CamTune, car: &CarView, state: usize, probe: &mut dyn Probe) -> Option<(Vec3, Quat, f32)> {
         match state {
             6..=17 => {
-                // (F-77143: down the car's length, level about its line of sight)
                 let (o, back) = Self::mount(tune, state);
-                let c = if back { -car.c() } else { car.c() };
-                Some((car.at(o), look_rot(c), tune.fixed_fov))
+                let (m, eye) = fixed_rows(o, back, &HeliCar::of(car));
+                Some((eye, Quat::from_mat3(&glam::Mat3::from_cols(m[0], m[1], m[2])), tune.fixed_fov))
             }
             HELI => Some((self.heli.place, Quat::from_mat3(&glam::Mat3::from_cols(self.heli.m[0], self.heli.m[1], self.heli.m[2])), self.heli.fov)),
             POLAR => {
@@ -1326,7 +1335,7 @@ mod original_normal_tests {
 /// The director's small routines against the original's code (tools/replay_director_reference.py, testdata/replay_director_ref.txt):
 /// the shot length F-66204 and the helicopter's zoom timer F-16218 (300 sequences of 12 calls, generator and spare after each),
 /// the k-th set bit F-48190 (4,000 masks), the polar camera's stick F-63907 (6,000 cases from the pad's bytes) and its activate
-/// F-82095 (3,000 generators).
+/// F-82095 (3,000 generators), the fixed mounts' camera F-77143 (3,000 car matrices, a third looking back).
 #[cfg(test)]
 mod original_director_tests {
     use super::*;
@@ -1337,7 +1346,7 @@ mod original_director_tests {
 
     #[test]
     fn director_routines_match_the_original() {
-        let (mut len, mut kth, mut pol, mut pact) = (0, 0, 0, 0);
+        let (mut len, mut kth, mut pol, mut pact, mut fix) = (0, 0, 0, 0, 0);
         for line in include_str!("testdata/replay_director_ref.txt").lines() {
             let (a, b) = line.split_once(" -> ").unwrap();
             let w: Vec<&str> = a.split(' ').collect();
@@ -1377,6 +1386,16 @@ mod original_director_tests {
                     assert_eq!([d.polar.fov.to_bits(), d.polar.pitch.to_bits(), d.polar.yaw.to_bits()], [o[0], o[1], o[2]], "{line}");
                     pol += 1;
                 }
+                "FIX" => {
+                    let v: Vec<f32> = w[1..16].iter().map(|x| f32::from_bits(h(x))).collect();
+                    let r = |i: usize| Vec3::new(v[i], v[i + 1], v[i + 2]);
+                    let car = HeliCar { m: [r(0), r(3), r(6), r(9)], vel: Vec3::ZERO };
+                    let (m, eye) = fixed_rows(r(12), w[16] == "1", &car);
+                    let got: Vec<u32> = m.iter().chain([eye].iter()).flat_map(|x| x.to_array().map(f32::to_bits)).collect();
+                    let want: Vec<u32> = b.split_whitespace().map(h).collect();
+                    assert_eq!(got, want, "{line}");
+                    fix += 1;
+                }
                 "PACT" => {
                     let mut tune = CamTune::default();
                     tune.polar_fov_range[2] = f32::from_bits(h(w[3]));
@@ -1391,7 +1410,7 @@ mod original_director_tests {
                 _ => panic!("{line}"),
             }
         }
-        assert!(len >= 290 && kth >= 3980 && pol >= 5990 && pact >= 2970, "{len} {kth} {pol} {pact}");
+        assert!(len >= 290 && kth >= 3980 && pol >= 5990 && pact >= 2970 && fix >= 2970, "{len} {kth} {pol} {pact} {fix}");
     }
 
     /// The helicopter's activate F-79727 and update F-48462 against the original's code (tools/replay_heli_reference.py,
