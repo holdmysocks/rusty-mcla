@@ -101,6 +101,8 @@ struct PropEnt {
     age: f32,
     /// +112: the age at the last whoosh (-FLT_MAX)
     whoosh: f32,
+    /// its voices whose request +172 is set (impacts, breaks, the deflection loop): moved to the prop every update
+    follow: Vec<crate::sndobj::Handle>,
 }
 
 const MUSIC_SUSPEND: &str = "DYNAMIC_MIXER_MUSIC_SUSPEND";
@@ -992,7 +994,7 @@ impl Sound {
                 let e = match held.iter().position(|e| e.key == key) {
                     Some(e) => e,
                     None => {
-                        held.push(PropEnt { key, inst, sounds: Vec::new(), scrape: None, scrape_age: 0.0, age: 0.0, whoosh: f32::MIN });
+                        held.push(PropEnt { key, inst, sounds: Vec::new(), scrape: None, scrape_age: 0.0, age: 0.0, whoosh: f32::MIN, follow: Vec::new() });
                         held.len() - 1
                     }
                 };
@@ -1001,6 +1003,8 @@ impl Sound {
             for h in prop_hits {
                 let (e, occ) = bind(&mut self.occl, lib, &mut self.prop_held, h.inst, h.model, h.pos);
                 let hs = coll.prop(lib, h.model, h.pos, h.speed, h.knocked, occ);
+                // (impact and break: request +172 = 1, F-99417 / the break loop F-53969)
+                self.prop_held[e].follow.extend(hs.iter().copied());
                 self.prop_held[e].sounds.extend(hs);
             }
             // the scrapes (F-99417): the type's loop on the entity's slot +136 at the prop, +108 = its age
@@ -1025,8 +1029,13 @@ impl Sound {
                 let (e, occ) = bind(&mut self.occl, lib, &mut self.prop_held, dfl.inst, dfl.model, dfl.pos);
                 let at = prop_matrix(dfl.inst).map_or(dfl.pos, |m| Vec3::new(m[3][0], m[3][1], m[3][2]));
                 let ent = &mut self.prop_held[e];
+                let was = ent.scrape;
                 if coll.prop_deflect(lib, &obj, dfl.speed, at, if dfl.player { 0 } else { occ }, &mut ent.scrape) {
                     ent.scrape_age = ent.age;
+                    // (a loop it started: request +172 = 1)
+                    if let Some(h) = ent.scrape.filter(|h| Some(*h) != was) {
+                        ent.follow.push(h);
+                    }
                 }
             }
             // the whooshes (F-12768): the player's car past each prop within the scan's reach; on a hit the gate (F-67165)
@@ -1064,6 +1073,15 @@ impl Sound {
                 ent.age += dt;
                 if let (Some(oc), Some(m)) = (&mut self.occl, prop_matrix(ent.inst)) {
                     oc.prop_follow(ent.key, m);
+                }
+                // the entity's voice pass (vt slot 5, F-34529): with a prop instance (+96), each live voice whose request
+                // +172 is set goes to the entity's place (+64, its matrix just refreshed)
+                ent.follow.retain(|h| lib.playing(*h));
+                if let Some(m) = prop_matrix(ent.inst) {
+                    let at = Vec3::new(m[3][0], m[3][1], m[3][2]);
+                    for h in &ent.follow {
+                        lib.set_pos(*h, at);
+                    }
                 }
                 if let Some(h) = ent.scrape {
                     if ent.age >= ent.scrape_age + 0.1 {

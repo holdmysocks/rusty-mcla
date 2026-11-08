@@ -1643,6 +1643,13 @@ impl SoundLib {
         }
     }
 
+    /// Move a playing sound (its request's position), the rest of the request unchanged.
+    pub fn set_pos(&mut self, h: Handle, pos: Vec3) {
+        if let Some(i) = self.insts.iter_mut().find(|i| i.id == h.0) {
+            i.req.pos = Some(pos);
+        }
+    }
+
     /// The audio timer a playing sound runs on (see `Instance::timer`).
     pub fn set_timer(&mut self, h: Handle, t: u8) {
         if let Some(i) = self.insts.iter_mut().find(|i| i.id == h.0) {
