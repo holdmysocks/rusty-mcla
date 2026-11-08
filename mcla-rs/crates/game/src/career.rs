@@ -2034,12 +2034,14 @@ impl Career {
 
     /// The completion statistic `k%AG` (F-20532): the completed list's missions over all
     /// missions, both without the always hidden (+685) and the repeatable (+693) ones - 100 in
-    /// the 100 % save (107 of 107), 1 in the new game (2 of 107) - cut to a whole number.
+    /// the 100 % save (107 of 107), 1 in the new game (2 of 107). The fraction is an f32 quotient
+    /// (kept at the manager's +76), times 100.0 cut towards zero: 53 of 100 is 52. With nothing
+    /// counted the kept fraction is posted, which stays 0 (the mission set never changes).
     pub fn percent_complete(&self) -> i64 {
         let counts = |i: &usize| !self.missions[*i].hidden && !self.missions[*i].repeatable;
         let total = (0..self.missions.len()).filter(counts).count();
         let done = self.done.iter().filter(|i| counts(i)).count();
-        if total == 0 { 0 } else { (done * 100 / total) as i64 }
+        percent_of(done, total)
     }
 
     /// The statistic is posted when a mission joins the completed list (F-97326) and when
@@ -3229,6 +3231,15 @@ pub fn reward_shown<T>(list: &[T], hidden: impl Fn(&T) -> bool) -> bool {
     list.iter().any(|r| !hidden(r))
 }
 
+/// F-20532's value: f32(done) / f32(total) x 100.0, fctiwz (0 with nothing counted).
+pub fn percent_of(done: usize, total: usize) -> i64 {
+    if total == 0 {
+        return 0;
+    }
+    let f = done as i32 as f32 / total as i32 as f32;
+    (f * 100.0) as i32 as i64
+}
+
 #[cfg(test)]
 mod tests {
     /// The three reward scripts that make a call append `reward_call`'s line and title (the
@@ -3654,6 +3665,30 @@ mod tests {
     /// The district lookup F-67263 run offline on 1,936 strings (tools/district_lookup_reference.py:
     /// every name and short form in mixed case, the mission files' values, near misses, random
     /// strings): `district_no` gives the same number for each.
+    /// F-20532 run offline (tools/percent_complete_reference.py, 3,000 mission sets of 0..140,
+    /// hidden / repeatable flags, completed lists): the value posted and the kept fraction equal.
+    #[test]
+    fn percent_complete_matches_the_original() {
+        let text = include_str!("testdata/percent_complete_ref.txt");
+        let mut n = 0;
+        for line in text.lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split(' ').collect();
+            let flags: Vec<u8> = if w[2] == "-" { vec![] } else { w[2].bytes().map(|c| c - b'0').collect() };
+            let done: Vec<usize> = if w[3] == "-" { vec![] } else { w[3].split(',').map(|x| x.parse().unwrap()).collect() };
+            let o: Vec<u32> = b.split(' ').map(|x| x.parse().unwrap()).collect();
+            let counts = |i: usize| flags[i] == 0;
+            let total = (0..flags.len()).filter(|&i| counts(i)).count();
+            let k = done.iter().filter(|&&i| counts(i)).count();
+            assert_eq!(o[0], 1, "{line}");
+            assert_eq!(percent_of(k, total) as i32 as u32, o[1], "{line}");
+            let frac = if total == 0 { 0.0f32 } else { k as i32 as f32 / total as i32 as f32 };
+            assert_eq!(frac.to_bits(), o[2], "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
+
     #[test]
     fn district_lookup_matches_the_original() {
         let text = include_str!("testdata/career_district_ref.txt");
