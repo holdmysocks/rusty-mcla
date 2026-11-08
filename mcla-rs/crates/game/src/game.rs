@@ -8434,7 +8434,7 @@ impl Game {
                         if selected {
                             flash_sel = flash_rows.len();
                         }
-                        flash_rows.push(crate::flash_ui::MenuRow { label: label.clone(), value: if matches!(it, It::RowAs(_, 0)) { String::new() } else { value.clone() }, enabled: !dim, part: None });
+                        flash_rows.push(crate::flash_ui::MenuRow { label: garage_key(menus[self.garage_menu].0, &label).and_then(|k| self.career.strings.get(k)).map_or_else(|| label.clone(), |v| v.to_string()), value: if matches!(it, It::RowAs(_, 0)) { String::new() } else { value.clone() }, enabled: !dim, part: None });
                         // (a part type the career has just unlocked wears the "new" mark until its list
                         // is opened: the row's `type` 50 - F-99914, `mc4_part_new`)
                         let s16_new = match it {
@@ -8798,7 +8798,7 @@ impl Game {
                             } else if let Some(at) = ring.iter().rev().position(|m| *m == self.garage_menu).filter(|_| self.garage_part.is_none() && self.garage_xpart.is_none() && self.plate_edit.is_none()) {
                                 // title_loop puts index+1 to the left. Keep its names in
                                 // the reverse of the port's rightward navigation order.
-                                MenuLayout::GarageLoop { names: ring.iter().rev().map(|m| menus[*m].0.to_string()).collect(), index: at, flat: matches!(self.garage_menu, 7 | 16) }
+                                MenuLayout::GarageLoop { names: ring.iter().rev().map(|m| garage_key("", menus[*m].0).and_then(|k| self.career.strings.get(k)).map_or_else(|| menus[*m].0.to_string(), |v| v.to_string())).collect(), index: at, flat: matches!(self.garage_menu, 7 | 16) }
                             } else { MenuLayout::List },
                             icon: if self.cart_open.is_some() { std::env::var("MCLA_CART_ICON").ok().and_then(|v| v.parse().ok()).unwrap_or(12) } else if ring.contains(&self.garage_menu) && self.garage_part.is_none() && self.garage_xpart.is_none() && self.plate_edit.is_none() && !listing_page { 11 } else { 10 },
                             // the rim shop shows the maker of every brand in the tab strip,
@@ -8806,7 +8806,8 @@ impl Game {
                             tabs: if rim_open { rim_tabs.iter().map(|b| b.mfr.to_string()).collect() } else { Vec::new() },
                             cur_tab: if rim_open { self.rim_brand } else { 0 },
                             // (the movie widens its panel to the title: neighbours left out)
-                            title: title.to_string(),
+                            // (the original's key for a menu's title: `garage_key`)
+                            title: garage_key("", &title).and_then(|k| self.career.strings.get(k)).map_or_else(|| title.to_string(), |v| v.to_string()),
                             rows,
                             select: flash_sel,
                             // (the full-screen vehicle list carries its prompts and the money inside the
@@ -15425,6 +15426,126 @@ impl Game {
 
 /// F-68183: seconds as "%02d:%02d:%02d" - rounded half away from zero (truncating the sum), the hours clamped to 99,
 /// the minutes and seconds from the unclamped count.
+/// The string key the original's garage menus give a menu or row the port names by its English text
+/// (`tune/ui/garage/*.sc.xml`: each state's `desc` is a key of the string table; the part areas' dynamic rows
+/// take the car part file's section names - `garage.SetFilePartAndArea('Exterior', 'ext_front')` - which the
+/// table holds as keys). `menu` is the English title of the menu the row is in, "" for a title or a tab.
+/// None: the port's own wording with no key in the original (PAINT AREA) - it stays as it is.
+pub fn garage_key(menu: &str, label: &str) -> Option<&'static str> {
+    Some(match (menu, label) {
+        // (titles and the ring's tabs: GARAGE_TOP_MENU, Garage_customization_menu, PartColorMenu, the Cust_* areas,
+        // ExtNeonColorMenu, DimensionMenu, HydraulicAirbagContainer, GarageSpecAbilMenu, VinylEditor,
+        // IntColor_Select, IntColorMenu, RimColorMatMenu)
+        ("", "GARAGE") => "Garage",
+        ("", "CUSTOMIZATION") => "Garage_customization_menu",
+        ("", "PAINT SHOP") => "Part Color",
+        ("", "FRONT") => "G_Front",
+        ("", "VEHICLE") => "G_All",
+        ("", "WHEEL") => "G_Wheels",
+        ("", "INTERIOR") => "G_Interior",
+        ("", "REAR") => "G_Rear",
+        ("", "EXTRA") => "G_NeonExt",
+        ("", "SIDE") => "G_Side",
+        ("", "NEON/WINDOW TINT") => "MiscColor",
+        ("", "DIMENSIONS") => "DimensionsMenu",
+        ("", "HYDRAULICS/AIR BAGS") => "G_Hydraulics",
+        ("", "SPECIAL ABILITIES") => "GarageSpecAbilMenu",
+        ("", "VINYL EDITOR") => "VE_VinylEditor",
+        ("", "COLOR") => "G_IntColor",
+        ("", "INTERIOR COLORS") => "G_InteriorColors",
+        ("", "MATERIALS/PAINT") => "G_RimMatColorMenu",
+        // (GARAGE_TOP_MENU)
+        ("GARAGE", "MANAGE VEHICLES") => "gManage",
+        ("GARAGE", "CUSTOMIZE VEHICLE") => "gCustomize",
+        ("GARAGE", "VEHICLE SHOWROOM") => "gShowroom",
+        ("GARAGE" | "-", "EXIT GARAGE") => "Exit Garage",
+        // (Garage_customization_menu)
+        ("CUSTOMIZATION", "PERFORMANCE SHOP") => "G_Performance",
+        ("CUSTOMIZATION", "EXTERIOR/INTERIOR") => "Exterior",
+        ("CUSTOMIZATION", "VINYL EDITOR") => "G_Vinyl_Editor",
+        ("CUSTOMIZATION", "PAINT SHOP") => "G_Paint_Shop",
+        ("CUSTOMIZATION", "HYDRAULICS/AIR BAGS") => "G_Hydraulics",
+        ("CUSTOMIZATION", "SPECIAL ABILITIES") => "G_Special_Ability_Select",
+        // (PartColorMenu)
+        ("PAINT SHOP", "PAINT OPTIONS") => "Paint Options",
+        ("PAINT SHOP", "PAINT TYPE") => "Paint Type",
+        ("PAINT SHOP", "FADE TYPE") => "Fade Type",
+        ("PAINT SHOP", "PRIMARY COLOR") => "Primary Color",
+        ("PAINT SHOP", "SECONDARY COLOR") => "2nd Color",
+        // (the part areas: the part file's sections)
+        ("FRONT", "COWL") => "bike_cowl",
+        ("FRONT", "FRONT BUMPERS") => "bumper_front",
+        ("FRONT", "HEADLIGHTS") => "headlight",
+        ("FRONT", "HOODS") => "hood",
+        ("FRONT", "INTERCOOLER") => "intercooler",
+        ("FRONT", "AIR SCOOPS") => "blower",
+        ("VEHICLE", "WIDEBODY") => "body",
+        ("INTERIOR", "STEERING WHEELS") => "steer_whl",
+        ("INTERIOR", "GAUGES") => "post_gauge",
+        ("INTERIOR", "FRONT SEATS") => "seats_f",
+        ("REAR", "TAIL") => "bike_tail",
+        ("REAR", "LICENSE PLATES") => "license_plate",
+        ("REAR", "REAR BUMPERS") => "bumper_rear",
+        ("REAR", "SPOILERS") => "spoiler",
+        ("REAR", "TAILLIGHTS") => "taillight",
+        ("REAR", "EXHAUSTS") => "exhaust",
+        ("SIDE", "TANK") => "bike_tank",
+        ("SIDE", "SIDESKIRTS") => "skirts",
+        ("SIDE", "DOORS") => "scissor_door",
+        ("SIDE", "SIDE EXHAUSTS") => "side_exhaust",
+        // (Cust_Wheels: Cust_RimMenu, the DLC rims, RimColorMatMenu, the dimensions, tires, brakes)
+        ("WHEEL", "RIMS") => "G_ChooseRims",
+        ("WHEEL", "SOUTH CENTRAL RIMS") => "G_ChooseRims_DLC",
+        ("WHEEL", "MATERIALS/PAINT") => "G_RimMatColorMenu",
+        ("WHEEL", "DIMENSIONS") => "G_ChooseDimensions",
+        ("WHEEL", "TIRES") => "G_ChooseTire",
+        ("WHEEL", "BRAKES") => "G_ChooseBrake",
+        ("EXTRA", "NEON/WINDOW TINT") => "G_ModExtNeonColor",
+        // (ExtNeonColorMenu)
+        ("NEON/WINDOW TINT", "NEON") => "G_ExtNeon",
+        ("NEON/WINDOW TINT", "NEON COLOR") => "G_ExtNeonColor",
+        ("NEON/WINDOW TINT", "WINDOW TINT") => "G_TintColor",
+        ("NEON/WINDOW TINT", "TINT OPACITY") => "G_TintTransparency",
+        // (DimensionMenu)
+        ("DIMENSIONS", "AXLE") => "Axle",
+        ("DIMENSIONS", "RIMS SIZE") => "G_RimSize",
+        ("DIMENSIONS", "TIRE PROFILE") => "G_TireProfile",
+        ("DIMENSIONS", "TIRE WIDTH") => "G_TireWidth",
+        ("DIMENSIONS", "RIDE HEIGHT") => "G_RideHeight",
+        // (HydraulicAirbagContainer)
+        ("HYDRAULICS/AIR BAGS", "HYDRAULICS") => "G_HydraulicsOnOff",
+        ("HYDRAULICS/AIR BAGS", "AIR BAGS") => "G_AirbagsOnOff",
+        ("HYDRAULICS/AIR BAGS", "LOWERING PATTERN") => "G_AirbagsPattern",
+        // (GarageSpecAbilMenu)
+        ("SPECIAL ABILITIES", "ZONE") => "ZONE",
+        ("SPECIAL ABILITIES", "AGRO") => "AGRO",
+        ("SPECIAL ABILITIES", "ROAR") => "ROAR",
+        ("SPECIAL ABILITIES", "EMP") => "PULSE",
+        // (VinylEditor)
+        ("VINYL EDITOR", "VINYL PACKAGES") => "VE_SelectVinylPackage",
+        ("VINYL EDITOR", "CREATE/EDIT VINYLS") => "VE_CreateEditVinyls",
+        ("VINYL EDITOR", "REMOVE ALL VINYLS") => "VE_RemoveAllVinyls",
+        ("VINYL EDITOR", "STORE VINYL PACKAGES") => "VE_SaveAsVinylPackage",
+        ("VINYL EDITOR", "EXIT VINYL EDITOR") => "VE_ExitVinylEditor",
+        // (IntColor_Select, IntColorMenu)
+        ("COLOR", "COLOR") => "G_ModIntColor",
+        ("INTERIOR COLORS", "INTERIOR NEON") => "G_IntNeon",
+        ("INTERIOR COLORS", "NEON COLOR") => "G_IntNeonColor",
+        ("INTERIOR COLORS", "GAUGE COLOR A") => "G_GaugesColor",
+        ("INTERIOR COLORS", "GAUGE COLOR B") => "G_GaugesBColor",
+        ("INTERIOR COLORS", "INTERIOR COLOR A") => "G_IntAColor",
+        ("INTERIOR COLORS", "INTERIOR COLOR B") => "G_IntBColor",
+        ("INTERIOR COLORS", "INTERIOR COLOR C") => "G_IntCColor",
+        ("INTERIOR COLORS", "INTERIOR COLOR D") => "G_IntDColor",
+        ("INTERIOR COLORS", "INTERIOR COLOR E") => "G_IntEColor",
+        // (RimColorMatMenu: the materials and the colours have the same texts in every language)
+        ("MATERIALS/PAINT", "SPOKE A") => "G_RimMat1",
+        ("MATERIALS/PAINT", "SPOKE B") => "G_RimMat2",
+        ("MATERIALS/PAINT", "LIP") => "G_RimMat3",
+        _ => return None,
+    })
+}
+
 pub fn hms_text(secs: f32) -> String {
     let i = if secs >= 0.0 { (secs + 0.5) as i32 } else { (secs - 0.5) as i32 };
     format!("{:02}:{:02}:{:02}", (i / 3600).min(99), (i - i / 3600 * 3600) / 60, i - i / 60 * 60)
