@@ -4571,9 +4571,12 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // (the steering is the default steer direction the start script gives the three,
                 // Racer_SetDefaultSteerDirection 0.5 - chassis +656, F-69218. A scene's car - the player's after
                 // the scene's engine_off, F-76651(racer, 1): the mover's inputs give way the same, and its +656 is
-                // the 0 that F-30391(0) left)
-                let steer = if c.brain.is_some() { 0.0 } else { 0.5 };
-                let input = CarInput { deactivated: true, steer, ..Default::default() };
+                // the 0 that F-30391(0) left. A computer racer on the grid at difficulty 0 - the race cores'
+                // Racer_Deactivate after Racer_PreRaceBurnout, OrderedCheckpointCore 0x11cf / UnorderedCheckpointCore
+                // 0xf3f - keeps the grid hold: word 0x3, F-30391's 0x2 arm, +656 = 0)
+                let grid = self.grid_hold.is_some() && c.ai.as_ref().map_or(false, |a| a.brain.is_some());
+                let steer = if c.brain.is_some() || grid { 0.0 } else { 0.5 };
+                let input = CarInput { deactivated: true, hold: grid, steer, ..Default::default() };
                 jobs.push((idx, input, StepPost::None));
                 continue;
             }

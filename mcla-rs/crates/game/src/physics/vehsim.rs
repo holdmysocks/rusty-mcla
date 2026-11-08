@@ -1302,10 +1302,12 @@ fn update_engine(vs: &mut VehState, vt: &VehTune, input: CarInput, pedal_release
     // (the engine word +46: F-30391(1), the deactivation, writes 0; F-30391(0), the activation, 1; F-17997 writes 1 while
     // the start holds the car. Recorded, the R8's garage visit (work/physics2/r8rec entry.bin, dr.1.bin): 0 from the
     // garage's Racer_Deactivate, the engine speed 0 all through the garage; +592 bit 0x1 and +46 flip on the same tick at
-    // the drive-out, and the engine winds up from 0 on the idle torque with the pedal at 0: 9.666, 18.440, 25.288)
+    // the drive-out, and the engine winds up from 0 on the idle torque with the pedal at 0: 9.666, 18.440, 25.288.
+    // F-30391 writes 0 only when the new flag word is 0x1 alone: a racer deactivated over the grid hold - the race cores'
+    // Racer_Deactivate at difficulty 0 after Racer_PreRaceBurnout, word 0x3 - takes the 0x2 arm, +46 = 1, running)
     if input.deactivated != vs.deact_seen {
         vs.deact_seen = input.deactivated;
-        vs.engine_stopped = input.deactivated;
+        vs.engine_stopped = input.deactivated && !input.hold;
     }
     if input.first_gear {
         vs.engine_stopped = false;
@@ -7689,6 +7691,15 @@ mod contact_integration_tests {
         assert!(w > 1.0);
         // (the reset leaves the word 1, F-47310)
         reset(&mut st, &tune, &world);
+        assert!(!st.veh.as_deref().unwrap().engine_stopped);
+    }
+
+    /// A racer deactivated over the grid hold (the race cores' Racer_Deactivate at difficulty 0 after
+    /// Racer_PreRaceBurnout: word 0x3) takes F-30391's 0x2 arm, +46 = 1: the engine is not stopped.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR containing Complete Edition vehicle resources"]
+    fn a_racer_deactivated_on_the_grid_keeps_its_engine() {
+        let (_, _, _, st) = r8_driven(CarInput { deactivated: true, hold: true, ..Default::default() }, 60, false);
         assert!(!st.veh.as_deref().unwrap().engine_stopped);
     }
 

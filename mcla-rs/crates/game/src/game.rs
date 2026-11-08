@@ -4234,12 +4234,19 @@ impl Game {
             let laps = self.race.as_ref().map_or(1, |r| r.laps.max(1));
             let rubber = (!self.rubber.is_empty()).then(|| self.rubber[step.min(self.rubber.len() - 1)].clone());
             let ids: Vec<usize> = self.race.as_ref().map(|r| r.participants.clone()).unwrap_or_default();
+            let easy_deact = self.race.as_ref().map_or(false, |r| r.kind == RaceKind::Race);
             for i in ids {
                 let Some(c) = vehicles.cars.get_mut(i) else { continue };
                 // (the core's grid set-up resets each racer's car before BrainRacing_SetupRace: mcCarSim's
                 // reset F-47310 -> mcCarNitro's F-40379, the shot count from the racer's built tune)
                 if !c.is_player {
                     c.nitro_reset();
+                    // (then each computer racer (record +8 = 2) gets Racer_PreRaceBurnout at a difficulty above 0, else
+                    // Racer_Deactivate - OrderedCheckpointCore 0x11af..0x11cf, UnorderedCheckpointCore 0xf1b..0xf3f;
+                    // F-12981: chassis +592 |= 0x1 over the grid hold, until the go's Racer_Activate)
+                    if desired == 0 && easy_deact {
+                        c.deactivated = true;
+                    }
                 }
                 let shots = c.state.nitro_shots;
                 let tune = c.model.aitunes.clone().map(|t| std::sync::Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&t.base, &t.mods, c.perf)));
@@ -4314,6 +4321,14 @@ impl Game {
                     if let Some(c) = vehicles.player_mut() {
                         c.engine_off = false;
                         c.deactivated = false;
+                    }
+                    // (the same Racer_Activate, F-46082, on the computer racers: those a difficulty 0 grid deactivated drive off)
+                    if race.kind == RaceKind::Race {
+                        for &i in &race.participants {
+                            if let Some(c) = vehicles.cars.get_mut(i).filter(|c| !c.is_player) {
+                                c.deactivated = false;
+                            }
+                        }
                     }
                     // (OrderedCheckpointCore 0x1058 / UnorderedCheckpointCore 0xde9, once Race_IsRaceTimerEnabled: each
                     // racer's nitrous, Racer_LockFeature(racer, 8, ..) F-17816 - locked for a computer racer (record +8 = 2)
