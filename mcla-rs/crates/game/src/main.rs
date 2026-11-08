@@ -5683,7 +5683,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.police.racer_uids = racers.iter().filter(|r| r.1).chain(racers.iter().filter(|r| !r.1)).map(|r| r.0).collect();
                     let inside = racers.iter().position(|r| r.2.distance_squared(zp) < zr * zr);
                     if let Some(line) = self.police.zone_step(lap, &racers, inside, sim_dt) {
-                        if !self.speech.busy() {
+                        // (the zone set off, F-71212: the request DISPATCH_REPORT_VIOLATION_STREETRACE (F-35677: dispatcher
+                        // to an officer, probability 1) carries the speech line at its +28; F-14569 plays the radio line and,
+                        // only when the radio manager took it, the speech)
+                        let took = if self.radio.loaded() {
+                            let rctx = radio_ctx(&self.vehicles, &world, self.time_of_day);
+                            self.radio.note(&rctx, world.nav.as_ref());
+                            self.radio.say("DISPATCH_REPORT_VIOLATION_STREETRACE", &rctx)
+                        } else {
+                            true
+                        };
+                        if took && !self.speech.busy() {
                             self.speech.say(line);
                         }
                     }
@@ -7463,6 +7473,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                         // (F-22530's end of a type >= 1 tactic on an AI racer: the radio stopped, REPORT_END_PURSUIT and,
                         // once the radio took it, the player's PLAYER_LOSE_POLICE)
+                        // (F-22530, tactic slot 0: the radio stopped when it speaks, then REPORT_SUSPECT_NOT_FOUND)
+                        Some(police::Event::DispatchLost) => {
+                            self.radio.stop();
+                            self.radio.say("REPORT_SUSPECT_NOT_FOUND", &rctx);
+                        }
                         Some(police::Event::LostAi) => {
                             self.radio.stop();
                             if self.radio.say("REPORT_END_PURSUIT", &rctx) && !self.speech.busy() {
@@ -7593,7 +7608,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.game.arrest_scene = 0;
                         self.police.hold_busted(1.5);
                     }
-                    Some(police::Event::LostAi) | None => {}
+                    Some(police::Event::LostAi) | Some(police::Event::DispatchLost) | None => {}
                 }
             }
             if self.arrest_wait && (self.arrest_mask.full() || !self.arrest_mask.is_on()) {

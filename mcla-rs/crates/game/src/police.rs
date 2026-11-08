@@ -119,6 +119,9 @@ pub enum Event {
     /// a tactic on an AI racer ended by result 2 or 3 (escaped, a cop gone): the radio's REPORT_END_PURSUIT and the
     /// player's PLAYER_LOSE_POLICE (F-22530, not gated by the target); nothing of the player's record, reward or grace
     LostAi,
+    /// the Dispatch to Location ended by result 2 or 3 (nobody at the place in fDispatchLocWaitTime, its cop gone): F-22530's
+    /// tactic slot 0 stops the radio and says REPORT_SUSPECT_NOT_FOUND (F-23215, probability 1, no speech after it)
+    DispatchLost,
     /// stopped for the cruiser: fine
     Ticket(i64),
     /// arrested during a pursuit: fine
@@ -4056,6 +4059,7 @@ impl Police {
                     log::info!("police: dispatch over ({})", result);
                     self.clear();
                     self.grace = 5.0;
+                    event = Some(Event::DispatchLost);
                 }
                 _ => self.dsp = Some(d),
             }
