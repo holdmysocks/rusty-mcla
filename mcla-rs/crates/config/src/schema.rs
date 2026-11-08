@@ -42,7 +42,7 @@ static KEYS: &[KeyInfo] = &[
     k("game.detail_level", "enum", "\"original\"", "original | 1.5x | 2x | 3x (model detail distances; 3x also keeps traffic cars at LOD 0)", true),
     k("game.stick_dead_zone", "int", "0", "0 .. 50 in steps of 5 (extra stick dead zone in percent, ahead of the original's own; 0 = the original's)", true),
     k("game.language", "enum", "\"english\"", "english | spanish | french | german | italian (the text and subtitles; the speech is English in every language on the disc)", true),
-    k("game.player_name", "string", "\"\"", "up to 15 characters: ASCII letters, digits, spaces (others dropped, spaces trimmed and single); empty = PLAYER in the chosen language. Shown where the original shows the Xbox gamertag (DECISIONS.md D53)", true),
+    k("game.player_name", "string", "\"\"", "up to 15 characters: ASCII letters, digits, spaces and the accented letters both name fonts have, ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÑÒÓÔÖÙÚÛÜ àáâãäåæçèéêëìíîïñòóôöùúûüß ¡¿ (others dropped, spaces trimmed and single); empty = PLAYER in the chosen language. Shown where the original shows the Xbox gamertag (DECISIONS.md D53)", true),
     k("paths.data_dir", "string", "\"\"", "empty = next to the exe; a relative path is taken from the install root", true),
     k("paths.screenshots", "string", "\"\"", "empty = <install root>/screenshots", true),
     k("launcher.language", "string", "\"\"", "empty = the system language", false),

@@ -65,19 +65,34 @@ impl Language {
 /// Out line were laid out for.
 pub const PLAYER_NAME_MAX: usize = 15;
 
-/// A player name as the game takes it (`game.player_name`): the characters of a gamertag only - ASCII letters, digits
-/// and spaces, every other character dropped -, spaces trimmed at both ends and runs of spaces made one, at most
-/// [`PLAYER_NAME_MAX`] characters. Empty = none (the game shows PLAYER).
+/// The letters beyond ASCII a player name may hold: the ones both fonts the name is drawn in have - Dev Gothic of
+/// the pause movie's results rows (its `slotsA..D` columns' fields) and VipItl of the HUD's splash fields (the Last
+/// Man Out line) -, in upper and lower case (the game shows the name upper case: a lower-case letter is kept when its
+/// capital is in both; `ß` stays `ß`), and the inverted `¡ ¿`. Not in both: `Õ õ` (results only) and every other
+/// letter (`ğ`, `Ø`, `ÿ`, ...). docs/UI.md "The player's name: letters".
+pub const PLAYER_NAME_LETTERS: &str = "ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÑÒÓÔÖÙÚÛÜàáâãäåæçèéêëìíîïñòóôöùúûüß¡¿";
+
+/// Whether `c` may stand in a player name: an ASCII letter or digit, a space, or one of [`PLAYER_NAME_LETTERS`].
+pub fn player_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == ' ' || PLAYER_NAME_LETTERS.contains(c)
+}
+
+/// A player name as the game takes it (`game.player_name`): ASCII letters, digits, spaces and
+/// [`PLAYER_NAME_LETTERS`] ([`player_name_char`]; every other character dropped), spaces trimmed at both ends and runs
+/// of spaces made one, at most [`PLAYER_NAME_MAX`] characters (characters, not bytes). Empty = none (the game shows
+/// PLAYER).
 pub fn clean_player_name(s: &str) -> String {
     let mut out = String::new();
-    for c in s.chars().filter(|c| c.is_ascii_alphanumeric() || *c == ' ') {
+    let mut n = 0;
+    for c in s.chars().filter(|&c| player_name_char(c)) {
         if c == ' ' && (out.is_empty() || out.ends_with(' ')) {
             continue;
         }
-        if out.len() == PLAYER_NAME_MAX {
+        if n == PLAYER_NAME_MAX {
             break;
         }
         out.push(c);
+        n += 1;
     }
     out.trim_end().to_string()
 }

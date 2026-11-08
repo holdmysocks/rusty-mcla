@@ -8149,6 +8149,17 @@ impl Game {
         self.arcade_restore.is_some() && !self.phone_race && self.arcade_x[1] != 0 && self.current_race.and_then(|i| self.race_defs.get(i)).map_or(false, |d| d.sub_type.eq_ignore_ascii_case("Circuit"))
     }
 
+    /// The Last Man Out line for a racer out (LMO_ELEMINATED, "<name> ELIMINATED!"): the name in place of the
+    /// `<D>..</D>` field, all upper case as the splash shows it (`upper_name`).
+    pub fn lmo_out_text(&self, name: &str) -> String {
+        let text = self.career.strings.get("LMO_ELEMINATED").map(|s| s.to_string()).unwrap_or_else(|| "<D>PLAYER_ELEMINATED</D> ELIMINATED!".to_string());
+        let text = match (text.find("<D>"), text.find("</D>")) {
+            (Some(a), Some(b)) if b > a => format!("{}{}{}", &text[..a], name, &text[b + 4..]),
+            _ => format!("{name} {text}"),
+        };
+        crate::game::upper_name(&text)
+    }
+
     /// LAST MAN OUT, once a tick while the race runs (before the tick's own work). True: the
     /// player is out and the race over.
     pub fn mc4_lmo_tick(&mut self, vehicles: &mut crate::vehicles::Vehicles) -> bool {
@@ -8177,12 +8188,8 @@ impl Game {
             Some(c) => crate::game::pretty_car_name(&c.model.name).to_uppercase(),
             None => String::new(),
         };
-        let text = self.career.strings.get("LMO_ELEMINATED").map(|s| s.to_string()).unwrap_or_else(|| "<D>PLAYER_ELEMINATED</D> ELIMINATED!".to_string());
-        let text = match (text.find("<D>"), text.find("</D>")) {
-            (Some(a), Some(b)) if b > a => format!("{}{}{}", &text[..a], name, &text[b + 4..]),
-            _ => format!("{name} {text}"),
-        };
-        self.show_message(&text.to_uppercase());
+        let text = self.lmo_out_text(&name);
+        self.show_message(&text);
         log::info!("last man out: racer {} ({}) is out at {:.1} s", k, name, now as f32 / 1000.0);
         if k == 0 {
             return true;

@@ -2005,7 +2005,9 @@ impl Game {
     /// name in those rows.
     pub fn player_shown_name(&self) -> String {
         let n = crate::hooks::player_name();
-        if n.is_empty() { self.career.strings.get("drv_mp_01_set").map(|s| s.to_uppercase()).unwrap_or_else(|| "PLAYER".to_string()) } else { n.to_uppercase() }
+        if n.is_empty() { self.career.strings.get("drv_mp_01_set").map(|s| s.to_uppercase()).unwrap_or_else(|| "PLAYER".to_string()) } else {
+            upper_name(&n)
+        }
     }
 
     /// The player's paint: the garage's own mix, else the chosen swatch.
@@ -5239,6 +5241,17 @@ impl Game {
             static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
             if matches!(self.mode, Mode::FreeRoam) && !ONCE.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 self.song_line = Some((t, 0.0));
+            }
+        }
+        // (test hook: MCLA_LMO_TEST=<n> posts the player's Last Man Out line once, on the n-th free-roam frame - the
+        // name path of a real one)
+        if let Some(n) = std::env::var("MCLA_LMO_TEST").ok().and_then(|v| v.parse::<u32>().ok()) {
+            static FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            if matches!(self.mode, Mode::FreeRoam) {
+                if FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 == n {
+                    let text = self.lmo_out_text(&self.player_shown_name());
+                    self.show_message(&text);
+                }
             }
         }
         // (test hook: MCLA_RESULTS_TEST shows the race-over screen with made-up results)
@@ -15573,6 +15586,12 @@ pub fn garage_key(menu: &str, label: &str) -> Option<&'static str> {
         ("MATERIALS/PAINT", "LIP") => "G_RimMat3",
         _ => return None,
     })
+}
+
+/// A name upper case as the name lines show it, letter by letter: `ß` has no capital in the fonts and stays one
+/// letter (`mcla_config::PLAYER_NAME_LETTERS`), every other letter its capital.
+pub fn upper_name(s: &str) -> String {
+    s.chars().map(|c| if c == 'ß' { c.to_string() } else { c.to_uppercase().collect() }).collect()
 }
 
 pub fn hms_text(secs: f32) -> String {

@@ -306,7 +306,19 @@ fn the_player_name_rule() {
     assert_eq!(clean_player_name(""), "");
     assert_eq!(clean_player_name("   "), "");
     assert_eq!(clean_player_name("  Sock  Master  "), "Sock Master");
-    assert_eq!(clean_player_name("Zoë_Ñ-1!"), "Zo1");
+    assert_eq!(clean_player_name("Zoë_Ñ-1!"), "ZoëÑ1");
+    // (the letters both name fonts have stay, the others go: ğ, Õ, Ø, ÿ, the capital ẞ)
+    assert_eq!(clean_player_name("José"), "José");
+    assert_eq!(clean_player_name("Zoë"), "Zoë");
+    assert_eq!(clean_player_name("Müller"), "Müller");
+    assert_eq!(clean_player_name("Çağ"), "Ça");
+    assert_eq!(clean_player_name("Õscar Øre ÿ ẞ"), "scar re");
+    assert_eq!(clean_player_name("¡Señor Ñandú!"), "¡Señor Ñandú");
+    assert_eq!(clean_player_name("¿Straße?"), "¿Straße");
+    // (15 characters, not bytes: 15 two-byte letters)
+    assert_eq!(clean_player_name("éééééééééééééééééé"), "ééééééééééééééé");
+    assert_eq!(clean_player_name("ÆÆÆÆÆÆÆÆÆÆÆÆÆÆÆ").chars().count(), 15);
+    assert!(PLAYER_NAME_LETTERS.chars().all(|c| !c.is_ascii() && player_name_char(c)));
     assert_eq!(clean_player_name("abcdefghijklmnopqrstuvwxyz"), "abcdefghijklmno");
     assert_eq!(clean_player_name("abcdefghijklmn opq"), "abcdefghijklmn");
     // (read and written through the file as cleaned)
@@ -316,5 +328,15 @@ fn the_player_name_rule() {
     let l = Settings::load(&p);
     assert_eq!(l.settings.game.player_name, "Hold My Socks");
     assert!(l.settings.to_toml().contains("player_name = \"Hold My Socks\""));
+    // (UTF-8 in the file, both ways)
+    std::fs::write(&p, "[game]
+player_name = \"Jürgen Çağ éè\"
+").unwrap();
+    let l = Settings::load(&p);
+    assert_eq!(l.settings.game.player_name, "Jürgen Ça éè");
+    let t = l.settings.to_toml();
+    assert!(t.contains("player_name = \"Jürgen Ça éè\""), "{t}");
+    std::fs::write(&p, &t).unwrap();
+    assert_eq!(Settings::load(&p).settings.game.player_name, "Jürgen Ça éè");
     let _ = std::fs::remove_dir_all(&d);
 }
