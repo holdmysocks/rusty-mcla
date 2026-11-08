@@ -585,11 +585,11 @@ impl Path {
         (p, d.normalize_or(Vec3::NEG_Z))
     }
 
-    /// Slot 6: the phase `d` metres on from `t` (the curve speed taken anew when unset).
+    /// Slot 6: the phase `d` metres on from `t` at the stored curve speed +180 (set at the attach, F-48384).
     fn advance(&self, t: f32, d: f32) -> f32 {
         match &self.geom {
             Geom::Tcp(q) => q.advance(t, d),
-            Geom::Curve(c) => LaneCurve::advance(t, d, if self.ds > 0.0 { self.ds } else { c.speed(t) }),
+            Geom::Curve(_) => LaneCurve::advance(t, d, self.ds),
         }
     }
 
@@ -2587,7 +2587,7 @@ fn recovery_rail(r: &mut Rider, env: &Env, me: usize, req: &RailReq) -> Option<P
     let (min_turn, pivot) = (r.ty.min_turn, r.ty.pivot_turn);
     // (F-26466's draws: the car's MWC)
     let mut rng = r.mwc;
-    let pick = rail_to_lane(req, min_turn, pivot, &cand, &mut || rng.next(), &mut |lane, ph| nav.curves[lane].eval(ph), &mut |q| !rail_blocked(env, me, q, w_own, 2106, 0.0));
+    let pick = rail_to_lane(req, min_turn, pivot, &cand, &mut || rng.next(), &mut |lane, ph| nav.curves[lane].eval_pair(ph), &mut |q| !rail_blocked(env, me, q, w_own, 2106, 0.0));
     r.mwc = rng;
     let pick = pick?;
     Some(Path::tcp(pick.rail, pick.speed, Some((pick.lane, pick.phase))))
@@ -2898,7 +2898,9 @@ pub(crate) fn backing_rail(place: Vec3, row2: Vec3) -> Path {
     let e = vmadd3(row2, 2.0, place);
     let m = vmul3(vadd3(e, place), 0.5);
     let cps = [e, vmul3(vadd3(m, e), 0.5), vmul3(vadd3(m, place), 0.5), place];
-    Path { geom: Geom::Curve(path_curve(&cps)), speed: 4.0, end: None, reverse: true, t: 1.0, ds: 0.0, owner: None }
+    let c = path_curve(&cps);
+    let ds = set_rail_speed(&c, 1.0);
+    Path { geom: Geom::Curve(c), speed: 4.0, end: None, reverse: true, t: 1.0, ds, owner: None }
 }
 
 /// The turn signals: the render flags' bits 0x20 (F-41231, the lamp state `s[2]`) and 0x10 (F-81289, `s[3]`), for
@@ -3170,7 +3172,7 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
         let c = &nav.curves[lane];
         let t0 = r.phase(nav);
         if r.ds_lane != lane {
-            r.ds = c.speed(t0);
+            r.ds = set_rail_speed(c, t0);
             r.ds_lane = lane;
         }
         let t1 = mcla_formats::rage::navsys::LaneCurve::advance(t0, d, r.ds);
@@ -3197,11 +3199,10 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
                     }
                     let nl = nav.links[n].lane;
                     let c = &nav.curves[nl];
-                    r.ds = c.speed(0.0);
+                    r.ds = set_rail_speed(c, 0.0);
                     r.ds_lane = nl;
                     if rest > 0.0 {
-                        let t = mcla_formats::rage::navsys::LaneCurve::advance(0.0, rest, r.ds).clamp(0.0, 1.0);
-                        r.set_phase(nav, env.lanes, t);
+                        r.set_phase(nav, env.lanes, carry_phase(c, 0.0, rest));
                     }
                 }
             }
@@ -4227,7 +4228,7 @@ fn after_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, chose
             (q, crate::tcp_rail::vnorm(Vec3::new(d.x, 0.0, d.z)))
         }
         (None, Some(c)) => {
-            let (q, d) = c.eval(r.t);
+            let (q, d) = c.eval_pair(r.t);
             (q, crate::tcp_rail::vnorm(Vec3::new(d.x, 0.0, d.z)))
         }
         (None, None) => (pos, fwd),
@@ -4351,11 +4352,10 @@ fn step_path_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, h
             r.link = k;
             r.set_phase(env.nav, env.lanes, t);
             let c = &env.nav.curves[lane];
-            r.ds = c.speed(t);
+            r.ds = set_rail_speed(c, t);
             r.ds_lane = lane;
             if rest > 0.0 {
-                let t1 = LaneCurve::advance(t, rest, r.ds).clamp(0.0, 1.0);
-                r.set_phase(env.nav, env.lanes, t1);
+                r.set_phase(env.nav, env.lanes, carry_phase(c, t, rest));
             }
         }
         r.on = [false; 3];
@@ -7306,7 +7306,7 @@ pub fn lane_entries(c: &LaneCurve, pl: glam::Vec4, max: usize) -> Vec<(Vec3, f32
     let mut last: Option<(bool, Vec3, f32)> = None;
     for k in 0..100 {
         let t = k as f32 * 0.010_101_01;
-        let p = c.eval(t).0;
+        let p = crate::railroute::point(c, t);
         let o = plane_out(pl, p);
         if let Some((true, q, tq)) = last {
             if !o {
@@ -8613,6 +8613,21 @@ pub fn snap_to_lane(nav: &NavSys, p: Vec3, r: f32) -> (Option<LaneHit>, usize) {
 /// handed over p zeros, 1 .. k - p - 1, then k - p repeated p times, with one more knot put
 /// before and after (K0 = K1 - (K2 - K1), the last = the one before + its step; with four
 /// knots both copied); TRange = K[count - p - 1] = k - p, TMax = TRange - 1e-4.
+/// F-48384's +180 (the follower's set rail): 0 stored, then the rail's slot 9 (F-87587 on a curve) at the phase with
+/// that 0 - |dP/du| x TRange, not averaged.
+fn set_rail_speed(c: &LaneCurve, t: f32) -> f32 {
+    c.pose_slot9(t, 0.0).2
+}
+
+/// F-50894's carry onto the rail just set at phase `t`: the rest of the step (only when above 0) at the rail's slot 11
+/// speed (F-75223 with 0), slot 6 from `t`, the phase then clamped by fsel (below 0 or NaN: 0; 1 and up: 1). Once a
+/// step: past the end of this rail too the phase stays at 1.
+fn carry_phase(c: &LaneCurve, t: f32, rest: f32) -> f32 {
+    let p = LaneCurve::advance(t, rest, crate::ghostroute::lane_speed(c, t, 0.0));
+    let f0 = if p >= 0.0 { p } else { 0.0 };
+    if f0 - 1.0 >= 0.0 { 1.0 } else { f0 }
+}
+
 pub fn path_curve(cps: &[Vec3]) -> LaneCurve {
     let k = cps.len();
     let p = (k as i32 - 1).clamp(1, 3) as usize;
@@ -8726,9 +8741,11 @@ pub fn path_rails(nav: &NavSys, verts: &[Vec3], snap: &[bool], parked: bool, min
     // tangent at its start (the curve, the join rail, else the lane at its phase)
     out.spawn = out.snapped.first().copied().unwrap_or(spawn);
     let tan = match (&out.curve, &out.join, out.lane) {
-        (Some(c), _, _) => Some(c.eval(0.0).1),
+        // (F-94337: the first rail's slot 10; the curve rail's vtable has the lane's slots 6 - 11, F-26180 here too)
+        (Some(c), _, _) => Some(crate::railroute::deriv(c, 0.0)),
         (None, Some(_), _) => Some(out.join_dir),
-        (None, None, Some((l, t))) => nav.curves.get(l).map(|c| c.eval(t).1),
+        // (F-94337: the first rail's slot 10 - a lane's F-26180)
+        (None, None, Some((l, t))) => nav.curves.get(l).map(|c| crate::railroute::deriv(c, t)),
         _ => None,
     };
     if let Some(t) = tan {
@@ -8839,8 +8856,9 @@ impl Route {
     /// The point and heading where the car is.
     fn peek(&self) -> (Vec3, Vec3) {
         match &self.rails[self.i] {
+            // (the stored pose: slot 9's point and dP/du, which are slot 8's, F-71868)
             RouteRail::Curve(c) => {
-                let (p, d) = c.eval(self.t);
+                let (p, d) = c.eval_pair(self.t);
                 (p, d.normalize_or(Vec3::NEG_Z))
             }
             RouteRail::Turn(p) => p.at(p.t),
@@ -8851,9 +8869,10 @@ impl Route {
     /// of |dP/dt| here and the last value).
     fn pose(&mut self) -> (Vec3, Vec3) {
         let (p, d, sp) = match &mut self.rails[self.i] {
+            // (slot 9, F-87587: the point, dP/du and the speed averaged with +180)
             RouteRail::Curve(c) => {
-                let (p, d) = c.eval(self.t);
-                (p, d.normalize_or(Vec3::NEG_Z), Some(d.length()))
+                let (p, d, s) = c.pose_slot9(self.t, self.ds);
+                (p, d.normalize_or(Vec3::NEG_Z), Some(s))
             }
             RouteRail::Turn(p) => {
                 let (q, d) = p.pose();
@@ -8861,7 +8880,7 @@ impl Route {
             }
         };
         if let Some(sp) = sp {
-            self.ds = if self.ds > 0.0 { (sp + self.ds) * 0.5 } else { sp };
+            self.ds = sp;
         }
         (p, d)
     }
@@ -8928,8 +8947,9 @@ pub fn step_route(r: &mut Rider, env: &Env, me: usize, half_len: f32, dt: f32) -
             let i = rt.i;
             match &mut rt.rails[i] {
                 RouteRail::Curve(c) => {
+                    // (+180 unset: the rail just set, F-48384's slot 9 at the phase with 0)
                     if rt.ds <= 0.0 {
-                        rt.ds = c.speed(rt.t);
+                        rt.ds = set_rail_speed(c, rt.t);
                     }
                     let t0 = rt.t;
                     let t1 = mcla_formats::rage::navsys::LaneCurve::advance(t0, d, rt.ds);
@@ -8945,12 +8965,18 @@ pub fn step_route(r: &mut Rider, env: &Env, me: usize, half_len: f32, dt: f32) -
                 },
             }
             if rt.i + 1 < rt.rails.len() {
-                // the next rail, from its start (its curve speed taken anew)
+                // the next rail, from its start (F-50894's carry: set at 0, F-48384, the rest once at its slot 11
+                // speed, clamped; the arc-line-arc rail's slot 11 is not read: there the rest goes on as before)
                 rt.i += 1;
                 rt.t = 0.0;
                 rt.ds = 0.0;
-                if let RouteRail::Turn(p) = &mut rt.rails[rt.i] {
-                    p.t = 0.0;
+                match &mut rt.rails[rt.i] {
+                    RouteRail::Turn(p) => p.t = 0.0,
+                    RouteRail::Curve(c) => {
+                        rt.ds = set_rail_speed(c, 0.0);
+                        rt.t = carry_phase(c, 0.0, d);
+                        break;
+                    }
                 }
                 continue;
             }
@@ -8964,11 +8990,10 @@ pub fn step_route(r: &mut Rider, env: &Env, me: usize, half_len: f32, dt: f32) -
                 r.link = link;
                 r.set_phase(nav, env.lanes, lt);
                 let c = &nav.curves[lane];
-                r.ds = c.speed(lt);
+                r.ds = set_rail_speed(c, lt);
                 r.ds_lane = lane;
                 if d > 0.0 {
-                    let t = mcla_formats::rage::navsys::LaneCurve::advance(lt, d, r.ds).min(1.0);
-                    r.set_phase(nav, env.lanes, t);
+                    r.set_phase(nav, env.lanes, carry_phase(c, lt, d));
                 }
             }
             r.state = 1;
@@ -10819,7 +10844,9 @@ pub fn lane_change_rail(nav: &NavSys, lanes: &Lanes, c: &crate::ghostroute::Chan
 /// four control points, attached from phase 0 with (`to`, `phase`) as the next rail.
 fn lane_change_path(pd: [Vec3; 4], w: f32, speed: f32, to: usize, phase: f32, owner: Option<usize>) -> Path {
     let cps = lane_change_cps(pd[0], pd[1], pd[2], pd[3], w);
-    Path { geom: Geom::Curve(path_curve(&cps)), speed, end: Some((to, phase)), reverse: false, t: 0.0, ds: 0.0, owner }
+    let c = path_curve(&cps);
+    let ds = set_rail_speed(&c, 0.0);
+    Path { geom: Geom::Curve(c), speed, end: Some((to, phase)), reverse: false, t: 0.0, ds, owner }
 }
 
 /// The cruising ghost's place and unit heading: on the lane-change rail its point and unit derivative, else its lane's.
@@ -10867,11 +10894,10 @@ fn step_lane_change(r: &mut Rider, env: &Env, me: usize, half_len: f32, dt: f32)
         r.link = k;
         r.set_phase(nav, env.lanes, to_t);
         let c = &nav.curves[to];
-        r.ds = c.speed(to_t);
+        r.ds = set_rail_speed(c, to_t);
         r.ds_lane = to;
         if rest > 0.0 {
-            let t1 = LaneCurve::advance(to_t, rest, r.ds).clamp(0.0, 1.0);
-            r.set_phase(nav, env.lanes, t1);
+            r.set_phase(nav, env.lanes, carry_phase(c, to_t, rest));
         }
     }
     r.pose(nav)
