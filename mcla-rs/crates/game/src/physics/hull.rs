@@ -2364,3 +2364,24 @@ mod element_tests {
         assert_eq!(n, 39000);
     }
 }
+
+#[cfg(test)]
+mod beside_edge_tests {
+    use glam::Vec3;
+
+    /// F-96748 run offline (tools/beside_edge_reference.py): 10,000 edges (1 mm .. 10 m, degenerate ones), points
+    /// before, along and past them, the radius round the true distance and at it - every answer equal to `beside_edge`.
+    #[test]
+    fn beside_edge_is_the_originals() {
+        let h = |x: &str| f32::from_bits(u32::from_str_radix(x, 16).unwrap());
+        let mut n = 0;
+        for line in include_str!("testdata/beside_edge_ref.txt").lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let c: Vec<f32> = case.split(' ').map(h).collect();
+            let v = |i: usize| Vec3::new(c[i], c[i + 1], c[i + 2]);
+            assert_eq!(super::beside_edge(v(0), v(3), v(6), c[9]), want == "1", "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 10000);
+    }
+}
