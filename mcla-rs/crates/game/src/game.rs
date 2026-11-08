@@ -7625,7 +7625,8 @@ impl Game {
                 // INTERIOR COLORS: ACCEPT on a colour row opens its strip (left / right through the
                 // swatches, ACCEPT keeps, BACK puts the old colour back)
                 let (up, down, left, right, back, enter) = if let Some((k, saved)) = self.int_open {
-                    let n = PALETTE.len();
+                    // (the neon's and the tint's strip: the original's 40 colours, `mc4::MISC_COLORS`)
+                    let n = if k >= 11 { crate::mc4::MISC_COLORS.len() } else { PALETTE.len() };
                     let cell = if k == 11 { &mut self.neon_color } else if k == 12 { &mut self.tint_color } else if k < 6 { &mut self.int_colors[k] } else if k < 9 { &mut self.rim_cols[k - 6] } else { &mut self.car_x.int_de_idx[(k - 9).min(1)].0 };
                     if left || right {
                         *cell = (*cell + n + right as usize - left as usize) % n;
@@ -7649,7 +7650,7 @@ impl Game {
                             12 => self.car_x.tint_rgb.filter(|o| o.0 == swatch).map(|o| crate::mc4::to_linear(o.1)),
                             _ => None,
                         };
-                        let from = (if k >= 11 { own.map(|c| paint_rgb_to_hsv([c[0], c[1], c[2], 1.0])) } else if k < 9 { self.slot_hsv[k] } else { self.car_x.int_de_hsv[(k - 9).min(1)] }).unwrap_or_else(|| paint_rgb_to_hsv(PALETTE[swatch % PALETTE.len()]));
+                        let from = (if k >= 11 { own.map(|c| paint_rgb_to_hsv([c[0], c[1], c[2], 1.0])) } else if k < 9 { self.slot_hsv[k] } else { self.car_x.int_de_hsv[(k - 9).min(1)] }).unwrap_or_else(|| if k >= 11 { let c = crate::mc4::to_linear(crate::mc4::misc_screen(swatch)); paint_rgb_to_hsv([c[0], c[1], c[2], 1.0]) } else { paint_rgb_to_hsv(PALETTE[swatch % PALETTE.len()]) });
                         self.pick_slot = Some((k.min(12), self.paint_hsv));
                         self.paint_pick = Some(Some(from));
                         self.paint_hsv = Some(from);
@@ -8103,14 +8104,14 @@ impl Game {
                     } else if (self.garage_row == neon_row + 1 || self.garage_row == tint_row + 1) && self.flash_garage.is_some() {
                         // (ExtNeon_Closed / Tint_Closed: left and right are empty transitions; ACCEPT opens the strip)
                     } else if self.garage_row == neon_row + 1 {
-                        self.neon_color = (self.neon_color as isize + d).rem_euclid(PALETTE.len() as isize) as usize;
+                        self.neon_color = (self.neon_color as isize + d).rem_euclid(crate::mc4::MISC_COLORS.len() as isize) as usize;
                         self.dirty = true;
                     } else if self.garage_row == tint_row {
                         // (ten rows, Tint_1 .. Tint_10: garage.ChangeTintTransparency(0..9))
                         self.tint_level = (self.tint_level as isize + d).rem_euclid(10) as u8;
                         self.dirty = true;
                     } else if self.garage_row == tint_row + 1 {
-                        self.tint_color = (self.tint_color as isize + d).rem_euclid(PALETTE.len() as isize) as usize;
+                        self.tint_color = (self.tint_color as isize + d).rem_euclid(crate::mc4::MISC_COLORS.len() as isize) as usize;
                         self.dirty = true;
                     } else if self.garage_row == fade_row {
                         self.paint_fade = (self.paint_fade as isize + d).rem_euclid(5) as u8;
@@ -8694,8 +8695,10 @@ impl Game {
                         if neon_page {
                             use crate::flash_ui::{choice_list, swatch_value};
                             let row = |label: String, value: String| crate::flash_ui::MenuRow { label, value, enabled: true, part: None };
-                            // (a colour the record keeps free, on its swatch: `mc4` CarLive)
-                            let free = |c: [f32; 3]| { let l = crate::mc4::to_linear(c); rgb_of([l[0], l[1], l[2], 1.0]) };
+                            // (the strip: the original's 40 colours, `mc4::MISC_COLORS`; a colour the record keeps free,
+                            // on its swatch - `mc4` CarLive - as its bytes, the record being byte / 255)
+                            let strip: Vec<u32> = crate::mc4::MISC_COLORS.to_vec();
+                            let free = |c: [f32; 3]| { let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32; b(c[0]) << 16 | b(c[1]) << 8 | b(c[2]) };
                             let swatch = |k: usize, idx: usize, own: Option<(usize, [f32; 3])>| {
                                 let idx = idx % strip.len();
                                 let shown = self.int_open.filter(|o| o.0 == k).map_or(idx, |o| o.1 % strip.len());

@@ -1795,6 +1795,37 @@ pub fn to_screen(c: [f32; 3]) -> [f32; 3] {
     [c[0].max(0.0).powf(1.0 / 2.2), c[1].max(0.0).powf(1.0 / 2.2), c[2].max(0.0).powf(1.0 / 2.2)]
 }
 
+/// The garage's 40 colours of the NEON COLOR and WINDOW TINT strips (0x00RRGGBB): the table the garage object's
+/// constructor F-74617 copies to its +21696 (the save's ColorData); MatchStateColorsToSavegame (F-93328) gives every
+/// strip of the Colors menus the same 40.
+pub const MISC_COLORS: [u32; 40] = [
+    0x000000, 0xFFFFFF, 0xDDD8BC, 0xD8CFA0, 0x010032, 0x10186E, 0x204465, 0x6A777D,
+    0x85C2E5, 0x524636, 0x6B5945, 0x934C3C, 0x2D1111, 0x6D6164, 0x967886, 0x2F4432,
+    0x4C4900, 0x4D7569, 0x009B7F, 0x2A8400, 0x47484C, 0x595F65, 0x727272, 0x917F63,
+    0x93908B, 0xADA39A, 0xA3A3A3, 0xD8D8D8, 0xE24412, 0xC17A38, 0xE57D32, 0xEDBA36,
+    0xBFA624, 0xB2AC10, 0x93346F, 0x8C705C, 0x3A0808, 0x8A0B22, 0xAF2613, 0xDF2B12,
+];
+
+/// A strip's colour as SetMiscColor (F-70456) writes it into the record: each byte x f32(1 / 255), no gamma.
+pub fn misc_screen(k: usize) -> [f32; 3] {
+    let c = MISC_COLORS[k % MISC_COLORS.len()];
+    let f = 1.0f32 / 255.0;
+    [((c >> 16) & 255) as f32 * f, ((c >> 8) & 255) as f32 * f, (c & 255) as f32 * f]
+}
+
+/// The strip's colour nearest a record's colour (the port's menu keeps the swatch beside the record's own colour).
+fn nearest_misc(c: [f32; 3]) -> usize {
+    let mut best = (0usize, f32::MAX);
+    for k in 0..MISC_COLORS.len() {
+        let s = misc_screen(k);
+        let d = (0..3).map(|i| (s[i] - c[i]) * (s[i] - c[i])).sum::<f32>();
+        if d < best.1 {
+            best = (k, d);
+        }
+    }
+    best.0
+}
+
 fn swatch_screen(k: usize) -> [f32; 3] {
     let c = PALETTE[k % PALETTE.len()];
     to_screen([c[0], c[1], c[2]])
@@ -2006,11 +2037,11 @@ impl Game {
         let (hyd, tint_level, neon_on, int_neon) = (self.hydraulics, self.tint_level, self.neon_on, self.int_neon);
         let tint = match x.tint_rgb {
             Some((k, c)) if k == self.tint_color => c,
-            _ => swatch_screen(self.tint_color),
+            _ => misc_screen(self.tint_color),
         };
         let neon = match x.neon_rgb {
             Some((k, c)) if k == self.neon_color => c,
-            _ => swatch_screen(self.neon_color),
+            _ => misc_screen(self.neon_color),
         };
         let paint_b = match x.paint_b_rgb {
             Some((k, c)) if k == self.paint_b => c,
@@ -2122,13 +2153,13 @@ impl Game {
         self.car_x.airbags = c.airbags();
         self.tint_level = c.tint_row();
         if let Some(rgb) = c.tint_rgb() {
-            self.tint_color = nearest_swatch(rgb);
+            self.tint_color = nearest_misc(rgb);
             self.car_x.tint_rgb = Some((self.tint_color, rgb));
         }
         let (on, rgb) = c.neon_ext();
         self.neon_on = on;
         if let Some(rgb) = rgb {
-            self.neon_color = nearest_swatch(rgb);
+            self.neon_color = nearest_misc(rgb);
             self.car_x.neon_rgb = Some((self.neon_color, rgb));
         }
         self.int_neon = c.neon_int();
@@ -2615,7 +2646,7 @@ impl Game {
             // (stock glass and no record: the constructor's glass)
             _ if row == 0 => [0.0, 0.0035, 0.005, 0.372],
             _ => {
-                let c = swatch_screen(self.tint_color);
+                let c = misc_screen(self.tint_color);
                 [c[0], c[1], c[2], a]
             }
         }
@@ -2633,10 +2664,7 @@ impl Game {
     pub fn neon_linear(&self) -> [f32; 3] {
         match self.car_x.neon_rgb {
             Some((k, c)) if k == self.neon_color => to_linear(c),
-            _ => {
-                let c = PALETTE[self.neon_color % PALETTE.len()];
-                [c[0], c[1], c[2]]
-            }
+            _ => to_linear(misc_screen(self.neon_color)),
         }
     }
 
@@ -13575,7 +13603,7 @@ mod tests {
         assert_eq!((s.hydraulics(), s.airbags(), s.tint_row(), s.ability_idx()), (true, true, 4, Some(2)));
         assert_eq!(s.visual.m_vWindowTintColorNew[3].0, 0.5832);
         assert_eq!(s.visual.ExtNeonIntensity.0, 1.0);
-        let sw = swatch_screen(5);
+        let sw = misc_screen(5);
         assert!((s.visual.ExtNeonColor[0].0 as f32 - sw[0]).abs() < 1e-5);
         assert_eq!(s.visual.paint[0].fade(), Some(2));
         assert_eq!(s.visual.paint[3].fade(), Some(2), "an area that had the body's fade follows it");
