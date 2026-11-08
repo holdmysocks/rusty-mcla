@@ -491,6 +491,40 @@ fn turn(rot: Quat, flip: bool, v: Vec3) -> Vec3 {
     rot * if flip { Vec3::new(-v.x, v.y, v.z) } else { v }
 }
 
+/// An effect instance's cull box as F-66872 writes it: the rule's CullSphere centre x s (s = the event's zoom x the
+/// instance's) through the instance's rows (the four-lane dot's sum, `halo::locator_place`), the radius
+/// |(CullRadius x the event's zoom) x the instance's| when CullRadius > 0, else 1; min / max = centre -+ radius in
+/// every lane (w: the scaled centre's x -+ radius, where the code's merges leave it). Checked on 4,000 cases against the original's code run offline
+/// (`tools/cull_sphere_reference.py`, test `cull_box_matches_the_original`).
+pub fn cull_box(rows: &[Vec3; 4], centre: Vec3, radius: f32, ev_zoom: f32, inst_zoom: f32) -> ([f32; 4], [f32; 4]) {
+    let o = centre * (ev_zoom * inst_zoom);
+    let c = crate::halo::locator_place(rows, o);
+    let r = if radius > 0.0 { radius * ev_zoom * inst_zoom } else { 1.0 }.abs();
+    ([c.x - r, c.y - r, c.z - r, o.x - r], [c.x + r, c.y + r, c.z + r, o.x + r])
+}
+
+#[cfg(test)]
+mod cull_box_tests {
+    use super::*;
+
+    #[test]
+    fn cull_box_matches_the_original() {
+        let t = include_str!("testdata/cull_sphere_reference.txt");
+        let mut n = 0;
+        for l in t.lines() {
+            let (a, b) = l.split_once(" -> ").unwrap();
+            let w: Vec<f32> = a.split_whitespace().skip(1).map(|x| f32::from_bits(u32::from_str_radix(x, 16).unwrap())).collect();
+            let want: Vec<u32> = b.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let v = |i: usize| Vec3::new(w[i], w[i + 1], w[i + 2]);
+            let (mn, mx) = cull_box(&[v(0), v(4), v(8), v(12)], v(16), w[19], w[20], w[21]);
+            let got: Vec<u32> = mn.iter().chain(mx.iter()).map(|x| x.to_bits()).collect();
+            assert_eq!(got, want, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
+    }
+}
+
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
@@ -1594,10 +1628,8 @@ impl Particles {
                             w_gpu = w_cpu;
                             // (the box: centre = the instance's matrix x CullSphere x s, radius |CullRadius x s|
                             // or 1; s = the event's zoom x the instance's - `F-66872`)
-                            let sc = em.zoom * ez;
-                            let c = e.pos + turn(e.rot, e.flip, Vec3::from(rule.cull_offset)) * sc;
-                            let r = if rule.cull_radius > 0.0 { (rule.cull_radius * sc).abs() } else { 1.0 };
-                            w_cpu = c.y - r;
+                            let rows = [turn(e.rot, e.flip, Vec3::X), turn(e.rot, e.flip, Vec3::Y), turn(e.rot, e.flip, Vec3::Z), e.pos];
+                            w_cpu = cull_box(&rows, Vec3::from(rule.cull_offset), rule.cull_radius, em.zoom, ez).0[1];
                         }
                         base_w.insert(em.uid, w_gpu);
                     }
