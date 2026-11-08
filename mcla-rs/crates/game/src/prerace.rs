@@ -218,13 +218,21 @@ impl Picker {
             let k = self.table.key("Safety")?;
             return self.draw(k);
         }
-        // (F-10331: the draw first, whatever the grid; the debug params forcepreracetaunt /
-        // disablepreracetaunt are off and no network session runs)
+        // (the scripts' grid: the race file's GridType as the parser reads it, 0 without opponents)
+        let grid = if a.grid.eq_ignore_ascii_case("1x1_Race_Grid") { 0 } else { grid_type_key(&a.grid) };
+        self.pick_key(grid, a.first_race, a.cam_only, a.front_lr)
+    }
+
+    /// PickRacestartCutsceneOrTauntFromGridEnum (F-10331) on the grid key `grid`, then the mapper's pick F-24279.
+    /// The draw first, whatever the grid; a taunt (key 7) for a first race or a draw <= 0.333, never on key 0 (an
+    /// unknown grid's -1 can have one); the debug params forcepreracetaunt / disablepreracetaunt are off and no
+    /// network session runs. A key the table does not have: None.
+    pub fn pick_key(&mut self, grid: i32, first_race: bool, cam_only: bool, front_lr: bool) -> Option<String> {
         let r = self.rng.float();
-        let grid = self.table.key(&a.grid).map(|p| self.table.keys[p]);
-        let taunt = (a.first_race || !(r > 0.333f32)) && grid.map_or(false, |g| g != 0);
-        let key = if taunt { 7 } else { grid? };
+        let taunt = (first_race || !(r > 0.333f32)) && grid != 0;
+        let key = if taunt { 7 } else { grid };
         let k = self.table.place_of_key(key)?;
+        let a = PickArgs { cam_only, front_lr, ..Default::default() };
         if a.cam_only {
             for _ in 0..self.bags[k].0.len() {
                 let s = self.draw(k)?;
@@ -276,6 +284,14 @@ pub fn slot_events(scene: &str) -> Vec<SlotEvent> {
         }
         e
     }).collect()
+}
+
+/// A race file's GridType as the race parser reads it (F-53452): its place among None, 2x4_Race_Grid,
+/// 2x4_Split_Race_Grid, 3x3_Race_Grid, 4x2_Race_Grid, 3x3_Split_Race_Grid, 1x8_Race_Grid (an ASCII case-blind
+/// compare), else -1 (the parser logs it; `16_Race_Grid` of be_ordered_mb_04_multi).
+pub fn grid_type_key(name: &str) -> i32 {
+    const TYPES: [&str; 7] = ["None", "2x4_Race_Grid", "2x4_Split_Race_Grid", "3x3_Race_Grid", "4x2_Race_Grid", "3x3_Split_Race_Grid", "1x8_Race_Grid"];
+    TYPES.iter().position(|t| t.eq_ignore_ascii_case(name)).map_or(-1, |p| p as i32)
 }
 
 /// The taunt speech scenario a scene prepares (`CineScript_RequestPreraceTauntScenarioAudio`, sub_823BFC78):
@@ -941,6 +957,54 @@ pub const PRERACE_EVENTS: [PreraceEvents; 136] = [
 mod tests {
     use super::*;
 
+    /// The pick against the original run offline (tools/prerace_pick_reference.py: F-10331 and F-24279 with the
+    /// bags' code, the load shuffle of every bag, then 30 picks per case on keys -2..9, 3,000 cases): every
+    /// result (grid place and item, or none) and the generator's two words equal.
+    #[test]
+    fn pick_matches_the_original() {
+        let text = include_str!("testdata/prerace_pick_ref.txt");
+        let mut cases = 0;
+        for line in text.lines() {
+            let (head, tail) = line.split_once(" -> ").unwrap();
+            let h: Vec<&str> = head.split(' ').collect();
+            let nums = |s: &str| s.split(',').map(|x| x.parse::<i32>().unwrap()).collect::<Vec<i32>>();
+            let (keys, counts) = (nums(h[0]), nums(h[1]));
+            let starter: Vec<u32> = h[2].split(',').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let lists = (0..9).map(|g| (format!("g{g}"), (0..counts[g] as usize).map(|i| {
+                if (starter[g] >> i) & 1 == 1 { format!("x_racestarter_{g}_{i}") } else { format!("s_{g}_{i}") }
+            }).collect())).collect();
+            let table = GridTable { lists, keys, sc: h[3] == "1" };
+            let mut p = Picker::new(table, h[4].parse().unwrap());
+            let (picks, state) = tail.split_once(" | ").unwrap();
+            let want: Vec<&str> = picks.split(',').collect();
+            for (op, w) in h[5].split(';').zip(&want) {
+                let o = nums(op);
+                let got = p.pick_key(o[0], o[1] == 1, o[2] == 1, o[3] == 1).map_or("-".to_string(), |s| {
+                    let g = (0..9).find(|&g| p.table.lists[g].1.contains(&s)).unwrap();
+                    format!("{g}.{}", p.table.lists[g].1.iter().position(|x| *x == s).unwrap())
+                });
+                assert_eq!(&got, w, "{line}");
+            }
+            let st: Vec<u32> = state.split(' ').map(|x| x.parse().unwrap()).collect();
+            assert_eq!((p.rng.lo, p.rng.carry), (st[0], st[1]), "{line}");
+            cases += 1;
+        }
+        assert_eq!(cases, 3000);
+    }
+
+    /// The race parser's GridType lookup F-53452 run offline on 25 names (tools/prerace_pick_reference.py).
+    #[test]
+    fn grid_type_key_matches_the_original() {
+        let text = include_str!("testdata/grid_type_ref.txt");
+        let mut n = 0;
+        for line in text.lines() {
+            let (name, key) = line.rsplit_once('|').unwrap();
+            assert_eq!(grid_type_key(name), key.parse::<i32>().unwrap(), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 25);
+    }
+
     /// The bags against the original run offline (tools/prerace_bag_reference.py: F-11038's shuffle, then 40
     /// draws of F-27986 or F-96888 per case, 3,000 cases): every pick, the order words, the cursor and the
     /// generator's two words equal.
@@ -1007,7 +1071,8 @@ mod tests {
         assert_eq!(p.pick(&first).as_deref(), Some("racestart/gen_prerace_taunt_hp_01"));
         let one = PickArgs { grid: "1x1_Race_Grid".into(), first_race: true, ..Default::default() };
         assert_eq!(p.pick(&one).as_deref(), Some("racestart/gen_prerace_grid_1x1_01"));
-        assert!(p.pick(&PickArgs { grid: "16_Race_Grid".into(), ..Default::default() }).is_none());
+        // (an unknown grid is key -1: no list of its own, but a first race still gets a taunt - F-53452, F-10331)
+        assert_eq!(p.pick(&PickArgs { grid: "16_Race_Grid".into(), first_race: true, ..Default::default() }).as_deref(), Some("racestart/gen_prerace_taunt_hp_01"));
         // the bag: every scene once per round, no repeat across the round's seam
         let mut q = Picker::new(GridTable::parse(tbl), 99);
         let k = q.table.key("4x2_Race_Grid").unwrap();

@@ -1,0 +1,25 @@
+None|0
+none|0
+NONE|0
+2x4_Race_Grid|1
+2X4_RACE_GRID|1
+2x4_Split_Race_Grid|2
+2x4_split_race_grid|2
+3x3_Race_Grid|3
+4x2_Race_Grid|4
+4x2_race_grid|4
+3x3_Split_Race_Grid|5
+1x8_Race_Grid|6
+1x8_RACE_grid|6
+16_Race_Grid|-1
+1x1_Race_Grid|-1
+Taunt|-1
+Safety|-1
+|-1
+2x4_Race_Grid |-1
+ 2x4_Race_Grid|-1
+2x4_Race_Gri|-1
+2x4_Race_Grids|-1
+3x3|-1
+NoneX|-1
+4x2_Split_Race_Grid|-1
