@@ -10703,9 +10703,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // any weather). The cars' head, tail, brake
         // and reversing lamps too (vehicles.rs `halo_lamps`); police lights are still sprites.
         // (the game's list of lamp props, one for the glow pass and the cars' map: halo::ListView)
-        // (its near plane faces the way the frame is drawn: in a car the chase camera's direction)
-        let lamp_fwd = if self.drive && self.vehicles.player().is_some() { (self.chase.look - self.chase.pos).normalize_or(Vec3::NEG_Z) } else { self.cam.forward() };
-        let lamp_list = halo::ListView::new(glam::Mat4::from_cols_array_2d(&globals.view_proj), self.cam.pos, lamp_fwd, self.cam.fov_y);
+        // (its view tests F-29884 / F-91781 take the main view's planes: the frame's frustum, F-53768)
+        let lamp_list = halo::ListView::new(frustum, self.cam.pos, self.cam.fov_y);
         // (the light trails: the original's frame turns every 1/30 s - trail.rs; their view is the frame's)
         let trail_tick = trail::begin(dt);
         let trail_view = if self.drive && self.vehicles.player().is_some() { self.chase.view() } else { self.cam.view() };
@@ -10747,7 +10746,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let lit = halo::lamp_lit(*org, hour);
                         // (kind 5 a signal prop, 4 a lamp prop: F-79256's radius rule; the occlusion on the sphere, F-38575)
                         let kind = if self.props.glow_signal.get(li).copied().unwrap_or(false) { 5 } else { 4 };
-                        if !(lit || refl_night) || !lamp_list.holds(kind, *bc, *bw, *br, || !no_occ && occluded.hides_sphere(*bc, *bw)) {
+                        if !(lit || refl_night) || !lamp_list.holds(kind, *bc, *bw, *br, self.props.glow_gfx.get(li).copied().unwrap_or(false), || !no_occ && occluded.hides_sphere(*bc, *bw)) {
                             continue;
                         }
                         if refl_night && sig_refl.len() < siglrefl::MAX && !self.props.glow_signal.get(li).copied().unwrap_or(false) {
@@ -10778,7 +10777,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if head_ok.map_or(true, |(k, _)| k != *h) {
                         let (o, bc, bw, br, bx) = self.props.signal_head_cull(*h);
                         let _ = bx;
-                        let ok = lamp_list.holds(5, bc, bw, br, || occluded.hides_sphere(bc, bw)) && (lamp_list.sphere_in_view(o, 2.0) || o.distance_squared(cam) <= 400.0);
+                        let ok = lamp_list.holds(5, bc, bw, br, false, || occluded.hides_sphere(bc, bw)) && (lamp_list.sphere_in_view(o, 2.0) || o.distance_squared(cam) <= 400.0);
                         head_ok = Some((*h, ok));
                     }
                     if !head_ok.map_or(false, |(_, ok)| ok) {
@@ -11762,7 +11761,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     for (li, (((p, c, r), _bx), (bc, bw, br, org))) in self.props.glow_lamps.iter().zip(self.props.glow_boxes.iter()).zip(self.props.glow_cull.iter()).enumerate() {
                         // (the game's one list of lamp props, taken from the MAIN view: halo::ListView)
                         let kind = if self.props.glow_signal.get(li).copied().unwrap_or(false) { 5 } else { 4 };
-                        if !halo::lamp_lit(*org, self.time_of_day) || !lamp_list.holds(kind, *bc, *bw, *br, || !no_occ && occluded.hides_sphere(*bc, *bw)) {
+                        if !halo::lamp_lit(*org, self.time_of_day) || !lamp_list.holds(kind, *bc, *bw, *br, self.props.glow_gfx.get(li).copied().unwrap_or(false), || !no_occ && occluded.hides_sphere(*bc, *bw)) {
                             continue;
                         }
                         let d = lamp_list.order(*org) as f32 + p.distance(env_eye) * 1.0e-4;

@@ -223,7 +223,8 @@ pub fn lamp_lit(pos: Vec3, hour: f32) -> bool {
 pub struct ListView {
     cam: Vec3,
     tan: f32,
-    planes: [glam::Vec4; 5],
+    /// the main view's planes (F-53768: the frame's frustum)
+    frustum: crate::render::Frustum,
     cell: (i32, i32),
     spiral: Vec<u16>,
 }
@@ -233,14 +234,8 @@ const GRID: (f32, f32, f32) = (40.0, -3470.89, -2330.4475);
 const SPIRAL_R: i32 = 9;
 
 impl ListView {
-    pub fn new(view_proj: glam::Mat4, cam: Vec3, forward: Vec3, fov_y: f32) -> ListView {
-        let r = |i: usize| view_proj.row(i);
-        let mut planes = [r(3) + r(0), r(3) - r(0), r(3) + r(1), r(3) - r(1), glam::Vec4::ZERO];
-        for p in planes.iter_mut().take(4) {
-            *p *= crate::render::plane_scale(p.truncate().length_squared());
-        }
-        // (the near plane, 0.2 m in front)
-        planes[4] = forward.extend(-forward.dot(cam) - 0.2);
+    /// `frustum`: the main view's (the frame's `Frustum`, F-53768 from its view-projection).
+    pub fn new(frustum: crate::render::Frustum, cam: Vec3, fov_y: f32) -> ListView {
         // (the spiral of F-44865: z up, x up, z down, x down, a ring wider each round)
         let n = (2 * SPIRAL_R + 1) as usize;
         let mut spiral = vec![u16::MAX; n * n];
@@ -259,24 +254,26 @@ impl ListView {
             }
         }
         let cell = (((cam.x - GRID.1) / GRID.0).round() as i32, ((cam.z - GRID.2) / GRID.0).round() as i32);
-        ListView { cam, tan: (fov_y * 0.5).tan(), planes, cell, spiral }
+        ListView { cam, tan: (fov_y * 0.5).tan(), frustum, cell, spiral }
     }
 
     /// Whether a prop is on the lamp and signal list (F-79256's flag 0x2, `visit`): `kind` the object's type
     /// (4 lamp props, 5 signal props), `centre`, `w` its sphere (+96, the box centre and half diagonal), `r` its
-    /// drawable's radius; `hidden`: the occlusion test (F-38575 on the sphere), asked only when the visit asks it.
-    pub fn holds(&self, kind: i32, centre: Vec3, w: f32, r: f32, hidden: impl FnOnce() -> bool) -> bool {
+    /// drawable's radius, `gfx` its drawable's byte +308 (its type's name has `_gfx_`, set by the type loader F-50983);
+    /// `hidden`: the occlusion test (F-38575 on the sphere), asked only when the visit asks it.
+    pub fn holds(&self, kind: i32, centre: Vec3, w: f32, r: f32, gfx: bool, hidden: impl FnOnce() -> bool) -> bool {
         let k = [0.0125 * self.tan, 0.1 * self.tan, 0.030_177_67];
-        let vis = || self.planes.iter().all(|p| p.dot(centre.extend(1.0)) >= -w);
+        // (the view's sphere test F-29884 on the main view's 8 plane rows)
+        let vis = || self.frustum.sphere_touches(centre, w);
         // (+156 is the prop's array of light places: set for every prop that has glows, the only ones asked here;
         // the far global's +8 is 3000, read from the running game - it moves only the value and flag 0x1)
-        let v = visit(self.cam, k, 3000.0, kind, 0, true, r, (centre, w), vis, || if hidden() { 0x1000_0000 } else { 0x2000_0000 });
+        let v = visit(self.cam, k, 3000.0, kind, gfx as u8, true, r, (centre, w), vis, || if hidden() { 0x1000_0000 } else { 0x2000_0000 });
         v.map_or(false, |v| v.flags & 0x2 != 0)
     }
 
-    /// A sphere inside the view's planes (F-91781: every plane's value + r >= 0).
+    /// A sphere inside the main view's planes (F-91781: every plane's value + r >= 0).
     pub fn sphere_in_view(&self, centre: Vec3, r: f32) -> bool {
-        self.planes.iter().all(|p| p.dot(centre.extend(1.0)) + r >= 0.0)
+        self.frustum.sphere_plus(centre, r)
     }
 
     /// The place of a prop's cell in the walk (the list's order; AddGlow keeps the first 96).
