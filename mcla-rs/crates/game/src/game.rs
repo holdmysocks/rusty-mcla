@@ -4626,36 +4626,39 @@ impl Game {
             return;
         }
         let cp = &race.checkpoints[..n];
-        let is_player = |i: usize| vehicles.cars.get(i).map_or(false, |c| c.is_player);
-        let Some(r) = st.iter().position(|e| e.1.is_some() && is_player(e.0)).or_else(|| st.iter().position(|e| e.1.is_some())) else { return };
-        let ref_ms = (st[r].1.unwrap_or(0.0) * 1000.0).round() as i32;
-        let path: f32 = (1..n).map(|j| cp[j].distance(cp[j - 1])).sum();
-        let total = race.laps.clamp(1, 100) as f32 * (vehicles.cars[st[r].0].state.pos.distance(cp[0]) + path);
-        let grid0 = self.current_race.and_then(|i| self.race_defs.get(i)).and_then(|d| d.grid.first()).map_or(cp[0], |g| g.0);
-        let mut f31 = 0.0f32;
-        for (place, e) in st.iter_mut().enumerate() {
-            if place == r || e.1.is_some() {
-                continue;
-            }
-            let Some(c) = vehicles.cars.get(e.0) else { continue };
-            if c.is_player || c.deactivated || place < r {
-                continue;
-            }
+        // (the results' estimate F-23843 on the standings as the results block: place = the row, the player type 0,
+        // every other an AI racer (2), a deactivated car's chassis state 1, the next checkpoint as count in the lap
+        // and the lap; the car's position stands for both the racer's +192 vector and its car's matrix. Approx.: the
+        // grid object is the race's first grid slot; without a finisher the original's base-time branch (the race
+        // table's +136, the career manager's generator) is not ported - nothing is estimated then)
+        let mut rec: Vec<crate::career::EstRacer> = st.iter().enumerate().map(|(place, e)| {
+            let c = vehicles.cars.get(e.0);
             let next = race.next.get(e.0).copied().unwrap_or(0);
-            let (k, lap) = (next % n, next / n);
-            let mut f0 = 0.0f32;
-            if k > 0 {
-                let s = grid0.distance(cp[0]) + (1..k).map(|j| cp[j].distance(cp[j - 1])).sum::<f32>();
-                f31 = (lap + 1) as f32 * s;
-                f0 = c.state.pos.distance(cp[k - 1]);
+            let p = c.map_or([0.0; 3], |c| c.state.pos.to_array());
+            crate::career::EstRacer {
+                kind: if c.map_or(false, |c| c.is_player) { 0 } else { 2 },
+                next: (next % n) as i32,
+                lap: (next / n) as i32,
+                time: e.1.map_or(crate::career::UNFINISHED, |t| (t * 1000.0).round() as i32),
+                place: place as i32 + 1,
+                state: if c.map_or(false, |c| c.deactivated) { 1 } else { 0 },
+                perf: 0.0,
+                p192: p,
+                pos: p,
             }
-            if f0 + f31 > total {
-                f31 = 0.0;
-                f0 = 0.0;
+        }).collect();
+        if !rec.iter().any(|e| e.time != crate::career::UNFINISHED && e.time != -1) {
+            return;
+        }
+        let cps: Vec<[f32; 3]> = cp.iter().map(|v| v.to_array()).collect();
+        let grid0 = self.current_race.and_then(|i| self.race_defs.get(i)).and_then(|d| d.grid.first()).map_or(cp[0], |g| g.0);
+        let mut rng = (0u32, 0u32);
+        crate::career::estimate_times(&mut rec, &cps, n as i32, race.laps as i32, grid0.to_array(), None, &mut rng, false);
+        for (e, r) in st.iter_mut().zip(&rec) {
+            if e.1.is_none() && r.time != crate::career::UNFINISHED && r.time != -1 {
+                e.1 = Some(r.time as f32 / 1000.0);
+                log::info!("results: car {} not finished, estimated {} ms", e.0, r.time);
             }
-            let t = ((1.0 - (f0 + f31) / total) * ref_ms as f32) as i32 + ref_ms;
-            e.1 = Some(t as f32 / 1000.0);
-            log::info!("results: car {} not finished (next checkpoint {}), {:.0} of {:.0} m: {} ms after {} ms", e.0, next, f0 + f31, total, t, ref_ms);
         }
     }
 

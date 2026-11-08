@@ -3243,6 +3243,137 @@ pub fn reward_shown<T>(list: &[T], hidden: impl Fn(&T) -> bool) -> bool {
     list.iter().any(|r| !hidden(r))
 }
 
+/// One racer record of the results' estimate F-23843 (the results block's 192-byte record and the racer it names).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EstRacer {
+    /// +16: 0 the player, 2 an AI racer
+    pub kind: i32,
+    /// +32 the next checkpoint (count in the lap), +36 the lap
+    pub next: i32,
+    pub lap: i32,
+    /// +40 the finish time in ms (0x7FFFFFFF not finished, -1 out)
+    pub time: i32,
+    /// +172
+    pub place: i32,
+    /// the car's chassis state word (+592; 1 = deactivated)
+    pub state: i32,
+    /// the racer's performance float (the no-finisher branch)
+    pub perf: f32,
+    /// the racer's +192 vector and its car's position
+    pub p192: [f32; 3],
+    pub pos: [f32; 3],
+}
+
+/// The not-finished time (0x7FFFFFFF) of the results.
+pub const UNFINISHED: i32 = 0x7FFF_FFFF;
+
+/// sqrt(dx dx + (dz dz + dy dy)) as the original fuses it (float steps).
+fn est_dist(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let (dx, dy, dz) = (a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    // (the guest's fmadds: the fused result rounded to a double, then to a float)
+    let fma = |a: f32, b: f32, c: f32| (a as f64).mul_add(b as f64, c as f64) as f32;
+    fma(dx, dx, fma(dz, dz, dy * dy)).sqrt()
+}
+
+/// fctiwz as the guest does it: NaN -> i32::MIN, else saturated towards zero.
+fn est_int(x: f32) -> i32 {
+    if x.is_nan() { i32::MIN } else { x as i32 }
+}
+
+/// The results' estimate F-23843 for the racers who did not finish. `cps` the checkpoints (centres), `per_lap` their
+/// count in a lap, `laps` the race's raw lap count, `grid` the race's grid object vector, `base` the race table's
+/// base time when the results name a race (+0 != -1), `rng` the career manager's generator words. Online: nothing.
+/// The reference is the finished player, else the finished racer placed first. With one: every AI racer not
+/// finished and placed behind it gets ref + (1 - covered / total) x ref ms (covered from the grid along the
+/// checkpoints to the next one times the lap + 1, plus the way to it; total = laps x (ref's way to the start +
+/// the lap's path)); a non-AI or deactivated one -1. Without: the non-player placed first gets base -
+/// (1 - perf) x -3000, every other non-player that + (generator % 1000) + place x 6000.
+pub fn estimate_times(rec: &mut [EstRacer], cps: &[[f32; 3]], per_lap: i32, laps: i32, grid: [f32; 3], base: Option<i32>, rng: &mut (u32, u32), online: bool) {
+    if online {
+        return;
+    }
+    let n = rec.len();
+    let mut best = 1000;
+    let mut r: Option<usize> = None;
+    for (i, e) in rec.iter().enumerate() {
+        if e.time == UNFINISHED || e.time == -1 {
+            continue;
+        }
+        if e.kind == 0 {
+            r = Some(i);
+            break;
+        }
+        if best > e.place {
+            r = Some(i);
+            best = e.place;
+        }
+    }
+    let Some(r) = r else {
+        let mut r: Option<usize> = None;
+        for (i, e) in rec.iter().enumerate() {
+            if e.kind != 0 && best > e.place {
+                best = e.place;
+                r = Some(i);
+            }
+        }
+        let Some(r) = r else { return };
+        if let Some(b) = base {
+            let k = (1.0f32 - rec[r].perf) * -3000.0f32;
+            rec[r].time = b.wrapping_sub(est_int(k));
+        }
+        for i in 0..n {
+            if i == r || rec[i].kind == 0 {
+                continue;
+            }
+            let t = (rng.0 as u64) * 0x5CDC_FAA7 + rng.1 as u64;
+            *rng = (t as u32, (t >> 32) as u32);
+            let x = (t as u32 & 0x7FFF_FFFF) as i32;
+            rec[i].time = rec[r].time.wrapping_add(x % 1000).wrapping_add(rec[i].place.wrapping_mul(6000));
+        }
+        return;
+    };
+    let cp0 = cps[0];
+    let mut way = est_dist(rec[r].p192, cp0);
+    for j in 1..per_lap.max(0) as usize {
+        way = est_dist(cps[j - 1], cps[j]) + way;
+    }
+    let total = laps.clamp(1, 100) as f32 * way;
+    let ref_t = rec[r].time;
+    let mut f31 = 0.0f32;
+    for i in 0..n {
+        if i == r || rec[i].time != UNFINISHED {
+            continue;
+        }
+        let e = rec[i];
+        if e.kind != 2 || e.state == 1 {
+            rec[i].time = -1;
+            continue;
+        }
+        if e.place <= rec[r].place {
+            continue;
+        }
+        let mut f0;
+        if e.next > 0 {
+            let k = e.next as usize;
+            f0 = est_dist(grid, cp0);
+            for j in 1..k {
+                f0 = est_dist(cps[j - 1], cps[j]) + f0;
+            }
+            f31 = e.lap.wrapping_add(1) as f32 * f0;
+            f0 = est_dist(cps[k - 1], e.pos);
+        } else {
+            f0 = est_dist(e.p192, e.pos);
+        }
+        if f0 + f31 > total {
+            f31 = 0.0;
+            f0 = 0.0;
+        }
+        let c = f0 + f31;
+        let t = (1.0f32 - c / total) * ref_t as f32;
+        rec[i].time = est_int(t).wrapping_add(ref_t);
+    }
+}
+
 /// What a tournament's results decide (F-66541).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TourDecision {
@@ -3790,6 +3921,44 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 2996);
+    }
+
+    #[test]
+    fn results_estimate_matches_the_original() {
+        let text = include_str!("testdata/results_estimate_ref.txt");
+        let v3 = |s: &str| -> [f32; 3] {
+            let w: Vec<f32> = s.split(',').map(|x| x.parse().unwrap()).collect();
+            [w[0], w[1], w[2]]
+        };
+        let mut n = 0;
+        for line in text.lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split(' ').collect();
+            let num = |i: usize| w[i].parse::<i32>().unwrap();
+            let (online, cnt, m, laps, race) = (num(0) != 0, num(1) as usize, num(2), num(3), num(4));
+            let table: Vec<i32> = w[5].split(',').map(|x| x.parse().unwrap()).collect();
+            let (g0, g1) = w[6].split_once(',').unwrap();
+            let mut rng = (g0.parse::<u32>().unwrap(), g1.parse::<u32>().unwrap());
+            let grid = v3(w[7]);
+            let cps: Vec<[f32; 3]> = w[8].split(';').map(v3).collect();
+            let mut rec: Vec<EstRacer> = w[9..].iter().filter(|s| **s != "-").map(|s| {
+                let f: Vec<&str> = s.split(',').collect();
+                let i = |k: usize| f[k].parse::<i32>().unwrap();
+                let fl = |k: usize| f[k].parse::<f32>().unwrap();
+                EstRacer { kind: i(0), next: i(1), lap: i(2), time: i(3), place: i(4), state: i(5), perf: fl(6),
+                           p192: [fl(7), fl(8), fl(9)], pos: [fl(10), fl(11), fl(12)] }
+            }).collect();
+            assert_eq!(rec.len(), cnt);
+            let base = if race == -1 { None } else { Some(table[race as usize]) };
+            estimate_times(&mut rec, &cps, m, laps, grid, base, &mut rng, online);
+            let (times, g) = b.split_once('|').unwrap();
+            let want: Vec<i32> = times.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            assert_eq!(rec.iter().map(|e| e.time).collect::<Vec<_>>(), want, "{line}");
+            let gw: Vec<u32> = g.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            assert_eq!((rng.0, rng.1), (gw[0], gw[1]), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 2593);
     }
 
     #[test]
