@@ -779,6 +779,9 @@ pub struct Director {
     pub cut: bool,
     /// the screen's width over its height (the near plane's corner)
     pub aspect: f32,
+    /// the lens (degrees) the shared viewport holds: the one last drawn. The tests' ball is sized by it, not by the lens
+    /// of the camera being tested (F-51014 / F-72161 / F-38041 read the viewport's +704 near, +712 / +716 tangents)
+    pub lens: f32,
     /// the drive view's place the frame before (the test of the reverse camera)
     pub drive_eye: Option<Vec3>,
 }
@@ -786,17 +789,21 @@ pub struct Director {
 impl Director {
     /// as mcPlayerCamera's reset leaves it (F-80435): BUMPER, switching on
     pub fn new(tune: &CamTune, seed: u32, car: &CarView) -> Director {
-        let mut d = Director { state: 0, time: 0.0, switching: true, next: false, rng: Mwc::new(seed), heli: Heli::default(), polar: Polar::default(), cut: true, aspect: 16.0 / 9.0, drive_eye: None };
+        let mut d = Director { state: 0, time: 0.0, switching: true, next: false, rng: Mwc::new(seed), heli: Heli::default(), polar: Polar::default(), cut: true, aspect: 16.0 / 9.0, lens: 65.0, drive_eye: None };
         d.polar_activate(tune);
         d.heli_activate(tune, car);
         d.time = d.rng.length(tune.cut);
         d
     }
 
-    /// the ball the tests sweep: the near plane's corner
-    fn near_r(&self, fov: f32) -> f32 {
-        let t = (fov.to_radians() * 0.5).tan();
-        NEAR * (t * t + (t * self.aspect).powi(2)).sqrt()
+    /// the ball the tests sweep: the near plane's corner, from the viewport (F-90812: +712 = tan(lens x pi/360) through
+    /// the C library's double tangent, +716 = +712 x aspect; the tests: sqrt(fma(+712 n, +712 n, (+716 n)^2)), n the near
+    /// +704). (The host's tangent stands for the C library's F-55967; both are rounded to single.)
+    fn near_r(&self) -> f32 {
+        let t = ((self.lens * f32::from_bits(0x3c0e_fa35)) as f64).tan() as f32;
+        let u = t * self.aspect;
+        let (a, b) = (u * NEAR, t * NEAR);
+        fmadds(b, b, a * a).sqrt()
     }
 
     fn polar_activate(&mut self, tune: &CamTune) {
@@ -820,7 +827,7 @@ impl Director {
     fn polar_place(&self, car: &CarView, probe: &mut dyn Probe) -> (Vec3, Quat) {
         let t = car.at(TARGET);
         let mut place = t + rot_y(rot_x(POLAR_OFFSET, -self.polar.pitch), self.polar.yaw);
-        let r = self.near_r(self.polar.fov) + 0.25;
+        let r = self.near_r() + 0.25;
         if let Some(p) = probe.sweep(t, place, r) {
             place = p;
             if let Some(p) = probe.own(t + (place - t) * 100.0, place, r) {
@@ -887,15 +894,15 @@ impl Director {
         if self.state == HELI {
             self.heli_update(tune, car, dt);
         }
-        let (eye, fov) = match self.own(tune, car, self.state, probe) {
-            Some((e, _, f)) => (e, f),
+        let eye = match self.own(tune, car, self.state, probe) {
+            Some((e, _, _)) => e,
             // (the reverse camera: where it stood the frame before; none yet - taken)
             None => match self.drive_eye {
-                Some(e) if !self.cut => (e, 60.0),
+                Some(e) if !self.cut => e,
                 _ => return true,
             },
         };
-        let r = self.near_r(fov);
+        let r = self.near_r();
         if probe.sweep(eye, eye, r).is_some() {
             return false;
         }
@@ -1074,7 +1081,8 @@ impl Playback {
     /// The camera of this frame (None while the opening runs: the race start's own cameras).
     /// `car`: the player's car. The director's time is the replay clock's step since its last
     /// frame.
-    pub fn camera(&mut self, car: &CarView, aspect: f32, probe: &mut dyn Probe) -> Option<Shot> {
+    /// `lens`: the lens (degrees) the last frame was drawn with (the viewport's).
+    pub fn camera(&mut self, car: &CarView, aspect: f32, lens: f32, probe: &mut dyn Probe) -> Option<Shot> {
         if self.opening != 0 {
             self.last_t = None;
             return None;
@@ -1084,6 +1092,7 @@ impl Playback {
         let tune = &self.tune;
         let d = self.director.get_or_insert_with(|| Director::new(tune, self.seed, car));
         d.aspect = aspect;
+        d.lens = lens;
         d.switching = self.auto_cam;
         if let Some(s) = self.force.take() {
             d.force(tune, car, s);
@@ -1157,7 +1166,7 @@ mod tests {
         let c = car();
         let d = Director::new(&tune, 3, &c);
         let t = c.at(TARGET);
-        let r = d.near_r(d.polar.fov) + 0.25;
+        let r = d.near_r() + 0.25;
         // no city hit: the car's bound is not asked
         let mut w = PolarWorld { world: None, own: Some(Vec3::ZERO), asked_own: vec![] };
         let (p, _) = d.polar_place(&c, &mut w);
@@ -1514,6 +1523,81 @@ mod original_director_tests {
             cases += 1;
         }
         assert!(cases >= 380, "{cases}");
+    }
+
+    /// The shot test F-51014 against the original's code (tools/replay_shot_reference.py, testdata/replay_shot_ref.txt): the
+    /// fixed and helicopter states, the probes answering from a list in both; what each probe is given (the ball's place and
+    /// radius from the viewport's lens, the look-ahead's end, the helicopter's look at the car's top), the answer, the generator and
+    /// the helicopter's lens and zoom timer. (The include mask is logged by the original only: 0x300 below 22.35 m/s, else 0x100;
+    /// no object is known to carry 0x200.)
+    #[test]
+    fn shot_test_matches_the_original() {
+        struct Rec<'a> {
+            ans: &'a [bool],
+            calls: Vec<String>,
+        }
+        impl Rec<'_> {
+            fn take(&mut self, a: Vec3) -> Option<Vec3> {
+                let i = self.calls.len() - 1;
+                self.ans.get(i).copied().unwrap_or(false).then_some(a)
+            }
+        }
+        impl Probe for Rec<'_> {
+            fn sweep(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
+                let k = if self.calls.is_empty() { format!("P{:08x},{:08x},{:08x},{:08x}", a.x.to_bits(), a.y.to_bits(), a.z.to_bits(), r.to_bits()) } else {
+                    format!("W{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x}", a.x.to_bits(), a.y.to_bits(), a.z.to_bits(), b.x.to_bits(), b.y.to_bits(), b.z.to_bits(), r.to_bits())
+                };
+                self.calls.push(k);
+                self.take(a)
+            }
+            fn heli(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
+                self.calls.push(format!("H{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x}", a.x.to_bits(), a.y.to_bits(), a.z.to_bits(), b.x.to_bits(), b.y.to_bits(), b.z.to_bits(), r.to_bits()));
+                self.take(a)
+            }
+        }
+        let mut cases = 0;
+        for line in include_str!("testdata/replay_shot_ref.txt").lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split_whitespace().collect();
+            let f = |x: &str| f32::from_bits(h(x));
+            let state = h(w[1]) as usize;
+            let ahead = w[2] == "1";
+            let v: Vec<f32> = w[3..35].iter().map(|x| f(x)).collect();
+            let ht: Vec<f32> = w[37..49].iter().map(|x| f(x)).collect();
+            let mut tune = CamTune::default();
+            tune.cut = [v[10], v[11], v[12], v[13]];
+            for k in 0..6 {
+                tune.mounts[k] = Vec3::new(v[14 + 3 * k], v[15 + 3 * k], v[16 + 3 * k]);
+            }
+            tune.heli_fov[0] = ht[0];
+            tune.heli_fov[1] = ht[1];
+            tune.heli_match = [ht[2], ht[3], ht[4]];
+            tune.heli_rates = [ht[5], ht[6]];
+            tune.heli_cut = [ht[7], ht[8], ht[9], ht[10]];
+            let car = CarView { pos: Vec3::new(v[2], v[3], v[4]), rot: Quat::IDENTITY, vel: Vec3::new(v[5], v[6], v[7]), top: v[8] };
+            let mut d = Director::new(&tune, 1, &car);
+            d.rng = Mwc { x: h(w[35]), c: h(w[36]), spare: None };
+            if state == HELI {
+                d.heli_activate(&tune, &car);
+            }
+            d.state = state;
+            d.lens = v[0];
+            d.aspect = v[1];
+            d.cut = false;
+            let n: usize = w[49].parse().unwrap();
+            let ans: Vec<bool> = w[50..50 + n].iter().map(|x| *x == "1").collect();
+            let mut rec = Rec { ans: &ans, calls: Vec::new() };
+            let ok = d.shot_ok(&tune, &car, ahead, ht[11], &mut rec);
+            let o: Vec<&str> = b.split_whitespace().collect();
+            // (the original's calls without their include masks)
+            let want: Vec<String> = o.iter().filter(|x| x.starts_with(['P', 'W', 'H'])).map(|x| x.rsplit_once(',').unwrap().0.to_string()).collect();
+            assert_eq!(rec.calls, want, "{line}");
+            let rest: Vec<u32> = o.iter().filter(|x| !x.starts_with(['P', 'W', 'H'])).map(|x| h(x)).collect();
+            let got = [ok as u32, d.rng.x, d.rng.c, if state == HELI { d.heli.fov.to_bits() } else { 0 }, if state == HELI { d.heli.zoom.to_bits() } else { 0 }];
+            assert_eq!(got.to_vec(), rest, "{line}");
+            cases += 1;
+        }
+        assert!(cases >= 3900, "{cases}");
     }
 
     #[test]

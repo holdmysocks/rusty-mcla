@@ -8959,6 +8959,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // the replay's own cameras (not under its PAUSE panel)
                 // (the original's director, replay::Director: its own cameras here, a drive view
                 // is left to the boom cameras below)
+                // (and the lens of the last frame: the shared viewport's, which sizes the director's test ball, F-51014)
                 let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
                 let car_view = replay::CarView::of(&render_state, car.model.max.y);
                 // (and the watched car's own hull, for the polar camera's push-out)
@@ -8989,7 +8990,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.replay_shot_t = p.t;
                     self.replay_wall = wall;
                 }
-                let shot = self.game.replay.as_mut().filter(|p| p.menu.is_none()).and_then(|p| p.camera(&car_view, aspect, &mut probe));
+                let shot = self.game.replay.as_mut().filter(|p| p.menu.is_none()).and_then(|p| p.camera(&car_view, aspect, self.cam.fov_y.to_degrees(), &mut probe));
                 if std::env::var("MCLA_REPLAY_DEBUG").is_ok() {
                     let now = self.game.replay.as_ref().and_then(|p| p.view());
                     if now != was || self.frame_no % 30 == 0 {
