@@ -781,7 +781,7 @@ mod tests {
             assert_eq!(got, want, "{line}");
             n += 1;
         }
-        assert_eq!(n, 6003);
+        assert_eq!(n, 8003);
     }
 
     #[test]

@@ -1,7 +1,9 @@
 """A box's moments F-30573 (f1 mass, f2..f4 the sides -> r7 three floats) and a body's inverse inertia in the world
 F-16702 (r3 the three rows, v1 the inverse moments, r4 the three rows out) run offline: the generated code unchanged,
-the second in vector mode (a register's lane k is the host's f32[3 - k]: the bytes reversed). Writes
-<out-dir>/inertia_ref.txt: "box m x y z -> i0 i1 i2" and "world r0 r1 r2 (xyz each) inv (xyz) -> o0 o1 o2 (xyz each)"."""
+the second in vector mode (a register's lane k is the host's f32[3 - k]: the bytes reversed), and its body wrapper
+F-72147 (r3 a body: rows at +208 / +224 / +240, inverse moments at +176; r4 the rows out; the w lanes and the body's
+other words filled with garbage, which it must not read). Writes <out-dir>/inertia_ref.txt: "box m x y z -> i0 i1 i2",
+"world r0 r1 r2 (xyz each) inv (xyz) -> o0 o1 o2 (xyz each)" and "body" lines as "world" ones (F-72147's result)."""
 import argparse
 import math
 import random
@@ -39,7 +41,7 @@ def main():
     ap.add_argument('--out-dir', type=Path, required=True)
     ap.add_argument('--tool', default='mcla-tool')
     a = ap.parse_args()
-    fbx, fw = addr(a.tool, 'F-30573'), addr(a.tool, 'F-16702')
+    fbx, fw, fbody = addr(a.tool, 'F-30573'), addr(a.tool, 'F-16702'), addr(a.tool, 'F-72147')
     rnd = random.Random(43)
     boxes = [[rnd.choice((4.0, rnd.uniform(0.1, 3000))), *(rnd.uniform(0.01, 6) for _ in range(3))] for _ in range(3000)]
     boxes += [[4.0, 2.25, 0.41625, 0.625], [0.0, 1, 1, 1], [1.0, 0, 0, 0]]
@@ -48,24 +50,36 @@ def main():
         r = rotation(rnd) if i % 10 else [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
         inv = [1 / rnd.uniform(0.05, 4000) for _ in range(3)]
         worlds.append([c for row in r for c in row] + inv)
+    brnd = random.Random(72147)
+    bodies = []
+    for i in range(2000):
+        r = rotation(brnd) if i % 10 else [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+        inv = [1 / brnd.uniform(0.05, 4000) for _ in range(3)]
+        bodies.append([c for row in r for c in row] + inv)
     nl = chr(10)
     NL = chr(92) + 'n'
     rb = nl.join('{%s},' % ','.join('0x%08x' % fb(x) for x in c) for c in boxes)
     rw = nl.join('{%s},' % ','.join('0x%08x' % fb(x) for x in c) for c in worlds)
-    fl = 'float r;uint32_t u;'
+    rbo = nl.join('{%s},' % ','.join('0x%08x' % fb(x) for x in c) for c in bodies)
     body = ('static const uint32_t B[][4]={' + nl + rb + nl + '};' + nl + 'static const uint32_t W[][12]={' + nl + rw + nl + '};' + nl +
             'for(auto&c:B){memset(objects,0,sizeof(objects));Context ctx{};ctx.r1.u32=0x2F00;ctx.r7.u32=0x1000;double*F[4]={&ctx.f1.f64,&ctx.f2.f64,&ctx.f3.f64,&ctx.f4.f64};' +
             'for(int k=0;k<4;k++){float x;uint32_t u=c[k];memcpy(&x,&u,4);*F[k]=x;}' +
             ('sub_%s(ctx,nullptr);printf("%%08x %%08x %%08x%s",load(0x1000),load(0x1004),load(0x1008));}' % (fbx, NL)) + nl +
             'for(auto&c:W){memset(objects,0,sizeof(objects));for(int i=0;i<3;i++)for(int k=0;k<3;k++)store(0x1000+16*i+4*k,c[3*i+k]);' +
             'Context ctx{};ctx.r1.u32=0x2F00;ctx.r3.u32=0x1000;ctx.r4.u32=0x1100;for(int k=0;k<3;k++)ctx.v1.u32[3-k]=c[9+k];ctx.v1.u32[0]=0;' +
-            ('sub_%s(ctx,nullptr);for(int i=0;i<3;i++)for(int k=0;k<3;k++)printf(i+k<4?"%%08x ":"%%08x%s",load(0x1100+16*i+4*k));}' % (fw, NL)) + nl)
+            ('sub_%s(ctx,nullptr);for(int i=0;i<3;i++)for(int k=0;k<3;k++)printf(i+k<4?"%%08x ":"%%08x%s",load(0x1100+16*i+4*k));}' % (fw, NL)) + nl +
+            'static const uint32_t O[][12]={' + nl + rbo + nl + '};' + nl + 'uint32_t g=0x9E3779B9u;' +
+            'for(auto&c:O){memset(objects,0,sizeof(objects));for(int k=0;k<96;k++){g=g*1664525u+1013904223u;store(0x1000+4*k,g|0x40000000u);}' +
+            'for(int i=0;i<3;i++)for(int k=0;k<3;k++)store(0x1000+208+16*i+4*k,c[3*i+k]);for(int k=0;k<3;k++)store(0x1000+176+4*k,c[9+k]);' +
+            'Context ctx{};ctx.r1.u32=0x2F00;ctx.r3.u32=0x1000;ctx.r4.u32=0x1200;' +
+            ('sub_%s(ctx,nullptr);for(int i=0;i<3;i++)for(int k=0;k<3;k++)printf(i+k<4?"%%08x ":"%%08x%s",load(0x1200+16*i+4*k));}' % (fbody, NL)) + nl)
     main_src = 'int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.assign(std::istreambuf_iterator<char>(bin),{});' + nl + body + '}' + nl
-    exe = build(index(a.recomp), ['sub_' + fbx, 'sub_' + fw], main_src, a.out_dir, 'inertia', vector=True)
+    exe = build(index(a.recomp), ['sub_' + fbx, 'sub_' + fw, 'sub_' + fbody], main_src, a.out_dir, 'inertia', vector=True)
     out = [x for x in run(exe, a.image).split(nl) if x]
-    assert len(out) == len(boxes) + len(worlds), len(out)
+    assert len(out) == len(boxes) + len(worlds) + len(bodies), len(out)
     lines = ['box %s -> %s' % (' '.join('%08x' % fb(x) for x in c), o) for c, o in zip(boxes, out)]
-    lines += ['world %s -> %s' % (' '.join('%08x' % fb(x) for x in c), o) for c, o in zip(worlds, out[len(boxes):])]
+    lines += ['world %s -> %s' % (' '.join('%08x' % fb(x) for x in c), o) for c, o in zip(worlds, out[len(boxes):len(boxes) + len(worlds)])]
+    lines += ['body %s -> %s' % (' '.join('%08x' % fb(x) for x in c), o) for c, o in zip(bodies, out[len(boxes) + len(worlds):])]
     a.out_dir.mkdir(parents=True, exist_ok=True)
     (a.out_dir / 'inertia_ref.txt').write_text(nl.join(lines) + nl)
     print(len(lines), 'cases')
