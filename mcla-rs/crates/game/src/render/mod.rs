@@ -458,6 +458,48 @@ pub fn pick_best(cand: &[u16], score: impl Fn(u16) -> f32, cap: usize) -> Vec<(u
     pairs.iter().rev().take(cap).map(|&(s, i)| (i, s)).collect()
 }
 
+/// F-37078, the cascade casters' test against the main view's near, left and right planes (the view's +768 / +784 /
+/// +800, `n . p + w` positive inside): per plane, in that order, the light's run `s = -(n . d)` as the code sums it
+/// (y, then z, then x, each a fused add rounded to a float) and, when `s > 0`, the sphere's depth outside it
+/// `-(n . c) - w` (a three-lane dot); bit 8, 2, 4 when that is more than the radius. The near plane's bit ends the
+/// test. Checked on 6,000 cases against the original's code run offline (`tools/casc_planes_reference.py`, test
+/// `casc_planes_match_the_original`).
+pub fn casc_main_out(planes: &[Vec4; 3], d: Vec3, c: Vec3, r: f32) -> u32 {
+    let fma = |a: f32, b: f32, c: f32| (a as f64).mul_add(b as f64, c as f64) as f32;
+    let mut out = 0;
+    for (i, p) in planes.iter().enumerate() {
+        let n = -p.truncate();
+        let s = fma(d.x, n.x, fma(d.z, n.z, d.y * n.y));
+        if s > 0.0 && crate::physics::exact::dot3(n, c) - p.w > r {
+            out |= [8, 2, 4][i];
+            if i == 0 {
+                break;
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod casc_planes_tests {
+    use super::*;
+
+    #[test]
+    fn casc_planes_match_the_original() {
+        let t = include_str!("testdata/casc_planes_reference.txt");
+        let mut n = 0;
+        for l in t.lines() {
+            let (a, b) = l.split_once(" -> ").unwrap();
+            let w: Vec<f32> = a.split_whitespace().skip(1).map(|x| f32::from_bits(u32::from_str_radix(x, 16).unwrap())).collect();
+            let pl = [Vec4::new(w[0], w[1], w[2], w[3]), Vec4::new(w[4], w[5], w[6], w[7]), Vec4::new(w[8], w[9], w[10], w[11])];
+            let got = casc_main_out(&pl, Vec3::new(w[16], w[17], w[18]), Vec3::new(w[12], w[13], w[14]), w[15]);
+            assert_eq!(got, b.trim().parse::<u32>().unwrap(), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 6000);
+    }
+}
+
 /// The cell index F-25968 reads for a place: `(p x scale - bias) x grid size` cut towards zero (a NaN cuts to
 /// the most negative int) and clamped into the grid, row `z` times the grid width plus column `x`. Scale and bias are
 /// the floats the grid builder (F-12750) stores in the grid object: 1 / (max - min) and min x scale per axis, the

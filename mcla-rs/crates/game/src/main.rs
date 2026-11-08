@@ -11212,7 +11212,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                             let keep = |c: Vec3, r: f32| -> bool {
                                 eye.distance(c) - r < 200.0
-                                    && !main_pl.iter().any(|p| p.truncate().dot(*d) < 0.0 && p.dot(c.extend(1.0)) < -r)
+                                    && render::casc_main_out(main_pl, *d, c, r) == 0
                                     && tile_pl.iter().all(|p| p.dot(c.extend(1.0)) >= -r)
                             };
                             let mut bound = false;
