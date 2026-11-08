@@ -476,7 +476,6 @@ fn kth_bit(mask: u32, k: u32) -> i32 {
 }
 
 /// The pad's stick byte as the original reads it (F-63907): (b - 127.5) / 127, within -1 .. 1.
-#[cfg(test)]
 fn stick_byte(b: u8) -> f32 {
     ((b as f32 - 127.5) * (1.0 / 127.0)).max(-1.0).min(1.0)
 }
