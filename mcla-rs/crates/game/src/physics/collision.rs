@@ -348,27 +348,37 @@ fn cell_of(x: f32, z: f32) -> (i32, i32) {
     ((x / CELL).floor() as i32, (z / CELL).floor() as i32)
 }
 
-/// The cells of the box (c0 ..= c1) that the segment a .. b comes within 5 cm of on x / z, column by column (x, then z
-/// ascending): for each column the z range of the segment's part over it (the column widened by 5 cm), widened again.
-fn segment_cells(a: Vec3, b: Vec3, c0: (i32, i32), c1: (i32, i32)) -> Vec<(i32, i32)> {
+/// One column of `segment_columns`: the rows the segment comes within 5 cm of, and the height range of its part over
+/// the column (the column widened by 5 cm).
+#[derive(Clone, Copy)]
+struct SegColumn {
+    lo: i32,
+    hi: i32,
+    ylo: f64,
+    yhi: f64,
+}
+
+/// The cells of the box (c0 ..= c1) that the segment a .. b comes within 5 cm of on x / z, column by column: for each
+/// column c0.0 ..= c1.0 the rows of the z range of the segment's part over it (the column widened by 5 cm), widened
+/// again (empty when lo > hi), and the heights of that part.
+fn segment_columns(a: Vec3, b: Vec3, c0: (i32, i32), c1: (i32, i32)) -> Vec<SegColumn> {
     const EPS: f64 = 0.05;
-    let (ax, az, bx, bz) = (a.x as f64, a.z as f64, b.x as f64, b.z as f64);
+    let (ax, ay, az, bx, by, bz) = (a.x as f64, a.y as f64, a.z as f64, b.x as f64, b.y as f64, b.z as f64);
     let cell = CELL as f64;
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity((c1.0 - c0.0 + 1).max(0) as usize);
     for cx in c0.0..=c1.0 {
-        let (zl, zh) = if (bx - ax).abs() < 1e-9 {
-            (az.min(bz), az.max(bz))
+        let (zl, zh, yl, yh) = if (bx - ax).abs() < 1e-9 {
+            (az.min(bz), az.max(bz), ay.min(by), ay.max(by))
         } else {
             let t = |x: f64| ((x - ax) / (bx - ax)).clamp(0.0, 1.0);
             let (t0, t1) = (t(cx as f64 * cell - EPS), t((cx + 1) as f64 * cell + EPS));
             let (z0, z1) = (az + (bz - az) * t0, az + (bz - az) * t1);
-            (z0.min(z1), z0.max(z1))
+            let (y0, y1) = (ay + (by - ay) * t0, ay + (by - ay) * t1);
+            (z0.min(z1), z0.max(z1), y0.min(y1), y0.max(y1))
         };
         let lo = (((zl - EPS) / cell).floor() as i32).max(c0.1);
         let hi = (((zh + EPS) / cell).floor() as i32).min(c1.1);
-        for cz in lo..=hi {
-            out.push((cx, cz));
-        }
+        out.push(SegColumn { lo, hi, ylo: yl, yhi: yh });
     }
     out
 }
@@ -614,25 +624,46 @@ impl WorldCollider {
         // Only the cells the segment comes within 5 cm of (a hit lies on the segment and inside its triangle's box,
         // so in one of them), not every cell of its box: the sounds' occlusion rays run to 400 m and met ~50,000
         // triangles each (1.4 ms). Equal t keep the order the whole box gave: the sector, the triangle's first cell
-        // of the box (column, then row), its index - the same hits in the same order.
-        let cells = segment_cells(o, end, (cx0, cz0), (cx1, cz1));
+        // of the box (column, then row), its index - the same hits in the same order. Each triangle is tested once,
+        // in the first of its cells the walk meets, and not where the segment passes over or under it.
+        let cols = segment_columns(o, end, (cx0, cz0), (cx1, cz1));
         let mut hits: Vec<(Hit, (usize, i32, i32, u32))> = Vec::new();
         for (si, s) in self.sectors.values().enumerate() {
             if mx.x < s.min.x || mn.x > s.max.x || mx.z < s.min.z || mn.z > s.max.z || mx.y < s.min.y || mn.y > s.max.y {
                 continue;
             }
-            let mut seen = hashbrown::HashSet::new();
-            for &(cx, cz) in &cells {
-                let Some(list) = s.grid.get(&(cx, cz)) else { continue };
-                for &i in list {
-                    if !seen.insert(i) {
-                        continue;
-                    }
-                    let tri = &s.tris[i as usize];
-                    if let Some((t, n)) = ray_tri_front(o, d, tri, max_t) {
+            for (k, c) in cols.iter().enumerate() {
+                let cx = cx0 + k as i32;
+                for cz in c.lo..=c.hi {
+                    let Some(list) = s.grid.get(&(cx, cz)) else { continue };
+                    for &i in list {
+                        let tri = &s.tris[i as usize];
                         let lo = tri[0].min(tri[1]).min(tri[2]);
+                        let hi = tri[0].max(tri[1]).max(tri[2]);
                         let (x0, z0) = cell_of(lo.x, lo.z);
-                        hits.push((Hit { t, point: o + d * t, normal: n, surface: Surface::from_u8(s.mats.get(i as usize).copied().unwrap_or(0)) }, (si, x0.max(cx0), z0.max(cz0), i)));
+                        let (x1, z1) = cell_of(hi.x, hi.z);
+                        // a triangle is in every cell of its box: tested in the first of them the walk meets (an
+                        // earlier column, or an earlier row of this one, in its box means it was met there)
+                        let first = (x0.max(cx0)..cx).all(|x| {
+                            let e = &cols[(x - cx0) as usize];
+                            e.lo.max(z0) > e.hi.min(z1)
+                        }) && c.lo.max(z0) == cz;
+                        if !first {
+                            continue;
+                        }
+                        // nor where the segment's heights over the triangle's columns stay 5 cm clear of its own
+                        // (a hit lies on the segment, inside the triangle's box)
+                        let (mut yl, mut yh) = (f64::INFINITY, f64::NEG_INFINITY);
+                        for e in &cols[(x0.max(cx0) - cx0) as usize..=(x1.min(cx1) - cx0) as usize] {
+                            yl = yl.min(e.ylo);
+                            yh = yh.max(e.yhi);
+                        }
+                        if (lo.y as f64) > yh + 0.05 || (hi.y as f64) < yl - 0.05 {
+                            continue;
+                        }
+                        if let Some((t, n)) = ray_tri_front(o, d, tri, max_t) {
+                            hits.push((Hit { t, point: o + d * t, normal: n, surface: Surface::from_u8(s.mats.get(i as usize).copied().unwrap_or(0)) }, (si, x0.max(cx0), z0.max(cz0), i)));
+                        }
                     }
                 }
             }
@@ -950,7 +981,7 @@ mod probe_all_tests {
 
     /// The walk over the segment's cells gives the hits the walk over its whole box gave: random sectors of triangles
     /// (tiny to 120 m, both faces, in some worlds with the vertices on the cell lines) and segments (short, to 700 m,
-    /// along x / z, on a cell line). Where the box was walked whole (up to 400 cells): the same hits in the same order,
+    /// along x / z, on a cell line, steep). Where the box was walked whole (up to 400 cells): the same hits in the same order,
     /// to the bit; past that the old order came from a hash set, so there the same hits in any order.
     #[test]
     fn segment_cells_give_the_box_walks_hits() {
@@ -992,6 +1023,11 @@ mod probe_all_tests {
                         let x = (o.x / 8.0).round() * 8.0;
                         o.x = x;
                         e.x = x;
+                    }
+                    4 => {
+                        // steep: from under the triangles to over them
+                        o.y = -30.0 + f() * 10.0;
+                        e.y = 30.0 + f() * 10.0;
                     }
                     _ => {}
                 }
