@@ -6935,11 +6935,13 @@ impl Vehicles {
     }
 
     /// Every car whose exterior neon is on (`ExtNeon::on`), with its body matrix, for the light quads' pass (F-17121 ->
-    /// F-35120): (car index, matrix, neon, is the player's). The in-car view's car makes none (F-17121 skips on +123).
+    /// F-35120): (car index, matrix, neon, is the player's). The in-car view's car makes none (F-17121 skips on +123),
+    /// nor a car in Stealth / MegaStealth (F-17121 skips while F-54047 is true: `pu_stealth`). No bike test: a bike
+    /// is an mcCar like a car (F-44722 gates the call on the draw flag +116 only).
     pub fn neon_cars(&self, in_car: bool) -> Vec<(usize, Mat4, ExtNeon, bool)> {
         let mut out = Vec::new();
         for (i, c) in self.cars.iter().enumerate() {
-            if self.hide_player && c.is_player || (in_car && c.is_player) {
+            if self.hide_player && c.is_player || (in_car && c.is_player) || c.pu_stealth {
                 continue;
             }
             let Some(n) = self.ext_neon(c).filter(|n| n.on()) else { continue };
