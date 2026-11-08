@@ -105,7 +105,7 @@ fn cents(ratio: f32) -> i32 {
 }
 
 /// F-46044: the original's log10 in double, `ln x * 0.4342944819032518` (F-96865 is its own ln routine).
-fn log10_guest(x: f64) -> f64 {
+pub(crate) fn log10_guest(x: f64) -> f64 {
     ln_guest(x) * 0.4342944819032518
 }
 

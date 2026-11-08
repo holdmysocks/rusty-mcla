@@ -57,6 +57,17 @@ pub struct NearProp {
     pub vel: Vec3,
 }
 
+/// A post the deflection pass steers a car round (F-35508): the prop's instance, type name hash, place, the car's speed
+/// (chassis +224, m/s) and whether the car is the player's (its loop then has no environment).
+#[derive(Clone, Copy, Debug)]
+pub struct PropDeflect {
+    pub inst: u32,
+    pub model: u32,
+    pub pos: Vec3,
+    pub speed: f32,
+    pub player: bool,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct PropHit {
     pub pos: Vec3,
@@ -212,6 +223,8 @@ pub struct Sound {
     prop_held: Vec<PropEnt>,
     /// the props near the player's car this frame, for its whoosh scan (main: `Props::near_props`)
     pub near_props: Vec<NearProp>,
+    /// the posts the deflection pass steered a car round this frame (main: `Props::deflects`)
+    pub prop_deflects: Vec<PropDeflect>,
     /// the map effects' sounds (ptxaudio.rs)
     ptx: crate::ptxaudio::PtxSounds,
     /// the player car's performance stages the sounds read: intake, turbo, nitrous
@@ -996,6 +1009,23 @@ impl Sound {
                 let at = prop_matrix(sc.inst).map_or(sc.pos, |m| Vec3::new(m[3][0], m[3][1], m[3][2]));
                 let ent = &mut self.prop_held[e];
                 if coll.prop_scrape(lib, sc.model, sc.rel, at, occ, &mut ent.scrape) {
+                    ent.scrape_age = ent.age;
+                }
+            }
+            // the deflections (F-35508: on a post the pass steers a car round): the gate (F-25269) binds the prop's entity when its
+            // type has a deflection loop ([58] != NULL_SOUND; an existing entity always), then F-94867 runs the loop on the
+            // entity's slot +136, +108 = its age
+            for dfl in self.prop_deflects.iter() {
+                let key = key_of(dfl.inst, dfl.model, dfl.pos);
+                let Some(obj) = lib.game.get(dfl.model).filter(|o| o.first() == Some(&43)).or_else(|| lib.game.get_name("LA_PROP_DEFAULT")).map(|o| o.to_vec()) else { continue };
+                let null = mcla_formats::hash::joaat("NULL_SOUND");
+                if !self.prop_held.iter().any(|e| e.key == key) && obj.get(58..62).map_or(null, |b| u32::from_be_bytes(b.try_into().unwrap())) == null {
+                    continue;
+                }
+                let (e, occ) = bind(&mut self.occl, lib, &mut self.prop_held, dfl.inst, dfl.model, dfl.pos);
+                let at = prop_matrix(dfl.inst).map_or(dfl.pos, |m| Vec3::new(m[3][0], m[3][1], m[3][2]));
+                let ent = &mut self.prop_held[e];
+                if coll.prop_deflect(lib, &obj, dfl.speed, at, if dfl.player { 0 } else { occ }, &mut ent.scrape) {
                     ent.scrape_age = ent.age;
                 }
             }

@@ -6,7 +6,7 @@
 //!
 //! Approximate (written down there): the port's car-to-car and car-to-prop contacts are not the original's (one
 //! point per pair, the prop's own footprint test), so those sounds follow the rule on the port's contacts; the prop
-//! deflection loop is not played yet. The whoosh past a prop (`prop_whoosh`, F-12768) is the original's.
+//! deflection loop (`deflect_level`, F-94867) and the whoosh past a prop (`prop_whoosh`, F-12768) are the original's.
 
 use crate::physics::car::{AudioTouch, CarState};
 use crate::physics::collision::Surface;
@@ -64,6 +64,27 @@ pub fn prop_whoosh(w: &[u8], car: Vec3, car_vel: Vec3, prop: Vec3, prop_vel: Vec
     let (p0, p1) = (be_s16(w, 71) as i32, be_s16(w, 73) as i32);
     let pitch = fmadds((p1 - p0) as f32, ts, p0 as f32) as i32 as i16 as f32;
     Some((vol, pitch))
+}
+
+/// The deflection loop's level (F-94867): None below the type's [34] mph, else (volume dB, pitch cents) as in
+/// `CollisionAudio::prop_deflect`.
+pub fn deflect_level(o: &[u8], speed: f32) -> Option<(f32, i32)> {
+    let s = speed * MPH;
+    let lo = be_f32(o, 34);
+    if s < lo {
+        return None;
+    }
+    let t = (s - lo) / (be_f32(o, 44) - lo);
+    let (v0, v1) = (be_s16(o, 38), be_s16(o, 48));
+    let v = crate::sndobj::fmadds(v1 - v0, t, v0);
+    let volume = if v - v1 >= 0.0 { v1 } else { v } * 0.01;
+    let (r0, r1) = (be_f32(o, 40), be_f32(o, 50));
+    let r = crate::sndobj::fmadds(r1 - r0, t, r0);
+    let ratio = if r - r1 >= 0.0 { r1 } else { r };
+    // (fctiwz: NaN - a ratio below 0 past the range's end - is 0x80000000; Rust's cast would give 0)
+    let c = crate::caraudio::log10_guest(ratio as f64) as f32 * f32::from_bits(0x4054_9a78) * 1200.0;
+    let pitch = if c.is_nan() { i32::MIN } else { c as i32 };
+    Some((volume, pitch))
 }
 
 /// Who owns the collision sounds of a car (owner +12): the player's car, a racer, anything else.
@@ -326,6 +347,21 @@ impl CollisionAudio {
         true
     }
 
+    /// A prop's deflection loop (F-94867, 3.2): the car's chassis speed s = `speed` x 2.237 mph from the type's [34]:
+    /// t = (s - [34]) / ([44] - [34]) (no upper clamp), volume min(lerp([38], [48], t), [48]) / 100 dB (the lerp in dB),
+    /// ratio min(lerp([40], [50], t), [50]), pitch trunc(f32(log10 ratio) x 3.321928 x 1200); its loop [58] at the prop
+    /// (`pos`), started in `slot` (the entity's +136, shared with the scrape) or updated there. `occ`: none (0) for the
+    /// player's car. False when too slow (no update).
+    pub fn prop_deflect(&mut self, lib: &mut SoundLib, o: &[u8], speed: f32, pos: Vec3, occ: u16, slot: &mut Option<Handle>) -> bool {
+        let Some((volume, pitch)) = deflect_level(o, speed) else { return false };
+        let req = Req { pos: Some(pos), volume, pitch, occluder: occ, ..Default::default() };
+        match *slot {
+            Some(h) if lib.playing(h) => lib.set(h, req),
+            _ => *slot = lib.play_hash(be_u32(o, 58), req),
+        }
+        true
+    }
+
     /// A prop hit (3.1 / 3.4): the type's impact sound by speed; a break sound when it is knocked loose. `occ`: the prop
     /// entity's occluder slot plus one (its requests carry it at +32, F-99417). The sounds started.
     pub fn prop(&mut self, lib: &mut SoundLib, model: u32, pos: Vec3, speed: f32, knocked: bool, occ: u16) -> Vec<Handle> {
@@ -382,6 +418,30 @@ mod tests {
             }
             let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
             let got = prop_whoosh(&w, v(9), v(12), v(15), v(18), f(21)).map(|(a, b)| format!("{:08x} {:08x}", a.to_bits(), b.to_bits()));
+            assert_eq!(got.as_deref().unwrap_or("none"), rhs, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 6000);
+    }
+
+    /// F-94867 run offline on 6,000 cases (tools/prop_deflect_reference.py), the start path: whether the loop starts and
+    /// its volume and pitch, every word equal.
+    #[test]
+    fn prop_deflect_matches_the_original() {
+        let txt = include_str!("testdata/prop_deflect_ref.txt");
+        let mut n = 0;
+        for l in txt.lines() {
+            let (lhs, rhs) = l.split_once(" -> ").unwrap();
+            let t: Vec<&str> = lhs.split_whitespace().collect();
+            let h = |i: usize| u32::from_str_radix(t[i], 16).unwrap();
+            let mut o = vec![0u8; 128];
+            o[34..38].copy_from_slice(&h(0).to_be_bytes());
+            o[38..40].copy_from_slice(&(t[1].parse::<i32>().unwrap() as i16).to_be_bytes());
+            o[40..44].copy_from_slice(&h(2).to_be_bytes());
+            o[44..48].copy_from_slice(&h(3).to_be_bytes());
+            o[48..50].copy_from_slice(&(t[4].parse::<i32>().unwrap() as i16).to_be_bytes());
+            o[50..54].copy_from_slice(&h(5).to_be_bytes());
+            let got = deflect_level(&o, f32::from_bits(h(6))).map(|(v, p)| format!("{:08x} {}", v.to_bits(), p));
             assert_eq!(got.as_deref().unwrap_or("none"), rhs, "{l}");
             n += 1;
         }
