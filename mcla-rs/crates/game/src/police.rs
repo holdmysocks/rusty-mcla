@@ -2376,6 +2376,13 @@ impl Police {
             log::info!("police: unit {} up for the tactic at {:?} ({:.0} m from the target)", self.units[ui].id, q, q.distance(at));
             out.push(uid);
         }
+        // (F-11097 calls F-97878 on each cop it takes: +1072 (may check law breaking, no port field) = +1073 = 1 - an
+        // engaged unit may patrol again after the tactic, whatever SetAllPoliceActive / a failed assign left)
+        for u in self.units.iter_mut() {
+            if Self::unit_car(vehicles, u.id).is_some_and(|ci| out.contains(&vehicles.cars[ci].uid)) {
+                u.may_patrol = true;
+            }
+        }
         (out.len() >= n).then_some(out)
     }
 

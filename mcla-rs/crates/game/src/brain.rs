@@ -1283,6 +1283,40 @@ pub fn run(v: &mut crate::vehicles::Vehicles, i: usize, brain: &mut Brain, to_go
 mod tests {
     use super::*;
 
+    /// The cop brain's attach F-43897 ends in the racing brain's Clear F-76382; the port makes a new `Brain::police` at each
+    /// attach. tools/brain_clear_reference.py runs Clear offline on a brain filled with A5A5A5A5 (capacities 0, then 5 / 7):
+    /// the fields it leaves equal the fresh police brain's - goals none, +212 / +216 / +220 = 0, laps +224 = 1, +252 (aiv
+    /// valid) 0, max speed +292 = -1.0, collision +296 = 0.0, the aiv job +304 freed (none pending), turn +332 / reverse +336
+    /// = 0. +272 = -1 is read by no brain function (no port field); the base call F-27233 is the AI topic's.
+    #[test]
+    fn police_brain_is_the_cleared_brain() {
+        let b = Brain::police(Arc::new(AiTune::from_floats(&vec![0.0; 4096]).unwrap()));
+        let ref_ = include_str!("testdata/brain_clear_ref.txt");
+        let mut n = 0;
+        for l in ref_.lines().filter(|l| l.starts_with("case ")) {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            assert_eq!((f[3], f[5]), ("1", "1"), "{l}");
+            let w = |off: u32| -> u32 {
+                let k = format!("w{off}=");
+                u32::from_str_radix(f.iter().find(|x| x.starts_with(&k)).unwrap().trim_start_matches(&k), 16).unwrap()
+            };
+            // (the goal arrays' u16 count +4: none)
+            assert_eq!((w(180) >> 16, w(188) >> 16), (0, 0), "{l}");
+            assert!(b.plan.goals.is_empty());
+            assert_eq!((w(212), w(216), w(220)), (b.base as u32, b.cur as u32, b.next as u32), "{l}");
+            assert_eq!(w(224) as usize, b.plan.laps, "{l}");
+            assert_eq!(w(252) >> 24 != 0, b.last.valid, "{l}");
+            assert_eq!(w(292), b.max_speed.to_bits(), "{l}");
+            assert_eq!(w(296), b.collision.to_bits(), "{l}");
+            assert_eq!(w(304) != 0, b.nav.pending(), "{l}");
+            assert_eq!(w(332), b.man.turn as u32, "{l}");
+            assert_eq!(w(336) >> 24 != 0, b.man.reverse, "{l}");
+            assert_eq!(w(272), u32::MAX, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 2);
+    }
+
     /// Racer_DistanceBetween, Racer_DistanceToPoint and Racer_AngleBetweenInDegrees against the original's code run offline
     /// (`work/racerai/rdist`: 6,000 position pairs at 3 scales, equal and vertical-only pairs, missing racers), word for word.
     #[test]
