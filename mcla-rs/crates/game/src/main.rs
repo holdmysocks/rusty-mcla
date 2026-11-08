@@ -455,6 +455,8 @@ struct App {
     ticket_wait: Option<(Vec3, f32)>,
     /// CopPullover's ticket form (47) is up, over the ticket scene's held black (0xc45)
     ticket_form: bool,
+    /// CopPullover.sco 0x48e / 0x49b: the traffic switched off after the waited fade down (the port's target kept)
+    ticket_traffic: Option<usize>,
     /// the time since the payback's intro ended, until its event script's fade up is over (`Game::payback_hold`)
     pb_intro_hold: Option<f32>,
     /// a won pink slip race's end (wager_hangout_core 0x5a07 ..): 1 the fade down, 2 the scene (its speech said or
@@ -935,6 +937,13 @@ impl App {
                 return;
             }
             self.ticket_wait = None;
+            // (0x48e / 0x49b: the traffic off when it is on - the enable byte cleared, the riding and parked cars go at
+            // once, F-26788 -> F-99126)
+            if self.vehicles.traffic_target > 0 {
+                self.ticket_traffic = Some(self.vehicles.traffic_target);
+                self.vehicles.traffic_target = 0;
+                self.vehicles.ambient_disable(0);
+            }
             // (0x54c: Racer_InitializeResetPosition at the place, ResetWithDamageIntact, Deactivate, the coord binding)
             let car = police::scene_frame_at(&mut self.vehicles, world, place);
             if let (Some(car), true, true) = (car, self.cine.has("cut_cop_walk_02"), self.cine.playing.is_none() && std::env::var("MCLA_NO_CINE").is_err()) {
@@ -990,6 +999,12 @@ impl App {
                 // at 5.867 s, which the walk plays after a bolt too; Racer_Activate again, scramble 0)
                 self.scene_fade.release(1.0);
                 self.vehicles.player_scramble = 0;
+                // (0x1024 -> 0x103d: after the fade up, Racer_Activate and scramble 0 - the traffic on again when it is
+                // off, AmbientMgr_SetTrafficEnable(1), then PoliceManager_CutSceneDone)
+                if self.vehicles.traffic_target == 0 {
+                    self.vehicles.traffic_target = self.ticket_traffic.unwrap_or(self.opt.traffic);
+                }
+                self.ticket_traffic = None;
                 // (the walk runs to its end after a bolt too: FinishScene stops its gesture)
                 if let Some(i) = self.vehicles.cars.iter().position(|c| c.is_player) {
                     self.drivers.end_gesture(i);
@@ -1035,6 +1050,12 @@ impl App {
                 self.scene_fade.release(1.0);
                 self.vehicles.player_hold = false;
                 self.vehicles.player_scramble = 0;
+                // (0x1024 -> 0x103d: after the fade up, Racer_Activate and scramble 0 - the traffic on again when it is
+                // off, AmbientMgr_SetTrafficEnable(1), then PoliceManager_CutSceneDone)
+                if self.vehicles.traffic_target == 0 {
+                    self.vehicles.traffic_target = self.ticket_traffic.unwrap_or(self.opt.traffic);
+                }
+                self.ticket_traffic = None;
             }
         }
     }
@@ -1388,6 +1409,7 @@ impl App {
             ticket_run: None,
             ticket_wait: None,
             ticket_form: false,
+            ticket_traffic: None,
             pb_intro_hold: None,
             pink_end: (0, false),
             pink_speech: None,
