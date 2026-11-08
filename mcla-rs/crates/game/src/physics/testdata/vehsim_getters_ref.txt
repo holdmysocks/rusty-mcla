@@ -1,0 +1,9000 @@
+dir 1 1 -> 0
+dir 1 ffffffff -> 0
+dir 0 0 -> 0
+dir 1 3 -> 1
+dir 0 3 -> 0
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 0 0 -> 0
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 1 1 -> 0
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 0 2 -> 0
+dir 1 0 -> -1
+dir 1 1 -> 0
+dir 1 ffffffff -> 0
+dir 0 7fffffff -> 0
+dir 1 80000000 -> 0
+dir 1 80000000 -> 0
+dir 1 80000000 -> 0
+dir 1 1 -> 0
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 80000000 -> 0
+dir 1 9 -> 1
+dir 1 ffffffff -> 0
+dir 1 80000000 -> 0
+dir 1 80000000 -> 0
+dir 0 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 0 2 -> 0
+dir 1 c -> 1
+dir 1 1 -> 0
+dir 1 8 -> 1
+dir 1 0 -> -1
+dir 1 a -> 1
+dir 1 7fffffff -> 1
+dir 1 a -> 1
+dir 0 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 7fffffff -> 1
+dir 1 80000000 -> 0
+dir 1 8 -> 1
+dir 1 1 -> 0
+dir 1 3 -> 1
+dir 1 7fffffff -> 1
+dir 1 b -> 1
+dir 1 a -> 1
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 80000000 -> 0
+dir 1 7fffffff -> 1
+dir 0 0 -> 0
+dir 1 3 -> 1
+dir 1 1 -> 0
+dir 1 2 -> 1
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 1 2 -> 1
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 0 ffffffff -> 0
+dir 0 1 -> 0
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 1 2 -> 1
+dir 1 9 -> 1
+dir 0 7fffffff -> 0
+dir 1 7 -> 1
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 0 4 -> 0
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 1 8 -> 1
+dir 1 2 -> 1
+dir 0 2 -> 0
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 1 80000000 -> 0
+dir 1 ffffffff -> 0
+dir 1 6 -> 1
+dir 1 80000000 -> 0
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 0 3 -> 0
+dir 1 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 1 c -> 1
+dir 1 1 -> 0
+dir 1 2 -> 1
+dir 1 2 -> 1
+dir 1 0 -> -1
+dir 1 1 -> 0
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 7fffffff -> 1
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 0 0 -> 0
+dir 1 0 -> -1
+dir 1 2 -> 1
+dir 1 8 -> 1
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 1 0 -> -1
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 0 80000000 -> 0
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 7fffffff -> 1
+dir 1 c -> 1
+dir 1 7fffffff -> 1
+dir 0 3 -> 0
+dir 0 1 -> 0
+dir 1 ffffffff -> 0
+dir 1 80000000 -> 0
+dir 0 3 -> 0
+dir 0 3 -> 0
+dir 1 7fffffff -> 1
+dir 1 a -> 1
+dir 1 7fffffff -> 1
+dir 1 8 -> 1
+dir 1 80000000 -> 0
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 c -> 1
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 8 -> 1
+dir 1 9 -> 1
+dir 0 7fffffff -> 0
+dir 1 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 8 -> 1
+dir 1 2 -> 1
+dir 0 2 -> 0
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 80000000 -> 0
+dir 0 2 -> 0
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 2 -> 1
+dir 1 ffffffff -> 0
+dir 1 8 -> 1
+dir 1 ffffffff -> 0
+dir 1 a -> 1
+dir 0 80000000 -> 0
+dir 1 80000000 -> 0
+dir 1 3 -> 1
+dir 0 ffffffff -> 0
+dir 0 a -> 0
+dir 1 3 -> 1
+dir 0 0 -> 0
+dir 1 80000000 -> 0
+dir 0 2 -> 0
+dir 1 c -> 1
+dir 0 1 -> 0
+dir 1 3 -> 1
+dir 1 8 -> 1
+dir 1 80000000 -> 0
+dir 1 2 -> 1
+dir 1 5 -> 1
+dir 1 7fffffff -> 1
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 1 1 -> 0
+dir 1 1 -> 0
+dir 1 1 -> 0
+dir 1 b -> 1
+dir 1 7fffffff -> 1
+dir 0 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 7 -> 1
+dir 0 7fffffff -> 0
+dir 0 3 -> 0
+dir 1 8 -> 1
+dir 1 a -> 1
+dir 1 0 -> -1
+dir 0 2 -> 0
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 1 80000000 -> 0
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 1 -> 0
+dir 1 1 -> 0
+dir 1 2 -> 1
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 1 80000000 -> 0
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 7fffffff -> 1
+dir 1 6 -> 1
+dir 1 0 -> -1
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 ffffffff -> 0
+dir 1 5 -> 1
+dir 1 b -> 1
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 1 -> 0
+dir 1 9 -> 1
+dir 1 2 -> 1
+dir 0 0 -> 0
+dir 1 7fffffff -> 1
+dir 1 1 -> 0
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 80000000 -> 0
+dir 1 3 -> 1
+dir 1 7fffffff -> 1
+dir 1 0 -> -1
+dir 1 b -> 1
+dir 1 1 -> 0
+dir 1 1 -> 0
+dir 1 7 -> 1
+dir 1 1 -> 0
+dir 1 80000000 -> 0
+dir 1 80000000 -> 0
+dir 1 1 -> 0
+dir 1 3 -> 1
+dir 1 4 -> 1
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 0 2 -> 0
+dir 0 c -> 0
+dir 1 0 -> -1
+dir 1 80000000 -> 0
+dir 0 0 -> 0
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 ffffffff -> 0
+dir 1 5 -> 1
+dir 1 ffffffff -> 0
+dir 1 c -> 1
+dir 1 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 1 3 -> 1
+dir 0 ffffffff -> 0
+dir 1 80000000 -> 0
+dir 1 0 -> -1
+dir 1 80000000 -> 0
+dir 1 3 -> 1
+dir 1 80000000 -> 0
+dir 1 ffffffff -> 0
+dir 1 a -> 1
+dir 0 7fffffff -> 0
+dir 0 3 -> 0
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 1 7fffffff -> 1
+dir 1 b -> 1
+dir 0 3 -> 0
+dir 1 7fffffff -> 1
+dir 1 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 1 7fffffff -> 1
+dir 1 80000000 -> 0
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 80000000 -> 0
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 6 -> 1
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 1 7 -> 1
+dir 1 1 -> 0
+dir 1 80000000 -> 0
+dir 1 3 -> 1
+dir 0 80000000 -> 0
+dir 1 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 2 -> 1
+dir 1 0 -> -1
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 80000000 -> 0
+dir 0 2 -> 0
+dir 1 80000000 -> 0
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 ffffffff -> 0
+dir 1 1 -> 0
+dir 1 c -> 1
+dir 1 7fffffff -> 1
+dir 1 1 -> 0
+dir 1 6 -> 1
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 0 ffffffff -> 0
+dir 1 8 -> 1
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 7fffffff -> 1
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 1 4 -> 1
+dir 1 3 -> 1
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 0 0 -> 0
+dir 1 1 -> 0
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 1 -> 0
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 1 9 -> 1
+dir 0 2 -> 0
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 8 -> 1
+dir 1 7fffffff -> 1
+dir 1 5 -> 1
+dir 1 4 -> 1
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 7fffffff -> 1
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 5 -> 1
+dir 1 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 1 8 -> 1
+dir 1 7fffffff -> 1
+dir 1 8 -> 1
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 7fffffff -> 1
+dir 0 a -> 0
+dir 1 80000000 -> 0
+dir 1 1 -> 0
+dir 1 2 -> 1
+dir 0 0 -> 0
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 1 8 -> 1
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 0 0 -> 0
+dir 1 7fffffff -> 1
+dir 1 7fffffff -> 1
+dir 1 8 -> 1
+dir 0 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 ffffffff -> 0
+dir 0 1 -> 0
+dir 1 ffffffff -> 0
+dir 1 9 -> 1
+dir 1 9 -> 1
+dir 1 7fffffff -> 1
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 0 ffffffff -> 0
+dir 1 1 -> 0
+dir 1 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 1 7fffffff -> 1
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 1 8 -> 1
+dir 1 b -> 1
+dir 1 3 -> 1
+dir 1 1 -> 0
+dir 1 9 -> 1
+dir 1 2 -> 1
+dir 1 2 -> 1
+dir 1 7fffffff -> 1
+dir 1 5 -> 1
+dir 1 7fffffff -> 1
+dir 1 8 -> 1
+dir 1 80000000 -> 0
+dir 0 2 -> 0
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 0 5 -> 0
+dir 1 7fffffff -> 1
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 1 7fffffff -> 1
+dir 1 ffffffff -> 0
+dir 1 80000000 -> 0
+dir 1 c -> 1
+dir 1 ffffffff -> 0
+dir 1 9 -> 1
+dir 0 8 -> 0
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 1 6 -> 1
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 1 6 -> 1
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 7fffffff -> 1
+dir 1 1 -> 0
+dir 1 80000000 -> 0
+dir 1 0 -> -1
+dir 1 7 -> 1
+dir 0 1 -> 0
+dir 1 7fffffff -> 1
+dir 1 6 -> 1
+dir 1 0 -> -1
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 2 -> 1
+dir 1 6 -> 1
+dir 1 4 -> 1
+dir 1 7 -> 1
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 1 -> 0
+dir 0 80000000 -> 0
+dir 1 c -> 1
+dir 0 1 -> 0
+dir 1 3 -> 1
+dir 1 1 -> 0
+dir 1 a -> 1
+dir 1 80000000 -> 0
+dir 1 0 -> -1
+dir 0 80000000 -> 0
+dir 0 9 -> 0
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 1 -> 0
+dir 1 2 -> 1
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 0 1 -> 0
+dir 1 80000000 -> 0
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 c -> 1
+dir 1 1 -> 0
+dir 1 2 -> 1
+dir 1 b -> 1
+dir 1 1 -> 0
+dir 0 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 1 8 -> 1
+dir 1 1 -> 0
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 4 -> 1
+dir 1 c -> 1
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 1 5 -> 1
+dir 1 9 -> 1
+dir 1 3 -> 1
+dir 1 80000000 -> 0
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 7fffffff -> 1
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 1 b -> 1
+dir 1 3 -> 1
+dir 1 80000000 -> 0
+dir 0 0 -> 0
+dir 1 1 -> 0
+dir 1 80000000 -> 0
+dir 1 80000000 -> 0
+dir 1 2 -> 1
+dir 1 0 -> -1
+dir 1 9 -> 1
+dir 1 c -> 1
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 1 c -> 1
+dir 1 1 -> 0
+dir 0 3 -> 0
+dir 1 1 -> 0
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 1 1 -> 0
+dir 1 1 -> 0
+dir 1 3 -> 1
+dir 1 5 -> 1
+dir 0 3 -> 0
+dir 1 a -> 1
+dir 0 80000000 -> 0
+dir 1 1 -> 0
+dir 1 ffffffff -> 0
+dir 0 0 -> 0
+dir 1 0 -> -1
+dir 1 ffffffff -> 0
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 1 a -> 1
+dir 1 2 -> 1
+dir 1 b -> 1
+dir 0 1 -> 0
+dir 0 4 -> 0
+dir 0 5 -> 0
+dir 1 0 -> -1
+dir 1 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 0 7fffffff -> 0
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 1 ffffffff -> 0
+dir 1 80000000 -> 0
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 7fffffff -> 1
+dir 1 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 0 7fffffff -> 0
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 1 1 -> 0
+dir 1 80000000 -> 0
+dir 1 a -> 1
+dir 1 0 -> -1
+dir 1 80000000 -> 0
+dir 0 1 -> 0
+dir 1 3 -> 1
+dir 1 8 -> 1
+dir 1 7fffffff -> 1
+dir 1 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 1 7fffffff -> 1
+dir 1 ffffffff -> 0
+dir 0 3 -> 0
+dir 1 ffffffff -> 0
+dir 1 1 -> 0
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 1 -> 0
+dir 0 1 -> 0
+dir 1 80000000 -> 0
+dir 1 ffffffff -> 0
+dir 1 80000000 -> 0
+dir 1 0 -> -1
+dir 1 7fffffff -> 1
+dir 1 2 -> 1
+dir 0 0 -> 0
+dir 1 0 -> -1
+dir 1 6 -> 1
+dir 1 7fffffff -> 1
+dir 0 3 -> 0
+dir 1 7fffffff -> 1
+dir 1 a -> 1
+dir 1 ffffffff -> 0
+dir 1 80000000 -> 0
+dir 1 ffffffff -> 0
+dir 0 3 -> 0
+dir 1 b -> 1
+dir 1 1 -> 0
+dir 1 1 -> 0
+dir 1 1 -> 0
+dir 1 80000000 -> 0
+dir 1 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 7fffffff -> 1
+dir 0 7fffffff -> 0
+dir 1 80000000 -> 0
+dir 1 8 -> 1
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 1 0 -> -1
+dir 0 0 -> 0
+dir 0 1 -> 0
+dir 0 ffffffff -> 0
+dir 1 c -> 1
+dir 1 2 -> 1
+dir 0 80000000 -> 0
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 1 7 -> 1
+dir 1 4 -> 1
+dir 1 3 -> 1
+dir 1 7fffffff -> 1
+dir 0 5 -> 0
+dir 1 1 -> 0
+dir 1 b -> 1
+dir 1 1 -> 0
+dir 1 7 -> 1
+dir 1 3 -> 1
+dir 1 1 -> 0
+dir 1 ffffffff -> 0
+dir 1 6 -> 1
+dir 1 7fffffff -> 1
+dir 1 80000000 -> 0
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 1 -> 0
+dir 0 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 2 -> 1
+dir 0 3 -> 0
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 0 5 -> 0
+dir 1 1 -> 0
+dir 1 ffffffff -> 0
+dir 1 1 -> 0
+dir 1 b -> 1
+dir 1 3 -> 1
+dir 0 3 -> 0
+dir 1 80000000 -> 0
+dir 1 0 -> -1
+dir 1 6 -> 1
+dir 0 1 -> 0
+dir 1 80000000 -> 0
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 3 -> 1
+dir 0 3 -> 0
+dir 1 0 -> -1
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 1 7fffffff -> 1
+dir 1 80000000 -> 0
+dir 1 7fffffff -> 1
+dir 1 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 1 0 -> -1
+dir 1 1 -> 0
+dir 0 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 1 7 -> 1
+dir 0 6 -> 0
+dir 1 0 -> -1
+dir 1 7 -> 1
+dir 1 1 -> 0
+dir 1 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 7fffffff -> 1
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 0 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 1 4 -> 1
+dir 1 3 -> 1
+dir 1 80000000 -> 0
+dir 1 ffffffff -> 0
+dir 1 1 -> 0
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 0 0 -> 0
+dir 1 80000000 -> 0
+dir 1 7fffffff -> 1
+dir 1 ffffffff -> 0
+dir 1 80000000 -> 0
+dir 1 1 -> 0
+dir 1 3 -> 1
+dir 1 80000000 -> 0
+dir 1 0 -> -1
+dir 1 c -> 1
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 a -> 1
+dir 1 80000000 -> 0
+dir 1 80000000 -> 0
+dir 1 3 -> 1
+dir 1 7 -> 1
+dir 0 80000000 -> 0
+dir 1 0 -> -1
+dir 0 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 1 c -> 1
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 7fffffff -> 1
+dir 1 80000000 -> 0
+dir 1 2 -> 1
+dir 1 0 -> -1
+dir 0 9 -> 0
+dir 1 0 -> -1
+dir 1 80000000 -> 0
+dir 1 6 -> 1
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 2 -> 1
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 0 0 -> 0
+dir 1 0 -> -1
+dir 1 7fffffff -> 1
+dir 1 7fffffff -> 1
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 a -> 1
+dir 0 1 -> 0
+dir 1 1 -> 0
+dir 1 80000000 -> 0
+dir 1 0 -> -1
+dir 1 1 -> 0
+dir 1 4 -> 1
+dir 1 1 -> 0
+dir 1 80000000 -> 0
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 0 7fffffff -> 0
+dir 1 80000000 -> 0
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 1 9 -> 1
+dir 1 2 -> 1
+dir 1 ffffffff -> 0
+dir 1 80000000 -> 0
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 0 80000000 -> 0
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 1 8 -> 1
+dir 1 9 -> 1
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 0 5 -> 0
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 ffffffff -> 0
+dir 0 7 -> 0
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 1 b -> 1
+dir 0 4 -> 0
+dir 0 3 -> 0
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 c -> 1
+dir 1 5 -> 1
+dir 0 0 -> 0
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 1 4 -> 1
+dir 1 ffffffff -> 0
+dir 1 80000000 -> 0
+dir 1 1 -> 0
+dir 1 2 -> 1
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 1 7 -> 1
+dir 1 ffffffff -> 0
+dir 1 80000000 -> 0
+dir 0 0 -> 0
+dir 1 ffffffff -> 0
+dir 1 1 -> 0
+dir 1 3 -> 1
+dir 1 80000000 -> 0
+dir 1 3 -> 1
+dir 0 3 -> 0
+dir 0 c -> 0
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 1 c -> 1
+dir 1 5 -> 1
+dir 1 4 -> 1
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 1 8 -> 1
+dir 1 ffffffff -> 0
+dir 1 a -> 1
+dir 1 8 -> 1
+dir 1 80000000 -> 0
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 7fffffff -> 1
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 4 -> 1
+dir 0 2 -> 0
+dir 1 80000000 -> 0
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 7fffffff -> 1
+dir 1 0 -> -1
+dir 1 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 1 80000000 -> 0
+dir 1 4 -> 1
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 1 ffffffff -> 0
+dir 1 4 -> 1
+dir 1 7fffffff -> 1
+dir 0 3 -> 0
+dir 1 a -> 1
+dir 1 7fffffff -> 1
+dir 0 7fffffff -> 0
+dir 1 3 -> 1
+dir 1 c -> 1
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 7fffffff -> 1
+dir 1 2 -> 1
+dir 1 2 -> 1
+dir 1 2 -> 1
+dir 1 6 -> 1
+dir 1 0 -> -1
+dir 0 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 7fffffff -> 1
+dir 0 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 7 -> 1
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 1 ffffffff -> 0
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 1 7fffffff -> 1
+dir 1 0 -> -1
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 0 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 0 0 -> 0
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 6 -> 1
+dir 0 3 -> 0
+dir 0 3 -> 0
+dir 1 7fffffff -> 1
+dir 1 7fffffff -> 1
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 b -> 1
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 0 2 -> 0
+dir 1 1 -> 0
+dir 1 a -> 1
+dir 1 4 -> 1
+dir 1 80000000 -> 0
+dir 1 0 -> -1
+dir 1 6 -> 1
+dir 1 c -> 1
+dir 1 2 -> 1
+dir 1 c -> 1
+dir 1 1 -> 0
+dir 1 3 -> 1
+dir 1 7fffffff -> 1
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 1 ffffffff -> 0
+dir 1 80000000 -> 0
+dir 1 1 -> 0
+dir 1 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 7fffffff -> 1
+dir 1 9 -> 1
+dir 1 80000000 -> 0
+dir 1 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 2 -> 1
+dir 1 2 -> 1
+dir 1 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 0 2 -> 0
+dir 1 7fffffff -> 1
+dir 1 7fffffff -> 1
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 1 80000000 -> 0
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 80000000 -> 0
+dir 1 0 -> -1
+dir 1 1 -> 0
+dir 1 2 -> 1
+dir 0 3 -> 0
+dir 1 80000000 -> 0
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 0 1 -> 0
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 5 -> 1
+dir 0 0 -> 0
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 2 -> 1
+dir 1 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 0 80000000 -> 0
+dir 1 80000000 -> 0
+dir 1 ffffffff -> 0
+dir 1 8 -> 1
+dir 1 2 -> 1
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 0 b -> 0
+dir 1 1 -> 0
+dir 1 1 -> 0
+dir 1 1 -> 0
+dir 0 0 -> 0
+dir 1 2 -> 1
+dir 1 7fffffff -> 1
+dir 1 b -> 1
+dir 1 80000000 -> 0
+dir 0 2 -> 0
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 1 -> 0
+dir 1 2 -> 1
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 2 -> 1
+dir 1 2 -> 1
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 b -> 1
+dir 1 1 -> 0
+dir 1 ffffffff -> 0
+dir 1 1 -> 0
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 2 -> 1
+dir 1 ffffffff -> 0
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 1 0 -> -1
+dir 1 80000000 -> 0
+dir 1 1 -> 0
+dir 1 8 -> 1
+dir 1 7fffffff -> 1
+dir 1 7fffffff -> 1
+dir 1 80000000 -> 0
+dir 1 7fffffff -> 1
+dir 0 2 -> 0
+dir 1 2 -> 1
+dir 1 c -> 1
+dir 1 2 -> 1
+dir 0 2 -> 0
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 0 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 0 2 -> 0
+dir 1 2 -> 1
+dir 0 ffffffff -> 0
+dir 1 1 -> 0
+dir 1 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 1 7 -> 1
+dir 1 4 -> 1
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 0 3 -> 0
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 1 4 -> 1
+dir 1 80000000 -> 0
+dir 1 2 -> 1
+dir 0 0 -> 0
+dir 1 6 -> 1
+dir 0 1 -> 0
+dir 1 0 -> -1
+dir 1 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 1 ffffffff -> 0
+dir 1 1 -> 0
+dir 1 1 -> 0
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 1 80000000 -> 0
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 0 1 -> 0
+dir 1 80000000 -> 0
+dir 1 80000000 -> 0
+dir 0 2 -> 0
+dir 1 80000000 -> 0
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 7fffffff -> 1
+dir 1 80000000 -> 0
+dir 1 80000000 -> 0
+dir 0 6 -> 0
+dir 1 1 -> 0
+dir 1 2 -> 1
+dir 0 1 -> 0
+dir 1 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 1 5 -> 1
+dir 1 0 -> -1
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 2 -> 1
+dir 1 0 -> -1
+dir 0 7fffffff -> 0
+dir 1 7 -> 1
+dir 1 80000000 -> 0
+dir 1 80000000 -> 0
+dir 1 1 -> 0
+dir 1 3 -> 1
+dir 1 6 -> 1
+dir 1 ffffffff -> 0
+dir 1 7 -> 1
+dir 1 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 0 b -> 0
+dir 1 4 -> 1
+dir 1 c -> 1
+dir 0 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 2 -> 1
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 7fffffff -> 1
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 1 -> 0
+dir 1 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 0 1 -> 0
+dir 1 7 -> 1
+dir 1 3 -> 1
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 2 -> 1
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 1 80000000 -> 0
+dir 1 c -> 1
+dir 1 7fffffff -> 1
+dir 1 3 -> 1
+dir 1 80000000 -> 0
+dir 1 7fffffff -> 1
+dir 1 6 -> 1
+dir 1 1 -> 0
+dir 1 ffffffff -> 0
+dir 1 1 -> 0
+dir 1 ffffffff -> 0
+dir 1 7 -> 1
+dir 1 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 1 5 -> 1
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 1 1 -> 0
+dir 1 80000000 -> 0
+dir 1 0 -> -1
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 1 80000000 -> 0
+dir 1 2 -> 1
+dir 1 7fffffff -> 1
+dir 1 b -> 1
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 1 1 -> 0
+dir 1 3 -> 1
+dir 1 80000000 -> 0
+dir 1 9 -> 1
+dir 1 2 -> 1
+dir 1 7fffffff -> 1
+dir 1 1 -> 0
+dir 1 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 0 1 -> 0
+dir 0 9 -> 0
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 7 -> 1
+dir 1 1 -> 0
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 0 80000000 -> 0
+dir 1 2 -> 1
+dir 0 7fffffff -> 0
+dir 1 1 -> 0
+dir 1 5 -> 1
+dir 1 2 -> 1
+dir 1 7 -> 1
+dir 1 3 -> 1
+dir 1 1 -> 0
+dir 0 2 -> 0
+dir 1 b -> 1
+dir 1 4 -> 1
+dir 1 80000000 -> 0
+dir 1 0 -> -1
+dir 1 1 -> 0
+dir 1 2 -> 1
+dir 1 ffffffff -> 0
+dir 1 5 -> 1
+dir 1 3 -> 1
+dir 0 7fffffff -> 0
+dir 1 2 -> 1
+dir 1 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 1 7 -> 1
+dir 1 2 -> 1
+dir 1 b -> 1
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 0 -> -1
+dir 1 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 1 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 2 -> 1
+dir 1 0 -> -1
+dir 0 80000000 -> 0
+dir 1 80000000 -> 0
+dir 0 3 -> 0
+dir 0 2 -> 0
+dir 1 4 -> 1
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 0 ffffffff -> 0
+dir 1 9 -> 1
+dir 1 5 -> 1
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 0 ffffffff -> 0
+dir 1 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 1 1 -> 0
+dir 0 1 -> 0
+dir 0 6 -> 0
+dir 1 80000000 -> 0
+dir 1 b -> 1
+dir 1 3 -> 1
+dir 1 80000000 -> 0
+dir 1 1 -> 0
+dir 1 80000000 -> 0
+dir 1 2 -> 1
+dir 0 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 0 3 -> 0
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 0 80000000 -> 0
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 2 -> 1
+dir 1 9 -> 1
+dir 1 0 -> -1
+dir 0 7fffffff -> 0
+dir 1 2 -> 1
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 4 -> 1
+dir 1 ffffffff -> 0
+dir 1 1 -> 0
+dir 1 1 -> 0
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 9 -> 1
+dir 1 80000000 -> 0
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 0 0 -> 0
+dir 1 7 -> 1
+dir 1 2 -> 1
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 1 8 -> 1
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 7fffffff -> 1
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 a -> 1
+dir 0 ffffffff -> 0
+dir 1 2 -> 1
+dir 0 2 -> 0
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 2 -> 1
+dir 0 7fffffff -> 0
+dir 1 7fffffff -> 1
+dir 1 7 -> 1
+dir 1 b -> 1
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 1 7fffffff -> 1
+dir 1 7fffffff -> 1
+dir 1 80000000 -> 0
+dir 1 80000000 -> 0
+dir 1 7fffffff -> 1
+dir 0 b -> 0
+dir 1 3 -> 1
+dir 1 7fffffff -> 1
+dir 1 5 -> 1
+dir 1 3 -> 1
+dir 1 ffffffff -> 0
+dir 1 3 -> 1
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 0 1 -> 0
+dir 1 1 -> 0
+dir 1 7fffffff -> 1
+dir 1 7fffffff -> 1
+dir 1 0 -> -1
+dir 1 1 -> 0
+dir 1 a -> 1
+dir 1 7fffffff -> 1
+dir 1 8 -> 1
+dir 1 80000000 -> 0
+dir 1 3 -> 1
+dir 0 2 -> 0
+dir 1 ffffffff -> 0
+dir 1 1 -> 0
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 80000000 -> 0
+dir 1 1 -> 0
+dir 0 7 -> 0
+dir 1 8 -> 1
+dir 1 1 -> 0
+dir 1 2 -> 1
+dir 1 80000000 -> 0
+dir 1 3 -> 1
+dir 1 7fffffff -> 1
+dir 1 0 -> -1
+dir 1 2 -> 1
+dir 0 2 -> 0
+dir 1 7fffffff -> 1
+dir 1 2 -> 1
+dir 1 1 -> 0
+dir 1 a -> 1
+dir 1 80000000 -> 0
+dir 1 2 -> 1
+dir 0 ffffffff -> 0
+dir 1 2 -> 1
+dir 1 0 -> -1
+dir 1 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 1 0 -> -1
+dir 1 c -> 1
+dir 1 80000000 -> 0
+dir 0 7fffffff -> 0
+dir 1 1 -> 0
+dir 1 80000000 -> 0
+dir 1 1 -> 0
+dir 1 80000000 -> 0
+dir 1 2 -> 1
+dir 1 0 -> -1
+dir 1 0 -> -1
+dir 1 ffffffff -> 0
+dir 1 0 -> -1
+dir 1 6 -> 1
+dir 1 7 -> 1
+dir 0 0 -> 0
+dir 1 7fffffff -> 1
+dir 1 80000000 -> 0
+dir 1 6 -> 1
+dir 1 ffffffff -> 0
+dir 1 7fffffff -> 1
+dir 1 8 -> 1
+dir 1 7fffffff -> 1
+dir 1 8 -> 1
+dir 1 1 -> 0
+dir 1 3 -> 1
+dir 1 1 -> 0
+dir 1 3 -> 1
+dir 1 2 -> 1
+dir 1 ffffffff -> 0
+dir 1 b -> 1
+dir 1 b -> 1
+dir 1 7fffffff -> 1
+dir 1 0 -> -1
+dir 1 3 -> 1
+dir 1 0 -> -1
+dir 1 0 -> -1
+drive 1 7fffffff 116c2 -> 1
+drive 1 0 116c2 -> 1
+drive 1 80000000 7f800000 -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 3 3eb97deb -> 1
+drive 1 0 7f800000 -> 1
+drive 1 3 3f800000 -> 1
+drive 1 3 3f541e49 -> 1
+drive 1 0 da24260 -> 1
+drive 1 b 7fc00000 -> 0
+drive 1 1 7fc00000 -> 0
+drive 1 80000000 80000000 -> 0
+drive 1 2 3f800000 -> 1
+drive 1 0 800116c2 -> 0
+drive 1 2 3e823d18 -> 1
+drive 1 4 0 -> 0
+drive 1 3 3f800000 -> 1
+drive 0 80000000 3e02beb8 -> 0
+drive 1 3 7f800000 -> 1
+drive 1 3 3e9d971f -> 1
+drive 1 2 0 -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 c be5db33d -> 0
+drive 1 0 0 -> 0
+drive 1 80000000 116c2 -> 1
+drive 1 80000000 3f800000 -> 1
+drive 1 1 7f800000 -> 0
+drive 1 0 da24260 -> 1
+drive 1 3 7f800000 -> 1
+drive 1 0 da24260 -> 1
+drive 1 3 800116c2 -> 0
+drive 1 80000000 da24260 -> 1
+drive 1 ffffffff 3eec52bc -> 1
+drive 1 1 3f800000 -> 0
+drive 1 80000000 80000000 -> 0
+drive 0 80000000 3e6b3daa -> 0
+drive 1 a da24260 -> 1
+drive 1 9 3f800000 -> 1
+drive 0 ffffffff da24260 -> 0
+drive 0 0 800116c2 -> 0
+drive 1 7fffffff 80000000 -> 0
+drive 1 3 7fc00000 -> 0
+drive 1 3 be13dff0 -> 0
+drive 1 3 3f1ea2b1 -> 1
+drive 1 80000000 7fc00000 -> 0
+drive 1 7fffffff 800116c2 -> 0
+drive 1 3 116c2 -> 1
+drive 1 80000000 3ed37a88 -> 1
+drive 1 1 3f800000 -> 0
+drive 1 ffffffff 3f6db6ab -> 1
+drive 1 ffffffff 800116c2 -> 0
+drive 1 80000000 800116c2 -> 0
+drive 1 80000000 bf4a297c -> 0
+drive 1 0 be7fb742 -> 0
+drive 1 80000000 800116c2 -> 0
+drive 1 7fffffff 3c3dc647 -> 1
+drive 1 7fffffff bf5b136c -> 0
+drive 1 0 da24260 -> 1
+drive 1 2 116c2 -> 1
+drive 1 2 116c2 -> 1
+drive 1 80000000 800116c2 -> 0
+drive 1 2 80000000 -> 0
+drive 1 7 7fc00000 -> 0
+drive 1 80000000 800116c2 -> 0
+drive 1 ffffffff 0 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 ffffffff da24260 -> 1
+drive 1 2 7fc00000 -> 0
+drive 1 ffffffff 800116c2 -> 0
+drive 1 ffffffff 3f800000 -> 1
+drive 1 1 bda8c3d7 -> 0
+drive 1 5 bf0a96c1 -> 0
+drive 1 0 3f643111 -> 1
+drive 0 3 bec5d5ab -> 0
+drive 0 6 3f6ba889 -> 0
+drive 1 c 3f668823 -> 1
+drive 1 2 3f554fa9 -> 1
+drive 1 2 0 -> 0
+drive 1 7fffffff 3f800000 -> 1
+drive 1 ffffffff 800116c2 -> 0
+drive 0 1 800116c2 -> 0
+drive 1 3 3de1f0e7 -> 1
+drive 1 2 116c2 -> 1
+drive 1 ffffffff 0 -> 0
+drive 1 2 7fc00000 -> 0
+drive 1 b 800116c2 -> 0
+drive 1 9 3e617b27 -> 1
+drive 1 6 bf21bd12 -> 0
+drive 1 7fffffff 7f800000 -> 1
+drive 1 1 0 -> 0
+drive 1 7fffffff 0 -> 0
+drive 1 7 800116c2 -> 0
+drive 1 8 0 -> 0
+drive 1 7fffffff bd9f7e06 -> 0
+drive 1 0 3f800000 -> 1
+drive 1 3 3f800000 -> 1
+drive 1 b 3f3acafc -> 1
+drive 1 7fffffff 7f800000 -> 1
+drive 1 ffffffff 3dab46cc -> 1
+drive 1 80000000 7fc00000 -> 0
+drive 1 4 7fc00000 -> 0
+drive 1 7fffffff 0 -> 0
+drive 1 1 7f800000 -> 0
+drive 1 0 3f559978 -> 1
+drive 1 2 3e175720 -> 1
+drive 1 3 3e23a30f -> 1
+drive 1 0 bea57605 -> 0
+drive 1 1 3f4d5334 -> 0
+drive 1 2 0 -> 0
+drive 1 0 3f800000 -> 1
+drive 1 80000000 0 -> 0
+drive 1 ffffffff 7f800000 -> 1
+drive 1 3 3f6828d5 -> 1
+drive 1 1 0 -> 0
+drive 0 1 da24260 -> 0
+drive 1 1 da24260 -> 0
+drive 1 1 da24260 -> 0
+drive 1 0 3f5b3666 -> 1
+drive 1 80000000 7fc00000 -> 0
+drive 1 7 bf2162dc -> 0
+drive 1 1 7fc00000 -> 0
+drive 1 7fffffff 0 -> 0
+drive 1 6 be3dcc9f -> 0
+drive 1 3 0 -> 0
+drive 0 2 0 -> 0
+drive 1 2 0 -> 0
+drive 1 c bf46b9f2 -> 0
+drive 1 9 7fc00000 -> 0
+drive 1 80000000 0 -> 0
+drive 1 2 7f800000 -> 1
+drive 1 2 7fc00000 -> 0
+drive 1 ffffffff 3e68be06 -> 1
+drive 1 2 3f1372b3 -> 1
+drive 1 0 7f800000 -> 1
+drive 1 80000000 800116c2 -> 0
+drive 1 2 800116c2 -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 5 7fc00000 -> 0
+drive 1 0 3f3357fc -> 1
+drive 1 2 7f800000 -> 1
+drive 1 3 0 -> 0
+drive 1 2 800116c2 -> 0
+drive 0 7fffffff 0 -> 0
+drive 1 ffffffff 80000000 -> 0
+drive 1 ffffffff 80000000 -> 0
+drive 0 0 0 -> 0
+drive 1 4 7f800000 -> 1
+drive 1 80000000 7f800000 -> 1
+drive 1 0 7fc00000 -> 0
+drive 1 80000000 da24260 -> 1
+drive 1 ffffffff 3f21d0f8 -> 1
+drive 1 2 800116c2 -> 0
+drive 1 ffffffff 800116c2 -> 0
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 0 3f800000 -> 1
+drive 1 80000000 800116c2 -> 0
+drive 1 ffffffff da24260 -> 1
+drive 1 80000000 7fc00000 -> 0
+drive 0 3 3ee05392 -> 0
+drive 1 1 3f800000 -> 0
+drive 1 80000000 bf50beae -> 0
+drive 1 1 7fc00000 -> 0
+drive 1 2 3eae06d9 -> 1
+drive 1 3 116c2 -> 1
+drive 1 9 116c2 -> 1
+drive 1 c 800116c2 -> 0
+drive 1 3 0 -> 0
+drive 0 8 da24260 -> 0
+drive 1 2 bdf33b76 -> 0
+drive 1 b 800116c2 -> 0
+drive 0 3 116c2 -> 0
+drive 1 7fffffff bf7fd012 -> 0
+drive 1 0 3f528990 -> 1
+drive 1 80000000 da24260 -> 1
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 1 7fc00000 -> 0
+drive 1 0 7f800000 -> 1
+drive 0 7 7f800000 -> 0
+drive 1 9 3d9ecda6 -> 1
+drive 1 8 80000000 -> 0
+drive 1 2 7f800000 -> 1
+drive 1 2 3e9e6be8 -> 1
+drive 1 4 7f800000 -> 1
+drive 1 0 800116c2 -> 0
+drive 1 0 da24260 -> 1
+drive 1 8 116c2 -> 1
+drive 1 80000000 116c2 -> 1
+drive 1 1 80000000 -> 0
+drive 1 ffffffff 3e9ced4a -> 1
+drive 1 7fffffff 3f55b6c1 -> 1
+drive 0 3 80000000 -> 0
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 1 ffffffff 80000000 -> 0
+drive 1 2 3e7e2414 -> 1
+drive 0 2 3f800000 -> 0
+drive 1 2 0 -> 0
+drive 1 2 beead0fd -> 0
+drive 1 a 7fc00000 -> 0
+drive 1 1 3e968b3b -> 0
+drive 1 0 3f800000 -> 1
+drive 1 0 116c2 -> 1
+drive 0 0 80000000 -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 7fffffff 80000000 -> 0
+drive 0 1 80000000 -> 0
+drive 1 1 3f800000 -> 0
+drive 1 2 3f4a7129 -> 1
+drive 1 ffffffff 116c2 -> 1
+drive 1 80000000 3f800000 -> 1
+drive 1 3 7f800000 -> 1
+drive 1 7fffffff 0 -> 0
+drive 1 1 bf31338a -> 0
+drive 1 2 da24260 -> 1
+drive 1 2 bf7fe42f -> 0
+drive 0 2 3f3f22f9 -> 0
+drive 1 3 800116c2 -> 0
+drive 1 9 7f800000 -> 1
+drive 1 ffffffff 80000000 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 2 80000000 -> 0
+drive 1 80000000 800116c2 -> 0
+drive 1 3 3f800000 -> 1
+drive 1 ffffffff 800116c2 -> 0
+drive 1 80000000 bd3c48e0 -> 0
+drive 1 1 116c2 -> 0
+drive 1 9 800116c2 -> 0
+drive 1 ffffffff befbf1c6 -> 0
+drive 1 7 800116c2 -> 0
+drive 1 8 3f800000 -> 1
+drive 1 ffffffff 0 -> 0
+drive 1 3 3f800000 -> 1
+drive 1 1 0 -> 0
+drive 1 0 3eac737e -> 1
+drive 1 80000000 800116c2 -> 0
+drive 1 80000000 3f7390da -> 1
+drive 1 2 116c2 -> 1
+drive 1 7fffffff 116c2 -> 1
+drive 1 0 0 -> 0
+drive 1 1 befeaa61 -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 3 800116c2 -> 0
+drive 1 3 7fc00000 -> 0
+drive 1 8 7f800000 -> 1
+drive 0 3 7fc00000 -> 0
+drive 1 80000000 da24260 -> 1
+drive 1 3 bf093539 -> 0
+drive 1 2 da24260 -> 1
+drive 1 7fffffff 7f800000 -> 1
+drive 1 1 80000000 -> 0
+drive 1 80000000 800116c2 -> 0
+drive 1 5 7fc00000 -> 0
+drive 1 80000000 da24260 -> 1
+drive 0 2 116c2 -> 0
+drive 1 1 116c2 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 80000000 7fc00000 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 3 7fc00000 -> 0
+drive 1 ffffffff 80000000 -> 0
+drive 1 a 7fc00000 -> 0
+drive 1 0 7fc00000 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 2 3e4d52eb -> 1
+drive 1 b 3f0dfd53 -> 1
+drive 1 4 80000000 -> 0
+drive 1 0 80000000 -> 0
+drive 1 2 7fc00000 -> 0
+drive 1 3 116c2 -> 1
+drive 1 3 80000000 -> 0
+drive 0 7fffffff 3f621c78 -> 0
+drive 1 1 80000000 -> 0
+drive 1 3 3f5f78da -> 1
+drive 1 8 be8eccff -> 0
+drive 1 ffffffff be0bfa6b -> 0
+drive 1 1 bedae4dd -> 0
+drive 1 1 7f800000 -> 0
+drive 1 7fffffff 0 -> 0
+drive 0 80000000 7f800000 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 7 7f800000 -> 1
+drive 1 80000000 7f800000 -> 1
+drive 1 2 0 -> 0
+drive 1 9 3f800000 -> 1
+drive 1 a 7fc00000 -> 0
+drive 0 3 da24260 -> 0
+drive 1 1 3ee7320a -> 0
+drive 0 6 800116c2 -> 0
+drive 1 8 80000000 -> 0
+drive 0 80000000 7f800000 -> 0
+drive 1 2 3f5fd866 -> 1
+drive 0 1 bf7a1a67 -> 0
+drive 1 0 3f800000 -> 1
+drive 1 a 116c2 -> 1
+drive 1 a bf3693e7 -> 0
+drive 1 6 bf495e10 -> 0
+drive 1 9 800116c2 -> 0
+drive 1 7fffffff 3f800000 -> 1
+drive 1 80000000 da24260 -> 1
+drive 1 2 7f800000 -> 1
+drive 1 80000000 800116c2 -> 0
+drive 1 7fffffff bf621c2c -> 0
+drive 1 ffffffff 3f5fc5e6 -> 1
+drive 0 1 0 -> 0
+drive 1 80000000 3f5efd06 -> 1
+drive 0 3 80000000 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 2 3daf121d -> 1
+drive 1 2 da24260 -> 1
+drive 1 8 800116c2 -> 0
+drive 1 1 7fc00000 -> 0
+drive 1 2 800116c2 -> 0
+drive 0 0 3f800000 -> 0
+drive 1 3 3f7ce7fa -> 1
+drive 1 7fffffff 80000000 -> 0
+drive 1 ffffffff bf5dd14f -> 0
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 0 7fc00000 -> 0
+drive 1 ffffffff 3f29eccf -> 1
+drive 0 7fffffff 7fc00000 -> 0
+drive 1 1 bf177ed7 -> 0
+drive 0 0 0 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 2 da24260 -> 1
+drive 1 1 7fc00000 -> 0
+drive 1 0 da24260 -> 1
+drive 1 2 3e60eee6 -> 1
+drive 1 80000000 800116c2 -> 0
+drive 1 1 be6afac5 -> 0
+drive 1 2 0 -> 0
+drive 1 2 bea2ed80 -> 0
+drive 1 0 3f800000 -> 1
+drive 1 7fffffff 3f6f912d -> 1
+drive 1 ffffffff be84a803 -> 0
+drive 1 ffffffff 7f800000 -> 1
+drive 1 7 7f800000 -> 1
+drive 1 0 116c2 -> 1
+drive 1 7 116c2 -> 1
+drive 1 8 7f800000 -> 1
+drive 1 2 be58f6a8 -> 0
+drive 0 b be528c11 -> 0
+drive 1 3 bf599717 -> 0
+drive 1 3 7f800000 -> 1
+drive 1 0 80000000 -> 0
+drive 1 a 0 -> 0
+drive 1 4 3ec637a2 -> 1
+drive 1 80000000 3f800000 -> 1
+drive 1 1 7fc00000 -> 0
+drive 1 ffffffff 800116c2 -> 0
+drive 0 2 7fc00000 -> 0
+drive 1 ffffffff 7f800000 -> 1
+drive 1 ffffffff 3f800000 -> 1
+drive 1 7fffffff 80000000 -> 0
+drive 1 3 800116c2 -> 0
+drive 1 3 3f01fa52 -> 1
+drive 1 2 7fc00000 -> 0
+drive 1 2 7f800000 -> 1
+drive 1 1 0 -> 0
+drive 1 7fffffff 800116c2 -> 0
+drive 1 1 bf1fc2b2 -> 0
+drive 1 ffffffff 7f800000 -> 1
+drive 1 2 0 -> 0
+drive 1 1 116c2 -> 0
+drive 1 0 80000000 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 2 3ec536c2 -> 1
+drive 1 80000000 3e68080b -> 1
+drive 1 1 0 -> 0
+drive 1 1 3f800000 -> 0
+drive 1 5 7f800000 -> 1
+drive 0 2 3f800000 -> 0
+drive 1 1 bc20f812 -> 0
+drive 1 2 80000000 -> 0
+drive 1 7fffffff 0 -> 0
+drive 1 9 3f800000 -> 1
+drive 1 ffffffff 3e8afcac -> 1
+drive 1 7fffffff da24260 -> 1
+drive 1 3 7f800000 -> 1
+drive 1 2 7fc00000 -> 0
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 c 3db7af12 -> 1
+drive 1 1 116c2 -> 0
+drive 1 ffffffff 0 -> 0
+drive 1 7fffffff 80000000 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 80000000 7fc00000 -> 0
+drive 1 7fffffff 80000000 -> 0
+drive 1 7fffffff 3ee4a0a8 -> 1
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 0 3f4773e6 -> 1
+drive 1 6 3f800000 -> 1
+drive 0 1 0 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 b 80000000 -> 0
+drive 1 80000000 da24260 -> 1
+drive 1 2 80000000 -> 0
+drive 1 3 7f800000 -> 1
+drive 0 2 7fc00000 -> 0
+drive 1 ffffffff 80000000 -> 0
+drive 1 0 3f800000 -> 1
+drive 1 2 3f800000 -> 1
+drive 1 2 3e4fc86b -> 1
+drive 1 a 3f800000 -> 1
+drive 1 7fffffff 0 -> 0
+drive 1 2 bf0dce50 -> 0
+drive 1 3 116c2 -> 1
+drive 1 1 0 -> 0
+drive 1 0 3f7d197f -> 1
+drive 1 0 80000000 -> 0
+drive 1 0 3eead09e -> 1
+drive 0 ffffffff 3f3b2bf3 -> 0
+drive 1 0 116c2 -> 1
+drive 1 8 da24260 -> 1
+drive 1 1 7f800000 -> 0
+drive 1 c 3f800000 -> 1
+drive 1 7fffffff 3e00a476 -> 1
+drive 1 2 3f58d414 -> 1
+drive 0 5 3f800000 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 80000000 bd12e22e -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 1 2 7f800000 -> 1
+drive 1 1 da24260 -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 1 1 7f800000 -> 0
+drive 1 1 da24260 -> 0
+drive 1 0 7fc00000 -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 1 0 80000000 -> 0
+drive 1 ffffffff da24260 -> 1
+drive 0 80000000 0 -> 0
+drive 1 3 800116c2 -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 1 5 bea774d5 -> 0
+drive 0 1 da24260 -> 0
+drive 1 7fffffff bf5edd41 -> 0
+drive 1 3 bf1a6f1a -> 0
+drive 1 1 7f800000 -> 0
+drive 1 1 da24260 -> 0
+drive 1 ffffffff 3f800000 -> 1
+drive 1 0 3f800000 -> 1
+drive 1 0 3f800000 -> 1
+drive 1 2 80000000 -> 0
+drive 1 3 bee949d1 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 1 bf0fcda6 -> 0
+drive 1 3 3f800000 -> 1
+drive 1 7fffffff da24260 -> 1
+drive 1 3 da24260 -> 1
+drive 1 6 7fc00000 -> 0
+drive 1 2 80000000 -> 0
+drive 1 2 800116c2 -> 0
+drive 1 80000000 3f800000 -> 1
+drive 1 1 befb9519 -> 0
+drive 1 3 80000000 -> 0
+drive 1 7fffffff bea03408 -> 0
+drive 0 8 116c2 -> 0
+drive 1 0 7fc00000 -> 0
+drive 0 ffffffff 3f1a8807 -> 0
+drive 1 1 7f800000 -> 0
+drive 1 7fffffff bf4aa2cd -> 0
+drive 1 2 80000000 -> 0
+drive 1 0 3f62fec3 -> 1
+drive 1 3 7f800000 -> 1
+drive 1 2 800116c2 -> 0
+drive 1 3 3f40edff -> 1
+drive 1 1 0 -> 0
+drive 1 80000000 116c2 -> 1
+drive 1 2 80000000 -> 0
+drive 1 2 3ee79b55 -> 1
+drive 1 1 80000000 -> 0
+drive 1 9 bf452fe1 -> 0
+drive 1 80000000 da24260 -> 1
+drive 1 0 3f0c32b8 -> 1
+drive 1 5 7fc00000 -> 0
+drive 1 1 7fc00000 -> 0
+drive 1 7 7fc00000 -> 0
+drive 1 80000000 3e38b9cc -> 1
+drive 0 1 3f39cd18 -> 0
+drive 1 80000000 da24260 -> 1
+drive 1 0 800116c2 -> 0
+drive 1 7 da24260 -> 1
+drive 1 3 da24260 -> 1
+drive 1 a 3e9ef7a8 -> 1
+drive 0 1 3f800000 -> 0
+drive 0 80000000 3f3230ed -> 0
+drive 0 7fffffff 80000000 -> 0
+drive 1 2 80000000 -> 0
+drive 0 3 7fc00000 -> 0
+drive 1 4 7fc00000 -> 0
+drive 1 2 800116c2 -> 0
+drive 1 2 80000000 -> 0
+drive 1 0 be0691c0 -> 0
+drive 1 1 3f800000 -> 0
+drive 0 3 3f70e46c -> 0
+drive 1 ffffffff 7f800000 -> 1
+drive 1 0 7fc00000 -> 0
+drive 1 0 3da91efb -> 1
+drive 1 4 3d87eb75 -> 1
+drive 1 3 da24260 -> 1
+drive 1 2 0 -> 0
+drive 0 3 3e8e20ae -> 0
+drive 1 6 da24260 -> 1
+drive 1 1 800116c2 -> 0
+drive 1 b 3f800000 -> 1
+drive 1 6 3f2f35cf -> 1
+drive 1 1 3f15b5b2 -> 0
+drive 1 80000000 80000000 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 1 0 -> 0
+drive 1 3 80000000 -> 0
+drive 1 1 3f008cf2 -> 0
+drive 1 0 80000000 -> 0
+drive 1 80000000 3f800000 -> 1
+drive 1 7 116c2 -> 1
+drive 1 3 80000000 -> 0
+drive 1 3 800116c2 -> 0
+drive 0 a 7f800000 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 ffffffff 800116c2 -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 1 5 3d2a464b -> 1
+drive 1 80000000 80000000 -> 0
+drive 1 3 da24260 -> 1
+drive 1 6 3e32dc71 -> 1
+drive 0 7fffffff 3f20cfc1 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 c da24260 -> 1
+drive 1 1 80000000 -> 0
+drive 1 3 80000000 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 3 3f307eed -> 1
+drive 1 ffffffff bcf71058 -> 0
+drive 1 6 0 -> 0
+drive 1 80000000 80000000 -> 0
+drive 1 7fffffff 3f23c5d6 -> 1
+drive 1 2 3f76665f -> 1
+drive 1 3 3f084779 -> 1
+drive 1 3 0 -> 0
+drive 1 0 116c2 -> 1
+drive 1 2 da24260 -> 1
+drive 1 1 3edbdef6 -> 0
+drive 1 0 3f28f71d -> 1
+drive 1 4 3f800000 -> 1
+drive 1 8 3f3622f3 -> 1
+drive 1 80000000 800116c2 -> 0
+drive 1 6 116c2 -> 1
+drive 1 0 3e062137 -> 1
+drive 1 0 800116c2 -> 0
+drive 0 3 3f654e40 -> 0
+drive 1 b 80000000 -> 0
+drive 1 1 3ed7b26c -> 0
+drive 1 2 116c2 -> 1
+drive 0 ffffffff bf0d7bc7 -> 0
+drive 1 1 0 -> 0
+drive 1 80000000 80000000 -> 0
+drive 1 9 3ec7d9b5 -> 1
+drive 1 1 bf2a1491 -> 0
+drive 1 0 0 -> 0
+drive 1 9 3e444c9c -> 1
+drive 1 0 3f800000 -> 1
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 ffffffff da24260 -> 1
+drive 1 80000000 116c2 -> 1
+drive 0 7fffffff 800116c2 -> 0
+drive 1 80000000 0 -> 0
+drive 1 0 7fc00000 -> 0
+drive 1 80000000 7f800000 -> 1
+drive 1 7fffffff 3f48bdbf -> 1
+drive 1 3 7fc00000 -> 0
+drive 1 1 beb56f77 -> 0
+drive 1 2 3f2c49a7 -> 1
+drive 1 9 3c1215bb -> 1
+drive 1 a 0 -> 0
+drive 1 0 3f3085b8 -> 1
+drive 1 c 7f800000 -> 1
+drive 1 2 116c2 -> 1
+drive 1 3 80000000 -> 0
+drive 1 2 3f26a676 -> 1
+drive 1 3 80000000 -> 0
+drive 1 1 7fc00000 -> 0
+drive 1 7 7fc00000 -> 0
+drive 1 7 116c2 -> 1
+drive 1 1 da24260 -> 0
+drive 0 2 3f1e53d3 -> 0
+drive 1 80000000 3f797637 -> 1
+drive 0 80000000 3c960bac -> 0
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 2 bda1f771 -> 0
+drive 1 80000000 da24260 -> 1
+drive 1 8 116c2 -> 1
+drive 1 ffffffff 80000000 -> 0
+drive 1 3 bf409a4a -> 0
+drive 1 1 bf3db61c -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 1 1 3e1d5c81 -> 0
+drive 1 2 0 -> 0
+drive 1 80000000 7fc00000 -> 0
+drive 1 3 0 -> 0
+drive 1 0 bf444fce -> 0
+drive 1 1 be274002 -> 0
+drive 1 7fffffff bf696307 -> 0
+drive 1 2 3f2889d2 -> 1
+drive 1 80000000 800116c2 -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 1 800116c2 -> 0
+drive 1 80000000 bf7f4fc8 -> 0
+drive 1 3 3d9b1c47 -> 1
+drive 1 2 116c2 -> 1
+drive 0 c 3db8ef1b -> 0
+drive 1 1 116c2 -> 0
+drive 1 80000000 7fc00000 -> 0
+drive 0 3 3f5704a1 -> 0
+drive 1 1 3f800000 -> 0
+drive 1 ffffffff 3f55238e -> 1
+drive 1 ffffffff 116c2 -> 1
+drive 1 0 7fc00000 -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 ffffffff 7f800000 -> 1
+drive 1 5 800116c2 -> 0
+drive 1 80000000 da24260 -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 2 7fc00000 -> 0
+drive 1 7fffffff 0 -> 0
+drive 1 80000000 3f472e75 -> 1
+drive 1 c 0 -> 0
+drive 1 0 7fc00000 -> 0
+drive 1 0 116c2 -> 1
+drive 1 80000000 800116c2 -> 0
+drive 1 3 7fc00000 -> 0
+drive 1 3 7f800000 -> 1
+drive 1 80000000 800116c2 -> 0
+drive 1 3 3f17851c -> 1
+drive 1 2 7fc00000 -> 0
+drive 0 80000000 80000000 -> 0
+drive 1 c da24260 -> 1
+drive 1 80000000 3f600fe5 -> 1
+drive 1 1 7f800000 -> 0
+drive 1 2 7fc00000 -> 0
+drive 1 1 80000000 -> 0
+drive 1 1 da24260 -> 0
+drive 1 ffffffff bd8f07c8 -> 0
+drive 1 7 7fc00000 -> 0
+drive 1 b 116c2 -> 1
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 80000000 0 -> 0
+drive 1 2 3f390944 -> 1
+drive 1 c 7f800000 -> 1
+drive 1 2 3f800000 -> 1
+drive 1 3 3f800000 -> 1
+drive 1 ffffffff da24260 -> 1
+drive 1 2 7f800000 -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 3 da24260 -> 1
+drive 1 2 3f2fb515 -> 1
+drive 1 1 bdd92356 -> 0
+drive 1 4 3f800000 -> 1
+drive 1 2 3e0eab41 -> 1
+drive 1 2 3db931e3 -> 1
+drive 1 0 800116c2 -> 0
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 0 116c2 -> 1
+drive 1 c da24260 -> 1
+drive 1 b 3f800000 -> 1
+drive 1 0 3f00028d -> 1
+drive 0 2 116c2 -> 0
+drive 1 2 0 -> 0
+drive 1 1 da24260 -> 0
+drive 1 7fffffff 3bbf58b0 -> 1
+drive 1 80000000 0 -> 0
+drive 1 0 116c2 -> 1
+drive 1 9 116c2 -> 1
+drive 1 0 7fc00000 -> 0
+drive 1 80000000 3e847d71 -> 1
+drive 1 0 800116c2 -> 0
+drive 1 80000000 80000000 -> 0
+drive 1 b 3e90c8ab -> 1
+drive 1 3 0 -> 0
+drive 1 80000000 116c2 -> 1
+drive 1 4 3e8dac8d -> 1
+drive 0 7fffffff 0 -> 0
+drive 1 80000000 7f800000 -> 1
+drive 1 0 116c2 -> 1
+drive 1 6 116c2 -> 1
+drive 1 80000000 da24260 -> 1
+drive 1 0 116c2 -> 1
+drive 1 7 800116c2 -> 0
+drive 1 3 7f800000 -> 1
+drive 0 3 80000000 -> 0
+drive 1 2 3df56da2 -> 1
+drive 1 7fffffff bf31ddd4 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 3 3ec5b697 -> 1
+drive 1 c 3edc8b70 -> 1
+drive 1 7fffffff 3e70b73d -> 1
+drive 1 1 3f800000 -> 0
+drive 0 2 3f800000 -> 0
+drive 1 1 116c2 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 2 3f7996a7 -> 1
+drive 1 ffffffff 7f800000 -> 1
+drive 1 2 800116c2 -> 0
+drive 1 80000000 116c2 -> 1
+drive 1 0 3f800000 -> 1
+drive 1 2 bf62a43d -> 0
+drive 1 0 7f800000 -> 1
+drive 1 2 7fc00000 -> 0
+drive 1 2 7f800000 -> 1
+drive 1 8 80000000 -> 0
+drive 1 80000000 3f0bc04c -> 1
+drive 1 1 3e2b50a9 -> 0
+drive 1 3 116c2 -> 1
+drive 1 ffffffff 3f4f207f -> 1
+drive 1 3 3f3d073c -> 1
+drive 0 3 116c2 -> 0
+drive 1 0 3e1403b5 -> 1
+drive 1 1 7f800000 -> 0
+drive 1 80000000 800116c2 -> 0
+drive 1 c 800116c2 -> 0
+drive 0 2 7f800000 -> 0
+drive 1 3 7f800000 -> 1
+drive 1 9 be3208da -> 0
+drive 1 1 3f800000 -> 0
+drive 1 9 3e79d604 -> 1
+drive 1 0 80000000 -> 0
+drive 1 2 0 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 1 3f800000 -> 0
+drive 1 1 bed41b91 -> 0
+drive 1 9 0 -> 0
+drive 1 ffffffff 0 -> 0
+drive 1 3 0 -> 0
+drive 1 2 116c2 -> 1
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 7fffffff 800116c2 -> 0
+drive 0 3 3ee870ee -> 0
+drive 1 2 be912209 -> 0
+drive 1 80000000 7f800000 -> 1
+drive 1 ffffffff 116c2 -> 1
+drive 1 80000000 3f213ad5 -> 1
+drive 1 ffffffff 116c2 -> 1
+drive 1 ffffffff 3f0e146e -> 1
+drive 1 ffffffff 3f800000 -> 1
+drive 1 8 3f800000 -> 1
+drive 1 7fffffff 3e6a924a -> 1
+drive 1 80000000 80000000 -> 0
+drive 1 1 da24260 -> 0
+drive 1 80000000 116c2 -> 1
+drive 0 3 3f800000 -> 0
+drive 1 ffffffff 3ec3489c -> 1
+drive 1 a 116c2 -> 1
+drive 0 80000000 7f800000 -> 0
+drive 1 80000000 116c2 -> 1
+drive 1 7 da24260 -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 0 80000000 7f800000 -> 0
+drive 1 0 0 -> 0
+drive 1 4 116c2 -> 1
+drive 1 80000000 3e8c9019 -> 1
+drive 1 3 da24260 -> 1
+drive 1 0 3f800000 -> 1
+drive 1 ffffffff 800116c2 -> 0
+drive 1 a 7fc00000 -> 0
+drive 1 2 80000000 -> 0
+drive 1 8 7fc00000 -> 0
+drive 1 2 3f800000 -> 1
+drive 1 3 3f800000 -> 1
+drive 1 3 80000000 -> 0
+drive 1 80000000 0 -> 0
+drive 1 0 3eb79ac3 -> 1
+drive 1 1 800116c2 -> 0
+drive 1 ffffffff 3f222116 -> 1
+drive 1 1 da24260 -> 0
+drive 1 4 7f800000 -> 1
+drive 1 a 3ec594fd -> 1
+drive 1 2 3bc60628 -> 1
+drive 1 7fffffff 80000000 -> 0
+drive 1 1 0 -> 0
+drive 0 3 3eb68636 -> 0
+drive 0 ffffffff 3e8e3561 -> 0
+drive 1 7fffffff 7f800000 -> 1
+drive 1 0 3f73b71b -> 1
+drive 1 3 116c2 -> 1
+drive 1 3 beaafb6d -> 0
+drive 1 2 7fc00000 -> 0
+drive 1 1 3e896b4a -> 0
+drive 1 2 3f800000 -> 1
+drive 1 2 3f7cee24 -> 1
+drive 1 3 3f21516c -> 1
+drive 1 0 800116c2 -> 0
+drive 1 3 bede2982 -> 0
+drive 1 7fffffff 800116c2 -> 0
+drive 1 3 7f800000 -> 1
+drive 0 7fffffff 7fc00000 -> 0
+drive 1 3 0 -> 0
+drive 1 1 3f10604d -> 0
+drive 1 7fffffff 116c2 -> 1
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 1 3f800000 -> 0
+drive 1 ffffffff 0 -> 0
+drive 1 2 116c2 -> 1
+drive 1 0 800116c2 -> 0
+drive 1 6 80000000 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 7fffffff 0 -> 0
+drive 0 7 3f800000 -> 0
+drive 1 0 bf14c07d -> 0
+drive 1 6 80000000 -> 0
+drive 1 0 80000000 -> 0
+drive 1 ffffffff 80000000 -> 0
+drive 1 1 be62006b -> 0
+drive 1 ffffffff 7f800000 -> 1
+drive 1 1 800116c2 -> 0
+drive 1 3 3d4e5409 -> 1
+drive 1 7fffffff 3f800000 -> 1
+drive 1 0 7fc00000 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 80000000 800116c2 -> 0
+drive 1 0 116c2 -> 1
+drive 1 1 da24260 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 4 80000000 -> 0
+drive 1 0 116c2 -> 1
+drive 1 80000000 800116c2 -> 0
+drive 1 3 116c2 -> 1
+drive 0 3 80000000 -> 0
+drive 1 7 7fc00000 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 7fffffff be9a39a0 -> 0
+drive 1 7 0 -> 0
+drive 1 c 116c2 -> 1
+drive 1 0 3e258add -> 1
+drive 1 7 3f1ce42c -> 1
+drive 0 80000000 800116c2 -> 0
+drive 1 7fffffff 7f800000 -> 1
+drive 1 ffffffff 3f3a1358 -> 1
+drive 1 ffffffff be352677 -> 0
+drive 1 1 80000000 -> 0
+drive 1 5 116c2 -> 1
+drive 1 3 bf7b2d8e -> 0
+drive 1 0 3ecd0350 -> 1
+drive 1 80000000 116c2 -> 1
+drive 1 ffffffff 3f800000 -> 1
+drive 1 0 80000000 -> 0
+drive 1 7fffffff 116c2 -> 1
+drive 1 0 3f800000 -> 1
+drive 1 1 3f800000 -> 0
+drive 1 0 116c2 -> 1
+drive 1 8 7fc00000 -> 0
+drive 1 3 800116c2 -> 0
+drive 1 c 3f800000 -> 1
+drive 1 2 800116c2 -> 0
+drive 1 7fffffff 3ea387d7 -> 1
+drive 1 2 3f136a35 -> 1
+drive 1 7fffffff 3efe8ec6 -> 1
+drive 1 5 da24260 -> 1
+drive 1 1 7f800000 -> 0
+drive 1 2 3f800000 -> 1
+drive 1 3 da24260 -> 1
+drive 1 3 be4c660d -> 0
+drive 1 1 7fc00000 -> 0
+drive 0 6 3dcbef72 -> 0
+drive 1 7fffffff 7f800000 -> 1
+drive 1 5 3f1950e2 -> 1
+drive 0 0 da24260 -> 0
+drive 1 2 80000000 -> 0
+drive 1 80000000 3f800000 -> 1
+drive 1 1 3f30f74a -> 0
+drive 1 1 0 -> 0
+drive 1 7fffffff beabc75e -> 0
+drive 1 ffffffff bf72c6f0 -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 0 7f800000 -> 1
+drive 1 8 800116c2 -> 0
+drive 1 2 800116c2 -> 0
+drive 1 c 7f800000 -> 1
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 0 da24260 -> 1
+drive 1 4 0 -> 0
+drive 1 2 3f800000 -> 1
+drive 1 c bed5fbe7 -> 0
+drive 1 2 da24260 -> 1
+drive 1 7fffffff da24260 -> 1
+drive 1 3 3f28bcdb -> 1
+drive 1 ffffffff 3ecea004 -> 1
+drive 1 3 80000000 -> 0
+drive 1 0 7fc00000 -> 0
+drive 1 3 116c2 -> 1
+drive 1 ffffffff 3ef1d10b -> 1
+drive 1 7 da24260 -> 1
+drive 1 0 7fc00000 -> 0
+drive 1 1 da24260 -> 0
+drive 1 3 116c2 -> 1
+drive 1 0 116c2 -> 1
+drive 1 80000000 da24260 -> 1
+drive 1 1 3eb4bbd5 -> 0
+drive 1 ffffffff 7f800000 -> 1
+drive 1 0 3f2903a1 -> 1
+drive 0 ffffffff 80000000 -> 0
+drive 1 ffffffff bf1a4698 -> 0
+drive 1 3 3eeaa820 -> 1
+drive 1 80000000 800116c2 -> 0
+drive 1 2 3f629c44 -> 1
+drive 1 3 800116c2 -> 0
+drive 1 1 0 -> 0
+drive 1 2 bf776fae -> 0
+drive 1 1 3f2f11f4 -> 0
+drive 1 7fffffff 116c2 -> 1
+drive 0 0 116c2 -> 0
+drive 1 1 116c2 -> 0
+drive 1 80000000 3f800000 -> 1
+drive 1 7fffffff da24260 -> 1
+drive 1 ffffffff 0 -> 0
+drive 1 4 800116c2 -> 0
+drive 1 2 3dae0b64 -> 1
+drive 1 7fffffff 0 -> 0
+drive 1 80000000 7fc00000 -> 0
+drive 1 3 800116c2 -> 0
+drive 1 2 800116c2 -> 0
+drive 1 ffffffff 3f800000 -> 1
+drive 1 0 800116c2 -> 0
+drive 1 1 0 -> 0
+drive 1 7fffffff 3f0a3228 -> 1
+drive 1 1 0 -> 0
+drive 1 4 80000000 -> 0
+drive 1 7fffffff 7f800000 -> 1
+drive 1 7fffffff 800116c2 -> 0
+drive 1 2 7fc00000 -> 0
+drive 1 80000000 116c2 -> 1
+drive 1 7fffffff 116c2 -> 1
+drive 1 2 80000000 -> 0
+drive 1 3 0 -> 0
+drive 1 7fffffff 0 -> 0
+drive 1 7fffffff 7f800000 -> 1
+drive 1 2 116c2 -> 1
+drive 1 7fffffff da24260 -> 1
+drive 1 0 7fc00000 -> 0
+drive 1 1 800116c2 -> 0
+drive 0 c da24260 -> 0
+drive 1 1 0 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 1 3f800000 -> 0
+drive 1 1 3f76164a -> 0
+drive 1 1 3f18f193 -> 0
+drive 1 7fffffff bdf5a89e -> 0
+drive 1 1 bf3aa8aa -> 0
+drive 1 3 800116c2 -> 0
+drive 1 0 da24260 -> 1
+drive 1 ffffffff 116c2 -> 1
+drive 0 0 7f800000 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 2 bf73d559 -> 0
+drive 1 0 3f800000 -> 1
+drive 1 ffffffff 3f1c23e2 -> 1
+drive 1 ffffffff 0 -> 0
+drive 1 80000000 da24260 -> 1
+drive 1 2 da24260 -> 1
+drive 1 1 3f17cf14 -> 0
+drive 1 1 3e235a6a -> 0
+drive 1 1 0 -> 0
+drive 1 2 da24260 -> 1
+drive 1 0 da24260 -> 1
+drive 1 0 bf27bf52 -> 0
+drive 1 ffffffff 3f2cd62e -> 1
+drive 1 7fffffff 7f800000 -> 1
+drive 0 ffffffff 800116c2 -> 0
+drive 1 6 bf2b7524 -> 0
+drive 1 80000000 3f800000 -> 1
+drive 1 80000000 3b1d5071 -> 1
+drive 1 3 0 -> 0
+drive 1 7fffffff 80000000 -> 0
+drive 1 3 bf21e773 -> 0
+drive 1 80000000 800116c2 -> 0
+drive 1 7fffffff 0 -> 0
+drive 0 0 80000000 -> 0
+drive 0 3 116c2 -> 0
+drive 1 b 800116c2 -> 0
+drive 1 0 3e82da7f -> 1
+drive 1 2 3f800000 -> 1
+drive 1 7fffffff 3eef3393 -> 1
+drive 1 0 3f800000 -> 1
+drive 1 6 116c2 -> 1
+drive 1 3 7fc00000 -> 0
+drive 1 1 80000000 -> 0
+drive 1 ffffffff 3ba8bc38 -> 1
+drive 1 1 da24260 -> 0
+drive 1 b 7f800000 -> 1
+drive 1 6 be7f4d84 -> 0
+drive 1 5 7f800000 -> 1
+drive 1 7fffffff 80000000 -> 0
+drive 1 c 3ec270c4 -> 1
+drive 1 0 7f800000 -> 1
+drive 1 a 7f800000 -> 1
+drive 1 80000000 116c2 -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 1 3f800000 -> 0
+drive 1 7fffffff 116c2 -> 1
+drive 0 80000000 0 -> 0
+drive 1 ffffffff 3eda3a67 -> 1
+drive 1 80000000 80000000 -> 0
+drive 1 1 0 -> 0
+drive 1 9 bf6c62f7 -> 0
+drive 1 6 beb791b7 -> 0
+drive 1 80000000 116c2 -> 1
+drive 0 9 bda80026 -> 0
+drive 1 8 7f800000 -> 1
+drive 1 7fffffff 116c2 -> 1
+drive 1 5 7fc00000 -> 0
+drive 1 80000000 116c2 -> 1
+drive 1 0 80000000 -> 0
+drive 1 a da24260 -> 1
+drive 1 3 3e0e3221 -> 1
+drive 1 8 7f800000 -> 1
+drive 1 1 3f6c4022 -> 0
+drive 1 2 7f800000 -> 1
+drive 0 0 116c2 -> 0
+drive 0 80000000 80000000 -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 3 3f4b8951 -> 1
+drive 1 1 116c2 -> 0
+drive 0 1 0 -> 0
+drive 1 1 80000000 -> 0
+drive 1 1 da24260 -> 0
+drive 1 3 3f800000 -> 1
+drive 1 ffffffff 3f1e3f8f -> 1
+drive 1 7fffffff 3f1ca11f -> 1
+drive 1 8 0 -> 0
+drive 1 0 3f54553b -> 1
+drive 1 8 7f800000 -> 1
+drive 1 1 3e7bca0e -> 0
+drive 0 3 80000000 -> 0
+drive 1 1 bf32f8c8 -> 0
+drive 1 80000000 7f800000 -> 1
+drive 0 7fffffff bf520754 -> 0
+drive 1 4 0 -> 0
+drive 1 80000000 0 -> 0
+drive 1 1 3f800000 -> 0
+drive 1 80000000 7f800000 -> 1
+drive 1 80000000 7fc00000 -> 0
+drive 1 0 3f1a3e5c -> 1
+drive 0 ffffffff 80000000 -> 0
+drive 1 b bf37bfbb -> 0
+drive 1 80000000 0 -> 0
+drive 1 1 3f21f275 -> 0
+drive 1 5 3f01fb24 -> 1
+drive 1 8 0 -> 0
+drive 1 1 3db534fa -> 0
+drive 1 80000000 3df99b78 -> 1
+drive 1 1 7f800000 -> 0
+drive 1 80000000 7fc00000 -> 0
+drive 1 3 bb71636c -> 0
+drive 1 ffffffff 80000000 -> 0
+drive 1 7fffffff 7f800000 -> 1
+drive 1 7fffffff 3f58ab9a -> 1
+drive 1 2 bd814b52 -> 0
+drive 1 5 80000000 -> 0
+drive 1 2 0 -> 0
+drive 1 2 80000000 -> 0
+drive 1 7fffffff 80000000 -> 0
+drive 1 3 3f800000 -> 1
+drive 1 80000000 3f793656 -> 1
+drive 0 6 7f800000 -> 0
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 0 116c2 -> 1
+drive 1 3 be0cb9e0 -> 0
+drive 1 80000000 be59ec5a -> 0
+drive 1 0 3f800000 -> 1
+drive 1 0 800116c2 -> 0
+drive 1 3 800116c2 -> 0
+drive 1 3 800116c2 -> 0
+drive 0 9 116c2 -> 0
+drive 1 80000000 bda7d1b6 -> 0
+drive 1 ffffffff da24260 -> 1
+drive 1 1 80000000 -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 1 80000000 7fc00000 -> 0
+drive 1 0 3ec00a6c -> 1
+drive 1 a 116c2 -> 1
+drive 0 7fffffff 800116c2 -> 0
+drive 1 a 3f33ebe1 -> 1
+drive 1 80000000 7fc00000 -> 0
+drive 1 80000000 800116c2 -> 0
+drive 1 8 800116c2 -> 0
+drive 1 1 3e103bf4 -> 0
+drive 0 80000000 800116c2 -> 0
+drive 1 80000000 3f800000 -> 1
+drive 1 2 800116c2 -> 0
+drive 1 1 7f800000 -> 0
+drive 1 ffffffff 800116c2 -> 0
+drive 1 8 0 -> 0
+drive 1 2 3f800000 -> 1
+drive 1 ffffffff 3f5d1a90 -> 1
+drive 1 3 3f800000 -> 1
+drive 1 1 116c2 -> 0
+drive 0 1 bf4cd4b2 -> 0
+drive 0 7fffffff da24260 -> 0
+drive 1 80000000 bf4e81d3 -> 0
+drive 1 3 3f800000 -> 1
+drive 0 0 da24260 -> 0
+drive 1 0 0 -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 1 1 7fc00000 -> 0
+drive 1 1 7fc00000 -> 0
+drive 0 ffffffff 116c2 -> 0
+drive 1 3 3f800000 -> 1
+drive 1 2 7fc00000 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 3 80000000 -> 0
+drive 1 ffffffff 3f3fab44 -> 1
+drive 1 1 116c2 -> 0
+drive 1 1 3d729cc5 -> 0
+drive 1 80000000 80000000 -> 0
+drive 1 0 3f60d15a -> 1
+drive 1 0 be9fff6f -> 0
+drive 1 ffffffff 7f800000 -> 1
+drive 0 0 0 -> 0
+drive 1 0 3f36b655 -> 1
+drive 1 5 116c2 -> 1
+drive 1 2 da24260 -> 1
+drive 1 2 116c2 -> 1
+drive 1 ffffffff 7f800000 -> 1
+drive 1 6 800116c2 -> 0
+drive 1 1 3f800000 -> 0
+drive 1 3 3e9464cc -> 1
+drive 1 6 7f800000 -> 1
+drive 0 6 116c2 -> 0
+drive 1 7fffffff 116c2 -> 1
+drive 1 1 bf3968f8 -> 0
+drive 1 0 7f800000 -> 1
+drive 0 80000000 800116c2 -> 0
+drive 1 1 bea206ec -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 a da24260 -> 1
+drive 0 80000000 116c2 -> 0
+drive 1 1 da24260 -> 0
+drive 1 80000000 7fc00000 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 ffffffff 800116c2 -> 0
+drive 1 0 0 -> 0
+drive 1 6 7fc00000 -> 0
+drive 1 0 da24260 -> 1
+drive 1 0 3e716a7d -> 1
+drive 1 3 80000000 -> 0
+drive 1 4 da24260 -> 1
+drive 1 c 3ec568ca -> 1
+drive 1 0 bedc6b62 -> 0
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 2 bd2e122f -> 0
+drive 1 7 80000000 -> 0
+drive 1 ffffffff 3f6c9898 -> 1
+drive 0 5 3f010582 -> 0
+drive 1 5 3f800000 -> 1
+drive 1 3 80000000 -> 0
+drive 1 ffffffff bef39d3a -> 0
+drive 1 3 3ee93bf6 -> 1
+drive 1 0 bf1b295b -> 0
+drive 1 1 116c2 -> 0
+drive 1 1 3eec315e -> 0
+drive 1 0 bed6419a -> 0
+drive 1 0 da24260 -> 1
+drive 0 7fffffff 80000000 -> 0
+drive 1 3 3f092807 -> 1
+drive 1 7fffffff 0 -> 0
+drive 1 80000000 be89126f -> 0
+drive 1 0 da24260 -> 1
+drive 1 80000000 3ec81736 -> 1
+drive 1 2 3f0d173d -> 1
+drive 1 80000000 3f6befd2 -> 1
+drive 1 80000000 3f2f0264 -> 1
+drive 1 8 bec26b6f -> 0
+drive 1 80000000 7f800000 -> 1
+drive 1 1 7fc00000 -> 0
+drive 1 b 80000000 -> 0
+drive 1 80000000 0 -> 0
+drive 0 ffffffff 800116c2 -> 0
+drive 0 ffffffff be48b439 -> 0
+drive 1 ffffffff bf0a00d6 -> 0
+drive 1 3 da24260 -> 1
+drive 1 5 800116c2 -> 0
+drive 1 ffffffff 3f6d7ad2 -> 1
+drive 1 ffffffff 0 -> 0
+drive 0 9 7fc00000 -> 0
+drive 1 80000000 3f775c9d -> 1
+drive 0 0 7fc00000 -> 0
+drive 1 7 116c2 -> 1
+drive 1 2 7fc00000 -> 0
+drive 1 2 0 -> 0
+drive 1 1 3e1a78b7 -> 0
+drive 1 1 7f800000 -> 0
+drive 1 80000000 0 -> 0
+drive 0 3 7fc00000 -> 0
+drive 1 2 bf65dc75 -> 0
+drive 1 1 0 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 ffffffff 3e8a111c -> 1
+drive 1 0 0 -> 0
+drive 1 3 80000000 -> 0
+drive 1 80000000 3f0c6cd3 -> 1
+drive 1 2 7f800000 -> 1
+drive 1 ffffffff 0 -> 0
+drive 1 2 0 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 ffffffff da24260 -> 1
+drive 1 2 da24260 -> 1
+drive 1 3 3e534297 -> 1
+drive 1 3 3ee6c3fc -> 1
+drive 1 2 116c2 -> 1
+drive 1 ffffffff bbd7d769 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 7fffffff 80000000 -> 0
+drive 1 ffffffff da24260 -> 1
+drive 1 7fffffff da24260 -> 1
+drive 1 2 800116c2 -> 0
+drive 1 7fffffff 3f4690ca -> 1
+drive 1 ffffffff 7f800000 -> 1
+drive 1 1 3ee04694 -> 0
+drive 0 2 3f800000 -> 0
+drive 1 1 7fc00000 -> 0
+drive 1 9 3f5bfa5f -> 1
+drive 1 ffffffff 0 -> 0
+drive 1 80000000 bf27b747 -> 0
+drive 1 80000000 800116c2 -> 0
+drive 1 80000000 0 -> 0
+drive 1 2 3f800000 -> 1
+drive 1 0 0 -> 0
+drive 1 0 80000000 -> 0
+drive 1 ffffffff 3f4971fa -> 1
+drive 1 8 0 -> 0
+drive 1 ffffffff da24260 -> 1
+drive 1 9 da24260 -> 1
+drive 1 b 7fc00000 -> 0
+drive 1 ffffffff 3f800000 -> 1
+drive 1 2 7fc00000 -> 0
+drive 0 80000000 7f800000 -> 0
+drive 1 ffffffff 0 -> 0
+drive 1 1 80000000 -> 0
+drive 1 7fffffff 80000000 -> 0
+drive 1 0 bec4e636 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 5 7f800000 -> 1
+drive 1 a 7f800000 -> 1
+drive 1 2 3f4cbefe -> 1
+drive 1 80000000 3f800000 -> 1
+drive 1 5 0 -> 0
+drive 1 1 116c2 -> 0
+drive 1 1 80000000 -> 0
+drive 1 80000000 0 -> 0
+drive 1 1 116c2 -> 0
+drive 1 3 3f54d582 -> 1
+drive 0 3 3f1452b6 -> 0
+drive 1 1 116c2 -> 0
+drive 1 7fffffff 116c2 -> 1
+drive 1 0 7f800000 -> 1
+drive 1 2 7fc00000 -> 0
+drive 1 3 800116c2 -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 1 2 116c2 -> 1
+drive 1 8 800116c2 -> 0
+drive 0 3 3ec2eb23 -> 0
+drive 1 ffffffff da24260 -> 1
+drive 1 80000000 3f650da1 -> 1
+drive 1 ffffffff 800116c2 -> 0
+drive 1 2 800116c2 -> 0
+drive 0 3 3f800000 -> 0
+drive 1 7fffffff 80000000 -> 0
+drive 1 7 da24260 -> 1
+drive 1 2 3f7abc2c -> 1
+drive 1 1 800116c2 -> 0
+drive 0 80000000 da24260 -> 0
+drive 1 7fffffff 0 -> 0
+drive 1 7 7fc00000 -> 0
+drive 1 ffffffff 0 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 ffffffff be3c7280 -> 0
+drive 1 1 116c2 -> 0
+drive 1 2 7fc00000 -> 0
+drive 1 2 da24260 -> 1
+drive 1 8 0 -> 0
+drive 1 ffffffff 3f800000 -> 1
+drive 1 ffffffff da24260 -> 1
+drive 1 0 116c2 -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 6 800116c2 -> 0
+drive 1 1 3f800000 -> 0
+drive 1 5 3f30b8e3 -> 1
+drive 1 3 3f095346 -> 1
+drive 1 2 da24260 -> 1
+drive 1 7fffffff 3f800000 -> 1
+drive 1 ffffffff 3f670cd5 -> 1
+drive 1 80000000 80000000 -> 0
+drive 1 8 3f6bb996 -> 1
+drive 1 80000000 800116c2 -> 0
+drive 1 1 bf7cfb0d -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 7fffffff 3f5cc501 -> 1
+drive 1 ffffffff 3f800000 -> 1
+drive 1 ffffffff 0 -> 0
+drive 0 1 800116c2 -> 0
+drive 1 2 0 -> 0
+drive 1 2 bf2e1c69 -> 0
+drive 1 2 800116c2 -> 0
+drive 1 2 0 -> 0
+drive 1 3 3de60b61 -> 1
+drive 1 ffffffff da24260 -> 1
+drive 1 3 7fc00000 -> 0
+drive 1 2 3ed54bf2 -> 1
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 7fffffff be43f459 -> 0
+drive 1 3 7fc00000 -> 0
+drive 1 a 116c2 -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 1 da24260 -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 1 1 3f7d523a -> 0
+drive 1 c 3f800000 -> 1
+drive 1 4 800116c2 -> 0
+drive 1 80000000 3e8a5627 -> 1
+drive 1 80000000 3ec16cca -> 1
+drive 1 7fffffff 0 -> 0
+drive 1 3 be394cb4 -> 0
+drive 1 1 7f800000 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 80000000 116c2 -> 1
+drive 1 a 3f008f60 -> 1
+drive 1 3 7fc00000 -> 0
+drive 1 7 3f800000 -> 1
+drive 1 80000000 80000000 -> 0
+drive 0 9 80000000 -> 0
+drive 1 b 116c2 -> 1
+drive 1 3 3d65d9e5 -> 1
+drive 1 b be0a0e01 -> 0
+drive 1 0 7fc00000 -> 0
+drive 0 7 116c2 -> 0
+drive 1 0 800116c2 -> 0
+drive 0 ffffffff 7f800000 -> 0
+drive 1 80000000 7f800000 -> 1
+drive 1 1 116c2 -> 0
+drive 1 7fffffff da24260 -> 1
+drive 0 80000000 0 -> 0
+drive 1 80000000 3e97a34a -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 2 116c2 -> 1
+drive 1 2 da24260 -> 1
+drive 1 80000000 0 -> 0
+drive 1 2 116c2 -> 1
+drive 1 80000000 116c2 -> 1
+drive 1 3 7f800000 -> 1
+drive 1 b 7fc00000 -> 0
+drive 1 1 7fc00000 -> 0
+drive 1 ffffffff 80000000 -> 0
+drive 1 ffffffff 3ec440d0 -> 1
+drive 1 3 80000000 -> 0
+drive 1 3 3f42d8ad -> 1
+drive 1 2 3e9ff6de -> 1
+drive 1 b da24260 -> 1
+drive 1 1 be966b2e -> 0
+drive 1 2 da24260 -> 1
+drive 1 ffffffff 3f03d62d -> 1
+drive 1 80000000 80000000 -> 0
+drive 1 c 800116c2 -> 0
+drive 1 5 3f800000 -> 1
+drive 1 80000000 3e282c34 -> 1
+drive 1 1 3ea7420e -> 0
+drive 1 3 80000000 -> 0
+drive 1 a da24260 -> 1
+drive 1 ffffffff 116c2 -> 1
+drive 1 80000000 0 -> 0
+drive 1 80000000 7f800000 -> 1
+drive 0 1 800116c2 -> 0
+drive 1 80000000 7fc00000 -> 0
+drive 1 2 3c60159f -> 1
+drive 1 5 bdfd695f -> 0
+drive 0 b da24260 -> 0
+drive 0 8 3f30a747 -> 0
+drive 1 0 3f13d7eb -> 1
+drive 1 1 3ed9687f -> 0
+drive 1 1 da24260 -> 0
+drive 1 3 800116c2 -> 0
+drive 1 1 3f78bbc0 -> 0
+drive 1 2 3f800000 -> 1
+drive 1 4 da24260 -> 1
+drive 1 4 3f800000 -> 1
+drive 1 7fffffff bf05cd56 -> 0
+drive 1 80000000 be945644 -> 0
+drive 1 b 0 -> 0
+drive 1 ffffffff 0 -> 0
+drive 1 0 da24260 -> 1
+drive 1 1 116c2 -> 0
+drive 0 3 80000000 -> 0
+drive 1 2 0 -> 0
+drive 1 3 7fc00000 -> 0
+drive 1 8 3f800000 -> 1
+drive 1 8 7fc00000 -> 0
+drive 1 ffffffff da24260 -> 1
+drive 1 3 800116c2 -> 0
+drive 1 3 0 -> 0
+drive 1 ffffffff 7f800000 -> 1
+drive 1 7 3f1bcd6d -> 1
+drive 1 7fffffff 3e52c4c0 -> 1
+drive 1 1 bf22ae76 -> 0
+drive 1 0 da24260 -> 1
+drive 1 6 bf204881 -> 0
+drive 1 0 3f29b0b7 -> 1
+drive 1 ffffffff bf751910 -> 0
+drive 0 3 da24260 -> 0
+drive 1 80000000 0 -> 0
+drive 0 3 80000000 -> 0
+drive 1 7fffffff 7f800000 -> 1
+drive 1 7 3ee1d521 -> 1
+drive 0 7fffffff da24260 -> 0
+drive 1 2 3f7ebb25 -> 1
+drive 1 3 80000000 -> 0
+drive 1 ffffffff 3da02725 -> 1
+drive 1 ffffffff da24260 -> 1
+drive 1 80000000 800116c2 -> 0
+drive 1 80000000 800116c2 -> 0
+drive 1 5 7fc00000 -> 0
+drive 1 80000000 7f800000 -> 1
+drive 1 8 0 -> 0
+drive 1 1 7f800000 -> 0
+drive 1 ffffffff 0 -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 1 2 7fc00000 -> 0
+drive 1 2 bf4af584 -> 0
+drive 1 0 3e971393 -> 1
+drive 1 c bf7c2c46 -> 0
+drive 1 7fffffff 3efeccfd -> 1
+drive 1 0 3f800000 -> 1
+drive 1 ffffffff da24260 -> 1
+drive 0 7fffffff 116c2 -> 0
+drive 1 80000000 800116c2 -> 0
+drive 1 3 0 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 1 0 -> 0
+drive 1 2 da24260 -> 1
+drive 1 0 0 -> 0
+drive 1 3 da24260 -> 1
+drive 1 0 da24260 -> 1
+drive 1 0 116c2 -> 1
+drive 1 3 7f800000 -> 1
+drive 1 0 80000000 -> 0
+drive 1 0 bf591ca7 -> 0
+drive 1 80000000 0 -> 0
+drive 1 a 80000000 -> 0
+drive 0 0 bf6f9b48 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 a 800116c2 -> 0
+drive 1 2 3f800000 -> 1
+drive 0 2 800116c2 -> 0
+drive 1 2 3f16ede5 -> 1
+drive 1 1 bf65e5ee -> 0
+drive 1 ffffffff 0 -> 0
+drive 1 ffffffff 800116c2 -> 0
+drive 1 80000000 116c2 -> 1
+drive 1 80000000 3e5368a0 -> 1
+drive 1 0 3f800000 -> 1
+drive 1 7fffffff 3f800000 -> 1
+drive 1 b bf5c6e88 -> 0
+drive 0 1 3f800000 -> 0
+drive 1 1 3e2cab3b -> 0
+drive 1 2 116c2 -> 1
+drive 1 0 7fc00000 -> 0
+drive 1 0 0 -> 0
+drive 0 ffffffff da24260 -> 0
+drive 1 2 3f3d5259 -> 1
+drive 1 2 800116c2 -> 0
+drive 1 80000000 7f800000 -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 2 116c2 -> 1
+drive 1 7 800116c2 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 a 800116c2 -> 0
+drive 1 3 7fc00000 -> 0
+drive 0 ffffffff bf2162a8 -> 0
+drive 1 ffffffff 7fc00000 -> 0
+drive 0 ffffffff 3eddf482 -> 0
+drive 1 3 7f800000 -> 1
+drive 1 0 3f800000 -> 1
+drive 1 3 800116c2 -> 0
+drive 1 1 0 -> 0
+drive 1 4 da24260 -> 1
+drive 1 ffffffff da24260 -> 1
+drive 1 80000000 7f800000 -> 1
+drive 1 2 3f800000 -> 1
+drive 1 1 800116c2 -> 0
+drive 1 1 3eecd943 -> 0
+drive 1 7fffffff bf2ea86f -> 0
+drive 1 c 3f274f79 -> 1
+drive 1 2 7fc00000 -> 0
+drive 1 3 7f800000 -> 1
+drive 0 1 3d70a135 -> 0
+drive 1 6 7fc00000 -> 0
+drive 1 6 7fc00000 -> 0
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 0 3d0f9346 -> 1
+drive 1 ffffffff 3f79c86c -> 1
+drive 1 b 7f800000 -> 1
+drive 1 3 0 -> 0
+drive 0 0 800116c2 -> 0
+drive 1 80000000 3f391795 -> 1
+drive 1 0 da24260 -> 1
+drive 1 3 116c2 -> 1
+drive 1 ffffffff 7f800000 -> 1
+drive 1 3 800116c2 -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 2 116c2 -> 1
+drive 1 1 3f754c5e -> 0
+drive 1 80000000 116c2 -> 1
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 0 da24260 -> 1
+drive 1 8 bf0e782e -> 0
+drive 1 2 bd98cc17 -> 0
+drive 1 0 116c2 -> 1
+drive 1 7fffffff 3f800000 -> 1
+drive 1 80000000 3f439de4 -> 1
+drive 1 ffffffff 7f800000 -> 1
+drive 1 4 3f800000 -> 1
+drive 1 1 3f0872d6 -> 0
+drive 1 80000000 0 -> 0
+drive 1 7fffffff 3f558a8c -> 1
+drive 1 7 3f800000 -> 1
+drive 1 2 3f4e423e -> 1
+drive 1 b 3f800000 -> 1
+drive 1 ffffffff 3f800000 -> 1
+drive 1 2 3ee314f8 -> 1
+drive 1 2 da24260 -> 1
+drive 1 2 7f800000 -> 1
+drive 1 ffffffff da24260 -> 1
+drive 1 3 116c2 -> 1
+drive 1 2 da24260 -> 1
+drive 1 2 bf21f129 -> 0
+drive 1 3 0 -> 0
+drive 0 7 800116c2 -> 0
+drive 1 2 bf20651c -> 0
+drive 1 7fffffff da24260 -> 1
+drive 0 0 7fc00000 -> 0
+drive 1 80000000 3e9dae8a -> 1
+drive 1 2 3f800000 -> 1
+drive 1 2 7fc00000 -> 0
+drive 1 3 3ebe9943 -> 1
+drive 1 0 80000000 -> 0
+drive 1 7 da24260 -> 1
+drive 1 3 7f800000 -> 1
+drive 1 5 bf0a1d4c -> 0
+drive 0 ffffffff 7f800000 -> 0
+drive 1 1 da24260 -> 0
+drive 0 ffffffff 0 -> 0
+drive 1 3 0 -> 0
+drive 1 4 0 -> 0
+drive 1 7fffffff 80000000 -> 0
+drive 0 0 116c2 -> 0
+drive 0 0 da24260 -> 0
+drive 1 80000000 7f800000 -> 1
+drive 1 0 7f800000 -> 1
+drive 1 0 800116c2 -> 0
+drive 1 2 3f46eb5b -> 1
+drive 0 8 3f001847 -> 0
+drive 1 ffffffff 800116c2 -> 0
+drive 1 0 da24260 -> 1
+drive 1 2 7f800000 -> 1
+drive 1 0 7f800000 -> 1
+drive 1 ffffffff 800116c2 -> 0
+drive 1 1 3f800000 -> 0
+drive 1 2 116c2 -> 1
+drive 1 9 3e8db276 -> 1
+drive 1 6 0 -> 0
+drive 1 3 7fc00000 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 7fffffff be7ae5bd -> 0
+drive 0 1 3f17be41 -> 0
+drive 1 7fffffff 80000000 -> 0
+drive 0 1 7f800000 -> 0
+drive 1 1 da24260 -> 0
+drive 1 80000000 beecef79 -> 0
+drive 1 1 bf30dbf1 -> 0
+drive 1 2 80000000 -> 0
+drive 1 7fffffff 3f285985 -> 1
+drive 1 c 3f1a3b71 -> 1
+drive 0 3 da24260 -> 0
+drive 1 6 bf226c1e -> 0
+drive 1 0 3f800000 -> 1
+drive 1 0 80000000 -> 0
+drive 1 ffffffff 0 -> 0
+drive 1 ffffffff 3ddef1aa -> 1
+drive 1 7 80000000 -> 0
+drive 1 2 3ec1c844 -> 1
+drive 1 3 0 -> 0
+drive 1 80000000 800116c2 -> 0
+drive 1 3 7f800000 -> 1
+drive 1 1 116c2 -> 0
+drive 1 2 7f800000 -> 1
+drive 1 7 0 -> 0
+drive 1 0 116c2 -> 1
+drive 1 3 3f800000 -> 1
+drive 0 ffffffff 7f800000 -> 0
+drive 1 2 3b7fed4d -> 1
+drive 1 ffffffff 3f38bd78 -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 2 bf7768bc -> 0
+drive 1 7fffffff 3f800000 -> 1
+drive 1 80000000 0 -> 0
+drive 1 ffffffff da24260 -> 1
+drive 1 ffffffff beef2a56 -> 0
+drive 1 1 7f800000 -> 0
+drive 1 2 7f800000 -> 1
+drive 1 1 3eec32a9 -> 0
+drive 1 7fffffff beca0781 -> 0
+drive 1 2 800116c2 -> 0
+drive 1 1 7f800000 -> 0
+drive 1 ffffffff da24260 -> 1
+drive 1 1 bf4a29fe -> 0
+drive 1 0 116c2 -> 1
+drive 1 80000000 3f800000 -> 1
+drive 1 4 be98c52c -> 0
+drive 1 1 3f800000 -> 0
+drive 1 0 3f79414c -> 1
+drive 1 80000000 116c2 -> 1
+drive 0 a 80000000 -> 0
+drive 1 ffffffff 3f36d5b4 -> 1
+drive 1 ffffffff bf4bb43c -> 0
+drive 1 8 7fc00000 -> 0
+drive 0 3 0 -> 0
+drive 1 ffffffff bf59700f -> 0
+drive 0 7fffffff da24260 -> 0
+drive 1 1 da24260 -> 0
+drive 0 0 116c2 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 3 3f800000 -> 1
+drive 1 1 bdd6e3b2 -> 0
+drive 1 ffffffff 80000000 -> 0
+drive 0 5 7f800000 -> 0
+drive 1 3 3d6d6245 -> 1
+drive 0 4 bf684dc1 -> 0
+drive 0 ffffffff 80000000 -> 0
+drive 1 c bf75df8a -> 0
+drive 1 1 7f800000 -> 0
+drive 1 3 7fc00000 -> 0
+drive 0 80000000 7f800000 -> 0
+drive 1 9 3f800000 -> 1
+drive 1 80000000 bf2e4529 -> 0
+drive 1 0 116c2 -> 1
+drive 1 b 3f800000 -> 1
+drive 1 2 3ed871ae -> 1
+drive 1 2 800116c2 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 2 be869605 -> 0
+drive 1 0 3f4ccc46 -> 1
+drive 1 80000000 7f800000 -> 1
+drive 1 ffffffff 116c2 -> 1
+drive 1 80000000 3f800000 -> 1
+drive 1 0 0 -> 0
+drive 0 6 3f800000 -> 0
+drive 1 3 80000000 -> 0
+drive 1 8 bf3da7d3 -> 0
+drive 1 b 3f800000 -> 1
+drive 1 1 7f800000 -> 0
+drive 1 7 80000000 -> 0
+drive 1 2 3f7dc7cf -> 1
+drive 1 1 0 -> 0
+drive 1 2 0 -> 0
+drive 0 3 bf2a48b9 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 3 bf7f1f68 -> 0
+drive 1 80000000 3f800000 -> 1
+drive 1 1 7f800000 -> 0
+drive 1 ffffffff 3f800000 -> 1
+drive 1 80000000 7fc00000 -> 0
+drive 1 4 da24260 -> 1
+drive 1 1 0 -> 0
+drive 0 3 80000000 -> 0
+drive 1 80000000 800116c2 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 ffffffff 0 -> 0
+drive 1 0 800116c2 -> 0
+drive 0 1 7f800000 -> 0
+drive 1 3 0 -> 0
+drive 0 ffffffff 3ebd524d -> 0
+drive 0 5 0 -> 0
+drive 1 80000000 3f800000 -> 1
+drive 1 0 3f800000 -> 1
+drive 1 7fffffff 7f800000 -> 1
+drive 1 8 80000000 -> 0
+drive 1 ffffffff 80000000 -> 0
+drive 1 1 0 -> 0
+drive 1 ffffffff be35bb28 -> 0
+drive 1 2 800116c2 -> 0
+drive 1 1 80000000 -> 0
+drive 1 2 3e98d185 -> 1
+drive 1 a 7f800000 -> 1
+drive 0 80000000 80000000 -> 0
+drive 0 ffffffff 800116c2 -> 0
+drive 1 ffffffff be05279e -> 0
+drive 1 7 3f7a6fe4 -> 1
+drive 0 3 0 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 3 116c2 -> 1
+drive 1 a 80000000 -> 0
+drive 1 80000000 3f0c4cb0 -> 1
+drive 1 2 80000000 -> 0
+drive 1 3 116c2 -> 1
+drive 1 9 3ee65cc5 -> 1
+drive 1 3 80000000 -> 0
+drive 1 1 3e3cfe39 -> 0
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 1 da24260 -> 0
+drive 1 c 800116c2 -> 0
+drive 1 9 80000000 -> 0
+drive 1 2 7fc00000 -> 0
+drive 1 ffffffff 3ef35277 -> 1
+drive 1 1 0 -> 0
+drive 1 0 da24260 -> 1
+drive 1 a 3f29e0fd -> 1
+drive 1 3 bf60b11f -> 0
+drive 1 2 0 -> 0
+drive 1 7 bf15f27c -> 0
+drive 0 ffffffff 116c2 -> 0
+drive 1 0 80000000 -> 0
+drive 1 9 7f800000 -> 1
+drive 1 5 800116c2 -> 0
+drive 1 ffffffff 3f42eef6 -> 1
+drive 1 80000000 7fc00000 -> 0
+drive 1 ffffffff 7f800000 -> 1
+drive 1 80000000 7f800000 -> 1
+drive 1 3 800116c2 -> 0
+drive 1 3 800116c2 -> 0
+drive 1 3 116c2 -> 1
+drive 1 0 3f52f3aa -> 1
+drive 1 1 3e366ae5 -> 0
+drive 1 80000000 3f5f0a4b -> 1
+drive 1 0 116c2 -> 1
+drive 1 2 7f800000 -> 1
+drive 1 80000000 bf2478b1 -> 0
+drive 1 ffffffff 3ee35b3e -> 1
+drive 1 5 3ea075dd -> 1
+drive 1 b da24260 -> 1
+drive 1 4 3f2a5bd4 -> 1
+drive 1 1 3f34627a -> 0
+drive 1 9 3eabcc07 -> 1
+drive 0 1 800116c2 -> 0
+drive 1 b 800116c2 -> 0
+drive 1 ffffffff da24260 -> 1
+drive 1 9 3e92091a -> 1
+drive 1 0 800116c2 -> 0
+drive 1 ffffffff 3f800000 -> 1
+drive 1 1 0 -> 0
+drive 1 6 7fc00000 -> 0
+drive 1 9 0 -> 0
+drive 1 ffffffff bee403a0 -> 0
+drive 1 7fffffff 0 -> 0
+drive 1 0 116c2 -> 1
+drive 1 ffffffff 3f800000 -> 1
+drive 1 0 3b9ebecd -> 1
+drive 0 4 116c2 -> 0
+drive 1 1 116c2 -> 0
+drive 1 ffffffff bf6b3061 -> 0
+drive 1 1 3f800000 -> 0
+drive 1 1 80000000 -> 0
+drive 1 80000000 3f1b95c8 -> 1
+drive 1 2 bf3a520c -> 0
+drive 1 2 befd7d1f -> 0
+drive 1 0 80000000 -> 0
+drive 1 1 3f800000 -> 0
+drive 1 c 3f7aaa92 -> 1
+drive 1 80000000 bf2a6c89 -> 0
+drive 1 3 da24260 -> 1
+drive 1 9 0 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 0 3b1a8ff4 -> 1
+drive 1 4 3f05012c -> 1
+drive 1 3 800116c2 -> 0
+drive 1 80000000 3e9fbd5c -> 1
+drive 1 2 bf3fcb50 -> 0
+drive 1 0 da24260 -> 1
+drive 1 9 3f800000 -> 1
+drive 1 2 800116c2 -> 0
+drive 1 1 7fc00000 -> 0
+drive 1 4 3e54fcf5 -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 b 3ec8a8d5 -> 1
+drive 1 0 80000000 -> 0
+drive 1 0 7fc00000 -> 0
+drive 1 80000000 3f800000 -> 1
+drive 1 80000000 7f800000 -> 1
+drive 1 3 3f800000 -> 1
+drive 1 3 0 -> 0
+drive 1 5 7fc00000 -> 0
+drive 1 5 7f800000 -> 1
+drive 1 7fffffff da24260 -> 1
+drive 1 0 bf62fc51 -> 0
+drive 1 0 bef89a31 -> 0
+drive 1 0 3f800000 -> 1
+drive 1 3 800116c2 -> 0
+drive 1 3 3e02557d -> 1
+drive 1 7fffffff bf6f017f -> 0
+drive 1 7fffffff 116c2 -> 1
+drive 1 4 80000000 -> 0
+drive 1 2 3f800000 -> 1
+drive 1 ffffffff 3f60c94d -> 1
+drive 1 80000000 3f800000 -> 1
+drive 1 7fffffff 3f0bfbcf -> 1
+drive 1 b 116c2 -> 1
+drive 1 5 7fc00000 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 ffffffff bf50b5a9 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 2 7fc00000 -> 0
+drive 0 3 3dfaaeb0 -> 0
+drive 0 8 3ea5e9cb -> 0
+drive 1 2 7f800000 -> 1
+drive 1 0 0 -> 0
+drive 1 3 0 -> 0
+drive 1 80000000 3f800000 -> 1
+drive 1 2 7f800000 -> 1
+drive 1 a bf789b7b -> 0
+drive 1 7fffffff 3e0880be -> 1
+drive 0 2 3f2fc1b2 -> 0
+drive 1 80000000 da24260 -> 1
+drive 1 7fffffff 3f800000 -> 1
+drive 1 3 800116c2 -> 0
+drive 1 3 3ed3e478 -> 1
+drive 1 2 116c2 -> 1
+drive 1 7fffffff 800116c2 -> 0
+drive 1 a da24260 -> 1
+drive 1 b 116c2 -> 1
+drive 0 0 0 -> 0
+drive 0 ffffffff da24260 -> 0
+drive 1 1 da24260 -> 0
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 8 7f800000 -> 1
+drive 1 3 3f5434fe -> 1
+drive 1 3 3f800000 -> 1
+drive 1 2 7fc00000 -> 0
+drive 1 1 3f800000 -> 0
+drive 1 ffffffff 0 -> 0
+drive 1 5 7fc00000 -> 0
+drive 1 1 bf3a639a -> 0
+drive 1 1 7f800000 -> 0
+drive 1 3 3f697887 -> 1
+drive 0 0 da24260 -> 0
+drive 1 3 3f55e5d6 -> 1
+drive 1 80000000 7f800000 -> 1
+drive 1 2 7fc00000 -> 0
+drive 1 0 3e052994 -> 1
+drive 1 ffffffff 3f800000 -> 1
+drive 1 7fffffff 0 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 2 da24260 -> 1
+drive 1 0 7fc00000 -> 0
+drive 1 1 116c2 -> 0
+drive 1 8 3f800000 -> 1
+drive 1 2 800116c2 -> 0
+drive 0 0 800116c2 -> 0
+drive 1 ffffffff 800116c2 -> 0
+drive 1 7fffffff 3f800000 -> 1
+drive 1 1 800116c2 -> 0
+drive 1 ffffffff 3e8dafdb -> 1
+drive 1 3 7f800000 -> 1
+drive 1 0 3f800000 -> 1
+drive 1 1 3e83d009 -> 0
+drive 1 2 7fc00000 -> 0
+drive 1 ffffffff 7fc00000 -> 0
+drive 0 7fffffff 3f800000 -> 0
+drive 1 0 80000000 -> 0
+drive 0 7fffffff bf1e5f68 -> 0
+drive 1 7fffffff 3f48388a -> 1
+drive 1 80000000 800116c2 -> 0
+drive 0 3 7fc00000 -> 0
+drive 1 0 da24260 -> 1
+drive 1 ffffffff 0 -> 0
+drive 1 ffffffff da24260 -> 1
+drive 0 3 3ee7556a -> 0
+drive 1 0 7f800000 -> 1
+drive 1 1 3f800000 -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 1 1 116c2 -> 0
+drive 1 ffffffff da24260 -> 1
+drive 1 80000000 3f71c0d1 -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 2 800116c2 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 5 3f5384a2 -> 1
+drive 1 ffffffff 116c2 -> 1
+drive 1 2 116c2 -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 80000000 bf7b7035 -> 0
+drive 1 c 80000000 -> 0
+drive 1 80000000 bf77703d -> 0
+drive 1 0 3f44cd2e -> 1
+drive 1 1 0 -> 0
+drive 1 7fffffff 7f800000 -> 1
+drive 1 0 da24260 -> 1
+drive 1 5 3e9df5e8 -> 1
+drive 1 8 7f800000 -> 1
+drive 1 3 800116c2 -> 0
+drive 1 0 3d91f995 -> 1
+drive 1 0 3f800000 -> 1
+drive 1 80000000 7fc00000 -> 0
+drive 1 2 7fc00000 -> 0
+drive 0 80000000 bf068485 -> 0
+drive 0 ffffffff 3eaff9bc -> 0
+drive 1 7fffffff bf2bfe48 -> 0
+drive 1 80000000 3f800000 -> 1
+drive 1 7 800116c2 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 3 0 -> 0
+drive 1 80000000 be60ede3 -> 0
+drive 1 1 116c2 -> 0
+drive 1 3 7fc00000 -> 0
+drive 1 80000000 da24260 -> 1
+drive 1 0 3f800000 -> 1
+drive 1 1 da24260 -> 0
+drive 1 3 7fc00000 -> 0
+drive 1 80000000 7fc00000 -> 0
+drive 1 2 7fc00000 -> 0
+drive 1 2 bee3a8db -> 0
+drive 1 7fffffff 800116c2 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 9 3f800000 -> 1
+drive 0 7 7fc00000 -> 0
+drive 1 3 da24260 -> 1
+drive 1 7 bf080a1f -> 0
+drive 1 0 116c2 -> 1
+drive 1 ffffffff 0 -> 0
+drive 1 80000000 3f800000 -> 1
+drive 1 3 800116c2 -> 0
+drive 1 1 0 -> 0
+drive 1 3 3f59214f -> 1
+drive 0 7 7f800000 -> 0
+drive 1 1 3f406977 -> 0
+drive 1 80000000 3e7a65c2 -> 1
+drive 1 3 80000000 -> 0
+drive 1 1 7f800000 -> 0
+drive 1 0 0 -> 0
+drive 1 80000000 da24260 -> 1
+drive 1 ffffffff 3f800000 -> 1
+drive 1 80000000 da24260 -> 1
+drive 0 5 3f800000 -> 0
+drive 0 2 bf58e476 -> 0
+drive 1 80000000 116c2 -> 1
+drive 1 3 80000000 -> 0
+drive 1 1 da24260 -> 0
+drive 1 1 7fc00000 -> 0
+drive 1 2 3f800000 -> 1
+drive 1 8 3ef63916 -> 1
+drive 1 80000000 da24260 -> 1
+drive 1 0 bd66ef31 -> 0
+drive 0 0 3ea67da1 -> 0
+drive 1 ffffffff da24260 -> 1
+drive 1 1 7fc00000 -> 0
+drive 0 1 da24260 -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 1 3 80000000 -> 0
+drive 1 ffffffff 7f800000 -> 1
+drive 1 7 3e9ee669 -> 1
+drive 1 2 80000000 -> 0
+drive 1 7 116c2 -> 1
+drive 1 3 800116c2 -> 0
+drive 0 5 0 -> 0
+drive 1 2 7fc00000 -> 0
+drive 1 7 116c2 -> 1
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 6 3f800000 -> 1
+drive 1 8 800116c2 -> 0
+drive 1 7fffffff bd9168b5 -> 0
+drive 0 7fffffff bee42cb3 -> 0
+drive 1 2 116c2 -> 1
+drive 1 4 7f800000 -> 1
+drive 1 3 da24260 -> 1
+drive 1 1 800116c2 -> 0
+drive 1 2 7f800000 -> 1
+drive 1 2 da24260 -> 1
+drive 1 0 da24260 -> 1
+drive 1 2 80000000 -> 0
+drive 1 2 0 -> 0
+drive 1 3 7fc00000 -> 0
+drive 1 80000000 7fc00000 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 3 bcdecb48 -> 0
+drive 1 9 bf39870a -> 0
+drive 1 a da24260 -> 1
+drive 1 1 80000000 -> 0
+drive 1 80000000 0 -> 0
+drive 1 7fffffff bebb8050 -> 0
+drive 1 a beeb2509 -> 0
+drive 1 80000000 bf16e7a8 -> 0
+drive 1 7fffffff be10fbca -> 0
+drive 1 5 80000000 -> 0
+drive 1 7fffffff 80000000 -> 0
+drive 1 2 bf50b93d -> 0
+drive 1 2 3f7f6109 -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 0 0 -> 0
+drive 1 b 800116c2 -> 0
+drive 1 9 3ed7e0fd -> 1
+drive 1 80000000 da24260 -> 1
+drive 1 3 3f800000 -> 1
+drive 1 7fffffff 3f800000 -> 1
+drive 1 0 80000000 -> 0
+drive 1 80000000 7fc00000 -> 0
+drive 1 7fffffff 80000000 -> 0
+drive 0 0 7fc00000 -> 0
+drive 1 2 3f23736b -> 1
+drive 1 9 da24260 -> 1
+drive 1 1 0 -> 0
+drive 1 3 0 -> 0
+drive 1 7fffffff 800116c2 -> 0
+drive 1 b 80000000 -> 0
+drive 1 2 3f800000 -> 1
+drive 1 7fffffff bf22c6b9 -> 0
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 2 0 -> 0
+drive 1 0 116c2 -> 1
+drive 1 2 800116c2 -> 0
+drive 1 ffffffff 800116c2 -> 0
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 7fffffff 116c2 -> 1
+drive 0 ffffffff 116c2 -> 0
+drive 1 4 0 -> 0
+drive 1 ffffffff 800116c2 -> 0
+drive 1 3 3e553240 -> 1
+drive 1 1 3f1416e2 -> 0
+drive 1 1 80000000 -> 0
+drive 1 2 800116c2 -> 0
+drive 1 1 3f800000 -> 0
+drive 1 a da24260 -> 1
+drive 1 ffffffff da24260 -> 1
+drive 1 4 bf681def -> 0
+drive 0 3 7f800000 -> 0
+drive 1 ffffffff 3ecc05b3 -> 1
+drive 0 80000000 3f800000 -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 1 0 80000000 -> 0
+drive 1 ffffffff 7f800000 -> 1
+drive 1 7fffffff 800116c2 -> 0
+drive 1 1 7fc00000 -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 7fffffff 116c2 -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 1 7f800000 -> 0
+drive 1 c 800116c2 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 3 bf613bec -> 0
+drive 1 ffffffff 7f800000 -> 1
+drive 1 2 7fc00000 -> 0
+drive 1 3 800116c2 -> 0
+drive 1 2 7fc00000 -> 0
+drive 1 0 7fc00000 -> 0
+drive 1 1 7f800000 -> 0
+drive 1 3 3f747f1b -> 1
+drive 1 2 116c2 -> 1
+drive 1 ffffffff 116c2 -> 1
+drive 1 0 da24260 -> 1
+drive 1 2 0 -> 0
+drive 1 3 800116c2 -> 0
+drive 1 80000000 7f800000 -> 1
+drive 0 2 800116c2 -> 0
+drive 1 80000000 7f800000 -> 1
+drive 1 b 3f4ed21a -> 1
+drive 1 0 3ee6fd24 -> 1
+drive 0 7fffffff 0 -> 0
+drive 1 1 3f800000 -> 0
+drive 1 80000000 da24260 -> 1
+drive 1 2 0 -> 0
+drive 0 0 0 -> 0
+drive 1 0 0 -> 0
+drive 0 80000000 da24260 -> 0
+drive 1 ffffffff 80000000 -> 0
+drive 1 1 3f014c5e -> 0
+drive 1 7fffffff bee94046 -> 0
+drive 1 3 800116c2 -> 0
+drive 1 0 3f729224 -> 1
+drive 1 0 3ef7466c -> 1
+drive 1 0 3decffd4 -> 1
+drive 1 2 3f800000 -> 1
+drive 1 0 da24260 -> 1
+drive 1 7fffffff 80000000 -> 0
+drive 1 8 0 -> 0
+drive 1 0 0 -> 0
+drive 1 7fffffff 116c2 -> 1
+drive 1 0 0 -> 0
+drive 1 80000000 3e93b19e -> 1
+drive 0 80000000 bec923b7 -> 0
+drive 1 80000000 da24260 -> 1
+drive 1 1 116c2 -> 0
+drive 1 4 80000000 -> 0
+drive 0 7fffffff 800116c2 -> 0
+drive 1 80000000 116c2 -> 1
+drive 1 7fffffff 0 -> 0
+drive 1 0 3e8c179c -> 1
+drive 1 0 3f800000 -> 1
+drive 0 7fffffff 7fc00000 -> 0
+drive 1 1 116c2 -> 0
+drive 1 7fffffff 116c2 -> 1
+drive 1 3 3dbb71ea -> 1
+drive 1 5 0 -> 0
+drive 1 4 800116c2 -> 0
+drive 0 ffffffff 3ec8e72e -> 0
+drive 0 3 da24260 -> 0
+drive 1 7fffffff 0 -> 0
+drive 1 7fffffff 7f800000 -> 1
+drive 1 b 800116c2 -> 0
+drive 1 3 800116c2 -> 0
+drive 1 1 116c2 -> 0
+drive 1 2 3f800000 -> 1
+drive 1 0 3f800000 -> 1
+drive 1 8 7fc00000 -> 0
+drive 1 7fffffff 7f800000 -> 1
+drive 0 7fffffff 3f6224c2 -> 0
+drive 1 3 3f800000 -> 1
+drive 1 4 80000000 -> 0
+drive 1 2 bf6c7054 -> 0
+drive 1 1 7fc00000 -> 0
+drive 1 0 bf634e0a -> 0
+drive 0 2 800116c2 -> 0
+drive 1 1 3f800000 -> 0
+drive 1 3 7fc00000 -> 0
+drive 1 1 800116c2 -> 0
+drive 0 80000000 800116c2 -> 0
+drive 1 80000000 bec22575 -> 0
+drive 1 0 80000000 -> 0
+drive 1 c da24260 -> 1
+drive 1 3 bf20bbf1 -> 0
+drive 1 7fffffff 3f800000 -> 1
+drive 1 0 3c2786e6 -> 1
+drive 1 1 3ec8cc6d -> 0
+drive 1 7fffffff 3f800000 -> 1
+drive 1 1 3ebea41a -> 0
+drive 1 2 116c2 -> 1
+drive 0 3 80000000 -> 0
+drive 1 1 bf6280d6 -> 0
+drive 1 1 da24260 -> 0
+drive 1 0 3da6fd6d -> 1
+drive 1 ffffffff 800116c2 -> 0
+drive 1 ffffffff bd436b30 -> 0
+drive 1 ffffffff 80000000 -> 0
+drive 0 7fffffff bef3ac4c -> 0
+drive 1 6 800116c2 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 2 7fc00000 -> 0
+drive 1 0 0 -> 0
+drive 1 8 7fc00000 -> 0
+drive 1 ffffffff 7f800000 -> 1
+drive 0 1 3f01bc39 -> 0
+drive 1 3 3e46e178 -> 1
+drive 1 80000000 3d553b22 -> 1
+drive 1 2 7fc00000 -> 0
+drive 0 2 da24260 -> 0
+drive 1 7 da24260 -> 1
+drive 1 0 7f800000 -> 1
+drive 1 1 800116c2 -> 0
+drive 1 8 7f800000 -> 1
+drive 0 80000000 80000000 -> 0
+drive 1 1 bf78ae59 -> 0
+drive 1 7fffffff 3f800000 -> 1
+drive 1 0 7f800000 -> 1
+drive 1 ffffffff 800116c2 -> 0
+drive 1 80000000 7fc00000 -> 0
+drive 1 7fffffff 0 -> 0
+drive 1 7fffffff 800116c2 -> 0
+drive 1 2 7f800000 -> 1
+drive 1 3 be5a7d36 -> 0
+drive 1 80000000 3cdcd632 -> 1
+drive 1 80000000 da24260 -> 1
+drive 0 ffffffff 3f6b309a -> 0
+drive 0 9 3f800000 -> 0
+drive 1 0 befc8d23 -> 0
+drive 1 4 3f800000 -> 1
+drive 1 7fffffff da24260 -> 1
+drive 1 3 bf7e22de -> 0
+drive 1 7fffffff 0 -> 0
+drive 1 2 0 -> 0
+drive 1 0 bde8d4d1 -> 0
+drive 1 1 7fc00000 -> 0
+drive 1 1 116c2 -> 0
+drive 1 2 0 -> 0
+drive 1 c da24260 -> 1
+drive 1 80000000 7f800000 -> 1
+drive 1 80000000 da24260 -> 1
+drive 1 7fffffff 3f281114 -> 1
+drive 1 0 3f800000 -> 1
+drive 1 9 0 -> 0
+drive 1 1 116c2 -> 0
+drive 1 80000000 3cdcdf66 -> 1
+drive 1 80000000 da24260 -> 1
+drive 1 0 7f800000 -> 1
+drive 1 4 0 -> 0
+drive 1 2 becff596 -> 0
+drive 1 ffffffff 3f800000 -> 1
+drive 1 ffffffff 116c2 -> 1
+drive 1 0 800116c2 -> 0
+drive 1 ffffffff 3e836495 -> 1
+drive 1 5 7fc00000 -> 0
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 0 3f800000 -> 1
+drive 1 1 80000000 -> 0
+drive 1 80000000 116c2 -> 1
+drive 0 0 116c2 -> 0
+drive 1 4 800116c2 -> 0
+drive 0 c 116c2 -> 0
+drive 1 0 bf585a5d -> 0
+drive 1 ffffffff 3f800000 -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 1 116c2 -> 0
+drive 1 5 3f800000 -> 1
+drive 1 2 3f800000 -> 1
+drive 1 80000000 7f800000 -> 1
+drive 1 b 7f800000 -> 1
+drive 1 6 3f800000 -> 1
+drive 0 80000000 800116c2 -> 0
+drive 0 1 be2c0c03 -> 0
+drive 1 7 7fc00000 -> 0
+drive 1 0 3f800000 -> 1
+drive 1 ffffffff 3d1585a4 -> 1
+drive 1 80000000 be3d1327 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 7fffffff 800116c2 -> 0
+drive 1 80000000 3f7ce244 -> 1
+drive 1 ffffffff bf3fdfd2 -> 0
+drive 1 1 0 -> 0
+drive 1 9 7f800000 -> 1
+drive 1 ffffffff 3f800000 -> 1
+drive 1 2 80000000 -> 0
+drive 1 2 7f800000 -> 1
+drive 1 2 3f800000 -> 1
+drive 1 3 3e82ae88 -> 1
+drive 1 1 0 -> 0
+drive 1 1 3f2547ac -> 0
+drive 1 2 3d5779fc -> 1
+drive 1 5 0 -> 0
+drive 1 0 116c2 -> 1
+drive 0 80000000 7f800000 -> 0
+drive 1 7fffffff 80000000 -> 0
+drive 1 7fffffff be5bb679 -> 0
+drive 0 ffffffff 7fc00000 -> 0
+drive 1 0 80000000 -> 0
+drive 1 b bca0920b -> 0
+drive 1 ffffffff 80000000 -> 0
+drive 1 1 7f800000 -> 0
+drive 1 1 bf2c7ffe -> 0
+drive 1 0 7fc00000 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 2 7fc00000 -> 0
+drive 1 7fffffff 116c2 -> 1
+drive 1 1 116c2 -> 0
+drive 0 0 0 -> 0
+drive 1 3 0 -> 0
+drive 1 ffffffff bedcbc5e -> 0
+drive 1 0 3f800000 -> 1
+drive 0 0 3f800000 -> 0
+drive 1 a 116c2 -> 1
+drive 0 0 800116c2 -> 0
+drive 1 a 3f374d13 -> 1
+drive 0 0 116c2 -> 0
+drive 1 0 3f387d13 -> 1
+drive 1 7fffffff 3daef41a -> 1
+drive 1 3 800116c2 -> 0
+drive 0 1 7f800000 -> 0
+drive 1 7 116c2 -> 1
+drive 1 3 3ef594d3 -> 1
+drive 1 2 3f31ff4d -> 1
+drive 1 0 80000000 -> 0
+drive 1 2 0 -> 0
+drive 1 3 80000000 -> 0
+drive 1 1 116c2 -> 0
+drive 1 1 7fc00000 -> 0
+drive 1 7fffffff 800116c2 -> 0
+drive 1 0 3f800000 -> 1
+drive 1 0 7f800000 -> 1
+drive 1 3 0 -> 0
+drive 1 0 7fc00000 -> 0
+drive 1 7fffffff 800116c2 -> 0
+drive 1 1 7fc00000 -> 0
+drive 1 ffffffff da24260 -> 1
+drive 1 a 800116c2 -> 0
+drive 1 0 3f800000 -> 1
+drive 1 3 800116c2 -> 0
+drive 1 7fffffff bf77c558 -> 0
+drive 1 80000000 80000000 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 ffffffff 800116c2 -> 0
+drive 1 0 bf60f789 -> 0
+drive 0 0 800116c2 -> 0
+drive 1 5 116c2 -> 1
+drive 1 2 7fc00000 -> 0
+drive 1 b 3f4c328e -> 1
+drive 1 ffffffff 0 -> 0
+drive 1 7fffffff 0 -> 0
+drive 1 ffffffff 800116c2 -> 0
+drive 1 80000000 3f800000 -> 1
+drive 1 0 3f5a5eea -> 1
+drive 1 ffffffff bf5b8f4c -> 0
+drive 1 5 bebbbce8 -> 0
+drive 1 3 7fc00000 -> 0
+drive 1 3 3f6c26f4 -> 1
+drive 1 7fffffff 800116c2 -> 0
+drive 1 ffffffff 3f49ed60 -> 1
+drive 1 3 0 -> 0
+drive 1 4 800116c2 -> 0
+drive 1 2 0 -> 0
+drive 1 8 80000000 -> 0
+drive 1 0 116c2 -> 1
+drive 0 8 7f800000 -> 0
+drive 1 80000000 3f800000 -> 1
+drive 1 7 80000000 -> 0
+drive 1 2 7f800000 -> 1
+drive 1 2 bf2bf3c0 -> 0
+drive 1 7 da24260 -> 1
+drive 1 80000000 bf77be2f -> 0
+drive 1 a 0 -> 0
+drive 1 ffffffff 800116c2 -> 0
+drive 1 7fffffff 116c2 -> 1
+drive 1 2 7f800000 -> 1
+drive 0 2 3f2d4f60 -> 0
+drive 1 2 0 -> 0
+drive 1 ffffffff 3f800000 -> 1
+drive 1 3 80000000 -> 0
+drive 0 ffffffff 3e9c26fe -> 0
+drive 1 2 7fc00000 -> 0
+drive 1 c 7fc00000 -> 0
+drive 1 b 3ea1d1f6 -> 1
+drive 1 a 0 -> 0
+drive 1 c 3f2d4d0a -> 1
+drive 0 ffffffff 7fc00000 -> 0
+drive 1 3 3f6e26e5 -> 1
+drive 1 7fffffff 116c2 -> 1
+drive 1 0 3e885599 -> 1
+drive 1 0 7f800000 -> 1
+drive 1 80000000 3f800000 -> 1
+drive 1 80000000 0 -> 0
+drive 1 80000000 80000000 -> 0
+drive 1 1 bf6c68e3 -> 0
+drive 1 8 3ed15fac -> 1
+drive 1 7 800116c2 -> 0
+drive 1 7fffffff 0 -> 0
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 ffffffff 7f800000 -> 1
+drive 1 1 80000000 -> 0
+drive 1 ffffffff 800116c2 -> 0
+drive 1 80000000 3f0d68fe -> 1
+drive 1 4 3d280856 -> 1
+drive 0 7fffffff 3f297100 -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 1 ffffffff 3f800000 -> 1
+drive 1 0 7fc00000 -> 0
+drive 1 0 116c2 -> 1
+drive 1 0 7f800000 -> 1
+drive 1 0 116c2 -> 1
+drive 1 5 7fc00000 -> 0
+drive 1 7 7f800000 -> 1
+drive 1 7fffffff 80000000 -> 0
+drive 1 5 da24260 -> 1
+drive 1 0 800116c2 -> 0
+drive 1 3 800116c2 -> 0
+drive 1 0 bc41161e -> 0
+drive 1 8 80000000 -> 0
+drive 0 0 800116c2 -> 0
+drive 1 80000000 7fc00000 -> 0
+drive 1 ffffffff 800116c2 -> 0
+drive 1 1 bf68df0d -> 0
+drive 1 7fffffff 3f800000 -> 1
+drive 1 2 bf04e2c0 -> 0
+drive 1 1 7f800000 -> 0
+drive 0 2 116c2 -> 0
+drive 0 8 7f800000 -> 0
+drive 0 ffffffff bf4f751f -> 0
+drive 1 2 3f4407f3 -> 1
+drive 1 3 800116c2 -> 0
+drive 1 0 3f800000 -> 1
+drive 1 2 3dbde250 -> 1
+drive 1 6 116c2 -> 1
+drive 1 3 0 -> 0
+drive 1 80000000 0 -> 0
+drive 1 7fffffff 3cad998d -> 1
+drive 1 0 0 -> 0
+drive 1 3 116c2 -> 1
+drive 1 80000000 3d524b56 -> 1
+drive 1 7 0 -> 0
+drive 1 0 bed0ab6a -> 0
+drive 1 0 800116c2 -> 0
+drive 1 0 116c2 -> 1
+drive 1 9 0 -> 0
+drive 1 3 0 -> 0
+drive 1 0 bf1c1dbe -> 0
+drive 1 6 7f800000 -> 1
+drive 1 7 80000000 -> 0
+drive 1 3 bec0b6e0 -> 0
+drive 1 b 7f800000 -> 1
+drive 1 3 bdb35702 -> 0
+drive 1 0 7fc00000 -> 0
+drive 1 2 800116c2 -> 0
+drive 1 6 3f800000 -> 1
+drive 1 0 3f2c095f -> 1
+drive 1 1 7f800000 -> 0
+drive 0 2 da24260 -> 0
+drive 0 1 800116c2 -> 0
+drive 1 9 800116c2 -> 0
+drive 1 7fffffff 3e999e2b -> 1
+drive 1 80000000 3ef2fc4e -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 c 3f800000 -> 1
+drive 1 80000000 3f800000 -> 1
+drive 1 b bdb779b6 -> 0
+drive 1 0 116c2 -> 1
+drive 1 1 bf0545e6 -> 0
+drive 1 80000000 80000000 -> 0
+drive 1 0 3f17048b -> 1
+drive 1 0 80000000 -> 0
+drive 1 80000000 800116c2 -> 0
+drive 1 0 0 -> 0
+drive 1 0 da24260 -> 1
+drive 1 1 800116c2 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 ffffffff 80000000 -> 0
+drive 1 80000000 7fc00000 -> 0
+drive 1 7fffffff 3f800000 -> 1
+drive 0 3 3f800000 -> 0
+drive 1 80000000 0 -> 0
+drive 1 0 bf06b452 -> 0
+drive 1 4 80000000 -> 0
+drive 1 2 da24260 -> 1
+drive 1 3 116c2 -> 1
+drive 0 80000000 80000000 -> 0
+drive 1 1 da24260 -> 0
+drive 1 80000000 3e7641b2 -> 1
+drive 1 9 7f800000 -> 1
+drive 1 3 da24260 -> 1
+drive 0 3 3f150289 -> 0
+drive 1 7fffffff 0 -> 0
+drive 1 c 3f800000 -> 1
+drive 1 3 3eb6d381 -> 1
+drive 0 b 3f4e679e -> 0
+drive 1 4 80000000 -> 0
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 ffffffff 116c2 -> 1
+drive 1 80000000 7fc00000 -> 0
+drive 1 80000000 bc14fa57 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 3 3e6b4966 -> 1
+drive 1 2 800116c2 -> 0
+drive 1 7fffffff bf64ba54 -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 1 1 0 -> 0
+drive 1 7 116c2 -> 1
+drive 1 80000000 3c1a5547 -> 1
+drive 1 6 3f800000 -> 1
+drive 1 b 3f800000 -> 1
+drive 0 1 116c2 -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 1 bf50bed6 -> 0
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 ffffffff bddcdf48 -> 0
+drive 1 9 3f71016b -> 1
+drive 1 1 da24260 -> 0
+drive 1 1 3f7a91ec -> 0
+drive 0 2 da24260 -> 0
+drive 1 7 80000000 -> 0
+drive 1 1 80000000 -> 0
+drive 0 ffffffff 3f267d3e -> 0
+drive 1 80000000 3ee320ae -> 1
+drive 1 80000000 bf578a26 -> 0
+drive 1 5 800116c2 -> 0
+drive 1 7fffffff 0 -> 0
+drive 1 80000000 80000000 -> 0
+drive 1 3 80000000 -> 0
+drive 1 2 3edc0317 -> 1
+drive 1 80000000 3f69bdb2 -> 1
+drive 1 1 7f800000 -> 0
+drive 1 7fffffff 0 -> 0
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 80000000 0 -> 0
+drive 1 80000000 7fc00000 -> 0
+drive 1 c 80000000 -> 0
+drive 1 0 7fc00000 -> 0
+drive 0 2 da24260 -> 0
+drive 1 3 7f800000 -> 1
+drive 1 80000000 0 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 ffffffff 80000000 -> 0
+drive 1 3 7fc00000 -> 0
+drive 1 7fffffff 3e62bb5a -> 1
+drive 1 7fffffff 0 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 0 116c2 -> 1
+drive 1 7fffffff 80000000 -> 0
+drive 1 80000000 80000000 -> 0
+drive 1 ffffffff 7f800000 -> 1
+drive 1 80000000 80000000 -> 0
+drive 1 3 3f6a1898 -> 1
+drive 1 80000000 7f800000 -> 1
+drive 1 7fffffff 80000000 -> 0
+drive 1 0 3e3892d5 -> 1
+drive 1 9 3f800000 -> 1
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 7fffffff 7f800000 -> 1
+drive 1 3 800116c2 -> 0
+drive 1 80000000 bf5f3964 -> 0
+drive 1 2 116c2 -> 1
+drive 1 a 80000000 -> 0
+drive 1 2 7fc00000 -> 0
+drive 1 80000000 80000000 -> 0
+drive 0 4 0 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 1 7f800000 -> 0
+drive 1 2 0 -> 0
+drive 1 1 0 -> 0
+drive 1 1 3f800000 -> 0
+drive 1 0 80000000 -> 0
+drive 0 80000000 116c2 -> 0
+drive 1 1 3f800000 -> 0
+drive 0 7fffffff 3f800000 -> 0
+drive 1 6 3f79a0cf -> 1
+drive 1 7fffffff 80000000 -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 1 3 3f0c600d -> 1
+drive 1 2 116c2 -> 1
+drive 0 80000000 800116c2 -> 0
+drive 1 ffffffff 3f69b3bf -> 1
+drive 1 1 0 -> 0
+drive 1 2 3f800000 -> 1
+drive 1 1 3f800000 -> 0
+drive 1 ffffffff 7f800000 -> 1
+drive 1 3 800116c2 -> 0
+drive 1 3 0 -> 0
+drive 1 3 da24260 -> 1
+drive 1 2 116c2 -> 1
+drive 1 ffffffff 0 -> 0
+drive 1 80000000 7f800000 -> 1
+drive 1 4 bf6b7639 -> 0
+drive 1 7fffffff 0 -> 0
+drive 1 2 116c2 -> 1
+drive 0 2 bf492a1b -> 0
+drive 1 0 0 -> 0
+drive 1 7 3f184990 -> 1
+drive 1 4 7f800000 -> 1
+drive 1 8 3ca3479b -> 1
+drive 0 2 3f4f7216 -> 0
+drive 1 9 3f3cbb89 -> 1
+drive 1 80000000 3edbfae7 -> 1
+drive 1 80000000 3ed062d7 -> 1
+drive 1 ffffffff 7f800000 -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 7fffffff 3ec8e112 -> 1
+drive 1 1 3f800000 -> 0
+drive 1 b 0 -> 0
+drive 1 80000000 da24260 -> 1
+drive 1 ffffffff da24260 -> 1
+drive 1 8 116c2 -> 1
+drive 1 ffffffff 3f266df2 -> 1
+drive 0 2 80000000 -> 0
+drive 1 0 80000000 -> 0
+drive 1 7fffffff 3f2f7ea4 -> 1
+drive 0 9 3f800000 -> 0
+drive 1 0 800116c2 -> 0
+drive 0 ffffffff 7f800000 -> 0
+drive 1 80000000 7f800000 -> 1
+drive 1 7fffffff 3f282c09 -> 1
+drive 1 2 0 -> 0
+drive 1 2 0 -> 0
+drive 1 2 80000000 -> 0
+drive 1 80000000 80000000 -> 0
+drive 1 9 3f800000 -> 1
+drive 1 2 7fc00000 -> 0
+drive 1 3 be93f43a -> 0
+drive 1 1 da24260 -> 0
+drive 1 6 3e785528 -> 1
+drive 1 80000000 bf2d10a8 -> 0
+drive 1 0 3f3addbb -> 1
+drive 0 4 0 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 3 be8003dc -> 0
+drive 1 8 3f800000 -> 1
+drive 1 1 800116c2 -> 0
+drive 1 2 3e356b9a -> 1
+drive 1 3 3f800000 -> 1
+drive 1 3 80000000 -> 0
+drive 1 9 3d461331 -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 2 0 -> 0
+drive 1 3 0 -> 0
+drive 1 7fffffff 0 -> 0
+drive 0 1 7f800000 -> 0
+drive 1 0 80000000 -> 0
+drive 1 80000000 0 -> 0
+drive 1 a 116c2 -> 1
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 1 3f800000 -> 0
+drive 1 80000000 7fc00000 -> 0
+drive 1 7fffffff da24260 -> 1
+drive 0 0 0 -> 0
+drive 1 1 7fc00000 -> 0
+drive 0 0 800116c2 -> 0
+drive 1 7 da24260 -> 1
+drive 1 3 7f800000 -> 1
+drive 1 1 3f464f4a -> 0
+drive 1 ffffffff da24260 -> 1
+drive 1 ffffffff bf0f3765 -> 0
+drive 1 3 3ec02ef3 -> 1
+drive 1 80000000 3f800000 -> 1
+drive 1 ffffffff 3f800000 -> 1
+drive 1 7 3f800000 -> 1
+drive 0 ffffffff 80000000 -> 0
+drive 1 80000000 7fc00000 -> 0
+drive 1 c 800116c2 -> 0
+drive 1 7 80000000 -> 0
+drive 1 6 7fc00000 -> 0
+drive 1 0 be6595be -> 0
+drive 1 2 3e953fe4 -> 1
+drive 1 7fffffff 3f800000 -> 1
+drive 1 ffffffff 116c2 -> 1
+drive 1 a 116c2 -> 1
+drive 1 b 0 -> 0
+drive 0 3 bef5b7aa -> 0
+drive 1 ffffffff 800116c2 -> 0
+drive 1 5 7f800000 -> 1
+drive 1 0 3f800000 -> 1
+drive 1 b 3f5ac659 -> 1
+drive 0 ffffffff 116c2 -> 0
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 7fffffff 116c2 -> 1
+drive 1 2 7fc00000 -> 0
+drive 0 1 0 -> 0
+drive 1 1 7f800000 -> 0
+drive 1 6 7f800000 -> 1
+drive 1 1 80000000 -> 0
+drive 1 8 7fc00000 -> 0
+drive 1 0 da24260 -> 1
+drive 1 ffffffff 3f800000 -> 1
+drive 1 8 3f4d464d -> 1
+drive 1 ffffffff 116c2 -> 1
+drive 1 2 116c2 -> 1
+drive 1 ffffffff 116c2 -> 1
+drive 1 3 800116c2 -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 2 80000000 -> 0
+drive 1 0 3f800000 -> 1
+drive 1 4 da24260 -> 1
+drive 0 3 bd5a30a0 -> 0
+drive 0 80000000 0 -> 0
+drive 1 ffffffff 0 -> 0
+drive 1 ffffffff 800116c2 -> 0
+drive 1 1 7fc00000 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 b bd6433bd -> 0
+drive 1 80000000 80000000 -> 0
+drive 1 0 80000000 -> 0
+drive 1 2 7f800000 -> 1
+drive 1 9 116c2 -> 1
+drive 1 2 3f800000 -> 1
+drive 0 80000000 7fc00000 -> 0
+drive 1 80000000 0 -> 0
+drive 1 80000000 7fc00000 -> 0
+drive 1 3 80000000 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 7fffffff 80000000 -> 0
+drive 1 0 116c2 -> 1
+drive 1 0 7f800000 -> 1
+drive 1 1 3f800000 -> 0
+drive 1 80000000 3f5c5223 -> 1
+drive 1 3 3f1c62ff -> 1
+drive 1 2 7fc00000 -> 0
+drive 1 80000000 3ec3d96d -> 1
+drive 1 0 7f800000 -> 1
+drive 1 ffffffff da24260 -> 1
+drive 1 7fffffff bd5bb6cc -> 0
+drive 0 3 da24260 -> 0
+drive 1 8 7f800000 -> 1
+drive 1 0 7f800000 -> 1
+drive 1 3 800116c2 -> 0
+drive 1 2 7fc00000 -> 0
+drive 1 1 3f51feee -> 0
+drive 1 b beddaac4 -> 0
+drive 1 3 3f03267c -> 1
+drive 1 8 3f5a32c9 -> 1
+drive 1 80000000 800116c2 -> 0
+drive 1 3 3f547856 -> 1
+drive 1 7 800116c2 -> 0
+drive 1 0 0 -> 0
+drive 1 1 0 -> 0
+drive 1 0 da24260 -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 7 116c2 -> 1
+drive 1 1 7f800000 -> 0
+drive 1 7fffffff 3f800000 -> 1
+drive 1 1 7fc00000 -> 0
+drive 1 ffffffff da24260 -> 1
+drive 1 3 da24260 -> 1
+drive 1 8 7fc00000 -> 0
+drive 1 0 80000000 -> 0
+drive 1 0 800116c2 -> 0
+drive 1 3 7fc00000 -> 0
+drive 1 3 7f800000 -> 1
+drive 1 7fffffff 80000000 -> 0
+drive 1 7fffffff 3f441c8e -> 1
+drive 1 a 0 -> 0
+drive 1 3 3ec133e5 -> 1
+drive 1 ffffffff 116c2 -> 1
+drive 1 1 0 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 80000000 116c2 -> 1
+drive 1 2 bf756477 -> 0
+drive 1 3 7f800000 -> 1
+drive 1 c 3f800000 -> 1
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 a 0 -> 0
+drive 0 0 bf586832 -> 0
+drive 1 2 3f800000 -> 1
+drive 1 2 3d913119 -> 1
+drive 1 a 800116c2 -> 0
+drive 1 1 3eef672e -> 0
+drive 1 ffffffff 0 -> 0
+drive 1 7fffffff 80000000 -> 0
+drive 1 7fffffff 3e4e73a5 -> 1
+drive 1 6 7f800000 -> 1
+drive 1 ffffffff 7f800000 -> 1
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 0 116c2 -> 1
+drive 1 2 7fc00000 -> 0
+drive 1 7 7fc00000 -> 0
+drive 1 3 800116c2 -> 0
+drive 1 3 800116c2 -> 0
+drive 1 80000000 3e13e44a -> 1
+drive 0 0 0 -> 0
+drive 1 b 7f800000 -> 1
+drive 1 2 3c9c17da -> 1
+drive 1 ffffffff 3f800000 -> 1
+drive 1 c 116c2 -> 1
+drive 1 2 80000000 -> 0
+drive 1 0 7f800000 -> 1
+drive 1 3 80000000 -> 0
+drive 1 2 da24260 -> 1
+drive 1 2 3db149c9 -> 1
+drive 0 3 800116c2 -> 0
+drive 1 80000000 800116c2 -> 0
+drive 1 3 800116c2 -> 0
+drive 1 3 da24260 -> 1
+drive 1 2 7f800000 -> 1
+drive 1 80000000 3f800000 -> 1
+drive 1 ffffffff be992bce -> 0
+drive 0 b 7fc00000 -> 0
+drive 1 7fffffff 80000000 -> 0
+drive 1 ffffffff 80000000 -> 0
+drive 1 2 bf1d0eb2 -> 0
+drive 1 ffffffff bf5c9602 -> 0
+drive 1 3 0 -> 0
+drive 1 7fffffff 7f800000 -> 1
+drive 0 8 0 -> 0
+drive 1 ffffffff 3f7595cb -> 1
+drive 1 3 be30d448 -> 0
+drive 0 2 7f800000 -> 0
+drive 1 ffffffff 0 -> 0
+drive 1 8 3f800000 -> 1
+drive 1 0 3eae3185 -> 1
+drive 1 1 3f800000 -> 0
+drive 1 7fffffff 116c2 -> 1
+drive 1 80000000 0 -> 0
+drive 1 7fffffff 3f800000 -> 1
+drive 1 80000000 7f800000 -> 1
+drive 1 3 7f800000 -> 1
+drive 1 3 3f06a3af -> 1
+drive 1 1 116c2 -> 0
+drive 1 3 116c2 -> 1
+drive 1 0 0 -> 0
+drive 1 80000000 7fc00000 -> 0
+drive 1 7fffffff 80000000 -> 0
+drive 0 b 7fc00000 -> 0
+drive 1 7fffffff 3f6d138c -> 1
+drive 1 1 7f800000 -> 0
+drive 1 6 da24260 -> 1
+drive 0 7fffffff 3ebed3a9 -> 0
+drive 1 2 0 -> 0
+drive 1 80000000 bf1bf1e6 -> 0
+drive 1 c 7f800000 -> 1
+drive 1 2 bf6e9d26 -> 0
+drive 1 2 800116c2 -> 0
+drive 1 0 da24260 -> 1
+drive 0 1 7fc00000 -> 0
+drive 0 3 7f800000 -> 0
+drive 1 7fffffff 800116c2 -> 0
+drive 1 4 bd2e0dc2 -> 0
+drive 1 0 0 -> 0
+drive 1 2 3f334867 -> 1
+drive 1 7fffffff beb386cf -> 0
+drive 1 0 7fc00000 -> 0
+drive 1 3 0 -> 0
+drive 1 ffffffff 800116c2 -> 0
+drive 1 80000000 80000000 -> 0
+drive 1 2 116c2 -> 1
+drive 1 ffffffff 0 -> 0
+drive 0 0 be1b3256 -> 0
+drive 1 80000000 7f800000 -> 1
+drive 0 2 7fc00000 -> 0
+drive 1 2 80000000 -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 1 3f800000 -> 0
+drive 1 80000000 80000000 -> 0
+drive 1 2 80000000 -> 0
+drive 1 1 7f800000 -> 0
+drive 1 2 7fc00000 -> 0
+drive 1 1 7fc00000 -> 0
+drive 1 1 bf05190b -> 0
+drive 1 0 3f800000 -> 1
+drive 1 1 7fc00000 -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 1 7fffffff 80000000 -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 1 3f11f1e7 -> 0
+drive 1 80000000 116c2 -> 1
+drive 1 0 0 -> 0
+drive 1 1 800116c2 -> 0
+drive 1 2 7f800000 -> 1
+drive 1 0 3f800000 -> 1
+drive 1 2 be32bef8 -> 0
+drive 1 3 3f239015 -> 1
+drive 1 c be989662 -> 0
+drive 0 6 bf2dd3df -> 0
+drive 1 8 0 -> 0
+drive 1 1 bf084f64 -> 0
+drive 0 c 3ee7f81d -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 7fffffff 0 -> 0
+drive 1 2 3f800000 -> 1
+drive 1 7fffffff da24260 -> 1
+drive 1 ffffffff da24260 -> 1
+drive 1 2 800116c2 -> 0
+drive 1 1 da24260 -> 0
+drive 1 80000000 3dd254f1 -> 1
+drive 1 0 0 -> 0
+drive 1 2 116c2 -> 1
+drive 1 1 7fc00000 -> 0
+drive 1 9 bd558ff2 -> 0
+drive 0 ffffffff 0 -> 0
+drive 1 7fffffff 7f800000 -> 1
+drive 1 7fffffff 7f800000 -> 1
+drive 1 0 bf1956b2 -> 0
+drive 1 5 7fc00000 -> 0
+drive 0 2 800116c2 -> 0
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 3 800116c2 -> 0
+drive 1 9 7fc00000 -> 0
+drive 1 3 da24260 -> 1
+drive 1 80000000 0 -> 0
+drive 1 ffffffff 3f0f9881 -> 1
+drive 1 0 3ee2f186 -> 1
+drive 1 4 800116c2 -> 0
+drive 1 2 3f3ebd07 -> 1
+drive 1 1 0 -> 0
+drive 0 1 3f800000 -> 0
+drive 1 80000000 800116c2 -> 0
+drive 1 2 3f6f5d37 -> 1
+drive 1 1 0 -> 0
+drive 1 80000000 bd96d862 -> 0
+drive 0 1 116c2 -> 0
+drive 1 0 da24260 -> 1
+drive 1 b 7f800000 -> 1
+drive 1 3 7f800000 -> 1
+drive 1 7fffffff 3f800000 -> 1
+drive 0 2 3f2725aa -> 0
+drive 1 0 3f800000 -> 1
+drive 1 80000000 116c2 -> 1
+drive 1 c 7fc00000 -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 0 80000000 -> 0
+drive 0 3 3f0a2408 -> 0
+drive 0 80000000 da24260 -> 0
+drive 1 1 3f6f7a96 -> 0
+drive 1 80000000 800116c2 -> 0
+drive 1 7fffffff 116c2 -> 1
+drive 0 80000000 80000000 -> 0
+drive 1 3 3f800000 -> 1
+drive 1 0 3e9767df -> 1
+drive 1 0 0 -> 0
+drive 1 2 da24260 -> 1
+drive 1 80000000 116c2 -> 1
+drive 1 0 3f680f2b -> 1
+drive 1 b 0 -> 0
+drive 1 1 bf0c869f -> 0
+drive 1 3 bdca36a6 -> 0
+drive 1 0 116c2 -> 1
+drive 1 0 7fc00000 -> 0
+drive 1 1 da24260 -> 0
+drive 1 1 3f1cad31 -> 0
+drive 1 80000000 116c2 -> 1
+drive 0 80000000 da24260 -> 0
+drive 1 0 bf27c57a -> 0
+drive 1 0 80000000 -> 0
+drive 1 7fffffff 7f800000 -> 1
+drive 0 5 80000000 -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 1 0 3f800000 -> 1
+drive 1 7fffffff 80000000 -> 0
+drive 1 7fffffff 7f800000 -> 1
+drive 1 ffffffff 7fc00000 -> 0
+drive 0 3 bee9aed4 -> 0
+drive 1 7fffffff 0 -> 0
+drive 1 0 da24260 -> 1
+drive 1 1 7f800000 -> 0
+drive 1 1 80000000 -> 0
+drive 0 0 bf67b248 -> 0
+drive 1 7 800116c2 -> 0
+drive 1 2 7fc00000 -> 0
+drive 1 0 0 -> 0
+drive 1 1 3eccda0e -> 0
+drive 1 7fffffff 116c2 -> 1
+drive 1 2 da24260 -> 1
+drive 1 80000000 bf25ea85 -> 0
+drive 1 ffffffff da24260 -> 1
+drive 1 ffffffff 116c2 -> 1
+drive 1 1 7f800000 -> 0
+drive 1 b 80000000 -> 0
+drive 1 9 da24260 -> 1
+drive 0 2 da24260 -> 0
+drive 1 1 80000000 -> 0
+drive 1 1 da24260 -> 0
+drive 1 2 da24260 -> 1
+drive 1 0 7fc00000 -> 0
+drive 1 0 da24260 -> 1
+drive 1 ffffffff 3f6c549f -> 1
+drive 1 b 80000000 -> 0
+drive 1 3 0 -> 0
+drive 1 0 80000000 -> 0
+drive 1 1 116c2 -> 0
+drive 0 a 800116c2 -> 0
+drive 1 3 7fc00000 -> 0
+drive 1 ffffffff 80000000 -> 0
+drive 1 2 116c2 -> 1
+drive 1 ffffffff da24260 -> 1
+drive 1 3 7fc00000 -> 0
+drive 1 1 da24260 -> 0
+drive 1 1 3f3a45a7 -> 0
+drive 1 80000000 3f800000 -> 1
+drive 1 3 3f52abec -> 1
+drive 1 80000000 116c2 -> 1
+drive 1 80000000 3f800000 -> 1
+drive 1 7fffffff 3f0c3d90 -> 1
+drive 1 0 da24260 -> 1
+drive 1 2 7f800000 -> 1
+drive 0 7fffffff 0 -> 0
+drive 1 c 3eacb674 -> 1
+drive 1 0 da24260 -> 1
+drive 1 c 7fc00000 -> 0
+drive 1 3 80000000 -> 0
+drive 1 0 3f5d907f -> 1
+drive 1 9 da24260 -> 1
+drive 1 ffffffff 7f800000 -> 1
+drive 1 80000000 800116c2 -> 0
+drive 1 80000000 bf008e24 -> 0
+drive 1 3 116c2 -> 1
+drive 1 7fffffff da24260 -> 1
+drive 1 2 3f800000 -> 1
+drive 1 80000000 3f6d3c3e -> 1
+drive 1 8 3f800000 -> 1
+drive 1 80000000 7fc00000 -> 0
+drive 1 7fffffff 0 -> 0
+drive 1 ffffffff 7f800000 -> 1
+drive 1 2 0 -> 0
+drive 1 80000000 3e592d9c -> 1
+drive 1 0 7f800000 -> 1
+drive 1 1 800116c2 -> 0
+drive 0 ffffffff 3d19a01a -> 0
+drive 1 7fffffff 7f800000 -> 1
+drive 1 ffffffff 80000000 -> 0
+drive 1 7fffffff da24260 -> 1
+drive 1 2 3f0b517a -> 1
+drive 1 0 80000000 -> 0
+drive 0 0 3e2dd9b3 -> 0
+drive 1 80000000 800116c2 -> 0
+drive 1 1 3eea3866 -> 0
+drive 0 3 3f800000 -> 0
+drive 1 ffffffff 7fc00000 -> 0
+drive 1 5 3ea8e78c -> 1
+drive 1 ffffffff 0 -> 0
+drive 1 1 da24260 -> 0
+drive 1 ffffffff 116c2 -> 1
+drive 0 2 3f02d324 -> 0
+drive 1 ffffffff 3f0268ac -> 1
+drive 1 7fffffff 7fc00000 -> 0
+drive 1 ffffffff 7fc00000 -> 0
+drive 0 7 0 -> 0
+drive 0 ffffffff 0 -> 0
+drive 1 80000000 116c2 -> 1
+drive 1 3 800116c2 -> 0
+drive 1 6 3f800000 -> 1
+drive 1 ffffffff 116c2 -> 1
+drive 1 1 116c2 -> 0
+drive 1 3 80000000 -> 0
+drive 1 2 bb37d987 -> 0
+drive 1 ffffffff 3e97e5b8 -> 1
+drive 1 7fffffff 7f800000 -> 1
+drive 1 80000000 80000000 -> 0
+drive 0 ffffffff 800116c2 -> 0
+drive 1 7fffffff 116c2 -> 1
+count 4 1 1 0 1 -> 3
+count ffffffff -> 0
+count 2 ff 1 -> 2
+count 80000000 -> 0
+count 4 ff 0 0 0 -> 1
+count 3 c1 e7 1 -> 3
+count 4 ff ff 1 0 -> 3
+count 4 ff 0 e 1 -> 3
+count ffffffff -> 0
+count 2 0 1 -> 1
+count 4 ff 0 ff 1 -> 3
+count 1 a7 -> 1
+count 4 0 1 1 e8 -> 3
+count 2 1 0 -> 1
+count 2 1 ff -> 2
+count 2 ff 0 -> 1
+count 4 0 0 1 1 -> 2
+count 1 1 -> 1
+count 0 -> 0
+count 4 88 0 1 1 -> 3
+count ffffffff -> 0
+count 0 -> 0
+count 3 0 1 1 -> 2
+count 80000000 -> 0
+count 3 ff 1 0 -> 2
+count 2 1 ff -> 2
+count ffffffff -> 0
+count 0 -> 0
+count 0 -> 0
+count 1 57 -> 1
+count 2 f1 89 -> 2
+count 80000000 -> 0
+count ffffffff -> 0
+count 3 0 1 7d -> 2
+count 4 1 4e 1 ff -> 4
+count 3 ff c5 0 -> 2
+count 3 1 1 0 -> 2
+count 2 0 ff -> 1
+count ffffffff -> 0
+count 4 1 0 0 0 -> 1
+count 0 -> 0
+count 80000000 -> 0
+count 80000000 -> 0
+count 1 1 -> 1
+count 4 1 ff 1 1 -> 4
+count 80000000 -> 0
+count 3 1 0 0 -> 1
+count 2 ff 0 -> 1
+count 4 1 ff 0 0 -> 2
+count 4 49 ff 0 0 -> 2
+count 2 41 66 -> 2
+count 2 0 1 -> 1
+count 80000000 -> 0
+count 0 -> 0
+count 2 1 1 -> 2
+count ffffffff -> 0
+count 1 1 -> 1
+count ffffffff -> 0
+count 2 1 1 -> 2
+count 4 0 1 52 ff -> 3
+count 4 1 1 0 0 -> 2
+count 80000000 -> 0
+count 3 ff 1 1 -> 3
+count 4 1 0 cb 0 -> 2
+count 4 0 80 3c 1 -> 3
+count 3 0 1 1 -> 2
+count 80000000 -> 0
+count 4 ff 0 ff 1 -> 3
+count 1 0 -> 0
+count ffffffff -> 0
+count 2 7e 1 -> 2
+count 1 1 -> 1
+count 2 21 0 -> 1
+count 3 1 8 1 -> 3
+count 2 0 1 -> 1
+count 2 bc 1 -> 2
+count ffffffff -> 0
+count 1 1 -> 1
+count 3 ff 12 0 -> 2
+count 3 ff ff 0 -> 2
+count 4 0 1 1 6f -> 3
+count 1 1 -> 1
+count 80000000 -> 0
+count 1 4a -> 1
+count 4 4 5d ff 1 -> 4
+count 2 41 1 -> 2
+count 4 0 ff ff 1 -> 3
+count ffffffff -> 0
+count 1 ff -> 1
+count 4 1 9d ff 1 -> 4
+count 2 ff 0 -> 1
+count 0 -> 0
+count 80000000 -> 0
+count 1 1 -> 1
+count 2 0 1 -> 1
+count 3 ff 1 1 -> 3
+count 80000000 -> 0
+count 3 1 1 1 -> 3
+count 2 ff 1 -> 2
+count 2 0 c3 -> 1
+count 4 0 1 1 ff -> 3
+count 0 -> 0
+count 3 0 1 1 -> 2
+count 4 1 ff ff ff -> 4
+count 1 45 -> 1
+count 0 -> 0
+count 0 -> 0
+count 4 ff 0 0 1 -> 2
+count 4 7c 1 ba ff -> 4
+count 1 1 -> 1
+count 1 ff -> 1
+count 4 0 e6 1 1 -> 3
+count 1 0 -> 0
+count 2 ff 1 -> 2
+count 4 1 0 1 1 -> 3
+count 3 1 ff 20 -> 3
+count 4 ff 1 b1 0 -> 3
+count 4 a7 ff 1 ff -> 4
+count ffffffff -> 0
+count 0 -> 0
+count ffffffff -> 0
+count 3 ff ff 1 -> 3
+count 80000000 -> 0
+count 2 0 0 -> 0
+count 1 1 -> 1
+count ffffffff -> 0
+count ffffffff -> 0
+count 2 1 ff -> 2
+count 4 42 0 0 1 -> 2
+count 3 98 1 ff -> 3
+count 1 0 -> 0
+count 0 -> 0
+count 80000000 -> 0
+count 4 ff 1 0 1a -> 3
+count ffffffff -> 0
+count 3 0 0 8d -> 1
+count 4 3f 16 ff 1 -> 4
+count 4 0 1 0 1 -> 2
+count 2 1 1 -> 2
+count ffffffff -> 0
+count 4 1 1 0 1 -> 3
+count 3 ff 0 1 -> 2
+count 1 1 -> 1
+count 3 ff 13 ff -> 3
+count 0 -> 0
+count 4 86 ff 1 1 -> 4
+count 1 1 -> 1
+count 4 0 1 1 1 -> 3
+count 4 86 0 ff ff -> 3
+count 80000000 -> 0
+count 2 ff 1 -> 2
+count ffffffff -> 0
+count 0 -> 0
+count 1 1 -> 1
+count 1 0 -> 0
+count 2 0 ff -> 1
+count 4 1 ff 8b 23 -> 4
+count 2 1 1 -> 2
+count 4 0 1 1 1 -> 3
+count 80000000 -> 0
+count ffffffff -> 0
+count 4 ff 0 ff ac -> 3
+count 0 -> 0
+count 2 ff 1 -> 2
+count 3 ff 1 0 -> 2
+count 4 0 1 1 1 -> 3
+count 3 0 0 0 -> 0
+count ffffffff -> 0
+count 0 -> 0
+count 4 49 0 1 1 -> 3
+count 1 1 -> 1
+count 3 0 22 1 -> 2
+count 2 0 1 -> 1
+count 4 1 7b ff 1 -> 4
+count 2 1 ac -> 2
+count ffffffff -> 0
+count ffffffff -> 0
+count 1 0 -> 0
+count 80000000 -> 0
+count 4 ff ff ff 1 -> 4
+count 2 1 1 -> 2
+count ffffffff -> 0
+count 0 -> 0
+count ffffffff -> 0
+count 4 1 0 ff 1 -> 3
+count 2 1 1 -> 2
+count 4 0 0 ff 1 -> 2
+count 3 ff 1 ff -> 3
+count 4 1 0 ff 1 -> 3
+count 2 0 ff -> 1
+count 4 1 1 1 0 -> 3
+count 3 99 0 ff -> 2
+count 1 5f -> 1
+count 80000000 -> 0
+count 0 -> 0
+count 80000000 -> 0
+count 2 1 1 -> 2
+count ffffffff -> 0
+count 80000000 -> 0
+count 4 0 0 1 1 -> 2
+count 1 1 -> 1
+count 0 -> 0
+count 3 0 0 ff -> 1
+count 1 0 -> 0
+count 2 1 ff -> 2
+count 80000000 -> 0
+count ffffffff -> 0
+count 1 ff -> 1
+count 2 ff 0 -> 1
+count 3 0 1 ff -> 2
+count 80000000 -> 0
+count 1 0 -> 0
+count 0 -> 0
+count 2 1 b4 -> 2
+count 0 -> 0
+count 4 ff 93 ff ff -> 4
+count 4 2 f4 ff ca -> 4
+count 4 e3 0 cc 1 -> 3
+count 4 ff 1 1 0 -> 3
+count 80000000 -> 0
+count 3 ff 1 0 -> 2
+count 3 1 ff ff -> 3
+count 1 ed -> 1
+count ffffffff -> 0
+count 1 ff -> 1
+count 2 1 ff -> 2
+count ffffffff -> 0
+count 1 1 -> 1
+count 2 1 ff -> 2
+count 4 ff 0 a5 1 -> 3
+count 4 1 1 4c ff -> 4
+count 0 -> 0
+count 4 1 34 1 1 -> 4
+count 4 ff ff 1 ff -> 4
+count 2 1 1 -> 2
+count 4 1 c1 1 1 -> 4
+count 4 0 20 1 ff -> 3
+count 1 1 -> 1
+count 80000000 -> 0
+count 1 1 -> 1
+count 2 ff 0 -> 1
+count 80000000 -> 0
+count 1 ff -> 1
+count 2 0 1 -> 1
+count 0 -> 0
+count 4 1 ff 58 0 -> 3
+count 4 1 1 0 1 -> 3
+count 2 1 4d -> 2
+count 0 -> 0
+count 2 0 1 -> 1
+count ffffffff -> 0
+count ffffffff -> 0
+count 2 1 0 -> 1
+count 4 1 ff 0 1 -> 3
+count 2 0 1 -> 1
+count ffffffff -> 0
+count 4 1 1 ff ff -> 4
+count ffffffff -> 0
+count 80000000 -> 0
+count 2 9b 5d -> 2
+count 1 7a -> 1
+count 80000000 -> 0
+count ffffffff -> 0
+count 0 -> 0
+count 2 1 0 -> 1
+count 2 0 1 -> 1
+count 4 56 ff 0 1 -> 3
+count 4 ff 1 76 1 -> 4
+count 0 -> 0
+count 1 1 -> 1
+count 4 ff 81 1 82 -> 4
+count 1 0 -> 0
+count 0 -> 0
+count 1 1 -> 1
+count 4 0 1 7b cb -> 3
+count 2 b5 1 -> 2
+count ffffffff -> 0
+count 2 1 0 -> 1
+count 1 ff -> 1
+count 1 1 -> 1
+count 4 0 1 ff 1 -> 3
+count 2 c8 1 -> 2
+count 2 1 9c -> 2
+count 1 ff -> 1
+count 4 1 1 0 3a -> 3
+count 3 ff 1 ff -> 3
+count 80000000 -> 0
+count 3 80 0 0 -> 1
+count 80000000 -> 0
+count 4 1 e6 1 ff -> 4
+count 2 1 1 -> 2
+count 3 ff 1 d3 -> 3
+count 2 ff ff -> 2
+count 3 ca 0 ff -> 2
+count 4 1 ff 0 0 -> 2
+count 0 -> 0
+count 4 1 1 76 ed -> 4
+count 4 0 ff ff 1 -> 3
+count 4 1 9c 1 1 -> 4
+count 0 -> 0
+count 2 d9 ff -> 2
+count 4 6f 16 ff 1 -> 4
+count 4 9f 1 ff ff -> 4
+count 2 0 1 -> 1
+count 3 6c 9b 0 -> 2
+count ffffffff -> 0
+count 4 15 ff 52 0 -> 3
+count 0 -> 0
+count 4 0 ff 1 1 -> 3
+count ffffffff -> 0
+count ffffffff -> 0
+count 0 -> 0
+count 4 1 1 ff 1 -> 4
+count ffffffff -> 0
+count ffffffff -> 0
+count 3 1 ff 1 -> 3
+count 2 0 1 -> 1
+count 4 a5 0 ff 1 -> 3
+count 3 1 1 9d -> 3
+count 2 1 1 -> 2
+count 0 -> 0
+count 80000000 -> 0
+count 4 ff 1 ff 1 -> 4
+count 3 0 ff 1 -> 2
+count 2 9e 0 -> 1
+count 1 ff -> 1
+count ffffffff -> 0
+count 4 1 ff 1 e4 -> 4
+count 4 9f ff 6 ff -> 4
+count 80000000 -> 0
+count 4 1 36 1 1 -> 4
+count ffffffff -> 0
+count 2 1 6d -> 2
+count ffffffff -> 0
+count 2 ff 1 -> 2
+count 4 1 1 1 1 -> 4
+count 4 0 68 0 fc -> 2
+count 4 ff 1 ff ff -> 4
+count 2 ff ff -> 2
+count 4 0 0 1 0 -> 1
+count ffffffff -> 0
+count 1 1 -> 1
+count 4 0 d9 ff 1 -> 3
+count 2 1 1 -> 2
+count 2 0 ff -> 1
+count ffffffff -> 0
+count 3 1 1 ff -> 3
+count ffffffff -> 0
+count 4 1 8e e8 ff -> 4
+count 2 ff 1 -> 2
+count 4 ff 1 ff 1 -> 4
+count 3 0 0 1 -> 1
+count ffffffff -> 0
+count 4 1 1f ff 0 -> 3
+count ffffffff -> 0
+count 1 1 -> 1
+count 4 ff 1 1 f4 -> 4
+count 80000000 -> 0
+count 0 -> 0
+count 4 1 1 0 1 -> 3
+count ffffffff -> 0
+count 2 1 0 -> 1
+count 4 0 d5 1 fd -> 3
+count 80000000 -> 0
+count 80000000 -> 0
+count 4 0 1 ff ff -> 3
+count 4 c6 2 ff ff -> 4
+count 2 45 1 -> 2
+count 1 ff -> 1
+count ffffffff -> 0
+count 4 ff 1 f8 ff -> 4
+count 0 -> 0
+count 4 1 ff ba 1 -> 4
+count 1 ff -> 1
+count 80000000 -> 0
+count 4 ff 19 0 ff -> 3
+count 4 c5 1 0 ff -> 3
+count 2 1 0 -> 1
+count 1 1 -> 1
+count 2 1 0 -> 1
+count 80000000 -> 0
+count 2 1 1 -> 2
+count 1 0 -> 0
+count 3 1 ff ca -> 3
+count 2 0 0 -> 0
+count 80000000 -> 0
+count 4 95 1 cc 1 -> 4
+count 4 23 96 ff 3d -> 4
+count 4 0 1 1 ff -> 3
+count 2 1 ff -> 2
+count 2 ff 0 -> 1
+count 2 88 1 -> 2
+count 0 -> 0
+count 3 1 1 1 -> 3
+count 4 ff 82 d7 1 -> 4
+count 80000000 -> 0
+count 1 0 -> 0
+count 0 -> 0
+count 80000000 -> 0
+count 1 0 -> 0
+count 4 ff ff ff ff -> 4
+count 2 ff 0 -> 1
+count 80000000 -> 0
+count 4 38 9c 0 1 -> 3
+count 0 -> 0
+count 4 1 1 ff b4 -> 4
+count 80000000 -> 0
+count 4 1 ff 1 ff -> 4
+count ffffffff -> 0
+count 4 0 bf 1 78 -> 3
+count 3 1 58 0 -> 2
+count 0 -> 0
+count 80000000 -> 0
+count 4 1 1 ff 1 -> 4
+count 0 -> 0
+count 4 1 0 0 1 -> 2
+count 4 0 0 ff 2e -> 2
+count 4 1 ad 1 1 -> 4
+count 4 ff 0 ff 1 -> 3
+count 4 1 1 1 f2 -> 4
+count 4 1 0 ff 0 -> 2
+count 0 -> 0
+count 4 1 1 0 0 -> 2
+count 0 -> 0
+count 2 26 1 -> 2
+count 0 -> 0
+count 0 -> 0
+count 80000000 -> 0
+count 80000000 -> 0
+count 2 87 29 -> 2
+count 4 c4 0 0 1 -> 2
+count ffffffff -> 0
+count 4 1 0 59 36 -> 3
+count 4 ff ff 1 ff -> 4
+count 80000000 -> 0
+count 4 ff 0 0 ff -> 2
+count 2 ff 1 -> 2
+count 0 -> 0
+count 2 1 1 -> 2
+count 4 1 ff 0 1 -> 3
+count 4 ef 1 1 ff -> 4
+count 4 30 a5 1 dc -> 4
+count 2 1 0 -> 1
+count ffffffff -> 0
+count 2 1 0 -> 1
+count 2 1 1 -> 2
+count 1 6a -> 1
+count 0 -> 0
+count 2 0 1 -> 1
+count 2 1 1 -> 2
+count 1 d0 -> 1
+count 0 -> 0
+count 2 21 55 -> 2
+count ffffffff -> 0
+count 4 ff 53 ff f3 -> 4
+count ffffffff -> 0
+count 3 1 1 88 -> 3
+count 0 -> 0
+count 80000000 -> 0
+count 2 1 d5 -> 2
+count 4 ff d9 1 0 -> 3
+count 3 1 0 ff -> 2
+count 80000000 -> 0
+count 3 49 1 ff -> 3
+count 4 1 1 e2 ff -> 4
+count 0 -> 0
+count 80000000 -> 0
+count 1 ff -> 1
+count 1 ff -> 1
+count 4 0 1 ff 1 -> 3
+count ffffffff -> 0
+count 4 1 1 1b 1 -> 4
+count 1 0 -> 0
+count 2 0 1 -> 1
+count 2 ff ff -> 2
+count 2 36 1 -> 2
+count 2 f6 38 -> 2
+count 0 -> 0
+count 3 0 1 0 -> 1
+count 1 1 -> 1
+count 4 0 1 1 37 -> 3
+count 4 2f 1 1 1 -> 4
+count 4 0 b0 0 ff -> 2
+count 1 42 -> 1
+count ffffffff -> 0
+count 2 1 1 -> 2
+count 0 -> 0
+count 3 0 ff 0 -> 1
+count 3 1 1 0 -> 2
+count 3 ff ff 0 -> 2
+count 1 ff -> 1
+count 2 1 1 -> 2
+count 4 0 1 48 1 -> 3
+count 4 ff 0 1 1 -> 3
+count ffffffff -> 0
+count 2 47 1 -> 2
+count ffffffff -> 0
+count 1 1 -> 1
+count 4 1 1 1 1 -> 4
+count 4 1 0 1 fa -> 3
+count 4 1 6f 0 0 -> 2
+count 4 1 7d 1 90 -> 4
+count 1 1 -> 1
+count 3 1 1 0 -> 2
+count ffffffff -> 0
+count 1 1 -> 1
+count 4 1 ff 1 1 -> 4
+count 4 1 1 0 0 -> 2
+count 0 -> 0
+count 4 0 1 0 73 -> 2
+count 1 1 -> 1
+count 2 ff 1 -> 2
+count 3 ff 7e ff -> 3
+count 1 1 -> 1
+count 4 1 0 0 0 -> 1
+count ffffffff -> 0
+count 2 0 53 -> 1
+count 4 a9 1 1 1 -> 4
+count 1 1 -> 1
+count ffffffff -> 0
+count 4 9e c9 1 1 -> 4
+count 4 1 0 7f 1 -> 3
+count 4 1 d8 13 0 -> 3
+count 3 1 1 1 -> 3
+count 0 -> 0
+count 0 -> 0
+count ffffffff -> 0
+count 0 -> 0
+count 2 ff 1 -> 2
+count 80000000 -> 0
+count 4 1 ff 1 e3 -> 4
+count ffffffff -> 0
+count 2 ff 90 -> 2
+count 80000000 -> 0
+count 2 0 1 -> 1
+count 2 0 1 -> 1
+count 3 ff 1 1 -> 3
+count 0 -> 0
+count 1 ff -> 1
+count 2 1 0 -> 1
+count 80000000 -> 0
+count 4 ff ff ff 1 -> 4
+count 2 41 1 -> 2
+count 3 b8 0 0 -> 1
+count 80000000 -> 0
+count 4 0 0 0 ff -> 1
+count 1 ff -> 1
+count 80000000 -> 0
+count 4 1 1 ff dd -> 4
+count 1 ff -> 1
+count 2 1 1 -> 2
+count 0 -> 0
+count 4 1 1b 76 ff -> 4
+count 2 1 0 -> 1
+count 3 ff 1 0 -> 2
+count 1 1 -> 1
+count 4 bd 1 1b 67 -> 4
+count 4 0 ff 1 0 -> 2
+count 2 ff 1 -> 2
+count 0 -> 0
+count 2 ff ff -> 2
+count ffffffff -> 0
+count 80000000 -> 0
+count 2 ff ff -> 2
+count 4 1 1 0 b -> 3
+count 2 1 cc -> 2
+count 80000000 -> 0
+count 4 1 87 0 6 -> 3
+count 4 0 ff fe ff -> 3
+count 4 0 1 1 1 -> 3
+count 0 -> 0
+count 4 1 0 1 ff -> 3
+count ffffffff -> 0
+count 0 -> 0
+count 2 0 ff -> 1
+count ffffffff -> 0
+count 2 ff 0 -> 1
+count 3 7 ff ca -> 3
+count 4 97 ff 9a 1 -> 4
+count 4 ff 1 ff 0 -> 3
+count 3 1 1 1 -> 3
+count 0 -> 0
+count 4 1 1 0 ff -> 3
+count 4 0 ff 1 1 -> 3
+count ffffffff -> 0
+count 80000000 -> 0
+count 2 1 ff -> 2
+count ffffffff -> 0
+count 0 -> 0
+count 2 0 ff -> 1
+count 4 1 1 1 1 -> 4
+count 4 ff 0 1 ff -> 3
+count 4 1 0 18 b8 -> 3
+count 3 1 1 1 -> 3
+count 1 1 -> 1
+count 3 ff 1 1 -> 3
+count 4 25 1 1 1 -> 4
+count 4 ff 82 8a cd -> 4
+count ffffffff -> 0
+count 0 -> 0
+count 2 ff dc -> 2
+count 4 0 0 ff ff -> 2
+count 3 0 1 2d -> 2
+count 3 ff 1 1 -> 3
+count 4 0 3f 1 1 -> 3
+count ffffffff -> 0
+count 2 1 0 -> 1
+count 80000000 -> 0
+count 80000000 -> 0
+count 4 1 1 ce a -> 4
+count 4 ff 1 d ff -> 4
+count 0 -> 0
+count 1 1 -> 1
+count 80000000 -> 0
+count 4 ff 1 0 1 -> 3
+count 3 92 1 ff -> 3
+count 4 1 1 2a ac -> 4
+count ffffffff -> 0
+count 4 0 1 20 0 -> 2
+count 4 1 1 0 1 -> 3
+count 2 ce 0 -> 1
+count ffffffff -> 0
+count 3 0 1 aa -> 2
+count ffffffff -> 0
+count 3 1 1 1 -> 3
+count 80000000 -> 0
+count ffffffff -> 0
+count 1 ff -> 1
+count 2 0 0 -> 0
+count ffffffff -> 0
+count 2 1 ff -> 2
+count 2 ff 1 -> 2
+count ffffffff -> 0
+count 0 -> 0
+count 4 ff 5b ff e1 -> 4
+count 2 1 1 -> 2
+count 2 1 91 -> 2
+count 4 0 1 1 cf -> 3
+count 2 0 1 -> 1
+count 4 ff 1 1 40 -> 4
+count 1 1 -> 1
+count 4 1 1 ff 0 -> 3
+count 2 0 74 -> 1
+count 1 0 -> 0
+count ffffffff -> 0
+count 4 1 0 1 77 -> 3
+count 2 0 1 -> 1
+count 4 1 bb ce 1 -> 4
+count 2 1 1 -> 2
+count 2 1 1 -> 2
+count 0 -> 0
+count 0 -> 0
+count 4 1 25 1 1 -> 4
+count 80000000 -> 0
+count 1 0 -> 0
+count 2 d2 e9 -> 2
+count 4 0 0 0 1 -> 1
+count 3 0 0 1 -> 1
+count 4 ff 0 1 ff -> 3
+count 4 0 0 e1 1 -> 2
+count 2 1 0 -> 1
+count ffffffff -> 0
+count 3 1 d3 1 -> 3
+count 4 ff ff 0 11 -> 3
+count 2 b1 ff -> 2
+count 4 1 1 1 1 -> 4
+count 4 51 1 1 1 -> 4
+count 1 ff -> 1
+count 4 ff 1 1 0 -> 3
+count 80000000 -> 0
+count 0 -> 0
+count 4 64 0 f0 ff -> 3
+count 1 1 -> 1
+count ffffffff -> 0
+count 4 ff 19 1 5f -> 4
+count 4 ff ff 0 3 -> 3
+count 2 1 a0 -> 2
+count 4 8d 1 1 d7 -> 4
+count 4 1 1 1 1 -> 4
+count 0 -> 0
+count 2 e9 ff -> 2
+count ffffffff -> 0
+count 2 1 0 -> 1
+count 3 0 28 1 -> 2
+count 4 0 1 ff 0 -> 2
+count 4 0 ff d9 a7 -> 3
+count 2 0 0 -> 0
+count ffffffff -> 0
+count 4 1 0 0 ff -> 2
+count 4 1 0 0 b7 -> 2
+count 1 ff -> 1
+count 80000000 -> 0
+count ffffffff -> 0
+count 4 1 0 1 ff -> 3
+count 4 ff 0 ff ff -> 3
+count ffffffff -> 0
+count 1 1 -> 1
+count 80000000 -> 0
+count 0 -> 0
+count 4 0 0 ff 0 -> 1
+count 2 1 1 -> 2
+count 2 0 1 -> 1
+count 2 0 6a -> 1
+count ffffffff -> 0
+count 3 f 1 85 -> 3
+count 80000000 -> 0
+count 4 0 ff 38 1 -> 3
+count 80000000 -> 0
+count 0 -> 0
+count 2 ff ff -> 2
+count 2 1 45 -> 2
+count 4 0 8b ff 1 -> 3
+count 4 1 ff 0 ff -> 3
+count 4 ff ff 92 ff -> 4
+count 2 ff 1 -> 2
+count 3 1 1 29 -> 3
+count 4 0 1 e6 0 -> 2
+count 2 1 1 -> 2
+count ffffffff -> 0
+count 0 -> 0
+count 2 c4 1 -> 2
+count 4 1 1 1 d3 -> 4
+count 80000000 -> 0
+count 80000000 -> 0
+count 3 0 0 ff -> 1
+count 2 f6 ff -> 2
+count 0 -> 0
+count 4 1 56 1 0 -> 3
+count 0 -> 0
+count 4 2c ff ff 37 -> 4
+count 2 1 1 -> 2
+count 0 -> 0
+count 1 87 -> 1
+count 1 0 -> 0
+count 1 ff -> 1
+count 0 -> 0
+count 4 0 1 ff 1 -> 3
+count ffffffff -> 0
+count 0 -> 0
+count 2 1 1 -> 2
+count 1 1 -> 1
+count 4 ff 1 0 de -> 3
+count 2 ff 90 -> 2
+count 1 ff -> 1
+count 2 26 c2 -> 2
+count 80000000 -> 0
+count 0 -> 0
+count ffffffff -> 0
+count 4 1 0 1 37 -> 3
+count 1 1 -> 1
+count 3 1 c6 1 -> 3
+count ffffffff -> 0
+count 4 ff 1 86 ff -> 4
+count 4 1 ff 6b 1 -> 4
+count 4 1 ff 1 ff -> 4
+count 1 c9 -> 1
+count 4 36 1 1 5b -> 4
+count 4 1 0 0 0 -> 1
+count 2 1 ff -> 2
+count 2 1 ff -> 2
+count ffffffff -> 0
+count 2 1 ff -> 2
+count 80000000 -> 0
+count 4 0 0 1 88 -> 2
+count ffffffff -> 0
+count 2 de c -> 2
+count 80000000 -> 0
+count 4 0 0 0 ff -> 1
+count ffffffff -> 0
+count 2 7b ff -> 2
+count 3 ff 1 0 -> 2
+count ffffffff -> 0
+count 4 0 0 1 0 -> 1
+count 1 1 -> 1
+count 4 0 40 1 1 -> 3
+count 0 -> 0
+count 3 1 1 1 -> 3
+count 4 1 ff ff 1 -> 4
+count 4 0 1 20 0 -> 2
+count 3 1 1 fb -> 3
+count 4 1 ff 14 ff -> 4
+count 4 0 1 1 1 -> 3
+count 4 1 0 0 1 -> 2
+count 4 1 ff 1 1 -> 4
+count 4 97 0 0 ff -> 2
+count 4 ff d3 ff 17 -> 4
+count 3 0 0 1 -> 1
+count 2 ff 0 -> 1
+count 2 ff 1 -> 2
+count 0 -> 0
+count 4 1 38 ff 0 -> 3
+count 3 1b 0 1 -> 2
+count 3 e1 0 ff -> 2
+count 0 -> 0
+count 4 ff 1 1 1 -> 4
+count 0 -> 0
+count 1 1 -> 1
+count 2 1 1 -> 2
+count 2 0 7b -> 1
+count 3 0 0 0 -> 0
+count 0 -> 0
+count 2 1 1 -> 2
+count 3 80 1 1 -> 3
+count 4 e4 0 4c 54 -> 3
+count 80000000 -> 0
+count 80000000 -> 0
+count 1 0 -> 0
+count 2 0 ff -> 1
+count 0 -> 0
+count 80000000 -> 0
+count 0 -> 0
+count 80000000 -> 0
+count 80000000 -> 0
+count 80000000 -> 0
+count ffffffff -> 0
+count ffffffff -> 0
+count 0 -> 0
+count 3 ff 0 1 -> 2
+count 2 ce 55 -> 2
+count ffffffff -> 0
+count 4 ff 1 87 ff -> 4
+count 1 1 -> 1
+count 4 ea 1 1 0 -> 3
+count ffffffff -> 0
+count 4 be 1 ff 0 -> 3
+count 4 0 48 69 0 -> 2
+count ffffffff -> 0
+count 0 -> 0
+count 4 c6 1 5e 1 -> 4
+count 2 1 a -> 2
+count 4 ff ff 0 1 -> 3
+count 0 -> 0
+count 2 1 49 -> 2
+count ffffffff -> 0
+count 4 ff ff ff 1 -> 4
+count 0 -> 0
+count 4 1 1 e5 c5 -> 4
+count 4 1 6a ff 1 -> 4
+count 2 a 0 -> 1
+count ffffffff -> 0
+count 80000000 -> 0
+count ffffffff -> 0
+count 2 1 1 -> 2
+count 80000000 -> 0
+count 80000000 -> 0
+count ffffffff -> 0
+count 4 ff 0 0 ff -> 2
+count ffffffff -> 0
+count 4 0 0 1 1 -> 2
+count ffffffff -> 0
+count 4 ff ff 0 1 -> 3
+count ffffffff -> 0
+count 4 ff 1 1 ff -> 4
+count ffffffff -> 0
+count 4 1 1 1 1 -> 4
+count 4 1 1 1 1 -> 4
+count 4 ff 0 1 1 -> 3
+count ffffffff -> 0
+count 0 -> 0
+count 80000000 -> 0
+count 2 0 ff -> 1
+count 2 8d 1 -> 2
+count 1 95 -> 1
+count 4 1 ff 1 1 -> 4
+count 1 0 -> 0
+count ffffffff -> 0
+count ffffffff -> 0
+count 0 -> 0
+count 0 -> 0
+count 4 18 77 e5 ff -> 4
+count ffffffff -> 0
+count 0 -> 0
+count 2 1 1 -> 2
+count 3 0 0 ff -> 1
+count 80000000 -> 0
+count ffffffff -> 0
+count 80000000 -> 0
+count 4 0 1 1 0 -> 2
+count 2 1 ef -> 2
+count 4 0 1 fe 0 -> 2
+count ffffffff -> 0
+count 4 ff 1 0 ee -> 3
+count 4 1 0 1 25 -> 3
+count 2 ff ff -> 2
+count 4 d4 1 1 1 -> 4
+count 4 1 1 0 1 -> 3
+count 4 1 ff 0 1 -> 3
+count 80000000 -> 0
+count 4 e9 1 1 ff -> 4
+count 2 ff 1 -> 2
+count 80000000 -> 0
+count 1 0 -> 0
+count 2 ff 1 -> 2
+count 80000000 -> 0
+count 0 -> 0
+count 2 1 c2 -> 2
+count 1 c2 -> 1
+count 2 96 1c -> 2
+count 1 1 -> 1
+count 3 1 0 0 -> 1
+count 2 ff 0 -> 1
+count 2 1 1 -> 2
+count 4 1 1b 1 1 -> 4
+count 1 8b -> 1
+count 4 44 1 0 1 -> 3
+count 3 1 84 cf -> 3
+count 4 ff e2 1 ff -> 4
+count 0 -> 0
+count 4 0 0 b6 1 -> 2
+count 2 6a ff -> 2
+count 2 1 1 -> 2
+count 3 1 1 ff -> 3
+count 4 0 0 1 ff -> 2
+count 1 7 -> 1
+count 1 68 -> 1
+count 0 -> 0
+count ffffffff -> 0
+count 1 ff -> 1
+count 0 -> 0
+count ffffffff -> 0
+count 80000000 -> 0
+count 0 -> 0
+count 80000000 -> 0
+count ffffffff -> 0
+count 1 1 -> 1
+count 2 1 ff -> 2
+count ffffffff -> 0
+count 3 a 1 1 -> 3
+count 4 0 30 1 ff -> 3
+count 2 ed 0 -> 1
+count 80000000 -> 0
+count ffffffff -> 0
+count 1 0 -> 0
+count 4 1 1 3d 1 -> 4
+count 80000000 -> 0
+count ffffffff -> 0
+count 80000000 -> 0
+count 80000000 -> 0
+count 4 1 4b ff 1 -> 4
+count 4 e9 1 ff ff -> 4
+count 4 1 1 1 1 -> 4
+count 2 ff 1 -> 2
+count ffffffff -> 0
+count 0 -> 0
+count ffffffff -> 0
+count 4 1 1 1 ff -> 4
+count 4 29 1 5c 20 -> 4
+count 80000000 -> 0
+count ffffffff -> 0
+count 2 1 1 -> 2
+count 4 1 ff ff 1 -> 4
+count 4 1 34 fc 1 -> 4
+count 4 1 4d b7 1 -> 4
+count 1 0 -> 0
+count 0 -> 0
+count 2 9f 1 -> 2
+count 1 1 -> 1
+count 0 -> 0
+count 80000000 -> 0
+count 4 0 1 0 1 -> 2
+count 2 0 1 -> 1
+count 0 -> 0
+count 4 1 0 1 0 -> 2
+count ffffffff -> 0
+count 4 0 0 d4 1 -> 2
+count 80000000 -> 0
+count 4 2e af 0 1 -> 3
+count 2 ff 0 -> 1
+count 4 1 7a 0 1 -> 3
+count ffffffff -> 0
+count 4 51 ff 1 1 -> 4
+count 80000000 -> 0
+count 4 ff 0 ff 0 -> 2
+count 2 ff 1 -> 2
+count 3 ff 0 ff -> 2
+count 2 1 1 -> 2
+count 1 1f -> 1
+count 0 -> 0
+count 3 0 8a 1 -> 2
+count 3 ea 1 44 -> 3
+count 2 1 ff -> 2
+count 1 1 -> 1
+count 2 1 0 -> 1
+count 3 1 1 1 -> 3
+count 2 1 c9 -> 2
+count 4 1 0 0 85 -> 2
+count 2 1 0 -> 1
+count 80000000 -> 0
+count 4 1 1 9a 84 -> 4
+count 4 ff 1 1 ff -> 4
+count 3 1 ff ff -> 3
+count 3 1 0 1 -> 2
+count 4 a8 1 1 1 -> 4
+count 2 66 0 -> 1
+count 3 1 1 ee -> 3
+count 0 -> 0
+count 4 1 0 48 0 -> 2
+count 4 1 0 ff 1 -> 3
+count 80000000 -> 0
+count 4 0 1 ff 1 -> 3
+count 1 1 -> 1
+count 4 0 1 1 10 -> 3
+count 2 0 1 -> 1
+count 2 ff 0 -> 1
+count 4 1 1 f3 ff -> 4
+count 4 0 ff ff 5f -> 3
+count 4 0 0 1 0 -> 1
+count 2 1 4 -> 2
+count 0 -> 0
+count 1 1 -> 1
+count ffffffff -> 0
+count 0 -> 0
+count 4 0 0 ea 1 -> 2
+count 4 1 ff 1 ff -> 4
+count 4 0 1 ff 1 -> 3
+count 3 e3 1 0 -> 2
+count 1 ff -> 1
+count ffffffff -> 0
+count 3 6b 0 0 -> 1
+count 2 0 ff -> 1
+count 4 27 35 e9 1 -> 4
+count 2 1 1 -> 2
+count 0 -> 0
+count 2 1 0 -> 1
+count 2 ff ff -> 2
+count 3 41 ff 0 -> 2
+count 1 2b -> 1
+count 2 10 1 -> 2
+count ffffffff -> 0
+count 3 1 1 0 -> 2
+count 2 1 1 -> 2
+count 1 ff -> 1
+count 4 1 0 3b 0 -> 2
+count 80000000 -> 0
+count 4 0 67 0 1 -> 2
+count 2 0 0 -> 0
+count 4 0 f4 24 0 -> 2
+count 4 1 0 ff 1 -> 3
+count 0 -> 0
+count 3 a0 1 a3 -> 3
+count 4 1 ff 1 0 -> 3
+count ffffffff -> 0
+count 2 1 1 -> 2
+count 4 0 0 1 0 -> 1
+count 3 0 0 0 -> 0
+count 2 0 ff -> 1
+count 1 1 -> 1
+count 1 1 -> 1
+count 2 0 55 -> 1
+count 4 1 1 ff 1 -> 4
+count 1 eb -> 1
+count 2 1 1 -> 2
+count 2 ff 6a -> 2
+count ffffffff -> 0
+count 2 1 ff -> 2
+count 4 1 7a ff ff -> 4
+count 3 1 1 1 -> 3
+count 4 7b 0 1 0 -> 2
+count 0 -> 0
+count 2 ff 1 -> 2
+count 0 -> 0
+count 4 1 0 b0 0 -> 2
+count ffffffff -> 0
+count 4 d5 ff 1 0 -> 3
+count 80000000 -> 0
+count 4 0 52 1 0 -> 2
+count 80000000 -> 0
+count 80000000 -> 0
+count 80000000 -> 0
+count 4 1 1 0 ff -> 3
+count 4 5e 0 ff 0 -> 2
+count 1 ff -> 1
+count ffffffff -> 0
+count 2 ff ff -> 2
+count 1 ec -> 1
+count 4 c5 1 ff 1 -> 4
+count 80000000 -> 0
+count 0 -> 0
+count 0 -> 0
+count 4 48 1e ff 83 -> 4
+count 4 0 0 4f 1 -> 2
+count 4 ff 1 1 1 -> 4
+count 80000000 -> 0
+count ffffffff -> 0
+count 3 31 fb 1 -> 3
+count 4 ff 1 1 0 -> 3
+count 80000000 -> 0
+count 2 1 ff -> 2
+count 2 1 ff -> 2
+count 2 0 ff -> 1
+count 4 0 0 ae ff -> 2
+count ffffffff -> 0
+count 2 1 0 -> 1
+count 4 1 ff 1 0 -> 3
+count 3 df 1 f -> 3
+count ffffffff -> 0
+count ffffffff -> 0
+count ffffffff -> 0
+count 4 8b 1 1 1 -> 4
+count 4 1 1 23 9e -> 4
+count 0 -> 0
+count 2 1 1 -> 2
+count 4 3e 1 c4 1 -> 4
+count 3 bf ff dc -> 3
+count ffffffff -> 0
+count 0 -> 0
+count 3 1 ff 51 -> 3
+count 4 0 1 0 0 -> 1
+count 2 1 0 -> 1
+count ffffffff -> 0
+count ffffffff -> 0
+count 2 ff 3a -> 2
+count 1 b9 -> 1
+count ffffffff -> 0
+count 1 0 -> 0
+count 2 0 0 -> 0
+count 80000000 -> 0
+count 4 7e ff 1 1 -> 4
+count 4 1 0 44 1 -> 3
+count 2 1 1 -> 2
+count 2 ff ff -> 2
+count 4 ff 0 ff 1 -> 3
+count 80000000 -> 0
+count 4 cb 0 6 1 -> 3
+count 2 ff 0 -> 1
+count ffffffff -> 0
+count ffffffff -> 0
+count 2 0 23 -> 1
+count 0 -> 0
+count ffffffff -> 0
+count 0 -> 0
+count 0 -> 0
+count 1 1 -> 1
+count 3 0 0 1 -> 1
+count 1 1 -> 1
+count 1 c8 -> 1
+count 4 1 ff 1 1 -> 4
+count ffffffff -> 0
+count 2 1 ff -> 2
+count 4 1 1 1 ff -> 4
+count 2 1 1 -> 2
+count ffffffff -> 0
+count 4 0 1 1 1 -> 3
+count 4 d1 1 ff 1 -> 4
+count 4 b6 1 0 ff -> 3
+count ffffffff -> 0
+count 80000000 -> 0
+count 1 d5 -> 1
+count 4 40 0 1 1 -> 3
+count 0 -> 0
+count 2 1 a -> 2
+count 0 -> 0
+count 2 ff f6 -> 2
+count 0 -> 0
+count 4 1 1 ff 0 -> 3
+count 2 ff 0 -> 1
+count 3 d3 9 ff -> 3
+count 2 ff 1 -> 2
+count 3 0 ff b4 -> 2
+count 80000000 -> 0
+count 4 1 1 d8 1 -> 4
+count 80000000 -> 0
+count 2 81 1 -> 2
+count 4 1 ff 1 c4 -> 4
+count 3 0 1 1 -> 2
+count 0 -> 0
+count 4 ff 1 ff 1 -> 4
+count 4 0 1 ff 1 -> 3
+count 80000000 -> 0
+count 1 1 -> 1
+count 0 -> 0
+count 2 ff c0 -> 2
+count 3 3d 45 0 -> 2
+count 2 0 1 -> 1
+count 0 -> 0
+count 4 ff 1 1 70 -> 4
+count 2 0 1 -> 1
+count 4 a1 cb 70 ff -> 4
+count 0 -> 0
+count 1 4d -> 1
+count 4 ff 1 fa a6 -> 4
+count 2 1 0 -> 1
+count 4 84 de 1 0 -> 3
+count 2 0 0 -> 0
+count 4 ff ff 1 ff -> 4
+count 4 0 12 1 1 -> 3
+count 80000000 -> 0
+count ffffffff -> 0
+count 2 92 ff -> 2
+count 2 0 1 -> 1
+count 0 -> 0
+count 80000000 -> 0
+count 3 ff 1 70 -> 3
+count 4 1 0 0 0 -> 1
+count 2 0 0 -> 0
+count 4 0 0 1 ff -> 2
+count 2 1 ff -> 2
+count 3 0 ff ff -> 2
+count 3 1 1 1 -> 3
+count 2 1 1 -> 2
+count 4 ff 0 19 1 -> 3
+count 1 ff -> 1
+count 80000000 -> 0
+count 4 1 1 1 0 -> 3
+count 1 1 -> 1
+count 2 4 2a -> 2
+count 2 24 9c -> 2
+count 4 1 b2 1 1 -> 4
+count 1 0 -> 0
+count 4 0 d6 1 1 -> 3
+count 1 1 -> 1
+count ffffffff -> 0
+count 2 0 0 -> 0
+count 1 1 -> 1
+count 4 ff 81 ff 57 -> 4
+count ffffffff -> 0
+count 2 30 1 -> 2
+count 3 1 0 1 -> 2
+count 80000000 -> 0
+count 4 0 1 9 0 -> 2
+count 4 0 1 1 fc -> 3
+count 4 7c 1 ff 1 -> 4
+count 2 1 74 -> 2
+count ffffffff -> 0
+count 2 1 ff -> 2
+count 2 ff 1 -> 2
+count 4 1 13 0 59 -> 3
+count 2 0 0 -> 0
+count 4 e1 1 1 0 -> 3
+count 3 0 1 8d -> 2
+count 4 80 1 0 0 -> 2
+count 4 1 1 1 1 -> 4
+count 3 1 ff 0 -> 2
+count 4 1 1 1 1 -> 4
+count 2 ff 3c -> 2
+count 0 -> 0
+count 80000000 -> 0
+count 0 -> 0
+count 4 0 ff 1 1 -> 3
+count 0 -> 0
+count 80000000 -> 0
+count 80000000 -> 0
+count 3 1 48 1 -> 3
+count 4 0 dc 29 5d -> 3
+count 0 -> 0
+count 2 1 6f -> 2
+count 4 ff 1 0 0 -> 2
+count 4 1 1 ff 1 -> 4
+count 3 0 1 0 -> 1
+count 4 1 d3 0 1 -> 3
+count 3 1 7c 0 -> 2
+count 80000000 -> 0
+count 2 1 1 -> 2
+count 4 1 1e f5 ff -> 4
+count 2 0 1e -> 1
+count 2 0 ff -> 1
+count ffffffff -> 0
+count 4 35 ff 1 1 -> 4
+count 1 1 -> 1
+count 4 1 0 1 1 -> 3
+count 2 0 1 -> 1
+count 80000000 -> 0
+count 4 1 1 1 7b -> 4
+count 80000000 -> 0
+count 80000000 -> 0
+count 2 1 1 -> 2
+count 0 -> 0
+count 1 ff -> 1
+count 1 df -> 1
+count 2 ff 1 -> 2
+count 4 1 0 ff 10 -> 3
+count ffffffff -> 0
+count 80000000 -> 0
+count 2 1 1 -> 2
+count 2 0 0 -> 0
+count 1 0 -> 0
+count ffffffff -> 0
+count 1 ff -> 1
+count 1 2d -> 1
+count 80000000 -> 0
+count 1 0 -> 0
+count 1 1 -> 1
+count 0 -> 0
+count 2 f9 6b -> 2
+count 1 1 -> 1
+count ffffffff -> 0
+count 80000000 -> 0
+count 3 1 ff ac -> 3
+count 4 ff 1 ff ff -> 4
+count 80000000 -> 0
+count 1 1 -> 1
+count 2 1 20 -> 2
+count 80000000 -> 0
+count 0 -> 0
+count 2 1 f6 -> 2
+count 1 0 -> 0
+count 1 ff -> 1
+count 4 ff 0 1 1 -> 3
+count ffffffff -> 0
+count 0 -> 0
+count 3 1 1 ff -> 3
+count 2 1 0 -> 1
+count 0 -> 0
+count 0 -> 0
+count 4 1 1 b9 5c -> 4
+count 4 1a 1 1 1 -> 4
+count 0 -> 0
+count 2 0 ff -> 1
+count 4 0 1 0 ff -> 2
+count 4 18 0 a 1 -> 3
+count 1 0 -> 0
+count 80000000 -> 0
+count 80000000 -> 0
+count 2 1 1 -> 2
+count 4 1 1 d1 e -> 4
+count 2 1 95 -> 2
+count 4 1 69 1 1 -> 4
+count ffffffff -> 0
+count 4 1 30 ff 1 -> 4
+count 2 1 1 -> 2
+count 2 ec 1 -> 2
+count 0 -> 0
+count 0 -> 0
+count 3 ff 1 84 -> 3
+count 80000000 -> 0
+count ffffffff -> 0
+count 1 1 -> 1
+count 0 -> 0
+count 2 0 1 -> 1
+count 2 1 1 -> 2
+count 3 ff 1 0 -> 2
+count 1 3e -> 1
+count ffffffff -> 0
+count 80000000 -> 0
+count 0 -> 0
+count 0 -> 0
+count 1 0 -> 0
+count 2 49 0 -> 1
+count 0 -> 0
+count 4 1 c8 1 1 -> 4
+count 0 -> 0
+count 4 a0 1 17 0 -> 3
+count 80000000 -> 0
+count 2 ff ff -> 2
+count 1 0 -> 0
+count 2 92 0 -> 1
+count 4 e 0 ff 1 -> 3
+count 4 1 e4 0 1 -> 3
+count 3 e 0 1 -> 2
+count 3 1 1 f4 -> 3
+count 4 1 0 1 1 -> 3
+count 0 -> 0
+count 4 1 1 1 1 -> 4
+count 2 ff 0 -> 1
+count 2 1 c2 -> 2
+count 4 1 2f 26 1 -> 4
+count 4 1 1 1 0 -> 3
+count 4 1 0 1 1 -> 3
+count 2 be 1 -> 2
+count 2 0 7c -> 1
+count 4 1 0 ff ff -> 3
+count 0 -> 0
+count 4 ff 1 1 1 -> 4
+count ffffffff -> 0
+count 4 ff 1 1 ff -> 4
+count 80000000 -> 0
+count 0 -> 0
+count 1 0 -> 0
+count 4 36 0 0 60 -> 2
+count 1 1 -> 1
+count 80000000 -> 0
+count 4 ff 0 1 1 -> 3
+count 0 -> 0
+count 4 0 e6 1 1 -> 3
+count 80000000 -> 0
+count 3 0 1 ff -> 2
+count ffffffff -> 0
+count 4 ff 1 ff 0 -> 3
+count 1 1 -> 1
+count 3 ff 0 1 -> 2
+count 4 ff 1 0 1 -> 3
+count 3 0 0 1 -> 1
+count 4 0 1 1 ff -> 3
+count 2 0 ff -> 1
+count 4 ff 54 1 1 -> 4
+count 80000000 -> 0
+count 4 30 1 1 1 -> 4
+count 4 1 0 0 1 -> 2
+count 4 1 1 1 1 -> 4
+count 2 1 1 -> 2
+count ffffffff -> 0
+count 4 1 f1 ff 1 -> 4
+count 4 fe 0 1 1 -> 3
+count 2 ff 1 -> 2
+count 2 1 ff -> 2
+count 2 0 1 -> 1
+count 4 0 1 1 1 -> 3
+count 4 1 0 ff 1 -> 3
+count 80000000 -> 0
+count 0 -> 0
+count 4 0 ff 1 ff -> 3
+count 4 1 1 1 ff -> 4
+count ffffffff -> 0
+count 4 1 9b ff 1 -> 4
+count 1 0 -> 0
+count 1 0 -> 0
+count 2 ff 1 -> 2
+count 4 ff 0 4e 1 -> 3
+count 4 0 1 1 1 -> 3
+count 3 1 2e 0 -> 2
+count 1 1 -> 1
+count 4 ff 1 0 4c -> 3
+count 80000000 -> 0
+count 0 -> 0
+count 4 1 1 4a ff -> 4
+count 2 0 1 -> 1
+count 2 ff 1 -> 2
+count ffffffff -> 0
+count 80000000 -> 0
+count 4 0 0 de 1 -> 2
+count 1 ff -> 1
+count 80000000 -> 0
+count ffffffff -> 0
+count 80000000 -> 0
+count 3 1 1 1 -> 3
+count 4 7f 1 68 1 -> 4
+count 4 1 d5 1 52 -> 4
+count 3 0 0 5 -> 1
+count 2 49 0 -> 1
+count 0 -> 0
+count 2 0 1 -> 1
+count 2 0 1 -> 1
+count 3 ff 1 ff -> 3
+count 4 0 ff 1 1 -> 3
+count 4 1 63 ff ff -> 4
+count 4 45 1 0 1 -> 3
+count 4 ff 1 1 1 -> 4
+count 4 1 1 ff ab -> 4
+count 2 0 1 -> 1
+count 4 1 ff 0 1 -> 3
+count 80000000 -> 0
+count 2 0 1 -> 1
+count ffffffff -> 0
+count 80000000 -> 0
+count 3 0 1 ff -> 2
+count 80000000 -> 0
+count 2 0 0 -> 0
+count 2 0 1 -> 1
+count 2 0 1 -> 1
+count 1 0 -> 0
+count 80000000 -> 0
+count 2 ff 0 -> 1
+count 4 0 ff 1 0 -> 2
+count 4 0 ff 1 0 -> 2
+count 0 -> 0
+count 80000000 -> 0
+count 4 0 1 0 1 -> 2
+count 4 1 1 0 0 -> 2
+count ffffffff -> 0
+count 4 49 1 ff 1 -> 4
+count 0 -> 0
+count 4 7 1 ff 1 -> 4
+count 80000000 -> 0
+count 0 -> 0
+count 1 44 -> 1
+count 2 8f 0 -> 1
+count 1 ff -> 1
+count 0 -> 0
+count 0 -> 0
+count 0 -> 0
+count 80000000 -> 0
+count 4 38 1 0 ca -> 3
+count 2 c3 1 -> 2
+count 2 0 1 -> 1
+count 80000000 -> 0
+count 2 ff 1 -> 2
+count ffffffff -> 0
+count 4 86 1 1 1 -> 4
+count 4 1 1 1 1 -> 4
+count 2 ff ff -> 2
+count 2 ff 0 -> 1
+count ffffffff -> 0
+count 0 -> 0
+count 3 1 ff 3f -> 3
+count 3 0 ff 0 -> 1
+count 2 eb 9f -> 2
+count ffffffff -> 0
+count 4 ff ff 86 1 -> 4
+count 0 -> 0
+count 4 0 1b 1 1 -> 3
+count ffffffff -> 0
+count 2 ff 1 -> 2
+count ffffffff -> 0
+count 1 1 -> 1
+count 1 1 -> 1
+count 80000000 -> 0
+count 1 ff -> 1
+count 4 1 0 5c ff -> 3
+count 3 1 0 0 -> 1
+count 0 -> 0
+count 3 0 ad df -> 2
+count 4 1 36 ff 1 -> 4
+count 80000000 -> 0
+count 2 1 ff -> 2
+count 2 0 af -> 1
+count 4 1 ff 1 ff -> 4
+count ffffffff -> 0
+count 0 -> 0
+count 4 1 0 0 c5 -> 2
+count 0 -> 0
+count 4 d3 0 ff 1 -> 3
+count 4 ff 0 86 99 -> 3
+count 3 1 ff bd -> 3
+count 2 ff 1 -> 2
+count 3 ff ff ff -> 3
+count 3 0 ff 0 -> 1
+count 3 ab ff ff -> 3
+count 0 -> 0
+count 3 1 2 1 -> 3
+count 3 1 ff 0 -> 2
+count 2 6f 1 -> 2
+count 3 1 1 0 -> 2
+count 2 ff ff -> 2
+count 2 1 1 -> 2
+count 80000000 -> 0
+count 2 6f 65 -> 2
+count 3 1 ff 1 -> 3
+count 2 1 1 -> 2
+count 3 1 ff e2 -> 3
+count 4 1 1 0 1 -> 3
+count ffffffff -> 0
+count 4 1 1 0 1 -> 3
+count 80000000 -> 0
+count 4 ff 0 0 1 -> 2
+count 2 3 1 -> 2
+count 3 1 0 1 -> 2
+count ffffffff -> 0
+count ffffffff -> 0
+count 4 ff 1 1 0 -> 3
+count 2 1 1 -> 2
+count 1 1 -> 1
+count 80000000 -> 0
+count ffffffff -> 0
+count 4 1 0 1 ff -> 3
+count 2 ff 1 -> 2
+count 4 0 0 db ff -> 2
+count ffffffff -> 0
+count 4 0 1 1 ff -> 3
+count 4 0 ae 1 0 -> 2
+count 2 1 1 -> 2
+count 1 23 -> 1
+count ffffffff -> 0
+count 3 ff 0 1 -> 2
+count 3 d0 0 1 -> 2
+count 2 9 1 -> 2
+count 2 0 0 -> 0
+count 80000000 -> 0
+count ffffffff -> 0
+count 1 ff -> 1
+count 2 1 1 -> 2
+count 3 0 1 0 -> 1
+count 4 0 0 56 1 -> 2
+count 2 0 ff -> 1
+count 0 -> 0
+count 4 ff ff d7 0 -> 3
+count 2 be ff -> 2
+count 80000000 -> 0
+count 4 d2 2f 33 ff -> 4
+count 80000000 -> 0
+count 80000000 -> 0
+count 0 -> 0
+count 2 0 1 -> 1
+count 80000000 -> 0
+count 4 0 1 0 76 -> 2
+count 2 1 ff -> 2
+count 3 db 6a 0 -> 2
+count 2 1 ff -> 2
+count 4 1 1 ff 0 -> 3
+count 4 1a 0 ff 2 -> 3
+count 4 1 0 1 ff -> 3
+count 2 ff 18 -> 2
+count 2 c9 ff -> 2
+count 1 1 -> 1
+count 1 ff -> 1
+count 4 ff ca 0 ff -> 3
+count 3 10 26 0 -> 2
+count 4 1 0 1 1 -> 3
+count 2 1 1 -> 2
+count 4 41 ff 3c ee -> 4
+count 4 1 64 0 ff -> 3
+count 2 ff ff -> 2
+count 4 0 ff 0 64 -> 2
+count 4 1 0 1 1 -> 3
+count 0 -> 0
+count 2 1 ff -> 2
+count 4 0 0 ff 1 -> 2
+count 4 0 1 0 1 -> 2
+count 80000000 -> 0
+count 0 -> 0
+count 3 1 0 ff -> 2
+count 2 ff b -> 2
+count 1 1 -> 1
+count 0 -> 0
+count 2 93 a2 -> 2
+count 4 1 1 0 0 -> 2
+count 2 0 1 -> 1
+count 4 0 20 1 1 -> 3
+count 2 2b 5b -> 2
+count 80000000 -> 0
+count 4 1 0 0 ff -> 2
+count ffffffff -> 0
+count 0 -> 0
+count 4 1 cc 1 1 -> 4
+count 1 ff -> 1
+count 4 c7 77 1 1 -> 4
+count 2 1 1 -> 2
+count 2 1 ff -> 2
+count 4 1 1 20 a2 -> 4
+count 4 ff 0 ff ff -> 3
+count 4 1 bd 0 0 -> 2
+count 2 1 1 -> 2
+count 0 -> 0
+count 3 1 1 1 -> 3
+count 2 9e 1 -> 2
+count 2 0 ff -> 1
+count ffffffff -> 0
+count 0 -> 0
+count 4 1 0 1 1 -> 3
+count 2 0 1 -> 1
+count 4 d7 5 1 29 -> 4
+count 1 2c -> 1
+count 0 -> 0
+count 1 fd -> 1
+count 0 -> 0
+count 4 d3 7e 1 7a -> 4
+count 2 1 ff -> 2
+count 4 1 0 1 dc -> 3
+count 3 0 1 1 -> 2
+count 80000000 -> 0
+count 4 1 80 0 0 -> 2
+count 1 4 -> 1
+count 4 0 1 6f 0 -> 2
+count ffffffff -> 0
+count 4 0 1 4 ff -> 3
+count ffffffff -> 0
+count ffffffff -> 0
+count 3 ff 9c ff -> 3
+count 4 be 1 ff 90 -> 4
+count 4 b9 0 0 1 -> 2
+count 3 ec 42 1 -> 3
+count 0 -> 0
+count ffffffff -> 0
+count 4 c6 ff 1 ff -> 4
+count 3 0 1 1 -> 2
+count 80000000 -> 0
+count 4 1 d0 1 ff -> 4
+count 0 -> 0
+count 3 1 73 ff -> 3
+count ffffffff -> 0
+count 4 5d 1 25 1 -> 4
+count 3 0 52 0 -> 1
+count 2 1 cf -> 2
+count 0 -> 0
+count 80000000 -> 0
+count 0 -> 0
+count 2 0 ff -> 1
+count 80000000 -> 0
+count 4 0 ff 0 ff -> 2
+count 0 -> 0
+count 0 -> 0
+count ffffffff -> 0
+count 0 -> 0
+count 3 1 ff 1 -> 3
+count 3 0 1 1 -> 2
+count 2 fe ff -> 2
+count 1 0 -> 0
+count 4 ff 1 1 1 -> 4
+count 2 20 ff -> 2
+count 4 1 ff 1 1 -> 4
+count 0 -> 0
+count 2 ff ff -> 2
+count 0 -> 0
+count 80000000 -> 0
+count ffffffff -> 0
+count 2 0 5f -> 1
+count 4 ff 60 ff ff -> 4
+count 2 93 ff -> 2
+count 80000000 -> 0
+count ffffffff -> 0
+count 80000000 -> 0
+count 2 1f ff -> 2
+count ffffffff -> 0
+count 0 -> 0
+count 0 -> 0
+count ffffffff -> 0
+count 2 ff 1 -> 2
+count ffffffff -> 0
+count 4 d2 1 1 ff -> 4
+count 4 81 d6 1 1 -> 4
+count 4 1 1 0 17 -> 3
+count 3 1 1 1 -> 3
+count 2 1 0 -> 1
+count 0 -> 0
+count 0 -> 0
+count 0 -> 0
+count 0 -> 0
+count 4 1 b6 0 1 -> 3
+count 4 0 ff ff 0 -> 2
+count 2 1 1 -> 2
+count 0 -> 0
+count 4 0 1 0 0 -> 1
+count 4 39 1 1 0 -> 3
+count 0 -> 0
+count 80000000 -> 0
+count 3 1 0 1 -> 2
+count 2 ff 1 -> 2
+count 0 -> 0
+count 1 ff -> 1
+count 80000000 -> 0
+count 0 -> 0
+count 80000000 -> 0
+count 4 ff 1 1 1 -> 4
+count 4 2c 39 1 ff -> 4
+count 4 b ff ff 1 -> 4
+count 4 1 1 1 1 -> 4
+count 1 ff -> 1
+count 4 0 1 1 ff -> 3
+count 2 1 1 -> 2
+count 4 1 0 0 ff -> 2
+count 4 ff ff 1 ff -> 4
+count 4 0 1 5b ff -> 3
+count 4 ff eb ff ff -> 4
+count 2 4a 0 -> 1
+count 80000000 -> 0
+count 2 ff ff -> 2
+count 3 5f 1 1 -> 3
+count 1 0 -> 0
+count 1 ff -> 1
+count 80000000 -> 0
+count 2 1 0 -> 1
+count 1 0 -> 0
+count ffffffff -> 0
+count 4 ff 1 1 0 -> 3
+count 4 1 ff 1 0 -> 3
+count 3 1 1 1 -> 3
+count ffffffff -> 0
+count 3 bb 60 1 -> 3
+count 80000000 -> 0
+count 2 1 ff -> 2
+count 1 0 -> 0
+count 1 0 -> 0
+count 0 -> 0
+count 1 dd -> 1
+count 3 5b 0 1 -> 2
+count 3 0 1 0 -> 1
+count ffffffff -> 0
+count 3 0 0 1 -> 1
+count 1 1 -> 1
+count 1 1 -> 1
+count 4 1 ff ff 1 -> 4
+count 1 ff -> 1
+count 0 -> 0
+count 3 1 ff 1 -> 3
+count 4 1 1 a0 c6 -> 4
+count 4 1 1 90 1 -> 4
+count 3 0 0 37 -> 1
+count 0 -> 0
+count 1 1 -> 1
+count 2 0 ff -> 1
+count 4 1 1 0 0 -> 2
+count 3 1 0 1 -> 2
+count 1 0 -> 0
+count 4 1 1 ff 0 -> 3
+count 2 ff 0 -> 1
+count 1 1 -> 1
+count 2 0 0 -> 0
+count 2 62 ff -> 2
+count 2 1 b2 -> 2
+count 4 94 0 0 0 -> 1
+count 3 0 e6 0 -> 1
+count 4 1 0 df ff -> 3
+count 2 1 1 -> 2
+count 0 -> 0
+count 4 ff 0 0 1 -> 2
+count 3 9 1 1 -> 3
+count 4 ff 81 e2 ff -> 4
+count ffffffff -> 0
+count ffffffff -> 0
+count 80000000 -> 0
+count 4 0 bf ff d9 -> 3
+count 2 ff ff -> 2
+count 1 6c -> 1
+count 2 1 1 -> 2
+count 3 1 1 ff -> 3
+count 2 1 17 -> 2
+count 2 ff 1 -> 2
+count ffffffff -> 0
+count 4 1 0 1 1 -> 3
+count 80000000 -> 0
+count 1 1 -> 1
+count 4 1 1 ff ff -> 4
+count 4 1 0 ff ff -> 3
+count ffffffff -> 0
+count 4 80 1 35 52 -> 4
+count 3 ff 1 1 -> 3
+count 0 -> 0
+count 4 1 1 1 0 -> 3
+count 0 -> 0
+count ffffffff -> 0
+count 4 ff 68 1 1 -> 4
+count 4 0 53 1 59 -> 3
+count 80000000 -> 0
+count 0 -> 0
+count 80000000 -> 0
+count 4 ff 1 7 1 -> 4
+count 4 ff 0 ff f2 -> 3
+count 3 0 1 1 -> 2
+count 4 1 1 ff 1 -> 4
+count 2 78 1 -> 2
+count 2 ff 1 -> 2
+count 1 1 -> 1
+count 2 ff 1 -> 2
+count ffffffff -> 0
+count 80000000 -> 0
+count 3 0 ff ff -> 2
+count 4 1 0 1b 1 -> 3
+count 2 1 35 -> 2
+count 2 0 1 -> 1
+count 80000000 -> 0
+count 4 1 0 0 1 -> 2
+count 80000000 -> 0
+count 80000000 -> 0
+count ffffffff -> 0
+count 4 0 ff 1 1 -> 3
+count 2 1 a5 -> 2
+count ffffffff -> 0
+count 3 ff 1 1 -> 3
+count 0 -> 0
+count 4 4d f5 0 ff -> 3
+count 0 -> 0
+count 3 1 1 0 -> 2
+count 4 1 d5 ff ff -> 4
+count 1 0 -> 0
+count 3 1 0 1 -> 2
+count 3 1 1 1 -> 3
+count 2 1 0 -> 1
+count 3 14 0 0 -> 1
+count 0 -> 0
+count 4 0 ff ff ff -> 3
+count 3 49 1 1 -> 3
+count 4 0 0 0 1 -> 1
+count 80000000 -> 0
+count 0 -> 0
+count 80000000 -> 0
+count 3 1 0 1 -> 2
+count 4 1 1 49 57 -> 4
+count 1 1 -> 1
+count 4 ff f6 5d 0 -> 3
+count 0 -> 0
+count 3 ff 81 bc -> 3
+count 1 1 -> 1
+count 2 66 3a -> 2
+count 0 -> 0
+count 4 a6 1 ff 1 -> 4
+count 4 1 1 1 1 -> 4
+count 0 -> 0
+count 2 ff 1 -> 2
+count 4 f5 1 1 0 -> 3
+count 4 1 b9 e0 1 -> 4
+count 2 1 ff -> 2
+count 4 1 ff ff 1 -> 4
+count 2 ff 0 -> 1
+count 2 1 ff -> 2
+count 4 8d 1e ff 1d -> 4
+count 3 ff ec 1 -> 3
+count 2 ff 1 -> 2
+count 2 ff 1 -> 2
+count 0 -> 0
+count ffffffff -> 0
+count 80000000 -> 0
+count 2 1 0 -> 1
+count ffffffff -> 0
+count 0 -> 0
+count 4 1 ff ff 1 -> 4
+count 3 7a ff d2 -> 3
+count 1 3d -> 1
+count 80000000 -> 0
+count 3 1 0 ff -> 2
+count 3 1 0 0 -> 1
+count 80000000 -> 0
+count ffffffff -> 0
+count 3 1 1 ff -> 3
+count 4 ff 1 17 1 -> 4
+count 80000000 -> 0
+count 2 ff c9 -> 2
+count 3 0 ff 0 -> 1
+count 80000000 -> 0
+count 3 0 1 1 -> 2
+count 4 1 ff 1 1 -> 4
+count 1 1 -> 1
+count 3 1 0 2f -> 2
+count 1 df -> 1
+count 2 1 1 -> 2
+count 2 ff 0 -> 1
+count 80000000 -> 0
+count 0 -> 0
+count 1 0 -> 0
+count 4 1 c6 1 1 -> 4
+count 2 ff ff -> 2
+count 4 4 1 ff ff -> 4
+count 4 1 0 1 1 -> 3
+count ffffffff -> 0
+count 0 -> 0
+count 2 d3 1 -> 2
+count 2 0 1 -> 1
+count 3 0 0 0 -> 0
+count ffffffff -> 0
+count 1 ff -> 1
+count 1 ff -> 1
+count 4 1 4f 0 1 -> 3
+count 4 ff 1 2d 56 -> 4
+count ffffffff -> 0
+count 3 fd a7 1 -> 3
+count 4 1 ff 0 66 -> 3
+count 2 1 1 -> 2
+count 2 4e 1 -> 2
+count 1 0 -> 0
+count 4 1 1 ff ff -> 4
+count 4 ff 0 7e ff -> 3
+count ffffffff -> 0
+count 80000000 -> 0
+count 2 ff 1 -> 2
+count ffffffff -> 0
+count 4 ff ff ff 1 -> 4
+count 0 -> 0
+count 1 1 -> 1
+count 2 1 ff -> 2
+count 80000000 -> 0
+count 1 8f -> 1
+count 80000000 -> 0
+count 4 1 96 51 1 -> 4
+count 0 -> 0
+count 2 0 ff -> 1
+count 0 -> 0
+count 2 0 1 -> 1
+count 2 1 0 -> 1
+count 4 1 ff ff 1 -> 4
+count 0 -> 0
+count 0 -> 0
+count 3 3f 1 1 -> 3
+count 1 ff -> 1
+count 2 1 1 -> 2
+count ffffffff -> 0
+count ffffffff -> 0
+count 80000000 -> 0
+count 0 -> 0
+count 80000000 -> 0
+count 3 1 ff ff -> 3
+count 4 6b 1 ff 0 -> 3
+count 2 0 1 -> 1
+count 1 0 -> 0
+count 80000000 -> 0
+count 80000000 -> 0
+count 4 ff 1 1 0 -> 3
+count 1 ff -> 1
+count 4 1 0 1 20 -> 3
+count 2 f0 71 -> 2
+count 2 1 1 -> 2
+count 4 0 ff 0 0 -> 1
+count 2 1 1 -> 2
+count 0 -> 0
+count 4 ff ff 1 0 -> 3
+count 4 1 ff 1 0 -> 3
+count 4 1 ff 1 1 -> 4
+count 2 0 1 -> 1
+count 2 2 49 -> 2
+count 1 5e -> 1
+count 1 aa -> 1
+count 1 63 -> 1
+count 0 -> 0
+count 3 0 1e 1 -> 2
+count 4 ff 1 1 1 -> 4
+count 4 1 46 1 1 -> 4
+count 1 1 -> 1
+count 2 e8 1 -> 2
+count 80000000 -> 0
+count 1 71 -> 1
+count ffffffff -> 0
+count 4 1 0 0 1 -> 2
+count ffffffff -> 0
+count 0 -> 0
+count ffffffff -> 0
+count ffffffff -> 0
+count 4 1 1 1 1 -> 4
+count 4 7e ff 1 0 -> 3
+count 2 ff 0 -> 1
+count 1 40 -> 1
+count 80000000 -> 0
+count 2 d0 1 -> 2
+count 4 1 3f d9 1 -> 4
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 80000000 80000000 -> 1
+nitro 7fc00000 3d6461bc -> 0
+nitro 0 80000000 -> 1
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 80000000 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro bf327842 80000000 -> 0
+nitro 3f800000 beb5c7f0 -> 0
+nitro 0 0 -> 1
+nitro 7f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 3f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 80000000 800116c2 -> 0
+nitro 3f6628ab 80000000 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 0 -> 0
+nitro 80000000 0 -> 1
+nitro 3f56b27d 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 3ecb278f 0 -> 0
+nitro 116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 800116c2 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 7fc00000 7fc00000 -> 0
+nitro 800116c2 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 3efc60d5 80000000 -> 0
+nitro bf7b8e88 bf7b8e88 -> 1
+nitro da24260 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 800116c2 0 -> 0
+nitro 3911c1b3 0 -> 0
+nitro 7f800000 80000000 -> 0
+nitro 7f800000 0 -> 0
+nitro 116c2 80000000 -> 0
+nitro 7fc00000 80000000 -> 0
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 7fc00000 0 -> 0
+nitro bf4d8d68 0 -> 0
+nitro 0 0 -> 1
+nitro be8d5615 3f1c18b9 -> 0
+nitro 3f49ef77 0 -> 0
+nitro 116c2 116c2 -> 1
+nitro 3f800000 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 7f800000 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro bf0cf5c5 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 3efdaafe 0 -> 0
+nitro 3f800000 0 -> 0
+nitro da24260 da24260 -> 1
+nitro bdf05867 0 -> 0
+nitro 3f800000 bf16f883 -> 0
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 7f800000 7fc00000 -> 0
+nitro 7f800000 7f800000 -> 1
+nitro 7f800000 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro da24260 0 -> 0
+nitro 0 0 -> 1
+nitro 116c2 7f800000 -> 0
+nitro 7fc00000 7fc00000 -> 0
+nitro bf4b01ac bf4b01ac -> 1
+nitro 3f800000 80000000 -> 0
+nitro 7fc00000 0 -> 0
+nitro 3f55027d 7fc00000 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 0 -> 0
+nitro 7f800000 0 -> 0
+nitro da24260 0 -> 0
+nitro 3ea69fcd 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 7f800000 0 -> 0
+nitro 3f6c6482 3f6c6482 -> 1
+nitro 3f1230bd 7f800000 -> 0
+nitro 7fc00000 0 -> 0
+nitro 80000000 116c2 -> 0
+nitro 800116c2 80000000 -> 0
+nitro 3f7e55b4 0 -> 0
+nitro da24260 da24260 -> 1
+nitro 3f800000 0 -> 0
+nitro 3d6bd283 0 -> 0
+nitro 7fc00000 80000000 -> 0
+nitro 7f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 3f1e0c1e 116c2 -> 0
+nitro 7fc00000 0 -> 0
+nitro 0 0 -> 1
+nitro bda9588d 80000000 -> 0
+nitro da24260 0 -> 0
+nitro 7f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 3f800000 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 0 0 -> 1
+nitro 3f11f5f9 0 -> 0
+nitro 0 0 -> 1
+nitro 3f800000 80000000 -> 0
+nitro 80000000 0 -> 1
+nitro 116c2 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro bf76411c bf76411c -> 1
+nitro bd5cbf87 da24260 -> 0
+nitro 3f800000 0 -> 0
+nitro 3f495592 80000000 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 3f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 3f47eb19 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 3f4cb7cc 0 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 80000000 -> 0
+nitro 3e39ed44 800116c2 -> 0
+nitro 80000000 bed95345 -> 0
+nitro 3f800000 0 -> 0
+nitro 800116c2 80000000 -> 0
+nitro 80000000 80000000 -> 1
+nitro 800116c2 0 -> 0
+nitro 80000000 0 -> 1
+nitro 3e6f6f57 0 -> 0
+nitro 80000000 0 -> 1
+nitro 3f800000 0 -> 0
+nitro 3f4be473 0 -> 0
+nitro 3f357121 0 -> 0
+nitro 3ea30cf2 0 -> 0
+nitro 3f11d8bd 0 -> 0
+nitro 0 0 -> 1
+nitro bd359a91 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 3ebed978 0 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 80000000 -> 0
+nitro 0 0 -> 1
+nitro 7f800000 0 -> 0
+nitro 800116c2 80000000 -> 0
+nitro 80000000 80000000 -> 1
+nitro 116c2 0 -> 0
+nitro bf22b9f8 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 3f6bf24d 3ee71a10 -> 0
+nitro 7f800000 0 -> 0
+nitro 116c2 bf1fc6a5 -> 0
+nitro 800116c2 7f800000 -> 0
+nitro 80000000 0 -> 1
+nitro da24260 80000000 -> 0
+nitro 0 0 -> 1
+nitro 3d3fa4ad bdcb08f5 -> 0
+nitro 116c2 0 -> 0
+nitro 3f800000 80000000 -> 0
+nitro 116c2 3f800000 -> 0
+nitro 7fc00000 0 -> 0
+nitro 80000000 0 -> 1
+nitro da24260 0 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro be91364f 0 -> 0
+nitro 116c2 bd48c5f1 -> 0
+nitro 3f715711 7fc00000 -> 0
+nitro 0 0 -> 1
+nitro 116c2 0 -> 0
+nitro 7f800000 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 7fc00000 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 3f2172cb 0 -> 0
+nitro 0 0 -> 1
+nitro 3e4ccc65 0 -> 0
+nitro 0 0 -> 1
+nitro da24260 0 -> 0
+nitro 0 0 -> 1
+nitro bf54f5a0 0 -> 0
+nitro 7f800000 0 -> 0
+nitro da24260 800116c2 -> 0
+nitro bf2c03a1 0 -> 0
+nitro 0 0 -> 1
+nitro da24260 0 -> 0
+nitro 3f499dc2 0 -> 0
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro bf72a9b3 0 -> 0
+nitro bef4bad7 80000000 -> 0
+nitro 7fc00000 0 -> 0
+nitro bedb099c 0 -> 0
+nitro 3f800000 80000000 -> 0
+nitro 3d9ba38b 0 -> 0
+nitro 3f800000 da24260 -> 0
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro bf00c4bc 0 -> 0
+nitro 0 0 -> 1
+nitro 7f800000 80000000 -> 0
+nitro 3f10cd7a 3f800000 -> 0
+nitro bec4b638 0 -> 0
+nitro 7f800000 0 -> 0
+nitro 3f800000 0 -> 0
+nitro be94d0ec 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 3ed6c30a 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 0 0 -> 1
+nitro 7f800000 0 -> 0
+nitro da24260 0 -> 0
+nitro 80000000 116c2 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 3e62bd7c 3e62bd7c -> 1
+nitro 7fc00000 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 7f800000 7f800000 -> 1
+nitro 80000000 80000000 -> 1
+nitro 3f800000 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 3d15f76a 0 -> 0
+nitro beaaadb5 80000000 -> 0
+nitro 3f55b3fa 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 7fc00000 0 -> 0
+nitro 116c2 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 7fc00000 bf4e11c1 -> 0
+nitro 116c2 0 -> 0
+nitro 3f712758 80000000 -> 0
+nitro 0 0 -> 1
+nitro 0 80000000 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 3f800000 80000000 -> 0
+nitro 80000000 80000000 -> 1
+nitro 3f800000 0 -> 0
+nitro 3f7e6dad 80000000 -> 0
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 800116c2 80000000 -> 0
+nitro 3ead4b2f 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 3ddb9a62 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 80000000 0 -> 1
+nitro 0 0 -> 1
+nitro 3f6550df 7fc00000 -> 0
+nitro 0 0 -> 1
+nitro 3f647710 3f800000 -> 0
+nitro 80000000 80000000 -> 1
+nitro bead3f0e 7f800000 -> 0
+nitro 3f3e2a2b 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 7fc00000 80000000 -> 0
+nitro 3f1eaa01 0 -> 0
+nitro 116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro be678d45 0 -> 0
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 3f800000 0 -> 0
+nitro 7fc00000 7fc00000 -> 0
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 3f800000 3f800000 -> 1
+nitro 3f800000 80000000 -> 0
+nitro 0 7fc00000 -> 0
+nitro 7fc00000 0 -> 0
+nitro bdc13859 3f800000 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 7fc00000 80000000 -> 0
+nitro 80000000 da24260 -> 0
+nitro 3f2f2502 0 -> 0
+nitro bf2912db 0 -> 0
+nitro 7f800000 0 -> 0
+nitro 3ebaccde 0 -> 0
+nitro da24260 80000000 -> 0
+nitro 116c2 bf148598 -> 0
+nitro 3f800000 0 -> 0
+nitro 80000000 0 -> 1
+nitro 0 3f4a4d05 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 3f53ed72 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 7f800000 0 -> 0
+nitro da24260 da24260 -> 1
+nitro 3f787bca 80000000 -> 0
+nitro 3f74adf7 80000000 -> 0
+nitro 7f800000 0 -> 0
+nitro da24260 7fc00000 -> 0
+nitro 7f800000 80000000 -> 0
+nitro 7fc00000 0 -> 0
+nitro 7f800000 0 -> 0
+nitro da24260 80000000 -> 0
+nitro 3f5e86bd 0 -> 0
+nitro 0 0 -> 1
+nitro 116c2 0 -> 0
+nitro 3f2df1f5 3db2ef42 -> 0
+nitro 116c2 116c2 -> 1
+nitro 116c2 0 -> 0
+nitro 80000000 0 -> 1
+nitro 0 0 -> 1
+nitro 7f800000 7f800000 -> 1
+nitro bf5cc703 0 -> 0
+nitro 0 0 -> 1
+nitro 3f3fcdab 3e598125 -> 0
+nitro 0 0 -> 1
+nitro 3f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 7fc00000 80000000 -> 0
+nitro 0 0 -> 1
+nitro 7fc00000 0 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 0 -> 0
+nitro 7f800000 0 -> 0
+nitro 800116c2 80000000 -> 0
+nitro 116c2 0 -> 0
+nitro 80000000 0 -> 1
+nitro 7fc00000 0 -> 0
+nitro 7f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 7fc00000 80000000 -> 0
+nitro 0 0 -> 1
+nitro 0 80000000 -> 1
+nitro da24260 0 -> 0
+nitro da24260 0 -> 0
+nitro 7f800000 80000000 -> 0
+nitro 0 0 -> 1
+nitro da24260 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 3f796894 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 7fc00000 0 -> 0
+nitro 7f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 7f800000 0 -> 0
+nitro 3ee62403 0 -> 0
+nitro 3ee947ed 0 -> 0
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 800116c2 bf71e1c4 -> 0
+nitro 800116c2 0 -> 0
+nitro 7f800000 80000000 -> 0
+nitro 80000000 3f074e88 -> 0
+nitro 800116c2 800116c2 -> 1
+nitro 80000000 80000000 -> 1
+nitro 116c2 116c2 -> 1
+nitro 0 0 -> 1
+nitro 7f800000 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 0 0 -> 1
+nitro da24260 0 -> 0
+nitro 80000000 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 116c2 116c2 -> 1
+nitro 80000000 80000000 -> 1
+nitro 116c2 80000000 -> 0
+nitro 80000000 80000000 -> 1
+nitro 80000000 800116c2 -> 0
+nitro 116c2 0 -> 0
+nitro da24260 0 -> 0
+nitro 0 0 -> 1
+nitro bf107adc 0 -> 0
+nitro 0 0 -> 1
+nitro 7fc00000 0 -> 0
+nitro 3d2fe802 da24260 -> 0
+nitro da24260 80000000 -> 0
+nitro 0 0 -> 1
+nitro 3f7b7546 0 -> 0
+nitro 0 0 -> 1
+nitro 7fc00000 0 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 7f800000 da24260 -> 0
+nitro 3f2ad138 800116c2 -> 0
+nitro da24260 3e26ecac -> 0
+nitro bf10df4a 0 -> 0
+nitro 3e3de5c1 bf7942e9 -> 0
+nitro 7fc00000 116c2 -> 0
+nitro 7f800000 0 -> 0
+nitro da24260 0 -> 0
+nitro 80000000 116c2 -> 0
+nitro 7f800000 80000000 -> 0
+nitro 116c2 80000000 -> 0
+nitro 7fc00000 3f23f182 -> 0
+nitro 80000000 80000000 -> 1
+nitro 7fc00000 0 -> 0
+nitro 116c2 0 -> 0
+nitro da24260 0 -> 0
+nitro 3e9c2bad 0 -> 0
+nitro da24260 0 -> 0
+nitro 7fc00000 3f800000 -> 0
+nitro 7fc00000 0 -> 0
+nitro da24260 0 -> 0
+nitro 0 0 -> 1
+nitro 116c2 0 -> 0
+nitro da24260 800116c2 -> 0
+nitro 7f800000 80000000 -> 0
+nitro 3f800000 80000000 -> 0
+nitro 80000000 80000000 -> 1
+nitro 800116c2 80000000 -> 0
+nitro 3e116143 3e116143 -> 1
+nitro 800116c2 7fc00000 -> 0
+nitro bec3afcf 0 -> 0
+nitro 0 0 -> 1
+nitro bf04d1a6 80000000 -> 0
+nitro 7f800000 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro da24260 0 -> 0
+nitro 3f623b4b 0 -> 0
+nitro da24260 7fc00000 -> 0
+nitro bf63ff52 800116c2 -> 0
+nitro 80000000 80000000 -> 1
+nitro be0484d0 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 7fc00000 da24260 -> 0
+nitro 80000000 0 -> 1
+nitro 7f800000 da24260 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 7fc00000 80000000 -> 0
+nitro da24260 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 3f800000 3f800000 -> 1
+nitro be694bbf 0 -> 0
+nitro bf4b0031 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 3f800000 0 -> 0
+nitro 3f353e5a 0 -> 0
+nitro 3f1e8c0e 3f1e8c0e -> 1
+nitro 800116c2 0 -> 0
+nitro 0 bf786302 -> 0
+nitro 0 80000000 -> 1
+nitro 3f48ac42 0 -> 0
+nitro bf449e4d da24260 -> 0
+nitro 7fc00000 7fc00000 -> 0
+nitro 3f01bb97 3eaac44e -> 0
+nitro 0 0 -> 1
+nitro 116c2 116c2 -> 1
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 7fc00000 80000000 -> 0
+nitro 7fc00000 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro da24260 80000000 -> 0
+nitro 3e17b009 0 -> 0
+nitro 0 0 -> 1
+nitro 80000000 0 -> 1
+nitro 80000000 0 -> 1
+nitro 3f31e9b4 0 -> 0
+nitro 800116c2 800116c2 -> 1
+nitro 116c2 80000000 -> 0
+nitro 80000000 0 -> 1
+nitro 3f5bd3bf 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro da24260 0 -> 0
+nitro da24260 0 -> 0
+nitro da24260 80000000 -> 0
+nitro 7f800000 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 3e24a7e2 3e24a7e2 -> 1
+nitro 3f800000 0 -> 0
+nitro 800116c2 80000000 -> 0
+nitro 80000000 80000000 -> 1
+nitro da24260 da24260 -> 1
+nitro 0 0 -> 1
+nitro 80000000 0 -> 1
+nitro 116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 80000000 0 -> 1
+nitro 3f800000 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 0 0 -> 1
+nitro 7f800000 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro bf1d5a8b 7f800000 -> 0
+nitro 80000000 0 -> 1
+nitro 3f800000 3f800000 -> 1
+nitro 0 0 -> 1
+nitro 3f800000 0 -> 0
+nitro 7f800000 0 -> 0
+nitro 3f4b598e 0 -> 0
+nitro 7f800000 0 -> 0
+nitro 3f800000 bf37ae0b -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 116c2 3e920cfb -> 0
+nitro 116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 116c2 116c2 -> 1
+nitro 7fc00000 0 -> 0
+nitro bf52bc6f 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 3f6d790f 80000000 -> 0
+nitro 7f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 3f800000 0 -> 0
+nitro da24260 0 -> 0
+nitro 3f800000 0 -> 0
+nitro bf42b743 80000000 -> 0
+nitro 800116c2 80000000 -> 0
+nitro 7f800000 3f679ddc -> 0
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 7f800000 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 3dd46524 80000000 -> 0
+nitro 80000000 80000000 -> 1
+nitro 3f19e090 3f19e090 -> 1
+nitro 3e8ca601 0 -> 0
+nitro bf177e87 da24260 -> 0
+nitro 7fc00000 0 -> 0
+nitro 0 0 -> 1
+nitro 7fc00000 80000000 -> 0
+nitro 116c2 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 3f800000 3f800000 -> 1
+nitro 800116c2 0 -> 0
+nitro 7f800000 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 800116c2 80000000 -> 0
+nitro 800116c2 0 -> 0
+nitro bf7ad1ec 0 -> 0
+nitro 7f800000 3f800000 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 3e7b3a0d 80000000 -> 0
+nitro 116c2 bf27d2c1 -> 0
+nitro 3eaecc7a 3eaecc7a -> 1
+nitro 3f542503 0 -> 0
+nitro da24260 0 -> 0
+nitro 3f2cacca 0 -> 0
+nitro 80000000 0 -> 1
+nitro 116c2 80000000 -> 0
+nitro 3f800000 0 -> 0
+nitro 3f00bf17 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 7f800000 80000000 -> 0
+nitro 116c2 80000000 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 0 -> 0
+nitro 7fc00000 7fc00000 -> 0
+nitro 0 0 -> 1
+nitro 116c2 0 -> 0
+nitro bec3644d 0 -> 0
+nitro 3f800000 0 -> 0
+nitro be86707d 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 3f800000 80000000 -> 0
+nitro da24260 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 7fc00000 80000000 -> 0
+nitro 3f2dbbd6 3f2dbbd6 -> 1
+nitro 80000000 0 -> 1
+nitro 0 0 -> 1
+nitro 116c2 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 3f127fe6 80000000 -> 0
+nitro 0 0 -> 1
+nitro 3ee193cc 0 -> 0
+nitro be9b21b6 80000000 -> 0
+nitro da24260 0 -> 0
+nitro 3f800000 3f800000 -> 1
+nitro 0 0 -> 1
+nitro 80000000 3e185358 -> 0
+nitro 116c2 116c2 -> 1
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 3f800000 0 -> 0
+nitro 3eb5406a 3e14aeef -> 0
+nitro 800116c2 3ea4ed7f -> 0
+nitro 0 0 -> 1
+nitro 800116c2 bf4453a0 -> 0
+nitro bbcfadf2 80000000 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 80000000 0 -> 1
+nitro 3f800000 80000000 -> 0
+nitro 7f800000 0 -> 0
+nitro 3ee11449 80000000 -> 0
+nitro 3f800000 3ef5986a -> 0
+nitro 3f448089 80000000 -> 0
+nitro 7fc00000 0 -> 0
+nitro 0 0 -> 1
+nitro 3f507f00 0 -> 0
+nitro 3ca93f34 80000000 -> 0
+nitro 0 0 -> 1
+nitro 116c2 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 3e60e9e9 0 -> 0
+nitro 0 0 -> 1
+nitro 7f800000 7f800000 -> 1
+nitro bf299dde 0 -> 0
+nitro 7f800000 80000000 -> 0
+nitro 80000000 80000000 -> 1
+nitro 7fc00000 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 116c2 116c2 -> 1
+nitro da24260 da24260 -> 1
+nitro 7f800000 80000000 -> 0
+nitro 3f800000 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 3ee3e6c9 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 3df577e6 0 -> 0
+nitro 7f800000 0 -> 0
+nitro 3de840f1 0 -> 0
+nitro 7f800000 3e9b1bf1 -> 0
+nitro 7f800000 0 -> 0
+nitro 3cc46596 0 -> 0
+nitro 3f5e476c 0 -> 0
+nitro 116c2 0 -> 0
+nitro 3f800000 80000000 -> 0
+nitro 0 0 -> 1
+nitro 3f800000 bf2e5e7f -> 0
+nitro bf4222ed 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 3f20da1e 0 -> 0
+nitro da24260 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 7f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 800116c2 3f800000 -> 0
+nitro 800116c2 80000000 -> 0
+nitro da24260 0 -> 0
+nitro 3f800000 3f06e163 -> 0
+nitro 3d02bf30 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 116c2 0 -> 0
+nitro 7f800000 80000000 -> 0
+nitro 0 0 -> 1
+nitro 3f7d6a4d 0 -> 0
+nitro 116c2 3f372e05 -> 0
+nitro 0 0 -> 1
+nitro be0994fa 0 -> 0
+nitro be72d0a9 3e5e7110 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 80000000 -> 0
+nitro 80000000 0 -> 1
+nitro beffd12c 0 -> 0
+nitro 116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 7f800000 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 7fc00000 bf7635f5 -> 0
+nitro 116c2 0 -> 0
+nitro 7f800000 3f1dd905 -> 0
+nitro 7fc00000 80000000 -> 0
+nitro bf556517 0 -> 0
+nitro bf452c4a 80000000 -> 0
+nitro 0 0 -> 1
+nitro 80000000 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 3f637a8e 0 -> 0
+nitro 7fc00000 80000000 -> 0
+nitro 7fc00000 0 -> 0
+nitro 3e599c6e 80000000 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro bf3e1891 80000000 -> 0
+nitro 3f800000 3f800000 -> 1
+nitro 3f800000 80000000 -> 0
+nitro 0 0 -> 1
+nitro 7f800000 80000000 -> 0
+nitro 3f800000 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 7fc00000 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 3f800000 80000000 -> 0
+nitro da24260 0 -> 0
+nitro 3f800000 0 -> 0
+nitro da24260 0 -> 0
+nitro da24260 da24260 -> 1
+nitro da24260 3e63a446 -> 0
+nitro 116c2 80000000 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro da24260 0 -> 0
+nitro 0 0 -> 1
+nitro 7f800000 7f800000 -> 1
+nitro 7fc00000 80000000 -> 0
+nitro bed1afb7 0 -> 0
+nitro 116c2 116c2 -> 1
+nitro 3f800000 80000000 -> 0
+nitro 0 0 -> 1
+nitro da24260 0 -> 0
+nitro 116c2 3f3c276a -> 0
+nitro 7fc00000 0 -> 0
+nitro 0 80000000 -> 1
+nitro 3f084fa5 0 -> 0
+nitro bea00014 0 -> 0
+nitro 800116c2 3f0529b6 -> 0
+nitro 0 0 -> 1
+nitro 7fc00000 bf0bf46c -> 0
+nitro 3d1d0cd9 0 -> 0
+nitro da24260 0 -> 0
+nitro 800116c2 800116c2 -> 1
+nitro 7f800000 80000000 -> 0
+nitro da24260 bf089e67 -> 0
+nitro 116c2 3f800000 -> 0
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 800116c2 3f800000 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 3f178702 7fc00000 -> 0
+nitro 3f12263b 0 -> 0
+nitro da24260 0 -> 0
+nitro 116c2 80000000 -> 0
+nitro 0 0 -> 1
+nitro 80000000 0 -> 1
+nitro 0 0 -> 1
+nitro 3f800000 800116c2 -> 0
+nitro 116c2 0 -> 0
+nitro 7fc00000 800116c2 -> 0
+nitro 7f800000 0 -> 0
+nitro bf2c5abb 3f291053 -> 0
+nitro 3ef4bade 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 0 0 -> 1
+nitro bdd553d0 80000000 -> 0
+nitro da24260 0 -> 0
+nitro 7f800000 3f34d8bb -> 0
+nitro bf42e7cb 80000000 -> 0
+nitro 3cdae00c 0 -> 0
+nitro 0 0 -> 1
+nitro 3f800000 0 -> 0
+nitro 3f77650a 0 -> 0
+nitro 7fc00000 80000000 -> 0
+nitro 0 80000000 -> 1
+nitro 7fc00000 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 116c2 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 116c2 116c2 -> 1
+nitro 7fc00000 0 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 80000000 -> 0
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 3f800000 0 -> 0
+nitro 3df4302d 0 -> 0
+nitro 3f800000 80000000 -> 0
+nitro da24260 0 -> 0
+nitro bee7fa17 0 -> 0
+nitro 0 0 -> 1
+nitro 3ebc7991 0 -> 0
+nitro 7fc00000 80000000 -> 0
+nitro 7fc00000 0 -> 0
+nitro 80000000 0 -> 1
+nitro 7fc00000 0 -> 0
+nitro 0 0 -> 1
+nitro 3f67efa2 80000000 -> 0
+nitro 0 0 -> 1
+nitro 7f800000 80000000 -> 0
+nitro 0 0 -> 1
+nitro 3f742794 0 -> 0
+nitro da24260 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 7fc00000 0 -> 0
+nitro 0 80000000 -> 1
+nitro 7f800000 0 -> 0
+nitro 3f3c09db 80000000 -> 0
+nitro 7f800000 0 -> 0
+nitro 7f800000 0 -> 0
+nitro bf380d56 80000000 -> 0
+nitro da24260 80000000 -> 0
+nitro 0 0 -> 1
+nitro 3f007984 0 -> 0
+nitro 3f61e0c8 80000000 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 7f800000 0 -> 0
+nitro da24260 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 800116c2 800116c2 -> 1
+nitro 116c2 116c2 -> 1
+nitro 3f800000 80000000 -> 0
+nitro 0 0 -> 1
+nitro 7fc00000 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 80000000 -> 0
+nitro 80000000 80000000 -> 1
+nitro 800116c2 80000000 -> 0
+nitro 800116c2 0 -> 0
+nitro 0 80000000 -> 1
+nitro 800116c2 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 7f800000 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 3f617aca 0 -> 0
+nitro beea92c2 7fc00000 -> 0
+nitro 3de03a63 bf55abc3 -> 0
+nitro 0 0 -> 1
+nitro 3e8f4455 0 -> 0
+nitro 116c2 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro da24260 bca375a5 -> 0
+nitro 7f800000 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 3f800000 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 3f800000 0 -> 0
+nitro 7fc00000 80000000 -> 0
+nitro 3f69733c 0 -> 0
+nitro 0 0 -> 1
+nitro 7fc00000 80000000 -> 0
+nitro 0 0 -> 1
+nitro 7f800000 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 80000000 0 -> 1
+nitro da24260 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 7fc00000 80000000 -> 0
+nitro 3eb551e2 0 -> 0
+nitro 0 0 -> 1
+nitro 116c2 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 3f800000 0 -> 0
+nitro 116c2 0 -> 0
+nitro da24260 0 -> 0
+nitro 3f395a70 0 -> 0
+nitro 0 116c2 -> 0
+nitro 80000000 80000000 -> 1
+nitro 3e988de3 0 -> 0
+nitro 800116c2 3eaca044 -> 0
+nitro 3f367e6c 0 -> 0
+nitro 3f800000 3f800000 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro da24260 0 -> 0
+nitro 116c2 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 0 116c2 -> 0
+nitro 0 0 -> 1
+nitro 3ed4a71c 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 3f800000 0 -> 0
+nitro 3f800000 0 -> 0
+nitro bf1404aa 0 -> 0
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro da24260 da24260 -> 1
+nitro 80000000 80000000 -> 1
+nitro 800116c2 116c2 -> 0
+nitro 3f800000 3f800000 -> 1
+nitro 80000000 0 -> 1
+nitro 0 0 -> 1
+nitro 116c2 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 7f800000 7f800000 -> 1
+nitro be778a1e 0 -> 0
+nitro 0 0 -> 1
+nitro 7f800000 0 -> 0
+nitro 3eb198ca 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 800116c2 0 -> 0
+nitro bf3daf47 3f74b9fa -> 0
+nitro bd2613cf 7f800000 -> 0
+nitro 116c2 bf28a175 -> 0
+nitro bf66cab5 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 0 80000000 -> 1
+nitro 0 3f1c0da5 -> 0
+nitro 116c2 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro bf569a2e 80000000 -> 0
+nitro 0 0 -> 1
+nitro 7fc00000 7fc00000 -> 0
+nitro 80000000 80000000 -> 1
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro bf537c46 116c2 -> 0
+nitro 0 0 -> 1
+nitro 80000000 0 -> 1
+nitro 116c2 3e3ce5ff -> 0
+nitro 0 0 -> 1
+nitro 0 3f800000 -> 0
+nitro 0 0 -> 1
+nitro 3f800000 3f800000 -> 1
+nitro 7fc00000 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 3f7cd62f 0 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 0 -> 0
+nitro 3c886a18 80000000 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 3d1fa771 0 -> 0
+nitro 3f800000 3f800000 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 7fc00000 800116c2 -> 0
+nitro be8225b7 80000000 -> 0
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 3f5e13cd 0 -> 0
+nitro 0 0 -> 1
+nitro 7fc00000 80000000 -> 0
+nitro 800116c2 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 800116c2 80000000 -> 0
+nitro da24260 80000000 -> 0
+nitro 116c2 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 7f800000 0 -> 0
+nitro 116c2 0 -> 0
+nitro 3f18bf21 0 -> 0
+nitro 7fc00000 80000000 -> 0
+nitro 0 80000000 -> 1
+nitro 3f617e33 0 -> 0
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 116c2 80000000 -> 0
+nitro da24260 da24260 -> 1
+nitro da24260 7fc00000 -> 0
+nitro 80000000 0 -> 1
+nitro 3ede8717 800116c2 -> 0
+nitro 3f800000 80000000 -> 0
+nitro bf6f0d62 80000000 -> 0
+nitro 3e019f0b 0 -> 0
+nitro 116c2 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 7fc00000 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 800116c2 80000000 -> 0
+nitro 80000000 80000000 -> 1
+nitro 800116c2 800116c2 -> 1
+nitro 80000000 0 -> 1
+nitro 3f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 7f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 3f800000 0 -> 0
+nitro 3f215eb9 80000000 -> 0
+nitro 3f17002c 80000000 -> 0
+nitro 80000000 80000000 -> 1
+nitro 116c2 80000000 -> 0
+nitro 7f800000 800116c2 -> 0
+nitro bec54feb 0 -> 0
+nitro 0 0 -> 1
+nitro da24260 80000000 -> 0
+nitro 116c2 0 -> 0
+nitro 3f606136 3f48dc8e -> 0
+nitro bf27ae46 0 -> 0
+nitro 7f800000 80000000 -> 0
+nitro 0 80000000 -> 1
+nitro 7f800000 80000000 -> 0
+nitro bf56e7b3 116c2 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 7fc00000 0 -> 0
+nitro 3f5c789c 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 7f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 3ebb9618 bec9c675 -> 0
+nitro 3ef210d6 80000000 -> 0
+nitro 0 0 -> 1
+nitro 7fc00000 0 -> 0
+nitro da24260 0 -> 0
+nitro 0 0 -> 1
+nitro da24260 80000000 -> 0
+nitro 7f800000 3dd9ab69 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 800116c2 -> 1
+nitro da24260 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 116c2 0 -> 0
+nitro bd6eb58e 0 -> 0
+nitro 3f004d57 0 -> 0
+nitro 3f800000 80000000 -> 0
+nitro da24260 80000000 -> 0
+nitro 7f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 0 -> 0
+nitro 7f800000 0 -> 0
+nitro da24260 0 -> 0
+nitro 3ea0002e 0 -> 0
+nitro 80000000 800116c2 -> 0
+nitro 80000000 0 -> 1
+nitro 0 0 -> 1
+nitro 3f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 7fc00000 80000000 -> 0
+nitro 3f752a47 3f752a47 -> 1
+nitro 3f50b5ae 116c2 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 80000000 0 -> 1
+nitro 116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 7f800000 3f800000 -> 0
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro bd017919 0 -> 0
+nitro 0 0 -> 1
+nitro 3f800000 80000000 -> 0
+nitro 3f46d4d2 0 -> 0
+nitro 116c2 800116c2 -> 0
+nitro 0 0 -> 1
+nitro da24260 0 -> 0
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 7fc00000 bf2ea0f3 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 0 -> 0
+nitro 7f800000 7f800000 -> 1
+nitro 3f800000 0 -> 0
+nitro da24260 80000000 -> 0
+nitro 80000000 0 -> 1
+nitro 3f800000 3f800000 -> 1
+nitro 0 0 -> 1
+nitro 7f800000 116c2 -> 0
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 3f800000 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 7f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 80000000 0 -> 1
+nitro be14dc23 800116c2 -> 0
+nitro da24260 0 -> 0
+nitro 116c2 0 -> 0
+nitro da24260 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 3f520015 80000000 -> 0
+nitro 3ea74565 0 -> 0
+nitro 0 3f800000 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro bee5e6f8 bf39d0b4 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 80000000 -> 0
+nitro 80000000 80000000 -> 1
+nitro 3f47e538 7fc00000 -> 0
+nitro 7f800000 80000000 -> 0
+nitro 7f800000 80000000 -> 0
+nitro 116c2 116c2 -> 1
+nitro 3e8cf883 0 -> 0
+nitro 80000000 0 -> 1
+nitro bf24e22c 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 80000000 0 -> 1
+nitro 3f800000 0 -> 0
+nitro 80000000 0 -> 1
+nitro 0 0 -> 1
+nitro 3db28ea5 3db28ea5 -> 1
+nitro 80000000 80000000 -> 1
+nitro bee40bac 80000000 -> 0
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 80000000 0 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 7fc00000 0 -> 0
+nitro 116c2 80000000 -> 0
+nitro 3f800000 0 -> 0
+nitro 7fc00000 80000000 -> 0
+nitro 0 0 -> 1
+nitro 3f800000 7fc00000 -> 0
+nitro 0 0 -> 1
+nitro 7fc00000 80000000 -> 0
+nitro 3e46fe2f 0 -> 0
+nitro 3f5ec372 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 800116c2 0 -> 0
+nitro 7f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 80000000 -> 0
+nitro 0 0 -> 1
+nitro 80000000 0 -> 1
+nitro becf4c6d 7f800000 -> 0
+nitro da24260 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 80000000 -> 0
+nitro da24260 da24260 -> 1
+nitro 0 0 -> 1
+nitro 3ead5c9b 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 7fc00000 7fc00000 -> 0
+nitro 7fc00000 0 -> 0
+nitro 800116c2 0 -> 0
+nitro bf0a536f bf0a536f -> 1
+nitro 7fc00000 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 3f800000 80000000 -> 0
+nitro 80000000 80000000 -> 1
+nitro 7f800000 0 -> 0
+nitro 7fc00000 80000000 -> 0
+nitro bcbe0d52 800116c2 -> 0
+nitro 116c2 0 -> 0
+nitro 800116c2 80000000 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 7f800000 -> 0
+nitro da24260 80000000 -> 0
+nitro 80000000 0 -> 1
+nitro 3e1056d7 0 -> 0
+nitro 116c2 80000000 -> 0
+nitro 3f31e798 80000000 -> 0
+nitro 7fc00000 80000000 -> 0
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 3f800000 0 -> 0
+nitro 7fc00000 7fc00000 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 7f800000 0 -> 0
+nitro 80000000 7fc00000 -> 0
+nitro 80000000 80000000 -> 1
+nitro 3f800000 3f800000 -> 1
+nitro 80000000 80000000 -> 1
+nitro 0 116c2 -> 0
+nitro bf146fe1 0 -> 0
+nitro 116c2 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 7fc00000 0 -> 0
+nitro 0 0 -> 1
+nitro 3f0a83c5 0 -> 0
+nitro 800116c2 800116c2 -> 1
+nitro da24260 80000000 -> 0
+nitro 3ed98ff7 0 -> 0
+nitro 800116c2 bf6fc6b2 -> 0
+nitro 0 0 -> 1
+nitro 7f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 7fc00000 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 7fc00000 80000000 -> 0
+nitro 3f017871 0 -> 0
+nitro 3f3a2b7e 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 3f446749 0 -> 0
+nitro be98dc65 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 800116c2 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 3f800000 3f800000 -> 1
+nitro 116c2 0 -> 0
+nitro beb3832d 0 -> 0
+nitro 3eec7546 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 3ecb7e01 3ef6e0b3 -> 0
+nitro 0 0 -> 1
+nitro 7fc00000 80000000 -> 0
+nitro 3e7e4e3f 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 80000000 0 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 7fc00000 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 3f339f12 0 -> 0
+nitro 0 0 -> 1
+nitro 7f800000 80000000 -> 0
+nitro be108268 be108268 -> 1
+nitro 0 0 -> 1
+nitro da24260 80000000 -> 0
+nitro 80000000 0 -> 1
+nitro da24260 da24260 -> 1
+nitro 0 80000000 -> 1
+nitro 3f800000 80000000 -> 0
+nitro 3e552f1e 0 -> 0
+nitro da24260 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro da24260 0 -> 0
+nitro 7fc00000 80000000 -> 0
+nitro da24260 0 -> 0
+nitro 7f800000 da24260 -> 0
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 80000000 80000000 -> 1
+nitro 3e8cc805 0 -> 0
+nitro 800116c2 800116c2 -> 1
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 7f800000 3dc03049 -> 0
+nitro 80000000 80000000 -> 1
+nitro 116c2 0 -> 0
+nitro da24260 0 -> 0
+nitro be913656 be913656 -> 1
+nitro 3edbd754 0 -> 0
+nitro 7f800000 0 -> 0
+nitro 3e31a9f3 0 -> 0
+nitro 3e35207e 0 -> 0
+nitro 80000000 0 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 7fc00000 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 3f1c8e65 800116c2 -> 0
+nitro 3f1775d0 80000000 -> 0
+nitro 800116c2 3f06f2a9 -> 0
+nitro bdda6b81 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 3ee37ae1 80000000 -> 0
+nitro 3ef3e589 80000000 -> 0
+nitro bf7686c0 80000000 -> 0
+nitro 0 0 -> 1
+nitro 3f800000 0 -> 0
+nitro 3e80b37c 80000000 -> 0
+nitro 7f800000 3f301719 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 7fc00000 80000000 -> 0
+nitro 7fc00000 7fc00000 -> 0
+nitro 7f800000 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 3f800000 3f800000 -> 1
+nitro da24260 80000000 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 116c2 0 -> 0
+nitro da24260 80000000 -> 0
+nitro 0 0 -> 1
+nitro 116c2 80000000 -> 0
+nitro 80000000 80000000 -> 1
+nitro 80000000 80000000 -> 1
+nitro 7f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 3e433de5 80000000 -> 0
+nitro bf718f85 7f800000 -> 0
+nitro bea551c4 0 -> 0
+nitro 116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 800116c2 80000000 -> 0
+nitro da24260 3f33aa12 -> 0
+nitro 3f800000 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 3f800000 0 -> 0
+nitro 7fc00000 7fc00000 -> 0
+nitro da24260 0 -> 0
+nitro 116c2 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 7f800000 80000000 -> 0
+nitro bde7d006 0 -> 0
+nitro 0 0 -> 1
+nitro 7f800000 80000000 -> 0
+nitro 116c2 80000000 -> 0
+nitro 3f14ace4 80000000 -> 0
+nitro 0 0 -> 1
+nitro 116c2 3f7f8aef -> 0
+nitro 80000000 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 0 0 -> 1
+nitro 3e363749 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro da24260 0 -> 0
+nitro bf54b14f 0 -> 0
+nitro 7fc00000 0 -> 0
+nitro 0 0 -> 1
+nitro 80000000 80000000 -> 1
+nitro 3f800000 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 3e6867ef 0 -> 0
+nitro be1012fb 0 -> 0
+nitro 0 0 -> 1
+nitro da24260 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 116c2 3eb304fd -> 0
+nitro 0 0 -> 1
+nitro 800116c2 0 -> 0
+nitro 80000000 0 -> 1
+nitro 800116c2 116c2 -> 0
+nitro 7fc00000 0 -> 0
+nitro 0 0 -> 1
+nitro 3f800000 116c2 -> 0
+nitro 80000000 80000000 -> 1
+nitro 80000000 80000000 -> 1
+nitro bf323958 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 116c2 116c2 -> 1
+nitro 0 0 -> 1
+nitro 3dcde5ac 7fc00000 -> 0
+nitro 800116c2 bf1409a3 -> 0
+nitro 3e86cad3 0 -> 0
+nitro 3f60389e 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro bf1e199a 0 -> 0
+nitro 80000000 0 -> 1
+nitro 7f800000 0 -> 0
+nitro 7f800000 80000000 -> 0
+nitro 80000000 80000000 -> 1
+nitro 80000000 80000000 -> 1
+nitro da24260 116c2 -> 0
+nitro 0 0 -> 1
+nitro 3f3ba5ed 80000000 -> 0
+nitro 3f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 3eb4616b 0 -> 0
+nitro be3352bb 0 -> 0
+nitro beec17e5 0 -> 0
+nitro 3f800000 0 -> 0
+nitro 7f800000 3f800000 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 800116c2 0 -> 0
+nitro 7f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 7fc00000 da24260 -> 0
+nitro 80000000 80000000 -> 1
+nitro 7f800000 0 -> 0
+nitro 3ddea932 0 -> 0
+nitro 7f800000 7f800000 -> 1
+nitro 3f591899 0 -> 0
+nitro 0 0 -> 1
+nitro 3f5fa798 800116c2 -> 0
+nitro bf7cc864 80000000 -> 0
+nitro 7fc00000 0 -> 0
+nitro 3e1f643f 0 -> 0
+nitro bf2fb88f 0 -> 0
+nitro bf3b812d 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 3eae0602 0 -> 0
+nitro 80000000 da24260 -> 0
+nitro 7f800000 80000000 -> 0
+nitro 80000000 80000000 -> 1
+nitro bf5a0842 0 -> 0
+nitro 0 da24260 -> 0
+nitro 3f2648af 0 -> 0
+nitro 0 80000000 -> 1
+nitro 3f556d2e 0 -> 0
+nitro 116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 3f800000 da24260 -> 0
+nitro 3f800000 80000000 -> 0
+nitro 3f631a47 0 -> 0
+nitro 3f5301ad 0 -> 0
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 80000000 0 -> 1
+nitro 80000000 0 -> 1
+nitro 800116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 3f800000 da24260 -> 0
+nitro 800116c2 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 80000000 0 -> 1
+nitro 3d2f42da 0 -> 0
+nitro 80000000 80000000 -> 1
+nitro 3f7cf614 80000000 -> 0
+nitro 0 0 -> 1
+nitro 0 80000000 -> 1
+nitro 3e21ac08 0 -> 0
+nitro 3f800000 80000000 -> 0
+nitro 3e26e31f 0 -> 0
+nitro 116c2 0 -> 0
+nitro 0 0 -> 1
+nitro 0 0 -> 1
+nitro 3e33dc2b 800116c2 -> 0
+nitro 80000000 0 -> 1
+nitro da24260 0 -> 0
+nitro 7f800000 0 -> 0
+nitro 0 0 -> 1
+nitro 3f45eec7 0 -> 0
+nitro bf165ee8 0 -> 0
+nitro 3e9c6117 0 -> 0
+nitro da24260 80000000 -> 0
+lens 7f800000 -> 0
+lens 7fc00000 -> 0
+lens 800116c2 -> 0
+lens 0 -> 1
+lens 80000000 -> 1
+lens da24260 -> 0
+lens 80000000 -> 1
+lens bf0cd38e -> 0
+lens 3e7bab46 -> 0
+lens 80000000 -> 1
+lens 3eaf0a73 -> 0
+lens 800116c2 -> 0
+lens da24260 -> 0
+lens 116c2 -> 0
+lens 3d9e6c75 -> 0
+lens be903323 -> 0
+lens da24260 -> 0
+lens 3e75b240 -> 0
+lens 3f16ecd3 -> 0
+lens 3eefe6d6 -> 0
+lens 7fc00000 -> 0
+lens 800116c2 -> 0
+lens 7fc00000 -> 0
+lens da24260 -> 0
+lens 7f800000 -> 0
+lens da24260 -> 0
+lens 80000000 -> 1
+lens 80000000 -> 1
+lens 116c2 -> 0
+lens bf1e5558 -> 0
+lens 3d199191 -> 0
+lens 800116c2 -> 0
+lens 80000000 -> 1
+lens 116c2 -> 0
+lens 80000000 -> 1
+lens 3b588ef9 -> 0
+lens da24260 -> 0
+lens 3f44b6f1 -> 0
+lens 0 -> 1
+lens 3f64d949 -> 0
+lens 80000000 -> 1
+lens 80000000 -> 1
+lens 3f3e4145 -> 0
+lens da24260 -> 0
+lens 80000000 -> 1
+lens 7fc00000 -> 0
+lens 7fc00000 -> 0
+lens 800116c2 -> 0
+lens 0 -> 1
+lens 7f800000 -> 0
+lens 116c2 -> 0
+lens 7f800000 -> 0
+lens 800116c2 -> 0
+lens 3f4a9538 -> 0
+lens 0 -> 1
+lens 800116c2 -> 0
+lens 7f800000 -> 0
+lens 3f1bb404 -> 0
+lens bf64e114 -> 0
+lens 800116c2 -> 0
+lens 800116c2 -> 0
+lens 116c2 -> 0
+lens 116c2 -> 0
+lens 3f800000 -> 0
+lens 800116c2 -> 0
+lens 0 -> 1
+lens bed567af -> 0
+lens 3edd0f78 -> 0
+lens 800116c2 -> 0
+lens 116c2 -> 0
+lens 3f800000 -> 0
+lens da24260 -> 0
+lens 3eee9133 -> 0
+lens 7f800000 -> 0
+lens 0 -> 1
+lens 800116c2 -> 0
+lens bef8c75c -> 0
+lens 80000000 -> 1
+lens 116c2 -> 0
+lens 80000000 -> 1
+lens 7f800000 -> 0
+lens 7fc00000 -> 0
+lens 3e45cd30 -> 0
+lens bf545034 -> 0
+lens 7f800000 -> 0
+lens be695eb6 -> 0
+lens 7f800000 -> 0
+lens 3ea02fcd -> 0
+lens 3f800000 -> 0
+lens 3f800000 -> 0
+lens 7f800000 -> 0
+lens 800116c2 -> 0
+lens 800116c2 -> 0
+lens 80000000 -> 1
+lens beac9ac5 -> 0
+lens 3df07e6c -> 0
+lens 80000000 -> 1
+lens 800116c2 -> 0
+lens be1113f4 -> 0
+lens 0 -> 1
+lens 116c2 -> 0
+lens 0 -> 1
+lens 7fc00000 -> 0
+lens 3ed3dfb4 -> 0
+lens 116c2 -> 0
+lens 3e8bc17a -> 0
+lens 800116c2 -> 0
+lens 80000000 -> 1
+lens 3e9c959b -> 0
+lens 800116c2 -> 0
+lens 3f800000 -> 0
+lens 116c2 -> 0
+lens 3f800000 -> 0
+lens da24260 -> 0
+lens 80000000 -> 1
+lens 800116c2 -> 0
+lens be8135dc -> 0
+lens 116c2 -> 0
+lens 3f23c582 -> 0
+lens da24260 -> 0
+lens 0 -> 1
+lens 3eb01b51 -> 0
+lens 0 -> 1
+lens 3f576b2a -> 0
+lens 0 -> 1
+lens 3ec0f1eb -> 0
+lens 3f800000 -> 0
+lens 116c2 -> 0
+lens 7f800000 -> 0
+lens 116c2 -> 0
+lens 800116c2 -> 0
+lens 800116c2 -> 0
+lens 7fc00000 -> 0
+lens 7fc00000 -> 0
+lens 3f800000 -> 0
+lens 80000000 -> 1
+lens 3f800000 -> 0
+lens 800116c2 -> 0
+lens 3f800000 -> 0
+lens 116c2 -> 0
+lens 116c2 -> 0
+lens 7f800000 -> 0
+lens da24260 -> 0
+lens 3f458665 -> 0
+lens 116c2 -> 0
+lens 3e82f2b3 -> 0
+lens 3d52b819 -> 0
+lens 800116c2 -> 0
+lens be68476e -> 0
+lens 116c2 -> 0
+lens 116c2 -> 0
+lens 7f800000 -> 0
+lens 3f800000 -> 0
+lens 3f078ae7 -> 0
+lens 3f800000 -> 0
+lens beac271a -> 0
+lens 7f800000 -> 0
+lens 80000000 -> 1
+lens 3f800000 -> 0
+lens bf37d3a6 -> 0
+lens da24260 -> 0
+lens 80000000 -> 1
+lens 800116c2 -> 0
+lens 116c2 -> 0
+lens 3f727019 -> 0
+lens 3f800000 -> 0
+lens 3f324c2b -> 0
+lens 7f800000 -> 0
+lens 116c2 -> 0
+lens 3f800000 -> 0
+lens 800116c2 -> 0
+lens 3f800000 -> 0
+lens 3f800000 -> 0
+lens 3f025b82 -> 0
+lens 7fc00000 -> 0
+lens 3f800000 -> 0
+lens 0 -> 1
+lens 7fc00000 -> 0
+lens 3f800000 -> 0
+lens 3f105ef9 -> 0
+lens 3dae2625 -> 0
+lens da24260 -> 0
+lens bf3c356a -> 0
+lens 80000000 -> 1
+lens 0 -> 1
+lens 80000000 -> 1
+lens 7fc00000 -> 0
+lens 800116c2 -> 0
+lens 0 -> 1
+lens 800116c2 -> 0
+lens 7f800000 -> 0
+lens 3f5d9d1e -> 0
+lens 3db5c583 -> 0
+lens bf06158b -> 0
+lens 80000000 -> 1
+lens da24260 -> 0
+lens 116c2 -> 0
+lens 3f800000 -> 0
+lens 0 -> 1
+lens 800116c2 -> 0
+lens da24260 -> 0
+lens da24260 -> 0
+lens 800116c2 -> 0
+lens 3f6bbc66 -> 0
+lens 80000000 -> 1
+lens da24260 -> 0
+lens 3f2bb96e -> 0
+lens 3f800000 -> 0
+lens 3f5e7c6b -> 0
+lens bf2ef6a9 -> 0
+lens bed24a24 -> 0
+lens 80000000 -> 1
+lens 0 -> 1
+lens 800116c2 -> 0
+lens 3efe5e48 -> 0
+lens 7fc00000 -> 0
+lens 3f4f5789 -> 0
+lens 800116c2 -> 0
+lens 3da003d6 -> 0
+lens da24260 -> 0
+lens 800116c2 -> 0
+lens 116c2 -> 0
+lens 3d7b47c6 -> 0
+lens 3f800000 -> 0
+lens 0 -> 1
+lens 800116c2 -> 0
+lens 7fc00000 -> 0
+lens 7f800000 -> 0
+lens 80000000 -> 1
+lens 116c2 -> 0
+lens bf15c0d2 -> 0
+lens 116c2 -> 0
+lens 116c2 -> 0
+lens bf0000e9 -> 0
+lens 800116c2 -> 0
+lens 800116c2 -> 0
+lens 3f58a611 -> 0
+lens 7f800000 -> 0
+lens becb3a03 -> 0
+lens 800116c2 -> 0
+lens 116c2 -> 0
+lens 7fc00000 -> 0
+lens 800116c2 -> 0
+lens 0 -> 1
+lens da24260 -> 0
+lens 3f800000 -> 0
+lens 3f800000 -> 0
+lens 3f800000 -> 0
+lens 3e938645 -> 0
+lens 3f00c562 -> 0
+lens 3f78b5f8 -> 0
+lens bf71a7e8 -> 0
+lens 80000000 -> 1
+lens be8c92f4 -> 0
+lens 3e3e6a7b -> 0
+lens 800116c2 -> 0
+lens 800116c2 -> 0
+lens 3f800000 -> 0
+lens 80000000 -> 1
+lens 7f800000 -> 0
+lens 116c2 -> 0
+lens 116c2 -> 0
+lens 3c911045 -> 0
+lens 3cf13f0e -> 0
+lens 116c2 -> 0
+lens 116c2 -> 0
+lens 800116c2 -> 0
+lens 7fc00000 -> 0
+lens 7fc00000 -> 0
+lens 80000000 -> 1
+lens 3f800000 -> 0
+lens 116c2 -> 0
+lens 80000000 -> 1
+lens 80000000 -> 1
+lens 3e806389 -> 0
+lens 3e89cffe -> 0
+lens 3f800000 -> 0
+lens 0 -> 1
+lens da24260 -> 0
+lens 3f800000 -> 0
+lens 7fc00000 -> 0
+lens 7fc00000 -> 0
+lens 116c2 -> 0
+lens da24260 -> 0
+lens 3f800000 -> 0
+lens 800116c2 -> 0
+lens 3eafd076 -> 0
+lens 3f469f1a -> 0
+lens 3f26b3e6 -> 0
+lens 80000000 -> 1
+lens 0 -> 1
+lens 3f800000 -> 0
+lens 0 -> 1
+lens 3f7b9164 -> 0
+lens 7fc00000 -> 0
+lens be2a5123 -> 0
+lens 7f800000 -> 0
+lens 3f5f5a35 -> 0
+lens 80000000 -> 1
+lens 7fc00000 -> 0
+lens 7fc00000 -> 0
+lens da24260 -> 0
+lens 0 -> 1
+lens 3ed19e4d -> 0
+lens 7fc00000 -> 0
+lens 7f800000 -> 0
+lens 3e01c2fa -> 0
+lens 3f692fb5 -> 0
+lens 3e9ae5f3 -> 0
+lens 0 -> 1
+lens 116c2 -> 0
+lens 3f800000 -> 0
+lens 3cef867e -> 0
+lens 800116c2 -> 0
+lens 80000000 -> 1
+lens 3f4c5115 -> 0
+lens da24260 -> 0
+lens 7fc00000 -> 0
+lens 3f800000 -> 0
+lens 0 -> 1
+lens 7fc00000 -> 0
+lens 800116c2 -> 0
+lens 3f800000 -> 0
+lens 3f800000 -> 0
+lens 3f800000 -> 0
+lens 116c2 -> 0
+lens 3f1f5710 -> 0
+lens 3ee6f8f8 -> 0
+lens 7fc00000 -> 0
+lens da24260 -> 0
+lens 80000000 -> 1
+lens 800116c2 -> 0
+lens 116c2 -> 0
+lens 7f800000 -> 0
+lens 116c2 -> 0
+lens 7fc00000 -> 0
+lens 116c2 -> 0
+lens 116c2 -> 0
+lens 3f60c2ae -> 0
+lens 0 -> 1
+lens 0 -> 1
+lens 3ebe3a20 -> 0
+lens 0 -> 1
+lens 7fc00000 -> 0
+lens bf76b506 -> 0
+lens bf10e9cd -> 0
+lens beb29d4e -> 0
+lens 116c2 -> 0
+lens 7fc00000 -> 0
+lens 3f800000 -> 0
+lens 0 -> 1
+lens 80000000 -> 1
+lens 3ec5faeb -> 0
+lens 3f800000 -> 0
+lens 800116c2 -> 0
+lens 80000000 -> 1
+lens 3f800000 -> 0
+lens 7f800000 -> 0
+lens bf44eac7 -> 0
+lens 80000000 -> 1
+lens 3f800000 -> 0
+lens 3f6de950 -> 0
+lens 7f800000 -> 0
+lens 3f79dc71 -> 0
+lens 0 -> 1
+lens 116c2 -> 0
+lens 3f800000 -> 0
+lens da24260 -> 0
+lens 800116c2 -> 0
+lens 116c2 -> 0
+lens bf2ce99f -> 0
+lens 3f006517 -> 0
+lens 3f29fef8 -> 0
+lens 800116c2 -> 0
+lens 3f2a885c -> 0
+lens da24260 -> 0
+lens 80000000 -> 1
+lens 0 -> 1
+lens 3f800000 -> 0
+lens 800116c2 -> 0
+lens 0 -> 1
+lens 3ea56534 -> 0
+lens 7fc00000 -> 0
+lens 7f800000 -> 0
+lens da24260 -> 0
+lens 7f800000 -> 0
+lens 116c2 -> 0
+lens da24260 -> 0
+lens 3f6bde5a -> 0
+lens 0 -> 1
+lens 7f800000 -> 0
+lens bd1c96ee -> 0
+lens 0 -> 1
+lens 0 -> 1
+lens 800116c2 -> 0
+lens 116c2 -> 0
+lens 116c2 -> 0
+lens da24260 -> 0
+lens 3f800000 -> 0
+lens 7f800000 -> 0
+lens 3f56a7f9 -> 0
+lens 3e41c006 -> 0
+lens 7fc00000 -> 0
+lens 80000000 -> 1
+lens 3f800000 -> 0
+lens 3eefacfc -> 0
+lens 80000000 -> 1
+lens bee4af41 -> 0
+lens 3f800000 -> 0
+lens 80000000 -> 1
+lens 3d44be89 -> 0
+lens 116c2 -> 0
+lens 116c2 -> 0
+lens bf3b148c -> 0
+lens be119f29 -> 0
+lens da24260 -> 0
+lens 3f800000 -> 0
+lens 7fc00000 -> 0
+lens 800116c2 -> 0
+lens 7fc00000 -> 0
+lens 0 -> 1
+lens 80000000 -> 1
+lens 3f800000 -> 0
+lens 7f800000 -> 0
+lens 0 -> 1
+lens 7f800000 -> 0
+lens da24260 -> 0
+lens 116c2 -> 0
+lens 7fc00000 -> 0
+lens 800116c2 -> 0
+lens da24260 -> 0
+lens 3ee85e84 -> 0
+lens 3e9a0e14 -> 0
+lens 80000000 -> 1
+lens 7f800000 -> 0
+lens da24260 -> 0
+lens 3f800000 -> 0
+lens 0 -> 1
+lens 0 -> 1
+lens 7fc00000 -> 0
+lens 3eab20f5 -> 0
+lens 3f6d5d2d -> 0
+lens 7fc00000 -> 0
+lens 3f800000 -> 0
+lens 3d6b31ca -> 0
+lens 0 -> 1
+lens 3f800000 -> 0
+lens 3d9a9ff5 -> 0
+lens da24260 -> 0
+lens 7f800000 -> 0
+lens 7f800000 -> 0
+lens 7fc00000 -> 0
+lens 3f800000 -> 0
+lens 3ec8474e -> 0
+lens 116c2 -> 0
+lens 0 -> 1
+lens 7f800000 -> 0
+lens da24260 -> 0
+lens 3f149b76 -> 0
+lens 116c2 -> 0
+lens 80000000 -> 1
+lens 3f78760a -> 0
+lens 7fc00000 -> 0
+lens 7fc00000 -> 0
+lens 0 -> 1
+lens 3eba04cb -> 0
+lens 3f800000 -> 0
+lens 3d2d9b10 -> 0
+lens 0 -> 1
+lens 80000000 -> 1
+lens 3f800000 -> 0
+lens 3efba3d3 -> 0
+lens 7fc00000 -> 0
+lens 7f800000 -> 0
+lens 3d81d1ad -> 0
+lens 80000000 -> 1
+lens 0 -> 1
+lens 3f800000 -> 0
+lens 7fc00000 -> 0
+lens bf3e627d -> 0
+lens 7f800000 -> 0
+lens 7fc00000 -> 0
+lens 80000000 -> 1
+lens bde98be8 -> 0
+lens da24260 -> 0
+lens 3f5b2ffd -> 0
+lens 7fc00000 -> 0
+lens 3f68e972 -> 0
+lens 7f800000 -> 0
+lens da24260 -> 0
+lens 800116c2 -> 0
+lens 800116c2 -> 0
+lens 0 -> 1
+lens 800116c2 -> 0
+lens 80000000 -> 1
+lens 80000000 -> 1
+lens 3f800000 -> 0
+lens 7fc00000 -> 0
+lens bd7c4679 -> 0
+lens 116c2 -> 0
+lens 800116c2 -> 0
+lens da24260 -> 0
+lens 3e0ea6aa -> 0
+lens da24260 -> 0
+lens bf066252 -> 0
+lens bf026a44 -> 0
+lens 3e422fcf -> 0
+lens 80000000 -> 1
+lens 3ead4bea -> 0
+lens da24260 -> 0
+lens 0 -> 1
+lens 800116c2 -> 0
+lens 116c2 -> 0
+lens 116c2 -> 0
+lens be095a96 -> 0
+lens 116c2 -> 0
+lens 0 -> 1
+lens 0 -> 1
+lens bf010a0c -> 0
+lens 800116c2 -> 0
+lens 3f800000 -> 0
+lens 3ed2d7e7 -> 0
+lens 800116c2 -> 0
+lens 7f800000 -> 0
+lens 800116c2 -> 0
+lens 116c2 -> 0
+lens 0 -> 1
+lens 3f326067 -> 0
+lens 80000000 -> 1
+lens 800116c2 -> 0
+lens 0 -> 1
+lens 7f800000 -> 0
+lens bf6796ca -> 0
+lens 116c2 -> 0
+lens 800116c2 -> 0
+lens 3ddb3c78 -> 0
+lens 116c2 -> 0
+lens bf6121ad -> 0
+lens 3f7d20c4 -> 0
+lens da24260 -> 0
+lens 7fc00000 -> 0
+lens 3ed07828 -> 0
+lens 7fc00000 -> 0
+lens 7f800000 -> 0
+lens bf01835a -> 0
+lens 7fc00000 -> 0
+lens 7f800000 -> 0
+lens 3f7f4a9a -> 0
+lens 3c6b8891 -> 0
+lens 800116c2 -> 0
+lens 7fc00000 -> 0
+lens da24260 -> 0
+lens 116c2 -> 0
+lens 116c2 -> 0
+lens 80000000 -> 1
+lens 7fc00000 -> 0
+lens be91d7fa -> 0
+lens 800116c2 -> 0
+lens 3f45aa69 -> 0
+lens 3f17687a -> 0
+lens 7fc00000 -> 0
+lens 80000000 -> 1
+lens 80000000 -> 1
+lens 0 -> 1
+lens 800116c2 -> 0
+lens 116c2 -> 0
+lens 80000000 -> 1
+lens 0 -> 1
+lens 7fc00000 -> 0
+lens 800116c2 -> 0
+lens 3f800000 -> 0
+lens 3f167e55 -> 0
+lens 3f594dc0 -> 0
+lens 800116c2 -> 0
+lens bddbdf53 -> 0
+lens 7f800000 -> 0
+lens 3f7a4209 -> 0
+lens 0 -> 1
+lens 7f800000 -> 0
+lens 7f800000 -> 0
+lens 3ecc02b8 -> 0
+lens 3d075334 -> 0
+lens da24260 -> 0
+lens da24260 -> 0
+lens 3f800000 -> 0
+lens 3e65941f -> 0
+lens da24260 -> 0
+lens da24260 -> 0
+lens 116c2 -> 0
+lens 7f800000 -> 0
+lens 7f800000 -> 0
+lens 3f800000 -> 0
+lens 3f800000 -> 0
+lens 116c2 -> 0
+lens bf62ebe2 -> 0
+lens be979eee -> 0
+lens 7fc00000 -> 0
+lens 80000000 -> 1
+lens 3f800000 -> 0
+lens 7f800000 -> 0
+lens 0 -> 1
+lens 7f800000 -> 0
+lens 3f800000 -> 0
+lens bf35760a -> 0
+lens 3f800000 -> 0
+lens 7f800000 -> 0
+lens 3f2ae1f4 -> 0
+lens 7f800000 -> 0
+lens 3f518bbb -> 0
+lens 80000000 -> 1
+lens 3f58bfe1 -> 0
+lens 116c2 -> 0
+lens 80000000 -> 1
+lens 0 -> 1
+lens 7f800000 -> 0
+lens 800116c2 -> 0
+lens 116c2 -> 0
+lens 3f800000 -> 0
+lens 3f800000 -> 0
+lens da24260 -> 0
+lens 116c2 -> 0
+lens 3e4bf372 -> 0
+lens 3f800000 -> 0
+lens 3f7243f5 -> 0
+lens 3d9e0bdd -> 0
+lens 3da09d0c -> 0
+lens 3e0be606 -> 0
+lens 7fc00000 -> 0
+lens 3f800000 -> 0
+lens 116c2 -> 0
+lens 7f800000 -> 0
+lens 7fc00000 -> 0
+lens 3e59c1aa -> 0
+lens be021f70 -> 0
+lens 800116c2 -> 0
+lens 3d7e074b -> 0
+lens da24260 -> 0
+lens 80000000 -> 1
+lens 3f800000 -> 0
+lens 3f800000 -> 0
+lens 3f4ae10e -> 0
+lens 3f800000 -> 0
+lens 80000000 -> 1
+lens 0 -> 1
+lens 3f800000 -> 0
+lens 7fc00000 -> 0
+lens 3e84a9dc -> 0
+lens be3a9ae7 -> 0
+lens da24260 -> 0
+lens 7f800000 -> 0
+lens 3f2ef433 -> 0
+lens 800116c2 -> 0
+lens 116c2 -> 0
+lens 3d8d6031 -> 0
+lens 800116c2 -> 0
+lens be8c6e87 -> 0
+lens 800116c2 -> 0
+lens bf03c876 -> 0
+lens 7fc00000 -> 0
+lens 3f7ce715 -> 0
+lens 3e0454c4 -> 0
+lens 0 -> 1
+lens da24260 -> 0
+lens 3e527a72 -> 0
+lens 80000000 -> 1
+lens 800116c2 -> 0
+lens da24260 -> 0
+lens 3f03be25 -> 0
+lens be702056 -> 0
+lens 80000000 -> 1
+lens 800116c2 -> 0
+lens 80000000 -> 1
+lens da24260 -> 0
+lens bec1d544 -> 0
+lens 80000000 -> 1
+lens 3f109f58 -> 0
+lens 116c2 -> 0
+lens 7f800000 -> 0
+lens 7f800000 -> 0
+lens da24260 -> 0
+lens 116c2 -> 0
+lens 7f800000 -> 0
+lens 3f800000 -> 0
+lens da24260 -> 0
+lens 3e74cb11 -> 0
+lens 7fc00000 -> 0
+lens 3eda4c10 -> 0
+lens 0 -> 1
+lens 116c2 -> 0
+lens 116c2 -> 0
+lens 116c2 -> 0
+lens 116c2 -> 0
+lens 116c2 -> 0
+lens 3f790cce -> 0
+lens 3c9e34b5 -> 0
+lens 7fc00000 -> 0
+lens 0 -> 1
+lens 3cf88ede -> 0
+lens 80000000 -> 1
+lens 7fc00000 -> 0
+lens 800116c2 -> 0
+lens 116c2 -> 0
+lens 3f0beccc -> 0
+lens 3f800000 -> 0
+lens 3e09743c -> 0
+lens 0 -> 1
+lens 80000000 -> 1
+lens 0 -> 1
+lens 3e6259a4 -> 0
+lens 80000000 -> 1
+lens 80000000 -> 1
+lens bedbf3f7 -> 0
+lens 116c2 -> 0
+lens 3d4ce419 -> 0
+lens 80000000 -> 1
+lens 116c2 -> 0
+lens 3f800000 -> 0
+lens 0 -> 1
+lens 3eb021d8 -> 0
+lens 0 -> 1
+lens bcde1347 -> 0
+lens 7fc00000 -> 0
+lens 800116c2 -> 0
+lens 3f800000 -> 0
+lens da24260 -> 0
+lens 0 -> 1
+lens 800116c2 -> 0
+lens bf448ca7 -> 0
+lens 3f6fb52e -> 0
+lens da24260 -> 0
+lens 80000000 -> 1
+lens 80000000 -> 1
+lens 3f800000 -> 0
+lens 3efe4f70 -> 0
+lens 0 -> 1
+lens 3f800000 -> 0
+lens 3f02ac43 -> 0
+lens 3ef59707 -> 0
+lens 0 -> 1
+lens 0 -> 1
+lens 7f800000 -> 0
+lens 0 -> 1
+lens 800116c2 -> 0
+lens 80000000 -> 1
+lens 0 -> 1
+lens 7fc00000 -> 0
+lens 3ecf6117 -> 0
+lens 800116c2 -> 0
+lens 800116c2 -> 0
+lens 7f800000 -> 0
+lens 3f800000 -> 0
+lens da24260 -> 0
+lens 80000000 -> 1
+lens 116c2 -> 0
+lens 3f800000 -> 0
+lens 3f045350 -> 0
+lens 80000000 -> 1
+lens 3f682102 -> 0
+lens 0 -> 1
+lens 3f800000 -> 0
+lens 80000000 -> 1
+lens 7fc00000 -> 0
+lens 7fc00000 -> 0
+lens bf0236ae -> 0
+lens 3a8d8862 -> 0
+lens 80000000 -> 1
+lens 800116c2 -> 0
+lens 116c2 -> 0
+lens bed4ccfd -> 0
+lens 7f800000 -> 0
+lens 800116c2 -> 0
+lens 3f800000 -> 0
+lens be36087c -> 0
+lens 3f800000 -> 0
+lens 3f800000 -> 0
+lens 800116c2 -> 0
+lens 3f800000 -> 0
+lens bf53816f -> 0
+lens bf112422 -> 0
+lens 800116c2 -> 0
+lens 800116c2 -> 0
+lens 7fc00000 -> 0
+lens 0 -> 1
+lens 7fc00000 -> 0
+lens 0 -> 1
+lens 3f2d6600 -> 0
+lens 0 -> 1
+lens 3f800000 -> 0
+lens 80000000 -> 1
+lens 3edf0938 -> 0
+lens 80000000 -> 1
+lens 3f329a3f -> 0
+lens bea27fe9 -> 0
+lens 116c2 -> 0
+lens 7fc00000 -> 0
+lens 7f800000 -> 0
+lens 3f800000 -> 0
+lens 3f5a28f2 -> 0
+lens 80000000 -> 1
+lens 7fc00000 -> 0
+lens 7f800000 -> 0
+lens 3f800000 -> 0
+lens da24260 -> 0
+lens 0 -> 1
+lens da24260 -> 0
+lens da24260 -> 0
+lens be4de8b9 -> 0
+lens 3ed6ad76 -> 0
+lens 7f800000 -> 0
+lens 116c2 -> 0
+lens 7fc00000 -> 0
+lens 3c8c77e8 -> 0
+lens 3f800000 -> 0
+lens 3f332730 -> 0
+lens 7fc00000 -> 0
+lens 80000000 -> 1
+lens 3f800000 -> 0
+lens 7f800000 -> 0
+lens bf6b0875 -> 0
+lens da24260 -> 0
+lens 3f5b790d -> 0
+lens becc47b8 -> 0
+lens 3f06669d -> 0
+lens 3e8a9f3b -> 0
+lens 0 -> 1
+lens 800116c2 -> 0
+lens 116c2 -> 0
+lens da24260 -> 0
+lens 3eeb488a -> 0
+lens 3f24957c -> 0
+lens da24260 -> 0
+lens 3eec2587 -> 0
+lens 80000000 -> 1
+lens bf6bba0a -> 0
+lens 116c2 -> 0
+lens 7f800000 -> 0
+lens 80000000 -> 1
+lens 116c2 -> 0
+lens 3e4e9739 -> 0
+lens 3eacc260 -> 0
+lens 7fc00000 -> 0
+lens da24260 -> 0
+lens 80000000 -> 1
+lens 7fc00000 -> 0
+lens 3e58444b -> 0
+lens 116c2 -> 0
+lens 3dcfc0d3 -> 0
+lens bf6ac5b2 -> 0
+lens 3ed2d1ee -> 0
+lens 7fc00000 -> 0
+lens 800116c2 -> 0
+lens 3e9cf3c4 -> 0
+lens 0 -> 1
+lens 116c2 -> 0
+lens 3f800000 -> 0
+lens 3f800000 -> 0
+lens 3db8d4b5 -> 0
+lens 80000000 -> 1
+lens 3f4e7a69 -> 0
+lens 7fc00000 -> 0
+lens 7fc00000 -> 0
+lens 116c2 -> 0
+lens 0 -> 1
+lens 800116c2 -> 0
+lens 7f800000 -> 0
+lens 7f800000 -> 0
+lens da24260 -> 0
+lens 800116c2 -> 0
+lens 800116c2 -> 0
+lens 7f800000 -> 0
+lens 80000000 -> 1
+lens 3e337cb9 -> 0
+lens da24260 -> 0
+lens 7fc00000 -> 0
+lens 7f800000 -> 0
+lens da24260 -> 0
+lens bf546b92 -> 0
+lens 80000000 -> 1
+lens 116c2 -> 0
+lens 800116c2 -> 0
+lens 800116c2 -> 0
+lens 3f800000 -> 0
+lens 0 -> 1
+lens 800116c2 -> 0
+lens 80000000 -> 1
+lens 3e5c9caa -> 0
+lens 0 -> 1
+lens bed1a4ff -> 0
+lens 7fc00000 -> 0
+lens da24260 -> 0
+lens 3f303429 -> 0
+lens 0 -> 1
+lens 7fc00000 -> 0
+lens bf6a6692 -> 0
+lens 3f800000 -> 0
+lens beb62631 -> 0
+lens 80000000 -> 1
+lens 116c2 -> 0
+lens 3f800000 -> 0
+lens bee32d3d -> 0
+lens 7fc00000 -> 0
+lens 7fc00000 -> 0
+lens 7fc00000 -> 0
+lens 0 -> 1
+lens 7f800000 -> 0
+lens 3f800000 -> 0
+lens 7f800000 -> 0
+lens da24260 -> 0
+lens 3f4333ba -> 0
+lens bf719463 -> 0
+lens 3f3838f6 -> 0
+lens 116c2 -> 0
+lens bf107371 -> 0
+lens 116c2 -> 0
+lens 3e5dfb27 -> 0
+lens 7fc00000 -> 0
+lens 0 -> 1
+lens 800116c2 -> 0
+lens da24260 -> 0
+lens 0 -> 1
+lens 800116c2 -> 0
+lens 0 -> 1
+lens 3f4e1471 -> 0
+lens 3e5af0c2 -> 0
+lens bf6018ce -> 0
+lens da24260 -> 0
+lens 0 -> 1
+lens 3f4e34c7 -> 0
+lens 0 -> 1
+lens 7f800000 -> 0
+lens 116c2 -> 0
+lens da24260 -> 0
+lens bdc390a7 -> 0
+lens 3f0022b3 -> 0
+lens 3f7fda4a -> 0
+lens 116c2 -> 0
+lens da24260 -> 0
+lens 800116c2 -> 0
+lens 80000000 -> 1
+lens 0 -> 1
+lens bea8e1a6 -> 0
+lens da24260 -> 0
+lens 0 -> 1
+lens 7fc00000 -> 0
+lens 3be7321d -> 0
+lens 80000000 -> 1
+lens bf4d7a5f -> 0
+lens 7f800000 -> 0
+lens 7fc00000 -> 0
+lens 3e0249e6 -> 0
+lens 3e8f2b30 -> 0
+lens 3d68153a -> 0
+lens bf36e93a -> 0
+lens 0 -> 1
+lens 80000000 -> 1
+lens bf609bcd -> 0
+lens 800116c2 -> 0
+lens 3f3d55b3 -> 0
+lens be216fc6 -> 0
+lens 3f06a6c6 -> 0
+lens 116c2 -> 0
+lens bf4d2ee8 -> 0
+lens 800116c2 -> 0
+lens 800116c2 -> 0
+lens 3eec5d78 -> 0
+lens 3f48490c -> 0
+lens 3e19ab21 -> 0
+lens 116c2 -> 0
+lens 116c2 -> 0
+lens 7f800000 -> 0
+lens 7fc00000 -> 0
+lens 7f800000 -> 0
+lens 3e9fdd03 -> 0
+lens 116c2 -> 0
+lens 3e67bd63 -> 0
+lens 7fc00000 -> 0
+lens 7fc00000 -> 0
+lens 3d3c75d3 -> 0
+lens 7fc00000 -> 0
+lens 3ed776b7 -> 0
+lens 3e92b761 -> 0
+lens da24260 -> 0
+lens da24260 -> 0
+lens 3e3828d4 -> 0
+lens 3f800000 -> 0
+lens 80000000 -> 1
+lens 7fc00000 -> 0
+lens 80000000 -> 1
+lens 3e74d36c -> 0
+lens da24260 -> 0
+lens 80000000 -> 1
+lens 7f800000 -> 0
+lens 3f800000 -> 0
+lens da24260 -> 0
+lens da24260 -> 0
+lens 3e29e8b9 -> 0
+lens bf2ecd24 -> 0
+lens beff9c19 -> 0
+lens 3f1f6190 -> 0
+lens 7f800000 -> 0

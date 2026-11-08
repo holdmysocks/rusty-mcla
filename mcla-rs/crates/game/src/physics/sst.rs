@@ -95,10 +95,15 @@ impl SsTurbo {
         self.blur = 1.0;
     }
 
+    /// The lens at rest F-50750: +20 == 0.0 (an unordered compare is not equal).
+    pub fn lens_at_rest(&self) -> bool {
+        self.fov == 0.0
+    }
+
     /// F-29462: `answering` is the chassis's vfunc 12 (F-71660: car state +592 0, or 16 on a car); not
     /// with chassis +576 bit 0x10 (`locked`).
     pub fn can_fire(&self, answering: bool) -> bool {
-        !self.locked && answering && self.full && self.level >= 1.0 && !self.burning && self.fov == 0.0
+        !self.locked && answering && self.full && self.level >= 1.0 && !self.burning && self.lens_at_rest()
     }
 
     /// F-68670: the level 1 and burning. (The camera's jolt, the pad's rumble 3 and the player's

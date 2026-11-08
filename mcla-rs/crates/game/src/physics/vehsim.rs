@@ -1713,6 +1713,36 @@ pub fn run_now<F: std::future::Future>(f: F) -> F::Output {
     }
 }
 
+/// The gearbox's direction F-80284: no gearbox 0, a forward gear 1, reverse -1, neutral 0. (The original's gear
+/// index +20 counts 0 reverse, 1 neutral, 2.. forward; the port's gear is that less 1, reverse -1 - the mapping the
+/// gearbox's own test `automatic_update_matches_complete_original_function` holds.)
+pub(super) fn gear_direction(gear: Option<i32>) -> i32 {
+    match gear {
+        None => 0,
+        Some(g) if g >= 1 => 1,
+        Some(-1) => -1,
+        Some(_) => 0,
+    }
+}
+
+/// "Driving" F-65255: a gearbox, not in neutral, and the chassis's throttle +136 above 0 (an unordered compare is
+/// not above).
+pub(super) fn driving(gear: Option<i32>, throttle: f32) -> bool {
+    matches!(gear, Some(g) if g != 0) && throttle > 0.0
+}
+
+/// The chassis's wheels with a contact record (byte +529), F-33415 - mcCarSim's vfunc 11: counted over the
+/// chassis's own wheel list (a bike's two).
+pub(super) fn contact_count(records: impl IntoIterator<Item = bool>) -> usize {
+    records.into_iter().filter(|r| *r).count()
+}
+
+/// The nitrous's view at its rest value F-91794: +24 == +20, where +20 is the 0.0 its constructor F-38377 leaves
+/// (no other routine writes it - every one called with the nitrous object traced).
+pub(super) fn nitro_view_at_rest(view: f32) -> bool {
+    view == 0.0
+}
+
 pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, world: &WorldCollider, dt: f32) {
     run_now(step_async(st, p, vt, input, world, dt, None))
 }
@@ -2116,7 +2146,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         // (A-82101: with charge left and the handbrake on, the centre of mass stays where it is)
         vs.by.cg_return = !(vs.burn > 0.0 && hand != 0.0);
         let grounded = st.wheels.iter().filter(|w| w.grounded).count();
-        let way = if vs.gear < 0 { -1 } else if vs.gear == 0 { 0 } else { 1 };
+        let way = gear_direction(Some(vs.gear));
         let limit = if way < 0 { t.s.burn_rev_threshold } else { t.s.burn_threshold };
         let wanted = thr > 0.0 && hand > 0.0 && vs.last_speed < limit && grounded > 0;
         if vs.two == 0 && wanted {
@@ -2364,7 +2394,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     let exact_nitro = vs.by.exact && !dbg_flag("MCLA_DBG_A1");
     // (the wheels with a contact record, byte +529, as the tick came in: mcCarNitro's update runs in the
     // chassis update, ahead of the pass that updates the wheels - F-33415 counts the last tick's)
-    vs.nitro_records = (0..4).filter(|i| (!vt.bike || i % 2 == 0) && vs.wheels[*i].record).count();
+    vs.nitro_records = contact_count((0..4).filter(|i| !vt.bike || i % 2 == 0).map(|i| vs.wheels[i].record));
     // (RB3: the player's shot is fired by the pad's code, between this update and the physics step - further
     // down, `nitro_try`. Here only: computer drivers, the older paths, and a replay's hint column of a
     // recording that did not log its pad, VEH_NITRO. MCLA_DBG_RB3: this rule for everyone, as before.)
@@ -3165,7 +3195,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     // `CarInput::sst` (F-94408). Ready: car state +592 0, or 16 on a car (F-71660) - not on the grid,
     // not with the rider off. ----
     let sst_btn = if pad_exact || REPLAY_STEER.load(std::sync::atomic::Ordering::Relaxed) { pressed } else { input.sst || (!input_ai && raw_input.nitro) };
-    let sst_go = sst_btn && vs.sst.can_fire(!input.hold && !wiped) && !vs.nitro_burning && vs.nitro_view == 0.0;
+    let sst_go = sst_btn && vs.sst.can_fire(!input.hold && !wiped) && !vs.nitro_burning && nitro_view_at_rest(vs.nitro_view);
     if sst_go {
         vs.sst.fire();
         // (F-68670's caller: the pad's rumble 3, unless a racing wheel took it - F-86040, none in the port)
@@ -3173,7 +3203,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
         log::info!("slipstream turbo fired ({})", if input_ai { "computer" } else { "player" });
     }
     // (the fire F-62883 refuses while the chassis's +576 bit 0x8 is set, Racer_LockFeature)
-    if nitro_try && !sst_go && !vs.sst.burning && vs.sst.fov == 0.0 && !vs.nitro_burning && vs.nitro_view == 0.0 && st.nitro_shots > 0 && input.lock & 0x8 == 0 {
+    if nitro_try && !sst_go && !vs.sst.burning && vs.sst.lens_at_rest() && !vs.nitro_burning && nitro_view_at_rest(vs.nitro_view) && st.nitro_shots > 0 && input.lock & 0x8 == 0 {
         vs.nitro_level = 1.0;
         vs.nitro_burning = true;
         vs.nitro_fires = vs.nitro_fires.wrapping_add(1);
@@ -4573,7 +4603,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             let p = (vs.nitro_level as f64).powf(t.nitro.boost_exp as f64) as f32;
             let k = -(t.nitro.boost_amount * p);
             let share = vs.nitro_records as f32 / wheels_in as f32;
-            let way: f32 = if vs.gear < 0 { -1.0 } else if vs.gear == 0 { 0.0 } else { 1.0 };
+            let way = gear_direction(Some(vs.gear)) as f32;
             calls.push((150, ((((body_rows[2] * k) * throttle_in) * share) * way) * mass, Vec3::ZERO));
             // (RB3, A-70093: the view goes out towards NitroFov at NitroFov / NitroFovOutTime a second -
             // also in the tick the burn ends)
@@ -5269,7 +5299,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                 let best = vt.torque_curve.as_ref().map_or(t.engine.s.opt_rpm * 0.104_719_76, |c| c.peak().0);
                 let root = ((vs.engine_w / best) as f64).powf(0.5) as f32;
                 let mut k = (vs.steer * root) * vs.burn;
-                let way: f32 = if vs.gear < 0 { -1.0 } else if vs.gear == 0 { 0.0 } else { 1.0 };
+                let way = gear_direction(Some(vs.gear)) as f32;
                 let first = if vs.drive == 0 { 2 } else { 0 };
                 let hold = vs.wheel_grip[first] * if way < 0.0 { gt.burnout_turn_rev } else { gt.burnout_turn };
                 // (each held wheel's record as it stands: normal +336, sideways +320, sideways speed +292, point +368)
@@ -5785,8 +5815,11 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             let d = vs.stuck_at - body_at;
             super::exact::fma(d.x, d.x, super::exact::fma(d.z, d.z, d.y * d.y))
         };
-        // (the port's own test for the turning: under throttle in a driving gear with a wheel on the ground)
-        let turns = pedal > 0.0 && vs.gear >= 1 && st.wheels.iter().any(|w| w.grounded);
+        // (state 1's turning test: "driving" F-65255 on the chassis's throttle +136, a wheel with a contact
+        // record - mcCarSim's vfunc 11, F-33415, this tick's records as the car's update left them - and a forward gear,
+        // the gearbox's +20 >= 2)
+        let records = contact_count((0..4).filter(|i| !vt.bike || i % 2 == 0).map(|i| vs.wheels[i].record));
+        let turns = driving(Some(vs.gear), pedal) && records != 0 && vs.gear >= 1;
         // (only with no wipeout or bust bit on the chassis, +592 & 0x30; the bust bit is not the port's car's)
         let gate = vs.wipe.is_none();
         let flips = !dbg_flag("MCLA_DBG_NOFLIP");
@@ -7576,6 +7609,45 @@ fn no_gyro() -> bool {
 fn gyro_full() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("MCLA_GYRO_FULL").is_ok())
+}
+
+#[cfg(test)]
+mod getter_tests {
+    /// F-80284, F-65255, F-33415, F-91794 and F-50750 as the original runs them (tools/vehsim_getters_reference.py,
+    /// 9000 cases, testdata/vehsim_getters_ref.txt). A gear index maps to the port's as the gearbox's test has it
+    /// (0 reverse -1, 1 neutral 0, g forward g - 1); indices below 0, which the gearbox never holds, have no port gear
+    /// and are skipped. The nitrous's rest is 0.0 in the game; cases with another rest are skipped.
+    #[test]
+    fn the_getters_match_the_original() {
+        let port_gear = |has: &str, g: &str| -> Option<Option<i32>> {
+            if has == "0" { return Some(None); }
+            let g = u32::from_str_radix(g, 16).unwrap() as i32;
+            if g < 0 { None } else { Some(Some(if g == 0 { -1 } else { g - 1 })) }
+        };
+        let f = |w: &str| f32::from_bits(u32::from_str_radix(w, 16).unwrap());
+        let (mut seen, mut bad) = ([0usize; 5], Vec::new());
+        for line in include_str!("testdata/vehsim_getters_ref.txt").lines() {
+            let (lhs, r3) = line.split_once(" -> ").unwrap();
+            let r3: i32 = r3.parse().unwrap();
+            let w: Vec<&str> = lhs.split(' ').collect();
+            let (k, got) = match w[0] {
+                "dir" => match port_gear(w[1], w[2]) { Some(g) => (0, super::gear_direction(g)), None => continue },
+                "drive" => match port_gear(w[1], w[2]) { Some(g) => (1, super::driving(g, f(w[3])) as i32), None => continue },
+                "count" => {
+                    let n = u32::from_str_radix(w[1], 16).unwrap() as i32;
+                    let bytes = if n > 0 { &w[2..] } else { &w[..0] };
+                    (2, super::contact_count(bytes.iter().map(|b| *b != "0")) as i32)
+                }
+                "nitro" => if f(w[2]) == 0.0 { (3, super::nitro_view_at_rest(f(w[1])) as i32) } else { continue },
+                "lens" => (4, super::super::sst::SsTurbo { fov: f(w[1]), ..Default::default() }.lens_at_rest() as i32),
+                k => panic!("{k}"),
+            };
+            seen[k] += 1;
+            if got != r3 { bad.push(line); }
+        }
+        assert!(bad.is_empty(), "{} mismatches, first {:?}", bad.len(), &bad[..bad.len().min(3)]);
+        assert!(seen.iter().all(|n| *n > 500), "{seen:?}");
+    }
 }
 
 #[cfg(test)]
