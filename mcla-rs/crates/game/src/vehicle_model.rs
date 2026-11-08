@@ -1879,6 +1879,54 @@ mod tests {
         println!("most of one kind on a fitted car: {} ({})", most.0, most.1);
     }
 
+    /// The light set's +24 side (F-27051 / F-75563: 1 for a lamp bone of the part in slot 6 bumper_f, 2 in slot 3
+    /// bumper_r): the glow list's name rule (`vehicles.rs`, `bumper_f*` / `bumper_r*`) gives every disc part the slot
+    /// the part loader gives it, and bumper parts with lamp bones exist (their glows go out with a broken end).
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn bumper_lamp_sides() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let assets = crate::assets::Assets::new(&dir);
+        let root = std::path::Path::new(&dir).join("resources/vehicle");
+        let mut cars: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        cars.sort();
+        let (mut front, mut rear, mut wrong) = (Vec::new(), Vec::new(), Vec::new());
+        for p in cars {
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            let Ok(car) = super::load_car(&assets, &p) else { continue };
+            let mut seen = std::collections::HashSet::new();
+            for pt in car.parts.iter().filter(|pt| !pt.is_base) {
+                if !seen.insert(pt.primary.clone()) {
+                    continue;
+                }
+                let Some(sk) = pt.skeleton.as_deref() else { continue };
+                let lamps = sk.bones.iter().filter(|b| crate::vehicles::glow_bone_kind_pub(&b.name.to_ascii_lowercase()).is_some()).count();
+                if lamps == 0 {
+                    continue;
+                }
+                let pn = pt.primary.to_ascii_lowercase();
+                let by_name = if pn.starts_with("bumper_f") { 1 } else if pn.starts_with("bumper_r") { 2 } else { 0 };
+                let by_slot = match super::classify_slot(&pt.primary, &pt.names) {
+                    super::Slot::BumperF => 1,
+                    super::Slot::BumperR => 2,
+                    _ => 0,
+                };
+                if by_name != by_slot {
+                    wrong.push(format!("{name} {} name {by_name} slot {by_slot}", pt.primary));
+                }
+                match by_name {
+                    1 => front.push(format!("{name} {} x{lamps}", pt.primary)),
+                    2 => rear.push(format!("{name} {} x{lamps}", pt.primary)),
+                    _ => {}
+                }
+            }
+        }
+        println!("front bumper parts with lamps: {} {:?}", front.len(), front.iter().take(12).collect::<Vec<_>>());
+        println!("rear bumper parts with lamps: {} {:?}", rear.len(), rear.iter().take(12).collect::<Vec<_>>());
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert!(!front.is_empty() || !rear.is_empty());
+    }
+
     #[test]
     #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
     fn needle_clips() {
