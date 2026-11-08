@@ -571,7 +571,7 @@ impl Path {
         crate::physics::exact::fma(-self.len(), self.t, self.len())
     }
 
-    /// The point and the derivative at phase `t` (a curve's slot 8: 825868F0, `eval_pair` - dP/du).
+    /// The point and the derivative at phase `t` (a curve's slot 8: F-71868, `eval_pair` - dP/du).
     fn eval(&self, t: f32) -> (Vec3, Vec3) {
         match &self.geom {
             Geom::Tcp(q) => (q.point(t), q.tangent(t)),
