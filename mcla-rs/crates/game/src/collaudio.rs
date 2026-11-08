@@ -6,7 +6,7 @@
 //!
 //! Approximate (written down there): the port's car-to-car and car-to-prop contacts are not the original's (one
 //! point per pair, the prop's own footprint test), so those sounds follow the rule on the port's contacts; the prop
-//! deflection loop and the whoosh are not played yet.
+//! deflection loop is not played yet. The whoosh past a prop (`prop_whoosh`, F-12768) is the original's.
 
 use crate::physics::car::{AudioTouch, CarState};
 use crate::physics::collision::Surface;
@@ -36,6 +36,34 @@ fn be_s16(o: &[u8], at: usize) -> f32 {
 }
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
+}
+
+/// A prop whoosh of the car's scan (F-12768, COLLISION_AUDIO_RULE.md 3.3) from GLOBAL_WHOOSHES `w`: the prop within
+/// [47] of the car (d^2 = x x + (y y + z z) against [47]^2), the relative speed |car vel - prop vel| x 2.237 at least
+/// [51]; ts = (min(rel, [55]) - [51]) / ([55] - [51]), tx = (throttle - [59]) / ([63] - [59]) (not clamped);
+/// volume ([67] + min(ts, tx) ([69] - [67])) x 0.01 dB, pitch the s16 of the integer [71] + ts ([73] - [71]) cents.
+pub fn prop_whoosh(w: &[u8], car: Vec3, car_vel: Vec3, prop: Vec3, prop_vel: Vec3, throttle: f32) -> Option<(f32, f32)> {
+    use crate::sndobj::fmadds;
+    let d = prop - car;
+    let r = be_f32(w, 47);
+    if fmadds(d.x, d.x, fmadds(d.y, d.y, d.z * d.z)) > r * r {
+        return None;
+    }
+    let v = prop_vel - car_vel;
+    let rel = fmadds(v.x, v.x, fmadds(v.y, v.y, v.z * v.z)).sqrt() * MPH;
+    let (lo, hi) = (be_f32(w, 51), be_f32(w, 55));
+    if rel < lo {
+        return None;
+    }
+    let ts = (if rel - hi >= 0.0 { hi } else { rel } - lo) / (hi - lo);
+    let (c0, c1) = (be_f32(w, 59), be_f32(w, 63));
+    let tx = (throttle - c0) / (c1 - c0);
+    let m = if ts - tx >= 0.0 { tx } else { ts };
+    let (v0, v1) = (be_s16(w, 67), be_s16(w, 69));
+    let vol = fmadds(m, v1 - v0, v0) * 0.01;
+    let (p0, p1) = (be_s16(w, 71) as i32, be_s16(w, 73) as i32);
+    let pitch = fmadds((p1 - p0) as f32, ts, p0 as f32) as i32 as i16 as f32;
+    Some((vol, pitch))
 }
 
 /// Who owns the collision sounds of a car (owner +12): the player's car, a racer, anything else.
@@ -328,5 +356,35 @@ impl CollisionAudio {
             out.extend(lib.play_hash(brk, Req { occluder: occ, ..Req::at(pos) }));
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F-12768 run offline on 6,000 cases (tools/prop_whoosh_reference.py): whether the gate is called and its volume and
+    /// pitch, every word equal.
+    #[test]
+    fn prop_whoosh_matches_the_original() {
+        let txt = include_str!("testdata/prop_whoosh_ref.txt");
+        let mut n = 0;
+        for l in txt.lines() {
+            let (lhs, rhs) = l.split_once(" -> ").unwrap();
+            let t: Vec<&str> = lhs.split_whitespace().collect();
+            let f = |i: usize| f32::from_bits(u32::from_str_radix(t[i], 16).unwrap());
+            let mut w = vec![0u8; 75];
+            for (k, at) in [47usize, 51, 55, 59, 63].into_iter().enumerate() {
+                w[at..at + 4].copy_from_slice(&f(k).to_bits().to_be_bytes());
+            }
+            for (k, at) in [67usize, 69, 71, 73].into_iter().enumerate() {
+                w[at..at + 2].copy_from_slice(&(t[5 + k].parse::<i32>().unwrap() as i16).to_be_bytes());
+            }
+            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let got = prop_whoosh(&w, v(9), v(12), v(15), v(18), f(21)).map(|(a, b)| format!("{:08x} {:08x}", a.to_bits(), b.to_bits()));
+            assert_eq!(got.as_deref().unwrap_or("none"), rhs, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 6000);
     }
 }

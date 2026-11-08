@@ -47,6 +47,16 @@ pub fn prop_sound(name: &str) -> u8 {
 }
 
 /// A prop was hit: (position, sound category, impact speed, knocked over?)
+/// A prop near the player's car for the whoosh scan (F-12768): instance (`u32::MAX` none), type name hash, position,
+/// velocity.
+#[derive(Clone, Copy, Debug)]
+pub struct NearProp {
+    pub inst: u32,
+    pub model: u32,
+    pub pos: Vec3,
+    pub vel: Vec3,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct PropHit {
     pub pos: Vec3,
@@ -78,6 +88,8 @@ struct PropEnt {
     scrape: Option<crate::sndobj::Handle>,
     scrape_age: f32,
     age: f32,
+    /// +112: the age at the last whoosh (-FLT_MAX)
+    whoosh: f32,
 }
 
 const MUSIC_SUSPEND: &str = "DYNAMIC_MIXER_MUSIC_SUSPEND";
@@ -198,6 +210,8 @@ pub struct Sound {
     /// the hit props' entities (their occluder keys) and the sounds they still play
     /// each touched prop's entity (the pool of F-44000, here while its sounds play)
     prop_held: Vec<PropEnt>,
+    /// the props near the player's car this frame, for its whoosh scan (main: `Props::near_props`)
+    pub near_props: Vec<NearProp>,
     /// the map effects' sounds (ptxaudio.rs)
     ptx: crate::ptxaudio::PtxSounds,
     /// the player car's performance stages the sounds read: intake, turbo, nitrous
@@ -965,7 +979,7 @@ impl Sound {
                 let e = match held.iter().position(|e| e.key == key) {
                     Some(e) => e,
                     None => {
-                        held.push(PropEnt { key, inst, sounds: Vec::new(), scrape: None, scrape_age: 0.0, age: 0.0 });
+                        held.push(PropEnt { key, inst, sounds: Vec::new(), scrape: None, scrape_age: 0.0, age: 0.0, whoosh: f32::MIN });
                         held.len() - 1
                     }
                 };
@@ -983,6 +997,33 @@ impl Sound {
                 let ent = &mut self.prop_held[e];
                 if coll.prop_scrape(lib, sc.model, sc.rel, at, occ, &mut ent.scrape) {
                     ent.scrape_age = ent.age;
+                }
+            }
+            // the whooshes (F-12768): the player's car past each prop within the scan's reach; on a hit the gate (F-67165)
+            // binds the prop's entity (only when its type has a whoosh, [81] != NULL_SOUND; an existing entity always),
+            // then the whoosh (F-28919): +132 < [68], age >= +112 + 2 s, the one-shot [81] at the prop, +112 = age
+            if let (Some(w), Some(p)) = (lib.game.get_name("GLOBAL_WHOOSHES").map(|o| o.to_vec()), vehicles.cars.iter().find(|c| c.is_player)) {
+                let null = mcla_formats::hash::joaat("NULL_SOUND");
+                for np in self.near_props.iter() {
+                    let Some((vol, pitch)) = crate::collaudio::prop_whoosh(&w, p.state.pos, p.state.vel, np.pos, np.vel, p.input.throttle) else { continue };
+                    let key = key_of(np.inst, np.model, np.pos);
+                    let obj = lib.game.get(np.model).filter(|o| o.first() == Some(&43)).or_else(|| lib.game.get_name("LA_PROP_DEFAULT")).map(|o| o.to_vec());
+                    let Some(obj) = obj else { continue };
+                    let snd = obj.get(81..85).map_or(null, |b| u32::from_be_bytes(b.try_into().unwrap()));
+                    if !self.prop_held.iter().any(|e| e.key == key) && snd == null {
+                        continue;
+                    }
+                    let (e, occ) = bind(&mut self.occl, lib, &mut self.prop_held, np.inst, np.model, np.pos);
+                    let ent = &mut self.prop_held[e];
+                    let live = ent.sounds.iter().filter(|h| lib.playing(**h)).count() + ent.scrape.is_some_and(|h| lib.playing(h)) as usize;
+                    if ent.age < ent.whoosh + 2.0 || live >= obj.get(68).copied().unwrap_or(0) as usize {
+                        continue;
+                    }
+                    let at = prop_matrix(np.inst).map_or(np.pos, |m| Vec3::new(m[3][0], m[3][1], m[3][2]));
+                    if let Some(h) = lib.play_hash(snd, crate::sndobj::Req { pos: Some(at), volume: vol, pitch: pitch as i32, occluder: occ, ..Default::default() }) {
+                        ent.sounds.push(h);
+                    }
+                    ent.whoosh = ent.age;
                 }
             }
             // F-20017, every frame after the occluders' update (above, `occlude`): age += dt, the instance's matrix again
@@ -1003,7 +1044,8 @@ impl Sound {
             }
             self.prop_held.retain_mut(|ent| {
                 ent.sounds.retain(|h| lib.playing(*h));
-                let on = !ent.sounds.is_empty() || ent.scrape.is_some_and(|h| lib.playing(h));
+                // (and 2 s past its last whoosh, F-20017's release rule)
+                let on = !ent.sounds.is_empty() || ent.scrape.is_some_and(|h| lib.playing(h)) || ent.age < ent.whoosh + 2.0;
                 if !on {
                     if let Some(oc) = &mut self.occl {
                         oc.release_prop(ent.key);

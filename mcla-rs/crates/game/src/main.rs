@@ -8372,6 +8372,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             self.sound.menu_cam = self.game.flash_menu.as_ref().filter(|_| self.game.in_menu()).and_then(|m| m.movie.player.get_global("cur_camera")).map(|v| v.to_f32() as i32);
             crate::ticktimes::mark(crate::ticktimes::S::Sound);
+            // the props round the player's car for its whoosh scan (F-12768: the prop list's 3 x 3 cells, then [47] = 6 m)
+            self.sound.near_props = self.vehicles.player().map(|c| self.props.near_props(c.state.pos, 6.0)).unwrap_or_default();
             self.sound.update(a, &self.vehicles, &self.game, &self.police, &self.ability, &self.props.hits, &self.props.scrapes, &|i| self.props.matrix(i), self.cam.pos, right, fwd, rain_snd, horn, self.time_of_day > 19.5 || self.time_of_day < 6.0, &|p: Vec3, q: Vec3| { let d = q - p; let l = d.length(); l > 0.0 && world.collider.raycast(p, d / l, l).is_some() }, &|p: Vec3, q: Vec3| { let d = q - p; let l = d.length(); if l > 0.0 { world.collider.raycast(p, d / l, l).map(|h| h.surface as u8) } else { None } }, Some(&world.collider), dt);
             // the map effects' sounds follow the effect instances (ptxaudio.rs)
             self.sound.effects(&self.fx.instances(), Some(&world.collider));

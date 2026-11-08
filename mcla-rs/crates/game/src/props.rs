@@ -539,6 +539,8 @@ pub struct Props {
     /// and they are drawn where their bodies are (`follow_level`); the collider each level instance is
     level_on: bool,
     level_map: Option<HashMap<(i32, i32, i32), u32>>,
+    /// the velocity of each collider whose prop moves in the physics level this frame (`follow_level`), by collider
+    moving: HashMap<u32, Vec3>,
     /// props a race script may place (ramps, flares): model and its triangles
     race_models: HashMap<String, (usize, Vec<[Vec3; 3]>)>,
     race_buf: Option<wgpu::Buffer>,
@@ -776,7 +778,7 @@ fn prop_mode(shader: &str) -> MatMode {
 
 impl Props {
     pub fn empty() -> Props {
-        Props { hedge_low: HashMap::new(), impostors: None, signal_glows: SignalGlows::default(), glow_buf: None, glow_count: 0, lights: Vec::new(), prop_lamps: Vec::new(), glow_lamps: Vec::new(), glow_cull: Vec::new(), glow_signal: Vec::new(), glow_boxes: Vec::new(), light_grid: HashMap::new(), models: Vec::new(), inst_buf: None, cells: HashMap::new(), instances: 0, insts: Vec::new(), colliders: Vec::new(), gas_stations: Vec::new(), col_grid: HashMap::new(), debris: Vec::new(), hits: Vec::new(), scrapes: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, heads: Vec::new(), signals: Default::default(), race_models: HashMap::new(), race_buf: None, race_runs: Vec::new(), barriers: Vec::new(), barrier_buf: None, barrier_on: 0, emitters: Vec::new(), trash: Vec::new() }
+        Props { hedge_low: HashMap::new(), impostors: None, signal_glows: SignalGlows::default(), glow_buf: None, glow_count: 0, lights: Vec::new(), prop_lamps: Vec::new(), glow_lamps: Vec::new(), glow_cull: Vec::new(), glow_signal: Vec::new(), glow_boxes: Vec::new(), light_grid: HashMap::new(), models: Vec::new(), inst_buf: None, cells: HashMap::new(), instances: 0, insts: Vec::new(), colliders: Vec::new(), gas_stations: Vec::new(), col_grid: HashMap::new(), debris: Vec::new(), hits: Vec::new(), scrapes: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, moving: HashMap::new(), heads: Vec::new(), signals: Default::default(), race_models: HashMap::new(), race_buf: None, race_runs: Vec::new(), barriers: Vec::new(), barrier_buf: None, barrier_on: 0, emitters: Vec::new(), trash: Vec::new() }
     }
 
     pub fn load(gpu: &mut Gpu, world: &mut World, data_dir: &str) -> Props {
@@ -1586,7 +1588,7 @@ impl Props {
             SignalGlows { lit: Vec::new(), cull, buf: None, count: 0, lamps, sizes: four("sm_fSignalGlowSizes", [4.52, 5.25, 8.7675, 10.0]), intensities: four("sm_fSignalGlowIntensitys", [4.52, 5.0, 5.0, 3.0]) }
         };
         let impostors = impostor::Impostors::new(gpu, data_dir, &mut models, &imp_types);
-        Props { hedge_low, impostors, signal_glows, glow_buf, glow_count: glows.len() as u32, lights, prop_lamps, glow_lamps, glow_boxes, glow_cull, glow_signal, light_grid, models, inst_buf, cells, instances: total, insts, colliders, gas_stations, col_grid, debris: Vec::new(), hits: Vec::new(), scrapes: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, heads, signals, race_models, race_buf: None, race_runs: Vec::new(), barriers, barrier_buf, barrier_on: 0, emitters, trash: load_resource_file(&Path::new(data_dir).join("resources/city/sc/0xad0a8b94.r66")).map(|r| trash_rails(&r)).unwrap_or_default() }
+        Props { hedge_low, impostors, signal_glows, glow_buf, glow_count: glows.len() as u32, lights, prop_lamps, glow_lamps, glow_boxes, glow_cull, glow_signal, light_grid, models, inst_buf, cells, instances: total, insts, colliders, gas_stations, col_grid, debris: Vec::new(), hits: Vec::new(), scrapes: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, moving: HashMap::new(), heads, signals, race_models, race_buf: None, race_runs: Vec::new(), barriers, barrier_buf, barrier_on: 0, emitters, trash: load_resource_file(&Path::new(data_dir).join("resources/city/sc/0xad0a8b94.r66")).map(|r| trash_rails(&r)).unwrap_or_default() }
     }
 
     /// Keep the effects of the particle props near the camera playing, and the litter on the
@@ -2151,6 +2153,26 @@ impl Props {
 
     /// A prop instance's matrix now as rows (x, y, z axes, origin; w 0 / 1): the port's instance turns by its unit
     /// rotation and scales x / z by its width and y by its height, which is how it read the original's matrix.
+    /// The props within `r` of `p` (the 40 m prop list cells round the car that the car's audio scan walks, F-12768):
+    /// each one's instance, type name hash, position (its matrix's) and velocity (its physics body's, 0 at rest).
+    pub fn near_props(&self, p: Vec3, r: f32) -> Vec<crate::sound::NearProp> {
+        let mut out = Vec::new();
+        let (c0, c1) = (col_cell(p - Vec3::splat(r + 3.0)), col_cell(p + Vec3::splat(r + 3.0)));
+        for cx in c0.0..=c1.0 {
+            for cz in c0.1..=c1.1 {
+                let Some(list) = self.col_grid.get(&(cx, cz)) else { continue };
+                for &i in list {
+                    let c = &self.colliders[i as usize];
+                    let pos = self.matrix(c.inst).map_or(c.pos, |m| Vec3::new(m[3][0], m[3][1], m[3][2]));
+                    if pos.distance(p) <= r + 3.0 {
+                        out.push(crate::sound::NearProp { inst: c.inst, model: c.foot.audio, pos, vel: self.moving.get(&i).copied().unwrap_or(Vec3::ZERO) });
+                    }
+                }
+            }
+        }
+        out
+    }
+
     pub fn matrix(&self, inst: u32) -> Option<[[f32; 4]; 4]> {
         let i = self.insts.get(inst as usize)?;
         let (q, k) = i.rot();
@@ -2479,6 +2501,7 @@ impl Props {
         // so the part that stays, a stump at most, is not drawn on its own)
         // (a piece taken out of the simulator asleep, `dormant`, lies at its last matrix and still counts)
         let mut best: HashMap<u32, (f32, usize)> = HashMap::new();
+        self.moving.clear();
         for (k, o) in level.objs.iter().enumerate() {
             let Some(i) = o.inst.or(o.entry.and_then(|e| e.from)) else { continue };
             let Some(mass) = o.body.as_ref().map(|b| b.mass).or(if o.dormant { o.entry.map(|e| e.mass) } else { None }) else { continue };
@@ -2491,6 +2514,9 @@ impl Props {
         }
         for (ci, (_, k)) in best {
             let o = &level.objs[k];
+            if let Some(b) = &o.body {
+                self.moving.insert(ci, b.v);
+            }
             let c = &mut self.colliders[ci as usize];
             if !c.knocked {
                 c.knocked = true;
