@@ -92,7 +92,11 @@ impl Stuck {
         self.timer += dt;
         // (moved: more than 5 m from the anchor, or faster than 10 m/s - tested in states 0 and 1 only;
         // a state change falls through into the next state's test in the same call)
-        let moved = |s: &Self| pos.distance_squared(s.anchor) > Self::RADIUS * Self::RADIUS || speed > Self::MOVING;
+        // (the squared distance fused as the original's: dy dy, then dz, then dx; NaN is not "moved")
+        let moved = |s: &Self| {
+            let d = pos - s.anchor;
+            d.x.mul_add(d.x, d.z.mul_add(d.z, d.y * d.y)) > Self::RADIUS * Self::RADIUS || speed > Self::MOVING
+        };
         if self.state == 0 {
             if moved(self) {
                 self.timer = 0.0;
@@ -1466,6 +1470,50 @@ mod tests {
         assert!((p.brake - 2.0 / 60.0).abs() < 1e-6);
         let p = i.update(Pedals { throttle: 0.2, brake: 1.0, handbrake: 0.0, steer: 0.0 }, false, dt);
         assert_eq!(p.brake, 0.0);
+    }
+
+    /// The stuck detector against the original's F-34336 run offline (tools/stuck_reference.py: 6,000 single calls and
+    /// 300 sequences of 12): state, timer, anchor, turn side, reverse and handbrake, word for word. The angles are the
+    /// port's `aiv::ang_xz` (F-32060) of forward = 0 - matrix row 2 and the points less the position, as the original's.
+    #[test]
+    fn stuck_matches_the_original() {
+        let u = |s: &str| u32::from_str_radix(&s.replace('_', ""), 16).unwrap();
+        let f = |s: &str| f32::from_bits(u(s));
+        let v3 = |w: &[&str]| glam::Vec3::new(f(w[0]), f(w[1]), f(w[2]));
+        let (mut st, mut m, mut dt) = (Stuck::default(), Manoeuvre::default(), 0.0f32);
+        let (mut n, mut bad) = (0, 0);
+        for l in include_str!("testdata/stuck_ref.txt").lines() {
+            let (lhs, rhs) = l.split_once(" -> ").unwrap_or((l, ""));
+            let w: Vec<&str> = lhs.split_whitespace().collect();
+            let car: Vec<&str> = if w[0] == "step" {
+                w[1..14].to_vec()
+            } else {
+                let s = &w[1..];
+                st = Stuck { state: u(s[0]) as u8, timer: f(s[1]), anchor: v3(&s[2..5]) };
+                m = Manoeuvre { turn: u(s[18]) as u8, reverse: u(s[19]) != 0, handbrake: u(s[20]) != 0 };
+                dt = f(s[21]);
+                if w[0] == "seq" {
+                    continue;
+                }
+                s[5..18].to_vec()
+            };
+            let pos = v3(&car[0..3]);
+            let fwd = glam::Vec3::ZERO - v3(&car[3..6]);
+            let to_line = crate::aiv::ang_xz(fwd, v3(&car[7..10]) - pos);
+            let to_corridor = crate::aiv::ang_xz(fwd, v3(&car[10..13]) - pos);
+            st.update(&mut m, pos, f(car[6]), to_line, to_corridor, dt);
+            let r: Vec<&str> = rhs.split_whitespace().collect();
+            let got = [st.state as u32, st.timer.to_bits(), st.anchor.x.to_bits(), st.anchor.y.to_bits(), st.anchor.z.to_bits(), m.turn as u32, m.reverse as u32, m.handbrake as u32];
+            let want: Vec<u32> = r.iter().map(|s| u(s)).collect();
+            n += 1;
+            if got[..] != want[..] {
+                if bad < 5 {
+                    eprintln!("{l}\n   port {got:08x?}");
+                }
+                bad += 1;
+            }
+        }
+        assert_eq!((n, bad), (9900, 0));
     }
 
     /// The rev cycle against the original's F-17058 run offline (tools/revving_reference.py: 800 sequences of 10 frames,
