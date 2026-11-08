@@ -2162,8 +2162,9 @@ pub fn warm_dress(root: &Path, d: &Dress) {
 
 /// A car's files being read on a worker thread, or read (`Vehicles::parsed`).
 enum Parsed {
-    /// (and when it was asked for; with the plain build's CPU part, `prep_car`)
-    Reading(std::thread::JoinHandle<Result<(CarAsset, CarPrep)>>, u64),
+    /// (and when it was asked for; with the CPU part, `prep_car`, of the build in the parts it was asked for - the
+    /// plain build's unless `prefetch_as`)
+    Reading(std::thread::JoinHandle<Result<(CarAsset, CarPrep, CarConfig)>>, u64),
     Read(Arc<CarAsset>, u64),
 }
 
@@ -2189,9 +2190,16 @@ impl Vehicles {
     /// Start reading the car in `dir` on a worker thread, if it is not read or being read (the model built from it
     /// later takes it from there - `load_model_cfg`).
     pub fn prefetch(&mut self, world: &World, dir: &Path) {
+        self.prefetch_as(world, dir, &CarConfig::default());
+    }
+
+    /// The same with the CPU part of the build in `cfg` (a hookman's set-up) made on the worker too; a car read
+    /// already gets that part made ahead (`prepare_ahead`).
+    pub fn prefetch_as(&mut self, world: &World, dir: &Path, cfg: &CarConfig) {
         let key = parsed_key(dir);
         // (a model of the car may be built already, but in other parts: the callers ask only when the build they want is not)
         if self.parsed.contains_key(&key) {
+            self.prepare_ahead(dir, cfg);
             return;
         }
         // (read ones nobody took - a race's guessed grid that was not drawn: the oldest go past PREFETCH_KEEP)
@@ -2204,10 +2212,11 @@ impl Vehicles {
         let stamp = self.parsed_stamp;
         let assets = crate::assets::Assets::new(world.assets.root.clone());
         let d = dir.to_path_buf();
+        let cfg = cfg.clone();
         // (and its plain build's CPU part: the race start builds the grid so before it dresses it)
         let read = move || vehicle_model::load_car(&assets, &d).map(|c| {
-            let p = Vehicles::prep_car(&c, &d, &CarConfig::default());
-            (c, p)
+            let p = Vehicles::prep_car(&c, &d, &cfg);
+            (c, p, cfg)
         });
         if let Ok(h) = std::thread::Builder::new().name("car read".into()).spawn(read) {
             log::info!("vehicles: reading {} ahead", dir.display());
@@ -2261,8 +2270,8 @@ impl Vehicles {
         let car = match self.parsed.remove(&key) {
             Some(Parsed::Read(c, _)) => c,
             Some(Parsed::Reading(h, _)) => {
-                let (c, p) = h.join().map_err(|_| anyhow::anyhow!("car read thread panicked"))??;
-                self.keep_prep(key.clone(), CarConfig::default(), PrepSlot::Ready(p));
+                let (c, p, cfg) = h.join().map_err(|_| anyhow::anyhow!("car read thread panicked"))??;
+                self.keep_prep(key.clone(), cfg, PrepSlot::Ready(p));
                 Arc::new(c)
             }
             None => Arc::new(vehicle_model::load_car(&world.assets, dir)?),
@@ -2272,7 +2281,10 @@ impl Vehicles {
         loop {
             let read: Vec<(String, u64)> = self.parsed.iter().filter_map(|(k, v)| if let Parsed::Read(_, t) = v { Some((k.clone(), *t)) } else { None }).collect();
             let Some(old) = read.iter().min_by_key(|(_, t)| *t).filter(|_| read.len() > PARSED_KEEP) else { break };
-            self.parsed.remove(&old.0);
+            // (freed on a worker: a read car is tens of MB, up to ~55 ms to free in a game tick)
+            if let Some(gone) = self.parsed.remove(&old.0) {
+                let _ = std::thread::Builder::new().name("car free".into()).spawn(move || drop(gone));
+            }
         }
         Ok(car)
     }

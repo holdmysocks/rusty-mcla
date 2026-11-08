@@ -12,6 +12,12 @@ use crate::vehicles::{CarInstance, Vehicles};
 use glam::Vec3;
 use mcla_formats::rage::navmesh::NavMesh;
 
+/// The city's navsys, rail tables and lanes, read once for the whole game (`prewarm` starts the read on a worker as
+/// soon as the data root is known, so the first cruising hookman does not read and parse the nav file in a game tick;
+/// a caller before it is done waits for the same value).
+type RailParts = (&'static mcla_formats::rage::navsys::NavSys, &'static crate::railroute::RailNet, Vec<crate::cruiserail::RailLane>);
+static PARTS: std::sync::OnceLock<Option<RailParts>> = std::sync::OnceLock::new();
+
 thread_local! {
     static RAILS: Option<&'static Rails<'static>> = make_rails();
     /// each cruiser's hold on the traffic as its last update left it: owner -> (state, request, ghost)
@@ -44,17 +50,37 @@ fn removed(v: &mut Vehicles) {
     }
 }
 
-/// The city's rails (navsys lanes, railnet tables), read once.
+/// The city's rails (navsys lanes, railnet tables): this thread's, from the parts read once.
 fn make_rails() -> Option<&'static Rails<'static>> {
+    let (nav, net, lanes) = parts()?;
+    Some(Box::leak(Box::new(Rails::of_lanes(nav, net, lanes.clone()))))
+}
+
+fn parts() -> Option<&'static RailParts> {
+    // (none before the data root is known - and not kept: read once it is)
     let root = crate::vehicles::traffic::DATA_ROOT.get()?;
-    let res = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")).ok()?;
-    let nav: &'static _ = Box::leak(Box::new(mcla_formats::rage::navsys::NavSys::parse(&res).ok()?));
-    let net: &'static _ = Box::leak(Box::new(crate::railroute::RailNet::parse(&res)));
-    Some(Box::leak(Box::new(Rails::new(&res, nav, net))))
+    PARTS
+        .get_or_init(|| {
+            let res = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")).ok()?;
+            let nav: &'static _ = Box::leak(Box::new(mcla_formats::rage::navsys::NavSys::parse(&res).ok()?));
+            let net: &'static _ = Box::leak(Box::new(crate::railroute::RailNet::parse(&res)));
+            Some((nav, net, Rails::lanes(&res, nav)))
+        })
+        .as_ref()
 }
 
 pub fn rails() -> Option<&'static Rails<'static>> {
     RAILS.with(|r| *r)
+}
+
+/// The rails read on a worker (once; at the first `AmbType::load`, when the data root is set).
+pub fn prewarm() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        let _ = std::thread::Builder::new().name("rails".into()).spawn(|| {
+            let _ = parts();
+        });
+    });
 }
 
 /// The car as the brain reads it; what the brain does to it is kept and put on the car afterwards (the car sits in

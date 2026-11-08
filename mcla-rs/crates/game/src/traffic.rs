@@ -96,6 +96,7 @@ impl Default for AmbType {
 impl AmbType {
     pub fn load(root: &std::path::Path, model: &str) -> AmbType {
         let _ = DATA_ROOT.set(root.to_path_buf());
+        crate::cruisedrive::prewarm();
         let d = AmbType::default();
         let (width, length) = bound_size(root, model).unwrap_or((0.0, 0.0));
         let (height, bound_r) = bound_extra(root, model).unwrap_or((0.0, 0.0));

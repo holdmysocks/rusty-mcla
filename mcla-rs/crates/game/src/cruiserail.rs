@@ -33,7 +33,7 @@ const NORM_EPS: f32 = f32::from_bits(0x3727_C5AC);
 
 /// A lane's own fields the rail code reads.
 #[derive(Clone, Copy, Debug, Default)]
-struct RailLane {
+pub(crate) struct RailLane {
     /// +4
     flags: u32,
     /// +0x0c: the stored length (lane slot 20, F-22677)
@@ -169,6 +169,22 @@ pub fn ground(m: &mut Frame, probe: &mut dyn FnMut(Vec3, Vec3) -> Option<(Vec3, 
 impl<'a> Rails<'a> {
     /// The lanes' fields from the navsys resource (lanes in file order, as `RailNet` and `NavSys::curves`).
     pub fn new(res: &Resource, nav: &'a NavSys, net: &'a RailNet) -> Rails<'a> {
+        Rails::of_lanes(nav, net, Rails::lanes(res, nav))
+    }
+
+    /// The rails from their lanes (`lanes`).
+    pub(crate) fn of_lanes(nav: &'a NavSys, net: &'a RailNet, lanes: Vec<RailLane>) -> Rails<'a> {
+        Rails {
+            net,
+            nav,
+            lanes,
+            #[cfg(test)]
+            replay: Default::default(),
+        }
+    }
+
+    /// The lanes' fields from the resource's lane records, each with its first link.
+    pub(crate) fn lanes(res: &Resource, nav: &NavSys) -> Vec<RailLane> {
         let d = &res.data;
         let be = |o: usize| u32::from_be_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]);
         let fl = |o: usize| f32::from_bits(be(o));
@@ -191,13 +207,7 @@ impl<'a> Rails<'a> {
                 x.link.get_or_insert(i);
             }
         }
-        Rails {
-            net,
-            nav,
-            lanes,
-            #[cfg(test)]
-            replay: Default::default(),
-        }
+        lanes
     }
 
     /// Lane slot 20 (F-22677): the stored length.

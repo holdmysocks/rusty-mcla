@@ -116,6 +116,10 @@ pub struct Special {
 }
 
 pub struct Roamers {
+    /// the last route of a man put down (`NavSys::route_through`) and what it was made from (the nav, start, heading,
+    /// points and radius, to the bit): a man whose placing fails is tried again a second later from the same place
+    /// and got the same route from a search of up to ~40 ms each time
+    route_memo: Option<(Vec<u32>, (Vec<Vec3>, usize))>,
     /// The story mission whose series the man just flashed starts, and his (name, car, set-up):
     /// `Game::story_series_start`
     pub series_of: Option<(String, String, String, String)>,
@@ -363,6 +367,7 @@ pub fn rail_place(world: &World, p: Vec3) -> Option<(Vec3, Vec3, Vec3, f32)> {
 impl Roamers {
     pub fn new() -> Roamers {
         Roamers {
+            route_memo: None,
             series_of: None,
             setup_cfg: Default::default(),
             wanted: 2,
@@ -894,7 +899,8 @@ impl Roamers {
             let cfg = &self.setup_cfg[&config];
             if !vehicles.models.iter().any(|x| x.name.eq_ignore_ascii_case(&car) && x.cfg == *cfg) {
                 if let Some(d) = game.car_dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(&car))) {
-                    vehicles.prefetch(world, d);
+                    // (with his set-up's build made on the worker too: not on the game thread when he is put down)
+                    vehicles.prefetch_as(world, d, cfg);
                 }
             }
         }
@@ -960,7 +966,18 @@ impl Roamers {
                     let n = m.pts.len();
                     // three times round
                     let stops: Vec<Vec3> = (0..n * 3).map(|j| m.pts[(next + j) % n]).collect();
-                    let (line, _) = nav.route_through(pos, dir, &stops, 25.0);
+                    let key: Vec<u32> = [nav as *const _ as usize as u64 as u32, ((nav as *const _ as usize as u64) >> 32) as u32, 25f32.to_bits()]
+                        .into_iter()
+                        .chain([pos, dir].iter().chain(stops.iter()).flat_map(|v| v.to_array().map(f32::to_bits)))
+                        .collect();
+                    let (line, _) = match &self.route_memo {
+                        Some((k, r)) if *k == key => r.clone(),
+                        _ => {
+                            let r = nav.route_through(pos, dir, &stops, 25.0);
+                            self.route_memo = Some((key, r.clone()));
+                            r
+                        }
+                    };
                     let at = if line.len() > 8 && !at_reset { line[0] } else { pos };
                     // (set down on the nearest rail with ground under it, as the cruising brain's teleport - `rail_place`; the
                     // loop's point itself can be 30 m off the road, inside a block with no collision: the car fell through the
