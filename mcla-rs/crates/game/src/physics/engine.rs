@@ -60,6 +60,31 @@ pub fn update_prepared(e: PreparedEngine, dt: f32) -> EngineResult {
     out
 }
 
+/// The engine's shake angle (vehEngine +40), the tail of the engine update F-55648: it moves towards 0.05 `share`
+/// (`share` = (torque +16 / torque at best power +20) x inertia, 0 when +20 is not positive) at 0.5 a second, the
+/// steps fused, and stops at it; while the engine runs (+46) it then takes the game's random draw `draw()`, its low
+/// 23 bits made +-1 degree: fma(x, 0x318efa35, -0x3c8efa35). The car parts' blower shake reads it.
+pub fn shake_step(angle: f32, share: f32, running: bool, dt: f32, draw: impl FnOnce() -> u32) -> f32 {
+    let target = share * f32::from_bits(0x3d4c_cccd);
+    let mut a = angle;
+    if a < target {
+        a = dt.mul_add(0.5, a);
+        if a > target {
+            a = target;
+        }
+    } else if a > target {
+        a = -dt.mul_add(0.5, -a);
+        if a < target {
+            a = target;
+        }
+    }
+    if running {
+        let x = (draw() & 0x7F_FFFF) as f32;
+        a += x.mul_add(f32::from_bits(0x318e_fa35), -f32::from_bits(0x3c8e_fa35));
+    }
+    a
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,5 +130,30 @@ mod tests {
             count += 1;
         }
         assert_eq!(count, 4000);
+    }
+
+    /// The shake angle F-55648 (+40) run offline on the whole engine update (tools/engine_shake_reference.py): 8,000
+    /// cases (torques, the torque at best power 0 / negative / positive, start angles at and round the target, steps,
+    /// the engine word 0 / 1, random generator states) - the angle and the generator's state after equal.
+    #[test]
+    fn shake_step_is_the_originals() {
+        let h = |x: &str| u32::from_str_radix(&x.replace('_', ""), 16).unwrap();
+        let mut n = 0;
+        for line in include_str!("testdata/engine_shake_ref.txt").lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let c: Vec<u32> = case.split(' ').map(h).collect();
+            let w: Vec<u32> = want.split(' ').map(h).collect();
+            let f = |i: usize| f32::from_bits(c[i]);
+            let share = if f(1) > 0.0 { (f(0) / f(1)) * f(2) } else { 0.0 };
+            let mut st = (c[6], c[7]);
+            let a = shake_step(f(3), share, c[5] != 0, f(4), || {
+                let t = 0x5CDC_FAA7u64 * st.0 as u64 + st.1 as u64;
+                st = (t as u32, (t >> 32) as u32);
+                st.0
+            });
+            assert_eq!((a.to_bits(), st.0, st.1), (w[0], w[1], w[2]), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 8000);
     }
 }
