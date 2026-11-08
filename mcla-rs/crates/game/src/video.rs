@@ -19,6 +19,9 @@ pub struct Video {
     tex: Option<egui::TextureHandle>,
     /// (start, end, text)
     pub subs: Vec<(f32, f32, String)>,
+    /// per line of `subs`: a thought (cutscene::SubTable), and the table's placing
+    pub thought: Vec<bool>,
+    pub place: [f32; 4],
     /// any key ends it (attract movie)
     pub any_key: bool,
     /// the sound track next to the frames
@@ -40,7 +43,7 @@ impl Video {
             return None;
         }
         log::info!("video: {} {}x{} {:.0} fps, {:.1} s", name, width, height, fps, frames as f32 / fps);
-        Some(Video { data: std::sync::Arc::new(data), ahead: None, width, height, fps, frames, start: Instant::now(), offset: 0.0, shown: None, tex: None, subs: Vec::new(), any_key: false, audio: dir.join(format!("{name}.mp3")), skipped: None })
+        Some(Video { data: std::sync::Arc::new(data), ahead: None, width, height, fps, frames, start: Instant::now(), offset: 0.0, shown: None, tex: None, subs: Vec::new(), thought: Vec::new(), place: crate::cutscene::PLACE_DEFAULT, any_key: false, audio: dir.join(format!("{name}.mp3")), skipped: None })
     }
 
     /// Restart the clock (call when the sound starts); `at` skips ahead.
@@ -60,6 +63,12 @@ impl Video {
     pub fn subtitle(&self) -> Option<&str> {
         let t = self.time();
         self.subs.iter().find(|s| t >= s.0 && t < s.1).map(|s| s.2.as_str())
+    }
+
+    /// Whether the line shown now is a thought.
+    pub fn subtitle_thought(&self) -> bool {
+        let t = self.time();
+        self.subs.iter().position(|s| t >= s.0 && t < s.1).is_some_and(|i| self.thought.get(i).copied().unwrap_or(false))
     }
 
     /// Frame `i` decoded into the picture shown.

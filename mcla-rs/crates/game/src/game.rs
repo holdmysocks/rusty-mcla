@@ -1059,6 +1059,8 @@ pub struct Game {
     pub map_races: Vec<usize>,
     /// a story scene is running: letterbox + this subtitle instead of the HUD
     pub cine: Option<String>,
+    /// the playing scene's subtitle placing and whether the line is a thought (cutscene::Cutscenes::subtitle_style)
+    pub cine_style: ([f32; 4], bool),
     /// collectable barrels found (indices into the script's list)
     pub collected: Vec<u16>,
     /// rim size chosen in the garage (inches; 0 = stock)
@@ -1652,6 +1654,7 @@ impl Game {
             mission_races: Vec::new(),
             map_races: Vec::new(),
             cine: None,
+            cine_style: (crate::cutscene::PLACE_DEFAULT, false),
             collected: Vec::new(),
             rim_inches: 0,
             hydraulics: false,
@@ -4967,9 +4970,10 @@ impl Game {
                 let sc = (screen.height() / 900.0).clamp(0.5, 2.0);
                 let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("movie subs")));
                 if let Some(f) = self.subfont.as_ref() {
-                    // (the film's subtitles: cut_intro's table, position 0.1 / 0.83, size 0.8 / 0.5)
+                    // (the film's subtitles: cut_intro's table, with its placing and thought column)
                     if let Some(sub) = m.subtitle() {
-                        f.draw(&p, screen, ctx.pixels_per_point(), crate::subfont::INTRO_PLACE, sub, egui::Color32::WHITE);
+                        let colour = if m.subtitle_thought() { crate::subfont::THOUGHT } else { egui::Color32::WHITE };
+                        f.draw(&p, screen, ctx.pixels_per_point(), m.place, sub, colour);
                     }
                 } else if let Some(sub) = m.subtitle() {
                     let lines = self.wrap(sub, 15.0 * sc, screen.width() * 0.8);
@@ -10039,7 +10043,8 @@ impl Game {
                     let sub = if plain && !self.opts.subtitles && std::env::var("MCLA_SUBTITLES").is_err() { "" } else { sub.as_str() };
                     // (the original's subtitle text: Arial12 in the table's rect - subfont.rs)
                     if let Some(f) = self.subfont.as_ref().filter(|_| plain) {
-                        f.draw(&p, screen, ctx.pixels_per_point(), crate::subfont::STORY_PLACE, sub, egui::Color32::WHITE);
+                        let (place, thought) = self.cine_style;
+                        f.draw(&p, screen, ctx.pixels_per_point(), place, sub, if thought { crate::subfont::THOUGHT } else { egui::Color32::WHITE });
                     }
                     let sub = if plain && self.subfont.is_some() { "" } else { sub };
                     let lines = self.wrap(sub, 15.0 * sc, screen.width() * 0.8);

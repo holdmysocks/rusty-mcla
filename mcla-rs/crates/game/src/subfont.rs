@@ -230,7 +230,7 @@ impl SubFont {
 
 /// The table's placing of the 18 story scenes (position 0.2 / 0.85, size 0.6 / 0.15).
 pub const STORY_PLACE: [f32; 4] = [0.2, 0.85, 0.6, 0.15];
-/// The film's placing (cut_intro's table: position 0.1 / 0.83, size 0.8 / 0.5).
+/// cut_intro's rows on the disc (position 0.1 / 0.83, size 0.8 / 0.5); the draw reads each table's own (cutscene::SubTable).
 pub const INTRO_PLACE: [f32; 4] = [0.1, 0.83, 0.8, 0.5];
 /// The thought colour (F-94291: 0.75, 0.9, 0.95, packed by F-44647).
 pub const THOUGHT: egui::Color32 = egui::Color32::from_rgb(0xBF, 0xE5, 0xF2);

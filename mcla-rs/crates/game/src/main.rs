@@ -4860,6 +4860,7 @@ impl App {
         self.game.cine_black = self.cine_hold.is_some();
         let subtitles = self.game.opts.subtitles;
         self.game.cine = self.cuts.playing.as_ref().map(|_| self.cuts.subtitle().filter(|_| subtitles).unwrap_or("").to_string());
+        self.game.cine_style = self.cuts.subtitle_style();
         if self.cine_free && self.cine.playing.is_some() {
             // letterbox with the name of the race / what happened
             if let Some(c) = self.cine_caption.clone() {
@@ -13743,6 +13744,10 @@ impl App {
                 // (the film carries the phone call: the subtitles of CUT_INTRO's table)
                 let subs = self.cuts.by_name("CUT_INTRO").map(|i| self.cuts.scenes[i].subs.clone()).unwrap_or_default();
                 if film && self.start_movie("intro", subs, false) {
+                    // (and that table's thought column and placing)
+                    if let (Some(m), Some(i)) = (self.game.movie.as_mut(), self.cuts.by_name("CUT_INTRO")) {
+                        (m.thought, m.place) = (self.cuts.scenes[i].thought.clone(), self.cuts.scenes[i].place);
+                    }
                     log::info!("opening: the film");
                 } else if !hooks::intro_film() && hooks::intro_scene() && std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok()) {
                     // (INTRO FAST, the user's own path - DECISIONS.md D24: the film is left out but the arrival by

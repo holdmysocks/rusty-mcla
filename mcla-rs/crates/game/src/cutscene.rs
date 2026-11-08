@@ -12,6 +12,10 @@ pub struct SceneDef {
     pub name: String,
     /// (start, end, text)
     pub subs: Vec<(f32, f32, String)>,
+    /// per line of `subs`: its `thought` field says TRUE (drawn in the thought colour)
+    pub thought: Vec<bool>,
+    /// the table's placing: position x, y and size w, h (fractions of the screen; subfont::rect)
+    pub place: [f32; 4],
     pub length: f32,
     /// audio stream relative to the converted audio root, if it exists
     pub stream: Option<String>,
@@ -62,32 +66,60 @@ fn fields(line: &str, sep: char) -> Vec<String> {
 /// subtitle draw (F-37072) shows the one of the language. The rows "time correction" / "position" / "size" hold the
 /// placing, not a line.
 pub fn subtitle_lines(dir: &Path, lang: usize) -> Option<Vec<(f32, f32, String)>> {
-    let (text, sep, cols): (String, char, &[usize]) = if let Ok(b) = std::fs::read(dir.join("subtitle.txt")) {
+    subtitle_table(dir, lang).map(|t| t.lines)
+}
+
+/// A scene's subtitle table: the lines of one language, each line's thought flag and the placing.
+pub struct SubTable {
+    pub lines: Vec<(f32, f32, String)>,
+    pub thought: Vec<bool>,
+    pub place: [f32; 4],
+}
+
+/// The placing before the table's rows (the subtitle object's ctor F-94291: x 0.15, y 0.6, w 0.7, h 0.2).
+pub const PLACE_DEFAULT: [f32; 4] = [0.15, 0.6, 0.7, 0.2];
+
+/// The whole table as the loader F-99606 reads it: the rows `position` / `size` set the placing from their time and
+/// end time columns (x / y, w / h); a line is a thought when its `thought` field equals "TRUE" (the loader compares
+/// it with that string; the disc's tables hold only "" and "FALSE", so no line of the game is one).
+pub fn subtitle_table(dir: &Path, lang: usize) -> Option<SubTable> {
+    let (text, sep, cols, tcol): (String, char, &[usize], usize) = if let Ok(b) = std::fs::read(dir.join("subtitle.txt")) {
         let units: Vec<u16> = b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
-        (String::from_utf16_lossy(&units).trim_start_matches('\u{feff}').to_string(), '\t', &[1, 5, 2, 3, 4, 6])
+        (String::from_utf16_lossy(&units).trim_start_matches('\u{feff}').to_string(), '\t', &[1, 5, 2, 3, 4, 6], 7)
     } else {
         let b = std::fs::read(dir.join("subtitle.csv")).ok()?;
-        (b.iter().map(|&b| b as char).collect(), ',', &[1, 5, 2, 3, 4])
+        (b.iter().map(|&b| b as char).collect(), ',', &[1, 5, 2, 3, 4], 6)
     };
     let col = cols.get(lang).copied().unwrap_or(1);
-    let mut subs = Vec::new();
+    let mut t = SubTable { lines: Vec::new(), thought: Vec::new(), place: PLACE_DEFAULT };
     for line in text.lines().skip(1) {
         let f = fields(line.trim_end_matches('\r'), sep);
         if f.len() < 2 {
             continue;
         }
         let Ok(start) = f[0].trim().parse::<f32>() else { continue };
-        if matches!(f[1].trim(), "" | "time correction" | "position" | "size") {
+        let last = f.last().and_then(|e| e.trim().parse::<f32>().ok());
+        match f[1].trim() {
+            "position" => {
+                (t.place[0], t.place[1]) = (start, last.unwrap_or(0.0));
+                continue;
+            }
+            "size" => {
+                (t.place[2], t.place[3]) = (start, last.unwrap_or(0.0));
+                continue;
+            }
+            "" | "time correction" => continue,
+            _ => {}
+        }
+        let s = f.get(col).map_or("", |s| s.trim());
+        if s.is_empty() {
             continue;
         }
-        let t = f.get(col).map_or("", |t| t.trim());
-        if t.is_empty() {
-            continue;
-        }
-        let end = f.last().and_then(|e| e.trim().parse::<f32>().ok()).filter(|e| *e > start).unwrap_or(start + 2.5);
-        subs.push((start, end, t.to_string()));
+        let end = last.filter(|e| *e > start).unwrap_or(start + 2.5);
+        t.lines.push((start, end, s.to_string()));
+        t.thought.push(f.get(tcol).is_some_and(|x| x == "TRUE"));
     }
-    Some(subs)
+    Some(t)
 }
 
 impl Cutscenes {
@@ -100,7 +132,7 @@ impl Cutscenes {
             if !name.to_ascii_uppercase().starts_with("CUT_") {
                 continue;
             }
-            let Some(subs) = subtitle_lines(&dir.join(&name), mcla_formats::strtbl::language()) else { continue };
+            let Some(SubTable { lines: subs, thought, place }) = subtitle_table(&dir.join(&name), mcla_formats::strtbl::language()) else { continue };
             let mut length = subs.last().map_or(4.0, |s| s.1 + 1.5);
             let mut stream = None;
             if let Some(root) = audio_root {
@@ -118,7 +150,7 @@ impl Cutscenes {
                     stream = Some(rel);
                 }
             }
-            c.scenes.push(SceneDef { name: name.to_ascii_uppercase(), subs, length, stream });
+            c.scenes.push(SceneDef { name: name.to_ascii_uppercase(), subs, thought, place, length, stream });
         }
         log::info!("cutscenes: {} story scenes, {} with their dialogue stream", c.scenes.len(), c.scenes.iter().filter(|s| s.stream.is_some()).count());
         c
@@ -193,6 +225,13 @@ impl Cutscenes {
         let p = self.playing.as_ref()?;
         p.def.subs.iter().find(|s| p.t >= s.0 && p.t < s.1).map(|s| s.2.as_str())
     }
+
+    /// The playing scene's placing and whether its current line is a thought.
+    pub fn subtitle_style(&self) -> ([f32; 4], bool) {
+        let Some(p) = self.playing.as_ref() else { return (PLACE_DEFAULT, false) };
+        let i = p.def.subs.iter().position(|s| p.t >= s.0 && p.t < s.1);
+        (p.def.place, i.is_some_and(|i| p.def.thought.get(i).copied().unwrap_or(false)))
+    }
 }
 
 #[cfg(test)]
@@ -202,6 +241,23 @@ mod tests {
     /// The subtitle tables as the original reads them (F-99606): `subtitle.txt` first, the language's column. Every
     /// scene's English from the .txt is the .csv's line for line (so the switch of file changes no English text), the
     /// five languages give their own lines, and the Japanese column is there only in the .txt.
+    #[test]
+    fn subtitle_placing_and_thoughts_from_the_tables() {
+        let Ok(dir) = std::env::var("MCLA_DATA_DIR") else { return };
+        let root = Path::new(&dir).join("tune/cutscene/Story");
+        let Ok(rd) = std::fs::read_dir(&root) else { return };
+        let mut n = 0;
+        for e in rd.flatten().filter(|e| e.path().join("subtitle.txt").exists()) {
+            let t = subtitle_table(&e.path(), 0).unwrap();
+            let intro = e.file_name().to_string_lossy().eq_ignore_ascii_case("CUT_INTRO");
+            assert_eq!(t.place, if intro { crate::subfont::INTRO_PLACE } else { crate::subfont::STORY_PLACE }, "{:?}", e.file_name());
+            assert_eq!(t.thought.len(), t.lines.len());
+            assert!(t.thought.iter().all(|x| !x), "{:?}", e.file_name());
+            n += 1;
+        }
+        assert_eq!(n, 19);
+    }
+
     #[test]
     fn subtitles_in_every_language() {
         let Ok(dir) = std::env::var("MCLA_DATA_DIR") else { return };
