@@ -673,12 +673,6 @@ fn look_rot(c: Vec3) -> Quat {
     Quat::from_mat3(&glam::Mat3::from_cols(a, b, c))
 }
 
-/// about y (F-57591): x' = x cos + z sin, z' = z cos - x sin
-fn rot_y(v: Vec3, a: f32) -> Vec3 {
-    let (s, c) = a.sin_cos();
-    Vec3::new(v.x * c + v.z * s, v.y, v.z * c - v.x * s)
-}
-
 /// about x (F-43547): y' = y cos - z sin, z' = z cos + y sin
 fn rot_x(v: Vec3, a: f32) -> Vec3 {
     // (the guest's sin and cos rounded to f32, the two fused sums of the asm)
@@ -741,22 +735,23 @@ impl Shot {
 }
 
 /// The car's world, as the director's tests see it: `probe(a, b, r)` sweeps a ball of radius
-/// `r` from `a` to `b` through the city and gives the last place it is free when it touches.
+/// `r` from `a` to `b` through the city (a == b: the ball at a) and gives its first touch: the
+/// contact point and the normal, as the original's query result holds them.
 pub trait Probe {
-    fn sweep(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3>;
+    fn sweep(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)>;
     /// the heli's test of its view of the car: the city only, undirected (F-80278 with r10 0)
-    fn heli(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
+    fn heli(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
         self.sweep(a, b, r)
     }
     /// the same sweep against the watched car's own bound alone (F-38041's query: only that
     /// instance, directed)
-    fn own(&mut self, _a: Vec3, _b: Vec3, _r: f32) -> Option<Vec3> {
+    fn own(&mut self, _a: Vec3, _b: Vec3, _r: f32) -> Option<(Vec3, Vec3)> {
         None
     }
 }
 
-impl<F: FnMut(Vec3, Vec3, f32) -> Option<Vec3>> Probe for F {
-    fn sweep(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
+impl<F: FnMut(Vec3, Vec3, f32) -> Option<(Vec3, Vec3)>> Probe for F {
+    fn sweep(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
         self(a, b, r)
     }
 }
@@ -780,7 +775,7 @@ pub struct Director {
     /// the screen's width over its height (the near plane's corner)
     pub aspect: f32,
     /// the lens (degrees) the shared viewport holds: the one last drawn. The tests' ball is sized by it, not by the lens
-    /// of the camera being tested (F-51014 / F-72161 / F-38041 read the viewport's +704 near, +712 / +716 tangents)
+    /// of the camera being tested (F-51014 / F-67414 / F-38041 read the viewport's +704 near, +712 / +716 tangents)
     pub lens: f32,
     /// the drive view's place the frame before (the test of the reverse camera)
     pub drive_eye: Option<Vec3>,
@@ -821,20 +816,24 @@ impl Director {
         self.heli.update(&mut self.rng, tune, &HeliCar::of(car), dt);
     }
 
-    /// the polar camera's place: about the car in the world's frame, pushed in by the city;
-    /// after a hit, pushed out of the car's own bound by a ball swept towards the place from
-    /// 100 times as far out (F-38041), only then (F-72161)
-    fn polar_place(&self, car: &CarView, probe: &mut dyn Probe) -> (Vec3, Quat) {
-        let t = car.at(TARGET);
-        let mut place = t + rot_y(rot_x(POLAR_OFFSET, -self.polar.pitch), self.polar.yaw);
+    /// The polar camera's update F-72161: place = rot_y(yaw, rot_x(-pitch, (0, 1, 7))) + T (T = the car's matrix times
+    /// (0, 0.65, 0)), the look-at rows (F-97951); then the world collision F-67414: a ball (the viewport's near corner +
+    /// 0.25) swept T -> place, on a touch place + ((contact - place) + normal r); after a touch only, the push-out F-38041 ->
+    /// the car's own bound: the ball swept from 100 (place - T) + T to the place, on a touch normal r + contact; the look-at
+    /// rows of the place made orthonormal (F-46571).
+    fn polar_place(&self, car: &HeliCar, probe: &mut dyn Probe) -> (Vec3, [Vec3; 3]) {
+        let t = xform(TARGET, &car.m);
+        let mut place = crate::aiv::rot_y(rot_x(POLAR_OFFSET, -self.polar.pitch), self.polar.yaw) + t;
         let r = self.near_r() + 0.25;
-        if let Some(p) = probe.sweep(t, place, r) {
-            place = p;
-            if let Some(p) = probe.own(t + (place - t) * 100.0, place, r) {
-                place = p;
+        if let Some((c, n)) = probe.sweep(t, place, r) {
+            place = place + (n * r + (c - place));
+            if let Some((c, n)) = probe.own((place - t) * 100.0 + t, place, r) {
+                place = n * r + c;
             }
         }
-        (place, look_rot(place - t))
+        let mut m = look_rows(place - t, Vec3::Y);
+        orthonormal(&mut m);
+        (place, m)
     }
 
     /// The right stick and the triggers while the polar camera is on (F-63907): x, y in
@@ -870,8 +869,8 @@ impl Director {
             }
             HELI => Some((self.heli.place, Quat::from_mat3(&glam::Mat3::from_cols(self.heli.m[0], self.heli.m[1], self.heli.m[2])), self.heli.fov)),
             POLAR => {
-                let (p, r) = self.polar_place(car, probe);
-                Some((p, r, self.polar.fov))
+                let (p, m) = self.polar_place(&HeliCar::of(car), probe);
+                Some((p, Quat::from_mat3(&glam::Mat3::from_cols(m[0], m[1], m[2])), self.polar.fov))
             }
             _ => None,
         }
@@ -1137,52 +1136,57 @@ mod tests {
     }
 
     /// nothing in the way
-    fn open(_: Vec3, _: Vec3, _: f32) -> Option<Vec3> {
+    fn open(_: Vec3, _: Vec3, _: f32) -> Option<(Vec3, Vec3)> {
         None
     }
 
-    /// a world that answers the polar camera's two sweeps and keeps what it was asked
+    /// a world that answers the polar camera's two sweeps (contact, normal) and keeps what it was asked
     struct PolarWorld {
-        world: Option<Vec3>,
-        own: Option<Vec3>,
+        world: Option<(Vec3, Vec3)>,
+        own: Option<(Vec3, Vec3)>,
         asked_own: Vec<(Vec3, Vec3, f32)>,
     }
 
     impl Probe for PolarWorld {
-        fn sweep(&mut self, _: Vec3, _: Vec3, _: f32) -> Option<Vec3> {
+        fn sweep(&mut self, _: Vec3, _: Vec3, _: f32) -> Option<(Vec3, Vec3)> {
             self.world
         }
-        fn own(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
+        fn own(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
             self.asked_own.push((a, b, r));
             self.own
         }
     }
 
-    /// F-72161 -> F-38041: the car's own bound is swept only after the city hit, from T + 100 x
-    /// (place - T) to the place, with the city sweep's ball; its hit is the place.
+    /// F-72161 -> F-38041: the car's own bound is swept only after the city hit, from 100 x
+    /// (place - T) + T to the place, with the city sweep's ball; the places from the touches'
+    /// contact and normal.
     #[test]
     fn polar_push_out() {
         let tune = CamTune::default();
         let c = car();
         let d = Director::new(&tune, 3, &c);
-        let t = c.at(TARGET);
+        let t = xform(TARGET, &HeliCar::of(&c).m);
         let r = d.near_r() + 0.25;
+        let free = crate::aiv::rot_y(rot_x(POLAR_OFFSET, -d.polar.pitch), d.polar.yaw) + t;
         // no city hit: the car's bound is not asked
-        let mut w = PolarWorld { world: None, own: Some(Vec3::ZERO), asked_own: vec![] };
-        let (p, _) = d.polar_place(&c, &mut w);
+        let mut w = PolarWorld { world: None, own: Some((Vec3::ZERO, Vec3::Y)), asked_own: vec![] };
+        let (p, _) = d.polar_place(&HeliCar::of(&c), &mut w);
         assert!(w.asked_own.is_empty());
-        assert_eq!(p, t + rot_y(rot_x(POLAR_OFFSET, -d.polar.pitch), d.polar.yaw));
-        // a city hit without a car hit: the city's place
-        let hit = t + Vec3::new(0.5, 0.2, 1.0);
-        let mut w = PolarWorld { world: Some(hit), own: None, asked_own: vec![] };
-        assert_eq!(d.polar_place(&c, &mut w).0, hit);
-        assert_eq!(w.asked_own, vec![(t + (hit - t) * 100.0, hit, r)]);
+        assert_eq!(p, free);
+        // a city hit without a car hit: off the contact by the ball along the normal
+        let (hit, n) = (t + Vec3::new(0.5, 0.2, 1.0), Vec3::new(0.0, 0.6, 0.8));
+        let at = free + (n * r + (hit - free));
+        let mut w = PolarWorld { world: Some((hit, n)), own: None, asked_own: vec![] };
+        assert_eq!(d.polar_place(&HeliCar::of(&c), &mut w).0, at);
+        assert_eq!(w.asked_own, vec![((at - t) * 100.0 + t, at, r)]);
         // both: the car's
-        let out = t + Vec3::new(0.9, 0.4, 1.8);
-        let mut w = PolarWorld { world: Some(hit), own: Some(out), asked_own: vec![] };
-        let (p, q) = d.polar_place(&c, &mut w);
-        assert_eq!(p, out);
-        assert_eq!(q, look_rot(out - t));
+        let (hit2, n2) = (t + Vec3::new(0.9, 0.4, 1.8), Vec3::Z);
+        let mut w = PolarWorld { world: Some((hit, n)), own: Some((hit2, n2)), asked_own: vec![] };
+        let (p, m) = d.polar_place(&HeliCar::of(&c), &mut w);
+        assert_eq!(p, n2 * r + hit2);
+        let mut want = look_rows(p - t, Vec3::Y);
+        orthonormal(&mut want);
+        assert_eq!(m, want);
     }
 
     /// The own-bound sweep on a hull: a place inside the car is moved to where the ball from
@@ -1283,7 +1287,7 @@ mod tests {
         let c = car();
         let mut d = Director::new(&t, 5, &c);
         // a wall everywhere: only the drive views stay (they take no test)
-        let mut wall = |a: Vec3, _: Vec3, _: f32| Some(a);
+        let mut wall = |a: Vec3, _: Vec3, _: f32| Some((a, Vec3::Y));
         for _ in 0..300 {
             d.time = -1.0;
             d.update(&t, &c, 1.0 / 30.0, &mut wall);
@@ -1537,20 +1541,20 @@ mod original_director_tests {
             calls: Vec<String>,
         }
         impl Rec<'_> {
-            fn take(&mut self, a: Vec3) -> Option<Vec3> {
+            fn take(&mut self, a: Vec3) -> Option<(Vec3, Vec3)> {
                 let i = self.calls.len() - 1;
-                self.ans.get(i).copied().unwrap_or(false).then_some(a)
+                self.ans.get(i).copied().unwrap_or(false).then_some((a, Vec3::Y))
             }
         }
         impl Probe for Rec<'_> {
-            fn sweep(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
+            fn sweep(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
                 let k = if self.calls.is_empty() { format!("P{:08x},{:08x},{:08x},{:08x}", a.x.to_bits(), a.y.to_bits(), a.z.to_bits(), r.to_bits()) } else {
                     format!("W{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x}", a.x.to_bits(), a.y.to_bits(), a.z.to_bits(), b.x.to_bits(), b.y.to_bits(), b.z.to_bits(), r.to_bits())
                 };
                 self.calls.push(k);
                 self.take(a)
             }
-            fn heli(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
+            fn heli(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
                 self.calls.push(format!("H{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x}", a.x.to_bits(), a.y.to_bits(), a.z.to_bits(), b.x.to_bits(), b.y.to_bits(), b.z.to_bits(), r.to_bits()));
                 self.take(a)
             }
@@ -1598,6 +1602,55 @@ mod original_director_tests {
             cases += 1;
         }
         assert!(cases >= 3900, "{cases}");
+    }
+
+    /// The polar camera's update F-72161 with its world collision F-67414 against the original's code
+    /// (tools/replay_polar_reference.py, testdata/replay_polar_ref.txt): 6,000 car matrices, lenses, pitches and yaws, the
+    /// sweep answering with a contact and normal (or nothing) in both; the sweep's arguments, whether the push-out F-38041 is
+    /// asked, the rows shown and the place. (The push-out itself is stubbed: it leaves the place.)
+    #[test]
+    fn polar_update_matches_the_original() {
+        struct W {
+            hit: Option<(Vec3, Vec3)>,
+            calls: Vec<String>,
+        }
+        impl Probe for W {
+            fn sweep(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
+                self.calls.push(format!("W{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x}", a.x.to_bits(), a.y.to_bits(), a.z.to_bits(), b.x.to_bits(), b.y.to_bits(), b.z.to_bits(), r.to_bits()));
+                self.hit
+            }
+            fn own(&mut self, _: Vec3, _: Vec3, _: f32) -> Option<(Vec3, Vec3)> {
+                self.calls.push("O".into());
+                None
+            }
+        }
+        let mut cases = 0;
+        for line in include_str!("testdata/replay_polar_ref.txt").lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split_whitespace().collect();
+            let v: Vec<f32> = w[1..].iter().map(|x| f32::from_bits(h(x))).collect();
+            let r3 = |i: usize| Vec3::new(v[i], v[i + 1], v[i + 2]);
+            let car = HeliCar { m: [r3(4), r3(7), r3(10), r3(13)], vel: Vec3::ZERO };
+            let hit = (w[17] == "1").then(|| (r3(17), r3(20)));
+            let tune = CamTune::default();
+            let cv = CarView { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, top: 1.0 };
+            let mut d = Director::new(&tune, 1, &cv);
+            d.lens = v[0];
+            d.aspect = v[1];
+            d.polar.pitch = v[2];
+            d.polar.yaw = v[3];
+            let mut probe = W { hit, calls: Vec::new() };
+            let (place, m) = d.polar_place(&car, &mut probe);
+            let o: Vec<&str> = b.split_whitespace().collect();
+            let want_calls: Vec<&str> = o.iter().copied().filter(|x| x.starts_with(['W', 'O'])).collect();
+            assert_eq!(probe.calls, want_calls, "{line}");
+            let want: Vec<u32> = o.iter().filter(|x| !x.starts_with(['W', 'O'])).map(|x| h(x)).collect();
+            let mut got: Vec<u32> = m.iter().chain([place].iter()).flat_map(|x| x.to_array().map(f32::to_bits)).collect();
+            got.push(hit.is_some() as u32);
+            assert_eq!(got, want, "{line}");
+            cases += 1;
+        }
+        assert!(cases >= 5900, "{cases}");
     }
 
     #[test]

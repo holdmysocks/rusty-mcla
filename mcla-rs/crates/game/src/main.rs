@@ -15687,27 +15687,29 @@ fn lookback_scene(asked: &mut bool, audio: Option<&mut audio::Audio>, on: bool) 
 
 /// The replay director's tests (replay::Probe, F-51014) on the cameras' level: a ball at a
 /// point (a == b) touching the city or a car, else the ball swept a -> b, directed (F-43031),
-/// the place where it first touches; the heli's look at the car: city only, both ways
+/// its first touch (contact point, normal); the heli's look at the car: city only, both ways
 /// (approx.: the original's undirected sweep F-80278 - the ball at both ends and the sweep in
-/// both directions).
+/// both directions; only whether it touches is used).
 struct ReplayProbe<'a>(&'a physics::camprobe::CamLevel<'a>, Option<physics::camprobe::CamObj>);
 
 impl replay::Probe for ReplayProbe<'_> {
-    fn sweep(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
+    fn sweep(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
         if (b - a).length_squared() < 1e-12 {
-            return (!self.0.contacts(a, r, true, 1).is_empty()).then_some(a);
+            return self.0.contacts(a, r, true, 1).first().map(|c| (c.pos, c.normal));
         }
-        self.0.sweep(a, b, r, true).map(|(t, _)| a + (b - a) * t)
+        self.0.sweep_hit(a, b, r, true).map(|h| (h.contact, h.normal))
     }
-    fn heli(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
+    fn heli(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
         let l = self.0;
-        if !l.contacts(a, r, false, 1).is_empty() || !l.contacts(b, r, false, 1).is_empty() {
-            return Some(a);
+        for p in [a, b] {
+            if let Some(c) = l.contacts(p, r, false, 1).first() {
+                return Some((c.pos, c.normal));
+            }
         }
-        l.sweep(a, b, r, false).or_else(|| l.sweep(b, a, r, false).map(|(t, n)| (1.0 - t, n))).map(|(t, _)| a + (b - a) * t)
+        l.sweep_hit(a, b, r, false).or_else(|| l.sweep_hit(b, a, r, false)).map(|h| (h.contact, h.normal))
     }
-    fn own(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<Vec3> {
-        self.1.as_ref()?.sweep(a, b, r).map(|(t, _)| a + (b - a) * t)
+    fn own(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
+        self.1.as_ref()?.sweep_hit(a, b, r).map(|h| (h.contact, h.normal))
     }
 }
 

@@ -48,6 +48,11 @@ impl CamObj {
 
     /// A ball swept from `a` to `b` against this car alone, directed: the first touch, (t, normal).
     pub fn sweep(&self, a: Vec3, b: Vec3, r: f32) -> Option<(f32, Vec3)> {
+        self.sweep_hit(a, b, r).map(|h| (h.t, h.normal))
+    }
+
+    /// The same sweep with its whole first touch (time, contact point, normal).
+    pub fn sweep_hit(&self, a: Vec3, b: Vec3, r: f32) -> Option<SweepHit> {
         let d = b - a;
         if d.length_squared() < 1e-12 {
             return None;
@@ -57,10 +62,10 @@ impl CamObj {
         if (a + d * t).distance(self.centre) > self.radius + r {
             return None;
         }
-        let mut best: Option<(f32, Vec3)> = None;
+        let mut best: Option<SweepHit> = None;
         for (i, v) in self.tris.iter().enumerate() {
-            if let Some(h) = sweep_polygon(a, d, r, v, self.normals[i]) {
-                if best.map_or(true, |b| h.0 < b.0) {
+            if let Some(h) = sweep_polygon_hit(a, d, r, v, self.normals[i]) {
+                if best.map_or(true, |b| h.t < b.t) {
                     best = Some(h);
                 }
             }
@@ -3466,14 +3471,19 @@ impl<'a> CamLevel<'a> {
     /// A ball swept from `a` to `b`, directed (F-43031 through F-80278): the first touch over
     /// everything, (t, normal).
     pub fn sweep(&self, a: Vec3, b: Vec3, r: f32, cars: bool) -> Option<(f32, Vec3)> {
+        self.sweep_hit(a, b, r, cars).map(|h| (h.t, h.normal))
+    }
+
+    /// The same sweep with its whole first touch (time, contact point, normal).
+    pub fn sweep_hit(&self, a: Vec3, b: Vec3, r: f32, cars: bool) -> Option<SweepHit> {
         let d = b - a;
         if d.length_squared() < 1e-12 {
             return None;
         }
-        let mut best: Option<(f32, Vec3)> = None;
-        let mut take = |h: Option<(f32, Vec3)>| {
+        let mut best: Option<SweepHit> = None;
+        let mut take = |h: Option<SweepHit>| {
             if let Some(h) = h {
-                if best.map_or(true, |b| h.0 < b.0) {
+                if best.map_or(true, |b| h.t < b.t) {
                     best = Some(h);
                 }
             }
@@ -3483,11 +3493,11 @@ impl<'a> CamLevel<'a> {
         self.city.triangles_of_ball(mn, mx, Some(ball), |m, i| {
             let v = &m.tris[i];
             let n = m.faces.get(i).copied().unwrap_or_else(|| (v[1] - v[0]).cross(v[2] - v[0]).normalize_or_zero());
-            take(sweep_polygon(a, d, r, v, n));
+            take(sweep_polygon_hit(a, d, r, v, n));
         });
         if cars {
             for o in &self.cars {
-                take(o.sweep(a, b, r));
+                take(o.sweep_hit(a, b, r));
             }
         }
         best
