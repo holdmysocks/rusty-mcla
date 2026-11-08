@@ -10745,7 +10745,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // (the occlusion test belongs to the rule's second branch alone - large
                         // props 200 .. 250 m off; MCLA_DEBUG_VIEW=118: without it)
                         let lit = halo::lamp_lit(*org, hour);
-                        if !(lit || refl_night) || !lamp_list.holds(*bc, *bw, *br, || !no_occ && occluded.hides_aabb(bx.0, bx.1)) {
+                        // (kind 5 a signal prop, 4 a lamp prop: F-79256's radius rule; the occlusion on the sphere, F-38575)
+                        let kind = if self.props.glow_signal.get(li).copied().unwrap_or(false) { 5 } else { 4 };
+                        if !(lit || refl_night) || !lamp_list.holds(kind, *bc, *bw, *br, || !no_occ && occluded.hides_sphere(*bc, *bw)) {
                             continue;
                         }
                         if refl_night && sig_refl.len() < siglrefl::MAX && !self.props.glow_signal.get(li).copied().unwrap_or(false) {
@@ -10775,7 +10777,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // clause, 300 m, never decides inside the list's reach), or within 20 m)
                     if head_ok.map_or(true, |(k, _)| k != *h) {
                         let (o, bc, bw, br, bx) = self.props.signal_head_cull(*h);
-                        let ok = lamp_list.holds(bc, bw, br, || occluded.hides_aabb(bx.0, bx.1)) && (lamp_list.sphere_in_view(o, 2.0) || o.distance_squared(cam) <= 400.0);
+                        let _ = bx;
+                        let ok = lamp_list.holds(5, bc, bw, br, || occluded.hides_sphere(bc, bw)) && (lamp_list.sphere_in_view(o, 2.0) || o.distance_squared(cam) <= 400.0);
                         head_ok = Some((*h, ok));
                     }
                     if !head_ok.map_or(false, |(_, ok)| ok) {
@@ -11756,9 +11759,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 } else {
                     let no_occ = globals.params[3] == 118.0;
-                    for (((p, c, r), bx), (bc, bw, br, org)) in self.props.glow_lamps.iter().zip(self.props.glow_boxes.iter()).zip(self.props.glow_cull.iter()) {
+                    for (li, (((p, c, r), _bx), (bc, bw, br, org))) in self.props.glow_lamps.iter().zip(self.props.glow_boxes.iter()).zip(self.props.glow_cull.iter()).enumerate() {
                         // (the game's one list of lamp props, taken from the MAIN view: halo::ListView)
-                        if !halo::lamp_lit(*org, self.time_of_day) || !lamp_list.holds(*bc, *bw, *br, || !no_occ && occluded.hides_aabb(bx.0, bx.1)) {
+                        let kind = if self.props.glow_signal.get(li).copied().unwrap_or(false) { 5 } else { 4 };
+                        if !halo::lamp_lit(*org, self.time_of_day) || !lamp_list.holds(kind, *bc, *bw, *br, || !no_occ && occluded.hides_sphere(*bc, *bw)) {
                             continue;
                         }
                         let d = lamp_list.order(*org) as f32 + p.distance(env_eye) * 1.0e-4;

@@ -262,17 +262,16 @@ impl ListView {
         ListView { cam, tan: (fov_y * 0.5).tan(), planes, cell, spiral }
     }
 
-    /// `centre`, `w`: the prop's box centre and half diagonal; `r`: its drawable's radius;
-    /// `hidden`: the occlusion test, asked only for the second branch.
-    pub fn holds(&self, centre: Vec3, w: f32, r: f32, hidden: impl FnOnce() -> bool) -> bool {
-        let r = if r < 0.15 { 1.0 } else { r };
-        let dd = (centre.distance(self.cam) - r).max(0.0);
-        if dd <= 200.0 && 0.0125 * self.tan * dd < r {
-            if 0.1 * self.tan * dd < r || self.planes.iter().all(|p| p.dot(centre.extend(1.0)) >= -w) {
-                return true;
-            }
-        }
-        dd < 250.0 && 0.030_177_67 * dd < r && !hidden()
+    /// Whether a prop is on the lamp and signal list (F-79256's flag 0x2, `visit`): `kind` the object's type
+    /// (4 lamp props, 5 signal props), `centre`, `w` its sphere (+96, the box centre and half diagonal), `r` its
+    /// drawable's radius; `hidden`: the occlusion test (F-38575 on the sphere), asked only when the visit asks it.
+    pub fn holds(&self, kind: i32, centre: Vec3, w: f32, r: f32, hidden: impl FnOnce() -> bool) -> bool {
+        let k = [0.0125 * self.tan, 0.1 * self.tan, 0.030_177_67];
+        let vis = || self.planes.iter().all(|p| p.dot(centre.extend(1.0)) >= -w);
+        // (+156 is the prop's array of light places: set for every prop that has glows, the only ones asked here;
+        // the far global's +8 is 3000, read from the running game - it moves only the value and flag 0x1)
+        let v = visit(self.cam, k, 3000.0, kind, 0, true, r, (centre, w), vis, || if hidden() { 0x1000_0000 } else { 0x2000_0000 });
+        v.map_or(false, |v| v.flags & 0x2 != 0)
     }
 
     /// A sphere inside the view's planes (F-91781: every plane's value + r >= 0).
@@ -288,6 +287,67 @@ impl ListView {
         }
         self.spiral[((z + SPIRAL_R) * (2 * SPIRAL_R + 1) + x + SPIRAL_R) as usize] as u32
     }
+}
+
+/// What F-79256 hands the list's callback for one object (the manager's +116 / +120 / +124).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Visit {
+    /// 0x1 the main view's list, 0x2 the lamp and signal list (also set with 0x30), 0x30 the far list
+    pub flags: u32,
+    /// clamp(R / k1 - R / 2, 0, far x 0.75)
+    pub value: f32,
+    /// max(distance - R, 0)
+    pub dist: f32,
+}
+
+/// F-79256 for one object of the list (its node flagged 0x8000): `cam` the query's camera (+176), `k` its three
+/// size factors (+192 / +196 / +200: 0.0125 tan(fov / 2), 0.1 tan(fov / 2), 0.0125 tan 67.5 deg), `far` the global's
+/// +8, `kind` the object's type (vfunc 1), `skip` its drawable's byte +308 (a lamp prop with 1 is passed over),
+/// `w156` its word +156, `radius` its drawable's +28 (under 0.15: 1.0 for a lamp or signal prop with +156
+/// set), `vis` the view's sphere test (F-29884), `occ` the occlusion's answer (F-38575, mode 2: 0x10000000
+/// hidden, 0x04000000 outside). Distance: dz^2, then dy and dx fused in, a single sqrt. None: not listed.
+/// Checked against the original's code run offline.
+#[allow(clippy::too_many_arguments)]
+pub fn visit(cam: Vec3, k: [f32; 3], far: f32, kind: i32, skip: u8, w156: bool, radius: f32, sphere: (Vec3, f32),
+             vis: impl FnOnce() -> bool, occ: impl FnOnce() -> u32) -> Option<Visit> {
+    if kind == 4 && skip == 1 {
+        return None;
+    }
+    let cap = far * 0.75;
+    let mut r = radius;
+    if r < 0.15 && (kind == 4 || kind == 5) && w156 {
+        r = 1.0;
+    }
+    let c = sphere.0;
+    let (dx, dy, dz) = (cam.x - c.x, cam.y - c.y, cam.z - c.z);
+    let d = dx.mul_add(dx, dy.mul_add(dy, dz * dz)).sqrt() - r;
+    let dd = if d >= 0.0 { d } else { 0.0 };
+    let (mut main, mut lamp, mut far_l) = (false, false, false);
+    if !(k[0] * dd >= r) {
+        if vis() {
+            main = dd <= cap;
+            lamp = dd <= 200.0;
+        } else if !(k[1] * dd >= r) {
+            lamp = dd <= 200.0;
+        }
+    }
+    if !(k[2] * dd >= r) {
+        far_l = dd < 250.0;
+    }
+    let q = r / k[0];
+    let v = -(r * 0.5 - q);
+    let v = if v >= 0.0 { v } else { 0.0 };
+    let value = if v - cap >= 0.0 { cap } else { v };
+    if main || far_l {
+        let o = occ();
+        let ok = o & 0x0400_0000 == 0 && o & 0x1000_0000 == 0;
+        main &= ok;
+        far_l &= ok;
+    }
+    if !(main || lamp || far_l) {
+        return None;
+    }
+    Some(Visit { flags: if far_l { 0x32 } else { 0 } | if lamp { 0x2 } else { 0 } | main as u32, value, dist: dd })
 }
 
 /// One light of the pass as the shader takes it (halo.wgsl `vs_halo`).
@@ -700,6 +760,59 @@ mod signal_lamp_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_list_visit_matches_the_original() {
+        // tools/lamp_list_reference.py: F-79256 run whole on 3,000 lists; every call it makes (the view's sphere test,
+        // the occlusion with its sphere and mode, the callback with the manager's flags, value and distance) in order
+        let text = include_str!("testdata/lamp_list_reference.txt");
+        let hx = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let fl = |s: &str| f32::from_bits(hx(s));
+        let mut blocks: Vec<Vec<&str>> = Vec::new();
+        for l in text.lines() {
+            if l.starts_with("CASE") {
+                blocks.push(Vec::new());
+            }
+            blocks.last_mut().unwrap().push(l);
+        }
+        let (mut n, mut listed, mut fails) = (0, 0, 0);
+        for b in &blocks {
+            let w: Vec<&str> = b[0].split_whitespace().collect();
+            let cam = Vec3::new(fl(w[3]), fl(w[4]), fl(w[5]));
+            let k = [fl(w[7]), fl(w[8]), fl(w[9])];
+            let far = fl(w[11]);
+            let mut mine: Vec<String> = Vec::new();
+            for l in b.iter().filter(|l| l.starts_with("N ")) {
+                let d: Vec<&str> = l.split_whitespace().collect();
+                let i: usize = d[1].parse().unwrap();
+                let hw: u32 = d[2].parse().unwrap();
+                if hw & 0x8000 == 0 {
+                    continue;
+                }
+                let (kind, skip, w156): (u32, u32, u32) = (d[3].parse().unwrap(), d[4].parse().unwrap(), hx(d[5]));
+                let sph = (Vec3::new(fl(d[7]), fl(d[8]), fl(d[9])), fl(d[10]));
+                let (vis, occ): (u32, u32) = (d[11].parse().unwrap(), hx(d[12]));
+                let calls = std::cell::RefCell::new(Vec::new());
+                let v = visit(cam, k, far, kind as i32, skip as u8, w156 != 0, fl(d[6]), sph,
+                    || { calls.borrow_mut().push(format!("VIS {i} 00001400")); vis != 0 },
+                    || { calls.borrow_mut().push(format!("OCC {i} {} {} {} {} 2", d[7], d[8], d[9], d[10])); occ });
+                mine.extend(calls.into_inner());
+                if let Some(v) = v {
+                    mine.push(format!("CB {i} {:08x} {:08x} {:08x} 00000000", v.flags, v.value.to_bits(), v.dist.to_bits()));
+                    listed += 1;
+                }
+            }
+            let theirs: Vec<String> = b.iter().filter(|l| !l.starts_with("N ") && !l.starts_with("CASE")).map(|l| l.to_string()).collect();
+            if mine != theirs {
+                if fails < 4 {
+                    eprintln!("{}: port {:?} original {:?}", b[0], mine, theirs);
+                }
+                fails += 1;
+            }
+            n += 1;
+        }
+        assert!(n == 3000 && listed > 2000 && fails == 0, "{fails} of {n} lists differ ({listed} listed)");
+    }
 
     #[test]
     fn the_gate_lamp_as_recorded() {
