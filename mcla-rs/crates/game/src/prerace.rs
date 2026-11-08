@@ -952,8 +952,8 @@ mod tests {
             let (head, tail) = line.split_once(" -> ").unwrap();
             let h: Vec<&str> = head.split(' ').collect();
             let n: usize = h[0].parse().unwrap();
-            let lo = u32::from_str_radix(h[1], 16).unwrap();
-            let carry = u32::from_str_radix(h[2], 16).unwrap();
+            let lo: u32 = h[1].parse().unwrap();
+            let carry: u32 = h[2].parse().unwrap();
             let ops: Vec<i32> = h[3].split(',').map(|x| x.parse().unwrap()).collect();
             let (picks, state) = tail.split_once(" | ").unwrap();
             let want: Vec<usize> = picks.split(',').map(|x| x.parse().unwrap()).collect();
@@ -969,7 +969,7 @@ mod tests {
             assert_eq!(got, want, "{}", line);
             assert_eq!(p.bags[0].0, order, "{}", line);
             assert_eq!(p.bags[0].1, st[1].parse::<usize>().unwrap(), "{}", line);
-            assert_eq!((p.rng.lo, p.rng.carry), (u32::from_str_radix(st[2], 16).unwrap(), u32::from_str_radix(st[3], 16).unwrap()), "{}", line);
+            assert_eq!((p.rng.lo, p.rng.carry), (st[2].parse::<u32>().unwrap(), st[3].parse::<u32>().unwrap()), "{}", line);
             cases += 1;
         }
         assert_eq!(cases, 3000);
