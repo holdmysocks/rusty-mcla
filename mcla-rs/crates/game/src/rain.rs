@@ -50,6 +50,18 @@ pub struct ConeSetup {
     pub tan: f32,
 }
 
+/// The faded strength the cone pass F-71942 hands F-19533 for a listed lamp `d` metres off with the entry's glow factor
+/// (+112): ((1 - max((d - (300 - 50)) / 50, 0)) x factor) x min(max((d - 20) / 10, 0), 1) x strength, in that order
+/// (a NaN on the way in stays in the far term, the near term takes 0). Lamps nearer than 20 m are skipped by the caller;
+/// beyond 250 x 0.3 = 75 m the pass draws its second (far) cone mesh. `cone_fade_matches_the_original`.
+pub fn cone_fade(d: f32, factor: f32, strength: f32) -> f32 {
+    let (near, far) = ((d - 20.0) / 10.0, (d - (300.0f32 - 50.0)) / 50.0);
+    let near = if near >= 0.0 { near } else { 0.0 };
+    let far = if -far >= 0.0 { 0.0 } else { far };
+    let near = if near - 1.0 >= 0.0 { 1.0 } else { near };
+    (1.0 - far) * factor * near * strength
+}
+
 /// F-19533 for one lamp (pos, colour, dir as the light record's vectors; intensity, ConeAngle, Penumbra), the pass's
 /// pull-back (+52, the original writes 0.2 there after each lamp), longest cone (+56) and edge brightness (+64), and
 /// its three arguments (density, strength x fade, colour weight). The copy F-10025 / set F-25852: cone x 1.077,
@@ -427,7 +439,8 @@ impl Rain {
             if d < 20.0 || d >= CONE_REACH || l.cone == [0.0, 1.0] || !crate::halo::lamp_lit(l.pos, f.hour) {
                 continue;
             }
-            let fade = strength * ((d - 20.0) / 10.0).clamp(0.0, 1.0) * (1.0 - ((d - 250.0) / 50.0).max(0.0));
+            // (the entry's glow factor +112: 1 for the listed lamps, F-59499)
+            let fade = cone_fade(d, 1.0, strength);
             if fade <= 0.0 {
                 continue;
             }
@@ -594,6 +607,45 @@ pub fn draw(pass: &mut wgpu::RenderPass<'_>) {
         pass.set_pipeline(&r.drop_pipeline);
         pass.set_vertex_buffer(0, r.drop_buf.slice(..));
         pass.draw(0..4, 0..r.drop_count);
+    }
+}
+
+#[cfg(test)]
+mod cone_fade_tests {
+    /// F-71942 run offline (`tools/cone_fade_reference.py`; qsort, F-19533 and the mesh draw F-20535 stubbed to print):
+    /// 500 lists, 4,634 entries, 1,813 lamps set up; the gate (density x strength >= 0.01), the 20 m skip, the faded
+    /// strength, density and edge words, the mesh (far beyond 250 x 0.3 m) and the count cleared after.
+    #[test]
+    fn cone_fade_matches_the_original() {
+        let t = include_str!("testdata/cone_fade_reference.txt");
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut lines = t.lines();
+        let (mut lists, mut lamps) = (0, 0);
+        while let Some(l) = lines.next() {
+            let c: Vec<&str> = l.split_whitespace().skip(1).collect();
+            let (dens, stre, edge) = (f32::from_bits(h(c[0])), f32::from_bits(h(c[1])), f32::from_bits(h(c[2])));
+            let ents: Vec<(f32, f32)> = (0..c[3].parse::<usize>().unwrap())
+                .map(|_| {
+                    let e: Vec<u32> = lines.next().unwrap().split_whitespace().skip(1).map(h).collect();
+                    (f32::from_bits(e[0]), f32::from_bits(e[1]))
+                })
+                .collect();
+            if !(dens * stre < 0.01) {
+                for (i, &(d, fac)) in ents.iter().enumerate() {
+                    if d < 20.0 {
+                        continue;
+                    }
+                    let mesh = if d > 250.0f32 * 0.3 { 0xBBBB0000u32 } else { 0xAAAA0000 };
+                    let want = format!("LAMP {:08x} {:08x} {:08x} {:08x} {i}", dens.to_bits(), super::cone_fade(d, fac, stre).to_bits(), edge.to_bits(), mesh);
+                    assert_eq!(lines.next().unwrap(), want, "{l}");
+                    assert_eq!(lines.next().unwrap(), format!("DRAW {mesh:08x} 0000cccc"));
+                    lamps += 1;
+                }
+            }
+            assert_eq!(lines.next(), Some("END 0"), "{l}");
+            lists += 1;
+        }
+        assert_eq!((lists, lamps), (500, 1813));
     }
 }
 
