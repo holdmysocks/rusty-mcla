@@ -93,3 +93,44 @@ fn language_letters_in_the_fonts() {
         }
     }
 }
+
+/// What the movies hold that the button / focus, init-action and HTML text paths of the runtime would need: buttons and
+/// their condition action records, DoInitAction blocks, edit texts with the HTML flag (UI.md, 2026-11-07 tag scan).
+#[test]
+#[ignore]
+fn button_init_and_html_census() {
+    use mcla_flash::swf::{Character, Cmd};
+    let dir = PathBuf::from(std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR")).join("resources/ui");
+    let mut list = Vec::new();
+    movies(&dir, &mut list);
+    for path in list {
+        let m = Movie::parse(&load(&path)).unwrap();
+        let (mut buttons, mut with_cond, mut conds, mut html, mut texts, mut init) = (0, 0, 0, 0, 0, 0);
+        let mut sprites = vec![&m.root];
+        for c in m.chars.iter().flatten() {
+            match c {
+                Character::Button(b) => {
+                    buttons += 1;
+                    conds += b.conditions as usize;
+                    with_cond += (b.conditions > 0) as usize;
+                    for (w, code) in &b.condition_actions {
+                        println!("COND {} {:08x} key {}
+{}", path.file_name().unwrap().to_string_lossy(), w, w >> 25, mcla_formats::avm1::disassemble(code));
+                    }
+                }
+                Character::EditText(t) => {
+                    texts += 1;
+                    html += (t.html != 0) as usize;
+                }
+                Character::Sprite(s) => sprites.push(s),
+                _ => {}
+            }
+        }
+        for s in sprites {
+            for f in &s.frames {
+                init += f.cmds.iter().filter(|c| matches!(c, Cmd::DoInitAction(_))).count();
+            }
+        }
+        println!("CENSUS {}	buttons {}	with_conditions {}	conditions {}	edit_texts {}	html {}	init_actions {}", path.file_name().unwrap().to_string_lossy(), buttons, with_cond, conds, texts, html, init);
+    }
+}

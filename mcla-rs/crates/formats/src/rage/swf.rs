@@ -239,10 +239,15 @@ pub struct Sprite {
 }
 
 /// Button: its state records (`+12`, count byte `+21`; the 8-byte condition
-/// action records at `+16` / `+22` are not read, see `docs/UI.md`).
+/// action records at `+16` are not read, only their count `+22`, see `docs/UI.md`).
 #[derive(Debug, Clone)]
 pub struct Button {
     pub records: Vec<ButtonRecord>,
+    /// +22: how many condition action records the button has
+    pub conditions: u8,
+    /// the 8-byte condition records at `+16`: the condition word (SWF BUTTONCONDACTION bits, the key code in the top
+    /// byte >> 1) and the actions (pointer `+4`, read as a DoAction block); the runtime does not run them
+    pub condition_actions: Vec<(u32, Code)>,
 }
 
 /// One 40-byte button record as the button draw F-28198 reads it.
@@ -752,7 +757,14 @@ impl<'a> Parser<'a> {
                 .collect(),
             None => Vec::new(),
         };
-        Button { records }
+        let conditions = rd.u8(o + 22);
+        let condition_actions = match rd.ptr(o + 16) {
+            Some(a) => (0..conditions as usize)
+                .map(|i| (rd.u32(a + 8 * i), rd.ptr(a + 8 * i + 4).map(|c| self.actions(c + 2)).unwrap_or_else(|| Code::from(&[0u8][..]))))
+                .collect(),
+            None => Vec::new(),
+        };
+        Button { records, conditions, condition_actions }
     }
 
     fn edit_text(&self, o: usize) -> EditText {
