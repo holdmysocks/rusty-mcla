@@ -2529,17 +2529,24 @@ fn rail_blocked(env: &Env, me: usize, q: &TcpRail, width: f32, mask: u32, lift: 
 /// instance word set. The rows and the place are the car's instance as the frame started (`Other::inst`). F-39379
 /// answers 0 at once for a cab or a trailer (the type's +111 / +112: the caller's `semi`); F-82779 has no such test.
 /// (The other excluded word of a car with +500 & 0x20 is not ported: the port's riders have no cab proxy.)
+/// The footprint probe's segment (F-39379 / F-82779 before F-57005): from the instance's rows and place, the half
+/// length and width (F-88657 slots 24 / 16, halved) and the frame's parity. Equal bit for bit to 162 probes recorded in
+/// the running original (`probe_segment_matches_the_recording`).
+fn probe_segment(inst: &[Vec3; 4], hl: f32, hw: f32, odd: bool) -> (Vec3, Vec3) {
+    let [row0, row1, row2, pos] = *inst;
+    let side = if odd { 0.675 * hw } else { -(0.675 * hw) };
+    let base = row1 * 0.75 + pos;
+    let base = row0 * side + base;
+    let along = 0.9 * hl;
+    (row2 * along + base, row2 * -along + base)
+}
+
 fn probe_hit(env: &Env, me: usize, inst: &[Vec3; 4], hl: f32, hw: f32) -> bool {
     use crate::physics::camprobe::{segment_level, LevelFilter};
     // (F-33765's rows and F-58860's place: the instance as the frame started - the state check F-94409 runs first in
     // the behaviour frame F-87488 and the new pose reaches the instance only after it, through slot 4 F-74063 in the
     // car update; F-82779 in state 8 follows and moves before its probe but the instance is still the frame's start)
-    let [row0, row1, row2, pos] = *inst;
-    let side = if env.parity { 0.675 * hw } else { -(0.675 * hw) };
-    let base = row1 * 0.75 + pos;
-    let base = row0 * side + base;
-    let along = 0.9 * hl;
-    let (a, b) = (row2 * along + base, row2 * -along + base);
+    let (a, b) = probe_segment(inst, hl, hw, env.parity);
     let excluded = [if me < env.level.ncars { rail_car_inst(me) } else { 0 }];
     let filter = LevelFilter { include: 14366, states: 7, excluded: &excluded };
     let mask = 512u32 << crate::tcp_rail::MATERIAL_SHIFT;
@@ -5472,6 +5479,29 @@ mod verify_lanes_tests {
 
 #[cfg(test)]
 mod tests {
+    /// The footprint probe's segment against the running original: 162 probes of riders in state 6 recorded at F-57005
+    /// (work/traffic-detail/probe, the recorder's Q lines) with the instance at the car update's entry (U), which the
+    /// recording shows is the matrix the probe reads (equal in all 162; the cars moved up to 0.27 m a frame).
+    #[test]
+    fn probe_segment_matches_the_recording() {
+        let txt = include_str!("testdata/probe_seg_rec.txt");
+        let mut n = 0;
+        for l in txt.lines().filter(|l| !l.starts_with('#') && !l.is_empty()) {
+            let (inp, out) = l.split_once(" | ").unwrap();
+            let v: Vec<f32> = inp.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            let w: Vec<f32> = out.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            assert!(v.len() == 15 && w.len() == 6);
+            let r = |k: usize| Vec3::new(v[3 * k], v[3 * k + 1], v[3 * k + 2]);
+            let (a, b) = super::probe_segment(&[r(0), r(1), r(2), r(3)], v[12], v[13], v[14] != 0.0);
+            let got = [a.x, a.y, a.z, b.x, b.y, b.z];
+            for k in 0..6 {
+                assert_eq!(got[k].to_bits(), w[k].to_bits(), "case {n} word {k}: {got:?} vs {w:?}");
+            }
+            n += 1;
+        }
+        assert_eq!(n, 162);
+    }
+
     use super::*;
 
     #[test]
