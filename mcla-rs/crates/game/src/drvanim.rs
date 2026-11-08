@@ -1370,6 +1370,50 @@ mod tests {
         assert!(n > 10_000, "{n}");
     }
 
+    /// The unfiltered add-subtract F-89611 ('U') and the add dispatcher F-97665 with no filter and one layout ('D')
+    /// against the original's code run offline (work/driverlight/addu/addu_ref.py): both are the filtered add with
+    /// every weight 1, the port's op 6 without a filter.
+    #[test]
+    fn the_unfiltered_add_matches_the_original() {
+        let text = include_str!("testdata/drvanim_addu_ref.txt");
+        let (mut n, mut bad, mut modes) = (0, 0, [0; 2]);
+        for line in text.lines() {
+            let (case, want) = line.split_once(" ->").unwrap();
+            let mut it = case.split_whitespace();
+            let m = it.next().unwrap();
+            modes[(m == "D") as usize] += 1;
+            let w: Vec<u32> = it.map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let want: Vec<u32> = want.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let k = w[1] as usize;
+            let f = |x: u32| f32::from_bits(x);
+            let (mut d, mut s) = (vec![], vec![]);
+            for i in 0..k {
+                let q = &w[2 + 11 * i..];
+                d.push(FrameDof { flags: q[1] as u8, v: [f(q[2]), f(q[3]), f(q[4]), f(q[5])] });
+                s.push(FrameDof { flags: q[6] as u8, v: [f(q[7]), f(q[8]), f(q[9]), f(q[10])] });
+            }
+            let wts = vec![1.0; k];
+            frame_add_filtered(&mut d, &s, &wts, f(w[0]));
+            for i in 0..k {
+                let wi = f(w[0]);
+                // (the add's scaled integer path reads a stack word it never wrote: not compared)
+                if d[i].flags & 0xF > 2 && s[i].flags & DOF_NO_VALUE == 0 && wi.abs() > W_LO && (wi - 1.0).abs() > W_LO {
+                    continue;
+                }
+                let got = [d[i].flags as u32, d[i].v[0].to_bits(), d[i].v[1].to_bits(), d[i].v[2].to_bits(), d[i].v[3].to_bits()];
+                n += 1;
+                if got[..] != want[5 * i..5 * i + 5] {
+                    if bad < 8 {
+                        eprintln!("{line}\n  dof {i}: got {got:08x?}");
+                    }
+                    bad += 1;
+                }
+            }
+        }
+        assert_eq!(bad, 0, "{bad} of {n} DOFs differ");
+        assert!(n > 8_000 && modes[0] > 1400 && modes[1] > 1400, "{n} {modes:?}");
+    }
+
     /// The clip sampler (F-47152 -> F-12216) against the original's code run offline on the Challenger 70 player pack
     /// (work/drvmachine/sample_ref.py): 720 samples of 180 clips, every DOF (vectors' x y z, quaternions' four words).
     /// Skipped without the disc's data.
