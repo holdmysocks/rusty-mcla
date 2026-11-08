@@ -4929,9 +4929,12 @@ impl Vehicles {
                     }
                 }
                 // a race path's car let go of by its path (unload): no rail, not posed; its speed
-                // +412 is what it measures, |car +208| (F-30960 with no rail; +416 = 0)
+                // +412 is what it measures, |car +208| (F-30960 with no rail; +416 = 0), on the car update's
+                // 30 Hz tick from the place change (F-53150)
                 10 => {
-                    r.v = c.state.vel.length();
+                    if let Some(v) = r.lock.track(c.state.pos, dt) {
+                        r.v = measured_speed(v);
+                    }
                     c.state.vel = Vec3::ZERO;
                     continue;
                 }
