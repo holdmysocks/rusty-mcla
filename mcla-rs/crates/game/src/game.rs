@@ -4236,6 +4236,12 @@ impl Game {
             let ids: Vec<usize> = self.race.as_ref().map(|r| r.participants.clone()).unwrap_or_default();
             for i in ids {
                 let Some(c) = vehicles.cars.get_mut(i) else { continue };
+                // (the core's grid set-up resets each racer's car before BrainRacing_SetupRace: mcCarSim's
+                // reset F-47310 -> mcCarNitro's F-40379, the shot count from the racer's built tune)
+                if !c.is_player {
+                    c.nitro_reset();
+                }
+                let shots = c.state.nitro_shots;
                 let tune = c.model.aitunes.clone().map(|t| std::sync::Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&t.base, &t.mods, c.perf)));
                 let perf = c.perf;
                 let name = c.model.name.clone();
@@ -4249,7 +4255,7 @@ impl Game {
                 }
                 let mut b = crate::brain::Brain::setup_race(course, tune.clone(), ai.opponent, laps, desired, rubber.is_some());
                 b.rubber = rubber.clone();
-                log::info!("race: racer {} ({}) brain: {} goals, opponent bit {}, perf {:.2}, aiv MaxSpeed {:.1}", i, name, b.plan.goals.len(), ai.opponent, perf, tune.max_speed);
+                log::info!("race: racer {} ({}) brain: {} goals, opponent bit {}, perf {:.2}, aiv MaxSpeed {:.1}, nitro {}", i, name, b.plan.goals.len(), ai.opponent, perf, tune.max_speed, shots);
                 log::debug!("race: racer {} goals {:?}", i, b.plan.goals.iter().take(8).map(|g| (g.centre().x as i32, g.centre().z as i32, g.w as i32, g.checkpoint(), g.is_checkpoint())).collect::<Vec<_>>());
                 ai.brain.0 = Some(Box::new(b));
                 // (the port's own off-road lines - offroad.rs, main.rs - are not this racer's any more)
@@ -4370,6 +4376,7 @@ impl Game {
                 finished_now = true;
             }
         }
+        let mut lap_nitro: Vec<usize> = Vec::new();
         for (i, c) in vehicles.cars.iter().enumerate() {
             if race.finish_time[i].is_some() || race.kind == RaceKind::Payback {
                 continue;
@@ -4428,7 +4435,18 @@ impl Game {
                     if c.is_player {
                         finished_now = true;
                     }
+                } else if !c.is_player && race.kind == RaceKind::Race && race.rivals_checkpoints.is_none() && race.laps > 1 && race.next[i] % race.lap_len.max(1) == 0 {
+                    // a lap done, not the last: OrderedCheckpointCore 0x2cfb, Racer_ResetNitros (F-24381) on
+                    // every racer - count = most where below (the player's lap refill is main.rs's)
+                    lap_nitro.push(i);
                 }
+            }
+        }
+        for i in lap_nitro {
+            let st = &mut vehicles.cars[i].state;
+            log::info!("race: racer {} lap done, nitro {} -> {}", i, st.nitro_shots, st.nitro_shots.max(st.nitro_max));
+            if st.nitro_shots < st.nitro_max {
+                st.nitro_shots = st.nitro_max;
             }
         }
         // (test hook: MCLA_RACE_END=<place>[,<seconds>] ends a race that many seconds after GO
