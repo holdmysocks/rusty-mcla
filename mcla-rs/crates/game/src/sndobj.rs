@@ -26,6 +26,24 @@ struct WaveInfo {
     loop_ms: Option<f32>,
 }
 
+/// A converted bank folder's `_index.tsv`: (file name, wave hash, wave info) per wave.
+fn read_index(dir: &Path) -> Vec<(String, u32, WaveInfo)> {
+    let mut v = Vec::new();
+    if let Ok(t) = std::fs::read_to_string(dir.join("_index.tsv")) {
+        for l in t.lines() {
+            let c: Vec<&str> = l.split('\t').collect();
+            let (Some(name), Some(h)) = (c.first(), c.get(1).and_then(|h| u32::from_str_radix(h, 16).ok())) else { continue };
+            let loop_start = c.get(5).and_then(|v| v.parse().ok()).unwrap_or(-1);
+            let headroom = c.get(6).and_then(|v| v.parse().ok()).unwrap_or(0);
+            let (samples, rate) = (c.get(2).and_then(|v| v.parse::<u32>().ok()), c.get(3).and_then(|v| v.parse::<u32>().ok()).filter(|r| *r > 0));
+            let ms = |n: Option<u32>| Some(wave_ms(n?, rate?));
+            let loop_ms = if loop_start >= 0 { ms(Some(loop_start as u32)) } else { None };
+            v.push((name.to_string(), h, WaveInfo { file: dir.join(format!("{name}.wav")), loop_start, headroom, dur_ms: ms(samples), loop_ms }));
+        }
+    }
+    v
+}
+
 /// F-13862: a header sample count to whole ms, floor(n / (rate x 0.001)) in f32 (the fsel floor of the original)
 fn wave_ms(samples: u32, rate: u32) -> f32 {
     (samples as f32 / (rate as f32 * 0.001)).floor()
@@ -580,6 +598,8 @@ pub struct SoundLib {
     /// bank name hash -> a mod's wave bank folder on disk (banks the game's audio does not have; modfs.rs)
     mod_banks: HashMap<u32, PathBuf>,
     waves: HashMap<u32, Arc<HashMap<u32, WaveInfo>>>,
+    /// a converted bank folder's waves by file name (the speech takes `play_clip` plays)
+    dir_waves: HashMap<PathBuf, Arc<HashMap<String, WaveInfo>>>,
     /// stream channel hash -> (converted .mp3, the stream's lowest channel headroom)
     /// a stream channel: its file, headroom and its bank's longest wave in whole ms (F-46175)
     stream_of: Option<HashMap<u32, (PathBuf, i16, i32)>>,
@@ -864,6 +884,7 @@ impl SoundLib {
             bank_dir,
             mod_banks,
             waves: HashMap::new(),
+            dir_waves: HashMap::new(),
             stream_of: None,
             clips: HashMap::new(),
             clip_uses: 0,
@@ -1280,19 +1301,7 @@ impl SoundLib {
             Some(d) => d.clone(),
             None => self.root.join(self.bank_dir.get(&bank)?),
         };
-        let mut m = HashMap::new();
-        if let Ok(t) = std::fs::read_to_string(dir.join("_index.tsv")) {
-            for l in t.lines() {
-                let c: Vec<&str> = l.split('\t').collect();
-                let (Some(name), Some(h)) = (c.first(), c.get(1).and_then(|h| u32::from_str_radix(h, 16).ok())) else { continue };
-                let loop_start = c.get(5).and_then(|v| v.parse().ok()).unwrap_or(-1);
-                let headroom = c.get(6).and_then(|v| v.parse().ok()).unwrap_or(0);
-                let (samples, rate) = (c.get(2).and_then(|v| v.parse::<u32>().ok()), c.get(3).and_then(|v| v.parse::<u32>().ok()).filter(|r| *r > 0));
-                let ms = |n: Option<u32>| Some(wave_ms(n?, rate?));
-                let loop_ms = if loop_start >= 0 { ms(Some(loop_start as u32)) } else { None };
-                m.insert(h, WaveInfo { file: dir.join(format!("{name}.wav")), loop_start, headroom, dur_ms: ms(samples), loop_ms });
-            }
-        }
+        let m: HashMap<u32, WaveInfo> = read_index(&dir).into_iter().map(|(_, h, w)| (h, w)).collect();
         let a = Arc::new(m);
         self.waves.insert(bank, a.clone());
         Some(a)
@@ -1571,9 +1580,20 @@ impl SoundLib {
 
     /// A converted wave file played as a one-shot voice of `category` (a speech take chosen by the speech system: the
     /// original plays it through its Speech sound, whose category sets the level). `key` = `<bank>/<wave>` below the root.
+    /// The wave info of a converted wave file, from its folder's index.
+    fn wave_at(&mut self, file: &Path) -> Option<WaveInfo> {
+        let dir = file.parent()?.to_path_buf();
+        let name = file.file_stem()?.to_str()?.to_string();
+        let m = self.dir_waves.entry(dir.clone()).or_insert_with(|| Arc::new(read_index(&dir).into_iter().map(|(n, _, w)| (n, w)).collect()));
+        m.get(&name).cloned()
+    }
+
     pub fn play_clip(&mut self, key: &str, category: &str, req: Req) -> Option<Handle> {
         let file = self.root.join(format!("{key}.wav"));
         let clip = self.clip_of(&file, -1)?;
+        // the take's wave info as the Speech sound's F-29703 sets it on the voice (headroom +216, length +212, loop bit), as a
+        // Simple sound's Prepare does
+        let wave = self.wave_at(&file);
         // `category` may name the voice's Speech sound (type 4, e.g. CAREER_SPEECH_DRV_MP_01_SET_POS_YELL: F-70477 plays
         // the take through "<voice>_<SoundPostFix>"): its header (volume, Doppler, category, mask, tristates) is the voice's
         let speech = self.snd.get(joaat(category)).filter(|o| o.first() == Some(&4)).map(|o| audcfg::parse_sound(o).header);
@@ -1586,9 +1606,10 @@ impl SoundLib {
             None => audcfg::parse_header(&o),
         };
         let (vol, pitch) = (h.volume as f32 * 0.01, h.pitch as i32);
-        let dur_ms = clip.frames() as f32 * 1000.0 / clip.rate as f32;
+        let dur_ms = wave.as_ref().and_then(|w| w.dur_ms).unwrap_or(clip.frames() as f32 * 1000.0 / clip.rate as f32);
         let voice = self.voice_id();
-        let root = Node { h, vol, pitch, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, clock: Clock::default(), env0: 0.0, tot: (0, 0), ty_ms: 0, kind: Kind::Wave { wave: None, clip: Some(clip), voice, pos_ms: 0.0, dur_ms, looping: false } };
+        let looping = wave.as_ref().is_some_and(|w| w.loop_start >= 0);
+        let root = Node { h, vol, pitch, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Waiting, t: 0.0, play_t: 0.0, clock: Clock::default(), env0: 0.0, tot: (0, 0), ty_ms: 0, kind: Kind::Wave { wave, clip: Some(clip), voice, pos_ms: 0.0, dur_ms, looping } };
         let id = self.next;
         self.next += 1;
         let timer = Some(self.timer_of(&root.h));
@@ -3677,6 +3698,11 @@ mod tests {
         {
             let i = lib.insts.iter().find(|i| i.id == h.0).unwrap();
             assert_eq!((i.root.h.category, i.root.vol, i.root.h.doppler), (joaat("SPEECH_CAREER_POS"), -3.0, 0));
+            // the take's wave info on the voice as F-29703 sets it: headroom 9.89 dB, floor(82875 / 48) = 1726 ms, no loop
+            match &i.root.kind {
+                Kind::Wave { wave: Some(w), dur_ms, looping, .. } => assert_eq!((w.headroom, *dur_ms, *looping), (989, 1726.0, false)),
+                _ => panic!("no wave info"),
+            }
         }
         let pos = |lib: &SoundLib| match &lib.insts.iter().find(|i| i.id == h.0).unwrap().root.kind {
             Kind::Wave { pos_ms, .. } => *pos_ms,
