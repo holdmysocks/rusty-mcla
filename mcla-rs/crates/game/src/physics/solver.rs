@@ -1,8 +1,8 @@
 //! The original's contact solver for one rigid body against the fixed world, operation for
-//! operation: the rows of an island's contacts (0x825DAD20), the sweeps over them (0x825E8F88
-//! with the kernel 0x825E51E8), the impulses they end in (0x825DCA18), and the second solve
-//! that only moves the body out of what it stands in (0x825DCEB8, 0x825DDCE8, the body's
-//! 0x8259DEA8 / 0x8259DC58 / 0x8259E790). Single precision, the original's order of sums; the
+//! operation: the rows of an island's contacts (F-36821), the sweeps over them (F-67704
+//! with the kernel F-18210), the impulses they end in (F-24076), and the second solve
+//! that only moves the body out of what it stands in (F-49764, F-64140, the body's
+//! F-35494 / F-12566 / F-67019). Single precision, the original's order of sums; the
 //! vector unit's multiply-add is two roundings, the scalar unit's one.
 //!
 //! Checked bit for bit against the original code run offline (tools/solver_reference.py; the
@@ -16,7 +16,7 @@ use super::artic::{
 use super::exact::{cross, dot3, fma, inverse3, recip, world_inverse_inertia};
 use glam::Vec3;
 
-/// How deep a contact may stand (0x828FF840, set by 0x827B4850 from 0x82082810).
+/// How deep a contact may stand (0x828FF840, set by F-36556 from 0x82082810).
 pub const ALLOW: f32 = f32::from_bits(0x3be5_6042);
 /// 0x82084820
 const SKIN: f32 = f32::from_bits(0x3a83_126f);
@@ -28,9 +28,9 @@ const TINY: f32 = f32::from_bits(0x322b_cc77);
 const SMALL: f32 = f32::from_bits(0x3727_c5ac);
 /// "no thickness" (0x82081BF8)
 const NONE: f32 = f32::from_bits(0x7149_f2ca);
-/// The sweeps of either solve (0x8281358C as the game sets it, 0x82590660).
+/// The sweeps of either solve (0x8281358C as the game sets it, F-31205).
 pub const SWEEPS: usize = 4;
-/// R3: the sweeps of an island that holds a jointed body - a thrown rider - (0x825DC5E8 / 0x825DC6C0: island
+/// R3: the sweeps of an island that holds a jointed body - a thrown rider - (F-50131 / F-78290: island
 /// +20 not 0 takes 0x82813590, which nothing writes: the image's 8).
 pub const SWEEPS_JOINTED: usize = 8;
 /// R3: the sweeps of the island being solved, where it is not the plain one (0 = SWEEPS).
@@ -114,7 +114,7 @@ fn columns(m: &[Vec3; 3]) -> [Vec3; 3] {
     [Vec3::new(m[0].x, m[1].x, m[2].x), Vec3::new(m[0].y, m[1].y, m[2].y), Vec3::new(m[0].z, m[1].z, m[2].z)]
 }
 
-/// The two directions across a contact's normal (0x821CE640).
+/// The two directions across a contact's normal (F-95825).
 pub fn basis(n: Vec3) -> [Vec3; 3] {
     let b1 = if n.x.abs() < n.y.abs() { Vec3::new(0.0, n.z, -n.y) } else { Vec3::new(-n.z, 0.0, n.x) };
     let l2 = dot3(b1, b1);
@@ -126,7 +126,7 @@ pub fn basis(n: Vec3) -> [Vec3; 3] {
     [n, b1, cross(n, b1)]
 }
 
-/// The inverse of the block in place (0x825DE528): by its lower half, each pivot kept above a
+/// The inverse of the block in place (F-68939): by its lower half, each pivot kept above a
 /// floor of its trace's hundred-thousandth.
 fn block_inverse(k: &[Vec3; 3]) -> [Vec3; 3] {
     let (m00, m10, m11, m20, m21, m22) = (k[0].x, k[1].x, k[1].y, k[2].x, k[2].y, k[2].z);
@@ -182,7 +182,7 @@ impl State {
 }
 
 impl Row {
-    /// 0x825E4FE8, 0x825E5110 (0x825E4C40, 0x825DE528).
+    /// F-13531, F-36219 (F-91803, F-68939).
     fn new(body: &Body, state: &State, c: &Contact) -> Row {
         let basis = basis(c.normal);
         let r = c.on_body - body.at;
@@ -202,7 +202,7 @@ impl Row {
         Row { neg: Vec3::ZERO, bias: Vec3::ZERO, basis, bcol, arm, jcol, kcol: columns(&block_inverse(&k)), c: cc, mu: c.friction }
     }
 
-    /// One visit of the kernel (0x825E51E8); returns the step's squares.
+    /// One visit of the kernel (F-18210); returns the step's squares.
     fn visit(&mut self, s: &mut State, omega: f32) -> Vec3 {
         let lin = Vec3::new(dot3(self.basis[0], s.vel), dot3(self.basis[1], s.vel), dot3(self.basis[2], s.vel));
         let ang = Vec3::new(dot3(self.arm[0], s.ang), dot3(self.arm[1], s.ang), dot3(self.arm[2], s.ang));
@@ -217,7 +217,7 @@ impl Row {
     }
 }
 
-/// 0x825E8F88: what the rows start with is given first (0x825E8B90), then the sweeps, until one
+/// F-67704: what the rows start with is given first (F-64443), then the sweeps, until one
 /// changes nothing.
 fn sweeps(rows: &mut [Row], s: &mut State, omega: f32) {
     for i in 0..rows.len() {
@@ -257,16 +257,25 @@ pub(super) fn cone(x: Vec3, c: Vec3, mu: f32) -> Vec3 {
     if 0.0 > nn { Vec3::ZERO } else { -(d * k - x) }
 }
 
-/// What the tick's forces will add to the velocity of the body's point `p` (0x8259D528).
+/// What the tick's torque will add to the body's turning rate, F-14402: the torque +352 x dt in the body's frame
+/// (rows +208 ..), times the inverse moments +176, back in the world's; nothing for a torque of 0 in x, y and z.
+pub(super) fn turn_change(body: &Body, dt: f32) -> Vec3 {
+    if body.torque == Vec3::ZERO {
+        return Vec3::ZERO;
+    }
+    let t = body.torque * dt;
+    let local = Vec3::new(dot3(body.rows[0], t), dot3(body.rows[1], t), dot3(body.rows[2], t)) * body.inv_moments;
+    let cols = columns(&body.rows);
+    Vec3::new(dot3(cols[0], local), dot3(cols[1], local), dot3(cols[2], local))
+}
+
+/// What the tick's forces will add to the velocity of the body's point `p` (F-64437).
 fn pending(body: &Body, p: Vec3, dt: f32) -> Vec3 {
     let lin = body.force * (body.inv_mass * dt);
     if body.torque == Vec3::ZERO {
         return lin;
     }
-    let t = body.torque * dt;
-    let local = Vec3::new(dot3(body.rows[0], t), dot3(body.rows[1], t), dot3(body.rows[2], t)) * body.inv_moments;
-    let cols = columns(&body.rows);
-    let dw = Vec3::new(dot3(cols[0], local), dot3(cols[1], local), dot3(cols[2], local));
+    let dw = turn_change(body, dt);
     let r = p - body.at;
     let yzx = |a: Vec3| Vec3::new(a.y, a.z, a.x);
     let zxy = |a: Vec3| Vec3::new(a.z, a.x, a.y);
@@ -284,7 +293,7 @@ pub struct Solved {
     pub turning: Vec3,
 }
 
-/// The velocity solve (0x825DE200). The contacts' `kept` and `impulse` are written.
+/// The velocity solve (F-68693). The contacts' `kept` and `impulse` are written.
 pub fn velocity(body: &Body, contacts: &mut [Contact], dt: f32, inv_dt: f32) -> Solved {
     let mut sum = 0.0f32;
     for c in contacts.iter() {
@@ -321,7 +330,7 @@ pub fn velocity(body: &Body, contacts: &mut [Contact], dt: f32, inv_dt: f32) -> 
         c.kept = p;
         let inv = inverse3(&row.bcol);
         c.impulse = ((inv[0] * p.x + inv[1] * p.y) + inv[2] * p.z) * bounce;
-        // (the body's 0x8259DE60)
+        // (the body's F-96615)
         impulse = impulse + c.impulse;
         turning = turning + cross(c.on_body - body.at, c.impulse);
     }
@@ -348,7 +357,7 @@ fn unit_or_x(v: Vec3) -> Vec3 {
     }
 }
 
-/// The body's direct push (0x8259DC58): `by` added to what is pending, less its share along
+/// The body's direct push (F-12566): `by` added to what is pending, less its share along
 /// what is pending already; no longer than 100 m.
 pub fn direct(pending: Vec3, by: Vec3) -> Vec3 {
     let l2 = dot3(by, by);
@@ -366,11 +375,11 @@ pub fn direct(pending: Vec3, by: Vec3) -> Vec3 {
     pending + add
 }
 
-/// The push solve (0x825DDCB0 and 0x825DDCE8) on the rows of the velocity solve. `margins`:
+/// The push solve (F-83361 and F-64140) on the rows of the velocity solve. `margins`:
 /// the body's bound's and the world's (bound +112 of the car's composite and of the city's
 /// grid). The contacts' `pushed` is written.
 pub fn push(body: &Body, contacts: &mut [Contact], solved: &mut Solved, dt: f32, inv_dt: f32, margins: (f32, f32), was_deep: bool, turn_left: Vec3) -> Pushed {
-    // (`turn_left`: what body +416 still holds - a turn too small to be applied stays there, 0x8259E790)
+    // (`turn_left`: what body +416 still holds - a turn too small to be applied stays there, F-67019)
     let mut out = Pushed { turn: turn_left, ..Pushed::default() };
     let mut deep = was_deep;
     for (row, c) in solved.rows.iter_mut().zip(contacts.iter()) {
@@ -416,7 +425,7 @@ pub fn push(body: &Body, contacts: &mut [Contact], solved: &mut Solved, dt: f32,
         c.pushed = q;
         let inv = inverse3(&row.bcol);
         let v = (inv[0] * q.x + inv[1] * q.y) + inv[2] * q.z;
-        // (the body's 0x8259DEA8)
+        // (the body's F-35494)
         out.push = v * (body.inv_mass * dt) + out.push;
         let t = cross(c.on_body - body.at, v);
         out.turn = Vec3::new(dot3(icol[0], t), dot3(icol[1], t), dot3(icol[2], t)) * dt + out.turn;
@@ -424,7 +433,7 @@ pub fn push(body: &Body, contacts: &mut [Contact], solved: &mut Solved, dt: f32,
     out
 }
 
-/// Sine and cosine as the vector unit's own routine has them (inside 0x8259E480): the angle
+/// Sine and cosine as the vector unit's own routine has them (inside F-58201): the angle
 /// less the nearest quarter turn, a polynomial each.
 pub(crate) fn sin_cos(x: f32) -> (f32, f32) {
     let f = f32::from_bits;
@@ -441,7 +450,7 @@ pub(crate) fn sin_cos(x: f32) -> (f32, f32) {
     (if k & 2 == 0 { s } else { -s }, if k1 & 2 == 0 { c } else { -c })
 }
 
-/// The rotation by `angle` about the unit vector `axis` as the push's turn builds it (0x8259E480), by rows.
+/// The rotation by `angle` about the unit vector `axis` as the push's turn builds it (F-58201), by rows.
 fn rotation(axis: Vec3, angle: f32) -> [Vec3; 3] {
     let (s, c) = sin_cos(angle);
     let a = axis * s;
@@ -450,13 +459,13 @@ fn rotation(axis: Vec3, angle: f32) -> [Vec3; 3] {
     [(axis * axis.x) * t + Vec3::new(c, a.z, n.y), (axis * axis.y) * t + Vec3::new(n.z, c, a.x), (axis * axis.z) * t + Vec3::new(a.y, n.x, c)]
 }
 
-/// 0x8259E790's test: is the turn large enough to be applied (and cleared)? One that is not stays in
+/// F-67019's test: is the turn large enough to be applied (and cleared)? One that is not stays in
 /// body +416 and the next tick's is added to it.
 pub fn turn_applies(turn: Vec3) -> bool {
     dot3(turn, turn) > f32::from_bits(0x2b8c_bccc)
 }
 
-/// The body's rows with the push solve's turn applied (0x8259E790): nothing below a millionth
+/// The body's rows with the push solve's turn applied (F-67019): nothing below a millionth
 /// of a radian.
 pub fn rows_pushed(rows: &[Vec3; 3], turn: Vec3) -> [Vec3; 3] {
     let l2 = dot3(turn, turn);
@@ -506,8 +515,8 @@ pub struct Touch {
     pub kept: Vec3,
     pub target: Vec3,
     pub impulse: Vec3,
-    /// +164: 0 a contact; a constraint's (0x825B6F78): 2 a rope (a length of 0.01 or more), 1 a
-    /// point (a 256-byte row of its own, 0x825DBFA4)
+    /// +164: 0 a contact; a constraint's (F-83853): 2 a rope (a length of 0.01 or more), 1 a
+    /// point (a 256-byte row of its own, A-81774)
     pub kind: u8,
     /// a side on one of the island's jointed bodies (a thrown rider's part): the row is then of
     /// type 7 (that Side has no body)
@@ -594,15 +603,15 @@ impl Row2 {
             let aa = (wa[0] * arm[i].x + wa[1] * arm[i].y) + wa[2] * arm[i].z;
             let lb = (tb[0] * basis[i].x + tb[1] * basis[i].y) + tb[2] * basis[i].z;
             let ab = (wb[0] * arm_b[i].x + wb[1] * arm_b[i].y) + wb[2] * arm_b[i].z;
-            // (a point constraint's block, 0x825E5CC0: B's linear term before its angular one)
+            // (a point constraint's block, F-72162: B's linear term before its angular one)
             if c.kind == 1 { ((aa + la) + lb) + ab } else { ((aa + la) + ab) + lb }
         });
         if c.kind == 1 {
-            // (no c row, no block of ten thousands: 0x825DE528 on the block as it is)
+            // (no c row, no block of ten thousands: F-68939 on the block as it is)
             return Row2 { row: Row { neg: Vec3::ZERO, bias: Vec3::ZERO, basis, bcol, arm, jcol, kcol: columns(&block_inverse(&k)), c: Vec3::X, mu: 0.0 }, arm_b, jcol_b, sa, sb, kind: 1 };
         }
         let cc = if k[0].x == 0.0 { Vec3::X } else { k[0] * recip(k[0].x) };
-        // (0x825E5110: a row between two sides without bodies is given a block of ten thousands)
+        // (F-36219: a row between two sides without bodies is given a block of ten thousands)
         let kcol = if k[0].x == 0.0 && k[1].y == 0.0 && k[2].z == 0.0 { [Vec3::splat(10000.0); 3] } else { columns(&block_inverse(&k)) };
         Row2 { row: Row { neg: Vec3::ZERO, bias: Vec3::ZERO, basis, bcol, arm, jcol, kcol, c: cc, mu: c.friction }, arm_b, jcol_b, sa, sb, kind: c.kind }
     }
@@ -630,7 +639,7 @@ impl Row2 {
         let ang_a = Vec3::new(dot3(r.arm[0], a.ang), dot3(r.arm[1], a.ang), dot3(r.arm[2], a.ang));
         let ang_b = Vec3::new(dot3(self.arm_b[0], b.ang), dot3(self.arm_b[1], b.ang), dot3(self.arm_b[2], b.ang));
         if self.kind == 1 {
-            // (a point constraint, 0x825E8468 / 0x825E7D78: both ways, no relaxation, no cone)
+            // (a point constraint, F-52995 / F-70556: both ways, no relaxation, no cone)
             let u = ((lin_a + ang_a) - (lin_b + ang_b)) - r.bias;
             let ku = Vec3::new(dot3(r.kcol[0], u), dot3(r.kcol[1], u), dot3(r.kcol[2], u));
             let step = Vec3::ZERO - ku;
@@ -738,7 +747,7 @@ fn states_of(bodies: &[Body]) -> Vec<State> {
     std::iter::once(NO_STATE).chain(bodies.iter().map(State::of)).collect()
 }
 
-/// An island's rows and their sweeps (0x825DAD20, 0x825DC5E8), from the bodies' velocities as
+/// An island's rows and their sweeps (F-36821, F-50131), from the bodies' velocities as
 /// they stand and the contacts' kept multipliers. Nothing is written back.
 pub fn island_solve(bodies: &[Body], touches: &[Touch], dt: f32, inv_dt: f32) -> IslandSolved {
     island_solve_jointed(bodies, touches, &mut [], (0, 0.0), dt, inv_dt)
@@ -775,8 +784,8 @@ pub fn island_solve_jointed(bodies: &[Body], touches: &[Touch], jointed: &mut [A
         }
         let mut row = Row2::new(bodies, &states, c);
         if c.kind == 1 {
-            // (0x825DC0AC: the target minus the two points' pending velocities - not over the island's
-            // elasticity - through the basis as its transpose; no warm start, 0x825E7A70)
+            // (A-48276: the target minus the two points' pending velocities - not over the island's
+            // elasticity - through the basis as its transpose; no warm start, F-90205)
             let pend = |s: &Side| s.body.map_or(Vec3::ZERO, |i| pending(&bodies[i], s.point, dt));
             let v = c.target - (pend(&c.a) - pend(&c.b));
             let b = &row.row.basis;
@@ -911,8 +920,8 @@ pub fn island_apply_jointed(solved: &IslandSolved, jointed: &mut [Articulated]) 
     island_apply_limits(solved, jointed);
 }
 
-/// The contacts' multipliers and impulses as the solve left them (0x825919F8; the same numbers
-/// 0x825DCA18 hands out): `kept` (+128) and `impulse` (+112, the vector that pushes A).
+/// The contacts' multipliers and impulses as the solve left them (F-66979; the same numbers
+/// F-24076 hands out): `kept` (+128) and `impulse` (+112, the vector that pushes A).
 pub fn island_impulses(solved: &IslandSolved, touches: &mut [Touch]) {
     for (row, c) in solved.rows.iter().zip(touches.iter_mut()) {
         let row = match row {
@@ -932,7 +941,7 @@ pub fn island_impulses(solved: &IslandSolved, touches: &mut [Touch]) {
         let p = Vec3::ZERO - row.row.neg;
         c.kept = p;
         let j = rigid_impulse(&row.row.bcol, V4::ZERO.sub(v4(row.row.neg)));
-        // (0x825919F8: a constraint's not times the island's elasticity)
+        // (F-66979: a constraint's not times the island's elasticity)
         c.impulse = v3(if c.kind == 0 { j.mul(V4::splat(solved.bounce)) } else { j });
     }
 }
@@ -956,7 +965,7 @@ fn rigid_impulse(m: &[Vec3; 3], p: V4) -> V4 {
     p.lane(2).madd(rows[2], j)
 }
 
-/// The impulses given to the bodies' accumulators (0x825A20E8 -> 0x8259DE60): per body what
+/// The impulses given to the bodies' accumulators (F-71376 -> F-96615): per body what
 /// +368 and +384 gain, contact by contact, A then B.
 pub fn island_apply(bodies: &[Body], touches: &[Touch]) -> Vec<(Vec3, Vec3)> {
     let mut out = vec![(Vec3::ZERO, Vec3::ZERO); bodies.len()];
@@ -974,7 +983,7 @@ pub fn island_apply(bodies: &[Body], touches: &[Touch]) -> Vec<(Vec3, Vec3)> {
     out
 }
 
-/// The push solve of an island (0x825DCEB8, 0x825DC6C0, 0x825DDCE8) on the rows of its last
+/// The push solve of an island (F-49764, F-78290, F-64140) on the rows of its last
 /// velocity solve. `pushes`: per body what +400 / +416 hold as it begins and end with, and
 /// whether a contact of it stood deeper than the bodies are thick there (+658).
 pub fn island_push(bodies: &[Body], touches: &mut [Touch], solved: &mut IslandSolved, dt: f32, inv_dt: f32, pushes: &mut [Pushed]) {
@@ -1063,7 +1072,7 @@ pub fn island_push_jointed(bodies: &[Body], touches: &mut [Touch], solved: &mut 
         row.row.bias = Vec3::new(ask * inv_dt, 0.0, 0.0);
         row.row.neg = Vec3::ZERO - c.pushed;
     }
-    // (0x825E7D20: every state from rest; the bodies' matrices as they stand now)
+    // (F-54406: every state from rest; the bodies' matrices as they stand now)
     solved.states = states_of(bodies);
     for s in solved.states.iter_mut() {
         s.vel = Vec3::ZERO;
@@ -1194,6 +1203,33 @@ mod tests {
         }
         eprintln!("cases compared {all}, empty islands skipped {empty}, differing {bad}");
         assert_eq!(bad, 0, "{bad} of {all} cases differ");
+    }
+}
+
+#[cfg(test)]
+mod turn_change_tests {
+    use super::*;
+
+    /// F-14402 as the original runs it (tools/turn_change_reference.py, 5000 cases, testdata/turn_change_ref.txt):
+    /// x, y and z equal bit for bit, NaN as NaN. (The routine's w lane is its y - nothing reads it.)
+    #[test]
+    fn turn_change_matches_the_original() {
+        let mut bad = Vec::new();
+        let mut n = 0;
+        for line in include_str!("testdata/turn_change_ref.txt").lines() {
+            let (lhs, rhs) = line.split_once(" -> ").unwrap();
+            let w: Vec<f32> = lhs.split(' ').map(|x| f32::from_bits(u32::from_str_radix(x, 16).unwrap())).collect();
+            let o: Vec<u32> = rhs.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let v = |k: usize| Vec3::new(w[k], w[k + 1], w[k + 2]);
+            let body = Body { at: Vec3::ZERO, rows: [v(0), v(4), v(8)], vel: Vec3::ZERO, ang: Vec3::ZERO, inv_mass: 0.0,
+                inv_moments: v(12), force: Vec3::ZERO, torque: v(16) };
+            let got = turn_change(&body, w[20]);
+            let same = |g: f32, e: u32| g.to_bits() == e || (g.is_nan() && f32::from_bits(e).is_nan());
+            if !(same(got.x, o[0]) && same(got.y, o[1]) && same(got.z, o[2])) { bad.push((line, got)); }
+            n += 1;
+        }
+        assert_eq!(n, 5000);
+        assert!(bad.is_empty(), "{} mismatches, first {:?}", bad.len(), &bad[..bad.len().min(3)]);
     }
 }
 
