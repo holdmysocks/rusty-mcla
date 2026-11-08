@@ -571,11 +571,11 @@ impl Path {
         crate::physics::exact::fma(-self.len(), self.t, self.len())
     }
 
-    /// The point and the derivative (slot 10) at phase `t`.
+    /// The point and the derivative at phase `t` (a curve's slot 8: 825868F0, `eval_pair` - dP/du).
     fn eval(&self, t: f32) -> (Vec3, Vec3) {
         match &self.geom {
             Geom::Tcp(q) => (q.point(t), q.tangent(t)),
-            Geom::Curve(c) => c.eval(t),
+            Geom::Curve(c) => c.eval_pair(t),
         }
     }
 
@@ -596,12 +596,16 @@ impl Path {
     /// The pose the follower stores (F-74567 -> slot 9): the point and the unit derivative; the curve speed +180 is
     /// the arc-line-arc rail's lateral output (0), or on a curve the mean of |dP/dt| here and the last value.
     fn pose(&mut self) -> (Vec3, Vec3) {
-        let (p, d) = self.eval(self.t);
-        self.ds = match self.geom {
-            Geom::Tcp(_) => 0.0,
-            Geom::Curve(_) => {
-                let sp = d.length();
-                if self.ds > 0.0 { (sp + self.ds) * 0.5 } else { sp }
+        // (a curve: slot 9, F-87587 - the point, dP/du and the speed averaged with +180)
+        let (p, d) = match &self.geom {
+            Geom::Tcp(_) => {
+                self.ds = 0.0;
+                self.eval(self.t)
+            }
+            Geom::Curve(c) => {
+                let (p, d, s) = c.pose_slot9(self.t, self.ds);
+                self.ds = s;
+                (p, d)
             }
         };
         (p, d.normalize_or(Vec3::NEG_Z))
@@ -629,7 +633,11 @@ impl Path {
             Geom::Tcp(q) => q.advance(self.t, hub_z.abs() * 0.4),
             Geom::Curve(_) => LaneCurve::advance(self.t, hub_z.abs() * 0.4, self.ds),
         };
-        self.eval(steer_clamp(p)).1
+        match &self.geom {
+            // (slot 10 on a curve: F-26180, `railroute::deriv`)
+            Geom::Curve(c) => crate::railroute::deriv(c, steer_clamp(p)),
+            Geom::Tcp(_) => self.eval(steer_clamp(p)).1,
+        }
     }
 }
 
@@ -996,7 +1004,7 @@ impl Rider {
     pub fn pos(&self, nav: &NavSys) -> Vec3 {
         let l = &nav.links[self.link];
         match nav.curves.get(l.lane) {
-            Some(c) if c.pts.len() >= 2 => c.eval(self.phase(nav)).0,
+            Some(c) if c.pts.len() >= 2 => c.pose_slot9(self.phase(nav), 0.0).0,
             _ => l.a + (l.b - l.a) * (self.s / l.len.max(1e-3)),
         }
     }
@@ -1004,7 +1012,7 @@ impl Rider {
     /// The heading: the curve's derivative at the phase, normalised (F-74567).
     pub fn tangent(&self, nav: &NavSys) -> Vec3 {
         let l = &nav.links[self.link];
-        let d = nav.curves.get(l.lane).map_or(Vec3::ZERO, |c| c.eval(self.phase(nav)).1);
+        let d = nav.curves.get(l.lane).filter(|c| c.pts.len() >= 2).map_or(Vec3::ZERO, |c| c.pose_slot9(self.phase(nav), 0.0).1);
         d.normalize_or(l.tangent_at(self.s / l.len.max(1e-3)))
     }
 
@@ -1013,9 +1021,9 @@ impl Rider {
     fn pose(&mut self, nav: &NavSys) -> (Vec3, Vec3) {
         let l = &nav.links[self.link];
         let Some(c) = nav.curves.get(l.lane).filter(|c| c.pts.len() >= 2) else { return (self.pos(nav), self.tangent(nav)) };
-        let (p, d) = c.eval(self.phase(nav));
-        let sp = d.length();
-        self.ds = if self.ds_lane == l.lane && self.ds > 0.0 { (sp + self.ds) * 0.5 } else { sp };
+        // (slot 9, F-87587: the point, dP/du and the speed averaged with +180 - here only while on the same lane)
+        let (p, d, s) = c.pose_slot9(self.phase(nav), if self.ds_lane == l.lane { self.ds } else { 0.0 });
+        self.ds = s;
         self.ds_lane = l.lane;
         (p, d.normalize_or(l.tangent_at(self.s / l.len.max(1e-3))))
     }
@@ -5012,7 +5020,7 @@ impl Vehicles {
                     None
                 } else {
                     match r.state {
-                        1 => nav.links.get(r.link).and_then(|l| nav.curves.get(l.lane)).filter(|cv| cv.pts.len() >= 2).map(|cv| cv.eval(steer_look(r.t, r.ds, hub_z)).1),
+                        1 => nav.links.get(r.link).and_then(|l| nav.curves.get(l.lane)).filter(|cv| cv.pts.len() >= 2).map(|cv| crate::railroute::deriv(cv, steer_look(r.t, r.ds, hub_z))),
                         6..=8 => r.path.as_ref().map(|p| p.look(hub_z)),
                         9 => r.route.as_ref().map(|rt| rt.look(hub_z)),
                         _ => None,
@@ -8861,7 +8869,7 @@ impl Route {
     /// The drawn steer's look on the rail the car is on (F-37033: slot 6 then slot 10).
     fn look(&self, hub_z: f32) -> Vec3 {
         match &self.rails[self.i] {
-            RouteRail::Curve(c) => c.eval(steer_look(self.t, self.ds, hub_z)).1,
+            RouteRail::Curve(c) => crate::railroute::deriv(c, steer_look(self.t, self.ds, hub_z)),
             RouteRail::Turn(p) => p.look(hub_z),
         }
     }

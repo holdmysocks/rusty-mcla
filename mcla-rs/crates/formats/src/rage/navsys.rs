@@ -294,6 +294,18 @@ impl LaneCurve {
         (p, dp)
     }
 
+    /// F-87587 (lane slot 9, F-42884; the follower's pose F-74567 calls it with its phase +176 and curve speed +180):
+    /// the point and the derivative dP/du of `eval_pair`, and the curve speed: |dP/du| (`fmuls` y y, `fmadds` z, `fmadds`
+    /// x, `fsqrts`) x TRange, averaged with `prev` ((s + prev) x 0.5) when `prev` is above 0.
+    pub fn pose_slot9(&self, t: f32, prev: f32) -> (Vec3, Vec3, f32) {
+        fn fma(a: f32, b: f32, c: f32) -> f32 {
+            (a as f64).mul_add(b as f64, c as f64) as f32
+        }
+        let (p, d) = self.eval_pair(t);
+        let s = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y)).sqrt() * self.t_range;
+        (p, d, if prev > 0.0 { (s + prev) * 0.5 } else { s })
+    }
+
     /// |dP/dt| at `t` (lane vfunc 11, F-75223)
     pub fn speed(&self, t: f32) -> f32 {
         self.eval(t).1.length()
@@ -2516,6 +2528,45 @@ mod verify_lanes_tests {
     /// F-99015 (point), F-26650 / F-26180 (derivative sum), F-42884 and F-71868 (point, derivative
     /// and speed), F-42559 (speed): `LaneCurve::eval` / `speed` against the original's lane curve
     /// functions on all 10,031 city lanes at 84,547 phases.
+    #[test]
+    /// F-87587 (lane slot 9) against the original's F-42884 on the 84,547 (lane, phase) cases of stage4.py: point,
+    /// derivative and speed (previous speed 0 and 3.0), every bit.
+    #[test]
+    #[ignore = "requires user's extracted data (MCLA_DATA_DIR) and the original's reference csv"]
+    fn lane_slot9_matches_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let bytes = std::fs::read(std::path::Path::new(&root).join("resources/city/sc/0x9960fcd8.r66")).unwrap();
+        let data = bytes[16..].to_vec();
+        let virtual_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let res = Resource { rtype: 66, flags: 0, virtual_size, physical_size: data.len() - virtual_size, data };
+        let nav = NavSys::parse(&res).unwrap();
+        let dir = std::env::var("MCLA_VERIFY_LANES").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../work/verify-people/lanes"));
+        let cases = std::fs::read_to_string(dir.join("cases4.txt")).unwrap();
+        let orig = std::fs::read_to_string(dir.join("stage4_original.csv")).unwrap();
+        let u = |s: &str| s.parse::<u32>().unwrap();
+        let (mut n, mut bad, mut old_bad) = (0usize, Vec::new(), 0usize);
+        for (c, o) in cases.lines().zip(orig.lines().skip(1)) {
+            let lane = usize::from_str_radix(c.split(' ').next().unwrap(), 16).unwrap();
+            let t = f32::from_bits(u32::from_str_radix(c.split(' ').nth(1).unwrap(), 16).unwrap());
+            let v: Vec<&str> = o.split(',').collect();
+            let curve = &nav.curves[lane];
+            let (p, d, s0) = curve.pose_slot9(t, 0.0);
+            let (p3, _, s3) = curve.pose_slot9(t, 3.0);
+            let got = [p.x, p.y, p.z, d.x, d.y, d.z, s0, p3.x, p3.y, p3.z, s3].map(f32::to_bits);
+            let want = [u(v[9]), u(v[10]), u(v[11]), u(v[13]), u(v[14]), u(v[15]), u(v[17]), u(v[18]), u(v[19]), u(v[20]), u(v[22])];
+            let (op, od) = curve.eval(t);
+            if [op.x, op.y, op.z].map(f32::to_bits) != [want[0], want[1], want[2]] || od.length().to_bits() != want[6] {
+                old_bad += 1;
+            }
+            if got != want && bad.len() < 10 {
+                bad.push((n, lane, t, curve.degree, got, want));
+            }
+            n += 1;
+        }
+        println!("{n} cases; old eval / speed differ on {old_bad}");
+        assert!(bad.is_empty(), "{bad:?}");
+    }
+
     #[test]
     #[ignore = "requires user's extracted data (MCLA_DATA_DIR) and the original's reference csv"]
     fn lane_curve_eval_against_the_original() {
