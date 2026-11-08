@@ -117,6 +117,18 @@ pub const PUSH_SCALE: f32 = 0.033_333_335;
 /// speed (+224), `struck_yaw` the struck body's turning rate about the vertical (+292, the flagged branch's side).
 /// `flagged`: the instance carries archetype type flags 0x0C (never, here: see the file's head).
 /// The draws are the shared MWC's, in the order x1, x2, x3 and (RandomSide, unflagged) x4; a 23-bit float each.
+/// F-91892, the speed factor: 0 unless the speed is above 0 (NaN too: the original's "not greater" branch), the speed over
+/// ThresholdSpeed below it, else 1 (a NaN threshold too)
+pub fn speed_factor(speed: f32, threshold: f32) -> f32 {
+    if !(speed > 0.0) {
+        0.0
+    } else if speed < threshold {
+        speed / threshold
+    } else {
+        1.0
+    }
+}
+
 pub fn strike(t: &Tune, flagged: bool, struck_yaw: f32, rows: &[Vec3; 3], speed: f32, rng: &mut Mwc) -> Strike {
     let mut f = t.force;
     let mut q = Vec3::ZERO;
@@ -140,8 +152,7 @@ pub fn strike(t: &Tune, flagged: bool, struck_yaw: f32, rows: &[Vec3; 3], speed:
     }
     let mut amp = t.shake_scale;
     if t.scale_by_speed {
-        // (F-91892: 0 at rest, 1 from ThresholdSpeed up, linear between)
-        let k = if speed <= 0.0 { 0.0 } else if speed >= t.threshold_speed { 1.0 } else { speed / t.threshold_speed };
+        let k = speed_factor(speed, t.threshold_speed);
         amp *= k;
         q *= k;
         f *= k;
@@ -346,6 +357,21 @@ mod tests {
         let t = Tune { random_side: false, scale_by_speed: true, ..Tune::FILE };
         let s = strike(&t, false, 0.0, &ROWS, 10.0, &mut Mwc { lo: 5, carry: 1 });
         assert_eq!((s.push, s.amp), (Vec3::new(200.0, 25.0, -250.0), 0.5));
+    }
+
+    #[test]
+    fn speed_factor_matches_the_original() {
+        // tools/agro_speed_reference.py: F-91892 run offline, 3,072 speeds and thresholds (0, -0, NaN, inf, the threshold and its neighbours)
+        let data = include_str!("../testdata/agro_speed_ref.txt");
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut n = 0;
+        for line in data.lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let got = speed_factor(f32::from_bits(h(w[1])), f32::from_bits(h(w[2])));
+            assert_eq!(got.to_bits(), h(w[4]), "{line}");
+            n += 1;
+        }
+        assert!(n > 3000, "{n}");
     }
 
     #[test]
