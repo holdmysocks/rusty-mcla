@@ -131,6 +131,23 @@ pub enum Event {
     ArrestScene,
 }
 
+/// The Pursuit's Delay state in the tactic's FSM update (F-95322): an ask of CatchUp is applied first (the Delay ends:
+/// `hold` = 0, CatchUp entered and ticked in this update), else the tick F-50798 asks CatchUp when the state's time > the
+/// hold, then the time + dt (F-88920). A hold of 0 is no Delay (its enter F-10824 asks CatchUp inside the begin).
+fn delay_step(hold: &mut f32, t: &mut f32, ask: &mut bool, dt: f32) {
+    if *hold <= 0.0 {
+        return;
+    }
+    if *ask {
+        (*hold, *t, *ask) = (0.0, 0.0, false);
+        return;
+    }
+    if *t > *hold {
+        *ask = true;
+    }
+    *t += dt;
+}
+
 /// A cruiser's state in the pull-over or pursuit tactic (GitHub #17; docs/reference/hookmen/pursuit_tactics.md).
 /// Pursuit (F-68032's FSM): CatchUp, AlongSide, Block, Halt (Delay is `flee_hold`, Search `Heat::Search`, Arrest the
 /// port's busted test); pull-over (F-36876's): CatchUp, AvoidCollision (`Avoid`), Halt.
@@ -1473,6 +1490,9 @@ pub struct Police {
     /// the pursuit after a bolt from the ticket starts with its cruisers held this long (the Pursuit
     /// tactic's Delay state, F-10824 / F-50798: request +20 = the bolt's time x fPullOverFleeDelayScale)
     flee_hold: f32,
+    /// the Delay state's time (its +8, from 0 at the enter) and its ask of CatchUp (the FSM's +16), applied at the next update
+    flee_t: f32,
+    flee_ask: bool,
     /// each pursuing cruiser's tactic state (by car uid), and the target's speed at the last update (tactic +64)
     tacs: HashMap<u32, CopTac>,
     last_tspeed: f32,
@@ -1646,6 +1666,8 @@ impl Police {
             ticketing: false,
             grace: 0.0,
             flee_hold: 0.0,
+            flee_t: 0.0,
+            flee_ask: false,
             speed_level: 0,
             speed_top: 0,
             sec: [0.0; 7],
@@ -2347,6 +2369,7 @@ impl Police {
         self.fled = true;
         self.score = self.score.max(self.tun.get("iPursuitLawBreakScore", 600.0));
         self.flee_hold = secs * self.tun.get("fPullOverFleeDelayScale", 2.0);
+        (self.flee_t, self.flee_ask) = (0.0, false);
         self.last_known = at;
         self.fine = self.law_fines();
         self.lost = 0.0;
@@ -4162,7 +4185,7 @@ impl Police {
 
         // ---- cruisers ---------------------------------------------------------
         let chasing = matches!(self.heat, Heat::Pursuit | Heat::Search | Heat::PullOver | Heat::Busted);
-        self.flee_hold = (self.flee_hold - dt).max(0.0);
+        delay_step(&mut self.flee_hold, &mut self.flee_t, &mut self.flee_ask, dt);
         if !matches!(self.heat, Heat::Pursuit | Heat::PullOver | Heat::Search) {
             self.tacs.clear();
         }
@@ -5276,6 +5299,35 @@ mod tests {
         p.arrest_posted = false;
         p.kind = TacKind::None;
         assert_eq!(p.hud_state(), 0);
+    }
+
+    #[test]
+    fn pursuit_delay_matches_the_original() {
+        // tools/pursuit_delay_reference.py: the original's Pursuit with a Delay hold, a still world; per hold the first update
+        // that asks CatchUp, the first in CatchUp, and the Delay's time after its last update
+        let mut n = 0;
+        for l in include_str!("testdata/pursuit_delay_ref.txt").lines() {
+            let v: Vec<i64> = l.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            let (mut hold, mut t, mut ask) = (f32::from_bits(v[0] as u32), 0.0f32, false);
+            let (mut ka, mut kc, mut tb) = (if hold <= 0.0 { 0 } else { -1 }, if hold <= 0.0 { 0 } else { -1 }, 0u32);
+            let mut k = 0;
+            while kc < 0 {
+                delay_step(&mut hold, &mut t, &mut ask, 1.0 / 60.0);
+                if hold > 0.0 {
+                    tb = t.to_bits();
+                }
+                if ka < 0 && (ask || hold <= 0.0) {
+                    ka = k;
+                }
+                if hold <= 0.0 {
+                    kc = k;
+                }
+                k += 1;
+            }
+            assert_eq!((ka, kc, tb as i64), (v[2], v[3], v[4]), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 288);
     }
 
     /// StartTactic against the original's F-33550 run by tools/start_tactic_reference.py over every asked kind, tactic already on
