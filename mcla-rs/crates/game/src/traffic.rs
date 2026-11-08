@@ -1554,6 +1554,9 @@ pub struct Other {
     pub back: Vec3,
     /// its instance matrix's row 0 (F-87404 reads it for the corners)
     pub row0: Vec3,
+    /// its instance matrix as the frame starts (`instance_matrix`: rows X, up, Z, place) - what F-33765 / F-58860 hand
+    /// the footprint probe
+    pub inst: [Vec3; 4],
     pub vel: Vec3,
     /// half its bound's length and width
     pub half_len: f32,
@@ -2523,14 +2526,15 @@ fn rail_blocked(env: &Env, me: usize, q: &TcpRail, width: f32, mask: u32, lift: 
 /// the half width to one side (row 0; + on an odd frame, - on an even one), from +0.9 to -0.9 of the half length along
 /// row 2 (the back) - the madds unfused as the vector unit does them; the block's material word 512 (shifted by the
 /// material manager's flag shift), the include mask 14366, the states 7, the own car excluded. A hit is the record's
-/// instance word set. (The rows here are the port's rail pose - row 0 = fwd x Y, row 2 = -fwd -, not the instance
-/// matrix F-33765 reads; the early answer 0 on the car's +448 -> +111 / +112 flags and the other excluded word of a
-/// car with +500 & 0x20 are not ported.)
-fn probe_hit(env: &Env, me: usize, pos: Vec3, fwd: Vec3, hl: f32, hw: f32) -> bool {
+/// instance word set. The rows and the place are the car's instance as the frame started (`Other::inst`). F-39379
+/// answers 0 at once for a cab or a trailer (the type's +111 / +112: the caller's `semi`); F-82779 has no such test.
+/// (The other excluded word of a car with +500 & 0x20 is not ported: the port's riders have no cab proxy.)
+fn probe_hit(env: &Env, me: usize, inst: &[Vec3; 4], hl: f32, hw: f32) -> bool {
     use crate::physics::camprobe::{segment_level, LevelFilter};
-    let row0 = fwd.cross(Vec3::Y).normalize_or(Vec3::X);
-    let row2 = -fwd;
-    let row1 = row2.cross(row0).normalize_or(Vec3::Y);
+    // (F-33765's rows and F-58860's place: the instance as the frame started - the state check F-94409 runs first in
+    // the behaviour frame F-87488 and the new pose reaches the instance only after it, through slot 4 F-74063 in the
+    // car update; F-82779 in state 8 follows and moves before its probe but the instance is still the frame's start)
+    let [row0, row1, row2, pos] = *inst;
     let side = if env.parity { 0.675 * hw } else { -(0.675 * hw) };
     let base = row1 * 0.75 + pos;
     let base = row0 * side + base;
@@ -4272,7 +4276,8 @@ fn step_path_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, h
     let (p, dd) = path.pose();
     let f = if path.reverse { -dd } else { dd };
     // the footprint probe
-    if !semi && probe_hit(env, me, p, f, half_len, hw) {
+    let inst = env.others.get(me).map(|o| o.inst);
+    if (!semi || r.state == 8) && inst.is_some_and(|i| probe_hit(env, me, &i, half_len, hw)) {
         if r.state == 8 {
             r.path = None;
             r.state = 6;
@@ -4745,6 +4750,7 @@ impl Vehicles {
                     right: c.state.right(),
                     back: glam::Mat3::from_quat(c.state.rot).z_axis,
                     row0: glam::Mat3::from_quat(c.state.rot).x_axis,
+                    inst: instance_matrix(c),
                     vel: c.state.vel,
                     half_len: hl,
                     half_wid: hw,
@@ -10805,6 +10811,7 @@ impl Vehicles {
                     right: c.state.right(),
                     back: glam::Mat3::from_quat(c.state.rot).z_axis,
                     row0: glam::Mat3::from_quat(c.state.rot).x_axis,
+                    inst: instance_matrix(c),
                     vel: c.state.vel,
                     half_len: hl,
                     half_wid: hw,
