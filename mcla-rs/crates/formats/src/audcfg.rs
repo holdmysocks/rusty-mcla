@@ -322,7 +322,8 @@ pub enum Payload {
     /// 9: a new instance of the child every `delay` ms, `count` times (-1 = forever)
     Retriggered { count: i16, delay_ms: u16, child: u32 },
     /// 10: near / far children cross-faded by distance
-    Crossfade { near: u32, far: u32, min: f32, max: f32, curve: u32 },
+    /// mode (+8: 0 drops the silent child at the range ends, 1 keeps both, 2 drops it past `margin` outside the range)
+    Crossfade { near: u32, far: u32, mode: u8, min: f32, max: f32, margin: f32, curve: u32 },
     /// 12: wave bank (name hash) and wave (name hash)
     Simple { bank: u32, wave: u32 },
     /// 13: all children at once
@@ -359,7 +360,7 @@ pub fn parse_payload(kind: u8, pl: &[u8]) -> Payload {
         7 => Payload::Sequential { children: list(0, 1) },
         8 => Payload::Streaming { duration_ms: be_u32(pl, 0), children: list(4, 5) },
         9 => Payload::Retriggered { count: be_i16(pl, 0), delay_ms: be_u16(pl, 2), child: be_u32(pl, 12) },
-        10 => Payload::Crossfade { near: be_u32(pl, 0), far: be_u32(pl, 4), min: be_f32(pl, 9), max: be_f32(pl, 13), curve: be_u32(pl, 37) },
+        10 => Payload::Crossfade { near: be_u32(pl, 0), far: be_u32(pl, 4), mode: pl.get(8).copied().unwrap_or(1), min: be_f32(pl, 9), max: be_f32(pl, 13), margin: be_f32(pl, 17), curve: be_u32(pl, 37) },
         12 => Payload::Simple { bank: be_u32(pl, 4), wave: be_u32(pl, 8) },
         13 => Payload::Multitrack { children: list(0, 1) },
         14 => {

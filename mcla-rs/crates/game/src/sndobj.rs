@@ -3,7 +3,7 @@
 //! pitch, pan, predelay, start offset, attack and release, the category's volume, the rolloff curve, the stereo pan
 //! law and Doppler). Rules and sources: `docs/reference/audio/SOUND_FORMAT.md`.
 //!
-//! Approximate (written down there): Crossfade plays its near child; MathOperation / variables are not evaluated; the
+//! Approximate (written down there): MathOperation / variables are not evaluated (no playable sound has one); the
 //! "requested settings" the game passes are the subset in [`Req`].
 
 use crate::audio::{Audio, Clip};
@@ -417,6 +417,9 @@ enum Kind {
     OnStop { child: Box<Node>, on_stop: u32, stopped: Option<Box<Node>> },
     /// TwinLoop: its two children cross-faded by `fade`; `clock` the ms it has been stepped (the update's time)
     Twin { fade: Twin, children: Vec<Node>, clock: f64, played: bool },
+    /// Crossfade (type 10): `children` [near, far] faded by the listener distance (`Xfade`); `gone` a child destroyed by
+    /// the mode (Done here), `fresh` one made again this update (it first runs in the next)
+    Cross { xf: Xfade, children: Vec<Node>, gone: [bool; 2], fresh: [bool; 2], played: bool },
     Empty,
 }
 
@@ -600,6 +603,8 @@ pub struct SoundLib {
     waves: HashMap<u32, Arc<HashMap<u32, WaveInfo>>>,
     /// a converted bank folder's waves by file name (the speech takes `play_clip` plays)
     dir_waves: HashMap<PathBuf, Arc<HashMap<String, WaveInfo>>>,
+    /// the distance from the listener of the instance being stepped (a Crossfade's fade, F-24107)
+    xf_dist: f32,
     /// stream channel hash -> (converted .mp3, the stream's lowest channel headroom)
     /// a stream channel: its file, headroom and its bank's longest wave in whole ms (F-46175)
     stream_of: Option<HashMap<u32, (PathBuf, i16, i32)>>,
@@ -885,6 +890,7 @@ impl SoundLib {
             mod_banks,
             waves: HashMap::new(),
             dir_waves: HashMap::new(),
+            xf_dist: 0.0,
             stream_of: None,
             clips: HashMap::new(),
             clip_uses: 0,
@@ -1460,8 +1466,21 @@ impl SoundLib {
                     _ => Kind::Empty,
                 }
             }
-            // approximation: Crossfade picks by distance
-            Payload::Crossfade { near, .. } => Kind::Group { children: self.make(near, depth + 1).into_iter().collect() },
+            // Crossfade (Init F-50297): both children made at Init, near in slot 72 and far in 73
+            Payload::Crossfade { near, far, mode, min, max, margin, curve } => {
+                let mut gone = [false; 2];
+                let children = [near, far]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, h)| {
+                        self.make(h, depth + 1).unwrap_or_else(|| {
+                            gone[i] = true;
+                            dead_node()
+                        })
+                    })
+                    .collect();
+                Kind::Cross { xf: Xfade { hashes: [near, far], mode, min, max, margin, curve }, children, gone, fresh: [false; 2], played: false }
+            }
             Payload::VariableBlock { child, .. } | Payload::MathOperation { child, .. } => Kind::Group { children: self.make(child, depth + 1).into_iter().collect() },
             Payload::Randomized { history_len, children, .. } => {
                 let pick = self.pick(hash, &h, history_len as usize, &children);
@@ -1671,7 +1690,7 @@ impl SoundLib {
                     *pos_ms = ms.min(*dur_ms);
                     *voice = ids();
                 }
-                Kind::Group { children } | Kind::Twin { children, .. } => children.iter_mut().for_each(|c| walk(c, ms, ids)),
+                Kind::Group { children } | Kind::Twin { children, .. } | Kind::Cross { children, .. } => children.iter_mut().for_each(|c| walk(c, ms, ids)),
                 Kind::Looping { child, .. } | Kind::Envelope { child, .. } | Kind::OnStop { child, .. } => walk(child, ms, ids),
                 Kind::Sequential { cur: Some(c), .. } => walk(c, ms, ids),
                 _ => {}
@@ -1736,6 +1755,7 @@ impl SoundLib {
         }
         let (ctx, rt) = root_ctx(&inst.req);
         let mut out = Vec::new();
+        self.xf_dist = inst.req.pos.map(|p| (inst.frame_pos.unwrap_or(p) - self.listener.0).length()).unwrap_or(0.0);
         self.step(&mut inst.root, dt * 1000.0, now, ctx, rt, inst.req.offset(), &mut out);
         if inst.root.st != St::Done {
             self.insts.insert(at, inst);
@@ -1828,6 +1848,7 @@ impl SoundLib {
             }
             let (ctx, rt) = root_ctx(&inst.req);
             let mut out = Vec::new();
+            self.xf_dist = inst.req.pos.map(|p| (inst.frame_pos.unwrap_or(p) - self.listener.0).length()).unwrap_or(0.0);
             self.step(&mut inst.root, ms, now, ctx, rt, inst.req.offset(), &mut out);
             for v in out {
                 drives.push(self.emit(v, inst, (lp, lr, lf)));
@@ -1974,6 +1995,39 @@ impl SoundLib {
                     children.iter_mut().for_each(|c| stop_node(c, -1, now));
                 }
                 children.iter().all(|c| c.st == St::Done)
+            }
+            Kind::Cross { xf, children, gone, fresh, played } => {
+                if !*played {
+                    // Play (F-82716): the children are prepared with the start offset; they first run in the next update
+                    *played = true;
+                    false
+                } else {
+                    // Update (F-39548): the fade from the request's distance to the listener, the children destroyed or
+                    // made again by the mode (F-54218), their runtime volumes (+36, F-66882), then each child's update with
+                    // the start offset as its parent offset
+                    let xf = *xf;
+                    let x = xf.fade(self.xf_dist, |c, v| self.curve_eval(c, v));
+                    for i in 0..2 {
+                        fresh[i] = false;
+                        if !gone[i] && !x.alive[i] {
+                            // stopped at once and its slot freed (F-45650, F-17136)
+                            children[i] = dead_node();
+                            gone[i] = true;
+                        } else if gone[i] && x.alive[i] {
+                            // made again from its reference (F-70509): it runs from the next update
+                            if let Some(c) = self.make(xf.hashes[i], 1) {
+                                children[i] = c;
+                                (gone[i], fresh[i]) = (false, true);
+                            }
+                        }
+                    }
+                    for i in 0..2 {
+                        if !gone[i] && !fresh[i] && children[i].st != St::Done {
+                            self.step(&mut children[i], ms, now, ctx, Rt { vol: x.db[i], ..Rt::NONE }, child_po, out);
+                        }
+                    }
+                    (0..2).all(|i| gone[i] || (!fresh[i] && children[i].st == St::Done))
+                }
             }
             Kind::Twin { fade, children, clock, played } => {
                 // Play (F-38194) when it starts, then Update (F-52106) at the update's ms: each child plays on at its level
@@ -2240,7 +2294,7 @@ struct Drive {
 fn hold_voices(n: &Node, f: &mut dyn FnMut(u64)) {
     match &n.kind {
         Kind::Wave { voice, .. } | Kind::Stream { voice, .. } => f(*voice),
-        Kind::Group { children } | Kind::Twin { children, .. } => children.iter().for_each(|c| hold_voices(c, f)),
+        Kind::Group { children } | Kind::Twin { children, .. } | Kind::Cross { children, .. } => children.iter().for_each(|c| hold_voices(c, f)),
         Kind::Looping { child, .. } | Kind::Envelope { child, .. } => hold_voices(child, f),
         Kind::Sequential { cur, .. } => {
             if let Some(c) = cur {
@@ -2289,6 +2343,8 @@ fn dur_type(n: &Node) -> (i32, bool) {
             // Wrapper (F-52913), Randomized / VariableBlock (F-67475)
             _ => first(children, (0, false)),
         },
+        // Crossfade (F-57182): the longer of its two, from 0
+        Kind::Cross { children, .. } => max_of(children, (0, false)),
         // TwinLoop (F-81098): the longer of its two
         Kind::Twin { children, .. } => match children.split_first() {
             Some((c, rest)) => max_of(rest, dur_total(c)),
@@ -2716,7 +2772,7 @@ fn stop_node(n: &mut Node, ovr: i32, now: u32) {
     // with none playing (F-68220 with F-13519) and makes none (Looping, Sequential and Retriggered test the bit); OnStop
     // plays its stop sound, Envelope its release stage
     match &mut n.kind {
-        Kind::Group { children } | Kind::Twin { children, .. } => children.iter_mut().for_each(|c| stop_node(c, ovr, now)),
+        Kind::Group { children } | Kind::Twin { children, .. } | Kind::Cross { children, .. } => children.iter_mut().for_each(|c| stop_node(c, ovr, now)),
         // Envelope: its own release stage fades the child (the step above starts it)
         Kind::Looping { child, .. } => stop_node(child, ovr, now),
         Kind::Sequential { cur, .. } => {
@@ -2733,11 +2789,82 @@ fn stop_node(n: &mut Node, ovr: i32, now: u32) {
     }
 }
 
+/// A finished node standing in an empty child slot.
+fn dead_node() -> Node {
+    let o = [12u8, 0, 0, 0, 0, 0xAA, 0xAA, 0xAA, 0xAA, 0, 0, 0, 0, 0, 0];
+    let (h, _) = audcfg::parse_header(&o);
+    Node { h, vol: 0.0, pitch: 0, pan: -1, predelay_ms: 0.0, start_ms: 0.0, st: St::Done, t: 0.0, play_t: 0.0, clock: Clock::default(), env0: 0.0, tot: (0, 0), ty_ms: 0, kind: Kind::Empty }
+}
+
+/// A Crossfade's data (Init F-50297: near +0, far +4, mode +8, Min +9, Max +13, margin +17, curve +37; the Min / Max /
+/// fraction variables +21 / +25 / +33 name no variable of a playable sound, MATHOP_VARIABLES.md).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Xfade {
+    pub hashes: [u32; 2],
+    pub mode: u8,
+    pub min: f32,
+    pub max: f32,
+    pub margin: f32,
+    pub curve: u32,
+}
+
+/// One fade (F-39612): the fraction, the two runtime volumes (dB) and which children stay.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct XfadeOut {
+    pub f: f32,
+    pub db: [f32; 2],
+    pub alive: [bool; 2],
+}
+
+impl Xfade {
+    /// F-39612: f = 0 at or inside Min, 1 at or past Max, else (d - Min) / (Max - Min); near = curve(f), far =
+    /// curve(1 - f), each 20 x 0.301 x log2(g) (the original's constant, not log10 2) or -100 below 1e-5. Mode 0 drops
+    /// the far child at f = 0 and the near at f = 1; mode 2 only when the distance outside the range
+    /// (max(Min - d, d - Max)) is over the margin; mode 1 keeps both. `curve` evaluates the CrossfadeCurve (F-33490),
+    /// None = no such curve (taken as x).
+    pub fn fade(&self, d: f32, curve: impl Fn(u32, f32) -> Option<f32>) -> XfadeOut {
+        let (min, max) = (self.min, self.max);
+        let f = if d <= min {
+            0.0
+        } else if d >= max {
+            1.0
+        } else {
+            (d - min) / (max - min)
+        };
+        let (a, b) = (min - d, d - max);
+        let out = if a - b >= 0.0 { a } else { b };
+        let g = [curve(self.curve, f).unwrap_or(f), curve(self.curve, 1.0 - f).unwrap_or(1.0 - f)];
+        let db = g.map(|g| {
+            let v = g.log2() * 0.301 * 20.0;
+            if g - 1e-5 >= 0.0 { v } else { -100.0 }
+        });
+        let mut alive = [true; 2];
+        match self.mode {
+            0 => {
+                if f == 0.0 {
+                    alive[1] = false;
+                } else if f == 1.0 {
+                    alive[0] = false;
+                }
+            }
+            2 => {
+                if f == 0.0 && out > self.margin {
+                    alive[1] = false;
+                } else if f == 1.0 && out > self.margin {
+                    alive[0] = false;
+                }
+            }
+            _ => {}
+        }
+        XfadeOut { f, db, alive }
+    }
+}
+
 /// Whether a node has a child still playing (F-13519: a direct child in state 2).
 fn live_child(k: &Kind) -> bool {
     let up = |c: &Node| c.st != St::Done;
     match k {
-        Kind::Group { children } | Kind::Twin { children, .. } => children.iter().any(up),
+        Kind::Group { children } | Kind::Twin { children, .. } | Kind::Cross { children, .. } => children.iter().any(up),
         Kind::Looping { child, .. } => up(child),
         Kind::Sequential { cur, .. } => cur.as_deref().is_some_and(up),
         Kind::Retrig { live, .. } => live.iter().any(up),
@@ -2759,6 +2886,10 @@ fn reset_node(n: &mut Node) {
         Kind::Group { children } => children.iter_mut().for_each(reset_node),
         Kind::Twin { children, clock, played, .. } => {
             (*clock, *played) = (0.0, false);
+            children.iter_mut().for_each(reset_node)
+        }
+        Kind::Cross { children, fresh, played, .. } => {
+            (*fresh, *played) = ([false; 2], false);
             children.iter_mut().for_each(reset_node)
         }
         Kind::Looping { child, plays, child_off, .. } => {
@@ -3228,6 +3359,52 @@ mod tests {
         assert!(bad.is_empty(), "{} differ, first: {:?}", bad.len(), bad.first());
     }
 
+    /// A Crossfade's fade F-39612 against the original's own code (tools/crossfade_reference.py, 6,000 cases: Min / Max /
+    /// margin / mode / distance; the curve stubbed as sqrtf on both sides): both runtime volumes bit-equal and which
+    /// children stay equal.
+    #[test]
+    fn crossfade_fade_is_the_originals() {
+        let t = include_str!("testdata/crossfade_ref.txt");
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let mut n = 0;
+        for l in t.lines() {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            let xf = Xfade { hashes: [0, 0], mode: w[3].parse().unwrap(), min: f(w[0]), max: f(w[1]), margin: f(w[2]), curve: 0 };
+            let x = xf.fade(f(w[4]), |_, v| Some(v.sqrt()));
+            let want = (u32::from_str_radix(w[6], 16).unwrap(), u32::from_str_radix(w[7], 16).unwrap(), w[8] == "1", w[9] == "1");
+            assert_eq!((x.db[0].to_bits(), x.db[1].to_bits(), x.alive[0], x.alive[1]), want, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 6000);
+    }
+
+    /// The disc's two Crossfades (POLICE_SIREN_LOOP_CROSSFADE, CAR_ALARM_CROSSFADE) play both children faded by the
+    /// listener distance: printed per distance the leaves' volumes, both children heard inside the range.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn crossfades_play_both_children() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        for name in ["POLICE_SIREN_LOOP_CROSSFADE", "CAR_ALARM_CROSSFADE"] {
+            let o = lib.snd.get(joaat(name)).expect(name).clone();
+            let Payload::Crossfade { near, far, mode, min, max, margin, curve } = audcfg::parse_sound(&o).payload else { panic!("{name}") };
+            println!("{name}: near {near:08x} far {far:08x} mode {mode} {min}..{max} margin {margin} curve {curve:08x} known {}", lib.curves.contains_key(&curve));
+            for d in [0.0, (min + max) * 0.5, max + 100.0] {
+                let h = lib.play(name, Req::at(Vec3::new(d, 0.0, 0.0))).expect(name);
+                let mut v = Vec::new();
+                for _ in 0..4 {
+                    v = lib.test_leaf_vols(h, 1.0 / 30.0);
+                }
+                println!("  d {d}: leaves {v:?}");
+                if d == (min + max) * 0.5 {
+                    assert!(v.len() >= 2, "{name}: both children inside the range");
+                }
+                lib.stop(h);
+            }
+        }
+    }
+
     /// A sound's play F-91431 and updates F-68220 (settings F-63029, play offsets F-90115, attack F-37133, release F-31923,
     /// stop F-58485) against the original's own code (tools/sound_node_reference.py): per call the state, the waiting
     /// flag, what the type does, the volume +40 and the pitch, pan, LPF and HPF handed down.
@@ -3558,7 +3735,7 @@ mod tests {
         fn streams(n: &Node, out: &mut Vec<f32>) {
             match &n.kind {
                 Kind::Stream { clip: Some(_), dur_ms, .. } => out.push(*dur_ms),
-                Kind::Group { children } | Kind::Twin { children, .. } => children.iter().for_each(|c| streams(c, out)),
+                Kind::Group { children } | Kind::Twin { children, .. } | Kind::Cross { children, .. } => children.iter().for_each(|c| streams(c, out)),
                 Kind::Looping { child, .. } | Kind::Envelope { child, .. } | Kind::OnStop { child, .. } => streams(child, out),
                 Kind::Sequential { cur: Some(c), .. } => streams(c, out),
                 _ => {}
@@ -3731,7 +3908,7 @@ mod tests {
         fn waves(n: &Node) -> usize {
             match &n.kind {
                 Kind::Wave { wave: Some(_), .. } => 1,
-                Kind::Group { children } | Kind::Twin { children, .. } => children.iter().map(waves).sum(),
+                Kind::Group { children } | Kind::Twin { children, .. } | Kind::Cross { children, .. } => children.iter().map(waves).sum(),
                 Kind::Looping { child, .. } | Kind::Envelope { child, .. } | Kind::OnStop { child, .. } => waves(child),
                 Kind::Sequential { cur: Some(c), .. } => waves(c),
                 _ => 0,
