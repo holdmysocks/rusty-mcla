@@ -224,6 +224,12 @@ impl da::Poser for RigPoser<'_> {
     }
 }
 
+/// A filter's per-DOF weights over the rig's frame (each bone's rotation, then its position): F-80388 asks the filter for
+/// every DOF with 1.0 preset, a no writes 0 - the bone's 0 / 1 for both (F-40876).
+fn dof_weights(mask: &[bool]) -> Vec<f32> {
+    mask.iter().flat_map(|&m| [if m { 1.0 } else { 0.0 }; 2]).collect()
+}
+
 /// The finish into the skeleton: a DOF with a value is the bone's, one without shows the rest pose.
 fn finish(frame: &[FrameDof], bones: &[crate::skin::Bone], out: &mut Vec<(Quat, Vec3)>) {
     out.clear();
@@ -1877,8 +1883,8 @@ impl Drivers {
                         }
                     }
                 }
-                let per_dof = |m: &dyn Fn(usize) -> bool| -> Vec<f32> { (0..model.bones.len()).flat_map(|b| [if m(b) { 1.0 } else { 0.0 }; 2]).collect() };
-                let dofw = [per_dof(&|b| model.spine_bones[b]), per_dof(&|b| model.neck_bones[b]), per_dof(&|b| !model.face_bones[b])];
+                let nf: Vec<bool> = model.face_bones.iter().map(|f| !f).collect();
+                let dofw = [dof_weights(&model.spine_bones), dof_weights(&model.neck_bones), dof_weights(&nf)];
                 Some(Rig { steer, idle_stop: clip(&["drv_idle_stp"]), reverse: clip(&["drv_rev"]), model, gestures, hit_hard, ejects, bike, dict, clips, dofw })
             })();
             if rig.is_none() {
@@ -2272,6 +2278,12 @@ mod original_tests {
             assert_eq!(mask(&|i| spine[i]), w[3], "{} spine", w[0]);
             assert_eq!(mask(&|i| neck[i]), w[4], "{} neck", w[0]);
             assert_eq!(mask(&|i| !face[i]), w[5], "{} no face", w[0]);
+            // F-80388's weights on a frame of every bone's rotation and position (then a kind 6 DOF: 1, a missing id: 0)
+            let nf: Vec<bool> = face.iter().map(|f| !f).collect();
+            for (k, m) in [&spine, &neck, &nf].into_iter().enumerate() {
+                let got: String = dof_weights(m).iter().map(|&x| if x == 1.0 { '1' } else { '0' }).collect::<String>() + "10";
+                assert_eq!(got, w[7 + k], "{} filter {} weights", w[0], k + 1);
+            }
             sets += 1;
             bones += n;
         }
