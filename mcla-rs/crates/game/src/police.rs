@@ -162,6 +162,17 @@ fn side_pick(a: bool, b: bool, c: bool, d: bool, on_right: bool) -> bool {
     }
 }
 
+/// The police manager's detecting-cop pick F-76033 (PoliceManager_CanAnyPoliceDetectTarget's body; the law update F-52240
+/// asks it with need_check, need_free and group 1): the first of the manager's `n` units, in its order, that is there
+/// (`unit(i)` = Some((+1072 may check law breaking, in a tactic F-72241, +872 group))), may check when `need_check`, is in no
+/// tactic when `need_free`, is of `group`, and then sees the target (`sees(i)`, F-94676, asked only for such a unit).
+fn first_detecting(n: usize, need_check: bool, need_free: bool, group: u8, unit: impl Fn(usize) -> Option<(bool, bool, u8)>, mut sees: impl FnMut(usize) -> bool) -> Option<usize> {
+    (0..n).find(|&i| match unit(i) {
+        Some((check, tactic, g)) => (!need_check || check) && (!need_free || !tactic) && g == group && sees(i),
+        None => false,
+    })
+}
+
 /// A cruiser's state in the pull-over or pursuit tactic (GitHub #17; docs/reference/hookmen/pursuit_tactics.md).
 /// Pursuit (F-68032's FSM): CatchUp, AlongSide, Block, Halt (Delay is `flee_hold`, Search `Heat::Search`, Arrest the
 /// port's busted test); pull-over (F-36876's): CatchUp, AvoidCollision (`Avoid`), Halt.
@@ -3240,12 +3251,21 @@ impl Police {
         let dsp_cop = self.dsp.as_ref().map(|d| d.cop);
         let mut detector: Option<(f32, u32)> = None;
         // (F-52240's loop takes a unit only with +872 and +1072 set: a unit not allowed to check law breaking detects nothing)
-        let no_check: Vec<String> = self.units.iter().filter(|u| !u.may_check).map(|u| format!("police_unit:{}", u.id)).collect();
-        for c in vehicles.cars.iter().filter(|c| c.cop && !c.goon && !pursuer(c) && Some(c.uid) != dsp_cop && !no_check.contains(&c.vinyl_name)) {
-            let d = c.state.pos.distance(ppos);
-            if d <= detect && cop_sees(world, c, ppos, detect, det_half) && detector.map_or(true, |b| d < b.0) {
-                detector = Some((d, c.uid));
-            }
+        // (F-52240 asks F-76033(need_check, need_free, group 1): the first unit in the manager's order, not the nearest. The
+        // manager's order is the units' (created at the player's load, 400 - 402, and kept while underground); a cop car of
+        // no unit (the race's waiting cruisers) comes after them in the cars' order - their place in the original's list is
+        // not decoded. Group 1 = a real cop (the goons' +872 is 0); in a tactic = a pursuer or the dispatch's cop)
+        let mut cands: Vec<(usize, &crate::vehicles::CarInstance)> = vehicles.cars.iter().filter(|c| c.cop).map(|c| {
+            let ui = self.units.iter().position(|u| c.vinyl_name == format!("police_unit:{}", u.id));
+            (ui.unwrap_or(self.units.len()), c)
+        }).collect();
+        cands.sort_by_key(|x| x.0);
+        let pick = first_detecting(cands.len(), true, true, 1, |i| {
+            let (ui, c) = cands[i];
+            Some((self.units.get(ui).map_or(true, |u| u.may_check), pursuer(c) || Some(c.uid) == dsp_cop, if c.goon { 0 } else { 1 }))
+        }, |i| cop_sees(world, cands[i].1, ppos, detect, det_half));
+        if let Some(i) = pick {
+            detector = Some((cands[i].1.state.pos.distance(ppos), cands[i].1.uid));
         }
         // (the dispatch's cop is in its tactic: the ladder takes it as the request cop)
         if detector.is_none() {
@@ -5314,6 +5334,22 @@ mod tests {
         p.arrest_posted = false;
         p.kind = TacKind::None;
         assert_eq!(p.hud_state(), 0);
+    }
+
+    #[test]
+    fn detect_pick_matches_the_original() {
+        // tools/detect_pick_reference.py: F-76033 over 3,000 managers (1 - 5 units, empty slots, +1072 / +872 bytes, tactic and
+        // sight answers, every need_check / need_free / group): the unit it returns
+        let mut n = 0;
+        for l in include_str!("testdata/detect_pick_ref.txt").lines() {
+            let v: Vec<i64> = l.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            let (k, em, ck, gp, tm, sm) = (v[0] as usize, v[1], v[2], v[3], v[4], v[5]);
+            let unit = |i: usize| ((em >> i) & 1 == 0).then(|| ((ck >> (2 * i)) & 3 != 0, (tm >> i) & 1 != 0, ((gp >> (2 * i)) & 3) as u8));
+            let r = first_detecting(k, v[6] != 0, v[7] != 0, v[8] as u8, unit, |i| (sm >> i) & 1 != 0);
+            assert_eq!(r.map_or(-1, |i| i as i64), v[9], "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
     }
 
     #[test]
