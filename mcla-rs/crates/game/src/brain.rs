@@ -167,6 +167,16 @@ pub struct RevEngine {
     pub limit_max: f32,
 }
 
+impl RevEngine {
+    /// The figures as F-17058 reads them: vehEngine +76 / +72 / +68 (rad/s: idle and greatest = the tune's rpm x 0.10471976,
+    /// +72 the speed of best power) through the rpm getters' x 9.549296 - not the tune's IdleRPM / OptRPM / MaxRPM.
+    pub fn of(t: &crate::physics::vehsim::VehTune) -> Self {
+        let (rad, rpm) = (0.104_719_76f32, 9.549_296_6f32);
+        let e = &t.t.engine.s;
+        RevEngine { idle: (e.idle_rpm * rad) * rpm, opt: t.best_power_speed() * rpm, max: (e.max_rpm * rad) * rpm, limit_min: t.t.s.rev_limit_min, limit_max: t.t.s.rev_limit_max }
+    }
+}
+
 impl Revving {
     /// SetRevvingEnabled (F-58174): on resets the cycle; either way the timer is drawn anew, U(0, 1) s.
     pub fn set_enabled(&mut self, on: bool, u: f32) {
@@ -184,37 +194,57 @@ impl Revving {
         self.enabled || self.timer > 0.0
     }
 
-    /// One frame: the throttle (0 or 1). `rpm` = the engine's, `rnd` = U(0, 1).
-    pub fn update(&mut self, e: &RevEngine, rpm: f32, dt: f32, rnd: &mut dyn FnMut() -> f32) -> f32 {
-        let step = 6000.0 * dt;
-        self.rpm = if self.rpm < rpm { (self.rpm + step).min(rpm) } else { (self.rpm - step).max(rpm) };
+    /// One frame: the throttle (0 or 1). `rpm` = the engine's (its speed x 9.549296, F-17058 reads it so), `draw` = the shared
+    /// generator's next word. As the original's case 2 (asm read 2026-11-08): the smoothed rpm by F-90102's fused steps
+    /// (fma / fnmsubs of 6000 x dt, then clamped to the target), the draws the low 23 bits as an integer times the image's
+    /// scales (U(0, 3) 0x34c00000, U(0, .35) 0x33333333, U(0, 1) 0x34000000; the shares fma(k, 0x33000000, 0.75),
+    /// fma(k, 0x32cccccc, 0.75) - one ulp below 0.2 x 2^-23 - and fma(k, 0x33b33333, 0.05)) and the targets fused:
+    /// fma(fma(max - opt, RevLimitMin, opt) - idle, share, idle), fma(max - idle, share, idle).
+    pub fn update(&mut self, e: &RevEngine, rpm: f32, dt: f32, draw: &mut dyn FnMut() -> u32) -> f32 {
+        use crate::physics::exact::{fma, fnms};
+        let mut k = || (draw() & 0x7F_FFFF) as f32;
+        let rate = 6000.0f32;
+        if self.rpm < rpm {
+            self.rpm = fma(rate, dt, self.rpm);
+            if !(self.rpm <= rpm) {
+                self.rpm = rpm;
+            }
+        } else if !(self.rpm <= rpm) {
+            self.rpm = fnms(rate, dt, self.rpm);
+            if !(self.rpm >= rpm) {
+                self.rpm = rpm;
+            }
+        }
         self.timer -= dt;
-        if self.up < 0.0 {
-            if self.timer >= 0.0 || (self.down >= 0.0 && self.rpm >= self.down) {
+        if !(self.up >= 0.0) {
+            if self.timer >= 0.0 || (!(self.rpm < self.down) && self.down >= 0.0) {
                 return 0.0;
             }
             if !self.enabled {
                 // (A-77186: revving switched off - throttle 1 for this last frame, no new target)
                 return 1.0;
             }
-            if e.limit_max > 0.0 {
-                self.timer = rnd() * 3.0;
-                self.up = e.idle + (e.opt + (e.max - e.opt) * e.limit_min - e.idle) * (0.75 + rnd() * 0.25);
-            } else {
-                self.timer = rnd() * 0.35;
-                self.up = e.idle + (e.max - e.idle) * (0.75 + rnd() * 0.2);
-            }
             self.down = -1.0;
+            if !(e.limit_max <= 0.0) {
+                self.timer = k() * f32::from_bits(0x34c0_0000);
+                let share = fma(k(), f32::from_bits(0x3300_0000), 0.75);
+                self.up = fma(fma(e.max - e.opt, e.limit_min, e.opt) - e.idle, share, e.idle);
+            } else {
+                self.timer = k() * f32::from_bits(0x3333_3333);
+                let share = fma(k(), f32::from_bits(0x32cc_cccc), 0.75);
+                self.up = fma(e.max - e.idle, share, e.idle);
+            }
             1.0
         } else {
             // (A-32488: revving switched off - the rev-up holds, throttle 1, until the cycle's timer
             // has run out; no down phase follows)
-            if !self.enabled || !(self.timer < 0.0 && self.rpm > self.up) {
+            if !self.enabled || self.timer >= 0.0 || self.rpm <= self.up {
                 return 1.0;
             }
-            self.timer = rnd();
-            self.down = e.idle + (e.max - e.idle) * (0.05 + rnd() * 0.7);
+            self.timer = k() * f32::from_bits(0x3400_0000);
+            let share = fma(k(), f32::from_bits(0x33b3_3333), 0.05);
             self.up = -1.0;
+            self.down = fma(e.max - e.idle, share, e.idle);
             0.0
         }
     }
@@ -910,7 +940,7 @@ impl Brain {
         if self.hold_still {
             t = Pedals { throttle: 0.0, brake: 0.0, handbrake: 1.0, steer: 0.0 };
         } else if self.rev.active() {
-            let thr = self.rev.update(&car.engine, car.rpm, dt, &mut || rng().float());
+            let thr = self.rev.update(&car.engine, car.rpm, dt, &mut || rng().next());
             t = Pedals { throttle: thr, brake: 0.0, handbrake: if self.rev.handbrake { 1.0 } else { 0.0 }, steer: 0.0 };
         } else if car.grid {
             t = Pedals { throttle: 1.0, brake: 0.0, handbrake: 1.0, steer: 0.0 };
@@ -1111,7 +1141,7 @@ pub fn run(v: &mut crate::vehicles::Vehicles, i: usize, brain: &mut Brain, to_go
     let vs = st.veh.as_ref();
     let (engine, drift_ratio, nitro_tune, sling_tune) = match vt.as_deref() {
         Some(t) => (
-            RevEngine { idle: t.t.engine.s.idle_rpm, opt: t.t.engine.s.opt_rpm, max: t.t.engine.s.max_rpm, limit_min: t.t.s.rev_limit_min, limit_max: t.t.s.rev_limit_max },
+            RevEngine::of(t),
             if t.sync_torque > 0.0 { t.t.gyro.drift_torque / t.sync_torque } else { 0.0 },
             [t.t.nitro.boost_exp, t.t.nitro.boost_amount, t.t.nitro.boost_time],
             [t.t.ss_turbo.boost_exp, t.t.ss_turbo.boost_amount, t.t.ss_turbo.use_time],
@@ -1438,6 +1468,49 @@ mod tests {
         assert_eq!(p.brake, 0.0);
     }
 
+    /// The rev cycle against the original's F-17058 run offline (tools/revving_reference.py: 800 sequences of 10 frames,
+    /// case 2 and, once revving is off and its timer out, case 3 on the grid word): the smoothed rpm, timer, rev-up target,
+    /// rev-down threshold, the generator and the throttle / handbrake written, word for word; and SetRevvingEnabled F-58174
+    /// on 400 states.
+    #[test]
+    fn revving_matches_the_original() {
+        let h = |s: &str| u32::from_str_radix(&s.replace('_', ""), 16).unwrap();
+        let f = |s: &str| f32::from_bits(h(s));
+        let rpm_k = 9.549_296_6f32;
+        let (mut r, mut g, mut e, mut dt) = (Revving::default(), Mwc::default(), RevEngine::default(), 0.0f32);
+        let (mut frames, mut seqs, mut sets) = (0, 0, 0);
+        for line in include_str!("testdata/revving_ref.txt").lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            if w[0] == "set" {
+                // (SetRevvingEnabled F-58174: +254, the reset on 1, the U(0, 1) timer; +256, the rev audio's pending byte,
+                // is not kept by the port - engaudio.rs starts the revs sound itself)
+                let mut q = Revving { rpm: f(w[2]), up: f(w[3]), down: f(w[4]), ..Revving::default() };
+                let mut m = Mwc { lo: h(w[5]), carry: h(w[6]) };
+                q.set_enabled(w[1] == "1", m.float());
+                let got = [q.enabled as u32, q.rpm.to_bits(), q.timer.to_bits(), q.up.to_bits(), q.down.to_bits(), m.lo, m.carry];
+                let want: Vec<u32> = std::iter::once(w[8].parse::<u32>().unwrap()).chain(w[9..15].iter().map(|x| h(x))).collect();
+                assert_eq!(got.to_vec(), want, "set line {line}");
+                sets += 1;
+                continue;
+            }
+            if w[0] == "case" {
+                r = Revving { enabled: w[1] == "1", handbrake: w[2] == "1", rpm: f(w[3]), timer: f(w[4]), up: f(w[5]), down: f(w[6]) };
+                g = Mwc { lo: h(w[7]), carry: h(w[8]) };
+                e = RevEngine { idle: f(w[11]) * rpm_k, opt: f(w[10]) * rpm_k, max: f(w[9]) * rpm_k, limit_min: f(w[12]), limit_max: f(w[13]) };
+                dt = f(w[14]);
+                seqs += 1;
+                continue;
+            }
+            // (case 3 when the cycle is not active: the grid's throttle 1 and handbrake 1)
+            let (thr, hb) = if r.active() { (r.update(&e, f(w[0]) * rpm_k, dt, &mut || g.next()), r.handbrake as u8 as f32) } else { (1.0, 1.0) };
+            let got = [r.rpm.to_bits(), r.timer.to_bits(), r.up.to_bits(), r.down.to_bits(), g.lo, g.carry, thr.to_bits(), hb.to_bits()];
+            let want: Vec<u32> = w[2..10].iter().map(|x| h(x)).collect();
+            assert_eq!(got.to_vec(), want, "sequence {seqs}, frame line {line}");
+            frames += 1;
+        }
+        assert_eq!((seqs, frames, sets), (800, 8000, 400));
+    }
+
     #[test]
     fn revving_switched_off_mid_rev_up() {
         // (A-32488: in the rev-up phase with revving off the throttle stays 1 until the timer is out, no down phase)
@@ -1445,7 +1518,7 @@ mod tests {
         let mut r = Revving::default();
         r.set_enabled(true, 0.0);
         let dt = 1.0 / 60.0;
-        let mut rnd = || 0.5;
+        let mut rnd = || 0x40_0000u32;
         assert_eq!(r.update(&e, 1000.0, dt, &mut rnd), 1.0);
         assert!(r.up >= 0.0);
         r.set_enabled(false, 0.25);
@@ -1470,7 +1543,7 @@ mod tests {
             r.set_enabled(false, u);
             let mut frames = 0i32;
             while r.active() {
-                r.update(&e, 1000.0, FRAME, &mut || 0.5);
+                r.update(&e, 1000.0, FRAME, &mut || 0x40_0000u32);
                 frames += 1;
             }
             // (the brain runs once per two chassis ticks)

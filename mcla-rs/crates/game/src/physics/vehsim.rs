@@ -216,6 +216,12 @@ pub fn crown_half_width(radius: f32, width: f32) -> f32 {
 }
 
 impl VehTune {
+    /// vehEngine +72, the engine's speed of best power (rad/s): Init F-23005's bisection on the torque curve, or OptRPM x
+    /// 0.10471976 for an engine without control values (no curve).
+    pub fn best_power_speed(&self) -> f32 {
+        self.torque_curve.as_ref().map_or(self.t.engine.s.opt_rpm * RPM, |c| c.peak().0)
+    }
+
     /// The car's set-up (F-62931) moves the tuned centre of mass by how the car sits on its
     /// wheels: f = SuspensionOffset + tyre radius - the height its wheels were modelled at
     /// (each the mean of front and rear); lower than modelled (f < 0) it goes up a quarter of
