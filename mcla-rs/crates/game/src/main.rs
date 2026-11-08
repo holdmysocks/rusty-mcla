@@ -1138,6 +1138,13 @@ impl App {
                                 self.speech.say(&sp);
                             }
                         }
+                        // (lost: cam_gps_warp_out with the pause pending - F-35052 holds the pause camera with no time
+                        // limit, no warp of its own; recorded: held until Garage_WarpTo, whose climb lets it go)
+                        let out = self.cine.playing.as_ref().and_then(|sc| mc4::PINK_LOSS_SCENES.iter().position(|n| sc.name.eq_ignore_ascii_case(n))).map(|k| mc4::PINK_LOSS_WARP_OUT[k]);
+                        if self.cine.held.is_none() && out.is_some_and(|w| t >= w) {
+                            self.cine.held = self.cine.camera();
+                            log::info!("pink slip lost: cam_gps_warp_out at {t:.3} s - the camera held");
+                        }
                     }
                     None => {
                         // (0x3f1b: the fade up over the scene's held fade_to_black, waited)

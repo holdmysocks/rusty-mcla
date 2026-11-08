@@ -415,6 +415,9 @@ pub struct Cine {
     pub racer_sets: Vec<String>,
     /// the local player's car is a motorcycle (F-17373: the racer's car config and its catalogue class 3), kept by `main`
     pub player_bike: bool,
+    /// the pause camera hold (F-83799 with -1, no time limit) taken at a scene's cam_gps_warp_out with the warper's
+    /// pause pending (F-35052): the camera stays where it was while the scene plays on; cleared by `start` / `stop`
+    pub held: Option<(Vec3, Vec3, Vec3, f32)>,
     /// scene ("story/cut_intro") -> (entry name, pack file)
     index: HashMap<String, Vec<(String, PathBuf)>>,
     models: HashMap<String, Option<Arc<SkinModel>>>,
@@ -844,6 +847,7 @@ impl Cine {
 
     /// Load a scene and start it at `origin` (identity for story scenes).
     pub fn start(&mut self, gpu: &mut Gpu, scene: &str, origin: Mat4) -> bool {
+        self.held = None;
         let key = scene.to_ascii_lowercase();
         if !self.index.contains_key(&key) {
             return false;
@@ -1106,6 +1110,7 @@ impl Cine {
     }
 
     pub fn stop(&mut self) {
+        self.held = None;
         self.playing = None;
         self.buf.clear();
     }
@@ -1135,6 +1140,9 @@ impl Cine {
 
     /// Camera at the scene's time: (eye, forward, up, vertical field of view in radians).
     pub fn camera(&self) -> Option<(Vec3, Vec3, Vec3, f32)> {
+        if self.held.is_some() && self.playing.is_some() {
+            return self.held;
+        }
         if self.at_game_camera() {
             return None;
         }

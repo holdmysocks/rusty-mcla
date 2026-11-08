@@ -10985,6 +10985,9 @@ pub const PINK_REWARD_SPEECH: [f32; 4] = [4.0, 2.46667, 3.66667, 3.66667];
 /// playspeech times (the generated scripts' event records)
 pub const PINK_LOSS_SCENES: [&str; 4] = ["cut_loss_chung_hee", "cut_loss_lester", "cut_loss_pete", "cut_loss_jin"];
 pub const PINK_LOSS_SPEECH: [f32; 4] = [4.16667, 1.66667, 3.0, 2.16667];
+/// The loss scenes' cam_gps_warp_out (event 79) times, in `PINK_LOSS_SCENES` order: there the warper's pending pause
+/// (Warper_SetPauseAtEndOfCut) holds the camera (F-35052 -> F-83799 with -1) until the Garage_WarpTo after the scene.
+pub const PINK_LOSS_WARP_OUT: [f32; 4] = [14.6667, 10.3333, 12.0, 11.8333];
 
 /// The career's pink slip lot: five profiles (manager + 50128, 8272 bytes each).
 pub const PINK_SLOTS: usize = 5;
