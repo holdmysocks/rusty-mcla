@@ -182,7 +182,7 @@ def main():
     idx = index(a.recomp)
     stubs = {'sub_' + k: v for k, v in stub.items()}
     names = ['sub_' + A[f] for f in ('F-26402', 'F-29590', 'F-83234')]
-    exe = build(idx, names, main_src, a.out_dir, 'sidestep', stubs=stubs, vector=True)
+    exe = build(idx, names, main_src, a.out_dir, 'sidestep', stubs=stubs, vector=True, flags=('-msse4.1', '-mssse3'))
     res = [x for x in run(exe, a.image).split(nl) if x]
     assert len(res) == len(cases), (len(res), len(cases))
     bad = [i for i, o in enumerate(res) if 'ERR' in o or 'EXC' in o]

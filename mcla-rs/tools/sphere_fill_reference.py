@@ -130,7 +130,7 @@ def main():
     # the box (F-15615 case 3) and curved-geometry (case 5) helpers: never reached by a capsule; they throw if they were
     other = {'sub_' + addr(a.tool, f) for f in ('F-25936', 'F-48308', 'F-80030', 'F-96503')}
     stubs = {n: 'throw std::runtime_error("other bound type");' for n in other}
-    exe = build(idx, names, main_src, a.out_dir, 'sphere_fill', stubs=stubs, vector=True)
+    exe = build(idx, names, main_src, a.out_dir, 'sphere_fill', stubs=stubs, vector=True, flags=('-msse4.1', '-mssse3'))
     res = [x for x in run(exe, a.image).split(nl) if x]
     assert len(res) == len(cases), (len(res), len(cases))
     bad = [i for i, o in enumerate(res) if 'EXC' in o]

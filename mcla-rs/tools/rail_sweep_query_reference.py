@@ -116,7 +116,7 @@ def main():
     main_src = ('int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);'
                 'image.assign(std::istreambuf_iterator<char>(bin),{});' + nl + body + '}' + nl)
     idx = index(a.recomp)
-    exe = build(idx, ['sub_' + A['F-85722'], 'sub_' + A['F-23371']], main_src, a.out_dir, 'rail_sweep_query', stubs=stubs, vector=True)
+    exe = build(idx, ['sub_' + A['F-85722'], 'sub_' + A['F-23371']], main_src, a.out_dir, 'rail_sweep_query', stubs=stubs, vector=True, flags=('-msse4.1', '-mssse3'))
     out = [x for x in run(exe, a.image).split(nl) if x]
     assert len(out) == len(cases), (len(out), len(cases))
     bad = [o for o in out if 'EXC' in o]

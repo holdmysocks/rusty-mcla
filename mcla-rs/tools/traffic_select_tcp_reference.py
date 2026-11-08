@@ -133,7 +133,7 @@ if(!injected)printf("no inject ");printf("%%x %%x %%d %%d\n",ix(load(0x1000)),ix
              'sub_' + active: 'ctx.r3.u64=*pointer(ctx.r3.u32+0x3F8);', 'sub_' + freeway: 'ctx.r3.u64=load(ctx.r3.u32);'}
     idx = index(a.recomp)
     exe = build(idx, ['sub_' + fn, 'sub_' + bld, 'sub_' + thunk, 'sub_' + start], setup + body, a.out_dir, 'traffic_select_tcp',
-                stubs=stubs, vector=True, scratch_end=0x80000)
+                stubs=stubs, vector=True, scratch_end=0x80000, flags=('-msse4.1', '-mssse3'))
     a.out_dir.mkdir(parents=True, exist_ok=True)
     inp = a.out_dir / 'traffic_select_tcp_in.txt'
     inp.write_text(NL.join(' '.join('%x' % x for x in c) for c in cs) + NL)
