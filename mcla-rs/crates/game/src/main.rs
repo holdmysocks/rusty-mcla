@@ -11111,6 +11111,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         let menu4 = self.game.ui_msaa4() || self.garage_light().is_some();
         let scene_n = aamode::scene_samples(menu4);
         gpu.set_scene_samples(scene_n);
+        // (the sun probe's count is the original's: its own 2 / 4 samples whatever this mode)
+        sunglow::set_original_samples(if menu4 { 4 } else { 2 });
         gpu.set_aniso16(menu4 || crate::hooks::aniso_16x());
         gpu.set_night_collector(night_fc_on);
         render::ms::set_plain();
@@ -12516,7 +12518,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // multisampled scene, and the colour resolve: the samples averaged)
             gpu.resolve_scene_depth(&mut enc);
             if pic.is_none() {
-                sunglow::run(&gpu, &mut enc, self.sky.sun_color.rgb(self.time_of_day).to_array());
+                // (the probe at camera + the glow's sun direction, as the glow's own quad)
+                let sd = Vec3::new(globals.true_sun[0], globals.true_sun[1], globals.true_sun[2]).normalize_or_zero();
+                sunglow::run(&gpu, &mut enc, self.sky.sun_color.rgb(self.time_of_day).to_array(), [globals.cam_pos[0], globals.cam_pos[1], globals.cam_pos[2]], sd.to_array());
             }
             gpu.resolve_scene_color(&mut enc);
             render::ms::set_plain();

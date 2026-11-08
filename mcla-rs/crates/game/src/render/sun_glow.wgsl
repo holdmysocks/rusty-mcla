@@ -98,3 +98,21 @@ fn fs_sun_glow(in: VsOut) -> @location(0) vec4<f32> {
     }
     return vec4<f32>(glow, 0.0);
 }
+
+// The occlusion probe of F-63954 (sunglow.rs): F-68903's 8-slice sphere of radius 20 at the place the CPU gives,
+// colour, depth and stencil writes off in the original - here it marks each sample it passes (GEQUAL against
+// the scene's depth, the frame's cull) for the counting pass (sun_probe_count.wgsl).
+struct ProbeConsts {
+    centre: vec4<f32>,
+};
+@group(1) @binding(2) var<uniform> probe: ProbeConsts;
+
+@vertex
+fn vs_sun_probe(@location(0) p: vec4<f32>) -> @builtin(position) vec4<f32> {
+    return g.view_proj * vec4<f32>(p.xyz + probe.centre.xyz, 1.0);
+}
+
+@fragment
+fn fs_sun_probe() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0);
+}
