@@ -77,6 +77,69 @@ pub fn perlin(x: f32) -> f32 {
     fma(g1 - g0, s, g0)
 }
 
+/// fsel: `a >= 0` (a NaN is not) picks `b`, else `c`.
+fn fsel(a: f32, b: f32, c: f32) -> f32 {
+    if a >= 0.0 { b } else { c }
+}
+
+/// The bumper's tune (`TUNERS_DAMAGE`, read live: docs/reference/audio/DAMAGE_PARTS_RULE.md): +468 the spring, +472 the
+/// Verlet keep, +496 the attached ends' limits.
+const BUMPER_SPRING: f32 = 1000.0;
+const BUMPER_KEEP: f32 = 0.9;
+const BUMPER_LIMIT: Vec3 = Vec3::new(0.01, 0.05, 0.15);
+/// gravity's y in the bumper forces (the image's -9.8)
+const GRAVITY_Y: f32 = -9.8;
+
+/// A matrix's rows as the original keeps them (glam's columns), w included.
+fn rows4(m: &Mat4) -> [Vec4; 4] {
+    [m.x_axis, m.y_axis, m.z_axis, m.w_axis]
+}
+
+/// The vector unit's 4-term dot (vmsum4fp, dpps): (a.x b.x + a.y b.y) + (a.z b.z + a.w b.w).
+fn dp4(a: Vec4, b: Vec4) -> f32 {
+    (a.x * b.x + a.y * b.y) + (a.z * b.z + a.w * b.w)
+}
+
+/// A point (w = 1) through rows r: each coordinate the 4-term dot with r's column.
+fn through(p: Vec3, r: &[Vec4; 4]) -> Vec3 {
+    let q = p.extend(1.0);
+    let col = |i: usize| Vec4::new(r[0][i], r[1][i], r[2][i], r[3][i]);
+    Vec3::new(dp4(q, col(0)), dp4(q, col(1)), dp4(q, col(2)))
+}
+
+/// A vector made unit as the vector unit does it: vmsum3fp's (x^2 + y^2) + z^2, then `exact::rsqrt`'s estimate and
+/// Newton step (a zero vector stays zero).
+fn unit(v: Vec3) -> Vec3 {
+    let n = (v.x * v.x + v.y * v.y) + v.z * v.z;
+    if n == 0.0 {
+        return Vec3::ZERO;
+    }
+    v * crate::physics::exact::rsqrt(n)
+}
+
+/// The vpermwi 135 / 99 cross: perm(a, zxy) perm(b, yzx) - perm(a, yzx) perm(b, zxy) = b x a, unfused.
+fn cross_vmx(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3::new(a.z * b.y - a.y * b.z, a.x * b.z - a.z * b.x, a.y * b.x - a.x * b.y)
+}
+
+/// A frame's inverse by F-30106 (rows; where it refuses, the rows as they were), w lanes kept.
+fn inverse_rows(r: &[Vec4; 4]) -> [Vec4; 4] {
+    match crate::physics::exact::inverse_frame(&[r[0].truncate(), r[1].truncate(), r[2].truncate()], r[3].truncate()) {
+        Some(i) => [i[0].extend(r[0].w), i[1].extend(r[1].w), i[2].extend(r[2].w), i[3].extend(r[3].w)],
+        None => *r,
+    }
+}
+
+/// Rows a (x, y, z of each) times rows m in the original's row order: row k = ((m0 a.x [+ m3]) + m1 a.y) + m2 a.z.
+fn row_product(a: &[Vec3; 4], m: &[Vec4; 4]) -> [Vec4; 4] {
+    let row = |k: usize| {
+        let v = a[k];
+        let t = if k == 3 { m[0] * v.x + m[3] } else { m[0] * v.x };
+        m[2] * v.z + (m[1] * v.y + t)
+    };
+    [row(0), row(1), row(2), row(3)]
+}
+
 fn clamp01(x: f32) -> f32 {
     x.clamp(0.0, 1.0)
 }
@@ -219,11 +282,13 @@ pub struct Bumper {
     pub detached: Option<Loose>,
     /// the pose delta F_local (car space), identity while both ends are attached
     pub pose: Mat4,
+    /// the drawn delta of a hanging bumper, the original's +16 (F-44446): F M^-1 M_rest^-1 in its row order
+    pub delta: Mat4,
 }
 
 impl Bumper {
     pub fn new(front: bool, m_rest: Mat4, movement: u32) -> Bumper {
-        let mut b = Bumper { front, m_rest, a: End::default(), b: End::default(), clock: 0.0, max_state: movement.min(2) as u8, detached: None, pose: Mat4::IDENTITY };
+        let mut b = Bumper { front, m_rest, a: End::default(), b: End::default(), clock: 0.0, max_state: movement.min(2) as u8, detached: None, pose: Mat4::IDENTITY, delta: Mat4::IDENTITY };
         // `sub_8233F648`: the half vector (0.5, 0, 0) both ways
         b.a.rest = m_rest.transform_point3(Vec3::new(0.5, 0.0, 0.0));
         b.b.rest = m_rest.transform_point3(Vec3::new(-0.5, 0.0, 0.0));
@@ -287,59 +352,102 @@ impl Bumper {
             self.pose = Mat4::IDENTITY;
             return;
         }
-        // 1 forces (sub_8233D488)
-        let k = clamp01(speed / 50.0);
+        // (F-44446, every step in the original's operations: the vector unit's products and sums unfused, its 4-term
+        // dot as dpps sums it, the scalar unit's multiply-adds fused; `r` the car matrix's rows, `inv` their inverse
+        // by F-30106)
+        let r = rows4(c);
+        let inv = inverse_rows(&r);
+        // 1 forces (F-13331): k = speed / 50 kept in [0, 1] by two fsel, the clock advanced by k; a loose end's force
+        // is gravity plus 15 sin(2 clock) k and 5 perlin(clock) k upwards (fused, the guest's double sine), with its
+        // spring to the rest point x 0.1; a broken end gravity alone; an attached one the spring alone
+        let k = fsel(speed / 50.0, speed / 50.0, 0.0);
+        let k = fsel(k - 1.0, 1.0, k);
         self.clock += k;
         let mut force = [Vec3::ZERO; 2];
         for (i, e) in [&self.a, &self.b].into_iter().enumerate() {
-            let re = c.transform_point3(e.rest);
-            let (f, w) = match e.state {
+            let at = through(e.rest, &r);
+            let (mut f, s) = match e.state {
                 0 => (Vec3::ZERO, 1.0),
-                1 => (GRAVITY + Vec3::new(0.0, 15.0 * (2.0 * self.clock).sin() * k + 5.0 * perlin(self.clock) * k, 0.0), 0.1),
-                _ => (GRAVITY, 0.0),
+                1 => (Vec3::new(0.0, GRAVITY_Y, 0.0), 0.1),
+                _ => (Vec3::new(0.0, GRAVITY_Y, 0.0), 0.0),
             };
-            force[i] = f + (re - e.pos) * 1000.0 * w;
-        }
-        // 2 Verlet (sub_8233D7A8)
-        for (e, f) in [&mut self.a, &mut self.b].into_iter().zip(force) {
-            let p = e.pos + (e.pos - e.prev) * (0.9 * dt * 30.0) + f * dt * dt;
-            e.prev = e.pos;
-            e.pos = p;
-        }
-        // 3 constraints in car space (sub_8233FC20)
-        let front = self.front;
-        for e in [&mut self.a, &mut self.b] {
-            if e.state == 0 {
-                e.pos = c.transform_point3(e.rest);
+            if e.state == 1 {
+                let sn = crate::physics::exact::guest_sin(f64::from(self.clock * 2.0)) as f32;
+                f.y = crate::physics::exact::fma(sn * 15.0, k, f.y);
+                f.y = crate::physics::exact::fma(perlin(self.clock * 1.0) * 5.0, k, f.y);
             }
-            let mut d = ci.transform_point3(e.pos) - e.rest;
-            let l = if e.state < 2 { Vec3::new(0.01, 0.05, 0.15) } else { Vec3::new(0.01, 0.2, 10.0) };
-            d.x = d.x.clamp(-l.x, l.x);
-            d.y = d.y.clamp(-l.y, 0.0);
-            d.z = if front { d.z.clamp(-l.z, 0.0) } else { d.z.clamp(0.0, l.z) };
-            e.pos = c.transform_point3(e.rest + d);
+            force[i] = ((at - e.pos) * BUMPER_SPRING) * s + f;
+        }
+        // 2 Verlet (F-73128): the keep 0.9 x dt x 30 (dt the game frame): p += (p - prev) keep + (f dt) dt
+        let keep = (BUMPER_KEEP * dt) * 30.0;
+        for (e, f) in [&mut self.a, &mut self.b].into_iter().zip(force) {
+            let v = (e.pos - e.prev) * keep + (f * dt) * dt;
+            e.prev = e.pos;
+            e.pos = e.pos + v;
+        }
+        // 3 the limits in car space (F-56713): an attached end is put back on its rest point; each end's offset from
+        // its rest point, through the car's inverse, is held in [-x, x], [-y, 0] and the front's [-z, 0] / the rear's
+        // [0, z] by fsel pairs - the tune's (0.01, 0.05, 0.15), a broken end's (that x, 0.2, 10.0) - and goes back to
+        // the world through the car's matrix; a broken end is then held at the rest length from the other
+        let front = self.front;
+        if self.a.state == 0 {
+            self.a.pos = through(self.a.rest, &r);
+        }
+        if self.b.state == 0 {
+            self.b.pos = through(self.b.rest, &r);
+        }
+        let da = through(self.a.pos, &inv) - self.a.rest;
+        let db = through(self.b.pos, &inv) - self.b.rest;
+        for (e, d) in [(&mut self.a, da), (&mut self.b, db)] {
+            let l = if e.state == 2 { Vec3::new(BUMPER_LIMIT.x, 0.2, 10.0) } else { BUMPER_LIMIT };
+            let x = fsel(d.x - -l.x, d.x, -l.x);
+            let x = fsel(x - l.x, l.x, x);
+            let y = fsel(d.y - -l.y, d.y, -l.y);
+            let y = fsel(y, 0.0, y);
+            let z = if front {
+                let z = fsel(d.z - -l.z, d.z, -l.z);
+                fsel(z, 0.0, z)
+            } else {
+                let z = fsel(d.z, d.z, 0.0);
+                fsel(z - l.z, l.z, z)
+            };
+            let local = Vec3::new(x, y, z) + e.rest;
+            e.pos = through(local, &r);
             e.local_prev = e.local;
-            e.local = e.rest + d;
+            e.local = local;
         }
-        let len = (self.a.rest - self.b.rest).length();
+        let rd = self.a.rest - self.b.rest;
+        let len = crate::physics::exact::fma(rd.x, rd.x, crate::physics::exact::fma(rd.z, rd.z, rd.y * rd.y)).sqrt();
         if self.a.state == 2 {
-            self.a.pos = self.b.pos + (self.a.pos - self.b.pos).normalize_or_zero() * len;
+            self.a.pos = unit(self.a.pos - self.b.pos) * len + self.b.pos;
         } else if self.b.state == 2 {
-            self.b.pos = self.a.pos + (self.b.pos - self.a.pos).normalize_or_zero() * len;
+            self.b.pos = unit(self.b.pos - self.a.pos) * len + self.a.pos;
         }
-        // 4 tearing (sub_8233D2F0)
-        if self.a.state == 2 && (self.a.prev - c.transform_point3(self.a.rest)).length() > 0.85 {
-            self.b.state = 2;
-        } else if self.b.state == 2 && (self.b.prev - c.transform_point3(self.b.rest)).length() > 0.85 {
+        // 4 tearing (F-49920): a broken end whose last place is more than 0.85 from its rest point breaks the
+        // other; the second end is looked at only when the first is not broken
+        let gone = |p: Vec3, rest: Vec3| {
+            let d = p - through(rest, &r);
+            crate::physics::exact::fma(d.x, d.x, crate::physics::exact::fma(d.z, d.z, d.y * d.y)).sqrt() > 0.85
+        };
+        if self.a.state == 2 {
+            if gone(self.a.prev, self.a.rest) {
+                self.b.state = 2;
+            }
+        } else if self.b.state == 2 && gone(self.b.prev, self.b.rest) {
             self.a.state = 2;
         }
-        // 5 the bumper's frame (world)
-        let up = c.y_axis.truncate();
+        // 5 the bumper's frame (world): x from B to the middle of the ends, z = x x up, y = z x x, each made unit
+        let up = r[1].truncate();
         let mid = (self.a.pos + self.b.pos) * 0.5;
-        let x = (mid - self.b.pos).normalize_or(c.x_axis.truncate());
-        let z = x.cross(up).normalize_or(c.z_axis.truncate());
-        let y = z.cross(x).normalize_or(up);
+        let x = unit(mid - self.b.pos);
+        let z = unit(cross_vmx(up, x));
+        let y = unit(cross_vmx(x, z));
         let f = Mat4::from_cols(x.extend(0.0), y.extend(0.0), z.extend(0.0), mid.extend(1.0));
+        // the drawn delta (the original's +16): F M^-1 M_rest^-1, the products as the vector unit sums them
+        let rest_inv = inverse_rows(&rows4(&self.m_rest));
+        let p = row_product(&[x, y, z, mid], &inv);
+        let q = row_product(&p.map(|v| v.truncate()), &rest_inv);
+        self.delta = Mat4::from_cols(q[0], q[1], q[2], q[3]);
         // 6 both ends broken: the piece comes off (2.4)
         if self.a.state == 2 && self.b.state == 2 {
             let va = self.a.pos - self.a.prev;
@@ -355,6 +463,11 @@ impl Bumper {
         self.pose = *ci * f;
     }
 
+    /// The pose of a piece that came off (its body's frame in car space, `pose`): M_rest^-1 pose, as the drawn delta.
+    fn detached_delta(&self) -> Mat4 {
+        self.m_rest.inverse() * self.pose
+    }
+
     /// The bumper's place in the drawn car: the rest of the car space maps the slot's mesh by
     /// M_slot' = M_slot * A with A = M_rest^-1 * F_local, its axes scaled by 0.9995 (0x827E6344).
     pub fn draw_delta(&self) -> Mat4 {
@@ -364,7 +477,7 @@ impl Bumper {
     /// The same about the bone M_b the slot's part hangs on (its matrix index, F-14987): M_b' = M_b * A', drawn
     /// on the car-space mesh as M_b A' M_b^-1.
     pub fn draw_delta_on(&self, mb: &Mat4) -> Mat4 {
-        let a = if self.a.state == 0 && self.b.state == 0 && self.detached.is_none() { Mat4::IDENTITY } else { self.m_rest.inverse() * self.pose };
+        let a = if self.detached.is_some() { self.detached_delta() } else if self.a.state == 0 && self.b.state == 0 { Mat4::IDENTITY } else { self.delta };
         slot_move(mb, &a, BUMPER_SCALE) * mb.inverse()
     }
 
@@ -771,6 +884,48 @@ pub fn hit_counts(local: Vec3) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hanging bumper's step against F-44446 run offline (tools/bumper_step_reference.py, testdata/bumper_step_ref.txt:
+    /// 3,000 random cars, rest frames, end places, clocks, speeds, states and tune maxima, front and rear; the free
+    /// piece's factory answering none): the ends' places, last places and car-space places, the clock, the states and
+    /// the drawn delta (+16) - every word equal.
+    #[test]
+    fn bumper_step_matches_the_original() {
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let m4 = |w: &[f32]| Mat4::from_cols(Vec4::from_slice(&w[0..4]), Vec4::from_slice(&w[4..8]), Vec4::from_slice(&w[8..12]), Vec4::from_slice(&w[12..16]));
+        let v3 = |w: &[f32], k: usize| Vec3::new(w[k], w[k + 1], w[k + 2]);
+        let mut n = 0;
+        for line in include_str!("testdata/bumper_step_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let iv: Vec<&str> = i.split_whitespace().collect();
+            let w: Vec<f32> = iv[..74].iter().map(|x| f(x)).collect();
+            let ints: Vec<u8> = iv[74..].iter().map(|x| x.parse().unwrap()).collect();
+            let ov: Vec<u32> = o.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let c = m4(&w[0..16]);
+            let mut b = Bumper::new(ints[0] != 0, m4(&w[16..32]), u32::from(ints[3]));
+            b.a.rest = v3(&w, 32);
+            b.b.rest = v3(&w, 36);
+            for (e, k) in [(&mut b.a, 40), (&mut b.b, 56)] {
+                (e.pos, e.prev, e.local, e.local_prev) = (v3(&w, k), v3(&w, k + 4), v3(&w, k + 8), v3(&w, k + 12));
+            }
+            (b.a.state, b.b.state, b.clock) = (ints[1], ints[2], w[72]);
+            let mut evs = Vec::new();
+            b.step(&c, &c.inverse(), w[73], DamageParts::FRAME, 0, &|_| None, &mut evs);
+            let bits = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+            let want3 = |k: usize| [ov[k], ov[k + 1], ov[k + 2]];
+            for (e, k, name) in [(&b.a, 16, "A"), (&b.b, 36, "B")] {
+                for (got, at, what) in [(e.pos, k, "pos"), (e.prev, k + 4, "prev"), (e.local, k + 8, "local"), (e.local_prev, k + 12, "local prev")] {
+                    assert_eq!(bits(got), want3(at), "{name} {what}: {line}");
+                }
+            }
+            assert_eq!((b.clock.to_bits(), u32::from(b.a.state), u32::from(b.b.state)), (ov[72], ov[73], ov[74]), "clock / states: {line}");
+            let delta = if b.a.state == 0 && b.b.state == 0 { Mat4::IDENTITY } else { b.delta };
+            let got: Vec<u32> = delta.to_cols_array().iter().map(|x| x.to_bits()).collect();
+            assert_eq!(got, ov[0..16].to_vec(), "delta: {line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
 
     /// tools/slot_pass_reference.py: F-14987 run whole offline on 400 random cars; each bone a moved slot's part
     /// hangs on, moved by the slots in the original's order (756 moves), is bit-equal to `slot_move` applied in that order.
