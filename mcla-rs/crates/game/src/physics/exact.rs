@@ -682,7 +682,8 @@ pub fn steer_frame(axis: Vec3) -> [Vec3; 3] {
         return IDENTITY;
     }
     if d > -f32::from_bits(0x3f7f7cff) {
-        let c = Vec3::new(b.z * a.y - b.y * a.z, b.x * a.z - b.z * a.x, b.y * a.x - b.x * a.y);
+        // the cross as F-81327 forms it, -(b.yzx a.zxy - b.zxy a.yzx) (vnmsubfp): the sign of a zero lane is its
+        let c = Vec3::new(-(b.y * a.z - b.z * a.y), -(b.z * a.x - b.x * a.z), -(b.x * a.y - b.y * a.x));
         let len = fma(c.z, c.z, fma(c.x, c.x, c.y * c.y)).sqrt();
         if len == 0.0 {
             return rotation_about_unit(Vec3::X, 0.0);
@@ -694,7 +695,11 @@ pub fn steer_frame(axis: Vec3) -> [Vec3; 3] {
         let angle = if d > 0.0 { turn } else { f32::from_bits(0x40490fdb) - turn };
         rotation_about_unit(n, angle)
     } else {
-        rotation_about_unit(Vec3::X, f32::from_bits(0x40490fdb))
+        // (anti-parallel) half a turn about unit(e x a), e the first unit axis with |a_e| < 1 / sqrt 3 (0x3f13cd3a):
+        // for a = up that is x, and the cross (formed as above) is (-0, -0, -1)
+        let e = if a.x.abs() < f32::from_bits(0x3f13cd3a) { Vec3::X } else if a.y.abs() < f32::from_bits(0x3f13cd3a) { Vec3::Y } else { Vec3::Z };
+        let c = Vec3::new(-(e.y * a.z - e.z * a.y), -(e.z * a.x - e.x * a.z), -(e.x * a.y - e.y * a.x));
+        rotation_about_unit(c * rsqrt((c.x * c.x + c.y * c.y) + c.z * c.z), f32::from_bits(0x40490fdb))
     }
 }
 
@@ -859,6 +864,35 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 8000);
+    }
+
+    /// The wheel's lean F-41945 (with F-10410) and steering frame F-49981 (with F-81327) run offline
+    /// (tools/wheel_frames_reference.py): 6,000 leans (random rows, the signed coordinate axes, non-unit axes, angles 0,
+    /// +-pi, random and tiny) and 4,000 axes (random, either side of the 3.6 degree limit, straight up and down, the
+    /// coordinate axes) - every word of the rows equal to `leaned` / `steer_frame`, NaN compared as NaN.
+    #[test]
+    fn wheel_frames_are_the_originals() {
+        use glam::Vec3;
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let canon = |w: u32| if f32::from_bits(w).is_nan() { 0x7fc0_0000 } else { w };
+        let (mut nl, mut nf) = (0, 0);
+        for line in include_str!("testdata/wheel_frames_ref.txt").lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let (kind, case) = case.split_once(' ').unwrap();
+            let c: Vec<f32> = case.split(' ').map(|x| f32::from_bits(h(x))).collect();
+            let v = |i: usize| Vec3::new(c[i], c[i + 1], c[i + 2]);
+            let rows = if kind == "L" {
+                nl += 1;
+                leaned(&[v(0), v(4), v(8)], v(12), c[16])
+            } else {
+                nf += 1;
+                steer_frame(v(0))
+            };
+            let got: Vec<u32> = rows.iter().flat_map(|r| r.to_array()).map(|x| canon(x.to_bits())).collect();
+            let want: Vec<u32> = want.split_whitespace().map(h).map(canon).collect();
+            assert_eq!(got, want, "{line}");
+        }
+        assert_eq!((nl, nf), (6000, 4000));
     }
 
     #[test]
