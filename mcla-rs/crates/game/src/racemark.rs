@@ -1,16 +1,16 @@
 //! The race markers: the green chevron the original stands over every computer racer in a race
 //! (the `icon_racer` mesh, tinted by the `mcUIClass` tune of `tune/ui`). Decode:
 //! `docs/reference/ui/racer_marker.md`; the functions are the icon manager's (vtable 0x82025BDC):
-//! `sub_822272C8` (who gets one), `sub_82226BE0` (colour, fade), `sub_82226180` (matrix),
-//! `sub_822256E0` / `sub_82226E40` / `sub_82225170` (queue, far first, drawn through
-//! `sub_82723940` with the scene's depth: the GPS map icons' x-ray technique - `hudmap_gpu.rs`).
+//! `F-54513` (who gets one), `F-50704` (colour, fade), `F-52921` (matrix),
+//! `F-34178` / `F-34858` / `F-23750` (queue, far first, drawn through
+//! `F-61799` with the scene's depth: the GPS map icons' x-ray technique - `hudmap_gpu.rs`).
 
 use glam::{Mat4, Vec3, Vec4};
 use std::collections::HashMap;
 use std::path::Path;
 
 /// The `mcUIClass` block of `tune/ui` (`tune/ui/0x75b995ab`; fields registered by
-/// `sub_82224BE8`, the icon manager holds them 20 bytes further on).
+/// `F-61858`, the icon manager holds them 20 bytes further on).
 #[derive(Clone, Debug)]
 pub struct MarkTune {
     /// HookmanIconOffsetScale: the marker's centre stands this many times the car's bound
@@ -102,48 +102,88 @@ impl MarkTune {
         }
     }
 
-    /// The alpha factor at `d` metres from the camera, None = not drawn: nothing nearer than
-    /// FadeInBegin, in over FadeInSpan, out from FadeOutBegin over FadeOutSpan, nothing beyond.
-    /// Icon type 18 (the payback client being chased) is always drawn, whole.
-    pub fn fade(&self, icon: u8, d: f32) -> Option<f32> {
+    /// The colour's alpha at `d` metres from the camera from the tune colour's alpha `a`, None = not
+    /// drawn: nothing nearer than FadeInBegin, in over FadeInSpan, out from FadeOutBegin over
+    /// FadeOutSpan, nothing beyond. Icon type 18 (the payback client being chased) is always drawn,
+    /// its alpha set to 1 (not the tune's). (F-50704, the order of its tests and products.)
+    pub fn fade(&self, icon: u8, d: f32, a: f32) -> Option<f32> {
         if icon == 18 {
             return Some(1.0);
         }
         let (ib, is) = self.fade_in;
         let (ob, os) = self.fade_out;
-        // (the order of the original's tests, sub_82226BE0 0x82226CF8..0x82226D80)
-        if ib <= d && d <= ib + is {
-            Some((d - ib) / is)
-        } else if ob <= d && d <= ob + os {
-            Some(1.0 - (d - ob) / os)
-        } else if ib + is < d && d < ob {
-            Some(1.0)
+        if ib <= d && d <= is + ib {
+            Some((d - ib) / is * a)
+        } else if ob <= d && d <= os + ob {
+            Some((1.0 - (d - ob) / os) * a)
+        } else if is + ib < d && d < ob {
+            Some(a)
         } else {
             None
         }
     }
 
-    /// The marker's world matrix for a car standing at `car` (its matrix's translation) whose
-    /// composite bound is `height` tall, seen from a camera at `cam` looking along `fwd`:
-    /// the flat `icon_racer` quad turned upright (x about 90 degrees: z -> -y), faced to the
-    /// camera (right = |fwd x Y|, up = |right x fwd|), scaled along the world's axes, centred
-    /// `offset_scale x height` above the car. (RacerMarkerTranslate goes into the translation row,
-    /// which the position then overwrites - it has no effect.)
-    pub fn matrix(&self, fwd: Vec3, car: Vec3, height: f32) -> Mat4 {
-        let f = fwd.normalize_or_zero();
-        let r = f.cross(Vec3::Y).normalize_or_zero();
-        let u = r.cross(f).normalize_or_zero();
-        let s = self.scale;
-        // mesh (x, y, z) -> x r + (-z) u + y f, then the world's axes scaled
-        let cx = r * s;
-        let cy = f * s;
-        let cz = -u * s;
-        let p = Vec3::new(car.x, car.y + height * self.offset_scale, car.z);
-        Mat4::from_cols(cx.extend(0.0), cy.extend(0.0), cz.extend(0.0), Vec4::new(p.x, p.y, p.z, 1.0))
+    /// The marker's world matrix (F-52921) for a car standing at `car` (its matrix's translation)
+    /// whose composite bound is `height` tall, seen by a camera whose matrix has the z row `cam_z`
+    /// (pointing back, the camera looks along -z): f = -cam_z, right = |f x Y|, up = |right x f|
+    /// (the vector unit's refined reciprocal root, 0 for a zero length), the flat `icon_racer` quad
+    /// turned upright by the quarter turn about x (F-67091: rows (1,0,0), (0,c,s), (0,-s,c) of
+    /// pi/2), then the tune's matrix (unit rows times RacerMarkerScale), centred
+    /// `offset_scale x height` above the car (fused). RacerMarkerTranslate only reaches the
+    /// translation row, which the position then overwrites: it has no effect. Every lane, product
+    /// and sum in the original's order; the translation's w is 1 here (the original leaves the
+    /// tune's w there, the draw reads 4x3).
+    pub fn matrix(&self, cam_z: Vec3, car: Vec3, height: f32) -> Mat4 {
+        type V = [f32; 4];
+        let mul = |a: V, b: V| -> V { [a[0] * b[0], a[1] * b[1], a[2] * b[2], a[3] * b[3]] };
+        let add = |a: V, b: V| -> V { [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]] };
+        // vnmsubfp as the recomp: -(a b - c)
+        let nmsub = |a: V, b: V, c: V| -> V {
+            let p = mul(a, b);
+            [-(p[0] - c[0]), -(p[1] - c[1]), -(p[2] - c[2]), -(p[3] - c[3])]
+        };
+        let yzx = |a: V| -> V { [a[1], a[2], a[0], a[3]] };
+        let zxy = |a: V| -> V { [a[2], a[0], a[1], a[3]] };
+        let splat = |x: f32| -> V { [x; 4] };
+        // vmsum3fp (the x86 dot product's order: (0 + z z) + (y y + x x)), the reciprocal root
+        // (+inf -> 0), one refinement step y + (1 - s y y) (y / 2)
+        let unit = |v: V| -> V {
+            let s = (0.0 + v[2] * v[2]) + (v[1] * v[1] + v[0] * v[0]);
+            let e = 1.0 / s.sqrt();
+            let e = if e == f32::INFINITY { 0.0 } else { e };
+            let k = -(s * (e * e) - 1.0);
+            let y = k * (0.5 * e) + e;
+            mul(v, splat(y))
+        };
+        let up: V = [0.0, 1.0, 0.0, 0.0];
+        let f: V = [0.0 - cam_z.x, 0.0 - cam_z.y, 0.0 - cam_z.z, 0.0 - 0.0];
+        let r = unit(nmsub(yzx(up), zxy(f), mul(zxy(up), yzx(f))));
+        let u = unit(nmsub(yzx(f), zxy(r), mul(zxy(f), yzx(r))));
+        // the quarter turn: cos / sin of pi/2 (f32) by the guest's libm, rounded to f32
+        let half_pi = std::f32::consts::FRAC_PI_2 as f64;
+        let (c, sn) = (crate::physics::exact::guest_cos(half_pi) as f32, crate::physics::exact::guest_sin(half_pi) as f32);
+        let q: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, c, sn], [0.0, -sn, c]];
+        let s: V = [self.scale.x, self.scale.y, self.scale.z, 0.0];
+        let m = [mul([1.0, 0.0, 0.0, 0.0], s), mul([0.0, 1.0, 0.0, 0.0], s), mul([0.0, 0.0, 1.0, 0.0], s)];
+        let row = |i: usize| -> Vec4 {
+            let t = add(add(mul(r, splat(q[i][0])), mul(u, splat(q[i][1]))), mul(f, splat(q[i][2])));
+            let o = add(add(mul(m[0], splat(t[0])), mul(m[1], splat(t[1]))), mul(m[2], splat(t[2])));
+            Vec4::from_array(o)
+        };
+        let y = self.offset_scale.mul_add(height, car.y);
+        Mat4::from_cols(row(0), row(1), row(2), Vec4::new(car.x, y, car.z, 1.0))
     }
 }
 
-/// One marker to draw this frame: world matrix, colour (alpha faded), distance from the camera.
+/// The distance from the camera at `cam` to `p` as the original takes it (F-50704 and the queue
+/// F-34178): dy dy, then dz dz and dx dx fused on, the single root.
+pub fn distance(cam: Vec3, p: Vec3) -> f32 {
+    let (dx, dy, dz) = (p.x - cam.x, p.y - cam.y, p.z - cam.z);
+    dx.mul_add(dx, dz.mul_add(dz, dy * dy)).sqrt()
+}
+
+/// One marker to draw this frame: world matrix, colour (alpha faded), distance from the camera
+/// to its centre.
 #[derive(Clone, Copy, Debug)]
 pub struct Mark {
     pub m: Mat4,
@@ -167,7 +207,7 @@ pub struct Racer {
 /// 4.6 / 2.1 cm in the marker's height)*.
 pub const WHEEL_BOX_DROP: f32 = 0.5;
 
-/// The height of the car's composite bound as the running game has it (`sub_8255B9A8` +16 y
+/// The height of the car's composite bound as the running game has it (`F-98453` +16 y
 /// minus +32 y), a constant of the car from its set-up on (100 live samples, at rest and racing):
 /// the top is the body hull's own box (+0x10 y, margin in - S281 1.4117 = its hull part's 1.412),
 /// the bottom the wheel parts' - each at the model's hub (the file's part matrix), its tyre's
@@ -198,16 +238,18 @@ pub fn box_bottom(wheel_parts: &[Vec3], r: [f32; 2], w: [f32; 2]) -> f32 {
     }).fold(f32::MAX, f32::min) - WHEEL_BOX_DROP
 }
 
-/// This frame's markers, far first (`sub_82225138` sorts the queue by distance, descending).
-pub fn marks(t: &MarkTune, cam: Vec3, fwd: Vec3, racers: &[Racer]) -> Vec<Mark> {
+/// This frame's markers, far first (`F-13438` sorts the queue by distance, descending).
+/// `cam_z` is the camera matrix's z row (pointing back).
+pub fn marks(t: &MarkTune, cam: Vec3, cam_z: Vec3, racers: &[Racer]) -> Vec<Mark> {
     let mut out: Vec<Mark> = racers
         .iter()
         .filter_map(|r| {
-            let d = cam.distance(r.pos);
-            let a = t.fade(r.icon, d)?;
+            let d = distance(cam, r.pos);
             let mut colour = t.colour(r.icon);
-            colour[3] *= a;
-            Some(Mark { m: t.matrix(fwd, r.pos, r.height), colour, dist: d })
+            colour[3] = t.fade(r.icon, d, colour[3])?;
+            // (the queue F-34178 keeps the distance to the marker's centre, which it sorts by)
+            let m = t.matrix(cam_z, r.pos, r.height);
+            Some(Mark { m, colour, dist: distance(cam, m.w_axis.truncate()) })
         })
         .collect();
     out.sort_by(|a, b| b.dist.partial_cmp(&a.dist).unwrap_or(std::cmp::Ordering::Equal));
@@ -221,13 +263,13 @@ mod tests {
     #[test]
     fn fade_rule() {
         let t = MarkTune::default();
-        assert_eq!(t.fade(1, 10.0), None);
-        assert_eq!(t.fade(1, 20.0), Some(0.0));
-        assert!((t.fade(1, 42.5).unwrap() - 0.5).abs() < 1e-6);
-        assert_eq!(t.fade(1, 100.0), Some(1.0));
-        assert!((t.fade(1, 195.0).unwrap() - 0.5).abs() < 1e-6);
-        assert_eq!(t.fade(1, 216.0), None);
-        assert_eq!(t.fade(18, 500.0), Some(1.0));
+        assert_eq!(t.fade(1, 10.0, 1.0), None);
+        assert_eq!(t.fade(1, 20.0, 1.0), Some(0.0));
+        assert!((t.fade(1, 42.5, 1.0).unwrap() - 0.5).abs() < 1e-6);
+        assert_eq!(t.fade(1, 100.0, 1.0), Some(1.0));
+        assert!((t.fade(1, 195.0, 1.0).unwrap() - 0.5).abs() < 1e-6);
+        assert_eq!(t.fade(1, 216.0, 1.0), None);
+        assert_eq!(t.fade(18, 500.0, 0.5), Some(1.0));
         assert_eq!(t.colour(13), [1.0, 0.0, 0.0, 1.0]);
     }
 
@@ -255,11 +297,54 @@ mod tests {
         }
     }
 
+    /// F-50704 / F-52921 / F-34178 run offline (tools/race_marker_reference.py, 4,000 cases):
+    /// queued or not, the matrix (row 3's w aside), the colour, the depth flag and the distance,
+    /// every word equal.
+    #[test]
+    fn markers_match_the_original() {
+        let text = include_str!("testdata/race_marker_ref.txt");
+        let mut n = 0;
+        for line in text.lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = a.split(' ').map(|x| x.parse().unwrap()).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let v3 = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let (cam_z, cam, pos) = (v3(0), v3(3), v3(6));
+            let height = f(9) - f(10);
+            let c4 = |i: usize| [f(i), f(i + 1), f(i + 2), f(i + 3)];
+            let t = MarkTune {
+                offset_scale: f(11),
+                depth_test: w[35] != 0,
+                scale: v3(12),
+                fade_in: (f(18), f(19)),
+                fade_out: (f(20), f(21)),
+                color: c4(22),
+                payback_racer: c4(26),
+                payback_buddy: c4(30),
+                ..MarkTune::default()
+            };
+            let icon = w[34] as u8;
+            let o: Vec<u32> = b.split(' ').map(|x| x.parse().unwrap()).collect();
+            let got = marks(&t, cam, cam_z, &[Racer { pos, height, icon }]);
+            assert_eq!(got.len() as u32, o[0], "{line}");
+            if let Some(m) = got.first() {
+                let mut words: Vec<u32> = m.m.to_cols_array().iter().map(|x| x.to_bits()).collect();
+                words.truncate(15);
+                assert_eq!(words, o[1..16].to_vec(), "matrix {line}");
+                assert_eq!(m.colour.map(f32::to_bits).to_vec(), o[17..21].to_vec(), "colour {line}");
+                assert_eq!(t.depth_test as u32, o[21], "depth {line}");
+                assert_eq!(m.dist.to_bits(), o[22], "distance {line}");
+            }
+            n += 1;
+        }
+        assert_eq!(n, 4000);
+    }
+
     #[test]
     fn matrix_faces_the_camera() {
         let t = MarkTune::default();
         // camera looking down -z: the quad spans x and y, 1.4 times taller than wide
-        let m = t.matrix(Vec3::new(0.0, 0.0, -1.0), Vec3::new(5.0, 1.0, -20.0), 2.0);
+        let m = t.matrix(Vec3::new(0.0, 0.0, 1.0), Vec3::new(5.0, 1.0, -20.0), 2.0);
         let a = m.transform_point3(Vec3::new(1.0, 0.0, -1.0));
         let b = m.transform_point3(Vec3::new(-1.0, 0.0, 1.0));
         assert!((a - Vec3::new(6.0, 1.0 + 3.8 + 1.4, -20.0)).length() < 1e-5, "{a:?}");

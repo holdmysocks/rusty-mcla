@@ -11413,7 +11413,8 @@ impl Game {
                 crate::racemark::bound_height(p);
             }
         }
-        let marks = crate::racemark::marks(&tune, hud.cam_pos, hud.cam_look - hud.cam_pos, &racers);
+        // (the camera matrix's z row: the port's look-at camera points it back from the look point)
+        let marks = crate::racemark::marks(&tune, hud.cam_pos, -(hud.cam_look - hud.cam_pos).normalize_or_zero(), &racers);
         if std::env::var("MCLA_MARK_LOG").is_ok() {
             for m in &marks {
                 log::info!("race marker: {:.1} m at {:?} colour {:?}", m.dist, m.m.w_axis.truncate(), m.colour);
@@ -12928,6 +12929,7 @@ impl Game {
             } else if enter && self.map_cursor > 0 {
                 (self.gps_pick, self.mission_target) = (Some(places[self.map_cursor].0), None);
                 self.gps_armed = true;
+                log::info!("gps: target set on the map at {:?} ({})", places[self.map_cursor].0, places[self.map_cursor].1);
                 self.career.stats.entry("tut:target_set".into()).or_insert(1);
             }
             let (w, name, kind) = match (self.map_free, self.map_drift) {
