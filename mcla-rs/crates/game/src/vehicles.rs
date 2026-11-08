@@ -1091,6 +1091,9 @@ pub struct CarLook {
     /// the record's headlight glass, taillight glass, bumped headlight and bumped taillight colours (record + 0x120 ..
     /// + 0x150: the glass draw's TintColors / BumpedTintColors of zones 4 - 7, `damagemap::glass_vars`)
     pub glass: [[f32; 4]; 4],
+    /// the record's exterior neon: ExtNeonColor (+0x50, four floats as stored) and (ExtNeonIntensity +0x170,
+    /// ExtNeonFlashRate +0x18c as a signed byte, 0, 0) - `ExtNeon`
+    pub ext_neon: [[f32; 4]; 2],
 }
 
 /// A set-up as `Vehicles::dress_setups` puts it on a car: the model's parts, the rim's
@@ -1294,6 +1297,10 @@ pub struct Vehicles {
     /// the player's gauge colour A and interior neon colour as its record holds them (w: IntNeonFlashRate, IntNeonIntensity) -
     /// what its driver is lit by (`Game::cabin_light_colors`)
     pub player_cabin_light: [[f32; 4]; 2],
+    /// the player's exterior neon record as `CarLook::ext_neon` (`Game::ext_neon_record`)
+    pub player_ext_neon: [[f32; 4]; 2],
+    /// the unpaused clock (0x827D7518, `App::wind_clock`) the neon's flash reads (F-10129)
+    pub neon_clock: f32,
     /// the brakes fitted in the garage (BRAKES: a model of `resources/brakes`), else the car's own
     pub player_brake: Option<Arc<BrakeModel>>,
     /// the tires fitted in the garage (TIRES: a set of `resources/tires/textures`; empty =
@@ -5570,6 +5577,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
         blur_wheels.iter_mut().for_each(|w| w.clear());
         let eye = self.wheel_eye;
         let player_tach_rpm = self.player_tach_rpm;
+        // (siColor2 of each car's draws: its exterior neon, F-96984 / F-56246 - `ExtNeon::si_color`)
+        let neon_si: Vec<[f32; 4]> = self.cars.iter().map(|c| self.ext_neon(c).map_or([0.0; 4], |n| n.si_color())).collect();
         for (ci, c) in self.cars.iter_mut().enumerate() {
             let pose = c.render_pose(self.render_alpha);
             let mut m = Mat4::from_rotation_translation(pose.rot, pose.pos);
@@ -5689,7 +5698,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             } else {
                 [[0.0; 4]; 5]
             };
-            let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: body_color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32 + int_glass], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(c.amb_lamps.tint).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5, slots: amb_slots, glass_tint: gv.tint, glass_bumped: gv.bumped, rest_rot: c.model.rest_rot };
+            let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: body_color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32 + int_glass], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(c.amb_lamps.tint).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5, slots: amb_slots, glass_tint: gv.tint, glass_bumped: gv.bumped, rest_rot: c.model.rest_rot, neon_si: neon_si[ci] };
             batch.push_object(&c.binding, &body_u);
             // (the side windows: the body's object moved by the window bone's clip)
             for (k, wb) in c.window_bindings.iter().enumerate() {
@@ -6831,6 +6840,78 @@ impl Vehicles {
                 *draws += 1;
             }
         }
+    }
+}
+
+/// A car's exterior neon as the original's mcCar keeps it (docs/reference/carparts/neon_rule.md): the record's
+/// ExtNeonColor (four floats as stored, no colour conversion), ExtNeonIntensity, the flash (car+404) and what follows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExtNeon {
+    pub color: [f32; 4],
+    pub intensity: f32,
+    /// car+404 = 0.5 x (1 + cos(b x t x 10)), b = ExtNeonFlashRate as a signed byte, t the unpaused clock (F-10129,
+    /// `drivers::neon_flash`); 1 at the rate 0 (every set-up on the disc)
+    pub pulse: f32,
+}
+
+impl ExtNeon {
+    /// From `CarLook::ext_neon` and the unpaused clock.
+    pub fn of(rec: [[f32; 4]; 2], clock: f32) -> ExtNeon {
+        ExtNeon { color: rec[0], intensity: rec[1][0], pulse: crate::drivers::neon_flash(rec[1][1], clock) }
+    }
+
+    /// The light quads' gate (F-17121): ExtNeonIntensity above 0.001 ([0x820022B4]); the second test, car+6477 == 0,
+    /// holds for every car offline.
+    pub fn on(&self) -> bool {
+        self.intensity > f32::from_bits(0x3a83_126f)
+    }
+
+    /// siColor2 (c59) of the car's draws: F-96984 car+2680 = ((pulse x ExtNeonIntensity) x car+268 (1.0)) x 0.3
+    /// ([0x8200FEB4]), car+2656 = ExtNeonColor; F-31618 sets their product, all four lanes. No gate.
+    pub fn si_color(&self) -> [f32; 4] {
+        let s = ((self.pulse * self.intensity) * 1.0) * f32::from_bits(0x3e99_999a);
+        self.color.map(|c| c * s)
+    }
+
+    /// The light quads' colour (F-17121): ExtNeonColor x ((ExtNeonIntensity x pulse) x f0), f0 = ((((up_y + 1) x 0.5)
+    /// x car+268 (1.0)) x f28) x D - `up_y` the body matrix's up row y, `f28` 1 for the player's car (sat(1 - T) of a
+    /// ground probe for others with their head lamps on), `night_or_garage` D = 0.2 at night (hour > 18 or < 6),
+    /// 0.125 by day and in the garage.
+    pub fn light_color(&self, up_y: f32, f28: f32, night: bool) -> [f32; 4] {
+        let d = if night { f32::from_bits(0x3e4c_cccd) } else { 0.125 };
+        let f0 = ((((up_y + 1.0) * 0.5) * 1.0) * f28) * d;
+        let k = (self.intensity * self.pulse) * f0;
+        self.color.map(|c| c * k)
+    }
+}
+
+impl Vehicles {
+    /// A car's exterior neon record: the player's (`player_ext_neon`), a set-up car's (an AI racer, a scene or story
+    /// car: its set-up's look); traffic and parked cars are not mcCars and have none (F-17121 / F-96984 run for mcCar
+    /// only).
+    pub fn ext_neon(&self, c: &CarInstance) -> Option<ExtNeon> {
+        if c.is_player {
+            return Some(ExtNeon::of(self.player_ext_neon, self.neon_clock));
+        }
+        if c.is_ambient() || c.parked.is_some() {
+            return None;
+        }
+        c.look.as_ref().map(|l| ExtNeon::of(l.ext_neon, self.neon_clock))
+    }
+
+    /// Every car whose exterior neon is on (`ExtNeon::on`), with its body matrix, for the light quads' pass (F-17121 ->
+    /// F-35120): (car index, matrix, neon, is the player's). The in-car view's car makes none (F-17121 skips on +123).
+    pub fn neon_cars(&self, in_car: bool) -> Vec<(usize, Mat4, ExtNeon, bool)> {
+        let mut out = Vec::new();
+        for (i, c) in self.cars.iter().enumerate() {
+            if self.hide_player && c.is_player || (in_car && c.is_player) {
+                continue;
+            }
+            let Some(n) = self.ext_neon(c).filter(|n| n.on()) else { continue };
+            let pose = c.render_pose(self.render_alpha);
+            out.push((i, Mat4::from_rotation_translation(pose.rot, pose.pos), n, c.is_player));
+        }
+        out
     }
 }
 
@@ -8387,5 +8468,54 @@ mod rest_rot_tests {
             }
         }
         println!("worst {worst:e}");
+    }
+}
+
+#[cfg(test)]
+mod ext_neon_tests {
+    use super::*;
+
+    /// The pulse, siColor2 and the light quads' colour in the original's f32 order (F-10129, F-96984, F-17121).
+    #[test]
+    fn ext_neon_values() {
+        let n = ExtNeon::of([[0.5, 0.25, 1.0, 0.0], [1.0, 0.0, 0.0, 0.0]], 123.4);
+        assert_eq!(n.pulse, 1.0, "rate 0: steady");
+        assert!(n.on());
+        assert_eq!(n.si_color(), [0.5 * 0.3f32, 0.25 * 0.3f32, 0.3f32, 0.0]);
+        // (upright, the player, night: (((2 x 0.5) x 1) x 1) x 0.2)
+        assert_eq!(n.light_color(1.0, 1.0, true), [0.5 * 0.2f32, 0.25 * 0.2f32, 0.2f32, 0.0]);
+        assert_eq!(n.light_color(1.0, 1.0, false), [0.0625, 0.03125, 0.125, 0.0]);
+        // (on its side: half; upside down: none)
+        assert_eq!(n.light_color(0.0, 1.0, false)[2], 0.0625);
+        assert_eq!(n.light_color(-1.0, 1.0, true)[2], 0.0);
+        // (the gate: above 0.001)
+        assert!(!ExtNeon::of([[1.0; 4], [0.001, 0.0, 0.0, 0.0]], 0.0).on());
+        assert!(ExtNeon::of([[1.0; 4], [0.0011, 0.0, 0.0, 0.0]], 0.0).on());
+        // (a rate: 0.5 (1 + cos(b t 10)); negative as positive)
+        let a = ExtNeon::of([[1.0; 4], [1.0, 3.0, 0.0, 0.0]], 0.7).pulse;
+        let b = ExtNeon::of([[1.0; 4], [1.0, -3.0, 0.0, 0.0]], 0.7).pulse;
+        assert_eq!(a, b);
+        assert!((a - 0.5 * (1.0 + (21.0f32).cos())).abs() < 1e-6);
+    }
+
+    /// Every set-up on the disc: `setup_look` takes the record's exterior neon as stored (0x50 four floats, 0x170, the
+    /// byte 0x18c signed); 16 of them have it on, every rate 0.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn setups_ext_neon_as_stored() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let root = std::path::Path::new(&dir).join("resources/vehicle/configs");
+        let (mut n, mut on) = (0, 0);
+        for e in std::fs::read_dir(&root).unwrap().flatten() {
+            let b = std::fs::read(e.path()).unwrap();
+            let Some(l) = crate::mc4::setup_look(&b) else { continue };
+            let f = |o: usize| f32::from_be_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+            assert_eq!(l.look.ext_neon, [[f(0x50), f(0x54), f(0x58), f(0x5c)], [f(0x170), b[0x18c] as i8 as f32, 0.0, 0.0]]);
+            assert_eq!(b[0x18c], 0);
+            n += 1;
+            on += ExtNeon::of(l.look.ext_neon, 0.0).on() as usize;
+        }
+        println!("{n} set-ups, {on} with the exterior neon on");
+        assert_eq!((n, on), (403, 16));
     }
 }

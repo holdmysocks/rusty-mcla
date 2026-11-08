@@ -1695,7 +1695,7 @@ impl App {
             self.weather_set(Nice);
         }
         let game_dt = dt * self.game.mc4_time_scale();
-        if self.game.mode != Mode::Paused { self.wind_clock += game_dt; }
+        if self.game.mode != Mode::Paused { self.wind_clock += game_dt; } self.vehicles.neon_clock = self.wind_clock;
         // The plants' night factor, at the end of the plants' draw (F-39007): towards 2.0 while IsNight (F-47292: not in
         // the garage, the hour past the night's start or before its end), else 1.0, by 2.0 x the clock's step (F-90102).
         let night_now = self.game.mode != Mode::Garage && (self.time_of_day > 18.0 || self.time_of_day < 6.0);
@@ -5263,6 +5263,8 @@ impl App {
             self.vehicles.player_interior = self.game.interior_groups();
             // (the gauge and interior neon colours its driver is lit by: the record's - F-42959)
             self.vehicles.player_cabin_light = self.game.cabin_light_colors();
+            // (its exterior neon record - the light quads and siColor2, F-17121 / F-96984)
+            self.vehicles.player_ext_neon = self.game.ext_neon_record();
             let tire = s19d_look.as_ref().map_or_else(|| self.game.tire_set(), |l| l.1.clone());
             self.vehicles.set_player_tire(&mut gpu, &mut world, &tire);
             let brake = match s19d_look.as_ref() {
@@ -5347,6 +5349,7 @@ impl App {
                 self.vehicles.player_rim_finish = l.rim_finish;
                 self.vehicles.player_interior = l.interior;
                 self.vehicles.player_cabin_light = l.cabin_light;
+                self.vehicles.player_ext_neon = l.ext_neon;
                 self.vehicles.player_paint_type = l.paint_type;
                 self.vehicles.player_paint_b = l.color2;
                 self.vehicles.player_area_a = l.area_a;

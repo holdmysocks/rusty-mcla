@@ -2076,7 +2076,9 @@ impl Game {
             c.set_tint(row, rgb);
         }
         let (on, old) = c.neon_ext();
-        let rgb = (neon_on && old.map_or(true, |o| !close(o, neon))).then_some(neon);
+        // (the colour goes into the record whether the neon is on or not: SetMiscColor F-70456 writes +0x50 as the
+        // cursor lands on a swatch, the toggle F-53428 only +0x170)
+        let rgb = old.map_or(true, |o| !close(o, neon)).then_some(neon);
         if on != neon_on || rgb.is_some() {
             c.set_neon_ext(neon_on, rgb);
         }
@@ -2658,6 +2660,24 @@ impl Game {
         let v = &self.mc4.as_ref()?.car(&self.car_x.car)?.visual;
         let g = |c: &Vec<F>| (c.len() >= 4).then(|| [c[0].0 as f32, c[1].0 as f32, c[2].0 as f32, c[3].0 as f32]);
         Some([g(&v.m_vHeadlightGlassColorNew)?, g(&v.m_vTaillightGlassColorNew)?, g(&v.m_vBumpedHeadlightColor)?, g(&v.m_vBumpedTaillightColor)?])
+    }
+
+    /// The player's exterior neon as the record holds it (`vehicles::CarLook::ext_neon`): ExtNeonColor (+0x50) as
+    /// stored - the original's light quads and siColor2 read it raw, no colour conversion - and (ExtNeonIntensity
+    /// +0x170, ExtNeonFlashRate +0x18c as a signed byte, 0, 0). The garage's rows are live (SetMiscColor F-70456 and the
+    /// toggle F-53428 write the record as they change): the chosen colour, and 1.0 / 0.0 by the NEON row (the record's
+    /// own intensity while it is on).
+    pub fn ext_neon_record(&self) -> [[f32; 4]; 2] {
+        let cur = if self.car_x.car.is_empty() { self.mc4_car_name(self.current_car) } else { self.car_x.car.clone() };
+        let rec = self.mc4.as_ref().and_then(|m| m.car(&cur));
+        let c = match self.car_x.neon_rgb {
+            Some((k, c)) if k == self.neon_color => c,
+            _ => misc_screen(self.neon_color),
+        };
+        let own = rec.map_or(0.0, |r| r.visual.ExtNeonIntensity.0 as f32);
+        let i = if !self.neon_on { 0.0 } else if own > 0.0 { own } else { 1.0 };
+        let rate = rec.map_or(0, |r| r.visual.ExtNeonFlashRate) as i8 as f32;
+        [[c[0], c[1], c[2], 0.0], [i, rate, 0.0, 0.0]]
     }
 
     /// The exterior neon's colour, linear.
@@ -8608,6 +8628,8 @@ pub struct SetupLook {
 ///   - the tire set, 0x845 (`TIRES`), and the brake model, 0x846 (`BRAKES`).
 ///   - the driver's light colours: gauge colour A at 0x70, the interior neon's at 0x60, its intensity at 0x174 and
 ///     its flash rate at 0x18D (a signed byte) (`cabin_light`, F-42959).
+///   - the exterior neon: ExtNeonColor at 0x50 (four floats), ExtNeonIntensity at 0x170, ExtNeonFlashRate at 0x18C (a
+///     signed byte) (`ext_neon`, F-17121 / F-96984).
 /// Step 19e: a set-up's licence plate text (0x847, seven letters; letters, digits and spaces).
 pub fn setup_plate(b: &[u8]) -> String {
     b.get(0x847..0x84e).map_or(String::new(), |l| l.iter().take_while(|c| **c != 0).filter(|c| c.is_ascii_alphanumeric() || **c == b' ').map(|c| *c as char).collect::<String>().trim().to_string())
@@ -8630,7 +8652,7 @@ pub fn setup_look(b: &[u8]) -> Option<SetupLook> {
     let body_a = rgb(0x660)?;
     let body = paint_as_drawn(area(0));
     let body_b = to_linear(body.b);
-    let mut look = crate::vehicles::CarLook { paint_type: body.ty, color2: [body_b[0], body_b[1], body_b[2], body.fade as f32], tint: [0.0, 0.0035, 0.005, 0.372], interior: [[0.0; 4]; 5], area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], rim_finish: [[0.0; 4]; 3], cabin_light: [[0.0; 4]; 2], glass: [0x120, 0x130, 0x140, 0x150].map(|o| [f(o), f(o + 4), f(o + 8), f(o + 12)]) };
+    let mut look = crate::vehicles::CarLook { paint_type: body.ty, color2: [body_b[0], body_b[1], body_b[2], body.fade as f32], tint: [0.0, 0.0035, 0.005, 0.372], interior: [[0.0; 4]; 5], area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], rim_finish: [[0.0; 4]; 3], cabin_light: [[0.0; 4]; 2], glass: [0x120, 0x130, 0x140, 0x150].map(|o| [f(o), f(o + 4), f(o + 8), f(o + 12)]), ext_neon: [[f(0x50), f(0x54), f(0x58), f(0x5c)], [f(0x170), b[0x18c] as i8 as f32, 0.0, 0.0]] };
     // (the driver's gauge and interior neon colours, as the record holds them, IntNeonFlashRate and IntNeonIntensity in
     // w - F-42959)
     let raw = |o: usize| [f(o), f(o + 4), f(o + 8)];
