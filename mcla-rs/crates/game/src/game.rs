@@ -5557,7 +5557,8 @@ impl Game {
                 let painter = if booting {
                     painter.with_clip_rect(egui::Rect::NOTHING)
                 } else if let Some(fp) = self.flash_prompt.as_mut() {
-                    let press = self.career.strings.get("prompt_press").map(|v| v.to_uppercase()).unwrap_or_else(|| "PRESS".into());
+                    // (prompt id 27 of the prompt bar set-up F-40654: one element, the Start icon and prompt_press_start)
+                    let press = self.career.strings.get("prompt_press_start").map(|v| v.to_uppercase()).unwrap_or_else(|| "PRESS".into());
                     // (on the keyboard the start screen's Start is Enter)
                     fp.show(&[crate::glyphs::with_key("ENTER", (press, crate::flash_ui::ICON_START))], None, None);
                     fp.movie.player.update(ctx.input(|i| i.stable_dt).min(0.1));
