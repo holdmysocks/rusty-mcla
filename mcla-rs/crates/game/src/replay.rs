@@ -1612,6 +1612,7 @@ mod original_director_tests {
     fn polar_update_matches_the_original() {
         struct W {
             hit: Option<(Vec3, Vec3)>,
+            own: Option<(Vec3, Vec3)>,
             calls: Vec<String>,
         }
         impl Probe for W {
@@ -1619,9 +1620,9 @@ mod original_director_tests {
                 self.calls.push(format!("W{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x}", a.x.to_bits(), a.y.to_bits(), a.z.to_bits(), b.x.to_bits(), b.y.to_bits(), b.z.to_bits(), r.to_bits()));
                 self.hit
             }
-            fn own(&mut self, _: Vec3, _: Vec3, _: f32) -> Option<(Vec3, Vec3)> {
-                self.calls.push("O".into());
-                None
+            fn own(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
+                self.calls.push(format!("O{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},1", a.x.to_bits(), a.y.to_bits(), a.z.to_bits(), b.x.to_bits(), b.y.to_bits(), b.z.to_bits(), r.to_bits()));
+                self.own
             }
         }
         let mut cases = 0;
@@ -1632,6 +1633,7 @@ mod original_director_tests {
             let r3 = |i: usize| Vec3::new(v[i], v[i + 1], v[i + 2]);
             let car = HeliCar { m: [r3(4), r3(7), r3(10), r3(13)], vel: Vec3::ZERO };
             let hit = (w[17] == "1").then(|| (r3(17), r3(20)));
+            let own = (w[24] == "1").then(|| (r3(24), r3(27)));
             let tune = CamTune::default();
             let cv = CarView { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, top: 1.0 };
             let mut d = Director::new(&tune, 1, &cv);
@@ -1639,7 +1641,7 @@ mod original_director_tests {
             d.aspect = v[1];
             d.polar.pitch = v[2];
             d.polar.yaw = v[3];
-            let mut probe = W { hit, calls: Vec::new() };
+            let mut probe = W { hit, own, calls: Vec::new() };
             let (place, m) = d.polar_place(&car, &mut probe);
             let o: Vec<&str> = b.split_whitespace().collect();
             let want_calls: Vec<&str> = o.iter().copied().filter(|x| x.starts_with(['W', 'O'])).collect();

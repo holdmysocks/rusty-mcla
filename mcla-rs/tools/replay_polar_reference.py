@@ -2,9 +2,13 @@
 rotations F-43547 / F-57591, the look-at F-97951 and the re-orthonormaliser F-46571, on a polar camera object (its real vtable,
 found by class name) over a car with any matrix. The sweep F-58512 is stubbed: it logs start, end and radius and answers from the
 case (0: no touch; 1: a touch whose contact and normal are written at its result +16 / +32). The push-out to the car's own bound
-F-38041 is stubbed (logged; it leaves the place). The viewport (+152) holds near +704 and F-90812's tangents +712 / +716.
+F-38041 runs unchanged; its query calls are stubbed: the query constructor F-93477 and the release F-13813 / F-47121 do nothing, the
+directed setup F-13494 logs start, end (its r4 block) and radius and keeps the result pointer, the instance frame F-56283 and the
+world conversion F-77105 do nothing (the case's contact and normal are already in the world), the bound test F-35029 answers from the
+case (a touch writes the case's second contact and normal at the result +16 / +32). The viewport (+152) holds near +704 and F-90812's tangents +712 / +716.
 Line:  POL <lens> <aspect> <pitch> <yaw> <car rows a b c place (12)> <touch 0/1> <contact x3> <normal x3>
-       -> [W<ax>,<ay>,<az>,<bx>,<by>,<bz>,<r> O, each followed by a space] <rows a b c (9)> <place (3)> <+156>
+       <own touch 0/1> <contact x3> <normal x3>
+       -> [W<ax>,<ay>,<az>,<bx>,<by>,<bz>,<r> | O<ax>,..,<r>, each followed by a space] <rows a b c (9)> <place (3)> <+156>
 (floats as hex bits; the rows are the ones the camera shows: +80 after a touch, else +16)
 Usage: replay_polar_reference.py --recomp D:/MCLA-static --image work/2026-10-10/original-image.bin --work DIR --out FILE [--tool mcla-tool]"""
 import argparse
@@ -16,7 +20,8 @@ import subprocess
 from pathlib import Path
 import recomp_dispatch as rd
 
-IDS = {'UPD': 'F-72161', 'SWEEP': 'F-58512', 'PUSH': 'F-38041'}
+IDS = {'UPD': 'F-72161', 'SWEEP': 'F-58512', 'QCT': 'F-93477', 'QDIR': 'F-13494', 'QINST': 'F-56283', 'QTEST': 'F-35029',
+       'QWORLD': 'F-77105', 'QREL1': 'F-13813', 'QREL2': 'F-47121'}
 
 MAIN = r'''
 int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.assign(std::istreambuf_iterator<char>(bin),{});
@@ -30,13 +35,15 @@ int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.
   for(int i=0;i<3;i++)store(V+2352+4*i,0);store(V+2352+12,f(1.0f));
   for(int i=0;i<4;i++){store(V+2240+4*i,0);store(V+2528+4*i,0x7F800000u);}
   for(uint32_t a=0x40010000;a<0x40014400;a+=4)store(a,0);
-  uint32_t lens,asp,pi,ya,m[12],hit,c[3],nm[3];
-  in>>std::hex>>lens>>asp>>pi>>ya;for(auto&x:m)in>>x;in>>hit;for(auto&x:c)in>>x;for(auto&x:nm)in>>x;in>>std::dec;
+  uint32_t lens,asp,pi,ya,m[12],hit,c[3],nm[3],oh,oc[3],on[3];
+  in>>std::hex>>lens>>asp>>pi>>ya;for(auto&x:m)in>>x;in>>hit;for(auto&x:c)in>>x;for(auto&x:nm)in>>x;
+  in>>oh;for(auto&x:oc)in>>x;for(auto&x:on)in>>x;in>>std::dec;
+  store(QU+64,oh);for(int i=0;i<3;i++){store(QU+80+4*i,oc[i]);store(QU+96+4*i,on[i]);}
   store(QU,hit);for(int i=0;i<3;i++){store(QU+16+4*i,c[i]);store(QU+32+4*i,nm[i]);}
   for(int r=0;r<4;r++){for(int i=0;i<3;i++)store(CM+16*r+4*i,m[3*r+i]);store(CM+16*r+12,r==3?f(1.0f):0);}
   float t=float(std::tan(double(g(lens)*g(0x3c0efa35u))));store(VP+696,lens);store(VP+704,f(0.2f));store(VP+712,f(t));store(VP+716,f(t*g(asp)));
   store(PO,VTP);store(PO+144,CM);store(PO+152,VP);store(PO+244,f(0.65f));store(PO+260,f(1.0f));store(PO+264,f(7.0f));
-  store(PO+272,pi);store(PO+276,ya);store(PO+168,f(47.0f));store(PO+192,0x40013000u);   // the vehicle (+28: its instance, left out of the sweep)
+  store(PO+272,pi);store(PO+276,ya);store(PO+168,f(47.0f));store(PO+192,0x40013000u);store(0x40013000u+28,0x40013100u);store(0x40013100u+4,0x40013200u);store(0x40013200u+12,0x40013300u);   // the vehicle (+28: its instance, left out of the sweep)
 
   Context cx=fresh();cx.r3.u32=PO;sub_UPD(cx,nullptr);
   uint32_t M=(load(PO+156)>>24)?PO+80:PO+16;
@@ -50,7 +57,12 @@ STUBS = {
     'SWEEP': 'printf("W%08x,%08x,%08x,%08x,%08x,%08x,%08x ",load(ctx.r4.u32),load(ctx.r4.u32+4),load(ctx.r4.u32+8),load(ctx.r5.u32),'
              'load(ctx.r5.u32+4),load(ctx.r5.u32+8),[&]{float x=float(ctx.f1.f64);uint32_t u;std::memcpy(&u,&x,4);return u;}());'
              'uint32_t h=load(0x40014000u);if(h){for(int i=0;i<8;i++)store(ctx.r7.u32+16+4*i,load(0x40014010u+4*i));}ctx.r3.u64=h;',
-    'PUSH': 'printf("O ");',
+    'QDIR': 'printf("O%08x,%08x,%08x,%08x,%08x,%08x,%08x,%u ",load(ctx.r4.u32),load(ctx.r4.u32+4),load(ctx.r4.u32+8),load(ctx.r4.u32+16),'
+            'load(ctx.r4.u32+20),load(ctx.r4.u32+24),[&]{float x=float(ctx.f1.f64);uint32_t u;std::memcpy(&u,&x,4);return u;}(),ctx.r7.u32);'
+            'store(0x40014070u,ctx.r6.u32);',
+    'QTEST': 'uint32_t h=load(0x40014040u),r=load(0x40014070u);if(h){for(int i=0;i<8;i++)store(r+16+4*i,load(0x40014050u+4*i));}'
+             'if(ctx.r4.u32!=0x40013300u||ctx.r5.u32!=0x40013100u)printf("Q? ");ctx.r3.u64=h;',
+    'QCT': '', 'QINST': '', 'QWORLD': '', 'QREL1': '', 'QREL2': '',
 }
 def fb(x):
     return struct.unpack('>I', struct.pack('>f', x))[0]
@@ -100,8 +112,14 @@ def main():
         nv = [rnd.gauss(0, 1) for _ in range(3)]
         nl = math.sqrt(sum(v * v for v in nv))
         nv = [v / nl for v in nv]
+        own = rnd.choice([0, 1])
+        c2 = [place[0] + rnd.uniform(-3, 3), place[1] + rnd.uniform(-1, 2), place[2] + rnd.uniform(-3, 3)]
+        n2 = [rnd.gauss(0, 1) for _ in range(3)]
+        nl = math.sqrt(sum(v * v for v in n2))
+        n2 = [v / nl for v in n2]
         vals = [lens, asp, pitch, yaw] + [v for r in m for v in r] + place
-        lines.append('POL ' + ' '.join(f'{fb(v):08x}' for v in vals) + f' {hit} ' + ' '.join(f'{fb(v):08x}' for v in c + nv))
+        lines.append('POL ' + ' '.join(f'{fb(v):08x}' for v in vals) + f' {hit} ' + ' '.join(f'{fb(v):08x}' for v in c + nv)
+                     + f' {own} ' + ' '.join(f'{fb(v):08x}' for v in c2 + n2))
     cases = a.work / 'replay_polar_cases.txt'
     cases.write_text('\n'.join(lines) + '\n')
     p = subprocess.run([str(exe), str(a.image), str(cases)], capture_output=True, text=True)
