@@ -2444,15 +2444,16 @@ impl Career {
         self.ext.get(i).map_or(false, |e| e.obj_hidden.len() == self.missions[i].objectives.len() && e.pre_base.len() == self.missions[i].prereq.len())
     }
 
-    /// A statistic counted from a baseline (F-13232): a Purse statistic as it stands,
-    /// any other from its value when the condition was armed (not below 0).
-    fn stat_since(&self, stat: &str, purse: bool, base: Option<i64>) -> i64 {
+    /// A statistic counted from a baseline (F-13232, `stat_progress`): a Purse statistic as it
+    /// stands, any other from its value when the condition was armed, 0 ..= `target`.
+    fn stat_since(&self, stat: &str, purse: bool, base: Option<i64>, target: i64) -> i64 {
         let v = self.stats.get(stat).copied().unwrap_or(0);
-        if purse { v } else { (v - base.unwrap_or(0)).max(0) }
+        stat_progress(purse, v as i32, base.unwrap_or(0) as i32, target as i32) as i64
     }
 
+    /// The condition's type is "Purse", compared byte for byte (F-13232; case counts).
     fn purse(r: &Requirement, n: usize) -> bool {
-        r.stat_types.get(n).map_or(false, |t| t.eq_ignore_ascii_case("Purse"))
+        r.stat_types.get(n).map_or(false, |t| t == "Purse")
     }
 
     /// The mission enters the mission log (the port's Active: CHECKING_OBJECTIVES): it leaves
@@ -2613,7 +2614,9 @@ impl Career {
     fn ext_stat_progress(&self, i: usize, oi: usize, stat: &str, target: u32) -> u32 {
         let base = self.ext.get(i).and_then(|e| e.obj_base.get(oi).copied()).flatten();
         let purse = Self::purse(&self.missions[i].objectives[oi], 0);
-        self.stat_since(stat, purse, base).clamp(0, target as i64) as u32
+        // (a Purse value is not clamped; below 0 it shows 0 here - approx.: the original's
+        // word would be negative)
+        self.stat_since(stat, purse, base, target as i64).max(0) as u32
     }
 
     /// An objective's Experience progress: the amount since its baseline (F-79261); 0
@@ -2642,7 +2645,7 @@ impl Career {
                 n >= *tally
             }
             Cond::Experience { amount } => self.rep - base.unwrap_or(0) >= *amount,
-            Cond::Stat { stat, value } => self.stat_since(stat, Self::purse(r, ci), base) >= *value,
+            Cond::Stat { stat, value } => self.stat_since(stat, Self::purse(r, ci), base, *value as i64) >= *value as i64,
             _ => true,
         })
     }
@@ -3231,6 +3234,22 @@ pub fn reward_shown<T>(list: &[T], hidden: impl Fn(&T) -> bool) -> bool {
     list.iter().any(|r| !hidden(r))
 }
 
+/// A Stat condition's progress (F-13232) from the statistic's word `v`: a Purse condition's `v`
+/// as it is, any other `v - base` (32-bit) cut to 0 ..= `target`.
+pub fn stat_progress(purse: bool, v: i32, base: i32, target: i32) -> i32 {
+    if purse {
+        return v;
+    }
+    let d = v.wrapping_sub(base);
+    if d < 0 {
+        0
+    } else if d > target {
+        target
+    } else {
+        d
+    }
+}
+
 /// F-20532's value: f32(done) / f32(total) x 100.0, fctiwz (0 with nothing counted).
 pub fn percent_of(done: usize, total: usize) -> i64 {
     if total == 0 {
@@ -3687,6 +3706,23 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 3000);
+    }
+
+    /// F-13232 run offline (tools/stat_progress_reference.py, 2,996 cases: the type spelled
+    /// Purse / purse / PURSE / Purses / Money / Tally / empty, 32-bit values, baselines, targets).
+    #[test]
+    fn stat_progress_matches_the_original() {
+        let text = include_str!("testdata/stat_progress_ref.txt");
+        let mut n = 0;
+        for line in text.lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split(' ').collect();
+            let num = |i: usize| w[i].parse::<i64>().unwrap() as i32;
+            let purse = w[0] == "Purse";
+            assert_eq!(stat_progress(purse, num(1), num(2), num(3)), b.parse::<i32>().unwrap(), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 2996);
     }
 
     #[test]
