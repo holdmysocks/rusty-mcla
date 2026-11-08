@@ -6719,6 +6719,8 @@ pub struct Road {
     pub density: i32,
     /// its lanes: first link and length
     pub lanes: Vec<(usize, f32)>,
+    /// the record's lanes' lengths summed (F-72428 over F-95725's list, `RecordData::road_lanes`: its own lanes, then
+    /// the sibling chain +0x0c with each one's child subtree; slot 20, the lane's +0x0c, added in order from 0)
     pub lane_len: f32,
     /// the box the occluders are asked about (road vfunc 2 F-76320; empty: never hidden)
     pub bmin: Vec3,
@@ -6728,18 +6730,12 @@ pub struct Road {
 }
 
 impl Road {
-    /// A lane's share of the road's spawn weight (F-72428, F-10273): its length, 0 while the race traffic clearing
-    /// holds it (its byte +104, mcRailAmbient slot 18 F-73172).
-    fn lane_weight(nav: &NavSys, off: &hashbrown::HashSet<usize>, lane: (usize, f32)) -> f32 {
-        if off.contains(&nav.links[lane.0].lane) { 0.0 } else { lane.1 }
-    }
-
-    /// The road's lane length for its spawn weight (F-72428: the lanes the clearing does not hold).
-    fn open_len(&self, nav: &NavSys, off: &hashbrown::HashSet<usize>) -> f32 {
-        if off.is_empty() {
-            return self.lane_len;
-        }
-        self.lanes.iter().map(|&l| Road::lane_weight(nav, off, l)).sum()
+    /// The road's lane length for its spawn weight (F-72428: over the record's lanes `RecordData::road_lanes`, each
+    /// one's length +0x0c, 0 while the race traffic clearing holds it - its byte +104, mcRailAmbient slot 18 F-73172 -,
+    /// `fadds` in order from 0).
+    fn open_len(nav: &NavSys, road: usize, off: &hashbrown::HashSet<usize>) -> f32 {
+        let lanes = nav.records.road_lanes.get(road).map_or(&[][..], |v| v.as_slice());
+        lanes.iter().fold(0.0f32, |t, &l| (if off.contains(&l) { 0.0 } else { nav.lane_len(l) }) + t)
     }
 }
 
@@ -7096,7 +7092,7 @@ impl Spawner {
                     lanes[e].0 = k;
                 }
             }
-            let lane_len = lanes.iter().map(|l| l.1).sum();
+            let lane_len = Road::open_len(nav, roads.len(), &hashbrown::HashSet::new());
             let (bmin, bmax) = occluder_box(z.mid, z.dir, z.side, z.rect_len, z.width, z.y_range);
             let rect = RegionRect { index: roads.len(), rect_c: z.rect_c, width: z.width, len: z.rect_len, y_range: z.y_range, mid: z.mid, dir: z.dir, side: z.side, no_box: z.no_box };
             roads.push(Road { mid: z.mid, dir: z.dir, speed: z.speed_limit_mps(), density: z.density, lanes, lane_len, bmin, bmax, rect });
@@ -7866,7 +7862,7 @@ impl Vehicles {
                     nearest = (d, Some(ri));
                 }
             }
-            let w = r.open_len(nav, &self.race_clearing.off) * 0.01 * sp.value(ri as u32, free_fast) * speed_factor;
+            let w = Road::open_len(nav, ri, &self.race_clearing.off) * 0.01 * sp.value(ri as u32, free_fast) * speed_factor;
             sp.list.push((ri as u32, w));
             sp.order.push((NavNode::Road(ri), w));
             sp.listed[ri] = true;
@@ -7972,10 +7968,6 @@ impl Vehicles {
                 sp.why[2] += 1;
                 continue;
             };
-            let road = &sp.roads[ri as usize];
-            if road.lanes.is_empty() {
-                continue;
-            }
             // a lane of the road and the phase along it (F-10273, `pick_lane`: the record's lanes by their length, the
             // race traffic clearing's weighing 0, two draws of the shared MWC); the phase's place on the port's links. (The
             // front-end mode has its point's lane and phase.)
@@ -7992,7 +7984,7 @@ impl Vehicles {
             let l = &nav.links[link];
             let pos = l.a + (l.b - l.a) * (s / l.len.max(1e-3));
             let dir = l.tangent_at(s / l.len.max(1e-3));
-            let fw = road.speed >= FREEWAY_SPEED;
+            let fw = sp.roads[ri as usize].speed >= FREEWAY_SPEED;
             if ty.freeway_only && !fw {
                 sp.why[3] += 1;
                 continue;
