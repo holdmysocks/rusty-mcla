@@ -200,13 +200,16 @@ struct Input {
     rmb: bool,
     /// the window's mouse pointer as last set (`cursor_wanted`)
     cursor_shown: Option<bool>,
+    /// the mouse was moved since the last key or pad input (`cursor_wanted`)
+    mouse_woke: bool,
 }
 
-/// Whether the window shows the mouse pointer (GitHub #45): the original, a console game, has none, so it is hidden
-/// while driving; it shows while a menu or a box that takes menu input is up (the port's menus also answer mouse
-/// clicks) and hides while the right button turns the free camera.
-fn cursor_wanted(menu: bool, rmb: bool) -> bool {
-    menu && !rmb
+/// Whether the window shows the mouse pointer (GitHub #45; the original, a console game, has none - DECISIONS.md D52):
+/// never while driving or in a cutscene; in a menu (or a box that takes menu input) only once the mouse has been
+/// moved, hidden again by the next key or pad input, so keyboard and pad players never see it; hidden while the
+/// right button turns the free camera.
+fn cursor_wanted(menu: bool, cutscene: bool, mouse_woke: bool, rmb: bool) -> bool {
+    menu && !cutscene && mouse_woke && !rmb
 }
 
 impl Input {
@@ -2569,6 +2572,10 @@ impl App {
             use pads::{Axis as A, Button as B, PadEvent as E};
             let list = [B::South, B::East, B::West, B::North, B::LeftShoulder, B::RightShoulder, B::Back, B::Start, B::LeftStick, B::RightStick, B::DPadUp, B::DPadDown, B::DPadLeft, B::DPadRight];
             let events = g.poll();
+            // (a pad button, or a stick or trigger past half way: the pointer hides - `cursor_wanted`)
+            if events.iter().any(|(_, e)| matches!(e, E::Pressed(_)) || matches!(e, E::Moved(_, v) if v.abs() > 0.5)) {
+                self.input.mouse_woke = false;
+            }
             // (the pad played with: of the pads used in the last second - a button, or a stick
             // or trigger past half way - the best ranked, the current one on a tie: one with
             // rumble (XInput, SDL's HIDAPI drivers) first, then one SDL knows the kind of.)
@@ -14987,6 +14994,9 @@ impl ApplicationHandler for App {
             // (Alt held, for Alt+Enter - `hooks`)
             WindowEvent::ModifiersChanged(m) => hooks::set_alt(m.state().alt_key()),
             WindowEvent::KeyboardInput { event, is_synthetic, .. } => {
+                if event.state == ElementState::Pressed && !is_synthetic {
+                    self.input.mouse_woke = false;
+                }
                 if let PhysicalKey::Code(code) = event.physical_key {
                     // (Alt+Enter: the window mode, before anything else hears the Enter - `hooks`)
                     if self.alt_enter_key(code, event.state == ElementState::Pressed, event.repeat, is_synthetic) {
@@ -15104,13 +15114,18 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            // (the mouse moved: the pointer may show in a menu - `cursor_wanted`)
+            WindowEvent::CursorMoved { .. } => {
+                self.input.mouse_woke = true;
+            }
             WindowEvent::MouseInput { state, button: MouseButton::Right, .. } => {
                 self.input.rmb = state == ElementState::Pressed;
             }
             WindowEvent::RedrawRequested => {
                 self.render();
                 self.after_frame();
-                let show = cursor_wanted(self.game.in_menu() || self.game.takes_menu_input(), self.input.rmb);
+                let cutscene = self.cuts.playing.is_some() || self.cine.playing.is_some() || self.game.movie.is_some();
+                let show = cursor_wanted(self.game.in_menu() || self.game.takes_menu_input(), cutscene, self.input.mouse_woke, self.input.rmb);
                 if self.input.cursor_shown != Some(show) {
                     if let Some(w) = self.window.as_ref() {
                         w.set_cursor_visible(show);
