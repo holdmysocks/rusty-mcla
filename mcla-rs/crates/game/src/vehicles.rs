@@ -7163,6 +7163,57 @@ pub fn compose_plate(bg: &PlateBg, font: &[u8], text: &str) -> Vec<u8> {
 }
 
 #[cfg(test)]
+mod traffic_light_set_tests {
+    use super::*;
+
+    /// A traffic car's light set (the traffic object's reset F-14696 sets the set's +0 to 0 and +4 to its
+    /// drawable, so F-70785 takes the second source F-74049): per kind the drawable's bones whose name is exactly
+    /// `<kind>0` (F-90899: skeleton order, a byte compare), at most the table's 8, the side +24 never written (0).
+    /// Every `va_` model on the disc: `prep_car`'s glow list equals that.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn traffic_glows_are_the_second_source() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let assets = crate::assets::Assets::new(&dir);
+        let root = std::path::Path::new(&dir).join("resources/vehicle");
+        let mut cars: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.path())
+            .filter(|p| p.is_dir() && p.file_name().map_or(false, |n| n.to_string_lossy().starts_with("va_"))).collect();
+        cars.sort();
+        let (mut n, mut lamps, mut bad) = (0, 0, Vec::new());
+        for p in cars {
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            let Ok(car) = vehicle_model::load_car(&assets, &p) else { continue };
+            let Some(sk) = car.skeleton.as_ref() else { continue };
+            let mut want: Vec<(u8, Vec3)> = Vec::new();
+            for b in &sk.bones {
+                // (the exact name: a bone spelt other than in lower case is not found)
+                let Some(k) = glow_bone_kind(&b.name).filter(|_| b.name == b.name.to_ascii_lowercase()) else { continue };
+                if want.iter().filter(|w| w.0 == k).count() < LIGHT_SET_KIND_CAP {
+                    want.push((k, b.world.w_axis.truncate()));
+                }
+            }
+            let prep = Vehicles::prep_car(&car, &p, &CarConfig::default());
+            let got: Vec<(u8, Vec3)> = prep.glow_bones.iter().map(|g| (g.0, g.1)).collect();
+            let same = got.len() == want.len() && got.iter().zip(&want).all(|(a, b)| a.0 == b.0 && a.1.distance(b.1) < 1e-4);
+            if !same {
+                bad.push(format!("{name}: port {:?} want {:?}", got.iter().map(|g| g.0).collect::<Vec<_>>(), want.iter().map(|g| g.0).collect::<Vec<_>>()));
+            }
+            if prep.glow_sides.iter().any(|&s| s != 0) {
+                bad.push(format!("{name}: a side lamp {:?}", prep.glow_sides));
+            }
+            n += 1;
+            lamps += want.len();
+        }
+        println!("{n} traffic models, {lamps} lamps; differ: {bad:?}");
+        assert!(n > 30, "{n}");
+        // (open: the garbage truck's LOD0 fragment has no skeleton; its lamp bones are in the LOD1 / LOD2 fragments'
+        // 30-bone skeleton. Which skeleton the original hands F-74049 - the first word of entry 0 of the traffic type's
+        // list +40, F-58302 - is not decoded, so the port's empty list is not settled either way)
+        assert!(bad.len() == 1 && bad[0].starts_with("va_rstr_garbagetruck_07: port []"), "{}", bad.join("\n"));
+    }
+}
+
+#[cfg(test)]
 mod plate_tests {
     use super::*;
 
