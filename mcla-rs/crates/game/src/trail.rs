@@ -581,6 +581,36 @@ mod tests {
     /// The original's F-80988 run offline on 4,000 records (tools/trail_ribbon_reference.py): every output
     /// float bit for bit, the projection callee a stub both sides compute alike.
     #[test]
+    fn the_free_record_pick_matches_the_original() {
+        // tools/trail_free_reference.py: F-58134 run on 2,000 sets of the 96 records
+        let text = include_str!("testdata/trail_free_reference.txt");
+        let half = |l: &str| -> (Vec<u32>, Vec<u32>) {
+            let (a, b) = l.split_once(" | ").unwrap();
+            (a.split_whitespace().skip(2).map(|x| x.parse().unwrap()).collect(), b.split_whitespace().map(|x| x.parse().unwrap()).collect())
+        };
+        let lines: Vec<&str> = text.lines().collect();
+        let (mut n, mut fails) = (0, 0);
+        for pair in lines.chunks(2) {
+            let (counts, drawn) = half(pair[0]);
+            let ret: i32 = pair[1].split_whitespace().nth(1).unwrap().parse().unwrap();
+            let (oc, od) = half(pair[1]);
+            let mut t = Trails::default();
+            for i in 0..RECORDS {
+                t.recs[i].count = counts[i];
+                t.recs[i].drawn = drawn[i] != 0;
+            }
+            let got = t.free();
+            let ok = got == ret
+                && (0..RECORDS).all(|i| t.recs[i].count == oc[i] && t.recs[i].drawn == (od[i] != 0));
+            if !ok {
+                fails += 1;
+            }
+            n += 1;
+        }
+        assert!(n == 2000 && fails == 0, "{fails} of {n} differ");
+    }
+
+    #[test]
     fn the_draw_matches_the_original() {
         // tools/trail_draw_reference.py: F-89089 run whole, the ribbon F-80988 a stub handing back chosen outputs
         let text = include_str!("testdata/trail_draw_reference.txt");
