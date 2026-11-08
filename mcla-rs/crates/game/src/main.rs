@@ -469,6 +469,9 @@ struct App {
     /// the wager hangout core's traffic setting saved for the pink slip's end scene (0x5e66 GetTrafficEnable into
     /// local 850, 0x5e72 / 0x5e7f SetTrafficEnable(0) when on); given back after the scene (0x5f1c / 0x5f8b)
     pink_traffic: Option<usize>,
+    /// the lost pink slip's held pause camera (F-83799 at cam_gps_warp_out): it stays the picture after the scene until the
+    /// garage warp's climb releases it (F-98643, recorded) and that climb starts from it
+    pink_hold: Option<(Vec3, Vec3, Vec3, f32)>,
     /// the red light race's start scene runs with the traffic off (CruisingHookmen red light cores, e.g. 0x18ac539b
     /// 0x5af0 AmbientMgr_DisableTraffic(1) + AmbientMgr_Reset, the scene, ReplayMgr_Begin, 0x5c05 DisableTraffic(0)):
     /// the race's traffic target to give back after it
@@ -1181,6 +1184,7 @@ impl App {
                         let out = self.cine.playing.as_ref().and_then(|sc| mc4::PINK_LOSS_SCENES.iter().position(|n| sc.name.eq_ignore_ascii_case(n))).map(|k| mc4::PINK_LOSS_WARP_OUT[k]);
                         if self.cine.held.is_none() && out.is_some_and(|w| t >= w) {
                             self.cine.held = self.cine.camera();
+                            self.pink_hold = self.cine.held;
                             log::info!("pink slip lost: cam_gps_warp_out at {t:.3} s - the camera held");
                         }
                     }
@@ -1419,6 +1423,7 @@ impl App {
             pink_speech: None,
             pink_lost: false,
             pink_traffic: None,
+            pink_hold: None,
             redlight_traffic: None,
             cine_events: (String::new(), Vec::new()),
             tips: Default::default(),
@@ -5925,13 +5930,20 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             let c = self.vehicles.player().unwrap();
                             let e = garagein::wait_rows(&garagein::SETUPS[g]);
                             let look = (self.chase.look - self.chase.pos).normalize_or(Vec3::NEG_Z);
-                            let s = hudmap::CamRows::look_at(self.cam.pos, self.cam.pos + look, self.boom_up.unwrap_or(Vec3::Y));
+                            // (the render camera: after a lost pink slip the held pause camera - the climb F-98643 starts from
+                            // it and lets the hold go)
+                            let held = self.pink_hold.take();
+                            let s = match held {
+                                Some((eye, fwd, up, _)) => hudmap::CamRows::look_at(eye, eye + fwd, up),
+                                None => hudmap::CamRows::look_at(self.cam.pos, self.cam.pos + look, self.boom_up.unwrap_or(Vec3::Y)),
+                            };
+                            let fov0 = held.map_or(self.cam.fov_y, |h| h.3);
                             let close = s.eye.distance(e.eye) < garagein::CLOSE;
-                            let warp = close.then(|| hudmap::CineWarp::target_close(s, e, self.cam.fov_y, garagein::LENS_DEG.to_radians()));
+                            let warp = close.then(|| hudmap::CineWarp::target_close(s, e, fov0, garagein::LENS_DEG.to_radians()));
                             // (far, Warp() sets the request's +96 to 25 and picks the climb as DEFAULT_WITH_CUT does, F-32081;
                             // the climb eases the lens to it)
                             let car = hudmap::CamRows { r0: c.state.rot * Vec3::X, r1: c.state.rot * Vec3::Y, r2: c.state.rot * Vec3::Z, eye: c.state.pos };
-                            let climb = (!close).then(|| hudmap::CineClimb::new(s, car, self.cam.fov_y, garagein::FAR_LENS_DEG.to_radians(), self.screen_v));
+                            let climb = (!close).then(|| hudmap::CineClimb::new(s, car, fov0, garagein::FAR_LENS_DEG.to_radians(), self.screen_v));
                             log::info!("garage entry: {} from {:?} (warp {}, climb {:?}, go to garage {})", garagein::SETUPS[g].key, s.eye, warp.is_some(), climb.as_ref().map(|c| c.kind()), goto.is_some());
                             self.garage_in = Some(garagein::Entry { garage: g, stage: garagein::Stage::Warp, t: 0.0, clock: 0.0, warp, hold: (c.state.pos, c.state.rot), opened: false, climb, dive: None });
                         } else if self.game.car_x.garage_after_scene && self.cuts.idle() {
@@ -9763,6 +9775,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
         }
+        // (a lost pink slip: the pause camera stays held after the loss scene until the garage warp's climb - recorded)
+        if let Some((eye, fwd, up, fov)) = self.pink_hold.filter(|_| scene_cam.is_none()) {
+            self.chase.pos = eye;
+            self.chase.look = eye + fwd;
+            self.chase.up = up;
+            self.cam.pos = eye;
+            self.cam.fov_y = fov;
+        }
         // (step 23b: the hangout's camera - the pull-in scene's last frame under the panel, the
         // pink slip choice's on the profiles' cars)
         if self.cine.playing.is_none() {
@@ -13373,6 +13393,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     log::info!("go to garage: {} (running {:?})", garagein::SETUPS[g].key, [0, 1, 2].map(|g| self.game.garage_running(g)));
                     self.game.mode = Mode::FreeRoam;
                     self.goto_garage = Some(g);
+                } else {
+                    self.pink_hold = None;
                 }
             }
             MenuAction::OpenGarage => {
