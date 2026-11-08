@@ -325,6 +325,13 @@ pub fn arc_clear(mesh: &NavMesh, car: &TurnCar, backing_up: bool, max_curvature:
 /// the side of a, +332 = 0 (+337 is left).
 #[allow(clippy::too_many_arguments)]
 pub fn turnaround_car(m: &mut Manoeuvre, avoid_handbrake: bool, angle_line: f32, angle_corridor: f32, speed: f32, car: &TurnCar, max_curvature: f32, mesh: &NavMesh) {
+    let backing = m.reverse;
+    pick_turn(m, avoid_handbrake, angle_line, angle_corridor, speed, &mut |ang, rev, pivot| arc_clear(mesh, car, backing, max_curvature, ang, rev, pivot));
+}
+
+/// F-67810's choice with the arc test F-38160 given as `test(angle, reverse, pivot)` (called in the original's order).
+pub fn pick_turn(m: &mut Manoeuvre, avoid_handbrake: bool, angle_line: f32, angle_corridor: f32, speed: f32, test: &mut dyn FnMut(f32, bool, bool) -> bool) {
+    // (`ble` is "not greater": a NaN speed goes on to the arcs)
     if speed > 10.0 {
         m.reverse = false;
         m.turn = 0;
@@ -339,8 +346,6 @@ pub fn turnaround_car(m: &mut Manoeuvre, avoid_handbrake: bool, angle_line: f32,
     let two_pi = 6.283_185_5f32;
     let pos = fsel(a, a, a + two_pi);
     let neg = fsel(-a, a, a - two_pi);
-    let backing = m.reverse;
-    let test = |ang: f32, rev: bool, pivot: bool| arc_clear(mesh, car, backing, max_curvature, ang, rev, pivot);
     // (same side first, then the other; the last resort backs up)
     let (same, other, side, other_side) = if m.turn == 1 { (pos, neg, 1u8, 2u8) } else { (neg, pos, 2u8, 1u8) };
     let set = |m: &mut Manoeuvre, turn: u8, hb: bool| {
@@ -778,6 +783,44 @@ mod tests {
             wheel_count: 4,
             drive: 0,
         }
+    }
+
+    /// The turnaround picker against the original's F-67810 run offline (tools/turnaround_reference.py, 6,000 cases): the
+    /// arc test F-38160 an oracle answering a mask bit per call, both sides log the calls (angle, reverse, pivot); turn
+    /// side, backing up, handbrake and the call log equal word for word. Angles as the original's: `aiv::ang_xz`
+    /// (F-32060) of forward = 0 - matrix row 2 and the points less the position.
+    #[test]
+    fn pick_turn_matches_the_original() {
+        let u = |s: &str| u32::from_str_radix(&s.replace('_', ""), 16).unwrap();
+        let f = |s: &str| f32::from_bits(u(s));
+        let v3 = |w: &[&str]| Vec3::new(f(w[0]), f(w[1]), f(w[2]));
+        let (mut n, mut bad) = (0, 0);
+        for l in include_str!("testdata/turnaround_ref.txt").lines() {
+            let (lhs, rhs) = l.split_once(" -> ").unwrap();
+            let s: Vec<&str> = lhs.split_whitespace().skip(1).collect();
+            let mut m = Manoeuvre { turn: u(s[0]) as u8, reverse: u(s[1]) != 0, handbrake: u(s[2]) != 0 };
+            let pos = v3(&s[5..8]);
+            let fwd = Vec3::ZERO - v3(&s[8..11]);
+            let to_line = crate::aiv::ang_xz(fwd, v3(&s[11..14]) - pos);
+            let to_corridor = crate::aiv::ang_xz(fwd, v3(&s[14..17]) - pos);
+            let mask = u(s[17]);
+            let mut log = Vec::new();
+            pick_turn(&mut m, u(s[3]) != 0, to_line, to_corridor, f(s[4]), &mut |a, rev, pivot| {
+                log.extend([a.to_bits(), rev as u32, pivot as u32]);
+                (mask >> (log.len() / 3 - 1)) & 1 != 0
+            });
+            let mut got = vec![m.turn as u32, m.reverse as u32, m.handbrake as u32];
+            got.extend(log);
+            let want: Vec<u32> = rhs.split_whitespace().map(|w| u(w)).collect();
+            n += 1;
+            if got != want {
+                if bad < 5 {
+                    eprintln!("{l}\n   port {got:08x?}");
+                }
+                bad += 1;
+            }
+        }
+        assert_eq!((n, bad), (6000, 0));
     }
 
     #[test]
