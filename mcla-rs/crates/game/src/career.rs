@@ -3374,6 +3374,13 @@ pub fn estimate_times(rec: &mut [EstRacer], cps: &[[f32; 3]], per_lap: i32, laps
     }
 }
 
+/// The series' decision F-63112: bComplete and bFailure are first set to "0"; then the first racer slot (in slot
+/// order) whose nRacerWins_<i> has reached nRacesToWin decides it - Some(true) (bComplete = "1") when that slot is
+/// the player's (type 0), Some(false) (bFailure = "1") otherwise; None while nobody has.
+pub fn series_decision(types: &[i32], wins: &[i32], need: i32) -> Option<bool> {
+    types.iter().zip(wins).find(|(_, w)| **w >= need).map(|(t, _)| *t == 0)
+}
+
 /// What a tournament's results decide (F-66541).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TourDecision {
@@ -4087,6 +4094,30 @@ mod tests {
                 want.push_str(&format!("{},{} ", set[i], wins[i]));
             }
             assert_eq!(b.split_whitespace().collect::<Vec<_>>(), want.split_whitespace().collect::<Vec<_>>(), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
+
+    #[test]
+    fn series_decision_matches_the_original() {
+        let text = include_str!("testdata/series_decision_ref.txt");
+        let mut n = 0;
+        for line in text.lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split(' ').collect();
+            let num = |i: usize| w[i].parse::<i32>().unwrap();
+            let (null, k, need) = (num(0), num(1) as usize, num(2));
+            let types: Vec<i32> = if w[3] == "-" { Vec::new() } else { w[3].split(',').map(|x| x.parse().unwrap()).collect() };
+            let wins: Vec<i32> = w[4].split(',').map(|x| x.parse().unwrap()).collect();
+            let got = if null != 0 { None } else { series_decision(&types[..k], &wins[..k], need) };
+            let (zero, one) = ("0,12288,2", "1,12544,2");
+            let want = match got {
+                Some(true) => format!("{one} {zero}"),
+                Some(false) => format!("{zero} {one}"),
+                None => format!("{zero} {zero}"),
+            };
+            assert_eq!(b, want, "{line}");
             n += 1;
         }
         assert_eq!(n, 3000);

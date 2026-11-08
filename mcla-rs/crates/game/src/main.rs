@@ -7970,15 +7970,20 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             None => sr.wins.push((winner, 1)),
                         }
                         self.game.series_first = true;
-                        let over = sr.wins.iter().find(|w| w.1 >= sr.to_win()).map(|w| w.0.clone());
+                        // (the decision F-63112: the first slot with nRacesToWin wins decides, bComplete when it is the player's)
+                        let types: Vec<i32> = sr.wins.iter().map(|w| if w.0 == "YOU" { 0 } else { 1 }).collect();
+                        let counts: Vec<i32> = sr.wins.iter().map(|w| w.1 as i32).collect();
+                        let decided = career::series_decision(&types, &counts, sr.to_win() as i32);
+                        let over = decided.and_then(|_| sr.wins.iter().find(|w| w.1 as i32 >= sr.to_win() as i32)).map(|w| w.0.clone());
                         match over {
                             Some(w) => {
+                                let won = decided == Some(true);
                                 self.game.next_event_race = None;
                                 s_decided = true;
-                                if w == "YOU" {
+                                if won {
                                     s_series_won = Some((sr.story.as_ref().map(|s| s.0.clone()), sr.key.clone()));
                                 }
-                                if w == "YOU" && sr.story.is_none() {
+                                if won && sr.story.is_none() {
                                     // (SERIES_COMPLETE: the event of the hangout completes at the
                                     // difficulty chosen there - its reward is the panel's
                                     // COMPLETION REWARD; below, `mc4_event_complete`)
@@ -7986,7 +7991,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 }
                                 // (form 56 for 3.5 s after the place's ring: SERIES WON / SERIES LOST -
                                 // EndOfRaceSequence, OrderedSeriesCore's bComplete / bFailure)
-                                self.game.opt_x.arcade.d.banner = Some((3.5, w == "YOU"));
+                                self.game.opt_x.arcade.d.banner = Some((3.5, won));
                                 self.game.opt_x.arcade.d.banner_kind = 3;
                                 log::info!("series {}: won by {} ({:?})", sr.key, w, sr.wins);
                             }
