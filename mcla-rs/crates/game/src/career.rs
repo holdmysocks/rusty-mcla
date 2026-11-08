@@ -1388,8 +1388,14 @@ impl Career {
                 continue;
             }
             st.won.push(r);
-            for (p, who) in order.iter().enumerate() {
-                *st.pts.entry(who.clone()).or_default() += POINTS.get(p).copied().unwrap_or(0);
+            // (F-31368 on the finishing order; a damaged-out player is already last in it, main.rs)
+            let mut table = [0i32; 17];
+            table[..POINTS.len()].copy_from_slice(&POINTS);
+            let mut rec: Vec<(i32, i32)> = order.iter().enumerate().map(|(p, who)| (if who == "YOU" { 0 } else { 1 }, p as i32 + 1)).collect();
+            let mut add: Vec<i32> = vec![0; order.len()];
+            tournament_points(&mut rec, &vec![false; order.len()], false, &table, &mut add);
+            for (who, a) in order.iter().zip(&add) {
+                *st.pts.entry(who.clone()).or_default() += *a;
             }
             let rows = order.iter().enumerate().map(|(p, who)| (who.clone(), POINTS.get(p).copied().unwrap_or(0), st.pts.get(who).copied().unwrap_or(0))).collect();
             let last = st.won.len() >= races.len();
@@ -3263,6 +3269,22 @@ pub fn tournament_decision(index: i32, total: i32, pts: &[i32], difficulty: i32)
     }
 }
 
+/// The points of a tournament race (F-31368) on (type, place) per racer slot: on a replay the player is put
+/// last first (F-87120); then per slot, the player's slot put last when it is damaged out, and the slot's
+/// points += `table[clamp(place - 1, 0, 16)]` (32-bit words; the career manager's table +4 * 93..).
+pub fn tournament_points(rec: &mut [(i32, i32)], damaged: &[bool], replay: bool, table: &[i32; 17], pts: &mut [i32]) {
+    if replay {
+        put_player_last(rec);
+    }
+    for i in 0..rec.len() {
+        if rec[i].0 == 0 && damaged[i] {
+            put_player_last(rec);
+        }
+        let k = rec[i].1.wrapping_sub(1).clamp(0, 16) as usize;
+        pts[i] = pts[i].wrapping_add(table[k]);
+    }
+}
+
 /// A series' or tournament's results putting the player last (F-87120), on (type, place) per racer
 /// (type 0 = the player): the first player's place becomes the racer count, and every other non-player
 /// racer placed behind the player's old place (-1 if there is no player) moves up one.
@@ -3804,6 +3826,41 @@ mod tests {
                 }
             }
             assert_eq!(b, want.join(" "), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
+
+    #[test]
+    fn tournament_points_matches_the_original() {
+        let text = include_str!("testdata/tournament_points_ref.txt");
+        let list = |s: &str| -> Vec<i32> { s.split(',').map(|x| x.parse().unwrap()).collect() };
+        let mut n = 0;
+        for line in text.lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split(' ').collect();
+            let num = |i: usize| w[i].parse::<i32>().unwrap();
+            let (null, trig, replay, k) = (num(0), num(1), num(2), num(3) as usize);
+            let (types, places, dmg, mut pts) = (list(w[4]), list(w[5]), list(w[6]), list(w[7]));
+            let table: [i32; 17] = list(w[8]).try_into().unwrap();
+            let mut rec: Vec<(i32, i32)> = types.iter().zip(&places).take(k).map(|(t, p)| (*t, *p)).collect();
+            let mut want = String::new();
+            let mut set = vec![0u32; k];
+            if null == 0 {
+                let damaged: Vec<bool> = dmg.iter().take(k).map(|d| *d != 0).collect();
+                tournament_points(&mut rec, &damaged, trig == 1 && replay == 1, &table, &mut pts[..k]);
+                set = vec![1; k];
+                want.push_str("est dec fill ");
+            }
+            want.push_str("| ");
+            for r in &rec {
+                want.push_str(&format!("{} ", r.1));
+            }
+            want.push_str("| ");
+            for i in 0..k {
+                want.push_str(&format!("{},{} ", set[i], pts[i]));
+            }
+            assert_eq!(b.split_whitespace().collect::<Vec<_>>(), want.split_whitespace().collect::<Vec<_>>(), "{line}");
             n += 1;
         }
         assert_eq!(n, 3000);
