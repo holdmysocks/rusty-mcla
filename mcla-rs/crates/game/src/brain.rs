@@ -433,11 +433,25 @@ use mcla_formats::rage::aitune::AiTune;
 use mcla_formats::rage::navmesh::{NavMesh, QuickestPath};
 use std::sync::Arc;
 
-/// The one random generator the original's brains share (MWC at 0x82860890). (approx.: here only the
-/// brains draw from it, and its seed is the port's.)
+/// The one random generator the original's brains share (the game's second shared MWC). Its seed as the
+/// original's: the static constructor resets it with s = 1 (or the "randomseed" start-up parameter), then the
+/// game state's init F-71171 resets it again with the low word of the CPU's time base (read until it is not 0)
+/// through F-37317 - so every power-on draws a different sequence (grid releases, rev cycles, ...).
+/// MCLA_RANDOMSEED=<n> stands for the parameter, as for `sst_trail::game_rng`. (approx.: here only the
+/// brains, police and a few others draw from it.)
 pub fn rng() -> std::sync::MutexGuard<'static, Mwc> {
     static R: std::sync::OnceLock<std::sync::Mutex<Mwc>> = std::sync::OnceLock::new();
-    R.get_or_init(|| std::sync::Mutex::new(Mwc::default())).lock().unwrap_or_else(|e| e.into_inner())
+    R.get_or_init(|| {
+        let s = std::env::var("MCLA_RANDOMSEED").ok().and_then(|v| v.trim().parse::<i64>().ok()).map(|v| v as u32).unwrap_or_else(|| loop {
+            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u32);
+            if t != 0 {
+                break t;
+            }
+        });
+        std::sync::Mutex::new(crate::sst_trail::rng_reset(s))
+    })
+    .lock()
+    .unwrap_or_else(|e| e.into_inner())
 }
 
 /// What the brain reads of its car each frame.
