@@ -1564,7 +1564,7 @@ fn mesh_to_batch_xf(gpu: &mut Gpu, mesh: &mcla_formats::rage::geometry::Mesh, sn
     }
     let vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
     let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&mesh.indices), usage: wgpu::BufferUsages::INDEX });
-    GpuBatch { shader: sname.to_string(), vb, ib, count: mesh.indices.len() as u32, bind, mode, min: mn, max: mx, bucket: 0, cull: 0 }
+    GpuBatch { shader: sname.to_string(), vb, ib, count: mesh.indices.len() as u32, bind, mode, min: mn, max: mx, bucket: 0, cull: 0, base_lens: false }
 }
 
 /// The California plate background of the disc (`resources/license_plates/backgrounds`),
@@ -2441,7 +2441,7 @@ impl Vehicles {
             if group != 0 {
                 log::debug!("car {}: moving group {} (1/2 windows, 3 hood, 4 trunk, 5/6 bumpers) batch shader {} tris {}", car.name, group, acc.sname, acc.indices.len() / 3);
             }
-            let b = GpuBatch { shader: acc.sname, vb, ib, count: acc.indices.len() as u32, bind, mode: acc.mode, min: acc.min, max: acc.max, bucket: (k.2 >> 31) as u8, cull: ((k.2 >> 12) & 7) as u8 };
+            let b = GpuBatch { shader: acc.sname, vb, ib, count: acc.indices.len() as u32, bind, mode: acc.mode, min: acc.min, max: acc.max, bucket: (k.2 >> 31) as u8, cull: ((k.2 >> 12) & 7) as u8, base_lens: (k.2 >> 15) & 1 != 0 };
             if lod == 0 {
                 batch_window.push(group);
                 batches.push(b);
@@ -2978,7 +2978,9 @@ impl Vehicles {
                 if std::env::var("MCLA_PARTS_LOG").is_ok() && cull != 1 {
                     log::info!("cull class {} {}: {} mesh {} {} tris", cull, car.name, part.primary, mi, mesh.indices.len() / 3);
                 }
-                let kbits = mode as u32 | cull << 12 | win_side << 16 | lod << 24;
+                // (bit 15: a lamp lens of the base fragment, which the depth pass does not cast - `GpuBatch::base_lens`)
+                let base_lens = part.is_base && sname.eq_ignore_ascii_case("BumpedGlass");
+                let kbits = mode as u32 | cull << 12 | (base_lens as u32) << 15 | win_side << 16 | lod << 24;
                 // The draw bucket, header byte +0x09 of the shader (`Shader::bucket`): grmModel's draw (F-73936)
                 // draws a geometry only in the pass whose bucket number equals its shader's, and the traffic car's
                 // lit draw (F-73627) asks for bucket 0 in the main opaque pass (2 at LOD 2) and bucket 1 in the main
@@ -6721,8 +6723,13 @@ impl Vehicles {
     /// The cars' windows into a shadow pass (the caller's pipeline stays): the original's shadow passes draw
     /// every mesh of the car with VS_CarShadowDepthLocal, the six CarGlass meshes among them - the cabin lies
     /// in the car's own shade and the shadow on the road has no window holes. MCLA_GLASS_NOSHADOW=1: as before.
+    /// The lamp lenses (BumpedGlass, shader bucket 3): the depth pass F-35555 draws the car's buckets 2 and 3 in
+    /// F-19470 (its G+588 is set by the constructor F-60786 and by nothing else): the base fragment's bucket 2
+    /// only (pass index 2), every fitted part slot's 2 and 3 - so a lens on a part slot (a light part) casts, one of
+    /// the base fragment does not. (MCLA_LENS_SHADOW_OLD=1: no lens casts, as before)
     pub fn draw_glass_casters<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, draws: &mut usize, range: Option<(Vec3, f32)>) {
         static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        static LENS_OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if *OFF.get_or_init(|| std::env::var("MCLA_GLASS_NOSHADOW").is_ok()) {
             return;
         }
@@ -6739,7 +6746,7 @@ impl Vehicles {
             let Some((batches, groups)) = self.lod_batches(ci) else { continue };
             pass.set_bind_group(3, &c.binding.bg, &[]);
             for (bi, b) in batches.iter().enumerate() {
-                if b.mode != MatMode::CarGlass || b.shader.to_ascii_lowercase().contains("bumped") {
+                if b.mode != MatMode::CarGlass || (b.shader.to_ascii_lowercase().contains("bumped") && (b.base_lens || *LENS_OLD.get_or_init(|| std::env::var("MCLA_LENS_SHADOW_OLD").is_ok()))) {
                     continue;
                 }
                 pass.set_bind_group(3, c.group_object(groups[bi]), &[]);

@@ -212,6 +212,9 @@ pub struct GpuBatch {
     /// a set-up car's cull class (vehicles.rs `prep_car`): 0 none (both sides, every other batch), 1 back faces culled,
     /// 2 both sides, 3 / 4 culled unless an end of the front / rear bumper hangs (`Vehicles::draw_culled`)
     pub cull: u8,
+    /// a set-up car's lamp lens (BumpedGlass, bucket 3) of its base fragment: the depth pass F-19470 casts the
+    /// base fragment's bucket 2 only and the part slots' buckets 2 and 3 (`Vehicles::draw_glass_casters`)
+    pub base_lens: bool,
 }
 
 /// One material range inside a sector's shared vertex / index buffers.
