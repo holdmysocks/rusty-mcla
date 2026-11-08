@@ -202,6 +202,9 @@ SHIM_FIXES = [
 def vector_shim() -> str:
     s = rc.vector_shim()
     for a, b in SHIM_FIXES:
+        # (a leaf shim that already declares ctr keeps its own)
+        if a == 'struct Context { ' and ' ctr' in s.split('struct Context {', 1)[-1].split('\n', 1)[0]:
+            continue
         s = s.replace(a, b, 1)
     # a stray access names its address (the leaf shim's message does not)
     s = s.replace('throw std::runtime_error("unexpected guest access");', 'throw std::runtime_error("unexpected guest access at 0x" + [&]{char t[12]; snprintf(t, sizeof t, "%08x", a); return std::string(t);}());', 1)

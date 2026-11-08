@@ -406,6 +406,11 @@ pub fn test(t: Test, c: &Ctx, k: &Tune, e: &Env) -> bool {
 }
 
 /// A symbol of the expression table (registered by F-74243): its value, booleans as 1 / 0.
+/// The rolling bands' lower edge: band i in m/s + 0.5, one fused step (Low F-53708, Medium F-53186, High F-31781, Extreme F-35700).
+fn rolling_floor(k: &Tune, i: usize) -> f32 {
+    crate::physics::exact::fma(k.bands[i], 0.44704, 0.5)
+}
+
 fn symbol(name: &str, c: &Ctx, k: &Tune, e: &Env) -> Option<f32> {
     let f = |b: u32| c.flags & b != 0;
     let b = |x: bool| if x { 1.0 } else { 0.0 };
@@ -419,7 +424,11 @@ fn symbol(name: &str, c: &Ctx, k: &Tune, e: &Env) -> Option<f32> {
         "IsEnabledImpacts" => b(k.enabled[5]),
         "IsOpponentDefined" => b(c.opponent),
         "StoppedRolling" => b(c.speed <= band(0)),
-        // (Low / Medium / High / ExtremeSpeedRolling: not in the car graph, not ported)
+        // (Low / Medium / High / ExtremeSpeedRolling: not in the car graph; above the band below by half a m/s, fused)
+        "LowSpeedRolling" => b(c.speed > rolling_floor(k, 0) && c.speed <= band(1)),
+        "MediumSpeedRolling" => b(c.speed > rolling_floor(k, 1) && c.speed <= band(2)),
+        "HighSpeedRolling" => b(c.speed > rolling_floor(k, 2) && c.speed <= band(3)),
+        "ExtremeSpeedRolling" => b(c.speed > rolling_floor(k, 3)),
         "ImpactHardThresholdAccel" => k.impact[0],
         "ImpactSoftThresholdAccel" => k.impact[1],
         "ImpactSideThresholdAccel" => k.impact[2],
@@ -493,6 +502,15 @@ fn symbol(name: &str, c: &Ctx, k: &Tune, e: &Env) -> Option<f32> {
     })
 }
 
+/// The expression table's functions: Abs (fabs), Min / Max (x - y rounded, then fsel).
+fn func(n: &str, x: f32, y: f32) -> f32 {
+    match n {
+        "Abs" => x.abs(),
+        "Min" => if x - y >= 0.0 { y } else { x },
+        _ => if x - y >= 0.0 { x } else { y },
+    }
+}
+
 /// An RPN condition (the expression table's evaluator): `$Name` a symbol (`$Abs`, `$Min`, `$Max` the functions), `%x` a number,
 /// `<` `>` compare, `&` `|` `!` logic; true when the result is not 0.
 pub fn rpn(s: &str, c: &Ctx, k: &Tune, e: &Env) -> bool {
@@ -501,11 +519,11 @@ pub fn rpn(s: &str, c: &Ctx, k: &Tune, e: &Env) -> bool {
     for tok in s.split_whitespace() {
         let v = if let Some(n) = tok.strip_prefix('$') {
             match n {
-                "Abs" => st.pop().unwrap_or(0.0).abs(),
+                "Abs" => func(n, st.pop().unwrap_or(0.0), 0.0),
                 "Min" | "Max" => {
                     let y = st.pop().unwrap_or(0.0);
                     let x = st.pop().unwrap_or(0.0);
-                    if n == "Min" { if x - y >= 0.0 { y } else { x } } else if x - y >= 0.0 { x } else { y }
+                    func(n, x, y)
                 }
                 _ => symbol(n, c, k, e).unwrap_or(0.0),
             }
@@ -1697,6 +1715,74 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 7981);
+    }
+
+    /// Every symbol of the expression table against the original's getter run offline (tools/drv_symbol_reference.py, 1,000
+    /// random contexts and tunes, the speed often at a band's edge): the context and tune read at the getters' offsets.
+    #[test]
+    fn symbols_match_the_original() {
+        let mut lines = include_str!("testdata/drv_symbol_ref.txt").lines();
+        let names: Vec<(char, &str)> = lines.next().unwrap().split_whitespace().map(|t| (t.as_bytes()[0] as char, &t[2..])).collect();
+        let mut n = 0;
+        for line in lines {
+            let (a, o) = line.split_once(" ->").unwrap();
+            let w: Vec<u32> = a.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let want: Vec<u32> = o.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let c = Ctx {
+                gesture: w[1] as i32,
+                flags: w[2],
+                flags2: w[3],
+                goal: f(5),
+                steer: f(6),
+                smooth: f(7),
+                to_limit: f(9),
+                dsteer: f(10),
+                culled: w[12] >> 24 != 0,
+                opponent: (w[12] >> 16) & 0xff != 0,
+                wheel_scale: f(16),
+                to_left: (w[18] >> 16) & 0xff != 0,
+                to_right: (w[18] >> 8) & 0xff != 0,
+                skid_timer: f(19),
+                neutral_timer: f(20),
+                maxed_timer: f(21),
+                speed: f(24),
+                accel: f(27),
+                lat_accel: f(28),
+                shift: w[31] as i32,
+                skid: f(32),
+                timer_a: f(37),
+                timer_b: f(38),
+                timer_c: f(39),
+                random: f(40),
+                dt: f(41),
+                ..Ctx::default()
+            };
+            let t = |i: usize| f(43 + i);
+            let by = |x: u32, i: u32| (x >> (24 - 8 * i)) & 0xff != 0;
+            let k = Tune {
+                enabled: [by(w[44], 0), by(w[44], 1), by(w[44], 2), by(w[44], 3), by(w[45], 0), by(w[45], 1)],
+                bands: [t(12), t(13), t(14), t(15)],
+                hoh_skid_window: t(23),
+                impact: [t(34), t(35), t(36)],
+                ..Tune::default()
+            };
+            let (x, y) = (f(81), f(82));
+            assert_eq!(want.len(), names.len());
+            for (&(kind, name), &v) in names.iter().zip(&want) {
+                let got = match name {
+                    "Abs" | "Min" | "Max" => func(name, x, y),
+                    _ => symbol(name, &c, &k, &Env::default()).unwrap_or_else(|| panic!("{name} not ported")),
+                };
+                if kind == 'B' {
+                    assert_eq!(got != 0.0, v != 0, "case {n} {name}");
+                } else {
+                    assert_eq!(got.to_bits(), v, "case {n} {name}: {got} vs {}", f32::from_bits(v));
+                }
+            }
+            n += 1;
+        }
+        assert_eq!(n, 1000);
     }
 
     /// The vehicle gatherer F-28290 against the original's code run offline with fake objects (`work/drvmachine/gather_ref.py`):
