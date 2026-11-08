@@ -534,6 +534,7 @@ mod tests {
         let has = |w: &str| r0.officers.iter().chain(r0.dispatchers.iter().map(|d| &d.0)).any(|v| !r0.voice_takes(w, v).is_empty());
         let (mut l1, mut l1_ok, mut l2, mut l2_ok) = (0, 0, 0, 0);
         let mut missing: Vec<String> = Vec::new();
+        let mut all_missing = std::collections::BTreeSet::new();
         for (ri, z) in nav.zones.iter().enumerate() {
             for sgn in [1.0f32, -1.0] {
                 let mut r = Radio::default();
@@ -542,17 +543,25 @@ mod tests {
                 if !r.street.is_empty() {
                     let w = format!("LOCATION1_{}", if whole_name(&r.street) { &r.street[..] } else { r.street.get(6..).unwrap_or("") });
                     l1 += 1;
-                    if has(&w) { l1_ok += 1 } else if missing.len() < 12 { missing.push(w) }
+                    if has(&w) { l1_ok += 1 } else { all_missing.insert(w.clone()); if missing.len() < 12 { missing.push(w) } }
                 }
                 if let Some(c) = &r.cross {
                     let w = format!("LOCATION2_{c}");
                     l2 += 1;
-                    if has(&w) { l2_ok += 1 } else if missing.len() < 24 { missing.push(w) }
+                    if has(&w) { l2_ok += 1 } else { all_missing.insert(w.clone()); if missing.len() < 24 { missing.push(w) } }
                 }
             }
         }
         println!("LOCATION1 {l1_ok} / {l1} with a clip, LOCATION2 {l2_ok} / {l2}; e.g. without: {missing:?}");
         assert!(l1 > 0 && l2 > 0);
+        // SC_MissingPoliceAssets.xml (the +196 list F-97364 loads; F-31988 drops a listed word, the resolver then takes the next step): no voice has any of them
+        let xml = std::fs::read_to_string(std::path::Path::new(&dir).join("tune/audio/SC_MissingPoliceAssets.xml")).unwrap();
+        let listed: Vec<&str> = xml.split("name=\"").skip(1).filter_map(|t| t.split('"').next()).collect();
+        assert_eq!(listed.len(), 28);
+        let up = |w: &str| w.to_ascii_uppercase();
+        let with_clip: Vec<&&str> = listed.iter().filter(|w| has(&up(w)) || has(w)).collect();
+        println!("listed with a clip: {with_clip:?}; unlisted without: {:?}", all_missing.iter().filter(|w| !listed.iter().any(|l| l.eq_ignore_ascii_case(w))).collect::<Vec<_>>());
+        assert!(with_clip.is_empty());
     }
 
     /// A freeway report is all SpecialCase and names the last ramp; its Frequency of 15 s refuses it until it has run out.
