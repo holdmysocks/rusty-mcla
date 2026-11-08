@@ -464,6 +464,9 @@ struct App {
     pink_speech: Option<String>,
     /// the playing pink slip end scene is a loss scene (cut_loss_*): Garage_WarpTo after it
     pink_lost: bool,
+    /// the wager hangout core's traffic setting saved for the pink slip's end scene (0x5e66 GetTrafficEnable into
+    /// local 850, 0x5e72 / 0x5e7f SetTrafficEnable(0) when on); given back after the scene (0x5f1c / 0x5f8b)
+    pink_traffic: Option<usize>,
     /// the playing scene's car events (cinecar.rs): the scene's name and each moved car's event
     cine_events: (String, Vec<(String, cinecar::CarEvent)>),
     /// tips waiting for a quiet moment: speech scenario, title, text
@@ -1086,6 +1089,13 @@ impl App {
                     let lost = mc4::PINK_LOSS_SCENES.iter().any(|n| scene.eq_ignore_ascii_case(n));
                     self.pink_lost = lost;
                     let player = self.vehicles.cars.iter().position(|c| c.is_player);
+                    // (0x5e66 .. 0x5e7f: the traffic off for the scene when it is on; the enable byte cleared - the
+                    // riding and parked cars go at once, F-26788 -> F-99126)
+                    if self.vehicles.traffic_target > 0 {
+                        self.pink_traffic = Some(self.vehicles.traffic_target);
+                        self.vehicles.traffic_target = 0;
+                        self.vehicles.ambient_disable(0);
+                    }
                     if self.cine.start(gpu, &scene, origin) {
                         started = true;
                         self.cine_free = true;
@@ -1119,6 +1129,9 @@ impl App {
                     }
                 }
                 if !started {
+                    if let Some(n) = self.pink_traffic.take() {
+                        self.vehicles.traffic_target = n;
+                    }
                     self.scene_fade.release(1.0);
                     self.pink_end = (3, false);
                 }
@@ -1147,6 +1160,10 @@ impl App {
                         }
                     }
                     None => {
+                        // (0x5f1c .. 0x5f8b: the saved traffic setting given back, then the fade up)
+                        if let Some(n) = self.pink_traffic.take() {
+                            self.vehicles.traffic_target = n;
+                        }
                         // (0x3f1b: the fade up over the scene's held fade_to_black, waited)
                         self.scene_fade.release(1.0);
                         self.pink_end = (3, false);
@@ -1375,6 +1392,7 @@ impl App {
             pink_end: (0, false),
             pink_speech: None,
             pink_lost: false,
+            pink_traffic: None,
             cine_events: (String::new(), Vec::new()),
             tips: Default::default(),
             reminder_wait: None,
