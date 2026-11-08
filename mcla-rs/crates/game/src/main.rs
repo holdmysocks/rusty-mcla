@@ -12371,7 +12371,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 pass.set_stencil_reference(0);
                 stat_cars = draws - d1;
                 gpuprof::stamp_pass(&gpu.device, &mut pass, "B people");
-                pass.set_pipeline(&gpu.pipeline_opaque);
+                // (the people - walkers, the scenes' characters, the drivers - draw every batch with the Object material
+                // (skin.rs `SkinBuffer::draw`): its own pipeline once built, the city program with the other materials' paths
+                // left out (render/mod.rs `mode_constant`), the same computation; RX 5500 XT: this pass 5 - 7 ms in the garage
+                // scenes, docs/PERFORMANCE.md 2026-11-08 (6))
+                pass.set_pipeline(gpu.pipeline_opaque_mode[render::MatMode::Object as usize].as_ref().and_then(|p| p.ready(render::ms::current())).unwrap_or(&gpu.pipeline_opaque));
                 if !pic_on {
                     // (F-68474: no walker drawn while the arrest's scene is on screen, F-36139 - `prepare` emitted none)
                     self.peds.draw(&mut pass, &gpu, false, &mut draws);
