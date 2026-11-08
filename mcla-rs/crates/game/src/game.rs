@@ -14743,13 +14743,20 @@ impl Game {
             // series' flags: `sr_results`)
             let series = self.series.clone();
             let tour = self.career.tour_table.clone();
-            // (the tournament sorted by the total - F-26722 -, ties by the finishing time, a racer who did not
-            // finish after one who did; the series by the place, below)
-            let time_of = |k: usize| self.last_results.get(k).and_then(|r| r.1).unwrap_or(f32::MAX);
+            // (the tournament by this race's points, the series by the place: below)
             let cells: Vec<Vec<String>> = if let Some(t) = tour.as_ref() {
-                let mut idx: Vec<(usize, i32, i32)> = (0..cells.len()).map(|k| t.rows.get(k).map_or((k, 0, 0), |r| (k, r.1, r.2))).collect();
-                idx.sort_by(|a, b| b.2.cmp(&a.2).then(time_of(a.0).partial_cmp(&time_of(b.0)).unwrap_or(std::cmp::Ordering::Equal)));
-                idx.iter().map(|&(k, pts, total)| vec![cells[k][0].clone(), cells[k][1].clone(), pts.to_string(), total.to_string()]).collect()
+                // (the rows F-26722: by this race's points - the tournament entry's score F-91345, F-33081 with the CRT
+                // qsort -, not by the total; the results are in finishing order, place = row + 1)
+                let mut table = [0i32; 17];
+                table[..4].copy_from_slice(&[7, 4, 2, 1]);
+                let rows: Vec<crate::career::TourRow> = (0..cells.len()).map(|k| crate::career::TourRow {
+                    kind: if self.last_results[k].0.starts_with("YOU") { 0 } else { 2 },
+                    time: self.last_results[k].1.map_or(crate::career::UNFINISHED, |v| (v * 1000.0).round() as i32),
+                    place: k as i32 + 1,
+                    total: t.rows.get(k).map_or(0, |r| r.2),
+                }).collect();
+                let idx = crate::career::tournament_rows(&rows, &table);
+                idx.iter().map(|&k| vec![cells[k][0].clone(), cells[k][1].clone(), t.rows.get(k).map_or(0, |r| r.1).to_string(), rows[k].total.to_string()]).collect()
             } else {
                 match series.as_ref() {
                     Some(sr) => {

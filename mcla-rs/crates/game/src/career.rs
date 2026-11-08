@@ -3394,10 +3394,14 @@ pub struct SeriesRow {
 /// The rows' comparator F-33081 on the entry's score F-66331 (1 - place): the higher score first; equal scores: two AI
 /// racers (type 2) -> -1 when the first's finish time is the larger, else 0; any other pair -1.
 pub fn series_row_cmp(a: &SeriesRow, b: &SeriesRow) -> i32 {
-    let (sa, sb) = (1i32.wrapping_sub(a.place), 1i32.wrapping_sub(b.place));
+    results_row_cmp(1i32.wrapping_sub(a.place), 1i32.wrapping_sub(b.place), (a.kind, a.time), (b.kind, b.time))
+}
+
+/// F-33081 on two entries' scores and their records' (type, finish time).
+pub fn results_row_cmp(sa: i32, sb: i32, a: (i32, i32), b: (i32, i32)) -> i32 {
     if sa == sb {
-        if a.kind == 2 && b.kind == 2 {
-            if a.time > b.time { -1 } else { 0 }
+        if a.0 == 2 && b.0 == 2 {
+            if a.1 > b.1 { -1 } else { 0 }
         } else {
             -1
         }
@@ -3406,6 +3410,33 @@ pub fn series_row_cmp(a: &SeriesRow, b: &SeriesRow) -> i32 {
     } else {
         1
     }
+}
+
+/// A row entry of the tournament's results (F-26722's 24-byte entry): the record's type, finish time and place, and
+/// the racer's nRacerPoints_<i> total.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TourRow {
+    pub kind: i32,
+    pub time: i32,
+    pub place: i32,
+    pub total: i32,
+}
+
+/// This race's points of a place: the career manager's table +4 * (93 + clamp(place - 1, 0, 16)).
+pub fn place_points(table: &[i32; 17], place: i32) -> i32 {
+    table[place.wrapping_sub(1).clamp(0, 16) as usize]
+}
+
+/// The Tournament_RESULTS rows' order (F-26722): the entries in record order, sorted by the CRT qsort with F-33081
+/// on the tournament entry's score F-91345 = this race's points (not the total). Row i shows fs_text3 = this race's
+/// points, fs_text4 = the total, fs_property1 22 for the player (else 1).
+pub fn tournament_rows(rows: &[TourRow], table: &[i32; 17]) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..rows.len()).collect();
+    crate::racemark::crt_qsort(&mut idx, |a, b| {
+        let (ra, rb) = (&rows[*a], &rows[*b]);
+        results_row_cmp(place_points(table, ra.place), place_points(table, rb.place), (ra.kind, ra.time), (rb.kind, rb.time))
+    });
+    idx
 }
 
 /// The Series_RESULTS rows' order (F-23726): the entries in record order, sorted by the CRT qsort (F-79639) with
@@ -4180,6 +4211,35 @@ mod tests {
             want.push_str("| ");
             for (i, &r) in order.iter().enumerate() {
                 want.push_str(&format!("{},{},1 ", i + 1, if rows[r].kind == 0 { 22 } else { 1 }));
+            }
+            assert_eq!(b.split_whitespace().collect::<Vec<_>>(), want.split_whitespace().collect::<Vec<_>>(), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
+
+    #[test]
+    fn tournament_rows_match_the_original() {
+        let text = include_str!("testdata/tournament_rows_ref.txt");
+        let mut n = 0;
+        for line in text.lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split(' ').collect();
+            let k = w[0].parse::<usize>().unwrap();
+            let table: [i32; 17] = w[1].split(',').map(|x| x.parse().unwrap()).collect::<Vec<i32>>().try_into().unwrap();
+            let rows: Vec<TourRow> = w[2..].iter().filter(|s| **s != "-").map(|s| {
+                let f: Vec<i32> = s.split(',').map(|x| x.parse().unwrap()).collect();
+                TourRow { kind: f[0], time: f[1], place: f[2], total: f[3] }
+            }).collect();
+            assert_eq!(rows.len(), k);
+            let order = tournament_rows(&rows, &table);
+            let mut want = String::new();
+            for (i, &r) in order.iter().enumerate() {
+                want.push_str(&format!("r{},{} ", r, i));
+            }
+            want.push_str("| ");
+            for &r in &order {
+                want.push_str(&format!("{},{},{} ", if rows[r].kind == 0 { 22 } else { 1 }, place_points(&table, rows[r].place), rows[r].total));
             }
             assert_eq!(b.split_whitespace().collect::<Vec<_>>(), want.split_whitespace().collect::<Vec<_>>(), "{line}");
             n += 1;
