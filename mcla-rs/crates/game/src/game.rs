@@ -4643,9 +4643,11 @@ impl Game {
         let cp = &race.checkpoints[..n];
         // (the results' estimate F-23843 on the standings as the results block: place = the row, the player type 0,
         // every other an AI racer (2), a deactivated car's chassis state 1, the next checkpoint as count in the lap
-        // and the lap; the car's position stands for both the racer's +192 vector and its car's matrix. Approx.: the
-        // grid object is the race's first grid slot; without a finisher the original's base-time branch (the race
-        // table's +136, the career manager's generator) is not ported - nothing is estimated then)
+        // and the lap; the car's position stands for both the racer's +192 vector and its car's matrix; the racer's
+        // performance its set-up's value (F-82331 -> F-92180 mcCarConfig::GetPerformanceValue = mc4::setup_perf of the car's
+        // samples at its mod value). Without a finisher the base time is the race table's +136 = GoalTargetTime x 1000
+        // and the draws come from the career generator (mcCareer +0x16C78, `oppick::career_rng`). Approx.: the grid
+        // object is the race's first grid slot)
         let mut rec: Vec<crate::career::EstRacer> = st.iter().enumerate().map(|(place, e)| {
             let c = vehicles.cars.get(e.0);
             let next = race.next.get(e.0).copied().unwrap_or(0);
@@ -4657,18 +4659,21 @@ impl Game {
                 time: e.1.map_or(crate::career::UNFINISHED, |t| (t * 1000.0).round() as i32),
                 place: place as i32 + 1,
                 state: if c.map_or(false, |c| c.deactivated) { 1 } else { 0 },
-                perf: 0.0,
+                perf: c.filter(|c| !c.is_player).and_then(|c| self.mc4_samples_of(&c.model.name).map(|sm| crate::mc4::setup_perf(sm, (c.perf * 100.0).round() as i32))).unwrap_or(0.0),
                 p192: p,
                 pos: p,
             }
         }).collect();
-        if !rec.iter().any(|e| e.time != crate::career::UNFINISHED && e.time != -1) {
-            return;
-        }
         let cps: Vec<[f32; 3]> = cp.iter().map(|v| v.to_array()).collect();
         let grid0 = self.current_race.and_then(|i| self.race_defs.get(i)).and_then(|d| d.grid.first()).map_or(cp[0], |g| g.0);
-        let mut rng = (0u32, 0u32);
-        crate::career::estimate_times(&mut rec, &cps, n as i32, race.laps as i32, grid0.to_array(), None, &mut rng, false);
+        let base = self.current_race.and_then(|i| self.race_defs.get(i)).map(|d| (d.goal_time * 1000.0).round() as i32);
+        {
+            let mut g = crate::oppick::career_rng();
+            let mut rng = (g.lo, g.carry);
+            crate::career::estimate_times(&mut rec, &cps, n as i32, race.laps as i32, grid0.to_array(), base, &mut rng, false);
+            g.lo = rng.0;
+            g.carry = rng.1;
+        }
         for (e, r) in st.iter_mut().zip(&rec) {
             if e.1.is_none() && r.time != crate::career::UNFINISHED && r.time != -1 {
                 e.1 = Some(r.time as f32 / 1000.0);
