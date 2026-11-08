@@ -941,6 +941,29 @@ fn on_triangle(a: Vec3, b: Vec3, c: Vec3) -> (Vec3, [f32; 3]) {
 mod tests {
     use super::*;
 
+    /// The static initialisers of the loop's globals run offline (tools/physics_consts_reference.py):
+    /// F-92824 / F-70580 / F-64228 / F-24192 set x, y, z (w left alone) to the port's LEAST2, REL,
+    /// NEAR2 and CATCH; the solver's F-36556 splats its ALLOW into all four lanes.
+    #[test]
+    fn the_loop_constants_are_the_originals() {
+        let w = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let want = [("F-36556", super::super::solver::ALLOW, 4), ("F-92824", LEAST2, 3), ("F-70580", REL, 3), ("F-64228", NEAR2, 3), ("F-24192", CATCH, 3)];
+        let lines: Vec<&str> = include_str!("../testdata/physics_consts_ref.txt").lines().collect();
+        assert_eq!(lines.len(), want.len());
+        for (line, (id, c, lanes)) in lines.iter().zip(want) {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            assert_eq!(i, id);
+            let o: Vec<u32> = o.split_whitespace().map(w).collect();
+            for k in 0..4 {
+                if k < lanes {
+                    assert_eq!(o[k], c.to_bits(), "{line}");
+                } else {
+                    assert_eq!(o[k], 0xa5a5_a5a3, "{line}");
+                }
+            }
+        }
+    }
+
     fn wheel(centre: Vec3) -> WheelCore {
         WheelCore::new(centre, [Vec3::X, Vec3::Y, Vec3::Z], 0.3443, 0.245)
     }

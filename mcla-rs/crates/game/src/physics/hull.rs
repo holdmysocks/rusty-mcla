@@ -2115,6 +2115,41 @@ pub fn refresh(now: &[Vec3; 4], manifolds: &mut Vec<Manifold>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cone's widen F-12753 and clamp F-99162 run offline with their arc cosine / cosine
+    /// (tools/cone_widen_reference.py, flush mode as the SDK sets it): x, y, z and the cosine
+    /// written back, every word (NaN as NaN: the default NaN's sign is the host's).
+    #[test]
+    fn cone_widen_and_clamp_match_the_original() {
+        let w = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let f = |s: &str| f32::from_bits(w(s));
+        let (mut nw, mut nc, mut nan) = (0, 0, 0);
+        for line in include_str!("../testdata/cone_widen_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let a: Vec<&str> = i.split_whitespace().collect();
+            let o: Vec<u32> = o.split_whitespace().map(w).collect();
+            let v = |k: usize| Vec3::new(f(a[k]), f(a[k + 1]), f(a[k + 2]));
+            let mut cos = f(a[1]);
+            let r = if a[0] == "widen" {
+                nw += 1;
+                cone_widen(&mut cos, v(2), v(6))
+            } else {
+                nc += 1;
+                cone_clamp(cos, v(2), v(6))
+            };
+            for (k, x) in [r.x, r.y, r.z].into_iter().enumerate() {
+                assert!(x.to_bits() == o[k] || (x.is_nan() && f32::from_bits(o[k]).is_nan()), "{line} lane {k}");
+                nan += x.is_nan() as usize;
+            }
+            if a[0] == "widen" {
+                assert_eq!(cos.to_bits(), o[4], "cos {line}");
+            }
+        }
+        assert_eq!(nw + nc, 6000);
+        assert!(nw > 2500 && nc > 2500);
+        // (exactly opposite vectors: the zero cross product normalised, NaN in both)
+        assert_eq!(nan, 3 * 600);
+    }
     use crate::physics::collision::SectorMesh;
 
     /// The vector unit's cosine F-72452 and arc cosine F-49700 run offline (tools/vec_trig_reference.py): 8,008 of

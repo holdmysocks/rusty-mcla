@@ -37,7 +37,8 @@ pub struct Fluid {
 
 impl Default for Fluid {
     fn default() -> Fluid {
-        // (the base's constructor, F-59913's caller F-79372 then the init)
+        // (F-79372's constructor F-52233: the base's F-72081 - +4 .. +16 and the current 0, the
+        // buoyancy 0.5, the damping 0.1 - then the timer 0)
         Fluid { inside: false, level: 0.0, flow: Vec3::ZERO, points: Vec::new(), buoyancy: 0.5, damp: 0.1, timer: 0.0, tune: FluidTune::default() }
     }
 }
@@ -72,6 +73,11 @@ impl Fluid {
     /// The buoyancy on entering (F-62399, F-77072): BuoyancyMin when it rises, else BuoyancyMax.
     fn start(&self) -> f32 {
         if self.tune.sink_rate > 0.0 { self.tune.buoyancy_min } else { self.tune.buoyancy_max }
+    }
+
+    /// vt+20, F-29560: the in bit (+12 bit 0) cleared, nothing else - the timer is not set.
+    pub fn leave(&mut self) {
+        self.inside = false;
     }
 
     /// vt+16, F-77072: in, unless the timer still runs.
@@ -120,6 +126,14 @@ impl Fluid {
     }
 }
 
+/// F-98483 as the callback calls it: the direction (1, 0, 0) (its constants 1.0, 0.0) times
+/// CurrentScale splatted, in the vector unit's flush mode - a subnormal scale reads as a zero of
+/// its sign. (The w lane, the stack's word times the scale, is not kept.)
+fn current(scale: f32) -> Vec3 {
+    let s = if scale.is_subnormal() { 0.0f32.copysign(scale) } else { scale };
+    Vec3::X * s
+}
+
 /// a x b as F-87118 forms it: lane x -(b.y a.z - b.z a.y) and so on (vnmsubfp as the generated
 /// code has it, the products and the subtraction each rounded, the sign flipped).
 fn cross(a: Vec3, b: Vec3) -> Vec3 {
@@ -166,16 +180,14 @@ impl Scan {
     pub fn finish(&self, fluid: &mut Fluid, drivable: bool) {
         if self.level == DRY {
             if fluid.inside && drivable {
-                // (vt+20, F-29560: the bit alone - the timer is not set)
-                fluid.inside = false;
+                fluid.leave();
             }
         } else {
             if !fluid.inside {
                 fluid.enter();
             }
             fluid.level = self.level;
-            // (F-98483: the direction (1, 0, 0) times CurrentScale)
-            fluid.flow = Vec3::X * fluid.tune.current_scale;
+            fluid.flow = current(fluid.tune.current_scale);
         }
     }
 }
@@ -212,6 +224,46 @@ mod tests {
             f.update(&rows, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, 1000.0, &mut force, &mut torque);
         }
         assert!((f.buoyancy - 0.1).abs() < 1e-7);
+    }
+
+    /// The constructor F-52233 (with F-72081), the leave F-29560 and the current F-98483 run
+    /// offline (tools/fluid_small_reference.py, flush mode as the SDK sets it), every word (NaN
+    /// as NaN: the default NaN's sign is the host's).
+    #[test]
+    fn constructor_leave_and_current_match_the_original() {
+        let w = |s: &str| u32::from_str_radix(&s.replace('_', ""), 16).unwrap();
+        let (mut nl, mut nf) = (0, 0);
+        for line in include_str!("../testdata/fluid_small_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let a: Vec<&str> = i.split_whitespace().collect();
+            let o: Vec<u32> = o.split_whitespace().map(w).collect();
+            match a[0] {
+                "ctor" => {
+                    let f = Fluid::default();
+                    let flow = [f.flow.x, f.flow.y, f.flow.z, 0.0].map(f32::to_bits);
+                    assert_eq!([f.inside as u32, f.level.to_bits()], [o[0], o[1]]);
+                    assert_eq!(flow, [o[2], o[3], o[4], o[5]]);
+                    assert_eq!([f.buoyancy.to_bits(), f.damp.to_bits(), f.timer.to_bits()], [o[6], o[7], o[8]]);
+                }
+                "leave" => {
+                    let flags = w(a[1]);
+                    assert_eq!(o[0], flags & !1, "{line}");
+                    let mut f = Fluid { inside: flags & 1 != 0, ..Fluid::default() };
+                    f.leave();
+                    assert_eq!(f.inside as u32, o[0] & 1);
+                    nl += 1;
+                }
+                _ => {
+                    let c = current(f32::from_bits(w(a[1])));
+                    for (k, x) in [c.x, c.y, c.z].into_iter().enumerate() {
+                        let r = f32::from_bits(o[k]);
+                        assert!(x.to_bits() == o[k] || (x.is_nan() && r.is_nan()), "{line} lane {k}");
+                    }
+                    nf += 1;
+                }
+            }
+        }
+        assert_eq!((nl, nf), (500, 1500));
     }
 
     /// The init F-62399 and the enter F-77072 run offline (tools/fluid_enter_reference.py):
