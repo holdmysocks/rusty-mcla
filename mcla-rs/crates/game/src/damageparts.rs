@@ -89,6 +89,9 @@ const BUMPER_KEEP: f32 = 0.9;
 const BUMPER_LIMIT: Vec3 = Vec3::new(0.01, 0.05, 0.15);
 /// gravity's y in the bumper forces (the image's -9.8)
 const GRAVITY_Y: f32 = -9.8;
+/// F-57572's reach of a hit round an end (0.8, an image word) and the least amount that counts (0.15)
+const HIT_NEAR: f32 = 0.8;
+const HIT_MIN: f32 = 0.15;
 
 /// A matrix's rows as the original keeps them (glam's columns), w included.
 fn rows4(m: &Mat4) -> [Vec4; 4] {
@@ -295,26 +298,41 @@ impl Bumper {
         b
     }
 
-    /// `sub_8233CF78`: both ends attached at the car's matrix, the free piece removed.
+    /// F-40944: both ends attached - each place and last place the rest point through the car's matrix (the 4-term
+    /// dot), car space the rest point, the forces 0 -, the states 0, the free piece removed (F-27119), the clock 0.
+    /// (It also writes the rest frame +272 (F-27388), which nothing the port draws reads.)
     pub fn reset(&mut self, c: &Mat4) {
+        let r = rows4(c);
         for e in [&mut self.a, &mut self.b] {
             e.state = 0;
-            e.pos = c.transform_point3(e.rest);
+            e.pos = through(e.rest, &r);
             e.prev = e.pos;
             e.local = e.rest;
             e.local_prev = e.rest;
         }
         self.detached = None;
+        self.clock = 0.0;
         self.pose = Mat4::IDENTITY;
     }
 
-    /// `sub_8233F738`: a queued hit changes the ends' states.
+    /// F-57572: a queued hit changes the ends' states. An end counts when the hit is within 0.8 m of it and
+    /// its amount above 0.15 (bge / ble on the fcmpu: a NaN distance or amount does not count).
     fn hit(&mut self, c: &Mat4, h: &PartHit, heavy: bool) {
         if h.kind != 0 {
             return;
         }
-        // (pA = C*restA + carVel*dt*K, K = 0x8288DCA8: 0 in the image, no writer found)
-        if (h.point - c.transform_point3(self.a.rest)).length() < 0.8 && h.amount > 0.15 {
+        // (an end's place = the rest point through C (4-term dots) + the body's velocity x dt x K, fused; K is an
+        // image word that is 0 and that nothing writes. The bumper's byte +486 - with heavy damage, B broken - is set
+        // by nothing: the constructor clears it.)
+        let r = rows4(c);
+        let (pa, pb) = (through(self.a.rest, &r), through(self.b.rest, &r));
+        // (|d| as fsqrts(dx dx + (dz dz + dy dy)), fused)
+        let dist = |p: Vec3| {
+            let d = h.point - p;
+            d.x.mul_add(d.x, d.z.mul_add(d.z, d.y * d.y)).sqrt()
+        };
+        let counts = |p: Vec3| dist(p) < HIT_NEAR && h.amount > HIT_MIN;
+        if counts(pa) {
             if self.a.state == 0 && self.b.state == 0 {
                 self.a.state = 1;
             } else if self.a.state == 1 && heavy {
@@ -324,7 +342,7 @@ impl Bumper {
                 self.a.state = 2;
             }
         }
-        if (h.point - c.transform_point3(self.b.rest)).length() < 0.8 && h.amount > 0.15 {
+        if counts(pb) {
             if self.b.state == 0 && self.a.state == 0 {
                 self.b.state = 1;
             } else if self.b.state == 1 && heavy {
@@ -922,6 +940,71 @@ mod tests {
             let delta = if b.a.state == 0 && b.b.state == 0 { Mat4::IDENTITY } else { b.delta };
             let got: Vec<u32> = delta.to_cols_array().iter().map(|x| x.to_bits()).collect();
             assert_eq!(got, ov[0..16].to_vec(), "delta: {line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
+
+    /// The bumper's reset against F-40944 run offline (tools/bumper_reset_hit_reference.py, testdata/bumper_reset_ref.txt:
+    /// 3,000 random cars, rest points (w 1, 0 or other), clocks, states and piece ids): the ends' places, last places,
+    /// car-space places (xyz) and forces (0), the clock, the states, the piece (none) - every word equal; the level's
+    /// removal is called exactly when the piece id is not -1.
+    #[test]
+    fn bumper_reset_matches_the_original() {
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let m4 = |w: &[f32]| Mat4::from_cols(Vec4::from_slice(&w[0..4]), Vec4::from_slice(&w[4..8]), Vec4::from_slice(&w[8..12]), Vec4::from_slice(&w[12..16]));
+        let v3 = |w: &[f32], k: usize| Vec3::new(w[k], w[k + 1], w[k + 2]);
+        let mut n = 0;
+        for line in include_str!("testdata/bumper_reset_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let iv: Vec<&str> = i.split_whitespace().collect();
+            let w: Vec<f32> = iv[..25].iter().map(|x| f(x)).collect();
+            let ints: Vec<i64> = iv[25..].iter().map(|x| x.parse().unwrap()).collect();
+            let ov: Vec<u32> = o.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let c = m4(&w[0..16]);
+            let mut b = Bumper::new(true, Mat4::IDENTITY, 2);
+            (b.a.rest, b.b.rest) = (v3(&w, 16), v3(&w, 20));
+            (b.a.state, b.b.state, b.clock) = (ints[0] as u8, ints[1] as u8, w[24]);
+            b.detached = Some(Loose { level: None, own_body: true, pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, ang_vel: Vec3::ZERO, touching: 0, still: 0.0 });
+            b.reset(&c);
+            let bits = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+            let want3 = |k: usize| [ov[k], ov[k + 1], ov[k + 2]];
+            for (e, k, name) in [(&b.a, 0, "A"), (&b.b, 20, "B")] {
+                for (got, at, what) in [(e.pos, k, "pos"), (e.prev, k + 4, "prev"), (e.local, k + 8, "local"), (e.local_prev, k + 12, "local prev")] {
+                    assert_eq!(bits(got), want3(at), "{name} {what}: {line}");
+                }
+                assert_eq!(want3(k + 16), [0; 3], "{name} force: {line}");
+            }
+            assert_eq!((b.clock.to_bits(), u32::from(b.a.state), u32::from(b.b.state), b.detached.is_some()), (ov[40], ov[41], ov[42], ov[43] != 0), "clock / states / piece: {line}");
+            assert_eq!((ov[44], ov[45] != 0), (u32::MAX, ints[2] != -1), "piece id / removal: {line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
+
+    /// The queued hit against F-57572 run offline (tools/bumper_reset_hit_reference.py, testdata/bumper_hit_ref.txt:
+    /// 3,000 random cars, rest points, hits at and round 0.8 m from an end, amounts at and an ulp above 0.15 and NaN,
+    /// damage ratios at and round the heavy ratio, kinds 0 / 1, every pair of states): both states equal (and +486
+    /// stays 0), with heavy = damage / maximum > the ratio as the original divides and compares.
+    #[test]
+    fn bumper_hit_matches_the_original() {
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let m4 = |w: &[f32]| Mat4::from_cols(Vec4::from_slice(&w[0..4]), Vec4::from_slice(&w[4..8]), Vec4::from_slice(&w[8..12]), Vec4::from_slice(&w[12..16]));
+        let v3 = |w: &[f32], k: usize| Vec3::new(w[k], w[k + 1], w[k + 2]);
+        let mut n = 0;
+        for line in include_str!("testdata/bumper_hit_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let iv: Vec<&str> = i.split_whitespace().collect();
+            let w: Vec<f32> = iv[..37].iter().map(|x| f(x)).collect();
+            let ints: Vec<u8> = iv[37..].iter().map(|x| x.parse().unwrap()).collect();
+            let ov: Vec<u32> = o.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            let c = m4(&w[0..16]);
+            let mut b = Bumper::new(true, Mat4::IDENTITY, 2);
+            (b.a.rest, b.b.rest) = (v3(&w, 16), v3(&w, 20));
+            (b.a.state, b.b.state) = (ints[1], ints[2]);
+            let heavy = w[33] / w[34] > w[35];
+            b.hit(&c, &PartHit { point: v3(&w, 28), amount: w[32], kind: ints[0] }, heavy);
+            assert_eq!([u32::from(b.a.state), u32::from(b.b.state), 0], [ov[0], ov[1], ov[2]], "{line}");
             n += 1;
         }
         assert_eq!(n, 3000);
