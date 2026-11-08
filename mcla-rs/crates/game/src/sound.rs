@@ -978,6 +978,12 @@ impl Sound {
                 };
                 coll.car(lib, i, &c.model.name, owner, c.model.bike, &c.state, c.is_player, self.occ_slots.get(&c.uid).copied().unwrap_or(0));
             }
+            // the Agro crashes of the frame's strikes, on the struck ambient cars (F-78148)
+            for &(uid, at) in ability.agro_crashes() {
+                if let Some((i, c)) = vehicles.cars.iter().enumerate().find(|(_, c)| c.uid == uid) {
+                    coll.agro_crash(lib, i, &c.model.name, crate::collaudio::Owner::Ambient, c.model.bike, &c.state, at, c.is_player, self.occ_slots.get(&c.uid).copied().unwrap_or(0));
+                }
+            }
             coll.retain(lib, |i| i < vehicles.cars.len());
             // each hit prop's entity: its occluder updated at once (F-99417), let go when its sounds are over
             let factors = self.occl.as_ref().map(|o| o.factors.clone()).unwrap_or_default();

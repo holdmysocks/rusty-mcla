@@ -1810,6 +1810,9 @@ impl LooseState {
                     continue;
                 }
                 let live = obj.amb.is_none();
+                // (the contact's point on the struck car, for its Agro crash sound; approx.: the original picks +48 / +64
+                // of the record by an instance test not traced - the struck side's point is taken)
+                let at = if car_is_a { s.t.b.point } else { s.t.a.point };
                 let b = self.objs[o].body.as_mut().unwrap();
                 let st = strike(&tune, false, b.w.y, &[car.now[0], car.now[1], car.now[2]], car.speed, &mut crate::brain::rng());
                 let (mass, was) = (b.mass, b.p);
@@ -1821,7 +1824,7 @@ impl LooseState {
                 b.jf = b.jf + st.push * (mass * PUSH_SCALE);
                 let spin = b.momentum_of(st.spin);
                 b.jt = b.jt + spin;
-                hook.struck(st.amp);
+                hook.struck(st.amp, vh.index, at);
             }
         }
     }

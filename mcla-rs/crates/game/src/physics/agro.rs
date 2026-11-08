@@ -8,7 +8,7 @@
 //!
 //! Not ported (approx.): rumble (D5); the struck mcCar's damage and wipeout and the instance-flagged branch (archetype
 //! type flags 0x0C: which instances carry them is not traced - a racer or police car is therefore never struck);
-//! the Agro-crash sounds; the zeroing of the contact's last impulse (probably no effect, the solve rewrites it).
+//! the Agro crash's speech line (tier 2, only when the struck car is the player's); the zeroing of the contact's last impulse (probably no effect, the solve rewrites it).
 
 use crate::vehicles::parked::Mwc;
 use glam::Vec3;
@@ -228,6 +228,9 @@ pub struct Out {
     pub gauge: Option<usize>,
     /// the pad's rumble 3 asked by strikes (F-70024 with AgroFeedback, T +134; taken by main.rs)
     pub rumble: u32,
+    /// the Agro crash sounds asked by strikes (F-70024 -> F-78148 on the struck car's collision audio): the struck
+    /// ambient car's uid and the contact's point on it
+    pub crashes: Vec<(u32, Vec3)>,
 }
 
 /// The hook of the car whose driver owns the ability: the ability's state as the game sets it each frame, the
@@ -289,8 +292,9 @@ impl Hook {
     }
 
     /// The user's side of a strike that passed the cooldown (F-70024): the jolt, the count, the force.
-    pub fn struck(&mut self, amp: f32) {
+    pub fn struck(&mut self, amp: f32, uid: u32, at: Vec3) {
         let Some(t) = self.tune else { return };
+        self.out.crashes.push((uid, at));
         self.out.jolts.push((t.shake_time, amp));
         self.out.strikes += 1;
         // (F-70024: AgroFeedback set, the pause manager's byte +6 clear and the driver's vt+44 0 - both

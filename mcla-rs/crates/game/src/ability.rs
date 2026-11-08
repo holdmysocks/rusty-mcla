@@ -171,6 +171,8 @@ pub struct Abilities {
     /// what Agro's strikes left for the game: camera jolts (ShakeTime, amplitude) and the strikes counted (stat gAGH)
     agro_jolts: Vec<(f32, f32)>,
     agro_strikes: u32,
+    /// the Agro crash sounds of the strikes since the last update: the struck ambient car's uid, the contact point
+    agro_crashes: Vec<(u32, glam::Vec3)>,
 }
 
 impl Abilities {
@@ -189,6 +191,7 @@ impl Abilities {
             clock: 0.0,
             agro_jolts: Vec::new(),
             agro_strikes: 0,
+            agro_crashes: Vec::new(),
             active: 0.0,
             near_miss_cool: 0.0,
             levels: [0; 4],
@@ -347,6 +350,11 @@ impl Abilities {
 
     /// What Agro's strikes of the frames since the last call asked of the game: the camera jolts
     /// (ShakeTime, ShakeScale; the user's camera, F-70024) and how many strikes to count in gAGH.
+    /// The Agro crash sounds the strikes of the last update asked for (the sound pass plays them, `collaudio::agro_crash`).
+    pub fn agro_crashes(&self) -> &[(u32, glam::Vec3)] {
+        &self.agro_crashes
+    }
+
     pub fn take_agro(&mut self) -> (Vec<(f32, f32)>, u32) {
         (std::mem::take(&mut self.agro_jolts), std::mem::take(&mut self.agro_strikes))
     }
@@ -365,6 +373,7 @@ impl Abilities {
         let agro_run = self.running && self.kind == Kind::Agro;
         let agro_tune = self.tunes[Kind::ALL.iter().position(|k| *k == Kind::Agro).unwrap_or(1)].agro;
         let mut armed = None;
+        self.agro_crashes.clear();
         for c in vehicles.cars.iter_mut() {
             let Some(vs) = c.state.veh.as_deref_mut() else { continue };
             let h = &mut vs.agro;
@@ -373,6 +382,7 @@ impl Abilities {
                 (h.agro_run, h.running, h.crashed, h.tune, h.now) = (agro_run, self.running, crashed, Some(agro_tune), self.clock);
                 self.agro_jolts.append(&mut h.out.jolts);
                 self.agro_strikes += std::mem::take(&mut h.out.strikes);
+                self.agro_crashes.append(&mut h.out.crashes);
                 armed = Some(h.out.gauge.take());
             }
         }

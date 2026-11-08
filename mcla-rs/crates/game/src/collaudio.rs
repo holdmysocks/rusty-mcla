@@ -118,6 +118,17 @@ pub struct CollisionAudio {
     time: f32,
 }
 
+/// An L / R bang's place (F-24302's body bangs, F-78148's Agro crash): the hit in the car's frame, `local`; the frame
+/// look_at(local, up (0,1,0)) (F-97951: row 2 = norm(local), row 0 = norm(up x row 2)) with row 3 = local; the point
+/// (off, 0, 0, 1) through it - local + off x row 0 - and back through the car's matrix. So the bang sits off the hit
+/// itself, across the line from the car's centre to it (0x82860930 = (0, 0, 0, 1) makes row 3 count).
+fn lr_point(st: &CarState, rot: Mat3, hit: Vec3, off: f32) -> Vec3 {
+    let local = rot.transpose() * (hit - st.pos);
+    let c = local.normalize_or(Vec3::Z);
+    let a = Vec3::Y.cross(c).normalize_or(Vec3::X);
+    st.pos + rot * (local + a * off)
+}
+
 impl CollisionAudio {
     pub fn new(data_dir: &Path) -> CollisionAudio {
         let mut materials = HashMap::new();
@@ -232,13 +243,10 @@ impl CollisionAudio {
                                 ca.bangs.push((h, t.pos));
                             }
                         }
-                        // L / R across the line from the car's centre to the hit, +-half the zone's spacing
-                        let local = rot.transpose() * (t.pos - st.pos);
-                        let c = local.normalize_or(Vec3::Z);
-                        let a = Vec3::Y.cross(c).normalize_or(Vec3::X);
+                        // L / R: the hit +-half the zone's spacing across the line from the car's centre to it
                         let half = 0.5 * f(178);
                         for (off, snd) in [(half, be_u32(&z, b)), (-half, be_u32(&z, b + 4))] {
-                            let p = st.pos + rot * (a * off);
+                            let p = lr_point(st, rot, t.pos, off);
                             if let Some(h) = lib.play_hash(snd, req(p)) {
                                 ca.bangs.push((h, p));
                             }
@@ -300,6 +308,29 @@ impl CollisionAudio {
     }
 
     /// Cars that are gone: their loops stop.
+    /// The Agro crash on a struck car (F-78148, from the strike F-70024 through F-20062 on the car's collision audio):
+    /// the side zone's (manager +14) Z+134 at the contact point, then Z+126 / Z+130 at +0.5 / -0.5 x Z+178 across the line
+    /// from the car's centre to the point (as the impact's L / R bangs), those two travelling with the car (voice +172 =
+    /// 16); every request at 0 dB with the car's occluder. Not ported: the struck player's opponent speech (tier 2).
+    pub fn agro_crash(&mut self, lib: &mut SoundLib, idx: usize, car: &str, owner: Owner, bike: bool, st: &CarState, at: Vec3, player: bool, occ: u16) {
+        let Some(mgr) = Self::manager(lib, car, owner, bike).map(|m| m.to_vec()) else { return };
+        let Some(z) = lib.game.get(be_u32(&mgr, 14)).map(|z| z.to_vec()) else { return };
+        let req = |p: Vec3| Req { pos: Some(p), volume: 0.0, player, occluder: occ, ..Default::default() };
+        if trace() {
+            eprintln!("COLLAUDIO agro crash car {idx} {owner:?} {} L {} R {}", lib.name_of(be_u32(&z, 134)).unwrap_or("?"), lib.name_of(be_u32(&z, 126)).unwrap_or("?"), lib.name_of(be_u32(&z, 130)).unwrap_or("?"));
+        }
+        lib.play_hash(be_u32(&z, 134), req(at));
+        let ca = self.cars.entry(idx).or_default();
+        let rot = Mat3::from_quat(st.rot);
+        let half = 0.5 * be_f32(&z, 178);
+        for (off, snd) in [(half, be_u32(&z, 126)), (-half, be_u32(&z, 130))] {
+            let p = lr_point(st, rot, at, off);
+            if let Some(h) = lib.play_hash(snd, req(p)) {
+                ca.bangs.push((h, p));
+            }
+        }
+    }
+
     pub fn retain(&mut self, lib: &mut SoundLib, alive: impl Fn(usize) -> bool) {
         self.cars.retain(|i, ca| {
             let keep = alive(*i);
