@@ -1,0 +1,89 @@
+state start here
+  stopped idle | fn
+state stopped idle
+  gesture switch | fn
+  stopped idle timeup | fn
+  cruising | fn
+  fidget | fn
+  impact damageout | fn
+  impact damageout inverted | fn
+  impact driveable | fn
+  honk the horn | rpn $IsHonking $ReadGoalSteering $Abs %0.015 < & $ReadSmoothedSteeringParam $Abs %0.1 < &
+state stopped idle timeup
+  cruising | fn
+  into reverse | fn
+  impact damageout | fn
+  impact damageout inverted | fn
+  impact driveable | fn
+  honk the horn | rpn $IsHonking $ReadGoalSteering $Abs %0.015 < & $ReadSmoothedSteeringParam $Abs %0.1 < &
+state cruising
+  suspended | fn
+  gesture switch | fn
+  stopped idle timeup | fn
+  stopped idle | fn
+  impact damageout | rpn $IsImpactDamageout $IsUpsideDown ! & $IsOpponentDefined ! & $IsEnabledImpacts & $IsDamageoutTiming ! & $IsOnline ! &
+  impact damageout inverted | fn
+  impact driveable | fn
+  impact soft | fn
+  nos boost | fn
+  wind into hand over hand left | fn
+  wind into hand over hand right | fn
+  shifting | fn
+  into reverse | fn
+state suspended
+  impact damageout | fn
+  impact damageout inverted | fn
+  impact driveable | fn
+  cruising | rpn $IsUpdateCulled !
+state wind into hand over hand left
+  slip outof hand over hand left | fn
+  unwind outof hand over hand left | fn
+state unwind outof hand over hand left
+  cruising | fn
+state slip outof hand over hand left
+  cruising | fn
+state wind into hand over hand right
+  slip outof hand over hand right | fn
+  unwind outof hand over hand right | fn
+state unwind outof hand over hand right
+  cruising | fn
+state slip outof hand over hand right
+  cruising | fn
+state shifting
+  cruising | fn
+state into reverse
+  reversing | fn
+state reversing
+  outof reverse | fn
+state outof reverse
+  cruising | fn
+state nos boost
+  impact damageout | fn
+  impact damageout inverted | fn
+  impact driveable | fn
+  cruising | fn
+state honk the horn
+  stopped idle timeup | rpn $IsHonking ! $ReadTimeRemaining %0.033 < & $ReadGoalSteering $Abs %0.015 > | $ReadSpeed $Abs %1.0 > |
+state impact soft
+  cruising | fn
+state impact driveable
+  cruising | fn
+state impact damageout
+  cruising | rpn $IsRaceFinish
+  impact start car | fn
+state impact damageout inverted
+  cruising | rpn $IsRaceFinish
+  impact damageout inverted car done | rpn $ReadTimeRemaining %0.033 < $IsGPSWarping ! &
+state impact damageout inverted car done
+  cruising | fn
+state impact start car
+  cruising | rpn $IsRaceFinish
+  impact start car done | fn
+state impact start car done
+  cruising | fn
+state fidget
+  gesture switch | fn
+  stopped idle | rpn $ReadTimeRemaining %0.033 < $ReadSmoothedSteeringParam $Abs %0.1 > | $IsCutscenePlaying |
+state gesture switch
+  cruising | rpn $ReadTimeRemaining %0.033 < $IsGestureNotPlaying | $IsPostPauseMenu | $IsGestureFindSH04 $IsCutscenePlaying ! & |
+symbols IsEnabledCruiseSteering IsEnabledHandOverHandSteeringInCockpit IsEnabledPalmSteering IsEnabledShifting IsEnabledFidgets IsEnabledImpacts IsOpponentDefined StoppedRolling LowSpeedRolling MediumSpeedRolling HighSpeedRolling ExtremeSpeedRolling ImpactHardThresholdAccel ImpactSoftThresholdAccel ImpactSideThresholdAccel IsImpactFromLeft IsImpactFromRight IsImpactFromFrontSoft IsImpactFromFrontHard IsSteeringLocked IsSteeringToLeft IsSteeringToRight IsUpShifting IsDownShifting IsUpsideDown IsReversing IsCockpitIdleTimeup IsNitroBurn IsHonking IsGPSWarping IsImpactDriveable IsImpactDamageout IsDamageoutTiming IsPostPauseMenu IsVisibleDamage IsGestureNeutral IsGestureLeft IsGestureRight IsGestureTalkLeft IsGestureTalkRight IsGestureMild IsGestureWin IsGestureListenLeft IsGestureListenRight IsGestureThumbDownLeft IsGestureThumbDownRight IsGestureCasualRight IsGestureMildRight IsGestureWin IsGestureCopFidget IsGestureCopHandsUp IsGestureNotPlaying IsOnline IsRaceFinish IsCutscenePlaying IsGestureFindSH04 IsUpdateCulled ReadSpeed ReadGoalSteering ReadSteering ReadSmoothedSteeringDeltaToLimit ReadAcceleration ReadLateralAcceleration ReadDSteeringDt ReadSkidValue ReadTimerA ReadTimerB ReadTimerC HandOverHandSkidTimeWindow ReadSkidTimer ReadSteeringNeutralTimer ReadSteeringMaxedTimer ReadRandomNum ReadDt StoppedRollingBandCutoff LowSpeedRollingBandCutoff MedSpeedRollingBandCutoff HighSpeedRollingBandCutoff Abs Min Max ReadTimeRemaining ReadAnimPhase ReadSteeringWheelAngle ReadSmoothedSteeringParam

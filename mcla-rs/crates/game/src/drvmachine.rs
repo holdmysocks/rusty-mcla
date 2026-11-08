@@ -1717,6 +1717,45 @@ mod tests {
         assert_eq!(n, 7981);
     }
 
+    /// The graph as the original's builder F-65927 makes it (its Init F-49795 run offline, work/drvmachine/graph_run.py, with the condition
+    /// functions' addresses dropped): every state in order, each transition's target in order and its RPN string or a condition
+    /// function (which one is the transition test's to tell); and every name of the symbol table F-74243 (run offline) known.
+    #[test]
+    fn graph_and_symbol_names_are_the_originals() {
+        let text = include_str!("testdata/drvmachine_graph_ref.txt");
+        let mut want: Vec<(String, Vec<String>)> = Vec::new();
+        let mut names = Vec::new();
+        for line in text.lines() {
+            if let Some(n) = line.strip_prefix("state ") {
+                want.push((n.to_string(), Vec::new()));
+            } else if let Some(t) = line.strip_prefix("  ") {
+                want.last_mut().unwrap().1.push(t.to_string());
+            } else if let Some(v) = line.strip_prefix("symbols ") {
+                names = v.split_whitespace().collect();
+            }
+        }
+        let name = |st: State| STATES.iter().find(|(s, _)| *s as usize == st as usize).unwrap().1;
+        let got: Vec<(String, Vec<String>)> = STATES
+            .iter()
+            .map(|(s, n)| {
+                let t = transitions(*s)
+                    .iter()
+                    .map(|(t, to)| match t {
+                        Test::Rpn(r) => format!("{} | rpn {r}", name(*to)),
+                        _ => format!("{} | fn", name(*to)),
+                    })
+                    .collect();
+                (n.to_string(), t)
+            })
+            .collect();
+        assert_eq!(got, want);
+        assert_eq!(names.len(), 85);
+        let (c, k, e) = (Ctx::default(), Tune::original(), Env::default());
+        for n in names {
+            assert!(matches!(n, "Abs" | "Min" | "Max") || symbol(n, &c, &k, &e).is_some(), "{n}");
+        }
+    }
+
     /// Every symbol of the expression table against the original's getter run offline (tools/drv_symbol_reference.py, 1,000
     /// random contexts and tunes, the speed often at a band's edge): the context and tune read at the getters' offsets.
     #[test]
