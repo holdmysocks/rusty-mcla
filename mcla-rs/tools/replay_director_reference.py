@@ -12,6 +12,8 @@ Lines:  LEN <lo> <carry> | <mean> <dev> <min> <max> x12 -> per call: <result> <f
         POL <fov> <pitch> <yaw> <min> <max> <dt> <b18> <b19> <b20> <b21> -> <fov> <pitch> <yaw>
         FIX <car rows a b c place (12)> <mount (3)> <look back> -> <rows a b c (9)> <eye (3)>   (fixed mount update F-77143)
         PACT <lo> <carry> <default lens> -> <lens> <pitch> <yaw> <lo> <carry>   (the polar camera's activate F-82095: +288 -> +168)
+        MNT <state> <mounts 0..5 (18)> -> <fixed +192 x y z> <look back +208>   (the mount setter F-31661: director +28 state, +40 -> the
+                                         fixed camera, mounts at +64 + 16 k; +192 starts as 0xA5A5A5A5 and +208 as 0xA5 to show what is written)
 (floats as hex bits)
 Usage: replay_director_reference.py --recomp D:/MCLA-static --image work/2026-10-10/original-image.bin --work DIR --out FILE [--tool mcla-tool]"""
 import argparse
@@ -23,7 +25,7 @@ from pathlib import Path
 import recomp_dispatch as rd
 import recomp_closure as rc
 
-IDS = {'LEN': 'F-66204', 'ZOOM': 'F-16218', 'KTH': 'F-48190', 'POL': 'F-63907', 'PACT': 'F-82095', 'FIX': 'F-77143'}
+IDS = {'LEN': 'F-66204', 'ZOOM': 'F-16218', 'KTH': 'F-48190', 'POL': 'F-63907', 'PACT': 'F-82095', 'FIX': 'F-77143', 'MNT': 'F-31661'}
 
 MAIN = r'''
 int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.assign(std::istreambuf_iterator<char>(bin),{});
@@ -48,6 +50,11 @@ int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.
    Context c=fresh();c.r3.u32=O;sub_FIX(c,nullptr);for(int j=16;j<80;j+=4)if((j&15)!=12)printf("%08x ",load(O+j));printf("\n");}
   else if(k=="PACT"){uint32_t lo,ca,df;in>>std::hex>>lo>>ca>>df>>std::dec;store(G,lo);store(G+4,ca);for(int j=0;j<0x200;j+=4)store(O+j,0xA5A5A5A5u);
    store(O+288,df);Context c=fresh();c.r3.u32=O;sub_PACT(c,nullptr);printf("%08x %08x %08x %08x %08x\n",load(O+168),load(O+272),load(O+276),load(G),load(G+4));}
+  else if(k=="MNT"){uint32_t st,m[18];in>>std::hex>>st;for(int i=0;i<18;i++)in>>m[i];in>>std::dec;
+   for(int j=0;j<0x200;j+=4){store(O+j,0);store(P+j,0xA5A5A5A5u);}store(O+28,st);store(O+40,P);
+   for(int q=0;q<6;q++){for(int i=0;i<3;i++)store(O+64+16*q+4*i,m[3*q+i]);store(O+64+16*q+12,0x3F800000u);}
+   Context c=fresh();c.r3.u32=O;sub_MNT(c,nullptr);
+   printf("%08x %08x %08x %u\n",load(P+192),load(P+196),load(P+200),load(P+208)>>24);}
   else{uint32_t fov,pi,ya,mn,mx,dt,b[4];in>>std::hex>>fov>>pi>>ya>>mn>>mx>>dt>>b[0]>>b[1]>>b[2]>>b[3]>>std::dec;
    for(int j=0;j<0x200;j+=4)store(O+j,0);for(int j=0;j<32;j+=4)store(P+j,0);
    store(O+168,fov);store(O+272,pi);store(O+276,ya);store(O+280,mn);store(O+284,mx);store(GDT,dt);
@@ -123,6 +130,10 @@ def main():
         lines.append('FIX ' + ' '.join(f'{fb(v):08x}' for v in vals) + f' {rnd.choice([0, 0, 1])}')
     for _ in range(3000):
         lines.append(f'PACT {rnd.getrandbits(32):08x} {rnd.getrandbits(32):08x} {fb(rnd.choice([47.0, rnd.uniform(10, 90)])):08x}')
+    for _ in range(3000):
+        st = rnd.choice([rnd.randrange(6, 18), rnd.randrange(6, 18), rnd.randrange(0, 22)])
+        ms = [rnd.choice([0.0, -0.0, rnd.uniform(-3, 3)]) for _ in range(18)]
+        lines.append(f'MNT {st:x} ' + ' '.join(f'{fb(v):08x}' for v in ms))
     cases = a.work / 'replay_director_cases.txt'
     cases.write_text('\n'.join(lines) + '\n')
     p = subprocess.run([str(exe), str(a.image), str(cases)], capture_output=True, text=True)

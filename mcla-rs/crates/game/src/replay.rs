@@ -1335,7 +1335,9 @@ mod original_normal_tests {
 /// The director's small routines against the original's code (tools/replay_director_reference.py, testdata/replay_director_ref.txt):
 /// the shot length F-66204 and the helicopter's zoom timer F-16218 (300 sequences of 12 calls, generator and spare after each),
 /// the k-th set bit F-48190 (4,000 masks), the polar camera's stick F-63907 (6,000 cases from the pad's bytes) and its activate
-/// F-82095 (3,000 generators), the fixed mounts' camera F-77143 (3,000 car matrices, a third looking back).
+/// F-82095 (3,000 generators), the fixed mounts' camera F-77143 (3,000 car matrices, a third looking back) and the mount
+/// setter F-31661 (3,000 states and mount tables; outside 6..17 the original only clears the look-back byte, where the port
+/// does not call it).
 #[cfg(test)]
 mod original_director_tests {
     use super::*;
@@ -1346,7 +1348,7 @@ mod original_director_tests {
 
     #[test]
     fn director_routines_match_the_original() {
-        let (mut len, mut kth, mut pol, mut pact, mut fix) = (0, 0, 0, 0, 0);
+        let (mut len, mut kth, mut pol, mut pact, mut fix, mut mnt) = (0, 0, 0, 0, 0, 0);
         for line in include_str!("testdata/replay_director_ref.txt").lines() {
             let (a, b) = line.split_once(" -> ").unwrap();
             let w: Vec<&str> = a.split(' ').collect();
@@ -1407,10 +1409,26 @@ mod original_director_tests {
                     assert_eq!([d.polar.fov.to_bits(), d.polar.pitch.to_bits(), d.polar.yaw.to_bits(), d.rng.x, d.rng.c], [o[0], o[1], o[2], o[3], o[4]], "{line}");
                     pact += 1;
                 }
+                "MNT" => {
+                    let state = h(w[1]) as usize;
+                    let v: Vec<f32> = w[2..20].iter().map(|x| f32::from_bits(h(x))).collect();
+                    let mut tune = CamTune::default();
+                    for k in 0..6 {
+                        tune.mounts[k] = Vec3::new(v[3 * k], v[3 * k + 1], v[3 * k + 2]);
+                    }
+                    let o: Vec<u32> = b.split(' ').map(h).collect();
+                    if (6..=17).contains(&state) {
+                        let (m, back) = Director::mount(&tune, state);
+                        assert_eq!([m.x.to_bits(), m.y.to_bits(), m.z.to_bits(), back as u32], [o[0], o[1], o[2], o[3]], "{line}");
+                    } else {
+                        assert_eq!(o, [0xA5A5_A5A5, 0xA5A5_A5A5, 0xA5A5_A5A5, 0], "{line}");
+                    }
+                    mnt += 1;
+                }
                 _ => panic!("{line}"),
             }
         }
-        assert!(len >= 290 && kth >= 3980 && pol >= 5990 && pact >= 2970 && fix >= 2970, "{len} {kth} {pol} {pact} {fix}");
+        assert!(len >= 290 && kth >= 3980 && pol >= 5990 && pact >= 2970 && fix >= 2970 && mnt >= 2970, "{len} {kth} {pol} {pact} {fix} {mnt}");
     }
 
     /// The helicopter's activate F-79727 and update F-48462 against the original's code (tools/replay_heli_reference.py,
