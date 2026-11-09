@@ -4262,6 +4262,39 @@ fn apply_impulse(b: &mut PBody, j: Vec3) {
     b.jf = Vec3::new(f(b.jf.x, j.x), f(b.jf.y, j.y), f(b.jf.z, j.z));
 }
 
+/// A semi's hitch in the world as F-15252 forms it: the hitch with w = 1 through the instance's matrix (rows, place),
+/// a vmsum4fp a lane.
+pub(super) fn hitch_world(m: &[Vec3; 4], h: Vec3) -> Vec3 {
+    use super::artic::V4;
+    let hw = V4([h.x, h.y, h.z, 1.0]);
+    let col = |k: usize| V4([m[0][k], m[1][k], m[2][k], m[3][k]]);
+    Vec3::new(hw.dot4(col(0)).x(), hw.dot4(col(1)).x(), hw.dot4(col(2)).x())
+}
+
+/// The second and third pair's point: the hitch + 10 x a row of the matrix (vmulfp, then vaddfp).
+pub(super) fn hitch_along(p: Vec3, row: Vec3) -> Vec3 {
+    use super::artic::V4;
+    let v = |a: Vec3| V4([a.x, a.y, a.z, 0.0]);
+    let r = v(row).mul(V4::splat(10.0)).add(v(p)).0;
+    Vec3::new(r[0], r[1], r[2])
+}
+
+/// A world point in an instance's frame, F-21064: the point less the place, into the rows (vmsum3fp); with the
+/// bound a composite, then the same through the part's matrix.
+pub(super) fn rope_local(m: &[Vec3; 4], p: Vec3, part: Option<&[Vec3; 4]>) -> Vec3 {
+    use super::artic::V4;
+    let v = |a: Vec3| V4([a.x, a.y, a.z, 0.0]);
+    let into = |m: &[Vec3; 4], p: V4| {
+        let d = p.sub(v(m[3]));
+        V4([v(m[0]).dot3(d).x(), v(m[1]).dot3(d).x(), v(m[2]).dot3(d).x(), 0.0])
+    };
+    let mut l = into(m, v(p));
+    if let Some(pm) = part {
+        l = into(pm, l);
+    }
+    Vec3::new(l.0[0], l.0[1], l.0[2])
+}
+
 /// A constraint between two ambient cars (rage::phConstraint, max distance: F-44049): the
 /// owner (the car that was activated, +3592 .. +3600), its two cars, a point in each one's frame
 /// (+80 / +96) and the length (+160); +164 = 0.6 (F-31401), +320 = 0, +328 = -1 (never
@@ -4476,10 +4509,22 @@ impl LooseState {
             return;
         }
         let hp = self.objs[q].amb.as_ref().unwrap().tune.hitch.unwrap_or(Vec3::ZERO);
-        // (the hitches; the points 10 m along each one's own +z and +y from them: 6 m and 1.5 m apart
-        // at most - their z axes within 2 asin 0.3, their y axes within 2 asin 0.075)
-        for (off, len) in [(Vec3::ZERO, ROPE_POINT), (Vec3::new(0.0, 0.0, 10.0), 6.0), (Vec3::new(0.0, 10.0, 0.0), 1.5)] {
-            self.ropes.push(Rope { owner: uid, a: uid, b: p, la: h + off, lb: hp + off, len });
+        // (F-15252: the hitches through each instance's matrix into the world; the points 10 m along each one's own
+        // +z and +y from them: 6 m and 1.5 m apart at most - their z axes within 2 asin 0.3, their y axes within
+        // 2 asin 0.075. The init F-44049 takes each point back into its instance's frame, F-21064 - through part 0
+        // of a composite (a trailer's: the file's part matrices are the identity).)
+        let (ma, mb) = (self.objs[o].matrix, self.objs[q].matrix);
+        const IDENTITY: [Vec3; 4] = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO];
+        let part = |x: usize| self.objs[x].veh.is_some_and(|v| v.shape2.is_some()).then_some(IDENTITY);
+        let (part_a, part_b) = (part(o), part(q));
+        let (wa, wb) = (hitch_world(&ma, h), hitch_world(&mb, hp));
+        for (row, len) in [(None, ROPE_POINT), (Some(2), 6.0), (Some(1), 1.5)] {
+            let (pa, pb) = match row {
+                None => (wa, wb),
+                Some(r) => (hitch_along(wa, ma[r]), hitch_along(wb, mb[r])),
+            };
+            let (la, lb) = (rope_local(&ma, pa, part_a.as_ref()), rope_local(&mb, pb, part_b.as_ref()));
+            self.ropes.push(Rope { owner: uid, a: uid, b: p, la, lb, len });
         }
         self.ambient_activate(q);
     }
@@ -5173,6 +5218,55 @@ pub fn hand_over_pieces(world: &LooseWorld, cars: &mut [CarLevel]) {
 #[cfg(test)]
 mod piece_tests {
     use super::*;
+
+    /// The semi's constraints as the original makes them (tools/semi_ropes_reference.py, testdata/semi_ropes_ref.txt):
+    /// F-15252's world points of the three pairs (each hitch through its instance's matrix, then + 10 x row 2 and
+    /// + 10 x row 1), their lengths 6 and 1.5 (the first's is the run-time global, `ROPE_POINT`), the instances, parts
+    /// 0, and each constraint's mode 2, +320 0, +328 -1, +164 0.6 on the first; and the init F-44049's points in each
+    /// instance's frame (F-21064, through part 0 or 1 of a composite), every word of x, y and z equal.
+    #[test]
+    fn semi_ropes_match_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mat = |w: &[u32], o: usize| -> [Vec3; 4] {
+            std::array::from_fn(|r| Vec3::new(f32::from_bits(w[o + 4 * r]), f32::from_bits(w[o + 4 * r + 1]), f32::from_bits(w[o + 4 * r + 2])))
+        };
+        let v = |w: &[u32], o: usize| Vec3::new(f32::from_bits(w[o]), f32::from_bits(w[o + 1]), f32::from_bits(w[o + 2]));
+        let bits = |a: Vec3| [a.x.to_bits(), a.y.to_bits(), a.z.to_bits()];
+        let (mut seen, mut bad) = ([0usize; 2], Vec::new());
+        for line in include_str!("testdata/semi_ropes_ref.txt").lines() {
+            let (lhs, rhs) = line.split_once(" -> ").unwrap();
+            let mut it = lhs.split(' ');
+            let kind = it.next().unwrap();
+            let w: Vec<u32> = it.map(h).collect();
+            let ok = if kind == "pair" {
+                seen[0] += 1;
+                let (calls, made) = rhs.split_once(" | ").unwrap();
+                let o: Vec<u32> = calls.split(' ').map(h).collect();
+                let k: Vec<u32> = made.split(' ').map(h).collect();
+                let (ma, mb) = (mat(&w, 0), mat(&w, 16));
+                let (pa, pb) = (hitch_world(&ma, v(&w, 32)), hitch_world(&mb, v(&w, 36)));
+                let want = [(pa, pb), (hitch_along(pa, ma[2]), hitch_along(pb, mb[2])), (hitch_along(pa, ma[1]), hitch_along(pb, mb[1]))];
+                (0..3).all(|c| {
+                    let r = &o[c * 13..c * 13 + 13];
+                    r[0..3] == bits(want[c].0) && r[4..7] == bits(want[c].1) && r[9..13] == [0x1070, 0x2070, 0, 0]
+                        && (c == 0 || r[8] == [6.0f32, 1.5][c - 1].to_bits())
+                        && k[c * 4..c * 4 + 4] == [if c == 0 { 0.6f32.to_bits() } else { 0 }, 0, (-1.0f32).to_bits(), 2]
+                })
+            } else {
+                seen[1] += 1;
+                let o: Vec<u32> = rhs.split(' ').map(h).collect();
+                let side = |m: usize, p: usize, t: usize| {
+                    let part = (w[t] == 12).then(|| mat(&w, t + 2 + 16 * w[t + 1] as usize));
+                    rope_local(&mat(&w, m), v(&w, p), part.as_ref())
+                };
+                o[0..4] == [0x6400, 0x6c00, w[41], w[75]] && o[4..7] == bits(side(0, 32, 40)) && o[8..11] == bits(side(16, 36, 74))
+                    && o[12..20].iter().all(|x| *x == 0) && o[20] == 0xffff_ffff && o[21] == w[108]
+            };
+            if !ok { bad.push(line); }
+        }
+        assert_eq!(seen, [600, 1000]);
+        assert!(bad.is_empty(), "{} mismatches, first {:?}", bad.len(), &bad[..bad.len().min(2)]);
+    }
 
     /// SetVelocity F-64271 and ApplyImpulse F-50175 run offline (tools/body_setters_reference.py, flush mode as the
     /// SDK sets it, testdata/body_setters_ref.txt): +272, +304 and +368 in x, y and z equal, NaN as NaN. (The
