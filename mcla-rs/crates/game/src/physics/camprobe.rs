@@ -3874,8 +3874,31 @@ impl<'a> CamLevel<'a> {
         self.sweep_city(a, b, r, cars)
     }
 
-    /// The old sweep: directed over the city's triangles (and the other cars' hulls with `cars`) - the replay helicopter's
-    /// (its original sweep is undirected with include 0x800, not ported).
+    /// The replay helicopter's look at the car (F-51014 state 18): F-80278 with r10 = 0, the undirected set-up F-55975
+    /// and the driver F-91312 over the level - include 0x800, types -1, states 4, excluded types 0, one record, the
+    /// watched car skipped - a ball of radius `r` from the car's roof `a` to the camera `b`. `f30` is the caller's f30
+    /// (F-51014's viewport ball radius), the polygon test's stack word. Blocked when the answer (the list's +44) is set.
+    /// Without the level (the tests): the old directed sweep over the city, both ways.
+    pub fn heli_hit(&self, a: Vec3, b: Vec3, r: f32, f30: f32) -> Option<SweepHit> {
+        if let Some(level) = self.level {
+            let q = CamQuery::HELI;
+            let filter = LevelFilter { include: q.include, states: q.states, excluded: &[], types: u32::MAX, exclude_types: q.exclude_types, skip: self.skip };
+            let f30_high = ((f30 as f64).to_bits() >> 32) as u32;
+            let mut out = None;
+            level.near((a + b) * 0.5, a.distance(b) * 0.5 + r, &mut |objs| {
+                let l = capsule_level(a, b, r, 0, 1, f30_high, &filter, objs.iter().copied()).list;
+                if l.done != 0 {
+                    out = Some(l.records.first().map_or(SweepHit { t: 0.0, depth: 0.0, contact: a, normal: Vec3::Y }, |x| SweepHit { t: x.t, depth: x.depth, contact: x.point, normal: x.normal }));
+                }
+                false
+            });
+            return out;
+        }
+        self.sweep_city(a, b, r, false).or_else(|| self.sweep_city(b, a, r, false))
+    }
+
+    /// The old sweep: directed over the city's triangles (and the other cars' hulls with `cars`); the cameras' sweep
+    /// without the level (the tests).
     pub fn sweep_city(&self, a: Vec3, b: Vec3, r: f32, cars: bool) -> Option<SweepHit> {
         let d = b - a;
         if d.length_squared() < 1e-12 {

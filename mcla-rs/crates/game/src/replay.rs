@@ -746,8 +746,9 @@ impl Shot {
 /// contact point and the normal, as the original's query result holds them.
 pub trait Probe {
     fn sweep(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)>;
-    /// the heli's test of its view of the car: the city only, undirected (F-80278 with r10 0)
-    fn heli(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
+    /// the heli's test of its view of the car: `a` the camera, `b` the car's roof; undirected (F-80278 with r10 0,
+    /// include 0x800), swept from the roof to the camera; `f30` the shot test's f30 (its viewport ball radius)
+    fn heli(&mut self, a: Vec3, b: Vec3, r: f32, _f30: f32) -> Option<(Vec3, Vec3)> {
         self.sweep(a, b, r)
     }
     /// the same sweep against the watched car's own bound alone (F-38041's query: only that
@@ -919,7 +920,7 @@ impl Director {
         if ahead && probe.sweep(eye, eye + car.vel * tune.cut[2], r).is_some() {
             return false;
         }
-        if self.state == HELI && probe.heli(eye, car.pos + Vec3::Y * car.top, 0.5).is_some() {
+        if self.state == HELI && probe.heli(eye, car.pos + Vec3::Y * car.top, 0.5, r).is_some() {
             return false;
         }
         true
@@ -1572,7 +1573,7 @@ mod original_director_tests {
                 self.calls.push(k);
                 self.take(a)
             }
-            fn heli(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
+            fn heli(&mut self, a: Vec3, b: Vec3, r: f32, _f30: f32) -> Option<(Vec3, Vec3)> {
                 self.calls.push(format!("H{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x}", a.x.to_bits(), a.y.to_bits(), a.z.to_bits(), b.x.to_bits(), b.y.to_bits(), b.z.to_bits(), r.to_bits()));
                 self.take(a)
             }

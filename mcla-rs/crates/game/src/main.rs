@@ -15922,9 +15922,8 @@ fn lookback_scene(asked: &mut bool, audio: Option<&mut audio::Audio>, on: bool) 
 
 /// The replay director's tests (replay::Probe, F-51014) on the cameras' level: a ball at a
 /// point (a == b) touching the city or a car, else the ball swept a -> b, directed (F-43031),
-/// its first touch (contact point, normal); the heli's look at the car: city only, both ways
-/// (approx.: the original's undirected sweep F-80278 - the ball at both ends and the sweep in
-/// both directions; only whether it touches is used).
+/// its first touch (contact point, normal); the heli's look at the car: the undirected sweep
+/// F-80278 from the roof to the camera over the level with include 0x800 (`CamLevel::heli_hit`).
 struct ReplayProbe<'a>(&'a physics::camprobe::CamLevel<'a>, Option<physics::camprobe::CamObj>, Option<DriveProbe<'a>>);
 
 /// The shot test's drive and reverse cameras (F-51014 states 0..5): the player's camera objects, the car's camera set and
@@ -15943,14 +15942,8 @@ impl replay::Probe for ReplayProbe<'_> {
         }
         self.0.sweep_hit(a, b, r, true).map(|h| (h.contact, h.normal))
     }
-    fn heli(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
-        let l = self.0;
-        for p in [a, b] {
-            if let Some(c) = l.contacts(p, r, physics::camprobe::CamQuery::HELI, 1).first() {
-                return Some((c.pos, c.normal));
-            }
-        }
-        l.sweep_city(a, b, r, false).or_else(|| l.sweep_city(b, a, r, false)).map(|h| (h.contact, h.normal))
+    fn heli(&mut self, a: Vec3, b: Vec3, r: f32, f30: f32) -> Option<(Vec3, Vec3)> {
+        self.0.heli_hit(b, a, r, f30).map(|h| (h.contact, h.normal))
     }
     fn own(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
         self.1.as_ref()?.sweep_hit(a, b, r).map(|h| (h.contact, h.normal))
