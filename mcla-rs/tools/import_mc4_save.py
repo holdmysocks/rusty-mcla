@@ -248,11 +248,16 @@ def mc4_block(d, small, opt, veh, car):
         garage.append(v)
     st = small['Stats']
     recs = [r for r in opt['vehicle_records'] if r['in_use']]
+    # (ColorData: the 40 colour slots every colour strip of the garage shows - the executable's table at first, a slot
+    # edited in the colour picker 0xFFRRGGBB - big-endian words; docs/UI.md "ColorData: the 40 shared slots")
+    cd = dec_small.entries(d)[1].get('ColorData')
+    color_data = list(struct.unpack_from('>%dI' % min(40, cd[1] // 4), d, cd[2])) if cd else []
     return {
         'container_version': struct.unpack('>I', d[:4])[0],
         'options': strip(opt['options'], NOTES),
         'options_unknown': opt.get('_unknown', []),
         'enable_gps': small['enableGps']['enabled'],
+        'color_data': color_data,
         'garage_current_slot': opt['garage']['current_slot'],
         'garage': garage,
         'vehicle_records': strip(recs, NOTES),
