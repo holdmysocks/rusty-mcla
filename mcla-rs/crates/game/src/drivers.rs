@@ -1731,12 +1731,17 @@ fn is_female(name: &str) -> bool {
     char_name(name).contains("_f")
 }
 
-/// The pack name of a car: "vp_frd_mustang_06_dub" -> "frd_mustang_06"; DLC cars keep their "vpd_" prefix (F-62204 /
-/// F-51581; the records spell every `_DUB` in capitals, so the cut is the name's end).
+/// The pack name of a car: "vp_frd_mustang_06_DUB" -> "frd_mustang_06"; DLC cars keep their "vpd_" prefix. F-62204 takes the
+/// whole name when its first three letters are "vpd" (case kept), else the name from its fourth letter (a shorter name: its
+/// end); F-51581 copies that, upper-cased, and when it holds "_DUB" (capitals) drops its last four letters, wherever the
+/// "_DUB" is. The port holds the records' names lower-cased (the records spell "vpd" small and "_DUB" in capitals), so both
+/// tests read case-blind here; the key is lower-cased (it only names the pack through the case-blind hash). Checked against
+/// both run offline (test the_pack_key_and_the_kept_name_match_the_original).
 fn car_key(name: &str) -> String {
-    let n = name.to_ascii_lowercase();
-    let n = n.trim_end_matches("_dub");
-    if n.starts_with("vpd") { n.to_string() } else { n.get(3..).unwrap_or("").to_string() }
+    let l = name.to_ascii_lowercase();
+    let n = if l.starts_with("vpd") { &l[..] } else { l.get(l.len().min(3)..).unwrap_or("") };
+    let cut = if n.contains("_dub") { n.len().saturating_sub(4) } else { n.len() };
+    n.get(..cut).unwrap_or("").to_string()
 }
 
 /// A driver pack's dictionary (F-99427): the holder's name table (+780, count +1548) against its clips (+8 + 4i), the keys
@@ -2576,6 +2581,30 @@ mod original_tests {
             n += 1;
         }
         assert_eq!(n, 4048);
+    }
+
+    /// The pack key (F-62204's prefix cut and F-51581) and SetCharName's kept name and sex (F-22036) run offline on the original's
+    /// code over every vehicle and character name of the disc plus odd spellings (work/driverlight/names/names_ref.py): "k
+    /// <car> <key as the original's buffer>" / "c <name> <kept> <+177>". Names of 32 letters or more (no racer's) are left out:
+    /// the kept copy's 32-byte truncation is not ported.
+    #[test]
+    fn the_pack_key_and_the_kept_name_match_the_original() {
+        let (mut k, mut c) = (0, 0);
+        for line in include_str!("testdata/drv_names_ref.txt").lines() {
+            let w: Vec<&str> = line.split(' ').collect();
+            if w[0] == "k" {
+                // (a name spelled otherwise than the records - "_dub" small, "VPD" - is one the original never holds)
+                if w[1].contains("_dub") || !w[1].starts_with("v") {
+                    continue;
+                }
+                assert_eq!(car_key(w[1]), w.get(2).copied().unwrap_or("").to_ascii_lowercase(), "{line}");
+                k += 1;
+            } else {
+                assert_eq!((char_name(w[1]), is_female(w[1]) as u8), (w[2], w[3].parse::<u8>().unwrap()), "{line}");
+                c += 1;
+            }
+        }
+        assert!(k > 150 && c > 150, "{k} {c}");
     }
 
     /// Op 13 (F-90682 -> F-51341) run offline on each distinct driver set (tools in work/driverlight/op13/rest_ref.py): the
