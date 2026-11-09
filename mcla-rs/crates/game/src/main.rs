@@ -743,8 +743,9 @@ struct App {
     /// the same game frames, for the player's view and reverse cameras a replay runs while not shown (`view_booms`)
     side_frames: u32,
     boom_sample: Option<(Vec3, glam::Quat, Vec3, Vec3, boomcam::BoomGround)>,
-    /// the game frame's sample before `boom_sample`: when one drawn frame holds two game frames, the first step runs on it
-    boom_prev: Option<(Vec3, glam::Quat, Vec3, Vec3, boomcam::BoomGround)>,
+    /// the game frames' samples before `boom_sample`, oldest first (at most 3): when one drawn frame holds several game
+    /// frames (a dip or a hitch; the clock takes at most 0.1 s, 3 game frames, a drawn frame), each step runs on its own
+    boom_hist: Vec<(Vec3, glam::Quat, Vec3, Vec3, boomcam::BoomGround)>,
     /// the near distance of this frame's view for the traffic's LOD (`Vehicles::pick_lods`): the boom file's
     /// `CameraNear` (base +172 - viewport +704) while a boom view drives the camera, else the port's own
     lod_near: f32,
@@ -1578,7 +1579,7 @@ impl App {
             boom_frames: 0,
             side_frames: 0,
             boom_sample: None,
-            boom_prev: None,
+            boom_hist: Vec::new(),
             lod_near: 0.3,
             event_views: Default::default(),
             event_cam: Default::default(),
@@ -8808,7 +8809,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if self.tick_no % 2 == 0 {
                 if let Some(c) = self.vehicles.player() {
                     let g = boomcam::BoomGround::from_state(&c.state, c.model.bike, self.crash_bits as u32);
-                    self.boom_prev = self.boom_sample.take();
+                    if let Some(old) = self.boom_sample.take() {
+                        if self.boom_hist.len() >= 3 {
+                            self.boom_hist.remove(0);
+                        }
+                        self.boom_hist.push(old);
+                    }
                     self.boom_sample = Some((c.state.pos, c.state.rot, c.state.vel, c.state.ang_vel, g));
                     self.boom_frames += 1;
                     self.side_frames += 1;
@@ -9046,9 +9052,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 // (the shot test's drive and reverse states run those cameras' own objects, F-51014: the car as the boom
                 // views see it at the last game frame, with the turn, the rise and the ability's lens each object holds)
-                let side_frames = std::mem::take(&mut self.side_frames).min(2);
-                // (with two game frames in this drawn frame the first step runs on the earlier one's sample)
-                let side_prev = self.boom_prev.filter(|_| side_frames >= 2);
+                let side_frames = std::mem::take(&mut self.side_frames).min(4);
+                // (with several game frames in this drawn frame the earlier steps run on the earlier frames' samples)
+                let side_hist: Vec<_> = self.boom_hist.iter().rev().take(side_frames.saturating_sub(1) as usize).rev().copied().collect();
                 let mut drive = match (self.booms.get(&car.model.name).cloned().flatten(), self.boom_sample.clone()) {
                     (Some(set), Some((pos, rot, vel, ang_vel, g))) => Some(DriveProbe {
                         set,
@@ -9088,7 +9094,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let fx = self.cam_fx.get_or_insert_with(|| boomcam::CamFx::load(&self.opt.data_dir)).clone();
                     let ab = if own < 2 { self.ability.camera() } else { (0.0, 1.0) };
                     for k in 0..side_frames {
-                        let (d_at, d_g) = match side_prev.filter(|_| k == 0) {
+                        let (d_at, d_g) = match side_hist.get(k as usize).copied() {
                             Some((pos, rot, vel, ang_vel, g)) => (boomcam::BoomTarget { pos, rot, vel, ang_vel, ..d.at }, g),
                             None => (boomcam::BoomTarget { ..d.at }, d.g),
                         };
@@ -9389,13 +9395,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             if !self.boom.stepped() {
                                 self.boom.reset();
                             }
-                            let frames = std::mem::take(&mut self.boom_frames).min(2);
+                            let frames = std::mem::take(&mut self.boom_frames).min(4);
                             if let Some((pos, rot, vel, ang_vel, g)) = self.boom_sample.filter(|_| frames > 0 || !self.boom.stepped()) {
                                 let at = boomcam::BoomTarget { pos, rot, vel, ang_vel, ..target };
-                                // (one step per game frame on that frame's own pose and ground: with two game frames in this
-                                // drawn frame the first runs on the earlier one's sample)
-                                let prev = self.boom_prev.filter(|_| frames >= 2).map(|(pos, rot, vel, ang_vel, g)| (boomcam::BoomTarget { pos, rot, vel, ang_vel, ..target }, g));
-                                let runs: Vec<(boomcam::BoomTarget, boomcam::BoomGround)> = prev.into_iter().chain(std::iter::once((at, g))).collect();
+                                // (one step per game frame on that frame's own pose and ground: with several game frames in this
+                                // drawn frame the earlier steps run on the earlier frames' samples)
+                                let earlier = self.boom_hist.iter().rev().take(frames.saturating_sub(1) as usize).rev().map(|&(pos, rot, vel, ang_vel, g)| (boomcam::BoomTarget { pos, rot, vel, ang_vel, ..target }, g));
+                                let runs: Vec<(boomcam::BoomTarget, boomcam::BoomGround)> = earlier.chain(std::iter::once((at, g))).collect();
                                 for (a, gk) in &runs {
                                     self.boom.step(tune, a, gk, 1.0 / 30.0, 30.0);
                                 }
