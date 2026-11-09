@@ -312,6 +312,9 @@ pub struct GpuSector {
     pub shown: f32,
     /// a far model: its test (see [`FarCull`])
     pub far: Option<FarCull>,
+    /// a far model: its opaque draws recorded once (main.rs `far_bundle`), up to three: the key each was recorded for (the sample
+    /// count, which material pipelines were built and the globals in use), the bundle and its draw count
+    pub bundle: std::sync::Mutex<Vec<(u64, Arc<wgpu::RenderBundle>, usize)>>,
 }
 
 /// Object uniform of a sector's batches: alpha of the cross-fade, interior or not.
@@ -2008,7 +2011,7 @@ impl World {
         let obj = Some((gpu.new_object(&sector_uniform(u, false)), gpu.new_object(&sector_uniform(u, true))));
         // (its CPU copy is many blocks: freed off the frame)
         rayon::spawn(move || drop(cs));
-        GpuSector { vb, ib, batches, caster_count, caster_min, caster_max, caster_batches, tris, obj, u, shown: u, far }
+        GpuSector { vb, ib, batches, caster_count, caster_min, caster_max, caster_batches, tris, obj, u, shown: u, far, bundle: Default::default() }
     }
 }
 

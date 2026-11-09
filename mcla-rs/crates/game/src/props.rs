@@ -1833,6 +1833,8 @@ impl Props {
         let mut pick = (u32::MAX, false);
         let lens = lens();
         let k = Lod::now();
+        // (what the walk picks: model, first instance, count - drawn after it, `draw_ranges`)
+        let mut out: Vec<(u32, u32, u32)> = Vec::with_capacity(1024);
         // fine cells: what is only seen close by; coarse cells: lamps, masts, trees (both as far
         // again as the DRAW DISTANCE takes the reach: a cell's props were sorted by the original's)
         for (cell, size, reach) in [(cell_of(cam), CELL, NEAR_DIST * k.draw), (far_cell_of(cam), FAR_CELL, FAR_DIST * k.draw)] {
@@ -1847,18 +1849,7 @@ impl Props {
                         if d > far || !frustum.intersects_aabb(run.min, run.max) || occluded.map_or(false, |o| o.hides_aabb(run.min, run.max)) {
                             continue;
                         }
-                        let mut put = |m: usize, r: &Run| {
-                            for b in &self.models[m].batches {
-                                if (b.mode == MatMode::PropGlass) != glass { continue; }
-                                if own { mode_pipe(pass, gpu, b.mode, &mut pick); }
-                                pass.set_bind_group(1, b.bind.as_ref(), &[]);
-                                pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
-                                pass.set_vertex_buffer(0, b.vb.slice(..));
-                                pass.set_index_buffer(b.ib.slice(..), wgpu::IndexFormat::Uint32);
-                                pass.draw_indexed(0..b.count, 0, r.start..r.start + r.count);
-                                *draws += 1;
-                            }
-                        };
+                        let mut put = |m: usize, r: &Run| out.push((m as u32, r.start, r.count));
                         match run.card {
                             // a plant cell: all cards when it is far, else model or card by fine cell
                             // (lighting work, 2026-10-14: in the shadow pass a plant is ALWAYS its mask card.
@@ -1912,6 +1903,7 @@ impl Props {
                 }
             }
         }
+        self.draw_ranges(pass, gpu, &mut out, own, glass, &mut pick, draws);
                 // the running race's own props
         if let Some(rb) = self.race_buf.as_ref() {
             pass.set_vertex_buffer(1, rb.slice(..));
@@ -1949,6 +1941,57 @@ impl Props {
         }
         if pick.1 {
             pass.set_pipeline(&gpu.pipeline_inst);
+        }
+    }
+
+    /// The instance ranges `draw_with`'s walk picked (model, first instance, count). The opaque ones are drawn grouped by
+    /// model in the walk's order of first appearance (a stable sort), each model's batches once with the ranges of
+    /// it, contiguous ranges as one draw; a bind group, vertex or index buffer already set is not set again (wgpu merges
+    /// every set into the pass's resource tracker: 4 a draw before). The same instances with the same state, so the
+    /// same picture: only the order of opaque, depth-tested draws of different models changes (docs/PERFORMANCE.md
+    /// 2026-11-09 (6)). The glass panes are blended and keep the walk's order. MCLA_PROPS_ORDER=1: the walk's order
+    /// and every set, as before.
+    fn draw_ranges<'a>(&'a self, pass: &mut wgpu::RenderPass<'_>, gpu: &'a Gpu, out: &mut Vec<(u32, u32, u32)>, own: bool, glass: bool, pick: &mut (u32, bool), draws: &mut usize) {
+        let old = props_old_order();
+        if !glass && !old {
+            group_ranges(out);
+        }
+        let (mut bind, mut mode, mut vb, mut ib): (*const wgpu::BindGroup, u32, *const wgpu::Buffer, *const wgpu::Buffer) = (std::ptr::null(), u32::MAX, std::ptr::null(), std::ptr::null());
+        let mut i = 0;
+        while i < out.len() {
+            let m = out[i].0;
+            // (one range at a time in the old order and for the glass; a model's whole group otherwise)
+            let mut j = i + 1;
+            if !glass && !old {
+                while j < out.len() && out[j].0 == m {
+                    j += 1;
+                }
+            }
+            for b in &self.models[m as usize].batches {
+                if (b.mode == MatMode::PropGlass) != glass { continue; }
+                if own { mode_pipe(pass, gpu, b.mode, pick); }
+                if old || Arc::as_ptr(&b.bind) != bind {
+                    pass.set_bind_group(1, b.bind.as_ref(), &[]);
+                    bind = Arc::as_ptr(&b.bind);
+                }
+                if old || b.mode as u32 != mode {
+                    pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
+                    mode = b.mode as u32;
+                }
+                if old || !std::ptr::eq(&b.vb, vb) {
+                    pass.set_vertex_buffer(0, b.vb.slice(..));
+                    vb = &b.vb;
+                }
+                if old || !std::ptr::eq(&b.ib, ib) {
+                    pass.set_index_buffer(b.ib.slice(..), wgpu::IndexFormat::Uint32);
+                    ib = &b.ib;
+                }
+                for r in &out[i..j] {
+                    pass.draw_indexed(0..b.count, 0, r.1..r.1 + r.2);
+                    *draws += 1;
+                }
+            }
+            i = j;
         }
     }
 
@@ -2741,6 +2784,28 @@ fn bake_card(prop: &mcla_formats::rage::props::Prop, texture: &mut dyn FnMut(&st
     Some((verts, indices, image))
 }
 
+/// `Props::draw_ranges`' order: the (model, first instance, count) ranges grouped by model, models by index, each model's
+/// ranges in the walk's order (a stable sort), a range that continues the one before it in the instance buffer joined to it.
+fn group_ranges(out: &mut Vec<(u32, u32, u32)>) {
+    out.sort_by_key(|o| o.0);
+    let mut w = 0;
+    for i in 0..out.len() {
+        if w > 0 && out[w - 1].0 == out[i].0 && out[w - 1].1 + out[w - 1].2 == out[i].1 {
+            out[w - 1].2 += out[i].2;
+        } else {
+            out[w] = out[i];
+            w += 1;
+        }
+    }
+    out.truncate(w);
+}
+
+/// MCLA_PROPS_ORDER=1: the props drawn in the walk's order with every set (`Props::draw_ranges`), as before.
+fn props_old_order() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MCLA_PROPS_ORDER").map_or(false, |v| v.trim() == "1"))
+}
+
 fn plant_mesh_shadow() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("MCLA_PLANT_MESH_SHADOW").map_or(false, |v| v != "0"))
@@ -2806,6 +2871,48 @@ mod clamp_length_tests {
             n += 1;
         }
         assert!(n > 3000);
+    }
+}
+
+#[cfg(test)]
+mod draw_order_tests {
+    use super::*;
+    /// `group_ranges` keeps every instance of every model, in the walk's order within the model, and only joins ranges
+    /// that continue each other (the drawn instances are the walk's: docs/PERFORMANCE.md 2026-11-09 (6)).
+    #[test]
+    fn grouped_ranges_draw_the_same_instances() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut rnd = |n: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as u32
+        };
+        for case in 0..2000 {
+            let mut out: Vec<(u32, u32, u32)> = Vec::new();
+            let mut at = 0u32;
+            for _ in 0..rnd(60) {
+                // (a cell's runs: each model at most once, consecutive in the instance buffer - or a gap)
+                at += rnd(3) * rnd(5);
+                let count = 1 + rnd(4);
+                out.push((rnd(8), at, count));
+                at += count;
+            }
+            let per_model = |v: &[(u32, u32, u32)]| {
+                let mut m: std::collections::BTreeMap<u32, Vec<u32>> = Default::default();
+                for &(model, first, count) in v {
+                    m.entry(model).or_default().extend(first..first + count);
+                }
+                m
+            };
+            let before = per_model(&out);
+            let mut g = out.clone();
+            group_ranges(&mut g);
+            assert_eq!(per_model(&g), before, "case {case}");
+            assert!(g.windows(2).all(|w| w[0].0 <= w[1].0), "case {case}: grouped by model");
+            assert!(g.windows(2).all(|w| w[0].0 != w[1].0 || w[0].1 + w[0].2 != w[1].1), "case {case}: joined where they continue");
+            assert!(g.len() <= out.len());
+        }
     }
 }
 

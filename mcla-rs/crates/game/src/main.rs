@@ -15771,6 +15771,10 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
     let mut mode_pipe = false;
     let mut runs: Vec<(u32, u32)> = Vec::new();
     let mut far_drawn: Vec<(u32, Vec3, f32)> = Vec::new();
+    // (the far models' opaque draws replayed from bundles recorded once - `far_bundle`; not with a probe frame, the draw
+    // list or a shader filter, which go draw by draw)
+    let bundles_on = phase == 0 && probe.is_none() && v.only.is_none() && v.hide.is_none() && !DRAWLIST_ON.load(std::sync::atomic::Ordering::Relaxed) && far_bundles_on();
+    let mut pending: Vec<Arc<wgpu::RenderBundle>> = Vec::new();
     for sec in secs {
         let (Some(vb), Some(ib)) = (sec.vb.as_ref(), sec.ib.as_ref()) else { continue };
         // (a far model: the sector record's box against the view and the occluder volumes - its visible bit - and nothing
@@ -15780,8 +15784,19 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
             if !v.frustum.intersects_aabb(bmin, bmax) || v.occluded.hides_aabb(bmin, bmax) {
                 continue;
             }
+            if bundles_on {
+                let (b, n) = far_bundle(gpu, sec, vb, ib);
+                pending.push(b);
+                *draws += n;
+                continue;
+            }
         } else if v.occluded.hides_all(sec.batches.iter().map(|b| (b.min, b.max))) {
             continue;
+        }
+        if !pending.is_empty() {
+            flush_far_bundles(pass, gpu, &mut pending);
+            last_mode = u32::MAX;
+            mode_pipe = false;
         }
         let mut bound = false;
         let mut last_bind: *const wgpu::BindGroup = std::ptr::null();
@@ -15899,12 +15914,125 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
             }
         }
     }
+    if !pending.is_empty() {
+        flush_far_bundles(pass, gpu, &mut pending);
+        mode_pipe = false;
+    }
     if pane_pipe {
         pass.set_pipeline(&gpu.pipeline_blend);
     }
     if mode_pipe {
         pass.set_pipeline(&gpu.pipeline_opaque);
     }
+}
+
+/// MCLA_FAR_BUNDLES=0: the far models drawn draw by draw, as before (`draw_sectors`).
+fn far_bundles_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MCLA_FAR_BUNDLES").map_or(true, |v| v.trim() != "0"))
+}
+
+/// A far model's opaque draws as `draw_sectors` makes them (phase 0, every batch whole), recorded once into a render
+/// bundle and replayed while the scene's sample count, the built material pipelines and the globals are the same. wgpu
+/// checks and tracks every set and draw of a pass when the pass ends - about 1.5 us a draw here, 8 - 10 ms for the GPS
+/// map's ~10,000 far draws at DRAW DISTANCE 3x (GitHub #47); a bundle's are checked once, when it is made. The same
+/// commands in the same order with the same state, so the same picture (docs/PERFORMANCE.md 2026-11-09 (6)).
+fn far_bundle(gpu: &Gpu, sec: &world::GpuSector, vb: &wgpu::Buffer, ib: &wgpu::Buffer) -> (Arc<wgpu::RenderBundle>, usize) {
+    let cur = render::ms::current();
+    let mut key = cur.slot() as u64;
+    for b in sec.batches.iter().filter(|b| !matches!(b.mode, MatMode::Blend | MatMode::StoreGlass)) {
+        if gpu.pipeline_opaque_mode[b.mode as usize].as_ref().and_then(|p| p.ready(cur)).is_some() {
+            key |= 1 << (8 + (b.mode as u64).min(55));
+        }
+    }
+    // (and the globals' bind group in use: set_aniso16 / set_night_collector swap it for another)
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (key, &gpu.globals_bg).hash(&mut h);
+        h.finish()
+    };
+    // (a few kept: the pause menu and the menus switch the sample count back and forth)
+    let mut slot = sec.bundle.lock().unwrap();
+    if let Some((_, b, n)) = slot.iter().find(|e| e.0 == key) {
+        return (b.clone(), *n);
+    }
+    let mut e = gpu.device.create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {
+        label: Some("far model"),
+        color_formats: &[Some(render::post::SCENE_FORMAT)],
+        depth_stencil: Some(wgpu::RenderBundleDepthStencil { format: render::ms::scene_ds_format(), depth_read_only: false, stencil_read_only: false }),
+        sample_count: cur.samples,
+        multiview: None,
+    });
+    // (the state the city pass's sector loop starts from: the globals, the identity object, the opaque pipeline)
+    e.set_bind_group(0, &gpu.globals_bg, &[]);
+    e.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+    e.set_pipeline(&gpu.pipeline_opaque);
+    e.set_vertex_buffer(0, vb.slice(..));
+    e.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+    let (mut last_mode, mut mode_pipe, mut last_obj, mut last_bind) = (u32::MAX, false, 0u8, std::ptr::null::<wgpu::BindGroup>());
+    let mut n = 0usize;
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    for b in &sec.batches {
+        if matches!(b.mode, MatMode::Blend | MatMode::StoreGlass) {
+            continue;
+        }
+        if let Some(o) = sec.obj.as_ref() {
+            let want = if b.interior { 2 } else { 1 };
+            if want != last_obj {
+                e.set_bind_group(3, if b.interior { &o.1.bg } else { &o.0.bg }, &[]);
+                last_obj = want;
+            }
+        }
+        runs.clear();
+        if b.parts.is_empty() {
+            runs.push((b.first, b.count));
+        } else {
+            for p in &b.parts {
+                match runs.last_mut() {
+                    Some(r) if r.0 + r.1 == p.0 => r.1 += p.1,
+                    _ => runs.push((p.0, p.1)),
+                }
+            }
+            if runs.is_empty() {
+                continue;
+            }
+        }
+        let bp = Arc::as_ptr(&b.bind);
+        if bp != last_bind {
+            e.set_bind_group(1, b.bind.as_ref(), &[]);
+            last_bind = bp;
+        }
+        if b.mode as u32 != last_mode {
+            e.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32)], &[]);
+            last_mode = b.mode as u32;
+            let own = gpu.pipeline_opaque_mode[b.mode as usize].as_ref().and_then(|p| p.ready(cur));
+            if own.is_some() || mode_pipe {
+                e.set_pipeline(own.unwrap_or(&*gpu.pipeline_opaque));
+                mode_pipe = own.is_some();
+            }
+        }
+        for r in &runs {
+            e.draw_indexed(r.0..r.0 + r.1, 0, 0..1);
+            n += 1;
+        }
+    }
+    let b = Arc::new(e.finish(&wgpu::RenderBundleDescriptor { label: Some("far model") }));
+    if slot.len() >= 3 {
+        slot.remove(0);
+    }
+    slot.push((key, b.clone(), n));
+    (b, n)
+}
+
+/// The far models' bundles waiting in `draw_sectors`, replayed; then the state its loop expects back (a bundle leaves the
+/// pass's pipeline, bind groups and buffers unset).
+fn flush_far_bundles(pass: &mut wgpu::RenderPass<'_>, gpu: &Gpu, pending: &mut Vec<Arc<wgpu::RenderBundle>>) {
+    pass.execute_bundles(pending.iter().map(|b| b.as_ref()));
+    pending.clear();
+    pass.set_bind_group(0, &gpu.globals_bg, &[]);
+    pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+    pass.set_pipeline(&gpu.pipeline_opaque);
 }
 
 /// game.dat's DYNAMIC_MIXER_LOOKBACK (the mixer's fixed slot 5, F-50037 / F-84487): asked for every
