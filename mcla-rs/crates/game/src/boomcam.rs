@@ -196,6 +196,11 @@ pub struct BoomCam {
     /// `step_held`: a camera that has not been running is stepped from where it was left, however far (the port's
     /// 80 m restart stands for the game's teleport snap, which such a camera never gets)
     held: bool,
+    /// the look-around words the camera last ran with: the turn and pitch (+452 / +456), the rise (+460) and the
+    /// ability's distance scale (+228; None = the reset's 1)
+    look: (f32, f32),
+    look_rise: f32,
+    ab_dist: Option<f32>,
 }
 
 fn norm_range(v: f32, range: f32) -> f32 {
@@ -641,6 +646,16 @@ fn shift_curve(t: &BoomTune) -> [impl Fn(f32) -> f32; 4] {
 }
 
 impl BoomCam {
+    /// The car `at` with this camera object's own look-around words - the turn and pitch +452 / +456, the rise +460,
+    /// the ability's lens +224 and distance +228 as it last ran with them: what the shot test steps a candidate with
+    /// (F-51014) and what a camera not shown keeps; a camera not running yet holds the reset's 0, 0, (0, 1) (F-83404).
+    pub fn held_target(&self, at: &BoomTarget) -> BoomTarget {
+        if !self.started {
+            return BoomTarget { pan: (0.0, 0.0), rise: 0.0, ability: (0.0, 1.0), ..*at };
+        }
+        BoomTarget { pan: self.look, rise: self.look_rise, ability: (self.ab_fov, self.ab_dist.unwrap_or(1.0)), ..*at }
+    }
+
     /// `step` on a camera that was not running (the replay shot test's candidate, F-51014 -> slot 10): from the state
     /// it was left in, without the port's 80 m restart; a camera never run yet starts with the reset.
     pub fn step_held(&mut self, t: &BoomTune, car: &BoomTarget, g: &BoomGround, dt: f32, fps: f32) -> BoomOut {
@@ -665,6 +680,9 @@ impl BoomCam {
         self.last_gear = car.gear;
         self.nitro = 0.0;
         self.ab_fov = 0.0;
+        self.look = (0.0, 0.0);
+        self.look_rise = 0.0;
+        self.ab_dist = Some(1.0);
         self.rate = t.s("ApproachRate");
         self.snap = true;
         let c = t.v3("Center");
@@ -777,6 +795,10 @@ impl BoomCam {
             self.reset_as_original(t, car, g, dt);
         }
         let snap = std::mem::take(&mut self.snap);
+        // (the look-around's words stay on the camera object until written again)
+        self.look = car.pan;
+        self.look_rise = car.rise;
+        self.ab_dist = Some(car.ability.1);
         // (the frame's snap share: 1 on a snap; on a fixed mount (+668) the chassis's air time over 0.5 s, at most 1 -
         // F-75234 through the chassis's vt+52 - so the bumper / cockpit frame follows the car in a long jump)
         let k = if snap {
@@ -4685,6 +4707,32 @@ camTrackCS {
     /// against the original's code run offline (tools/boom_reset_reference.py, 4,000 cases: tunes, car matrices, wheels
     /// grounded or not, two or four or none, velocities, spins, the state word, the look back and the fixed mount): every
     /// field the port's camera keeps, bit for bit.
+    /// A camera object keeps the look-around words it last ran with (+452 / +456 / +460, the ability's +224 / +228)
+    /// until written again; one never run, or reset (F-83404), holds 0, 0, (0, 1).
+    #[test]
+    fn a_camera_keeps_its_look_words() {
+        let t = BoomTune::parse("camBoomCS
+Offset 0 2 5
+Focus 0 1 0
+ApproachRate 20
+SSFovMin 60
+").unwrap();
+        let g = BoomGround { count: 0, ..Default::default() };
+        let base = BoomTarget { fixed_mount: true, ..super::target_at(Vec3::ZERO) };
+        let mut cam = BoomCam::default();
+        let h = cam.held_target(&BoomTarget { pan: (0.3, 0.1), rise: 0.5, ability: (-5.0, 1.2), ..base });
+        assert_eq!((h.pan, h.rise, h.ability), ((0.0, 0.0), 0.0, (0.0, 1.0)));
+        cam.step(&t, &BoomTarget { pan: (0.3, 0.1), rise: 0.5, ability: (-5.0, 1.2), ..base }, &g, 1.0 / 30.0, 30.0);
+        let h = cam.held_target(&base);
+        assert_eq!((h.pan, h.rise, h.ability), ((0.3, 0.1), 0.5, (-5.0, 1.2)));
+        // (the lens held at its lowest on a fixed mount: a later -2 leaves -5)
+        cam.step(&t, &BoomTarget { ability: (-2.0, 1.1), ..h }, &g, 1.0 / 30.0, 30.0);
+        assert_eq!(cam.held_target(&base).ability, (-5.0, 1.1));
+        cam.reset_as_original(&t, &base, &g, 1.0 / 30.0);
+        let h = cam.held_target(&base);
+        assert_eq!((h.pan, h.rise, h.ability), ((0.0, 0.0), 0.0, (0.0, 1.0)));
+    }
+
     #[test]
     fn reset_matches_the_original() {
         let data = include_str!("testdata/boom_reset_ref.txt");

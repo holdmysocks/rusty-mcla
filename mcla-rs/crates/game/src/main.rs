@@ -9033,8 +9033,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.replay_wall = wall;
                 }
                 // (the shot test's drive and reverse states run those cameras' own objects, F-51014: the car as the boom
-                // views see it at the last game frame; the turn, the rise and the ability's lens are the shown camera's
-                // own - a candidate gets none)
+                // views see it at the last game frame, with the turn, the rise and the ability's lens each object holds)
                 let side_frames = std::mem::take(&mut self.side_frames).min(2);
                 let mut drive = match (self.booms.get(&car.model.name).cloned().flatten(), self.boom_sample.clone()) {
                     (Some(set), Some((pos, rot, vel, ang_vel, g))) => Some(DriveProbe {
@@ -9067,23 +9066,33 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // (a replay still runs the player's look-around frame ahead of the director, F-10533 -> F-36289: the
                 // player's own view's camera and the reverse camera each game frame, unless the director shows that one;
                 // recorded in the original's replay, CAMERAS_REPLAY.md "per-view cameras")
+                // (the look-around frame itself runs with the pad off - every word of the player's own view camera eased
+                // back to 0 - and writes that camera only; the reverse camera keeps its own words)
                 if let (Some(d), Some(p)) = (drive.as_mut(), self.game.replay.as_ref().filter(|p| p.menu.is_none())) {
                     let cur = p.view();
                     let own = boomcam::VIEW_OF_PORT[(self.cam_mode as usize).min(5)].min(4);
-                    for slot in [own, replay::REVERSE] {
-                        if cur == Some(slot) {
-                            continue;
-                        }
-                        let (tune, rev) = if slot == replay::REVERSE {
-                            match d.set.reverse.as_ref() {
-                                Some(t) => (t, true),
-                                None => continue,
+                    let fx = self.cam_fx.get_or_insert_with(|| boomcam::CamFx::load(&self.opt.data_dir)).clone();
+                    let ab = if own < 2 { self.ability.camera() } else { (0.0, 1.0) };
+                    for _ in 0..side_frames {
+                        self.look.frame(&fx, own as u8, car.model.bike, 0.0, 0.0, false, false, None, 1.0 / 30.0);
+                        for slot in [own, replay::REVERSE] {
+                            if cur == Some(slot) {
+                                continue;
                             }
-                        } else {
-                            boomcam::tune_for(&d.set, boomcam::PORT_OF_VIEW[slot], false)
-                        };
-                        let at = boomcam::BoomTarget { rev, fixed_mount: slot < 2, ..d.at };
-                        for _ in 0..side_frames {
+                            let (tune, rev) = if slot == replay::REVERSE {
+                                match d.set.reverse.as_ref() {
+                                    Some(t) => (t, true),
+                                    None => continue,
+                                }
+                            } else {
+                                boomcam::tune_for(&d.set, boomcam::PORT_OF_VIEW[slot], false)
+                            };
+                            let base = boomcam::BoomTarget { rev, fixed_mount: slot < 2, ..d.at };
+                            let at = if slot == own {
+                                boomcam::BoomTarget { pan: (self.look.yaw, self.look.pitch), rise: self.look.rise, ability: ab, ..base }
+                            } else {
+                                d.booms[slot].held_target(&base)
+                            };
                             d.booms[slot].step(tune, &at, &d.g, 1.0 / 30.0, 30.0);
                         }
                     }
@@ -9202,6 +9211,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if replay_cut {
                         self.boom.reset();
                         self.cam_switch.reset();
+                        // (a cut to the player's own view camera: its reset F-83404 clears the words the look-around eases,
+                        // +452 / +456 / +460 and +224; the player camera's own held angles stay)
+                        if replay_drive.map_or(false, |(v, back)| !back && v as usize == boomcam::VIEW_OF_PORT[(self.cam_mode as usize).min(5)].min(4)) {
+                            (self.look.yaw, self.look.pitch, self.look.rise, self.look.fov) = (0.0, 0.0, 0.0, 0.0);
+                        }
                         // (a cut to a fixed mount - bumper or cockpit, camBoomCS vt+60 - puts the
                         // TRANSITIONMOVIE mask up, F-53309 -> F-28091)
                         if replay_drive.map_or(false, |(v, _)| v < 2) {
@@ -9311,7 +9325,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let free = (self.idle_time > fx.look_delay && still > fx.look_delay)
                             .then(|| self.gamepad.as_ref().and_then(|g| active_pad(g, self.pad_id)).map(|p| (p.axis(pads::Axis::LeftX), -p.axis(pads::Axis::LeftY))))
                             .flatten();
-                        self.look.frame(&fx, boomcam::VIEW_OF_PORT[(mode as usize).min(5)] as u8, car.model.bike, side, up, input, self.look_back && !chase, free, dt);
+                        // (in a replay the look-around frame runs ahead of the director, on the player's own view camera)
+                        if self.game.replay.as_ref().map_or(true, |p| p.menu.is_some()) {
+                            self.look.frame(&fx, boomcam::VIEW_OF_PORT[(mode as usize).min(5)] as u8, car.model.bike, side, up, input, self.look_back && !chase, free, dt);
+                        }
                         let target = boomcam::BoomTarget {
                             pos: render_state.pos,
                             rot: render_state.rot,
@@ -9332,6 +9349,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             fixed_mount: !chase,
                             model_offset: car.model.simtunes.as_ref().map_or(Vec3::ZERO, |s| Vec3::new(s.base.s.model_offset_x, s.base.s.model_offset_y, s.base.s.model_offset_z)),
                         };
+                        // (a replay's shown camera that is not the player's own view runs with the words its object holds - 0
+                        // since the cut made it current, F-83404 - as the look-around writes the player's view camera only)
+                        let own_slot = boomcam::VIEW_OF_PORT[(self.cam_mode as usize).min(5)].min(4);
+                        let shown_slot = if self.look_back && chase { 5 } else { boomcam::VIEW_OF_PORT[(self.cam_switch.shown(mode) as usize).min(5)].min(4) };
+                        let target = if self.game.replay.is_some() && shown_slot != own_slot { self.boom.held_target(&target) } else { target };
                         // (the director's lens, F-98562: near 0.2 in every view it shows, not the file's CameraNear)
                         self.cam.near = boomcam::DIRECTOR_NEAR;
                         self.lod_near = boomcam::DIRECTOR_NEAR;
@@ -9355,7 +9377,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 // it is not the one shown, in every view, F-36289; a replay's are run ahead of its director)
                                 if shown != 5 && self.game.replay.is_none() {
                                     if let Some(rt) = set.reverse.as_ref() {
-                                        let rat = boomcam::BoomTarget { rev: true, pan: (0.0, 0.0), rise: 0.0, fixed_mount: false, ability: (0.0, 1.0), ..at };
+                                        // (with the words it holds: the look back's turn, or the reset's 0)
+                                        let rat = self.view_booms[5].held_target(&boomcam::BoomTarget { rev: true, fixed_mount: false, ..at });
                                         for _ in 0..frames.max(1) {
                                             self.view_booms[5].step(rt, &rat, &g, 1.0 / 30.0, 30.0);
                                         }
@@ -15846,8 +15869,8 @@ impl replay::Probe for ReplayProbe<'_> {
             boomcam::tune_for(&d.set, boomcam::PORT_OF_VIEW[state.min(4)], false)
         };
         let inside = state < 2;
-        let at = boomcam::BoomTarget { rev, fixed_mount: inside, ..d.at };
         let cam = &mut d.booms[state.min(5)];
+        let at = cam.held_target(&boomcam::BoomTarget { rev, fixed_mount: inside, ..d.at });
         let mut pos = cam.step_held(tune, &at, &d.g, 1.0 / 30.0, 30.0).pos;
         if tune.collide_type() & 2 != 0 {
             let from = cam.collide_from(tune, &at);
