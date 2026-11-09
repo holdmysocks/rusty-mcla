@@ -454,21 +454,29 @@ pub struct NodeRect {
 
 impl NodeRect {
     /// F-46547: the squared distance from `p` (x / z) to the rectangle when it is within `r`
-    /// (0 inside). A pre-test on 0.70711 x the length + r from the centre, then `p - c` turned by
-    /// -atan2(dir.x, dir.z) and measured against half the width (x) and half the length (z).
+    /// (0 inside). A pre-test on 0.70711 x the length + r from the centre (dz² fused onto dx²), then `p - c` turned
+    /// by -atan2(dir.x, dir.z) (the guest's atan2 cut to single, F-58339's guest sine and cosine, fused) and measured
+    /// against half the width (x) and half the length (z), ez² fused onto ex²; within unless e > r² (a NaN is within).
     pub fn dist2_within(&self, p: Vec3, r: f32) -> Option<f32> {
-        let (dx, dz) = (p.x - self.c[0], p.z - self.c[1]);
-        let pre = 0.707_107 * self.len + r;
-        if dx * dx + dz * dz > pre * pre {
+        use crate::guest_math::{guest_atan2, guest_cos, guest_sin};
+        let (dx, dz) = (self.c[0] - p.x, self.c[1] - p.z);
+        let pre = self.len * std::f32::consts::FRAC_1_SQRT_2 + r;
+        if dz.mul_add(dz, dx * dx) > pre * pre {
             return None;
         }
-        let b = -self.dir[0].atan2(self.dir[1]);
-        let (sn, cs) = b.sin_cos();
-        let (lx, lz) = (dx * cs + dz * sn, dz * cs - dx * sn);
-        let excess = |v: f32, h: f32| if v < -h { v + h } else if v > h { v - h } else { 0.0 };
-        let (ex, ez) = (excess(lx, 0.5 * self.width), excess(lz, 0.5 * self.len));
-        let e = ex * ex + ez * ez;
-        (e <= r * r).then_some(e)
+        let b = -(guest_atan2(self.dir[0] as f64, self.dir[1] as f64) as f32);
+        let (sn, cs) = (guest_sin(b as f64) as f32, guest_cos(b as f64) as f32);
+        let (vx, vz) = (p.x - self.c[0], p.z - self.c[1]);
+        let (lx, lz) = (vx.mul_add(cs, vz * sn), vz.mul_add(cs, -(vx * sn)));
+        let excess = |v: f32, h: f32| if v < -h { Some(v - -h) } else if v > h { Some(v - h) } else { None };
+        let mut e = 0.0f32;
+        if let Some(x) = excess(lx, self.width * 0.5) {
+            e = x * x;
+        }
+        if let Some(z) = excess(lz, self.len * 0.5) {
+            e = z.mul_add(z, e);
+        }
+        (!(e > r * r)).then_some(e)
     }
 }
 
@@ -619,9 +627,19 @@ impl NavSys {
             if hits.len() >= 8 {
                 return;
             }
-            let ax = |v: f32, lo: f32, hi: f32| if v < lo { v - lo } else if v > hi { v - hi } else { 0.0 };
-            let (ex, ez) = (ax(p.x, n.min[0], n.max[0]), ax(p.z, n.min[1], n.max[1]));
-            if ex * ex + ez * ez > r * r {
+            // (F-80185: x below / above, then z fused on; kept when d <= r², as lanes_near)
+            let mut d = 0.0f32;
+            if p.x < n.min[0] {
+                d = (p.x - n.min[0]) * (p.x - n.min[0]);
+            } else if p.x > n.max[0] {
+                d = (p.x - n.max[0]) * (p.x - n.max[0]);
+            }
+            if p.z < n.min[1] {
+                d = (p.z - n.min[1]).mul_add(p.z - n.min[1], d);
+            } else if p.z > n.max[1] {
+                d = (p.z - n.max[1]).mul_add(p.z - n.max[1], d);
+            }
+            if d > r * r {
                 return;
             }
             let code = (if p.x - n.split[0] > -1e-6 { 2 } else { 0 }) | (if p.z - n.split[1] > -1e-6 { 1 } else { 0 });
@@ -2207,6 +2225,48 @@ mod speed_tests {
         assert!(n == 800 && hits > 250, "{n} {hits}");
     }
 
+    /// The road / junction lookups F-55639 / F-85231 (the walk F-21575, the box test F-80185, the rectangle distance F-46547
+    /// through the items' slot 3) run offline on the city's resource (tools/node_within_reference.py, 1,500 queries, 0 - 150 m,
+    /// 40 % near a node's centre): [`NavSys::node_within`] picks the same road and the same junction (named by the answer's
+    /// rectangle, read from the resource at the original's offset) or none, in every query; and the walk with mask 6 capped at
+    /// 64 / 8 / 3 ([`NavSys::regions_near`], up to 35 hits) gives the same nodes in the same order.
+    #[test]
+    #[ignore = "requires user's extracted Complete Edition data; set MCLA_DATA_DIR"]
+    fn node_within_matches_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").expect("set MCLA_DATA_DIR to extracted/cache");
+        let bytes = std::fs::read(std::path::Path::new(&root).join("resources/city/sc/0x9960fcd8.r66")).unwrap();
+        let data = bytes[16..].to_vec();
+        let virtual_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let be = |o: usize| u32::from_be_bytes(data[o..o + 4].try_into().unwrap());
+        let rect_at = |o: i64| -> Option<[u32; 6]> {
+            (o >= 0).then(|| { let o = o as usize; [be(o + 0x34), be(o + 0x38), be(o + 0x3c), be(o + 0x40), be(o + 0x60), be(o + 0x68)] })
+        };
+        let res = Resource { rtype: 66, flags: 0, virtual_size, physical_size: data.len() - virtual_size, data: data.clone() };
+        let nav = NavSys::parse(&res).unwrap();
+        let bits = |r: NodeRect| [r.c[0].to_bits(), r.c[1].to_bits(), r.width.to_bits(), r.len.to_bits(), r.dir[0].to_bits(), r.dir[1].to_bits()];
+        let (mut n, mut found) = (0, [0, 0]);
+        for l in include_str!("../testdata/node_within_ref.txt").lines() {
+            let mut parts = l.split('|');
+            let v: Vec<i64> = parts.next().unwrap().split_whitespace().map(|t| t.parse().unwrap()).collect();
+            let f = |k: usize| f32::from_bits(v[k] as i32 as u32);
+            let p = Vec3::new(f(0), f(1), f(2));
+            for (k, junction) in [false, true].into_iter().enumerate() {
+                let got = nav.node_within(p, f(3), junction).map(|x| bits(nav.node_rect(x)));
+                assert_eq!(got, rect_at(v[4 + k]), "{l} junction {junction}");
+                found[k] += got.is_some() as u32;
+            }
+            // the walk with mask 6 (regions_near), capped at 64 / 8 / 3: the same nodes in the same order
+            for (cap, part) in [64usize, 8, 3].into_iter().zip(parts) {
+                let w: Vec<i64> = part.split_whitespace().map(|t| t.parse().unwrap()).collect();
+                let got: Vec<[u32; 6]> = nav.regions_near(p, f(3), cap).into_iter().map(|x| bits(nav.node_rect(x))).collect();
+                let want: Vec<[u32; 6]> = w[1..].iter().map(|&o| rect_at(o).unwrap()).collect();
+                assert_eq!((got.len() as i64, &got), (w[0], &want), "{l} cap {cap}");
+            }
+            n += 1;
+        }
+        assert!(n == 1500 && found[0] > 500 && found[1] > 200, "{n} {found:?}");
+    }
+
     #[test]
     #[ignore = "requires user's extracted Complete Edition data; set MCLA_DATA_DIR"]
     fn complete_edition_road_lanes_and_junction_roads() {
@@ -2525,10 +2585,6 @@ mod verify_lanes_tests {
         (k(a) as i64 - k(b) as i64).unsigned_abs().min(u32::MAX as u64) as u32
     }
 
-    /// F-99015 (point), F-26650 / F-26180 (derivative sum), F-42884 and F-71868 (point, derivative
-    /// and speed), F-42559 (speed): `LaneCurve::eval` / `speed` against the original's lane curve
-    /// functions on all 10,031 city lanes at 84,547 phases.
-    #[test]
     /// F-87587 (lane slot 9) against the original's F-42884 on the 84,547 (lane, phase) cases of stage4.py: point,
     /// derivative and speed (previous speed 0 and 3.0), every bit.
     #[test]
@@ -2567,6 +2623,9 @@ mod verify_lanes_tests {
         assert!(bad.is_empty(), "{bad:?}");
     }
 
+    /// F-99015 (point), F-26650 / F-26180 (derivative sum), F-42884 and F-71868 (point, derivative
+    /// and speed), F-42559 (speed): `LaneCurve::eval` / `speed` against the original's lane curve
+    /// functions on all 10,031 city lanes at 84,547 phases.
     #[test]
     #[ignore = "requires user's extracted data (MCLA_DATA_DIR) and the original's reference csv"]
     fn lane_curve_eval_against_the_original() {
@@ -2743,5 +2802,32 @@ mod verify_small_tests {
         assert_eq!((vw, kw), (145901, 88942), "word counts (lane numbers excluded)");
         assert_eq!(vh, 0x0afb56ee6ebfdfdf, "control vertices");
         assert_eq!(kh, 0xab3b448743ac3989, "knot vectors");
+    }
+}
+
+#[cfg(test)]
+mod node_rect_tests {
+    use super::*;
+
+    /// F-46547 run offline on its generated code (tools/node_rect_reference.py, 4,000 rectangles and points: turned,
+    /// axis-aligned and zero directions, points around and inside, r 0 / 5 / 50 / random, a tenth with one word made
+    /// a zero, a denormal, an infinity, a NaN or a random value): within and the squared distance equal to the bit.
+    #[test]
+    fn node_rect_distance_matches_the_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/node_rect_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let (a, b) = l.split_once(" -> ").unwrap();
+            let w: Vec<f32> = a.split_whitespace().map(|t| f32::from_bits(u32::from_str_radix(t, 16).unwrap())).collect();
+            let o: Vec<&str> = b.split_whitespace().collect();
+            let rect = NodeRect { lane: None, c: [w[0], w[1]], width: w[2], len: w[3], dir: [w[4], w[5]] };
+            let got = rect.dist2_within(Vec3::new(w[6], 0.0, w[7]), w[8]);
+            let within = o[0] == "1";
+            assert_eq!(got.is_some(), within, "{l}");
+            if let Some(e) = got {
+                assert_eq!(e.to_bits(), u32::from_str_radix(o[1], 16).unwrap(), "{l}");
+            }
+            n += 1;
+        }
+        assert_eq!(n, 4000);
     }
 }

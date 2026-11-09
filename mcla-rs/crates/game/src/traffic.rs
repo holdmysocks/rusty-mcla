@@ -2955,6 +2955,53 @@ pub fn brake_lamp(r: &Rider) -> bool {
     r.v == 0.0 || (r.slot == Some(1) && r.v < 6.7056) || r.active || r.obst_v.is_some_and(|o| r.v > o * 1.5)
 }
 
+/// A constraint slot's thresholds as F-30960 hands them to F-49294 (its stack copy of the controller's tune): the
+/// decel band, MinDecel, this frame's MaxDecel, the accel band, MinAccel, MaxAccel + the car's bonus.
+#[derive(Clone, Copy, Debug)]
+pub struct SlotTune {
+    pub band_d: f32,
+    pub min_d: f32,
+    pub max_d: f32,
+    pub band_a: f32,
+    pub min_a: f32,
+    pub up: f32,
+}
+
+/// F-49294, a constraint slot's update for an active entry (its needed acceleration `a`, F-20809's result, and its
+/// distance less the margin): the hysteresis by the sign of `a` (a NaN takes the accel side) - on, off below MinAccel -
+/// band / 2 (a >= 0) or when -a < MinDecel - band / 2; off, on above MinAccel + band / 2 or when -a > MinDecel + band / 2 -;
+/// on whenever the gap is not > 0; then at most `up`, and at least -MaxDecel, or for the player (the obstacle's type 9)
+/// beyond 1.25 MaxDecel -1.5 MaxDecel. Returns the on bit, the slot's acceleration and its gap (fsel: 0 when -gap >= 0).
+pub fn slot_update(on: bool, a: f32, gap: f32, player: bool, t: &SlotTune) -> (bool, f32, f32) {
+    let mut on = on;
+    let neg = a < 0.0;
+    if on {
+        if !neg {
+            if a < (-t.band_a).mul_add(0.5, t.min_a) {
+                on = false;
+            }
+        } else if -a < (-t.band_d).mul_add(0.5, t.min_d) {
+            on = false;
+        }
+    } else if !neg {
+        if a > t.band_a.mul_add(0.5, t.min_a) {
+            on = true;
+        }
+    } else if -a > t.band_d.mul_add(0.5, t.min_d) {
+        on = true;
+    }
+    if !(gap > 0.0) {
+        on = true;
+    }
+    let mut a = if a > t.up { t.up } else { a };
+    if player && -a > t.max_d * 1.25 {
+        a = -(t.max_d * 1.5);
+    } else if -a > t.max_d {
+        a = -t.max_d;
+    }
+    (on, a, if -gap >= 0.0 { 0.0 } else { gap })
+}
+
 /// The speed controller (F-33409 -> F-30960): the constraint entries (car ahead,
 /// stop line, slower next lane), each with its hysteresis; the most negative wins, else the
 /// positive one with the smallest gap, else free driving towards `want`. Returns the
@@ -2998,53 +3045,70 @@ fn control(r: &mut Rider, v: f32, want: f32, half_len: f32, ahead: &Ahead, other
         entries[3] = Some((needed(v, vt, d, 0.0, up, max_decel), d, false));
     }
     let mut on = [r.on[0], r.on[1], r.on[2], r.ghost.as_ref().is_some_and(|g| g.on3)];
-    let (on_a, off_a) = (ty.min_accel + ty.min_accel_band * 0.5, ty.min_accel - ty.min_accel_band * 0.5);
-    let (on_d, off_d) = (ty.min_decel + ty.min_decel_band * 0.5, ty.min_decel - ty.min_decel_band * 0.5);
-    let mut best_neg: Option<(f32, usize)> = None;
-    let mut best_pos: Option<(f32, f32, usize)> = None;
-    for k in 0..4 {
-        let Some((mut a, gap, player)) = entries[k] else {
-            on[k] = false;
-            continue;
-        };
-        // (F-49294; no room left forces it on)
-        if !on[k] {
-            on[k] = a > on_a || -a > on_d || gap <= 0.0;
-        } else if gap > 0.0 && ((a >= 0.0 && a < off_a) || (a < 0.0 && -a < off_d)) {
-            on[k] = false;
-        }
-        if !on[k] {
-            continue;
-        }
-        if player && -a > 1.25 * max_decel {
-            a = -1.5 * max_decel;
-        } else {
-            a = a.clamp(-max_decel, up);
-        }
-        if a < 0.0 {
-            if best_neg.map_or(true, |b| a < b.0) {
-                best_neg = Some((a, k));
-            }
-        } else if best_pos.map_or(true, |b| gap < b.1) {
-            best_pos = Some((a, gap, k));
-        }
-    }
+    let t = SlotTune { band_d: ty.min_decel_band, min_d: ty.min_decel, max_d: max_decel, band_a: ty.min_accel_band, min_a: ty.min_accel, up };
+    let (a, chosen) = pick(&entries, &mut on, &t, want, v, dt, &mut r.waited, r.wait);
     r.on = [on[0], on[1], on[2]];
     if let Some(g) = r.ghost.as_mut() {
         g.on3 = on[3];
     }
-    let (mut a, chosen) = match (best_neg, best_pos) {
-        (Some((n, k)), _) => (n, Some(k)),
-        (None, Some((p, _, k))) => (p, Some(k)),
-        _ => (((want - v) / 1.0).clamp(-(ty.min_decel + ty.max_decel) * 0.5, (ty.min_accel + ty.max_accel + r.bonus) * 0.5), None),
+    (a, chosen)
+}
+
+/// F-30960 from its slot updates on: each active entry through F-49294 ([`slot_update`]), the pick, free driving and the
+/// start delay (+440 `waited` against +444 `wait`, counted while the speed +412 is 0). `entries`: the needed acceleration,
+/// the distance less the margin and whether the obstacle is the player. Returns the acceleration and the entry chosen
+/// (+420; none -1).
+#[allow(clippy::too_many_arguments)]
+pub fn pick(entries: &[Option<(f32, f32, bool)>; 4], on: &mut [bool; 4], t: &SlotTune, want: f32, v: f32, dt: f32, waited: &mut f32, wait: f32) -> (f32, Option<usize>) {
+    // (F-30960's pick over the four slots: a > 0 the smallest stored gap - slot 3 keeps the gap it beats -, a <= 0 the
+    // least; both start at FLT_MAX and take only a strictly smaller value, so a NaN never wins)
+    let (mut pos_gap, mut pos_a, mut pos_k) = (f32::MAX, f32::MAX, None);
+    let (mut neg_a, mut neg_k) = (f32::MAX, None);
+    for k in 0..4 {
+        // (an inactive entry clears only the slot's active bit: its on bit stays for when the entry comes back)
+        let Some((a, dist_less_margin, player)) = entries[k] else {
+            continue;
+        };
+        let (o, a, gap) = slot_update(on[k], a, dist_less_margin, player, t);
+        on[k] = o;
+        if !o {
+            continue;
+        }
+        if a > 0.0 {
+            if gap < pos_gap {
+                if k < 3 {
+                    pos_gap = gap;
+                }
+                (pos_a, pos_k) = (a, Some(k));
+            }
+        } else if a < neg_a {
+            (neg_a, neg_k) = (a, Some(k));
+        }
+    }
+    let (mut a, chosen) = if pos_a == f32::MAX && neg_a == f32::MAX {
+        // free driving: F-54830 (want - v) / the controller's +156 (1.0), at most (MaxAccel + bonus + MinAccel) / 2, at
+        // least -(MaxDecel + MinDecel) / 2 with this frame's MaxDecel (x 3 with the player across)
+        let mut a = (want - v) / 1.0;
+        let (upf, dnf) = ((t.up + t.min_a) * 0.5, (t.max_d + t.min_d) * 0.5);
+        if a > upf {
+            a = upf;
+        }
+        if -a > dnf {
+            a = -dnf;
+        }
+        (a, None)
+    } else if pos_a < neg_a {
+        (pos_a, pos_k)
+    } else {
+        (neg_a, neg_k)
     };
     // moving off from standing: the start delay, counted while the controller asks to go
     if v == 0.0 {
-        if a <= 0.0 {
-            r.waited = 0.0;
+        if !(a > 0.0) {
+            *waited = 0.0;
         } else {
-            r.waited += dt;
-            if r.waited < r.wait {
+            *waited += dt;
+            if *waited < wait {
                 a = 0.0;
             }
         }
@@ -11843,5 +11907,84 @@ mod measured_speed_tests {
             n += 1;
         }
         assert_eq!(n, 3000);
+    }
+}
+
+#[cfg(test)]
+mod slot_update_tests {
+    use super::*;
+
+    /// F-49294 run offline on its generated code with its needed acceleration F-20809 stubbed (tools/slot_update_reference.py,
+    /// 4,000 cases: on / off, the entry's reset bit, no obstacle / a car / the player, a near each threshold, at 0 and -0,
+    /// the gap 0 and negative, a twentieth with one word a zero, a denormal, an infinity, a NaN or FLT_MAX): the on bit,
+    /// the slot's acceleration and its gap equal to the bit.
+    #[test]
+    fn slot_update_matches_the_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/slot_update_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let (a, b) = l.split_once(" -> ").unwrap();
+            let w: Vec<u32> = a.split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let o: Vec<u32> = b.split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let f = |k: usize| f32::from_bits(w[k]);
+            let t = SlotTune { band_d: f(6), min_d: f(7), max_d: f(8), band_a: f(9), min_a: f(10), up: f(11) };
+            let (on, acc, gap) = slot_update(w[0] != 0 && w[1] == 0, f(3), f(4) - f(5), w[2] == 9, &t);
+            assert_eq!((0x80 | if on { 0x40 } else { 0 }, acc.to_bits(), gap.to_bits()), (o[0], o[1], o[2]), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
+    }
+}
+
+#[cfg(test)]
+mod controller_pick_tests {
+    use super::*;
+
+    /// F-30960 run offline from its slot updates on (tools/controller_pick_reference.py, 4,000 cases: four entries each
+    /// active or not, with or without the reset bit, the player as entry 0's obstacle, a at 0 / -0 / MaxAccel + bonus /
+    /// -MaxDecel / random / NaN / infinities, the slots' on bits, standing and moving, the start delay, the player across or
+    /// along our rail): the acceleration, the entry chosen (+420), +440, every slot's on bit and, for the active ones, its
+    /// +0 / +4 equal [`pick`]'s to the bit.
+    #[test]
+    fn controller_pick_matches_the_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/controller_pick_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let (a, b) = l.split_once(" -> ").unwrap();
+            let w: Vec<u32> = a.split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let o: Vec<&str> = b.split_whitespace().collect();
+            let h = |k: usize| u32::from_str_radix(o[k], 16).unwrap();
+            let f = |k: usize| f32::from_bits(w[k]);
+            let mut entries = [None; 4];
+            let mut on = [false; 4];
+            for e in 0..4 {
+                let x = 7 * e;
+                if w[x] != 0 {
+                    entries[e] = Some((f(x + 3), f(x + 4) - f(x + 5), w[x + 2] != 0));
+                }
+                // (the entry's reset bit clears the slot's on bit before the update, F-49294's first test)
+                on[e] = w[28 + e] != 0 && !(w[x] != 0 && w[x + 1] != 0);
+            }
+            let t0 = 32;
+            let across = w[t0 + 12] == 1;
+            let max_d = if across { f(t0 + 5) * 3.0 } else { f(t0 + 5) };
+            let t = SlotTune { band_d: f(t0 + 3), min_d: f(t0 + 4), max_d, band_a: f(t0), min_a: f(t0 + 1), up: f(t0 + 6) + f(t0 + 2) };
+            let mut waited = f(t0 + 9);
+            let (acc, chosen) = pick(&entries, &mut on, &t, f(t0 + 8), f(t0 + 7), f(t0 + 11), &mut waited, f(t0 + 10));
+            assert_eq!(acc.to_bits(), h(0), "a {l}");
+            assert_eq!(chosen.map_or(-1, |k| k as i32), o[1].parse::<i32>().unwrap(), "chosen {l}");
+            assert_eq!(waited.to_bits(), h(2), "waited {l}");
+            for e in 0..4 {
+                let flags = h(3 + e);
+                assert_eq!(flags & 0x40 != 0, on[e], "on {e} {l}");
+                assert_eq!(flags & 0x80 != 0, entries[e].is_some(), "active {e} {l}");
+                if let Some((a, gap, player)) = entries[e] {
+                    // (the slot's +0 / +4 as F-49294 leaves them, from the bit it had before)
+                    let before = w[28 + e] != 0 && w[7 * e + 1] == 0;
+                    let (_, sa, sg) = slot_update(before, a, gap, player, &t);
+                    assert_eq!((sa.to_bits(), sg.to_bits()), (h(7 + 2 * e), h(8 + 2 * e)), "slot {e} {l}");
+                }
+            }
+            n += 1;
+        }
+        assert_eq!(n, 4000);
     }
 }

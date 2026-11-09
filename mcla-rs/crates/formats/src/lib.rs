@@ -10,6 +10,7 @@ pub mod audcfg;
 pub mod avm1;
 pub mod crypto;
 pub mod dds;
+pub mod guest_math;
 pub mod hash;
 pub mod iso;
 pub mod jpeg;
