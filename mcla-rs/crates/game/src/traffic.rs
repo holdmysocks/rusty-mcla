@@ -5601,6 +5601,27 @@ mod verify_lanes_tests {
 
 #[cfg(test)]
 mod tests {
+    /// F-91754 on the original's code run offline (tools/frontend_planes_reference.py, 3,000 cases): the six planes'
+    /// words and the two atans equal.
+    #[test]
+    fn frontend_planes_match_the_original() {
+        let f = |w: &str| f32::from_bits(u32::from_str_radix(w, 16).unwrap());
+        let mut n = 0;
+        for l in include_str!("testdata/frontend_planes_ref.txt").lines() {
+            let (c, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<f32> = c.split(' ').map(f).collect();
+            let v = |i: usize| glam::Vec3::new(c[i], c[i + 1], c[i + 2]);
+            let pl = super::frontend_planes_of([v(0), v(3), v(6), v(9)], [c[12], c[13]], [c[14], c[15], c[16], c[17]]);
+            let got: Vec<String> = pl.iter().flat_map(|p| p.to_array()).map(|x| format!("{:08x}", x.to_bits())).collect();
+            let want: Vec<&str> = o.split(' ').collect();
+            assert_eq!(got, want[2..], "{l}");
+            let at = |t: f32| format!("{:08x}", (mcla_formats::guest_math::guest_atan(t as f64) as f32).to_bits());
+            assert_eq!((at(c[13]), at(c[12])), (want[0].to_string(), want[1].to_string()), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
+
     /// F-95989 on the original's code run offline (tools/seen_reference.py, 6,000 cases): the answer and the point the
     /// occluder is asked about equal, the query's arguments (r 2, kinds 2 / 2) as the port's.
     #[test]
@@ -7435,29 +7456,43 @@ pub struct FrontEndPoints {
     pub pts: Vec<(Vec3, usize, f32, Option<(usize, f32)>)>,
 }
 
-/// The front-end frustum (F-91754): six planes, outward normal and w = normal . point (a
-/// point is outside when normal . p - w > 0): near (at S+8304), left, right, far (at S+8308), top,
-/// bottom; the sides at atan(tan across) + S+8312 and atan(tan up) + S+8316 off the forward axis.
+/// The front-end frustum (F-91754) from the port's front-end camera: the viewport's matrix as the port builds it
+/// (z = -forward, x = right, y = up, the eye; not the original's own matrix - approximate input), `frontend_planes_of`.
 pub fn frontend_planes(fe: &FrontEnd) -> [glam::Vec4; 6] {
-    let [a, b, near, far] = fe.amb;
-    let h = fe.tan[1].atan() + a;
-    let v = fe.tan[0].atan() + b;
-    // the viewport's matrix: z = -forward, x = right, y = up
     let z = -fe.fwd;
     let x = Vec3::Y.cross(z).normalize_or(Vec3::X);
     let y = z.cross(x);
+    frontend_planes_of([x, y, z, fe.eye], fe.tan, fe.amb)
+}
+
+/// F-91754 as the original computes it: six planes, outward normal and w = normal . point (a point is outside when
+/// normal . p - w > 0): near (at S+8304), left, right, far (at S+8308), top, bottom. `rows` the viewport's matrix rows
+/// (+64 x, +80 y, +96 z, +112 the place), `tan` its +712 / +716, `amb` S+8312 / +8316 / +8304 / +8308. h = S+8312 +
+/// atan(+716), v = S+8316 + atan(+712) (the guest atan F-79102, single); the local normals (0, 0, 1), (-cos h, 0, sin h),
+/// (cos h, 0, sin h), (0, 0, -1), (0, cos v, sin v), (0, -cos v, sin v) (guest cos / sin, single), the points (0, 0, -near),
+/// 0, 0, (0, 0, -far), 0, 0; each turned by the rows as the vector unit sums (vmsum3fp: (0 + z r2) + (y r1 + x r0); the
+/// point vmsum4fp with w 1: (r3 + z r2) + (y r1 + x r0)), w = fma(p.x, n.x, fma(p.z, n.z, p.y n.y)).
+pub fn frontend_planes_of(rows: [Vec3; 4], tan: [f32; 2], amb: [f32; 4]) -> [glam::Vec4; 6] {
+    use mcla_formats::guest_math::{guest_atan, guest_cos, guest_sin};
+    let [a, b, near, far] = amb;
+    let h = a + guest_atan(tan[1] as f64) as f32;
+    let v = b + guest_atan(tan[0] as f64) as f32;
+    let (ch, sh) = (guest_cos(h as f64) as f32, guest_sin(h as f64) as f32);
+    let (cv, sv) = (guest_cos(v as f64) as f32, guest_sin(v as f64) as f32);
     let local = [
         (Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, -near)),
-        (Vec3::new(-h.cos(), 0.0, h.sin()), Vec3::ZERO),
-        (Vec3::new(h.cos(), 0.0, h.sin()), Vec3::ZERO),
+        (Vec3::new(-ch, 0.0, sh), Vec3::ZERO),
+        (Vec3::new(ch, 0.0, sh), Vec3::ZERO),
         (Vec3::new(0.0, 0.0, -1.0), Vec3::new(0.0, 0.0, -far)),
-        (Vec3::new(0.0, v.cos(), v.sin()), Vec3::ZERO),
-        (Vec3::new(0.0, -v.cos(), v.sin()), Vec3::ZERO),
+        (Vec3::new(0.0, cv, sv), Vec3::ZERO),
+        (Vec3::new(0.0, -cv, sv), Vec3::ZERO),
     ];
+    let [r0, r1, r2, r3] = rows;
+    let turn = |v: Vec3, base: f32, j: usize| (base + v.z * r2[j]) + (v.y * r1[j] + v.x * r0[j]);
     local.map(|(n, p)| {
-        let nw = x * n.x + y * n.y + z * n.z;
-        let pw = fe.eye + x * p.x + y * p.y + z * p.z;
-        nw.extend(nw.dot(pw))
+        let nw = Vec3::new(turn(n, 0.0, 0), turn(n, 0.0, 1), turn(n, 0.0, 2));
+        let pw = Vec3::new(turn(p, r3.x, 0), turn(p, r3.y, 1), turn(p, r3.z, 2));
+        nw.extend(pw.x.mul_add(nw.x, pw.z.mul_add(nw.z, pw.y * nw.y)))
     })
 }
 

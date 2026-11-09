@@ -60,6 +60,44 @@ pub fn guest_sin(x: f64) -> f64 {
     v * if x >= 0.0 { 1.0 } else { -1.0 }
 }
 
+/// The guest C runtime's atan (F-79102), in double, on atan2's table (0x827EB158): |x| above 1 taken as 1 / |x| (above
+/// 2^1022 the answer is pi/2), folded about tan(pi/12) by sqrt 3, the same rational of the square, the octant's angle
+/// added; the sign by fsel on x (a NaN gives the negated value), +-0 kept.
+pub fn guest_atan(x: f64) -> f64 {
+    let a = x.abs();
+    let r = if a > f64::from_bits(0x7fd0000000000000) {
+        f64::from_bits(0x3ff921fb54442d18)
+    } else {
+        let (mut k, mut f) = if a > 1.0 { (2usize, 1.0 / a) } else { (0usize, a) };
+        if f > f64::from_bits(0x3fd126145e9ecd56) {
+            let root3 = f64::from_bits(0x3ffbb67ae8584caa);
+            let sum = root3 + f;
+            f = root3.mul_add(f, -1.0) / sum;
+            k += 1;
+        }
+        let z = f * f;
+        let p = f64::from_bits(0xbfeacd7ad9b187bd).mul_add(z, f64::from_bits(0xc020fd3f5c8d6a63));
+        let q = f64::from_bits(0x402e0c49e14ac710) + z;
+        let p = p.mul_add(z, f64::from_bits(0xc034817fb9e2bccb));
+        let q = q.mul_add(z, f64::from_bits(0x404dca0a320da3d7));
+        let p = p.mul_add(z, f64::from_bits(0xc02b60a651061ce2));
+        let q = q.mul_add(z, f64::from_bits(0x40558a12040b6da5));
+        let p = p * z;
+        let q = q.mul_add(z, f64::from_bits(0x4044887cbcc495a9));
+        let p = p * f;
+        let mut f = p / q + f;
+        if k > 1 {
+            f = -f;
+        }
+        [0.0, f64::from_bits(0x3fe0c152382d7366), f64::from_bits(0x3ff921fb54442d18), f64::from_bits(0x3ff0c152382d7366)][k] + f
+    };
+    if a.to_bits() == 0 || x >= 0.0 {
+        r
+    } else {
+        -r
+    }
+}
+
 /// The guest C runtime's atan2 (F-65975), in double: the smaller of |y|, |x|
 /// over the larger, folded once more about tan(pi/6), a rational of the square, and the
 /// octant's angle added.
