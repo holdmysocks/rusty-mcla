@@ -747,8 +747,10 @@ impl Ambience {
                     Some(c) => (lib.rand_float(-s.spread, s.spread) + c).to_radians(),
                     None => lib.rand_float(-std::f32::consts::PI, std::f32::consts::PI),
                 };
-                // F-14965: list B (0, 0, -6000) through F-57591, list C (0, 0, +6000) rotated inline by the same sin / cos
-                let pos = listener + shot_offset(timers == 1, angle);
+                // F-14965: list B (0, 0, -6000) through F-57591, list C (0, 0, +6000) rotated inline by the same sin / cos;
+                // a world position (the request's P+20 with flags 4, as the location emitters pass their records'), so
+                // 6 km from the world's origin, not from the listener
+                let pos = shot_offset(timers == 1, angle);
                 if let Some(h) = lib.play_hash(s.sound, Req { pos: Some(pos), volume: s.volume, ..Default::default() }) {
                     if timers == 0 { self.shots.push(h) } else { self.quad_shots.push(h) }
                 }
