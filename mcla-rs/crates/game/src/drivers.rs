@@ -1399,8 +1399,9 @@ enum Off {
     Eject { clip: String, t: f32, rate: f32 },
     /// the clip's time is up (F-41119): its last frame, and the character matrix then, wait for GoRagdoll (F-54692)
     Ready { local: Vec<(Quat, Vec3)>, mat: Mat4 },
-    /// "impact ragdoll": the bones in the world from the ragdoll (F-46606), kept from frame to frame
-    Ragdoll { world: Vec<Mat4> },
+    /// "impact ragdoll": the bones in the world from the ragdoll (F-46606), kept from frame to frame; `prev` the
+    /// tick's before, which the draw blends from (`Drivers::draw_alpha`)
+    Ragdoll { prev: Vec<Mat4>, world: Vec<Mat4> },
 }
 
 /// The gesture a scene event asks of a driver (racer+684; the event ids of table 0x827EAD60).
@@ -1522,6 +1523,23 @@ pub struct Drivers {
     pub steer_out: HashMap<u32, SteerOut>,
     /// the cars whose visible hit (mcCarDamage +48) a driver's gatherer took this frame
     pub hit_taken: Vec<u32>,
+    /// the render alpha between the last two ticks the thrown rider is drawn at (None: as the last tick left him). The
+    /// port's interpolation for any frame rate, not the original's (it draws each frame as its update left it); the
+    /// ragdoll itself keeps the tick's end.
+    pub draw_alpha: Option<f32>,
+    /// MCLA_DRAW_STEPS: each bike rider's drawn place this frame (seat id, the root bone or the seat matrix)
+    pub draw_log: Option<Vec<(&'static str, usize, Vec3)>>,
+}
+
+/// A bone's matrix between two ticks: the place lerped, the turn slerped (and the scale lerped) by `a`; the end
+/// itself from 1 on, and a jump of 2 m or more drawn at once.
+fn bone_between(p: &Mat4, w: &Mat4, a: f32) -> Mat4 {
+    if a >= 1.0 || p.w_axis.truncate().distance(w.w_axis.truncate()) >= 2.0 {
+        return *w;
+    }
+    let (s0, r0, t0) = p.to_scale_rotation_translation();
+    let (s1, r1, t1) = w.to_scale_rotation_translation();
+    Mat4::from_scale_rotation_translation(s0.lerp(s1, a), r0.slerp(r1, a), t0.lerp(t1, a))
 }
 
 /// What the drivers' distance LOD (F-12028) reads of one racer's driver.
@@ -1934,7 +1952,7 @@ impl Drivers {
             f.sort();
             f.into_iter().next()
         })?;
-        match self.off.insert(id, Off::Ragdoll { world: Vec::new() }) {
+        match self.off.insert(id, Off::Ragdoll { prev: Vec::new(), world: Vec::new() }) {
             Some(Off::Ready { local, mat }) => Some((local, mat, r6)),
             _ => None,
         }
@@ -1942,7 +1960,11 @@ impl Drivers {
 
     /// The thrown rider's bones in the world this frame.
     pub fn ragdoll_world(&mut self, id: usize, world: Vec<Mat4>) {
-        self.off.insert(id, Off::Ragdoll { world });
+        let prev = match self.off.remove(&id) {
+            Some(Off::Ragdoll { world: w, .. }) if w.len() == world.len() => w,
+            _ => world.clone(),
+        };
+        self.off.insert(id, Off::Ragdoll { prev, world });
     }
 
     /// The rider back on his seat (RemoveRagdoll's snap, F-98260: the skeleton goes back to the animation), or a
@@ -1999,6 +2021,7 @@ impl Drivers {
                 }
             }
         }
+        let steps = std::env::var_os("MCLA_DRAW_STEPS").is_some();
         let mut local: Vec<(Quat, Vec3)> = Vec::new();
         let mut other: Vec<(Quat, Vec3)> = Vec::new();
         for s in seats {
@@ -2166,8 +2189,18 @@ impl Drivers {
                     }
                 },
                 Some(Off::Ready { local: l, .. }) => local.clone_from(l),
-                Some(Off::Ragdoll { world }) if !world.is_empty() => self.buf.next_world = Some(world.clone()),
+                Some(Off::Ragdoll { prev, world }) if !world.is_empty() => {
+                    let a = self.draw_alpha.unwrap_or(1.0);
+                    self.buf.next_world = Some(if prev.len() == world.len() { prev.iter().zip(world).map(|(p, w)| bone_between(p, w, a)).collect() } else { world.clone() });
+                }
                 _ => {}
+            }
+            if let Some(log) = self.draw_log.as_mut().filter(|_| s.bike) {
+                // (the thrown rider: the mean of his drawn bones' places; else the seat matrix's place)
+                match self.buf.next_world.as_ref().filter(|w| !w.is_empty()) {
+                    Some(w) => log.push(("ragdoll", s.id, w.iter().map(|m| m.w_axis.truncate()).sum::<Vec3>() / w.len() as f32)),
+                    None => log.push(("rider", s.id, s.mat.w_axis.truncate())),
+                }
             }
             match next {
                 Some(Some(o)) => {
@@ -2200,6 +2233,28 @@ impl Drivers {
                 self.buf.next_cabin = Some(Cabin::of(s.mat, offs, colors, s.head, s.bike, neon_flash(colors[0][3], self.clock), &wind));
             }
             self.buf.emit(&rig.model, 0, &local, s.mat);
+            // (MCLA_DRAW_STEPS: the drawn head and the two outermost bones of the bind pose - the hands - in the world and in the
+            // car's frame, one `dstep` line each a frame)
+            if steps {
+                let m = &rig.model;
+                let (mut lo, mut hi) = (0, 0);
+                for (i, b) in m.bones.iter().enumerate() {
+                    if b.bind.x < m.bones[lo].bind.x {
+                        lo = i;
+                    }
+                    if b.bind.x > m.bones[hi].bind.x {
+                        hi = i;
+                    }
+                }
+                let inv = s.mat.inverse();
+                for (tag, b) in [("h", m.head), ("l", (!m.bones.is_empty()).then_some(lo)), ("r", (!m.bones.is_empty()).then_some(hi))] {
+                    if let Some(w) = b.and_then(|b| self.buf.bone_pos(b)) {
+                        let l = inv.transform_point3(w);
+                        eprintln!("dstep {} drv {}{tag} {:.4} {:.4} {:.4} 0", self.frame, s.uid, w.x, w.y, w.z);
+                        eprintln!("dstep {} drvL {}{tag} {:.4} {:.4} {:.4} 0", self.frame, s.uid, l.x, l.y, l.z);
+                    }
+                }
+            }
             if s.player {
                 self.player_head = rig.model.head.and_then(|h| self.buf.bone_pos(h)).map(|w| s.mat.inverse().transform_point3(w));
             }

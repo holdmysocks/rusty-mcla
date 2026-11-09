@@ -8856,6 +8856,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             for (k, p) in self.peds.draw_log.as_mut().map(std::mem::take).unwrap_or_default() {
                 eprintln!("dstep {f} ped {}_{} {:.4} {:.4} {:.4} 0", k.0, k.1, p.x, p.y, p.z);
             }
+            // (the bike riders as drawn the frame before - the drivers' prepare runs after this)
+            for (k, i, p) in self.drivers.draw_log.as_mut().map(std::mem::take).unwrap_or_default() {
+                eprintln!("dstep {f} {k} {i} {:.4} {:.4} {:.4} 0", p.x, p.y, p.z);
+            }
             for (i, p) in self.props.between_log.clone().unwrap_or_default() {
                 eprintln!("dstep {f} prop {i} {:.4} {:.4} {:.4} 0", p.x, p.y, p.z);
             }
@@ -11880,6 +11884,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 ..Default::default()
             });
             (self.drivers.clock, self.drivers.paused) = (self.wind_clock, self.game.mode == Mode::Paused);
+            self.drivers.draw_alpha = (std::env::var_os("MCLA_DRAW_HELD").is_none()).then_some(self.vehicles.render_alpha);
+            if self.drivers.draw_log.is_none() && self.peds.draw_log.is_some() {
+                self.drivers.draw_log = Some(Vec::new());
+            }
             self.drivers.prepare(&mut gpu, &seats, self.cam.pos, &frustum, dt);
             drop(seats);
             // (what each car driver's gatherer wrote into its car's steering part, F-28290: for the part's next step)
