@@ -691,6 +691,15 @@ pub fn swatch_value(rgb: u32, select: i32, strip: &[u32]) -> String {
     format!("{}{};{};{}", SWATCH, rgb, select, strip.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(","))
 }
 
+/// A colour row whose closed state has one child state `id` (`ExtNeon_Dummy`, `ColorA1_Dummy`, `Rim1_Dummy` ...).
+/// The original's state-chart menu builder F-31313 sends a row's enabled child states as its `elements` with `name` =
+/// the child's text, and a state with no desc takes its id from the string table, which these ids are not in: the
+/// table's miss is the key as "!!%s!!" (F-12531). The movie sizes its value column from those names, so the closed
+/// row widens the panel (captures work/ui2/cap c05, c16).
+pub fn swatch_with_child(value: String, id: &str) -> String {
+    format!("{value};{id}")
+}
+
 /// One list row: label (`text1`), value (`text2`), selectable (`property1`).
 #[derive(Clone, PartialEq, Debug)]
 pub struct MenuRow {
@@ -1284,14 +1293,20 @@ impl FlashMenu {
                 let rgb: i32 = f.next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0) as i32;
                 let select: i32 = f.next().and_then(|v| v.parse().ok()).unwrap_or(-1);
                 let strip: Vec<i32> = f.next().unwrap_or("").split(',').filter_map(|v| v.parse::<u32>().ok()).map(|v| v as i32).collect();
+                let child = f.next().filter(|id| !id.is_empty() && select < 0);
                 // (the states' `fs_type`: 30 closed, 31 open - Paint.sc.xml, Colors.sc.xml; the open row's strip shows
                 // `numswatches` 5 from its `offset`, which the movie moves to keep `select` in view)
                 p.set_path(&format!("menu.elements.{}.type", i), Value::Int(if select >= 0 { 31 } else { 30 }));
                 p.set_path(&format!("menu.elements.{}.color", i), Value::Int(rgb));
                 p.set_path(&format!("menu.elements.{}.select", i), Value::Int(select));
-                p.set_path(&format!("menu.elements.{}.count", i), Value::Int(strip.len() as i32));
+                p.set_path(&format!("menu.elements.{}.count", i), Value::Int(if child.is_some() { 1 } else { strip.len() as i32 }));
                 for (j, c) in strip.iter().enumerate() {
                     p.set_path(&format!("menu.elements.{}.elements.{}.color", i, j), Value::Int(*c));
+                }
+                // (closed, the one child state's name - see `swatch_with_child`; open, the strip's children have no name)
+                for j in 0..strip.len().max(1) {
+                    let name = if j == 0 { child.map(|id| format!("!!{id}!!")) } else { None };
+                    p.set_path(&format!("menu.elements.{}.elements.{}.name", i, j), Value::str(name.as_deref().unwrap_or("")));
                 }
                 p.set_path(&format!("menu.elements.{}.text2", i), Value::str(""));
                 p.set_path(&format!("menu.elements.{}.text3", i), Value::str(""));
@@ -2178,7 +2193,45 @@ mod tests {
         assert_eq!(super::race_time(3_723_450), "1:02:03.45");
         assert_eq!(super::race_time(-2_500), "-00:02.50");
     }
+
+    /// The NEON/WINDOW TINT page's width as the original's (captures work/ui2/cap c16, c17): a closed colour row sends its
+    /// one child state named "!!<id>!!" (`swatch_with_child`), the movie sizes its value column from it. Closed, the
+    /// value column is "!!ExtNeon_Dummy!!" and the panel 504.05 wide; open, the strip's row is skipped by the movie
+    /// and the title's 465.47 wins (the original's open panel is wider still: open, UI.md).
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn neon_page_value_column_from_the_child_states() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let strings = StringTable::parse(&std::fs::read(Path::new(&dir).join("ui/0xa4c1e8fa")).unwrap()).unwrap();
+        let shared = UiShared { textures: Arc::new(HashMap::new()), strings: Arc::new(strings), logic: Arc::new(crate::menu3d::UiLogic::load(&dir)) };
+        let strip: Vec<u32> = (0..40).map(|i| 0x101010 * (i % 15)).collect();
+        let row = |label: &str, value: String| MenuRow { label: label.into(), value, enabled: true, part: None };
+        let levels: Vec<String> = (1..=10).map(|k| if k == 1 { "STOCK".to_string() } else if k == 10 { "FULL".to_string() } else { format!("LEVEL {}", k - 1) }).collect();
+        for (open, col2, width) in [(false, 190.986, 504.053), (true, 146.191, 465.469)] {
+            let mut menu = FlashMenu::load(&dir, GARAGE_MOVIE, [0.0; 2], &shared).unwrap();
+            let page = MenuPage {
+                layout: MenuLayout::Paint, icon: 10, title: "NEON/WINDOW TINT".into(),
+                rows: vec![
+                    row("NEON", choice_list(1, &["ON".into(), "OFF".into()])),
+                    row("\u{b1}NEON COLOR", swatch_with_child(swatch_value(0x8080f4, if open { 0 } else { -1 }, &strip), "ExtNeon_Dummy")),
+                    row("WINDOW TINT", swatch_with_child(swatch_value(0xffffff, -1, &strip), "Tint_Dummy")),
+                    row("TINT OPACITY", choice_list(0, &levels)),
+                ],
+                select: if open { 1 } else { 0 }, money: Some(("MONEY".into(), 5000)), ..MenuPage::default()
+            };
+            for _ in 0..60 {
+                menu.show(&page);
+                menu.movie.player.tick();
+            }
+            let p = &mut menu.movie.player;
+            let num = |v: Option<Value>| match v { Some(Value::Int(i)) => i as f32, Some(Value::Float(f)) => f, v => panic!("{v:?}") };
+            let c2 = num(p.get_global("list_intercol2"));
+            let w = num(p.get_path("menu.width"));
+            assert!((c2 - col2).abs() < 0.01 && (w - width).abs() < 0.01, "open {open}: list_intercol2 {c2} width {w}");
+        }
+    }
 }
+
 
 /// `hud/hud.swf` driven from the port's HUD state.
 pub struct FlashHud {
