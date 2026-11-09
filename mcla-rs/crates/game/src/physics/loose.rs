@@ -4651,8 +4651,8 @@ impl LooseState {
     }
 }
 
-/// An active ambient car's wheels (slot 14 F-37370 -> F-19974, per wheel): a probe from the
-/// wheel's bone straight down the car to half a metre under its floor (F-18688 -> F-57005,
+/// An active ambient car's wheels (slot 14 F-37370 -> F-19974, per wheel): a probe from half a metre
+/// above to half a metre below the wheel's place in the car's floor plane (its x and z; F-18688 -> F-57005,
 /// the ground; a polygon steeper than 45 degrees is no hit); the spring along the hit's normal with a
 /// constant quarter of the car's weight on top, its push when it is past its travel; the tyre's
 /// stretch across the normal against the slip - the front pair's whole, the others' less their rolling
@@ -4669,8 +4669,10 @@ fn ambient_wheels(a: &mut Amb, b: &mut PBody, m: &[Vec3; 4], city: &super::colli
     let gj = |a: Vec3, b: Vec3| zxy(a) * yzx(b) - yzx(a) * zxy(b);
     for (i, w) in t.wheels.iter().enumerate().take(6) {
         let rec = &mut a.wheels[i];
+        // (F-18688 with f1 0.5 from F-37370: base +- 0.5 the up row, the wheel's height not used; the spring's
+        // zero the segment's middle, (start + end) x 0.5 - the wheel's base itself)
         let base = (x * w.x + p) + z * w.z;
-        let top = base + u * w.y;
+        let top = base + u * 0.5;
         let bottom = base - u * 0.5;
         let mid = (top + bottom) * 0.5;
         let seg = bottom - top;
