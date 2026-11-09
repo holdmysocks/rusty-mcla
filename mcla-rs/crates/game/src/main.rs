@@ -9265,17 +9265,22 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             Some((_, back)) => back,
                             None => (self.game.opt_x.ctrl.kbd.binds.down(crate::keybinds::LOOKBACK, |k| self.input.down(k)) || self.cam_mode == 9 || self.pad_look.1 < -0.6) && matches!(self.game.mode, Mode::FreeRoam | Mode::Race),
                         };
-                        // the look back's on (F-39925): refused while the wipeout camera runs or the event
-                        // camera shows event 11, 12 or >= 14 (approx.: the off is taken as never refused);
-                        // in a chase view it ends the event (F-94591(0, -1, -1)) and cuts to the reverse
+                        // the look back (F-39925, run every frame with on = LOOKBACK held, F-67519): refused, on or off
+                        // alike, while the wipeout camera runs or the event camera shows event 11, 12 or >= 14 - its
+                        // refusals come before the on / off, so a release while they hold leaves the look back on until
+                        // they clear; in a chase view the on ends the event (F-94591(0, -1, -1)) and cuts to the reverse
                         // camera over the director's blend: the event view is gone at once (recorded,
                         // docs/reference/cameras/recorded_blends_evidence.md)
-                        if self.look_back && !was_back && replay_drive.is_none() {
+                        if self.look_back != was_back && replay_drive.is_none() {
                             let refused = self.crash_cam.active(&self.cam_switch.blend) || matches!(self.event_dir.event(), Some(e) if e == 11 || e == 12 || e >= 14);
                             if refused {
-                                self.look_back = false;
-                            } else if boomcam::VIEW_OF_PORT[(mode as usize).min(5)] >= 2 && (self.event_dir.running() || self.event_dir.leaving(&self.cam_switch.blend)) {
+                                self.look_back = was_back;
+                            } else if self.look_back && boomcam::VIEW_OF_PORT[(mode as usize).min(5)] >= 2 && (self.event_dir.running() || self.event_dir.leaving(&self.cam_switch.blend)) {
                                 self.event_dir.cut_out();
+                            } else if !self.look_back && boomcam::VIEW_OF_PORT[(mode as usize).min(5)] < 2 {
+                                // (the off on the bumper / cockpit clears that camera's turn and pitch +452 / +456; the
+                                // player camera's held angles stay)
+                                (self.look.yaw, self.look.pitch) = (0.0, 0.0);
                             }
                         }
                         // (a change of view blends or cuts, a look back cuts - mcPlayerCamera; the
@@ -9377,8 +9382,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 // it is not the one shown, in every view, F-36289; a replay's are run ahead of its director)
                                 if shown != 5 && self.game.replay.is_none() {
                                     if let Some(rt) = set.reverse.as_ref() {
-                                        // (with the words it holds: the look back's turn, or the reset's 0)
-                                        let rat = self.view_booms[5].held_target(&boomcam::BoomTarget { rev: true, fixed_mount: false, ..at });
+                                        // (no look-around words: the look back's off clears its turn and pitch, F-39925)
+                                        let rat = boomcam::BoomTarget { rev: true, pan: (0.0, 0.0), rise: 0.0, fixed_mount: false, ability: (0.0, 1.0), ..at };
                                         for _ in 0..frames.max(1) {
                                             self.view_booms[5].step(rt, &rat, &g, 1.0 / 30.0, 30.0);
                                         }
