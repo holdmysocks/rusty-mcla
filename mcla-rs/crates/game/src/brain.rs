@@ -22,11 +22,25 @@ pub struct OpponentInput {
     pub cur: Pedals,
 }
 
-fn approach(cur: f32, target: f32, step: f32) -> f32 {
+/// One pedal of F-94408: below the target `cur + rate x dt` fused (fmadds), not past the target; above it
+/// `-(rate x dt - cur)` fused (fnmsubs: -0 at dt 0 from +0), not below; equal (or NaN) as it is.
+fn approach(cur: f32, target: f32, rate: f32, dt: f32) -> f32 {
     if cur < target {
-        (cur + step).min(target)
+        let c = rate.mul_add(dt, cur);
+        if c > target {
+            target
+        } else {
+            c
+        }
+    } else if cur > target {
+        let c = -rate.mul_add(dt, -cur);
+        if c < target {
+            target
+        } else {
+            c
+        }
     } else {
-        (cur - step).max(target)
+        cur
     }
 }
 
@@ -41,15 +55,14 @@ impl OpponentInput {
     pub fn update(&mut self, target: Pedals, collision: bool, dt: f32) -> Pedals {
         let c = &mut self.cur;
         // ((cur - target) x cur >= 0: the wheel comes back towards the middle)
-        let mut rate = if (c.steer - target.steer) * c.steer >= 0.0 { Self::STEER_BACK } else { Self::STEER_OUT };
-        if collision {
-            rate *= 0.5;
-        }
-        c.steer = approach(c.steer, target.steer, rate * dt);
-        c.throttle = approach(c.throttle, target.throttle, Self::THROTTLE * dt);
-        let br = if target.brake > c.brake { Self::BRAKE_ON } else { Self::BRAKE_OFF };
-        c.brake = approach(c.brake, target.brake, br * dt);
-        c.handbrake = approach(c.handbrake, target.handbrake, Self::HANDBRAKE * dt);
+        // (fsel: a NaN takes the second rate)
+        let rate = if (c.steer - target.steer) * c.steer >= 0.0 { Self::STEER_BACK } else { Self::STEER_OUT };
+        let rate = rate * if collision { 0.5 } else { 1.0 };
+        c.steer = approach(c.steer, target.steer, rate, dt);
+        c.throttle = approach(c.throttle, target.throttle, Self::THROTTLE, dt);
+        let br = if target.brake - c.brake >= 0.0 { Self::BRAKE_ON } else { Self::BRAKE_OFF };
+        c.brake = approach(c.brake, target.brake, br, dt);
+        c.handbrake = approach(c.handbrake, target.handbrake, Self::HANDBRAKE, dt);
         if c.throttle > 0.0 {
             c.brake = 0.0;
         }
@@ -1315,6 +1328,32 @@ pub fn run(v: &mut crate::vehicles::Vehicles, i: usize, brain: &mut Brain, to_go
 
 #[cfg(test)]
 mod tests {
+
+    /// mcOpponentInput's update F-94408 run offline (tools/pedal_slew_reference.py, docs/reference/ai/verify_pedal_slew.md):
+    /// the held pedals and what goes to the chassis.
+    #[test]
+    fn pedal_slew_matches_the_original() {
+        let u = |s: &str| u32::from_str_radix(&s.replace('_', ""), 16).unwrap();
+        let f = |s: &str| f32::from_bits(u(s));
+        let (mut n, mut bad) = (0, 0);
+        for line in include_str!("testdata/pedal_slew_ref.txt").lines() {
+            let (lhs, rhs) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = lhs.split_whitespace().skip(1).collect();
+            let o: Vec<u32> = rhs.split_whitespace().map(u).collect();
+            let p = |k: usize| Pedals { steer: f(w[k]), throttle: f(w[k + 1]), brake: f(w[k + 2]), handbrake: f(w[k + 3]) };
+            let mut inp = OpponentInput { cur: p(2) };
+            let q = inp.update(p(6), u(w[0]) != 0, f(w[1]));
+            let got = [q.steer, q.throttle, q.brake, q.handbrake].map(f32::to_bits);
+            n += 1;
+            if got[..] != o[..4] || got[..] != o[4..] {
+                if bad < 5 {
+                    eprintln!("{line}\n   port {:08x?}", got);
+                }
+                bad += 1;
+            }
+        }
+        assert_eq!((n, bad), (6000, 0));
+    }
     use super::*;
 
     /// The cop brain's attach F-43897 ends in the racing brain's Clear F-76382; the port makes a new `Brain::police` at each
@@ -1464,8 +1503,12 @@ mod tests {
         // (from the middle (cur - target) x cur is 0: the fsel at A-57478 takes the 4 /s rate)
         assert!((p.steer - 4.0 / 60.0).abs() < 1e-6);
         let p = i.update(Pedals { throttle: 0.0, brake: 1.0, handbrake: 0.0, steer: 0.0 }, true, dt);
-        // (steer back at 4 /s halved; the throttle falls to 0 in that frame, so the brake rises at 2 /s)
+        // (steer back at 4 /s halved; the throttle's fused step down leaves the rounding of 35 x dt (9.3e-9, as
+        // the original's fnmsubs does - verify_pedal_slew.md), still above 0, so the brake is held at 0 a frame more)
         assert!((p.steer - (4.0 - 2.0) / 60.0).abs() < 1e-6);
+        assert_eq!(p.throttle, 9.313226e-9);
+        assert_eq!(p.brake, 0.0);
+        let p = i.update(Pedals { throttle: 0.0, brake: 1.0, handbrake: 0.0, steer: 0.0 }, true, dt);
         assert_eq!(p.throttle, 0.0);
         assert!((p.brake - 2.0 / 60.0).abs() < 1e-6);
         let p = i.update(Pedals { throttle: 0.2, brake: 1.0, handbrake: 0.0, steer: 0.0 }, false, dt);
