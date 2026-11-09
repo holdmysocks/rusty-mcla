@@ -849,14 +849,16 @@ impl Seq {
     /// The node whose op is on top of the stack for node `n` after the optimizer (F-94730): a
     /// blend whose weight is <= 0.001 in size, or whose child 1 is op 12, leaves child 0; a blend without a filter whose
     /// weight is >= 0.999, or whose child 0 is op 12, leaves child 1; an add-subtract of weight <= 0.001 in size or with
-    /// child 1 op 12 leaves child 0.
+    /// child 1 op 12 leaves child 0; a NaN weight counts as <= 0.001 (checked against the original offline,
+    /// test the_optimizer_matches_the_original).
     fn kept(&self, n: usize) -> usize {
         match &self.nodes[n] {
             Node::Blend { weight, filter, kids: [Some(a), Some(b)], .. } => {
                 let (a, b) = (self.kept(*a), self.kept(*b));
-                if weight.abs() <= W_LO || self.no_clip(b) {
+                // (the original's ble / bge also branch on an unordered compare: a NaN weight leaves child 0)
+                if !(weight.abs() > W_LO) || self.no_clip(b) {
                     a
-                } else if filter.is_none() && (*weight >= W_HI || self.no_clip(a)) {
+                } else if filter.is_none() && (!(*weight < W_HI) || self.no_clip(a)) {
                     b
                 } else {
                     n
@@ -864,7 +866,7 @@ impl Seq {
             }
             Node::Add { weight, kids: [Some(a), Some(b)], .. } => {
                 let (a, b) = (self.kept(*a), self.kept(*b));
-                if weight.abs() <= W_LO || self.no_clip(b) {
+                if !(weight.abs() > W_LO) || self.no_clip(b) {
                     a
                 } else {
                     n
@@ -1368,6 +1370,57 @@ mod tests {
         }
         assert_eq!(bad, 0, "{bad} of {n} DOFs differ");
         assert!(n > 10_000, "{n}");
+    }
+
+    /// The optimizer F-94730 against the original's code run offline (work/driverlight/opt/opt_ref.py): 4,000 random
+    /// op lists of blends, adds, clip / clip-less animations and identities, the weights around 0.001 / 0.999 and NaN,
+    /// with and without a filter; the ops the original leaves in its list are the port's tree after `kept`, in post-order.
+    #[test]
+    fn the_optimizer_matches_the_original() {
+        let text = include_str!("testdata/drvanim_opt_ref.txt");
+        fn emit(s: &Seq, n: usize, out: &mut Vec<usize>) {
+            let n = s.kept(n);
+            if let Node::Blend { kids: [Some(a), Some(b)], .. } | Node::Add { kids: [Some(a), Some(b)], .. } = &s.nodes[n] {
+                emit(s, *a, out);
+                emit(s, *b, out);
+            }
+            out.push(n);
+        }
+        let (mut cases, mut dropped) = (0, 0);
+        for line in text.lines() {
+            let (ops, left) = line.split_once(" -> ").unwrap();
+            let mut s = Seq::default();
+            let mut st: Vec<usize> = Vec::new();
+            for tok in ops.split(' ') {
+                let f: Vec<&str> = tok.split(':').collect();
+                let w = f32::from_bits(u32::from_str_radix(f[1], 16).unwrap());
+                let filter = (f[2] == "1").then_some(Filter::Spine);
+                let node = match u32::from_str_radix(f[0], 16).unwrap() {
+                    1 => Node::Anim(Player { clip: Some(Clip { id: 1, dur: 1.0, flags: 0 }), ..Default::default() }),
+                    12 => Node::Anim(Player::default()),
+                    13 => Node::Identity,
+                    op => {
+                        let b = st.pop().unwrap();
+                        let a = st.pop().unwrap();
+                        if op == 4 {
+                            Node::Blend { weight: w, rate: 0.0, destroy: false, filter, kids: [Some(a), Some(b)] }
+                        } else {
+                            Node::Add { weight: w, rate: 0.0, filter, kids: [Some(a), Some(b)] }
+                        }
+                    }
+                };
+                s.nodes.push(node);
+                st.push(s.nodes.len() - 1);
+            }
+            assert_eq!(st.len(), 1, "{line}");
+            let mut got = Vec::new();
+            emit(&s, st[0], &mut got);
+            let want: Vec<usize> = left.split(' ').map(|x| x.parse().unwrap()).collect();
+            assert_eq!(got, want, "{line}");
+            cases += 1;
+            dropped += (s.nodes.len() != want.len()) as usize;
+        }
+        assert!(cases == 4000 && dropped > 1000, "{cases} {dropped}");
     }
 
     /// The unfiltered add-subtract F-89611 ('U') and the add dispatcher F-97665 with no filter and one layout ('D')
