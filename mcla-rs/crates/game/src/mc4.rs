@@ -12310,10 +12310,7 @@ impl Game {
     /// `o...`) need a session, the file holds 1000 records at most; a new record starts the operation from zero
     /// (1 and 2 take the value). True when the record was written.
     pub fn mc4_stat_submit(&mut self, code: &str, sub: u32, op: u8, v: f64) -> bool {
-        if self.goal_attack && self.race.is_some() {
-            return false;
-        }
-        if matches!(code.as_bytes().first(), Some(b'n' | b'o')) {
+        if stat_refused(code, crate::rewards::cheat_gate_on(), self.test_drive.is_some(), self.goal_attack && self.race.is_some()) {
             return false;
         }
         let key = format!("{code}/{}", stat_sub(code, sub));
@@ -19476,5 +19473,35 @@ mod tests {
         }
         assert_eq!(g.career.ostats.len(), STAT_RECORDS, "the file holds 1000 records");
         assert!(!g.mc4_stat_submit("kNEW", 0, 3, 1.0) && g.mc4_stat_submit("kXXX", 0, 0, 1.0), "existing records still change");
+    }
+}
+
+/// F-79933's refusals off line, before the record is looked up: everything in a goal attack race (the race's +3152);
+/// the on-line statistics (`n...` needs a session with two racers, `o...` a session: F-24338); and while the cheat gate
+/// F-68910 holds, all but the codes starting `a` or `t` and `gCOL` (its first four characters), unless a
+/// showroom test drive runs (F-64975's byte, set by its start F-22067). Checked offline: `stat_refusal_matches_the_original`.
+pub fn stat_refused(code: &str, cheat_gate: bool, test_drive: bool, goal_attack_race: bool) -> bool {
+    let c = code.as_bytes();
+    if goal_attack_race || matches!(c.first(), Some(b'n' | b'o')) {
+        return true;
+    }
+    cheat_gate && !test_drive && !matches!(c.first(), Some(b'a' | b't')) && c.get(..4) != Some(b"gCOL".as_slice())
+}
+
+#[cfg(test)]
+mod stat_refusal_tests {
+    /// The submit run offline as generated (tools/stat_refusal_reference.py): 37 codes x gate off / nitro / never damage
+    /// out x test drive x goal attack race, written or refused.
+    #[test]
+    fn stat_refusal_matches_the_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/stat_refusal_ref.txt").lines() {
+            let (k, r) = l.split_once(" -> ").unwrap();
+            let f: Vec<&str> = k.split(' ').collect();
+            let refused = super::stat_refused(f[0], f[1] != "0", f[2] == "1", f[3] == "1");
+            assert_eq!(!refused, r == "1", "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 444);
     }
 }

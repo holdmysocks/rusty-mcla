@@ -1128,8 +1128,10 @@ impl Career {
         if matches!(ev, Ev::Rep(_)) && self.mute_tips > 0 {
             self.mute_tips -= 1;
         }
+        // (the statistics below are refused while the cheat gate holds - F-79933: `mc4::stat_refused`)
+        let stats_ok = !crate::rewards::cheat_gate_on();
         match ev {
-            Ev::Race { place, class, district, .. } => {
+            Ev::Race { place, class, district, .. } if stats_ok => {
                 if place == 1 {
                     *self.stats.entry("wins".into()).or_default() += 1;
                     if let Some(s) = class_stat(class) {
@@ -1142,8 +1144,8 @@ impl Career {
                     }
                 }
             }
-            Ev::Delivery => *self.stats.entry("xCDL".into()).or_default() += 1,
-            Ev::Money(m) => *self.stats.entry("k$WA".into()).or_default() += m.max(0),
+            Ev::Delivery if stats_ok => *self.stats.entry("xCDL".into()).or_default() += 1,
+            Ev::Money(m) if stats_ok => *self.stats.entry("k$WA".into()).or_default() += m.max(0),
             Ev::Rep(r) => {
                 self.rep = r;
                 self.resolve_pending();
