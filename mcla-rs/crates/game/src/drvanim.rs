@@ -924,27 +924,45 @@ impl Seq {
 
 // ---- the clip sampler: a clip at time t into a frame (F-47152 -> F-40465 -> without a filter F-12216), DOF by track.
 
-/// The key index and the fraction for time `t` (F-47152, F-10710 / F-30330, F-12216): frame = (frames - 1) / duration x t,
-/// clamped to [0, frames - 1]; less the block's start (block 0 here), clamped to [0, block length + 1]; the key index the
-/// floor of it clamped to [0, block frames - 2], the fraction what is left clamped to [0, 1].
+/// The key index and the fraction for time `t` (F-47152, F-10710 / F-30330, F-12216), in the block `sample_block` picks.
 pub fn sample_pos(a: &mcla_formats::rage::anim::Animation, t: f32) -> (usize, f32) {
+    let (_, i, fr) = sample_block(a, t);
+    (i, fr)
+}
+
+/// The tracks of block `b` (a clip of one block: its tracks).
+pub fn block_tracks(a: &mcla_formats::rage::anim::Animation, b: usize) -> &[mcla_formats::rage::anim::Track] {
+    a.block_tracks.get(b).filter(|_| a.blocks > 1).map_or(&a.tracks[..], |t| &t[..])
+}
+
+/// The block, the key index and the fraction for time `t` (F-47152, F-10710 / F-30330, F-12216): frame = (frames - 1) /
+/// duration x t, clamped to [0, frames - 1]; the block F-10710 = the frame / the block length (+0a, single), truncated, its
+/// low 16 bits, at most blocks - 1; less the block's start (F-30330: fnms(block length, block, frame)), clamped to [0, block
+/// length + 1]; the key index the floor of it clamped to [0, the block's frames (+10) - 2], the fraction what is left
+/// clamped to [0, 1].
+pub fn sample_block(a: &mcla_formats::rage::anim::Animation, t: f32) -> (usize, usize, f32) {
     let last = (a.frames as i64 - 1) as f32;
     let pos = (last / a.duration) * t;
     let pos = fsel(pos, pos, 0.0);
     let pos = fsel(pos - last, last, pos);
-    let blk = 0.0f32;
+    // (F-10710: fdivs, fctidz - a NaN gives the integer 0x8000_0000_0000_0000 - then lhz of the low half, cmplw)
+    let q = pos / a.block_len as f32;
+    let iv: i64 = if q.is_nan() { i64::MIN } else { q as i64 };
+    let b = (iv as u16).min(a.blocks.wrapping_sub(1));
+    let blk = b as f32;
     let local = fnms(a.block_len as f32, blk, pos);
     let local = fsel(local, local, 0.0);
     let hi = (a.block_len as i64 + 1) as f32;
     let local = fsel(local - hi, hi, local);
     let fl = (local as f64).floor() as f32;
     let fl = fsel(fl, fl, 0.0);
-    let top = (a.block0_frames as i64 - 2) as f32;
+    let bf = a.block_frames.get(b as usize).copied().unwrap_or(a.block0_frames);
+    let top = (bf as i64 - 2) as f32;
     let fl = fsel(fl - top, top, fl);
     let i = fl as i64 as i32;
     let fr = local - i as f32;
     let fr = fsel(fr, fr, 0.0);
-    (i.max(0) as usize, fsel(fr - 1.0, 1.0, fr))
+    (b as usize, i.max(0) as usize, fsel(fr - 1.0, 1.0, fr))
 }
 
 /// A float channel at key `i` and fraction `fr`: a static float; a raw one a + (b - a) fr (fused); a quantised one the same on
@@ -1684,6 +1702,70 @@ mod tests {
         }
         assert_eq!(bad, 0, "{bad} of {n} DOFs differ");
         assert!(cases > 1000 && ops.iter().all(|&x| x > 300), "{cases} {ops:?}");
+    }
+
+    /// The block step of the sampler (F-10710 / F-30330) against the original's code run offline on clips of several blocks
+    /// (work/driverlight/msamp/msample_ref.py: the 456 driver clips of more than one block are in 279 packs; 12 of those packs,
+    /// times on and about the block edges, on keys, at the ends and random): 'S' the same-layout loop and 'M' the mapped loop
+    /// kept in the testdata (the harness also runs the lookup and filtered ones), each DOF of the clip's first block as the
+    /// frame; 864 samples, every DOF's words. Skipped without the disc's data.
+    #[test]
+    fn the_block_step_matches_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let text = include_str!("testdata/drvanim_msample_ref.txt");
+        let mut packs: std::collections::HashMap<&str, mcla_formats::rsc::Resource> = Default::default();
+        let (mut n, mut bad, mut off, mut lines, mut blocks) = (0, 0, 0, 0, std::collections::BTreeSet::new());
+        for line in text.lines() {
+            let (case, want) = line.split_once(" ->").unwrap();
+            let mut it = case.split_whitespace();
+            let pack = it.next().unwrap();
+            if !packs.contains_key(pack) {
+                let Ok(d) = std::fs::read(std::path::Path::new(&root).join("resources/animation").join(pack)) else {
+                    return;
+                };
+                let vs = u32::from_le_bytes(d[12..16].try_into().unwrap()) as usize;
+                let data = d[16..].to_vec();
+                packs.insert(pack, mcla_formats::rsc::Resource { rtype: 2, flags: 0, virtual_size: vs, physical_size: data.len() - vs, data });
+            }
+            let rd = mcla_formats::rage::Rd::new(&packs[pack]);
+            let o = usize::from_str_radix(it.next().unwrap(), 16).unwrap();
+            let t = f32::from_bits(u32::from_str_radix(it.next().unwrap(), 16).unwrap());
+            let mode = it.next().unwrap();
+            let mask: Vec<u16> = it.next().map_or(vec![], |m| m.split(',').filter(|x| !x.is_empty()).map(|x| u16::from_str_radix(x, 16).unwrap()).collect());
+            let want: Vec<u32> = want.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let a = mcla_formats::rage::anim::animation_named(&rd, o).unwrap();
+            assert!(a.blocks > 1, "{line}");
+            let (b, i, fr) = sample_block(&a, t);
+            blocks.insert((pack, o, b));
+            let frame = block_tracks(&a, 0);
+            let tracks = block_tracks(&a, b);
+            assert_eq!(want.len(), 5 * frame.len(), "{line}");
+            lines += 1;
+            for (k, f) in frame.iter().enumerate() {
+                let quat = matches!(f.kind, 1 | 6);
+                let w = &want[5 * k..5 * k + 5];
+                if mode == "F" && f.kind <= 1 && !mask.contains(&f.bone_id) {
+                    off += 1;
+                    continue;
+                }
+                let mut dof = FrameDof { flags: quat as u8 | DOF_NO_VALUE, v: [0.0; 4] };
+                if let Some(tr) = tracks.iter().find(|x| (x.kind, x.bone_id) == (f.kind, f.bone_id)) {
+                    sample_track_in(tr, i, fr, &mut dof, mode == "M" || mode == "F");
+                }
+                let got = [dof.flags as u32, dof.v[0].to_bits(), dof.v[1].to_bits(), dof.v[2].to_bits(), dof.v[3].to_bits()];
+                let m = if dof.flags & DOF_NO_VALUE != 0 { 1 } else if quat || f.flags & 0xF0 != 0x10 { 5 } else { 4 };
+                n += 1;
+                if got[..m] != w[..m] {
+                    if bad < 8 {
+                        eprintln!("{mode} {case} block {b} dof {k} kind {}: got {got:08x?} want {w:08x?}", f.kind);
+                    }
+                    bad += 1;
+                }
+            }
+        }
+        assert_eq!(bad, 0, "{bad} of {n} DOFs differ");
+        assert!(lines > 800 && blocks.iter().filter(|x| x.2 > 0).count() > 20, "{lines} {}", blocks.len());
+        let _ = off;
     }
 
     /// The sampler's other loops against the original's code run offline (work/driverlight/fsamp/fsample_ref.py, the

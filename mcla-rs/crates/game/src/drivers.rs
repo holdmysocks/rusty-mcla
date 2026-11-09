@@ -185,28 +185,21 @@ impl da::Poser for RigPoser<'_> {
     fn sample(&self, clip: da::ClipId, t: f32, filtered: bool, out: &mut [FrameDof]) {
         let Some(c) = self.0.clips.get(clip as usize) else { return };
         let a = &c.anim;
-        let (i, fr) = da::sample_pos(a, t);
+        // (the block of the time, F-10710, and its own tracks: a clip of several blocks keeps each block's channels)
+        let (blk, i, fr) = da::sample_block(a, t);
+        let tracks = da::block_tracks(a, blk);
         // (F-12216's same-layout loop when the rig's frame layout is the clip's, else its mapped loop; filtered: F-80057)
         let mapped = filtered || a.layout != self.0.model.layout;
-        let f = c.frame(t, false);
         for b in 0..self.0.model.bones.len() {
             // (only the DOFs the original's frame has: the bone's record +27 a rotation, +26 a translation)
             let (has_pos, has_rot) = self.0.model.dofs.get(b).copied().unwrap_or((true, true));
             for (slot, k) in [(2 * b, c.rot[b].filter(|_| has_rot)), (2 * b + 1, c.pos[b].filter(|_| has_pos))] {
                 let Some(k) = k else { continue };
-                let tr = &a.tracks[k];
-                let d = &mut out[slot];
-                if tr.chans.is_empty() {
-                    // (a clip of several blocks: the decoder's own sampling - the sampler's block step is not ported)
-                    d.v = if slot % 2 == 0 {
-                        tr.data.rot(f).to_array()
-                    } else {
-                        let v = tr.data.vec(f);
-                        [v.x, v.y, v.z, 0.0]
-                    };
-                    d.flags &= !DOF_NO_VALUE;
-                } else {
-                    da::sample_track_in(tr, i, fr, d, mapped);
+                let key = (a.tracks[k].kind, a.tracks[k].bone_id);
+                // (the DOFs and the block's tracks merge-joined by key; a DOF without a track in the block keeps no value)
+                let tr = if a.blocks > 1 { tracks.iter().find(|x| (x.kind, x.bone_id) == key) } else { tracks.get(k) };
+                if let Some(tr) = tr {
+                    da::sample_track_in(tr, i, fr, &mut out[slot], mapped);
                 }
             }
         }

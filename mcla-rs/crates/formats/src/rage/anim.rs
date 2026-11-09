@@ -62,6 +62,11 @@ pub struct Animation {
     pub block0_frames: u16,
     /// +16: the layout signature of the clip's tracks (F-59824 over (type, kind, id) in track order)
     pub layout: u32,
+    /// a clip of several blocks: each block's own tracks with their channels (`tracks` is then the old reader's join of
+    /// them, with no channels); empty for a clip of one block
+    pub block_tracks: Vec<Vec<Track>>,
+    /// each block's frame count, its +10 as stored
+    pub block_frames: Vec<u16>,
 }
 
 pub const KIND_TRANSLATION: u8 = 0;
@@ -242,6 +247,7 @@ pub fn animation_named(rd: &Rd, o: usize) -> Option<Animation> {
     let bl = rd.ptr(o + 0x14)?;
     let mut tracks: Vec<Track> = Vec::new();
     let mut block0_frames = 0;
+    let (mut block_tracks, mut block_frames) = (Vec::new(), Vec::new());
     for b in 0..nblk {
         let blk = rd.ptr(bl + b * 4)?;
         let ta = rd.ptr(blk + 4)?;
@@ -256,7 +262,11 @@ pub fn animation_named(rd: &Rd, o: usize) -> Option<Animation> {
         if b == 0 {
             block0_frames = rd.u16(blk + 0x10);
         }
+        block_frames.push(rd.u16(blk + 0x10));
         let cur: Vec<Track> = (0..nt).filter_map(|t| track(rd, rd.ptr(ta + t * 4)?, bf)).collect();
+        if nblk > 1 {
+            block_tracks.push(cur.clone());
+        }
         if nblk == 1 {
             tracks = cur;
             break;
@@ -282,7 +292,7 @@ pub fn animation_named(rd: &Rd, o: usize) -> Option<Animation> {
             }
         }
     }
-    Some(Animation { name, frames, duration, looped: rd.u16(o + 4) & 1 != 0, tracks, block_len: rd.u16(o + 0x0a), blocks: nblk as u16, block0_frames, layout: rd.u32(o + 16) })
+    Some(Animation { name, frames, duration, looped: rd.u16(o + 4) & 1 != 0, tracks, block_len: rd.u16(o + 0x0a), blocks: nblk as u16, block0_frames, layout: rd.u32(o + 16), block_tracks, block_frames })
 }
 
 /// The animation called exactly `name` inside a resource whose animations carry plain names
