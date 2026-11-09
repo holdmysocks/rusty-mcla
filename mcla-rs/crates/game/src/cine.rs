@@ -610,8 +610,10 @@ fn aux_pack(scene: &str) -> Option<&'static str> {
 /// The set a cutscene draws for `set` (LookupDriverToCutscenePath / Name, F-58832 / F-81189): the character manager's
 /// map +116 (the HackedScale column of Boot.sco's RegisterDriverMappings), and when the local player's car is a motorcycle
 /// (F-17373, which with a player there stands for the script's own argument) the map +140 (the jacket column) - in the 45
-/// mappings they differ only for the player's `drv_mp_01_set`: `drv_mp_jacket_01_set_hackedscale` on a bike. Not ported: a
-/// slot marked to use the unscaled character (CineScript_Characters_GetSlotToUseUnscaledCharacter); GH_06 marks no slot.
+/// mappings they differ only for the player's `drv_mp_01_set`: `drv_mp_jacket_01_set_hackedscale` on a bike. Every slot: the
+/// core keeps the plain set only for a record tied to a racer whose slot is marked unscaled (the byte F-99281 reads), and no shipped
+/// scene marks one (the marks come from the generic casts, whose records have no racer; FinishScene clears them) - checked
+/// over all 315 scene scripts, docs/reference/cutscenes/unscaled_slot.md.
 fn cutscene_set(set: &str, bike: bool) -> String {
     if bike && set.eq_ignore_ascii_case("drv_mp_01_set") {
         return "drv_mp_jacket_01_set_hackedscale".to_string();
