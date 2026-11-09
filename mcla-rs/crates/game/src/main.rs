@@ -9307,7 +9307,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             lookback_scene(&mut self.look_scene, self.audio.as_mut(), false);
                         }
                         if self.look_back && chase && replay_drive.is_none() && self.crash_bits == 0 && !self.crash_cam.active(&self.cam_switch.blend) {
-                            let air = render_state.airborne_time;
+                            // (chassis vt+52 = +584, the air time: negative in the tick of a landing)
+                            let air = render_state.veh.as_ref().map_or(render_state.airborne_time, |v| v.air584());
                             if air > 0.25 {
                                 if cinematic && self.cam_switch.pan != (0.0, 0.0) {
                                     let a = render_state.pos + render_state.rot * Vec3::Y * 0.5;
@@ -9422,7 +9423,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             steer: car.input.steer,
                             front_z: if front_z.is_finite() { front_z } else { 0.0 },
                             slope: boomcam::TrackCar::slope_of(render_state.rot, &render_state.wheels),
-                            air_time: render_state.airborne_time,
+                            air_time: render_state.veh.as_ref().map_or(render_state.airborne_time, |v| v.air584()),
                             // (mcCarAero +4: AeroDampFactor while wiped out and over 4.47 m/s)
                             aero: if self.crash_bits & 0x10 != 0 && render_state.speed() > 4.47 { car.model.simtunes.as_ref().map_or(1.0, |s| s.base.s.aero_damp_factor) } else { 1.0 },
                             model_offset_y: car.model.simtunes.as_ref().map_or(0.75, |s| s.base.s.model_offset_y),
@@ -9452,7 +9453,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let (zmin, zmax) = zs.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &z| (a.min(z), b.max(z)));
                         // (the chassis' wheel 0 is the first front wheel, wheel 1 the first back one)
                         let first_down = |z0: f32| zs.iter().position(|&z| (z - z0).abs() < 0.05).map_or(true, |i| render_state.wheels[i].grounded);
-                        let air_time = render_state.airborne_time;
+                        // (the chooser's and the tuck's air time: chassis vt+52 = +584, negative in the tick of a landing)
+                        let air_time = render_state.veh.as_ref().map_or(render_state.airborne_time, |v| v.air584());
                         let ein = boomcam::EventIn {
                             allowed,
                             view: boomcam::VIEW_OF_PORT[(mode as usize).min(5)] as u8,
