@@ -4295,6 +4295,49 @@ pub(super) fn rope_local(m: &[Vec3; 4], p: Vec3, part: Option<&[Vec3; 4]>) -> Ve
     Vec3::new(l.0[0], l.0[1], l.0[2])
 }
 
+/// F-83853's wake test for an inactive side: the two world points farther apart than the
+/// length + 0.01 (squared, the sum in vmsum3fp's order; NaN is not far).
+fn rope_far(pa: Vec3, pb: Vec3, len: f32) -> bool {
+    let d = pa - pb;
+    let lim = len + 0.01;
+    dot3(d, d) > lim * lim
+}
+
+/// F-83853's contact on the max-distance path: none for a slack rope (err < 0); else the kind
+/// (1 for a length below 0.01, else 2), the depth min(err, +164) by `err > +164` with the allowed
+/// depth on top (+320 = 0) and the excess past +164.
+fn rope_depth(err: f32, len: f32) -> Option<(u8, f32, f32)> {
+    if err < 0.0 {
+        return None;
+    }
+    let (depth, excess) = if err > ROPE_DEPTH { (ROPE_DEPTH, err - ROPE_DEPTH) } else { (err, 0.0) };
+    Some((if len < 0.01 { 1 } else { 2 }, depth + solver::ALLOW, excess))
+}
+
+/// F-64595, the excess split between the two sides' direct pushes (collider slot 27): with both,
+/// by the squared inverse masses (the larger's share 1 / (sqrt(small / large) + 1), the other the
+/// rest, equal halves), A along the normal and B against it; with one side only, all of it.
+fn rope_push(ia: Option<f32>, ib: Option<f32>, n: Vec3, e: f32) -> [Option<Vec3>; 2] {
+    match (ia, ib) {
+        (Some(ia), Some(ib)) => {
+            let (sa, sb) = (ia * ia, ib * ib);
+            let (wa, wb) = if sa > sb {
+                let wa = 1.0 / ((sb / sa).sqrt() + 1.0);
+                (wa, 1.0 - wa)
+            } else if sb > sa {
+                let wb = 1.0 / ((sa / sb).sqrt() + 1.0);
+                (1.0 - wb, wb)
+            } else {
+                (0.5, 0.5)
+            };
+            [Some(n * (wa * e)), Some(n * (-(wb * e)))]
+        }
+        (Some(_), None) => [Some(n * e), None],
+        (None, Some(_)) => [None, Some(n * (-e))],
+        (None, None) => [None, None],
+    }
+}
+
 /// A constraint between two ambient cars (rage::phConstraint, max distance: F-44049): the
 /// owner (the car that was activated, +3592 .. +3600), its two cars, a point in each one's frame
 /// (+80 / +96) and the length (+160); +164 = 0.6 (F-31401), +320 = 0, +328 = -1 (never
@@ -4574,11 +4617,7 @@ impl LooseState {
         for r in ropes {
             let (Some(oa), Some(ob)) = (self.amb_obj(r.a), self.amb_obj(r.b)) else { continue };
             let (pa, pb) = (xf(&self.objs[oa].matrix, r.la), xf(&self.objs[ob].matrix, r.lb));
-            let far = |pa: Vec3, pb: Vec3| {
-                let d = pa - pb;
-                let lim = r.len + 0.01;
-                dot3(d, d) > lim * lim
-            };
+            let far = |pa: Vec3, pb: Vec3| rope_far(pa, pb, r.len);
             if self.objs[oa].body.is_none() {
                 if !far(pa, pb) {
                     continue;
@@ -4595,30 +4634,13 @@ impl LooseState {
             if rope_dbg() {
                 eprintln!("ROPE tick {} {} -> {} len {} err {:.4} active {} {} island-to-be", self.tick, r.a, r.b, r.len, err, self.objs[oa].body.is_some(), self.objs[ob].body.is_some());
             }
-            if err < 0.0 {
-                continue;
-            }
-            let kind = if r.len >= 0.01 { 2 } else { 1 };
-            let (depth, excess) = if err > ROPE_DEPTH { (ROPE_DEPTH, err - ROPE_DEPTH) } else { (err, 0.0) };
-            // (+320 = 0: the allowed depth on top)
-            let depth = depth + solver::ALLOW;
+            let Some((kind, depth, excess)) = rope_depth(err, r.len) else { continue };
             if excess > 0.0 {
-                let (ia, ib) = (self.objs[oa].body.map_or(0.0, |b| b.inv_mass), self.objs[ob].body.map_or(0.0, |b| b.inv_mass));
-                let (sa, sb) = (ia * ia, ib * ib);
-                let (wa, wb) = if sa > sb {
-                    let wa = 1.0 / ((sb / sa).sqrt() + 1.0);
-                    (wa, 1.0 - wa)
-                } else if sb > sa {
-                    let wb = 1.0 / ((sa / sb).sqrt() + 1.0);
-                    (1.0 - wb, wb)
-                } else {
-                    (0.5, 0.5)
-                };
-                if let Some(b) = self.objs[oa].body.as_mut() {
-                    b.push = solver::direct(b.push, n * (wa * excess));
-                }
-                if let Some(b) = self.objs[ob].body.as_mut() {
-                    b.push = solver::direct(b.push, n * (-(wb * excess)));
+                let pushes = rope_push(self.objs[oa].body.map(|b| b.inv_mass), self.objs[ob].body.map(|b| b.inv_mass), n, excess);
+                for (o, p) in [(oa, pushes[0]), (ob, pushes[1])] {
+                    if let (Some(b), Some(p)) = (self.objs[o].body.as_mut(), p) {
+                        b.push = solver::direct(b.push, p);
+                    }
                 }
             }
             let side = |m: &[Vec3; 4], p: Vec3| Side { body: None, point: p, local: inv(m, p - m[3]), rows: [m[0], m[1], m[2]], margin: 0.04, core: Vec3::ZERO };
@@ -5266,6 +5288,85 @@ mod piece_tests {
         }
         assert_eq!(seen, [600, 1000]);
         assert!(bad.is_empty(), "{} mismatches, first {:?}", bad.len(), &bad[..bad.len().min(2)]);
+    }
+
+    /// The constraint update F-83853 on the semi's ropes (tools/rope_update_reference.py, testdata/rope_update_ref.txt:
+    /// the constraint made by F-31401 / F-44049 / F-95940 as F-15252 makes it, then one update): the points in each
+    /// instance's frame (rope_local), back to the world (xf), the wake of each inactive side when the points are far
+    /// (A first, nothing more when one is not), the kind, the record's points, normal, back, depth and friction /
+    /// elasticity (+100 / +104: 0, 0), and the push split (F-64595) handed to each collider - x, y and z equal as
+    /// values (a composite's identity part gives a -0 lane the port's point has as +0). Cases the port has no counterpart for are counted, not compared: a failed
+    /// wake, a level index 0xFFFF, a part matrix that is not the identity.
+    #[test]
+    fn rope_update_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(&x.replace('_', ""), 16).unwrap();
+        let f = |w: u32| f32::from_bits(w);
+        let mat = |w: &[u32], o: usize| -> [Vec3; 4] { std::array::from_fn(|r| Vec3::new(f(w[o + 4 * r]), f(w[o + 4 * r + 1]), f(w[o + 4 * r + 2]))) };
+        let v = |w: &[u32], o: usize| Vec3::new(f(w[o]), f(w[o + 1]), f(w[o + 2]));
+        let ident: [u32; 16] = [0x3f80_0000, 0, 0, 0, 0, 0x3f80_0000, 0, 0, 0, 0, 0x3f80_0000, 0, 0, 0, 0, 0];
+        let (mut n_cmp, mut n_skip, mut rets, mut bad) = (0, 0, [0usize; 3], Vec::new());
+        for line in include_str!("testdata/rope_update_ref.txt").lines() {
+            let (lhs, rhs) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = lhs.split(' ').skip(1).map(h).collect();
+            let (log, rest) = rhs.split_once("| ret ").unwrap();
+            let (head, rec) = rest.split_once(" | rec ").unwrap();
+            let ret = h(head.split(' ').next().unwrap());
+            let rec: Vec<u32> = rec.split(' ').map(h).collect();
+            let log: Vec<&str> = log.split_whitespace().collect();
+            let part_ok = |t: usize| w[t] != 12 || w[t + 2 + 16 * w[t + 1] as usize..t + 18 + 16 * w[t + 1] as usize] == ident;
+            if w[146] == 0xffff || w[147] == 0xffff || w[109] == 2 || w[110] == 2 || !part_ok(40) || !part_ok(74) {
+                n_skip += 1;
+                continue;
+            }
+            n_cmp += 1;
+            rets[ret as usize] += 1;
+            let side = |m: usize, p: usize, t: usize| {
+                let part = (w[t] == 12).then_some([Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO]);
+                rope_local(&mat(&w, m), v(&w, p), part.as_ref())
+            };
+            let (ma, mb, len) = (mat(&w, 0), mat(&w, 16), f(w[108]));
+            let (pa, pb) = (xf(&ma, side(0, 32, 40)), xf(&mb, side(16, 36, 74)));
+            // (the port's steps: the wakes, then the contact and the push)
+            let mut want = Vec::new();
+            let mut stop = false;
+            for (inactive, idx) in [(w[109] == 1, 5u32), (w[110] == 1, 9)] {
+                if inactive && !stop {
+                    if rope_far(pa, pb, len) { want.push(format!("wake {idx:x} 0 0 -> {:x}", if idx == 5 { 0x4000 } else { 0x4400 })); } else { stop = true; }
+                }
+            }
+            let (n, err) = rope_normal(pa, pb, len);
+            let mut ok = true;
+            let eq = |a: Vec3, r: &[u32]| a.x == f(r[0]) && a.y == f(r[1]) && a.z == f(r[2]);
+            let contact = if stop { None } else { rope_depth(err, len) };
+            let mut pushes = Vec::new();
+            match contact {
+                None => ok &= ret == 0,
+                Some((kind, depth, excess)) => {
+                    ok &= ret == kind as u32 && eq(pa, &rec[8..]) && eq(pb, &rec[12..]) && eq(n, &rec[16..]) && eq(Vec3::ZERO - n, &rec[20..]) && depth.to_bits() == rec[24] && rec[25..27] == [0, 0];
+                    if excess > 0.0 {
+                        let p = rope_push(Some(f(w[111])), Some(f(w[112])), n, excess);
+                        for (c, q) in [(0x4000, p[0]), (0x4400, p[1])] {
+                            if let Some(q) = q { pushes.push((c, q)); }
+                        }
+                    }
+                }
+            }
+            // (the log: the wakes, then each push "push <collider> <r4> <r5> x y z w")
+            let wl = want.join(" ");
+            let nw = want.iter().map(|s| s.split(' ').count()).sum::<usize>();
+            ok &= log.len() >= nw && log[..nw].join(" ") == wl;
+            let pl = &log[nw.min(log.len())..];
+            ok &= pl.len() == 8 * pushes.len();
+            if ok {
+                for (k, (c, q)) in pushes.iter().enumerate() {
+                    let r: Vec<u32> = pl[8 * k + 4..8 * k + 7].iter().map(|x| h(x)).collect();
+                    ok &= pl[8 * k] == "push" && h(pl[8 * k + 1]) == *c && eq(*q, &r);
+                }
+            }
+            if !ok { bad.push(line); }
+        }
+        assert!(n_cmp > 300 && rets.iter().all(|r| *r > 50), "{n_cmp} compared, {n_skip} skipped, returns {rets:?}");
+        assert!(bad.is_empty(), "{} of {n_cmp} mismatch, first {:?}", bad.len(), &bad[..bad.len().min(1)]);
     }
 
     /// SetVelocity F-64271 and ApplyImpulse F-50175 run offline (tools/body_setters_reference.py, flush mode as the
