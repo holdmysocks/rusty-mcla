@@ -4601,8 +4601,8 @@ impl Game {
             let step = self.rb_step.unwrap_or(0);
             let rb = &self.rubber[step.min(self.rubber.len() - 1)];
             let unordered = race.rivals_checkpoints.is_some();
-            // (seg[k] = |cp[k+1] - cp[k]| in 3D; an unordered race 200 m each - F-51033)
-            let seg: Vec<f32> = (0..n).map(|k| if unordered { 200.0 } else { race.checkpoints[k].distance(race.checkpoints[(k + 1) % n]) }).collect();
+            // (seg[k] = |cp[k] - cp[k+1]| in 3D; an unordered race 200 m each - F-51033)
+            let seg: Vec<f32> = crate::rubber::segments(&race.checkpoints, unordered);
             let chain = crate::rubber::Chain { seg: &seg, total: n };
             // (F-23349: to the checkpoint it heads for; unordered: the nearest one it has not taken,
             // the finish only when it is the last one left; 0 once finished)
@@ -4612,13 +4612,8 @@ impl Game {
                     Some(r) if own => r,
                     _ => &race.checkpoints,
                 };
-                let d = if k >= n || k >= list.len() {
-                    0.0
-                } else if unordered && k + 1 < list.len() {
-                    list[k..list.len() - 1].iter().map(|c| c.distance(pos)).fold(f32::INFINITY, f32::min)
-                } else {
-                    list[k].distance(pos)
-                };
+                // (the port's model of the ones not taken: those from k on)
+                let d = if k >= n { 0.0 } else { crate::rubber::next_dist(pos, list, k, unordered, |c| c >= k) };
                 crate::rubber::ChainPos { p: k, d }
             };
             // places (1 = first) as the race shows them
@@ -4651,7 +4646,12 @@ impl Game {
                     let me = at(i, pos, true);
                     let gap = chain.gap(me, lpos);
                     let shifted = rb.shifted_gap(gap, place[i] as i32 - place[li] as i32);
-                    let to_finish = chain.to_finish(me);
+                    // (F-52915: the plain distance to the checkpoint it heads for, never the unordered race's nearest)
+                    let own_list: &[Vec3] = race.rivals_checkpoints.as_deref().unwrap_or(&race.checkpoints);
+                    let to_finish = chain.to_finish(crate::rubber::ChainPos {
+                        p: me.p,
+                        d: own_list.get(me.p).filter(|_| me.p < n).map_or(0.0, |c| crate::rubber::dist(*c - pos, crate::rubber::YZX)),
+                    });
                     let d2 = humans.iter().map(|&h| vehicles.cars[h].state.pos.distance_squared(pos)).fold(1e8f32, f32::min);
                     let speed = vehicles.cars[i].state.vel.length();
                     let c = &mut vehicles.cars[i];
@@ -4664,12 +4664,7 @@ impl Game {
                         let cap = rb.cap(shifted, to_finish, d2, speed, max_speed);
                         let st = ai.rb.get_or_insert(crate::ai::RbState { start: pos, ..Default::default() });
                         // (+392, F-85220: from the start along the chain)
-                        let k = me.p.min(n);
-                        st.from_start = if k == 0 {
-                            pos.distance(st.start)
-                        } else {
-                            st.start.distance(race.checkpoints[0]) + seg[..k - 1].iter().sum::<f32>() + race.checkpoints[k - 1].distance(pos)
-                        };
+                        st.from_start = chain.from_start(me.p, st.start, pos, &race.checkpoints);
                         st.gap = gap;
                         st.to_finish = to_finish;
                         st.cap = cap;
@@ -8778,7 +8773,7 @@ impl Game {
                                             Some((row, idx, hsv)) if row == prow => shown(hsv, idx),
                                             _ => primary_rgb,
                                         };
-                                        r.value = swatch_value(rgb, if open == Some(prow) { (self.color_idx % strip.len()) as i32 } else { -1 }, &strip);
+                                        r.value = crate::flash_ui::swatch_with_child(swatch_value(rgb, if open == Some(prow) { (self.color_idx % strip.len()) as i32 } else { -1 }, &strip), "ColorA1_Dummy");
                                     }
                                     "SECONDARY COLOR" => {
                                         // (the second colour is listed with a fade only)
@@ -8791,7 +8786,7 @@ impl Game {
                                             (true, None) => { let p = PALETTE[self.paint_open.map_or(self.paint_b, |o| o.1) % PALETTE.len()]; crate::mc4::to_screen([p[0], p[1], p[2]]) }
                                             _ => self.paint_b_screen(),
                                         };
-                                        r.value = swatch_value(rgb_of([c[0], c[1], c[2], 1.0]), if open == Some(srow) { (self.paint_b % strip.len()) as i32 } else { -1 }, &strip);
+                                        r.value = crate::flash_ui::swatch_with_child(swatch_value(rgb_of([c[0], c[1], c[2], 1.0]), if open == Some(srow) { (self.paint_b % strip.len()) as i32 } else { -1 }, &strip), "ColorB1_Dummy");
                                     }
                                     _ => {}
                                 }
@@ -8879,7 +8874,7 @@ impl Game {
                                 let idx = self.rim_cols[k] % slots.len();
                                 let shown = self.int_open.filter(|o| o.0 == 6 + k).map_or(idx, |o| o.1 % slots.len());
                                 let rgb = (if self.int_open.map(|o| o.0) == Some(6 + k) { self.int_open_hsv } else { self.slot_hsv[6 + k] }).map_or(rgb_of(PALETTE[shown % PALETTE.len()]), |h| { let c = paint_hsv_to_rgb(h); rgb_of([c[0], c[1], c[2], 1.0]) });
-                                out.push(row(st(key, d), swatch_value(rgb, if self.int_open.map(|o| o.0) == Some(6 + k) { idx as i32 } else { -1 }, &slots)));
+                                out.push(row(st(key, d), crate::flash_ui::swatch_with_child(swatch_value(rgb, if self.int_open.map(|o| o.0) == Some(6 + k) { idx as i32 } else { -1 }, &slots), &format!("Rim{}_Dummy", k + 1))));
                             }
                             rows = out;
                         }
@@ -8901,7 +8896,8 @@ impl Game {
                                 // the original's capture work/ui2/cap/c17 - the neon square stays the record's colour over swatch 0)
                                 let own = if self.int_open.map(|o| o.0) == Some(k) { self.int_open_free } else { own };
                                 let rgb = own.filter(|o| o.0 % strip.len() == shown).map_or(strip[shown], |o| free(o.1));
-                                swatch_value(rgb, if self.int_open.map(|o| o.0) == Some(k) { idx as i32 } else { -1 }, &strip)
+                                // (Colors.sc.xml: ExtNeon_Closed / Tint_Closed each hold one child state)
+                                crate::flash_ui::swatch_with_child(swatch_value(rgb, if self.int_open.map(|o| o.0) == Some(k) { idx as i32 } else { -1 }, &strip), if k == 11 { "ExtNeon_Dummy" } else { "Tint_Dummy" })
                             };
                             let levels: Vec<String> = (1..=10).map(|k| st(&format!("Tint_{k}"), &if k == 1 { "STOCK".to_string() } else if k == 10 { "FULL".to_string() } else { format!("LEVEL {}", k - 1) })).collect();
                             rows = vec![

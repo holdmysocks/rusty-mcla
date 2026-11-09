@@ -1,8 +1,8 @@
 //! Opponent rubber banding as the original's mcRubberBandMgr does it (decoded 2026-10-21, docs/AI.md
 //! "Rubber banding"; rule file work/racerai/rubber.md).
 //!
-//! It is only a cap on the throttle a computer racer's driver asks for (mcBrainRacing sub_822BCFE0,
-//! 0x822BD544..0x822BD668: `throttle = min(throttle, cap)`). Every frame (sub_82743E28) each racer's gap
+//! It is only a cap on the throttle a computer racer's driver asks for (mcBrainRacing F-17058,
+//! A-19457..A-72963: `throttle = min(throttle, cap)`). Every frame (F-48266) each racer's gap
 //! to the best-placed human is measured along the chain of checkpoints, shifted by the racer's rank
 //! difference to that human (AheadDistOffsets / BehindDistOffsets), and turned into the cap by the
 //! tuning of the race's step (`RubberBandTune00` .. `RubberBandTune10` in `tune/career`).
@@ -22,7 +22,7 @@ pub struct RubberBand {
     pub behind_max_throttle: f32,
     pub dist_behind_before_shortcuts: f32,
     pub nitro_min_dist_from_start: f32,
-    /// (x 2 at load, sub_82743A10)
+    /// (x 2 at load, F-12436)
     pub nitro_min_dist_from_finish: f32,
     pub nitro_min_dist_behind_player: f32,
     /// (x 2.5 at load)
@@ -191,21 +191,102 @@ pub struct Chain<'a> {
 }
 
 impl Chain<'_> {
-    fn sum(&self, from: usize, to_excl: usize) -> f32 {
-        (from..to_excl).map(|k| self.seg.get(k).copied().unwrap_or(0.0)).sum()
+    fn s(&self, k: usize) -> f32 {
+        self.seg.get(k).copied().unwrap_or(0.0)
     }
 
-    /// How far `a` is ahead of `l` along the route (+388, sub_82743448).
+    /// How far `a` is ahead of `l` along the route (+388, F-25500): from the leader's distance to his next
+    /// checkpoint, the segments from `a`'s place up to `l`'s subtracted one by one, those from `l`'s up to
+    /// `a`'s added, then `a`'s own distance subtracted while it has not finished.
     pub fn gap(&self, a: ChainPos, l: ChainPos) -> f32 {
         let last = self.total.saturating_sub(1);
-        let da = if a.p < self.total { a.d } else { 0.0 };
-        l.d - self.sum(a.p, l.p.min(last)) + self.sum(l.p, a.p.min(last)) - da
+        let mut g = l.d;
+        for k in a.p..l.p.min(last) {
+            g -= self.s(k);
+        }
+        for k in l.p..a.p.min(last) {
+            g += self.s(k);
+        }
+        if a.p < self.total {
+            g -= a.d;
+        }
+        g
     }
 
-    /// The racer's distance to the finish (+396, sub_82743798).
+    /// The racer's distance to the finish (+396, F-52915): the segments from its place to the last summed one
+    /// by one, then (not finished) its plain distance to the checkpoint it heads for added (`a.d`: [`dist`],
+    /// [`YZX`]; not the unordered race's nearest one).
     pub fn to_finish(&self, a: ChainPos) -> f32 {
-        a.d + self.sum(a.p, self.total.saturating_sub(1))
+        let mut f = 0.0f32;
+        for k in a.p..self.total.saturating_sub(1) {
+            f += self.s(k);
+        }
+        if a.p < self.total {
+            f = a.d + f;
+        }
+        f
     }
+
+    /// The racer's distance from its start along the chain (+392, F-85220): at `p` = 0 straight from the
+    /// start to the car; else start -> checkpoint 0, the segments before checkpoint p - 1, and (not
+    /// finished) checkpoint p - 1 -> the car. `cps` = the checkpoints of the whole race.
+    pub fn from_start(&self, p: usize, start: glam::Vec3, car: glam::Vec3, cps: &[glam::Vec3]) -> f32 {
+        if p == 0 || cps.is_empty() {
+            return dist(car - start, YZX);
+        }
+        let mut f = dist(cps[0] - start, XZY);
+        for k in 0..(p - 1).min(self.total.saturating_sub(1)) {
+            f += self.s(k);
+        }
+        if p < self.total {
+            if let Some(c) = cps.get(p - 1) {
+                f = dist(*c - car, YZX) + f;
+            }
+        }
+        f
+    }
+}
+
+/// The axis orders the original's chain routines square and sum a difference in (fmuls, fmadds, fmadds).
+pub const XZY: [usize; 3] = [0, 2, 1];
+pub const YZX: [usize; 3] = [1, 2, 0];
+
+/// |d| as the chain routines compute it: the first axis squared, the other two fused on in `order`, fsqrts.
+pub fn dist(d: glam::Vec3, order: [usize; 3]) -> f32 {
+    let c = d.to_array();
+    let (a, b, e) = (c[order[0]], c[order[1]], c[order[2]]);
+    e.mul_add(e, b.mul_add(b, a * a)).sqrt()
+}
+
+/// The segment lengths of the chain (F-51033: +1616 + 4 k): |cp[k] - cp[k + 1]| ([`YZX`]), the last one back
+/// to checkpoint 0; 200 m each in an unordered race.
+pub fn segments(cps: &[glam::Vec3], unordered: bool) -> Vec<f32> {
+    let n = cps.len();
+    (0..n).map(|k| if unordered { 200.0 } else { dist(cps[k] - cps[(k + 1) % n], YZX) }).collect()
+}
+
+/// A racer's distance to the checkpoint `k` it heads for (F-23349; 0 once `k` is past the list): in an
+/// unordered race not yet at its last checkpoint the nearest one it has not taken (`untaken`, all but the
+/// last; squared distances min'd by fsel from 1e8, then fsqrts), else the plain distance ([`XZY`]).
+pub fn next_dist(car: glam::Vec3, cps: &[glam::Vec3], k: usize, unordered: bool, untaken: impl Fn(usize) -> bool) -> f32 {
+    let n = cps.len();
+    if k >= n {
+        return 0.0;
+    }
+    if unordered && k + 1 < n {
+        let mut m = 1.0e8f32;
+        for i in 0..n - 1 {
+            if untaken(i) {
+                let d = cps[i] - car;
+                let q = d.y.mul_add(d.y, d.z.mul_add(d.z, d.x * d.x));
+                if m - q >= 0.0 {
+                    m = q;
+                }
+            }
+        }
+        return m.sqrt();
+    }
+    dist(cps[k] - car, XZY)
 }
 
 #[cfg(test)]
@@ -293,6 +374,70 @@ mod tests {
             }
         }
         assert_eq!((n, bad), (6000, 0));
+    }
+
+    /// The chain distances against F-23349 / F-25500 / F-85220 / F-52915 run offline (tools/rubber_input_reference.py,
+    /// docs/reference/ai/verify_rubber_inputs.md). The port holds one place per racer (lap * n + next): a record
+    /// with next = n before the last lap, or with lap = laps, has no port place and is left out of the chain sums.
+    #[test]
+    fn chain_matches_the_original() {
+        use glam::Vec3;
+        let u = |s: &str| u32::from_str_radix(&s.replace('_', ""), 16).unwrap();
+        let f = |s: &str| f32::from_bits(u(s));
+        let (mut cases, mut placed, mut bad, mut old_bad) = (0, 0, 0, 0);
+        for line in include_str!("testdata/rubber_input_ref.txt").lines() {
+            let (lhs, rhs) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = lhs.split_whitespace().skip(1).collect();
+            let r: Vec<u32> = rhs.split_whitespace().map(u).collect();
+            let i = |k: usize| u(w[k]) as usize;
+            let v = |k: usize| Vec3::new(f(w[k]), f(w[k + 1]), f(w[k + 2]));
+            let (n, laps, unordered) = (i(0), i(1).max(1), i(2) != 0);
+            let (mut na, mut la, nl, ll, sa, sl) = (i(5), i(6), i(7), i(8), u(w[9]), u(w[10]));
+            let (car_a, mut car_l, start) = (v(11), v(14), v(17));
+            // (a = l: one record - the harness writes l's next / lap after a's, a's car place and states after l's)
+            if i(3) == i(4) {
+                (na, la, car_l) = (nl, ll, car_a);
+            }
+            let seg: Vec<f32> = (0..n).map(|k| f(w[20 + k])).collect();
+            let cps: Vec<Vec3> = (0..n).map(|k| v(20 + n + 3 * k)).collect();
+            let untaken = |st: u32| move |c: usize| matches!((st >> (2 * c)) & 3, 0 | 2);
+            let da = next_dist(car_a, &cps, na, unordered, untaken(sa));
+            let dl = next_dist(car_l, &cps, nl, unordered, untaken(if i(3) == i(4) { sa } else { sl }));
+            cases += 1;
+            let mut got = vec![(da.to_bits(), r[0]), (dl.to_bits(), r[1])];
+            let place = |next: usize, lap: usize| (next < n && lap < laps || next == n && lap + 1 == laps).then(|| lap * n + next);
+            if let (Some(pa), Some(pl)) = (place(na, la), place(nl, ll)) {
+                placed += 1;
+                let total = laps * n;
+                let flat: Vec<f32> = (0..total).map(|k| seg[k % n]).collect();
+                let fcps: Vec<Vec3> = (0..total).map(|k| cps[k % n]).collect();
+                let c = Chain { seg: &flat, total };
+                let a = ChainPos { p: pa, d: da };
+                let gap = c.gap(a, ChainPos { p: pl, d: dl });
+                let from = c.from_start(pa, start, car_a, &fcps);
+                let fin = c.to_finish(ChainPos { p: pa, d: if na < n { dist(cps[na] - car_a, YZX) } else { 0.0 } });
+                got.extend([(gap.to_bits(), r[2]), (from.to_bits(), r[3]), (fin.to_bits(), r[4])]);
+                // (the rule before: the ranges summed first, unfused distances, the nearest checkpoint's distance in the finish sum)
+                let sum = |a: usize, b: usize| (a..b).map(|k| flat.get(k).copied().unwrap_or(0.0)).sum::<f32>();
+                let last = total - 1;
+                let old_gap = dl - sum(pa, pl.min(last)) + sum(pl, pa.min(last)) - if pa < total { da } else { 0.0 };
+                let old_fin = da + sum(pa, last);
+                let k = pa.min(total);
+                let old_from = if k == 0 { car_a.distance(start) } else { start.distance(fcps[0]) + flat[..k - 1].iter().sum::<f32>() + fcps[k - 1].distance(car_a) };
+                if old_gap.to_bits() != r[2] || old_fin.to_bits() != r[4] || old_from.to_bits() != r[3] {
+                    old_bad += 1;
+                }
+            }
+            if got.iter().any(|(p, o)| p != o) {
+                if bad < 5 {
+                    eprintln!("{line}
+   port {:08x?}", got);
+                }
+                bad += 1;
+            }
+        }
+        eprintln!("{cases} cases, {placed} with both places; the rule before differed in {old_bad}");
+        assert_eq!((cases, bad), (4000, 0));
     }
 
     #[test]
