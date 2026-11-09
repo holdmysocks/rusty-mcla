@@ -2278,6 +2278,25 @@ mod tests {
         }
     }
 
+    /// The minimap's camera as the hudmap movie leaves it (rule_frame.md 3.1): it eases `target0_cam` from the init
+    /// script's position (0, 5000, 2500) / look (0, 0, 0) by `pos += int((cam - pos) / 2)`, which stops one short of the
+    /// HUD clip's (0, 1890, 0) / (0, 0, -110): the eye settles at (0, 1891, 1) and the look at (0, 0, -109) in the car's
+    /// frame - the recorded eye's 1 m behind the car (hudmap.rs `minimap_camera_in_the_car_frame_matches_the_recording`).
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn minimap_eye_settles_one_short() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let strings = StringTable::parse(&std::fs::read(Path::new(&dir).join("ui/0xa4c1e8fa")).unwrap()).unwrap();
+        let shared = UiShared { textures: Arc::new(HashMap::new()), strings: Arc::new(strings), logic: Arc::new(crate::menu3d::UiLogic::load(&dir)) };
+        let mut m = FlashMinimap::load(&dir, &shared).unwrap();
+        for _ in 0..300 {
+            m.drive(&HudInfo::default(), None, 1.0 / 30.0);
+        }
+        assert_eq!(m.cam_eye, glam::Vec3::new(0.0, 1891.0, 1.0));
+        assert_eq!(m.cam_look, glam::Vec3::new(0.0, 0.0, -109.0));
+        assert_eq!(m.cam_fovy, 35.0);
+    }
+
     /// The scrollbar's cursor follows the selection, as the original's list refresh (F-31454) sets it:
     /// ScrollbarSliderPosition = cur / (count - 1), and the movie's ShowScrollbar puts `scroll_cursor` at the bar's
     /// height times it. INTERIOR COLORS (nine rows, six shown): row 0 at the top, row 8 at the bottom, row 4 halfway.

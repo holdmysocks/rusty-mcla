@@ -4476,6 +4476,31 @@ mod tests {
         }
     }
 
+    /// The same recorded frame built as the game builds it: the car frame 1 (F-15166 takes frame `coord` = 1, filled
+    /// by F-32331 as the turn about y by the player's heading with the car's x / z, y 0) applied to the eye
+    /// and look the hudmap movie settles at, (0, 1891, 1) and (0, 0, -109) (flash_ui.rs `minimap_eye_settles_one_short`).
+    /// The car is the player's recorded arrow (819.61023, -808.40912) with its recorded back vector: the recorded eye
+    /// is reproduced, its 1 m behind the car is the movie's eased z = 1.
+    #[test]
+    fn minimap_camera_in_the_car_frame_matches_the_recording() {
+        let car = Vec3::new(819.61023, 17.57223, -808.40912);
+        let back = Vec3::new(0.47491, 0.0, -0.880034);
+        let (vp, e) = minimap_view_proj(car, heading(back), Vec3::new(0.0, 1891.0, 1.0), Vec3::new(0.0, 0.0, -109.0), 35.0);
+        let rec_eye = Vec3::new(820.085144, 1891.0, -809.289124);
+        assert!((e - rec_eye).length() < 2e-3, "eye {e:?}");
+        let rec = [[-2.791112, -1.503681, -0.02761, -0.027579], [0.0, 0.184181, -0.999423, -0.998312], [-1.506222, 2.786402, 0.051162, 0.051105], [1069.980347, 3139.864258, 1943.944946, 1951.785034]];
+        let got = vp.to_cols_array_2d();
+        for c in 0..4 {
+            for r in 0..4 {
+                let tol = if c == 3 { 0.05 } else { 2e-4 };
+                assert!((got[c][r] - rec[c][r]).abs() < tol, "col {c} row {r}: {} vs {}", got[c][r], rec[c][r]);
+            }
+        }
+        // with the tune's (0, 1891, 0) / (0, 0, -110) instead the eye is 1 m off
+        let (_, e0) = minimap_view_proj(car, heading(back), Vec3::new(0.0, 1891.0, 0.0), Vec3::new(0.0, 0.0, -110.0), 35.0);
+        assert!(((e0 - rec_eye).length() - 1.0).abs() < 2e-3);
+    }
+
     /// The icons of the recorded idle frame (`work/mm/cap/mm_idle.bin`, draws 1530..1552, R8 outside the
     /// Hollywood garage at night, speed 0, `docs/reference/minimap/trace_idle.md`): position, uniform
     /// scale, turn about y, colour and the target pixel of every draw, against the numbers read from the
