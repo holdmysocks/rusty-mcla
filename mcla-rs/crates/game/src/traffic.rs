@@ -1134,6 +1134,8 @@ pub struct DriverLanes {
     pub best: Option<(usize, f32)>,
     /// the best lane's phase t (the report's +648)
     pub best_t: f32,
+    /// the best lane's unit tangent (the report's +624: slot 8's dP/du at the phase, the vector unit's normalisation)
+    pub best_tan: Vec3,
 }
 
 /// A lane's first two control points (F-78185 reads P0 - P1); the link's ends without them.
@@ -9405,8 +9407,8 @@ impl Vehicles {
             if self.amb_cutscene.is_none() {
                 if let Some(dl) = self.driver_lanes.get(&c.uid) {
                     if let Some((lane, _)) = dl.best {
-                        let t = dl.list.iter().find(|e| e.0 == lane).map_or(0.0, |e| e.1);
-                        let tangent = nav.curves[lane].eval(t).1;
+                        // (the report's tangent +624)
+                        let tangent = dl.best_tan;
                         let reverse = !(c.state.forward().dot(tangent) > 0.0);
                         player_rec = player_junction_record(nav, lane, reverse);
                         player_j = player_rec.map(|r| r.0);
@@ -9532,14 +9534,21 @@ impl Vehicles {
                     }
                 }
             }
+            // (F-58331's report: each listed lane's slot 8 at its phase - F-71868, the point and dP/du -, d^2 to the car
+            // as dy^2, dz fused, dx fused, the first strictly nearest from 3.4e38 in the list's order; its tangent the
+            // vector unit's normalisation of dP/du)
             let mut best: Option<(usize, f32)> = None;
+            let mut best_tan = Vec3::ZERO;
             for &(lane, t, _) in &dl.list {
-                let q = nav.curves[lane].eval(t).0;
-                let d2 = (q - p).length_squared();
-                if best.map_or(f32::MAX, |b| b.1) > d2 {
+                let (q, d) = nav.curves[lane].eval_pair(t);
+                let (dy, dz, dx) = (q.y - p.y, q.z - p.z, q.x - p.x);
+                let d2 = crate::physics::exact::fma(dx, dx, crate::physics::exact::fma(dz, dz, dy * dy));
+                if d2 < best.map_or(f32::MAX, |b| b.1) {
                     best = Some((lane, d2));
+                    best_tan = crate::tcp_rail::vnorm(d);
                 }
             }
+            dl.best_tan = best_tan;
             if std::env::var_os("MCLA_DRIVER_LANE_LOG").is_some() && best.map(|b| b.0) != dl.best.map(|b| b.0) {
                 log::info!("driver car {uid}: lane {:?} ({} listed, {} near, w {w:.2})", best.map(|b| (b.0, b.1.sqrt())), dl.list.len(), found.len());
             }
