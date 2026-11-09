@@ -487,7 +487,17 @@ pub const PLACES: [(u32, Kind, [f32; 3]); 18] = [
 
 /// The port's state as the map's element lists, layer by layer (each list in the order its
 /// producer adds; capacities enforced).
+/// A car's place and back (its -forward) on the map as the car is drawn this frame: its pose between the last two ticks
+/// (`CarInstance::render_pose` at the frame's `render_alpha`). With the tick's own pose the map and its icons moved in
+/// 60 Hz steps under a scene drawn smooth at any frame rate; at the original's 30 frames a second the two are the same
+/// (docs/PERFORMANCE.md 2026-11-09 (7)).
+pub fn shown(c: &crate::vehicles::CarInstance, alpha: f32) -> (Vec3, Vec3) {
+    let p = c.render_pose(alpha);
+    (p.pos, p.rot * Vec3::Z)
+}
+
 pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, pursuit: bool) -> Vec<Element> {
+    let alpha = vehicles.render_alpha;
     let mut layers: [Vec<Element>; 7] = Default::default();
     let mut push = |e: Element| {
         let l = e.kind.layer(e.flags);
@@ -557,9 +567,10 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
         // the red-light racer waiting at a light (redlight.rs; the original's red-light hookmen,
         // subtype 1, icon 3 - `<district>_redlight_hk1` scripts)
         for (i, c) in vehicles.cars.iter().enumerate().filter(|(_, c)| c.driver == "redlight") {
-            let mut e = Element::at(Kind::Racer(1), c.state.pos);
+            let (pos, back) = shown(c, alpha);
+            let mut e = Element::at(Kind::Racer(1), pos);
             e.uid = 4000 + i as u32;
-            e.back = -c.state.forward();
+            e.back = back;
             e.colour = DIFFICULTY[game.difficulty_of(&c.model.name).clamp(0, 3) as usize];
             e.icon = 3;
             push(e);
@@ -569,8 +580,7 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
             let mut e = Element::at(Kind::Racer(2), *p);
             e.uid = 4999;
             if let Some(c) = car.filter(|c| c.state.pos.distance(*p) < 60.0) {
-                e.pos = c.state.pos;
-                e.back = -c.state.forward();
+                (e.pos, e.back) = shown(c, alpha);
             }
             e.colour = DIFFICULTY[game.mc4_hookman_diff().unwrap_or(1).min(3)];
             e.icon = 4;
@@ -592,9 +602,10 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
     // keeps no car but his as a racer once the run starts (`Roamers::update`)
     if game.bmt_goal.is_some() {
         for (i, c) in vehicles.cars.iter().enumerate().filter(|(_, c)| c.racer && !c.is_player) {
-            let mut e = Element::at(Kind::Racer(3), c.state.pos);
+            let (pos, back) = shown(c, alpha);
+            let mut e = Element::at(Kind::Racer(3), pos);
             e.uid = 4800 + i as u32;
-            e.back = -c.state.forward();
+            e.back = back;
             e.icon = 4;
             push(e);
         }
@@ -607,9 +618,10 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
     if let Some(race) = game.race.as_ref().filter(|r| r.kind == crate::game::RaceKind::Race && !game.story_race_hides_opponents()) {
         for (k, &i) in race.participants.iter().enumerate() {
             let Some(c) = vehicles.cars.get(i).filter(|c| !c.is_player) else { continue };
-            let mut e = Element::at(Kind::OtherCar, c.state.pos);
+            let (pos, back) = shown(c, alpha);
+            let mut e = Element::at(Kind::OtherCar, pos);
             e.uid = 5000 + k as u32;
-            e.back = -c.state.forward();
+            e.back = back;
             push(e);
         }
     }
@@ -620,8 +632,9 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
         if !(pursuit || near) {
             continue;
         }
-        let mut e = Element::at(Kind::Cop, c.state.pos);
-        e.back = -c.state.forward();
+        let (pos, back) = shown(c, alpha);
+        let mut e = Element::at(Kind::Cop, pos);
+        e.back = back;
         if pursuit {
             e.flags |= 0x20;
         }
@@ -668,8 +681,9 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
         }
     }
     if let Some(c) = player {
-        let mut e = Element::at(Kind::Player, c.state.pos);
-        e.back = -c.state.forward();
+        let (pos, back) = shown(c, alpha);
+        let mut e = Element::at(Kind::Player, pos);
+        e.back = back;
         push(e);
     }
     layers.into_iter().flatten().collect()

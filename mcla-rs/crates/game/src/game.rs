@@ -10581,11 +10581,13 @@ impl Game {
                         // camera, shown by the movie itself in `HUD.renderMe` at its depth (20, between
                         // the ring at 3 and the north marker at 22) over the `miniBG` plate.
                         if let (Some(hm), Some(car)) = (self.hm.as_mut(), vehicles.player()) {
-                            let h = crate::hudmap::heading(-car.state.forward());
+                            // (the car as it is drawn this frame - `hudmap::shown`)
+                            let (car_pos, car_back) = crate::hudmap::shown(car, vehicles.render_alpha);
+                            let h = crate::hudmap::heading(car_back);
                             // (the overhead map, mode 2: the movie's camera in world coordinates -
                             // fixed over the city, north up, no heading turn; its own 749x430 target)
                             let over = fm.overhead;
-                            let (vp, eye) = if over { (crate::hudmap::overhead_view_proj(fm.cam_eye, fm.cam_look, fm.cam_fovy, fm.aspect), fm.cam_eye) } else { crate::hudmap::minimap_view_proj(car.state.pos, h, fm.cam_eye, fm.cam_look, fm.cam_fovy) };
+                            let (vp, eye) = if over { (crate::hudmap::overhead_view_proj(fm.cam_eye, fm.cam_look, fm.cam_fovy, fm.aspect), fm.cam_eye) } else { crate::hudmap::minimap_view_proj(car_pos, h, fm.cam_eye, fm.cam_look, fm.cam_fovy) };
                             let racing = self.race.is_some() || self.bmt_goal.is_some();
                             let target = self.gps_armed && (self.mission_target.is_some() || self.gps_pick.is_some()) && !racing;
                             let strobe_on = self.race.as_ref().map_or(true, |r| r.rivals_checkpoints.is_none());
@@ -10599,7 +10601,7 @@ impl Game {
                                 fm.movie.swap_handle("HUD.renderMe", 0x4d4d_0001, tex);
                             }
                             // map_rotation: world north 500 m from the player through the map camera
-                            let n = vp * (car.state.pos + Vec3::new(0.0, 0.0, -500.0)).extend(1.0);
+                            let n = vp * (car_pos + Vec3::new(0.0, 0.0, -500.0)).extend(1.0);
                             if n.w.abs() > 1e-4 {
                                 fm.map_rotation = (std::f32::consts::FRAC_PI_2 - (n.y / n.w).atan2(n.x / n.w)).to_degrees();
                             }
