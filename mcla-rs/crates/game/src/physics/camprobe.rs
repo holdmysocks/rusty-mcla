@@ -1568,6 +1568,14 @@ pub fn capsule_directed(a: Vec3, b: Vec3, big_r: f32, prim: &Primitive) -> Optio
         }
         Primitive::Box { centre, size } => return capsule_box_directed(a, b, big_r, centre, size).map(|h| (h, 0)),
     };
+    directed_tail(a, b, big_r, centre, t, q).map(|h| (h, index))
+}
+
+/// The tail F-11472's directed branch shares for spheres, capsules and curved bounds: the sweep's point p = d t + a0
+/// (a0 = a - centroid), n = q + p; none when n runs along the sweep (fused n.x d.x + (n.z d.z + n.y d.y) > 0); the
+/// normal n by the estimate of 1 / |n| with one Newton step, the depth |d| (1 - t), the point -(normal R - p) + centroid.
+fn directed_tail(a: Vec3, b: Vec3, big_r: f32, centre: Vec3, t: f32, q: Vec3) -> Option<CapsulePrimHit> {
+    let d = b - a;
     let a0 = a - centre;
     let p = d * t + a0;
     let n = q + p;
@@ -1577,7 +1585,7 @@ pub fn capsule_directed(a: Vec3, b: Vec3, big_r: f32, prim: &Primitive) -> Optio
     let normal = n * rsqrt0(vdot(n, n));
     let depth = dot_xyz(d, d).sqrt() * (1.0 - t);
     let point = std::hint::black_box(-(normal * big_r - p)) + centre;
-    Some((CapsulePrimHit { depth, t, normal, point }, index))
+    Some(CapsulePrimHit { depth, t, normal, point })
 }
 
 /// F-11472 directed on a box bound (size `size` about `centre`): the face planes' crossings as the undirected branch
@@ -1939,6 +1947,171 @@ pub fn capsule_curved(a: Vec3, b: Vec3, big_r: f32, wheel: &gjk::WheelCore, cent
     let p = d * t + a0;
     let point = std::hint::black_box(-(normal * (big_r - depth) - p)) + centroid;
     CapsulePrimHit { depth, t, normal, point }
+}
+
+/// A convex bound as the cast F-81943 meets it (its type switch): the core's point farthest along `d` in the bound's
+/// own frame, and the margin laid on along d's unit. Ported: type 0 (`CastSphere`) and type 5 (`CastWheel`); the
+/// other types' supports (1 capsule, 2, 3 box, 4 polyhedron, 13 triangle) are not.
+pub trait CastBound {
+    fn core(&self, d: Vec3) -> Vec3;
+    fn margin(&self) -> f32;
+}
+
+/// A sphere bound (type 0): its core the centre (+48), its margin the radius (+8) - F-80030's ball.
+pub struct CastSphere {
+    pub centre: Vec3,
+    pub r: f32,
+}
+
+impl CastBound for CastSphere {
+    fn core(&self, _d: Vec3) -> Vec3 {
+        self.centre
+    }
+    fn margin(&self) -> f32 {
+        self.r
+    }
+}
+
+/// A curved bound (type 5, a car's wheel): its core's farthest point F-20142 (`gjk::WheelCore`'s, in the wheel's
+/// own frame), its margin +112.
+pub struct CastWheel<'a> {
+    pub wheel: &'a gjk::WheelCore,
+    pub margin: f32,
+}
+
+impl CastBound for CastWheel<'_> {
+    fn core(&self, d: Vec3) -> Vec3 {
+        self.wheel.farthest(d)
+    }
+    fn margin(&self) -> f32 {
+        self.margin
+    }
+}
+
+/// A bound's pose over the cast: its matrix's rows (+0, +16, +32) and its place at the start (+48) and at the end.
+#[derive(Clone, Copy, Debug)]
+pub struct CastPose {
+    pub rows: [Vec3; 3],
+    pub from: Vec3,
+    pub to: Vec3,
+}
+
+/// What F-81943 answers (its out buffer): the normal (+0), the two points the simplex ended with (+16 / +32, on the
+/// first bound and the second, where the bounds stand at t), t (+48), and how many points went into the simplex (0:
+/// the original's points are whatever its simplex object held before, the port's zero).
+#[derive(Clone, Copy, Debug)]
+pub struct CastHit {
+    pub normal: Vec3,
+    pub on_a: Vec3,
+    pub on_b: Vec3,
+    pub t: f32,
+    pub adds: u32,
+}
+
+/// F-81506: x with M x = b for the 3x3 M given by its rows: the cofactor rows r2 x r3, r3 x r1, r1 x r2 (the vector
+/// unit's cross products), det = (r1 x r2) . r3, its reciprocal by the estimate with one Newton step, each cofactor row
+/// times it, x = those rows . b.
+fn solve_rows(rows: &[Vec3; 3], b: Vec3) -> Vec3 {
+    let [r1, r2, r3] = *rows;
+    let (c1, c2, c3) = (vcross(r2, r3), vcross(r3, r1), vcross(r1, r2));
+    let inv = recip(vdot(c3, r3));
+    Vec3::new(vdot(c1 * inv, b), vdot(c2 * inv, b), vdot(c3 * inv, b))
+}
+
+/// F-81943's support of one bound in a world direction `dir`: the direction taken into the bound's frame (F-81506), the
+/// core's farthest point there, plus the unit of that local direction (1 / sqrt by the estimate with one Newton step;
+/// (1, 0, 0) where its square is not above 0) times the margin (product rounded, then the sum); then placed by the
+/// matrix at `at` (each coordinate (at + z p.z) + (y p.y + x p.x)). No bound: the point `at`.
+fn cast_support(bound: Option<&dyn CastBound>, rows: &[Vec3; 3], at: Vec3, dir: Vec3) -> Vec3 {
+    let p = match bound {
+        Some(bound) => {
+            let dl = solve_rows(rows, dir);
+            let core = bound.core(dl);
+            let dd = vdot(dl, dl);
+            let u = if dd > 0.0 { dl * super::exact::rsqrt(dd) } else { Vec3::X };
+            u * bound.margin() + core
+        }
+        None => Vec3::ZERO,
+    };
+    let [x, y, z] = *rows;
+    Vec3::new((at.x + z.x * p.z) + (y.x * p.y + x.x * p.x), (at.y + z.y * p.z) + (y.y * p.y + x.y * p.x), (at.z + z.z * p.z) + (y.z * p.y + x.z * p.x))
+}
+
+/// F-81943: the first time t in [0, 1] at which bound `a` (moving `pa.from` -> `pa.to`) meets bound `b` (or a point,
+/// when there is none; moving `pb.from` -> `pb.to`), margins included - the GJK ray cast (as Bullet's subsimplex cast):
+/// r = (a's move) - (b's move); v = a's support against r - b's along r, at the start; then while v.v > 1e-4, at most
+/// 32 times: p = a's support against v, q = b's along v (each at its place at t), w = p - q; where v.w > 0: none when
+/// v.r >= -1e-12, else t -= (v.w) recip(v.r) (the estimate with one Newton step), none when t > 1, the normal held = v
+/// and both places moved to t ((to - from) t + from); w (with p, q) into the simplex (F-15857), its point nearest the
+/// origin (F-69046) the new v - or (1e8, 1e8, 1e8) when it fails, which ends the loop as does a v equal to that. The
+/// answer: the normal -(n / |n|) (estimate, one Newton step, no guard: NaN when no step moved t), the simplex's two points
+/// (F-87167 copies them), t. Rules in docs/reference/cameras/probe_rule.md 2.1; checked to the bit against the original
+/// run offline (`curved_directed_matches_the_original`).
+pub fn convex_cast(a: &dyn CastBound, pa: &CastPose, b: Option<&dyn CastBound>, pb: &CastPose) -> Option<CastHit> {
+    const NEAR2: f32 = f32::from_bits(0x38D1_B717); // 1e-4 (0x82080750)
+    const AWAY: f32 = f32::from_bits(0x2B8C_BCCC); // 1e-12 (0x8208A320, negated)
+    const FAILED: f32 = f32::from_bits(0x4CBE_BC20); // 1e8 (0x820430C0)
+    let r = (pa.to - pa.from) - (pb.to - pb.from);
+    let (mut xa, mut xb) = (pa.from, pb.from);
+    let start_a = cast_support(Some(a), &pa.rows, pa.from, Vec3::ZERO - r);
+    let mut v = start_a - cast_support(b, &pb.rows, pb.from, r);
+    let (mut t, mut n) = (0.0f32, Vec3::ZERO);
+    let mut simplex = gjk::Simplex::default();
+    let mut adds = 0;
+    let mut left = 32;
+    let mut v2 = vdot(v, v);
+    while v2 > NEAR2 && left != 0 {
+        left -= 1;
+        let p = cast_support(Some(a), &pa.rows, xa, Vec3::ZERO - v);
+        let q = cast_support(b, &pb.rows, xb, v);
+        let w = p - q;
+        let vw = vdot(v, w);
+        if vw > 0.0 {
+            let vr = vdot(v, r);
+            if vr >= 0.0 - AWAY {
+                return None;
+            }
+            t = t - recip(vr) * vw;
+            if t > 1.0 {
+                return None;
+            }
+            n = v;
+            xa = Vec3::splat(t) * (pa.to - pa.from) + pa.from;
+            xb = Vec3::splat(t) * (pb.to - pb.from) + pb.from;
+        }
+        simplex.add(w, p, q);
+        adds += 1;
+        v = if simplex.closest() { simplex.v } else { Vec3::splat(FAILED) };
+        v2 = if [v.x, v.y, v.z].iter().all(|c| c.to_bits() == FAILED.to_bits()) { 0.0 } else { vdot(v, v) };
+    }
+    // (no guard: n = 0 gives 0 inf; the Newton step's negation is the sign flip, kept out of the optimiser's reach so
+    // the NaN's sign is the original's)
+    let l2 = vdot(n, n);
+    let y = 1.0 / l2.sqrt();
+    let e = std::hint::black_box(f32::from_bits(std::hint::black_box(l2 * (y * y) - 1.0).to_bits() ^ 0x8000_0000));
+    let normal = Vec3::ZERO - n * (e * (0.5 * y) + y);
+    let (on_a, on_b) = if adds > 0 { (simplex.p1, simplex.p2) } else { (Vec3::ZERO, Vec3::ZERO) };
+    Some(CastHit { normal, on_a, on_b, t, adds })
+}
+
+/// F-11472 directed (the query's byte +212 = 1) on a curved bound (type 5: a car's wheel, `wheel` at the bound's own
+/// frame, its centroid +48 and margin +112): the ball of radius `big_r` made a sphere bound (F-80030: centre 0, radius
+/// R), the cast object set (F-60260: the wheel first, the ball second), and the cast F-81943 of the ball, from `a` to
+/// `b` at the identity matrix, against the wheel standing at the bound's origin. Where it answers with t > 0: the
+/// shared directed tail with q = 0 (index 0). Checked to the bit against the original run offline
+/// (`curved_directed_matches_the_original`).
+pub fn capsule_curved_directed(a: Vec3, b: Vec3, big_r: f32, wheel: &gjk::WheelCore, centroid: Vec3, margin: f32) -> Option<CapsulePrimHit> {
+    let rows = [Vec3::X, Vec3::Y, Vec3::Z];
+    let hit = convex_cast(
+        &CastWheel { wheel, margin },
+        &CastPose { rows, from: Vec3::ZERO, to: Vec3::ZERO },
+        Some(&CastSphere { centre: Vec3::ZERO, r: big_r }),
+        &CastPose { rows, from: a, to: b },
+    )?;
+    if !(hit.t > 0.0) {
+        return None;
+    }
+    directed_tail(a, b, big_r, centroid, hit.t, Vec3::ZERO)
 }
 
 /// Whether the capsule `a` .. `b` (radius `r`, in the part's frame) misses the part bound's box `min` .. `max`
@@ -2687,11 +2860,15 @@ pub struct CapsuleQuery {
 /// (index 0) against the mask; a slot by depth and the cap R at the contact; the record (part 0, kind 2, +80 1).
 /// Directed (+212 set): `capsule_directed`, the material asked by the record's index (the primitives' getter answers the
 /// bound's one material whatever the index), the cap FLT_MAX, the record's index the capsule's part; a curved bound's
-/// directed branch (the cast F-81943) is not ported and makes no record.
+/// directed branch is `capsule_curved_directed` (the cast F-81943, index 0).
 fn capsule_prim_record(q: &mut CapsuleQuery, b: &ProbeBound, inst: u32) {
     if q.directed {
-        let ProbeShape::Prim(p) = &b.shape else { return };
-        let Some((h, index)) = capsule_directed(q.a, q.b, q.r, p) else { return };
+        let h = match &b.shape {
+            ProbeShape::Prim(p) => capsule_directed(q.a, q.b, q.r, p),
+            ProbeShape::Curved { wheel, centroid, margin } => capsule_curved_directed(q.a, q.b, q.r, wheel, *centroid, *margin).map(|h| (h, 0)),
+            _ => None,
+        };
+        let Some((h, index)) = h else { return };
         let mat = b.material(0);
         if mat & q.mask != 0 {
             return;
@@ -3073,8 +3250,8 @@ pub fn capsule_level<'a>(a: Vec3, b: Vec3, r: f32, mask: u32, cap: usize, f30_hi
 }
 
 /// The cameras' swept ball (F-80278 with the directed set-up F-13494, then F-91312): as `capsule_level` with the query's
-/// +212 set, so each primitive and polygon is met by the directed branch (`capsule_directed`, F-43031 directed). A curved
-/// bound (type 5) makes no record here: its directed cast F-81943 is not ported.
+/// +212 set, so each primitive and polygon is met by the directed branch (`capsule_directed`, F-43031 directed) and a
+/// curved bound (type 5) by the cast F-81943 (`capsule_curved_directed`).
 pub fn sweep_level<'a>(a: Vec3, b: Vec3, r: f32, mask: u32, cap: usize, filter: &LevelFilter, objects: impl IntoIterator<Item = LevelObject<'a>>) -> CapsuleQuery {
     level_query(true, a, b, r, mask, cap, 0, filter, objects)
 }
@@ -3860,7 +4037,7 @@ impl<'a> CamLevel<'a> {
         // (with the level's objects: F-80278 / F-58512 as the original's - the directed set-up F-13494 and the driver
         // F-91312 over the level, one record, the camera's car skipped; the callers' queries as the ball's: the boom, the
         // pull-in and the replay 0x100 / 7, the deflection 0x100 / 4 - probe_rule.md section 4; a car's wheels, curved
-        // bounds, make no record yet: their directed cast F-81943 is not ported)
+        // bounds, by the directed cast F-81943, `capsule_curved_directed`)
         if let Some(level) = self.level {
             let q = if cars { CamQuery::CARS } else { CamQuery::FIXED };
             let filter = LevelFilter { include: q.include, states: q.states, excluded: &[], types: u32::MAX, exclude_types: q.exclude_types, skip: self.skip };
@@ -4357,6 +4534,81 @@ mod tests {
         }
         eprintln!("capsule_curved: {hits} touching, {deep} deeper than the radius, {none} at depth 0 ({zero_len} without length) {zero_ways:?}");
         assert_eq!((hits, deep, none, zero_len), (1827, 1246, 927, 194));
+    }
+
+    /// F-11472 directed on a curved bound (a car's wheel) against the original's code run offline
+    /// (tools/curved_directed_reference.py -> testdata/curved_directed_ref.txt; F-11472 whole with F-80030, F-60260, the
+    /// cast F-81943 and its callees, alloc stubbed, the material call faked as (index + 1) << 8, the stack NaN-filled):
+    /// the cast's out buffer (t; FLT_MAX where it answers 0; the normal; the two points where the simplex was used), the
+    /// result, the list call (depth, cap, point) and the record - every word equal.
+    #[test]
+    fn curved_directed_matches_the_original() {
+        let u = |h: &str| u32::from_str_radix(&h.replace('_', ""), 16).unwrap();
+        let (mut miss, mut at_start, mut away, mut records, mut zero_len, mut no_steps) = (0, 0, 0, 0, 0, 0);
+        let mut steps = std::collections::BTreeMap::new();
+        for (k, line) in include_str!("../testdata/curved_directed_ref.txt").lines().enumerate() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(u).collect();
+            let x: Vec<u32> = o.split_whitespace().map(u).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let p = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+            let (r, wd) = (f(0), f(1));
+            let shape = gjk::WheelShape::sized(&[(f32::from_bits(0x3e99_999a), f32::from_bits(0x3dcc_cccd)), (r, wd)]);
+            let wheel = gjk::WheelCore::of(&shape, Vec3::ZERO, [Vec3::X, Vec3::Y, Vec3::Z], r, wd);
+            let (a, b, big_r) = (p(2), p(5), f(8));
+            zero_len += (a == b) as usize;
+            // the cast alone, as F-11472 sets it up
+            let rows = [Vec3::X, Vec3::Y, Vec3::Z];
+            let cast = convex_cast(
+                &CastWheel { wheel: &wheel, margin: gjk::WHEEL_MARGIN },
+                &CastPose { rows, from: Vec3::ZERO, to: Vec3::ZERO },
+                Some(&CastSphere { centre: Vec3::ZERO, r: big_r }),
+                &CastPose { rows, from: a, to: b },
+            );
+            match cast {
+                None => {
+                    miss += 1;
+                    assert_eq!(x[36], f32::MAX.to_bits(), "line {k}: the cast answers 0");
+                }
+                Some(c) => {
+                    assert_eq!(x[36], c.t.to_bits(), "line {k}: t");
+                    assert_eq!(&x[24..27], &bits(c.normal), "line {k}: the cast's normal");
+                    if c.adds > 0 {
+                        assert_eq!(&x[28..31], &bits(c.on_a), "line {k}: the point on the wheel");
+                        assert_eq!(&x[32..35], &bits(c.on_b), "line {k}: the point on the ball");
+                    } else {
+                        no_steps += 1;
+                    }
+                    *steps.entry(c.adds).or_insert(0) += 1;
+                    at_start += (c.t == 0.0) as usize;
+                }
+            }
+            let h = capsule_curved_directed(a, b, big_r, &wheel, Vec3::ZERO, gjk::WHEEL_MARGIN);
+            let Some(h) = h else {
+                away += cast.map_or(false, |c| c.t > 0.0) as usize;
+                assert_eq!(&x[0..2], &[0, 0], "line {k}: no record");
+                continue;
+            };
+            if 256 & w[9] != 0 {
+                assert_eq!(&x[0..2], &[0, 0], "line {k}: material");
+                continue;
+            }
+            records += 1;
+            assert_eq!([x[0], x[1]], [(h.depth > 0.0) as u32, 1], "line {k}: result, list call");
+            assert_eq!([x[2], x[3]], [h.depth.to_bits(), f32::MAX.to_bits()], "line {k}: depth, cap");
+            assert_eq!(&x[4..7], &bits(h.point), "line {k}: point");
+            if w[10] != 0 && h.depth > 0.0 {
+                assert_eq!(x[7], 0x1234, "line {k}: instance");
+                assert_eq!(&x[8..11], &bits(h.point), "line {k}: contact");
+                assert_eq!(&x[11..14], &bits(h.normal), "line {k}: normal");
+                assert_eq!(&x[14..17], &bits(h.normal), "line {k}: bound normal");
+                assert_eq!(&x[17..20], &[h.t.to_bits(), h.depth.to_bits(), 256], "line {k}: t, depth, material");
+                assert_eq!(&x[20..24], &[0, 2, 1, 0], "line {k}: index, kind, +80, +82");
+            }
+        }
+        eprintln!("curved_directed: {miss} casts missing, {at_start} answering t = 0 ({no_steps} without a step), {away} moving away, {records} list calls, {zero_len} without length; simplex points per answer {steps:?}");
+        assert_eq!((miss, at_start, no_steps, away, records, zero_len), (791, 1927, 0, 7, 1148, 210));
     }
 
     /// F-15615 on spheres, capsules and boxes against the original's code run offline (tools/ball_primitive_reference.py

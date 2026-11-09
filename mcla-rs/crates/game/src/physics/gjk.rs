@@ -403,7 +403,7 @@ impl WheelCore {
 
     /// F-20142: the core's point farthest along `dir`, in the wheel's own frame. Corners,
     /// then curved edges, then curved faces; a later candidate wins only by being farther.
-    fn farthest(&self, dir: Vec3) -> Vec3 {
+    pub(crate) fn farthest(&self, dir: Vec3) -> Vec3 {
         let d = dir * rsqrt_or_zero(dot(dir, dir));
         let (mut best, mut out) = (-f32::MAX, Vec3::ZERO);
         for v in self.corners {
@@ -748,8 +748,8 @@ pub fn contact(shape: &impl Support, tri: &[Vec3; 3], face: Vec3, bisectors: [Ve
 /// up to four points of the difference of the two shapes, each with the points of the shapes
 /// it came from; and what of it is nearest the origin.
 #[derive(Clone, Copy, Debug)]
-struct Simplex {
-    count: usize,
+pub(crate) struct Simplex {
+    pub(crate) count: usize,
     w: [Vec3; 4],
     p: [Vec3; 4],
     q: [Vec3; 4],
@@ -759,9 +759,9 @@ struct Simplex {
     /// and the second shape's
     ids_b: [u32; 4],
     /// the nearest point (from the second shape to the first) and where it lies on each
-    v: Vec3,
-    p1: Vec3,
-    p2: Vec3,
+    pub(crate) v: Vec3,
+    pub(crate) p1: Vec3,
+    pub(crate) p2: Vec3,
 }
 
 impl Default for Simplex {
@@ -780,7 +780,7 @@ impl Simplex {
         (0..self.count).fold(false, |any, i| any | near(self.w[i])) | near(self.last)
     }
 
-    fn add(&mut self, w: Vec3, p: Vec3, q: Vec3) {
+    pub(crate) fn add(&mut self, w: Vec3, p: Vec3, q: Vec3) {
         self.last = w;
         self.w[self.count] = w;
         self.p[self.count] = p;
@@ -806,7 +806,7 @@ impl Simplex {
     /// F-69046: the simplex's point nearest the origin; the corners that do not carry it
     /// are dropped. False where four points lie all but flat (the loop stops there with what
     /// it had).
-    fn closest(&mut self) -> bool {
+    pub(crate) fn closest(&mut self) -> bool {
         let (w, p, q) = (self.w, self.p, self.q);
         let (bary, used): ([f32; 4], [bool; 4]) = match self.count {
             1 => {
