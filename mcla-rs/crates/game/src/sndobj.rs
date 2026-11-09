@@ -1919,15 +1919,17 @@ impl SoundLib {
                 drives.push(self.emit(v, inst, (lp, lr, lf)));
             }
         }
-        // the voice manager (F-46122): the waves ranked by their levels, 96 a bucket; the first 76 (the config's 96 voices
-        // less 20, F-68447 / F-11111) are heard: a waiting one starts while physical voices are free, past them the
-        // playing ones stop. A wave not playing goes on (its position runs) and starts from there when picked again.
+        // the voice manager (F-46122): the waves ranked by their levels, 96 a bucket; the first 80 (manager +12 = +24 - +28,
+        // F-68447: driversettings.xml NumPhysicalVoices 100 less NumNewPhysicalVoiceBufferVoices 20; recorded 80 / 100 / 20
+        // all through a drive, F-11111 never called) are heard: a waiting one starts while physical voices of the 100
+        // (the pool F-49820 sizes from the same config word) are free, past them the playing ones stop. A wave not
+        // playing goes on (its position runs) and starts from there when picked again.
         let slots: Vec<VoiceSlot> = drives
             .iter()
             .map(|d| VoiceSlot { active: true, ended: false, state: self.voice_state.get(&d.id).copied().unwrap_or(0), group: 0, flags: d.flags, h: d.h })
             .collect();
         let banks: Vec<&[VoiceSlot]> = slots.chunks(96).collect();
-        let picked = rank_pick(&banks, 76, 96u32.saturating_sub(audio.voices() as u32));
+        let picked = rank_pick(&banks, 80, 100u32.saturating_sub(audio.voices() as u32));
         let at = |id: u16| (id >> 8) as usize * 96 + (id & 0xff) as usize;
         let mut go = vec![false; drives.len()];
         for &id in &picked.start {
