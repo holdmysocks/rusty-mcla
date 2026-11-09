@@ -14080,8 +14080,13 @@ impl App {
                     log::info!("start warp: released under CarSelection's black");
                 }
                 let film = hooks::intro_film() && (self.opt.shot.is_none() || std::env::var("MCLA_MOVIE").is_ok());
-                // (the film carries the phone call: the subtitles of CUT_INTRO's table)
-                let subs = self.cuts.by_name("CUT_INTRO").map(|i| self.cuts.scenes[i].subs.clone()).unwrap_or_default();
+                // (the film carries the phone call: the subtitles of CUT_INTRO's table. The film's start F-32379 loads them
+                // through F-16426, which loads a table only with the SUBTITLES option on; MCLA_SUBTITLES=1 shows them anyway)
+                let subs = if self.game.opts.subtitles || std::env::var("MCLA_SUBTITLES").is_ok() {
+                    self.cuts.by_name("CUT_INTRO").map(|i| self.cuts.scenes[i].subs.clone()).unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 if film && self.start_movie("intro", subs, false) {
                     // (and that table's thought column and placing)
                     if let (Some(m), Some(i)) = (self.game.movie.as_mut(), self.cuts.by_name("CUT_INTRO")) {
