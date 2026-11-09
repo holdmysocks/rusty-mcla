@@ -455,6 +455,10 @@ pub struct CarInstance {
     pub window_bindings: Vec<ObjectBinding>,
     /// the side windows' controllers (left, right)
     pub windows: [WindowCtl; 2],
+    /// the side windows' pending requests, per side [close (up), open (down)]: the car-parts object's bytes D +2153 /
+    /// +2154 (left) and +2155 / +2156 (right). F-35036 takes them each frame for every car (`take_window_requests`); a
+    /// request the window cannot take yet stays set
+    pub win_req: [[bool; 2]; 2],
     /// the auto spoiler's controller (D+864, the windows' class at rate 1.0)
     pub spoiler: WindowCtl,
     /// the convertible roof's players and requests (`RoofCtl`)
@@ -936,10 +940,10 @@ pub struct RoofCtl {
 impl RoofCtl {
     /// One frame of F-35036's roof part, then both players' updates (vt+12). `down`: the option; `player`: the car is the
     /// local human player's (F-65988 - the update's gate; the no-damage byte +435 is 0 off line); `lens`: the
-    /// clamshell's and the skinned roof's lengths; `windows`: the side windows' controllers and clip lengths, opened and
-    /// closed with the roof. (The port sets a request when the option changes; the original sets it at every apply of
+    /// clamshell's and the skinned roof's lengths; `windows`: the side windows' controllers and clip lengths (set down at the start), and `win_req`
+    /// their request bytes, which the roof sets to open or close them with it. (The port sets a request when the option changes; the original sets it at every apply of
     /// the options - one asking for the end the roof stands at is never taken and is cleared by the next one taken.)
-    pub fn step(&mut self, down: bool, player: bool, dt: f32, lens: (f32, f32), windows: &mut [WindowCtl; 2], win_lens: [Option<f32>; 2]) {
+    pub fn step(&mut self, down: bool, player: bool, dt: f32, lens: (f32, f32), windows: &mut [WindowCtl; 2], win_lens: [Option<f32>; 2], win_req: &mut [[bool; 2]; 2]) {
         match self.opt {
             None => {
                 if down && player {
@@ -980,11 +984,10 @@ impl RoofCtl {
                 self.raise = false;
                 self.lower = false;
             }
+            // (the window requests D +2153 / +2155 or +2154 / +2156 = 1, taken after the roof by `take_window_requests`)
             if let Some(open) = win {
-                for k in 0..2 {
-                    if let Some(l) = win_lens[k] {
-                        windows[k].request(open, l);
-                    }
+                for req in win_req.iter_mut() {
+                    req[open as usize] = true;
                 }
             }
         }
@@ -998,6 +1001,20 @@ impl RoofCtl {
     pub fn shown(&self, lens: (f32, f32)) -> [bool; 3] {
         let moving = |c: &WindowCtl, l: f32| c.time > 0.0 && c.time < l;
         [self.top.time < 0.01, self.top.time > lens.1 - 0.01, moving(&self.top, lens.1) || moving(&self.hatch, lens.0)]
+    }
+}
+
+/// F-35036's window requests: per side (left +288, right +384) the close byte (+2153 / +2155) first, then the open byte
+/// (+2154 / +2156); a request taken (the slot's close vt+24 from fully open, open vt+20 from closed) clears both bytes
+/// of its side, one not taken stays set. A side without a window clip takes none.
+pub fn take_window_requests(windows: &mut [WindowCtl; 2], req: &mut [[bool; 2]; 2], lens: [Option<f32>; 2]) {
+    for k in 0..2 {
+        let Some(l) = lens[k] else { continue };
+        for open in [false, true] {
+            if req[k][open as usize] && windows[k].request(open, l) {
+                req[k] = [false; 2];
+            }
+        }
     }
 }
 
@@ -1023,18 +1040,21 @@ impl WindowCtl {
     pub const SPOILER_RATE: f32 = 1.0;
 
     /// `open` only from closed, `close` only from fully open (an up request while the window is
-    /// still going down is dropped, as the original's)
-    pub fn request(&mut self, open: bool, duration: f32) {
+    /// still going down is not taken; for the side windows the request then stays pending, `take_window_requests`).
+    /// Returns whether it was taken (the slots' vt+20 / vt+24 result).
+    pub fn request(&mut self, open: bool, duration: f32) -> bool {
         match (open, self.state) {
             (true, 1) => {
                 self.state = 3;
                 self.time = 0.0;
+                true
             }
             (false, 2) => {
                 self.state = 4;
                 self.time = duration;
+                true
             }
-            _ => {}
+            _ => false,
         }
     }
 
@@ -3496,7 +3516,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, rotor_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, crash: Default::default(), parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, vinyl_slot: VINYL_SLOT_NONE, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), spoiler: WindowCtl::default(), roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), valve: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, rotor_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, crash: Default::default(), parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), vinyl: None, vinyl_done: false, vinyl_slot: VINYL_SLOT_NONE, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), win_req: [[false; 2]; 2], spoiler: WindowCtl::default(), roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), valve: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
         self.cars.len() - 1
     }
 
@@ -4107,13 +4127,15 @@ if keep || c.state.pos.distance(center) < 450.0 {
             if let (Some(cl), Some(top)) = (c.model.clamshell.as_ref(), c.model.skinned_top.as_ref()) {
                 let down = c.model.cfg.extra.get(vehicle_model::ROOF_DOWN).copied().unwrap_or(0) != 0;
                 let win_lens = [0, 1].map(|k| c.model.windows[k].as_ref().map(|w| w.duration));
-                c.roof.step(down, c.is_player, dt, (cl.duration, top.duration), &mut c.windows, win_lens);
+                c.roof.step(down, c.is_player, dt, (cl.duration, top.duration), &mut c.windows, win_lens, &mut c.win_req);
                 // (test hook: MCLA_ROOF_TEST=<s> holds every convertible's roof players at that time, moving)
                 if let Some(t) = roof_test {
                     c.roof.hatch = WindowCtl { state: 3, time: t.min(cl.duration) };
                     c.roof.top = WindowCtl { state: 3, time: t.min(top.duration) };
                 }
             }
+            // (then the window requests, F-35036 for every car - the player gate covers only the roof's +2159 / +2160)
+            take_window_requests(&mut c.windows, &mut c.win_req, [0, 1].map(|k| c.model.windows[k].as_ref().map(|w| w.duration)));
             for k in 0..2 {
                 if let Some(clip) = c.model.windows[k].as_ref() {
                     if window_test && c.is_player {
@@ -6813,16 +6835,22 @@ impl Vehicles {
 }
 
 impl Vehicles {
-    /// Roll a side window of a car down (`open`) or up, as the original's window controller:
-    /// down only from fully up, up only from fully down; it moves at half the clip's rate (the
-    /// DB9's 0.667 s clip takes 1.33 s). Nothing happens on a car whose model has no clip.
+    /// A scene's request to roll a side window of a car down (`open`) or up: the original's request byte, taken by the
+    /// window's controller (down only from fully up, up only from fully down, at half the clip's rate - the DB9's
+    /// 0.667 s clip takes 1.33 s) when it can, pending until then. Nothing moves on a car whose model has no clip. An up
+    /// request is skipped while the skinned roof is folded (F-80163 in the window_up_* handler and FinishScene's).
     pub fn window(&mut self, car: usize, right: bool, open: bool) {
         let Some(c) = self.cars.get_mut(car) else { return };
-        let k = right as usize;
-        if let Some(clip) = c.model.windows[k].as_ref() {
-            let d = clip.duration;
-            c.windows[k].request(open, d);
+        if !open {
+            if let Some(top) = c.model.skinned_top.as_ref() {
+                if c.roof.top.time > top.duration - 0.01 {
+                    return;
+                }
+            }
         }
+        // (a scene's window event sets the request byte: window_down_* D +2154 / +2156, window_up_* +2153 / +2155; it is
+        // taken by the next frame's `take_window_requests`, or stays pending)
+        c.win_req[right as usize][open as usize] = true;
     }
 
     /// How far down a side window is: 0 up (closed) .. 1 fully down (open).
@@ -8288,6 +8316,39 @@ mod needle_tests {
 mod roof_tests {
     use super::{RoofCtl, WindowCtl};
 
+    /// F-35036's window requests (its part after the roof): close first, then open; a request is cleared (both bytes of
+    /// its side) only when the slot takes it, so an up request made while the window is still going down waits and
+    /// rolls it up once it is fully down; an open request at the open end waits for the next close.
+    #[test]
+    fn window_requests_wait_until_taken() {
+        let l = 1.0;
+        let mut w = [WindowCtl::default(); 2];
+        let mut req = [[false; 2]; 2];
+        // down requested on the left: taken at once (closed)
+        req[0][1] = true;
+        super::take_window_requests(&mut w, &mut req, [Some(l), Some(l)]);
+        assert_eq!((w[0].state, req[0]), (3, [false; 2]));
+        // up requested while it is going down: not taken, stays set
+        req[0][0] = true;
+        w[0].update(0.5, l);
+        super::take_window_requests(&mut w, &mut req, [Some(l), Some(l)]);
+        assert_eq!((w[0].state, req[0]), (3, [true, false]));
+        // once fully down it is taken
+        w[0].update(10.0, l);
+        assert_eq!(w[0].state, 2);
+        super::take_window_requests(&mut w, &mut req, [Some(l), Some(l)]);
+        assert_eq!((w[0].state, req[0]), (4, [false; 2]));
+        // both bytes set on a closed window: the close is not taken, the open is, and both clear
+        let mut w = [WindowCtl::default(); 2];
+        let mut req = [[true, true], [false; 2]];
+        super::take_window_requests(&mut w, &mut req, [Some(l), Some(l)]);
+        assert_eq!((w[0].state, req[0]), (3, [false; 2]));
+        // no clip on a side: the request is never taken
+        let mut req = [[false; 2], [false, true]];
+        super::take_window_requests(&mut w, &mut req, [Some(l), None]);
+        assert_eq!(req[1], [false, true]);
+    }
+
     /// The three roof draw tests against the original's F-36938 / F-80163 / F-91671 run offline on 4000 random and edge
     /// times (tools/roof_shown_reference.py): every answer equal.
     #[test]
@@ -8311,32 +8372,38 @@ mod roof_tests {
     fn roof_requests() {
         let lens = (5.0, 7.0);
         let wl = [Some(0.667), Some(0.667)];
+        // (the roof, then F-35036's window requests, as the frame runs them)
+        let st = |r: &mut RoofCtl, down: bool, player: bool, dt: f32, lens: (f32, f32), w: &mut [WindowCtl; 2], wl: [Option<f32>; 2]| {
+            let mut req = [[false; 2]; 2];
+            r.step(down, player, dt, lens, w, wl, &mut req);
+            super::take_window_requests(w, &mut req, wl);
+        };
         let mut w = [WindowCtl::default(); 2];
         // (made with the option down: at the end, windows down, no motion)
         let mut r = RoofCtl::default();
-        r.step(true, true, 0.0, lens, &mut w, wl);
+        st(&mut r, true, true, 0.0, lens, &mut w, wl);
         assert_eq!((r.hatch.state, r.top.state, r.top.time, w[0].state, w[1].time), (2, 2, 7.0, 2, 0.667));
         // (not the player's car: nothing at the start)
         let (mut r2, mut w2) = (RoofCtl::default(), [WindowCtl::default(); 2]);
-        r2.step(true, false, 0.0, lens, &mut w2, wl);
+        st(&mut r2, true, false, 0.0, lens, &mut w2, wl);
         assert_eq!((r2.top.state, w2[0].state), (1, 1));
         // (raised: both close, the windows go up; the hatch ends first)
-        r.step(false, true, 1.0, lens, &mut w, wl);
+        st(&mut r, false, true, 1.0, lens, &mut w, wl);
         assert_eq!((r.hatch.state, r.top.state, r.raise, w[0].state), (4, 4, false, 4));
-        r.step(false, true, 4.5, lens, &mut w, wl);
+        st(&mut r, false, true, 4.5, lens, &mut w, wl);
         assert_eq!((r.hatch.state, r.top.state), (1, 4));
         // (lowered while the top still closes: the request waits for both at 1)
-        r.step(true, true, 0.5, lens, &mut w, wl);
+        st(&mut r, true, true, 0.5, lens, &mut w, wl);
         assert!(r.lower);
         assert_eq!(r.top.state, 4);
-        r.step(true, true, 2.0, lens, &mut w, wl);
+        st(&mut r, true, true, 2.0, lens, &mut w, wl);
         assert_eq!((r.top.state, r.hatch.state), (1, 1));
         w = [WindowCtl::default(); 2];
-        r.step(true, true, 0.1, lens, &mut w, wl);
+        st(&mut r, true, true, 0.1, lens, &mut w, wl);
         assert_eq!((r.top.state, r.hatch.state, r.lower, w[0].state), (3, 3, false, 3));
         // (the player's car only)
         let mut r3 = RoofCtl { opt: Some(false), ..Default::default() };
-        r3.step(true, false, 0.1, lens, &mut w2, wl);
+        st(&mut r3, true, false, 0.1, lens, &mut w2, wl);
         assert_eq!((r3.top.state, r3.lower), (1, true));
     }
 }

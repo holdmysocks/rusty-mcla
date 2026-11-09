@@ -3574,8 +3574,12 @@ mod window_sound_tests {
                 i += 7;
                 log.0.clear();
                 match op {
-                    "o" => ctl.request(true, dur),
-                    "c" => ctl.request(false, dur),
+                    "o" => {
+                        ctl.request(true, dur);
+                    }
+                    "c" => {
+                        ctl.request(false, dur);
+                    }
                     u => {
                         ctl.update(f32::from_bits(hex(&u[1..])), dur);
                         updated = true;
