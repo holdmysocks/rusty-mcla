@@ -249,10 +249,19 @@ impl CopLights {
         let (tag, parent, rest, _, _) = self.lamps[i];
         let last = (self.anim.frames.max(1) - 1) as f32;
         let t = if self.duration > 0.0 { time.rem_euclid(self.duration) } else { 0.0 };
-        // (F-50482: the clip's frame is ((n - 1) / duration) x t, not rounded to a key; docs/reference/hookmen/clip_time_and_tactics.md A)
-        let f = if self.duration > 0.0 { (last / self.duration * t).clamp(0.0, last) } else { 0.0 };
         let (_, rest_r, rest_t) = rest.to_scale_rotation_translation();
-        let r = self.anim.track(KIND_ROTATION, tag).map_or(rest_r, |tr| tr.data.rot(f));
+        let r = self.anim.track(KIND_ROTATION, tag).map_or(rest_r, |tr| {
+            if tr.chans.is_empty() || self.duration <= 0.0 || last <= 0.0 {
+                // (a clip of several blocks, which the cop lights' is not: the keys of the loaded track)
+                let f = if self.duration > 0.0 { (last / self.duration * t).clamp(0.0, last) } else { 0.0 };
+                return tr.data.rot(f);
+            }
+            // (the clip player's sample F-50482, then the sampler F-47152 -> F-12216 as the drivers' clips run it)
+            let (i, fr) = crate::drvanim::sample_pos(&self.anim, clip_time(self.anim.frames, self.duration, t));
+            let mut d = crate::skin::FrameDof { flags: crate::skin::DOF_QUATERNION | crate::skin::DOF_NO_VALUE, v: [0.0; 4] };
+            crate::drvanim::sample_track(tr, i, fr, &mut d);
+            if d.flags & crate::skin::DOF_NO_VALUE == 0 { glam::Quat::from_array(d.v) } else { rest_r }
+        });
         parent * Mat4::from_rotation_translation(r, rest_t)
     }
 
@@ -272,6 +281,15 @@ impl CopLights {
     pub fn lamp_of_tag(&self, tag: u16) -> Option<usize> {
         self.lamps.iter().position(|l| l.0 == tag)
     }
+}
+
+/// The clip player's sample F-50482 with rounding off (as the car's animation object calls it): the frame
+/// F = ((n - 1) / duration) x t, unrounded, and the time handed to the sampler F-47152, (duration x F) / (n - 1) - the round
+/// trip moves t by an ulp in about a quarter of the cases (docs/reference/hookmen/clip_time_and_tactics.md A).
+pub(crate) fn clip_time(frames: usize, duration: f32, t: f32) -> f32 {
+    let n1 = (frames as i64 - 1) as f32;
+    let f = (n1 / duration) * t;
+    (duration * f) / n1
 }
 
 /// Slot classification used to pick the hinge bone for a part.
@@ -1678,6 +1696,46 @@ pub fn load_simple(path: &Path, shared_textures: Option<&Dictionary>) -> Result<
 
 #[cfg(test)]
 mod tests {
+    /// the cruiser's cop_lights clip takes the channel sampler (one block, four channels per pivot), and how far that moves
+    /// the pivots from the loaded keys' lerp (the earlier path) over two loops at 60 Hz
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn cop_lights_take_the_channel_sampler() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let assets = crate::assets::Assets::new(&dir);
+        let car = super::load_car(&assets, &std::path::Path::new(&dir).join("resources/vehicle/vp_chv_police_96")).unwrap();
+        let cl = car.cop_lights.expect("cop lights");
+        use mcla_formats::rage::anim::KIND_ROTATION;
+        let mut worst = 0.0f32;
+        for (i, l) in cl.lamps.iter().enumerate() {
+            let tr = cl.anim.track(KIND_ROTATION, l.0).expect("pivot track");
+            assert!(!tr.chans.is_empty() && tr.flags & 0xF0 == 0x10 && tr.chans.len() >= 4, "lamp {i}");
+            for k in 0..40 {
+                let t = (k as f32 / 60.0).rem_euclid(cl.duration);
+                let last = (cl.anim.frames - 1) as f32;
+                let old = tr.data.rot((last / cl.duration * t).clamp(0.0, last));
+                let (_, new, _) = (cl.lamps[i].1.inverse() * cl.pivot_at(i, t)).to_scale_rotation_translation();
+                worst = worst.max(old.angle_between(new).to_degrees());
+            }
+        }
+        println!("cop lights: {} lamps, worst angle new vs old {worst:.5} deg", cl.lamps.len());
+        assert!(worst < 0.1); // (0.056 deg on the disc's clip, 2026-11-08)
+    }
+
+    #[test]
+    fn clip_time_matches_the_original() {
+        // tools/clip_time_reference.py: F-50482 (round 0) on 6,000 cases - the time it hands to the sampler, bit for bit
+        let mut n = 0;
+        for l in include_str!("testdata/clip_time_ref.txt").lines() {
+            let (a, b) = l.split_once(" | ").unwrap();
+            let v: Vec<u32> = a.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            let got = super::clip_time(v[0] as usize, f32::from_bits(v[1]), f32::from_bits(v[2]));
+            assert_eq!(got.to_bits(), b.parse::<u32>().unwrap(), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 6000);
+    }
+
     /// every car, traffic or not, takes its textures from its `<car>.xtp` (F-39685 / F-70899);
     /// a traffic car holds no texture besides the .xtp's
     #[test]

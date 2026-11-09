@@ -615,6 +615,18 @@ pub(crate) fn any_police_close(player: Option<Vec3>, units: impl IntoIterator<It
     })
 }
 
+/// The police's burn-out test F-25339 (the law update's offence and the tactic's target): the car's burnout charge
+/// (chassis +580, `VehState::burn`) fcmpu-greater than 0 (NaN and -0 are not; a subnormal is). No car / chassis: false.
+pub(crate) fn burn_charged(burn: Option<f32>) -> bool {
+    burn.map_or(false, |b| b > 0.0)
+}
+
+/// Racer_IsBurningOut F-48805: the burnout state (chassis +578, `VehState::burn_state`) as a signed byte greater than 0.
+/// No racer / car: false (the original does not test the chassis).
+pub(crate) fn burn_state_on(state: Option<u8>) -> bool {
+    state.map_or(false, |s| (s as i8) > 0)
+}
+
 /// The patrol's path change F-84839 for a unit whose brain is the patrol's and that has a group: `group` = the group's paths,
 /// `own` = the unit's path in it (+1124), `timer` = +1128. A group of one path - every group of the disc's patrol file -
 /// changes nothing and draws no number. Else, with the timer <= 0 (NaN passes): one step of the shared MWC `rng`, its low 23
@@ -3305,7 +3317,7 @@ impl Police {
         let ai_target = self.target.is_some();
         let tc = self.target_car(vehicles).unwrap_or(p);
         let (tpos, tvel, tfwd, tright, tdamage) = (tc.state.pos, tc.state.vel, tc.state.forward(), tc.state.right(), tc.state.damage);
-        let t_burning = tc.state.veh.as_ref().map_or(false, |v| v.burn > 0.0);
+        let t_burning = burn_charged(tc.state.veh.as_ref().map(|v| v.burn));
         let t_bike_down = tc.model.bike && tc.state.wipeout > 0.0;
         let (t_uid, t_half, t_rev) = (tc.uid, 0.5 * (tc.model.max.y - tc.model.min.y), tc.state.gear < 0);
         let prev_heat = std::mem::replace(&mut self.prev_heat, self.heat);
@@ -3493,7 +3505,7 @@ impl Police {
             }
         }
         // burn-outs (F-88545: the car sim's burn-out charge above 0 - the launch after it counts as well)
-        let burn_cond = p.state.veh.as_ref().map_or(false, |v| v.burn > 0.0);
+        let burn_cond = burn_charged(p.state.veh.as_ref().map(|v| v.burn));
         let burn_bit = scoring && offence_gate(burn_cond, self.burnout_active, &mut self.sec[2], t("fBurnOutThresholdTime", 1.5), dt);
         if watching && burn_bit {
             breaking = true;
@@ -3684,7 +3696,7 @@ impl Police {
         // (from here on the tactic's target)
         let ai_target = self.target.is_some();
         let (ppos, pvel, pfwd, pright, damage, burning, bike_down) = match self.target_car(vehicles) {
-            Some(c) => (c.state.pos, c.state.vel, c.state.forward(), c.state.right(), c.state.damage, c.state.veh.as_ref().map_or(false, |v| v.burn > 0.0), c.model.bike && c.state.wipeout > 0.0),
+            Some(c) => (c.state.pos, c.state.vel, c.state.forward(), c.state.right(), c.state.damage, burn_charged(c.state.veh.as_ref().map(|v| v.burn)), c.model.bike && c.state.wipeout > 0.0),
             None => (tpos, tvel, tfwd, tright, tdamage, t_burning, t_bike_down),
         };
         let speed = pvel.length();
@@ -5422,6 +5434,27 @@ mod tests {
         p.arrest_posted = false;
         p.kind = TacKind::None;
         assert_eq!(p.hud_state(), 0);
+    }
+
+    #[test]
+    fn burn_tests_match_the_original() {
+        // tools/burn_tests_reference.py: F-25339 on the special floats and 2,000 random words (and no car / chassis),
+        // F-48805 on every byte 0..255 (and no racer / car)
+        let (mut a_n, mut b_n) = (0, 0);
+        for l in include_str!("testdata/burn_tests_ref.txt").lines() {
+            let (a, b) = l.split_once(" | ").unwrap();
+            let v: Vec<&str> = a.split_whitespace().collect();
+            let (w, null): (u32, u32) = (v[1].parse().unwrap(), v[2].parse().unwrap());
+            let got = if v[0] == "charge" {
+                a_n += 1;
+                burn_charged((null == 0).then(|| f32::from_bits(w)))
+            } else {
+                b_n += 1;
+                burn_state_on((null == 0).then(|| w as u8))
+            };
+            assert_eq!(got, b == "1", "{l}");
+        }
+        assert_eq!((a_n, b_n), (2020, 258));
     }
 
     #[test]
