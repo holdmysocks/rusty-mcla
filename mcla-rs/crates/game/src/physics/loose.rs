@@ -4715,11 +4715,8 @@ fn ambient_wheels(a: &mut Amb, b: &mut PBody, m: &[Vec3; 4], city: &super::colli
         return;
     }
     let t = a.tune.clone();
-    let inv_dt = 1.0 / dt;
+    let wt = WheelTune { grip: t.grip, travel: t.travel, stretch: t.stretch, cog_sim: t.cog_sim, k: t.k, c: t.c, kt: t.kt, ct: t.ct, mass: t.mass };
     let (x, u, z, p) = (m[0], m[1], m[2], m[3]);
-    let yzx = |v: Vec3| Vec3::new(v.y, v.z, v.x);
-    let zxy = |v: Vec3| Vec3::new(v.z, v.x, v.y);
-    let gj = |a: Vec3, b: Vec3| zxy(a) * yzx(b) - yzx(a) * zxy(b);
     for (i, w) in t.wheels.iter().enumerate().take(6) {
         let rec = &mut a.wheels[i];
         // (F-18688 with f1 0.5 from F-37370: base +- 0.5 the up row, the wheel's height not used; the spring's
@@ -4733,59 +4730,106 @@ fn ambient_wheels(a: &mut Amb, b: &mut PBody, m: &[Vec3; 4], city: &super::colli
         // (the city bound only, one-sided, the nearest hit: collision.rs `probe_front`)
         let hit = (len > 0.0).then(|| city.probe_front(top, seg / len, len)).flatten().map(|h| (h.point, h.normal)).filter(|(_, n)| !(n.y.abs() < f32::from_bits(0x3f35_0481)));
         let Some((contact, n)) = hit else {
-            rec.slide = false;
-            rec.d = ex::fnms(u.y, dt, rec.d);
-            rec.d = rec.d.clamp(-t.travel, t.travel);
+            ambient_wheel_air(rec, u.y, wt.travel, dt);
             continue;
         };
         // (slot 21: the point's velocity)
         let vp = b.v + cross(b.w, contact - b.at);
-        let s = fma(b.v.z, b.v.z, fma(b.v.x, b.v.x, b.v.y * b.v.y)).sqrt();
-        let slip = if i <= 1 {
-            let wk = Vec3::new(dot3(z, Vec3::new(x.x, u.x, z.x)), dot3(z, Vec3::new(x.y, u.y, z.y)), dot3(z, Vec3::new(x.z, u.z, z.z)));
-            let uu = zxy(wk) * yzx(vp) - yzx(wk) * zxy(vp);
-            vp - wk * uu
-        } else {
-            z * s + vp
-        };
-        let c1 = gj(n, slip);
-        let c2 = gj(n, c1);
-        let diff = contact - mid;
-        let d_old = rec.d;
-        let d = fma(diff.x, u.x, fma(u.y, diff.y, u.z * diff.z));
-        rec.d = d;
-        let rate = if d_old == 0.0 { 0.0 } else { (d - d_old) * inv_dt };
-        let cosn = fma(u.x, n.x, fma(u.z, n.z, u.y * n.y));
-        let mut f = n * (cosn * fma(t.k, d, t.c * rate));
-        // (a quarter of the archetype's weight, no gravity factor)
-        let sup = quarter_weight(Some(t.mass));
-        f.y = sup + f.y;
-        b.force = b.force + f;
-        let r = u * (t.cog_sim * u.y) + (contact - p);
-        b.torque = b.torque + gj(f, r);
-        if d > t.travel {
-            b.push = solver::direct(b.push, n * (d - t.travel));
+        let out = ambient_wheel_contact(rec, &wt, m, i <= 1, contact, n, mid, vp, b.v, dt);
+        b.force = b.force + out.force;
+        b.torque = b.torque + out.torque;
+        if let Some(push) = out.push {
+            b.push = solver::direct(b.push, push);
         }
-        let s_old = rec.s;
-        let st = fma(c2.x, c2.x, fma(c2.y, c2.y, c2.z * c2.z)).sqrt() * dt;
-        rec.s = st;
-        if st > t.stretch {
-            rec.raw = st;
-            rec.slide = true;
-            rec.s = t.grip * t.stretch;
-        } else {
-            rec.slide = false;
-        }
-        let rate_s = (rec.s - s_old) * inv_dt;
-        let l2 = dot3(c2, c2);
-        let dir = if l2 == 0.0 { Vec3::ZERO } else { c2 * super::gjk::rsqrt_as_original(l2) };
-        let fac = if s < f32::from_bits(0x3f64_e26d) { 4.0 } else { 1.0 };
-        let ft = ex::fms(fac * t.kt, rec.s, t.ct * rate_s) * u.y;
-        let tyre = dir * ft;
-        b.force = b.force + tyre;
-        b.torque = b.torque + cross(contact - b.at, tyre);
-        rec.d = rec.d.clamp(-t.travel, t.travel);
+        b.force = b.force + out.tyre;
+        b.torque = b.torque + cross(contact - b.at, out.tyre);
     }
+}
+
+/// The type's numbers F-19974 reads (+204 grip, +216 travel, +228 stretch, +240 cog, +244 k, +248 c, +252 kt, +256 ct) and
+/// the archetype's mass (the quarter weight F-60791).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WheelTune {
+    pub grip: f32,
+    pub travel: f32,
+    pub stretch: f32,
+    pub cog_sim: f32,
+    pub k: f32,
+    pub c: f32,
+    pub kt: f32,
+    pub ct: f32,
+    pub mass: f32,
+}
+
+/// What F-19974 hands the body for one wheel on the ground: the spring's force (vfunc +128), its torque (+132), the push
+/// past the travel (+108), the tyre's force at the contact (+124).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WheelCalls {
+    pub force: Vec3,
+    pub torque: Vec3,
+    pub push: Option<Vec3>,
+    pub tyre: Vec3,
+}
+
+/// F-19974 with no hit: d less the up row's y x dt, slide off, d kept within the travel.
+pub(crate) fn ambient_wheel_air(rec: &mut AmbWheel, u_y: f32, travel: f32, dt: f32) {
+    rec.slide = false;
+    rec.d = ex::fnms(u_y, dt, rec.d);
+    rec.d = rec.d.clamp(-travel, travel);
+}
+
+/// F-19974 on a hit (`contact`, normal `n`; `mid` the probe's middle, `vp` the point's velocity from the body's slot 21, `v`
+/// the body's velocity +272, `m` the instance matrix, `front` the front pair): the deflection d along the up row, its rate
+/// (0 when the old d is 0), the spring along n with the quarter weight on y, the push past the travel, the tyre's stretch
+/// across n against the slip (the front pair's whole, the others' less their rolling), its force; d kept within the travel.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ambient_wheel_contact(rec: &mut AmbWheel, t: &WheelTune, m: &[Vec3; 4], front: bool, contact: Vec3, n: Vec3, mid: Vec3, vp: Vec3, v: Vec3, dt: f32) -> WheelCalls {
+    let inv_dt = 1.0 / dt;
+    let (x, u, z, p) = (m[0], m[1], m[2], m[3]);
+    let yzx = |v: Vec3| Vec3::new(v.y, v.z, v.x);
+    let zxy = |v: Vec3| Vec3::new(v.z, v.x, v.y);
+    let gj = |a: Vec3, b: Vec3| zxy(a) * yzx(b) - yzx(a) * zxy(b);
+    let s = fma(v.z, v.z, fma(v.x, v.x, v.y * v.y)).sqrt();
+    let slip = if front {
+        let wk = Vec3::new(dot3(z, Vec3::new(x.x, u.x, z.x)), dot3(z, Vec3::new(x.y, u.y, z.y)), dot3(z, Vec3::new(x.z, u.z, z.z)));
+        let uu = zxy(wk) * yzx(vp) - yzx(wk) * zxy(vp);
+        vp - wk * uu
+    } else {
+        z * s + vp
+    };
+    let c1 = gj(n, slip);
+    let c2 = gj(n, c1);
+    let diff = contact - mid;
+    let d_old = rec.d;
+    let d = fma(diff.x, u.x, fma(u.y, diff.y, u.z * diff.z));
+    rec.d = d;
+    let rate = if d_old == 0.0 { 0.0 } else { (d - d_old) * inv_dt };
+    let cosn = fma(u.x, n.x, fma(u.z, n.z, u.y * n.y));
+    let mut f = n * (cosn * fma(t.k, d, t.c * rate));
+    // (a quarter of the archetype's weight, no gravity factor)
+    let sup = quarter_weight(Some(t.mass));
+    f.y = sup + f.y;
+    let r = u * (t.cog_sim * u.y) + (contact - p);
+    let torque = gj(f, r);
+    let push = (d > t.travel).then(|| n * (d - t.travel));
+    let s_old = rec.s;
+    let st = fma(c2.x, c2.x, fma(c2.y, c2.y, c2.z * c2.z)).sqrt() * dt;
+    rec.s = st;
+    if st > t.stretch {
+        rec.raw = st;
+        rec.slide = true;
+        rec.s = t.grip * t.stretch;
+    } else {
+        rec.slide = false;
+    }
+    let rate_s = (rec.s - s_old) * inv_dt;
+    let l2 = dot3(c2, c2);
+    let dir = if l2 == 0.0 { Vec3::ZERO } else { c2 * super::gjk::rsqrt_as_original(l2) };
+    let fac = if s < f32::from_bits(0x3f64_e26d) { 4.0 } else { 1.0 };
+    let ft = ex::fms(fac * t.kt, rec.s, t.ct * rate_s) * u.y;
+    let tyre = dir * ft;
+    rec.d = rec.d.clamp(-t.travel, t.travel);
+    WheelCalls { force: f, torque, push, tyre }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -5882,5 +5926,44 @@ mod xf_tests {
             n += 1;
         }
         assert_eq!(n, 8000);
+    }
+}
+
+#[cfg(test)]
+mod amb_wheel_tests {
+    use super::*;
+
+    /// F-19974 on the original's code run offline (tools/amb_wheel_reference.py, 4,000 wheels: hits and none, the front
+    /// pair and the rest, deflections past the travel, slides): the record (+8 d, +12 s, +16 raw, +20 slide) and every
+    /// vector the body is handed (the force, its torque, the push, the tyre's force and its point) equal bit for bit.
+    #[test]
+    fn ambient_wheel_matches_the_original() {
+        let h = |w: &str| u32::from_str_radix(w, 16).unwrap();
+        let mut n = 0;
+        for l in include_str!("../testdata/amb_wheel_ref.txt").lines() {
+            let (c, o) = l.split_once(" -> ").unwrap();
+            let w: Vec<u32> = c.split(' ').map(h).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let v3 = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let m = [v3(0), v3(3), v3(6), v3(9)];
+            let mut rec = AmbWheel { d: f(12), s: f(13), raw: f(14), slide: w[40] != 0 };
+            let t = WheelTune { grip: f(31), travel: f(32), stretch: f(33), cog_sim: f(34), k: f(35), c: f(36), kt: f(37), ct: f(38), mass: f(39) };
+            let mut got = String::new();
+            let hx = |v: Vec3| format!("{:08x} {:08x} {:08x}", v.x.to_bits(), v.y.to_bits(), v.z.to_bits());
+            if w[41] != 0 {
+                let out = ambient_wheel_contact(&mut rec, &t, &m, w[42] != 0, v3(15), v3(18), v3(21), v3(27), v3(24), f(30));
+                got += &format!(" f {} t {}", hx(out.force), hx(out.torque));
+                if let Some(p) = out.push {
+                    got += &format!(" p {}", hx(p));
+                }
+                got += &format!(" y {} at {}", hx(out.tyre), hx(v3(15)));
+            } else {
+                ambient_wheel_air(&mut rec, m[1].y, t.travel, f(30));
+            }
+            got += &format!(" | {:08x} {:08x} {:08x} {}", rec.d.to_bits(), rec.s.to_bits(), rec.raw.to_bits(), rec.slide as u8);
+            assert_eq!(got.trim(), o.trim(), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
     }
 }
