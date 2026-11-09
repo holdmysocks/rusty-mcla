@@ -666,6 +666,9 @@ pub struct SoundLib {
     cat_timer: HashMap<u32, u8>,
     /// Randomized objects' history (kept per object, as the original writes it into the metadata)
     history: HashMap<u32, (usize, Vec<u8>)>,
+    /// (tests) children a Randomized takes when one of them is listed (the choice recorded in the original)
+    #[cfg(test)]
+    pub(crate) force_pick: Vec<u32>,
     insts: Vec<Instance>,
     next: u64,
     next_voice: u64,
@@ -951,6 +954,8 @@ impl SoundLib {
             timer_ms: [0.0; 3],
             cat_timer: audcfg::category_timers(&cat).into_iter().collect(),
             history: HashMap::new(),
+            #[cfg(test)]
+            force_pick: Vec::new(),
             insts: Vec::new(),
             next: 1,
             next_voice: 0,
@@ -1603,6 +1608,10 @@ impl SoundLib {
         if n == 0 {
             return None;
         }
+        #[cfg(test)]
+        if let Some(c) = children.iter().find(|c| self.force_pick.contains(&c.0)) {
+            return Some(c.0);
+        }
         let (idx, hist) = self.history.entry(hash).or_insert_with(|| (0, vec![0xFF; hlen])).clone();
         if h.tristate(5) == 1 {
             let i = (idx + 1) % n;
@@ -1809,6 +1818,42 @@ impl SoundLib {
     }
 
     /// Advance every sound by `dt` and drive the mixer's voices.
+    /// (tests) One update of one sound at the timer's time `now` (ms): the waves it holds that are played and not ended
+    /// (the original's Simple sounds in state 2), and whether the sound itself is still there.
+    #[cfg(test)]
+    pub(crate) fn test_alive(&mut self, h: Handle, now: u32, ms: f32) -> Option<usize> {
+        let at = self.insts.iter().position(|i| i.id == h.0)?;
+        let mut inst = self.insts.remove(at);
+        let t = inst.timer.unwrap_or(0) as usize;
+        self.timer_ms[t] = now as f64;
+        if apply_stop(&mut inst, now) {
+            return None;
+        }
+        let (ctx, rt) = root_ctx(&inst.req);
+        let mut out = Vec::new();
+        self.step(&mut inst.root, ms, now, ctx, rt, inst.req.offset(), &mut out);
+        fn alive(n: &Node) -> usize {
+            let me = matches!(n.kind, Kind::Wave { .. } | Kind::Stream { .. }) && n.clock.play_at.is_some() && n.st != St::Done;
+            let mut c = me as usize;
+            match &n.kind {
+                Kind::Group { children } | Kind::Twin { children, .. } | Kind::Cross { children, .. } => c += children.iter().map(alive).sum::<usize>(),
+                Kind::Looping { child, .. } | Kind::Envelope { child, .. } => c += alive(child),
+                Kind::Sequential { cur, .. } => c += cur.as_deref().map(alive).unwrap_or(0),
+                Kind::Retrig { live, .. } => c += live.iter().map(alive).sum::<usize>(),
+                Kind::OnStop { child, stopped, .. } => c += alive(child) + stopped.as_deref().map(alive).unwrap_or(0),
+                _ => {}
+            }
+            c
+        }
+        let n = alive(&inst.root);
+        if inst.root.st != St::Done {
+            self.insts.insert(at, inst);
+            Some(n)
+        } else {
+            None
+        }
+    }
+
     /// (tests) Advance one playing sound by `dt` and give the volume chain (dB) of every wave it plays now - the
     /// original's vol[40] with its attack / release / envelope terms; empty once it has ended.
     #[cfg(test)]
@@ -3606,6 +3651,62 @@ mod tests {
             println!("{name}: first update {first:?}, second {second:?}");
             assert!(!first.is_empty(), "{name}: plays the update it was started");
             assert!(second.is_empty(), "{name}: killed at the next update");
+        }
+    }
+
+    /// Whole sound trees against a drive recorded in the original (private recorder, TD lines; tools/sound_tree_extract.py):
+    /// each root sound played at its recorded update, stopped at its recorded stop, stepped at the recorded times; the
+    /// waves it holds playing after each update compared with the original's Simple sounds in state 2.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR and MCLA_TREE_REC (a file of tools/sound_tree_extract.py)"]
+    fn trees_match_the_recorded_drive() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let rec = std::fs::read_to_string(std::env::var("MCLA_TREE_REC").expect("MCLA_TREE_REC")).expect("rec");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let (mut same, mut diff, mut none) = (0, 0, 0);
+        let mut by: std::collections::BTreeMap<String, (u32, u32, String)> = Default::default();
+        for line in rec.lines().filter(|l| !l.is_empty()) {
+            let f: Vec<&str> = line.split('|').collect();
+            let stop: i64 = f[1].parse().unwrap();
+            let ms: Vec<u32> = f[2].split(' ').map(|v| v.parse().unwrap()).collect();
+            let want: Vec<i64> = f[3].split(' ').map(|v| v.parse().unwrap()).collect();
+            lib.force_pick = f.get(4).map(|v| v.split(' ').filter(|n| !n.is_empty()).map(joaat).collect()).unwrap_or_default();
+            let Some(h) = lib.play(f[0], Req::default()) else { none += 1; continue };
+            let mut got = Vec::new();
+            let mut prev = ms[0];
+            for (k, &now) in ms.iter().enumerate() {
+                if k as i64 == stop {
+                    lib.stop(h);
+                }
+                got.push(lib.test_alive(h, now, now.saturating_sub(prev) as f32).map(|n| n as i64).unwrap_or(-1));
+                prev = now;
+                if got[k] < 0 {
+                    break;
+                }
+            }
+            lib.insts.retain(|i| i.id != h.0);
+            got.resize(want.len(), -1);
+            let e = by.entry(f[0].to_string()).or_default();
+            if got == want {
+                same += 1;
+                e.0 += 1;
+            } else {
+                diff += 1;
+                e.1 += 1;
+                if e.2.is_empty() {
+                    e.2 = format!("stop {stop} ms {:?}
+      want {want:?}
+      got  {got:?}", &ms[..ms.len().min(24)]);
+                }
+            }
+        }
+        println!("instances: {same} equal, {diff} differ, {none} not made");
+        for (n, (s, d, ex)) in &by {
+            if *d > 0 {
+                println!("{n}: {s} equal, {d} differ
+      {ex}");
+            }
         }
     }
 
