@@ -963,6 +963,13 @@ pub struct Game {
     pub int_open: Option<(usize, usize)>,
     /// the row's own colour when its strip opened (BACK puts it back with the swatch)
     pub int_open_hsv: Option<[f32; 3]>,
+    /// the neon's / the tint's free colour when its strip opened (BACK puts it back)
+    pub int_open_free: Option<(usize, [f32; 3])>,
+    /// Every colour strip's own cursor, as each strip state of the garage's chart keeps its selected child (+12): it
+    /// starts on swatch 0 (the chart's parser F-25313 gives a state's cursor to its first selectable child), stays
+    /// where it was left, and is not matched to the car's colour (MatchStateColorsToSavegame F-93328 only fills the
+    /// swatches). 0..10 the interior and rim rows (`int_open`'s k), 11 neon, 12 tint, 13 / 14 PRIMARY / SECONDARY COLOR.
+    pub strip_cursor: [usize; 15],
     /// the colours mixed with EDIT COLOR SLOT for those rows (0..5 the interior's, 6..8 the
     /// rim's): hue, saturation, value; none = the swatch
     pub slot_hsv: [Option<[f32; 3]>; 9],
@@ -1617,6 +1624,8 @@ impl Game {
             int_colors: [0, 4, 4, 9, 9, 9],
             int_open: None,
             int_open_hsv: None,
+            int_open_free: None,
+            strip_cursor: [0; 15],
             slot_hsv: [None; 9],
             pick_slot: None,
             paint_pick: None,
@@ -2019,6 +2028,26 @@ impl Game {
         if n.is_empty() { self.career.strings.get("drv_mp_01_set").map(|s| s.to_uppercase()).unwrap_or_else(|| "PLAYER".to_string()) } else {
             upper_name(&n)
         }
+    }
+
+    /// A colour strip opens: entering the strip state descends into its current child (F-96829 with F-13024), whose
+    /// onenter runs - SetMiscColor (F-70456) for the misc strips, SetVehicleColor (F-99653) for the paint's - so the
+    /// swatch under the strip's own cursor goes on the car at once (BACK puts back what the car had).
+    pub fn strip_enter(&mut self, k: usize) {
+        let c = self.strip_cursor[k.min(14)] % 40;
+        match k {
+            11 => { self.neon_color = c; self.car_x.neon_rgb = None; }
+            12 => { self.tint_color = c; self.car_x.tint_rgb = None; }
+            13 => { self.color_idx = c; self.paint_hsv = Some(self.vehicle_color_hsv(c)); }
+            14 => { self.paint_b = c; self.car_x.paint_b_rgb = Some((c, self.vehicle_color(c))); }
+            _ => {
+                let s = self.slot_screen(c);
+                let h = paint_rgb_to_hsv([s[0], s[1], s[2], 1.0]);
+                if k < 6 { self.int_colors[k] = c; } else if k < 9 { self.rim_cols[k - 6] = c; } else { self.car_x.int_de_idx[(k - 9).min(1)].0 = c; }
+                if k < 9 { self.slot_hsv[k] = Some(h); } else { self.car_x.int_de_hsv[(k - 9).min(1)] = Some(h); }
+            }
+        }
+        self.dirty = true;
     }
 
     /// A save from before the 40-slot strips (2026-11-08): a gauge, interior A..C or rim row that has an index into the
@@ -7629,16 +7658,20 @@ impl Game {
                 } else if let Some((row, idx, hsv)) = self.paint_open {
                     let primary = row == CUSTOM_SLOTS.iter().position(|x| *x == Slot::Paint).map_or(0, |i| i + 1);
                     if back {
+                        // (ResetPaintColor: the car's colour back; the strip's cursor stays)
                         if primary {
+                            self.strip_cursor[13] = self.color_idx;
                             self.color_idx = idx;
                             self.paint_hsv = hsv;
                         } else {
+                            self.strip_cursor[14] = self.paint_b;
                             self.paint_b = idx;
                             self.car_x.paint_b_rgb = self.paint_open_b;
                         }
                         self.paint_open = None;
                         self.dirty = true;
                     } else if enter {
+                        if primary { self.strip_cursor[13] = self.color_idx; } else { self.strip_cursor[14] = self.paint_b; }
                         self.paint_open = None;
                     } else if primary && self.x_hit(ctx) {
                         // EDIT COLOR SLOT: the picker starts from the colour on the car
@@ -7755,27 +7788,35 @@ impl Game {
                     }
                     let cell = if k == 11 { &mut self.neon_color } else if k == 12 { &mut self.tint_color } else if k < 6 { &mut self.int_colors[k] } else if k < 9 { &mut self.rim_cols[k - 6] } else { &mut self.car_x.int_de_idx[(k - 9).min(1)].0 };
                     if back {
+                        // (the strip's cursor stays where it was; the car gets back what it had)
+                        self.strip_cursor[k.min(14)] = *cell;
                         *cell = saved;
                         if k < 9 { self.slot_hsv[k] = self.int_open_hsv; } else if k < 11 { self.car_x.int_de_hsv[(k - 9).min(1)] = self.int_open_hsv; }
+                        if k == 11 { self.car_x.neon_rgb = self.int_open_free; } else if k == 12 { self.car_x.tint_rgb = self.int_open_free; }
                         self.int_open = None;
                     } else if enter {
+                        self.strip_cursor[k.min(14)] = *cell;
                         self.int_open = None;
                     }
                     (false, false, false, false, false, false)
                 } else if self.garage_menu == 11 && self.garage_part.is_none() && self.flash_garage.is_some() && enter && (self.garage_row == neon_row + 1 || self.garage_row == tint_row + 1) {
                     // NEON/WINDOW TINT: ExtNeon_Open / Tint_Open (11, 12 here)
                     self.int_open = Some(if self.garage_row == neon_row + 1 { (11, self.neon_color) } else { (12, self.tint_color) });
+                    self.int_open_free = if self.garage_row == neon_row + 1 { self.car_x.neon_rgb } else { self.car_x.tint_rgb };
+                    self.strip_enter(if self.garage_row == neon_row + 1 { 11 } else { 12 });
                     (up, down, left, right, back, false)
                 } else if self.garage_menu == 18 && self.garage_part.is_none() && enter && (9933..=9935).contains(&self.garage_row) {
                     let k = self.garage_row - 9933;
                     self.int_open = Some((6 + k, self.rim_cols[k]));
                     self.int_open_hsv = self.slot_hsv[6 + k];
+                    self.strip_enter(6 + k);
                     (up, down, left, right, back, false)
                 } else if self.garage_menu == 17 && self.garage_part.is_none() && enter && (9941..=9948).contains(&self.garage_row) {
                     // (rows 9947, 9948 - INTERIOR COLOR D, E - are 9 and 10 here)
                     let k = if self.garage_row > 9946 { self.garage_row - 9947 + 9 } else { self.garage_row - 9941 };
                     self.int_open = Some((k, if k < 6 { self.int_colors[k] } else { self.car_x.int_de_idx[(k - 9).min(1)].0 }));
                     self.int_open_hsv = if k < 9 { self.slot_hsv[k] } else { self.car_x.int_de_hsv[(k - 9).min(1)] };
+                    self.strip_enter(k);
                     (up, down, left, right, back, false)
                 } else {
                     (up, down, left, right, back, enter)
@@ -8101,6 +8142,7 @@ impl Game {
                     if enter || std::env::var("MCLA_PAINT_OPEN").is_ok() {
                         self.paint_open = Some(if self.garage_row == fade_row + 1 { (self.garage_row, self.paint_b, None) } else { (self.garage_row, self.color_idx, self.paint_hsv) });
                         self.paint_open_b = self.car_x.paint_b_rgb;
+                        self.strip_enter(if self.garage_row == fade_row + 1 { 14 } else { 13 });
                         if std::env::var("MCLA_PAINT_OPEN").map_or(false, |v| v == "pick") {
                             self.paint_pick = Some(self.paint_hsv);
                             self.paint_hsv = Some(self.paint_hsv.unwrap_or_else(|| paint_rgb_to_hsv(PALETTE[self.color_idx % PALETTE.len()])));
