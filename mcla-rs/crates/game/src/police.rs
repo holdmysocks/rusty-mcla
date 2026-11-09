@@ -6170,6 +6170,28 @@ mod tests {
         assert!(checked == 1908 && heat == 0 && states == [913, 195, 800], "{checked} {heat} {states:?}");
     }
 
+    /// The brains' bearing cache against recordings of the running original (docs/reference/hookmen/squad_fsm.md, the
+    /// bearing cache): the cache (+760 value, +764 set) is cleared by the brain update F-74140 and filled by F-90304 on
+    /// the first ask. In the recorded Double Pursuit (d4) and Arrow Trap (a2) it is clear at every cop's entry to the
+    /// tactic update (20,447), so the tactic is the first to ask; each value it left (1,347) must be the port's fresh
+    /// bearing (`swipe_geo`: aiv::ang3 of the cop's right row and target - cop, x 180 / pi) from the entry's frames.
+    #[test]
+    fn bearing_cache_matches_the_recording() {
+        let rec = include_str!("testdata/bearing_cache_rec.txt");
+        let fl = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let v3 = |v: &[&str]| Vec3::new(fl(v[0]), fl(v[1]), fl(v[2]));
+        let mut n = 0;
+        for line in rec.lines() {
+            let v: Vec<&str> = line.split_whitespace().collect();
+            assert_eq!(v[0], "B");
+            let (right, pos, tpos) = (v3(&v[1..]), v3(&v[4..]), v3(&v[7..]));
+            let g = swipe_geo(pos, right, Vec3::Z, Vec3::ZERO, tpos, Vec3::ZERO);
+            assert_eq!(format!("{:08X}", g.bearing.to_bits()), v[10], "line {n}: {line}");
+            n += 1;
+        }
+        assert_eq!(n, 1347);
+    }
+
     /// The search's point lists against a recording of the running original (docs/reference/hookmen/search_recording.md):
     /// every build of F-52110 (first builds and rebuilds) recorded at its entry and exit in Pursuit and Arrow Trap
     /// searches. Each runs `search_points_on` on the city's navigation data (resources/city/sc: the r66 nav system, the r26
