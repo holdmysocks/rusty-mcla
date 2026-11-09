@@ -10,7 +10,7 @@
 
 /// Event times in scene seconds; `racename` is -1 where the scene has none (taunts 01..09). An event
 /// record is (name, "", -1, start, duration, 0): `racename_len` is the badge's duration - form 70 is
-/// shown by the event's start (`sub_823D76A8`, case 67) and closed by its end (`sub_823D6E38`).
+/// shown by the event's start (`F-91263`, case 67) and closed by its end (`F-26895`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PreraceEvents {
     pub scene: &'static str,
@@ -33,7 +33,7 @@ pub fn events(scene: &str) -> Option<PreraceEvents> {
     PRERACE_EVENTS.iter().copied().find(|e| e.scene == name)
 }
 
-/// The start-scene table the original plays from: `tune/cutscene/racestartgridmapping_sc.tbl` (sub_823C8218
+/// The start-scene table the original plays from: `tune/cutscene/racestartgridmapping_sc.tbl` (F-36338
 /// tries the South Central table first and takes `racestartgridmapping.tbl` only when that fails, so the
 /// Complete Edition always plays the `_sc` one): `Grid <name> <key> { Cutscene <script> ... }` - grids 0..6,
 /// Taunt 7, Safety 8. Scenes as cine names (`racestart/<scene>`, lower case), in the table's order.
@@ -88,7 +88,7 @@ impl GridTable {
     }
 }
 
-/// What the race script hands the picker (`PickRacestartCutsceneOrTauntFromGridEnum`, sub_823C55B8).
+/// What the race script hands the picker (`PickRacestartCutsceneOrTauntFromGridEnum`, F-10331).
 #[derive(Clone, Debug, Default)]
 pub struct PickArgs {
     /// the race's GridType ("2x4_Race_Grid"); "1x1_Race_Grid" without opponents, "Safety" for SafetyCam 1
@@ -259,7 +259,7 @@ impl Picker {
     }
 }
 
-/// A scene event aimed at a racer slot (kind 2: `CineScript_Events_LaunchEventOnRacerSlot`, sub_823C5220) or
+/// A scene event aimed at a racer slot (kind 2: `CineScript_Events_LaunchEventOnRacerSlot`, F-51323) or
 /// at the scene's speech (`playspeech`, `stopaudiostreams`), from the scene script's 7-word event records
 /// (name, kind, racer name, slot, time, duration, f3 - f3 is 0 in every race-start scene). Slot i is the race's
 /// racer list index i (`Cars_AssignIdToSlot`); `*_left` events go to slot 0, `*_right` to slot 1. `dur` 0 = no
@@ -273,17 +273,47 @@ pub struct SlotEvent {
     pub dur: f32,
 }
 
-/// The slot / speech events of a scene, in the script's order. (gesture_left / gesture_right before 1 s are
-/// moved to 1 s in a race-start scene, 0x823C5264.)
+/// The slot / speech events of a scene, in the script's order, each with the start the slot launch gives it
+/// (`slot_event_start`).
 pub fn slot_events(scene: &str) -> Vec<SlotEvent> {
     let name = scene.rsplit('/').next().unwrap_or(scene).to_ascii_lowercase();
     SLOT_EVENTS.iter().filter(|e| e.scene == name).map(|e| {
         let mut e = *e;
-        if (e.event == "gesture_left" || e.event == "gesture_right") && e.t < 1.0 {
-            e.t = 1.0;
-        }
+        e.t = slot_event_start(scene, e.event, e.t);
         e
     }).collect()
+}
+
+/// The generic event types (mcGenericEventType's 97-name table, F-49543), in type order.
+pub const EVENT_TYPES: [&str; 97] = [
+    "gesture_neutral", "gesture_left", "gesture_right", "gesture_talk_left", "gesture_talk_right", "gesture_mild", "gesture_win",
+    "gesture_listen_left", "gesture_listen_right", "gesture_thm_dwn_lft", "gesture_thm_dwn_rgt", "showdriver", "hidedriver", "horn",
+    "open_door_right", "close_door_right", "open_door_left", "close_door_left", "open_left_door", "close_left_door", "slam_door_left",
+    "slam_door_right", "car_on", "car_off", "car_restore", "car_left_shudder", "car_right_shudder", "car_rear_shudder",
+    "car_left_rear_shudder", "window_down_left", "window_down_right", "window_up_left", "window_up_right", "headlights_on",
+    "headlights_off", "engine_on", "engine_off", "carignition", "racer_enablemusic", "racer_disablemusic", "playspeech",
+    "speechsystem_play", "musicplay", "musicstop", "musicpause", "musicnext", "musicprev", "stopaudiostreams", "gesture_casual_right",
+    "gesture_look_right", "gesture_mild_right", "gesture_disappointed", "gesture_copfidget", "gesture_cophandsup", "gesture_findsh04",
+    "jawflap", "prerace_burnout", "particles", "countdown", "go5sec", "go1sec", "go", "arrest_splash_off", "arrest_splash",
+    "arrest_panel", "ticket_splash", "ticket_panel", "racename", "fade_to_black", "fade_to_scene", "cam_grain_on", "cam_grain_off",
+    "bookmark_cut_to_game", "bookmark", "cut_to_game", "cam_noupright", "cam_dof", "cam_fov", "cam_to_game", "cam_gps_warp_out",
+    "cam_to_garage", "cam_to_rmr", "cam_to_menu", "menu_to_cam", "garage_to_cam", "garage_lighting", "game_lighting", "rmr_to_cam",
+    "big_map_up", "big_map_down", "dof_near_distance", "dof_far_distance", "dof_transition_time", "roll_credits",
+    "cam_to_gps_tutorial", "bw_toggle_on", "bw_toggle_off",
+];
+
+/// An event name's type (F-49543): the first table name the event name contains (the C runtime's strstr, case
+/// kept), else -1 (logged; the event is still made).
+pub fn event_type(name: &str) -> i32 {
+    EVENT_TYPES.iter().position(|t| name.contains(t)).map_or(-1, |i| i as i32)
+}
+
+/// The start a slot event is launched at (`CineScript_Events_LaunchEventOnRacerSlot`, F-51323): a
+/// `gesture_left` / `gesture_right` type (1 / 2) before 1 s starts at 1 s when the current scene's name (the
+/// short form, `racestart/...`) contains `racestart`; any other start is kept. The event is made only when the
+/// slot holds a racer id above -1 whose racer exists; else its node goes back to the pool.
+pub fn slot_event_start(scene: &str, event: &str, t: f32) -> f32 {
+    if t < 1.0 && scene.contains("racestart") && matches!(event_type(event), 1 | 2) { 1.0 } else { t }
 }
 
 /// A race file's GridType as the race parser reads it (F-53452): its place among None, 2x4_Race_Grid,
@@ -294,7 +324,7 @@ pub fn grid_type_key(name: &str) -> i32 {
     TYPES.iter().position(|t| t.eq_ignore_ascii_case(name)).map_or(-1, |p| p as i32)
 }
 
-/// The taunt speech scenario a scene prepares (`CineScript_RequestPreraceTauntScenarioAudio`, sub_823BFC78):
+/// The taunt speech scenario a scene prepares (`CineScript_RequestPreraceTauntScenarioAudio`, F-56020):
 /// a name with TAUNT -> `TAUNT_PRERACE_HP` (sender slot 1, the hookman; receiver slot 0), else with PH ->
 /// `TAUNT_PRERACE_PH` (sender slot 0), else `TAUNT_PRERACE_H` (slot 1 alone). None for other scenes.
 /// The whole name upper-cased (the C runtime's ASCII a..z) and searched, as F-56020 does; it then requests the
@@ -982,6 +1012,34 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 312);
+    }
+
+    /// The slot launch against the original run offline (tools/slot_event_reference.py: F-51323 with the event
+    /// type look-up and strstr, 8 scene names x 23 event names x 4 starts, 736 cases): the event made or not, its
+    /// type, racer and start equal.
+    #[test]
+    fn slot_event_matches_the_original() {
+        let text = include_str!("testdata/slot_event_ref.txt");
+        let mut n = 0;
+        for line in text.lines() {
+            let mut it = line.splitn(3, '|');
+            let (scene, event, rest) = (it.next().unwrap(), it.next().unwrap(), it.next().unwrap());
+            let (args, out) = rest.split_once(" -> ").unwrap();
+            let a: Vec<&str> = args.split(' ').collect();
+            let (slot, t, dur): (usize, f32, f32) = (a[0].parse().unwrap(), a[1].parse().unwrap(), a[2].parse().unwrap());
+            let ids: Vec<i32> = a[3].split(',').map(|x| x.parse().unwrap()).collect();
+            let racers: u32 = a[4].parse().unwrap();
+            let id = ids[slot];
+            let want = if id > -1 && id < 8 && (racers >> id) & 1 == 1 {
+                format!("{} {} {} {} 0.5", event_type(event), id, slot_event_start(scene, event, t), dur)
+            } else {
+                "free-".to_string()
+            };
+            let got: Vec<String> = out.split(' ').map(|x| x.parse::<f32>().map_or(x.to_string(), |v| v.to_string())).collect();
+            assert_eq!(got.join(" "), want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 736);
     }
 
     /// The pick against the original run offline (tools/prerace_pick_reference.py: F-10331 and F-24279 with the

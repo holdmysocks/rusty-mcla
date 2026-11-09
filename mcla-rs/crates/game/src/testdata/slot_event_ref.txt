@@ -1,0 +1,736 @@
+racestart/gen_prerace_taunt_H_01|gesture_neutral|2 -1 7.33333015 0,1,-1,3 2 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_neutral|0 0.99999994 0 3,0,0,1 15 -> 0 3 0.99999994 0 0.5
+racestart/gen_prerace_taunt_H_01|gesture_neutral|3 0.5 1.39999998 3,2,3,1 10 -> 0 1 0.5 1.39999998 0.5
+racestart/gen_prerace_taunt_H_01|gesture_neutral|2 1 0 0,0,1,3 15 -> 0 1 1 0 0.5
+racestart/gen_prerace_taunt_H_01|gesture_left|0 0.25 7.33333015 3,0,1,3 10 -> 1 3 1 7.33333015 0.5
+racestart/gen_prerace_taunt_H_01|gesture_left|3 1.5 1.39999998 0,3,1,3 15 -> 1 3 1.5 1.39999998 0.5
+racestart/gen_prerace_taunt_H_01|gesture_left|2 0 7.33333015 3,3,2,1 15 -> 1 2 1 7.33333015 0.5
+racestart/gen_prerace_taunt_H_01|gesture_left|3 0.99999994 1.39999998 1,2,2,-1 1 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_right|0 1.5 0 0,2,2,-1 15 -> 2 0 1.5 0 0.5
+racestart/gen_prerace_taunt_H_01|gesture_right|3 0.25 0 -1,3,2,-1 1 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_right|0 1.00000012 0 2,2,3,0 1 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_right|1 0 0 -1,0,3,2 15 -> 2 0 1 0 0.5
+racestart/gen_prerace_taunt_H_01|gesture_talk_left|1 0.5 7.33333015 2,-1,3,0 2 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_talk_left|1 1.00000012 1.39999998 1,0,3,3 15 -> 3 0 1.00000012 1.39999998 0.5
+racestart/gen_prerace_taunt_H_01|gesture_talk_left|0 4.36667013 1.39999998 3,0,3,2 2 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_talk_left|1 -1 0 -1,1,3,-1 15 -> 3 1 -1 0 0.5
+racestart/gen_prerace_taunt_H_01|gesture_talk_right|0 2.33332992 1.39999998 -1,3,3,1 15 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_talk_right|2 0.5 0 2,0,1,2 2 -> 4 1 0.5 0 0.5
+racestart/gen_prerace_taunt_H_01|gesture_talk_right|2 1.5 0 0,1,3,3 15 -> 4 3 1.5 0 0.5
+racestart/gen_prerace_taunt_H_01|gesture_talk_right|1 4.36667013 0 -1,0,2,0 2 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_listen_left|1 0.25 0 2,0,3,2 0 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_listen_left|1 4.36667013 1.39999998 0,3,1,-1 0 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_listen_left|1 0.99999994 0 2,2,-1,0 10 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_listen_left|0 1.00000012 7.33333015 3,3,3,-1 15 -> 7 3 1.00000012 7.33333015 0.5
+racestart/gen_prerace_taunt_H_01|gesture_listen_right|1 2.33332992 0 -1,-1,3,1 2 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_listen_right|0 4.36667013 0 3,0,0,1 1 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_listen_right|3 0.5 7.33333015 -1,3,0,3 10 -> 8 3 0.5 7.33333015 0.5
+racestart/gen_prerace_taunt_H_01|gesture_listen_right|1 -1 7.33333015 1,2,1,-1 10 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_thm_dwn_lft|1 2.33332992 1.39999998 2,0,0,0 0 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_thm_dwn_lft|2 0.25 0 3,2,3,2 1 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_thm_dwn_lft|1 -1 7.33333015 0,3,0,2 0 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_thm_dwn_lft|3 1.5 1.39999998 3,1,0,3 15 -> 9 3 1.5 1.39999998 0.5
+racestart/gen_prerace_taunt_H_01|gesture_thm_dwn_rgt|3 1.00000012 0 2,3,2,1 15 -> 10 1 1.00000012 0 0.5
+racestart/gen_prerace_taunt_H_01|gesture_thm_dwn_rgt|2 2.33332992 7.33333015 3,0,2,2 0 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_thm_dwn_rgt|2 0.99999994 0 1,2,1,3 1 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_thm_dwn_rgt|2 -1 0 1,-1,0,2 0 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_copfidget|1 0.5 0 -1,1,3,-1 15 -> 52 1 0.5 0 0.5
+racestart/gen_prerace_taunt_H_01|gesture_copfidget|2 2.33332992 1.39999998 2,1,1,3 1 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_copfidget|1 0 1.39999998 3,1,1,3 10 -> 52 1 0 1.39999998 0.5
+racestart/gen_prerace_taunt_H_01|gesture_copfidget|1 0.25 1.39999998 -1,-1,3,0 2 -> free-
+racestart/gen_prerace_taunt_H_01|window_down_left|2 4.36667013 0 3,2,0,-1 2 -> free-
+racestart/gen_prerace_taunt_H_01|window_down_left|1 1 0 -1,3,-1,0 0 -> free-
+racestart/gen_prerace_taunt_H_01|window_down_left|2 1.00000012 0 2,3,3,0 0 -> free-
+racestart/gen_prerace_taunt_H_01|window_down_left|1 0.5 7.33333015 -1,3,3,1 0 -> free-
+racestart/gen_prerace_taunt_H_01|window_up_right|3 4.36667013 0 -1,3,1,2 15 -> 32 2 4.36667013 0 0.5
+racestart/gen_prerace_taunt_H_01|window_up_right|2 1 1.39999998 -1,3,3,3 15 -> 32 3 1 1.39999998 0.5
+racestart/gen_prerace_taunt_H_01|window_up_right|1 2.33332992 7.33333015 3,0,3,-1 15 -> 32 0 2.33332992 7.33333015 0.5
+racestart/gen_prerace_taunt_H_01|window_up_right|2 0.5 0 2,2,2,-1 15 -> 32 2 0.5 0 0.5
+racestart/gen_prerace_taunt_H_01|playspeech|0 0.25 7.33333015 1,1,1,2 15 -> 40 1 0.25 7.33333015 0.5
+racestart/gen_prerace_taunt_H_01|playspeech|2 1 0 3,3,1,0 15 -> 40 1 1 0 0.5
+racestart/gen_prerace_taunt_H_01|playspeech|3 0.99999994 0 2,0,-1,1 15 -> 40 1 0.99999994 0 0.5
+racestart/gen_prerace_taunt_H_01|playspeech|3 2.33332992 1.39999998 1,2,0,3 15 -> 40 3 2.33332992 1.39999998 0.5
+racestart/gen_prerace_taunt_H_01|horn|0 -1 1.39999998 3,-1,3,2 15 -> 13 3 -1 1.39999998 0.5
+racestart/gen_prerace_taunt_H_01|horn|1 1.5 7.33333015 0,2,3,1 15 -> 13 2 1.5 7.33333015 0.5
+racestart/gen_prerace_taunt_H_01|horn|0 4.36667013 0 1,3,1,-1 2 -> 13 1 4.36667013 0 0.5
+racestart/gen_prerace_taunt_H_01|horn|0 0.25 0 0,1,1,1 2 -> free-
+racestart/gen_prerace_taunt_H_01|bw_toggle_off|0 2.33332992 1.39999998 -1,3,0,1 0 -> free-
+racestart/gen_prerace_taunt_H_01|bw_toggle_off|0 0.5 7.33333015 1,2,2,3 2 -> 96 1 0.5 7.33333015 0.5
+racestart/gen_prerace_taunt_H_01|bw_toggle_off|2 0.99999994 0 1,-1,3,-1 15 -> 96 3 0.99999994 0 0.5
+racestart/gen_prerace_taunt_H_01|bw_toggle_off|0 1.5 0 2,3,2,-1 10 -> free-
+racestart/gen_prerace_taunt_H_01|Gesture_Left|1 0.5 0 3,-1,2,2 15 -> free-
+racestart/gen_prerace_taunt_H_01|Gesture_Left|1 4.36667013 0 1,0,-1,1 1 -> -1 0 4.36667013 0 0.5
+racestart/gen_prerace_taunt_H_01|Gesture_Left|0 -1 0 2,2,3,0 10 -> free-
+racestart/gen_prerace_taunt_H_01|Gesture_Left|3 0.99999994 7.33333015 3,-1,0,3 15 -> -1 3 0.99999994 7.33333015 0.5
+racestart/gen_prerace_taunt_H_01|GESTURE_RIGHT|1 0 1.39999998 0,2,1,1 15 -> -1 2 0 1.39999998 0.5
+racestart/gen_prerace_taunt_H_01|GESTURE_RIGHT|1 2.33332992 0 1,0,3,2 15 -> -1 0 2.33332992 0 0.5
+racestart/gen_prerace_taunt_H_01|GESTURE_RIGHT|0 1.00000012 1.39999998 -1,-1,-1,3 0 -> free-
+racestart/gen_prerace_taunt_H_01|GESTURE_RIGHT|1 4.36667013 1.39999998 0,0,3,0 0 -> free-
+racestart/gen_prerace_taunt_H_01|my_gesture_left_2|2 -1 0 3,3,1,1 15 -> 1 1 1 0 0.5
+racestart/gen_prerace_taunt_H_01|my_gesture_left_2|2 0.5 1.39999998 -1,0,1,3 1 -> free-
+racestart/gen_prerace_taunt_H_01|my_gesture_left_2|3 0.99999994 1.39999998 -1,-1,-1,1 15 -> 1 1 1 1.39999998 0.5
+racestart/gen_prerace_taunt_H_01|my_gesture_left_2|1 0.25 0 0,2,3,-1 15 -> 1 2 1 0 0.5
+racestart/gen_prerace_taunt_H_01|gesture_right_gesture_left|1 0.25 0 -1,-1,0,3 15 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_right_gesture_left|1 2.33332992 0 3,1,-1,2 10 -> 1 1 2.33332992 0 0.5
+racestart/gen_prerace_taunt_H_01|gesture_right_gesture_left|1 0.99999994 0 3,3,3,3 10 -> 1 3 1 0 0.5
+racestart/gen_prerace_taunt_H_01|gesture_right_gesture_left|0 0 0 -1,-1,-1,3 2 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_neutral_left|1 1.5 0 -1,2,0,0 15 -> 0 2 1.5 0 0.5
+racestart/gen_prerace_taunt_H_01|gesture_neutral_left|0 0.25 1.39999998 0,0,3,-1 1 -> 0 0 0.25 1.39999998 0.5
+racestart/gen_prerace_taunt_H_01|gesture_neutral_left|0 0 0 3,-1,3,-1 10 -> 0 3 0 0 0.5
+racestart/gen_prerace_taunt_H_01|gesture_neutral_left|2 -1 0 3,-1,3,-1 2 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_lef|1 -1 7.33333015 3,3,3,-1 1 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_lef|1 1.5 0 3,3,3,0 1 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_lef|3 2.33332992 0 2,0,3,0 2 -> free-
+racestart/gen_prerace_taunt_H_01|gesture_lef|0 0 1.39999998 1,-1,0,0 2 -> -1 1 0 1.39999998 0.5
+racestart/gen_prerace_taunt_H_01|bogus|1 1.5 7.33333015 3,0,0,0 10 -> free-
+racestart/gen_prerace_taunt_H_01|bogus|1 0.99999994 7.33333015 -1,3,2,1 2 -> free-
+racestart/gen_prerace_taunt_H_01|bogus|1 0.5 0 3,1,1,-1 0 -> free-
+racestart/gen_prerace_taunt_H_01|bogus|0 2.33332992 1.39999998 2,2,3,-1 15 -> -1 2 2.33332992 1.39999998 0.5
+racestart/gen_prerace_taunt_H_01||3 1.00000012 7.33333015 2,-1,3,-1 10 -> free-
+racestart/gen_prerace_taunt_H_01||3 0.99999994 1.39999998 2,0,1,3 0 -> free-
+racestart/gen_prerace_taunt_H_01||3 0.25 1.39999998 3,0,1,3 0 -> free-
+racestart/gen_prerace_taunt_H_01||1 0.5 0 -1,1,3,1 10 -> -1 1 0.5 0 0.5
+racestart/cut_racestart_3x3_01|gesture_neutral|0 -1 7.33333015 2,1,3,-1 10 -> free-
+racestart/cut_racestart_3x3_01|gesture_neutral|0 4.36667013 1.39999998 0,2,2,-1 0 -> free-
+racestart/cut_racestart_3x3_01|gesture_neutral|0 1 0 -1,-1,-1,2 1 -> free-
+racestart/cut_racestart_3x3_01|gesture_neutral|0 1.5 7.33333015 3,0,3,-1 15 -> 0 3 1.5 7.33333015 0.5
+racestart/cut_racestart_3x3_01|gesture_left|2 4.36667013 7.33333015 0,3,3,1 1 -> free-
+racestart/cut_racestart_3x3_01|gesture_left|3 0.5 1.39999998 1,1,3,3 1 -> free-
+racestart/cut_racestart_3x3_01|gesture_left|1 0.99999994 0 3,3,2,2 1 -> free-
+racestart/cut_racestart_3x3_01|gesture_left|3 0.25 0 0,0,3,3 15 -> 1 3 1 0 0.5
+racestart/cut_racestart_3x3_01|gesture_right|0 0 0 1,1,1,-1 15 -> 2 1 1 0 0.5
+racestart/cut_racestart_3x3_01|gesture_right|1 0.99999994 1.39999998 2,1,-1,0 10 -> 2 1 1 1.39999998 0.5
+racestart/cut_racestart_3x3_01|gesture_right|0 0.5 0 0,3,1,1 2 -> free-
+racestart/cut_racestart_3x3_01|gesture_right|3 4.36667013 7.33333015 2,-1,-1,3 1 -> free-
+racestart/cut_racestart_3x3_01|gesture_talk_left|2 1.00000012 0 3,2,3,3 1 -> free-
+racestart/cut_racestart_3x3_01|gesture_talk_left|0 -1 0 3,0,-1,1 1 -> free-
+racestart/cut_racestart_3x3_01|gesture_talk_left|1 1 1.39999998 -1,2,1,3 1 -> free-
+racestart/cut_racestart_3x3_01|gesture_talk_left|1 2.33332992 7.33333015 0,0,2,3 15 -> 3 0 2.33332992 7.33333015 0.5
+racestart/cut_racestart_3x3_01|gesture_talk_right|0 1.00000012 7.33333015 1,1,3,0 15 -> 4 1 1.00000012 7.33333015 0.5
+racestart/cut_racestart_3x3_01|gesture_talk_right|0 0.25 0 0,3,3,3 2 -> free-
+racestart/cut_racestart_3x3_01|gesture_talk_right|0 0.99999994 0 2,3,-1,-1 1 -> free-
+racestart/cut_racestart_3x3_01|gesture_talk_right|0 0.5 1.39999998 3,0,0,2 15 -> 4 3 0.5 1.39999998 0.5
+racestart/cut_racestart_3x3_01|gesture_listen_left|2 1.00000012 0 3,-1,3,-1 2 -> free-
+racestart/cut_racestart_3x3_01|gesture_listen_left|1 1 1.39999998 3,3,0,1 1 -> free-
+racestart/cut_racestart_3x3_01|gesture_listen_left|1 4.36667013 7.33333015 2,3,3,2 0 -> free-
+racestart/cut_racestart_3x3_01|gesture_listen_left|0 0.99999994 0 3,-1,3,3 2 -> free-
+racestart/cut_racestart_3x3_01|gesture_listen_right|2 4.36667013 0 1,1,2,0 2 -> free-
+racestart/cut_racestart_3x3_01|gesture_listen_right|1 -1 7.33333015 3,0,0,0 1 -> 8 0 -1 7.33333015 0.5
+racestart/cut_racestart_3x3_01|gesture_listen_right|2 1.5 0 0,3,2,-1 15 -> 8 2 1.5 0 0.5
+racestart/cut_racestart_3x3_01|gesture_listen_right|0 0.25 7.33333015 1,-1,1,3 0 -> free-
+racestart/cut_racestart_3x3_01|gesture_thm_dwn_lft|3 4.36667013 0 3,3,3,3 15 -> 9 3 4.36667013 0 0.5
+racestart/cut_racestart_3x3_01|gesture_thm_dwn_lft|1 1.00000012 0 3,2,0,2 2 -> free-
+racestart/cut_racestart_3x3_01|gesture_thm_dwn_lft|3 1.5 0 1,3,0,0 1 -> 9 0 1.5 0 0.5
+racestart/cut_racestart_3x3_01|gesture_thm_dwn_lft|1 1 0 3,3,3,-1 10 -> 9 3 1 0 0.5
+racestart/cut_racestart_3x3_01|gesture_thm_dwn_rgt|1 -1 7.33333015 1,1,3,1 15 -> 10 1 -1 7.33333015 0.5
+racestart/cut_racestart_3x3_01|gesture_thm_dwn_rgt|3 0.99999994 1.39999998 2,0,2,1 2 -> 10 1 0.99999994 1.39999998 0.5
+racestart/cut_racestart_3x3_01|gesture_thm_dwn_rgt|0 0.25 0 3,3,0,3 15 -> 10 3 0.25 0 0.5
+racestart/cut_racestart_3x3_01|gesture_thm_dwn_rgt|1 4.36667013 0 1,3,3,2 15 -> 10 3 4.36667013 0 0.5
+racestart/cut_racestart_3x3_01|gesture_copfidget|2 1 1.39999998 1,1,2,0 10 -> free-
+racestart/cut_racestart_3x3_01|gesture_copfidget|1 0 0 0,3,1,0 10 -> 52 3 0 0 0.5
+racestart/cut_racestart_3x3_01|gesture_copfidget|2 4.36667013 7.33333015 3,2,2,-1 15 -> 52 2 4.36667013 7.33333015 0.5
+racestart/cut_racestart_3x3_01|gesture_copfidget|0 1.00000012 7.33333015 1,0,0,1 0 -> free-
+racestart/cut_racestart_3x3_01|window_down_left|1 1 1.39999998 3,3,3,2 2 -> free-
+racestart/cut_racestart_3x3_01|window_down_left|1 0.5 7.33333015 -1,-1,0,2 15 -> free-
+racestart/cut_racestart_3x3_01|window_down_left|1 0.99999994 0 3,3,3,0 15 -> 29 3 0.99999994 0 0.5
+racestart/cut_racestart_3x3_01|window_down_left|1 -1 7.33333015 -1,1,2,0 15 -> 29 1 -1 7.33333015 0.5
+racestart/cut_racestart_3x3_01|window_up_right|3 4.36667013 1.39999998 -1,3,1,0 2 -> free-
+racestart/cut_racestart_3x3_01|window_up_right|1 1 0 2,1,2,-1 15 -> 32 1 1 0 0.5
+racestart/cut_racestart_3x3_01|window_up_right|0 -1 1.39999998 0,-1,0,-1 15 -> 32 0 -1 1.39999998 0.5
+racestart/cut_racestart_3x3_01|window_up_right|0 0 1.39999998 1,3,2,1 0 -> free-
+racestart/cut_racestart_3x3_01|playspeech|1 1.5 0 1,3,-1,2 15 -> 40 3 1.5 0 0.5
+racestart/cut_racestart_3x3_01|playspeech|0 0.25 0 2,3,2,2 10 -> free-
+racestart/cut_racestart_3x3_01|playspeech|1 0.99999994 7.33333015 3,3,3,0 1 -> free-
+racestart/cut_racestart_3x3_01|playspeech|2 4.36667013 0 1,3,-1,-1 1 -> free-
+racestart/cut_racestart_3x3_01|horn|1 1.5 0 1,0,1,3 2 -> free-
+racestart/cut_racestart_3x3_01|horn|1 2.33332992 1.39999998 3,3,3,-1 2 -> free-
+racestart/cut_racestart_3x3_01|horn|1 4.36667013 1.39999998 1,2,-1,3 15 -> 13 2 4.36667013 1.39999998 0.5
+racestart/cut_racestart_3x3_01|horn|0 1 0 3,3,2,3 0 -> free-
+racestart/cut_racestart_3x3_01|bw_toggle_off|3 1.5 0 3,-1,3,3 10 -> 96 3 1.5 0 0.5
+racestart/cut_racestart_3x3_01|bw_toggle_off|0 1 0 3,2,-1,3 15 -> 96 3 1 0 0.5
+racestart/cut_racestart_3x3_01|bw_toggle_off|0 -1 7.33333015 0,0,-1,-1 15 -> 96 0 -1 7.33333015 0.5
+racestart/cut_racestart_3x3_01|bw_toggle_off|1 0.5 0 2,2,1,3 2 -> free-
+racestart/cut_racestart_3x3_01|Gesture_Left|3 1.00000012 1.39999998 -1,3,2,0 15 -> -1 0 1.00000012 1.39999998 0.5
+racestart/cut_racestart_3x3_01|Gesture_Left|3 -1 1.39999998 3,0,2,3 1 -> free-
+racestart/cut_racestart_3x3_01|Gesture_Left|2 2.33332992 1.39999998 2,2,3,1 2 -> free-
+racestart/cut_racestart_3x3_01|Gesture_Left|3 1.5 1.39999998 3,1,3,3 15 -> -1 3 1.5 1.39999998 0.5
+racestart/cut_racestart_3x3_01|GESTURE_RIGHT|2 0.5 0 3,-1,0,1 0 -> free-
+racestart/cut_racestart_3x3_01|GESTURE_RIGHT|1 1 0 3,3,0,1 0 -> free-
+racestart/cut_racestart_3x3_01|GESTURE_RIGHT|3 0.99999994 0 3,2,3,3 10 -> -1 3 0.99999994 0 0.5
+racestart/cut_racestart_3x3_01|GESTURE_RIGHT|0 2.33332992 7.33333015 -1,1,3,3 10 -> free-
+racestart/cut_racestart_3x3_01|my_gesture_left_2|0 0.99999994 0 2,1,2,-1 15 -> 1 2 1 0 0.5
+racestart/cut_racestart_3x3_01|my_gesture_left_2|1 -1 7.33333015 0,0,3,2 10 -> free-
+racestart/cut_racestart_3x3_01|my_gesture_left_2|0 0.5 0 1,3,3,-1 1 -> free-
+racestart/cut_racestart_3x3_01|my_gesture_left_2|1 2.33332992 1.39999998 1,0,1,-1 10 -> free-
+racestart/cut_racestart_3x3_01|gesture_right_gesture_left|1 0.5 0 3,2,0,0 15 -> 1 2 1 0 0.5
+racestart/cut_racestart_3x3_01|gesture_right_gesture_left|0 2.33332992 0 -1,-1,-1,0 1 -> free-
+racestart/cut_racestart_3x3_01|gesture_right_gesture_left|2 1.5 0 3,-1,2,3 10 -> free-
+racestart/cut_racestart_3x3_01|gesture_right_gesture_left|1 0 7.33333015 1,3,3,3 10 -> 1 3 1 7.33333015 0.5
+racestart/cut_racestart_3x3_01|gesture_neutral_left|3 0 7.33333015 3,0,1,3 0 -> free-
+racestart/cut_racestart_3x3_01|gesture_neutral_left|1 4.36667013 0 1,3,-1,3 1 -> free-
+racestart/cut_racestart_3x3_01|gesture_neutral_left|0 2.33332992 0 2,1,0,-1 15 -> 0 2 2.33332992 0 0.5
+racestart/cut_racestart_3x3_01|gesture_neutral_left|3 -1 7.33333015 0,3,-1,3 1 -> free-
+racestart/cut_racestart_3x3_01|gesture_lef|1 0.25 0 0,-1,-1,0 0 -> free-
+racestart/cut_racestart_3x3_01|gesture_lef|2 -1 0 0,1,1,1 1 -> free-
+racestart/cut_racestart_3x3_01|gesture_lef|2 1 0 1,2,3,2 2 -> free-
+racestart/cut_racestart_3x3_01|gesture_lef|2 0.5 1.39999998 3,2,-1,3 15 -> free-
+racestart/cut_racestart_3x3_01|bogus|2 1.5 0 3,0,2,2 15 -> -1 2 1.5 0 0.5
+racestart/cut_racestart_3x3_01|bogus|1 0.25 0 2,-1,3,0 2 -> free-
+racestart/cut_racestart_3x3_01|bogus|0 0 7.33333015 0,0,1,-1 2 -> free-
+racestart/cut_racestart_3x3_01|bogus|0 0.5 0 -1,-1,3,-1 15 -> free-
+racestart/cut_racestart_3x3_01||0 1.5 0 3,0,2,0 0 -> free-
+racestart/cut_racestart_3x3_01||0 1 0 -1,3,2,-1 15 -> free-
+racestart/cut_racestart_3x3_01||1 0.25 1.39999998 -1,0,3,2 15 -> -1 0 0.25 1.39999998 0.5
+racestart/cut_racestart_3x3_01||0 -1 0 1,2,3,3 15 -> -1 1 -1 0 0.5
+racestart/cut_redlight_01|gesture_neutral|0 1.5 1.39999998 2,2,1,-1 15 -> 0 2 1.5 1.39999998 0.5
+racestart/cut_redlight_01|gesture_neutral|0 0.5 0 -1,2,3,3 15 -> free-
+racestart/cut_redlight_01|gesture_neutral|1 0.25 7.33333015 3,0,3,3 2 -> free-
+racestart/cut_redlight_01|gesture_neutral|0 1.00000012 0 3,3,-1,0 10 -> 0 3 1.00000012 0 0.5
+racestart/cut_redlight_01|gesture_left|0 0.99999994 1.39999998 0,0,1,1 15 -> 1 0 1 1.39999998 0.5
+racestart/cut_redlight_01|gesture_left|1 1.00000012 0 -1,-1,3,2 1 -> free-
+racestart/cut_redlight_01|gesture_left|1 -1 7.33333015 2,1,1,3 1 -> free-
+racestart/cut_redlight_01|gesture_left|1 0.5 0 2,3,-1,2 15 -> 1 3 1 0 0.5
+racestart/cut_redlight_01|gesture_right|0 0 7.33333015 0,3,-1,1 15 -> 2 0 1 7.33333015 0.5
+racestart/cut_redlight_01|gesture_right|1 4.36667013 7.33333015 -1,2,3,3 2 -> free-
+racestart/cut_redlight_01|gesture_right|1 1 0 1,0,0,3 0 -> free-
+racestart/cut_redlight_01|gesture_right|3 -1 0 1,-1,3,3 1 -> free-
+racestart/cut_redlight_01|gesture_talk_left|2 0.99999994 0 3,1,3,3 10 -> 3 3 0.99999994 0 0.5
+racestart/cut_redlight_01|gesture_talk_left|0 0.25 0 1,3,3,2 0 -> free-
+racestart/cut_redlight_01|gesture_talk_left|0 1 1.39999998 1,2,0,0 10 -> 3 1 1 1.39999998 0.5
+racestart/cut_redlight_01|gesture_talk_left|0 0 0 0,0,1,2 1 -> 3 0 0 0 0.5
+racestart/cut_redlight_01|gesture_talk_right|1 0.99999994 0 0,3,3,-1 1 -> free-
+racestart/cut_redlight_01|gesture_talk_right|0 2.33332992 0 3,3,1,-1 15 -> 4 3 2.33332992 0 0.5
+racestart/cut_redlight_01|gesture_talk_right|3 0.25 1.39999998 1,-1,2,3 15 -> 4 3 0.25 1.39999998 0.5
+racestart/cut_redlight_01|gesture_talk_right|1 1.5 0 0,1,0,1 10 -> 4 1 1.5 0 0.5
+racestart/cut_redlight_01|gesture_listen_left|2 0 7.33333015 3,3,1,3 10 -> 7 1 0 7.33333015 0.5
+racestart/cut_redlight_01|gesture_listen_left|1 0.25 0 2,0,2,3 15 -> 7 0 0.25 0 0.5
+racestart/cut_redlight_01|gesture_listen_left|3 0.5 7.33333015 1,3,3,3 15 -> 7 3 0.5 7.33333015 0.5
+racestart/cut_redlight_01|gesture_listen_left|1 1.5 7.33333015 1,1,3,-1 0 -> free-
+racestart/cut_redlight_01|gesture_listen_right|0 1.00000012 7.33333015 3,3,1,-1 15 -> 8 3 1.00000012 7.33333015 0.5
+racestart/cut_redlight_01|gesture_listen_right|0 0.5 7.33333015 -1,2,1,-1 10 -> free-
+racestart/cut_redlight_01|gesture_listen_right|1 -1 1.39999998 0,1,2,-1 15 -> 8 1 -1 1.39999998 0.5
+racestart/cut_redlight_01|gesture_listen_right|2 0 7.33333015 1,3,3,1 2 -> free-
+racestart/cut_redlight_01|gesture_thm_dwn_lft|0 1.5 0 1,0,2,-1 15 -> 9 1 1.5 0 0.5
+racestart/cut_redlight_01|gesture_thm_dwn_lft|1 4.36667013 0 -1,3,1,-1 15 -> 9 3 4.36667013 0 0.5
+racestart/cut_redlight_01|gesture_thm_dwn_lft|0 2.33332992 7.33333015 1,3,0,3 15 -> 9 1 2.33332992 7.33333015 0.5
+racestart/cut_redlight_01|gesture_thm_dwn_lft|0 0.25 0 3,0,2,3 0 -> free-
+racestart/cut_redlight_01|gesture_thm_dwn_rgt|1 4.36667013 0 1,1,0,0 0 -> free-
+racestart/cut_redlight_01|gesture_thm_dwn_rgt|0 0.99999994 0 -1,2,-1,-1 2 -> free-
+racestart/cut_redlight_01|gesture_thm_dwn_rgt|0 0.25 7.33333015 3,1,-1,-1 1 -> free-
+racestart/cut_redlight_01|gesture_thm_dwn_rgt|1 0 7.33333015 1,-1,3,0 10 -> free-
+racestart/cut_redlight_01|gesture_copfidget|1 0.5 0 2,1,3,3 0 -> free-
+racestart/cut_redlight_01|gesture_copfidget|1 0.99999994 0 -1,0,0,-1 2 -> free-
+racestart/cut_redlight_01|gesture_copfidget|0 4.36667013 0 1,1,3,3 10 -> 52 1 4.36667013 0 0.5
+racestart/cut_redlight_01|gesture_copfidget|0 1.5 0 3,2,-1,1 0 -> free-
+racestart/cut_redlight_01|window_down_left|1 0.25 0 2,3,-1,3 15 -> 29 3 0.25 0 0.5
+racestart/cut_redlight_01|window_down_left|1 0.99999994 7.33333015 -1,0,-1,3 10 -> free-
+racestart/cut_redlight_01|window_down_left|3 1.5 0 1,0,0,0 2 -> free-
+racestart/cut_redlight_01|window_down_left|1 2.33332992 0 3,2,1,2 0 -> free-
+racestart/cut_redlight_01|window_up_right|1 1 0 3,2,3,0 1 -> free-
+racestart/cut_redlight_01|window_up_right|0 4.36667013 0 3,2,3,3 10 -> 32 3 4.36667013 0 0.5
+racestart/cut_redlight_01|window_up_right|0 0.5 0 0,3,-1,1 10 -> free-
+racestart/cut_redlight_01|window_up_right|2 1.00000012 0 3,1,-1,0 10 -> free-
+racestart/cut_redlight_01|playspeech|3 1.5 0 -1,2,0,3 1 -> free-
+racestart/cut_redlight_01|playspeech|1 -1 0 2,3,0,1 2 -> free-
+racestart/cut_redlight_01|playspeech|0 1 0 3,0,1,2 15 -> 40 3 1 0 0.5
+racestart/cut_redlight_01|playspeech|0 4.36667013 0 2,1,3,3 2 -> free-
+racestart/cut_redlight_01|horn|1 0.25 7.33333015 -1,3,3,1 1 -> free-
+racestart/cut_redlight_01|horn|2 1 0 0,3,-1,0 10 -> free-
+racestart/cut_redlight_01|horn|1 0.99999994 0 2,-1,3,0 0 -> free-
+racestart/cut_redlight_01|horn|3 1.5 7.33333015 3,2,0,3 15 -> 13 3 1.5 7.33333015 0.5
+racestart/cut_redlight_01|bw_toggle_off|0 1.5 0 3,3,-1,0 15 -> 96 3 1.5 0 0.5
+racestart/cut_redlight_01|bw_toggle_off|1 0.99999994 0 2,-1,2,3 10 -> free-
+racestart/cut_redlight_01|bw_toggle_off|3 0.25 1.39999998 3,3,1,3 1 -> free-
+racestart/cut_redlight_01|bw_toggle_off|1 2.33332992 1.39999998 3,2,3,0 2 -> free-
+racestart/cut_redlight_01|Gesture_Left|0 0.25 0 0,-1,2,2 0 -> free-
+racestart/cut_redlight_01|Gesture_Left|3 1 1.39999998 -1,-1,2,3 10 -> -1 3 1 1.39999998 0.5
+racestart/cut_redlight_01|Gesture_Left|0 0 1.39999998 1,-1,2,1 15 -> -1 1 0 1.39999998 0.5
+racestart/cut_redlight_01|Gesture_Left|1 1.00000012 0 3,-1,3,0 15 -> free-
+racestart/cut_redlight_01|GESTURE_RIGHT|0 -1 0 -1,3,2,3 1 -> free-
+racestart/cut_redlight_01|GESTURE_RIGHT|1 0 0 1,3,-1,1 1 -> free-
+racestart/cut_redlight_01|GESTURE_RIGHT|3 1 7.33333015 1,3,3,3 10 -> -1 3 1 7.33333015 0.5
+racestart/cut_redlight_01|GESTURE_RIGHT|3 1.5 0 3,-1,3,3 0 -> free-
+racestart/cut_redlight_01|my_gesture_left_2|1 4.36667013 0 1,3,-1,3 10 -> 1 3 4.36667013 0 0.5
+racestart/cut_redlight_01|my_gesture_left_2|1 -1 7.33333015 2,3,3,-1 15 -> 1 3 1 7.33333015 0.5
+racestart/cut_redlight_01|my_gesture_left_2|1 0 1.39999998 -1,1,2,2 0 -> free-
+racestart/cut_redlight_01|my_gesture_left_2|0 1.00000012 0 2,3,3,2 2 -> free-
+racestart/cut_redlight_01|gesture_right_gesture_left|0 0 1.39999998 0,1,-1,3 2 -> free-
+racestart/cut_redlight_01|gesture_right_gesture_left|1 0.99999994 1.39999998 3,3,1,1 10 -> 1 3 1 1.39999998 0.5
+racestart/cut_redlight_01|gesture_right_gesture_left|0 1.5 7.33333015 3,3,0,-1 2 -> free-
+racestart/cut_redlight_01|gesture_right_gesture_left|1 1.00000012 0 -1,-1,2,3 15 -> free-
+racestart/cut_redlight_01|gesture_neutral_left|3 -1 7.33333015 -1,1,2,3 10 -> 0 3 -1 7.33333015 0.5
+racestart/cut_redlight_01|gesture_neutral_left|2 4.36667013 0 -1,3,3,0 15 -> 0 3 4.36667013 0 0.5
+racestart/cut_redlight_01|gesture_neutral_left|0 1.00000012 0 0,2,3,2 2 -> free-
+racestart/cut_redlight_01|gesture_neutral_left|1 0.25 7.33333015 1,3,0,2 10 -> 0 3 0.25 7.33333015 0.5
+racestart/cut_redlight_01|gesture_lef|0 0.5 7.33333015 2,1,2,3 2 -> free-
+racestart/cut_redlight_01|gesture_lef|1 1.00000012 7.33333015 0,2,-1,1 15 -> -1 2 1.00000012 7.33333015 0.5
+racestart/cut_redlight_01|gesture_lef|1 0.25 0 0,3,2,3 10 -> -1 3 0.25 0 0.5
+racestart/cut_redlight_01|gesture_lef|0 2.33332992 0 0,3,-1,3 1 -> -1 0 2.33332992 0 0.5
+racestart/cut_redlight_01|bogus|0 1.00000012 0 2,3,3,3 15 -> -1 2 1.00000012 0 0.5
+racestart/cut_redlight_01|bogus|3 4.36667013 0 3,0,0,2 0 -> free-
+racestart/cut_redlight_01|bogus|3 1 0 2,1,1,2 10 -> free-
+racestart/cut_redlight_01|bogus|2 1.5 0 1,-1,3,3 15 -> -1 3 1.5 0 0.5
+racestart/cut_redlight_01||3 0.5 7.33333015 2,2,-1,3 1 -> free-
+racestart/cut_redlight_01||1 1.00000012 1.39999998 -1,-1,-1,3 15 -> free-
+racestart/cut_redlight_01||1 0 7.33333015 1,3,3,-1 0 -> free-
+racestart/cut_redlight_01||3 1.5 0 -1,2,3,2 0 -> free-
+RaceStart/taunt_01|gesture_neutral|1 -1 0 -1,3,3,2 2 -> free-
+RaceStart/taunt_01|gesture_neutral|0 0 0 -1,2,3,0 10 -> free-
+RaceStart/taunt_01|gesture_neutral|1 4.36667013 1.39999998 0,-1,2,1 15 -> free-
+RaceStart/taunt_01|gesture_neutral|3 0.5 1.39999998 3,1,1,-1 15 -> free-
+RaceStart/taunt_01|gesture_left|0 -1 0 2,0,0,3 15 -> 1 2 -1 0 0.5
+RaceStart/taunt_01|gesture_left|1 0.99999994 0 -1,3,3,1 15 -> 1 3 0.99999994 0 0.5
+RaceStart/taunt_01|gesture_left|1 1.5 0 2,0,3,1 10 -> free-
+RaceStart/taunt_01|gesture_left|1 0.5 0 3,2,3,-1 10 -> free-
+RaceStart/taunt_01|gesture_right|1 1.5 7.33333015 0,1,3,3 10 -> 2 1 1.5 7.33333015 0.5
+RaceStart/taunt_01|gesture_right|2 0.99999994 0 1,0,3,0 1 -> free-
+RaceStart/taunt_01|gesture_right|1 1 1.39999998 3,0,3,3 15 -> 2 0 1 1.39999998 0.5
+RaceStart/taunt_01|gesture_right|0 4.36667013 1.39999998 3,0,1,0 10 -> 2 3 4.36667013 1.39999998 0.5
+RaceStart/taunt_01|gesture_talk_left|2 0 0 3,3,3,3 1 -> free-
+RaceStart/taunt_01|gesture_talk_left|1 4.36667013 7.33333015 3,3,1,2 0 -> free-
+RaceStart/taunt_01|gesture_talk_left|1 2.33332992 7.33333015 2,0,-1,2 15 -> 3 0 2.33332992 7.33333015 0.5
+RaceStart/taunt_01|gesture_talk_left|3 1 0 2,3,0,2 1 -> free-
+RaceStart/taunt_01|gesture_talk_right|3 0 0 0,3,3,3 0 -> free-
+RaceStart/taunt_01|gesture_talk_right|0 0.25 7.33333015 0,2,3,0 2 -> free-
+RaceStart/taunt_01|gesture_talk_right|1 4.36667013 7.33333015 1,3,0,-1 15 -> 4 3 4.36667013 7.33333015 0.5
+RaceStart/taunt_01|gesture_talk_right|2 2.33332992 1.39999998 2,0,1,-1 15 -> 4 1 2.33332992 1.39999998 0.5
+RaceStart/taunt_01|gesture_listen_left|3 2.33332992 0 -1,3,3,3 15 -> 7 3 2.33332992 0 0.5
+RaceStart/taunt_01|gesture_listen_left|0 -1 1.39999998 3,1,-1,2 15 -> 7 3 -1 1.39999998 0.5
+RaceStart/taunt_01|gesture_listen_left|0 0.5 0 -1,1,-1,3 2 -> free-
+RaceStart/taunt_01|gesture_listen_left|2 0 1.39999998 -1,1,2,1 15 -> 7 2 0 1.39999998 0.5
+RaceStart/taunt_01|gesture_listen_right|1 2.33332992 1.39999998 0,0,0,1 1 -> 8 0 2.33332992 1.39999998 0.5
+RaceStart/taunt_01|gesture_listen_right|1 -1 0 2,0,3,3 1 -> 8 0 -1 0 0.5
+RaceStart/taunt_01|gesture_listen_right|0 0 0 1,3,1,1 1 -> free-
+RaceStart/taunt_01|gesture_listen_right|0 0.99999994 7.33333015 3,1,3,0 2 -> free-
+RaceStart/taunt_01|gesture_thm_dwn_lft|0 4.36667013 1.39999998 3,1,3,3 15 -> 9 3 4.36667013 1.39999998 0.5
+RaceStart/taunt_01|gesture_thm_dwn_lft|0 1.5 0 2,3,0,3 15 -> 9 2 1.5 0 0.5
+RaceStart/taunt_01|gesture_thm_dwn_lft|1 -1 0 -1,3,1,3 10 -> 9 3 -1 0 0.5
+RaceStart/taunt_01|gesture_thm_dwn_lft|0 1.00000012 0 -1,-1,2,1 1 -> free-
+RaceStart/taunt_01|gesture_thm_dwn_rgt|3 1 0 -1,0,0,-1 10 -> free-
+RaceStart/taunt_01|gesture_thm_dwn_rgt|0 1.5 7.33333015 3,3,3,0 10 -> 10 3 1.5 7.33333015 0.5
+RaceStart/taunt_01|gesture_thm_dwn_rgt|0 -1 0 3,2,1,2 10 -> 10 3 -1 0 0.5
+RaceStart/taunt_01|gesture_thm_dwn_rgt|0 0.99999994 7.33333015 -1,0,-1,-1 2 -> free-
+RaceStart/taunt_01|gesture_copfidget|1 0.99999994 0 -1,3,3,1 1 -> free-
+RaceStart/taunt_01|gesture_copfidget|2 0.25 0 0,2,1,3 15 -> 52 1 0.25 0 0.5
+RaceStart/taunt_01|gesture_copfidget|1 1.00000012 0 0,3,2,1 15 -> 52 3 1.00000012 0 0.5
+RaceStart/taunt_01|gesture_copfidget|1 4.36667013 7.33333015 3,0,2,2 10 -> free-
+RaceStart/taunt_01|window_down_left|2 4.36667013 0 1,3,2,3 1 -> free-
+RaceStart/taunt_01|window_down_left|1 1 0 0,0,0,1 0 -> free-
+RaceStart/taunt_01|window_down_left|1 -1 0 3,-1,3,3 0 -> free-
+RaceStart/taunt_01|window_down_left|0 0.5 0 3,3,1,3 15 -> 29 3 0.5 0 0.5
+RaceStart/taunt_01|window_up_right|0 4.36667013 1.39999998 2,3,0,3 10 -> free-
+RaceStart/taunt_01|window_up_right|0 2.33332992 0 2,3,-1,3 2 -> free-
+RaceStart/taunt_01|window_up_right|0 0.99999994 0 3,0,-1,0 2 -> free-
+RaceStart/taunt_01|window_up_right|0 0.25 1.39999998 0,1,1,0 0 -> free-
+RaceStart/taunt_01|playspeech|3 0.99999994 0 -1,0,1,3 10 -> 40 3 0.99999994 0 0.5
+RaceStart/taunt_01|playspeech|1 0 7.33333015 0,0,-1,-1 15 -> 40 0 0 7.33333015 0.5
+RaceStart/taunt_01|playspeech|0 -1 1.39999998 1,3,3,3 0 -> free-
+RaceStart/taunt_01|playspeech|1 4.36667013 7.33333015 2,0,3,2 0 -> free-
+RaceStart/taunt_01|horn|0 0.99999994 1.39999998 2,1,3,3 0 -> free-
+RaceStart/taunt_01|horn|1 1.5 0 3,2,1,1 1 -> free-
+RaceStart/taunt_01|horn|0 0.25 0 1,3,3,1 10 -> 13 1 0.25 0 0.5
+RaceStart/taunt_01|horn|3 0.5 0 3,2,0,-1 15 -> free-
+RaceStart/taunt_01|bw_toggle_off|0 -1 1.39999998 -1,-1,3,3 10 -> free-
+RaceStart/taunt_01|bw_toggle_off|1 1.5 0 3,3,3,-1 0 -> free-
+RaceStart/taunt_01|bw_toggle_off|2 2.33332992 0 -1,1,3,0 1 -> free-
+RaceStart/taunt_01|bw_toggle_off|2 1.00000012 0 3,1,3,3 10 -> 96 3 1.00000012 0 0.5
+RaceStart/taunt_01|Gesture_Left|0 0 0 0,3,3,0 2 -> free-
+RaceStart/taunt_01|Gesture_Left|1 0.25 7.33333015 3,2,2,3 2 -> free-
+RaceStart/taunt_01|Gesture_Left|0 -1 1.39999998 3,2,2,1 1 -> free-
+RaceStart/taunt_01|Gesture_Left|2 0.5 7.33333015 1,0,0,1 0 -> free-
+RaceStart/taunt_01|GESTURE_RIGHT|1 4.36667013 7.33333015 -1,0,1,3 1 -> -1 0 4.36667013 7.33333015 0.5
+RaceStart/taunt_01|GESTURE_RIGHT|1 1.5 0 3,0,2,0 1 -> -1 0 1.5 0 0.5
+RaceStart/taunt_01|GESTURE_RIGHT|1 0.25 0 0,3,2,2 10 -> -1 3 0.25 0 0.5
+RaceStart/taunt_01|GESTURE_RIGHT|1 1 7.33333015 2,0,2,3 15 -> -1 0 1 7.33333015 0.5
+RaceStart/taunt_01|my_gesture_left_2|0 0.99999994 1.39999998 3,3,3,0 1 -> free-
+RaceStart/taunt_01|my_gesture_left_2|1 4.36667013 1.39999998 2,3,1,3 1 -> free-
+RaceStart/taunt_01|my_gesture_left_2|1 1 1.39999998 1,2,2,3 2 -> free-
+RaceStart/taunt_01|my_gesture_left_2|3 1.00000012 0 0,2,3,-1 15 -> free-
+RaceStart/taunt_01|gesture_right_gesture_left|1 0.5 0 -1,3,1,3 10 -> 1 3 0.5 0 0.5
+RaceStart/taunt_01|gesture_right_gesture_left|2 -1 0 3,1,-1,2 1 -> free-
+RaceStart/taunt_01|gesture_right_gesture_left|0 0 0 2,1,2,2 15 -> 1 2 0 0 0.5
+RaceStart/taunt_01|gesture_right_gesture_left|2 1.00000012 1.39999998 1,3,2,2 0 -> free-
+RaceStart/taunt_01|gesture_neutral_left|2 1.5 1.39999998 3,3,1,2 15 -> 0 1 1.5 1.39999998 0.5
+RaceStart/taunt_01|gesture_neutral_left|3 0.5 1.39999998 0,3,1,3 2 -> free-
+RaceStart/taunt_01|gesture_neutral_left|0 1.00000012 0 1,0,-1,2 1 -> free-
+RaceStart/taunt_01|gesture_neutral_left|0 4.36667013 0 3,1,0,-1 10 -> 0 3 4.36667013 0 0.5
+RaceStart/taunt_01|gesture_lef|0 4.36667013 7.33333015 3,2,3,3 15 -> -1 3 4.36667013 7.33333015 0.5
+RaceStart/taunt_01|gesture_lef|0 0 0 1,-1,-1,2 2 -> -1 1 0 0 0.5
+RaceStart/taunt_01|gesture_lef|0 0.5 7.33333015 1,0,2,-1 10 -> -1 1 0.5 7.33333015 0.5
+RaceStart/taunt_01|gesture_lef|0 1.5 7.33333015 -1,-1,3,3 0 -> free-
+RaceStart/taunt_01|bogus|2 2.33332992 1.39999998 -1,0,1,2 2 -> -1 1 2.33332992 1.39999998 0.5
+RaceStart/taunt_01|bogus|2 1.00000012 0 -1,3,-1,3 15 -> free-
+RaceStart/taunt_01|bogus|2 0.25 1.39999998 0,1,0,1 15 -> -1 0 0.25 1.39999998 0.5
+RaceStart/taunt_01|bogus|2 -1 0 1,3,2,3 0 -> free-
+RaceStart/taunt_01||0 1.00000012 0 -1,0,2,-1 0 -> free-
+RaceStart/taunt_01||0 0.99999994 0 -1,2,3,3 2 -> free-
+RaceStart/taunt_01||0 1 0 2,-1,2,3 15 -> -1 2 1 0 0.5
+RaceStart/taunt_01||0 -1 7.33333015 0,3,3,0 0 -> free-
+story/cut_story_hollywood_garage_intro|gesture_neutral|1 0.5 1.39999998 -1,-1,2,3 15 -> free-
+story/cut_story_hollywood_garage_intro|gesture_neutral|0 1 1.39999998 2,3,1,0 15 -> 0 2 1 1.39999998 0.5
+story/cut_story_hollywood_garage_intro|gesture_neutral|0 0.99999994 7.33333015 3,3,-1,0 2 -> free-
+story/cut_story_hollywood_garage_intro|gesture_neutral|0 1.5 1.39999998 2,-1,1,3 0 -> free-
+story/cut_story_hollywood_garage_intro|gesture_left|3 1.00000012 0 1,1,2,1 15 -> 1 1 1.00000012 0 0.5
+story/cut_story_hollywood_garage_intro|gesture_left|1 -1 0 -1,0,3,1 10 -> free-
+story/cut_story_hollywood_garage_intro|gesture_left|1 1.5 0 3,-1,1,0 15 -> free-
+story/cut_story_hollywood_garage_intro|gesture_left|0 0.25 0 -1,-1,2,2 2 -> free-
+story/cut_story_hollywood_garage_intro|gesture_right|2 1.00000012 0 0,0,1,1 1 -> free-
+story/cut_story_hollywood_garage_intro|gesture_right|0 -1 0 -1,-1,1,0 10 -> free-
+story/cut_story_hollywood_garage_intro|gesture_right|1 1.5 0 0,0,2,0 1 -> 2 0 1.5 0 0.5
+story/cut_story_hollywood_garage_intro|gesture_right|3 1 1.39999998 -1,1,1,0 1 -> 2 0 1 1.39999998 0.5
+story/cut_story_hollywood_garage_intro|gesture_talk_left|2 4.36667013 7.33333015 0,-1,0,0 10 -> free-
+story/cut_story_hollywood_garage_intro|gesture_talk_left|2 0.25 0 0,0,3,1 0 -> free-
+story/cut_story_hollywood_garage_intro|gesture_talk_left|2 1.5 0 -1,3,3,1 2 -> free-
+story/cut_story_hollywood_garage_intro|gesture_talk_left|1 1 1.39999998 -1,2,3,2 10 -> free-
+story/cut_story_hollywood_garage_intro|gesture_talk_right|0 0.5 7.33333015 2,3,0,-1 10 -> free-
+story/cut_story_hollywood_garage_intro|gesture_talk_right|0 -1 1.39999998 2,2,3,0 0 -> free-
+story/cut_story_hollywood_garage_intro|gesture_talk_right|1 2.33332992 0 0,0,2,2 0 -> free-
+story/cut_story_hollywood_garage_intro|gesture_talk_right|3 0 0 3,2,3,0 1 -> 4 0 0 0 0.5
+story/cut_story_hollywood_garage_intro|gesture_listen_left|1 0.25 0 1,3,1,2 15 -> 7 3 0.25 0 0.5
+story/cut_story_hollywood_garage_intro|gesture_listen_left|0 0.5 1.39999998 0,1,2,2 0 -> free-
+story/cut_story_hollywood_garage_intro|gesture_listen_left|2 1 1.39999998 0,-1,-1,3 15 -> free-
+story/cut_story_hollywood_garage_intro|gesture_listen_left|1 1.00000012 0 -1,3,1,1 0 -> free-
+story/cut_story_hollywood_garage_intro|gesture_listen_right|2 4.36667013 7.33333015 1,1,3,1 2 -> free-
+story/cut_story_hollywood_garage_intro|gesture_listen_right|2 0.25 0 3,3,3,3 15 -> 8 3 0.25 0 0.5
+story/cut_story_hollywood_garage_intro|gesture_listen_right|1 0.5 0 0,2,-1,3 15 -> 8 2 0.5 0 0.5
+story/cut_story_hollywood_garage_intro|gesture_listen_right|0 0 0 3,1,3,1 0 -> free-
+story/cut_story_hollywood_garage_intro|gesture_thm_dwn_lft|2 0 1.39999998 0,1,3,1 2 -> free-
+story/cut_story_hollywood_garage_intro|gesture_thm_dwn_lft|3 4.36667013 0 -1,2,2,3 0 -> free-
+story/cut_story_hollywood_garage_intro|gesture_thm_dwn_lft|3 1 0 1,2,3,3 15 -> 9 3 1 0 0.5
+story/cut_story_hollywood_garage_intro|gesture_thm_dwn_lft|1 -1 1.39999998 0,0,2,1 2 -> free-
+story/cut_story_hollywood_garage_intro|gesture_thm_dwn_rgt|3 1 1.39999998 2,2,3,1 10 -> 10 1 1 1.39999998 0.5
+story/cut_story_hollywood_garage_intro|gesture_thm_dwn_rgt|3 1.5 0 -1,-1,1,3 15 -> 10 3 1.5 0 0.5
+story/cut_story_hollywood_garage_intro|gesture_thm_dwn_rgt|0 2.33332992 1.39999998 1,1,-1,-1 2 -> 10 1 2.33332992 1.39999998 0.5
+story/cut_story_hollywood_garage_intro|gesture_thm_dwn_rgt|3 4.36667013 0 3,3,1,3 0 -> free-
+story/cut_story_hollywood_garage_intro|gesture_copfidget|0 2.33332992 1.39999998 0,-1,0,0 1 -> 52 0 2.33332992 1.39999998 0.5
+story/cut_story_hollywood_garage_intro|gesture_copfidget|1 0.99999994 7.33333015 -1,3,0,1 0 -> free-
+story/cut_story_hollywood_garage_intro|gesture_copfidget|2 1.00000012 1.39999998 1,2,2,1 15 -> 52 2 1.00000012 1.39999998 0.5
+story/cut_story_hollywood_garage_intro|gesture_copfidget|2 0 0 0,0,-1,2 2 -> free-
+story/cut_story_hollywood_garage_intro|window_down_left|3 0 0 3,-1,3,3 10 -> 29 3 0 0 0.5
+story/cut_story_hollywood_garage_intro|window_down_left|1 1.5 7.33333015 3,2,2,1 15 -> 29 2 1.5 7.33333015 0.5
+story/cut_story_hollywood_garage_intro|window_down_left|3 0.5 1.39999998 3,0,-1,1 15 -> 29 1 0.5 1.39999998 0.5
+story/cut_story_hollywood_garage_intro|window_down_left|1 -1 0 3,3,0,1 10 -> 29 3 -1 0 0.5
+story/cut_story_hollywood_garage_intro|window_up_right|1 1.5 0 3,3,1,2 1 -> free-
+story/cut_story_hollywood_garage_intro|window_up_right|1 1 0 1,2,1,-1 1 -> free-
+story/cut_story_hollywood_garage_intro|window_up_right|2 0 7.33333015 2,3,2,2 10 -> free-
+story/cut_story_hollywood_garage_intro|window_up_right|2 2.33332992 0 3,2,2,3 15 -> 32 2 2.33332992 0 0.5
+story/cut_story_hollywood_garage_intro|playspeech|1 1 1.39999998 3,0,3,2 15 -> 40 0 1 1.39999998 0.5
+story/cut_story_hollywood_garage_intro|playspeech|0 2.33332992 0 3,3,1,3 0 -> free-
+story/cut_story_hollywood_garage_intro|playspeech|1 0 7.33333015 3,-1,3,-1 15 -> free-
+story/cut_story_hollywood_garage_intro|playspeech|1 1.00000012 0 2,1,1,0 15 -> 40 1 1.00000012 0 0.5
+story/cut_story_hollywood_garage_intro|horn|1 2.33332992 0 -1,2,3,3 1 -> free-
+story/cut_story_hollywood_garage_intro|horn|1 4.36667013 1.39999998 3,0,3,0 2 -> free-
+story/cut_story_hollywood_garage_intro|horn|0 1.00000012 0 3,-1,2,0 10 -> 13 3 1.00000012 0 0.5
+story/cut_story_hollywood_garage_intro|horn|1 1 7.33333015 3,2,0,1 10 -> free-
+story/cut_story_hollywood_garage_intro|bw_toggle_off|1 1 0 3,0,0,3 0 -> free-
+story/cut_story_hollywood_garage_intro|bw_toggle_off|3 0.5 7.33333015 -1,3,0,3 2 -> free-
+story/cut_story_hollywood_garage_intro|bw_toggle_off|1 -1 0 0,1,1,0 2 -> 96 1 -1 0 0.5
+story/cut_story_hollywood_garage_intro|bw_toggle_off|3 1.5 1.39999998 1,2,2,3 1 -> free-
+story/cut_story_hollywood_garage_intro|Gesture_Left|2 -1 0 3,1,-1,-1 1 -> free-
+story/cut_story_hollywood_garage_intro|Gesture_Left|1 4.36667013 7.33333015 1,1,3,3 15 -> -1 1 4.36667013 7.33333015 0.5
+story/cut_story_hollywood_garage_intro|Gesture_Left|1 0.99999994 1.39999998 1,3,-1,2 2 -> free-
+story/cut_story_hollywood_garage_intro|Gesture_Left|1 0.5 0 3,1,2,2 0 -> free-
+story/cut_story_hollywood_garage_intro|GESTURE_RIGHT|1 0.99999994 1.39999998 2,3,3,-1 0 -> free-
+story/cut_story_hollywood_garage_intro|GESTURE_RIGHT|1 0 7.33333015 3,0,-1,-1 2 -> free-
+story/cut_story_hollywood_garage_intro|GESTURE_RIGHT|1 2.33332992 1.39999998 1,-1,2,0 10 -> free-
+story/cut_story_hollywood_garage_intro|GESTURE_RIGHT|1 -1 1.39999998 2,1,3,3 0 -> free-
+story/cut_story_hollywood_garage_intro|my_gesture_left_2|0 1.5 1.39999998 0,3,3,-1 2 -> free-
+story/cut_story_hollywood_garage_intro|my_gesture_left_2|2 1.00000012 0 3,2,2,2 15 -> 1 2 1.00000012 0 0.5
+story/cut_story_hollywood_garage_intro|my_gesture_left_2|1 0.25 1.39999998 1,1,0,-1 2 -> 1 1 0.25 1.39999998 0.5
+story/cut_story_hollywood_garage_intro|my_gesture_left_2|1 -1 1.39999998 1,1,0,3 15 -> 1 1 -1 1.39999998 0.5
+story/cut_story_hollywood_garage_intro|gesture_right_gesture_left|1 0.99999994 0 2,3,-1,-1 2 -> free-
+story/cut_story_hollywood_garage_intro|gesture_right_gesture_left|1 1.00000012 0 2,2,2,0 0 -> free-
+story/cut_story_hollywood_garage_intro|gesture_right_gesture_left|1 1.5 0 0,3,0,2 15 -> 1 3 1.5 0 0.5
+story/cut_story_hollywood_garage_intro|gesture_right_gesture_left|0 0.5 0 0,2,3,-1 15 -> 1 0 0.5 0 0.5
+story/cut_story_hollywood_garage_intro|gesture_neutral_left|1 0.5 0 2,1,3,2 1 -> free-
+story/cut_story_hollywood_garage_intro|gesture_neutral_left|0 -1 0 -1,1,2,3 0 -> free-
+story/cut_story_hollywood_garage_intro|gesture_neutral_left|2 4.36667013 0 3,3,3,0 15 -> 0 3 4.36667013 0 0.5
+story/cut_story_hollywood_garage_intro|gesture_neutral_left|1 0.25 0 2,0,1,1 15 -> 0 0 0.25 0 0.5
+story/cut_story_hollywood_garage_intro|gesture_lef|1 2.33332992 7.33333015 3,3,3,3 0 -> free-
+story/cut_story_hollywood_garage_intro|gesture_lef|1 0 7.33333015 -1,1,0,3 10 -> -1 1 0 7.33333015 0.5
+story/cut_story_hollywood_garage_intro|gesture_lef|1 4.36667013 7.33333015 1,-1,3,3 15 -> free-
+story/cut_story_hollywood_garage_intro|gesture_lef|0 0.5 7.33333015 1,3,0,-1 15 -> -1 1 0.5 7.33333015 0.5
+story/cut_story_hollywood_garage_intro|bogus|1 1 0 -1,3,0,-1 15 -> -1 3 1 0 0.5
+story/cut_story_hollywood_garage_intro|bogus|1 -1 0 1,-1,1,0 15 -> free-
+story/cut_story_hollywood_garage_intro|bogus|2 4.36667013 0 1,2,0,1 10 -> free-
+story/cut_story_hollywood_garage_intro|bogus|3 0.99999994 7.33333015 -1,3,1,-1 1 -> free-
+story/cut_story_hollywood_garage_intro||0 1 7.33333015 2,-1,0,-1 10 -> free-
+story/cut_story_hollywood_garage_intro||0 0.5 7.33333015 -1,3,3,3 1 -> free-
+story/cut_story_hollywood_garage_intro||1 0.99999994 1.39999998 3,3,3,0 10 -> -1 3 0.99999994 1.39999998 0.5
+story/cut_story_hollywood_garage_intro||3 1.5 0 -1,3,-1,1 10 -> -1 1 1.5 0 0.5
+xracestartx|gesture_neutral|1 -1 0 0,3,2,2 15 -> 0 3 -1 0 0.5
+xracestartx|gesture_neutral|3 1 0 2,3,0,-1 15 -> free-
+xracestartx|gesture_neutral|1 2.33332992 1.39999998 1,1,1,-1 15 -> 0 1 2.33332992 1.39999998 0.5
+xracestartx|gesture_neutral|1 0.25 0 2,3,-1,-1 15 -> 0 3 0.25 0 0.5
+xracestartx|gesture_left|1 1 0 3,-1,1,3 10 -> free-
+xracestartx|gesture_left|0 2.33332992 7.33333015 1,-1,0,3 1 -> free-
+xracestartx|gesture_left|0 4.36667013 0 3,3,3,3 1 -> free-
+xracestartx|gesture_left|3 -1 1.39999998 1,3,3,3 15 -> 1 3 1 1.39999998 0.5
+xracestartx|gesture_right|0 1.00000012 0 3,0,2,2 2 -> free-
+xracestartx|gesture_right|0 1.5 0 3,3,2,-1 15 -> 2 3 1.5 0 0.5
+xracestartx|gesture_right|1 -1 7.33333015 2,1,0,3 15 -> 2 1 1 7.33333015 0.5
+xracestartx|gesture_right|1 1 7.33333015 3,3,2,2 10 -> 2 3 1 7.33333015 0.5
+xracestartx|gesture_talk_left|3 1.5 1.39999998 2,-1,1,3 15 -> 3 3 1.5 1.39999998 0.5
+xracestartx|gesture_talk_left|1 0.99999994 7.33333015 1,1,3,2 0 -> free-
+xracestartx|gesture_talk_left|1 4.36667013 1.39999998 3,3,3,3 2 -> free-
+xracestartx|gesture_talk_left|1 1.00000012 7.33333015 0,1,2,1 10 -> 3 1 1.00000012 7.33333015 0.5
+xracestartx|gesture_talk_right|1 1.5 1.39999998 1,2,3,3 15 -> 4 2 1.5 1.39999998 0.5
+xracestartx|gesture_talk_right|0 -1 1.39999998 3,0,3,2 1 -> free-
+xracestartx|gesture_talk_right|1 2.33332992 7.33333015 2,3,1,1 15 -> 4 3 2.33332992 7.33333015 0.5
+xracestartx|gesture_talk_right|0 0.5 7.33333015 2,3,0,1 10 -> free-
+xracestartx|gesture_listen_left|3 1 0 -1,3,3,2 15 -> 7 2 1 0 0.5
+xracestartx|gesture_listen_left|1 0.5 7.33333015 3,3,-1,3 15 -> 7 3 0.5 7.33333015 0.5
+xracestartx|gesture_listen_left|1 0.25 0 -1,1,2,1 0 -> free-
+xracestartx|gesture_listen_left|3 -1 0 2,-1,1,2 15 -> 7 2 -1 0 0.5
+xracestartx|gesture_listen_right|0 0.5 1.39999998 3,3,2,0 15 -> 8 3 0.5 1.39999998 0.5
+xracestartx|gesture_listen_right|0 0.25 7.33333015 -1,3,1,2 0 -> free-
+xracestartx|gesture_listen_right|0 2.33332992 0 1,-1,-1,1 0 -> free-
+xracestartx|gesture_listen_right|2 0.99999994 0 2,2,-1,0 2 -> free-
+xracestartx|gesture_thm_dwn_lft|1 0.25 1.39999998 3,-1,-1,3 2 -> free-
+xracestartx|gesture_thm_dwn_lft|1 -1 0 1,3,-1,3 15 -> 9 3 -1 0 0.5
+xracestartx|gesture_thm_dwn_lft|2 1.5 1.39999998 3,3,0,1 15 -> 9 0 1.5 1.39999998 0.5
+xracestartx|gesture_thm_dwn_lft|1 0 0 3,3,1,-1 1 -> free-
+xracestartx|gesture_thm_dwn_rgt|2 1 0 2,3,3,0 2 -> free-
+xracestartx|gesture_thm_dwn_rgt|1 0.5 1.39999998 2,1,1,1 1 -> free-
+xracestartx|gesture_thm_dwn_rgt|0 0.25 0 2,0,3,0 2 -> free-
+xracestartx|gesture_thm_dwn_rgt|1 0.99999994 1.39999998 2,2,3,0 10 -> free-
+xracestartx|gesture_copfidget|1 1 0 3,1,3,2 15 -> 52 1 1 0 0.5
+xracestartx|gesture_copfidget|1 0.25 0 2,3,2,-1 1 -> free-
+xracestartx|gesture_copfidget|0 1.00000012 7.33333015 3,3,2,3 15 -> 52 3 1.00000012 7.33333015 0.5
+xracestartx|gesture_copfidget|1 1.5 1.39999998 -1,1,3,2 15 -> 52 1 1.5 1.39999998 0.5
+xracestartx|window_down_left|0 4.36667013 7.33333015 3,0,2,0 2 -> free-
+xracestartx|window_down_left|2 1 0 3,3,3,1 2 -> free-
+xracestartx|window_down_left|0 -1 0 2,1,1,2 2 -> free-
+xracestartx|window_down_left|0 1.00000012 0 -1,3,-1,-1 0 -> free-
+xracestartx|window_up_right|0 1 0 0,1,0,-1 15 -> 32 0 1 0 0.5
+xracestartx|window_up_right|1 0.5 0 0,3,3,-1 10 -> 32 3 0.5 0 0.5
+xracestartx|window_up_right|1 0.99999994 0 2,0,3,2 1 -> 32 0 0.99999994 0 0.5
+xracestartx|window_up_right|1 1.00000012 0 3,3,2,-1 15 -> 32 3 1.00000012 0 0.5
+xracestartx|playspeech|0 4.36667013 1.39999998 0,2,2,3 10 -> free-
+xracestartx|playspeech|1 0.25 0 2,1,-1,2 15 -> 40 1 0.25 0 0.5
+xracestartx|playspeech|2 -1 0 3,2,1,2 10 -> 40 1 -1 0 0.5
+xracestartx|playspeech|1 1 0 3,-1,2,3 15 -> free-
+xracestartx|horn|1 1 1.39999998 0,0,2,3 15 -> 13 0 1 1.39999998 0.5
+xracestartx|horn|3 1.00000012 0 1,3,1,3 10 -> 13 3 1.00000012 0 0.5
+xracestartx|horn|1 0.5 1.39999998 3,3,3,2 0 -> free-
+xracestartx|horn|0 0 0 3,3,3,-1 1 -> free-
+xracestartx|bw_toggle_off|2 0.25 0 0,3,0,3 0 -> free-
+xracestartx|bw_toggle_off|0 0.5 0 2,3,3,2 15 -> 96 2 0.5 0 0.5
+xracestartx|bw_toggle_off|2 1 0 0,-1,-1,3 1 -> free-
+xracestartx|bw_toggle_off|0 -1 0 1,2,3,3 15 -> 96 1 -1 0 0.5
+xracestartx|Gesture_Left|0 2.33332992 1.39999998 -1,3,3,2 0 -> free-
+xracestartx|Gesture_Left|2 0.5 1.39999998 -1,0,3,3 15 -> -1 3 0.5 1.39999998 0.5
+xracestartx|Gesture_Left|1 4.36667013 0 2,1,0,0 0 -> free-
+xracestartx|Gesture_Left|2 -1 0 1,0,2,0 10 -> free-
+xracestartx|GESTURE_RIGHT|0 4.36667013 0 3,0,0,2 0 -> free-
+xracestartx|GESTURE_RIGHT|0 1.5 0 -1,-1,1,1 10 -> free-
+xracestartx|GESTURE_RIGHT|1 0.25 7.33333015 0,0,0,1 15 -> -1 0 0.25 7.33333015 0.5
+xracestartx|GESTURE_RIGHT|0 0.5 0 0,2,3,0 0 -> free-
+xracestartx|my_gesture_left_2|0 1.00000012 7.33333015 2,3,-1,-1 1 -> free-
+xracestartx|my_gesture_left_2|0 1.5 0 -1,1,3,2 2 -> free-
+xracestartx|my_gesture_left_2|1 -1 7.33333015 1,1,3,3 0 -> free-
+xracestartx|my_gesture_left_2|0 4.36667013 0 0,1,0,-1 2 -> free-
+xracestartx|gesture_right_gesture_left|3 4.36667013 0 2,1,3,3 15 -> 1 3 4.36667013 0 0.5
+xracestartx|gesture_right_gesture_left|0 2.33332992 0 -1,0,-1,3 10 -> free-
+xracestartx|gesture_right_gesture_left|0 -1 1.39999998 0,-1,-1,-1 0 -> free-
+xracestartx|gesture_right_gesture_left|0 1.5 7.33333015 3,3,-1,3 10 -> 1 3 1.5 7.33333015 0.5
+xracestartx|gesture_neutral_left|2 1.00000012 0 3,0,3,2 1 -> free-
+xracestartx|gesture_neutral_left|0 1.5 7.33333015 1,0,0,2 10 -> 0 1 1.5 7.33333015 0.5
+xracestartx|gesture_neutral_left|2 1 7.33333015 -1,3,0,1 0 -> free-
+xracestartx|gesture_neutral_left|2 0.25 0 3,2,2,0 15 -> 0 2 0.25 0 0.5
+xracestartx|gesture_lef|2 1.00000012 1.39999998 0,2,0,2 2 -> free-
+xracestartx|gesture_lef|3 0.25 0 0,3,2,3 0 -> free-
+xracestartx|gesture_lef|3 0 1.39999998 3,3,3,2 1 -> free-
+xracestartx|gesture_lef|1 0.99999994 7.33333015 2,0,0,2 2 -> free-
+xracestartx|bogus|0 2.33332992 7.33333015 3,3,2,1 0 -> free-
+xracestartx|bogus|0 1 1.39999998 1,3,0,3 10 -> -1 1 1 1.39999998 0.5
+xracestartx|bogus|1 -1 7.33333015 3,-1,0,3 2 -> free-
+xracestartx|bogus|3 0.99999994 0 0,1,1,2 15 -> -1 2 0.99999994 0 0.5
+xracestartx||1 -1 0 3,3,3,2 15 -> -1 3 -1 0 0.5
+xracestartx||0 0.5 0 3,-1,2,-1 1 -> free-
+xracestartx||0 1.5 1.39999998 2,0,3,3 1 -> free-
+xracestartx||2 0 0 2,3,2,2 2 -> free-
+racestar|gesture_neutral|3 1.5 7.33333015 -1,2,0,1 15 -> 0 1 1.5 7.33333015 0.5
+racestar|gesture_neutral|2 0 7.33333015 -1,-1,2,3 15 -> 0 2 0 7.33333015 0.5
+racestar|gesture_neutral|1 1.00000012 0 3,1,-1,3 15 -> 0 1 1.00000012 0 0.5
+racestar|gesture_neutral|0 -1 1.39999998 3,3,0,0 15 -> 0 3 -1 1.39999998 0.5
+racestar|gesture_left|0 2.33332992 0 0,2,3,-1 2 -> free-
+racestar|gesture_left|0 1 0 1,0,-1,-1 10 -> 1 1 1 0 0.5
+racestar|gesture_left|2 1.5 1.39999998 3,1,1,2 15 -> 1 1 1.5 1.39999998 0.5
+racestar|gesture_left|0 1.00000012 7.33333015 1,2,3,-1 15 -> 1 1 1.00000012 7.33333015 0.5
+racestar|gesture_right|0 1 0 0,3,1,1 0 -> free-
+racestar|gesture_right|0 0 0 2,3,3,-1 15 -> 2 2 0 0 0.5
+racestar|gesture_right|0 4.36667013 1.39999998 3,1,2,1 15 -> 2 3 4.36667013 1.39999998 0.5
+racestar|gesture_right|2 1.5 0 3,3,3,3 10 -> 2 3 1.5 0 0.5
+racestar|gesture_talk_left|1 0.99999994 0 1,3,3,3 2 -> free-
+racestar|gesture_talk_left|3 2.33332992 0 3,1,1,3 10 -> 3 3 2.33332992 0 0.5
+racestar|gesture_talk_left|0 0 7.33333015 -1,-1,0,2 10 -> free-
+racestar|gesture_talk_left|1 -1 0 2,3,2,0 15 -> 3 3 -1 0 0.5
+racestar|gesture_talk_right|0 0.25 7.33333015 0,-1,2,3 10 -> free-
+racestar|gesture_talk_right|1 -1 7.33333015 3,-1,0,3 10 -> free-
+racestar|gesture_talk_right|1 0 7.33333015 0,3,1,2 10 -> 4 3 0 7.33333015 0.5
+racestar|gesture_talk_right|2 1 1.39999998 3,3,1,0 10 -> 4 1 1 1.39999998 0.5
+racestar|gesture_listen_left|0 0.5 0 3,2,3,0 15 -> 7 3 0.5 0 0.5
+racestar|gesture_listen_left|1 0 0 1,2,2,3 15 -> 7 2 0 0 0.5
+racestar|gesture_listen_left|0 0.25 0 2,-1,2,3 15 -> 7 2 0.25 0 0.5
+racestar|gesture_listen_left|0 1 0 3,-1,1,2 1 -> free-
+racestar|gesture_listen_right|1 0.99999994 0 -1,3,-1,3 0 -> free-
+racestar|gesture_listen_right|2 1 1.39999998 3,3,3,1 0 -> free-
+racestar|gesture_listen_right|2 0 0 0,-1,3,0 1 -> free-
+racestar|gesture_listen_right|0 0.25 0 2,1,-1,1 0 -> free-
+racestar|gesture_thm_dwn_lft|1 1.00000012 7.33333015 3,2,0,0 10 -> free-
+racestar|gesture_thm_dwn_lft|2 0.99999994 7.33333015 1,1,1,0 0 -> free-
+racestar|gesture_thm_dwn_lft|1 1.5 1.39999998 -1,3,0,3 15 -> 9 3 1.5 1.39999998 0.5
+racestar|gesture_thm_dwn_lft|0 0.5 7.33333015 3,-1,1,-1 0 -> free-
+racestar|gesture_thm_dwn_rgt|0 1.5 0 1,-1,3,3 10 -> 10 1 1.5 0 0.5
+racestar|gesture_thm_dwn_rgt|0 1 7.33333015 3,2,3,1 15 -> 10 3 1 7.33333015 0.5
+racestar|gesture_thm_dwn_rgt|0 -1 7.33333015 1,1,1,0 15 -> 10 1 -1 7.33333015 0.5
+racestar|gesture_thm_dwn_rgt|2 0 1.39999998 0,-1,0,1 2 -> free-
+racestar|gesture_copfidget|3 0.99999994 7.33333015 3,1,-1,-1 15 -> free-
+racestar|gesture_copfidget|2 2.33332992 1.39999998 0,0,3,0 15 -> 52 3 2.33332992 1.39999998 0.5
+racestar|gesture_copfidget|1 1.5 7.33333015 0,3,1,3 2 -> free-
+racestar|gesture_copfidget|0 -1 0 -1,1,3,3 10 -> free-
+racestar|window_down_left|0 1 1.39999998 3,3,-1,2 10 -> 29 3 1 1.39999998 0.5
+racestar|window_down_left|1 0.99999994 1.39999998 0,3,1,3 15 -> 29 3 0.99999994 1.39999998 0.5
+racestar|window_down_left|3 0.5 0 0,-1,0,-1 10 -> free-
+racestar|window_down_left|3 2.33332992 0 1,3,3,0 2 -> free-
+racestar|window_up_right|1 0.25 0 -1,3,3,2 2 -> free-
+racestar|window_up_right|2 -1 7.33333015 3,1,-1,2 0 -> free-
+racestar|window_up_right|1 1.00000012 7.33333015 3,1,3,3 1 -> free-
+racestar|window_up_right|0 4.36667013 0 1,1,0,3 2 -> 32 1 4.36667013 0 0.5
+racestar|playspeech|0 1.5 0 3,-1,3,0 15 -> 40 3 1.5 0 0.5
+racestar|playspeech|0 0.5 1.39999998 2,3,-1,0 10 -> free-
+racestar|playspeech|2 0.99999994 0 1,3,3,1 15 -> 40 3 0.99999994 0 0.5
+racestar|playspeech|1 2.33332992 0 0,-1,-1,-1 2 -> free-
+racestar|horn|0 1.5 0 3,-1,3,3 0 -> free-
+racestar|horn|0 0.5 1.39999998 2,3,0,3 2 -> free-
+racestar|horn|2 1.00000012 0 -1,-1,2,3 15 -> 13 2 1.00000012 0 0.5
+racestar|horn|1 1 0 3,0,3,-1 15 -> 13 0 1 0 0.5
+racestar|bw_toggle_off|1 0.25 0 2,3,3,1 10 -> 96 3 0.25 0 0.5
+racestar|bw_toggle_off|0 1 1.39999998 0,-1,3,1 15 -> 96 0 1 1.39999998 0.5
+racestar|bw_toggle_off|2 1.00000012 0 1,1,2,2 1 -> free-
+racestar|bw_toggle_off|1 -1 0 1,3,1,1 1 -> free-
+racestar|Gesture_Left|2 1.00000012 0 2,3,3,0 2 -> free-
+racestar|Gesture_Left|1 0.25 0 2,1,-1,3 1 -> free-
+racestar|Gesture_Left|1 2.33332992 7.33333015 0,3,1,3 1 -> free-
+racestar|Gesture_Left|1 0.99999994 0 3,-1,2,0 2 -> free-
+racestar|GESTURE_RIGHT|2 1.5 0 2,3,-1,1 2 -> free-
+racestar|GESTURE_RIGHT|0 0 7.33333015 2,3,3,-1 15 -> -1 2 0 7.33333015 0.5
+racestar|GESTURE_RIGHT|0 2.33332992 0 3,0,-1,2 0 -> free-
+racestar|GESTURE_RIGHT|2 0.5 1.39999998 3,3,3,-1 1 -> free-
+racestar|my_gesture_left_2|0 0.99999994 1.39999998 0,2,0,2 2 -> free-
+racestar|my_gesture_left_2|3 4.36667013 7.33333015 3,3,-1,2 1 -> free-
+racestar|my_gesture_left_2|0 1.00000012 7.33333015 3,3,-1,-1 15 -> 1 3 1.00000012 7.33333015 0.5
+racestar|my_gesture_left_2|1 -1 0 2,1,-1,0 2 -> 1 1 -1 0 0.5
+racestar|gesture_right_gesture_left|2 4.36667013 0 2,-1,1,0 10 -> 1 1 4.36667013 0 0.5
+racestar|gesture_right_gesture_left|2 1.5 1.39999998 3,3,3,-1 1 -> free-
+racestar|gesture_right_gesture_left|1 0.5 0 3,3,3,3 1 -> free-
+racestar|gesture_right_gesture_left|0 -1 1.39999998 3,0,2,1 1 -> free-
+racestar|gesture_neutral_left|0 2.33332992 0 3,3,0,3 15 -> 0 3 2.33332992 0 0.5
+racestar|gesture_neutral_left|0 1.00000012 0 2,2,2,-1 15 -> 0 2 1.00000012 0 0.5
+racestar|gesture_neutral_left|0 0.99999994 7.33333015 1,1,3,0 10 -> 0 1 0.99999994 7.33333015 0.5
+racestar|gesture_neutral_left|2 4.36667013 1.39999998 -1,3,3,0 0 -> free-
+racestar|gesture_lef|2 -1 1.39999998 3,3,1,3 2 -> -1 1 -1 1.39999998 0.5
+racestar|gesture_lef|1 0 7.33333015 0,0,3,2 15 -> -1 0 0 7.33333015 0.5
+racestar|gesture_lef|0 4.36667013 1.39999998 -1,2,1,0 2 -> free-
+racestar|gesture_lef|0 1.5 1.39999998 1,2,0,2 10 -> -1 1 1.5 1.39999998 0.5
+racestar|bogus|0 -1 0 -1,3,1,1 2 -> free-
+racestar|bogus|0 1.00000012 1.39999998 3,1,0,1 15 -> -1 3 1.00000012 1.39999998 0.5
+racestar|bogus|1 1.5 0 -1,2,3,-1 15 -> -1 2 1.5 0 0.5
+racestar|bogus|3 0 0 3,3,0,3 10 -> -1 3 0 0 0.5
+racestar||3 4.36667013 0 0,1,3,2 15 -> -1 2 4.36667013 0 0.5
+racestar||0 -1 0 3,2,0,2 2 -> free-
+racestar||1 0.5 1.39999998 -1,2,-1,3 15 -> -1 2 0.5 1.39999998 0.5
+racestar||1 0.25 7.33333015 1,3,3,1 2 -> free-
+|gesture_neutral|1 4.36667013 7.33333015 -1,3,2,0 0 -> free-
+|gesture_neutral|1 1.00000012 1.39999998 2,-1,3,-1 0 -> free-
+|gesture_neutral|1 -1 7.33333015 2,1,3,3 2 -> 0 1 -1 7.33333015 0.5
+|gesture_neutral|1 0.5 0 3,3,0,-1 2 -> free-
+|gesture_left|2 1.00000012 0 3,3,-1,3 15 -> free-
+|gesture_left|0 0 1.39999998 -1,1,-1,-1 15 -> free-
+|gesture_left|1 1 1.39999998 3,1,2,3 1 -> free-
+|gesture_left|2 0.5 7.33333015 3,1,3,-1 15 -> 1 3 0.5 7.33333015 0.5
+|gesture_right|1 2.33332992 0 1,0,3,0 0 -> free-
+|gesture_right|1 0 1.39999998 2,3,3,1 10 -> 2 3 0 1.39999998 0.5
+|gesture_right|0 1.00000012 0 2,2,2,3 15 -> 2 2 1.00000012 0 0.5
+|gesture_right|1 4.36667013 0 -1,1,3,3 1 -> free-
+|gesture_talk_left|1 4.36667013 0 2,3,1,3 15 -> 3 3 4.36667013 0 0.5
+|gesture_talk_left|3 0.25 0 3,-1,3,3 0 -> free-
+|gesture_talk_left|3 0.99999994 0 3,3,2,3 15 -> 3 3 0.99999994 0 0.5
+|gesture_talk_left|0 1.00000012 0 1,-1,2,1 2 -> 3 1 1.00000012 0 0.5
+|gesture_talk_right|0 1.00000012 1.39999998 1,1,2,-1 2 -> 4 1 1.00000012 1.39999998 0.5
+|gesture_talk_right|0 2.33332992 7.33333015 3,0,1,-1 1 -> free-
+|gesture_talk_right|0 -1 7.33333015 -1,-1,3,1 15 -> free-
+|gesture_talk_right|3 0 0 3,1,1,-1 15 -> free-
+|gesture_listen_left|0 -1 0 3,3,0,1 2 -> free-
+|gesture_listen_left|1 2.33332992 0 2,3,2,3 15 -> 7 3 2.33332992 0 0.5
+|gesture_listen_left|0 0.99999994 0 -1,2,1,3 1 -> free-
+|gesture_listen_left|1 0 0 0,0,3,1 15 -> 7 0 0 0 0.5
+|gesture_listen_right|1 0 7.33333015 2,2,2,3 10 -> free-
+|gesture_listen_right|1 1 0 2,3,1,3 1 -> free-
+|gesture_listen_right|0 0.99999994 7.33333015 1,2,2,2 15 -> 8 1 0.99999994 7.33333015 0.5
+|gesture_listen_right|3 2.33332992 7.33333015 1,3,3,3 1 -> free-
+|gesture_thm_dwn_lft|2 0.5 0 1,3,3,3 15 -> 9 3 0.5 0 0.5
+|gesture_thm_dwn_lft|2 1.00000012 1.39999998 1,0,0,2 15 -> 9 0 1.00000012 1.39999998 0.5
+|gesture_thm_dwn_lft|0 0.25 7.33333015 0,3,2,2 0 -> free-
+|gesture_thm_dwn_lft|0 0.99999994 0 -1,1,1,2 15 -> free-
+|gesture_thm_dwn_rgt|1 1.00000012 0 -1,3,0,1 1 -> free-
+|gesture_thm_dwn_rgt|0 0.25 0 3,-1,0,-1 1 -> free-
+|gesture_thm_dwn_rgt|2 0.5 1.39999998 3,0,-1,3 1 -> free-
+|gesture_thm_dwn_rgt|1 1.5 0 -1,2,-1,3 15 -> 10 2 1.5 0 0.5
+|gesture_copfidget|2 0.25 1.39999998 -1,3,2,2 15 -> 52 2 0.25 1.39999998 0.5
+|gesture_copfidget|1 0.5 0 3,0,2,1 15 -> 52 0 0.5 0 0.5
+|gesture_copfidget|1 1.5 0 3,2,3,-1 2 -> free-
+|gesture_copfidget|1 0.99999994 1.39999998 0,3,-1,3 15 -> 52 3 0.99999994 1.39999998 0.5
+|window_down_left|3 0.99999994 0 2,1,1,2 15 -> 29 2 0.99999994 0 0.5
+|window_down_left|2 1.00000012 0 0,2,2,3 10 -> free-
+|window_down_left|1 0.25 0 -1,3,3,1 0 -> free-
+|window_down_left|0 -1 0 3,-1,3,2 2 -> free-
+|window_up_right|0 4.36667013 7.33333015 3,3,2,3 15 -> 32 3 4.36667013 7.33333015 0.5
+|window_up_right|0 1.5 7.33333015 2,2,1,2 0 -> free-
+|window_up_right|3 0.5 1.39999998 0,1,3,2 10 -> free-
+|window_up_right|0 1 1.39999998 -1,0,1,2 1 -> free-
+|playspeech|0 0.25 1.39999998 -1,3,-1,1 10 -> free-
+|playspeech|2 0 7.33333015 -1,0,1,3 0 -> free-
+|playspeech|2 1 1.39999998 1,1,3,-1 1 -> free-
+|playspeech|2 0.99999994 7.33333015 -1,-1,-1,-1 0 -> free-
+|horn|3 -1 0 -1,3,1,3 1 -> free-
+|horn|3 0.5 0 2,2,3,2 0 -> free-
+|horn|1 2.33332992 7.33333015 2,3,1,3 10 -> 13 3 2.33332992 7.33333015 0.5
+|horn|1 0.99999994 0 2,0,2,-1 10 -> free-
+|bw_toggle_off|0 0.25 0 -1,-1,-1,3 2 -> free-
+|bw_toggle_off|0 0 7.33333015 -1,2,0,-1 0 -> free-
+|bw_toggle_off|0 2.33332992 1.39999998 0,2,3,-1 10 -> free-
+|bw_toggle_off|1 0.5 1.39999998 -1,3,1,1 15 -> 96 3 0.5 1.39999998 0.5
+|Gesture_Left|3 0 0 -1,3,2,-1 0 -> free-
+|Gesture_Left|3 1 7.33333015 1,2,-1,3 10 -> -1 3 1 7.33333015 0.5
+|Gesture_Left|2 1.5 0 0,1,1,3 2 -> -1 1 1.5 0 0.5
+|Gesture_Left|3 0.5 1.39999998 -1,1,2,0 15 -> -1 0 0.5 1.39999998 0.5
+|GESTURE_RIGHT|0 4.36667013 0 3,1,2,1 15 -> -1 3 4.36667013 0 0.5
+|GESTURE_RIGHT|1 -1 0 -1,2,3,1 15 -> -1 2 -1 0 0.5
+|GESTURE_RIGHT|0 0 1.39999998 3,2,-1,0 0 -> free-
+|GESTURE_RIGHT|3 1.00000012 0 0,2,2,3 10 -> -1 3 1.00000012 0 0.5
+|my_gesture_left_2|2 1.5 7.33333015 3,3,1,3 10 -> 1 1 1.5 7.33333015 0.5
+|my_gesture_left_2|2 0.25 0 1,2,2,0 1 -> free-
+|my_gesture_left_2|3 0.5 1.39999998 3,0,3,0 1 -> 1 0 0.5 1.39999998 0.5
+|my_gesture_left_2|1 -1 0 0,-1,2,1 15 -> free-
+|gesture_right_gesture_left|0 0.5 7.33333015 3,3,3,3 2 -> free-
+|gesture_right_gesture_left|2 2.33332992 1.39999998 0,0,3,1 0 -> free-
+|gesture_right_gesture_left|1 4.36667013 7.33333015 1,0,-1,1 15 -> 1 0 4.36667013 7.33333015 0.5
+|gesture_right_gesture_left|0 0 1.39999998 3,3,0,2 2 -> free-
+|gesture_neutral_left|0 0.99999994 1.39999998 0,2,3,2 1 -> 0 0 0.99999994 1.39999998 0.5
+|gesture_neutral_left|2 4.36667013 0 1,3,2,2 1 -> free-
+|gesture_neutral_left|3 0.25 0 3,3,2,0 1 -> 0 0 0.25 0 0.5
+|gesture_neutral_left|2 2.33332992 0 0,1,1,3 2 -> 0 1 2.33332992 0 0.5
+|gesture_lef|0 4.36667013 1.39999998 3,3,0,3 1 -> free-
+|gesture_lef|0 2.33332992 7.33333015 3,-1,2,3 2 -> free-
+|gesture_lef|1 0.99999994 0 0,1,3,3 2 -> -1 1 0.99999994 0 0.5
+|gesture_lef|3 -1 0 3,2,2,0 15 -> -1 0 -1 0 0.5
+|bogus|0 1.5 1.39999998 2,3,2,3 10 -> free-
+|bogus|0 2.33332992 1.39999998 3,1,-1,0 2 -> free-
+|bogus|3 0.5 1.39999998 3,0,-1,2 2 -> free-
+|bogus|0 -1 0 2,3,0,-1 2 -> free-
+||3 0.99999994 0 3,0,1,-1 0 -> free-
+||2 0.5 7.33333015 3,3,-1,3 10 -> free-
+||3 1.5 1.39999998 -1,0,2,3 0 -> free-
+||3 -1 1.39999998 0,3,1,3 15 -> -1 3 -1 1.39999998 0.5
