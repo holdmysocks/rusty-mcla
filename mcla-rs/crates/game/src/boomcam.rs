@@ -2326,6 +2326,12 @@ pub struct TrackTune {
     pub collide_type: i32,
     pub collide_min: f32,
     pub near: f32,
+    /// CollideHeight (+472): the radius of F-10185's deflection probe at the track point (an event with
+    /// ApproachOn 0.5, else 0, set by F-26269; the vehTrackCS constructor's 0.2 for the wipeout and
+    /// ability cameras, as both recorded vehTrackCS objects hold it)
+    pub collide_height: f32,
+    /// ReverseOn (+208): 0 in every file; -1 for the wipeout camera of an exploding car (F-37740)
+    pub reverse_on: i32,
 }
 
 impl TrackTune {
@@ -2381,6 +2387,8 @@ impl TrackTune {
             collide_type: f(&b, "CollideType", 1.0) as i32,
             collide_min: f(&b, "CollideMinDist", 2.0),
             near: { let n = f(&b, "CameraNear", 0.2); if n > 0.0 { n } else { 0.2 } },
+            collide_height: if f(&e, "ApproachOn", 1.0) != 0.0 { 0.5 } else { 0.0 },
+            reverse_on: 0,
         }
     }
 }
@@ -2421,6 +2429,8 @@ impl TrackTune {
             collide_type: 1,
             collide_min: 0.5,
             near: 0.2,
+            collide_height: 0.2,
+            reverse_on: 0,
         }
     }
 
@@ -2459,6 +2469,8 @@ impl TrackTune {
             collide_type: if agro { 0 } else { 1 },
             collide_min: 0.0,
             near: 0.2,
+            collide_height: 0.2,
+            reverse_on: 0,
         }
     }
 }
@@ -2592,13 +2604,15 @@ impl CrashCam {
         let car = &self.with_rider(car);
         let mut t = TrackTune::wipeout(model_offset);
         t.offset = how.offset;
+        // (an exploding car: ReverseOn -1 - TrackTo mirrored, the hill turned and the place turned half
+        // round the point, F-10185)
+        t.reverse_on = if how.exploding { -1 } else { 0 };
         if !self.used {
             self.cam.app_xz = 5.0;
             self.used = true;
         }
         // (reset: snap, the side 0 - no mirror)
         self.cam.set(&t, car, 99, 0.0);
-        self.cam.rev = how.exploding;
         self.tune = Some(t);
         self.started = true;
     }
@@ -2756,6 +2770,12 @@ pub struct TrackCar {
 }
 
 impl TrackCar {
+    /// The followed matrix (+144) as the original's rows (right, up, back) and its place.
+    fn rows(&self) -> ([Vec3; 3], Vec3) {
+        let (m, p) = self.follow.unwrap_or_else(|| (Mat3::from_quat(self.rot), self.pos));
+        ([m.x_axis, m.y_axis, m.z_axis], p)
+    }
+
     /// The slope under a car's wheels (see `slope`).
     pub fn slope_of(rot: Quat, wheels: &[crate::physics::car::WheelState]) -> Option<f32> {
         let back = rot * Vec3::Z;
@@ -2808,56 +2828,92 @@ fn wrap_pi(a: f32) -> f32 {
     a
 }
 
-/// yaw (about y, 0 = looking along -z) and pitch of a direction
-fn yaw_pitch(d: Vec3) -> (f32, f32) {
-    let d = d.normalize_or(Vec3::NEG_Z);
-    ((-d.x).atan2(-d.z), d.y.clamp(-1.0, 1.0).asin())
+/// The vector unit's unit vector (the estimate of 1 / sqrt and one Newton step, products rounded).
+fn vunit(v: Vec3) -> Vec3 {
+    use crate::physics::exact::{dot3, rsqrt};
+    v * rsqrt(dot3(v, v))
 }
 
-fn dir_of(yaw: f32, pitch: f32) -> Vec3 {
-    Vec3::new(-yaw.sin() * pitch.cos(), pitch.sin(), -yaw.cos() * pitch.cos())
+/// The vector unit's cross product (each product rounded, then the difference).
+fn vcross(a: Vec3, b: Vec3) -> Vec3 {
+    crate::physics::exact::cross(a, b)
 }
 
-/// The track camera with one event view on (F-26269 then F-92343 each frame).
-#[derive(Default)]
+/// F-97951: the rows of a camera looking along -dir (row 2 = unit(dir), row 0 = unit(up x row 2),
+/// row 1 = row 2 x row 0).
+fn look_rows(dir: Vec3, up: Vec3) -> [Vec3; 3] {
+    let z = vunit(dir);
+    let x = vunit(vcross(up, z));
+    [x, vcross(z, x), z]
+}
+
+/// F-67990: the four rows (the place row too) times the rotation by `angle` about `axis`
+/// (F-10410): row' = (R0 row.x + R1 row.y) + R2 row.z, the vector unit's products rounded.
+fn turn_rows(m: &mut [Vec3; 4], axis: Vec3, angle: f32) {
+    let r = crate::physics::exact::rotation_about(axis, angle);
+    for row in m.iter_mut() {
+        *row = (r[0] * row.x + r[1] * row.y) + r[2] * row.z;
+    }
+}
+
+/// The track camera (camTrackCS / vehTrackCS). Its fields are the original object's: the event
+/// camera runs F-92343 (the lens) then the update F-63744 each frame; the wipeout and ability
+/// cameras (plain vehTrackCS) F-63744 only. Rule: docs/reference/cameras/camtrack_rule.md, checked
+/// call for call against the running original (track_update_matches_the_original).
+#[derive(Default, Clone)]
 struct TrackCam {
+    /// +296: the next update takes the computed matrix as it is (set by the reset)
     snap: bool,
+    /// +240 TrackTo, +448 Offset (set by the event, F-26269), +528 VertOffset (0 after every reset)
     track: Vec3,
     offset: Vec3,
-    pos: Vec3,
-    yaw: f32,
-    pitch: f32,
-    st_yaw: f32,
-    st_pitch: f32,
-    speed: f32,
-    /// the place's XZ approach rate (+276; not touched by the reset) and the per-axis lag (+416)
-    app_xz: f32,
+    vert: f32,
+    /// +16..+64: the output matrix - rows right, up, back, then the place
+    out: [Vec3; 4],
+    /// +336..+384: the computed (target) matrix of F-10185; +320 the track point T; +688 the
+    /// place before the turns about T
+    comp: [Vec3; 4],
+    at: Vec3,
+    place: Vec3,
+    /// +400 / +404 / +408: the turn's AppApp lags (x pitch, y yaw, z roll); +416..+424 the place's
+    st_rot: [f32; 3],
     st_pos: [f32; 3],
-    /// the hill angle (+616; not touched by the reset either)
+    /// +768: the filtered speed of the lens (F-92343)
+    speed: f32,
+    /// +276 / +272: the place's XZ and Y approach rates (F-91254). The XZ one is not touched by the
+    /// reset (the load leaves the file's MaxAppXZPos there)
+    app_xz: f32,
+    app_y: f32,
+    /// +616: the hill angle (not touched by the reset either)
     hill: f32,
     /// the collision's kept distance (+672) and state bits (+668); the reset zeroes both
     dist: f32,
     bits: u32,
     /// byte +156: the shown camera is the pulled-in one this frame
     corrected: bool,
-    /// ReverseOn -1 (+208, the wipeout camera of an exploding car): byte +656 set, the hill's
-    /// sign turned
+    /// byte +656: ReverseOn -1 (the wipeout camera of an exploding car) - TrackTo mirrored, the
+    /// hill's sign turned
     rev: bool,
     /// F-70292's grounded filter: +580 / +584 (the time off / on the ground) and +588 = 0
-    /// (stored turned round: the constructor's 588 = 1 is `false` here); none of them is
-    /// touched by the event's reset
+    /// (stored turned round: the constructor's 588 = 1 is `false` here); +592 the tumble (off
+    /// the ground and |L| over 1500) and +596 its copy F-10185 keeps for the rates; none of them
+    /// is touched by the event's reset
     t_off: f32,
     t_on: f32,
     off_ground: bool,
-    /// the look object's yaw (+576 -> +20): turned only by Hydraulics' CAM_PAN at 2 rad/s;
-    /// zeroed at the event's entry and exit
+    tumble: bool,
+    held: bool,
+    /// the look object's yaw (+576 -> +20): turned only by Hydraulics' CAM_PAN at 2 rad/s (and set to
+    /// pi with ReverseOn -1); zeroed at the event's entry and exit
     look_yaw: f32,
 }
 
 impl TrackCam {
     /// The event is set (F-26269): Burnout's TrackTo.z = the front axle; Offset and
-    /// TrackTo mirrored when the event's side (`EventDirector::side`) is above zero; the next
-    /// frame snaps (reset F-88984: the filtered speed starts at the car's).
+    /// TrackTo mirrored when the event's side (`EventDirector::side`) is above zero; then the
+    /// reset (F-88984 / F-73044): the filtered speed starts at the car's (0 in reverse gear), the
+    /// output takes the last computed matrix, the next update snaps; the lags, the rates, the hill
+    /// and the grounded filter stay.
     fn set(&mut self, t: &TrackTune, car: &TrackCar, ev: usize, side: f32) {
         let mut track = if ev == EV_BURNOUT { Vec3::new(t.track.x, t.track.y, car.front_z) } else { t.track };
         let mut offset = t.offset;
@@ -2865,62 +2921,116 @@ impl TrackCam {
             track.x = -track.x;
             offset.x = -offset.x;
         }
-        let (app_xz, hill, t_off, t_on, off_ground) = (self.app_xz, self.hill, self.t_off, self.t_on, self.off_ground);
-        *self = TrackCam { snap: true, track, offset, speed: if car.reverse_gear { 0.0 } else { car.speed }, app_xz, hill, t_off, t_on, off_ground, ..Default::default() };
+        self.track = track;
+        self.offset = offset;
+        self.speed = if car.reverse_gear { 0.0 } else { car.speed };
+        self.out = self.comp;
+        self.snap = true;
+        self.rev = false;
+        self.corrected = false;
+        self.bits = 0;
+        self.dist = 0.0;
+        self.vert = 0.0;
+        self.held = false;
     }
 
-    /// The point it tracks (F-10185): TrackTo through the followed matrix (the car's, or the
-    /// thrown rider's), its height capped at the tune's ModelOffset.y and the rest added along the
-    /// world's up, + VertOffset (`vert`, 0 after every event reset).
-    fn track_point(&self, car: &TrackCar, vert: f32) -> Vec3 {
-        let (m, origin) = car.follow.unwrap_or_else(|| (Mat3::from_quat(car.rot), car.pos));
+    /// The point it tracks (F-10185): TrackTo (x and z turned with ReverseOn -1) through the followed
+    /// matrix (the car's, or the thrown rider's), its height capped at the tune's ModelOffset.y and the
+    /// rest added along the world's up, + VertOffset.
+    fn track_point(&self, car: &TrackCar) -> Vec3 {
+        let (m, p0) = car.rows();
         let ty = if car.model_offset_y > self.track.y { self.track.y } else { car.model_offset_y };
-        let mut at = origin + m * Vec3::new(self.track.x, ty, self.track.z);
-        at.y += self.track.y - ty + vert;
+        let p = if self.rev { Vec3::new(-self.track.x, ty, -self.track.z) } else { Vec3::new(self.track.x, ty, self.track.z) };
+        // (the vector unit's sum of four products against the matrix's columns: (1 w + z r2) + (y r1 + x r0))
+        let col = |c: usize| (1.0 * p0[c] + p.z * m[2][c]) + (p.y * m[1][c] + p.x * m[0][c]);
+        let mut at = Vec3::new(col(0), col(1), col(2));
+        at.y = ((self.track.y - ty) + self.vert) + at.y;
         at
     }
 
-    /// Where the camera wants to stand (F-10185): the Offset in the car's level heading
-    /// (behind the motion after half a second in the air above 10 m/s), its y along the world's up.
-    fn place(&self, car: &TrackCar, at: Vec3) -> Vec3 {
-        let m = car.follow.map_or_else(|| Mat3::from_quat(car.rot), |f| f.0);
-        // (F-10185: a wiped-out bike first - M.Z less the body's velocity, laid flat; then the
-        // air rule; else M.Z)
+    /// Where the camera wants to stand (F-10185): the Offset in the car's level heading (behind the
+    /// motion after half a second in the air above 10 m/s; a wiped-out bike behind M.Z less the
+    /// body's velocity, laid flat), its y along the world's up. ApproachOn 0: in the car's whole frame.
+    fn place(&self, t: &TrackTune, car: &TrackCar, at: Vec3) -> Vec3 {
+        let (m, _) = car.rows();
         let back = if car.bike_wiped {
-            let d = m.z_axis - car.vel;
-            Vec3::new(d.x, 0.0, d.z).normalize_or(m.z_axis)
-        } else if car.air_time > 0.5 && car.speed > 10.0 && car.vel.length_squared() > 1e-4 {
-            -car.vel.normalize()
+            let mut d = m[2] - car.vel;
+            d.y = 0.0;
+            vunit(d)
+        } else if car.air_time > 0.5 && car.speed > 10.0 {
+            Vec3::ZERO - vunit(car.vel)
         } else {
-            m.z_axis
+            m[2]
         };
-        let x = Vec3::Y.cross(back).normalize_or(m.x_axis);
-        let zh = x.cross(Vec3::Y);
-        at + x * self.offset.x + zh * self.offset.z + Vec3::Y * self.offset.y
+        let (up, back) = if t.approach_on { (Vec3::Y, back) } else { (m[1], m[2]) };
+        let x = vunit(vcross(up, back));
+        let mut p = (x * self.offset.x + at) - vcross(up, x) * self.offset.z;
+        p.y = self.offset.y + p.y;
+        p
     }
 
-    /// `dt_game`: the game's step (G+8, slowed by a time warp) - the XZ rate's own approach
-    /// runs on it; everything else on `dt` (the camera's clock, +184).
+    /// `dt_game`: the game's step (G+8, slowed by a time warp) - the grounded filter and the XZ
+    /// rate's own approach run on it; everything else on `dt` (the camera's clock, +184).
     fn update(&mut self, t: &TrackTune, car: &TrackCar, dt: f32, dt_game: f32, test: SphereTest, aspect: f32) -> BoomOut {
-        // (per call of the original: once a 30 Hz game frame)
+        // (per call of the original: once a 30 Hz game frame; another frame length takes the
+        // per-call factors to that step)
         let frames = (dt * 30.0).max(0.0);
-        // the lens: the filtered speed over SSSpeedMin..Max, eased (1 - cos(pi x)) / 2
+        let (fov, dist) = if t.car_lens { self.lens(t, car, frames) } else { (t.fov.0, t.dist) };
+        self.step(t, car, fov, dist, dt, dt_game, frames, test, aspect)
+    }
+
+    /// F-92343, the event camera's class only: the filtered speed (SSFilter a call), the lens weight
+    /// k = (1 - cos(pi x)) / 2 over SSSpeedMin..Max, the lens and the distance scale, with the car's
+    /// slipstream turbo (mcCarSSTurbo +20 / +24) and nitrous (mcCarNitro +24) terms. Returns the
+    /// lens (+168) and DistMin / DistMax (+304 / +300).
+    fn lens(&mut self, t: &TrackTune, car: &TrackCar, frames: f32) -> (f32, (f32, f32)) {
+        use crate::physics::exact::fma;
         let spd = if car.reverse_gear { 0.0 } else { car.speed };
-        self.speed += (spd - self.speed) * (1.0 - (1.0 - t.ss_filter.clamp(0.0, 1.0)).powf(frames));
-        let k = if t.ss_speed.0 < t.ss_speed.1 {
-            let x = ((self.speed - t.ss_speed.0) / (t.ss_speed.1 - t.ss_speed.0)).clamp(0.0, 1.0);
-            (1.0 - (std::f32::consts::PI * x).cos()) * 0.5
+        let f = t.ss_filter;
+        self.speed = if frames == 1.0 { fma(1.0 - f, self.speed, f * spd) } else { self.speed + (spd - self.speed) * (1.0 - (1.0 - f.clamp(0.0, 1.0)).powf(frames)) };
+        let (lo, hi) = t.ss_speed;
+        let k = if lo < hi {
+            let x = if !(self.speed > lo) { 0.0 } else if !(self.speed < hi) { 1.0 } else { (self.speed - lo) / (hi - lo) };
+            (1.0 - cos_pi(x)) * 0.5
         } else {
             0.0
         };
-        // (F-92343: the car's slipstream turbo adds its lens degrees and scales the distance,
-        // the nitrous shot adds its widening - whatever the event; the event camera's class only)
-        let (lf, ld) = if t.car_lens { (car.sst.0 + car.nitro_view, car.sst.1) } else { (0.0, 1.0) };
-        let fov = t.fov.0 + (t.fov.1 - t.fov.0) * k + lf;
-        let dsc = (1.0 + (t.dist_scale - 1.0) * k) * ld;
-        // the grounded filter (F-70292, game time): more than 0.51 of the wheels down for over
-        // 0.1 s is on the ground, fewer for over 0.1 s off it; off it and spinning with |L| over
-        // 1500 the place's XZ rate goes for MinAppXZPos (+592)
+        let mut dsc = fma(t.dist_scale - 1.0, k, 1.0);
+        let mut fov = fma(t.fov.1 - t.fov.0, k, t.fov.0);
+        fov += car.sst.0;
+        dsc *= car.sst.1;
+        fov += car.nitro_view;
+        // (+224 / +228 of the camera base: 0 and 1 on every recorded object)
+        (0.0 + fov, (t.dist.0 * dsc, t.dist.1 * dsc))
+    }
+
+    /// F-63744: one update of the track camera with the lens `fov` and DistMin / DistMax `dist`.
+    #[allow(clippy::too_many_arguments)]
+    fn step(&mut self, t: &TrackTune, car: &TrackCar, fov: f32, dist: (f32, f32), dt: f32, dt_game: f32, frames: f32, test: SphereTest, aspect: f32) -> BoomOut {
+        self.ground(t, car, dt_game);
+        self.hill_step(t, car, frames);
+        self.target(t, car, test);
+        self.rates(t, car, dt_game);
+        // F-48560: ApproachOn 0 or the snap after a reset: the computed matrix as it is
+        if !t.approach_on || self.snap {
+            self.out = self.comp;
+        } else {
+            self.follow(t, dist, dt, frames);
+        }
+        // (MinMaxOn is 0 in every file and constructor: F-94118 never runs)
+        let pos = if t.collide_type != 0 { self.pull_in(t, dt, test, fov, aspect) } else { self.out[3] };
+        self.snap = false;
+        let reach = (self.at - self.out[3]).length().max(1.0);
+        BoomOut { pos, look: pos - self.out[2] * reach, up: self.out[1], fov }
+    }
+
+    /// F-70292: ReverseOn -1 sets byte +656 (else it is cleared); the grounded filter on game time -
+    /// more than 0.51 of the wheels down for over 0.1 s is on the ground, fewer for over 0.1 s off it;
+    /// off it with |L|^2 over 2.25e6 (body +320) is the tumble (+592). (ReverseOn 1 and TrackBreak,
+    /// 0 in every file and constructor, are not ported.)
+    fn ground(&mut self, t: &TrackTune, car: &TrackCar, dt_game: f32) {
+        use crate::physics::exact::fma;
+        self.rev = t.reverse_on == -1;
         if car.grounded as i32 > (car.wheels as f32 * 0.51) as i32 {
             self.t_on += dt_game;
             if self.t_on > 0.1 {
@@ -2934,94 +3044,196 @@ impl TrackCam {
                 self.off_ground = true;
             }
         }
-        let tumble = self.off_ground && car.ang_mom.length_squared() > 2.25e6;
-        // the point it tracks (F-10185): TrackTo through the whole car matrix, its height capped
-        // at the tune's ModelOffset.y and the rest added along the world's up (+ VertOffset, 0
-        // after every event reset)
-        let m = car.follow.map_or_else(|| Mat3::from_quat(car.rot), |f| f.0);
-        let at = self.track_point(car, 0.0);
-        // the hill angle (F-66356): the slope under the wheels (its sign turned for a
-        // camera ahead of the car), eased per frame by HillLerp into asin(s * HillMax) up or
-        // asin(s * HillMin) down; none without ApproachOn. (HillLerp per 30 Hz
-        // frame: the game halves it only at a 60 Hz refresh (-framelock=1), never in play)
+        let l = car.ang_mom;
+        let l2 = fma(l.z, l.z, fma(l.x, l.x, l.y * l.y));
+        self.tumble = l2 > 2.25e6 && self.off_ground;
+    }
+
+    /// F-66356: the hill angle - the mean slope under the wheels on the ground (its sign turned for a
+    /// camera ahead of the car or with ReverseOn -1), eased each call by HillLerp into
+    /// asin(min(s HillMax, 0.9)) up or -asin(min(s HillMin, 0.9)) down; 0 without ApproachOn. (HillLerp
+    /// per 30 Hz frame: the game halves it only at a 60 Hz refresh (-framelock=1), never in play.)
+    fn hill_step(&mut self, t: &TrackTune, car: &TrackCar, frames: f32) {
+        use crate::physics::exact::{fma, fms, guest_asin};
         let (h_min, h_max, h_lerp) = t.hill;
-        if !t.approach_on || h_lerp <= 0.0 || h_max <= h_min {
+        if !t.approach_on || !(h_lerp > 0.0) || !(h_max > h_min) {
             self.hill = 0.0;
-        } else {
-            let s = car.slope.unwrap_or(0.0) * if (self.offset.z < 0.0) != self.rev { -1.0 } else { 1.0 };
-            let goal = if s < 0.0 { -(s * h_min).min(0.9).asin() } else { (s * h_max).min(0.9).asin() };
-            let l = 1.0 - (1.0 - h_lerp.min(1.0)).powf(frames);
-            self.hill += (goal - self.hill) * l;
+            return;
         }
-        // the place, turned about the point by the hill angle round the camera's level right
-        // axis (F-10185: rows * R(A, -pitch))
-        // (ApproachOn 0, byte +572: the Offset in the car's whole frame, its y along the world's up)
-        let want = if t.approach_on { self.place(car, at) } else { at + m.x_axis * self.offset.x + m.z_axis * self.offset.z + Vec3::Y * self.offset.y };
-        let rel = want - at;
-        let a = Vec3::Y.cross(rel.normalize_or(Vec3::Z)).normalize_or(Vec3::X);
-        let want = if self.hill != 0.0 { at + Quat::from_axis_angle(a, -self.hill) * rel } else { want };
-        // the look yaw turns the place about the point round the world's up (F-67990); the
-        // deflection runs only while the look object is all zero
-        let want = if self.look_yaw != 0.0 { at + Quat::from_rotation_y(self.look_yaw) * (want - at) } else { want };
-        let want = if self.look_yaw == 0.0 { deflect(at, want, t, test) } else { want };
-        // the place's approach rates (F-91254): over the speed range, the XZ one moving
-        // towards its goal at AppInc / AppDec a second, in reverse gear RevAppXZPos
-        let s = car.speed;
-        let u = if t.app_speed.1 != t.app_speed.0 && s > t.app_speed.0 { ((s - t.app_speed.0) / (t.app_speed.1 - t.app_speed.0)).min(1.0) } else { 0.0 };
-        let mut goal = if t.app_xz.0 > 0.0 {
-            // (off the ground and tumbling: MinAppXZPos)
-            if tumble { t.app_xz.0 } else { t.app_xz.1 + (t.app_xz.0 - t.app_xz.1) * u }
+        let mut s = car.slope.unwrap_or(0.0);
+        if self.rev || self.offset.z < 0.0 {
+            s *= -1.0;
+        }
+        let l = if frames == 1.0 { h_lerp } else { 1.0 - (1.0 - h_lerp.min(1.0)).powf(frames) };
+        let asin = |x: f32| guest_asin(x.min(0.9) as f64) as f32;
+        self.hill = if s < 0.0 { fms(1.0 - l, self.hill, asin(s * h_min) * l) } else { fma(1.0 - l, self.hill, asin(h_max * s) * l) };
+    }
+
+    /// F-10185: the track point T (+320), the place (+688) and the computed matrix (+336) - looking
+    /// from the place at T, world up - turned about T by the hill angle round the level right axis
+    /// (and by the look object's yaw); then, with CollideHeight and the look object all zero, turned
+    /// away from what a ball at T (or swept from T to the place) touches, never below T.
+    fn target(&mut self, t: &TrackTune, car: &TrackCar, test: SphereTest) {
+        use crate::physics::exact::fma;
+        let at = self.track_point(car);
+        self.at = at;
+        self.held = false;
+        let p = self.place(t, car, at);
+        if t.approach_on && self.off_ground && self.tumble {
+            self.held = true;
+        }
+        self.place = p;
+        let r = look_rows(p - at, Vec3::Y);
+        self.comp = [r[0], r[1], r[2], p];
+        // the turns about T: the hill's pitch round A = up x Z, the look object's yaw round the up
+        let (zoom, look_pitch) = (0.0f32, 0.0f32);
+        let pitch = if t.reverse_on == -1 {
+            let yaw = if self.rev { std::f32::consts::PI } else { 0.0 };
+            let a = yaw.abs();
+            let f = if !(a > 0.0) { 0.0 } else if !(a < std::f32::consts::PI) { 1.0 } else { a * std::f32::consts::FRAC_1_PI };
+            self.look_yaw = yaw;
+            fma(-self.hill - self.hill, f, self.hill) + look_pitch
         } else {
-            t.app_xz.1
+            look_pitch + self.hill
+        };
+        // (+532: 0 after every reset, no writer)
+        let pitch = 0.0 + pitch;
+        let yaw = self.look_yaw;
+        let axis = vcross(Vec3::Y, self.comp[2]);
+        if zoom != 0.0 || yaw != 0.0 || pitch != 0.0 {
+            self.comp[3] = self.comp[3] - at;
+            if pitch != 0.0 {
+                turn_rows(&mut self.comp, axis, -pitch);
+            }
+            if yaw != 0.0 {
+                turn_rows(&mut self.comp, Vec3::Y, yaw);
+            }
+            self.comp[3] = self.comp[3] + at;
+        }
+        // the deflection (A-24782)
+        let r = t.collide_height;
+        if !(r > 0.0) || yaw != 0.0 || zoom != 0.0 || look_pitch != 0.0 {
+            return;
+        }
+        let nu = |n: Vec3| fma(n.z, 0.0, fma(n.x, 0.0, n.y * 1.0));
+        let na = |n: Vec3| fma(n.x, axis.x, fma(n.y, axis.y, n.z * axis.z));
+        let atan2 = |y: f32, x: f32| crate::physics::exact::guest_atan2(y as f64, x as f64) as f32;
+        let (yaw_c, pitch_c) = if let Some((_, n)) = test.contacts(at, r, CamQuery::FIXED, 1).first().copied() {
+            (atan2(na(n) * r, r) * 2.0, atan2(nu(n) * r, r) * 0.5)
+        } else if let Some((f, n)) = test.sweep(at, self.comp[3], r, false) {
+            let d = self.comp[3] - at;
+            let len = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y)).sqrt();
+            // (approx.: the record's word +68 taken as the length left after the touch)
+            let k = (1.0 - f) * len;
+            (atan2(na(n) * k, len) * 2.0, atan2(nu(n) * k, len) * 0.5)
+        } else {
+            return;
+        };
+        // (the clamp to +-45 degrees by two fsel)
+        let q = std::f32::consts::FRAC_PI_4;
+        let yaw_c = if yaw_c - (-q) >= 0.0 { yaw_c } else { -q };
+        let yaw_c = if yaw_c - q >= 0.0 { q } else { yaw_c };
+        self.comp[3] = self.comp[3] - at;
+        if pitch_c != 0.0 {
+            turn_rows(&mut self.comp, axis, -pitch_c);
+        }
+        if yaw_c != 0.0 {
+            turn_rows(&mut self.comp, Vec3::Y, yaw_c);
+        }
+        self.comp[3] = self.comp[3] + at;
+        if self.comp[3].y < at.y {
+            self.comp[3].y = at.y;
+        }
+    }
+
+    /// F-91254: the place's approach rates - over MinSpeed..MaxSpeed of the car's speed the XZ goal
+    /// goes from MaxAppXZPos to MinAppXZPos (MinAppXZPos while tumbling; MaxAppXZPos alone with
+    /// MinAppXZPos 0 or a look yaw), times mcCarAero +4 below 1, RevAppXZPos in reverse gear; the XZ
+    /// rate moves to it at AppInc / AppDec a second of game time (F-90102). AppY: no filter.
+    fn rates(&mut self, t: &TrackTune, car: &TrackCar, dt_game: f32) {
+        use crate::physics::exact::{approach, fma};
+        let (lo, hi) = t.app_speed;
+        let s = car.speed;
+        let u = if hi == lo || !(s > lo) { 0.0 } else if !(s < hi) { 1.0 } else { (s - lo) / (hi - lo) };
+        let (mn, mx) = t.app_xz;
+        let mut goal = if mn > 0.0 {
+            let g = fma(mn - mx, u, mx);
+            if self.tumble || self.held { mn } else { g }
+        } else {
+            mx
         };
         if self.look_yaw != 0.0 {
-            goal = t.app_xz.1;
+            goal = mx;
         }
         if car.aero < 1.0 {
             goal *= car.aero;
         }
-        if car.reverse_gear && !self.rev {
+        if t.reverse_on == 0 && car.reverse_gear {
             goal = t.rev_app_xz;
         }
-        let step = if goal < self.app_xz { t.app_dec } else { t.app_inc } * dt_game;
-        self.app_xz += (goal - self.app_xz).clamp(-step, step);
-        let app_y = t.app_y.0 + (t.app_y.1 - t.app_y.0) * u;
-        if self.snap || !t.approach_on {
-            // (F-48560: with ApproachOn 0 the output is the computed matrix every frame - no
-            // place approach, no distance clamp, no turn; it looks at the point, world up)
-            self.pos = want;
-            let (y, p) = yaw_pitch(at - self.pos);
-            self.yaw = y;
-            self.pitch = p;
-            self.snap = false;
-        } else {
-            // the place follows (F-48560; Burnout's App*Pos are 0: it stays), then the
-            // distance is held in [DistMin, DistMax] x the lens' scale (F-59594)
-            for i in 0..3 {
-                let rate = if i == 1 { app_y } else { self.app_xz };
-                self.pos[i] = approach(self.pos[i], want[i], t.app_pos_min, rate * dt, t.app_app, &mut self.st_pos[i], frames);
+        if goal < self.app_xz {
+            approach(&mut self.app_xz, goal, t.app_dec, dt_game);
+        } else if goal > self.app_xz {
+            approach(&mut self.app_xz, goal, t.app_inc, dt_game);
+        }
+        self.app_y = fma(t.app_y.1 - t.app_y.0, u, t.app_y.0);
+    }
+
+    /// F-36151: the output follows the computed matrix - the place per axis at AppXZ / AppY a second
+    /// (F-54792 with AppPosMin and the AppApp lag), held DistMin..DistMax from T (F-59594); the angles
+    /// (zxy, F-33934) turn to the computed matrix's, LookAt of the way to looking at T from the new place:
+    /// roll and yaw at AppRot, pitch at AppXRot a second (AppRotMin, AppApp); the rows from the angles
+    /// (F-62659).
+    fn follow(&mut self, t: &TrackTune, (lo, hi): (f32, f32), dt: f32, frames: f32) {
+        use crate::physics::exact::fma;
+        let (at, want) = (self.at, self.comp[3]);
+        let mut p = self.out[3];
+        p.x = approach(p.x, want.x, t.app_pos_min, dt * self.app_xz, t.app_app, &mut self.st_pos[0], frames);
+        p.y = approach(p.y, want.y, t.app_pos_min, self.app_y * dt, t.app_app, &mut self.st_pos[1], frames);
+        p.z = approach(p.z, want.z, t.app_pos_min, dt * self.app_xz, t.app_app, &mut self.st_pos[2], frames);
+        // F-59594: the distance from T, full 3D
+        if hi != 0.0 && !(hi < lo) && p != at {
+            let l2 = |p: Vec3| {
+                let d = p - at;
+                fma(d.x, d.x, fma(d.z, d.z, d.y * d.y))
+            };
+            if l2(p) > hi * hi {
+                p = vunit(p - at) * hi + at;
             }
-            let (lo, hi) = (t.dist.0 * dsc, t.dist.1 * dsc);
-            let d = self.pos - at;
-            let len = d.length();
-            if hi != 0.0 && hi >= lo && len > 1e-4 {
-                if len > hi {
-                    self.pos = at + d / len * hi;
-                } else if len < lo {
-                    self.pos = at + d / len * lo;
+            if l2(p) < lo * lo {
+                p = vunit(p - at) * lo + at;
+            }
+        }
+        self.out[3] = p;
+        let cur = euler_zxy(&[self.out[0], self.out[1], self.out[2]]);
+        let unwrap = |a: &mut [f32; 3]| {
+            use std::f32::consts::{FRAC_PI_2, TAU};
+            for i in 0..3 {
+                if cur[i] > FRAC_PI_2 && a[i] < -FRAC_PI_2 {
+                    a[i] += TAU;
+                }
+                if cur[i] < -FRAC_PI_2 && a[i] > FRAC_PI_2 {
+                    a[i] -= TAU;
                 }
             }
-            // and it turns to watch the point: yaw at AppRot, pitch at AppXRot (LookAt 1)
-            let (ty, tp) = yaw_pitch(at - self.pos);
-            let ty = self.yaw + wrap_pi(ty - self.yaw);
-            self.yaw = wrap_pi(approach(self.yaw, ty, t.app_rot_min, t.app_rot * dt, t.app_app, &mut self.st_yaw, frames));
-            self.pitch = approach(self.pitch, tp, t.app_rot_min, t.app_x_rot * dt, t.app_app, &mut self.st_pitch, frames);
+        };
+        let mut tgt = euler_zxy(&[self.comp[0], self.comp[1], self.comp[2]]);
+        unwrap(&mut tgt);
+        if t.look_at > 0.001 {
+            let mut la = euler_zxy(&look_rows(p - at, Vec3::Y));
+            unwrap(&mut la);
+            let w = 1.0 - t.look_at;
+            for i in 0..3 {
+                tgt[i] = tgt[i] * w + la[i] * t.look_at;
+            }
         }
-        let reach = (at - self.pos).length().max(1.0);
-        let look = self.pos + dir_of(self.yaw, self.pitch) * reach;
-        // the shown camera pulled in from walls (F-91096); the look keeps its direction
-        let pos = self.pull_in(t, at, dt, test, fov, aspect);
-        BoomOut { pos, look: look + (pos - self.pos), up: Vec3::Y, fov }
+        let rx = if t.app_x_rot != 0.0 { t.app_x_rot } else { t.app_rot };
+        let mut c = cur;
+        c[2] = approach(c[2], tgt[2], t.app_rot_min, t.app_rot * dt, t.app_app, &mut self.st_rot[2], frames);
+        c[0] = approach(c[0], tgt[0], t.app_rot_min, rx * dt, t.app_app, &mut self.st_rot[0], frames);
+        c[1] = approach(c[1], tgt[1], t.app_rot_min, t.app_rot * dt, t.app_app, &mut self.st_rot[1], frames);
+        let r = rows_of_zxy(c);
+        self.out = [r[0], r[1], r[2], p];
     }
 
     /// CollideType 1 / 3 (F-91096, TYPE13): a ball of the near plane's corner + 0.1 from
@@ -3030,20 +3242,20 @@ impl TrackCam {
     /// MinAppXZPos m/s while the state bits last (as coded: with MinAppXZPos 0 it snaps back).
     /// The camera stands on the line from the point at that distance. (approx.: type 3's four
     /// class sweeps, which only add state bits, are left out)
-    fn pull_in(&mut self, t: &TrackTune, at: Vec3, dt: f32, test: SphereTest, fov: f32, aspect: f32) -> Vec3 {
-        let p = self.pull_in_at(t, at, dt, test, fov, aspect);
-        self.corrected = p != self.pos;
+    fn pull_in(&mut self, t: &TrackTune, dt: f32, test: SphereTest, fov: f32, aspect: f32) -> Vec3 {
+        let p = self.pull_in_at(t, self.at, dt, test, fov, aspect);
+        self.corrected = p != self.out[3];
         p
     }
 
     fn pull_in_at(&mut self, t: &TrackTune, at: Vec3, dt: f32, test: SphereTest, fov: f32, aspect: f32) -> Vec3 {
         if t.collide_type != 1 && t.collide_type != 3 {
-            return self.pos;
+            return self.out[3];
         }
         let old = self.bits;
         self.bits &= !0x3C01;
         let active = old != 0;
-        let c = self.pos;
+        let c = self.out[3];
         let l = (c - at).length();
         if l < 1e-4 {
             return c;
@@ -3194,38 +3406,6 @@ fn step_sweep(test: &dyn Fn(Vec3, f32) -> Option<(f32, Vec3)>, a: Vec3, b: Vec3,
         free = s;
     }
     None
-}
-
-/// The event camera's target turned away from what blocks it (F-10185, A-24782): with
-/// CollideHeight (0.5 for an ApproachOn event, else 0) a ball at the track point, else swept
-/// from it to the place; on a touch the place turns about the point by yaw 2 atan(n.A) (at
-/// most 45 degrees) and pitch 0.5 atan(n.y) (scaled by 1 - t for the sweep), and never stands
-/// below the point. Nothing is kept between frames.
-fn deflect(at: Vec3, want: Vec3, t: &TrackTune, test: SphereTest) -> Vec3 {
-    let h = if t.approach_on { 0.5 } else { 0.0 };
-    if h <= 0.0 {
-        return want;
-    }
-    let z = (want - at).normalize_or(Vec3::Z);
-    let a = Vec3::new(z.z, 0.0, -z.x);
-    let (yaw, pitch) = if let Some((_, n)) = test.contacts(at, h, CamQuery::FIXED, 1).first().copied() {
-        (2.0 * n.dot(a).atan(), 0.5 * n.y.atan())
-    } else if let Some((f, n)) = test.sweep(at, want, h, false) {
-        (2.0 * (n.dot(a) * (1.0 - f)).atan(), 0.5 * (n.y * (1.0 - f)).atan())
-    } else {
-        return want;
-    };
-    let yaw = yaw.clamp(-std::f32::consts::FRAC_PI_4, std::f32::consts::FRAC_PI_4);
-    let mut rel = want - at;
-    if pitch != 0.0 {
-        rel = Quat::from_axis_angle(a.normalize_or(Vec3::X), -pitch) * rel;
-    }
-    if yaw != 0.0 {
-        rel = Quat::from_rotation_y(yaw) * rel;
-    }
-    let mut p = at + rel;
-    p.y = p.y.max(at.y);
-    p
 }
 
 /// What the event camera's chooser (F-24075) reads of the car, the pad and the camera
@@ -4437,9 +4617,9 @@ camTrackCS {
                 follow: Some((m, pos)),
                 bike_wiped: flags & 0x14 != 0,
             };
-            let c = TrackCam { track, offset, ..Default::default() };
-            let t = c.track_point(&car, vert);
-            let p = c.place(&car, t);
+            let c = TrackCam { track, offset, vert, ..Default::default() };
+            let t = c.track_point(&car);
+            let p = c.place(&TrackTune::wipeout(Vec3::ZERO), &car, t);
             worst = (worst.0.max((t - t_rec).abs().max_element()), worst.1.max((p - p_rec).abs().max_element()));
             n += 1;
         }
@@ -4864,6 +5044,262 @@ SSFovMin 60
         }
         eprintln!("{n} resets, frame / place / velocity worst {worst:e} of their size");
         assert!(n >= 3900, "{n}");
+    }
+
+    /// The track camera's update F-63744 (with F-70292, F-66356, F-10185, F-91254, F-48560 / F-36151 and F-59594)
+    /// against the running original, call for call: each recorded update (CAMI / CAMO of the recorder's
+    /// mcla_veh_cam_in / _out) is run from its recorded entry state - the camera object, the followed matrix, the
+    /// chassis, the body and the wheels of the tick - and every field it writes is compared with the recorded exit
+    /// (rule and evidence: docs/reference/cameras/camtrack_rule.md, "Checked against the original").
+    #[test]
+    fn track_update_matches_the_original() {
+        let s = track_rec_check(include_str!("testdata/track_update_rec.txt"), 1e-5);
+        assert!(s.cases >= 1000, "{s:?}");
+        assert!(s.event >= 100 && s.wipeout >= 150 && s.moving >= 300 && s.bike_wiped >= 200 && s.deflected >= 100, "{s:?}");
+    }
+
+    /// The same over a whole export (`MCLA_TRACK_FIXTURE` = a file of work/cameras2/trk/track_testdata.py); skipped
+    /// without it.
+    #[test]
+    fn track_update_matches_the_original_full() {
+        let Ok(p) = std::env::var("MCLA_TRACK_FIXTURE") else { return };
+        let text = std::fs::read_to_string(p).unwrap();
+        let s = track_rec_check(&text, 1e-5);
+        eprintln!("{s:?}");
+    }
+
+    #[derive(Debug, Default)]
+    struct TrackRecStats {
+        cases: usize,
+        /// the event camera (camTrackCS), the wipeout camera (vehTrackCS with collision), the car moving (> 1 m/s)
+        event: usize,
+        wipeout: usize,
+        moving: usize,
+        /// the snap after a reset; the air rule; a wiped-out bike's heading; the tumble; the hill moving
+        snap: usize,
+        air: usize,
+        bike_wiped: usize,
+        tumble: usize,
+        hill: usize,
+        /// updates whose computed matrix the level's probe turned (F-87651 / F-58512 on the city: the recorded
+        /// matrix is taken for them), and those with no wheels recorded (the hill and the grounded filter taken
+        /// from the recording)
+        deflected: usize,
+        no_wheels: usize,
+        /// the distance clamp acting
+        clamped: usize,
+        /// the rates taken with the aero damp factor
+        aero: usize,
+        /// the deflected ones by kind (vehTrackCS, camTrackCS)
+        defl_kind: [usize; 2],
+    }
+
+    const TRK_IN: &[usize] = &[
+        16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 156, 168, 172, 184, 208, 240, 244, 248, 256, 260, 264, 268, 272, 276, 280, 284, 288,
+        296, 300, 304, 308, 400, 404, 408, 416, 420, 424, 436, 448, 452, 456, 464, 468, 472, 476, 480, 484, 488, 492, 496, 500, 504, 508, 512, 516, 520,
+        524, 528, 532, 548, 552, 556, 560, 564, 568, 572, 580, 584, 588, 592, 596, 616, 644, 648, 656, 660, 664, 668, 672,
+    ];
+    const TRK_OUT: &[usize] = &[
+        16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 128, 132, 136, 156, 272, 276, 296, 320, 324, 328, 336, 340, 344, 348, 352, 356, 360,
+        364, 368, 372, 376, 380, 384, 388, 392, 396, 400, 404, 408, 416, 420, 424, 436, 580, 584, 588, 592, 596, 616, 644, 648, 656, 660, 664, 668, 672,
+        688, 692, 696, 704, 708, 712, 720, 724, 728,
+    ];
+
+    /// Runs the track camera's update on every recorded call of `text` (lines of work/cameras2/trk/track_testdata.py)
+    /// and asserts every written field within `tol` of its size (the larger of its magnitude and 1).
+    fn track_rec_check(text: &str, tol: f32) -> TrackRecStats {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut st = TrackRecStats::default();
+        let names = ["out rows", "out place", "T", "computed rows", "computed place", "place", "turn lags", "place lags", "rates", "hill", "ground", "flags"];
+        let mut worst = vec![(0.0f32, String::new()); names.len()];
+        for line in text.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let (rec, tick, kind, wheels_known) = (w[0], w[1], w[2] == "1", w[3] == "w1");
+            let r: Vec<u32> = w[4..].iter().map(|x| h(x)).collect();
+            let f = |k: usize| f32::from_bits(r[k]);
+            let (dt, dt_game) = (f(0), f(1));
+            let ib = 2;
+            let iw = |off: usize| ib + TRK_IN.iter().position(|&o| o == off).unwrap();
+            let fi = |off: usize| f(iw(off));
+            let ui = |off: usize| r[iw(off)];
+            let vi = |off: usize| Vec3::new(fi(off), fi(off + 4), fi(off + 8));
+            let cb = ib + TRK_IN.len();
+            let v3 = |k: usize| Vec3::new(f(k), f(k + 1), f(k + 2));
+            let (m0, m1, m2, mp) = (v3(cb), v3(cb + 3), v3(cb + 6), v3(cb + 9));
+            let (vel, ang) = (v3(cb + 12), v3(cb + 15));
+            let (nw, mo_y, speed, air, flags, gear, bike) = (r[cb + 18], f(cb + 19), f(cb + 20), f(cb + 21), r[cb + 22], r[cb + 23], r[cb + 24] != 0);
+            let (mut down, mut sum) = (0usize, 0.0f32);
+            for k in 0..(nw as usize).min(4) {
+                if r[cb + 25 + 2 * k] != 0 {
+                    down += 1;
+                    sum += f(cb + 26 + 2 * k);
+                }
+            }
+            let ob = cb + 33;
+            let fo = |off: usize| f(ob + TRK_OUT.iter().position(|&o| o == off).unwrap());
+            let uo = |off: usize| r[ob + TRK_OUT.iter().position(|&o| o == off).unwrap()];
+            let vo = |off: usize| Vec3::new(fo(off), fo(off + 4), fo(off + 8));
+            assert_eq!(r.len(), ob + TRK_OUT.len(), "{rec} {tick}: words");
+            // (dead in every file and constructor: MinMaxOn, TrackBreak, ReverseOn 1, the copy +436)
+            assert!(ui(480) == 0 && ui(484) == 0 && ui(208) as i32 != 1 && ui(436) == 0, "{rec} {tick}");
+            assert_eq!(ui(184) >> 24, 1, "{rec} {tick}: the camera's clock is G+88");
+            let mut t = TrackTune::wipeout(Vec3::ZERO);
+            t.app_rot = fi(264);
+            t.app_x_rot = fi(268);
+            t.app_app = fi(280);
+            t.app_rot_min = fi(284);
+            t.app_pos_min = fi(288);
+            t.look_at = fi(308);
+            t.rev_app_xz = fi(488);
+            t.app_xz = (fi(492), fi(496));
+            t.app_y = (fi(500), fi(504));
+            t.app_speed = (fi(508), fi(512));
+            t.app_inc = fi(516);
+            t.app_dec = fi(520);
+            t.hill = (fi(548), fi(552), fi(556));
+            t.approach_on = ui(256) != 0;
+            assert_eq!(ui(572) >> 24 != 0, !t.approach_on, "{rec} {tick}: byte +572");
+            assert!(ui(260) != 0, "{rec} {tick}: AppAppOn");
+            t.collide_type = ui(464) as i32;
+            t.collide_min = fi(476);
+            t.near = fi(172);
+            t.collide_height = fi(472);
+            t.reverse_on = ui(208) as i32;
+            let mut c = TrackCam {
+                snap: ui(296) != 0,
+                track: vi(240),
+                offset: vi(448),
+                vert: fi(528),
+                out: [vi(16), vi(32), vi(48), vi(64)],
+                st_rot: [fi(400), fi(404), fi(408)],
+                st_pos: [fi(416), fi(420), fi(424)],
+                app_xz: fi(276),
+                app_y: fi(272),
+                hill: fi(616),
+                dist: fi(672),
+                bits: ui(668),
+                corrected: ui(156) >> 24 != 0,
+                rev: ui(656) >> 24 != 0,
+                t_off: fi(580),
+                t_on: fi(584),
+                off_ground: ui(588) == 0,
+                tumble: ui(592) != 0,
+                held: ui(596) != 0,
+                ..Default::default()
+            };
+            let car = TrackCar {
+                pos: Vec3::ZERO,
+                rot: Quat::IDENTITY,
+                vel,
+                speed,
+                reverse_gear: gear == 0,
+                steer: 0.0,
+                front_z: 0.0,
+                slope: (down > 0).then(|| sum / down as f32),
+                air_time: air,
+                aero: 1.0,
+                model_offset_y: mo_y,
+                sst: (0.0, 1.0),
+                nitro_view: 0.0,
+                grounded: down,
+                wheels: nw as usize,
+                ang_mom: ang,
+                follow: Some((Mat3::from_cols(m0, m1, m2), mp)),
+                bike_wiped: bike && flags & 0x14 != 0,
+            };
+            // F-63744's order (TrackCam::step without the collision, which needs the level)
+            c.ground(&t, &car, dt_game);
+            c.hill_step(&t, &car, 1.0);
+            if !wheels_known {
+                // (no wheels in the recording: the grounded filter and the hill as recorded)
+                st.no_wheels += 1;
+                (c.t_off, c.t_on, c.off_ground, c.tumble, c.hill) = (fo(580), fo(584), uo(588) == 0, uo(592) != 0, fo(616));
+            }
+            c.target(&t, &car, &NO_WORLD);
+            let rec_comp = [vo(336), vo(352), vo(368), vo(384)];
+            let off = |a: Vec3, b: Vec3| (a - b).abs().max_element() / b.abs().max_element().max(1.0);
+            let comp_off = (0..4).map(|i| off(c.comp[i], rec_comp[i])).fold(0.0f32, f32::max);
+            if comp_off >= tol && off(c.place, vo(688)) < tol && off(c.at, vo(320)) < tol && t.collide_height > 0.0 {
+                // (the deflection: what the level's probe answered turned the computed matrix)
+                st.deflected += 1;
+                // (the probe only turns the matrix about T - the distance kept - or lifts the place to T's height)
+                let (d0, d1) = ((c.comp[3] - c.at).length(), (rec_comp[3] - c.at).length());
+                assert!((d0 - d1).abs() < 1e-3 * d0.max(1.0) || rec_comp[3].y == c.at.y, "{rec} t{tick}: not a turn about T ({d0} / {d1})");
+                st.defl_kind[kind as usize] += 1;
+                c.comp = rec_comp;
+            }
+            // (mcCarAero +4 is not in the recording: 1, or - where 1 does not give the recorded rate - the damp the
+            // bike's chassis update writes there while it is wiped out (docs/reference/vehicle/gjkfix__p2__rider_decode.md
+            // 2.2 (c)): every such case of the four bike recordings fits one value, 7 / 60 (0.1 x it = 0.011666667, the
+            // wipeout camera's settled rate; 12 x it = 1.4 and 4 x it = 0.46666667 on the other vehTrackCS))
+            let keep = c.clone();
+            c.rates(&t, &car, dt_game);
+            if c.app_xz != fo(276) {
+                c = keep;
+                c.rates(&t, &TrackCar { aero: 7.0 / 60.0, ..car }, dt_game);
+                st.aero += 1;
+            }
+            let hi = fi(300);
+            let snap = !t.approach_on || c.snap;
+            if snap {
+                c.out = c.comp;
+            } else {
+                let p = c.out[3];
+                c.follow(&t, (fi(304), hi), dt, 1.0);
+                let _ = p;
+            }
+            c.snap = false;
+            // the recorded exit, field by field
+            let rows = |m: &[Vec3; 4]| (0..3).map(|i| m[i]).collect::<Vec<_>>();
+            let checks: [(usize, Vec<Vec3>, Vec<Vec3>); 12] = [
+                (0, rows(&c.out), vec![vo(16), vo(32), vo(48)]),
+                (1, vec![c.out[3]], vec![vo(64)]),
+                (2, vec![c.at, c.at], vec![vo(320), vo(720)]),
+                (3, rows(&c.comp), vec![vo(336), vo(352), vo(368)]),
+                (4, vec![c.comp[3]], vec![vo(384)]),
+                (5, vec![c.place, c.place], vec![vo(688), vo(704)]),
+                (6, vec![Vec3::from(c.st_rot)], vec![Vec3::new(fo(400), fo(404), fo(408))]),
+                (7, vec![Vec3::from(c.st_pos)], vec![Vec3::new(fo(416), fo(420), fo(424))]),
+                (8, vec![Vec3::new(c.app_xz, c.app_y, 0.0)], vec![Vec3::new(fo(276), fo(272), 0.0)]),
+                (9, vec![Vec3::splat(c.hill)], vec![Vec3::splat(fo(616))]),
+                (10, vec![Vec3::new(c.t_off, c.t_on, 0.0)], vec![Vec3::new(fo(580), fo(584), 0.0)]),
+                (
+                    11,
+                    vec![Vec3::new((!c.off_ground) as u32 as f32, c.tumble as u32 as f32, c.held as u32 as f32), Vec3::new(c.rev as u32 as f32, c.snap as u32 as f32, 0.0)],
+                    vec![Vec3::new(uo(588) as f32, uo(592) as f32, uo(596) as f32), Vec3::new((uo(656) >> 24) as f32, uo(296) as f32, 0.0)],
+                ),
+            ];
+            for (k, got, want) in checks {
+                for (g, wv) in got.iter().zip(want.iter()) {
+                    let e = off(*g, *wv);
+                    if e >= tol && std::env::var("MCLA_TRACK_DEBUG").is_ok() {
+                        eprintln!("{rec} t{tick} kind {kind} field {}: {g} against {wv} ({e:e}) app_xz {} snap {snap}", names[k], fo(276));
+                    }
+                    if e > worst[k].0 {
+                        worst[k] = (e, format!("{rec} t{tick}: {g} against {wv}"));
+                    }
+                }
+            }
+            st.cases += 1;
+            st.event += kind as usize;
+            st.wipeout += (!kind && t.collide_type != 0) as usize;
+            st.moving += (speed > 1.0) as usize;
+            st.snap += snap as usize;
+            st.air += (air > 0.5 && speed > 10.0) as usize;
+            st.bike_wiped += car.bike_wiped as usize;
+            st.tumble += c.tumble as usize;
+            st.hill += (fo(616) != fi(616)) as usize;
+            let l = (vo(64) - vo(320)).length();
+            st.clamped += (!snap && hi != 0.0 && ((l - hi).abs() < 1e-3 || (l - fi(304)).abs() < 1e-3)) as usize;
+        }
+        for (k, (e, at)) in worst.iter().enumerate() {
+            eprintln!("{:15} worst {:e}  {}", names[k], e, at);
+        }
+        eprintln!("{st:?}");
+        for (k, (e, at)) in worst.iter().enumerate() {
+            assert!(*e < tol, "{}: off by {:e} of its size ({at})", names[k], e);
+        }
+        st
     }
 
     /// Runs `BoomCam::step` on every recorded call of `text` (boom_testdata.py lines; `tail`: fixed_testdata.py lines,
