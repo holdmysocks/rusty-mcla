@@ -260,8 +260,8 @@ fn drawable_box(root: &std::path::Path, model: &str) -> Option<[f32; 4]> {
 
 /// The neon cars' records (F-17121) with the port's inputs: (the car's body matrix, its body record, its four neon records).
 /// The sizes W H L are the composite bound's box (F-98453, as the wheel fit leaves it - `CarParams::composite_box`); the
-/// player's car makes no ground probe (f28 = 1). (approx.) the ground frame F-88547 (a probe 1 m above to 3 m below the
-/// car: its hit normal and point) is the body matrix moved to the wheels' foot. The radius box F-63160 is
+/// player's car makes no ground probe (f28 = 1). G is the ground frame F-88547 (`ground_frame`: the city probe 1 m above
+/// to 3 m below the car's origin, its hit normal and point; a miss leaves the body matrix). The radius box F-63160 is
 /// `drawable_box` (the car's .r83; without one, the port's old blob radius 0.99 x the model's width / 0.64).
 /// f28 = sat(1 - T): a car other than the one the view follows ([0x8288DCF8], the player's) whose head state (+168) is
 /// over 0.001 probes (F-20855: include 0x800 = the city bound, states 4 = fixed, one result) from its origin + its
@@ -288,16 +288,22 @@ fn car_records(vehicles: &crate::vehicles::Vehicles, cam: Vec3, night: bool, col
         if m.w_axis.truncate().distance(cam) > 450.0 {
             continue;
         }
-        // (a bike is not in `blob_cars`: its wheels' foot from the model's box)
-        let (ground_y, width) = match blobs.iter().find(|b| b.m == m) {
-            Some(b) => (b.ground_y, b.max.x - b.min.x),
-            None => (c.model.min.y, c.model.max.x - c.model.min.x),
-        };
+        let width = c.model.max.x - c.model.min.x;
         let (lo, hi) = c.params().composite_box();
         let (x, y, z) = (m.x_axis.truncate(), m.y_axis.truncate(), m.z_axis.truncate());
-        let foot = m.w_axis.truncate() + y * ground_y;
+        // G: the ground frame F-88547 - the probe from the origin 1.0 m up to 3.0 m down (world y); the hit's point and
+        // normal with w 1 / 0 (approx.: the w words F-20855 leaves are not read), a miss the body matrix itself.
+        // MCLA_NEON_FOOT_OLD=1: the body matrix at the wheels' foot as before.
+        let o = m.w_axis.truncate();
+        let g = if foot_old() {
+            let gy = blobs.iter().find(|b| b.m == m).map_or(c.model.min.y, |b| b.ground_y);
+            [x.extend(0.0).to_array(), y.extend(0.0).to_array(), z.extend(0.0).to_array(), (o + y * gy).extend(1.0).to_array()]
+        } else {
+            let hit = collider.and_then(|w| w.probe_front(o + Vec3::Y, Vec3::NEG_Y, 4.0));
+            ground_frame(m.to_cols_array_2d(), hit.map(|h| (h.point.extend(1.0).to_array(), h.normal.extend(0.0).to_array())))
+        };
         let input = NeonIn {
-            g: [x.extend(0.0).to_array(), y.extend(0.0).to_array(), z.extend(0.0).to_array(), foot.extend(1.0).to_array()],
+            g,
             size: (hi - lo).extend(0.0).to_array(),
             box_: drawable_box(&vehicles.data_root, &c.model.name).unwrap_or([0.99 * width / 0.64, 0.0, 0.0, 0.0]),
             colour: n.map_or([0.0; 4], |n| n.color),
@@ -317,11 +323,16 @@ fn car_records(vehicles: &crate::vehicles::Vehicles, cam: Vec3, night: bool, col
         };
         let (body, neon) = neon_records(&input);
         if std::env::var("MCLA_GLOW_DUMP").is_ok() {
-            eprintln!("car rec {ci} neon {} t {:.4} size {:?} body c0 {:?} c3 {:?} colour {:?}", neon.is_some(), input.t, input.size, body.c[0], body.c[3], body.colour);
+            eprintln!("car rec {ci} neon {} t {:.4} size {:?} body c0 {:?} c3 {:?} colour {:?} g1 {:?} g3 {:?} o {:?}", neon.is_some(), input.t, input.size, body.c[0], body.c[3], body.colour, input.g[1], input.g[3], m.w_axis);
         }
         out.push((m, body, neon));
     }
     out
+}
+
+fn foot_old() -> bool {
+    static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OLD.get_or_init(|| std::env::var_os("MCLA_NEON_FOOT_OLD").is_some())
 }
 
 fn body_old() -> bool {
@@ -607,9 +618,97 @@ pub fn neon_records(n: &NeonIn) -> (QuadRec, Option<[QuadRec; 4]>) {
     (body, Some([r0, r1, e2, e3]))
 }
 
+/// F-88547's two vector helpers as the generated code has them: the cross product's form
+/// -((a.yzx b.zxy) - a.zxy b.yzx) per lane (vpermwi 99 / 135, mul, mul, sub, sign flip; w = -(aw bw - aw bw)), and
+/// the normalize: s = the three-lane dot as `dpps` sums it (z z + (y y + x x)), e = 1 / sqrt(s) (vrsqrtefp as the
+/// recompiler emits it), 0 when e == 0, one Newton step e + (1 - s e e) (0.5 e), all unfused; the vector times that.
+// (x86's NaN rule, as the generated code runs: a NaN operand comes through quieted, the first one first; an invalid
+// operation gives the default NaN 0xFFC00000 - spelled out, so the compiler's operand order cannot change the sign)
+fn x86(a: f32, b: f32, r: f32) -> f32 {
+    if a.is_nan() {
+        f32::from_bits(a.to_bits() | 0x0040_0000)
+    } else if b.is_nan() {
+        f32::from_bits(b.to_bits() | 0x0040_0000)
+    } else if r.is_nan() {
+        f32::from_bits(0xFFC0_0000)
+    } else {
+        r
+    }
+}
+fn xm(a: f32, b: f32) -> f32 {
+    x86(a, b, a * b)
+}
+fn xs(a: f32, b: f32) -> f32 {
+    x86(a, b, a - b)
+}
+fn xa(a: f32, b: f32) -> f32 {
+    x86(a, b, a + b)
+}
+fn xneg(a: f32) -> f32 {
+    f32::from_bits(a.to_bits() ^ 0x8000_0000)
+}
+
+fn gf_cross(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    let p99 = |v: [f32; 4]| [v[1], v[2], v[0], v[3]];
+    let p135 = |v: [f32; 4]| [v[2], v[0], v[1], v[3]];
+    let (a99, a135, b99, b135) = (p99(a), p135(a), p99(b), p135(b));
+    v4(|i| xneg(xs(xm(a99[i], b135[i]), xm(a135[i], b99[i]))))
+}
+
+fn gf_normalize(v: [f32; 4]) -> [f32; 4] {
+    let s = xa(xm(v[2], v[2]), xa(xm(v[1], v[1]), xm(v[0], v[0])));
+    let q = if s.is_nan() { x86(s, s, s) } else { s.sqrt() };
+    let e = if q.is_nan() { q } else if q < 0.0 || s < 0.0 { f32::from_bits(0xFFC0_0000) } else { 1.0 / q };
+    let e = if e == 0.0 { 0.0 } else { e };
+    let k = xa(xm(xneg(xs(xm(s, xm(e, e)), 1.0)), xm(0.5, e)), e);
+    v4(|i| xm(v[i], k))
+}
+
+/// The car's ground frame F-88547 (car+4512, read by F-17121 as G): the body matrix `m` (rows x, y, z, origin; the
+/// render thread's +208 or the update's +144 by the TLS byte +72) probed from 1.0 m above its origin to 3.0 m below
+/// (F-20855: include 0x800, type flags -1, states 4, one result). On a hit (point p, normal n): rows
+/// x' = norm(n x z), n, z' = norm(x' x n), p - n and p as the probe left them, w words included. On a miss: `m` itself.
+/// (The second frame +4576 is the same with its origin row the matrix's; the player car's floor plane into the
+/// renderer +320 / +336 is the driver lights' - not here.) Bit-exact against the code run offline
+/// (tools/ground_frame_reference.py, test `ground_frame_matches_the_original`).
+pub fn ground_frame(m: [[f32; 4]; 4], hit: Option<([f32; 4], [f32; 4])>) -> [[f32; 4]; 4] {
+    let Some((p, n)) = hit else { return m };
+    let x = gf_normalize(gf_cross(m[2], n));
+    let z = gf_normalize(gf_cross(n, x));
+    [x, n, z, p]
+}
+
 #[cfg(test)]
 mod neon_tests {
     use super::*;
+
+    /// tools/ground_frame_reference.py: F-88547 run offline, 4,000 cars (both matrices, the TLS byte, the camera
+    /// car, hits with upright / random / degenerate normals, misses): both frames and the position row every word.
+    #[test]
+    fn ground_frame_matches_the_original() {
+        let txt = include_str!("testdata/ground_frame_reference.txt");
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut n = 0;
+        let mut lines = txt.lines();
+        while let Some(l) = lines.next() {
+            let Some(rest) = l.strip_prefix("CASE ") else { continue };
+            let w: Vec<u32> = rest.split_whitespace().skip(1).map(h).collect();
+            let out: Vec<u32> = lines.next().unwrap().strip_prefix("OUT ").unwrap().split_whitespace().map(h).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let row = |o: usize| [f(o), f(o + 1), f(o + 2), f(o + 3)];
+            let mat = |o: usize| [row(o), row(o + 4), row(o + 8), row(o + 12)];
+            let m = if w[0] != 0 { mat(3 + 16) } else { mat(3) };
+            let hit = (w[2] != 0).then(|| (row(35), row(39)));
+            let g = ground_frame(m, hit);
+            let bits = |r: [[f32; 4]; 4]| r.iter().flatten().map(|v| v.to_bits()).collect::<Vec<u32>>();
+            assert_eq!(bits(g), out[0..16].to_vec(), "case {n} +4512");
+            let mut g2 = g;
+            g2[3] = m[3];
+            assert_eq!(bits(g2), out[16..32].to_vec(), "case {n} +4576");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
+    }
 
     /// F-63160's box from the .r83 against the body quads' r2 recorded in the original (R8 3.5511, ZX-14 0.781).
     #[test]
