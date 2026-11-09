@@ -15463,6 +15463,9 @@ impl Game {
                         crate::mc4::arcade_set(&mut self.arcade_opts, &mut self.arcade_x, &mut self.opt_x, slot, v);
                     }
                     nag = true;
+                    // (and every cheat off: F-72804 clears the nine cheat bytes - F-61511 A-54695 calls it
+                    // here, the GOAL ATTACK start)
+                    self.cheats = [false; 6];
                     started = Some(i);
                     self.race_sel = i;
                     self.current_race = Some(i);
