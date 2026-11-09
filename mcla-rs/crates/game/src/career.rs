@@ -2370,6 +2370,18 @@ pub fn money_text_in(v: i64, lang: usize) -> String {
     }
 }
 
+/// A Stat condition's count after its objective in the mission log (F-97850): the statistic type compared byte
+/// for byte (case kept) - `Money` / `Purse` give "($cur/$target)" in the language's money text (F-13827), `Tally`
+/// "(cur/target)" as signed words, any other nothing. The original writes it after the text and a space ("%s (..)");
+/// `cur` is the target once the condition is complete, else its progress (F-13232).
+pub fn stat_count_text(stat_type: &str, cur: i32, target: i32, lang: usize) -> Option<String> {
+    match stat_type {
+        "Money" | "Purse" => Some(format!("({}/{})", money_text_in(cur as i64, lang), money_text_in(target as i64, lang))),
+        "Tally" => Some(format!("({cur}/{target})")),
+        _ => None,
+    }
+}
+
 /// The digits alone, as F-36073 writes them with its sign flag clear (the GPS panel's
 /// `Navmap_Bank_Amount`, F-27560).
 pub fn money_digits_in(v: i64, lang: usize) -> String {
@@ -2692,14 +2704,7 @@ impl Career {
     fn objective_count(&self, i: usize, oi: usize, cur: u32, target: u32) -> Option<String> {
         let r = &self.missions[i].objectives[oi];
         match r.conds.first()? {
-            Cond::Stat { .. } => {
-                let t = r.stat_types.first().map(|s| s.to_ascii_lowercase()).unwrap_or_default();
-                match t.as_str() {
-                    "tally" => Some(format!("({}/{})", cur, target)),
-                    "money" | "purse" => Some(format!("({}/{})", money_text_in(cur as i64, self.strings.lang), money_text_in(target as i64, self.strings.lang))),
-                    _ => None,
-                }
-            }
+            Cond::Stat { .. } => stat_count_text(r.stat_types.first().map_or("", |s| s.as_str()), cur as i32, target as i32, self.strings.lang),
             Cond::Experience { .. } | Cond::TallyRace { .. } | Cond::TallyMission { .. } => Some(format!("({}/{})", cur, target)),
             _ => None,
         }
@@ -3917,6 +3922,28 @@ mod tests {
         assert_eq!(v.len(), 1, "{v:?}");
         assert!(!v[0].2 && v[0].1.len() == 1 && v[0].1[0].ends_with("(1/6)") && !v[0].1[0].starts_with(crate::game::OBJ_DONE), "{v:?}");
         assert!(c.take_mission_updates().is_empty());
+    }
+
+    /// The mission log's Stat count against the original run offline (tools/stat_text_reference.py: F-97850 with
+    /// the money text F-13827, 10 type texts x 40 values / prefixes / languages, 400 cases): the whole text equal.
+    #[test]
+    fn stat_count_text_matches_the_original() {
+        let text = include_str!("testdata/stat_text_ref.txt");
+        let mut n = 0;
+        for line in text.lines() {
+            let (ty, rest) = line.split_once('|').unwrap();
+            let (prefix, rest) = rest.split_once('|').unwrap();
+            let (args, out) = rest.split_once(" -> ").unwrap();
+            let v: Vec<i64> = args.split(' ').map(|x| x.parse().unwrap()).collect();
+            let cur = if v[0] != 0 { v[2] } else { v[1] } as i32;
+            let want = match stat_count_text(ty, cur, v[2] as i32, v[3] as usize) {
+                Some(c) => format!("{prefix} {c}"),
+                None => prefix.to_string(),
+            };
+            assert_eq!(out, want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 400);
     }
 
     /// The repeat missions' TallyMission LessThan prerequisite (F-12302): met when fewer than

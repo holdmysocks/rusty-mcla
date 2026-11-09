@@ -1,0 +1,400 @@
+Tally|Win 5 races|0 1000 10 1 -> Win 5 races (1000/10)
+Tally|Win 5 races|1 999 10 5 -> Win 5 races (10/10)
+Tally|Earn|0 2 25000 1 -> Earn (2/25000)
+Tally|Win 5 races|0 1000 1234567 0 -> Win 5 races (1000/1234567)
+Tally|Earn|0 1000 -1000 4 -> Earn (1000/-1000)
+Tally|Earn|1 5 -1 2 -> Earn (-1/-1)
+Tally||0 100000 5 5 ->  (100000/5)
+Tally||0 5 2 2 ->  (5/2)
+Tally|Win 5 races|0 100000 1000 2 -> Win 5 races (100000/1000)
+Tally|Win 5 races|0 1500 25 5 -> Win 5 races (1500/25)
+Tally||0 9 999 4 ->  (9/999)
+Tally|Earn|1 25 -1000 5 -> Earn (-1000/-1000)
+Tally|Win 5 races|0 25000 9 1 -> Win 5 races (25000/9)
+Tally|Earn|0 100000 0 1 -> Earn (100000/0)
+Tally|Win 5 races|0 -1000 9 1 -> Win 5 races (-1000/9)
+Tally||0 0 9 2 ->  (0/9)
+Tally|Earn|0 25000 10 0 -> Earn (25000/10)
+Tally||1 1 1234567 5 ->  (1234567/1234567)
+Tally|Earn|1 1 1000 5 -> Earn (1000/1000)
+Tally|Win 5 races|1 2 -1 5 -> Win 5 races (-1/-1)
+Tally|Win 5 races|0 999 9 2 -> Win 5 races (999/9)
+Tally|Earn|1 -1000 -1 2 -> Earn (-1/-1)
+Tally||1 999 25 1 ->  (25/25)
+Tally||0 -1000 2147483647 3 ->  (-1000/2147483647)
+Tally||0 2147483647 2147483647 1 ->  (2147483647/2147483647)
+Tally|Win 5 races|1 1 9 3 -> Win 5 races (9/9)
+Tally|Earn|1 0 25 1 -> Earn (25/25)
+Tally||0 -1 25 5 ->  (-1/25)
+Tally|Win 5 races|0 1500 2 0 -> Win 5 races (1500/2)
+Tally|Earn|1 1 9 0 -> Earn (9/9)
+Tally|Win 5 races|0 0 0 1 -> Win 5 races (0/0)
+Tally|Win 5 races|0 10 1500 5 -> Win 5 races (10/1500)
+Tally||1 2147483647 2 5 ->  (2/2)
+Tally|Earn|0 25000 1000 1 -> Earn (25000/1000)
+Tally|Earn|1 2147483647 25 0 -> Earn (25/25)
+Tally|Win 5 races|1 5 1 0 -> Win 5 races (1/1)
+Tally||0 1000 1500 5 ->  (1000/1500)
+Tally|Earn|0 1000 0 0 -> Earn (1000/0)
+Tally|Earn|0 9 -1 5 -> Earn (9/-1)
+Tally||1 2147483647 2 2 ->  (2/2)
+Money|Win 5 races|0 1500 1 5 -> Win 5 races ($1,500/$1)
+Money|Earn|0 -1000 1500 5 -> Earn ($-1,000/$1,500)
+Money||0 -1000 1 0 ->  ($-1,000/$1)
+Money|Win 5 races|1 1 1000 0 -> Win 5 races ($1,000/$1,000)
+Money|Earn|1 1234567 25 3 -> Earn ($25/$25)
+Money|Earn|0 100000 5 5 -> Earn ($100,000/$5)
+Money|Earn|1 1500 2147483647 5 -> Earn ($2,147,483,647/$2,147,483,647)
+Money|Win 5 races|0 2147483647 1500 1 -> Win 5 races (2.147.483.647$/1.500$)
+Money|Earn|0 25 1 2 -> Earn (25$/1$)
+Money|Win 5 races|0 0 100000 0 -> Win 5 races ($0/$100,000)
+Money|Win 5 races|1 25000 999 1 -> Win 5 races (999$/999$)
+Money||0 1 9 4 ->  (1$/9$)
+Money||1 999 1000 0 ->  ($1,000/$1,000)
+Money|Win 5 races|0 0 -1000 3 -> Win 5 races ($0/$-1.000)
+Money|Earn|0 -1 999 5 -> Earn ($-1/$999)
+Money|Win 5 races|1 25 2 2 -> Win 5 races (2$/2$)
+Money||0 25000 9 0 ->  ($25,000/$9)
+Money|Earn|0 25000 2147483647 1 -> Earn (25.000$/2.147.483.647$)
+Money|Earn|1 25000 100000 4 -> Earn (100.000$/100.000$)
+Money||0 2147483647 -1 0 ->  ($2,147,483,647/$-1)
+Money|Win 5 races|1 -1 2 1 -> Win 5 races (2$/2$)
+Money|Win 5 races|0 1 999 0 -> Win 5 races ($1/$999)
+Money||0 1234567 1234567 4 ->  (1.234.567$/1.234.567$)
+Money|Earn|0 2 2 0 -> Earn ($2/$2)
+Money|Win 5 races|0 -1000 -1 4 -> Win 5 races (-1.000$/-1$)
+Money||0 9 -1000 5 ->  ($9/$-1,000)
+Money||1 -1000 1 0 ->  ($1/$1)
+Money|Earn|1 999 999 5 -> Earn ($999/$999)
+Money|Win 5 races|1 9 -1 5 -> Win 5 races ($-1/$-1)
+Money|Earn|1 25000 999 1 -> Earn (999$/999$)
+Money||1 25 1234567 4 ->  (1.234.567$/1.234.567$)
+Money|Win 5 races|0 -1000 -1000 4 -> Win 5 races (-1.000$/-1.000$)
+Money|Earn|1 1500 25000 0 -> Earn ($25,000/$25,000)
+Money||1 25 25 4 ->  (25$/25$)
+Money|Win 5 races|1 0 1500 0 -> Win 5 races ($1,500/$1,500)
+Money|Win 5 races|1 1000 1000 3 -> Win 5 races ($1.000/$1.000)
+Money|Win 5 races|1 1234567 5 0 -> Win 5 races ($5/$5)
+Money|Earn|0 25 999 2 -> Earn (25$/999$)
+Money|Earn|0 100000 1234567 5 -> Earn ($100,000/$1,234,567)
+Money|Win 5 races|0 -1000 25000 4 -> Win 5 races (-1.000$/25.000$)
+Purse|Win 5 races|1 2147483647 1000 5 -> Win 5 races ($1,000/$1,000)
+Purse|Earn|0 10 1234567 2 -> Earn (10$/1|234|567$)
+Purse|Earn|0 0 -1000 1 -> Earn (0$/-1.000$)
+Purse|Earn|0 0 9 3 -> Earn ($0/$9)
+Purse|Earn|0 5 0 2 -> Earn (5$/0$)
+Purse|Earn|0 -1 5 4 -> Earn (-1$/5$)
+Purse||0 -1000 25 1 ->  (-1.000$/25$)
+Purse||0 25 10 4 ->  (25$/10$)
+Purse|Win 5 races|1 9 100000 4 -> Win 5 races (100.000$/100.000$)
+Purse|Earn|0 2 0 4 -> Earn (2$/0$)
+Purse||1 1 25000 4 ->  (25.000$/25.000$)
+Purse||1 1 2 3 ->  ($2/$2)
+Purse||0 2 -1000 5 ->  ($2/$-1,000)
+Purse||1 -1000 1234567 3 ->  ($1.234.567/$1.234.567)
+Purse|Earn|0 999 2 1 -> Earn (999$/2$)
+Purse|Earn|0 0 -1 4 -> Earn (0$/-1$)
+Purse||0 1 10 0 ->  ($1/$10)
+Purse|Win 5 races|0 999 1500 1 -> Win 5 races (999$/1.500$)
+Purse|Win 5 races|0 25000 25000 1 -> Win 5 races (25.000$/25.000$)
+Purse|Win 5 races|0 1500 25 2 -> Win 5 races (1|500$/25$)
+Purse|Earn|0 1000 2147483647 5 -> Earn ($1,000/$2,147,483,647)
+Purse||0 0 -1 0 ->  ($0/$-1)
+Purse|Win 5 races|0 100000 1500 0 -> Win 5 races ($100,000/$1,500)
+Purse|Win 5 races|0 10 -1 5 -> Win 5 races ($10/$-1)
+Purse||1 1 1234567 0 ->  ($1,234,567/$1,234,567)
+Purse|Win 5 races|1 1234567 1500 5 -> Win 5 races ($1,500/$1,500)
+Purse|Win 5 races|1 1234567 1 2 -> Win 5 races (1$/1$)
+Purse|Earn|0 5 1500 0 -> Earn ($5/$1,500)
+Purse||0 1500 1234567 3 ->  ($1.500/$1.234.567)
+Purse|Earn|0 25000 100000 0 -> Earn ($25,000/$100,000)
+Purse||1 100000 10 1 ->  (10$/10$)
+Purse|Earn|0 1 25 0 -> Earn ($1/$25)
+Purse|Earn|0 100000 -1000 1 -> Earn (100.000$/-1.000$)
+Purse|Win 5 races|1 1500 1500 2 -> Win 5 races (1|500$/1|500$)
+Purse|Win 5 races|1 5 25 3 -> Win 5 races ($25/$25)
+Purse|Earn|0 2147483647 10 1 -> Earn (2.147.483.647$/10$)
+Purse||0 10 10 0 ->  ($10/$10)
+Purse||0 25000 1234567 4 ->  (25.000$/1.234.567$)
+Purse||0 10 9 0 ->  ($10/$9)
+Purse||1 -1000 5 2 ->  (5$/5$)
+None|Win 5 races|0 5 -1 1 -> Win 5 races
+None|Earn|0 0 1500 5 -> Earn
+None|Win 5 races|0 1234567 1000 5 -> Win 5 races
+None|Earn|1 1500 9 2 -> Earn
+None|Win 5 races|0 999 100000 2 -> Win 5 races
+None||0 -1 25 3 -> 
+None|Win 5 races|1 -1 9 5 -> Win 5 races
+None|Win 5 races|0 1000 -1000 1 -> Win 5 races
+None||0 0 1234567 1 -> 
+None|Earn|0 25 100000 0 -> Earn
+None|Win 5 races|1 25000 5 3 -> Win 5 races
+None||1 1 10 1 -> 
+None|Win 5 races|0 -1 2147483647 5 -> Win 5 races
+None||1 -1 100000 5 -> 
+None|Win 5 races|0 25000 0 4 -> Win 5 races
+None|Earn|1 999 999 0 -> Earn
+None||1 -1000 0 1 -> 
+None|Earn|0 100000 2 0 -> Earn
+None||0 1500 10 2 -> 
+None|Win 5 races|0 1000 1234567 0 -> Win 5 races
+None||1 1 10 4 -> 
+None|Earn|0 0 25000 5 -> Earn
+None|Win 5 races|0 1234567 1000 1 -> Win 5 races
+None|Win 5 races|0 5 25 1 -> Win 5 races
+None|Earn|1 1 999 0 -> Earn
+None|Earn|0 1000 5 0 -> Earn
+None||0 2 10 2 -> 
+None|Win 5 races|0 0 2 0 -> Win 5 races
+None|Win 5 races|1 2147483647 5 4 -> Win 5 races
+None|Win 5 races|0 0 100000 0 -> Win 5 races
+None|Earn|0 1000 10 3 -> Earn
+None|Win 5 races|0 25000 2 1 -> Win 5 races
+None||0 1500 9 4 -> 
+None|Earn|0 1500 5 2 -> Earn
+None||0 1000 25000 1 -> 
+None|Earn|1 5 25 1 -> Earn
+None|Win 5 races|0 999 25000 1 -> Win 5 races
+None|Win 5 races|1 2147483647 1234567 2 -> Win 5 races
+None||0 25 1000 0 -> 
+None||0 1 5 3 -> 
+tally||0 0 999 3 -> 
+tally||0 2 25 0 -> 
+tally|Win 5 races|0 25 10 2 -> Win 5 races
+tally|Win 5 races|0 5 999 5 -> Win 5 races
+tally||0 10 999 2 -> 
+tally|Win 5 races|0 1500 5 0 -> Win 5 races
+tally||0 1500 -1000 0 -> 
+tally||1 0 25000 3 -> 
+tally|Earn|1 1 -1000 2 -> Earn
+tally|Earn|0 -1000 1234567 4 -> Earn
+tally|Win 5 races|0 1000 -1 5 -> Win 5 races
+tally|Win 5 races|0 25 1500 3 -> Win 5 races
+tally||0 9 0 4 -> 
+tally|Win 5 races|0 5 1 2 -> Win 5 races
+tally|Win 5 races|0 -1000 100000 0 -> Win 5 races
+tally|Win 5 races|1 100000 9 5 -> Win 5 races
+tally|Win 5 races|0 999 -1 0 -> Win 5 races
+tally|Earn|1 -1000 0 0 -> Earn
+tally|Win 5 races|1 -1 10 1 -> Win 5 races
+tally|Win 5 races|1 5 9 0 -> Win 5 races
+tally|Earn|1 1000 1234567 4 -> Earn
+tally|Earn|1 25000 2 1 -> Earn
+tally|Earn|0 -1 -1 5 -> Earn
+tally|Earn|1 5 25000 4 -> Earn
+tally|Earn|0 1000 -1 0 -> Earn
+tally|Earn|0 9 2147483647 3 -> Earn
+tally|Earn|0 9 1234567 3 -> Earn
+tally|Win 5 races|0 2 25 2 -> Win 5 races
+tally|Earn|0 1500 999 0 -> Earn
+tally|Win 5 races|1 9 100000 0 -> Win 5 races
+tally||1 -1000 2147483647 2 -> 
+tally|Earn|0 100000 1234567 4 -> Earn
+tally|Earn|1 1 10 4 -> Earn
+tally||1 1234567 25000 2 -> 
+tally|Earn|0 1500 2 5 -> Earn
+tally||0 2147483647 5 2 -> 
+tally|Win 5 races|0 1500 10 0 -> Win 5 races
+tally||0 0 2 5 -> 
+tally||1 -1 0 5 -> 
+tally||0 5 -1 0 -> 
+MONEY|Win 5 races|0 1500 -1000 0 -> Win 5 races
+MONEY|Earn|0 2147483647 25000 0 -> Earn
+MONEY|Earn|1 1000 1500 5 -> Earn
+MONEY|Earn|0 1500 -1000 3 -> Earn
+MONEY|Win 5 races|0 25000 1 2 -> Win 5 races
+MONEY|Earn|0 2147483647 25000 0 -> Earn
+MONEY||0 1 9 3 -> 
+MONEY|Win 5 races|1 -1 0 4 -> Win 5 races
+MONEY||0 1234567 1500 2 -> 
+MONEY||0 2147483647 5 0 -> 
+MONEY|Earn|0 1234567 5 0 -> Earn
+MONEY||1 25 0 5 -> 
+MONEY|Win 5 races|1 10 9 3 -> Win 5 races
+MONEY||0 100000 1000 1 -> 
+MONEY||0 2147483647 0 3 -> 
+MONEY|Earn|0 2147483647 5 5 -> Earn
+MONEY|Earn|0 2147483647 2147483647 2 -> Earn
+MONEY|Earn|1 -1 5 3 -> Earn
+MONEY||0 9 1000 5 -> 
+MONEY|Earn|0 1500 100000 3 -> Earn
+MONEY|Win 5 races|0 -1 1234567 0 -> Win 5 races
+MONEY|Earn|1 -1 9 3 -> Earn
+MONEY|Win 5 races|0 25 9 0 -> Win 5 races
+MONEY|Win 5 races|1 10 2147483647 0 -> Win 5 races
+MONEY|Win 5 races|0 25000 10 0 -> Win 5 races
+MONEY|Earn|0 25000 -1 4 -> Earn
+MONEY|Win 5 races|0 0 2 4 -> Win 5 races
+MONEY||1 10 1 5 -> 
+MONEY|Win 5 races|1 5 1 2 -> Win 5 races
+MONEY||0 -1 2147483647 0 -> 
+MONEY||0 9 2147483647 3 -> 
+MONEY|Earn|0 1000 1000 3 -> Earn
+MONEY|Win 5 races|0 0 100000 0 -> Win 5 races
+MONEY||1 1000 0 4 -> 
+MONEY||1 2147483647 10 0 -> 
+MONEY|Win 5 races|0 -1000 1500 3 -> Win 5 races
+MONEY||0 1000 0 0 -> 
+MONEY|Earn|1 2 2147483647 0 -> Earn
+MONEY||0 100000 2147483647 2 -> 
+MONEY|Win 5 races|0 999 -1000 5 -> Win 5 races
+purse|Win 5 races|1 2147483647 1500 0 -> Win 5 races
+purse||0 100000 1234567 1 -> 
+purse|Earn|1 25 25000 0 -> Earn
+purse||0 999 1500 2 -> 
+purse|Earn|1 9 5 5 -> Earn
+purse||1 9 999 0 -> 
+purse|Win 5 races|1 0 -1 0 -> Win 5 races
+purse|Earn|0 2147483647 -1 0 -> Earn
+purse|Win 5 races|0 10 1000 2 -> Win 5 races
+purse||0 -1000 -1000 5 -> 
+purse|Win 5 races|0 -1000 -1000 5 -> Win 5 races
+purse|Earn|1 1000 1500 2 -> Earn
+purse|Earn|0 25 -1 0 -> Earn
+purse||1 1 1500 3 -> 
+purse|Earn|0 5 -1000 4 -> Earn
+purse|Earn|0 100000 2 4 -> Earn
+purse|Earn|0 25 1 4 -> Earn
+purse|Win 5 races|0 1 100000 1 -> Win 5 races
+purse||1 -1000 9 5 -> 
+purse|Win 5 races|0 1234567 -1 3 -> Win 5 races
+purse||0 -1 1000 3 -> 
+purse|Earn|0 1000 10 2 -> Earn
+purse|Earn|0 -1 1234567 3 -> Earn
+purse||1 9 9 5 -> 
+purse||1 1500 -1 2 -> 
+purse|Win 5 races|0 25000 1 0 -> Win 5 races
+purse||0 2 25000 3 -> 
+purse|Win 5 races|1 1500 1500 3 -> Win 5 races
+purse|Earn|1 9 2147483647 0 -> Earn
+purse||0 1234567 1500 0 -> 
+purse|Earn|1 100000 9 3 -> Earn
+purse|Win 5 races|0 2 1 0 -> Win 5 races
+purse||1 10 999 3 -> 
+purse|Win 5 races|0 5 2 2 -> Win 5 races
+purse|Win 5 races|1 5 2 3 -> Win 5 races
+purse||1 2 1 5 -> 
+purse|Earn|0 25000 10 2 -> Earn
+purse|Win 5 races|0 1 -1000 4 -> Win 5 races
+purse|Earn|0 25000 1234567 5 -> Earn
+purse|Win 5 races|0 0 0 4 -> Win 5 races
+Talley||0 100000 2 4 -> 
+Talley|Earn|1 2147483647 100000 2 -> Earn
+Talley|Earn|0 25000 9 3 -> Earn
+Talley|Earn|0 1500 1234567 4 -> Earn
+Talley||0 5 999 1 -> 
+Talley|Win 5 races|0 999 2147483647 3 -> Win 5 races
+Talley|Earn|0 -1 -1 5 -> Earn
+Talley|Earn|1 25 100000 0 -> Earn
+Talley|Earn|1 -1000 1234567 0 -> Earn
+Talley||1 1500 -1000 4 -> 
+Talley|Win 5 races|0 -1 2147483647 2 -> Win 5 races
+Talley|Earn|0 0 1234567 0 -> Earn
+Talley|Win 5 races|0 999 1234567 0 -> Win 5 races
+Talley||0 1234567 9 5 -> 
+Talley|Earn|1 1000 999 0 -> Earn
+Talley||0 25 5 0 -> 
+Talley||0 2147483647 1000 3 -> 
+Talley||0 100000 1000 5 -> 
+Talley||1 100000 100000 0 -> 
+Talley||1 25 1500 1 -> 
+Talley|Win 5 races|0 5 2147483647 0 -> Win 5 races
+Talley|Earn|0 25 2 0 -> Earn
+Talley|Win 5 races|0 1 1234567 3 -> Win 5 races
+Talley||0 1000 999 0 -> 
+Talley|Win 5 races|0 -1 1234567 1 -> Win 5 races
+Talley||0 1500 999 3 -> 
+Talley|Win 5 races|1 0 5 4 -> Win 5 races
+Talley||0 0 100000 5 -> 
+Talley|Win 5 races|0 5 999 0 -> Win 5 races
+Talley|Earn|1 5 999 3 -> Earn
+Talley|Win 5 races|0 0 -1 3 -> Win 5 races
+Talley|Win 5 races|0 -1 999 4 -> Win 5 races
+Talley|Win 5 races|0 25 10 5 -> Win 5 races
+Talley|Win 5 races|0 -1000 1500 4 -> Win 5 races
+Talley|Earn|0 10 25 3 -> Earn
+Talley||0 -1000 1500 0 -> 
+Talley|Earn|0 100000 25000 4 -> Earn
+Talley||0 25000 -1 1 -> 
+Talley|Earn|1 1000 2 5 -> Earn
+Talley|Earn|1 25 9 5 -> Earn
+Money |Win 5 races|0 9 5 0 -> Win 5 races
+Money ||0 100000 0 2 -> 
+Money ||1 100000 1 2 -> 
+Money |Earn|0 25000 5 0 -> Earn
+Money |Win 5 races|0 1 9 0 -> Win 5 races
+Money |Earn|0 25 9 4 -> Earn
+Money |Earn|0 25000 9 3 -> Earn
+Money ||0 2147483647 1000 1 -> 
+Money |Win 5 races|0 100000 1 5 -> Win 5 races
+Money |Earn|1 9 1000 4 -> Earn
+Money ||0 -1000 0 4 -> 
+Money ||0 9 2 1 -> 
+Money |Earn|0 1 -1000 2 -> Earn
+Money |Win 5 races|0 25000 100000 5 -> Win 5 races
+Money |Win 5 races|1 1234567 0 3 -> Win 5 races
+Money |Win 5 races|1 25 25 2 -> Win 5 races
+Money |Earn|0 100000 25 5 -> Earn
+Money |Earn|0 2 2 0 -> Earn
+Money ||1 25000 1234567 2 -> 
+Money |Win 5 races|0 25 1500 0 -> Win 5 races
+Money |Earn|1 2 9 2 -> Earn
+Money ||0 -1000 1000 1 -> 
+Money |Earn|0 2147483647 2147483647 3 -> Earn
+Money |Earn|0 25000 2147483647 0 -> Earn
+Money |Earn|1 0 2 1 -> Earn
+Money |Earn|1 2147483647 2147483647 4 -> Earn
+Money ||0 2147483647 1 0 -> 
+Money |Earn|1 10 1000 4 -> Earn
+Money ||0 999 100000 1 -> 
+Money |Win 5 races|1 0 1000 0 -> Win 5 races
+Money |Win 5 races|1 5 1500 1 -> Win 5 races
+Money |Earn|1 1234567 100000 0 -> Earn
+Money |Earn|0 -1 10 5 -> Earn
+Money |Win 5 races|1 25000 25000 4 -> Win 5 races
+Money ||0 1 999 4 -> 
+Money |Win 5 races|0 1234567 1000 5 -> Win 5 races
+Money |Earn|0 25 -1 0 -> Earn
+Money |Win 5 races|1 999 2 0 -> Win 5 races
+Money |Earn|0 25 100000 5 -> Earn
+Money |Win 5 races|0 1 25000 1 -> Win 5 races
+|Win 5 races|0 5 25000 2 -> Win 5 races
+|Win 5 races|0 25000 2 0 -> Win 5 races
+|Win 5 races|0 25 999 0 -> Win 5 races
+||0 10 999 0 -> 
+||1 9 25 3 -> 
+|Win 5 races|1 1500 -1000 4 -> Win 5 races
+||0 9 0 1 -> 
+||0 2147483647 -1 1 -> 
+|Earn|0 25 10 0 -> Earn
+|Earn|0 9 100000 0 -> Earn
+|Win 5 races|0 10 1 5 -> Win 5 races
+|Win 5 races|1 25 0 2 -> Win 5 races
+|Win 5 races|1 25000 1234567 0 -> Win 5 races
+|Earn|1 1500 5 0 -> Earn
+|Win 5 races|1 -1000 2 5 -> Win 5 races
+|Earn|0 2147483647 1234567 2 -> Earn
+||0 1 10 0 -> 
+|Win 5 races|1 0 0 0 -> Win 5 races
+|Earn|0 1234567 -1 0 -> Earn
+|Win 5 races|0 9 25 3 -> Win 5 races
+|Earn|1 -1000 1 0 -> Earn
+||1 1000 999 5 -> 
+||0 999 -1 2 -> 
+|Earn|1 -1 25000 0 -> Earn
+|Earn|0 999 1 0 -> Earn
+|Win 5 races|1 1 -1 4 -> Win 5 races
+|Earn|1 5 -1 3 -> Earn
+||1 0 0 3 -> 
+||0 1000 1234567 5 -> 
+|Earn|1 10 999 0 -> Earn
+||0 0 -1 0 -> 
+|Earn|1 1000 10 3 -> Earn
+||1 25 9 1 -> 
+||1 1 25000 1 -> 
+||0 100000 -1 2 -> 
+|Win 5 races|1 1500 1000 0 -> Win 5 races
+||0 999 25000 5 -> 
+|Earn|1 1234567 5 4 -> Earn
+|Earn|0 25 2 4 -> Earn
+|Win 5 races|0 1234567 1234567 0 -> Win 5 races
