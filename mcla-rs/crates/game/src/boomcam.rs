@@ -193,6 +193,9 @@ pub struct BoomCam {
     /// the snap byte (+664): set where the original cuts to this camera; the next `step` takes its filters at 1
     /// and skips the approach rate, then clears it (it keeps the camera's state, unlike the port's own restart)
     snap: bool,
+    /// `step_held`: a camera that has not been running is stepped from where it was left, however far (the port's
+    /// 80 m restart stands for the game's teleport snap, which such a camera never gets)
+    held: bool,
 }
 
 fn norm_range(v: f32, range: f32) -> f32 {
@@ -638,75 +641,63 @@ fn shift_curve(t: &BoomTune) -> [impl Fn(f32) -> f32; 4] {
 }
 
 impl BoomCam {
-    /// One call of the original's chase-camera update (camDynamicBoomCS, F-14014), as the original runs it once a
-    /// game frame: the lens (F-44852) from last call's filtered velocity, the frame (F-90220), the filters, the
-    /// normalised sets, the boom, the hill pitch, the look-around turn, the homing and the approach rate, for a chase
-    /// view (+668 clear) - every factor per call, as the original's. `dt` is the frame's time (F-76427), `fps` the
-    /// game's frame-rate word that halves both filters below 60.
-    pub fn step(&mut self, t: &BoomTune, car: &BoomTarget, g: &BoomGround, dt: f32, fps: f32) -> BoomOut {
-        use crate::physics::exact::{cross, dot3, fma, fnms, guest_asin, guest_cos};
-        // (the port's: a car moved over 80 m - a teleport - starts the camera afresh, as `update` does; the original
-        // sets its snap byte +664 where the game moves the car)
-        // (the port's own restart: a fresh camera, or a car moved over 80 m - a teleport; the original's snap byte
-        // +664 snaps the filters without clearing the state)
-        // (compared with a recording - `recomp_timing` - the recorded snap byte stands for the teleport, so the port's
-        // 80 m rule is off there)
-        let far = self.recomp_timing.is_none() && (self.world - car.pos).length_squared() > 80.0 * 80.0;
-        let restart = !self.started || far;
-        let snap = restart || std::mem::take(&mut self.snap);
-        // (the frame's snap share: 1 on a snap; on a fixed mount (+668) the chassis's air time over 0.5 s, at most 1 -
-        // F-75234 through the chassis's vt+52 - so the bumper / cockpit frame follows the car in a long jump)
-        let k = if snap {
-            1.0
-        } else if car.fixed_mount && g.air > 0.5 {
-            let a = g.air - 0.5;
-            let a = if a >= 0.0 { a } else { 0.0 };
-            if a - 1.0 >= 0.0 { 1.0 } else { a }
-        } else {
-            0.0
-        };
-        let car_m = Mat3::from_quat(car.rot);
-        if restart {
-            *self = BoomCam { started: true, stepped: true, last_gear: car.gear, up: BOOM_UP, dir: car_m.z_axis, ..Default::default() };
-        }
-        // ---- the lens, F-44852: from last call's filtered velocity (+464, +472) ----
-        let q = fma(self.vel.x, self.vel.x, self.vel.z * self.vel.z).sqrt() / t.range("LinVelRange", 2);
-        let q = if q >= 0.0 { q } else { 0.0 };
-        let ss = if q - 1.0 >= 0.0 { 1.0 } else { q };
-        let cosv = if ss <= 0.0 {
-            1.0
-        } else if ss >= 1.0 {
-            -1.0
-        } else {
-            guest_cos((ss * std::f32::consts::PI) as f64) as f32
-        };
-        let kk = (1.0 - cosv) * 0.5;
-        let mut dist = fma(t.s("SSDistScale") - 1.0, kk, 1.0);
-        let mut fov = fma(t.s("SSFovMax") - t.s("SSFovMin"), kk, t.s("SSFovMin"));
-        // (the slipstream turbo and the nitrous only on a chase view not looking back: F-44852 skips them on a fixed
-        // mount, +668, and while vt+56, +208, is set)
-        if !car.rev && !car.fixed_mount {
-            fov = car.sst.0 + fov;
-            dist = car.sst.1 * dist;
-            // (approx.: the nitrous object's +24 lens is the port's ramp)
-            self.nitro = if car.nitro { (self.nitro + dt / car.nitro_fov.1.max(0.05)).min(1.0) } else { (self.nitro - dt / car.nitro_fov.2.max(0.05)).max(0.0) };
-            if self.nitro > 0.0 {
-                fov = car.nitro_fov.0 * self.nitro + fov;
-            }
-        }
-        // (then every view: the ability's lens +224 added, its distance +228 multiplied; F-38892 writes them to the
-        // bumper and cockpit only, the lens held at its lowest since the view was set - the chase views get (0, 1))
-        let ab_fov = if car.fixed_mount {
-            self.ab_fov = self.ab_fov.min(car.ability.0);
-            self.ab_fov
-        } else {
-            car.ability.0
-        };
-        fov = ab_fov + fov;
-        dist = car.ability.1 * dist;
-        let dist_scale = dist;
+    /// `step` on a camera that was not running (the replay shot test's candidate, F-51014 -> slot 10): from the state
+    /// it was left in, without the port's 80 m restart; a camera never run yet starts with the reset.
+    pub fn step_held(&mut self, t: &BoomTune, car: &BoomTarget, g: &BoomGround, dt: f32, fps: f32) -> BoomOut {
+        self.held = true;
+        let o = self.step(t, car, g, dt, fps);
+        self.held = false;
+        o
+    }
 
-        // ---- the frame, F-90220 ----
+    /// The camera's reset as the original's camDynamicBoomCS slot 9 (F-83404), run when the camera is made current:
+    /// the base reset (F-74452: the ability's lens offset 0), the approach rate from ApproachRate, the snap byte, the
+    /// boom's offset and focus (RevOffset / RevFocus while looking back) less Center, the roll and the tumble 0, the
+    /// frame's up and direction from the car's own rows and then the frame (F-90220) at a snap share of 1, the place
+    /// = the car's matrix x (offset, 1), the filters cleared and the filtered velocity and turn rate started at the car's
+    /// in the frame (F-17419), the shift kick off, the lens SSFovMin.
+    pub fn reset_as_original(&mut self, t: &BoomTune, car: &BoomTarget, g: &BoomGround, dt: f32) {
+        use crate::physics::exact::dot3;
+        let car_m = Mat3::from_quat(car.rot);
+        let (r0, r1, r2) = (car_m.x_axis, car_m.y_axis, car_m.z_axis);
+        self.started = true;
+        self.stepped = true;
+        self.last_gear = car.gear;
+        self.nitro = 0.0;
+        self.ab_fov = 0.0;
+        self.rate = t.s("ApproachRate");
+        self.snap = true;
+        let c = t.v3("Center");
+        let (o, f) = if car.rev { (t.v3("RevOffset"), t.v3("RevFocus")) } else { (t.v3("Offset"), t.v3("Focus")) };
+        self.off = o - c;
+        self.foc = f - c;
+        self.roll = 0.0;
+        self.tumble = 0.0;
+        self.up = r1;
+        self.dir = r2;
+        let (fx, fz) = self.frame(t, car, g, 1.0, dt);
+        // (vmsum4fp128 of (offset, 1) with the matrix's columns: (place + z c) + (y b + x a))
+        let o = self.off;
+        let k = |i: usize| (car.pos[i] + o.z * r2[i]) + (o.y * r1[i] + o.x * r0[i]);
+        self.world = Vec3::new(k(0), k(1), k(2));
+        // (F-17419: the frame's rows the frame left at +256 - x, up, z - dotted with the matrix object's velocity and spin)
+        let fu = self.up;
+        self.vel = Vec3::new(dot3(fx, car.vel), dot3(fu, car.vel), dot3(fz, car.vel));
+        self.ang = Vec3::new(dot3(fx, car.ang_vel), dot3(fu, car.ang_vel), dot3(fz, car.ang_vel));
+        self.acc = Vec3::ZERO;
+        self.ang_acc = Vec3::ZERO;
+        self.gz = 0.0;
+        self.shift = 0.0;
+        self.shift_val = 0.0;
+        self.shift_armed = false;
+        self.lens = t.s("SSFovMin");
+    }
+
+    /// The frame (F-90220): the up and the heading toward the grounded wheels' polygon and the car's back row, by the
+    /// snap share `k`; returns the frame's x and z.
+    fn frame(&mut self, t: &BoomTune, car: &BoomTarget, g: &BoomGround, k: f32, dt: f32) -> (Vec3, Vec3) {
+        use crate::physics::exact::{cross, fma};
+        let car_m = Mat3::from_quat(car.rot);
         let s0 = fma(1.0 - t.s("OrientationFactor"), k, t.s("OrientationFactor"));
         let s1 = fma(1.0 - t.s("OrientationFilter"), k, t.s("OrientationFilter"));
         let s2 = fma(1.0 - t.s("DirectionFilter"), k, t.s("DirectionFilter"));
@@ -762,6 +753,82 @@ impl BoomCam {
         };
         let x = vnorm(cross(self.up, frame_dir));
         let z = vnorm(cross(x, self.up));
+        (x, z)
+    }
+
+    /// One call of the original's chase-camera update (camDynamicBoomCS, F-14014), as the original runs it once a
+    /// game frame: the lens (F-44852) from last call's filtered velocity, the frame (F-90220), the filters, the
+    /// normalised sets, the boom, the hill pitch, the look-around turn, the homing and the approach rate, for a chase
+    /// view (+668 clear) - every factor per call, as the original's. `dt` is the frame's time (F-76427), `fps` the
+    /// game's frame-rate word that halves both filters below 60.
+    pub fn step(&mut self, t: &BoomTune, car: &BoomTarget, g: &BoomGround, dt: f32, fps: f32) -> BoomOut {
+        use crate::physics::exact::{dot3, fma, fnms, guest_asin, guest_cos};
+        // (the port's: a car moved over 80 m - a teleport - starts the camera afresh, as `update` does; the original
+        // sets its snap byte +664 where the game moves the car)
+        // (the port's own restart: a fresh camera, or a car moved over 80 m - a teleport; the original's snap byte
+        // +664 snaps the filters without clearing the state)
+        // (compared with a recording - `recomp_timing` - the recorded snap byte stands for the teleport, so the port's
+        // 80 m rule is off there)
+        let far = self.recomp_timing.is_none() && !self.held && (self.world - car.pos).length_squared() > 80.0 * 80.0;
+        let restart = !self.started || far;
+        if restart {
+            // (a fresh or moved camera: the original's slot 9, F-83404, which every camera gets when it is made current;
+            // it sets the snap byte this call takes)
+            self.reset_as_original(t, car, g, dt);
+        }
+        let snap = std::mem::take(&mut self.snap);
+        // (the frame's snap share: 1 on a snap; on a fixed mount (+668) the chassis's air time over 0.5 s, at most 1 -
+        // F-75234 through the chassis's vt+52 - so the bumper / cockpit frame follows the car in a long jump)
+        let k = if snap {
+            1.0
+        } else if car.fixed_mount && g.air > 0.5 {
+            let a = g.air - 0.5;
+            let a = if a >= 0.0 { a } else { 0.0 };
+            if a - 1.0 >= 0.0 { 1.0 } else { a }
+        } else {
+            0.0
+        };
+        let car_m = Mat3::from_quat(car.rot);
+
+        // ---- the lens, F-44852: from last call's filtered velocity (+464, +472) ----
+        let q = fma(self.vel.x, self.vel.x, self.vel.z * self.vel.z).sqrt() / t.range("LinVelRange", 2);
+        let q = if q >= 0.0 { q } else { 0.0 };
+        let ss = if q - 1.0 >= 0.0 { 1.0 } else { q };
+        let cosv = if ss <= 0.0 {
+            1.0
+        } else if ss >= 1.0 {
+            -1.0
+        } else {
+            guest_cos((ss * std::f32::consts::PI) as f64) as f32
+        };
+        let kk = (1.0 - cosv) * 0.5;
+        let mut dist = fma(t.s("SSDistScale") - 1.0, kk, 1.0);
+        let mut fov = fma(t.s("SSFovMax") - t.s("SSFovMin"), kk, t.s("SSFovMin"));
+        // (the slipstream turbo and the nitrous only on a chase view not looking back: F-44852 skips them on a fixed
+        // mount, +668, and while vt+56, +208, is set)
+        if !car.rev && !car.fixed_mount {
+            fov = car.sst.0 + fov;
+            dist = car.sst.1 * dist;
+            // (approx.: the nitrous object's +24 lens is the port's ramp)
+            self.nitro = if car.nitro { (self.nitro + dt / car.nitro_fov.1.max(0.05)).min(1.0) } else { (self.nitro - dt / car.nitro_fov.2.max(0.05)).max(0.0) };
+            if self.nitro > 0.0 {
+                fov = car.nitro_fov.0 * self.nitro + fov;
+            }
+        }
+        // (then every view: the ability's lens +224 added, its distance +228 multiplied; F-38892 writes them to the
+        // bumper and cockpit only, the lens held at its lowest since the view was set - the chase views get (0, 1))
+        let ab_fov = if car.fixed_mount {
+            self.ab_fov = self.ab_fov.min(car.ability.0);
+            self.ab_fov
+        } else {
+            car.ability.0
+        };
+        fov = ab_fov + fov;
+        dist = car.ability.1 * dist;
+        let dist_scale = dist;
+
+        // ---- the frame, F-90220 ----
+        let (x, z) = self.frame(t, car, g, k, dt);
         let ctr = t.v3("Center");
         let col = |i: usize| Vec3::new(car_m.x_axis[i], car_m.y_axis[i], car_m.z_axis[i]);
         let origin = car.pos + Vec3::new(dot3(ctr, col(0)), dot3(ctr, col(1)), dot3(ctr, col(2)));
@@ -970,9 +1037,8 @@ impl BoomCam {
         // ---- the homing: last call's place seen from the new frame goes HomingTime of the way ----
         let len = fma(off.y, off.y, fma(off.z, off.z, off.x * off.x)).sqrt();
         let homing = t.v3("HomingTime");
-        // (not gated by the snap; approx.: on a restart the original homes from its +64, the place the last view
-        // left there - the port has none and starts on the target)
-        if homing != Vec3::ZERO && !restart {
+        // (not gated by the snap; after a reset it homes from the place F-83404 put at +64)
+        if homing != Vec3::ZERO {
             let d = self.world - origin;
             let last = Vec3::new(dot3(x, d), dot3(self.up, d), dot3(z, d));
             off = (off - last) * homing + last;
@@ -4603,6 +4669,87 @@ camTrackCS {
         let Some(set) = BoomSet::load(&data, "vp_aud_r8_08") else { return };
         let (n, _) = boom_rec_check(set.reverse.as_ref().unwrap(), include_str!("testdata/boom_step_reverse_rec.txt"), true, true);
         assert_eq!(n, 1153);
+    }
+
+    /// The reset F-83404 (camDynamicBoomCS slot 9, with its frame F-90220 at the snap share 1 and the velocity start F-17419)
+    /// against the original's code run offline (tools/boom_reset_reference.py, 4,000 cases: tunes, car matrices, wheels
+    /// grounded or not, two or four or none, velocities, spins, the state word, the look back and the fixed mount): every
+    /// field the port's camera keeps, bit for bit.
+    #[test]
+    fn reset_matches_the_original() {
+        let data = include_str!("testdata/boom_reset_ref.txt");
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let (mut n, mut worst) = (0, 0.0f32);
+        for line in data.lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split_whitespace().collect();
+            let f = |k: usize| f32::from_bits(h(w[k]));
+            let v3 = |k: usize| Vec3::new(f(k), f(k + 1), f(k + 2));
+            let (rev, fixed, dt) = (w[1] == "1", w[2] == "1", f(3));
+            let tu = 4;
+            let names = ["Center", "Offset", "Focus", "RevOffset", "RevFocus"];
+            let mut text = String::from("camBoomCS
+");
+            for (q, nm) in names.iter().enumerate() {
+                let v = v3(tu + 3 * q);
+                text += &format!("{nm} {} {} {}
+", v.x, v.y, v.z);
+            }
+            for (k, nm) in ["ApproachRate", "OrientationFactor", "OrientationFilter", "DirectionFilter", "SSFovMin"].iter().enumerate() {
+                text += &format!("{nm} {}
+", f(tu + 15 + k));
+            }
+            let t = BoomTune::parse(&text).unwrap();
+            let m0 = tu + 20;
+            let rot = Quat::from_mat3(&Mat3::from_cols(v3(m0), v3(m0 + 3), v3(m0 + 6)));
+            let car = BoomTarget {
+                pos: v3(m0 + 9), rot, vel: v3(m0 + 12), ang_vel: v3(m0 + 15), grounded: 0, gear: 0, rev, nitro: false, nitro_fov: (0.0, 0.5, 1.0),
+                ability: (0.0, 1.0), sst: (0.0, 1.0), pan: (0.0, 0.0), rise: 0.0, fixed_mount: fixed, model_offset: Vec3::ZERO,
+            };
+            let speed = f(m0 + 18);
+            let state: u32 = w[m0 + 19].parse().unwrap();
+            let count: usize = w[m0 + 20].parse().unwrap();
+            let mut g = BoomGround { count, speed, flags: state, ..Default::default() };
+            for i in 0..count {
+                let b = m0 + 21 + 10 * i;
+                if w[b] == "1" {
+                    g.wheels[i] = Some((v3(b + 1), v3(b + 4)));
+                }
+            }
+            let mut cam = BoomCam { tumble: 0.5, vel: Vec3::splat(10.0), off: Vec3::splat(5.0), lens: 32.0, ab_fov: 10.0, rate: 20.0, ..Default::default() };
+            cam.reset_as_original(&t, &car, &g, dt);
+            let o: Vec<u32> = b.split_whitespace().map(h).collect();
+            let fo = |k: usize| f32::from_bits(o[k]);
+            let vo = |k: usize| Vec3::new(fo(k), fo(k + 1), fo(k + 2));
+            // (the car's matrix reaches the port as a quaternion (BoomTarget::rot), so what is made from its rows - the frame,
+            // the place, the velocity in the frame - is compared as the recorded update tests do, within 1e-5 of its size;
+            // the rest bit for bit)
+            let close = [("up", cam.up, vo(0)), ("dir", cam.dir, vo(3)), ("vel", cam.vel, vo(7)), ("ang", cam.ang, vo(13)), ("world", cam.world, vo(26))];
+            for (nm, got, want) in close {
+                let e = (got - want).abs().max_element() / want.abs().max_element().max(1.0);
+                worst = worst.max(e);
+                assert!(e < 1e-5, "{nm}: {got} against {want} ({e:e}): {line}");
+            }
+            let bits = |v: Vec3| v.to_array().map(f32::to_bits).to_vec();
+            let exact: [(&str, Vec<u32>, Vec<u32>); 10] = [
+                ("tumble", vec![cam.tumble.to_bits()], vec![o[6]]),
+                ("acc", bits(cam.acc), bits(vo(10))),
+                ("ang_acc", bits(cam.ang_acc), bits(vo(16))),
+                ("off", bits(cam.off), bits(vo(19))),
+                ("foc", bits(cam.foc), bits(vo(22))),
+                ("roll", vec![cam.roll.to_bits()], vec![o[25]]),
+                ("rate", vec![cam.rate.to_bits()], vec![o[29]]),
+                ("gz / shift / value", vec![cam.gz.to_bits(), cam.shift.to_bits(), cam.shift_val.to_bits()], vec![o[30], o[31], o[32]]),
+                ("armed / lens / snap", vec![cam.shift_armed as u32, cam.lens.to_bits(), cam.snap as u32], vec![o[33], o[34], o[35]]),
+                ("ability lens", vec![cam.ab_fov.to_bits()], vec![o[36]]),
+            ];
+            for (nm, got, want) in exact {
+                assert_eq!(got, want, "{nm}: {line}");
+            }
+            n += 1;
+        }
+        eprintln!("{n} resets, frame / place / velocity worst {worst:e} of their size");
+        assert!(n >= 3900, "{n}");
     }
 
     /// Runs `BoomCam::step` on every recorded call of `text` (boom_testdata.py lines; `tail`: fixed_testdata.py lines,

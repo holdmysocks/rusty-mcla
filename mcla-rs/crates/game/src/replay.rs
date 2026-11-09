@@ -755,6 +755,12 @@ pub trait Probe {
     fn own(&mut self, _a: Vec3, _b: Vec3, _r: f32) -> Option<(Vec3, Vec3)> {
         None
     }
+    /// The shot test's drive and reverse states (0..5, F-51014): that camera's own object updated once through its
+    /// slot 10 (camDynamicBoomCS F-14014, its collision F-12669 included) from the state it was left in, and its
+    /// place (+80 when +156, else +16, row 3); `r` the viewport's near corner. None: no camera to run (the shot passes untested).
+    fn drive(&mut self, _state: usize, _r: f32) -> Option<Vec3> {
+        None
+    }
 }
 
 impl<F: FnMut(Vec3, Vec3, f32) -> Option<(Vec3, Vec3)>> Probe for F {
@@ -784,14 +790,12 @@ pub struct Director {
     /// the lens (degrees) the shared viewport holds: the one last drawn. The tests' ball is sized by it, not by the lens
     /// of the camera being tested (F-51014 / F-67414 / F-38041 read the viewport's +704 near, +712 / +716 tangents)
     pub lens: f32,
-    /// the drive view's place the frame before (the test of the reverse camera)
-    pub drive_eye: Option<Vec3>,
 }
 
 impl Director {
     /// as mcPlayerCamera's reset leaves it (F-80435): BUMPER, switching on
     pub fn new(tune: &CamTune, seed: u32, car: &CarView) -> Director {
-        let mut d = Director { state: 0, time: 0.0, switching: true, next: false, rng: Mwc::new(seed), heli: Heli::default(), polar: Polar::default(), cut: true, aspect: 16.0 / 9.0, lens: 65.0, drive_eye: None };
+        let mut d = Director { state: 0, time: 0.0, switching: true, next: false, rng: Mwc::new(seed), heli: Heli::default(), polar: Polar::default(), cut: true, aspect: 16.0 / 9.0, lens: 65.0 };
         d.polar_activate(tune);
         d.heli_activate(tune, car);
         d.time = d.rng.length(tune.cut);
@@ -902,10 +906,10 @@ impl Director {
         }
         let eye = match self.own(tune, car, self.state, probe) {
             Some((e, _, _)) => e,
-            // (the reverse camera: where it stood the frame before; none yet - taken)
-            None => match self.drive_eye {
-                Some(e) if !self.cut => e,
-                _ => return true,
+            // (the drive views and the reverse camera: their own camera stepped once, F-51014 -> slot 10)
+            None => match probe.drive(self.state, self.near_r()) {
+                Some(e) => e,
+                None => return true,
             },
         };
         let r = self.near_r();
@@ -1313,7 +1317,7 @@ mod tests {
         for _ in 0..300 {
             d.time = -1.0;
             d.update(&t, &c, 1.0 / 30.0, &mut wall);
-            // (the reverse camera has no place before its first frame: taken as well)
+            // (the drive views and the reverse camera: no camera behind this probe - taken untested)
             drive += (d.state <= REVERSE) as usize;
         }
         assert!(drive > 225, "{drive}");
