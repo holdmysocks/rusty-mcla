@@ -6075,6 +6075,95 @@ mod tests {
         assert!(checked == 3572 && heat == 2347 && states == [0, 2099, 902, 70, 0, 501], "{checked} {heat} {states:?}");
     }
 
+    /// The pull-over's machine against a recording of the running original (docs/reference/hookmen/pullover_recording.md): a
+    /// pull-over (the manager's request / start F-36876 tactic on the player's car), recorded at the entry and the exit of
+    /// F-36876. Each update in CatchUp / AvoidCollision / Halt starts the port from the recorded state (state, asked state,
+    /// time, AvoidCollision's side timer or Halt's last squared distance and growing time, the brain's command / handbrake /
+    /// side bytes), computes the tests from the recorded cop and target frames, velocities and chassis speeds (`swipe_geo`,
+    /// `closing_in`, `moving`) and runs `pullover_machine` once: state, asked state, time, timers, command, handbrake and side
+    /// must be the exit's. Updates whose entry or exit is Ticket are the heat's (counted, not run). The side pick F-14848 is
+    /// taken from the recording (the exit's side byte); the re-pick gate is passed as true (open).
+    #[test]
+    fn pullover_machine_matches_the_recording() {
+        let rec = include_str!("testdata/pullover_rec.txt");
+        let hex = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let fl = |s: &str| f32::from_bits(hex(s));
+        let v3 = |v: &[&str]| Vec3::new(fl(v[0]), fl(v[1]), fl(v[2]));
+        let tac_of = |id: i32| match id {
+            0 => Some(Tac::CatchUp),
+            1 => Some(Tac::Avoid),
+            2 => Some(Tac::Halt),
+            _ => None,
+        };
+        let code = |t: Tac| match t {
+            Tac::CatchUp => 0,
+            Tac::Avoid => 1,
+            Tac::Halt => 2,
+            _ => 9,
+        };
+        let (pull, moving_speed) = (15.0f32, 1.0f32);
+        let (mut checked, mut heat, mut states) = (0, 0, [0u32; 3]);
+        for line in rec.lines() {
+            let v: Vec<&str> = line.split_whitespace().collect();
+            assert_eq!((v[0], v[37]), ("V", "="));
+            let int = |i: usize| v[i].parse::<i32>().unwrap();
+            let (st, asked, ost, oasked) = (int(4), int(5), int(38), int(39));
+            let (Some(s0), Some(_)) = (tac_of(st), tac_of(ost)) else {
+                heat += 1;
+                continue;
+            };
+            if asked >= 0 && tac_of(asked).is_none() || oasked >= 0 && tac_of(oasked).is_none() {
+                heat += 1;
+                continue;
+            }
+            let mut tac = CopTac {
+                st: s0,
+                t: fl(v[6]),
+                begun: true,
+                next: tac_of(asked),
+                cmd: int(9) as u8,
+                hb: int(10) != 0,
+                side: int(11) != 0,
+                ..Default::default()
+            };
+            match s0 {
+                Tac::Avoid => tac.side_t = fl(v[7]),
+                Tac::Halt => (tac.halt_d2, tac.grow_t) = (fl(v[7]), fl(v[8])),
+                _ => {}
+            }
+            let (cpos, crow0, crow2, cvel, cspeed) = (v3(&v[14..]), v3(&v[17..]), v3(&v[20..]), v3(&v[23..]), fl(v[26]));
+            let (tpos, tvel, tspeed) = (v3(&v[27..]), v3(&v[33..]), fl(v[36]));
+            let geo = swipe_geo(cpos, crow0, crow2, cvel, tpos, tvel);
+            let closing = |r: f32| closing_in(tpos, cpos, tspeed, cspeed, cvel, r, moving_speed);
+            let (dx, dy, dz) = (tpos.x - cpos.x, tpos.y - cpos.y, tpos.z - cpos.z);
+            let sees = PullSees {
+                all_halt: geo.dsq < (pull - 1.0) * (pull - 1.0),
+                moving: moving(tspeed, moving_speed),
+                closing0: closing(0.0),
+                closing7: closing(7.0),
+                closing50: closing(50.0),
+                near50: geo.dsq < 50.0 * 50.0,
+                near_pull: geo.dsq < pull * pull,
+                pick: int(45) != 0,
+                gate: true,
+                cspeed,
+                d2: fmas(dx, dx, fmas(dz, dz, dy * dy)),
+            };
+            pullover_machine(&mut tac, &sees, fl(v[1]));
+            let (a, z) = match tac.st {
+                Tac::Avoid => (tac.side_t.to_bits(), 0),
+                Tac::Halt => (tac.halt_d2.to_bits(), tac.grow_t.to_bits()),
+                _ => (0, 0),
+            };
+            let got = format!("{} {} {:08X} {:08X} {:08X} {} {} {}", code(tac.st), tac.next.map_or(-1, code), tac.t.to_bits(), a, z, tac.cmd,
+                              tac.hb as u8, tac.side as u8);
+            assert_eq!(got, v[38..46].join(" "), "update {checked}: {line}");
+            states[code(tac.st) as usize] += 1;
+            checked += 1;
+        }
+        assert!(checked == 1908 && heat == 0 && states == [913, 195, 800], "{checked} {heat} {states:?}");
+    }
+
     /// The Arrow Trap against a recording of the running original (docs/reference/hookmen/arrow_trap_recording.md): an Arrow
     /// Trap (StartPursuit kind 3) on the player's car, recorded at the entry and the exit of F-76774. Each update in CatchUp /
     /// Halt starts the port from the recorded machine (state, asked state, CatchUp's lock / hysteresis / wait / latch, the
