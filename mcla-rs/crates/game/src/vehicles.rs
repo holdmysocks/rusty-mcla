@@ -6390,14 +6390,14 @@ if keep || c.state.pos.distance(center) < 450.0 {
 
     /// Draw all cars. `blend_pass` selects glass-only.
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, blend_pass: bool, draws: &mut usize, range: Option<(Vec3, f32)>, frustum: Option<&crate::render::Frustum>) {
-        self.draw_x(pass, gpu, blend_pass, draws, range, frustum, false, None);
+        self.draw_x(pass, gpu, blend_pass, draws, range, frustum, false, None, true);
     }
 
     /// `draw` with the set-up cars' back faces culled by their batches' cull class (`GpuBatch::cull`), as the
     /// original's car draw (F-92759) does; `mirrored`: the view is mirrored, the other face culled. Into a pass of
     /// the variant in force (`ms::current`).
     pub fn draw_culled<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, blend_pass: bool, draws: &mut usize, range: Option<(Vec3, f32)>, frustum: Option<&crate::render::Frustum>, mirrored: bool) {
-        self.draw_x(pass, gpu, blend_pass, draws, range, frustum, false, Some(mirrored));
+        self.draw_x(pass, gpu, blend_pass, draws, range, frustum, false, Some(mirrored), true);
     }
 
     /// The cars into a sun shadow pass (the cascades, the near map). Traffic and parked cars cast none: the ambient
@@ -6405,7 +6405,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// (registry hits 0), and the recorded frames (work/traffic-detail/fix/shadowchk.py) hold no depth draw of the
     /// food truck's meshes - only its occlusion blob (PS_CalcShadowsQuad). (MCLA_TRAFFIC_CASTS=1: as before)
     pub fn draw_shadow<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, draws: &mut usize, range: Option<(Vec3, f32)>) {
-        self.draw_x(pass, gpu, false, draws, range, None, traffic_casts_none(), None);
+        self.draw_x(pass, gpu, false, draws, range, None, traffic_casts_none(), None, false);
     }
 
     /// The wheels' blur discs (F-49519, after the cars' glass): for every wheel `blur_wheels` holds, the shared
@@ -6454,7 +6454,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
         }
     }
 
-    fn draw_x<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, blend_pass: bool, draws: &mut usize, range: Option<(Vec3, f32)>, frustum: Option<&crate::render::Frustum>, skip_ambient: bool, cull: Option<bool>) {
+    fn draw_x<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, gpu: &'a Gpu, blend_pass: bool, draws: &mut usize, range: Option<(Vec3, f32)>, frustum: Option<&crate::render::Frustum>, skip_ambient: bool, cull: Option<bool>, in_view: bool) {
         // (the opaque pass of `draw_culled`: each batch with its material's own pipeline once it is built - `car_pipe`)
         let own = cull.is_some() && !blend_pass;
         let mut pick = (0u8, u32::MAX, false);
@@ -6475,7 +6475,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 4 => hangs(0),
                 _ => true,
             };
-            let mut wheels_visible = true;
+            // (the in-car view: the car draw F-73214, with the draw object's G+123 set, goes from the part loop F-92759 and
+            // the hanging bumpers straight to the readouts - no brakes (F-57869), exhaust tips (F-39836) or wheels (F-11293);
+            // the sun's depth draw is another function. The tips are in the body's batches here: still drawn, out of view)
+            let mut wheels_visible = !(in_view && c.is_player && self.interior_glass && std::env::var_os("MCLA_INCAR_WHEELS_OLD").is_none());
             let pos = c.render_pose(self.render_alpha).pos;
             // (the main view's passes - the ones with a frustum: a traffic car is drawn by its LOD alone, which
             // has its view, occluder and 500 tests; the reach and box below are the port's, for the other cars)
@@ -6486,7 +6489,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     continue;
                 }
                 // wheels are a few pixels beyond this
-                wheels_visible = d < max * 0.6;
+                wheels_visible &= d < max * 0.6;
             }
             if let Some(f) = frustum.filter(|_| !by_lod) {
                 let r = Vec3::splat(c.model.params.body_half.length() + 1.0);
