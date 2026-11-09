@@ -15870,7 +15870,7 @@ impl replay::Probe for ReplayProbe<'_> {
                 return Some((c.pos, c.normal));
             }
         }
-        l.sweep_hit(a, b, r, false).or_else(|| l.sweep_hit(b, a, r, false)).map(|h| (h.contact, h.normal))
+        l.sweep_city(a, b, r, false).or_else(|| l.sweep_city(b, a, r, false)).map(|h| (h.contact, h.normal))
     }
     fn own(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
         self.1.as_ref()?.sweep_hit(a, b, r).map(|h| (h.contact, h.normal))

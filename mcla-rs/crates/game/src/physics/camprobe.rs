@@ -3857,6 +3857,30 @@ impl<'a> CamLevel<'a> {
         if d.length_squared() < 1e-12 {
             return None;
         }
+        // (with the level's objects: F-80278 / F-58512 as the original's - the directed set-up F-13494 and the driver
+        // F-91312 over the level, one record, the camera's car skipped; the callers' queries as the ball's: the boom, the
+        // pull-in and the replay 0x100 / 7, the deflection 0x100 / 4 - probe_rule.md section 4; a car's wheels, curved
+        // bounds, make no record yet: their directed cast F-81943 is not ported)
+        if let Some(level) = self.level {
+            let q = if cars { CamQuery::CARS } else { CamQuery::FIXED };
+            let filter = LevelFilter { include: q.include, states: q.states, excluded: &[], types: u32::MAX, exclude_types: q.exclude_types, skip: self.skip };
+            let mut out = None;
+            level.near((a + b) * 0.5, d.length() * 0.5 + r, &mut |objs| {
+                out = sweep_level(a, b, r, 0, 1, &filter, objs.iter().copied()).list.records.iter().find(|x| x.instance != 0).map(|x| SweepHit { t: x.t, depth: x.depth, contact: x.point, normal: x.normal });
+                false
+            });
+            return out;
+        }
+        self.sweep_city(a, b, r, cars)
+    }
+
+    /// The old sweep: directed over the city's triangles (and the other cars' hulls with `cars`) - the replay helicopter's
+    /// (its original sweep is undirected with include 0x800, not ported).
+    pub fn sweep_city(&self, a: Vec3, b: Vec3, r: f32, cars: bool) -> Option<SweepHit> {
+        let d = b - a;
+        if d.length_squared() < 1e-12 {
+            return None;
+        }
         let mut best: Option<SweepHit> = None;
         let mut take = |h: Option<SweepHit>| {
             if let Some(h) = h {
