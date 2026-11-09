@@ -8773,7 +8773,7 @@ impl Game {
                                             Some((row, idx, hsv)) if row == prow => shown(hsv, idx),
                                             _ => primary_rgb,
                                         };
-                                        r.value = crate::flash_ui::swatch_with_child(swatch_value(rgb, if open == Some(prow) { (self.color_idx % strip.len()) as i32 } else { -1 }, &strip), "ColorA1_Dummy");
+                                        r.value = crate::flash_ui::swatch_states(swatch_value(rgb, if open == Some(prow) { (self.color_idx % strip.len()) as i32 } else { -1 }, &strip), "ColorA1_Dummy", "PickColorA");
                                     }
                                     "SECONDARY COLOR" => {
                                         // (the second colour is listed with a fade only)
@@ -8786,7 +8786,7 @@ impl Game {
                                             (true, None) => { let p = PALETTE[self.paint_open.map_or(self.paint_b, |o| o.1) % PALETTE.len()]; crate::mc4::to_screen([p[0], p[1], p[2]]) }
                                             _ => self.paint_b_screen(),
                                         };
-                                        r.value = crate::flash_ui::swatch_with_child(swatch_value(rgb_of([c[0], c[1], c[2], 1.0]), if open == Some(srow) { (self.paint_b % strip.len()) as i32 } else { -1 }, &strip), "ColorB1_Dummy");
+                                        r.value = crate::flash_ui::swatch_states(swatch_value(rgb_of([c[0], c[1], c[2], 1.0]), if open == Some(srow) { (self.paint_b % strip.len()) as i32 } else { -1 }, &strip), "ColorB1_Dummy", "PickColorB");
                                     }
                                     _ => {}
                                 }
@@ -8842,19 +8842,21 @@ impl Game {
                             use crate::flash_ui::{choice_list, swatch_value};
                             let row = |label: String, value: String| crate::flash_ui::MenuRow { label, value, enabled: true, part: None };
                             let labels = [("G_IntNeonColor", "NEON COLOR"), ("G_GaugesColor", "GAUGE COLOR A"), ("G_GaugesBColor", "GAUGE COLOR B"), ("G_IntAColor", "INTERIOR COLOR A"), ("G_IntBColor", "INTERIOR COLOR B"), ("G_IntCColor", "INTERIOR COLOR C")];
+                            // (the rows' open states in ColorsInt.sc.xml; their closed states have no child state)
+                            let open_ids = ["IntNeon_Open", "Gauges_Open", "GaugesB_Open", "IntColorA_Open", "IntColorB_Open", "IntColorC_Open", "IntColorD_Open", "IntColorE_Open"];
                             let mut out = vec![row(st("G_IntNeon", "INTERIOR NEON"), choice_list(self.int_neon as usize, &[st("G_Off", "OFF"), st("on", "ON")]))];
                             for (k, (key, d)) in labels.iter().enumerate() {
                                 let idx = self.int_colors[k] % slots.len();
                                 let shown = self.int_open.filter(|o| o.0 == k).map_or(idx, |o| o.1 % slots.len());
                                 let rgb = (if self.int_open.map(|o| o.0) == Some(k) { self.int_open_hsv } else { self.slot_hsv[k] }).map_or(rgb_of(PALETTE[shown % PALETTE.len()]), |h| { let c = paint_hsv_to_rgb(h); rgb_of([c[0], c[1], c[2], 1.0]) });
-                                out.push(row(st(key, d), swatch_value(rgb, if self.int_open.map(|o| o.0) == Some(k) { idx as i32 } else { -1 }, &slots)));
+                                out.push(row(st(key, d), crate::flash_ui::swatch_states(swatch_value(rgb, if self.int_open.map(|o| o.0) == Some(k) { idx as i32 } else { -1 }, &slots), "", open_ids[k])));
                             }
                             // (INTERIOR COLOR D, E: colour slots 12, 13 of ColorsInt.sc.xml - the vehicle's own, `mc4`)
                             for (k, (key, d)) in [("G_IntDColor", "INTERIOR COLOR D"), ("G_IntEColor", "INTERIOR COLOR E")].iter().enumerate() {
                                 let idx = self.car_x.int_de_idx[k].0 % slots.len();
                                 let shown = self.int_open.filter(|o| o.0 == 9 + k).map_or(idx, |o| o.1 % slots.len());
                                 let rgb = (if self.int_open.map(|o| o.0) == Some(9 + k) { self.int_open_hsv } else { self.car_x.int_de_hsv[k] }).map_or(rgb_of(PALETTE[shown % PALETTE.len()]), |h| { let c = paint_hsv_to_rgb(h); rgb_of([c[0], c[1], c[2], 1.0]) });
-                                out.push(row(st(key, d), swatch_value(rgb, if self.int_open.map(|o| o.0) == Some(9 + k) { idx as i32 } else { -1 }, &slots)));
+                                out.push(row(st(key, d), crate::flash_ui::swatch_states(swatch_value(rgb, if self.int_open.map(|o| o.0) == Some(9 + k) { idx as i32 } else { -1 }, &slots), "", open_ids[6 + k])));
                             }
                             rows = out;
                         }
@@ -8874,7 +8876,7 @@ impl Game {
                                 let idx = self.rim_cols[k] % slots.len();
                                 let shown = self.int_open.filter(|o| o.0 == 6 + k).map_or(idx, |o| o.1 % slots.len());
                                 let rgb = (if self.int_open.map(|o| o.0) == Some(6 + k) { self.int_open_hsv } else { self.slot_hsv[6 + k] }).map_or(rgb_of(PALETTE[shown % PALETTE.len()]), |h| { let c = paint_hsv_to_rgb(h); rgb_of([c[0], c[1], c[2], 1.0]) });
-                                out.push(row(st(key, d), crate::flash_ui::swatch_with_child(swatch_value(rgb, if self.int_open.map(|o| o.0) == Some(6 + k) { idx as i32 } else { -1 }, &slots), &format!("Rim{}_Dummy", k + 1))));
+                                out.push(row(st(key, d), crate::flash_ui::swatch_states(swatch_value(rgb, if self.int_open.map(|o| o.0) == Some(6 + k) { idx as i32 } else { -1 }, &slots), &format!("Rim{}_Dummy", k + 1), &format!("Rim{}_Open", k + 1))));
                             }
                             rows = out;
                         }
@@ -8897,7 +8899,7 @@ impl Game {
                                 let own = if self.int_open.map(|o| o.0) == Some(k) { self.int_open_free } else { own };
                                 let rgb = own.filter(|o| o.0 % strip.len() == shown).map_or(strip[shown], |o| free(o.1));
                                 // (Colors.sc.xml: ExtNeon_Closed / Tint_Closed each hold one child state)
-                                crate::flash_ui::swatch_with_child(swatch_value(rgb, if self.int_open.map(|o| o.0) == Some(k) { idx as i32 } else { -1 }, &strip), if k == 11 { "ExtNeon_Dummy" } else { "Tint_Dummy" })
+                                crate::flash_ui::swatch_states(swatch_value(rgb, if self.int_open.map(|o| o.0) == Some(k) { idx as i32 } else { -1 }, &strip), if k == 11 { "ExtNeon_Dummy" } else { "Tint_Dummy" }, if k == 11 { "ExtNeon_Open" } else { "Tint_Open" })
                             };
                             let levels: Vec<String> = (1..=10).map(|k| st(&format!("Tint_{k}"), &if k == 1 { "STOCK".to_string() } else if k == 10 { "FULL".to_string() } else { format!("LEVEL {}", k - 1) })).collect();
                             rows = vec![

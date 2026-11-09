@@ -691,13 +691,16 @@ pub fn swatch_value(rgb: u32, select: i32, strip: &[u32]) -> String {
     format!("{}{};{};{}", SWATCH, rgb, select, strip.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(","))
 }
 
-/// A colour row whose closed state has one child state `id` (`ExtNeon_Dummy`, `ColorA1_Dummy`, `Rim1_Dummy` ...).
-/// The original's state-chart menu builder F-31313 sends a row's enabled child states as its `elements` with `name` =
-/// the child's text, and a state with no desc takes its id from the string table, which these ids are not in: the
-/// table's miss is the key as "!!%s!!" (F-12531). The movie sizes its value column from those names, so the closed
-/// row widens the panel (captures work/ui2/cap c05, c16).
-pub fn swatch_with_child(value: String, id: &str) -> String {
-    format!("{value};{id}")
+/// A colour row's two states as the original's state chart names them: the closed state's one child state `closed`
+/// (`ExtNeon_Dummy`, `ColorA1_Dummy`, `Rim1_Dummy` ...; "" for a closed state without one, the interior rows) and the
+/// open state's id `open` (`ExtNeon_Open`, `PickColorA` ...), whose 40 strip children are an `<include count="40">` of
+/// an id-less state. The original's state-chart menu builder F-31313 sends a row's enabled child states as its
+/// `elements` with `name` = the child's text; a state with no desc takes its id from the string table, and an included
+/// copy without an id is named "<parent id>.s<n>", n from 0 (the parser F-32344); none of these ids is in the table,
+/// whose miss is the key as "!!%s!!" (F-12531). The movie sizes its value column from those names (menu `type` 1
+/// measures every row's children), so the row widens the panel (captures work/ui2/cap c05, c16, c17).
+pub fn swatch_states(value: String, closed: &str, open: &str) -> String {
+    format!("{value};{closed};{open}")
 }
 
 /// One list row: label (`text1`), value (`text2`), selectable (`property1`).
@@ -1294,6 +1297,7 @@ impl FlashMenu {
                 let select: i32 = f.next().and_then(|v| v.parse().ok()).unwrap_or(-1);
                 let strip: Vec<i32> = f.next().unwrap_or("").split(',').filter_map(|v| v.parse::<u32>().ok()).map(|v| v as i32).collect();
                 let child = f.next().filter(|id| !id.is_empty() && select < 0);
+                let open_id = f.next().filter(|id| !id.is_empty() && select >= 0);
                 // (the states' `fs_type`: 30 closed, 31 open - Paint.sc.xml, Colors.sc.xml; the open row's strip shows
                 // `numswatches` 5 from its `offset`, which the movie moves to keep `select` in view)
                 p.set_path(&format!("menu.elements.{}.type", i), Value::Int(if select >= 0 { 31 } else { 30 }));
@@ -1303,9 +1307,9 @@ impl FlashMenu {
                 for (j, c) in strip.iter().enumerate() {
                     p.set_path(&format!("menu.elements.{}.elements.{}.color", i, j), Value::Int(*c));
                 }
-                // (closed, the one child state's name - see `swatch_with_child`; open, the strip's children have no name)
+                // (closed, the one child state's name; open, the strip's included copies - see `swatch_states`)
                 for j in 0..strip.len().max(1) {
-                    let name = if j == 0 { child.map(|id| format!("!!{id}!!")) } else { None };
+                    let name = if j == 0 { child.map(|id| format!("!!{id}!!")) } else { None }.or_else(|| open_id.map(|id| format!("!!{id}.s{j}!!")));
                     p.set_path(&format!("menu.elements.{}.elements.{}.name", i, j), Value::str(name.as_deref().unwrap_or("")));
                 }
                 p.set_path(&format!("menu.elements.{}.text2", i), Value::str(""));
@@ -2195,9 +2199,9 @@ mod tests {
     }
 
     /// The NEON/WINDOW TINT page's width as the original's (captures work/ui2/cap c16, c17): a closed colour row sends its
-    /// one child state named "!!<id>!!" (`swatch_with_child`), the movie sizes its value column from it. Closed, the
-    /// value column is "!!ExtNeon_Dummy!!" and the panel 504.05 wide; open, the strip's row is skipped by the movie
-    /// and the title's 465.47 wins (the original's open panel is wider still: open, UI.md).
+    /// one child state named "!!<id>!!", an open one its 40 included copies "!!<open id>.s<n>!!" (`swatch_states`); the
+    /// movie sizes its value column from them. Closed, "!!ExtNeon_Dummy!!", the panel 504.05 wide; open,
+    /// "!!ExtNeon_Open.s30!!" (225.70), 538.77 (the captures: 386 and 412 px).
     #[test]
     #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
     fn neon_page_value_column_from_the_child_states() {
@@ -2207,14 +2211,14 @@ mod tests {
         let strip: Vec<u32> = (0..40).map(|i| 0x101010 * (i % 15)).collect();
         let row = |label: &str, value: String| MenuRow { label: label.into(), value, enabled: true, part: None };
         let levels: Vec<String> = (1..=10).map(|k| if k == 1 { "STOCK".to_string() } else if k == 10 { "FULL".to_string() } else { format!("LEVEL {}", k - 1) }).collect();
-        for (open, col2, width) in [(false, 190.986, 504.053), (true, 146.191, 465.469)] {
+        for (open, col2, width) in [(false, 190.986, 504.053), (true, 225.703, 538.770)] {
             let mut menu = FlashMenu::load(&dir, GARAGE_MOVIE, [0.0; 2], &shared).unwrap();
             let page = MenuPage {
                 layout: MenuLayout::Paint, icon: 10, title: "NEON/WINDOW TINT".into(),
                 rows: vec![
                     row("NEON", choice_list(1, &["ON".into(), "OFF".into()])),
-                    row("\u{b1}NEON COLOR", swatch_with_child(swatch_value(0x8080f4, if open { 0 } else { -1 }, &strip), "ExtNeon_Dummy")),
-                    row("WINDOW TINT", swatch_with_child(swatch_value(0xffffff, -1, &strip), "Tint_Dummy")),
+                    row("\u{b1}NEON COLOR", swatch_states(swatch_value(0x8080f4, if open { 0 } else { -1 }, &strip), "ExtNeon_Dummy", "ExtNeon_Open")),
+                    row("WINDOW TINT", swatch_states(swatch_value(0xffffff, -1, &strip), "Tint_Dummy", "Tint_Open")),
                     row("TINT OPACITY", choice_list(0, &levels)),
                 ],
                 select: if open { 1 } else { 0 }, money: Some(("MONEY".into(), 5000)), ..MenuPage::default()
