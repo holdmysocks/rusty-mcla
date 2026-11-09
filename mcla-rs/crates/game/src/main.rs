@@ -8434,6 +8434,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if let Some(l) = self.sound.want_speech.take() {
                 self.speech.request(l);
             }
+            // (F-46824 after its own line: with a race (F-27863 non-null), offline, more than one racer (+3088) and a racer
+            // in record 1 (+208 - the race core puts the human first and its AI opponents after, so the first opponent;
+            // participants[1]), F-23328(TAUNT_RACE_BIG_CRASH, that racer's driver name +144) - the voice is his driver
+            // set's profile, as the pre-race taunt gets it)
+            if std::mem::take(&mut self.sound.want_crash_taunt) {
+                if let Some(&opp) = self.game.race.as_ref().filter(|r| r.participants.len() > 1).and_then(|r| r.participants.get(1)) {
+                    let set = self.drivers.set_of.get(&opp).cloned().unwrap_or_default();
+                    let voice = prerace::voice_of(&self.opt.data_dir, &set).unwrap_or_default();
+                    self.speech.request_as("TAUNT_RACE_BIG_CRASH", &voice);
+                }
+            }
             // the speech manager's "a line plays" test (+2256 and +2260, F-58518 / F-68821 and the police chirp): the
             // career speech only, the police radio has a manager of its own
             self.sound.speech_busy = self.speech.busy();

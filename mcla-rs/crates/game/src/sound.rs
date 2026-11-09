@@ -257,6 +257,8 @@ pub struct Sound {
     pub menu_cam: Option<i32>,
     /// a speech line the sounds ask for (PLAYER_IN_AIR); the game says it if no speech plays
     pub want_speech: Option<&'static str>,
+    /// the wipeout's race taunt is asked (F-46824, after its own line): the game says it in the record-1 racer's voice
+    pub want_crash_taunt: bool,
     navmap: bool,
     /// set by the game: the start warp's step (startwarp.rs) - 0 none, 1 the climb, 2 held, 3 the way down
     pub warp: u8,
@@ -486,12 +488,16 @@ impl Sound {
     /// The player's wipeout slow motion starts (F-46437, offline, the local player): its audio entity's vt+36 (F-46824)
     /// sets +2200 = -1 (no PLAYER_WIPE_OUT from the wreck start's 0.25 s timer, which the port does not have) and,
     /// unless a speech line plays (+2256 and +2260), asks for PLAYER_WIPE_OUT_TIMEWARP ("PLAYER") on a car, not a bike.
-    /// Not ported: then TAUNT_RACE_BIG_CRASH in a race of more than one racer through the race's +208 speaker (not
-    /// identified).
+    /// Then, car or bike, `want_crash_taunt`: the game asks TAUNT_RACE_BIG_CRASH in the voice of the race's record-1
+    /// racer (race +208) when an offline race of more than one racer (+3088) runs.
     pub fn wipeout_warp(&mut self, bike: bool) {
-        if !self.speech_busy && !bike {
+        if self.speech_busy {
+            return;
+        }
+        if !bike {
             self.want_speech = Some("PLAYER_WIPE_OUT_TIMEWARP");
         }
+        self.want_crash_taunt = true;
     }
 
     /// The player engine's stop after a damage-out (the player's vt+56, F-17073, with 1): the engine sound's stop

@@ -246,6 +246,17 @@ impl Speech {
     /// draw 27 < 30 passes, the script draw 0 next, a request 66.3 s after the start refused with no draw, one at 120.7 s
     /// drawn 36 and refused (the last start kept).
     pub fn request(&mut self, scenario: &str) -> bool {
+        self.request_with(scenario, "", true)
+    }
+
+    /// The same start asked by F-23328 (scenario, voice group = a racer's driver name, F-83760's racer +144): no
+    /// entity for the lines (F-23328 starts it through F-70230, not F-30989), the computer lines in `profile`'s voice
+    /// as `say_as` gives them.
+    pub fn request_as(&mut self, scenario: &str, profile: &str) -> bool {
+        self.request_with(scenario, profile, false)
+    }
+
+    fn request_with(&mut self, scenario: &str, profile: &str, attach: bool) -> bool {
         let key = scenario.to_ascii_uppercase();
         let (Some(g), Some(count)) = (self.gates.get(&key).copied(), self.scenarios.get(&key).map(|s| s.len())) else { return false };
         if self.clock < g.last + g.frequency || self.rand(0, 99) >= g.probability || count == 0 {
@@ -270,10 +281,15 @@ impl Speech {
             e.last_script = pick;
         }
         let steps = self.scenarios[&key][pick as usize].clone();
-        let steps = self.phone_steps(steps, "");
+        let steps = self.phone_steps(steps, profile);
         // (F-30989 then gives the lines the requesting entity, F-18143: the player's car for PLAYER_NITROUS / PLAYER_IN_AIR)
+        let pv = (!profile.is_empty()).then(|| profile.to_ascii_uppercase());
         let steps = steps.into_iter().map(|st| match st {
-            Step::Play { asset, player, voice, rec, force, post, .. } => Step::Play { asset, player, voice, rec, force, post, attach: true },
+            Step::Play { asset, player, voice, rec, force, post, attach: at } => {
+                let voice = if player || pv.is_none() { voice } else { pv.clone() };
+                Step::Play { asset, player, voice, rec, force, post, attach: if attach { true } else { at } }
+            }
+            Step::Clip { name, player: false, voice } => Step::Clip { name, player: false, voice: pv.clone().or(voice) },
             o => o,
         });
         if g.delay > 0.0 {
@@ -570,6 +586,35 @@ mod tests {
 
     /// The speech manager's gate and script pick (F-95157) against the running original (work/slipstream/audio3/cap,
     /// recorder sst_audio: GATE / PICK / SCEN lines): the generator's state words before the draws, the clock, the outcome.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR (data dir)"]
+    fn the_crash_taunt_is_a_gated_request_in_the_racers_voice() {
+        let data = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let mut sp = Speech::load(&data, Path::new("."));
+        // CareerScript.xml: Probability 50, Delay 1.0, Frequency 20; the hookman line in the GENERIC_HOOKMAN group
+        assert_eq!(sp.gate("TAUNT_RACE_BIG_CRASH").map(|g| (g.probability, g.delay, g.frequency)), Some((50, 1.0, 20.0)));
+        sp.clock = 100.0;
+        // a gate draw below 50 starts it (the same draws as `request`)
+        let mut started = false;
+        for s in 0..64u32 {
+            crate::sndobj::set_audio_rng_state((0x1234_5678 ^ s.wrapping_mul(0x9E37_79B9), 0x0bad_f00d));
+            sp.stop();
+            sp.wait = 0.0;
+            if let Some(e) = sp.gates.get_mut("TAUNT_RACE_BIG_CRASH") {
+                e.last = -f32::MAX;
+            }
+            if sp.request_as("TAUNT_RACE_BIG_CRASH", "gh_01") {
+                started = true;
+                break;
+            }
+        }
+        assert!(started);
+        let plays: Vec<_> = sp.queue.iter().filter_map(|s| match s { Step::Play { voice, attach, player, .. } => Some((voice.clone(), *attach, *player)), _ => None }).collect();
+        assert!(!plays.is_empty());
+        assert!(plays.iter().all(|(v, a, p)| !p && !a && v.as_deref() == Some("GH_01")), "{:?}", plays);
+        assert!(matches!(sp.queue.front(), Some(Step::Wait(w)) if *w == 1.0));
+    }
+
     #[test]
     #[ignore = "requires MCLA_DATA_DIR (data dir)"]
     fn request_gate_from_disc() {
