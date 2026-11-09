@@ -128,21 +128,30 @@ impl RubberBand {
     /// The throttle cap (+404) for a racer at shifted gap `g` (+384, metres ahead of the human), its own
     /// distance to the finish (+396) and the squared straight-line distance to the nearest human (+400),
     /// going at `speed` (car +224) with its driver's MaxSpeed (aivVehicleTuning [0]).
+    /// As F-17058 computes it (brain +412 .. +484 = the tune from its +0): `ble` on the speed (not above: 1, a NaN speed
+    /// too), the interpolations fused, the clamps and the min / max as fsel (a NaN takes the second value).
     pub fn cap(&self, g: f32, to_finish: f32, human_d2: f32, speed: f32, max_speed: f32) -> f32 {
-        if speed <= self.min_speed * max_speed {
+        if !(speed > self.min_speed * max_speed) {
             return 1.0;
         }
+        let fsel = |a: f32, b: f32, c: f32| if a >= 0.0 { b } else { c };
+        let clamp01 = |t: f32| {
+            let m = fsel(t, t, 0.0);
+            fsel(m - 1.0, 1.0, m)
+        };
+        let mx = self.max_throttle;
         let mut cap = if g > 0.0 {
-            let t = ((g - self.min_dist) / (self.max_dist - self.min_dist)).clamp(0.0, 1.0);
-            (self.max_throttle + t * (self.min_throttle - self.max_throttle)).min(self.max_throttle)
+            let t = clamp01((g - self.min_dist) / (self.max_dist - self.min_dist));
+            let c = t.mul_add(self.min_throttle - mx, mx);
+            fsel(mx - c, c, mx)
         } else {
-            let t = ((-g - self.behind_min_dist) / (self.behind_max_dist - self.behind_min_dist)).clamp(0.0, 1.0);
-            self.max_throttle + t * (self.behind_max_throttle - self.max_throttle)
+            let t = clamp01((-self.behind_min_dist - g) / (self.behind_max_dist - self.behind_min_dist));
+            t.mul_add(self.behind_max_throttle - mx, mx)
         };
         if to_finish < self.home_stretch_distance {
-            cap = cap.min(self.home_stretch_behind_max_throttle);
+            cap = fsel(cap - self.home_stretch_behind_max_throttle, self.home_stretch_behind_max_throttle, cap);
         } else if human_d2 < self.player_close_distance * self.player_close_distance {
-            cap = self.max_throttle.max(self.player_close_max_throttle);
+            cap = fsel(mx - self.player_close_max_throttle, mx, self.player_close_max_throttle);
         }
         cap
     }
@@ -240,6 +249,50 @@ mod tests {
         assert_eq!(r.cap(100.0, 2000.0, far, 30.0, 61.0), 1.0);
         assert_eq!(r.shifted_gap(100.0, -2), 35.0);
         assert_eq!(r.shifted_gap(-10.0, 2), 14.0);
+    }
+
+    /// The cap against the original's F-17058 run offline (tools/rubber_cap_reference.py, 6,000 cases: brain +404 after
+    /// the frame, with the tune at +412 .. +484): word for word. Off (+380 clear) the original writes 1.
+    #[test]
+    fn cap_matches_the_original() {
+        let u = |s: &str| u32::from_str_radix(&s.replace('_', ""), 16).unwrap();
+        let f = |s: &str| f32::from_bits(u(s));
+        let (mut n, mut bad) = (0, 0);
+        for l in include_str!("testdata/rubber_cap_ref.txt").lines() {
+            let (lhs, rhs) = l.split_once(" -> ").unwrap();
+            let s: Vec<&str> = lhs.split_whitespace().skip(1).collect();
+            let t = |i: usize| f(s[6 + i]);
+            let r = RubberBand {
+                max_throttle: t(0),
+                min_speed: t(1),
+                min_dist: t(2),
+                max_dist: t(3),
+                min_throttle: t(4),
+                behind_min_dist: t(5),
+                behind_max_dist: t(6),
+                behind_max_throttle: t(7),
+                dist_behind_before_shortcuts: 0.0,
+                nitro_min_dist_from_start: 0.0,
+                nitro_min_dist_from_finish: 0.0,
+                nitro_min_dist_behind_player: 0.0,
+                unlimited_nitro_min_dist_behind_player: 0.0,
+                home_stretch_behind_max_throttle: t(15),
+                home_stretch_distance: t(16),
+                player_close_max_throttle: t(17),
+                player_close_distance: t(18),
+                ahead_offsets: [0.0; 8],
+                behind_offsets: [0.0; 8],
+            };
+            let cap = if u(s[0]) != 0 { r.cap(f(s[1]), f(s[2]), f(s[3]), f(s[4]), f(s[5])) } else { 1.0 };
+            n += 1;
+            if cap.to_bits() != u(rhs) {
+                if bad < 5 {
+                    eprintln!("{l}\n   port {:08x}", cap.to_bits());
+                }
+                bad += 1;
+            }
+        }
+        assert_eq!((n, bad), (6000, 0));
     }
 
     #[test]
