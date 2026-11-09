@@ -622,6 +622,9 @@ struct Instance {
     frame_pos: Option<Vec3>,
     doppler: f32,
     stop: bool,
+    /// a stop that came before the sound's first update (F-22244 on state 0: +56 bit 0x10): it plays that update, and the
+    /// next update's top kills it (F-97268 -> F-45650: the type's Kill, state 3; no release, no stop sound)
+    kill: bool,
     /// the request's release override (the request entry +192, -1 = none): a stop takes it instead of each sound's own
     /// ReleaseTime (F-58485)
     stop_ms: i32,
@@ -1645,7 +1648,7 @@ impl SoundLib {
         if std::env::var_os("MCLA_SOUND_STARTS").is_some() {
             log::info!("sound start: {} vol {:.2} pitch {}", self.snd.name_of(hash).unwrap_or("?"), req.volume, req.pitch);
         }
-        self.insts.push(Instance { id, hash, root, req, prev_pos: None, frame_pos: None, doppler: 1.0, stop: false, stop_ms: -1, timer });
+        self.insts.push(Instance { id, hash, root, req, prev_pos: None, frame_pos: None, doppler: 1.0, stop: false, kill: false, stop_ms: -1, timer });
         Some(Handle(id))
     }
 
@@ -1691,7 +1694,7 @@ impl SoundLib {
         let id = self.next;
         self.next += 1;
         let timer = Some(self.timer_of(&root.h));
-        self.insts.push(Instance { id, hash: 0, root, req, prev_pos: None, frame_pos: None, doppler: 1.0, stop: false, stop_ms: -1, timer });
+        self.insts.push(Instance { id, hash: 0, root, req, prev_pos: None, frame_pos: None, doppler: 1.0, stop: false, kill: false, stop_ms: -1, timer });
         Some(Handle(id))
     }
 
@@ -1815,9 +1818,8 @@ impl SoundLib {
         let t = inst.timer.unwrap_or(0) as usize;
         self.timer_ms[t] += dt as f64 * 1000.0;
         let now = self.timer_ms[t] as u32;
-        if inst.stop {
-            inst.stop = false;
-            stop_node(&mut inst.root, inst.stop_ms, now);
+        if apply_stop(&mut inst, now) {
+            return Vec::new();
         }
         let (ctx, rt) = root_ctx(&inst.req);
         let mut out = Vec::new();
@@ -1910,9 +1912,8 @@ impl SoundLib {
                 continue;
             }
             let now = self.timer_ms[inst.timer.unwrap_or(0) as usize] as u32;
-            if inst.stop {
-                inst.stop = false;
-                stop_node(&mut inst.root, inst.stop_ms, now);
+            if apply_stop(inst, now) {
+                continue;
             }
             let (ctx, rt) = root_ctx(&inst.req);
             let mut out = Vec::new();
@@ -2839,6 +2840,25 @@ fn inherit(h: &SoundHeader, p: &Ctx) -> (u32, u32, f32, f32, u8) {
     )
 }
 
+/// The per-sound update's top (F-89113): a sound marked for a kill ends now (F-97268: the type's Kill, state 3; its voices are
+/// not driven again); a stop request (F-22244) on a sound that has not had its first update marks it for the kill at the
+/// next update and lets it play this one, else it is the release stop (F-58485). True when the sound ended here.
+fn apply_stop(inst: &mut Instance, now: u32) -> bool {
+    if inst.kill {
+        inst.root.st = St::Done;
+        return true;
+    }
+    if inst.stop {
+        inst.stop = false;
+        if inst.root.clock.play_at.is_none() && inst.root.st == St::Waiting {
+            inst.kill = true;
+        } else {
+            stop_node(&mut inst.root, inst.stop_ms, now);
+        }
+    }
+    false
+}
+
 /// A voice the manager stops (F-71842): its record's position (ms, synced from the playing voice every update) moves 80 on;
 /// past the length a voice with no loop start ends (-1), else it wraps into the loop: start + (pos - start) mod (len - start),
 /// the start itself when the loop is empty.
@@ -3567,6 +3587,26 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 6000);
+    }
+
+    /// A stop in the update a sound was started (128 times in a recorded drive: bumper creaks, scrapes, skids, terrain
+    /// loops; verify_audio_b1.md batch 49): the sound plays that one update, then the next update's top kills it with no
+    /// release. A stop after its first update is the release stop.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn a_sound_stopped_before_its_first_update_plays_one_update() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        for name in ["SKIDS_MASTER", "GARBAGE_CAN_SCRAPE_MASTER", "DAMAGE_BUMPER_CREAK_MASTER"] {
+            let h = lib.play(name, Req::default()).expect(name);
+            lib.stop(h);
+            let first = lib.test_leaf_vols(h, 1.0 / 30.0);
+            let second = lib.test_leaf_vols(h, 1.0 / 30.0);
+            println!("{name}: first update {first:?}, second {second:?}");
+            assert!(!first.is_empty(), "{name}: plays the update it was started");
+            assert!(second.is_empty(), "{name}: killed at the next update");
+        }
     }
 
     /// The disc's two Crossfades (POLICE_SIREN_LOOP_CROSSFADE, CAR_ALARM_CROSSFADE) play both children faded by the
