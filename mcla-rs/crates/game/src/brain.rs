@@ -975,16 +975,23 @@ impl Brain {
             if !self.man.reverse && self.man.turn == 0 {
                 let cap = rb.map_or(1.0, |(_, s)| s.cap);
                 self.cap_written = true;
-                t.throttle = a.throttle.min(cap);
-                // nitrous / slingshot
-                let gates = rb.map_or(true, |(r, s)| s.from_start > r.nitro_min_dist_from_start && s.to_finish > r.nitro_min_dist_from_finish && s.gap < -r.nitro_min_dist_behind_player);
-                if car.wheels_down == car.wheel_count && self.allow_nitro && a.throttle > 0.999_999 && self.nitro_off == 0.0 && gates {
-                    if car.sling_ready && !car.nitro_burning {
-                        out.sling = self.aiv.sling_benefit() > self.sling_score;
-                    } else if car.nitro_ready && !car.sling_active {
-                        out.nitro = self.aiv.nitro_benefit() > self.nitro_score;
-                    }
-                }
+                t.throttle = capped(a.throttle, cap);
+                // nitrous / slingshot (on the capped throttle)
+                let gates = rb.map_or(true, |(r, s)| boost_gates(r, s.from_start, s.to_finish, s.gap));
+                let (aiv, ns, ss) = (&self.aiv, self.nitro_score, self.sling_score);
+                let f = boost_pick(
+                    t.throttle,
+                    car.wheels_down == car.wheel_count,
+                    self.allow_nitro,
+                    self.nitro_off,
+                    gates,
+                    car.sling_ready && !car.nitro_burning,
+                    car.nitro_ready && !car.sling_active,
+                    || aiv.sling_benefit() > ss,
+                    || aiv.nitro_benefit() > ns,
+                );
+                out.sling = f & 4 != 0;
+                out.nitro = f & 8 != 0;
                 // (no wheel down, car vfunc 44 == 0: flags |= 1 and +32 = clamp(fma(-(s a), -2.5465, w -4), -1, 1), with
                 // s = the sign of up.y (0 at 0, -1 for NaN), a = asin(row 2 .y) - row 2 the back - and w = row 0 . the angular
                 // velocity (vmsum3fp), the clamps the original's fsel pair: the bike's in-air control levels it, vehsim section 12)
@@ -1032,6 +1039,54 @@ impl Brain {
     /// Mark a collision with another vehicle (mcOpponent F-30284: +296 = 1.5 s).
     pub fn hit(&mut self) {
         self.collision = 1.5;
+    }
+}
+
+/// The throttle under the rubber band's cap as F-17058 takes it: fsel(throttle - cap, cap, throttle) (a NaN throttle stays).
+pub fn capped(throttle: f32, cap: f32) -> f32 {
+    if throttle - cap >= 0.0 {
+        cap
+    } else {
+        throttle
+    }
+}
+
+/// The rubber band's gates on the nitrous / slingshot (F-17058, with the rubber band on): +392 from the start above
+/// UseNitroMinDistFromStart, +396 to the finish above UseNitroMinDistFromFinish, +388 the gap below -UseNitroMinDistBehindPlayer
+/// (a NaN fails each).
+pub fn boost_gates(r: &crate::rubber::RubberBand, from_start: f32, to_finish: f32, gap: f32) -> bool {
+    from_start > r.nitro_min_dist_from_start && to_finish > r.nitro_min_dist_from_finish && gap < -r.nitro_min_dist_behind_player
+}
+
+/// F-17058's nitrous / slingshot pick (input flags: 4 the slingshot, 8 the nitrous): every wheel down, nitrous allowed
+/// (+236), the capped throttle above 0.99999899 (0x3F7FFFEF), the nitrous timer +248 at 0 and the gates; then the slingshot
+/// when it can fire and the nitrous is not burning - its benefit above +244 or nothing - else the nitrous when it can fire and
+/// the slingshot is not active, its benefit above +240.
+#[allow(clippy::too_many_arguments)]
+pub fn boost_pick(
+    throttle: f32,
+    all_down: bool,
+    allow: bool,
+    nitro_off: f32,
+    gates: bool,
+    sling_ok: bool,
+    nitro_ok: bool,
+    sling_wins: impl FnOnce() -> bool,
+    nitro_wins: impl FnOnce() -> bool,
+) -> u32 {
+    if !(all_down && allow && throttle > f32::from_bits(0x3F7F_FFEF) && nitro_off == 0.0 && gates) {
+        return 0;
+    }
+    if sling_ok {
+        if sling_wins() {
+            4
+        } else {
+            0
+        }
+    } else if nitro_ok && nitro_wins() {
+        8
+    } else {
+        0
     }
 }
 
@@ -1330,6 +1385,69 @@ pub fn run(v: &mut crate::vehicles::Vehicles, i: usize, brain: &mut Brain, to_go
 
 #[cfg(test)]
 mod tests {
+
+    /// F-17058's nitrous / slingshot pick after the cap, run offline (tools/nitro_pick_reference.py, verify_nitro_pick.md):
+    /// the input flags (+40) and the throttle (+156), the cap computed by the verified RubberBand::cap.
+    #[test]
+    fn nitro_pick_matches_the_original() {
+        use crate::rubber::RubberBand;
+        let u = |s: &str| u32::from_str_radix(&s.replace('_', ""), 16).unwrap();
+        let f = |s: &str| f32::from_bits(u(s));
+        let (mut n, mut picks, mut bad, mut old_bad) = (0, 0, 0, 0);
+        for line in include_str!("testdata/nitro_pick_ref.txt").lines() {
+            let (lhs, rhs) = line.split_once(" -> ").unwrap();
+            let s: Vec<&str> = lhs.split_whitespace().skip(1).collect();
+            let o: Vec<u32> = rhs.split_whitespace().map(u).collect();
+            let w = |i: usize| u(s[i]);
+            let t = |i: usize| f(s[6 + i]);
+            let r = RubberBand {
+                max_throttle: t(0),
+                min_speed: t(1),
+                min_dist: t(2),
+                max_dist: t(3),
+                min_throttle: t(4),
+                behind_min_dist: t(5),
+                behind_max_dist: t(6),
+                behind_max_throttle: t(7),
+                nitro_min_dist_from_start: t(11),
+                nitro_min_dist_from_finish: t(12),
+                nitro_min_dist_behind_player: t(13),
+                home_stretch_behind_max_throttle: t(15),
+                home_stretch_distance: t(16),
+                player_close_max_throttle: t(17),
+                player_close_distance: t(18),
+                ..Default::default()
+            };
+            let on = w(0) != 0;
+            let cap = if on { r.cap(f(s[1]), f(s[2]), f(s[3]), f(s[4]), f(s[5])) } else { 1.0 };
+            let thr = capped(f(s[25]), cap);
+            let gates = !on || boost_gates(&r, f(s[29]), f(s[2]), f(s[30]));
+            let (no, nready, burning, so, sready, sactive) = (w(31) != 0, w(32) != 0, w(33) != 0, w(34) != 0, w(35) != 0, w(36) != 0);
+            let (nb, sb, ns, ss) = (f(s[37]), f(s[38]), f(s[39]), f(s[40]));
+            let pick = |th: f32| {
+                boost_pick(th, w(26) == 4, w(27) != 0, f(s[28]), gates, so && sready && !(no && burning), no && nready && !(so && sactive), || sb > ss, || nb > ns)
+            };
+            // (no wheel down: the in-air branch adds flag 1, as Brain::update's `air`)
+            let air = if w(26) == 0 { 1 } else { 0 };
+            let flags = pick(thr) | air;
+            n += 1;
+            if flags != 0 {
+                picks += 1;
+            }
+            if (flags, thr.to_bits()) != (o[0], o[1]) {
+                if bad < 5 {
+                    eprintln!("{line}\n   port {flags:08x} {:08x}", thr.to_bits());
+                }
+                bad += 1;
+            }
+            // (the rule before: f32::min, and the uncapped throttle in the test)
+            if (pick(f(s[25])) | air, f(s[25]).min(cap).to_bits()) != (o[0], o[1]) {
+                old_bad += 1;
+            }
+        }
+        eprintln!("{n} cases, {picks} picks; the rule before differed in {old_bad}");
+        assert_eq!((n, bad), (15000, 0));
+    }
 
     /// The goal helpers against the original run offline (tools/goal_helpers_reference.py, verify_goal_helpers.md): the goal
     /// point F-79021, the current goal's checkpoint F-68139 and lap F-60424, the max-speed setters F-59732 / F-61343.
