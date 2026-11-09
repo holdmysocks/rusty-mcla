@@ -6627,6 +6627,66 @@ pub fn stat_sub(code: &str, sub: u32) -> String {
     sub.to_string()
 }
 
+/// A statistic record's value type (byte +8's top three bits in memory, its low three in the save file: 0 float,
+/// 1 signed, else unsigned): the add F-45364 adds by it (f32, or a 32-bit word that wraps) and the compare F-80717
+/// compares by it. The record takes it from the value first submitted (UpdateStatFloat / UpdateStatInt, or the
+/// game code's own submit); the port keeps `ostats` as plain numbers (the save is unchanged) and takes the type from
+/// the code: the float and unsigned codes are the ones every record of four original saves has
+/// (work/launcher-saveimport/in, byte +8 0x28 / 0x2A / 0x1A), and the scripts submit only kARS by UpdateStatFloat,
+/// every other code by UpdateStatInt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatType {
+    Float,
+    Signed,
+    Unsigned,
+}
+
+const STAT_FLOATS: [&str; 15] = ["gDAM", "ghTC", "ghTP", "gk2W", "gkDS", "gkWL", "gmJD", "gsJT", "kARS", "khTC", "nkDS", "nm2W", "nmWL", "nsJT", "vkDT"];
+const STAT_UNSIGNED: [&str; 3] = ["tDL1", "tDL2", "tREW"];
+
+pub fn stat_type(code: &str) -> StatType {
+    if STAT_FLOATS.contains(&code) {
+        StatType::Float
+    } else if STAT_UNSIGNED.contains(&code) {
+        StatType::Unsigned
+    } else {
+        StatType::Signed
+    }
+}
+
+/// The record's 32 bits for a value of its type (a whole number as its 32-bit word).
+pub fn stat_bits(ty: StatType, v: f64) -> u32 {
+    match ty {
+        StatType::Float => (v as f32).to_bits(),
+        _ => v as i64 as u32,
+    }
+}
+
+pub fn stat_from_bits(ty: StatType, b: u32) -> f64 {
+    match ty {
+        StatType::Float => f32::from_bits(b) as f64,
+        StatType::Signed => b as i32 as f64,
+        StatType::Unsigned => b as f64,
+    }
+}
+
+/// F-45364: record + value, f32 for a float record, else the 32-bit words (wrapping).
+pub fn stat_add_bits(ty: StatType, record: u32, value: u32) -> u32 {
+    match ty {
+        StatType::Float => (f32::from_bits(record) + f32::from_bits(value)).to_bits(),
+        _ => record.wrapping_add(value),
+    }
+}
+
+/// F-80717: value < record by the record's type.
+pub fn stat_less_bits(ty: StatType, record: u32, value: u32) -> bool {
+    match ty {
+        StatType::Float => f32::from_bits(value) < f32::from_bits(record),
+        StatType::Signed => (value as i32) < (record as i32),
+        StatType::Unsigned => value < record,
+    }
+}
+
 /// the purse's limit either way (AddMoney F-71075 clamps above, SpendMoney F-38145 below)
 pub const PURSE_CAP: i64 = 2_140_000_000;
 pub const TT_PANEL: char = '\u{1}';
@@ -12321,13 +12381,16 @@ impl Game {
         if !present && self.career.ostats.len() >= STAT_RECORDS {
             return false;
         }
-        let old = self.mc4_stat(code, sub);
-        let nv = match op {
-            0 => old + v,
-            1 if present && !(v < old) => return false,
-            2 if present && !(old < v) => return false,
-            _ => v,
+        // (by the record's value type: F-45364 adds, F-80717 compares - `stat_type`)
+        let ty = stat_type(code);
+        let (old, val) = (stat_bits(ty, self.mc4_stat(code, sub)), stat_bits(ty, v));
+        let nb = match op {
+            0 => stat_add_bits(ty, old, val),
+            1 if present && !stat_less_bits(ty, old, val) => return false,
+            2 if present && !stat_less_bits(ty, val, old) => return false,
+            _ => val,
         };
+        let nv = stat_from_bits(ty, nb);
         self.career.ostats.insert(key, nv);
         // (the port's own counts are whole numbers: a float statistic lives in `ostats` alone)
         if sub == 0 && nv.fract() == 0.0 {
@@ -19446,7 +19509,9 @@ mod tests {
         let (p0, c0) = (g.mc4_stat("ghTP", 0), g.mc4_stat("khTC", 0));
         g.mc4b_tick(1.0, d);
         let hours = 1.0 / 3600.0;
-        assert!((g.mc4_stat("ghTP", 0) - p0 - hours).abs() < 1e-6 && (g.mc4_stat("khTC", 0) - c0 - hours).abs() < 1e-6);
+        // (float statistics add in f32: F-45364)
+        let f32_add = |a: f64| (a as f32 + hours as f32) as f64;
+        assert!(g.mc4_stat("ghTP", 0) == f32_add(p0) && g.mc4_stat("khTC", 0) == f32_add(c0));
         assert!(!g.mc4_stat_present("gvTS", 0));
         let car = g.car_dirs.get(g.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap();
         assert!(g.career.ostats.get(&format!("vkDT/{car}")).copied().unwrap_or(0.0) > 0.0);
@@ -19473,6 +19538,64 @@ mod tests {
         }
         assert_eq!(g.career.ostats.len(), STAT_RECORDS, "the file holds 1000 records");
         assert!(!g.mc4_stat_submit("kNEW", 0, 3, 1.0) && g.mc4_stat_submit("kXXX", 0, 0, 1.0), "existing records still change");
+    }
+
+    /// The record's add F-45364 and compare F-80717 against the original run offline (tools/stat_value_reference.py,
+    /// testdata/stat_value_ref.txt: "type record value -> sum less", the 32-bit words in decimal; 832 cases: f32 sums
+    /// with rounding, infinities and NaN, 32-bit wraps signed and unsigned, type 3 read as unsigned).
+    #[test]
+    fn stat_value_arithmetic_matches_the_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/stat_value_ref.txt").lines() {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            let (t, a, b): (usize, u32, u32) = (w[0].parse().unwrap(), w[1].parse().unwrap(), w[2].parse().unwrap());
+            let (sum, less): (u32, u8) = (w[4].parse().unwrap(), w[5].parse().unwrap());
+            let ty = [StatType::Float, StatType::Signed, StatType::Unsigned, StatType::Unsigned][t];
+            let s = stat_add_bits(ty, a, b);
+            // (a NaN sum: the same NaN class is enough, its payload is the host's)
+            if ty == StatType::Float && f32::from_bits(sum).is_nan() {
+                assert!(f32::from_bits(s).is_nan(), "{l}");
+            } else {
+                assert_eq!(s, sum, "{l}");
+            }
+            assert_eq!(stat_less_bits(ty, a, b), less == 1, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 832);
+        // the bits round trip through the port's numbers
+        for &(ty, b) in &[(StatType::Float, 0x3DCC_CCCDu32), (StatType::Signed, 0xFFFF_FF9C), (StatType::Unsigned, 0xFFFF_FFFF)] {
+            assert_eq!(stat_bits(ty, stat_from_bits(ty, b)), b);
+        }
+    }
+
+    /// An imported original save (work/launcher-saveimport ref/full_v15__empty.json, its career statistics:
+    /// testdata/old_save_ostats.json) loads, takes typed updates and saves back in the same shape: the records not
+    /// updated keep their exact numbers, a float statistic adds in f32, an integer one as a 32-bit word that wraps.
+    #[test]
+    fn typed_statistics_keep_an_old_save() {
+        let old: crate::career::SaveState = serde_json::from_str(include_str!("testdata/old_save_ostats.json")).unwrap();
+        let mut g = Game::new(Vec::new(), 0);
+        // (as Career::restore takes them; restore itself starts a new game here, the test has no missions)
+        g.career.ostats = old.ostats.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        assert!(g.mc4_stat_submit("ghTC", 0, 0, 0.1));
+        assert!(g.mc4_stat_submit("gBRN", 0, 0, 1.0));
+        assert!(g.mc4_stat_submit("tDL1", 0, 0, -1.0), "an unsigned record takes the word of -1");
+        assert!(g.mc4_stat_submit("kTST", 0, 3, 2147483647.0) && g.mc4_stat_submit("kTST", 0, 0, 1.0));
+        assert!(!g.mc4_stat_submit("kARS", 0, 1, 0.7) && g.mc4_stat_submit("kARS", 0, 1, 0.5), "keep lower, in f32");
+        let back: crate::career::SaveState = serde_json::from_str(&serde_json::to_string(&g.career.save()).unwrap()).unwrap();
+        assert!(back.ostats.len() == g.career.ostats.len() && back.ostats.iter().all(|(k, v)| g.career.ostats.get(k) == Some(v)), "the save round trip keeps every number");
+        for (k, v) in &old.ostats {
+            if !["ghTC/0", "gBRN/0", "tDL1/0", "kARS/0"].contains(&k.as_str()) {
+                assert_eq!(back.ostats.get(k), Some(v), "{k} untouched");
+            }
+        }
+        let f = |k: &str| back.ostats[k];
+        assert_eq!(f("ghTC/0"), (old.ostats["ghTC/0"] as f32 + 0.1f32) as f64);
+        assert_eq!(f("gBRN/0"), old.ostats["gBRN/0"] + 1.0);
+        assert_eq!(f("tDL1/0"), old.ostats["tDL1/0"] - 1.0);
+        assert_eq!(f("kTST/0"), -2147483648.0, "a signed record wraps");
+        assert_eq!(f("kARS/0"), 0.5f32 as f64);
+        assert_eq!(back.stats.get("gBRN"), Some(&(old.ostats["gBRN/0"] as i64 + 1)));
     }
 }
 
