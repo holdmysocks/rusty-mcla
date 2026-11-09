@@ -546,6 +546,12 @@ pub struct Props {
     level_map: Option<HashMap<(i32, i32, i32), u32>>,
     /// the velocity of each collider whose prop moves in the physics level this frame (`follow_level`), by collider
     moving: HashMap<u32, Vec3>,
+    /// each moving prop's instance at the last tick's start and end and the tick it moved in (`between_tick`):
+    /// `draw_between` draws it between the two by the render alpha, as the cars are (presentation only)
+    between: HashMap<u32, (Inst, Inst, u64)>,
+    between_tick: u64,
+    /// MCLA_DRAW_STEPS: the moving props' drawn places this frame (instance, place)
+    pub between_log: Option<Vec<(u32, Vec3)>>,
     /// props a race script may place (ramps, flares): model and its triangles
     race_models: HashMap<String, (usize, Vec<[Vec3; 3]>)>,
     race_buf: Option<wgpu::Buffer>,
@@ -783,7 +789,7 @@ fn prop_mode(shader: &str) -> MatMode {
 
 impl Props {
     pub fn empty() -> Props {
-        Props { hedge_low: HashMap::new(), impostors: None, signal_glows: SignalGlows::default(), glow_buf: None, glow_count: 0, lights: Vec::new(), prop_lamps: Vec::new(), glow_lamps: Vec::new(), glow_cull: Vec::new(), glow_signal: Vec::new(), glow_gfx: Vec::new(), glow_boxes: Vec::new(), light_grid: HashMap::new(), models: Vec::new(), inst_buf: None, cells: HashMap::new(), instances: 0, insts: Vec::new(), colliders: Vec::new(), gas_stations: Vec::new(), col_grid: HashMap::new(), debris: Vec::new(), hits: Vec::new(), scrapes: Vec::new(), deflects: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, moving: HashMap::new(), heads: Vec::new(), signals: Default::default(), race_models: HashMap::new(), race_buf: None, race_runs: Vec::new(), barriers: Vec::new(), barrier_buf: None, barrier_on: 0, emitters: Vec::new(), trash: Vec::new() }
+        Props { hedge_low: HashMap::new(), impostors: None, signal_glows: SignalGlows::default(), glow_buf: None, glow_count: 0, lights: Vec::new(), prop_lamps: Vec::new(), glow_lamps: Vec::new(), glow_cull: Vec::new(), glow_signal: Vec::new(), glow_gfx: Vec::new(), glow_boxes: Vec::new(), light_grid: HashMap::new(), models: Vec::new(), inst_buf: None, cells: HashMap::new(), instances: 0, insts: Vec::new(), colliders: Vec::new(), gas_stations: Vec::new(), col_grid: HashMap::new(), debris: Vec::new(), hits: Vec::new(), scrapes: Vec::new(), deflects: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, moving: HashMap::new(), between: HashMap::new(), between_tick: 0, between_log: std::env::var_os("MCLA_DRAW_STEPS").map(|_| Vec::new()), heads: Vec::new(), signals: Default::default(), race_models: HashMap::new(), race_buf: None, race_runs: Vec::new(), barriers: Vec::new(), barrier_buf: None, barrier_on: 0, emitters: Vec::new(), trash: Vec::new() }
     }
 
     pub fn load(gpu: &mut Gpu, world: &mut World, data_dir: &str) -> Props {
@@ -1596,7 +1602,7 @@ impl Props {
             SignalGlows { lit: Vec::new(), cull, buf: None, count: 0, lamps, sizes: four("sm_fSignalGlowSizes", [4.52, 5.25, 8.7675, 10.0]), intensities: four("sm_fSignalGlowIntensitys", [4.52, 5.0, 5.0, 3.0]) }
         };
         let impostors = impostor::Impostors::new(gpu, data_dir, &mut models, &imp_types);
-        Props { hedge_low, impostors, signal_glows, glow_buf, glow_count: glows.len() as u32, lights, prop_lamps, glow_lamps, glow_boxes, glow_cull, glow_signal, glow_gfx, light_grid, models, inst_buf, cells, instances: total, insts, colliders, gas_stations, col_grid, debris: Vec::new(), hits: Vec::new(), scrapes: Vec::new(), deflects: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, moving: HashMap::new(), heads, signals, race_models, race_buf: None, race_runs: Vec::new(), barriers, barrier_buf, barrier_on: 0, emitters, trash: load_resource_file(&Path::new(data_dir).join("resources/city/sc/0xad0a8b94.r66")).map(|r| trash_rails(&r)).unwrap_or_default() }
+        Props { hedge_low, impostors, signal_glows, glow_buf, glow_count: glows.len() as u32, lights, prop_lamps, glow_lamps, glow_boxes, glow_cull, glow_signal, glow_gfx, light_grid, models, inst_buf, cells, instances: total, insts, colliders, gas_stations, col_grid, debris: Vec::new(), hits: Vec::new(), scrapes: Vec::new(), deflects: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, moving: HashMap::new(), between: HashMap::new(), between_tick: 0, between_log: std::env::var_os("MCLA_DRAW_STEPS").map(|_| Vec::new()), heads, signals, race_models, race_buf: None, race_runs: Vec::new(), barriers, barrier_buf, barrier_on: 0, emitters, trash: load_resource_file(&Path::new(data_dir).join("resources/city/sc/0xad0a8b94.r66")).map(|r| trash_rails(&r)).unwrap_or_default() }
     }
 
     /// Keep the effects of the particle props near the camera playing, and the litter on the
@@ -2483,6 +2489,7 @@ impl Props {
             let com_local = Vec3::new(c.foot.center.x, c.foot.y0 + c.foot.height * 0.5, c.foot.center.y) * c.scale;
             let pos = d.com - d.rot * com_local;
             let inst = Inst { pos_scale: [pos.x, pos.y, pos.z, c.scale], rot_tint: [d.rot.x, d.rot.y, d.rot.z, d.rot.w], fill: [0; 4], ..Inst::NONE };
+            note_between(&mut self.between, self.between_tick, c.inst, self.insts[c.inst as usize], inst);
             self.insts[c.inst as usize] = inst;
             gpu.queue.write_buffer(buf, c.inst as u64 * std::mem::size_of::<Inst>() as u64, bytemuck::bytes_of(&inst));
             if resting || d.age > 12.0 {
@@ -2540,10 +2547,59 @@ impl Props {
             let mut inst = self.insts[c.inst as usize];
             inst.pos_scale = [m[3].x, m[3].y, m[3].z, c.scale];
             inst.rot_tint = [rot.x, rot.y, rot.z, rot.w];
+            note_between(&mut self.between, self.between_tick, c.inst, self.insts[c.inst as usize], inst);
             self.insts[c.inst as usize] = inst;
             gpu.queue.write_buffer(buf, c.inst as u64 * std::mem::size_of::<Inst>() as u64, bytemuck::bytes_of(&inst));
         }
     }
+}
+
+impl Props {
+    /// A game tick starts (main.rs `update_gameplay`): what moves in it is drawn between its start and end.
+    pub fn begin_tick(&mut self) {
+        self.between_tick += 1;
+    }
+
+    /// The moving props drawn between their last tick's start and end by the render alpha, as the cars are (the port's
+    /// interpolation, not the original's: it draws each 30 Hz frame as its update left it). A prop that did not move in
+    /// the last tick is written at its end once and dropped.
+    pub fn draw_between(&mut self, gpu: &Gpu, alpha: f32) {
+        let Some(buf) = self.inst_buf.as_ref() else { return };
+        let tick = self.between_tick;
+        let log = self.between_log.is_some();
+        let mut drawn = Vec::new();
+        self.between.retain(|&i, (a, b, stamp)| {
+            let fresh = *stamp == tick;
+            let inst = if fresh { lerp_inst(*a, *b, alpha) } else { *b };
+            gpu.queue.write_buffer(buf, i as u64 * std::mem::size_of::<Inst>() as u64, bytemuck::bytes_of(&inst));
+            if log {
+                drawn.push((i, Vec3::new(inst.pos_scale[0], inst.pos_scale[1], inst.pos_scale[2])));
+            }
+            fresh
+        });
+        if let Some(l) = self.between_log.as_mut() {
+            *l = drawn;
+        }
+    }
+}
+
+/// A prop instance moved in tick `tick` from `old` to `new`: the start a tick's first move left (`Props::draw_between`).
+fn note_between(between: &mut HashMap<u32, (Inst, Inst, u64)>, tick: u64, inst: u32, old: Inst, new: Inst) {
+    let start = between.get(&inst).filter(|e| e.2 == tick).map_or(old, |e| e.0);
+    between.insert(inst, (start, new, tick));
+}
+
+/// An instance between `a` and `b`: the place blended, the turn slerped (its length, the height scale, `b`'s); a jump
+/// of 5 m or more - a placement - drawn at `b`.
+fn lerp_inst(a: Inst, b: Inst, alpha: f32) -> Inst {
+    let (pa, pb) = (Vec3::from_slice(&a.pos_scale[..3]), Vec3::from_slice(&b.pos_scale[..3]));
+    if alpha >= 1.0 || pa.distance(pb) >= 5.0 {
+        return b;
+    }
+    let ((qa, _), (qb, kb)) = (a.rot(), b.rot());
+    let q = qa.slerp(qb, alpha.max(0.0)) * kb.sqrt();
+    let p = pa.lerp(pb, alpha.max(0.0));
+    Inst { pos_scale: [p.x, p.y, p.z, b.pos_scale[3]], rot_tint: [q.x, q.y, q.z, q.w], ..b }
 }
 
 /// Side of a far card's picture (one view), in texels.

@@ -2911,6 +2911,9 @@ impl App {
         self.tick_no += 1;
         self.game.gps_race_teardown();
         self.vehicles.begin_tick();
+        // (the walkers and the loose props drawn between this tick's start and end, as the cars - peds.rs, props.rs)
+        self.peds.begin_tick();
+        self.props.begin_tick();
         // --- input / simulation -------------------------------------------------
         if self.input.rmb {
             self.cam.yaw += self.input.mouse_dx * 0.0025;
@@ -8840,6 +8843,23 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         self.vehicles.render_alpha = if self.opt.fixed_dt > 0.0 { 1.0 } else { self.sim_clock.alpha() };
         let world = self.world.take().unwrap();
         let mut gpu = self.gpu.take().unwrap();
+        self.props.draw_between(&gpu, if std::env::var_os("MCLA_DRAW_HELD").is_some() { 1.0 } else { self.vehicles.render_alpha });
+        // (MCLA_DRAW_STEPS=1: the drawn places of the other cars, the walkers (the frame before's) and the moving props, one
+        // line each a frame - what the frame-to-frame step of each is measured on)
+        if self.peds.draw_log.is_some() {
+            let f = self.frame_no;
+            let a = if std::env::var_os("MCLA_DRAW_HELD").is_some() { 1.0 } else { self.vehicles.render_alpha };
+            for c in self.vehicles.cars.iter().filter(|c| !c.is_player) {
+                let p = c.render_pose(a).pos;
+                eprintln!("dstep {f} {} {} {:.4} {:.4} {:.4} {:.3}", if c.cop { "cop" } else if c.parked.is_some() { "park" } else if c.is_ambient() { "amb" } else { "car" }, c.uid, p.x, p.y, p.z, c.state.speed());
+            }
+            for (k, p) in self.peds.draw_log.as_mut().map(std::mem::take).unwrap_or_default() {
+                eprintln!("dstep {f} ped {}_{} {:.4} {:.4} {:.4} 0", k.0, k.1, p.x, p.y, p.z);
+            }
+            for (i, p) in self.props.between_log.clone().unwrap_or_default() {
+                eprintln!("dstep {f} prop {i} {:.4} {:.4} {:.4} 0", p.x, p.y, p.z);
+            }
+        }
         // The cars' lamps. Under the weather's keys they are on as the game has them: while
         // m_NFLFade is above zero (18:00 to 06:00 in every weather's file - recorded: on at
         // 05:45 and 18:15, off at 06:15 and 17:45) and all day long in rain and fog (recorded on
@@ -11705,7 +11725,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             use rayon::prelude::*;
             // (the walkers' skinning for this frame, docs/PERFORMANCE.md 2026-10-27 (4): beside the shadow passes)
             let (peds, ped_eye, ped_frustum) = (&mut self.peds, self.cam.pos, &frustum);
-            let ped_hidden = self.arrest_on_screen;
+            let (ped_hidden, ped_alpha) = (self.arrest_on_screen, if std::env::var_os("MCLA_DRAW_HELD").is_some() { 1.0 } else { self.vehicles.render_alpha });
             // (the scenes' cast and the hangouts' people: skinned beside the passes too; MCLA_CINE_PREP_OLD=1: after them as before)
             let cine_old = std::env::var_os("MCLA_CINE_PREP_OLD").is_some();
             let cine_prep = (!cine_old).then_some(&mut self.cine);
@@ -11733,7 +11753,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         _ => (j, night_job(), 0, 0),
                     })
                     .collect()
-            }, || rayon::join(|| peds.prepare(gpu, ped_eye, ped_frustum, ped_hidden), || if let Some(c) = cine_prep { c.prepare(gpu) }).0));
+            }, || rayon::join(|| peds.prepare(gpu, ped_eye, ped_frustum, ped_hidden, ped_alpha), || if let Some(c) = cine_prep { c.prepare(gpu) }).0));
             if cine_old {
                 self.cine.prepare(&gpu);
             }

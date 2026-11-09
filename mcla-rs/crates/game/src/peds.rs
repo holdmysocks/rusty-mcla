@@ -66,6 +66,17 @@ impl PedType {
     }
 }
 
+/// A walker's place, facing and clip time at a tick's start (presentation only: `Peds::prepare` draws the walker
+/// between it and the tick's end by the render alpha, as the cars are - vehicle_pose.rs).
+#[derive(Clone, Copy)]
+struct Between {
+    pos: Vec3,
+    rot: Quat,
+    time: f32,
+    blend: f32,
+    state: State,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum State {
     Walk,
@@ -92,6 +103,8 @@ struct Ped {
     from: Vec<(Quat, Vec3)>,
     blend: f32,
     cur: Vec<(Quat, Vec3)>,
+    /// the walker as the tick before the last one left it (`Peds::begin_tick`): what `prepare` draws it between
+    prev: Option<Between>,
     /// stands around instead of walking
     loiter: bool,
     calm: f32,
@@ -2657,6 +2670,8 @@ fn read_type(model: &Path, anims: &Path) -> Option<TypeRead> {
 }
 
 pub struct Peds {
+    /// MCLA_DRAW_STEPS: each drawn walker's key and drawn place this frame (main.rs logs them)
+    pub draw_log: Option<Vec<((usize, u32), Vec3)>>,
     /// the ambient manager's front-end mode (F-95688, the start screen): the spawner has no
     /// visibility test (F-33044, A-29552); the focus and view are the camera's
     pub frontend: bool,
@@ -2765,6 +2780,7 @@ fn wrap_angle(mut d: f32) -> f32 {
 impl Peds {
     pub fn new() -> Peds {
         Peds {
+            draw_log: std::env::var_os("MCLA_DRAW_STEPS").map(|_| Vec::new()),
             frontend: false,
             preroll: 0,
             traffic_regions: None,
@@ -3270,7 +3286,7 @@ impl Peds {
                 time: ((seed >> 8) & 0xff) as f32 / 40.0,
                 from: Vec::new(),
                 blend: 0.0,
-                cur: Vec::new(),
+                cur: Vec::new(), prev: None,
                 loiter: false,
                 calm: 0.0,
                 seed,
@@ -3406,7 +3422,7 @@ impl Peds {
                     time: ((h >> 8) & 0xff) as f32 / 40.0,
                     from: Vec::new(),
                     blend: 0.0,
-                    cur: Vec::new(),
+                    cur: Vec::new(), prev: None,
                     loiter,
                     calm: 0.0,
                     seed: h,
@@ -3442,6 +3458,14 @@ impl Peds {
         }
         if any_ground {
             self.filled = true;
+        }
+    }
+
+    /// A game tick starts: each walker's pose now is what the next drawn frames start from (`prepare`). Every tick,
+    /// so that a tick without `update` (a hold) draws the walkers still.
+    pub fn begin_tick(&mut self) {
+        for p in self.list.iter_mut() {
+            p.prev = Some(Between { pos: p.pos, rot: p.rot, time: p.time, blend: p.blend, state: p.state });
         }
     }
 
@@ -3924,7 +3948,7 @@ impl Peds {
             time: 0.0,
             from: Vec::new(),
             blend: 0.0,
-            cur: Vec::new(),
+            cur: Vec::new(), prev: None,
             loiter: true,
             calm: 0.0,
             seed: hash(id, item),
@@ -4005,7 +4029,10 @@ impl Peds {
     /// Skin everything in view into this frame's vertex buffer. `hidden`: the cops' arrest scene is on screen (F-36139) -
     /// the walker render F-68474 returns before its light step and its draw, so nothing is emitted and the lights stay as
     /// they were.
-    pub fn prepare(&mut self, gpu: &Gpu, cam: Vec3, frustum: &Frustum, hidden: bool) {
+    /// `alpha`: the render alpha (vehicles.rs `render_alpha`) - each walker is drawn between its pose at the last tick's
+    /// start and its end, as the cars are; the port's interpolation, not the original's (it draws each 30 Hz frame as
+    /// its update left it). Its place and facing are blended, its clip time and cross-fade too while its clip runs on.
+    pub fn prepare(&mut self, gpu: &Gpu, cam: Vec3, frustum: &Frustum, hidden: bool, alpha: f32) {
         self.buf.clear();
         let tables = self.night_lights.as_ref().and_then(|_| crate::render::LAMP_TABLES.read().ok()?.clone());
         let mut local: Vec<(Quat, Vec3)> = Vec::new();
@@ -4026,22 +4053,40 @@ impl Peds {
             if !visible || hidden {
                 continue;
             }
+            // (drawn between the last tick's start and end: a jump of 2 m or more - a placement - is drawn at once;
+            // the clip's time only while the same clip runs on, not over a restart)
+            let (pos, rot) = match p.prev {
+                Some(b) if alpha < 1.0 && b.pos.distance(p.pos) < 2.0 => {
+                    if b.state == p.state && b.time <= p.time && (b.time != p.time || b.blend != p.blend) {
+                        clip.local(&ty.model.bones, clip.frame(b.time + (p.time - b.time) * alpha, looped), &mut local);
+                        let blend = if b.blend >= p.blend { b.blend + (p.blend - b.blend) * alpha } else { p.blend };
+                        if blend > 0.0 && p.from.len() == local.len() {
+                            blend_pose(&mut local, &p.from, (blend / p.blend_len).clamp(0.0, 1.0));
+                        }
+                    }
+                    (b.pos.lerp(p.pos, alpha), b.rot.slerp(p.rot, alpha))
+                }
+                _ => (p.pos, p.rot),
+            };
+            if let Some(d) = self.draw_log.as_mut() {
+                d.push((p.key, pos));
+            }
             let lod = lod as usize;
             // (at night the four lights of its program, picked and eased as the original's
             // F-44222 does at the walker's place - only while it is drawn, as there)
             if let (Some((dynamic, frames)), Some(t)) = (&self.night_lights, &tables) {
-                let f = crate::fillmap::body_now(p.pos.x, p.pos.z);
+                let f = crate::fillmap::body_now(pos.x, pos.z);
                 let amb = self.amb_base + Vec3::new(f[0], f[1], f[2]);
-                let fl = self.fig_lights.entry(p.key).or_insert_with(|| crate::figlight::FigureLight::new(t, p.pos, amb));
-                fl.step(t, p.pos, *frames);
+                let fl = self.fig_lights.entry(p.key).or_insert_with(|| crate::figlight::FigureLight::new(t, pos, amb));
+                fl.step(t, pos, *frames);
                 fl.step_amb(amb, *frames);
-                self.buf.next_lanes = Some(fl.lanes(p.pos, dynamic));
+                self.buf.next_lanes = Some(fl.lanes(pos, dynamic));
                 // (MCLA_PED_AMB_OLD=1: the ambient as before, the scene's plus the fill map at once, unpacked)
                 if std::env::var("MCLA_PED_AMB_OLD").is_err() {
                     self.buf.next_amb = Some(fl.amb_bytes());
                 }
             }
-            self.buf.emit(&ty.model, lod, &local, Mat4::from_rotation_translation(p.rot, p.pos));
+            self.buf.emit(&ty.model, lod, &local, Mat4::from_rotation_translation(rot, pos));
         }
         if self.night_lights.is_some() {
             let alive: HashSet<(usize, u32)> = self.list.iter().map(|p| p.key).collect();
