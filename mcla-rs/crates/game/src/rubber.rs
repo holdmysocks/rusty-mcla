@@ -10,7 +10,7 @@
 use crate::police::Tuning;
 use std::path::Path;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RubberBand {
     pub max_throttle: f32,
     pub min_speed: f32,
@@ -265,6 +265,20 @@ pub fn segments(cps: &[glam::Vec3], unordered: bool) -> Vec<f32> {
     (0..n).map(|k| if unordered { 200.0 } else { dist(cps[k] - cps[(k + 1) % n], YZX) }).collect()
 }
 
+/// The squared straight-line distance from a computer racer to the nearest human (+400, F-48266): each |car - human|^2
+/// fused y z x, min'd by fsel from 1e8 (no human: 1e8).
+pub fn nearest_human_d2(car: glam::Vec3, humans: impl IntoIterator<Item = glam::Vec3>) -> f32 {
+    let mut m = 1.0e8f32;
+    for h in humans {
+        let d = car - h;
+        let q = d.x.mul_add(d.x, d.z.mul_add(d.z, d.y * d.y));
+        if m - q >= 0.0 {
+            m = q;
+        }
+    }
+    m
+}
+
 /// A racer's distance to the checkpoint `k` it heads for (F-23349; 0 once `k` is past the list): in an
 /// unordered race not yet at its last checkpoint the nearest one it has not taken (`untaken`, all but the
 /// last; squared distances min'd by fsel from 1e8, then fsqrts), else the plain distance ([`XZY`]).
@@ -430,14 +444,76 @@ mod tests {
             }
             if got.iter().any(|(p, o)| p != o) {
                 if bad < 5 {
-                    eprintln!("{line}
-   port {:08x?}", got);
+                    eprintln!("{line}\n   port {:08x?}", got);
                 }
                 bad += 1;
             }
         }
         eprintln!("{cases} cases, {placed} with both places; the rule before differed in {old_bad}");
         assert_eq!((cases, bad), (4000, 0));
+    }
+
+    /// The whole per-frame update F-48266 run offline (tools/rubber_update_reference.py, verify_rubber_inputs.md): for every
+    /// computer racer +384 .. +400 as the port composes them (the leading human by place, first on a tie; gap, rank
+    /// shift, from start, to finish, nearest_human_d2).
+    #[test]
+    fn update_matches_the_original() {
+        use glam::Vec3;
+        let u = |s: &str| u32::from_str_radix(&s.replace('_', ""), 16).unwrap();
+        let f = |s: &str| f32::from_bits(u(s));
+        let (mut racers, mut bad, mut old_bad) = (0, 0, 0);
+        for line in include_str!("testdata/rubber_update_ref.txt").lines() {
+            let (lhs, rhs) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = lhs.split_whitespace().skip(1).collect();
+            let out: Vec<u32> = rhs.split_whitespace().map(u).collect();
+            let i = |k: usize| u(w[k]) as usize;
+            let v = |k: usize| Vec3::new(f(w[k]), f(w[k + 1]), f(w[k + 2]));
+            let (c, n, laps, unordered) = (i(0), i(1), i(2).max(1), i(3) != 0);
+            let seg: Vec<f32> = (0..n).map(|k| f(w[4 + k])).collect();
+            let cps: Vec<Vec3> = (0..n).map(|k| v(4 + n + 3 * k)).collect();
+            let off: Vec<f32> = (0..16).map(|k| f(w[4 + 4 * n + k])).collect();
+            let rb = RubberBand { ahead_offsets: off[..8].try_into().unwrap(), behind_offsets: off[8..].try_into().unwrap(), ..Default::default() };
+            let r = |j: usize| 20 + 4 * n + 11 * j;
+            let total = laps * n;
+            let flat: Vec<f32> = (0..total).map(|k| seg[k % n]).collect();
+            let fcps: Vec<Vec3> = (0..total).map(|k| cps[k % n]).collect();
+            let chain = Chain { seg: &flat, total };
+            let pos = |j: usize| {
+                let (next, lap) = (i(r(j) + 2), i(r(j) + 3));
+                let st = u(w[r(j) + 4]);
+                let d = next_dist(v(r(j) + 5), &cps, next, unordered, |k| matches!((st >> (2 * k)) & 3, 0 | 2));
+                (ChainPos { p: lap * n + next, d }, next)
+            };
+            let humans: Vec<usize> = (0..c).filter(|&j| i(r(j)) != 2).collect();
+            let leader = humans.iter().copied().min_by_key(|&j| u(w[r(j) + 1]) as i32);
+            for j in 0..c {
+                let o = &out[5 * j..5 * j + 5];
+                let Some(l) = leader.filter(|_| i(r(j)) == 2) else {
+                    assert!(o.iter().all(|&x| x == 0x7FA5_A5A5), "{line}");
+                    continue;
+                };
+                racers += 1;
+                let (me, next) = pos(j);
+                let car = v(r(j) + 5);
+                let gap = chain.gap(me, pos(l).0);
+                let k = u(w[r(j) + 1]) as i32 - u(w[r(l) + 1]) as i32;
+                let fin = chain.to_finish(ChainPos { p: me.p, d: if next < n { dist(cps[next] - car, YZX) } else { 0.0 } });
+                let got = [rb.shifted_gap(gap, k), gap, chain.from_start(me.p, v(r(j) + 8), car, &fcps), fin, nearest_human_d2(car, humans.iter().map(|&h| v(r(h) + 5)))];
+                if got.iter().zip(o).any(|(g, o)| g.to_bits() != *o) {
+                    if bad < 5 {
+                        eprintln!("{line}\n   racer {j} port {:08x?}", got.map(f32::to_bits));
+                    }
+                    bad += 1;
+                }
+                // (the rule before: distance_squared unfused, f32::min)
+                let old = humans.iter().map(|&h| v(r(h) + 5).distance_squared(car)).fold(1e8f32, f32::min);
+                if old.to_bits() != o[4] {
+                    old_bad += 1;
+                }
+            }
+        }
+        eprintln!("{racers} computer racers; the old +400 differed in {old_bad}");
+        assert_eq!((racers, bad), (4251, 0));
     }
 
     #[test]

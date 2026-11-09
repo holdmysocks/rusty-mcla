@@ -4652,7 +4652,7 @@ impl Game {
                         p: me.p,
                         d: own_list.get(me.p).filter(|_| me.p < n).map_or(0.0, |c| crate::rubber::dist(*c - pos, crate::rubber::YZX)),
                     });
-                    let d2 = humans.iter().map(|&h| vehicles.cars[h].state.pos.distance_squared(pos)).fold(1e8f32, f32::min);
+                    let d2 = crate::rubber::nearest_human_d2(pos, humans.iter().map(|&h| vehicles.cars[h].state.pos));
                     let speed = vehicles.cars[i].state.vel.length();
                     let c = &mut vehicles.cars[i];
                     if let Some(ai) = c.ai.as_mut() {
