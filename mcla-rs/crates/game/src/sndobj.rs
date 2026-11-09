@@ -4053,4 +4053,71 @@ mod tests {
         assert_eq!(lib.ped_reaction("", true, 2, false), None);
         assert_eq!(lib.ped_reaction("AMBIENT_PED_NONE", false, 3, false), None);
     }
+    /// The speed mix against a drive recorded in the original (tools/player_speed_recording.py, recording
+    /// work/audio2/spdrec/cap/s3.txt: the R8 in free roam, 1,350 player updates, 0 - 141 mph, camera modes 2, 3 and 6).
+    /// Each update F-99947 stores the inputs after the recorder's hook, so line k + 1 shows what it made from line k's
+    /// state: mixer_mph(speed) and rpm_frac(rpm, 1000, 9000) (the R8 tune's IdleRPM / MaxRPM; the engine's +76 / +68 are
+    /// rpm_speed of them). The speed step F-15595 runs once a frame from F-99037; it posts each controller's level and the
+    /// audio thread's command pass writes it to the controller, so the recorder (on the game thread) sometimes reads a
+    /// controller before its new level is written (unchanged; the next update then shows two steps) or after a step that
+    /// ran before the update's store (the earlier inputs). Every record update is one of those, bit for bit.
+    #[test]
+    fn speed_mix_matches_the_recording() {
+        use crate::caraudio::{mixer_mph, rpm_frac, rpm_speed};
+        let hx = |t: &str| u32::from_str_radix(&t[1..], 16).unwrap();
+        let num = |t: &str| t[1..].parse::<u32>().unwrap();
+        let (mut recs, mut rows) = (Vec::new(), Vec::new());
+        for l in include_str!("testdata/player_speed_rec.txt").lines() {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            match w[0] {
+                "r" => {
+                    let f = |i: usize| f32::from_bits(hx(w[i]));
+                    recs.push(SpeedRec { cat: num(w[1]), a: [f(2), f(3)], b: [f(4), f(5)], mb: [num(w[6]) as u16 as i16, num(w[7]) as u16 as i16], rate: f(8) });
+                }
+                "S" => {
+                    let lv: Vec<u32> = w[10..].iter().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+                    assert_eq!(lv.len(), recs.len());
+                    let v: Vec<f32> = (2..9).map(|i| f32::from_bits(hx(w[i]))).collect();
+                    // (mode, A, B, dt, speed, rpm, engine +76, +68, levels)
+                    rows.push((w[1][1..].parse::<i32>().unwrap(), v, lv));
+                }
+                _ => {}
+            }
+        }
+        assert_eq!((recs.len(), rows.len()), (24, 1350));
+        let (mut inputs, mut eng) = (0, 0);
+        for w in rows.windows(2) {
+            let (p, q) = (&w[0].1, &w[1].1);
+            if p[5].to_bits() != 0 || p[6].to_bits() != 0 {
+                assert_eq!((rpm_speed(1000.0).to_bits(), rpm_speed(9000.0).to_bits()), (p[5].to_bits(), p[6].to_bits()));
+                eng += 1;
+            }
+            if q[0].to_bits() != 0 || q[1].to_bits() != 0 {
+                assert_eq!((mixer_mph(p[3]).to_bits(), rpm_frac(p[4], 1000.0, 9000.0).to_bits()), (q[0].to_bits(), q[1].to_bits()));
+                inputs += 1;
+            }
+        }
+        assert_eq!((inputs, eng), (1321, 1349));
+        let (mut one, mut moving, mut unchanged, mut two, mut early) = (0, 0, 0, 0, 0);
+        for (i, w) in rows.windows(2).enumerate() {
+            let (p, q) = (&w[0], &w[1]);
+            for (k, r) in recs.iter().enumerate() {
+                let st = |lin: u32, s: &(i32, Vec<f32>, Vec<u32>)| speed_step(r, f32::from_bits(lin), s.0, s.1[0], s.1[1], s.1[2]).to_bits();
+                let (was, now, s1) = (p.2[k], q.2[k], st(p.2[k], q));
+                if s1 == now {
+                    one += 1;
+                    moving += (s1 != was) as usize;
+                } else if was == now {
+                    unchanged += 1
+                } else if st(st(was, p), q) == now || st(s1, q) == now {
+                    two += 1
+                } else if st(was, p) == now {
+                    early += 1
+                } else {
+                    panic!("update {} record {k} {r:?}: {was:08x} -> {now:08x}, one step gives {s1:08x}", i + 1)
+                }
+            }
+        }
+        assert_eq!((one, moving, unchanged, two, early), (26792, 10730, 3270, 1002, 1312));
+    }
 }

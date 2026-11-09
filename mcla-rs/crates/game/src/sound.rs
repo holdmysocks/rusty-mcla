@@ -1259,7 +1259,7 @@ impl Sound {
         // branch of F-99037, taken as the pause as for the speed fade)
         if let Some(lib) = &mut self.lib {
             let paused = game.mode == Mode::Paused;
-            lib.set_speed_inputs(if paused { 0.0 } else { speed * f32::from_bits(0x400F_2B02) }, if paused { 0.0 } else { crate::caraudio::mixer_rpm_frac(p) });
+            lib.set_speed_inputs(if paused { 0.0 } else { crate::caraudio::mixer_mph(speed) }, if paused { 0.0 } else { crate::caraudio::mixer_rpm_frac(p) });
         }
         // AIRTIME (F-22751): in the air and a 10 m probe down from each wheel in turn (one a frame) hits nothing;
         // after 0.5 s in the air PLAYER_IN_AIR is asked for once

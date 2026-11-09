@@ -1640,9 +1640,23 @@ pub(crate) fn engine_rpm(c: &CarInstance) -> f32 {
 /// physics' rad/s, made from the tune's rpm x 0.10471976 (0x8207D3E8).
 pub(crate) fn mixer_rpm_frac(c: &CarInstance) -> f32 {
     let Some(e) = c.model.params.veh.as_ref().map(|t| &t.t.engine.s) else { return 0.0 };
-    let k = |rpm: f32| (rpm * f32::from_bits(0x3DD6_7750)) * f32::from_bits(0x4118_C9EB);
-    let (idle, max) = (k(e.idle_rpm), k(e.max_rpm));
-    (engine_rpm(c) - idle) / (max - idle)
+    rpm_frac(engine_rpm(c), e.idle_rpm, e.max_rpm)
+}
+
+/// The first input: the chassis speed (m/s) x 2.237, in mph.
+pub(crate) fn mixer_mph(speed: f32) -> f32 {
+    speed * f32::from_bits(0x400F_2B02)
+}
+
+/// (rpm - idle) / (max - idle) with idle / max = the tune's rpm x 0.10471976 x 9.549296, as F-99947 has them.
+pub(crate) fn rpm_frac(rpm: f32, idle_rpm: f32, max_rpm: f32) -> f32 {
+    let (idle, max) = (rpm_speed(idle_rpm) * f32::from_bits(0x4118_C9EB), rpm_speed(max_rpm) * f32::from_bits(0x4118_C9EB));
+    (rpm - idle) / (max - idle)
+}
+
+/// A tune rpm as the engine object holds it (rad/s, engine +76 / +68).
+pub(crate) fn rpm_speed(rpm: f32) -> f32 {
+    rpm * f32::from_bits(0x3DD6_7750)
 }
 
 fn engine_in(c: &CarInstance, racing: bool) -> EngineIn {

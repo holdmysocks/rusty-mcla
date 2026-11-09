@@ -1,7 +1,7 @@
 """MANAGER_PLAYER_SPEED run offline: the mixer's F-15595 (each record's target from the two speed inputs, the controller's
 level slewed toward it at rate x dt) with SetVolumeDB F-10740, the generated code whole and
 unchanged, on the game's own MANAGER_PLAYER_SPEED table and on random tables, through random frames: the camera mode
-(+1744, 5 = cinematic: inputs taken as 0), the two inputs (+1748 / +1752; the game only ever stores 0 there) and the frame
+(+1744, 5 = cinematic: inputs taken as 0), the two inputs (+1748 / +1752: mph and the rpm fraction, F-99947; recorded in tools/player_speed_recording.py) and the frame
 time (0x827D7500 +92). Stubbed: dB2lin F-42985 with the arithmetic of the recomp's vector powf (as busfx.rs::db2lin, itself
 checked bit-exact against the original in busfx_is_the_originals; the generated vector code does not build in this
 harness), the controller command post F-42774 (records the command's value and, as the mixer's
