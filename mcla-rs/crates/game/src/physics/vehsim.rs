@@ -59,8 +59,55 @@ pub struct VehTune {
     pub tyre_width: [f32; 2],
     /// the wheels as the collision has them (front, rear)
     pub wheel_shape: [std::sync::Arc<super::hull::HullShape>; 2],
+    /// the first vehSuspension's bone (a motorcycle's; see `SuspLever`)
+    pub susp_lever: Option<SuspLever>,
     torque_curve: Option<super::engine_curve::Curve>,
     idle_curve: Option<super::engine_curve::Curve>,
+}
+
+/// The first vehSuspension object of a car (chassis +52 [0]) as far as the bike gyro's reverse drive reads it: its
+/// +64, the bone's place in the world. Init F-66627: M the bone's local matrix (an owned copy), L its global one; the
+/// mode is 3 where |L.r2.y| > 0.7, the wheel's SteeringLimit (tune +40) is above 0, the wheel's x at rest (+384) is
+/// within 0.1 and M's place row is 0 (x, y, z), 1 for the rest of |L.r2.y| > 0.7; 2 for the other cases with that
+/// SteeringLimit and x, else 0. The update F-17019 (vehAuto::Update F-98311, after the wheels and axles): in modes 2
+/// and 3 M's place row becomes M.r2 x -d, d the wheel's axle displacement (F-48387, `axle_disp`); modes 0 / 1 only
+/// change M.r2 and leave the place row. Then +16 = M x the chassis matrix (+240), so +64 = the chassis's place plus
+/// its rows times M's place row, three vmaddfp in the order x, y, z. (Not ported: the blend with the partner axle
+/// where |M.r3.x| > 0.1 and |M.r2.x| < 0.1 - no motorcycle's first bone has it.)
+#[derive(Clone, Copy, Debug)]
+pub struct SuspLever {
+    pub row2: Vec3,
+    pub row3: Vec3,
+    /// modes 2 / 3: the place row follows the wheel
+    pub follows: bool,
+    /// the slot's wheel, the port's order (front left, front right, rear left, rear right: chassis +412, +420,
+    /// +416, +424)
+    pub wheel: usize,
+}
+
+impl SuspLever {
+    pub fn new(local: glam::Mat4, global: glam::Mat4, steering_limit: f32, rest_x: f32, wheel: usize) -> SuspLever {
+        let (row2, row3) = (local.z_axis.truncate(), local.w_axis.truncate());
+        let near = steering_limit > 0.0 && !(rest_x.abs() >= 0.1);
+        let follows = if global.z_axis.y.abs() > 0.7 { near && row3.x == 0.0 && row3.y == 0.0 && row3.z == 0.0 } else { near };
+        SuspLever { row2, row3, follows, wheel }
+    }
+
+    /// +64 after the update: `rows` the chassis matrix (right, up, back, place), `d` the wheel's axle displacement.
+    pub fn place(&self, rows: &[Vec3; 4], d: f32) -> Vec3 {
+        use super::artic::V4;
+        let m = if self.follows {
+            V4::new(self.row2.x, self.row2.y, self.row2.z, 0.0).mul(V4::new(-d, -d, -d, -d))
+        } else {
+            V4::new(self.row3.x, self.row3.y, self.row3.z, 0.0)
+        };
+        let v = |a: Vec3| V4::new(a.x, a.y, a.z, 0.0);
+        let sp = |k: usize| V4::new(m.0[k], m.0[k], m.0[k], m.0[k]);
+        let p = v(rows[0]).madd(sp(0), v(rows[3]));
+        let p = v(rows[1]).madd(sp(1), p);
+        let p = v(rows[2]).madd(sp(2), p);
+        Vec3::new(p.0[0], p.0[1], p.0[2])
+    }
 }
 
 /// One wheel part of the composite bound as the wheels' fit (F-55382) leaves it: its shape (front,
@@ -262,7 +309,7 @@ impl VehTune {
         // (a width a set-up gave - the tuning files' own TireWidth is a placeholder of 0.1)
         let fitted = |w: f32| if w >= 0.15 { w } else { 0.0 };
         let tyre_width = [fitted(t.wheel_front.width), fitted(t.wheel_back.width)];
-        let mut vt = VehTune { t, ratios, top_speed, gravity, bike: false, shift: Vec::new(), sync_torque: 0.0, inertia_yaw, tyre_width, wheel_shape, torque_curve, idle_curve };
+        let mut vt = VehTune { t, ratios, top_speed, gravity, bike: false, shift: Vec::new(), sync_torque: 0.0, inertia_yaw, tyre_width, wheel_shape, susp_lever: None, torque_curve, idle_curve };
         (vt.shift, vt.sync_torque) = vt.shift_points();
         vt
     }
@@ -5202,8 +5249,16 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             if vs.stuck > 0 {
                 f = f * 0.1;
             }
-            // (body_rows[3]: the chassis matrix's place, chassis +288 - the model's origin)
-            let at = (body_at + body_rows[3]) * 0.5;
+            // (the first vehSuspension's +64: its bone's place, `SuspLever`, as the update of this frame left it - the
+            // chassis matrix and the wheel's displacement as they stand; without one the chassis's place, +288)
+            let lever = match vt.susp_lever {
+                Some(l) => {
+                    let (w, j) = (if l.wheel < 2 { &t.wheel_front } else { &t.wheel_back }, l.wheel);
+                    l.place(&body_rows, super::exact::axle_disp(vs.wheels[j].comp, w.travel_extent, w.travel_limit, offsets[j]))
+                }
+                _ => body_rows[3],
+            };
+            let at = (body_at + lever) * 0.5;
             // (the point less the place: the vector unit's subtraction, F-18006's own step)
             let (p1, p2) = force_at_products(f, super::loose::vsub(at, body_at));
             calls.push((FORCE_AT_FIRST, f, p1));

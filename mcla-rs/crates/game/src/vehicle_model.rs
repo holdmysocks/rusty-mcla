@@ -69,6 +69,9 @@ pub struct CarAsset {
     pub hubs: Option<[Vec3; 4]>,
     /// motorcycle: two wheels on the centre line
     pub bike: bool,
+    /// a motorcycle's first suspension bone as the bike gyro's reverse drive leans on it (F-70909 makes the
+    /// vehSuspension objects from the bones "arm", "shock", "guide" + fl / fr / rl / rr + "0"; the first one made)
+    pub susp_lever: Option<crate::physics::vehsim::SuspLever>,
     /// per-car tuning (mass, dimensions, drivetrain, gears, torque curve, top speed)
     pub tune: Option<mcla_formats::rage::vehtune::VehTune>,
     /// the simulation tuning (base and fully upgraded)
@@ -1299,7 +1302,24 @@ pub fn load_car(assets: &Assets, car_dir: &Path) -> Result<CarAsset> {
     if let (Some(c), Some(t)) = (clamshell.as_ref(), skinned_top.as_ref()) {
         log::info!("car {}: roof clips clamshell {:.3} s ({} bones), skinned_top {:.3} s ({} bones)", name, c.duration, c.bones.len(), t.duration, t.bones.len());
     }
-    Ok(CarAsset { name, shaders, shaders_parent, textures, parts, lod_parts, min, max, skeleton, hubs, bike, tune, simtune, fit, vehmods, aitune, hull, windows, cop_lights, spoiler, clamshell, skinned_top, needles, damage_layout })
+    // (F-70909's slots in its order, FindBone F-59267: the base skeleton first, then the parts' (the bikes' arm parts are
+    // alike in every set); each slot's
+    // wheel fl / fr / rl / rr. Only a motorcycle's gyro reads it, so only a motorcycle's is kept: its wheels sit
+    // on the centre line, the skeleton's hubs give their x)
+    let susp_lever = if bike {
+        let centre = skeleton.as_ref().and_then(|s| s.bike_hubs());
+        let find = |n: &str| skeleton.iter().chain(parts.iter().filter_map(|p| p.skeleton.as_deref()))
+            .find_map(|sk| sk.bones.iter().find(|b| b.name == n).map(|b| (b.local, b.world)));
+        ["armfl0", "armfr0", "armrl0", "armrr0", "shockfl0", "shockfr0", "shockrl0", "shockrr0", "guiderl0", "guiderr0"].iter().enumerate()
+            .find_map(|(i, n)| find(n).map(|b| (i, b)))
+            .and_then(|(i, (local, world))| {
+                let wheel = if i < 8 { i % 4 } else { i - 6 };
+                let w = simtune.as_ref().map(|t| if wheel < 2 { &t.base.wheel_front } else { &t.base.wheel_back })?;
+                let x = centre.map(|c| if wheel < 2 { c[0].x } else { c[1].x })?;
+                Some(crate::physics::vehsim::SuspLever::new(local, world, w.steering_limit, x, wheel))
+            })
+    } else { None };
+    Ok(CarAsset { name, shaders, shaders_parent, textures, parts, lod_parts, min, max, skeleton, hubs, bike, susp_lever, tune, simtune, fit, vehmods, aitune, hull, windows, cop_lights, spoiler, clamshell, skinned_top, needles, damage_layout })
 }
 
 /// Display name of a part from its internal names, e.g. "exstPipe05_Borla_single_round"

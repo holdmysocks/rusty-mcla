@@ -77,6 +77,8 @@ pub fn run(data_dir: &str, spec: &str) -> anyhow::Result<()> {
     }
     let mut vt = super::vehsim::VehTune::new(tune);
     vt.bike = car.bike;
+    vt.susp_lever = car.susp_lever;
+    println!("suspension lever {:?}", vt.susp_lever);
     // (and, from the recording: the tyres' widths, front and rear, and where the wheels sit
     // in the car's frame - half the track front and rear, and their height at rest without
     // the suspension's offset)

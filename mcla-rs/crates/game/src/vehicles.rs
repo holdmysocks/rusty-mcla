@@ -92,6 +92,8 @@ pub struct CarModel {
     pub rim_ratio: f32,
     /// motorcycle: one front and one rear wheel on the centre line, leans into corners
     pub bike: bool,
+    /// the first suspension bone the bike gyro's reverse drive leans on (`vehicle_model::CarAsset::susp_lever`)
+    pub susp_lever: Option<crate::physics::vehsim::SuspLever>,
     /// a bike's front and rear tyre and rim are twice this wide: the span of the wheel_0 / wheel_2
     /// bones' translation limits (F-74884)
     pub bike_wheel_width: [f32; 2],
@@ -2220,6 +2222,7 @@ impl CarInstance {
             tune.set_air_ride(s);
             let mut vt = crate::physics::vehsim::VehTune::new(tune);
             vt.bike = self.model.bike;
+            vt.susp_lever = self.model.susp_lever;
             if let Some(h) = self.model.rest_height {
                 vt.seat(h);
             }
@@ -2575,6 +2578,7 @@ impl Vehicles {
             base.set_air_ride(s);
             let mut vt = crate::physics::vehsim::VehTune::new(base);
             vt.bike = car.bike;
+            vt.susp_lever = car.susp_lever;
             if let Some(hubs) = car.hubs {
                 vt.seat((hubs[0].y + hubs[2].y) * 0.5);
             }
@@ -2654,7 +2658,7 @@ impl Vehicles {
         // (F-74884, a bike's set-up: +4092 / +4096 = |max - min| of the translation limits, crBoneData +144 / +160, of the
         // first bone named wheel_0 / wheel_2 in the base fragment's skeleton, then the parts' - F-20921)
         let bike_wheel_width = ["wheel_0", "wheel_2"].map(|n| car.skeleton.as_ref().and_then(|s| s.bones.iter().find(|b| b.name == n)).map_or(params.wheel_width, |b| (b.trans_limits.1 - b.trans_limits.0).length()));
-        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, glow_sides, font_bones, batches, params, params_mods, simtunes, vehmods: car.vehmods.clone(), fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), needles: [car.needles[0].clone().map(Arc::new), car.needles[1].clone().map(Arc::new), upgrade.as_ref().map(|u| u.0.clone())], needle_place: upgrade.as_ref().map_or(Mat4::IDENTITY, |u| u.1), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, fx_anchors, fx_anchor_rear, rest_rot: rest_table(&rest_rot) });
+        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, glow_sides, font_bones, batches, params, params_mods, simtunes, vehmods: car.vehmods.clone(), fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, susp_lever: car.susp_lever, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), needles: [car.needles[0].clone().map(Arc::new), car.needles[1].clone().map(Arc::new), upgrade.as_ref().map(|u| u.0.clone())], needle_place: upgrade.as_ref().map_or(Mat4::IDENTITY, |u| u.1), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, fx_anchors, fx_anchor_rear, rest_rot: rest_table(&rest_rot) });
         self.models.push(m.clone());
         if self.wheels.is_none() {
             self.wheels = load_wheels(gpu, world).map(Arc::new);
