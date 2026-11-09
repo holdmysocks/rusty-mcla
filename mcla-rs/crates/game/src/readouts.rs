@@ -171,6 +171,17 @@ pub struct Vertex {
     pub uv: [f32; 2],
     pub color: [f32; 4],
     pub emissive: [f32; 3],
+    /// the depth offset (render state 12) the strip is drawn with - `set_depth_offset`
+    pub depth: f32,
+}
+
+/// The in-car view's depth offset at the readouts: the car draw F-73214 runs them right after the part loop F-92759, which
+/// set render state 12 to G+5700 = 0.275 for a car that is no motorcycle (F-78985), with no state 12 between - so the strip
+/// is drawn 0.275 nearer, as the dash under it. Set by vehicles.rs each frame (0 for a motorcycle or with the offset off).
+static DEPTH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub fn set_depth_offset(v: f32) {
+    DEPTH.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
 }
 
 /// One readout's quads in the world (`world` = the car's drawn matrix): glyph k < count, its four corners as F-57755
@@ -183,7 +194,7 @@ pub fn quads(world: Mat4, r: [Vec3; 3], t: &Text, color: [f32; 4], emissive: [f3
         for (x, y, u, v) in [(x0, -STEP, 0.0, 1.0), (x0, 0.0, 0.0, 0.0), (x1, 0.0, 1.0, 0.0), (x0, -STEP, 0.0, 1.0), (x1, 0.0, 1.0, 0.0), (x1, -STEP, 1.0, 1.0)] {
             let local = r[0] * x + r[1] * y + r[2];
             let p = world * Vec4::new(local.x, local.y, local.z, 1.0);
-            out.push(Vertex { pos: p.truncate().into(), uv: [u * 0.125 + cell[0], v * 0.125 + cell[1]], color, emissive });
+            out.push(Vertex { pos: p.truncate().into(), uv: [u * 0.125 + cell[0], v * 0.125 + cell[1]], color, emissive, depth: 0.0 });
         }
     }
 }
@@ -253,6 +264,7 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 12, shader_location: 1 },
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 20, shader_location: 2 },
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 36, shader_location: 3 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 48, shader_location: 4 },
         ];
         // (the technique's pass: AlphaBlendEnable 1, SrcBlend SRCALPHA, DestBlend INVSRCALPHA - rage ids 10 / 4 / 5)
         let blend = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add };
@@ -290,6 +302,8 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, frame: Option<&Frame>) {
         quads(f.world, rows(bone, w, h, tune[4], t.count), t, [tune[0], tune[1], tune[2], tune[3]], f.emissive, &mut verts);
         draws.push((t.font, start, verts.len() as u32));
     }
+    let depth = f32::from_bits(DEPTH.load(std::sync::atomic::Ordering::Relaxed));
+    verts.iter_mut().for_each(|v| v.depth = depth);
     // (MCLA_READOUT_LOG=1: what each readout shows and where)
     if std::env::var("MCLA_READOUT_LOG").is_ok_and(|v| v.trim() == "1") {
         for (k, t) in list.iter().enumerate() {

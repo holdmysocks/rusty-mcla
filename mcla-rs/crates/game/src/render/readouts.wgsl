@@ -40,9 +40,11 @@ struct VOut {
 };
 
 @vertex
-fn vs_main(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>, @location(3) emissive: vec3<f32>) -> VOut {
+fn vs_main(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>, @location(3) emissive: vec3<f32>, @location(4) depth: f32) -> VOut {
     var o: VOut;
     o.clip = g.view_proj * vec4<f32>(pos, 1.0);
+    // (render state 12, the in-car view's depth offset - readouts.rs set_depth_offset)
+    o.clip.z = o.clip.z + depth * o.clip.w;
     o.uv = uv;
     o.color = color;
     o.emissive = emissive;

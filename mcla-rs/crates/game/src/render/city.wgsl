@@ -1277,6 +1277,10 @@ fn vs_body(in: VsIn) -> VsOut {
     if (obj.params.w < 15.5 && in.uv1.y > 76.5 && in.uv1.y < 77.5) {
         o.clip.z = o.clip.z + obj.lamp_b[18].x * o.clip.w;
     }
+    // (the in-car view's car: params.w bit 512, render state 12 = G+5700 = 0.275 around the body and each part - vehicles.rs)
+    if (obj.params.w > 15.5 && (u32(round(obj.params.w)) & 512u) != 0u) {
+        o.clip.z = o.clip.z + 0.275 * o.clip.w;
+    }
     // (car paint's directional fade, per vertex; the material's mode is not visible to this stage -
     // only the paint branch of the pixel stage reads it)
     o.paint_s = paint_fade_s(in.pos, in.uv2.y);

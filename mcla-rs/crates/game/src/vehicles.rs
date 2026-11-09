@@ -5736,6 +5736,15 @@ if keep || c.state.pos.distance(center) < 450.0 {
             }
             // (+ 256: the in-car glass, only the player's car - the camera's target, F-95074)
             let int_glass = if self.interior_glass && c.is_player { 256.0 } else { 0.0 };
+            // (+ 512: the depth offset. With G+123 set and the car no motorcycle (F-54299), the part loop F-92759 runs F-78985
+            // before the body and before each part: render state 12 (the polygon offset) = G+5700, which the constructor F-60786
+            // sets to 0.275 (the image's constant, as the cockpit arms' - skin.rs COCKPIT_DEPTH_OFFSET). city.wgsl adds it to
+            // the clip z of the body and its parts as for the arms. The wheels (F-11293) do not run it: here not offset.
+            // MCLA_CAR_DEPTH_OFFSET_OFF=1: none)
+            let int_glass = int_glass + if int_glass > 0.0 && !c.model.bike && std::env::var_os("MCLA_CAR_DEPTH_OFFSET_OFF").is_none() { 512.0 } else { 0.0 };
+            if c.is_player {
+                crate::readouts::set_depth_offset(if int_glass > 512.0 { 0.275 } else { 0.0 });
+            }
             // (the glass draw's variables, F-50822 - damagemap::glass_vars: the four windows' states in the first dent
             // slot (WindowDmgVal 0 - 3, 0 in the in-car view), the zones' glass colours (the record's; a car without
             // one the R8's recorded), and in the fifth the side windows' clip plane ClipPlaneEq - normal the car
