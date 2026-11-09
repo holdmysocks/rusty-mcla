@@ -3064,7 +3064,7 @@ impl TrackCam {
             self.follow(t, dist, dt, frames);
         }
         // (MinMaxOn is 0 in every file and constructor: F-94118 never runs)
-        let pos = if t.collide_type != 0 { self.pull_in(t, dt, test, fov, aspect) } else { self.out[3] };
+        let pos = if t.collide_type != 0 { self.pull_in(t, dt, frames, test, fov, aspect) } else { self.out[3] };
         self.snap = false;
         let reach = (self.at - self.out[3]).length().max(1.0);
         BoomOut { pos, look: pos - self.out[2] * reach, up: self.out[1], fov }
@@ -3166,11 +3166,10 @@ impl TrackCam {
         let atan2 = |y: f32, x: f32| crate::physics::exact::guest_atan2(y as f64, x as f64) as f32;
         let (yaw_c, pitch_c) = if let Some((_, n)) = test.contacts(at, r, CamQuery::FIXED, 1).first().copied() {
             (atan2(na(n) * r, r) * 2.0, atan2(nu(n) * r, r) * 0.5)
-        } else if let Some((f, n)) = test.sweep(at, self.comp[3], r, false) {
+        } else if let Some((_, k, n)) = test.sweep_rec(at, self.comp[3], r, false) {
+            // (the record's +68: the length of the sweep left after the touch, L (1 - t))
             let d = self.comp[3] - at;
             let len = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y)).sqrt();
-            // (approx.: the record's word +68 taken as the length left after the touch)
-            let k = (1.0 - f) * len;
             (atan2(na(n) * k, len) * 2.0, atan2(nu(n) * k, len) * 0.5)
         } else {
             return;
@@ -3282,19 +3281,28 @@ impl TrackCam {
         self.out = [r[0], r[1], r[2], p];
     }
 
-    /// CollideType 1 / 3 (F-91096, TYPE13): a ball of the near plane's corner + 0.1 from
-    /// the track point to the camera; on a touch the kept distance (+672) goes in 30 % a
-    /// frame to the touch (never under CollideMinDist), when clear it goes back out at
-    /// MinAppXZPos m/s while the state bits last (as coded: with MinAppXZPos 0 it snaps back).
-    /// The camera stands on the line from the point at that distance. (approx.: type 3's four
-    /// class sweeps, which only add state bits, are left out)
-    fn pull_in(&mut self, t: &TrackTune, dt: f32, test: SphereTest, fov: f32, aspect: f32) -> Vec3 {
-        let p = self.pull_in_at(t, self.at, dt, test, fov, aspect);
-        self.corrected = p != self.out[3];
-        p
+    /// CollideType 1 / 3 (F-91096, TYPE13; rule in track_collision_rule.md 2): from the smoothed output (+80 = +16), a
+    /// ball of the near plane's half diagonal + 0.1 (+468) at T, else swept T -> the camera, on the level (the camera's
+    /// include +200, the states 7, its car skipped): a touch whose normal faces T -> camera (n.u < -1e-5) gives the
+    /// distance of the touch (t L, the ball at T: 0), never under CollideMinDist; the kept distance +672 goes to it at
+    /// MinAppXZPos m/s (G+88) when that is longer, else 30 % a call; the camera stands on the line from T at that
+    /// distance (+128, byte +156). Clear after a touch (+668 not 0): back out to L the same way while it is not there
+    /// (as coded: with MinAppXZPos 0 shown only once within 1e-4 of L); else +672 = L, +668 = 0. The side bits
+    /// 0x2 / 0x4 / 0x8 / 0x10 of the touch's normal. (approx.: type 3's four class sweeps, which only add state bits, are
+    /// left out - no shipped file has CollideType 3)
+    fn pull_in(&mut self, t: &TrackTune, dt: f32, frames: f32, test: SphereTest, fov: f32, aspect: f32) -> Vec3 {
+        let p = self.pull_in_at(t, self.at, dt, frames, test, pull_radius(t.near, fov, aspect));
+        if self.corrected {
+            p
+        } else {
+            self.out[3]
+        }
     }
 
-    fn pull_in_at(&mut self, t: &TrackTune, at: Vec3, dt: f32, test: SphereTest, fov: f32, aspect: f32) -> Vec3 {
+    /// F-91096's TYPE13 with the probe radius `r`; returns the place it writes to +128 (shown while `corrected`, byte +156).
+    fn pull_in_at(&mut self, t: &TrackTune, at: Vec3, dt: f32, frames: f32, test: SphereTest, r: f32) -> Vec3 {
+        use crate::physics::exact::{approach, cross, dot3, fma, rsqrt};
+        self.corrected = false;
         if t.collide_type != 1 && t.collide_type != 3 {
             return self.out[3];
         }
@@ -3302,77 +3310,90 @@ impl TrackCam {
         self.bits &= !0x3C01;
         let active = old != 0;
         let c = self.out[3];
-        let l = (c - at).length();
-        if l < 1e-4 {
-            return c;
-        }
-        let u = (c - at) / l;
-        let ty = (fov.to_radians() * 0.5).tan();
-        let r = t.near * (ty * ty + (ty * aspect) * (ty * aspect)).sqrt() + 0.1;
+        // (L by the scalar unit: sqrt(dx dx + (dy dy + dz dz)), T - C; u by the vector unit's estimate and one Newton step)
+        let d = at - c;
+        let l = fma(d.x, d.x, fma(d.y, d.y, d.z * d.z)).sqrt();
+        let w = c - at;
+        let u = w * rsqrt(dot3(w, w));
         if self.dist == 0.0 {
             self.dist = l;
         }
-        let mut f = None;
+        let dot = |n: Vec3| fma(n.z, u.z, fma(n.x, u.x, n.y * u.y));
+        let mut f16 = 1e7f32;
         let mut n = Vec3::ZERO;
-        if let Some((_, hn)) = test.contacts(at, r, CamQuery::CARS, 1).first().copied().filter(|(_, hn)| hn.dot(u) < -1e-5) {
-            f = Some(0.0);
+        if let Some((_, hn)) = test.contacts(at, r, CamQuery::CARS, 1).first().copied().filter(|&(_, hn)| dot(hn) < -1e-5) {
+            f16 = 0.0;
             n = hn;
-        } else if let Some((ft, hn)) = test.sweep(at, c, r, true).filter(|(_, hn)| hn.dot(u) < -1e-5) {
-            f = Some(ft);
-            n = hn;
-        }
-        if f.is_some() {
             self.bits |= 1;
-            let s = Vec3::new(-u.z, 0.0, u.x);
-            let v = u.cross(s);
+        } else if let Some((_, depth, hn)) = test.sweep_rec(at, c, r, true).filter(|&(_, _, hn)| dot(hn) < -1e-5) {
+            f16 = (l - depth) / l;
+            n = hn;
+            self.bits |= 1;
+        }
+        if self.bits & 1 != 0 {
+            // (S = u x up, V = u x S as the vector unit forms them; the products n.S, n.V by the scalar chain)
+            let s = cross(u, Vec3::Y);
+            let v = cross(u, s);
+            let nd = |a: Vec3| fma(n.z, a.z, fma(n.x, a.x, n.y * a.y));
             self.bits &= !0x18;
-            let a = n.dot(s);
+            let a = nd(s);
             if a < -0.001 {
-                self.bits = (self.bits | 0x8) & !0x10;
+                self.bits = (self.bits & !0x18) | 0x8;
             } else if a > 0.001 {
-                self.bits = (self.bits | 0x10) & !0x8;
+                self.bits = (self.bits & !0x18) | 0x10;
             }
-            let b = n.dot(v);
+            let b = nd(v);
             if b > 0.001 {
-                self.bits = (self.bits | 0x2) & !0x4;
+                self.bits = (self.bits & !0x6) | 0x2;
             } else if b < -0.001 {
-                self.bits = (self.bits | 0x4) & !0x2;
+                self.bits = (self.bits & !0x6) | 0x4;
             }
         }
         self.bits &= !0x20;
         let rate = t.app_xz.0;
-        if let Some(f) = f {
-            let mut d = f * l;
+        // (30 % a call of the original - a 30 Hz frame; another frame length takes it to that step)
+        let filter = |dist: f32, to: f32| if frames == 1.0 { fma(to - dist, 0.3, dist) } else { dist + (to - dist) * (1.0 - 0.7f32.powf(frames)) };
+        if (0.0..=1.0).contains(&f16) {
+            let mut d = f16 * l;
             if t.collide_min > 0.0 && d < t.collide_min {
                 d = t.collide_min;
                 self.bits |= 0x20;
             }
             if rate > 0.0 && d > self.dist {
-                self.dist = (self.dist + rate * dt).min(d);
+                approach(&mut self.dist, d, rate, dt);
             } else {
-                self.dist += (d - self.dist) * (1.0 - 0.7f32.powf(dt * 30.0));
+                self.dist = filter(self.dist, d);
             }
-            return at + u * self.dist;
+            self.corrected = true;
+            return u * self.dist + at;
         }
         if active {
-            let shown = if rate > 0.0 {
-                // (F-90102: linear at MinAppXZPos m/s, shown until it is there)
-                self.dist += (l - self.dist).clamp(-rate * dt, rate * dt);
-                (self.dist - l).abs() > 1e-6
+            self.corrected = if rate > 0.0 {
+                approach(&mut self.dist, l, rate, dt);
+                self.dist != l
             } else {
-                self.dist += (l - self.dist) * (1.0 - 0.7f32.powf(dt * 30.0));
-                (self.dist - l).abs() <= 1e-4
+                self.dist = filter(self.dist, l);
+                !(self.dist < l - 1e-4) && !(self.dist > l + 1e-4)
             };
-            if shown {
-                return at + u * self.dist;
+            let p = u * self.dist + at;
+            if !self.corrected {
+                self.bits = 0;
             }
-            self.bits = 0;
-            return c;
+            return p;
         }
         self.dist = l;
         self.bits = 0;
         c
     }
+}
+
+/// F-91096's ball: the near plane's half diagonal (viewport +704 near, +712 / +716 tan of the half lens up / across) + 0.1
+/// (+468): sqrt((tan_y near)^2 + (tan_x near)^2) + 0.1, the scalar unit's chain.
+fn pull_radius(near: f32, fov: f32, aspect: f32) -> f32 {
+    let ty = (fov.to_radians() * 0.5).tan();
+    let tx = ty * aspect;
+    let (a, b) = (tx * near, ty * near);
+    crate::physics::exact::fma(b, b, a * a).sqrt() + 0.1
 }
 
 /// What the cameras' probes see (`physics::camprobe::CamLevel` in the game): a ball's
@@ -3386,6 +3407,11 @@ pub trait CamWorld {
         !self.contacts(c, r, q, 1).is_empty()
     }
     fn sweep(&self, a: Vec3, b: Vec3, r: f32, cars: bool) -> Option<(f32, Vec3)>;
+    /// The sweep's first touch as its record holds it: (t +64, depth +68, normal +32); the depth is the length of the
+    /// sweep left after the touch, |b - a| (1 - t) where the world has no record of its own.
+    fn sweep_rec(&self, a: Vec3, b: Vec3, r: f32, cars: bool) -> Option<(f32, f32, Vec3)> {
+        self.sweep(a, b, r, cars).map(|(t, n)| (t, (b - a).length() * (1.0 - t), n))
+    }
 }
 
 pub use crate::physics::camprobe::CamQuery;
@@ -3401,6 +3427,9 @@ impl CamWorld for crate::physics::camprobe::CamLevel<'_> {
     }
     fn sweep(&self, a: Vec3, b: Vec3, r: f32, cars: bool) -> Option<(f32, Vec3)> {
         crate::physics::camprobe::CamLevel::sweep(self, a, b, r, cars)
+    }
+    fn sweep_rec(&self, a: Vec3, b: Vec3, r: f32, cars: bool) -> Option<(f32, f32, Vec3)> {
+        crate::physics::camprobe::CamLevel::sweep_hit(self, a, b, r, cars).map(|h| (h.t, h.depth, h.normal))
     }
 }
 
@@ -5182,9 +5211,14 @@ SSFovMin 60
     /// (rule and evidence: docs/reference/cameras/camtrack_rule.md, "Checked against the original").
     #[test]
     fn track_update_matches_the_original() {
-        let s = track_rec_check(include_str!("testdata/track_update_rec.txt"), 1e-5);
+        let s = with_city(|w| track_rec_check(include_str!("testdata/track_update_rec.txt"), 1e-5, w));
         assert!(s.cases >= 1000, "{s:?}");
         assert!(s.event >= 100 && s.wipeout >= 150 && s.moving >= 300 && s.bike_wiped >= 200 && s.deflected >= 100, "{s:?}");
+        if s.pull_cases > 0 {
+            // (with the city: the port's probe turns exactly the updates the original's did; the pull-in's touches)
+            assert_eq!(s.port_deflected, s.deflected, "{s:?}");
+            assert!(s.pull_cases >= 500 && s.pull_hits >= 30, "{s:?}");
+        }
     }
 
     /// The same over a whole export (`MCLA_TRACK_FIXTURE` = a file of work/cameras2/trk/track_testdata.py); skipped
@@ -5193,8 +5227,29 @@ SSFovMin 60
     fn track_update_matches_the_original_full() {
         let Ok(p) = std::env::var("MCLA_TRACK_FIXTURE") else { return };
         let text = std::fs::read_to_string(p).unwrap();
-        let s = track_rec_check(&text, 1e-5);
+        let s = with_city(|w| track_rec_check(&text, 1e-5, w));
         eprintln!("{s:?}");
+    }
+
+    /// The city's grid bound as the level's one object (the level queries' `RailLevel` with no cars, walkers nor props),
+    /// as the cameras' world; None without the extracted data (MCLA_DATA_DIR).
+    fn with_city<R>(f: impl FnOnce(Option<&dyn CamWorld>) -> R) -> R {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Ok(d) = std::fs::read(std::path::Path::new(&root).join("resources/city/sc/0x3e5fd91d.r1")) else {
+            eprintln!("skipped: the city's bound (MCLA_DATA_DIR) is missing");
+            return f(None);
+        };
+        assert!(d.len() >= 16 && &d[0..4] == b"MCLR");
+        let u32le = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let data = d[16..].to_vec();
+        let vs = (u32le(12) as usize).min(data.len());
+        let res = mcla_formats::rsc::Resource { rtype: u32le(4), flags: u32le(8), virtual_size: vs, physical_size: data.len() - vs, data };
+        let city = crate::physics::camprobe::ProbeBound::of_city(&mcla_formats::rage::bound::CityBound::parse(&res).unwrap());
+        let col = crate::physics::collision::WorldCollider { city: Some(std::sync::Arc::new(city)), ..Default::default() };
+        let state = crate::physics::loose::LooseState::default();
+        let level = crate::vehicles::traffic::RailLevel::new(&col, &[], std::path::Path::new(""), &[], &state);
+        let world = crate::physics::camprobe::CamLevel { city: &col, cars: Vec::new(), level: Some(&level), skip: 0 };
+        f(Some(&world))
     }
 
     #[derive(Debug, Default)]
@@ -5210,15 +5265,22 @@ SSFovMin 60
         bike_wiped: usize,
         tumble: usize,
         hill: usize,
-        /// updates whose computed matrix the level's probe turned (F-87651 / F-58512 on the city: the recorded
-        /// matrix is taken for them), and those with no wheels recorded (the hill and the grounded filter taken
-        /// from the recording)
+        /// updates whose computed matrix the level's probe turned in the original (F-87651 / F-58512; without the
+        /// city the recorded matrix is taken for them), and those with no wheels recorded (the hill and the grounded
+        /// filter taken from the recording)
         deflected: usize,
         no_wheels: usize,
         /// the distance clamp acting
         clamped: usize,
         /// the rates taken with the aero damp factor
         aero: usize,
+        /// with the city: the updates the port's probe turned; the pull-in's updates (CollideType 1) and its touches
+        port_deflected: usize,
+        pull_cases: usize,
+        pull_hits: usize,
+        /// the pull-in's release after a touch, and its first call after a reset (+672 = 0)
+        pull_release: usize,
+        pull_first: usize,
         /// the deflected ones by kind (vehTrackCS, camTrackCS)
         defl_kind: [usize; 2],
     }
@@ -5236,10 +5298,10 @@ SSFovMin 60
 
     /// Runs the track camera's update on every recorded call of `text` (lines of work/cameras2/trk/track_testdata.py)
     /// and asserts every written field within `tol` of its size (the larger of its magnitude and 1).
-    fn track_rec_check(text: &str, tol: f32) -> TrackRecStats {
+    fn track_rec_check(text: &str, tol: f32, world: Option<&dyn CamWorld>) -> TrackRecStats {
         let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
         let mut st = TrackRecStats::default();
-        let names = ["out rows", "out place", "T", "computed rows", "computed place", "place", "turn lags", "place lags", "rates", "hill", "ground", "flags"];
+        let names = ["out rows", "out place", "T", "computed rows", "computed place", "place", "turn lags", "place lags", "rates", "hill", "ground", "flags", "pull-in place", "pull-in state"];
         let mut worst = vec![(0.0f32, String::new()); names.len()];
         for line in text.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
             let w: Vec<&str> = line.split_whitespace().collect();
@@ -5344,11 +5406,20 @@ SSFovMin 60
                 st.no_wheels += 1;
                 (c.t_off, c.t_on, c.off_ground, c.tumble, c.hill) = (fo(580), fo(584), uo(588) == 0, uo(592) != 0, fo(616));
             }
-            c.target(&t, &car, &NO_WORLD);
+            let mut bare = c.clone();
+            bare.target(&t, &car, &NO_WORLD);
+            if let Some(w) = world {
+                c.target(&t, &car, w);
+                st.port_deflected += (c.comp != bare.comp) as usize;
+            } else {
+                c = bare.clone();
+            }
             let rec_comp = [vo(336), vo(352), vo(368), vo(384)];
             let off = |a: Vec3, b: Vec3| (a - b).abs().max_element() / b.abs().max_element().max(1.0);
-            let comp_off = (0..4).map(|i| off(c.comp[i], rec_comp[i])).fold(0.0f32, f32::max);
-            if comp_off >= tol && off(c.place, vo(688)) < tol && off(c.at, vo(320)) < tol && t.collide_height > 0.0 {
+            let comp_off = (0..4).map(|i| off(bare.comp[i], rec_comp[i])).fold(0.0f32, f32::max);
+            if world.is_some() {
+                st.deflected += (comp_off >= tol) as usize;
+            } else if comp_off >= tol && off(c.place, vo(688)) < tol && off(c.at, vo(320)) < tol && t.collide_height > 0.0 {
                 // (the deflection: what the level's probe answered turned the computed matrix)
                 st.deflected += 1;
                 // (the probe only turns the matrix about T - the distance kept - or lifts the place to T's height)
@@ -5378,6 +5449,19 @@ SSFovMin 60
                 let _ = p;
             }
             c.snap = false;
+            // F-91096 (CollideType 1): on the level's city
+            let mut pulled = None;
+            if let (Some(w), true) = (world, t.collide_type != 0) {
+                st.pull_cases += 1;
+                // (the viewport F-91096 reads is not recorded: its near plane and lens taken as the camera's own +172 /
+                // +168 at 16:9 - the recording's 1280 x 720; with them every touch's distance comes out bit for bit)
+                let r = pull_radius(t.near, fi(168), 16.0 / 9.0);
+                let p = c.pull_in_at(&t, c.at, dt, 1.0, w, r);
+                pulled = Some((p, c.corrected, c.bits, c.dist));
+                st.pull_hits += (uo(668) & 1) as usize;
+                st.pull_release += (ui(668) != 0 && uo(668) & 1 == 0) as usize;
+                st.pull_first += (fi(672) == 0.0) as usize;
+            }
             // the recorded exit, field by field
             let rows = |m: &[Vec3; 4]| (0..3).map(|i| m[i]).collect::<Vec<_>>();
             let checks: [(usize, Vec<Vec3>, Vec<Vec3>); 12] = [
@@ -5398,6 +5482,11 @@ SSFovMin 60
                     vec![Vec3::new(uo(588) as f32, uo(592) as f32, uo(596) as f32), Vec3::new((uo(656) >> 24) as f32, uo(296) as f32, 0.0)],
                 ),
             ];
+            let mut checks = Vec::from(checks);
+            if let Some((p, shown, bits, dist)) = pulled {
+                checks.push((12, vec![p], vec![vo(128)]));
+                checks.push((13, vec![Vec3::new(shown as u32 as f32, bits as f32, dist)], vec![Vec3::new((uo(156) >> 24) as f32, uo(668) as f32, fo(672))]));
+            }
             for (k, got, want) in checks {
                 for (g, wv) in got.iter().zip(want.iter()) {
                     let e = off(*g, *wv);
