@@ -935,6 +935,16 @@ pub fn quat_angle(w: f32) -> f32 {
     }
 }
 
+/// The depth offset the driver's cockpit view model is drawn with: the base draw F-56050 sets render state 12 to 0.275 (the
+/// image's constant) around it and back to 0. State 12 is the device's polygon offset (recorded on the original's bike cockpit:
+/// front and back offset 0.275, scale 0), an absolute offset in the depth range's units, the guest value Xenia converts to host
+/// steps (`GetD3D10IntegerPolygonOffset`, rexglue-sdk graphics/util/draw.h). The original's depth is reversed (viewport z scale -1,
+/// offset 1, GEQUAL) as the port's (near / distance; near 0.2 in every drive view, read live - boomcam.rs `DIRECTOR_NEAR`), so the arms are drawn 0.275 nearer:
+/// in front of the dash and bars. Applied to the clip z (`o.clip.z += offset * o.clip.w`): every fragment's depth + 0.275, the
+/// screen place and w unchanged. approx.: the device adds it after clipping and clamps to 1; here a point nearer than about
+/// 0.28 m (depth above 0.725) is clipped by the near plane instead. MCLA_COCKPIT_OFFSET_OFF=1: none, as before.
+pub const COCKPIT_DEPTH_OFFSET: f32 = 0.275;
+
 /// This frame's skinned geometry of one kind of character.
 #[derive(Default)]
 pub struct SkinBuffer {
@@ -984,6 +994,8 @@ pub struct SkinBuffer {
     draw_stencil: Vec<u32>,
     /// this frame's figures (character programs): the model's origin, bystander, the car's lights
     figs: Vec<(Vec3, bool, Option<crate::drivers::Cabin>)>,
+    /// per figure: drawn with the set's cockpit view model (F-56050: render state 12, the depth offset, `COCKPIT_DEPTH_OFFSET`)
+    fig_cockpit: Vec<bool>,
     /// and each draw's figure and material
     char_draws: Vec<(usize, CharMat)>,
     char_objs: Vec<crate::render::ObjectBinding>,
@@ -999,6 +1011,7 @@ impl SkinBuffer {
         self.lanes.clear();
         self.draw_fig.clear();
         self.figs.clear();
+        self.fig_cockpit.clear();
         self.char_draws.clear();
         self.draw_stencil.clear();
     }
@@ -1047,7 +1060,8 @@ impl SkinBuffer {
             None => usize::MAX,
         };
         let first = (lod.min(2)..3).find(|&l| !model.lods[l].is_empty()).unwrap_or(0);
-        let parts = if std::mem::take(&mut self.next_cockpit) && !model.cockpit.is_empty() { &model.cockpit } else { &model.lods[first] };
+        let cockpit = std::mem::take(&mut self.next_cockpit) && !model.cockpit.is_empty();
+        let parts = if cockpit { &model.cockpit } else { &model.lods[first] };
         let chars = self.char_light.is_some();
         let cfig = self.figs.len();
         let cabin = self.next_cabin.take();
@@ -1056,6 +1070,7 @@ impl SkinBuffer {
             // the scene position (cine.rs); x / z within 3 cm of the recorded draws, y up to 0.4 m higher)
             let at = if self.light_at_root { root.w_axis } else { self.world.first().map_or(root.w_axis, |w| w.w_axis) };
             self.figs.push((at.truncate(), std::mem::take(&mut self.next_bystander), cabin));
+            self.fig_cockpit.push(cockpit);
         }
         // (a driver's wind: windEmitterPlaneEq, windParams and the draw's place - its gWorld is a translation alone, so
         // the program's object space is the world's less that place; MCLA_DRV_WIND_OLD=1: none)
@@ -1186,6 +1201,11 @@ impl SkinBuffer {
                 // not kept for the scenes' bystanders: the generic look then)
                 let fxv = if cl.night && m.fx == fx::PED { 0 } else { m.fx };
                 u.interior[4] = [fxv as f32, 1.0, if m.double { 1.0 } else { 0.0 }, if by { 1.0 } else { 0.0 }];
+                // (the cockpit view model's depth offset - city.wgsl, the figure branch of `vs_body`)
+                // (MCLA_COCKPIT_OFFSET=<v>: another offset, a diagnostic)
+                if self.fig_cockpit.get(*f).copied().unwrap_or(false) && std::env::var_os("MCLA_COCKPIT_OFFSET_OFF").is_none() {
+                    u.lamp_b[18][0] = std::env::var("MCLA_COCKPIT_OFFSET").ok().and_then(|v| v.parse().ok()).unwrap_or(COCKPIT_DEPTH_OFFSET);
+                }
                 if i < self.char_objs.len() {
                     self.uniforms.push_object(&self.char_objs[i], &u);
                 } else {

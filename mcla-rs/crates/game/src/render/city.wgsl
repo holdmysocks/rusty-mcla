@@ -1273,6 +1273,10 @@ fn vs_body(in: VsIn) -> VsOut {
         o.uv1.x = 0.0;
         o.uv2.y = 0.0;
     }
+    // (the cockpit view model's depth offset, render state 12 = 0.275 - skin.rs `COCKPIT_DEPTH_OFFSET`; 0 for other figures)
+    if (obj.params.w < 15.5 && in.uv1.y > 76.5 && in.uv1.y < 77.5) {
+        o.clip.z = o.clip.z + obj.lamp_b[18].x * o.clip.w;
+    }
     // (car paint's directional fade, per vertex; the material's mode is not visible to this stage -
     // only the paint branch of the pixel stage reads it)
     o.paint_s = paint_fade_s(in.pos, in.uv2.y);
