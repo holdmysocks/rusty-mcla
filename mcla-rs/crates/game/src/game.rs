@@ -9032,7 +9032,11 @@ impl Game {
                             tab_icons: Vec::new(),
                         row_props: Vec::new(),
                             description: String::new(),
-                            list_max: 0,
+                            // (the garage's menus send `fs_List_max` 6 - Main.sc.xml GARAGE_TOP_MENU and
+                            // Garage_customization_menu - and the colour pages under them send none, so the movie
+                            // keeps 6: INTERIOR COLORS' nine rows scroll, six shown, and the movie's ShowScrollbar
+                            // widens the panel by 10 (capture work/ui2/cap d14))
+                            list_max: if paint_page { 6 } else { 0 },
                             headers: Vec::new(),
                             cells: Vec::new(),
                         };

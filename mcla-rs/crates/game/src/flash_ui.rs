@@ -2234,6 +2234,41 @@ mod tests {
             assert!((c2 - col2).abs() < 0.01 && (w - width).abs() < 0.01, "open {open}: list_intercol2 {c2} width {w}");
         }
     }
+
+    /// INTERIOR COLORS' width as the original's (captures work/ui2/cap d14, d15): nine rows with `List_max` 6 scroll, and
+    /// the movie's ShowScrollbar adds 10 to a panel wider than `widthpanel_min`. Closed, the title's 415.23 + 10; with
+    /// NEON COLOR open, "!!IntNeon_Open.s30!!" (219.35) gives 582.48 + 10. The captures' left edges 868.75 / 743.5 px
+    /// against the closed NEON/WINDOW TINT page's 809.5 (504.05): 0.749 px a unit, within 0.2 px.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn interior_page_width_with_the_scrollbar() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let strings = StringTable::parse(&std::fs::read(Path::new(&dir).join("ui/0xa4c1e8fa")).unwrap()).unwrap();
+        let shared = UiShared { textures: Arc::new(HashMap::new()), strings: Arc::new(strings), logic: Arc::new(crate::menu3d::UiLogic::load(&dir)) };
+        let strip: Vec<u32> = (0..40).map(|i| 0x101010 * (i % 15)).collect();
+        let row = |label: &str, value: String| MenuRow { label: label.into(), value, enabled: true, part: None };
+        let labels = ["\u{b1}NEON COLOR", "GAUGE COLOR A", "GAUGE COLOR B", "INTERIOR COLOR A", "INTERIOR COLOR B", "INTERIOR COLOR C", "INTERIOR COLOR D", "INTERIOR COLOR E"];
+        let ids = ["IntNeon_Open", "Gauges_Open", "GaugesB_Open", "IntColorA_Open", "IntColorB_Open", "IntColorC_Open", "IntColorD_Open", "IntColorE_Open"];
+        for (open, width) in [(false, 425.234), (true, 592.480)] {
+            let mut menu = FlashMenu::load(&dir, GARAGE_MOVIE, [0.0; 2], &shared).unwrap();
+            let mut rows = vec![row("INTERIOR NEON", choice_list(0, &["OFF".into(), "ON".into()]))];
+            for k in 0..8 {
+                rows.push(row(labels[k], swatch_states(swatch_value(0xdddddd, if open && k == 0 { 0 } else { -1 }, &strip), "", ids[k])));
+            }
+            let page = MenuPage {
+                layout: MenuLayout::Paint, icon: 10, title: "INTERIOR COLORS".into(), rows,
+                select: if open { 1 } else { 0 }, money: Some(("MONEY".into(), 5000)), list_max: 6, ..MenuPage::default()
+            };
+            for _ in 0..60 {
+                menu.show(&page);
+                menu.movie.player.tick();
+            }
+            let p = &mut menu.movie.player;
+            let num = |v: Option<Value>| match v { Some(Value::Int(i)) => i as f32, Some(Value::Float(f)) => f, v => panic!("{v:?}") };
+            let w = num(p.get_path("menu.width"));
+            assert!((w - width).abs() < 0.01, "open {open}: width {w}");
+        }
+    }
 }
 
 
