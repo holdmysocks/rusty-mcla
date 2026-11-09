@@ -346,9 +346,78 @@ impl Veh {
         let r = (g.max(0) as usize + 1).min(d.len() - 1);
         Self::read(&d[r], self.spd_k * v).max(0.1)
     }
-    /// the best-gear row 0 ([19..]) as the forward pass reads it
-    fn accel0(&self, v: f32) -> f32 {
-        Self::read(&self.t.accel, self.spd_k * v).max(0.1)
+    /// The benefits' read of the acceleration row 0 (F-82077 / F-96973 inline it): the index (word 11 x v, below or at 0
+    /// as 0, NaN as 0) floored by the 2^23 rounding and capped at 126.1, the fraction from the index unclamped above, the lerp
+    /// fused, then at least 0.1.
+    fn accel0_inline(&self, v: f32) -> f32 {
+        let x = self.spd_k * v;
+        let x = fsel(-x, 0.0, x);
+        let xc = fsel(x, x, 0.0);
+        let xc = fsel(xc - 126.1, 126.1, xc);
+        let h = fsel(xc, -8388608.0, 8388608.0);
+        let r = (xc - h) + h;
+        let fl = fsel(xc - r, r, r - 1.0);
+        let row = &self.t.accel;
+        let j = fl as usize;
+        if row.len() < j + 2 {
+            return 0.1;
+        }
+        let a = fma(row[j + 1] - row[j], x - fl, row[j]);
+        fsel(0.1 - a, 0.1, a)
+    }
+    /// F-82077 (nitrous, `cubic` false) / F-96973 (slingshot, true): the fraction of a boost's time gain the grip-limited
+    /// line keeps. Two forward runs over the samples f+1 .. n-1 from the forward speed (at least 0.1): the boosted run under
+    /// the grip limit and the sample's allowed speed, the free boosted run; the boost c x b^2 (b^3) with b = 1 - t / dur
+    /// (at least 0), the drag term ((d3 |k| + d2) v + d1, at least 0)^4; (T - ta) / (T - tb) clamped 0 .. 1, 0 unless
+    /// T - tb > 1e-6. The arithmetic as the original's: fused multiply-adds, its selects and term order.
+    #[allow(clippy::too_many_arguments)]
+    fn boost_benefit(&self, s: &[Sample], f: i32, n: i32, v_fwd: f32, c: f32, dur: f32, inv_g: f32, total: f32, cubic: bool) -> f32 {
+        let (d1, d2, d3) = (self.t.drag[0], self.t.drag[1], self.t.drag[2]);
+        let mut va = fsel(0.1 - v_fwd, 0.1, v_fwd);
+        let mut vb = va;
+        let (mut ta, mut tb) = (0.0f32, 0.0f32);
+        let inv_t = 1.0 / dur;
+        let boost = |b: f32, e: f32| if cubic { fma(c * b * b, b, e) } else { fma(c * b, b, e) };
+        let mut i = f + 1;
+        while i < n && i >= 0 && (i as usize) < s.len() {
+            let q = &s[i as usize];
+            let ba = fnms(inv_t, ta, 1.0);
+            let ba = fsel(-ba, 0.0, ba);
+            let bb = fnms(inv_t, tb, 1.0);
+            let bb = fsel(-bb, 0.0, bb);
+            let k = q.kappa.abs();
+            let ds2 = q.ds * 2.0;
+            // the grip-limited run
+            let alat = fma(q.kappa * va, va, q.g_ly);
+            let nn = fnms(q.kv * inv_g * va, va, 1.0);
+            let nn = fsel(nn, nn, 0.0);
+            let nn = fsel(nn - 1.0, 1.0, nn);
+            let dra = fma(fma(d3, k, d2), va, d1);
+            let dra = fsel(-dra, 0.0, dra);
+            let ga = nn * q.a_max;
+            let l2 = fms(ga, ga, alat * alat);
+            let lim = fsel(-l2, 0.0, l2).sqrt();
+            let e = fnms(dra * dra * dra, dra, self.accel0_inline(va));
+            let a = boost(ba, e) + q.g_ty;
+            let a = fsel(a - lim, lim, a);
+            let v2 = fma(a * q.ds, 2.0, va * va);
+            let na = fsel(0.1 - v2, 0.1, v2).sqrt();
+            let na = fsel(na - q.allowed, q.allowed, na);
+            // the free run
+            let drb = fma(fma(d3, k, d2), vb, d1);
+            let drb = fsel(-drb, 0.0, drb);
+            let ab = fnms(drb * drb * drb, drb, boost(bb, self.accel0_inline(vb))) + q.g_ty;
+            let v2 = fma(ab * q.ds, 2.0, vb * vb);
+            let nb = fsel(0.1 - v2, 0.1, v2).sqrt();
+            ta += ds2 / (na + va);
+            tb += ds2 / (nb + vb);
+            va = na;
+            vb = nb;
+            i += 1;
+        }
+        let r = if total - tb > 1e-6 { (total - ta) / (total - tb) } else { 0.0 };
+        let r = fsel(r, r, 0.0);
+        fsel(r - 1.0, 1.0, r)
     }
     /// F-67089
     fn steer_scalar(&self, v: f32) -> f32 {
@@ -2414,43 +2483,9 @@ impl Aiv {
         (kc, ac)
     }
 
-    /// F-82077 / F-96973: fraction of the time gain of a boost that the grip-limited
-    /// line keeps, against an unlimited run.
+    /// F-82077 / F-96973 on this follower's line and state (the boost's c and duration).
     fn boost_benefit(&self, c: f32, dur: f32, cubic: bool) -> f32 {
-        let (n, f) = (self.ln.n, self.ln.f);
-        let mut va = if 0.1 - self.v_fwd >= 0.0 { 0.1 } else { self.v_fwd };
-        let mut vb = va;
-        let (mut ta, mut tb) = (0.0f32, 0.0f32);
-        let t = &self.veh.t;
-        let (d1, d2, d3) = (t.drag[0], t.drag[1], t.drag[2]);
-        let inv_t = 1.0 / dur;
-        let pw = |b: f32| if cubic { b * b * b } else { b * b };
-        let mut i = f + 1;
-        while i < n && (i as usize) < NS {
-            let s = self.ln.s[i as usize];
-            let ba = (1.0 - inv_t * ta).max(0.0);
-            let bb = (1.0 - inv_t * tb).max(0.0);
-            let k = s.kappa.abs();
-            let nn = (1.0 - s.kv * self.inv_g * va * va).clamp(0.0, 1.0);
-            let alat = s.kappa * va * va + s.g_ly;
-            let ga = nn * s.a_max;
-            let lim = (ga * ga - alat * alat).max(0.0).sqrt();
-            let dra = ((k * d3 + d2) * va + d1).max(0.0);
-            let mut a = c * pw(ba) + (self.veh.accel0(va) - dra * dra * dra * dra) + s.g_ty;
-            a = a.min(lim);
-            let na = (a * s.ds * 2.0 + va * va).max(0.1).sqrt().min(s.allowed);
-            let drb = ((k * d3 + d2) * vb + d1).max(0.0);
-            let ab = c * pw(bb) + self.veh.accel0(vb) - drb * drb * drb * drb + s.g_ty;
-            let nb = (ab * s.ds * 2.0 + vb * vb).max(0.1).sqrt();
-            ta += s.ds * 2.0 / (na + va);
-            tb += s.ds * 2.0 / (nb + vb);
-            va = na;
-            vb = nb;
-            i += 1;
-        }
-        let tt = self.ln.t;
-        let r = if tt - tb > 1e-6 { (tt - ta) / (tt - tb) } else { 0.0 };
-        r.max(0.0).min(1.0)
+        self.veh.boost_benefit(&self.ln.s, self.ln.f, self.ln.n, self.v_fwd, c, dur, self.inv_g, self.ln.t, cubic)
     }
 
     /// push point k by `dv` (F-70569's push), keeping it when F-63779 accepts it.
@@ -2587,6 +2622,62 @@ mod tests {
     /// next recorded frame, on 1,010 varied states (car moved along / off the line, slow, reversed, other caps / boost timers) and on
     /// 603 recorded states with the point ring cut short (so the line is laid anew): every field it writes, bit for bit
     /// (docs/reference/ai/verify_follower.md).
+    /// F-82077 / F-96973 against the original run offline (tools/boost_benefit_reference.py): 8,000 random lines (0 .. 66
+    /// samples), the R8's tune with the drag, speed index and acceleration row varied, speeds at and around the 0.1 floor,
+    /// zero durations, line times at and around the runs' times; both answers equal bit for bit.
+    #[test]
+    fn boost_benefit_matches_the_original() {
+        let Ok(tb) = std::fs::read("D:/MCLA/work/ai-verify/scalar/tune_r8.bin") else {
+            println!("tune_r8.bin missing: skipped");
+            return;
+        };
+        let base: Vec<f32> = tb.chunks_exact(4).map(|c| f32::from_be_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let text = include_str!("testdata/boost_benefit_ref.txt");
+        let hex = |w: &str| u32::from_str_radix(&w.replace('_', ""), 16).unwrap();
+        let mut tabs: Vec<Vec<f32>> = Vec::new();
+        let (mut ran, mut bad, mut mid) = (0, 0, 0);
+        for line in text.lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            if w[0] == "table" {
+                tabs.push(w[2..].iter().map(|x| f32::from_bits(hex(x))).collect());
+                continue;
+            }
+            let arrow = w.iter().position(|x| *x == "->").unwrap();
+            let v: Vec<u32> = w[1..arrow].iter().map(|x| hex(x)).collect();
+            let want = [hex(w[arrow + 1]), hex(w[arrow + 2])];
+            let fv = |i: usize| f32::from_bits(v[i]);
+            let mut fl = base.clone();
+            fl[19..147].copy_from_slice(&tabs[v[0] as usize]);
+            fl[5] = fv(1);
+            fl[6] = fv(2);
+            fl[7] = fv(3);
+            let mut veh = Veh::new(Arc::new(AiTune::from_floats(&fl).unwrap()));
+            veh.spd_k = fv(4);
+            let (n, f) = (v[11] as i32, v[12] as i32);
+            let mut ss = [Sample::default(); NS];
+            for j in 0..(n - f - 1).max(0) as usize {
+                let q = &v[14 + 7 * j..14 + 7 * j + 7];
+                let g = |i: usize| f32::from_bits(q[i]);
+                ss[(f + 1) as usize + j] = Sample { allowed: g(0), kv: g(1), kappa: g(2), g_ty: g(3), g_ly: g(4), a_max: g(5), ds: g(6), ..Default::default() };
+            }
+            let got = [
+                veh.boost_benefit(&ss, f, n, fv(5), fv(6), fv(7), fv(10), fv(13), false).to_bits(),
+                veh.boost_benefit(&ss, f, n, fv(5), fv(8), fv(9), fv(10), fv(13), true).to_bits(),
+            ];
+            ran += 1;
+            mid += want.iter().filter(|&&x| x != 0 && x != 0x3F80_0000).count();
+            if got != want {
+                if bad < 5 {
+                    println!("{line}{}  port {:08x} {:08x}", char::from(10), got[0], got[1]);
+                }
+                bad += 1;
+            }
+        }
+        println!("boost benefit: {ran} cases, {mid} answers strictly inside 0 .. 1, {bad} differ");
+        assert!(ran >= 8000);
+        assert_eq!(bad, 0);
+    }
+
     #[test]
     fn follower_update_is_the_originals() {
         let dir = "D:/MCLA/work/racerai/follow";
