@@ -1388,7 +1388,15 @@ impl FlashMenu {
             _ => 10,
         };
         p.set_path("menu.List_max", Value::Int(list_max as i32));
-        p.set_global("ScrollbarVisible", Value::Int((page.list_max > 0 && page.rows.len() > list_max) as i32));
+        // (the list refresh F-31454 / F-56282: a list longer than it shows gets ScrollbarVisible 1 and the slider at
+        // f32(cur) / f32(count - 1), a single division, cur not below 0; the movie's ShowScrollbar puts the cursor at
+        // the bar's height times it - without it the cursor stayed at the top)
+        let scrolls = page.list_max > 0 && page.rows.len() > list_max;
+        p.set_global("ScrollbarVisible", Value::Int(scrolls as i32));
+        if scrolls {
+            let cur = if page.select == usize::MAX { 0 } else { page.select.min(page.rows.len() - 1) };
+            p.set_global("ScrollbarSliderPosition", Value::Float(cur as f32 / (page.rows.len() - 1) as f32));
+        }
         p.set_path("prompt.count", Value::Int(page.prompts.len() as i32));
         for (i, (t, icon)) in page.prompts.iter().enumerate() {
             let (t, icon) = crate::glyphs::prompt(t, *icon);
@@ -2268,6 +2276,38 @@ mod tests {
             let w = num(p.get_path("menu.width"));
             assert!((w - width).abs() < 0.01, "open {open}: width {w}");
         }
+    }
+
+    /// The scrollbar's cursor follows the selection, as the original's list refresh (F-31454) sets it:
+    /// ScrollbarSliderPosition = cur / (count - 1), and the movie's ShowScrollbar puts `scroll_cursor` at the bar's
+    /// height times it. INTERIOR COLORS (nine rows, six shown): row 0 at the top, row 8 at the bottom, row 4 halfway.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn scroll_cursor_follows_the_selection() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let strings = StringTable::parse(&std::fs::read(Path::new(&dir).join("ui/0xa4c1e8fa")).unwrap()).unwrap();
+        let shared = UiShared { textures: Arc::new(HashMap::new()), strings: Arc::new(strings), logic: Arc::new(crate::menu3d::UiLogic::load(&dir)) };
+        let strip: Vec<u32> = (0..40).map(|i| 0x101010 * (i % 15)).collect();
+        let row = |label: &str, value: String| MenuRow { label: label.into(), value, enabled: true, part: None };
+        let mut ys = Vec::new();
+        for sel in [0, 4, 8] {
+            let mut menu = FlashMenu::load(&dir, GARAGE_MOVIE, [0.0; 2], &shared).unwrap();
+            let mut rows = vec![row("INTERIOR NEON", choice_list(0, &["OFF".into(), "ON".into()]))];
+            for k in 0..8 {
+                rows.push(row(&format!("ROW {k}"), swatch_states(swatch_value(0xdddddd, -1, &strip), "", "IntColorA_Open")));
+            }
+            let page = MenuPage { layout: MenuLayout::Paint, icon: 10, title: "INTERIOR COLORS".into(), rows, select: sel, list_max: 6, ..MenuPage::default() };
+            for _ in 0..60 {
+                menu.show(&page);
+                menu.movie.player.tick();
+            }
+            let p = &menu.movie.player;
+            let named = |n: &str| p.insts.iter().flatten().filter(|i| &*i.name == n).map(|i| i.y).collect::<Vec<f32>>();
+            let cursor = named("scroll_cursor");
+            assert_eq!(cursor.len(), 1, "one scroll cursor");
+            ys.push(cursor[0]);
+        }
+        assert!(ys[0].abs() < 1e-3 && ys[2] > 50.0 && (ys[1] - ys[2] / 2.0).abs() < 1e-3, "cursor y {ys:?}");
     }
 }
 
