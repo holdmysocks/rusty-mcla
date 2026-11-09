@@ -67,7 +67,10 @@ impl Character {
     pub fn parse(res: &Resource) -> Result<Character> {
         let rd = Rd::new(res);
         let name = rd.ptr(0x08).map(|p| rd.cstr(p)).unwrap_or_default();
-        let count = (rd.u32(0x20) as usize).min(256);
+        // (the count is the skeleton data's +20 too: the prop sets (prp_*) keep a pointer at the root's +0x20, not a count -
+        // F-66930 run offline on all 290 sets with skeleton data reads S+20; the root's +0x20 only where the drawable has none)
+        let sk_count = rd.ptr(0x10).and_then(|dr| rd.ptr(dr + 0x0c)).map(|sk| rd.u16(sk + 20) as usize).filter(|&n| n > 0 && n <= 256);
+        let count = sk_count.unwrap_or_else(|| (rd.u32(0x20) as usize).min(256));
         // (the bones the character is drawn and animated with are the drawable's skeleton data's, drawable (root+0x10) +0x0c
         // -> +0: the creature's skeleton component, the frame it makes (F-66930) and the rest pose (F-51341) read those. The
         // root's own records at 0x30 are a second copy that differs in 7 driver sets - the player's drv_mp_01_set_h has no

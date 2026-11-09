@@ -2349,6 +2349,46 @@ mod original_tests {
         }
     }
 
+    /// The frame every character set's skeleton gets (F-66930 as F-21688 calls it: no mover, no filter), run offline on the
+    /// original's code for all 290 sets of the cache with skeleton data - drivers, cutscene casts, peds, cops, mechanics, props
+    /// (work/driverlight/castframe/frame_ref.py): per set the layout signature, the DOF count and an FNV-1a sum over each DOF's
+    /// kind, id (low, high byte) and type, in the frame's order. The port's frame is the bones' (`dof_trans`, `dof_rot`, `id`)
+    /// sorted by kind << 16 | id, as `SkinModel::dofs` / `ids` and `cine::pose_at` sample it. Skipped without the disc's data.
+    #[test]
+    fn every_sets_frame_matches_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let (mut sets, mut dofs) = (0, 0);
+        for line in include_str!("testdata/cast_frame_ref.txt").lines() {
+            let w: Vec<&str> = line.split(' ').collect();
+            // (the set's first .r6 by name, as the harness took it)
+            let Ok(dir) = std::fs::read_dir(Path::new(&root).join("resources/character").join(w[0])) else { return };
+            let mut r6: Vec<_> = dir.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "r6")).collect();
+            r6.sort();
+            let c = crate::skin::SkinModel::read(&r6[0]).expect(w[0]);
+            let mut f: Vec<(u8, u16, u8)> = Vec::new();
+            for b in &c.bones {
+                if b.dof_trans {
+                    f.push((0, b.id, 0));
+                }
+                if b.dof_rot {
+                    f.push((1, b.id, 1));
+                }
+            }
+            f.sort_by_key(|&(k, id, _)| ((k as u32) << 16) | id as u32);
+            let mut h = 0x811c_9dc5u32;
+            for &(k, id, ty) in &f {
+                for v in [k, id as u8, (id >> 8) as u8, ty] {
+                    h = (h ^ v as u32).wrapping_mul(0x0100_0193);
+                }
+            }
+            let want = (u32::from_str_radix(w[1], 16).unwrap(), w[2].parse::<usize>().unwrap(), u32::from_str_radix(w[3], 16).unwrap());
+            assert_eq!((c.frame_layout, f.len(), h), want, "{}", w[0]);
+            sets += 1;
+            dofs += f.len();
+        }
+        assert_eq!((sets, dofs), (290, 29_217));
+    }
+
     #[test]
     fn the_frame_filters_match_the_original() {
         let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
