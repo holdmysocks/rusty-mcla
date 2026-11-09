@@ -318,7 +318,9 @@ pub fn convert(sav: &[u8], base: Map<String, Value>, races: &[String]) -> Result
         ost.insert(
             key,
             match r.value {
-                small::StatValue::F(f) => num(round_to(f, 4)),
+                // (the record's f32 exactly, as the shortest decimal that gives it back: the port goes on adding to it in
+                // f32, and a short number reads back the same through any JSON parser)
+                small::StatValue::F(f) => num(f32_shortest(f)),
                 other => other.json(),
             },
         );

@@ -78,6 +78,11 @@ pub fn num(x: f64) -> Value {
     Number::from_f64(x).map(Value::Number).unwrap_or(Value::Null)
 }
 
+/// An f32 (given widened) as the shortest decimal that reads back as the same f32 (Rust's `Display` of f32), as a double.
+pub fn f32_shortest(x: f64) -> f64 {
+    format!("{}", x as f32).parse().unwrap_or(x)
+}
+
 pub fn nums(xs: &[f64]) -> Value {
     Value::Array(xs.iter().map(|x| num(*x)).collect())
 }

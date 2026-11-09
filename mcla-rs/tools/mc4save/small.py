@@ -223,6 +223,8 @@ def decode_stats(sav, off, size):
         value = struct.unpack_from({0: '>f', 1: '>i'}.get(ty, '>I'), r, 12)[0]
         rec = {'id': ident, 'sub': sub, 'type': STAT_TYPES.get(ty, ty), 'op': STAT_OPS.get(op, op),
                'value': round(value, 6) if ty == 0 else value}
+        if ty == 0:
+            rec['f32'] = value   # the f32 exactly (the importer keeps it)
         if ident[0] == 'v' and sub < nveh:
             rec['vehicle'] = VEHICLES[sub]
         if ident[0] == 'r' and sub < len(races):

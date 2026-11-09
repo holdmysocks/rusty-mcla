@@ -87,10 +87,21 @@ PART_BYTES = {'hood': 0x862, 'bumper_r': 0x863, 'bumper_f': 0x865, 'skirts': 0x8
 CFG_SLOTS = ('hood', 'bumper_r', 'bumper_f', 'skirts', 'spoiler', 'exhaust', 'seats', 'body')
 
 
+def f32_shortest(v):
+    """the shortest decimal that reads back as the same f32 (v is that f32 widened)"""
+    if v != v or v in (float('inf'), float('-inf')):
+        return v
+    for p in range(1, 10):
+        s = float('%.*g' % (p, v))
+        if struct.unpack('>f', struct.pack('>f', s))[0] == v:
+            return s
+    return v
+
+
 def stats(small):
     """(id, sub id, value, is float) of every record of the statistics table (its count is at
     +904 of the entry; byte 8 of a record: bits 0-2 the type - 0 float, 1 int, 2 unsigned)."""
-    return [(r['id'], r['sub'], r['value'], r['type'] == 'float') for r in small['Stats']['records']]
+    return [(r['id'], r['sub'], r.get('f32', r['value']), r['type'] == 'float') for r in small['Stats']['records']]
 
 
 def garage(d):
@@ -269,7 +280,9 @@ def main():
     ost = {}
     for ident, sub, v, is_float in stats(small):
         key = '%s/%s' % (ident, VEHICLES[sub] if ident[0] == 'v' and sub < len(VEHICLES) else sub)
-        ost[key] = round(v, 4) if is_float else v
+        # (a float record's f32 exactly, as the shortest decimal that gives it back - savedecode util::f32_shortest:
+        # the port adds to it in f32, mc4::stat_type)
+        ost[key] = f32_shortest(v) if is_float else v
         if not is_float and sub == 0:
             st[ident] = v
     career['ostats'] = ost

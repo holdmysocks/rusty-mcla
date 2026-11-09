@@ -19568,12 +19568,29 @@ mod tests {
         }
     }
 
-    /// An imported original save (work/launcher-saveimport ref/full_v15__empty.json, its career statistics:
-    /// testdata/old_save_ostats.json) loads, takes typed updates and saves back in the same shape: the records not
-    /// updated keep their exact numbers, a float statistic adds in f32, an integer one as a 32-bit word that wraps.
+    /// An imported original save (work/launcher-saveimport ref/full_v15__empty.json, its career statistics: as the
+    /// importer wrote them before 2026-11-09, float records rounded to 4 decimals - testdata/old_save_ostats.json - and
+    /// as it writes them now, each float record's f32 as its shortest decimal - testdata/new_import_ostats.json) loads, takes typed
+    /// updates and saves back in the same shape: the records not updated keep their exact numbers, a float statistic
+    /// adds in f32, an integer one as a 32-bit word that wraps.
     #[test]
     fn typed_statistics_keep_an_old_save() {
-        let old: crate::career::SaveState = serde_json::from_str(include_str!("testdata/old_save_ostats.json")).unwrap();
+        for (file, exact) in [(include_str!("testdata/old_save_ostats.json"), false), (include_str!("testdata/new_import_ostats.json"), true)] {
+            typed_statistics_round_trip(file, exact);
+        }
+    }
+
+    fn typed_statistics_round_trip(file: &str, exact: bool) {
+        let old: crate::career::SaveState = serde_json::from_str(file).unwrap();
+        assert_eq!(old.ostats.len(), 799);
+        if exact {
+            // (every float record is an f32, written as the shortest decimal that gives it back)
+            for (k, v) in &old.ostats {
+                if stat_type(k.split('/').next().unwrap()) == StatType::Float {
+                    assert_eq!(format!("{}", *v as f32).parse::<f64>().unwrap(), *v, "{k}");
+                }
+            }
+        }
         let mut g = Game::new(Vec::new(), 0);
         // (as Career::restore takes them; restore itself starts a new game here, the test has no missions)
         g.career.ostats = old.ostats.iter().map(|(k, v)| (k.clone(), *v)).collect();

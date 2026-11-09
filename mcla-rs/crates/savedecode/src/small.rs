@@ -80,7 +80,8 @@ pub fn decode_stats(b: &[u8]) -> Result<Stats, crate::Error> {
         let o = 908 + 16 * i;
         let ty = bb.u8(o + 8) & 7;
         let value = match ty {
-            0 => StatValue::F(round_to(bb.f32(o + 12), 6)),
+            // (the f32 exactly, widened: the port adds float statistics in f32 - mc4::stat_type)
+            0 => StatValue::F(bb.f32(o + 12)),
             1 => StatValue::I(bb.i32(o + 12) as i64),
             _ => StatValue::U(bb.u32(o + 12) as u64),
         };

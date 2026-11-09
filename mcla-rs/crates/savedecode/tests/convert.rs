@@ -167,3 +167,58 @@ fn the_real_ps3_save_decrypts_to_what_ps3dec_py_wrote() {
     assert!(got == want, "differs from the Python decryption");
     eprintln!("the real PS3 RAGE.SAV decrypts to {} bytes equal to ps3dec.py's output", got.len());
 }
+
+/// A float statistic comes over as the record's f32 exactly (the shortest decimal that gives it back), not rounded to
+/// 4 decimals: the port goes on adding to it in f32 (`mc4::stat_type`, F-45364). Every float record of the real saves (the Stats entry read here by hand: records of
+/// 16 bytes from +908, the count at +904, the type in byte +8's low three bits) against the converted `career.ostats`.
+#[test]
+fn float_statistics_keep_their_f32() {
+    let Some(table) = std::fs::read(root().join("extracted/cache/tune/race/0x0f1f4d8d")).ok() else {
+        eprintln!("skipped: the race table of the extracted data is not on this disk");
+        return;
+    };
+    let races = race_table(&table);
+    let mut checked = 0;
+    for name in ["xenia_current_v14", "full_v15", "newgame_v14", "recomp_trace_v14", "ps3_RAGE_dec"] {
+        let (Some(sav), Some(basejson)) = (fixture(&format!("in/{name}.sav")), fixture("in/base_empty.json")) else {
+            continue;
+        };
+        let got = convert(&sav, map(serde_json::from_slice(&basejson).unwrap()), &races).unwrap();
+        let ost = got.save["career"]["ostats"].as_object().unwrap().clone();
+        // the entries: version, count, then (name length, name, data version byte, size, data)
+        let u = |o: usize| u32::from_be_bytes(sav[o..o + 4].try_into().unwrap()) as usize;
+        let (mut o, mut stats) = (8, None);
+        for _ in 0..u(4) {
+            let nl = u(o);
+            let nm = &sav[o + 4..o + 4 + nl];
+            let size = u(o + 4 + nl + 1);
+            let data = o + 4 + nl + 5;
+            if nm == b"Stats" {
+                stats = Some(&sav[data..data + size]);
+            }
+            o = data + size;
+        }
+        let st = stats.expect("Stats entry");
+        let n = u32::from_be_bytes(st[904..908].try_into().unwrap()) as usize;
+        for i in 0..n {
+            let r = &st[908 + 16 * i..924 + 16 * i];
+            if r[8] & 7 != 0 || r[0] == b'v' {
+                continue;
+            }
+            let key = format!("{}/{}", String::from_utf8_lossy(&r[0..4]), u32::from_be_bytes(r[4..8].try_into().unwrap()));
+            let f = f32::from_be_bytes(r[12..16].try_into().unwrap());
+            if f.is_finite() {
+                let v = ost[&key].as_f64().unwrap();
+                assert_eq!(v as f32, f, "{name} {key}");
+                assert_eq!(v, format!("{f}").parse::<f64>().unwrap(), "{name} {key}: the shortest decimal");
+                checked += 1;
+            }
+        }
+        for (k, v) in &ost {
+            if let Some(x) = v.as_f64().filter(|x| x.fract() != 0.0) {
+                assert_eq!(format!("{}", x as f32).parse::<f64>().unwrap(), x, "{name} {k}: a float statistic is an f32's shortest decimal");
+            }
+        }
+    }
+    eprintln!("{checked} float statistics kept as their f32");
+}
