@@ -10649,6 +10649,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
         }
+        // (the open map's camera has the original's depth planes from its height, F-34124: near H - 700, far H + 2000
+        // above 800 m - hudmap_gpu::orig_planes; nothing past the far plane is drawn or culled in)
+        self.cam.planes = if map3d { Some(hudmap_gpu::orig_planes(self.cam.pos.y)) } else { None };
         self.vehicles.hide_player = self.hide_player || (self.game.fresh_game && self.intro_stage != 0) || self.game.starter_pick.is_some();
         // (test hook: MCLA_CAM_FIX=px,py,pz,bx,by,bz,ux,uy,uz,fov_y_deg - the chase camera put where a recorded frame of the
         // original had it, for pixel comparisons: its position and back / up axes (gViewInverse c15, c14, c13 of the frame,

@@ -62,8 +62,12 @@ pub fn orig_z(d: f32, near: f32, far: f32) -> f32 {
     far / (far - near) * (1.0 - near / d)
 }
 
-/// The same from the port's reversed infinite depth (`port_near / d`; 0 = nothing drawn).
+/// The same from the port's reversed depth (0 = nothing drawn): infinite, `port_near / d`; or, with `port_near` 0, the
+/// open map's own projection with the original's planes (`Camera::planes`), where it is 1 - z/w.
 pub fn orig_z_from_port(z_port: f32, port_near: f32, near: f32, far: f32) -> f32 {
+    if port_near == 0.0 {
+        return 1.0 - z_port;
+    }
     far / (far - near) * (1.0 - near * z_port / port_near)
 }
 
@@ -82,8 +86,12 @@ pub fn alpha(tex_a: f32, hue_a: f32, behind: bool, xray: f32) -> f32 {
     }
 }
 
-/// The port's near plane from its view-projection (reversed infinite: clip z = near for every point).
+/// The port's near plane from its view-projection (reversed infinite: clip z = near for every point); 0 for a
+/// projection with a far plane (clip z depends on the point: the open map's, `Camera::planes`).
 pub fn port_near(vp: &Mat4) -> f32 {
+    if vp.row(2).truncate().length_squared() > 0.0 {
+        return 0.0;
+    }
     vp.w_axis.z
 }
 
@@ -756,7 +764,7 @@ mod tests {
     #[test]
     fn port_depth_gives_the_original_z() {
         // the port's reversed infinite depth (near / d) rebuilds the original's z at that distance
-        let cam = crate::camera::Camera { pos: Vec3::new(0.0, 886.0, 0.0), yaw: 0.0, pitch: -0.6, fov_y: 0.6, near: 0.3 };
+        let cam = crate::camera::Camera { pos: Vec3::new(0.0, 886.0, 0.0), yaw: 0.0, pitch: -0.6, fov_y: 0.6, near: 0.3, planes: None };
         let vp = cam.view_proj(16.0 / 9.0);
         let pn = port_near(&vp);
         assert!((pn - 0.3).abs() < 1e-6);
@@ -771,6 +779,37 @@ mod tests {
         }
         // nothing drawn in the port (depth 0) reads as beyond everything
         assert!(orig_z_from_port(0.0, pn, n, f) > 1.0);
+    }
+
+    #[test]
+    fn the_open_maps_projection_has_the_original_planes() {
+        // the open map's camera (`Camera::planes` = orig_planes): depth 1 at near, 0 at far, beyond far clipped and
+        // culled; the x-ray's rebuilt z is the original's z/w, 0 at near and 1 at far (rule_frame.md 4.2: h 850 ->
+        // 150 / 2850, 9000 -> 8300 / 11000)
+        for h in [850.0f32, 886.17, 1520.3, 2886.6, 9000.0] {
+            let (n, f) = orig_planes(h);
+            let cam = crate::camera::Camera { pos: Vec3::new(0.0, h, 0.0), yaw: 0.3, pitch: -1.2, fov_y: 25f32.to_radians(), near: 0.3, planes: Some((n, f)) };
+            let vp = cam.view_proj(16.0 / 9.0);
+            assert_eq!(port_near(&vp), 0.0);
+            let fwd = cam.forward();
+            for (d, want) in [(n, Some(0.0)), ((n + f) * 0.5, None), (f, Some(1.0)), (f * 1.01, None)] {
+                let c = vp * (cam.pos + fwd * d).extend(1.0);
+                let z_port = c.z / c.w;
+                let a = orig_z(d, n, f);
+                let b = orig_z_from_port(z_port, 0.0, n, f);
+                assert!((a - b).abs() < 2e-5, "h {h} d {d}: {a} {b}");
+                if let Some(w) = want {
+                    assert!((b - w).abs() < 2e-5, "h {h} d {d}: {b}");
+                }
+            }
+            let c = vp * (cam.pos + fwd * f * 1.01).extend(1.0);
+            assert!(c.z < 0.0, "past the far plane is clipped");
+            let fr = crate::render::Frustum::from_view_proj(vp);
+            let past = cam.pos + fwd * (f + 50.0);
+            assert!(!fr.intersects_aabb(past - Vec3::splat(10.0), past + Vec3::splat(10.0)));
+            let mid = cam.pos + fwd * ((n + f) * 0.5);
+            assert!(fr.intersects_aabb(mid - Vec3::splat(10.0), mid + Vec3::splat(10.0)));
+        }
     }
 
     #[test]

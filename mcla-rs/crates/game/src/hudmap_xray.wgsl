@@ -47,6 +47,10 @@ fn vs_main(@location(0) p: vec3<f32>, @location(1) uv: vec2<f32>, @builtin(insta
 
 // the original's z/w (D3D, 0 near .. 1 far) at the distance the port's depth value stands for
 fn orig_z(z_port: f32) -> f32 {
+    // (w 0: the open map's projection has the original's planes - hudmap_gpu::port_near)
+    if g.xray.w == 0.0 {
+        return 1.0 - z_port;
+    }
     return g.xray.y * (1.0 - g.xray.z * z_port / g.xray.w);
 }
 

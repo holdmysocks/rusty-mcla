@@ -58,11 +58,13 @@ pub struct Camera {
     pub pitch: f32,
     pub fov_y: f32,
     pub near: f32,
+    /// a finite (near, far) instead of `near` and no far plane: the open GPS map's (`hudmap_gpu::orig_planes`)
+    pub planes: Option<(f32, f32)>,
 }
 
 impl Default for Camera {
     fn default() -> Self {
-        Camera { pos: Vec3::new(1600.0, 30.0, 0.0), yaw: 0.0, pitch: -0.2, fov_y: 65f32.to_radians(), near: 0.3 }
+        Camera { pos: Vec3::new(1600.0, 30.0, 0.0), yaw: 0.0, pitch: -0.2, fov_y: 65f32.to_radians(), near: 0.3, planes: None }
     }
 }
 
@@ -80,6 +82,10 @@ impl Camera {
     }
     /// Reverse-Z infinite projection (depth 1 near → 0 far) for precision over km distances.
     pub fn proj(&self, aspect: f32) -> Mat4 {
+        if let Some((n, far)) = self.planes {
+            // (reverse-Z with both planes: depth 1 at n, 0 at far; beyond far is clipped and culled)
+            return Mat4::perspective_rh(self.fov_y, aspect, far, n);
+        }
         let f = 1.0 / (self.fov_y * 0.5).tan();
         Mat4::from_cols_array(&[
             f / aspect, 0.0, 0.0, 0.0,
