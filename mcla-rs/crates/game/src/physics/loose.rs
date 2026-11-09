@@ -527,6 +527,8 @@ pub struct CarIn<'a> {
     /// the car's matrix as the collide has it, and as its last one (body +96)
     pub now: [Vec3; 4],
     pub last: [Vec3; 4],
+    /// the car's collider +32: its matrix before the tick's move (against another body, F-65617)
+    pub prev: [Vec3; 4],
     /// chassis +224
     pub speed: f32,
     /// the composite bound's box (min, max)
@@ -548,6 +550,8 @@ pub struct WheelIn {
     pub core: super::gjk::WheelCore,
     pub now: [Vec3; 4],
     pub last: [Vec3; 4],
+    /// the part's last matrix on the car's +32 (against another body)
+    pub prev: [Vec3; 4],
     pub half: Vec3,
 }
 
@@ -715,6 +719,13 @@ pub fn level_hints() -> Option<&'static LevelHints> {
 fn r1() -> bool {
     static D: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *D.get_or_init(|| std::env::var_os("MCLA_DBG_RA1").is_some())
+}
+
+/// `MCLA_DBG_CARLAST96`: the car against a loose body at its +96 (`CarIn::last`) in the pair's box test, swept test and
+/// broad phase, the boxes at +96, as before.
+fn car_last96() -> bool {
+    static D: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *D.get_or_init(|| std::env::var_os("MCLA_DBG_CARLAST96").is_some())
 }
 
 fn dbg() -> bool {
@@ -1160,28 +1171,40 @@ impl LooseState {
                 }
                 let Some(sa) = self.shape(world, car, a, pa) else { continue };
                 let at = self.manis.iter().position(|m| m.a == a && m.b == b && m.part_a == pa && m.part_b == pb);
-                if !boxes_meet(&sa, &sb) && !hint("x", 7) {
+                // (the instances' last matrices, F-65617: the collider's +96 only while the other instance has no
+                // collider record - two bodies in the simulator are each taken at +32, the matrix they had as the tick
+                // began: V s_rtv s390 / s391, 11286 x 22286 / 22320)
+                // (the car is a body too: against a loose body both are taken at +32 (F-65617's input +128 / +192 - the
+                // car's collider +32 is its matrix before the tick's move, `CarIn::prev`), and so is the box test of the
+                // parts (F-36478: Plast from the same input); MCLA_DBG_CARLAST96: the car at +96 and the boxes at +96, as before)
+                let old96 = car_last96();
+                let body_side = |w: Who| match w {
+                    Who::Car => !old96,
+                    Who::Obj(o) => self.objs[o].body.is_some() && self.objs[o].veh.is_none(),
+                    Who::City => false,
+                };
+                let both = [a, b].into_iter().all(|w| body_side(w));
+                let car_prev = |part: u16, last: [Vec3; 4]| if part == 0 { car.prev } else { car.wheels.get(part as usize - 1).copied().flatten().map_or(last, |w| w.prev) };
+                let prev_of = |w: Who, part: u16, last: [Vec3; 4]| if w == Who::Car { car_prev(part, last) } else { self.prev_part(world, w, part).unwrap_or(last) };
+                // (and an active side at +32 when the other is inactive with level byte bit 8 - manifold +1249 / +1250,
+                // an ambient car with inst +140 bit 0x80 moved this frame)
+                let posed = |w: Who| matches!(w, Who::Obj(o) if self.objs[o].body.is_none() && self.objs[o].amb.as_ref().is_some_and(|x| x.posed));
+                let prop_body = |w: Who| matches!(w, Who::Obj(o) if self.objs[o].body.is_some() && self.objs[o].veh.is_none());
+                let (la, lb) = if both {
+                    (prev_of(a, pa, sa.last), prev_of(b, pb, sb.last))
+                } else {
+                    let la = if posed(b) && prop_body(a) { self.prev_part(world, a, pa).unwrap_or(sa.last) } else { sa.last };
+                    let lb = if posed(a) && prop_body(b) { self.prev_part(world, b, pb).unwrap_or(sb.last) } else { sb.last };
+                    (la, lb)
+                };
+                let meet = if old96 { boxes_meet(&sa, &sb) } else { parts_meet((sa.bbox, sa.now, la), (sb.bbox, sb.now, lb)) };
+                if !meet && !hint("x", 7) {
                     continue;
                 }
                 if let Some(k) = at {
                     self.manis[k].visited = true;
                 }
                 let count = at.map_or(0, |k| self.manis[k].slots.len());
-                // (the instances' last matrices, F-65617: the collider's +96 only while the other instance has no
-                // collider record - two bodies in the simulator are each taken at +32, the matrix they had as the tick
-                // began: V s_rtv s390 / s391, 11286 x 22286 / 22320)
-                let both = [a, b].into_iter().all(|w| matches!(w, Who::Obj(o) if self.objs[o].body.is_some() && self.objs[o].veh.is_none()));
-                // (and an active side at +32 when the other is inactive with level byte bit 8 - manifold +1249 / +1250,
-                // an ambient car with inst +140 bit 0x80 moved this frame)
-                let posed = |w: Who| matches!(w, Who::Obj(o) if self.objs[o].body.is_none() && self.objs[o].amb.as_ref().is_some_and(|x| x.posed));
-                let prop_body = |w: Who| matches!(w, Who::Obj(o) if self.objs[o].body.is_some() && self.objs[o].veh.is_none());
-                let (la, lb) = if both {
-                    (self.prev_part(world, a, pa).unwrap_or(sa.last), self.prev_part(world, b, pb).unwrap_or(sb.last))
-                } else {
-                    let la = if posed(b) && prop_body(a) { self.prev_part(world, a, pa).unwrap_or(sa.last) } else { sa.last };
-                    let lb = if posed(a) && prop_body(b) { self.prev_part(world, b, pb).unwrap_or(sb.last) } else { sb.last };
-                    (la, lb)
-                };
                 let found: Option<(Vec3, Vec3, Vec3, f32, Nearest)> = if count == 0 && sweeps {
                     sweep(&sa.core, sa.margin, sa.cg, &sa.now, &la, &sb.core, sb.margin, sb.cg, &sb.now, &lb).filter(|s| !(s.lambda >= 1.0)).map(|s| {
                         let (qa, qb) = (xf(&sa.now, s.local_a), xf(&sb.now, s.local_b));
@@ -1299,7 +1322,8 @@ impl LooseState {
             let (lo, hi) = car.bound;
             let c = (hi + lo) * 0.5;
             let d = hi - c;
-            (lo, hi, c, fma(d.z, d.z, fma(d.y, d.y, d.x * d.x)).sqrt(), car.now, Some(car.last))
+            // (the car's collider +32 (+80 its place), F-84048, as any active object's)
+            (lo, hi, c, fma(d.z, d.z, fma(d.y, d.y, d.x * d.x)).sqrt(), car.now, Some(if car_last96() { car.last } else { car.prev }))
         };
         for o in 0..n {
             if let Some(vh) = self.objs[o].veh {
@@ -3362,7 +3386,7 @@ impl LooseState {
         static NONE: std::sync::OnceLock<HullShape> = std::sync::OnceLock::new();
         let hull = NONE.get_or_init(|| HullShape::new(vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z], &[[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]]));
         let m = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO];
-        let car = CarIn { hull, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: m, last: m, speed: 0.0, bound: (Vec3::ZERO, Vec3::ZERO), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.0, 0.0), wiped: false };
+        let car = CarIn { hull, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: m, last: m, prev: m, speed: 0.0, bound: (Vec3::ZERO, Vec3::ZERO), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.0, 0.0), wiped: false };
         self.step_rest_rider(world, &car, dt, rider);
     }
 
@@ -5794,7 +5818,7 @@ mod piece_tests {
         let city = flat();
         let hull = HullShape::new(vec![Vec3::new(-1.0, -0.5, -2.0), Vec3::new(1.0, -0.5, -2.0), Vec3::new(0.0, 0.5, -2.0), Vec3::new(0.0, -0.5, 2.0)], &[[0, 1, 2], [0, 3, 1], [1, 3, 2], [2, 3, 0]]);
         let away = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(1000.0, 0.0, 1000.0)];
-        let car = CarIn { hull: &hull, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: away, last: away, speed: 0.0, bound: (hull.min, hull.max), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.5, 0.1), wiped: false };
+        let car = CarIn { hull: &hull, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: away, last: away, prev: away, speed: 0.0, bound: (hull.min, hull.max), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.5, 0.1), wiped: false };
         for (rows, height) in [([Vec3::X, Vec3::Z, Vec3::NEG_Y], 0.25f32), ([Vec3::X, Vec3::Y, Vec3::Z], 0.1665)] {
             let mut s = LooseState::default();
             let id = s.add_piece(&world, [rows[0], rows[1], rows[2], Vec3::new(0.0, height + 0.5, 0.0)], Vec3::ZERO, Vec3::ZERO).unwrap();
@@ -5831,7 +5855,7 @@ mod piece_tests {
         let city = flat();
         let hull = HullShape::new(vec![Vec3::new(-1.0, -0.5, -2.0), Vec3::new(1.0, -0.5, -2.0), Vec3::new(0.0, 0.5, -2.0), Vec3::new(0.0, -0.5, 2.0)], &[[0, 1, 2], [0, 3, 1], [1, 3, 2], [2, 3, 0]]);
         let away = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(1000.0, 0.0, 1000.0)];
-        let car = CarIn { hull: &hull, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: away, last: away, speed: 0.0, bound: (hull.min, hull.max), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.5, 0.1), wiped: false };
+        let car = CarIn { hull: &hull, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: away, last: away, prev: away, speed: 0.0, bound: (hull.min, hull.max), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.5, 0.1), wiped: false };
         let mut s = LooseState::default();
         let id = s.add_piece(&world, [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(0.0, 0.6, 0.0)], Vec3::ZERO, Vec3::ZERO).unwrap();
         let dt = 1.0 / 60.0;

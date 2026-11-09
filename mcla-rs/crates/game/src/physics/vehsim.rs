@@ -6359,6 +6359,8 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             // (stage P: the hull against the props and pieces about it, their kept contacts, the callbacks)
             let loose_world = world.loose.as_ref().filter(|_| !dbg_flag("MCLA_DBG_P1") && !vs.loose.ghost);
             // (RA7: the wheels' parts for the props' side - MCLA_DBG_RA7: the hull alone, as before)
+            // (the car's collider +32, the matrix before the tick's move - as the moved body for the level step has it)
+            let car_prev = if stood { [rows1[0], rows1[1], rows1[2], origin1] } else { [rows0[0], rows0[1], rows0[2], body_rows[3]] };
             let mut loose_wheels: Vec<Option<super::loose::WheelIn>> = Vec::new();
             if !dbg_flag("MCLA_DBG_RA7") && wheel_geo.iter().filter(|g| g.is_some()).count() == 4 {
                 for i in 0..4 {
@@ -6372,7 +6374,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                             let mg = f32::from_bits(0x3d23_d70a);
                             let half = Vec3::new(own.support(Vec3::X).x + mg, own.support(Vec3::Y).y + mg, own.support(Vec3::Z).z + mg);
                             let top = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(rest.x, (limit + rest.y) + 0.1, rest.z)];
-                            Some(super::loose::WheelIn { core, now: m, last: super::gjk::world_matrix(&top, &last), half })
+                            Some(super::loose::WheelIn { core, now: m, last: super::gjk::world_matrix(&top, &last), prev: super::gjk::world_matrix(&top, &car_prev), half })
                         }
                         _ => None,
                     });
@@ -6385,7 +6387,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                 let xf = |x: f32, z: f32| super::loose::xf(&seen, Vec3::new(x, y, z));
                 Some([xf(car_box.1.x, car_box.0.z), xf(car_box.1.x, car_box.1.z), xf(car_box.0.x, car_box.1.z), xf(car_box.0.x, car_box.0.z)])
             };
-            let car_in = super::loose::CarIn { hull, hull_cg: hull.cg, hull_margin: f32::from_bits(0x3d23_d70a), now: seen, last, speed: speed_in, bound: car_box, wheels: loose_wheels, vel: v_in, touch: (t.s.bound_friction, t.s.bound_elasticity), wiped: vs.wipe.is_some() };
+            let car_in = super::loose::CarIn { hull, hull_cg: hull.cg, hull_margin: f32::from_bits(0x3d23_d70a), now: seen, last, prev: car_prev, speed: speed_in, bound: car_box, wheels: loose_wheels, vel: v_in, touch: (t.s.bound_friction, t.s.bound_elasticity), wiped: vs.wipe.is_some() };
             if let Some(lw) = loose_world {
                 vs.loose.tick += 1;
                 vs.loose.collide(lw, &car_in, world, car_city_pair);

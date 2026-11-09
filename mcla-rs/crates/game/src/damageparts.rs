@@ -1336,7 +1336,7 @@ mod piece_replay {
             if tick < det_tick {
                 continue;
             }
-            let car_in = CarIn { hull: &hull, hull_cg: hull.cg, hull_margin: f32::from_bits(0x3d23_d70a), now, last, speed: cv.length(), bound: (hull.min - Vec3::splat(0.041), hull.max + Vec3::splat(0.041)), wheels: Vec::new(), vel: cv, touch: (tune.s.bound_friction, tune.s.bound_elasticity), wiped: false };
+            let car_in = CarIn { hull: &hull, hull_cg: hull.cg, hull_margin: f32::from_bits(0x3d23_d70a), now, last, prev: last, speed: cv.length(), bound: (hull.min - Vec3::splat(0.041), hull.max + Vec3::splat(0.041)), wheels: Vec::new(), vel: cv, touch: (tune.s.bound_friction, tune.s.bound_elasticity), wiped: false };
             loose.pre_collide(&world, dt);
             loose.tick += 1;
             loose.collide(&world, &car_in, &city, false);

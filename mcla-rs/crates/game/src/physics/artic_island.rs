@@ -1797,7 +1797,7 @@ mod tests {
             let ids: Vec<usize> = (0..ls.manis.len()).collect();
             let world = LooseWorld::default();
             let m4 = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO];
-            let car_in = CarIn { hull: shape, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: m4, last: m4, speed: 0.0, bound: (Vec3::ZERO, Vec3::ZERO), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.0, 0.0), wiped: false };
+            let car_in = CarIn { hull: shape, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: m4, last: m4, prev: m4, speed: 0.0, bound: (Vec3::ZERO, Vec3::ZERO), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.0, 0.0), wiped: false };
             let (mut p, mut l) = (Vec3::ZERO, Vec3::ZERO);
             let mut dynm = CarDyn { p: &mut p, l: &mut l, mass: 0.0, inverse: Vec3::ZERO, rows: [Vec3::X, Vec3::Y, Vec3::Z] };
             let city_rows = vec![true; city.len()];
@@ -1893,7 +1893,7 @@ mod tests {
             let mut ls = LooseState::default();
             let world = LooseWorld::default();
             let m4 = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO];
-            let car_in = CarIn { hull: shape, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: m4, last: m4, speed: 0.0, bound: (Vec3::ZERO, Vec3::ZERO), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.0, 0.0), wiped: false };
+            let car_in = CarIn { hull: shape, hull_cg: Vec3::ZERO, hull_margin: 0.04, now: m4, last: m4, prev: m4, speed: 0.0, bound: (Vec3::ZERO, Vec3::ZERO), wheels: Vec::new(), vel: Vec3::ZERO, touch: (0.0, 0.0), wiped: false };
             let (mut p, mut l) = (Vec3::ZERO, Vec3::ZERO);
             let mut dynm = CarDyn { p: &mut p, l: &mut l, mass: 0.0, inverse: Vec3::ZERO, rows: [Vec3::X, Vec3::Y, Vec3::Z] };
             let city_rows = vec![true; city.len()];
