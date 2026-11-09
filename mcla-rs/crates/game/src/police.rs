@@ -5928,6 +5928,47 @@ mod tests {
         assert!(checked == 4800 && swiped > 400, "{checked} {swiped}");
     }
 
+    /// The swipes against a recording of the running original: a Double Pursuit (StartPursuit kind 2) on the player's car
+    /// driven along Hollywood Blvd, recorded at the entry and the exit of its update F-40655 (docs/reference/hookmen/
+    /// double_pursuit_recording.md). Every AlongSide update: the recorded dt, the state's wait +24 and latch +32, the flank
+    /// slots, each cop's place, rows 0 / 2, velocity and head-on byte and the target's place and velocity in; the port's
+    /// swipes over the brains' override words at the entry (+756 steer, +748 brake, +752 handbrake - the brain resets them
+    /// each frame) must give the words, the wait and the latch the update left.
+    #[test]
+    fn squad_swipes_match_the_recording() {
+        let rec = include_str!("testdata/squad_swipe_rec.txt");
+        let hex = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let fl = |s: &str| f32::from_bits(hex(s));
+        let v3 = |v: &[&str]| Vec3::new(fl(v[0]), fl(v[1]), fl(v[2]));
+        let mut lines = rec.lines();
+        let (mut checked, mut swiped) = (0, 0);
+        while let Some(u) = lines.next() {
+            let u: Vec<&str> = u.split_whitespace().collect();
+            assert_eq!(u[0], "U");
+            let dt = fl(u[1]);
+            let mut sq = Squad { swipe_t: fl(u[2]), latch: hex(u[3]) != 0, ..Default::default() };
+            let slot = |s: &str| (hex(s) as i32 >= 0).then(|| hex(s) as usize);
+            let (a, b, n) = (slot(u[4]), slot(u[5]), u[6].parse::<usize>().unwrap());
+            let cops: Vec<Vec<&str>> = (0..n).map(|_| lines.next().unwrap().split_whitespace().collect()).collect();
+            let t: Vec<&str> = lines.next().unwrap().split_whitespace().collect();
+            let w: Vec<&str> = lines.next().unwrap().split_whitespace().collect();
+            let (tpos, tvel) = (v3(&t[1..]), v3(&t[4..]));
+            let g: Vec<Option<SwipeGeo>> = cops.iter().map(|c| Some(swipe_geo(v3(&c[1..]), v3(&c[4..]), v3(&c[7..]), v3(&c[10..]), tpos, tvel))).collect();
+            let head_on: Vec<bool> = cops.iter().map(|c| c[13] != "0").collect();
+            let mut ovr = vec![crate::ai::Overrides::default(); n];
+            squad_swipes(&mut sq, false, dt, a, b, &g, &head_on, 60.0, &mut ovr);
+            let mut got = format!("W {:08X} {:02X}", sq.swipe_t.to_bits(), sq.latch as u8);
+            for (c, o) in cops.iter().zip(&ovr) {
+                let word = |v: Option<f32>, i: usize| v.map_or(hex(c[i]), f32::to_bits);
+                got += &format!(" {:08X} {:08X} {:08X}", word(o.steer, 14), word(o.brake, 15), word(o.handbrake.map(|_| 1.0), 16));
+                swiped += o.brake.is_some() as u32;
+            }
+            assert_eq!(got, w.join(" "), "update {checked}");
+            checked += 1;
+        }
+        assert!(checked == 2355 && swiped == 190, "{checked} {swiped}");
+    }
+
     /// The squad formations against the original's (the Arrow Trap's F-80532, the Double Pursuit's F-21534, with the
     /// enters F-81752 / F-86874) run offline by tools/formation_reference.py: the same inputs from the same xorshift, every
     /// call's send, hysteresis bits, slots and brains equal.
