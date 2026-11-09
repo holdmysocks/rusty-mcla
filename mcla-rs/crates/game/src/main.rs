@@ -9428,6 +9428,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.lod_near = boomcam::DIRECTOR_NEAR;
                         // (every view, the chase views and the bumper / cockpit mounts: the original's update once a game
                         // frame on the sim's pose, drawn on the car as it is drawn)
+                        // (the same game frames' poses for the track cameras below: event, wipeout, ability)
+                        let mut cam_steps: Vec<(Vec3, glam::Quat, Vec3, Vec3)> = Vec::new();
                         let out = {
                             if !self.boom.stepped() {
                                 self.boom.reset();
@@ -9442,6 +9444,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 for (a, gk) in &runs {
                                     self.boom.step(tune, a, gk, 1.0 / 30.0, 30.0);
                                 }
+                                cam_steps = runs.iter().map(|(a, _)| (a.pos, a.rot, a.vel, a.ang_vel)).collect();
                                 // (the shown camera is the player's object for its view - the reverse camera while
                                 // looking back from a chase view - kept as it was run)
                                 let shown = if self.look_back && chase { 5 } else { boomcam::VIEW_OF_PORT[(self.cam_switch.shown(mode) as usize).min(5)].min(4) };
@@ -9510,6 +9513,19 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }),
                             follow: None,
                             bike_wiped: car.model.bike && self.crash_bits & 0x14 != 0,
+                        };
+                        // (the track cameras step once a game frame on that frame's pose, F-63744 as the original, and are
+                        // drawn between their last two steps by the boom's share: smooth at any frame rate)
+                        let ang_mom_of = |rot: glam::Quat, w: Vec3| {
+                            car.params().veh.as_ref().map_or(Vec3::ZERO, |vt| {
+                                let i = crate::physics::vehsim::moments(car.params(), &vt.t);
+                                rot * (i * (rot.inverse() * w))
+                            })
+                        };
+                        self.cam_switch.blend.track_steps = if std::env::var_os("MCLA_CAM_HOLD").is_some() {
+                            None
+                        } else {
+                            Some(cam_steps.iter().map(|&(pos, rot, vel, w)| boomcam::TrackCar { pos, rot, vel, speed: vel.length(), ang_mom: ang_mom_of(rot, w), ..track_car }).collect())
                         };
                         let charge = render_state.veh.as_ref().map_or(0.0, |v| v.burn);
                         // the chooser's inputs (F-24075; boomcam::EventIn)
@@ -9663,6 +9679,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                         // the director's step (F-18583): one blend for every camera
                         let out = self.cam_switch.blend.apply(&boomcam::BoomTarget { pan: (0.0, 0.0), ..target }, drive_out, &others, dt);
+                        self.cam_switch.blend.track_steps = None;
                         if std::env::var("MCLA_EVENT_DEBUG").is_ok() && self.frame_no % 10 == 0 {
                             log::info!("event cam: event {:?} leaving {} air {} running {} allowed {} handbrake {} charge {:.2} yaw {:.2} cam {:.1} {:.1} {:.1}", self.event_dir.event(), self.event_dir.leaving(&self.cam_switch.blend), vs.map_or(false, |v| v.air.fitted && v.air.on), self.event_dir.running(), allowed, car.input.handbrake, charge, render_state.ang_vel.y, out.pos.x, out.pos.y, out.pos.z);
                         }
@@ -9676,10 +9693,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.chase.pos = out.pos;
                         self.chase.look = out.look;
                         // diagnostics: the drawn view in the drawn car's frame, once a drawn frame (GitHub #46)
-                        if std::env::var("MCLA_CAM_JITTER").is_ok() {
-                            let inv = render_state.rot.inverse();
-                            let (p, l) = (inv * (out.pos - render_state.pos), inv * (out.look - render_state.pos));
-                            eprintln!("camj {} {} {:.4} {:.6} {:.6} {:.6} {:.6} {:.6} {:.6} {:.3}", self.frame_no, self.tick_no, self.vehicles.render_alpha, p.x, p.y, p.z, l.x, l.y, l.z, out.fov);
+                        if let Ok(v) = std::env::var("MCLA_CAM_JITTER") {
+                            // (MCLA_CAM_JITTER=w: in the world's frame, with the crash / event camera's flags)
+                            let (p, l) = if v == "w" {
+                                (out.pos, out.look)
+                            } else {
+                                let inv = render_state.rot.inverse();
+                                (inv * (out.pos - render_state.pos), inv * (out.look - render_state.pos))
+                            };
+                            eprintln!("camj {} {} {:.4} {:.6} {:.6} {:.6} {:.6} {:.6} {:.6} {:.3} {} {}", self.frame_no, self.tick_no, self.vehicles.render_alpha, p.x, p.y, p.z, l.x, l.y, l.z, out.fov, self.crash_cam.active(&self.cam_switch.blend) as u8, self.event_dir.running() as u8);
                         }
                         // the camera kept out of walls (camBoomCS CollideType 2, F-12669): a ball
                         // of the near plane's corner from the file's Collide point on the car to the

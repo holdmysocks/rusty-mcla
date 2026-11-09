@@ -1281,6 +1281,10 @@ pub struct Director {
     /// the port's: how far the drawn frame is from the step before the last one to the last one (`BoomCam::draw_at`);
     /// None draws the last step's own
     pub share: Option<f32>,
+    /// the port's: the track cameras' (event, wipeout, ability) input of each game frame since the last drawn frame,
+    /// oldest first - each steps once on each (F-63744 once a 30 Hz game frame, as the original) and is drawn by
+    /// `share` between its last two steps (`TrackCam::paced`). None (the tests): one update on the drawn frame's dt.
+    pub track_steps: Option<Vec<TrackCar>>,
 }
 
 /// What a push did (F-98424).
@@ -2511,7 +2515,7 @@ impl AbilityCam {
             return (None, pushed);
         }
         let t = TrackTune::ability(agro);
-        (Some(self.cam.update(&t, car, dt, dt, test, aspect)), pushed)
+        (Some(self.cam.paced(dir, &t, car, &|c| *c, dt, dt, test, aspect)), pushed)
     }
 }
 
@@ -2623,7 +2627,12 @@ impl CrashCam {
             return None;
         }
         let t = self.tune.clone()?;
-        Some(self.cam.update(&t, &self.with_rider(car), dt, dt_game, test, aspect))
+        let (rider, m) = (self.rider, self.rider_mat);
+        let with_rider = move |c: &TrackCar| match (rider, m) {
+            (true, Some(m)) => TrackCar { follow: Some(m), ..*c },
+            _ => *c,
+        };
+        Some(self.cam.paced(dir, &t, car, &with_rider, dt, dt_game, test, aspect))
     }
 }
 
@@ -2906,6 +2915,8 @@ struct TrackCam {
     /// the look object's yaw (+576 -> +20): turned only by Hydraulics' CAM_PAN at 2 rad/s (and set to
     /// pi with ReverseOn -1); zeroed at the event's entry and exit
     look_yaw: f32,
+    /// the port's: the outputs of the last two game frames' steps (`paced`), the earlier None after a snap
+    drawn: [Option<BoomOut>; 2],
 }
 
 impl TrackCam {
@@ -2967,6 +2978,41 @@ impl TrackCam {
         let mut p = (x * self.offset.x + at) - vcross(up, x) * self.offset.z;
         p.y = self.offset.y + p.y;
         p
+    }
+
+    /// The update as the game runs it: with the director's game-frame inputs (`Director::track_steps`) one
+    /// update of 1/30 s on each (the game's step scaled as `dt_game / dt` - a time warp), the first one at once
+    /// when nothing was stepped yet or the camera was just set; drawn between the last two steps by the
+    /// director's share (the port's frame interpolation, as `BoomCam::draw_at`: the original draws at 30 fps).
+    /// `map` turns each input into the camera's (the wipeout camera's rider). Without them: `update` on `dt`.
+    #[allow(clippy::too_many_arguments)]
+    fn paced(&mut self, dir: &Director, t: &TrackTune, car: &TrackCar, map: &dyn Fn(&TrackCar) -> TrackCar, dt: f32, dt_game: f32, test: SphereTest, aspect: f32) -> BoomOut {
+        let Some(steps) = dir.track_steps.as_ref() else {
+            return self.update(t, &map(car), dt, dt_game, test, aspect);
+        };
+        let warp = if dt > 0.0 { dt_game / dt } else { 1.0 };
+        let mut step = |c: &mut Self, k: &TrackCar| {
+            let snapping = c.snap;
+            let o = c.update(t, &map(k), 1.0 / 30.0, warp / 30.0, test, aspect);
+            c.drawn = [if snapping { None } else { c.drawn[1] }, Some(o)];
+        };
+        if self.drawn[1].is_none() || self.snap {
+            step(self, steps.last().unwrap_or(car));
+        } else {
+            for k in steps {
+                step(self, k);
+            }
+        }
+        let last = self.drawn[1].expect("stepped");
+        match (self.drawn[0], dir.share) {
+            (Some(a), Some(s)) if s < 1.0 => BoomOut {
+                pos: a.pos.lerp(last.pos, s),
+                look: a.look.lerp(last.look, s),
+                up: a.up.lerp(last.up, s).normalize_or(last.up),
+                fov: a.fov + (last.fov - a.fov) * s,
+            },
+            _ => last,
+        }
     }
 
     /// `dt_game`: the game's step (G+8, slowed by a time warp) - the grounded filter and the XZ
@@ -3854,7 +3900,7 @@ impl EventDirector {
 
     /// The event camera's update when the director runs it (current, or a blend's source or target).
     fn show(&mut self, dir: &Director, t: &TrackTune, car: &TrackCar, dt: f32, test: SphereTest, aspect: f32) -> Option<BoomOut> {
-        dir.involves(CamId::Event).then(|| self.cam.update(t, car, dt, dt, test, aspect))
+        dir.involves(CamId::Event).then(|| self.cam.paced(dir, t, car, &|c| *c, dt, dt, test, aspect))
     }
 }
 
@@ -4208,6 +4254,89 @@ mod tests {
     /// R4 (r4_event_rules.md): ApproachOn 0 copies the computed place in the car's whole frame
     /// every frame; the slipstream turbo / nitrous lens terms; TrackTo.y above ModelOffset.y along
     /// the world's up; MinAppXZPos while off the ground and tumbling; MaxAppXZPos with a look yaw.
+    #[test]
+    fn track_cam_at_any_fps() {
+        // (the event / wipeout / ability camera steps once a 30 Hz game frame on that frame's input
+        // (`TrackCam::paced`) and is drawn between its last two steps: the same smooth drive drawn at
+        // 30, 60, 75, 144 and 240 Hz and at 144 Hz with 90 ms hitches - every step's output equals the
+        // 30 Hz run's, and the drawn place's |second difference| (mm per frame^2) is below the held draw's)
+        let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| r"D:\MCLA\extracted\cache".into());
+        let none: SphereTest = &NO_WORLD;
+        let car_at = |t: f32| {
+            let yaw = t * 0.35;
+            let r = 40.0;
+            let pos = Vec3::new(r * yaw.cos(), 0.3 * (t * 1.7).sin(), r * yaw.sin());
+            let rot = Quat::from_rotation_y(-yaw) * Quat::from_rotation_z(0.05 * (t * 2.3).sin()) * Quat::from_rotation_x(0.03 * (t * 1.1).sin());
+            let vel = Vec3::new(-r * 0.35 * yaw.sin(), 0.0, r * 0.35 * yaw.cos());
+            TrackCar { pos, rot, vel, speed: r * 0.35, reverse_gear: false, steer: 0.1, front_z: -1.3, slope: Some(0.02 * (t * 0.9).sin()), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false }
+        };
+        for (ev_name, ev) in [("Wheelie", EV_WHEELIE), ("Burnout", EV_BURNOUT), ("Damageout", EV_DAMAGEOUT)] {
+            let Some(t) = TrackTune::load(&data, "vp_aud_r8_08", ev_name) else { return };
+            // (drawn places, and each game frame's step output)
+            let run = |dts: &dyn Fn(usize) -> f32, held: bool| {
+                let mut c = TrackCam::default();
+                c.set(&t, &car_at(0.0), ev, 0.0);
+                let mut dir = Director::default();
+                // (game frame 0 at t = 0, taken by the first drawn frame at every rate)
+                let (mut now, mut next, mut i) = (0.0f64, 0u32, 0usize);
+                let (mut drawn, mut steps) = (Vec::new(), Vec::new());
+                while now < 6.0 {
+                    if i > 0 {
+                        now += dts(i) as f64;
+                    }
+                    i += 1;
+                    let mut cars = Vec::new();
+                    while next as f64 / 30.0 <= now + 1e-9 {
+                        cars.push(car_at(next as f32 / 30.0));
+                        next += 1;
+                    }
+                    let gf = next - 1;
+                    let n = cars.len();
+                    dir.track_steps = Some(cars);
+                    dir.share = Some(if held { 1.0 } else { ((now - gf as f64 / 30.0) * 30.0).clamp(0.0, 1.0) as f32 });
+                    let o = c.paced(&dir, &t, &car_at(now as f32), &|k| *k, 0.0, 0.0, none, 16.0 / 9.0);
+                    if n > 0 {
+                        steps.push((gf, c.drawn[1].unwrap().pos));
+                    }
+                    if now > 1.0 {
+                        drawn.push((now as f32, o.pos));
+                    }
+                }
+                (drawn, steps)
+            };
+            // (uniform frames: |second difference| in mm per frame^2; with hitches the change of the drawn
+            // velocity across a frame in m/s)
+            let jit = |d: &[(f32, Vec3)], uniform: bool| {
+                let v: Vec<f32> = d.windows(3).map(|w| if uniform {
+                    (w[0].1 - w[1].1 * 2.0 + w[2].1).length() * 1000.0
+                } else {
+                    ((w[2].1 - w[1].1) / (w[2].0 - w[1].0) - (w[1].1 - w[0].1) / (w[1].0 - w[0].0)).length()
+                }).collect();
+                (v.iter().sum::<f32>() / v.len() as f32, v.iter().copied().fold(0.0f32, f32::max))
+            };
+            let (_, base) = run(&|_| 1.0 / 30.0, false);
+            for (name, dts) in [
+                ("60", &(|_| 1.0f32 / 60.0) as &dyn Fn(usize) -> f32),
+                ("75", &|_| 1.0 / 75.0),
+                ("144", &|_| 1.0 / 144.0),
+                ("240", &|_| 1.0 / 240.0),
+                ("144 + 90 ms every 7th", &|i| if i % 7 == 6 { 0.09 } else { 1.0 / 144.0 }),
+            ] {
+                let (d, st) = run(dts, false);
+                let (dh, _) = run(dts, true);
+                // (the last step of each drawn frame against the 30 Hz run's step of the same game frame)
+                let off = st.iter().filter_map(|&(k, p)| base.iter().find(|b| b.0 == k).map(|b| p.distance(b.1))).fold(0.0f32, f32::max);
+                let uniform = !name.contains("hitch") && !name.contains("90 ms");
+                let (jm, jx) = jit(&d, uniform);
+                let (hm, hx) = jit(&dh, uniform);
+                let unit = if uniform { "mm/frame^2" } else { "m/s velocity change a frame" };
+                eprintln!("track fps {ev_name} {name}: steps off the 30 Hz run {off:e} m; drawn mean {jm:.2} max {jx:.2}, held {hm:.2} / {hx:.2} {unit}");
+                assert!(off == 0.0, "{ev_name} {name}: {off}");
+                assert!(jm < hm * 0.5, "{ev_name} {name}: {jm} {jx} vs {hm} {hx}");
+            }
+        }
+    }
+
     #[test]
     fn event_r4_rules() {
         let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| r"D:\MCLA\extracted\cache".into());
