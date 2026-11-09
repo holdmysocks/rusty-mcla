@@ -2068,6 +2068,14 @@ impl HullShape {
     }
 }
 
+/// One kept contact's refresh (F-33100, age != 0): its point on the body in the body's frame as it stands (a sum of four, the
+/// vector unit's vmsum4fp with the frame's column, in flush mode) and the depth along the back normal (a sum of three products). The
+/// other side is the city, which stands still: its point is kept.
+pub(super) fn refreshed(now: &[Vec3; 4], l: Vec3, on_world: Vec3, normal: Vec3) -> (Vec3, f32) {
+    let on_body = super::loose::vxf(now, l);
+    (on_body, super::loose::vdot3(super::loose::vsub(on_body, on_world), super::loose::vsub(Vec3::ZERO, normal)))
+}
+
 /// The contacts kept from earlier ticks brought up to the body's matrix as it stands
 /// (F-26862): their points, their depth; what has come 4 cm apart is dropped, and of those
 /// a tick old or more the one that has slid farthest, if more than 2 cm.
@@ -2075,13 +2083,7 @@ pub fn refresh(now: &[Vec3; 4], manifolds: &mut Vec<Manifold>) {
     for m in manifolds.iter_mut() {
         for s in m.slots.iter_mut().rev() {
             if s.age != 0 {
-                let l = s.c.local;
-                s.c.on_body = Vec3::new(
-                    (now[3].x + now[2].x * l.z) + (now[1].x * l.y + now[0].x * l.x),
-                    (now[3].y + now[2].y * l.z) + (now[1].y * l.y + now[0].y * l.x),
-                    (now[3].z + now[2].z * l.z) + (now[1].z * l.y + now[0].z * l.x),
-                );
-                s.c.depth = dot3(s.c.on_body - s.c.on_world, Vec3::ZERO - s.c.normal);
+                (s.c.on_body, s.c.depth) = refreshed(now, s.c.local, s.c.on_world, s.c.normal);
             }
             s.c.target = Vec3::ZERO;
             s.age = s.age.saturating_add(1);
@@ -2115,6 +2117,37 @@ pub fn refresh(now: &[Vec3; 4], manifolds: &mut Vec<Manifold>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The contact refresh F-33100 run offline (tools/force_leaves_reference.py, testdata/contact_refresh_ref.txt, 1,200
+    /// cases): the body's side of a kept contact (age != 0, kind 0) - its point in the body's frame as it stands and the depth
+    /// along the back normal against the other side's point as the original left it (the city's, which stands still).
+    #[test]
+    fn contact_refresh_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let v = |w: &[u32], o: usize| Vec3::new(f32::from_bits(w[o]), f32::from_bits(w[o + 1]), f32::from_bits(w[o + 2]));
+        let (mut n, mut bad) = (0, Vec::new());
+        for line in include_str!("testdata/contact_refresh_ref.txt").lines() {
+            let (lhs, rhs) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = lhs.split(' ').skip(1).map(h).collect();
+            let o: Vec<u32> = rhs.trim_start_matches("| ").trim().split(' ').map(h).collect();
+            if w[0] == 0 || w[1] != 0 {
+                continue;
+            }
+            let now: [Vec3; 4] = std::array::from_fn(|r| v(&w, 11 + 4 * r));
+            // (the contact stores the normal; the back normal the original reads is its negation)
+            let back = v(&w, 8);
+            let (on_body, depth) = refreshed(&now, v(&w, 2), v(&o, 8), Vec3::ZERO - back);
+            let same = |g: f32, e: u32| g.to_bits() == e || (g.is_nan() && f32::from_bits(e).is_nan());
+            n += 1;
+            // (a back normal lane of -0 comes back as +0 through 0 - (0 - x); only a zero's sign: the depth is compared as a number then)
+            let depth_ok = same(depth, o[3]) || (depth == 0.0 && f32::from_bits(o[3]) == 0.0);
+            if !(same(on_body.x, o[4]) && same(on_body.y, o[5]) && same(on_body.z, o[6]) && depth_ok) {
+                bad.push(line);
+            }
+        }
+        assert!(n > 500, "{n}");
+        assert!(bad.is_empty(), "{} mismatches, first {:?}", bad.len(), &bad[..bad.len().min(2)]);
+    }
 
     /// The cone's widen F-12753 and clamp F-99162 run offline with their arc cosine / cosine
     /// (tools/cone_widen_reference.py, flush mode as the SDK sets it): x, y, z and the cosine

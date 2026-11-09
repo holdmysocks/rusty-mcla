@@ -353,10 +353,10 @@ impl PBody {
 
     /// F-97724: an impulse at a point, taken into the momenta at once.
     pub fn impulse_now(&mut self, vec: Vec3, point: Vec3) {
-        self.p = self.p + vec;
+        let (p, l) = impulse_sums(self.p, self.l, self.at, vec, point);
+        self.p = p;
         (self.v, self.p) = capped(self.p * self.inv_mass, self.p, self.max_speed);
-        let r = point - self.at;
-        self.l = self.l + cross(r, vec);
+        self.l = l;
         (self.w, self.l) = capped(ex::spin_of(self.l, &self.rows, self.inv_inertia), self.l, self.max_spin);
     }
 
@@ -1613,13 +1613,7 @@ impl LooseState {
             }
             for s in m.slots.iter_mut().rev() {
                 if s.age != 0 {
-                    s.t.a.point = xf(&ma, s.t.a.local);
-                    if city {
-                        s.t.b.point = s.t.b.local;
-                    } else {
-                        s.t.b.point = xf(&mb, s.t.b.local);
-                    }
-                    s.t.depth = dot3(s.t.a.point - s.t.b.point, s.t.back);
+                    (s.t.a.point, s.t.b.point, s.t.depth) = refresh_points(&ma, if city { None } else { Some(&mb) }, s.t.a.local, s.t.b.local, s.t.back);
                 }
                 s.t.target = Vec3::ZERO;
                 s.age = s.age.saturating_add(1);
@@ -3007,8 +3001,7 @@ impl LooseState {
         // (broken off a moving parent it takes the parent's motion with it, F-47138 / F-74100)
         if let Some(pb) = self.objs[w].body {
             let pos = xf(&matrix, parent.cg);
-            let r = matrix[3] - pos;
-            let vel = cross(pb.w, r) + pb.v;
+            let vel = piece_velocity(matrix[3], pos, pb.v, pb.w);
             set_velocity(&mut body, vel);
             body.w = pb.w;
             body.l = body.momentum_of(pb.w);
@@ -4244,7 +4237,7 @@ pub struct Amb {
 }
 
 /// A vector float as the vector unit takes and gives it in flush mode: a denormal is a zero of its sign.
-fn flush(x: f32) -> f32 {
+pub(super) fn flush(x: f32) -> f32 {
     if x.is_subnormal() { 0.0f32.copysign(x) } else { x }
 }
 
@@ -4260,6 +4253,66 @@ fn set_velocity(b: &mut PBody, v: Vec3) {
 fn apply_impulse(b: &mut PBody, j: Vec3) {
     let f = |a: f32, b: f32| flush(flush(a) + flush(b));
     b.jf = Vec3::new(f(b.jf.x, j.x), f(b.jf.y, j.y), f(b.jf.z, j.z));
+}
+
+// The vector unit in flush mode on whole vectors (x, y, z), and the two lane rotations its cross products use.
+pub(super) fn vadd(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3::new(flush(flush(a.x) + flush(b.x)), flush(flush(a.y) + flush(b.y)), flush(flush(a.z) + flush(b.z)))
+}
+pub(super) fn vsub(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3::new(flush(flush(a.x) - flush(b.x)), flush(flush(a.y) - flush(b.y)), flush(flush(a.z) - flush(b.z)))
+}
+pub(super) fn vmul(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3::new(flush(flush(a.x) * flush(b.x)), flush(flush(a.y) * flush(b.y)), flush(flush(a.z) * flush(b.z)))
+}
+pub(super) fn vyzx(v: Vec3) -> Vec3 {
+    Vec3::new(v.y, v.z, v.x)
+}
+pub(super) fn vzxy(v: Vec3) -> Vec3 {
+    Vec3::new(v.z, v.x, v.y)
+}
+
+/// The cross product of the vector unit in flush mode as F-97724 and F-74100 form it: -(zxy(a) yzx(b) - yzx(a) zxy(b)),
+/// each product rounded (vmulfp), then the difference (vnmsubfp) negated.
+fn vcross(a: Vec3, b: Vec3) -> Vec3 {
+    let m = vmul(vyzx(a), vzxy(b));
+    -vsub(vmul(vzxy(a), vyzx(b)), m)
+}
+
+/// The impulse at a point F-97724 up to the body's setters: P + J (vaddfp; handed to the momentum setter, vfunc 42) and
+/// the angular momentum L + (point - place) x J (written to +320 before the turn is re-derived, vfunc 46).
+pub(super) fn impulse_sums(p: Vec3, l: Vec3, at: Vec3, vec: Vec3, point: Vec3) -> (Vec3, Vec3) {
+    (vadd(p, vec), vadd(l, vcross(vsub(point, at), vec)))
+}
+
+/// The velocity F-74100 hands to the body of a piece broken off a moving parent (vfunc 41): the parent's velocity plus the
+/// parent's turn crossed with the arm from the parent's centre to the piece's place (the turn crossed with the arm is
+/// the negated cross product of the arm and the turn, as the vector unit forms it).
+pub(super) fn piece_velocity(place: Vec3, centre: Vec3, v: Vec3, w: Vec3) -> Vec3 {
+    vadd(vcross(w, vsub(place, centre)), v)
+}
+
+/// `xf` in flush mode (vmsum4fp: every product and sum taken with a denormal as a zero of its sign).
+pub(super) fn vxf(m: &[Vec3; 4], p: Vec3) -> Vec3 {
+    let f = |a: f32, b: f32| flush(flush(a) * flush(b));
+    let s = |a: f32, b: f32| flush(flush(a) + flush(b));
+    let k = |c: usize| s(s(m[3][c], f(m[2][c], p.z)), s(f(m[1][c], p.y), f(m[0][c], p.x)));
+    Vec3::new(k(0), k(1), k(2))
+}
+
+/// The vector unit's sum of three products in flush mode, the fourth lane masked: (0 + z z') + (y y' + x x').
+pub(super) fn vdot3(a: Vec3, b: Vec3) -> f32 {
+    let m = vmul(a, b);
+    flush(flush(flush(0.0 + m.z) + flush(flush(m.y) + flush(m.x))))
+}
+
+/// The refresh of one kept contact F-33100 (age != 0): A's world point from A's frame, B's from B's (None: the city, which
+/// stands still: its local point is already in the world, a denormal one a zero as the vector unit takes it), and the depth along the back normal (a sum of three products
+/// of the vector unit, the fourth lane masked).
+pub(super) fn refresh_points(ma: &[Vec3; 4], mb: Option<&[Vec3; 4]>, la: Vec3, lb: Vec3, back: Vec3) -> (Vec3, Vec3, f32) {
+    let a = vxf(ma, la);
+    let b = mb.map_or(Vec3::new(flush(lb.x), flush(lb.y), flush(lb.z)), |m| vxf(m, lb));
+    (a, b, vdot3(vsub(a, b), back))
 }
 
 /// A semi's hitch in the world as F-15252 forms it: the hitch with w = 1 through the instance's matrix (rows, place),
@@ -5242,6 +5295,119 @@ pub fn hand_over_pieces(world: &LooseWorld, cars: &mut [CarLevel]) {
 #[cfg(test)]
 mod piece_tests {
     use super::*;
+
+    fn same3(g: Vec3, e: &[u32]) -> bool {
+        g.to_array().iter().zip(e).all(|(g, e)| g.to_bits() == *e || (g.is_nan() && f32::from_bits(*e).is_nan()))
+    }
+
+    fn vec_at(w: &[u32], o: usize) -> Vec3 {
+        Vec3::new(f32::from_bits(w[o]), f32::from_bits(w[o + 1]), f32::from_bits(w[o + 2]))
+    }
+
+    /// The impulse at a point F-97724 run offline (tools/force_leaves_reference.py, 2,500 cases, flush mode as the SDK sets
+    /// it, testdata/impulse_at_point_ref.txt): the momentum P + J it hands to the body's setter (vfunc 42), the call of
+    /// vfunc 46 after it, and the angular momentum +320 it leaves, x, y and z, every word (NaN as NaN). What the two
+    /// virtual calls do (the caps, the speeds) is not in the file.
+    #[test]
+    fn impulse_at_point_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let (mut n, mut bad) = (0, Vec::new());
+        for line in include_str!("testdata/impulse_at_point_ref.txt").lines() {
+            let (lhs, rhs) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = lhs.split(' ').skip(1).map(h).collect();
+            let (log, l) = rhs.split_once(" | ").unwrap();
+            let log: Vec<&str> = log.split(' ').collect();
+            let l: Vec<u32> = l.split(' ').map(h).collect();
+            let (p, nl) = impulse_sums(vec_at(&w, 0), vec_at(&w, 3), vec_at(&w, 6), vec_at(&w, 9), vec_at(&w, 12));
+            let want_p: Vec<u32> = log[1..4].iter().map(|x| h(x)).collect();
+            n += 1;
+            if !(log[0] == "c1" && log[4] == "c2" && same3(p, &want_p) && same3(nl, &l)) {
+                bad.push(line);
+            }
+        }
+        assert_eq!(n, 2500);
+        assert!(bad.is_empty(), "{} mismatches, first {:?}", bad.len(), &bad[..bad.len().min(2)]);
+    }
+
+    /// The velocity of a piece broken off a moving parent, F-74100 run offline (tools/force_leaves_reference.py, 2,500
+    /// cases, testdata/piece_velocity_ref.txt): the velocity handed to the body's setter (vfunc 41) and the turn handed to
+    /// vfunc 43, every word (NaN as NaN). The case words are: the level index, the flag word's low bits, whether the
+    /// body is there, then the place, the centre, the velocity and the turn; the lookup (index not 0xFFFF, flags & 3 == 0,
+    /// body present) is the port's `if let Some(parent body)`.
+    #[test]
+    fn piece_velocity_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let (mut n, mut called, mut bad) = (0, 0, Vec::new());
+        for line in include_str!("testdata/piece_velocity_ref.txt").lines() {
+            let (lhs, rhs) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = lhs.split(' ').skip(1).map(h).collect();
+            let fires = w[0] != 0xFFFF && w[1] & 3 == 0 && w[2] != 0;
+            n += 1;
+            let ok = if fires {
+                called += 1;
+                let t: Vec<&str> = rhs.trim_end_matches('|').trim().split(' ').collect();
+                let (v, turn): (Vec<u32>, Vec<u32>) = (t[2..5].iter().map(|x| h(x)).collect(), t[7..10].iter().map(|x| h(x)).collect());
+                let got = piece_velocity(vec_at(&w, 3), vec_at(&w, 6), vec_at(&w, 9), vec_at(&w, 12));
+                t[0] == "v" && t[5] == "w" && same3(got, &v) && same3(vec_at(&w, 12), &turn)
+            } else {
+                rhs.trim() == "|"
+            };
+            if !ok { bad.push(line); }
+        }
+        assert_eq!(n, 2500);
+        assert!(called > 2000, "{called} calls");
+        assert!(bad.is_empty(), "{} mismatches, first {:?}", bad.len(), &bad[..bad.len().min(2)]);
+    }
+
+    /// The refresh of one contact F-33100 run offline (tools/force_leaves_reference.py, 1,200 cases, flush mode as the SDK
+    /// sets it, testdata/contact_refresh_ref.txt): from age 0 on, the target (+144) 0 and the age + 1 (to 16 bits); for age
+    /// != 0 A's and B's world points (x, y, z, every word, NaN as NaN) and, for kind 0, the depth +12; an age 0 or a
+    /// kind other than 0 leaves the words as they were. B's frame is the identity in a tenth of the cases, which the city
+    /// path (B's local point kept) reproduces word for word apart from the sign of a zero.
+    #[test]
+    fn contact_refresh_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let (mut n, mut moved, mut kept, mut city, mut zero_sign, mut bad) = (0, 0, 0, 0, 0, Vec::new());
+        for line in include_str!("testdata/contact_refresh_ref.txt").lines() {
+            let (lhs, rhs) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = lhs.split(' ').skip(1).map(h).collect();
+            let o: Vec<u32> = rhs.trim_start_matches("| ").trim().split(' ').map(h).collect();
+            let (age, kind) = (w[0] as u16, w[1]);
+            let mat = |at: usize| -> [Vec3; 4] { std::array::from_fn(|r| vec_at(&w, at + 4 * r)) };
+            let (ma, mb) = (mat(11), mat(27));
+            let (la, lb, back) = (vec_at(&w, 2), vec_at(&w, 5), vec_at(&w, 8));
+            n += 1;
+            // (the words: 0 .. 3 the record's first four, 4 .. 7 A's point, 8 .. 11 B's, 12 .. 15 the target, 16 the age)
+            let mut ok = o[16] == (age.wrapping_add(1)) as u32 && o[12..16].iter().all(|x| *x == 0);
+            if age != 0 {
+                moved += 1;
+                let (a, b, depth) = refresh_points(&ma, Some(&mb), la, lb, back);
+                ok &= same3(a, &o[4..7]) && same3(b, &o[8..11]);
+                if kind == 0 {
+                    ok &= depth.to_bits() == o[3] || (depth.is_nan() && f32::from_bits(o[3]).is_nan());
+                } else {
+                    ok &= o[3] == 0xA5A5_000C;
+                }
+                let identity = mb.iter().zip([Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO]).all(|(r, e)| *r == e);
+                if identity {
+                    city += 1;
+                    let (_, c, _) = refresh_points(&ma, None, la, lb, back);
+                    // (a zero of the other sign is the only difference allowed)
+                    let eq = |g: f32, e: u32| g.to_bits() == e || (g == 0.0 && f32::from_bits(e) == 0.0) || (g.is_nan() && f32::from_bits(e).is_nan());
+                    let same_but_zero = c.to_array().iter().zip(&o[8..11]).all(|(g, e)| eq(*g, *e));
+                    zero_sign += (!same3(c, &o[8..11]) && same_but_zero) as usize;
+                    ok &= same_but_zero;
+                }
+            } else {
+                kept += 1;
+                ok &= o[4..12].iter().enumerate().all(|(i, x)| *x == 0xA5A5_0000 + 48 + 4 * i as u32) && o[3] == 0xA5A5_000C;
+            }
+            if !ok { bad.push(line); }
+        }
+        assert_eq!(n, 1200);
+        assert!(moved > 800 && kept > 40 && city > 40, "{moved} refreshed, {kept} kept, {city} city; {zero_sign} zero signs");
+        assert!(bad.is_empty(), "{} mismatches, first {:?}", bad.len(), &bad[..bad.len().min(2)]);
+    }
 
     /// The semi's constraints as the original makes them (tools/semi_ropes_reference.py, testdata/semi_ropes_ref.txt):
     /// F-15252's world points of the three pairs (each hitch through its instance's matrix, then + 10 x row 2 and

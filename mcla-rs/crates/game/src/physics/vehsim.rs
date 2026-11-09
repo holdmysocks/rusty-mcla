@@ -1175,6 +1175,9 @@ pub struct VehState {
     pub way_after: i32,
     /// A2: the player's pad between frames (pedals, the next steering value, the smoothed stick)
     pub pad: super::pad::PadHeld,
+    /// the forward speed the pad's frame measured (after the update, before the physics step) - what F-65097's
+    /// kick-down target is taken from; None off the pad's exact path
+    pub kick_fwd: Option<f32>,
     pub steer_back: f32,
     /// chassis +656 while damaged out (bit 0x04): the full lock F-30391 picked as the bit was set
     pub out_steer: Option<f32>,
@@ -1188,7 +1191,7 @@ pub struct VehState {
 
 impl Default for VehState {
     fn default() -> Self {
-        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, rider: None, rider_out: None, rider_job: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, stuck_cool: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_shake: 0.0, shake_rng: [0x2545_F491, 1], engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), air: AirRide::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, fric_boost: false, grip_h: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false, goal: 0.0 }, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default(), engine_stopped: false, deact_seen: false }
+        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, rider: None, rider_out: None, rider_job: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, stuck_cool: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_shake: 0.0, shake_rng: [0x2545_F491, 1], engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), air: AirRide::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, fric_boost: false, grip_h: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false, goal: 0.0 }, kick_fwd: None, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default(), engine_stopped: false, deact_seen: false }
     }
 }
 
@@ -1287,6 +1290,31 @@ pub(super) fn displace(disp: &mut f32, limit: f32, step: f32, relax: f32) -> (f3
         *disp = limit.min(*disp + relax);
         (0.0, false)
     }
+}
+
+/// The place of the force-at-a-point call (body vfunc 31, F-18006) in the sums: the force and the torque's first product, then
+/// the second product taken from the sum (the port keeps them as two entries of the call list).
+const FORCE_AT_FIRST: u16 = 545;
+const FORCE_AT_SECOND: u16 = 546;
+
+/// The torque's two products of the force F at the arm d (the point less the body's place), vector unit in flush mode:
+/// yzx(d) zxy(F) and zxy(d) yzx(F).
+pub(super) fn force_at_products(f: Vec3, d: Vec3) -> (Vec3, Vec3) {
+    use super::loose::{vmul, vyzx, vzxy};
+    (vmul(vyzx(d), vzxy(f)), vmul(vzxy(d), vyzx(f)))
+}
+
+/// The second product's step of F-18006: the torque so far less the second product (vnmsubfp: -(p2 - q)), which is
+/// not q + (-p2) where the two are equal (the zero is then -0).
+pub(super) fn force_at_second(q: Vec3, p2: Vec3) -> Vec3 {
+    -super::loose::vsub(p2, q)
+}
+
+/// F-18006 as a whole: the force sum + F, the torque sum + the force's torque about the body's place `pos` at `at`.
+pub(super) fn apply_force_at(sum_f: Vec3, sum_q: Vec3, f: Vec3, at: Vec3, pos: Vec3) -> (Vec3, Vec3) {
+    use super::loose::{vadd, vsub};
+    let (p1, p2) = force_at_products(f, vsub(at, pos));
+    (vadd(sum_f, f), force_at_second(vadd(sum_q, p1), p2))
 }
 
 pub(super) fn synchronize_engine(current: f32, target: f32, torque: f32, inertia: f32, dt: f32) -> f32 {
@@ -2086,16 +2114,17 @@ pub async fn step_async(st: &mut CarState, p: &CarParams, vt: &VehTune, input: C
         // does - seen in a recording the moment reverse engages under a held pedal)
         vs.boost_timer = boost_restart(0.0, e.boost_duration);
     }
-    if stomped && vs.gear > 1 && !vs.gear_change.active && vs.shift_timer > 0.12 && (vs.gear as usize) < vt.shift.len() {
-        let r = t.wheel_back.radius.max(0.1);
-        let mut target = 1;
-        if fwd_speed >= 10.0 {
-            while target < vs.gear && fwd_speed / r * vt.ratios[target as usize] / RPM > vt.shift[target as usize][0] {
-                target += 1;
-            }
-        }
-        let n = (vs.gear - target).min(t.trans.max_downshifts.clamp(1, 4) as i32);
-        if n > 0 {
+    // (F-65097 after the boost: the target F-24547 of the forward speed the pad's frame measured - the chassis's
+    // velocity along -row 2, after the update and before the physics step; n = min(gear - target, MaxDownshifts
+    // tune +32), none when the target is above; only out of a gear above first (the original's index 2) with no
+    // change running (gearbox +24 == 0): SetGear(gear - n) F-59013 and the change's direction F-83469(-1). sd.1 k367:
+    // 30.114 m/s, ratio needed 9.3317 over first's 9.1106: 2nd -> 1st. Before, the port took the first gear whose
+    // upshift point the speed did not pass, gated by a shift timer of its own: no shift there.)
+    if stomped && vs.gear > 1 && !vs.gear_change.active {
+        let speed = if pad_exact { vs.kick_fwd.unwrap_or(fwd_speed) } else { fwd_speed };
+        let d = vs.gear - gear_for_speed(vt, speed);
+        let n = d.min(t.trans.max_downshifts as i32);
+        if d >= 0 && n > 0 {
             vs.gear -= n;
             vs.shift_timer = 0.0;
         }
@@ -3130,6 +3159,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
                 (raw_input.throttle, raw_input.brake, raw_input.steer)
             };
             vs.pad.pedals = super::pad::pedals(vs.pad.pedals, &t.input, &super::pad::PedalIn { rt, lt, speed: speed224, forward, bike: vt.bike });
+            vs.kick_fwd = Some(forward);
             vs.pad.handbrake = raw_input.handbrake;
             if replay_way == 0 && forced == 0 {
                 vs.way_after = vs.pad.pedals.way as i32;
@@ -5174,9 +5204,10 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             }
             // (body_rows[3]: the chassis matrix's place, chassis +288 - the model's origin)
             let at = (body_at + body_rows[3]) * 0.5;
-            let d = at - body_at;
-            calls.push((545, f, Vec3::new(d.y * f.z, d.z * f.x, d.x * f.y)));
-            calls.push((545, Vec3::ZERO, -Vec3::new(d.z * f.y, d.x * f.z, d.y * f.x)));
+            // (the point less the place: the vector unit's subtraction, F-18006's own step)
+            let (p1, p2) = force_at_products(f, super::loose::vsub(at, body_at));
+            calls.push((FORCE_AT_FIRST, f, p1));
+            calls.push((FORCE_AT_SECOND, Vec3::ZERO, p2));
         }
         // (the port's flag for "on one wheel": both wheels are then set up for the whole weight)
         vs.wheelie = match vs.bg.state { 1 => 1, -1 => 2, 0 => 0, _ => vs.wheelie };
@@ -5732,8 +5763,18 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                 vs.sums_gyro[3] = q;
                 stage = 2;
             }
-            f = f + df;
-            q = q + dq;
+            match key {
+                // (F-18006: the vector unit's adds, the second product taken off the sum)
+                FORCE_AT_FIRST => {
+                    f = super::loose::vadd(f, df);
+                    q = super::loose::vadd(q, dq);
+                }
+                FORCE_AT_SECOND => q = force_at_second(q, dq),
+                _ => {
+                    f = f + df;
+                    q = q + dq;
+                }
+            }
         }
         force = f;
         torque = q;
@@ -7471,20 +7512,7 @@ pub fn set_pose(st: &mut CarState, vt: &VehTune, world: &WorldCollider, m: [Vec3
         let front = i < 2;
         w.spin_rate = if all || (front == (drive == 1)) { power } else { free };
     }
-    let g = if fwd < -1.0 {
-        -1
-    } else if fwd < 10.0 {
-        1
-    } else {
-        let radii = match t.drivetrain_type {
-            1 | 4 => vec![t.wheel_front.radius; 2],
-            2 | 3 => vec![t.wheel_front.radius, t.wheel_front.radius, t.wheel_back.radius, t.wheel_back.radius],
-            _ => vec![t.wheel_back.radius; 2],
-        };
-        let needed = super::transmission::ratio_for_speed(e.max_rpm * RPM, fwd * 2.237, &radii);
-        let top = vt.ratios.len() as i32 - 1;
-        (1..top).find(|&g| needed > vt.ratios[g as usize]).unwrap_or(top)
-    };
+    let g = gear_for_speed(vt, fwd);
     if g != vs.gear {
         let was = vs.gear;
         vs.gear = g;
@@ -7494,6 +7522,27 @@ pub fn set_pose(st: &mut CarState, vt: &VehTune, world: &WorldCollider, m: [Vec3
     let ratio = if g < 0 { -vt.ratios[0] } else { vt.ratios[g as usize] };
     let peak = vt.torque_curve.as_ref().map_or(e.opt_rpm * RPM, |c| c.peak().0);
     vs.engine_w = (ratio * power).min(peak).max(e.idle_rpm * RPM);
+}
+
+/// F-24547, the gear for a forward speed: reverse under -1 m/s, first under 10, else the lowest gear whose ratio is
+/// below the one the speed needs at the engine's top speed (F-24970: the speed x 2.237 in mph, the drivetrain's
+/// wheels' radii), the top gear when none is.
+pub(super) fn gear_for_speed(vt: &VehTune, fwd: f32) -> i32 {
+    let t = &vt.t;
+    if fwd < -1.0 {
+        -1
+    } else if fwd < 10.0 {
+        1
+    } else {
+        let radii = match t.drivetrain_type {
+            1 | 4 => vec![t.wheel_front.radius; 2],
+            2 | 3 => vec![t.wheel_front.radius, t.wheel_front.radius, t.wheel_back.radius, t.wheel_back.radius],
+            _ => vec![t.wheel_back.radius; 2],
+        };
+        let needed = super::transmission::ratio_for_speed(t.engine.s.max_rpm * RPM, fwd * 2.237, &radii);
+        let top = vt.ratios.len() as i32 - 1;
+        (1..top).find(|&g| needed > vt.ratios[g as usize]).unwrap_or(top)
+    }
 }
 
 /// mcCarStuck's righting (F-72170, state 4): the car's forwards kept, its up the world's - right = unit(up x
@@ -7633,6 +7682,33 @@ fn gyro_full() -> bool {
 
 #[cfg(test)]
 mod getter_tests {
+    /// The body's apply-force-at-a-point F-18006 run offline (tools/force_leaves_reference.py, 2,500 cases, flush mode as
+    /// the SDK sets it, testdata/force_at_point_ref.txt): the force and torque sums after (x, y, z, every word, NaN as
+    /// NaN) and the force and the point the notification slot is handed (they are F and the point as given). The w lanes of
+    /// the vector registers held garbage in the run.
+    #[test]
+    fn force_at_point_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let v = |w: &[u32], o: usize| glam::Vec3::new(f32::from_bits(w[o]), f32::from_bits(w[o + 1]), f32::from_bits(w[o + 2]));
+        let same = |g: glam::Vec3, e: &[u32]| g.to_array().iter().zip(e).all(|(g, e)| g.to_bits() == *e || (g.is_nan() && f32::from_bits(*e).is_nan()));
+        let (mut n, mut zero, mut bad) = (0, 0, Vec::new());
+        for line in include_str!("testdata/force_at_point_ref.txt").lines() {
+            let (lhs, rhs) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = lhs.split(' ').skip(1).map(h).collect();
+            let (log, sums) = rhs.split_once(" | ").unwrap();
+            let log: Vec<u32> = log.split(' ').skip(1).map(h).collect();
+            let sums: Vec<u32> = sums.split(' ').map(h).collect();
+            let (f, q) = super::apply_force_at(v(&w, 9), v(&w, 12), v(&w, 0), v(&w, 3), v(&w, 6));
+            n += 1;
+            zero += (f32::from_bits(sums[3]) == 0.0 || f32::from_bits(sums[4]) == 0.0 || f32::from_bits(sums[5]) == 0.0) as usize;
+            let ok = same(f, &sums[0..3]) && same(q, &sums[3..6]) && same(v(&w, 0), &log[0..3]) && same(v(&w, 3), &log[3..6]);
+            if !ok { bad.push(line); }
+        }
+        assert_eq!(n, 2500);
+        assert!(zero > 100, "{zero} cases with a zero torque lane");
+        assert!(bad.is_empty(), "{} mismatches, first {:?}", bad.len(), &bad[..bad.len().min(2)]);
+    }
+
     /// F-80284, F-65255, F-33415, F-91794 and F-50750 as the original runs them (tools/vehsim_getters_reference.py,
     /// 9000 cases, testdata/vehsim_getters_ref.txt). A gear index maps to the port's as the gearbox's test has it
     /// (0 reverse -1, 1 neutral 0, g forward g - 1); indices below 0, which the gearbox never holds, have no port gear
