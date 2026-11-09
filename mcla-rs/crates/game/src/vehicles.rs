@@ -3448,6 +3448,11 @@ impl Vehicles {
                 if let Some(d) = resolve(&car, &setup) {
                     let dir = world.assets.root.join("resources/vehicle").join(&car);
                     self.prepare_ahead(&dir, &d.cfg);
+                    // (and its wheels' parts - `wheel_ahead`)
+                    wheel_ahead(&world.assets.root.join("resources/tires/models/tir_car"));
+                    if let Some(rd) = d.rim_dir.as_ref() {
+                        wheel_ahead(rd);
+                    }
                 }
             }
         }
@@ -7243,6 +7248,88 @@ fn tire_textures(gpu: &mut Gpu, root: &Path, set: &str) -> Option<[(Arc<GpuTextu
     Some([out.pop()?, b])
 }
 
+/// A wheel part of `load_wheels_with` as read from its folder (a tyre's or a rim's): the .r63's model with the .r83's
+/// shaders (where the model has none) and textures. No GPU: made on a worker by `wheel_ahead`.
+fn wheel_source(dir: &Path) -> Option<vehicle_model::SimpleModel> {
+    let mut r63 = None;
+    let mut r83 = None;
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            match p.extension().and_then(|x| x.to_str()) {
+                Some("r63") => r63 = Some(p),
+                Some("r83") => r83 = Some(p),
+                _ => {}
+            }
+        }
+    }
+    let (Some(m), Some(sh)) = (r63, r83) else { return None };
+    // (the shaders and the rim's own texture are in the .r83)
+    let look = vehicle_model::load_simple(&sh, None).ok();
+    let mut model = vehicle_model::load_simple(&m, None).ok()?;
+    if let Some(look) = look {
+        if std::env::var("MCLA_WHEEL_DUMP").is_ok() {
+            log::info!("wheel look {}: model shaders {:?}, look shaders {:?}, look textures {:?}", dir.display(), model.shaders.iter().map(|s| (s.name.clone(), s.params.len(), s.textures().map(|t| format!("{:08x}={}", t.0, t.1)).collect::<Vec<_>>())).collect::<Vec<_>>(), look.shaders.iter().map(|s| (s.name.clone(), s.params.len(), s.textures().map(|t| format!("{:08x}={}", t.0, t.1)).collect::<Vec<_>>())).collect::<Vec<_>>(), look.textures.iter().map(|(h, t)| format!("{:08x}={} {}x{}", h, t.name, t.width, t.height)).collect::<Vec<_>>());
+        }
+        if model.shaders.is_empty() {
+            model.shaders = look.shaders;
+        }
+        for (h, t) in look.textures {
+            model.textures.entry(h).or_insert(t);
+        }
+    }
+    Some(model)
+}
+
+type WheelSourceSlot = Option<Arc<vehicle_model::SimpleModel>>;
+
+/// The wheel parts read ahead (`wheel_ahead`) or before, by folder: being read on a worker, or read.
+static WHEEL_SOURCES: std::sync::Mutex<Vec<(std::path::PathBuf, Result<WheelSourceSlot, std::thread::JoinHandle<WheelSourceSlot>>)>> = std::sync::Mutex::new(Vec::new());
+
+/// MCLA_WHEEL_AHEAD=0: the wheel parts read where they are used, as before.
+fn wheel_ahead_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MCLA_WHEEL_AHEAD").map_or(true, |v| v.trim() != "0"))
+}
+
+/// A set-up car's tyre and rim read on a worker ahead of its dressing (`dress_setups`): the read and parse of their
+/// files were 4 - 11 ms of a hookman car's build on the game thread (docs/PERFORMANCE.md 2026-11-08 (7), 2026-11-09 (8)).
+pub fn wheel_ahead(dir: &Path) {
+    if !wheel_ahead_on() || !dir.is_dir() {
+        return;
+    }
+    let mut g = WHEEL_SOURCES.lock().unwrap_or_else(|e| e.into_inner());
+    if g.iter().any(|(d, _)| d == dir) {
+        return;
+    }
+    let d = dir.to_path_buf();
+    if let Ok(h) = std::thread::Builder::new().name("wheel read".into()).spawn(move || wheel_source(&d).map(Arc::new)) {
+        g.push((dir.to_path_buf(), Err(h)));
+    }
+}
+
+/// A wheel part: the one read ahead (waiting for its worker if it is still reading), else read now. `keep`: left for
+/// the next use (a tyre, shared by every wheel); else given up (a rim, one car's). At most 16 kept.
+fn wheel_source_cached(dir: &Path, keep: bool) -> WheelSourceSlot {
+    if !wheel_ahead_on() {
+        return wheel_source(dir).map(Arc::new);
+    }
+    let mut g = WHEEL_SOURCES.lock().unwrap_or_else(|e| e.into_inner());
+    let found = g.iter().position(|(d, _)| d == dir).map(|i| g.remove(i).1);
+    let m = match found {
+        Some(Ok(m)) => m,
+        Some(Err(h)) => h.join().ok().flatten(),
+        None => wheel_source(dir).map(Arc::new),
+    };
+    if keep {
+        g.push((dir.to_path_buf(), Ok(m.clone())));
+        while g.len() > 16 {
+            g.remove(0);
+        }
+    }
+    m
+}
+
 pub fn load_wheels_with(gpu: &mut Gpu, world: &mut World, rim_dir: &Path, tyre: &str, rim_ratio: f32, tire_set: Option<&str>) -> Option<WheelModel> {
     let root = world.assets.root.clone();
     let tire_tex = tire_set.and_then(|s| tire_textures(gpu, &root, s));
@@ -7279,37 +7366,16 @@ pub fn load_wheels_with(gpu: &mut Gpu, world: &mut World, rim_dir: &Path, tyre: 
         }
     }
     let dump_dir = std::env::var("MCLA_BRAKE_DUMP").ok().map(|d| root.join("resources/brakes").join(d));
-    for dir in [root.join("resources/tires/models").join(tyre), dump_dir.unwrap_or_else(|| rim_dir.to_path_buf())] {
-        let mut r63 = None;
-        let mut r83 = None;
-        if let Ok(rd) = std::fs::read_dir(&dir) {
-            for e in rd.flatten() {
-                let p = e.path();
-                match p.extension().and_then(|x| x.to_str()) {
-                    Some("r63") => r63 = Some(p),
-                    Some("r83") => r83 = Some(p),
-                    _ => {}
-                }
-            }
-        }
-        if let (Some(m), Some(sh)) = (r63, r83) {
-            // (the shaders and the rim's own texture are in the .r83)
-            let look = vehicle_model::load_simple(&sh, None).ok();
-            if let Ok(mut model) = vehicle_model::load_simple(&m, None) {
-                if let Some(look) = look {
-                    if std::env::var("MCLA_WHEEL_DUMP").is_ok() {
-                        log::info!("wheel look {}: model shaders {:?}, look shaders {:?}, look textures {:?}", dir.display(), model.shaders.iter().map(|s| (s.name.clone(), s.params.len(), s.textures().map(|t| format!("{:08x}={}", t.0, t.1)).collect::<Vec<_>>())).collect::<Vec<_>>(), look.shaders.iter().map(|s| (s.name.clone(), s.params.len(), s.textures().map(|t| format!("{:08x}={}", t.0, t.1)).collect::<Vec<_>>())).collect::<Vec<_>>(), look.textures.iter().map(|(h, t)| format!("{:08x}={} {}x{}", h, t.name, t.width, t.height)).collect::<Vec<_>>());
-                    }
-                    if model.shaders.is_empty() {
-                        model.shaders = look.shaders;
-                    }
-                    for (h, t) in look.textures {
-                        model.textures.entry(h).or_insert(t);
-                    }
-                }
-                sources.push(model);
-            }
-        }
+    // (the tyre's folder is kept for the next wheel; the rim's is given up once used)
+    let tyre_dir = root.join("resources/tires/models").join(tyre);
+    if let Some(m) = wheel_source_cached(&tyre_dir, true) {
+        sources.push(m);
+    }
+    if let Some(m) = match dump_dir {
+        Some(d) => wheel_source(&d).map(Arc::new),
+        None => wheel_source_cached(rim_dir, false),
+    } {
+        sources.push(m);
     }
     if sources.is_empty() {
         return None;
