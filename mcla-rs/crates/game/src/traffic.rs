@@ -647,7 +647,7 @@ fn turn_radius(ty: &AmbType, v: f32, ready: bool) -> f32 {
     if ready { ty.pivot_turn } else { radius_at(v, ty.min_turn) }
 }
 
-fn radius_at(v: f32, min_turn: f32) -> f32 {
+pub(crate) fn radius_at(v: f32, min_turn: f32) -> f32 {
     let f9 = (v - 4.4704) * f32::from_bits(0x3E18_B54C);
     let f8 = if f9 >= 0.0 { f9 } else { 0.0 };
     let f5 = if f8 - 1.0 >= 0.0 { 1.0 } else { f8 };

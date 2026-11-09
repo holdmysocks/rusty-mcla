@@ -557,6 +557,44 @@ const TURN_RATE: f32 = f32::from_bits(0x403C_7EDD);
 const AVOID_TURN: f32 = 2.26893;
 const AVOID_CLEAR: f32 = PED_RADIUS;
 
+/// F-10083's gate: the behaviour's flags M+260 with bit 0x1 (avoidance on) and neither 0x4 (sliding) nor 0x2 (a clip of
+/// its own).
+pub(crate) fn ahead_runs(m260: u32) -> bool {
+    m260 & 0x4 == 0 && m260 & 0x2 == 0 && m260 & 0x1 != 0
+}
+
+/// How F-10083 reaches the blocker's obstacle from its type bits (the archetype's +16): a walker or traffic (& 0x1020)
+/// through the entity at +128 (F-88657: the cab proxy +52 when +500 bit 0x20, else +496), passed on the left only; a
+/// car (& 0xC) through +80's +128; furniture (& 0x12) through the dynamic cast F-75805's +140; none of these: nothing
+/// in the way.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum AheadObst {
+    Entity,
+    Object,
+    Cast,
+}
+
+pub(crate) fn ahead_kind(ty: u32) -> Option<AheadObst> {
+    if ty & 0x1FE0 & 0xFFFF_F03F != 0 {
+        Some(AheadObst::Entity)
+    } else if ty & 0xC != 0 {
+        Some(AheadObst::Object)
+    } else if ty & 0x1E & 0xFFFF_FFF3 != 0 {
+        Some(AheadObst::Cast)
+    } else {
+        None
+    }
+}
+
+/// F-79428's request to the passing rail's builder F-92334 (its words +28 .. +44): clearance 0.25, the
+/// sweep's extra word 0.3 + the type's +492 (single), the gate 0x4011361E, the sweep's mask
+/// 0x383E, the flags 0x80 (the left rails) | 0x40 (the right ones) when both sides (not a walker or traffic);
+/// 0x20 (the lane test) and 0x10 (ready) clear.
+pub(crate) fn ahead_request(kind: AheadObst, type492: f32) -> (f32, f32, f32, u32, u8) {
+    let both = kind != AheadObst::Entity;
+    (f32::from_bits(0x3E80_0000), f32::from_bits(0x3E99_999A) + type492, f32::from_bits(0x4011_361E), 0x383E, 0x80 | if both { 0x40 } else { 0 })
+}
+
 // ---- The walker's ground, up vector and drawn matrix: its slot 80 F-49074 (sphere refresh, ground, matrix tail), the
 // type's slot 64 F-24029 (the ground hit, U, the place) and slot 60 F-59837 (set sphere k), the forward ring F-89721 /
 // F-22858. Vector-unit steps flush denormals in and out, their multiply-add is two roundings, the three-lane dot is
@@ -2324,39 +2362,51 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
     // arcs too short to sample) and swept by the capsule all the way; the shortest wins.
     let hit = if query { sphere_hit(ahead, AWARE_RADIUS, me, peds, props, false) } else { None };
     if let Some((o, who)) = hit {
-        let corners = box_corners(&o);
-        let d0 = flat(o.0 - p.pos);
-        let side = |c: Vec3| {
-            let c = flat(c - p.pos).normalize_or_zero();
-            d0.x * c.z - d0.z * c.x
+        // F-10083 -> F-79428 -> F-92334 (`traffic::pass_pick`): the request on F-79428's stack - the walker's start (its
+        // rail at its phase, y = 0, made unit; with no rail its place and facing), the blocker's matrix and box
+        // (slot 1, slots 4 / 6), the walker's own width 0.6 (2 x 0.3), clearance 0.25, the gate
+        // 2.26893 (0x4011361E), no lane test, 0x80 the left rails and 0x40 the right ones only when the blocker is
+        // not a walker or traffic (F-10083: type & 0x1020 -> r29 = 0); the radius F-36195 at the walker's speed with
+        // its type's fMinTurningRadius. The sweep F-23371 (mask 0x383E, 0.3 + the type's +492 up) is the port's
+        // capsule test along the rail's chords (its world, not the level's query).
+        let (sp, sh) = match p.ride {
+            Some((r, ph)) => {
+                let mut t = r.tangent(ph);
+                t.y = 0.0;
+                (crate::tcp_rail::vadd3(r.point(ph), Vec3::ZERO), crate::tcp_rail::vnorm(t))
+            }
+            None => (crate::tcp_rail::vadd3(p.pos, Vec3::ZERO), fwd),
         };
-        let left = corners.iter().copied().min_by(|a, b| side(*a).total_cmp(&side(*b))).unwrap();
-        let right = corners.iter().copied().max_by(|a, b| side(*a).total_cmp(&side(*b))).unwrap();
-        let push = 0.5 * (2.0 * PED_RADIUS) + 0.25;
-        let mut pass: Option<(f32, Vec3)> = None;
-        let mut why = String::new();
-        let both = who == usize::MAX;
-        for (corner, sgn) in [(left, 1.0f32), (right, -1.0)].into_iter().take(if both { 2 } else { 1 }) {
-            let v = flat(corner - p.pos);
-            let pp = corner + Vec3::new(v.z, 0.0, -v.x).normalize_or_zero() * (sgn * push);
-            let d = flat(pp - p.pos);
-            if d.length() < 1e-3 || yaw_between(fwd, d.normalize()).abs() > AVOID_TURN {
-                why.push('T');
-                continue;
-            }
-            if way_clear(p.pos, pp, AVOID_CLEAR, me, usize::MAX, None, peds, props, col, false, false) && pass.map_or(true, |b| d.length() <= b.0) {
-                pass = Some((d.length(), pp));
-                why.push('+');
-            } else {
-                why.push('C');
-            }
-        }
+        let row0 = o.1;
+        // (the port's blockers: a walker, type 0x20, or furniture, 0x2)
+        let ahead = ahead_request(if who == usize::MAX { AheadObst::Cast } else { AheadObst::Entity }, 0.0);
+        let req = crate::vehicles::traffic::PassReq {
+            p: sp,
+            h0: sh,
+            row0,
+            row2: Vec3::new(-row0.z, 0.0, row0.x),
+            place: o.0,
+            w: o.2.x * 2.0,
+            l: o.2.y * 2.0,
+            w_own: 2.0 * PED_RADIUS,
+            c: ahead.0,
+            radius: crate::vehicles::traffic::radius_at(p.speed, ty.turn_radius),
+            gate: ahead.2,
+            flags: ahead.4,
+        };
+        let mut sweep = |q: &crate::tcp_rail::TcpRail| {
+            let legs = [(q.p, q.a), (q.a, q.b), (q.b, q.t)];
+            !legs.iter().all(|&(a, b)| a.distance(b) < 1e-4 || way_clear(a, b, AVOID_CLEAR, me, usize::MAX, None, peds, props, col, false, false))
+        };
+        let pass = crate::vehicles::traffic::pass_pick(&req, &mut sweep, &mut |_, _| Vec::new(), &mut |_| false, &mut |_, _| true);
         if std::env::var("MCLA_PED_DUMP").is_ok() {
-            log::info!("ped avoid {} {} {} ahead {:.2}", p.key.1, if who == usize::MAX { "prop" } else { "ped" }, why, flat(o.0 - p.pos).dot(fwd));
+            log::info!("ped avoid {} {} {} ahead {:.2}", p.key.1, if who == usize::MAX { "prop" } else { "ped" }, pass.is_some(), flat(o.0 - p.pos).dot(fwd));
         }
         match pass {
-            Some((_, pp)) => {
-                p.rail = Some((pp, true));
+            Some(r) => {
+                // (the rail ridden by phase to its end T, then the path's rails again)
+                p.rail = Some((r.t, false));
+                p.ride = Some((r, 0.0));
                 p.stops = 0;
             }
             None => {
@@ -4230,6 +4280,66 @@ fn scan_voice_banks(audio_root: &Path) -> HashMap<String, String> {
 
 #[cfg(test)]
 mod tests {
+    /// F-10083 with F-79428 against the original's code run offline (tools/ped_ahead_reference.py, 4,000 cases; the
+    /// passing rail's builder F-92334 stubbed, verified on its own): the gate, the empty slot and the instance with no
+    /// archetype, the type's class and the obstacle's chain, the request words F-92334 is handed, the stop on a refusal
+    /// (M+96 = the obstacle's place) and the stop count's reset (M+260 & 7).
+    #[test]
+    fn walker_ahead_matches_the_original() {
+        use super::{ahead_kind, ahead_request, ahead_runs, AheadObst};
+        let h = |t: &str| u32::from_str_radix(&t.replace('_', ""), 16).unwrap();
+        let mut n = [0usize; 3];
+        for l in include_str!("testdata/ped_ahead_ref.txt").lines() {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<u32> = i.split(' ').map(h).collect();
+            let (fl, slot, ty) = (c[0], c[1], c[2]);
+            let mut want = String::new();
+            let mut m260 = fl;
+            let mut m96 = [0u32; 4];
+            'run: {
+                if !ahead_runs(fl) || slot == 2 {
+                    break 'run;
+                }
+                let kind = if slot == 0 { None } else { ahead_kind(ty) };
+                // (the chain to the obstacle: the harness's objects, 0x2800 the obstacle, 0x2500 the cab proxy)
+                let obst = match kind {
+                    None => None,
+                    Some(AheadObst::Entity) if c[3] & 0x20 != 0 && c[4] != 0 => Some(0x2500),
+                    Some(AheadObst::Entity) => (c[5] != 0).then_some(0x2800),
+                    Some(AheadObst::Object) => (c[6] != 0 && c[5] != 0).then_some(0x2800),
+                    Some(AheadObst::Cast) => {
+                        want += " C 1 00000000 827e_5e1c 827e_a460";
+                        (c[7] != 0 && c[5] != 0).then_some(0x2800)
+                    }
+                };
+                let Some(ob) = obst else {
+                    m260 &= 7;
+                    n[0] += 1;
+                    break 'run;
+                };
+                let (cl, lift, gate, mask, flags) = ahead_request(kind.unwrap(), f32::from_bits(c[8]));
+                want += " P 820d_9d6c";
+                want += &" 00000000".repeat(11);
+                for w in [c[10], ob, c[11], cl.to_bits(), lift.to_bits(), gate.to_bits(), mask, (flags as u32) << 24] {
+                    want += &format!(" {w:08x}");
+                }
+                if c[9] & 0xFF != 0 {
+                    // (a detour taken: F-79428's tail resets the stops in a row, the port's `stops = 0`)
+                    want += " F 1 S";
+                    m260 &= 7;
+                    n[1] += 1;
+                } else {
+                    want += " L T";
+                    m96 = [c[12], c[13], c[14], 0x3F80_0000];
+                    n[2] += 1;
+                }
+            }
+            want += &format!(" M {m260:08x} {:08x} {:08x} {:08x} {:08x}", m96[0], m96[1], m96[2], m96[3]);
+            assert_eq!(want.trim().replace('_', ""), o.replace('_', ""), "{l}");
+        }
+        assert_eq!(n, [n[0], 595, 405]);
+    }
+
     use super::*;
     use crate::ambient::Tod;
 
