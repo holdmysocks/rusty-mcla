@@ -1556,6 +1556,136 @@ mod tests {
         assert!(n > 8_000 && modes[0] > 1400 && modes[1] > 1400, "{n} {modes:?}");
     }
 
+    /// The composer's whole flush F-66956 against the original's code run offline (work/driverlight/flush/flush_ref.py):
+    /// random op lists of real clips of the Challenger 70 player pack (op 1 at random times, op 12, op 4 / op 6 with weights
+    /// about the optimizer's thresholds and one of three real bone filters or none), every pooled frame of one clip's DOFs
+    /// and bound to a real accelerator. The original runs the optimizer, the filter hand-down and every op (F-62814: F-42575,
+    /// F-84707, F-29370); the port's `Seq::compose` must leave the same top frame, every DOF's flags and words. Skipped
+    /// without the disc's data.
+    #[test]
+    fn the_whole_flush_matches_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Ok(d) = std::fs::read(std::path::Path::new(&root).join("resources/animation/0xe4f29864/player/male/0x953f13ee.r2")) else {
+            return;
+        };
+        let vs = u32::from_le_bytes(d[12..16].try_into().unwrap()) as usize;
+        let data = d[16..].to_vec();
+        let res = mcla_formats::rsc::Resource { rtype: 2, flags: 0, virtual_size: vs, physical_size: data.len() - vs, data };
+        let rd = mcla_formats::rage::Rd::new(&res);
+        let text = include_str!("testdata/drvanim_flush_ref.txt");
+        let mut lines = text.lines();
+        let rf = usize::from_str_radix(lines.next().unwrap().strip_prefix("# ref ").unwrap(), 16).unwrap();
+        let r = mcla_formats::rage::anim::animation_named(&rd, rf).unwrap();
+        // the frame: the reference clip's tracks (a rotation for kinds 1 / 6, else a vector); the filters' bones as the
+        // harness gave them (bone i of the distinct ids of kinds 0 / 1, k = 0..2: (7 i + 3 k) % (k + 2) == 0)
+        let dofs: Vec<(u8, u16)> = r.tracks.iter().map(|t| (t.kind, t.bone_id)).collect();
+        let mut ids: Vec<u16> = Vec::new();
+        for t in &r.tracks {
+            if t.kind <= 1 && !ids.contains(&t.bone_id) {
+                ids.push(t.bone_id);
+            }
+        }
+        let wts: Vec<Vec<f32>> = (0..3)
+            .map(|k| dofs.iter().map(|&(kind, id)| if kind > 1 { 1.0 } else { let i = ids.iter().position(|&x| x == id).unwrap(); if (i * 7 + k * 3) % (k + 2) == 0 { 1.0 } else { 0.0 } }).collect())
+            .collect();
+        struct P<'a> {
+            dofs: &'a [(u8, u16)],
+            layout: u32,
+            clips: Vec<mcla_formats::rage::anim::Animation>,
+            wts: &'a [Vec<f32>],
+        }
+        impl Poser for P<'_> {
+            fn len(&self) -> usize {
+                self.dofs.len()
+            }
+            fn blank(&self) -> Vec<FrameDof> {
+                self.dofs.iter().map(|&(k, _)| FrameDof { flags: if matches!(k, 1 | 6) { DOF_QUATERNION } else { DOF_VECTOR3 } | DOF_NO_VALUE, v: [0.0; 4] }).collect()
+            }
+            fn sample(&self, clip: ClipId, t: f32, filtered: bool, out: &mut [FrameDof]) {
+                let a = &self.clips[clip as usize];
+                let (i, fr) = sample_pos(a, t);
+                let mapped = filtered || a.layout != self.layout;
+                for tr in &a.tracks {
+                    if let Some(k) = self.dofs.iter().position(|&x| x == (tr.kind, tr.bone_id)) {
+                        sample_track_in(tr, i, fr, &mut out[k], mapped);
+                    }
+                }
+            }
+            fn rest(&self, _: &mut [FrameDof]) {
+                unreachable!()
+            }
+            fn weights(&self, f: Filter) -> &[f32] {
+                &self.wts[match f {
+                    Filter::Spine => 0,
+                    Filter::Neck => 1,
+                    Filter::NoFace => 2,
+                }]
+            }
+        }
+        let mut p = P { dofs: &dofs, layout: r.layout, clips: Vec::new(), wts: &wts };
+        let mut clip_of: std::collections::HashMap<usize, ClipId> = Default::default();
+        let (mut cases, mut n, mut bad, mut ops) = (0, 0, 0, [0usize; 4]);
+        for line in lines {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let v: Vec<u32> = case.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let mut s = Seq::default();
+            let mut st: Vec<usize> = Vec::new();
+            for o in v[1..].chunks(3) {
+                let node = match o[0] {
+                    1 => {
+                        let id = *clip_of.entry(o[1] as usize).or_insert_with(|| {
+                            p.clips.push(mcla_formats::rage::anim::animation_named(&rd, o[1] as usize).unwrap());
+                            (p.clips.len() - 1) as ClipId
+                        });
+                        ops[0] += 1;
+                        Node::Anim(Player { t: f32::from_bits(o[2]), clip: Some(Clip { id, dur: p.clips[id as usize].duration, flags: 0 }), ..Default::default() })
+                    }
+                    12 => {
+                        ops[1] += 1;
+                        Node::Anim(Player::default())
+                    }
+                    op => {
+                        let b = st.pop().unwrap();
+                        let a = st.pop().unwrap();
+                        let filter = [None, Some(Filter::Spine), Some(Filter::Neck), Some(Filter::NoFace)][o[2] as usize];
+                        let w = f32::from_bits(o[1]);
+                        if op == 4 {
+                            ops[2] += 1;
+                            Node::Blend { weight: w, rate: 0.0, destroy: false, filter, kids: [Some(a), Some(b)] }
+                        } else {
+                            ops[3] += 1;
+                            Node::Add { weight: w, rate: 0.0, filter, kids: [Some(a), Some(b)] }
+                        }
+                    }
+                };
+                s.nodes.push(node);
+                st.push(s.nodes.len() - 1);
+            }
+            s.root = Some(st[0]);
+            let want: Vec<u32> = want.split_whitespace().skip(2).map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            assert_eq!(want.len(), 5 * dofs.len(), "{line}");
+            let f = s.compose(&p).unwrap();
+            cases += 1;
+            for (k, d) in f.iter().enumerate() {
+                let w = &want[5 * k..5 * k + 5];
+                // (a vector's fourth word is not one the ops define)
+                let m = if d.flags & 0xF == DOF_VECTOR3 { 4 } else { 5 };
+                let got = [d.flags as u32, d.v[0].to_bits(), d.v[1].to_bits(), d.v[2].to_bits(), d.v[3].to_bits()];
+                // (a DOF without a value: only the flag is defined)
+                let m = if w[0] & DOF_NO_VALUE as u32 != 0 { 1 } else { m };
+                n += 1;
+                if got[..m] != w[..m] {
+                    if bad < 8 {
+                        eprintln!("{case}\n  dof {k} {:?}: got {got:08x?} want {w:08x?}", dofs[k]);
+                    }
+                    bad += 1;
+                }
+            }
+        }
+        assert_eq!(bad, 0, "{bad} of {n} DOFs differ");
+        assert!(cases > 1000 && ops.iter().all(|&x| x > 300), "{cases} {ops:?}");
+    }
+
     /// The sampler's other loops against the original's code run offline (work/driverlight/fsamp/fsample_ref.py, the
     /// Challenger 70 player pack, 360 samples of 180 clips, every frame bound to a real accelerator as a scheduled tree's
     /// are): 'S' the frame's layout = the clip's +16 (F-12216's same-layout loop), 'M' another layout (its mapped loop), 'F'
