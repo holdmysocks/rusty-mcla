@@ -2914,6 +2914,8 @@ impl App {
         // (the walkers and the loose props drawn between this tick's start and end, as the cars - peds.rs, props.rs)
         self.peds.begin_tick();
         self.props.begin_tick();
+        // (and the scenes' cast, the hangout people and the scene camera - cine.rs `draw_t`, `draw_camera`)
+        self.cine.begin_tick();
         // --- input / simulation -------------------------------------------------
         if self.input.rmb {
             self.cam.yaw += self.input.mouse_dx * 0.0025;
@@ -8844,14 +8846,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         let world = self.world.take().unwrap();
         let mut gpu = self.gpu.take().unwrap();
         self.props.draw_between(&gpu, if std::env::var_os("MCLA_DRAW_HELD").is_some() { 1.0 } else { self.vehicles.render_alpha });
-        // (MCLA_DRAW_STEPS=1: the drawn places of the other cars, the walkers (the frame before's) and the moving props, one
+        // (MCLA_DRAW_STEPS=1: the drawn places of the cars (the player's `me`), the walkers (the frame before's) and the moving props, one
         // line each a frame - what the frame-to-frame step of each is measured on)
         if self.peds.draw_log.is_some() {
             let f = self.frame_no;
             let a = if std::env::var_os("MCLA_DRAW_HELD").is_some() { 1.0 } else { self.vehicles.render_alpha };
-            for c in self.vehicles.cars.iter().filter(|c| !c.is_player) {
+            for c in self.vehicles.cars.iter() {
                 let p = c.render_pose(a).pos;
-                eprintln!("dstep {f} {} {} {:.4} {:.4} {:.4} {:.3}", if c.cop { "cop" } else if c.parked.is_some() { "park" } else if c.is_ambient() { "amb" } else { "car" }, c.uid, p.x, p.y, p.z, c.state.speed());
+                eprintln!("dstep {f} {} {} {:.4} {:.4} {:.4} {:.3}", if c.is_player { "me" } else if c.cop { "cop" } else if c.parked.is_some() { "park" } else if c.is_ambient() { "amb" } else { "car" }, c.uid, p.x, p.y, p.z, c.state.speed());
             }
             for (k, p) in self.peds.draw_log.as_mut().map(std::mem::take).unwrap_or_default() {
                 eprintln!("dstep {f} ped {}_{} {:.4} {:.4} {:.4} 0", k.0, k.1, p.x, p.y, p.z);
@@ -10014,7 +10016,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         self.chase.up = self.boom_up.unwrap_or(Vec3::Y);
         // (the race-start warp keeps the picture until it lands on the scene's camera, though the scene
         // already runs for its last second - mcWarper state 19 / 29)
-        let scene_cam = self.cine.camera().filter(|_| self.warp_view.is_none() && !self.garage_in.as_ref().map_or(false, |g| g.dive.is_some()));
+        let held_draw = std::env::var_os("MCLA_DRAW_HELD").is_some();
+        let scene_cam = self.cine.draw_camera(if held_draw { 1.0 } else { self.vehicles.render_alpha }).filter(|_| self.warp_view.is_none() && !self.garage_in.as_ref().map_or(false, |g| g.dive.is_some()));
+        if let (Some(c), true) = (scene_cam, self.peds.draw_log.is_some()) {
+            eprintln!("dstep {} scam 0 {:.4} {:.4} {:.4} 0", self.frame_no, c.0.x, c.0.y, c.0.z);
+        }
         // (cam_to_game: the viewport blends from the scene camera's last view to the game camera over 1 s - cine::CamBlend,
         // F-82215; a cut hand-off starts it at its end, so nothing shows)
         match scene_cam {
@@ -11757,9 +11763,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         _ => (j, night_job(), 0, 0),
                     })
                     .collect()
-            }, || rayon::join(|| peds.prepare(gpu, ped_eye, ped_frustum, ped_hidden, ped_alpha), || if let Some(c) = cine_prep { c.prepare(gpu) }).0));
+            }, || rayon::join(|| peds.prepare(gpu, ped_eye, ped_frustum, ped_hidden, ped_alpha), || if let Some(c) = cine_prep { c.prepare(gpu, ped_alpha) }).0));
             if cine_old {
-                self.cine.prepare(&gpu);
+                self.cine.prepare(&gpu, ped_alpha);
             }
             parts.sort_by_key(|p| p.0);
             for (j, cb, n, sec_n) in parts {

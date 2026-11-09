@@ -5473,6 +5473,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
         // hubs at the world's origin: it was drawn without wheels, the tyres somewhere under it. Its wheels go
         // under their mounts at the suspension's rest length. approx.: no static sag)
         let unset = c.state.wheels.iter().all(|w| w.world_pos == Vec3::ZERO);
+        // (a steady move - a scene's posed car, every tick - is drawn between the tick's start and end as a driven car is,
+        // `finish_tick`; a placement, a jump of 2 m or more or a turn of 20 degrees or more, is drawn at once. The port's
+        // interpolation, not the original's: posed cars stepped at 60 Hz above the tick rate)
+        let jump = unset || c.state.pos.distance(pos) >= 2.0 || c.state.rot.angle_between(rot) >= 20f32.to_radians();
         // (its drawn wheels roll with the way it was moved along its forward - a car the scene drives in the
         // original is a riding car whose wheels turn at the road's speed; approx.: the posed car's rolling is not
         // taken from the original, it is the plain rolling of the move)
@@ -5495,7 +5499,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
         c.state.vel = Vec3::ZERO;
         c.state.ang_vel = Vec3::ZERO;
         c.placed = true;
-        c.pose_history.reset();
+        if jump || std::env::var_os("MCLA_DRAW_HELD").is_some() {
+            c.pose_history.reset();
+        }
     }
 
     pub fn begin_tick(&mut self) {

@@ -93,6 +93,9 @@ pub struct Scene {
     movers: Vec<Mover>,
     pub duration: f32,
     pub t: f32,
+    /// the scene time at the latest game tick's start (`Cine::begin_tick`): the cast is drawn between it and `t` by the render
+    /// alpha (`draw_t`)
+    pub t_prev: f32,
     /// scene space -> world
     pub origin: Mat4,
     /// CineScript_Camera_Kill: the game camera shows the rest
@@ -103,6 +106,15 @@ pub struct Scene {
 
 impl Scene {
     /// The length the event-time rule compares with: the scene camera's own clip (header +12), else the scene's.
+    /// The scene time a drawn frame shows: between the latest tick's start and end by the render alpha `a` (1: the tick's end,
+    /// as the logic uses). This is the port's interpolation, not the original's (it draws each 30 Hz frame at its update's
+    /// time): above the tick rate the cast would move in 60 Hz steps. A jump (a skip, a start part-way in, the warp's
+    /// hand-over) or a time going back is drawn at once.
+    pub fn draw_t(&self, a: f32) -> f32 {
+        let d = self.t - self.t_prev;
+        if (0.0..=0.1).contains(&d) { (a - 1.0).mul_add(d, self.t) } else { self.t }
+    }
+
     pub fn camera_len(&self) -> f32 {
         self.camera.as_ref().map_or(self.duration, |c| c.duration)
     }
@@ -431,6 +443,10 @@ pub struct Cine {
     ambient: Vec<Actor>,
     ambient_name: String,
     clock: f32,
+    /// `clock` at the latest tick's start (the hangout people drawn between, as `Scene::draw_t`)
+    clock_prev: f32,
+    /// MCLA_DRAW_STEPS: the drawn frame's number for the `dstep` lines
+    steps: Option<u64>,
     /// a start scene after its cut to the game camera: its script runs on to the clip's end, so its people
     /// stay where they are and go on moving (work/career2/cap/README.md, finding 5: the starter is still in
     /// the game view for a few seconds after the cut)
@@ -852,7 +868,7 @@ impl Cine {
         if !self.index.contains_key(&key) {
             return false;
         }
-        let mut sc = Scene { name: key.clone(), camera: None, actors: Vec::new(), movers: Vec::new(), duration: 0.0, t: 0.0, origin, camera_killed: false, cam_cut: Default::default() };
+        let mut sc = Scene { name: key.clone(), camera: None, actors: Vec::new(), movers: Vec::new(), duration: 0.0, t: 0.0, t_prev: 0.0, origin, camera_killed: false, cam_cut: Default::default() };
         // the scene itself, its bystanders, then the faces
         let short = key.rsplit('/').next().unwrap_or("").to_string();
         let parts = [(key.clone(), false), (format!("hangout/{short}_peds"), false), (format!("{key}_im"), true)];
@@ -1017,6 +1033,14 @@ impl Cine {
         log::info!("cine: {} people at {} ({:.0} ms)", self.ambient.len(), name, t0.elapsed().as_secs_f32() * 1000.0);
     }
 
+    /// A game tick starts: the times the drawn frames blend from (`Scene::draw_t`).
+    pub fn begin_tick(&mut self) {
+        self.clock_prev = self.clock;
+        for sc in self.playing.iter_mut().chain(self.linger.iter_mut()) {
+            sc.t_prev = sc.t;
+        }
+    }
+
     pub fn tick(&mut self, dt: f32) {
         self.clock += dt;
         if let Some(sc) = self.linger.as_mut() {
@@ -1131,7 +1155,7 @@ impl Cine {
                     continue;
                 }
                 let anim = animation_named(&rd, o)?;
-                let sc = Scene { name: key.clone(), camera: Some(Arc::new(anim)), actors: Vec::new(), movers: Vec::new(), duration: 0.0, t, origin, camera_killed: false, cam_cut: Default::default() };
+                let sc = Scene { name: key.clone(), camera: Some(Arc::new(anim)), actors: Vec::new(), movers: Vec::new(), duration: 0.0, t, t_prev: t, origin, camera_killed: false, cam_cut: Default::default() };
                 return Self::scene_camera(&sc);
             }
         }
@@ -1147,6 +1171,30 @@ impl Cine {
             return None;
         }
         Self::scene_camera(self.playing.as_ref()?)
+    }
+
+    /// The camera a drawn frame shows: `camera` drawn between the camera times of the last two updates by the render alpha `a`
+    /// (`Scene::draw_t`; the port's interpolation, not the original's). Across a cut (the two ends as far apart as the cut
+    /// test's metres or degrees) or a jump in time it is the latest update's, as `camera`.
+    pub fn draw_camera(&self, a: f32) -> Option<(Vec3, Vec3, Vec3, f32)> {
+        let now = self.camera()?;
+        if self.held.is_some() {
+            return Some(now);
+        }
+        let Some(sc) = self.playing.as_ref() else { return Some(now) };
+        let Some(cam) = sc.camera.as_ref() else { return Some(now) };
+        let (s, memo) = *sc.cam_cut.lock().unwrap_or_else(|e| e.into_inner());
+        // (the memo is the latest update's (scene time, camera time); `last2` the update's before)
+        let (Some((at, t1)), t0) = (memo, s.last2) else { return Some(now) };
+        if at != sc.t || !(0.0..=0.1).contains(&(t1 - t0)) || a >= 1.0 {
+            return Some(now);
+        }
+        let Some(before) = Self::camera_at(sc, cam, t0) else { return Some(now) };
+        let turn = before.1.angle_between(now.1).max(before.2.angle_between(now.2));
+        if before.0.distance(now.0) > CAM_CUT_METRES || turn > CAM_CUT_DEGREES * 0.017_453_292 {
+            return Some(now);
+        }
+        Self::camera_at(sc, cam, (a - 1.0).mul_add(t1 - t0, t1))
     }
 
     /// A story scene past its cut_to_game: the game camera shows the rest (`STORY_MARKS`).
@@ -1169,6 +1217,11 @@ impl Cine {
                 snapped
             }
         };
+        Self::camera_at(sc, cam, t)
+    }
+
+    /// The scene camera at a (snapped) camera time.
+    fn camera_at(sc: &Scene, cam: &Animation, t: f32) -> Option<(Vec3, Vec3, Vec3, f32)> {
         let f = cam.frame_at(t);
         let pos = cam.track(KIND_TRANSLATION, 0)?.data.vec(f);
         // (the scene camera update F-40303 starts the matrix as identity each update; the lens
@@ -1227,24 +1280,33 @@ impl Cine {
     }
 
     /// Skin the characters at the scene's time.
-    pub fn prepare(&mut self, gpu: &Gpu) {
+    /// `alpha`: the render alpha the cast is drawn at (`Scene::draw_t`; 1 = the tick's end).
+    pub fn prepare(&mut self, gpu: &Gpu, alpha: f32) {
         self.buf.clear();
         let mut local: Vec<(Quat, Vec3)> = Vec::new();
-        for a in &self.ambient {
+        let steps = self.steps.map(|n| n + 1).or_else(|| std::env::var_os("MCLA_DRAW_STEPS").map(|_| 0));
+        self.steps = steps;
+        let d = self.clock - self.clock_prev;
+        let clock = if (0.0..=0.1).contains(&d) { (alpha - 1.0).mul_add(d, self.clock) } else { self.clock };
+        for (k, a) in self.ambient.iter().enumerate() {
             let last = a.clip.last_frame();
-            let f = if a.clip.anim.duration > 0.0 && last > 0.0 { (self.clock / a.clip.anim.duration * last).rem_euclid(last) } else { 0.0 };
+            let f = if a.clip.anim.duration > 0.0 && last > 0.0 { (clock / a.clip.anim.duration * last).rem_euclid(last) } else { 0.0 };
             a.clip.local(&a.model.bones, f, &mut local);
             let (mt, mr) = a.clip.mover(f);
             // (the hangout's people: bystanders, the manager's own lights)
             self.buf.next_bystander = true;
             self.buf.emit(&a.model, 0, &local, Mat4::from_rotation_translation(mr, mt));
+            if let (Some(n), Some(p)) = (steps, a.model.head.and_then(|h| self.buf.bone_pos(h))) {
+                eprintln!("dstep {n} hang {k} {:.4} {:.4} {:.4} 0", p.x, p.y, p.z);
+            }
         }
-        for sc in self.playing.iter_mut().chain(self.linger.iter_mut()) {
-        for a in &mut sc.actors {
-            let f = a.clip.anim.frame_at(sc.t - a.t0);
-            a.pose(f, sc.t, &mut local);
+        for (si, sc) in self.playing.iter_mut().chain(self.linger.iter_mut()).enumerate() {
+        let t = sc.draw_t(alpha);
+        for (k, a) in sc.actors.iter_mut().enumerate() {
+            let f = a.clip.anim.frame_at(t - a.t0);
+            a.pose(f, t, &mut local);
             if let Some(face) = a.face.as_ref() {
-                let ff = face.anim.frame_at(sc.t);
+                let ff = face.anim.frame_at(t);
                 if let (Some((shapes, tracks)), Some(m)) = (a.shapes.as_mut(), a.model.morph.as_ref()) {
                     // a target without a track keeps its weight (F-77597 writes only what the frame has)
                     for (i, t) in tracks.iter().enumerate() {
@@ -1288,7 +1350,7 @@ impl Cine {
                     a.face_in = Some(old);
                 }
                 if let Some(old) = a.face_in.as_ref() {
-                    blend_in(&mut local, old, 4.0 * sc.t);
+                    blend_in(&mut local, old, 4.0 * t);
                 }
             }
             let (mt, mr) = a.clip.mover(f);
@@ -1297,6 +1359,9 @@ impl Cine {
             // lights of its own)
             self.buf.next_bystander = a.label.to_ascii_lowercase().contains("ped");
             self.buf.emit_shaped(&a.model, 0, &local, sc.origin * Mat4::from_rotation_translation(mr, mt), a.shapes.as_ref().map(|s| &s.0));
+            if let (Some(n), Some(p)) = (steps, a.model.head.or((!a.model.bones.is_empty()).then_some(0)).and_then(|h| self.buf.bone_pos(h))) {
+                eprintln!("dstep {n} cast {si}_{k} {:.4} {:.4} {:.4} 0", p.x, p.y, p.z);
+            }
         }
         }
         self.buf.upload(gpu);
@@ -1512,5 +1577,28 @@ mod cast_tests {
             n += 1;
         }
         assert_eq!(n, 3472);
+    }
+}
+
+#[cfg(test)]
+mod draw_between_tests {
+    use super::*;
+
+    /// The drawn scene time runs between the tick's start and end by the render alpha; a jump or a time going back is drawn
+    /// at once (the port's interpolation, `Scene::draw_t`).
+    #[test]
+    fn the_drawn_scene_time_lies_between_the_ticks() {
+        let mut sc = Scene { name: String::new(), camera: None, actors: Vec::new(), movers: Vec::new(), duration: 10.0, t: 2.0, t_prev: 2.0, origin: Mat4::IDENTITY, camera_killed: false, cam_cut: Default::default() };
+        sc.t_prev = sc.t;
+        sc.t += 1.0 / 60.0;
+        assert_eq!(sc.draw_t(1.0), sc.t);
+        assert_eq!(sc.draw_t(0.0), sc.t_prev);
+        assert!((sc.draw_t(0.25) - (2.0 + 0.25 / 60.0)).abs() < 1e-6);
+        sc.t_prev = sc.t;
+        sc.t = 7.5;
+        assert_eq!(sc.draw_t(0.25), 7.5);
+        sc.t_prev = sc.t;
+        sc.t = 1.0;
+        assert_eq!(sc.draw_t(0.25), 1.0);
     }
 }
