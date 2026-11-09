@@ -20,6 +20,15 @@ a m/s, the target's x / z in quarters of a metre as random walks.
   the state, the asked state, the brain or the factor changed, every 25th and the last
   (state: 0 CatchUp, 1 AvoidCollision, 2 Halt; +16: AvoidCollision's side timer, Halt's last squared distance; +20: Halt's
   growing time; 0 in other states)
+
+Run it with the tactic's own vtable targets compiled in and the rest of their callees stubbed (the shared builder no
+longer compiles these by itself; without them the build stops on an unresolved indirect call), from mcla-rs:
+
+  python tools/pullover_fsm_reference.py --recomp <recomp> --image <image> --out <dir> --ref <file>
+    --targets F-49619 F-74264 F-29906 F-24596 F-94002 F-74492 F-87882 F-54202 F-37056 F-82134 F-33778 F-77220 F-66453
+    --more F-35685 F-75034 F-29294 F-38446 F-62425 F-29290 F-33229 F-62311
+
+With these the tool writes crates/game/src/testdata/pullover_fsm_ref.txt byte for byte.
 """
 import argparse
 import subprocess

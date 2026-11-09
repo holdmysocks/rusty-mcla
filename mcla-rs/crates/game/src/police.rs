@@ -4480,62 +4480,6 @@ impl Police {
                 let st = tac.st;
                 // (Halt's steer away as its tick writes it, F-84018: from the update after it was taken)
                 let halt_steer0 = if st == Tac::Halt { tac.halt_steer } else { 0.0 };
-                if searching || squad {
-                    // (no tactic state changes during the Search; a squad's commands come from its FSM)
-                    tac.t += dt;
-                } else if pull {
-                    // pull-over (F-36876, pullover_machine; the re-pick gate's tactic +36 is not ported: open)
-                    let pull_r = t("fPullOverDist", 15.0);
-                    let (dx, dy, dz) = (ppos.x - cpos.x, ppos.y - cpos.y, ppos.z - cpos.z);
-                    let sees = PullSees {
-                        all_halt,
-                        moving: t_moving,
-                        closing0: closing(0.0),
-                        closing7: closing(7.0),
-                        closing50: closing(50.0),
-                        near50: d < 50.0,
-                        near_pull: d < pull_r,
-                        pick: pick_side(),
-                        gate: true,
-                        cspeed,
-                        d2: fmas(dx, dx, fmas(dz, dz, dy * dy)),
-                    };
-                    c.state.vel *= pullover_machine(tac, &sees, dt);
-                } else {
-                    // pursuit (F-68032, pursuit_machine; the re-pick gate's tactic +36 is not ported: open)
-                    let sees = PursuitSees {
-                        near_safe: d < safe,
-                        near_along: d < 1.5 * along,
-                        near5: d < 5.0,
-                        moving: t_moving,
-                        same_dir,
-                        ahead,
-                        on_right,
-                        same_facing,
-                        all_block,
-                        closing: closing(safe),
-                        pick: pick_side(),
-                        gate: true,
-                        bearing,
-                        speed,
-                    };
-                    pursuit_machine(tac, &sees, t("fArrestTgtThresholdSpd", 10.0), last_tspeed, dt);
-                }
-                // (a command sent this update - by the machines above or the squad's - goes through the brain command
-                // F-83687: its block as the senders build it (Stop F-72181, with Block's handbrake / no throttle / its steer;
-                // AlongSide F-94949 with the side and fAlongSideDist; the others F-59773), and every command but Search (7)
-                // zeroes the cop's unseen and cone times)
-                if std::mem::take(&mut tac.sent) {
-                    let blk = cmd_block(tac.cmd, tac.hb, tac.block_steer, tac.side, along);
-                    brain_command(&mut tac.brain, tac.cmd as u32, Some(&blk), 0);
-                    if tac.cmd != 7 {
-                        let e = self.eyes.entry(c.uid).or_default();
-                        (e.unseen, e.cone_t) = (tac.brain.unseen, tac.brain.cone_t);
-                    }
-                }
-                if tac.st != st {
-                    log::info!("police: cruiser {} {:?} -> {:?} ({:.0} m)", c.uid, st, tac.st, d);
-                }
                 // ---- the goal plan (F-67303; docs/reference/hookmen/goal_speed.md). The cop is driven by the racers'
                 // brain (brain.rs, mcBrainPolice is an mcBrainRacing): its goals, a 5 m radius each, and the speed to
                 // reach the last with; the speed on the way is the race line's speed profile. Only the PullOver,
@@ -4549,7 +4493,10 @@ impl Police {
                     }
                 }
                 // (the port's other cops of a search keep the route they had - the original's pursuit has one cop)
-                let plans = matches!(tac.st, Tac::CatchUp | Tac::AlongSide | Tac::Avoid) && !searching;
+                // (the brain ticks before the tactics (docs/reference/hookmen/brain_tactic_order.md): it plans and
+                // overrides by the command it holds - the one the tactic sent last frame; this frame's goes in below)
+                let bcmd = tac.brain.cmd;
+                let plans = matches!(bcmd, 3 | 4 | 5) && !searching;
                 let per = if tac.head_on { 0.5 * period } else { period };
                 tac.replan = (tac.replan - dt).max(0.0);
                 let (empty, done) = ai.brain.0.as_ref().map_or((true, false), |b| (b.goal_count() == 0, b.route_done()));
@@ -4630,18 +4577,18 @@ impl Police {
                     } else {
                         // the target's own speed when it is moving, else 0 (F-85634)
                         let default_v = default_final_speed(Some(speed), t("fMovingSpeed", 1.0));
-                        match (tac.st, pull) {
+                        match bcmd {
                             // Pursuit brain (F-15067): from the target, P and 2P (head-on 2P, 4P) along D; a stopped target:
                             // from fSafeDist off it towards the cop. Final speed (F-49680): 0 for a stopped target, full
                             // pace (-1) beyond 2 x fSafeDist, 1.2 x its speed when it is near, going the same way and
                             // ahead of the cop, else full pace
                             // (F-42951 false - a police cop in a race: from the target less P of its velocity, 1 s steps,
                             // the default final speed)
-                            (Tac::CatchUp, false) if !ed78 => {
+                            4 if !ed78 => {
                                 let b = if t_moving { ppos - pvel * per } else { ppos + (cpos - ppos).normalize_or(Vec3::X) * safe };
                                 (chain(b, 1.0), default_v)
                             }
-                            (Tac::CatchUp, false) => {
+                            4 => {
                                 let b = if t_moving { ppos } else { ppos + (cpos - ppos).normalize_or(Vec3::X) * safe };
                                 let v = if !t_moving { 0.0 } else if d >= 2.0 * safe { -1.0 } else if same_dir && ahead { 1.2 * speed } else { -1.0 };
                                 (chain(b, per * ho), v)
@@ -4649,7 +4596,7 @@ impl Police {
                             // PullOver brain (F-51787): one point, both goals - the target; 15 m behind it stopped
                             // (fPullOverDist); driving the wrong way, P of its velocity on and 8 m to the side of its lane;
                             // off the mesh, back by P of its velocity up to 5 times
-                            (Tac::CatchUp, true) => {
+                            3 => {
                                 let lane_dir = nav.and_then(|n| crate::vehicles::traffic::snap_to_lane(n, ppos, 5.0).0).map(|h| h.dir.normalize_or_zero());
                                 let mut q = match lane_dir {
                                     Some(tn) if self.against_traffic => ppos + pvel * per + Vec3::new(tn.z, 0.0, -tn.x) * 8.0,
@@ -4665,11 +4612,11 @@ impl Police {
                             }
                             // AlongSide brain (F-13443): from fAlongSideDist beside the target, 1.15 P (head-on 2.3 P) along D
                             _ if !ed78 => {
-                                let b = ppos + pright * if tac.side { along } else { -along } - pvel * per;
+                                let b = ppos + pright * if tac.brain.side != 0 { along } else { -along } - pvel * per;
                                 (chain(b, 1.0), default_v)
                             }
                             _ => {
-                                let b = ppos + pright * if tac.side { along } else { -along };
+                                let b = ppos + pright * if tac.brain.side != 0 { along } else { -along };
                                 (chain(b, 1.15 * per * ho), default_v)
                             }
                         }
@@ -4688,10 +4635,13 @@ impl Police {
                     b.allow_nitro = d > t("fAllowNitroDist", 125.0);
                 }
                 // (the port's own driver when the car has no racing tune: at the goals in turn)
-                let goal = if cpos.distance(tac.goals[0]) < 5.0 { tac.goals[1] } else { tac.goals[0] };
-                ai.chase = Some((goal, Vec3::ZERO));
-                ai.chase_exact = true;
-                ai.target_speed = 85.0;
+                // (before the brain's first plan - the tactic's first command is not in yet - the cop keeps its chase)
+                if tac.goals != [Vec3::ZERO; 2] {
+                    let goal = if cpos.distance(tac.goals[0]) < 5.0 { tac.goals[1] } else { tac.goals[0] };
+                    ai.chase = Some((goal, Vec3::ZERO));
+                    ai.chase_exact = true;
+                    ai.target_speed = 85.0;
+                }
                 // ---- the brain's overrides (F-88118 puts them over the driver's input) ----
                 ai.ovr = {
                     // the brain state's overrides by its command (brain_override; the Search, 7, has none; a squad's cops get theirs
@@ -4700,14 +4650,14 @@ impl Police {
                     let stop = StopParams { hb: w[0] >> 24 != 0, amount: f32::from_bits(w[1]), throttle: f32::from_bits(w[2]), steer: f32::from_bits(w[3]) };
                     let (dx, dy, dz) = (ppos.x - cpos.x, ppos.y - cpos.y, ppos.z - cpos.z);
                     let bs = BrainSees { moving: t_moving, ahead, same_dir, ed78, cspeed, tspeed: speed, d2: fmas(dx, dx, fmas(dz, dz, dy * dy)), safe };
-                    let o = brain_override(if searching { 7 } else { tac.cmd }, tac.brain.side_d, &stop, &bs);
+                    let o = brain_override(if searching { 7 } else { bcmd as u8 }, tac.brain.side_d, &stop, &bs);
                     let mut v = crate::ai::Overrides {
                         throttle: (o[0] != -1.0).then_some(o[0]),
                         brake: (o[1] != -1.0).then_some(o[1]),
                         handbrake: (o[2] != -1.0).then_some(o[2] > 0.0),
                         steer: (o[3] != -1000.0).then_some(o[3]),
                     };
-                    if !pull && tac.st == Tac::Halt && halt_steer0 != 0.0 {
+                    if !pull && st == Tac::Halt && halt_steer0 != 0.0 {
                         v.steer = Some(halt_steer0);
                     }
                     (v.throttle.is_some() || v.brake.is_some() || v.handbrake.is_some() || v.steer.is_some()).then_some(v)
@@ -4720,6 +4670,63 @@ impl Police {
                     v.handbrake = o.handbrake.or(v.handbrake);
                     v.throttle = o.throttle.or(v.throttle);
                     ai.ovr = Some(v);
+                }
+                // ---- the tactic's machine, after the brain: its command acts at the next frame's brain tick ----
+                if searching || squad {
+                    // (no tactic state changes during the Search; a squad's commands come from its FSM)
+                    tac.t += dt;
+                } else if pull {
+                    // pull-over (F-36876, pullover_machine; the re-pick gate's tactic +36 is not ported: open)
+                    let pull_r = t("fPullOverDist", 15.0);
+                    let (dx, dy, dz) = (ppos.x - cpos.x, ppos.y - cpos.y, ppos.z - cpos.z);
+                    let sees = PullSees {
+                        all_halt,
+                        moving: t_moving,
+                        closing0: closing(0.0),
+                        closing7: closing(7.0),
+                        closing50: closing(50.0),
+                        near50: d < 50.0,
+                        near_pull: d < pull_r,
+                        pick: pick_side(),
+                        gate: true,
+                        cspeed,
+                        d2: fmas(dx, dx, fmas(dz, dz, dy * dy)),
+                    };
+                    c.state.vel *= pullover_machine(tac, &sees, dt);
+                } else {
+                    // pursuit (F-68032, pursuit_machine; the re-pick gate's tactic +36 is not ported: open)
+                    let sees = PursuitSees {
+                        near_safe: d < safe,
+                        near_along: d < 1.5 * along,
+                        near5: d < 5.0,
+                        moving: t_moving,
+                        same_dir,
+                        ahead,
+                        on_right,
+                        same_facing,
+                        all_block,
+                        closing: closing(safe),
+                        pick: pick_side(),
+                        gate: true,
+                        bearing,
+                        speed,
+                    };
+                    pursuit_machine(tac, &sees, t("fArrestTgtThresholdSpd", 10.0), last_tspeed, dt);
+                }
+                // (a command sent this update - by the machines above or the squad's - goes through the brain command
+                // F-83687: its block as the senders build it (Stop F-72181, with Block's handbrake / no throttle / its steer;
+                // AlongSide F-94949 with the side and fAlongSideDist; the others F-59773), and every command but Search (7)
+                // zeroes the cop's unseen and cone times)
+                if std::mem::take(&mut tac.sent) {
+                    let blk = cmd_block(tac.cmd, tac.hb, tac.block_steer, tac.side, along);
+                    brain_command(&mut tac.brain, tac.cmd as u32, Some(&blk), 0);
+                    if tac.cmd != 7 {
+                        let e = self.eyes.entry(c.uid).or_default();
+                        (e.unseen, e.cone_t) = (tac.brain.unseen, tac.brain.cone_t);
+                    }
+                }
+                if tac.st != st {
+                    log::info!("police: cruiser {} {:?} -> {:?} ({:.0} m)", c.uid, st, tac.st, d);
                 }
             } else if let Some(ai) = Some(ai) {
                 // (out of the tactics: the port's own driver again)
@@ -4756,6 +4763,16 @@ impl Police {
                 ai.link = None;
                 ai.target_speed = 14.0;
                 self.tacs.remove(&c.uid);
+            }
+        }
+        // (test hook MCLA_POLICE_TRACE: every tactic cop each police frame - its tactic state, its brain's command,
+        // place, speed and the overrides on its driver)
+        if std::env::var_os("MCLA_POLICE_TRACE").is_some() {
+            for c in vehicles.cars.iter().filter(|c| c.cop && self.tacs.contains_key(&c.uid)) {
+                let tc = &self.tacs[&c.uid];
+                let o = c.ai.as_ref().and_then(|a| a.ovr);
+                log::info!("ptrace {:.4} {:?} {} {:?} cmd {} brain {} pos {:.3} {:.3} {:.3} v {:.3} ovr {:?}", self.time, self.heat, c.uid, tc.st, tc.cmd, tc.brain.cmd,
+                    c.state.pos.x, c.state.pos.y, c.state.pos.z, c.state.vel.length(), o.map(|o| (o.throttle, o.brake, o.handbrake, o.steer)));
             }
         }
         // the patrol cops: the three units on their patrol paths (F-24233) - no other cruiser is made (the player-load
