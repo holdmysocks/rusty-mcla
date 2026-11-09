@@ -207,6 +207,9 @@ pub struct Ambience {
     shots: Vec<Handle>,
     /// the quadshots' slots (mgr +296 / +300, F-73296), apart from the one-shots' (+288 / +292, F-57118)
     quad_shots: Vec<Handle>,
+    /// mgr byte +1079: 1 from the ctor F-16854, 0 from a scene's start F-37136 to its FinishScene F-65984; while 0 the
+    /// distant one-shots (list B) are panned, not placed (F-14965)
+    pub positional: bool,
     slots: Vec<Slot>,
     line: Option<Handle>,
     landmark_curve: u32,
@@ -270,6 +273,12 @@ fn shot_offset(quad: bool, angle: f32) -> Vec3 {
     crate::aiv::rot_y(Vec3::new(0.0, 0.0, if quad { 6000.0 } else { -6000.0 }), angle)
 }
 
+/// List B's pan in a scene (F-14965 with mgr +1079 = 0): fctiwz of the angle in radians, as the request's P+64 (degrees,
+/// -1 = none) - so -3 .. 3 degrees, and an angle in (-2, -1] gives -1, no pan at all.
+fn shot_pan(angle: f32) -> i16 {
+    angle as i32 as i16
+}
+
 impl Ambience {
     pub fn new(lib: &SoundLib) -> Option<Ambience> {
         let g = &lib.game;
@@ -301,6 +310,7 @@ impl Ambience {
             quad_timers: Vec::new(),
             shots: Vec::new(),
             quad_shots: Vec::new(),
+            positional: true,
             slots: Vec::new(),
             line: None,
             landmark_curve: joaat("MC4_HANGOUT_LANDMARK_APPLY"),
@@ -751,7 +761,13 @@ impl Ambience {
                 // a world position (the request's P+20 with flags 4, as the location emitters pass their records'), so
                 // 6 km from the world's origin, not from the listener
                 let pos = shot_offset(timers == 1, angle);
-                if let Some(h) = lib.play_hash(s.sound, Req { pos: Some(pos), volume: s.volume, ..Default::default() }) {
+                // list B with +1079 clear: no position, the pan P+64 = fctiwz(the angle in radians)
+                let req = if timers == 0 && !self.positional {
+                    Req { pan: shot_pan(angle), volume: s.volume, ..Default::default() }
+                } else {
+                    Req { pos: Some(pos), volume: s.volume, ..Default::default() }
+                };
+                if let Some(h) = lib.play_hash(s.sound, req) {
                     if timers == 0 { self.shots.push(h) } else { self.quad_shots.push(h) }
                 }
             }
@@ -973,6 +989,16 @@ mod tests {
         let (b, c) = (shot_offset(false, a), shot_offset(true, a));
         assert_eq!((b.x, b.z), (-c.x, -c.z));
         assert!((c.x - 6000.0 * a.sin()).abs() < 0.01 && (c.z - 6000.0 * a.cos()).abs() < 0.01);
+    }
+
+    /// List B's pan in a scene is the angle in radians cut to an integer (fctiwz), read as degrees.
+    #[test]
+    fn scene_pan_is_the_angle_cut_to_an_integer() {
+        assert_eq!(shot_pan(3.1), 3);
+        assert_eq!(shot_pan(0.9), 0);
+        assert_eq!(shot_pan(-0.9), 0);
+        assert_eq!(shot_pan(-1.5), -1);
+        assert_eq!(shot_pan(-2.99), -2);
     }
 
     /// The data's odd radii never panic: equal radii give NaN (silent through the LANDMARK curve), an inner radius

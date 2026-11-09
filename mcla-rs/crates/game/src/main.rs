@@ -8463,6 +8463,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // SLOWMO_FORM (slot 17): the tutorial's form 108, a hangout entry until its MISSION_EVENT (local / wager cores
             // 0x87e / 0xa60 / 0x10f0, 0xd1f / 0x15d6)
             self.sound.slowmo_form = self.hangout_entry.is_some() || self.game.opt_x.s23.slow.visible;
+            self.sound.scene = self.cine.playing.is_some();
             self.sound.update(a, &self.vehicles, &self.game, &self.police, &self.ability, &self.props.hits, &self.props.scrapes, &|i| self.props.matrix(i), self.cam.pos, right, fwd, rain_snd, horn, self.time_of_day > 19.5 || self.time_of_day < 6.0, &|p: Vec3, q: Vec3| { let d = q - p; let l = d.length(); l > 0.0 && world.collider.raycast(p, d / l, l).is_some() }, &|p: Vec3, q: Vec3| { let d = q - p; let l = d.length(); if l > 0.0 { world.collider.raycast(p, d / l, l).map(|h| h.surface as u8) } else { None } }, Some(&world.collider), dt);
             // the map effects' sounds follow the effect instances (ptxaudio.rs)
             self.sound.effects(&self.fx.instances(), Some(&world.collider));

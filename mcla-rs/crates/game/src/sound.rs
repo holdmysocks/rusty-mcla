@@ -215,6 +215,8 @@ pub struct Sound {
     /// mode, set by the game each frame
     pub sliders: [u8; 5],
     pub cam_audio: i32,
+    /// a cine scene plays (the scene byte: F-37136 .. F-65984), set by the game each frame
+    pub scene: bool,
     /// every car's sounds beside the engine and collisions (caraudio.rs, with `lib`)
     fleet: Option<crate::caraudio::Fleet>,
     /// the sound occlusion's table of occluders (occlusion.rs, with `lib`) and each car's slot plus one by `uid`
@@ -1792,6 +1794,8 @@ impl Sound {
             let cores: Vec<(&str, Vec3, bool)> = crate::hangoutin::SETUPS.iter().filter(|s| game.mc4_hangout_core_running(s.key)).map(|s| (s.key, s.line[1], game.place_hold.contains_key(&s.uid))).collect();
             amb.hangouts(lib, &cores, game.hangout_audio.map(|(si, _)| crate::hangoutin::SETUPS[si].key));
             let mph = if game.mode == Mode::Paused { 0.0 } else { speed * 2.237 };
+            // mgr +1079 (F-37136 clears it at a scene's start, F-65984 sets it at its finish)
+            amb.positional = !self.scene;
             let factors = self.occl.as_ref().map(|o| o.factors.clone()).unwrap_or_default();
             let l = lib.listener.0;
             match &mut self.occl {
