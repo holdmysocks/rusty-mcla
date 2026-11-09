@@ -7529,19 +7529,26 @@ pub fn set_pose(st: &mut CarState, vt: &VehTune, world: &WorldCollider, m: [Vec3
 /// wheels' radii), the top gear when none is.
 pub(super) fn gear_for_speed(vt: &VehTune, fwd: f32) -> i32 {
     let t = &vt.t;
+    let radii = match t.drivetrain_type {
+        1 | 4 => vec![t.wheel_front.radius; 2],
+        2 | 3 => vec![t.wheel_front.radius, t.wheel_front.radius, t.wheel_back.radius, t.wheel_back.radius],
+        _ => vec![t.wheel_back.radius; 2],
+    };
+    gear_from(fwd, t.engine.s.max_rpm * RPM, &radii, &vt.ratios)
+}
+
+/// F-24547 on its inputs (`ratios` the port's: reverse, then first ..). The original's branches are "not less"
+/// (bge), so a NaN speed takes neither and comes out as the top gear, as a needed ratio that is not above any
+/// gear's (NaN) does. With fewer than two forward gears the answer is first.
+pub(super) fn gear_from(fwd: f32, max_engine_speed: f32, radii: &[f32], ratios: &[f32]) -> i32 {
     if fwd < -1.0 {
         -1
     } else if fwd < 10.0 {
         1
     } else {
-        let radii = match t.drivetrain_type {
-            1 | 4 => vec![t.wheel_front.radius; 2],
-            2 | 3 => vec![t.wheel_front.radius, t.wheel_front.radius, t.wheel_back.radius, t.wheel_back.radius],
-            _ => vec![t.wheel_back.radius; 2],
-        };
-        let needed = super::transmission::ratio_for_speed(t.engine.s.max_rpm * RPM, fwd * 2.237, &radii);
-        let top = vt.ratios.len() as i32 - 1;
-        (1..top).find(|&g| needed > vt.ratios[g as usize]).unwrap_or(top)
+        let needed = super::transmission::ratio_for_speed(max_engine_speed, fwd * 2.237, radii);
+        let top = ratios.len() as i32 - 1;
+        (1..top).find(|&g| needed > ratios[g as usize]).unwrap_or(top.max(1))
     }
 }
 
@@ -7767,6 +7774,31 @@ mod getter_tests {
         }
         assert!(bad.is_empty(), "{} mismatches, first {:?}", bad.len(), &bad[..bad.len().min(3)]);
         assert!(seen.iter().all(|n| *n > 1000), "{seen:?}");
+    }
+
+    /// F-24547 run offline with its callees (tools/gear_for_speed_reference.py, testdata/gear_for_speed_ref.txt):
+    /// 6,000 cases, the forward speed (the edges -1 and 10 and their neighbours, NaN, inf), the engine's top speed,
+    /// 0 .. 4 wheel radii and 2 .. 9 gear ratios (random, equal, odd) against the gear index it returns.
+    #[test]
+    fn gear_for_speed_matches_the_original() {
+        let h = |w: &str| u32::from_str_radix(w, 16).unwrap();
+        let f = |w: &str| f32::from_bits(h(w));
+        let (mut n, mut bad) = (0, Vec::new());
+        for line in include_str!("testdata/gear_for_speed_ref.txt").lines() {
+            let (lhs, rhs) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = lhs.split(' ').collect();
+            let k = h(w[2]) as usize;
+            let radii: Vec<f32> = w[3..3 + k].iter().map(|x| f(x)).collect();
+            let count = h(w[3 + k]) as usize;
+            let q: Vec<f32> = w[4 + k..4 + k + count].iter().map(|x| f(x)).collect();
+            let ratios: Vec<f32> = std::iter::once(q[0]).chain(q[2..].iter().copied()).collect();
+            let want = h(rhs) as i32;
+            let want = if want == 0 { -1 } else { want - 1 };
+            n += 1;
+            if super::gear_from(f(w[0]), f(w[1]), &radii, &ratios) != want { bad.push(line); }
+        }
+        assert!(bad.is_empty(), "{} of {n} differ, first {:?}", bad.len(), &bad[..bad.len().min(3)]);
+        assert_eq!(n, 6000);
     }
 }
 
