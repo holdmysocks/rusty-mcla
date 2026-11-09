@@ -297,8 +297,10 @@ pub fn grid_type_key(name: &str) -> i32 {
 /// The taunt speech scenario a scene prepares (`CineScript_RequestPreraceTauntScenarioAudio`, sub_823BFC78):
 /// a name with TAUNT -> `TAUNT_PRERACE_HP` (sender slot 1, the hookman; receiver slot 0), else with PH ->
 /// `TAUNT_PRERACE_PH` (sender slot 0), else `TAUNT_PRERACE_H` (slot 1 alone). None for other scenes.
+/// The whole name upper-cased (the C runtime's ASCII a..z) and searched, as F-56020 does; it then requests the
+/// scenario with speakers A, B = the racers of slots 0, 1 (PH: 1, 0), and only when both slots hold a racer.
 pub fn taunt_kind(scene: &str) -> Option<&'static str> {
-    let n = scene.rsplit('/').next().unwrap_or(scene).to_ascii_uppercase();
+    let n = scene.to_ascii_uppercase();
     if !n.contains("TAUNT") {
         return None;
     }
@@ -956,6 +958,31 @@ pub const PRERACE_EVENTS: [PreraceEvents; 136] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The taunt request against the original run offline (tools/taunt_request_reference.py: F-56020 on 26 names x
+    /// 12 slot / racer sets): the scenario is TAUNT_PRERACE_<taunt_kind>, A / B the racers of slots 0 / 1 (PH: 1 / 0),
+    /// and nothing without a taunt kind or with a slot that holds no racer.
+    #[test]
+    fn taunt_request_matches_the_original() {
+        let text = include_str!("testdata/taunt_request_ref.txt");
+        let mut n = 0;
+        for line in text.lines() {
+            let (name, rest) = line.rsplit_once('|').unwrap();
+            let (args, out) = rest.split_once(" -> ").unwrap();
+            let v: Vec<i32> = args.split(' ').map(|x| x.parse().unwrap()).collect();
+            let has = |s: i32| s >= 0 && s < 8 && (v[2] >> s) & 1 == 1;
+            let want = match taunt_kind(name) {
+                Some(k) if has(v[0]) && has(v[1]) => {
+                    let (a, b) = if k == "PH" { (v[1], v[0]) } else { (v[0], v[1]) };
+                    format!("TAUNT_PRERACE_{k} {a} {b}")
+                }
+                _ => "-".to_string(),
+            };
+            assert_eq!(out, want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 312);
+    }
 
     /// The pick against the original run offline (tools/prerace_pick_reference.py: F-10331 and F-24279 with the
     /// bags' code, the load shuffle of every bag, then 30 picks per case on keys -2..9, 3,000 cases): every

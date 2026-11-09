@@ -1,0 +1,312 @@
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_HP_01_generated|1 -1 0 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_HP_01_generated|-1 3 15 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_HP_01_generated|1 -1 1 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_HP_01_generated|-1 0 0 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_HP_01_generated|-1 -1 15 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_HP_01_generated|-1 -1 15 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_HP_01_generated|3 2 0 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_HP_01_generated|2 -1 0 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_HP_01_generated|3 2 5 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_HP_01_generated|-1 1 0 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_HP_01_generated|-1 3 15 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_HP_01_generated|1 3 15 -> TAUNT_PRERACE_HP 1 3
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_PH_01_generated|0 0 15 -> TAUNT_PRERACE_PH 0 0
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_PH_01_generated|0 1 1 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_PH_01_generated|3 3 15 -> TAUNT_PRERACE_PH 3 3
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_PH_01_generated|3 3 1 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_PH_01_generated|-1 0 15 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_PH_01_generated|3 0 0 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_PH_01_generated|3 3 10 -> TAUNT_PRERACE_PH 3 3
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_PH_01_generated|1 2 15 -> TAUNT_PRERACE_PH 2 1
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_PH_01_generated|-1 -1 0 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_PH_01_generated|0 -1 5 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_PH_01_generated|0 -1 10 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_PH_01_generated|0 0 2 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_H_01_generated|-1 2 15 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_H_01_generated|3 -1 15 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_H_01_generated|1 1 2 -> TAUNT_PRERACE_H 1 1
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_H_01_generated|0 3 1 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_H_01_generated|-1 0 15 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_H_01_generated|3 2 1 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_H_01_generated|3 2 15 -> TAUNT_PRERACE_H 3 2
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_H_01_generated|-1 1 10 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_H_01_generated|0 3 2 -> -
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_H_01_generated|3 1 15 -> TAUNT_PRERACE_H 3 1
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_H_01_generated|0 0 15 -> TAUNT_PRERACE_H 0 0
+game/CineScripts/generated/RaceStart/sc_gen_prerace_taunt_H_01_generated|1 2 15 -> TAUNT_PRERACE_H 1 2
+game/cinescripts/generated/racestart/gen_prerace_taunt_hp_02_generated|-1 1 10 -> -
+game/cinescripts/generated/racestart/gen_prerace_taunt_hp_02_generated|3 -1 5 -> -
+game/cinescripts/generated/racestart/gen_prerace_taunt_hp_02_generated|1 2 15 -> TAUNT_PRERACE_HP 1 2
+game/cinescripts/generated/racestart/gen_prerace_taunt_hp_02_generated|-1 1 15 -> -
+game/cinescripts/generated/racestart/gen_prerace_taunt_hp_02_generated|2 1 15 -> TAUNT_PRERACE_HP 2 1
+game/cinescripts/generated/racestart/gen_prerace_taunt_hp_02_generated|-1 -1 0 -> -
+game/cinescripts/generated/racestart/gen_prerace_taunt_hp_02_generated|3 1 2 -> -
+game/cinescripts/generated/racestart/gen_prerace_taunt_hp_02_generated|1 3 2 -> -
+game/cinescripts/generated/racestart/gen_prerace_taunt_hp_02_generated|-1 0 0 -> -
+game/cinescripts/generated/racestart/gen_prerace_taunt_hp_02_generated|3 2 15 -> TAUNT_PRERACE_HP 3 2
+game/cinescripts/generated/racestart/gen_prerace_taunt_hp_02_generated|2 -1 5 -> -
+game/cinescripts/generated/racestart/gen_prerace_taunt_hp_02_generated|1 0 15 -> TAUNT_PRERACE_HP 1 0
+game/cinescripts/generated/racestart/gen_prerace_taunt_ph_02_generated|2 2 0 -> -
+game/cinescripts/generated/racestart/gen_prerace_taunt_ph_02_generated|1 2 5 -> -
+game/cinescripts/generated/racestart/gen_prerace_taunt_ph_02_generated|0 0 15 -> TAUNT_PRERACE_PH 0 0
+game/cinescripts/generated/racestart/gen_prerace_taunt_ph_02_generated|3 3 15 -> TAUNT_PRERACE_PH 3 3
+game/cinescripts/generated/racestart/gen_prerace_taunt_ph_02_generated|1 3 15 -> TAUNT_PRERACE_PH 3 1
+game/cinescripts/generated/racestart/gen_prerace_taunt_ph_02_generated|0 3 2 -> -
+game/cinescripts/generated/racestart/gen_prerace_taunt_ph_02_generated|-1 1 1 -> -
+game/cinescripts/generated/racestart/gen_prerace_taunt_ph_02_generated|3 2 10 -> -
+game/cinescripts/generated/racestart/gen_prerace_taunt_ph_02_generated|-1 3 15 -> -
+game/cinescripts/generated/racestart/gen_prerace_taunt_ph_02_generated|3 -1 0 -> -
+game/cinescripts/generated/racestart/gen_prerace_taunt_ph_02_generated|1 -1 15 -> -
+game/cinescripts/generated/racestart/gen_prerace_taunt_ph_02_generated|1 0 5 -> -
+game/cinescripts/generated/racestart/gen_prerace_grid_2x4_01_generated|1 1 0 -> -
+game/cinescripts/generated/racestart/gen_prerace_grid_2x4_01_generated|2 3 5 -> -
+game/cinescripts/generated/racestart/gen_prerace_grid_2x4_01_generated|2 2 10 -> -
+game/cinescripts/generated/racestart/gen_prerace_grid_2x4_01_generated|2 2 15 -> -
+game/cinescripts/generated/racestart/gen_prerace_grid_2x4_01_generated|1 1 15 -> -
+game/cinescripts/generated/racestart/gen_prerace_grid_2x4_01_generated|0 -1 2 -> -
+game/cinescripts/generated/racestart/gen_prerace_grid_2x4_01_generated|1 3 0 -> -
+game/cinescripts/generated/racestart/gen_prerace_grid_2x4_01_generated|2 1 0 -> -
+game/cinescripts/generated/racestart/gen_prerace_grid_2x4_01_generated|1 1 5 -> -
+game/cinescripts/generated/racestart/gen_prerace_grid_2x4_01_generated|3 2 0 -> -
+game/cinescripts/generated/racestart/gen_prerace_grid_2x4_01_generated|2 0 15 -> -
+game/cinescripts/generated/racestart/gen_prerace_grid_2x4_01_generated|3 0 15 -> -
+racestart/sc_gen_prerace_taunt_hp_01|2 0 2 -> -
+racestart/sc_gen_prerace_taunt_hp_01|0 2 15 -> TAUNT_PRERACE_HP 0 2
+racestart/sc_gen_prerace_taunt_hp_01|0 3 2 -> -
+racestart/sc_gen_prerace_taunt_hp_01|0 -1 15 -> -
+racestart/sc_gen_prerace_taunt_hp_01|-1 3 15 -> -
+racestart/sc_gen_prerace_taunt_hp_01|0 -1 0 -> -
+racestart/sc_gen_prerace_taunt_hp_01|0 2 0 -> -
+racestart/sc_gen_prerace_taunt_hp_01|1 3 10 -> TAUNT_PRERACE_HP 1 3
+racestart/sc_gen_prerace_taunt_hp_01|-1 -1 10 -> -
+racestart/sc_gen_prerace_taunt_hp_01|0 3 1 -> -
+racestart/sc_gen_prerace_taunt_hp_01|0 -1 15 -> -
+racestart/sc_gen_prerace_taunt_hp_01|3 3 10 -> TAUNT_PRERACE_HP 3 3
+racestart/gen_prerace_taunt_PH_02|-1 -1 15 -> -
+racestart/gen_prerace_taunt_PH_02|1 2 15 -> TAUNT_PRERACE_PH 2 1
+racestart/gen_prerace_taunt_PH_02|1 1 10 -> TAUNT_PRERACE_PH 1 1
+racestart/gen_prerace_taunt_PH_02|1 -1 1 -> -
+racestart/gen_prerace_taunt_PH_02|1 1 5 -> -
+racestart/gen_prerace_taunt_PH_02|0 2 10 -> -
+racestart/gen_prerace_taunt_PH_02|1 1 15 -> TAUNT_PRERACE_PH 1 1
+racestart/gen_prerace_taunt_PH_02|1 -1 15 -> -
+racestart/gen_prerace_taunt_PH_02|1 1 15 -> TAUNT_PRERACE_PH 1 1
+racestart/gen_prerace_taunt_PH_02|-1 0 5 -> -
+racestart/gen_prerace_taunt_PH_02|-1 1 5 -> -
+racestart/gen_prerace_taunt_PH_02|3 2 15 -> TAUNT_PRERACE_PH 2 3
+racestart/gen_prerace_taunt_H_01|-1 1 15 -> -
+racestart/gen_prerace_taunt_H_01|3 3 5 -> -
+racestart/gen_prerace_taunt_H_01|3 -1 10 -> -
+racestart/gen_prerace_taunt_H_01|2 2 5 -> TAUNT_PRERACE_H 2 2
+racestart/gen_prerace_taunt_H_01|0 -1 0 -> -
+racestart/gen_prerace_taunt_H_01|-1 0 2 -> -
+racestart/gen_prerace_taunt_H_01|3 1 2 -> -
+racestart/gen_prerace_taunt_H_01|2 0 0 -> -
+racestart/gen_prerace_taunt_H_01|1 3 0 -> -
+racestart/gen_prerace_taunt_H_01|2 3 10 -> -
+racestart/gen_prerace_taunt_H_01|0 2 15 -> TAUNT_PRERACE_H 0 2
+racestart/gen_prerace_taunt_H_01|2 1 0 -> -
+racestart/gen_prerace_starter_2x4_01|-1 -1 15 -> -
+racestart/gen_prerace_starter_2x4_01|3 0 15 -> -
+racestart/gen_prerace_starter_2x4_01|3 3 15 -> -
+racestart/gen_prerace_starter_2x4_01|3 1 15 -> -
+racestart/gen_prerace_starter_2x4_01|-1 2 10 -> -
+racestart/gen_prerace_starter_2x4_01|0 -1 15 -> -
+racestart/gen_prerace_starter_2x4_01|2 3 15 -> -
+racestart/gen_prerace_starter_2x4_01|1 2 15 -> -
+racestart/gen_prerace_starter_2x4_01|1 0 15 -> -
+racestart/gen_prerace_starter_2x4_01|2 1 1 -> -
+racestart/gen_prerace_starter_2x4_01|2 0 15 -> -
+racestart/gen_prerace_starter_2x4_01|-1 -1 10 -> -
+racestart/sc_gen_prerace_grid_1x1_01|3 1 0 -> -
+racestart/sc_gen_prerace_grid_1x1_01|-1 -1 15 -> -
+racestart/sc_gen_prerace_grid_1x1_01|2 2 1 -> -
+racestart/sc_gen_prerace_grid_1x1_01|2 3 2 -> -
+racestart/sc_gen_prerace_grid_1x1_01|-1 2 15 -> -
+racestart/sc_gen_prerace_grid_1x1_01|1 1 2 -> -
+racestart/sc_gen_prerace_grid_1x1_01|3 1 15 -> -
+racestart/sc_gen_prerace_grid_1x1_01|3 1 15 -> -
+racestart/sc_gen_prerace_grid_1x1_01|1 0 15 -> -
+racestart/sc_gen_prerace_grid_1x1_01|2 0 1 -> -
+racestart/sc_gen_prerace_grid_1x1_01|3 2 10 -> -
+racestart/sc_gen_prerace_grid_1x1_01|1 -1 1 -> -
+TAUNT|3 -1 0 -> -
+TAUNT|-1 1 15 -> -
+TAUNT|2 -1 10 -> -
+TAUNT|2 1 5 -> -
+TAUNT|-1 0 10 -> -
+TAUNT|1 3 15 -> TAUNT_PRERACE_H 1 3
+TAUNT|3 1 15 -> TAUNT_PRERACE_H 3 1
+TAUNT|0 0 15 -> TAUNT_PRERACE_H 0 0
+TAUNT|0 3 1 -> -
+TAUNT|2 -1 5 -> -
+TAUNT|-1 2 10 -> -
+TAUNT|-1 1 10 -> -
+taunt|0 2 15 -> TAUNT_PRERACE_H 0 2
+taunt|1 1 2 -> TAUNT_PRERACE_H 1 1
+taunt|2 2 0 -> -
+taunt|3 2 1 -> -
+taunt|3 3 0 -> -
+taunt|1 -1 15 -> -
+taunt|-1 0 10 -> -
+taunt|3 3 0 -> -
+taunt|1 0 5 -> -
+taunt|1 3 10 -> TAUNT_PRERACE_H 1 3
+taunt|1 2 1 -> -
+taunt|2 1 10 -> -
+Taunt_hp|1 2 1 -> -
+Taunt_hp|-1 2 0 -> -
+Taunt_hp|0 3 0 -> -
+Taunt_hp|-1 3 10 -> -
+Taunt_hp|2 3 10 -> -
+Taunt_hp|-1 3 15 -> -
+Taunt_hp|0 0 15 -> TAUNT_PRERACE_HP 0 0
+Taunt_hp|3 3 0 -> -
+Taunt_hp|3 2 5 -> -
+Taunt_hp|1 0 15 -> TAUNT_PRERACE_HP 1 0
+Taunt_hp|0 0 0 -> -
+Taunt_hp|0 1 15 -> TAUNT_PRERACE_HP 0 1
+taunt_ph|3 0 15 -> TAUNT_PRERACE_PH 0 3
+taunt_ph|0 0 15 -> TAUNT_PRERACE_PH 0 0
+taunt_ph|-1 0 1 -> -
+taunt_ph|3 2 15 -> TAUNT_PRERACE_PH 2 3
+taunt_ph|0 3 0 -> -
+taunt_ph|2 2 10 -> -
+taunt_ph|0 3 5 -> -
+taunt_ph|1 1 15 -> TAUNT_PRERACE_PH 1 1
+taunt_ph|0 -1 0 -> -
+taunt_ph|3 1 15 -> TAUNT_PRERACE_PH 1 3
+taunt_ph|0 -1 10 -> -
+taunt_ph|-1 2 15 -> -
+taunt_php|1 0 15 -> TAUNT_PRERACE_HP 1 0
+taunt_php|0 -1 2 -> -
+taunt_php|3 0 1 -> -
+taunt_php|0 0 15 -> TAUNT_PRERACE_HP 0 0
+taunt_php|0 3 15 -> TAUNT_PRERACE_HP 0 3
+taunt_php|2 1 1 -> -
+taunt_php|0 0 1 -> TAUNT_PRERACE_HP 0 0
+taunt_php|0 1 1 -> -
+taunt_php|3 1 5 -> -
+taunt_php|1 0 0 -> -
+taunt_php|-1 2 5 -> -
+taunt_php|3 0 15 -> TAUNT_PRERACE_HP 3 0
+taunt_hph|3 -1 15 -> -
+taunt_hph|-1 0 10 -> -
+taunt_hph|1 -1 5 -> -
+taunt_hph|0 1 1 -> -
+taunt_hph|-1 1 15 -> -
+taunt_hph|3 -1 5 -> -
+taunt_hph|3 2 15 -> TAUNT_PRERACE_HP 3 2
+taunt_hph|2 1 5 -> -
+taunt_hph|1 -1 15 -> -
+taunt_hph|2 1 15 -> TAUNT_PRERACE_HP 2 1
+taunt_hph|0 -1 0 -> -
+taunt_hph|-1 2 2 -> -
+ph_taunt|-1 3 15 -> -
+ph_taunt|-1 -1 15 -> -
+ph_taunt|2 -1 2 -> -
+ph_taunt|-1 3 2 -> -
+ph_taunt|3 0 15 -> TAUNT_PRERACE_PH 0 3
+ph_taunt|2 0 2 -> -
+ph_taunt|-1 0 0 -> -
+ph_taunt|-1 -1 2 -> -
+ph_taunt|2 2 15 -> TAUNT_PRERACE_PH 2 2
+ph_taunt|2 0 10 -> -
+ph_taunt|1 2 0 -> -
+ph_taunt|2 0 2 -> -
+hp_taunt|-1 1 2 -> -
+hp_taunt|2 3 5 -> -
+hp_taunt|2 3 2 -> -
+hp_taunt|2 3 10 -> -
+hp_taunt|3 -1 15 -> -
+hp_taunt|0 3 15 -> TAUNT_PRERACE_HP 0 3
+hp_taunt|-1 1 15 -> -
+hp_taunt|1 3 1 -> -
+hp_taunt|3 1 10 -> TAUNT_PRERACE_HP 3 1
+hp_taunt|3 -1 5 -> -
+hp_taunt|-1 3 10 -> -
+hp_taunt|2 -1 0 -> -
+xhpx/taunt|-1 3 1 -> -
+xhpx/taunt|2 1 15 -> TAUNT_PRERACE_HP 2 1
+xhpx/taunt|3 1 15 -> TAUNT_PRERACE_HP 3 1
+xhpx/taunt|0 -1 10 -> -
+xhpx/taunt|2 3 15 -> TAUNT_PRERACE_HP 2 3
+xhpx/taunt|1 -1 0 -> -
+xhpx/taunt|2 0 1 -> -
+xhpx/taunt|3 0 15 -> TAUNT_PRERACE_HP 3 0
+xhpx/taunt|0 2 1 -> -
+xhpx/taunt|3 -1 1 -> -
+xhpx/taunt|-1 1 2 -> -
+xhpx/taunt|0 -1 15 -> -
+phtaunthp|2 2 1 -> -
+phtaunthp|1 0 15 -> TAUNT_PRERACE_HP 1 0
+phtaunthp|1 -1 2 -> -
+phtaunthp|3 2 0 -> -
+phtaunthp|2 0 5 -> TAUNT_PRERACE_HP 2 0
+phtaunthp|-1 3 0 -> -
+phtaunthp|-1 -1 0 -> -
+phtaunthp|3 2 2 -> -
+phtaunthp|-1 2 10 -> -
+phtaunthp|-1 3 15 -> -
+phtaunthp|0 2 0 -> -
+phtaunthp|0 2 10 -> -
+TAUN_HP|0 1 15 -> -
+TAUN_HP|1 1 5 -> -
+TAUN_HP|0 2 5 -> -
+TAUN_HP|2 1 10 -> -
+TAUN_HP|2 0 2 -> -
+TAUN_HP|1 2 2 -> -
+TAUN_HP|-1 1 10 -> -
+TAUN_HP|1 -1 15 -> -
+TAUN_HP|0 1 15 -> -
+TAUN_HP|-1 0 15 -> -
+TAUN_HP|3 2 1 -> -
+TAUN_HP|0 2 5 -> -
+tauntP_H|0 0 2 -> -
+tauntP_H|-1 1 15 -> -
+tauntP_H|1 3 10 -> TAUNT_PRERACE_H 1 3
+tauntP_H|1 1 15 -> TAUNT_PRERACE_H 1 1
+tauntP_H|0 0 10 -> -
+tauntP_H|0 1 15 -> TAUNT_PRERACE_H 0 1
+tauntP_H|3 0 15 -> TAUNT_PRERACE_H 3 0
+tauntP_H|3 3 1 -> -
+tauntP_H|0 0 15 -> TAUNT_PRERACE_H 0 0
+tauntP_H|3 0 2 -> -
+tauntP_H|3 3 15 -> TAUNT_PRERACE_H 3 3
+tauntP_H|3 2 15 -> TAUNT_PRERACE_H 3 2
+gen_prerace_taunt_h_02|1 3 1 -> -
+gen_prerace_taunt_h_02|0 2 15 -> TAUNT_PRERACE_H 0 2
+gen_prerace_taunt_h_02|-1 -1 15 -> -
+gen_prerace_taunt_h_02|1 1 5 -> -
+gen_prerace_taunt_h_02|2 1 0 -> -
+gen_prerace_taunt_h_02|1 2 15 -> TAUNT_PRERACE_H 1 2
+gen_prerace_taunt_h_02|3 1 10 -> TAUNT_PRERACE_H 3 1
+gen_prerace_taunt_h_02|3 1 15 -> TAUNT_PRERACE_H 3 1
+gen_prerace_taunt_h_02|0 3 0 -> -
+gen_prerace_taunt_h_02|2 0 15 -> TAUNT_PRERACE_H 2 0
+gen_prerace_taunt_h_02|2 0 15 -> TAUNT_PRERACE_H 2 0
+gen_prerace_taunt_h_02|0 0 15 -> TAUNT_PRERACE_H 0 0
+gen_prerace_taunt_mild_01|3 0 5 -> -
+gen_prerace_taunt_mild_01|3 1 1 -> -
+gen_prerace_taunt_mild_01|3 3 15 -> TAUNT_PRERACE_H 3 3
+gen_prerace_taunt_mild_01|3 -1 10 -> -
+gen_prerace_taunt_mild_01|0 2 15 -> TAUNT_PRERACE_H 0 2
+gen_prerace_taunt_mild_01|-1 2 5 -> -
+gen_prerace_taunt_mild_01|0 1 0 -> -
+gen_prerace_taunt_mild_01|0 0 15 -> TAUNT_PRERACE_H 0 0
+gen_prerace_taunt_mild_01|-1 -1 2 -> -
+gen_prerace_taunt_mild_01|-1 3 15 -> -
+gen_prerace_taunt_mild_01|2 1 2 -> -
+gen_prerace_taunt_mild_01|-1 2 15 -> -
+|1 3 5 -> -
+|-1 -1 1 -> -
+|1 1 15 -> -
+|1 1 10 -> -
+|-1 2 15 -> -
+|2 -1 10 -> -
+|1 3 2 -> -
+|0 -1 15 -> -
+|1 0 10 -> -
+|2 2 15 -> -
+|1 0 5 -> -
+|-1 -1 2 -> -
