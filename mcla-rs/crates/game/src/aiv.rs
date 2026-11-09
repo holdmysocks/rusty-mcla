@@ -390,7 +390,7 @@ pub(crate) fn norm_or(v: Vec3, eps: f32, fb: Vec3) -> Vec3 {
 }
 
 /// the scalar acos of the original's helpers: the guest runtime's acos of a value clamped by `fsel`, rounded to single
-fn acos32(c: f32) -> f32 {
+pub(crate) fn acos32(c: f32) -> f32 {
     let lo = if c - -1.0 >= 0.0 { c } else { -1.0 };
     let hi = if lo - 1.0 >= 0.0 { 1.0 } else { lo };
     guest_acos(hi as f64) as f32

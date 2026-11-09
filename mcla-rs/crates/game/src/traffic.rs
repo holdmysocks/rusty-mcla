@@ -5601,6 +5601,48 @@ mod verify_lanes_tests {
 
 #[cfg(test)]
 mod tests {
+    /// F-95989 on the original's code run offline (tools/seen_reference.py, 6,000 cases): the answer and the point the
+    /// occluder is asked about equal, the query's arguments (r 2, kinds 2 / 2) as the port's.
+    #[test]
+    fn seen_matches_the_original() {
+        let f = |w: &str| f32::from_bits(u32::from_str_radix(w, 16).unwrap());
+        let (mut n, mut asked) = (0, 0);
+        for l in include_str!("testdata/seen_ref.txt").lines() {
+            let (c, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<&str> = c.split(' ').collect();
+            let o: Vec<&str> = o.split(' ').collect();
+            let from = super::SeenFrom {
+                inner: f(c[0]),
+                outer: f(c[1]),
+                wide: f(c[2]),
+                fov_mph: [f(c[3]), f(c[4])],
+                fov_deg: [f(c[5]), f(c[6])],
+                focus: glam::Vec3::new(f(c[7]), f(c[8]), f(c[9])),
+                view: glam::Vec3::new(f(c[10]), 0.0, f(c[11])),
+                mph: f(c[12]),
+            };
+            let p = glam::Vec3::new(f(c[13]), f(c[14]), f(c[15]));
+            let word = |i: usize| u32::from_str_radix(c[i], 16).unwrap();
+            let mut got = None;
+            let occ = (word(18) & 0xFF != 0).then_some(|q: glam::Vec3| {
+                got = Some(q);
+                word(19)
+            });
+            let r = from.sees(p, f(c[16]), word(17) & 0xFF != 0, occ);
+            assert_eq!(r, o[0] == "1", "{l}");
+            match got {
+                None => assert_eq!(o[1], "-", "{l}"),
+                Some(q) => {
+                    let w = [q.x, q.y, q.z].map(|v| format!("{:08x}", v.to_bits()));
+                    assert_eq!(&o[1..7], &[w[0].as_str(), w[1].as_str(), w[2].as_str(), "2", "2", "40000000"], "{l}");
+                    asked += 1;
+                }
+            }
+            n += 1;
+        }
+        assert_eq!((n, asked), (6000, 1654));
+    }
+
     /// The footprint probe's segment against the running original: 162 probes of riders in state 6 recorded at F-57005
     /// (work/traffic-detail/probe, the recorder's Q lines) with the instance at the car update's entry (U), which the
     /// recording shows is the matrix the probe reads (equal in all 162; the cars moved up to 0.27 m a frame).
@@ -7282,24 +7324,73 @@ pub fn density_index(global: i32, script: i32, cutscene: bool, frontend: Option<
     }
 }
 
-/// Is a point seen from the focus (F-95989 / F-92805): nearer than 50 m always;
-/// up to 250 m within the field of view either way along the view line (|cos|) and not
-/// behind an occluder (sphere r 2, 1.5 m up); beyond, never.
+/// Is a point seen from the focus (F-95989 / F-92805), from the spawn radii (50 / 250 m), one viewer, 1.5 m up for the
+/// occluder (`SeenFrom::sees`).
 pub(super) fn seen(t: &Tune, focus: Vec3, view: Vec3, mph: f32, p: Vec3, occ: Option<&crate::occluder::Selected>) -> bool {
-    let d = Vec3::new(p.x - focus.x, 0.0, p.z - focus.z);
-    let dist = d.length();
-    if dist < t.spawn_inner {
-        return true;
+    let from = SeenFrom { inner: t.spawn_inner, outer: t.spawn_outer, wide: 0.0, fov_mph: t.fov_mph, fov_deg: t.fov_deg, focus, view, mph };
+    from.sees(p, 1.5, false, occ.map(|o| move |c: Vec3| if o.hides_sphere(c, 2.0) { OCC_HIDDEN } else { 0 }))
+}
+
+/// the occluder query's answer bit for a sphere wholly behind an occluder (F-87100's 0x04000000; F-95989 also takes
+/// 0x10000000 as hidden)
+const OCC_HIDDEN: u32 = 0x0400_0000;
+
+/// What F-95989 reads off the ambient manager: the spawn radii (+4, +8), the flag's radius (+72), the field of view's
+/// speeds (+108, +112) and degrees at them (+116, +120), the focus (+192), the view's x and z (+224, +232), the speed in mph
+/// (+968).
+#[derive(Clone, Copy)]
+pub(crate) struct SeenFrom {
+    pub inner: f32,
+    pub outer: f32,
+    pub wide: f32,
+    pub fov_mph: [f32; 2],
+    pub fov_deg: [f32; 2],
+    pub focus: Vec3,
+    pub view: Vec3,
+    pub mph: f32,
+}
+
+impl SeenFrom {
+    /// F-95989, as the original computes it. The flat distance squared d2 = dz dz + dx dx (fused). Without `flag`: nearer
+    /// than the inner radius (or NaN) seen, beyond the outer one not; with it, beyond `wide` (or NaN) not seen, else the
+    /// cone. The cone: the flat direction normalised as the vector unit does it (railroute::vnorm), c = view.z n.z +
+    /// view.x n.x (fused), the angle acos(|c|) clamped by fsel (aiv::acos32); the speed's share t = (mph - lo) / (hi - lo),
+    /// by fsel NaN or below 0 -> 0, from 1 -> 1; the field of view fov = t (deg_hi - deg_lo) + deg_lo (fused) times
+    /// pi/180; an angle at or above it is not seen (a NaN angle is). Then, when the occluder test is on (`occ`, the
+    /// manager's byte +2121), the query on the point `h` up (sphere r 2): bit 0x04000000 or 0x10000000 hides it.
+    pub(crate) fn sees(&self, p: Vec3, h: f32, flag: bool, occ: Option<impl FnOnce(Vec3) -> u32>) -> bool {
+        let (dx, dz) = (self.focus.x - p.x, self.focus.z - p.z);
+        let d2 = dz.mul_add(dz, dx * dx);
+        if flag {
+            if !(d2 <= self.wide * self.wide) {
+                return false;
+            }
+        } else {
+            if !(d2 >= self.inner * self.inner) {
+                return true;
+            }
+            if d2 > self.outer * self.outer {
+                return false;
+            }
+        }
+        let n = crate::railroute::vnorm(Vec3::new(p.x - self.focus.x, 0.0, p.z - self.focus.z));
+        let c = self.view.z.mul_add(n.z, self.view.x * n.x);
+        let a = crate::aiv::acos32(c.abs());
+        let t = (self.mph - self.fov_mph[0]) / (self.fov_mph[1] - self.fov_mph[0]);
+        let t0 = if t >= 0.0 { t } else { 0.0 };
+        let k = if t0 - 1.0 >= 0.0 { 1.0 } else { t0 };
+        let fov = k.mul_add(self.fov_deg[1] - self.fov_deg[0], self.fov_deg[0]) * f32::from_bits(0x3C8E_FA35);
+        if a >= fov {
+            return false;
+        }
+        match occ {
+            None => true,
+            Some(q) => {
+                let b = q(Vec3::new(p.x, p.y + h, p.z));
+                b & 0x0400_0000 == 0 && b & 0x1000_0000 == 0
+            }
+        }
     }
-    if dist > t.spawn_outer {
-        return false;
-    }
-    let k = ((mph - t.fov_mph[0]) / (t.fov_mph[1] - t.fov_mph[0])).clamp(0.0, 1.0);
-    let fov = lerp(t.fov_deg, k).to_radians();
-    if (d / dist).dot(view).abs() < fov.cos() {
-        return false;
-    }
-    !occ.is_some_and(|o| o.hides_sphere(p + Vec3::Y * 1.5, 2.0))
 }
 
 // ---------------------------------------------------------------------------------
