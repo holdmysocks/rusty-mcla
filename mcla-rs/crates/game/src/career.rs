@@ -2370,6 +2370,14 @@ pub fn money_text_in(v: i64, lang: usize) -> String {
     }
 }
 
+/// The count an Experience, TallyRace or TallyMission condition puts after its objective in the mission log
+/// (F-34957, F-62132, F-95375: "%s (%d/%d)", signed words): the target once the condition is complete, else its
+/// count - TallyRace +192, TallyMission +156, Experience the experience record's value less the base armed with
+/// the condition (no text when the record is not found), none of them cut to the target.
+pub fn count_text(complete: bool, count: i32, target: i32) -> String {
+    format!("({}/{})", if complete { target } else { count }, target)
+}
+
 /// A Stat condition's count after its objective in the mission log (F-97850): the statistic type compared byte
 /// for byte (case kept) - `Money` / `Purse` give "($cur/$target)" in the language's money text (F-13827), `Tally`
 /// "(cur/target)" as signed words, any other nothing. The original writes it after the text and a space ("%s (..)");
@@ -2705,7 +2713,7 @@ impl Career {
         let r = &self.missions[i].objectives[oi];
         match r.conds.first()? {
             Cond::Stat { .. } => stat_count_text(r.stat_types.first().map_or("", |s| s.as_str()), cur as i32, target as i32, self.strings.lang),
-            Cond::Experience { .. } | Cond::TallyRace { .. } | Cond::TallyMission { .. } => Some(format!("({}/{})", cur, target)),
+            Cond::Experience { .. } | Cond::TallyRace { .. } | Cond::TallyMission { .. } => Some(count_text(false, cur as i32, target as i32)),
             _ => None,
         }
     }
@@ -3922,6 +3930,29 @@ mod tests {
         assert_eq!(v.len(), 1, "{v:?}");
         assert!(!v[0].2 && v[0].1.len() == 1 && v[0].1[0].ends_with("(1/6)") && !v[0].1[0].starts_with(crate::game::OBJ_DONE), "{v:?}");
         assert!(c.take_mission_updates().is_empty());
+    }
+
+    /// The mission log's Experience / TallyRace / TallyMission count against the original run offline
+    /// (tools/count_text_reference.py: F-34957, F-62132, F-95375, 300 cases each): the whole text equal.
+    #[test]
+    fn count_text_matches_the_original() {
+        let text = include_str!("testdata/count_text_ref.txt");
+        let mut n = 0;
+        for line in text.lines() {
+            let (kind, rest) = line.split_once('|').unwrap();
+            let (prefix, rest) = rest.split_once('|').unwrap();
+            let (args, out) = rest.split_once(" -> ").unwrap();
+            let v: Vec<i32> = args.split(' ').map(|x| x.parse().unwrap()).collect();
+            let (done, count, target, base, found) = (v[0] != 0, v[1], v[2], v[3], v[4] != 0);
+            let want = match kind {
+                "0" if !found => prefix.to_string(),
+                "0" => format!("{prefix} {}", count_text(done, count.wrapping_sub(base), target)),
+                _ => format!("{prefix} {}", count_text(done, count, target)),
+            };
+            assert_eq!(out, want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 900);
     }
 
     /// The mission log's Stat count against the original run offline (tools/stat_text_reference.py: F-97850 with
