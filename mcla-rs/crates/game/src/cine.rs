@@ -21,6 +21,7 @@ use crate::render::Gpu;
 use crate::skin::{Clip, FaceShapes, SkinBuffer, SkinModel};
 use glam::{Mat4, Quat, Vec3};
 use hashbrown::HashMap;
+use crate::skin::{DOF_FLOAT, DOF_QUATERNION, DOF_VECTOR3};
 use mcla_formats::rage::anim::{animation_named, pack_entries, Animation, KIND_FOV, KIND_MOVER_ROTATION, KIND_MOVER_TRANSLATION, KIND_ROTATION, KIND_TRANSLATION};
 use mcla_formats::rage::Rd;
 use std::path::{Path, PathBuf};
@@ -607,6 +608,23 @@ fn aux_pack(scene: &str) -> Option<&'static str> {
     scene.starts_with("cut_cop_arrest").then_some("cut_cop_faces")
 }
 
+/// A vector track (kind, bone 0) of a scene clip at time `t`, sampled as F-15435 (`drvanim::sample_dof`).
+fn dof_vec(a: &Animation, kind: u8, t: f32) -> Option<Vec3> {
+    crate::drvanim::sample_dof(a, kind, 0, DOF_VECTOR3, t).map(|v| Vec3::new(v[0], v[1], v[2]))
+}
+
+/// A rotation track (kind, bone 0) of a scene clip at time `t`, sampled as F-15435.
+fn dof_rot(a: &Animation, kind: u8, t: f32) -> Option<Quat> {
+    crate::drvanim::sample_dof(a, kind, 0, DOF_QUATERNION, t).map(Quat::from_array)
+}
+
+/// A scene mover's place at time `t`: its mover track and its root's, each sampled as F-15435 (a missing one: zero / identity).
+fn mover_at(a: &Animation, t: f32) -> (Vec3, Quat) {
+    let p = dof_vec(a, KIND_MOVER_TRANSLATION, t).unwrap_or(Vec3::ZERO) + dof_vec(a, KIND_TRANSLATION, t).unwrap_or(Vec3::ZERO);
+    let r = dof_rot(a, KIND_MOVER_ROTATION, t).unwrap_or(Quat::IDENTITY) * dof_rot(a, KIND_ROTATION, t).unwrap_or(Quat::IDENTITY);
+    (p, r)
+}
+
 /// The set a cutscene draws for `set` (LookupDriverToCutscenePath / Name, F-58832 / F-81189): the character manager's
 /// map +116 (the HackedScale column of Boot.sco's RegisterDriverMappings), and when the local player's car is a motorcycle
 /// (F-17373, which with a player there stands for the script's own argument) the map +140 (the jacket column) - in the 45
@@ -1084,9 +1102,8 @@ impl Cine {
             let rd = Rd::new(&res);
             let (o, _) = pack_entries(&res).into_iter().find(|(_, n)| n == name)?;
             let a = animation_named(&rd, o)?;
-            let fr = if end { (a.frames.max(1) - 1) as f32 } else { 0.0 };
-            let p = a.track(KIND_MOVER_TRANSLATION, 0).map(|t| t.data.vec(fr)).unwrap_or(Vec3::ZERO) + a.track(KIND_TRANSLATION, 0).map(|t| t.data.vec(fr)).unwrap_or(Vec3::ZERO);
-            let r = a.track(KIND_MOVER_ROTATION, 0).map(|t| t.data.rot(fr)).unwrap_or(Quat::IDENTITY) * a.track(KIND_ROTATION, 0).map(|t| t.data.rot(fr)).unwrap_or(Quat::IDENTITY);
+            let t = if end { a.duration } else { 0.0 };
+            let (p, r) = mover_at(&a, t);
             return Some((p, r.normalize()));
         }
         None
@@ -1212,8 +1229,8 @@ impl Cine {
         let t = match memo {
             Some((at, snapped)) if at == sc.t => snapped,
             _ => {
-                let pos = |s: f32| cam.track(KIND_TRANSLATION, 0).map(|t| t.data.vec(cam.frame_at(s)));
-                let rot = |s: f32| cam.track(KIND_ROTATION, 0).map(|t| t.data.rot(cam.frame_at(s)));
+                let pos = |s: f32| dof_vec(cam, KIND_TRANSLATION, s);
+                let rot = |s: f32| dof_rot(cam, KIND_ROTATION, s);
                 let snapped = cam_cut_rule(&mut cut, true, sc.t, CAM_CUT_METRES, CAM_CUT_DEGREES, pos, rot);
                 *state = (cut, Some((sc.t, snapped)));
                 snapped
@@ -1224,8 +1241,7 @@ impl Cine {
 
     /// The scene camera at a (snapped) camera time.
     fn camera_at(sc: &Scene, cam: &Animation, t: f32) -> Option<(Vec3, Vec3, Vec3, f32)> {
-        let f = cam.frame_at(t);
-        let pos = cam.track(KIND_TRANSLATION, 0)?.data.vec(f);
+        let pos = dof_vec(cam, KIND_TRANSLATION, t)?;
         // (the scene camera update F-40303 starts the matrix as identity each update; the lens
         // track is a focal length in mm on a 35 mm gate, F-25555 (cam_sample); the render
         // camera's vertical angle is that divided by the viewport's aspect, 16:9 (F-79297, the
@@ -1233,8 +1249,8 @@ impl Cine {
         // lens, pi/4.)
         let mut m = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
         let (mut h, mut k14) = (std::f32::consts::FRAC_PI_4, 1.0);
-        let rot = cam.track(KIND_ROTATION, 0).map(|t| t.data.rot(f).to_array());
-        cam_sample(&mut m, &mut h, &mut k14, Some(pos), rot, cam.track(KIND_FOV, 0).map(|t| t.data.vec(f).x), None);
+        let rot = dof_rot(cam, KIND_ROTATION, t).map(|q| q.to_array());
+        cam_sample(&mut m, &mut h, &mut k14, Some(pos), rot, crate::drvanim::sample_dof(cam, KIND_FOV, 0, DOF_FLOAT, t).map(|v| v[0]), None);
         let fov = h / (16.0 / 9.0);
         let row = |i: usize| Vec3::new(m[4 * i], m[4 * i + 1], m[4 * i + 2]);
         Some((sc.origin.transform_point3(row(3)), sc.origin.transform_vector3(-row(2)).normalize_or(Vec3::Z), sc.origin.transform_vector3(row(1)).normalize_or(Vec3::Y), fov))
@@ -1268,9 +1284,7 @@ impl Cine {
     pub fn mover(&self, label: &str) -> Option<(Vec3, Quat)> {
         let sc = self.playing.as_ref()?;
         let m = sc.movers.iter().find(|m| m.label == label)?;
-        let f = m.anim.frame_at(sc.t);
-        let p = m.anim.track(KIND_MOVER_TRANSLATION, 0).map(|t| t.data.vec(f)).unwrap_or(Vec3::ZERO) + m.anim.track(KIND_TRANSLATION, 0).map(|t| t.data.vec(f)).unwrap_or(Vec3::ZERO);
-        let r = m.anim.track(KIND_MOVER_ROTATION, 0).map(|t| t.data.rot(f)).unwrap_or(Quat::IDENTITY) * m.anim.track(KIND_ROTATION, 0).map(|t| t.data.rot(f)).unwrap_or(Quat::IDENTITY);
+        let (p, r) = mover_at(&m.anim, sc.t);
         let (_, or, _) = sc.origin.to_scale_rotation_translation();
         Some((sc.origin.transform_point3(p), (or * r).normalize()))
     }

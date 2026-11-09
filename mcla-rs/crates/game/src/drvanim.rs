@@ -1016,13 +1016,71 @@ pub fn sample_track_in(tr: &mcla_formats::rage::anim::Track, i: usize, fr: f32, 
             Some(Chan::Static4(v)) => d.v = *v,
             _ => return,
         },
+        // (a float DOF - the camera's FOV, the face's float tracks: F-15435 asks the track's first channel, slot +36)
+        DOF_FLOAT => match tr.chans.first() {
+            Some(c) => d.v[0] = chan_at(c, i, fr),
+            None => return,
+        },
         _ => return,
     }
     d.flags &= !DOF_NO_VALUE;
 }
 
+/// One DOF of a clip at time `t` as F-15435 samples it (r6 0: no frame rounding) - the scene camera, the scene cars, the
+/// scenes' movers and roots read their tracks with it: the block, key and fraction of `sample_block`, the track of that
+/// block with the DOF's kind and id (the block's sorted list, F-75513's search), its value by the DOF's type (`DOF_VECTOR3`
+/// x y z, `DOF_QUATERNION` normalised in the mapped order, `DOF_FLOAT` x); None when the block has no such track. Checked
+/// against the original run offline on the 239 cine packs (test `the_dof_sampler_matches_the_original`).
+pub fn sample_dof(a: &mcla_formats::rage::anim::Animation, kind: u8, id: u16, ty: u8, t: f32) -> Option<[f32; 4]> {
+    let (b, i, fr) = sample_block(a, t);
+    let tr = block_tracks(a, b).iter().find(|x| x.kind == kind && x.bone_id == id)?;
+    let mut d = FrameDof { flags: ty | DOF_NO_VALUE, v: [0.0; 4] };
+    sample_track_in(tr, i, fr, &mut d, true);
+    (d.flags & DOF_NO_VALUE == 0).then_some(d.v)
+}
+
 #[cfg(test)]
 mod tests {
+    /// F-15435 run offline on the original's code over the 239 cine packs (work/driverlight/cinesamp/samp_ref.py: every clip's
+    /// root / mover / camera tracks and three others, 12 times each, block edges and the ends included - 61,860 cases; the
+    /// committed 4,000 of them, `MCLA_CINESAMP_FULL=<samp_ref.txt>` for all): "<pack> <anim> <kind> <id> <type> <t> -> <ret>
+    /// <flags> <4 words>"; `sample_dof` gives every value word (x y z of a vector, the four of a quaternion, x of a float)
+    /// bit for bit. Skipped without the disc's data.
+    #[test]
+    fn the_dof_sampler_matches_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let full = std::env::var("MCLA_CINESAMP_FULL").ok().and_then(|p| std::fs::read_to_string(p).ok());
+        let text = full.as_deref().unwrap_or(include_str!("testdata/cine_dof_ref.txt"));
+        let mut packs: std::collections::HashMap<String, Option<mcla_formats::rsc::Resource>> = Default::default();
+        let mut anims: std::collections::HashMap<(String, usize), mcla_formats::rage::anim::Animation> = Default::default();
+        let (mut n, mut bad) = (0, 0);
+        for line in text.lines() {
+            let (a, b) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split(' ').collect();
+            let o: Vec<&str> = b.split(' ').collect();
+            let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+            let pack = if w[0].contains('/') { w[0].to_string() } else { format!("resources/animation/cineanimpacks/{}.r1", w[0]) };
+            let res = packs.entry(pack.clone()).or_insert_with(|| crate::assets::load_resource_file(&std::path::Path::new(&root).join(&pack)).ok());
+            let Some(res) = res.as_ref() else { return };
+            let off = h(w[1]) as usize;
+            let an = anims.entry((pack, off)).or_insert_with(|| mcla_formats::rage::anim::animation_named(&mcla_formats::rage::Rd::new(res), off).unwrap());
+            let (kind, id, ty, t) = (h(w[2]) as u8, h(w[3]) as u16, h(w[4]) as u8, f32::from_bits(h(w[5])));
+            let words = match ty { DOF_QUATERNION => 4, DOF_FLOAT => 1, _ => 3 };
+            let want: Vec<u32> = o[2..2 + words].iter().map(|s| h(s)).collect();
+            let got = sample_dof(an, kind, id, ty, t).map(|v| v[..words].iter().map(|x| x.to_bits()).collect::<Vec<u32>>());
+            if (o[0] == "1") != got.is_some() || got.as_ref().is_some_and(|g| *g != want) {
+                if bad < 10 {
+                    eprintln!("{line}
+  port {got:08x?}");
+                }
+                bad += 1;
+            }
+            n += 1;
+        }
+        assert_eq!(bad, 0, "{bad} of {n} differ");
+        assert!(n >= 4000, "{n}");
+    }
+
     use super::*;
 
     /// The request tree in the offline harness's words (preorder ids) and the holders in the builders' order.

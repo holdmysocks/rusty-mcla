@@ -85,12 +85,13 @@ fn unit_or(v: Vec3, least: f32, other: Vec3) -> Vec3 {
     }
 }
 
+/// The mover's place / turn at time t, its track sampled as F-15435 (`drvanim::sample_dof`).
 fn pos_at(a: &Animation, t: f32) -> Option<Vec3> {
-    a.track(KIND_MOVER_TRANSLATION, 0).map(|k| k.data.vec(a.frame_at(t)))
+    crate::drvanim::sample_dof(a, KIND_MOVER_TRANSLATION, 0, crate::skin::DOF_VECTOR3, t).map(|v| Vec3::new(v[0], v[1], v[2]))
 }
 
 fn rot_at(a: &Animation, t: f32) -> Option<Quat> {
-    a.track(KIND_MOVER_ROTATION, 0).map(|k| k.data.rot(a.frame_at(t)))
+    crate::drvanim::sample_dof(a, KIND_MOVER_ROTATION, 0, crate::skin::DOF_QUATERNION, t).map(Quat::from_array)
 }
 
 /// `F-13038`: the cut test. t0 = t on the 1/30 s grid (from where the last test stood plus 1/30 if it
