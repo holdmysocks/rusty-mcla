@@ -631,4 +631,76 @@ mod tests {
         assert!((rec[0] - red[0].powf(1.0 / 2.2)).abs() < 2e-3, "the record holds it as on screen: {rec:?}");
         let _ = std::fs::remove_dir_all(&d);
     }
+
+    /// Release check (2026-11-08): a save written before the 40-slot strips - body colour, second colour, gauge /
+    /// interior rows as indices into the port's old palette with no colour of their own, a rim row's own colour, neon
+    /// and tint on -
+    /// loads, saves and loads again with every colour on screen unchanged, on two cars.
+    #[test]
+    fn an_old_save_keeps_its_colours_through_the_strips() {
+        type Look = ([f32; 4], [f32; 3], [[f32; 4]; 3], [[f32; 4]; 5], [f32; 3], [f32; 3]);
+        fn look(g: &mut Game, car: usize) -> Look {
+            g.current_car = car;
+            g.selected_car = car;
+            g.sync_car_paint();
+            let name = g.dir_name(car).to_ascii_lowercase();
+            let rec = g.mc4.as_ref().unwrap().car(&name).unwrap().clone();
+            let neon = rec.neon_ext().1.unwrap_or([9.0; 3]);
+            let tint = rec.tint_rgb().unwrap_or([9.0; 3]);
+            (g.paint_color(), g.paint_b_linear(), g.rim_finish(), g.interior_finish(), neon, tint)
+        }
+        fn close(a: &Look, b: &Look, what: &str) {
+            let v = |l: &Look| { let mut v: Vec<f32> = l.0.to_vec(); v.extend(l.1); for r in l.2 { v.extend(r); } for r in l.3 { v.extend(r); } v.extend(l.4); v.extend(l.5); v };
+            let (x, y) = (v(a), v(b));
+            for (k, (p, q)) in x.iter().zip(&y).enumerate() {
+                assert!((p - q).abs() < 2e-3, "{what}: value {k} {p} -> {q}
+{x:?}
+{y:?}");
+            }
+        }
+        let d = dir("oldsave");
+        let all = ["vp_vw_golf_83", "vp_test_mod_01"];
+        let mut g = Game::new(all.iter().map(PathBuf::from).collect(), 1);
+        g.data_dir = d.clone();
+        g.owned = all.iter().map(|s| s.to_string()).collect();
+        for c in all {
+            g.mc4_car_added(c, None);
+        }
+        // (the old state, per car: what a save of the last release held)
+        for (car, (body, b, ints, rims, neon, tint)) in [(0usize, (3usize, 6usize, [0usize, 6, 4, 2, 9, 7], Some(5usize), 3usize, 7usize)), (1, (8, 1, [0, 4, 1, 9, 5, 9], None, 12, 20))] {
+            g.current_car = car;
+            g.selected_car = car;
+            g.sync_car_paint();
+            g.color_idx = body;
+            g.paint_hsv = None;
+            g.paint_fade = 1;
+            g.paint_b = b;
+            g.car_x.paint_b_rgb = None;
+            g.int_colors = ints;
+            // (the rim rows' index was never saved - they come back stock - only their own colour, as the strip set it)
+            g.rim_cols = [2; 3];
+            g.slot_hsv = [None; 9];
+            g.slot_hsv[7] = rims.map(crate::game::rim_swatch_hsv);
+            g.neon_on = true;
+            g.neon_color = neon;
+            g.car_x.neon_rgb = None;
+            g.tint_level = 4;
+            g.tint_color = tint;
+            g.car_x.tint_rgb = None;
+            g.dirty = true;
+        }
+        // (the neon / tint colours compare in the record, which the save writes; the rest as the game shows them)
+        g.write_save(&d);
+        let before = [look(&mut g, 0), look(&mut g, 1)];
+        let mut g2 = game(&all, &d);
+        let after = [look(&mut g2, 0), look(&mut g2, 1)];
+        close(&before[0], &after[0], "car 0, first load");
+        close(&before[1], &after[1], "car 1, first load");
+        g2.write_save(&d);
+        let mut g3 = game(&all, &d);
+        let again = [look(&mut g3, 0), look(&mut g3, 1)];
+        close(&before[0], &again[0], "car 0, second load");
+        close(&before[1], &again[1], "car 1, second load");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }
