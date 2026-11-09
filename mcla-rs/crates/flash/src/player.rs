@@ -1672,7 +1672,9 @@ pub fn measure_string(movie: &Movie, font: &str, s: &str, size: f32) -> f32 {
         }
     }
     let Some(f) = first else { return 0.0 };
-    let em: f32 = s.chars().map(|ch| f.glyph_index(ch).and_then(|g| f.advances.get(g).copied()).unwrap_or(0.0)).sum();
+    // (the line measure F-53874 with no width limit, as F-30069 calls it: leading spaces and CRs skipped, the line
+    // ends at a CR; each character's glyph as the original finds it, a missing one glyph 0)
+    let em: f32 = s.trim_start_matches([' ', '\r']).split('\r').next().unwrap_or("").chars().map(|ch| f.text_advance(f.text_glyph(ch))).sum();
     em / 1024.0 * size
 }
 

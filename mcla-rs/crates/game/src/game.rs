@@ -8851,14 +8851,14 @@ impl Game {
                             for (k, (key, d)) in labels.iter().enumerate() {
                                 let idx = self.int_colors[k] % slots.len();
                                 let shown = self.int_open.filter(|o| o.0 == k).map_or(idx, |o| o.1 % slots.len());
-                                let rgb = self.slot_hsv[k].map_or(rgb_of(PALETTE[shown % PALETTE.len()]), |h| { let c = paint_hsv_to_rgb(h); rgb_of([c[0], c[1], c[2], 1.0]) });
+                                let rgb = (if self.int_open.map(|o| o.0) == Some(k) { self.int_open_hsv } else { self.slot_hsv[k] }).map_or(rgb_of(PALETTE[shown % PALETTE.len()]), |h| { let c = paint_hsv_to_rgb(h); rgb_of([c[0], c[1], c[2], 1.0]) });
                                 out.push(row(st(key, d), swatch_value(rgb, if self.int_open.map(|o| o.0) == Some(k) { idx as i32 } else { -1 }, &slots)));
                             }
                             // (INTERIOR COLOR D, E: colour slots 12, 13 of ColorsInt.sc.xml - the vehicle's own, `mc4`)
                             for (k, (key, d)) in [("G_IntDColor", "INTERIOR COLOR D"), ("G_IntEColor", "INTERIOR COLOR E")].iter().enumerate() {
                                 let idx = self.car_x.int_de_idx[k].0 % slots.len();
                                 let shown = self.int_open.filter(|o| o.0 == 9 + k).map_or(idx, |o| o.1 % slots.len());
-                                let rgb = self.car_x.int_de_hsv[k].map_or(rgb_of(PALETTE[shown % PALETTE.len()]), |h| { let c = paint_hsv_to_rgb(h); rgb_of([c[0], c[1], c[2], 1.0]) });
+                                let rgb = (if self.int_open.map(|o| o.0) == Some(9 + k) { self.int_open_hsv } else { self.car_x.int_de_hsv[k] }).map_or(rgb_of(PALETTE[shown % PALETTE.len()]), |h| { let c = paint_hsv_to_rgb(h); rgb_of([c[0], c[1], c[2], 1.0]) });
                                 out.push(row(st(key, d), swatch_value(rgb, if self.int_open.map(|o| o.0) == Some(9 + k) { idx as i32 } else { -1 }, &slots)));
                             }
                             rows = out;
@@ -8878,7 +8878,7 @@ impl Game {
                             for (k, (key, d)) in [("G_Rim1Color", "SPOKE A"), ("G_Rim2Color", "SPOKE B"), ("G_Rim3Color", "LIP")].iter().enumerate() {
                                 let idx = self.rim_cols[k] % slots.len();
                                 let shown = self.int_open.filter(|o| o.0 == 6 + k).map_or(idx, |o| o.1 % slots.len());
-                                let rgb = self.slot_hsv[6 + k].map_or(rgb_of(PALETTE[shown % PALETTE.len()]), |h| { let c = paint_hsv_to_rgb(h); rgb_of([c[0], c[1], c[2], 1.0]) });
+                                let rgb = (if self.int_open.map(|o| o.0) == Some(6 + k) { self.int_open_hsv } else { self.slot_hsv[6 + k] }).map_or(rgb_of(PALETTE[shown % PALETTE.len()]), |h| { let c = paint_hsv_to_rgb(h); rgb_of([c[0], c[1], c[2], 1.0]) });
                                 out.push(row(st(key, d), swatch_value(rgb, if self.int_open.map(|o| o.0) == Some(6 + k) { idx as i32 } else { -1 }, &slots)));
                             }
                             rows = out;
@@ -8897,6 +8897,9 @@ impl Game {
                             let swatch = |k: usize, idx: usize, own: Option<(usize, [f32; 3])>| {
                                 let idx = idx % strip.len();
                                 let shown = self.int_open.filter(|o| o.0 == k).map_or(idx, |o| o.1 % strip.len());
+                                // (the open row's own square keeps the colour the car had when the strip opened, as the paint rows:
+                                // the original's capture work/ui2/cap/c17 - the neon square stays the record's colour over swatch 0)
+                                let own = if self.int_open.map(|o| o.0) == Some(k) { self.int_open_free } else { own };
                                 let rgb = own.filter(|o| o.0 % strip.len() == shown).map_or(strip[shown], |o| free(o.1));
                                 swatch_value(rgb, if self.int_open.map(|o| o.0) == Some(k) { idx as i32 } else { -1 }, &strip)
                             };

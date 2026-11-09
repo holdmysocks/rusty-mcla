@@ -454,7 +454,7 @@ impl<'a> Builder<'a> {
         }
         let argb = 0xff00_0000 | (tint[0] as u32) << 16 | (tint[1] as u32) << 8 | tint[2] as u32;
         let color = apply_cx(argb, cx, self.alpha);
-        let adv = |c: char| font.glyph_index(c).and_then(|g| font.advances.get(g).copied()).unwrap_or(0.0);
+        let adv = |c: char| font.text_advance(font.text_glyph(c));
         let width = et.rect[0];
         let line_adv = (font.ascent as i32 + font.descent as i32 + et.leading as i32) as f32;
         let mut y = font.ascent as f32;
@@ -470,9 +470,7 @@ impl<'a> Builder<'a> {
                     _ => (0.0, 0.0),
                 };
                 for ch in line.chars() {
-                    if let Some(g) = font.glyph_index(ch) {
-                        self.glyph_quad(et.font, h, g, x, y, world, color);
-                    }
+                    self.glyph_quad(et.font, h, font.text_glyph(ch), x, y, world, color);
                     x += adv(ch) + extra;
                 }
                 y += line_adv;

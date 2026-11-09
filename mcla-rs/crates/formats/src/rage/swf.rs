@@ -175,6 +175,30 @@ pub struct Font {
 }
 
 impl Font {
+    /// The glyph of a character as the original's text measure and draw find it (`F-53874`, `F-50496`): below 128 the
+    /// font's ASCII table, unchecked; otherwise the code searched in the glyph list (compared as 16 bits), and a
+    /// code the font lacks takes glyph 0 - the space in every font of the movies - so it is drawn and advanced as one
+    /// (the string table's "±NEON COLOR": a space's indent before NEON COLOR).
+    pub fn text_glyph(&self, ch: char) -> usize {
+        let c = ch as u32;
+        if c < 128 {
+            return self.ascii[c as usize] as usize;
+        }
+        if c > 0xFFFF {
+            return 0;
+        }
+        self.codes.iter().position(|&k| k as u32 == c).unwrap_or(0)
+    }
+
+    /// The advance (em 1024) of glyph `g` for the text measure and draw: the font's advance table, or 800 for a font
+    /// without one (`F-53874`).
+    pub fn text_advance(&self, g: usize) -> f32 {
+        if self.advances.is_empty() {
+            return 800.0;
+        }
+        self.advances.get(g).copied().unwrap_or(0.0)
+    }
+
     pub fn glyph_index(&self, ch: char) -> Option<usize> {
         let c = ch as u32;
         if c < 128 && (c >= 32 || self.ascii[c as usize] != 0) {
