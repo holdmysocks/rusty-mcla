@@ -7,7 +7,7 @@ use glam::{Mat3, Quat, Vec3};
 
 use super::collision::WorldCollider;
 use super::gjk;
-use super::exact::{dot3 as vdot, dot_xyz, fma, fms, fnms, recip};
+use super::exact::{dot3 as vdot, dot_xyz, dot_xzy, fma, fms, fnms, recip};
 use super::hull::HullShape;
 
 /// One car's hull in the world: its triangles in the file's order, their normals and the
@@ -758,9 +758,11 @@ fn corner_hit(best: f32, o: Vec3, dr: Vec3, ep: Vec3, rr: f32, c: Vec3) -> Optio
 
 /// The ball (radius `r`, from `o` by `dd`, length `l`, end `ep`) against the edge from `a` by `e`
 /// (F-58482): the side of the capsule by its quadratic, else the two corners; (depth, contact,
-/// normal) when deeper than `best`. `n` is the polygon's normal.
+/// normal) when deeper than `best`. `n` is the polygon's normal. With `wedge` (the second face's normal of a box edge,
+/// r6 of F-62040): the side's touch is taken when the sweep does not run along the sum of the two faces' normals, else
+/// when the wedge test F-22406 lets its normal through.
 #[allow(clippy::too_many_arguments)]
-fn sweep_edge(best: f32, o: Vec3, dd: Vec3, ep: Vec3, a: Vec3, e: Vec3, r: f32, l: f32, n: Vec3) -> Option<(f32, Vec3, Vec3)> {
+fn sweep_edge(best: f32, o: Vec3, dd: Vec3, ep: Vec3, a: Vec3, e: Vec3, r: f32, l: f32, n: Vec3, wedge: Option<Vec3>) -> Option<(f32, Vec3, Vec3)> {
     if !(l > 1e-6) {
         return None;
     }
@@ -787,6 +789,12 @@ fn sweep_edge(best: f32, o: Vec3, dd: Vec3, ep: Vec3, a: Vec3, e: Vec3, r: f32, 
                             let p = e * s + a;
                             let g = ct - p;
                             let nn = g * rsqrt0(vdot(g, g));
+                            if let Some(nb) = wedge {
+                                if !(vdot(dd, n + nb) >= 0.0) || wedge_test(nn, n, nb) {
+                                    return Some((dep, p, nn));
+                                }
+                                return None;
+                            }
                             if !(vdot(dd, n) >= 0.0) || !(vdot(n, nn) >= 0.0) {
                                 return Some((dep, p, nn));
                             }
@@ -806,6 +814,35 @@ fn sweep_edge(best: f32, o: Vec3, dd: Vec3, ep: Vec3, a: Vec3, e: Vec3, r: f32, 
         return corner_hit(best, o, dr, ep, rr, b);
     }
     None
+}
+
+/// F-22406 as F-58482 calls it (no frame, r7 0, tolerance 0.003): whether the normal `nn` lies within the wedge of the
+/// faces `na` and `nb`. Not when it faces away from their sum; the part along the edge (na x nb, its unit by the f64
+/// estimate and two f64 Newton steps where its square is above 1e-6) taken out of `nn`, then within unless both
+/// crosses of that with the faces are above 0.003 |p|^2 in square and agree in direction.
+fn wedge_test(nn: Vec3, na: Vec3, nb: Vec3) -> bool {
+    if dot_xyz(nn, nb + na) < 0.0 {
+        return false;
+    }
+    let c = vcross(na, nb);
+    let c2 = dot_xyz(c, c);
+    let mut p = nn;
+    if c2 > f32::from_bits(0x3586_37BD) {
+        let x = c2 as f64;
+        let y0 = (1.0 / x.sqrt()) as f32 as f64;
+        let y1 = (-(y0 * y0).mul_add(x, -1.0)).mul_add(y0 * 0.5, y0);
+        let y2 = (-(y1 * y1).mul_add(x, -1.0)).mul_add(y1 * 0.5, y1);
+        let k = if -x >= 0.0 { 0.0 } else { y2 as f32 };
+        let cn = c * k;
+        let pd = dot_xyz(nn, cn);
+        p = -(cn * pd - nn);
+    }
+    let (u, w) = (vcross(p, na), vcross(p, nb));
+    let tol = dot_xyz(p, p) * f32::from_bits(0x3B44_9BA6);
+    if !(dot_xyz(u, w) > 0.0) || !(dot_xyz(u, u) > tol) {
+        return true;
+    }
+    !(dot_xyz(w, w) > tol)
 }
 
 /// The record of a touch: when (0..1 along the sweep), how deep (the distance carried past it),
@@ -857,7 +894,7 @@ pub fn sweep_polygon_hit(o: Vec3, d: Vec3, r: f32, v: &[Vec3; 3], n: Vec3) -> Op
     let mut best = -1.0f32;
     let mut hit = None;
     for i in 0..3 {
-        let Some((dep, p, nn)) = sweep_edge(best, o, d, ep, v[i], v[(i + 1) % 3] - v[i], r, l, n) else { continue };
+        let Some((dep, p, nn)) = sweep_edge(best, o, d, ep, v[i], v[(i + 1) % 3] - v[i], r, l, n, None) else { continue };
         if fma(nn.z, d.z, fma(nn.x, d.x, nn.y * d.y)) > 0.0 || !(dep > best) || fma(n.z, d.z, fma(n.x, d.x, n.y * d.y)) > 0.0 {
             continue;
         }
@@ -1193,25 +1230,30 @@ fn edge_between(fa: i32, fb: i32) -> i32 {
 /// inside the box the faces nearest the two ends (F-21753): the same face; opposite faces - the least of the four other
 /// faces' pushes (h - min, max + h); neighbours - their edge when the piece is longer than the difference of the ends'
 /// squared distances from that edge's line, else the face with the larger of the two least depths. (kind, index).
-fn box_clip(code: i32, half: Vec3, start: &mut Vec3, end: &mut Vec3, dir: &mut Vec3, t: f32) -> (i32, i32) {
+/// Directed (`directed_r` the query's radius R, its stack byte +95 set): the crossing also replaces the end when it lies
+/// within R of the box across the region's two other axes (outside one: |c| < h + R on it; outside both: the fused
+/// squares of the two gaps under R^2; inside both: always), and a middle inside the box is left as (-1, its index).
+fn box_clip(code: i32, half: Vec3, start: &mut Vec3, end: &mut Vec3, dir: &mut Vec3, t: f32, directed_r: Option<f32>) -> (i32, i32) {
     let c = *dir * t + *start;
     let axis = (code / 2) as usize;
     let j1 = (axis + 1) % 3;
     let j2 = (j1 + 1) % 3;
     let ac = c.abs();
     let (s, e) = (*start, *end);
-    let nearer_start = if !(ac[j1] < half[j1]) {
+    let big_r = directed_r.unwrap_or(0.0);
+    let (nearer_start, close) = if !(ac[j1] < half[j1]) {
         if ac[j2] < half[j2] {
-            s[j1].abs() < e[j1].abs()
+            (s[j1].abs() < e[j1].abs(), ac[j1] < half[j1] + big_r)
         } else {
-            fma(s[j2], s[j2], s[j1] * s[j1]) < fma(e[j2], e[j2], e[j1] * e[j1])
+            let (g1, g2) = (ac[j1] - half[j1], ac[j2] - half[j2]);
+            (fma(s[j2], s[j2], s[j1] * s[j1]) < fma(e[j2], e[j2], e[j1] * e[j1]), fma(g2, g2, g1 * g1) < big_r * big_r)
         }
     } else if ac[j2] < half[j2] {
-        s[axis].abs() < e[axis].abs()
+        (s[axis].abs() < e[axis].abs(), true)
     } else {
-        s[j2].abs() < e[j2].abs()
+        (s[j2].abs() < e[j2].abs(), ac[j2] < half[j2] + big_r)
     };
-    if nearer_start {
+    if nearer_start || (directed_r.is_some() && close) {
         *end = c;
     } else {
         *start = c;
@@ -1219,7 +1261,7 @@ fn box_clip(code: i32, half: Vec3, start: &mut Vec3, end: &mut Vec3, dir: &mut V
     let (s, e) = (*start, *end);
     *dir = e - s;
     let (kind, index) = box_feature((e + s) * 0.5, half);
-    if kind != -1 {
+    if kind != -1 || directed_r.is_some() {
         return (kind, index as i32);
     }
     let fa = near_face(half, s);
@@ -1322,7 +1364,7 @@ fn capsule_box(a: Vec3, b: Vec3, big_r: f32, centre: Vec3, size: Vec3) -> Option
         let (k, i) = box_feature(d * 0.5 + a0, half);
         (k, i as i32)
     } else if n == 1 {
-        let ki = box_clip(codes[0], half, &mut start, &mut end, &mut dir, ts[0]);
+        let ki = box_clip(codes[0], half, &mut start, &mut end, &mut dir, ts[0], None);
         let tol = f32::from_bits(0x3586_37BD);
         let kept = (0..3).all(|k| a0[k] + tol >= start[k] && start[k] >= a0[k] - tol);
         #[cfg(test)]
@@ -1378,7 +1420,7 @@ fn capsule_box(a: Vec3, b: Vec3, big_r: f32, centre: Vec3, size: Vec3) -> Option
         start = d * t_lo + a0;
         end = d * t_hi + a0;
         dir = end - start;
-        box_clip(codes[chosen], half, &mut start, &mut end, &mut dir, rel)
+        box_clip(codes[chosen], half, &mut start, &mut end, &mut dir, rel, None)
     };
     #[cfg(test)]
     tests::LAST_BOX.with(|c| c.set((kind, n)));
@@ -1495,6 +1537,206 @@ fn capsule_box(a: Vec3, b: Vec3, big_r: f32, centre: Vec3, size: Vec3) -> Option
     };
     let p = d * t + a0;
     let point = std::hint::black_box(-(normal * (big_r - depth) - p)) + centre;
+    Some(CapsulePrimHit { depth, t, normal, point })
+}
+
+/// F-11472, the directed branch (the query's byte +212 = 1, set by F-13494), on a sphere, capsule or box bound: the
+/// ball of radius `big_r` swept from `a` to `b` (the query's +176 / +192 in the bound's frame). A sphere: the first
+/// crossing t of the segment with the sphere of radius r + R (F-53035; a start inside: none); a capsule: the first
+/// answer of F-40312 against the capsule of radius r + R (none: no record), its axis place s clamped to [0, 1], the
+/// bound's point (0, L/2 - s L, 0), the record's index its part (0 lower cap, 1 upper, 2 side). Then n = q + p of the
+/// sweep's point p = d t + a0; none when n runs along the sweep (n . d > 0); the normal n / |n| (the estimate with one
+/// Newton step), the depth |d| (1 - t). A box is `capsule_box_directed` (index 0). The point -(normal R - p) about the
+/// centroid. (hit, the record's index +76). Rules in docs/reference/cameras/probe_rule.md "F-11472 directed"; checked to
+/// the bit against the original run offline (`capsule_directed_matches_the_original`).
+pub fn capsule_directed(a: Vec3, b: Vec3, big_r: f32, prim: &Primitive) -> Option<(CapsulePrimHit, u16)> {
+    let d = b - a;
+    let (centre, t, q, index) = match *prim {
+        Primitive::Sphere { centre, r } => {
+            let reach = r + big_r;
+            (centre, seg_sphere(a - centre, d, reach * reach)?, Vec3::ZERO, 0)
+        }
+        Primitive::Capsule { centre, r, len } => {
+            let h = len * 0.5;
+            let (n, t0, _, k0, _, s0, _) = seg_capsule_s(a - centre, b - centre, len, r + big_r);
+            if n == 0 {
+                return None;
+            }
+            let s = if s0 >= 0.0 { s0 } else { 0.0 };
+            let s = if s - 1.0 >= 0.0 { 1.0 } else { s };
+            (centre, t0, Vec3::new(0.0, fnms(s, len, h), 0.0), k0 as u16)
+        }
+        Primitive::Box { centre, size } => return capsule_box_directed(a, b, big_r, centre, size).map(|h| (h, 0)),
+    };
+    let a0 = a - centre;
+    let p = d * t + a0;
+    let n = q + p;
+    if dot_xzy(n, d) > 0.0 {
+        return None;
+    }
+    let normal = n * rsqrt0(vdot(n, n));
+    let depth = dot_xyz(d, d).sqrt() * (1.0 - t);
+    let point = std::hint::black_box(-(normal * big_r - p)) + centre;
+    Some((CapsulePrimHit { depth, t, normal, point }, index))
+}
+
+/// F-11472 directed on a box bound (size `size` about `centre`): the face planes' crossings as the undirected branch
+/// finds them; none: the feature of the axis's middle; one: the axis cut there (F-79106 directed); more: how far
+/// outside its face each crossing lies, the earliest crossing within R of its face (2 when none), the crossing picked
+/// in order - the first one not after that earliest, then one lying less outside, outside R and before the earliest
+/// when the held one lies outside R or comes later, or one before the held one when the held one lies within R - and the
+/// piece between its neighbouring crossings cut there (F-79106 directed). By the feature: a corner the sweep does not
+/// run towards (d . corner not above 0): F-43026 from the piece's start along its unit direction to the axis's end
+/// (depth above 0), t = (|d| - depth) / |d| (0.5 for |d| not above 1e-6); an edge: F-62040 (F-58482 with the wedge of
+/// its two faces) on the piece, the depth that plus how much shorter the piece's end lies from the start than |d|; a
+/// face whose axis the piece's start lies outside of by R: the push of the nearer end (as the undirected face) over
+/// |d| on that axis, none when the start lies within the pushed back point on that axis or the way to it runs
+/// against d, t = 1 - that, the depth |d| times it. A piece inside the box: none.
+fn capsule_box_directed(a: Vec3, b: Vec3, big_r: f32, centre: Vec3, size: Vec3) -> Option<CapsulePrimHit> {
+    let eps = f32::from_bits(0x3586_37BD);
+    let d = b - a;
+    let a0 = a - centre;
+    let half = size * 0.5;
+    let dd = fma(d.x, d.x, fma(d.y, d.y, d.z * d.z));
+    let dlen = if dd > 0.0 { dd.sqrt() } else { 0.0 };
+    let mut ts: Vec<f32> = Vec::with_capacity(6);
+    let mut codes: Vec<i32> = Vec::with_capacity(6);
+    for ax in 0..3 {
+        if d[ax] == 0.0 {
+            continue;
+        }
+        let inv = 1.0 / d[ax];
+        for (k, plane) in [(0, half[ax]), (1, -half[ax])] {
+            let t = (plane - a0[ax]) * inv;
+            if !(t < 0.0) && !(t > 1.0) {
+                ts.push(t);
+                codes.push(2 * ax as i32 + k);
+            }
+        }
+    }
+    let n = ts.len();
+    let mut start = a0;
+    let mut end = a0 + d;
+    let mut dir = d;
+    let (kind, index) = if n == 0 {
+        let (k, i) = box_feature(d * 0.5 + a0, half);
+        (k, i as i32)
+    } else if n == 1 {
+        // (the kept piece's range the undirected branch keeps is not read by the directed features)
+        box_clip(codes[0], half, &mut start, &mut end, &mut dir, ts[0], Some(big_r))
+    } else {
+        let mut out = [0.0f32; 6];
+        let mut earliest = 2.0f32;
+        for i in 0..n {
+            let p = (d * ts[i] + a0).abs();
+            let j1 = ((codes[i] / 2 + 1) % 3) as usize;
+            let j2 = (j1 + 1) % 3;
+            let (h1, p1, p2, h2) = (half[j1], p[j1], p[j2], half[j2]);
+            out[i] = if p1 > h1 {
+                if p2 > h2 {
+                    let (u, v) = (p1 - h1, p2 - h2);
+                    fma(v, v, u * u).sqrt()
+                } else {
+                    p1 - h1
+                }
+            } else if p2 > h2 {
+                p2 - h2
+            } else {
+                let (g1, g2) = (p1 - h1, p2 - h2);
+                if !(g2.abs() < g1.abs()) { g1 } else { g2 }
+            };
+            if out[i] < big_r && ts[i] < earliest {
+                earliest = ts[i];
+            }
+        }
+        let mut chosen: Option<usize> = None;
+        for i in 0..n {
+            let take = match chosen {
+                // (past the earliest the original compares with the words before its two arrays, which this frame
+                // leaves unset; taken as NaN here: not picked)
+                None => !(ts[i] > earliest),
+                Some(c) => {
+                    (out[i] < out[c] && out[i] > big_r && ts[i] < earliest && (out[c] > big_r || ts[i] < ts[c]))
+                        || (ts[i] < ts[c] && out[c] < big_r)
+                }
+            };
+            if take {
+                chosen = Some(i);
+            }
+        }
+        // (none picked only for NaN crossings)
+        let chosen = chosen?;
+        let (mut t_lo, mut t_hi) = (0.0f32, 1.0f32);
+        let tr = ts[chosen];
+        for (k, &tk) in ts.iter().enumerate() {
+            if k == chosen {
+                continue;
+            }
+            if tk < tr {
+                if tk > t_lo {
+                    t_lo = tk;
+                }
+            } else if tk > tr && tk < t_hi {
+                t_hi = tk;
+            }
+        }
+        let rel = (tr - t_lo) / (t_hi - t_lo);
+        start = d * t_lo + a0;
+        end = d * t_hi + a0;
+        dir = end - start;
+        box_clip(codes[chosen], half, &mut start, &mut end, &mut dir, rel, Some(big_r))
+    };
+    #[cfg(test)]
+    tests::LAST_BOX.with(|c| c.set((kind, n)));
+    let (depth, t, normal) = match kind {
+        0 => {
+            let cu = Vec3::from(BOX_CORNER[index as usize]);
+            if fma(d.x, cu.x, fma(d.y, cu.y, cu.z * d.z)) > 0.0 {
+                return None;
+            }
+            let corner = (cu * half) * 2.0;
+            let dr = dir * rsqrt0(vdot(dir, dir));
+            let (dep, _, nrm) = corner_hit(0.0, start, dr, a0 + d, big_r * big_r, corner)?;
+            (dep, if dlen > eps { (dlen - dep) / dlen } else { 0.5 }, nrm)
+        }
+        1 => {
+            let (c0, c1) = EDGE_CORNERS[index as usize];
+            let k = half * 2.0;
+            let p = Vec3::from(BOX_CORNER[c0]) * k;
+            let e = Vec3::from(BOX_CORNER[c1]) * k - p;
+            let (fa, fb) = BOX_EDGE[index as usize];
+            let l = dot_xyz(dir, dir).sqrt();
+            let (dep, _, nrm) = sweep_edge(0.0, start, dir, end, p, e, big_r, l, BOX_FACE[fa], Some(BOX_FACE[fb]))?;
+            let w = end - a0;
+            let depth = (dlen - dot_xzy(w, w).sqrt()) + dep;
+            (depth, if dlen > eps { (dlen - depth) / dlen } else { 0.5 }, nrm)
+        }
+        2 => {
+            let ax = (index / 2) as usize;
+            if start[ax].abs() < half[ax] + big_r {
+                return None;
+            }
+            let base = if !(start[ax].abs() < end[ax].abs()) { a0 + d } else { a0 };
+            let nrm = BOX_FACE[index as usize];
+            let q = -(nrm * big_r - base);
+            let depth = if nrm[ax] * q[ax] >= 0.0 { half[ax] - q[ax].abs() } else { q[ax].abs() + half[ax] };
+            if depth < 0.0 {
+                return None;
+            }
+            let f0 = if d[ax].abs() > eps { depth / d[ax].abs() } else { 0.0 };
+            let q2 = -(d * f0 - q);
+            if start[ax].abs() < q2[ax].abs() {
+                return None;
+            }
+            if dot_xyz(q2 - a0, d) < 0.0 {
+                return None;
+            }
+            (dlen * f0, 1.0 - f0, nrm)
+        }
+        _ => return None,
+    };
+    let p = d * t + a0;
+    let point = std::hint::black_box(-(normal * big_r - p)) + centre;
     Some(CapsulePrimHit { depth, t, normal, point })
 }
 
@@ -2425,9 +2667,11 @@ impl ResultList {
 /// The undirected capsule query as the dispatch sees it: its ends +176 / +192 and radius +208 in the current frame, its
 /// box +96 / +112 (the ends' smaller / larger values less / plus the radius; the list's box +0 / +16, which F-89028
 /// tests, is another, left as it is), the material mask +88, the polygon index +60, the caller's f30's high word (what F-44891 saves in the stack word the
-/// polygon test's line part reads), and the result list.
+/// polygon test's line part reads), and the result list. `directed` is the byte +212: F-13494 sets it (the cameras' swept
+/// ball), F-55975 clears it.
 #[derive(Clone, Debug)]
 pub struct CapsuleQuery {
+    pub directed: bool,
     pub a: Vec3,
     pub b: Vec3,
     pub r: f32,
@@ -2441,7 +2685,23 @@ pub struct CapsuleQuery {
 
 /// F-11472 (undirected) on a primitive or curved bound with its record: no answer, no list call; the bound's material
 /// (index 0) against the mask; a slot by depth and the cap R at the contact; the record (part 0, kind 2, +80 1).
+/// Directed (+212 set): `capsule_directed`, the material asked by the record's index (the primitives' getter answers the
+/// bound's one material whatever the index), the cap FLT_MAX, the record's index the capsule's part; a curved bound's
+/// directed branch (the cast F-81943) is not ported and makes no record.
 fn capsule_prim_record(q: &mut CapsuleQuery, b: &ProbeBound, inst: u32) {
+    if q.directed {
+        let ProbeShape::Prim(p) = &b.shape else { return };
+        let Some((h, index)) = capsule_directed(q.a, q.b, q.r, p) else { return };
+        let mat = b.material(0);
+        if mat & q.mask != 0 {
+            return;
+        }
+        if let Some(k) = q.list.alloc(h.depth, f32::MAX, h.point) {
+            q.list.records[k] =
+                Record { instance: inst, point: h.point, normal: h.normal, bound_normal: h.normal, t: h.t, depth: h.depth, material: mat, index, kind: 2, below: 1, part: 0 };
+        }
+        return;
+    }
     let h = match &b.shape {
         ProbeShape::Prim(p) => capsule_primitive(q.a, q.b, q.r, p),
         ProbeShape::Curved { wheel, centroid, margin } => Some(capsule_curved(q.a, q.b, q.r, wheel, *centroid, *margin)),
@@ -2475,6 +2735,19 @@ fn capsule_poly_record(q: &mut CapsuleQuery, b: &ProbeBound, verts: &[Vec3], pol
         }
         _ => Some(Beside { normal: Vec3::Z, v0x: None }),
     };
+    if q.directed {
+        // F-43031 directed: the ball swept along b - a against the polygon's front, the cap FLT_MAX
+        let Some(h) = sweep_polygon_hit(q.a, q.b - q.a, q.r, &v, n) else { return };
+        let mat = b.material(mats.get(i).copied().unwrap_or(0) as usize);
+        if mat & q.mask != 0 {
+            return;
+        }
+        if let Some(k) = q.list.alloc(h.depth, f32::MAX, h.contact) {
+            q.list.records[k] =
+                Record { instance: inst, point: h.contact, normal: h.normal, bound_normal: n, t: h.t, depth: h.depth, material: mat, index: i as u16, kind: 2, below: 1, part: 0 };
+        }
+        return;
+    }
     let mut slot = q.f30_high;
     let h = capsule_polygon(q.a, q.b, q.r, &v, n, n, beside, &mut slot);
     let mat = b.material(mats.get(i).copied().unwrap_or(0) as usize);
@@ -2796,8 +3069,20 @@ impl LevelFilter<'_> {
 /// sweep is blocked when the first record's instance word is set. `f30_high` is the caller's f30 (the polygon test's
 /// stack word, 9.7).
 pub fn capsule_level<'a>(a: Vec3, b: Vec3, r: f32, mask: u32, cap: usize, f30_high: u32, filter: &LevelFilter, objects: impl IntoIterator<Item = LevelObject<'a>>) -> CapsuleQuery {
+    level_query(false, a, b, r, mask, cap, f30_high, filter, objects)
+}
+
+/// The cameras' swept ball (F-80278 with the directed set-up F-13494, then F-91312): as `capsule_level` with the query's
+/// +212 set, so each primitive and polygon is met by the directed branch (`capsule_directed`, F-43031 directed). A curved
+/// bound (type 5) makes no record here: its directed cast F-81943 is not ported.
+pub fn sweep_level<'a>(a: Vec3, b: Vec3, r: f32, mask: u32, cap: usize, filter: &LevelFilter, objects: impl IntoIterator<Item = LevelObject<'a>>) -> CapsuleQuery {
+    level_query(true, a, b, r, mask, cap, 0, filter, objects)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn level_query<'a>(directed: bool, a: Vec3, b: Vec3, r: f32, mask: u32, cap: usize, f30_high: u32, filter: &LevelFilter, objects: impl IntoIterator<Item = LevelObject<'a>>) -> CapsuleQuery {
     let vol = CullVolume::capsule(a, b, r);
-    let mut q = CapsuleQuery { a, b, r, lo: Vec3::ZERO, hi: Vec3::ZERO, mask, index: 0xFFFF, f30_high, list: ResultList::new(cap) };
+    let mut q = CapsuleQuery { directed, a, b, r, lo: Vec3::ZERO, hi: Vec3::ZERO, mask, index: 0xFFFF, f30_high, list: ResultList::new(cap) };
     for o in objects {
         if !filter.takes(&o, &vol) {
             continue;
@@ -2987,6 +3272,14 @@ fn seg_sphere(w: Vec3, d: Vec3, r2: f32) -> Option<f32> {
 /// The side by the xz quadratic (the line misses when (a.z d.x - a.x d.z)^2 > r^2 |d.xz|^2), the caps' spheres where an
 /// end of the side's span lies past a cap, a nearly vertical segment through the caps directly. Operation for operation.
 fn seg_capsule(a: Vec3, b: Vec3, len: f32, r: f32) -> (u32, f32, f32, i32, i32) {
+    let (n, t0, t1, k0, k1, _, _) = seg_capsule_s(a, b, len, r);
+    (n, t0, t1, k0, k1)
+}
+
+/// F-40312 with its axis outputs (r9 / r10): as `seg_capsule`, and per answer the place along the axis s = (y + L/2) x
+/// (1 / L) of the side's height y there (the side's quadratic heights, or the caps' ends of an upright segment; 0.5 for
+/// L not above 1e-6), swapped with the answers; s1 only with two answers (else 0).
+fn seg_capsule_s(a: Vec3, b: Vec3, len: f32, r: f32) -> (u32, f32, f32, i32, i32, f32, f32) {
     let rr = r * r;
     let (mut t0, mut t1, mut k0, mut k1) = (-1.0f32, -1.0f32, -1i32, -1i32);
     let d = b - a;
@@ -2998,7 +3291,7 @@ fn seg_capsule(a: Vec3, b: Vec3, len: f32, r: f32) -> (u32, f32, f32, i32, i32) 
     if a2 > eps {
         let f7 = fms(a.z, dx, a.x * dz);
         if f7 * f7 > rr * a2 {
-            return (0, -1.0, -1.0, -1, -1);
+            return (0, -1.0, -1.0, -1, -1, 0.0, 0.0);
         }
         let c7 = fma(a.z, a.z, a.x * a.x);
         let bq = fma(a.z, dz, a.x * dx);
@@ -3058,11 +3351,11 @@ fn seg_capsule(a: Vec3, b: Vec3, len: f32, r: f32) -> (u32, f32, f32, i32, i32) 
         }
     } else {
         if !(dy.abs() > eps) {
-            return (0, -1.0, -1.0, -1, -1);
+            return (0, -1.0, -1.0, -1, -1, 0.0, 0.0);
         }
         let q = rr - fma(b.x, b.x, b.z * b.z);
         if !(q > 0.0) {
-            return (0, -1.0, -1.0, -1, -1);
+            return (0, -1.0, -1.0, -1, -1, 0.0, 0.0);
         }
         let s = q.sqrt();
         k0 = 0;
@@ -3079,22 +3372,25 @@ fn seg_capsule(a: Vec3, b: Vec3, len: f32, r: f32) -> (u32, f32, f32, i32, i32) 
         y0 = lo;
         y1 = hi;
     }
-    let _ = (y0, y1);
+    let inv_len = 1.0 / len;
+    let s_of = |y: f32| if len > eps { (y + h) * inv_len } else { 0.5 };
     let first = k0 != -1 && !(t0 < 0.0) && !(t0 > 1.0);
     if first {
+        let s0 = s_of(y0);
         let second = k1 != -1 && !(t1 < 0.0) && !(t1 > 1.0);
         if !second {
-            return (1, t0, t1, k0, k1);
+            return (1, t0, t1, k0, k1, s0, 0.0);
         }
+        let s1 = s_of(y1);
         if t0 > t1 {
-            return (2, t1, t0, k1, k0);
+            return (2, t1, t0, k1, k0, s1, s0);
         }
-        return (2, t0, t1, k0, k1);
+        return (2, t0, t1, k0, k1, s0, s1);
     }
     if k1 == -1 || t1 < 0.0 || t1 > 1.0 {
-        return (0, t0, t1, k0, k1);
+        return (0, t0, t1, k0, k1, 0.0, 0.0);
     }
-    (1, t1, t1, k1, k1)
+    (1, t1, t1, k1, k1, s_of(y1), 0.0)
 }
 
 /// F-54304: the segment from `p` (from the box's centre) along `d` against the box of half sizes `h` - the slabs per
@@ -4218,6 +4514,55 @@ mod tests {
     }
 
     #[test]
+    fn capsule_directed_matches_the_original() {
+        // F-11472's directed branch run whole offline (tools/capsule_directed_reference.py): spheres, capsules, boxes
+        let u = |h: &str| u32::from_str_radix(&h.replace('_', ""), 16).unwrap();
+        let mut seen = std::collections::BTreeMap::new();
+        for (k, line) in include_str!("../testdata/capsule_directed_ref.txt").lines().enumerate() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(u).collect();
+            let x: Vec<u32> = o.split_whitespace().map(u).collect();
+            let f = |i: usize| f32::from_bits(w[i]);
+            let p = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let prim = match w[0] {
+                0 => Primitive::Sphere { centre: p(1), r: f(4) },
+                1 => Primitive::Capsule { centre: p(1), r: f(5), len: f(6) },
+                _ => Primitive::Box { centre: p(1), size: p(7) },
+            };
+            let (a, b, big_r) = (p(10), p(13), f(16));
+            let h = capsule_directed(a, b, big_r, &prim);
+            let way = if w[0] == 3 { LAST_BOX.with(|c| c.get()) } else { (h.map_or(-2, |h| h.1 as i32), 0) };
+            *seen.entry((w[0], way.0, way.1.min(2), h.is_some())).or_insert(0) += 1;
+            let Some((h, index)) = h else {
+                assert_eq!(&x[0..2], &[0, 0], "line {k}: no record");
+                continue;
+            };
+            let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+            let mat = (index as u32 + 1) << 8;
+            if mat & w[17] != 0 {
+                assert_eq!(&x[0..2], &[0, 0], "line {k}: material");
+                continue;
+            }
+            assert_eq!([x[0], x[1]], [(h.depth > 0.0) as u32, 1], "line {k}: result, list call");
+            assert_eq!([x[2], x[3]], [h.depth.to_bits(), f32::MAX.to_bits()], "line {k}: depth, cap");
+            assert_eq!(&x[4..7], &bits(h.point), "line {k}: point");
+            if w[18] != 0 && h.depth > 0.0 {
+                assert_eq!(x[7], 0x1234, "line {k}: instance");
+                assert_eq!(&x[8..11], &bits(h.point), "line {k}: contact");
+                assert_eq!(&x[11..14], &bits(h.normal), "line {k}: normal");
+                assert_eq!(&x[14..17], &bits(h.normal), "line {k}: bound normal");
+                assert_eq!(&x[17..20], &[h.t.to_bits(), h.depth.to_bits(), mat], "line {k}: t, depth, material");
+                assert_eq!(&x[20..24], &[index as u32, 2, 1, 0], "line {k}: index, kind, +80, +82");
+            }
+        }
+        assert_eq!(
+            format!("{seen:?}"),
+            "{(0, -2, 0, false): 842, (0, 0, 0, true): 377, (1, -2, 0, false): 1711, (1, 0, 0, true): 261, (1, 1, 0, true): 243, (1, 2, 0, true): 166, (3, -1, 0, false): 186, (3, -1, 1, false): 157, (3, -1, 2, false): 194, \
+            (3, 0, 0, false): 402, (3, 0, 0, true): 92, (3, 0, 1, false): 143, (3, 0, 1, true): 96, (3, 0, 2, false): 181, (3, 0, 2, true): 355, (3, 1, 0, false): 428, (3, 1, 0, true): 59, (3, 1, 1, false): 380, (3, 1, 1, true): 127, (3, 1, 2, false): 492, (3, 1, 2, true): 539, (3, 2, 0, false): 274, (3, 2, 0, true): 48, (3, 2, 1, false): 334, (3, 2, 1, true): 112, (3, 2, 2, false): 397, (3, 2, 2, true): 404}"
+        );
+    }
+
+    #[test]
     fn capsule_dispatch_matches_the_original() {
         let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
         let Ok(d) = std::fs::read(std::path::Path::new(&root).join("resources/prop/0x0e66973c.r131")) else { return };
@@ -4242,7 +4587,7 @@ mod tests {
             let head: Vec<u32> = groups.next().unwrap().split_whitespace().map(u).collect();
             let x: Vec<u32> = o.split_whitespace().map(u).collect();
             let cap = head[0] as usize;
-            let mut q = CapsuleQuery { a: Vec3::ZERO, b: Vec3::ZERO, r: 0.0, lo: Vec3::ZERO, hi: Vec3::ZERO, mask: 0, index: 0xFFFF, f30_high: head[1], list: ResultList::new(cap) };
+            let mut q = CapsuleQuery { directed: false, a: Vec3::ZERO, b: Vec3::ZERO, r: 0.0, lo: Vec3::ZERO, hi: Vec3::ZERO, mask: 0, index: 0xFFFF, f30_high: head[1], list: ResultList::new(cap) };
             let mut got = Vec::new();
             for g in groups {
                 let w: Vec<u32> = g.split_whitespace().map(u).collect();
@@ -4417,7 +4762,7 @@ mod tests {
             let x: Vec<u32> = o.split_whitespace().map(u).collect();
             let (ball, cap) = (head[0] != 0, head[1] as usize);
             balls += ball as usize;
-            let mut cq = CapsuleQuery { a: Vec3::ZERO, b: Vec3::ZERO, r: 0.0, lo: Vec3::ZERO, hi: Vec3::ZERO, mask: 0, index: 0xFFFF, f30_high: head[2], list: ResultList::new(cap) };
+            let mut cq = CapsuleQuery { directed: false, a: Vec3::ZERO, b: Vec3::ZERO, r: 0.0, lo: Vec3::ZERO, hi: Vec3::ZERO, mask: 0, index: 0xFFFF, f30_high: head[2], list: ResultList::new(cap) };
             let mut bq = BallQuery { c: Vec3::ZERO, r: 0.0, lo: Vec3::ZERO, hi: Vec3::ZERO, mask: 0, index: 0xFFFF, flags: [0; 3], list: ResultList::new(cap) };
             let mut got = Vec::new();
             for g in groups {
