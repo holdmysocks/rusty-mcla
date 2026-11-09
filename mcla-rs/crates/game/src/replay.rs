@@ -1048,11 +1048,19 @@ pub struct Playback {
     pub opening: u8,
     /// frames of the opening so far
     pub opening_frames: u32,
+    /// the port's pacing: the replay time since the director's last step (it steps once a 1/30 s of the replay's
+    /// clock, as the original's camera manager once a game frame), the car at the last drawn frame (its time, its
+    /// view) and the director's own shots of the last two steps (drawn between them; the earlier None after a cut)
+    pace: f32,
+    last_car: Option<(f32, CarView)>,
+    drawn: [Option<Shot>; 2],
+    /// the director's steps so far (diagnostics, tests)
+    steps: u32,
 }
 
 impl Playback {
     pub fn new(tune: CamTune, seed: u32) -> Playback {
-        Playback { t: 0.0, paused: false, legend: 0, auto_cam: true, menu: None, tune, started: false, seed, director: None, next: false, force: None, last_t: None, opening: 1, opening_frames: 0 }
+        Playback { t: 0.0, paused: false, legend: 0, auto_cam: true, menu: None, tune, started: false, seed, director: None, next: false, force: None, last_t: None, opening: 1, opening_frames: 0, pace: 0.0, last_car: None, drawn: [None, None], steps: 0 }
     }
 
     pub fn restart(&mut self) {
@@ -1063,6 +1071,7 @@ impl Playback {
         self.menu = None;
         self.director = None;
         self.last_t = None;
+        (self.pace, self.last_car, self.drawn) = (0.0, None, [None, None]);
     }
 
     /// a state of the director at once (test hook)
@@ -1105,6 +1114,7 @@ impl Playback {
     pub fn camera(&mut self, car: &CarView, aspect: f32, lens: f32, probe: &mut dyn Probe) -> Option<Shot> {
         if self.opening != 0 {
             self.last_t = None;
+            self.last_car = None;
             return None;
         }
         let dt = self.last_t.map_or(0.0, |l| (self.t - l).max(0.0));
@@ -1116,19 +1126,62 @@ impl Playback {
         d.switching = self.auto_cam;
         if let Some(s) = self.force.take() {
             d.force(tune, car, s);
+            self.drawn = [None, None];
         }
         if std::mem::take(&mut self.next) {
             d.next = true;
         }
+        let prev = self.last_car.replace((self.t, *car));
+        // (the first frame, or after a forced state: a step at once on this frame's car; later steps on the replay
+        // clock's 1/30 s grid)
+        let first = self.drawn[1].is_none();
+        if first {
+            let s = d.update(tune, car, 1.0 / 30.0, probe);
+            self.steps += 1;
+            self.drawn = [None, Some(s)];
+            self.pace = self.t.rem_euclid(1.0 / 30.0);
+            if dt <= 0.0 {
+                return Some(s);
+            }
+        }
         if dt <= 0.0 {
             // (F-10533: paused, only NEXT CAMERA runs the director)
             if d.next {
-                return Some(d.update(tune, car, 0.0, probe));
+                let s = d.update(tune, car, 0.0, probe);
+                self.drawn = [None, Some(s)];
+                return Some(s);
             }
             d.cut = false;
             return Some(d.shot(tune, car, probe));
         }
-        Some(d.update(tune, car, dt, probe))
+        // (the director once a 1/30 s of replay time on the car of that moment - lerped between the last two drawn
+        // frames' cars - and its own shots drawn between its last two steps: smooth at any frame rate, the original's
+        // 30 Hz path at every one; at most 6 steps a frame)
+        let (t0, c0) = prev.unwrap_or((self.t - dt, *car));
+        let mut cut = first && d.cut;
+        if !first {
+            self.pace += dt;
+        }
+        let mut steps = 0;
+        while self.pace >= 1.0 / 30.0 && steps < 6 {
+            self.pace -= 1.0 / 30.0;
+            steps += 1;
+            let ts = self.t - self.pace;
+            let k = if self.t > t0 { ((ts - t0) / (self.t - t0)).clamp(0.0, 1.0) } else { 1.0 };
+            let ck = CarView { pos: c0.pos.lerp(car.pos, k), rot: c0.rot.slerp(car.rot, k), vel: c0.vel.lerp(car.vel, k), top: car.top };
+            let s = d.update(tune, &ck, 1.0 / 30.0, probe);
+            self.steps += 1;
+            cut |= d.cut;
+            self.drawn = [if d.cut { None } else { self.drawn[1] }, Some(s)];
+        }
+        self.pace = self.pace.min(1.0 / 30.0);
+        d.cut = cut;
+        let share = self.pace * 30.0;
+        let last = self.drawn[1].expect("stepped");
+        Some(match (self.drawn[0], last) {
+            (Some(Shot::Own { eye: e0, rot: r0, fov: f0 }), Shot::Own { eye, rot, fov }) => Shot::Own { eye: e0.lerp(eye, share), rot: r0.slerp(rot, share), fov: f0 + (fov - f0) * share },
+            _ => last,
+        })
     }
 }
 
@@ -1322,6 +1375,67 @@ mod tests {
             drive += (d.state <= REVERSE) as usize;
         }
         assert!(drive > 225, "{drive}");
+    }
+
+    #[test]
+    fn replay_cameras_at_any_fps() {
+        // (the director steps once a 1/30 s of replay time and its own shots are drawn between its last two steps:
+        // the helicopter on a car driving a curve at 60, 144, 240 fps and 144 with 90 ms hitches - every step's eye
+        // equals the 30 Hz run's, the drawn eye's |second difference| far below the last step held)
+        let t = CamTune::default();
+        let car_at = |x: f32| {
+            let yaw = x * 0.3;
+            let r = 60.0;
+            CarView { pos: Vec3::new(r * yaw.cos(), 0.0, r * yaw.sin()), rot: Quat::from_rotation_y(-yaw), vel: Vec3::new(-r * 0.3 * yaw.sin(), 0.0, r * 0.3 * yaw.cos()), top: 1.3 }
+        };
+        let run = |dts: &dyn Fn(usize) -> f32, held: bool| {
+            let mut p = Playback::new(t.clone(), 9);
+            (p.opening, p.auto_cam) = (0, false);
+            let mut probe = open;
+            let (mut steps, mut drawn) = (Vec::new(), Vec::new());
+            let mut i = 0;
+            p.force = Some(HELI);
+            p.camera(&car_at(0.0), 16.0 / 9.0, 40.0, &mut probe);
+            while p.t < 6.0 {
+                p.t += dts(i);
+                i += 1;
+                let n = p.steps;
+                let s = p.camera(&car_at(p.t), 16.0 / 9.0, 40.0, &mut probe).unwrap();
+                if p.steps != n {
+                    if let Some(Shot::Own { eye, .. }) = p.drawn[1] {
+                        steps.push((p.steps, eye));
+                    }
+                }
+                let s = if held { p.drawn[1].unwrap() } else { s };
+                if let Shot::Own { eye, .. } = s {
+                    if p.t > 1.0 {
+                        drawn.push(eye);
+                    }
+                }
+            }
+            (steps, drawn)
+        };
+        let jit = |d: &[Vec3]| d.windows(3).map(|w| (w[0] - w[1] * 2.0 + w[2]).length() * 1000.0).sum::<f32>() / (d.len() - 2) as f32;
+        let (base, _) = run(&|_| 1.0 / 30.0, false);
+        assert!(base.len() > 150);
+        for (name, dts) in [
+            ("60", &(|_| 1.0f32 / 60.0) as &dyn Fn(usize) -> f32),
+            ("144", &|_| 1.0 / 144.0),
+            ("240", &|_| 1.0 / 240.0),
+            ("144 + 90 ms every 7th", &|i| if i % 7 == 6 { 0.09 } else { 1.0 / 144.0 }),
+        ] {
+            let (st, d) = run(dts, false);
+            let (_, dh) = run(dts, true);
+            let off = st.iter().filter_map(|&(k, e)| base.iter().find(|b| b.0 == k).map(|b| e.distance(b.1))).fold(0.0f32, f32::max);
+            let (j, jh) = (jit(&d), jit(&dh));
+            eprintln!("replay fps {name}: steps off the 30 Hz run {off:e} m; drawn mean |d2| {j:.2}, held {jh:.2} mm/frame^2");
+            // (f32 clock rounding; with hitches the step's car is lerped across the 90 ms frame - its chord on the 60 m
+            // curve, 2.8 mm)
+            assert!(off < if name.contains("90 ms") { 5e-3 } else { 1e-4 }, "{name}: {off}");
+            if !name.contains("90 ms") {
+                assert!(j < jh * 0.5, "{name}: {j} vs {jh}");
+            }
+        }
     }
 
     #[test]
