@@ -1009,6 +1009,9 @@ pub struct Game {
     /// The box is of type 5 (F-48904 jump table: no option rows, the one prompt BACK (B) from the
     /// pair {2, `prompt_back`}, UI.md): A does nothing, B closes it
     pub box_back_only: bool,
+    /// the cheat page's confirm box is up (F-71949 opened it: the page's close was asked with a cheat on that the
+    /// gate F-68910 counts); its answer goes to F-12731 - `message_box_ui`
+    pub cheat_box: bool,
     /// ARCADE's INFORMATION is up for this race type (an index into `arcade_ui`'s TYPES): the
     /// type 5 box of F-81761 message 59, which the recording shows in the navsys movie's own
     /// panel (`template_confbox`), not in the popup movie
@@ -1649,6 +1652,7 @@ impl Game {
             flash_popup: None,
             message_box: None,
             box_back_only: false,
+            cheat_box: false,
             arcade_info: None,
             nav_busy: false,
             garage_panel: None,
@@ -6590,6 +6594,9 @@ impl Game {
                             // (the port's own pages of OPTIONS, D19: rows 5 and 6)
                             self.menu_sel = if self.pause_page == PAGE_DISPLAY { 4 } else { 5 };
                             self.pause_page = 4;
+                        } else if self.pause_page == 2 && crate::rewards::cheat_gate(&self.cheats, false) {
+                            self.message_box = Some((Self::cheat_box_def(), 0, MenuAction::None));
+                            self.cheat_box = true;
                         } else if self.pause_page != 0 {
                             self.menu_sel = if self.pause_page == 2 { 1 } else { 0 };
                             self.pause_page = 0;
@@ -6726,7 +6733,9 @@ impl Game {
                     _ => {}
                 }
                 if back {
-                    if self.pause_page != 0 {
+                    if self.pause_page == 2 && crate::rewards::cheat_gate(&self.cheats, false) {
+                        self.open_cheat_box();
+                    } else if self.pause_page != 0 {
                         self.menu_sel = if self.pause_page == 2 { 1 } else { 0 };
                         self.pause_page = 0;
                     } else if !wreck_menu {
@@ -12430,6 +12439,18 @@ impl Game {
     }
 
     /// A YES / NO box of the pause / race-over menus (F-48904, its YES / NO layout; B cancels)
+    /// The cheat page's close (F-71949, its vt+752, asked by the form close vt+736): while a cheat the gate F-68910
+    /// counts is on, and the page has not had its answer (+4480, cleared at each opening by F-40212), it opens the
+    /// message box (F-45878: yes / no, `pause_Cheat_Enabled` over `Dialog_Cheat_Confirm`) and stays open.
+    fn open_cheat_box(&mut self) {
+        self.message_box = Some((Self::cheat_box_def(), 0, MenuAction::None));
+        self.cheat_box = true;
+    }
+
+    fn cheat_box_def() -> crate::flash_ui::MessageBoxDef {
+        crate::flash_ui::MessageBoxDef { title: "pause_Cheat_Enabled".into(), description: "Dialog_Cheat_Confirm".into(), options: vec![("cheat_yes".into(), "messagebox_yes".into()), ("cheat_no".into(), "messagebox_no".into())] }
+    }
+
     fn open_confirm(&mut self, title: &str, description: &str, confirm: MenuAction) {
         let def = crate::flash_ui::MessageBoxDef { title: title.into(), description: description.into(), options: vec![("confirm_yes".into(), "Common_Yes".into()), ("confirm_no".into(), "Common_No".into())] };
         self.message_box = Some((def, 0, confirm));
@@ -12852,6 +12873,16 @@ impl Game {
         }
         if self.message_box.is_none() {
             self.box_back_only = false;
+        }
+        // (the cheat page's box answered: F-12731 - YES (form result 3) keeps the cheats, NO or BACK (2 / 1) turns all
+        // nine bytes off (F-72804); then the page closes - its close asked again, now with the answer given, +4480)
+        if self.message_box.is_none() && std::mem::take(&mut self.cheat_box) {
+            if out.is_none() {
+                self.cheats = [false; 6];
+            }
+            out = None;
+            self.menu_sel = 1;
+            self.pause_page = 0;
         }
         if in_pause {
             self.box_page = self.message_box.is_some().then(|| MenuPage { prompts: vec![(st("prompt_accept").to_uppercase(), ICON_A), (st("prompt_back").to_uppercase(), crate::flash_ui::ICON_B)], list_max: 6, ..page.clone() });
@@ -16165,6 +16196,34 @@ mod tests {
     /// GitHub #42: the performance shop as the original's cart (F-71685 / F-54140 / F-37077 / F-68300 / F-10450): LEFT
     /// / RIGHT fit a box at once, stock included; with a total of 0 ACCEPT keeps it, a priced box asks for the
     /// checkout, which pays and owns; BACK asks to undo, which puts the stages back.
+    #[test]
+    fn the_cheat_page_asks_before_it_closes() {
+        // F-71949 / F-12731: BACK on the cheat page with a cheat the gate counts opens the yes / no box and the page stays;
+        // YES keeps the cheats, NO and BACK turn them all off; either way the page closes. Top down view alone: no box.
+        let run = |cheats: [bool; 6], down: bool, back: bool| {
+            let mut g = Game::new(vec![std::path::PathBuf::from("v").join("vp_nsn_240sx_98")], 0);
+            g.cheats = cheats;
+            g.pause_page = 2;
+            let asked = crate::rewards::cheat_gate(&g.cheats, false);
+            if asked {
+                g.open_cheat_box();
+            }
+            let ctx = egui::Context::default();
+            let _ = ctx.run(egui::RawInput::default(), |c| {
+                if down {
+                    let _ = g.message_box_ui(c, false, true, false, false);
+                }
+                let _ = g.message_box_ui(c, false, false, !back, back);
+            });
+            (asked, g.cheats, g.pause_page, g.message_box.is_some())
+        };
+        let on = [true, false, false, true, false, false];
+        assert_eq!(run(on, false, false), (true, on, 0, false));
+        assert_eq!(run(on, true, false), (true, [false; 6], 0, false));
+        assert_eq!(run(on, false, true), (true, [false; 6], 0, false));
+        assert!(!run([false, false, false, true, false, false], false, false).0);
+    }
+
     #[test]
     fn the_performance_shop_goes_back_to_stock() {
         let mut g = Game::new(vec![std::path::PathBuf::from("v").join("vp_nsn_240sx_98")], 0);
