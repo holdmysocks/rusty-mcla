@@ -4308,6 +4308,8 @@ impl App {
                 // (right after the MISSION_EVENT the core calls AudioManager_EnterHangoutState(<location id>), F-35228:
                 // the ambience's hangout district and the speech stopped, F-60295 - before the entry scene's own lines)
                 self.game.hangout_audio = Some((si, false));
+                // (CineScript_SetForceCutsceneLighting(1) right before that MISSION_EVENT - `Game::force_cut_light`)
+                self.game.force_cut_light = true;
                 self.speech.stop();
                 if let Some(s) = story {
                     self.cuts.queue(s);
@@ -7064,6 +7066,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let pp = self.vehicles.player().map(|c| c.state.pos);
             self.game.update_place_holds(pp, sim_dt);
             self.game.step_hangout_audio();
+            // (SetForceCutsceneLighting(0): the hangout left - its exit state passed, the exit scene and the exit warp's
+            // climb over)
+            if self.game.force_cut_light && self.game.hangout_audio.is_none() && self.cine.playing.is_none() && self.climb.is_none() {
+                self.game.force_cut_light = false;
+            }
             crate::ticktimes::mark(crate::ticktimes::S::Other);
             if std::env::var("MCLA_SIGNAL_TEST").is_ok() && self.tick_no % 600 == 0 {
                 let moving = self.vehicles.cars.iter().filter(|c| !c.is_player && c.parked.is_none() && c.state.speed() > 3.0).count();
@@ -11255,7 +11262,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             night: hour > 18.0 || hour < 6.0,
             night_path: false,
             dynamic: None,
-            cine: self.cine.playing.is_some(),
+            // (F-22850: a cine script runs, or the hangouts' forced cutscene lighting)
+            cine: self.cine.playing.is_some() || self.game.force_cut_light,
         };
         // (at night the scenes' cast takes path A's night lights - the cutscene light list while a scene plays,
         // cutlights.rs; MCLA_CHAR_NIGHT_OLD=1: the day's lights at night as before)

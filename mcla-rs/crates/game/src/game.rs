@@ -889,6 +889,12 @@ pub struct Game {
     /// the ambience's hangout state (`AudioManager_EnterHangoutState` at the pull-in, `_ExitHangoutState` when its panel
     /// closes): the `hangoutin::SETUPS` index, and whether its panel (`hangout_key`) has come up yet (`step_hangout_audio`)
     pub hangout_audio: Option<(usize, bool)>,
+    /// the cine manager's +334, CineScript_SetForceCutsceneLighting: the hangout cores set it at the pull-in (with the
+    /// set dressing and the cutscene depth of field: local_hangout_core 0xe166126d 0x1046, wager_hangout_core 0x16e89a34
+    /// 0x151c) and clear it with PostProcessing_SetGameDof once the hangout is left (0x144f after the exit warp is ready,
+    /// 0x227e after the exit event's state wait; the wager core's 0x1c46 / 0x5695 / 0x6559). With it the light picker's
+    /// probe F-22850 is on although no cine script runs: at night the characters take the cutscene light list.
+    pub force_cut_light: bool,
     pub hangout_diff: usize,
     /// the delivery panel's difficulty: set to MEDIUM once (mcDeliveryForm's ctor, F-87733)
     /// and kept from the last choice - its refresh, F-17823, does not reset it
@@ -1591,6 +1597,7 @@ impl Game {
             next_race_start: false,
             hangout_key: None,
             hangout_audio: None,
+            force_cut_light: false,
             hangout_diff: 0,
             delivery_diff: 1,
             hangout_page: (0, 0),
