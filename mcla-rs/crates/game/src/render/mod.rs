@@ -1043,9 +1043,16 @@ pub struct ObjPool {
 const POOL_SLOTS: u64 = 256;
 
 impl ObjPool {
+    /// A slot's new value. The mirror holds what the buffer holds, so a value equal to it byte for byte is not
+    /// written again (the parked and still cars' parts, most of a frame's ~2,300 objects in traffic; docs/PERFORMANCE.md
+    /// 2026-11-09 (7)).
     fn put(&mut self, buf: u32, off: u64, b: &[u8]) {
         let (i, o) = (buf as usize, off as usize);
-        self.mirror[i][o..o + b.len()].copy_from_slice(b);
+        let m = &mut self.mirror[i][o..o + b.len()];
+        if m == b {
+            return;
+        }
+        m.copy_from_slice(b);
         let d = &mut self.dirty[i];
         *d = Some(d.map_or((o, o + b.len()), |(lo, hi)| (lo.min(o), hi.max(o + b.len()))));
     }
@@ -1076,8 +1083,8 @@ impl Drop for ObjectBinding {
 pub struct UniformBatch {
     bytes: Vec<u8>,
     dst: Vec<(wgpu::Buffer, u64, u64, u64)>,
-    /// pooled objects' values: (pool buffer, offset in it, start in `bytes`, length)
-    pooled: Vec<(u32, u64, usize, usize)>,
+    /// a pooled object's value was put in its pool's mirror (`push_object`): the pools' changed parts are written at the flush
+    pooled: bool,
     arena: Option<wgpu::Buffer>,
 }
 
@@ -1093,25 +1100,29 @@ impl UniformBatch {
     pub fn push_object(&mut self, b: &ObjectBinding, u: &ObjectUniform) {
         let v = bytemuck::bytes_of(u);
         match b.slot.as_ref() {
-            Some(s) => self.pooled.push((s.buf, b.off, self.bytes.len(), v.len())),
-            None => self.dst.push((b.buf.clone(), b.off, self.bytes.len() as u64, v.len() as u64)),
+            // (into the mirror at once, not through `bytes`: the buffer is written from the mirror at the flush, as before)
+            Some(s) => {
+                if let Ok(mut p) = s.pool.lock() {
+                    p.put(s.buf, b.off, v);
+                }
+                self.pooled = true;
+            }
+            None => {
+                self.dst.push((b.buf.clone(), b.off, self.bytes.len() as u64, v.len() as u64));
+                self.bytes.extend_from_slice(v);
+            }
         }
-        self.bytes.extend_from_slice(v);
     }
 
     fn flush(&mut self, gpu: &Gpu) {
-        if !self.pooled.is_empty() {
+        if std::mem::take(&mut self.pooled) {
             if let Ok(mut p) = gpu.obj_pool.lock() {
-                for &(buf, off, start, len) in &self.pooled {
-                    p.put(buf, off, &self.bytes[start..start + len]);
-                }
                 for i in 0..p.bufs.len() {
                     if let Some((lo, hi)) = p.dirty[i].take() {
                         gpu.queue.write_buffer(&p.bufs[i], lo as u64, &p.mirror[i][lo..hi]);
                     }
                 }
             }
-            self.pooled.clear();
         }
         if self.dst.is_empty() {
             self.bytes.clear();
