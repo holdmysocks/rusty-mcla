@@ -201,6 +201,20 @@ pub struct BoomCam {
     look: (f32, f32),
     look_rise: f32,
     ab_dist: Option<f32>,
+    /// the port's drawing above 30 fps: what the step before the last one left (frame, camera, focus, roll, lens),
+    /// so `draw_at` can go from it to the last one as the drawn car goes between ticks; None after a snap or restart
+    prev: Option<Box<BoomDrawn>>,
+}
+
+/// What `BoomCam::draw` puts on the car: the boom's frame, camera, focus, roll and lens of one game frame.
+#[derive(Clone, Copy, Debug)]
+struct BoomDrawn {
+    up: Vec3,
+    dir: Vec3,
+    off: Vec3,
+    foc: Vec3,
+    roll: f32,
+    lens: f32,
 }
 
 fn norm_range(v: f32, range: f32) -> f32 {
@@ -675,6 +689,7 @@ impl BoomCam {
         use crate::physics::exact::dot3;
         let car_m = Mat3::from_quat(car.rot);
         let (r0, r1, r2) = (car_m.x_axis, car_m.y_axis, car_m.z_axis);
+        self.prev = None;
         self.started = true;
         self.stepped = true;
         self.last_gear = car.gear;
@@ -789,6 +804,8 @@ impl BoomCam {
         // 80 m rule is off there)
         let far = self.recomp_timing.is_none() && !self.held && (self.world - car.pos).length_squared() > 80.0 * 80.0;
         let restart = !self.started || far;
+        let before = BoomDrawn { up: self.up, dir: self.dir, off: self.off, foc: self.foc, roll: self.roll, lens: self.lens };
+        self.prev = if restart || self.snap { None } else { Some(Box::new(before)) };
         if restart {
             // (a fresh or moved camera: the original's slot 9, F-83404, which every camera gets when it is made current;
             // it sets the snap byte this call takes)
@@ -1108,20 +1125,44 @@ impl BoomCam {
     /// frame on the drawn car's place (origin = place + car x Center). At a game frame's own instant it is the
     /// original's output; between frames the boom keeps its last state while the car moves on.
     pub fn draw(&self, t: &BoomTune, car: &BoomTarget) -> BoomOut {
+        self.draw_at(t, car, 1.0)
+    }
+
+    /// `draw` with the boom's state taken `share` of the way from the step before the last one to the last one (the
+    /// port's: it draws above the original's 30 fps; the car is drawn between its last two ticks, and the boom held for a
+    /// whole game frame on a car that moves on made the view jump at 30 Hz, GitHub #46). 1 is the last step's own.
+    pub fn draw_at(&self, t: &BoomTune, car: &BoomTarget, share: f32) -> BoomOut {
         use crate::physics::exact::{cross, dot3};
+        let now = BoomDrawn { up: self.up, dir: self.dir, off: self.off, foc: self.foc, roll: self.roll, lens: self.lens };
+        let d = match self.prev.as_deref() {
+            Some(p) if share < 1.0 => {
+                let u = share.max(0.0);
+                let mix = |a: Vec3, b: Vec3| a.lerp(b, u);
+                let dir_of = |a: Vec3, b: Vec3| mix(a, b).try_normalize().unwrap_or(b);
+                BoomDrawn {
+                    up: dir_of(p.up, now.up),
+                    dir: dir_of(p.dir, now.dir),
+                    off: mix(p.off, now.off),
+                    foc: mix(p.foc, now.foc),
+                    roll: p.roll + (now.roll - p.roll) * u,
+                    lens: p.lens + (now.lens - p.lens) * u,
+                }
+            }
+            _ => now,
+        };
         let car_m = Mat3::from_quat(car.rot);
         let ctr = t.v3("Center");
         let col = |i: usize| Vec3::new(car_m.x_axis[i], car_m.y_axis[i], car_m.z_axis[i]);
         let origin = car.pos + Vec3::new(dot3(ctr, col(0)), dot3(ctr, col(1)), dot3(ctr, col(2)));
         // (a fixed mount's frame takes the followed car's back axis itself: here the car as drawn)
-        let x = vnorm(cross(self.up, if car.fixed_mount { car_m.z_axis } else { self.dir }));
-        let z = vnorm(cross(x, self.up));
-        let frame = Mat3::from_cols(x, self.up, z);
-        let pos = origin + frame * self.off;
-        let look = origin + frame * self.foc;
+        let x = vnorm(cross(d.up, if car.fixed_mount { car_m.z_axis } else { d.dir }));
+        let z = vnorm(cross(x, d.up));
+        let frame = Mat3::from_cols(x, d.up, z);
+        let pos = origin + frame * d.off;
+        let look = origin + frame * d.foc;
         let view = (look - pos).normalize_or(-z);
-        let up = Quat::from_axis_angle(view, self.roll) * self.up;
-        BoomOut { pos, look, up, fov: self.lens }
+        let up = Quat::from_axis_angle(view, d.roll) * d.up;
+        BoomOut { pos, look, up, fov: d.lens }
     }
 
     /// Whether `step` has run since the last reset.
@@ -1237,6 +1278,9 @@ pub struct Director {
     pub view: u8,
     /// set when the blend ended with a view queued (F-70013): the view the director cut to
     finished: Option<u8>,
+    /// the port's: how far the drawn frame is from the step before the last one to the last one (`BoomCam::draw_at`);
+    /// None draws the last step's own
+    pub share: Option<f32>,
 }
 
 /// What a push did (F-98424).
@@ -1425,7 +1469,7 @@ impl Director {
         let src = match (&mut self.from, self.src) {
             (Some((tune, cam)), CamId::View(_)) => {
                 if cam.stepped() {
-                    cam.draw(tune, car)
+                    cam.draw_at(tune, car, self.share.unwrap_or(1.0))
                 } else {
                     cam.update(tune, car, dt)
                 }
@@ -4692,6 +4736,18 @@ camTrackCS {
         assert_eq!(n, 1065);
     }
 
+    /// GitHub #43: the 240SX's cockpit (its own eye: Offset z 0.45, lens 52.4 / SS 35..55, SpeedZOffsetY 0.045) through
+    /// the same update, 1,792 recorded calls of recording s240a (full throttle, then a swerve at up to 93 mph, two hits).
+    /// The eye's place, focus, roll and lens are within 1.2e-7 of their size; the filtered acceleration within 1.8e-5
+    /// (the hits' large accelerations through the test's emulation of the recomp's factor rescale), hence the 2e-5 bar.
+    #[test]
+    fn cockpit_240sx_swerve_matches_the_original() {
+        let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| r"D:\MCLA\extracted\cache".into());
+        let Some(set) = BoomSet::load(&data, "vp_nsn_240sx_98") else { return };
+        let (n, _) = boom_rec_check_tol(&set.views[3], include_str!("testdata/boom_step_pov240_rec.txt"), true, false, 2e-5);
+        assert_eq!(n, 1792);
+    }
+
     /// The look-back branch (+208, vt+56): the chase views' reverse camera runs every frame with +208 set (RevOffset /
     /// RevFocus, the hill pitch swapped and negated, no turbo / nitrous lens). 1,153 recorded calls of the R8's
     /// `_reverse` camera beside the boom2 of recording c11.
@@ -4815,6 +4871,11 @@ SSFovMin 60
     /// (`fixed`) or with the look-back flag (`rev`), and asserts every field within 1e-5 of its size; returns the
     /// calls and those with a shift kick running.
     fn boom_rec_check(t: &BoomTune, text: &str, tail: bool, rev: bool) -> (usize, usize) {
+        boom_rec_check_tol(t, text, tail, rev, 1e-5)
+    }
+
+    /// `boom_rec_check` with its own bar (the worst error over the field's size).
+    fn boom_rec_check_tol(t: &BoomTune, text: &str, tail: bool, rev: bool, tol: f32) -> (usize, usize) {
         let fixed = tail && !rev;
         let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
         let names = ["up", "dir", "tumble", "vel", "acc", "ang", "ang_acc", "off", "foc", "roll", "world", "rate", "gz", "shift", "lens"];
@@ -4868,7 +4929,7 @@ SSFovMin 60
             eprintln!("{:8} worst {:e}", names[k], worst[k]);
         }
         for k in 0..names.len() {
-            assert!(worst[k] < 1e-5, "{}: off by {:e} of its size", names[k], worst[k]);
+            assert!(worst[k] < tol, "{}: off by {:e} of its size", names[k], worst[k]);
         }
         (n, kicks)
     }

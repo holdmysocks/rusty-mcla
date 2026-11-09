@@ -3150,6 +3150,14 @@ impl App {
             } else if self.sim_time < 1.0 {
                 player_input = physics::car::CarInput { handbrake: true, ..Default::default() };
             }
+            // self-test of a swerve (GitHub #43): "start s, period s, steer amplitude" - the steer a sine after the start
+            if let Ok(v) = std::env::var("MCLA_SWERVE") {
+                let n: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                let (t0, per, amp) = (n.first().copied().unwrap_or(8.0), n.get(1).copied().unwrap_or(1.5), n.get(2).copied().unwrap_or(0.6));
+                if self.sim_time > t0 {
+                    player_input.steer = amp * ((self.sim_time - t0) * std::f32::consts::TAU / per).sin();
+                }
+            }
         }
         // take world/gpu out of self for the simulation borrow
         let mut world = self.world.take().unwrap();
@@ -9400,7 +9408,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                     }
                                 }
                             }
-                            if self.boom.stepped() { self.boom.draw(tune, &target) } else { self.boom.update(tune, &target, dt) }
+                            // (the port draws above the original's 30 fps: the car is drawn between its last two ticks, so the
+                            // boom is drawn the same share of the way between its last two game frames, one tick behind -
+                            // held for the whole game frame the view jumped at 30 Hz, GitHub #46)
+                            let share = ((self.tick_no % 2) as f32 + self.vehicles.render_alpha) * 0.5;
+                            // (diagnostics: MCLA_CAM_HOLD draws the last step's own, as before #46)
+                            let share = if std::env::var_os("MCLA_CAM_HOLD").is_some() { 1.0 } else { share };
+                            self.cam_switch.blend.share = Some(share);
+                            if self.boom.stepped() { self.boom.draw_at(tune, &target, share) } else { self.boom.update(tune, &target, dt) }
                         };
                         let drive_out = out;
                         // the burnout camera: with the CINEMATIC CAMERA option on and a chase view in
@@ -9603,6 +9618,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                         self.chase.pos = out.pos;
                         self.chase.look = out.look;
+                        // diagnostics: the drawn view in the drawn car's frame, once a drawn frame (GitHub #46)
+                        if std::env::var("MCLA_CAM_JITTER").is_ok() {
+                            let inv = render_state.rot.inverse();
+                            let (p, l) = (inv * (out.pos - render_state.pos), inv * (out.look - render_state.pos));
+                            eprintln!("camj {} {} {:.4} {:.6} {:.6} {:.6} {:.6} {:.6} {:.6} {:.3}", self.frame_no, self.tick_no, self.vehicles.render_alpha, p.x, p.y, p.z, l.x, l.y, l.z, out.fov);
+                        }
                         // the camera kept out of walls (camBoomCS CollideType 2, F-12669): a ball
                         // of the near plane's corner from the file's Collide point on the car to the
                         // camera; the camera stops where it touches, the look keeps its direction
