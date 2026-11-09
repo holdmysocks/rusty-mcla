@@ -847,6 +847,34 @@ fn swipe_geo(pos: Vec3, right: Vec3, back: Vec3, vel: Vec3, tpos: Vec3, tvel: Ve
     }
 }
 
+/// The Pursuit's tests for its cop, one update, with the helpers its ticks call (F-68032, CatchUp F-88702, AlongSide F-85137,
+/// Block F-85039, Halt F-84018): `g` the cop's `swipe_geo`; within fSafeDist / 1.5 x fAlongSideDist (single product) / 5 m on
+/// the squared distance (F-29545); every cop within half fSafeDist (F-90575 on the same test); facing the same way on the
+/// frames' third rows (F-43223); the target moving (F-43975) on its speed `tspeed` (the chassis' +224, F-41260); `closing`
+/// (F-32902, `closing_in`) and the side `pick` (F-14848) as the caller has them.
+#[allow(clippy::too_many_arguments)]
+fn pursuit_sees(g: &SwipeGeo, all_d2: &[f32], safe: f32, along: f32, cback: Vec3, tback: Vec3, tspeed: f32, moving_speed: f32,
+                closing: bool, pick: bool) -> PursuitSees {
+    let ra = along * 1.5;
+    let rb = 0.5 * safe;
+    PursuitSees {
+        near_safe: g.dsq < safe * safe,
+        near_along: g.dsq < ra * ra,
+        near5: g.dsq < 25.0,
+        moving: moving(tspeed, moving_speed),
+        same_dir: g.same_dir,
+        ahead: g.ahead,
+        on_right: g.on_right,
+        same_facing: same_facing(tback, cback),
+        all_block: all_d2.iter().all(|&d| d < rb * rb),
+        closing,
+        pick,
+        gate: true,
+        bearing: g.bearing,
+        speed: tspeed,
+    }
+}
+
 /// The swipes of one CatchUp / AlongSide update (F-47983 / F-41674, after the lock and the formation), on the tactic's cops'
 /// tests `g` (`a` / `b`: the right / left flank's index, slots +164 / +168) and their brains' head-on flags (+774, F-48012).
 /// The right flank: within 10 m (the Double Pursuit's 15), the same way, the Arrow Trap's not ahead, not on its right,
@@ -4332,9 +4360,11 @@ impl Police {
         let last_tspeed = self.last_tspeed;
         self.last_tspeed = speed;
         // (every cop of the tactic within r of the target: F-90575, F-36876)
-        let within = |r: f32| vehicles.cars.iter().filter(|c| pursuer(c)).all(|c| c.state.pos.distance(ppos) < r);
+        // (the squared distance below r x r, F-39842)
+        let all_d2: Vec<f32> = vehicles.cars.iter().filter(|c| pursuer(c)).map(|c| arrest_d2(c.state.pos, ppos)).collect();
+        let within = |r: f32| all_d2.iter().all(|&d| d < r * r);
         // (the pull-over's: within fPullOverDist - 1, the tactic's slot 8 F-66453 less 1.0)
-        let (all_block, all_halt) = (within(0.5 * safe), within(t("fPullOverDist", 15.0) - 1.0));
+        let all_halt = within(t("fPullOverDist", 15.0) - 1.0);
         let on_road = |q: Vec3| crate::offroad::mesh().map_or(true, |m| m.on_road(q));
         let on_mesh = |q: Vec3| crate::offroad::mesh().map_or(true, |m| m.on_mesh(q));
         for c in vehicles.cars.iter_mut().filter(|c| pursuer(c) || Some(c.uid) == dsp_cop) {
@@ -4461,11 +4491,10 @@ impl Police {
                 // (the brain's predicates, F-74140's helpers: in front of the cop, on its right, going the same way,
                 // facing the same way, the angle off the cop's right axis, and "closing in": the cop moving, faster
                 // than the target and heading at it within 25.8 deg)
-                let ahead = cfwd.dot(to) > 0.0;
-                let on_right = on_side(cright, cpos, ppos);
-                let same_dir = pvel.dot(cvel) > 0.0;
+                // (in the original's float order, as the swipes take them: `swipe_geo`)
+                let geo = swipe_geo(cpos, cright, -cfwd, cvel, ppos, pvel);
+                let (ahead, on_right, same_dir) = (geo.ahead, geo.on_right, geo.same_dir);
                 let same_facing = same_facing(pfwd, cfwd);
-                let bearing = crate::aiv::ang3(cright, to).to_degrees();
                 let closing = |r: f32| closing_in(ppos, cpos, speed, cspeed, cvel, r, t("fMovingSpeed", 1.0));
                 // (head-on, +774: in front, coming the other way, seen, travel directions more than fHeadOnAngle apart)
                 let tdir = if t_moving { pvel.normalize_or_zero() } else { pfwd };
@@ -4695,22 +4724,7 @@ impl Police {
                     c.state.vel *= pullover_machine(tac, &sees, dt);
                 } else {
                     // pursuit (F-68032, pursuit_machine; the re-pick gate's tactic +36 is not ported: open)
-                    let sees = PursuitSees {
-                        near_safe: d < safe,
-                        near_along: d < 1.5 * along,
-                        near5: d < 5.0,
-                        moving: t_moving,
-                        same_dir,
-                        ahead,
-                        on_right,
-                        same_facing,
-                        all_block,
-                        closing: closing(safe),
-                        pick: pick_side(),
-                        gate: true,
-                        bearing,
-                        speed,
-                    };
+                    let sees = pursuit_sees(&geo, &all_d2, safe, along, -cfwd, -pfwd, speed, t("fMovingSpeed", 1.0), closing(safe), pick_side());
                     pursuit_machine(tac, &sees, t("fArrestTgtThresholdSpd", 10.0), last_tspeed, dt);
                 }
                 // (a command sent this update - by the machines above or the squad's - goes through the brain command
@@ -5967,6 +5981,84 @@ mod tests {
             checked += 1;
         }
         assert!(checked == 2355 && swiped == 190, "{checked} {swiped}");
+    }
+
+    /// The Pursuit's machine against a recording of the running original (docs/reference/hookmen/pursuit_recording.md): a
+    /// Pursuit (StartPursuit kind 1) on the player's car, recorded at the entry and the exit of F-68032. Each update in
+    /// CatchUp / AlongSide / Block / Halt starts the port from the recorded state (state, asked state, its time, AlongSide's
+    /// +16 / +20 or Halt's +16, the brain's command / handbrake / side bytes, the tactic's +64), computes the tests from the
+    /// recorded cop and target frames, velocities and chassis speeds (`swipe_geo`, `pursuit_sees`, `closing_in`) and runs
+    /// `pursuit_machine` once: state, asked state, time bits, timers, command, handbrake and side must be the exit's. Updates
+    /// whose entry or exit is Delay, Search or Arrest are the heat's (counted, not run). The side pick F-14848 (mesh / road
+    /// tests) is taken from the recording: `pick` is the exit's side byte.
+    #[test]
+    fn pursuit_machine_matches_the_recording() {
+        let rec = include_str!("testdata/pursuit_rec.txt");
+        let hex = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let fl = |s: &str| f32::from_bits(hex(s));
+        let v3 = |v: &[&str]| Vec3::new(fl(v[0]), fl(v[1]), fl(v[2]));
+        let tac_of = |id: i32| match id {
+            1 => Some(Tac::CatchUp),
+            2 => Some(Tac::AlongSide),
+            3 => Some(Tac::Block),
+            5 => Some(Tac::Halt),
+            _ => None,
+        };
+        let code = |t: Tac| match t {
+            Tac::CatchUp => 1,
+            Tac::AlongSide => 2,
+            Tac::Block => 3,
+            Tac::Halt => 5,
+            Tac::Avoid => 9,
+        };
+        let (safe, along, moving_speed, thresh) = (30.0f32, 5.0f32, 1.0f32, 10.0f32);
+        let (mut checked, mut heat, mut states) = (0, 0, [0u32; 6]);
+        for line in rec.lines() {
+            let v: Vec<&str> = line.split_whitespace().collect();
+            assert_eq!((v[0], v[37]), ("P", "="));
+            let int = |i: usize| v[i].parse::<i32>().unwrap();
+            let (st, asked, ost, oasked) = (int(4), int(5), int(38), int(39));
+            let (Some(s0), Some(_)) = (tac_of(st), tac_of(ost)) else {
+                heat += 1;
+                continue;
+            };
+            if asked >= 0 && tac_of(asked).is_none() || oasked >= 0 && tac_of(oasked).is_none() {
+                heat += 1;
+                continue;
+            }
+            let mut tac = CopTac {
+                st: s0,
+                t: fl(v[6]),
+                begun: true,
+                next: tac_of(asked),
+                cmd: int(9) as u8,
+                hb: int(10) != 0,
+                side: int(11) != 0,
+                ..Default::default()
+            };
+            match s0 {
+                Tac::AlongSide => (tac.far_t, tac.side_t) = (fl(v[7]), fl(v[8])),
+                Tac::Halt => tac.halt_steer = fl(v[7]),
+                _ => {}
+            }
+            let (cpos, crow0, crow2, cvel, cspeed) = (v3(&v[14..]), v3(&v[17..]), v3(&v[20..]), v3(&v[23..]), fl(v[26]));
+            let (tpos, trow2, tvel, tspeed) = (v3(&v[27..]), v3(&v[30..]), v3(&v[33..]), fl(v[36]));
+            let geo = swipe_geo(cpos, crow0, crow2, cvel, tpos, tvel);
+            let closing = closing_in(tpos, cpos, tspeed, cspeed, cvel, safe, moving_speed);
+            let sees = pursuit_sees(&geo, &[geo.dsq], safe, along, crow2, trow2, tspeed, moving_speed, closing, int(45) != 0);
+            pursuit_machine(&mut tac, &sees, thresh, fl(v[2]), fl(v[1]));
+            let (a, z) = match tac.st {
+                Tac::AlongSide => (tac.far_t.to_bits(), tac.side_t.to_bits()),
+                Tac::Halt => (tac.halt_steer.to_bits(), 0),
+                _ => (0, 0),
+            };
+            let got = format!("{} {} {:08X} {:08X} {:08X} {} {} {}", code(tac.st), tac.next.map_or(-1, code), tac.t.to_bits(), a, z, tac.cmd,
+                              tac.hb as u8, tac.side as u8);
+            assert_eq!(got, v[38..46].join(" "), "update {checked}: {line}");
+            states[code(tac.st) as usize] += 1;
+            checked += 1;
+        }
+        assert!(checked == 3572 && heat == 2347 && states == [0, 2099, 902, 70, 0, 501], "{checked} {heat} {states:?}");
     }
 
     /// The squad formations against the original's (the Arrow Trap's F-80532, the Double Pursuit's F-21534, with the
