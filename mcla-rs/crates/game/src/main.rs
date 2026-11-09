@@ -7589,7 +7589,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                     }
                     Some(police::Event::Escaped) => {
+                        // (COP_EVADE is the race-reward listener's: nothing while the cheat gate is set - F-12673)
                         let exp = rewards::pursuit_exp(self.game.rep, std::mem::take(&mut self.police.chase_time));
+                        let exp = if rewards::cheat_gate_on() { 0 } else { exp };
                         if exp > 0 {
                             // (no upper limit: F-55689)
                             self.game.rep += exp;
@@ -8684,6 +8686,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.ability.meter = 1.0;
             }
         }
+        // (the cheat gate F-68910: no race money, no reward, no mission progress while one is on)
+        rewards::set_cheat_gate(rewards::cheat_gate(&self.game.cheats, false));
         // (NO FINES: the fine routine itself returns 0, F-83946)
         self.police.no_charges = self.game.cheats[5];
         // (and none before the career has unlocked them: `mc4`, flags.police_unlocked)

@@ -3470,7 +3470,8 @@ impl Game {
         // (a delivery: the manager's money less the damage, and its event's reward; a payback
         // leg: its share, the experience of the last leg, and the event `be_payback` -
         // F-96289, F-66865, F-67065: `mc4_mission_pay`)
-        let (money, rep) = self.mc4_mission_pay(delivered);
+        // (the listener's - nothing, the run not moved on, while the cheat gate is set: F-12673, F-68910)
+        let (money, rep) = if crate::rewards::cheat_gate_on() { (0, 0) } else { self.mc4_mission_pay(delivered) };
         self.money += money;
         // (the reputation has no upper limit: F-55689)
         self.rep += rep;
@@ -3524,6 +3525,10 @@ impl Game {
         // F-12673 drops the race's events while EventOptions_IsPowerUps (F-83812, the record's byte 21)
         // holds - no money, no experience, no class or ability point, no adaptive step)
         let s_power = self.mc4_arcade_env().is_some() && self.mc4_arcade_record()[21] != 0;
+        // (and nothing at all while the cheat gate is set: F-12673 leaves before its events when F-68910 holds -
+        // the script's own AddMoney of a won wager still pays)
+        let s_cheat = crate::rewards::cheat_gate_on();
+        let s_power = s_power || s_cheat;
         let s14_plain = !s14_editor && !s_power && !(!s14_id.is_empty() && (self.career.is_time_trial(&s14_id) || self.mc4_tt_of(&s14_id).is_some()));
         if s14_editor || s_power {
             money = 0;
@@ -3578,6 +3583,9 @@ impl Game {
         // again - to the list)
         let s_now = if self.wager_paid { money / 2 } else { 0 };
         self.money += s_now;
+        if s_cheat {
+            money = s_now;
+        }
         // (the money, the Progression experience and the same experience for Unlocking wait in the pending list until the
         // REWARDS page gives them - F-48818 / F-51495, `give_pending`; past the career's top the reputation still counts
         // up: 119170 -> 119230 after a series race on the 100 % save - `rk95_map`, `sr_rewards`)

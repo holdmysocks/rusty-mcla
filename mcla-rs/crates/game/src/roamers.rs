@@ -1114,7 +1114,8 @@ impl Roamers {
                 let field = vehicles.cars.iter().filter(|c| c.racer).count() + 1;
                 let place = s15b_place;
                 let diff = game.mc4_hookman_diff().filter(|_| self.rival_challenged).or(ch.diff).unwrap_or_else(|| vehicles.cars.iter().find(|c| c.racer).map_or(1, |c| game.mc4_difficulty_of_setup(&c.model.name, &c.vinyl_name)).clamp(0, 3) as usize);
-                let exp = crate::rewards::beat_me_there_exp(game.rep, diff, place, field);
+                // (the race-reward listener's: nothing while the cheat gate is set - F-12673)
+                let exp = if crate::rewards::cheat_gate_on() { 0 } else { crate::rewards::beat_me_there_exp(game.rep, diff, place, field) };
                 game.rep += exp;
                 // (its reward is given at once, +9 = 1 - F-90736: AddExperience posts EXPERIENCE_EVENT then)
                 if exp > 0 {

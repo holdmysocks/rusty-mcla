@@ -3,6 +3,30 @@
 //! career, the class of the player's car and the difficulty of the event.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// The cheat gate (F-68910): set while a pause-menu cheat that blocks the career is on. The original reads its cheat
+/// bytes (globals) wherever it pays or counts: the race money F-78976, the race-reward listener F-12673 and the
+/// missions' condition updates (vt#9 of mcConditionString / Mission / Stat / Experience / TallyMission). The game
+/// sets it every frame from its cheats (`set_cheat_gate`).
+static CHEAT_GATE: AtomicBool = AtomicBool::new(false);
+
+/// F-68910 on the port's cheats (unlimited nitro, never damage out, unlimited specials, top down view, no police,
+/// no fines - the bytes +0, -9, +1, +2, +4, +6 of the original's cheat block; the byte +5 has no pause-menu row and
+/// top down view, +2, does not block): 1 when nitro, specials, no police or no fines is on, or never damage out
+/// outside the race editor (`editor`: its object's +156 overhead view, its +13 editing mode or the byte of its test
+/// drive set - the port has no race editor).
+pub fn cheat_gate(cheats: &[bool; 6], editor: bool) -> bool {
+    cheats[0] || (cheats[1] && !editor) || cheats[2] || cheats[4] || cheats[5]
+}
+
+pub fn set_cheat_gate(on: bool) {
+    CHEAT_GATE.store(on, Ordering::Relaxed);
+}
+
+pub fn cheat_gate_on() -> bool {
+    CHEAT_GATE.load(Ordering::Relaxed)
+}
 
 /// Share of the career at which each of the thirteen reputation levels starts.
 pub const LEVEL_FRAC: [f32; 13] = [0.0, 0.04, 0.1, 0.17, 0.25, 0.34, 0.43, 0.52, 0.6, 0.68, 0.76, 0.84, 1.0];
@@ -75,6 +99,10 @@ pub fn perf_class(perf: f32) -> usize {
 
 /// Prize money an event is worth (mcExperienceManager_CalculateRaceMoney).
 pub fn race_money(rep: i64, class: usize, diff: usize, round: f32) -> f32 {
+    // (0 while the cheat gate is set: F-68910 first)
+    if cheat_gate_on() {
+        return 0.0;
+    }
     let p = progress(rep).1;
     let v = (p * 3000.0 + 250.0) * CLASS_MONEY[class.min(3)] * DIFF_MONEY[diff.min(3)];
     (v / round) as i32 as f32 * round
@@ -300,5 +328,25 @@ mod tests {
         }
         eprintln!("compared {n:?}, {bad} differ");
         assert_eq!(bad, 0);
+    }
+
+    /// F-68910 against the original run offline over every combination of the seven cheat bytes and the race editor's
+    /// three flags (tools/cheat_gate_reference.py): the port's six pause-menu cheats give the same answer; the byte +5,
+    /// which no pause-menu row sets, blocks too.
+    #[test]
+    fn cheat_gate_matches_the_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/cheat_gate_ref.txt").lines() {
+            let (k, r) = l.split_once(" -> ").unwrap();
+            let b: Vec<bool> = k.split(' ').map(|x| x == "1").collect();
+            let want = r == "1";
+            if b[5] {
+                assert!(want, "{l}");
+                continue;
+            }
+            assert_eq!(cheat_gate(&[b[0], b[1], b[2], b[3], b[4], b[6]], b[7] || b[8] || b[9]), want, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 512);
     }
 }

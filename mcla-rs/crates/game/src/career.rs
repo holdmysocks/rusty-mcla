@@ -1150,7 +1150,9 @@ impl Career {
             }
             _ => {}
         }
-        let active: Vec<usize> = self.order.clone();
+        // (the conditions' updates - vt#9 of mcConditionString F-77134, Mission F-88673, Stat F-16469, Experience
+        // F-79261, TallyMission F-12302 - do nothing while the cheat gate F-68910 is set: no mission moves on)
+        let active: Vec<usize> = if crate::rewards::cheat_gate_on() { Vec::new() } else { self.order.clone() };
         for i in active {
             if self.state[i].stage != Stage::Active {
                 continue;
