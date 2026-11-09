@@ -9151,6 +9151,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
                 let mut boom_view = false;
+                // (the boom's collision hit this frame: the director shows its corrected matrix +80, byte +156 - F-12669)
+                let mut boom_corrected = false;
                 // (the port's own near for the views the director does not show: cutscenes, garage, free camera;
                 // the director's views take boomcam::DIRECTOR_NEAR below)
                 self.cam.near = camera::Camera::default().near;
@@ -9614,6 +9616,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             if let Some(m) = boomcam::boom_collide(from, self.chase.pos, r, inside_car, &cam_level) {
                                 self.chase.pos += m;
                                 self.chase.look += m;
+                                boom_corrected = true;
                             }
                         }
                         self.boom_up = Some(out.up);
@@ -9805,14 +9808,20 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                     }
                 }
-                // (the shake on the camera in use, after its collision - see CAMERAS_REPLAY.md)
+                // (the shake, at the end of the look-around frame F-36289, turns the current camera's own matrix +16 -
+                // the uncorrected one: a boom whose collision hit this frame is shown by its corrected matrix +80, which
+                // the shake never reaches (F-12669, boom_collision_rule.md); the blocks still run, unseen)
                 // (none while the player's Zone runs: the blocks keep their state, F-36289)
                 let zone = self.ability.kind == ability::Kind::Zone && self.ability.active > 0.0;
                 if shake_on && sim_dt > 0.0 && !zone {
                     if let Some(sh) = self.shake.as_mut() {
                         let mut up = self.boom_up.unwrap_or(Vec3::Y);
-                        sh.apply(dt, &mut self.chase.pos, &mut self.chase.look, &mut up, render_state.pos);
-                        self.boom_up = Some(up);
+                        let (mut pos, mut look) = (self.chase.pos, self.chase.look);
+                        sh.apply(dt, &mut pos, &mut look, &mut up, render_state.pos);
+                        if !boom_corrected {
+                            (self.chase.pos, self.chase.look) = (pos, look);
+                            self.boom_up = Some(up);
+                        }
                     }
                 }
                 // cheat: the race seen from straight above
