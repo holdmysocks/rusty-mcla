@@ -1937,19 +1937,6 @@ fn swatch_screen(k: usize) -> [f32; 3] {
     to_screen([c[0], c[1], c[2]])
 }
 
-/// The swatch nearest a screen colour (what the port's menu row shows for it).
-fn nearest_swatch(c: [f32; 3]) -> usize {
-    let mut best = (0usize, f32::MAX);
-    for k in 0..PALETTE.len() {
-        let s = swatch_screen(k);
-        let d = (0..3).map(|i| (s[i] - c[i]) * (s[i] - c[i])).sum::<f32>();
-        if d < best.1 {
-            best = (k, d);
-        }
-    }
-    best.0
-}
-
 fn close(a: [f32; 3], b: [f32; 3]) -> bool {
     (0..3).all(|i| (a[i] - b[i]).abs() < 2e-6)
 }
@@ -2064,6 +2051,36 @@ impl Game {
     /// Slot k of ColorData as SetMiscColor (F-70456) writes it into the record.
     pub fn slot_screen(&self, k: usize) -> [f32; 3] {
         word_screen(self.color_slots()[k % 40])
+    }
+
+    /// The paint a PRIMARY / SECONDARY COLOR swatch puts on the car: SetVehicleColor (F-99653) takes the swatch's
+    /// `fs_color` - ColorData slot `k`, MatchStateColorsToSavegame F-93328 - and F-40495 makes it each byte x f32(1 / 255),
+    /// then the gamut limit (F-52258, run when the excess F-85014 is not 0), before the paint record. As the screen
+    /// (the record) has it.
+    pub fn vehicle_color(&self, k: usize) -> [f32; 3] {
+        let mut c = self.slot_screen(k);
+        gamut_limit(&mut c);
+        c
+    }
+
+    /// `vehicle_color` as the shop's own colour (`paint_hsv`: the HSV of the linear colour).
+    pub fn vehicle_color_hsv(&self, k: usize) -> [f32; 3] {
+        rgb_hsv(to_linear(self.vehicle_color(k)))
+    }
+
+    /// A save from before the 40-slot paint strips (2026-11-08): a body colour that was an index into the port's old
+    /// 10-colour palette (`paint_hsv` none) becomes that colour as the shop's own, so nothing changes on the car; the
+    /// index stays as the strip's (now a ColorData slot).
+    pub fn legacy_paint(&mut self) {
+        let own = |idx: usize| { let p = PALETTE[idx % PALETTE.len()]; rgb_hsv([p[0], p[1], p[2]]) };
+        if self.paint_hsv.is_none() {
+            self.paint_hsv = Some(own(self.color_idx));
+        }
+        for v in self.paints.values_mut() {
+            if v.0.is_none() {
+                v.0 = Some(own(v.1));
+            }
+        }
     }
 
     /// The block, made if the save had none.
@@ -2316,7 +2333,7 @@ impl Game {
             self.ability_pick = Some(k);
         }
         if let Some(rgb) = c.visual.paint.first().and_then(|p| p.color_b()) {
-            self.paint_b = nearest_swatch(rgb);
+            self.paint_b = nearest_misc(&self.color_slots(), rgb);
             self.car_x.paint_b_rgb = Some((self.paint_b, rgb));
         }
     }
@@ -5103,7 +5120,7 @@ impl Game {
     }
 
     /// The second colour in the shop's hands, as on screen.
-    fn paint_b_screen(&self) -> [f32; 3] {
+    pub fn paint_b_screen(&self) -> [f32; 3] {
         match self.car_x.paint_b_rgb {
             Some((k, c)) if k == self.paint_b => c,
             _ => swatch_screen(self.paint_b),
@@ -13486,6 +13503,30 @@ mod tests {
     /// ColorData: a block without it takes the executable's table; SaveCustomColor writes 0xFF | trunc(c x 255), a reset
     /// puts the table's word back; both go through the block's JSON.
     #[test]
+    fn paint_strips_on_the_slots() {
+        let mut g = Game::new(Vec::new(), 0);
+        // (SetVehicleColor: a slot in gamut is its bytes x f32(1 / 255); slot 4 = 0x010032)
+        let c = g.vehicle_color(4);
+        assert_eq!(c, word_screen(MISC_COLORS[4]));
+        g.mc4_mut().color_data_set(9, [1.0, 0.0, 0.0]);
+        assert_eq!(g.vehicle_color(9), { let mut w = word_screen(g.color_slots()[9]); gamut_limit(&mut w); w });
+        // (the shop's own colour stands for the slot's: back to the screen within a rounding)
+        let back = to_screen(hsv_rgb(g.vehicle_color_hsv(4)));
+        assert!((0..3).all(|i| (back[i] - c[i]).abs() < 1e-5), "{back:?} {c:?}");
+        // (an old save's palette body colour keeps its look)
+        g.paint_hsv = None;
+        g.color_idx = 3;
+        g.paints.insert("x".into(), (None, 6, 2, 0));
+        let before = g.paint_color();
+        g.legacy_paint();
+        let after = g.paint_color();
+        assert!((0..3).all(|i| (before[i] - after[i]).abs() < 1e-5), "{before:?} {after:?}");
+        let p = PALETTE[6];
+        let h = g.paints["x"].0.unwrap();
+        assert!((0..3).all(|i| (hsv_rgb(h)[i] - p[i]).abs() < 1e-5));
+    }
+
+    #[test]
     fn color_data_slots() {
         let old = Mc4::from_value(&serde_json::json!({ "container_version": 15 })).unwrap();
         let mut full = old.clone();
@@ -13789,7 +13830,9 @@ mod tests {
         g.tint_level = 4;
         g.car_x.ability = Some(2);
         g.paint_fade = 2;
+        // (SECONDARY COLOR moved to slot 4: SetVehicleColor's colour, as the strip gives it)
         g.paint_b = 4;
+        g.car_x.paint_b_rgb = Some((4, g.vehicle_color(4)));
         g.mc4_mut().options.airride_pattern = 3;
         take(&mut g, "vp_aud_r8_08");
         assert_eq!((g.hydraulics, g.car_x.airbags, g.neon_on, g.tint_level), (false, false, false, 0), "the R8 keeps its own");
@@ -13803,8 +13846,8 @@ mod tests {
         assert!((s.visual.ExtNeonColor[0].0 as f32 - sw[0]).abs() < 1e-5);
         assert_eq!(s.visual.paint[0].fade(), Some(2));
         assert_eq!(s.visual.paint[3].fade(), Some(2), "an area that had the body's fade follows it");
-        let pb = swatch_screen(4);
-        assert!((s.visual.paint[0].ColorB[2].0 as f32 - pb[2]).abs() < 1e-5);
+        let pb = g.vehicle_color(4);
+        assert!((0..3).all(|i| (s.visual.paint[0].ColorB[i].0 as f32 - pb[i]).abs() < 1e-5));
         assert_eq!(m.options.airride_pattern, 3);
         let r8 = m.car("vp_aud_r8_08").unwrap();
         assert_eq!((r8.hydraulics(), r8.tint_row(), r8.neon_ext().0), (false, 0, false));

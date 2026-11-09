@@ -953,6 +953,8 @@ pub struct Game {
     pub ability_sel: usize,
     /// the paint shop's open colour strip: the row, and the colour to go back to
     pub paint_open: Option<(usize, usize, Option<[f32; 3]>)>,
+    /// the second colour as the car had it when SECONDARY COLOR's strip opened (BACK puts it back)
+    pub paint_open_b: Option<(usize, [f32; 3])>,
     /// INTERIOR COLORS (ColorsInt.sc.xml): the neon switch, the six colours listed (neon,
     /// gauges A and B, interior A, B, C: swatch numbers) and the row whose strip is open
     /// with the colour it had
@@ -1610,6 +1612,7 @@ impl Game {
             ability_pick: None,
             ability_sel: 0,
             paint_open: None,
+            paint_open_b: None,
             int_neon: false,
             int_colors: [0, 4, 4, 9, 9, 9],
             int_open: None,
@@ -1797,7 +1800,7 @@ impl Game {
                     self.current_car = i;
                     self.selected_car = i;
                 }
-                self.color_idx = sd.color % PALETTE.len();
+                self.color_idx = sd.color % 40;
                 self.cfg = sd.cfg;
                 self.best_time = sd.best_time;
                 self.money = sd.money.unwrap_or(START_MONEY);
@@ -1836,6 +1839,7 @@ impl Game {
                 // (MODS.md M-6 item 5: the fitted rims by folder name, over the positions)
                 self.resolve_saved_rims();
                 self.paints = sd.paints;
+                self.legacy_paint();
                 self.finishes = sd.finishes;
                 self.rim_ids = sd.rim_ids;
                 if let Some(m) = sd.rim_mats {
@@ -7611,6 +7615,15 @@ impl Game {
                     } else if enter {
                         self.paint_pick = None;
                         self.pick_accepted = true;
+                        // (PRIMARY COLOR's picker: ACCEPT is SaveCustomColor F-53397 into the strip's slot too)
+                        let paint_row = CUSTOM_SLOTS.iter().position(|x| *x == Slot::Paint).map_or(0, |i| i + 1);
+                        if let (None, Some((row, _, _)), Some(h)) = (self.pick_slot, self.paint_open, self.paint_hsv) {
+                            if row == paint_row {
+                                let c = crate::mc4::to_screen(paint_hsv_to_rgb(h));
+                                let slot = self.color_idx % 40;
+                                self.mc4_mut().color_data_set(slot, c);
+                            }
+                        }
                     }
                     (false, false, false, false, false, false)
                 } else if let Some((row, idx, hsv)) = self.paint_open {
@@ -7621,6 +7634,7 @@ impl Game {
                             self.paint_hsv = hsv;
                         } else {
                             self.paint_b = idx;
+                            self.car_x.paint_b_rgb = self.paint_open_b;
                         }
                         self.paint_open = None;
                         self.dirty = true;
@@ -7633,8 +7647,17 @@ impl Game {
                             self.paint_hsv = Some(paint_rgb_to_hsv(PALETTE[self.color_idx % PALETTE.len()]));
                         }
                     } else if primary && self.y_hit(ctx) {
-                        // RESET COLOR SLOT: back to the slot's own colour
-                        self.paint_hsv = None;
+                        // RESET COLOR SLOT (ResetDefaultColor, inline in F-96638): the slot back to the table's word, and the car
+                        // takes it (SetVehicleColor F-99653)
+                        let slot = self.color_idx % 40;
+                        self.mc4_mut().color_data_reset(slot);
+                        self.paint_hsv = Some(self.vehicle_color_hsv(self.color_idx));
+                        self.dirty = true;
+                    } else if !primary && self.y_hit(ctx) {
+                        // (SECONDARY COLOR's swatches are the same element, PaintColor.sc.xml: Y = ResetDefaultColor(0) there too)
+                        let slot = self.paint_b % 40;
+                        self.mc4_mut().color_data_reset(slot);
+                        self.car_x.paint_b_rgb = Some((slot, self.vehicle_color(slot)));
                         self.dirty = true;
                     }
                     (false, false, left, right, false, false)
@@ -8027,7 +8050,8 @@ impl Game {
                 let count_for = |slot: Slot| -> usize {
                     if !available_slots.contains(&slot) { return 0; }
                     match slot {
-                        Slot::Paint => PALETTE.len(),
+                        // (the paint strips: the 40 slots of ColorData - MatchStateColorsToSavegame F-93328, Paint.sc.xml 5, 6)
+                        Slot::Paint => 40,
                         Slot::Wheels => rim_count,
                         s => order_of(s).map(|o| o.len()).unwrap_or_else(|| variants.iter().find(|(x, _)| *x == s).map(|(_, v)| v.len()).unwrap_or(0)),
                     }
@@ -8076,6 +8100,7 @@ impl Game {
                 let (left, right, enter) = if colour_row && self.paint_open.is_none() && self.paint_pick.is_none() {
                     if enter || std::env::var("MCLA_PAINT_OPEN").is_ok() {
                         self.paint_open = Some(if self.garage_row == fade_row + 1 { (self.garage_row, self.paint_b, None) } else { (self.garage_row, self.color_idx, self.paint_hsv) });
+                        self.paint_open_b = self.car_x.paint_b_rgb;
                         if std::env::var("MCLA_PAINT_OPEN").map_or(false, |v| v == "pick") {
                             self.paint_pick = Some(self.paint_hsv);
                             self.paint_hsv = Some(self.paint_hsv.unwrap_or_else(|| paint_rgb_to_hsv(PALETTE[self.color_idx % PALETTE.len()])));
@@ -8200,7 +8225,9 @@ impl Game {
                         self.paint_fade = (self.paint_fade as isize + d).rem_euclid(5) as u8;
                         self.dirty = true;
                     } else if self.garage_row == fade_row + 1 {
-                        self.paint_b = (self.paint_b as isize + d).rem_euclid(PALETTE.len() as isize) as usize;
+                        self.paint_b = (self.paint_b as isize + d).rem_euclid(40) as usize;
+                        // (SetVehicleColor F-99653 for the second colour, Paint.sc.xml 6)
+                        self.car_x.paint_b_rgb = Some((self.paint_b, self.vehicle_color(self.paint_b)));
                         self.dirty = true;
                     } else if self.garage_row == ptype_row {
                         // (the shop's order: Gloss, Metallic, Pearlescent, Sparkle, Matte)
@@ -8256,8 +8283,9 @@ impl Game {
                             };
                             let nv = order.map_or(nv, |o| o[nv.min(o.len() - 1)]);
                             if slot == Slot::Paint {
+                                // (SetVehicleColor F-99653: the slot's colour through the gamut limit)
                                 self.color_idx = nv;
-                                self.paint_hsv = None;
+                                self.paint_hsv = Some(self.vehicle_color_hsv(nv));
                             } else {
                                 self.cfg.set(slot, nv);
                             }
@@ -8641,11 +8669,10 @@ impl Game {
                         // PAINT OPTIONS / PAINT TYPE / FADE TYPE are choices, the colours swatches.
                         let paint_page = title == "PAINT SHOP" && self.garage_part.is_none() && !listing_page;
                         let rgb_of = |c: [f32; 4]| ((c[0].clamp(0.0, 1.0) * 255.0) as u32) << 16 | ((c[1].clamp(0.0, 1.0) * 255.0) as u32) << 8 | (c[2].clamp(0.0, 1.0) * 255.0) as u32;
-                        let strip: Vec<u32> = PALETTE.iter().map(|c| rgb_of(*c)).collect();
-                        let primary_rgb = match self.paint_hsv {
-                            Some(h) => { let c = paint_hsv_to_rgb(h); rgb_of([c[0], c[1], c[2], 1.0]) }
-                            None => strip[self.color_idx % strip.len()],
-                        };
+                        // (the paint strips: the 40 slots of ColorData; the shop's own colour is linear, shown as the screen has it)
+                        let strip: Vec<u32> = self.color_slots().iter().map(|c| c & 0xFF_FFFF).collect();
+                        let shown = |h: Option<[f32; 3]>, idx: usize| { let c = match h { Some(h) => crate::mc4::to_screen(paint_hsv_to_rgb(h)), None => { let p = PALETTE[idx % PALETTE.len()]; crate::mc4::to_screen([p[0], p[1], p[2]]) } }; rgb_of([c[0], c[1], c[2], 1.0]) };
+                        let primary_rgb = shown(self.paint_hsv, self.color_idx);
                         if paint_page {
                             use crate::flash_ui::{choice_list, swatch_value};
                             let open = self.paint_open.map(|o| o.0);
@@ -8672,7 +8699,7 @@ impl Game {
                                     // the cursor: the original's captures, work/ui/ref t38 / t39)
                                     "PRIMARY COLOR" => {
                                         let rgb = match self.paint_open {
-                                            Some((row, idx, hsv)) if row == prow => hsv.map_or(strip[idx % strip.len()], |h| { let c = paint_hsv_to_rgb(h); rgb_of([c[0], c[1], c[2], 1.0]) }),
+                                            Some((row, idx, hsv)) if row == prow => shown(hsv, idx),
                                             _ => primary_rgb,
                                         };
                                         r.value = swatch_value(rgb, if open == Some(prow) { (self.color_idx % strip.len()) as i32 } else { -1 }, &strip);
@@ -8683,7 +8710,12 @@ impl Game {
                                             continue;
                                         }
                                         r.enabled = true;
-                                        r.value = swatch_value(strip[self.paint_open.filter(|o| o.0 == srow).map_or(self.paint_b, |o| o.1) % strip.len()], if open == Some(srow) { (self.paint_b % strip.len()) as i32 } else { -1 }, &strip);
+                                        let c = match (open == Some(srow), self.paint_open_b) {
+                                            (true, Some(o)) => o.1,
+                                            (true, None) => { let p = PALETTE[self.paint_open.map_or(self.paint_b, |o| o.1) % PALETTE.len()]; crate::mc4::to_screen([p[0], p[1], p[2]]) }
+                                            _ => self.paint_b_screen(),
+                                        };
+                                        r.value = swatch_value(rgb_of([c[0], c[1], c[2], 1.0]), if open == Some(srow) { (self.paint_b % strip.len()) as i32 } else { -1 }, &strip);
                                     }
                                     _ => {}
                                 }

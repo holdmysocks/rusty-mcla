@@ -515,7 +515,9 @@ mod tests {
             g.mode = crate::game::Mode::Garage;
             g.mc4_paint_sync();
             g.paint_fade = 2;
+            // (SECONDARY COLOR moved to slot 7, as the strip does it)
             g.paint_b = 7;
+            g.car_x.paint_b_rgb = Some((7, g.vehicle_color(7)));
             g.mc4_paint_sync();
             g.mode = crate::game::Mode::FreeRoam;
             if !in_use {
