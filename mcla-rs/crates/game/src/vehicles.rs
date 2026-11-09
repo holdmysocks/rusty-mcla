@@ -5001,9 +5001,13 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// racer turning that into its brain's 1.5 s collision timer when the aggressor is the player (F-30284: the other driver's
     /// slot 10 is true for mcPlayer only; the other driver classes return false). Both drivers are told in the original, the aggressor's call (byte 1) does nothing.
     /// The cruiser whose siren lights the world (F-88968 tests the siren's target, F-62430 takes the per-frame record
-    /// nearest the camera within 100 m): its place 2 m above the car.
+    /// nearest the camera within 100 m): its place 2 m above the car. F-88968 is a slot of the police unit (mcPolice), so
+    /// only the police's cruisers light it: the player's own cruiser with its bar on makes no light (recorded: lane 3 of
+    /// c84 .. c95 empty, the car's two slots a lamp and the hour's light, in three frames - lighting evidence
+    /// cop_dome_evidence_2026-11-09.md). MCLA_SIREN_PLAYER_OLD=1: the player's cruiser lights it too, as before.
     pub fn siren_light(&self, cam: Vec3) -> Option<Vec3> {
-        self.cars.iter().filter(|c| (c.cop && (c.siren || self.sirens)) || (c.is_player && c.siren)).map(|c| c.state.pos + Vec3::Y * 2.0).map(|p| (p.distance_squared(cam), p)).filter(|x| x.0 < 10000.0).min_by(|a, b| a.0.total_cmp(&b.0)).map(|x| x.1)
+        let old = std::env::var_os("MCLA_SIREN_PLAYER_OLD").is_some();
+        self.cars.iter().filter(|c| (c.cop && !c.is_player && (c.siren || self.sirens)) || (old && c.is_player && (c.siren || c.cop && self.sirens))).map(|c| c.state.pos + Vec3::Y * 2.0).map(|p| (p.distance_squared(cam), p)).filter(|x| x.0 < 10000.0).min_by(|a, b| a.0.total_cmp(&b.0)).map(|x| x.1)
     }
 
     fn notify_contact(&mut self, a: usize, b: usize) {
