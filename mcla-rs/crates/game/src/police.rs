@@ -1648,6 +1648,9 @@ pub struct Police {
     /// each pursuing cruiser's tactic state (by car uid), and the target's speed at the last update (tactic +64)
     tacs: HashMap<u32, CopTac>,
     last_tspeed: f32,
+    /// the tactic's +88: the cop whose car the target's seen probe hit nearest (F-16046; kept while the target is not
+    /// moving, the probe then not run); the common update F-63286 brakes it (F-39048, 1.0)
+    probe_cop: Option<u32>,
     /// the highest speed band whose start points were paid (the record's "started" bits +100: kept to `clear`)
     speed_level: u8,
     /// the highest speed band of the offences so far (1..3; 0 = none): the fine counts that one
@@ -1813,6 +1816,7 @@ impl Police {
             chase_type: 0,
             tacs: HashMap::new(),
             last_tspeed: 0.0,
+            probe_cop: None,
             bullhorn: None,
             ticket_hold: None,
             ticketing: false,
@@ -2858,6 +2862,7 @@ impl Police {
         }
         self.kind = kind;
         self.cops = cops;
+        self.probe_cop = None;
         self.may_escalate = may_escalate;
         // (the tactic's begin: +112 = fMinPerRdoTime; its constructor: +96 = 1, +100 = 0)
         self.rdo_t = self.tun.get("fMinPerRdoTime", 15.0);
@@ -3417,12 +3422,17 @@ impl Police {
         // only in reverse)
         // (the probe, F-20855: one-sided, every level object - no instance excluded, include and type flags -1, states 7;
         // any hit counts: the city, the other cars, the props and the pedestrians' capsules - `level_probe_front`)
-        let probe_hit = {
+        // (a moving target's probe also sets +88: the tactic cop whose car is the nearest hit, else none; not moving, the
+        // probe is not run and +88 keeps its value)
+        let t_still = tvel.length() * MPH <= tun.get("fMovingSpeed", 1.0);
+        let probe_hit = !t_still && {
             let o = tpos + Vec3::Y * t_half;
             let d = if t_rev { -tfwd } else { tfwd };
-            level_probe_front(world, vehicles, &self.peds, t_uid, o, d, 7.0)
+            let (hit, car) = level_probe_nearest_car(world, vehicles, &self.peds, t_uid, o, d, 7.0);
+            self.probe_cop = car.filter(|u| self.cops.contains(u));
+            hit
         };
-        let seen_now = tvel.length() * MPH <= tun.get("fMovingSpeed", 1.0) || probe_hit;
+        let seen_now = t_still || probe_hit;
         self.seen_update(seen_now, dt);
         for c in vehicles.cars.iter().filter(|c| pursuer(c)) {
             n_cops += 1;
@@ -4699,6 +4709,10 @@ impl Police {
                     v.handbrake = o.handbrake.or(v.handbrake);
                     v.throttle = o.throttle.or(v.throttle);
                     ai.ovr = Some(v);
+                }
+                // (then the common update F-63286: full brake for the cop the target's probe hit, +88)
+                if self.probe_cop == Some(c.uid) {
+                    ai.ovr = Some(crate::ai::Overrides { brake: Some(1.0), ..ai.ovr.unwrap_or_default() });
                 }
                 // ---- the tactic's machine, after the brain: its command acts at the next frame's brain tick ----
                 if searching || squad {
@@ -6061,6 +6075,93 @@ mod tests {
         assert!(checked == 3572 && heat == 2347 && states == [0, 2099, 902, 70, 0, 501], "{checked} {heat} {states:?}");
     }
 
+    /// The Arrow Trap against a recording of the running original (docs/reference/hookmen/arrow_trap_recording.md): an Arrow
+    /// Trap (StartPursuit kind 3) on the player's car, recorded at the entry and the exit of F-76774. Each update in CatchUp /
+    /// Halt starts the port from the recorded machine (state, asked state, CatchUp's lock / hysteresis / wait / latch, the
+    /// three slots) and brains (command +568, side +708, head-on +774, the override words), gives it the recorded cops'
+    /// frames, velocities and route points and the target's frame, velocity and chassis speed, and runs `squad_machine` with
+    /// `squad_formation` and `squad_swipes` once: state, asked state and slots must be the exit's; after a CatchUp update also
+    /// the lock, hysteresis, wait and latch bits and every cop's command, side and override words.
+    #[test]
+    fn arrow_trap_matches_the_recording() {
+        let rec = include_str!("testdata/arrow_trap_rec.txt");
+        let hex = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let fl = |s: &str| f32::from_bits(hex(s));
+        let v3 = |v: &[&str]| Vec3::new(fl(v[0]), fl(v[1]), fl(v[2]));
+        let slot = |s: &str| s.parse::<i32>().ok().filter(|&k| k >= 0).map(|k| k as u32);
+        let (safe, along, moving_speed, thresh, head_on_dist) = (30.0f32, 5.0f32, 1.0f32, 10.0f32, 60.0f32);
+        let mut lines = rec.lines();
+        let (mut checked, mut catchup, mut sends, mut swiped) = (0, 0, 0, 0);
+        while let Some(u) = lines.next() {
+            let u: Vec<&str> = u.split_whitespace().collect();
+            assert_eq!(u[0], "A");
+            let dt = fl(u[1]);
+            let (st, asked) = (u[2].parse::<i32>().unwrap(), u[3].parse::<i32>().unwrap());
+            let mut sq = Squad {
+                begun: st == 0,
+                halt: st == 2,
+                next: (asked >= 0).then_some(asked == 2),
+                lock: fl(u[4]),
+                hyst: fl(u[5]),
+                swipe_t: fl(u[6]),
+                latch: hex(u[7]) != 0,
+                slots: [slot(u[8]), slot(u[9]), slot(u[10])],
+            };
+            let n: usize = u[11].parse().unwrap();
+            let cops: Vec<Vec<&str>> = (0..n).map(|_| lines.next().unwrap().split_whitespace().collect()).collect();
+            let t: Vec<&str> = lines.next().unwrap().split_whitespace().collect();
+            let w: Vec<&str> = lines.next().unwrap().split_whitespace().collect();
+            let (tpos, tright, tback, tvel, tspeed) = (v3(&t[1..]), v3(&t[4..]), v3(&t[7..]), v3(&t[10..]), fl(t[13]));
+            let pos: Vec<Vec3> = cops.iter().map(|c| v3(&c[1..])).collect();
+            let g: Vec<Option<SwipeGeo>> = cops.iter().map(|c| Some(swipe_geo(v3(&c[1..]), v3(&c[4..]), v3(&c[7..]), v3(&c[10..]), tpos, tvel))).collect();
+            let head_on: Vec<bool> = cops.iter().map(|c| c[13] != "0").collect();
+            let route: Vec<Option<Vec3>> = cops.iter().map(|c| (c[16] == "1").then(|| v3(&c[17..]))).collect();
+            let mut brains: Vec<(u8, bool)> = cops.iter().map(|c| (c[14].parse().unwrap(), c[15] != "0")).collect();
+            let any_safe = g.iter().flatten().any(|x| x.dsq < safe * safe);
+            let t_moving = moving(tspeed, moving_speed);
+            let fast = tspeed * 2.237 > thresh;
+            let mut ovr = vec![crate::ai::Overrides::default(); n];
+            let mut sent = false;
+            squad_machine(&mut sq, &mut (), true, any_safe, t_moving, fast, dt, &mut |sq: &mut Squad, _: &mut (), d: f32, enter: bool| {
+                let mut slots = sq.slots.map(|k| k.map(|k| k as usize));
+                let s = squad_formation(&mut sq.hyst, &mut slots, true, &mut brains, &pos, &route, tpos, tright, tback, along, d, enter);
+                sq.slots = slots.map(|k| k.map(|k| k as u32));
+                sent |= s;
+                s
+            }, &mut |sq: &mut Squad, _: &mut ()| {
+                let index = |k: Option<u32>| k.map(|k| k as usize);
+                squad_swipes(sq, true, dt, index(sq.slots[0]), index(sq.slots[1]), &g, &head_on, head_on_dist, &mut ovr);
+            });
+            // (the common update F-63286 then brakes the cop the target's probe hit, +88: the recorded exit's)
+            if let Ok(k) = usize::try_from(u[12].parse::<i32>().unwrap()) {
+                ovr[k].brake = Some(1.0);
+            }
+            let code = |h: bool| if h { 2 } else { 0 };
+            let sl = |k: Option<u32>| k.map_or(-1, |k| k as i32);
+            let now = code(sq.halt);
+            let mut got = vec![now.to_string(), sq.next.map_or(-1, code).to_string()];
+            let mut want: Vec<String> = w[1..3].iter().map(|s| s.to_string()).collect();
+            got.extend(sq.slots.iter().map(|&k| sl(k).to_string()));
+            want.extend(w[7..10].iter().map(|s| s.to_string()));
+            if now == 0 && w[1] == "0" {
+                got.push(format!("{:08X} {:08X} {:08X} {:02X}", sq.lock.to_bits(), sq.hyst.to_bits(), sq.swipe_t.to_bits(), sq.latch as u8));
+                want.push(w[3..7].join(" "));
+                for (k, c) in cops.iter().enumerate() {
+                    let word = |v: Option<f32>, i: usize| v.map_or(hex(c[i]), f32::to_bits);
+                    got.push(format!("{} {} {:08X} {:08X} {:08X}", brains[k].0, brains[k].1 as u8, word(ovr[k].steer, 20), word(ovr[k].brake, 21),
+                                     word(ovr[k].handbrake.map(|_| 1.0), 22)));
+                    want.push(w[10 + 5 * k..15 + 5 * k].join(" "));
+                    swiped += ovr[k].brake.is_some() as u32;
+                }
+                catchup += 1;
+                sends += sent as u32;
+            }
+            assert_eq!(got, want, "update {checked}");
+            checked += 1;
+        }
+        assert!(checked == 2996 && catchup == 2114 && sends == 9 && swiped == 251, "{checked} {catchup} {sends} {swiped}");
+    }
+
     /// The squad formations against the original's (the Arrow Trap's F-80532, the Double Pursuit's F-21534, with the
     /// enters F-81752 / F-86874) run offline by tools/formation_reference.py: the same inputs from the same xorshift, every
     /// call's send, hysteresis bits, slots and brains equal.
@@ -6974,6 +7075,21 @@ fn block_traffic_cond(world: &World, vehicles: &Vehicles, p: &crate::vehicles::C
 /// F-20855 as the seen test and block traffic call it: a one-sided line probe from `o` along `d` for `len`, any hit
 /// counts - the city bound, the other cars' hulls, the props (the level's own and the moved / broken ones) and the
 /// walkers' capsules (radius 0.3, 0.3 to 1.5 m above the feet).
+/// `level_probe_front` and the car whose hull is the nearest hit (F-16046 keeps the nearest hit and looks its instance up in
+/// the tactic's cops): the cars' and the city's distances are compared; a prop or a walker hit counts for the hit only
+/// (their distances not computed: approximate when one lies between the target and a car).
+fn level_probe_nearest_car(world: &World, vehicles: &Vehicles, peds: &[Vec3], skip_uid: u32, o: Vec3, d: Vec3, len: f32) -> (bool, Option<u32>) {
+    let city = world.collider.probe_front(o, d, len).map(|h| h.t);
+    let car = vehicles.cars.iter().filter(|c| c.uid != skip_uid)
+        .filter_map(|c| hull_probe_t(c, o, d, len).map(|t| (t, c.uid)))
+        .min_by(|a, b| a.0.total_cmp(&b.0));
+    let near = car.filter(|&(t, _)| city.map_or(true, |ct| t < ct)).map(|(_, u)| u);
+    let hit = city.is_some() || car.is_some()
+        || props_probe(world.collider.loose.as_deref(), &vehicles.level, o, d, len)
+        || peds.iter().any(|&q| seg_capsule(o, d, len, q + Vec3::Y * 0.3, q + Vec3::Y * 1.5, 0.3));
+    (hit, near)
+}
+
 fn level_probe_front(world: &World, vehicles: &Vehicles, peds: &[Vec3], skip_uid: u32, o: Vec3, d: Vec3, len: f32) -> bool {
     world.collider.probe_front(o, d, len).is_some()
         || vehicles.cars.iter().filter(|c| c.uid != skip_uid).any(|c| hull_probe_front(c, o, d, len))
@@ -7073,6 +7189,21 @@ fn props_probe(lw: Option<&crate::physics::loose::LooseWorld>, lv: &crate::physi
 }
 
 /// A one-sided segment o -> o + d x len against a car's hull triangles (its bound's faces seen from outside).
+/// The nearest front-face hit of the probe on a car's hull, its distance.
+fn hull_probe_t(c: &crate::vehicles::CarInstance, o: Vec3, d: Vec3, len: f32) -> Option<f32> {
+    let reach = 0.5 * (c.model.max - c.model.min).length() + len;
+    if (c.state.pos - o).length_squared() > reach * reach {
+        return None;
+    }
+    let h = c.model.params.hull.as_ref()?;
+    let inv = c.state.rot.inverse();
+    let (lo, ld) = (inv * (o - c.state.pos), inv * d);
+    h.tris.iter().filter_map(|t| {
+        let tri = [h.verts[t[0] as usize], h.verts[t[1] as usize], h.verts[t[2] as usize]];
+        crate::physics::collision::ray_tri_front(lo, ld, &tri, len).map(|(t, _)| t)
+    }).min_by(|a, b| a.total_cmp(b))
+}
+
 fn hull_probe_front(c: &crate::vehicles::CarInstance, o: Vec3, d: Vec3, len: f32) -> bool {
     let reach = 0.5 * (c.model.max - c.model.min).length() + len;
     if (c.state.pos - o).length_squared() > reach * reach {
