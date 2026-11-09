@@ -1195,7 +1195,14 @@ fn unit2(v: glam::Vec2, or: glam::Vec2) -> glam::Vec2 {
 /// x fMinSetGoalTime `per` until a point lies on a road or junction (within 3 m), then along the connection list
 /// to the neighbour best in line with that direction, each next point the middle of the node's lane; 10 at most.
 fn search_points(nav: &NavSys, world: &World, start: Vec3, v: Vec3, per: f32, first: bool, random: bool, angle: f32, rnd: &mut dyn FnMut() -> f32) -> Vec<(Vec3, Option<NavNode>)> {
-    let mesh = crate::offroad::mesh();
+    let probe = |p: Vec3, h: f32| -> Option<Vec3> { world.collider.raycast(p + Vec3::Y * h, -Vec3::Y, 2.0 * h).map(|hit| hit.point) };
+    search_points_on(nav, crate::offroad::mesh(), &probe, start, v, per, first, random, angle, rnd)
+}
+
+/// `search_points` on a given navigation mesh and vertical probe (`probe(p, h)`: the line from p + h up to p - h down,
+/// its hit point; F-20855).
+#[allow(clippy::too_many_arguments)]
+fn search_points_on(nav: &NavSys, mesh: Option<&mcla_formats::rage::navmesh::NavMesh>, probe: &dyn Fn(Vec3, f32) -> Option<Vec3>, start: Vec3, v: Vec3, per: f32, first: bool, random: bool, angle: f32, rnd: &mut dyn FnMut() -> f32) -> Vec<(Vec3, Option<NavNode>)> {
     // F-58319: over the mesh, or F-45363's polygon within 10 m - which moves the point to its centre
     let nav_ok = |p: Vec3| -> Option<Vec3> {
         match mesh {
@@ -1204,7 +1211,6 @@ fn search_points(nav: &NavSys, world: &World, start: Vec3, v: Vec3, per: f32, fi
             Some(m) => m.teleport_target(p),
         }
     };
-    let probe = |p: Vec3, h: f32| -> Option<Vec3> { world.collider.raycast(p + Vec3::Y * h, -Vec3::Y, 2.0 * h).map(|hit| hit.point) };
     let v = if v.length_squared() < 499.523 { (if v.length_squared() <= 1e-5 { Vec3::X } else { v.normalize() }) * 22.35 } else { v };
     let s = v * per;
     let mut pts: Vec<(Vec3, Option<NavNode>)> = Vec::new();
@@ -6162,6 +6168,62 @@ mod tests {
             checked += 1;
         }
         assert!(checked == 1908 && heat == 0 && states == [913, 195, 800], "{checked} {heat} {states:?}");
+    }
+
+    /// The search's point lists against a recording of the running original (docs/reference/hookmen/search_recording.md):
+    /// every build of F-52110 (first builds and rebuilds) recorded at its entry and exit in Pursuit and Arrow Trap
+    /// searches. Each runs `search_points_on` on the city's navigation data (resources/city/sc: the r66 nav system, the r26
+    /// mesh) with the recorded start, the target's last known velocity (+624), +736 / +740 and the shared generator's two
+    /// words (the multiply-with-carry 0x5CDCFAA7): the count, every point's bits and whether it has a node must be the
+    /// exit's. The vertical probe F-20855 (the city's collision) answers as it did in the recording, in the order the
+    /// builder asked it, and the port must ask it as many times. Skipped without the data.
+    #[test]
+    fn search_points_match_the_recording() {
+        let dir = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        let Ok(res) = crate::assets::load_resource_file(&std::path::Path::new(&dir).join("resources/city/sc/0x9960fcd8.r66")) else { return };
+        let Ok(nav) = NavSys::parse(&res) else { return };
+        let Some(mesh) = crate::offroad::mesh() else { return };
+        let rec = include_str!("testdata/search_points_rec.txt");
+        let hex = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let fl = |s: &str| f32::from_bits(hex(s));
+        let v3 = |v: &[&str]| Vec3::new(fl(v[0]), fl(v[1]), fl(v[2]));
+        let (mut checked, mut probed, mut bad) = (0, 0, Vec::new());
+        for line in rec.lines() {
+            let v: Vec<&str> = line.split_whitespace().collect();
+            assert_eq!((v[0], v[12]), ("Q", "="));
+            let (first, random, angle) = (v[1] == "1", v[2] == "1", fl(v[3]));
+            let (lv, start) = (v3(&v[4..]), v3(&v[7..]));
+            let (mut x, mut c) = (hex(v[10]) as u64, hex(v[11]) as u64);
+            let mut rnd = || {
+                let t = x * 0x5CDC_FAA7 + c;
+                (x, c) = (t & 0xFFFF_FFFF, t >> 32);
+                (x as u32 & 0x7F_FFFF) as f32 * (1.0 / 8_388_608.0)
+            };
+            // (the recorded answers of the vertical probe, in the order the builder asked them)
+            let n: usize = v[14].parse().unwrap();
+            let pv = &v[15 + 4 * n..];
+            assert_eq!(pv[0], "P");
+            let answers: Vec<Option<Vec3>> = (0..pv[1].parse::<usize>().unwrap()).map(|i| (hex(pv[2 + 4 * i]) != 0).then(|| v3(&pv[3 + 4 * i..]))).collect();
+            let asked = std::cell::Cell::new(0usize);
+            let probe = |_: Vec3, _: f32| -> Option<Vec3> {
+                let i = asked.get();
+                asked.set(i + 1);
+                answers.get(i).copied().flatten()
+            };
+            let pts = search_points_on(&nav, Some(mesh), &probe, start, lv, 1.0, first, random, angle, &mut rnd);
+            let got = std::iter::once(format!("{} {}", (pts.is_empty() as u8), pts.len()))
+                .chain(pts.iter().map(|(p, n)| format!("{:08X} {:08X} {:08X} {}", p.x.to_bits(), p.y.to_bits(), p.z.to_bits(), n.is_some() as u8)))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let want = format!("{} {}", u8::from(hex(v[13]) != 0), v[14..15 + 4 * n].join(" "));
+            probed += (asked.get() > 0) as u32;
+            if got != want || asked.get() != answers.len() {
+                bad.push(format!("build {checked} (probes {} of {}): {line}\n   got {got}", asked.get(), answers.len()));
+            }
+            checked += 1;
+        }
+        assert!(bad.is_empty(), "{} of {checked} differ ({probed} asked the probe):\n{}", bad.len(), bad.join("\n"));
+        eprintln!("search points: {checked} builds equal, {probed} asked the probe");
     }
 
     /// The Arrow Trap against a recording of the running original (docs/reference/hookmen/arrow_trap_recording.md): an Arrow

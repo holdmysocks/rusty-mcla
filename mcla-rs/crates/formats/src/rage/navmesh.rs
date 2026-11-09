@@ -285,6 +285,14 @@ fn cell(x: f32, z: f32) -> (i32, i32) {
     ((x / GRID).floor() as i32, (z / GRID).floor() as i32)
 }
 
+/// A polygon's stored centre in world space as F-58750 forms it: the record's three i16 x the mesh scale 0.05 (a
+/// multiply), w = 1, each world coordinate a four-lane dot with the chunk matrix's column (the recompiled vmsum4fp128 =
+/// _mm_dp_ps 0xFF: the four products rounded, then (x + y) + (z + w)).
+fn stored_centre(rows: &[Vec3; 4], l: Vec3) -> Vec3 {
+    let dot = |k: usize| (l.x * rows[0][k] + l.y * rows[1][k]) + (l.z * rows[2][k] + rows[3][k]);
+    Vec3::new(dot(0), dot(1), dot(2))
+}
+
 impl NavMesh {
     pub fn parse(res: &Resource) -> Option<NavMesh> {
         let rd = Rd::new(res);
@@ -371,7 +379,7 @@ impl NavMesh {
                     material,
                     flags: mesh.materials.get(material as usize).copied().unwrap_or(0),
                     area: rd.f32(o + 8),
-                    center: world(Vec3::new(i16at(o), i16at(o + 2), i16at(o + 4))),
+                    center: stored_centre(&rows, Vec3::new(q16(o), q16(o + 2), q16(o + 4))),
                     normal,
                     nv: nv as u8,
                     verts: pv,
