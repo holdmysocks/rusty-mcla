@@ -1253,6 +1253,12 @@ impl Sound {
         let st = &p.state;
         let speed = st.speed();
         let grounded = st.wheels.iter().any(|w| w.grounded);
+        // the mixer's speed inputs (F-99947 every frame: chassis +224 x 2.237 mph and the rpm fraction; 0 / 0 in the pause
+        // branch of F-99037, taken as the pause as for the speed fade)
+        if let Some(lib) = &mut self.lib {
+            let paused = game.mode == Mode::Paused;
+            lib.set_speed_inputs(if paused { 0.0 } else { speed * f32::from_bits(0x400F_2B02) }, if paused { 0.0 } else { crate::caraudio::mixer_rpm_frac(p) });
+        }
         // AIRTIME (F-22751): in the air and a 10 m probe down from each wheel in turn (one a frame) hits nothing;
         // after 0.5 s in the air PLAYER_IN_AIR is asked for once
         if let Some(lib) = &mut self.lib {

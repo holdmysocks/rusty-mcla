@@ -1635,6 +1635,16 @@ pub(crate) fn engine_rpm(c: &CarInstance) -> f32 {
     c.state.veh.as_deref().map_or(c.state.rpm, |v| v.engine_w * 9.549_296)
 }
 
+/// MANAGER_PLAYER_SPEED's second input as F-99947 makes it: (entity +200 - idle) / (max - idle), the rpm the audio read
+/// this frame (F-12794) against the engine's idle +76 and greatest +68 speeds, each x 9.549296 (0x8207D394) - the
+/// physics' rad/s, made from the tune's rpm x 0.10471976 (0x8207D3E8).
+pub(crate) fn mixer_rpm_frac(c: &CarInstance) -> f32 {
+    let Some(e) = c.model.params.veh.as_ref().map(|t| &t.t.engine.s) else { return 0.0 };
+    let k = |rpm: f32| (rpm * f32::from_bits(0x3DD6_7750)) * f32::from_bits(0x4118_C9EB);
+    let (idle, max) = (k(e.idle_rpm), k(e.max_rpm));
+    (engine_rpm(c) - idle) / (max - idle)
+}
+
 fn engine_in(c: &CarInstance, racing: bool) -> EngineIn {
     let st = &c.state;
     let vs = st.veh.as_deref();
@@ -3117,6 +3127,11 @@ mod tests {
         let mut a = crate::audio::Audio::new_offline(&dir).expect("audio");
         let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
         lib.set_sliders([10; 5]);
+        // the recorded frames are at speed: the MANAGER_PLAYER_SPEED records at their high ends (their runtime 0 dB there)
+        lib.set_speed_inputs(200.0, 1.0);
+        for _ in 0..300 {
+            lib.update(1.0 / 30.0, &mut a);
+        }
         let rec = [("PLAYER_VEHICLES_SST", -25.497), ("PLAYER_VEHICLES_NITROUS", 0.500), ("NITROUS_FRONT_END", -4.500), ("PLAYER_VEHICLES", -19.998), ("MUSIC", -17.498)];
         let vols = |lib: &SoundLib| rec.map(|(n, _)| lib.category(n).expect(n).volume);
         let off = vols(&lib);

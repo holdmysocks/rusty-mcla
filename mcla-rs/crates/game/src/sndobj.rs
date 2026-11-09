@@ -702,6 +702,8 @@ pub struct SoundLib {
     presence_db: f32,
     /// MANAGER_PLAYER_SPEED (F-15595): each record and its controller's linear level
     speed: Option<Vec<(SpeedRec, f32)>>,
+    /// MANAGER_PLAYER_SPEED's inputs, mixer +1748 / +1752: the player's mph and engine rpm fraction (F-99947)
+    speed_in: (f32, f32),
     /// DYNAMIC_MIXER_SLOWDOWN's SFX_HARD record (pitch ratio 0.1, its level unchanged): the controller's ratio now and
     /// its target (career2 `audioramp/notes.md`: 1 a second either way; the PLAYER_VEHICLES and AMBIENCE records are
     /// `Audio::set_time_slow`'s)
@@ -966,6 +968,7 @@ impl SoundLib {
             speed_fade: 0.0,
             presence_db: 0.0,
             speed: None,
+            speed_in: (0.0, 0.0),
             slow_hard: (1.0, 1.0),
             scenes_on_hint: Default::default(),
         })
@@ -1053,6 +1056,13 @@ impl SoundLib {
 
     /// Turn a dynamic mixer scene on (strength 1) or off (with its exit sound) by name, as a fixed slot: starting a
     /// running scene does nothing.
+    /// The mixer's speed inputs (+1748 / +1752) as the player audio entity's update F-99947 sets them every frame: the car's
+    /// speed in mph and its engine's rpm between idle and the maximum; 0 / 0 from the mixer's ctor, the entity's release
+    /// F-35488 and the pause branch of F-99037.
+    pub fn set_speed_inputs(&mut self, mph: f32, rpm_frac: f32) {
+        self.speed_in = (mph, rpm_frac);
+    }
+
     pub fn scene(&mut self, name: &str, on: bool) {
         self.scene_at(name, on, 1.0);
     }
@@ -1205,14 +1215,14 @@ impl SoundLib {
 
     fn step_scenes(&mut self, dt: f32) {
         let mut changed = false;
-        // MANAGER_PLAYER_SPEED (F-15595, every mixer update): the speed inputs (+1748 / +1752) are only ever set to 0 in
-        // the game (F-35488 and the timer pause in F-99037), so every record follows its low end
+        // MANAGER_PLAYER_SPEED (F-15595, every mixer update) on the inputs the player entity's update leaves (+1748 /
+        // +1752, `set_speed_inputs`)
         if self.speed.is_none() {
             self.speed = Some(self.game.get_name("MANAGER_PLAYER_SPEED").map_or(Vec::new(), |o| SpeedRec::table(o).into_iter().map(|r| (r, 1.0)).collect()));
         }
         let mode = self.cam_mode.map_or(-1, |m| m.0);
         for (r, lin) in self.speed.iter_mut().flatten() {
-            let v = speed_step(r, *lin, mode, 0.0, 0.0, dt);
+            let v = speed_step(r, *lin, mode, self.speed_in.0, self.speed_in.1, dt);
             if v != *lin {
                 *lin = v;
                 changed = true;
@@ -3843,9 +3853,13 @@ mod tests {
         let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
         let a = crate::audio::Audio::new_offline(&dir).expect("audio");
         let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        // at speed, the MANAGER_PLAYER_SPEED records settled at their high ends
+        lib.set_speed_inputs(200.0, 1.0);
+        lib.step_scenes(10.0);
         let v = |lib: &SoundLib, n: &str| lib.category(n).unwrap().volume;
         let (sfx, amb, eng, music) = (v(&lib, "SFX"), v(&lib, "AMBIENCE"), v(&lib, "PLAYER_VEHICLES_ENGINES"), v(&lib, "MUSIC_USER"));
-        assert!((music + 17.5).abs() < 0.05, "{music}");
+        // -17.5 resolved, +2 dB from its MANAGER_PLAYER_SPEED record at the high end (mB -150 .. +200 over 40 .. 100 mph)
+        assert!((music + 15.5).abs() < 0.05, "{music}");
         lib.set_sliders([5, 10, 10, 10, 10]);
         assert!((v(&lib, "SFX") - sfx + 6.0206).abs() < 0.01);
         assert!((v(&lib, "AMBIENCE") - amb + 6.0206).abs() < 0.01);
