@@ -9811,9 +9811,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // (the shake, at the end of the look-around frame F-36289, turns the current camera's own matrix +16 -
                 // the uncorrected one: a boom whose collision hit this frame is shown by its corrected matrix +80, which
                 // the shake never reaches (F-12669, boom_collision_rule.md); the blocks still run, unseen)
-                // (none while the player's Zone runs: the blocks keep their state, F-36289)
+                // (none while the player's Zone runs or the police hold the car - chassis +592 bit 0x8, set with the bust's
+                // 0x20: the blocks keep their state, F-36289)
                 let zone = self.ability.kind == ability::Kind::Zone && self.ability.active > 0.0;
-                if shake_on && sim_dt > 0.0 && !zone {
+                if shake_on && sim_dt > 0.0 && !zone && self.crash_bits & 0x8 == 0 {
                     if let Some(sh) = self.shake.as_mut() {
                         let mut up = self.boom_up.unwrap_or(Vec3::Y);
                         let (mut pos, mut look) = (self.chase.pos, self.chase.look);
