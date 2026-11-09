@@ -2150,8 +2150,9 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
         discard;
     }
     // (a sector cross-fading with its far model: world.rs writes its alpha into the last dent
-    // slot of the sector's object uniform, marked by w = -7; dithered like the props' fade)
-    if (obj.dents[5].w < -6.5 && obj.dents[5].x < 0.999) {
+    // slot of the sector's object uniform, marked by w = -7; dithered like the props' fade. Not a wheel - dents[3].y = 1,
+    // its dents[5] the tyre's clip plane)
+    if (obj.dents[5].w < -6.5 && obj.dents[3].y < 0.5 && obj.dents[5].x < 0.999) {
         if (obj.dents[5].x <= fract(52.9829189 * fract(dot(in.clip.xy + vec2<f32>(17.0, 5.0), vec2<f32>(0.06711056, 0.00583715))))) {
             discard;
         }
@@ -2657,7 +2658,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
         // its wet terms yet - the mirror and highlight this older code laid on a wet night road
         // were several times what the original shows, so there the road stays as in the dry)
         // (interior floors - the sector's interior uniform: their programs have no wet terms at all; 75: as before)
-        let dry_in = obj.dents[5].w < -6.5 && obj.dents[5].y > 0.5 && !(g.params.w > 74.5 && g.params.w < 75.5);
+        let dry_in = obj.dents[5].w < -6.5 && obj.dents[3].y < 0.5 && obj.dents[5].y > 0.5 && !(g.params.w > 74.5 && g.params.w < 75.5);
         let wet = select(g.shadow_params.z, 0.0, dry_in || (g.dome.w > 0.5 && g.ambient_ground.w > -0.5 && (mat.mode == 20u || g.tone.w > 0.5)));
         base = base * (1.0 - 0.4 * wet);
         spec = 2.2 * wet;
@@ -3249,7 +3250,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     // No sun reaches them. (Its shadow collector term is not read yet.)
     // (Ground batches of interiors - tunnel roads, car park floors - cannot carry the mark in
     // their vertices: their sector's interior object uniform has it, dents[5] = (.., 1, .., -7).)
-    let interior_obj = obj.dents[5].w < -6.5 && obj.dents[5].y > 0.5 && (mat.mode < 6u || mat.mode >= 20u);
+    let interior_obj = obj.dents[5].w < -6.5 && obj.dents[3].y < 0.5 && obj.dents[5].y > 0.5 && (mat.mode < 6u || mat.mode >= 20u);
     // The interior programs run on numbers (2026-10-13, work/lighting/tun_rules.py: each rule
     // against its program, exact). With V = the second colour's rgb, occ its alpha, lamps = the
     // cell's lamps x 3 (gPropNFLColor.w = 1), z = ShaderGlobals.z (8 + f by day, 4 at night):
