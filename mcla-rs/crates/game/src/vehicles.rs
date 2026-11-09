@@ -1004,6 +1004,22 @@ impl RoofCtl {
     }
 }
 
+/// The tyre's clip plane of a set-up car's wheel `i` (F-11293 -> TireClipPlaneEq): h = FenderClip[front / rear][wide] when it
+/// is above 0 and the car no motorcycle, else 1000; n = the car matrix's up row (as stored, not normalised), p = its origin +
+/// n h; the plane (n, -(p.x n.x + (n.z p.z + n.y p.y))) - the original's fnmadds / fmadds / fmuls order. A tyre pixel at w is
+/// dropped when dot(n, w) + d > 0.
+pub fn tyre_clip_plane(car: &Mat4, fender_clip: Option<[[f32; 2]; 2]>, wide: bool, wheel: usize, bike: bool) -> [f32; 4] {
+    let h = fender_clip.map_or(0.0, |c| c[(wheel >= 2) as usize][wide as usize]);
+    let h = if h > 0.0 && !bike { h } else { 1000.0 };
+    let n = car.y_axis.truncate();
+    let o = car.w_axis.truncate();
+    // (vmaddfp: p = n x h + origin, multiplied then added; the scalars as fused in double and rounded to single)
+    let p = n * h + o;
+    let fma = |a: f32, b: f32, c: f32| (a as f64).mul_add(b as f64, c as f64) as f32;
+    let d = -fma(p.x, n.x, fma(n.z, p.z, n.y * p.y));
+    [n.x, n.y, n.z, d]
+}
+
 /// F-35036's window requests: per side (left +288, right +384) the close byte (+2153 / +2155) first, then the open byte
 /// (+2154 / +2156); a request taken (the slot's close vt+24 from fully open, open vt+20 from closed) clears both bytes
 /// of its side, one not taken stays set. A side without a window clip takes none.
@@ -5936,6 +5952,15 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     let k = if c.model.bike { 0.0 } else { fit.map_or(w.tyre_bead - 0.406, |f| f.bead[(i >= 2) as usize]) };
                     finish[4] = [w.tyre_bead, k, 1.0, 0.0];
                 }
+                // (the sixth: the tyre's clip plane TireClipPlaneEq, F-11293 for a set-up car's draw object - its byte +589, set
+                // to 1 by the constructor F-60786 only: not traffic or parked cars. h = mcCarModelTune FenderClip [axle][wide]
+                // (+24 / +28 front - wheels 0 and 1 -, +32 / +36 the others; wide = the set-up's byte +2203), 1000 on a
+                // motorcycle or when h <= 0; the plane's normal the car matrix's up row, through its origin + up x h. city.wgsl
+                // drops the tyre's pixels above it (PS_ParallaxRubber2's kill on dot(plane, world) + w > 0): a tyre tucked into
+                // its arch is not drawn through the wing. MCLA_TYRE_CLIP_OLD=1: none)
+                if !c.is_ambient() && c.parked.is_none() && std::env::var_os("MCLA_TYRE_CLIP_OLD").is_none() {
+                    finish[5] = tyre_clip_plane(&wheel_m, c.model.simtunes.as_ref().map(|t| t.fender_clip), c.setup.or(c.model.fit).is_some_and(|f| f.wide), i, c.model.bike);
+                }
                 // (params.y: the rim effect's useGradient.x - F-91597 hands F-96332 "not a motorcycle" (F-54299): 100.0 on a
                 // motorcycle, 0.0 on a car: city.wgsl's fade along the axle is taken at x - useGradient.x, so a bike's rims never fade)
                 let use_gradient = if c.model.bike { 100.0 } else { 0.0 };
@@ -8309,6 +8334,36 @@ mod needle_tests {
         // (one mph / 100 rpm moves the needle by nearly one frame)
         let df = (needle_time(speedo, 51.0, false) - needle_time(speedo, 50.0, false)) * 30.0;
         assert!((df - 220.0 / 221.0).abs() < 1e-3, "{df}");
+    }
+}
+
+#[cfg(test)]
+mod tyre_clip_tests {
+    use glam::{Mat4, Quat, Vec3};
+
+    /// F-11293's clip height: FenderClip [front (wheels 0, 1) / rear][stock / wide] when above 0 on a car, else 1000; the
+    /// plane goes through the car's origin + up x h with the up row as its normal.
+    #[test]
+    fn tyre_clip_plane_rule() {
+        let clip = Some([[0.31, 0.33], [0.35, 0.37]]);
+        let car = Mat4::from_rotation_translation(Quat::from_rotation_z(0.3) * Quat::from_rotation_x(-0.1), Vec3::new(10.0, 2.0, -5.0));
+        let up = car.y_axis.truncate();
+        let o = car.w_axis.truncate();
+        let height = |pl: [f32; 4]| -(pl[3] + Vec3::new(pl[0], pl[1], pl[2]).dot(o));
+        for (wheel, wide, want) in [(0, false, 0.31), (1, true, 0.33), (2, false, 0.35), (3, true, 0.37), (5, false, 0.35)] {
+            let pl = super::tyre_clip_plane(&car, clip, wide, wheel, false);
+            assert_eq!([pl[0], pl[1], pl[2]], [up.x, up.y, up.z]);
+            assert!((height(pl) - want).abs() < 1e-5, "wheel {wheel} wide {wide}: {}", height(pl));
+            // (a point just under the plane stays, just over is dropped)
+            let under = o + up * (want - 0.01);
+            let over = o + up * (want + 0.01);
+            assert!(Vec3::new(pl[0], pl[1], pl[2]).dot(under) + pl[3] < 0.0 && Vec3::new(pl[0], pl[1], pl[2]).dot(over) + pl[3] > 0.0);
+        }
+        // (a motorcycle, a clip of 0 or below, a car without its .r50: 1000)
+        for (c, bike) in [(clip, true), (Some([[0.0, 0.0], [-0.2, 0.0]]), false), (None, false)] {
+            let pl = super::tyre_clip_plane(&car, c, false, 2, bike);
+            assert!((height(pl) - 1000.0).abs() < 0.01);
+        }
     }
 }
 

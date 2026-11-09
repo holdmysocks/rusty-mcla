@@ -399,6 +399,10 @@ pub struct SimTunes {
     /// mcCarModelTune's FenderCeilingFront / FenderCeilingRear (+40 / +48), each for the stock body and the wide one: how
     /// high a drawn wheel's top may stand (F-47822); 0 = no ceiling, as the ctor F-97670 leaves it
     pub fender_ceiling: [[f32; 2]; 2],
+    /// mcCarModelTune's FenderClipFront / FenderClipRear (+24 / +32), each for the stock body and the wide one: the height
+    /// above the car's origin, along its up row, over which a set-up car's tyre is not drawn (F-11293 TireClipPlaneEq,
+    /// VS_ParallaxRubber2 / PS_ParallaxRubber2 kill); 0 = none
+    pub fender_clip: [[f32; 2]; 2],
     /// mcCarModelTune's TireSteerLimit and TireSteerOffset (+136, +140; the ctor's 0, 0): the share of its turn a drawn
     /// steered wheel gives back, and the shift sideways with it (F-47822)
     pub tire_steer: [f32; 2],
@@ -637,6 +641,7 @@ impl SimTunes {
                 let pair = |o: usize| [[rd.f32(c + o), rd.f32(c + o + 4)], [rd.f32(c + o + 8), rd.f32(c + o + 12)]];
                 (out.fender_height, out.fender_width, out.fender_floor) = (pair(56), pair(72), pair(104));
                 out.fender_ceiling = pair(40);
+                out.fender_clip = pair(24);
                 out.tire_steer = [rd.f32(c + 136), rd.f32(c + 140)];
                 out.rotor = Some(BikeRotors { size: [rd.f32(c + 120), rd.f32(c + 124)], offset: [rd.f32(c + 128), rd.f32(c + 132)], has: [rd.u8(c + 201) != 0, rd.u8(c + 202) != 0, rd.u8(c + 203) != 0, rd.u8(c + 204) != 0] });
                 out.part_movement = Some([rd.u32(c + 184), rd.u32(c + 188), rd.u32(c + 192), rd.u32(c + 196)]);

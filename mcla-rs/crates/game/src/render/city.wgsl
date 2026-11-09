@@ -1987,6 +1987,10 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     // gradients to (tireMotionBlur, 0) and reads the normal and lettering maps with them - the top level at rest, smeared
     // round the tyre as it turns; tireMotionBlur = the wheel's dents[3].z, vehicles.rs. MCLA_DEBUG_VIEW=811: as before)
     let tyre_grad = mat.mode == 18u && in.uv1.x > 9.5 && obj.dents[3].y > 0.5 && !(g.params.w > 810.5 && g.params.w < 811.5);
+    // (the tyre's clip plane TireClipPlaneEq - the wheel's dents[5], vehicles.rs tyre_clip_plane: VS_ParallaxRubber2 84 sends
+    // dot(plane.xyz, world) + plane.w in o0.w and PS_ParallaxRubber2 8 kills where it is above 0, so a tyre does not show
+    // through its wing above mcCarModelTune's FenderClip; a zero plane - traffic, parked cars - never kills)
+    if (mat.mode == 18u && in.uv1.x > 9.5 && obj.dents[3].y > 0.5 && dot(obj.dents[5].xyz, in.wpos) + obj.dents[5].w > 0.0) { discard; }
     var albedo = textureSampleBias(t_diffuse, s_diffuse, in.uv0, select(0.0, -1.0, badge_px));
     if (tyre_grad) { albedo = textureSampleGrad(t_diffuse, s_diffuse, in.uv0, vec2<f32>(obj.dents[3].z, 0.0), vec2<f32>(obj.dents[3].z, 0.0)); }
     // (the cars' maps: no car program's fetch constant asks for gamma - every DiffuseSampler, NormalSampler,
