@@ -289,11 +289,13 @@ impl Goal {
     pub fn is_checkpoint(&self) -> bool {
         self.flags & 2 != 0
     }
-    pub fn lap(&self) -> usize {
-        ((self.flags >> 2) & 0xF) as usize
+    /// Flags bits 2..5, sign-extended as F-60424 reads them (a lap of 8 or more would read negative; races have 7 at most).
+    pub fn lap(&self) -> i32 {
+        ((self.flags as i32) << 26) >> 28
     }
-    pub fn checkpoint(&self) -> usize {
-        ((self.flags >> 6) & 0x7F) as usize
+    /// Flags bits 6..12, sign-extended as F-68139 reads them (64 or more would read negative; races have fewer).
+    pub fn checkpoint(&self) -> i32 {
+        ((self.flags as i32) << 19) >> 25
     }
     /// Where the goal lies (F-79021: a gate's point is lerp(pos, p1, w)).
     pub fn centre(&self) -> Vec3 {
@@ -828,7 +830,7 @@ impl Brain {
         let mut cut = self.plan.goals.len();
         for i in self.cur..self.plan.goals.len() {
             let g = &self.plan.goals[i];
-            if g.lap() > lap || (g.lap() == lap && g.checkpoint() >= before) {
+            if g.lap() > lap as i32 || (g.lap() == lap as i32 && g.checkpoint() >= before as i32) {
                 cut = i;
                 break;
             }
@@ -1329,6 +1331,44 @@ pub fn run(v: &mut crate::vehicles::Vehicles, i: usize, brain: &mut Brain, to_go
 #[cfg(test)]
 mod tests {
 
+    /// The goal helpers against the original run offline (tools/goal_helpers_reference.py, verify_goal_helpers.md): the goal
+    /// point F-79021, the current goal's checkpoint F-68139 and lap F-60424, the max-speed setters F-59732 / F-61343.
+    #[test]
+    fn goal_helpers_match_the_original() {
+        let u = |s: &str| u32::from_str_radix(&s.replace('_', ""), 16).unwrap();
+        let f = |s: &str| f32::from_bits(u(s));
+        let (mut n, mut bad) = (0, 0);
+        for line in include_str!("testdata/goal_helpers_ref.txt").lines() {
+            let (lhs, rhs) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = lhs.split_whitespace().skip(1).map(u).collect();
+            let o: Vec<u32> = rhs.split_whitespace().map(u).collect();
+            let (count, cur, idx) = (w[0] as usize, w[1] as usize, w[2] as usize);
+            let flags = &w[3..15];
+            let g = |fl: u32| Goal {
+                pos: Vec3::new(f32::from_bits(w[15]), f32::from_bits(w[16]), f32::from_bits(w[17])),
+                w: f32::from_bits(w[18]),
+                p1: Vec3::new(f32::from_bits(w[19]), f32::from_bits(w[20]), f32::from_bits(w[21])),
+                speed: 0.0,
+                flags: fl,
+            };
+            let c = g(flags[idx]).centre();
+            // (the current goal: +216, the last one when it is the count; 0 without goals)
+            let at = if cur == count { count.wrapping_sub(1) } else { cur };
+            let (cp, lap) = if count == 0 { (0, 0) } else { let x = g(flags[at]); (x.checkpoint(), x.lap()) };
+            let mph = f32::from_bits(w[23]);
+            let speed = crate::checkpoints::max_speed_of(mph);
+            let got = [c.x.to_bits(), c.y.to_bits(), c.z.to_bits(), cp as u32, lap as u32, speed.to_bits(), speed.to_bits()];
+            n += 1;
+            if got[..] != o[..] {
+                if bad < 5 {
+                    eprintln!("{line}\n   port {:08x?}", got);
+                }
+                bad += 1;
+            }
+        }
+        assert_eq!((n, bad), (4000, 0));
+    }
+
     /// mcOpponentInput's update F-94408 run offline (tools/pedal_slew_reference.py, docs/reference/ai/verify_pedal_slew.md):
     /// the held pedals and what goes to the chassis.
     #[test]
@@ -1483,7 +1523,7 @@ mod tests {
             let mut rng = Mwc { lo: seed * 7919, carry: 1 };
             let mut g = GoalPlan::new(1, 1, 1, false);
             g.build(&c, 0, 0, &mut rng);
-            let cps_hit: Vec<usize> = g.goals.iter().filter(|x| x.is_checkpoint()).map(|x| x.checkpoint()).collect();
+            let cps_hit: Vec<i32> = g.goals.iter().filter(|x| x.is_checkpoint()).map(|x| x.checkpoint()).collect();
             let alts = g.goals.iter().filter(|x| !x.is_checkpoint()).count();
             // (either one alt point and checkpoint 10, or the shortcut's five and checkpoint 10 skipped)
             let main = cps_hit.contains(&10);

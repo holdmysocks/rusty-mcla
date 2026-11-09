@@ -479,11 +479,21 @@ fn specs_from(a: &[Arr]) -> Option<Vec<CpSpec>> {
                 radius: radius[k],
                 height: height[k],
                 act_height: act[k],
-                max_speed: if speed[k] > 0.0 { speed[k] * 0.447 } else { -1.0 },
+                max_speed: max_speed_of(speed[k]),
                 look_at: look_at_of(lx[k], lz[k]),
             })
             .collect(),
     )
+}
+
+/// A script's max speed in mph as Checkpoint_SetMaxSpeed (F-59732) and SetAltCPMaxSpeed (F-61343) store it: x 0.447 when
+/// above 0 (`ble`: a NaN too gives -1), else -1.
+pub fn max_speed_of(mph: f32) -> f32 {
+    if mph > 0.0 {
+        mph * 0.447
+    } else {
+        -1.0
+    }
 }
 
 // ---------------------------------------------------------------------------------
