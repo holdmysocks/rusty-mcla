@@ -182,13 +182,17 @@ impl da::Poser for RigPoser<'_> {
         (0..self.len()).map(|i| FrameDof { flags: if i % 2 == 0 { DOF_QUATERNION } else { DOF_VECTOR3 } | DOF_NO_VALUE, v: [0.0; 4] }).collect()
     }
 
-    fn sample(&self, clip: da::ClipId, t: f32, out: &mut [FrameDof]) {
+    fn sample(&self, clip: da::ClipId, t: f32, filtered: bool, out: &mut [FrameDof]) {
         let Some(c) = self.0.clips.get(clip as usize) else { return };
         let a = &c.anim;
         let (i, fr) = da::sample_pos(a, t);
+        // (F-12216's same-layout loop when the rig's frame layout is the clip's, else its mapped loop; filtered: F-80057)
+        let mapped = filtered || a.layout != self.0.model.layout;
         let f = c.frame(t, false);
         for b in 0..self.0.model.bones.len() {
-            for (slot, k) in [(2 * b, c.rot[b]), (2 * b + 1, c.pos[b])] {
+            // (only the DOFs the original's frame has: the bone's record +27 a rotation, +26 a translation)
+            let (has_pos, has_rot) = self.0.model.dofs.get(b).copied().unwrap_or((true, true));
+            for (slot, k) in [(2 * b, c.rot[b].filter(|_| has_rot)), (2 * b + 1, c.pos[b].filter(|_| has_pos))] {
                 let Some(k) = k else { continue };
                 let tr = &a.tracks[k];
                 let d = &mut out[slot];
@@ -202,7 +206,7 @@ impl da::Poser for RigPoser<'_> {
                     };
                     d.flags &= !DOF_NO_VALUE;
                 } else {
-                    da::sample_track(tr, i, fr, d);
+                    da::sample_track_in(tr, i, fr, d, mapped);
                 }
             }
         }
@@ -2256,6 +2260,28 @@ mod original_tests {
     /// (work/driverlight/filt/filter_ref.py: F-73047, F-25694, F-16979, F-10233 as F-29730 calls them, then F-40876 asked per
     /// bone as a vector and a quaternion DOF; every answer 1 / 1.0 or 0 / 0.0, an integer kind 1, a missing id 0). Per set:
     /// the root alone, spine00's subtree, neck's, and id 0's minus Facial_root's - the port's Spine, Neck and NoFace.
+    /// The frame a driver's skeleton component makes (F-21688 -> F-66930: a translation DOF for each bone whose record's +26
+    /// is set, a rotation DOF for +27, no mover, sorted; F-59824) has the layout of the clips made for that skeleton: the
+    /// Challenger 70 pack's clips carry 0x4159FD2F (111 clips) and 0x2FB83659 (20), which are the frames of
+    /// drv_mb_001_set / drv_mp_01_set and of drv_sc_fb_002_set_h; drv_ma_001_set's frame differs (its clips go the mapped
+    /// way). Skipped without the disc's data.
+    #[test]
+    fn the_frame_layouts_match_the_clips() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let dir = Path::new(&root).join("resources/character");
+        for (set, want) in [("drv_mb_001_set", Some(0x4159_FD2Fu32)), ("drv_mp_01_set", Some(0x4159_FD2F)), ("drv_sc_fb_002_set_h", Some(0x2FB8_3659)), ("drv_ma_001_set", None)] {
+            let Some(f) = std::fs::read_dir(dir.join(set)).ok().and_then(|d| d.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "r6"))) else {
+                eprintln!("no disc data for {set}, skipped");
+                continue;
+            };
+            let c = crate::skin::SkinModel::read(&f).expect("set");
+            match want {
+                Some(w) => assert_eq!(c.frame_layout, w, "{set}"),
+                None => assert!(![0x4159_FD2F, 0x6DFB_0A97, 0x2FB8_3659].contains(&c.frame_layout), "{set}"),
+            }
+        }
+    }
+
     #[test]
     fn the_frame_filters_match_the_original() {
         let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());

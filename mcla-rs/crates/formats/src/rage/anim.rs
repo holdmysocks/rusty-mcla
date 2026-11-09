@@ -60,6 +60,8 @@ pub struct Animation {
     pub block_len: u16,
     pub blocks: u16,
     pub block0_frames: u16,
+    /// +16: the layout signature of the clip's tracks (F-59824 over (type, kind, id) in track order)
+    pub layout: u32,
 }
 
 pub const KIND_TRANSLATION: u8 = 0;
@@ -280,7 +282,7 @@ pub fn animation_named(rd: &Rd, o: usize) -> Option<Animation> {
             }
         }
     }
-    Some(Animation { name, frames, duration, looped: rd.u16(o + 4) & 1 != 0, tracks, block_len: rd.u16(o + 0x0a), blocks: nblk as u16, block0_frames })
+    Some(Animation { name, frames, duration, looped: rd.u16(o + 4) & 1 != 0, tracks, block_len: rd.u16(o + 0x0a), blocks: nblk as u16, block0_frames, layout: rd.u32(o + 16) })
 }
 
 /// The animation called exactly `name` inside a resource whose animations carry plain names

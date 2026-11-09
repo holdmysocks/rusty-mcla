@@ -259,6 +259,11 @@ pub struct SkinModel {
     pub neck_bones: Vec<bool>,
     /// the bones of the spine00 subtree: a driver's filter +92 (F-29730)
     pub spine_bones: Vec<bool>,
+    /// the layout signature of the character's frame (`Character::frame_layout`)
+    pub layout: u32,
+    /// per bone: the frame holds its translation / its rotation (the record's +26 / +27); a clip's track for a DOF the frame
+    /// lacks is not sampled, and the bone keeps its rest value there
+    pub dofs: Vec<(bool, bool)>,
 }
 
 /// A character set's blend shapes bound to its high-detail parts: the `.r3` mesh record names the model
@@ -465,7 +470,9 @@ impl SkinModel {
             binds4 = binds.clone();
         }
         let [face_bones, neck_bones, spine_bones] = bone_masks(&c);
-        Some(SkinModel { bones, ids, lods, cockpit, binds, binds4, mats, head: c.bone("head"), morph, face_bones, neck_bones, spine_bones })
+        let layout = c.frame_layout;
+        let dofs: Vec<(bool, bool)> = c.bones.iter().map(|b| (b.dof_trans, b.dof_rot)).collect();
+        Some(SkinModel { bones, ids, lods, cockpit, binds, binds4, mats, head: c.bone("head"), morph, face_bones, neck_bones, spine_bones, layout, dofs })
     }
 }
 

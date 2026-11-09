@@ -21,11 +21,59 @@ pub struct Bone {
     /// the bone record's translation limits (crBoneData +144 / +160; lod+0x00 -> 224-byte
     /// records): a bike's tyre and rim are twice as wide as the distance between them (F-74884)
     pub trans_limits: (Vec3, Vec3),
+    /// the bone record's +26 / +27 bytes: the frame made from the skeleton (F-66930) holds a translation DOF (kind 0, a
+    /// Vector3) and a rotation DOF (kind 1, a Quaternion) for the bone; `dof_id` the id both carry (the record's +22 when
+    /// the skeleton's +28 has bit 1, else the bone's index)
+    pub dof_trans: bool,
+    pub dof_rot: bool,
+    pub dof_id: u16,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Skeleton {
     pub bones: Vec<Bone>,
+}
+
+impl Skeleton {
+    /// The layout signature of the frame made from the skeleton (F-66930 through the skeleton component F-21688, no mover
+    /// and no filter): its DOFs sorted by kind << 16 | id (F-39725), summed by F-59824 (`layout_signature`). A clip whose
+    /// +16 equals it is sampled on the same-layout path.
+    pub fn frame_layout(&self) -> u32 {
+        let mut d: Vec<(u8, u8, u16)> = Vec::new();
+        for b in &self.bones {
+            if b.dof_trans {
+                d.push((0, 0, b.dof_id));
+            }
+            if b.dof_rot {
+                d.push((1, 1, b.dof_id));
+            }
+        }
+        d.sort_by_key(|&(_, k, id)| ((k as u32) << 16) | id as u32);
+        layout_signature(&d)
+    }
+}
+
+/// F-59824, a frame layout's signature: over the DOFs (type, kind, id) in the frame's order the two 32-bit sums of
+/// Fletcher's checksum (both start 0xFFFF) take per DOF the word kind << 8 | 0x80 | type and then the id, folded to 16 bits
+/// every 180 DOFs; the result is sum 2's fold in the high half (added twice over: (s2 << 16) + (s2 & 0xFFFF0000)) or'd
+/// with sum 1's fold. The clips' own +16 is the same over their tracks.
+pub fn layout_signature(dofs: &[(u8, u8, u16)]) -> u32 {
+    if dofs.is_empty() {
+        return 0;
+    }
+    let (mut s1, mut s2) = (0xFFFFu32, 0xFFFFu32);
+    for chunk in dofs.chunks(180) {
+        for &(t, k, id) in chunk {
+            let w = ((t as u32 & 0xF) | 0x80) | ((k as u32) << 8);
+            s1 = s1.wrapping_add(w);
+            s2 = s2.wrapping_add(s1);
+            s1 = s1.wrapping_add(id as u32);
+            s2 = s2.wrapping_add(s1);
+        }
+        s1 = (s1 >> 16) + (s1 & 0xFFFF);
+        s2 = (s2 >> 16) + (s2 & 0xFFFF);
+    }
+    (s2 << 16).wrapping_add(s2 & 0xFFFF_0000) | ((s1 >> 16) + (s1 & 0xFFFF))
 }
 
 fn read_mat(rd: &Rd, off: usize) -> Mat4 {
@@ -89,6 +137,13 @@ impl Skeleton {
         let locals: Vec<Mat4> = (0..count).map(|i| read_mat(&rd, mats + i * 64)).collect();
         // bone records: lod+0x00 -> count x 224 bytes
         let vec3 = |o: usize| Vec3::new(rd.f32(o), rd.f32(o + 4), rd.f32(o + 8));
+        let ids_on = rd.u32(lod + 28) & 2 != 0;
+        let dofs: Vec<(bool, bool, u16)> = match rd.ptr(lod).filter(|&r| rd.has(r, count * 224)) {
+            Some(r) => (0..count)
+                .map(|i| (rd.u8(r + i * 224 + 26) != 0, rd.u8(r + i * 224 + 27) != 0, if ids_on { rd.u16(r + i * 224 + 22) } else { i as u16 }))
+                .collect(),
+            None => vec![(false, false, 0); count],
+        };
         let limits: Vec<(Vec3, Vec3)> = match rd.ptr(lod).filter(|&r| rd.has(r, count * 224)) {
             Some(r) => (0..count).map(|i| (vec3(r + i * 224 + 144), vec3(r + i * 224 + 160))).collect(),
             None => vec![(Vec3::ZERO, Vec3::ZERO); count],
@@ -110,7 +165,8 @@ impl Skeleton {
         let mut bones = Vec::with_capacity(count);
         for i in 0..count {
             let w = resolve(i, &locals, &parents, &mut world, 0);
-            bones.push(Bone { local: locals[i], world: w, name: names[i].clone(), tag: tags[i], parent: parents[i], trans_limits: limits[i] });
+            bones.push(Bone { local: locals[i], world: w, name: names[i].clone(), tag: tags[i], parent: parents[i], trans_limits: limits[i],
+                dof_trans: dofs[i].0, dof_rot: dofs[i].1, dof_id: dofs[i].2 });
         }
         Ok(Some(Skeleton { bones }))
     }

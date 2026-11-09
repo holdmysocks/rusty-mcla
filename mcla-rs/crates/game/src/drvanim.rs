@@ -827,8 +827,11 @@ pub fn frame_add_filtered(dst: &mut [FrameDof], src: &[FrameDof], wts: &[f32], w
 /// What the composer reads of the character. A frame is the skeleton's DOFs in a fixed layout (`len`).
 pub trait Poser {
     fn len(&self) -> usize;
-    /// The clip's frame at time `t` into `out` (a fresh frame: DOFs the clip has no track for hold no value).
-    fn sample(&self, clip: ClipId, t: f32, out: &mut [FrameDof]);
+    /// The clip's frame at time `t` into `out` (a fresh frame: DOFs the clip has no track for hold no value). `filtered`:
+    /// the animation lies under operand 1 of a blend with a filter, which the hand-down F-31817 gives the animation op, so
+    /// the sampler F-40465 takes its filtered body F-80057 (`sample_track_in` with `mapped`); otherwise F-12216, whose
+    /// same-layout loop or mapped loop is picked by the frame's layout against the clip's +16.
+    fn sample(&self, clip: ClipId, t: f32, filtered: bool, out: &mut [FrameDof]);
     /// The identity node's frame: the skeleton's rest pose.
     fn rest(&self, out: &mut [FrameDof]);
     /// A filter's weight per DOF (crFrameFilterBoneBasic: the bone's weight, 1 inside the set and 0 outside; 1 for DOFs
@@ -878,30 +881,35 @@ impl Seq {
 
     /// The composer pass: the tree's frame, or none without a root.
     pub fn compose(&self, p: &dyn Poser) -> Option<Vec<FrameDof>> {
-        self.root.map(|r| self.frame(self.kept(r), p))
+        self.root.map(|r| self.frame(self.kept(r), false, p))
     }
 
-    fn frame(&self, n: usize, p: &dyn Poser) -> Vec<FrameDof> {
+    /// `under`: the node lies under operand 1 of a kept blend with a filter. The hand-down F-31817 (after the optimizer, on
+    /// the ops left) gives each animation op in the range of a filtered blend's operand 1 the blend's filter (more than one
+    /// make a combined record); the animation is then sampled through the filter. Its values on the filter's DOFs are the
+    /// filtered body's (`sample_track_in`, mapped) and its other DOFs hold no value, which no blend above reads (each
+    /// filtered blend skips a DOF of weight 0, and the masks are 0 / 1), so the port samples them all.
+    fn frame(&self, n: usize, under: bool, p: &dyn Poser) -> Vec<FrameDof> {
         let mut f = p.blank();
         match &self.nodes[n] {
             Node::Anim(pl) => {
                 if let Some(c) = pl.clip {
-                    p.sample(c.id, pl.t, &mut f);
+                    p.sample(c.id, pl.t, under, &mut f);
                 }
             }
             Node::Identity => p.rest(&mut f),
             // (a kept blend: the frame of child 1 blended onto child 0's; F-27951 clamps the weight)
             Node::Blend { weight, filter, kids: [Some(a), Some(b)], .. } => {
-                f = self.frame(self.kept(*a), p);
-                let s = self.frame(self.kept(*b), p);
+                f = self.frame(self.kept(*a), under, p);
+                let s = self.frame(self.kept(*b), under || filter.is_some(), p);
                 match filter {
                     Some(x) => frame_blend_filtered(&mut f, &s, p.weights(*x), crate::skin::frame_weight(*weight)),
                     None => crate::skin::frame_blend(&mut f, &s, *weight),
                 }
             }
             Node::Add { weight, filter, kids: [Some(a), Some(b)], .. } => {
-                f = self.frame(self.kept(*a), p);
-                let s = self.frame(self.kept(*b), p);
+                f = self.frame(self.kept(*a), under, p);
+                let s = self.frame(self.kept(*b), under, p);
                 // (the unfiltered add F-89611 is the filtered one with every weight 1)
                 match filter {
                     Some(x) => frame_add_filtered(&mut f, &s, p.weights(*x), *weight),
@@ -965,12 +973,19 @@ fn chan_at(c: &mcla_formats::rage::anim::Chan, i: usize, fr: f32) -> f32 {
 /// 16-byte value (F-14184). A Vector3 of one channel per component sets x y z (w kept); of one channel, its 16 bytes. The DOF
 /// holds a value afterwards. (The three-channel quaternion with w rebuilt is not in the driver clips: not ported.)
 pub fn sample_track(tr: &mcla_formats::rage::anim::Track, i: usize, fr: f32, d: &mut FrameDof) {
+    sample_track_in(tr, i, fr, d, false)
+}
+
+/// `sample_track` as the sampler's loops differ: the squared norm of a quaternion is summed x, w, y, z (fused) in F-12216's
+/// same-layout loop and its per-DOF lookup loop, and y, x, z, w in its mapped loop and in all of the filtered body F-80057's
+/// loops (`mapped`); the rest is the same (checked offline against all five, work/driverlight/fsamp).
+pub fn sample_track_in(tr: &mcla_formats::rage::anim::Track, i: usize, fr: f32, d: &mut FrameDof, mapped: bool) {
     use mcla_formats::rage::anim::Chan;
     let per = tr.flags & 0xF0 == 0x10;
     match d.flags & 0xF {
         DOF_QUATERNION if per && tr.chans.len() >= 4 => {
             let [x, y, z, w] = std::array::from_fn(|k| chan_at(&tr.chans[k], i, fr));
-            let n2 = fma(z, z, fma(y, y, fma(w, w, x * x)));
+            let n2 = if mapped { fma(w, w, fma(z, z, fma(x, x, y * y))) } else { fma(z, z, fma(y, y, fma(w, w, x * x))) };
             let r = rsqrt2(n2);
             d.v = [r * x, r * y, r * z, r * w];
         }
@@ -1423,6 +1438,80 @@ mod tests {
         assert!(cases == 4000 && dropped > 1000, "{cases} {dropped}");
     }
 
+    /// The flush prelude F-92880 (the optimizer F-94730, then the filter hand-down F-31817) against the original's code run
+    /// offline (work/driverlight/hand/hand_ref.py): 4,000 random op lists with three real bone filters. An animation op the
+    /// original leaves with a filter (or a combined record of several) is one the port samples `under` a filtered blend,
+    /// and its filters are the filtered blends above it whose operand 1 holds it, innermost first.
+    #[test]
+    fn the_filter_hand_down_matches_the_original() {
+        let text = include_str!("testdata/drvanim_hand_ref.txt");
+        fn emit(s: &Seq, n: usize, up: &mut Vec<Filter>, out: &mut Vec<String>) {
+            let n = s.kept(n);
+            let name = |f: &Filter| match f {
+                Filter::Spine => '0',
+                Filter::Neck => '1',
+                Filter::NoFace => '2',
+            };
+            match &s.nodes[n] {
+                Node::Blend { filter, kids: [Some(a), Some(b)], .. } => {
+                    emit(s, *a, up, out);
+                    up.extend(*filter);
+                    emit(s, *b, up, out);
+                    if filter.is_some() {
+                        up.pop();
+                    }
+                    out.push(n.to_string());
+                }
+                Node::Add { kids: [Some(a), Some(b)], .. } => {
+                    emit(s, *a, up, out);
+                    emit(s, *b, up, out);
+                    out.push(n.to_string());
+                }
+                Node::Anim(p) if p.clip.is_some() && !up.is_empty() => out.push(format!("{n}:{}", up.iter().rev().map(name).collect::<String>())),
+                _ => out.push(n.to_string()),
+            }
+        }
+        let (mut cases, mut handed) = (0, 0);
+        for line in text.lines() {
+            let (ops, left) = line.split_once(" -> ").unwrap();
+            let mut s = Seq::default();
+            let mut st: Vec<usize> = Vec::new();
+            for tok in ops.split(' ') {
+                let f: Vec<&str> = tok.split(':').collect();
+                let w = f32::from_bits(u32::from_str_radix(f[1], 16).unwrap());
+                let filter = match f[2] {
+                    "1" => Some(Filter::Spine),
+                    "2" => Some(Filter::Neck),
+                    "3" => Some(Filter::NoFace),
+                    _ => None,
+                };
+                let node = match u32::from_str_radix(f[0], 16).unwrap() {
+                    1 => Node::Anim(Player { clip: Some(Clip { id: 1, dur: 1.0, flags: 0 }), ..Default::default() }),
+                    12 => Node::Anim(Player::default()),
+                    13 => Node::Identity,
+                    op => {
+                        let b = st.pop().unwrap();
+                        let a = st.pop().unwrap();
+                        if op == 4 {
+                            Node::Blend { weight: w, rate: 0.0, destroy: false, filter, kids: [Some(a), Some(b)] }
+                        } else {
+                            Node::Add { weight: w, rate: 0.0, filter, kids: [Some(a), Some(b)] }
+                        }
+                    }
+                };
+                s.nodes.push(node);
+                st.push(s.nodes.len() - 1);
+            }
+            let mut got = Vec::new();
+            emit(&s, st[0], &mut Vec::new(), &mut got);
+            let want: Vec<&str> = left.split(' ').collect();
+            assert_eq!(got, want, "{line}");
+            cases += 1;
+            handed += want.iter().filter(|x| x.contains(':')).count();
+        }
+        assert!(cases == 4000 && handed > 1500, "{cases} {handed}");
+    }
+
     /// The unfiltered add-subtract F-89611 ('U') and the add dispatcher F-97665 with no filter and one layout ('D')
     /// against the original's code run offline (work/driverlight/addu/addu_ref.py): both are the filtered add with
     /// every weight 1, the port's op 6 without a filter.
@@ -1465,6 +1554,88 @@ mod tests {
         }
         assert_eq!(bad, 0, "{bad} of {n} DOFs differ");
         assert!(n > 8_000 && modes[0] > 1400 && modes[1] > 1400, "{n} {modes:?}");
+    }
+
+    /// The sampler's other loops against the original's code run offline (work/driverlight/fsamp/fsample_ref.py, the
+    /// Challenger 70 player pack, 360 samples of 180 clips, every frame bound to a real accelerator as a scheduled tree's
+    /// are): 'S' the frame's layout = the clip's +16 (F-12216's same-layout loop), 'M' another layout (its mapped loop), 'F'
+    /// with a bone filter on a random half of the clip's bones (F-40465 -> F-61066 -> F-80057). S is `sample_track_in`
+    /// as before, M and F with `mapped`; F's DOFs off the filter (bone kinds 0 / 1) hold no value in the original, which the
+    /// port does not model (no blend above reads them). Skipped without the disc's data.
+    #[test]
+    fn the_sampler_loops_match_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Ok(d) = std::fs::read(std::path::Path::new(&root).join("resources/animation/0xe4f29864/player/male/0x953f13ee.r2")) else {
+            return;
+        };
+        let vs = u32::from_le_bytes(d[12..16].try_into().unwrap()) as usize;
+        let data = d[16..].to_vec();
+        let res = mcla_formats::rsc::Resource { rtype: 2, flags: 0, virtual_size: vs, physical_size: data.len() - vs, data };
+        let rd = mcla_formats::rage::Rd::new(&res);
+        let text = include_str!("testdata/drvanim_fsample_ref.txt");
+        let (mut n, mut bad, mut off, mut modes) = (0, 0, 0, [0usize; 3]);
+        for line in text.lines() {
+            let (case, want) = line.split_once(" ->").unwrap();
+            let mut it = case.split_whitespace();
+            let o = usize::from_str_radix(it.next().unwrap(), 16).unwrap();
+            let t = f32::from_bits(u32::from_str_radix(it.next().unwrap(), 16).unwrap());
+            let mode = it.next().unwrap();
+            let mask: Vec<u16> = it.next().map_or(vec![], |m| m.split(',').filter(|x| !x.is_empty()).map(|x| u16::from_str_radix(x, 16).unwrap()).collect());
+            let want: Vec<u32> = want.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let a = mcla_formats::rage::anim::animation_named(&rd, o).unwrap();
+            let (i, fr) = sample_pos(&a, t);
+            assert_eq!(want.len(), 5 * a.tracks.len(), "{line}");
+            modes[match mode { "S" => 0, "M" => 1, _ => 2 }] += 1;
+            for (k, tr) in a.tracks.iter().enumerate() {
+                let quat = matches!(tr.kind, 1 | 6);
+                let w = &want[5 * k..5 * k + 5];
+                if mode == "F" && tr.kind <= 1 && !mask.contains(&tr.bone_id) {
+                    assert!(w[0] & DOF_NO_VALUE as u32 != 0, "{case} track {k}: a DOF off the filter holds a value");
+                    off += 1;
+                    continue;
+                }
+                let mut dof = FrameDof { flags: quat as u8 | DOF_NO_VALUE, v: [0.0; 4] };
+                sample_track_in(tr, i, fr, &mut dof, mode != "S");
+                let got = [dof.flags as u32, dof.v[0].to_bits(), dof.v[1].to_bits(), dof.v[2].to_bits(), dof.v[3].to_bits()];
+                let m = if quat || tr.flags & 0xF0 != 0x10 { 5 } else { 4 };
+                n += 1;
+                if got[..m] != w[..m] {
+                    if bad < 8 {
+                        eprintln!("{mode} {case} track {k} kind {}: got {got:08x?} want {w:08x?}", tr.kind);
+                    }
+                    bad += 1;
+                }
+            }
+        }
+        assert_eq!(bad, 0, "{bad} of {n} DOFs differ");
+        assert!(n > 60_000 && off > 10_000 && modes == [360, 360, 360], "{n} {off} {modes:?}");
+    }
+
+    /// F-59824 over a clip's tracks (type 1 for kinds 1 / 6, else 0; in track order) is the clip's stored +16, for every
+    /// clip of the Challenger 70 player pack (182). Skipped without the disc's data.
+    #[test]
+    fn the_layout_signature_is_the_clips() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Ok(d) = std::fs::read(std::path::Path::new(&root).join("resources/animation/0xe4f29864/player/male/0x953f13ee.r2")) else {
+            return;
+        };
+        let vs = u32::from_le_bytes(d[12..16].try_into().unwrap()) as usize;
+        let data = d[16..].to_vec();
+        let res = mcla_formats::rsc::Resource { rtype: 2, flags: 0, virtual_size: vs, physical_size: data.len() - vs, data };
+        let rd = mcla_formats::rage::Rd::new(&res);
+        let mut n = 0;
+        let mut o = 4;
+        while let Some(a) = rd.ptr(o) {
+            o += 4;
+            let Some(an) = mcla_formats::rage::anim::animation_named(&rd, a) else { continue };
+            if an.blocks != 1 {
+                continue;
+            }
+            let dofs: Vec<(u8, u8, u16)> = an.tracks.iter().map(|t| (matches!(t.kind, 1 | 6) as u8, t.kind, t.bone_id)).collect();
+            assert_eq!(mcla_formats::rage::skeleton::layout_signature(&dofs), an.layout, "{}", an.name);
+            n += 1;
+        }
+        assert!(n >= 180, "{n}");
     }
 
     /// The clip sampler (F-47152 -> F-12216) against the original's code run offline on the Challenger 70 player pack

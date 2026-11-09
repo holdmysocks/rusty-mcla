@@ -28,6 +28,9 @@ pub struct CharBone {
     pub local_rot: Quat,
     /// bind pose position in model space
     pub world_pos: Vec3,
+    /// the record's +26 / +27: the frame made from the skeleton holds a translation / a rotation DOF for the bone
+    pub dof_trans: bool,
+    pub dof_rot: bool,
 }
 
 pub struct Character {
@@ -47,6 +50,9 @@ pub struct Character {
     /// the shaders with their material parameters (SpecExp, wrapAmount, the maps, ...)
     pub shaders: Vec<super::drawable::Shader>,
     pub textures: Vec<Texture>,
+    /// the layout signature of the frame the skeleton component makes (F-21688 -> F-66930: the bones' DOFs sorted, F-59824;
+    /// `skeleton::layout_signature`); a clip whose +16 equals it is sampled on the same-layout path
+    pub frame_layout: u32,
 }
 
 const BONE_STRIDE: usize = 0xE0;
@@ -75,8 +81,24 @@ impl Character {
                 local_pos: v(0x20),
                 local_rot: if q.is_finite() && q.length_squared() > 0.5 { q.normalize() } else { Quat::IDENTITY },
                 world_pos: v(0x60),
+                dof_trans: rd.u8(o + 26) != 0,
+                dof_rot: rd.u8(o + 27) != 0,
             });
         }
+        // the DOFs' id: the record's +22 when the skeleton data's (drawable +0x0c) +28 has bit 1, else the bone's index
+        let ids_on = rd.ptr(0x10).and_then(|dr| rd.ptr(dr + 0x0c)).map_or(true, |sk| rd.u32(sk + 28) & 2 != 0);
+        let mut dofs: Vec<(u8, u8, u16)> = Vec::new();
+        for (i, b) in bones.iter().enumerate() {
+            let id = if ids_on { b.id } else { i as u16 };
+            if b.dof_trans {
+                dofs.push((0, 0, id));
+            }
+            if b.dof_rot {
+                dofs.push((1, 1, id));
+            }
+        }
+        dofs.sort_by_key(|&(_, k, id)| ((k as u32) << 16) | id as u32);
+        let frame_layout = super::skeleton::layout_signature(&dofs);
         let d = Drawable::parse(res)?;
         // the drawable itself hangs off root+0x10: +08 shader group, +40.. LOD model lists
         let mut shader_tex = Vec::new();
@@ -153,7 +175,7 @@ impl Character {
             }
             o += 4;
         }
-        Ok(Character { name, bones, models, lods, cockpit, shader_tex, shader_names, shaders, textures })
+        Ok(Character { name, bones, models, lods, cockpit, shader_tex, shader_names, shaders, textures, frame_layout })
     }
 
     pub fn bone(&self, name: &str) -> Option<usize> {
