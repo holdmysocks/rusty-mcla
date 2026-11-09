@@ -26,9 +26,6 @@ use std::time::{Duration, Instant};
 const KEEP: usize = 10;
 /// How many log lines a crash report carries.
 const TAIL_LINES: usize = 50;
-/// The developer's old extraction folder, used only when nothing next to the exe exists.
-/// TODO-remove-before-release (docs/LAUNCHER.md, open list): a player's machine has no such folder; delete this and its test.
-const DEV_DATA_FALLBACK: &str = "D:/MCLA/extracted/cache";
 
 pub struct Runtime {
     pub settings: Settings,
@@ -69,11 +66,11 @@ pub fn init(data_flag: Option<&str>, settings_flag: Option<&str>, shot_run: bool
             env: env_data.as_deref(),
             settings: &settings.paths.data_dir,
             exe_dir: &exe_dir,
-            dev_fallback: Some(Path::new(DEV_DATA_FALLBACK)),
+            // (no developer fallback folder: the data is found next to the exe, by the settings, --data or MCLA_DATA)
+            dev_fallback: None,
         });
         match data.source {
             DataSource::NotFound => log::error!("data folder not found (looked at {}); run the launcher to build it, or pass --data <folder>", data.path.display()),
-            DataSource::DevFallback => log::warn!("data folder: using the developer fallback {} (TODO-remove-before-release)", data.path.display()),
             s => log::info!("data folder: {} ({:?})", data.path.display(), s),
         }
         let screenshots = paths::screenshots_dir(&settings.paths.screenshots, &exe_dir);
