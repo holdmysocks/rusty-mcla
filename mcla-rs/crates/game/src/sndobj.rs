@@ -668,6 +668,8 @@ pub struct SoundLib {
     next_voice: u64,
     /// each wave voice's slot state for the voice manager (1 playing, 2 stopping; waiting when absent)
     voice_state: HashMap<u64, u8>,
+    /// voices the manager stopped this update: their position moves 80 ms on (F-71842), applied at the next step
+    voice_jump: std::collections::HashSet<u64>,
     pub listener: (Vec3, Vec3, Vec3),
     /// the game ticks since the last Doppler sample (frame_sample)
     sample_ticks: usize,
@@ -950,6 +952,7 @@ impl SoundLib {
             next: 1,
             next_voice: 0,
             voice_state: HashMap::new(),
+            voice_jump: Default::default(),
             listener: (Vec3::ZERO, Vec3::X, Vec3::NEG_Z),
             sample_ticks: 0,
             clock: 0.0,
@@ -1945,6 +1948,7 @@ impl SoundLib {
                 (2, ..) => {}
                 (1, _, true) => {
                     states.insert(d.id, 2);
+                    self.voice_jump.insert(d.id & !SLOWED);
                 }
                 (1, ..) | (0, true, _) => {
                     states.insert(d.id, 1);
@@ -1999,15 +2003,16 @@ impl SoundLib {
         }
         n.t = now.wrapping_sub(n.clock.play_at.unwrap_or(now)) as f32;
         let h = &n.h;
+        let (category, curve, curve_scale, doppler, mask) = inherit(h, &parent);
         let ctx = Ctx {
             vol,
             pitch,
             pan,
-            category: if h.has(13) { h.category } else { parent.category },
-            curve: if h.has(14) { h.curve } else { parent.curve },
-            curve_scale: parent.curve_scale * if h.no_inherit2 & 0x40 != 0 { 1.0 } else { 1.0 } * h.curve_scale as f32 * 0.01,
-            doppler: if h.no_inherit & 0x01 != 0 { 1.0 } else { parent.doppler } * h.doppler as f32 * 0.01,
-            mask: h.speaker_mask | if h.no_inherit2 & 0x20 != 0 { 0 } else { parent.mask },
+            category,
+            curve,
+            curve_scale,
+            doppler,
+            mask,
             positional: match h.tristate(1) {
                 2 => parent.positional,
                 v => v,
@@ -2025,6 +2030,10 @@ impl SoundLib {
                 if *pos_ms == 0.0 {
                     *pos_ms = if *looping { offset % dur_ms.max(1.0) } else { offset };
                 }
+                if self.voice_jump.remove(voice) {
+                    let ls = wave.as_ref().and_then(|w| w.loop_ms).unwrap_or(c.loop_start as f32 * 1000.0 / c.rate as f32);
+                    *pos_ms = stop_jump(*pos_ms, *dur_ms, looping.then_some(ls));
+                }
                 if !*looping && *pos_ms >= *dur_ms {
                     true
                 } else {
@@ -2041,6 +2050,9 @@ impl SoundLib {
             }
             Kind::Stream { clip, headroom, voice, pos_ms, dur_ms, looping } => {
                 let Some(c) = clip.clone() else { n.st = St::Done; return };
+                if self.voice_jump.remove(voice) {
+                    *pos_ms = stop_jump(*pos_ms, *dur_ms, looping.then_some(c.loop_start as f32 * 1000.0 / c.rate as f32));
+                }
                 if !*looping && *pos_ms >= *dur_ms {
                     true
                 } else {
@@ -2812,6 +2824,36 @@ pub(crate) fn rank_pick(banks: &[&[VoiceSlot]], budget: u32, free: u32) -> Picke
 /// or `now >= end`, which also marks the sound ended: -100 dB), `vol += 20 * log2(ratio) * 0.301` in dB (-100 below 1e-5). Returns the
 /// new volume and whether the sound goes on (an ended sound stops only when `flags & 0x10` is clear in the original's +58).
 /// Verified bit for bit by `release_step_is_the_originals`; `Clock::tick` steps a stopped sound's release with it.
+/// The inherited parameters of a node (F-57176): category and rolloff curve its own when set (not 0), else the parent's;
+/// curve scale = own x 0.01 x the parent's unless +10 bit 0x40, doppler = own x 0.01 x the parent's unless +9 bit 0x01, speaker
+/// mask = own | the parent's unless +10 bit 0x20. A root's parent is `root_ctx` (scale and doppler 1.0, mask 0, curve 0 =
+/// DEFAULT_ROLLOFF), which gives the original's root values; the root's category is the port's request / BASE (the
+/// original writes the own field, 0 when unset). The route (+21) is not ported.
+fn inherit(h: &SoundHeader, p: &Ctx) -> (u32, u32, f32, f32, u8) {
+    (
+        if h.category != 0 { h.category } else { p.category },
+        if h.curve != 0 { h.curve } else { p.curve },
+        if h.no_inherit2 & 0x40 != 0 { h.curve_scale as f32 * 0.01 } else { h.curve_scale as f32 * p.curve_scale * 0.01 },
+        if h.no_inherit & 0x01 != 0 { h.doppler as f32 * 0.01 } else { h.doppler as f32 * p.doppler * 0.01 },
+        h.speaker_mask | if h.no_inherit2 & 0x20 != 0 { 0 } else { p.mask },
+    )
+}
+
+/// A voice the manager stops (F-71842): its record's position (ms, synced from the playing voice every update) moves 80 on;
+/// past the length a voice with no loop start ends (-1), else it wraps into the loop: start + (pos - start) mod (len - start),
+/// the start itself when the loop is empty.
+pub(crate) fn stop_jump(pos: f32, len: f32, loop_start: Option<f32>) -> f32 {
+    let p = pos + 80.0;
+    if p < len {
+        return p;
+    }
+    match loop_start {
+        None => len,
+        Some(ls) if len - ls <= 0.0 => ls,
+        Some(ls) => ls + (p - ls) % (len - ls),
+    }
+}
+
 pub(crate) fn release_step(start: u32, end: u32, now: u32, vol: f32, flags: u8) -> (f32, bool) {
     let (ratio, ended) = if end <= start || now >= end { (0.0, true) } else { ((end - now) as f32 / (end - start) as f32, false) };
     (vol + lin2db(ratio), !(ended && flags & 0x10 != 0))
@@ -3169,6 +3211,64 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 3934);
+    }
+
+    /// The stop's position jump (F-71842) against the running original: every stop of a recorded drive (the record's
+    /// position, length and loop start before, its position after; work/audio2/spdrec vj2, verify_audio_b1.md batch 47)
+    #[test]
+    fn stop_jump_matches_the_recorded_original() {
+        use super::*;
+        let mut n = 0;
+        for line in include_str!("testdata/stop_jump_rec.txt").lines() {
+            let (case, out) = line.split_once(" -> ").unwrap();
+            let c: Vec<i64> = case.split(' ').map(|t| t.parse().unwrap()).collect();
+            let want: i64 = out.parse().unwrap();
+            let got = stop_jump(c[0] as f32, c[1] as f32, (c[2] != -1).then_some(c[2] as f32));
+            let got = if c[2] == -1 && got >= c[1] as f32 { -1 } else { got as i64 };
+            assert_eq!(got, want, "{line}");
+            n += 1;
+        }
+        assert!(n > 0);
+    }
+
+    /// The inherited parameters (F-57176) against the original's code run offline (tools/inherit_reference.py, 6,000 random
+    /// sounds, blocks and parents): category, curve, curve scale, doppler and speaker mask bit for bit. A root is compared
+    /// with the port's root parent (`root_ctx`): its category only where the own field is set (the port's unset root
+    /// category is the request's / BASE), curve 0 = DEFAULT_ROLLOFF.
+    #[test]
+    fn inherited_parameters_match_the_original() {
+        use super::*;
+        let default_rolloff = joaat("DEFAULT_ROLLOFF");
+        let mut n = 0;
+        for line in include_str!("testdata/inherit_ref.txt").lines() {
+            let (case, out) = line.split_once(" -> ").unwrap();
+            let c: Vec<u32> = case.split(' ').map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let o: Vec<u32> = out.split(' ').map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let root = c[0] == 1;
+            let mut hdr = audcfg::parse_header(&[0u8; 15]).0;
+            hdr.no_inherit = c[1] as u8;
+            hdr.no_inherit2 = c[2] as u8;
+            hdr.doppler = c[3] as u16;
+            hdr.category = c[4];
+            hdr.curve = c[5];
+            hdr.curve_scale = c[6] as u16;
+            hdr.speaker_mask = c[7] as u8;
+            let parent = if root {
+                Ctx { vol: 0.0, pitch: 0, pan: -1, category: joaat("BASE"), curve: 0, curve_scale: 1.0, doppler: 1.0, mask: 0, positional: 2, lpf: 23900, hpf: 0 }
+            } else {
+                Ctx { vol: 0.0, pitch: 0, pan: -1, category: c[9], curve: c[10], curve_scale: f32::from_bits(c[11]), doppler: f32::from_bits(c[12]), mask: c[13] as u8, positional: 2, lpf: 23900, hpf: 0 }
+            };
+            let (cat, curve, scale, dop, mask) = inherit(&hdr, &parent);
+            if !root || c[4] != 0 {
+                assert_eq!(cat, o[0], "category: {line}");
+            }
+            assert_eq!(if root && curve == 0 { default_rolloff } else { curve }, o[1], "curve: {line}");
+            assert_eq!(scale.to_bits(), o[2], "curve scale: {line}");
+            assert_eq!(dop.to_bits(), o[3], "doppler: {line}");
+            assert_eq!(mask as u32, o[4], "speaker mask: {line}");
+            n += 1;
+        }
+        assert_eq!(n, 6000);
     }
 
     /// The voice manager's ranking and pick (F-91203, F-96767) against the original's code run offline on random voice
