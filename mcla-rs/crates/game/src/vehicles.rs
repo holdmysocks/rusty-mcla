@@ -6941,6 +6941,16 @@ impl Vehicles {
         if c.is_ambient() || c.parked.is_some() {
             return None;
         }
+        // (test hook MCLA_NEON_CARS=<a set-up .xcc>: every set-up car but the player's and the cops' (AI racers, scene cars)
+        // takes that set-up's exterior neon record - shots of their neon, e.g. GH_34_2_vpd_mit_evox_08.xcc, whose freeway
+        // hookman a command line cannot start)
+        if !c.cop && (c.ai.is_some() || c.look.is_some()) {
+            static TEST: std::sync::OnceLock<Option<[[f32; 4]; 2]>> = std::sync::OnceLock::new();
+            let rec = TEST.get_or_init(|| std::env::var("MCLA_NEON_CARS").ok().and_then(|p| std::fs::read(p).ok()).and_then(|b| crate::mc4::setup_look(&b)).map(|l| l.look.ext_neon));
+            if let Some(n) = rec {
+                return Some(ExtNeon::of(*n, self.neon_clock));
+            }
+        }
         c.look.as_ref().map(|l| ExtNeon::of(l.ext_neon, self.neon_clock))
     }
 
