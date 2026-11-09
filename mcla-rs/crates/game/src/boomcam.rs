@@ -241,7 +241,7 @@ impl BoomCam {
 /// None when it is clear.
 pub fn boom_collide(p: Vec3, c: Vec3, r: f32, inside_car: bool, world: SphereTest) -> Option<Vec3> {
     if !inside_car {
-        let k = world.contacts(p, r, true, 10);
+        let k = world.contacts(p, r, CamQuery::CARS, 10);
         if !k.is_empty() {
             let mut acc = Vec3::ZERO;
             for (d, n) in k {
@@ -2990,7 +2990,7 @@ impl TrackCam {
         }
         let mut f = None;
         let mut n = Vec3::ZERO;
-        if let Some((_, hn)) = test.contacts(at, r, true, 1).first().copied().filter(|(_, hn)| hn.dot(u) < -1e-5) {
+        if let Some((_, hn)) = test.contacts(at, r, CamQuery::CARS, 1).first().copied().filter(|(_, hn)| hn.dot(u) < -1e-5) {
             f = Some(0.0);
             n = hn;
         } else if let Some((ft, hn)) = test.sweep(at, c, r, true).filter(|(_, hn)| hn.dot(u) < -1e-5) {
@@ -3052,18 +3052,28 @@ impl TrackCam {
 }
 
 /// What the cameras' probes see (`physics::camprobe::CamLevel` in the game): a ball's
-/// contacts at a point, up to `max` by the original's result list, (depth, normal); a ball swept
-/// a -> b, directed, its first touch (t, normal). `cars`: the other cars too, else the city only.
+/// contacts at a point (F-87651), up to `max` by the original's result list, (depth, normal), for the
+/// caller's query `q` (include, states, excluded types); whether it touches anything (the count-only call,
+/// record count 0: F-87651's answer); a ball swept a -> b, directed, its first touch (t, normal) - `q.cars()`:
+/// the other cars too, else the city only.
 pub trait CamWorld {
-    fn contacts(&self, c: Vec3, r: f32, cars: bool, max: usize) -> Vec<(f32, Vec3)>;
+    fn contacts(&self, c: Vec3, r: f32, q: CamQuery, max: usize) -> Vec<(f32, Vec3)>;
+    fn touches(&self, c: Vec3, r: f32, q: CamQuery) -> bool {
+        !self.contacts(c, r, q, 1).is_empty()
+    }
     fn sweep(&self, a: Vec3, b: Vec3, r: f32, cars: bool) -> Option<(f32, Vec3)>;
 }
+
+pub use crate::physics::camprobe::CamQuery;
 
 pub type SphereTest<'a> = &'a dyn CamWorld;
 
 impl CamWorld for crate::physics::camprobe::CamLevel<'_> {
-    fn contacts(&self, c: Vec3, r: f32, cars: bool, max: usize) -> Vec<(f32, Vec3)> {
-        crate::physics::camprobe::CamLevel::contacts(self, c, r, cars, max).into_iter().map(|k| (k.depth, k.normal)).collect()
+    fn contacts(&self, c: Vec3, r: f32, q: CamQuery, max: usize) -> Vec<(f32, Vec3)> {
+        crate::physics::camprobe::CamLevel::contacts(self, c, r, q, max).into_iter().map(|k| (k.depth, k.normal)).collect()
+    }
+    fn touches(&self, c: Vec3, r: f32, q: CamQuery) -> bool {
+        crate::physics::camprobe::CamLevel::touches(self, c, r, q)
     }
     fn sweep(&self, a: Vec3, b: Vec3, r: f32, cars: bool) -> Option<(f32, Vec3)> {
         crate::physics::camprobe::CamLevel::sweep(self, a, b, r, cars)
@@ -3074,7 +3084,7 @@ impl CamWorld for crate::physics::camprobe::CamLevel<'_> {
 pub struct Balls<F>(pub F);
 
 impl<F: Fn(Vec3, f32) -> Option<(f32, Vec3)>> CamWorld for Balls<F> {
-    fn contacts(&self, c: Vec3, r: f32, _cars: bool, max: usize) -> Vec<(f32, Vec3)> {
+    fn contacts(&self, c: Vec3, r: f32, _q: CamQuery, max: usize) -> Vec<(f32, Vec3)> {
         (self.0)(c, r).into_iter().take(max).collect()
     }
     fn sweep(&self, a: Vec3, b: Vec3, r: f32, _cars: bool) -> Option<(f32, Vec3)> {
@@ -3132,7 +3142,7 @@ fn deflect(at: Vec3, want: Vec3, t: &TrackTune, test: SphereTest) -> Vec3 {
     }
     let z = (want - at).normalize_or(Vec3::Z);
     let a = Vec3::new(z.z, 0.0, -z.x);
-    let (yaw, pitch) = if let Some((_, n)) = test.contacts(at, h, false, 1).first().copied() {
+    let (yaw, pitch) = if let Some((_, n)) = test.contacts(at, h, CamQuery::FIXED, 1).first().copied() {
         (2.0 * n.dot(a).atan(), 0.5 * n.y.atan())
     } else if let Some((f, n)) = test.sweep(at, want, h, false) {
         (2.0 * (n.dot(a) * (1.0 - f)).atan(), 0.5 * (n.y * (1.0 - f)).atan())
@@ -3375,7 +3385,7 @@ impl EventDirector {
         if i.air_time > 0.1 && !i.sst_on && !i.nitro_on {
             // a 2 m ball at the car clear, and the way 2 s ahead along the velocity, falling
             // 5 m more, from half a metre up the car (nothing after Air is tried this frame)
-            if !test.contacts(car.pos, 2.0, false, 1).is_empty() {
+            if test.touches(car.pos, 2.0, CamQuery::AIR) {
                 return None;
             }
             let a = car.pos + car.rot * Vec3::Y * 0.5;

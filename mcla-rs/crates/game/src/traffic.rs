@@ -2472,7 +2472,7 @@ impl<'a> RailLevel<'a> {
 
     /// The objects a query about the ball (`c`, `r`) can meet: the city, the cars, walkers and hit props, then the unhit
     /// props found near it (every one whose bound's ball can touch it); `f` answers from them.
-    fn near(&self, c: Vec3, r: f32, f: &mut dyn FnMut(&[crate::physics::camprobe::LevelObject<'_>]) -> bool) -> bool {
+    pub(crate) fn near(&self, c: Vec3, r: f32, f: &mut dyn FnMut(&[crate::physics::camprobe::LevelObject<'_>]) -> bool) -> bool {
         use crate::physics::camprobe::{level_words as lw, LevelObject};
         let built = &self.built;
         let mut out: Vec<LevelObject<'_>> = Vec::with_capacity(built.objs.len() + 16);
@@ -2508,7 +2508,7 @@ impl crate::tcp_rail::RailSweepWorld for LevelSweep<'_, '_> {
     fn sphere(&mut self, c: Vec3, r: f32) -> bool {
         use crate::physics::camprobe::{ball_level, LevelFilter};
         let q = crate::tcp_rail::level_query(false, 1, self.include);
-        let filter = LevelFilter { include: q.include, states: q.states as u32, excluded: &self.excluded };
+        let filter = LevelFilter::rail(q.include, q.states as u32, &self.excluded);
         self.level.near(c, r, &mut |objs| {
             let l = ball_level(c, r, q.material, q.max as usize, [0; 3], &filter, objs.iter().copied()).list;
             l.records.first().is_some_and(|x| x.instance != 0)
@@ -2517,7 +2517,7 @@ impl crate::tcp_rail::RailSweepWorld for LevelSweep<'_, '_> {
     fn capsule(&mut self, a: Vec3, b: Vec3, r: f32, f30: f32) -> bool {
         use crate::physics::camprobe::{capsule_level, LevelFilter};
         let q = crate::tcp_rail::level_query(true, 1, self.include);
-        let filter = LevelFilter { include: q.include, states: q.states as u32, excluded: &self.excluded };
+        let filter = LevelFilter::rail(q.include, q.states as u32, &self.excluded);
         let f30_high = ((f30 as f64).to_bits() >> 32) as u32;
         self.level.near((a + b) * 0.5, a.distance(b) * 0.5 + r, &mut |objs| {
             let l = capsule_level(a, b, r, q.material, q.max as usize, f30_high, &filter, objs.iter().copied()).list;
@@ -2563,7 +2563,7 @@ fn probe_hit(env: &Env, me: usize, inst: &[Vec3; 4], hl: f32, hw: f32) -> bool {
     // car update; F-82779 in state 8 follows and moves before its probe but the instance is still the frame's start)
     let (a, b) = probe_segment(inst, hl, hw, env.parity);
     let excluded = [if me < env.level.ncars { rail_car_inst(me) } else { 0 }];
-    let filter = LevelFilter { include: 14366, states: 7, excluded: &excluded };
+    let filter = LevelFilter::rail(14366, 7, &excluded);
     let mask = 512u32 << crate::tcp_rail::MATERIAL_SHIFT;
     env.level.near((a + b) * 0.5, a.distance(b) * 0.5, &mut |objs| segment_level(a, b, mask, &filter, objs.iter().copied()).list.records[0].instance != 0)
 }
@@ -4751,6 +4751,16 @@ impl Vehicles {
             }
             c.amb_frames = (c.amb_frames + 1).min(3);
         }
+    }
+
+    /// The level's objects as the original's level holds them (the city's grid, every car's composite with its state and
+    /// type words, walkers, props) for the cameras' probes, and the instance word of car `k` in it.
+    pub fn probe_level<'a>(&'a self, col: &'a WorldCollider) -> RailLevel<'a> {
+        RailLevel::new(col, &self.cars, &self.data_root, &self.walkers, &self.level)
+    }
+
+    pub fn probe_inst(k: usize) -> u32 {
+        rail_car_inst(k)
     }
 
     /// Move the traffic cars: along their lanes, on their rails, back from physics; the

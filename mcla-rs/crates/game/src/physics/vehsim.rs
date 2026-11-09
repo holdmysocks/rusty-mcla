@@ -5828,7 +5828,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
         (vs.stuck, vs.stuck_timer, vs.stuck_cool) = (state, timer, cool);
         if right {
             let city = super::camprobe::CamLevel::city(world);
-            let place = stuck_push_out(body_at, |c, r| if r == 1.0 { city.contacts(c, r, false, 1).first().map(|k| (k.normal, k.depth)) } else { None });
+            let place = stuck_push_out(body_at, |c, r| if r == 1.0 { city.contacts(c, r, super::camprobe::CamQuery::FIXED, 1).first().map(|k| (k.normal, k.depth)) } else { None });
             righted = Some(stuck_righted(body_rows[2], place));
             // (F-59013: a forward gear past the first goes to the first)
             if vs.gear >= 2 {

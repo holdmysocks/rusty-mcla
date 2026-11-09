@@ -82,10 +82,41 @@ pub struct Contact {
     pub depth: f32,
 }
 
-/// The city plus the cars (other than the camera's).
+/// The city plus the cars (other than the camera's). With `level` (the game's level objects as the original's level holds
+/// them: the city's grid, every car's composite, walkers, props) the ball's contacts are F-87651 on it, the camera's
+/// target `skip` left out; without it (the tests, the sim's push-out) the city's triangles and `cars`' hulls.
 pub struct CamLevel<'a> {
     pub city: &'a WorldCollider,
     pub cars: Vec<CamObj>,
+    pub level: Option<&'a crate::vehicles::traffic::RailLevel<'a>>,
+    pub skip: u32,
+}
+
+/// What a camera asks of the level (probe_rule.md section 4): the include mask (the driver's r8), the states (r10) and
+/// the excluded types (sp+92); the type mask r9 is -1 for every camera.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CamQuery {
+    pub include: u32,
+    pub states: u32,
+    pub exclude_types: u32,
+}
+
+impl CamQuery {
+    /// The boom (F-20517 / F-12669: camera +200 = 0x100 - 0x200 is added below 22.35 m/s, a bit no archetype has -,
+    /// byte +196 = 7, none excluded), the event camera's pull-in and the replay's tests: the city, the cars, traffic.
+    pub const CARS: CamQuery = CamQuery { include: 0x100, states: 7, exclude_types: 0 };
+    /// The event camera's deflection (the states 7 & 0xFC = 4): the fixed objects only - the city.
+    pub const FIXED: CamQuery = CamQuery { include: 0x100, states: 4, exclude_types: 0 };
+    /// The event chooser's Air test: every type, fixed, type bit 1 excluded - the city and the fixed props.
+    pub const AIR: CamQuery = CamQuery { include: u32::MAX, states: 4, exclude_types: 1 };
+    /// The replay helicopter's view of the car (include 0x800, fixed): the city.
+    pub const HELI: CamQuery = CamQuery { include: 0x800, states: 4, exclude_types: 0 };
+
+    /// Whether the cars can pass (the fallback without the level's objects: cars are active / inactive, type 0x185 /
+    /// 0x189 / 0x1100).
+    pub fn cars(&self) -> bool {
+        self.states & 3 != 0 && self.include & 0x1185 != 0 && self.exclude_types & 0x1185 != 0x1185
+    }
 }
 
 /// The result list (F-89028): up to `max` records, the lowest score dropped; the score is the
@@ -2729,6 +2760,19 @@ pub struct LevelFilter<'a> {
     pub include: u32,
     pub states: u32,
     pub excluded: &'a [u32],
+    /// the driver's r6 (the culler's +92: tested against the archetype's include word; -1 for the rail sweep)
+    pub types: u32,
+    /// the driver's r8 (the culler's +88: archetype type bits that drop an object; 0 for the rail sweep)
+    pub exclude_types: u32,
+    /// the driver's r4: the one object it skips (0: none)
+    pub skip: u32,
+}
+
+impl<'a> LevelFilter<'a> {
+    /// The rail sweep's filter (types -1, no excluded types, nothing skipped).
+    pub fn rail(include: u32, states: u32, excluded: &'a [u32]) -> LevelFilter<'a> {
+        LevelFilter { include, states, excluded, types: u32::MAX, exclude_types: 0, skip: 0 }
+    }
 }
 
 impl LevelFilter<'_> {
@@ -2736,8 +2780,9 @@ impl LevelFilter<'_> {
     /// callback.
     fn takes(&self, o: &LevelObject, vol: &CullVolume) -> bool {
         let state_bit = 1u32.checked_shl(o.state & 3).unwrap_or(0);
-        instance_masks_pass(self.states, state_bit, self.include, u32::MAX, 0, o.arch_type, o.arch_include)
+        instance_masks_pass(self.states, state_bit, self.include, self.types, self.exclude_types, o.arch_type, o.arch_include)
             && instance_culled_in(vol, &o.m, o.bound.centroid, o.bound.radius)
+            && (self.skip == 0 || o.inst != self.skip)
             && !self.excluded.iter().take(64).any(|&w| w == o.inst)
     }
 }
@@ -2783,6 +2828,16 @@ pub fn ball_level<'a>(c: Vec3, r: f32, mask: u32, cap: usize, flags: [i32; 3], f
         }
     }
     q
+}
+
+/// F-87651, the cameras' ball at a point (the boom, the event camera's pull-in, the replay's tests): its query object
+/// (F-81308: the excluded-list filter of the rail queries, no words), the set-up F-38096 (the centre, the radius, the
+/// records and their count: -1 or 0xFFFF taken as 1, below 0 as 0, above 64 as 64; the material mask +88 = 0) and the
+/// driver F-49353 with the caller's skipped object, include, type and state masks and excluded types (`filter`). The
+/// answer is the list's +44 (`list.done`).
+pub fn camera_ball<'a>(c: Vec3, r: f32, max: i32, filter: &LevelFilter, objects: impl IntoIterator<Item = LevelObject<'a>>) -> BallQuery {
+    let cap = if max == -1 || max == 0xFFFF { 1 } else { max.clamp(0, 64) } as usize;
+    ball_level(c, r, 0, cap, [0; 3], filter, objects)
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -3433,13 +3488,24 @@ pub fn segment_level<'a>(a: Vec3, b: Vec3, mask: u32, filter: &LevelFilter, obje
 impl<'a> CamLevel<'a> {
     /// The city alone.
     pub fn city(city: &'a WorldCollider) -> CamLevel<'a> {
-        CamLevel { city, cars: Vec::new() }
+        CamLevel { city, cars: Vec::new(), level: None, skip: 0 }
     }
 
-    /// A ball's contacts at `c` (F-87651): up to `max`, by the result list's rule; `cars`: the
-    /// other cars too (the boom, the event camera's pull-in, the replay's tests), else the city only
-    /// (the event camera's deflection and chooser: the fixed objects).
-    pub fn contacts(&self, c: Vec3, r: f32, cars: bool, max: usize) -> Vec<Contact> {
+    /// A ball's contacts at `c` (F-87651): up to `max`, by the result list's rule, for the caller's query `q`. On the
+    /// level's objects: `camera_ball` (the records the list holds: point, normal, depth). Without them: the city's
+    /// triangles and, when `q` takes cars, `cars`' hulls.
+    pub fn contacts(&self, c: Vec3, r: f32, q: CamQuery, max: usize) -> Vec<Contact> {
+        if let Some(level) = self.level {
+            let filter = LevelFilter { include: q.include, states: q.states, excluded: &[], types: u32::MAX, exclude_types: q.exclude_types, skip: self.skip };
+            let mut out = Vec::new();
+            level.near(c, r, &mut |objs| {
+                let l = camera_ball(c, r, max as i32, &filter, objs.iter().copied()).list;
+                out = l.records.iter().filter(|x| x.instance != 0).map(|x| Contact { pos: x.point, normal: x.normal, depth: x.depth }).collect();
+                false
+            });
+            return out;
+        }
+        let cars = q.cars();
         let mut list = List { max, cap: r, held: Vec::new() };
         let ext = Vec3::splat(r);
         // (the edge flags' stack slot, as the previous polygon's call left it)
@@ -3466,6 +3532,21 @@ impl<'a> CamLevel<'a> {
             }
         }
         list.held.into_iter().map(|h| h.1).collect()
+    }
+
+    /// Whether a ball at `c` touches anything for `q`: F-87651 with the record count 0, its answer (the list's +44);
+    /// without the level's objects, any contact.
+    pub fn touches(&self, c: Vec3, r: f32, q: CamQuery) -> bool {
+        if let Some(level) = self.level {
+            let filter = LevelFilter { include: q.include, states: q.states, excluded: &[], types: u32::MAX, exclude_types: q.exclude_types, skip: self.skip };
+            let mut hit = false;
+            level.near(c, r, &mut |objs| {
+                hit = camera_ball(c, r, 0, &filter, objs.iter().copied()).list.done != 0;
+                false
+            });
+            return hit;
+        }
+        !self.contacts(c, r, q, 1).is_empty()
     }
 
     /// A ball swept from `a` to `b`, directed (F-43031 through F-80278): the first touch over
@@ -4547,7 +4628,7 @@ mod tests {
                 .collect();
             let excluded: Vec<u32> = (0..2).map(|j| if h[13 + j] < 0x100 { INST + 0x100 * h[13 + j] } else { h[13 + j] }).collect();
             let n = (h[12] as i32).clamp(0, 2) as usize;
-            let filter = LevelFilter { include: h[10], states: h[11] & 0xFF, excluded: &excluded[..n] };
+            let filter = LevelFilter::rail(h[10], h[11] & 0xFF, &excluded[..n]);
             let mask = 640 << crate::tcp_rail::MATERIAL_SHIFT;
             let (answer, l) = if ball {
                 balls += 1;
@@ -4575,6 +4656,91 @@ mod tests {
         // (sphere cases, cases blocked, objects by kind - city, props, walkers -, cases excluding one of their objects,
         // records)
         assert_eq!((balls, blocked, kinds, excl_hit, recs), (992, 729, [1174, 2935, 1632], 1295, 953), "coverage");
+    }
+
+    /// The cameras' ball at a point F-87651 against the original's code run whole offline (tools/camera_ball_reference.py ->
+    /// testdata/camera_ball_ref.txt): its query object (F-81308), the set-up F-38096 and the driver F-49353 with all below
+    /// it, called as the cameras call it - the skipped object, include / type / state masks, the record count (signed,
+    /// limited to 0 .. 64) and the excluded types -, on levels of the city's grid, prop composites (some given the cars'
+    /// type words) and walker capsules. The answer, the query's list and every record equal `camera_ball`.
+    #[test]
+    fn camera_ball_matches_the_original() {
+        let Some(city) = city_probe() else { return };
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Ok(d) = std::fs::read(std::path::Path::new(&root).join("resources/prop/0x0e66973c.r131")) else { return };
+        let u32le = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let data = d[16..].to_vec();
+        let vs = (u32le(12) as usize).min(data.len());
+        let res = mcla_formats::rsc::Resource { rtype: u32le(4), flags: u32le(8), virtual_size: vs, physical_size: data.len() - vs, data };
+        let types = mcla_formats::rage::fragphys::parse_frag_types(&res);
+        let fake = |_: &mcla_formats::rage::fragphys::FragBound| -> Vec<u32> { (0..256).map(|j| (j + 1) << 8).collect() };
+        let props: Vec<ProbeBound> = types.iter().map(|t| ProbeBound::of_prop(t, &fake)).collect();
+        let u = |h: &str| u32::from_str_radix(&h.replace('_', ""), 16).unwrap();
+        let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+        const INST: u32 = 0x40D0_1000;
+        let (mut cases, mut hits, mut recs, mut skipped) = (0, 0, 0, 0);
+        for (k, line) in include_str!("../testdata/camera_ball_ref.txt").lines().enumerate() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let mut groups = i.split(" | ");
+            let h: Vec<u32> = groups.next().unwrap().split_whitespace().map(u).collect();
+            let x: Vec<u32> = o.split_whitespace().map(u).collect();
+            let f = |i: usize| f32::from_bits(h[i]);
+            let words: Vec<Vec<u32>> = groups.map(|g| g.split_whitespace().map(u).collect()).collect();
+            let walkers: Vec<Option<ProbeBound>> = words
+                .iter()
+                .map(|w| {
+                    (w[0] == 2).then(|| {
+                        let (r, l) = (f32::from_bits(w[1]), f32::from_bits(w[2]));
+                        let hl = l * 0.5 + r;
+                        ProbeBound {
+                            kind: 1,
+                            radius: hl,
+                            centroid: Vec3::ZERO,
+                            max: Vec3::new(r, hl, r),
+                            min: Vec3::new(-r, -hl, -r),
+                            materials: (0..64).map(|j| (j + 1) << 8).collect(),
+                            shape: ProbeShape::Prim(Primitive::Capsule { centre: Vec3::ZERO, r, len: l }),
+                        }
+                    })
+                })
+                .collect();
+            let objs: Vec<LevelObject> = words
+                .iter()
+                .enumerate()
+                .map(|(n, w)| {
+                    let p = |i: usize| Vec3::new(f32::from_bits(w[i]), f32::from_bits(w[i + 1]), f32::from_bits(w[i + 2]));
+                    let bound = match w[0] {
+                        0 => &city,
+                        1 => &props[w[2] as usize],
+                        _ => walkers[n].as_ref().unwrap(),
+                    };
+                    LevelObject { inst: INST + 0x100 * n as u32, state: w[3], arch_type: w[4], arch_include: w[5], m: [p(6), p(9), p(12), p(15)], bound }
+                })
+                .collect();
+            let skip = if h[4] < 0x1000 { INST + 0x100 * h[4] } else { h[4] };
+            let filter = LevelFilter { include: h[5], types: h[6], states: h[7], exclude_types: h[9], skip, excluded: &[] };
+            let q = camera_ball(Vec3::new(f(0), f(1), f(2)), f(3), h[8] as i32, &filter, objs.iter().copied());
+            let l = q.list;
+            let mut st = vec![l.done as u32, l.records.len() as u32, l.done as u32, l.level as u32, l.new as u32];
+            st.extend([l.new_bits as u32, (l.new_bits >> 32) as u32, l.level_bits as u32, (l.level_bits >> 32) as u32, l.high.to_bits(), l.low.to_bits()]);
+            assert_eq!(&x[..11], &st[..], "line {k}: answer and list");
+            assert_eq!(x.len(), 11 + 17 * l.records.len(), "line {k}: records");
+            for (j, r) in l.records.iter().enumerate() {
+                let y = &x[11 + 17 * j..28 + 17 * j];
+                let mut e = vec![r.instance];
+                for v in [r.point, r.normal, r.bound_normal] {
+                    e.extend(bits(v));
+                }
+                e.extend([r.t.to_bits(), r.depth.to_bits(), r.material, r.index as u32, r.kind as u32, r.below as u32, r.part as u32]);
+                assert_eq!(y, &e[..], "line {k}: record {j}");
+                recs += (r.instance != 0) as usize;
+            }
+            hits += l.records.first().is_some_and(|r| r.instance != 0) as usize;
+            skipped += objs.iter().any(|o| o.inst == skip) as usize;
+            cases += 1;
+        }
+        // (cases, cases with a contact, records set, cases skipping one of their objects)
+        assert_eq!((cases, hits, recs, skipped), (3000, 380, 579, 2252), "coverage");
     }
 
     /// The two level queries against the player car's composite as the running game makes it (tools/level_query_car_reference.py
@@ -4705,7 +4871,7 @@ mod tests {
                 .collect();
             let excluded: Vec<u32> = (0..2).map(|j| if h[13 + j] < 0x100 { INST + 0x100 * h[13 + j] } else { h[13 + j] }).collect();
             let n = (h[12] as i32).clamp(0, 2) as usize;
-            let filter = LevelFilter { include: h[10], states: h[11] & 0xFF, excluded: &excluded[..n] };
+            let filter = LevelFilter::rail(h[10], h[11] & 0xFF, &excluded[..n]);
             let mask = 640 << crate::tcp_rail::MATERIAL_SHIFT;
             let (answer, l) = if ball {
                 balls += 1;
@@ -4862,7 +5028,7 @@ mod tests {
                 .collect();
             let excluded: Vec<u32> = (0..2).map(|j| if h[13 + j] < 0x100 { INST + 0x100 * h[13 + j] } else { h[13 + j] }).collect();
             let n = (h[12] as i32).clamp(0, 2) as usize;
-            let filter = LevelFilter { include: h[10], states: h[11] & 0xFF, excluded: &excluded[..n] };
+            let filter = LevelFilter::rail(h[10], h[11] & 0xFF, &excluded[..n]);
             let q = segment_level(Vec3::new(f(3), f(4), f(5)), Vec3::new(f(6), f(7), f(8)), h[1] << 8, &filter, objs.iter().copied());
             let l = &q.list;
             let mut st = vec![0, l.records.len() as u32, l.done as u32, l.level as u32, l.new as u32];

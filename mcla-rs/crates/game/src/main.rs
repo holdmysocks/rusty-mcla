@@ -8863,9 +8863,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let shake_dv = self.vehicles.player_mut().map_or(0.0, |c| std::mem::take(&mut c.state.shake_dv));
             if let Some(car) = self.vehicles.player() {
                 let render_state = car.render_state(self.vehicles.render_alpha);
-                // the level the cameras' probes see (physics/camprobe.rs): the city and every other
-                // placed car's hull where it is drawn; the camera's own car is not in it
+                // the level the cameras' probes see (physics/camprobe.rs): the level's objects as the original's level
+                // holds them for the ball (F-87651, the camera's target skipped); the city and every other placed car's
+                // hull where it is drawn for the sweep
+                let probe_level = self.vehicles.probe_level(&world.collider);
                 let cam_level = physics::camprobe::CamLevel {
+                    level: Some(&probe_level),
+                    skip: self.vehicles.cars.iter().position(|c| c.is_player).map_or(0, vehicles::Vehicles::probe_inst),
                     city: &world.collider,
                     cars: self
                         .vehicles
@@ -12601,7 +12605,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // the sun's glow quad over the finished scene (sunglow.rs), then the lamps' pass
             // the occlusion blobs under the cars (carblob.rs): over the finished scene, before the glow passes
             if !map3d && pic.is_none() {
-                carblob::run(&gpu, &mut enc, &self.vehicles, self.cam.pos, self.game.mode != Mode::Garage && (self.time_of_day > 18.0 || self.time_of_day < 6.0), self.world.as_ref().map(|w| &w.collider));
+                carblob::run(&gpu, &mut enc, &self.vehicles, self.cam.pos, self.game.mode != Mode::Garage && (self.time_of_day > 18.0 || self.time_of_day < 6.0), Some(&world.collider));
             }
             // (step 19g: the effects on the cars - ice blocks, shields, stealth - pu_fx.rs)
             if !map3d {
@@ -15815,14 +15819,14 @@ struct DriveProbe<'a> {
 impl replay::Probe for ReplayProbe<'_> {
     fn sweep(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
         if (b - a).length_squared() < 1e-12 {
-            return self.0.contacts(a, r, true, 1).first().map(|c| (c.pos, c.normal));
+            return self.0.contacts(a, r, physics::camprobe::CamQuery::CARS, 1).first().map(|c| (c.pos, c.normal));
         }
         self.0.sweep_hit(a, b, r, true).map(|h| (h.contact, h.normal))
     }
     fn heli(&mut self, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
         let l = self.0;
         for p in [a, b] {
-            if let Some(c) = l.contacts(p, r, false, 1).first() {
+            if let Some(c) = l.contacts(p, r, physics::camprobe::CamQuery::HELI, 1).first() {
                 return Some((c.pos, c.normal));
             }
         }
