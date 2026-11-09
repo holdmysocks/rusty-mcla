@@ -31,6 +31,9 @@ pub struct CharBone {
     /// the record's +26 / +27: the frame made from the skeleton holds a translation / a rotation DOF for the bone
     pub dof_trans: bool,
     pub dof_rot: bool,
+    /// the record's default translation and rotation words as stored (+32 .. +47, +64 .. +79): what the rest pose op copies
+    /// into a frame (F-26010's identity branch -> F-90682 -> F-51341, no normalising; the translation's w word too)
+    pub rest_raw: [[f32; 4]; 2],
 }
 
 pub struct Character {
@@ -65,14 +68,27 @@ impl Character {
         let rd = Rd::new(res);
         let name = rd.ptr(0x08).map(|p| rd.cstr(p)).unwrap_or_default();
         let count = (rd.u32(0x20) as usize).min(256);
+        // (the bones the character is drawn and animated with are the drawable's skeleton data's, drawable (root+0x10) +0x0c
+        // -> +0: the creature's skeleton component, the frame it makes (F-66930) and the rest pose (F-51341) read those. The
+        // root's own records at 0x30 are a second copy that differs in 7 driver sets - the player's drv_mp_01_set_h has no
+        // translation DOF for its spine, arms and legs there, five others other face bones by up to 11 cm; the root's copy
+        // only where the drawable has none)
+        let base = rd
+            .ptr(0x10)
+            .and_then(|dr| rd.ptr(dr + 0x0c))
+            .filter(|&sk| rd.u16(sk + 20) as usize == count)
+            .and_then(|sk| rd.ptr(sk))
+            .filter(|&b| rd.has(b, count * BONE_STRIDE))
+            .unwrap_or(BONES_AT);
         let mut bones = Vec::with_capacity(count);
         for i in 0..count {
-            let o = BONES_AT + i * BONE_STRIDE;
+            let o = base + i * BONE_STRIDE;
             if !rd.has(o, BONE_STRIDE) {
                 break;
             }
             let v = |k: usize| Vec3::new(rd.f32(o + k), rd.f32(o + k + 4), rd.f32(o + k + 8));
-            let parent = rd.ptr(o + 0x10).filter(|p| *p >= BONES_AT).map(|p| (p - BONES_AT) / BONE_STRIDE).filter(|p| *p < count && *p != i);
+            let v4 = |k: usize| [rd.f32(o + k), rd.f32(o + k + 4), rd.f32(o + k + 8), rd.f32(o + k + 12)];
+            let parent = rd.ptr(o + 0x10).filter(|p| *p >= base).map(|p| (p - base) / BONE_STRIDE).filter(|p| *p < count && *p != i);
             let q = Quat::from_xyzw(rd.f32(o + 0x40), rd.f32(o + 0x44), rd.f32(o + 0x48), rd.f32(o + 0x4c));
             bones.push(CharBone {
                 name: rd.ptr(o).map(|p| rd.cstr(p)).unwrap_or_default(),
@@ -83,6 +99,7 @@ impl Character {
                 world_pos: v(0x60),
                 dof_trans: rd.u8(o + 26) != 0,
                 dof_rot: rd.u8(o + 27) != 0,
+                rest_raw: [v4(0x20), v4(0x40)],
             });
         }
         // the DOFs' id: the record's +22 when the skeleton data's (drawable +0x0c) +28 has bit 1, else the bone's index

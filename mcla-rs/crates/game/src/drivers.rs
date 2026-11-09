@@ -206,10 +206,7 @@ impl da::Poser for RigPoser<'_> {
     }
 
     fn rest(&self, out: &mut [FrameDof]) {
-        for (b, bone) in self.0.model.bones.iter().enumerate() {
-            out[2 * b] = FrameDof { flags: DOF_QUATERNION, v: bone.rot.to_array() };
-            out[2 * b + 1] = FrameDof { flags: DOF_VECTOR3, v: [bone.pos.x, bone.pos.y, bone.pos.z, 0.0] };
-        }
+        rest_into(&self.0.model.bones, &self.0.model.dofs, out);
     }
 
     fn weights(&self, f: da::Filter) -> &[f32] {
@@ -218,6 +215,23 @@ impl da::Poser for RigPoser<'_> {
             da::Filter::Neck => 1,
             da::Filter::NoFace => 2,
         }]
+    }
+}
+
+/// The rest pose op (op 13, F-26010's identity branch -> F-90682 -> F-51341 with no filter): each DOF the frame has (the
+/// skeleton data's record +27 a rotation, +26 a translation) takes the bone's default as stored - the rotation +64, the
+/// translation +32 with its w word - and loses its no-value bit; a DOF the frame lacks keeps none. The accelerator's mapping
+/// (+44 set in every set) and the per-DOF lookup with the bone's flags give the same frame (checked offline on all 131 driver
+/// sets, test `the_rest_pose_op_matches_the_original`).
+fn rest_into(bones: &[crate::skin::Bone], dofs: &[(bool, bool)], out: &mut [FrameDof]) {
+    for (b, bone) in bones.iter().enumerate() {
+        let (has_pos, has_rot) = dofs.get(b).copied().unwrap_or((true, true));
+        for (slot, on, v) in [(2 * b, has_rot, bone.rest[1]), (2 * b + 1, has_pos, bone.rest[0])] {
+            if let (true, Some(d)) = (on, out.get_mut(slot)) {
+                d.flags &= !DOF_NO_VALUE;
+                d.v = v;
+            }
+        }
     }
 }
 
@@ -2563,6 +2577,42 @@ mod original_tests {
         }
         assert_eq!(n, 4048);
     }
+
+    /// Op 13 (F-90682 -> F-51341) run offline on each distinct driver set (tools in work/driverlight/op13/rest_ref.py): the
+    /// frame's DOFs ordered by kind then id, each "kind id flags w0 w1 w2 w3" after the op - the port's frame from the same
+    /// set, `rest_into` on DOFs without a value, compared bit for bit.
+    #[test]
+    fn the_rest_pose_op_matches_the_original() {
+        let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| r"D:\MCLA\extracted\cache".into());
+        let (mut sets, mut checked) = (0, 0);
+        for line in include_str!("testdata/drvanim_rest_ref.txt").lines() {
+            let w: Vec<&str> = line.split(' ').collect();
+            let Some(c) = crate::skin::SkinModel::read(&Path::new(&data).join(w[0])) else { return };
+            // (the bones and DOF set as `SkinModel::from_character` makes them)
+            let bones: Vec<crate::skin::Bone> = c.bones.iter().map(|b| crate::skin::Bone { parent: b.parent, pos: b.local_pos, rot: b.local_rot, bind: b.world_pos, rest: b.rest_raw }).collect();
+            let dofs: Vec<(bool, bool)> = c.bones.iter().map(|b| (b.dof_trans, b.dof_rot)).collect();
+            let mut frame = vec![FrameDof { flags: DOF_NO_VALUE, v: [f32::from_bits(0x7fc0dead); 4] }; 2 * bones.len()];
+            rest_into(&bones, &dofs, &mut frame);
+            // the port's DOFs with a value, as (kind 0 translation / 1 rotation, id): the original's order
+            let mut got: Vec<(u32, u32, &FrameDof)> = Vec::new();
+            for (b, &(has_pos, has_rot)) in dofs.iter().enumerate() {
+                if has_pos { got.push((0, c.bones[b].id as u32, &frame[2 * b + 1])); }
+                if has_rot { got.push((1, c.bones[b].id as u32, &frame[2 * b])); }
+            }
+            got.sort_by_key(|g| (g.0, g.1));
+            let want: Vec<&[&str]> = w[1..].chunks(7).collect();
+            assert_eq!(got.len(), want.len(), "{}", w[0]);
+            for (g, r) in got.iter().zip(&want) {
+                let h = |i: usize| u32::from_str_radix(r[i], 16).unwrap();
+                assert_eq!((g.0, g.1), (h(0), h(1)), "{}", w[0]);
+                assert_eq!((g.2.flags & DOF_NO_VALUE) as u32, h(2) & DOF_NO_VALUE as u32, "{} dof {:?}", w[0], (g.0, g.1));
+                assert_eq!(g.2.v.map(f32::to_bits), [h(3), h(4), h(5), h(6)], "{} dof {:?}", w[0], (g.0, g.1));
+                checked += 1;
+            }
+            sets += 1;
+        }
+        assert_eq!((sets, checked > 0), (49, true));
+    }
 }
 
 #[cfg(test)]
@@ -2811,7 +2861,7 @@ mod ride_tests {
     /// only; its smoother waits 0.5 s at the centre, then moves at 5 x dt towards 0.5 - look x 0.5.
     #[test]
     fn ride_pan() {
-        let bones = vec![crate::skin::Bone { parent: None, pos: Vec3::ZERO, rot: Quat::IDENTITY, bind: Vec3::ZERO }];
+        let bones = vec![crate::skin::Bone { parent: None, pos: Vec3::ZERO, rot: Quat::IDENTITY, bind: Vec3::ZERO, rest: [[0.0; 4], [0.0, 0.0, 0.0, 1.0]] }];
         let anim = Arc::new(mcla_formats::rage::anim::Animation::default());
         let ids = vec![0u16];
         let b = BikeClips::load(|_| Some(Clip::bind(&anim, &ids, false, false))).unwrap();
@@ -2920,7 +2970,7 @@ mod ride_tests {
 
     #[test]
     fn ride_states() {
-        let bones = vec![crate::skin::Bone { parent: None, pos: Vec3::ZERO, rot: Quat::IDENTITY, bind: Vec3::ZERO }];
+        let bones = vec![crate::skin::Bone { parent: None, pos: Vec3::ZERO, rot: Quat::IDENTITY, bind: Vec3::ZERO, rest: [[0.0; 4], [0.0, 0.0, 0.0, 1.0]] }];
         let anim = Arc::new(mcla_formats::rage::anim::Animation::default());
         let ids = vec![0u16];
         let b = BikeClips::load(|_| Some(Clip::bind(&anim, &ids, false, false))).unwrap();

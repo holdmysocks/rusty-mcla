@@ -17,6 +17,9 @@ pub struct Bone {
     pub rot: Quat,
     /// bind pose position; the bind pose has no rotations
     pub bind: Vec3,
+    /// the skeleton data's default translation and rotation words as stored (`CharBone::rest_raw`): the rest pose op's
+    /// values
+    pub rest: [[f32; 4]; 2],
 }
 
 pub struct SkinVert {
@@ -364,7 +367,7 @@ impl SkinModel {
     /// The model of a character set read by `read`.
     pub fn from_character(gpu: &mut Gpu, name: &str, path: &Path, c: Character) -> Option<SkinModel> {
         let ids: Vec<u16> = c.bones.iter().map(|b| b.id).collect();
-        let bones: Vec<Bone> = c.bones.iter().map(|b| Bone { parent: b.parent, pos: b.local_pos, rot: b.local_rot, bind: b.world_pos }).collect();
+        let bones: Vec<Bone> = c.bones.iter().map(|b| Bone { parent: b.parent, pos: b.local_pos, rot: b.local_rot, bind: b.world_pos, rest: b.rest_raw }).collect();
         // one texture per shader
         let mut binds = Vec::new();
         for tn in &c.shader_tex {
