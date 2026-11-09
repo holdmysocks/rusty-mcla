@@ -1032,10 +1032,16 @@ pub fn sample_track_in(tr: &mcla_formats::rage::anim::Track, i: usize, fr: f32, 
 /// x y z, `DOF_QUATERNION` normalised in the mapped order, `DOF_FLOAT` x); None when the block has no such track. Checked
 /// against the original run offline on the 239 cine packs (test `the_dof_sampler_matches_the_original`).
 pub fn sample_dof(a: &mcla_formats::rage::anim::Animation, kind: u8, id: u16, ty: u8, t: f32) -> Option<[f32; 4]> {
+    sample_dof_in(a, kind, id, ty, t, true)
+}
+
+/// `sample_dof` for a frame's DOF as the clip sampler F-12216 fills it: `mapped` false when the frame's layout is the clip's
+/// (its same-layout loop: the quaternion's other normalising order), true otherwise (the mapped loop, F-15435's order).
+pub fn sample_dof_in(a: &mcla_formats::rage::anim::Animation, kind: u8, id: u16, ty: u8, t: f32, mapped: bool) -> Option<[f32; 4]> {
     let (b, i, fr) = sample_block(a, t);
     let tr = block_tracks(a, b).iter().find(|x| x.kind == kind && x.bone_id == id)?;
     let mut d = FrameDof { flags: ty | DOF_NO_VALUE, v: [0.0; 4] };
-    sample_track_in(tr, i, fr, &mut d, true);
+    sample_track_in(tr, i, fr, &mut d, mapped);
     (d.flags & DOF_NO_VALUE == 0).then_some(d.v)
 }
 

@@ -63,8 +63,9 @@ fn blend_in(local: &mut [(Quat, Vec3)], old: &[(Quat, Vec3)], w: f32) {
 
 impl Actor {
     /// The pose at frame `f` of its clip, scene time `t`.
-    fn pose(&self, f: f32, t: f32, local: &mut Vec<(Quat, Vec3)>) {
-        self.clip.local(&self.model.bones, f, local);
+    /// The body at clip time `ct` (scene time `t`).
+    fn pose(&self, ct: f32, t: f32, local: &mut Vec<(Quat, Vec3)>) {
+        pose_at(&self.clip.anim, &self.model, ct, local);
         if let (Some((r, p)), Some(l)) = (self.root_add, local.first_mut()) {
             l.0 = (r * l.0).normalize();
             l.1 += p;
@@ -625,6 +626,27 @@ fn mover_at(a: &Animation, t: f32) -> (Vec3, Quat) {
     (p, r)
 }
 
+/// A scene character's body at clip time `t` as the original's clip sampler fills its frame (F-47152 -> F-12216: the block,
+/// key and fraction of `sample_block`, each DOF from the block's own track, the mapped loop unless the character's frame
+/// layout is the clip's) and the finish writes it: only the DOFs the character's frame has (the skeleton data's +27 / +26),
+/// a bone without a value keeps its default local.
+fn pose_at(a: &Animation, m: &SkinModel, t: f32, out: &mut Vec<(Quat, Vec3)>) {
+    let mapped = a.layout != m.layout;
+    out.clear();
+    for (i, b) in m.bones.iter().enumerate() {
+        let id = m.ids.get(i).copied().unwrap_or(0);
+        let (has_pos, has_rot) = m.dofs.get(i).copied().unwrap_or((true, true));
+        let r = has_rot.then(|| crate::drvanim::sample_dof_in(a, KIND_ROTATION, id, DOF_QUATERNION, t, mapped)).flatten().map_or(b.rot, Quat::from_array);
+        let p = has_pos.then(|| crate::drvanim::sample_dof_in(a, KIND_TRANSLATION, id, DOF_VECTOR3, t, mapped)).flatten().map_or(b.pos, |v| Vec3::new(v[0], v[1], v[2]));
+        out.push((r, p));
+    }
+}
+
+/// A scene character's mover (its place in the scene) at clip time `t`, sampled as F-15435.
+fn mover_of(a: &Animation, t: f32) -> (Vec3, Quat) {
+    (dof_vec(a, KIND_MOVER_TRANSLATION, t).unwrap_or(Vec3::ZERO), dof_rot(a, KIND_MOVER_ROTATION, t).unwrap_or(Quat::IDENTITY))
+}
+
 /// The set a cutscene draws for `set` (LookupDriverToCutscenePath / Name, F-58832 / F-81189): the character manager's
 /// map +116 (the HackedScale column of Boot.sco's RegisterDriverMappings), and when the local player's car is a motorcycle
 /// (F-17373, which with a player there stands for the script's own argument) the map +140 (the jacket column) - in the 45
@@ -1136,7 +1158,7 @@ impl Cine {
         // (CineScript_Characters_ReAnimateSlot, F-56094 -> F-52646: the new clip from 0 added on the root bone to
         // the old clip frozen at its time with its root height 0, cross-faded in over 0.25 s; played once)
         let mut old = Vec::new();
-        a.pose(a.clip.anim.frame_at(sc.t - a.t0), sc.t, &mut old);
+        a.pose(sc.t - a.t0, sc.t, &mut old);
         a.root_add = old.first().map(|l| (l.0, Vec3::new(l.1.x, 0.0, l.1.z)));
         a.fade = Some((old, sc.t));
         a.clip = Clip::bind(&Arc::new(anim), &a.model.ids, false, false);
@@ -1262,9 +1284,8 @@ impl Cine {
         let Some(sc) = self.playing.as_ref() else { return Vec::new() };
         let mut local: Vec<(Quat, Vec3)> = Vec::new();
         sc.actors.iter().map(|a| {
-            let f = a.clip.anim.frame_at(sc.t - a.t0);
-            a.pose(f, sc.t, &mut local);
-            let (mt, mr) = a.clip.mover(f);
+            a.pose(sc.t - a.t0, sc.t, &mut local);
+            let (mt, mr) = mover_of(&a.clip.anim, sc.t - a.t0);
             let root = local.first().map_or(Vec3::ZERO, |l| l.1);
             (a.label.clone(), (sc.origin * Mat4::from_rotation_translation(mr, mt)).transform_point3(root))
         }).collect()
@@ -1319,15 +1340,14 @@ impl Cine {
         for (si, sc) in self.playing.iter_mut().chain(self.linger.iter_mut()).enumerate() {
         let t = sc.draw_t(alpha);
         for (k, a) in sc.actors.iter_mut().enumerate() {
-            let f = a.clip.anim.frame_at(t - a.t0);
-            a.pose(f, t, &mut local);
+            a.pose(t - a.t0, t, &mut local);
             if let Some(face) = a.face.as_ref() {
-                let ff = face.anim.frame_at(t);
+                let fmapped = face.anim.layout != a.model.layout;
                 if let (Some((shapes, tracks)), Some(m)) = (a.shapes.as_mut(), a.model.morph.as_ref()) {
                     // a target without a track keeps its weight (F-77597 writes only what the frame has)
-                    for (i, t) in tracks.iter().enumerate() {
-                        if let Some(t) = *t {
-                            shapes.set(i, face.anim.tracks[t].data.vec(ff).x);
+                    for (i, tk) in tracks.iter().enumerate() {
+                        if let Some(v) = tk.and_then(|k| face.anim.tracks.get(k)).and_then(|k| crate::drvanim::sample_dof_in(&face.anim, k.kind, k.bone_id, DOF_FLOAT, t, fmapped)) {
+                            shapes.set(i, v[0]);
                         }
                     }
                     shapes.update(m);
@@ -1340,14 +1360,16 @@ impl Cine {
                 // whatever the body clip has for those bones)
                 for i in 0..local.len() {
                     let fb = a.model.face_bones.get(i).copied().unwrap_or(false);
-                    if fb || a.clip.rot[i].is_none() {
-                        if let Some(t) = face.rot[i] {
-                            local[i].0 = face.anim.tracks[t].data.rot(ff);
+                    let id = a.model.ids.get(i).copied().unwrap_or(0);
+                    let (has_pos, has_rot) = a.model.dofs.get(i).copied().unwrap_or((true, true));
+                    if has_rot && (fb || a.clip.rot[i].is_none()) && face.rot[i].is_some() {
+                        if let Some(v) = crate::drvanim::sample_dof_in(&face.anim, KIND_ROTATION, id, DOF_QUATERNION, t, fmapped) {
+                            local[i].0 = Quat::from_array(v);
                         }
                     }
-                    if fb || a.clip.pos[i].is_none() {
-                        if let Some(t) = face.pos[i] {
-                            local[i].1 = face.anim.tracks[t].data.vec(ff);
+                    if has_pos && (fb || a.clip.pos[i].is_none()) && face.pos[i].is_some() {
+                        if let Some(v) = crate::drvanim::sample_dof_in(&face.anim, KIND_TRANSLATION, id, DOF_VECTOR3, t, fmapped) {
+                            local[i].1 = Vec3::new(v[0], v[1], v[2]);
                         }
                     }
                 }
@@ -1357,7 +1379,7 @@ impl Cine {
             if a.face.is_some() {
                 if a.face_in.is_none() {
                     let mut old = Vec::new();
-                    a.clip.local(&a.model.bones, 0.0, &mut old);
+                    pose_at(&a.clip.anim, &a.model, 0.0, &mut old);
                     for (i, b) in a.model.bones.iter().enumerate() {
                         if a.model.face_bones.get(i).copied().unwrap_or(false) {
                             old[i] = (b.rot, b.pos);
@@ -1369,7 +1391,7 @@ impl Cine {
                     blend_in(&mut local, old, 4.0 * t);
                 }
             }
-            let (mt, mr) = a.clip.mover(f);
+            let (mt, mr) = mover_of(&a.clip.anim, t - a.t0);
             // (F-65008: a cine character whose name holds "ped" is drawn with the manager's own
             // lights - the scenes' bystanders pedsit1_ped00, benchsit_ped05 ...; the cast with three
             // lights of its own)
