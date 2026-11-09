@@ -1350,7 +1350,7 @@ fn update_engine(vs: &mut VehState, vt: &VehTune, input: CarInput, pedal_release
         vs.trans_inhibited = true;
     } else {
         if vs.trans_inhibited && !computer {
-            vs.boost_timer = e.boost_duration;
+            vs.boost_timer = boost_restart(0.0, e.boost_duration);
         }
         vs.trans_inhibited = false;
     }
@@ -1358,7 +1358,7 @@ fn update_engine(vs: &mut VehState, vt: &VehTune, input: CarInput, pedal_release
     // (A-91058: and all through a burnout - it launches with the whole boost)
     let burn_then = if vs.by.exact { vs.by.state_in } else { vs.burn_state };
     if !computer && (burn_then == 1 || burn_then == 2 || if vs.gear < 0 { pedal_released.1 } else { pedal_released.0 }) {
-        vs.boost_timer = e.boost_duration;
+        vs.boost_timer = boost_restart(0.0, e.boost_duration);
     }
     // (A-20216, after the rules above: the automatic brake holds the transmission - a car
     // standing still is held, which is why the first frame of throttle starts a whole boost)
@@ -1372,7 +1372,7 @@ fn update_engine(vs: &mut VehState, vt: &VehTune, input: CarInput, pedal_release
     // vehEngine::SetThrottle compares against the preceding envelope-adjusted pedal.
     let pedal_velocity = (pedal - vs.engine_pedal) * (1.0 / dt);
     if e.boost_throttle_threshold > 0.0 && pedal_velocity > e.boost_throttle_threshold && !computer {
-        vs.boost_timer = e.boost_duration;
+        vs.boost_timer = boost_restart(0.0, e.boost_duration);
     }
     vs.engine_pedal = vs.gear_change.update(pedal, vs.gear, vt.ratios.len() - 1,
         ratio, vs.engine_w, vs.omega[0], e, vt.t.trans.s.gear_change_match_rpm, dt);
@@ -1743,6 +1743,25 @@ pub(super) fn nitro_view_at_rest(view: f32) -> bool {
     view == 0.0
 }
 
+/// F-16736: the gearbox out of reverse or neutral (the original's index 0 / 1, the port's -1 / 0) goes to first
+/// (SetGear 2, F-59013); any other gear is kept.
+pub(super) fn first_from_still(gear: i32) -> bool {
+    matches!(gear, -1 | 0)
+}
+
+/// F-31773, the player's shift down: refused at the original's index 2 and below (first, neutral, reverse - the
+/// port's 1 and below), else the gearbox's own down shift (F-67455).
+pub(super) fn can_shift_down(gear: i32) -> bool {
+    gear > 1
+}
+
+/// F-50158, the engine's boost started afresh: the timer +28 is `f1` when it is above 0, else BoostDuration (the
+/// engine tune's +40). Every caller hands it the image's 0.0 (the constant at +3796, in a saved register), so it is
+/// always BoostDuration.
+pub(super) fn boost_restart(f1: f32, duration: f32) -> f32 {
+    if f1 > 0.0 { f1 } else { duration }
+}
+
 pub fn step(st: &mut CarState, p: &CarParams, vt: &VehTune, input: CarInput, world: &WorldCollider, dt: f32) {
     run_now(step_async(st, p, vt, input, world, dt, None))
 }
@@ -1914,12 +1933,12 @@ pub async fn step_async(st: &mut CarState, p: &CarParams, vt: &VehTune, input: C
     // zeroed where the grid input is made, vehicles.rs. The `noburnout` switch, 0x8288E614, is 0 in a game.)
     // (Racer_Deactivate's F-30391 puts the gearbox into first out of reverse or neutral, F-16736; so does the
     // control step's engine hold, F-17997)
-    if (input.deactivated || input.first_gear) && vs.gear <= 0 {
+    if (input.deactivated || input.first_gear) && first_from_still(vs.gear) {
         vs.gear = 1;
         vs.shift_timer = 0.0;
     }
     if input.hold {
-        if vs.gear <= 0 {
+        if first_from_still(vs.gear) {
             vs.gear = 1;
             vs.shift_timer = 0.0;
         }
@@ -2028,7 +2047,7 @@ pub async fn step_async(st: &mut CarState, p: &CarParams, vt: &VehTune, input: C
     // gearbox to first out of reverse or neutral (F-16736) over what the pad's code chose - the pad's own reverse
     // choice never sees the hold's brake, the held car stands in first)
     if input.first_gear {
-        if vs.gear <= 0 {
+        if first_from_still(vs.gear) {
             vs.gear = 1;
             vs.shift_timer = 0.0;
         }
@@ -2065,7 +2084,7 @@ pub async fn step_async(st: &mut CarState, p: &CarParams, vt: &VehTune, input: C
     if stomped {
         // (F-65097 begins by starting the engine's boost afresh, whatever the gearbox then
         // does - seen in a recording the moment reverse engages under a held pedal)
-        vs.boost_timer = e.boost_duration;
+        vs.boost_timer = boost_restart(0.0, e.boost_duration);
     }
     if stomped && vs.gear > 1 && !vs.gear_change.active && vs.shift_timer > 0.12 && (vs.gear as usize) < vt.shift.len() {
         let r = t.wheel_back.radius.max(0.1);
@@ -2331,7 +2350,8 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     // own shifts set it, F-59013)
     if input.manual && !input_ai && forced == 0 && vs.gear >= 1 {
         let to = vs.gear + input.shift.signum() as i32;
-        if to != vs.gear && to >= 1 && to <= t.trans.gears as i32 - 2 {
+        let ok = if to < vs.gear { can_shift_down(vs.gear) } else { to <= t.trans.gears as i32 - 2 };
+        if to != vs.gear && ok {
             vs.gear = to;
             vs.shift_timer = 0.0;
         }
@@ -6013,7 +6033,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                         vs.stuck = 0;
                         vs.stuck_timer = 0.0;
                         vs.bg = BikeGyro { level: vs.bg.level, share: t.gyro.lean_angle, ..BikeGyro::default() };
-                        if vs.gear <= 0 {
+                        if first_from_still(vs.gear) {
                             let was = vs.gear;
                             vs.gear = 1;
                             vs.gear_change.start(was, 1, e.gcl);
@@ -7647,6 +7667,30 @@ mod getter_tests {
         }
         assert!(bad.is_empty(), "{} mismatches, first {:?}", bad.len(), &bad[..bad.len().min(3)]);
         assert!(seen.iter().all(|n| *n > 500), "{seen:?}");
+    }
+
+    /// F-31773, F-16736 and F-50158 as the original runs them (tools/gear_leaves_reference.py, 6000 cases,
+    /// testdata/gear_leaves_ref.txt): whether the down shift F-67455 is called, whether SetGear is called and with 2
+    /// (first), and the boost timer's word. Gear indices map as above; below 0 there is no port gear (skipped).
+    #[test]
+    fn the_gear_leaves_match_the_original() {
+        let h = |w: &str| u32::from_str_radix(w, 16).unwrap();
+        let (mut seen, mut bad) = ([0usize; 3], Vec::new());
+        for line in include_str!("testdata/gear_leaves_ref.txt").lines() {
+            let (lhs, rhs) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = lhs.split(' ').collect();
+            let port = |g: &str| { let g = h(g) as i32; (g >= 0).then(|| if g == 0 { -1 } else { g - 1 }) };
+            let (k, ok) = match w[0] {
+                "down" => match port(w[1]) { Some(g) => (0, (rhs == "called -") == super::can_shift_down(g)), None => continue },
+                "first" => match port(w[1]) { Some(g) => (1, (rhs == "called 2 -") == super::first_from_still(g) && (rhs == "-" || rhs == "called 2 -")), None => continue },
+                "boost" => (2, super::boost_restart(f32::from_bits(h(w[1])), f32::from_bits(h(w[2]))).to_bits() == h(rhs)),
+                k => panic!("{k}"),
+            };
+            seen[k] += 1;
+            if !ok { bad.push(line); }
+        }
+        assert!(bad.is_empty(), "{} mismatches, first {:?}", bad.len(), &bad[..bad.len().min(3)]);
+        assert!(seen.iter().all(|n| *n > 1000), "{seen:?}");
     }
 }
 
