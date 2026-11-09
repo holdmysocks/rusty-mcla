@@ -4949,12 +4949,15 @@ impl Vehicles {
                     // (F-17857) at once and nothing more that update; else after the behaviour's step, F-30960's
                     // no-rail exit (a = 0, which F-58614 keeps))
                     let measured = r.lock.track(c.state.pos, dt).map(measured_speed);
-                    if let Some(v) = measured.filter(|_| r.state == 4) {
+                    // (F-17857: with the body active the update returns after +412 in every state - a woken car at rest
+                    // takes no recovery try while the physics moves it)
+                    let body_active = r.in_level && r.active;
+                    if let Some(v) = measured.filter(|_| r.state == 4 || body_active) {
                         r.v = v;
                     }
                     // physical: the physics level's rest rule takes it out (state 5: vehicles.rs,
                     // loose.rs `ambient_frame`); a contact makes it active again
-                    if r.in_level && r.state == 4 {
+                    if r.in_level && (r.state == 4 || body_active) {
                         // (not active: the behaviour's state 4 and F-58614's offset timer)
                         if !r.active {
                             rider_offset(r, env.clock);
@@ -5345,6 +5348,11 @@ impl Vehicles {
         let c = &mut self.cars[k];
         let r = c.rail.as_mut().unwrap();
         if r.physical {
+            // (a car at rest made active again: PrepareForActivation, behaviour vfunc 12 F-79450 -> state 4)
+            if r.state == 5 {
+                r.state = 4;
+                r.rest = 0.0;
+            }
             return;
         }
         r.wake = true;
