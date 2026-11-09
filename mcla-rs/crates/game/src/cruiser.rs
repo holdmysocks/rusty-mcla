@@ -18,6 +18,14 @@ pub struct GhostRequest {
     pub dest_speed: Option<f32>,
 }
 
+/// F-25539's request (after the route; an empty route of a set destination is state 4 before it): SetSpeed (+1664) above 0
+/// -> req+68 and flag 0x40, SetDestSpeed (+1668) above -1 -> req+76 and flag 0x20 (`ble`: a NaN sets neither). The start
+/// speed it also fills (req+72, flag 0x80: max(velocity . rail tangent, 0)) is not read on this path (cruise_ghost.md 3.4)
+/// and not kept.
+pub fn ghost_request(owner: u32, route: crate::railroute::Route, start: (u32, f32), set_speed: f32, dest_speed: f32) -> GhostRequest {
+    GhostRequest { owner, route, start, set_speed: (set_speed > 0.0).then_some(set_speed), dest_speed: (dest_speed > -1.0).then_some(dest_speed) }
+}
+
 /// What state 5 reads of a live ghost: its matrix (rows a, b, c, place), its rail record's lane and phase, its speed.
 #[derive(Clone, Copy, Debug)]
 pub struct GhostView {
@@ -155,8 +163,9 @@ impl<T: GhostTraffic, C: CruiseCar> CruiseEnv for World<'_, '_, T, C> {
         true
     }
 
-    /// Route + request (F-25539 in the decode): the route from the rail to the current destination, the request; none
-    /// (no lane on the route): state 4. (idx -1: a request with no route - what the ambient side does with it is open.)
+    /// Route + request (F-25539, verified offline: test `route_request_matches_the_original`): the route from the rail to the
+    /// current destination, the request ([`ghost_request`]); an empty route: state 4, no request. With no destination (idx
+    /// -1) the original submits the request with no descriptor and no route (type 0, owner 0, steps 0).
     fn route(&mut self, b: &mut Cruising) {
         let rp = rail_of(b);
         let Some(lane) = rp.lane else {
@@ -174,13 +183,7 @@ impl<T: GhostTraffic, C: CruiseCar> CruiseEnv for World<'_, '_, T, C> {
             crate::railroute::Route::default()
         };
         log::debug!("cruiser {}: route from lane {} t {:.4} to {:?} (lane {:?} t {:.4}): {:?}", self.owner, lane, rp.t, b.dests[b.idx.max(0) as usize & 63], route.dest_lane, route.dest_t, route.nodes.iter().map(|n| (n.rec, n.lanes.clone())).collect::<Vec<_>>());
-        b.request = self.traffic.request_ghost(GhostRequest {
-            owner: self.owner,
-            route,
-            start: (lane, rp.t),
-            set_speed: (b.speed > 0.0).then_some(b.speed),
-            dest_speed: (b.dest_speed > -1.0).then_some(b.dest_speed),
-        });
+        b.request = self.traffic.request_ghost(ghost_request(self.owner, route, (lane, rp.t), b.speed, b.dest_speed));
         b.state = 3;
     }
 
@@ -403,6 +406,53 @@ impl std::fmt::Debug for CruiserSlot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Route + request against the original's F-25539 run offline (tools/cruise_request_reference.py, 3,000 cases; the
+    /// route search an oracle answering an empty or a non-empty node chain): the state, the result, whether the route is
+    /// searched (and for which destination), and the submitted request's SetSpeed / SetDestSpeed (flags 0x40 / 0x20, req+68
+    /// / +76), owner and route (req+8, req+220: set only with a route) as `route` and `ghost_request` decide them.
+    #[test]
+    fn route_request_matches_the_original() {
+        let u = |s: &str| u32::from_str_radix(&s.replace('_', ""), 16).unwrap();
+        let f = |s: &str| f32::from_bits(u(s));
+        let (b, r, node, typem) = (0x4010_0000u32, 0x4010_1000u32, 0x4010_7000u32, 0x40A0_0000u32);
+        let (mut n, mut bad) = (0, 0);
+        for l in include_str!("testdata/cruise_request_ref.txt").lines() {
+            let (lhs, rhs) = l.split_once(" -> ").unwrap();
+            let s: Vec<&str> = lhs.split_whitespace().skip(1).collect();
+            let (idx, empty) = (u(s[0]) as i32, u(s[1]) != 0);
+            let (req_part, out_part) = (rhs.split_once(" | ").unwrap().1, rhs.split_once(" | ").unwrap().0);
+            let o: Vec<&str> = out_part.split_whitespace().collect();
+            let mut ok = true;
+            // (the port's route(): with a destination the route is searched and an empty one is state 4, no request)
+            let searched = idx != -1;
+            ok &= (o[4] != "-") == searched;
+            if searched {
+                ok &= u(o[4]) == 0x4010_4000 && o[5] == s[4] && u(o[6]) == b + 560 + 16 * idx as u32;
+            }
+            if searched && empty {
+                ok &= (u(o[0]), u(o[1]), req_part) == (0, 4, "-");
+            } else {
+                // (the traffic side gives a request without a route no owner and no order: traffic.rs request_ghost)
+                let owner = if searched { r } else { 0 };
+                let g = ghost_request(owner, crate::railroute::Route::default(), (0, 0.0), f(s[2]), f(s[3]));
+                let q: Vec<&str> = req_part.split_whitespace().collect();
+                let flags = u(q[9]);
+                ok &= (u(o[0]), u(o[1]), u(o[2])) == (1, 3, 7);
+                ok &= g.set_speed.map(f32::to_bits) == (flags & 0x40 != 0).then(|| u(q[3]));
+                ok &= g.dest_speed.map(f32::to_bits) == (flags & 0x20 != 0).then(|| u(q[5]));
+                ok &= (u(q[2]), u(q[1]), u(q[6])) == if searched { (g.owner, typem, node) } else { (0, 0, 0) };
+            }
+            n += 1;
+            if !ok {
+                if bad < 5 {
+                    eprintln!("{l}");
+                }
+                bad += 1;
+            }
+        }
+        assert_eq!((n, bad), (3000, 0));
+    }
 
     struct Car {
         idle: f32,
