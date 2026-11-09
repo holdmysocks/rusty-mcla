@@ -46,8 +46,9 @@ struct PedType {
     #[allow(dead_code)]
     avoid: Vec<AvoidItem>,
     angry: Vec<Clip>,
-    /// the shared Pivot clips (`Mped_turnL/R_90/180`) with the yaw their root turns
-    pivot: Vec<(Clip, f32)>,
+    /// the shared Pivot clips (`Mped_turnL/R_90/180`) in the avoid list's order with their root's turn at the clip's end
+    /// (from its start; `turn_pick` reads it)
+    pivot: Vec<(Clip, Quat)>,
     lod_switch: [f32; 2],
     /// `fMinTurningRadius` of the set's `mcAmbientType.xml` (type +160)
     turn_radius: f32,
@@ -1128,6 +1129,65 @@ pub struct AvoidItem {
 /// its end; one of those, uniformly by the shared MWC (`index`). `disp(clip, t)` is the clip's mover at `t`
 /// (`None`: its end). Returns the entry and its wrapped angle.
 #[allow(clippy::too_many_arguments)]
+/// The angry clips a walker of sex `female` may play (F-72336's gather): of the avoid list's entries (`entries`: AvoidType,
+/// clip loaded; the list's order) those whose clip is there and whose type is 4 + bSex (AngryMale / AngryFemale; the sex is
+/// the byte's low 8 bits). The entries' indices, in order.
+pub(crate) fn angry_list(entries: &[(u32, bool)], female: bool) -> Vec<usize> {
+    let want = 4 + female as u32;
+    entries.iter().enumerate().filter(|(_, e)| e.1 && e.0 == want).map(|(i, _)| i).collect()
+}
+
+/// The walker's angry clip (F-72336): one of `angry_list` by the shared MWC (0x82860890), `(lo & 0x7FFFFFFF) % n`; none,
+/// and no draw, when the list is empty. Returns the entry's index.
+pub(crate) fn angry_pick(entries: &[(u32, bool)], female: bool, rng: &mut crate::vehicles::parked::Mwc) -> Option<usize> {
+    let list = angry_list(entries, female);
+    (!list.is_empty()).then(|| list[rng.index(list.len() as u32) as usize])
+}
+
+/// F-86566: `v` turned by the unit quaternion `q` as the original does it, 2 (q.v) q + (2 w^2 - 1) v + 2 w (q x v): the
+/// scalar products fused as there, the three vector multiply-adds unfused (vmulfp / vmaddfp).
+pub(crate) fn quat_rotate(q: Quat, v: Vec3) -> Vec3 {
+    use crate::physics::exact::fma;
+    let s = fma(v.z, q.z, fma(v.x, q.x, q.y * v.y)) * 2.0;
+    let k = fma(q.w * q.w, 2.0, -1.0);
+    let c = Vec3::new(fma(q.y, v.z, -(q.z * v.y)), fma(q.z, v.x, -(v.z * q.x)), fma(v.y, q.x, -(q.y * v.x)));
+    let w2 = q.w * 2.0;
+    let a = Vec3::new(q.x * s, q.y * s, q.z * s);
+    let b = Vec3::new(v.x * k + a.x, v.y * k + a.y, v.z * k + a.z);
+    Vec3::new(c.x * w2 + b.x, c.y * w2 + b.y, c.z * w2 + b.z)
+}
+
+/// The walker's turn clip (F-16288): over the avoid list's entries of AvoidType 3 (Pivot, either sex) whose clip is
+/// there, the clip's turn - its root's rotation at the clip's end (F-21043; `entries`: AvoidType, that rotation) turning
+/// -z, its xz angle from -z (F-32060) - minus `want`, wrapped once each way by 2 pi (fsel); the entry whose |difference|
+/// is the smallest, below the start 1e8, strictly (the first of equals). Returns the entry and its
+/// difference (what the walker still turns after the clip, M+252).
+pub(crate) fn turn_pick(entries: &[(u32, Option<Quat>)], want: f32) -> Option<(usize, f32)> {
+    const PI: f32 = 3.141_592_7;
+    const TAU: f32 = 6.283_185_5;
+    let mut best = 1.0e8_f32;
+    let mut out = None;
+    for (i, e) in entries.iter().enumerate() {
+        let (3, Some(q)) = *e else { continue };
+        let d = crate::aiv::ang_xz(quat_rotate(q, Vec3::NEG_Z), Vec3::NEG_Z) - want;
+        let d = if -(d - PI) >= 0.0 { d } else { d - TAU };
+        let d = if d + PI >= 0.0 { d } else { d + TAU };
+        if d.abs() < best {
+            best = d.abs();
+            out = Some((i, d));
+        }
+    }
+    out
+}
+
+/// The Pivot clip for the port's wanted turn `want` (its yaw, counter-clockwise about y; `yaw_between`) by `turn_pick`,
+/// whose angles run the other way (F-32060's sign): asked with -want, its difference yaw_o - (-want) is want - the clip's
+/// port yaw, the turn still to make after the clip in the port's sense. The clip's index in `pivot` and that rest.
+fn pivot_pick(ty: &PedType, want: f32) -> Option<(usize, f32)> {
+    let entries: Vec<(u32, Option<Quat>)> = ty.pivot.iter().map(|(_, q)| (3, Some(*q))).collect();
+    turn_pick(&entries, -want)
+}
+
 pub fn evade_pick(items: &[AvoidItem], female: bool, dir: f32, approach: f32, time: f32, min: f32, max: f32, mut disp: impl FnMut(usize, Option<f32>) -> Vec3, rng: &mut crate::vehicles::parked::Mwc) -> Option<(usize, f32)> {
     use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
     let min2 = min * min;
@@ -2232,9 +2292,8 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
     if p.turn_round {
         p.turn_round = false;
         let want = yaw_between(fwd, -fwd);
-        if want.abs() > std::f32::consts::FRAC_PI_4 && !ty.pivot.is_empty() {
-            let k = (0..ty.pivot.len()).min_by(|&a, &b| wrap_angle(want - ty.pivot[a].1).abs().total_cmp(&wrap_angle(want - ty.pivot[b].1).abs())).unwrap();
-            p.turn_rest = wrap_angle(want - ty.pivot[k].1);
+        if let Some((k, rest)) = (want.abs() > std::f32::consts::FRAC_PI_4).then(|| pivot_pick(ty, want)).flatten() {
+            p.turn_rest = rest;
             p.then_angry = false;
             p.stop = 0.0;
             p.speed = 0.0;
@@ -2968,15 +3027,8 @@ impl Peds {
         let gender = if female { "fped" } else { "mped" };
         let mut evade = Vec::new();
         let mut evade_names = Vec::new();
-        let mut angry = Vec::new();
-        // Pivot clips are chosen without regard to sex (F-16288)
-        let mut pivot = Vec::new();
         for (a, fast, front, kind) in &self.avoid {
             if *kind == 3 {
-                let c = Clip::bind(a, &model.ids, *fast, *front);
-                let q = c.mover(c.last_frame()).1 * c.mover(0.0).1.inverse();
-                let yaw = wrap_angle(2.0 * q.y.atan2(q.w));
-                pivot.push((c, yaw));
                 continue;
             }
             if !a.short().starts_with(gender) {
@@ -2987,10 +3039,28 @@ impl Peds {
                     evade.push(Clip::bind(a, &model.ids, *fast, *front));
                     evade_names.push(a.short());
                 }
-                1 => angry.push(Clip::bind(a, &model.ids, *fast, *front)),
                 _ => {}
             }
         }
+        // (the angry clips as F-72336 gathers them, `angry_list`: the avoid list's order, AvoidType 4 + bSex, the clip loaded)
+        let table: Vec<(u32, bool)> = self.avoid_list.iter().map(|(n, ty, ..)| (*ty, self.avoid.iter().any(|(a, ..)| a.short() == *n))).collect();
+        let angry: Vec<Clip> = angry_list(&table, female)
+            .into_iter()
+            .filter_map(|i| self.avoid.iter().find(|(a, ..)| a.short() == self.avoid_list[i].0))
+            .map(|(a, fast, front, _)| Clip::bind(a, &model.ids, *fast, *front))
+            .collect();
+        // (the Pivot clips as F-16288 reads them: the avoid list's order, AvoidType 3, either sex, the clip loaded)
+        let pivot: Vec<(Clip, Quat)> = self
+            .avoid_list
+            .iter()
+            .filter(|(_, ty, ..)| *ty == 3)
+            .filter_map(|(n, ..)| self.avoid.iter().find(|(a, ..)| a.short() == *n))
+            .map(|(a, fast, front, _)| {
+                let c = Clip::bind(a, &model.ids, *fast, *front);
+                let q = c.mover(c.last_frame()).1 * c.mover(0.0).1.inverse();
+                (c, q)
+            })
+            .collect();
         let mut lod_switch = [40.0, 80.0];
         if let Ok(t) = std::fs::read_to_string(self.tune_dir.join(name).join("mcAmbientRenderType.xml")) {
             let s = xml_value(&t, "fLodSwitchScale").unwrap_or(1.0);
@@ -3689,7 +3759,8 @@ impl Peds {
                     p.blend = 0.25;
                     p.time = 0.0;
                     p.calm = 1.5;
-                    let angry = |r: f32| State::Angry((r * ty.angry.len() as f32) as usize % ty.angry.len());
+                    // (F-72336: one of the type's angry clips by the shared MWC, `angry_pick`)
+                    let angry = |rng: &mut crate::vehicles::parked::Mwc| State::Angry(rng.index(ty.angry.len() as u32) as usize);
                     p.state = if on_mesh {
                         // after a dodge: face the car (a Pivot clip beyond 45 degrees), then
                         // the angry clip, else wait (F-73407)
@@ -3697,13 +3768,12 @@ impl Peds {
                         match p.state {
                             State::Evade(_) => {
                                 let want = p.dodged.map_or(0.0, |c| yaw_between(f, flat(c - p.pos).normalize_or(f)));
-                                if want.abs() > std::f32::consts::FRAC_PI_4 && !ty.pivot.is_empty() {
-                                    let k = (0..ty.pivot.len()).min_by(|&a, &b| wrap_angle(want - ty.pivot[a].1).abs().total_cmp(&wrap_angle(want - ty.pivot[b].1).abs())).unwrap();
-                                    p.turn_rest = wrap_angle(want - ty.pivot[k].1);
+                                if let Some((k, rest)) = (want.abs() > std::f32::consts::FRAC_PI_4).then(|| pivot_pick(ty, want)).flatten() {
+                                    p.turn_rest = rest;
                                     p.then_angry = true;
                                     State::Turn(k)
                                 } else if !ty.angry.is_empty() {
-                                    angry(rand())
+                                    angry(&mut self.dodge_rng.pick)
                                 } else {
                                     p.stop = stop_time(ty.idle.anim.duration, &mut p.mwc);
                                     p.stops += 1;
@@ -3713,7 +3783,7 @@ impl Peds {
                             State::Turn(_) if p.then_angry => {
                                 p.then_angry = false;
                                 if !ty.angry.is_empty() {
-                                    angry(rand())
+                                    angry(&mut self.dodge_rng.pick)
                                 } else {
                                     p.stop = stop_time(ty.idle.anim.duration, &mut p.mwc);
                                     p.stops += 1;
@@ -3724,7 +3794,7 @@ impl Peds {
                         }
                     } else {
                         match p.state {
-                            State::Evade(_) if !ty.angry.is_empty() && rand() < 0.45 => angry(rand()),
+                            State::Evade(_) if !ty.angry.is_empty() && rand() < 0.45 => angry(&mut self.dodge_rng.pick),
                             _ if p.loiter => State::Idle,
                             _ => State::Walk,
                         }
@@ -4458,6 +4528,54 @@ mod tests {
         assert!(yaw.windows(2).all(|w| w[1] > w[0]) && (yaw[7] - std::f32::consts::FRAC_PI_2).abs() < 1e-6 && yaw[0] < 0.2, "{yaw:?}");
         ring.reset(Vec3::NEG_X);
         assert_eq!(ring.rows().1, Vec3::NEG_X);
+    }
+
+    /// The angry clip pick (F-72336) against the original's code run offline on 4,000 cases: the entry and the MWC after
+    /// must be equal.
+    /// The turn clip choice (F-16288 with F-86566 and F-32060) against the original's code run offline on 4,000 cases
+    /// (tools/turn_pick_reference.py -> testdata/turn_pick_ref.txt): lists of up to 8 entries, mostly Pivot, clips present
+    /// or not, turns about y (quarter and half turns, near them, near the wanted turn) with a little tilt. The entry and
+    /// the rest angle must be equal bit for bit.
+    #[test]
+    fn turn_pick_matches_the_original() {
+        let h = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let f = |t: &str| f32::from_bits(h(t));
+        let (mut n, mut picked) = (0, 0);
+        for l in include_str!("testdata/turn_pick_ref.txt").lines() {
+            let (c, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<&str> = c.split(' ').collect();
+            let o: Vec<&str> = o.split(' ').collect();
+            let k = |i: usize, j: usize| 2 + 6 * i + j;
+            let entries: Vec<(u32, Option<Quat>)> = (0..h(c[0]) as usize)
+                .map(|i| (h(c[k(i, 0)]), (h(c[k(i, 1)]) != 0).then(|| Quat::from_xyzw(f(c[k(i, 2)]), f(c[k(i, 3)]), f(c[k(i, 4)]), f(c[k(i, 5)])))))
+                .collect();
+            let got = turn_pick(&entries, f(c[1]));
+            let (e, r) = got.map_or((-1, u32::MAX), |(e, r)| (e as i32, r.to_bits()));
+            assert_eq!((e, r), (o[0].parse::<i32>().unwrap(), h(o[1])), "{l}");
+            n += 1;
+            picked += (e >= 0) as usize;
+        }
+        assert_eq!((n, picked), (4000, 2897));
+    }
+
+    #[test]
+    fn angry_pick_matches_the_original() {
+        // (tools/angry_pick_reference.py -> testdata/angry_pick_ref.txt: lists of up to 10 entries of every AvoidType, clips
+        // present or not, the sex byte (its low 8 bits count), the shared MWC)
+        let h = |t: &str| u32::from_str_radix(&t.replace('_', ""), 16).unwrap();
+        let (mut n, mut picked) = (0, 0);
+        for l in include_str!("testdata/angry_pick_ref.txt").lines() {
+            let (c, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<&str> = c.split(' ').collect();
+            let o: Vec<&str> = o.split(' ').collect();
+            let entries: Vec<(u32, bool)> = (0..h(c[0]) as usize).map(|i| (h(c[4 + 2 * i]), h(c[5 + 2 * i]) != 0)).collect();
+            let mut rng = crate::vehicles::parked::Mwc { lo: h(c[2]), carry: h(c[3]) };
+            let e = angry_pick(&entries, h(c[1]) & 0xFF != 0, &mut rng).map_or(-1, |e| e as i32);
+            assert_eq!((e, rng.lo, rng.carry), (o[0].parse::<i32>().unwrap(), h(o[1]), h(o[2])), "{l}");
+            n += 1;
+            picked += (e >= 0) as usize;
+        }
+        assert_eq!((n, picked), (4000, 2276));
     }
 
     /// The evade clip pick (F-37443 with the xz angle F-32060) against the original's code run offline on 4,000 cases
