@@ -13,7 +13,9 @@
 //! lowest level of detail), middles 0.4383 above the cylinder's; traffic cars r 1.5204 / 1.4401,
 //! span exactly 1.5 r, middles 0.3211 / 0.2651 up. (approx.) here: the span is half the length
 //! of the model's box, the height 0.2326 r (R8). Traffic cars follow the decoded record (F-68081 -> F-18380,
-//! see the traffic branch in `run`); the player car's own producer is not decoded.
+//! see the traffic branch in `run`). Every other car (player, racers, cops, scene cars, bikes) takes its body
+//! record from F-17121 (`car_records`, 2026-11-08): r = 0.64 X (F-63160's box), A / B = g0 +- gz L / 4 + gy H / 4
+//! - the R8's measured r 1.8844, span 2.2318 = L / 2 and 0.4383 = H / 4 above are that record.
 //!
 //! `MCLA_DEBUG_VIEW=270`: the pass off; 271: wheels only; 272: bodies only; 273: without the
 //! cars' mask (the blobs darken the cars too); 275: no neon light quads.
@@ -249,7 +251,10 @@ fn drawable_box(root: &std::path::Path, model: &str) -> Option<[f32; 4]> {
         (d[0].is_finite() && d[0] > 0.0).then_some(d)
     };
     let v = read();
-    map.insert(model.to_string(), v);
+    // (not remembered before the data root is known: the first frames may come before it is set)
+    if v.is_some() || root.join("resources/vehicle").join(model).is_dir() {
+        map.insert(model.to_string(), v);
+    }
     v
 }
 
@@ -263,17 +268,26 @@ fn drawable_box(root: &std::path::Path, model: &str) -> Option<[f32; 4]> {
 /// up row x 2.0 ([0x827E6358]) 5.0 m ([0x82006BF8]) straight down; T = the hit's fraction (+64 of the result, 0.0
 /// before the call). On a miss F-17121 takes the join with T as the result left it - (approx.) 0.0, i.e. f28 = 1.
 /// The head state is the port's eased head lamp level `AmbLamps::s[0]`; the probe is the city's `probe_front`.
-fn neon_lights(vehicles: &crate::vehicles::Vehicles, cam: Vec3, night: bool, collider: Option<&crate::physics::collision::WorldCollider>) -> Vec<(Mat4, QuadRec, [QuadRec; 4])> {
+/// Every mcCar's records (not the traffic cars' `va_` models, whose blob is F-68081's): the body record, and the
+/// four neon records while its neon is on. F-17121 skips the in-car view's car (+123) and a car under Stealth
+/// (F-54047), so such a car has no occlusion body quad either.
+fn car_records(vehicles: &crate::vehicles::Vehicles, cam: Vec3, night: bool, collider: Option<&crate::physics::collision::WorldCollider>) -> Vec<(Mat4, QuadRec, Option<[QuadRec; 4]>)> {
     let mut out = Vec::new();
     let blobs = vehicles.blob_cars();
-    for (ci, m, n, player) in vehicles.neon_cars(vehicles.interior_glass) {
+    for (ci, c) in vehicles.cars.iter().enumerate() {
+        let player = c.is_player;
+        if vehicles.hide_player && player || (vehicles.interior_glass && player) || c.pu_stealth || c.model.name.to_ascii_lowercase().starts_with("va_") {
+            continue;
+        }
+        let n = vehicles.ext_neon(c).filter(|n| n.on());
+        let pose = c.render_pose(vehicles.render_alpha);
+        let m = Mat4::from_rotation_translation(pose.rot, pose.pos);
         // F-44722 calls F-17121 only for a car whose draw flag (+116) its visibility test set this frame: the
         // light volumes off screen draw nothing, the 450 m reach is the one that counts (approx.: the port's reach,
         // not the flag's own routine)
         if m.w_axis.truncate().distance(cam) > 450.0 {
             continue;
         }
-        let c = &vehicles.cars[ci];
         // (a bike is not in `blob_cars`: its wheels' foot from the model's box)
         let (ground_y, width) = match blobs.iter().find(|b| b.m == m) {
             Some(b) => (b.ground_y, b.max.x - b.min.x),
@@ -286,9 +300,9 @@ fn neon_lights(vehicles: &crate::vehicles::Vehicles, cam: Vec3, night: bool, col
             g: [x.extend(0.0).to_array(), y.extend(0.0).to_array(), z.extend(0.0).to_array(), foot.extend(1.0).to_array()],
             size: (hi - lo).extend(0.0).to_array(),
             box_: drawable_box(&vehicles.data_root, &c.model.name).unwrap_or([0.99 * width / 0.64, 0.0, 0.0, 0.0]),
-            colour: n.color,
-            intensity: n.intensity,
-            pulse: n.pulse,
+            colour: n.map_or([0.0; 4], |n| n.color),
+            intensity: n.map_or(0.0, |n| n.intensity),
+            pulse: n.map_or(0.0, |n| n.pulse),
             scale: 1.0,
             up_y: m.y_axis.y,
             t: match collider {
@@ -301,14 +315,18 @@ fn neon_lights(vehicles: &crate::vehicles::Vehicles, cam: Vec3, night: bool, col
             night,
             b6477: false,
         };
-        if let (body, Some(neon)) = neon_records(&input) {
-            if std::env::var("MCLA_GLOW_DUMP").is_ok() {
-                eprintln!("neon car {ci} t {:.4} size {:?} body c0 {:?} c3 {:?} colour {:?}", input.t, input.size, body.c[0], body.c[3], body.colour);
-            }
-            out.push((m, body, neon));
+        let (body, neon) = neon_records(&input);
+        if std::env::var("MCLA_GLOW_DUMP").is_ok() {
+            eprintln!("car rec {ci} neon {} t {:.4} size {:?} body c0 {:?} c3 {:?} colour {:?}", neon.is_some(), input.t, input.size, body.c[0], body.c[3], body.colour);
         }
+        out.push((m, body, neon));
     }
     out
+}
+
+fn body_old() -> bool {
+    static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OLD.get_or_init(|| std::env::var_os("MCLA_BLOB_BODY_OLD").is_some())
 }
 
 fn push(out: &mut Vec<f32>, rows: [[f32; 4]; 6]) {
@@ -324,7 +342,13 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
     let Some(s) = guard.as_ref() else { return };
     let dbg = view();
     // (a car whose neon is on: its body record is the fifth light quad, not an occlusion quad - F-62149 sorts by +4)
-    let lights = if dbg != 275 { neon_lights(vehicles, cam, night, collider) } else { Vec::new() };
+    let mut recs = car_records(vehicles, cam, night, collider);
+    if dbg == 275 {
+        for r in recs.iter_mut() {
+            r.2 = None;
+        }
+    }
+    let lights: Vec<(Mat4, QuadRec, [QuadRec; 4])> = recs.iter().filter_map(|(m, b, n)| n.map(|n| (*m, *b, n))).collect();
     if !lights.is_empty() {
         let inst: Vec<[[f32; 4]; 9]> = lights.iter().flat_map(|(_, body, neon)| std::iter::once(body).chain(neon.iter()).map(light_instance)).take(MAX_LIGHT).collect();
         gpu.queue.write_buffer(&s.light_inst, 0, bytemuck::cast_slice(&inst));
@@ -385,7 +409,8 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
                 n += 1;
             }
         }
-        if dbg != 271 && n < MAX_INST && !lights.iter().any(|l| l.0 == c.m) {
+        // (the other cars' body quads: their F-17121 records, below; MCLA_BLOB_BODY_OLD=1: the measured fit)
+        if dbg != 271 && n < MAX_INST && (c.ambient || body_old()) && !lights.iter().any(|l| l.0 == c.m) {
             let (width, length) = (c.max.x - c.min.x, c.max.z - c.min.z);
             let r = if c.ambient { length / 3.0 } else { 0.99 * width };
             // (the R8's measured span is 2.2318 - half the length of its lowest level of detail,
@@ -414,6 +439,25 @@ pub fn run(gpu: &Gpu, enc: &mut wgpu::CommandEncoder, vehicles: &crate::vehicles
             push(&mut data, [foot.extend(1.0).to_array(), (x * (1.05 * r)).extend(strength).to_array(), (y * (1.05 * r / 8.0)).extend(0.0).to_array(), (z * (span * 0.5 + r)).extend(0.0).to_array(), first.extend(r * r).to_array(), (z * (span / 3.0)).extend(0.0).to_array()]);
             n += 1;
         }
+    }
+    // the body records of the cars whose neon is off: the occlusion quad (F-62149 files them by +4 = 0), drawn as
+    // F-35120 draws a record - the cylinder on the record's frame, rows x r 1.05, y r 0.13125, z r 2 + |A - B|, the
+    // four spheres c0..c3 (the port's blob mesh is +-1 along each row, so the half lengths here)
+    for (m, body, neon) in &recs {
+        if dbg == 271 || body_old() || neon.is_some() || n >= MAX_INST {
+            continue;
+        }
+        let pos = m.w_axis.truncate();
+        let strength = ((60.0 - pos.distance(cam)) / 30.0).clamp(0.0, 1.0);
+        if strength <= 0.0 {
+            continue;
+        }
+        let r = body.c[0][3].sqrt();
+        let d = v4(|i| body.c[3][i] - body.c[0][i]);
+        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let row = |k: usize, s: f32, w: f32| [body.m[k][0] * s, body.m[k][1] * s, body.m[k][2] * s, w];
+        push(&mut data, [body.m[3], row(0, 1.05 * r, strength), row(1, 1.05 * r / 8.0, 0.0), row(2, r + 0.5 * len, 0.0), body.c[0], [d[0] / 3.0, d[1] / 3.0, d[2] / 3.0, 0.0]]);
+        n += 1;
     }
     if n == 0 {
         return;
