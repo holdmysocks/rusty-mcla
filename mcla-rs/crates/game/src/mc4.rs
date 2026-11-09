@@ -3252,7 +3252,14 @@ pub fn top_arrow_vertices(t: &TopArrowTune, m: &TopArrowModel, local: [f32; 3], 
 /// hidden outright (the opacity is 0.91 or more), whatever the order of drawing and the
 /// culling in force were.
 pub fn top_arrow_picture(t: &TopArrowTune, m: &TopArrowModel, size: usize, local: [f32; 3]) -> Vec<u8> {
+    use rayon::prelude::*;
     const SS: usize = 3;
+    // (the picture's rows in bands of this many, each band worked on by itself: a sample's
+    // nearest face and colour depend only on that sample and the faces in their order, so the
+    // bands give the same bytes as one pass - test `top_arrow_picture_bands_are_one_pass`;
+    // the one pass took 3.9 ms a picture at 1440 lines, a new picture nearly every frame of a
+    // race: docs/PERFORMANCE.md 2026-11-09)
+    const BAND: usize = 4;
     let mut out = vec![0u8; size * size * 4];
     if size == 0 {
         return out;
@@ -3275,70 +3282,94 @@ pub fn top_arrow_picture(t: &TopArrowTune, m: &TopArrowModel, size: usize, local
     }
     let (bw, bh) = ((px1 - px0) * SS, (py1 - py0) * SS);
     let (ox, oy) = ((px0 * SS) as f32, (py0 * SS) as f32);
-    // (per sample: 1 / depth of the nearest face so far, its colour and opacity)
-    let mut near = vec![0.0f32; bw * bh];
-    let mut col = vec![[0.0f32; 4]; bw * bh];
-    for tri in &m.tris {
-        let [a, b, c] = tri.map(|k| v[k as usize]);
-        if a.depth <= 0.01 || b.depth <= 0.01 || c.depth <= 0.01 || a.depth > 100.0 || b.depth > 100.0 || c.depth > 100.0 {
-            continue;
-        }
-        let (x0, y0, x1, y1, x2, y2) = (a.x * s - ox, a.y * s - oy, b.x * s - ox, b.y * s - oy, c.x * s - ox, c.y * s - oy);
-        let area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
-        if area.abs() < 1e-9 {
-            continue;
-        }
-        let sx0 = x0.min(x1).min(x2).floor().max(0.0) as usize;
-        let sy0 = y0.min(y1).min(y2).floor().max(0.0) as usize;
-        let sx1 = (x0.max(x1).max(x2).ceil().max(0.0) as usize + 1).min(bw);
-        let sy1 = (y0.max(y1).max(y2).ceil().max(0.0) as usize + 1).min(bh);
-        let (ia, ib, ic) = (1.0 / a.depth, 1.0 / b.depth, 1.0 / c.depth);
-        for y in sy0..sy1 {
-            let gy = y as f32 + 0.5;
-            for x in sx0..sx1 {
-                let gx = x as f32 + 0.5;
-                let w0 = ((x1 - gx) * (y2 - gy) - (x2 - gx) * (y1 - gy)) / area;
-                let w1 = ((x2 - gx) * (y0 - gy) - (x0 - gx) * (y2 - gy)) / area;
-                let w2 = 1.0 - w0 - w1;
-                if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
-                    continue;
+    // (the faces in their order, on the samples' grid: corners, area, depths, the samples they cover)
+    struct Face {
+        x: [f32; 3],
+        y: [f32; 3],
+        area: f32,
+        inv: [f32; 3],
+        rgb: [glam::Vec3; 3],
+        alpha: [f32; 3],
+        sx: (usize, usize),
+        sy: (usize, usize),
+    }
+    let faces: Vec<Face> = m
+        .tris
+        .iter()
+        .filter_map(|tri| {
+            let [a, b, c] = tri.map(|k| v[k as usize]);
+            if a.depth <= 0.01 || b.depth <= 0.01 || c.depth <= 0.01 || a.depth > 100.0 || b.depth > 100.0 || c.depth > 100.0 {
+                return None;
+            }
+            let (x0, y0, x1, y1, x2, y2) = (a.x * s - ox, a.y * s - oy, b.x * s - ox, b.y * s - oy, c.x * s - ox, c.y * s - oy);
+            let area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+            if area.abs() < 1e-9 {
+                return None;
+            }
+            let sx0 = x0.min(x1).min(x2).floor().max(0.0) as usize;
+            let sy0 = y0.min(y1).min(y2).floor().max(0.0) as usize;
+            let sx1 = (x0.max(x1).max(x2).ceil().max(0.0) as usize + 1).min(bw);
+            let sy1 = (y0.max(y1).max(y2).ceil().max(0.0) as usize + 1).min(bh);
+            Some(Face { x: [x0, x1, x2], y: [y0, y1, y2], area, inv: [1.0 / a.depth, 1.0 / b.depth, 1.0 / c.depth], rgb: [a.rgb, b.rgb, c.rgb], alpha: [a.alpha, b.alpha, c.alpha], sx: (sx0, sx1), sy: (sy0, sy1) })
+        })
+        .collect();
+    out[py0 * size * 4..py1 * size * 4].par_chunks_mut(BAND * size * 4).enumerate().for_each(|(band, rows)| {
+        let (qy0, qy1) = (py0 + band * BAND, (py0 + (band + 1) * BAND).min(py1));
+        // (this band's samples: rows ys0..ys1 of the target's)
+        let (ys0, ys1) = ((qy0 - py0) * SS, (qy1 - py0) * SS);
+        // (per sample: 1 / depth of the nearest face so far, its colour and opacity)
+        let mut near = vec![0.0f32; bw * (ys1 - ys0)];
+        let mut col = vec![[0.0f32; 4]; bw * (ys1 - ys0)];
+        for f in &faces {
+            let ([x0, x1, x2], [y0, y1, y2], area) = (f.x, f.y, f.area);
+            let [ia, ib, ic] = f.inv;
+            for y in f.sy.0.max(ys0)..f.sy.1.min(ys1) {
+                let gy = y as f32 + 0.5;
+                for x in f.sx.0..f.sx.1 {
+                    let gx = x as f32 + 0.5;
+                    let w0 = ((x1 - gx) * (y2 - gy) - (x2 - gx) * (y1 - gy)) / area;
+                    let w1 = ((x2 - gx) * (y0 - gy) - (x0 - gx) * (y2 - gy)) / area;
+                    let w2 = 1.0 - w0 - w1;
+                    if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                        continue;
+                    }
+                    let inv = w0 * ia + w1 * ib + w2 * ic;
+                    let at = (y - ys0) * bw + x;
+                    if inv <= near[at] {
+                        continue;
+                    }
+                    near[at] = inv;
+                    // (even in space, not on the screen: each corner's weight / its depth)
+                    let (p0, p1, p2) = (w0 * ia / inv, w1 * ib / inv, w2 * ic / inv);
+                    let rgb = (f.rgb[0] * p0 + f.rgb[1] * p1 + f.rgb[2] * p2).clamp(glam::Vec3::ZERO, glam::Vec3::ONE);
+                    col[at] = [rgb.x, rgb.y, rgb.z, (f.alpha[0] * p0 + f.alpha[1] * p1 + f.alpha[2] * p2).clamp(0.0, 1.0)];
                 }
-                let inv = w0 * ia + w1 * ib + w2 * ic;
-                let at = y * bw + x;
-                if inv <= near[at] {
-                    continue;
-                }
-                near[at] = inv;
-                // (even in space, not on the screen: each corner's weight / its depth)
-                let (p0, p1, p2) = (w0 * ia / inv, w1 * ib / inv, w2 * ic / inv);
-                let rgb = (a.rgb * p0 + b.rgb * p1 + c.rgb * p2).clamp(glam::Vec3::ZERO, glam::Vec3::ONE);
-                col[at] = [rgb.x, rgb.y, rgb.z, (a.alpha * p0 + b.alpha * p1 + c.alpha * p2).clamp(0.0, 1.0)];
             }
         }
-    }
-    for py in py0..py1 {
-        for px in px0..px1 {
-            let (mut sum, mut hit) = ([0.0f32; 4], 0.0f32);
-            for sy in 0..SS {
-                for sx in 0..SS {
-                    let at = ((py - py0) * SS + sy) * bw + (px - px0) * SS + sx;
-                    if near[at] > 0.0 {
-                        hit += 1.0;
-                        for k in 0..4 {
-                            sum[k] += col[at][k];
+        for py in qy0..qy1 {
+            for px in px0..px1 {
+                let (mut sum, mut hit) = ([0.0f32; 4], 0.0f32);
+                for sy in 0..SS {
+                    for sx in 0..SS {
+                        let at = ((py - qy0) * SS + sy) * bw + (px - px0) * SS + sx;
+                        if near[at] > 0.0 {
+                            hit += 1.0;
+                            for k in 0..4 {
+                                sum[k] += col[at][k];
+                            }
                         }
                     }
                 }
-            }
-            if hit > 0.0 {
-                let o = (py * size + px) * 4;
-                for k in 0..3 {
-                    out[o + k] = (sum[k] / hit * 255.0 + 0.5) as u8;
+                if hit > 0.0 {
+                    let o = ((py - qy0) * size + px) * 4;
+                    for k in 0..3 {
+                        rows[o + k] = (sum[k] / hit * 255.0 + 0.5) as u8;
+                    }
+                    rows[o + 3] = (sum[3] / (SS * SS) as f32 * 255.0 + 0.5) as u8;
                 }
-                out[o + 3] = (sum[3] / (SS * SS) as f32 * 255.0 + 0.5) as u8;
             }
         }
-    }
+    });
     out
 }
 
@@ -13476,6 +13507,142 @@ impl Game {
 
 #[cfg(test)]
 mod tests {
+    // (the single-pass picture as it was: the reference for the bands)
+    fn top_arrow_picture_ref(t: &TopArrowTune, m: &TopArrowModel, size: usize, local: [f32; 3]) -> Vec<u8> {
+        const SS: usize = 3;
+        let mut out = vec![0u8; size * size * 4];
+        if size == 0 {
+            return out;
+        }
+        let v = top_arrow_vertices(t, m, local, 1.0);
+        let s = (size * SS) as f32;
+        // (only the part of the target the arrow can reach is worked on)
+        let seen: Vec<&TopArrowVertex> = v.iter().filter(|p| p.depth > 0.01).collect();
+        if seen.is_empty() {
+            return out;
+        }
+        let lo = |f: fn(&TopArrowVertex) -> f32| seen.iter().map(|p| f(p)).fold(f32::MAX, f32::min);
+        let hi = |f: fn(&TopArrowVertex) -> f32| seen.iter().map(|p| f(p)).fold(f32::MIN, f32::max);
+        let px0 = ((lo(|p| p.x) * size as f32).floor().max(0.0) as usize).min(size);
+        let py0 = ((lo(|p| p.y) * size as f32).floor().max(0.0) as usize).min(size);
+        let px1 = ((hi(|p| p.x) * size as f32).ceil().max(0.0) as usize + 1).min(size);
+        let py1 = ((hi(|p| p.y) * size as f32).ceil().max(0.0) as usize + 1).min(size);
+        if px1 <= px0 || py1 <= py0 {
+            return out;
+        }
+        let (bw, bh) = ((px1 - px0) * SS, (py1 - py0) * SS);
+        let (ox, oy) = ((px0 * SS) as f32, (py0 * SS) as f32);
+        // (per sample: 1 / depth of the nearest face so far, its colour and opacity)
+        let mut near = vec![0.0f32; bw * bh];
+        let mut col = vec![[0.0f32; 4]; bw * bh];
+        for tri in &m.tris {
+            let [a, b, c] = tri.map(|k| v[k as usize]);
+            if a.depth <= 0.01 || b.depth <= 0.01 || c.depth <= 0.01 || a.depth > 100.0 || b.depth > 100.0 || c.depth > 100.0 {
+                continue;
+            }
+            let (x0, y0, x1, y1, x2, y2) = (a.x * s - ox, a.y * s - oy, b.x * s - ox, b.y * s - oy, c.x * s - ox, c.y * s - oy);
+            let area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+            if area.abs() < 1e-9 {
+                continue;
+            }
+            let sx0 = x0.min(x1).min(x2).floor().max(0.0) as usize;
+            let sy0 = y0.min(y1).min(y2).floor().max(0.0) as usize;
+            let sx1 = (x0.max(x1).max(x2).ceil().max(0.0) as usize + 1).min(bw);
+            let sy1 = (y0.max(y1).max(y2).ceil().max(0.0) as usize + 1).min(bh);
+            let (ia, ib, ic) = (1.0 / a.depth, 1.0 / b.depth, 1.0 / c.depth);
+            for y in sy0..sy1 {
+                let gy = y as f32 + 0.5;
+                for x in sx0..sx1 {
+                    let gx = x as f32 + 0.5;
+                    let w0 = ((x1 - gx) * (y2 - gy) - (x2 - gx) * (y1 - gy)) / area;
+                    let w1 = ((x2 - gx) * (y0 - gy) - (x0 - gx) * (y2 - gy)) / area;
+                    let w2 = 1.0 - w0 - w1;
+                    if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                        continue;
+                    }
+                    let inv = w0 * ia + w1 * ib + w2 * ic;
+                    let at = y * bw + x;
+                    if inv <= near[at] {
+                        continue;
+                    }
+                    near[at] = inv;
+                    // (even in space, not on the screen: each corner's weight / its depth)
+                    let (p0, p1, p2) = (w0 * ia / inv, w1 * ib / inv, w2 * ic / inv);
+                    let rgb = (a.rgb * p0 + b.rgb * p1 + c.rgb * p2).clamp(glam::Vec3::ZERO, glam::Vec3::ONE);
+                    col[at] = [rgb.x, rgb.y, rgb.z, (a.alpha * p0 + b.alpha * p1 + c.alpha * p2).clamp(0.0, 1.0)];
+                }
+            }
+        }
+        for py in py0..py1 {
+            for px in px0..px1 {
+                let (mut sum, mut hit) = ([0.0f32; 4], 0.0f32);
+                for sy in 0..SS {
+                    for sx in 0..SS {
+                        let at = ((py - py0) * SS + sy) * bw + (px - px0) * SS + sx;
+                        if near[at] > 0.0 {
+                            hit += 1.0;
+                            for k in 0..4 {
+                                sum[k] += col[at][k];
+                            }
+                        }
+                    }
+                }
+                if hit > 0.0 {
+                    let o = (py * size + px) * 4;
+                    for k in 0..3 {
+                        out[o + k] = (sum[k] / hit * 255.0 + 0.5) as u8;
+                    }
+                    out[o + 3] = (sum[3] / (SS * SS) as f32 * 255.0 + 0.5) as u8;
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn top_arrow_picture_bands_are_one_pass() {
+        // (the picture in row bands, byte for byte the single pass's, at the sizes 720 - 2160 lines and more give)
+        let t = TopArrowTune::load(&data_dir());
+        let Some(m) = top_arrow_model(&data_dir()) else { return };
+        let mut n = 0;
+        for size in [16usize, 100, 256, 320, 384, 512, 768] {
+            for k in 0..48 {
+                let a = k as f32 * (std::f32::consts::TAU / 48.0);
+                for local in [[50.0 * a.sin(), 0.0, -50.0 * a.cos()], [30.0 * a.cos(), 20.0 * a.sin(), -40.0], [5.0 * a.sin(), -3.0, 2.0 * a.cos()]] {
+                    assert!(top_arrow_picture(&t, m, size, local) == top_arrow_picture_ref(&t, m, size, local), "size {size} local {local:?}");
+                    n += 1;
+                }
+            }
+        }
+        assert_eq!(n, 7 * 48 * 3);
+    }
+
+    #[test]
+    #[ignore]
+    fn top_arrow_picture_cost() {
+        // (cargo test --release top_arrow_picture_cost -- --ignored --nocapture: ms a picture, bands and one pass)
+        let t = TopArrowTune::load(&data_dir());
+        let m = top_arrow_model(&data_dir()).expect("model");
+        for lines in [720.0f32, 900.0, 1080.0, 1440.0, 2160.0] {
+            let r = top_arrow_rect(&t, lines * 16.0 / 9.0, lines);
+            let size = (r[2].max(r[3]) as usize).clamp(16, 2048);
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            for k in 0..40 {
+                let d = k as f32 * 0.15;
+                let local = [50.0 * d.sin(), 0.0, -50.0 * d.cos()];
+                let t0 = std::time::Instant::now();
+                std::hint::black_box(top_arrow_picture(&t, m, size, local));
+                a.push(t0.elapsed().as_secs_f64() * 1000.0);
+                let t0 = std::time::Instant::now();
+                std::hint::black_box(top_arrow_picture_ref(&t, m, size, local));
+                b.push(t0.elapsed().as_secs_f64() * 1000.0);
+            }
+            a.sort_by(|x, y| x.partial_cmp(y).unwrap());
+            b.sort_by(|x, y| x.partial_cmp(y).unwrap());
+            eprintln!("arrowcost: {lines} lines, picture {size} px: bands median {:.2} ms (max {:.2}), one pass median {:.2} ms (max {:.2})", a[20], a[39], b[20], b[39]);
+        }
+    }
+
     /// CHANGE STATE round the 77 plate backgrounds (F-31343): on from plate_ca_00, back from the first to the last.
 
     /// The colour pickers' gamut limit (F-85014, F-52258) against the original run offline: tools/gamut_reference.py,
