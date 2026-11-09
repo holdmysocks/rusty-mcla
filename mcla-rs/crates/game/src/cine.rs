@@ -1274,6 +1274,9 @@ impl Cine {
         let rot = dof_rot(cam, KIND_ROTATION, t).map(|q| q.to_array());
         cam_sample(&mut m, &mut h, &mut k14, Some(pos), rot, crate::drvanim::sample_dof(cam, KIND_FOV, 0, DOF_FLOAT, t).map(|v| v[0]), None);
         let fov = h / (16.0 / 9.0);
+        // (F-40303 then levels the scene origin, F-84619, unless the cine manager's +228 is set (the arrest's frame
+        // sets it): not needed here - every origin the port builds is yaw-only or identity, which it leaves bit for bit,
+        // and the tilted arrest frame is the case it skips. Then the camera's rows x the origin.)
         let row = |i: usize| Vec3::new(m[4 * i], m[4 * i + 1], m[4 * i + 2]);
         Some((sc.origin.transform_point3(row(3)), sc.origin.transform_vector3(-row(2)).normalize_or(Vec3::Z), sc.origin.transform_vector3(row(1)).normalize_or(Vec3::Y), fov))
     }
