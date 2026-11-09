@@ -1042,6 +1042,22 @@ impl Brain {
     }
 }
 
+/// F-50530, mcCarNitro's fire test (the brain's and the pad's): not burning (+32), the view at rest (+24 == +20, an
+/// unordered compare not equal); unless the pause menu's unlimited nitro (the byte 0x8288_E5B0) or the racer's unlimited
+/// (+33): not locked (the sim's +576 bit 0x8) and a shot left (+18, i16, > 0); the car answering its pad (vfunc 12); not
+/// lying on the ground (its helper: the air time not above 0 and up.y under 0.1, both compares false on NaN).
+#[allow(clippy::too_many_arguments)]
+pub fn nitro_can_fire(burning: bool, view: f32, rest: f32, cheat: bool, unlimited: bool, locked: bool, shots: i16, answering: bool, air: f32, up_y: f32) -> bool {
+    if burning || view != rest {
+        return false;
+    }
+    if !(cheat || unlimited) && (locked || shots <= 0) {
+        return false;
+    }
+    let lying = !(air > 0.0) && up_y < 0.1;
+    answering && !lying
+}
+
 /// The throttle under the rubber band's cap as F-17058 takes it: fsel(throttle - cap, cap, throttle) (a NaN throttle stays).
 pub fn capped(throttle: f32, cap: f32) -> f32 {
     if throttle - cap >= 0.0 {
@@ -1248,7 +1264,12 @@ pub fn run(v: &mut crate::vehicles::Vehicles, i: usize, brain: &mut Brain, to_go
         nitro_t: vs.map_or(0.0, |s| s.nitro_level * nitro_tune[2]),
         sling_tune,
         sling_t: vs.map_or(0.0, |s| s.sst.level * sling_tune[2]),
-        nitro_ready: st.nitro_shots > 0 && vs.map_or(false, |s| s.nitro_level <= 0.0 && s.nitro_rest <= 0.0),
+        // (F-50530 on the car's nitrous: the view's rest +20 is 0 in the port; the pause menu's unlimited nitro is not the
+        // cars' in the port and the racer's own unlimited byte +33 is approximated by the shot kept after the update, so both false;
+        // the up.y the chassis's row as the car stands at the brain's update)
+        nitro_ready: vs.map_or(false, |s| {
+            nitro_can_fire(s.nitro_burning, s.nitro_view, 0.0, false, false, c.lock & 0x8 != 0, st.nitro_shots as i16, to_go.is_none(), s.air584(), st.up().y)
+        }),
         nitro_burning: vs.map_or(false, |s| s.nitro_level > 0.0),
         // (F-29462, the car answering its pad off the grid)
         sling_ready: vs.map_or(false, |s| s.sst.can_fire(to_go.is_none())),
@@ -1385,6 +1406,39 @@ pub fn run(v: &mut crate::vehicles::Vehicles, i: usize, brain: &mut Brain, to_go
 
 #[cfg(test)]
 mod tests {
+
+    /// F-50530 and F-29462, the nitrous and slingshot can-fire tests, run offline (tools/boost_ready_reference.py,
+    /// verify_boost_ready.md): every answer of nitro_can_fire and SsTurbo::can_fire equals the original's.
+    #[test]
+    fn boost_ready_matches_the_original() {
+        let text = include_str!("testdata/boost_ready_ref.txt");
+        let hex = |w: &str| u32::from_str_radix(&w.replace('_', ""), 16).unwrap();
+        let (mut n, mut fire, mut bad) = ([0usize; 2], [0usize; 2], 0);
+        for line in text.lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let v: Vec<u32> = w[1..w.len() - 2].iter().map(|x| hex(x)).collect();
+            let want = hex(w[w.len() - 1]) != 0;
+            let f = |i: usize| f32::from_bits(v[i]);
+            let (k, got) = if w[0] == "nitro" {
+                // (bytes as the original reads them: +32 / +33 / the cheat byte non-zero, the vfunc's answer its low byte)
+                (0, nitro_can_fire(v[0] != 0, f(3), f(4), v[2] != 0, v[1] != 0, v[5] & 0x8 != 0, v[6] as u16 as i16, v[7] & 0xff != 0, f(8), f(9)))
+            } else {
+                let t = crate::physics::sst::SsTurbo { locked: v[0] & 0x10 != 0, full: v[2] != 0, level: f(3), burning: v[4] != 0, fov: f(5), ..Default::default() };
+                (1, t.can_fire(v[1] & 0xff != 0))
+            };
+            n[k] += 1;
+            fire[k] += want as usize;
+            if got != want {
+                if bad < 5 {
+                    println!("{line}  port {}", got as u8);
+                }
+                bad += 1;
+            }
+        }
+        println!("can fire: nitrous {} cases ({} fire), slingshot {} ({}), {bad} differ", n[0], fire[0], n[1], fire[1]);
+        assert!(n[0] >= 6000 && n[1] >= 6000);
+        assert_eq!(bad, 0);
+    }
 
     /// F-17058's nitrous / slingshot pick after the cap, run offline (tools/nitro_pick_reference.py, verify_nitro_pick.md):
     /// the input flags (+40) and the throttle (+156), the cap computed by the verified RubberBand::cap.
