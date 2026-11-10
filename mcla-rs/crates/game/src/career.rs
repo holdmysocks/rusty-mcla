@@ -64,6 +64,10 @@ struct Mission {
     rewards: Vec<Reward>,
     /// each reward's bHidden (+8) and bGiveImmediately (+9)
     reward_flags: Vec<(bool, bool)>,
+    /// the text (+10) of the last reward of aRewards whose bHidden is clear, "" for none: what the mission log's
+    /// `menu.reward` is set to (F-74020). The tune loader runs each reward's vt+4, which copies its first member
+    /// (szCarName, szStringId: F-30672; szMissionId, szScriptName, szStatName: sprintf "%s", F-23081)
+    reward_text: String,
     /// place in the mission lists (`0x68d5d432`, then `0x3b47e155`): the save's index
     index: i32,
     /// a South Central mission (the save's add-on block)
@@ -249,6 +253,8 @@ pub struct MissionView {
     pub objectives: Vec<ObjectiveView>,
     /// the event race to drive next, if the mission has its own races
     pub next_race: Option<String>,
+    /// the reward line's text as the mission holds it (`Mission::reward_text`; a string table key), "" for none
+    pub reward: String,
 }
 
 #[derive(Default)]
@@ -535,8 +541,15 @@ impl Career {
             let rew = tail.find("<aRewards>").map(|a| &tail[a..tail.find("</aRewards>").unwrap_or(tail.len())]).unwrap_or("");
             let mut rewards = Vec::new();
             let mut reward_flags = Vec::new();
+            let mut reward_text = String::new();
             for r in rew.split("<Item type=\"mcReward").skip(1) {
                 let flags = (val(r, "bHidden") == Some("true"), val(r, "bGiveImmediately") == Some("true"));
+                // (the money rewards' text is their amount as money, F-44145; no mission file has a visible one)
+                if !flags.0 {
+                    if let Some(v) = r.split("<sz").nth(1).and_then(|s| s.split_once('>')).map(|(_, v)| v.split('<').next().unwrap_or("")) {
+                        reward_text = v.to_string();
+                    }
+                }
                 match r.split('"').next().unwrap_or("") {
                     "Mission" => rewards.push(Reward::Mission { id: tag(r, "szMissionId").unwrap_or("").to_ascii_uppercase(), state: tag(r, "szTransitionState").unwrap_or("").to_ascii_uppercase().replace('_', "") }),
                     "Car" => rewards.push(Reward::Car(tag(r, "szCarName").unwrap_or("").to_ascii_lowercase())),
@@ -559,6 +572,7 @@ impl Career {
                 objectives: requirements(section(&t, "aObjectives")),
                 rewards,
                 reward_flags,
+                reward_text,
                 index: if south { list_sc.iter().position(|n| *n == stem).map_or(-1, |k| (list_main.len() + k) as i32) } else { list_main.iter().position(|n| *n == stem).map_or(-1, |k| k as i32) },
                 addon: south,
                 auto_start: val(&t, "bAutoStart") == Some("true"),
@@ -1732,6 +1746,7 @@ impl Career {
                     title: self.title(i),
                     who: self.who(i),
                     desc: self.text(&format!("{}_DESC", m.id)),
+                    reward: m.reward_text.clone(),
                     next_race: self.event_of(m).and_then(|e| e.races.iter().find(|r| !self.state[i].won.contains(*r))).map(|r| r.rsplit('/').next().unwrap_or(r).replace('_', " ").to_uppercase()),
                     objectives: m
                         .objectives
@@ -3615,6 +3630,31 @@ mod tests {
             }
         }
         assert!(c.strings.get("INSTALL_ABILITY_CONFIRM_SPLASH").is_some());
+    }
+
+    /// The mission log's reward line (F-74020): the last visible reward's text, as the tune loader's vt+4 leaves it
+    /// (read from the running original: BESTOF_GH_04's car reward +10 = "GH_04_1_vp_chv_camaross_69", its log shows
+    /// REWARD "NIKOLAI'S '69 CAMARO SS"); hidden rewards give none.
+    #[test]
+    fn mission_log_reward_text() {
+        let data = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        let c = Career::load(&data);
+        if c.missions.is_empty() {
+            return;
+        }
+        let with: Vec<(&str, &str)> = c.missions.iter().filter(|m| !m.reward_text.is_empty()).map(|m| (m.id.as_str(), m.reward_text.as_str())).collect();
+        // (the 13 the running original holds: BEAT_GH_04_MUSCLE, BEAT_GH_05_TUNER, ESCAPE_POLICE and
+        // TOURNAMENT_SOUTH_CENTRALB have visible rewards too but are on no mission list)
+        assert_eq!(with.len(), 13, "{with:?}");
+        let of = |id: &str| c.missions[c.index[id]].reward_text.as_str();
+        assert_eq!(of("BESTOF_GH_04"), "GH_04_1_vp_chv_camaross_69");
+        assert_eq!(c.strings.get(of("BESTOF_GH_04")).map(|s| s.to_uppercase()).as_deref(), Some("NIKOLAI'S '69 CAMARO SS"));
+        assert_eq!(of("TOURNAMENT_BEACHESB"), "vp_mbz_s600_07_DUB");
+        // (only hidden rewards: none)
+        assert_eq!(of("REP_ON_HW_STRIP"), "");
+        // (every text has its string)
+        let missing: Vec<&str> = with.iter().map(|w| w.1).filter(|t| c.strings.get(t).is_none()).collect();
+        assert!(missing.is_empty(), "{missing:?}");
     }
 
     /// The objectives' nTargetId and mcMissionManager_DoesUIDHaveActiveMission: the hangout's

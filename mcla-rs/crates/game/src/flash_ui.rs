@@ -788,8 +788,9 @@ pub enum MenuLayout {
     PerfShop { details: Vec<(u8, u8, String, i32)>, class: i32, total: i64, meters: [[f32; 3]; 3] },
     /// The mission log (`template_MissionLog`, 11, of the GPS map movie): the list on the
     /// left; on the right the chosen mission's picture, `menu.summary`, and up to five
-    /// `menu.objective<n>` lines with a tick box each (`menu.objective_status[n-1]`).
-    MissionLog { summary: String, objectives: Vec<(String, bool)> },
+    /// `menu.objective<n>` lines with a tick box each (`menu.objective_status[n-1]`), and `menu.reward` (the
+    /// REWARD box below them, hidden when "").
+    MissionLog { summary: String, objectives: Vec<(String, bool)>, reward: String },
     /// A message box of the popup movie (`template_confbox`, 3): the title bar, a
     /// description wrapped by the movie (it asks the host for the line count,
     /// `FSCommand:MeasureSlotHeight`) and the choices.
@@ -1068,8 +1069,9 @@ impl FlashMenu {
                 }
                 45
             }
-            MenuLayout::MissionLog { summary, objectives } => {
+            MenuLayout::MissionLog { summary, objectives, reward } => {
                 p.set_path("menu.summary", Value::str(summary));
+                p.set_path("menu.reward", Value::str(reward));
                 for k in 0..5 {
                     let (text, done) = objectives.get(k).cloned().unwrap_or_default();
                     p.set_path(&format!("menu.objective{}", k + 1), Value::str(&text));

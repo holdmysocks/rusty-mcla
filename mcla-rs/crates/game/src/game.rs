@@ -13199,6 +13199,7 @@ impl Game {
                     desc: self.career.strings.get(text).map(|v| v.to_string()).unwrap_or_default(),
                     objectives: Vec::new(),
                     next_race: None,
+                    reward: String::new(),
                 })
                 .collect(),
         };
@@ -13230,9 +13231,14 @@ impl Game {
             Some(v) => (v.desc.clone(), v.objectives.iter().take(5).map(|o| (o.count.as_ref().map_or_else(|| o.text.clone(), |c| format!("{} {}", o.text, c)).to_uppercase(), tab == 1 || o.cur >= o.target)).collect()),
             None => (String::new(), Vec::new()),
         };
+        // (`menu.reward`, F-74020: the selected mission's reward text; the movie shows the REWARD box only when
+        // it is not "". The original's box reads the text's string - "NIKOLAI'S '69 CAMARO SS" for
+        // GH_04_1_vp_chv_camaross_69 - in capitals; every listed mission's text has one, a text without would be
+        // shown as it is, not decoded)
+        let reward = views.get(sel).filter(|v| !v.reward.is_empty()).map_or_else(String::new, |v| self.career.strings.get(&v.reward).map_or_else(|| v.reward.clone(), |s| s.to_string()).to_uppercase());
         let titles = [st("Navmap_MLog_ActiveMissions", "ACTIVE MISSIONS"), st("Navmap_MLog_CompletedMissions", "COMPLETED MISSIONS"), st("Navmap_MLog_Tutorials", "TUTORIALS")];
         let page = MenuPage {
-            layout: MenuLayout::MissionLog { summary, objectives },
+            layout: MenuLayout::MissionLog { summary, objectives, reward },
             // (tab icon frames: 36 "!", 37 "x", 38 "?")
             icon: 36 + tab as i32,
             tabs: if guided { vec![titles[0].clone(), titles[2].clone()] } else { titles.to_vec() },
