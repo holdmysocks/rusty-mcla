@@ -150,12 +150,22 @@ pub fn part_present(t: &FragType, absent: u64, child: usize) -> bool {
 
 /// A group and everything that hangs on it, as a bit set.
 pub fn subtree(t: &FragType, g: usize) -> u64 {
-    let mut bits = 1u64 << g;
+    let mut bits = [0u32; 2];
+    mark_subtree(t, g, 255, &mut bits);
+    bits[0] as u64 | (bits[1] as u64) << 32
+}
+
+/// F-45377: group `g` and the groups under it set in the bit array `bits` (bit g of word g / 32); the sub-tree of group
+/// `skip` is left out (255: none).
+pub fn mark_subtree(t: &FragType, g: usize, skip: u32, bits: &mut [u32]) {
+    bits[g >> 5] |= 1 << (g & 31);
     let grp = &t.groups[g];
-    for k in 0..grp.groups as usize {
-        bits |= subtree(t, grp.first_group as usize + k);
+    for k in 0..grp.groups as u32 {
+        let c = grp.first_group as u32 + k;
+        if c != skip {
+            mark_subtree(t, c as usize, skip, bits);
+        }
     }
-    bits
 }
 
 /// The mass of what an entry holds (F-49276 / F-85792): the children's, in their order.
@@ -178,7 +188,7 @@ fn set_mass(mass: f32) -> (f32, f32) {
 /// estimate and one Newton step), 0x7f7fffff where a lane is 0. The vector unit runs in flush
 /// mode: a subnormal lane compares equal to 0, and a subnormal inverse (an inertia above about
 /// 8.5e37) is 0 of its sign.
-fn set_inertia(i: [f32; 3]) -> ([f32; 3], [f32; 3]) {
+pub(super) fn set_inertia(i: [f32; 3]) -> ([f32; 3], [f32; 3]) {
     let i = inertia_floor(i);
     let inv = |x: f32| {
         if x == 0.0 || x.is_subnormal() {
@@ -220,25 +230,39 @@ fn inertia_floor(mut i: [f32; 3]) -> [f32; 3] {
     i
 }
 
-/// F-13409: the entry's centre of gravity (by the parts' volumes; shifted by the type's +0x40
-/// while the entry is younger than a quarter of a second), its mass, and its moments (each
-/// part's own about its place, carried to the centre without its turn; no moment under a
-/// twentieth of the largest).
-pub fn entry_refresh(t: &FragType, e: &mut Entry, mass: f32) {
+/// F-99875: one part's place for the centre of volume - its bound's centre of gravity through the part's matrix where the
+/// bound has one, else the matrix's origin.
+pub fn part_place(m: &[Vec3; 4], cg: Option<Vec3>) -> Vec3 {
+    match cg {
+        Some(cg) => xf(m, cg),
+        None => m[3],
+    }
+}
+
+/// F-99875: the centre of the parts' volumes: each place by its volume, added in turn, over the sum of the volumes
+/// where that is above 1e-6 (the estimate of 1 / sum and one Newton step); the sum 0 .. 1e-6 leaves the plain sum.
+pub fn volume_centre(parts: impl Iterator<Item = (f32, Vec3)>) -> Vec3 {
     let mut acc = Vec3::ZERO;
     let mut tot = 0.0f32;
-    for (c, part) in t.parts.iter().enumerate() {
-        let Some(b) = part.bound.as_ref().filter(|_| part_present(t, e.absent, c)) else { continue };
-        let w = b.volume;
+    for (w, p) in parts {
         tot = w + tot;
-        let m = m4(&part.matrix);
-        let p = if b.flag6 { xf(&m, v(b.cg)) } else { m[3] };
         acc = p * w + acc;
     }
     if tot > f32::from_bits(0x3586_37bd) {
         acc = acc * recip(tot);
     }
-    e.cg = acc;
+    acc
+}
+
+/// F-13409: the entry's centre of gravity (by the parts' volumes; shifted by the type's +0x40
+/// while the entry is younger than a quarter of a second), its mass, and its moments (each
+/// part's own about its place, carried to the centre without its turn; no moment under a
+/// twentieth of the largest).
+pub fn entry_refresh(t: &FragType, e: &mut Entry, mass: f32) {
+    e.cg = volume_centre(t.parts.iter().enumerate().filter_map(|(c, part)| {
+        let b = part.bound.as_ref().filter(|_| part_present(t, e.absent, c))?;
+        Some((b.volume, part_place(&m4(&part.matrix), b.flag6.then(|| v(b.cg)))))
+    }));
     if e.age < 0.25 {
         e.cg = e.cg + v(t.cg_shift);
     }
@@ -262,6 +286,10 @@ pub fn entry_refresh(t: &FragType, e: &mut Entry, mass: f32) {
 
 // ---------------------------------------------------------------------------------------------
 // Bodies of what has come loose (the simulator's pool bodies, 672 bytes; p1/body_decode.md).
+
+/// A body's speed limit and its turning limit (2 pi), as its constructor F-33655 sets them.
+pub const BODY_MAX_SPEED: f32 = 500.0;
+pub const BODY_MAX_SPIN: f32 = f32::from_bits(0x40c9_0fdb);
 
 /// The body of an activated prop or piece.
 #[derive(Clone, Copy, Debug)]
@@ -342,6 +370,21 @@ impl PBody {
             max_speed,
             max_spin,
             moves: 0,
+        }
+    }
+
+    /// F-21091: the impulses not yet in the momenta go in (and the velocities follow, cut to the body's limits) where they
+    /// are not zero in every lane.
+    fn take_impulses(&mut self) {
+        if self.jf != Vec3::ZERO {
+            self.p = self.p + self.jf;
+            (self.v, self.p) = capped(self.p * self.inv_mass, self.p, self.max_speed);
+            self.jf = Vec3::ZERO;
+        }
+        if self.jt != Vec3::ZERO {
+            self.l = self.l + self.jt;
+            (self.w, self.l) = capped(ex::spin_of(self.l, &self.rows, self.inv_inertia), self.l, self.max_spin);
+            self.jt = Vec3::ZERO;
         }
     }
 
@@ -1603,9 +1646,9 @@ impl LooseState {
                 if obj.veh.is_some() {
                     return obj.matrix;
                 }
-                super::gjk::world_matrix(&m4(&world.types[obj.ty].parts[part as usize].matrix), &obj.matrix)
+                super::loose_words::side_matrix(Some(&obj.matrix), Some(&m4(&world.types[obj.ty].parts[part as usize].matrix)))
             }
-            Who::City => [Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO],
+            Who::City => super::loose_words::side_matrix(None, None),
         }
     }
 
@@ -1706,10 +1749,7 @@ impl LooseState {
                     Who::City => surface_touch(s.surface),
                 };
                 let (ta, tb) = (of(who_a), of(who_b));
-                let f = ta.0 * tb.0;
-                s.t.friction = if f >= 0.0 { f } else { 0.0 };
-                let e = ta.1 * tb.1;
-                s.t.elasticity = if e - 1.0 >= 0.0 { 1.0 } else { e };
+                (s.t.friction, s.t.elasticity) = contact_terms(ta, tb);
                 s.t.impulse = Vec3::ZERO;
                 s.enabled = true;
                 if wheel || off {
@@ -1852,6 +1892,80 @@ impl LooseState {
 // ---------------------------------------------------------------------------------------------
 // The breaking pass (F-12210, F-54981, F-80619; p1/break_decode.md).
 
+/// F-43430: a contact's friction and elasticity from the materials of its two sides (friction, elasticity): the products,
+/// the friction not below 0 (a NaN is 0), the elasticity cut to 1.
+pub fn contact_terms(ta: (f32, f32), tb: (f32, f32)) -> (f32, f32) {
+    let f = ta.0 * tb.0;
+    let e = ta.1 * tb.1;
+    (if f >= 0.0 { f } else { 0.0 }, if e - 1.0 >= 0.0 { 1.0 } else { e })
+}
+
+/// F-14324: strength `m` laid on group `g` goes into `gi` for the group and, as the walk leaves it, for the groups around
+/// it: down through the sub-groups that are present (`dir` below zero: each level takes the group's down share) and up
+/// through the parents (`dir` above zero: each takes its up share), a group no longer in the entry (not `present`)
+/// ending the walk and getting nothing. `scales` are the tuning object's two numbers (+12 on the way down, +16 on the way
+/// up) where it exists - the port runs without it.
+fn spread(t: &FragType, present: &dyn Fn(usize) -> bool, gi: &mut [f32], mut m: f32, mut g: usize, mut dir: i32, scales: Option<(f32, f32)>) {
+    loop {
+        let grp = &t.groups[g];
+        if dir < 0 {
+            m = grp.down * m;
+            if let Some((down, _)) = scales {
+                m = down * m;
+            }
+        }
+        if present(g) {
+            gi[g] = gi[g] + m;
+        }
+        if dir <= 0 {
+            for k in 0..grp.groups as usize {
+                let c = grp.first_group as usize + k;
+                if present(c) {
+                    spread(t, present, gi, m, c, dir - 1, scales);
+                }
+            }
+            if dir < 0 {
+                return;
+            }
+        }
+        let p = grp.parent as usize;
+        if grp.parent == 255 || !present(p) {
+            return;
+        }
+        m = grp.up * m;
+        if let Some((_, up)) = scales {
+            m = up * m;
+        }
+        dir += 1;
+        g = p;
+    }
+}
+
+/// F-66303: what a body's archetype asks of its damping, in the world axes: for the moving and for the turning, the
+/// velocity in the body's axes `l` is slowed by `c` times its unit vector, `|l| l` times `sq` and `l` times `lin`
+/// (`d`: those three for each, the force's first), the acceleration cut at the point where it would carry the velocity
+/// past rest in a tick (then it is exactly the one that stops it); times the mass or the moments, back to the world.
+pub(super) fn damping_forces(rows: &[Vec3; 3], v0: Vec3, w0: Vec3, mass: f32, inertia: Vec3, d: &[[f32; 3]; 6], dt: f32) -> (Vec3, Vec3) {
+    let rs = super::gjk::rsqrt_as_original;
+    let inv_dt = recip(dt);
+    let cols = [Vec3::new(rows[0].x, rows[1].x, rows[2].x), Vec3::new(rows[0].y, rows[1].y, rows[2].y), Vec3::new(rows[0].z, rows[1].z, rows[2].z)];
+    let slow = |x: Vec3, c: Vec3, lin: Vec3, sq: Vec3| {
+        let l = Vec3::new(dot3(rows[0], x), dot3(rows[1], x), dot3(rows[2], x));
+        let l2 = dot3(l, l);
+        let sp = if l2 == 0.0 { 0.0 } else { l2 * rs(l2) };
+        let u = if l2 > f32::from_bits(0x3727_c5ac) { l * rs(l2) } else { Vec3::ZERO };
+        let mut a = Vec3::ZERO - ((u * c) + (((l * sp) * sq) + (l * lin)));
+        let n = a * dt + l;
+        if 0.0 >= dot3(n, l) {
+            a = -(l * inv_dt - Vec3::ZERO);
+        }
+        a
+    };
+    let fl = slow(v0, v(d[0]), v(d[1]), v(d[2])) * mass;
+    let tl = slow(w0, v(d[3]), v(d[4]), v(d[5])) * inertia;
+    (Vec3::new(dot3(cols[0], fl), dot3(cols[1], fl), dot3(cols[2], fl)), Vec3::new(dot3(cols[0], tl), dot3(cols[1], tl), dot3(cols[2], tl)))
+}
+
 /// F-34309: how much of the impulses on its parts (`comp`, by part) breaks or moves an
 /// instance: the share `t` and the group that leaves (255: the whole of it).
 fn break_strength(t: &FragType, obj: &Obj, comp: &[Vec3]) -> Option<(f32, u8)> {
@@ -1874,35 +1988,6 @@ fn break_strength(t: &FragType, obj: &Obj, comp: &[Vec3]) -> Option<(f32, u8)> {
     }
     let mut gi = vec![0.0f32; t.groups.len()];
     let mut total = 0.0f32;
-    fn spread(t: &FragType, present: &dyn Fn(usize) -> bool, gi: &mut [f32], mut m: f32, mut g: usize, mut dir: i32) {
-        loop {
-            let grp = &t.groups[g];
-            if dir < 0 {
-                m = grp.down * m;
-            }
-            if present(g) {
-                gi[g] = gi[g] + m;
-            }
-            if dir <= 0 {
-                for k in 0..grp.groups as usize {
-                    let c = grp.first_group as usize + k;
-                    if present(c) {
-                        spread(t, present, gi, m, c, dir - 1);
-                    }
-                }
-                if dir < 0 {
-                    return;
-                }
-            }
-            let p = grp.parent as usize;
-            if grp.parent == 255 || !present(p) {
-                return;
-            }
-            m = grp.up * m;
-            dir += 1;
-            g = p;
-        }
-    }
     for (p, c) in comp.iter().enumerate().take(t.parts.len()) {
         if c.x == 0.0 && c.y == 0.0 && c.z == 0.0 {
             continue;
@@ -1913,7 +1998,7 @@ fn break_strength(t: &FragType, obj: &Obj, comp: &[Vec3]) -> Option<(f32, u8)> {
             continue;
         }
         total = m + total;
-        spread(t, &present, &mut gi, m, g, 0);
+        spread(t, &present, &mut gi, m, g, 0, None);
     }
     if !obj.hit && t.min_move >= 0.0 {
         let x = t.groups[0].up * gi[0];
@@ -2959,7 +3044,7 @@ impl LooseState {
     fn break_apart(&mut self, world: &LooseWorld, w: usize, group: u8) -> Option<(usize, u64)> {
         let ty = self.objs[w].ty;
         let t = &world.types[ty];
-        let (max_speed, max_spin) = (500.0f32, f32::from_bits(0x40c9_0fdb));
+        let (max_speed, max_spin) = (BODY_MAX_SPEED, BODY_MAX_SPIN);
         let was_hit = self.objs[w].hit;
         if self.objs[w].entry.is_none() {
             if t.flags & 1 == 0 {
@@ -3447,7 +3532,6 @@ impl LooseState {
     /// tick's force sums.
     pub fn pre_collide(&mut self, world: &LooseWorld, dt: f32) {
         (self.collided, self.refreshed) = (false, false);
-        let rs = super::gjk::rsqrt_as_original;
         self.replay_pieces();
         self.pieces_wake(dt);
         self.bodies_wake(dt);
@@ -3493,25 +3577,9 @@ impl LooseState {
             // 0.1 / 0.02 at 2.7 m/s). Not the torn bumper's plain phArchetypePhys.)
             let file_type = veh.is_none() && world.types[self.objs[o].ty].off != usize::MAX;
             if self.objs[o].entry.is_some() || veh.is_some() || file_type {
-                let inv_dt = recip(dt);
-                let cols = [Vec3::new(b.rows[0].x, b.rows[1].x, b.rows[2].x), Vec3::new(b.rows[0].y, b.rows[1].y, b.rows[2].y), Vec3::new(b.rows[0].z, b.rows[1].z, b.rows[2].z)];
-                let slow = |x: Vec3, c: Vec3, lin: Vec3, sq: Vec3| {
-                    let l = Vec3::new(dot3(b.rows[0], x), dot3(b.rows[1], x), dot3(b.rows[2], x));
-                    let l2 = dot3(l, l);
-                    let sp = if l2 == 0.0 { 0.0 } else { l2 * rs(l2) };
-                    let u = if l2 > f32::from_bits(0x3727_c5ac) { l * rs(l2) } else { Vec3::ZERO };
-                    let mut a = Vec3::ZERO - ((u * c) + (((l * sp) * sq) + (l * lin)));
-                    let n = a * dt + l;
-                    if 0.0 >= dot3(n, l) {
-                        a = -(l * inv_dt - Vec3::ZERO);
-                    }
-                    a
-                };
-                let d = &damping;
-                let fl = slow(b.v, v(d[0]), v(d[1]), v(d[2])) * b.mass;
-                b.force = b.force + Vec3::new(dot3(cols[0], fl), dot3(cols[1], fl), dot3(cols[2], fl));
-                let tl = slow(b.w, v(d[3]), v(d[4]), v(d[5])) * b.inertia;
-                b.torque = b.torque + Vec3::new(dot3(cols[0], tl), dot3(cols[1], tl), dot3(cols[2], tl));
+                let (df, dtq) = damping_forces(&b.rows, b.v, b.w, b.mass, b.inertia, &damping, dt);
+                b.force = b.force + df;
+                b.torque = b.torque + dtq;
             }
             b.moves += 1;
             if b.moves > 32 {
@@ -3546,16 +3614,7 @@ impl LooseState {
             b.jt = b.torque * dt + b.jt;
             b.force = Vec3::ZERO;
             b.torque = Vec3::ZERO;
-            if b.jf != Vec3::ZERO {
-                b.p = b.p + b.jf;
-                (b.v, b.p) = capped(b.p * b.inv_mass, b.p, b.max_speed);
-                b.jf = Vec3::ZERO;
-            }
-            if b.jt != Vec3::ZERO {
-                b.l = b.l + b.jt;
-                (b.w, b.l) = capped(ex::spin_of(b.l, &b.rows, b.inv_inertia), b.l, b.max_spin);
-                b.jt = Vec3::ZERO;
-            }
+            b.take_impulses();
             if let Some(city) = city {
                 let m = self.objs[o].matrix;
                 if let Some(a) = self.objs[o].amb.as_mut() {
@@ -4917,8 +4976,8 @@ pub fn piece_type() -> FragType {
             mass,
             inv_mass: 1.0 / mass,
             gravity: 1.5,
-            max_speed: 500.0,
-            max_spin: f32::from_bits(0x40c9_0fdb),
+            max_speed: BODY_MAX_SPEED,
+            max_spin: BODY_MAX_SPIN,
             inertia,
             inv_inertia: inertia.map(recip),
         },
@@ -4954,13 +5013,53 @@ impl Sleep {
     pub fn reset() -> Sleep {
         Sleep { state: 1, a: 12, b: 17 }
     }
+
+    /// The update (F-43494) with the object's own limits 15 and 20.
+    pub fn update(&mut self, still: bool) {
+        self.update_with(still, 15, 20);
+    }
+
+    /// F-43494: where the body is still, counter A runs while the object is awake (state 1) and settles it (state 0) at
+    /// its limit, then counter B runs while it is not awake and puts it to sleep (state 2) at its limit; where it moves,
+    /// an awake object starts both counters again and any other is woken (the original's slot 1, which the port does
+    /// as state 1; this gives whether it was called).
+    pub fn update_with(&mut self, still: bool, limit_a: u32, limit_b: u32) -> bool {
+        if still {
+            if self.state == 1 {
+                self.a += 1;
+                if self.a >= limit_a {
+                    self.state = 0;
+                }
+            }
+            if self.state != 1 {
+                self.b += 1;
+                if self.b >= limit_b {
+                    self.state = 2;
+                }
+            }
+            false
+        } else if self.state == 1 {
+            self.a = 0;
+            self.b = 0;
+            false
+        } else {
+            self.state = 1;
+            true
+        }
+    }
 }
 
 /// The "still" test (F-61306 -> F-66163) with the game's tolerances: v^2 and w^2 0.05.
 fn still(b: &PBody, dt: f32, f2: f32) -> bool {
-    let [a, bb, c, d] = still_terms(b, dt, f2);
-    let tol = f32::from_bits(0x3d4c_cccd);
-    !(a > tol) && !(bb > tol) && !(c > tol) && !(d > tol)
+    let (v, w, fifth) = (f32::from_bits(0x3d4c_cccd), f32::from_bits(0x3d4c_cccd), f32::from_bits(0x3e4c_cccd));
+    still_with(still_terms(b, dt, f2), 0.0, [v, w, fifth])
+}
+
+/// F-61306: the five terms against the object's tolerances (+4 for the two velocity terms, +8 for the two spin terms,
+/// +12 for the fifth, which a pool body's slot 15 gives as 0): not one above (a NaN is not).
+fn still_with(terms: [f32; 4], fifth: f32, tol: [f32; 3]) -> bool {
+    let [a, bb, c, d] = terms;
+    !(a > tol[1]) && !(bb > tol[0]) && !(c > tol[1]) && !(d > tol[0]) && !(fifth > tol[2])
 }
 
 /// The four terms the still test compares with its tolerances: |w1|^2, |v1|^2, and the growths by the tick's sums.
@@ -5116,25 +5215,7 @@ impl LooseState {
                 }
             }
             let s = &mut self.pieces[k].sleep;
-            if still(&b, dt, dt) {
-                if s.state == 1 {
-                    s.a += 1;
-                    if s.a >= 15 {
-                        s.state = 0;
-                    }
-                }
-                if s.state != 1 {
-                    s.b += 1;
-                    if s.b >= 20 {
-                        s.state = 2;
-                    }
-                }
-            } else if s.state == 1 {
-                s.a = 0;
-                s.b = 0;
-            } else {
-                s.state = 1;
-            }
+            s.update(still(&b, dt, dt));
         }
     }
 }
@@ -5180,7 +5261,7 @@ impl LooseState {
         let t = &world.types[self.objs[o].ty];
         let obj = &mut self.objs[o];
         obj.body = Some(match obj.entry {
-            Some(e) => PBody::new(&obj.matrix, e.cg, &e, 500.0, f32::from_bits(0x40c9_0fdb)),
+            Some(e) => PBody::new(&obj.matrix, e.cg, &e, BODY_MAX_SPEED, BODY_MAX_SPIN),
             None => {
                 let a = &t.archetype;
                 let e = Entry { absent: 0, age: 0.0, cg: v(t.cg), mass: a.mass, inv_mass: a.inv_mass, inertia: v(a.inertia), inv_inertia: v(a.inv_inertia), ..Default::default() };
@@ -5219,25 +5300,7 @@ impl LooseState {
             let Some(mut b) = self.objs[o].body else { continue };
             (b.push, b.turn) = (Vec3::ZERO, Vec3::ZERO);
             let s = &mut self.objs[o].sleep;
-            if still(&b, dt, dt) {
-                if s.state == 1 {
-                    s.a += 1;
-                    if s.a >= 15 {
-                        s.state = 0;
-                    }
-                }
-                if s.state != 1 {
-                    s.b += 1;
-                    if s.b >= 20 {
-                        s.state = 2;
-                    }
-                }
-            } else if s.state == 1 {
-                s.a = 0;
-                s.b = 0;
-            } else {
-                s.state = 1;
-            }
+            s.update(still(&b, dt, dt));
             if dbg() {
                 let s = &self.objs[o].sleep;
                 eprintln!("LOOSESLEEPOBJ tick {} obj {o} state {} a {} b {} still {} terms {:?}", self.tick, s.state, s.a, s.b, still(&b, dt, dt), still_terms(&b, dt, dt));
@@ -5998,3 +6061,7 @@ mod amb_wheel_tests {
         assert_eq!(n, 4000);
     }
 }
+
+#[cfg(test)]
+#[path = "loose_small_tests.rs"]
+mod loose_small_tests;

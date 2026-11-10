@@ -21,6 +21,7 @@ pub mod headon;
 pub mod wipeout;
 pub mod hull;
 pub mod loose;
+pub mod loose_words;
 pub mod pad;
 pub mod replay;
 pub mod softpush;
