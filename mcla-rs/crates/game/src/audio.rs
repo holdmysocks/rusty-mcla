@@ -715,6 +715,8 @@ pub struct Audio {
     /// the next song start plays the song that played last again (F-62155 plays the manager's +68, which only the next
     /// song F-51486 moves on; the port's start moves on unless this is set)
     song_replay: bool,
+    /// the next song start plays the song before in the lists' order (PreviousSong's place, F-81531, taken at the start)
+    song_back: bool,
     /// the music manager (MusicMgr): its Play / suspend state, run by `sound.rs` where the mixer is
     pub(crate) mgr: MusicMgr,
     pub now_playing: String,
@@ -765,6 +767,10 @@ pub enum ObjCmd {
     /// the music manager's Play (its argument) or the race scene's suspend (racer_enablemusic): `MusicMgr`
     MusicPlay { arg: u32 },
     MusicSuspend,
+    /// the HUD's music buttons (F-49672 / F-78917 / F-29546): the manager's Pause(-1) (F-70924), NextSong / PreviousSong
+    /// with the chime (F-51486 / F-87381)
+    MusicPause,
+    MusicSkip { back: bool, chime: bool },
     /// a story scene's audio (game.dat `CUTSCENES_<name>`: its dialogue and effects streams and its mixer scene)
     /// started (`sounds` false: its mixer scene only), or (`on` false) the scene's audio ended
     Cutscene { name: String, on: bool, sounds: bool },
@@ -866,6 +872,7 @@ impl Audio {
             song_clock: (0, 0),
             song_len_ms: 0,
             song_replay: false,
+            song_back: false,
             mgr: MusicMgr::default(),
             now_playing: String::new(),
             music_meta: Vec::new(),
@@ -1124,6 +1131,13 @@ impl Audio {
     /// The next song start plays the last song again (see `song_replay`).
     pub(crate) fn replay_song(&mut self) {
         self.song_replay = true;
+    }
+
+    /// The next song start plays the song before in the lists' order (see `song_back`); it takes the place of a
+    /// replay asked before it.
+    pub(crate) fn cue_back(&mut self) {
+        self.song_replay = false;
+        self.song_back = true;
     }
 
     pub fn music_playing(&self) -> bool {
@@ -1646,6 +1660,14 @@ impl Audio {
         if self.music_files.is_empty() || self.handle.is_none() {
             return;
         }
+        // (the place before: PreviousSong, F-87381)
+        if std::mem::take(&mut self.song_back) {
+            if let Some(f) = self.lists.as_ref().and_then(|l| l.lock().ok().and_then(|mut l| l.prev_file())).filter(|f| *f < self.music_files.len()) {
+                self.music_next = f;
+                self.start_track();
+                return;
+            }
+        }
         // (the song that played last, again: F-62155 without the next song F-51486 before it)
         if std::mem::take(&mut self.song_replay) {
             self.start_track();
@@ -1786,8 +1808,9 @@ pub(crate) struct MusicMgr {
     /// +384 the song, +388 the one before it
     pub song: Option<u32>,
     pub old: Option<u32>,
-    /// +500 the jingle; +508 / +512 two more of the manager's sounds
+    /// +500 the jingle; +504 the pause's sound, +508 / +512 the next / previous song's (live while set)
     pub jingle: Option<u32>,
+    pub off: bool,
     pub after: [bool; 2],
     /// +516 the MUSIC_SUSPEND scene
     pub suspend: Option<u32>,
@@ -1817,18 +1840,22 @@ pub(crate) struct MusicMgr {
     pub list: (u32, u32),
 }
 
-/// MUSIC_0_MANAGER (game.dat): +10 the jingle (MUSIC_PLAYER_ON_MASTER), +14 / +26 / +32 the song's predelay (ms) behind
-/// the jingle / +508 / +512.
+/// MUSIC_0_MANAGER (game.dat): +10 the jingle (MUSIC_PLAYER_ON_MASTER), +16 the pause's (MUSIC_PLAYER_OFF_MASTER), +22 /
+/// +28 the next / previous song's (MUSIC_PLAYER_NEXT_MASTER), +14 / +26 / +32 the song's predelay (ms) behind the jingle /
+/// +508 / +512.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct MusicTune {
     pub jingle: u32,
+    pub off: u32,
+    pub skip: [u32; 2],
     pub pre: [u16; 3],
 }
 
 impl MusicTune {
     pub fn read(o: &[u8]) -> Option<MusicTune> {
         let u16at = |at: usize| o.get(at..at + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
-        Some(MusicTune { jingle: u32::from_be_bytes(o.get(10..14)?.try_into().ok()?), pre: [u16at(14)?, u16at(26)?, u16at(32)?] })
+        let u32at = |at: usize| o.get(at..at + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+        Some(MusicTune { jingle: u32at(10)?, off: u32at(16)?, skip: [u32at(22)?, u32at(28)?], pre: [u16at(14)?, u16at(26)?, u16at(32)?] })
     }
 }
 
@@ -1870,6 +1897,16 @@ pub(crate) trait MusicEnv {
     fn next_place(&mut self) -> (u32, u32);
     /// the next song start plays the song +68 holds (no next song before it)
     fn same_song(&mut self);
+    /// the order's previous place (F-81531) and the song at it (+48, +68)
+    fn prev_place(&mut self) -> (u32, u32) {
+        (0, 0)
+    }
+    /// the manager's slot +504 / +508 / +512 (0 / 1 / 2): its sound stopped (F-31667(h, 0)), or `hash` made and played
+    /// into it at 0 dB (F-39054); true when it plays
+    fn slot_stop(&mut self, _slot: usize) {}
+    fn slot_play(&mut self, _slot: usize, _hash: u32) -> bool {
+        false
+    }
 }
 
 impl MusicMgr {
@@ -2007,6 +2044,69 @@ impl MusicMgr {
             }
             e.hard_stop(s);
             self.song = None;
+        }
+    }
+
+    /// mcMusicManager Pause (F-70924, argument -1 from the HUD): with a song and MUSIC_USER above -95 dB the +504 sound
+    /// stopped and MUSIC_PLAYER_OFF_MASTER (+16 of the tune) played into it; the state 2 and the stop F-79064.
+    pub fn pause(&mut self, t: &MusicTune, arg: i32, e: &mut impl MusicEnv) {
+        if self.song.is_some() && e.music_user_db() > -95.0 {
+            if self.off {
+                e.slot_stop(0);
+            }
+            self.off = e.slot_play(0, t.off);
+        }
+        self.state = 2;
+        self.stop(arg, e);
+    }
+
+    /// F-79064: with a song, the place to come back to (+60 / +64: with the restart byte set the list and position
+    /// F-34712 finds the song at, else +48 / +52 - no ported code reads them), +84 = the song's position (+172), the
+    /// voice's +192 = `arg` unless it is -1 (only -1 reaches here), the song released (F-63886); the console player's
+    /// slot 24 (not on the PC); the idle handler.
+    pub fn stop(&mut self, arg: i32, e: &mut impl MusicEnv) {
+        let _ = arg;
+        if let Some(s) = self.song {
+            self.w84 = e.song_position(s);
+            e.release(s);
+            self.song = None;
+            // (+68 stays: the next start plays this song again; the port's start moves on unless told)
+            e.same_song();
+        }
+        self.handler = Handler::Idle;
+    }
+
+    /// NextSong (F-51486) and PreviousSong (F-87381), `chime` their argument's byte: with MUSIC_USER above -95 dB, the
+    /// restart byte, the song's place, position, kept position and length cleared (the console player: its slot 36 / 40,
+    /// not on the PC); the order's next (F-44754) or previous (F-81531) place and its song (+48, +68); with a song,
+    /// `chime` set: the +508 / +512 sound stopped and MUSIC_PLAYER_NEXT_MASTER (+22 / +28) played into it; the song
+    /// released (F-63886) and the next started (F-62155). The song's name logged (F-77135).
+    pub fn skip(&mut self, t: &MusicTune, back: bool, chime: bool, e: &mut impl MusicEnv) {
+        if !(e.music_user_db() > -95.0) {
+            return;
+        }
+        self.restart = false;
+        self.offset = 0;
+        self.w84 = 0;
+        self.pos = 0.0;
+        self.w80 = 0;
+        if self.console {
+            return;
+        }
+        let (p, song) = if back { e.prev_place() } else { e.next_place() };
+        self.list.0 = p;
+        self.cur = song;
+        if let Some(s) = self.song {
+            if chime {
+                let k = back as usize;
+                if self.after[k] {
+                    e.slot_stop(1 + k);
+                }
+                self.after[k] = e.slot_play(1 + k, t.skip[k]);
+            }
+            e.release(s);
+            self.song = None;
+            self.start(t, 0, e);
         }
     }
 
@@ -2165,7 +2265,7 @@ mod tests {
                 list: (3, 4),
                 ..MusicMgr::default()
             };
-            let t = MusicTune { jingle: w[21], pre: [w[22] as u16, w[23] as u16, w[24] as u16] };
+            let t = MusicTune { jingle: w[21], off: 0, skip: [0, 0], pre: [w[22] as u16, w[23] as u16, w[24] as u16] };
             let mut e = Rec { out: "L".into(), w: &w };
             if w[0] == 0 {
                 m.play(&t, w[1], &mut e);
@@ -2277,7 +2377,7 @@ mod tests {
             }
             fn same_song(&mut self) {}
         }
-        let t = MusicTune { jingle: 0, pre: [900, 0, 0] };
+        let t = MusicTune { jingle: 0, off: 0, skip: [0, 0], pre: [900, 0, 0] };
         let mut lines = include_str!("testdata/music_playing_ref.txt").lines();
         let mut n = 0;
         while let Some(c) = lines.next() {
@@ -2429,5 +2529,136 @@ mod tests {
         let back = SlowRamp { from: r.at(0.5), to: SLOWDOWN_OFF, start: std::time::Instant::now(), dur: SLOWDOWN_FADE.1 };
         assert!(near(back.at(0.25), [0.75, 0.75, 0.75]));
         assert!(near(back.at(0.5), SLOWDOWN_OFF));
+    }
+}
+
+#[cfg(test)]
+mod music_button_tests {
+    use super::{Handler, MusicEnv, MusicMgr, MusicTune};
+
+    /// The calls the manager makes, in order.
+    #[derive(Default)]
+    struct Log {
+        db: f32,
+        calls: Vec<String>,
+    }
+
+    impl MusicEnv for Log {
+        fn music_user_db(&self) -> f32 {
+            self.db
+        }
+        fn scene_start(&mut self) -> Option<u32> {
+            None
+        }
+        fn scene_stop(&mut self, _h: u32) {}
+        fn sound_stop(&mut self, _h: u32) {}
+        fn jingle(&mut self, hash: u32) -> Option<u32> {
+            self.calls.push(format!("jingle {hash:x}"));
+            Some(9)
+        }
+        fn release(&mut self, h: u32) {
+            self.calls.push(format!("release {h}"));
+        }
+        fn pick(&mut self) -> u32 {
+            0
+        }
+        fn song_start(&mut self, _hash: u32, offset: u32, predelay: u32, arg: u32) -> Option<u32> {
+            self.calls.push(format!("song {offset} {predelay} {arg}"));
+            Some(2)
+        }
+        fn place(&mut self, _a: u32, _b: u32) {}
+        fn console_ready(&mut self) -> bool {
+            false
+        }
+        fn console_start(&mut self, _entry: u32) {}
+        fn console_stop(&mut self) {}
+        fn changed(&mut self) {}
+        fn user_music(&self) -> bool {
+            false
+        }
+        fn song_state(&self, _h: u32) -> u16 {
+            2
+        }
+        fn song_position(&self, _h: u32) -> u32 {
+            61_250
+        }
+        fn song_length(&mut self, _h: u32) -> u32 {
+            200_000
+        }
+        fn hard_stop(&mut self, _h: u32) {}
+        fn next_place(&mut self) -> (u32, u32) {
+            self.calls.push("next place".into());
+            (4, 40)
+        }
+        fn same_song(&mut self) {
+            self.calls.push("same song".into());
+        }
+        fn prev_place(&mut self) -> (u32, u32) {
+            self.calls.push("prev place".into());
+            (2, 20)
+        }
+        fn slot_stop(&mut self, slot: usize) {
+            self.calls.push(format!("stop +{}", 504 + 4 * slot));
+        }
+        fn slot_play(&mut self, slot: usize, hash: u32) -> bool {
+            self.calls.push(format!("play +{} {hash:x}", 504 + 4 * slot));
+            true
+        }
+    }
+
+    const T: MusicTune = MusicTune { jingle: 0x10, off: 0x16, skip: [0x22, 0x28], pre: [900, 75, 75] };
+
+    fn playing() -> MusicMgr {
+        MusicMgr { song: Some(1), handler: Handler::Playing, offset: 61_000, pos: 0.3, w80: 200_000, restart: true, ..Default::default() }
+    }
+
+    /// Pause (F-70924 -> F-79064) and NextSong / PreviousSong (F-51486 / F-87381) as decoded: the calls in order and the
+    /// fields after.
+    #[test]
+    fn pause_and_skip_as_the_manager_does() {
+        // (pause with a song: MUSIC_PLAYER_OFF_MASTER into +504, the state 2, the song's place kept, released, idle)
+        let mut m = playing();
+        let mut e = Log::default();
+        m.pause(&T, -1, &mut e);
+        assert_eq!(e.calls, ["play +504 16", "release 1", "same song"]);
+        assert_eq!((m.state, m.song, m.w84, m.handler, m.off, m.offset), (2, None, 61_250, Handler::Idle, true, 61_000));
+        // (a second one: the +504 sound stopped first; with no song nothing plays, the state and the handler as before)
+        let mut e = Log::default();
+        m.song = Some(1);
+        m.pause(&T, -1, &mut e);
+        assert_eq!(e.calls[..2], ["stop +504", "play +504 16"]);
+        let mut m = MusicMgr { handler: Handler::Playing, ..Default::default() };
+        let mut e = Log::default();
+        m.pause(&T, -1, &mut e);
+        assert!(e.calls.is_empty());
+        assert_eq!((m.state, m.handler), (2, Handler::Idle));
+        // (muted: Pause plays no sound but stops)
+        let mut m = playing();
+        let mut e = Log { db: -100.0, ..Default::default() };
+        m.pause(&T, -1, &mut e);
+        assert_eq!(e.calls, ["release 1", "same song"]);
+        // (next: fields cleared, the next place, MUSIC_PLAYER_NEXT_MASTER into +508, the song released and the next
+        // started 75 ms behind it from 0)
+        let mut m = playing();
+        let mut e = Log::default();
+        m.skip(&T, false, true, &mut e);
+        assert_eq!(e.calls, ["next place", "play +508 22", "release 1", "song 0 75 0"]);
+        assert_eq!((m.restart, m.offset, m.pos, m.w80, m.w84, m.list.0, m.cur, m.song, m.handler), (false, 0, 0.0, 0, 0, 4, 40, Some(2), Handler::Playing));
+        // (previous: its place and +512, +28)
+        let mut m = playing();
+        let mut e = Log::default();
+        m.skip(&T, true, true, &mut e);
+        assert_eq!(e.calls, ["prev place", "play +512 28", "release 1", "song 0 75 0"]);
+        assert_eq!((m.list.0, m.cur), (2, 20));
+        // (no song: the place moves, nothing starts; muted: nothing at all)
+        let mut m = MusicMgr { handler: Handler::Playing, ..Default::default() };
+        let mut e = Log::default();
+        m.skip(&T, false, true, &mut e);
+        assert_eq!(e.calls, ["next place"]);
+        let mut m = playing();
+        let mut e = Log { db: -95.0, ..Default::default() };
+        m.skip(&T, false, true, &mut e);
+        assert!(e.calls.is_empty());
+        assert_eq!(m, playing());
     }
 }

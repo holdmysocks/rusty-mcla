@@ -113,6 +113,8 @@ struct MusicHere<'a> {
     lib: &'a mut crate::sndobj::SoundLib,
     a: &'a mut Audio,
     jingle: &'a mut Option<crate::sndobj::Handle>,
+    /// +504 / +508 / +512
+    slots: &'a mut [Option<crate::sndobj::Handle>; 3],
 }
 
 impl crate::audio::MusicEnv for MusicHere<'_> {
@@ -175,6 +177,22 @@ impl crate::audio::MusicEnv for MusicHere<'_> {
     }
     fn same_song(&mut self) {
         self.a.replay_song();
+    }
+    fn prev_place(&mut self) -> (u32, u32) {
+        // (as the next place: the radio's order moves back at the song start, Audio::next_track)
+        log::info!("music: previous song");
+        self.a.cue_back();
+        (0, 0)
+    }
+    fn slot_stop(&mut self, slot: usize) {
+        if let Some(h) = self.slots[slot].take() {
+            self.lib.stop(h);
+        }
+    }
+    fn slot_play(&mut self, slot: usize, hash: u32) -> bool {
+        self.slots[slot] = self.lib.play_hash(hash, crate::sndobj::Req::default());
+        log::info!("music: {} into +{} ({})", self.lib.name_of(hash).unwrap_or("?"), 504 + 4 * slot, if self.slots[slot].is_some() { "playing" } else { "not made" });
+        self.slots[slot].is_some()
     }
 }
 
@@ -299,6 +317,8 @@ pub struct Sound {
     phone: bool,
     /// the music manager's jingle (its +500)
     music_jingle: Option<crate::sndobj::Handle>,
+    /// the music manager's +504 / +508 / +512 sounds
+    music_slots: [Option<crate::sndobj::Handle>; 3],
     tutorial: bool,
     dmg_prev: f32,
     dmg_armed: bool,
@@ -712,6 +732,13 @@ impl Sound {
                 self.music_jingle = None;
             }
             a.mgr.jingle = self.music_jingle.map(|_| 1);
+            for h in self.music_slots.iter_mut() {
+                if h.is_some_and(|h| !lib.playing(h)) {
+                    *h = None;
+                }
+            }
+            a.mgr.off = self.music_slots[0].is_some();
+            a.mgr.after = [self.music_slots[1].is_some(), self.music_slots[2].is_some()];
             if !lib.scene_on(MUSIC_SUSPEND) {
                 a.mgr.suspend = None;
             }
@@ -720,7 +747,7 @@ impl Sound {
             if a.mgr.handler == crate::audio::Handler::Playing {
                 if let Some(t) = lib.game.get_name("MUSIC_0_MANAGER").and_then(crate::audio::MusicTune::read) {
                     let mut m = std::mem::take(&mut a.mgr);
-                    m.playing(&t, dt, &mut MusicHere { lib, a, jingle: &mut self.music_jingle });
+                    m.playing(&t, dt, &mut MusicHere { lib, a, jingle: &mut self.music_jingle, slots: &mut self.music_slots });
                     a.mgr = m;
                 }
             }
@@ -730,18 +757,29 @@ impl Sound {
                         let tune = lib.game.get_name("MUSIC_0_MANAGER").and_then(crate::audio::MusicTune::read);
                         if let Some(t) = tune {
                             let mut m = std::mem::take(&mut a.mgr);
-                            m.play(&t, arg, &mut MusicHere { lib, a, jingle: &mut self.music_jingle });
+                            m.play(&t, arg, &mut MusicHere { lib, a, jingle: &mut self.music_jingle, slots: &mut self.music_slots });
                             a.mgr = m;
                         } else {
                             // (no manager object: the radio starts as it did)
                             a.mgr.handler = crate::audio::Handler::Playing;
                         }
                     }
+                    crate::audio::ObjCmd::MusicPause | crate::audio::ObjCmd::MusicSkip { .. } => {
+                        if let Some(t) = lib.game.get_name("MUSIC_0_MANAGER").and_then(crate::audio::MusicTune::read) {
+                            let mut m = std::mem::take(&mut a.mgr);
+                            let mut e = MusicHere { lib, a, jingle: &mut self.music_jingle, slots: &mut self.music_slots };
+                            match c {
+                                crate::audio::ObjCmd::MusicSkip { back, chime } => m.skip(&t, back, chime, &mut e),
+                                _ => m.pause(&t, -1, &mut e),
+                            }
+                            a.mgr = m;
+                        }
+                    }
                     crate::audio::ObjCmd::MusicSuspend => {
                         let tune = lib.game.get_name("MUSIC_0_MANAGER").and_then(crate::audio::MusicTune::read);
                         if let Some(t) = tune {
                             let mut m = std::mem::take(&mut a.mgr);
-                            m.suspend(&t, &mut MusicHere { lib, a, jingle: &mut self.music_jingle });
+                            m.suspend(&t, &mut MusicHere { lib, a, jingle: &mut self.music_jingle, slots: &mut self.music_slots });
                             a.mgr = m;
                         }
                     }

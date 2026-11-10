@@ -809,6 +809,12 @@ struct App {
     pad_horn: bool,
     /// HEADLIGHTS held on the pad (the input's +40 bit 0x2, F-56064)
     pad_flash: bool,
+    /// the HUD form's music buttons (MUSIC_UP / MUSIC_DOWN / MUSIC_PAUSE): the pad's down this frame (bits 0..2), the
+    /// buttons down the frame before (pad and keys), another button of the press chain pressed (HEADLIGHTS, MAP)
+    music_pad: u8,
+    music_before: u8,
+    music_other: bool,
+    music_keys: flash_ui::HudMusicKeys,
     /// the pad's actions that were down a frame ago (by the active map), a shift asked for and
     /// not yet handed to the car, and the last shift with its time
     pad_act_prev: u32,
@@ -1679,6 +1685,10 @@ impl App {
             pad_horn: false,
             pad_flash: false,
             pad_act_prev: 0,
+            music_pad: 0,
+            music_before: 0,
+            music_other: false,
+            music_keys: Default::default(),
             pad_shift: 0,
             pad_shift_last: None,
             at_station: None,
@@ -2403,26 +2413,17 @@ impl App {
         let driving = self.drive && !self.game.in_menu() && !self.game.show_map;
         match act {
             // (N)
-            kb::MUSIC_UP => {
-                if let Some(a) = self.audio.as_mut() {
-                    a.next_track();
-                }
-            }
-            kb::MUSIC_DOWN if driving => {
-                if let Some(a) = self.audio.as_mut() {
-                    a.prev_track();
-                }
-            }
-            // (B)
-            kb::MUSIC_PAUSE => {
-                if let Some(a) = self.audio.as_mut() {
-                    a.music_on = !a.music_on;
-                }
-            }
+            // (N, B: MUSIC_UP, MUSIC_PAUSE - with MUSIC_DOWN read as the pad's are, `music_buttons`)
             // (F)
-            kb::HEADLIGHTS => self.flash = true,
+            kb::HEADLIGHTS => {
+                self.music_other |= driving;
+                self.flash = true
+            }
             // (O)
-            kb::MAP => self.game.map_button(),
+            kb::MAP => {
+                self.music_other |= driving;
+                self.game.map_button()
+            }
             // (G)
             kb::GARAGE => self.enter_garage = true,
             // (L)
@@ -2641,6 +2642,7 @@ impl App {
     /// left stick moves, A picks and B goes back.
     fn gamepad_buttons(&mut self) {
         self.pad_flash = false;
+        self.music_pad = 0;
         self.game.script_stick = [false; 2];
         let (now, look, pressed) = {
             let Some(g) = self.gamepad.as_mut() else { return };
@@ -2876,11 +2878,9 @@ impl App {
                 crate::mc4::pad_down(&st, &live, "CAM_PAN_RIGHT") as i32 as f32 - crate::mc4::pad_down(&st, &live, "CAM_PAN_LEFT") as i32 as f32,
                 crate::mc4::pad_down(&st, &live, "CAM_PAN_UP") as i32 as f32 - crate::mc4::pad_down(&st, &live, "CAM_PAN_DOWN") as i32 as f32,
             );
-            if a(12) || a(13) {
-                if let Some(au) = self.audio.as_mut() {
-                    if a(12) { au.next_track() } else { au.prev_track() }
-                }
-            }
+            // (MUSIC_UP / MUSIC_DOWN / MUSIC_PAUSE: the HUD form's, `music_buttons`)
+            self.music_pad = (down >> 12 & 1) as u8 | ((down >> 13 & 1) as u8) << 1 | (crate::mc4::pad_down(&st, &live, "MUSIC_PAUSE") as u8) << 2;
+            self.music_other |= a(7) || a(9);
             if a(14) {
                 self.fire_ability = true;
             }
@@ -2924,6 +2924,46 @@ impl App {
         if p(13) {
             if let Some(a) = self.audio.as_mut() {
                 a.next_track();
+            }
+        }
+    }
+
+    /// The HUD form's music buttons, a tick (`flash_ui::HudMusicKeys`): the pad's and the keyboard's MUSIC_UP /
+    /// MUSIC_DOWN / MUSIC_PAUSE, the form shown while driving (no menu, no GPS map), its bit 7 off in a replay.
+    fn music_buttons(&mut self, dt: f32) {
+        use crate::keybinds as kb;
+        let driving = self.drive && !self.game.in_menu() && !self.game.show_map;
+        let keys = &self.game.opt_x.ctrl.kbd.binds.keys;
+        let key = |a: usize| keys[a].iter().flatten().any(|k| self.input.down(*k));
+        let down = if driving { self.music_pad | key(kb::MUSIC_UP) as u8 | (key(kb::MUSIC_DOWN) as u8) << 1 | (key(kb::MUSIC_PAUSE) as u8) << 2 } else { 0 };
+        let before = std::mem::replace(&mut self.music_before, down);
+        let other = std::mem::take(&mut self.music_other);
+        let Some(a) = self.audio.as_mut() else { return };
+        let playing = if a.objects { a.mgr.handler == audio::Handler::Playing } else { a.music_playing() };
+        for c in self.music_keys.tick(down, before, other, driving, self.game.replay.is_none(), playing, dt) {
+            log::info!("music button: {c:?} (playing {playing})");
+            use flash_ui::MusicCall as M;
+            if c == M::Off {
+                // (F-73849 with the string table's MUSIC_OFF, 3.0 s, -1 / -1: shown as it is, tUSR)
+                if let Some(t) = self.game.flash_hud.as_ref().filter(|_| matches!(self.game.mode, Mode::FreeRoam | Mode::Race)).map(|h| h.movie.string("MUSIC_OFF")) {
+                    self.game.song_line = Some((t, 0.0));
+                }
+                self.game.mc4_song_line(-1, -1);
+            }
+            if a.objects {
+                a.obj_cmds.push(match c {
+                    M::Play => audio::ObjCmd::MusicPlay { arg: 0 },
+                    M::Next => audio::ObjCmd::MusicSkip { back: false, chime: true },
+                    M::Prev => audio::ObjCmd::MusicSkip { back: true, chime: true },
+                    M::Off => audio::ObjCmd::MusicPause,
+                });
+            } else {
+                // (no sound library: the radio's sink alone)
+                match c {
+                    M::Play | M::Next => a.next_track(),
+                    M::Prev => a.prev_track(),
+                    M::Off => a.stop_song(),
+                }
             }
         }
     }
@@ -8877,6 +8917,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         self.screen_eye = self.cam.pos;
 
         self.gamepad_buttons();
+        self.music_buttons(dt);
         // (what the prompts' keyboard keys are on this screen, and the GPS map's key - `glyphs`)
         crate::glyphs::set_screen(if self.photo.is_some() {
             crate::glyphs::Screen::Photo
@@ -14725,7 +14766,8 @@ impl App {
         let gpu = pollster::block_on(Gpu::new(window.clone())).unwrap_or_else(|e| crate::hooks::gpu_init_failed(&e));
         log::info!("startup: gpu at {} ms", t0.elapsed().as_millis());
         self.egui = Some(App::make_egui(&window, &gpu.device, &gpu.queue, gpu.config.format));
-        if self.opt.shot.is_none() {
+        // (test hook MCLA_AUDIO_LIVE: a screenshot run with the sound device, as a played game has it)
+        if self.opt.shot.is_none() || std::env::var("MCLA_AUDIO_LIVE").is_ok() {
             self.audio = audio::Audio::new(&self.opt.data_dir);
         } else if self.opt.audio_dump.is_some() {
             self.audio = audio::Audio::new_offline(&self.opt.data_dir);

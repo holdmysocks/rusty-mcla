@@ -2352,6 +2352,100 @@ pub struct FlashHud {
     song_shown: bool,
 }
 
+/// The HUD form's music buttons (mcHUDForm; actions MUSIC_UP 19, MUSIC_DOWN 20, MUSIC_PAUSE 21). The HUD reader
+/// F-68423 sends one press a tick, the first of HEADLIGHTS, MAP, MUSIC_DOWN, MUSIC_UP, MUSIC_PAUSE (and the photo camera's
+/// moves) that is pressed, then MUSIC_DOWN's held (F-60479) and released (F-44632) events. The press (F-49672) is taken
+/// with the form shown and its +5708 bit 7 (F-53853: not paused, not in a replay); held and released with the form shown.
+/// `playing`: the music manager in its playing state (+376 = F-61726, +380 0).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HudMusicKeys {
+    /// +5704: MUSIC_DOWN's hold clock (s), -1 when none runs (the constructor's value)
+    pub hold: f32,
+}
+
+/// What a music button asks of the music manager: Play(0) (F-33831), NextSong(1) / PreviousSong(1) (F-51486 / F-87381),
+/// or the MUSIC_OFF line (F-73849 with the string table's MUSIC_OFF, 3.0 s, list and place -1: tUSR) and Pause(-1) (F-70924).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MusicCall {
+    Play,
+    Next,
+    Prev,
+    Off,
+}
+
+impl Default for HudMusicKeys {
+    fn default() -> Self {
+        HudMusicKeys { hold: -1.0 }
+    }
+}
+
+impl HudMusicKeys {
+    /// The press (F-49672): MUSIC_UP NextSong while playing, else Play; MUSIC_DOWN while playing starts the hold clock
+    /// at 0, else Play and the clock off; MUSIC_PAUSE while playing MUSIC_OFF, else Play.
+    pub fn press(&mut self, action: u32, playing: bool) -> Option<MusicCall> {
+        match action {
+            19 => Some(if playing { MusicCall::Next } else { MusicCall::Play }),
+            20 if playing => {
+                self.hold = 0.0;
+                None
+            }
+            20 => {
+                self.hold = -1.0;
+                Some(MusicCall::Play)
+            }
+            21 => Some(if playing { MusicCall::Off } else { MusicCall::Play }),
+            _ => None,
+        }
+    }
+
+    /// MUSIC_DOWN held (F-78917), `dt` the frame time: with the clock running it adds the time; at 1.0 s the clock goes
+    /// off and MUSIC_OFF.
+    pub fn held(&mut self, dt: f32) -> Option<MusicCall> {
+        if self.hold == -1.0 {
+            return None;
+        }
+        self.hold += dt;
+        if self.hold < 1.0 {
+            return None;
+        }
+        self.hold = -1.0;
+        Some(MusicCall::Off)
+    }
+
+    /// MUSIC_DOWN released (F-29546): with the clock running, it goes off and PreviousSong.
+    pub fn released(&mut self) -> Option<MusicCall> {
+        if self.hold == -1.0 {
+            return None;
+        }
+        self.hold = -1.0;
+        Some(MusicCall::Prev)
+    }
+
+    /// One tick of the reader: `down` the three buttons (bit 0 MUSIC_UP, 1 MUSIC_DOWN, 2 MUSIC_PAUSE) this tick and
+    /// `before` the tick before; `other` another button of the press chain pressed ahead of them (HEADLIGHTS, MAP);
+    /// `shown` the form shown, `drive` its bit 7.
+    pub fn tick(&mut self, down: u8, before: u8, other: bool, shown: bool, drive: bool, playing: bool, dt: f32) -> Vec<MusicCall> {
+        let mut out = Vec::new();
+        if !shown {
+            return out;
+        }
+        let pressed = down & !before;
+        if !other && drive {
+            // (first match: MUSIC_DOWN, MUSIC_UP, MUSIC_PAUSE)
+            let act = if pressed & 2 != 0 { Some(20) } else if pressed & 1 != 0 { Some(19) } else if pressed & 4 != 0 { Some(21) } else { None };
+            if let Some(c) = act.and_then(|a| self.press(a, playing)) {
+                out.push(c);
+            }
+        }
+        if down & 2 != 0 {
+            out.extend(self.held(dt));
+        } else if before & 2 != 0 {
+            out.extend(self.released());
+        }
+        out
+    }
+}
+
 /// Splash slots of the HUD movie (`SplashTypes` 5, 4, 10 for slots 0..2; slot 3
 /// is the countdown). Colours: 0 white, 1 blue, 2 red.
 pub const SPLASH_CENTER: usize = 0;
@@ -2743,5 +2837,61 @@ impl FlashHud {
         p.set_global("countdownCount", Value::Int(want / 30));
         p.set_global("countdownTimer", Value::Int(want % 30));
         behind
+    }
+}
+
+#[cfg(test)]
+mod music_key_tests {
+    use super::{HudMusicKeys, MusicCall as M};
+
+    /// The HUD form's music buttons as F-49672 / F-78917 / F-29546 take them, through the reader's order (F-68423).
+    #[test]
+    fn music_buttons_follow_the_hud_form() {
+        let dt = 1.0f32 / 30.0;
+        // (not playing: every button is Play; MUSIC_DOWN leaves no clock, so its hold and release do nothing)
+        for (bit, want) in [(1u8, M::Play), (2, M::Play), (4, M::Play)] {
+            let mut k = HudMusicKeys::default();
+            assert_eq!(k.tick(bit, 0, false, true, true, false, dt), vec![want]);
+            assert_eq!(k.hold, -1.0);
+            for _ in 0..60 {
+                assert!(k.tick(bit, bit, false, true, true, false, dt).is_empty());
+            }
+            assert!(k.tick(0, bit, false, true, true, false, dt).is_empty());
+        }
+        // (playing: MUSIC_UP NextSong, MUSIC_PAUSE MUSIC_OFF; MUSIC_DOWN tapped PreviousSong at the release)
+        let mut k = HudMusicKeys::default();
+        assert_eq!(k.tick(1, 0, false, true, true, true, dt), vec![M::Next]);
+        assert_eq!(k.tick(4, 0, false, true, true, true, dt), vec![M::Off]);
+        assert!(k.tick(2, 0, false, true, true, true, dt).is_empty());
+        assert_eq!(k.hold, dt);
+        assert!(k.tick(2, 2, false, true, true, true, dt).is_empty());
+        assert_eq!(k.tick(0, 2, false, true, true, true, dt), vec![M::Prev]);
+        assert_eq!(k.hold, -1.0);
+        // (held: the frame times summed as f32 from 0 in the press tick; MUSIC_OFF once at 1.0 s, nothing at the release)
+        let mut k = HudMusicKeys::default();
+        // (the tick it fires: the first n with (n + 1) frame times summed as f32 at or past 1.0)
+        let mut sum = 0.0f32;
+        let want = (0..).find(|_| {
+            sum += dt;
+            sum >= 1.0
+        });
+        let fired: Vec<usize> = (0..120).filter(|&n| !k.tick(2, if n == 0 { 0 } else { 2 }, false, true, true, true, dt).is_empty()).collect();
+        assert_eq!(fired, vec![want.unwrap()]);
+        assert!(k.tick(0, 2, false, true, true, true, dt).is_empty());
+        // (one press a tick: MUSIC_DOWN before MUSIC_UP before MUSIC_PAUSE; HEADLIGHTS / MAP ahead of them take the tick)
+        let mut k = HudMusicKeys::default();
+        assert_eq!(k.tick(7, 0, false, true, true, false, dt), vec![M::Play]);
+        assert_eq!(k.hold, -1.0);
+        let mut k = HudMusicKeys::default();
+        assert_eq!(k.tick(5, 0, false, true, true, true, dt), vec![M::Next]);
+        assert!(HudMusicKeys::default().tick(1, 0, true, true, true, true, dt).is_empty());
+        // (bit 7 off - paused, a replay: no press, but a running clock still counts and releases)
+        let mut k = HudMusicKeys { hold: 0.5 };
+        assert!(k.tick(1, 0, false, true, false, true, dt).is_empty());
+        assert_eq!(k.tick(0, 2, false, true, false, true, dt), vec![M::Prev]);
+        // (the form hidden: nothing)
+        let mut k = HudMusicKeys { hold: 0.5 };
+        assert!(k.tick(0, 2, false, false, true, true, dt).is_empty());
+        assert_eq!(k.hold, 0.5);
     }
 }
