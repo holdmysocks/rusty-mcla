@@ -325,6 +325,22 @@ fn type_list(xml: &str) -> Vec<(String, Tod)> {
     body.split("<TypeName>").skip(1).map(|item| (item.split('<').next().unwrap_or("").trim().to_ascii_lowercase(), Tod::parse(item))).collect()
 }
 
+/// The weighted draw F-36934 (a TypeDistribution's pick): a total of 0 draws nothing; else x = (u23 total) 2^-23 of the
+/// generator's next value, and the first index whose running x - w drops below 0 (strict); none past the last.
+pub fn draw_index(w: &[f32], total: f32, rng: &mut crate::vehicles::parked::Mwc) -> Option<usize> {
+    if total == 0.0 {
+        return None;
+    }
+    let mut x = (rng.next() & 0x7F_FFFF) as f32 * total * (1.0 / 8_388_608.0);
+    for (i, &wi) in w.iter().enumerate() {
+        x -= wi;
+        if x < 0.0 {
+            return Some(i);
+        }
+    }
+    None
+}
+
 impl Distribution {
     // world rectangle covered by the 256x256 map (fitted to the parked car lists, which
     // are stored per district)
@@ -456,6 +472,13 @@ impl Distribution {
             break;
         }
         d
+    }
+
+    /// F-71916's draw at `pos` and `hour` (F-36934 on the district's weights): the type's index in `all`; None (and no draw)
+    /// when the district gives nothing.
+    pub fn draw(&self, pos: Vec3, hour: f32, rng: &mut crate::vehicles::parked::Mwc) -> Option<usize> {
+        let w = self.weights(pos, hour)?;
+        draw_index(&w.w, w.total, rng)
     }
 
     /// Weighted pick for this place and hour among the types `usable` accepts
