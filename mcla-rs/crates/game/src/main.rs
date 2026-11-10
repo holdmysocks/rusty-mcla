@@ -8647,6 +8647,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 Some(startwarp::Phase::Down) => 3,
             };
             self.sound.damage_alpha = self.game.flash_hud.as_ref().and_then(|h| h.movie.player.get_global("damage_alpha")).map_or(0.0, |v| v.to_f32());
+            // (the radar detector's inputs, F-92562: the HUD movie's active_radar slot and its detector's visibility; the
+            // cops suspended while the arrest scene runs, Script_SuspendAllCops)
+            self.sound.active_radar = self.game.flash_hud.as_ref().and_then(|h| h.movie.player.get_global("active_radar")).map_or(0.0, |v| v.to_f32());
+            self.sound.detector_shown = self.game.flash_hud.as_ref().and_then(|h| h.movie.player.get_global("detectorisvisible")).is_some_and(|v| v.to_i32() != 0);
+            self.sound.cops_suspended = self.game.arrest_scene != 2;
             // the sounds the movies started this frame (their Sound objects' start, F-92898): RACER_FOUND_MASTER from the
             // HUD's splash queue 1, RANK_UP_MASTER / REP_BAR_FILL_MASTER from the pause page's AnimateReward
             {

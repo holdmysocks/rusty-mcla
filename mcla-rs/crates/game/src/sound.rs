@@ -196,6 +196,89 @@ impl crate::audio::MusicEnv for MusicHere<'_> {
     }
 }
 
+/// The radar detector's beep (F-92562, from the player audio entity's update): the level follows min(active_radar, 5.5)
+/// at GLOBAL_RADAR_DETECTOR +20 per second; while it is above 0 and the HUD's detector is shown, it beeps the record's
+/// +10 sound every 1 s at level 0 down to 0.08 s at level 5 (+14 / +16 ms), its volume from the six-entry table +25
+/// (hundredths of a dB, by the level), 50 cents up (+18) above level 5. The HUD movie hidden, the cops suspended or a
+/// cop in a pull-over or pursuit tactic set the level to 0.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RadarBeep {
+    pub level: f32,
+    pub clock: f32,
+    pub last: f32,
+}
+
+/// GLOBAL_RADAR_DETECTOR (game.dat): +10 the sound, +14 the interval at level 0 and +16 at level 5 (ms), +18 the
+/// pitch above level 5 (cents), +20 the rate (per second), +25 + 2 i the volume at level i (0.01 dB)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RadarTune {
+    pub sound: u32,
+    pub slow: i16,
+    pub fast: u16,
+    pub pitch: u16,
+    pub rate: f32,
+    pub vol: [i16; 6],
+}
+
+impl RadarTune {
+    pub fn read(o: &[u8]) -> Option<RadarTune> {
+        let u16_at = |k: usize| o.get(k..k + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
+        let u32_at = |k: usize| o.get(k..k + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+        let mut vol = [0i16; 6];
+        for (i, v) in vol.iter_mut().enumerate() {
+            *v = u16_at(25 + 2 * i)? as i16;
+        }
+        Some(RadarTune { sound: u32_at(10)?, slow: u16_at(14)? as i16, fast: u16_at(16)?, pitch: u16_at(18)?, rate: f32::from_bits(u32_at(20)?), vol })
+    }
+}
+
+impl RadarBeep {
+    /// One update (F-92562): `dt` the frame's time (G+92, also the clock's step here), `radar` the HUD's active_radar,
+    /// `shown` the HUD's detector shown, `quiet` the HUD movie hidden / the cops suspended / a cop chasing. The beep's
+    /// (volume dB, pitch cents) when one starts.
+    pub fn step(&mut self, t: &RadarTune, dt: f32, radar: f32, shown: bool, quiet: bool) -> Option<(f32, i32)> {
+        self.clock += dt;
+        // (the ramp toward min(active_radar, 5.5): fsel, fmadds / fnmsubs, clamped at the target)
+        let target = if radar - 5.5 >= 0.0 { 5.5 } else { radar };
+        if self.level < target {
+            self.level = dt.mul_add(t.rate, self.level);
+            if self.level > target {
+                self.level = target;
+            }
+        } else if self.level > target {
+            self.level = -dt.mul_add(t.rate, -self.level);
+            if self.level < target {
+                self.level = target;
+            }
+        }
+        if !(self.level > 0.0) || !shown {
+            return None;
+        }
+        if quiet {
+            self.level = 0.0;
+            return None;
+        }
+        let lv = self.level;
+        let (hi, lo) = (t.fast as i32 as f32 * 0.001f32, t.slow as f32 * 0.001f32);
+        let k = ((hi - lo) * lv).mul_add(0.2, lo);
+        let k = if k - hi >= 0.0 { k } else { hi };
+        let k = if k - lo >= 0.0 { lo } else { k };
+        if self.clock < k + self.last {
+            return None;
+        }
+        let i = lv as i32;
+        let pitch = if lv > 5.0 { t.pitch as i32 } else { 0 };
+        let vol = if i >= 5 {
+            t.vol[5] as f32 * 0.01f32
+        } else {
+            let (a, b) = (t.vol[i as usize] as f32, t.vol[i as usize + 1] as f32);
+            (b - a).mul_add(lv - i as f32, a) * 0.01f32
+        };
+        self.last = self.clock;
+        Some((vol, pitch))
+    }
+}
+
 #[derive(Default)]
 pub struct Sound {
     /// the reverb object the probes chose (F-26357; REVERB_DEFAULT until the first choice)
@@ -293,6 +376,14 @@ pub struct Sound {
     /// set by the game each frame: the HUD movie's `damage_alpha`, a splash posted to the HUD's queue 1, the pause
     /// movie's `cur_camera`
     pub damage_alpha: f32,
+    /// set by the game each frame: the HUD movie's `active_radar` (the lit radar lights + 1, the movie's own script
+    /// from `radar_strength`), its detector shown (`detectorisvisible` != 0: the original's mcRadarDetectorCtrl, form
+    /// 109 child 14, vt+60) and the cops suspended (registry Script_SuspendAllCops: the arrest scene running)
+    pub active_radar: f32,
+    pub detector_shown: bool,
+    pub cops_suspended: bool,
+    /// the radar detector (F-92562): its level (+2188), the clock (+156) and its last beep (+2184)
+    radar: RadarBeep,
     /// the names the UI movies started (`flash::Player::sounds_started`), played by name (F-42664: no position, the
     /// default parameters)
     pub movie_sounds: Vec<std::rc::Rc<str>>,
@@ -1044,6 +1135,16 @@ impl Sound {
                 self.dmg_armed = false;
             }
             self.dmg_prev = v;
+            // the radar detector (F-92562; the HUD movie shown as the damage beep takes it, the cops in a pull-over or
+            // pursuit tactic as the port's heat: PullOver, Pursuit, Search)
+            if let Some(t) = lib.game.get_name("GLOBAL_RADAR_DETECTOR").and_then(RadarTune::read) {
+                let hud = matches!(game.mode, Mode::FreeRoam | Mode::Race) && game.flash_hud.is_some();
+                let chase = matches!(police.heat, Heat::PullOver | Heat::Pursuit | Heat::Search);
+                let shown = game.flash_hud.is_some() && self.detector_shown;
+                if let Some((volume, pitch)) = self.radar.step(&t, dt, self.active_radar, shown, !hud || self.cops_suspended || chase) {
+                    lib.play_hash(t.sound, crate::sndobj::Req { volume, pitch, ..crate::sndobj::Req::default() });
+                }
+            }
             for n in std::mem::take(&mut self.movie_sounds) {
                 if lib.play(&n, crate::sndobj::Req::default()).is_none() {
                     log::warn!("audio: no sound object {n} (started by a movie)");
@@ -2017,4 +2118,54 @@ pub fn load_amb_types(data_dir: &str) -> std::collections::HashMap<String, u8> {
         out.insert(e.file_name().to_string_lossy().to_ascii_lowercase(), class);
     }
     out
+}
+
+#[cfg(test)]
+mod radar_tests {
+    use super::*;
+
+    fn tune() -> RadarTune {
+        RadarTune { sound: 1, slow: 1000, fast: 80, pitch: 50, rate: 2.0, vol: [0, 0, 0, 0, 0, -300] }
+    }
+
+    /// GLOBAL_RADAR_DETECTOR as on the disc.
+    #[test]
+    fn radar_tune_from_the_disc() {
+        let Ok(d) = std::env::var("MCLA_DATA_DIR") else { return };
+        let Ok(b) = std::fs::read(std::path::Path::new(&d).join("audio/X360/config/game.dat")) else { return };
+        let Some(g) = mcla_formats::audcfg::Dat::parse(&b) else { return };
+        let t = g.get_name("GLOBAL_RADAR_DETECTOR").and_then(RadarTune::read).unwrap();
+        assert_eq!(t, RadarTune { sound: 0x76aafd22, ..tune() });
+    }
+
+    /// F-92562: the ramp at +20 per second to min(active_radar, 5.5), the interval 1 s .. 0.08 s, -3 dB and +50
+    /// cents at the top, the level cleared while quiet, kept while the detector is hidden.
+    #[test]
+    fn the_radar_detector_beeps_faster_as_the_cop_nears() {
+        let t = tune();
+        let mut r = RadarBeep::default();
+        // (level 0: no beep)
+        assert_eq!(r.step(&t, 0.5, 0.0, true, false), None);
+        // (0.5 s at 2 per s: level 1, interval 1 - 0.92 x 0.2 = 0.816 s, clock 1.0 >= 0.816)
+        assert_eq!(r.step(&t, 0.5, 3.0, true, false), Some((0.0, 0)));
+        assert_eq!(r.level, 1.0);
+        // (level 2 next, interval 0.632, 0.5 s since: none)
+        assert_eq!(r.step(&t, 0.5, 3.0, true, false), None);
+        // (level 3 is the target)
+        assert_eq!(r.step(&t, 0.5, 3.0, true, false), Some((0.0, 0)));
+        assert_eq!(r.level, 3.0);
+        // (the top: 5.5, -3 dB, +50 cents, 0.08 s)
+        r.step(&t, 2.0, 9.0, true, false);
+        assert_eq!(r.level, 5.5);
+        r.last = r.clock - 1.0;
+        assert_eq!(r.step(&t, 0.0, 9.0, true, false), Some((-3.0, 50)));
+        // (hidden: kept; quiet: cleared)
+        assert_eq!(r.step(&t, 0.0, 9.0, false, true), None);
+        assert_eq!(r.level, 5.5);
+        assert_eq!(r.step(&t, 0.0, 9.0, true, true), None);
+        assert_eq!(r.level, 0.0);
+        // (level 4.5: between -0 and -3 dB by half)
+        let mut r = RadarBeep { level: 4.5, clock: 10.0, last: 0.0 };
+        assert_eq!(r.step(&t, 0.0, 4.5, true, false), Some((-1.5, 0)));
+    }
 }
