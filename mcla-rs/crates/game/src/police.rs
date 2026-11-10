@@ -1062,6 +1062,15 @@ pub fn damaged_out(damage: f32) -> bool {
     !(damage < 1.0)
 }
 
+/// StateTicket's tick F-46174 and the state's clock: true (the tactic's result, +24 = 1) once the state's time - before
+/// this update's dt is added - is over the limit (fArrestStateTime, + 0.5 s when the enter F-25878 left +68 at 0: the
+/// target damaged out); the time then grows by dt. `hold` = (time, limit).
+fn ticket_tick(hold: &mut (f32, f32), dt: f32) -> bool {
+    let over = hold.0 > hold.1;
+    hold.0 += dt;
+    over
+}
+
 /// "Moving" (F-43975 for the target, F-36212 for the cop's own car): the speed over fMovingSpeed x 0.447.
 fn moving(speed: f32, moving_speed: f32) -> bool {
     speed > moving_speed * 0.447
@@ -1990,8 +1999,9 @@ pub struct Police {
     /// the pull-over's bullhorn (its tactic +92 = 2 at iBullhornLawBreakScore, F-22530): seconds left of
     /// fBullhornTime; Some(0) = run out (the 599 cap is lifted)
     bullhorn: Option<f32>,
-    /// the ticket hold (FsmPullOver StateTicket, F-25878 / F-46174): seconds left before COP_PULLOVER
-    ticket_hold: Option<f32>,
+    /// the ticket hold (FsmPullOver StateTicket, F-25878 / F-46174): (the state's time, its limit): the tick sets the
+    /// result once the time - before this update's dt is added - is over the limit, then COP_PULLOVER
+    ticket_hold: Option<(f32, f32)>,
     /// COP_PULLOVER is running (CopPullover.sco): the police wait for `ticket_done` or `suspect_fled`
     ticketing: bool,
     /// after a tactic on the player ends: no scoring for 5 s (the record's +116, F-22530 / F-54211)
@@ -4147,11 +4157,10 @@ impl Police {
                 if let Some(b) = self.bullhorn.as_mut() {
                     *b = (*b - dt).max(0.0);
                 }
-                if let Some(h) = self.ticket_hold.as_mut() {
+                if let Some(hold) = self.ticket_hold.as_mut() {
                     // (StateTicket: the cop halted, fArrestStateTime - 0.5 s more when the car is damaged out -,
                     // then the tactic's result and COP_PULLOVER)
-                    *h -= dt;
-                    if *h <= 0.0 {
+                    if ticket_tick(hold, dt) {
                         self.ticket_hold = None;
                         self.ticketing = true;
                         event = Some(Event::Ticket(self.law_fines() as i64));
@@ -4173,7 +4182,8 @@ impl Police {
                 } else if self.arrest_step(ain(speed < arrest_speed, false), t("fPullOverDist", 15.0), t("fArrestTime", 1.0), t("fBikerWipeoutArrestDist", 50.0), arrest_speed * dt, dt) {
                     // (the pull-over's radius fPullOverDist, F-66453)
                     if self.ticket_hold.is_none() {
-                        self.ticket_hold = Some(t("fArrestStateTime", 1.75) + if damaged_out(damage) { 0.5 } else { 0.0 });
+                        // (entered in the update the arrest test answers; its first tick there sees 0, then dt is added)
+                        self.ticket_hold = Some((dt, t("fArrestStateTime", 1.75) + if damaged_out(damage) { 0.5 } else { 0.0 }));
                         // (what the ticket is for - the panel lists it: 1 reckless driving,
                         // 2 traffic violation, 4 destruction of property)
                         self.ticket_for = (if self.offences & (LAW_BURNOUT | LAW_VEHICLE | LAW_POLICE_VEHICLE) != 0 { 1 } else { 0 }) | (if self.offences & (LAW_SPEED | LAW_WRONG_WAY | LAW_RED_LIGHT) != 0 { 2 } else { 0 }) | (if self.offences & LAW_PROP != 0 { 4 } else { 0 });
@@ -5606,6 +5616,27 @@ mod tests {
             assert_eq!(default_final_speed(sp, f32::from_bits(c[0])).to_bits(), c[3], "{c:x?}");
         }
         assert_eq!(v.len(), 18);
+    }
+
+    /// StateTicket's clock against recording t1 (docs/reference/hookmen/pullover_recording.md): entered in update 451
+    /// (the exit's time = dt 0x3D088889), the result set in update 504; the state time at each exit grows by the update's
+    /// dt (503: 0x3FE2221F, 504: 0x3FE66663). The car was not damaged out (+68 = 1: limit fArrestStateTime 1.75).
+    #[test]
+    fn ticket_clock_matches_the_recording() {
+        let dt = f32::from_bits(0x3D08_8889);
+        let mut hold = (dt, 1.75f32);
+        let mut times = vec![(451, hold.0.to_bits())];
+        let mut result = None;
+        for k in 452..=504 {
+            if ticket_tick(&mut hold, dt) && result.is_none() {
+                result = Some(k);
+            }
+            times.push((k, hold.0.to_bits()));
+        }
+        assert_eq!(result, Some(504));
+        assert_eq!(times[0], (451, 0x3D08_8889));
+        assert_eq!(times[times.len() - 2], (503, 0x3FE2_221F));
+        assert_eq!(times[times.len() - 1], (504, 0x3FE6_6663));
     }
 
     #[test]
