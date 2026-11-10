@@ -2573,4 +2573,35 @@ mod sector_record_tests {
         }
         eprintln!("{} far models, {} linked otherwise than by overlap", far.len(), moved);
     }
+
+    /// The sector step F-50520 hands the batch test F-92840 only the volumes F-98017 keeps: those the record's box (+208 /
+    /// +224) is not wholly in front of, F-39296 testing each plane at the set's first corner table (+0, the near corner;
+    /// F-92840 uses the second, +64, the far one). A volume left out has a plane with the whole record box in front, so it
+    /// cannot hide a batch whose box meets the record box (the far corner's dot is no less than the near corner's, the
+    /// rounded dot being monotone in each coordinate): the port testing every volume (`hides_aabb`) gives the same answer
+    /// when every batch box meets its record's box. Checked here for all of them. Skipped without the extracted files.
+    #[test]
+    fn batch_boxes_meet_their_record_box() {
+        let assets = Assets::new("D:/MCLA/extracted/cache");
+        let recs = sector_records(&assets);
+        let Ok(index) = WorldIndex::load_or_build(&assets) else { return };
+        if recs.is_empty() {
+            return;
+        }
+        let (mut batches, mut inside, mut worst) = (0usize, 0usize, 0f32);
+        for r in &recs {
+            let j = record_sector(r, &index.sectors).expect(&r.name);
+            let res = load_resource_file(&assets.root.join(&index.sectors[j].file)).unwrap();
+            let sec = Sector::parse(&res).unwrap();
+            for b in &sec.batches {
+                let (mn, mx) = b.bounds.expect("batch box");
+                batches += 1;
+                assert!(mx.cmpge(r.min).all() && mn.cmple(r.max).all(), "{}: batch box {mn:?}..{mx:?} misses the record box {:?}..{:?}", r.name, r.min, r.max);
+                let out = (r.min - mn).max(mx - r.max).max_element();
+                worst = worst.max(out);
+                inside += (out <= 0.0) as usize;
+            }
+        }
+        eprintln!("{batches} batch boxes meet their record box; {inside} wholly inside, the most past it {worst} m");
+    }
 }
