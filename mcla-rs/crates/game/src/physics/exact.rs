@@ -232,12 +232,16 @@ fn dot4_one(a: Vec3, b: Vec3, bw: f32) -> f32 {
 /// `chassis`: rows and place (chassis +304..+352); `rows`, `inverse`: the body's rows and
 /// its inverse moments. Returns (torque, force).
 pub fn gyro_turn(torque: Vec3, offset: Vec3, chassis: &[Vec3; 4], rows: &[Vec3; 3], inverse: Vec3, mass: f32) -> (Vec3, Vec3) {
+    gyro_turn_with(torque, offset, chassis, &world_inverse_inertia(rows, inverse), mass)
+}
+
+/// F-81152 with the body's world inverse inertia `m` (its vtable slot 17's three rows) given.
+pub fn gyro_turn_with(torque: Vec3, offset: Vec3, chassis: &[Vec3; 4], m: &[Vec3; 3], mass: f32) -> (Vec3, Vec3) {
     let [r0, r1, r2, at] = *chassis;
     let back = Vec3::ZERO - Vec3::new(dot3(r0, at), dot3(r1, at), dot3(r2, at));
     let local = Vec3::new(dot4_one(torque, r0, back.x), dot4_one(torque, r1, back.y), dot4_one(torque, r2, back.z));
     let cols = [Vec3::new(r0.x, r1.x, r2.x), Vec3::new(r0.y, r1.y, r2.y), Vec3::new(r0.z, r1.z, r2.z)];
     let applied = Vec3::new(dot4_one(local, cols[0], at.x), dot4_one(local, cols[1], at.y), dot4_one(local, cols[2], at.z));
-    let m = world_inverse_inertia(rows, inverse);
     let mc = [Vec3::new(m[0].x, m[1].x, m[2].x), Vec3::new(m[0].y, m[1].y, m[2].y), Vec3::new(m[0].z, m[1].z, m[2].z)];
     let spin = Vec3::new(dot3(applied, mc[0]), dot3(applied, mc[1]), dot3(applied, mc[2]));
     // spin x offset, as two rounded products and their difference
@@ -246,6 +250,17 @@ pub fn gyro_turn(torque: Vec3, offset: Vec3, chassis: &[Vec3; 4], rows: &[Vec3; 
     let first = zxy(offset) * yzx(spin);
     let c = -(yzx(offset) * zxy(spin) - first);
     (applied, c * -mass)
+}
+
+/// F-81152 with a ground normal `n`: of the force its part that points along `n` is taken off where there is one
+/// (the dot product, fused, over zero): -(n lift - force).
+pub fn off_ground(force: Vec3, n: Vec3) -> Vec3 {
+    let lift = fma(force.x, n.x, fma(n.y, force.y, n.z * force.z));
+    if lift > 0.0 {
+        -(n * lift - force)
+    } else {
+        force
+    }
 }
 
 // ---- the body (class at 0x82081554): what the wheels' damping hands it, its integrator, its
@@ -809,5 +824,39 @@ mod tests {
             }
         }
         assert!(bad.is_empty(), "{} of {n} differ, first {:?}", bad.len(), &bad[..bad.len().min(4)]);
+    }
+}
+
+#[cfg(test)]
+mod gyro_tests {
+    use super::*;
+
+    /// vehGyro's turn F-81152 run whole offline (tools/gyro_turn_reference.py): the torque taken through the chassis frame
+    /// and applied (body slot 33's vector), the force (slot 128's) with the ground normal's part taken off - 6,000 cases
+    /// (frames not square, places some hundred metres out, NaN, infinities, no normal and one). The body's slot 17 hands the
+    /// case's three rows as the world inverse inertia.
+    #[test]
+    fn gyro_turn_matches_the_original() {
+        let w = |s: &str| u32::from_str_radix(s.trim_start_matches('h'), 16).unwrap();
+        let (mut n, mut with_normal) = (0, 0);
+        for line in include_str!("../testdata/gyro_turn_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let i: Vec<&str> = i.split_whitespace().collect();
+            let o: Vec<u32> = o.split_whitespace().map(w).collect();
+            let f = |k: usize| f32::from_bits(w(i[k]));
+            let v = |k: usize| Vec3::new(f(k), f(k + 1), f(k + 2));
+            let chassis = [v(6), v(9), v(12), v(15)];
+            let m = [v(18), v(21), v(24)];
+            let (applied, force) = gyro_turn_with(v(0), v(3), &chassis, &m, f(27));
+            let force = if i[28] == "none" { force } else { with_normal += 1; off_ground(force, v(28)) };
+            let got = [applied.x, applied.y, applied.z, force.x, force.y, force.z];
+            for k in 0..6 {
+                let same = got[k].to_bits() == o[k] || (got[k].is_nan() && f32::from_bits(o[k]).is_nan());
+                assert!(same, "word {k}: {:08x} against {:08x}: {line}", got[k].to_bits(), o[k]);
+            }
+            n += 1;
+        }
+        assert_eq!(n, 6000);
+        assert!(with_normal > 3000);
     }
 }

@@ -4856,8 +4856,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
         // leaves the point where it is, less what of it points along the normal)
         let torque_about = |tq: Vec3, off: Vec3, n: Vec3| -> (Vec3, Vec3) {
             let (tq, f) = ex::gyro_turn(tq, off, &chassis, &rows, inverse, mass);
-            let lift = fma(f.x, n.x, fma(n.y, f.y, n.z * f.z));
-            (tq, if lift > 0.0 { f - n * lift } else { f })
+            (tq, ex::off_ground(f, n))
         };
         // (F-96311: a force at a point, its arm from the centre of mass carried through the chassis's frame)
         let cg = ex::point_through(com_local, &chassis);

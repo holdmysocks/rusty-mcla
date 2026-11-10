@@ -4037,6 +4037,12 @@ impl PBody {
     }
 }
 
+/// F-61340: what mcCarDamage multiplies a blow by - against a vehicle (`inflict`: the other's mcCarDamage +20) the car's own
+/// +16 (`blow[1]`) times it, else its +12 (`blow[0]`).
+pub(crate) fn blow_for(inflict: Option<f32>, blow: [f32; 2]) -> f32 {
+    inflict.map_or(blow[0], |f| f * blow[1])
+}
+
 impl LooseState {
     /// Two objects' names swapped in every manifold (the island of another car solved in this car's step, that car the
     /// island's `Car`: vehsim.rs).
@@ -4121,10 +4127,11 @@ impl LooseState {
     /// (`blow[1]`) times the vehicle's "damage inflicted" factor (its mcCarDamage +20), against anything else the
     /// car's own +12 (`blow[0]`; `CarState::blow`).
     pub fn vehicle_factor(&self, other: Option<Who>, blow: [f32; 2]) -> f32 {
-        match other {
-            Some(Who::Obj(o)) => self.objs.get(o).and_then(|o| o.veh).map_or(blow[0], |v| v.inflict * blow[1]),
-            _ => blow[0],
-        }
+        let vehicle = match other {
+            Some(Who::Obj(o)) => self.objs.get(o).and_then(|o| o.veh).map(|v| v.inflict),
+            _ => None,
+        };
+        blow_for(vehicle, blow)
     }
 
     /// The other vehicles of the tick in hand, as the replay's file has them before it: each an

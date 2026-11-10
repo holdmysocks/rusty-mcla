@@ -269,6 +269,18 @@ pub(super) fn turn_change(body: &Body, dt: f32) -> Vec3 {
     Vec3::new(dot3(cols[0], local), dot3(cols[1], local), dot3(cols[2], local))
 }
 
+/// F-43928: a side's pending velocity as the rows take it: zero where the side has no collider; the collider's answer
+/// (`res`, F-64437) times `less` (one over the island's bounce), or as it is where `unscaled` (a point constraint's row,
+/// the flag byte the caller passes). The original's third way, a side with an instance but no collider (its slot 6), is
+/// not in the port: such a side gives zero.
+fn pend_of(res: Option<Vec3>, unscaled: bool, less: f32) -> Vec3 {
+    match res {
+        None => Vec3::ZERO,
+        Some(r) if unscaled => r,
+        Some(r) => r * less,
+    }
+}
+
 /// What the tick's forces will add to the velocity of the body's point `p` (F-64437).
 fn pending(body: &Body, p: Vec3, dt: f32) -> Vec3 {
     let lin = body.force * (body.inv_mass * dt);
@@ -663,6 +675,26 @@ impl Row2 {
     }
 }
 
+/// F-42898 (inline in F-50131 as well): the sweeps of an island. Of the three counts `plain` (the first global, the game sets 4),
+/// `joint` (the second, the image's 8) and `typed_n` (the third, the game sets 32): without the island's byte +80
+/// (`typed`: it holds contacts of type 3 or 4, which the port has none of) an island with a jointed body (+20) takes `joint`,
+/// the others `plain`; with it `typed_n`, or the larger (signed) of `joint` and `typed_n` where it has a jointed body.
+pub fn sweeps_count(typed: bool, jointed: bool, plain: i32, joint: i32, typed_n: i32) -> i32 {
+    match (typed, jointed) {
+        (false, false) => plain,
+        (false, true) => joint,
+        (true, false) => typed_n,
+        (true, true) => joint.max(typed_n),
+    }
+}
+
+/// F-50131: whether the island's velocity solve runs the sweeps at all - its rows (+52) or its other count (+16) above
+/// zero. (The port runs them always; with no rows they change nothing.)
+#[allow(dead_code)]
+pub fn runs_sweeps(rows: i32, others: i32) -> bool {
+    rows > 0 || others > 0
+}
+
 /// The sweeps over an island's rows (F-67704): the contacts' in the island's order, then the
 /// joint-limit rows of each jointed body (the tail of the row list). First pass (F-90205): a
 /// jointed body with rows (types 7 and 11) has its solve-time scratch cleared (F-80860) and the
@@ -698,7 +730,7 @@ fn sweeps2(rows: &mut [IRow], states: &mut [State], omega: f32, jointed: &mut [A
             }
         }
     }
-    let count = if jointed.is_empty() { sweeps_now() } else { SWEEPS_JOINTED };
+    let count = sweeps_count(false, !jointed.is_empty(), sweeps_now() as i32, SWEEPS_JOINTED as i32, 32).max(0) as usize;
     for _ in 0..count {
         let mut left = Vec3::ZERO;
         for row in rows.iter_mut() {
@@ -791,14 +823,14 @@ pub fn island_solve_jointed(bodies: &[Body], touches: &[Touch], jointed: &mut [A
         if c.kind == 1 {
             // (A-48276: the target minus the two points' pending velocities - not over the island's
             // elasticity - through the basis as its transpose; no warm start, F-90205)
-            let pend = |s: &Side| s.body.map_or(Vec3::ZERO, |i| pending(&bodies[i], s.point, dt));
+            let pend = |s: &Side| pend_of(s.body.map(|i| pending(&bodies[i], s.point, dt)), true, less);
             let v = c.target - (pend(&c.a) - pend(&c.b));
             let b = &row.row.basis;
             row.row.bias = Vec3::new(dot3(v, Vec3::new(b[0].x, b[1].x, b[2].x)), dot3(v, Vec3::new(b[0].y, b[1].y, b[2].y)), dot3(v, Vec3::new(b[0].z, b[1].z, b[2].z)));
             rows.push(IRow::Rigid(row));
             continue;
         }
-        let pend = |s: &Side| s.body.map_or(Vec3::ZERO, |i| pending(&bodies[i], s.point, dt) * less);
+        let pend = |s: &Side| pend_of(s.body.map(|i| pending(&bodies[i], s.point, dt)), false, less);
         let p = pend(&c.a) - pend(&c.b);
         let g = (ALLOW - SKIN) - c.depth;
         let gap = if -g >= 0.0 { 0.0 } else { g };
@@ -975,17 +1007,28 @@ fn rigid_impulse(m: &[Vec3; 3], p: V4) -> V4 {
 pub fn island_apply(bodies: &[Body], touches: &[Touch]) -> Vec<(Vec3, Vec3)> {
     let mut out = vec![(Vec3::ZERO, Vec3::ZERO); bodies.len()];
     for c in touches {
-        if let Some(i) = c.a.body {
-            out[i].0 = out[i].0 + c.impulse;
-            out[i].1 = out[i].1 + cross(c.a.point - bodies[i].at, c.impulse);
-        }
-        if let Some(i) = c.b.body {
-            let j = Vec3::ZERO - c.impulse;
-            out[i].0 = out[i].0 + j;
-            out[i].1 = out[i].1 + cross(c.b.point - bodies[i].at, j);
+        for (side, call) in [&c.a, &c.b].into_iter().zip(applications(c)) {
+            if let (Some(i), Some((j, point))) = (side.body, call) {
+                out[i].0 = out[i].0 + j;
+                out[i].1 = out[i].1 + cross(point - bodies[i].at, j);
+            }
         }
     }
     out
+}
+
+/// F-71376: the two applications a contact's update hands the collider (F-96615 -> F-78198: impulse and point): A's the impulse at
+/// A's point (+48), B's its opposite - taken from zero - at B's point (+64); a side with no collider is not applied.
+pub fn applications(c: &Touch) -> [Option<(Vec3, Vec3)>; 2] {
+    [c.a.body.map(|_| (c.impulse, c.a.point)), c.b.body.map(|_| (Vec3::ZERO - c.impulse, c.b.point))]
+}
+
+/// F-54406: every state's velocity (+0) and angular velocity (+16) from rest; the rest of the 128 bytes stays.
+fn rest_states(states: &mut [State]) {
+    for s in states.iter_mut() {
+        s.vel = Vec3::ZERO;
+        s.ang = Vec3::ZERO;
+    }
 }
 
 /// The push solve of an island (F-49764, F-78290, F-64140) on the rows of its last
@@ -1079,10 +1122,7 @@ pub fn island_push_jointed(bodies: &[Body], touches: &mut [Touch], solved: &mut 
     }
     // (F-54406: every state from rest; the bodies' matrices as they stand now)
     solved.states = states_of(bodies);
-    for s in solved.states.iter_mut() {
-        s.vel = Vec3::ZERO;
-        s.ang = Vec3::ZERO;
-    }
+    rest_states(&mut solved.states);
     for (a, l) in jointed.iter_mut().zip(solved.limits.iter_mut()) {
         a.push_start(l, inv_dt);
     }
@@ -1258,5 +1298,154 @@ mod cone_tests {
             n += 1;
         }
         assert_eq!(n, 6000);
+    }
+}
+
+#[cfg(test)]
+mod rest_tests {
+    use super::*;
+
+    /// F-54406 run offline (tools/hull_small_reference.py): every state's velocity and angular velocity zeroed, the other six
+    /// vectors of its 128 bytes and the states past the count untouched (counts -1 .. 8). Compared on x, y, z; a zeroed
+    /// vector's w lane is 0 in the original too.
+    #[test]
+    fn rest_states_matches_the_original() {
+        let mut n = 0;
+        for l in include_str!("../testdata/hull_small_ref.txt").lines() {
+            let Some(rest) = l.strip_prefix("zero ") else { continue };
+            let (i, o) = rest.split_once(" -> ").unwrap();
+            let w = |s: &str| -> Vec<u32> { s.split_whitespace().map(|x| u32::from_str_radix(x.trim_start_matches('h'), 16).unwrap()).collect() };
+            let (i, o) = (w(i), w(o));
+            let count = (i[0] as i32).max(0) as usize;
+            let v3 = |k: usize| Vec3::new(f32::from_bits(i[1 + k]), f32::from_bits(i[2 + k]), f32::from_bits(i[3 + k]));
+            let mut states: Vec<State> = (0..8)
+                .map(|s| State { vel: v3(32 * s), ang: v3(32 * s + 4), mcol: [v3(32 * s + 8), v3(32 * s + 12), v3(32 * s + 16)], icol: [v3(32 * s + 20), v3(32 * s + 24), v3(32 * s + 28)] })
+                .collect();
+            rest_states(&mut states[..count]);
+            for (s, st) in states.iter().enumerate() {
+                let vs = [st.vel, st.ang, st.mcol[0], st.mcol[1], st.mcol[2], st.icol[0], st.icol[1], st.icol[2]];
+                for (k, v) in vs.iter().enumerate() {
+                    let at = 32 * s + 4 * k;
+                    let same = |a: f32, b: u32| a.to_bits() == b || (a.is_nan() && f32::from_bits(b).is_nan());
+                    assert!(same(v.x, o[at]) && same(v.y, o[at + 1]) && same(v.z, o[at + 2]), "state {s} vector {k}: {l}");
+                    if s < count && k < 2 {
+                        assert_eq!(o[at + 3], 0, "w lane of a zeroed vector: {l}");
+                    }
+                }
+            }
+            n += 1;
+        }
+        assert_eq!(n, 1500);
+    }
+}
+
+#[cfg(test)]
+mod island_small_tests {
+    use super::*;
+
+    fn lines(tag: &'static str) -> impl Iterator<Item = (Vec<u32>, Vec<u32>)> {
+        let w = |s: &str| -> Vec<u32> { s.split_whitespace().map(|x| u32::from_str_radix(x.trim_start_matches('h'), 16).unwrap()).collect() };
+        include_str!("../testdata/island_small_ref.txt").lines().filter_map(move |l| {
+            let rest = l.strip_prefix(tag)?.strip_prefix(' ')?;
+            let (i, o) = rest.split_once(" -> ")?;
+            Some((w(i), w(o)))
+        })
+    }
+
+    fn same(a: f32, b: u32) -> bool {
+        a.to_bits() == b || (a.is_nan() && f32::from_bits(b).is_nan())
+    }
+
+    /// F-71376 run offline with its callee F-78198 recorded (tools/island_small_reference.py): a side is applied exactly when
+    /// the manifold has its collider (non-null, id not 0xffff); A with the impulse at A's point, B with the impulse taken from
+    /// zero at B's point; the manifold's instance (+8 / +12) and part (+28 / +36) words ride along as r4 and r6.
+    #[test]
+    fn contact_applications_match_the_original() {
+        let (mut n, mut both) = (0, 0);
+        for (i, o) in lines("apply") {
+            let f = |k: usize| f32::from_bits(i[k]);
+            let v = |k: usize| Vec3::new(f(k), f(k + 1), f(k + 2));
+            let gate = |has: u32, id: u32| has != 0 && (id & 0xFFFF) != 0xFFFF;
+            let (ga, gb) = (gate(i[9], i[10]), gate(i[11], i[12]));
+            let mut c = Touch { impulse: v(0), ..Default::default() };
+            c.a.point = v(3);
+            c.b.point = v(6);
+            c.a.body = ga.then_some(0);
+            c.b.body = gb.then_some(0);
+            let calls = applications(&c);
+            assert_eq!(o[0] as usize, ga as usize + gb as usize, "calls {i:x?}");
+            // (the original makes A's call first, then B's, each into the next record)
+            let mut rec = 0;
+            for (k, call) in calls.iter().enumerate() {
+                let Some((j, p)) = call else { continue };
+                let r = &o[1 + 9 * rec..1 + 9 * rec + 9];
+                assert!(same(j.x, r[3]) && same(j.y, r[4]) && same(j.z, r[5]), "impulse {k} {i:x?}");
+                assert!(same(p.x, r[6]) && same(p.y, r[7]) && same(p.z, r[8]), "point {k} {i:x?}");
+                assert_eq!(r[0], i[13 + k], "instance {k}");
+                assert_eq!(r[2], i[15 + k], "part {k}");
+                assert_ne!(r[1], 0);
+                rec += 1;
+            }
+            both += (ga && gb) as u32;
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+        assert!(both > 100);
+    }
+
+    /// F-43928 run offline with the collider's slot 22 and the instance's slot 6 recorded: zero stored first; with a collider its
+    /// answer times `less` (the port's `pend_of`), or as it is where the flag byte (r10 & 0xff) is set; the step, the part and the
+    /// point reach the collider as given. The instance-only way (slot 6, no collider) is not in the port and is not compared
+    /// but for what it is given.
+    #[test]
+    fn pending_velocity_matches_the_original() {
+        let (mut n, mut by_collider, mut zero) = (0, 0, 0);
+        for (i, o) in lines("pend") {
+            let f = |k: usize| f32::from_bits(i[k]);
+            let (has_collider, has_instance, unscaled, less) = (i[0] != 0, i[1] != 0, i[2] & 0xFF != 0, f(4));
+            let res = Vec3::new(f(9), f(10), f(11));
+            let got = pend_of(has_collider.then_some(res), unscaled, less);
+            assert_eq!(o[0], 1, "returns its out pointer");
+            if has_collider {
+                by_collider += 1;
+                assert!(same(got.x, o[1]) && same(got.y, o[2]) && same(got.z, o[3]), "{i:x?} -> {o:x?}: {got:?}");
+                // (what the collider is given: dt, the part, the point)
+                assert_eq!(&o[5..10], &[i[3], i[8], i[5], i[6], i[7]], "arguments {i:x?}");
+            } else if has_instance {
+                // (the instance's answer is written as it is; the port has no such side)
+                assert_eq!(&o[1..4], &i[13..16]);
+                assert_eq!(&o[10..14], &[i[8], i[5], i[6], i[7]][..], "instance arguments");
+            } else {
+                zero += 1;
+                assert!(got == Vec3::ZERO && o[1..5] == [0, 0, 0, 0], "{i:x?} -> {o:x?}");
+            }
+            n += 1;
+        }
+        assert_eq!(n, 4000);
+        assert!(by_collider > 2000 && zero > 200);
+    }
+
+    /// F-50131 run offline with F-67704 recorded: the sweeps run when the island's +52 or +16 is above zero, with the count
+    /// F-42898 picks from the island's byte +80 and +20 and the three globals, and the relaxation 1.1 of the port's `OMEGA`;
+    /// byte +78 is 1 either way.
+    #[test]
+    fn velocity_solve_sweeps_match_the_original() {
+        let (mut n, mut ran) = (0, 0);
+        for (i, o) in lines("sweeps") {
+            let (rows, others) = (i[3] as i32, i[4] as i32);
+            assert_eq!(o[0] == 1, runs_sweeps(rows, others), "{i:x?}");
+            assert_eq!(o[5], 1, "byte +78");
+            if o[0] == 1 {
+                let sweeps = sweeps_count(i[6] & 0xFF != 0, i[5] as i32 != 0, i[0] as i32, i[1] as i32, i[2] as i32);
+                assert_eq!(o[3] as i32, sweeps, "{i:x?}");
+                assert_eq!(o[4], OMEGA.to_bits());
+                ran += 1;
+            }
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+        assert!(ran > 1500);
+        // (what the port runs: 4 sweeps, 8 with a jointed body)
+        assert_eq!((sweeps_count(false, false, SWEEPS as i32, 8, 32), sweeps_count(false, true, SWEEPS as i32, SWEEPS_JOINTED as i32, 32)), (4, 8));
     }
 }

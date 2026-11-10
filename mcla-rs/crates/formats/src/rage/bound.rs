@@ -340,6 +340,25 @@ pub fn ambient_bound(res: &Resource) -> Option<AmbientBound> {
     }
 }
 
+/// F-17693 (the polyhedron's material getter, slot 14) for a polygon inside the bound: `number` is the polygon's byte in the
+/// numbers array (+216), `count` the bound's material count (+220, a byte) and `id` the ids array's entry (+208). A number
+/// below the count (signed) gives its id, any other number 0. (A polygon number outside the polygons takes the bound's
+/// default, +212, with -1 meaning 0: `polygon_material_of`.)
+pub fn polygon_material(number: i32, count: u8, id: impl Fn(usize) -> u32) -> u32 {
+    if number < count as i32 {
+        id(number as usize)
+    } else {
+        0
+    }
+}
+
+/// F-17693 whole: `index` is the polygon, `polygons` the bound's polygon count (+204), `numbers` the array (+216), `default`
+/// the bound's +212 (what a number outside the polygons takes; -1 is 0).
+pub fn polygon_material_of(index: i32, polygons: i32, numbers: &[u8], default: i32, count: u8, id: impl Fn(usize) -> u32) -> u32 {
+    let number = if index < polygons && index >= 0 { numbers[index as usize] as i32 } else if default == -1 { 0 } else { default };
+    polygon_material(number, count, id)
+}
+
 /// The polyhedron bound (type 4) at `o`.
 fn hull_at(rd: &Rd, size: usize, o: usize) -> Option<Hull> {
     {
@@ -362,8 +381,9 @@ fn hull_at(rd: &Rd, size: usize, o: usize) -> Option<Hull> {
                         hull.tris.push(v);
                         hull.areas.push(rd.f32(p));
                         hull.beside.push([rd.u16(p + 10), rd.u16(p + 12), rd.u16(p + 14)]);
-                        let number = numbers.map_or(0, |n| rd.u8(n + t) as usize);
-                        hull.material.push(ids.filter(|_| number < nm).map_or(0, |i| rd.u32(i + number * 4)));
+                        // (the polygon's material id, F-17693: its number in the numbers array, then the ids' entry)
+                        let number = numbers.map_or(0, |n| rd.u8(n + t) as i32);
+                        hull.material.push(ids.map_or(0, |i| polygon_material(number, nm as u8, |m| rd.u32(i + m * 4))));
                     }
                     if let Some((b, w)) = composite_box_of(rd, size, o) {
                         hull.composite = Some(b);

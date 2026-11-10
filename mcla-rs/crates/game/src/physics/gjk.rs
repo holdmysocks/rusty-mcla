@@ -564,6 +564,9 @@ impl Support for Corners<'_> {
     }
 }
 
+/// The detector's first direction (its constructor F-15933 stores (0, 0, 1, 1) at +16).
+pub const FIRST_DIRECTION: Vec3 = Vec3::Z;
+
 /// The loop for any two convex cores (F-33272): the first's point farthest against `v`, the
 /// second's farthest along it.
 pub fn loop_pair(shape: &impl Support, by: Vec3, then: Vec3, other: &impl Support, first: Vec3, margin_a: f32, margin_b: f32) -> (Option<Nearest>, bool) {
@@ -710,7 +713,7 @@ pub fn contact_local(shape: &impl Support, by: Vec3, local: &[Vec3; 3], face: Ve
             }
         }
         let off = best.0 + ((margin_a + margin_b) + CATCH);
-        let mut first = Vec3::Z;
+        let mut first = FIRST_DIRECTION;
         let (inner, _, ends) = loop_ends(shape, by, best.1 * off, &Corners(&local), &mut first, margin_a, margin_b);
         // (the routine's inner detector works in the caller's simplex buffer: the element of whichever answer is
         // kept is read from the corners that loop ended with, F-26668 after F-25833)

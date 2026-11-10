@@ -2076,6 +2076,84 @@ pub(super) fn refreshed(now: &[Vec3; 4], l: Vec3, on_world: Vec3, normal: Vec3) 
     (on_body, super::loose::vdot3(super::loose::vsub(on_body, on_world), super::loose::vsub(Vec3::ZERO, normal)))
 }
 
+/// F-67839: whether a polyhedron's centroid (the vector stored at +48) is set: any of x, y, z not equal to zero (a NaN is
+/// not equal to zero), the byte +5 the setter writes.
+#[allow(dead_code)]
+pub fn has_centroid(c: Vec3) -> bool {
+    c.x != 0.0 || c.y != 0.0 || c.z != 0.0
+}
+
+/// F-26668 (the detector's A side) / F-11678 (its B side): the element a contact is on, from one shape's simplex corners
+/// (each once, F-37693) and the contact's direction in the shape's frame. `kind` is the bound's type byte (+4): 4 a
+/// polyhedron, whose triangle F-48088 gives (`hull`); 13 the number stored in the bound itself (the u16 at +240, `own`);
+/// any other 0. The two functions are the same but for which corner list they read, so a caller passes that one.
+#[allow(dead_code)]
+pub fn simplex_element(kind: u8, own: u16, hull: Option<&HullShape>, corners: &[u32], dir: Vec3) -> u16 {
+    match (kind, hull) {
+        (4, Some(h)) => h.element(corners, dir),
+        (13, _) => own,
+        _ => 0,
+    }
+}
+
+/// The 176-byte contact records of the original as words (big-endian reading of the guest's memory): the four small
+/// routines on them, run offline and compared word for word (`hull_small_tests`). The port's `Contact` / `Slot` keep
+/// the same numbers in fields (+12 depth, +16 `local`, +32 / +64 `on_world`, +48 `on_body`, +80 `normal`, +96 the
+/// opposite of the normal, +112 `impulse`, +128 `kept`, +144 `target`, byte +165 bit 0x80 `Slot::enabled`, +168 the
+/// element, +174 the age).
+#[allow(dead_code)]
+pub mod record {
+    pub const WORDS: usize = 44;
+    pub type Record = [u32; WORDS];
+
+    const FLAGS: u32 = 0x00C0_0000; // byte +165 (the word at +164 holds bytes 164 165 166 167), bits 0xC0
+
+    /// F-51639: the vectors +0 .. +159 and the kind (+164) and the u16s +168 .. +174 zeroed, byte +165 gets bits 0xC0.
+    pub fn reset(r: &mut Record) {
+        for w in &mut r[..40] {
+            *w = 0;
+        }
+        // (the kind byte +164 zero, byte +165 gets its bits 0xC0, +166 and +167 stay)
+        r[41] = (r[41] & 0x00FF_FFFF) | FLAGS;
+        r[42] = 0;
+        r[43] = 0;
+    }
+
+    /// F-34223: a new record from the points `local` (+16, w 0), `world` (+32, w 0), `body` (+48, w 0), `world2` (+64), the
+    /// `normal` (+80, and its opposite at +96, taken from 0), the `depth` (+12, the sixth vector's x) and the two element
+    /// numbers (+168 and +170, low 16 bits each).
+    pub fn new(r: &mut Record, v: [[f32; 4]; 6], ids: (u32, u32)) {
+        reset(r);
+        let mut put = |at: usize, x: [f32; 4], w: Option<f32>| {
+            for k in 0..3 {
+                r[at / 4 + k] = x[k].to_bits();
+            }
+            r[at / 4 + 3] = w.unwrap_or(x[3]).to_bits();
+        };
+        put(16, v[0], Some(0.0));
+        put(32, v[1], Some(0.0));
+        put(48, v[2], Some(0.0));
+        put(64, v[3], None);
+        put(80, v[4], None);
+        let n = v[4];
+        let neg = |x: f32| (0.0 - x).to_bits();
+        r[96 / 4..96 / 4 + 4].copy_from_slice(&[neg(n[0]), neg(n[1]), neg(n[2]), neg(n[3])]);
+        r[3] = v[5][0].to_bits();
+        r[42] = (ids.0 << 16) | (ids.1 & 0xFFFF);
+    }
+
+    /// F-86309: `src` copied over `dst`, but of byte +165 only the bits 0x80 and 0x40 come from the source (the byte +167
+    /// stays).
+    pub fn copy(dst: &mut Record, src: &Record) {
+        dst[..40].copy_from_slice(&src[..40]);
+        dst[40] = src[40]; // +160
+        let w = dst[41];
+        dst[41] = (src[41] & 0xFF00_0000) | (w & 0x00FF_0000 & !FLAGS) | (src[41] & FLAGS) | (src[41] & 0x0000_FF00) | (w & 0x0000_00FF);
+        dst[42] = src[42];
+        dst[43] = src[43];
+    }
+}
+
 /// The contacts kept from earlier ticks brought up to the body's matrix as it stands
 /// (F-26862): their points, their depth; what has come 4 cm apart is dropped, and of those
 /// a tick old or more the one that has slid farthest, if more than 2 cm.
@@ -2392,6 +2470,10 @@ mod nearest_kept_tests {
         assert_eq!(n, 20000);
     }
 }
+
+#[cfg(test)]
+#[path = "hull_small_tests.rs"]
+mod hull_small_tests;
 
 #[cfg(test)]
 mod element_tests {
