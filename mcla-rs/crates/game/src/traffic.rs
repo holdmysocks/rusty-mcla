@@ -1418,26 +1418,39 @@ fn junction_box(center: Vec3) -> Option<JunctionBox> {
     m.get(&(center.x.to_bits(), center.z.to_bits())).copied()
 }
 
-/// The light a rider obeys (F-55442 -> F-83573 / F-16850 / F-78185): the
-/// junction lane it is to enter - its next lane when that is a junction lane, else the first
-/// junction lane starting where the next lane ends (F-32663; no further) - and its
-/// junction's state for that lane (`Junction::lane_state`, the lane's first span against the
-/// current arm). Returns (junction, xz metres from `pos` to the junction lane's first point =
-/// the stop line, state 2 green / 1 yellow / 0 red). (Which junction lane F-32663 takes
-/// when several start at that point follows the node's lane order; here the graph's successor
-/// order. The junction is the lane's, F-41621; one without arms gives none here.)
+/// The junction lane a rider whose next lane is `lane` obeys (F-55442): that lane when it is a junction lane; else, when
+/// its flags +4 have neither 0x1000 nor 0x800, the first lane of the vertex list at its last control point (root +0x38,
+/// `RecordData::vertex_lanes`, in the list's order) other than itself whose first control point equals that point (x, y,
+/// z) and that is a junction lane (F-32663); else none. (0x1000 takes an override lane of the car's instead (its +16 ->
+/// +452: byte +64 bit 0x80, the lane +48), not ported; no city lane has 0x1000 or 0x800 in the data.)
+pub(crate) fn light_lane(nav: &NavSys, lane: usize) -> Option<usize> {
+    let link = |l: usize| nav.links.get(nav.links.partition_point(|k| k.lane < l)).filter(|k| k.lane == l);
+    let own = link(lane)?;
+    if junction_lane(own) {
+        return Some(lane);
+    }
+    if own.flags & 0x1800 != 0 {
+        return None;
+    }
+    let end = *nav.curves.get(lane)?.pts.last()?;
+    let v = *nav.records.last_vertex.get(lane)?;
+    nav.records.vertex_lanes.get(v as usize)?.iter().copied().find(|&m| {
+        m != lane
+            && nav.curves.get(m).and_then(|c| c.pts.first()).is_some_and(|&p| p.x == end.x && p.y == end.y && p.z == end.z)
+            && link(m).is_some_and(junction_lane)
+    })
+}
+
+/// The light a rider obeys (F-55442 -> F-83573 / F-16850 / F-78185): the junction lane it is to enter (`light_lane`)
+/// and its junction's state for that lane (`Junction::lane_state`, the lane's first span against the current arm).
+/// Returns (junction, xz metres from `pos` to the junction lane's first point = the stop line, state 2 green / 1 yellow
+/// / 0 red). (The junction is the lane's, F-41621; one without arms gives none here.)
 fn signal_stop(env: &Env, r: &Rider, pos: Vec3) -> Option<(usize, f32, u8, usize)> {
     let nav = env.nav;
     let n = r.next?;
-    let first = if junction_lane(&nav.links[n]) {
-        n
-    } else {
-        let lane = nav.links[n].lane;
-        let mut k = n;
-        while let Some(&m) = nav.links[k].next.iter().find(|&&m| nav.links[m].lane == lane && m != k) {
-            k = m;
-        }
-        *nav.links[k].next.iter().find(|&&m| nav.links[m].lane != lane && junction_lane(&nav.links[m]))?
+    let first = match light_lane(nav, nav.links[n].lane)? {
+        l if l == nav.links[n].lane => n,
+        l => nav.links.partition_point(|k| k.lane < l),
     };
     let c = nav.curves.get(nav.links[first].lane)?;
     let (p0, p1) = match (c.pts.first(), c.pts.get(1)) {
@@ -5645,6 +5658,29 @@ mod verify_lanes_tests {
 
 #[cfg(test)]
 mod tests {
+    /// F-55442 (with F-32663) run offline for every lane of the city as the next lane, on the placed navsys (harness and
+    /// recipe: docs reference/map/signal_rule.md "Which lane, checked"): the junction lane chosen (or none) and the lane's
+    /// flags equal `light_lane`'s.
+    #[test]
+    fn light_lane_matches_the_original() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
+        let Ok(res) = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")) else { return };
+        let nav = NavSys::parse(&res).unwrap();
+        let (mut n, mut bad) = (0, Vec::new());
+        for line in include_str!("testdata/light_lane_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let (lane, flags, want) = (w[0].parse::<usize>().unwrap(), u32::from_str_radix(w[1], 16).unwrap(), w[2].parse::<i64>().unwrap());
+            let link = &nav.links[nav.links.partition_point(|k| k.lane < lane)];
+            let got = super::light_lane(&nav, lane).map_or(-1, |l| l as i64);
+            if got != want || link.flags != flags {
+                bad.push(format!("lane {lane}: flags {:08x} / {flags:08x}, lane {got} / {want}", link.flags));
+            }
+            n += 1;
+        }
+        assert_eq!(n, 10031);
+        assert!(bad.is_empty(), "{} of {n} differ, first: {:?}", bad.len(), &bad[..bad.len().min(8)]);
+    }
+
     /// F-91754 on the original's code run offline (tools/frontend_planes_reference.py, 3,000 cases): the six planes'
     /// words and the two atans equal.
     #[test]
