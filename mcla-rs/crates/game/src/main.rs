@@ -5288,6 +5288,8 @@ impl App {
             self.vehicles.player_rim_finish = self.game.rim_finish();
             // (the five colour groups, INTERIOR COLOR A..E: `mc4`)
             self.vehicles.player_interior = self.game.interior_groups();
+            // (the cabin trim's rows, F-19629)
+            self.vehicles.player_trim = self.game.trim_colors();
             // (the gauge and interior neon colours its driver is lit by: the record's - F-42959)
             self.vehicles.player_cabin_light = self.game.cabin_light_colors();
             // (its exterior neon record - the light quads and siColor2, F-17121 / F-96984)
@@ -5375,6 +5377,7 @@ impl App {
             if let Some((l, _, _)) = s19d_look.as_ref() {
                 self.vehicles.player_rim_finish = l.rim_finish;
                 self.vehicles.player_interior = l.interior;
+                self.vehicles.player_trim = l.trim;
                 self.vehicles.player_cabin_light = l.cabin_light;
                 self.vehicles.player_ext_neon = l.ext_neon;
                 self.vehicles.player_paint_type = l.paint_type;

@@ -215,6 +215,61 @@ fn paint_tuned(src: &str) -> String {
     format!("{}{}{}{}{}", &src[..a], table("PAINT_A", 0), table("PAINT_B", 4), table("PAINT_C", 8), &src[b..])
 }
 
+/// The cabin trim's nine surface kinds as the disc's GlobalInteriorTuning has them (tune/vehicle `intTune`, 0xdc0293e5):
+/// per kind DetailTile, SpecMapIntensity, SpecMapExp, Smoothness, Metallic (the file's field order, +4 .. +20 of the
+/// global's 28-byte rows). F-19629 hands kind k's row to the trim program as intDL0.w = DetailTile and intDL1 =
+/// (SpecMapExp, SpecMapIntensity, Smoothness, Metallic) for every zone of that kind - equal to every recorded trim draw
+/// (work/carparts2/trim/tables.py). Without the file: these, the disc's values.
+pub const TRIM_DISC: [[f32; 5]; 9] = [
+    [1.0, 0.0175, 0.42499998, 0.0, 0.0],
+    [1.0, 0.37999991, 1.6000003, 0.0, 0.0],
+    [0.875, 0.1375, 0.72500002, 0.0, 0.0],
+    [1.0, 0.408, 1.305, 0.0, 0.5],
+    [1.0, 0.025000019, 0.40000001, 0.0, 0.0],
+    [1.0, 0.02, 0.5, 0.0, 0.0],
+    [1.0, 1.0, 1.0, 0.963, 1.0],
+    [1.0, 0.15999998, 0.40000001, 0.25, 0.0],
+    [1.0, 0.11, 0.40000001, 0.25, 1.0],
+];
+
+/// The trim's kinds read from the disc (`TRIM_DISC` where the file or a field is missing).
+pub fn trim_tune() -> [[f32; 5]; 9] {
+    static T: std::sync::OnceLock<[[f32; 5]; 9]> = std::sync::OnceLock::new();
+    *T.get_or_init(|| {
+        let Some(dir) = DATA_DIR.get() else { return TRIM_DISC };
+        std::fs::read_to_string(std::path::Path::new(dir).join("tune/vehicle/0xdc0293e5")).map_or(TRIM_DISC, |t| trim_tune_from(&t))
+    })
+}
+
+/// The kinds from the text of the tune file (fields it lacks: `TRIM_DISC`'s).
+pub fn trim_tune_from(text: &str) -> [[f32; 5]; 9] {
+    let mut t = TRIM_DISC;
+    const F: [&str; 5] = ["m_fDetailTile", "m_fSpecMapIntensity", "m_fSpecMapExp", "m_fSmoothness", "m_fMetallic"];
+    for l in text.lines() {
+        let mut w = l.split_whitespace();
+        let (Some(k), Some(x)) = (w.next(), w.next().and_then(|x| x.parse::<f32>().ok())) else { continue };
+        for (i, f) in F.iter().enumerate() {
+            if let Some(n) = k.strip_prefix(f).and_then(|n| n.parse::<usize>().ok()).filter(|n| *n < 9) {
+                t[n][i] = x;
+            }
+        }
+    }
+    t
+}
+
+/// The kind of surface of a cabin trim zone (0 .. 24), F-19629's fixed list: zones 0 .. 2 kind 0, 3 .. 5 kind 2,
+/// 6 .. 8 kind 1, 9 .. 11 kind 3, 12 .. 14 kind 4, 15 .. 17 kind 5, 18 kind 6, 19 .. 21 kind 7, 22 .. 24 kind 8.
+pub fn trim_kind(zone: usize) -> usize {
+    [0, 0, 0, 2, 2, 2, 1, 1, 1, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 7, 7, 7, 8, 8, 8][zone.min(24)]
+}
+
+/// The shader with the trim's intDL1 rows by kind (SpecMapExp, SpecMapIntensity, Smoothness, Metallic) written in.
+fn trim_tuned(src: &str) -> String {
+    let (Some(a), Some(b)) = (src.find("//#TRIM_BEGIN"), src.find("//#TRIM_END")) else { return src.to_string() };
+    let cells: Vec<String> = trim_tune().iter().map(|r| format!("vec4<f32>({:?}, {:?}, {:?}, {:?})", r[2], r[1], r[3], r[4])).collect();
+    format!("{}//#TRIM_BEGIN\nconst TRIM_DL1: array<vec4<f32>, 9> = array<vec4<f32>, 9>({});\n{}", &src[..a], cells.join(", "), &src[b..])
+}
+
 pub const SHADOW_SIZE: u32 = 4096;
 /// The original's sun shadow maps: four cascades of 640 x 640 texels, two by two in one
 /// 1280 x 1280 depth map (tile 1 right of tile 0, tiles 2 and 3 under them) - `Gpu::set_cascades`.
@@ -1007,6 +1062,10 @@ pub struct ObjectUniform {
     /// siColor2 (c59) of a set-up car's draws: its exterior neon's colour x pulse x intensity x 0.3 (`vehicles::ExtNeon::si_color`,
     /// F-96984 / F-56246), screened in by the third byte of the vertex colour; 0 for others
     pub neon_si: [f32; 4],
+    /// the cabin trim's colours (InteriorTrim, city.wgsl mode 17): rows 0 .. 9 the vehicle record's m_vBaseColor[g] as
+    /// stored (F-19629 hands row G[zone] of these to the trim program as intDL0, no gamma), rows 10 / 11 its gauge colours
+    /// A / B (DashGaugeColor, DashGaugeColorB - the cabin trim's siColor0 / siColor1); w 1 = given, 0 = the old look
+    pub trim: [[f32; 4]; 12],
 }
 
 impl Default for ObjectUniform {
@@ -1014,7 +1073,7 @@ impl Default for ObjectUniform {
         // (lamps without a table of their own: the Audi R8's, as before the tables were read)
         let (lamp_a, lamp_b) = car_lamps::R8.uniform();
         let g = crate::damagemap::glass_vars([0.0; 4], false, false, true, false, &crate::damagemap::RECORDED_GLASS, [0.0, 1.0, 0.0], [0.0; 3], -1.0, false);
-        ObjectUniform { model: Mat4::IDENTITY.to_cols_array_2d(), color: [1.0, 1.0, 1.0, 0.0], params: [0.0; 4], dents: [[0.0; 4]; 6], color2: [0.0; 4], fade_min: [0.0; 4], fade_size: [1.0; 4], tint: [0.0; 4], interior: [[0.0; 4]; 5], fill: [0.0; 4], lamp_a, lamp_b, area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], slots: [[0.0; 4]; 5], glass_tint: g.tint, glass_bumped: g.bumped, rest_rot: [[0.0; 4]; 27], neon_si: [0.0; 4] }
+        ObjectUniform { model: Mat4::IDENTITY.to_cols_array_2d(), color: [1.0, 1.0, 1.0, 0.0], params: [0.0; 4], dents: [[0.0; 4]; 6], color2: [0.0; 4], fade_min: [0.0; 4], fade_size: [1.0; 4], tint: [0.0; 4], interior: [[0.0; 4]; 5], fill: [0.0; 4], lamp_a, lamp_b, area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], slots: [[0.0; 4]; 5], glass_tint: g.tint, glass_bumped: g.bumped, rest_rot: [[0.0; 4]; 27], neon_si: [0.0; 4], trim: [[0.0; 4]; 12] }
     }
 }
 
@@ -2206,7 +2265,7 @@ impl Gpu {
         let identity_obj = make_object_binding(&device, &obj_layout, &ObjectUniform::default(), &blank_dmg);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("city"),
-            source: wgpu::ShaderSource::Wgsl(mode_constant(&xs::split_consts(&paint_tuned(&[include_str!("city.wgsl"), xs::text("xs_road.wgsl"), xs::text("xs_roadn.wgsl"), xs::text("xs_water.wgsl"), xs::text("xs_pond.wgsl")].concat()))).replace("const HALF_PX_DP: f32 = 1.0;", if half_pixel_on() { "const HALF_PX_DP: f32 = 1.0;" } else { "const HALF_PX_DP: f32 = 0.0;" }).into()),
+            source: wgpu::ShaderSource::Wgsl(mode_constant(&xs::split_consts(&trim_tuned(&paint_tuned(&[include_str!("city.wgsl"), xs::text("xs_road.wgsl"), xs::text("xs_roadn.wgsl"), xs::text("xs_water.wgsl"), xs::text("xs_pond.wgsl")].concat())))).replace("const HALF_PX_DP: f32 = 1.0;", if half_pixel_on() { "const HALF_PX_DP: f32 = 1.0;" } else { "const HALF_PX_DP: f32 = 0.0;" }).into()),
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("city pl"),
@@ -4483,5 +4542,46 @@ mod view_sphere_tests {
             n += 1;
         }
         assert_eq!((n, inside), (6000, 1271));
+    }
+}
+
+#[cfg(test)]
+mod trim_tests {
+    use super::*;
+
+    /// F-19629's two tables as the original handed them to the cabin trim's program (all 56 trim draws of the recorded
+    /// frame work/lighting/cap/am_base, the R8 with an imported save: intDL0 c205 + zone, intDL1 c230 + zone - bits from
+    /// work/carparts2/trim/bits.py) against the port's rule: intDL1[z] = (SpecMapExp, SpecMapIntensity, Smoothness,
+    /// Metallic) of the zone's kind and intDL0[z].w = its DetailTile, from the disc's tune file (intTune) through the
+    /// fixed zone -> kind list; intDL0[z].rgb = the record's colour of the zone's group by the R8's own table - every
+    /// zone of one group recorded with the same colour.
+    const DL0: [[u32; 4]; 25] = [[0x3d70f0f2, 0x3d70f0f2, 0x3d70f0f2, 0x3f800000], [0x3e989899, 0x3e989899, 0x3e989899, 0x3f800000], [0x3e989899, 0x3e989899, 0x3e989899, 0x3f800000], [0x3e989899, 0x3e989899, 0x3e989899, 0x3f600000], [0x3e989899, 0x3e989899, 0x3e989899, 0x3f600000], [0x3e989899, 0x3e989899, 0x3e989899, 0x3f600000], [0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000], [0x3e28a8a9, 0x3f048485, 0x00000000, 0x3f800000], [0x3d70f0f2, 0x3d70f0f2, 0x3d70f0f2, 0x3f800000], [0x3d70f0f2, 0x3d70f0f2, 0x3d70f0f2, 0x3f800000], [0x3d70f0f2, 0x3d70f0f2, 0x3d70f0f2, 0x3f800000], [0x3d70f0f2, 0x3d70f0f2, 0x3d70f0f2, 0x3f800000], [0x3d70f0f2, 0x3d70f0f2, 0x3d70f0f2, 0x3f800000], [0x3d70f0f2, 0x3d70f0f2, 0x3d70f0f2, 0x3f800000], [0x3e989899, 0x3e989899, 0x3e989899, 0x3f800000], [0x3d70f0f2, 0x3d70f0f2, 0x3d70f0f2, 0x3f800000], [0x3d70f0f2, 0x3d70f0f2, 0x3d70f0f2, 0x3f800000], [0x3e989899, 0x3e989899, 0x3e989899, 0x3f800000], [0x3e989899, 0x3e989899, 0x3e989899, 0x3f800000], [0x3e989899, 0x3e989899, 0x3e989899, 0x3f800000], [0x3e989899, 0x3e989899, 0x3e989899, 0x3f800000], [0x3e989899, 0x3e989899, 0x3e989899, 0x3f800000], [0x3e989899, 0x3e989899, 0x3e989899, 0x3f800000], [0x3e989899, 0x3e989899, 0x3e989899, 0x3f800000], [0x3e989899, 0x3e989899, 0x3e989899, 0x3f800000]];
+    const DL1: [[u32; 4]; 25] = [[0x3ed99999, 0x3c8f5c29, 0x00000000, 0x00000000], [0x3ed99999, 0x3c8f5c29, 0x00000000, 0x00000000], [0x3ed99999, 0x3c8f5c29, 0x00000000, 0x00000000], [0x3f39999a, 0x3e0ccccd, 0x00000000, 0x00000000], [0x3f39999a, 0x3e0ccccd, 0x00000000, 0x00000000], [0x3f39999a, 0x3e0ccccd, 0x00000000, 0x00000000], [0x3fcccccf, 0x3ec28f59, 0x00000000, 0x00000000], [0x3fcccccf, 0x3ec28f59, 0x00000000, 0x00000000], [0x3fcccccf, 0x3ec28f59, 0x00000000, 0x00000000], [0x3fa70a3d, 0x3ed0e560, 0x00000000, 0x3f000000], [0x3fa70a3d, 0x3ed0e560, 0x00000000, 0x3f000000], [0x3fa70a3d, 0x3ed0e560, 0x00000000, 0x3f000000], [0x3ecccccd, 0x3cccccd7, 0x00000000, 0x00000000], [0x3ecccccd, 0x3cccccd7, 0x00000000, 0x00000000], [0x3ecccccd, 0x3cccccd7, 0x00000000, 0x00000000], [0x3f000000, 0x3ca3d70a, 0x00000000, 0x00000000], [0x3f000000, 0x3ca3d70a, 0x00000000, 0x00000000], [0x3f000000, 0x3ca3d70a, 0x00000000, 0x00000000], [0x3f800000, 0x3f800000, 0x3f76872b, 0x3f800000], [0x3ecccccd, 0x3e23d709, 0x3e800000, 0x00000000], [0x3ecccccd, 0x3e23d709, 0x3e800000, 0x00000000], [0x3ecccccd, 0x3e23d709, 0x3e800000, 0x00000000], [0x3ecccccd, 0x3de147ae, 0x3e800000, 0x3f800000], [0x3ecccccd, 0x3de147ae, 0x3e800000, 0x3f800000], [0x3ecccccd, 0x3de147ae, 0x3e800000, 0x3f800000]];
+
+    #[test]
+    fn trim_tables_match_the_recording() {
+        let data = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        let Ok(text) = std::fs::read_to_string(std::path::Path::new(&data).join("tune/vehicle/0xdc0293e5")) else {
+            eprintln!("(no game data: skipped)");
+            return;
+        };
+        let t = trim_tune_from(&text);
+        // (the file's values are the table the port keeps for a missing file)
+        assert_eq!(t.map(|r| r.map(f32::to_bits)), TRIM_DISC.map(|r| r.map(f32::to_bits)));
+        for z in 0..25 {
+            let k = t[trim_kind(z)];
+            assert_eq!([k[2], k[1], k[3], k[4]].map(f32::to_bits), DL1[z], "intDL1 of zone {z}");
+            assert_eq!(k[0].to_bits(), DL0[z][3], "DetailTile of zone {z}");
+        }
+        let Some(g) = crate::mc4::zone_groups_dir(&std::path::Path::new(&data).join("resources/vehicle/vp_aud_r8_08")) else { return };
+        for a in 0..25 {
+            for b in 0..25 {
+                if g[a] == g[b] {
+                    assert_eq!(DL0[a][..3], DL0[b][..3], "zones {a} and {b}, group {}", g[a]);
+                }
+            }
+        }
+        // (group 3: the save's INTERIOR COLOR D, the green 42 / 255, 132 / 255, 0 as stored - no gamma on the way)
+        assert_eq!(DL0[7][..3], [(42.0f32 / 255.0).to_bits(), (132.0f32 / 255.0).to_bits(), 0]);
     }
 }

@@ -1136,6 +1136,9 @@ pub struct CarLook {
     /// the record's exterior neon: ExtNeonColor (+0x50, four floats as stored) and (ExtNeonIntensity +0x170,
     /// ExtNeonFlashRate +0x18c as a signed byte, 0, 0) - `ExtNeon`
     pub ext_neon: [[f32; 4]; 2],
+    /// the cabin trim's rows as `ObjectUniform::trim` has them (the record's ten m_vBaseColor rows as stored, its
+    /// gauge colours A and B; w 1 = given)
+    pub trim: [[f32; 4]; 12],
 }
 
 /// A set-up as `Vehicles::dress_setups` puts it on a car: the model's parts, the rim's
@@ -1336,6 +1339,8 @@ pub struct Vehicles {
     pub player_rim_finish: [[f32; 4]; 3],
     /// the player's cabin colours A, B, C (w 1 = chosen)
     pub player_interior: [[f32; 4]; 5],
+    /// the player's cabin trim rows (`ObjectUniform::trim`, `Game::trim_colors`)
+    pub player_trim: [[f32; 4]; 12],
     /// the player's gauge colour A and interior neon colour as its record holds them (w: IntNeonFlashRate, IntNeonIntensity) -
     /// what its driver is lit by (`Game::cabin_light_colors`)
     pub player_cabin_light: [[f32; 4]; 2],
@@ -2979,6 +2984,9 @@ impl Vehicles {
                     .map(|x| x.1.clone());
                 let sn = all_tex.iter().find(|(_, n)| Some(n) != dn.as_ref() && !is_normal(n)).map(|x| x.1.clone()).or_else(|| dn.clone());
                 // (a traffic tyre: PSAmbientTire reads its NormalSampler map - the second slot, city.wgsl)
+                // (a set-up car's cabin trim: PS_BumpSpec of InteriorTrim.fx reads its NormalSampler map (s2) - the second slot,
+                // city.wgsl mode 17; MCLA_TRIM_OLD=1: as before)
+                let sn = if !car_is_ambient && mode == MatMode::Interior && std::env::var("MCLA_TRIM_OLD").is_err() { sh.and_then(|s| s.textures().find(|(h, _)| NORMAL_SAMPLERS.contains(h)).map(|(_, n)| n.to_string())).or(sn) } else { sn };
                 let sn = if car_is_ambient && sname.eq_ignore_ascii_case("AmbientTire") { sh.and_then(|s| s.textures().find(|(h, _)| NORMAL_SAMPLERS.contains(h)).map(|(_, n)| n.to_string())).or(sn) } else { sn };
                 if log::log_enabled!(log::Level::Debug) && dn.is_none() && !all_tex.is_empty() {
                     log::debug!("shader {} has only normal maps: {:?}", sname, all_tex);
@@ -3299,6 +3307,32 @@ impl Vehicles {
                                 let z = v.uv1[0].round();
                                 if (0.0..25.0).contains(&z) {
                                     v.uv2[1] = 100.0 + table[z as usize] as f32;
+                                }
+                            }
+                        }
+                        // (and for the trim's program, city.wgsl mode 17: VS_BumpSpec of InteriorTrim.fx samples both maps at
+                        // uv x intDL0.w, the DetailTile of the zone's kind (render::trim_tune); its stored tangent in the car's
+                        // space in the second colour's rgb, t x 0.5 + 0.5 (those bytes are not read in this mode; its sign
+                        // rides in the normal's length as on every car mesh); colour alpha 32 on a cabin part, whose own-lamp
+                        // light is the gauge colours (the draws recorded: siColor0 / 1 = DashGaugeColor / B), not the lamps')
+                        if !car_is_ambient && std::env::var("MCLA_TRIM_OLD").is_err() {
+                            let tune = crate::render::trim_tune();
+                            let txf = part_xf * bone_m;
+                            let cabin = pn.starts_with("interior") || pn.contains("_int") || pn.starts_with("seats") || pn.starts_with("steer_whl");
+                            let tan_ok = mesh.tangents.len() == mesh.positions.len();
+                            for (i, v) in acc.verts[first..].iter_mut().enumerate() {
+                                let z = v.uv1[0].round();
+                                if (0.0..25.0).contains(&z) {
+                                    let tile = tune[crate::render::trim_kind(z as usize)][0];
+                                    v.uv0 = [v.uv0[0] * tile, v.uv0[1] * tile];
+                                }
+                                if tan_ok {
+                                    let t = txf.transform_vector3(mesh.tangents[i].truncate()).normalize_or_zero();
+                                    let e = |x: f32| ((x * 0.5 + 0.5) * 255.0).round() as u8;
+                                    v.color1 = [e(t.x), e(t.y), e(t.z), v.color1[3]];
+                                }
+                                if cabin {
+                                    v.color[3] |= 32;
                                 }
                             }
                         }
@@ -5724,6 +5758,12 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // (traffic and parked cars: their type's paint, `iPaintType`)
                 (false, None) => (self.amb_types.get(&c.model.name).map_or(3, |t| t.paint_type.min(5)), [0.0; 4], [0.0; 4], [[0.0; 4]; 5], [[0.0; 4]; 5], [[0.0; 4]; 5]),
             };
+            // (the cabin trim's colour rows: the player's record, a set-up's own, none for traffic - F-19629)
+            let body_trim = match (c.is_player, c.look.as_ref()) {
+                (true, _) => self.player_trim,
+                (false, Some(l)) => l.trim,
+                (false, None) => [[0.0; 4]; 12],
+            };
             // (a body's first dent slot: its four windows' states for the glass program - WindowDmgVal
             // slots 0 - 3, damagemap::CarDamage::window)
             let mut body_slots = [[0.0; 4]; 6];
@@ -5789,7 +5829,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             } else {
                 [[0.0; 4]; 5]
             };
-            let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: body_color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32 + int_glass], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(c.amb_lamps.tint).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5, slots: amb_slots, glass_tint: gv.tint, glass_bumped: gv.bumped, rest_rot: c.model.rest_rot, neon_si: neon_si[ci] };
+            let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: body_color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32 + int_glass], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(c.amb_lamps.tint).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5, slots: amb_slots, glass_tint: gv.tint, glass_bumped: gv.bumped, rest_rot: c.model.rest_rot, neon_si: neon_si[ci], trim: body_trim };
             batch.push_object(&c.binding, &body_u);
             // (the side windows: the body's object moved by the window bone's clip)
             for (k, wb) in c.window_bindings.iter().enumerate() {

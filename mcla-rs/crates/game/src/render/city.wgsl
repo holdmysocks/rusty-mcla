@@ -541,6 +541,7 @@ struct Object {
     glass_bumped: array<vec4<f32>, 9>, // ... and BumpedTintColors, the lamps' lenses'
     rest_rot: array<vec4<f32>, 27>,    // a set-up car's rest rotations, 9 floats each (vehicles.rs rest_mark)
     neon_si: vec4<f32>,                // siColor2 (c59): the car's exterior neon, F-96984 (vehicles.rs ExtNeon::si_color)
+    trim: array<vec4<f32>, 12>,        // the cabin trim's colours: m_vBaseColor[0 .. 9] as stored, gauge colours A / B (F-19629)
 };
 @group(3) @binding(0) var<uniform> obj: Object;
 // Which of a car's two light slots holds the lamp first (the hour's light second): a traffic or parked
@@ -1752,6 +1753,22 @@ const PAINT_A: array<vec4<f32>, 6> = array<vec4<f32>, 6>(vec4<f32>(0.375, 0.15, 
 const PAINT_B: array<vec4<f32>, 6> = array<vec4<f32>, 6>(vec4<f32>(4.5, 0.0, 0.0, 0.1), vec4<f32>(4.5, 0.0, 0.0, 0.05), vec4<f32>(4.5, 0.07, 0.625, 1.0), vec4<f32>(4.5, 0.07, 0.625, 1.0), vec4<f32>(4.5, 0.07, 0.625, 1.0), vec4<f32>(4.5, 0.013, 0.625, 1.0));
 const PAINT_C: array<vec4<f32>, 6> = array<vec4<f32>, 6>(vec4<f32>(0.29, 0.068, 0.295, 1.0), vec4<f32>(0.29, 0.068, 0.0, 1.0), vec4<f32>(1.0, 20.0, 0.0, 1.0), vec4<f32>(0.0, 13.975, 0.3275, 1.0), vec4<f32>(0.1625, 14.0, 0.5, 1.0), vec4<f32>(0.235, 4.125, 0.685, 1.0));
 //#PAINT_END
+
+// The cabin trim's intDL1 rows by kind of surface (SpecMapExp, SpecMapIntensity, Smoothness, Metallic), F-19629 from the
+// disc's GlobalInteriorTuning - replaced at start-up by the file's own (render::trim_tuned).
+//#TRIM_BEGIN
+const TRIM_DL1: array<vec4<f32>, 9> = array<vec4<f32>, 9>(vec4<f32>(0.425, 0.0175, 0.0, 0.0), vec4<f32>(1.6, 0.38, 0.0, 0.0), vec4<f32>(0.725, 0.1375, 0.0, 0.0), vec4<f32>(1.305, 0.408, 0.0, 0.5), vec4<f32>(0.4, 0.025, 0.0, 0.0), vec4<f32>(0.5, 0.02, 0.0, 0.0), vec4<f32>(1.0, 1.0, 0.963, 1.0), vec4<f32>(0.4, 0.16, 0.25, 0.0), vec4<f32>(0.4, 0.11, 0.25, 1.0));
+//#TRIM_END
+// The kind of a trim zone, F-19629's fixed list (render::trim_kind).
+fn trim_kind(z: i32) -> i32 {
+    if (z <= 2) { return 0; }
+    if (z <= 5) { return 2; }
+    if (z <= 8) { return 1; }
+    if (z <= 17) { return 3 + (z - 9) / 3; }
+    if (z == 18) { return 6; }
+    if (z <= 21) { return 7; }
+    return 8;
+}
 
 // The normal a paint's flakes tilt (PS_CarPaint 55 - 59: normalize(N + (noise - 0.5) x DL4.y)), by
 // the paint type - the very expressions of the paint's lower half in fs_main, where the soft
@@ -3977,6 +3994,82 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             // The player's cars' BlackMatte parts and the wheel's back disc (uv2.x = 4): PS_BlackMatte of
             // BlackMatte.fx is the same instruction (recorded draws 2112 ... 2118, c26.w = 1) - black.
             lit = vec3<f32>(0.0);
+            base = vec3<f32>(0.0);
+            emissive = vec3<f32>(0.0);
+            spec_k = 0.0;
+        } else if (mat.mode == 17u && g.params.w > 817.5 && g.params.w < 818.5) {
+            // (diagnostics 818, the trim's gates: red = a zone group in uv2.y, green = its colour row given, blue = cp_on)
+            lit = vec3<f32>(select(0.0, 1.0, in.uv2.y > 99.5), select(0.0, 1.0, obj.trim[clamp(i32(round(in.uv2.y)) - 100, 0, 9)].w > 0.5), select(0.0, 1.0, cp_on));
+            base = vec3<f32>(0.0);
+            emissive = vec3<f32>(0.0);
+            spec_k = 0.0;
+        } else if (mat.mode == 17u && cp_on && in.uv2.y > 99.5 && obj.trim[clamp(i32(round(in.uv2.y)) - 100, 0, 9)].w > 0.5 && !(g.params.w > 816.5 && g.params.w < 817.5)) {
+            // VS_BumpSpec + PS_BumpSpec of InteriorTrim.fx (cars/0xecdcebc7, the cabin trim), the rule run against both
+            // programs on recorded draws (work/carparts2/trim/trim_check.py, full.py: 1,200 cases, every term live, 3e-8):
+            //   zone z (uv1.x), its colour group G[z] (the vehicle's .r83 table, uv2.y - 100) and kind k (trim_kind):
+            //   colour = m_vBaseColor[G[z]] as stored (intDL0.rgb, F-19629), both maps read at uv x DetailTile_k (vehicles.rs)
+            //   n'     = T (2 m.r - 1) + B (2 m.g - 1) + N (2 m.b - 1),  B = cross(T, N) x w  (m the normal map; not normalised)
+            //   L      = screen(screen(L0 s, L1 occ s), ambYPos x 0.5 occ),  s = 0.5 sat(4 n.l0) occ   (the vertex program,
+            //            each light x n.l x its fall-off - the true normal; L0 the first light, as the paint's)
+            //   c      = 1.33333 sat(collector - 0.25);  own = the own-lamp light (a cabin part: the gauge colours A / B)
+            //   dif    = texture x colour x screen(c L, own x b^2)   (b = 2 m.b - 1)
+            //   S      = lum(texture) x soft^SpecMapExp_k x (SpecMapIntensity_k (0.5 + 0.5 occ)(0.5 + 0.666665 sat(collector - 0.25)) + own)
+            //   out    = screen(dif, S x (3.5 (1 - sat|h.n'|) + 0.5) x (0.25 n'.y + 0.75)),  h = normalize(n' + v)
+            // soft = the blurred surroundings along reflect(-v, n') - the same lookup as PS_BumpSpec_true_true's (parab.py: 0
+            // difference over 200 normals). Smoothness, Metallic, NoiseScale / NoiseStrength: in the tables, read by no
+            // trim program. (MCLA_DEBUG_VIEW 817: the old look; MCLA_TRIM_OLD=1: neither the tile, the map nor the frame)
+            let tz = clamp(i32(round(in.uv1.x)), 0, 24);
+            let tdl = TRIM_DL1[trim_kind(tz)];
+            let tcol = obj.trim[clamp(i32(round(in.uv2.y)) - 100, 0, 9)].rgb;
+            let ttex = car_raw(albedo.rgb);
+            var tm = vec3<f32>(0.5, 0.5, 1.0);
+            if (textureDimensions(t_second).x >= 8u) { tm = select(car_raw(second.rgb), second.rgb, !car_raw_tex); }
+            let tb = tm * 2.0 - vec3<f32>(1.0);
+            let tocc = in.color1.a;
+            let tn = normalize(in.normal);
+            let tt0 = (obj.model * vec4<f32>(in.color1.rgb * 2.0 - 1.0, 0.0)).xyz;
+            let tt = tt0 * inverseSqrt(max(dot(tt0, tt0), 1e-12));
+            let tbn = cross(tt, tn) * ((1.0 - 2.0 * in.bflip) * select(-1.0, 1.0, dot(cross(obj.model[0].xyz, obj.model[1].xyz), obj.model[2].xyz) >= 0.0));
+            let tnp = tt * tb.x + tbn * tb.y + tn * tb.z;
+            var fct = 127.0 / 255.0;
+            if (g.tone.w < 0.5 && g.shadow_params.x > 0.0) {
+                fct = car_collector(in.wpos);
+            } else if (g.tone.w > 0.5 && g.car_amb.w < 0.5) {
+                fct = night_collector(in.wpos);
+            }
+            let tsc = clamp(fct * FC_LIT - 0.25, 0.0, 1.0);
+            // (the two lights as the paint takes them: the hour's light - the sun, or the key light - and the lamp; which is
+            // first is the car's, car_lamp_first; the 0.9 is their fall-off at 100 m of a range of 1000)
+            let att_t = select(0.9, 1.0, g.params.w > 98.5 && g.params.w < 99.5);
+            let nls_t = max(dot(tn, g.sun_dir.xyz), 0.0);
+            let nlk_t = max(dot(tn, car_kd()), 0.0);
+            let nlc_t = max(dot(tn, car_ld()), 0.0);
+            let sun_t = g.sun_color.rgb * g.sun_dir.w;
+            let l_hour_t = (sun_t * nls_t + car_kc() * nlk_t) * att_t;
+            let nl_hour_t = select(nlk_t, nls_t, dot(sun_t, vec3<f32>(1.0)) >= dot(car_kc(), vec3<f32>(1.0)));
+            let l_lamp_t = car_lc() * (nlc_t * att_t);
+            let lf_t = car_lamp_first();
+            let s_t = 0.5 * clamp(4.0 * select(nl_hour_t, nlc_t, lf_t), 0.0, 1.0) * tocc;
+            let l0_t = select(l_hour_t, l_lamp_t, lf_t) * s_t;
+            let l1_t = select(l_lamp_t, l_hour_t, lf_t) * (tocc * s_t);
+            var lt_t = l0_t + l1_t - clamp(l0_t * l1_t, vec3<f32>(0.0), vec3<f32>(1.0));
+            let am_t = hemi * (0.5 * tocc);
+            lt_t = lt_t + am_t - clamp(lt_t * am_t, vec3<f32>(0.0), vec3<f32>(1.0));
+            var own_t = car_own_lamps(in.color);
+            if ((u32(round(in.color.a * 255.0)) & 32u) != 0u) {
+                let ga = obj.trim[10].rgb * (in.color.r * obj.trim[10].w);
+                let gb = obj.trim[11].rgb * (in.color.g * obj.trim[11].w);
+                own_t = ga + gb - clamp(ga * gb, vec3<f32>(0.0), vec3<f32>(1.0));
+            }
+            if (g.params.w > 72.5 && g.params.w < 73.5) { own_t = vec3<f32>(0.0); }
+            let lk_t = lt_t * (1.33333 * tsc);
+            let ob_t = own_t * (tb.z * tb.z);
+            let dif_t = ttex * tcol * (lk_t + ob_t - clamp(lk_t * ob_t, vec3<f32>(0.0), vec3<f32>(1.0)));
+            let ee_t = pow(max(env_soft(reflect(-v, tnp)), vec3<f32>(0.000001)), vec3<f32>(tdl.x));
+            let lum_t = dot(ttex, vec3<f32>(0.3, 0.59, 0.11));
+            let th = clamp(abs(dot(normalize(tnp + v), tnp)), 0.0, 1.0);
+            let sp_t = lum_t * (ee_t * (tdl.y * (0.5 + 0.5 * tocc) * (0.5 + 0.666665 * tsc)) + ee_t * own_t) * ((3.5 * (1.0 - th) + 0.5) * (0.25 * tnp.y + 0.75));
+            lit = dif_t + sp_t - clamp(dif_t * sp_t, vec3<f32>(0.0), vec3<f32>(1.0));
             base = vec3<f32>(0.0);
             emissive = vec3<f32>(0.0);
             spec_k = 0.0;

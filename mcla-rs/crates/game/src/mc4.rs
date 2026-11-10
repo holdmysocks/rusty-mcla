@@ -5116,6 +5116,58 @@ impl Game {
         [[g[0], g[1], g[2], rate], [n[0], n[1], n[2], if self.int_neon { 1.0 } else { 0.0 }]]
     }
 
+    /// The cabin trim's rows for the renderer (`ObjectUniform::trim`): the vehicle record's ten m_vBaseColor rows as
+    /// stored (F-19629 hands row G[zone] to InteriorTrim's program, intDL0, with no gamma) and its gauge colours A / B
+    /// (DashGaugeColor / DashGaugeColorB, the cabin trim's siColor0 / siColor1) - with the garage's colours in hand put
+    /// in as `mc4_store` writes them (INTERIOR COLOR A..C = rows 0..2, D / E = rows 3 / 4, GAUGE COLOR A / B). Without
+    /// a record: the vehicle's own set-up file's rows, as the record made for it would hold them (`mc4_car_record`
+    /// builds a missing record from that file); none (w 0, the shader keeps the old look) without either.
+    pub fn trim_colors(&self) -> [[f32; 4]; 12] {
+        let cur = if self.car_x.car.is_empty() { self.mc4_car_name(self.current_car) } else { self.car_x.car.clone() };
+        let of = |f: Option<&Vec<F>>| f.filter(|v| v.len() >= 3).map(|v| [v[0].0 as f32, v[1].0 as f32, v[2].0 as f32]);
+        let stored: [Option<[f32; 3]>; 12] = match self.mc4.as_ref().and_then(|m| m.car(&cur)) {
+            Some(rec) => {
+                let v = &rec.visual;
+                std::array::from_fn(|k| match k {
+                    0..=9 => of(v.m_vBaseColor.get(k).map(|g| &g.rgb)),
+                    10 => of(Some(&v.DashGaugeColor)),
+                    _ => of(Some(&v.DashGaugeColorB)),
+                })
+            }
+            None => {
+                // (the set-up file's rows, read once per vehicle)
+                static CACHE: std::sync::Mutex<Option<(String, [[f32; 4]; 12])>> = std::sync::Mutex::new(None);
+                let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+                if c.as_ref().map_or(true, |(n, _)| *n != cur) {
+                    let model = crate::catalog::model_of(&cur);
+                    let rows = crate::render::car_lamps::setup_file(std::path::Path::new(&self.data_dir), model).and_then(|f| std::fs::read(f).ok()).and_then(|b| setup_look(&b)).map_or([[0.0; 4]; 12], |l| l.look.trim);
+                    *c = Some((cur.clone(), rows));
+                }
+                c.as_ref().map_or([None; 12], |(_, r)| r.map(|x| (x[3] > 0.5).then_some([x[0], x[1], x[2]])))
+            }
+        };
+        let mut out = [[0.0f32; 4]; 12];
+        for k in 0..12 {
+            let stored = stored[k];
+            // (the garage's rows in hand: slot 3 + g for A..C, 1 / 2 for the gauges; D / E by their own pick)
+            let live = match k {
+                0..=2 => self.slot_hsv[3 + k].map(hsv_rgb),
+                3 | 4 => match self.car_x.int_de_hsv[k - 3] {
+                    Some(h) => Some(hsv_rgb(h)),
+                    None if self.car_x.int_de_idx[k - 3].0 != 9 => Some(swatch_screen(self.car_x.int_de_idx[k - 3].0)),
+                    None => None,
+                },
+                10 => self.slot_hsv[1].map(hsv_rgb),
+                11 => self.slot_hsv[2].map(hsv_rgb),
+                _ => None,
+            };
+            if let Some(c) = live.or(stored) {
+                out[k] = [c[0], c[1], c[2], 1.0];
+            }
+        }
+        out
+    }
+
     /// The cockpit readouts' tune for `readouts.rs`, the record's GaugeText (0x190 + 0x20 k: colour, skew, font index;
     /// F-43500 reads them at +400 + 32 k of the car's tune): rgba, skew, font. Without a record: white, 0, font 0.
     pub fn gauge_texts(&self) -> [[f32; 6]; 5] {
@@ -8889,7 +8941,14 @@ pub fn setup_look(b: &[u8]) -> Option<SetupLook> {
     let body_a = rgb(0x660)?;
     let body = paint_as_drawn(area(0));
     let body_b = to_linear(body.b);
-    let mut look = crate::vehicles::CarLook { paint_type: body.ty, color2: [body_b[0], body_b[1], body_b[2], body.fade as f32], tint: [0.0, 0.0035, 0.005, 0.372], interior: [[0.0; 4]; 5], area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], rim_finish: [[0.0; 4]; 3], cabin_light: [[0.0; 4]; 2], glass: [0x120, 0x130, 0x140, 0x150].map(|o| [f(o), f(o + 4), f(o + 8), f(o + 12)]), ext_neon: [[f(0x50), f(0x54), f(0x58), f(0x5c)], [f(0x170), b[0x18c] as i8 as f32, 0.0, 0.0]] };
+    let mut look = crate::vehicles::CarLook { paint_type: body.ty, color2: [body_b[0], body_b[1], body_b[2], body.fade as f32], tint: [0.0, 0.0035, 0.005, 0.372], interior: [[0.0; 4]; 5], area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], rim_finish: [[0.0; 4]; 3], cabin_light: [[0.0; 4]; 2], glass: [0x120, 0x130, 0x140, 0x150].map(|o| [f(o), f(o + 4), f(o + 8), f(o + 12)]), ext_neon: [[f(0x50), f(0x54), f(0x58), f(0x5c)], [f(0x170), b[0x18c] as i8 as f32, 0.0, 0.0]], trim: [[0.0; 4]; 12] };
+    // (the cabin trim's rows as stored - F-19629: m_vBaseColor at 0x5c0 + 0x10 g, the gauge colours A / B at 0x70 / 0x80)
+    for (k, o) in (0..10).map(|g| 0x5c0 + 0x10 * g).chain([0x70, 0x80]).enumerate() {
+        let c = [f(o), f(o + 4), f(o + 8)];
+        if c.iter().all(|v| v.is_finite()) {
+            look.trim[k] = [c[0], c[1], c[2], 1.0];
+        }
+    }
     // (the driver's gauge and interior neon colours, as the record holds them, IntNeonFlashRate and IntNeonIntensity in
     // w - F-42959)
     let raw = |o: usize| [f(o), f(o + 4), f(o + 8)];
