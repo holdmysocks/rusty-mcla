@@ -44,3 +44,6 @@ PARAM.*
 # Build products and signing scratch of a release
 /release-out/
 *.pickle
+
+# Debug dump written by the ignored flash_ui test rim_tab_logo_frames
+mcla-rs/crates/game/rim_logo_frames.txt
