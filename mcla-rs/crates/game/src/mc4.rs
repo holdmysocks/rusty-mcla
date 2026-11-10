@@ -3178,11 +3178,30 @@ pub fn top_arrow_model(data_dir: &str) -> Option<&'static TopArrowModel> {
 /// so it points at the target. The frame is a mirror (x = z x up, not up x z); the model is
 /// the same on both sides, so only its lighting could tell, and the normals go through the
 /// same frame.
+/// As F-30300 computes it: z = 0 - local, then x = -(up.yzx z.zxy - up.zxy z.yzx) and y = -(z.yzx x.zxy - z.zxy x.yzx)
+/// (vnmsubfp: a 0 comes out -0), each product and difference rounded on its own, each axis made unit by the vector unit (`railroute::vnorm`: an axis of
+/// length 0 stays 0).
 pub fn top_arrow_axes(local: glam::Vec3) -> [glam::Vec3; 3] {
-    let z = (-local).normalize_or(glam::Vec3::Z);
-    let x = z.cross(glam::Vec3::Y).normalize_or(glam::Vec3::NEG_X);
-    let y = x.cross(z).normalize_or(glam::Vec3::Y);
+    use crate::railroute::vnorm;
+    use glam::Vec3;
+    let up = Vec3::Y;
+    let z = vnorm(Vec3::new(0.0 - local.x, 0.0 - local.y, 0.0 - local.z));
+    let x = vnorm(Vec3::new(-(up.y * z.z - up.z * z.y), -(up.z * z.x - up.x * z.z), -(up.x * z.y - up.y * z.x)));
+    let y = vnorm(Vec3::new(-(z.y * x.z - z.z * x.y), -(z.z * x.x - z.x * x.z), -(z.x * x.y - z.y * x.x)));
     [x, y, z]
+}
+
+/// F-30300 whole: the target in the car's frame (the inverse frame F-30106 of the car's rows and place - the car's own
+/// rows and place where it refuses - applied as the vector unit's four-term sums (w + z) + (y + x)), the arrow's frame
+/// from it (`top_arrow_axes`) and the movie's `gpsArrowRotation`: F-32060((0, 0, -1), local) x -57.29578 (the compass
+/// ring's arrow, in degrees). Checked offline: `top_arrow_frame_matches_the_original`.
+pub fn top_arrow_frame(rows: [glam::Vec3; 3], place: glam::Vec3, target: glam::Vec3) -> (glam::Vec3, [glam::Vec3; 3], f32) {
+    use glam::Vec3;
+    let inv = crate::physics::exact::inverse_frame(&rows, place).unwrap_or([rows[0], rows[1], rows[2], place]);
+    let col = |f: fn(Vec3) -> f32| (f(inv[3]) + target.z * f(inv[2])) + (target.y * f(inv[1]) + target.x * f(inv[0]));
+    let local = Vec3::new(col(|v| v.x), col(|v| v.y), col(|v| v.z));
+    let rot = crate::aiv::ang_xz(Vec3::new(0.0, 0.0, -1.0), local) * -57.295776;
+    (local, top_arrow_axes(local), rot)
 }
 
 /// One corner of the arrow as the vertex program hands it on: where it is in the target
@@ -14897,6 +14916,7 @@ mod tests {
         // (the arrow's frame, F-30300: its z axis away from the target, x = z x up, y = x x z)
         let m = top_arrow_axes(glam::Vec3::new(0.0, 0.0, -9.0));
         assert_eq!(m, [glam::Vec3::NEG_X, glam::Vec3::Y, glam::Vec3::Z]);
+        assert_eq!(top_arrow_axes(glam::Vec3::ZERO), [glam::Vec3::ZERO; 3], "no direction: no frame");
         let m = top_arrow_axes(glam::Vec3::new(4.0, 0.0, 0.0));
         assert!((m[2] - glam::Vec3::NEG_X).length() < 1e-6 && (m[0] - glam::Vec3::NEG_Z).length() < 1e-6 && (m[1] - glam::Vec3::Y).length() < 1e-6, "{m:?}");
         // (the tuning file and the model of the disc)
@@ -19785,6 +19805,53 @@ mod tests {
         assert_eq!(f("kTST/0"), -2147483648.0, "a signed record wraps");
         assert_eq!(f("kARS/0"), 0.5f32 as f64);
         assert_eq!(back.stats.get("gBRN"), Some(&(old.ostats["gBRN/0"] as i64 + 1)));
+    }
+
+    /// F-30300 run offline (tools/arrow_frame_reference.py, testdata/arrow_frame_ref.txt: 3,000 cars and targets - turned
+    /// cars, level ones, the identity, an all-zero matrix whose inverse is refused, targets far, near, straight above and
+    /// on the car): the arrow's three axes and gpsArrowRotation equal bit for bit.
+    #[test]
+    fn top_arrow_frame_matches_the_original() {
+        use glam::Vec3;
+        let mut n = 0;
+        for l in include_str!("testdata/arrow_frame_ref.txt").lines() {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let f = |s: &str| -> Vec<f32> { s.split_whitespace().map(|w| f32::from_bits(w.parse().unwrap())).collect() };
+            let (i, o) = (f(i), f(o));
+            let v = |k: usize, a: &[f32]| Vec3::new(a[k], a[k + 1], a[k + 2]);
+            let (_, m, rot) = top_arrow_frame([v(0, &i), v(3, &i), v(6, &i)], v(9, &i), v(12, &i));
+            let bits = |a: Vec3| [a.x.to_bits(), a.y.to_bits(), a.z.to_bits()];
+            for r in 0..3 {
+                assert_eq!(bits(m[r]), bits(v(3 * r, &o)), "row {r}: {l}");
+            }
+            assert_eq!(rot.to_bits(), o[9].to_bits(), "rotation: {l}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
+
+    /// The game's level frame (rows right, up, back from the heading) through `top_arrow_frame` gives the port's earlier
+    /// flat turn of the target and the same signed angle as atan2(d.x, -d.z) - heading, modulo a turn.
+    #[test]
+    fn top_arrow_frame_in_the_level_frame() {
+        use glam::Vec3;
+        let mut r = 12345u32;
+        let mut f = || {
+            r = r.wrapping_mul(1664525).wrapping_add(1013904223);
+            (r >> 8) as f32 / (1u32 << 24) as f32
+        };
+        for _ in 0..2000 {
+            let h = (f() - 0.5) * 12.0;
+            let pos = Vec3::new(f() * 4000.0 - 2000.0, f() * 50.0, f() * 4000.0 - 2000.0);
+            let d = Vec3::new(f() * 600.0 - 300.0, f() * 20.0 - 10.0, f() * 600.0 - 300.0);
+            let (s, c) = h.sin_cos();
+            let (local, _, rot) = top_arrow_frame([Vec3::new(c, 0.0, s), Vec3::Y, Vec3::new(-s, 0.0, c)], pos, pos + d);
+            let flat = Vec3::new(d.x * c + d.z * s, d.y, d.z * c - d.x * s);
+            assert!((local - flat).length() < 2e-3 * d.length().max(1.0), "{local} {flat}");
+            let old = (d.x.atan2(-d.z) - h).to_degrees();
+            let diff = (rot - old).rem_euclid(360.0);
+            assert!(diff.min(360.0 - diff) < 0.05, "{rot} {old}");
+        }
     }
 
     /// F-54482's setting statistics against the imported PS3 save (testdata/old_save_ostats.json: saved 2011-07-31 at

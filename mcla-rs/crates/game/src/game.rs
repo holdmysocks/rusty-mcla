@@ -10623,6 +10623,14 @@ impl Game {
                         let dt = ctx.input(|i| i.stable_dt).min(0.1);
                         // the arrow on the ring points at the next checkpoint (`gpsArrowRotation`,
                         // degrees from straight ahead)
+                        // (both arrows from F-30300 - `mc4::top_arrow_frame`: the target through the car's level
+                        // frame, rows right, up, back from the heading - approx.: the original lays the car's own z row
+                        // flat, F-32331 - its local for the 3D arrow and F-32060's angle for the ring)
+                        let arrow_rows = {
+                            let (s, c) = hud.player_heading.sin_cos();
+                            [Vec3::new(c, 0.0, s), Vec3::Y, Vec3::new(-s, 0.0, c)]
+                        };
+                        let arrow_of = |d: Vec3| crate::mc4::top_arrow_frame(arrow_rows, hud.player_pos, hud.player_pos + d);
                         let gps = self.race.as_ref().and_then(|race| {
                             // (an unordered race: the nearest open checkpoint - checkpoints::gps_target)
                             // (the core's GPS target once it set one: `Race::gps_cp`)
@@ -10631,7 +10639,7 @@ impl Game {
                                 None => crate::checkpoints::gps_target(&race.checkpoints, race.next.first().copied().unwrap_or(0), race.rivals_checkpoints.is_some(), hud.player_pos)?,
                             };
                             let d = cp - hud.player_pos;
-                            Some(((d.x.atan2(-d.z) - hud.player_heading).to_degrees(), d))
+                            Some((arrow_of(d).2, d))
                         });
                         // (cruising: at the GPS target - "The directional arrow will point in the
                         // direction of the target", `ng_tut_minimap`)
@@ -10643,7 +10651,7 @@ impl Game {
                             gps.or_else(|| {
                                 let t = gps_tp?;
                                 let d = t - hud.player_pos;
-                                Some(((d.x.atan2(-d.z) - hud.player_heading).to_degrees(), d))
+                                Some((arrow_of(d).2, d))
                             })
                         } else {
                             gps
@@ -10669,14 +10677,13 @@ impl Game {
                             }
                             let _ = left;
                             let d = at - hud.player_pos;
-                            Some(((d.x.atan2(-d.z) - hud.player_heading).to_degrees(), d))
+                            Some((arrow_of(d).2, d))
                         });
                         // GAME OPTIONS' ARROW (`mc4`): COMPASS - the arrow on the ring (the movie's
                         // `gpsArrowActive`, F-76348); TOP - the 3D arrow over the car, which takes
                         // the target in the car's level frame (right, up, back); NONE - neither
                         let arrow_mode = self.mc4.as_ref().map_or(0, |m| m.options.gps_arrow.min(2));
-                        let (sin, cos) = hud.player_heading.sin_cos();
-                        let top = gps.filter(|_| arrow_mode == 1).map(|(_, d)| [d.x * cos + d.z * sin, d.y, d.z * cos - d.x * sin]);
+                        let top = gps.filter(|_| arrow_mode == 1).map(|(_, d)| arrow_of(d).0.to_array());
                         crate::mc4::top_arrow(&mut self.car_x, &self.data_dir, ctx, top, dt);
                         let gps = gps.filter(|_| arrow_mode == 0).map(|g| g.0);
                         fm.highlight = self.tutorial_box.as_ref().map_or(false, |t| t.0.contains("target") && t.2 <= 0.0);
