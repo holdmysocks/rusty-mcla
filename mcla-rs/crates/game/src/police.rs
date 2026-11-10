@@ -6,6 +6,7 @@
 
 use crate::props::Inst;
 use crate::render::Gpu;
+use crate::vehicles::parked::Mwc;
 use crate::vehicles::Vehicles;
 use crate::world::World;
 use glam::Vec3;
@@ -2168,6 +2169,8 @@ pub struct Police {
     rdo_rng: (u32, u32),
     time: f32,
     rng: u32,
+    /// the launching scripts' generator for EvaluatePolice's roll (a script context's MWC, seeded when first drawn from)
+    script_rng: Option<Mwc>,
     glow_buf: Option<wgpu::Buffer>,
     glow_count: u32,
     pub enabled: bool,
@@ -2329,6 +2332,7 @@ impl Police {
             rdo_rng: (0x2f6e_2b1d, 0x51ed_270b),
             time: 0.0,
             rng: 0x51ed_270b,
+            script_rng: None,
             glow_buf: None,
             glow_count: 0,
             enabled: true,
@@ -2819,13 +2823,14 @@ impl Police {
     /// every police car (DestroyAllPolice) and counts a no-cop race when the chance was above 0; else the script's three
     /// CreatePolice (units 400 - 402) and the streak back to 0. Then SetChaseProperties(a, b, c), SetRaceChaseTarget.
     /// `racers` is the race's racer count (+3080, the player included) for the launchers' gate: more than
-    /// mcRacerManager_GetNumRacersAllowedForPolice (5) - chance 0. (The roll draws the port's own random numbers.)
+    /// mcRacerManager_GetNumRacersAllowedForPolice (5) - chance 0. The roll is RAND_FLOAT_RANGE (F-47737) on the
+    /// launching script's generator (`script_rng`).
     pub fn evaluate(&mut self, e: PoliceEval, racers: usize, zones: usize, unlocked: bool, vehicles: &mut Vehicles) {
         let mut chance = if e.gate5 && racers > 5 { 0.0 } else { e.chance };
         if chance > 0.0 && self.no_cop_races >= 4 {
             chance = 1.0;
         }
-        let r = self.rand();
+        let r = self.script_rng.get_or_insert_with(Mwc::script).float_range(0.0, 1.0);
         if zones == 0 || r > chance {
             self.destroy_all(vehicles);
             if chance > 0.0 {

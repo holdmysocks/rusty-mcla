@@ -178,8 +178,9 @@ fn parse_paths(xml: &str) -> Vec<AmbPath> {
             let e = item[b..].find(&format!("</{tag}>"))? + b;
             Some(&item[b..e])
         };
-        let flag = |tag: &str| item.find(&format!("<{tag} value=\"")).map_or(false, |a| item[a..].split('"').nth(1) == Some("true"));
-        let value = |tag: &str| item.find(&format!("<{tag} value=\"")).and_then(|a| item[a..].split('"').nth(1)).and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+        // (the original's readers of a text attribute: F-83747, F-79880)
+        let flag = |tag: &str| item.find(&format!("<{tag} value=\"")).and_then(|a| item[a..].split('"').nth(1)).map_or(false, crate::ambient::attr_bool);
+        let value = |tag: &str| item.find(&format!("<{tag} value=\"")).and_then(|a| item[a..].split('"').nth(1)).map_or(0.0, crate::ambient::attr_f32);
         let m = block("SpawnMtx").map(floats).unwrap_or_default();
         if m.len() < 12 {
             continue;

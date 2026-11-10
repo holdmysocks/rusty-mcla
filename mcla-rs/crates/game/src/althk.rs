@@ -22,6 +22,7 @@
 //! (`roamers.rs`); a flash ends the core script and the man's own script runs the race.
 
 use crate::game::Game;
+use crate::vehicles::parked::Mwc;
 use glam::Vec3;
 use hashbrown::HashMap;
 use mcla_formats::sco::Tok;
@@ -346,8 +347,9 @@ pub fn vec_rotate_y(v: Vec3, a: f32) -> Vec3 {
 /// landmarks farther than 1000 m (+1796) from the player's grid slot whose direction is within
 /// 0.8 rad of the way he faces - at most fifteen; with fewer than five the cone is widened to
 /// 1.17 rad, then 1.4 rad -, and of these one at random, never the one taken last time
-/// (RAND_INT_RANGE_DIFFERENT with the script's `LastGrid`).
-pub fn redlight_goal(landmarks: &[Vec3], start: Vec3, fwd: Vec3, last: &mut usize, rnd: f32) -> Option<usize> {
+/// (RAND_INT_RANGE_DIFFERENT with the script's `LastGrid`: 0x18ac539b 0x54ea, a `LastGrid` above count - 1 set to 0
+/// first, the draw on the script's generator, `LastGrid` the result).
+pub fn redlight_goal(landmarks: &[Vec3], start: Vec3, fwd: Vec3, last: &mut usize, rng: &mut Mwc) -> Option<usize> {
     let pass = |limit: f32| -> Vec<usize> {
         let mut c = Vec::new();
         for (i, l) in landmarks.iter().enumerate() {
@@ -376,13 +378,8 @@ pub fn redlight_goal(landmarks: &[Vec3], start: Vec3, fwd: Vec3, last: &mut usiz
     if *last > n - 1 {
         *last = 0;
     }
-    let mut k = ((rnd.clamp(0.0, 0.9999)) * n as f32) as usize;
-    if n > 1 && k == *last {
-        k = (k + 1 + ((rnd * 7919.0) as usize % (n - 1))) % n;
-        if k == *last {
-            k = (k + 1) % n;
-        }
-    }
+    // (one landmark: hi == lo is the original's division by zero; the port takes the one there is)
+    let k = rng.int_range_different(*last as i32, 0, n as i32 - 1).clamp(0, n as i32 - 1) as usize;
     *last = k;
     Some(c[k])
 }
@@ -401,7 +398,8 @@ pub struct RaceState {
     pub radius: f32,
     /// the red light men's last landmark (`LastGrid`, by id)
     pub last_goal: HashMap<u32, usize>,
-    rng: u32,
+    /// the hookman script's generator (RAND_INT_RANGE, RAND_INT_RANGE_DIFFERENT: the script context's MWC)
+    rng: Option<Mwc>,
     /// the registry's `raceBack`: 1 from a red light race's start, 0 once raced back
     pub back_offer: bool,
     /// RACE BACK chosen on the race-over menu: the caller makes the race
@@ -422,14 +420,9 @@ pub struct RaceState {
 }
 
 impl RaceState {
-    fn rnd(&mut self) -> f32 {
-        if self.rng == 0 {
-            self.rng = 0x9e37_79b9;
-        }
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 17;
-        self.rng ^= self.rng << 5;
-        (self.rng >> 8) as f32 / 16_777_216.0
+    /// The script context's generator, seeded when first drawn from (`Mwc::script`).
+    fn rng(&mut self) -> &mut Mwc {
+        self.rng.get_or_insert_with(Mwc::script)
     }
 }
 
@@ -533,7 +526,7 @@ impl Game {
                 let hook = vehicles.cars.iter().find(|c| c.racer && c.vinyl_name == man.config)?;
                 let hp = hook.state.pos;
                 // RAND_INT_RANGE(4, 6), inclusive
-                let count = 4 + ((self.althk.rnd() * 3.0) as usize).min(2);
+                let count = self.althk.rng().int_range(4, 6) as usize;
                 let (first, cps) = freeway_course(&def.pts, hp, count);
                 let n = def.pts.len();
                 let last = (first + cps.len().max(1) - 1) % n.max(1);
@@ -570,7 +563,8 @@ impl Game {
         self.althk.last_uid = uid;
         self.althk.won = None;
         self.althk.taunt_on = true;
-        self.althk.taunt_at = 30.0 + self.althk.rnd() * 10.0;
+        // (0x5cce: RAND_INT_RANGE(30000, 40000) ms)
+        self.althk.taunt_at = self.althk.rng().int_range(30_000, 40_000) as f32 * 0.001;
     }
 
     /// The red light race from the district's place nearest `pp` (0x47e7). `back`: a race
@@ -595,9 +589,8 @@ impl Game {
                 (0..marks.len()).min_by(|&a, &b| marks[a].distance(slot).total_cmp(&marks[b].distance(slot)))
             }
             None => {
-                let r = self.althk.rnd();
                 let mut last = self.althk.last_goal.get(&def.id).copied().unwrap_or(0);
-                let g = redlight_goal(&marks, start, fwd, &mut last, r);
+                let g = redlight_goal(&marks, start, fwd, &mut last, self.althk.rng());
                 self.althk.last_goal.insert(def.id, last);
                 g
             }
@@ -717,7 +710,10 @@ impl Game {
 
     pub fn alt_taunt_said(&mut self, scenario: &str) {
         let t = self.race.as_ref().map_or(0.0, |r| r.time);
-        self.althk.taunt_at = t + 45.0 + self.althk.rnd() * 25.0;
+        // (0x668a: RAND_INT_RANGE(Race_GetTimer + 45000, Race_GetTimer + 70000) ms; the timer in ms from the port's race
+        // time)
+        let ms = (t * 1000.0) as i32;
+        self.althk.taunt_at = self.althk.rng().int_range(ms.wrapping_add(45_000), ms.wrapping_add(70_000)) as f32 * 0.001;
         log::info!("alt hookman: {} at {:.1} s, the next at {:.1} s", scenario, t, self.althk.taunt_at);
     }
 
@@ -877,19 +873,20 @@ mod tests {
         let mut last = 0;
         // fewer than five in any cone: the widest one's (0 and 1) are drawn from
         let mut seen = std::collections::HashSet::new();
-        for r in 0..20 {
-            let g = redlight_goal(&l, start, fwd, &mut last, r as f32 / 20.0).unwrap();
+        let mut rng = Mwc::seed(7);
+        for _ in 0..20 {
+            let g = redlight_goal(&l, start, fwd, &mut last, &mut rng).unwrap();
             assert!(g == 0 || g == 1);
             seen.insert(g);
         }
         assert_eq!(seen.len(), 2);
         // never the same twice running with two to choose from
         let mut last = 0;
-        let a = redlight_goal(&l, start, fwd, &mut last, 0.1).unwrap();
-        let b = redlight_goal(&l, start, fwd, &mut last, 0.1).unwrap();
+        let a = redlight_goal(&l, start, fwd, &mut last, &mut rng).unwrap();
+        let b = redlight_goal(&l, start, fwd, &mut last, &mut rng).unwrap();
         assert_ne!(a, b);
         // none: nothing farther than 1000 m ahead
-        assert_eq!(redlight_goal(&l[3..], start, fwd, &mut 0, 0.5), None);
+        assert_eq!(redlight_goal(&l[3..], start, fwd, &mut 0, &mut rng), None);
     }
 
     #[test]

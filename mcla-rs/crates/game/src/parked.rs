@@ -46,11 +46,80 @@ impl Mwc {
     pub fn index(&mut self, n: u32) -> u32 {
         (self.next() & 0x7FFF_FFFF) % n.max(1)
     }
+    /// The generator's seed (F-37317): x = s + (s == 0), carry = s ^ rotl16(s) (the generator's +8 byte and +12 word,
+    /// cleared there, are not used by any draw).
+    pub fn seed(s: u32) -> Mwc {
+        Mwc { lo: s.wrapping_add((s == 0) as u32), carry: s ^ s.rotate_left(16) }
+    }
+    /// A script context's generator as its constructor seeds it (F-36420 -> F-82174): with one draw `x & 0x7FFFFFFF` of the
+    /// game's global generator, which the original seeds from the time base at start-up (F-71171).
+    pub fn script() -> Mwc {
+        static GLOBAL: std::sync::OnceLock<std::sync::Mutex<Mwc>> = std::sync::OnceLock::new();
+        let g = GLOBAL.get_or_init(|| {
+            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1);
+            std::sync::Mutex::new(Mwc::seed(t as u32 ^ (t >> 32) as u32))
+        });
+        let s = g.lock().unwrap_or_else(|e| e.into_inner()).next() & 0x7FFF_FFFF;
+        Mwc::seed(s)
+    }
+    /// RAND_INT_RANGE (F-32828): hi < lo gives lo and draws nothing; else lo + (x & 0x7FFFFFFF) % (hi - lo + 1) in the
+    /// guest's 32-bit signed arithmetic.
+    pub fn int_range(&mut self, lo: i32, hi: i32) -> i32 {
+        if hi < lo {
+            return lo;
+        }
+        range_of((self.next() & 0x7FFF_FFFF) as i32, lo, hi)
+    }
+    /// RAND_FLOAT_RANGE (F-47737): hi < lo gives hi and draws nothing; else lo + (hi - lo) x (x & 0x7FFFFF) x 2^-23 as the
+    /// original rounds it (the difference and the product to single, then one fused multiply-add on lo).
+    pub fn float_range(&mut self, lo: f32, hi: f32) -> f32 {
+        // (a NaN end: the compare is unordered and the draw is made)
+        if hi < lo {
+            return hi;
+        }
+        let d = hi - lo;
+        let r = (self.next() & 0x7F_FFFF) as f32;
+        let p = d * r;
+        (p as f64).mul_add(1.0 / 8_388_608.0, lo as f64) as f32
+    }
+    /// RAND_INT_RANGE_DIFFERENT (F-40328) and the particles' frame draw (F-61280): a value of [lo, hi] other than `cur`,
+    /// ((v % (hi - lo)) - lo + cur + 1) % (hi - lo + 1) + lo with v = x & 0x7FFFFFFF, in the guest's 32-bit signed
+    /// arithmetic. Always draws. (hi == lo is a division by zero the original traps on; the port gives lo.)
+    pub fn int_range_different(&mut self, cur: i32, lo: i32, hi: i32) -> i32 {
+        different_of((self.next() & 0x7FFF_FFFF) as i32, cur, lo, hi)
+    }
     /// A weight pick as sub_826F23A0 makes it: `(lo & 0x7FFFFF) x total x 2^-23`.
     fn scaled(&mut self, total: f32) -> f32 {
         (self.next() & 0x7F_FFFF) as f32 * total * (1.0 / 8_388_608.0)
     }
 }
+
+/// The remainder of the guest's `divw` / `mullw` / `subf` as the generated code computes it: the quotient is 0 for a zero
+/// divisor or i32::MIN / -1, so the remainder is then the dividend.
+pub fn divw_rem(a: i32, b: i32) -> i32 {
+    let q = if b != 0 && !(a == i32::MIN && b == -1) { a / b } else { 0 };
+    a.wrapping_sub(q.wrapping_mul(b))
+}
+
+/// The int range draw on a drawn value `v` (x & 0x7FFFFFFF): lo + v % (hi - lo + 1), guest arithmetic.
+pub fn range_of(v: i32, lo: i32, hi: i32) -> i32 {
+    divw_rem(v, hi.wrapping_sub(lo).wrapping_add(1)).wrapping_add(lo)
+}
+
+/// The DIFFERENT draw on a drawn value `v` (x & 0x7FFFFFFF): ((v % (hi - lo)) - lo + cur + 1) % (hi - lo + 1) + lo, guest
+/// arithmetic (hi == lo, the original's trap, gives lo).
+pub fn different_of(v: i32, cur: i32, lo: i32, hi: i32) -> i32 {
+    let n = hi.wrapping_sub(lo);
+    if n == 0 {
+        return lo;
+    }
+    let t = divw_rem(v, n).wrapping_sub(lo).wrapping_add(cur).wrapping_add(1);
+    divw_rem(t, n.wrapping_add(1)).wrapping_add(lo)
+}
+
+#[cfg(test)]
+#[path = "rng_tests.rs"]
+mod rng_tests;
 
 /// A layout item's parked car has no spot (car +44 = 0; +40 the item).
 pub const ITEM_SPOT: usize = usize::MAX;

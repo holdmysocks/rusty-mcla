@@ -256,6 +256,33 @@ struct Effect {
 
 struct Rng(u32);
 
+/// A random texture frame of [lo, hi] (the step F-12752's and the birth F-61736's draw on the ptfx generator): with lo != hi and the
+/// current frame inside, one other than it (RAND_INT_RANGE_DIFFERENT's rule, F-61280), else any (lo + v % (hi - lo + 1));
+/// the frame is the low byte. The drawn value is the port's stream's word (& 0x7FFFFFFF); the arithmetic is the original's.
+fn random_frame(rng: &mut Rng, cur: u8, lo: i32, hi: i32) -> i32 {
+    use crate::vehicles::parked::{different_of, range_of};
+    let v = (rng.u() & 0x7FFF_FFFF) as i32;
+    let c = cur as i32;
+    (if lo != hi && c >= lo && c <= hi { different_of(v, c, lo, hi) } else { range_of(v, lo, hi) }) & 0xFF
+}
+
+/// A sprite particle's first frames at its birth (F-61736, after its first draws): A any of [FrameStart,
+/// FrameEnd] (low byte), B = A + 1, past FrameEnd FrameEnd (HoldLastTexFrame) or FrameStart; AnimateRandom: B is A
+/// and then a random frame of [FrameStart, AnimEnd] (`random_frame`). Returns A, B in `b`.
+fn birth_frames(rng: &mut Rng, start: i32, end: i32, anim_end: i32, flags: u32, b: &mut u8) -> u8 {
+    use crate::vehicles::parked::range_of;
+    let a = (range_of((rng.u() & 0x7FFF_FFFF) as i32, start, end) & 0xFF) as u8;
+    let mut bb = a.wrapping_add(1) as i32;
+    if bb > end {
+        bb = if flags & flag::HOLD_LAST_TEX_FRAME != 0 { end } else { start };
+    }
+    if flags & flag::ANIMATE_RANDOM != 0 {
+        bb = random_frame(rng, a, start, anim_end);
+    }
+    *b = bb as u8;
+    a
+}
+
 impl Rng {
     fn f(&mut self) -> f32 {
         let mut x = self.0;
@@ -1234,8 +1261,7 @@ impl Particles {
             }
             if let Some(s) = &pr.sprite {
                 // first frame, first turn (degrees), first spin (turns a second)
-                p.frame = (s.frame_start + (rng.f() * (s.frame_end - s.frame_start + 1) as f32) as i32).clamp(0, 255) as u8;
-                p.frame0 = p.frame;
+                p.frame0 = birth_frames(&mut rng, s.frame_start, s.frame_end, s.anim_end, pr.flags, &mut p.frame);
                 // (InitTheta, InitRotateVel with their evolutions, list 3 ids 6 / 7: `F-70576`, `F-61736`)
                 let (th, rv) = (ev(3, 6, s.init_theta.eval(te)), ev(3, 7, s.init_rot_vel.eval(te)));
                 p.theta = rng.range(th[0], th[1]).to_radians();
@@ -1428,8 +1454,8 @@ impl Particles {
                         p.anim = (p.anim - 1.0).min(1.0);
                         let (a, b) = (s.frame_start, s.anim_end);
                         let next = if pr.flags & flag::ANIMATE_RANDOM != 0 {
-                            a + (rng.f() * (b - a + 1) as f32) as i32
-                        } else if p.frame as i32 + 1 > b {
+                            random_frame(&mut rng, p.frame, a, b)
+                        } else if (p.frame as i32 + 1) & 0xFF > b {
                             if pr.flags & flag::HOLD_LAST_TEX_FRAME != 0 {
                                 b
                             } else {

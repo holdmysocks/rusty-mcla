@@ -162,7 +162,7 @@ pub static DATA_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceL
 fn type_colors(root: &std::path::Path, model: &str) -> (Option<[[f32; 3]; 20]>, u8) {
     let Ok(t) = std::fs::read_to_string(root.join("tune/ambients/traffic").join(model).join("mcAmbientCarTypeColor.xml")) else { return (None, 2) };
     let scale = crate::ambient::xml_value(&t, "fScale").unwrap_or(1.0);
-    let paint = crate::ambient::xml_value(&t, "iPaintType").map_or(2, |v| v as u8);
+    let paint = crate::ambient::xml_int(&t, "iPaintType").map_or(2, |v| v as u8);
     let body = t.find("<vColors").and_then(|i| {
         let b = &t[i..];
         Some(&b[b.find('>')? + 1..b.find("</vColors>")?])

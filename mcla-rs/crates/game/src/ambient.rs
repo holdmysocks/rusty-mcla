@@ -8,22 +8,166 @@ use glam::Vec3;
 use hashbrown::HashMap;
 use std::path::Path;
 
-pub fn xml_value(text: &str, tag: &str) -> Option<f32> {
+/// The text of a `<tag value="..."/>` of a tune file.
+fn xml_text<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
     let i = text.find(&format!("<{tag} "))?;
     let rest = &text[i..];
     let v = rest.find("value=\"")? + 7;
     let e = rest[v..].find('"')?;
-    rest[v..v + e].trim().parse().ok()
+    Some(&rest[v..v + e])
 }
 
-/// A `<tag value="true|false"/>` of a tune file.
-pub fn xml_bool(text: &str, tag: &str) -> Option<bool> {
-    let i = text.find(&format!("<{tag} "))?;
-    let rest = &text[i..];
-    let v = rest.find("value=\"")? + 7;
-    let e = rest[v..].find('"')?;
-    rest[v..v + e].trim().parse().ok()
+/// A `<tag value="..."/>` read as a float the way the original reads a text attribute (F-92206 -> F-79880): the C
+/// library's atof, rounded to single (`attr_f32`).
+pub fn xml_value(text: &str, tag: &str) -> Option<f32> {
+    xml_text(text, tag).map(attr_f32)
 }
+
+/// A `<tag value="..."/>` read as a bool the way the original reads a text attribute (F-83747, `attr_bool`).
+pub fn xml_bool(text: &str, tag: &str) -> Option<bool> {
+    xml_text(text, tag).map(attr_bool)
+}
+
+/// A `<tag value="..."/>` read as an int the way the original reads a text attribute (F-79822, `attr_int`).
+pub fn xml_int(text: &str, tag: &str) -> Option<i32> {
+    xml_text(text, tag).map(attr_int)
+}
+
+/// The C library's whitespace (isspace in the C locale).
+fn c_space(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
+}
+
+/// The C library's atof (F-53123) on a text: blanks skipped, then the longest prefix [+-]digits[.digits][e[+-]digits]
+/// (at least one digit; an exponent only with a digit after it), 0 without one, correctly rounded to double (checked on
+/// the disc's texts and made-up numbers against the original's code, `attr_tests`).
+pub fn c_atof(s: &str) -> f64 {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() && c_space(b[i]) {
+        i += 1;
+    }
+    let st = i;
+    if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+        i += 1;
+    }
+    let d0 = i;
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    let mut digits = i - d0;
+    if i < b.len() && b[i] == b'.' {
+        i += 1;
+        let f0 = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        digits += i - f0;
+    }
+    if digits == 0 {
+        return 0.0;
+    }
+    if i < b.len() && (b[i] == b'e' || b[i] == b'E') {
+        let mut j = i + 1;
+        if j < b.len() && (b[j] == b'+' || b[j] == b'-') {
+            j += 1;
+        }
+        if j < b.len() && b[j].is_ascii_digit() {
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            i = j;
+        }
+    }
+    s[st..i].parse::<f64>().unwrap_or(0.0)
+}
+
+/// A text attribute as a float (F-79880): float(atof(text)) - the double rounded to single, not the decimal straight.
+pub fn attr_f32(s: &str) -> f32 {
+    c_atof(s) as f32
+}
+
+/// A text attribute as an int (F-79822): "0x" and the rest by the base-16 conversion (F-63823), else strtol base 10
+/// (F-53090): blanks, a sign, digits; out of range the int's end.
+pub fn attr_int(s: &str) -> i32 {
+    let b = s.as_bytes();
+    if b.len() >= 2 && b[0] == b'0' && b[1] == b'x' {
+        return c_strtoul(&b[2..], 16) as i32;
+    }
+    c_strtol(b, 10)
+}
+
+/// The C library's number scan: blanks, a sign, (base 16) an "0x", the digits; (negative, digit count, value, out of
+/// range).
+fn c_digits(b: &[u8], base: u32) -> (bool, usize, u64, bool) {
+    let mut i = 0;
+    while i < b.len() && c_space(b[i]) {
+        i += 1;
+    }
+    let neg = i < b.len() && b[i] == b'-';
+    if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+        i += 1;
+    }
+    if base == 16 && i + 1 < b.len() && b[i] == b'0' && (b[i + 1] == b'x' || b[i + 1] == b'X') {
+        i += 2;
+    }
+    let (mut v, mut over, s0) = (0u64, false, i);
+    while i < b.len() {
+        let Some(d) = (b[i] as char).to_digit(base) else { break };
+        v = v * base as u64 + d as u64;
+        if v > u32::MAX as u64 {
+            over = true;
+            v = u32::MAX as u64 + 1;
+        }
+        i += 1;
+    }
+    (neg, i - s0, v, over)
+}
+
+/// strtol: out of range LONG_MAX / LONG_MIN.
+fn c_strtol(b: &[u8], base: u32) -> i32 {
+    let (neg, n, v, over) = c_digits(b, base);
+    if n == 0 {
+        return 0;
+    }
+    if neg {
+        if over || v > 0x8000_0000 {
+            i32::MIN
+        } else {
+            (v as i64).wrapping_neg() as i32
+        }
+    } else if over || v > i32::MAX as u64 {
+        i32::MAX
+    } else {
+        v as i32
+    }
+}
+
+/// strtoul: out of range ULONG_MAX; a '-' negates.
+fn c_strtoul(b: &[u8], base: u32) -> u32 {
+    let (neg, n, v, over) = c_digits(b, base);
+    if n == 0 {
+        return 0;
+    }
+    if over {
+        return u32::MAX;
+    }
+    if neg {
+        (v as u32).wrapping_neg()
+    } else {
+        v as u32
+    }
+}
+
+/// A text attribute as a bool (F-83747): false when its first character is 'f', 'F' or '0', else true (an empty text
+/// too).
+pub fn attr_bool(s: &str) -> bool {
+    !matches!(s.as_bytes().first(), Some(b'f' | b'F' | b'0'))
+}
+
+#[cfg(test)]
+#[path = "attr_tests.rs"]
+mod attr_tests;
 
 /// Weight of something over the day: (start, end, weight) rows of a `TodArray`, times as
 /// written (HHMM).
@@ -35,8 +179,8 @@ impl Tod {
         let mut v = Vec::new();
         // the files write the row tag both as <Item> and <item>
         for item in xml.replace("<item>", "<Item>").split("<Item>").skip(1) {
-            let (Some(a), Some(b), Some(w)) = (xml_value(&item, "iStartTime"), xml_value(&item, "iEndTime"), xml_value(&item, "fWeight")) else { continue };
-            v.push((a as i32, b as i32, w));
+            let (Some(a), Some(b), Some(w)) = (xml_int(&item, "iStartTime"), xml_int(&item, "iEndTime"), xml_value(&item, "fWeight")) else { continue };
+            v.push((a, b, w));
         }
         Tod(v)
     }
@@ -242,7 +386,7 @@ impl Distribution {
         }
         self.nodes.push(node);
         let tree = std::fs::read_to_string(dir.join("mcAmbientDistributionTreeData.xml")).unwrap_or_default();
-        if let Some(c) = xml_value(&tree, "iMapColor") {
+        if let Some(c) = xml_int(&tree, "iMapColor") {
             self.node_of.insert(c as u8, k);
         }
         let kids = tree.split("<ChildNames>").nth(1).and_then(|t| t.split("</ChildNames>").next()).unwrap_or("");
@@ -288,7 +432,7 @@ impl Distribution {
                     }
                 }
                 if let Ok(tree) = std::fs::read_to_string(dir.join("mcAmbientDistributionTreeData.xml")) {
-                    if let Some(c) = xml_value(&tree, "iMapColor") {
+                    if let Some(c) = xml_int(&tree, "iMapColor") {
                         leaves.push((c as u8, list.clone(), density.clone()));
                     }
                 }
