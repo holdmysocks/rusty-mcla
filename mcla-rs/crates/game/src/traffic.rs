@@ -1062,7 +1062,10 @@ impl Rider {
         let (p, d, s) = c.pose_slot9(self.phase(nav), if self.ds_lane == l.lane { self.ds } else { 0.0 });
         self.ds = s;
         self.ds_lane = l.lane;
-        (p, d.normalize_or(l.tangent_at(self.s / l.len.max(1e-3))))
+        // (the heading: -row 2 of F-74567's pose, `follower_pose` - the derivative made unit by the vector unit; a zero
+        // derivative, which no lane of the file has, would give 0 there: the link's tangent instead)
+        let h = crate::tcp_rail::vnorm(d);
+        (p, if h == Vec3::ZERO { l.tangent_at(self.s / l.len.max(1e-3)) } else { h })
     }
 
     /// Put the car at phase `t` of its lane: the link holding it and the metres along it.
@@ -1591,6 +1594,30 @@ pub fn flat_forward(back: Vec3) -> (f32, f32) {
     }
     let k = -(dd * (y * y) - 1.0) * (0.5 * y) + y;
     (-(back.x * k), -(back.z * k))
+}
+
+/// F-74567, the follower's pose (behaviour slot 4 F-74063 writes it into the target matrix, then that matrix's y = car
+/// +2324): no rail - rows (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 0) and the pose flag (+160 0x80) cleared;
+/// else from the rail's slot 9 point `p` and derivative `t`: row 2 = 0 - t, row 0 = row 2 x (0, 1, 0, 0) and row 1 = row 0
+/// x row 2 (row 0 before it is made unit) in their permute / vnmsubfp form, each made unit by vmsum3fp, vrsqrtefp (an
+/// infinite estimate replaced by the start-up 0) and one Newton step; row 3 = p; the flag set.
+pub fn follower_pose(rail: Option<([f32; 4], [f32; 4])>) -> ([[f32; 4]; 4], bool) {
+    use crate::physics::artic::V4;
+    let Some((p, t)) = rail else {
+        return ([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0; 4]], false);
+    };
+    let (zero, one, half, inf) = (V4::ZERO, V4::splat(1.0), V4::splat(0.5), V4::splat(f32::INFINITY));
+    let unit = |v: V4| {
+        let l2 = v.dot3(v);
+        let est = l2.rsqrte();
+        let e = est.sel(zero, est.eq(inf));
+        v.mul(l2.nmsub(e.mul(e), one).madd(half.mul(e), e))
+    };
+    let up = V4::new(0.0, 1.0, 0.0, 0.0);
+    let f = zero.sub(V4(t));
+    let r0 = f.yzx().nmsub(up.zxy(), f.zxy().mul(up.yzx()));
+    let r1 = r0.yzx().nmsub(f.zxy(), r0.zxy().mul(f.yzx()));
+    ([unit(r0).0, unit(r1).0, unit(f).0, p], true)
 }
 
 /// F-35476 (behaviour slot 19 through F-74598): the follower's current rail `cur` is one of its race path's rails - F-47392
@@ -12261,6 +12288,40 @@ mod controller_pick_tests {
     /// its curve / join / lane rails (each none or one), their words +4 (0, 1, 0x800, 0x1000, 0x1800, 0x2001, all but
     /// 0x1800) and the follower's rail (none, the curve, the join, the lane, another rail) - 13,725 cases, the answer equal
     /// to [`path_rail_counts`]'s on every one.
+    /// F-74063 with F-74567 run offline on the original's code (work/traffic-detail/pose, the rail's slot 9 a stub with the
+    /// case's point and derivative): 6,000 cases - no rail, derivatives of every length, straight up or down, flat, zero,
+    /// with a w, NaN, infinities and denormals mixed in -, the target matrix's 16 words (y = car +2324 over row 3's; a NaN
+    /// lane only as a NaN) and the pose flag equal to [`follower_pose`]'s; [`Rider::pose`]'s heading (`tcp_rail::vnorm`) is minus row 2, but for a zero's sign.
+    #[test]
+    fn follower_pose_matches_the_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/follower_pose_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let (a, b) = l.split_once(" | ").unwrap();
+            let w: Vec<u32> = a.split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let o: Vec<u32> = b.split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let v = |k: usize| [0, 1, 2, 3].map(|i| f32::from_bits(w[k + i]));
+            let (mut rows, flag) = follower_pose((w[0] == 1).then(|| (v(1), v(5))));
+            rows[3][1] = f32::from_bits(w[9]);
+            let got: Vec<u32> = rows.iter().flat_map(|r| r.map(f32::to_bits)).collect();
+            // (a NaN lane: any NaN - its sign and payload are the recompiled code's x86 default, not the console's)
+            let nan = |b: u32| f32::from_bits(b).is_nan();
+            for (g, e) in got.iter().zip(&o[..16]) {
+                assert!(g == e || (nan(*g) && nan(*e)), "{l}");
+            }
+            assert_eq!(o[16], (w[10] & 0x7F) | if flag { 0x80 } else { 0 }, "flag {l}");
+            if w[0] == 1 {
+                let h = crate::tcp_rail::vnorm(Vec3::new(f32::from_bits(w[5]), f32::from_bits(w[6]), f32::from_bits(w[7])));
+                let r2 = rows[2];
+                // (equal but for the sign of a zero lane: 0 - t gives +0 where -t gives -0)
+                for (x, y) in [h.x, h.y, h.z].into_iter().zip(r2) {
+                    assert!((x.is_nan() && y.is_nan()) || -x == y, "heading {l}");
+                }
+            }
+            n += 1;
+        }
+        assert_eq!(n, 6000);
+    }
+
     #[test]
     fn path_rail_counts_matches_the_original() {
         let (mut n, mut yes) = (0, 0);
