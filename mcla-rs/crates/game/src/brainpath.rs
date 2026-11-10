@@ -1,5 +1,5 @@
 //! mcBrainRacing: a found nav path handed to the aiv race line, 1:1 with the original
-//! (sub_822BE000 and its portal feeders sub_822BBEE8, sub_822BC360, sub_822BC508; decode in
+//! (F-47058 and its portal feeders F-77661, F-82239, F-78429; decode in
 //! work/racerai/brain.md 2.4, listings work/racerai/scratch/br.txt).
 //!
 //! The nav result is the original's linked list of 56-byte elements: one portal (type 2) per
@@ -11,7 +11,7 @@ use crate::brain::Goal;
 use glam::Vec3;
 use mcla_formats::rage::navmesh::{NavMesh, Portal56, QuickestPath};
 
-/// Material flag tested by the feeders: vfunc 60 of the mesh (sub_82764828) returns the
+/// Material flag tested by the feeders: vfunc 60 of the mesh (F-43095) returns the
 /// polygon's material object, its word +8 is the material flags; `& 2` = ai_road. Span nodes
 /// have no material (vfunc 60 returns 0), so their flag is 0.
 const FLAG_BIT: u32 = 0x2;
@@ -21,7 +21,7 @@ fn fma(a: f32, b: f32, c: f32) -> f32 {
     (a as f64).mul_add(b as f64, c as f64) as f32
 }
 
-/// sub_8254F478: the polygon's normal-table entry rotated by its chunk matrix (no
+/// F-83219: the polygon's normal-table entry rotated by its chunk matrix (no
 /// normalisation).
 fn poly_normal(mesh: &NavMesh, id: u32) -> Vec3 {
     let p = &mesh.polys[id as usize];
@@ -36,11 +36,11 @@ fn node_flag(mesh: &NavMesh, id: u32) -> bool {
     mesh.polys.get(id as usize).map_or(false, |p| p.flags & FLAG_BIT != 0)
 }
 
-/// Quad far-edge tables of sub_822BBEE8: index 2 x (4 a + b) into 0x01010258 / 0x1A4FB3BC.
+/// Quad far-edge tables of F-77661: index 2 x (4 a + b) into 0x01010258 / 0x1A4FB3BC.
 const QUAD_T1: u32 = 0x0101_0258;
 const QUAD_T2: u32 = 0x1A4F_B3BC;
 
-/// sub_822BBEE8(brain, element, start): the edge of the path's first polygon (`start`: the
+/// F-77661(brain, element, start): the edge of the path's first polygon (`start`: the
 /// polygon left by the portal) or last polygon (the polygon entered) opposite the portal,
 /// pushed so the corridor covers that whole polygon.
 fn far_edge(mesh: &NavMesh, p: &Portal56, start: bool) -> Option<Portal> {
@@ -72,20 +72,30 @@ fn far_edge(mesh: &NavMesh, p: &Portal56, start: bool) -> Option<Portal> {
         // triangle: the vertex nearest A and the third one
         (ia, 3 - ib - ia)
     } else {
-        let s = (((ia << 2) | ib) << 1) as u32 & 31;
-        ((QUAD_T1 >> s) as i32 & 3, (QUAD_T2 >> s) as i32 & 3)
+        // (sraw: the shift's low 6 bits, 32 .. 63 giving 0 for these positive tables)
+        let s = (((ia << 2) | ib) << 1) as u32 & 63;
+        let t = |w: u32| if s < 32 { (w >> s) as i32 & 3 } else { 0 };
+        (t(QUAD_T1), t(QUAD_T2))
     };
-    // (approx.: a degenerate match (A and B nearest the same vertex) gives the original an
-    // index outside the vertex list; the port wraps it into 0..3)
-    let vert = |k: i32| v[(k & 3) as usize];
-    // orientation against the stored centre (sub_8254F388)
+    // A degenerate triangle (A and B nearest the same vertex) gives an index outside 0 .. 2: the
+    // original reads its stack there - 3 the fetch's fourth vertex, -1 the stored centre, -2 the
+    // normal (both written before the read).
+    // (approx.: -3 and below or 4 and above need a vertex list with no vertex within 1e4 m of A or B;
+    // the port wraps them into 0..3)
     let c = poly.center;
+    let nrm = poly_normal(mesh, id);
+    let vert = |k: i32| match k {
+        -1 => c,
+        -2 => nrm,
+        _ => v[(k & 3) as usize],
+    };
+    // orientation against the stored centre (F-58750)
     let (u, w) = (vert(i) - c, vert(j) - c);
     let cross = fma(w.z, u.x, -(u.z * w.x));
     if (cross < 0.0) != start {
         std::mem::swap(&mut i, &mut j);
     }
-    Some(Portal { a: vert(i), b: vert(j), normal: poly_normal(mesh, id), offroad: node_flag(mesh, id), ext: (0.0, 0.0) })
+    Some(Portal { a: vert(i), b: vert(j), normal: nrm, offroad: node_flag(mesh, id), ext: (0.0, 0.0) })
 }
 
 fn push_far_edge(aiv: &mut Aiv, mesh: &NavMesh, p: &Portal56, start: bool) -> Option<Portal> {
@@ -94,7 +104,7 @@ fn push_far_edge(aiv: &mut Aiv, mesh: &NavMesh, p: &Portal56, start: bool) -> Op
     Some(portal)
 }
 
-/// sub_822BC508(brain, element): the path portal itself, with the clearances beyond its ends as
+/// F-78429(brain, element): the path portal itself, with the clearances beyond its ends as
 /// the extensions and the normal / flag of the node entered.
 fn path_portal(mesh: &NavMesh, p: &Portal56) -> Portal {
     let normal = if (p.entered as usize) < mesh.polys.len() {
@@ -114,7 +124,7 @@ fn push_path_portal(aiv: &mut Aiv, mesh: &NavMesh, p: &Portal56) -> Portal {
     portal
 }
 
-/// sub_822BC360(brain, point): a path with no portal (start and goal in one polygon) on an
+/// F-82239(brain, point): a path with no portal (start and goal in one polygon) on an
 /// empty corridor: two edges of that polygon, v0-v1 and (v0 for a triangle, else v3)-v2.
 fn single_polygon(mesh: &NavMesh, id: u32) -> Vec<Portal> {
     let Some(poly) = mesh.polys.get(id as usize) else { return Vec::new() };
@@ -131,11 +141,11 @@ fn goal_node(mesh: &NavMesh, path: &QuickestPath) -> Option<u32> {
     mesh.find(path.goal, u32::MAX, 1.0)
 }
 
-/// sub_822BE000 with the brain's +216 (`current`, the goal being driven to) and +220 (`next`,
+/// F-47058 with the brain's +216 (`current`, the goal being driven to) and +220 (`next`,
 /// the goal the path was planned to). Call once the nav state is 4 and the aiv's goal ring has
 /// room (< 8). Returns false when the aiv's portal ring has no room for the path (nothing is
 /// done and the nav state stays 4); true when the path was consumed (then the caller sets the
-/// nav state to 0, sub_826FD488).
+/// nav state to 0, F-71636).
 #[allow(clippy::too_many_arguments)]
 pub fn path_to_aiv_at(aiv: &mut Aiv, mesh: &NavMesh, path: &QuickestPath, goals: &mut Vec<Goal>, current: usize, next: &mut usize, looping: bool, final_heading: Vec3, final_speed: f32) -> bool {
     // count = elements of the list (portals + the goal point)
@@ -184,7 +194,7 @@ pub fn path_to_aiv_at(aiv: &mut Aiv, mesh: &NavMesh, path: &QuickestPath, goals:
         // an extra goal between the middles of the last two portals (portal 64 and the far edge
         // of the polygon it enters), radius 100 (0x82007928), max speed -1 (0x82003770); it
         // keeps the following goal's lap / checkpoint bits with bits 0 and 1 cleared, and its
-        // +16 / +28 (sub_822BB278 shifts the array up and fills only +0..+12)
+        // +16 / +28 (F-89800 shifts the array up and fills only +0..+12)
         // (approx.: the original reads the two midpoints from the aiv ring's stored ends; the
         // port uses the ends it passed - the same middles up to rounding, push_portal moves both
         // ends of a road portal inward by the same amount)
@@ -314,6 +324,67 @@ mod tests {
         // single-polygon path: v0-v1 and v3-v2
         let sp = single_polygon(&m, 1);
         assert_eq!((sp[0].a, sp[0].b, sp[1].a, sp[1].b), (m.polys[1].verts[0], m.polys[1].verts[1], m.polys[1].verts[3], m.polys[1].verts[2]));
+    }
+
+    /// F-77661, F-82239 and F-78429 run offline (tools/race_line_feeders_reference.py, verify_race_line_feeders.md): every
+    /// pushed portal's ends, normal, flag and extensions equal to far_edge, single_polygon and path_portal.
+    #[test]
+    fn race_line_feeders_match_the_original() {
+        let text = include_str!("testdata/race_line_feeders_ref.txt");
+        let hex = |w: &str| u32::from_str_radix(&w.replace('_', ""), 16).unwrap();
+        let words = |e: &Portal| {
+            let mut w: Vec<u32> = [e.a, e.b, e.normal].iter().flat_map(|q| [q.x, q.y, q.z]).map(f32::to_bits).collect();
+            w.extend([e.offroad as u32, e.ext.0.to_bits(), e.ext.1.to_bits()]);
+            w
+        };
+        // one polygon (node 0) with the case's vertices, centre, normal (chunk rows the identity) and flags
+        let mesh = |nv: u32, verts: [Vec3; 4], center: Vec3, n: Vec3, flags: u32| {
+            let mut m = NavMesh::default();
+            m.chunk_rows = vec![[Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO]];
+            m.chunk_first = vec![0];
+            m.polys.push(NavPoly { chunk: 0, material: 1, flags, area: 1.0, center, normal: n, nv: nv as u8, verts, first_link: 0, n_links: 0 });
+            m.local.push(PolyLocal { verts, n, d: 0.0 });
+            m
+        };
+        let mut counts = [0usize; 3];
+        let mut bad = 0;
+        for line in text.lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let arrow = w.iter().position(|x| *x == "->").unwrap();
+            let v: Vec<u32> = w[1..arrow].iter().map(|x| hex(x)).collect();
+            let o: Vec<u32> = w[arrow + 1..].iter().map(|x| hex(x)).collect();
+            let v3 = |i: usize| Vec3::new(f32::from_bits(v[i]), f32::from_bits(v[i + 1]), f32::from_bits(v[i + 2]));
+            let vs = |i: usize| [v3(i), v3(i + 3), v3(i + 6), v3(i + 9)];
+            let fl = |i: usize| if v[i] != 0 { v[i + 1] } else { 0 };
+            let got: Vec<u32> = match w[0] {
+                "edge" => {
+                    counts[0] += 1;
+                    let m = mesh(v[1], vs(8), v3(20), v3(23), fl(26));
+                    let p = Portal56 { a: v3(2), b: v3(5), clear_a: 0.0, clear_b: 0.0, left: 0, entered: 0, flags: 0, normal: Vec3::Y };
+                    words(&far_edge(&m, &p, v[0] != 0).unwrap())
+                }
+                "single" => {
+                    counts[1] += 1;
+                    let m = mesh(v[0], vs(1), Vec3::ZERO, v3(13), fl(16));
+                    single_polygon(&m, 0).iter().flat_map(words).collect()
+                }
+                _ => {
+                    counts[2] += 1;
+                    let m = mesh(4, [Vec3::ZERO; 4], Vec3::ZERO, v3(8), fl(11));
+                    let p = Portal56 { a: v3(0), b: v3(3), clear_a: f32::from_bits(v[6]), clear_b: f32::from_bits(v[7]), left: 0, entered: 0, flags: 0, normal: Vec3::Y };
+                    words(&path_portal(&m, &p))
+                }
+            };
+            if got != o {
+                if bad < 5 {
+                    println!("{line}{}  port {:08x?}", char::from(10), got);
+                }
+                bad += 1;
+            }
+        }
+        println!("race line feeders: {} edge, {} single, {} portal cases, {bad} differ", counts[0], counts[1], counts[2]);
+        assert!(counts[0] >= 8000 && counts[1] >= 2000 && counts[2] >= 2000);
+        assert_eq!(bad, 0);
     }
 
     #[test]
