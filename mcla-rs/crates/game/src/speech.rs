@@ -99,6 +99,9 @@ pub struct Speech {
     line_wait: bool,
     /// the Priority (+12) of the scenario `request` started, while it plays
     cur_priority: Option<i32>,
+    /// the last request was refused for a script with no line (tests)
+    #[cfg(test)]
+    no_line: bool,
 }
 
 fn attr<'a>(s: &'a str, name: &str) -> Option<&'a str> {
@@ -241,8 +244,10 @@ impl Speech {
     /// A speech request as F-30989 / F-62728 make it (`"PLAYER_NITROUS"`, voice group "PLAYER", not forced): the start
     /// F-95157 refuses it while the clock is below its last start + Frequency, then unless rand(0, 99) < Probability (the
     /// draw only when the clock passed); a scenario playing is cut only by a higher Priority (+12). On a start: the last
-    /// start = the clock, the script = rand(0, count - 1), one on (wrapping) when it equals the last one (so a scenario of
-    /// two scripts alternates), the Delay before the first line. Recorded (work/slipstream/audio3/cap/n0.txt): the gate
+    /// start = the clock, the script drawn = rand(0, count - 1) is the one said, the last script (+28) = that draw, one on
+    /// (wrapping) when it equals the last one (the script's pointer is taken before the bump: a scenario of two scripts can
+    /// say the same one twice), the Delay before the first line; a script with no line (PlayAsset / SpecialCase) stops the
+    /// speech (F-73277) and the start is refused, the last start and script kept. Recorded (work/slipstream/audio3/cap/n0.txt): the gate
     /// draw 27 < 30 passes, the script draw 0 next, a request 66.3 s after the start refused with no draw, one at 120.7 s
     /// drawn 36 and refused (the last start kept).
     pub fn request(&mut self, scenario: &str) -> bool {
@@ -269,18 +274,30 @@ impl Speech {
             self.queue.clear();
             self.wait = 0.0;
         }
-        let mut pick = self.rand(0, count as i32 - 1);
-        if pick == g.last_script {
-            pick += 1;
-            if pick == count as i32 {
-                pick = 0;
+        let pick = self.rand(0, count as i32 - 1);
+        let mut last = pick;
+        if last == g.last_script {
+            last += 1;
+            if last == count as i32 {
+                last = 0;
             }
         }
         if let Some(e) = self.gates.get_mut(&key) {
             e.last = self.clock;
-            e.last_script = pick;
+            e.last_script = last;
         }
         let steps = self.scenarios[&key][pick as usize].clone();
+        // (no line in the script: F-95157 logs it, stops everything and refuses)
+        if !steps.iter().any(|st| matches!(st, Step::Play { .. } | Step::Clip { .. } | Step::Phone { .. })) {
+            #[cfg(test)]
+            {
+                self.no_line = true;
+            }
+            self.queue.clear();
+            self.wait = 0.0;
+            self.cur_priority = None;
+            return false;
+        }
         let steps = self.phone_steps(steps, profile);
         // (F-30989 then gives the lines the requesting entity, F-18143: the player's car for PLAYER_NITROUS / PLAYER_IN_AIR)
         let pv = (!profile.is_empty()).then(|| profile.to_ascii_uppercase());
@@ -297,7 +314,7 @@ impl Speech {
         }
         self.queue.extend(steps);
         self.cur_priority = Some(g.priority);
-        log::debug!("speech: {} started at {:.3} s (script {})", key, self.clock, pick);
+        log::debug!("speech: {} started at {:.3} s (script {}, last {})", key, self.clock, pick, last);
         true
     }
 
@@ -664,7 +681,8 @@ mod tests {
         crate::sndobj::set_audio_rng_state((0x0154_510f, 0x3d3d_6924));
         assert!(n1.request("PLAYER_NITROUS"));
         assert_eq!((crate::sndobj::audio_rng_state(), n1.gate("PLAYER_NITROUS").unwrap().last_script), ((0x9457_687f, 0x2e2c_cf41), 1));
-        // two scripts alternate: after script 0 the next start takes 1 whatever the draw, and back
+        // two scripts: the last script kept (+28) alternates, after 0 the next start keeps 1 whatever the draw, and back (the
+        // script said is the draw)
         for seed in 0..64u32 {
             sp.stop();
             sp.wait = 0.0;
@@ -757,4 +775,102 @@ mod tests {
             }
         }
     }
+
+    /// verify_audio_b1.md batch 54: the speech manager's scenario start F-95157 run offline whole
+    /// (tools/speech_start_reference.py, 4,000 random manager and scenario states, the audio's generator real): for the
+    /// requests the port makes (not forced, not queued, not online, no prepared scenario, the sender none or the same,
+    /// a voice for the sender) the result, the last start (+24) and script (+28), the generator's state after, every line
+    /// with the delay it gets (Delay and the WaitTimes before it) and the stops are the original's
+    #[test]
+    fn speech_start_matches_the_original() {
+        let mut lines = include_str!("testdata/speech_start_ref.txt").lines();
+        let (mut n, mut used, mut started) = (0, 0, 0);
+        while let Some(c) = lines.next() {
+            let w: Vec<u32> = c.split(' ').skip(1).map(|t| t[1..].parse().unwrap()).collect();
+            let (want_calls, want_after) = (lines.next().unwrap(), lines.next().unwrap());
+            n += 1;
+            let ours = w[0] == 0 && w[2] == 0 && (w[1] == 0 || w[4] == 0) && !(w[4] == 1 && w[5] == 1) && w[6] != 2 && (w[17] == 1 || w[18] == 1);
+            if !ours {
+                continue;
+            }
+            used += 1;
+            let mut sp = Speech::load("D:/nonexistent", Path::new("D:/nonexistent"));
+            let scripts: Vec<Vec<Step>> = (0..w[12] as usize)
+                .map(|s| {
+                    (0..4)
+                        .map_while(|j| match w[23 + 4 * s + j] {
+                            0 => Some(Step::Play { asset: format!("S{s}_{j}"), player: false, voice: None, rec: 0, force: 0, post: None, attach: false }),
+                            2 => Some(Step::Wait(f32::from_bits(w[35 + 4 * s + j]))),
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .collect();
+            sp.scenarios.insert("T".into(), scripts);
+            sp.gates.insert(
+                "T".into(),
+                Gate {
+                    priority: w[14] as i32,
+                    delay: f32::from_bits(w[16]),
+                    frequency: f32::from_bits(w[10]),
+                    probability: w[11] as i32,
+                    last: f32::from_bits(w[9]),
+                    last_script: w[13] as i32,
+                },
+            );
+            sp.clock = f32::from_bits(w[8]);
+            let busy = w[4] != 0;
+            if busy {
+                sp.queue.push_back(Step::Wait(-1.0));
+                sp.cur_priority = Some(if w[4] == 1 { w[14] } else { w[15] } as i32);
+            }
+            crate::sndobj::set_audio_rng_state((w[21], w[22]));
+            let ok = sp.request("T");
+            let g = sp.gate("T").unwrap();
+            let no_line = sp.no_line;
+            let cut = busy && !matches!(sp.queue.front(), Some(Step::Wait(x)) if *x == -1.0);
+            let mut got = String::new();
+            for _ in 0..(cut as usize + no_line as usize) {
+                got += " S";
+            }
+            if ok {
+                started += 1;
+                let mut acc = 0.0f32;
+                for st in &sp.queue {
+                    match st {
+                        Step::Wait(x) => acc += *x,
+                        Step::Play { asset, .. } => {
+                            let (s, j) = asset[1..].split_once('_').unwrap();
+                            got += &format!(" L{s} {j} d{:08x} m", acc.to_bits());
+                            acc = 0.0;
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            // (the original's calls: its stops and line builds, the logs and the pool's reset left out)
+            let want: String = want_calls[1..].split(' ').filter(|t| !t.is_empty()).fold((String::new(), false), |(mut o, line), t| {
+                if line {
+                    o += " ";
+                    o += t;
+                    return (o, !t.starts_with('m') && !t.starts_with('x'));
+                }
+                if t == "S" {
+                    o += " S";
+                } else if t.starts_with('L') {
+                    o += " ";
+                    o += t;
+                    return (o, true);
+                }
+                (o, false)
+            }).0;
+            assert_eq!(got, want, "case {}: {c}", n - 1);
+            let (r0, r1) = crate::sndobj::audio_rng_state();
+            let after = format!("A r{} x{:08x} x{:08x} x{r0:08x} x{r1:08x}", ok as u8, g.last.to_bits(), g.last_script as u32);
+            assert_eq!(&want_after[..after.len()], after, "case {}: {c}", n - 1);
+        }
+        assert_eq!(n, 4000);
+        assert!(used > 2000 && started > 300, "{used} {started}");
+    }
 }
+
