@@ -5696,6 +5696,42 @@ mod verify_lanes_tests {
 
 #[cfg(test)]
 mod tests {
+    /// F-15621 (one lane's answer to a point) run offline on the placed navsys for all 10,031 lanes, three points each (a
+    /// point of the lane moved up to 3 / 12 / 40 m across and 2 m up or down, radius 0.5 - 6.5 / 20.5 / 45.5 m; harness
+    /// work/traffic-detail/snap): `lane_answer` gives the same validity and, when valid, the same squared distance, phase,
+    /// point and direction bit for bit, and the answer's lane.
+    #[test]
+    fn lane_answer_matches_the_original() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
+        let Ok(res) = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")) else { return };
+        let nav = NavSys::parse(&res).unwrap();
+        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let f = |s: &str| f32::from_bits(h(s));
+        let (mut n, mut valid, mut bad) = (0, 0, Vec::new());
+        for line in include_str!("testdata/snap_lane_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let w: Vec<&str> = line.split_whitespace().filter(|x| *x != "|").collect();
+            let lane = w[0].parse::<usize>().unwrap();
+            let (p, r) = (glam::Vec3::new(f(w[1]), f(w[2]), f(w[3])), f(w[4]));
+            let got = super::lane_answer(&nav, lane, p, r);
+            let ok = match (&got, w[5] == "1") {
+                (None, false) => true,
+                (Some(a), true) => {
+                    valid += 1;
+                    let bits = [a.d2, a.t, a.point.x, a.point.y, a.point.z, a.dir.x, a.dir.y, a.dir.z].map(f32::to_bits);
+                    bits.iter().zip(&w[6..14]).all(|(g, e)| *g == h(e)) && w[14].parse::<usize>().ok() == Some(a.lane)
+                }
+                _ => false,
+            };
+            if !ok {
+                bad.push(format!("{line} -> {got:?}"));
+            }
+            n += 1;
+        }
+        assert_eq!(n, 30093);
+        assert!(valid > 15000);
+        assert!(bad.is_empty(), "{} of {n} differ, first: {:?}", bad.len(), &bad[..bad.len().min(4)]);
+    }
+
     /// F-55442 (with F-32663) run offline for every lane of the city as the next lane, on the placed navsys (harness and
     /// recipe: docs reference/map/signal_rule.md "Which lane, checked"): the junction lane chosen (or none) and the lane's
     /// flags equal `light_lane`'s.
@@ -8911,22 +8947,31 @@ pub fn snap_to_lane(nav: &NavSys, p: Vec3, r: f32) -> (Option<LaneHit>, usize) {
         if b.flags & 1 == 0 {
             continue;
         }
-        let o = (b.min - p).max(p - b.max).max(Vec3::ZERO);
-        if !(r * r > o.z * o.z + (o.y * o.y + o.x * o.x)) {
-            continue;
-        }
-        let c = &nav.curves[lane];
-        let n = if b.len >= 450.0 { 8 } else { 4 };
-        let (t, d2, point) = curve_nearest(c, p, n, 10);
-        if !(d2 < r * r) {
-            continue;
-        }
+        let Some(h) = lane_answer(nav, lane, p, r) else { continue };
         hits += 1;
-        if best.as_ref().map_or(true, |x| d2 < x.d2) {
-            best = Some(LaneHit { lane, t, d2, point, dir: crate::railroute::deriv(c, t) });
+        if best.as_ref().map_or(true, |x| h.d2 < x.d2) {
+            best = Some(h);
         }
     }
     (best, hits)
+}
+
+/// One lane's answer to a point within `r` (F-15621): the lane's box within r (slot 5, F-56243), its nearest curve
+/// point with 8 chords for a lane of 450 m or more, else 4, and 10 halvings (F-53741), valid when the squared distance is
+/// under r^2 (strict); then the curve's derivative at that phase (F-26180) as the answer's direction.
+pub fn lane_answer(nav: &NavSys, lane: usize, p: Vec3, r: f32) -> Option<LaneHit> {
+    let b = lane_boxes(nav).get(lane)?;
+    let o = (b.min - p).max(p - b.max).max(Vec3::ZERO);
+    if !(r * r > o.z * o.z + (o.y * o.y + o.x * o.x)) {
+        return None;
+    }
+    let c = &nav.curves[lane];
+    let n = if b.len >= 450.0 { 8 } else { 4 };
+    let (t, d2, point) = curve_nearest(c, p, n, 10);
+    if !(d2 < r * r) {
+        return None;
+    }
+    Some(LaneHit { lane, t, d2, point, dir: crate::railroute::deriv(c, t) })
 }
 
 /// The curve rail of a path (F-86418 -> F-80887 -> F-42351; class F-33069,
