@@ -4490,7 +4490,15 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             // (a set-up car's 20th entry, the shift light: bulb 1, cover (0.5, 0.125, 0) - sub_823523C0's fixed row -
             // its state in lamp_a[4].w)
             if (lid == 19 && !amb8) { la = vec3<f32>(1.0); lb = vec3<f32>(0.5, 0.125, 0.0); l_on = obj.lamp_a[4].w; }
-            let ix = clamp(albedo.rg, vec2<f32>(0.0), vec2<f32>(1.0));
+            // (the lamp's normal map m, NormalSampler s2, as stored: PS_Light reads the illumination map at
+            // uv + (2 m.rg - 1) x lightRefract (c69, recorded 0.15) and takes |2 m.r - 1|^5 for the spot term -
+            // listing lines 9 .. 15, 20 .. 21, 39; vehicles.rs binds it in the second slot, MCLA_LAMP_FLAT a flat one)
+            let nm8s = textureSampleGrad(t_second, s_diffuse, in.uv0, uv0_dx, uv0_dy).rgb;
+            let nm8 = select(car_raw(nm8s), nm8s, car_raw_tex) * 2.0 - vec3<f32>(1.0);
+            var ill8 = textureSampleGrad(t_diffuse, s_diffuse, in.uv0 + nm8.xy * 0.15, uv0_dx, uv0_dy);
+            if (car_raw_tex) { ill8 = vec4<f32>(srgb_decode(ill8.rgb), ill8.a); }
+            let spot8 = 0.1875 + 0.625 * pow(abs(nm8.x), 5.0);
+            let ix = clamp(ill8.rg, vec2<f32>(0.0), vec2<f32>(1.0));
             let illum = select(1.055 * pow(ix, vec2<f32>(1.0 / 2.4)) - vec2<f32>(0.055), ix * 12.92, ix <= vec2<f32>(0.0031308));
             if (g.params.w > 60.5 && g.params.w < 61.5) { return vec4<f32>(to_scene(vec3<f32>(f32(lid % 3) * 0.5, f32((lid / 3) % 3) * 0.5, f32(lid / 9) * 0.5) + vec3<f32>(0.05)), 1.0); }
             if (g.params.w > 61.5 && g.params.w < 62.5) { return vec4<f32>(to_scene(vec3<f32>(illum, 0.0)), 1.0); }
@@ -4499,7 +4507,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             let ll8 = car_lc() * max(dot(n, car_ld()), 0.0) * att8;
             let l2 = lh8 + ll8 - clamp(lh8 * ll8, vec3<f32>(0.0), vec3<f32>(1.0));
             let lg8 = l2 + hemi - clamp(l2 * hemi, vec3<f32>(0.0), vec3<f32>(1.0));
-            let b8 = mix(lb * lg8 * (0.1875 * 0.25 * (1.0 + illum.y)), env, 0.025);
+            let b8 = mix(lb * lg8 * (spot8 * 0.25 * (1.0 + illum.y)), env, 0.025);
             let sm8 = env_soft(r) * lb * 0.58125;
             var ub8 = b8 + (b8 + sm8 - clamp(b8 * sm8, vec3<f32>(0.0), vec3<f32>(1.0)));
             var em8 = la * lb * (3.0 * illum.x * l_on);

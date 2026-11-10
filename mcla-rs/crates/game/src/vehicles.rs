@@ -1652,6 +1652,9 @@ fn plate_texture(gpu: &mut Gpu, world: &World) -> (Arc<GpuTexture>, u32) {
 /// word 0 bits 2 - 9 clear), so the original filters the stored texels and its rule follows; city.wgsl decodes
 /// after the filter (`car_raw_tex`). Keyed `hash ^ 0x0052_4157`, apart from a gamma upload of the same file.
 /// MCLA_DEBUG_VIEW=780: the gamma uploads as before (city.wgsl reads the same switch).
+/// The flat normal map a set-up car's lamp (PS_Light) takes when its shader names none.
+const LAMP_FLAT_N: &str = "__lamp_flat_n";
+
 pub fn car_tex_raw() -> bool {
     std::env::var("MCLA_DEBUG_VIEW").map_or(true, |v| v.trim() != "780")
 }
@@ -2468,6 +2471,15 @@ impl Vehicles {
         for m in meshes {
             let resolve = |gpu: &mut Gpu, world: &mut World, name: Option<&str>| -> (Arc<GpuTexture>, u32) {
                 let Some(name) = name else { return (gpu.white.clone(), 0) };
+                if name == LAMP_FLAT_N {
+                    let k = mcla_formats::hash::joaat(LAMP_FLAT_N);
+                    if let Some(t) = gpu.textures.get(&k) {
+                        return (t.clone(), k);
+                    }
+                    let t = Arc::new(crate::render::create_rgba_as(&gpu.device, &gpu.queue, 1, 1, &[128, 128, 255, 255], "lamp flat normal", !car_tex_raw()));
+                    gpu.textures.insert(k, t.clone());
+                    return (t, k);
+                }
                 let h = mcla_formats::hash::joaat(name);
                 let hk = if car_tex_raw() { h ^ 0x0052_4157 } else { h };
                 if let Some(t) = gpu.textures.get(&hk) {
@@ -2984,6 +2996,14 @@ impl Vehicles {
                     .map(|x| x.1.clone());
                 let sn = all_tex.iter().find(|(_, n)| Some(n) != dn.as_ref() && !is_normal(n)).map(|x| x.1.clone()).or_else(|| dn.clone());
                 // (a traffic tyre: PSAmbientTire reads its NormalSampler map - the second slot, city.wgsl)
+                // (a set-up car's lamps: PS_Light reads its NormalSampler map (s2) and shifts the illumination map's
+                // fetch by it - the second slot, city.wgsl mode 8; none, or MCLA_LAMP_FLAT: a flat map, 128 128 255)
+                let sn = if !car_is_ambient && sname.eq_ignore_ascii_case("CarLight") {
+                    let nm = sh.and_then(|s| s.textures().find(|(h, _)| NORMAL_SAMPLERS.contains(h)).map(|(_, n)| n.to_string()));
+                    Some(nm.filter(|_| std::env::var("MCLA_LAMP_FLAT").is_err()).unwrap_or_else(|| LAMP_FLAT_N.to_string()))
+                } else {
+                    sn
+                };
                 // (a set-up car's cabin trim: PS_BumpSpec of InteriorTrim.fx reads its NormalSampler map (s2) - the second slot,
                 // city.wgsl mode 17; MCLA_TRIM_OLD=1: as before)
                 let sn = if !car_is_ambient && mode == MatMode::Interior && std::env::var("MCLA_TRIM_OLD").is_err() { sh.and_then(|s| s.textures().find(|(h, _)| NORMAL_SAMPLERS.contains(h)).map(|(_, n)| n.to_string())).or(sn) } else { sn };
