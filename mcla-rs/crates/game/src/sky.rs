@@ -507,6 +507,36 @@ mod cloud_speed_tests {
 mod shadow_fade_tests {
     use super::*;
 
+    /// F-45287's switch: shadows while 1 - m_ShadowFade <= 0.95 (f32), so none below a strength of 0.05.
+    /// Prints the hours of the four weathers where the port's old test (strength > 0) and this one differ.
+    #[test]
+    #[ignore = "requires user's extracted lighting; set MCLA_DATA_DIR"]
+    fn shadows_stop_below_the_originals_threshold() {
+        assert!(!shadows_drawn(0.0) && !shadows_drawn(0.04) && shadows_drawn(0.05) && shadows_drawn(1.0));
+        assert!(!shadows_drawn(0.049_999_97));
+        let root = std::env::var("MCLA_DATA_DIR").expect("set MCLA_DATA_DIR to extracted/cache");
+        // ShaderGlobals.z (c63.z of the main view's PSMultiLight draws) recorded on the original, Nice:
+        // 8 + (1 - m_ShadowFade) while drawn, 4 when not (work/lighting/cap tsw_* / tg_* / l3L_*)
+        let nice = Sky::load_weather(&root, Weather::Nice);
+        for (h, z) in [(6.5_f32, 8.095843_f32), (17.75, 8.099314), (17.9, 8.55), (17.95, 8.775004), (17.97, 8.864998), (18.0, 4.0)] {
+            let s = nice.tod(h).map_or(0.0, |t| t.shadow_fade.clamp(0.0, 1.0));
+            let port = if shadows_drawn(s) && !(h > 18.0 || h < 6.0) { 8.0 + (1.0 - s) } else { 4.0 };
+            assert!((port - z).abs() < 2e-5, "{h}: port {port} recorded {z}");
+        }
+        for w in [Weather::Nice, Weather::Cloudy, Weather::Stormy, Weather::Foggy] {
+            let sky = Sky::load_weather(&root, w);
+            let mut differ: Vec<f32> = Vec::new();
+            for i in 0..24 * 1024 {
+                let h = i as f32 / 1024.0;
+                let s = sky.tod(h).map_or(0.0, |t| t.shadow_fade.clamp(0.0, 1.0));
+                if (s > 0.0) != shadows_drawn(s) && !(h > 18.0 || h < 6.0) {
+                    differ.push(h);
+                }
+            }
+            eprintln!("{w:?}: {} of 24576 day steps differ, first {:?} last {:?}", differ.len(), differ.first(), differ.last());
+        }
+    }
+
     #[test]
     fn tuned_moon_shadows_survive_zero_daylight_and_storms_disable_day_shadows() {
         let mut night = Sky::default().at(0.0);
@@ -535,6 +565,13 @@ mod shadow_fade_tests {
             assert_eq!(storm.at(hour).shadow_strength(), 0.0);
         }
     }
+}
+
+/// Whether the sun's shadows are drawn at this strength (m_ShadowFade): F-45287 hands the shadows to
+/// ShaderGlobals.z (8 + the light manager's +4) only while +4 = 1 - m_ShadowFade is <= 0.95 (the f32 at its
+/// constant), else 4 - no shadows. So below a strength of about 0.05 there are none.
+pub fn shadows_drawn(strength: f32) -> bool {
+    1.0 - strength <= 0.95_f32
 }
 
 /// The hour the light manager (F-70200) evaluates every weather's keys at a second time for the

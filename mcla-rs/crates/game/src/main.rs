@@ -11107,7 +11107,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
         }
         // sun shadow map: an orthographic box around the area in front of the camera
-        let shadow_on = globals.shadow_params[0] > 0.0 && !self.opt.no_shadows && !map3d && (self.game.mode != Mode::Garage || gar_light.is_some());
+        let shadow_on = crate::sky::shadows_drawn(globals.shadow_params[0]) && !self.opt.no_shadows && !map3d && (self.game.mode != Mode::Garage || gar_light.is_some());
         if map3d && self.gps_fog.shown.is_none() {
             // from the air: only a thin haze (while a GPSJump holds the fog, its share decides)
             let d = self.cam.pos.distance(self.chase.look);
