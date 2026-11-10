@@ -154,13 +154,19 @@ pub const SLOW_OUT: f32 = 0.5;
 /// `F-66886` with the one-way flag (+100 of the line, 1): where the move `p -> q` meets the line
 /// `a -> b` in x/z, as (s along the move, t along the line); None when parallel or crossed the other way.
 fn meet(p: [f32; 2], q: [f32; 2], a: [f32; 2], b: [f32; 2]) -> Option<(f32, f32)> {
+    meet_way(p, q, a, b, true)
+}
+
+/// `F-66886`: with the one-way flag a move with a denominator below the epsilon (the other way, or parallel) does not
+/// meet; without it only a parallel one (|denominator| below the epsilon).
+fn meet_way(p: [f32; 2], q: [f32; 2], a: [f32; 2], b: [f32; 2], one_way: bool) -> Option<(f32, f32)> {
     let dx_ab = b[0] - a[0];
     let dz_pq = q[1] - p[1];
     let dx_pq = q[0] - p[0];
     let dz_ab = b[1] - a[1];
     // (fused multiply-subtract / multiply-add, as the original's code)
     let den = dz_ab.mul_add(dx_pq, -(dx_ab * dz_pq));
-    if den < EPS || den.abs() < EPS {
+    if (one_way && den < EPS) || den.abs() < EPS {
         return None;
     }
     if dx_ab.abs() < EPS {
@@ -196,13 +202,31 @@ pub(crate) fn crossed_xz(a: Vec3, b: Vec3, prev: Vec3, cur: Vec3) -> Option<(f32
     ((0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&t)).then_some((u, t))
 }
 
-/// `Trigger_CheckTrigger` of the entry line (`F-37517`): the player moved from `prev` to `cur`.
-pub fn crossed(s: &Setup, prev: Vec3, cur: Vec3) -> bool {
-    let [a, b] = s.line;
-    let Some((u, t)) = crossed_xz(a, b, prev, cur) else { return false };
+/// The line trigger's check (`F-37517`): a trigger with an owner (+48, not 0) takes only the entity of that id; the
+/// entity's move from `prev` (its +400) to `cur` (its matrix place) against the line `a -> b` (+64, +80) in x/z
+/// (`F-95591` with the one-way byte +100); then the move's height where they meet (from `prev`) below the line's
+/// there + `height` (+96) and not below the line's - 2. True when the trigger fires (its vt+28 runs; it returns 1
+/// only then). Checked offline: `trigger_line_matches_the_original`.
+pub fn trigger_line(a: Vec3, b: Vec3, height: f32, one_way: bool, owner: u32, id: u32, prev: Vec3, cur: Vec3) -> bool {
+    if owner != 0 && owner != id {
+        return false;
+    }
+    let xz = |v: Vec3| [v.x, v.z];
+    let Some((u, t)) = meet_way(xz(prev), xz(cur), xz(a), xz(b), one_way) else { return false };
+    // (`F-95591`: both within [0, 1])
+    if !((0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&t)) {
+        return false;
+    }
     let on_line = a.y + (b.y - a.y) * t;
     let at = prev.y + (cur.y - prev.y) * u;
-    at < on_line + HEIGHT && at >= on_line - BELOW
+    at < height + on_line && at >= on_line - BELOW
+}
+
+/// `Trigger_CheckTrigger` of the entry line (`F-37517`): the player moved from `prev` to `cur` (the hangouts' lines:
+/// one way, no owner, `rHeight` 20).
+pub fn crossed(s: &Setup, prev: Vec3, cur: Vec3) -> bool {
+    let [a, b] = s.line;
+    trigger_line(a, b, HEIGHT, true, 0, 0, prev, cur)
 }
 
 /// The hangout whose entry line the move `prev -> cur` crossed.
@@ -238,6 +262,25 @@ pub struct Entry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F-37517 run offline (tools/trigger_line_reference.py, testdata/trigger_line_ref.txt: 4,000 lines, moves, heights,
+    /// one-way bytes and owners): fired or not equal on every case.
+    #[test]
+    fn trigger_line_matches_the_original() {
+        let (mut n, mut fired) = (0, 0);
+        for l in include_str!("testdata/trigger_line_ref.txt").lines() {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(|w| w.parse().unwrap()).collect();
+            let f = |k: usize| f32::from_bits(w[k]);
+            let v = |k: usize| Vec3::new(f(k), f(k + 1), f(k + 2));
+            let got = trigger_line(v(0), v(3), f(6), w[7] != 0, w[8], w[9], v(10), v(13));
+            let want: Vec<u32> = o.split_whitespace().map(|w| w.parse().unwrap()).collect();
+            assert_eq!((got as u32, got as u32), (want[0], want[1]), "{l}");
+            fired += got as u32;
+            n += 1;
+        }
+        assert_eq!((n, fired), (4000, 570));
+    }
 
     /// One way only: driven in across Hollywood's first hangout's line it fires, out across it not, beside
     /// it or above the height not.
