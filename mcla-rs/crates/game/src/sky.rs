@@ -921,6 +921,29 @@ mod tod_tests {
         assert!(night.nfl > 0.99);
     }
 
+    /// The night programs' switch: the original selects its "multilight" technique (F-55636's on branch, for the
+    /// passes F-33091 picks) when the light manager's byte +903 is set, and +903 is IsNight F-47292 of the
+    /// hour (written by the time-of-day update F-70200 through F-32097; the override byte it ORs in is never written): h > 18 or h < 6, both
+    /// strict (the running original's +14568 / +14564). The port draws its night programs while m_NFLFade > 0. The two
+    /// agree at every hour of all four weathers' keys (step 1/1024 h, and the keys' own times). Recorded on the
+    /// original (work/lighting/cap/tsw_*, 13 hours): multilight draws in the main view from 18.25 to 5.5, none at
+    /// 17.75, 18.0, 6.5 .. 8.0 (docs/reference/lighting/night_technique_evidence_2026-11-10.md).
+    #[test]
+    #[ignore = "requires user's extracted lighting; set MCLA_DATA_DIR"]
+    fn night_programs_switch_at_the_originals_hours() {
+        let root = std::env::var("MCLA_DATA_DIR").expect("set MCLA_DATA_DIR to extracted/cache");
+        for w in [Weather::Nice, Weather::Cloudy, Weather::Stormy, Weather::Foggy] {
+            let sky = Sky::load_weather(&root, w);
+            let mut hours: Vec<f32> = (0..24 * 1024).map(|i| i as f32 / 1024.0).collect();
+            hours.extend(sky.nfl_fade.keys.iter().map(|k| k.0));
+            assert!(sky.nfl_fade.keys.len() >= 4, "{w:?}");
+            for h in hours {
+                let is_night = h > 18.0 || h < 6.0;
+                assert_eq!(sky.tod(h).unwrap().nfl > 0.0, is_night, "{w:?} at {h}");
+            }
+        }
+    }
+
     /// The cascades' shadow ray (`shadow_ray`) against the eleven hours read off the original's
     /// shadow matrices (LIGHTING.md, "Shadows are not cast along the light"): (az, el) in degrees.
     #[test]
