@@ -93,10 +93,10 @@ fn park_spawn_matches_the_original() {
         let parts: Vec<&str> = line.split(" |").collect();
         let head: Vec<&str> = parts[0].split_whitespace().collect();
         let h = |i: usize| u32::from_str_radix(head[i], 16).unwrap();
-        let d = |i: usize| head[i].parse::<i32>().unwrap();
-        let (net, en, glob, nl, tries, event) = (h(0), h(1), h(2), d(3) as usize, d(4), h(5));
+        let d = |i: usize| head[i].parse::<i64>().unwrap();
+        let (net, en, glob, nl, tries, event) = (h(0), h(1), h(2), d(3) as usize, d(4) as i32, h(5));
         let (density, radius, fx, fz, m972) = (f32::from_bits(h(6)), f32::from_bits(h(7)), f32::from_bits(h(8)), f32::from_bits(h(9)), h(10));
-        let mut rng = Mwc { lo: h(11), carry: h(12) };
+        let mut rng = Mwc { lo: d(11) as u32, carry: d(12) as u32 };
         let (seenmode, slot7) = (h(13), h(14));
         // the lists, their spots and items
         let mut t = parts[1].split_whitespace();
@@ -127,7 +127,7 @@ fn park_spawn_matches_the_original() {
         let types: Vec<(u32, bool, u32)> = (0..5).map(|k| (u32::from_str_radix(ty[1 + 3 * k], 16).unwrap(), ty[2 + 3 * k] == "1", ty[3 + 3 * k].parse().unwrap())).collect();
         let want_log = parts[4].trim_end();
         let tail: Vec<&str> = parts[5].split_whitespace().collect();
-        let want_rng = (u32::from_str_radix(tail[0], 16).unwrap(), u32::from_str_radix(tail[1], 16).unwrap());
+        let want_rng: (u32, u32) = (tail[0].parse().unwrap(), tail[1].parse().unwrap());
 
         let mut env = Env { spots: &spots, items: &items, lists: &lists, w, total, dty, types, event, seenmode, slot7, log: String::new() };
         if net == 0 && en != 0 && glob != 0 {
