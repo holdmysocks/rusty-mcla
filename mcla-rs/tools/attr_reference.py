@@ -10,7 +10,7 @@ flags}; every case here is a text attribute. Each case line of <out-dir>/attr_re
 
 Texts: every attribute value of the disc's XML files (--values, one a line), and made-up numbers (decimal, exponents,
 signs, leading blanks, trailing text, hex, overflow). The locale is the image's own (C); only the CRT's error report
-F-37557 (a null text, not reached) and the locale getter F-52205 are stubs.
+F-37557 (a null text, not reached), the locale getter F-52205 and operator delete F-13813 are stubs.
 
 Run: PYTHONPATH=mcla-rs/tools python mcla-rs/tools/attr_reference.py --recomp D:/MCLA-static --image <original-image.bin>
 --out-dir <dir> --tool <mcla-tool.exe> [--values <file>] (under the memcap job of recomp_closure)."""
@@ -73,7 +73,7 @@ def main():
     ap.add_argument('--tool', default='mcla-tool')
     ap.add_argument('--values', type=Path)
     a = ap.parse_args()
-    f = {k: addr(a.tool, v) for k, v in dict(flt='F-79880', int='F-79822', bool='F-83747', err='F-37557', loc='F-52205').items()}
+    f = {k: addr(a.tool, v) for k, v in dict(flt='F-79880', int='F-79822', bool='F-83747', err='F-37557', loc='F-52205', free='F-13813').items()}
     rnd = random.Random(79822)
     disc = a.values.read_text(encoding='latin-1').split(nl) if a.values else []
     ts = texts(rnd, disc)
@@ -86,7 +86,7 @@ def main():
     for tag, call in secs:
         body += ('for(auto&t:T){memset(objects,0,sizeof(objects));Context ctx{};ctx.r1.u32=0x2F00;memcpy(pointer(0x1800),t,%d);' % w +
                  'store(0x1000+4,0x1800);ctx.r3.u32=0x1000;try{' + call + '}catch(std::exception&){printf("trap");}printf("%s");fflush(stdout);}' % NL + nl)
-    stubs = {'sub_' + f['err']: '', 'sub_' + f['loc']: 'ctx.r3.u64=0x1F00;', 'sub_82130588': ''}
+    stubs = {'sub_' + f['err']: '', 'sub_' + f['loc']: 'ctx.r3.u64=0x1F00;', 'sub_' + f['free']: ''}
     main_src = ('static uint32_t fb(float x){uint32_t w;memcpy(&w,&x,4);return w;}' + nl +
                 'int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.assign(std::istreambuf_iterator<char>(bin),{});' + nl + body + '}' + nl)
     exe = build(index(a.recomp), sorted({'sub_' + f[k] for k in ('flt', 'int', 'bool')}), main_src, a.out_dir, 'attr', stubs=stubs)
