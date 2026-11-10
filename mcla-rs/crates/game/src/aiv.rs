@@ -2740,6 +2740,37 @@ mod tests {
         assert_eq!(bad, 0);
     }
 
+    /// F-70624 (one obstacle appended) run offline whole with its normalise F-41334: 5,000 cases
+    /// (tools/obstacle_add_reference.py, testdata/obstacle_add_ref.txt; directions down to below the 1e-5 fallback and
+    /// zero, the two bools, any old flag byte). The stored position, velocity, direction (its y set to 0, normalised),
+    /// half extent (lanes 0 and 2) and the flag byte's two top bits equal bit for bit. (The byte's low 6 bits are the
+    /// slot's old ones, which only this writes and nothing reads; the port keeps them 0.)
+    #[test]
+    fn obstacle_add_matches_the_original() {
+        let text = include_str!("testdata/obstacle_add_ref.txt");
+        let tune = Arc::new(mcla_formats::rage::aitune::AiTune::from_floats(&vec![0.0; 4096]).unwrap());
+        let mut n = 0;
+        for line in text.lines() {
+            let w: Vec<u32> = line.split_whitespace().filter(|x| *x != "case" && *x != "->").map(|x| u32::from_str_radix(&x.replace('_', ""), 16).unwrap()).collect();
+            assert_eq!(w.len(), 39);
+            let f = |i: usize| f32::from_bits(w[i]);
+            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let o = Obstacle { pos: v(0), vel: v(4), dir: v(8), extent: (f(12), f(14)), flags: ((w[16] as u8) << 7) | ((w[17] as u8) << 6) };
+            let mut a = Aiv::new(tune.clone());
+            a.set_obstacles(&[o]);
+            let g = a.obst[0];
+            let r = &w[20..];
+            let got = [g.pos.x, g.pos.y, g.pos.z, g.vel.x, g.vel.y, g.vel.z, g.dir.x, g.dir.y, g.dir.z, g.extent.0, g.extent.1].map(|x| x.to_bits());
+            let want = [r[0], r[1], r[2], r[4], r[5], r[6], r[8], r[9], r[10], r[12], r[14]];
+            assert_eq!(got, want, "case {n}: {line}");
+            assert_eq!(g.flags, r[16] as u8 & 0xC0, "case {n} flags");
+            assert_eq!((r[17], r[18]), (w[18] + 1, w[18] + 1), "case {n} counts");
+            assert_eq!(a.n_obst, 1);
+            n += 1;
+        }
+        assert_eq!(n, 5000);
+    }
+
     /// The aiv's car values in a race (+25168 size, +25292 / +25308 the tunes, +25324 g, +25328 1 / g) as the live R8
     /// race holds them (work/racerai/follow/in_rec.bin, 201 states): the aiv init's, the enable F-92836's values put
     /// back by BrainRacing_Reset F-69438; `car_defaults` and a fresh aiv equal them bit for bit, F-12813 keeps them.
