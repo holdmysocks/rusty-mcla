@@ -145,6 +145,81 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A damaged save (a cut-off copy in a folder of its own, never the player's): the start-up checks raise
+    /// SG_LoadError (RETRY / CREATE NEW SAVE), RETRY reads the file again, CREATE NEW SAVE asks
+    /// SG_CreateNewSaveConfirmation (YES / NO), NO goes back, YES starts the new career; nothing is written over the
+    /// file before YES. The boxes' strings and buttons are SaveGame.sc.xml's.
+    #[test]
+    fn a_damaged_save_raises_sg_load_error() {
+        std::env::remove_var("MCLA_SAVE_FILE");
+        std::env::remove_var("MCLA_NEW_GAME");
+        let dir = std::env::temp_dir().join(format!("mcla_loaderr_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("mcla_save.json");
+        let damaged = b"{\"car\": \"vp_dge_challenger_70\", \"color\": 3, \"cfg";
+        std::fs::write(&file, damaged).unwrap();
+        let d = dir.to_string_lossy().to_string();
+        let mut g = crate::game::Game::new(Vec::new(), 0);
+        g.data_dir = d.clone();
+        g.load_save(&d);
+        assert!(g.save_damaged && g.fresh_game, "a new career until the box is answered");
+        g.write_save(&d);
+        assert_eq!(std::fs::read(&file).unwrap(), damaged, "nothing written over the damaged file");
+        let shown = |g: &mut crate::game::Game| -> (String, String, Vec<String>) {
+            let (m, _, _) = g.message_box.take().expect("a box");
+            (m.title, m.description, m.options.into_iter().map(|o| o.1).collect())
+        };
+        assert!(g.load_error_boxes());
+        assert_eq!(shown(&mut g), ("Save_Dialog_Title_Error".into(), "Save_Dialog_LoadError".into(), vec!["Common_Retry".into(), "Save_CreateNewSave".into()]));
+        // RETRY, still damaged: the same box again
+        g.box_sel = 0;
+        assert!(g.load_error_boxes() && g.save_box == 0 && !g.relaunch);
+        assert!(g.load_error_boxes() && g.save_box == 6);
+        g.message_box = None;
+        // CREATE NEW SAVE: the confirmation; NO: SG_LoadError again
+        g.box_sel = 1;
+        assert!(g.load_error_boxes());
+        assert_eq!(shown(&mut g), ("Save_Dialog_Title_Message".into(), "Save_Dialog_OverwriteDamageDataConf".into(), vec!["Common_Yes".into(), "Common_No".into()]));
+        g.box_sel = 1;
+        assert!(g.load_error_boxes() && g.save_box == 0 && g.save_damaged);
+        assert!(g.load_error_boxes() && g.save_box == 6);
+        g.message_box = None;
+        g.box_sel = 1;
+        assert!(g.load_error_boxes() && g.save_box == 7);
+        g.message_box = None;
+        // YES: CREATE_NEW_SAVE (the new career's SAVING / LOADING), the next save writes over the file
+        g.box_sel = 0;
+        assert!(g.load_error_boxes() && g.save_box == 3 && !g.save_damaged && !g.relaunch);
+        assert!(!g.load_error_boxes(), "the new career's own steps from here");
+        g.write_save(&d);
+        assert!(!crate::game::Game::save_damaged_at(&d), "a readable save now");
+        // RETRY on a file that reads again: the game starts again to load it, and writes nothing meanwhile
+        let good = std::fs::read(&file).unwrap();
+        g.save_damaged = true;
+        g.save_box = 6;
+        g.box_sel = 0;
+        assert!(g.load_error_boxes() && g.relaunch && g.save_box == 0);
+        g.write_save(&d);
+        assert_eq!(std::fs::read(&file).unwrap(), good);
+        let _ = std::fs::remove_dir_all(dir);
+        // the boxes as the XML has them
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../extracted/cache/tune/ui/SaveGame.sc.xml");
+        let Ok(x) = std::fs::read_to_string(p) else { return };
+        for (id, title, desc, buttons) in [
+            ("SG_LoadError", "Save_Dialog_Title_Error", "Save_Dialog_LoadError", ["Common_Retry", "Save_CreateNewSave"]),
+            ("SG_CreateNewSaveConfirmation", "Save_Dialog_Title_Message", "Save_Dialog_OverwriteDamageDataConf", ["Common_Yes", "Common_No"]),
+        ] {
+            let at = x.find(&format!("\"{id}\" class")).unwrap();
+            let next = x[at + 10..].find("<state id").map_or(x.len(), |n| at + 10 + n);
+            let s = &x[at..next];
+            assert!(s.contains(&format!("expr=\"{title}\"")) && s.contains(&format!("expr=\"{desc}\"")), "{id}");
+            let (a, b) = (s.find(&format!("desc=\"{}\"", buttons[0])).unwrap(), s.find(&format!("desc=\"{}\"", buttons[1])).unwrap());
+            assert!(a < b, "{id}: button order");
+        }
+        assert!(x.contains("event=\"file.loadError\">
+               <action expr=\"UI.ActivateAndFocus(SG_LoadError)\"") || x.contains("UI.ActivateAndFocus(SG_LoadError)"));
+    }
+
     /// The strings and buttons come out of the XML itself.
     #[test]
     fn spec_matches_save_game_xml() {

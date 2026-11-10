@@ -828,8 +828,15 @@ pub struct Game {
     /// a new career's save boxes (SaveGame.sc.xml): 0 not shown yet, 1 the ALERT is up, 2 done
     /// (mc.loadSuccess), 3 the auto save WARNING after CREATE A NEW SAVE GAME, 4 the auto save
     /// disabled WARNING after CONTINUE WITHOUT SAVING, 5 the SAVING / LOADING tags; and the
-    /// player chose CONTINUE WITHOUT SAVING (nothing is written this session)
+    /// player chose CONTINUE WITHOUT SAVING (nothing is written this session); 6 SG_LoadError is up, 7
+    /// SG_CreateNewSaveConfirmation is up (a damaged save: `save_damaged`)
     pub save_box: u8,
+    /// The save file is there but cannot be read (SaveGame.sc.xml file.loadError / file.fileCorrupt, messages 2 / 32):
+    /// the start-up checks raise SG_LoadError instead of SG_NoGamesFound, and nothing is written over the file until
+    /// CREATE NEW SAVE is confirmed (`save_boxes_step`).
+    pub save_damaged: bool,
+    /// RETRY found the damaged save readable now: the port starts itself again to load it (main.rs `about_to_wait`).
+    pub relaunch: bool,
     /// MCLA_RADAR_LOG: the backlight pulse (speeding with the radar over 0.75) as last logged
     pub radar_pulse: bool,
     /// seconds in step 5 (SAVING, then LOADING), and since the world was ready at the car
@@ -1574,6 +1581,8 @@ impl Game {
             race_wreck_over: false,
             career_over: false,
             save_box: 0,
+            save_damaged: false,
+            relaunch: false,
             radar_pulse: false,
             save_box_t: (0.0, None),
             tag_saving: None,
@@ -1819,6 +1828,14 @@ impl Game {
         // (VEHICLE SELECT waits for the opening)
         self.hold_starter = self.fresh_game;
         log::info!("save: reading {} (exists {})", Self::save_path(data_dir).display(), Self::save_path(data_dir).exists());
+        // (a file that is there but cannot be read or parsed: SG_LoadError at the start-up checks, a new career until
+        // the player answers it - `save_damaged`)
+        self.save_damaged = !self.fresh_game && Self::save_damaged_at(data_dir);
+        if self.save_damaged {
+            log::warn!("save: {} is damaged: SG_LoadError, nothing is written over it until CREATE NEW SAVE", Self::save_path(data_dir).display());
+            self.fresh_game = true;
+            self.hold_starter = true;
+        }
         if let Ok(t) = std::fs::read_to_string(Self::save_path(data_dir)) {
             let parsed = serde_json::from_str::<SaveData>(&t);
             if let Err(e) = &parsed {
@@ -1932,8 +1949,14 @@ impl Game {
         self.opt_x.s23b.sc_setup_done = false;
     }
 
+    /// The save file exists and cannot be read or parsed (LoadFile's LOAD_ERROR / FILE_CORRUPT, messages 2 / 32).
+    pub fn save_damaged_at(data_dir: &str) -> bool {
+        let p = Self::save_path(data_dir);
+        p.exists() && std::fs::read_to_string(&p).map_or(true, |t| serde_json::from_str::<SaveData>(&t).is_err())
+    }
+
     pub fn write_save(&self, data_dir: &str) {
-        if self.no_save {
+        if self.no_save || self.save_damaged {
             return;
         }
         if self.no_save {
@@ -5516,7 +5539,7 @@ impl Game {
         let boxed = self.message_box.is_some();
         // (the start-up boxes answer ACCEPT alone)
         self.save_dialog_step();
-        let box_back = back && !(self.fresh_game && matches!(self.save_box, 1 | 3 | 4)) && self.save_dlg.is_none();
+        let box_back = back && !(self.fresh_game && matches!(self.save_box, 1 | 3 | 4 | 6 | 7)) && self.save_dlg.is_none();
         if let Some(a) = self.message_box_ui(ctx, up, down, enter, box_back) {
             action = a;
             // (YES in the garage's SELL VEHICLE box: `garage.FinishVehicleSale`)
@@ -12319,7 +12342,49 @@ fn pause_camera_index(page: u8) -> i32 {
     std::env::var("MCLA_PAUSE_CAM").ok().and_then(|v| v.parse().ok()).unwrap_or(by_page)
 }
 
+
+
 impl Game {
+    /// A damaged save's boxes (SaveGame.sc.xml SG_LoadError, SG_CreateNewSaveConfirmation; the boxes answer ACCEPT
+    /// only): `save_box` 0 with `save_damaged`, 6 and 7. True when one of them was handled.
+    pub fn load_error_boxes(&mut self) -> bool {
+        let bx = |d: &str, title: &str, options: Vec<(String, String)>| Some((crate::flash_ui::MessageBoxDef { title: title.into(), description: d.into(), options }, 0, MenuAction::None));
+        match self.save_box {
+            // (SG_LoadError: RETRY = START_PLAYER_CHECKS, the file read again; CREATE NEW SAVE = SG_CreateNewSaveConfirmation)
+            0 if self.save_damaged => {
+                self.save_box = 6;
+                self.message_box = bx("Save_Dialog_LoadError", "Save_Dialog_Title_Error", vec![("retry".into(), "Common_Retry".into()), ("create".into(), "Save_CreateNewSave".into())]);
+            }
+            6 => match self.box_sel {
+                0 => {
+                    if Self::save_damaged_at(&self.data_dir) {
+                        log::info!("save boxes: RETRY - the save is still damaged");
+                    } else {
+                        log::info!("save boxes: RETRY - the save reads now: starting again to load it");
+                        self.relaunch = true;
+                    }
+                    self.save_box = 0;
+                }
+                _ => {
+                    self.save_box = 7;
+                    self.message_box = bx("Save_Dialog_OverwriteDamageDataConf", "Save_Dialog_Title_Message", vec![("yes".into(), "Common_Yes".into()), ("no".into(), "Common_No".into())]);
+                }
+            },
+            // (YES: CREATE_NEW_SAVE and SG_SaveFile - the new career's SAVING / LOADING as after the auto save warning,
+            // the damaged file written over by the first save; NO: SG_LoadError again)
+            7 => match self.box_sel {
+                0 => {
+                    log::info!("save boxes: CREATE_NEW_SAVE over the damaged save");
+                    self.save_damaged = false;
+                    self.save_box = 3;
+                }
+                _ => self.save_box = 0,
+            },
+            _ => return false,
+        }
+        true
+    }
+
     /// Put one of the game's message boxes up. `confirm` is what its "Yes" does.
     /// False when the box or the popup movie is not there.
     /// A new career's start-up checks (Boot.sc.xml Startup_Checks, SaveGame.sc.xml; references
@@ -12335,6 +12400,9 @@ impl Game {
     /// only ACCEPT (uinput.action_pressed); B does nothing. `save_box` 2 = done: CarSelection may start.
     fn save_boxes_step(&mut self, world: &World, vehicles: &Vehicles, dt: f32) {
         if !self.fresh_game || self.flash_popup.is_none() || std::env::var("MCLA_NO_SAVE_BOX").is_ok() || self.message_box.is_some() {
+            return;
+        }
+        if self.load_error_boxes() {
             return;
         }
         let bx = |d: &str, title: &str, options: Vec<(String, String)>| Some((crate::flash_ui::MessageBoxDef { title: title.into(), description: d.into(), options }, 0, MenuAction::None));
