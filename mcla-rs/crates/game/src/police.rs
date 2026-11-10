@@ -1058,6 +1058,32 @@ fn needs_teleport(under: bool, off_mesh_t: f32, out: bool, out_delay: f32) -> bo
 /// Damaged out (F-12032, mcCarDamage +36 >= its tune's MaxDamage +24, as `!(points < max)`: a NaN is out). The port keeps
 /// damage as points / MaxDamage, capped at 1.0, and points == MaxDamage give exactly 1.0; a car one point - or a fraction of
 /// one - short is not out (the port had tested 0.999, which took points from 0.999 x MaxDamage).
+/// A start report as the radio says it: `default` = the default report class (F-56787: REPORT_VIOLATION_PURSUIT,
+/// probability 0.2), whose send F-66952 first draws the shared generator and makes the probability 1.0 under 0.25; then
+/// F-14569 (a name set) draws again and says the name under the probability; else by +8 (`bits`, the law record's bits):
+/// 0x20 REPORT_HIT_COP_CAR_HARD, 0x40 _SOFT, 0x80 REPORT_VIOLATION_MAJORINCIDENT, 0x200 _REDLIGHTS, 0x8
+/// _RECKLESS_SIDEWALK, 0x2000 _RECKLESS_WRONGSIDE, 0x7 _SPEEDING, none: the name. The other report classes have
+/// probability 1 (one draw, the name). `draw` is the generator's 23-bit float.
+pub fn report_line(name: &'static str, default: bool, bits: u32, mut draw: impl FnMut() -> f32) -> &'static str {
+    let mut prob = if default { 0.2f32 } else { 1.0 };
+    if default && draw() < 0.25 {
+        prob = 1.0;
+    }
+    if draw() < prob {
+        return name;
+    }
+    const BY_BIT: [(u32, &str); 7] = [
+        (0x20, "REPORT_HIT_COP_CAR_HARD"),
+        (0x40, "REPORT_HIT_COP_CAR_SOFT"),
+        (0x80, "REPORT_VIOLATION_MAJORINCIDENT"),
+        (0x200, "REPORT_VIOLATION_REDLIGHTS"),
+        (0x8, "REPORT_VIOLATION_RECKLESS_SIDEWALK"),
+        (0x2000, "REPORT_VIOLATION_RECKLESS_WRONGSIDE"),
+        (0x7, "REPORT_VIOLATION_SPEEDING"),
+    ];
+    BY_BIT.iter().find(|b| bits & b.0 != 0).map_or(name, |b| b.1)
+}
+
 pub fn damaged_out(damage: f32) -> bool {
     !(damage < 1.0)
 }
@@ -1952,11 +1978,17 @@ pub struct Police {
     /// _REACQUIRE when it ends with a sighting after 2 s
     pub radio_cue: Vec<String>,
     /// F-52240's ladder started a tactic from a detecting cop (no tactic yet): the speech line it requests (F-70230)
-    /// before StartTactic - Some(the target is the player); main picks PLAYER_COPS_BEGIN_PURSUIT or the race taunt
-    pub begin_cue: Option<bool>,
+    /// before StartTactic - Some(the tactic's AI target, None = the player); main picks PLAYER_COPS_BEGIN_PURSUIT or the
+    /// race taunt
+    pub begin_cue: Option<Option<u32>>,
     /// the report of this update's Event::Pursuit when it is not REPORT_VIOLATION_PURSUIT (F-52240's hit-a-cop steal:
     /// REPORT_HIT_COP_CAR_HARD, the report F-61876 makes); cleared at every update
     pub start_report: Option<&'static str>,
+    /// the start's default report's +8 (F-52240: the law record's +100 & +96 - this update's offence bits, the
+    /// original's numbering) when the ladder started the tactic; None for the other starts (+8 = 0)
+    pub report_bits: Option<u32>,
+    /// this update's offence bits in the original's numbering (the record's +96, the bits F-14569 reads)
+    tick_law: u32,
     arrest: f32,
     /// the tactic's +140 (the target burning out) and +144 (barely moving) timers and +48, the target's last place
     t_burn: f32,
@@ -2177,6 +2209,8 @@ impl Police {
             radio_cue: Vec::new(),
             begin_cue: None,
             start_report: None,
+            report_bits: None,
+            tick_law: 0,
             arrest_over: false,
             zone: None,
             zone_go: false,
@@ -3579,6 +3613,8 @@ impl Police {
     /// Advance the police simulation. Returns what happened this frame.
     pub fn update(&mut self, gpu: &Gpu, world: &World, vehicles: &mut Vehicles, dt: f32) -> Option<Event> {
         self.start_report = None;
+        self.report_bits = None;
+        self.tick_law = 0;
         // (F-52240 clears the word at the end of a scored tick and in the grace: one payment a frame at most)
         let law_word = vehicles.player_mut().and_then(|c| c.state.veh.as_deref_mut()).map_or(0, |v| std::mem::take(&mut v.agro.law_word));
         match self.heat {
@@ -3828,6 +3864,7 @@ impl Police {
         if watching && lvl > 0 {
             breaking = true;
             self.offences |= LAW_SPEED;
+            self.tick_law |= 0x1;
             self.speed_top = self.speed_top.max(lvl);
             // (F-52240 / F-19359: a band higher than any paid pays its start points that tick and nothing else;
             // then the three bands share one seconds counter, the current band's rate. Dropping to no speeding
@@ -3882,6 +3919,7 @@ impl Police {
         if watching && wrong_bit {
             breaking = true;
             self.offences |= LAW_WRONG_WAY;
+            self.tick_law |= 0x2000;
             if !self.wrong_active {
                 self.wrong_active = true;
                 self.sec[1] = 0.0;
@@ -3923,6 +3961,7 @@ impl Police {
         if watching && off_road {
             breaking = true;
             self.offences |= LAW_OFF_ROAD;
+            self.tick_law |= 0x8;
             if !self.off_active {
                 // (its seconds counter is not reset at the start, as the speed bands')
                 self.off_active = true;
@@ -3973,6 +4012,7 @@ impl Police {
                 if watching && d.dot(a) < 0.9 {
                     breaking = true;
                     self.offences |= LAW_RED_LIGHT;
+                    self.tick_law |= 0x200;
                     add += t("iRedLightPoints", 250.0);
                 }
             }
@@ -3995,14 +4035,17 @@ impl Police {
             if tab.iter().any(|e: &(u32, f32)| e.1 > 22.35) {
                 self.hard_tab = Some(tab);
                 self.offences |= LAW_POLICE_HARD;
+                self.tick_law |= 0x20;
             }
             breaking = true;
             self.offences |= LAW_POLICE_VEHICLE;
+            self.tick_law |= 0x40;
             add += t("iDamagePoliceVehPoints", 600.0);
         }
         if watching && law_word & 8 != 0 {
             breaking = true;
             self.offences |= LAW_VEHICLE;
+            self.tick_law |= 0x80;
             add += t("iDamageOtherVehPoints", 130.0);
         }
         self.last_damage = damage;
@@ -4141,7 +4184,11 @@ impl Police {
                     // (F-52240, the detecting cop's three starts: the speech request F-70230 before StartTactic, whether
                     // that starts or not - not the zone's own start, F-71212 says its own line)
                     if detected && self.score >= pull {
-                        self.begin_cue = Some(!ai_target);
+                        self.begin_cue = Some(self.target);
+                        // (its Arrow Trap / Pursuit report is the default one with +8 = the record's +100 & +96)
+                        if kind != TacKind::PullOver {
+                            self.report_bits = Some(self.tick_law);
+                        }
                     }
                     if let Some(cops) = self.engage(gpu, world, vehicles, kind.cops(), if zone && !detected { None } else { first }, ppos, pfwd) {
                         self.start_tactic(kind, cops, true, tt);
@@ -5636,6 +5683,31 @@ mod tests {
     /// StateTicket's clock against recording t1 (docs/reference/hookmen/pullover_recording.md): entered in update 451
     /// (the exit's time = dt 0x3D088889), the result set in update 504; the state time at each exit grows by the update's
     /// dt (503: 0x3FE2221F, 504: 0x3FE66663). The car was not damaged out (+68 = 1: limit fArrestStateTime 1.75).
+    /// The say's choice of F-66952 / F-14569 (docs/reference/hookmen/law_reports.md) on chosen draws: the default class's
+    /// first draw under 0.25 makes it the name, else the second under 0.2; failing both, the bits in F-14569's order.
+    #[test]
+    fn report_line_follows_the_original() {
+        let run = |default: bool, bits: u32, d: &[f32]| {
+            let mut it = d.iter().copied();
+            let mut n = 0;
+            let line = report_line("REPORT_VIOLATION_PURSUIT", default, bits, || {
+                n += 1;
+                it.next().unwrap()
+            });
+            (line, n)
+        };
+        assert_eq!(run(true, 0x40, &[0.1, 0.9]), ("REPORT_VIOLATION_PURSUIT", 2));
+        assert_eq!(run(true, 0x40, &[0.3, 0.19]), ("REPORT_VIOLATION_PURSUIT", 2));
+        assert_eq!(run(true, 0x40, &[0.3, 0.2]), ("REPORT_HIT_COP_CAR_SOFT", 2));
+        assert_eq!(run(true, 0x60, &[0.3, 0.5]), ("REPORT_HIT_COP_CAR_HARD", 2));
+        assert_eq!(run(true, 0x2201, &[0.3, 0.5]), ("REPORT_VIOLATION_REDLIGHTS", 2));
+        assert_eq!(run(true, 0x2009, &[0.3, 0.5]), ("REPORT_VIOLATION_RECKLESS_SIDEWALK", 2));
+        assert_eq!(run(true, 0x2001, &[0.3, 0.5]), ("REPORT_VIOLATION_RECKLESS_WRONGSIDE", 2));
+        assert_eq!(run(true, 0x4, &[0.3, 0.5]), ("REPORT_VIOLATION_SPEEDING", 2));
+        assert_eq!(run(true, 0x1400, &[0.3, 0.5]), ("REPORT_VIOLATION_PURSUIT", 2));
+        assert_eq!(run(false, 0x40, &[0.9999]), ("REPORT_VIOLATION_PURSUIT", 1));
+    }
+
     #[test]
     fn ticket_clock_matches_the_recording() {
         let dt = f32::from_bits(0x3D08_8889);

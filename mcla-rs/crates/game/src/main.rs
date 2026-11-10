@@ -7533,13 +7533,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 let s19d_goons = self.police.goons;
                 let ev = self.game.mc4_payback_chase(&mut self.police, &mut self.vehicles, &mut gpu, &mut world, ev, sim_dt);
                 // (F-52240: a detecting cop starting a tactic requests a speech line through F-70230 - offline, in a race of
-                // more than one racer with its first opponent (race +208): TAUNT_RACE_COP_CHASING_PLAYER when the target is
-                // the player, else _HOOKMAN, in that opponent's voice; otherwise PLAYER_COPS_BEGIN_PURSUIT, no voice)
-                if let Some(player_target) = self.police.begin_cue.take() {
+                // more than one racer with its first opponent (race +208, the sender) and the target (+144, the receiver):
+                // TAUNT_RACE_COP_CHASING_PLAYER when the target is the player, said by the sender, else _HOOKMAN, which
+                // CareerScript.xml has said by the receiver - the chased AI racer; otherwise PLAYER_COPS_BEGIN_PURSUIT)
+                if let Some(ai) = self.police.begin_cue.take() {
                     if let Some(&opp) = self.game.race.as_ref().filter(|r| r.participants.len() > 1).and_then(|r| r.participants.get(1)) {
-                        let set = self.drivers.set_of.get(&opp).cloned().unwrap_or_default();
+                        let speaker = match ai {
+                            None => Some(opp),
+                            Some(uid) => self.vehicles.cars.iter().position(|c| c.uid == uid),
+                        };
+                        let set = speaker.and_then(|k| self.drivers.set_of.get(&k)).cloned().unwrap_or_default();
                         let voice = prerace::voice_of(&self.opt.data_dir, &set).unwrap_or_default();
-                        self.speech.request_as(if player_target { "TAUNT_RACE_COP_CHASING_PLAYER" } else { "TAUNT_RACE_COP_CHASING_HOOKMAN" }, &voice);
+                        self.speech.request_as(if ai.is_none() { "TAUNT_RACE_COP_CHASING_PLAYER" } else { "TAUNT_RACE_COP_CHASING_HOOKMAN" }, &voice);
                     } else {
                         self.speech.request_as("PLAYER_COPS_BEGIN_PURSUIT", "");
                     }
@@ -7548,9 +7553,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if self.radio.loaded() && !s19d_goons && !self.police.goons {
                     let rctx = radio_ctx(&self.vehicles, &world, self.time_of_day);
                     self.radio.note(&rctx, world.nav.as_ref());
+                    // (the speech update F-85023: a queued request when no line plays)
+                    self.radio.pump(&rctx);
                     match ev {
+                        // (the ladder's start, F-52240: its report +40 = 1, queued while a line plays)
                         Some(police::Event::PullOver) => {
-                            self.radio.say("REPORT_PULL_SUSPECT_OVER", &rctx);
+                            self.radio.say_queued("REPORT_PULL_SUSPECT_OVER", &rctx);
                         }
                         // (siren/RULE.md section 7: hitting the cop adds iDamagePoliceVehPoints 600 at once; the
                         // score reaching 600 by itself; driving off during the ticket)
@@ -7567,9 +7575,19 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                         }
                         // (the start's report: REPORT_VIOLATION_PURSUIT, the default of a report (F-56787); F-52240 gives
-                        // the race's hit-a-cop steal REPORT_HIT_COP_CAR_HARD)
+                        // the race's hit-a-cop steal REPORT_HIT_COP_CAR_HARD; the default one's line by F-66952 / F-14569's
+                        // draws and, from the ladder, the law record's bits - police::report_line)
                         Some(police::Event::Pursuit) => {
-                            self.radio.say(self.police.start_report.unwrap_or("REPORT_VIOLATION_PURSUIT"), &rctx);
+                            let line = match self.police.start_report {
+                                Some(r) => r,
+                                None => police::report_line("REPORT_VIOLATION_PURSUIT", true, self.police.report_bits.unwrap_or(0), || crate::sst_trail::game_rng().float()),
+                            };
+                            // (the ladder's starts queue theirs, +40 = 1)
+                            if self.police.report_bits.is_some() {
+                                self.radio.say_queued(line, &rctx);
+                            } else {
+                                self.radio.say(line, &rctx);
+                            }
                         }
                         Some(police::Event::Escaped) => {
                             self.radio.say("REPORT_END_PURSUIT", &rctx);

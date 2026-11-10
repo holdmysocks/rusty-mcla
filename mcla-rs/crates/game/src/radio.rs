@@ -116,6 +116,9 @@ pub struct Radio {
     queue: VecDeque<(String, f32)>,
     wait: f32,
     rng: u32,
+    /// the speech manager's request queue (+28 + 268 i, write +2172, read +2176, count +2180; F-95157 adds a
+    /// request with its queue flag there while a line plays, 8 at most): the scenario and its parties
+    requests: VecDeque<(String, (String, String))>,
 }
 
 fn attr<'a>(s: &'a str, name: &str) -> Option<&'a str> {
@@ -301,6 +304,30 @@ impl Radio {
         self.say_line(scenario, parties, ctx)
     }
 
+    /// The same with the request's queue flag (a report's +40, F-14569 -> F-95157): while a line plays the request is
+    /// queued (true; refused when 8 wait), ahead of every gate; else as `say`.
+    pub fn say_queued(&mut self, scenario: &str, ctx: &Ctx) -> bool {
+        let parties = self.parties(&scenario.to_ascii_uppercase());
+        if self.busy() {
+            if self.requests.len() == 8 {
+                return false;
+            }
+            self.requests.push_back((scenario.to_string(), parties));
+            return true;
+        }
+        self.say_line(scenario, parties, ctx)
+    }
+
+    /// The speech update's queue (F-85023): with no line playing, the
+    /// oldest queued request is taken out and asked again without the flag - through the whole gate. Once a frame.
+    pub fn pump(&mut self, ctx: &Ctx) {
+        if !self.busy() {
+            if let Some((scenario, parties)) = self.requests.pop_front() {
+                self.say_line(&scenario, parties, ctx);
+            }
+        }
+    }
+
     /// A line of a tactic (F-26639), its sender and receiver named.
     pub fn say_from(&mut self, scenario: &str, sender: String, receiver: String, ctx: &Ctx) -> bool {
         self.say_line(scenario, (sender, receiver), ctx)
@@ -478,6 +505,11 @@ impl Radio {
         self.queue.clear();
     }
 
+    /// Requests waiting in the queue (`say_queued`).
+    pub fn queued(&self) -> usize {
+        self.requests.len()
+    }
+
     pub fn update(&mut self, a: &mut Audio, dt: f32) {
         self.clock += dt;
         self.wait -= dt;
@@ -502,6 +534,23 @@ impl Radio {
 
 #[cfg(test)]
 mod tests {
+    /// F-95157's queue flag and F-85023's pop: queued while a line plays, 8 at most, taken out one a frame once quiet.
+    #[test]
+    fn queued_requests_wait_for_a_quiet_radio() {
+        let mut r = super::Radio::default();
+        let ctx = super::Ctx::default();
+        r.wait = 1.0;
+        for _ in 0..9 {
+            r.say_queued("REPORT_PULL_SUSPECT_OVER", &ctx);
+        }
+        assert_eq!(r.queued(), 8);
+        r.pump(&ctx);
+        assert_eq!(r.queued(), 8);
+        r.wait = 0.0;
+        r.pump(&ctx);
+        assert_eq!(r.queued(), 7);
+    }
+
     /// F-95031 against the original's code run offline on 4,000 cases (tools/radio_direction_reference.py): headings
     /// and road directions round the circle, on and off the 45 degree line, signed zeros, with and without a road.
     #[test]
