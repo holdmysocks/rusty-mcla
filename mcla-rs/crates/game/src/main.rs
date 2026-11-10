@@ -9500,7 +9500,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             speed: render_state.speed(),
                             reverse_gear: render_state.gear < 0,
                             steer: car.input.steer,
-                            front_z: if front_z.is_finite() { front_z } else { 0.0 },
+                            front_z: front_z.is_finite().then_some(front_z),
                             slope: boomcam::TrackCar::slope_of(render_state.rot, &render_state.wheels),
                             air_time: render_state.veh.as_ref().map_or(render_state.airborne_time, |v| v.air584()),
                             // (mcCarAero +4: AeroDampFactor while wiped out and over 4.47 m/s)

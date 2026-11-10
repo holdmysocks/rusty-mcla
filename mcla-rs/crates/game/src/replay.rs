@@ -796,9 +796,15 @@ pub struct Director {
 impl Director {
     /// as mcPlayerCamera's reset leaves it (F-80435): BUMPER, switching on
     pub fn new(tune: &CamTune, seed: u32, car: &CarView) -> Director {
-        let mut d = Director { state: 0, time: 0.0, switching: true, next: false, rng: Mwc::new(seed), heli: Heli::default(), polar: Polar::default(), cut: true, aspect: 16.0 / 9.0, lens: 65.0 };
+        Self::reset_with(tune, Mwc::new(seed), &HeliCar::of(car))
+    }
+
+    /// The constructor F-48429 and the reset F-80435 (tests/camera_ctor_ref.txt): the state 0, switching on, NEXT CAMERA off, the
+    /// polar camera's activate, the helicopter's, then the first shot's length, drawn from `rng` in that order.
+    fn reset_with(tune: &CamTune, rng: Mwc, car: &HeliCar) -> Director {
+        let mut d = Director { state: 0, time: 0.0, switching: true, next: false, rng, heli: Heli::default(), polar: Polar::default(), cut: true, aspect: 16.0 / 9.0, lens: 65.0 };
         d.polar_activate(tune);
-        d.heli_activate(tune, car);
+        d.heli = Heli::activate(&mut d.rng, tune, car);
         d.time = d.rng.length(tune.cut);
         d
     }
@@ -1836,5 +1842,91 @@ mod original_director_tests {
             seqs += 1;
         }
         assert!(seqs >= 110, "{seqs}");
+    }
+    /// The camera constructors F-38251 (polar), F-75429 (helicopter) and F-48429 (director) against the original's code run
+    /// offline (tools/camera_ctor_reference.py, testdata/camera_ctor_ref.txt, 35 objects pre-filled with a word: 0, a pattern or a
+    /// random one): the words they write that the port keeps. A constructor's values are only used where a camera file leaves a key
+    /// out, and all 69 cars' four replay files (`_replay`, `polar`, `fixed`, `heli`) hold every key, so `CamTune::default` stands for the
+    /// R8's files; the ones the constructors write that it also holds are equal (polar lens range and default, the helicopter's
+    /// match factors, rates and zoom times, the director's shot lengths). The helicopter's lens range is the polar
+    /// constructor's (25 / 60 / 47, its base class), not `heli_fov`; the mounts the director's constructor clears are the mount setter's
+    /// (F-31661) to fill.
+    #[test]
+    fn camera_constructors_match_the_original() {
+        let t = CamTune::default();
+        let b = |x: f32| x.to_bits();
+        let mut n = 0;
+        for line in include_str!("testdata/camera_ctor_ref.txt").lines().filter(|l| l.starts_with("CTOR ")) {
+            let (_, o) = line.split_once(" -> ").unwrap();
+            let parts: Vec<Vec<u32>> = o.split(" | ").take(3).map(|p| p.split(' ').map(h).collect()).collect();
+            let (pol, hel, dir) = (&parts[0], &parts[1], &parts[2]);
+            // polar: +272 pitch, +276 yaw, +280 / +284 / +288 the lens range and default
+            assert_eq!((pol[0], pol[1]), (0, 0), "{line}");
+            assert_eq!([pol[2], pol[3], pol[4]], t.polar_fov_range.map(b), "{line}");
+            // helicopter: the polar constructor's range, +320 .. +328 match, +332 the acceleration (activate sets it), +340 / +344 rates, +348 .. +360 zoom, byte +368
+            assert_eq!([hel[0], hel[1], hel[2]], t.polar_fov_range.map(b), "{line}");
+            assert_eq!([hel[3], hel[4], hel[5]], t.heli_match.map(b), "{line}");
+            assert_eq!(hel[6], b(9.8), "{line}");
+            assert_eq!([hel[7], hel[8]], t.heli_rates.map(b), "{line}");
+            assert_eq!([hel[9], hel[10], hel[11], hel[12]], t.heli_cut.map(b), "{line}");
+            assert_eq!(hel[13], 0, "{line}: side");
+            // director: +12 .. +24 zero, +28 state -1, +32 time 0, bytes +36 switching 1 and +37 next 0, +160 .. +172 the shot length, the 24 mount words zero, the three cameras' sizes
+            assert_eq!(&dir[..6], &[0, 0, 0, 0, u32::MAX, 0], "{line}");
+            assert_eq!((dir[6], dir[7]), (1, 0), "{line}");
+            assert_eq!(&dir[8..12], &t.cut.map(b), "{line}");
+            assert!(dir[12..36].iter().all(|&w| w == 0), "{line}");
+            assert_eq!(&dir[36..39], &[0x224, 0x304, 0x384], "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 35);
+    }
+
+    /// The director's reset F-80435 (after its constructor): the fixed camera's slot 9 (F-20175), the polar camera's activate F-82095, the
+    /// helicopter's F-79727 and the first shot's length F-66400, from a random generator, random tunes (shot lengths, polar and
+    /// helicopter lens, match factors, rates, zoom times) and a random car; against `Director::reset_with` (2,957 cases).
+    #[test]
+    fn director_reset_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/camera_ctor_ref.txt").lines().filter(|l| l.starts_with("DIR ")) {
+            let (a, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = a.split(' ').skip(1).map(h).collect();
+            let f = |k: usize| f32::from_bits(w[k]);
+            let rng = Mwc { x: w[0], c: w[1], spare: None };
+            let mut t = CamTune::default();
+            t.cut = [f(2), f(3), f(4), f(5)];
+            t.polar_fov_range = [f(6), f(7), f(8)];
+            t.heli_fov = [f(9), f(10), f(11)];
+            t.heli_match = [f(12), f(13), f(14)];
+            t.heli_rates = [f(15), f(16)];
+            t.heli_cut = [f(17), f(18), f(19), f(20)];
+            let v = |k: usize| Vec3::new(f(k), f(k + 1), f(k + 2));
+            let car = HeliCar { m: [v(21), v(24), v(27), v(30)], vel: v(33) };
+            let d = Director::reset_with(&t, rng, &car);
+            let segs: Vec<&str> = o.split(" | ").collect();
+            let head: Vec<&str> = segs[0].split(' ').collect();
+            // (the state is printed in decimal)
+            assert_eq!(head[0].parse::<usize>().unwrap(), d.state, "{line}");
+            assert_eq!(h(head[1]), b32(d.time), "time: {line}");
+            assert_eq!((head[2] == "1", head[3] == "1"), (d.switching, d.next), "{line}");
+            let pol: Vec<u32> = segs[1].split(' ').map(h).collect();
+            assert_eq!(pol, vec![b32(d.polar.fov), b32(d.polar.pitch), b32(d.polar.yaw)], "polar: {line}");
+            // (the helicopter: rows a b c and the place, the velocity, then the lens, goal, angle and zoom)
+            let mut got: Vec<u32> = d.heli.m.iter().chain([d.heli.place, d.heli.vel].iter()).flat_map(|r| r.to_array().map(f32::to_bits)).collect();
+            got.extend([d.heli.fov, d.heli.goal, d.heli.angle, d.heli.zoom].map(f32::to_bits));
+            let hp: Vec<&str> = segs[2].split(' ').collect();
+            let want: Vec<u32> = hp[..19].iter().map(|x| h(x)).collect();
+            assert_eq!(got, want, "helicopter: {line}");
+            assert_eq!(h(hp[20]), b32(HELI_ACCEL), "acceleration: {line}");
+            let g: Vec<&str> = segs[3].split(' ').collect();
+            assert_eq!(d.heli.side, hp[19] == "1", "side: {line}");
+            assert_eq!((d.rng.x, d.rng.c), (h(g[0]), h(g[1])), "generator: {line}");
+            assert_eq!(d.rng.spare.map(f32::to_bits), if g[2] == "1" { Some(h(g[3])) } else { None }, "spare: {line}");
+            n += 1;
+        }
+        assert!(n >= 2900, "{n}");
+    }
+
+    fn b32(x: f32) -> u32 {
+        x.to_bits()
     }
 }

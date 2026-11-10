@@ -2331,8 +2331,8 @@ pub struct TrackTune {
     pub collide_min: f32,
     pub near: f32,
     /// CollideHeight (+472): the radius of F-10185's deflection probe at the track point (an event with
-    /// ApproachOn 0.5, else 0, set by F-26269; the vehTrackCS constructor's 0.2 for the wipeout and
-    /// ability cameras, as both recorded vehTrackCS objects hold it)
+    /// ApproachOn 0.5, else 0, set by F-26269; the wipeout camera's 0.2, which the car load F-89557 stores after the vehTrackCS
+    /// constructor F-59764's 0.5; the ability camera keeps the constructor's 0.5, test `plain_track_cameras_match_the_constructor`)
     pub collide_height: f32,
     /// ReverseOn (+208): 0 in every file; -1 for the wipeout camera of an exploding car (F-37740)
     pub reverse_on: i32,
@@ -2442,7 +2442,7 @@ impl TrackTune {
     /// constructors' values (F-59764 over camAppCS / vehBaseCS; r5_rules 5.1): TrackTo (0, 0.8, 0),
     /// Offset (0, 1.9, 7.7), lens 60, 1..10 m from the point, AppRot 60 / AppXRot 10, XZ 2..12 and
     /// Y 5 m/s over 5..35 m/s, RevAppXZPos 20, AppInc 5 / AppDec 10, the hill, CollideType 1 with
-    /// no minimum, near 0.2; no collision at all when the car's ability was Agro at its load.
+    /// no minimum, CollideHeight 0.5, near 0.2 (the load); no collision at all when the car's ability was Agro at its load.
     pub fn ability(agro: bool) -> TrackTune {
         TrackTune {
             blend: 1.2,
@@ -2473,7 +2473,7 @@ impl TrackTune {
             collide_type: if agro { 0 } else { 1 },
             collide_min: 0.0,
             near: 0.2,
-            collide_height: 0.2,
+            collide_height: 0.5,
             reverse_on: 0,
         }
     }
@@ -2612,7 +2612,8 @@ impl CrashCam {
         // round the point, F-10185)
         t.reverse_on = if how.exploding { -1 } else { 0 };
         if !self.used {
-            self.cam.app_xz = 5.0;
+            // (the load's post-load F-79400 ran on the constructor's values, before the load stored its own)
+            self.cam.post_load(t.base_app_xz);
             self.used = true;
         }
         // (reset: snap, the side 0 - no mirror)
@@ -2747,8 +2748,9 @@ pub struct TrackCar {
     pub reverse_gear: bool,
     /// the steering (chassis +132; the port's pad steer, -1 left .. 1 right)
     pub steer: f32,
-    /// the front axle's z in the car (the first wheel of the chassis' held list, wheel +392)
-    pub front_z: f32,
+    /// the front axle's z in the car (the first wheel of the chassis' held list, wheel +392); None with the list empty (the
+    /// Burnout view then keeps the file's TrackTo.z, F-26269)
+    pub front_z: Option<f32>,
     /// the ground's slope along the car: the mean over the wheels on the ground of the y of
     /// the car's back axis laid into each wheel's ground plane (wheel +352 / +356); None with
     /// no wheel down
@@ -2926,7 +2928,7 @@ impl TrackCam {
     /// output takes the last computed matrix, the next update snaps; the lags, the rates, the hill
     /// and the grounded filter stay.
     fn set(&mut self, t: &TrackTune, car: &TrackCar, ev: usize, side: f32) {
-        let mut track = if ev == EV_BURNOUT { Vec3::new(t.track.x, t.track.y, car.front_z) } else { t.track };
+        let mut track = if ev == EV_BURNOUT { Vec3::new(t.track.x, t.track.y, car.front_z.unwrap_or(t.track.z)) } else { t.track };
         let mut offset = t.offset;
         if side > 0.0 {
             track.x = -track.x;
@@ -2934,7 +2936,26 @@ impl TrackCam {
         }
         self.track = track;
         self.offset = offset;
+        self.reset(car);
+    }
+
+    /// The post-load F-79400 (+276 = +496, +272 = +504): the place's XZ rate takes the base block's MaxAppXZPos. (The Y rate is
+    /// rewritten by every update before it is read.)
+    fn post_load(&mut self, base_app_xz: f32) {
+        self.app_xz = base_app_xz;
+    }
+
+    /// The event camera's reset (F-88984): the filtered speed starts at the car's (0 in reverse gear; the lens +168 = SSFovMin it
+    /// also sets is rewritten by the lens step before it is read), then the base reset.
+    fn reset(&mut self, car: &TrackCar) {
         self.speed = if car.reverse_gear { 0.0 } else { car.speed };
+        self.reset_base();
+    }
+
+    /// The base reset, vehTrackCS's own slot 9 (F-73044, with the camera base's F-74452: words +224 = 0, +228 = 1): the output takes the last
+    /// computed matrix, the next update snaps, the collision's state, the vertical offset and the reverse view start over. (The words
+    /// +436, +532, +660, +664, +220 it also writes are the update's: the copy flag, a spare, the reverse timer, the side sign.)
+    fn reset_base(&mut self) {
         self.out = self.comp;
         self.snap = true;
         self.rev = false;
@@ -3828,7 +3849,7 @@ impl EventDirector {
         if self.loaded.as_deref() != Some(car_name) {
             self.loaded = Some(car_name.to_string());
             let base = (0..EVENT_NAMES.len()).find_map(|e| self.tune(data_dir, car_name, e)).map_or(7.0, |t| t.base_app_xz);
-            self.cam.app_xz = base;
+            self.cam.post_load(base);
         }
         // Hydraulics' pan (F-38892): CAM_PAN_LEFT / RIGHT turn the look yaw at 2 rad/s while the
         // event camera has the view; it never decays
@@ -4297,7 +4318,7 @@ mod tests {
             let pos = Vec3::new(r * yaw.cos(), 0.3 * (t * 1.7).sin(), r * yaw.sin());
             let rot = Quat::from_rotation_y(-yaw) * Quat::from_rotation_z(0.05 * (t * 2.3).sin()) * Quat::from_rotation_x(0.03 * (t * 1.1).sin());
             let vel = Vec3::new(-r * 0.35 * yaw.sin(), 0.0, r * 0.35 * yaw.cos());
-            TrackCar { pos, rot, vel, speed: r * 0.35, reverse_gear: false, steer: 0.1, front_z: -1.3, slope: Some(0.02 * (t * 0.9).sin()), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false }
+            TrackCar { pos, rot, vel, speed: r * 0.35, reverse_gear: false, steer: 0.1, front_z: Some(-1.3), slope: Some(0.02 * (t * 0.9).sin()), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false }
         };
         for (ev_name, ev) in [("Wheelie", EV_WHEELIE), ("Burnout", EV_BURNOUT), ("Damageout", EV_DAMAGEOUT)] {
             let Some(t) = TrackTune::load(&data, "vp_aud_r8_08", ev_name) else { return };
@@ -4372,7 +4393,7 @@ mod tests {
         let Some(t) = TrackTune::load(&data, "vp_aud_r8_08", "SSTurbo") else { return };
         assert!(!t.approach_on && t.base_app_xz == 12.0, "{t:?}");
         let none: SphereTest = &NO_WORLD;
-        let car0 = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 30.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (10.0, 1.2), nitro_view: 5.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
+        let car0 = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 30.0, reverse_gear: false, steer: 0.0, front_z: Some(-1.3), slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (10.0, 1.2), nitro_view: 5.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
         let mut c = TrackCam::default();
         c.set(&t, &car0, EV_SSTURBO, 0.0);
         let o = c.update(&t, &car0, 1.0 / 30.0, 1.0 / 30.0, none, 16.0 / 9.0);
@@ -4450,7 +4471,7 @@ mod tests {
         assert!(!burnout_ends(&fx, 1.0, 0.6, 0.8) && burnout_ends(&fx, 1.0, 0.6, 0.7) && burnout_ends(&fx, 0.0, 1.0, 2.0));
         let mut d = EventDirector::default();
         let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 25.0 };
-        let mut car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
+        let mut car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: Some(-1.3), slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
         let o = d.frame_t(&data, "vp_aud_r8_08", &ein(1.0, 1.0, 2.0, 0.0), &car, BoomOut { ..chase }, 1.0 / 60.0, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
         assert!(d.running());
         // (blending in: between the chase view and the event view)
@@ -4499,7 +4520,7 @@ mod tests {
             return;
         }
         let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
-        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::new(0.0, 0.0, -15.0), speed: 15.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
+        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::new(0.0, 0.0, -15.0), speed: 15.0, reverse_gear: false, steer: 0.0, front_z: Some(-1.3), slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
         let dt = 1.0 / 60.0;
         let run = |i: EventIn, ray: bool| {
             let mut d = EventDirector::default();
@@ -4528,7 +4549,7 @@ mod tests {
     #[test]
     fn ability_hands_back_after_its_blend_in() {
         let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
-        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
+        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: Some(-1.3), slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
         let dt = 0.1;
         let (mut a, mut dir) = (AbilityCam::default(), Director::default());
         let f = |a: &mut AbilityCam, dir: &mut Director, push: bool, running: bool| {
@@ -4598,7 +4619,7 @@ camTrackCS {
 ", "Idle");
         let (o1, o2) = (BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 }, BoomOut { pos: Vec3::new(3.0, 1.0, 4.0), look: Vec3::ZERO, up: Vec3::Y, fov: 50.0 });
         let (a, b) = (dir_cam_of(&o1, Vec3::ZERO), dir_cam_of(&o2, Vec3::ZERO));
-        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
+        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: Some(-1.3), slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
         let h = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
         let text = include_str!("testdata/event_blend_rec.txt");
         let (mut cases, mut steps) = (0, 0);
@@ -4693,7 +4714,7 @@ camTrackCS {
         let Some(t) = TrackTune::load(&data, "vp_aud_r8_08", "AirRide") else { return };
         assert_eq!((t.blend, t.ret), (0.7, 0.0));
         let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
-        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
+        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: Some(-1.3), slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
         let dt = 1.0 / 60.0;
         let mut d = EventDirector::default();
         let step = |d: &mut EventDirector, i: EventIn| {
@@ -4762,7 +4783,7 @@ camTrackCS {
                 speed: 0.0,
                 reverse_gear: false,
                 steer: 0.0,
-                front_z: 0.0,
+                front_z: Some(0.0),
                 slope: None,
                 air_time: 0.0,
                 aero: 1.0,
@@ -4796,7 +4817,7 @@ camTrackCS {
         assert_eq!(CrashStart::choose(1, false, false, 1.0, right, slide).blend, 0.0);
         assert_eq!(CrashStart::choose(4, true, false, 1.0, right, slide).blend, 0.0);
         let mo = Vec3::new(0.0, 0.708, 0.0);
-        let mut car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: slide, speed: slide.length(), reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 0.3, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
+        let mut car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: slide, speed: slide.length(), reverse_gear: false, steer: 0.0, front_z: Some(-1.3), slope: Some(0.0), air_time: 0.0, aero: 0.3, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
         let drive = BoomOut { pos: Vec3::new(0.0, 2.0, 6.0), look: Vec3::ZERO, up: Vec3::Y, fov: 60.0 };
         let (mut c, mut dir) = (CrashCam::default(), Director::default());
         let how = CrashStart::choose(3, false, false, 1.0, right, slide);
@@ -4883,7 +4904,7 @@ camTrackCS {
         let wall = |c: Vec3, r: f32| (c.z - r < -5.0).then(|| (-5.0 - (c.z - r), Vec3::Z));
         let mut d = EventDirector::default();
         let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
-        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
+        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: Some(-1.3), slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
         let mut o = BoomOut { ..chase };
         let mut free = BoomOut { ..chase };
         let mut e = EventDirector::default();
@@ -4967,7 +4988,7 @@ camTrackCS {
         assert_eq!((t.offset, t.blend, t.dist, t.app_xz), (Vec3::new(-2.525, 0.0, -9.0), 1.5, (5.0, 10.0), (4.0, 9.0)));
         let mut d = EventDirector::default();
         let chase = BoomOut { pos: Vec3::new(0.0, 2.0, 9.0), look: Vec3::ZERO, up: Vec3::Y, fov: 40.0 };
-        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: -1.3, slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
+        let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer: 0.0, front_z: Some(-1.3), slope: Some(0.0), air_time: 0.0, aero: 1.0, model_offset_y: 0.708, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
         let o = d.frame_t(&data, "vp_aud_r8_08", &ein(0.0, 0.0, 0.0, 59.9), &car, BoomOut { ..chase }, 1.0 / 60.0, &NO_WORLD, &|_, _| false, 16.0 / 9.0);
         assert!(!d.idle_t() && o.pos == chase.pos);
         let mut held = Vec::new();
@@ -5204,6 +5225,320 @@ SSFovMin 60
         assert!(n >= 3900, "{n}");
     }
 
+    /// The track cameras' resets against the original's code run offline (tools/camera_ctor_reference.py, testdata/camera_ctor_ref.txt,
+    /// 2,952 cameras of garbage words with a random computed matrix, gear word and speed): the event camera's reset F-88984 (with the
+    /// base reset F-73044) and vehTrackCS's own slot 9 (F-73044). Every field the port keeps is checked, the fields it does not keep
+    /// are the update's own state whose reset values the fixture holds (+436 the copy flag, +532, +660 the reverse timer, +664 the side
+    /// sign 1, +220, +224 / +228 the base's 0 / 1, +772 / +776 the extra output rotations) - and no other word is written.
+    #[test]
+    fn track_resets_match_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut n = 0;
+        for line in include_str!("testdata/camera_ctor_ref.txt").lines().filter(|l| l.starts_with("TRS ")) {
+            let (a, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split(' ').collect();
+            let (seed, gear, spd, fov) = (h(w[1]), h(w[2]), f32::from_bits(h(w[3])), h(w[4]));
+            let cm: Vec<u32> = w[5..21].iter().map(|x| h(x)).collect();
+            // (the garbage the harness filled the camera with, word by word)
+            let mut g = Vec::new();
+            let mut s = seed;
+            for _ in 0..0x340 / 4 {
+                s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                g.push(s);
+            }
+            let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: spd, reverse_gear: gear == 0, steer: 0.0, front_z: None, slope: None, air_time: 0.0, aero: 1.0, model_offset_y: 0.7, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
+            let row = |k: usize| Vec3::new(f32::from_bits(cm[4 * k]), f32::from_bits(cm[4 * k + 1]), f32::from_bits(cm[4 * k + 2]));
+            for (variant, part) in o.split(" | ").enumerate() {
+                let mut cam = TrackCam {
+                    snap: false,
+                    track: Vec3::new(1.0, 2.0, 3.0),
+                    offset: Vec3::new(4.0, 5.0, 6.0),
+                    vert: 4.0,
+                    out: [Vec3::splat(9.0); 4],
+                    comp: [row(0), row(1), row(2), row(3)],
+                    at: Vec3::splat(0.5),
+                    place: Vec3::splat(0.25),
+                    st_rot: [1.0, 2.0, 3.0],
+                    st_pos: [4.0, 5.0, 6.0],
+                    speed: 7.0,
+                    app_xz: 2.5,
+                    app_y: 3.5,
+                    hill: 0.3,
+                    dist: 6.0,
+                    bits: 0xFF,
+                    corrected: true,
+                    rev: true,
+                    t_off: 0.1,
+                    t_on: 0.2,
+                    off_ground: true,
+                    tumble: true,
+                    held: true,
+                    look_yaw: 0.4,
+                    drawn: [None, None],
+                };
+                let before = cam.clone();
+                if variant == 0 {
+                    cam.reset(&car);
+                } else {
+                    cam.reset_base();
+                }
+                let t: Vec<&str> = part.split_whitespace().collect();
+                // (the output matrix: the four rows copied whole)
+                let out: Vec<u32> = t[..16].iter().map(|x| h(x)).collect();
+                assert_eq!(out, cm, "output rows: {line}");
+                let got: Vec<u32> = cam.out.iter().flat_map(|r| r.to_array().map(f32::to_bits)).collect();
+                assert_eq!(got, (0..4).flat_map(|r| cm[4 * r..4 * r + 3].to_vec()).collect::<Vec<u32>>(), "port output: {line}");
+                // (the written words: the ones known to be written, then any other that changed)
+                let mut words = std::collections::HashMap::new();
+                for x in &t[16..] {
+                    assert!(!x.starts_with('!'), "an unexpected word written: {x}: {line}");
+                    let (off, val) = x.split_once('=').unwrap();
+                    words.insert(off.parse::<usize>().unwrap(), h(val));
+                }
+                let speed_word = if gear == 0 { 0 } else { spd.to_bits() };
+                let mut expect: Vec<(usize, u32)> = vec![(220, 0), (224, 0), (228, 0x3f80_0000), (296, 1), (436, 0), (528, 0), (532, 0), (596, 0), (660, 0), (664, 0x3f80_0000), (668, 0), (672, 0)];
+                // (the bytes +156 and +656 are the top bytes of their words)
+                expect.extend([(156, g[156 / 4] & 0x00FF_FFFF), (656, g[656 / 4] & 0x00FF_FFFF)]);
+                if variant == 0 {
+                    expect.extend([(168, fov), (768, speed_word), (772, 0), (776, 0)]);
+                } else {
+                    expect.extend([(168, g[42]), (768, g[192]), (772, g[193]), (776, g[194])]);
+                }
+                for (off, val) in expect {
+                    assert_eq!(words[&off], val, "word +{off} (variant {variant}): {line}");
+                }
+                // (the port's fields: reset ones, and the ones the reset leaves)
+                assert!(cam.snap && !cam.rev && !cam.corrected && !cam.held, "{line}");
+                assert_eq!((cam.bits, cam.dist.to_bits(), cam.vert.to_bits()), (0, 0, 0), "{line}");
+                assert_eq!(cam.speed.to_bits(), if variant == 0 { speed_word } else { 7.0f32.to_bits() }, "speed (variant {variant}): {line}");
+                assert_eq!((cam.track, cam.offset, cam.comp, cam.at, cam.place), (before.track, before.offset, before.comp, before.at, before.place), "{line}");
+                assert_eq!((cam.st_rot, cam.st_pos, cam.app_xz, cam.app_y, cam.hill), (before.st_rot, before.st_pos, before.app_xz, before.app_y, before.hill), "{line}");
+                assert_eq!((cam.t_off, cam.t_on, cam.off_ground, cam.tumble, cam.look_yaw), (before.t_off, before.t_on, before.off_ground, before.tumble, before.look_yaw), "{line}");
+                assert!(cam.drawn.iter().all(|d| d.is_none()), "{line}");
+            }
+            n += 1;
+        }
+        assert!(n >= 2900, "{n}");
+    }
+
+    /// The post-load F-79400 (+276 = +496, +272 = +504) on 997 cameras of garbage words with random MaxAppXZPos / MaxAppYPos (0, -0,
+    /// infinity, NaN among them): the XZ rate takes the first, the Y rate the second, nothing else is written; `post_load` takes the
+    /// first (the Y rate is rewritten by every update before it is read). The base block's value is `TrackTune::base_app_xz`, and the
+    /// wipeout camera's 5 (its constructor's MaxAppXZPos, which the load stores over afterwards) is `wipeout().base_app_xz`.
+    #[test]
+    fn post_load_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut n = 0;
+        for line in include_str!("testdata/camera_ctor_ref.txt").lines().filter(|l| l.starts_with("PLD ")) {
+            let (a, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split(' ').collect();
+            let (x, y) = (h(w[2]), h(w[3]));
+            let t: Vec<&str> = o.split(' ').collect();
+            assert_eq!((h(t[0]), h(t[1])), (x, y), "{line}");
+            assert_eq!(&t[2..], &["!272", "!276"], "{line}");
+            let mut cam = TrackCam { app_xz: 2.5, app_y: 3.5, ..Default::default() };
+            cam.post_load(f32::from_bits(x));
+            assert_eq!(cam.app_xz.to_bits(), x, "{line}");
+            if x != 0x8000_0000 && f32::from_bits(x).is_finite() {
+                let text = format!("camTrackCS {{\nMaxAppXZPos {}\n}}\n", f32::from_bits(x));
+                assert_eq!(TrackTune::from_text(&text, "Burnout").base_app_xz.to_bits(), x, "{line}");
+            }
+            n += 1;
+        }
+        assert!(n >= 990, "{n}");
+    }
+
+    /// The plain vehTrackCS cameras against the constructor F-59764 (with its bases) and the player camera's constructor F-42437
+    /// run offline (tools/camera_ctor_reference.py): the ability camera (+68) and the wipeout camera (+72) as the constructors leave
+    /// them. Each tune field the object holds is compared; the ones that differ are exactly the ones the car load F-89557 (stores
+    /// near 0.2 on both, and on the wipeout camera RevAppXZPos / MaxAppXZPos 0.1, MinAppYPos / MaxAppYPos 1 / 2, CollideHeight 0.2,
+    /// CollideMinDist 0.5, TrackTo 0.75 x ModelOffset) and the wipeout start (Offset) write afterwards - code this test does not
+    /// run. (The port's ability camera had the wipeout camera's CollideHeight 0.2; the constructor's value, which nothing overwrites,
+    /// is 0.5.) The unwritten words (SSSpeed / SSFilter, the lens terms: the event camera's) are not in a plain vehTrackCS.
+    #[test]
+    fn plain_track_cameras_match_the_constructor() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let text = include_str!("testdata/camera_ctor_ref.txt");
+        let pc: Vec<(Vec<u32>, Vec<u32>)> = text
+            .lines()
+            .filter(|l| l.starts_with("PC "))
+            .map(|l| {
+                let (_, o) = l.split_once(" -> ").unwrap();
+                let mut p = o.split(" | ").map(|c| c.split_whitespace().map(h).collect::<Vec<u32>>());
+                (p.next().unwrap(), p.next().unwrap())
+            })
+            .collect();
+        assert_eq!(pc.len(), 4);
+        // (words from +4: a word the constructors write has the same value whatever the object held before; the first line's fill is 0)
+        let word = |c: &Vec<u32>, off: usize| c[(off - 4) / 4];
+        for (nm, c, c2) in [("ability", &pc[0].0, &pc[1].0), ("wipeout", &pc[0].1, &pc[1].1)] {
+            for off in [160, 164, 168, 228, 240, 244, 248, 256, 264, 268, 272, 280, 284, 288, 300, 304, 308, 448, 452, 456, 464, 488, 496, 500, 504, 508, 512, 516, 520, 548, 552, 556] {
+                assert_eq!(word(c, off), word(c2, off), "{nm} +{off} is written by the constructors");
+            }
+        }
+        let fl = |c: &Vec<u32>, off: usize| f32::from_bits(word(c, off));
+        let fields = |t: &TrackTune, c: &Vec<u32>| -> Vec<(&'static str, bool)> {
+            let v3 = |off: usize| Vec3::new(fl(c, off), fl(c, off + 4), fl(c, off + 8));
+            let e = |a: f32, off: usize| a.to_bits() == word(c, off);
+            vec![
+                ("blend", e(t.blend, 160)),
+                ("track", t.track.to_array().map(f32::to_bits) == v3(240).to_array().map(f32::to_bits)),
+                ("offset", t.offset.to_array().map(f32::to_bits) == v3(448).to_array().map(f32::to_bits)),
+                ("dist.0", e(t.dist.0, 304)),
+                ("dist.1", e(t.dist.1, 300)),
+                ("dist_scale", e(t.dist_scale, 228)),
+                ("fov.0", e(t.fov.0, 168)),
+                ("fov.1", e(t.fov.1, 168)),
+                ("app_rot", e(t.app_rot, 264)),
+                ("app_x_rot", e(t.app_x_rot, 268)),
+                ("app_app", e(t.app_app, 280)),
+                ("app_rot_min", e(t.app_rot_min, 284)),
+                ("look_at", e(t.look_at, 308)),
+                ("app_xz.0", e(t.app_xz.0, 492)),
+                ("app_xz.1", e(t.app_xz.1, 496)),
+                ("app_y.0", e(t.app_y.0, 500)),
+                ("app_y.1", e(t.app_y.1, 504)),
+                ("rev_app_xz", e(t.rev_app_xz, 488)),
+                ("app_speed.0", e(t.app_speed.0, 508)),
+                ("app_speed.1", e(t.app_speed.1, 512)),
+                ("app_inc", e(t.app_inc, 516)),
+                ("app_dec", e(t.app_dec, 520)),
+                ("app_pos_min", e(t.app_pos_min, 288)),
+                ("base_app_xz", e(t.base_app_xz, 496) || (t.base_app_xz == 0.0 && word(c, 276) == 0)),
+                ("hill.0", e(t.hill.0, 548)),
+                ("hill.1", e(t.hill.1, 552)),
+                ("hill.2", e(t.hill.2, 556)),
+                ("approach_on", t.approach_on == (word(c, 256) != 0)),
+                ("collide_type", t.collide_type as u32 == word(c, 464)),
+                ("collide_min", e(t.collide_min, 476)),
+                ("near", e(t.near, 172)),
+                ("collide_height", e(t.collide_height, 472)),
+                ("reverse_on", t.reverse_on as u32 == word(c, 208)),
+            ]
+        };
+        let differs = |t: &TrackTune, c: &Vec<u32>| fields(t, c).into_iter().filter(|f| !f.1).map(|f| f.0).collect::<Vec<_>>();
+        // (the ability camera: only the near plane, which the load stores)
+        assert_eq!(differs(&TrackTune::ability(false), &pc[0].0), vec!["near"]);
+        assert_eq!(fl(&pc[0].0, 172), 1.0);
+        // (the Agro car's: no collision type; the load stores +200 = 0 instead, which nothing here runs)
+        assert_eq!(TrackTune::ability(true).collide_type, 0);
+        // (the wipeout camera, TrackTo = 0.75 x the tune's ModelOffset)
+        let wipe = TrackTune::wipeout(Vec3::new(0.0, 0.708, 0.0));
+        assert_eq!(
+            differs(&wipe, &pc[0].1),
+            vec!["track", "offset", "app_xz.1", "app_y.0", "app_y.1", "rev_app_xz", "collide_min", "near", "collide_height"],
+            "{wipe:?}"
+        );
+        // (the post-load ran on the constructor's MaxAppXZPos: the 5 the first wipeout starts the place's XZ rate with)
+        assert_eq!(wipe.base_app_xz.to_bits(), word(&pc[0].1, 496));
+        // (what the load stores)
+        assert_eq!((wipe.near, wipe.collide_height, wipe.collide_min, wipe.rev_app_xz, wipe.app_xz.1, wipe.app_y), (0.2, 0.2, 0.5, 0.1, 0.1, (1.0, 2.0)));
+    }
+
+    /// The event camera's set-event F-26269 against the original's code run offline (tools/camera_ctor_reference.py, `SEV` lines: 3,649
+    /// cases, every event number, current events, enable bytes, random event records, steering, yaw rate, pad short, held-wheel list
+    /// and generator): the cases the original answers 1 for an event number (`ret` is 0 for the current event and a disabled one, which
+    /// the chooser, not this function, decides in the port), through `EventDirector::side` + `TrackCam::set` + the tune
+    /// `TrackTune::from_text` makes from the same record. Compared: the side, the mirrored TrackTo / Offset, Burnout's front axle (kept
+    /// when the list is empty), the record's fields in the camera (BlendTime, ApproachOn, AppXRot with the update's substitution of
+    /// AppRot for 0, the five approach rates, the lens range and distance terms, CollideHeight 0.5 or 0, MinSpeed / MaxSpeed 2 / 10 for
+    /// Hydraulics else 10 / 25) and the snap. The Idle view's side is a draw of the game's shared generator (a multiply-with-carry;
+    /// bit 22 of the 23-bit draw) which the port does not share: its draw is taken from the fixture's generator, and the port's
+    /// own (`EventDirector::rng`) stays the approximation it was.
+    #[test]
+    fn set_event_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let (mut n, mut sets, mut mirrored, mut burnout_kept) = (0, 0, 0, 0);
+        let mut by_event = [0usize; 18];
+        for line in include_str!("testdata/camera_ctor_ref.txt").lines().filter(|l| l.starts_with("SEV ")) {
+            let (a, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split(' ').collect();
+            let e: i32 = w[1].parse().unwrap();
+            let cur: i32 = w[2].parse().unwrap();
+            let en = h(w[3]) as u8;
+            let rec: Vec<u32> = w[4..24].iter().map(|x| h(x)).collect();
+            let (apprt, yaw, steer, pad) = (h(w[24]), f32::from_bits(h(w[25])), f32::from_bits(h(w[26])), h(w[27]) as u16 as i16);
+            let (cnt, wz, gl, gc): (i32, f32, u32, u32) = (w[28].parse().unwrap(), f32::from_bits(h(w[29])), h(w[30]), h(w[31]));
+            let parts: Vec<&str> = o.split('|').map(str::trim).collect();
+            let head: Vec<&str> = parts[0].split(' ').collect();
+            let ret: i32 = head[0].parse().unwrap();
+            let after: i32 = head[1].parse().unwrap();
+            n += 1;
+            // (the original's early refusals: the current event, a disabled one; -1 clears)
+            let refused = e == cur || (e >= 0 && en == 0);
+            assert_eq!(ret, if refused { 0 } else { 1 }, "{line}");
+            assert_eq!(after, if refused { cur } else { e }, "{line}");
+            assert!(parts[3].split_whitespace().next().is_none(), "unexpected words written: {line}");
+            if refused || e < 0 {
+                continue;
+            }
+            let ev = e as usize;
+            by_event[ev] += 1;
+            let toks: Vec<&str> = parts[1].split(' ').collect();
+            let kn: Vec<u32> = toks[..25].iter().map(|x| h(x)).collect();
+            let word = |off: u32| kn[[160, 240, 244, 248, 252, 448, 452, 456, 460, 256, 268, 296, 472, 488, 492, 496, 500, 504, 508, 512, 744, 748, 752, 756, 760].iter().position(|&o| o == off).unwrap()];
+            let b572: u32 = toks[25].parse().unwrap();
+            // the record as a camera file's text
+            let fl = |k: usize| f32::from_bits(rec[k]);
+            let name = EVENT_NAMES[ev];
+            let text = format!(
+                "camTrackCS {{\nAppRot {}\n{name} {{\nBlendTime {}\nReturnTime {}\nTrackTo {} {} {}\nOffset {} {} {}\nApproachOn {}\nAppXRot {}\nRevAppXZPos {}\nMinAppXZPos {}\nMaxAppXZPos {}\nMinAppYPos {}\nMaxAppYPos {}\nMinFOV {}\nMaxFOV {}\nDistScale {}\nDistMin {}\nDistMax {}\n}}\n}}\n",
+                f32::from_bits(apprt), fl(0), fl(1), fl(2), fl(3), fl(4), fl(5), fl(6), fl(7), rec[8], fl(9), fl(10), fl(11), fl(12), fl(13), fl(14), fl(15), fl(16), fl(17), fl(18), fl(19)
+            );
+            let t = TrackTune::from_text(&text, name);
+            let car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: 0.0, reverse_gear: false, steer, front_z: (cnt > 0).then_some(wz), slope: None, air_time: 0.0, aero: 1.0, model_offset_y: 0.7, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
+            let input = EventIn { yaw_rate: yaw, g18: pad, ..Default::default() };
+            let side = if ev == EV_IDLE {
+                // (the shared generator's draw: x' = x 0x5CDCFAA7 + carry, the draw its low 23 bits as a float over 2^23, >= 0.5)
+                let m = gl as u64 * 0x5CDC_FAA7 + gc as u64;
+                assert_eq!(((m as u32) & 0x7F_FFFF) as f32 * f32::from_bits(0x3400_0000) >= 0.5, (m as u32) & 0x40_0000 != 0);
+                if (m as u32) & 0x40_0000 != 0 { 1.0 } else { -1.0 }
+            } else {
+                EventDirector::default().side(ev, &input, &car)
+            };
+            // (only the Idle view draws: the generator moves by exactly that one draw)
+            let g: Vec<u32> = parts[2].split(' ').map(h).collect();
+            if ev == EV_IDLE {
+                let m = gl as u64 * 0x5CDC_FAA7 + gc as u64;
+                assert_eq!((g[0], g[1]), (m as u32, (m >> 32) as u32), "{line}");
+            } else {
+                assert_eq!((g[0], g[1]), (gl, gc), "{line}");
+            }
+            let mut cam = TrackCam::default();
+            cam.set(&t, &car, ev, side);
+            let bits3 = |v: Vec3| v.to_array().map(f32::to_bits);
+            let want3 = |off: u32| [word(off), word(off + 4), word(off + 8)];
+            assert_eq!(bits3(cam.track), want3(240), "TrackTo: {line}");
+            assert_eq!(bits3(cam.offset), want3(448), "Offset: {line}");
+            assert!(cam.snap, "{line}");
+            let eq = |nm: &str, got: f32, off: u32| assert_eq!(got.to_bits(), word(off), "{nm}: {line}");
+            eq("BlendTime", t.blend, 160);
+            // (the update takes AppRot for an AppXRot of 0, the port's tune does it where it reads the file)
+            let rx = if f32::from_bits(word(268)) != 0.0 { word(268) } else { apprt };
+            assert_eq!(t.app_x_rot.to_bits(), rx, "AppXRot: {line}");
+            eq("RevAppXZPos", t.rev_app_xz, 488);
+            eq("MinAppXZPos", t.app_xz.0, 492);
+            eq("MaxAppXZPos", t.app_xz.1, 496);
+            eq("MinAppYPos", t.app_y.0, 500);
+            eq("MaxAppYPos", t.app_y.1, 504);
+            eq("MinSpeed", t.app_speed.0, 508);
+            eq("MaxSpeed", t.app_speed.1, 512);
+            eq("MinFOV", t.fov.0, 744);
+            eq("MaxFOV", t.fov.1, 748);
+            eq("DistScale", t.dist_scale, 752);
+            eq("DistMin", t.dist.0, 756);
+            eq("DistMax", t.dist.1, 760);
+            eq("CollideHeight", t.collide_height, 472);
+            assert_eq!(t.approach_on, word(256) != 0, "{line}");
+            assert_eq!(b572, !t.approach_on as u32, "byte +572: {line}");
+            sets += 1;
+            mirrored += (side > 0.0) as usize;
+            burnout_kept += (ev == EV_BURNOUT && cnt <= 0) as usize;
+        }
+        eprintln!("{n} cases, {sets} sets {mirrored} mirrored {burnout_kept} Burnout with an empty list {by_event:?}");
+        assert!(n >= 3600 && sets >= 2500 && mirrored >= 500 && burnout_kept >= 20 && by_event.iter().all(|&c| c >= 60), "{n} {sets} {mirrored} {burnout_kept} {by_event:?}");
+    }
+
     /// The track camera's update F-63744 (with F-70292, F-66356, F-10185, F-91254, F-48560 / F-36151 and F-59594)
     /// against the running original, call for call: each recorded update (CAMI / CAMO of the recorder's
     /// mcla_veh_cam_in / _out) is run from its recorded entry state - the camera object, the followed matrix, the
@@ -5385,7 +5720,7 @@ SSFovMin 60
                 speed,
                 reverse_gear: gear == 0,
                 steer: 0.0,
-                front_z: 0.0,
+                front_z: Some(0.0),
                 slope: (down > 0).then(|| sum / down as f32),
                 air_time: air,
                 aero: 1.0,
