@@ -132,19 +132,20 @@ mod floormirror;
 mod titlecam;
 mod startwarp;
 
-/// Where the pause cameras' frame sits in the car (x right, y up, z rear from the
-/// car's origin). Measured in the original (CAREER_RACES.md "Race end: camera and
-/// timing", second run): the settled PauseCamera3 and PauseCamera2 both stand at their
-/// tuned place + (0, 1.42, 0.08) from the S281's instance origin, the look the tune's to
-/// 0.003. (approx.: the port's car origin taken as the original's instance origin; was
-/// (0, 1.38, -0.25), fitted by eye)
 /// VEHICLE SELECT's music (CarSelection 0xedb: mcMusicManager_PlayCustomMusic('MUSIC_CARSELECT_MASTER'))
 const CARSELECT_MUSIC: &str = "MUSIC_CARSELECT_MASTER";
 /// INTRO FAST (DECISIONS.md D24): the film `intro720.bik` (68.47 s) ends with the arrival CUT_INTRO shows (10.3 s), the
 /// two ending together - the film's time of the scene's first frame (the close-up's cut: film 66.30 s, scene 8.1 s;
 /// CUTSCENES.md "The opening scenes' audio (session `cut-audio`, 2026-10-23)")
 const FILM_CUT_INTRO_AT: f32 = 58.2;
-const PAUSE_FRAME: Vec3 = Vec3::new(0.0, 1.42, 0.08);
+/// Where the pause cameras' frame (the HUD frame 14, F-32331) stands: the car's composite box's top
+/// centre, turned by the car (`racemark::pause_origin`); the frame's axes the heading only. The race-end
+/// fit on the S281 (CAREER_RACES.md "Race end: second run": (0, 1.42, 0.08 rear)) is this to 1 cm.
+/// (approx.: the port's car origin taken as the original's matrix origin)
+fn pause_origin(car: &vehicles::CarInstance, s: &physics::CarState) -> Vec3 {
+    let (hi, lo) = racemark::bound_box(car);
+    racemark::pause_origin(s.pos, s.rot, hi, lo, car.model.bike)
+}
 /// The point RACE_GH_06_READY_TO_START_ON_ENTER.sco gives AmbientMgr_SetRoadDensity (0x8be .. 0x8dc, 0xab1): the
 /// road of CUT_STORY_RACE_GH_06 (F-86195 finds it), index 0 for the scene, -1 after it.
 const GH_06_SCENE_ROAD: Vec3 = Vec3::new(-234.0, 21.0, -733.0);
@@ -9309,8 +9310,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let fwd = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or(Vec3::NEG_Z);
                         let right = Vec3::new(-fwd.z, 0.0, fwd.x);
                         let off: Vec<f32> = std::env::var("MCLA_PAUSE_OFF").ok().map(|v| v.split(',').filter_map(|x| x.parse().ok()).collect()).unwrap_or_default();
-                        let off = if off.len() == 3 { Vec3::new(off[0], off[1], off[2]) } else { PAUSE_FRAME };
-                        let origin = render_state.pos + right * off.x + Vec3::Y * off.y - fwd * off.z;
+                        let origin = if off.len() == 3 { render_state.pos + right * off[0] + Vec3::Y * off[1] - fwd * off[2] } else { pause_origin(car, &render_state) };
                         let place = |p: Vec3| origin + right * p.x + Vec3::Y * p.y - fwd * p.z;
                         self.chase.pos = place(eye);
                         self.chase.look = place(look);
@@ -10072,7 +10072,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let fwd = render_state.forward();
                         let fwd = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or(Vec3::NEG_Z);
                         let right = Vec3::new(-fwd.z, 0.0, fwd.x);
-                        let origin = render_state.pos + right * PAUSE_FRAME.x + Vec3::Y * PAUSE_FRAME.y - fwd * PAUSE_FRAME.z;
+                        let origin = pause_origin(car, &render_state);
                         let place = |p: Vec3| origin + right * p.x + Vec3::Y * p.y - fwd * p.z;
                         if self.race_end_cam.is_none() {
                             let logic = menu3d::UiLogic::load(&self.opt.data_dir);
