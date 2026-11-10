@@ -266,7 +266,8 @@ impl LodFade {
                     run = true;
                 }
                 if run {
-                    self.t += 3.0 * dt;
+                    // (F-89177's fmadds: dt x the rate 3.0 + t in one rounding)
+                    self.t = (dt as f64).mul_add(3.0, self.t as f64) as f32;
                     if self.t > 1.0 {
                         self.t = 1.0;
                         self.state = 1;
@@ -1532,6 +1533,20 @@ impl World {
         300.0 * Self::lens_scale(lens_deg) * detail.max(1.0)
     }
 
+    /// The lens scale moved towards its target as F-50083 calls F-90102: by the rate 0.5 (0x827E0DF4) x `dt` a step, the
+    /// multiply and the add fused (the original's fmadds / fnmsubs: one rounding of the double result to f32), clamped at the target.
+    pub fn ease_lod_scale(cur: f32, target: f32, dt: f32) -> f32 {
+        if cur < target {
+            let v = 0.5f64.mul_add(dt as f64, cur as f64) as f32;
+            if v > target { target } else { v }
+        } else if cur > target {
+            let v = (-0.5f64).mul_add(dt as f64, cur as f64) as f32;
+            if v < target { target } else { v }
+        } else {
+            cur
+        }
+    }
+
     /// The lens scale's target (F-50083): 1.5 at a 25 degree lens .. 1.0 from 50 degrees.
     pub fn lens_scale(lens_deg: f32) -> f32 {
         1.5 - 0.5 * ((lens_deg - 25.0) * 0.04).clamp(0.0, 1.0)
@@ -1610,7 +1625,7 @@ impl World {
         let dt = now.duration_since(self.last_fade).as_secs_f32().min(0.1);
         self.last_fade = now;
         let target = Self::lens_scale(crate::props::lens().to_degrees());
-        self.lod_scale = if self.lod_scale < target { (self.lod_scale + 0.5 * dt).min(target) } else { (self.lod_scale - 0.5 * dt).max(target) };
+        self.lod_scale = Self::ease_lod_scale(self.lod_scale, target, dt);
         let detail = 300.0 * self.lod_scale * crate::props::Lod::now().detail.max(1.0);
         let detail = std::env::var("MCLA_SECTOR_DIST").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(detail);
         // (the lens widens with speed: keep to the larger distance for a while rather than drop and reload)
@@ -2088,6 +2103,75 @@ mod lod_option_tests {
         let d = super::World::lod_dist(&b, glam::Vec3::new(2077.6362, -11.969, -303.6336));
         assert!((d - f32::from_bits(0x43c6a131)).abs() < 2e-3, "{d}");
         assert_eq!(super::World::lod_dist(&b, glam::Vec3::new(1500.0, 0.0, 0.0)), 0.0);
+    }
+
+    fn bits(h: &str) -> f32 {
+        f32::from_bits(u32::from_str_radix(h, 16).unwrap())
+    }
+
+    /// F-89177 run offline as generated (tools/map_reach_reference.py, section FDE: 12,000 sector records of every state
+    /// (+252 0 .. 5), distance against the detail distance (equal, one ulp over, infinite), t, +292 flags, fade state, last choice,
+    /// frame time): at the shipped settings (cross-fade on, detail models on, no snap, far drawable present) `LodFade::step`
+    /// leaves the same fade state, the same t bit for bit (dt x 3.0 + t fused) and the same choice byte. The settings are
+    /// constants of the port; the other settings' cases of the fixture are skipped.
+    #[test]
+    fn lod_fade_matches_the_original() {
+        let (mut n, mut skipped, mut started, mut running, mut finished) = (0, 0, 0, 0, 0);
+        for l in include_str!("testdata/map_reach_ref.txt").lines().filter(|l| l.starts_with("FDE ")) {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let i: Vec<&str> = i.split(' ').collect();
+            let (cross, det, snap, far): (u32, u32, u32, u32) = (i[9].parse().unwrap(), i[10].parse().unwrap(), i[11].parse().unwrap(), i[12].parse().unwrap());
+            if (cross, det, snap, far) != (1, 1, 0, 1) {
+                skipped += 1;
+                continue;
+            }
+            let st: u32 = i[1].parse().unwrap();
+            let (dist, thr, t) = (bits(i[2]), bits(i[3]), bits(i[4]));
+            let (fl, fs, ch): (u32, u32, u32) = (i[5].parse().unwrap(), i[6].parse().unwrap(), i[7].parse().unwrap());
+            let dt = bits(i[8]);
+            let mut f = super::LodFade { state: fs as u8, t, choice: ch as u8 };
+            f.step(st == 3, dist < thr, fl & 2 != 0, dt);
+            let o: Vec<&str> = o.split(' ').collect();
+            assert_eq!((f.state as u32, f.t.to_bits(), f.choice as u32), (o[0].parse().unwrap(), u32::from_str_radix(o[1], 16).unwrap(), o[2].parse().unwrap()), "{l}");
+            started += (fs == 1 && f.state != 1) as u32;
+            running += (fs != 1 && f.state != 1) as u32;
+            finished += (fs != 1 && f.state == 1 && st == 3 && ch != 0) as u32;
+            n += 1;
+        }
+        assert!(n > 10000 && skipped > 500 && started > 300 && running > 500 && finished > 300, "{n} {skipped} {started} {running} {finished}");
+    }
+
+    /// F-50083's lens scale and sector detail distance, run offline with its callees stubbed (section LNS, 4,400 cases (the 1,684 at other constants are skipped) of lens
+    /// degrees 10 .. 120, current scale, frame time): the target (`World::lens_scale`), the eased scale (F-90102 fused,
+    /// `World::ease_lod_scale`) and the detail distance 300 x scale equal the original to the bit - at the shipped constants
+    /// (narrow end 1.5, rate 0.5, base 300). NOT ported (the open item, docs/MAP.md): while the game is paused (F-31789's flag) the
+    /// original multiplies the eased scale by 2.0 and stores it back each frame; the fixture's paused cases are checked for that
+    /// rule only.
+    #[test]
+    fn detail_distance_matches_the_original() {
+        let (mut n, mut paused) = (0, 0);
+        for l in include_str!("testdata/map_reach_ref.txt").lines().filter(|l| l.starts_with("LNS ")) {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let i: Vec<&str> = i.split(' ').collect();
+            let (fov, sc, narrow, rate, dt, base) = (bits(i[1]), bits(i[2]), bits(i[3]), bits(i[4]), bits(i[5]), bits(i[6]));
+            let (f432, f433, f373, tls): (u32, u32, u32, u32) = (i[7].parse().unwrap(), i[8].parse().unwrap(), i[9].parse().unwrap(), i[10].parse().unwrap());
+            let o: Vec<f32> = o.split(' ').map(bits).collect();
+            let is_paused = if f432 != 0 && tls == 0 { f433 & 0xFF != 0 } else { f373 & 0xFF != 0 };
+            if (narrow, rate, base) != (1.5, 0.5, 300.0) {
+                continue;
+            }
+            let eased = super::World::ease_lod_scale(sc, super::World::lens_scale(fov), dt);
+            if is_paused {
+                assert_eq!(o[0].to_bits(), (eased * 2.0).to_bits(), "{l}");
+                assert_eq!(o[1].to_bits(), (300.0 * (eased * 2.0)).to_bits(), "{l}");
+                paused += 1;
+            } else {
+                assert_eq!(o[0].to_bits(), eased.to_bits(), "{l}");
+                assert_eq!(o[1].to_bits(), (300.0 * eased).to_bits(), "{l}");
+                n += 1;
+            }
+        }
+        assert!(n > 1000 && paused > 150, "{n} {paused}");
     }
 
     /// F-89177: a flip starts a third of a second's fade only in view; a running fade goes to its end; out of view the

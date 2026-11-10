@@ -764,6 +764,49 @@ pub fn frame(data_dir: &str, view_proj: Mat4, frustum: &Frustum) -> Selected {
 mod tests {
     use super::*;
 
+    /// F-71608 (the sphere visibility wrapper: occluder part only, flags 2) and F-87100 (the centre / radius packer) run
+    /// offline as generated over a stubbed F-38575 that answers the case's word (tools/map_reach_reference.py, section OCC:
+    /// 319 words each (two lines of 321 are left out of the fixture by its raw-address filter), the callee is verified apart). F-71608 passes the view's occluder list, the sphere (x, y, z, w) and the
+    /// flags 2 on, and answers 0 when the word has bit 0x04000000 (outside the frustum part) or 0x10000000 (hidden by a volume),
+    /// else 1. F-87100 puts the radius into the centre's w lane, passes the caller's flags on and returns the word as it is. For
+    /// the flags 2 F-38575 answers 0x10000000 when a volume hides the sphere, 0x20000000 when none does, 0 with no volumes
+    /// (read from its code: the occluder loop's two exits): the port's `hides_sphere` is that answer, so a sphere is visible
+    /// exactly when it is not hidden - checked below on a box volume.
+    #[test]
+    fn sphere_wrappers_match_the_original() {
+        let f = |h: &str| u32::from_str_radix(h, 16).unwrap();
+        let (mut a, mut b) = (0, 0);
+        for l in include_str!("testdata/map_reach_ref.txt").lines().filter(|l| l.starts_with("OCC")) {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let i: Vec<&str> = i.split(' ').collect();
+            let o: Vec<&str> = o.split(' ').collect();
+            let word = f(i[1]);
+            if i[0] == "OCCA" {
+                let visible = !(word & 0x0400_0000 != 0 || word & 0x1000_0000 != 0);
+                assert_eq!(o[0], if visible { "1" } else { "0" }, "{l}");
+                assert_eq!(o[1], "2", "{l}");
+                assert_eq!((f(o[2]), f(o[3]), f(o[4]), f(o[5])), (f(i[2]), f(i[3]), f(i[4]), f(i[5])), "{l}");
+                a += 1;
+            } else {
+                assert_eq!(f(o[0]), word, "{l}");
+                assert_eq!(o[1], i[2], "{l}");
+                assert_eq!((f(o[2]), f(o[3]), f(o[4]), f(o[5])), (f(i[3]), f(i[4]), f(i[5]), f(i[6])), "{l}");
+                b += 1;
+            }
+        }
+        assert_eq!((a, b), (319, 319));
+        // the port's side: a box volume (|x| |y| |z| <= 10 inside, the planes facing out), spheres behind / in front / straddling
+        let planes = vec![Vec4::new(1.0, 0.0, 0.0, -10.0), Vec4::new(-1.0, 0.0, 0.0, -10.0), Vec4::new(0.0, 1.0, 0.0, -10.0), Vec4::new(0.0, -1.0, 0.0, -10.0), Vec4::new(0.0, 0.0, 1.0, -10.0), Vec4::new(0.0, 0.0, -1.0, -10.0)];
+        let s = Selected { volumes: vec![planes], ids: vec![0], pos: vec![0] };
+        let word = |s: &Selected, c: Vec3, r: f32| if s.volumes.is_empty() { 0 } else if s.hides_sphere(c, r) { 0x1000_0000u32 } else { 0x2000_0000 };
+        let visible = |w: u32| !(w & 0x0400_0000 != 0 || w & 0x1000_0000 != 0);
+        assert!(!visible(word(&s, Vec3::new(0.0, 0.0, 0.0), 1.0)) == s.hides_sphere(Vec3::ZERO, 1.0));
+        assert!(visible(word(&s, Vec3::new(50.0, 0.0, 0.0), 1.0)) && !s.hides_sphere(Vec3::new(50.0, 0.0, 0.0), 1.0));
+        assert!(visible(word(&s, Vec3::new(9.5, 0.0, 0.0), 1.0)) && !s.hides_sphere(Vec3::new(9.5, 0.0, 0.0), 1.0));
+        let none = Selected { volumes: Vec::new(), ids: Vec::new(), pos: Vec::new() };
+        assert!(visible(word(&none, Vec3::ZERO, 1.0)) && !none.hides_sphere(Vec3::ZERO, 1.0));
+    }
+
     fn box_text(boxes: &[(Vec3, Vec3)]) -> String {
         let mut s = format!("version: 4\nOccluders {}\n{{\n", boxes.len());
         for (i, (a, b)) in boxes.iter().enumerate() {

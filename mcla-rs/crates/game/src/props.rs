@@ -104,31 +104,39 @@ impl PropModel {
     /// cards' and hedges' far distance and `FAR_DIST`), the detail level where a plant's model gives
     /// way to its card (city.wgsl `vs_inst` takes the same two from `Globals::lod`).
     fn reach(&self, scale: f32, fov: f32, k: Lod) -> (f32, f32) {
+        self.reach_half(scale, fov.to_degrees() * 0.5, fov, k)
+    }
+
+    /// `reach` from the half lens angle in degrees (F-63362 forms it as the viewport's degrees x 0.5, the same f32 here).
+    /// F-63362 + F-98063 bit for bit (test `reach_matches_the_original`): the angle factors are the executable's f32
+    /// constants, applied as it applies them (angle x constant, one rounding), the tangent is its own (F-55967's double
+    /// precision tan, rounded to f32), the radius is doubled and divided by it, and the scale (capped at 2) multiplies after.
+    pub(crate) fn reach_half(&self, scale: f32, half_deg: f32, fov: f32, k: Lod) -> (f32, f32) {
         let r = self.sphere;
-        let half_deg = fov.to_degrees() * 0.5;
-        let by = |per: f32| 2.0 * r / (half_deg * std::f32::consts::PI / per).tan().max(1e-6) * scale.min(2.0);
+        let s2 = scale.min(2.0);
+        let dist = |h: f32, per: f32| 2.0 * r / orig_tan(h * per).max(1e-6) * s2;
         let cap = FAR_DIST * k.draw;
         match self.kind {
             1 => {
                 // (the plants' half angle x the night factor, both distances: F-63362)
-                let half_deg = half_deg * k.night;
-                let far = (2.0 * r / (half_deg * std::f32::consts::PI / 7200.0).tan().max(1e-6) * scale.min(2.0) * k.draw).min(cap);
+                let h = half_deg * k.night;
+                let far = (dist(h, PLANT_FAR_K) * k.draw).min(cap);
                 // (the model's angle x 0.9 while the game is paused: F-63362, F-31789's flag)
-                let model = 2.0 * r / (half_deg * k.plant_angle * std::f32::consts::PI / 400.0).tan().max(1e-6) * scale.min(2.0);
+                let model = 2.0 * r / orig_tan((h * k.plant_angle) * PLANT_MODEL_K).max(1e-6) * s2;
                 ((model * k.detail).min(far), far)
             }
             // hedges: the high level to L = 2R / tan(h pi/600) (DETAIL LEVEL), the low level
             // (`Props::hedge_low`, kind 5) from L - 16 to the far end
             2 => {
-                let far = (by(2400.0) * k.draw).min(cap);
-                ((by(600.0) * k.detail).min(far), far)
+                let far = (dist(half_deg, HEDGE_FAR_K) * k.draw).min(cap);
+                ((dist(half_deg, HEDGE_LOD_K) * k.detail).min(far), far)
             }
             5 => {
-                let far = (by(2400.0) * k.draw).min(cap);
+                let far = (dist(half_deg, HEDGE_FAR_K) * k.draw).min(cap);
                 (0.0, far)
             }
             3 => {
-                let far = (2.0 * r / (half_deg * k.night * std::f32::consts::PI / 7200.0).tan().max(1e-6) * scale.min(2.0) * k.draw).min(cap);
+                let far = (dist(half_deg * k.night, PLANT_FAR_K) * k.draw).min(cap);
                 (0.0, far)
             }
             _ => {
@@ -137,6 +145,19 @@ impl PropModel {
             }
         }
     }
+}
+
+/// F-63362's angle constants, f32 as the executable holds them: pi/400 (a plant's model to its card), pi/7200 (the card's
+/// far end), pi/600 and pi/2400 (a hedge's high level and far end), per degree of the half lens angle.
+const PLANT_MODEL_K: f32 = f32::from_bits(0x3c00_adfc);
+const PLANT_FAR_K: f32 = f32::from_bits(0x39e4_c388);
+const HEDGE_LOD_K: f32 = f32::from_bits(0x3bab_92a6);
+const HEDGE_FAR_K: f32 = f32::from_bits(0x3aab_92a6);
+
+/// The tangent F-63362 takes: the executable's own routine works in double precision on the f32 argument and the result is
+/// rounded to f32 (`frsp`).
+fn orig_tan(x: f32) -> f32 {
+    (x as f64).tan() as f32
 }
 
 /// The two OPTIONS > PERFORMANCE scales the draw distances take (1 = the original's), and the
@@ -2921,6 +2942,130 @@ mod lod_option_tests {
     use super::*;
     /// lod_rule.md at the 25 degree lens: props 360.36 R (cap 2250), plants' model 20.31 R and cards 366.7 R;
     /// DRAW DISTANCE scales the far ends (and the caps), DETAIL LEVEL the plant's model distance.
+    fn bits(h: &str) -> f32 {
+        f32::from_bits(u32::from_str_radix(h, 16).unwrap())
+    }
+
+    /// F-63362 (+ F-98063 and F-31789) run offline as generated (tools/map_reach_reference.py, section RCH: 6,000 cases of
+    /// MaxRots, radius, scale, "_displayAsLowLOD", lens degrees, night factor, the paused flag's four sources and both passes):
+    /// the type's model / card / hedge distances equal `PropModel::reach_half` to the bit (plants: the model distance and the
+    /// card's far end, the night factor on the half angle, the 0.9 while paused, the low-LOD sentinel; hedges: the high level
+    /// and the far end, no night factor, no paused factor), and the fade band the original sets for the far end is the
+    /// far end's last quarter (0.75 F .. F) with the width's reciprocal as the slope. Hedges: the original's fade bands take the
+    /// hedge's distances unscaled (F-98063's hedge path never reads the scale), so they are compared at scale 1.
+    #[test]
+    fn reach_matches_the_original() {
+        let (mut n, mut capped, mut sentinel, mut paused_n, mut night_n) = (0, 0, 0, 0, 0);
+        for l in include_str!("testdata/map_reach_ref.txt").lines().filter(|l| l.starts_with("RCH ")) {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let i: Vec<&str> = i.split(' ').collect();
+            let maxrots: i32 = i[1].parse().unwrap();
+            let (radius, scale, low, fov, night) = (bits(i[2]), bits(i[3]), i[4].parse::<u32>().unwrap(), bits(i[5]), bits(i[6]));
+            let (f432, f433, f373, tls): (u32, u32, u32, u32) = (i[7].parse().unwrap(), i[8].parse().unwrap(), i[9].parse().unwrap(), i[10].parse().unwrap());
+            let paused = if f432 != 0 && tls == 0 { f433 & 0xFF != 0 } else { f373 & 0xFF != 0 };
+            let mut it = o.split(' ');
+            let (n132, n136, n140) = (bits(it.next().unwrap()), bits(it.next().unwrap()), it.next().unwrap());
+            assert_eq!(it.next().unwrap(), "2", "{l}");
+            let groups: Vec<Vec<f32>> = o.split('[').skip(1).map(|g| g.split(']').next().unwrap().split(' ').skip(2).map(|h| if h == "deadbeef" { 0.0 } else { bits(h) }).collect()).collect();
+            let band = &groups[1];
+            let kind = if maxrots > 1 { 2 } else if low != 0 { 3 } else { 1 };
+            let m = PropModel { batches: Vec::new(), radius, sphere: radius, kind };
+            let k = Lod { draw: 1.0, detail: 1.0, plant_angle: if paused { 0.9 } else { 1.0 }, night };
+            // (the hedges at scale 1: see above)
+            let sc = if kind == 2 { 1.0 } else { scale };
+            let s2 = sc.min(2.0);
+            let (near, far) = m.reach_half(sc, fov * 0.5, 0.0, k);
+            let exp_far = n136 * s2;
+            if exp_far > FAR_DIST {
+                // (the cards' and hedges' far ends are cut at the view's far clip by the port; F-63362 has no cut)
+                assert_eq!(far, FAR_DIST, "{l}");
+                capped += 1;
+            } else {
+                assert_eq!(far.to_bits(), exp_far.to_bits(), "far: {l}");
+            }
+            match kind {
+                3 => {
+                    assert_eq!(n132, -10000.0, "{l}");
+                    assert_eq!(near, 0.0);
+                    sentinel += 1;
+                }
+                _ => {
+                    let exp_near = n132 * s2;
+                    assert_eq!(near.to_bits(), exp_near.min(far).to_bits(), "near: {l}");
+                }
+            }
+            if kind == 2 {
+                assert_eq!(n140, o.split(' ').next().unwrap(), "{l}");
+            } else {
+                assert_eq!(n140, "deadbeef", "{l}");
+            }
+            // the band F-98063 puts out for the far end: (F - F/4, F, 1 / (F/4), 1)
+            let y = exp_far;
+            let q = y * 0.25;
+            assert_eq!([band[0].to_bits(), band[1].to_bits(), band[2].to_bits(), band[3].to_bits()], [(y - q).to_bits(), y.to_bits(), (1.0 / q).to_bits(), 1.0f32.to_bits()], "band: {l}");
+            paused_n += (paused && kind == 1) as u32;
+            night_n += (night > 1.0 && kind != 2) as u32;
+            n += 1;
+        }
+        assert_eq!(n, 6000);
+        assert!(capped > 100 && sentinel > 500 && paused_n > 500 && night_n > 1500, "{capped} {sentinel} {paused_n} {night_n}");
+    }
+
+    /// F-98063 alone over its four (r5, r6) modes for trees and hedges (section FAD): the trees' bands D - 4 .. D (r5 = 1), 3/4 F .. F
+    /// (r5 = 0), the fade-in D - 8 .. D - 4 (r6 set), the hedges' L - 8 .. L and L - 16 .. L - 8; the scale (capped at 2) multiplies
+    /// the trees' distances only. The shader gets (x, y, z, w) and fades by w - z (clamp(depth, x, y) - x): z = 1 / width, w = 1
+    /// out, z = -1 / width, w = 0 in (city.wgsl `vs_inst` writes the same bands as clamps: read, not run).
+    #[test]
+    fn fade_bands_match_the_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/map_reach_ref.txt").lines().filter(|l| l.starts_with("FAD ")) {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let i: Vec<&str> = i.split(' ').collect();
+            let maxrots: i32 = i[1].parse().unwrap();
+            let (n132, n136, scale) = (bits(i[2]), bits(i[3]), bits(i[4]));
+            let (r5, r6): (u32, u32) = (i[5].parse().unwrap(), i[6].parse().unwrap());
+            let (d, w) = if maxrots <= 1 {
+                // trees: the scaled model (r5) or far distance, the band 4 wide for the model and a quarter of the far end
+                let d = if r5 != 0 { n132 } else { n136 } * scale.min(2.0);
+                (d, if r5 != 0 { 4.0 } else { d * 0.25 })
+            } else {
+                // hedges: unscaled, L (r5 or r6) with an 8 band, else the far end with a quarter band
+                let d = if (r5 | r6) != 0 { n132 } else { n136 };
+                (d, if (r5 | r6) != 0 { 8.0 } else { d * 0.25 })
+            };
+            let exp = if r6 == 0 { [d - w, d, 1.0 / w, 1.0] } else { [d - w * 2.0, d - w, -1.0 / w, 0.0] };
+            let got: Vec<f32> = o.split(' ').map(bits).collect();
+            // (a zero distance gives -0 in the original's fused negate and +0 here: equal as numbers, compared with +0 added)
+            assert_eq!(got[..4].iter().map(|v| (v + 0.0).to_bits()).collect::<Vec<_>>(), exp.iter().map(|v| (v + 0.0).to_bits()).collect::<Vec<_>>(), "{l}");
+            assert_eq!((got[4] + 0.0).to_bits(), (exp[0] + 0.0).to_bits(), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
+
+    /// F-65267 (the deferred paused flag's setter) and F-31789 (its getter) run offline (section PAU): the getter answers the
+    /// setter's byte while the flag is set and the thread block's byte 72 is 0, else the renderer's own byte; the port keeps
+    /// the one flag (`set_paused`) and `Lod::now` turns it into the 0.9.
+    #[test]
+    fn paused_flag_matches_the_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/map_reach_ref.txt").lines().filter(|l| l.starts_with("PAU ")) {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let i: Vec<u32> = i.split(' ').skip(1).map(|v| v.parse().unwrap()).collect();
+            let (r4, set, f373, tls) = (i[0], i[1], i[2], i[3]);
+            let got: u32 = o.parse().unwrap();
+            let want = if set != 0 && tls == 0 { r4 & 0xFF } else { f373 };
+            assert_eq!(got, want, "{l}");
+            if set != 0 && tls == 0 {
+                set_paused(r4 & 0xFF != 0);
+                assert_eq!(Lod::now().plant_angle, if got != 0 { 0.9 } else { 1.0 }, "{l}");
+            }
+            n += 1;
+        }
+        set_paused(false);
+        assert_eq!(n, 40);
+    }
+
     #[test]
     fn reach_by_the_options() {
         let m = |kind| PropModel { batches: Vec::new(), radius: 1.0, sphere: 1.0, kind };
