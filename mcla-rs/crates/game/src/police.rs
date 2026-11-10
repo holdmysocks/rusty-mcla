@@ -227,6 +227,9 @@ struct CopTac {
     speed: f32,
     plan_fwd: Vec3,
     plan_speed: f32,
+    /// brain +640: the target's position, taken by the brain update (F-74140) while it is on the nav mesh or has a
+    /// teleport target there (F-72689 / F-45363); the quick re-aim's goal
+    last_seen: Vec3,
     head_on: bool,
     /// Block's steer, taken at its enter (F-56982, +700): full lock towards the side the target was on
     block_steer: f32,
@@ -1191,6 +1194,209 @@ fn unit2(v: glam::Vec2, or: glam::Vec2) -> glam::Vec2 {
     glam::Vec2::new(v.x * r, v.y * r)
 }
 
+/// The inputs of the cop brain's goal plan (F-67303's replan with the per-state destinations: Pursuit F-15067 / F-49680,
+/// PullOver F-51787, AlongSide F-13443, the junction prediction and the quick re-aim).
+#[derive(Clone, Copy, Debug)]
+struct PlanIn {
+    bcmd: u8,
+    ed78: bool,
+    head_on: bool,
+    quick: bool,
+    turned: bool,
+    t_moving: bool,
+    same_dir: bool,
+    ahead: bool,
+    /// the law record's frame offence bit 0x2000 (wrong way, F-88545's gated bit)
+    wrong_way: bool,
+    /// the target's lane tangent (its +624) when it has a lane (+640)
+    lane_tan: Option<Vec3>,
+    side: u8,
+    ppos: Vec3,
+    pvel: Vec3,
+    pfwd: Vec3,
+    pright: Vec3,
+    cpos: Vec3,
+    /// brain +640: the target's position last seen (the quick re-aim's goal)
+    last_seen: Vec3,
+    speed: f32,
+    d: f32,
+    safe: f32,
+    along: f32,
+    /// fMinSetGoalTime (tune +208) as the brains read it: not halved head-on (only the countdown is), the head-on
+    /// chains double it instead
+    per: f32,
+    moving_speed: f32,
+    pull_dist: f32,
+}
+
+/// The brain's nav test as F-72689 / F-45363 make it: over the navigation mesh, or a polygon within 10 m - then the point
+/// becomes that polygon's stored centre unless it is inside it (true with no mesh loaded).
+fn nav_snap(q: &mut Vec3) -> bool {
+    let Some(m) = crate::offroad::mesh() else { return true };
+    if m.on_mesh(*q) {
+        return true;
+    }
+    match m.teleport_target(*q) {
+        Some(c) => {
+            *q = c;
+            true
+        }
+        None => false,
+    }
+}
+
+/// The cop brain's goal plan (see `PlanIn`): the two goals and the speed to reach the last with.
+fn cop_plan(nav: Option<&NavSys>, i: &PlanIn) -> ([Vec3; 2], f32) {
+    let PlanIn { bcmd, ed78, head_on, quick, turned, t_moving, same_dir, ahead, wrong_way, lane_tan, side, ppos, pvel, pfwd, pright, cpos, last_seen, speed, d, safe, along, per, moving_speed, pull_dist } = *i;
+    let on_road = |q: Vec3| crate::offroad::mesh().map_or(true, |m| m.on_road(q));
+    let ho = if head_on { 2.0 } else { 1.0 };
+    
+    // (F-72689 over the mesh, or F-45363 a polygon within 10 m - which writes that polygon's stored centre into the point
+    // when it is not inside it: `nav_snap`)
+    let nav_ok = |q: &mut Vec3| nav_snap(q);
+    // F-19210: the lane within 5 m of q (F-59579: its derivative there, not unit) gives the direction - its velocity
+    // itself when there is none, it is a junction's (F-41621) or zero; turned to the velocity's side (the fused dot), and
+    // when it is under 45 deg (ang3, F-88594) off the velocity, made unit as the vector unit does (vmsum3fp, 1 / sqrt
+    // with infinity to 0, one Newton step) and scaled to the target's speed; else the velocity
+    let dir_at = |q: Vec3| -> Vec3 {
+        use crate::physics::exact::{dot3, fma};
+        let lane = nav.and_then(|n| crate::vehicles::traffic::snap_to_lane(n, q, 5.0).0.filter(|h| n.lane_junction.get(h.lane).map_or(true, |j| j.is_none())));
+        let Some(mut l) = lane.map(|h| h.dir).filter(|l| *l != Vec3::ZERO) else { return pvel };
+        if fma(l.x, pvel.x, fma(l.z, pvel.z, l.y * pvel.y)) < 0.0 {
+            l = Vec3::ZERO - l;
+        }
+        if crate::aiv::ang3(l, pvel) >= std::f32::consts::FRAC_PI_4 {
+            return pvel;
+        }
+        let d = dot3(l, l);
+        let e = 1.0 / d.sqrt();
+        let e = if e == f32::INFINITY { 0.0 } else { e };
+        l * ((1.0 - d * (e * e)) * (0.5 * e) + e) * speed
+    };
+    // the two-goal chain from b, k seconds of D each; a goal off the mesh is moved back and forth
+    // along D by a quarter of k (4 tries each way, from the goal; D read again at the last point tried)
+    let chain = |b: Vec3, k: f32| -> [Vec3; 2] {
+        let mut out = [b; 2];
+        let mut q = b;
+        // (the goal is the point before the test; the next goal chains from the point the test left - a polygon's centre)
+        for g in out.iter_mut() {
+            let p0 = q + dir_at(q) * k;
+            *g = p0;
+            q = p0;
+            if !nav_ok(&mut q) {
+                for j in 1..=4 {
+                    let dd = dir_at(q);
+                    let off = j as f32 * 0.25;
+                    q = p0 + dd * (k - off);
+                    if nav_ok(&mut q) {
+                        *g = q;
+                        break;
+                    }
+                    q = p0 + dd * (off + k);
+                    if nav_ok(&mut q) {
+                        *g = q;
+                        break;
+                    }
+                }
+            }
+        }
+        out
+    };
+    if quick && turned {
+        // the junction prediction: the road out of the junction the target is in that lies most along
+        // its heading (x / z from the junction's centre), at the middle of that road's lane
+        let pick = nav.and_then(|n| {
+            let hit = crate::vehicles::traffic::snap_to_lane(n, ppos, 5.0).0?;
+            let j = (*n.lane_junction.get(hit.lane)?)?;
+            let jc = n.junction_c.get(j)?;
+            let mut best: Option<(f32, usize)> = None;
+            for r in n.junction_roads(j) {
+                let z = &n.zones[r];
+                let d2 = glam::Vec2::new(z.rect_c[0] - jc[0], z.rect_c[1] - jc[1]).normalize_or_zero();
+                if d2 == glam::Vec2::ZERO {
+                    continue;
+                }
+                let sc = d2.dot(glam::Vec2::new(pfwd.x, pfwd.z));
+                if sc > 0.0 && best.map_or(true, |b| sc > b.0) {
+                    best = Some((sc, r));
+                }
+            }
+            let lane = n.zones[best?.1].lane?;
+            Some(n.curves.get(lane)?.eval(0.5).0)
+        });
+        // (F-90092 over a road, F-53622 a road polygon within 10 m, F-72689, F-45363 - the two within-10 m ones move the
+        // point onto their polygon's centre)
+        let q = pick.and_then(|mut q| {
+            let m = crate::offroad::mesh();
+            if on_road(q) {
+                return Some(q);
+            }
+            if let Some(c) = m.and_then(|m| m.road_teleport_target(q)) {
+                return Some(c);
+            }
+            nav_ok(&mut q).then_some(q)
+        }).unwrap_or(last_seen);
+        ([q, q], speed)
+    } else if quick {
+        ([last_seen, last_seen], speed)
+    } else {
+        // the target's own speed when it is moving, else 0 (F-85634)
+        let default_v = default_final_speed(Some(speed), moving_speed);
+        match bcmd {
+            // Pursuit brain (F-15067): from the target, P and 2P (head-on 2P, 4P) along D; a stopped target:
+            // from fSafeDist off it towards the cop. Final speed (F-49680): 0 for a stopped target, full
+            // pace (-1) beyond 2 x fSafeDist, 1.2 x its speed when it is near, going the same way and
+            // ahead of the cop, else full pace
+            // (F-42951 false - a police cop in a race: from the target less P of its velocity, 1 s steps,
+            // the default final speed)
+            4 if !ed78 => {
+                let b = if t_moving { ppos - pvel * per } else { ppos + (cpos - ppos).normalize_or(Vec3::X) * safe };
+                (chain(b, 1.0), default_v)
+            }
+            4 => {
+                let b = if t_moving { ppos } else { ppos + (cpos - ppos).normalize_or(Vec3::X) * safe };
+                let v = if !t_moving { 0.0 } else if d >= 2.0 * safe { -1.0 } else if same_dir && ahead { 1.2 * speed } else { -1.0 };
+                (chain(b, per * ho), v)
+            }
+            // PullOver brain (F-51787): one point, both goals - the target; 15 m behind it stopped
+            // (fPullOverDist); driving the wrong way, P of its velocity on and 8 m to the side of its lane;
+            // off the mesh, back by P of its velocity up to 5 times
+            // (the law record's wrong-way bit 0x2000 and the target's lane +640 / its tangent +624; vector
+            // multiply-adds as the original's vmaddfp: product rounded, then the add)
+            3 => {
+                let q = match (wrong_way, lane_tan) {
+                    (true, Some(tn)) => (ppos + pvel * per) + crate::aiv::rot_y(tn, std::f32::consts::FRAC_PI_2) * 8.0,
+                    (true, None) => ppos,
+                    _ if !t_moving => ppos + (-pfwd) * pull_dist,
+                    _ => ppos,
+                };
+                let mut g = q;
+                if !nav_ok(&mut g) {
+                    let step = pvel * per;
+                    let mut b = q;
+                    for _ in 0..5 {
+                        b -= step;
+                        if nav_ok(&mut b) {
+                            g = b;
+                            break;
+                        }
+                    }
+                }
+                ([g, g], default_v)
+            }
+            // AlongSide brain (F-13443): from fAlongSideDist beside the target, 1.15 P (head-on 2.3 P) along D
+            _ if !ed78 => {
+                let b = ppos + pright * if side != 0 { along } else { -along } - pvel * per;
+                (chain(b, 1.0), default_v)
+            }
+            _ => {
+                let b = ppos + pright * if side != 0 { along } else { -along };
+                (chain(b, ho * per * 1.15), default_v)
+            }
+        }
+    }
+}
+
 /// The search's points (F-52110): from `start` along the target's last known velocity `v` (at least 22.35 m/s)
 /// x fMinSetGoalTime `per` until a point lies on a road or junction (within 3 m), then along the connection list
 /// to the neighbour best in line with that direction, each next point the middle of the node's lane; 10 at most.
@@ -1680,7 +1886,8 @@ pub struct Police {
     burnout_active: bool,
     /// block traffic's started bit (F-88545)
     block_active: bool,
-    /// the wrong-way condition this tick (F-29334)
+    /// the law record's wrong-way bit (0x2000 of its frame offence bits, F-88545: the condition F-29334 held for
+    /// fWrongWayThresholdTime, every tick once started); kept through the grace, as the record is
     against_traffic: bool,
     /// the walkers' feet (`Peds::capsule_feet`), set by the caller each frame: their capsules are in the seen / block probe
     pub peds: Vec<Vec3>,
@@ -3354,6 +3561,8 @@ impl Police {
         // (the tactic's target, +32: the player, or the AI racer the cop zone chose. The law record and its offences are
         // the player's; the tactic - sight, search, arrest tests, the cops' goals - looks at the target)
         let ai_target = self.target.is_some();
+        // (the player's lane and its kept phase: the PullOver brain's +640 / +624 - an AI racer target's lane is not kept)
+        let lane_of_player = if ai_target { None } else { vehicles.driver_lanes.get(&p.uid).and_then(|d| Some((d.best?.0, d.best_t))) };
         let tc = self.target_car(vehicles).unwrap_or(p);
         let (tpos, tvel, tfwd, tright, tdamage) = (tc.state.pos, tc.state.vel, tc.state.forward(), tc.state.right(), tc.state.damage);
         let t_burning = burn_charged(tc.state.veh.as_ref().map(|v| v.burn));
@@ -3527,7 +3736,6 @@ impl Police {
                 _ => false,
             }
         };
-        self.against_traffic = wrong_cond;
         // (the law record's last road +60, F-28783: the road of the target's lane, kept while it has none; FW when its
         // name starts "FW" or "XT")
         if let (Some(nav), Some(l)) = (world.nav.as_ref(), vehicles.driver_lanes.get(&p.uid).and_then(|d| d.best).map(|b| b.0)) {
@@ -3537,6 +3745,9 @@ impl Police {
             }
         }
         let wrong_bit = scoring && offence_gate(wrong_cond, self.wrong_active, &mut self.sec[1], t("fWrongWayThresholdTime", 1.2), dt);
+        if scoring {
+            self.against_traffic = wrong_bit;
+        }
         if watching && wrong_bit {
             breaking = true;
             self.offences |= LAW_WRONG_WAY;
@@ -4548,124 +4759,20 @@ impl Police {
                 let turned = tac.plan_fwd != Vec3::ZERO && tac.plan_fwd.angle_between(pfwd) > 0.5236;
                 let changed = (speed - tac.plan_speed).abs() > 6.705;
                 let ended_head_on = was_head_on && !tac.head_on;
-                let quick = tac.replan < 0.3 * per && (turned || changed);
-                if plans && (tac.replan <= 0.0 || done || ended_head_on || quick || empty) {
-                    let ho = if tac.head_on { 2.0 } else { 1.0 };
-                    let nav = world.nav.as_ref();
-                    // (F-72689 over the mesh, or F-45363 a polygon within 10 m)
-                    let nav_ok = |q: Vec3| crate::offroad::mesh().map_or(true, |m| m.on_mesh(q) || m.teleport_target(q).is_some());
-                    // F-19210: the lane within 5 m of q gives the direction, scaled to the target's speed - its velocity
-                    // itself when there is none, it is a junction's, or it is 45 deg or more off the velocity
-                    let dir_at = |q: Vec3| -> Vec3 {
-                        let lane = nav.and_then(|n| crate::vehicles::traffic::snap_to_lane(n, q, 5.0).0.filter(|h| n.lane_junction.get(h.lane).map_or(true, |j| j.is_none())));
-                        match lane.map(|h| h.dir.normalize_or_zero()).filter(|l| *l != Vec3::ZERO) {
-                            Some(l) => {
-                                let l = if l.dot(pvel) < 0.0 { -l } else { l };
-                                if l.angle_between(pvel) < 0.785_398 { l * speed } else { pvel }
-                            }
-                            None => pvel,
-                        }
-                    };
-                    // the two-goal chain from b, k seconds of D each; a goal off the mesh is moved back and forth
-                    // along D by a quarter of k (4 tries each way, from the goal; D read again at the last point tried)
-                    let chain = |b: Vec3, k: f32| -> [Vec3; 2] {
-                        let mut out = [b; 2];
-                        let mut q = b;
-                        for g in out.iter_mut() {
-                            let p0 = q + dir_at(q) * k;
-                            *g = p0;
-                            q = p0;
-                            if !nav_ok(p0) {
-                                for j in 1..=4 {
-                                    let dd = dir_at(q);
-                                    q = p0 + dd * (k - 0.25 * j as f32);
-                                    if nav_ok(q) {
-                                        *g = q;
-                                        break;
-                                    }
-                                    q = p0 + dd * (k + 0.25 * j as f32);
-                                    if nav_ok(q) {
-                                        *g = q;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        out
-                    };
-                    let (g, v): ([Vec3; 2], f32) = if quick && turned {
-                        // the junction prediction: the road out of the junction the target is in that lies most along
-                        // its heading (x / z from the junction's centre), at the middle of that road's lane
-                        let pick = nav.and_then(|n| {
-                            let hit = crate::vehicles::traffic::snap_to_lane(n, ppos, 5.0).0?;
-                            let j = (*n.lane_junction.get(hit.lane)?)?;
-                            let jc = n.junction_c.get(j)?;
-                            let mut best: Option<(f32, usize)> = None;
-                            for r in n.junction_roads(j) {
-                                let z = &n.zones[r];
-                                let d2 = glam::Vec2::new(z.rect_c[0] - jc[0], z.rect_c[1] - jc[1]).normalize_or_zero();
-                                if d2 == glam::Vec2::ZERO {
-                                    continue;
-                                }
-                                let sc = d2.dot(glam::Vec2::new(pfwd.x, pfwd.z));
-                                if sc > 0.0 && best.map_or(true, |b| sc > b.0) {
-                                    best = Some((sc, r));
-                                }
-                            }
-                            let lane = n.zones[best?.1].lane?;
-                            Some(n.curves.get(lane)?.eval(0.5).0)
-                        });
-                        let q = pick.filter(|&q| on_road(q) || nav_ok(q)).unwrap_or(ppos);
-                        ([q, q], speed)
-                    } else if quick {
-                        ([ppos, ppos], speed)
-                    } else {
-                        // the target's own speed when it is moving, else 0 (F-85634)
-                        let default_v = default_final_speed(Some(speed), t("fMovingSpeed", 1.0));
-                        match bcmd {
-                            // Pursuit brain (F-15067): from the target, P and 2P (head-on 2P, 4P) along D; a stopped target:
-                            // from fSafeDist off it towards the cop. Final speed (F-49680): 0 for a stopped target, full
-                            // pace (-1) beyond 2 x fSafeDist, 1.2 x its speed when it is near, going the same way and
-                            // ahead of the cop, else full pace
-                            // (F-42951 false - a police cop in a race: from the target less P of its velocity, 1 s steps,
-                            // the default final speed)
-                            4 if !ed78 => {
-                                let b = if t_moving { ppos - pvel * per } else { ppos + (cpos - ppos).normalize_or(Vec3::X) * safe };
-                                (chain(b, 1.0), default_v)
-                            }
-                            4 => {
-                                let b = if t_moving { ppos } else { ppos + (cpos - ppos).normalize_or(Vec3::X) * safe };
-                                let v = if !t_moving { 0.0 } else if d >= 2.0 * safe { -1.0 } else if same_dir && ahead { 1.2 * speed } else { -1.0 };
-                                (chain(b, per * ho), v)
-                            }
-                            // PullOver brain (F-51787): one point, both goals - the target; 15 m behind it stopped
-                            // (fPullOverDist); driving the wrong way, P of its velocity on and 8 m to the side of its lane;
-                            // off the mesh, back by P of its velocity up to 5 times
-                            3 => {
-                                let lane_dir = nav.and_then(|n| crate::vehicles::traffic::snap_to_lane(n, ppos, 5.0).0).map(|h| h.dir.normalize_or_zero());
-                                let mut q = match lane_dir {
-                                    Some(tn) if self.against_traffic => ppos + pvel * per + Vec3::new(tn.z, 0.0, -tn.x) * 8.0,
-                                    _ if !t_moving => ppos - pfwd * t("fPullOverDist", 15.0),
-                                    _ => ppos,
-                                };
-                                if !nav_ok(q) {
-                                    if let Some(k) = (1..=5).find(|&i| nav_ok(q - pvel * per * i as f32)) {
-                                        q -= pvel * per * k as f32;
-                                    }
-                                }
-                                ([q, q], default_v)
-                            }
-                            // AlongSide brain (F-13443): from fAlongSideDist beside the target, 1.15 P (head-on 2.3 P) along D
-                            _ if !ed78 => {
-                                let b = ppos + pright * if tac.brain.side != 0 { along } else { -along } - pvel * per;
-                                (chain(b, 1.0), default_v)
-                            }
-                            _ => {
-                                let b = ppos + pright * if tac.brain.side != 0 { along } else { -along };
-                                (chain(b, 1.15 * per * ho), default_v)
-                            }
-                        }
-                    };
+                let mut seen = ppos;
+                if nav_snap(&mut seen) {
+                    tac.last_seen = seen;
+                }
+                // (F-67303's order: the countdown out, the route's last goal reached and a head-on just over plan
+                // anew; else, with a law record, under 0.3 x fMinSetGoalTime (not halved head-on) left, the target
+                // turned more than 30 deg since the last plan or its speed changed by 6.705 m/s re-aims)
+                let normal = tac.replan <= 0.0 || done || ended_head_on;
+                let quick = !normal && tac.replan < 0.3 * period && (turned || changed);
+                if plans && (normal || quick || empty) {
+                    // (the target's lane tangent, its +624, at its kept phase)
+                    let lane_tan = world.nav.as_ref().zip(lane_of_player).and_then(|(n, (l, bt))| Some(n.curves.get(l)?.eval(bt).1));
+                    let pin = PlanIn { bcmd: bcmd as u8, ed78, head_on: tac.head_on, quick, turned, t_moving, same_dir, ahead, wrong_way: self.against_traffic, lane_tan, side: tac.brain.side as u8, ppos, pvel, pfwd, pright, cpos, last_seen: tac.last_seen, speed, d, safe, along, per: period, moving_speed: t("fMovingSpeed", 1.0), pull_dist: t("fPullOverDist", 15.0) };
+                    let (g, v) = cop_plan(world.nav.as_ref(), &pin);
                     tac.replan = per;
                     tac.plan_fwd = pfwd;
                     tac.plan_speed = speed;
@@ -6168,6 +6275,85 @@ mod tests {
             checked += 1;
         }
         assert!(checked == 1908 && heat == 0 && states == [913, 195, 800], "{checked} {heat} {states:?}");
+    }
+
+    /// The cop brains' goal plans against recordings of the running original (docs/reference/hookmen/goal_plan_recording.md):
+    /// every replan of F-67303 in a recorded Pursuit (Pursuit and AlongSide brains) and pull-over (PullOver brain), at its
+    /// entry and exit. Each runs `cop_plan` on the city's nav data with the recorded command, head-on and side bytes, the
+    /// last plan's heading (+656) and speed (+672), the countdown (+588), the cop's and the target's frames and velocities
+    /// and the target's chassis speed: the two goals' bits and the final speed (+208) must be the exit's. Skipped without
+    /// the data.
+    #[test]
+    fn cop_plan_matches_the_recording() {
+        let dir = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        let Ok(res) = crate::assets::load_resource_file(&std::path::Path::new(&dir).join("resources/city/sc/0x9960fcd8.r66")) else { return };
+        let Ok(nav) = NavSys::parse(&res) else { return };
+        if crate::offroad::mesh().is_none() {
+            return;
+        }
+        let rec = include_str!("testdata/cop_plan_rec.txt");
+        let hex = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let fl = |s: &str| f32::from_bits(hex(s));
+        let v3 = |v: &[&str]| Vec3::new(fl(v[0]), fl(v[1]), fl(v[2]));
+        let (per, safe, along) = (1.0f32, 30.0f32, 5.0f32);
+        let (mut n, mut bad) = (0, Vec::new());
+        for line in rec.lines() {
+            let v: Vec<&str> = line.split_whitespace().collect();
+            assert_eq!((v[0], v[36]), ("G", "="));
+            let int = |i: usize| v[i].parse::<u32>().unwrap();
+            let (cmd, ho, side) = (int(1) as u8, int(2) != 0, int(4) as u8);
+            let (t588, h656, s672) = (fl(v[5]), v3(&v[6..]), fl(v[9]));
+            let (cpos, crow0, crow2, cvel) = (v3(&v[11..]), v3(&v[14..]), v3(&v[17..]), v3(&v[20..]));
+            let (tpos, trow0, trow2, tvel, tspeed) = (v3(&v[23..]), v3(&v[26..]), v3(&v[29..]), v3(&v[32..]), fl(v[35]));
+            // (the law record's frame bits and the target's +624 / +640: recorded from v6 on; the earlier lines are
+            // Pursuit / AlongSide plans, which do not read them)
+            let known = v[49] != "-";
+            let wrong_way = known && hex(v[49]) & 0x2000 != 0;
+            let lane_tan = (known && hex(v[53]) != 0).then(|| v3(&v[50..]));
+            let pfwd = -trow2;
+            let turned = h656 != Vec3::ZERO && (-h656).angle_between(pfwd) > 0.5236;
+            let changed = (tspeed - s672).abs() > 6.705;
+            let was_ho = int(3) != 0;
+            // (the recording has no route state: a replan that is neither of these was the route's last goal reached)
+            let normal = t588 == 0.0 || (was_ho && !ho);
+            let quick = !normal && t588 < 0.3 * per && (turned || changed);
+            let geo = swipe_geo(cpos, crow0, crow2, cvel, tpos, tvel);
+            let pin = PlanIn {
+                bcmd: cmd,
+                ed78: true,
+                head_on: ho,
+                quick,
+                turned,
+                t_moving: moving(tspeed, 1.0),
+                same_dir: geo.same_dir,
+                ahead: geo.ahead,
+                wrong_way,
+                lane_tan,
+                side,
+                ppos: tpos,
+                pvel: tvel,
+                pfwd,
+                pright: trow0,
+                cpos,
+                last_seen: v3(&v[46..]),
+                speed: tspeed,
+                d: (tpos - cpos).length(),
+                safe,
+                along,
+                per,
+                moving_speed: 1.0,
+                pull_dist: 15.0,
+            };
+            let (g, fs) = cop_plan(Some(&nav), &pin);
+            let got = format!("{:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}", fs.to_bits(), g[0].x.to_bits(), g[0].y.to_bits(), g[0].z.to_bits(),
+                              g[1].x.to_bits(), g[1].y.to_bits(), g[1].z.to_bits());
+            let want = format!("{} {}", v[38], v[40..46].join(" "));
+            if got != want {
+                bad.push(format!("plan {n} (cmd {cmd} quick {quick} turned {turned}): want {want}\n                                 got  {got}"));
+            }
+            n += 1;
+        }
+        assert!(bad.is_empty(), "{} of {n} differ:\n{}", bad.len(), bad.join("\n"));
     }
 
     /// The brains' bearing cache against recordings of the running original (docs/reference/hookmen/squad_fsm.md, the
