@@ -1254,6 +1254,19 @@ impl App {
             a.t += dt;
         }
         let mut windows: Vec<(usize, bool, bool)> = Vec::new();
+        // the jaw flaps this step, in the event player's order (F-42389's Update: per event by start, its Start before
+        // its Stop): (start, event index, on)
+        let mut jaws: Vec<(f32, usize, bool)> = Vec::new();
+        for k in (0..a.ends.len()).rev() {
+            let (i, end) = a.ends[k];
+            if end <= a.t {
+                a.ends.remove(k);
+                let e = a.events[i];
+                if prerace::jaw_stop(e.event, e.f3) {
+                    jaws.push((e.t, i, false));
+                }
+            }
+        }
         for i in 0..a.events.len() {
             let e = a.events[i];
             if a.fired[i] || e.t > a.t {
@@ -1261,6 +1274,19 @@ impl App {
             }
             a.fired[i] = true;
             let car = usize::try_from(e.slot).ok().and_then(|s| a.racers.get(s).copied());
+            // (the instance's end: start + dur when dur > 0, else FLT_MAX - stopped by FinishScene's Stop, F-81612)
+            if e.dur > 0.0 {
+                if e.t + e.dur <= a.t {
+                    if prerace::jaw_stop(e.event, e.f3) {
+                        jaws.push((e.t, i, false));
+                    }
+                } else {
+                    a.ends.push((i, e.t + e.dur));
+                }
+            }
+            if prerace::jaw_start(e.event, e.f3) {
+                jaws.push((e.t, i, true));
+            }
             match e.event {
                 "playspeech" => {
                     if a.taunt {
@@ -1289,11 +1315,13 @@ impl App {
                 }
             }
         }
-        // the speakers' jaws: the player's line - slot 0, the hookman's - slot 1
-        let line = self.speech.line();
-        for (slot, player) in [(0usize, true), (1usize, false)] {
-            if let Some(&ci) = a.racers.get(slot) {
-                self.drivers.jaw(ci, line == Some(player) && a.taunt);
+        // the jaw flaps (racer +688): set by the gesture events whose f3 is 1.0 and cleared by their stop
+        // (F-91263 / F-26895) - not by the speech, which never touches it
+        jaws.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)).then(y.2.cmp(&x.2)));
+        for (_, i, on) in jaws {
+            let e = a.events[i];
+            if let Some(&ci) = usize::try_from(e.slot).ok().and_then(|s| a.racers.get(s)) {
+                self.drivers.jaw(ci, on);
             }
         }
         let over = a.t >= a.duration;

@@ -1950,7 +1950,8 @@ impl Drivers {
         }
     }
 
-    /// The jaw flap while the driver's speech line plays (racer+688; `DRV_GEST_JAWFLAP` in / out over 0.25 s).
+    /// The jaw flap (racer+688: on from the start of a gesture event whose f3 is 1.0 to its stop, `prerace::jaw_start`;
+    /// `DRV_GEST_JAWFLAP` in / out over 0.25 s).
     pub fn jaw(&mut self, id: usize, on: bool) {
         self.acting.entry(id).or_default().jaw = on;
     }
