@@ -127,6 +127,20 @@ impl Views {
     }
 }
 
+/// The turn of the garage movie's coordinate frame 5, where the menu panel hangs: F-32331 copies frame 6 into it,
+/// built from the car's matrix with row 1 = (0, 1, 0), row 2 = the car's z row made square to it (F-49999's
+/// orthonormalise: y dropped, normalised) and row 0 = their cross product - the car's heading only, no pitch or
+/// roll (the translation is the car matrix's own, `origin` at the caller).
+pub fn yaw_frame(rot: Quat) -> Quat {
+    let z = rot * Vec3::Z;
+    let flat = Vec3::new(z.x, 0.0, z.z);
+    if flat.length_squared() < 1e-12 {
+        return Quat::IDENTITY;
+    }
+    let flat = flat.normalize();
+    Quat::from_rotation_y(flat.x.atan2(flat.z))
+}
+
 /// The views' frame (`coord` 5 of the garage movie) as a matrix into the car's own
 /// frame (x right, y up, z rear).
 pub fn file_frame() -> glam::Mat4 {
@@ -234,5 +248,24 @@ impl View {
         let cam = target + dir * dist;
         let look = target;
         (cam, look, self.fov.to_radians())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Frame 5 keeps the car's heading and drops its pitch and roll (F-32331's frame 6: up (0, 1, 0), z the car's
+    /// z made flat). A car standing 1.5 degrees nose down and 0.8 degrees rolled, heading 35 degrees.
+    #[test]
+    fn panel_frame_is_the_heading_only() {
+        let rot = Quat::from_rotation_y(35f32.to_radians()) * Quat::from_rotation_x(1.5f32.to_radians()) * Quat::from_rotation_z(0.8f32.to_radians());
+        let f = yaw_frame(rot);
+        assert!((f * Vec3::Y - Vec3::Y).length() < 1e-6);
+        let z = rot * Vec3::Z;
+        let flat = Vec3::new(z.x, 0.0, z.z).normalize();
+        assert!((f * Vec3::Z - flat).length() < 1e-6);
+        assert!((f * Vec3::X - Vec3::Y.cross(flat)).length() < 1e-6);
+        assert!((yaw_frame(Quat::from_rotation_y(-2.0)) * Vec3::Z - Quat::from_rotation_y(-2.0) * Vec3::Z).length() < 1e-6);
     }
 }

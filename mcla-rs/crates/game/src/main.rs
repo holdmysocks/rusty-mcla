@@ -9018,7 +9018,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 let centre = origin + render_state.rot * Vec3::new(0.0, view.height, 0.0);
                                 pos = centre + (pos - look);
                             }
-                            self.game.garage_panel = original.then(|| (view.menu_rot, view.menu_offset, view.menu_scale, glam::Mat4::from_rotation_translation(render_state.rot, origin) * garagecam::file_frame()));
+                            self.game.garage_panel = original.then(|| (view.menu_rot, view.menu_offset, view.menu_scale, glam::Mat4::from_rotation_translation(garagecam::yaw_frame(render_state.rot), origin) * garagecam::file_frame()));
                             // the menu covers the left of the screen (the original's small menus float
                             // beside the car): show the car in what is left, a little wider
                             let d = look - pos;
