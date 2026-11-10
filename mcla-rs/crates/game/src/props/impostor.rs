@@ -644,6 +644,41 @@ mod data_tests {
         )
     }
 
+    /// F-62185 over the shipped foliage types (`crate::props::palm`): the palms and their low-LOD twins, nothing else.
+    #[test]
+    fn palm_types_by_name() {
+        let Some(types) = shipped() else { return };
+        let palms: Vec<&str> = types.iter().filter(|t| crate::props::palm(&t.0)).map(|t| t.0.as_str()).collect();
+        assert_eq!(types.len(), 53);
+        assert_eq!(
+            palms,
+            [
+                "la_prop_gfx_date_palm_01x",
+                "la_prop_gfx_palm_tree_tall_01x",
+                "la_prop_gfx_palm_tree_trimmed_01x",
+                "la_prop_gfx_palm_tree_01x",
+                "la_prop_gfx_palm_canary_trimmed_01x",
+                "la_prop_gfx_palm_tree_01x_displayAsLowLOD",
+                "la_prop_gfx_palm_tree_trimmed_01x_displayAsLowLOD",
+                "la_prop_gfx_date_palm_01x_displayAsLowLOD",
+            ]
+        );
+        assert!(types.iter().all(|t| crate::props::palm(&t.0) == t.0.to_ascii_lowercase().contains("palm")));
+    }
+
+    /// F-62185 run as generated (tools/map_palm_reference.py) on the shipped type names and edge names: `palm` equals it.
+    #[test]
+    fn palm_matches_the_original() {
+        let text = include_str!("../testdata/map_palm_ref.txt");
+        let mut n = 0;
+        for line in text.lines() {
+            let (name, r) = line.rsplit_once(' ').unwrap();
+            assert_eq!(crate::props::palm(name), r == "1", "{name}");
+            n += 1;
+        }
+        assert_eq!(n, 59);
+    }
+
     /// Regenerates the list `tools/map_impostor_reference.py` takes as `--types`: MCLA_DUMP_TYPES=<file> cargo test dump_type_list -- --ignored
     #[test]
     #[ignore]

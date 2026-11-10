@@ -1455,7 +1455,9 @@ fn vs_inst(in: VsIn, inst: InstIn) -> VsOut {
     // Leaves: V = colour x 2 - 1, a = 0.4 sat(0.25 (y - 0.5)) occlusion^2, k = sat(a V.x), d = a (wind.x V + wind.y V x n) + k,
     // and sat(0.05 (y - 1)) wind.z on x. Trunks: only that last term.
     if (in.uv1.y > 100.5 && in.uv1.y < 102.5) {
-        let wx = 0.075 * sin(6.2831855 * fract(g.lod.w / 4.0));
+        // (palms, uv1.y 101.5 - props.rs `palm`, F-62185: F-39007 binds gWindVector x (5, 5, 1, 1), so their leaves move
+        // five times as far; the trunk's z and the leaves' w are the same)
+        let wx = 0.075 * sin(6.2831855 * fract(g.lod.w / 4.0)) * select(1.0, 5.0, in.uv1.y > 101.375 && in.uv1.y < 101.75);
         let wz = 0.075 * sin(6.2831855 * fract(g.lod.w / 5.0));
         let tilt = clamp(0.05 * (in.pos.y - 1.0), 0.0, 1.0) * wz;
         if (in.uv1.y > 101.125 && in.uv1.y < 101.375) {

@@ -210,6 +210,16 @@ pub fn set_plant_night(v: f32) {
     PLANT_NIGHT.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
 }
 
+/// F-62185: a foliage type is a palm when its name holds "pal" at bytes 12..14 or 17..19 (`la_prop_gfx_palm_..`,
+/// `la_prop_gfx_date_palm_..`: 8 of the 53 shipped types, the `_displayAsLowLOD` twins with their base). The plant draw
+/// F-63362 binds such a type's gWindVector times the vector 0x8288D100 = (5, 5, 1, 1) (set up by F-77830) in its two
+/// model passes; the others get gWindVector as it is.
+pub fn palm(name: &str) -> bool {
+    let b = name.as_bytes();
+    let at = |i: usize| b.get(i..i + 3) == Some(b"pal".as_slice());
+    at(12) || at(17)
+}
+
 /// The renderer's paused-detail flag (renderer +373, read by F-31789).
 static PAUSED_DETAIL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -992,7 +1002,7 @@ impl Props {
                 let fade_uv = if sname.to_ascii_lowercase().contains("trafficsignal") || prop.radius <= 0.0 {
                     None
                 } else {
-                    Some([prop.radius, 100.0 + if !lname.contains("_gfx_") { 0.0 } else if lname.ends_with("#low") { 2.25 } else if lname.contains("hedge") { 2.0 } else if sname.to_ascii_lowercase().contains("trunk") { 1.25 } else { 1.0 }])
+                    Some([prop.radius, 100.0 + if !lname.contains("_gfx_") { 0.0 } else if lname.ends_with("#low") { 2.25 } else if lname.contains("hedge") { 2.0 } else if sname.to_ascii_lowercase().contains("trunk") { 1.25 } else if palm(&prop.name) { 1.5 } else { 1.0 }])
                 };
                 if std::env::var("MCLA_LEAF_DUMP").is_ok() && lname.contains("_gfx_") && !mesh.colors.is_empty() {
                     let m = mesh.colors.len() as f32;
