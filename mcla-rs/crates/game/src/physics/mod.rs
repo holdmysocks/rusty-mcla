@@ -25,6 +25,8 @@ pub mod loose_words;
 pub mod vehsim_words;
 #[cfg(test)]
 mod vehsim_small_tests;
+#[cfg(test)]
+mod hyd_refresh_tests;
 pub mod pad;
 pub mod replay;
 pub mod softpush;

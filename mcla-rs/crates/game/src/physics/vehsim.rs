@@ -534,6 +534,12 @@ pub struct Hydraulics {
     /// (the port's: each wheel's +432 as its last writer left it - the hydraulics' F-42075 or the air ride's F-71524,
     /// both through F-86255; None: the tune's SuspensionOffset)
     pub(crate) ofs: Option<[f32; 4]>,
+    /// the vehicle record's dirty bit 0x80 the switch-on F-71695 and the switch-off F-28175 raise (F-53649), which the car's
+    /// update F-53665 answers with the refresh F-92950 on the same tick
+    pub(crate) dirty: bool,
+    /// that refresh found the hydraulics working (F-94375) and ran F-10823 / F-60656: every wheel set up and weighed
+    /// afresh, its +428 the weight plus the hydraulics' load (taken by `physics_frame`)
+    pub(crate) refresh: bool,
 }
 
 impl Hydraulics {
@@ -562,12 +568,14 @@ impl Hydraulics {
             self.order = [1; 4];
             self.moving = [true; 4];
             self.ev_switch = 1;
+            self.dirty = true;
         } else if !flag && self.on {
             self.on = false;
             // (F-28175: every ram to the middle, moving)
             self.order = [0; 4];
             self.moving = [true; 4];
             self.ev_switch = -1;
+            self.dirty = true;
         }
         // (the wheel events: F-39230 for each wheel, whether the hydraulics are on or not)
         for i in 0..4 {
@@ -3166,11 +3174,19 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     } else {
         vs.hyd.buttons = 0;
     }
+    // (the car's update F-53665, ahead of its wheel writer: the refresh F-92950 for the record's dirty bit clears it and,
+    // with the hydraulics fitted and (on, or a dance pattern +20 - which nothing in the game sets, `Hydraulics` has
+    // none), runs F-10823 and so F-60656: each wheel's slot 1 F-73903 sets it up again - +432 back to the tune's
+    // SuspensionOffset - and weighs it, then its +428 is that weight plus the hydraulics' load (`physics_frame`).
+    // Recorded 2026-11-05 (work/physics2/hyd/rec/h2.txt): the Impala's +428 6039 / 4698 -> 12299 / 10958 on the switch-on
+    // tick, after the rams' first step and before +432 follows them; back to 6039 / 4698 on the switch-off tick)
+    let hyd_refresh = std::mem::take(&mut vs.hyd.dirty) && input.hyd & super::car::HYD_FITTED != 0 && vs.hyd.on && !vt.bike;
+    vs.hyd.refresh = hyd_refresh;
     // (the tick's wheel writer F-53665: while the hydraulics work, F-42075 gives each wheel its ram's height through
     // F-86255 - wheel +432 = the height, and the compression +496 moves with it by the change, as the air ride's writer;
     // recorded 2026-11-05: +432 0 -> 0.0508 and the compression 0.0015 -> 0.0524 on the same tick)
     if input.hyd & super::car::HYD_FITTED != 0 && vs.hyd.active() && !vt.bike {
-        let old = vs.hyd.wheel_offsets(so);
+        let old = if hyd_refresh { so } else { vs.hyd.wheel_offsets(so) };
         for i in 0..4 {
             vs.wheels[i].comp += vs.hyd.height[i] - old[i];
         }
@@ -3566,8 +3582,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
         let weight = (if t.s.bound_gravity > 0.1 { t.s.bound_gravity } else { 1.0 } * mass) * 9.8f32;
         let share_at = |i: usize, width: f32, z: f32| {
             let at = p.wheel_pos[i];
-            let w = weight / (at.z.abs() * 2.0) * (z + at.z).abs();
-            if at.x.abs() > width { (com_local.x + at.x).abs() / (at.x.abs() * 2.0) * w } else { w }
+            super::vehsim_words::wheel_share(weight, at.x, at.z, width, com_local.x, z)
         };
         // (wheel +428 as A-69686 finds it: weighed before the burnout moved the centre of mass this tick)
         if let Some(z) = cg_before_burn {
@@ -3656,7 +3671,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
     // suspension damping the body's integration solves implicitly: (arm, normal, strength)
     let mut implicit: Vec<(Vec3, Vec3, f32)> = Vec::new();
     // A car fitted with hydraulics rides on their suspension (shorter, softer damped, a low
-    // limit on its push); switched on, every wheel carries the same tuned load.
+    // limit on its push); switched on, every wheel carries its own weight plus the same tuned load (`w_static`).
     let hyd_fitted = input.hyd & super::car::HYD_FITTED != 0 && !vt.bike;
     let hyd_wheels = hyd_fitted.then(|| {
         let fit = |w: &mcla_formats::rage::simtune::WheelTune| {
@@ -3671,6 +3686,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
         };
         (fit(&t.wheel_front), fit(&t.wheel_back))
     });
+    let hyd_refresh = std::mem::take(&mut vs.hyd.refresh);
     let hyd = vs.hyd;
     // (each wheel's height +432 as the tick's writer F-53665 left it - the hydraulics' or the air ride's, by F-86255 -
     // `hyd.ofs`, or the wheel tune's SuspensionOffset)
@@ -3717,12 +3733,22 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             Some((f, b)) => if front { f } else { b },
             None => if front { &t.wheel_front } else { &t.wheel_back },
         };
+        // (wheel +428. The control step F-17997 weighs every wheel afresh (F-52728) only while the hydraulics do not work -
+        // fitted and (on, or a dance pattern, never set): working, the weight stays what the switch-on's refresh F-60656
+        // gave it, max(the weight + clamp(SuspensionStiffness - 1, 0, 10) x mass, 1), until the switch-off. The share the
+        // refresh's set-up F-73903 weighs is this tick's (F-11389 on the same centre of mass); a car whose state is new
+        // has no weight kept yet and takes this tick's, as the set-up left it.)
+        let share = if front { w_front } else { w_rear };
         let w_static = if hyd_fitted && hyd.on {
-            super::vehsim_words::hyd_static_load(t.hydraulics.suspension_stiffness, mass)
-        } else if front {
-            w_front
+            if hyd_refresh {
+                super::vehsim_words::hyd_refresh_weight(share, t.hydraulics.suspension_stiffness, mass)
+            } else if vs.w_then[i] > 0.0 {
+                vs.w_then[i]
+            } else {
+                share
+            }
         } else {
-            w_rear
+            share
         };
         // (the ram's length moves the wheel's place of rest)
         // (and so does the tuning's SuspensionOffset, wheel +432: a lowered car's wheels sit

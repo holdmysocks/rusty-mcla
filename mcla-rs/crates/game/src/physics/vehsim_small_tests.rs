@@ -77,27 +77,17 @@ fn pedal_torque_matches_the_original() {
 }
 
 /// F-31519: the aero's drag numbers. The original squares the top speed with the C library's pow (a logarithm and
-/// exponential in double precision), the port with the exact double product: they agree on every case but those where
-/// the square lies exactly half way between two floats (25 significant bits) and the library's last bits decide the
-/// rounding; there the original is one unit away (counted: 1 in about 1,700 random cases).
+/// exponential in double precision); the port runs the same pow (`caraudio::pow_guest`), so the cases where the square
+/// lies exactly half way between two floats agree too (more of those in hyd_refresh_tests).
 #[test]
 fn drag_init_matches_the_original() {
-    let (mut n, mut ties) = (0, 0);
+    let mut n = 0;
     for (i, o) in cases("drag") {
         let got = vw::drag_numbers(f(i[0]), f(i[3]), f(i[1]), f(i[2]));
-        let top = f(i[0]) * f(0x3ee4dd2f);
-        let sq = top as f64 * top as f64;
-        let near = sq as f32;
-        let half = |other: f32| (near as f64 - sq).abs() * 2.0 == (other as f64 - near as f64).abs();
-        let tie = near.is_finite() && near != 0.0 && (half(f32::from_bits(near.to_bits() + 1)) || half(f32::from_bits(near.to_bits() - 1)));
-        if tie {
-            ties += 1;
-            continue;
-        }
         all_same(&bits(&got), &o, &format!("{i:08x?}"));
         n += 1;
     }
-    assert!(n >= 2990 && ties <= 10, "{n} {ties}");
+    assert_eq!(n, 3000);
 }
 
 /// F-75615: lying on the ground.

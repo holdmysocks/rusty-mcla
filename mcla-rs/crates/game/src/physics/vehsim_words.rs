@@ -50,10 +50,13 @@ pub fn engine_init(e: &EngineScalars, torque: &[f32]) -> [f32; 6] {
     [max, best, idle, c84, c88, t]
 }
 
-/// F-31519, the aero's drag numbers per top speed: 1 / (HighGearMPH x 0.447)^2 (the square in double precision, rounded).
+/// F-31519, the aero's drag numbers per top speed: 1 / (HighGearMPH x 0.447)^2, the square by the C library's pow
+/// (F-21955, `caraudio::pow_guest`: its logarithm and exponential in double precision, then rounded to single). Where
+/// the exact square lies half way between two floats the library's last bits decide the rounding, so an exact product
+/// is not the same number there.
 pub fn drag_over(high_gear_mph: f32) -> f32 {
     let top = high_gear_mph * f32::from_bits(0x3ee4dd2f);
-    1.0 / ((top as f64 * top as f64) as f32)
+    1.0 / (crate::caraudio::pow_guest(top as f64, 2.0) as f32)
 }
 
 /// F-31519's three stored numbers: (+24 Down, +28 DragMin, +32 DragMax) each times `drag_over`.
@@ -80,6 +83,28 @@ pub fn hyd_static_load(stiffness: f32, mass: f32) -> f32 {
 pub fn wheel_weight_to_set(weight_428: f32, load: f32) -> f32 {
     let f = weight_428 + load;
     if f - 1.0 >= 0.0 { f } else { 1.0 }
+}
+
+/// F-11389, a wheel's share of the car's `weight` (wheel +428 as its set-up F-73903 and the weighing F-52728 give it to
+/// F-51861): the weight over twice the wheel's distance along the car (+392, `at_z`) times its distance from the centre
+/// of mass on the other side (`cg_z + at_z`); where the wheel stands wider (+384, `at_x`) than its tyre (+424, `width`)
+/// halved the same way across. (The original first takes the chassis +104 from +392 when a global byte is set; that
+/// byte is 0 in the image and nothing writes it.)
+pub fn wheel_share(weight: f32, at_x: f32, at_z: f32, width: f32, cg_x: f32, cg_z: f32) -> f32 {
+    let w = weight / (at_z.abs() * 2.0) * (cg_z + at_z).abs();
+    if at_x.abs() > width { (cg_x + at_x).abs() / (at_x.abs() * 2.0) * w } else { w }
+}
+
+/// What F-73903 (the wheel's slot 1) weighs a wheel with: ((the sim tune's +124 x the body's mass +192) x 9.8).
+pub fn wheel_init_weight(gravity: f32, mass: f32) -> f32 {
+    (gravity * mass) * 9.8f32
+}
+
+/// F-60656 for one wheel, as the car's refresh F-92950 runs it at the hydraulics' switch-on (F-71695 raises the record's
+/// dirty bit 0x80, F-53649): the wheel's slot 1 F-73903 weighs it afresh (`share`, F-11389), then F-17224 gives F-51861
+/// that weight plus the hydraulics' load, not under 1.
+pub fn hyd_refresh_weight(share: f32, stiffness: f32, mass: f32) -> f32 {
+    wheel_weight_to_set(share, hyd_static_load(stiffness, mass))
 }
 
 /// F-60656: for each wheel (`weights`: their +428 words) the value its setter is given, empty where the routine does
