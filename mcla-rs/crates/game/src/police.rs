@@ -1110,6 +1110,24 @@ fn tactic_end(active: u8, flag: u32, result: u32, racing: bool, brain: bool) -> 
     Some(CopEnd { brain_reset: brain, siren_stop: flag, lights_off, unlock: lights_off && !racing })
 }
 
+/// EvaluateCopZones' pick F-88125 (after it cleared the zone: +188 / +192 -1, +196 0): "no cops" (`None`) when the dev
+/// override F-47443 is set with a value <= 0 (`ovr`), the manager's police list is empty (F-53190) or the race has no zones
+/// (+184); else the zone is one index draw of the shared generator ((lo & 0x7FFFFFFF) % zones) and the lap 0, or with a race
+/// current (`laps`: its +3124, `None` without a race; the code's test of race + 8 is on the address, never null) of more than one lap a second draw % laps. The
+/// caller arms lap 0 (+196 = 1); the original then calls SetAllPoliceUnderground(1, 1) F-36452 (the port's race start has
+/// its units underground already).
+fn zone_pick(rng: &mut (u32, u32), ovr: Option<i32>, police: i32, zones: u16, laps: Option<i32>) -> Option<(i32, i32)> {
+    if ovr.map_or(false, |v| v <= 0) || police <= 0 || zones == 0 {
+        return None;
+    }
+    let idx = (rdo_draw(rng) % zones as u32) as i32;
+    let lap = match laps {
+        Some(l) if l > 1 => (rdo_draw(rng) % l as u32) as i32,
+        _ => 0,
+    };
+    Some((idx, lap))
+}
+
 /// The track timer's step in the common update F-63286: +136 runs down by dt while above 0 (no clamp); the step that takes it
 /// to <= 0 sets the brains' lost flag +773 when the tactic's vt+28 answers (`answers`: the Pursuit, Double Pursuit and Arrow
 /// Trap classes give their +29, the first chase property; the pull-over 0).
@@ -2851,13 +2869,14 @@ impl Police {
     /// (approx.: the port's own random numbers, not the game's LCG)
     pub fn pick_zone(&mut self, zones: usize, laps: usize) {
         self.zone_go = false;
-        self.zone = (zones > 0).then(|| {
-            let idx = (self.rand() * zones as f32) as usize % zones;
-            let lap = if laps > 1 { (self.rand() * laps as f32) as usize % laps } else { 0 };
+        // (the manager's police list, F-53190: the units CreatePolice made; the dev override F-47443 is never set)
+        let police = self.units.len() as i32;
+        let picked = zone_pick(&mut self.rdo_rng, None, police, zones.min(u16::MAX as usize) as u16, Some(laps as i32));
+        self.zone = picked.map(|(idx, lap)| {
             log::info!("police: cop zone {} enabled on lap {}", idx, lap);
-            CopZone { idx, lap, state: if lap == 0 { 1 } else { 0 }, timer: 0.0, target: None, player: false, stationed: false }
+            CopZone { idx: idx as usize, lap: lap as usize, state: if lap == 0 { 1 } else { 0 }, timer: 0.0, target: None, player: false, stationed: false }
         });
-        if zones == 0 {
+        if picked.is_none() {
             log::info!("police: no cops in this race");
         }
     }
@@ -5795,6 +5814,30 @@ mod tests {
         assert_eq!((cases, rows), (1056, 12549 - 1056));
     }
 
+    /// tools/zone_pick_reference.py: the original's EvaluateCopZones body F-88125 run offline (3,120 cases: the dev override,
+    /// 0 - 5 police, 0 - 11 zones, no race / a race (its +8 word 1 or 0), laps 0 - 8 and -1, random generator states): the
+    /// zone, the lap, the armed state, the underground call and the generator after equal `zone_pick`.
+    #[test]
+    fn zone_pick_matches_the_original() {
+        let g = |t: &str| u32::from_str_radix(&t[1..], 16).unwrap();
+        let mut n = 0;
+        for l in include_str!("testdata/zone_pick_ref.txt").lines() {
+            let (lhs, rhs) = l.split_once(" -> ").unwrap();
+            let v: Vec<&str> = lhs.split(' ').collect();
+            let u = |i: usize| v[i].parse::<u32>().unwrap();
+            let ovr = (u(0) != 0).then(|| u(1) as i32);
+            let laps = (u(4) != 0).then(|| u(5) as i32);
+            let mut rng = (g(v[6]), g(v[7]));
+            let got = zone_pick(&mut rng, ovr, u(2) as i32, u(3) as u16, laps);
+            let (zone, lap) = got.unwrap_or((-1, -1));
+            let armed = matches!(got, Some((_, 0))) as u32;
+            let want = format!("{zone} {lap} {armed} 0 p00000000 {} g{:08x} g{:08x}", got.is_some() as u32, rng.0, rng.1);
+            assert_eq!(want, rhs, "{lhs}");
+            n += 1;
+        }
+        assert_eq!(n, 3120);
+    }
+
     /// tools/tactic_end_reference.py: the original's tactic end F-67316 run offline (2,506 cases: the active byte, the flag word,
     /// the result, a race current or not, the global present or not, 0 - 4 cop entries null / car / car with a brain, the
     /// count also 0 and -1): the return, the global's byte, the callee events in order and every brain's +773 / +408 equal
@@ -8244,6 +8287,7 @@ mod scene_tests {
         // never the AI (chance 0): the player is the target; 5.5 s, then fCopZoneRdoDelayTime 2 s
         let mut p = Police::new();
         p.tun.v.insert("iRaceTgtAiProbPrcnt".into(), 0.0);
+        p.create_units(true);
         p.pick_zone(1, 1);
         p.zone_step(0, &racers, Some(0), dt);
         assert_eq!(p.zone.as_ref().map(|z| (z.state, z.target, z.player)), Some((2, Some(10), true)));
@@ -8258,6 +8302,7 @@ mod scene_tests {
         // always the AI (chance 100): the nearest AI racer within fRaceTgtAiDist
         let mut p = Police::new();
         p.tun.v.insert("iRaceTgtAiProbPrcnt".into(), 100.0);
+        p.create_units(true);
         p.pick_zone(1, 1);
         p.zone_step(0, &racers, Some(0), dt);
         assert_eq!(p.zone.as_ref().map(|z| (z.target, z.player)), Some((Some(12), false)));
@@ -8281,6 +8326,7 @@ mod scene_tests {
         let mut p = Police::new();
         p.tun.v.insert("iRaceTgtAiProbPrcnt".into(), 100.0);
         p.tun.v.insert("fRaceTgtAiDist".into(), 10.0);
+        p.create_units(true);
         p.pick_zone(1, 1);
         p.zone_step(0, &racers, Some(0), dt);
         assert_eq!(p.zone.as_ref().map(|z| z.target), Some(Some(10)));
