@@ -3721,11 +3721,14 @@ impl App {
         // ---- crashes (crash_camera_rule.md 4): the player's car wiped out (chassis +592 bit 0x10) or
         // damaged out (0x04); a wreck is put back on the road, repaired, a moment later ----
         {
-            // (slow motion: the warpers on real time; the game's scale is the least of them)
-            self.warp_wipe.update(dt);
-            self.warp_expl.update(dt);
-            self.warp_look.update(dt);
-            self.wipe_scale = self.warp_wipe.cur.min(self.warp_expl.cur).min(self.warp_look.cur);
+            // (slow motion: the warpers on real time, F-25863 once a game frame after its sim - here at the first
+            // tick of the next frame, on the frame's 2 ticks; the game's scale is the least of them, held for the frame)
+            if self.tick_no % 2 == 1 {
+                self.warp_wipe.update(2.0 * dt);
+                self.warp_expl.update(2.0 * dt);
+                self.warp_look.update(2.0 * dt);
+                self.wipe_scale = self.warp_wipe.cur.min(self.warp_expl.cur).min(self.warp_look.cur);
+            }
             let mission = self.game.race.as_ref().map_or(false, |r| r.kind != game::RaceKind::Race);
             if self.wreck_engine == 3 {
                 // "impact start car done" with no pause: its exit after more than 5 s in it (F-38554, +156 += dt by
@@ -3846,8 +3849,16 @@ impl App {
                         let rolled = up_y <= 0.1 && c.state.airborne_time <= 0.0 && !police::damaged_out(c.state.damage);
                         if head_on {
                             log::info!("crash: head-on wipeout at {:.2} s, speed {:.2}, damage {:.3}", self.sim_time, speed, c.state.damage);
+                            // (recorded in the original, w3: the hit frame's sim at the old scale, F-85638's own update
+                            // on that frame's time, then the frame's F-25863 on it too; the next frame at the new scale.
+                            // A hit in a frame's first tick is seen at its second: the frame's update comes at the next
+                            // tick; one in its second tick is seen at the next frame's first, after that update ran)
                             let now = self.wipe_scale;
-                            self.warp_wipe.start(now, 0.0);
+                            self.warp_wipe.start(now, 2.0 * dt);
+                            if self.tick_no % 2 == 1 {
+                                self.warp_wipe.update(2.0 * dt);
+                                self.wipe_scale = self.warp_wipe.cur.min(self.warp_expl.cur).min(self.warp_look.cur);
+                            }
                             // (F-46437: then the player's audio entity vt+36, F-46824)
                             self.sound.wipeout_warp(c.model.bike);
                         } else if rolled {
@@ -3919,6 +3930,23 @@ impl App {
                             // under 0.7) is stood up where it is
                             self.crash_bits = 0;
                             c.state.upset = 0.0;
+                            // (then, for the player, F-53665's own setView F-41662: the look-back warper reset
+                            // (F-86999 on racer +988); type 3 over the wipeout camera's +432 (1.5, its constructor)
+                            // while the director runs that camera, the car is no motorcycle and the view is a
+                            // chase view, else a cut (type 4). Recorded in the original (w3): the push of the drive
+                            // view over 1.5 s from setView in the frame the bit goes; the camera update's cut
+                            // F-38892 then finds the blend camera, not the wipeout camera, current)
+                            self.warp_look.reset();
+                            // (the reset also stops its mixer scene, +40)
+                            lookback_scene(&mut self.look_scene, self.audio.as_mut(), false);
+                            self.boom.reset();
+                            let dir = &mut self.cam_switch.blend;
+                            if self.crash_cam.active(dir) && !c.model.bike && boomcam::VIEW_OF_PORT[(self.cam_mode as usize).min(5)] >= 2 {
+                                dir.push(boomcam::CamId::View(dir.view), boomcam::CrashCam::RETURN, 1.0);
+                            } else {
+                                dir.stop();
+                                self.crash_cam.stop();
+                            }
                             if up_y < 0.7 && !owned {
                                 let f = c.state.forward();
                                 let fresh = physics::CarState::new(c.state.pos + Vec3::Y * 0.8, (-f.x).atan2(-f.z));
@@ -9841,8 +9869,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 self.shake_wipe = true;
                             }
                         }
-                        // the bits gone while it is the current camera: a cut to the drive view
-                        if self.crash_bits == 0 && (self.crash_cam.active(&self.cam_switch.blend) || self.cam_switch.blend.is_current(boomcam::CamId::Wipeout)) {
+                        // the bits gone while it is the current camera (F-38892: dir+48 is the wipeout camera, not
+                        // the blend camera): a cut to the drive view
+                        if self.crash_bits == 0 && self.cam_switch.blend.is_current(boomcam::CamId::Wipeout) {
                             self.crash_cam.stop();
                             self.cam_switch.blend.stop();
                             self.boom.reset();

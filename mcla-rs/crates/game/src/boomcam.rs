@@ -2568,6 +2568,9 @@ impl CrashStart {
 }
 
 impl CrashCam {
+    /// The wipeout camera's +432: 1.5 (its constructor's; no file sets it), the blend back to the drive view of
+    /// F-53665's setView F-41662 when the wipeout is over (recorded in the original: the push's time word 0x3FC00000).
+    pub const RETURN: f32 = 1.5;
     /// Set up for this wipeout and run by the director (current, or a blend's source or target).
     pub fn active(&self, dir: &Director) -> bool {
         self.started && dir.involves(CamId::Wipeout)
@@ -6023,6 +6026,26 @@ mod original_warper_tests {
             }
         }
         assert_eq!(seqs, 300);
+    }
+
+    /// The slow motion of a head-on wall hit recorded in the original (240SX into a wall at 40 m/s, work/cameras2/rec/cap/w3.txt):
+    /// per frame the boom's real frame time (D) and the game's scaled one (0x827D7508, at the director's blend steps S). The hit
+    /// frame runs at the old scale; F-85638's update on that frame's time, then the frame's own F-25863 on it too; every later
+    /// frame's game time is its real time x the scale its frame before left (main.rs, the crash block). Equal word for word.
+    #[test]
+    fn wipeout_slow_motion_matches_the_recording() {
+        let d = [0x3D0F288Cu32, 0x3D27E6AE, 0x3D1A2B8F, 0x3D12F902, 0x3D079472, 0x3D38278E, 0x3D8444C1].map(f32::from_bits);
+        let s = [0x3D0F288Cu32, 0x3CB21746, 0x3C4020C3, 0x3BCADCB9, 0x3B67896D, 0x3B9352D8, 0x3BD3A135];
+        let mut w = TimeWarper::new([1.25, 0.1, 5.0, 10.0]);
+        let mut scale = 1.0f32;
+        for k in 0..d.len() {
+            assert_eq!((d[k] * scale).to_bits(), s[k], "frame {k}");
+            if k == 0 {
+                w.start(scale, d[k]);
+            }
+            w.update(d[k]);
+            scale = w.cur;
+        }
     }
 }
 
