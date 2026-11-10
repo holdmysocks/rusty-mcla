@@ -11,6 +11,10 @@
 
 use glam::Vec3;
 
+#[cfg(test)]
+#[path = "gjk_leaves_tests.rs"]
+mod gjk_leaves_tests;
+
 /// A sum of three products as the original's vector unit forms it.
 #[inline]
 fn dot(a: Vec3, b: Vec3) -> f32 {

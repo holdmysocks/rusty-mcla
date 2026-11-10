@@ -11,6 +11,10 @@ use mcla_formats::rage::simtune::SsTurboTune;
 
 use super::exact::{approach, fma, fnms, inverse_frame, point_through, unit_or_zero};
 
+#[cfg(test)]
+#[path = "sst_leaves_tests.rs"]
+mod sst_leaves_tests;
+
 /// The object's state (offsets of mcCarSSTurbo).
 #[derive(Clone, Copy, Debug)]
 pub struct SsTurbo {
@@ -119,6 +123,8 @@ impl SsTurbo {
     /// -(turboBoostAmount x level^turboBoostExp), the factor of the push along the car's back row, before
     /// the throttle, the share of the wheels down and the mass.
     pub fn burn(&mut self, t: &SsTurboTune, upset: bool, dt: f32) -> f32 {
+        // (F-60935 clears +64 first, whichever half runs)
+        self.strength = 0.0;
         self.level = fnms(1.0 / t.use_time, dt, self.level);
         if !(self.level > 0.0) || upset {
             self.level = 0.0;
@@ -126,7 +132,7 @@ impl SsTurbo {
             self.burning = false;
             self.full = false;
         }
-        let p = (self.level as f64).powf(t.boost_exp as f64) as f32;
+        let p = crate::caraudio::pow_guest(self.level as f64, t.boost_exp as f64) as f32;
         let k = -(t.boost_amount * p);
         self.blur = t.blur_start_amount;
         if self.fov != t.fov {
@@ -174,7 +180,7 @@ impl SsTurbo {
             // (the leader's trail and its +68 are written by the search's caller, Vehicles::draft_pass)
             self.strength = s;
             self.level = fma((1.0 / t.regen_time) * dt, s, self.level);
-            if self.level >= 1.0 {
+            if !(self.level < 1.0) {
                 self.level = 1.0;
                 self.full = true;
                 self.stay = t.stay_full_time;

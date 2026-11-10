@@ -4,6 +4,10 @@
 use super::collision::WorldCollider;
 use glam::{Mat3, Quat, Vec3};
 
+#[cfg(test)]
+#[path = "car_leaves_tests.rs"]
+mod car_leaves_tests;
+
 #[derive(Clone, Debug)]
 pub struct CarParams {
     pub mass: f32,
@@ -422,6 +426,27 @@ pub fn blow_mults(flags: u8, difficulty: f32) -> [f32; 2] {
     m
 }
 
+/// F-15289's damage points: `hit` added to the `points` so far; at MaxDamage only a hit over FatalBlow leaves the car
+/// at the maximum, a softer one leaves it one point short (the comparison is the original's `blt`: a NaN is over it).
+pub(super) fn add_damage_points(points: f32, hit: f32, max: f32, fatal: f32) -> f32 {
+    let new = points + hit;
+    if !(new < max) {
+        if hit > fatal { max } else { max - 1.0 }
+    } else {
+        new
+    }
+}
+
+/// The record F-15289 hands its callees (word-level form for the offline comparison): the hit (the blow factor +12
+/// times the argument), the new points (`add_damage_points` of the points in +40), whether they reached the maximum
+/// and whether the hit is over WipeoutThreshold while they have not.
+pub(super) fn damage_record(points: f32, blow: f32, factor: f32, max: f32, fatal: f32, wipeout: f32) -> (f32, f32, bool, bool) {
+    let hit = blow * factor;
+    let new = add_damage_points(points, hit, max, fatal);
+    let reached = !(new < max);
+    (hit, new, reached, !reached && hit > wipeout)
+}
+
 impl CarState {
     /// a nitrous shot is burning
     pub fn nitro_on(&self) -> bool {
@@ -562,10 +587,7 @@ impl CarState {
         let max = max.max(1.0);
         self.last_hit = hit;
         let was_wreck = self.damage >= 1.0;
-        let mut points = self.damage * max + hit;
-        if points >= max {
-            points = if hit > fatal { max } else { max - 1.0 };
-        }
+        let points = add_damage_points(self.damage * max, hit, max, fatal);
         self.damage = (points / max).min(1.0);
         // (the car wrecked, F-74220: rumble 7)
         if !was_wreck && self.damage >= 1.0 {

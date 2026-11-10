@@ -16,6 +16,10 @@ use super::artic::{
 use super::exact::{cross, dot3, fma, inverse3, recip, world_inverse_inertia};
 use glam::Vec3;
 
+#[cfg(test)]
+#[path = "solver_leaves_tests.rs"]
+mod solver_leaves_tests;
+
 /// How deep a contact may stand (0x828FF840, set by F-36556 from 0x82082810).
 pub const ALLOW: f32 = f32::from_bits(0x3be5_6042);
 /// 0x82084820
@@ -598,6 +602,30 @@ fn with_b(states: &mut [State], sb: usize, f: impl FnOnce(&mut RigidState)) {
     states[sb].ang = v3(b.ang);
 }
 
+/// The K block of a row between two sides (F-72162 for a point constraint, `point`; the contact rows' F-11306 / F-36219
+/// order otherwise): what an impulse along each direction does to the point's velocity along each - A's angular term,
+/// A's linear, B's, with `point` B's linear term before its angular one. `angular_only` (the original's byte +240) leaves
+/// the linear terms out: zero vectors in their places.
+fn k_block(basis: &[Vec3; 3], bcol: &[Vec3; 3], arm: &[Vec3; 3], jcol: &[Vec3; 3], arm_b: &[Vec3; 3], jcol_b: &[Vec3; 3], sa: &State, sb: &State, point: bool, angular_only: bool) -> [Vec3; 3] {
+    let through = |s: &State, j: &[Vec3; 3]| {
+        let (mrow, irow) = (columns(&s.mcol), columns(&s.icol));
+        let t: [Vec3; 3] = std::array::from_fn(|k| (bcol[0] * mrow[k].x + bcol[1] * mrow[k].y) + bcol[2] * mrow[k].z);
+        let w: [Vec3; 3] = std::array::from_fn(|k| (j[0] * irow[k].x + j[1] * irow[k].y) + j[2] * irow[k].z);
+        (t, w)
+    };
+    let (ta, wa) = through(sa, jcol);
+    let (tb, wb) = through(sb, jcol_b);
+    std::array::from_fn(|i| {
+        let la = (ta[0] * basis[i].x + ta[1] * basis[i].y) + ta[2] * basis[i].z;
+        let aa = (wa[0] * arm[i].x + wa[1] * arm[i].y) + wa[2] * arm[i].z;
+        let lb = (tb[0] * basis[i].x + tb[1] * basis[i].y) + tb[2] * basis[i].z;
+        let ab = (wb[0] * arm_b[i].x + wb[1] * arm_b[i].y) + wb[2] * arm_b[i].z;
+        let (la, lb) = if angular_only { (Vec3::ZERO, Vec3::ZERO) } else { (la, lb) };
+        // (a point constraint's block, F-72162: B's linear term before its angular one)
+        if point { ((aa + la) + lb) + ab } else { ((aa + la) + ab) + lb }
+    })
+}
+
 impl Row2 {
     fn new(bodies: &[Body], states: &[State], c: &Touch) -> Row2 {
         let basis = basis(c.normal);
@@ -607,22 +635,7 @@ impl Row2 {
         let arm_b = [cross(rb, basis[0]), cross(rb, basis[1]), cross(rb, basis[2])];
         let (bcol, jcol, jcol_b) = (columns(&basis), columns(&arm), columns(&arm_b));
         let (sa, sb) = (c.a.body.map_or(0, |i| i + 1), c.b.body.map_or(0, |i| i + 1));
-        let through = |s: &State, j: &[Vec3; 3]| {
-            let (mrow, irow) = (columns(&s.mcol), columns(&s.icol));
-            let t: [Vec3; 3] = std::array::from_fn(|k| (bcol[0] * mrow[k].x + bcol[1] * mrow[k].y) + bcol[2] * mrow[k].z);
-            let w: [Vec3; 3] = std::array::from_fn(|k| (j[0] * irow[k].x + j[1] * irow[k].y) + j[2] * irow[k].z);
-            (t, w)
-        };
-        let (ta, wa) = through(&states[sa], &jcol);
-        let (tb, wb) = through(&states[sb], &jcol_b);
-        let k: [Vec3; 3] = std::array::from_fn(|i| {
-            let la = (ta[0] * basis[i].x + ta[1] * basis[i].y) + ta[2] * basis[i].z;
-            let aa = (wa[0] * arm[i].x + wa[1] * arm[i].y) + wa[2] * arm[i].z;
-            let lb = (tb[0] * basis[i].x + tb[1] * basis[i].y) + tb[2] * basis[i].z;
-            let ab = (wb[0] * arm_b[i].x + wb[1] * arm_b[i].y) + wb[2] * arm_b[i].z;
-            // (a point constraint's block, F-72162: B's linear term before its angular one)
-            if c.kind == 1 { ((aa + la) + lb) + ab } else { ((aa + la) + ab) + lb }
-        });
+        let k = k_block(&basis, &bcol, &arm, &jcol, &arm_b, &jcol_b, &states[sa], &states[sb], c.kind == 1, false);
         if c.kind == 1 {
             // (no c row, no block of ten thousands: F-68939 on the block as it is)
             return Row2 { row: Row { neg: Vec3::ZERO, bias: Vec3::ZERO, basis, bcol, arm, jcol, kcol: columns(&block_inverse(&k)), c: Vec3::X, mu: 0.0 }, arm_b, jcol_b, sa, sb, kind: 1 };
