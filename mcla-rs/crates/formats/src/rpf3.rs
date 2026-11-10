@@ -38,6 +38,21 @@ impl Entry {
     }
 }
 
+/// What an entry's words 1..3 (`size`, `c`, `d`) make it. A resource is any entry whose `d` has bit 31; the original's
+/// resource-info routine (`F-30036`) then hands out `d` as the flags and the low byte of `c` as the type (`Kind::Resource`
+/// keeps 12 bits of type: they differ only if bits 8..11 of `c` are set, which no entry of the disc's archives has).
+pub fn classify(b: u32, c: u32, d: u32, count: usize) -> Kind {
+    if c & 0x8000_0000 != 0 && d & 0xC000_0000 == 0 && ((c & 0x7FFF_FFFF) as usize) <= count {
+        Kind::Dir { first: c & 0x7FFF_FFFF, count: d }
+    } else if d & 0x8000_0000 != 0 {
+        Kind::Resource { size: b, offset: c & !0xFFF, rtype: c & 0xFFF, flags: d }
+    } else if d & 0x4000_0000 != 0 {
+        Kind::File { size: b, offset: c, compressed: Some(d & 0x3FFF_FFFF) }
+    } else {
+        Kind::File { size: b, offset: c, compressed: None }
+    }
+}
+
 pub struct Rpf3<R: ReadAt> {
     pub src: Arc<R>,
     pub entries: Vec<Entry>,
@@ -71,16 +86,7 @@ impl<R: ReadAt> Rpf3<R> {
             let d = u32le(e, 12);
             // Directories: bit31 of the third word set, fourth word is a small child count.
             // (The root entry carries 1 in its second word, so do not require b == 0.)
-            let kind = if c & 0x8000_0000 != 0 && d & 0xC000_0000 == 0 && ((c & 0x7FFF_FFFF) as usize) <= count {
-                Kind::Dir { first: c & 0x7FFF_FFFF, count: d }
-            } else if d & 0x8000_0000 != 0 {
-                Kind::Resource { size: b, offset: c & !0xFFF, rtype: c & 0xFFF, flags: d }
-            } else if d & 0x4000_0000 != 0 {
-                Kind::File { size: b, offset: c, compressed: Some(d & 0x3FFF_FFFF) }
-            } else {
-                Kind::File { size: b, offset: c, compressed: None }
-            };
-            entries.push(Entry { hash: a, kind, parent: u32::MAX });
+            entries.push(Entry { hash: a, kind: classify(b, c, d, count), parent: u32::MAX });
         }
         // parent links
         for i in 0..entries.len() {
@@ -143,12 +149,47 @@ impl<R: ReadAt> Rpf3<R> {
         self.children(dir).find(|&i| self.entries[i].hash == hash)
     }
 
-    /// Resolve a slash-separated path (case-insensitive) to an entry index.
+    /// Resolve a slash-separated path (case-insensitive) to an entry index, as the original's find (`F-82183`) does: one
+    /// leading separator is skipped; each component (up to `/`, `\` or the end) is hashed (`F-58929`, seed 0) and binary
+    /// searched among the current directory's children by hash (so an empty component, as in `a//b`, is a name of
+    /// hash 0); after a match all following separators are skipped; an entry that is not a directory ends the walk (it is
+    /// the answer even if components remain); a path that ends at a directory answers that directory.
     pub fn lookup(&self, path: &str) -> Option<usize> {
+        let b = path.as_bytes();
+        let b = &b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())];
+        let sep = |c: u8| c == b'/' || c == b'\\';
+        let mut p = b.first().map_or(0, |&c| sep(c) as usize);
         let mut cur = 0usize;
-        for part in path.split(['/', '\\']).filter(|p| !p.is_empty()) {
-            cur = self.child(cur, crate::hash::joaat(part))?;
+        if p == b.len() {
+            return Some(0);
         }
-        Some(cur)
+        loop {
+            let end = b[p..].iter().position(|&c| sep(c)).map_or(b.len(), |i| p + i);
+            let hash = crate::hash::at_string_hash(&b[p..end], 0);
+            p = end;
+            let Some(Entry { kind: Kind::Dir { first, count }, .. }) = self.entries.get(cur) else { return None };
+            let (mut lo, mut hi) = (*first, first.wrapping_add(*count).wrapping_sub(1));
+            let found = loop {
+                if lo > hi {
+                    return None;
+                }
+                let mid = lo.wrapping_add(hi) >> 1;
+                let h = self.entries.get(mid as usize)?.hash;
+                if hash < h {
+                    hi = mid.wrapping_sub(1);
+                } else if hash > h {
+                    lo = mid.wrapping_add(1);
+                } else {
+                    break mid as usize;
+                }
+            };
+            while p < b.len() && sep(b[p]) {
+                p += 1;
+            }
+            cur = found;
+            if !self.entries[found].is_dir() || p == b.len() {
+                return Some(found);
+            }
+        }
     }
 }

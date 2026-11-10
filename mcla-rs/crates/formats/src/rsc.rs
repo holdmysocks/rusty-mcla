@@ -28,13 +28,19 @@ pub fn virtual_size_from_flags(f: u32) -> usize {
     ((f & 0x7FF) as usize) << (((f >> 11) & 0xF) + 8)
 }
 
+/// The original's resource-info check (`F-46450`) on the first bytes of a file: it reads 12 bytes and wants all 12, the
+/// magic in the first word; then the type is the second word and the flags the third (both big-endian).
+pub fn header(head: &[u8]) -> Option<(u32, u32)> {
+    if head.len() < 12 || u32le(head, 0) != RSC_MAGIC {
+        return None;
+    }
+    Some((u32be(head, 4), u32be(head, 8)))
+}
+
 impl Resource {
     pub fn parse(blob: &[u8]) -> Result<Resource> {
-        if blob.len() < 20 || u32le(blob, 0) != RSC_MAGIC {
-            bail!("not an RSC5 resource");
-        }
-        let rtype = u32be(blob, 4);
-        let flags = u32be(blob, 8);
+        // (the stream after the header must also have bytes: 20 in all)
+        let Some((rtype, flags)) = header(blob).filter(|_| blob.len() >= 20) else { bail!("not an RSC5 resource") };
         let data = crate::xmem::decompress(&blob[12..])?;
         let vs = virtual_size_from_flags(flags).min(data.len());
         Ok(Resource { rtype, flags, virtual_size: vs, physical_size: data.len() - vs, data })

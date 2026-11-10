@@ -807,9 +807,12 @@ impl EvoGroup {
         }
     }
 
-    /// Index of the evolution called `name` (`F-95887`).
+    /// Index of the evolution called `name` (`F-95887`): the original keeps a table of (name hash, index) rows sorted by
+    /// hash, built by `F-94093` (a name whose hash is already in the table replaces that row's index, so the last of equal
+    /// hashes wins), and searches it by the hash of `name` (`F-58929`: lower-cased, so case does not matter).
     pub fn index(&self, name: &str) -> Option<usize> {
-        self.names.iter().position(|n| n == name)
+        let h = crate::hash::at_string_hash(name.as_bytes(), 0);
+        self.names.iter().rposition(|n| crate::hash::at_string_hash(n.as_bytes(), 0) == h)
     }
 }
 

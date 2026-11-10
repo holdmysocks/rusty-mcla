@@ -12,6 +12,8 @@ pub mod crypto;
 pub mod dds;
 pub mod guest_math;
 pub mod hash;
+#[cfg(test)]
+mod lookup_tests;
 pub mod iso;
 pub mod jpeg;
 pub mod keys;

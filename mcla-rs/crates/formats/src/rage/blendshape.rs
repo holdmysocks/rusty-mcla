@@ -79,6 +79,13 @@ impl TargetBlob {
 }
 
 impl BlendShapes {
+    /// The target filed under the u16 `key` (`F-75109`: the original takes bucket key % count and walks the chain for the
+    /// first node of that key; `parse` keeps the nodes sorted by key, same-key nodes in chain order).
+    pub fn target(&self, key: u16) -> Option<&Target> {
+        let i = self.targets.partition_point(|t| t.id < key);
+        self.targets.get(i).filter(|t| t.id == key)
+    }
+
     pub fn parse(res: &Resource) -> Result<BlendShapes> {
         let rd = Rd::new(res);
         let arr = |o: usize| -> Vec<Option<usize>> {
