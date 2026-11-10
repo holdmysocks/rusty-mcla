@@ -1951,6 +1951,12 @@ pub struct Police {
     /// a line for the police radio from the search (F-40917): REPORT_SUSPECT_LOST when the clock starts, _SPOTTED or
     /// _REACQUIRE when it ends with a sighting after 2 s
     pub radio_cue: Vec<String>,
+    /// F-52240's ladder started a tactic from a detecting cop (no tactic yet): the speech line it requests (F-70230)
+    /// before StartTactic - Some(the target is the player); main picks PLAYER_COPS_BEGIN_PURSUIT or the race taunt
+    pub begin_cue: Option<bool>,
+    /// the report of this update's Event::Pursuit when it is not REPORT_VIOLATION_PURSUIT (F-52240's hit-a-cop steal:
+    /// REPORT_HIT_COP_CAR_HARD, the report F-61876 makes); cleared at every update
+    pub start_report: Option<&'static str>,
     arrest: f32,
     /// the tactic's +140 (the target burning out) and +144 (barely moving) timers and +48, the target's last place
     t_burn: f32,
@@ -2169,6 +2175,8 @@ impl Police {
             srch: Vec::new(),
             prev_heat: Heat::None,
             radio_cue: Vec::new(),
+            begin_cue: None,
+            start_report: None,
             arrest_over: false,
             zone: None,
             zone_go: false,
@@ -3570,6 +3578,7 @@ impl Police {
 
     /// Advance the police simulation. Returns what happened this frame.
     pub fn update(&mut self, gpu: &Gpu, world: &World, vehicles: &mut Vehicles, dt: f32) -> Option<Event> {
+        self.start_report = None;
         // (F-52240 clears the word at the end of a scored tick and in the grace: one payment a frame at most)
         let law_word = vehicles.player_mut().and_then(|c| c.state.veh.as_deref_mut()).map_or(0, |v| std::mem::take(&mut v.agro.law_word));
         match self.heat {
@@ -4068,6 +4077,7 @@ impl Police {
                 self.fine = self.law_fines();
                 self.lost = 0.0;
                 event = Some(Event::Pursuit);
+                self.start_report = Some("REPORT_HIT_COP_CAR_HARD");
             }
         }
         // (from here on the tactic's target)
@@ -4128,6 +4138,11 @@ impl Police {
                     TacKind::None
                 };
                 if kind != TacKind::None {
+                    // (F-52240, the detecting cop's three starts: the speech request F-70230 before StartTactic, whether
+                    // that starts or not - not the zone's own start, F-71212 says its own line)
+                    if detected && self.score >= pull {
+                        self.begin_cue = Some(!ai_target);
+                    }
                     if let Some(cops) = self.engage(gpu, world, vehicles, kind.cops(), if zone && !detected { None } else { first }, ppos, pfwd) {
                         self.start_tactic(kind, cops, true, tt);
                         if kind == TacKind::PullOver {

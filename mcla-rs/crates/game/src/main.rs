@@ -7532,6 +7532,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // two results the leg's own: no radio, no fine, no arrest form - `mc4`)
                 let s19d_goons = self.police.goons;
                 let ev = self.game.mc4_payback_chase(&mut self.police, &mut self.vehicles, &mut gpu, &mut world, ev, sim_dt);
+                // (F-52240: a detecting cop starting a tactic requests a speech line through F-70230 - offline, in a race of
+                // more than one racer with its first opponent (race +208): TAUNT_RACE_COP_CHASING_PLAYER when the target is
+                // the player, else _HOOKMAN, in that opponent's voice; otherwise PLAYER_COPS_BEGIN_PURSUIT, no voice)
+                if let Some(player_target) = self.police.begin_cue.take() {
+                    if let Some(&opp) = self.game.race.as_ref().filter(|r| r.participants.len() > 1).and_then(|r| r.participants.get(1)) {
+                        let set = self.drivers.set_of.get(&opp).cloned().unwrap_or_default();
+                        let voice = prerace::voice_of(&self.opt.data_dir, &set).unwrap_or_default();
+                        self.speech.request_as(if player_target { "TAUNT_RACE_COP_CHASING_PLAYER" } else { "TAUNT_RACE_COP_CHASING_HOOKMAN" }, &voice);
+                    } else {
+                        self.speech.request_as("PLAYER_COPS_BEGIN_PURSUIT", "");
+                    }
+                }
                 // ---- the radio traffic that goes with it ----
                 if self.radio.loaded() && !s19d_goons && !self.police.goons {
                     let rctx = radio_ctx(&self.vehicles, &world, self.time_of_day);
@@ -7554,8 +7566,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 self.radio.say("REPORT_SUSPECT_FLEES", &rctx);
                             }
                         }
+                        // (the start's report: REPORT_VIOLATION_PURSUIT, the default of a report (F-56787); F-52240 gives
+                        // the race's hit-a-cop steal REPORT_HIT_COP_CAR_HARD)
                         Some(police::Event::Pursuit) => {
-                            self.radio.say("REPORT_VIOLATION_PURSUIT", &rctx);
+                            self.radio.say(self.police.start_report.unwrap_or("REPORT_VIOLATION_PURSUIT"), &rctx);
                         }
                         Some(police::Event::Escaped) => {
                             self.radio.say("REPORT_END_PURSUIT", &rctx);
