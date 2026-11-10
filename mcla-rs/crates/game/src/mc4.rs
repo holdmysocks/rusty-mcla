@@ -5262,6 +5262,24 @@ impl Game {
     }
 
 
+    /// The brake calipers' tint for the renderer (the caliper object's `brushed` row): F-91597 hands
+    /// brakeCaliperTintColor = (m_vBrakeCaliperColor x 0.5) ^ 2.2 (`caliper_tint_row`) - the record's, else the vehicle's
+    /// own set-up file's; none without either.
+    pub fn caliper_tint(&self) -> [f32; 4] {
+        let cur = if self.car_x.car.is_empty() { self.mc4_car_name(self.current_car) } else { self.car_x.car.clone() };
+        if let Some(rec) = self.mc4.as_ref().and_then(|m| m.car(&cur)) {
+            return rgb_of(&rec.visual.m_vBrakeCaliperColor).map_or([0.0; 4], caliper_tint_row);
+        }
+        static CACHE: std::sync::Mutex<Option<(String, [f32; 4])>> = std::sync::Mutex::new(None);
+        let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if c.as_ref().map_or(true, |(n, _)| *n != cur) {
+            let model = crate::catalog::model_of(&cur);
+            let row = crate::render::car_lamps::setup_file(std::path::Path::new(&self.data_dir), model).and_then(|f| std::fs::read(f).ok()).and_then(|b| setup_look(&b)).map_or([0.0; 4], |l| l.look.caliper);
+            *c = Some((cur.clone(), row));
+        }
+        c.as_ref().map_or([0.0; 4], |(_, r)| *r)
+    }
+
     /// The brushed metal's tint for the renderer (`ObjectUniform::brushed`): F-91597 hands the vehicle record's
     /// m_vBrushedMetalColorA..C as stored to BrushedMetalTintDownload, of which VS_BrakeRotor and VS_BumpedBrushedmetal
     /// read row 0 (c209). The record's, else the set-up file's; w 1 = given. The garage has no row for it.
@@ -9123,6 +9141,14 @@ pub fn rim_tint_pow(x: f32) -> f32 {
     (x as f64).powf(2.2f32 as f64) as f32
 }
 
+/// brakeCaliperTintColor as F-91597 hands it (to F-57676): the record's m_vBrakeCaliperColor (+0x110) times 0.5 (the
+/// float at the image's 0.5 constant, a vector multiply), then each of r, g, b to the power 2.2f in double and back to
+/// float, as the rims' rows (`rim_tint_pow`). PS_BrakeCaliper reads xyz only; w 1 here = given.
+pub fn caliper_tint_row(c: [f32; 3]) -> [f32; 4] {
+    let h = c.map(|x| x * 0.5);
+    [rim_tint_pow(h[0]), rim_tint_pow(h[1]), rim_tint_pow(h[2]), 1.0]
+}
+
 pub fn setup_look(b: &[u8]) -> Option<SetupLook> {
     if b.len() != 8176 {
         return None;
@@ -9140,7 +9166,7 @@ pub fn setup_look(b: &[u8]) -> Option<SetupLook> {
     let body_a = rgb(0x660)?;
     let body = paint_as_drawn(area(0));
     let body_b = to_linear(body.b);
-    let mut look = crate::vehicles::CarLook { paint_type: body.ty, color2: [body_b[0], body_b[1], body_b[2], body.fade as f32], tint: [0.0, 0.0035, 0.005, 0.372], interior: [[0.0; 4]; 5], area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], rim_finish: [[0.0; 4]; 3], cabin_light: [[0.0; 4]; 2], glass: [0x120, 0x130, 0x140, 0x150].map(|o| [f(o), f(o + 4), f(o + 8), f(o + 12)]), ext_neon: [[f(0x50), f(0x54), f(0x58), f(0x5c)], [f(0x170), b[0x18c] as i8 as f32, 0.0, 0.0]], trim: [[0.0; 4]; 12], rim_raw: [[0.0; 4]; 5], brushed: [0.0; 4] };
+    let mut look = crate::vehicles::CarLook { paint_type: body.ty, color2: [body_b[0], body_b[1], body_b[2], body.fade as f32], tint: [0.0, 0.0035, 0.005, 0.372], interior: [[0.0; 4]; 5], area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], rim_finish: [[0.0; 4]; 3], cabin_light: [[0.0; 4]; 2], glass: [0x120, 0x130, 0x140, 0x150].map(|o| [f(o), f(o + 4), f(o + 8), f(o + 12)]), ext_neon: [[f(0x50), f(0x54), f(0x58), f(0x5c)], [f(0x170), b[0x18c] as i8 as f32, 0.0, 0.0]], trim: [[0.0; 4]; 12], rim_raw: [[0.0; 4]; 5], brushed: [0.0; 4], caliper: [0.0; 4] };
     // (the cabin trim's rows as stored - F-19629: m_vBaseColor at 0x5c0 + 0x10 g, the gauge colours A / B at 0x70 / 0x80)
     for (k, o) in (0..10).map(|g| 0x5c0 + 0x10 * g).chain([0x70, 0x80]).enumerate() {
         let c = [f(o), f(o + 4), f(o + 8)];
@@ -9176,6 +9202,11 @@ pub fn setup_look(b: &[u8]) -> Option<SetupLook> {
     let bm = [f(0xe0), f(0xe4), f(0xe8)];
     if bm.iter().all(|v| v.is_finite()) {
         look.brushed = [bm[0], bm[1], bm[2], 1.0];
+    }
+    // (m_vBrakeCaliperColor at 0x110 -> brakeCaliperTintColor, F-91597)
+    let cc = [f(0x110), f(0x114), f(0x118)];
+    if cc.iter().all(|v| v.is_finite()) {
+        look.caliper = caliper_tint_row(cc);
     }
     for k in 0..3 {
         let c = rgb(0x90 + 0x10 * k).map(to_linear).unwrap_or([0.8, 0.8, 0.8]);
@@ -20129,5 +20160,18 @@ mod rim_tint_tests {
         }
         let look = super::setup_look(&b).expect("r8").look;
         assert_eq!(look.brushed.map(f32::to_bits), [REC[0], REC[1], REC[2], 1.0f32.to_bits()]);
+    }
+
+    /// brakeCaliperTintColor as recorded in the original (the silver 240SX at noon, `work/police17/cap/g.gpu.bin` and
+    /// `wb_burn.gpu.bin`: all 8 draws of PS_BrakeCaliper of cars/0x78cadf2c, c106 = 0x3c28e5a2 x 3, w 0; c100 baseColor
+    /// 1, 1, 1 = the `brakecaliper` material's; scan `work/carparts2/caliper/scan.py`): F-91597's (m_vBrakeCaliperColor
+    /// x 0.5) ^ 2.2 of the 240SX set-up's 0.25 grey (the colour 386 of the 400 set-ups store).
+    #[test]
+    fn caliper_tint_matches_the_recording() {
+        const REC: u32 = 0x3c28e5a2;
+        assert_eq!(super::caliper_tint_row([0.25; 3]).map(f32::to_bits), [REC, REC, REC, 1.0f32.to_bits()]);
+        let dir = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        let Ok(b) = std::fs::read(std::path::Path::new(&dir).join("resources/vehicle/configs/vp_nsn_240sx_98.xcc")) else { return };
+        assert_eq!(super::setup_look(&b).expect("240sx").look.caliper.map(f32::to_bits), [REC, REC, REC, 1.0f32.to_bits()]);
     }
 }

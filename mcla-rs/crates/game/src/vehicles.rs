@@ -316,7 +316,14 @@ fn load_brakes(gpu: &mut Gpu, world: &mut World, dir: &Path) -> Option<BrakeMode
             let i = (y * t.width as usize + x) * 4;
             px.get(i..i + 3).map_or(true, |c| c.iter().max().unwrap() - c.iter().min().unwrap() < 12 && c[0] < 60)
         });
-        let (zone, paint, own_tex) = if is_rotor { (8.0, [255u8, 255, 255], 0.0) } else if lower.contains("rotor") && plain { (9.0, [150, 6, 6], 0.0) } else { (9.0, [255, 255, 255], 1.0) };
+        // (the `brakecaliper` material is PS_BrakeCaliper of cars/0x78cadf2c: DiffuseSampler ^ 1.6 x baseColor x
+        // brakeCaliperTintColor - uv1.y 2, the colour baseColor; city.wgsl zone 9)
+        let base_color = sh.and_then(|s| s.params.iter().find(|(h, _)| *h == 0x1468b111)).and_then(|(_, p)| match p {
+            mcla_formats::rage::drawable::ShaderParam::Vector(v) => v.first().map(|x| [x.x, x.y, x.z]),
+            _ => None,
+        });
+        let caliper_prog = lower == "brakecaliper" && base_color.is_some();
+        let (zone, paint, own_tex) = if is_rotor { (8.0, [255u8, 255, 255], 0.0) } else if caliper_prog { (9.0, base_color.unwrap().map(|x| (x.clamp(0.0, 1.0) * 255.0).round() as u8), 2.0) } else if lower.contains("rotor") && plain { (9.0, [150, 6, 6], 0.0) } else { (9.0, [255, 255, 255], 1.0) };
         let mut b = mesh_to_batch_xf(gpu, mesh, &sname, mode, tex.clone(), tex, key, key, xf);
         // (as on the rims the first colour channel is baked occlusion, the others empty:
         // the generic path would draw the brake black)
@@ -1129,6 +1136,8 @@ pub struct CarLook {
     pub rim_raw: [[f32; 4]; 5],
     /// m_vBrushedMetalColorA as stored (the brushed metal's tint, F-91597), w 1 = given
     pub brushed: [f32; 4],
+    /// brakeCaliperTintColor as F-91597 hands it (`mc4::caliper_tint_row` of m_vBrakeCaliperColor), w 1 = given
+    pub caliper: [f32; 4],
 }
 
 /// A set-up as `Vehicles::dress_setups` puts it on a car: the model's parts, the rim's
@@ -1335,6 +1344,8 @@ pub struct Vehicles {
     pub player_rim_tint: [[f32; 4]; 5],
     /// the player's m_vBrushedMetalColorA (`Game::brushed_tint`), w 1 = given
     pub player_brushed: [f32; 4],
+    /// the player's brakeCaliperTintColor (`Game::caliper_tint`), w 1 = given
+    pub player_caliper: [f32; 4],
     /// the player's gauge colour A and interior neon colour as its record holds them (w: IntNeonFlashRate, IntNeonIntensity) -
     /// what its driver is lit by (`Game::cabin_light_colors`)
     pub player_cabin_light: [[f32; 4]; 2],
@@ -6101,7 +6112,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         // (the wheel's mark, no dirt: its maps are decoded as the wheel's, city.wgsl car_raw_tex)
                         let mut mark = [[0.0; 4]; 6];
                         mark[3] = [0.0, 1.0, 0.0, 0.0];
-                        batch.push_object(cb, &ObjectUniform { model: cm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: mark, fill: car_fill, ..Default::default() });
+                        // (brakeCaliperTintColor, F-91597, in the object's `brushed` row - a caliper's object draws no
+                        // brushed metal; none for a car without a record or set-up, which keeps the old look)
+                        let cal_tint = if c.is_player { self.player_caliper } else { c.look.as_ref().map_or([0.0; 4], |l| l.caliper) };
+                        batch.push_object(cb, &ObjectUniform { model: cm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, 0.0, 0.0, 0.0], dents: mark, fill: car_fill, brushed: cal_tint, ..Default::default() });
                     }
                 }
             }

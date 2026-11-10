@@ -2968,6 +2968,13 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
         } else if (zone == 9) {
             // its caliper: painted, or its own texture
             base = mix(in.color.rgb, albedo.rgb * in.color.rgb * 1.5, step(0.5, in.uv1.y));
+            // (the `brakecaliper` material, uv1.y 2: PS_BrakeCaliper of cars/0x78cadf2c - diffuse = DiffuseSampler ^ 1.6 x
+            // baseColor (the vertex colour) x brakeCaliperTintColor (F-91597: (m_vBrakeCaliperColor x 0.5) ^ 2.2, in the
+            // object's `brushed` row); the program's own light, mirror and highlight are not ported (approx.: the terms below).
+            // MCLA_DEBUG_VIEW=787: as before)
+            if (in.uv1.y > 1.5 && obj.brushed.w > 0.5 && !(g.params.w > 786.5 && g.params.w < 787.5)) {
+                base = pow(max(albedo.rgb, vec3<f32>(0.0)), vec3<f32>(1.6)) * in.color.rgb * obj.brushed.rgb;
+            }
             spec = 0.5;
             gloss = 50.0;
             rim_mirror = 0.04;

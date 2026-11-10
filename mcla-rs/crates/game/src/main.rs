@@ -5407,6 +5407,7 @@ impl App {
             self.vehicles.player_rim_tint = self.game.rim_tints();
             // (the brushed metal's tint, F-91597)
             self.vehicles.player_brushed = self.game.brushed_tint();
+            self.vehicles.player_caliper = self.game.caliper_tint();
             // (the gauge and interior neon colours its driver is lit by: the record's - F-42959)
             self.vehicles.player_cabin_light = self.game.cabin_light_colors();
             // (its exterior neon record - the light quads and siColor2, F-17121 / F-96984)
@@ -5497,6 +5498,7 @@ impl App {
                 self.vehicles.player_trim = l.trim;
                 self.vehicles.player_rim_tint = crate::mc4::rim_tint_rows(&l.rim_raw);
                 self.vehicles.player_brushed = l.brushed;
+                self.vehicles.player_caliper = l.caliper;
                 self.vehicles.player_cabin_light = l.cabin_light;
                 self.vehicles.player_ext_neon = l.ext_neon;
                 self.vehicles.player_paint_type = l.paint_type;
