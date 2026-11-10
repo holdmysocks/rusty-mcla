@@ -73,6 +73,7 @@ mod flash_ui;
 mod selfmovie;
 mod flashpic;
 mod minimap_gpu;
+mod toparrow_gpu;
 mod gpuprof;
 mod passprof;
 mod uipass;
@@ -11404,6 +11405,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let tu3b = Instant::now();
             // (and the minimap into the HUD movie's texture of it - minimap_gpu.rs)
             minimap_gpu::render(&gpu.device, &gpu.queue, [&eg.renderer, &eg.renderer4, &eg.renderer2]);
+            // (and the top GPS arrow's picture - toparrow_gpu.rs)
+            toparrow_gpu::render(&gpu.device, &gpu.queue, [&eg.renderer, &eg.renderer4, &eg.renderer2]);
             let tu4 = Instant::now();
             let desc = egui_wgpu::ScreenDescriptor { size_in_pixels: [gpu.config.width, gpu.config.height], pixels_per_point: out.pixels_per_point };
             // (the original's menu flag: the UI pass at 4x while a menu is open - uipass.rs)
@@ -14713,6 +14716,7 @@ impl App {
         std::thread::spawn(|| { offroad::mesh(); });
         flashpic::init(device, queue);
         minimap_gpu::init(device, queue);
+        toparrow_gpu::init(device);
         Egui { ctx, state, renderer, renderer4, ui4: None, ui2: None, renderer2, selfs }
     }
 

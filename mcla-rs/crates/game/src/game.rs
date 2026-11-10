@@ -10683,7 +10683,15 @@ impl Game {
                         // `gpsArrowActive`, F-76348); TOP - the 3D arrow over the car, which takes
                         // the target in the car's level frame (right, up, back); NONE - neither
                         let arrow_mode = self.mc4.as_ref().map_or(0, |m| m.options.gps_arrow.min(2));
-                        let top = gps.filter(|_| arrow_mode == 1).map(|(_, d)| arrow_of(d).0.to_array());
+                        // (the 3D arrow follows the drawn car, as the minimap does - `hudmap::shown`: the pose between the
+                        // last two ticks, through the same level frame; the target point is the tick's. Its picture is made on
+                        // the GPU each frame it changes - toparrow_gpu.rs)
+                        let drawn = vehicles.cars.iter().find(|c| c.is_player).map(|c| crate::hudmap::shown(c, vehicles.render_alpha));
+                        let (car_pos, heading) = drawn.map_or((hud.player_pos, hud.player_heading), |(p, back)| (p, (-back.x).atan2(back.z)));
+                        let top = gps.filter(|_| arrow_mode == 1).map(|(_, d)| {
+                            let (s, c) = heading.sin_cos();
+                            crate::mc4::top_arrow_frame([Vec3::new(c, 0.0, s), Vec3::Y, Vec3::new(-s, 0.0, c)], car_pos, hud.player_pos + d).0.to_array()
+                        });
                         crate::mc4::top_arrow(&mut self.car_x, &self.data_dir, ctx, top, dt);
                         let gps = gps.filter(|_| arrow_mode == 0).map(|g| g.0);
                         fm.highlight = self.tutorial_box.as_ref().map_or(false, |t| t.0.contains("target") && t.2 <= 0.0);

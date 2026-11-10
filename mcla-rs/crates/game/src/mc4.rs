@@ -3282,33 +3282,49 @@ pub fn top_arrow_vertices(t: &TopArrowTune, m: &TopArrowModel, local: [f32; 3], 
         .collect()
 }
 
-/// The arrow's target as a picture, `size` x `size`, four bytes a point (red, green, blue
-/// not yet times the opacity, opacity) - what the blit's shader (ArrowBlit: colour / alpha,
-/// alpha x the fade) hands to the screen. The nearest face wins at each point (the target
-/// has a depth buffer); colours and opacity run evenly between a triangle's corners.
-/// (approx.) The target's own size and edge smoothing were not read: the picture is made
-/// at the size it is shown, each point from 3 x 3 samples. Faces behind others are taken as
-/// hidden outright (the opacity is 0.91 or more), whatever the order of drawing and the
-/// culling in force were.
-pub fn top_arrow_picture(t: &TopArrowTune, m: &TopArrowModel, size: usize, local: [f32; 3]) -> Vec<u8> {
-    use rayon::prelude::*;
-    const SS: usize = 3;
-    // (the picture's rows in bands of this many, each band worked on by itself: a sample's
-    // nearest face and colour depend only on that sample and the faces in their order, so the
-    // bands give the same bytes as one pass - test `top_arrow_picture_bands_are_one_pass`;
-    // the one pass took 3.9 ms a picture at 1440 lines, a new picture nearly every frame of a
-    // race: docs/PERFORMANCE.md 2026-11-09)
-    const BAND: usize = 4;
-    let mut out = vec![0u8; size * size * 4];
+/// Samples a pixel each way of the arrow's picture.
+pub const TOP_ARROW_SS: usize = 3;
+
+/// One face of the arrow on the picture's sample grid (`top_arrow_raster`): corners relative to the worked-on
+/// box's first sample, the doubled signed area, 1 / depth at each corner, colours and opacities, and the samples it
+/// may cover (half open, relative to the box).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct TopArrowFace {
+    pub x: [f32; 3],
+    pub y: [f32; 3],
+    pub area: f32,
+    pub inv: [f32; 3],
+    pub rgb: [[f32; 3]; 3],
+    pub alpha: [f32; 3],
+    pub sx: [u32; 2],
+    pub sy: [u32; 2],
+}
+
+/// The part of the picture the arrow can reach (pixels px0..px1 x py0..py1, bw x bh samples) and its faces in their
+/// order, set up as `top_arrow_picture` draws them (shared with the GPU's picture, toparrow_gpu.rs, so both start
+/// from the same numbers). None: nothing to draw.
+pub struct TopArrowRaster {
+    pub px0: usize,
+    pub py0: usize,
+    pub px1: usize,
+    pub py1: usize,
+    pub bw: usize,
+    pub bh: usize,
+    pub faces: Vec<TopArrowFace>,
+}
+
+pub fn top_arrow_raster(t: &TopArrowTune, m: &TopArrowModel, size: usize, local: [f32; 3]) -> Option<TopArrowRaster> {
+    const SS: usize = TOP_ARROW_SS;
     if size == 0 {
-        return out;
+        return None;
     }
     let v = top_arrow_vertices(t, m, local, 1.0);
     let s = (size * SS) as f32;
     // (only the part of the target the arrow can reach is worked on)
     let seen: Vec<&TopArrowVertex> = v.iter().filter(|p| p.depth > 0.01).collect();
     if seen.is_empty() {
-        return out;
+        return None;
     }
     let lo = |f: fn(&TopArrowVertex) -> f32| seen.iter().map(|p| f(p)).fold(f32::MAX, f32::min);
     let hi = |f: fn(&TopArrowVertex) -> f32| seen.iter().map(|p| f(p)).fold(f32::MIN, f32::max);
@@ -3317,22 +3333,11 @@ pub fn top_arrow_picture(t: &TopArrowTune, m: &TopArrowModel, size: usize, local
     let px1 = ((hi(|p| p.x) * size as f32).ceil().max(0.0) as usize + 1).min(size);
     let py1 = ((hi(|p| p.y) * size as f32).ceil().max(0.0) as usize + 1).min(size);
     if px1 <= px0 || py1 <= py0 {
-        return out;
+        return None;
     }
     let (bw, bh) = ((px1 - px0) * SS, (py1 - py0) * SS);
     let (ox, oy) = ((px0 * SS) as f32, (py0 * SS) as f32);
-    // (the faces in their order, on the samples' grid: corners, area, depths, the samples they cover)
-    struct Face {
-        x: [f32; 3],
-        y: [f32; 3],
-        area: f32,
-        inv: [f32; 3],
-        rgb: [glam::Vec3; 3],
-        alpha: [f32; 3],
-        sx: (usize, usize),
-        sy: (usize, usize),
-    }
-    let faces: Vec<Face> = m
+    let faces = m
         .tris
         .iter()
         .filter_map(|tri| {
@@ -3349,9 +3354,43 @@ pub fn top_arrow_picture(t: &TopArrowTune, m: &TopArrowModel, size: usize, local
             let sy0 = y0.min(y1).min(y2).floor().max(0.0) as usize;
             let sx1 = (x0.max(x1).max(x2).ceil().max(0.0) as usize + 1).min(bw);
             let sy1 = (y0.max(y1).max(y2).ceil().max(0.0) as usize + 1).min(bh);
-            Some(Face { x: [x0, x1, x2], y: [y0, y1, y2], area, inv: [1.0 / a.depth, 1.0 / b.depth, 1.0 / c.depth], rgb: [a.rgb, b.rgb, c.rgb], alpha: [a.alpha, b.alpha, c.alpha], sx: (sx0, sx1), sy: (sy0, sy1) })
+            Some(TopArrowFace { x: [x0, x1, x2], y: [y0, y1, y2], area, inv: [1.0 / a.depth, 1.0 / b.depth, 1.0 / c.depth], rgb: [a.rgb.into(), b.rgb.into(), c.rgb.into()], alpha: [a.alpha, b.alpha, c.alpha], sx: [sx0 as u32, sx1 as u32], sy: [sy0 as u32, sy1 as u32] })
         })
         .collect();
+    Some(TopArrowRaster { px0, py0, px1, py1, bw, bh, faces })
+}
+
+/// The arrow's target as a picture, `size` x `size`, four bytes a point (red, green, blue
+/// not yet times the opacity, opacity) - what the blit's shader (ArrowBlit: colour / alpha,
+/// alpha x the fade) hands to the screen. The nearest face wins at each point (the target
+/// has a depth buffer); colours and opacity run evenly between a triangle's corners.
+/// (approx.) The target's own size and edge smoothing were not read: the picture is made
+/// at the size it is shown, each point from 3 x 3 samples. Faces behind others are taken as
+/// hidden outright (the opacity is 0.91 or more), whatever the order of drawing and the
+/// culling in force were. The game makes the same bytes on the GPU (toparrow_gpu.rs); this is
+/// the reference and the `MCLA_TOPARROW_CPU=1` path.
+pub fn top_arrow_picture(t: &TopArrowTune, m: &TopArrowModel, size: usize, local: [f32; 3]) -> Vec<u8> {
+    use rayon::prelude::*;
+    const SS: usize = TOP_ARROW_SS;
+    // (the picture's rows in bands of this many, each band worked on by itself: a sample's
+    // nearest face and colour depend only on that sample and the faces in their order, so the
+    // bands give the same bytes as one pass - test `top_arrow_picture_bands_are_one_pass`;
+    // the one pass took 3.9 ms a picture at 1440 lines, a new picture nearly every frame of a
+    // race: docs/PERFORMANCE.md 2026-11-09)
+    const BAND: usize = 4;
+    let mut out = vec![0u8; size * size * 4];
+    let Some(TopArrowRaster { px0, py0, px1, py1, bw, faces, .. }) = top_arrow_raster(t, m, size, local) else { return out };
+    let faces: Vec<Face> = faces.iter().map(|f| Face { x: f.x, y: f.y, area: f.area, inv: f.inv, rgb: f.rgb.map(glam::Vec3::from), alpha: f.alpha, sx: (f.sx[0] as usize, f.sx[1] as usize), sy: (f.sy[0] as usize, f.sy[1] as usize) }).collect();
+    struct Face {
+        x: [f32; 3],
+        y: [f32; 3],
+        area: f32,
+        inv: [f32; 3],
+        rgb: [glam::Vec3; 3],
+        alpha: [f32; 3],
+        sx: (usize, usize),
+        sy: (usize, usize),
+    }
     out[py0 * size * 4..py1 * size * 4].par_chunks_mut(BAND * size * 4).enumerate().for_each(|(band, rows)| {
         let (qy0, qy1) = (py0 + band * BAND, (py0 + (band + 1) * BAND).min(py1));
         // (this band's samples: rows ys0..ys1 of the target's)
@@ -3444,13 +3483,33 @@ pub fn top_arrow(x: &mut CarLive, data_dir: &str, ctx: &egui::Context, local: Op
     let size = (r[2].max(r[3]) as usize).clamp(16, 2048);
     let Ok(mut shown) = SHOWN.lock() else { return };
     if !matches!(&*shown, Some((_, s, l)) if *s == size && *l == x.top_arrow.1) {
-        let image = egui::ColorImage::from_rgba_unmultiplied([size, size], &top_arrow_picture(t, model, size, x.top_arrow.1));
-        match shown.as_mut() {
-            Some((tex, s, l)) => {
+        // (on the GPU, toparrow_gpu.rs: the same picture, drawn into this texture before the UI pass; the texture is
+        // made blank once per size)
+        let gpu = crate::toparrow_gpu::enabled();
+        if gpu {
+            if !matches!(&*shown, Some((_, s, _)) if *s == size) {
+                let blank = egui::ColorImage::new([size, size], egui::Color32::TRANSPARENT);
+                match shown.as_mut() {
+                    Some((tex, s, _)) => {
+                        tex.set(blank, egui::TextureOptions::LINEAR);
+                        *s = size;
+                    }
+                    None => *shown = Some((ctx.load_texture("mc4_top_arrow", blank, egui::TextureOptions::LINEAR), size, [f32::NAN; 3])),
+                }
+            }
+            if let Some((tex, _, l)) = shown.as_mut() {
+                crate::toparrow_gpu::queue(crate::toparrow_gpu::Job { size: size as u32, raster: top_arrow_raster(t, model, size, x.top_arrow.1), tex: tex.id() });
+                *l = x.top_arrow.1;
+            }
+        }
+        let image = (!gpu).then(|| egui::ColorImage::from_rgba_unmultiplied([size, size], &top_arrow_picture(t, model, size, x.top_arrow.1)));
+        match (image, shown.as_mut()) {
+            (None, _) => {}
+            (Some(image), Some((tex, s, l))) => {
                 tex.set(image, egui::TextureOptions::LINEAR);
                 (*s, *l) = (size, x.top_arrow.1);
             }
-            None => *shown = Some((ctx.load_texture("mc4_top_arrow", image, egui::TextureOptions::LINEAR), size, x.top_arrow.1)),
+            (Some(image), None) => *shown = Some((ctx.load_texture("mc4_top_arrow", image, egui::TextureOptions::LINEAR), size, x.top_arrow.1)),
         }
     }
     let Some((tex, _, _)) = shown.as_ref() else { return };
