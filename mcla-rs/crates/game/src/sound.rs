@@ -477,6 +477,33 @@ impl Preloaded {
     }
 }
 
+/// A sound library read on a thread of its own (`load_ahead`), for the first sound update to take.
+struct AheadBox(Preloaded);
+// (the same hand-over as the start-up movie's sound thread, bootload.rs: made on the thread, then only used here)
+unsafe impl Send for AheadBox {}
+
+static AHEAD: std::sync::Mutex<Option<std::thread::JoinHandle<AheadBox>>> = std::sync::Mutex::new(None);
+
+/// Without the start-up movie (INTRO OFF, `start_at_once`): the sound library, the ambience beds and the stream index
+/// read on a thread while the game loads, as bootload.rs does behind the movie; the first sound update waits for it.
+/// They were read in the start screen's first tick instead: 5 s of its 6.5 s in #47's log (docs/PERFORMANCE.md
+/// 2026-11-09 (9)). MCLA_SOUND_AHEAD=0: not.
+pub fn load_ahead(root: &std::path::Path, cfg: &std::path::Path) {
+    if std::env::var("MCLA_SOUND_AHEAD").map_or(false, |v| v.trim() == "0") {
+        return;
+    }
+    let (root, cfg) = (root.to_path_buf(), cfg.to_path_buf());
+    let h = std::thread::Builder::new().name("sound library".into()).spawn(move || {
+        let t = std::time::Instant::now();
+        let p = Preloaded::load(&root, &cfg, true);
+        log::info!("startup: sound library read in {} ms (beside the loading)", t.elapsed().as_millis());
+        AheadBox(p)
+    });
+    if let Ok(h) = h {
+        *AHEAD.lock().unwrap_or_else(|e| e.into_inner()) = Some(h);
+    }
+}
+
 impl Sound {
     /// The player engine's start (F-44510 with ignition 0, from CopArrest's Racer_PlayIgnition F-35902 / F-91984):
     /// the engine sound stops and plays the ignition, cranks and flares (engaudio.rs `start`); from the request on the
@@ -648,7 +675,8 @@ impl Sound {
         let wet = rain > 0.0;
         a.set_listener(cam_pos, cam_right);
         if !self.lib_tried {
-            self.adopt(Preloaded::load(a.root(), &a.cfg, false));
+            let ahead = AHEAD.lock().unwrap_or_else(|e| e.into_inner()).take().and_then(|h| h.join().ok());
+            self.adopt(ahead.map_or_else(|| Preloaded::load(a.root(), &a.cfg, false), |b| b.0));
         }
         a.objects = self.lib.is_some();
         if let Some(lib) = &mut self.lib {

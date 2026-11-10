@@ -1392,7 +1392,12 @@ impl SoundLib {
                 let Ok(rd) = std::fs::read_dir(dir) else { return };
                 for e in rd.flatten() {
                     let p = e.path();
-                    if p.is_dir() {
+                    // (the entry's own type, from the directory listing: no second look at each of the ~42,000 files)
+                    let dir = match e.file_type() {
+                        Ok(t) if !t.is_symlink() => t.is_dir(),
+                        _ => p.is_dir(),
+                    };
+                    if dir {
                         walk(&p, m);
                     } else if let Some(mp3) = p.to_str().and_then(|s| s.strip_suffix(".txt")).filter(|s| s.ends_with(".mp3")) {
                         let Ok(t) = std::fs::read_to_string(&p) else { continue };

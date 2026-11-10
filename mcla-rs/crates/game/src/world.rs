@@ -1274,6 +1274,38 @@ pub fn decode_far(path: &Path, sectors: &[SectorInfo], records: &[SectorRecord])
     Ok(out)
 }
 
+/// The road network's file: the largest .r66 in city/sc.
+pub fn nav_file(assets: &Assets) -> Option<PathBuf> {
+    let rd = std::fs::read_dir(assets.path("resources/city/sc")).ok()?;
+    let mut best: Option<(u64, PathBuf)> = None;
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.extension().map_or(false, |x| x == "r66") {
+            let sz = e.metadata().map(|m| m.len()).unwrap_or(0);
+            if best.as_ref().map_or(true, |b| sz > b.0) {
+                best = Some((sz, p));
+            }
+        }
+    }
+    best.map(|b| b.1)
+}
+
+/// The traffic's lane curves (traffic.rs `rail_nav`) and the city's occluders made on threads while the game loads,
+/// from a road network of their own read from the same file (the world's is not shared): without the start-up
+/// movie they were made in the start screen's first tick, 2.2 s of it (docs/PERFORMANCE.md 2026-11-09 (9)).
+pub fn lanes_ahead(assets: &std::sync::Arc<Assets>, data_dir: &str) {
+    let a = assets.clone();
+    let _ = std::thread::Builder::new().name("lane curves".into()).spawn(move || {
+        if let Some(n) = nav_file(&a).and_then(|p| load_resource_file(&p).and_then(|r| NavSys::parse(&r)).ok()) {
+            let _ = crate::vehicles::traffic::rail_nav(&n);
+        }
+    });
+    let d = data_dir.to_string();
+    let _ = std::thread::Builder::new().name("occluders".into()).spawn(move || {
+        let _ = crate::occluder::city(&d);
+    });
+}
+
 pub struct World {
     pub index: WorldIndex,
     pub assets: Arc<Assets>,
@@ -1343,18 +1375,8 @@ impl World {
         }
         // road network: the largest .r66 in city/sc
         let mut nav = None;
-        if let Ok(rd) = std::fs::read_dir(assets.path("resources/city/sc")) {
-            let mut best: Option<(u64, PathBuf)> = None;
-            for e in rd.flatten() {
-                let p = e.path();
-                if p.extension().map_or(false, |x| x == "r66") {
-                    let sz = e.metadata().map(|m| m.len()).unwrap_or(0);
-                    if best.as_ref().map_or(true, |b| sz > b.0) {
-                        best = Some((sz, p));
-                    }
-                }
-            }
-            if let Some((_, p)) = best {
+        {
+            if let Some(p) = nav_file(&assets) {
                 match load_resource_file(&p).and_then(|r| NavSys::parse(&r)) {
                     Ok(n) => {
                         log::info!("navsys: {} links, {} zones, {} streets", n.links.len(), n.zones.len(), n.streets.len());

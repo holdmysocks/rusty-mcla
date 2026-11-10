@@ -14600,6 +14600,9 @@ impl App {
             self.audio = audio::Audio::new_offline(&self.opt.data_dir);
         }
         let root = self.audio.as_ref().map(|a| a.root().to_path_buf());
+        if let Some(a) = self.audio.as_ref() {
+            sound::load_ahead(a.root(), &a.cfg);
+        }
         self.load_game(gpu, root.as_deref(), None);
         if let Some(a) = self.audio.as_mut() {
             a.set_music_catalog(&self.game.career.strings);
@@ -14704,7 +14707,20 @@ impl App {
     fn load_game(&mut self, mut gpu: Gpu, audio_root: Option<&std::path::Path>, ui: Option<&egui::Context>) {
         let t0 = Instant::now();
         let lap = |what: &str| log::info!("startup: {} at {} ms", what, t0.elapsed().as_millis());
+        // the speech's and the police radio's clip indexes and scripts: files only, read on threads of their own from
+        // here and taken below (2.4 s and 3.4 s of #47's load in a row - docs/PERFORMANCE.md 2026-11-09 (9));
+        // MCLA_SPEECH_AHEAD=0: read in place
+        let ahead = std::env::var("MCLA_SPEECH_AHEAD").map_or(true, |v| v.trim() != "0");
+        let speech_job = audio_root.filter(|_| ahead).map(|r| {
+            let (d, r) = (self.opt.data_dir.clone(), r.to_path_buf());
+            let (d2, r2) = (d.clone(), r.clone());
+            (std::thread::spawn(move || speech::Speech::load(&d, &r)), std::thread::spawn(move || radio::Radio::load(&d2, &r2)))
+        });
         let assets = Arc::new(Assets::new(&self.opt.data_dir));
+        // (without the movie's UI context the first tick would make them - `world::lanes_ahead`)
+        if ui.is_none() && std::env::var("MCLA_LANES_AHEAD").map_or(true, |v| v.trim() != "0") {
+            world::lanes_ahead(&assets, &self.opt.data_dir);
+        }
         lap("egui");
         let mut world = World::new(assets).expect("world");
         world.index_globaltex();
@@ -14889,9 +14905,10 @@ impl App {
         lap("races, rims, catalog, career, save, cars");
         self.sound.amb_types = sound::load_amb_types(&self.opt.data_dir);
         if let Some(root) = audio_root {
-            self.speech = speech::Speech::load(&self.opt.data_dir, root);
+            let (sj, rj) = speech_job.map_or((None, None), |(s, r)| (Some(s), Some(r)));
+            self.speech = sj.and_then(|j| j.join().ok()).unwrap_or_else(|| speech::Speech::load(&self.opt.data_dir, root));
             lap("speech");
-            self.radio = radio::Radio::load(&self.opt.data_dir, root);
+            self.radio = rj.and_then(|j| j.join().ok()).unwrap_or_else(|| radio::Radio::load(&self.opt.data_dir, root));
             lap("police radio");
             self.sound.scripted_radio = self.radio.loaded();
         }
