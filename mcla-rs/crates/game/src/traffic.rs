@@ -2496,6 +2496,42 @@ impl<'a> RailLevel<'a> {
     }
 }
 
+/// What a walker's sphere 2 meets (F-10083's input): the first record's object - its archetype's type bits (+16), its
+/// matrix (slot 1: row 0, row 2, the place) and its bound's box width and length (x and z of max - min; the original's
+/// obstacle slots 4 / 6 - the walker's / prop's obstacle sizes are not decoded, the bound's box stands for them).
+#[derive(Clone, Copy, Debug)]
+pub struct AheadHit {
+    pub ty: u32,
+    pub row0: Vec3,
+    pub row2: Vec3,
+    pub place: Vec3,
+    pub w: f32,
+    pub l: f32,
+}
+
+impl RailLevel<'_> {
+    /// A walker's sphere 2 (F-59837 with k = 2: the shape type 512, include 0x103E, the states 7, 12 records) tested
+    /// at the next manager frame's start (F-78763 -> F-66549 -> the driver F-49353, `ball_level`), walker `me`'s own
+    /// instance excluded; the first record's object as F-10083 reads it.
+    pub fn walker_ahead(&self, me: usize, c: Vec3, r: f32) -> Option<AheadHit> {
+        use crate::physics::camprobe::{ball_level, LevelFilter};
+        let excluded = [INST_WALKER + me as u32];
+        let filter = LevelFilter::rail(0x103E, 7, &excluded);
+        let mut out = None;
+        self.near(c, r, &mut |objs| {
+            let l = ball_level(c, r, 512 << crate::tcp_rail::MATERIAL_SHIFT, 12, [0; 3], &filter, objs.iter().copied()).list;
+            if let Some(rec) = l.records.first().filter(|x| x.instance != 0) {
+                if let Some(o) = objs.iter().find(|o| o.inst == rec.instance) {
+                    let ext = o.bound.max - o.bound.min;
+                    out = Some(AheadHit { ty: o.arch_type, row0: o.m[0], row2: o.m[2], place: o.m[3], w: ext.x, l: ext.z });
+                }
+            }
+            true
+        });
+        out
+    }
+}
+
 /// F-23371's level for one rider's sweep: the queries F-66549 / F-27454 (`tcp_rail::level_query`: the type 640's
 /// material flags, the include mask - 0 is 0x812 -, the states 7) against `RailLevel`, the own car excluded.
 struct LevelSweep<'e, 'a> {

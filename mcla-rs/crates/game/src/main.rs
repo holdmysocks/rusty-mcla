@@ -7223,7 +7223,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let unpainted = self.game.mc4_unpainted().map(u8::from);
                         peds::RemarkCar { pos: c.state.pos, vel: c.state.vel, damage: Some((c.state.damage * max.max(1.0), max)), unpainted, price, spent_word }
                     });
-                    self.peds.update(&mut gpu, nav, &world.collider, &|p, r, out| props.obstacle_boxes_near(p, r, out), focus, &threats, signals, self.time_of_day, sim_dt);
+                    // (the walkers' sphere 2 tests the level as the traffic's frame left it: F-78763 at the manager frame's start)
+                    let level = self.vehicles.probe_level(&world.collider);
+                    self.peds.update(&mut gpu, nav, &world.collider, &|p, r, out| props.obstacle_boxes_near(p, r, out), &|me, c, r| level.walker_ahead(me, c, r), focus, &threats, signals, self.time_of_day, sim_dt);
                     // (the walkers' matrices as this update left them: what the next frame's car sweeps meet, F-96156's order)
                     self.vehicles.walkers = self.peds.instance_matrices();
                     // (the layout items' people: placed, removed, and what the spawners see next)

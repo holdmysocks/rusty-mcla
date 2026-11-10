@@ -800,6 +800,24 @@ struct Ground {
     /// manager frame's start, read by that frame's sidestep (F-26402)
     centre1: Vec3,
     pending1: bool,
+    /// sphere 2 (F-59837 with k = 2): its centre (T's place + (0 - T's row 2) x u, u the walker MWC's 23 bits x
+    /// 2.5 / 2^23), its pending flag, and what its test at the next frame's start met (F-10083's slot)
+    centre2: Vec3,
+    pending2: bool,
+    hit2: Option<crate::vehicles::traffic::AheadHit>,
+}
+
+/// F-59837 (the walker type's slot 60): sphere `k` of the walker (+944 + 1216 k) set at T's `place` (a plain copy of
+/// the matrix' +48) with the include mask of the table [0x800, 0x103A, 0x103E] (shape type 512, pending); sphere 2 moved
+/// ahead: + (0 - `row2`) x u, u = (the walker MWC's draw & 0x7FFFFF) x 2.5 / 2^23 (an int to float, one single
+/// multiply; the vector unit's subtract and multiply-add, flushed). The centre and the include mask.
+pub(crate) fn sphere_set(k: usize, place: Vec3, row2: Vec3, mwc: &mut crate::vehicles::parked::Mwc) -> (Vec3, u32) {
+    let include = [0x800, 0x103A, 0x103E][k];
+    if k != 2 {
+        return (place, include);
+    }
+    let u = (mwc.next() & 0x7F_FFFF) as f32 * f32::from_bits(0x34A0_0000);
+    (crate::tcp_rail::vmadd3(crate::tcp_rail::vdiff(Vec3::ZERO, row2), u, place), include)
 }
 
 /// F-49074 for a walker on the mesh, once per update of the port, after its behaviour step (`p.pos`, `p.ground.t_face`:
@@ -811,7 +829,7 @@ struct Ground {
 /// the centre is T's place) and reads sphere 0. So a draw is read once, in the next frame, against the centre of the
 /// draw. The port's update may cover no manager frame (no test, no ring step) or several (one test; the ring stepped
 /// once a frame).
-fn walker_ground(p: &mut Ped, col: &WorldCollider, cur: Vec3, frames: u32, draw0: bool, draw1: bool, dt: f32) {
+fn walker_ground(p: &mut Ped, col: &WorldCollider, cur: Vec3, frames: u32, draw0: bool, draw1: bool, draw2: bool, dt: f32) {
     let clip = matches!(p.state, State::Evade(_) | State::Angry(_) | State::Turn(_));
     let g = &mut p.ground;
     if clip {
@@ -830,13 +848,19 @@ fn walker_ground(p: &mut Ped, col: &WorldCollider, cur: Vec3, frames: u32, draw0
         }
     }
     if draw0 {
-        g.centre = t_place;
+        g.centre = sphere_set(0, t_place, -face, &mut p.mwc).0;
         g.pending = true;
     }
     // (sphere 1 drawn by the same F-59837: T's place, radius 0.667, mask 0x103A)
     if draw1 {
-        g.centre1 = t_place;
+        g.centre1 = sphere_set(1, t_place, -face, &mut p.mwc).0;
         g.pending1 = true;
+    }
+    // (sphere 2: the same centre moved ahead along T's facing by u = (MWC & 0x7FFFFF) x 2.5 / 2^23 - an int to float,
+    // one single multiply -, the vector unit's 0 - row 2 and multiply-add; T's row 2 is minus the facing)
+    if draw2 {
+        g.centre2 = sphere_set(2, t_place, -face, &mut p.mwc).0;
+        g.pending2 = true;
     }
     let pick = ground_pick(&g.hits, g.centre);
     g.hits.clear();
@@ -2306,10 +2330,6 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
         p.speed = 0.0;
         return 1.0;
     }
-    // the awareness spheres re-queried this frame (`due`: bit 1 around the walker, bit 2
-    // ahead of it, 0 .. 2.5 m drawn anew); their hits are acted on in the same frame
-    let query = due & 4 != 0;
-    let ahead = p.pos + fwd * (AHEAD_MAX * rand());
     // sliding aside
     if let Some((a, b, t0, len)) = p.slide {
         let t = t0 + dt;
@@ -2360,8 +2380,9 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
     // walker in the way is only ever passed on the left (F-10083 clears args +44 bit 0x40
     // for type 0x20). Each is reached by a turn of at most 130 degrees (turning radius 0.1:
     // arcs too short to sample) and swept by the capsule all the way; the shortest wins.
-    let hit = if query { sphere_hit(ahead, AWARE_RADIUS, me, peds, props, false) } else { None };
-    if let Some((o, who)) = hit {
+    // (what sphere 2 met: the first record's object, F-10083's class by its type bits; none of the classes is nothing)
+    let hit = p.ground.hit2.and_then(|h| ahead_kind(h.ty).map(|k| (h, k)));
+    if let Some((o, kind)) = hit {
         // F-10083 -> F-79428 -> F-92334 (`traffic::pass_pick`): the request on F-79428's stack - the walker's start (its
         // rail at its phase, y = 0, made unit; with no rail its place and facing), the blocker's matrix and box
         // (slot 1, slots 4 / 6), the walker's own width 0.6 (2 x 0.3), clearance 0.25, the gate
@@ -2377,17 +2398,15 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
             }
             None => (crate::tcp_rail::vadd3(p.pos, Vec3::ZERO), fwd),
         };
-        let row0 = o.1;
-        // (the port's blockers: a walker, type 0x20, or furniture, 0x2)
-        let ahead = ahead_request(if who == usize::MAX { AheadObst::Cast } else { AheadObst::Entity }, 0.0);
+        let ahead = ahead_request(kind, 0.0);
         let req = crate::vehicles::traffic::PassReq {
             p: sp,
             h0: sh,
-            row0,
-            row2: Vec3::new(-row0.z, 0.0, row0.x),
-            place: o.0,
-            w: o.2.x * 2.0,
-            l: o.2.y * 2.0,
+            row0: o.row0,
+            row2: o.row2,
+            place: o.place,
+            w: o.w,
+            l: o.l,
             w_own: 2.0 * PED_RADIUS,
             c: ahead.0,
             radius: crate::vehicles::traffic::radius_at(p.speed, ty.turn_radius),
@@ -2400,7 +2419,7 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
         };
         let pass = crate::vehicles::traffic::pass_pick(&req, &mut sweep, &mut |_, _| Vec::new(), &mut |_| false, &mut |_, _| true);
         if std::env::var("MCLA_PED_DUMP").is_ok() {
-            log::info!("ped avoid {} {} {} ahead {:.2}", p.key.1, if who == usize::MAX { "prop" } else { "ped" }, pass.is_some(), flat(o.0 - p.pos).dot(fwd));
+            log::info!("ped avoid {} {:#x} {} ahead {:.2}", p.key.1, o.ty, pass.is_some(), flat(o.place - p.pos).dot(fwd));
         }
         match pass {
             Some(r) => {
@@ -2411,7 +2430,7 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
             }
             None => {
                 if std::env::var("MCLA_PED_DUMP").is_ok() {
-                    log::info!("ped stop {} by {} at {:.1} m, half {:.2} {:.2} centre {:.1} {:.1}", p.key.1, if who == usize::MAX { "prop" } else { "ped" }, box_dist(&o, p.pos), o.2.x, o.2.y, o.0.x, o.0.z);
+                    log::info!("ped stop {} by {:#x} at {:.1} m, box {:.2} {:.2} centre {:.1} {:.1}", p.key.1, o.ty, flat(o.place - p.pos).length(), o.w, o.l, o.place.x, o.place.z);
                 }
                 p.stop = stop_time(ty.idle.anim.duration, &mut p.mwc);
                 p.stops += 1;
@@ -3589,7 +3608,7 @@ impl Peds {
         }
     }
 
-    pub fn update(&mut self, gpu: &mut Gpu, nav: &NavSys, col: &WorldCollider, obstacles: &dyn Fn(Vec3, f32, &mut Vec<Obst>), center: Vec3, threats: &[Threat], signals: Option<(&crate::signals::Signals, f32)>, hour: f32, dt: f32) {
+    pub fn update(&mut self, gpu: &mut Gpu, nav: &NavSys, col: &WorldCollider, obstacles: &dyn Fn(Vec3, f32, &mut Vec<Obst>), ahead: &dyn Fn(usize, Vec3, f32) -> Option<crate::vehicles::traffic::AheadHit>, center: Vec3, threats: &[Threat], signals: Option<(&crate::signals::Signals, f32)>, hour: f32, dt: f32) {
         self.hour = hour;
         if !self.enabled || self.dirs.is_empty() {
             return;
@@ -3703,6 +3722,15 @@ impl Peds {
                 let c = p.ground.centre1;
                 let near: Vec<FillCapsule> = caps.iter().filter(|o| o.obj != i && o.pos.distance_squared(c) < 9.0).copied().collect();
                 side = side_slots(&sphere_fill(c, AWARE_RADIUS, &near, 0), |_| WALKER_TYPE);
+            }
+            // sphere 2 the same way (F-78763: cleared every frame, a pending one tested against the level as it is now,
+            // `ahead`: the frame's level, the walker's own instance left out), read by this frame's F-10083
+            if frames > 0 {
+                p.ground.hit2 = None;
+                if p.ground.pending2 {
+                    p.ground.pending2 = false;
+                    p.ground.hit2 = ahead(i, p.ground.centre2, AWARE_RADIUS);
+                }
             }
             if on_mesh {
                 boxes.clear();
@@ -4033,7 +4061,7 @@ impl Peds {
                     }
                 }
                 // the ground, U and the drawn matrix (F-49074)
-                walker_ground(p, col, cur, frames, due & 1 != 0, due & 2 != 0, dt);
+                walker_ground(p, col, cur, frames, due & 1 != 0, due & 2 != 0, due & 4 != 0, dt);
             } else if let Some(g) = col.ground(p.pos, 0.7, 1.5) {
                 // (kerb walkers, the port's own: eased onto the collision)
                 p.pos.y += (g.point.y - p.pos.y) * (dt * 12.0).min(1.0);
@@ -4284,6 +4312,26 @@ mod tests {
     /// passing rail's builder F-92334 stubbed, verified on its own): the gate, the empty slot and the instance with no
     /// archetype, the type's class and the obstacle's chain, the request words F-92334 is handed, the stop on a refusal
     /// (M+96 = the obstacle's place) and the stop count's reset (M+260 & 7).
+    #[test]
+    fn sphere_set_matches_the_original() {
+        // F-59837 run offline for its three spheres (tools/sphere2_reference.py, 4,000 cases, 1,968 of sphere 2): the
+        // centre's three words, the walker MWC after the draw, the include mask, the radius, the pending word, type 512
+        let h = |t: &str| u32::from_str_radix(&t.replace('_', ""), 16).unwrap();
+        let f = |w: u32| f32::from_bits(w);
+        let mut n = 0;
+        for l in include_str!("testdata/sphere2_ref.txt").lines() {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<u32> = i.split(' ').map(h).collect();
+            let w: Vec<u32> = o.split(' ').map(h).collect();
+            let mut mwc = crate::vehicles::parked::Mwc { lo: c[6], carry: c[7] };
+            let (got, inc) = super::sphere_set(c[9] as usize, glam::Vec3::new(f(c[3]), f(c[4]), f(c[5])), glam::Vec3::new(f(c[0]), f(c[1]), f(c[2])), &mut mwc);
+            assert_eq!([got.x.to_bits(), got.y.to_bits(), got.z.to_bits(), mwc.lo, mwc.carry, inc], [w[0], w[1], w[2], w[7], w[8], w[6]], "{l}");
+            assert_eq!([w[3], w[4], w[5]], [c[8], 1, 512], "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
+    }
+
     #[test]
     fn walker_ahead_matches_the_original() {
         use super::{ahead_kind, ahead_request, ahead_runs, AheadObst};
