@@ -19353,6 +19353,8 @@ mod tests {
         let d = |two: bool, air: bool, x: f32| S23Drive { present: true, vel_xz: 20.0, speed: 20.0, two, wheelie: false, airborne: air, pos: glam::Vec3::new(x, 0.0, 0.0), placed: true };
         g.mc4b_tick(1.0, d(true, false, 0.0));
         let mile = 20.0 * crate::mc4b::MPH * crate::mc4b::PER_HOUR;
+        // (gkDS waits for the flush F-15445; gk2W is the gyro's own per-frame submit)
+        g.mc4_drive_flush();
         assert!((g.mc4_stat("gkDS", 0) - mile as f64).abs() < 1e-5 && (g.mc4_stat("gk2W", 0) - mile as f64).abs() < 1e-5);
         // (a wheel down takes the take-off point; the first frame is a set-down)
         g.mc4b_tick(0.1, d(false, false, 0.0));
@@ -19712,15 +19714,36 @@ mod tests {
         g.fresh_game = false;
         g.mode = crate::game::Mode::FreeRoam;
         let d = crate::mc4b::S23Drive { present: true, vel_xz: 20.0, speed: 20.0, ..Default::default() };
-        let (p0, c0) = (g.mc4_stat("ghTP", 0), g.mc4_stat("khTC", 0));
-        g.mc4b_tick(1.0, d);
-        let hours = 1.0 / 3600.0;
+        let (p0, c0, k0) = (g.mc4_stat("ghTP", 0), g.mc4_stat("khTC", 0), g.mc4_stat("gkDS", 0));
+        // (the flush F-15445 every 100th tick: nothing before it, then the 100 ticks' miles and hours in one f32 add each)
+        let mut odo = 0.0f32;
+        for k in 0..100 {
+            if k == 99 {
+                assert_eq!((g.mc4_stat("ghTP", 0), g.mc4_stat("gkDS", 0)), (p0, k0), "nothing before the flush");
+            }
+            g.mc4b_tick(0.016, d);
+            odo += 20.0 * crate::mc4b::MPH * 0.016 * crate::mc4b::PER_HOUR;
+        }
+        let mut clock = 0.0f32;
+        for _ in 0..100 {
+            clock += 0.016;
+        }
+        let hours = clock * crate::mc4b::PER_HOUR;
         // (float statistics add in f32: F-45364)
-        let f32_add = |a: f64| (a as f32 + hours as f32) as f64;
-        assert!(g.mc4_stat("ghTP", 0) == f32_add(p0) && g.mc4_stat("khTC", 0) == f32_add(c0));
+        let f32_add = |a: f64, b: f32| (a as f32 + b) as f64;
+        assert!(g.mc4_stat("ghTP", 0) == f32_add(p0, hours) && g.mc4_stat("khTC", 0) == f32_add(c0, hours));
+        assert_eq!(g.mc4_stat("gkDS", 0), f32_add(k0, odo));
         assert!(!g.mc4_stat_present("gvTS", 0));
         let car = g.car_dirs.get(g.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap();
         assert!(g.career.ostats.get(&format!("vkDT/{car}")).copied().unwrap_or(0.0) > 0.0);
+        // (a large total keeps counting: 1.6 s of driving on 20,000 miles, where one frame's would round to nothing)
+        g.career.ostats.insert("gkDS/0".into(), 20_000.0);
+        g.career.stats.insert("gkDS".into(), 20_000);
+        for _ in 0..100 {
+            g.mc4b_tick(0.016, d);
+        }
+        assert!(g.mc4_stat("gkDS", 0) > 20_000.0);
+        assert_eq!((20_000.0f32 + 20.0 * crate::mc4b::MPH * 0.016 * crate::mc4b::PER_HOUR), 20_000.0, "a frame's miles alone round away");
         let _ = std::fs::remove_dir_all(&dir);
     }
     /// The statistics submit (F-79933): the five operations, the 1000-record limit, nothing on line or in a goal attack,

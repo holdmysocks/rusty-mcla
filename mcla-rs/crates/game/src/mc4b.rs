@@ -97,6 +97,13 @@ pub struct S23bLive {
     pub race_serial: u64,
     /// the music manager's song-line clock (+36; +40 = 15 s): the line and its statistics again when it runs out
     pub song_t: f32,
+    /// the driving flush F-15445: the per-car tracker's miles since the last flush (F-53047's +20, f32) and the car they are
+    /// for, the game clock (seconds) and its value at the last flush (the player's +1224), the pose sampler's count (+920)
+    pub odo: f32,
+    pub odo_car: Option<String>,
+    pub clock: f32,
+    pub clock_last: Option<f32>,
+    pub flush_n: u32,
 }
 
 /// The music manager's interval between two song lines (+40, set to 15.0 by its constructor F-96264;
@@ -391,7 +398,10 @@ impl Game {
 
 /// mph per m/s (0x8201CD1C) and hours per second (0x8202F80C).
 pub const MPH: f32 = 2.237;
-pub const PER_HOUR: f32 = 0.000_277_778;
+/// 1 / 3600 as the image holds it (the f32 nearest; the literal 0.000277778 was 7 ulps off)
+pub const PER_HOUR: f32 = 1.0 / 3600.0;
+/// The driving flush F-15445 runs every 100th call of the player's pose sampler (F-61454's +920 count; taken as once a frame)
+pub const FLUSH_EVERY: u32 = 100;
 
 /// The races of the city table that count for aAAR / aARC: sub types Ordered, Circuit,
 /// Unordered, Blitz (1, 2, 3, 5 of F-93280's table 0x827E930C).
@@ -435,6 +445,30 @@ pub fn album_dir(data_dir: &str) -> std::path::PathBuf {
 pub const ALBUM_SLOTS: usize = 16;
 
 impl Game {
+    /// F-15445: the tracker's miles to `vkDT` / `gkDS` (`nkDS` is on-line), the tracker cleared; the hours since the last flush
+    /// to `khTC` / `ghTC` in "Cruising" and `ghTP`, when the clock has not gone back.
+    pub fn mc4_drive_flush(&mut self) {
+        let x = &mut self.opt_x.s23b;
+        x.flush_n = 0;
+        let (odo, car, clock, last) = (std::mem::take(&mut x.odo), x.odo_car.clone(), x.clock, x.clock_last);
+        if let Some(car) = car {
+            use crate::mc4::{stat_add_bits, stat_bits, stat_from_bits, StatType};
+            let e = self.career.ostats.entry(format!("vkDT/{car}")).or_insert(0.0);
+            *e = stat_from_bits(StatType::Float, stat_add_bits(StatType::Float, stat_bits(StatType::Float, *e), odo.to_bits()));
+        }
+        self.mc4_stat_add("gkDS", 0, odo as f64);
+        let Some(last) = last else { return };
+        if clock >= last {
+            let hours = ((clock - last) * PER_HOUR) as f64;
+            if self.mode == Mode::FreeRoam {
+                self.mc4_stat_add("khTC", 0, hours);
+                self.mc4_stat_add("ghTC", 0, hours);
+            }
+            self.mc4_stat_add("ghTP", 0, hours);
+            self.opt_x.s23b.clock_last = Some(clock);
+        }
+    }
+
     /// Once a frame from the step 23 tick: the driving statistics, the test drive.
     pub fn mc4b_tick(&mut self, dt: f32, d: S23Drive) {
         // ---- the showroom's test drive (F-22067) ----
@@ -465,23 +499,32 @@ impl Game {
             return;
         }
         let miles = |v: f32| (v * MPH * sim * PER_HOUR) as f64;
-        self.mc4_stat_add("gkDS", 0, miles(d.vel_xz));
-        // (the flush F-15445 adds the same distance to the vehicle's own `vkDT` - the sub id is the vehicle table's index, kept
-        // here under the vehicle's name like the importer's keys - and adds the hours: `ghTP` always, `khTC` and `ghTC` while the game is in "Cruising"
-        // (free roam). The hours' clock is taken as the game's own, stopped in the pause and slowed by slow motion
-        // (the clock object's +20: not checked); the first flush's hours are not decoded.)
+        // (the tracker F-53047 sums the miles every frame in f32 (+20 += |v xz| x 2.237 x dt x 1/3600); the flush F-15445 hands
+        // them to the statistics: `vkDT` (the vehicle's own - its sub id the vehicle table's index, kept here under the vehicle's
+        // name like the importer's keys), `gkDS`, `nkDS` (on-line: refused), and the hours since the last flush, (clock - +1224) x
+        // 1/3600: `khTC` and `ghTC` while the game is in "Cruising" (free roam), `ghTP` always. Each submit adds in f32, so the
+        // flush's ~1.7 s chunks keep counting on a large total where a frame's would round away. The flush runs every 100th
+        // pose sample, at the racer's reset and when the player goes (F-61454, F-41331, F-55514): here every 100th tick and when
+        // the vehicle changes. The clock is the game's own (stopped in the pause, slowed by slow motion; the clock object's +20 not
+        // checked); the hours before the first tick are not counted.)
         let car = self.car_dirs.get(self.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase());
-        if let Some(car) = car {
-            *self.career.ostats.entry(format!("vkDT/{car}")).or_insert(0.0) += miles(d.vel_xz);
+        {
+            let x = &mut self.opt_x.s23b;
+            if x.odo_car.is_some() && x.odo_car != car {
+                self.mc4_drive_flush();
+            }
+            let x = &mut self.opt_x.s23b;
+            x.odo_car = car;
+            x.odo += miles(d.vel_xz) as f32;
+            x.clock += sim;
+            x.clock_last.get_or_insert(x.clock - sim);
+            x.flush_n += 1;
+            if x.flush_n >= FLUSH_EVERY {
+                self.mc4_drive_flush();
+            }
         }
         // (no top speed `gvTS`: the flush's write of it (operation 2 when the tracker's +48 > 10) reads +48 after the
         // tracker's reset F-92167 has zeroed it, so the original never records one - and no save has the record)
-        let hours = (sim * PER_HOUR) as f64;
-        self.mc4_stat_add("ghTP", 0, hours);
-        if self.mode == Mode::FreeRoam {
-            self.mc4_stat_add("khTC", 0, hours);
-            self.mc4_stat_add("ghTC", 0, hours);
-        }
         if d.two {
             self.mc4_stat_add("gk2W", 0, miles(d.speed));
         }
