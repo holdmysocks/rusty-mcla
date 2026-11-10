@@ -1471,6 +1471,11 @@ pub struct World {
     /// sounds and people meet the city bound there. Only the port's own readers of the drawn rooms use them (the
     /// garage's spot search, the rain's floor: `WorldCollider::raycast_with`).
     pub set_collider: crate::physics::collision::WorldCollider,
+    /// the garage rooms decoded at the start (`request_set`) while the prop manager's slot does not hold them: out of the
+    /// draw list (`sets`), as the original's are not loaded (`load_room`)
+    rooms_held: HashMap<usize, GpuSector>,
+    /// the garage room in the slot (its index, `SET_ID` + it): loaded by the garage's enter script, dropped by its exit script
+    pub room: Option<usize>,
     /// the far city's sector models that are not shown now (their sector itself is loaded);
     /// the shown ones are among `sets`
     far_hidden: HashMap<usize, GpuSector>,
@@ -1602,6 +1607,8 @@ impl World {
             sets: HashMap::new(),
             set_bounds: HashMap::new(),
             set_collider: Default::default(),
+            rooms_held: HashMap::new(),
+            room: None,
             far_hidden: HashMap::new(),
             resident: HashMap::new(),
             fades: vec![LodFade::default(); rec_box.len()],
@@ -1857,7 +1864,12 @@ impl World {
                     self.set_bounds.insert(id, (mn, mx));
                     let gs = self.upload(gpu, cs);
                     log::info!("interior set {}: {} batches, {} triangles, bounds {:.0?} .. {:.0?}", id - SET_ID, gs.batches.len(), gs.tris, gs.caster_min, gs.caster_max);
-                    self.sets.insert(id, gs);
+                    // (drawn only while the slot holds it - `load_room`; MCLA_ROOMS_OLD=1: all three always, as before)
+                    if self.room == Some(id - SET_ID) || std::env::var_os("MCLA_ROOMS_OLD").is_some() {
+                        self.sets.insert(id, gs);
+                    } else {
+                        self.rooms_held.insert(id, gs);
+                    }
                     self.set_collider.sectors.insert(id, SectorMesh::build(col));
                 }
                 Ok(mut cs) => {
@@ -1993,7 +2005,7 @@ impl World {
     /// only after the load (core_rolling_prototype 0x958), so it is read here at once, not on a worker. False when the
     /// slot is taken or the file is missing.
     pub fn load_dressing(&mut self, gpu: &mut Gpu, name: &str) -> bool {
-        if self.sets.contains_key(&DRESS_ID) {
+        if self.sets.contains_key(&DRESS_ID) || self.room.is_some() {
             return false;
         }
         let path = self.assets.path("resources/cutsceneitems").join(format!("{}.r102", name.to_ascii_lowercase()));
@@ -2014,6 +2026,37 @@ impl World {
     /// The set dressing's unload (F-54343 sets the slot's request; the machine releases the drawable, state 0).
     pub fn drop_dressing(&mut self) {
         self.sets.remove(&DRESS_ID);
+    }
+
+    /// A garage room into the prop manager's slot: `<x>_garage_enter_cine` (and REDLIGHT_GH_01_GARAGE_ON_ENTER,
+    /// GARAGE_BEACHES_PAYBACK_ON_ENTER) `LoadSetDressing('<room>_set_items', 0)` before its scene. The slot takes it only
+    /// while it is empty (F-19063); true when the room is (now) the slot's.
+    pub fn load_room(&mut self, k: usize) -> bool {
+        if self.room == Some(k) || std::env::var_os("MCLA_ROOMS_OLD").is_some() {
+            return true;
+        }
+        if self.room.is_some() || self.sets.contains_key(&DRESS_ID) {
+            return false;
+        }
+        self.room = Some(k);
+        if let Some(gs) = self.rooms_held.remove(&(SET_ID + k)) {
+            self.sets.insert(SET_ID + k, gs);
+        }
+        log::info!("garage room {k} loaded");
+        true
+    }
+
+    /// The exit script's `UnloadSetDressing` after the `_ext` scene (F-50072 -> F-54343(0)): the room out of the draw list.
+    pub fn drop_room(&mut self) {
+        if std::env::var_os("MCLA_ROOMS_OLD").is_some() {
+            return;
+        }
+        if let Some(k) = self.room.take() {
+            if let Some(gs) = self.sets.remove(&(SET_ID + k)) {
+                self.rooms_held.insert(SET_ID + k, gs);
+            }
+            log::info!("garage room {k} unloaded");
+        }
     }
 
     /// Load an interior set in the background.

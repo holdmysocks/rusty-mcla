@@ -647,6 +647,8 @@ struct App {
     /// its flag (true: FinishScene takes it); `scene_set_unload`: a script's UnloadSetDressing asked (F-50072)
     scene_set: Option<(String, bool)>,
     scene_set_unload: bool,
+    /// the garage's `_ext` scene plays: its exit script unloads the room when it is over (`World::drop_room`)
+    room_exit: bool,
     /// the hangout whose core loaded its set-up's set dressing (+1284, flag 0) at the pull-in: `layout::HANGOUT_ITEMS`' index
     hang_set: Option<usize>,
     /// a scene's own fade down and up (`cine::SCENE_FADES`)
@@ -1602,6 +1604,7 @@ impl App {
             f02c_fade: 0,
             scene_set: None,
             scene_set_unload: false,
+            room_exit: false,
             hang_set: None,
             f02c_mask: Default::default(),
             scene_fade: Default::default(),
@@ -6211,6 +6214,19 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             if story.is_some() || dive_to.is_none() {
                                 self.game.career_loading = false;
                             }
+                            // (the room: `<x>_garage_enter_cine` 0x14b..0x16c `LoadSetDressing('<room>_set_items', 0)` before its
+                            // `_ent` scene; of the event scripts that play a story scene here, REDLIGHT_GH_01_GARAGE_ON_ENTER 0x96..0xb7
+                            // the Hollywood room before cut_story_hollywood_garage_intro, GARAGE_BEACHES_PAYBACK_ON_ENTER 0x61c..0x63e the
+                            // Beaches room before cut_story_payback_intro; the others load none)
+                            let room = match story.map(|i| self.cuts.scenes[i].name.as_str()) {
+                                None => Some(gi.garage),
+                                Some("CUT_STORY_HOLLYWOOD_GARAGE_INTRO") => Some(0),
+                                Some("CUT_STORY_PAYBACK_INTRO") => Some(1),
+                                Some(_) => None,
+                            };
+                            if let Some(k) = room {
+                                world.load_room(k);
+                            }
                             if let Some(i) = story {
                                 self.cuts.queue(i);
                                 self.game.car_x.garage_after_scene = true;
@@ -6482,7 +6498,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if played {
                         self.cine_free = true;
                         self.cine_caption = Some(String::new());
-                    } else if let Some(c) = self.vehicles.player_mut() {
+                        self.room_exit = true;
+                    } else {
+                        // (no `_ext` scene in the port's own ways out: the room goes now)
+                        world.drop_room();
+                    }
+                    if let Some(c) = self.vehicles.player_mut().filter(|_| !played) {
                         c.state = physics::car::CarState::new(p + Vec3::Y * 0.3, yaw);
                         c.pose_history.reset();
                         c.placed = false;
@@ -13956,6 +13977,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 };
                 self.game.selected_car = self.game.current_car;
                 self.game.mode = Mode::Garage;
+                // (the port's own ways into the garage - the pause menu's RETURN TO GARAGE, the main menu - pass no enter
+                // script: the nearest garage's room is put in the slot here; after an entry it is there already)
+                if world.room.is_none() {
+                    let p = self.vehicles.player().map_or(Vec3::ZERO, |c| c.state.pos);
+                    world.load_room(garagein::nearest(p));
+                }
                 // (back from a test drive: the showroom again, as `garage.WarpToGarage` leaves it)
                 if self.game.test_drive.take().is_some() {
                     self.game.showroom_again = true;
@@ -14493,6 +14520,12 @@ impl App {
     /// end); FIND_SH_02C's core loads its own with the flag 0 and unloads it after its fade down (`scene_set_unload`). The
     /// slot takes no second set while one is loaded (F-19063). Drawn in world coordinates (F-51002), with no bound.
     fn dressing_tick(&mut self, gpu: &mut Gpu, world: &mut World) {
+        // (a garage's room: `<x>_garage_exit_cine` waits for its `_ext` scene (IsChildFinished) and then
+        // `UnloadSetDressing('<room>_set_items')`: hw 0x18c..0x1ac, be 0x18e..0x1af, sc 0x185..0x1ab)
+        if self.room_exit && self.cine.playing.is_none() {
+            self.room_exit = false;
+            world.drop_room();
+        }
         // (a hangout's: UnloadSetDressing once its core's flow ends - right after a race is taken (local 0x2286,
         // wager the same), or, the panel left, once the player's car is at least the core's radius +64 (flat,
         // VFlatDist, polled every 500 ms) from its centre +52: local 0x2328..0x2391, wager 0x65fc..0x6667)
