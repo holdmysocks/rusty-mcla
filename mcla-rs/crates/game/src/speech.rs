@@ -78,10 +78,12 @@ pub struct Ask<'a> {
 }
 
 /// A request waiting in the manager's ring (the 268-byte records at +28: the scenario +256, the sender +260, the names
-/// +0 / +128, forced +264, the byte +265; F-13869 pushes, F-85023 pops).
+/// +0 / +128, forced +264, the byte +265; F-13869 pushes, F-85023 pops). The ring is the manager's, one for both senders:
+/// `radio` = the police radio's request (sender `RADIO`) with its sender and receiver call signs (+0 / +128).
 #[derive(Clone, Debug)]
 struct Pending {
     key: String,
+    radio: Option<(String, String)>,
     profile: String,
     attach: bool,
     sender: Option<Sender>,
@@ -163,6 +165,9 @@ pub struct Speech {
     pub radio_on: bool,
     /// a start cut the radio's scenario (F-73277 stops it): the game stops the radio
     pub cut_radio: bool,
+    /// the radio's request F-85023 took out of the ring this update (scenario, sender, receiver): the game hands it to
+    /// the radio (`radio::Radio::say_from`), whose start is the port's F-95157 for the sender `RADIO`
+    pub radio_next: Option<(String, (String, String))>,
 }
 
 fn attr<'a>(s: &'a str, name: &str) -> Option<&'a str> {
@@ -345,7 +350,7 @@ impl Speech {
                 return false;
             }
             let Ask { profile, attach, sender, voice, forced, keep, .. } = ask;
-            self.pending.push_back(Pending { key, profile: profile.to_string(), attach, sender, voice, forced, keep });
+            self.pending.push_back(Pending { key, radio: None, profile: profile.to_string(), attach, sender, voice, forced, keep });
             return true;
         }
         if !ask.forced && (self.clock < g.last + g.frequency || self.rand(0, 99) >= g.probability) {
@@ -426,6 +431,21 @@ impl Speech {
         self.held = ask.keep;
         log::debug!("speech: {} started at {:.3} s (script {}, last {})", key, self.clock, pick, last);
         true
+    }
+
+    /// The radio's waiting request (F-14569's report with +40 = 1 -> F-95157 with r10 = 1, sender `RADIO`) while a
+    /// scenario plays: into the one ring (refused when 8 wait - the player's waiting requests count too).
+    pub fn queue_radio(&mut self, scenario: &str, parties: (String, String)) -> bool {
+        if self.pending.len() == 8 {
+            return false;
+        }
+        self.pending.push_back(Pending { key: scenario.to_string(), radio: Some(parties), profile: String::new(), attach: false, sender: Some(RADIO), voice: None, forced: false, keep: false });
+        true
+    }
+
+    /// Requests waiting in the ring (both senders').
+    pub fn waiting(&self) -> usize {
+        self.pending.len()
     }
 
     /// F-73277's bookkeeping: the lines to come, the scenario playing and its sender gone.
@@ -654,12 +674,20 @@ impl Speech {
         if !self.busy() && !self.radio_on {
             if let Some(p) = self.pending.pop_front() {
                 self.stop_now(a);
+                if let Some(parties) = p.radio {
+                    self.radio_next = Some((p.key, parties));
+                    return self.mixer_tick(a);
+                }
                 let ask = Ask { profile: &p.profile, attach: p.attach, sender: p.sender, voice: p.voice, forced: p.forced, keep: p.keep, wait: false };
                 self.start(&p.key, ask);
             }
         }
-        // the scenario's dynamic mixer while it plays (F-70477 / F-38026: switched on when a line starts - not while the
-        // first line is held)
+        self.mixer_tick(a);
+    }
+
+    /// The scenario's dynamic mixer while it plays (F-70477 / F-38026: switched on when a line starts - not while the
+    /// first line is held).
+    fn mixer_tick(&mut self, a: &mut Audio) {
         let on = self.busy() && !self.held && !self.mixer.is_empty();
         if on != self.mixer_on && !self.mixer.is_empty() {
             a.obj_scene(&self.mixer, on);
@@ -945,6 +973,31 @@ mod tests {
         assert!(sp.pending.is_empty() && sp.cur_key.as_deref() == Some("T"));
     }
 
+    /// The one ring of 8 (F-13869 / F-85023) holds both senders' waiting requests in their order: a radio request
+    /// taken out is handed to the radio (`radio_next`), the next update's is the player's; 8 waiting refuse either.
+    #[test]
+    fn both_senders_wait_in_the_one_ring() {
+        let mut sp = Speech::load("D:/nonexistent", Path::new("D:/nonexistent"));
+        let line = || vec![Step::Play { asset: "L".into(), player: true, voice: None, rec: 0, force: 0, post: None, attach: false }];
+        sp.scenarios.insert("T".into(), vec![line()]);
+        sp.gates.insert("T".into(), Gate { priority: 0, delay: 0.0, frequency: 0.0, probability: 100, last: -1.0e9, last_script: -1, force_sender: true });
+        sp.radio_on = true;
+        assert!(sp.queue_radio("REPORT_END_PURSUIT", ("4ADAM8".into(), "DISPATCH".into())));
+        assert!(sp.request_taunt("T", ""));
+        for _ in 0..6 {
+            assert!(sp.queue_radio("R", (String::new(), String::new())));
+        }
+        assert!(!sp.request_taunt("T", "") && !sp.queue_radio("R", (String::new(), String::new())));
+        assert_eq!(sp.waiting(), 8);
+        let Some(mut a) = std::env::var("MCLA_DATA_DIR").ok().and_then(|d| crate::audio::Audio::new_offline(&d)) else { return };
+        sp.radio_on = false;
+        sp.update(&mut a, 0.0);
+        assert_eq!(sp.radio_next.take(), Some(("REPORT_END_PURSUIT".to_string(), ("4ADAM8".to_string(), "DISPATCH".to_string()))));
+        assert!(!sp.busy() && sp.waiting() == 7);
+        sp.update(&mut a, 0.0);
+        assert!(sp.radio_next.is_none() && sp.cur_key.as_deref() == Some("T") && sp.waiting() == 6);
+    }
+
     #[test]
     fn speech_start_matches_the_original() {
         let mut lines = include_str!("testdata/speech_start_ref.txt").lines();
@@ -1000,7 +1053,7 @@ mod tests {
                 };
             }
             for _ in 0..w[7] {
-                sp.pending.push_back(Pending { key: "X".into(), profile: String::new(), attach: false, sender: None, voice: None, forced: false, keep: false });
+                sp.pending.push_back(Pending { key: "X".into(), radio: None, profile: String::new(), attach: false, sender: None, voice: None, forced: false, keep: false });
             }
             let held_before = sp.held;
             crate::sndobj::set_audio_rng_state((w[21], w[22]));

@@ -7642,12 +7642,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.radio.note(&rctx, world.nav.as_ref());
                     // (the one speech manager: each speaker sees the other's scenario playing)
                     talk_sync(&mut self.speech, &mut self.radio);
-                    // (the speech update F-85023: a queued request when no line plays)
-                    self.radio.pump(&rctx);
                     match ev {
                         // (the ladder's start, F-52240: its report +40 = 1, queued while a line plays)
                         Some(police::Event::PullOver) => {
-                            self.radio.say_queued("REPORT_PULL_SUSPECT_OVER", &rctx);
+                            self.radio.say_queued(&mut self.speech, "REPORT_PULL_SUSPECT_OVER", &rctx);
                         }
                         // (siren/RULE.md section 7: hitting the cop adds iDamagePoliceVehPoints 600 at once; the
                         // score reaching 600 by itself; driving off during the ticket)
@@ -7673,7 +7671,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             };
                             // (the ladder's starts queue theirs, +40 = 1)
                             if self.police.report_bits.is_some() {
-                                self.radio.say_queued(line, &rctx);
+                                self.radio.say_queued(&mut self.speech, line, &rctx);
                             } else {
                                 self.radio.say(line, &rctx);
                             }
@@ -8571,7 +8569,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (the speech clock adds G+92, the frame's real time, not clamped - F-85023; a line holds while timer 0 is paused)
             self.speech.paused = self.game.mode == Mode::Paused && self.game.replay.is_none();
             let real_dt = if self.opt.fixed_dt > 0.0 || self.test_render_dt.is_some() { dt } else { self.frame_ms * 0.001 };
+            talk_sync(&mut self.speech, &mut self.radio);
             self.speech.update(a, real_dt);
+            // (F-85023 took the radio's request out of the one ring: asked again through the radio's whole gate)
+            if let Some((scenario, (sender, receiver))) = self.speech.radio_next.take() {
+                if self.radio.loaded() {
+                    let rctx = radio_ctx(&self.vehicles, &world, self.time_of_day);
+                    self.radio.say_from(&scenario, sender, receiver, &rctx);
+                }
+            }
             self.radio.units = self.sound.radio_units();
             self.radio.update(a, dt);
             talk_sync(&mut self.speech, &mut self.radio);

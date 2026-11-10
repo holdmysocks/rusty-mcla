@@ -116,9 +116,6 @@ pub struct Radio {
     queue: VecDeque<(String, f32)>,
     wait: f32,
     rng: u32,
-    /// the speech manager's request queue (+28 + 268 i, write +2172, read +2176, count +2180; F-95157 adds a
-    /// request with its queue flag there while a line plays, 8 at most): the scenario and its parties
-    requests: VecDeque<(String, (String, String))>,
     /// the player's speaker plays a scenario (the one speech manager's +2260 with +2252 the player's, `speech::PLAYER`,
     /// rank 1 against the radio's 0): set by the game before the radio's requests
     pub speech_on: bool,
@@ -307,28 +304,17 @@ impl Radio {
         self.say_line(scenario, parties, ctx)
     }
 
-    /// The same with the request's queue flag (a report's +40, F-14569 -> F-95157): while a line plays the request is
-    /// queued (true; refused when 8 wait), ahead of every gate; else as `say`.
-    pub fn say_queued(&mut self, scenario: &str, ctx: &Ctx) -> bool {
+    /// The same with the request's queue flag (a report's +40, F-14569 -> F-95157): while a line plays (the radio's or
+    /// the player's speaker's) the request goes to the speech manager's one ring (+28 + 268 i, write +2172, read +2176,
+    /// count +2180: true; refused when 8 wait, the player's waiting requests counted), ahead of every gate; else as `say`.
+    /// F-85023 takes it out once nothing plays (`speech::Speech::radio_next`) and it is asked again through the whole
+    /// gate (`say_from`).
+    pub fn say_queued(&mut self, sp: &mut crate::speech::Speech, scenario: &str, ctx: &Ctx) -> bool {
         let parties = self.parties(&scenario.to_ascii_uppercase());
-        if self.busy() || self.speech_on {
-            if self.requests.len() == 8 {
-                return false;
-            }
-            self.requests.push_back((scenario.to_string(), parties));
-            return true;
+        if self.busy() || sp.busy() {
+            return sp.queue_radio(scenario, parties);
         }
         self.say_line(scenario, parties, ctx)
-    }
-
-    /// The speech update's queue (F-85023): with no line playing, the
-    /// oldest queued request is taken out and asked again without the flag - through the whole gate. Once a frame.
-    pub fn pump(&mut self, ctx: &Ctx) {
-        if !self.busy() && !self.speech_on {
-            if let Some((scenario, parties)) = self.requests.pop_front() {
-                self.say_line(&scenario, parties, ctx);
-            }
-        }
     }
 
     /// A line of a tactic (F-26639), its sender and receiver named.
@@ -520,11 +506,6 @@ impl Radio {
         self.wait = 0.0;
     }
 
-    /// Requests waiting in the queue (`say_queued`).
-    pub fn queued(&self) -> usize {
-        self.requests.len()
-    }
-
     pub fn update(&mut self, a: &mut Audio, dt: f32) {
         self.clock += dt;
         self.wait -= dt;
@@ -549,36 +530,36 @@ impl Radio {
 
 #[cfg(test)]
 mod tests {
-    /// The player's speaker playing (rank 1 above the radio's 0): a report is refused, a queued one waits until it ends.
+    /// The player's speaker playing (rank 1 above the radio's 0): a report is refused; a queued one goes to the speech
+    /// manager's ring.
     #[test]
     fn the_player_speaker_holds_the_radio_off() {
         let mut r = super::Radio::default();
+        let mut sp = crate::speech::Speech::default();
         let ctx = super::Ctx::default();
         r.speech_on = true;
-        assert!(r.say_queued("REPORT_PULL_SUSPECT_OVER", &ctx));
-        assert_eq!(r.queued(), 1);
-        r.pump(&ctx);
-        assert_eq!(r.queued(), 1);
-        r.speech_on = false;
-        r.pump(&ctx);
-        assert_eq!(r.queued(), 0);
+        r.scenarios.insert("REPORT_PULL_SUSPECT_OVER".into(), vec![vec![]]);
+        assert!(!r.say("REPORT_PULL_SUSPECT_OVER", &ctx));
+        // (the speech plays: queued in the one ring)
+        r.wait = 1.0;
+        assert!(r.say_queued(&mut sp, "REPORT_PULL_SUSPECT_OVER", &ctx));
+        assert_eq!(sp.waiting(), 1);
     }
 
-    /// F-95157's queue flag and F-85023's pop: queued while a line plays, 8 at most, taken out one a frame once quiet.
+    /// F-95157's queue flag: queued while a line plays, 8 at most in the one ring (the player's requests count).
     #[test]
-    fn queued_requests_wait_for_a_quiet_radio() {
+    fn queued_requests_share_the_ring_of_8() {
         let mut r = super::Radio::default();
+        let mut sp = crate::speech::Speech::default();
         let ctx = super::Ctx::default();
         r.wait = 1.0;
-        for _ in 0..9 {
-            r.say_queued("REPORT_PULL_SUSPECT_OVER", &ctx);
+        for _ in 0..3 {
+            assert!(sp.queue_radio("X", ("A".into(), "B".into())));
         }
-        assert_eq!(r.queued(), 8);
-        r.pump(&ctx);
-        assert_eq!(r.queued(), 8);
-        r.wait = 0.0;
-        r.pump(&ctx);
-        assert_eq!(r.queued(), 7);
+        for k in 0..6 {
+            assert_eq!(r.say_queued(&mut sp, "REPORT_PULL_SUSPECT_OVER", &ctx), k < 5);
+        }
+        assert_eq!(sp.waiting(), 8);
     }
 
     /// F-95031 against the original's code run offline on 4,000 cases (tools/radio_direction_reference.py): headings
