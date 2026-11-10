@@ -1710,14 +1710,23 @@ mod tests {
     /// word for word.
     #[test]
     fn rider_bike_semi_live_island_is_the_originals() {
+        // (yc.0's levels: the bike, the trailer (a two-part bound); the body at its hitch is the third)
+        let (report, n) = live_bike_island(include_bytes!("testdata/rider_semi_yc0.bin"), include_bytes!("testdata/rider_semi_yc0_run.bin"), 0x5732, &[0x56e3], &[]);
+        assert_eq!(n, 5);
+        assert!(report.is_empty(), "{}", report.join("\n"));
+    }
+
+    /// The island of `fixture` / `run` (as [`many_island`]) through the live path: loose.rs `LooseState::solve_island` with
+    /// a `RiderMerge`, the bike (level `bike`) the island's car with its contacts with the city as the car's own rows, every
+    /// other body a loose vehicle object (`two_part`: the levels with a second hull), their rows the loose world's
+    /// manifolds, the rider's rows his share, every row in the recorded A list's order. Answers the report and the count of
+    /// ticks: the rider RGX0 -> RGD1, isl +40, every row's +128 / +112, the bike's +368 / +384 and each object's jf / jt.
+    fn live_bike_island(fixture: &[u8], run: &[u8], bike: u32, two_part: &[u32], open: &[u32]) -> (Vec<String>, usize) {
         use crate::physics::loose::{CarDyn, CarIn, LooseState, LooseWorld, Mani, Obj, PBody, RiderMerge, Slot2, VehObj, Who};
         use crate::physics::artic_run::{IslRow, RiderIsland};
-        let (map, ticks) = isl2_ticks(include_bytes!("testdata/rider_semi_yc0.bin"));
-        let cases = run_cases(include_bytes!("testdata/rider_semi_yc0_run.bin"));
+        let (map, ticks) = isl2_ticks(fixture);
+        let cases = run_cases(run);
         let shape: &'static crate::physics::hull::HullShape = Box::leak(Box::new(crate::physics::hull::HullShape::new(vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z], &[[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]])));
-        // (yc.0's levels: the trailer, the body at its hitch, the bike)
-        const TRAILER: u32 = 0x56e3;
-        const BIKE: u32 = 0x5732;
         let mut report = Vec::new();
         let mut n = 0;
         for t in &ticks {
@@ -1736,7 +1745,7 @@ mod tests {
             let mut bike_at = None;
             for (bi, b) in t.bodies.iter().enumerate() {
                 let sb = isl2_body(b);
-                if b.level == BIKE {
+                if b.level == bike {
                     car = sb;
                     bike_at = Some(bi);
                     obj_of.push(None);
@@ -1745,7 +1754,7 @@ mod tests {
                 let m = &b.matrix1;
                 let matrix = [wv(m, 0), wv(m, 16), wv(m, 32), wv(m, 48)];
                 let body = PBody { at: sb.at, rows: sb.rows, v: sb.vel, w: sb.ang, p: Vec3::ZERO, l: Vec3::ZERO, force: sb.force, torque: sb.torque, jf: Vec3::ZERO, jt: Vec3::ZERO, push: Vec3::ZERO, turn: Vec3::ZERO, last: matrix, prev: matrix, last_set: true, deep: false, deep_count: 0, mass: 0.0, inv_mass: sb.inv_mass, inertia: Vec3::ZERO, inv_inertia: sb.inv_moments, max_speed: f32::MAX, max_spin: f32::MAX, moves: 0 };
-                let veh = VehObj { shape, shape2: (b.level == TRAILER).then_some(shape), class: 6, gravity: 1.0, cg: Vec3::ZERO, index: b.level, here: true, inflict: 1.0, rider_touch: None, pair: true };
+                let veh = VehObj { shape, shape2: two_part.contains(&b.level).then_some(shape), class: 6, gravity: 1.0, cg: Vec3::ZERO, index: b.level, here: true, inflict: 1.0, rider_touch: None, pair: true };
                 obj_of.push(Some(ls.objs.len()));
                 ls.objs.push(Obj { ty: 0, inst: None, matrix, entry: None, hit: false, body: Some(body), level: b.level as i64, addr: b.level as i64, veh: Some(veh), sleep: crate::physics::loose::Sleep::reset(), dormant: false, amb: None });
             }
@@ -1836,11 +1845,43 @@ mod tests {
             let (words, nan) = strict(&a, &c.out);
             eprintln!("live island, tick {}: {} rows, the bike {}, {} objects, {} differing words, {nan} NaN on both sides, {} row / body results differ", t.tick, out.touches.len(), if bike_at.is_some() { "a body" } else { "no body" }, ls.objs.len(), words.len(), bad.len());
             bad.extend(words);
-            if !bad.is_empty() {
+            if open.contains(&t.tick) {
+                if bad.is_empty() {
+                    report.push(format!("tick {}: exact now - take it off the open list", t.tick));
+                }
+            } else if !bad.is_empty() {
                 report.push(format!("tick {}: {} differences, first {:#?}", t.tick, bad.len(), &bad[..bad.len().min(16)]));
             }
         }
-        assert_eq!(n, 5);
+        (report, n)
+    }
+
+    /// The rider thrown head on into an ambient car on the 101 freeway (rc.0 1328 - 1351, recomp recorder command `a` with
+    /// the snapshot trigger `MCLA_RAG_SNAP_CAR=4`: the rider's manifold with a car and his manifold with the bike or the
+    /// bike's with that car hold contacts): ambient car 0x5709 (class 6), the bike 0x5718, the rider 0x5726 (above both).
+    /// 1328, 1331 - 1338 and 1350 are one island of the car, the bike and the rider with enabled bike x rider rows
+    /// (1328 / 1337 / 1338 also the bike's row with the city); 1329 and 1351 the rider with the car only (the bike no body),
+    /// 1339 the rider with the bike only. The island's velocity solve with every body, word for word on the ticks not in
+    /// [`OPEN_RC0`].
+    #[test]
+    fn rider_bike_car_island_velocity_solve_is_the_originals() {
+        let (report, n) = many_island(include_bytes!("testdata/rider_bike_car_rc0.bin"), include_bytes!("testdata/rider_bike_car_rc0_run.bin"), &OPEN_RC0);
+        assert_eq!(n, 13);
+        assert!(report.is_empty(), "{}", report.join("\n"));
+    }
+
+    /// rc.0 ticks not yet word for word (open): 1332 (link 2's place and turn 1 - 2 ulp, every row exact, as rv.0 156 /
+    /// 158 / 159 and ov.0 730), 1339 (every row exact, the links up to ~1e-5 relative), 1336 / 1337 (the bike x rider rows
+    /// and the rider's row with the city ~1e-4 relative, the bike's +368 / +384 ~1e-5: the solve departs; the first
+    /// differing quantity is not found).
+    const OPEN_RC0: [u32; 4] = [1332, 1336, 1337, 1339];
+
+    /// rc.0 through the live path (`live_bike_island`): the bike the island's car, the ambient car a loose vehicle object,
+    /// the rider's rows with both his share (`Who::Car` for the bike, `Who::Obj` for the car).
+    #[test]
+    fn rider_bike_car_live_island_is_the_originals() {
+        let (report, n) = live_bike_island(include_bytes!("testdata/rider_bike_car_rc0.bin"), include_bytes!("testdata/rider_bike_car_rc0_run.bin"), 0x5718, &[], &OPEN_RC0);
+        assert_eq!(n, 13);
         assert!(report.is_empty(), "{}", report.join("\n"));
     }
 

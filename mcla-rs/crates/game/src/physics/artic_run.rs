@@ -1517,4 +1517,15 @@ mod tests {
         assert_eq!(same, ticks);
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
+
+    /// The merged island's lists against rc.0 1328 - 1351 (the rider thrown head on into an ambient car, his bike in the
+    /// same island on 10 of the 13 ticks; testdata/rider_bike_car_rc0_order.txt).
+    #[test]
+    fn merged_island_order_matches_rider_bike_car_recording() {
+        let (ticks, same, bad) = merged_order_check(include_str!("testdata/rider_bike_car_rc0_order.txt"));
+        eprintln!("{ticks} ticks, {same} in the port's cache order");
+        assert_eq!(ticks, 13);
+        assert_eq!(same, ticks);
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
 }
