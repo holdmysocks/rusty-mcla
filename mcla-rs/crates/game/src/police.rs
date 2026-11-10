@@ -1560,6 +1560,151 @@ pub struct RadioCall {
     pub receiver: Option<u32>,
 }
 
+/// The tactic radio's own state (F-26639): the countdown +112, the law record's road +60 and its timer +64, the nitrous
+/// tries +100, the far byte +96, and the radio's draw state (the game's one generator, shared with the lane changes).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RdoState {
+    pub t: f32,
+    pub road: Option<usize>,
+    pub fw_t: f32,
+    pub nitro: u8,
+    pub far: bool,
+    pub rng: (u32, u32),
+}
+
+/// What `chatter_step` reads from the world (the callees of F-26639 that are not its own code).
+pub(crate) struct RdoIn<'a> {
+    pub dt: f32,
+    /// the tactic kind's vt+80 (Pursuit past its Delay, Double Pursuit, Arrow Trap; not in the Search)
+    pub on: bool,
+    /// F-94735: a speech line is playing
+    pub busy: bool,
+    /// the tactic's cops (+72)
+    pub n: usize,
+    /// the target (+32) exists
+    pub target: bool,
+    /// the target's vt+40 (a player)
+    pub is_player: bool,
+    /// the law record (+36) exists
+    pub rec: bool,
+    /// F-86691: the road of the target's lane (none: no lane or no road)
+    pub road: Option<usize>,
+    /// F-28783: the road's name starts FW or XT
+    pub is_fw: &'a dyn Fn(usize) -> bool,
+    /// the law record's hard-hit bit (+0 & 0x20)
+    pub hard: bool,
+    /// F-13798 per cop: the value of the cop's entry in the target's contact list (none: no +48 or no entry)
+    pub hit: &'a [Option<f32>],
+    /// the target's nitrous burning byte
+    pub nitro_burning: bool,
+    /// the target's speed (+48 +8 +224); 0 when the chain is broken or there is no target (the candidate is skipped then)
+    pub speed: f32,
+    /// F-27863: a race is current
+    pub in_race: bool,
+    /// F-76898: the manager's +80
+    pub mgr80: i32,
+    /// F-29443 at fRdoVicinityDist / at 10 m
+    pub within_vic: bool,
+    pub within_10: bool,
+    pub min_t: f32,
+    pub max_t: f32,
+}
+
+/// The radio's draw (F-26639): x = lo x 0x5CDCFAA7 + hi; low and high 32 bits the new state.
+pub(crate) fn rdo_draw(rng: &mut (u32, u32)) -> u32 {
+    let x = rng.0 as u64 * 0x5CDC_FAA7 + rng.1 as u64;
+    *rng = (x as u32, (x >> 32) as u32);
+    x as u32 & 0x7FFF_FFFF
+}
+
+fn rdo_cop(rng: &mut (u32, u32), n: usize) -> usize {
+    if n > 1 { rdo_draw(rng) as usize % n } else { 0 }
+}
+
+/// One update of the tactic's radio without the world (F-26639 after the tactic update's countdown, F-63286): the line
+/// said (its scenario name, the sender's index in the cops, the receiver's index; none = DISPATCH).
+pub(crate) fn chatter_step(st: &mut RdoState, i: &RdoIn) -> Option<(&'static str, usize, Option<usize>)> {
+    st.t = (st.t - i.dt).max(0.0);
+    let n = i.n;
+    if !i.on || i.busy || n == 0 {
+        return None;
+    }
+    let mut call = None;
+    if i.target {
+        // A: on to or off a freeway: the road the target's lane belongs to, stable for 1 s; said once, on the expiry frame
+        if let (true, true, Some(r)) = (i.is_player, i.rec, i.road) {
+            if st.road == Some(r) {
+                if st.fw_t > 0.0 {
+                    st.fw_t -= i.dt;
+                    if st.fw_t <= 0.0 {
+                        let k = rdo_cop(&mut st.rng, n);
+                        call = Some((if (i.is_fw)(r) { "REPORT_FREEWAY_ENTER" } else { "REPORT_FREEWAY_EXIT" }, k, None));
+                    }
+                }
+            } else {
+                if (i.is_fw)(r) != st.road.is_some_and(|o| (i.is_fw)(o)) {
+                    st.fw_t = 1.0;
+                }
+                st.road = Some(r);
+            }
+        }
+        // B: a police car hit hard, from the cop whose entry is the largest (the first of equals; floor -1)
+        if call.is_none() && i.rec && i.hard {
+            let mut best = -1.0f32;
+            let mut who = None;
+            for (k, v) in i.hit.iter().enumerate().take(n) {
+                if let Some(v) = *v {
+                    if v > best {
+                        best = v;
+                        who = Some(k);
+                    }
+                }
+            }
+            if let Some(k) = who {
+                call = Some(("REPORT_PURSUIT_HIT_COP_CAR_HARD", k, None));
+            }
+        }
+        // C: the nitrous seen, twice at most a tactic
+        if call.is_none() && st.nitro < 2 && n > 1 && i.nitro_burning {
+            let k = rdo_cop(&mut st.rng, n);
+            call = Some(("REPORT_UPGRADE_NITROUS", k, Some((k + 1) % n)));
+            st.nitro += 1;
+        }
+    }
+    // D: the periodic line, a uniform pick of those that may be said
+    if call.is_none() && st.t == 0.0 {
+        let k = rdo_cop(&mut st.rng, n);
+        let mut list: Vec<(&'static str, bool)> = vec![("REPORT_LOCATION_UPDATE", false), ("REPORT_IDENTIFY_DRIVER", false)];
+        if i.mgr80 == 1 {
+            list.push(("REPORT_REQUEST_BACKUP", false));
+        }
+        list.push(("REPORT_SUSPECT_DESTRUCTION", false));
+        if i.speed > 44.7 {
+            list.push(("REPORT_SUSPECT_SPEED", false));
+        }
+        if n > 1 {
+            list.push((if i.in_race { "REPORT_RACE_OFFICER_TO_OFFICER" } else { "REPORT_CRUISE_OFFICER_TO_OFFICER" }, true));
+            list.push(("REPORT_PURSUIT_STATEMENT", true));
+            list.push(("REPORT_UPGRADE_MISC", true));
+            // (F-29443: a cop within the distance; the far byte: said once each time the cops come in from beyond it)
+            if !i.within_vic {
+                st.far = true;
+            } else if !i.within_10 && st.far {
+                st.far = false;
+                list.push(("REPORT_MANEUVER_VICINITY", false));
+            }
+        }
+        let (name, other) = list[rdo_draw(&mut st.rng) as usize % list.len()];
+        call = Some((name, k, other.then(|| (k + 1) % n)));
+    }
+    // E: any line sets the countdown again, refused by its Frequency or not
+    if call.is_some() {
+        let x = rdo_draw(&mut st.rng) & 0x7F_FFFF;
+        st.t = i.min_t + (i.max_t - i.min_t) * x as f32 * 2f32.powi(-23);
+    }
+    call
+}
+
 /// The police manager's tactic kinds (types 0 - 4; docs/reference/hookmen/clip_time_and_tactics.md B): how many cops
 /// each takes (+72, set by the ctors) and the floor StartTactic (F-33550) raises the law score to. A higher kind
 /// replaces a lower one on the same target.
@@ -1898,13 +2043,13 @@ pub struct Police {
     last_known: Vec3,
     /// time until the next radio report of the target's position
     /// the tactic's radio (F-26639): the countdown +112, the law record's road +60 and its timer +64, the nitrous tries
-    /// +100, the far byte +96, this frame's hard hit's cop, the line's draw
+    /// +100, the far byte +96, this frame's hard-hit table, the line's draw
     rdo_t: f32,
     rdo_road: Option<usize>,
     rdo_fw_t: f32,
     rdo_nitro: u8,
     rdo_far: bool,
-    hard_cop: Option<u32>,
+    hard_tab: Option<Vec<(u32, f32)>>,
     rdo_rng: (u32, u32),
     time: f32,
     rng: u32,
@@ -2059,7 +2204,7 @@ impl Police {
             rdo_fw_t: 0.0,
             rdo_nitro: 0,
             rdo_far: true,
-            hard_cop: None,
+            hard_tab: None,
             rdo_rng: (0x2f6e_2b1d, 0x51ed_270b),
             time: 0.0,
             rng: 0x51ed_270b,
@@ -3148,102 +3293,69 @@ impl Police {
         }
     }
 
-    /// The radio's draw (F-26639): x = lo x 0x5CDCFAA7 + hi; low and high 32 bits the new state.
-    fn rdo_draw(&mut self) -> u32 {
-        let x = self.rdo_rng.0 as u64 * 0x5CDC_FAA7 + self.rdo_rng.1 as u64;
-        self.rdo_rng = (x as u32, (x >> 32) as u32);
-        x as u32 & 0x7FFF_FFFF
-    }
-
-    fn rdo_cop(&mut self, n: usize) -> usize {
-        if n > 1 { self.rdo_draw() as usize % n } else { 0 }
-    }
-
     /// The tactic's radio, once a game frame (F-26639, from the tactic's update): the countdown always; a line only in a
-    /// Pursuit past its Delay, a Double Pursuit or an Arrow Trap, not in the Search, and with no line playing.
+    /// Pursuit past its Delay, a Double Pursuit or an Arrow Trap, not in the Search, and with no line playing. The rule is
+    /// `chatter_step`; this gathers its inputs from the world.
     pub fn chatter(&mut self, world: &World, vehicles: &Vehicles, busy: bool, dt: f32) -> Option<RadioCall> {
-        self.rdo_t = (self.rdo_t - dt).max(0.0);
         let on = match self.kind {
             TacKind::Pursuit => self.flee_hold <= 0.0,
             TacKind::PursuitDbl | TacKind::ArrowTrap => true,
             _ => false,
         };
-        if !on || self.heat == Heat::Search || busy || self.cops.is_empty() {
-            return None;
-        }
-        let p = self.target_car(vehicles)?;
-        let (ppos, speed, nitro) = (p.state.pos, p.state.speed(), p.state.veh.as_deref().is_some_and(|v| v.nitro_burning));
+        let car = self.target_car(vehicles);
         let cops = self.cops.clone();
         let n = cops.len();
-        let mut call = None;
         // (A and B read the target's law record: none for an AI racer - F-26639 skips them; C and D run on its car)
         let record = self.target.is_none();
-        // A: on to or off a freeway: the road the target's lane belongs to, stable for 1 s; said once, on the expiry frame
-        if let (true, Some(nav)) = (record, world.nav.as_ref()) {
-            let is_fw = |r: usize| nav.zones.get(r).is_some_and(|z| z.name.starts_with("FW") || z.name.starts_with("XT"));
-            if let Some(r) = vehicles.driver_lanes.get(&p.uid).and_then(|d| d.best).and_then(|b| nav.lane_road(b.0)) {
-                if self.rdo_road == Some(r) {
-                    if self.rdo_fw_t > 0.0 {
-                        self.rdo_fw_t -= dt;
-                        if self.rdo_fw_t <= 0.0 {
-                            let k = self.rdo_cop(n);
-                            call = Some(RadioCall { name: if is_fw(r) { "REPORT_FREEWAY_ENTER" } else { "REPORT_FREEWAY_EXIT" }, sender: cops[k], receiver: None });
-                        }
-                    }
-                } else {
-                    if is_fw(r) != self.rdo_road.is_some_and(is_fw) {
-                        self.rdo_fw_t = 1.0;
-                    }
-                    self.rdo_road = Some(r);
-                }
-            }
-        }
-        // B: a police car hit hard, from the cop hit hardest
-        if call.is_none() && record {
-            if let Some(c) = self.hard_cop {
-                call = Some(RadioCall { name: "REPORT_PURSUIT_HIT_COP_CAR_HARD", sender: c, receiver: None });
-            }
-        }
-        // C: the nitrous seen, twice at most a tactic
-        if call.is_none() && self.rdo_nitro < 2 && n > 1 && nitro {
-            let k = self.rdo_cop(n);
-            call = Some(RadioCall { name: "REPORT_UPGRADE_NITROUS", sender: cops[k], receiver: Some(cops[(k + 1) % n]) });
-            self.rdo_nitro += 1;
-        }
-        // D: the periodic line, a uniform pick of those that may be said
-        if call.is_none() && self.rdo_t == 0.0 {
-            let k = self.rdo_cop(n);
-            let mut list = vec![("REPORT_LOCATION_UPDATE", false), ("REPORT_IDENTIFY_DRIVER", false)];
+        let (ppos, speed, nitro) = car.map_or((Vec3::ZERO, 0.0, false), |p| {
+            (p.state.pos, p.state.speed(), p.state.veh.as_deref().is_some_and(|v| v.nitro_burning))
+        });
+        let nav = world.nav.as_ref().filter(|_| record);
+        let is_fw = |r: usize| nav.and_then(|nv| nv.zones.get(r)).is_some_and(|z| z.name.starts_with("FW") || z.name.starts_with("XT"));
+        // the road of the target's lane (the original skips A when it has none)
+        let road = car
+            .filter(|_| record)
+            .and_then(|p| vehicles.driver_lanes.get(&p.uid))
+            .and_then(|d| d.best)
+            .and_then(|b| nav.and_then(|nv| nv.lane_road(b.0)));
+        // the target's contact list, a cop's entry (F-13798): the hard-hit table the law block kept this frame
+        let hit: Vec<Option<f32>> =
+            cops.iter().map(|u| self.hard_tab.as_ref().and_then(|t| t.iter().find(|e| e.0 == *u).map(|e| e.1))).collect();
+        // F-29443: some cop within the distance of the target (only asked when n > 1)
+        let within = |d: f32| cops.iter().filter_map(|u| vehicles.cars.iter().find(|c| c.uid == *u)).any(|c| c.state.pos.distance(ppos) < d);
+        let vic = self.tun.get("fRdoVicinityDist", 100.0);
+        let (within_vic, within_10) = if n > 1 && car.is_some() { (within(vic), within(10.0)) } else { (false, false) };
+        let mut st = RdoState { t: self.rdo_t, road: self.rdo_road, fw_t: self.rdo_fw_t, nitro: self.rdo_nitro, far: self.rdo_far, rng: self.rdo_rng };
+        let i = RdoIn {
+            dt,
+            on: on && self.heat != Heat::Search && car.is_some(),
+            busy,
+            n,
+            target: true,
+            is_player: record,
+            rec: record,
+            road,
+            is_fw: &is_fw,
+            hard: self.hard_tab.is_some(),
+            hit: &hit,
+            nitro_burning: nitro,
+            speed,
+            in_race: self.in_race,
             // (F-76898: the cops in the latest tactic)
-            if n == 1 {
-                list.push(("REPORT_REQUEST_BACKUP", false));
-            }
-            list.push(("REPORT_SUSPECT_DESTRUCTION", false));
-            if speed > 44.7 {
-                list.push(("REPORT_SUSPECT_SPEED", false));
-            }
-            if n > 1 {
-                list.push((if self.in_race { "RACE_OFFICER_TO_OFFICER" } else { "CRUISE_OFFICER_TO_OFFICER" }, true));
-                list.push(("REPORT_PURSUIT_STATEMENT", true));
-                list.push(("REPORT_UPGRADE_MISC", true));
-                // (F-29443: a cop within the distance; the far byte: said once each time the cops come in from beyond 100 m)
-                let within = |d: f32| cops.iter().filter_map(|u| vehicles.cars.iter().find(|c| c.uid == *u)).any(|c| c.state.pos.distance(ppos) < d);
-                if !within(self.tun.get("fRdoVicinityDist", 100.0)) {
-                    self.rdo_far = true;
-                } else if !within(10.0) && self.rdo_far {
-                    self.rdo_far = false;
-                    list.push(("REPORT_MANEUVER_VICINITY", false));
-                }
-            }
-            let (name, other) = list[self.rdo_draw() as usize % list.len()];
-            call = Some(RadioCall { name, sender: cops[k], receiver: other.then(|| cops[(k + 1) % n]) });
-        }
-        // E: any line sets the countdown again, refused by its Frequency or not
-        if call.is_some() {
-            let (lo, hi) = (self.tun.get("fMinPerRdoTime", 15.0), self.tun.get("fMaxPerRdoTime", 30.0));
-            self.rdo_t = lo + (hi - lo) * (self.rdo_draw() & 0x7F_FFFF) as f32 * 2f32.powi(-23);
-        }
-        call
+            mgr80: n as i32,
+            within_vic,
+            within_10,
+            min_t: self.tun.get("fMinPerRdoTime", 15.0),
+            max_t: self.tun.get("fMaxPerRdoTime", 30.0),
+        };
+        let call = chatter_step(&mut st, &i);
+        self.rdo_t = st.t;
+        self.rdo_road = st.road;
+        self.rdo_fw_t = st.fw_t;
+        self.rdo_nitro = st.nitro;
+        self.rdo_far = st.far;
+        self.rdo_rng = st.rng;
+        call.map(|(name, k, r)| RadioCall { name, sender: cops[k], receiver: r.map(|r| cops[r]) })
     }
 
     /// The number of cops in the latest tactic (police manager +80, PoliceManager_GetNumCopsInLatestTactic).
@@ -3856,13 +3968,13 @@ impl Police {
         let mut hit_cop = false;
         // (F-93844: the hard byte, the largest cop value of the table over 22.35 m/s; F-26639 B says its line from the cop
         // with the largest)
-        self.hard_cop = None;
+        self.hard_tab = None;
         if watching && law_word & 2 != 0 {
             hit_cop = true;
             let now = vehicles.player().and_then(|c| c.state.veh.as_deref()).map_or(0.0, |v| v.agro.now);
             let tab = vehicles.player().and_then(|c| c.state.veh.as_deref()).map_or(Vec::new(), |v| v.agro.law_tab.iter().filter(|e| e.0 >> 32 == 2 && e.1 > now).map(|e| (e.0 as u32, e.2)).collect());
             if tab.iter().any(|e: &(u32, f32)| e.1 > 22.35) {
-                self.hard_cop = tab.iter().filter(|e| self.cops.contains(&e.0)).max_by(|a, b| a.1.total_cmp(&b.1)).map(|e| e.0);
+                self.hard_tab = Some(tab);
                 self.offences |= LAW_POLICE_HARD;
             }
             breaking = true;
@@ -5265,6 +5377,84 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 100, "{checked}");
+    }
+
+    /// The tactic radio's chatter step against the original's F-26639 run offline (tools/radio_chatter_reference.py: the
+    /// tactic object in guest memory, the world's answers (road, freeway name, contact entries, vicinity, call signs, the say)
+    /// stubbed as the case's inputs, the rest of the function and the scenario classes unchanged; 4,000 cases of 60 frames,
+    /// 240,000 frames equal, this file a covering subset): the line said, its sender and receiver, the countdown, the law
+    /// record's road and timer, the nitrous tries, the far byte and the generator, bit for bit.
+    #[test]
+    fn radio_chatter_matches_the_original() {
+        let r = rdo_replay(include_str!("testdata/radio_chatter_ref.txt"));
+        assert!(r.len() > 1000, "{}", r.len());
+        for (ln, want, got) in &r {
+            assert_eq!(got, want, "line {ln}");
+        }
+    }
+
+    /// Replays the tool's file through `chatter_step`: per F line, the original's outputs and the port's.
+    fn rdo_replay(text: &str) -> Vec<(usize, String, String)> {
+        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let f = |s: &str| f32::from_bits(h(s));
+        let mut out = Vec::new();
+        let (mut n, mut fw, mut min_t, mut max_t) = (0usize, 0u32, 0f32, 0f32);
+        let mut st = RdoState { t: 0.0, road: None, fw_t: 0.0, nitro: 0, far: false, rng: (0, 0) };
+        for (ln, l) in text.lines().enumerate() {
+            let v: Vec<&str> = l.split_whitespace().collect();
+            match v.first().copied() {
+                Some("CASE") => {
+                    n = v[1].parse().unwrap();
+                    fw = h(v[2]);
+                    min_t = f(v[3]);
+                    max_t = f(v[4]);
+                    let r = u64::from_str_radix(v[11], 16).unwrap();
+                    st = RdoState { t: f(v[6]), road: v[7].parse().ok(), fw_t: f(v[8]), nitro: v[9].parse().unwrap(), far: v[10] == "1", rng: (r as u32, (r >> 32) as u32) };
+                }
+                Some("F") => {
+                    let hit: Vec<Option<f32>> = v[16..20].iter().take(n).map(|s| if *s == "-" || *s == "n" { None } else { Some(f(s)) }).collect();
+                    let chain: u32 = v[9].parse().unwrap();
+                    let is_fw = |r: usize| fw >> r & 1 != 0;
+                    let i = RdoIn {
+                        dt: f(v[1]),
+                        on: v[2] == "1",
+                        busy: v[3] == "1",
+                        n,
+                        target: v[4] == "1",
+                        is_player: v[5] == "1",
+                        rec: v[6] == "1",
+                        road: v[7].parse().ok(),
+                        is_fw: &is_fw,
+                        hard: v[8] == "1",
+                        hit: &hit,
+                        nitro_burning: chain == 3 && v[10] != "0",
+                        speed: if chain >= 2 && v[4] == "1" { f(v[11]) } else { 0.0 },
+                        in_race: v[12] == "1",
+                        mgr80: v[13].parse().unwrap(),
+                        within_vic: v[14] == "1",
+                        within_10: v[15] == "1",
+                        min_t,
+                        max_t,
+                    };
+                    let call = chatter_step(&mut st, &i);
+                    let got = format!(
+                        "{} {} {} {:x} {:x} {} {} {} {:016x}",
+                        call.map_or("-", |c| c.0),
+                        call.map_or("-".to_string(), |c| c.1.to_string()),
+                        call.map_or("-".to_string(), |c| c.2.map_or("D".to_string(), |r| r.to_string())),
+                        st.t.to_bits(),
+                        st.fw_t.to_bits(),
+                        st.road.map_or("-".to_string(), |r| r.to_string()),
+                        st.nitro,
+                        st.far as u8,
+                        (st.rng.1 as u64) << 32 | st.rng.0 as u64
+                    );
+                    out.push((ln + 1, v[21..].join(" "), got));
+                }
+                _ => {}
+            }
+        }
+        out
     }
 
     /// The Arrow Trap's CatchUp / Halt machine against the original's tactic object run offline (tools/squad_fsm_reference.py:
