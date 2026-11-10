@@ -21,6 +21,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
+mod rules;
+use rules::{frame_plan, link_twins, parse_tuning, picture_plan, tuning_lookup, PicturePlan, ShadowRound, SlotState, Visit, LOW_LOD_SUFFIX};
+pub use rules::wind_vector;
+
 /// Side of a picture in texels.
 const TILE: u32 = 128;
 /// The generation surface is multisampled and resolved, as the original's (4x).
@@ -93,8 +97,10 @@ struct Type {
     mask_valid: bool,
     /// the frame its cards were last drawn in
     stamp: AtomicU64,
+    /// drawn at least once (the diagnostics' dump)
     valid: bool,
-    night: bool,
+    /// +217: the day / night byte its pictures were last drawn for (0 until the first draw, as the resource has it)
+    last_night: u8,
 }
 
 pub(super) struct Impostors {
@@ -116,9 +122,10 @@ pub(super) struct Impostors {
     samp_bg: wgpu::BindGroup,
     /// the leaves' colour pictures: no anisotropy
     samp_leaf_bg: wgpu::BindGroup,
-    /// the type whose mask is drawn next (one a frame, in turn), the hour of the last call, masks drawn so far
-    mask_next: usize,
-    mask_hour: f32,
+    /// the original's type array, in file order, for the shadow masks' round robin (F-80686)
+    slots: Vec<Slot>,
+    round: ShadowRound,
+    /// masks drawn so far
     mask_total: u64,
     /// false with MCLA_NO_SHADOW_IMPOSTORS: the shadow pass keeps the baked cards
     mask_on: bool,
@@ -128,18 +135,24 @@ pub(super) struct Impostors {
     log_every: u64,
 }
 
-/// `ScheduledFrame` per type name (lower case) from `tune/MultiPropTuning.xml`.
-fn schedule(data_dir: &str) -> Vec<(String, u32)> {
-    let text = std::fs::read_to_string(std::path::Path::new(data_dir).join("tune/MultiPropTuning.xml")).unwrap_or_default();
-    let mut out = Vec::new();
-    for item in text.split("<Item").skip(1) {
-        let name = item.split("<Name").nth(1).and_then(|t| t.split_once('>')).and_then(|t| t.1.split('<').next()).map(|n| n.trim().to_ascii_lowercase());
-        let value = item.split("<ScheduledFrame").nth(1).and_then(|t| t.split('"').nth(1)).and_then(|v| v.trim().parse::<u32>().ok());
-        if let (Some(n), Some(v)) = (name, value) {
-            out.push((n, v));
-        }
-    }
-    out
+/// What `Props::load` knows of one record of the plant type array (file order): the loader's walk of the original includes the
+/// twins and the types without a picture, and the shadow masks' round robin steps over all of them.
+pub(super) struct SlotInfo {
+    /// the record's name (a twin's holds `_displayAsLowLOD`)
+    pub name: String,
+    /// the radius of the drawable's bounding sphere where the record's prop (the name cut at the suffix) has a drawable
+    pub radius: Option<f32>,
+    /// the plant model it is drawn with, where the port has one
+    pub model: Option<usize>,
+}
+
+/// A record of the type array as the schedules see it.
+struct Slot {
+    has_drawable: bool,
+    has_pictures: bool,
+    low: bool,
+    /// the port's picture type behind it (a twin has none of its own)
+    ty: Option<usize>,
 }
 
 impl Impostors {
@@ -181,11 +194,22 @@ impl Impostors {
 
     /// The pictures, the generation pipeline and one card model per type (pushed onto `models`).
     /// None with `MCLA_NO_IMPOSTORS=1` or without types.
-    pub(super) fn new(gpu: &mut Gpu, data_dir: &str, models: &mut Vec<PropModel>, infos: &[TypeInfo]) -> Option<Impostors> {
+    pub(super) fn new(gpu: &mut Gpu, data_dir: &str, models: &mut Vec<PropModel>, infos: &[TypeInfo], slot_infos: &[SlotInfo]) -> Option<Impostors> {
         if std::env::var("MCLA_NO_IMPOSTORS").map_or(false, |v| v != "0") || infos.is_empty() {
             return None;
         }
-        let sched = schedule(data_dir);
+        let tune = parse_tuning(&std::fs::read_to_string(std::path::Path::new(data_dir).join("tune/MultiPropTuning.xml")).unwrap_or_default());
+        // the type array as the original's loader sets it up (F-95538 per record, then F-64555): MaxRots and ScheduledFrame from the
+        // tuning table, the twins, which records get pictures and which twin takes whose
+        let names: Vec<&str> = slot_infos.iter().map(|s| s.name.as_str()).collect();
+        let low: Vec<bool> = names.iter().map(|n| n.contains(LOW_LOD_SUFFIX)).collect();
+        let plans: Vec<Option<PicturePlan>> = slot_infos.iter().enumerate().map(|(k, s)| s.radius.and_then(|r| picture_plan(tuning_lookup(&tune, names[k]).0, low[k], r))).collect();
+        let links = link_twins(&names, &low);
+        let mut slots: Vec<Slot> = slot_infos
+            .iter()
+            .enumerate()
+            .map(|(k, s)| Slot { has_drawable: s.radius.is_some(), has_pictures: plans[k].is_some() || links[k].map_or(false, |b| plans[b].is_some()), low: low[k], ty: None })
+            .collect();
         let tile_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("impostor tile layout"),
             entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None }],
@@ -267,6 +291,8 @@ impl Impostors {
             if !size.is_finite() || size.min_element() <= 0.01 {
                 continue;
             }
+            let (maxrots, sched) = tuning_lookup(&tune, &info.name);
+            let Some(plan) = picture_plan(maxrots, false, info.sphere) else { continue };
             let (width, height) = (size.x.max(size.z), size.y);
             let centre_y = info.min.y + 0.5 * height;
             let picture = |gpu: &Gpu, label: &str, format: wgpu::TextureFormat| -> Arc<GpuTexture> {
@@ -297,7 +323,7 @@ impl Impostors {
             let card_ix = models.len() - 1;
             // The shadow impostor: the mask and the quad the shadow pass draws for the type
             // (render/shadow.wgsl `vs_shadow_inst` builds it from the light direction, uv1.y = 105).
-            let msize = if info.sphere > 2.0 { MASK_BIG } else { TILE };
+            let msize = plan.shadow;
             let mask = {
                 let texture = mask_target(gpu, "impostor shadow mask", MASK_FORMAT, 1, msize);
                 let view = texture.create_view(&Default::default());
@@ -316,21 +342,24 @@ impl Impostors {
             let mbind = gpu.texture_bind_group(&mask, &mask, km, km);
             models.push(PropModel { batches: vec![PropBatch { vb: mvb, ib: mib, count: 6, bind: mbind, mode: MatMode::Foliage }], radius: info.radius, sphere: info.sphere, kind: 3 });
             let mask_card = models.len() - 1;
-            let lname = info.name.to_ascii_lowercase();
-            let sched = sched.iter().find(|s| s.0 == lname).map_or(3, |s| s.1);
             if info.baked < by_baked.len() {
                 by_baked[info.baked] = types.len() as u32;
             }
             log::debug!("impostor type {}: width {:.3} height {:.3} centre y {:.3} ScheduledFrame {}", info.name, width, height, centre_y, sched);
-            types.push(Type { model: info.model, card: card_ix, width, height, centre_y, sched, color, normal, buf, bg, mask, mask_card, mask_buf, mask_bg, mask_valid: false, stamp: AtomicU64::new(0), valid: false, night: false });
+            types.push(Type { model: info.model, card: card_ix, width, height, centre_y, sched, color, normal, buf, bg, mask, mask_card, mask_buf, mask_bg, mask_valid: false, stamp: AtomicU64::new(0), valid: false, last_night: 0 });
         }
         if types.is_empty() {
             return None;
         }
-        log::info!("impostors: {} plant types with a {} x {} picture ({} named in MultiPropTuning.xml), redrawn every other frame while their cards are in view", types.len(), TILE, TILE, sched.len());
+        for (k, s) in slots.iter_mut().enumerate() {
+            if !low[k] {
+                s.ty = slot_infos[k].model.and_then(|m| types.iter().position(|t| t.model == m));
+            }
+        }
+        log::info!("impostors: {} plant types with a {} x {} picture ({} named in MultiPropTuning.xml), redrawn every other frame while their cards are in view", types.len(), TILE, TILE, tune.len());
         let mask_on = !std::env::var("MCLA_NO_SHADOW_IMPOSTORS").map_or(false, |v| v != "0");
         log::info!("impostors: shadow masks {} ({} of {} x {}, the rest {} x {}), one redrawn a frame", if mask_on { "on" } else { "off (MCLA_NO_SHADOW_IMPOSTORS)" }, types.iter().filter(|t| t.mask.width == MASK_BIG).count(), MASK_BIG, MASK_BIG, TILE, TILE);
-        Some(Impostors { types, by_baked, pipeline, pipeline_trunk, ms_color, ms_normal, ms_depth, pipeline_mask, pipeline_mask_trunk, ms_mask, ms_mask_depth, samp_bg, samp_leaf_bg, mask_next: 0, mask_hour: f32::NAN, mask_total: 0, mask_on, frame: 2, total: 0, log_every: std::env::var("MCLA_IMPOSTOR_LOG").ok().and_then(|v| v.parse().ok()).unwrap_or(0) })
+        Some(Impostors { types, by_baked, pipeline, pipeline_trunk, ms_color, ms_normal, ms_depth, pipeline_mask, pipeline_mask_trunk, ms_mask, ms_mask_depth, samp_bg, samp_leaf_bg, slots, round: ShadowRound::default(), mask_total: 0, mask_on, frame: 2, total: 0, log_every: std::env::var("MCLA_IMPOSTOR_LOG").ok().and_then(|v| v.parse().ok()).unwrap_or(0) })
     }
 
     /// The model to draw in the scene pass where a run names the baked card `baked`: the type's
@@ -339,7 +368,8 @@ impl Impostors {
         match self.by_baked.get(baked) {
             Some(&t) if t != u32::MAX => {
                 let ty = &self.types[t as usize];
-                ty.stamp.store(self.frame, Ordering::Relaxed);
+                // (the counter of the frame this scene pass belongs to: `update` of this frame took `frame` and stepped it)
+                ty.stamp.store(self.frame.wrapping_sub(1), Ordering::Relaxed);
                 ty.card
             }
             _ => baked,
@@ -372,15 +402,15 @@ impl Impostors {
             return;
         }
         let c = -row.normalize();
-        let moved = (hour - self.mask_hour).abs();
-        let all = !(moved.min(24.0 - moved) < 1.0 / 120.0);
-        self.mask_hour = hour;
-        let (first, count) = if all { (0, n) } else { (self.mask_next % n, 1) };
-        if !all {
-            self.mask_next = (self.mask_next + 1) % n;
-        }
-        for k in 0..count {
-            let ty = &mut self.types[(first + k) % n];
+        // F-80686: over the original's type array - twins and types without a picture take their turn too (a twin only works out its card
+        // vectors) - everything when the time of day is 1 / 120 h or more from the last call (the first call, and not wrapped at 24 h),
+        // else the next record with a drawable and pictures
+        let flags: Vec<(bool, bool, bool)> = self.slots.iter().map(|s| (s.has_drawable, s.has_pictures, s.low)).collect();
+        let visits = self.round.turn(&flags, hour);
+        let drawn: Vec<usize> = visits.iter().filter(|v| v.1 == Visit::Draw).filter_map(|v| self.slots[v.0].ty).collect();
+        let count = drawn.len();
+        for &tix in &drawn {
+            let ty = &mut self.types[tix];
             let Some(model) = models.get(ty.model) else { continue };
             // (pix_center 0, as the recorded PSGenerateImposterShadowDepth draws: half a texel - render::half_pixel)
             let ms = ty.mask.width as f32;
@@ -445,15 +475,17 @@ impl Impostors {
         }
         let c = -fwd.normalize();
         let night = g.tone[3] > 0.5;
-        let mask = (1u32 << (frame & 1)) * 5;
+        let night_byte = night as u8;
+        // F-65228 with F-27437: the types whose cards were drawn in the last frame (or this one) and that are due (rules.rs `frame_plan`)
+        let mut state: Vec<SlotState> = self
+            .types
+            .iter()
+            .map(|t| SlotState { has_drawable: true, has_pictures: true, low: false, max_rots: 1, sched: t.sched, last_night: t.last_night, twin: None, stamp: t.stamp.load(Ordering::Relaxed) as u32 })
+            .collect();
+        let plan = frame_plan(&mut state, frame as u32, false, night_byte);
         let mut drawn = 0u32;
-        for ty in self.types.iter_mut() {
-            if ty.stamp.load(Ordering::Relaxed) + 1 < frame {
-                continue;
-            }
-            if ty.valid && ty.night == night && ty.sched & mask == 0 {
-                continue;
-            }
+        for (tix, _tiles) in plan {
+            let ty = &mut self.types[tix];
             let Some(model) = models.get(ty.model) else { continue };
             let u = TileUniform {
                 // (pix_center 0, as the recorded PSGenerateImposter draws: half a texel of the picture - render::half_pixel)
@@ -490,7 +522,7 @@ impl Impostors {
             }
             drop(pass);
             ty.valid = true;
-            ty.night = night;
+            ty.last_night = night_byte;
             drawn += 1;
         }
         self.total += drawn as u64;
@@ -504,13 +536,6 @@ impl Impostors {
 /// One lane operation of the original's vector code: the cross product it builds from two shuffles, two multiplies and a
 /// subtraction (each rounded to single, no fused multiply-add), the sign bit flipped last. `a` and `b` as given are `a x b`
 /// negated, i.e. `b x a`.
-/// gWindVector (F-65228, the amplitude and periods from F-77830): x, y = 0.075 sin(2 pi frac(t / 4)), z = 0.075 sin(2 pi frac(t / 5)),
-/// w = 0.4; t = the clock `App::wind_clock`.
-pub fn wind_vector(t: f32) -> [f32; 4] {
-    let s = |period: f32| 0.075 * (std::f32::consts::TAU * (t / period).fract()).sin();
-    [s(4.0), s(4.0), s(5.0), 0.4]
-}
-
 fn cross_flipped(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     let (a9, a7) = ([a[1], a[2], a[0], a[3]], [a[2], a[0], a[1], a[3]]);
     let (b9, b7) = ([b[1], b[2], b[0], b[3]], [b[2], b[0], b[1], b[3]]);
@@ -590,5 +615,101 @@ mod tile_camera_tests {
             n += 1;
         }
         assert!(n > 100);
+    }
+}
+
+
+#[cfg(test)]
+mod data_tests {
+    use super::rules::*;
+    use mcla_formats::rage::props::{parse_foliage, parse_props};
+
+    const DIR: &str = "D:/MCLA/extracted/cache";
+
+    /// The shipped foliage records in file order with the prop each names (the name cut at the suffix): (name, drawable radius).
+    fn shipped() -> Option<Vec<(String, Option<f32>, u32)>> {
+        let dir = std::path::Path::new(DIR).join("resources/prop");
+        let fres = crate::assets::load_resource_file(&dir.join("0x982ff5e0.r134")).ok()?;
+        let pres = crate::assets::load_resource_file(&dir.join("0x0e66973c.r131")).ok()?;
+        let props = parse_props(&pres);
+        let by_name: std::collections::HashMap<String, f32> = props.iter().map(|p| (p.name.to_ascii_lowercase(), p.radius)).collect();
+        Some(
+            parse_foliage(&fres)
+                .iter()
+                .map(|ft| {
+                    let base = ft.name.trim_end_matches(LOW_LOD_SUFFIX).to_ascii_lowercase();
+                    (ft.name.clone(), by_name.get(&base).copied(), ft.rot_steps)
+                })
+                .collect(),
+        )
+    }
+
+    /// Regenerates the list `tools/map_impostor_reference.py` takes as `--types`: MCLA_DUMP_TYPES=<file> cargo test dump_type_list -- --ignored
+    #[test]
+    #[ignore]
+    fn dump_type_list() {
+        let Ok(path) = std::env::var("MCLA_DUMP_TYPES") else { return };
+        let list = shipped().unwrap();
+        let text: String = list.iter().map(|(n, r, _)| format!("{} {} {:08x}\n", n, r.is_some() as u8, r.map_or(0, |r| r.to_bits()))).collect();
+        std::fs::write(path, text).unwrap();
+    }
+
+    /// The type list the offline run was given (the first `SET` line of testdata/map_impostor_ref.txt) is what the port's parser reads
+    /// from the shipped resources: same 53 records, same order, same drawables and radii.
+    #[test]
+    fn the_offline_run_had_the_shipped_type_list() {
+        let Some(list) = shipped() else { return };
+        let line = include_str!("../testdata/map_impostor_ref.txt").lines().find(|l| l.starts_with("SET ")).unwrap();
+        let t: Vec<&str> = line.split(" -> ").next().unwrap().split(' ').collect();
+        let tuned: usize = t[1].parse().unwrap();
+        let rest = &t[2 + 3 * tuned..];
+        let n: usize = rest[0].parse().unwrap();
+        assert_eq!(n, list.len());
+        for (k, (name, radius, _)) in list.iter().enumerate() {
+            assert_eq!(rest[1 + 3 * k], name);
+            assert_eq!(rest[2 + 3 * k], if radius.is_some() { "1" } else { "0" }, "{name}");
+            assert_eq!(u32::from_str_radix(rest[3 + 3 * k], 16).unwrap(), radius.map_or(0, |r| r.to_bits()), "{name}");
+        }
+        let tune = parse_tuning(&std::fs::read_to_string(format!("{DIR}/tune/MultiPropTuning.xml")).unwrap());
+        assert_eq!(tune.len(), tuned);
+        for (k, i) in tune.iter().enumerate() {
+            assert_eq!((t[2 + 3 * k], t[3 + 3 * k], t[4 + 3 * k]), (i.name.as_str(), i.max_rots.to_string().as_str(), i.sched.to_string().as_str()));
+        }
+    }
+
+    /// The loader's results over the shipped records, against the port's own data: the tuning's MaxRots is the resource's rotation
+    /// count for every record (the resource carries the tuned value for the rotations), the hedge types are the ones that get no pictures,
+    /// every other base type has a positive drawable radius and 128 x 128 colour and normal pictures (MaxRots 1), the shadow impostor
+    /// is 256 for a radius over 2.0, and every twin finds its base.
+    #[test]
+    fn shipped_types_are_set_up_as_the_original_does() {
+        let Some(list) = shipped() else { return };
+        let tune = parse_tuning(&std::fs::read_to_string(format!("{DIR}/tune/MultiPropTuning.xml")).unwrap());
+        let names: Vec<&str> = list.iter().map(|l| l.0.as_str()).collect();
+        let low: Vec<bool> = names.iter().map(|n| n.contains(LOW_LOD_SUFFIX)).collect();
+        let links = link_twins(&names, &low);
+        let (mut pictured, mut twins) = (0, 0);
+        for (k, (name, radius, rots)) in list.iter().enumerate() {
+            let (mr, sched) = tuning_lookup(&tune, name);
+            assert_eq!(mr as u32, *rots, "{name}: MaxRots of the tuning and the resource");
+            assert!(radius.is_some(), "{name}: every shipped record has a prop with a drawable");
+            if low[k] {
+                twins += 1;
+                assert!(links[k].is_some(), "{name}: a twin without its base");
+                continue;
+            }
+            assert_eq!(name.to_ascii_lowercase().contains("hedge"), mr >= 250, "{name}: the port's hedge rule is the original's");
+            match picture_plan(mr, false, radius.unwrap()) {
+                Some(p) => {
+                    pictured += 1;
+                    assert!(radius.unwrap() > 0.0, "{name}");
+                    assert_eq!((p.color, p.normal), ((128, 128), (128, 128)), "{name}");
+                    assert_eq!(p.shadow, if radius.unwrap() > 2.0 { 256 } else { 128 }, "{name}");
+                    assert!([1, 2, 4, 8, 3].contains(&sched), "{name}: ScheduledFrame {sched}");
+                }
+                None => assert!(mr >= 250, "{name}"),
+            }
+        }
+        assert_eq!((pictured, twins), (28, 23));
     }
 }

@@ -1110,10 +1110,15 @@ impl Props {
         let mut card_of: HashMap<usize, Option<usize>> = HashMap::new();
         // the plant types with a card, for their impostors (props/impostor.rs)
         let mut imp_types: Vec<impostor::TypeInfo> = Vec::new();
+        // (and every record of the type array in file order, for the schedules that walk all of them)
+        let mut slot_infos: Vec<impostor::SlotInfo> = Vec::new();
         for ft in &foliage {
             let base = ft.name.trim_end_matches("_displayAsLowLOD").to_ascii_lowercase();
+            let slot_ix = slot_infos.len();
+            slot_infos.push(impostor::SlotInfo { name: ft.name.clone(), radius: by_name.get(&base).map(|&pi| all[pi].radius), model: None });
             let Some(&pi) = by_name.get(&base) else { continue };
             let Some(mi) = model_for(gpu, world, &mut models, pi) else { continue };
+            slot_infos[slot_ix].model = Some(mi);
             plant_models.insert(mi);
             // Far off the original draws a plant as a card with a picture of it; near, the model.
             if !card_of.contains_key(&mi) {
@@ -1650,7 +1655,7 @@ impl Props {
             log::info!("props: lamp locators on {} of {} signal heads", lamps.iter().filter(|l| l.iter().flatten().any(|x| x.is_some())).count(), heads.len());
             SignalGlows { lit: Vec::new(), cull, buf: None, count: 0, lamps, sizes: four("sm_fSignalGlowSizes", [4.52, 5.25, 8.7675, 10.0]), intensities: four("sm_fSignalGlowIntensitys", [4.52, 5.0, 5.0, 3.0]) }
         };
-        let impostors = impostor::Impostors::new(gpu, data_dir, &mut models, &imp_types);
+        let impostors = impostor::Impostors::new(gpu, data_dir, &mut models, &imp_types, &slot_infos);
         Props { hedge_low, impostors, signal_glows, glow_buf, glow_count: glows.len() as u32, lights, prop_lamps, glow_lamps, glow_boxes, glow_cull, glow_signal, glow_gfx, light_grid, models, inst_buf, cells, instances: total, insts, colliders, gas_stations, col_grid, debris: Vec::new(), hits: Vec::new(), scrapes: Vec::new(), deflects: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, moving: HashMap::new(), between: HashMap::new(), between_tick: 0, between_log: std::env::var_os("MCLA_DRAW_STEPS").map(|_| Vec::new()), heads, signals, race_models, race_buf: None, race_runs: Vec::new(), barriers, barrier_buf, barrier_on: 0, emitters, trash: load_resource_file(&Path::new(data_dir).join("resources/city/sc/0xad0a8b94.r66")).map(|r| trash_rails(&r)).unwrap_or_default() }
     }
 
