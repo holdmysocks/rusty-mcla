@@ -8548,7 +8548,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if let Some(&opp) = self.game.race.as_ref().filter(|r| r.participants.len() > 1).and_then(|r| r.participants.get(1)) {
                     let set = self.drivers.set_of.get(&opp).cloned().unwrap_or_default();
                     let voice = prerace::voice_of(&self.opt.data_dir, &set).unwrap_or_default();
-                    self.speech.request_as("TAUNT_RACE_BIG_CRASH", &voice);
+                    self.speech.request_taunt("TAUNT_RACE_BIG_CRASH", &voice);
                 }
             }
             // the speech manager's "a line plays" test (+2256 and +2260, F-58518 / F-68821 and the police chirp): the

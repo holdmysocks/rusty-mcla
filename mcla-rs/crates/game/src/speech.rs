@@ -34,7 +34,7 @@ const PLAYER_PHONE_BANK: &str = "0xb84d2992";
 
 /// A scenario's speech-manager fields (the loader F-66242): Priority (+12, default 3), Delay (+16, s, default 0),
 /// Frequency (+20, s, default 10), Probability (+64, percent clamped 0..100, default 100), the time of its last start
-/// (+24, -FLT_MAX at load) and its last script (+28, -1 at load).
+/// (+24, -FLT_MAX at load) and its last script (+28, -1 at load); `force_sender`: its ForceSender voice (+32) is set.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Gate {
     pub priority: i32,
@@ -43,6 +43,43 @@ pub struct Gate {
     pub probability: i32,
     pub last: f32,
     pub last_script: i32,
+    pub force_sender: bool,
+}
+
+/// The entity a speech request comes from (F-95157's r5, kept at +2252 while its scenario plays): `rank` is its +36.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Sender {
+    pub id: u32,
+    pub rank: i32,
+}
+
+/// A request to the scenario start F-95157 beside the scenario: `profile` the voice the computer lines get (`say_as`),
+/// `attach` the lines are said by the requesting entity (F-30989), `sender` the entity (+2252), `voice` the sender's name
+/// (None: no name; Some(found): the name and whether the entity's vt+44 found its voice), `forced` (r8: no Frequency /
+/// Probability gate), `keep` (r9: the first line's +467 - it holds until the same scenario is asked again), `wait` (r10:
+/// while a scenario plays the request waits in the ring of 8).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Ask<'a> {
+    pub profile: &'a str,
+    pub attach: bool,
+    pub sender: Option<Sender>,
+    pub voice: Option<bool>,
+    pub forced: bool,
+    pub keep: bool,
+    pub wait: bool,
+}
+
+/// A request waiting in the manager's ring (the 268-byte records at +28: the scenario +256, the sender +260, the names
+/// +0 / +128, forced +264, the byte +265; F-13869 pushes, F-85023 pops).
+#[derive(Clone, Debug)]
+struct Pending {
+    key: String,
+    profile: String,
+    attach: bool,
+    sender: Option<Sender>,
+    voice: Option<bool>,
+    forced: bool,
+    keep: bool,
 }
 
 impl Gate {
@@ -56,6 +93,7 @@ impl Gate {
             probability: num("Probability").map_or(100, |v| (v as i32).clamp(0, 100)),
             last: -f32::MAX,
             last_script: -1,
+            force_sender: attr(tag, "ForceSender").is_some(),
         }
     }
 }
@@ -99,6 +137,16 @@ pub struct Speech {
     line_wait: bool,
     /// the Priority (+12) of the scenario `request` started, while it plays
     cur_priority: Option<i32>,
+    /// the scenario playing (+2260) and its sender entity (+2252)
+    cur_key: Option<String>,
+    sender: Option<Sender>,
+    /// the first line of the scenario playing is held (+467: its delay does not run, F-35459, until a request of the same
+    /// scenario plays it, F-34685)
+    held: bool,
+    /// the requests waiting while a scenario plays (the ring of 8, F-13869; F-85023 starts the oldest when none plays)
+    pending: VecDeque<Pending>,
+    /// the sender's voice found (+2200: kept from one start to the next when a start finds none of its own)
+    sender_voice: bool,
     /// the last request was refused for a script with no line (tests)
     #[cfg(test)]
     no_line: bool,
@@ -241,38 +289,70 @@ impl Speech {
         crate::sndobj::audio_rand(lo, hi)
     }
 
-    /// A speech request as F-30989 / F-62728 make it (`"PLAYER_NITROUS"`, voice group "PLAYER", not forced): the start
-    /// F-95157 refuses it while the clock is below its last start + Frequency, then unless rand(0, 99) < Probability (the
-    /// draw only when the clock passed); a scenario playing is cut only by a higher Priority (+12). On a start: the last
-    /// start = the clock, the script drawn = rand(0, count - 1) is the one said, the last script (+28) = that draw, one on
-    /// (wrapping) when it equals the last one (the script's pointer is taken before the bump: a scenario of two scripts can
-    /// say the same one twice), the Delay before the first line; a script with no line (PlayAsset / SpecialCase) stops the
-    /// speech (F-73277) and the start is refused, the last start and script kept. Recorded (work/slipstream/audio3/cap/n0.txt): the gate
-    /// draw 27 < 30 passes, the script draw 0 next, a request 66.3 s after the start refused with no draw, one at 120.7 s
-    /// drawn 36 and refused (the last start kept).
+    /// A speech request as F-30989 / F-62728 make it (`"PLAYER_NITROUS"`, voice group "PLAYER", not forced, not kept, not
+    /// waiting): `start`. (The name PLAYER's lookup is taken as found, not traced: every PLAYER_* scenario has a ForceSender,
+    /// which comes first.)
     pub fn request(&mut self, scenario: &str) -> bool {
-        self.request_with(scenario, "", true)
+        self.start(scenario, Ask { attach: true, voice: Some(true), ..Default::default() })
     }
 
-    /// The same start asked by F-23328 (scenario, voice group = a racer's driver name, F-83760's racer +144): no
-    /// entity for the lines (F-23328 starts it through F-70230, not F-30989), the computer lines in `profile`'s voice
-    /// as `say_as` gives them.
+    /// The same start asked by F-52240 through F-70230 (scenario, voice group = a racer's driver name: not forced, not
+    /// kept, not waiting): no entity for the lines, the computer lines in `profile`'s voice as `say_as` gives them; an
+    /// empty `profile` (no voice found for the racer) finds no sender voice.
     pub fn request_as(&mut self, scenario: &str, profile: &str) -> bool {
-        self.request_with(scenario, profile, false)
+        self.start(scenario, Ask { profile, voice: Some(!profile.is_empty()), ..Default::default() })
     }
 
-    fn request_with(&mut self, scenario: &str, profile: &str, attach: bool) -> bool {
+    /// F-23328's request (scenario, the racer's driver name): F-70230 with r9 = 1, so it waits in the ring while a scenario
+    /// plays (`request_as` otherwise).
+    pub fn request_taunt(&mut self, scenario: &str, profile: &str) -> bool {
+        self.start(scenario, Ask { profile, voice: Some(!profile.is_empty()), wait: true, ..Default::default() })
+    }
+
+    /// The scenario start F-95157 (offline: the online check F-24338 refuses everything online). A waiting request while
+    /// a scenario plays goes to the ring (refused when 8 wait) and is taken, with no gate. Not forced: refused while the
+    /// clock is below its last start + Frequency, then unless rand(0, 99) < Probability (the draw only when the clock
+    /// passed). No script: refused. A scenario playing: the same scenario with its first line held is played (F-34685),
+    /// taken; another sender entity playing is cut only by a higher rank (+36), else a higher Priority (+12, unsigned) cuts
+    /// it (F-73277); otherwise refused. On a start: the last start = the clock, the script drawn = rand(0, count - 1) is the
+    /// one said, the last script (+28) = that draw, one on (wrapping) when it equals the last one (the script's pointer is
+    /// taken before the bump: a scenario of two scripts can say the same one twice); the sender's voice is the ForceSender
+    /// (+32), else the name's (vt+44), else the one kept (+2200): none refuses (the last start and script kept). The Delay
+    /// comes before the first line; a script with no line (PlayAsset / SpecialCase) stops the speech and the start is
+    /// refused. The first line keeps `keep` (+467). Recorded (work/slipstream/audio3/cap/n0.txt): the gate draw 27 < 30
+    /// passes, the script draw 0 next, a request 66.3 s after the start refused with no draw, one at 120.7 s drawn 36 and
+    /// refused (the last start kept). Run offline whole on 4,000 states: verify_audio_b1.md batches 54 and 55.
+    pub fn start(&mut self, scenario: &str, ask: Ask) -> bool {
         let key = scenario.to_ascii_uppercase();
         let (Some(g), Some(count)) = (self.gates.get(&key).copied(), self.scenarios.get(&key).map(|s| s.len())) else { return false };
-        if self.clock < g.last + g.frequency || self.rand(0, 99) >= g.probability || count == 0 {
+        if ask.wait && self.busy() {
+            if self.pending.len() == 8 {
+                return false;
+            }
+            let Ask { profile, attach, sender, voice, forced, keep, .. } = ask;
+            self.pending.push_back(Pending { key, profile: profile.to_string(), attach, sender, voice, forced, keep });
+            return true;
+        }
+        if !ask.forced && (self.clock < g.last + g.frequency || self.rand(0, 99) >= g.probability) {
+            return false;
+        }
+        if count == 0 {
             return false;
         }
         if self.busy() {
-            if self.cur_priority.is_some_and(|p| g.priority <= p) {
+            if self.cur_key.as_deref() == Some(&key) && self.held {
+                // (F-34685: the held line's +467 cleared, its tick runs)
+                self.held = false;
+                return true;
+            }
+            let cut = match self.sender.filter(|s| Some(*s) != ask.sender) {
+                Some(s) => ask.sender.map_or(0, |a| a.rank) > s.rank,
+                None => self.cur_priority.is_none_or(|p| g.priority as u32 > p as u32),
+            };
+            if !cut {
                 return false;
             }
-            self.queue.clear();
-            self.wait = 0.0;
+            self.cut();
         }
         let pick = self.rand(0, count as i32 - 1);
         let mut last = pick;
@@ -286,6 +366,14 @@ impl Speech {
             e.last = self.clock;
             e.last_script = last;
         }
+        if g.force_sender {
+            self.sender_voice = true;
+        } else if let Some(found) = ask.voice {
+            self.sender_voice = found;
+        }
+        if !self.sender_voice {
+            return false;
+        }
         let steps = self.scenarios[&key][pick as usize].clone();
         // (no line in the script: F-95157 logs it, stops everything and refuses)
         if !steps.iter().any(|st| matches!(st, Step::Play { .. } | Step::Clip { .. } | Step::Phone { .. })) {
@@ -293,18 +381,17 @@ impl Speech {
             {
                 self.no_line = true;
             }
-            self.queue.clear();
-            self.wait = 0.0;
-            self.cur_priority = None;
+            self.cut();
             return false;
         }
+        let profile = ask.profile;
         let steps = self.phone_steps(steps, profile);
         // (F-30989 then gives the lines the requesting entity, F-18143: the player's car for PLAYER_NITROUS / PLAYER_IN_AIR)
         let pv = (!profile.is_empty()).then(|| profile.to_ascii_uppercase());
         let steps = steps.into_iter().map(|st| match st {
             Step::Play { asset, player, voice, rec, force, post, attach: at } => {
                 let voice = if player || pv.is_none() { voice } else { pv.clone() };
-                Step::Play { asset, player, voice, rec, force, post, attach: if attach { true } else { at } }
+                Step::Play { asset, player, voice, rec, force, post, attach: if ask.attach { true } else { at } }
             }
             Step::Clip { name, player: false, voice } => Step::Clip { name, player: false, voice: pv.clone().or(voice) },
             o => o,
@@ -314,8 +401,21 @@ impl Speech {
         }
         self.queue.extend(steps);
         self.cur_priority = Some(g.priority);
+        self.cur_key = Some(key.clone());
+        self.sender = ask.sender;
+        self.held = ask.keep;
         log::debug!("speech: {} started at {:.3} s (script {}, last {})", key, self.clock, pick, last);
         true
+    }
+
+    /// F-73277's bookkeeping: the lines to come, the scenario playing and its sender gone.
+    fn cut(&mut self) {
+        self.queue.clear();
+        self.wait = 0.0;
+        self.cur_priority = None;
+        self.cur_key = None;
+        self.sender = None;
+        self.held = false;
     }
 
     /// Queue a scenario; returns false if it does not exist.
@@ -384,8 +484,7 @@ impl Speech {
     /// mcCareerSpeech_Stop (F-90827 -> F-73277, while the speech system is the career speech's): everything stops -
     /// the line on show, the lines to come, its wait; the scenario's mixer goes with the speech no longer busy.
     pub fn stop_now(&mut self, a: &mut Audio) {
-        self.queue.clear();
-        self.wait = 0.0;
+        self.cut();
         self.line_wait = false;
         self.line = None;
         a.obj_line_stop();
@@ -513,11 +612,12 @@ impl Speech {
     pub fn update(&mut self, a: &mut Audio, dt: f32) {
         self.clock += dt;
         if !self.busy() {
-            self.cur_priority = None;
+            self.cut();
         }
         // a line's voice holds in a pause (its sound is on the paused timer 0: F-89113 skips it, so the line's end - its
-        // sound slot freed, F-78934 - waits); WaitTime delays run on the real frame time (+392 += G+92, F-35459)
-        if !(self.paused && self.line_wait) {
+        // sound slot freed, F-78934 - waits); WaitTime delays run on the real frame time (+392 += G+92, F-35459); a held
+        // first line (+467) does not run at all
+        if !(self.paused && self.line_wait) && !self.held {
             self.wait -= dt;
         }
         if let Some(l) = self.line.as_mut().filter(|_| !self.paused) {
@@ -526,9 +626,21 @@ impl Speech {
                 self.line = None;
             }
         }
-        self.step(a);
-        // the scenario's dynamic mixer while it plays (F-70477 / F-38026)
-        let on = self.busy() && !self.mixer.is_empty();
+        if !self.held {
+            self.step(a);
+        }
+        // (F-85023: when no scenario plays, the oldest waiting request is started - everything stopped first, F-73277 -
+        // with its own forced flag and byte, not waiting)
+        if !self.busy() {
+            if let Some(p) = self.pending.pop_front() {
+                self.stop_now(a);
+                let ask = Ask { profile: &p.profile, attach: p.attach, sender: p.sender, voice: p.voice, forced: p.forced, keep: p.keep, wait: false };
+                self.start(&p.key, ask);
+            }
+        }
+        // the scenario's dynamic mixer while it plays (F-70477 / F-38026: switched on when a line starts - not while the
+        // first line is held)
+        let on = self.busy() && !self.held && !self.mixer.is_empty();
         if on != self.mixer_on && !self.mixer.is_empty() {
             a.obj_scene(&self.mixer, on);
         }
@@ -776,21 +888,25 @@ mod tests {
         }
     }
 
-    /// verify_audio_b1.md batch 54: the speech manager's scenario start F-95157 run offline whole
-    /// (tools/speech_start_reference.py, 4,000 random manager and scenario states, the audio's generator real): for the
-    /// requests the port makes (not forced, not queued, not online, no prepared scenario, the sender none or the same,
-    /// a voice for the sender) the result, the last start (+24) and script (+28), the generator's state after, every line
-    /// with the delay it gets (Delay and the WaitTimes before it) and the stops are the original's
+    /// verify_audio_b1.md batches 54 and 55: the speech manager's scenario start F-95157 run offline whole
+    /// (tools/speech_start_reference.py, 4,000 random manager and scenario states, the audio's generator real): for every
+    /// state but the online ones (the port is offline) - forced or not, waiting or not, the first line held or not, a
+    /// scenario playing (this one held or not, another), its sender entity (none, this one, another with its rank), the
+    /// ring full or empty, the sender's voice (ForceSender, kept, none) - the result, the last start (+24) and script
+    /// (+28), the generator's state after, the push to the ring, the held line played, every line with the delay it gets
+    /// (Delay and the WaitTimes before it), the stops, and after it the sender's voice (+2200), the sender entity (+2252),
+    /// the scenario playing (+2260) and its first line's byte (+467) are the original's
     #[test]
     fn speech_start_matches_the_original() {
         let mut lines = include_str!("testdata/speech_start_ref.txt").lines();
         let (mut n, mut used, mut started) = (0, 0, 0);
+        let mut seen = [0u32; 6];
         while let Some(c) = lines.next() {
             let w: Vec<u32> = c.split(' ').skip(1).map(|t| t[1..].parse().unwrap()).collect();
             let (want_calls, want_after) = (lines.next().unwrap(), lines.next().unwrap());
             n += 1;
-            let ours = w[0] == 0 && w[2] == 0 && (w[1] == 0 || w[4] == 0) && !(w[4] == 1 && w[5] == 1) && w[6] != 2 && (w[17] == 1 || w[18] == 1);
-            if !ours {
+            // (online: F-24338 refuses before anything; the port has no online play)
+            if w[0] == 1 {
                 continue;
             }
             used += 1;
@@ -816,24 +932,48 @@ mod tests {
                     probability: w[11] as i32,
                     last: f32::from_bits(w[9]),
                     last_script: w[13] as i32,
+                    force_sender: w[17] == 1,
                 },
             );
             sp.clock = f32::from_bits(w[8]);
+            sp.sender_voice = w[18] == 1;
+            let me = Sender { id: 1, rank: w[19] as i32 };
             let busy = w[4] != 0;
             if busy {
                 sp.queue.push_back(Step::Wait(-1.0));
                 sp.cur_priority = Some(if w[4] == 1 { w[14] } else { w[15] } as i32);
+                sp.cur_key = Some(if w[4] == 1 { "T" } else { "O" }.into());
+                sp.held = w[5] == 1;
+                sp.sender = match w[6] {
+                    1 => Some(me),
+                    2 => Some(Sender { id: 2, rank: w[20] as i32 }),
+                    _ => None,
+                };
             }
+            for _ in 0..w[7] {
+                sp.pending.push_back(Pending { key: "X".into(), profile: String::new(), attach: false, sender: None, voice: None, forced: false, keep: false });
+            }
+            let held_before = sp.held;
             crate::sndobj::set_audio_rng_state((w[21], w[22]));
-            let ok = sp.request("T");
+            let ok = sp.start("T", Ask { attach: true, sender: Some(me), voice: None, forced: w[2] == 1, keep: w[3] == 1, wait: w[1] == 1, profile: "" });
             let g = sp.gate("T").unwrap();
             let no_line = sp.no_line;
+            let pushed = sp.pending.len() > w[7] as usize;
             let cut = busy && !matches!(sp.queue.front(), Some(Step::Wait(x)) if *x == -1.0);
+            let played = held_before && !sp.held && ok && busy && !cut;
             let mut got = String::new();
+            if pushed {
+                got += " U";
+                seen[0] += 1;
+            }
+            if played {
+                got += " A";
+                seen[1] += 1;
+            }
             for _ in 0..(cut as usize + no_line as usize) {
                 got += " S";
             }
-            if ok {
+            if ok && !pushed && !played {
                 started += 1;
                 let mut acc = 0.0f32;
                 for st in &sp.queue {
@@ -848,15 +988,17 @@ mod tests {
                     }
                 }
             }
-            // (the original's calls: its stops and line builds, the logs and the pool's reset left out)
+            // (the original's calls: the ring push, the held line played, its stops and line builds; the logs and the
+            // pool's reset left out)
             let want: String = want_calls[1..].split(' ').filter(|t| !t.is_empty()).fold((String::new(), false), |(mut o, line), t| {
                 if line {
                     o += " ";
                     o += t;
                     return (o, !t.starts_with('m') && !t.starts_with('x'));
                 }
-                if t == "S" {
-                    o += " S";
+                if t == "S" || t == "U" || t == "A" {
+                    o += " ";
+                    o += t;
                 } else if t.starts_with('L') {
                     o += " ";
                     o += t;
@@ -868,9 +1010,27 @@ mod tests {
             let (r0, r1) = crate::sndobj::audio_rng_state();
             let after = format!("A r{} x{:08x} x{:08x} x{r0:08x} x{r1:08x}", ok as u8, g.last.to_bits(), g.last_script as u32);
             assert_eq!(&want_after[..after.len()], after, "case {}: {c}", n - 1);
+            // +2200, +2204, +2252, +2256, +2260 and the first line's +440 / +444 / +467
+            let t: Vec<&str> = want_after.split(' ').collect();
+            let word = |k: usize| u32::from_str_radix(&t[k][1..], 16).unwrap();
+            assert_eq!(word(6) != 0, sp.sender_voice, "case {} +2200: {c}", n - 1);
+            let snd = match sp.sender { None => 0, Some(Sender { id: 1, .. }) => 0x4028_0000, Some(_) => 0x4029_0000 };
+            assert_eq!(word(8), snd, "case {} +2252: {c}", n - 1);
+            let cur = match sp.cur_key.as_deref() { None => 0, Some("T") => 0x4020_0000, Some(_) => 0x4021_0000 };
+            assert_eq!(word(10), cur, "case {} +2260: {c}", n - 1);
+            assert_eq!(word(9) != 0, sp.busy(), "case {} +2256: {c}", n - 1);
+            // (F-34685 is a stub there: the byte it clears stays)
+            if word(9) != 0 && !played {
+                assert_eq!(t[13], format!("b{}", sp.held as u8), "case {} +467: {c}", n - 1);
+            }
+            seen[2] += (busy && w[6] == 2 && !ok && !pushed) as u32;
+            seen[3] += (!sp.sender_voice && !ok) as u32;
+            seen[4] += (w[2] == 1 && ok) as u32;
+            seen[5] += (w[7] == 8 && w[1] == 1 && busy && !ok) as u32;
         }
+        eprintln!("pushed {}, played held {}, refused by rank {}, no voice {}, forced starts {}, ring full {}", seen[0], seen[1], seen[2], seen[3], seen[4], seen[5]);
         assert_eq!(n, 4000);
-        assert!(used > 2000 && started > 300, "{used} {started}");
+        assert!(used > 3700 && started > 500 && seen.iter().all(|&k| k > 10), "{used} {started} {seen:?}");
     }
 }
 
