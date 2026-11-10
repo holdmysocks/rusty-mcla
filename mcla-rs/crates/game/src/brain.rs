@@ -387,7 +387,9 @@ impl GoalPlan {
     }
 
     fn open_to(&self, p: &AltPath) -> bool {
-        (p.mask as u32 >> (self.opponent & 0xFF)) & 1 != 0
+        // (srw by the opponent's low byte: the shift's low 6 bits, 32 .. 63 giving 0)
+        let sh = self.opponent & 0xFF & 0x3F;
+        sh < 32 && (p.mask as u32 >> sh) & 1 != 0
     }
 
     fn matches(&self, p: &AltPath, shortcut: bool) -> bool {
@@ -1424,6 +1426,71 @@ pub fn run(v: &mut crate::vehicles::Vehicles, i: usize, brain: &mut Brain, to_go
 
 #[cfg(test)]
 mod tests {
+
+    /// F-58517 with F-60279 run offline (tools/goal_build_reference.py, verify_goal_build.md): the goal count, every goal's
+    /// flags word and its eight float words (an FNV-1a hash) and the shared generator's state after equal to GoalPlan::build.
+    #[test]
+    fn goal_build_matches_the_original() {
+        let text = include_str!("testdata/goal_build_ref.txt");
+        let hex = |w: &str| u32::from_str_radix(&w.replace('_', ""), 16).unwrap();
+        let fnv = |g: &Goal| {
+            let mut h = 2_166_136_261u32;
+            for v in [g.pos.x, g.pos.y, g.pos.z, g.w, g.p1.x, g.p1.y, g.p1.z, g.speed] {
+                for b in v.to_bits().to_le_bytes() {
+                    h = (h ^ b as u32).wrapping_mul(16_777_619);
+                }
+            }
+            h
+        };
+        let (mut cases, mut goals, mut bad) = (0, 0, 0);
+        for line in text.lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let arrow = w.iter().position(|x| *x == "->").unwrap();
+            let v: Vec<u32> = w[1..arrow].iter().map(|x| hex(x)).collect();
+            let o: Vec<u32> = w[arrow + 1..].iter().map(|x| hex(x)).collect();
+            let f = |i: usize| f32::from_bits(v[i]);
+            let (pre, n, np, na) = (v[10] as usize, v[11] as usize, v[12] as usize, v[13] as usize);
+            let c0 = 14 + pre;
+            let v3 = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let cps = (0..n).map(|i| {
+                let b = c0 + 10 * i;
+                CpDef { pos: v3(b), second: v3(b + 3), radius: f(b + 6), frac: f(b + 7), speed: f(b + 8), gate: v[b + 9] != 0 }
+            }).collect();
+            let p0 = c0 + 10 * n;
+            let paths = (0..np).map(|i| {
+                let b = p0 + 7 * i;
+                AltPath { before: v[b] as usize, weight: f(b + 1), first: v[b + 2] as usize, count: v[b + 3] as usize, mask: v[b + 4] as u8, skip: v[b + 5] as usize, shortcut: v[b + 6] != 0 }
+            }).collect();
+            let a0 = p0 + 7 * np;
+            let alt = (0..na).map(|i| AltCp { pos: v3(a0 + 5 * i), radius: f(a0 + 5 * i + 3), speed: f(a0 + 5 * i + 4) }).collect();
+            let course = Course { cps, paths, alt };
+            let mut plan = GoalPlan::new(v[4] as usize, v[8], 0, v[9] != 0);
+            plan.laps = v[4] as usize;
+            plan.shortcut_chance = f(7);
+            plan.lock = (v[5] as i32, v[6] as i32);
+            // (the goals already in the list: their flags words, the allocator's fill 0xCDCDCDCD in the floats)
+            let cd = f32::from_bits(0xCDCD_CDCD);
+            plan.goals = (0..pre).map(|i| Goal { pos: Vec3::splat(cd), w: cd, p1: Vec3::splat(cd), speed: cd, flags: v[14 + i] }).collect();
+            let mut rng = Mwc { lo: v[0], carry: v[1] };
+            plan.build(&course, v[2] as usize, v[3] as usize, &mut rng);
+            let mut got = vec![plan.goals.len() as u32, rng.lo, rng.carry];
+            for g in &plan.goals {
+                got.push(g.flags);
+                got.push(fnv(g));
+            }
+            cases += 1;
+            goals += plan.goals.len();
+            if got != o {
+                if bad < 5 {
+                    println!("{line}{}  port {:08x?}", char::from(10), got);
+                }
+                bad += 1;
+            }
+        }
+        println!("goal build: {cases} cases, {goals} goals, {bad} differ");
+        assert!(cases >= 4000);
+        assert_eq!(bad, 0);
+    }
 
     /// F-34392 run offline with its goal list builder recorded (tools/catch_up_reference.py, verify_catch_up.md): whether it
     /// builds, the builder's (checkpoint, lap), the lock, the goal count (0xFFFF with no goal at or after the point) and
