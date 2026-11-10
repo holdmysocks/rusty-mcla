@@ -214,19 +214,56 @@ pub const WHEEL_BOX_DROP: f32 = 0.5;
 /// crown radius (`vehsim::crown` of the fitted TireRadius / TireWidth, front = -z) and
 /// `WHEEL_BOX_DROP` below.
 pub fn bound_height(c: &crate::vehicles::CarInstance) -> f32 {
-    let Some(h) = c.model.params.hull.as_ref() else { return c.model.max.y - c.model.min.y };
-    let top = h.bbox.map_or(c.model.max.y, |(hi, _)| hi.y);
+    let (hi, lo) = bound_box(c);
+    if std::env::var("MCLA_MARK_LOG").is_ok() {
+        log::info!("race marker bound {}: top {:.4} bottom {:.4} h {:.4}", c.model.name, hi.y, lo.y, hi.y - lo.y);
+    }
+    hi.y - lo.y
+}
+
+/// The car's composite bound box (max, min) as the running game holds it (`F-98453` +16 / +32,
+/// recorded live on four cars): y as `bound_height` says; z the hull's box, or the wheels' (hub
+/// -/+ crown radius) where they reach further; x the hull's or the wheels' (hub -/+ half the tyre
+/// width + twice the margin). *(approx.: the wheels' x reach is not decoded - the live S281 / R8 /
+/// Murcielago boxes are 0.069 - 0.080 past half the tyre width, not one rule; the left and right
+/// wheels are alike, so the box's x centre is 0 on every four-wheeled car whatever the rule)*.
+pub fn bound_box(c: &crate::vehicles::CarInstance) -> (Vec3, Vec3) {
+    let Some(h) = c.model.params.hull.as_ref() else { return (c.model.max, c.model.min) };
+    let (hi, lo) = h.bbox.unwrap_or((c.model.max, c.model.min));
     let tyres = match (c.setup.as_ref(), c.model.simtunes.as_ref()) {
         (Some(f), _) => Some((f.radius, f.width)),
         (None, Some(s)) => Some(([s.base.wheel_front.radius, s.base.wheel_back.radius], [s.base.wheel_front.width, s.base.wheel_back.width])),
         _ => None,
     };
-    let Some((r, w)) = tyres.filter(|_| !h.wheel_parts.is_empty()) else { return top - c.model.min.y };
-    let bottom = box_bottom(&h.wheel_parts, r, w);
-    if std::env::var("MCLA_MARK_LOG").is_ok() {
-        log::info!("race marker bound {}: top {:.4} bottom {:.4} h {:.4} tyres {:?} {:?}", c.model.name, top, bottom, top - bottom, r, w);
+    let Some((r, w)) = tyres.filter(|_| !h.wheel_parts.is_empty()) else { return (hi, Vec3::new(lo.x, c.model.min.y, lo.z)) };
+    composite_box(hi, lo, &h.wheel_parts, r, w)
+}
+
+/// `bound_box` from the hull's own box (`hi`, `lo`) and the wheel parts with their tyres.
+pub fn composite_box(mut hi: Vec3, mut lo: Vec3, wheel_parts: &[Vec3], r: [f32; 2], w: [f32; 2]) -> (Vec3, Vec3) {
+    lo.y = box_bottom(wheel_parts, r, w);
+    for p in wheel_parts {
+        let a = if p.z < 0.0 { 0 } else { 1 };
+        let (cr, wx) = (crate::physics::vehsim::crown(r[a], w[a], 0.0), w[a] * 0.5 + 0.08);
+        hi.x = hi.x.max(p.x + wx);
+        lo.x = lo.x.min(p.x - wx);
+        hi.z = hi.z.max(p.z + cr);
+        lo.z = lo.z.min(p.z - cr);
     }
-    top - bottom
+    (hi, lo)
+}
+
+/// Where the pause menus' coordinate frame (the HUD frame 14, built by `F-32331`) stands in the
+/// world: the car's matrix origin plus its composite box's centre turned by the car (`rot`), y
+/// at the top of the turned box - centre y + half the box's height x the sum of |each of the
+/// car's rows' y|. A bike's box top is first raised by 0.4 (F-32331 asks the class test). The
+/// frame's rows are the heading only (up (0, 1, 0), the car's z row flattened), as frame 5's.
+pub fn pause_origin(pos: Vec3, rot: glam::Quat, hi: Vec3, lo: Vec3, bike: bool) -> Vec3 {
+    let hi = if bike { Vec3::new(hi.x, hi.y + 0.4, hi.z) } else { hi };
+    let half = (hi - lo) * 0.5;
+    let centre = rot * (lo + half);
+    let up = (rot * Vec3::X).y.abs() + (rot * Vec3::Y).y.abs() + (rot * Vec3::Z).y.abs();
+    pos + Vec3::new(centre.x, centre.y + half.y * up, centre.z)
 }
 
 /// The lowest wheel part's box bottom: hub - crown radius (tyre radius `r`, width `w`; front
@@ -406,6 +443,42 @@ mod tests {
             // (S281 and R8 to 0.1 mm; the Murcielago's box reaches 2.4 cm and the Ducati's 1.1 cm
             // lower than the 0.5 rule - WHEEL_BOX_DROP)
             assert!((bottom - bottom_live).abs() < 0.03, "{name} bottom {bottom}");
+        }
+    }
+
+    /// The whole composite box against the live ones (`work/career2/mk/rec`, marks.py: max / min),
+    /// and the pause frame's origin it gives the S281 against the race-end fit (CAREER_RACES.md
+    /// "Race end: second run": PauseCamera3 / 2 + (0, 1.42, 0.08 rear)).
+    #[test]
+    fn live_composite_boxes_and_the_pause_origin() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let dir = std::path::Path::new(&root).join("resources/vehicle");
+        if !dir.exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::new(&root);
+        for (name, hi_live, lo_live) in [
+            ("vp_sln_s281_06", [1.0049f32, 1.4117, 2.4269], [-1.0049f32, -0.5112, -2.2864]),
+            ("vp_aud_r8_08", [1.0038, 1.2772, 2.1064], [-1.0038, -0.4759, -2.3572]),
+            ("vp_lam_murcielago_06", [1.0694, 1.0885, 2.2371], [-1.0694, -0.5459, -2.3676]),
+            ("vp_duc_999r_06", [0.4270, 1.1482, 1.0534], [-0.4270, -0.5071, -1.0472]),
+        ] {
+            let car = crate::vehicle_model::load_car(&assets, &dir.join(name)).unwrap();
+            let h = car.hull.as_ref().unwrap();
+            let s = &car.simtune.as_ref().unwrap().base;
+            let wheels: Vec<Vec3> = h.wheel_parts.iter().map(|p| Vec3::from(*p)).collect();
+            let (hi, lo) = composite_box(Vec3::from(h.bbox.0), Vec3::from(h.bbox.1), &wheels, [s.wheel_front.radius, s.wheel_back.radius], [s.wheel_front.width, s.wheel_back.width]);
+            let (hl, ll) = (Vec3::from(hi_live), Vec3::from(lo_live));
+            println!("{name}: max {hi:?} ({hl:?}) min {lo:?} ({ll:?})");
+            // z and the top as the live box; x within the undecoded wheel reach; the centre's x and z
+            assert!((hi.z - hl.z).abs() < 5e-4 && (lo.z - ll.z).abs() < 5e-4 && (hi.y - hl.y).abs() < 5e-4, "{name}");
+            assert!((hi.x - hl.x).abs() < 0.02 && (lo.x - ll.x).abs() < 0.02, "{name} x");
+            assert!(((hi + lo).x - (hl + ll).x).abs() < 1e-3 && ((hi + lo).z - (hl + ll).z).abs() < 1e-3, "{name} centre");
+            if name == "vp_sln_s281_06" {
+                let o = pause_origin(Vec3::ZERO, glam::Quat::IDENTITY, hi, lo, false);
+                println!("S281 pause origin {o:?}");
+                assert!((o - Vec3::new(0.0, 1.42, 0.08)).length() < 0.015, "{o:?}");
+            }
         }
     }
 
