@@ -570,8 +570,13 @@ fn v4(v: Vec3) -> V4 {
 fn v3(v: V4) -> Vec3 {
     Vec3::new(v.0[0], v.0[1], v.0[2])
 }
+/// B's state as the type-7 code reads it: the state's +32 / +80 blocks as they lie in the
+/// island's work space (F-71455), row by row - the transposes of `mcol` / `icol`. F-11306 (the
+/// row's K) takes them as rows and F-67470 (the give) through their transposes; the world inverse
+/// inertia is not exactly symmetric in floats, so the side matters (rc.0 1336 / 1337: the
+/// bike's and the car's +80 in the snapshot's work space are `icol` transposed, word for word).
 fn rigid_state(s: &State) -> RigidState {
-    RigidState { vel: v4(s.vel), ang: v4(s.ang), m: s.mcol.map(v4), i: s.icol.map(v4) }
+    RigidState { vel: v4(s.vel), ang: v4(s.ang), m: columns(&s.mcol).map(v4), i: columns(&s.icol).map(v4) }
 }
 /// A type-7 visit or give with B's state taken out of the island's states and put back.
 fn with_b(states: &mut [State], sb: usize, f: impl FnOnce(&mut RigidState)) {

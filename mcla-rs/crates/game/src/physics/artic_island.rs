@@ -1416,14 +1416,10 @@ mod tests {
         assert!(report.is_empty(), "{}", report.join("\n"));
     }
 
-    /// The ticks of rv.0 whose shared solve is not yet the original's word for word (unverified, open): 156, 158 and
-    /// 159. The rows that differ there are exactly the tick's rows on the friction cone (their multipliers within
-    /// about 1e-5 of the recorded ones, the bike's share within 1e-6), while the cone rows of the other nine ticks are
-    /// exact. Ruled out: the warm starts (every choice of the earlier records' +0 / +128), the hinge bytes (each part
-    /// added or taken away), the bike's body (place, rows, angular velocity and sums from either snapshot), the rows'
-    /// inputs (the RGD1 snapshot's records equal the PAIR records but for +0), the row order (A list), the sweep
-    /// count (island +20 = 1: 8) and the elasticity factor (equal on every tick).
-    const OPEN: [u32; 3] = [156, 158, 159];
+    /// The ticks of rv.0 whose shared solve is not yet the original's word for word (open): none. 156, 158 and 159 (the
+    /// rows on the friction cone ~1e-5 off) are exact since the type-7 rows take the bike's +32 / +80 blocks as the
+    /// island's work space holds them (solver.rs `rigid_state`; found on rc.0 1336).
+    const OPEN: [u32; 0] = [];
 
     /// The thrown rider against another vehicle: ov.0 724 - 735 (recomp recorder, a parked ambient car 0x5745 -
     /// mcAmbientPhysInst, level state 0 (active) after the bike struck it - the rider 0x5754 lying on it, the bike
@@ -1508,11 +1504,10 @@ mod tests {
     /// xi.0's racer ticks not yet word for word (unverified, open).
     const OPEN_RACER: [u32; 0] = [];
 
-    /// The tick of ov.0 whose rider x car solve is not yet the original's word for word (unverified, open): 730, the
-    /// first tick of six rows all with the car (no self row), four of them new sub-manifolds. One row (rider part 17)
-    /// ends about 1e-5 from the recorded multipliers and impulse, and the rider's links by an ulp or two - the same kind
-    /// of difference as rv.0 156 / 158 / 159 ([`OPEN`]). The car's share and the other eleven ticks are exact.
-    const OPEN_CAR: [u32; 1] = [730];
+    /// The ticks of ov.0 whose rider x car solve is not yet the original's word for word (open): none. 730 (one row
+    /// ~1e-5 off, the links an ulp or two) is exact since the type-7 rows take the car's +32 / +80 blocks as the
+    /// island's work space holds them (solver.rs `rigid_state`; found on rc.0 1336).
+    const OPEN_CAR: [u32; 0] = [];
 
     // -----------------------------------------------------------------------------------------
     // One island of several rigid bodies and the rider (RGISL001, export_isl.py): the rider thrown onto a vehicle that
@@ -1870,11 +1865,11 @@ mod tests {
         assert!(report.is_empty(), "{}", report.join("\n"));
     }
 
-    /// rc.0 ticks not yet word for word (open): 1332 (link 2's place and turn 1 - 2 ulp, every row exact, as rv.0 156 /
-    /// 158 / 159 and ov.0 730), 1339 (every row exact, the links up to ~1e-5 relative), 1336 / 1337 (the bike x rider rows
-    /// and the rider's row with the city ~1e-4 relative, the bike's +368 / +384 ~1e-5: the solve departs; the first
-    /// differing quantity is not found).
-    const OPEN_RC0: [u32; 4] = [1332, 1336, 1337, 1339];
+    /// rc.0 ticks not yet word for word (open): 1332 - every row, the bodies' shares and every other word exact; only the
+    /// solve-time scratch left in link 2 after the sweeps (+16 / +32, the seen change of motion) differs by 1 - 2 ulp (an
+    /// order of the scratch's sums, not found). 1336 / 1337 / 1339 are exact since the type-7 rows take B's +32 / +80
+    /// blocks as the work space holds them (solver.rs `rigid_state`, read in the RGD1 snapshot's row list).
+    const OPEN_RC0: [u32; 1] = [1332];
 
     /// rc.0 through the live path (`live_bike_island`): the bike the island's car, the ambient car a loose vehicle object,
     /// the rider's rows with both his share (`Who::Car` for the bike, `Who::Obj` for the car).
