@@ -4,6 +4,7 @@
 
 use crate::assets::load_resource_file;
 use crate::render::{Gpu, MatMode, Vertex};
+use crate::physics::exact_mat;
 use glam::{Mat4, Quat, Vec3};
 use mcla_formats::rage::anim::{Animation, KIND_MOVER_ROTATION, KIND_MOVER_TRANSLATION, KIND_ROTATION, KIND_TRANSLATION};
 use mcla_formats::rage::blendshape::BlendShapes;
@@ -1031,10 +1032,12 @@ impl SkinBuffer {
         self.skin.clear();
         let given = self.next_world.take().filter(|g| g.len() >= model.bones.len());
         for (i, b) in model.bones.iter().enumerate() {
+            // (the local matrix of the pose F-22579 and the product with the parent's global F-97374, as the original
+            // rounds them: physics::exact_mat; glam's would differ in the last bit)
             let w = match (&given, b.parent) {
                 (Some(g), _) => g[i],
-                (None, Some(pi)) if pi < i => self.world[pi] * Mat4::from_rotation_translation(local[i].0, local[i].1),
-                _ => root * Mat4::from_rotation_translation(local[i].0, local[i].1),
+                (None, Some(pi)) if pi < i => exact_mat::chain(&exact_mat::pose_matrix(local[i].0, local[i].1), &self.world[pi]),
+                _ => exact_mat::chain(&exact_mat::pose_matrix(local[i].0, local[i].1), &root),
             };
             self.world.push(w);
             let gone = self.hide_from == Some(i) || matches!(b.parent, Some(pi) if pi < i && self.hidden.get(pi).copied().unwrap_or(false));
@@ -1042,8 +1045,9 @@ impl SkinBuffer {
                 self.hidden.clear();
             }
             self.hidden.push(gone);
-            // the bind pose has no rotations: its inverse is a plain translation
-            self.skin.push(if gone { Mat4::from_translation(w.w_axis.truncate()) * Mat4::from_scale(Vec3::ZERO) } else { w * Mat4::from_translation(-b.bind) });
+            // the bind pose has no rotations: its inverse is a plain translation (the draw matrix F-96265: rows of the bone's
+            // matrix, the place less the bind position through them, in the original's rounding)
+            self.skin.push(if gone { Mat4::from_translation(w.w_axis.truncate()) * Mat4::from_scale(Vec3::ZERO) } else { exact_mat::bind_skin(&w, b.bind) });
         }
         // (a set without a skeleton - a scene's prop such as a door: every vertex names bone 0, which is the
         // entity's root here, so the model is drawn rigid at the root its animation gives)

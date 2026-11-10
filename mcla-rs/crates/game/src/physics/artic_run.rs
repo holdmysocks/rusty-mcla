@@ -275,6 +275,18 @@ pub struct WalkPair {
     pub rows: usize,
 }
 
+/// F-78981: the other instance of a row seen from a run (the callbacks walk the list sorted by A, then the one sorted by
+/// B): the run of the A-side instance (`as_a`) gets side B, the other side A (the city is 0). The original answers side A
+/// unless that is the run's own instance, then side B; the two agree wherever the row belongs to the run (a self contact
+/// has the rider on both sides).
+fn other_level(w: &WalkPair, as_a: bool) -> i64 {
+    if as_a {
+        w.b.unwrap_or(0)
+    } else {
+        w.a.unwrap_or(0)
+    }
+}
+
 /// The row lists of the island that holds object `of` (docs/reference/vehicle/gjk_exact.md Part 10 item 4 and
 /// ragdoll_self_contacts.md 8): `pairs` in the cache's order - those that held a contact at the collide's end, the
 /// ones the update's refresh then empties too (rows 0: they still join) - each a node of a union-find forest
@@ -782,7 +794,7 @@ impl RiderRagdoll {
         // the rider (rs.0 154: 0.85 / 0 with the bike A, rh.0 208: 0.85 / 0.1 with the rider A and the gate open, rt.0:
         // the polygons' with the rider A and the gate shut - F-55998's branch for the rider's class is not decoded). The
         // other instance of a row is its other side (F-78981: the city 0, the rider himself in a self contact).
-        let level_of = |w: &WalkPair, a: bool| if a { w.b.unwrap_or(0) } else { w.a.unwrap_or(0) };
+        let level_of = other_level;
         let run = |list: &[(usize, usize)], me: i64, as_a: bool| -> Vec<(usize, usize)> {
             list.iter().filter(|x| if as_a { walk[x.0].a == Some(me) } else { walk[x.0].b == Some(me) }).copied().collect()
         };
@@ -1529,3 +1541,7 @@ mod tests {
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 }
+
+#[cfg(test)]
+#[path = "artic_run_offline.rs"]
+mod offline;

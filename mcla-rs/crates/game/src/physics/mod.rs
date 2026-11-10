@@ -4,6 +4,8 @@ pub mod agro;
 pub mod artic;
 pub mod artic_build;
 pub mod artic_collide;
+#[cfg(test)]
+pub mod artic_offline;
 pub mod artic_pose;
 pub mod artic_run;
 pub mod camprobe;
@@ -11,6 +13,8 @@ pub mod car;
 pub mod collision;
 pub mod drivetrain;
 pub mod exact;
+pub mod exact_inv4;
+pub mod exact_mat;
 pub mod fluid;
 pub mod gjk;
 pub mod headon;

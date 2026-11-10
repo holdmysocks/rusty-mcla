@@ -496,14 +496,14 @@ impl Bumper {
     /// on the car-space mesh as M_b A' M_b^-1.
     pub fn draw_delta_on(&self, mb: &Mat4) -> Mat4 {
         let a = if self.detached.is_some() { self.detached_delta() } else if self.a.state == 0 && self.b.state == 0 { Mat4::IDENTITY } else { self.delta };
-        slot_move(mb, &a, BUMPER_SCALE) * mb.inverse()
+        slot_move(mb, &a, BUMPER_SCALE) * crate::physics::exact_inv4::inverse_of(mb)
     }
 
     /// The slot's part in the drawn car (car matrix `m`), hung on its bone `mb`; a fallen piece (its body's matrix
     /// `fallen`) has A = M_rest^-1 m^-1 B, so that it is drawn where its body is.
     pub fn slot_draw(&self, m: &Mat4, mb: &Mat4, fallen: Option<Mat4>) -> Mat4 {
         match fallen {
-            Some(b) => *m * slot_move(mb, &(self.m_rest.inverse() * m.inverse() * b), BUMPER_SCALE) * mb.inverse(),
+            Some(b) => *m * slot_move(mb, &(self.m_rest.inverse() * m.inverse() * b), BUMPER_SCALE) * crate::physics::exact_inv4::inverse_of(mb),
             None => *m * self.draw_delta_on(mb),
         }
     }

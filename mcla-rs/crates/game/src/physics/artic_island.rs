@@ -1969,3 +1969,7 @@ mod tests {
         assert!(report.is_empty(), "{}", report.join("\n"));
     }
 }
+
+#[cfg(test)]
+#[path = "artic_island_offline.rs"]
+mod offline;

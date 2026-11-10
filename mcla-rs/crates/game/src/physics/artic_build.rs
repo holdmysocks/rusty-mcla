@@ -1599,3 +1599,7 @@ mod tests {
         assert_eq!(n, 8000);
     }
 }
+
+#[cfg(test)]
+#[path = "artic_build_offline.rs"]
+mod offline;

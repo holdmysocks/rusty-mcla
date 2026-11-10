@@ -6,7 +6,7 @@
 
 use crate::particles::Particles;
 use crate::vehicles::CarInstance;
-use glam::{Mat3, Mat4, Quat, Vec3};
+use glam::{Mat4, Quat, Vec3};
 use mcla_formats::hash::joaat;
 
 /// The idle exhaust smoke stops at this speed (chassis +224, m/s).
@@ -50,7 +50,10 @@ pub fn step(fx: &mut Particles, cars: &[CarInstance], cam: Vec3, player_hidden: 
         for (k, (a, on_rear)) in c.model.fx_anchors.iter().take(2).enumerate() {
             let w = if *on_rear { rear_m } else { car_m } * *a;
             let pos = w.w_axis.truncate();
-            let rot = Quat::from_mat3(&Mat3::from_cols(w.x_axis.truncate().normalize_or_zero(), w.y_axis.truncate().normalize_or_zero(), w.z_axis.truncate().normalize_or_zero())).normalize();
+            // (the matrix to quaternion F-16377 in the original's arithmetic, physics::exact_mat; the unit length is the port's)
+            let axes = [w.x_axis, w.y_axis, w.z_axis].map(|c| c.truncate().normalize_or_zero().to_array());
+            let q = crate::physics::exact_mat::quat_of_rows(&axes);
+            let rot = Quat::from_xyzw(q[0], q[1], q[2], q[3]).normalize();
             let dist = pos.distance(cam);
             let key = 0x4341_5246_0000_0000 | ((ci as u64) << 4) | k as u64;
             if exhaust_on {

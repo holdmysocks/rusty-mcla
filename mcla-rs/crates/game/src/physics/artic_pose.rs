@@ -130,9 +130,22 @@ pub fn link_of(child_link: &[i32], i: usize, n_links: usize) -> usize {
 
 /// Forward kinematics (F-97374): `G0 = L0 x P`, `Gk = Lk x G[parent k]`. The parents come before their children.
 pub fn fk(locals: &[Mat], parent: &[i32], p: &Mat) -> Vec<Mat> {
+    fk_from(locals, parent, Some(p))
+}
+
+/// [`fk`] with the original's other start: without a parent matrix (`None`) bone 0's global is its local, copied.
+/// Checked word for word against F-97374 run offline (tools/skeleton_fk_reference.py, test `fk_matches_the_original`).
+pub fn fk_from(locals: &[Mat], parent: &[i32], p: Option<&Mat>) -> Vec<Mat> {
     let mut g: Vec<Mat> = Vec::with_capacity(locals.len());
     for k in 0..locals.len() {
-        let m = if k == 0 { mmul(&locals[0], p) } else { mmul(&locals[k], &g[parent[k] as usize]) };
+        let m = if k == 0 {
+            match p {
+                Some(p) => mmul(&locals[0], p),
+                None => locals[0],
+            }
+        } else {
+            mmul(&locals[k], &g[parent[k] as usize])
+        };
         g.push(m);
     }
     g
@@ -245,6 +258,32 @@ pub fn remove_pose(t: &RagdollType, character: &Mat) -> (Vec<Mat>, Vec<Mat>) {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    /// F-97374, the skeleton's globals from its locals, run offline (tools/skeleton_fk_reference.py): 1,500 skeletons of
+    /// 1 to 12 bones (chains and trees, rigid frames and general lanes, with and without a parent matrix): every word equal.
+    #[test]
+    fn fk_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let nan = |x: u32| if f32::from_bits(x).is_nan() { 0x7fc0_0000 } else { x };
+        let mat = |w: &[u32]| -> Mat { [0, 1, 2, 3].map(|r| V4::from_bits([w[4 * r], w[4 * r + 1], w[4 * r + 2], w[4 * r + 3]])) };
+        let mut cases = 0;
+        for line in include_str!("../testdata/skeleton_fk_ref.txt").lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let t: Vec<&str> = case.split(' ').collect();
+            let n: usize = t[0].parse().unwrap();
+            let has_p = t[1] == "1";
+            let parent: Vec<i32> = t[2].split(',').map(|x| x.parse().unwrap()).collect();
+            let w: Vec<u32> = t[3..].iter().map(|x| h(x)).collect();
+            let p = mat(&w[..16]);
+            let locals: Vec<Mat> = (0..n).map(|k| mat(&w[16 + 16 * k..32 + 16 * k])).collect();
+            let g = fk_from(&locals, &parent, has_p.then_some(&p));
+            let got: Vec<u32> = g.iter().flatten().flat_map(|v| v.bits()).map(nan).collect();
+            let want: Vec<u32> = want.split_whitespace().map(|x| nan(h(x))).collect();
+            assert_eq!(got, want, "{line}");
+            cases += 1;
+        }
+        assert_eq!(cases, 1500);
+    }
 
     /// testdata/ragdoll_pose_ro0.bin (work/ragdoll/skin/export_pose.py): sections of u32 words.
     struct Fix(HashMap<String, Vec<u32>>);
