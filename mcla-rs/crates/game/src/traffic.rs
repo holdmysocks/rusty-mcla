@@ -352,7 +352,7 @@ pub fn steer_of(fwd: Vec3, d: Vec3) -> f32 {
 /// the drawn 0.025 m drop - while it rides; rows X, up, Z, place.
 pub fn instance_matrix(c: &super::CarInstance) -> [Vec3; 4] {
     let m = glam::Mat3::from_quat(c.state.rot);
-    let at = c.rail.as_ref().filter(|r| seat_poses(r)).and_then(|r| r.seat.as_ref()).map_or(c.state.pos, |s| s.at.0);
+    let at = c.rail.as_ref().filter(|r| seat_poses(r)).and_then(|r| r.seat.as_ref()).map_or(c.state.pos, |s| s.at());
     [m.x_axis, m.y_axis, m.z_axis, at]
 }
 
@@ -4570,25 +4570,185 @@ fn step_path_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, h
     Some((p, f))
 }
 
-/// How a riding car stands on the ground (car update F-22467, decoded 2026-10-20): the
-/// rail gives only x / z and the heading; the height and tilt come from a ground probe
-/// (mask 0x800) set up one frame and read the next, and the up and forward are the means of
-/// the last eight.
+/// How a riding car stands on the ground (the car update F-22467, checked 2026-11-10 against a recording of the original
+/// and offline): the rail gives the target T (F-74567's pose: row 2 the rail derivative made unit and negated, row 3 its
+/// point with y = the stored pose's row 3 y, car +2324); a ground probe (T +- 1.75 m, mask 0x800) set up one frame
+/// gives its hit to the next frame only; up and forward are the means of the rings of the last eight (empty at a spawn
+/// and back from physics, so the first seven frames average fewer).
 #[derive(Clone, Debug)]
 pub struct Seat {
-    /// the y the rail target takes (car +2324: the car's own y of the last update)
-    y: f32,
-    /// the probe set up last frame: the target then (position, travel direction)
-    pending: Option<(Vec3, Vec3)>,
-    /// what the car takes when no probe result comes (car +2272 .. +2320): position, up, travel
-    raw: (Vec3, Vec3, Vec3),
-    /// the last eight ups and forwards (rings at car +2368 / +2528)
-    ups: [Vec3; 8],
-    fwds: [Vec3; 8],
-    k: usize,
+    /// the probe set up last frame: the point it is round
+    pending: Option<Vec3>,
+    /// the stored pose (car +2272 .. +2335, four rows)
+    raw: [[f32; 4]; 4],
+    /// the rings of ups (+2368) and forwards (+2528)
+    ups: VRing,
+    fwds: VRing,
+    /// the car's matrix as the seat last left it (instance +128, which F-86858 wrote)
+    cur: [[f32; 4]; 4],
     frames: u32,
-    /// the car's position and up of the last update (before the drawn 0.025 m drop)
-    at: (Vec3, Vec3),
+}
+
+/// A ring of 8 vec4 with a running sum (+0 count, +4 next, +16 sum, +32 the entries).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VRing {
+    pub count: i32,
+    pub next: i32,
+    pub sum: [f32; 4],
+    pub e: [[f32; 4]; 8],
+}
+
+impl VRing {
+    /// F-22858: the first entry starts the sum; up to 8 are added; then the oldest is taken out of the sum and replaced.
+    pub fn push(&mut self, v: [f32; 4]) {
+        use crate::physics::artic::V4;
+        if self.count == 0 {
+            self.sum = v;
+            self.e[0] = v;
+            (self.next, self.count) = (1, 1);
+        } else if self.count < 8 {
+            self.e[(self.next & 7) as usize] = v;
+            self.sum = V4(self.sum).add(V4(v)).0;
+            self.count += 1;
+            self.next += 1;
+        } else {
+            if self.next == 8 {
+                self.next = 0;
+            }
+            let i = (self.next & 7) as usize;
+            self.sum = V4(self.sum).sub(V4(self.e[i])).0;
+            self.e[i] = v;
+            self.sum = V4(self.sum).add(V4(v)).0;
+            self.next += 1;
+        }
+    }
+
+    /// F-96620: sum x the reciprocal of the count refined once (r + r (1 - r c)); `None` while empty.
+    pub fn mean(&self) -> Option<[f32; 4]> {
+        use crate::physics::artic::V4;
+        if self.count <= 0 {
+            return None;
+        }
+        let c = V4::splat(self.count as f32);
+        let r = c.recip();
+        Some(V4(self.sum).mul(r.madd(r.nmsub(c, V4::splat(1.0)), r)).0)
+    }
+}
+
+/// A vector made unit by the vector unit: dot3, the estimate refined once ((1 - l2 e^2)(0.5 e) + e); `guard`: an
+/// estimate of +inf (a zero vector) taken as 0 (the start-up +inf / 0 constants).
+fn vu_unit(v: crate::physics::artic::V4, guard: bool) -> crate::physics::artic::V4 {
+    use crate::physics::artic::V4;
+    let l2 = v.dot3(v);
+    let est = l2.rsqrte();
+    let e = if guard { est.sel(V4::ZERO, est.eq(V4::splat(f32::INFINITY))) } else { est };
+    v.mul(l2.nmsub(e.mul(e), V4::splat(1.0)).madd(V4::splat(0.5).mul(e), e))
+}
+
+/// The probe's hits as the car type's slot 64 reads them (car +2256 the count, records of 96 bytes from +1680: +0 the
+/// hit instance, +16 the point, +32 the normal).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Hits {
+    pub count: u32,
+    /// record 0's instance word is not 0
+    pub owner: bool,
+    pub points: [[f32; 4]; 4],
+    pub normal: [f32; 4],
+}
+
+/// The car type's slot 64 F-72535: the matrix from the probe's hits, or `None` (r3 = 0). Four hits on a type with four
+/// wheels (+120 == 4): row 3 the mean of the points, the axes from their differences; one hit with its instance: row 3
+/// the point, row 1 its normal, rows 0 / 2 by cross products with T's row 2; every row made unit (guarded).
+pub fn hit_pose(t2: [f32; 4], h: &Hits, four_wheels: bool) -> Option<[[f32; 4]; 4]> {
+    use crate::physics::artic::V4;
+    if h.count == 4 && four_wheels {
+        let mut sum = V4::ZERO;
+        for p in h.points {
+            sum = sum.add(V4(p));
+        }
+        let c = V4::splat(4.0);
+        let r = c.recip();
+        let r3 = sum.mul(r.madd(r.nmsub(c, V4::splat(1.0)), r));
+        let [p0, p1, p2, p3] = h.points.map(V4);
+        let (n0, n1, n2) = (V4::ZERO.sub(p0), V4::ZERO.sub(p1), V4::ZERO.sub(p2));
+        let (d02, d01, d13, d23) = (n0.add(p2), n0.add(p1), n1.add(p3), n2.add(p3));
+        let half = V4::splat(0.5);
+        let a = d23.add(d01).mul(half);
+        let b = d02.add(d13).mul(half);
+        let r1 = a.yzx().nmsub(b.zxy(), a.zxy().mul(b.yzx()));
+        let r0 = b.yzx().nmsub(r1.zxy(), b.zxy().mul(r1.yzx()));
+        let r2 = r1.yzx().nmsub(r0.zxy(), r1.zxy().mul(r0.yzx()));
+        return Some([vu_unit(r0, true).0, vu_unit(r1, true).0, vu_unit(r2, true).0, r3.0]);
+    }
+    if h.count == 1 && h.owner {
+        let (n, t) = (V4(h.normal), V4(t2));
+        let r0 = t.yzx().nmsub(n.zxy(), t.zxy().mul(n.yzx()));
+        let r2 = n.yzx().nmsub(r0.zxy(), n.zxy().mul(r0.yzx()));
+        return Some([vu_unit(r0, true).0, vu_unit(n, true).0, vu_unit(r2, true).0, h.points[0]]);
+    }
+    None
+}
+
+/// One frame of F-22467 after the probe: `cur` the car's matrix, `t2` / `t3` the target's rows 2 and 3, `hit` slot
+/// 64's matrix. Returns the car's new matrix (rows); updates the stored pose and the rings.
+pub fn seat_rows(raw: &mut [[f32; 4]; 4], ups: &mut VRing, fwds: &mut VRing, cur: &[[f32; 4]; 4], t2: [f32; 4], t3: [f32; 4], hit: Option<[[f32; 4]; 4]>, trailer: bool) -> [[f32; 4]; 4] {
+    use crate::physics::artic::V4;
+    let t3 = V4(t3);
+    let mut m = match hit {
+        None => {
+            // the car's up kept, the position slid to T in the car's plane; the frame takes the stored pose of before
+            let (u, q, t) = (V4(cur[1]), V4(cur[3]), V4(t2));
+            let r0 = u.zxy().nmsub(t.yzx(), u.yzx().mul(t.zxy()));
+            let r2 = r0.zxy().nmsub(u.yzx(), r0.yzx().mul(u.zxy()));
+            let d = t3.sub(q);
+            let p = q.add(d.sub(u.mul(d.dot3(u))));
+            std::mem::replace(raw, [vu_unit(r0, false).0, u.0, vu_unit(r2, false).0, p.0])
+        }
+        Some(m) => {
+            // the hit's pose, its point slid to T in the hit's plane for the stored pose
+            let (u, q) = (V4(m[1]), V4(m[3]));
+            let d = t3.sub(q);
+            *raw = [m[0], m[1], m[2], q.add(d.sub(u.mul(d.dot3(u)))).0];
+            m
+        }
+    };
+    if !trailer {
+        fwds.push(m[2]);
+        m[2] = fwds.mean().unwrap_or(m[2]);
+    }
+    ups.push(m[1]);
+    let up = V4(ups.mean().unwrap_or(m[1]));
+    let r2 = V4(m[2]);
+    let r0 = up.zxy().nmsub(r2.yzx(), up.yzx().mul(r2.zxy()));
+    let r2 = r0.zxy().nmsub(up.yzx(), r0.yzx().mul(up.zxy()));
+    [vu_unit(r0, false).0, vu_unit(up, false).0, vu_unit(r2, false).0, m[3]]
+}
+
+/// F-22467's probe rule: four probes (type +108 == 0, +120 == 4, and a run-time 0x1800 rail within 120 m or a type
+/// +116 == 2 tilted within 150 m) or a trailer (+112) every frame; a standing car (+412 == 0) none offline; else on
+/// frames whose low bit equals the car's (car >> 5) within 80 m or tilted (up.y < 0.99619) within 120 m, beyond on
+/// frames whose low two bits equal its.
+pub fn seat_probe_due(four: bool, trailer: bool, v: f32, id: u32, frame: u32, dist2: f32, tilted: bool) -> bool {
+    if four || trailer {
+        return true;
+    }
+    if v == 0.0 {
+        return false;
+    }
+    let slot = id >> 5;
+    if dist2 < 6400.0 || (tilted && dist2 < 14400.0) {
+        return !(slot ^ frame) & 1 == 1;
+    }
+    (slot ^ frame) & 3 == 0
+}
+
+/// F-22467's four-probe mode (type +108 == 0 and +120 == 4, and the car's rail a run-time one, +4 & 0x1800, within
+/// 120 m, or a type +116 == 2 tilted within 150 m). Not used: the port has no four
+/// probes (F-23470's multi-hit branch); kept for the offline check of the rule.
+pub fn seat_four_probes(proxy: bool, wheels4: bool, group2: bool, rt_rail: bool, tilted: bool, dist2: f32) -> bool {
+    let near_rail = dist2 < 14400.0 && rt_rail;
+    let tilt = group2 && tilted && dist2 < 22500.0;
+    (near_rail || tilt) && !proxy && wheels4
 }
 
 /// The drawn wheels' lock (F-37906, written after the render update in F-46062): set
@@ -4788,86 +4948,69 @@ impl Tilt {
 const PROBE_HALF: f32 = 1.75;
 
 impl Seat {
+    /// The seat of a car whose matrix is (pos, up, forward): the stored pose that matrix (the spawn F-60230 and the return
+    /// from physics F-47485 copy the instance matrix into +2272), the rings empty (their counts zeroed there).
     pub fn new(pos: Vec3, up: Vec3, fwd: Vec3) -> Seat {
-        Seat { y: pos.y, pending: None, raw: (pos, up, fwd), ups: [up; 8], fwds: [fwd; 8], k: 0, frames: 0, at: (pos, up) }
+        let right = fwd.cross(up).normalize_or(Vec3::X);
+        let m = [[right.x, right.y, right.z, 0.0], [up.x, up.y, up.z, 0.0], [-fwd.x, -fwd.y, -fwd.z, 0.0], [pos.x, pos.y, pos.z, 1.0]];
+        Seat { pending: None, raw: m, ups: VRing::default(), fwds: VRing::default(), cur: m, frames: 0 }
+    }
+
+    /// The car's place as the seat left it (before the drawn 0.025 m drop).
+    pub fn at(&self) -> Vec3 {
+        Vec3::new(self.cur[3][0], self.cur[3][1], self.cur[3][2])
+    }
+
+    /// Its up as the seat left it (instance +144).
+    pub fn up(&self) -> Vec3 {
+        Vec3::new(self.cur[1][0], self.cur[1][1], self.cur[1][2])
     }
 }
 
-/// The ground under `p` (the probe: a vertical segment +- 1.75 m round it, the city's bound -
-/// the original's collision class 0x800): contact point and its normal, facing up.
+/// The ground under `p` (the probe: a vertical segment +- 1.75 m round it, F-23470; the city's bound - the original's
+/// collision class 0x800): contact point and the face's normal as the probe gives it.
 pub fn probe_ground(col: &WorldCollider, p: Vec3) -> Option<(Vec3, Vec3)> {
     // (F-18688 -> F-57005: one-sided faces, the nearest hit - collision.rs `probe_front`)
     let h = col.probe_front(p + Vec3::Y * PROBE_HALF, Vec3::NEG_Y, 2.0 * PROBE_HALF)?;
-    Some((h.point, h.normal.normalize_or(Vec3::Y)))
+    Some((h.point, h.normal))
 }
 
-/// Should the car set up a probe this frame (F-22467): trailers every frame; a standing
-/// car never (offline); else on alternate frames by the car's id, every fourth beyond 80 m
-/// from the focus unless it is tilted more than 5 degrees within 120 m.
-fn probe_due(r: &Rider, frame: u32, dist2: f32, up_y: f32) -> bool {
-    if r.ty.trailer {
-        return true;
-    }
-    if r.v == 0.0 {
-        return false;
-    }
-    let slot = r.id >> 5;
-    if dist2 >= 6400.0 && !(up_y < 0.99619 && dist2 < 14400.0) {
-        return (frame.wrapping_add(slot)) & 3 == 0;
-    }
-    (frame ^ slot) & 1 == 0
+/// Should the car set up a probe this frame (F-22467, `seat_probe_due`): `dist2` the distance to the focus in the
+/// floor plane, squared as the original (dx dx, then fused dz dz). The four-probe mode (type +120 == 4 within 120 m of
+/// a run-time 0x1800 rail, or a tilted +116 == 2 type) is not ported: the port probes once there.
+fn probe_due(r: &Rider, frame: u32, dist2: f32) -> bool {
+    let tilted = r.seat.as_ref().is_some_and(|s| s.cur[1][1] < 0.99619);
+    seat_probe_due(false, r.ty.trailer, r.v, r.id, frame, dist2, tilted)
 }
 
-/// One frame of the seat: `p` / `dir` the rail's target (point, travel direction), `car` the
-/// car's position and up now; `face` the way the car faces (the travel direction, or against
-/// it backing up). Returns the car's position and rotation.
-#[allow(clippy::too_many_arguments)]
-fn seat_car(r: &mut Rider, col: &WorldCollider, p: Vec3, dir: Vec3, face: Vec3, car: (Vec3, Vec3, Vec3), due: bool) -> (Vec3, Quat) {
+/// One frame of the seat (F-22467): `p` / `f` the rail's point and unit derivative (F-74567's pose: row 2 = -f, the
+/// car faces f also backing up), `car` the car's matrix for a new seat. The last frame's probe gives this frame's hit
+/// (slot 64 F-72535 with this frame's target); a probe due is set up round the target. Returns the drawn position and
+/// rotation.
+fn seat_car(r: &mut Rider, col: &WorldCollider, p: Vec3, f: Vec3, car: (Vec3, Vec3, Vec3), due: bool) -> (Vec3, Quat) {
     let trailer = r.ty.trailer;
     let s = r.seat.get_or_insert_with(|| Seat::new(car.0, car.1, car.2));
-    let t_pos = Vec3::new(p.x, s.y, p.z);
-    // last frame's probe, read now
-    let hit = s.pending.take().and_then(|(at, d)| probe_ground(col, at).map(|h| (h, d)));
-    let (pos, up_raw, fwd_raw) = match hit {
-        Some(((q, n), d)) => {
-            let f = (d - n * d.dot(n)).normalize_or(d);
-            // for the frames without a result: the contact moved towards the target in its plane
-            let off = t_pos - q;
-            s.raw = (q + off - n * off.dot(n), n, f);
-            (q, n, f)
-        }
-        None => {
-            let m = s.raw;
-            // the next raw: the car's up kept, sliding to the target in that plane
-            let (cp, cu) = s.at;
-            let u = cu.normalize_or(Vec3::Y);
-            let off = t_pos - cp;
-            let f = (dir - u * dir.dot(u)).normalize_or(dir);
-            s.raw = (cp + off - u * off.dot(u), u, f);
-            m
-        }
-    };
+    // (slot 4: row 3 y = car +2324, the stored pose's row 3 y)
+    let t2 = [-f.x, -f.y, -f.z, 0.0];
+    let t3 = [p.x, s.raw[3][1], p.z, 0.0];
+    let hit = s.pending.take().and_then(|at| probe_ground(col, at)).and_then(|(q, n)| {
+        let h = Hits { count: 1, owner: true, points: [[q.x, q.y, q.z, 0.0]; 4], normal: [n.x, n.y, n.z, 0.0] };
+        hit_pose(t2, &h, false)
+    });
     if due {
-        s.pending = Some((t_pos, dir));
+        s.pending = Some(Vec3::new(t3[0], t3[1], t3[2]));
     }
-    s.ups[s.k] = up_raw;
-    s.fwds[s.k] = fwd_raw;
-    s.k = (s.k + 1) % 8;
-    let up = s.ups.iter().copied().sum::<Vec3>().normalize_or(Vec3::Y);
-    // (a trailer's forward is not smoothed)
-    let fwd = if trailer { fwd_raw } else { s.fwds.iter().copied().sum::<Vec3>().normalize_or(fwd_raw) };
-    let f = if face.dot(dir) < 0.0 { -fwd } else { fwd };
-    let right = f.cross(up).normalize_or(Vec3::X);
-    let f = up.cross(right).normalize_or(f);
-    s.y = pos.y;
-    s.at = (pos, up);
+    let cur = s.cur;
+    let m = seat_rows(&mut s.raw, &mut s.ups, &mut s.fwds, &cur, t2, t3, hit, trailer);
+    s.cur = m;
     s.frames += 1;
+    let v = |i: usize| Vec3::new(m[i][0], m[i][1], m[i][2]);
     // (a car on a rail is drawn 0.025 m lower from its second frame on: F-37033 sets the skeleton's +236
     // on the first frame its instance has a rider (instance +452 -> +188) and from then subtracts 0.025 from
     // the drawn matrix's place y - the world's y, not along the car's up; no rider clears it. Recorded: the
     // taxi standing at a light, drawn c3.y 22.8026 against its instance's 22.8276; a parked car 0)
-    let drawn = if s.frames > 1 { pos - Vec3::Y * 0.025 } else { pos };
-    (drawn, Quat::from_mat3(&glam::Mat3::from_cols(right, up, -f)).normalize())
+    let drawn = if s.frames > 1 { v(3) - Vec3::Y * 0.025 } else { v(3) };
+    (drawn, Quat::from_mat3(&glam::Mat3::from_cols(v(0), v(1), v(2))).normalize())
 }
 
 /// The rotation of a car facing `f` (3D) with the world's up as near up as it goes.
@@ -5190,10 +5333,11 @@ impl Vehicles {
             let back = matches!(r.path.as_ref(), Some(pp) if pp.reverse);
             // on the ground (F-22467)
             let dir = if back { -f } else { f };
-            let dist2 = Vec3::new(c.state.pos.x - focus.x, 0.0, c.state.pos.z - focus.z).length_squared();
-            let due = probe_due(r, frame, dist2, c.state.up().y);
-            let car = (c.state.pos, c.state.up(), dir);
-            let (p, rot) = seat_car(r, col, p, dir, f, car, due);
+            let (dx, dz) = (focus.x - c.state.pos.x, focus.z - c.state.pos.z);
+            let dist2 = dz.mul_add(dz, dx * dx);
+            let due = probe_due(r, frame, dist2);
+            let car = (c.state.pos, c.state.up(), c.state.forward());
+            let (p, rot) = seat_car(r, col, p, f, car, due);
             c.state.relocate(p, rot);
             c.state.vel = dir * v;
             if let Some(w) = trace.as_mut() {
@@ -5378,9 +5522,9 @@ impl Vehicles {
             let pos = h - rot * TRAILER_HITCH;
             // on the ground as every car (probed every frame, its forward not smoothed)
             let dir = rot * Vec3::NEG_Z;
-            let car = (tp, tr * Vec3::Y, dir);
+            let car = (tp, tr * Vec3::Y, tr * Vec3::NEG_Z);
             let (pos, rot) = match t.rail.as_mut() {
-                Some(r) => seat_car(r, col, pos, dir, dir, car, true),
+                Some(r) => seat_car(r, col, pos, dir, car, true),
                 None => (pos, rot),
             };
             let v = if dt > 0.0 { (pos - tp) / dt } else { Vec3::ZERO };
@@ -12320,6 +12464,109 @@ mod controller_pick_tests {
             n += 1;
         }
         assert_eq!(n, 6000);
+    }
+
+    /// The car seat F-22467 run offline whole (`work/traffic-detail/seat/off`: the car type's slot 64 F-72535 and the rings
+    /// F-22858 / F-96620 as generated; slot 60, the place getter, the network test and the instance setter stubs) on 3,000
+    /// cases - tilted, flat, zero and any ups, targets of any direction, 0 / 1 / 4 / other hit counts with and without the
+    /// record's instance, four-wheel and other types, trailers, rings empty to full at every index with a drifted sum,
+    /// distances about 80 / 120 / 150 m, NaN and denormal lanes: the probe set-up (whether slot 60 runs, its four-probe
+    /// flag, 1.75 and 0), the returned matrix, the stored pose and both rings equal to [`seat_probe_due`],
+    /// [`seat_four_probes`], [`hit_pose`] and [`seat_rows`] (a NaN lane only as a NaN).
+    #[test]
+    fn seat_matches_the_original() {
+        let (mut n, mut hits, mut fours, mut due) = (0, 0, 0, 0);
+        let nan = |b: u32| f32::from_bits(b).is_nan();
+        let same = |g: &[u32], e: &[u32], l: &str, what: &str| {
+            for (k, (g, e)) in g.iter().zip(e).enumerate() {
+                assert!(g == e || (nan(*g) && nan(*e)), "{what} word {k}: {g:08x} against {e:08x} | {l}");
+            }
+        };
+        let rows = |w: &[u32]| -> [[f32; 4]; 4] { [0, 1, 2, 3].map(|r| [0, 1, 2, 3].map(|i| f32::from_bits(w[4 * r + i]))) };
+        let v4 = |w: &[u32]| -> [f32; 4] { [0, 1, 2, 3].map(|i| f32::from_bits(w[i])) };
+        let ring = |w: &[u32]| VRing { count: w[0] as i32, next: w[1] as i32, sum: v4(&w[4..8]), e: [0, 1, 2, 3, 4, 5, 6, 7].map(|j| v4(&w[8 + 4 * j..])) };
+        let ring_words = |r: &VRing, pad: &[u32]| -> Vec<u32> {
+            let mut o = vec![r.count as u32, r.next as u32, pad[2], pad[3]];
+            o.extend(r.sum.map(f32::to_bits));
+            for e in r.e {
+                o.extend(e.map(f32::to_bits));
+            }
+            o
+        };
+        for l in include_str!("testdata/seat_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let p: Vec<&str> = l.split(" | ").collect();
+            let a: Vec<u32> = p[0].split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let w: Vec<u32> = p[1].split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let o: Vec<u32> = p[2].split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let f = |k: usize| f32::from_bits(a[k]);
+            let (car, frame, v, mgr) = (a[0], a[1], f(2), a[3] == 1);
+            let (t108, t112, t116, t120, beh, rail, rfl) = (a[7] != 0, a[8] != 0, a[9], a[10], a[11] == 1, a[12] == 1, a[13]);
+            let cur = rows(&w[0..16]);
+            let (t2, t3, count) = (v4(&w[16..20]), v4(&w[20..24]), w[24]);
+            let rec = |j: usize| &w[25 + 9 * j..34 + 9 * j];
+            let hits_in = Hits { count, owner: rec(0)[0] != 0, points: [0, 1, 2, 3].map(|j| v4(&rec(j)[1..5])), normal: v4(&rec(0)[5..9]) };
+            let mut raw = rows(&w[61..77]);
+            let (mut ups, mut fwds) = (ring(&w[77..117]), ring(&w[117..157]));
+            // the probe rule (F-58860's place = the car's +176, the focus at the manager's +0x37330)
+            let (dx, dz) = (f(4) - cur[3][0], f(5) - cur[3][2]);
+            let dist2 = if mgr { dz.mul_add(dz, dx * dx) } else { 45.0 };
+            let tilted = cur[1][1] < 0.99619;
+            let four = seat_four_probes(t108, t120 == 4, t116 == 2, beh && rail && rfl & 0x1800 != 0, tilted, dist2);
+            let d = seat_probe_due(four, t112, v, car, frame, dist2, tilted);
+            assert_eq!(o[113], d as u32, "slot 60 | {l}");
+            if d {
+                assert_eq!((o[114], o[115], o[116]), (four as u32, 1.75f32.to_bits(), 0), "slot 60 args | {l}");
+            }
+            let hit = hit_pose(t2, &hits_in, t120 == 4);
+            let m = seat_rows(&mut raw, &mut ups, &mut fwds, &cur, t2, t3, hit, t112);
+            assert_eq!(o[0], 1, "{l}");
+            same(&m.iter().flat_map(|r| r.map(f32::to_bits)).collect::<Vec<_>>(), &o[1..17], l, "matrix");
+            same(&raw.iter().flat_map(|r| r.map(f32::to_bits)).collect::<Vec<_>>(), &o[17..33], l, "stored pose");
+            same(&ring_words(&ups, &w[77..81]), &o[33..73], l, "up ring");
+            same(&ring_words(&fwds, &w[117..121]), &o[73..113], l, "forward ring");
+            (n, hits, fours, due) = (n + 1, hits + hit.is_some() as u32, fours + four as u32, due + d as u32);
+        }
+        assert_eq!(n, 3000);
+        assert!(hits > 1000 && fours > 300 && due > 1000, "{hits} {fours} {due}");
+    }
+
+    /// The seat against a recording of the original (`work/traffic-detail/seat/cap/s1.seat`, a 90 s weave through traffic,
+    /// the car update's entry each frame: 145,549 riding-car frames, the drawn matrix equal to the seat's tail in every
+    /// one; here 800 of them - 300 in the first seven frames after a spawn, 250 hit, 250 without): from one frame's stored
+    /// pose, rings, matrix and probe hit, [`seat_rows`] gives the next frame's matrix and both rings. A hit frame's
+    /// forward (row 2 of slot 64's pose, which takes the target's row 2, not recorded) is the next frame's newest forward
+    /// ring entry; [`hit_pose`]'s rows 1 and 3 do not depend on it.
+    #[test]
+    fn seat_matches_the_recording() {
+        let (mut n, mut ramp) = (0, 0);
+        let rows = |w: &[u32]| -> [[f32; 4]; 4] { [0, 1, 2, 3].map(|r| [0, 1, 2, 3].map(|i| f32::from_bits(w[4 * r + i]))) };
+        let v4 = |w: &[u32]| -> [f32; 4] { [0, 1, 2, 3].map(|i| f32::from_bits(w[i])) };
+        let ring = |w: &[u32]| VRing { count: w[0] as i32, next: w[1] as i32, sum: v4(&w[4..8]), e: [0, 1, 2, 3, 4, 5, 6, 7].map(|j| v4(&w[8 + 4 * j..])) };
+        let bits = |r: &VRing| (r.count, r.next, r.sum.map(f32::to_bits), r.e.map(|e| e.map(f32::to_bits)));
+        for l in include_str!("testdata/seat_rec.txt").lines().filter(|l| !l.starts_with('#')) {
+            let p: Vec<&str> = l.split(" | ").collect();
+            let k: Vec<u32> = p[0].split_whitespace().map(|t| t.parse().unwrap()).collect();
+            let a: Vec<u32> = p[1].split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let b: Vec<u32> = p[2].split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+            let mut raw = rows(&a[0..16]);
+            let (mut ups, mut fwds) = (ring(&a[16..56]), ring(&a[56..96]));
+            let cur = rows(&a[96..112]);
+            let (bu, bw) = (ring(&b[16..56]), ring(&b[56..96]));
+            ramp += (ups.count < 8) as u32;
+            let hit = (k[0] == 1).then(|| {
+                let h = Hits { count: 1, owner: true, points: [v4(&a[116..120]); 4], normal: v4(&a[112..116]) };
+                let mut m = hit_pose([0.0, 0.0, -1.0, 0.0], &h, false).unwrap();
+                m[2] = bw.e[((bw.next + 7) & 7) as usize];
+                m
+            });
+            let m = seat_rows(&mut raw, &mut ups, &mut fwds, &cur, [0.0, 0.0, -1.0, 0.0], [0.0; 4], hit, k[1] != 0);
+            let got: Vec<u32> = m.iter().flat_map(|r| r.map(f32::to_bits)).collect();
+            assert_eq!(&got[..15], &b[..15], "matrix | {l}");
+            assert_eq!(bits(&ups), bits(&bu), "up ring | {l}");
+            assert_eq!(bits(&fwds), bits(&bw), "forward ring | {l}");
+            n += 1;
+        }
+        assert_eq!((n, ramp), (800, 300));
     }
 
     #[test]
