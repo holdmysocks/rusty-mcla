@@ -5262,6 +5262,24 @@ impl Game {
     }
 
 
+    /// The brushed metal's tint for the renderer (`ObjectUniform::brushed`): F-91597 hands the vehicle record's
+    /// m_vBrushedMetalColorA..C as stored to BrushedMetalTintDownload, of which VS_BrakeRotor and VS_BumpedBrushedmetal
+    /// read row 0 (c209). The record's, else the set-up file's; w 1 = given. The garage has no row for it.
+    pub fn brushed_tint(&self) -> [f32; 4] {
+        let cur = if self.car_x.car.is_empty() { self.mc4_car_name(self.current_car) } else { self.car_x.car.clone() };
+        if let Some(rec) = self.mc4.as_ref().and_then(|m| m.car(&cur)) {
+            return rgb_of(&rec.visual.m_vBrushedMetalColorA).map_or([0.0; 4], |c| [c[0], c[1], c[2], 1.0]);
+        }
+        static CACHE: std::sync::Mutex<Option<(String, [f32; 4])>> = std::sync::Mutex::new(None);
+        let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if c.as_ref().map_or(true, |(n, _)| *n != cur) {
+            let model = crate::catalog::model_of(&cur);
+            let row = crate::render::car_lamps::setup_file(std::path::Path::new(&self.data_dir), model).and_then(|f| std::fs::read(f).ok()).and_then(|b| setup_look(&b)).map_or([0.0; 4], |l| l.look.brushed);
+            *c = Some((cur.clone(), row));
+        }
+        c.as_ref().map_or([0.0; 4], |(_, r)| *r)
+    }
+
     /// The cabin trim's rows for the renderer (`ObjectUniform::trim`): the vehicle record's ten m_vBaseColor rows as
     /// stored (F-19629 hands row G[zone] to InteriorTrim's program, intDL0, with no gamma) and its gauge colours A / B
     /// (DashGaugeColor / DashGaugeColorB, the cabin trim's siColor0 / siColor1) - with the garage's colours in hand put
@@ -9122,7 +9140,7 @@ pub fn setup_look(b: &[u8]) -> Option<SetupLook> {
     let body_a = rgb(0x660)?;
     let body = paint_as_drawn(area(0));
     let body_b = to_linear(body.b);
-    let mut look = crate::vehicles::CarLook { paint_type: body.ty, color2: [body_b[0], body_b[1], body_b[2], body.fade as f32], tint: [0.0, 0.0035, 0.005, 0.372], interior: [[0.0; 4]; 5], area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], rim_finish: [[0.0; 4]; 3], cabin_light: [[0.0; 4]; 2], glass: [0x120, 0x130, 0x140, 0x150].map(|o| [f(o), f(o + 4), f(o + 8), f(o + 12)]), ext_neon: [[f(0x50), f(0x54), f(0x58), f(0x5c)], [f(0x170), b[0x18c] as i8 as f32, 0.0, 0.0]], trim: [[0.0; 4]; 12], rim_raw: [[0.0; 4]; 5] };
+    let mut look = crate::vehicles::CarLook { paint_type: body.ty, color2: [body_b[0], body_b[1], body_b[2], body.fade as f32], tint: [0.0, 0.0035, 0.005, 0.372], interior: [[0.0; 4]; 5], area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], rim_finish: [[0.0; 4]; 3], cabin_light: [[0.0; 4]; 2], glass: [0x120, 0x130, 0x140, 0x150].map(|o| [f(o), f(o + 4), f(o + 8), f(o + 12)]), ext_neon: [[f(0x50), f(0x54), f(0x58), f(0x5c)], [f(0x170), b[0x18c] as i8 as f32, 0.0, 0.0]], trim: [[0.0; 4]; 12], rim_raw: [[0.0; 4]; 5], brushed: [0.0; 4] };
     // (the cabin trim's rows as stored - F-19629: m_vBaseColor at 0x5c0 + 0x10 g, the gauge colours A / B at 0x70 / 0x80)
     for (k, o) in (0..10).map(|g| 0x5c0 + 0x10 * g).chain([0x70, 0x80]).enumerate() {
         let c = [f(o), f(o + 4), f(o + 8)];
@@ -9152,6 +9170,12 @@ pub fn setup_look(b: &[u8]) -> Option<SetupLook> {
         if c.iter().all(|v| v.is_finite()) && m <= 3 {
             look.rim_raw[k] = [c[0], c[1], c[2], m as f32 + 1.0];
         }
+    }
+    // (the brushed metal's tint as stored - F-91597 hands m_vBrushedMetalColorA..C (0xe0 / 0xf0 / 0x100) to
+    // BrushedMetalTintDownload; the brushed programs read row 0 only)
+    let bm = [f(0xe0), f(0xe4), f(0xe8)];
+    if bm.iter().all(|v| v.is_finite()) {
+        look.brushed = [bm[0], bm[1], bm[2], 1.0];
     }
     for k in 0..3 {
         let c = rgb(0x90 + 0x10 * k).map(to_linear).unwrap_or([0.8, 0.8, 0.8]);
@@ -20090,5 +20114,20 @@ mod rim_tint_tests {
             n += 1;
         }
         eprintln!("rim rows: {n} of {} recorded sets checked against their set-up files", REC.len());
+    }
+
+    /// BrushedMetalTintDownload of the R8's recorded draws (cars/0xb140ff44 VS c209 .. c211, work/lighting/cap am_base and
+    /// every other capture: 38 draws each, work/carparts2/rotor/cal_scan.py): the set-up's m_vBrushedMetalColorA..C as
+    /// stored - row B (80 / 255) is the R8's own, so the rows are the record's, not a constant.
+    #[test]
+    fn brushed_rows_match_the_recording() {
+        const REC: [u32; 9] = [0x3f400000, 0x3f400000, 0x3f400000, 0x3ea0a0a1, 0x3ea0a0a1, 0x3ea0a0a1, 0x3f400000, 0x3f400000, 0x3f400000];
+        let dir = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        let Ok(b) = std::fs::read(std::path::Path::new(&dir).join("resources/vehicle/configs/vp_aud_r8_08.xcc")) else { return };
+        for (k, o) in [0xe0usize, 0xe4, 0xe8, 0xf0, 0xf4, 0xf8, 0x100, 0x104, 0x108].into_iter().enumerate() {
+            assert_eq!(u32::from_be_bytes(b[o..o + 4].try_into().unwrap()), REC[k], "row {} channel {}", k / 3, k % 3);
+        }
+        let look = super::setup_look(&b).expect("r8").look;
+        assert_eq!(look.brushed.map(f32::to_bits), [REC[0], REC[1], REC[2], 1.0f32.to_bits()]);
     }
 }

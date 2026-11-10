@@ -542,6 +542,7 @@ struct Object {
     rest_rot: array<vec4<f32>, 27>,    // a set-up car's rest rotations, 9 floats each (vehicles.rs rest_mark)
     neon_si: vec4<f32>,                // siColor2 (c59): the car's exterior neon, F-96984 (vehicles.rs ExtNeon::si_color)
     trim: array<vec4<f32>, 12>,        // the cabin trim's colours: m_vBaseColor[0 .. 9] as stored, gauge colours A / B (F-19629)
+    brushed: vec4<f32>,                // BrushedMetalTintDownload[0]: the record's m_vBrushedMetalColorA as stored, w 1 = given (F-91597)
 };
 @group(3) @binding(0) var<uniform> obj: Object;
 // Which of a car's two light slots holds the lamp first (the hour's light second): a traffic or parked
@@ -3649,11 +3650,14 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             // PS_BrakeRotor of brushedmetal.fxc (cars/0xb140ff44: brake discs, suspension arms,
             // door and trim metal, some exhaust tips), exact against the program:
             //   out = tint x (0.125 x ambient x k^2 + SOFT surroundings x ReflectColorMod x k)
-            // k = 0.25 + 0.75 x baked occlusion; tint = BrushedMetalTintDownload, 0.75 in every
-            // recorded draw; ReflectColorMod the material's (uv2.x - 1). No light, no collector,
-            // no own-lamp term in the pixel program - and the blurred map, not the sharp one.
+            // k = 0.25 + 0.75 x baked occlusion; tint = BrushedMetalTintDownload[0] (VS c209 -> o4), which F-91597
+            // fills from the vehicle's record, m_vBrushedMetalColorA as stored (0.75 on the R8 and every recorded
+            // draw; 40 set-ups have another); 0.75 where a car has none (traffic). ReflectColorMod the material's
+            // (uv2.x - 1). No light, no collector, no own-lamp term in the pixel program - and the blurred map, not
+            // the sharp one. (MCLA_DEBUG_VIEW=785: 0.75 on every car, as before)
             let k7 = 0.25 + 0.75 * in.color1.a;
-            lit = 0.75 * (0.125 * hemi * k7 * k7 + env_soft(r) * ((in.uv2.x - 1.0) * k7));
+            let bm7 = select(vec3<f32>(0.75), obj.brushed.rgb, obj.brushed.w > 0.5 && !(g.params.w > 784.5 && g.params.w < 785.5));
+            lit = bm7 * (0.125 * hemi * k7 * k7 + env_soft(r) * ((in.uv2.x - 1.0) * k7));
             spec_k = 0.0;
         } else if (mat.mode == 13u && in.uv2.x > 1.5 && cp_on) {
             // VS_CarbonFiber + PS_CarbonFiber of cars/0x84fc57d9 (the R8's side blades), read from the

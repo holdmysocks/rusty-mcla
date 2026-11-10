@@ -1141,6 +1141,8 @@ pub struct CarLook {
     pub trim: [[f32; 4]; 12],
     /// the rims' five rows as stored (RimColorA..E, w = RimMaterialA..E + 1; 0 = none) - `Game::rim_tints` does the rest
     pub rim_raw: [[f32; 4]; 5],
+    /// m_vBrushedMetalColorA as stored (the brushed metal's tint, F-91597), w 1 = given
+    pub brushed: [f32; 4],
 }
 
 /// A set-up as `Vehicles::dress_setups` puts it on a car: the model's parts, the rim's
@@ -1345,6 +1347,8 @@ pub struct Vehicles {
     pub player_trim: [[f32; 4]; 12],
     /// the player's rims' five rows as F-91597 hands them (colour ^ 2.2, w = hookup + 1): `Game::rim_tints`
     pub player_rim_tint: [[f32; 4]; 5],
+    /// the player's m_vBrushedMetalColorA (`Game::brushed_tint`), w 1 = given
+    pub player_brushed: [f32; 4],
     /// the player's gauge colour A and interior neon colour as its record holds them (w: IntNeonFlashRate, IntNeonIntensity) -
     /// what its driver is lit by (`Game::cabin_light_colors`)
     pub player_cabin_light: [[f32; 4]; 2],
@@ -5793,6 +5797,12 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 (false, Some(l)) => l.trim,
                 (false, None) => [[0.0; 4]; 12],
             };
+            // (the brushed metal's tint, BrushedMetalTintDownload[0]: the record's m_vBrushedMetalColorA - F-91597)
+            let body_brushed = match (c.is_player, c.look.as_ref()) {
+                (true, _) => self.player_brushed,
+                (false, Some(l)) => l.brushed,
+                (false, None) => [0.0; 4],
+            };
             // (a body's first dent slot: its four windows' states for the glass program - WindowDmgVal
             // slots 0 - 3, damagemap::CarDamage::window)
             let mut body_slots = [[0.0; 4]; 6];
@@ -5858,7 +5868,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             } else {
                 [[0.0; 4]; 5]
             };
-            let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: body_color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32 + int_glass], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(c.amb_lamps.tint).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5, slots: amb_slots, glass_tint: gv.tint, glass_bumped: gv.bumped, rest_rot: c.model.rest_rot, neon_si: neon_si[ci], trim: body_trim };
+            let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: body_color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32 + int_glass], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(c.amb_lamps.tint).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5, slots: amb_slots, glass_tint: gv.tint, glass_bumped: gv.bumped, rest_rot: c.model.rest_rot, neon_si: neon_si[ci], trim: body_trim, brushed: body_brushed };
             batch.push_object(&c.binding, &body_u);
             // (the side windows: the body's object moved by the window bone's clip)
             for (k, wb) in c.window_bindings.iter().enumerate() {

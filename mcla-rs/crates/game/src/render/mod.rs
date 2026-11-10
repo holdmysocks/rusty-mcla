@@ -1066,6 +1066,9 @@ pub struct ObjectUniform {
     /// stored (F-19629 hands row G[zone] of these to the trim program as intDL0, no gamma), rows 10 / 11 its gauge colours
     /// A / B (DashGaugeColor, DashGaugeColorB - the cabin trim's siColor0 / siColor1); w 1 = given, 0 = the old look
     pub trim: [[f32; 4]; 12],
+    /// BrushedMetalTintDownload[0] (VS_BrakeRotor / VS_BumpedBrushedmetal c209, the brushed metal's tint): the vehicle
+    /// record's m_vBrushedMetalColorA as stored (F-91597); w 1 = given, 0 = none (0.75, the stock row)
+    pub brushed: [f32; 4],
 }
 
 impl Default for ObjectUniform {
@@ -1073,7 +1076,7 @@ impl Default for ObjectUniform {
         // (lamps without a table of their own: the Audi R8's, as before the tables were read)
         let (lamp_a, lamp_b) = car_lamps::R8.uniform();
         let g = crate::damagemap::glass_vars([0.0; 4], false, false, true, false, &crate::damagemap::RECORDED_GLASS, [0.0, 1.0, 0.0], [0.0; 3], -1.0, false);
-        ObjectUniform { model: Mat4::IDENTITY.to_cols_array_2d(), color: [1.0, 1.0, 1.0, 0.0], params: [0.0; 4], dents: [[0.0; 4]; 6], color2: [0.0; 4], fade_min: [0.0; 4], fade_size: [1.0; 4], tint: [0.0; 4], interior: [[0.0; 4]; 5], fill: [0.0; 4], lamp_a, lamp_b, area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], slots: [[0.0; 4]; 5], glass_tint: g.tint, glass_bumped: g.bumped, rest_rot: [[0.0; 4]; 27], neon_si: [0.0; 4], trim: [[0.0; 4]; 12] }
+        ObjectUniform { model: Mat4::IDENTITY.to_cols_array_2d(), color: [1.0, 1.0, 1.0, 0.0], params: [0.0; 4], dents: [[0.0; 4]; 6], color2: [0.0; 4], fade_min: [0.0; 4], fade_size: [1.0; 4], tint: [0.0; 4], interior: [[0.0; 4]; 5], fill: [0.0; 4], lamp_a, lamp_b, area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], slots: [[0.0; 4]; 5], glass_tint: g.tint, glass_bumped: g.bumped, rest_rot: [[0.0; 4]; 27], neon_si: [0.0; 4], trim: [[0.0; 4]; 12], brushed: [0.0; 4] }
     }
 }
 
