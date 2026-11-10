@@ -330,8 +330,9 @@ impl HangoutScene {
     pub fn update(&mut self, game: &mut Game, vehicles: &mut Vehicles, gpu: &mut Gpu, world: &mut World, near: Option<(&str, f32)>, scene: Option<&str>, cam: Option<(Vec3, Vec3, Vec3, f32)>, dt: f32) {
         self.tick = self.tick.wrapping_add(1);
         // (test hook: MCLA_PUT_AT="x,y,z[,yaw degrees]" puts the player's car there once, a
-        // second into the run)
-        if self.tick == 60 {
+        // second into the run - or at MCLA_PUT_AT_TICK's tick of this update)
+        let put_tick = std::env::var("MCLA_PUT_AT_TICK").ok().and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(60);
+        if self.tick == put_tick {
             if let Ok(v) = std::env::var("MCLA_PUT_AT") {
                 let f: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
                 if f.len() >= 3 {

@@ -14499,6 +14499,7 @@ impl App {
             let c = Vec3::from(h.centre);
             let far = self.vehicles.player().map_or(true, |p| glam::Vec2::new(p.state.pos.x - c.x, p.state.pos.z - c.z).length() >= h.radius);
             if self.game.race.is_some() || (self.hangout_in.is_none() && far) {
+                log::info!("set dressing of {} unloaded ({})", h.key, if self.game.race.is_some() { "a race" } else { "the radius left" });
                 world.drop_dressing();
                 self.scene_set = None;
                 self.hang_set = None;
