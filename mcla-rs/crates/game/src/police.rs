@@ -1055,9 +1055,6 @@ fn needs_teleport(under: bool, off_mesh_t: f32, out: bool, out_delay: f32) -> bo
     under || off_mesh_t > 5.0 || (out && !(out_delay > 0.0))
 }
 
-/// Damaged out (F-12032, mcCarDamage +36 >= its tune's MaxDamage +24, as `!(points < max)`: a NaN is out). The port keeps
-/// damage as points / MaxDamage, capped at 1.0, and points == MaxDamage give exactly 1.0; a car one point - or a fraction of
-/// one - short is not out (the port had tested 0.999, which took points from 0.999 x MaxDamage).
 /// A start report as the radio says it: `default` = the default report class (F-56787: REPORT_VIOLATION_PURSUIT,
 /// probability 0.2), whose send F-66952 first draws the shared generator and makes the probability 1.0 under 0.25; then
 /// F-14569 (a name set) draws again and says the name under the probability; else by +8 (`bits`, the law record's bits):
@@ -1069,8 +1066,16 @@ pub fn report_line(name: &'static str, default: bool, bits: u32, mut draw: impl 
     if default && draw() < 0.25 {
         prob = 1.0;
     }
-    if draw() < prob {
-        return name;
+    report_say(Some(name).filter(|n| !n.is_empty()), prob, bits, draw).unwrap_or(name)
+}
+
+/// F-14569 on its own: a name (`None`: no name or an empty one) draws once and is said under `prob`; else the first bit
+/// group of `bits` picks the line; none - the name, or nothing (`None`) without a name.
+fn report_say(name: Option<&'static str>, prob: f32, bits: u32, mut draw: impl FnMut() -> f32) -> Option<&'static str> {
+    if let Some(n) = name {
+        if draw() < prob {
+            return Some(n);
+        }
     }
     const BY_BIT: [(u32, &str); 7] = [
         (0x20, "REPORT_HIT_COP_CAR_HARD"),
@@ -1081,9 +1086,12 @@ pub fn report_line(name: &'static str, default: bool, bits: u32, mut draw: impl 
         (0x2000, "REPORT_VIOLATION_RECKLESS_WRONGSIDE"),
         (0x7, "REPORT_VIOLATION_SPEEDING"),
     ];
-    BY_BIT.iter().find(|b| bits & b.0 != 0).map_or(name, |b| b.1)
+    BY_BIT.iter().find(|b| bits & b.0 != 0).map(|b| b.1).or(name)
 }
 
+/// Damaged out (F-12032, mcCarDamage +36 >= its tune's MaxDamage +24, as `!(points < max)`: a NaN is out). The port keeps
+/// damage as points / MaxDamage, capped at 1.0, and points == MaxDamage give exactly 1.0; a car one point - or a fraction of
+/// one - short is not out (the port had tested 0.999, which took points from 0.999 x MaxDamage).
 pub fn damaged_out(damage: f32) -> bool {
     !(damage < 1.0)
 }
@@ -5693,9 +5701,6 @@ mod tests {
         assert_eq!(v.len(), 18);
     }
 
-    /// StateTicket's clock against recording t1 (docs/reference/hookmen/pullover_recording.md): entered in update 451
-    /// (the exit's time = dt 0x3D088889), the result set in update 504; the state time at each exit grows by the update's
-    /// dt (503: 0x3FE2221F, 504: 0x3FE66663). The car was not damaged out (+68 = 1: limit fArrestStateTime 1.75).
     /// The say's choice of F-66952 / F-14569 (docs/reference/hookmen/law_reports.md) on chosen draws: the default class's
     /// first draw under 0.25 makes it the name, else the second under 0.2; failing both, the bits in F-14569's order.
     #[test]
@@ -5721,6 +5726,35 @@ mod tests {
         assert_eq!(run(false, 0x40, &[0.9999]), ("REPORT_VIOLATION_PURSUIT", 1));
     }
 
+    /// Every case of tools/report_say_reference.py (the original's F-66952 / F-14569 run offline, the request stubbed): the
+    /// line asked (or none) and the generator's state after, so the draws are the same in number and in value.
+    #[test]
+    fn report_line_matches_the_original() {
+        let h = |t: &str| u32::from_str_radix(&t[1..], 16).unwrap();
+        let mut n = 0;
+        for l in include_str!("testdata/report_say_ref.txt").lines() {
+            let (lhs, rhs) = l.split_once(" -> ").unwrap();
+            let a: Vec<&str> = lhs.split(' ').collect();
+            let b: Vec<&str> = rhs.split(' ').collect();
+            let mut g = crate::vehicles::parked::Mwc { lo: h(a[9]), carry: h(a[10]) };
+            let bits = h(a[2]);
+            let name = match a[1] { "2" => Some("REPORT_VIOLATION_PURSUIT"), _ => None };
+            let line = if a[0] == "0" {
+                Some(report_line(name.unwrap(), true, bits, || g.float()))
+            } else {
+                report_say(name, f32::from_bits(h(a[3])), bits, || g.float())
+            };
+            assert_eq!(line.unwrap_or("-"), b[1], "{l}");
+            assert_eq!(b[0] == "1", line.is_some(), "{l}");
+            assert_eq!((g.lo, g.carry), (h(b[6]), h(b[7])), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 2100);
+    }
+
+    /// StateTicket's clock against recording t1 (docs/reference/hookmen/pullover_recording.md): entered in update 451
+    /// (the exit's time = dt 0x3D088889), the result set in update 504; the state time at each exit grows by the update's
+    /// dt (503: 0x3FE2221F, 504: 0x3FE66663). The car was not damaged out (+68 = 1: limit fArrestStateTime 1.75).
     #[test]
     fn ticket_clock_matches_the_recording() {
         let dt = f32::from_bits(0x3D08_8889);
