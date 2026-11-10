@@ -5115,6 +5115,54 @@ impl Game {
         let rate = rec.map_or(0, |c| c.visual.IntNeonFlashRate) as i8 as f32;
         [[g[0], g[1], g[2], rate], [n[0], n[1], n[2], if self.int_neon { 1.0 } else { 0.0 }]]
     }
+    /// The rims' five rows as F-91597 hands them to the rim program every frame (tintColors c206 + zone, materialHookups
+    /// c211 + zone; the zone is the rim vertex's TEXCOORD1.x, read by VS_Common as the table index): the record's
+    /// RimColorA..E (+0x90 + 0x10 k) as stored ^ 2.2 (pow in double with 2.2f, then to float), and RimMaterialA..E
+    /// (+0x178 + 4 k: 0 painted, 1 chrome, 2 carbon fibre, 3 brushed) as the hookup, here in w as hookup + 1 (0: no row).
+    /// The garage's three rows in hand (spoke A / B / lip = record rows 0..2, `garage.SetRimMaterial(k, ..)`) are put in
+    /// as `mc4_store` writes them. Without a record: the set-up file's rows.
+    pub fn rim_tints(&self) -> [[f32; 4]; 5] {
+        let cur = if self.car_x.car.is_empty() { self.mc4_car_name(self.current_car) } else { self.car_x.car.clone() };
+        let stored: [Option<([f32; 3], u8)>; 5] = match self.mc4.as_ref().and_then(|m| m.car(&cur)) {
+            Some(rec) => {
+                let v = &rec.visual;
+                std::array::from_fn(|k| rgb_of([&v.RimColorA, &v.RimColorB, &v.RimColorC, &v.RimColorD, &v.RimColorE][k]).zip(rec.rim_material(k)))
+            }
+            None => {
+                static CACHE: std::sync::Mutex<Option<(String, [[f32; 4]; 5])>> = std::sync::Mutex::new(None);
+                let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+                if c.as_ref().map_or(true, |(n, _)| *n != cur) {
+                    let model = crate::catalog::model_of(&cur);
+                    let rows = crate::render::car_lamps::setup_file(std::path::Path::new(&self.data_dir), model).and_then(|f| std::fs::read(f).ok()).and_then(|b| setup_look(&b)).map_or([[0.0; 4]; 5], |l| l.look.rim_raw);
+                    *c = Some((cur.clone(), rows));
+                }
+                c.as_ref().map_or([None; 5], |(_, r)| r.map(|x| (x[3] > 0.5).then_some(([x[0], x[1], x[2]], (x[3] - 1.0) as u8))))
+            }
+        };
+        let mut out = [[0.0f32; 4]; 5];
+        for k in 0..5 {
+            let mut row = stored[k];
+            if k < 3 {
+                // (as mc4_store writes the row: a colour more than 2e-3 off the record's goes in at six decimals)
+                if let Some(rgb) = self.slot_hsv[6 + k].map(hsv_rgb) {
+                    let have = row.map(|r| r.0);
+                    let c = match have {
+                        Some(h) if (0..3).all(|i| (h[i] - rgb[i]).abs() <= 2e-3) => h,
+                        _ => rgb.map(|x| r6(x).0 as f32),
+                    };
+                    row = Some((c, row.map_or(1, |r| r.1)));
+                }
+                // (the port's 0 painted, 1 chrome, 2 brushed, 3 carbon fibre are the record's 0, 1, 3, 2)
+                let m = [0u8, 1, 3, 2][self.rim_mats[k].min(3) as usize];
+                row = row.map(|(c, _)| (c, m));
+            }
+            if let Some((c, m)) = row {
+                out[k] = [rim_tint_pow(c[0]), rim_tint_pow(c[1]), rim_tint_pow(c[2]), m as f32 + 1.0];
+            }
+        }
+        out
+    }
+
 
     /// The cabin trim's rows for the renderer (`ObjectUniform::trim`): the vehicle record's ten m_vBaseColor rows as
     /// stored (F-19629 hands row G[zone] to InteriorTrim's program, intDL0, with no gamma) and its gauge colours A / B
@@ -8949,6 +8997,16 @@ pub fn setup_plate(b: &[u8]) -> String {
     b.get(0x847..0x84e).map_or(String::new(), |l| l.iter().take_while(|c| **c != 0).filter(|c| c.is_ascii_alphanumeric() || **c == b' ').map(|c| *c as char).collect::<String>().trim().to_string())
 }
 
+/// A look's stored rim rows as the rim program gets them (`Game::rim_tints` for a set-up car).
+pub fn rim_tint_rows(raw: &[[f32; 4]; 5]) -> [[f32; 4]; 5] {
+    raw.map(|r| if r[3] > 0.5 { [rim_tint_pow(r[0]), rim_tint_pow(r[1]), rim_tint_pow(r[2]), r[3]] } else { [0.0; 4] })
+}
+
+/// F-91597's gamma on a rim row: pow(x, 2.2f) in double, then to float.
+pub fn rim_tint_pow(x: f32) -> f32 {
+    (x as f64).powf(2.2f32 as f64) as f32
+}
+
 pub fn setup_look(b: &[u8]) -> Option<SetupLook> {
     if b.len() != 8176 {
         return None;
@@ -8966,7 +9024,7 @@ pub fn setup_look(b: &[u8]) -> Option<SetupLook> {
     let body_a = rgb(0x660)?;
     let body = paint_as_drawn(area(0));
     let body_b = to_linear(body.b);
-    let mut look = crate::vehicles::CarLook { paint_type: body.ty, color2: [body_b[0], body_b[1], body_b[2], body.fade as f32], tint: [0.0, 0.0035, 0.005, 0.372], interior: [[0.0; 4]; 5], area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], rim_finish: [[0.0; 4]; 3], cabin_light: [[0.0; 4]; 2], glass: [0x120, 0x130, 0x140, 0x150].map(|o| [f(o), f(o + 4), f(o + 8), f(o + 12)]), ext_neon: [[f(0x50), f(0x54), f(0x58), f(0x5c)], [f(0x170), b[0x18c] as i8 as f32, 0.0, 0.0]], trim: [[0.0; 4]; 12] };
+    let mut look = crate::vehicles::CarLook { paint_type: body.ty, color2: [body_b[0], body_b[1], body_b[2], body.fade as f32], tint: [0.0, 0.0035, 0.005, 0.372], interior: [[0.0; 4]; 5], area_a: [[0.0; 4]; 5], area_b: [[0.0; 4]; 5], rim_finish: [[0.0; 4]; 3], cabin_light: [[0.0; 4]; 2], glass: [0x120, 0x130, 0x140, 0x150].map(|o| [f(o), f(o + 4), f(o + 8), f(o + 12)]), ext_neon: [[f(0x50), f(0x54), f(0x58), f(0x5c)], [f(0x170), b[0x18c] as i8 as f32, 0.0, 0.0]], trim: [[0.0; 4]; 12], rim_raw: [[0.0; 4]; 5] };
     // (the cabin trim's rows as stored - F-19629: m_vBaseColor at 0x5c0 + 0x10 g, the gauge colours A / B at 0x70 / 0x80)
     for (k, o) in (0..10).map(|g| 0x5c0 + 0x10 * g).chain([0x70, 0x80]).enumerate() {
         let c = [f(o), f(o + 4), f(o + 8)];
@@ -8988,6 +9046,14 @@ pub fn setup_look(b: &[u8]) -> Option<SetupLook> {
         let pb = to_linear(p.b);
         look.area_a[k - 1] = [a[0], a[1], a[2], own as u8 as f32];
         look.area_b[k - 1] = [pb[0], pb[1], pb[2], p.ty as f32 + 8.0 * p.fade as f32];
+    }
+    // (the rims' five rows as stored - F-91597: RimColorA..E at 0x90 + 0x10 k, RimMaterialA..E at 0x178 + 4 k; w = material + 1)
+    for k in 0..5 {
+        let c = [f(0x90 + 0x10 * k), f(0x94 + 0x10 * k), f(0x98 + 0x10 * k)];
+        let m = u(0x178 + 4 * k);
+        if c.iter().all(|v| v.is_finite()) && m <= 3 {
+            look.rim_raw[k] = [c[0], c[1], c[2], m as f32 + 1.0];
+        }
     }
     for k in 0..3 {
         let c = rgb(0x90 + 0x10 * k).map(to_linear).unwrap_or([0.8, 0.8, 0.8]);
@@ -19766,5 +19832,44 @@ mod stat_refusal_tests {
             n += 1;
         }
         assert_eq!(n, 444);
+    }
+}
+
+#[cfg(test)]
+mod rim_tint_tests {
+    /// The rims' rows of recorded draws of the original (cars/0x9ba9add5, VS c206..c210 tintColors, c211..c215
+    /// materialHookups; work/lighting/cap, work/carparts2/trim/rimmatch.py: every recorded set but the wheel's back), each
+    /// with the set-up file whose rows F-91597's rule turns into them bit for bit. bl_L12 is the player's R8 of the save:
+    /// the stock set-up's colours, its first three materials the save's chrome.
+    const REC: [(&str, &str, [u32; 15], [u8; 5]); 6] = [
+        ("bl_std", "Delivery_vp_chv_impala_96.xcc", [0x3e60c9c8, 0x3e60c9c8, 0x3e60c9c8, 0x3f75162c, 0x3f75162c, 0x3f75162c, 0x3f1cb055, 0x3f1cb055, 0x3f1cb055, 0x3f75162c, 0x3f75162c, 0x3f75162c, 0x3f800000, 0x3f800000, 0x3f800000], [3, 1, 1, 1, 1]),
+        ("c2_2330b", "Delivery_vp_dge_charger_06.xcc", [0x3ed831a4, 0x3ed831a4, 0x3ed831a4, 0x3d66e887, 0x3d66e887, 0x3d66e887, 0x3ed831a4, 0x3ed831a4, 0x3ed831a4, 0x3f6a6e9a, 0x3f6a6e9a, 0x3f6a6e9a, 0x3f800000, 0x3f800000, 0x3f800000], [3, 3, 3, 3, 1]),
+        ("fx_15", "Delivery_vp_mit_evo_06.xcc", [0x3f800000, 0x3e9f530e, 0x3db1f949, 0x3ee27828, 0x3ee27828, 0x3ee27828, 0x3ee27828, 0x3ee27828, 0x3ee27828, 0x3f6a6e9a, 0x3f6a6e9a, 0x3f6a6e9a, 0x3f800000, 0x3f800000, 0x3f800000], [0, 3, 3, 3, 1]),
+        ("sk_15", "Delivery_vp_chv_camaross_69.xcc", [0x3f800000, 0x3f800000, 0x3f800000, 0x3f12ba8c, 0x3f12ba8c, 0x3f12ba8c, 0x3e93dfb1, 0x3e93dfb1, 0x3e93dfb1, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000], [3, 0, 3, 1, 1]),
+        ("tn_night", "Delivery_vp_sln_s7_06.xcc", [0x3f800000, 0x3f800000, 0x3f800000, 0x3f796bbd, 0x3f796bbd, 0x3f796bbd, 0x3f600904, 0x3f600904, 0x3f600904, 0x3f75162c, 0x3f75162c, 0x3f75162c, 0x3f800000, 0x3f800000, 0x3f800000], [3, 1, 3, 1, 1]),
+        ("bl_L12", "vp_aud_r8_08.xcc", [0x3f796bbd, 0x3f796bbd, 0x3f796bbd, 0x3f796bbd, 0x3f796bbd, 0x3f796bbd, 0x3f796bbd, 0x3f796bbd, 0x3f796bbd, 0x3f796bbd, 0x3f796bbd, 0x3f796bbd, 0x3f800000, 0x3f800000, 0x3f800000], [1, 1, 1, 3, 0]),
+    ];
+
+    #[test]
+    fn rim_rows_match_the_recording() {
+        // (the gamma alone, no file needed: the R8's 252 / 255 as recorded)
+        assert_eq!(super::rim_tint_pow(f32::from_bits(0x3f7cfcfd)).to_bits(), 0x3f796bbd);
+        let dir = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        let mut n = 0;
+        for (cap, xcc, bits, hook) in REC {
+            let Ok(b) = std::fs::read(std::path::Path::new(&dir).join("resources/vehicle/configs").join(xcc)) else { continue };
+            let look = super::setup_look(&b).expect(xcc).look;
+            let rows = super::rim_tint_rows(&look.rim_raw);
+            for z in 0..5 {
+                for c in 0..3 {
+                    assert_eq!(rows[z][c].to_bits(), bits[3 * z + c], "{cap} {xcc} zone {z} channel {c}");
+                }
+                if cap != "bl_L12" || z >= 3 {
+                    assert_eq!(rows[z][3], hook[z] as f32 + 1.0, "{cap} {xcc} hookup of zone {z}");
+                }
+            }
+            n += 1;
+        }
+        eprintln!("rim rows: {n} of {} recorded sets checked against their set-up files", REC.len());
     }
 }

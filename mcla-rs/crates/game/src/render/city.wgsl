@@ -2912,8 +2912,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
         emissive = emissive + albedo.rgb * lamp_px * on * 3.2 * f32(in.uv0.x < 0.30);
         spec = 0.3;
     } else if (mat.mode == 18u) {
-        // Wheel rim (shader RimMain): uv1.x selects one of five material zones - zone 0
-        // is the dark barrel / recesses, the others polished metal - and the vertex
+        // Wheel rim (shader RimMain): uv1.x selects one of five material zones - on the R8's rim zone 0
+        // the spokes' faces, 1 their sides, 2 the lip, 3 the barrel and badge (F-91597's rows by zone) - and the vertex
         // colour alpha carries baked occlusion.
         let zone = i32(round(in.uv1.x));
         occ = mix(0.25, 1.0, in.color.a);
@@ -3735,7 +3735,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             base = vec3<f32>(0.0);
             emissive = vec3<f32>(0.0);
             spec_k = 0.0;
-        } else if (mat.mode == 18u && i32(round(in.uv1.x)) < 8 && obj.dents[clamp(i32(round(in.uv1.x)) - 1, 0, 2)].w > 0.5 && g.dome.w > 0.5 && g.ambient_ground.w > -0.5 && !(g.params.w > 134.5 && g.params.w < 135.5)) {
+        } else if (mat.mode == 18u && i32(round(in.uv1.x)) < 8 && (obj.dents[clamp(i32(round(in.uv1.x)) - 1, 0, 2)].w > 0.5 || obj.trim[clamp(i32(round(in.uv1.x)), 0, 4)].w > 0.5) && g.dome.w > 0.5 && g.ambient_ground.w > -0.5 && !(g.params.w > 134.5 && g.params.w < 135.5)) {
             // VS_Common + PS_Multi of cars/0x9ba9add5 (the rims), read from the listing (LIGHTING_WORK.md,
             // "Rims"): each vertex's zone picks a colour (c206 + zone) and a "material hookup" (c211 + zone):
             //   1: surroundings (sharp, along the mirror ray) x (0.125 + 1.1852 s) x colour^0.45 x occ
@@ -3751,7 +3751,16 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             // The fade along the axle below. MCLA_DEBUG_VIEW=135: the zones as before; 783: no fade.
             // (the wheel's back, drawn in the rim's place from behind - vehicles.rs `wheel_backside`, F-57869: the rim's
             // colours x 0.125 (uv2.y), as F-94854 sets them; its hookups the rim's)
-            let fin18 = obj.dents[clamp(i32(round(in.uv1.x)) - 1, 0, 2)] * vec4<f32>(vec3<f32>(select(1.0, in.uv2.y, in.uv2.y > 0.1 && in.uv2.y < 0.2)), 1.0);
+            // (F-91597, recorded: tintColors[z] = RimColor[z] ^ 2.2 and materialHookups[z] = RimMaterial[z] of the record, z =
+            // the vertex's zone (TEXCOORD1.x, VS_Common's index) - the object's trim rows 0..4, hookup + 1 in w. Where given,
+            // they replace the zones' finish below; the hookup as the old w: 0 -> 1 painted, 1 -> 2 chrome, 3 -> 3 brushed,
+            // 2 -> 4 carbon fibre)
+            let rz18 = clamp(i32(round(in.uv1.x)), 0, 4);
+            let rt18 = obj.trim[rz18];
+            let exact18 = rt18.w > 0.5 && !(g.params.w > 783.5 && g.params.w < 784.5);
+            var fin18 = obj.dents[clamp(i32(round(in.uv1.x)) - 1, 0, 2)];
+            if (exact18) { fin18 = vec4<f32>(rt18.rgb, select(select(select(1.0, 2.0, rt18.w > 1.5), 4.0, rt18.w > 2.5), 3.0, rt18.w > 3.5)); }
+            fin18 = fin18 * vec4<f32>(vec3<f32>(select(1.0, in.uv2.y, in.uv2.y > 0.1 && in.uv2.y < 0.2)), 1.0);
             let occ18 = in.color.a;
             var fc18 = 127.0 / 255.0;
             if (g.tone.w < 0.5 && g.shadow_params.x > 0.0) {
@@ -3763,11 +3772,11 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             let soft18 = env_soft(r);
             let col18 = pow(max(fin18.rgb, vec3<f32>(0.000001)), vec3<f32>(0.45));
             // (zone 3 keeps the rim file's own hookup, 3, whatever the finish: recorded)
-            if (fin18.w > 3.5 && i32(round(in.uv1.x)) != 3) {
+            if (fin18.w > 3.5 && (exact18 || i32(round(in.uv1.x)) != 3)) {
                 // hookup 2 (the record's rim material 2, Carbon Fiber): `r0.yzw = 0.2` - a flat grey,
                 // neither light nor surroundings nor occlusion (PS_Multi instructions 96 - 99)
                 lit = vec3<f32>(0.2);
-            } else if (fin18.w > 2.5 || i32(round(in.uv1.x)) == 3) {
+            } else if (fin18.w > 2.5 || (!exact18 && i32(round(in.uv1.x)) == 3)) {
                 lit = soft18 * col18 * ((0.25 + 1.0667 * s18) * occ18);
             } else if (fin18.w > 1.5) {
                 lit = env * col18 * ((0.125 + 1.1852 * s18) * occ18);

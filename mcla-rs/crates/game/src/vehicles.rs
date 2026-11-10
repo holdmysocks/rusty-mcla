@@ -1139,6 +1139,8 @@ pub struct CarLook {
     /// the cabin trim's rows as `ObjectUniform::trim` has them (the record's ten m_vBaseColor rows as stored, its
     /// gauge colours A and B; w 1 = given)
     pub trim: [[f32; 4]; 12],
+    /// the rims' five rows as stored (RimColorA..E, w = RimMaterialA..E + 1; 0 = none) - `Game::rim_tints` does the rest
+    pub rim_raw: [[f32; 4]; 5],
 }
 
 /// A set-up as `Vehicles::dress_setups` puts it on a car: the model's parts, the rim's
@@ -1341,6 +1343,8 @@ pub struct Vehicles {
     pub player_interior: [[f32; 4]; 5],
     /// the player's cabin trim rows (`ObjectUniform::trim`, `Game::trim_colors`)
     pub player_trim: [[f32; 4]; 12],
+    /// the player's rims' five rows as F-91597 hands them (colour ^ 2.2, w = hookup + 1): `Game::rim_tints`
+    pub player_rim_tint: [[f32; 4]; 5],
     /// the player's gauge colour A and interior neon colour as its record holds them (w: IntNeonFlashRate, IntNeonIntensity) -
     /// what its driver is lit by (`Game::cabin_light_colors`)
     pub player_cabin_light: [[f32; 4]; 2],
@@ -2509,6 +2513,11 @@ impl Vehicles {
                 (d, k0)
             };
             let (s2, k1) = resolve(gpu, world, m.sn.as_deref());
+            // (MCLA_LAMP_TEX_DUMP: a set-up car's lamp maps - the illumination map in the first slot, the normal map in the second)
+            if std::env::var("MCLA_LAMP_TEX_DUMP").is_ok() && m.sname.eq_ignore_ascii_case("CarLight") {
+                let dims = |n: Option<&str>| n.and_then(|n| car.textures.get(&mcla_formats::hash::joaat(n))).map(|t| (t.width, t.height, format!("{:?}", t.format), t.levels.len()));
+                log::info!("lamp maps {}: first {:?} {:?} / second {:?} {:?}", car.name, m.dn, dims(m.dn.as_deref()), m.sn, dims(m.sn.as_deref()));
+            }
             let (s2, k1) = if m.carbon { carbon_weave(gpu, world) } else { (s2, k1) };
             let win_maps = if m.win_cand { glass_maps(gpu, world) } else { None };
             let ((d, k0), (s2, k1)) = win_maps.clone().unwrap_or(((d, k0), (s2, k1)));
@@ -6042,7 +6051,17 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // (params.y: the rim effect's useGradient.x - F-91597 hands F-96332 "not a motorcycle" (F-54299): 100.0 on a
                 // motorcycle, 0.0 on a car: city.wgsl's fade along the axle is taken at x - useGradient.x, so a bike's rims never fade)
                 let use_gradient = if c.model.bike { 100.0 } else { 0.0 };
-                batch.push_object(b, &ObjectUniform { model: wm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, use_gradient, 0.0, 0.0], dents: finish, fill: car_fill, ..Default::default() });
+                // (the trim slots of a wheel carry its rims' five rows as F-91597 hands them - tintColors / materialHookups
+                // by the rim vertex's zone, colour ^ 2.2 and the hookup + 1 in w; city.wgsl's rim branch takes them where
+                // given. MCLA_RIM_TINT_OLD=1: none, the zones as before)
+                let mut rim_rows = [[0.0f32; 4]; 12];
+                if std::env::var_os("MCLA_RIM_TINT_OLD").is_none() {
+                    let rows = if c.is_player { Some(self.player_rim_tint) } else { c.look.as_ref().map(|l| crate::mc4::rim_tint_rows(&l.rim_raw)) };
+                    if let Some(r) = rows {
+                        rim_rows[..5].copy_from_slice(&r);
+                    }
+                }
+                batch.push_object(b, &ObjectUniform { model: wm.to_cols_array_2d(), color: [0.8, 0.8, 0.8, 1.0], params: [night, use_gradient, 0.0, 0.0], dents: finish, fill: car_fill, trim: rim_rows, ..Default::default() });
                 // the brake (F-43091 -> F-57869, `brake_place`): the rotor in the wheel's turning frame, the caliper in its
                 // hub's, both sized by the axle's rim radius - the set-up's (WheelFit::rim_radius). (approx.) a car without a
                 // set-up: the radius of the rim the port draws, its rim ratio of the tyre
