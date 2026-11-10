@@ -504,8 +504,9 @@ impl Game {
         // name like the importer's keys), `gkDS`, `nkDS` (on-line: refused), and the hours since the last flush, (clock - +1224) x
         // 1/3600: `khTC` and `ghTC` while the game is in "Cruising" (free roam), `ghTP` always. Each submit adds in f32, so the
         // flush's ~1.7 s chunks keep counting on a large total where a frame's would round away. The flush runs every 100th
-        // pose sample, at the racer's reset and when the player goes (F-61454, F-41331, F-55514): here every 100th tick and when
-        // the vehicle changes. The clock is the game's own (stopped in the pause, slowed by slow motion; the clock object's +20 not
+        // pose sample, at the player's Racer_Reset (his vfunc 76, F-41331) and when the player goes (F-61454, F-55514): here
+        // every 100th tick, when the vehicle changes, and at the player resets the port has (main.rs: free roam's start, a
+        // garage's exit scene). The clock is the game's own (stopped in the pause, slowed by slow motion; the clock object's +20 not
         // checked); the hours before the first tick are not counted.)
         let car = self.car_dirs.get(self.current_car).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase());
         {

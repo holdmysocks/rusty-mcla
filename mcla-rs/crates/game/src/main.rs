@@ -13184,6 +13184,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if let Some(v) = self.vehicles.player_mut().and_then(|c| c.state.veh.as_deref_mut()) {
                         v.air = physics::vehsim::AirRide::default();
                     }
+                    // (the player's Racer_Reset is F-41331, which runs the driving flush F-15445 first)
+                    self.game.mc4_drive_flush();
                 }
                 // (the race object goes: its destructor's Race_Reset, F-83102 - kMRS, xRRT)
                 if self.game.race.is_some() && !self.game.goal_attack {
@@ -14369,6 +14371,8 @@ impl App {
                 if let Some(c) = self.vehicles.player_mut() {
                     c.show_driver = false;
                 }
+                // (the player's vfunc 76 is F-41331: the driving flush F-15445, then F-89258)
+                self.game.mc4_drive_flush();
             }
             let later = vehicles::ENGINE_BACK_LATER.contains(&ended.as_str()) || ended.starts_with("racestart/");
             if (ended.starts_with("story/") && !later) || cinedriver::GARAGE_EXIT.contains(&ended.as_str()) {
