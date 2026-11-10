@@ -1111,6 +1111,89 @@ fn tactic_end(active: u8, flag: u32, result: u32, racing: bool, brain: bool) -> 
     Some(CopEnd { brain_reset: brain, siren_stop: flag, lights_off, unlock: lights_off && !racing })
 }
 
+/// F-71212's states 2 and 3 (tools/zone_setoff_reference.py, the ticks): 2 - the target damaged out (F-12032, asked only
+/// with a target) starts the chase at once (state 0), else the timer +212 down by dt, below 0 state 3 with
+/// fCopZoneRdoDelayTime; 3 - the timer down, and with a target, below 0 or (only then asked) damaged out, the chase (state
+/// 0, the timer kept): the Arrow Trap (StartTactic F-33550 type 4, F-30913's tactic on the target). (state, timer, start)
+pub(crate) fn zone_tick(state: u8, target: bool, timer: f32, dt: f32, delay: f32, mut wrecked: impl FnMut() -> bool) -> (u8, f32, bool) {
+    match state {
+        2 if target && wrecked() => (0, timer, true),
+        2 => {
+            let t = timer - dt;
+            if t < 0.0 { (3, delay, false) } else { (2, t, false) }
+        }
+        3 => {
+            let t = timer - dt;
+            if target && (t < 0.0 || wrecked()) { (0, t, true) } else { (3, t, false) }
+        }
+        _ => (state, timer, false),
+    }
+}
+
+/// The zone's target (manager +200): a racer of the race (its index) or an entry of the AI list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ZoneTgt {
+    Racer(usize),
+    Ai(usize),
+}
+
+/// The zone machine's squared distance (F-71212): d = a - b, dy dy, then dz and dx fused in.
+fn zone_d2(a: Vec3, b: Vec3) -> f32 {
+    let (dx, dy, dz) = (a.x - b.x, a.y - b.y, a.z - b.z);
+    fmas(dx, dx, fmas(dz, dz, dy * dy))
+}
+
+/// The cop zone's set-off, F-71212's state 1 (tools/zone_setoff_reference.py): the race's racers in order; the first within
+/// the zone's radius (`zone_d2` < r x r) sets it off (a request each racer inside), and its target: the scripted racer
+/// (SetRaceChaseTarget's +208, when it is in the racer list), else by the kind +204 - 1 the racer; 0 and 2 with no AI list
+/// the racer; 0 one draw of the shared generator, (lo & 0x7FFFFF) x 2^-23 < iRaceTgtAiProbPrcnt x 0.01 or the racer; then
+/// (0 and 2) the nearest entry of the AI list (count 0 or entry 0 null: the racer; null entries skipped; the first of the
+/// equal) when fRaceTgtAiDist is negative or it is nearer than that, else the racer; 3 and up none, and the next racer
+/// inside sets it off again. None: nothing set it off; else (the requests, the target).
+pub(crate) fn zone_set_off(rng: &mut (u32, u32), kind: u32, prob: i32, dist: f32, zone: Vec3, r: f32, racers: &[Vec3], scripted: Option<usize>,
+                           ai: Option<&[Option<Vec3>]>) -> Option<(u32, Option<ZoneTgt>)> {
+    let mut req = 0;
+    for (k, &rp) in racers.iter().enumerate() {
+        if !(zone_d2(rp, zone) < r * r) {
+            continue;
+        }
+        req += 1;
+        if let Some(s) = scripted {
+            return Some((req, Some(ZoneTgt::Racer(s))));
+        }
+        let tgt = match kind {
+            1 => ZoneTgt::Racer(k),
+            0 | 2 => match ai {
+                None => ZoneTgt::Racer(k),
+                Some(list) => {
+                    let rolled = kind == 2 || {
+                        let d = (rdo_draw(rng) & 0x7F_FFFF) as f32 * f32::from_bits(0x3400_0000);
+                        d < prob as f32 * 0.01f32
+                    };
+                    match list.first() {
+                        Some(&Some(q0)) if rolled => {
+                            let (mut best, mut bd) = (0, zone_d2(rp, q0));
+                            for (j, q) in list.iter().enumerate().skip(1) {
+                                if let Some(q) = *q {
+                                    let d = zone_d2(rp, q);
+                                    if d < bd {
+                                        (best, bd) = (j, d);
+                                    }
+                                }
+                            }
+                            if dist < 0.0 || bd < dist * dist { ZoneTgt::Ai(best) } else { ZoneTgt::Racer(k) }
+                        }
+                        _ => ZoneTgt::Racer(k),
+                    }
+                }
+            },
+            _ => continue,
+        };
+        return Some((req, Some(tgt)));
+    }
+    if req > 0 { Some((req, None)) } else { None }
+}
+
 /// EvaluateCopZones' pick F-88125 (after it cleared the zone: +188 / +192 -1, +196 0): "no cops" (`None`) when the dev
 /// override F-47443 is set with a value <= 0 (`ovr`), the manager's police list is empty (F-53190) or the race has no zones
 /// (+184); else the zone is one index draw of the shared generator ((lo & 0x7FFFFFFF) % zones) and the lap 0, or with a race
@@ -1916,18 +1999,20 @@ pub struct PoliceEval {
     pub gate5: bool,
     pub props: [bool; 3],
     pub chase_type: u8,
+    /// SetRaceChaseTarget's racer (manager +208) is the player
+    pub chase_player: bool,
 }
 
 impl PoliceEval {
     /// chance 0: wager / pink slip, delivery, time trial, tournament, series, red light, seven story cores
-    pub const NEVER: PoliceEval = PoliceEval { chance: 0.0, gate5: false, props: [true; 3], chase_type: race_chase_type(0, None) };
+    pub const NEVER: PoliceEval = PoliceEval { chance: 0.0, gate5: false, props: [true; 3], chase_type: race_chase_type(0, None), chase_player: false };
     /// 25 % with the racers gate: generic_local_hookman, the *_CHAMP_CORE and BEAT_SH_0x cores, RaceWrapper
-    pub const GATED: PoliceEval = PoliceEval { chance: 0.25, gate5: true, props: [true; 3], chase_type: race_chase_type(0, None) };
+    pub const GATED: PoliceEval = PoliceEval { chance: 0.25, gate5: true, props: [true; 3], chase_type: race_chase_type(0, None), chase_player: false };
     /// 25 %, no gate: TelephoneChallenge
-    pub const PHONE: PoliceEval = PoliceEval { chance: 0.25, gate5: false, props: [true; 3], chase_type: race_chase_type(0, None) };
+    pub const PHONE: PoliceEval = PoliceEval { chance: 0.25, gate5: false, props: [true; 3], chase_type: race_chase_type(0, None), chase_player: false };
     /// BEAT_SH_04B_CORE: always, the player the zone's target, no tracking, no race retarget
     pub const SH_04B: PoliceEval =
-        PoliceEval { chance: 1.0, gate5: false, props: [false, false, true], chase_type: race_chase_type(1, Some(true)) };
+        PoliceEval { chance: 1.0, gate5: false, props: [false, false, true], chase_type: race_chase_type(1, Some(true)), chase_player: true };
 }
 
 /// The race's cop zone (PoliceManager +188 zone, +192 lap, +196 state, +212 timer).
@@ -2102,6 +2187,8 @@ pub struct Police {
     /// PoliceManager_SetRaceChaseTarget's type (manager +204): 0 the zone's roll, 1 the racer that set it off, 2 the
     /// nearest AI racer
     chase_type: u8,
+    /// its racer +208 is the player (BEAT_SH_04B): the zone's target whoever sets it off
+    chase_player: bool,
     /// the pull-over's bullhorn (its tactic +92 = 2 at iBullhornLawBreakScore, F-22530): seconds left of
     /// fBullhornTime; Some(0) = run out (the 599 cap is lifted)
     bullhorn: Option<f32>,
@@ -2296,6 +2383,7 @@ impl Police {
             chase_props: [true; 3],
             tac_retarget: true,
             chase_type: 0,
+            chase_player: false,
             tacs: HashMap::new(),
             last_tspeed: 0.0,
             probe_cop: None,
@@ -2846,6 +2934,7 @@ impl Police {
                    if self.race_off { "no police in this race" } else { "police" }, self.no_cop_races);
         self.set_chase_properties(e.props);
         self.chase_type = e.chase_type;
+        self.chase_player = e.chase_player;
     }
 
     /// PoliceManager_SetChaseProperties (F-95292 -> F-39756): the running tactic gets +29 = a with its track time
@@ -2866,6 +2955,7 @@ impl Police {
             self.set_chase_properties([true; 3]);
         }
         self.chase_type = 0;
+        self.chase_player = false;
     }
 
     /// PoliceManager_EvaluateCopZones (F-88125): of the race's zones ONE is picked, and ONE lap
@@ -2887,21 +2977,21 @@ impl Police {
     }
 
     /// The zone machine of a race (F-71212), per frame: `lap` is the race's current lap, `racers` the race's racers in
-    /// order (uid, the player, position, damaged out), `inside` the first of them within the zone's radius.
-    /// State 1 (armed): that racer sets it off - state 2, 5.5 s, and the target (+200): the scripts' race chase target is
-    /// unset (SetRaceChaseTarget(0, 0), type 0), so with iRaceTgtAiProbPrcnt % the AI racer nearest to it (the first of
-    /// the AI list, then each nearer one; it may be itself) when within fRaceTgtAiDist (or that is negative), else the
-    /// racer itself. State 2: the target damaged out (F-12032) - the chase starts at once (state 0); else the 5.5 s down,
-    /// then state 3 for fCopZoneRdoDelayTime; state 3: the time down, and at < 0 or the target damaged out the chase
-    /// starts: the Arrow Trap (type 4, StartTactic F-33550) on the target, player or AI racer. (The roll draws the
-    /// port's own random numbers, not the game's multiply-with-carry.)
-    pub fn zone_step(&mut self, lap: usize, racers: &[(u32, bool, Vec3, bool)], inside: Option<usize>, dt: f32) -> Option<&'static str> {
+    /// order (uid, the player, position, damaged out), `zone` the zone's place and radius.
+    /// State 1 (armed): the first racer within the radius sets it off (`zone_set_off`) - state 2, 5.5 s, and the target
+    /// (+200): BEAT_SH_04B's scripted racer, the player; else by the type (+204, SetRaceChaseTarget): 0 the roll (one draw
+    /// of the shared generator against iRaceTgtAiProbPrcnt %), then the AI racer nearest to the racer within
+    /// fRaceTgtAiDist (or that negative), else the racer itself; 1 the racer; 2 the nearest without the roll. The AI list
+    /// is the race's AI racers in race order (the original's opponent manager's). State 2: the target damaged out
+    /// (F-12032) - the chase starts at once (state 0); else the 5.5 s down, then state 3 for fCopZoneRdoDelayTime;
+    /// state 3: the time down, and at < 0 or the target damaged out the chase starts: the Arrow Trap (type 4, StartTactic
+    /// F-33550) on the target, player or AI racer.
+    pub fn zone_step(&mut self, lap: usize, racers: &[(u32, bool, Vec3, bool)], zone: (Vec3, f32), dt: f32) -> Option<&'static str> {
         // (test hook MCLA_COP_ZONE_AI=1: the roll always picks the nearest AI racer, at any distance)
-        let prob = if std::env::var_os("MCLA_COP_ZONE_AI").is_some() { 1.0 } else { self.tun.get("iRaceTgtAiProbPrcnt", 30.0) * 0.01 };
+        let prob = if std::env::var_os("MCLA_COP_ZONE_AI").is_some() { 100 } else { self.tun.get("iRaceTgtAiProbPrcnt", 30.0) as i32 };
         let ai_r = if std::env::var_os("MCLA_COP_ZONE_AI").is_some() { -1.0 } else { self.tun.get("fRaceTgtAiDist", 150.0) };
         let delay = self.tun.get("fCopZoneRdoDelayTime", 2.0);
-        let self_ct = self.chase_type;
-        let roll = if self_ct == 0 && matches!(self.zone.as_ref(), Some(z) if z.state == 1) && inside.is_some() { self.rand() } else { 1.0 };
+        let (kind, scripted) = (self.chase_type as u32, if self.chase_player { racers.iter().position(|r| r.1) } else { None });
         let Some(z) = self.zone.as_mut() else { return None };
         let mut say = None;
         let wrecked = |z: &CopZone| z.target.and_then(|t| racers.iter().find(|r| r.0 == t)).map_or(false, |r| r.3);
@@ -2914,53 +3004,26 @@ impl Police {
             // (F-71212: no racer sets it off while the player drives a police car)
             1 if self.player_police => {}
             1 => {
-                if let Some(k) = inside {
+                let pos: Vec<Vec3> = racers.iter().map(|r| r.2).collect();
+                let ai: Vec<usize> = (0..racers.len()).filter(|&i| !racers[i].1).collect();
+                let ai_pos: Vec<Option<Vec3>> = ai.iter().map(|&i| Some(racers[i].2)).collect();
+                if let Some((_, tgt)) = zone_set_off(&mut self.rdo_rng, kind, prob, ai_r, zone.0, zone.1, &pos, scripted, Some(&ai_pos)) {
                     z.state = 2;
                     z.timer = 5.5;
                     say = Some("PLAYER_COPS_BEGIN_PURSUIT");
-                    let (_, _, sp, _) = racers[k];
-                    let mut tgt = k;
-                    let ais: Vec<usize> = (0..racers.len()).filter(|&i| !racers[i].1).collect();
-                    // (+204: 1 the racer itself, 2 the nearest AI racer without the roll, 0 the roll)
-                    if !ais.is_empty() && (self_ct == 2 || (self_ct == 0 && roll < prob)) {
-                        let d2 = |i: usize| {
-                            let q = racers[i].2;
-                            let (dx, dy, dz) = (sp.x - q.x, sp.y - q.y, sp.z - q.z);
-                            fmas(dx, dx, fmas(dz, dz, dy * dy))
-                        };
-                        let (mut best, mut bd) = (ais[0], d2(ais[0]));
-                        for &i in &ais[1..] {
-                            let d = d2(i);
-                            if d < bd {
-                                (best, bd) = (i, d);
-                            }
-                        }
-                        if ai_r < 0.0 || bd < ai_r * ai_r {
-                            tgt = best;
-                        }
-                    }
-                    z.target = Some(racers[tgt].0);
-                    z.player = racers[tgt].1;
-                    log::info!("police: cop zone {} set off by {}, target {}", z.idx, if racers[k].1 { "the player" } else { "an AI racer" },
-                               if z.player { "the player" } else { "an AI racer" });
+                    let t = tgt.map(|t| match t {
+                        ZoneTgt::Racer(i) => i,
+                        ZoneTgt::Ai(j) => ai[j],
+                    });
+                    z.target = t.map(|i| racers[i].0);
+                    z.player = t.map_or(false, |i| racers[i].1);
+                    log::info!("police: cop zone {} set off, target {}", z.idx,
+                               if t.is_none() { "none" } else if z.player { "the player" } else { "an AI racer" });
                 }
             }
-            2 => {
-                if z.target.is_some() && wrecked(z) {
-                    start = true;
-                } else {
-                    z.timer -= dt;
-                    if z.timer < 0.0 {
-                        z.state = 3;
-                        z.timer = delay;
-                    }
-                }
-            }
-            3 => {
-                z.timer -= dt;
-                if z.target.is_some() && (z.timer < 0.0 || wrecked(z)) {
-                    start = true;
-                }
+            2 | 3 => {
+                let w = wrecked(z);
+                (z.state, z.timer, start) = zone_tick(z.state, z.target.is_some(), z.timer, dt, delay, || w);
             }
             _ => {}
         }
@@ -5843,6 +5906,62 @@ mod tests {
         assert_eq!(n, 3120);
     }
 
+    /// tools/zone_setoff_reference.py: the original's zone machine F-71212 in state 1 run offline (4,000 cases: the type 0 - 3
+    /// and 7, the percentage, fRaceTgtAiDist (negative, 0, NaN, huge), the radius, 0 - 5 racers round the zone, the AI
+    /// list absent / 0 - 7 entries with nulls and equal distances, the scripted racer in the racer list or not, the
+    /// generator's state): the state, the target, the timer, the requests and the generator after equal `zone_set_off`;
+    /// and 2,000 ticks of states 2 / 3 (the timer, dt, a target or none, damaged out or not, the delay): the state, the
+    /// timer, the damaged-out questions and the Arrow Trap's start equal `zone_tick`.
+    #[test]
+    fn zone_set_off_matches_the_original() {
+        let h = |t: &str| u32::from_str_radix(&t[1..], 16).unwrap();
+        let mut ticks = 0;
+        let pt = |t: &str| {
+            let w: Vec<f32> = t.split(':').map(|x| f32::from_bits(u32::from_str_radix(x, 16).unwrap())).collect();
+            Vec3::new(w[0], w[1], w[2])
+        };
+        let mut n = 0;
+        for l in include_str!("testdata/zone_setoff_ref.txt").lines() {
+            let (lhs, rhs) = l.split_once(" -> ").unwrap();
+            if let Some(t) = lhs.strip_prefix("T ") {
+                let v: Vec<&str> = t.split(' ').collect();
+                let (st, tg, wr) = (v[0].parse::<u8>().unwrap(), v[1] == "1", v[4] == "1");
+                let mut asked = 0;
+                let (st2, tm, start) = zone_tick(st, tg, f32::from_bits(h(v[2])), f32::from_bits(h(v[3])), f32::from_bits(h(v[5])), || {
+                    asked += 1;
+                    wr
+                });
+                // (the start: StartTactic type 4, r6 1, r7 0, on F-30913's tactic built with f1 0.0 on the target)
+                let want = format!("{st2} f{:08x} {asked} t00000000 s{}", tm.to_bits(), if start { "1041" } else { "0" });
+                assert_eq!(want, rhs, "{lhs}");
+                ticks += 1;
+                continue;
+            }
+            let (a, b) = lhs.split_once(" | ").unwrap();
+            let v: Vec<&str> = a.split(' ').collect();
+            let (kind, prob, dist, r, zone) = (v[0].parse::<u32>().unwrap(), v[1].parse::<i32>().unwrap(), f32::from_bits(h(v[2])),
+                                               f32::from_bits(h(v[3])), pt(v[4]));
+            let racers: Vec<Vec3> = v[5..].iter().filter(|t| **t != ".").map(|t| pt(t)).collect();
+            let w: Vec<&str> = b.split(' ').collect();
+            let k = w.len();
+            let ai: Option<Vec<Option<Vec3>>> = (w[0] != "null").then(|| w[1..k - 4].iter().map(|t| (*t != "n").then(|| pt(t))).collect());
+            let mask = w[k - 3][1..].parse::<u32>().unwrap();
+            let scripted = w[k - 4][1..].parse::<usize>().ok().filter(|&i| mask >> i & 1 == 1);
+            let mut rng = (h(w[k - 2]), h(w[k - 1]));
+            let got = zone_set_off(&mut rng, kind, prob, dist, zone, r, &racers, scripted, ai.as_deref());
+            let tgt = match got.and_then(|g| g.1) {
+                None => "0".to_string(),
+                Some(ZoneTgt::Racer(i)) => format!("r{i}"),
+                Some(ZoneTgt::Ai(j)) => format!("a{j}"),
+            };
+            let want = format!("{} {tgt} f{} {} g{:08x} g{:08x}", if got.is_some() { 2 } else { 1 },
+                               if got.is_some() { "40b00000" } else { "7f7f7f7f" }, got.map_or(0, |g| g.0), rng.0, rng.1);
+            assert_eq!(want, rhs, "{lhs}");
+            n += 1;
+        }
+        assert_eq!((n, ticks), (4000, 2000));
+    }
+
     /// tools/tactic_end_reference.py: the original's tactic end F-67316 run offline (2,506 cases: the active byte, the flag word,
     /// the result, a race current or not, the global present or not, 0 - 4 cop entries null / car / car with a brain, the
     /// count also 0 and -1): the return, the global's byte, the callee events in order and every brain's +773 / +408 equal
@@ -8288,17 +8407,18 @@ mod scene_tests {
     #[test]
     fn the_cop_zone_waits_5_5_s_then_the_radio_delay() {
         let dt = 1.0 / 30.0;
+        const FAR: Vec3 = Vec3::new(1.0e4, 0.0, 0.0);
         let racers = [(10u32, true, Vec3::ZERO, false), (11, false, Vec3::new(40.0, 0.0, 0.0), false), (12, false, Vec3::new(20.0, 0.0, 0.0), false)];
         // never the AI (chance 0): the player is the target; 5.5 s, then fCopZoneRdoDelayTime 2 s
         let mut p = Police::new();
         p.tun.v.insert("iRaceTgtAiProbPrcnt".into(), 0.0);
         p.create_units(true);
         p.pick_zone(1, 1);
-        p.zone_step(0, &racers, Some(0), dt);
+        p.zone_step(0, &racers, (Vec3::ZERO, 5.0), dt);
         assert_eq!(p.zone.as_ref().map(|z| (z.state, z.target, z.player)), Some((2, Some(10), true)));
         let mut n = 0;
         while !p.zone_go {
-            p.zone_step(0, &racers, None, dt);
+            p.zone_step(0, &racers, (FAR, 5.0), dt);
             n += 1;
             assert!(p.zone_on_player() || p.zone_go);
             assert!(n < 1000);
@@ -8309,12 +8429,12 @@ mod scene_tests {
         p.tun.v.insert("iRaceTgtAiProbPrcnt".into(), 100.0);
         p.create_units(true);
         p.pick_zone(1, 1);
-        p.zone_step(0, &racers, Some(0), dt);
+        p.zone_step(0, &racers, (Vec3::ZERO, 5.0), dt);
         assert_eq!(p.zone.as_ref().map(|z| (z.target, z.player)), Some((Some(12), false)));
         assert!(!p.zone_on_player());
         // its wait runs out: the chase is handed to the update as an AI target (no zone_go for the player)
         for _ in 0..(166 + 61) {
-            p.zone_step(0, &racers, None, dt);
+            p.zone_step(0, &racers, (FAR, 5.0), dt);
         }
         assert!(!p.zone_go);
         assert_eq!(p.zone_target, Some(12));
@@ -8333,12 +8453,21 @@ mod scene_tests {
         p.tun.v.insert("fRaceTgtAiDist".into(), 10.0);
         p.create_units(true);
         p.pick_zone(1, 1);
-        p.zone_step(0, &racers, Some(0), dt);
+        p.zone_step(0, &racers, (Vec3::ZERO, 5.0), dt);
         assert_eq!(p.zone.as_ref().map(|z| z.target), Some(Some(10)));
         // the target damaged out: the chase at once
         let wrecked = [(10u32, true, Vec3::ZERO, true)];
-        p.zone_step(0, &wrecked, None, dt);
+        p.zone_step(0, &wrecked, (FAR, 5.0), dt);
         assert!(p.zone_go);
+        // BEAT_SH_04B (SetRaceChaseTarget with the player): an AI racer sets it off, the player is the target
+        let mut p = Police::new();
+        p.tun.v.insert("iRaceTgtAiProbPrcnt".into(), 100.0);
+        p.chase_type = PoliceEval::SH_04B.chase_type;
+        p.chase_player = PoliceEval::SH_04B.chase_player;
+        p.create_units(true);
+        p.pick_zone(1, 1);
+        p.zone_step(0, &racers, (Vec3::new(40.0, 0.0, 0.0), 5.0), dt);
+        assert_eq!(p.zone.as_ref().map(|z| (z.state, z.target, z.player)), Some((2, Some(10), true)));
     }
 
     #[test]

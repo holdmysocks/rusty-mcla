@@ -5936,8 +5936,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         .collect();
                     // (the in-race retarget's racers, the player first: F-22530)
                     self.police.racer_uids = racers.iter().filter(|r| r.1).chain(racers.iter().filter(|r| !r.1)).map(|r| r.0).collect();
-                    let inside = racers.iter().position(|r| r.2.distance_squared(zp) < zr * zr);
-                    if let Some(line) = self.police.zone_step(lap, &racers, inside, sim_dt) {
+                    // (the first racer within the zone's radius sets it off, F-71212: police.rs `zone_set_off`)
+                    if let Some(line) = self.police.zone_step(lap, &racers, (zp, zr), sim_dt) {
                         // (the zone set off, F-71212: the request DISPATCH_REPORT_VIOLATION_STREETRACE (F-35677: dispatcher
                         // to an officer, probability 1) carries the speech line at its +28; F-14569 plays the radio line and,
                         // only when the radio manager took it, the speech)
