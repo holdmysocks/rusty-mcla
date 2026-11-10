@@ -797,6 +797,8 @@ impl Roamers {
         }
         let Some(player) = vehicles.player() else { return None };
         let (pp, pf, pname, pspeed) = (player.state.pos, player.state.forward(), player.model.name.clone(), player.state.speed());
+        // (the chassis state word +592 the flash test reads: the port's crash bits)
+        let pstate = player.crash.bits as u32;
         self.sync_timer -= dt;
         if self.sync_timer <= 0.0 {
             self.sync_timer = 1.0;
@@ -1189,7 +1191,7 @@ impl Roamers {
             }
             let rel = c.state.pos - pp;
             let d = rel.length();
-            let ok = crate::mc4::can_flash(d, pspeed - c.state.speed(), pf.dot(rel.normalize_or_zero()));
+            let ok = crate::mc4::can_flash(pstate, d, pspeed, c.state.speed(), -pf, rel);
             // (step 19d: and nothing stands between the two - a segment from 0.5 above the one
             // to 0.5 above the other, F-96972 A-94661..A-37010; the port asks the
             // city's collision)

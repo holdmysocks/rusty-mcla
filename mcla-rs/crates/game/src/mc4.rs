@@ -10043,12 +10043,16 @@ pub fn setup_perf(s: [f32; 3], m: i32) -> f32 {
     ((m as f32 - pa) / (pb - pa)).mul_add(vb - va, va)
 }
 
-/// Racer_CanFlashHookman (F-57747 -> F-96972): the hookman is within 30 m, the two
-/// speeds are within 25 of each other, and he is ahead - the player's forward axis and the
-/// direction to him make more than 0.2. (The routine's last test, a clear line from one
-/// vehicle to the other 0.5 m up, is the caller's.)
-pub fn can_flash(dist: f32, speed_gap: f32, ahead: f32) -> bool {
-    dist <= 30.0 && speed_gap.abs() <= 25.0 && ahead >= 0.2
+/// Racer_CanFlashHookman (F-57747 -> F-96972) before its line of sight: the player's chassis state word (+592, `state`)
+/// clear, the script's distance at most 30, the two speeds (+224) within 25 of each other, and the man ahead - the
+/// player's back axis (matrix row 2) and the direction to him (`rel`, his position less the player's), each normalised by
+/// the vector unit's refined reciprocal root, have a dot x x' + (y y' + z z') of at most -0.2. Each test is the routine's `ble`, not greater: a NaN passes it. (The
+/// routine's last test, a clear segment from 0.5 above the one to 0.5 above the other, is the caller's.) Checked
+/// offline: `can_flash_matches_the_original`.
+pub fn can_flash(state: u32, dist: f32, speed: f32, his_speed: f32, back: glam::Vec3, rel: glam::Vec3) -> bool {
+    use crate::physics::exact::{dot3, dot_xyz};
+    let n = |v: glam::Vec3| v * crate::aiv::vrsqrt1(dot3(v, v));
+    state == 0 && !(dist > 30.0) && !((speed - his_speed).abs() > 25.0) && !(dot_xyz(n(back), n(rel)) > -0.2)
 }
 
 pub const PRIO_FREE: i32 = -1;
@@ -17359,11 +17363,10 @@ mod tests {
         assert_eq!(setup_perf(s, 0), 0.4);
         assert_eq!(setup_perf(s, 50), 0.6);
         assert_eq!(setup_perf(s, 100), 0.9);
-        // (Racer_CanFlashHookman: 30 m, 25 of speed, 0.2 ahead)
-        assert!(can_flash(30.0, 0.0, 0.21) && can_flash(5.0, -25.0, 1.0));
-        // (step 19d: 0.2 itself is ahead - the routine fails the test with `ble` on c . dir
-        // against -0.2, F-96972 A-35936)
-        assert!(!can_flash(30.1, 0.0, 1.0) && !can_flash(10.0, 25.5, 1.0) && can_flash(10.0, 0.0, 0.2) && !can_flash(10.0, 0.0, 0.19) && !can_flash(10.0, 0.0, -1.0));
+        // (Racer_CanFlashHookman: 30 m, 25 of speed, ahead; the -0.2 edge: `can_flash_matches_the_original`)
+        let fl = |d: f32, g: f32, ahead: bool| can_flash(0, d, g, 0.0, glam::Vec3::Z, if ahead { -glam::Vec3::Z * 5.0 } else { glam::Vec3::Z * 5.0 });
+        assert!(fl(30.0, 0.0, true) && fl(5.0, -25.0, true) && !fl(30.1, 0.0, true) && !fl(10.0, 25.5, true) && !fl(10.0, 0.0, false));
+        assert!(!can_flash(0x10, 10.0, 0.0, 0.0, glam::Vec3::Z, -glam::Vec3::Z));
         // (the three races a local hookman keeps: his first, then those never run in the
         // order of the array, then the ones run longest ago)
         let hist = |r: usize| match r { 3 => Some(5), 4 => Some(1), 6 => Some(0), _ => None };
@@ -17862,8 +17865,52 @@ mod tests {
         g.mc4_clock_sounds(Some(-10));
         g.mc4_clock_sounds(Some(-20));
         assert!(!g.opt_x.arcade.d.tick_loop);
-        // (the flash test: ahead by 0.2 or more is ahead - F-96972's `ble`)
-        assert!(can_flash(30.0, 25.0, 0.2) && !can_flash(30.01, 0.0, 1.0) && !can_flash(10.0, 25.5, 1.0) && !can_flash(10.0, 0.0, 0.19));
+        // (the flash test's limits - F-96972's `ble`s)
+        let fl = |d: f32, g: f32, ahead: bool| can_flash(0, d, g, 0.0, glam::Vec3::Z, if ahead { -glam::Vec3::Z * 5.0 } else { glam::Vec3::Z * 5.0 });
+        assert!(fl(30.0, 25.0, true) && !fl(30.01, 0.0, true) && !fl(10.0, 25.5, true));
+    }
+
+    /// F-31769 run offline (tools/pad_manual_reference.py): the pad, the devices of its map's slots 4 and 5 -> manual
+    #[test]
+    fn pad_manual_matches_the_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/pad_manual_ref.txt").lines() {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(|w| w.parse().unwrap()).collect();
+            let slots: ControlSlots = [("SHIFT_UP".to_string(), (w[1], 0)), ("SHIFT_DOWN".to_string(), (w[2], 0))].into_iter().collect();
+            assert_eq!(pad_manual(&slots) as u32, o.trim().parse::<u32>().unwrap(), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 256);
+    }
+
+    /// F-96972 run offline (tools/flash_test_reference.py): the state word, the script's distance, the speeds, the back
+    /// axis and the two positions, the probe's hit -> the answer (also at B's vehicle +113), whether the probe ran and its
+    /// segment (0.5 above each)
+    #[test]
+    fn can_flash_matches_the_original() {
+        let f = |w: &str| if w == "nan" { f32::NAN } else { w.parse::<f32>().unwrap() };
+        let (mut n, mut yes) = (0, 0);
+        for l in include_str!("testdata/flash_test_ref.txt").lines() {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let w: Vec<&str> = i.split_whitespace().collect();
+            let o: Vec<&str> = o.split_whitespace().collect();
+            let v = |k: usize| glam::Vec3::new(f(w[k]), f(w[k + 1]), f(w[k + 2]));
+            let (back, pa, pb) = (v(4), v(7), v(10));
+            let pre = can_flash(w[0].parse().unwrap(), f(w[1]), f(w[2]), f(w[3]), back, pb - pa);
+            let ans = pre && w[13] == "0";
+            assert_eq!((o[0] == "1", o[1] == "1", o[2] == "1"), (ans, ans, pre), "{l}");
+            if pre {
+                let up = glam::Vec3::new(0.0, 0.5, 0.0);
+                let (s, e) = (pa + up, pb + up);
+                for (k, x) in [s.x, s.y, s.z, e.x, e.y, e.z].into_iter().enumerate() {
+                    assert_eq!(x, f(o[3 + k]), "{l}");
+                }
+            }
+            n += 1;
+            yes += ans as usize;
+        }
+        assert_eq!((n, yes), (2991, 93));
     }
 
     /// Step 20: the samples' mission records come back into the port - the log's order and
