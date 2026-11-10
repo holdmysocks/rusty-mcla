@@ -1089,6 +1089,27 @@ fn report_say(name: Option<&'static str>, prob: f32, bits: u32, mut draw: impl F
     BY_BIT.iter().find(|b| bits & b.0 != 0).map(|b| b.1).or(name)
 }
 
+/// What the tactic end F-67316 does to one cop of its array (a null entry is skipped): a car with a brain gets the brain
+/// command 0 (F-24671), its lost flag +773 = 1 and +408 = 0; with the flag's low byte set the siren stop F-75318, and when
+/// the result +24 is not 1 (arrested) the siren target 0 (F-78189) and, with no race current (F-27863), the stream unlock
+/// F-93264 - in that order. `None` when the tactic is not active (+20 clear: the end returns 0 and does nothing).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct CopEnd {
+    brain_reset: bool,
+    siren_stop: bool,
+    lights_off: bool,
+    unlock: bool,
+}
+
+fn tactic_end(active: u8, flag: u32, result: u32, racing: bool, brain: bool) -> Option<CopEnd> {
+    if active == 0 {
+        return None;
+    }
+    let flag = flag & 0xFF != 0;
+    let lights_off = flag && result != 1;
+    Some(CopEnd { brain_reset: brain, siren_stop: flag, lights_off, unlock: lights_off && !racing })
+}
+
 /// The track timer's step in the common update F-63286: +136 runs down by dt while above 0 (no clamp); the step that takes it
 /// to <= 0 sets the brains' lost flag +773 when the tactic's vt+28 answers (`answers`: the Pursuit, Double Pursuit and Arrow
 /// Trap classes give their +29, the first chase property; the pull-over 0).
@@ -1991,6 +2012,9 @@ pub struct Police {
     /// answers (the Pursuit / Double Pursuit / Arrow Trap: +29, the first chase property; the pull-over: 0), the end
     /// F-67316 sets it; the loss tests need it (F-68032: +773 && unseen > fLostTgtThresholdTime)
     lost_ok: bool,
+    /// the cops whose siren target the last tactic end set to 0 (F-67316 with its flag, not arrested): taken by the next
+    /// siren step
+    lamps_off: Vec<u32>,
     /// the lead's brain: unseen time +596, the time in the search cone +600, the last known velocity +624
     last_known_v: Vec3,
     /// each cop brain's +624: the target's velocity at its last sight-tracker tick (F-54688 - not under command 3 Pull Over
@@ -2228,6 +2252,7 @@ impl Police {
             in_race: false,
             track_t: 0.0,
             lost_ok: true,
+            lamps_off: Vec::new(),
             last_known_v: Vec3::ZERO,
             brain_tvel: HashMap::new(),
             srch: Vec::new(),
@@ -3660,7 +3685,11 @@ impl Police {
             let lit = matches!(self.heat, Heat::Pursuit | Heat::PullOver | Heat::Search | Heat::Busted) || self.ticketing;
             let dsp_lit = self.dsp.as_ref().filter(|d| d.st >= 2).map(|d| d.cop);
             // (the player's own cruiser is not one of them: its lights follow its HEADLIGHTS button - main.rs)
+            let off = std::mem::take(&mut self.lamps_off);
             for c in vehicles.cars.iter_mut().filter(|c| c.cop && !c.is_player) {
+                if off.contains(&c.uid) {
+                    c.siren = false;
+                }
                 if (lit && self.cops.contains(&c.uid)) || dsp_lit == Some(c.uid) {
                     c.siren = true;
                 } else if self.heat == Heat::None && c.siren && self.dsp.as_ref().map_or(true, |d| d.cop != c.uid) {
@@ -3706,11 +3735,11 @@ impl Police {
             if alive && wrecked && self.heat == Heat::Search {
                 // (F-22530: the tactic lost and its target damaged out (F-12032) - F-41497 ends it, silently)
                 log::info!("police: AI racer {} lost and damaged out - its tactic ends", u);
-                self.end_tactic();
+                self.end_tactic(true);
             } else if !alive {
                 // (F-22530: the target's +656 no longer 3 - the tactic ends, silently)
                 log::info!("police: AI racer {} gone - its tactic ends", u);
-                self.end_tactic();
+                self.end_tactic(true);
             } else if !self.in_race {
                 // (F-22530: no race current and the target not the player - the tactic ends at once; a tactic cop seeing
                 // the player within fVisionDist, F-43276 (no cone), starts an Arrow Trap on the player with that cop
@@ -3720,7 +3749,7 @@ impl Police {
                     self.cops.iter().filter_map(|k| vehicles.cars.iter().find(|c| c.uid == *k)).find(|c| cop_sees(world, c, p.state.pos, vision, 0.0)).map(|c| (c.uid, p.state.pos, p.state.forward(), p.state.vel))
                 });
                 log::info!("police: AI racer {} chased with no race - the tactic ends{}", u, if seer.is_some() { ", the player seen" } else { "" });
-                self.end_tactic();
+                self.end_tactic(true);
                 if let Some((cop, pos, fwd, vel)) = seer {
                     if let Some(cops) = self.engage(gpu, world, vehicles, TacKind::ArrowTrap.cops(), Some(cop), pos, fwd) {
                         let tt = self.tun.get("fTrackTgtTime", 25.0);
@@ -4136,7 +4165,7 @@ impl Police {
         if ai_target && self.in_race && hit_cop && self.kind == TacKind::ArrowTrap && self.tac_retarget && !goons {
             let first = self.units.iter().filter_map(|u| Self::unit_car(vehicles, u.id)).map(|i| vehicles.cars[i].uid).find(|u| self.cops.contains(u)).or(self.cops.first().copied());
             log::info!("police: a police car hit - the Arrow Trap on AI racer {:?} turns on the player", self.target);
-            self.end_tactic();
+            self.end_tactic(false);
             if let Some(cops) = self.engage(gpu, world, vehicles, TacKind::ArrowTrap.cops(), first, ppos, pfwd) {
                 self.start_tactic(TacKind::ArrowTrap, cops, true, t("fTrackTgtTime", 25.0));
                 self.heat = Heat::Pursuit;
@@ -4479,7 +4508,7 @@ impl Police {
                         // grace; in a race SetAllPoliceUnderground(1, 1), F-36452, for any target)
                         if ai_target {
                             // (in a race F-36452 clears the player's record as well)
-                            if self.in_race { self.clear() } else { self.end_tactic() }
+                            if self.in_race { self.clear() } else { self.end_tactic(true) }
                             event = Some(Event::LostAi);
                         } else {
                             self.clear();
@@ -4519,7 +4548,7 @@ impl Police {
                         let car = vehicles.cars.iter().find(|c| c.uid == r).map(|c| (c.is_player, c.state.pos, c.state.forward(), c.state.vel));
                         if let Some((is_player, pos, fwd, vel)) = car {
                             log::info!("police: the target lost - cruiser {} sees racer {} (player {}): a new Arrow Trap", cop, r, is_player);
-                            self.end_tactic();
+                            self.end_tactic(false);
                             self.target = (!is_player).then_some(r);
                             if let Some(cops) = self.engage(gpu, world, vehicles, TacKind::ArrowTrap.cops(), Some(cop), pos, fwd) {
                                 self.start_tactic(TacKind::ArrowTrap, cops, true, t("fTrackTgtTime", 25.0));
@@ -4570,7 +4599,7 @@ impl Police {
         if gone && matches!(self.heat, Heat::Pursuit | Heat::Search | Heat::PullOver) {
             log::info!("police: a cruiser of the {:?} is gone - the police are lost", self.kind);
             if ai_target {
-                if self.in_race { self.clear() } else { self.end_tactic() }
+                if self.in_race { self.clear() } else { self.end_tactic(true) }
                 event = Some(Event::LostAi);
             } else {
                 self.clear();
@@ -5281,9 +5310,22 @@ impl Police {
 
     /// A tactic's end that leaves the player's law record as it is (F-41497 / the tactic's vt+12(0)): the tactic on an
     /// AI racer, which has no record.
-    fn end_tactic(&mut self) {
-        // (the end F-67316 sets every cop's +773)
-        self.lost_ok = true;
+    /// The tactic's end, its vt+12 F-67316 with the caller's flag: 1 from the silent end F-41497 and the manager's result
+    /// step F-22530 (the escape / cop-gone end), 0 where a new tactic follows (the race retarget in F-22530, the hit-cop
+    /// steal in F-52240, StartTactic F-33550). The port never ends a tactic on an arrest (result 1), so `arrested` is false
+    /// at every call; the stream unlock F-93264 is not needed (the port streams no racer out).
+    fn end_tactic(&mut self, flag: bool) {
+        let racing = self.in_race;
+        for &u in &self.cops {
+            if let Some(e) = tactic_end(1, flag as u32, 0, racing, true) {
+                if e.brain_reset {
+                    self.lost_ok = true;
+                }
+                if e.lights_off {
+                    self.lamps_off.push(u);
+                }
+            }
+        }
         self.heat = Heat::None;
         self.target = None;
         self.flee_hold = 0.0;
@@ -5751,6 +5793,60 @@ mod tests {
             cases += 1;
         }
         assert_eq!((cases, rows), (1056, 12549 - 1056));
+    }
+
+    /// tools/tactic_end_reference.py: the original's tactic end F-67316 run offline (2,506 cases: the active byte, the flag word,
+    /// the result, a race current or not, the global present or not, 0 - 4 cop entries null / car / car with a brain, the
+    /// count also 0 and -1): the return, the global's byte, the callee events in order and every brain's +773 / +408 equal
+    /// what `tactic_end` gives.
+    #[test]
+    fn tactic_end_matches_the_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/tactic_end_ref.txt").lines() {
+            let (lhs, rhs) = l.split_once(" -> ").unwrap();
+            let v: Vec<&str> = lhs.split(' ').collect();
+            let num = |i: usize| v[i].parse::<u64>().unwrap();
+            let (act, flag, res, race, glob, cnt) = (num(0) as u8, num(1) as u32, num(2) as u32, num(3) != 0, num(4) != 0, num(5) as u32 as i32);
+            let kinds = &v[6..];
+            let (mut ev, mut brains) = (Vec::new(), Vec::new());
+            let mut ret = 0;
+            if let Some(_) = tactic_end(act, flag, res, race, false) {
+                ret = 1;
+                for (i, k) in kinds.iter().enumerate().take(cnt.max(0) as usize) {
+                    if *k == "n" {
+                        continue;
+                    }
+                    let e = tactic_end(act, flag, res, race, *k == "b").unwrap();
+                    if e.brain_reset {
+                        ev.push(format!("C:{i}:x0"));
+                    }
+                    if e.siren_stop {
+                        ev.push(format!("S:{i}"));
+                    }
+                    if e.lights_off {
+                        ev.push(format!("L:{i}:x0"));
+                    }
+                    if e.unlock {
+                        ev.push(format!("U:{i}"));
+                    }
+                }
+                ev.push("V56:T".into());
+                ev.push("V4:T".into());
+            }
+            for (i, k) in kinds.iter().enumerate() {
+                let reset = ret == 1 && (i as i32) < cnt && *k == "b";
+                brains.push(match *k {
+                    "b" if reset => "k1:x00000000".to_string(),
+                    "b" => "k51:x77777777".to_string(),
+                    _ => "-".to_string(),
+                });
+            }
+            let gb = if ret == 1 && glob { 0 } else { 0x5A };
+            let want = format!("r{ret} g{gb} {} | {}", if ev.is_empty() { ".".into() } else { ev.join(" ") }, if brains.is_empty() { ".".into() } else { brains.join(" ") });
+            assert_eq!(want, rhs, "{lhs}");
+            n += 1;
+        }
+        assert_eq!(n, 2506);
     }
 
     #[test]
@@ -8177,7 +8273,7 @@ mod scene_tests {
         p.score = 40.0;
         p.start_tactic(TacKind::ArrowTrap, vec![1, 2, 3], true, 25.0);
         assert_eq!(p.score, 40.0);
-        p.end_tactic();
+        p.end_tactic(true);
         assert_eq!((p.target, p.score, p.heat), (None, 40.0, Heat::None));
         p.start_tactic(TacKind::ArrowTrap, vec![1, 2, 3], true, 25.0);
         assert_eq!(p.score, 1000.0);
