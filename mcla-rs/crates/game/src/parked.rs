@@ -384,6 +384,8 @@ struct PortParkEnv<'a> {
     used: hashbrown::HashMap<String, u32>,
     tune: &'a super::traffic::Tune,
     occluders: Option<Option<crate::occluder::Selected>>,
+    /// (MCLA_PARK_DUMP) tries turned down at the type draw, the type's tests, the seen test
+    why: [u32; 3],
 }
 
 impl PortParkEnv<'_> {
@@ -410,7 +412,9 @@ impl ParkEnv for PortParkEnv<'_> {
         node_count(self.parking, self.lists[l], &self.occ, self.cruise)
     }
     fn type_draw(&mut self, rng: &mut Mwc) -> Option<usize> {
-        self.ambient.draw(self.focus, self.hour, rng)
+        let t = self.ambient.draw(self.focus, self.hour, rng);
+        self.why[0] += t.is_none() as u32;
+        t
     }
     /// (approx.: the type's pool +4 is taken as its model loaded and fewer cars of it than its instances)
     fn type_ok(&mut self, ty: usize) -> bool {
@@ -418,13 +422,17 @@ impl ParkEnv for PortParkEnv<'_> {
         let Some(m) = self.models.iter().find(|m| m.name.eq_ignore_ascii_case(name)) else { return false };
         let root = std::path::PathBuf::from(self.data_dir);
         let t = *self.amb_types.entry(m.name.clone()).or_insert_with(|| super::traffic::AmbType::load(&root, &m.name));
-        t.bound_group != 2 && !t.taxi && self.used.get(&m.name).copied().unwrap_or(0) < t.instances
+        let ok = t.bound_group != 2 && !t.taxi && self.used.get(&m.name).copied().unwrap_or(0) < t.instances;
+        self.why[1] += !ok as u32;
+        ok
     }
     fn seen(&mut self, l: usize, e: usize, _ty: usize) -> bool {
         let p = self.parking.spots[self.spot(l, e)].pos;
         let (dir, focus) = (self.data_dir, self.focus);
         let occ = self.occluders.get_or_insert_with(|| crate::occluder::city(dir).map(|c| c.select_around(focus + Vec3::Y * 1.75, OCC_RANGE)));
-        seen(self.tune, self.focus, self.view, self.mph, p, occ.as_ref())
+        let s = seen(self.tune, self.focus, self.view, self.mph, p, occ.as_ref());
+        self.why[2] += s as u32;
+        s
     }
     fn item_taken(&self, l: usize, k: usize) -> bool {
         self.items_occ[self.item(l, k) as usize]
@@ -651,8 +659,12 @@ impl Vehicles {
             used,
             tune: &sp.tune,
             occluders: None,
+            why: [0; 3],
         };
         let got = park_spawn_core(&mut env, &mut self.park_rng, &views, 60, cruise, sp.tune.parked_density, (focus.x, focus.z), sp.tune.parked_radius);
+        for (k, n) in env.why.into_iter().enumerate() {
+            self.park_why[2 + k] += n;
+        }
         match got {
             None => {}
             Some(ParkTry::Item { list, k }) => {
