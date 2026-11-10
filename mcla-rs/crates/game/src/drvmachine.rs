@@ -1139,6 +1139,9 @@ impl Tune {
 /// A clip of the driver's dictionary by name (the lookup F-66148 is case-blind).
 pub type Clip = &'static str;
 
+/// The step's hook to the anim player (`Machine::step_live`): face, pan overlay, the commands so far, the machine's view.
+pub type Live<'a> = &'a mut dyn FnMut(Option<&str>, Option<Clip>, &[Cmd], &mut Env);
+
 /// What the callbacks ask of the driver's anim player and of the game, in call order.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd {
@@ -1199,7 +1202,7 @@ const TALK_LEFT: [Clip; 4] = ["drv_gest_cas_lft_01", "drv_gest_agro_lft_01", "dr
 const TALK_RIGHT: [Clip; 4] = ["drv_gest_cas_rgt_01", "drv_gest_agro_rgt_01", "drv_gest_mild_rgt_01", "drv_gest_rspnd_rgt"];
 const MILD: [Clip; 2] = ["drv_gest_mild_lft_01", "drv_gest_mild_rgt_01"];
 const WIN: [Clip; 2] = ["drv_win", "drv_win_02"];
-const FIDGET: [Clip; 2] = ["drv_gest_fidget_01", "drv_gest_mirror"];
+pub const FIDGET: [Clip; 2] = ["drv_gest_fidget_01", "drv_gest_mirror"];
 
 /// `fsel(a, b, c)`: b when a >= 0 (a NaN takes c).
 fn fsel(a: f32, b: f32, c: f32) -> f32 {
@@ -1266,7 +1269,17 @@ impl Machine {
 
     /// F-58452: the current state's update, then up to three transitions (exit, action, enter, update).
     pub fn step(&mut self, c: &mut Ctx, k: &Tune, e: &Env, r: &Racer, out: &mut Vec<Cmd>) {
+        let mut e = *e;
+        self.step_live(c, k, &mut e, r, out, &mut |_, _, _, _| {});
+    }
+
+    /// The step with the anim player read live: the original's tests (ReadTimeRemaining F-87745, ReadAnimPhase) read the
+    /// player that the enters' plays (F-24441 -> F-67055 on the player's +44) have already changed, so a state entered on this
+    /// step is tested against its own clip. `live` is handed the face, the pan overlay and the commands so far, and refreshes
+    /// `e` from the player.
+    pub fn step_live(&mut self, c: &mut Ctx, k: &Tune, e: &mut Env, r: &Racer, out: &mut Vec<Cmd>, live: Live) {
         self.update(c, k, e, r, out);
+        live(self.face.as_deref(), self.overlay, out, e);
         for _ in 0..3 {
             let Some(&(_, to)) = transitions(self.state).iter().find(|(t, _)| test(*t, c, k, e)) else { break };
             self.exit(c, k, r, out);
@@ -1275,7 +1288,9 @@ impl Machine {
             }
             self.state = to;
             self.enter(c, k, r, out);
+            live(self.face.as_deref(), self.overlay, out, e);
             self.update(c, k, e, r, out);
+            live(self.face.as_deref(), self.overlay, out, e);
         }
     }
 

@@ -256,7 +256,7 @@ fn finish(frame: &[FrameDof], bones: &[crate::skin::Bone], out: &mut Vec<(Quat, 
 
 /// The machine's commands into the sequencer (the anim player's play / pair / five / overlay builders and its setters),
 /// the clips found by the pack's dictionary (F-99427).
-fn apply_cmds(seq: &mut da::Seq, m: &dm::Machine, cmds: &[dm::Cmd], dict: &HashMap<String, u32>, dur: &dyn Fn(da::ClipId) -> f32, car: &str) {
+fn apply_cmds(seq: &mut da::Seq, face: Option<&str>, pan: Option<dm::Clip>, cmds: &[dm::Cmd], dict: &HashMap<String, u32>, dur: &dyn Fn(da::ClipId) -> f32, car: &str) {
     let id = |n: &str| -> Option<da::ClipId> {
         let r = dict.get(&n.to_ascii_lowercase()).copied();
         if r.is_none() {
@@ -271,7 +271,7 @@ fn apply_cmds(seq: &mut da::Seq, m: &dm::Machine, cmds: &[dm::Cmd], dict: &HashM
         }
         r
     };
-    let look = da::Look { face: m.face.as_deref().and_then(id), pan_spine: None, pan: m.overlay.and_then(id), filters: true };
+    let look = da::Look { face: face.and_then(id), pan_spine: None, pan: pan.and_then(id), filters: true };
     for c in cmds {
         let req = match c {
             dm::Cmd::Play(n, b, l, nb) => id(n).map(|x| da::play(&look, dur, x, *b, *l, *nb)),
@@ -369,7 +369,7 @@ impl CarAnim {
         if !(dt >= f32::from_bits(0x3586_37bd)) && self.ctx.flags & 0xC0000 == 0 && d.g.g76 & 0xC0 != 0 {
             return out;
         }
-        let env = dm::Env { remaining: self.seq.remaining(), phase: self.seq.phase(), cutscene: d.cutscene };
+        let mut env = dm::Env { remaining: self.seq.remaining(), phase: self.seq.phase(), cutscene: d.cutscene };
         self.m.rng = *rng;
         let mut cmds = Vec::new();
         // (the racer's jaw flap F-72268 before the step, while the racer is loaded - F-90764)
@@ -378,9 +378,18 @@ impl CarAnim {
             let clip0 = self.seq.slot_clipped(0);
             self.m.jaw_flap(&racer, clip0, &mut cmds);
         }
-        self.m.step(&mut self.ctx, k, &env, &racer, &mut cmds);
+        // (the commands reach the anim player as they are made and the tests read it live: a state entered on this step
+        // sees its own clip's time left - F-58452 / F-87745)
+        let dur = |c: da::ClipId| rig.clips.get(c as usize).map_or(0.0, |c| c.anim.duration);
+        let mut done = 0;
+        let seq = &mut self.seq;
+        self.m.step_live(&mut self.ctx, k, &mut env, &racer, &mut cmds, &mut |face, pan, out, e| {
+            apply_cmds(seq, face, pan, &out[done..], &rig.dict, &dur, car);
+            done = out.len();
+            e.remaining = seq.remaining();
+            e.phase = seq.phase();
+        });
         *rng = self.m.rng;
-        apply_cmds(&mut self.seq, &self.m, &cmds, &rig.dict, &|c| rig.clips.get(c as usize).map_or(0.0, |c| c.anim.duration), car);
         // the pan's smoother (driver +48, F-36491: centre 0.5, rate 5, hold 0.5) while +112 is set, then the pan clip's time
         if self.m.overlay.is_some() {
             let (p, hold) = self.pan_p.get_or_insert((0.5, -1.0));
@@ -3223,6 +3232,15 @@ mod recorded_tests {
         let mut m = dm::Machine::new("drv_mp_01_set", [0, 0]);
         // (the human's pan overlay was set before the recordings began)
         m.overlay = Some("DRV_PAN_SWEEP_OVERLAY");
+        // (the machine's round robin counters are not recorded: a run that begins with the car standing takes the fidget
+        // counter +96 from the run's first fidget pick - the counter steps before it indexes, F-34469)
+        let first_fidget = fix.lines().filter(|l| l.starts_with("C play ")).find_map(|l| {
+            let n = l.split(' ').nth(2)?.to_ascii_lowercase();
+            dm::FIDGET.iter().position(|f| n == format!("{prefix}{f}"))
+        });
+        if let Some(j) = first_fidget {
+            m.counters[7] = j as i32 + 1;
+        }
         let mut seq = da::Seq::default();
         let dur = |c: da::ClipId| durs.get(c as usize).copied().unwrap_or(0.0);
         let mut o = Outcome { states: 0, frames: 0, bad_state: 0, bad_calls: 0, calls: 0, bad_words: Default::default(), notes: Vec::new() };
@@ -3265,12 +3283,18 @@ mod recorded_tests {
             // on a change of side)
             c.side_vals = [bf(132), bf(136), bf(140), bf(144)];
             dm::context_step(&mut c, &inp, &k, dt);
-            let env = dm::Env { remaining: seq.remaining(), phase: seq.phase(), cutscene: false };
+            let mut env = dm::Env { remaining: seq.remaining(), phase: seq.phase(), cutscene: false };
             let r = dm::Racer { human: true, mode3: fw[3] == 3, alarm: 0.0, engine_off: fw[4] & 0x20 != 0, jaw: false };
             m.rng = [fw[1], fw[2]];
             let overlay_was = m.overlay;
             let mut cmds = Vec::new();
-            m.step(&mut c, &k, &env, &r, &mut cmds);
+            let mut done = 0;
+            m.step_live(&mut c, &k, &mut env, &r, &mut cmds, &mut |face, pan, out, e| {
+                apply_cmds(&mut seq, face, pan, &out[done..], dict, &dur, "test");
+                done = out.len();
+                e.remaining = seq.remaining();
+                e.phase = seq.phase();
+            });
             let b8 = |x: f32| format!("{:08x}", x.to_bits());
             let name = |n: &str| format!("{prefix}{}", n.to_ascii_lowercase());
             let mut got: Vec<String> = Vec::new();
@@ -3295,7 +3319,6 @@ mod recorded_tests {
             if m.overlay != overlay_was {
                 got.push(format!("ovly {}", m.overlay.map_or("-".to_string(), name)));
             }
-            apply_cmds(&mut seq, &m, &cmds, dict, &dur, "test");
             seq.update(dt);
             // (compared from the first clip the machine plays: before it the sequencer's clip is not known)
             o.states += 1;
@@ -3346,7 +3369,7 @@ mod recorded_tests {
                 durs.push(a.duration);
             }
         }
-        for run in ["chase", "pov"] {
+        for run in ["chase", "pov", "idle"] {
             let Ok(fix) = std::fs::read_to_string(dir.join(format!("{run}.fix"))) else {
                 eprintln!("no {run}.fix, skipped");
                 continue;
