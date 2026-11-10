@@ -3853,8 +3853,9 @@ impl Game {
         // with the script's routes: through the nodes of the likeliest route of each stretch
         let circuit = laps > 1 || def.sub_type == "Circuit";
         let cuts_on = std::env::var("MCLA_SHORTCUTS").map_or(true, |v| v != "0");
-        let course_line = |c: &crate::racescript::Course, rnd: Option<&mut dyn FnMut() -> f32>| -> (Vec<Vec3>, usize, Vec<Shortcut>) {
-            let per_leg = c.pick(circuit, rnd);
+        // (a line from a pick of the routes: no draws, so the opponents' lines are built side by side once each has
+        // drawn its pick in turn - `course_line` below)
+        let course_build = |c: &crate::racescript::Course, per_leg: &[Vec<(Vec3, f32)>]| -> (Vec<Vec3>, usize, Vec<Shortcut>) {
             let n = c.cps.len();
             // every stop of the line, and whether it lies away from the roads
             let mut stops: Vec<(Vec3, bool)> = Vec::new();
@@ -3942,6 +3943,9 @@ impl Game {
                 cursor = to;
             }
             (line, off, out)
+        };
+        let course_line = |c: &crate::racescript::Course, rnd: Option<&mut dyn FnMut() -> f32>| -> (Vec<Vec3>, usize, Vec<Shortcut>) {
+            course_build(c, &c.pick(circuit, rnd))
         };
         let mut shortcuts: Vec<Shortcut> = Vec::new();
         let routed = course.as_ref().filter(|c| c.routes.iter().any(|r| r.weight > 0.0));
@@ -4061,6 +4065,8 @@ impl Game {
         let models: Vec<_> = if racers.is_empty() { vehicles.models.clone() } else { racers };
         // (a wager is one on one, against the car nearest to the difficulty paid for)
         let wager_model = self.wager.filter(|_| kind == RaceKind::Race).and_then(|(_, d)| models.iter().min_by_key(|m| (self.difficulty_of(&m.name) - d as i32).abs()).cloned());
+        // (each opponent's pick of the routes, drawn in turn on the generator; its line is built after the loop)
+        let mut opp_picks: Vec<(usize, Vec<Vec<(Vec3, f32)>>)> = Vec::new();
         for k in 0..n_opp {
             let (p, yaw) = def.grid[(k + 1).min(def.grid.len() - 1)];
             let mut model = wager_model.clone().unwrap_or_else(|| models[(k + 1) % models.len()].clone());
@@ -4116,21 +4122,10 @@ impl Game {
             }
             d.aggression = 0.8;
             // every opponent makes his own choice of the routes he knows
-            d.path = Some(match routed {
-                Some(c) => {
-                    let (l, _, cuts) = course_line(c, Some(&mut lcg as &mut dyn FnMut() -> f32));
-                    if l.len() > 4 {
-                        shortcuts.extend(cuts.into_iter().map(|mut s| {
-                            s.car = idx;
-                            s
-                        }));
-                        std::sync::Arc::new(l)
-                    } else {
-                        path.clone()
-                    }
-                }
-                None => path.clone(),
-            });
+            d.path = Some(path.clone());
+            if let Some(c) = routed {
+                opp_picks.push((idx, c.pick(circuit, Some(&mut lcg as &mut dyn FnMut() -> f32))));
+            }
             if kind == RaceKind::Payback {
                 // the mark runs for it
                 d.target_speed = (top * 0.7).clamp(24.0, 48.0);
@@ -4143,6 +4138,29 @@ impl Game {
             }
             vehicles.cars[idx].ai = Some(d);
             participants.push(idx);
+        }
+        // (the opponents' lines, 10 - 22 ms each in the race start's tick, built on threads: the same function of the
+        // same picks, put in in the opponents' order - docs/PERFORMANCE.md 2026-11-10 (3); MCLA_RACE_LINES_AHEAD=0: in turn)
+        if let Some(c) = routed {
+            let lines: Vec<(Vec<Vec3>, usize, Vec<Shortcut>)> = if std::env::var("MCLA_RACE_LINES_AHEAD").map_or(true, |v| v.trim() != "0") {
+                std::thread::scope(|sc| {
+                    let hs: Vec<_> = opp_picks.iter().map(|(_, per_leg)| sc.spawn(|| course_build(c, per_leg))).collect();
+                    hs.into_iter().map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+                })
+            } else {
+                opp_picks.iter().map(|(_, per_leg)| course_build(c, per_leg)).collect()
+            };
+            for ((idx, _), (l, _, cuts)) in opp_picks.iter().zip(lines) {
+                if l.len() > 4 {
+                    shortcuts.extend(cuts.into_iter().map(|mut s| {
+                        s.car = *idx;
+                        s
+                    }));
+                    if let Some(d) = vehicles.cars[*idx].ai.as_mut() {
+                        d.path = Some(std::sync::Arc::new(l));
+                    }
+                }
+            }
         }
         // (mcRacerManager's AddRacer, F-95558, of each in turn: the human racers first)
         let participants = crate::oppmgr::racer_order(&participants, |i| i == pi);
