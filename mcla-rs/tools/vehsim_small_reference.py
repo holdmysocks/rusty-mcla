@@ -5,7 +5,7 @@
 
   idle     F-86064  idle torque at an engine speed: the fallback (no idle curve) formula; the curve branch is a stub
   pedal    F-48349  torque for a pedal position (torque F-71482 / curve and idle F-86064 are stubs answering from the case)
-  init     F-23005  engine init (the real ctor F-48129 first, the curve builder F-39421's engine twin and the curves' own
+  init     F-23005  engine init (the real ctor F-48129 first, the engine's curve builder and the curves' own
                     virtual functions real, the allocator a bump pointer): +68 +72 +76 +84 +88 and the torque +20
   drag     F-31519  the aero's drag numbers from the tune (the C library pow real)
   lying    F-75615  lying on the ground: air time (slot 13, a stub) and the up row's y
