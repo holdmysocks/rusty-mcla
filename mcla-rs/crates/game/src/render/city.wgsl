@@ -4493,9 +4493,19 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             // (the lamp's normal map m, NormalSampler s2, as stored: PS_Light reads the illumination map at
             // uv + (2 m.rg - 1) x lightRefract (c69, recorded 0.15) and takes |2 m.r - 1|^5 for the spot term -
             // listing lines 9 .. 15, 20 .. 21, 39; vehicles.rs binds it in the second slot, MCLA_LAMP_FLAT a flat one)
-            let nm8s = textureSampleGrad(t_second, s_diffuse, in.uv0, uv0_dx, uv0_dy).rgb;
+            // (both fetches trilinear with no anisotropy, as the draws' fetch words have them - aniso 0, levels 0 .. 7 / 0 .. 6:
+            // the level of the longer footprint axis; MCLA_DEBUG_VIEW 63: the device sampler's anisotropic reading)
+            let iso8 = !(g.params.w > 62.5 && g.params.w < 63.5);
+            let fp8 = max(dot(uv0_dx, uv0_dx), dot(uv0_dy, uv0_dy));
+            let dn8 = vec2<f32>(textureDimensions(t_second));
+            let di8 = vec2<f32>(textureDimensions(t_diffuse));
+            let lv_n8 = max(0.5 * log2(fp8 * dn8.x * dn8.y), 0.0);
+            let lv_i8 = max(0.5 * log2(fp8 * di8.x * di8.y), 0.0);
+            var nm8s = textureSampleLevel(t_second, s_diffuse, in.uv0, lv_n8).rgb;
+            if (!iso8) { nm8s = textureSampleGrad(t_second, s_diffuse, in.uv0, uv0_dx, uv0_dy).rgb; }
             let nm8 = select(car_raw(nm8s), nm8s, car_raw_tex) * 2.0 - vec3<f32>(1.0);
-            var ill8 = textureSampleGrad(t_diffuse, s_diffuse, in.uv0 + nm8.xy * 0.15, uv0_dx, uv0_dy);
+            var ill8 = textureSampleLevel(t_diffuse, s_diffuse, in.uv0 + nm8.xy * 0.15, lv_i8);
+            if (!iso8) { ill8 = textureSampleGrad(t_diffuse, s_diffuse, in.uv0 + nm8.xy * 0.15, uv0_dx, uv0_dy); }
             if (car_raw_tex) { ill8 = vec4<f32>(srgb_decode(ill8.rgb), ill8.a); }
             let spot8 = 0.1875 + 0.625 * pow(abs(nm8.x), 5.0);
             let ix = clamp(ill8.rg, vec2<f32>(0.0), vec2<f32>(1.0));
