@@ -1973,3 +1973,7 @@ mod tests {
 #[cfg(test)]
 #[path = "artic_island_offline.rs"]
 mod offline;
+
+#[cfg(test)]
+#[path = "artic2_island_offline.rs"]
+mod offline2;

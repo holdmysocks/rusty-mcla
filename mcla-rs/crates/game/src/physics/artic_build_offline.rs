@@ -39,7 +39,8 @@ fn link_constructor_matches_the_original() {
         let l = Link { child: 0, root, mass: 70.0, moments: [1.0, 2.0, 3.0, 0.0], rest: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.5, 0.25, 0.0]] };
         let got = words(&link_block(&l));
         for &i in &touched {
-            assert_eq!(got[i], 0, "root {root}: word {i} (+{})", 4 * i);
+            // (a zero of either sign: the rest-frame copy after the constructor writes -0 at +656, as the original does)
+            assert_eq!(got[i] << 1, 0, "root {root}: word {i} (+{})", 4 * i);
         }
     }
 }

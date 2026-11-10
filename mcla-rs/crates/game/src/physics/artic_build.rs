@@ -545,7 +545,9 @@ fn rest_to_current(b: &mut [u8], rest: &[V4; 4]) {
     let yzx = |a: V4| [a[1], a[2], a[0], a[3]];
     let zxy = |a: V4| [a[2], a[0], a[1], a[3]];
     let t = vmadd(yzx(cc), zxy(w), v);
-    put_v(b, 656, vsub(t, vmul(zxy(cc), yzx(w))));
+    // vnmsubfp: -(a b - t), the sign bit flipped after the subtraction (an exact cancel gives -0, not +0)
+    let p = vsub(vmul(zxy(cc), yzx(w)), t);
+    put_v(b, 656, [-p[0], -p[1], -p[2], -p[3]]);
 }
 
 /// The link constructor (F-60898): zeroes the vectors at +16..+111, +576..+735, +880..+1007 and the words
@@ -1603,3 +1605,7 @@ mod tests {
 #[cfg(test)]
 #[path = "artic_build_offline.rs"]
 mod offline;
+
+#[cfg(test)]
+#[path = "artic2_build_offline.rs"]
+mod offline2;

@@ -2469,3 +2469,7 @@ mod tests {
 #[cfg(test)]
 #[path = "artic_body_offline.rs"]
 mod offline;
+
+#[cfg(test)]
+#[path = "artic2_body_offline.rs"]
+mod offline2;
