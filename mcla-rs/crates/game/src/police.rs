@@ -1966,6 +1966,11 @@ pub struct Police {
     /// +136: while above 0 the brains' lost flag +773 is off (F-79519; F-63286 counts it down and sets the flag
     /// again); the tactic's begin (F-82656) sets fTrackTgtTime - the manager's track byte is 1 by default (F-39756)
     track_t: f32,
+    /// the brains' lost flag +773 (the tactic's cops all alike): F-79519 clears it (the begin, SetChaseProperties, a
+    /// re-sighting in the Search), the base update F-63286 sets it when +136 runs down past 0 and the tactic's vt+28
+    /// answers (the Pursuit / Double Pursuit / Arrow Trap: +29, the first chase property; the pull-over: 0), the end
+    /// F-67316 sets it; the loss tests need it (F-68032: +773 && unseen > fLostTgtThresholdTime)
+    lost_ok: bool,
     /// the lead's brain: unseen time +596, the time in the search cone +600, the last known velocity +624
     last_known_v: Vec3,
     /// each cop brain's +624: the target's velocity at its last sight-tracker tick (F-54688 - not under command 3 Pull Over
@@ -2202,6 +2207,7 @@ impl Police {
             speech_busy: false,
             in_race: false,
             track_t: 0.0,
+            lost_ok: true,
             last_known_v: Vec3::ZERO,
             brain_tvel: HashMap::new(),
             srch: Vec::new(),
@@ -2779,6 +2785,7 @@ impl Police {
     pub fn set_chase_properties(&mut self, p: [bool; 3]) {
         if self.kind != TacKind::None {
             self.track_t = if p[0] { if self.track_t > 0.0 { self.track_t } else { 1.0 } } else { -1.0 };
+            self.lost_ok = false;
             self.tac_retarget = p[1];
         }
         self.chase_props = p;
@@ -3295,6 +3302,7 @@ impl Police {
         }
         // (the base begin: F-79519(+29 ? fTrackTgtTime : -1); +29 / +30 from the manager's +220 / +221 via the request)
         self.track_t = if kind == TacKind::PullOver || !self.chase_props[0] { -1.0 } else { track };
+        self.lost_ok = false;
         self.tac_retarget = self.chase_props[1];
         if kind != TacKind::Dispatch {
             self.dsp = None;
@@ -3739,14 +3747,15 @@ impl Police {
         if self.heat == Heat::Pursuit && !matches!(prev_heat, Heat::Pursuit | Heat::Search | Heat::Busted) {
             self.last_known_v = tvel;
         }
-        // (F-63286: +136 runs down; at 0 the brains' lost flag +773 is set again)
+        // (F-63286: +136 runs down while above 0; when it passes 0 the brains' lost flag +773 is set if the tactic's
+        // vt+28 answers - the Pursuit classes' +29, the pull-over's 0)
         if self.track_t > 0.0 {
             self.track_t -= dt;
-            if self.track_t <= 0.0 {
-                self.track_t = 0.0;
+            if self.track_t <= 0.0 && self.chase_props[0] && matches!(self.kind, TacKind::Pursuit | TacKind::PursuitDbl | TacKind::ArrowTrap) {
+                self.lost_ok = true;
             }
         }
-        let track_flag = self.track_t <= 0.0;
+        let track_flag = self.lost_ok;
         let pfwd = p.state.forward();
         let speed = pvel.length();
         let mph = speed * MPH;
@@ -4423,9 +4432,11 @@ impl Police {
                     } else if self.search < 2.0 {
                         // (F-79519 with 1 s: +773 off for a second; the clock goes on)
                         self.track_t = 1.0;
+                        self.lost_ok = false;
                         self.search += dt;
                     } else {
                         self.track_t = 20.0;
+                        self.lost_ok = false;
                         if !self.goons {
                             self.radio_cue.push(if self.search / t("fSearchMaxTime", 35.0) < 0.5 { "REPORT_SUSPECT_SPOTTED" } else { "REPORT_SUSPECT_REACQUIRE" }.into());
                         }
@@ -5255,6 +5266,8 @@ impl Police {
     /// A tactic's end that leaves the player's law record as it is (F-41497 / the tactic's vt+12(0)): the tactic on an
     /// AI racer, which has no record.
     fn end_tactic(&mut self) {
+        // (the end F-67316 sets every cop's +773)
+        self.lost_ok = true;
         self.heat = Heat::None;
         self.target = None;
         self.flee_hold = 0.0;
