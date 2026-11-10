@@ -815,6 +815,9 @@ pub struct Game {
     pub hangout_slow: crate::mc4::SlowMo,
     /// real seconds since the player crossed the line (the race-end panels, `RACE_END_*`)
     pub race_end_t: Option<f32>,
+    /// a beat me there run's EndOfRaceSequence waits: WAITUNWARPED(200), then the panel's WAITUNWARPED(2200), and how
+    /// many are over (`bmt_end_ui`)
+    pub bmt_waits: Option<(crate::racescript::ScriptWait, crate::racescript::ScriptWait, u8)>,
     /// how many times a race's end sequence has run (RaceOver.sch's EndOfRaceSequence: its splash cleanup and the
     /// player's line, `end_race_speech`)
     pub end_seq_n: u32,
@@ -1576,6 +1579,7 @@ impl Game {
             race_slow_wait: None,
             hangout_slow: crate::mc4::SlowMo::default(),
             race_end_t: None,
+            bmt_waits: None,
             end_seq_n: 0,
             race_dmg_out: false,
             race_wreck_over: false,
@@ -12699,11 +12703,26 @@ impl Game {
     fn bmt_end_ui(&mut self, ctx: &egui::Context, up: bool, down: bool, enter: bool) -> MenuAction {
         let Some(mut e) = self.bmt_end.clone() else { return MenuAction::None };
         let dt = ctx.input(|i| i.stable_dt).min(0.1);
+        // (a new run's end: its first frame is the script's call of the first wait)
+        if e.t == 0.0 {
+            self.bmt_waits = None;
+        }
         e.t += dt;
         // (test hook MCLA_BMT_HOLD: the clock held at 1 s, for a screenshot of the panel)
-        if std::env::var("MCLA_BMT_HOLD").is_ok() {
+        let hold = std::env::var("MCLA_BMT_HOLD").is_ok();
+        if hold {
             e.t = e.t.min(1.0);
         }
+        // (the script's waits as the WAIT natives run them, by the frame's unscaled step - racescript::ScriptWait)
+        let (w1, w2, ph) = self.bmt_waits.get_or_insert((crate::racescript::ScriptWait::new(200), crate::racescript::ScriptWait::new(2200), 0));
+        if *ph == 0 && w1.step(dt, false) {
+            *ph = 1;
+        }
+        if *ph == 1 && !hold && w2.step(dt, false) {
+            *ph = 2;
+        }
+        let (panel, over) = (*ph >= 1, *ph >= 2);
+        let left = if w2.on { (w2.ms as f32 - w2.timer.max(0.0)) / 1000.0 } else { w2.ms as f32 / 1000.0 };
         // (test hook MCLA_BMT_SHOT=<seconds>: the screenshot that long after the line, at 60 frames a second)
         static SHOT_FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let frames = SHOT_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -12712,8 +12731,7 @@ impl Game {
         }
         let s = |k: &str, f: &str| self.career.strings.get(k).filter(|v| !v.contains('<')).map(|v| v.to_uppercase()).unwrap_or_else(|| f.to_string());
         if !e.wrecked {
-            let end = Self::RACE_END_MENU;
-            if e.t >= end || self.flash_menu.is_none() {
+            if over || self.flash_menu.is_none() {
                 self.place_splash = None;
                 self.bmt_end = None;
                 self.bmt_go = Some((e.race, e.hookman));
@@ -12723,8 +12741,8 @@ impl Game {
                 return MenuAction::None;
             }
             self.bmt_end = Some(e.clone());
-            if e.t >= Self::RACE_END_PANEL {
-                self.place_splash = Some((e.place, end - e.t));
+            if panel {
+                self.place_splash = Some((e.place, left));
                 self.place_tied = false;
                 self.results_movie(ctx, &[], 0);
             }

@@ -18,6 +18,67 @@ use glam::{Quat, Vec3};
 use mcla_formats::sco::{Call, Val};
 use std::path::{Path, PathBuf};
 
+/// A scripted wait as the script VM's WAIT natives run it (D56: the scripts are read, not run, but the time a wait lasts
+/// is the original's): WAIT F-99099 steps by the frame's scaled step, WAITUNWARPED F-36273 by the unscaled one,
+/// WAITUNPAUSED F-77483 by the scaled step and not while the game is paused. The call that reaches the wait starts it
+/// (timer 0, nothing added); every later frame adds step x 1000 to the f32 timer (the product exact, one rounding), and
+/// the wait is over in the frame whose truncated timer (fctiwz: NaN the lowest int) is at least the ms; a negative timer
+/// ends it at once. So at 30 frames a second WAIT(1000) lasts 31 frames, WAIT(250) 8; at 60 WAIT(500) lasts 31.
+/// Checked against the natives run offline (`tools/script_wait_reference.py`, test `script_wait_matches_the_original`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScriptWait {
+    pub ms: i32,
+    pub timer: f32,
+    /// the start call has been made (thread state 1)
+    pub on: bool,
+}
+
+impl ScriptWait {
+    /// A wait of `ms`, not yet started: the first `step` is the script's call.
+    pub fn new(ms: i32) -> Self {
+        ScriptWait { ms, timer: 0.0, on: false }
+    }
+
+    /// One frame of the wait with that frame's step (seconds: the scaled or unscaled one as the variant takes) and, for
+    /// WAITUNPAUSED, whether the game is paused (pass false for the others). True once the wait is over; the script
+    /// goes on in the same frame.
+    pub fn step(&mut self, dt: f32, paused: bool) -> bool {
+        if !self.on {
+            self.timer = 0.0;
+            self.on = true;
+            return false;
+        }
+        if self.timer < 0.0 {
+            self.on = false;
+            return true;
+        }
+        if paused {
+            return false;
+        }
+        self.timer = (dt as f64 * 1000.0 + self.timer as f64) as f32;
+        let t = if self.timer.is_nan() { i32::MIN } else { self.timer as i32 };
+        if t < self.ms {
+            return false;
+        }
+        self.on = false;
+        true
+    }
+
+    /// The frames a wait of `ms` lasts at a constant step `dt` (from the frame after the call to the one it ends in).
+    pub fn frames(ms: i32, dt: f32) -> u32 {
+        let mut w = ScriptWait::new(ms);
+        w.step(dt, false);
+        let mut n = 1;
+        while !w.step(dt, false) {
+            n += 1;
+            if n > 1_000_000 {
+                break;
+            }
+        }
+        n
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Shape {
     /// fires this many seconds into the race (negative: before the start)
@@ -1027,6 +1088,39 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The three WAIT natives (F-99099, F-36273, F-77483) run offline as generated (tools/script_wait_reference.py): each
+    /// case's frames (run-length: count, step, paused) into ScriptWait from the start call; the frame it ends in and the
+    /// timer's bits equal.
+    #[test]
+    fn script_wait_matches_the_original() {
+        let text = include_str!("testdata/script_wait_ref.txt");
+        let mut n = 0;
+        for line in text.lines() {
+            let (case, want) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = case.split(' ').collect();
+            let v: u32 = w[0].parse().unwrap();
+            let mut sw = ScriptWait::new(w[1].parse().unwrap());
+            let k: usize = w[2].parse().unwrap();
+            let mut f = 0i32;
+            let mut done = -1i32;
+            for r in 0..k {
+                let c: u32 = w[3 + 3 * r].parse().unwrap();
+                let dt: f32 = w[4 + 3 * r].parse().unwrap();
+                let p = w[5 + 3 * r] != "0";
+                for _ in 0..c {
+                    if done < 0 && sw.step(dt, v == 2 && p) && f > 0 {
+                        done = f;
+                    }
+                    f += 1;
+                }
+            }
+            assert_eq!(format!("{} {}", done, sw.timer.to_bits()), want, "{}", case);
+            n += 1;
+        }
+        assert_eq!(n, 1600);
+        assert_eq!((ScriptWait::frames(1000, 1.0 / 30.0), ScriptWait::frames(250, 1.0 / 30.0), ScriptWait::frames(500, 1.0 / 60.0)), (31, 8, 31));
+    }
 
     /// The global triggers' fire rule (global_triggers.md 2-3): a line fires for whichever racer crosses it, once until
     /// the next reset; a radius fires only for the player, and another racer inside consumes it unfired; brushing past a
