@@ -3105,14 +3105,28 @@ impl TopArrowTune {
 /// display, 4:3 otherwise).
 /// (approx.) The original asks the console whether the display is wide; here a window wider
 /// than 3:2 counts as wide.
+/// (approx.) The screen's line scale (its +652) is taken as 1 and the centre column (the control's +1680) as half the
+/// width; the rest is F-29366's arithmetic (`top_arrow_blit`).
 pub fn top_arrow_rect(t: &TopArrowTune, width: f32, height: f32) -> [f32; 4] {
     let (cols, lines) = (width.trunc(), height.trunc());
-    let k = (t.blit_scale * lines * (1.0 / 720.0)).max(1.0);
     let shape = cols / lines.max(1.0);
     let display = if shape > 1.5 { 16.0 / 9.0 } else { 4.0 / 3.0 };
-    let half = (shape / display * k * 128.0).trunc();
-    let y = t.blit[1] * lines + lines * 0.075;
-    [cols * 0.5 - half, y.trunc(), 2.0 * half, (y + k * 256.0).trunc() - y.trunc()]
+    let [l, top, r, bottom] = top_arrow_blit(lines as i32, 1.0, t.blit[1], t.blit_scale, shape / display, cols * 0.5);
+    [l, top, r - l, bottom - top]
+}
+
+/// F-29366's rectangle (left, top, right, bottom) from the words it reads: the screen's lines (+692) and line scale (+652),
+/// the control's BlitPosition.y (+1668), BlitScale (+1672), shape ratio (+1676) and centre column (+1680).
+/// n = trunc(lines x scale); k = BlitScale x n x (1 / 720), at least 1 (fsel: a NaN keeps it); half = trunc(ratio x k x 128);
+/// top = fmadds(BlitPosition.y, n, n x 0.075); trunc(top) and trunc(top + 256 k) as the rows, centre -/+ half as the columns.
+/// Checked offline: `top_arrow_blit_matches_the_original`.
+pub fn top_arrow_blit(lines: i32, scale: f32, blit_y: f32, blit_scale: f32, ratio: f32, centre: f32) -> [f32; 4] {
+    let n = ((lines as f32) * scale) as i32 as f32;
+    let f2 = (blit_scale * n) * 0.0013888889;
+    let k = if 1.0 - f2 >= 0.0 { 1.0 } else { f2 };
+    let half = ((ratio * k) * 128.0) as i32 as f32;
+    let top = blit_y.mul_add(n, n * 0.075);
+    [centre - half, top as i32 as f32, centre + half, (top + k * 256.0) as i32 as f32]
 }
 
 /// The arrow's model (`resources/ui/meshes/direction_arrow`, shader "Arrow"): its corners,
@@ -19828,6 +19842,25 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 3000);
+    }
+
+    /// F-29366 run offline (tools/arrow_rect_reference.py, testdata/arrow_rect_ref.txt: 4,000 screens - common and odd line
+    /// counts, line scales, BlitPosition.y and BlitScale of the tune and random, shape ratios and centres): the rectangle it
+    /// hands the quad draw equal bit for bit.
+    #[test]
+    fn top_arrow_blit_matches_the_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/arrow_rect_ref.txt").lines() {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().skip(1).map(|x| x.parse().unwrap()).collect();
+            let f = |k: usize| f32::from_bits(w[k]);
+            let lines: i32 = i.split_whitespace().next().unwrap().parse().unwrap();
+            let got = top_arrow_blit(lines, f(0), f(1), f(2), f(3), f(4)).map(f32::to_bits);
+            let want: Vec<u32> = o.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            assert_eq!(got.to_vec(), want, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
     }
 
     /// The game's level frame (rows right, up, back from the heading) through `top_arrow_frame` gives the port's earlier
