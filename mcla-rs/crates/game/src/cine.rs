@@ -510,6 +510,30 @@ pub const SCENE_FADES: &[(&str, bool, f32, f32)] = &[
     ("cut_cop_fidget_bike", true, 6.3, 1.0),
 ];
 
+/// The scenes whose description record names a set dressing (word +12, handed to core_rolling_prototype: 0x8d1 calls
+/// CineScript_Prop_LoadSetDressing F-58434 -> F-19063 with it and the flag 1 when it is not "", then waits for its load,
+/// 0x958): (scene, set). The flag 1 makes FinishScene's unload F-65984 -> F-54343(1) take it at the scene's end
+/// (`World::load_dressing`). From work/driverlight/gen (`compare.py`, docs/reference/cutscenes/set_dressing.md).
+pub const SCENE_DRESSING: &[(&str, &str)] = &[
+    ("cut_intro", "cut_intro_set_items"),
+    ("story/cut_story_bestof_sh_05", "cut_pantry_set_items"),
+    ("story/cut_story_city_champ", "cut_hk1_22_set_items"),
+    ("story/cut_story_city_champ_night", "cut_hk1_22_set_items"),
+    ("story/cut_story_district_champs", "cut_hk1_22_set_items"),
+    ("story/cut_story_district_champs_night", "cut_hk1_22_set_items"),
+    ("story/cut_story_race_sh_01", "cut_intro_set_items"),
+    ("story/cut_story_races_in_beach", "cut_hk3_8_set_items"),
+];
+
+/// FIND_SH_02C_CORE's own set dressing (`Story/0xb27d6524` 0xb93: LoadSetDressing with the flag 0 before the scene, so
+/// FinishScene leaves it; UnloadSetDressing F-50072 at 0xfdf once its fade down after the scene is full).
+pub const FIND_02C_DRESSING: (&str, &str) = ("story/cut_story_find_sh_02c", "cut_hk2_24_set_items");
+
+/// The set dressing a scene's description names (`SCENE_DRESSING`).
+pub fn scene_dressing(scene: &str) -> Option<&'static str> {
+    SCENE_DRESSING.iter().find(|(s, _)| s.eq_ignore_ascii_case(scene)).map(|(_, d)| *d)
+}
+
 /// The scenes whose script names a stream other than the scene's own name (the description's +8,
 /// docs/reference/cutscenes/generated_description.md): the payback goons' walk-ups, whose objects are
 /// CUTSCENES_CUT_PAYBACK_GOONS_WALKUP1 / 2 (game.dat; streams CUT_MISC_PAYBACK_GOONS_WALKUP1 / 2).

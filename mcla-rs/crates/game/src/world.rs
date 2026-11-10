@@ -1048,6 +1048,8 @@ fn merge_batches(batches: Vec<CpuBatch>) -> Vec<CpuBatch> {
 /// detail distance, but never beyond this (x the DETAIL LEVEL option) - the paused lens scale takes the detail distance past it.
 const STREAM_DIST: f32 = 600.0;
 pub const SET_ID: usize = 1 << 40;
+/// the scene set dressing's one slot among the interior sets (`World::load_dressing`)
+pub const DRESS_ID: usize = SET_ID + 8;
 /// ids of the cells of the city's own collision in the collider
 pub const BOUND_ID: usize = 1 << 41;
 
@@ -1983,6 +1985,35 @@ impl World {
             let s = (*id - FAR_ID) % FAR_SLOTS;
             (if s == FAR_SLOTS - 1 { usize::MAX } else { s }, gs)
         })
+    }
+
+    /// A scene's set dressing loaded now (mcCinePropMgr, F-46322: one slot). LoadSetDressing F-19063 takes a name only
+    /// while the slot is empty (state 0); its machine F-63463 finds the name, loads it and holds it at state 3, where the
+    /// render pass F-51002 draws its drawable with the identity matrix: world coordinates, no bound. The scene's clock starts
+    /// only after the load (core_rolling_prototype 0x958), so it is read here at once, not on a worker. False when the
+    /// slot is taken or the file is missing.
+    pub fn load_dressing(&mut self, gpu: &mut Gpu, name: &str) -> bool {
+        if self.sets.contains_key(&DRESS_ID) {
+            return false;
+        }
+        let path = self.assets.path("resources/cutsceneitems").join(format!("{}.r102", name.to_ascii_lowercase()));
+        match decode_set(DRESS_ID, &path) {
+            Ok(cs) => {
+                let gs = self.upload(gpu, cs);
+                log::info!("set dressing {}: {} batches, {} triangles", name, gs.batches.len(), gs.tris);
+                self.sets.insert(DRESS_ID, gs);
+                true
+            }
+            Err(e) => {
+                log::warn!("set dressing {}: {}", name, e);
+                false
+            }
+        }
+    }
+
+    /// The set dressing's unload (F-54343 sets the slot's request; the machine releases the drawable, state 0).
+    pub fn drop_dressing(&mut self) {
+        self.sets.remove(&DRESS_ID);
     }
 
     /// Load an interior set in the background.

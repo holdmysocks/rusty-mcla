@@ -643,6 +643,10 @@ struct App {
     /// 1 the fade down asked, 2 the fade up, then Racer_PlayIgnition and Racer_Activate (0x1322 / 0x132c)
     f02c_fade: u8,
     f02c_mask: boomcam::CutMask,
+    /// the scene set dressing in the prop manager's one slot (`World::load_dressing`): the scene that loaded it and
+    /// its flag (true: FinishScene takes it); `scene_set_unload`: a script's UnloadSetDressing asked (F-50072)
+    scene_set: Option<(String, bool)>,
+    scene_set_unload: bool,
     /// a scene's own fade down and up (`cine::SCENE_FADES`)
     scene_fade: boomcam::CutMask,
     /// the opening's `Graphics_WarpToTimeOfDay(17, 100)`: the hour aimed at, while the clock is moved there
@@ -1588,6 +1592,8 @@ impl App {
             audio_trace_t: 0.0,
             intro_mask: Default::default(),
             f02c_fade: 0,
+            scene_set: None,
+            scene_set_unload: false,
             f02c_mask: Default::default(),
             scene_fade: Default::default(),
             intro_tod: None,
@@ -8456,6 +8462,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if self.f02c_mask.full() {
                 self.f02c_mask.release(1.0);
                 self.f02c_fade = 2;
+                // (0xfdf: UnloadSetDressing('cut_hk2_24_set_items') under the black)
+                self.scene_set_unload = true;
             }
         } else if self.f02c_fade == 2 && !self.f02c_mask.is_on() {
             self.f02c_fade = 0;
@@ -8833,6 +8841,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.police.create_units(self.game.mc4_police_unlocked());
         }
 
+        self.dressing_tick(&mut gpu, &mut world);
         self.vehicles.finish_tick(sim_dt);
         self.input.pending_keys.clear();
         self.world = Some(world);
@@ -14403,6 +14412,36 @@ impl App {
         let over_black = self.game.movie.is_some() || (self.intro_stage == 2 && self.cuts.playing.is_some());
         self.game.intro_mask = if over_black { 0.0 } else { self.intro_mask.update(dt) };
         self.game.opening_black = self.intro_stage == 4 || (self.intro_stage == 3 && !self.game.fresh_game);
+    }
+
+    /// The scenes' set dressing (docs/reference/cutscenes/set_dressing.md): a scene whose description names one loads it
+    /// at its start (core_rolling_prototype 0x8e4, flag 1: FinishScene F-65984 -> F-54343(1) unloads it at the scene's
+    /// end); FIND_SH_02C's core loads its own with the flag 0 and unloads it after its fade down (`scene_set_unload`). The
+    /// slot takes no second set while one is loaded (F-19063). Drawn in world coordinates (F-51002), with no bound.
+    fn dressing_tick(&mut self, gpu: &mut Gpu, world: &mut World) {
+        let now = self.cine.playing.as_ref().map(|s| s.name.clone());
+        let ended = self.scene_set.as_ref().is_some_and(|(scene, auto)| *auto && now.as_deref() != Some(scene.as_str()));
+        if ended || std::mem::take(&mut self.scene_set_unload) {
+            world.drop_dressing();
+            self.scene_set = None;
+        }
+        let Some(scene) = now else { return };
+        if self.scene_set.is_some() {
+            return;
+        }
+        let pick = if let Some(set) = cine::scene_dressing(&scene) {
+            Some((set, true))
+        } else if scene.eq_ignore_ascii_case(cine::FIND_02C_DRESSING.0) {
+            Some((cine::FIND_02C_DRESSING.1, false))
+        } else {
+            None
+        };
+        // (taken by the scene even when the slot was full or the file is missing: it is not asked again;
+        // MCLA_DRESS_OLD=1: none, as before)
+        if let Some((set, auto)) = pick.filter(|_| std::env::var_os("MCLA_DRESS_OLD").is_none()) {
+            world.load_dressing(gpu, set);
+            self.scene_set = Some((scene, auto));
+        }
     }
 
     /// The cine scenes' lamp switches (vehicles.rs `CINE_LAMP_EVENTS`): at a scene's start every car's switch
