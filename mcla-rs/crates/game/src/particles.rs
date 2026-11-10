@@ -307,6 +307,10 @@ pub struct Particles {
     spawned: Vec<Effect>,
     playing: usize,
     frame: u64,
+    /// the last step's time and the effect instances' moves in it (`play` by their emitters, `update` takes them):
+    /// what `prepare` draws the step's movement back by at the frame's render alpha
+    last_dt: f32,
+    last_moved: Vec<(u32, Vec3)>,
     next_id: u32,
     /// `MCLA_FX_STANDIN=1`: the effect rules are not played (the callers fall back)
     standin: bool,
@@ -695,6 +699,8 @@ impl Particles {
             spawned: Vec::new(),
             playing: 0,
             frame: 0,
+            last_dt: 0.0,
+            last_moved: Vec::new(),
             next_id: 1,
             standin: std::env::var("MCLA_FX_STANDIN").map_or(false, |v| v == "1"),
             hour: 12.0,
@@ -1617,6 +1623,8 @@ impl Particles {
             self.coll.retain(|id, _| alive.contains(id));
         }
         self.step_rule_particles(&fx, dt, &moved, born_from);
+        self.last_dt = dt;
+        self.last_moved = moved;
         if self.frame % 60 == 0 && std::env::var("MCLA_FX_LOG").is_ok() {
             let names: Vec<String> = self.effects.iter().map(|e| format!("{} t {:.2} kids {} em {}", fx.effects[e.effect].name, e.t, e.kids.len(), e.em.iter().filter(|m| m.playing).count())).collect();
             log::info!("fx: dt {:.4} effects {} particles {} first {:?}: {:?}", dt, self.effects.len(), self.rule_list.len(), self.rule_list.first().map(|p| (p.pos, p.t, p.ts)), names);
@@ -1641,7 +1649,72 @@ impl Particles {
     }
 
     /// Build the instance buffer (sorted by sheet, far to near inside a sheet).
-    pub fn prepare(&mut self, gpu: &Gpu, cam: Vec3) {
+    /// The frame's particles drawn where they were at the frame's render alpha (vehicles.rs `render_alpha`, as the cars'
+    /// `render_pose`): each between its place before the last step and after it - the effect list's particles
+    /// `prev` -> `pos` (their instance's move included), the port's own back by their velocity over the step, the effect
+    /// instances back by their move in it (the flames at a moving car's exhaust started a step's travel ahead of the
+    /// drawn car: up to 0.93 m at 200 km/h - docs/PERFORMANCE.md 2026-11-09 (10)). The places are put back after the
+    /// draw's lists are made; alpha 1 (fixed-step runs, MCLA_DRAW_HELD) draws them as they are.
+    pub fn prepare(&mut self, gpu: &Gpu, cam: Vec3, alpha: f32) {
+        let back = 1.0 - alpha.clamp(0.0, 1.0);
+        if back <= 0.0 {
+            self.prepare_at(gpu, cam);
+            return;
+        }
+        // (the places kept as they are and put back by value: the simulation goes on bit for bit)
+        let rule: Vec<(Vec3, Vec3)> = self.rule_list.iter().map(|p| (p.pos, p.prev)).collect();
+        let own: Vec<Vec3> = self.list.iter().map(|p| p.pos).collect();
+        fn keep(e: &Effect, out: &mut Vec<Vec3>) {
+            out.push(e.pos);
+            for k in &e.kids {
+                keep(k, out);
+            }
+        }
+        fn shift(e: &mut Effect, moved: &[(u32, Vec3)], parent: Vec3, back: f32) {
+            let d = moved.iter().find(|m| m.0 == e.id).map_or(parent, |m| -m.1 * back);
+            e.pos += d;
+            for k in e.kids.iter_mut() {
+                shift(k, moved, d, back);
+            }
+        }
+        fn put(e: &mut Effect, at: &mut std::slice::Iter<Vec3>) {
+            if let Some(v) = at.next() {
+                e.pos = *v;
+            }
+            for k in e.kids.iter_mut() {
+                put(k, at);
+            }
+        }
+        let mut inst = Vec::new();
+        for e in &self.effects {
+            keep(e, &mut inst);
+        }
+        for p in self.rule_list.iter_mut() {
+            let d = (p.prev - p.pos) * back;
+            p.pos += d;
+            p.prev += d;
+        }
+        let step = self.last_dt * back;
+        for p in self.list.iter_mut() {
+            p.pos -= p.vel * step;
+        }
+        for e in self.effects.iter_mut() {
+            shift(e, &self.last_moved, Vec3::ZERO, back);
+        }
+        self.prepare_at(gpu, cam);
+        for (p, (pos, prev)) in self.rule_list.iter_mut().zip(rule) {
+            (p.pos, p.prev) = (pos, prev);
+        }
+        for (p, pos) in self.list.iter_mut().zip(own) {
+            p.pos = pos;
+        }
+        let mut at = inst.iter();
+        for e in self.effects.iter_mut() {
+            put(e, &mut at);
+        }
+    }
+
+    fn prepare_at(&mut self, gpu: &Gpu, cam: Vec3) {
         self.depth_bg = Some(gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("particle depth"),
             layout: &gpu.particle_depth_layout,

@@ -11872,7 +11872,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let k = (d.light + d.ambient).lerp(Vec3::ONE, d.light_w);
             [d.fog_min[0] * k.x, d.fog_min[1] * k.y, d.fog_min[2] * k.z, d.fog_min[3], d.fog_height]
         });
-        self.fx.prepare(&gpu, self.cam.pos);
+        self.fx.prepare(&gpu, self.cam.pos, if std::env::var_os("MCLA_DRAW_HELD").is_some() { 1.0 } else { self.vehicles.render_alpha });
         // (the rain and the lamps' cones in it, as the original draws them - rain.rs)
         rain::prepare(&gpu, &rain::Frame { cam_pos: globals.cam_pos, inv_view_proj: globals.inv_view_proj, rain: self.rain_amount(), light: self.sky_now().tod.map(|t| (t.light + t.ambient, t.nfl)), car: self.vehicles.player().filter(|_| self.drive).map(|c| c.render_pose(self.vehicles.render_alpha).pos), lamps: &self.props.prop_lamps, weather: match self.weather { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 }, next: self.sky_next.as_ref().map(|(_, w, f)| (match w { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 }, *f)), hour: self.time_of_day, collider: Some((&world.collider, &world.set_collider)) });
         // (the drivers and riders are mcCharacterPlus instances: path A as the scenes' cast, by day and at night -
