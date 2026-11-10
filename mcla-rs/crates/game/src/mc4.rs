@@ -12474,6 +12474,25 @@ pub fn tutorial_keys(form: u32) -> Option<(String, String)> {
     TUTORIAL_FORMS.iter().find(|f| f.0 == form).map(|f| (format!("tutorial_{}_title", f.1), format!("tutorial_{}_desc", f.1)))
 }
 
+/// EndOfRaceSequence's two waits after the line (RaceOver.sch): WAITUNWARPED(200), forms 60 and 54 up, then the panel's
+/// WAITUNWARPED(2200) (4400 with a team game's form 58, F-34603), the race-over menu - each as the native runs it
+/// (`racescript::ScriptWait`, by the real frame time). `ph` how many are over, `panel_at` / `menu_at` the race end's clock
+/// (`Game::race_end_t`) in the frames they ended.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RaceEndWaits {
+    pub w1: crate::racescript::ScriptWait,
+    pub w2: crate::racescript::ScriptWait,
+    pub ph: u8,
+    pub panel_at: f32,
+    pub menu_at: f32,
+}
+
+impl RaceEndWaits {
+    pub fn new(second_ms: i32) -> Self {
+        RaceEndWaits { w1: crate::racescript::ScriptWait::new(200), w2: crate::racescript::ScriptWait::new(second_ms), ph: 0, panel_at: 0.0, menu_at: 0.0 }
+    }
+}
+
 /// The perspective form's slow motion (form 108, +960 .. +984; F-84653 / F-82413).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SlowMo {
@@ -12573,8 +12592,8 @@ pub enum SstTut {
     Idle,
     /// 0x69..0xe3: every 100 ms (WAITUNPAUSED) until racing and the turbo level > 0.3
     Charge,
-    /// 0xe8..0x14e: AudioManager_SetActiveTimeSlow(1), the ease to pause (form 108, 1 / 0.5 s), 500 ms
-    Ease(f32),
+    /// 0xe8..0x14e: AudioManager_SetActiveTimeSlow(1), the ease to pause (form 108, 1 / 0.5 s), WAITUNWARPED(500)
+    Ease(crate::racescript::ScriptWait),
     /// 0x156..0x22d: form 78 with TUTORIAL_SST_INGAME (drv_mb_04_set, PLAYER) until it is closed
     Box78,
     /// 0x2dc..0x356: the ease from pause done; every 100 ms until racing and the level > 0.99
@@ -12629,7 +12648,7 @@ pub struct S23Live {
     /// Game/Career/SST_Tutorial (`SstTut`), the race seen last frame, the script's 100 ms poll
     pub sst_tut: SstTut,
     pub sst_race_was: bool,
-    pub sst_poll: f32,
+    pub sst_poll: crate::racescript::ScriptWait,
     /// (step 23b) in a gas station last frame
     pub station_was: bool,
 }
@@ -12941,10 +12960,22 @@ impl Game {
         self.opt_x.s23.run.as_ref().map_or(false, |r| r.phase == 2 && !r.modeless && tutorial_keys(r.form).map_or(false, |k| k.0 == title))
     }
 
+    /// Seconds since EndOfRaceSequence's WAITUNWARPED(200) after the line ended (forms 60 and 54 up), while the race's
+    /// end runs (`RaceEndWaits`).
+    pub fn race_end_panel(&self) -> Option<f32> {
+        self.race_end_t.filter(|_| self.race_end_w.ph >= 1).map(|t| t - self.race_end_w.panel_at)
+    }
+
+    /// Seconds since the panel's WAITUNWARPED(2200) (4400 with a team game's form 58) ended: the race-over menu.
+    pub fn race_end_menu(&self) -> Option<f32> {
+        self.race_end_t.filter(|_| self.race_end_w.ph >= 2).map(|t| t - self.race_end_w.menu_at)
+    }
+
     /// The race's end after the line, in real seconds (EndOfRaceSequence and its forms, decoded
     /// 2026-10-19 and timed against a recording of the original - CAREER_RACES.md): after
     /// WAITUNWARPED(200) forms 60 (mcEndOfRaceForm) and 54 (mcStandingsForm, the place) come up
-    /// and the camera swings to the standings form's PauseCamera3.
+    /// and the camera swings to the standings form's PauseCamera3. Nominal: the waits themselves run as the natives do
+    /// (`RaceEndWaits`, `race_end_panel` / `race_end_menu`); these seed the slow-motion and splash markers.
     pub const RACE_END_PANEL: f32 = 0.2;
     /// mcEndOfRaceForm's update (F-79093) pauses the game when its own clock reaches 1 s.
     pub const RACE_END_FREEZE: f32 = 1.2;
@@ -12982,14 +13013,33 @@ impl Game {
             return;
         }
         if let Some(t) = self.race_end_t.as_mut() {
-            *t += dt;
-        }
-        if let Some(w) = self.race_slow_wait.as_mut() {
-            *w -= dt;
-            if *w <= 0.0 {
-                self.race_slow_wait = None;
-                self.race_slow.set(0.0, 1.0 / 0.5, false, true, 0.4);
+            // (the line's frame is the script's call of the first wait; the waits step by the real frame time)
+            if *t == 0.0 {
+                self.race_end_w = RaceEndWaits::new(if self.eob.is_some() { 4400 } else { 2200 });
             }
+            *t += dt;
+            let t = *t;
+            let w = &mut self.race_end_w;
+            if w.ph == 0 && w.w1.step(dt, false) {
+                w.ph = 1;
+                w.panel_at = t;
+            }
+            if w.ph == 1 && w.w2.step(dt, false) {
+                w.ph = 2;
+                w.menu_at = t;
+            }
+            // (the place splash stays until the second wait is over: form 54 closes with the menu - a beat me there
+            // run's is `bmt_end_ui`'s)
+            if self.bmt_end.is_none() {
+                if let Some((_, left)) = self.place_splash.as_mut() {
+                    *left = if w.ph >= 2 { 0.0 } else { f32::INFINITY };
+                }
+            }
+        }
+        // (the slow motion starts once the first wait is over)
+        if self.race_slow_wait.is_some() && self.race_end_w.ph >= 1 {
+            self.race_slow_wait = None;
+            self.race_slow.set(0.0, 1.0 / 0.5, false, true, 0.4);
         }
         self.race_slow.update(dt);
     }
@@ -13057,7 +13107,9 @@ impl Game {
         if race && !was && matches!(self.opt_x.s23.sst_tut, SstTut::Idle | SstTut::Done) && !Self::mc4_no_tutorial() && !self.fresh_game {
             if self.rgh06_race() {
                 self.opt_x.s23.sst_tut = SstTut::Charge;
-                self.opt_x.s23.sst_poll = 0.0;
+                // (the script's first wait is called in this frame)
+                self.opt_x.s23.sst_poll = crate::racescript::ScriptWait::new(100);
+                self.opt_x.s23.sst_poll.step(0.0, false);
                 log::info!("SST_Tutorial started (RACE_GH_06)");
             }
         }
@@ -13071,38 +13123,39 @@ impl Game {
     /// SST_Tutorial's steps once it runs (`SstTut`): `racing` the script's test, `level` Racer_GetTurboLevel.
     fn mc4_sst_tut_step(&mut self, dt: f32, level: f32, racing: bool) {
         let title = self.tutorial_box.as_ref().map(|b| b.0.clone());
+        // (the script's WAITUNPAUSED(100) between its tests, by the scaled step (the game's time scale x the frame's): the
+        // tests run in the frame it ends and the loop calls the next wait in that frame - racescript::ScriptWait; the
+        // script's own test keeps it out of a paused game)
+        let scaled = dt * self.mc4_time_scale();
         let x = &mut self.opt_x.s23;
-        // (the script's WAITUNPAUSED(100) between its tests)
-        let poll = matches!(x.sst_tut, SstTut::Charge | SstTut::Full) && {
-            x.sst_poll += dt;
-            if x.sst_poll >= 0.1 {
-                x.sst_poll = 0.0;
-                true
-            } else {
-                false
-            }
+        let poll = matches!(x.sst_tut, SstTut::Charge | SstTut::Full) && x.sst_poll.step(scaled, false) && {
+            x.sst_poll.step(scaled, false);
+            true
         };
         match x.sst_tut {
             SstTut::Charge if poll && racing && level > 0.3 => {
                 x.slow.ease(0.0);
-                x.sst_tut = SstTut::Ease(0.5);
+                let mut w = crate::racescript::ScriptWait::new(500);
+                w.step(dt, false);
+                x.sst_tut = SstTut::Ease(w);
                 log::info!("SST_Tutorial: level {:.3} > 0.3 - the ease to pause", level);
             }
-            SstTut::Ease(t) => {
-                if t - dt <= 0.0 {
+            SstTut::Ease(mut w) => {
+                if w.step(dt, false) {
                     if let Some((t, d)) = tutorial_keys(78) {
                         self.tutorial_box = Some((t, d, 0.0, 600.0));
                     }
                     self.opt_x.arcade.d.say_over.push("TUTORIAL_SST_INGAME".to_string());
                     self.opt_x.s23.sst_tut = SstTut::Box78;
                 } else {
-                    x.sst_tut = SstTut::Ease(t - dt);
+                    x.sst_tut = SstTut::Ease(w);
                 }
             }
             SstTut::Box78 if title.as_deref() != Some("tutorial_slipstream_title") => {
                 x.slow.ease(1.0);
                 x.sst_tut = SstTut::Full;
-                x.sst_poll = 0.0;
+                x.sst_poll = crate::racescript::ScriptWait::new(100);
+                x.sst_poll.step(0.0, false);
                 log::info!("SST_Tutorial: form 78 closed - the ease from pause");
             }
             SstTut::Full if poll && racing && level > 0.99 => {
@@ -19072,13 +19125,15 @@ mod tests {
         }
     }
 
-    /// The race's end in slow motion (EndOfRaceSequence): 0.2 s of real time, then to a
-    /// standstill in 0.5 s with sin(t pi / 2) ^ 0.4, the simulation held at the floor of 0.1.
+    /// The race's end in slow motion (EndOfRaceSequence): WAITUNWARPED(200) (the line's frame calls it, two 0.1 s frames
+    /// end it), then to a standstill in 0.5 s with sin(t pi / 2) ^ 0.4, the simulation held at the floor of 0.1.
     #[test]
     fn race_end_slow_motion() {
         let mut g = crate::game::Game::new(Vec::new(), 0);
         g.mode = crate::game::Mode::Results;
         g.race_slow_wait = Some(0.2);
+        g.race_end_t = Some(0.0);
+        g.race_slow_tick(0.1);
         g.race_slow_tick(0.1);
         assert_eq!(g.mc4_time_scale(), 1.0);
         g.race_slow_tick(0.1);
@@ -19087,12 +19142,41 @@ mod tests {
         assert!((g.mc4_time_scale() - (1.0 - e)).abs() < 1e-5, "{}", g.mc4_time_scale());
         g.race_slow_tick(0.25);
         assert_eq!(g.mc4_time_scale(), 0.1);
+        // (past 1.2 s after the line form 60 pauses the game)
         g.race_slow_tick(5.0);
-        assert_eq!(g.mc4_time_scale(), 0.1);
+        assert_eq!(g.mc4_time_scale(), 0.0);
         // (leaving the race: back to 1)
         g.mode = crate::game::Mode::FreeRoam;
         g.race_slow_tick(0.016);
         assert_eq!(g.mc4_time_scale(), 1.0);
+    }
+
+    /// The race's end's waits as the WAIT natives run them, at 60 frames a second: the line's frame calls WAITUNWARPED(200),
+    /// over 12 frames later (the panels and the slow motion); the panel's WAITUNWARPED(2200) is over 133 frames after that
+    /// (the menu: 145 frames, 2.417 s, where a seconds clock said 2.4), 4400 with a team game's form 58: 264.
+    #[test]
+    fn race_end_waits_as_the_natives() {
+        for (eob, second) in [(false, 133), (true, 264)] {
+            let mut g = crate::game::Game::new(Vec::new(), 0);
+            g.mode = crate::game::Mode::Results;
+            g.eob = eob.then_some((1, 2));
+            g.race_slow_wait = Some(crate::game::Game::RACE_END_PANEL);
+            g.race_end_t = Some(0.0);
+            g.place_splash = Some((1, crate::game::Game::RACE_END_MENU));
+            let (mut panel, mut menu) = (None, None);
+            for f in 0..400 {
+                g.race_slow_tick(1.0 / 60.0);
+                if panel.is_none() && g.race_end_panel().is_some() {
+                    panel = Some(f);
+                    assert!(g.race_slow_wait.is_none());
+                }
+                if menu.is_none() && g.race_end_menu().is_some() {
+                    menu = Some(f);
+                    assert_eq!(g.place_splash.map(|p| p.1), Some(0.0));
+                }
+            }
+            assert_eq!((panel, menu), (Some(12), Some(12 + second)));
+        }
     }
 
     /// The race's end: the panels 0.2 s after the line, the game paused at 1.2 s (form 60's

@@ -815,6 +815,8 @@ pub struct Game {
     pub hangout_slow: crate::mc4::SlowMo,
     /// real seconds since the player crossed the line (the race-end panels, `RACE_END_*`)
     pub race_end_t: Option<f32>,
+    /// EndOfRaceSequence's two waits after the line, as the WAIT natives run them (`mc4::RaceEndWaits`)
+    pub race_end_w: crate::mc4::RaceEndWaits,
     /// a beat me there run's EndOfRaceSequence waits: WAITUNWARPED(200), then the panel's WAITUNWARPED(2200), and how
     /// many are over (`bmt_end_ui`)
     pub bmt_waits: Option<(crate::racescript::ScriptWait, crate::racescript::ScriptWait, u8)>,
@@ -1579,6 +1581,7 @@ impl Game {
             race_slow_wait: None,
             hangout_slow: crate::mc4::SlowMo::default(),
             race_end_t: None,
+            race_end_w: crate::mc4::RaceEndWaits::new(2200),
             bmt_waits: None,
             end_seq_n: 0,
             race_dmg_out: false,
@@ -14997,7 +15000,7 @@ impl Game {
             return false;
         }
         // (the race's end: nothing over the picture until WAITUNWARPED(200) is over)
-        if self.race_end_t.map_or(false, |t| t < Self::RACE_END_PANEL) && self.replay.is_none() {
+        if self.race_end_t.is_some() && self.race_end_panel().is_none() && self.replay.is_none() {
             return true;
         }
         // (a won pink slip race's end scene: between the panels and the race-over menu)

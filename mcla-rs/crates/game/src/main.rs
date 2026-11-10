@@ -1134,7 +1134,7 @@ impl App {
         match self.pink_end.0 {
             0 => {
                 let g = &self.game;
-                let due = g.pink_scene.is_some() && g.mode == Mode::Results && !g.reward_panel && g.mission_results.is_empty() && g.replay.is_none() && g.race_end_t.map_or(false, |t| t >= game::Game::RACE_END_PANEL);
+                let due = g.pink_scene.is_some() && g.mode == Mode::Results && !g.reward_panel && g.mission_results.is_empty() && g.replay.is_none() && g.race_end_panel().is_some();
                 if !due {
                     return;
                 }
@@ -5788,7 +5788,7 @@ impl App {
                 // WAITUNWARPED(4400) instead of the standings' 2200 - F-34603)
                 if let Some(t) = self.game.flag.as_ref().and_then(|fg| fg.team_scores()) {
                     self.game.eob = Some(t);
-                    self.game.place_splash = self.game.place_splash.map(|(p, left)| (p, left + 2.2));
+                    self.game.race_end_w.w2.ms = 4400;
                 }
                 // (the REWARDS page's give posts the race's reputation itself: `give_pending`)
                 if !self.game.rewards_ask() {
@@ -9252,7 +9252,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // (and a beat me there run's end in free roam: the same EndOfRaceSequence - `Game::bmt_end`)
                 let bmt_run_end = self.game.mode == Mode::FreeRoam && self.game.bmt_end.as_ref().map_or(false, |e| !e.wrecked);
                 let race_end_on = (self.game.mode == Mode::Results || bmt_run_end) && self.game.replay.is_none() && self.cuts.playing.is_none() && self.game.race_end_t.is_some();
-                let race_end_swing = race_end_on && self.game.race_end_t.map_or(false, |t| t < game::Game::RACE_END_MENU);
+                let race_end_swing = race_end_on && self.game.race_end_menu().is_none();
                 if !race_end_on {
                     self.race_end_cam = None;
                     self.race_end_from = None;
@@ -10254,7 +10254,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // short way round unless that path is blocked, then the long way, else a cut
                 // (F-32916 tests t = 0.25, 0.5, 0.75).
                 if race_end_on {
-                    let t = self.game.race_end_t.unwrap_or(0.0);
                     let polar = |d: Vec3| (d.x.atan2(d.z), d.y.atan2(Vec3::new(d.x, 0.0, d.z).length()), d.length());
                     let mix = |a: (Vec3, Vec3, f32), b: (Vec3, Vec3, f32), k: f32, long: bool| -> (Vec3, Vec3, f32) {
                         let (y0, p0, r0) = polar(a.0 - a.1);
@@ -10269,7 +10268,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let look = a.1.lerp(b.1, k);
                         (look + Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos()) * r, look, a.2 + (b.2 - a.2) * k)
                     };
-                    if race_end_swing && t >= game::Game::RACE_END_PANEL {
+                    if let Some(since) = self.game.race_end_panel().filter(|_| race_end_swing) {
                         let fwd = render_state.forward();
                         let fwd = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or(Vec3::NEG_Z);
                         let right = Vec3::new(-fwd.z, 0.0, fwd.x);
@@ -10283,7 +10282,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.race_end_cam = to.zip(cam(1));
                         }
                         if let Some((to, from)) = self.race_end_cam {
-                            let n = ((t - game::Game::RACE_END_PANEL) * 30.0).floor();
+                            let n = (since * 30.0).floor();
                             let f = 1.0 - 0.9f32.powf(n);
                             let k = (1.0 - (n * 3.0).min(100.0) / 100.0).clamp(-1.0, 1.0).acos().sin();
                             let view = |c: &menu3d::PauseCam| (place(c.position), place(c.lookat), c.fovy.to_radians());
@@ -10292,7 +10291,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             (self.chase.pos, self.chase.look, self.cam.fov_y) = out;
                             self.race_end_from = Some(out);
                         }
-                    } else if !race_end_swing && t < game::Game::RACE_END_MENU + 5.0 {
+                    } else if let Some(since) = self.game.race_end_menu().filter(|&m| !race_end_swing && m < 5.0) {
                         if let Some(from) = self.race_end_from {
                             let to = (self.chase.pos, self.chase.look, self.cam.fov_y);
                             if self.race_end_way.is_none() {
@@ -10304,7 +10303,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 };
                                 self.race_end_way = Some(if !blocked(false) { 0.0 } else if !blocked(true) { 1.0 } else { -1.0 });
                             }
-                            let n = ((t - game::Game::RACE_END_MENU) * 30.0).floor();
+                            let n = (since * 30.0).floor();
                             let f = 1.0 - 0.9f32.powf(n);
                             match self.race_end_way {
                                 Some(w) if w >= 0.0 => (self.chase.pos, self.chase.look, self.cam.fov_y) = mix(from, to, f, w > 0.5),

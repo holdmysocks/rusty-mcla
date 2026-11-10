@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 /// the wait is over in the frame whose truncated timer (fctiwz: NaN the lowest int) is at least the ms; a negative timer
 /// ends it at once. So at 30 frames a second WAIT(1000) lasts 31 frames, WAIT(250) 8; at 60 WAIT(500) lasts 31.
 /// Checked against the natives run offline (`tools/script_wait_reference.py`, test `script_wait_matches_the_original`).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ScriptWait {
     pub ms: i32,
     pub timer: f32,
