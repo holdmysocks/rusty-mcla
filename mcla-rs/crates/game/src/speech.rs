@@ -53,6 +53,14 @@ pub struct Sender {
     pub rank: i32,
 }
 
+/// The two senders on the one speech manager: the player's speaker (the global F-44958 makes: +36 = 1), whose requests
+/// are every career / taunt / player line (F-30989, F-70230, F-19599, F-51720 and the natives all pass it), and the police
+/// radio's (F-45942: +36 = 0 from the base constructor F-32285), whose reports go through the same start (F-84173, F-14569).
+/// So a player request cuts a radio line whatever the Priorities, and a radio request is refused while the player's
+/// speaker plays.
+pub const PLAYER: Sender = Sender { id: 1, rank: 1 };
+pub const RADIO: Sender = Sender { id: 2, rank: 0 };
+
 /// A request to the scenario start F-95157 beside the scenario: `profile` the voice the computer lines get (`say_as`),
 /// `attach` the lines are said by the requesting entity (F-30989), `sender` the entity (+2252), `voice` the sender's name
 /// (None: no name; Some(found): the name and whether the entity's vt+44 found its voice), `forced` (r8: no Frequency /
@@ -150,6 +158,11 @@ pub struct Speech {
     /// the last request was refused for a script with no line (tests)
     #[cfg(test)]
     no_line: bool,
+    /// the police radio plays a scenario (the port's radio is its own player: this is the manager's +2260 with the radio
+    /// as +2252 - `RADIO`); set by the game before the requests
+    pub radio_on: bool,
+    /// a start cut the radio's scenario (F-73277 stops it): the game stops the radio
+    pub cut_radio: bool,
 }
 
 fn attr<'a>(s: &'a str, name: &str) -> Option<&'a str> {
@@ -293,20 +306,20 @@ impl Speech {
     /// waiting): `start`. (The name PLAYER's lookup is taken as found, not traced: every PLAYER_* scenario has a ForceSender,
     /// which comes first.)
     pub fn request(&mut self, scenario: &str) -> bool {
-        self.start(scenario, Ask { attach: true, voice: Some(true), ..Default::default() })
+        self.start(scenario, Ask { attach: true, sender: Some(PLAYER), voice: Some(true), ..Default::default() })
     }
 
     /// The same start asked by F-52240 through F-70230 (scenario, voice group = a racer's driver name: not forced, not
     /// kept, not waiting): no entity for the lines, the computer lines in `profile`'s voice as `say_as` gives them; an
     /// empty `profile` (no voice found for the racer) finds no sender voice.
     pub fn request_as(&mut self, scenario: &str, profile: &str) -> bool {
-        self.start(scenario, Ask { profile, voice: Some(!profile.is_empty()), ..Default::default() })
+        self.start(scenario, Ask { profile, sender: Some(PLAYER), voice: Some(!profile.is_empty()), ..Default::default() })
     }
 
     /// F-23328's request (scenario, the racer's driver name): F-70230 with r9 = 1, so it waits in the ring while a scenario
     /// plays (`request_as` otherwise).
     pub fn request_taunt(&mut self, scenario: &str, profile: &str) -> bool {
-        self.start(scenario, Ask { profile, voice: Some(!profile.is_empty()), wait: true, ..Default::default() })
+        self.start(scenario, Ask { profile, sender: Some(PLAYER), voice: Some(!profile.is_empty()), wait: true, ..Default::default() })
     }
 
     /// The scenario start F-95157 (offline: the online check F-24338 refuses everything online). A waiting request while
@@ -325,7 +338,9 @@ impl Speech {
     pub fn start(&mut self, scenario: &str, ask: Ask) -> bool {
         let key = scenario.to_ascii_uppercase();
         let (Some(g), Some(count)) = (self.gates.get(&key).copied(), self.scenarios.get(&key).map(|s| s.len())) else { return false };
-        if ask.wait && self.busy() {
+        // (a scenario plays: this speaker's, or the radio's - `radio_on`)
+        let playing = self.busy() || self.radio_on;
+        if ask.wait && playing {
             if self.pending.len() == 8 {
                 return false;
             }
@@ -339,13 +354,14 @@ impl Speech {
         if count == 0 {
             return false;
         }
-        if self.busy() {
-            if self.cur_key.as_deref() == Some(&key) && self.held {
+        if playing {
+            if !self.radio_on && self.cur_key.as_deref() == Some(&key) && self.held {
                 // (F-34685: the held line's +467 cleared, its tick runs)
                 self.held = false;
                 return true;
             }
-            let cut = match self.sender.filter(|s| Some(*s) != ask.sender) {
+            let on = if self.radio_on { Some(RADIO) } else { self.sender };
+            let cut = match on.filter(|s| Some(*s) != ask.sender) {
                 Some(s) => ask.sender.map_or(0, |a| a.rank) > s.rank,
                 None => self.cur_priority.is_none_or(|p| g.priority as u32 > p as u32),
             };
@@ -353,6 +369,10 @@ impl Speech {
                 return false;
             }
             self.cut();
+            if self.radio_on {
+                self.radio_on = false;
+                self.cut_radio = true;
+            }
         }
         let pick = self.rand(0, count as i32 - 1);
         let mut last = pick;
@@ -631,7 +651,7 @@ impl Speech {
         }
         // (F-85023: when no scenario plays, the oldest waiting request is started - everything stopped first, F-73277 -
         // with its own forced flag and byte, not waiting)
-        if !self.busy() {
+        if !self.busy() && !self.radio_on {
             if let Some(p) = self.pending.pop_front() {
                 self.stop_now(a);
                 let ask = Ask { profile: &p.profile, attach: p.attach, sender: p.sender, voice: p.voice, forced: p.forced, keep: p.keep, wait: false };
@@ -896,6 +916,35 @@ mod tests {
     /// (+28), the generator's state after, the push to the ring, the held line played, every line with the delay it gets
     /// (Delay and the WaitTimes before it), the stops, and after it the sender's voice (+2200), the sender entity (+2252),
     /// the scenario playing (+2260) and its first line's byte (+467) are the original's
+    /// The two senders of the one manager (`PLAYER` rank 1, `RADIO` rank 0): a player request cuts a radio scenario
+    /// whatever its Priority (the cut stops the radio), and a waiting one waits behind it - the ring is taken only once
+    /// neither plays (F-95157, F-85023).
+    #[test]
+    fn a_player_request_cuts_the_radio_and_waits_behind_it() {
+        let mut sp = Speech::load("D:/nonexistent", Path::new("D:/nonexistent"));
+        let line = || vec![Step::Play { asset: "L".into(), player: true, voice: None, rec: 0, force: 0, post: None, attach: false }];
+        sp.scenarios.insert("T".into(), vec![line()]);
+        sp.gates.insert("T".into(), Gate { priority: 0, delay: 0.0, frequency: 0.0, probability: 100, last: -1.0e9, last_script: -1, force_sender: true });
+        sp.clock = 10.0;
+        // the radio plays: a request of Priority 0 still cuts it (rank 1 > 0)
+        sp.radio_on = true;
+        assert!(sp.request("T"));
+        assert!(sp.cut_radio && !sp.radio_on && sp.sender == Some(PLAYER));
+        // a waiting request behind the radio's line: into the ring, no line
+        sp.cut();
+        sp.cut_radio = false;
+        sp.radio_on = true;
+        assert!(sp.request_taunt("T", ""));
+        assert!(sp.pending.len() == 1 && !sp.busy() && !sp.cut_radio);
+        // not taken while the radio plays; taken once it is quiet (the update needs an audio device: the data's)
+        let Some(mut a) = std::env::var("MCLA_DATA_DIR").ok().and_then(|d| crate::audio::Audio::new_offline(&d)) else { return };
+        sp.update(&mut a, 0.0);
+        assert_eq!(sp.pending.len(), 1);
+        sp.radio_on = false;
+        sp.update(&mut a, 0.0);
+        assert!(sp.pending.is_empty() && sp.cur_key.as_deref() == Some("T"));
+    }
+
     #[test]
     fn speech_start_matches_the_original() {
         let mut lines = include_str!("testdata/speech_start_ref.txt").lines();

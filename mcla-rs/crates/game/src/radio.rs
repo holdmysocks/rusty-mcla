@@ -119,6 +119,9 @@ pub struct Radio {
     /// the speech manager's request queue (+28 + 268 i, write +2172, read +2176, count +2180; F-95157 adds a
     /// request with its queue flag there while a line plays, 8 at most): the scenario and its parties
     requests: VecDeque<(String, (String, String))>,
+    /// the player's speaker plays a scenario (the one speech manager's +2260 with +2252 the player's, `speech::PLAYER`,
+    /// rank 1 against the radio's 0): set by the game before the radio's requests
+    pub speech_on: bool,
 }
 
 fn attr<'a>(s: &'a str, name: &str) -> Option<&'a str> {
@@ -308,7 +311,7 @@ impl Radio {
     /// queued (true; refused when 8 wait), ahead of every gate; else as `say`.
     pub fn say_queued(&mut self, scenario: &str, ctx: &Ctx) -> bool {
         let parties = self.parties(&scenario.to_ascii_uppercase());
-        if self.busy() {
+        if self.busy() || self.speech_on {
             if self.requests.len() == 8 {
                 return false;
             }
@@ -321,7 +324,7 @@ impl Radio {
     /// The speech update's queue (F-85023): with no line playing, the
     /// oldest queued request is taken out and asked again without the flag - through the whole gate. Once a frame.
     pub fn pump(&mut self, ctx: &Ctx) {
-        if !self.busy() {
+        if !self.busy() && !self.speech_on {
             if let Some((scenario, parties)) = self.requests.pop_front() {
                 self.say_line(&scenario, parties, ctx);
             }
@@ -416,6 +419,11 @@ impl Radio {
         if before.is_some_and(|l| self.clock < l.0 + frequency) {
             return false;
         }
+        // (the player's speaker playing: F-84173 says nothing while +2252 is the player's and a scenario plays, and the
+        // start F-95157 refuses the radio's request, rank 0 not above the player's 1)
+        if self.speech_on {
+            return false;
+        }
         if self.busy() {
             if priority <= self.playing {
                 return false;
@@ -505,6 +513,13 @@ impl Radio {
         self.queue.clear();
     }
 
+    /// A player request cut the radio's scenario (F-95157 -> F-73277, `speech::Speech::cut_radio`): the lines to come and
+    /// the wait of the one playing.
+    pub fn cut(&mut self) {
+        self.queue.clear();
+        self.wait = 0.0;
+    }
+
     /// Requests waiting in the queue (`say_queued`).
     pub fn queued(&self) -> usize {
         self.requests.len()
@@ -534,6 +549,21 @@ impl Radio {
 
 #[cfg(test)]
 mod tests {
+    /// The player's speaker playing (rank 1 above the radio's 0): a report is refused, a queued one waits until it ends.
+    #[test]
+    fn the_player_speaker_holds_the_radio_off() {
+        let mut r = super::Radio::default();
+        let ctx = super::Ctx::default();
+        r.speech_on = true;
+        assert!(r.say_queued("REPORT_PULL_SUSPECT_OVER", &ctx));
+        assert_eq!(r.queued(), 1);
+        r.pump(&ctx);
+        assert_eq!(r.queued(), 1);
+        r.speech_on = false;
+        r.pump(&ctx);
+        assert_eq!(r.queued(), 0);
+    }
+
     /// F-95157's queue flag and F-85023's pop: queued while a line plays, 8 at most, taken out one a frame once quiet.
     #[test]
     fn queued_requests_wait_for_a_quiet_radio() {
