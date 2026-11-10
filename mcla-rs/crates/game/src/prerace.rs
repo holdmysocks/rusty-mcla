@@ -261,7 +261,7 @@ impl Picker {
 
 /// A scene event aimed at a racer slot (kind 2: `CineScript_Events_LaunchEventOnRacerSlot`, F-51323) or
 /// at the scene's speech (`playspeech`, `stopaudiostreams`), from the scene script's 7-word event records
-/// (name, kind, racer name, slot, time, duration, f3 - f3 is 0 in every race-start scene). Slot i is the race's
+/// (name, kind, racer name, slot, time, duration, f3 - f3 1.0 on a gesture is its jaw flap, `jaw_start`). Slot i is the race's
 /// racer list index i (`Cars_AssignIdToSlot`); `*_left` events go to slot 0, `*_right` to slot 1. `dur` 0 = no
 /// end call. Read with `work/career2/re2/evrec.py` -> `work/career2/gen_ev.py`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -279,7 +279,7 @@ pub struct SlotEvent {
 /// (`slot_event_start`).
 pub fn slot_events(scene: &str) -> Vec<SlotEvent> {
     let name = scene.rsplit('/').next().unwrap_or(scene).to_ascii_lowercase();
-    SLOT_EVENTS.iter().filter(|e| e.scene == name).map(|e| {
+    SLOT_EVENTS.iter().chain(PINK_EVENTS.iter()).filter(|e| e.scene == name).map(|e| {
         let mut e = *e;
         e.t = slot_event_start(scene, e.event, e.t);
         e
@@ -333,6 +333,12 @@ pub fn jaw_start_type(ty: i32, f3: f32) -> bool {
         55 => true,
         _ => false,
     }
+}
+
+/// Whether an event's stop sends its racer's gesture back to none (+684 = 20, F-90946), F-26895: the gestures 0 .. 10,
+/// 48 .. 51, 53 and 54 (copfidget, 52, does nothing).
+pub fn gesture_stop_type(ty: i32) -> bool {
+    matches!(ty, 0..=10 | 48..=51 | 53 | 54)
 }
 
 /// Whether an event's stop turns its driver's jaw flap off (racer +688 = 0, F-63941), F-26895: the gestures 0 .. 10,
@@ -839,6 +845,37 @@ pub const SLOT_EVENTS: [SlotEvent; 465] = [
     SlotEvent { scene: "sc_gen_prerace_taunt_ph_01", event: "gesture_listen_left", slot: 0, t: 0.666667, dur: 0.0, f3: 0.0 },
 ];
 
+/// The pink slip end scenes' gesture events (`cut_reward_*`, `cut_loss_*` and their sc_ forms; their other events are the
+/// fades, playspeech, cam_gps_warp_out and bookmark, played by `main.rs::pink_end_tick`). The slots are the car slots the
+/// wager core assigns (won: 0 the player's racer, 1 the hookman's; lost: 0 the hookman's racer in the player's car, 1 the
+/// player), as in the race starts. From the generated scripts' description records, `work/driverlight/pinkacts/gen_rows.py`.
+pub const PINK_EVENTS: [SlotEvent; 24] = [
+    SlotEvent { scene: "cut_loss_chung_hee", event: "gesture_talk_right", slot: 0, t: 5.16667, dur: 10.5, f3: 1.0 },
+    SlotEvent { scene: "cut_loss_jin", event: "gesture_talk_right", slot: 0, t: 3.5, dur: 9.33333, f3: 1.0 },
+    SlotEvent { scene: "cut_loss_lester", event: "gesture_talk_right", slot: 0, t: 4.33333, dur: 7.0, f3: 1.0 },
+    SlotEvent { scene: "cut_loss_pete", event: "gesture_talk_right", slot: 0, t: 3.33333, dur: 9.66667, f3: 1.0 },
+    SlotEvent { scene: "cut_reward_gen_01", event: "gesture_listen_left", slot: 0, t: 2.33333, dur: 0.0, f3: 0.0 },
+    SlotEvent { scene: "cut_reward_gen_01", event: "gesture_talk_right", slot: 1, t: 3.16667, dur: 0.0, f3: 1.0 },
+    SlotEvent { scene: "cut_reward_gen_02", event: "gesture_listen_left", slot: 0, t: 2.33333, dur: 0.0, f3: 0.0 },
+    SlotEvent { scene: "cut_reward_gen_02", event: "gesture_talk_right", slot: 1, t: 3.16667, dur: 0.0, f3: 1.0 },
+    SlotEvent { scene: "cut_reward_gen_03", event: "gesture_listen_left", slot: 0, t: 2.66667, dur: 9.33333, f3: 0.0 },
+    SlotEvent { scene: "cut_reward_gen_03", event: "gesture_talk_right", slot: 1, t: 3.16667, dur: 8.83333, f3: 1.0 },
+    SlotEvent { scene: "cut_reward_gen_04", event: "gesture_listen_left", slot: 0, t: 2.0, dur: 0.0, f3: 0.0 },
+    SlotEvent { scene: "cut_reward_gen_04", event: "gesture_talk_right", slot: 1, t: 3.16667, dur: 0.0, f3: 1.0 },
+    SlotEvent { scene: "cut_reward_karol", event: "gesture_listen_left", slot: 0, t: 2.0, dur: 0.0, f3: 0.0 },
+    SlotEvent { scene: "cut_reward_karol", event: "gesture_talk_right", slot: 1, t: 3.16667, dur: 0.0, f3: 1.0 },
+    SlotEvent { scene: "cut_reward_marcel", event: "gesture_listen_left", slot: 0, t: 2.0, dur: 0.0, f3: 0.0 },
+    SlotEvent { scene: "cut_reward_marcel", event: "gesture_talk_right", slot: 1, t: 3.33333, dur: 0.0, f3: 1.0 },
+    SlotEvent { scene: "cut_reward_nikolai", event: "gesture_listen_left", slot: 0, t: 2.0, dur: 0.0, f3: 0.0 },
+    SlotEvent { scene: "cut_reward_nikolai", event: "gesture_talk_right", slot: 1, t: 3.33333, dur: 0.0, f3: 1.0 },
+    SlotEvent { scene: "sc_cut_loss_one", event: "gesture_talk_right", slot: 0, t: 2.83333, dur: 0.0, f3: 1.0 },
+    SlotEvent { scene: "sc_cut_loss_two", event: "gesture_talk_right", slot: 0, t: 2.83333, dur: 0.0, f3: 1.0 },
+    SlotEvent { scene: "sc_cut_reward_gen_01", event: "gesture_listen_left", slot: 0, t: 2.66667, dur: 9.33333, f3: 0.0 },
+    SlotEvent { scene: "sc_cut_reward_gen_01", event: "gesture_talk_right", slot: 1, t: 3.16667, dur: 8.83333, f3: 1.0 },
+    SlotEvent { scene: "sc_cut_reward_hookman_01", event: "gesture_listen_left", slot: 0, t: 2.0, dur: 0.0, f3: 0.0 },
+    SlotEvent { scene: "sc_cut_reward_hookman_01", event: "gesture_talk_right", slot: 1, t: 3.33333, dur: 0.0, f3: 1.0 },
+];
+
 /// A start scene's racer events in flight (main.rs `prerace_acts_*`).
 pub struct Acts {
     pub scene: String,
@@ -853,6 +890,8 @@ pub struct Acts {
     pub ends: Vec<(usize, f32)>,
     /// the taunt speech was prepared
     pub taunt: bool,
+    /// a pink slip end scene's (`PINK_EVENTS`): no windows, the speech is `pink_end_tick`'s
+    pub pink: bool,
 }
 
 /// The speech profile (GH_01 .., SH_01 ..) of a driver's character set (`tune/audio/CareerVoices.xml` and
@@ -1242,8 +1281,29 @@ mod tests {
             // (by type: a name does not always give its own type - `gesture_mild_right` contains `gesture_mild`, type 5)
             assert_eq!(s688, if jaw_start_type(ty as i32, f3) { 1 } else { 0x5a }, "start {l}");
             assert_eq!(e688, if jaw_stop_type(ty as i32, f3) { 0 } else { 0x5a }, "stop {l}");
+            // (the stop's +684: 20 where it sends the gesture back to none, else the racer's 0x5a5a5a5a)
+            assert_eq!(p[4], if gesture_stop_type(ty as i32) { "00000014" } else { "5a5a5a5a" }, "gesture stop {l}");
             n += 1;
         }
         assert_eq!((n, skipped), (656, 120));
+    }
+
+    /// The pink slip end scenes' gesture events (PINK_EVENTS, checked against the generated scripts by
+    /// work/driverlight/gen/compare.py: 24 rows equal): the reward scenes' player listens on slot 0 and the hookman
+    /// talks on slot 1 with his jaw; the loss scenes' hookman (slot 0, in the player's car) talks with his jaw.
+    #[test]
+    fn pink_scene_events() {
+        let ev = slot_events("cut_reward_gen_01");
+        let got: Vec<_> = ev.iter().map(|e| (e.event, e.slot, e.t, e.dur, jaw_start(e.event, e.f3))).collect();
+        assert_eq!(got, [("gesture_listen_left", 0, 2.33333, 0.0, false), ("gesture_talk_right", 1, 3.16667, 0.0, true)]);
+        for n in ["cut_loss_chung_hee", "cut_loss_lester", "cut_loss_pete", "cut_loss_jin"] {
+            let ev = slot_events(n);
+            assert_eq!(ev.len(), 1, "{n}");
+            assert!(ev[0].event == "gesture_talk_right" && ev[0].slot == 0 && ev[0].dur > 0.0 && jaw_start(ev[0].event, ev[0].f3) && jaw_stop(ev[0].event, ev[0].f3), "{n}");
+        }
+        for n in ["cut_reward_gen_02", "cut_reward_gen_03", "cut_reward_gen_04"] {
+            assert_eq!(slot_events(n).len(), 2, "{n}");
+        }
+        assert_eq!(PINK_EVENTS.iter().filter(|e| jaw_start(e.event, e.f3)).count(), 15);
     }
 }

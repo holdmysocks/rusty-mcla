@@ -933,7 +933,7 @@ impl App {
             taunt = !voice.is_empty() && self.speech.prepare_taunt(kind, &voice);
             log::info!("prerace scene {}: taunt {} hookman car {} set {} voice {:?} prepared {}", scene, kind, hook, set, voice, taunt);
         }
-        self.prerace_acts = Some(prerace::Acts { scene: scene.to_string(), fired: vec![false; events.len()], events, t: 0.0, duration, racers, ends: Vec::new(), taunt });
+        self.prerace_acts = Some(prerace::Acts { scene: scene.to_string(), fired: vec![false; events.len()], events, t: 0.0, duration, racers, ends: Vec::new(), taunt, pink: false });
         if taunt {
             self.prerace_window(0, false, true);
             self.prerace_window(1, true, true);
@@ -1155,6 +1155,7 @@ impl App {
                         self.cine_caption = None;
                         // (slot 1: the hookman's car - Cars_AssignIdToSlot(hookman's racer, 1), 0x5a22)
                         let (label, src) = if lost { ("hookmans", player) } else { ("hookman", hook) };
+                        let mut copy = None;
                         if let (Some(h), Some(s), Some((mp, mr))) = (hook, src, self.cine.mover(label)) {
                             let src = &self.vehicles.cars[s];
                             let set = self.vehicles.cars[h].driver_set.clone();
@@ -1162,6 +1163,7 @@ impl App {
                             // (made facing the mover's way)
                             let f = mr * glam::Vec3::NEG_Z;
                             let idx = self.vehicles.spawn(gpu, model, mp, (-f.x).atan2(-f.z), color, false);
+                            copy = Some(idx);
                             let c = &mut self.vehicles.cars[idx];
                             c.driver = "cine:hookman".to_string();
                             c.driver_set = set;
@@ -1175,6 +1177,14 @@ impl App {
                                     break;
                                 }
                             }
+                        }
+                        // (the scene's gesture events go to its car slots' racers: won 0 the player, 1 the hookman; lost 0
+                        // the hookman in the player's car, 1 the player - LaunchEventOnRacerSlot, as at a race start)
+                        let racers = if lost { [copy, player] } else { [player, copy] };
+                        if let [Some(a), Some(b)] = racers {
+                            let events = prerace::slot_events(&scene);
+                            let duration = self.cine.playing.as_ref().map_or(0.0, |sc| sc.duration);
+                            self.prerace_acts = Some(prerace::Acts { scene: scene.clone(), fired: vec![false; events.len()], events, t: 0.0, duration, racers: vec![a, b], ends: Vec::new(), taunt: false, pink: true });
                         }
                         log::info!("pink slip end: {scene} at grid slot 0 {pos:?} yaw {yaw:.4}, speech {speech}");
                         self.pink_end = (2, false);
@@ -1251,7 +1261,7 @@ impl App {
             return;
         }
         // (after the cut the scene's script runs on to the clip's end)
-        if !(self.cine_prerace && self.cine.playing.is_some()) {
+        if !((self.cine_prerace || a.pink) && self.cine.playing.is_some()) {
             a.t += dt;
         }
         let mut windows: Vec<(usize, bool, bool)> = Vec::new();
@@ -1326,13 +1336,33 @@ impl App {
             }
         }
         let over = a.t >= a.duration;
-        let racers_n = a.racers.len();
+        if over {
+            // (FinishScene F-65984 -> F-10326 -> F-81612: every event still running is stopped, in the player's order -
+            // a gesture's stop F-26895 sends its racer's gesture back to none and a jaw flap set by its start goes off)
+            for i in 0..a.events.len() {
+                let e = a.events[i];
+                let running = a.fired[i] && (e.dur <= 0.0 || a.ends.iter().any(|&(k, _)| k == i));
+                let Some(&ci) = usize::try_from(e.slot).ok().and_then(|s| a.racers.get(s)) else { continue };
+                if !running {
+                    continue;
+                }
+                let ty = prerace::event_type(e.event);
+                if prerace::gesture_stop_type(ty) {
+                    self.drivers.end_gesture(ci);
+                }
+                if prerace::jaw_stop_type(ty, e.f3) {
+                    self.drivers.jaw(ci, false);
+                }
+            }
+            a.ends.clear();
+        }
+        let racers_n = if a.pink { 0 } else { a.racers.len() };
         self.prerace_acts = Some(a);
         for (slot, right, open) in windows {
             self.prerace_window(slot, right, open);
         }
         if over {
-            // (FinishScene, F-62618 mode 1: slot 0's left and slot 1's right windows up)
+            // (FinishScene, F-62618 mode 1: slot 0's left and slot 1's right windows up; the pink slip scenes open none)
             if racers_n > 0 {
                 self.prerace_window(0, false, false);
                 self.prerace_window(1, true, false);
@@ -4174,7 +4204,7 @@ impl App {
         // on every one of them), stopped with the scene (F-19749)
         // (a race-start scene's script runs on past its cut to the clip's end, FinishScene, and its stream with it - until
         // its `stopaudiostreams` event, 1 s after the cut in the starter scenes)
-        let want = self.cine.playing.as_ref().and_then(|s| cine::scene_audio(&s.name)).or_else(|| self.prerace_acts.as_ref().and_then(|a| cine::scene_audio(&a.scene)));
+        let want = self.cine.playing.as_ref().and_then(|s| cine::scene_audio(&s.name)).or_else(|| self.prerace_acts.as_ref().filter(|a| !a.pink).and_then(|a| cine::scene_audio(&a.scene)));
         if want != self.cine_audio && self.cuts.playing.is_none() {
             if let Some(a) = self.audio.as_mut() {
                 if let Some(old) = self.cine_audio.take() {
@@ -4725,10 +4755,8 @@ impl App {
                             }
                         }
                     }
-                    if self.cine_prerace {
-                        if let Some(a) = self.prerace_acts.as_mut() {
-                            a.t = t;
-                        }
+                    if let Some(a) = self.prerace_acts.as_mut().filter(|a| self.cine_prerace || a.pink) {
+                        a.t = t;
                     }
                     // the cars: where the game's physics runs with the scene, each moved car is driven along its
                     // mover by its car event and animated brain (cinecar.rs); elsewhere - a story scene stops the
