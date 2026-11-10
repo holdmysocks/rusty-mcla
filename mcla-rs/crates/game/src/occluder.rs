@@ -76,6 +76,16 @@ struct Poly {
     reversed: u32,
 }
 
+/// One occluder of the file as read.
+struct Raw {
+    kind: String,
+    centre: Vec3,
+    radius: f32,
+    verts: Vec<Vec3>,
+    edges: Vec<(u16, u16)>,
+    polys: Vec<(Vec<u16>, Vec<u16>)>,
+}
+
 struct Occluder {
     centre: Vec3,
     verts: Vec<Vec3>,
@@ -150,25 +160,8 @@ impl<'a> Tokens<'a> {
 }
 
 impl Occluders {
-    /// Parse the text of an occluder file.
-    ///
-    /// ```text
-    /// version: 4
-    /// Occluders <n>
-    /// {
-    ///     Occluder <i>
-    ///     {
-    ///         Type box
-    ///         Name <name>
-    ///         BoundingSphere <x> <y> <z> <r>
-    ///         Vertices <nv> { <x> <y> <z> ... }
-    ///         Edges <ne> { <a> <b> ... }
-    ///         Polygons <np> { Vertices <k> { <vertex> ... } Edges <k> { <edge> ... } ... }
-    ///     }
-    ///     ...
-    /// }
-    /// ```
-    pub fn parse(text: &str) -> Result<Occluders, String> {
+    /// The file as it reads: every occluder's sphere, vertices, edges and polygons (vertex and edge lists), in file order.
+    fn parse_raw(text: &str) -> Result<Vec<Raw>, String> {
         let mut t = Tokens { it: text.split_ascii_whitespace() };
         t.expect("version:")?;
         let version: u32 = t.num()?;
@@ -176,8 +169,7 @@ impl Occluders {
             return Err(format!("occluder file version {version}, expected 4"));
         }
         let count = t.counted("Occluders")?;
-        let mut list = Vec::with_capacity(count);
-        let mut entries = Vec::with_capacity(count);
+        let mut raws = Vec::with_capacity(count);
         for _ in 0..count {
             t.expect("Occluder")?;
             let _index: u32 = t.num()?;
@@ -232,6 +224,36 @@ impl Occluders {
             }
             t.expect("}")?;
             t.expect("}")?;
+            raws.push(Raw { kind: kind.to_string(), centre, radius, verts, edges, polys });
+        }
+        t.expect("}")?;
+        Ok(raws)
+    }
+
+    /// Parse the text of an occluder file.
+    ///
+    /// ```text
+    /// version: 4
+    /// Occluders <n>
+    /// {
+    ///     Occluder <i>
+    ///     {
+    ///         Type box
+    ///         Name <name>
+    ///         BoundingSphere <x> <y> <z> <r>
+    ///         Vertices <nv> { <x> <y> <z> ... }
+    ///         Edges <ne> { <a> <b> ... }
+    ///         Polygons <np> { Vertices <k> { <vertex> ... } Edges <k> { <edge> ... } ... }
+    ///     }
+    ///     ...
+    /// }
+    /// ```
+    pub fn parse(text: &str) -> Result<Occluders, String> {
+        let raws = Occluders::parse_raw(text)?;
+        let count = raws.len();
+        let mut list = Vec::with_capacity(count);
+        let mut entries = Vec::with_capacity(count);
+        for Raw { kind, centre, radius, verts, edges, polys } in raws {
             // the box F-89837 makes: bounds of the vertices, centre and half size
             let mut mn = Vec3::splat(f32::MAX);
             let mut mx = Vec3::splat(-f32::MAX);
@@ -248,7 +270,6 @@ impl Occluders {
             }
             entries.push(entry);
         }
-        t.expect("}")?;
         let (nodes, order) = build_tree(&entries);
         Ok(Occluders { list, entries, nodes, order, in_file: count })
     }
@@ -1248,5 +1269,66 @@ mod tests {
             println!("  {x}");
         }
         assert!(wrong.is_empty() && cases > 1000);
+    }
+
+    fn fnv(h: u64, w: u32) -> u64 {
+        (0..4).fold(h, |h, i| ((h ^ ((w >> (8 * i)) & 0xFF) as u64)).wrapping_mul(0x100000001b3))
+    }
+
+    /// The occluder file reader (loader body F-67870 with the header reader F-97059, the per-occluder reader F-97372, the array
+    /// allocator F-66575 / F-60120 and the polygon / vertex / edge setters F-45179, F-36691, F-10868) run offline as generated
+    /// - with the original's own tokenizer reading the whole `city.occluder` from a buffer (tools/occluder_parse_reference.py;
+    /// the stream refill answers end of file, the C runtime's per-thread data answers none): for every one of the 5614 occluders
+    /// a 64-bit FNV-1a over what it stored (sphere, vertex count, vertex coordinates as f32 bits, edge count, edge bytes,
+    /// polygon count, per polygon its count, vertex indices and edge indices as bytes) and over the polygons' reversed-edge
+    /// masks. The port's `parse_raw` (numbers by Rust's parse) must give the same words, and the port's masks the same masks
+    /// for every body it keeps.
+    #[test]
+    fn parse_matches_the_original() {
+        let Ok(text) = std::fs::read_to_string("D:/MCLA/extracted/cache/city/sc/city.occluder") else { return };
+        let raws = Occluders::parse_raw(&text).unwrap();
+        let want: Vec<Vec<&str>> = include_str!("testdata/occluder_parse_ref.txt").lines().map(|l| l.split(' ').collect()).collect();
+        assert_eq!(raws.len(), 5614);
+        assert_eq!(raws.len(), want.len());
+        let (mut kept, mut masks) = (0, 0);
+        for (i, (r, w)) in raws.iter().zip(&want).enumerate() {
+            let mut h = 0xcbf29ce484222325u64;
+            for f in [r.centre.x, r.centre.y, r.centre.z, r.radius] {
+                h = fnv(h, f.to_bits());
+            }
+            h = fnv(h, r.verts.len() as u32);
+            for v in &r.verts {
+                for f in [v.x, v.y, v.z] {
+                    h = fnv(h, f.to_bits());
+                }
+            }
+            h = fnv(h, r.edges.len() as u32);
+            for &(a, b) in &r.edges {
+                h = fnv(fnv(h, a as u32 & 0xFF), b as u32 & 0xFF);
+            }
+            h = fnv(h, r.polys.len() as u32);
+            for (pv, pe) in &r.polys {
+                h = fnv(h, pv.len() as u32);
+                for &v in pv {
+                    h = fnv(h, v as u32 & 0xFF);
+                }
+                for &e in pe {
+                    h = fnv(h, e as u32 & 0xFF);
+                }
+            }
+            assert_eq!(w[1].parse::<usize>().unwrap(), i);
+            assert_eq!(format!("{h:016x}"), w[2], "occluder {i}: stored data");
+            assert_eq!((r.verts.len(), r.edges.len(), r.polys.len()), (w[4].parse().unwrap(), w[5].parse().unwrap(), w[6].parse().unwrap()));
+            if r.kind == "box" {
+                if let Some(o) = Occluder::build(r.centre, r.verts.clone(), r.edges.clone(), r.polys.clone()) {
+                    let hm = o.polys.iter().fold(0xcbf29ce484222325u64, |h, p| fnv(h, p.reversed));
+                    assert_eq!(format!("{hm:016x}"), w[3], "occluder {i}: edge masks");
+                    masks += 1;
+                }
+                kept += 1;
+            }
+        }
+        println!("{} occluders equal, {kept} boxes, {masks} masks equal", raws.len());
+        assert!(masks > 5000);
     }
 }

@@ -1519,13 +1519,17 @@ fn vs_inst(in: VsIn, inst: InstIn) -> VsOut {
         } else if (kind == 2) {
             // hedges: the high level (uv1.y 102) out over L - 8 .. L, the low level (102.25) in over L - 16 .. L - 8
             // and out over the last quarter of its far end (lod_rule.md 2b); L = 2R / tan(h pi/600)
-            let far = min(2.0 * r / tan(half_deg * 0.001308997) * s2 * kd, 6000.0 * kd);
-            let l = min(2.0 * r / tan(half_deg * 0.005235988) * s2 * max(g.lod.y, 1.0), far);
+            // (the bands are not scaled by the instance: F-98063's hedge path never reads the scale; what the scale does is the
+            // original's cull walk, F-58526: an instance whose depth - 2 R is over min(scale x the far end, the cull cap) is dropped)
+            let far = min(2.0 * r / tan(half_deg * 0.001308997) * kd, 6000.0 * kd);
+            let l = min(2.0 * r / tan(half_deg * 0.005235988) * max(g.lod.y, 1.0), far);
+            let cull = min(s * 2.0 * r / tan(half_deg * 0.001308997) * kd, 6000.0 * kd) + 2.0 * r;
             if (in.uv1.y < 102.125) {
                 fade = clamp((l - depth) * 0.125, 0.0, 1.0);
             } else {
                 fade = min(clamp((far - depth) / (far * 0.25), 0.0, 1.0), clamp((depth - (l - 16.0)) * 0.125, 0.0, 1.0));
             }
+            if (depth > cull) { fade = 0.0; }
         } else {
             let far = min(r * s * (80.0 * cot - 0.5) * kd, 2250.0 * kd);
             fade = clamp((far - depth) * 0.125, 0.0, 1.0);

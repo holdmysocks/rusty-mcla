@@ -18,6 +18,8 @@ One line per case, "<TAG> <inputs> -> <outputs>"; floats are f32 bit patterns in
   LNS  F-50083 with its callees stubbed (the sector directory work, the streaming, the time base): the lens scale and the
        detail distance: LNS <fov deg> <scale> <narrow end> <rate> <dt> <base> <f432> <f433> <f373> <tls72> -> <scale'> <distance>
        (mcla_city_lod, the build's own option hook, is the identity here: the shipped default 1.0)
+  LNC  F-50083 frame after frame: the scale it leaves is the next frame's input, the first P frames with the paused flag set:
+       LNC <fov deg> <scale 0> <dt> <P> <frames> -> <frame>:<scale after that frame>...
   FDE  F-89177: FDE <state> <dist> <thr> <t> <flags> <fade state> <choice> <dt> <cross> <detail on> <snap> <far present>
            -> <fade state> <t> <choice>
 Usage: map_reach_reference.py --recomp D:/MCLA-static --image IMG --work DIR --out FILE [--tool mcla-tool]"""
@@ -289,6 +291,32 @@ def main():
         cross, det, snap, far = (1, 1, 0, 1) if shipped else (rnd.choice([0, 1]), rnd.choice([0, 1]), rnd.choice([0, 1]), rnd.choice([0, 1]))
         cases.append(f'FDE {st} {fb(dist):08x} {fb(thr):08x} {fb(t):08x} {fl} {fs} {ch} {fb(dt):08x} {cross} {det} {snap} {far}')
     go(exe, 'FDE', cases)
+
+    # ---- LNC: F-50083 run frame after frame (the output scale is the next frame's input), P frames paused then unpaused ---------
+    lns_exe = rd.build(idx, [name('F-50083')], 'void mcla_city_lod(PPCRegister&f13){}\n' + fill(
+        MAIN_LNS, D_=D, DIR_FLAG_=DIR_FLAG, TB_FLAG_=TB_FLAG, G_RN_=G_RN, VIEW_IDX_=G_VIEW, GDT_=GDT, STREAM_=STREAM_B,
+        PRESS_=PRESS, SKIPF_=SKIP_F).replace('sub_LNS(', name('F-50083') + '('), a.work, 'map_reach_lns', image=img, stubs=lns_stubs)
+    r2 = random.Random(50083)
+    chains = []
+    for _ in range(48):
+        chains.append(dict(fov=r2.choice([25.0, 25.0, 30.0, 37.5, 50.0, 60.0, r2.uniform(20, 70)]), s0=r2.choice([1.5, 1.0, r2.uniform(1.0, 1.5), 1.25]),
+                           dt=r2.choice([1 / 60, 1 / 30, 1 / 60, r2.uniform(0.005, 0.05)]), pa=r2.choice([0, 1, 2, 5, 50, 100, 127, 128, 130, 200]), n=400))
+    marks = lambda c: sorted({m for m in (1, 2, 3, 4, 5, 10, 20, 50, 100, 126, 127, 128, 129, 130, 150, 200, 201, 202, 300, 400, c['pa'], c['pa'] + 1, c['pa'] + 2) if 1 <= m <= c['n']})
+    cur = [fb(c['s0']) for c in chains]
+    seq = [[] for _ in chains]
+    for fr in range(1, 401):
+        lines = []
+        for c, sc in zip(chains, cur):
+            paused = fr <= c['pa']
+            lines.append(f"LNS {fb(c['fov']):08x} {sc:08x} {fb(1.5):08x} {fb(0.5):08x} {fb(c['dt']):08x} {fb(300.0):08x} 0 0 {int(paused)} 0")
+        cf = a.work / 'LNC_cases.txt'
+        cf.write_text('\n'.join(lines) + '\n')
+        res = run_exe(lns_exe, a.image, cf)
+        cur = [int(r.split()[0], 16) for r in res]
+        for i, v in enumerate(cur):
+            seq[i].append(v)
+    for c, sq in zip(chains, seq):
+        out.append(f"LNC {fb(c['fov']):08x} {fb(c['s0']):08x} {fb(c['dt']):08x} {c['pa']} {c['n']} -> " + ' '.join(f'{m}:{sq[m - 1]:08x}' for m in marks(c)))
 
     keep = [l for l in out if not re.search(r'(?<![0-9a-zA-Z])82[0-9a-f]{6}(?![0-9a-zA-Z])', l)]
     a.out.write_text('\n'.join(keep) + '\n')

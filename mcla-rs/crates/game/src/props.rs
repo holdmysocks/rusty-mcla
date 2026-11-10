@@ -107,6 +107,26 @@ impl PropModel {
         self.reach_half(scale, fov.to_degrees() * 0.5, fov, k)
     }
 
+    /// Where the cull walk drops an instance of scale `scale`: the hedges' (kinds 2 and 5) far end is not scaled in the fade
+    /// bands (`reach`), but the walk's leaf (F-58526, the type's pass without the plant fade call) culls an instance whose
+    /// depth - 2 R exceeds min(the node's scale x the far end F-63362 keeps at +136, the cull cap): the far end here is
+    /// that, plus the 2 R. `far` = what `reach` returned (every other kind keeps it). The node's scale is a byte
+    /// of 16ths in the original; the port has the instance scale itself (approximate).
+    fn cull_far(&self, far: f32, scale: f32, fov: f32, k: Lod) -> f32 {
+        self.cull_far_half(far, scale, fov.to_degrees() * 0.5, k)
+    }
+
+    /// `cull_far` from the half lens angle in degrees.
+    pub(crate) fn cull_far_half(&self, far: f32, scale: f32, half_deg: f32, k: Lod) -> f32 {
+        match self.kind {
+            2 | 5 => {
+                let raw = 2.0 * self.sphere / orig_tan(half_deg * HEDGE_FAR_K).max(1e-6) * k.draw;
+                (scale * raw).min(FAR_DIST * k.draw) + 2.0 * self.sphere
+            }
+            _ => far,
+        }
+    }
+
     /// `reach` from the half lens angle in degrees (F-63362 forms it as the viewport's degrees x 0.5, the same f32 here).
     /// F-63362 + F-98063 bit for bit (test `reach_matches_the_original`): the angle factors are the executable's f32
     /// constants, applied as it applies them (angle x constant, one rounding), the tangent is its own (F-55967's double
@@ -115,6 +135,9 @@ impl PropModel {
         let r = self.sphere;
         let s2 = scale.min(2.0);
         let dist = |h: f32, per: f32| 2.0 * r / orig_tan(h * per).max(1e-6) * s2;
+        // (the hedges' bands are never scaled: F-98063's hedge path does not read the scale - what the instance scale
+        // does to a hedge is the cull, `cull_far`)
+        let dist_h = |h: f32, per: f32| 2.0 * r / orig_tan(h * per).max(1e-6);
         let cap = FAR_DIST * k.draw;
         match self.kind {
             1 => {
@@ -128,11 +151,11 @@ impl PropModel {
             // hedges: the high level to L = 2R / tan(h pi/600) (DETAIL LEVEL), the low level
             // (`Props::hedge_low`, kind 5) from L - 16 to the far end
             2 => {
-                let far = (dist(half_deg, HEDGE_FAR_K) * k.draw).min(cap);
-                ((dist(half_deg, HEDGE_LOD_K) * k.detail).min(far), far)
+                let far = (dist_h(half_deg, HEDGE_FAR_K) * k.draw).min(cap);
+                ((dist_h(half_deg, HEDGE_LOD_K) * k.detail).min(far), far)
             }
             5 => {
-                let far = (dist(half_deg, HEDGE_FAR_K) * k.draw).min(cap);
+                let far = (dist_h(half_deg, HEDGE_FAR_K) * k.draw).min(cap);
                 (0.0, far)
             }
             3 => {
@@ -193,6 +216,11 @@ static PAUSED_DETAIL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 /// main.rs, once a frame: whether the game is paused (the original's flag of F-31789).
 pub fn set_paused(on: bool) {
     PAUSED_DETAIL.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether the game is paused as F-31789 reports it (`set_paused`).
+pub fn paused() -> bool {
+    PAUSED_DETAIL.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 impl Lod {
@@ -1785,6 +1813,7 @@ impl Props {
                         let model = &self.models[run.model];
                         let d = dist_to_box(cam, run.min, run.max);
                         let (near, far) = model.reach(run.scale, lens, k);
+                        let far = model.cull_far(far, run.scale, lens, k);
                         if d > far || !frustum.intersects_aabb(run.min, run.max) {
                             continue;
                         }
@@ -1794,6 +1823,7 @@ impl Props {
                                 for sub in &run.subs {
                                     let ds = dist_to_box(cam, sub.min, sub.max);
                                     let (near, far) = model.reach(sub.scale, lens, k);
+                                    let far = model.cull_far(far, sub.scale, lens, k);
                                     if ds <= near && ds <= far && frustum.intersects_aabb(sub.min, sub.max) {
                                         put(pass, run.model, sub.start, sub.count, draws);
                                     }
@@ -1867,6 +1897,7 @@ impl Props {
                         let model = &self.models[run.model];
                         let d = dist_to_box(cam, run.min, run.max);
                         let (near, far) = model.reach(run.scale, lens, k);
+                        let far = model.cull_far(far, run.scale, lens, k);
                         if d > far || !frustum.intersects_aabb(run.min, run.max) || occluded.map_or(false, |o| o.hides_aabb(run.min, run.max)) {
                             continue;
                         }
@@ -1883,6 +1914,7 @@ impl Props {
                                 for sub in &run.subs {
                                     let ds = dist_to_box(cam, sub.min, sub.max);
                                     let (near, far) = model.reach(sub.scale, lens, k);
+                                    let far = model.cull_far(far, sub.scale, lens, k);
                                     if ds > far || !frustum.intersects_aabb(sub.min, sub.max) || occluded.map_or(false, |o| o.hides_aabb(sub.min, sub.max)) {
                                         continue;
                                     }
@@ -1905,6 +1937,7 @@ impl Props {
                                     for sub in &run.subs {
                                         let ds = dist_to_box(cam, sub.min, sub.max);
                                         let (near, far) = model.reach(sub.scale, lens, k);
+                                        let far = model.cull_far(far, sub.scale, lens, k);
                                         if ds > far || !frustum.intersects_aabb(sub.min, sub.max) || occluded.map_or(false, |o| o.hides_aabb(sub.min, sub.max)) {
                                             continue;
                                         }
@@ -2952,10 +2985,10 @@ mod lod_option_tests {
     /// card's far end, the night factor on the half angle, the 0.9 while paused, the low-LOD sentinel; hedges: the high level
     /// and the far end, no night factor, no paused factor), and the fade band the original sets for the far end is the
     /// far end's last quarter (0.75 F .. F) with the width's reciprocal as the slope. Hedges: the original's fade bands take the
-    /// hedge's distances unscaled (F-98063's hedge path never reads the scale), so they are compared at scale 1.
+    /// hedge's distances unscaled (F-98063's hedge path never reads the scale; the cull walk does scale them: `cull_far`).
     #[test]
     fn reach_matches_the_original() {
-        let (mut n, mut capped, mut sentinel, mut paused_n, mut night_n) = (0, 0, 0, 0, 0);
+        let (mut n, mut capped, mut sentinel, mut paused_n, mut night_n, mut hedge_n) = (0, 0, 0, 0, 0, 0);
         for l in include_str!("testdata/map_reach_ref.txt").lines().filter(|l| l.starts_with("RCH ")) {
             let (i, o) = l.split_once(" -> ").unwrap();
             let i: Vec<&str> = i.split(' ').collect();
@@ -2971,9 +3004,9 @@ mod lod_option_tests {
             let kind = if maxrots > 1 { 2 } else if low != 0 { 3 } else { 1 };
             let m = PropModel { batches: Vec::new(), radius, sphere: radius, kind };
             let k = Lod { draw: 1.0, detail: 1.0, plant_angle: if paused { 0.9 } else { 1.0 }, night };
-            // (the hedges at scale 1: see above)
-            let sc = if kind == 2 { 1.0 } else { scale };
-            let s2 = sc.min(2.0);
+            // (the hedges' bands take no scale at all: the expected distances are the type's own, whatever the scale)
+            let s2 = if kind == 2 { 1.0 } else { scale.min(2.0) };
+            let sc = scale;
             let (near, far) = m.reach_half(sc, fov * 0.5, 0.0, k);
             let exp_far = n136 * s2;
             if exp_far > FAR_DIST {
@@ -2995,6 +3028,9 @@ mod lod_option_tests {
                 }
             }
             if kind == 2 {
+                // the cull walk's limit (F-58526): scale x the far end, to the cap, and 2 R: only here does the scale reach a hedge
+                assert_eq!(m.cull_far_half(far, sc, fov * 0.5, k).to_bits(), ((sc * n136).min(FAR_DIST) + 2.0 * radius).to_bits(), "cull: {l}");
+                hedge_n += 1;
                 assert_eq!(n140, o.split(' ').next().unwrap(), "{l}");
             } else {
                 assert_eq!(n140, "deadbeef", "{l}");
@@ -3008,7 +3044,7 @@ mod lod_option_tests {
             n += 1;
         }
         assert_eq!(n, 6000);
-        assert!(capped > 100 && sentinel > 500 && paused_n > 500 && night_n > 1500, "{capped} {sentinel} {paused_n} {night_n}");
+        assert!(capped > 100 && sentinel > 500 && paused_n > 500 && night_n > 1500 && hedge_n > 1000, "{capped} {sentinel} {paused_n} {night_n} {hedge_n}");
     }
 
     /// F-98063 alone over its four (r5, r6) modes for trees and hedges (section FAD): the trees' bands D - 4 .. D (r5 = 1), 3/4 F .. F

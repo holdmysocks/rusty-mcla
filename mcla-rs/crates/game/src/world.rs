@@ -281,14 +281,160 @@ impl LodFade {
     /// The (sector, far model) alphas F-75080 draws with, the sector loaded or not.
     pub fn alphas(&self, loaded: bool) -> (f32, f32) {
         if loaded && self.state != 1 {
-            let u = if self.state == 2 { self.t } else { 1.0 - self.t };
-            ((2.0 * u).min(1.0), 1.0 - 2.0 * (u - 0.5).max(0.0))
+            self.fade_alphas(-1.0)
         } else if loaded && self.choice & 2 != 0 {
             (1.0, 0.0)
         } else {
             (0.0, 1.0)
         }
     }
+
+    /// The two alphas F-75080 computes for a record that fades (loaded, +295 not 1): u = +288 t (or the forced fade
+    /// setting when that is not negative; the shipped value is -1.0), 1 - u unless fading to detail (+295 2); the sector's
+    /// min(2u, 1) (fsel on 1 - 2u) and the far model's 1 - 2 max(u - 0.5, 0) (fnmsubs: -(2w - 1), so -0 where 2w = 1). Run offline as generated over 20,000 cases (tools/map_alpha_reference.py).
+    pub fn fade_alphas(&self, forced: f32) -> (f32, f32) {
+        let mut u = self.t;
+        if !(forced < 0.0) {
+            u = forced;
+        } else if self.state != 2 {
+            u = 1.0 - u;
+        }
+        let a = u * 2.0;
+        let w = u - 0.5;
+        (if 1.0 - a >= 0.0 { a } else { 1.0 }, -(if w >= 0.0 { w } else { 0.0 }).mul_add(2.0, -1.0))
+    }
+
+    /// F-75080 (the draw of one sector record for one pass), as the calls it makes. `rec` = the record (+252 loaded state,
+    /// +268 distance, +295 fade state, +296 last choice, +288 t in `self`); `g` = the globals it reads. The cross-fade
+    /// passes (mask 0x1E1800: pass bits 11, 12, 17 - 20) draw both models with the fade alphas while a loaded record
+    /// fades; the other passes draw the one model chosen now (the mirror 0x1000000 uses its own distance, the shadow /
+    /// reflection passes 0x1F0 and 0xC their own rules). The mirror's, shadow's and reflection passes are not drawn
+    /// by `World` (rearview.rs has its own mirror rule); this is the whole decision, checked against the original for
+    /// every pass bit.
+    pub fn sector_draw(&self, pass: u32, loaded: bool, dist: f32, g: &DrawGlobals) -> Vec<SectorEv> {
+        let mut ev = Vec::new();
+        if pass == 2 && dist > g.gate {
+            return ev;
+        }
+        let detail = if !g.det_on && self.state == 1 { false } else { dist < g.thr };
+        let a = pass & 0x402 != 0;
+        let mut sector = loaded && detail && !a && self.choice & 4 != 0;
+        let mut far = a || (!sector && g.far_present);
+        let fading = loaded && self.state != 1 && pass & 0x1E1800 != 0;
+        if pass & 0x1F0 != 0 && g.rn_370 {
+            far = true;
+            sector = false;
+        }
+        if pass & 0x1000000 != 0 {
+            sector = !g.flag_14391 && loaded && dist < g.thr2;
+            far = !sector;
+        }
+        if pass & 0xC != 0 {
+            sector = loaded && detail;
+            far = true;
+            if g.rn_393 {
+                sector = true;
+                far = false;
+            }
+        }
+        let (mut fs, mut ff) = (1.0, 1.0);
+        if fading {
+            (fs, ff) = self.fade_alphas(g.forced);
+            ev.push(SectorEv::Begin);
+            ev.push(SectorEv::Fade(fs));
+        }
+        if sector || fading {
+            ev.push(SectorEv::Sector);
+        }
+        if far || fading {
+            if g.far_present && pass & 0x146000 == 0 {
+                if fading {
+                    ev.push(SectorEv::Fade(ff));
+                    ev.push(SectorEv::Param12(if g.flag_scale_fade { g.scale * fs } else { g.scale }));
+                }
+                if g.far_model {
+                    if pass == 2 {
+                        ev.push(SectorEv::MirrorIn(g.night));
+                    }
+                    ev.push(SectorEv::Far(if pass == 0x80000 { 2 } else { 0 }));
+                    if pass == 2 {
+                        ev.push(SectorEv::MirrorOut);
+                    }
+                }
+            }
+            if fading {
+                ev.push(SectorEv::Param12(0.0));
+                ev.push(SectorEv::End);
+            }
+        }
+        ev
+    }
+}
+
+/// What F-75080 reads outside the record: the sector settings of the city block, the renderer's flags, the far-model
+/// drawable. The shipped values are in `Default`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawGlobals {
+    /// the mirror pass's distance gate
+    pub gate: f32,
+    /// detail models on, the detail distance (300 x the lens scale) and the mirror's 20 m
+    pub det_on: bool,
+    pub thr: f32,
+    pub thr2: f32,
+    /// the forced fade setting (-1 off)
+    pub forced: f32,
+    /// the far model's parameter 12: the value, and whether it follows the sector's alpha
+    pub scale: f32,
+    pub flag_scale_fade: bool,
+    /// the renderer's flags at +370 and +393
+    pub rn_370: bool,
+    pub rn_393: bool,
+    /// the far-model drawable exists; this record has a far model
+    pub far_present: bool,
+    pub far_model: bool,
+    /// the byte that holds the mirror's detail back
+    pub flag_14391: bool,
+    pub night: bool,
+}
+
+impl Default for DrawGlobals {
+    fn default() -> Self {
+        DrawGlobals {
+            gate: 450.0,
+            det_on: true,
+            thr: 300.0,
+            thr2: 20.0,
+            forced: -1.0,
+            scale: 1.0,
+            flag_scale_fade: false,
+            rn_370: false,
+            rn_393: false,
+            far_present: true,
+            far_model: true,
+            flag_14391: false,
+            night: false,
+        }
+    }
+}
+
+/// One call F-75080 makes, in order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SectorEv {
+    /// the render state set-up (F-24823)
+    Begin,
+    /// the light-manager fade (F-18250)
+    Fade(f32),
+    /// shader parameter 12 (F-33110)
+    Param12(f32),
+    /// the sector's drawables (F-65459)
+    Sector,
+    /// the far model (F-73936), mode 2 in the opaque pass
+    Far(u32),
+    /// the render state restore (F-75431)
+    End,
+    /// the mirror pass's camera set-up round the far model
+    MirrorIn(bool),
+    MirrorOut,
 }
 
 pub struct GpuSector {
@@ -898,6 +1044,9 @@ fn merge_batches(batches: Vec<CpuBatch>) -> Vec<CpuBatch> {
 }
 
 /// Ids of interior sets (garages) start here; they are kept apart from the streamed sectors.
+/// How far the original streams sectors in (the record distance under 600, F-50083's neighbours; lod_rule.md): the port loads to the
+/// detail distance, but never beyond this (x the DETAIL LEVEL option) - the paused lens scale takes the detail distance past it.
+const STREAM_DIST: f32 = 600.0;
 pub const SET_ID: usize = 1 << 40;
 /// ids of the cells of the city's own collision in the collider
 pub const BOUND_ID: usize = 1 << 41;
@@ -1569,6 +1718,15 @@ impl World {
         }
     }
 
+    /// One frame of F-50083's lens scale: eased towards the lens' target (`lens_scale`), and while the game is paused
+    /// (F-31789's flag) doubled and stored back - every frame, so a pause leaves the scale (and the 300 m x scale detail
+    /// distance) doubling per frame and easing back only at 0.5 a second. Run frame after frame offline as generated
+    /// (tools/map_reach_reference.py, LNC) and per frame (LNS); the test `lens_scale_runs_like_the_original`.
+    pub fn step_lod_scale(cur: f32, lens_deg: f32, dt: f32, paused: bool) -> f32 {
+        let eased = Self::ease_lod_scale(cur, Self::lens_scale(lens_deg), dt);
+        if paused { eased * 2.0 } else { eased }
+    }
+
     /// The lens scale's target (F-50083): 1.5 at a 25 degree lens .. 1.0 from 50 degrees.
     pub fn lens_scale(lens_deg: f32) -> f32 {
         1.5 - 0.5 * ((lens_deg - 25.0) * 0.04).clamp(0.0, 1.0)
@@ -1646,12 +1804,14 @@ impl World {
         let now = std::time::Instant::now();
         let dt = now.duration_since(self.last_fade).as_secs_f32().min(0.1);
         self.last_fade = now;
-        let target = Self::lens_scale(crate::props::lens().to_degrees());
-        self.lod_scale = Self::ease_lod_scale(self.lod_scale, target, dt);
+        self.lod_scale = Self::step_lod_scale(self.lod_scale, crate::props::lens().to_degrees(), dt, crate::props::paused());
         let detail = 300.0 * self.lod_scale * crate::props::Lod::now().detail.max(1.0);
         let detail = std::env::var("MCLA_SECTOR_DIST").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(detail);
-        // (the lens widens with speed: keep to the larger distance for a while rather than drop and reload)
-        self.load_radius = detail.max(self.load_radius - 2.0);
+        // (the lens widens with speed: keep to the larger distance for a while rather than drop and reload; what is
+        // loaded stops at the original's streaming distance, 600 m - F-50083's paused doubling takes the detail
+        // distance beyond it, where the original has nothing loaded)
+        let stream = detail.min(STREAM_DIST * crate::props::Lod::now().detail.max(1.0));
+        self.load_radius = stream.max(self.load_radius - 2.0);
         self.unload_radius = self.load_radius + 90.0;
         // request loads, nearest first (from the lock while the streaming is locked)
         let spos = self.stream_lock.unwrap_or(pos);
@@ -2164,11 +2324,9 @@ mod lod_option_tests {
     }
 
     /// F-50083's lens scale and sector detail distance, run offline with its callees stubbed (section LNS, 4,400 cases (the 1,684 at other constants are skipped) of lens
-    /// degrees 10 .. 120, current scale, frame time): the target (`World::lens_scale`), the eased scale (F-90102 fused,
-    /// `World::ease_lod_scale`) and the detail distance 300 x scale equal the original to the bit - at the shipped constants
-    /// (narrow end 1.5, rate 0.5, base 300). NOT ported (the open item, docs/MAP.md): while the game is paused (F-31789's flag) the
-    /// original multiplies the eased scale by 2.0 and stores it back each frame; the fixture's paused cases are checked for that
-    /// rule only.
+    /// degrees 10 .. 120, current scale, frame time, 400 of them with the paused flag set): `World::step_lod_scale` (the target
+    /// `World::lens_scale`, the eased scale F-90102 fused, doubled while paused) and the detail distance 300 x scale equal the
+    /// original to the bit, at the shipped constants (narrow end 1.5, rate 0.5, base 300).
     #[test]
     fn detail_distance_matches_the_original() {
         let (mut n, mut paused) = (0, 0);
@@ -2178,22 +2336,123 @@ mod lod_option_tests {
             let (fov, sc, narrow, rate, dt, base) = (bits(i[1]), bits(i[2]), bits(i[3]), bits(i[4]), bits(i[5]), bits(i[6]));
             let (f432, f433, f373, tls): (u32, u32, u32, u32) = (i[7].parse().unwrap(), i[8].parse().unwrap(), i[9].parse().unwrap(), i[10].parse().unwrap());
             let o: Vec<f32> = o.split(' ').map(bits).collect();
+            // (F-31789: the +433 byte when +432 is set and the thread block's byte 72 is clear, else +373)
             let is_paused = if f432 != 0 && tls == 0 { f433 & 0xFF != 0 } else { f373 & 0xFF != 0 };
             if (narrow, rate, base) != (1.5, 0.5, 300.0) {
                 continue;
             }
-            let eased = super::World::ease_lod_scale(sc, super::World::lens_scale(fov), dt);
+            let scale = super::World::step_lod_scale(sc, fov, dt, is_paused);
+            assert_eq!(o[0].to_bits(), scale.to_bits(), "{l}");
+            assert_eq!(o[1].to_bits(), (300.0 * scale).to_bits(), "{l}");
             if is_paused {
-                assert_eq!(o[0].to_bits(), (eased * 2.0).to_bits(), "{l}");
-                assert_eq!(o[1].to_bits(), (300.0 * (eased * 2.0)).to_bits(), "{l}");
                 paused += 1;
             } else {
-                assert_eq!(o[0].to_bits(), eased.to_bits(), "{l}");
-                assert_eq!(o[1].to_bits(), (300.0 * eased).to_bits(), "{l}");
                 n += 1;
             }
         }
         assert!(n > 1000 && paused > 150, "{n} {paused}");
+    }
+
+    /// F-50083 frame after frame (section LNC: 48 chains of 400 frames, the scale it leaves fed back in, the first P = 0 .. 200
+    /// frames with the paused flag set; the scale after 20 frames of each chain's marks): the same bits as `step_lod_scale`
+    /// stepped the same way - the scale doubles every paused frame (to f32's top in 127 frames) and eases back at 0.5 a
+    /// second, so a pause of a few frames leaves the detail distance far past 600 m for minutes.
+    #[test]
+    fn lens_scale_runs_like_the_original() {
+        let (mut chains, mut marks, mut grew) = (0, 0, 0);
+        for l in include_str!("testdata/map_reach_ref.txt").lines().filter(|l| l.starts_with("LNC ")) {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let i: Vec<&str> = i.split(' ').collect();
+            let (fov, s0, dt) = (bits(i[1]), bits(i[2]), bits(i[3]));
+            let (pa, n): (u32, u32) = (i[4].parse().unwrap(), i[5].parse().unwrap());
+            let want: std::collections::HashMap<u32, u32> = o.split(' ').map(|m| {
+                let (f, v) = m.split_once(':').unwrap();
+                (f.parse().unwrap(), u32::from_str_radix(v, 16).unwrap())
+            }).collect();
+            let mut sc = s0;
+            for fr in 1..=n {
+                sc = super::World::step_lod_scale(sc, fov, dt, fr <= pa);
+                if let Some(&w) = want.get(&fr) {
+                    assert_eq!(sc.to_bits(), w, "{l} frame {fr}");
+                    marks += 1;
+                }
+            }
+            chains += 1;
+            grew += (pa > 0 && sc > 100.0) as u32;
+        }
+        assert!(chains == 48 && marks > 800 && grew > 15, "{chains} {marks} {grew}");
+    }
+
+    /// F-75080 run offline as generated (tools/map_alpha_reference.py, 20,000 records x passes: every pass bit and the cross-fade
+    /// passes, states 0 .. 4 of the load, fade states 0 .. 255, t, the distances round the detail and the mirror's distance,
+    /// the forced fade, every global the function reads; every callee a recorder): `LodFade::sector_draw` makes the same
+    /// calls in the same order with the same arguments - the fade alphas bit for bit (`fade_alphas`), shader parameter 12,
+    /// the sector and far draws, the mirror pass's set-up. Then `alphas` (what the port draws with) equals the original's
+    /// alpha of each model in the two passes the port draws, for the states a frame's `step` leaves.
+    #[test]
+    fn sector_draw_matches_the_original() {
+        use super::{DrawGlobals, LodFade, SectorEv};
+        let (mut n, mut fading, mut mirror, mut main_n, mut with_a) = (0, 0, 0, 0, 0);
+        for l in include_str!("testdata/map_alpha_ref.txt").lines() {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let i: Vec<&str> = i.split(' ').collect();
+            let pass = u32::from_str_radix(i[1], 16).unwrap();
+            let (st, fs, ch): (u32, u8, u8) = (i[3].parse().unwrap(), i[4].parse().unwrap(), i[5].parse().unwrap());
+            let (dist, t, thr, thr2, forced, gate) = (bits(i[6]), bits(i[7]), bits(i[8]), bits(i[9]), bits(i[10]), bits(i[11]));
+            let flag = |k: usize| i[k] != "0";
+            let g = DrawGlobals {
+                gate,
+                det_on: flag(12),
+                thr,
+                thr2,
+                forced,
+                scale: bits(i[14]),
+                flag_scale_fade: flag(13),
+                rn_370: flag(15),
+                rn_393: flag(16),
+                far_present: flag(17),
+                far_model: flag(19) && flag(18),
+                flag_14391: flag(20),
+                night: flag(21),
+            };
+            let f = LodFade { state: fs, t, choice: ch };
+            let mut s = String::new();
+            for e in f.sector_draw(pass, st == 3, dist, &g) {
+                match e {
+                    SectorEv::Begin => s += "S ",
+                    SectorEv::Fade(a) => s += &format!("A{:08x} ", a.to_bits()),
+                    SectorEv::Param12(a) => s += &format!("P12:{:08x} ", a.to_bits()),
+                    SectorEv::Sector => s += &format!("D{pass:x} "),
+                    SectorEv::Far(m) => s += &format!("F{m} "),
+                    SectorEv::End => s += "R ",
+                    SectorEv::MirrorIn(night) => s += if night { "V W X572662306 " } else { "V W X286331153 " },
+                    SectorEv::MirrorOut => s += "X7 ",
+                }
+            }
+            assert_eq!(if s.is_empty() { "-" } else { s.trim_end() }, o.trim_end(), "{l}");
+            n += 1;
+            fading += o.starts_with("S ") as u32;
+            mirror += o.contains('V') as u32;
+            // the port's alphas: the opaque and the cross-fade-less main passes at the shipped settings, a record `step` left consistent
+            let shipped = g == DrawGlobals { gate, thr, thr2, night: g.night, ..DrawGlobals::default() } && forced < 0.0;
+            let consistent = ch == (if st == 3 { 4 } else { 0 }) | (if st == 3 && dist < thr { 2 } else { 1 });
+            if (pass == 0x80000 || pass == 0x800) && shipped && consistent {
+                let (mut sa, mut fa, mut cur) = (0.0f32, 0.0f32, 1.0f32);
+                for tok in o.split(' ') {
+                    match tok.as_bytes().first() {
+                        Some(b'A') => cur = bits(&tok[1..]),
+                        Some(b'D') => sa = cur,
+                        Some(b'F') => fa = cur,
+                        _ => {}
+                    }
+                }
+                let (pa, pf) = f.alphas(st == 3);
+                assert_eq!((pa.to_bits(), pf.to_bits()), (sa.to_bits(), fa.to_bits()), "{l}");
+                main_n += 1;
+                with_a += (fs != 1 && st == 3) as u32;
+            }
+        }
+        assert!(n == 20000 && fading > 3000 && mirror > 100 && main_n > 1000 && with_a > 500, "{n} {fading} {mirror} {main_n} {with_a}");
     }
 
     /// F-89177: a flip starts a third of a second's fade only in view; a running fade goes to its end; out of view the
