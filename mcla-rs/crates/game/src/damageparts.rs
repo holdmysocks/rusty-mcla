@@ -195,9 +195,10 @@ impl Flap {
         }
     }
 
-    /// `F-97771`: back to rest (closed) at the car's matrix.
+    /// `F-97771`: back to rest (closed) at the car's matrix - the rest point through it by the 4-term dots (checked
+    /// word for word, test `flap_reset_matches_the_original`).
     pub fn reset(&mut self, c: &Mat4) {
-        self.p = c.transform_point3(FLAP_R);
+        self.p = through(FLAP_R, &rows4(c));
         self.q = self.p;
         self.angle = 0.0;
         self.prev_angle = 0.0;
@@ -537,6 +538,17 @@ impl Bumper {
         }
     }
 
+    /// F-87243, a teleport's carry: each end's place through the car's old matrix's inverse (F-30106), then
+    /// through the new one, the 4-term dots each, its last place set to the same (the end keeps no speed). Checked word for
+    /// word (test `bumper_carry_matches_the_original`).
+    pub fn carry(&mut self, old: &Mat4, new: &Mat4) {
+        let (i, n) = (inverse_rows(&rows4(old)), rows4(new));
+        for e in [&mut self.a, &mut self.b] {
+            e.pos = through(through(e.pos, &i), &n);
+            e.prev = e.pos;
+        }
+    }
+
     /// `F-57399`: the fastest moving end relative to the car (m/s) and where it is; None when both are gone.
     pub fn creak(&self, dt: f32) -> Option<(f32, Vec3)> {
         if (self.a.state == 2 && self.b.state == 2) || self.detached.is_some() {
@@ -871,15 +883,11 @@ impl DamageParts {
         // (F-18198, the teleport: the flaps re-rested, the bumpers' points carried with the car - here a
         // jump of more than 10 m in a frame)
         if (c.w_axis - self.last_c.w_axis).truncate().length() > 10.0 {
-            let carry = c * self.last_c.inverse();
             for f in [&mut self.hood, &mut self.trunk] {
                 f.reset(&c);
             }
             for b in self.bumpers.iter_mut().flatten() {
-                for e in [&mut b.a, &mut b.b] {
-                    e.pos = carry.transform_point3(e.pos);
-                    e.prev = carry.transform_point3(e.prev);
-                }
+                b.carry(&self.last_c, &c);
             }
         }
         let ci = c.inverse();
@@ -1030,6 +1038,53 @@ mod tests {
         assert_eq!(bad, [0; 5], "mismatches (p, q, angle, prev, event): {bad:?}
 {}", first.join("
 "));
+    }
+
+    /// A teleport's carry F-87243 run offline (tools/bumper_carry_reference.py, testdata/bumper_carry_ref.txt: 3,000
+    /// random old and new car matrices and end places): both ends' places and last places - every word equal.
+    #[test]
+    fn bumper_carry_matches_the_original() {
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let m4 = |w: &[f32]| Mat4::from_cols(Vec4::from_slice(&w[0..4]), Vec4::from_slice(&w[4..8]), Vec4::from_slice(&w[8..12]), Vec4::from_slice(&w[12..16]));
+        let v3 = |w: &[f32], k: usize| Vec3::new(w[k], w[k + 1], w[k + 2]);
+        let mut n = 0;
+        for line in include_str!("testdata/bumper_carry_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<f32> = i.split_whitespace().map(|x| f(x)).collect();
+            let ov: Vec<u32> = o.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let mut b = Bumper::new(true, Mat4::IDENTITY, 1);
+            (b.a.pos, b.a.prev, b.b.pos, b.b.prev) = (v3(&w, 32), v3(&w, 36), v3(&w, 40), v3(&w, 44));
+            b.carry(&m4(&w[0..16]), &m4(&w[16..32]));
+            let bits = |v: Vec3| vec![v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+            for (got, k, what) in [(b.a.pos, 0, "A"), (b.a.prev, 4, "A prev"), (b.b.pos, 20, "B"), (b.b.prev, 24, "B prev")] {
+                assert_eq!(bits(got), ov[k..k + 3].to_vec(), "{what}: {line}");
+            }
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
+
+    /// The flap's reset F-97771 as the binding runs it (tools/flap_step_reference.py, the reset's words logged before
+    /// the random state): the particle and its last place (+112 / +128) and both angles 0 - every word equal.
+    #[test]
+    fn flap_reset_matches_the_original() {
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let m4 = |w: &[f32]| Mat4::from_cols(Vec4::from_slice(&w[0..4]), Vec4::from_slice(&w[4..8]), Vec4::from_slice(&w[8..12]), Vec4::from_slice(&w[12..16]));
+        let mut n = 0;
+        for line in include_str!("testdata/flap_step_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let w: Vec<f32> = i.split_whitespace().take(16).map(|x| f(x)).collect();
+            let ov: Vec<u32> = o.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let mut fl = Flap::new(0.2, 1);
+            fl.angle = 0.3;
+            fl.prev_angle = 0.3;
+            fl.reset(&m4(&w));
+            let bits = |v: Vec3| vec![v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+            assert_eq!((bits(fl.p), bits(fl.q)), (ov[50..53].to_vec(), ov[54..57].to_vec()), "particle: {line}");
+            assert_eq!((fl.angle.to_bits(), fl.prev_angle.to_bits()), (ov[67], ov[68]), "angles: {line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
     }
 
     /// The bumper's reset against F-40944 run offline (tools/bumper_reset_hit_reference.py, testdata/bumper_reset_ref.txt:

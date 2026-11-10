@@ -12,7 +12,8 @@ Flap at 0x1000 (the original's offsets, DAMAGE_PARTS_RULE.md 1.1). Car at 0x2000
 
 Writes <out-dir>/flap_step_ref.txt: one case a line, "in -> out" (hex float / int words): in = M(16) p(4) q(4) angle
 prev speed (floats) trunk loose (ints); out = flap +0 .. +188 (48 words), the event (0 none, 1 closed, 2 open) and its
-rate. Test `damageparts::tests::flap_step_matches_the_original`."""
+rate, then the reset's flap +112 .. +188 (20 words, before the random state). Tests
+`damageparts::tests::flap_step_matches_the_original`, `flap_reset_matches_the_original`."""
 import argparse
 import random
 import struct
@@ -70,11 +71,13 @@ def main():
              '{Context t{};t.r3.u32=0x1000;t.r4.u32=0x2800;t.r5.u32=0x2810;t.r6.u32=0x2820;t.r7.u32=0x2830;t.r13.u32=0x5800;t.r1.u32=0x7F00;'
              + f['F-71271'] + '(t,nullptr);}'
              '{Context t{};t.r3.u32=0x1000;t.r4.u32=0x2000+208;t.r13.u32=0x5800;t.r1.u32=0x7F00;' + f['F-97771'] + '(t,nullptr);}'
+             'for(int o=112;o<192;o+=4)store(0x6100+o-112,load(0x1000+o));'
              'for(int k=0;k<4;k++){store(0x1000+112+4*k,c[16+k]);store(0x1000+128+4*k,c[20+k]);}'
              'store(0x1000+180,c[24]);store(0x1000+184,c[25]);*pointer(0x1000+88)=uint8_t(c[28]);'
              'store(0x6000,0);store(0x6004,0);')
     outs = ('for(int o=0;o<192;o+=4)printf("%08x ",load(0x1000+o));'
-            'printf("%08x %08x' + chr(92) + 'n",load(0x6000),load(0x6004));')
+            'printf("%08x %08x",load(0x6000),load(0x6004));'
+            'for(int o=0;o<80;o+=4)printf(" %08x",load(0x6100+o));printf("' + chr(92) + 'n");')
     log = '{float t=float(ctx.f1.f64);uint32_t u;memcpy(&u,&t,4);store(0x6000,%d);store(0x6004,u);}'
     stubs = {f['F-28953']: log % 1, f['F-47714']: log % 2}
     body = ('static const uint32_t C[][%d]={' % n + nl + rows + nl + '};' + nl +
