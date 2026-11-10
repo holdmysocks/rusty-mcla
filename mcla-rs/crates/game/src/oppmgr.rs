@@ -190,9 +190,138 @@ pub fn racer_extent(min: [f32; 3], max: [f32; 3]) -> Extent {
     Extent { width: hx * 2.0, length: hz * 2.0, radius }
 }
 
+/// mcRacerManager's racer list: +0 the entries (null = an empty slot), +400 their count, and the frame's snapshot +404 /
+/// +804 (taken at the frame's start by F-25724), which IndexOf searches while the thread block's byte +72 is set
+/// (`updating`). Checked against the original run offline: test `racer_list_matches_the_original`.
+#[derive(Debug, Clone, Default)]
+pub struct RacerList<T> {
+    pub list: Vec<Option<T>>,
+    pub snap: Vec<Option<T>>,
+    pub updating: bool,
+}
+
+impl<T: Copy + PartialEq> RacerList<T> {
+    /// F-95558 (AddRacer): into the first empty slot; on the way a human racer (vfunc 40) takes the place of the first
+    /// non-human one, which is carried on (humans first, each group in the order added); at the end appended.
+    pub fn add(&mut self, racer: T, human: impl Fn(&T) -> bool) {
+        let mut r = racer;
+        for slot in self.list.iter_mut() {
+            match *slot {
+                None => {
+                    *slot = Some(r);
+                    return;
+                }
+                Some(e) => {
+                    if human(&r) && !human(&e) {
+                        *slot = Some(r);
+                        r = e;
+                    }
+                }
+            }
+        }
+        self.list.push(Some(r));
+    }
+
+    /// F-44187 (RemoveRacer): the first slot holding it (a null racer: the first empty slot) is emptied; the count stays.
+    /// Returns false when it is not in the list - the original then writes 0 to the word before the list (index -1).
+    pub fn remove(&mut self, racer: Option<T>) -> bool {
+        match self.list.iter().position(|e| *e == racer) {
+            Some(i) => {
+                self.list[i] = None;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// F-80858 (IndexOf): -1 for a null racer or one not in the list (the snapshot while `updating`).
+    pub fn index_of(&self, racer: Option<T>) -> i32 {
+        let Some(r) = racer else { return -1 };
+        let l = if self.updating { &self.snap } else { &self.list };
+        l.iter().position(|e| *e == Some(r)).map_or(-1, |i| i as i32)
+    }
+
+    /// F-52302: the racer to slot `to`, swapping with what is there; the list grows with empty slots to reach it. Its own
+    /// index is F-80858's (the snapshot's while `updating`), the swap is in the list.
+    pub fn move_to(&mut self, racer: Option<T>, to: i32) {
+        let i = self.index_of(racer);
+        if i < 0 || to < 0 {
+            return;
+        }
+        let to = to as usize;
+        while self.list.len() <= to {
+            self.list.push(None);
+        }
+        self.list[i as usize] = self.list[to];
+        self.list[to] = racer;
+    }
+
+    /// F-25724's copy of the list into the snapshot.
+    pub fn snapshot(&mut self) {
+        self.snap = self.list.clone();
+    }
+}
+
+/// The order of the race's racer list after AddRacer of each of `ids` in turn (`human`: vfunc 40).
+pub fn racer_order(ids: &[usize], human: impl Fn(usize) -> bool) -> Vec<usize> {
+    let mut l = RacerList::default();
+    for &i in ids {
+        l.add(i, |&j| human(j));
+    }
+    l.list.into_iter().flatten().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F-95558, F-44187, F-80858 and F-52302 run offline on 4,000 random op sequences (tools/racer_list_reference.py,
+    /// verify_racer_list.md): after every op the list's count and entries, every IndexOf, and whether an absent racer
+    /// was removed (the original's stray write) equal RacerList's.
+    #[test]
+    fn racer_list_matches_the_original() {
+        let text = include_str!("testdata/racer_list_ref.txt");
+        let hex = |w: &str| u32::from_str_radix(&w.replace('_', ""), 16).unwrap();
+        let (mut cases, mut ops, mut bad) = (0, 0, 0);
+        for line in text.lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let arrow = w.iter().position(|x| *x == "->").unwrap();
+            let v: Vec<u32> = w[1..arrow].iter().map(|x| hex(x)).collect();
+            let o: Vec<u32> = w[arrow + 1..].iter().map(|x| hex(x)).collect();
+            let humans = v[0];
+            let human = |r: &u32| (humans >> r) & 1 != 0;
+            let rac = |k: u32| if k < 7 { Some(k) } else { None };
+            let mut l: RacerList<u32> = RacerList::default();
+            let mut stray = false;
+            let mut got = Vec::new();
+            for i in 0..v[1] as usize {
+                let (op, k, b) = (v[2 + 3 * i], v[3 + 3 * i], v[4 + 3 * i]);
+                let mut r = 0;
+                match op {
+                    0 => l.add(k, human),
+                    1 => stray |= !l.remove(rac(k)),
+                    2 => l.move_to(rac(k), b as i32),
+                    3 => r = l.index_of(rac(k)) as u32,
+                    4 => l.snapshot(),
+                    _ => l.updating = b != 0,
+                }
+                let h = l.list.iter().map(|e| e.unwrap_or(7)).fold(2_166_136_261u32, |h, x| x.to_le_bytes().iter().fold(h, |h, b| (h ^ *b as u32).wrapping_mul(16_777_619)));
+                got.extend([r, l.list.len() as u32, h]);
+                ops += 1;
+            }
+            got.push(if stray { 0 } else { 0x1234_5678 });
+            cases += 1;
+            if got != o {
+                if bad < 5 {
+                    println!("{line}{}  port {:08x?}", char::from(10), got);
+                }
+                bad += 1;
+            }
+        }
+        println!("racer list: {cases} cases, {ops} ops, {bad} differ");
+        assert!(cases >= 4000);
+        assert_eq!(bad, 0);
+    }
 
     fn words(s: &str) -> Vec<u32> {
         s.split_whitespace().map(|t| u32::from_str_radix(t.trim_start_matches('h'), 16).unwrap()).collect()

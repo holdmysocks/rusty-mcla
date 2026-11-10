@@ -4144,6 +4144,8 @@ impl Game {
             vehicles.cars[idx].ai = Some(d);
             participants.push(idx);
         }
+        // (mcRacerManager's AddRacer, F-95558, of each in turn: the human racers first)
+        let participants = crate::oppmgr::racer_order(&participants, |i| i == pi);
         let target = if kind == RaceKind::Payback { participants.get(1).copied() } else { None };
         let n = vehicles.cars.len();
         // (a new race object: +3773 / +3774 clear, the ctor F-61221)
@@ -4286,6 +4288,8 @@ impl Game {
             vehicles.cars[idx].ai = Some(d);
             participants.push(idx);
         }
+        // (mcRacerManager's AddRacer, F-95558, of each in turn: the human racers first)
+        let participants = crate::oppmgr::racer_order(&participants, |i| i == pi);
         let n = vehicles.cars.len();
         let lap_len = checkpoints.len();
         self.race_dmg_out = false;
