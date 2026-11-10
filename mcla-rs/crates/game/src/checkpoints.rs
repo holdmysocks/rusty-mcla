@@ -236,7 +236,8 @@ impl CpSpec {
         match self.second {
             Some(b) => {
                 let d = b - self.pos;
-                Vec3::new(d.z, 0.0, -d.x).normalize_or_zero() * GATE_BAND
+                let v = Vec3::new(d.z, 0.0, -d.x);
+                (v * unit_scale(dot3(v, v))) * GATE_BAND
             }
             None => Vec3::ZERO,
         }
@@ -245,37 +246,52 @@ impl CpSpec {
     /// `F-78734`: did the way from `prev` (the car's last position) to `ahead` (2 m on
     /// along its velocity) touch the checkpoint.
     pub fn hit(&self, ahead: Vec3, prev: Vec3) -> bool {
+        self.hit_in(ahead, prev, self.gate_offset(), DEPTH)
+    }
+
+    /// The hit test with the object's +96 (the gate offset) and +184 (the depth) given (the original reads them from the
+    /// object; the unit test feeds arbitrary ones).
+    pub fn hit_in(&self, ahead: Vec3, prev: Vec3, off: Vec3, depth: f32) -> bool {
         match self.second {
             Some(b) => {
                 let a = self.pos;
-                let off = self.gate_offset();
                 for (ga, gb) in [(a, b), (a + off, b + off), (a - off, b - off)] {
                     let Some((t, u)) = cross_xz(ahead, prev, ga, gb) else { continue };
                     if !(0.0..=1.0).contains(&t) || !(-0.2..=1.2).contains(&u) {
                         continue;
                     }
-                    // (the first line crossed decides; the heights are those of the line itself)
-                    let gy = a.y + (b.y - a.y) * u;
+                    // (the first line crossed decides; the heights are those of the line itself, the line's height at u
+                    // one fused multiply-add as the original's)
+                    let gy = fmadds(b.y - a.y, u, a.y);
                     let py = ahead.y + (prev.y - ahead.y) * t;
-                    return py > gy - DEPTH && py < gy + self.act_height;
+                    return py > gy - depth && py < self.act_height + gy;
                 }
                 false
             }
             None => {
                 let c = self.pos;
+                // (vmsum3fp, summed z + (y + x); the nearest point of the way as `seg_dist` finds it: the point is
+                // rebuilt as (p - c) + c)
+                let dot = |u: Vec3, v: Vec3| u.z * v.z + (u.y * v.y + u.x * v.x);
+                const E: f32 = 1e-12;
                 let d = ahead - prev;
-                let num = -d.dot(prev - c);
-                let dd = d.dot(d);
-                // the point of the way nearest the checkpoint; inside the way the reach is 1.2 x
-                let (q, r) = if num <= 1e-12 {
-                    (prev, self.radius)
-                } else if dd - num <= 1e-12 {
-                    (ahead, self.radius)
+                let pc = prev - c;
+                let num = 0.0 - dot(d, pc);
+                let (q, r) = if E >= num {
+                    (pc + c, self.radius)
                 } else {
-                    (prev + d * (num / dd), self.radius * 1.2)
+                    let rest = dot(d, d) - num;
+                    if E >= rest {
+                        ((pc + d) + c, self.radius)
+                    } else {
+                        let x = num + rest;
+                        let r = 1.0 / x;
+                        let r = r * -(r * x - 1.0) + r;
+                        (d * (num * r) + pc + c, self.radius * 1.2)
+                    }
                 };
                 let (dx, dz) = (q.x - c.x, q.z - c.z);
-                dx * dx + dz * dz < r * r && q.y > c.y - DEPTH && q.y < c.y + self.act_height
+                fmadds(dz, dz, dx * dx) < r * r && q.y > c.y - depth && q.y < self.act_height + c.y
             }
         }
     }
@@ -291,9 +307,22 @@ pub fn spec_at(specs: &[CpSpec], marker: Vec3) -> Option<&CpSpec> {
     })
 }
 
-/// `F-51496`: the point 2 m ahead of a car along its velocity (none when it stands).
+/// vmsum3fp as the code sums it: z + (y + x).
+fn dot3(u: Vec3, v: Vec3) -> f32 {
+    u.z * v.z + (u.y * v.y + u.x * v.x)
+}
+
+/// The scale the original's code makes a vector unit with (`F-51496`, `F-34461`): 1 / sqrt(l2) (the start-up constant
+/// +inf, for l2 = 0, selects 0), refined once as y + (1 - l2 y^2) * 0.5 y, each operation rounded to single.
+fn unit_scale(l2: f32) -> f32 {
+    let y = 1.0 / l2.sqrt();
+    let y = if y == f32::INFINITY { 0.0 } else { y };
+    -(l2 * (y * y) - 1.0) * (0.5 * y) + y
+}
+
+/// `F-51496`: the point 2 m ahead of a car along its velocity (the car itself when it stands: the scale is 0).
 pub fn ahead_point(pos: Vec3, vel: Vec3) -> Vec3 {
-    pos + vel.normalize_or_zero() * 2.0
+    (vel * unit_scale(dot3(vel, vel))) * 2.0 + pos
 }
 
 /// fmadds as the generated code does it: the product and the sum in double, then to single.
@@ -354,6 +383,47 @@ pub fn nearest_open(cps: impl IntoIterator<Item = (Vec3, bool)>, p: Vec3) -> f32
         }
     }
     m
+}
+
+/// `F-98939` (`CheckpointManager_FindClosestOpenCheckpoint`): the index of the first checkpoint, among those open to the racer
+/// (state word 0), whose position is nearest the player's - nearer than 25000, strictly nearer than any before it (so the
+/// first of equal distances wins; the distance is the rounded 3D length of `point_dist`); none when none is open or near.
+pub fn closest_open(cps: impl IntoIterator<Item = (Vec3, bool)>, p: Vec3) -> Option<usize> {
+    let (mut m, mut best) = (25000.0f32, None);
+    for (i, (c, open)) in cps.into_iter().enumerate() {
+        if open {
+            let d = point_dist(c, p);
+            if m > d {
+                m = d;
+                best = Some(i);
+            }
+        }
+    }
+    best
+}
+
+/// The racer's state word of a checkpoint (+200 + 4 x racer): 0 open, 1 closing, 2 opening, 3 closed.
+pub const STATE_OPEN: i32 = 0;
+pub const STATE_CLOSING: i32 = 1;
+pub const STATE_OPENING: i32 = 2;
+pub const STATE_CLOSED: i32 = 3;
+
+/// `F-37765` (`CheckpointManager_GetWhichHitCheckpoint`): the first checkpoint of the list, in order, that is open or
+/// opening for the racer (state 0 or 2) and that the hit test (`F-78734`) says is hit; none when there is none.
+pub fn which_hit(n: usize, state: impl Fn(usize) -> i32, hit: impl Fn(usize) -> bool) -> Option<usize> {
+    (0..n).find(|&i| matches!(state(i), STATE_OPEN | STATE_OPENING) && hit(i))
+}
+
+/// `F-37816` (the Activate handler) leaves the racer's state word 2 and its timer 0 (the look word is the handler's argument).
+pub const ACTIVATED: (i32, f32) = (STATE_OPENING, 0.0);
+
+/// `F-15277` (the Deactivate handler): a closed checkpoint (3) stays as it is, any other becomes closing (1) with its timer 0.
+pub fn deactivated(state: i32, timer: f32) -> (i32, f32) {
+    if state == STATE_CLOSED {
+        (state, timer)
+    } else {
+        (STATE_CLOSING, 0.0)
+    }
 }
 
 /// `F-66886` on the ground plane (x, z): where the line a0 -> a1 meets b0 -> b1, as the
@@ -885,6 +955,182 @@ mod tests {
         assert!(!c.hit(Vec3::new(0.0, -3.5, 1.0), Vec3::new(0.0, -3.5, -1.0)));
     }
 
+    /// The hit test (F-78734) run offline by `tools/checkpoint_hit_reference.py` on generated round and line checkpoints
+    /// (nearest point of the way at and around radius / 1.2 x radius, ends of the way on the checkpoint, crossings at
+    /// t / u = 0, 1, -0.2, 1.2 and their ulp neighbours, the three gate lines, heights on the window edges, random world
+    /// floats): the boolean equals the port's `hit_in` on every case. Evidence: docs/reference/checkpoints/verify_small_evidence.md.
+    #[test]
+    fn hit_matches_the_original() {
+        let text = include_str!("../tests/data/checkpoint_hit_reference.txt");
+        let (mut n, mut yes) = ([0usize; 2], [0usize; 2]);
+        for line in text.lines() {
+            let p: Vec<&str> = line.split(' ').collect();
+            let f = |i: usize| f32::from_bits(u32::from_str_radix(p[i], 16).unwrap());
+            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let kind: usize = p[1].parse().unwrap();
+            let mut c = CpSpec::at(v(2));
+            c.second = (kind == 1).then(|| v(5));
+            (c.radius, c.act_height) = (f(8), f(9));
+            let got = c.hit_in(v(14), v(17), v(11), f(10));
+            let want = p[20] == "1";
+            assert_eq!(got, want, "case {line}");
+            n[kind] += 1;
+            yes[kind] += want as usize;
+        }
+        assert_eq!(n, [3000, 4500]);
+        assert!(yes[0] > 500 && yes[1] > 500, "hits compared {yes:?}");
+    }
+
+    /// The point 2 m ahead (F-51496), run offline with `tools/checkpoint_ahead_reference.py` on 2600 cars (zero, -0, tiny,
+    /// denormal, huge, axis-aligned and random velocities): the ahead point handed to the hit test equals `ahead_point`
+    /// bit for bit, the last position handed on is the car's +400 vector (its position when the car has no physics pointer),
+    /// and the hit test is asked only for a checkpoint open (0) or opening (2) for the racer. (The position and velocity
+    /// getters and the hit test itself are stubs in the run; see the tool.)
+    #[test]
+    fn ahead_point_matches_the_original() {
+        let text = include_str!("../tests/data/checkpoint_ahead_reference.txt");
+        let (mut n, mut called, mut zero) = (0, 0, 0);
+        for line in text.lines() {
+            let p: Vec<&str> = line.split(' ').collect();
+            let f = |i: usize| f32::from_bits(u32::from_str_radix(p[i], 16).unwrap());
+            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let (vel, pos, flag, prev) = (v(1), v(4), u32::from_str_radix(p[7], 16).unwrap(), v(8));
+            assert_eq!(p[11], "|");
+            let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+            let state: u32 = p[p.len() - 2].parse().unwrap();
+            let ret: u32 = p[p.len() - 1].parse().unwrap();
+            if p.len() == 20 {
+                assert!(state == 0 || state == 2, "{line}");
+                assert_eq!(ret, 1);
+                // (a velocity whose square overflows gives NaN lanes in both; the sign of a NaN is the machine's)
+                let norm = |x: Vec3| bits(x).map(|b| if f32::from_bits(b).is_nan() { 0x7fc0_0000 } else { b });
+                assert_eq!(norm(ahead_point(pos, vel)), norm(v(12)), "ahead: {line}");
+                assert_eq!(bits(if flag != 0 { prev } else { pos }), bits(v(15)), "prev: {line}");
+                called += 1;
+                zero += (vel == Vec3::ZERO) as usize;
+            } else {
+                assert_eq!(p.len(), 14, "{line}");
+                assert!(state == 1 || state == 3, "{line}");
+                assert_eq!(ret, 0);
+            }
+            n += 1;
+        }
+        assert_eq!(n, 2692);
+        assert!(called > 1500 && zero > 5, "{called} asked, {zero} standing");
+    }
+
+    /// The placement handler (F-34461: the draw point +112, the 2 m ground probe, the gate offset +96, then the ceiling
+    /// height F-64647) and the ceiling height alone, run offline by `tools/checkpoint_gate_reference.py` (the level probe is a
+    /// recording stub that answers with the case's hit): the gate offset (all three lanes, bits), the marker, the two probe
+    /// segments and the height equal the port's `gate_offset`, `draw_pos`, `ceiling_height`.
+    #[test]
+    fn placement_matches_the_original() {
+        let text = include_str!("../tests/data/checkpoint_gate_reference.txt");
+        let (mut gates, mut ceils, mut grounds, mut roofs) = (0, 0, 0, 0);
+        for line in text.lines() {
+            let p: Vec<&str> = line.split(' ').collect();
+            let f = |i: usize| f32::from_bits(u32::from_str_radix(p[i], 16).unwrap());
+            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let bits = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+            if p[0] == "GATE" {
+                let mut c = CpSpec::at(v(2));
+                c.second = (p[1] == "1").then(|| v(5));
+                c.draw_line = f(8);
+                let (hit1, hit2): (bool, bool) = (p[9] == "1", p[16] == "1");
+                assert_eq!(p[23], "|");
+                assert_eq!((p[24], p[31], p[38]), ("P", "P", "|"), "{line}");
+                let d = c.draw_pos();
+                // the ground probe: 2 m above to 2 m below the marker
+                assert_eq!((bits(v(25)), bits(v(28))), (bits(Vec3::new(d.x, d.y + 2.0, d.z)), bits(Vec3::new(d.x, d.y - 2.0, d.z))), "ground probe: {line}");
+                let marker = if hit1 { v(10) } else { d };
+                assert_eq!(bits(v(42)), bits(marker), "marker: {line}");
+                if hit1 {
+                    assert_eq!(bits(v(45)), bits(v(13)), "normal: {line}");
+                    grounds += 1;
+                }
+                assert_eq!(bits(v(39)), bits(c.gate_offset()), "gate offset: {line}");
+                assert_eq!((bits(v(32)), bits(v(35))), (bits(marker), bits(Vec3::new(marker.x, marker.y + CEILING_PROBE, marker.z))), "ceiling probe: {line}");
+                assert_eq!(p[48], "0");
+                assert_eq!(ceiling_height(marker, hit2.then(|| v(17))).to_bits(), u32::from_str_radix(p[49], 16).unwrap(), "ceiling: {line}");
+                roofs += hit2 as usize;
+                gates += 1;
+            } else {
+                let m = v(1);
+                let hit = p[4] == "1";
+                assert_eq!((p[8], p[9]), ("|", "P"));
+                assert_eq!((bits(v(10)), bits(v(13))), (bits(m), bits(Vec3::new(m.x, m.y + CEILING_PROBE, m.z))), "{line}");
+                assert_eq!(ceiling_height(m, hit.then(|| v(5))).to_bits(), u32::from_str_radix(p[16], 16).unwrap(), "{line}");
+                roofs += hit as usize;
+                ceils += 1;
+            }
+        }
+        assert_eq!((gates, ceils), (3000, 1500));
+        assert!(grounds > 1000 && roofs > 1500, "{grounds} ground hits, {roofs} ceiling hits");
+    }
+
+    /// The list handlers, run offline by `tools/checkpoint_list_reference.py`: FindClosestOpenCheckpoint (F-98939; 2500 lists
+    /// incl. ties, far places, closed ones) against `closest_open`; GetWhichHitCheckpoint (F-37765 with the real hit test, 2500
+    /// lists) against `which_hit` with `hit_in`; the Activate (F-37816) and Deactivate (F-15277) stores (600 cases each: the
+    /// racer's state and timer words change, no other word of the 6 objects does) against `ACTIVATED` / `deactivated`.
+    /// (The car position getter is a stub in the run.)
+    #[test]
+    fn list_handlers_match_the_original() {
+        let text = include_str!("../tests/data/checkpoint_list_reference.txt");
+        let hex = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let (mut closest, mut which, mut acts, mut deacts, mut found, mut hits) = (0, 0, 0, 0, 0, 0);
+        for line in text.lines() {
+            let p: Vec<&str> = line.split(' ').collect();
+            let f = |i: usize| f32::from_bits(hex(p[i]));
+            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let want = |p: &Vec<&str>| p[p.len() - 1].parse::<i32>().unwrap();
+            match p[0] {
+                "CLOSEST" => {
+                    let n: usize = p[1].parse().unwrap();
+                    let cps: Vec<(Vec3, bool)> = (0..n).map(|k| (v(6 + 4 * k), p[9 + 4 * k] == "00000000")).collect();
+                    let got = closest_open(cps, v(3));
+                    assert_eq!(got.map_or(-1, |i| i as i32), want(&p), "{line}");
+                    found += got.is_some() as usize;
+                    closest += 1;
+                }
+                "WHICH" => {
+                    let n: usize = p[1].parse().unwrap();
+                    let (ahead, prev) = (v(3), v(6));
+                    let cp = |k: usize| 9 + 14 * k;
+                    let spec = |k: usize| {
+                        let o = cp(k);
+                        let mut c = CpSpec::at(v(o + 1));
+                        c.second = (p[o] == "00000001").then(|| v(o + 4));
+                        (c.radius, c.act_height) = (f(o + 7), f(o + 8));
+                        c
+                    };
+                    let got = which_hit(n, |k| hex(p[cp(k) + 13]) as i32, |k| spec(k).hit_in(ahead, prev, v(cp(k) + 10), f(cp(k) + 9)));
+                    assert_eq!(got.map_or(-1, |i| i as i32), want(&p), "{line}");
+                    hits += got.is_some() as usize;
+                    which += 1;
+                }
+                "ACT" => {
+                    // ACT racer cp look n state timer lookbefore | look state timer others-unchanged
+                    assert_eq!(p[8], "|");
+                    assert_eq!(hex(p[9]), hex(p[3]), "{line}");
+                    assert_eq!(hex(p[10]) as i32, ACTIVATED.0, "{line}");
+                    assert_eq!(hex(p[11]), ACTIVATED.1.to_bits(), "{line}");
+                    assert_eq!(p[12], "1", "{line}");
+                    acts += 1;
+                }
+                _ => {
+                    // DEACT racer cp n state timer | state timer others-unchanged
+                    assert_eq!(p[6], "|");
+                    let (st, tm) = deactivated(p[4].parse::<i32>().unwrap(), f(5));
+                    assert_eq!((hex(p[7]) as i32, hex(p[8])), (st, tm.to_bits()), "{line}");
+                    assert_eq!(p[9], "1", "{line}");
+                    deacts += 1;
+                }
+            }
+        }
+        assert_eq!((closest, which, acts, deacts), (2500, 2500, 600, 600));
+        assert!(found > 2000 && hits > 200, "{found} lists with an open one, {hits} with a hit");
+    }
+
     /// The original's line-line intersection (F-66886) and segment test (F-95591), run offline by
     /// `tools/checkpoint_cross_reference.py` on 3200 generated cases x flag 0 / 1 (axis-aligned, parallel, threshold values,
     /// random, car-step moves): the port equals them bit for bit. Evidence: docs/reference/checkpoints/verify_small_evidence.md.
@@ -1018,7 +1264,8 @@ mod tests {
 
     #[test]
     fn ahead_point_is_two_metres_along_the_velocity() {
-        assert_eq!(ahead_point(Vec3::ONE, Vec3::new(0.0, 0.0, -30.0)), Vec3::new(1.0, 1.0, -1.0));
+        // (the original's reciprocal root is refined once: 1 ulp off exact, see ahead_point_matches_the_original)
+        assert!((ahead_point(Vec3::ONE, Vec3::new(0.0, 0.0, -30.0)) - Vec3::new(1.0, 1.0, -1.0)).abs().max_element() < 1e-6);
         assert_eq!(ahead_point(Vec3::ONE, Vec3::ZERO), Vec3::ONE);
     }
 
@@ -1245,5 +1492,5 @@ pub fn gps_target(checkpoints: &[Vec3], next: usize, unordered: bool, player: Ve
     if !unordered || next + 1 >= n {
         return Some(checkpoints[next]);
     }
-    checkpoints[next..n - 1].iter().copied().min_by(|a, b| a.distance_squared(player).partial_cmp(&b.distance_squared(player)).unwrap_or(std::cmp::Ordering::Equal))
+    closest_open(checkpoints.iter().enumerate().map(|(i, &c)| (c, i >= next && i < n - 1)), player).map(|i| checkpoints[i])
 }

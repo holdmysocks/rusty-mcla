@@ -46,7 +46,7 @@ def closure(idx, names, stubs=(), limit=60):
 SIMDE = Path('D:/MCLA-static/third_party/rexglue-sdk/thirdparty/simde')
 
 
-def vector_shim() -> str:
+def vector_shim(scratch_end: int = 0x3000) -> str:
     # VectorMaskL as the SDK's intrinsics.h: row k = bytes 15..0 shifted right by k places, 0xFF filled in front
     rows = ',\n'.join(', '.join('0x%02X' % b for b in [0xFF] * k + list(range(15, k - 1, -1))) for k in range(16))
     # VectorMaskR as the SDK's: row k = bytes k-1 .. 0, 0xFF filled behind (lvrx128 / stvrx128)
@@ -58,12 +58,17 @@ def vector_shim() -> str:
         'typedef VReg PPCVRegister;\n'   # (vupkd3d128's scratch register)
         'alignas(16) static uint8_t VectorMaskL[]={' + rows + '};\n'
         'alignas(16) static uint8_t VectorMaskR[]={' + rows_r + '};\n')
-    s = shim()
+    s = shim(scratch_end)
     s = s.replace('struct Context {', prelude + 'struct Context { VReg ' + ', '.join(f'v{i}' for i in range(128)) + ';', 1)
     s = s.replace('struct { void disableFlushMode() {} } fpscr;',
                   'struct { void disableFlushMode() {} void enableFlushMode() {} void disableFlushModeUnconditional() {}'
                   ' void enableFlushModeUnconditional() {} } fpscr;')
     s = s.replace('static uint8_t objects[', 'alignas(16) static uint8_t objects[', 1)
+    s = '#include <simde/x86/sse4.1.h>\n' + s  # (Condition::setFromMask below needs the simde types first)
+    # cr6 from a vector compare (the SDK's Condition::setFromMask: lt = all lanes set, eq = none; `so` is always 0)
+    s = s.replace('bool eq{}, lt{}, gt{};',
+                  'bool eq{}, lt{}, gt{}, so{}; void setFromMask(simde__m128 m,int imm){int k=simde_mm_movemask_ps(m);'
+                  'lt=k==imm;gt=0;eq=k==0;so=0;}', 1)
     return s + '#define REX_RAW_ADDR(a) pointer(a)\n'
 
 
@@ -77,7 +82,7 @@ def build(idx, names, main, out: Path, tag, stubs=(), vector=False, scratch_end=
                        for n in stubs)
     out.mkdir(parents=True, exist_ok=True)
     cpp = out / f'{tag}.cpp'
-    cpp.write_text((vector_shim() if vector else shim(scratch_end)) + EXTRA + protos + stubdefs + ''.join(fs.values()) + main)
+    cpp.write_text((vector_shim(scratch_end) if vector else shim(scratch_end)) + EXTRA + protos + stubdefs + ''.join(fs.values()) + main)
     exe = out / f'{tag}.exe'
     r = subprocess.run(['g++', '-std=c++17', '-O2', '-ffp-contract=off', '-msse4.1', '-mssse3', '-static', *flags, '-I' + str(SIMDE), str(cpp), '-o', str(exe)],
                        capture_output=True, text=True)
