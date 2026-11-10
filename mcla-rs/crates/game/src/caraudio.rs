@@ -549,6 +549,9 @@ pub struct CarSounds {
     parts_seen: Option<u64>,
     /// GLOBAL_CAR_PARTICLES +18 (CAR_BANGERS_GLASS_LARGE): a window cracking or breaking
     glass_hash: u32,
+    /// GLOBAL_CAR_PARTICLES +14 (CAR_DEBRIS_LARGE_MULTI): a zone hit's impact puff (F-55155)
+    debris_hash: u32,
+    debris_seen: Option<u64>,
     /// GLOBAL_CAR_PARTICLES +22 (RADIATOR_STEAM_MASTER) and slots 1428 / 1432: the wipeout's two steam loops
     steam_hash: u32,
     steam: [Option<Handle>; 2],
@@ -627,6 +630,8 @@ impl CarSounds {
             scrape: [(None, 0.0); 2],
             parts_seen: None,
             glass_hash: g.get_name("GLOBAL_CAR_PARTICLES").map_or(0, |o| be_u32(o, 18)),
+            debris_hash: g.get_name("GLOBAL_CAR_PARTICLES").map_or(0, |o| be_u32(o, 14)),
+            debris_seen: None,
             steam_hash: g.get_name("GLOBAL_CAR_PARTICLES").map_or(0, |o| be_u32(o, 22)),
             steam: [None; 2],
             glass_seen: None,
@@ -1408,6 +1413,24 @@ impl CarSounds {
             w.follow(&mut v, c.state);
             if let Some(h) = w.looping() {
                 lib.set(h, req);
+            }
+        }
+    }
+
+    /// A zone hit's impact puff (F-49242 -> F-55155 on the car's sound entity, when it has one): GLOBAL_CAR_PARTICLES (+1256)
+    /// +14 - CAR_DEBRIS_LARGE_MULTI - once at the hit's place (the hit matrix's +48; here its place in the car under the
+    /// car's matrix this frame), 0 dB, LPF field 23900, flags 4, as the glass one-shot F-45199 (the same code but the
+    /// field); heard whether or not the car is drawn.
+    pub fn debris(&mut self, lib: &mut SoundLib, dmg: &crate::damagemap::CarDamage, pos: Vec3, rot: glam::Quat) {
+        // (events from before this car's sounds were made are not heard)
+        let seen = *self.debris_seen.get_or_insert(dmg.debris_serial);
+        for &(n, local) in dmg.debris.iter().filter(|(n, _)| *n > seen) {
+            self.debris_seen = Some(n);
+            if !is_null(self.debris_hash) {
+                let h = lib.play_hash(self.debris_hash, self.req(pos + rot * local));
+                if std::env::var_os("MCLA_PARTS_LOG").is_some() {
+                    log::info!("debris: event {n} sound {:08x} started {}", self.debris_hash, h.is_some());
+                }
             }
         }
     }
@@ -2393,6 +2416,7 @@ impl Fleet {
                 }
                 s.damage_parts(lib, &p.state.parts);
                 s.glass(lib, &p.state.dmg, p.state.pos, p.state.rot);
+                s.debris(lib, &p.state.dmg, p.state.pos, p.state.rot);
                 s.windows(lib, &p.windows, &p.spoiler, &p.roof, p.state.pos, p.state.rot);
                 // a police car's horn button chirps the siren (F-44589)
                 if (p.cop || ctl.police_class) && ctl.horn {
@@ -2548,6 +2572,7 @@ impl Fleet {
                 s.update(lib, &self.mats, &ci, -1, dt);
                 s.damage_parts(lib, &c.state.parts);
                 s.glass(lib, &c.state.dmg, c.state.pos, c.state.rot);
+                s.debris(lib, &c.state.dmg, c.state.pos, c.state.rot);
                 s.windows(lib, &c.windows, &c.spoiler, &c.roof, c.state.pos, c.state.rot);
                 if c.cop && !c.goon {
                     if stop_all {

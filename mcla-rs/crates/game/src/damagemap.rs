@@ -69,6 +69,13 @@ pub struct CarDamage {
     pub glass_serial: u64,
     /// the last one the effects took (main.rs)
     pub glass_fx_seen: u64,
+    /// a zone hit's impact puff (F-49242, from the zone damage F-74840 whenever its amount passes the threshold, before
+    /// the 0.12 height gate): the hit's place in the car, numbered on (`debris_serial`) for the sound; the last 8 kept
+    pub debris: Vec<(u64, Vec3)>,
+    pub debris_serial: u64,
+    /// the lower threshold 0.125 (F-74840: the car drawn, G+116 > 0, and wiped out, chassis +592 bit 0x10); set by the
+    /// game from the frame before
+    pub debris_low: bool,
     pub sparks: Vec<Sparks>,
 }
 
@@ -118,6 +125,19 @@ impl CarDamage {
                 self.glass_serial += 1;
                 self.glass.push((self.glass_serial, p.local));
             }
+        }
+    }
+
+    /// F-74840's impact puff gate: an amount above 0.25 (0.125 with `debris_low`, both strict) starts F-49242, whose
+    /// sound (F-55155) is heard whether or not the car is drawn.
+    pub fn debris_hit(&mut self, local: Vec3, amount: f32) {
+        let thr = if self.debris_low { 0.125 } else { 0.25 };
+        if amount > thr {
+            if self.debris.len() >= 8 {
+                self.debris.remove(0);
+            }
+            self.debris_serial += 1;
+            self.debris.push((self.debris_serial, local));
         }
     }
 
@@ -464,6 +484,24 @@ mod tests {
     /// window sums at and an ulp under the steps, NaN, infinite and negative, random record colours, car matrices
     /// with scaled up rows, clip heights, every in-car / no-damage / gate / motorcycle / flag / thread pick): every
     /// word of WindowDmgVal, TintColors, BumpedTintColors and the plane equal.
+    /// F-74840's puff threshold: strictly above 0.25, or 0.125 on a drawn wiped-out car; the hit's place kept.
+    #[test]
+    fn a_hard_hit_starts_the_debris_puff() {
+        let mut d = CarDamage::default();
+        d.debris_hit(Vec3::X, 0.25);
+        assert!(d.debris.is_empty());
+        d.debris_hit(Vec3::X, 0.2501);
+        assert_eq!(d.debris, vec![(1, Vec3::X)]);
+        d.debris_low = true;
+        d.debris_hit(Vec3::Z, 0.125);
+        d.debris_hit(Vec3::Z, 0.13);
+        assert_eq!(d.debris.len(), 2);
+        for _ in 0..10 {
+            d.debris_hit(Vec3::Y, 1.0);
+        }
+        assert!(d.debris.len() == 8 && d.debris_serial == 12);
+    }
+
     #[test]
     fn glass_vars_match_the_original() {
         let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());

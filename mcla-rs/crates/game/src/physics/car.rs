@@ -730,6 +730,8 @@ impl CarState {
         if std::env::var_os("MCLA_PARTS_LOG").is_some() {
             eprintln!("parts hit: {amount:.4} at car-local {local:.2?} counts {}", crate::damageparts::hit_counts(local));
         }
+        // (the impact puff and its sound, F-49242: after the gated part in the original, but not under the gate)
+        self.dmg.debris_hit(local, amount);
         if !crate::damageparts::hit_counts(local) {
             return false;
         }

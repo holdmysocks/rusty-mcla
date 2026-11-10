@@ -5407,7 +5407,6 @@ impl App {
             self.vehicles.player_rim_tint = self.game.rim_tints();
             // (the brushed metal's tint, F-91597)
             self.vehicles.player_brushed = self.game.brushed_tint();
-            self.vehicles.player_caliper = self.game.caliper_tint();
             // (the gauge and interior neon colours its driver is lit by: the record's - F-42959)
             self.vehicles.player_cabin_light = self.game.cabin_light_colors();
             // (its exterior neon record - the light quads and siColor2, F-17121 / F-96984)
@@ -5498,7 +5497,6 @@ impl App {
                 self.vehicles.player_trim = l.trim;
                 self.vehicles.player_rim_tint = crate::mc4::rim_tint_rows(&l.rim_raw);
                 self.vehicles.player_brushed = l.brushed;
-                self.vehicles.player_caliper = l.caliper;
                 self.vehicles.player_cabin_light = l.cabin_light;
                 self.vehicles.player_ext_neon = l.ext_neon;
                 self.vehicles.player_paint_type = l.paint_type;
@@ -7449,6 +7447,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                         d.glass_fx_seen = n;
                     }
+                }
+                // (F-74840's lower impact-puff threshold, 0.125, for the next hits: the car drawn (G+116, the test above)
+                // and wiped out (chassis +592 bit 0x10 - the port's player car only, `crash_bits`))
+                let wiped = self.crash_bits & 0x10 != 0;
+                for c in self.vehicles.cars.iter_mut() {
+                    let low = wiped && c.is_player && {
+                        let (lo, hi) = c.model.params.composite_box();
+                        let r = (hi.x - lo.x).max(hi.z - lo.z);
+                        let o = c.state.pos;
+                        o.distance(cam_at) - r <= 450.0 && view.map_or(true, |f| f.intersects_sphere(o, r))
+                    };
+                    c.state.dmg.debris_low = low;
                 }
                 // (a scrape's sparks, damagemap::Sparks - `F-85632`: the effect damage_scrape_sparks at
                 // the point, its z along the contact normal, x = normalize(up x z), y = z x x
