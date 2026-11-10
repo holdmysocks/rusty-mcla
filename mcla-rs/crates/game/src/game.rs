@@ -10476,7 +10476,7 @@ impl Game {
                         }
                     }
                     self.city_map(ctx, vehicles, world, hud);
-                    self.mission_log_ui(ctx, [up, down, left, right, enter], tab_prev, tab_next, hud.map_vp, hud.player_pos);
+                    self.mission_log_ui(ctx, [up, down, left, right, enter], tab_prev, tab_next, hud.map_vp, hud.player_pos, hud.police_state > 1);
                 } else {
                     self.hook_icons(ctx, vehicles, &hud);
                     self.race_markers(ctx, vehicles, &hud);
@@ -13130,7 +13130,7 @@ impl Game {
     /// The mission log over the GPS map, on the map movie's own page: ACTIVE MISSIONS
     /// and COMPLETED MISSIONS (LB / RB), the chosen mission's text and objectives.
     /// Y (the GPS prompt) folds it away to leave the map.
-    fn mission_log_ui(&mut self, ctx: &egui::Context, keys: [bool; 5], tab_prev: bool, tab_next: bool, map_vp: Option<glam::Mat4>, player: Vec3) {
+    fn mission_log_ui(&mut self, ctx: &egui::Context, keys: [bool; 5], tab_prev: bool, tab_next: bool, map_vp: Option<glam::Mat4>, player: Vec3, pursuit: bool) {
         let [up, down, left, right, enter] = keys;
         use crate::flash_ui::{MenuLayout, MenuPage, MenuRow, ICON_B, ICON_Y};
         if self.flash_navsys.is_none() || self.editor.is_some() {
@@ -13254,11 +13254,24 @@ impl Game {
             ..MenuPage::default()
         };
         let prompts = vec![(st("Navmap_Prompt_Exit", "EXIT"), ICON_B), (st("Navmap_Prompt_GPSMap", "GPS"), ICON_Y), (st("prompt_changeTabs", "CHANGE TABS"), crate::flash_ui::ICON_LB_RB)];
-        // (the active missions can be made the GPS target; the port has no target to set yet)
+        // (the footer of the two mission lists, `mlog_footer` (F-49278): SET AS TARGET, or UNSET TARGET on the GPS
+        // target's own row, only on the active list with a row whose open objective (F-96100) has a target and the map's
+        // target selection on - off in a police pursuit (CareerCruise's PolicePersuit: F-35540(1) > 1) and on the map
+        // opened in a race (+376). The tutorials tab is a UIList, not a mission list: its footer is not this. The A below
+        // (F-31828) has the same gates. Approx.: the port has no target manager (F-49590) - a target id other than 0 stands
+        // for a shown record; the pursuit is read each frame, the original takes it when the map is focused)
         let mut prompts = prompts;
-        if tab == 0 && !views.is_empty() {
-            prompts.insert(0, (st("Nav_SetAsTarget", "SET AS TARGET"), crate::flash_ui::ICON_A));
-            if enter && !hidden && !guided {
+        let foot = if guided || tab == 2 {
+            None
+        } else {
+            let id = views.get(sel).map_or("", |v| v.id.as_str());
+            let list = if tab == 0 { "Navmap_MLog_ActiveMissions" } else { "Navmap_MLog_CompletedMissions" };
+            let current = self.gps_pick.is_none() && self.mission_target.as_deref() == Some(id);
+            mlog_footer(list, self.race_current(), !pursuit, sel as u32, n as u32, (self.career.open_target(id) != 0).then_some(false), current)
+        };
+        if let Some(t @ (41 | 42)) = foot {
+            prompts.insert(0, (if t == 42 { st("Nav_UnSetAsTarget", "UNSET TARGET") } else { st("Nav_SetAsTarget", "SET AS TARGET") }, crate::flash_ui::ICON_A));
+            if enter && !hidden {
                 // (the mission log's A, F-31828: the row's open objective target (F-96100 ->
                 // F-49590) is the GPS map's target already -> GPS_UNSET_TARGET_GENERIC and it is
                 // cleared (F-26916); else MISSION_LOG_SELECT_CONFIRMATION_MASTER and it is set
@@ -16488,6 +16501,23 @@ mod tests {
         assert_eq!(n, 440);
     }
 
+    /// F-49278 run offline (tools/mlog_footer_reference.py): the list, NM +376 / +375, the selection and count, the
+    /// target record (none / shown / +8 set) and the map's target (none / the record / another / an object answering none)
+    #[test]
+    fn mlog_footer_matches_the_original() {
+        let lists = ["Navmap_MLog_ActiveMissions_Tutorials", "Navmap_MLog_ActiveMissions", "Navmap_MLog_CompletedMissions"];
+        let mut n = 0;
+        for l in include_str!("testdata/mlog_footer_ref.txt").lines() {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(|w| w.parse().unwrap()).collect();
+            let record = match w[5] { 0 => None, 1 => Some(false), _ => Some(true) };
+            let got = super::mlog_footer(lists[w[0] as usize], w[1] != 0, w[2] != 0, w[3], w[4], record, w[6] == 1);
+            assert_eq!(got.unwrap_or(0), o.trim().parse::<u32>().unwrap(), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 1000);
+    }
+
     /// F-75783 / F-97172: LT / RT on a race's or the collectables' statistics stop at the ends
     #[test]
     fn stat_pages_stop_at_the_ends() {
@@ -16771,6 +16801,23 @@ pub fn tab_step(index: u32, count: u32, wrap: bool, right: bool) -> (u32, &'stat
         index - 1
     };
     (t, if t == index { "UI_MENU_ERROR" } else if right { "UI_MENU_NAV_RIGHT" } else { "UI_MENU_NAV_LEFT" })
+}
+
+/// The mission log list's footer prompt F-49278 (None: left as it is, else the prompt id - 41 SET AS TARGET, 42 UNSET
+/// TARGET, each with EXIT / GPS / CHANGE TABS, 44 those three alone): the guided log's list
+/// "Navmap_MLog_ActiveMissions_Tutorials" keeps its own; the map opened in a race (`race_map`, NM +376), another list
+/// than "Navmap_MLog_ActiveMissions", a selection not below `count`, no target record for the row's open objective
+/// (`record`: its +8, hidden) or a hidden one, or the map's target selection off (`select_on`, NM +375,
+/// navMap.SetTargetSelectionEnabled) give 44; else 42 when the record is the map's target (`current`), 41 when not.
+/// Checked offline: `mlog_footer_matches_the_original`.
+pub fn mlog_footer(list: &str, race_map: bool, select_on: bool, sel: u32, count: u32, record: Option<bool>, current: bool) -> Option<u32> {
+    if list == "Navmap_MLog_ActiveMissions_Tutorials" {
+        return None;
+    }
+    if race_map || list != "Navmap_MLog_ActiveMissions" || sel >= count || record != Some(false) || !select_on {
+        return Some(44);
+    }
+    Some(if current { 42 } else { 41 })
 }
 
 pub fn wager_range(base: i32, d: u32) -> (i32, i32, i32, i32) {

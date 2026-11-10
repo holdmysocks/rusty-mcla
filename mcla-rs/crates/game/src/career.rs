@@ -1637,6 +1637,11 @@ impl Career {
         })
     }
 
+    /// F-96100's answer for mission `id`: the target id (+104) of its open objective, 0 with none.
+    pub fn open_target(&self, id: &str) -> i32 {
+        self.index.get(id).and_then(|&i| self.open_objective(i).map(|k| self.missions[i].objectives[k].target_id)).unwrap_or(0)
+    }
+
     /// mcMissionManager_DoesUIDHaveActiveMission (F-75396 -> F-93550): a mission of the
     /// manager's list whose open objective (F-96100; none: 0) has the target id `uid`.
     pub fn uid_has_active_mission(&self, uid: i32) -> bool {
