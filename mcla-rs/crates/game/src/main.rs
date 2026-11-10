@@ -647,6 +647,8 @@ struct App {
     /// its flag (true: FinishScene takes it); `scene_set_unload`: a script's UnloadSetDressing asked (F-50072)
     scene_set: Option<(String, bool)>,
     scene_set_unload: bool,
+    /// the hangout whose core loaded its set-up's set dressing (+1284, flag 0) at the pull-in: `layout::HANGOUT_ITEMS`' index
+    hang_set: Option<usize>,
     /// a scene's own fade down and up (`cine::SCENE_FADES`)
     scene_fade: boomcam::CutMask,
     /// the opening's `Graphics_WarpToTimeOfDay(17, 100)`: the hour aimed at, while the clock is moved there
@@ -1600,6 +1602,7 @@ impl App {
             f02c_fade: 0,
             scene_set: None,
             scene_set_unload: false,
+            hang_set: None,
             f02c_mask: Default::default(),
             scene_fade: Default::default(),
             intro_tod: None,
@@ -4429,6 +4432,9 @@ impl App {
                 // place of the hangout's own entry; the hangout follows once it is over)
                 let night = self.time_of_day > 18.5 || self.time_of_day < 5.5;
                 // (LOCATION_EVENT with the place's name: the hangout core's static +4, before <KEY>_ENTER)
+                // (right before it the core loads its set-up's set dressing, +1284, with the flag 0: local_hangout_core
+                // 0x1015, wager_hangout_core 0x1513 - `dressing_tick` unloads it)
+                self.hangout_dressing(&mut gpu, &mut world, hangoutin::SETUPS[si].key);
                 self.game.career.event(career::Ev::Str("LOCATION_EVENT", hangoutin::SETUPS[si].key));
                 let story = self.game.career.location_enter(hangoutin::SETUPS[si].enter).and_then(|id| self.cuts.for_mission(&id, night)).filter(|_| std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok()));
                 // (right after the MISSION_EVENT the core calls AudioManager_EnterHangoutState(<location id>), F-35228:
@@ -14466,6 +14472,19 @@ impl App {
     /// end); FIND_SH_02C's core loads its own with the flag 0 and unloads it after its fade down (`scene_set_unload`). The
     /// slot takes no second set while one is loaded (F-19063). Drawn in world coordinates (F-51002), with no bound.
     fn dressing_tick(&mut self, gpu: &mut Gpu, world: &mut World) {
+        // (a hangout's: UnloadSetDressing once its core's flow ends - right after a race is taken (local 0x2286,
+        // wager the same), or, the panel left, once the player's car is at least the core's radius +64 (flat,
+        // VFlatDist, polled every 500 ms) from its centre +52: local 0x2328..0x2391, wager 0x65fc..0x6667)
+        if let Some(k) = self.hang_set {
+            let h = &layout::HANGOUT_ITEMS[k];
+            let c = Vec3::from(h.centre);
+            let far = self.vehicles.player().map_or(true, |p| glam::Vec2::new(p.state.pos.x - c.x, p.state.pos.z - c.z).length() >= h.radius);
+            if self.game.race.is_some() || (self.hangout_in.is_none() && far) {
+                world.drop_dressing();
+                self.scene_set = None;
+                self.hang_set = None;
+            }
+        }
         let now = self.cine.playing.as_ref().map(|s| s.name.clone());
         let ended = self.scene_set.as_ref().is_some_and(|(scene, auto)| *auto && now.as_deref() != Some(scene.as_str()));
         if ended || std::mem::take(&mut self.scene_set_unload) {
@@ -14488,6 +14507,20 @@ impl App {
         if let Some((set, auto)) = pick.filter(|_| std::env::var_os("MCLA_DRESS_OLD").is_none()) {
             world.load_dressing(gpu, set);
             self.scene_set = Some((scene, auto));
+        }
+    }
+
+    /// A hangout core's LoadSetDressing(+1284, 0) at the pull-in (none when the set-up names none; the slot takes no
+    /// second set while one is loaded, F-19063).
+    fn hangout_dressing(&mut self, gpu: &mut Gpu, world: &mut World, key: &str) {
+        let Some(set) = hangout_scene::setup_of(key).map(|s| s.dressing).filter(|d| !d.is_empty()) else { return };
+        let Some(k) = layout::HANGOUT_ITEMS.iter().position(|h| h.key.eq_ignore_ascii_case(key)) else { return };
+        if self.scene_set.is_some() || std::env::var_os("MCLA_DRESS_OLD").is_some() {
+            return;
+        }
+        if world.load_dressing(gpu, set) {
+            self.scene_set = Some((format!("hangout:{key}"), false));
+            self.hang_set = Some(k);
         }
     }
 
