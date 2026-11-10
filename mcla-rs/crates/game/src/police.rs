@@ -1089,6 +1089,18 @@ fn report_say(name: Option<&'static str>, prob: f32, bits: u32, mut draw: impl F
     BY_BIT.iter().find(|b| bits & b.0 != 0).map(|b| b.1).or(name)
 }
 
+/// The track timer's step in the common update F-63286: +136 runs down by dt while above 0 (no clamp); the step that takes it
+/// to <= 0 sets the brains' lost flag +773 when the tactic's vt+28 answers (`answers`: the Pursuit, Double Pursuit and Arrow
+/// Trap classes give their +29, the first chase property; the pull-over 0).
+fn track_step(track_t: &mut f32, lost_ok: &mut bool, dt: f32, answers: bool) {
+    if *track_t > 0.0 {
+        *track_t -= dt;
+        if *track_t <= 0.0 && answers {
+            *lost_ok = true;
+        }
+    }
+}
+
 /// Damaged out (F-12032, mcCarDamage +36 >= its tune's MaxDamage +24, as `!(points < max)`: a NaN is out). The port keeps
 /// damage as points / MaxDamage, capped at 1.0, and points == MaxDamage give exactly 1.0; a car one point - or a fraction of
 /// one - short is not out (the port had tested 0.999, which took points from 0.999 x MaxDamage).
@@ -3757,12 +3769,8 @@ impl Police {
         }
         // (F-63286: +136 runs down while above 0; when it passes 0 the brains' lost flag +773 is set if the tactic's
         // vt+28 answers - the Pursuit classes' +29, the pull-over's 0)
-        if self.track_t > 0.0 {
-            self.track_t -= dt;
-            if self.track_t <= 0.0 && self.chase_props[0] && matches!(self.kind, TacKind::Pursuit | TacKind::PursuitDbl | TacKind::ArrowTrap) {
-                self.lost_ok = true;
-            }
-        }
+        let answers = self.chase_props[0] && matches!(self.kind, TacKind::Pursuit | TacKind::PursuitDbl | TacKind::ArrowTrap);
+        track_step(&mut self.track_t, &mut self.lost_ok, dt, answers);
         let track_flag = self.lost_ok;
         let pfwd = p.state.forward();
         let speed = pvel.length();
@@ -5703,6 +5711,48 @@ mod tests {
 
     /// The say's choice of F-66952 / F-14569 (docs/reference/hookmen/law_reports.md) on chosen draws: the default class's
     /// first draw under 0.25 makes it the name, else the second under 0.2; failing both, the bits in F-14569's order.
+    /// tools/lost_flag_reference.py: the original's track set F-79519 and common update F-63286 run offline over the four tactic
+    /// classes (1,056 cases, 900 updates each): +136 and every cop's +773 equal the port's `track_step` on every recorded
+    /// update (a set: +136 = the value, +773 cleared on every cop).
+    #[test]
+    fn lost_flag_matches_the_original() {
+        let h = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let (mut cases, mut rows) = (0, 0);
+        let mut it = include_str!("testdata/lost_flag_ref.txt").lines().peekable();
+        while let Some(head) = it.next() {
+            let v: Vec<&str> = head.split(' ').collect();
+            assert_eq!(v[0], "CASE");
+            let (cls, p29, nc, dt) = (v[1], v[2] == "1", v[3].parse::<u32>().unwrap(), f32::from_bits(h(v[4])));
+            let sets: Vec<(usize, f32)> = v[5].split(',').map(|kv| {
+                let (k, b) = kv.split_once(':').unwrap();
+                (k.parse().unwrap(), f32::from_bits(h(b)))
+            }).collect();
+            let answers = p29 && cls != "3";
+            let mut rec = std::collections::BTreeMap::new();
+            while let Some(l) = it.peek().filter(|l| !l.starts_with("CASE")) {
+                let w: Vec<&str> = l.split(' ').collect();
+                rec.insert(w[0].parse::<usize>().unwrap(), (h(w[1]), w[2].parse::<u32>().unwrap()));
+                it.next();
+            }
+            let (mut t, mut lost) = (0.0f32, true);
+            for k in 0..900 {
+                for &(sk, sv) in &sets {
+                    if sk == k {
+                        t = sv;
+                        lost = false;
+                    }
+                }
+                track_step(&mut t, &mut lost, dt, answers);
+                if let Some(&(tb, mask)) = rec.get(&k) {
+                    assert_eq!((t.to_bits(), if lost { (1 << nc) - 1 } else { 0 }), (tb, mask), "{head} update {k}");
+                    rows += 1;
+                }
+            }
+            cases += 1;
+        }
+        assert_eq!((cases, rows), (1056, 12549 - 1056));
+    }
+
     #[test]
     fn report_line_follows_the_original() {
         let run = |default: bool, bits: u32, d: &[f32]| {
