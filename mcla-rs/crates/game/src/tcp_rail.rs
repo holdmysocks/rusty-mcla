@@ -69,6 +69,11 @@ pub(crate) fn vmadd3(a: Vec3, k: f32, c: Vec3) -> Vec3 {
     vmadd(a, k, c)
 }
 
+/// The vector unit's difference (vsubfp: denormal operands and results read as 0).
+pub(crate) fn vsub3(a: Vec3, b: Vec3) -> Vec3 {
+    vsub(a, b)
+}
+
 /// The vector unit's sum.
 pub(crate) fn vadd3(a: Vec3, b: Vec3) -> Vec3 {
     vadd(a, b)

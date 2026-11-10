@@ -147,16 +147,28 @@ pub fn route_next(route: &Route, net: &RailNet, nav: &NavSys, last: i32, l: u32,
     ordinary_next(net, nav, l, shared)
 }
 
-/// F-21784: the destination tangent . (destination - p), z first, then y and x fused.
+/// F-21784: the destination tangent . (destination - p), z first, then y and x fused (the difference by the vector unit,
+/// denormals flushed).
 pub fn end_plane(route: &Route, p: Vec3) -> f32 {
-    let (d, v) = (route.dest_dir, route.dest_point - p);
+    let (d, v) = (route.dest_dir, crate::tcp_rail::vsub3(route.dest_point, p));
     fma(d.x, v.x, fma(d.y, v.y, d.z * v.z))
 }
 
-/// F-48537: |destination - p|, x^2, then y and z fused.
+/// F-48537: |destination - p|, x^2, then y and z fused (the difference by the vector unit, denormals flushed).
 pub fn dest_dist(route: &Route, p: Vec3) -> f32 {
-    let v = route.dest_point - p;
+    let v = crate::tcp_rail::vsub3(route.dest_point, p);
     fma(v.z, v.z, fma(v.y, v.y, v.x * v.x)).sqrt()
+}
+
+/// The speed controller's entry 3 F-25114 for the cruising ghost at `p`: with flag 0x20 (the destination speed +252) and
+/// the car before the destination's plane (F-21784 > 0), (the destination speed, the distance to the destination point
+/// F-48537) at margin 0 and no reset bit; else none (the distance still FLT_MAX, the entry's sentinel, is none too).
+pub fn dest_entry(route: &Route, p: Vec3, flags: u8, dest_speed: f32) -> Option<(f32, f32)> {
+    if flags & FLAG_DEST_SPEED == 0 || !(end_plane(route, p) > 0.0) {
+        return None;
+    }
+    let d = dest_dist(route, p);
+    (d != f32::MAX).then_some((dest_speed, d))
 }
 
 /// F-44936: on the last node and past the destination's plane (0.5 m before it when stopping there: flag 0x20, the
@@ -417,6 +429,34 @@ pub fn lane_change(route: &Route, net: &RailNet, nav: &NavSys, t: &Track, cur: u
 mod tests {
     use super::*;
     use crate::railroute;
+
+    /// F-25114 run offline on the original's code (work/traffic-detail/e3, 6,000 cases: the flag byte, the destination
+    /// speed, point and direction, the car's place before, on and past the plane, with zeros, -0, NaN, infinities, FLT_MAX
+    /// and a denormal mixed in): the entry's active bit, distance (+4) and speed (+8) equal [`dest_entry`]'s to the bit;
+    /// its margin (+12) is 0 and its reset bit (0x40) cleared every frame.
+    #[test]
+    fn dest_entry_matches_the_original() {
+        let (mut n, mut on) = (0, 0);
+        for l in include_str!("testdata/dest_entry_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let (a, b) = l.split_once(" | ").unwrap();
+            let w: Vec<&str> = a.split_whitespace().collect();
+            let o: Vec<&str> = b.split_whitespace().collect();
+            let v = |k: usize| Vec3::new(fx(w[k]), fx(w[k + 1]), fx(w[k + 2]));
+            let route = Route { dest_point: v(2), dest_dir: v(5), ..Default::default() };
+            let got = dest_entry(&route, v(8), hx(w[0]) as u8, fx(w[1]));
+            let b16 = hx(o[4]);
+            assert_eq!(b16 & 0x80 != 0, got.is_some(), "active {l}");
+            assert_eq!(b16 & 0x3F, hx(w[11]) & 0x3F, "low bits {l}");
+            assert_eq!(b16 & 0x40, 0, "reset {l}");
+            assert_eq!(hx(o[3]), 0, "margin {l}");
+            let (sp, d) = got.map_or((0, 0), |(s, d)| (s.to_bits(), d.to_bits()));
+            assert_eq!((hx(o[1]), hx(o[2])), (d, sp), "dist / speed {l}");
+            n += 1;
+            on += got.is_some() as usize;
+        }
+        assert_eq!(n, 6000);
+        assert!(on > 1000);
+    }
 
     fn load() -> Option<(NavSys, RailNet)> {
         let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));

@@ -867,9 +867,8 @@ pub struct Rider {
     /// a race path's bPhysical (path +170): the instance's +140 bit 0x80 (F-92604 ->
     /// F-55165), for the car's life
     pub phys_pair: bool,
-    /// a race path's car: the lane of its path (+64) when F-70324's slot 19 (F-74598 -> F-35476) counts it as one of the
-    /// path's rails - the path has not both a curve (+176) and a join rail (+180), and the lane has no flag 0x800 / 0x1000
-    /// (the curve rail's 0x1000 never matches) -; the path stays the car's for life (behaviour +468)
+    /// a race path's car: the lane of its path (+64), for F-70324's slot 19 (F-74598 -> F-35476, `path_rail_counts`); the
+    /// path stays the car's for life (behaviour +468)
     pub race_lane: Option<usize>,
     /// the race path it was started on (behaviour +468, kept for the car's life - F-28180 is its only
     /// writer after the ctor) has bParked (+164, `PathRails::quiet`): behaviour slot 18, F-86955
@@ -1592,6 +1591,24 @@ pub fn flat_forward(back: Vec3) -> (f32, f32) {
     }
     let k = -(dd * (y * y) - 1.0) * (0.5 * y) + y;
     (-(back.x * k), -(back.z * k))
+}
+
+/// F-35476 (behaviour slot 19 through F-74598): the follower's current rail `cur` is one of its race path's rails - F-47392
+/// (the curve +176, else the join +180, else the lane +64) or F-73217 (the join when both curve and join exist, the lane
+/// when one of them does, else none) -, each as (rail, its word +4), a rail with neither 0x800 nor 0x1000 there counting
+/// as none (so a lane of the file never counts: none carries those bits). No rail or no path: false.
+pub fn path_rail_counts(cur: Option<u32>, curve: Option<(u32, u32)>, join: Option<(u32, u32)>, lane: Option<(u32, u32)>) -> bool {
+    let Some(cur) = cur else {
+        return false;
+    };
+    let a = curve.or(join).or(lane);
+    let b = match (curve, join) {
+        (Some(_), Some(_)) => join,
+        (None, None) => None,
+        _ => lane,
+    };
+    let kept = |x: Option<(u32, u32)>| x.filter(|r| r.1 & 0x1800 != 0).map(|r| r.0);
+    kept(a) == Some(cur) || kept(b) == Some(cur)
 }
 
 /// The acceleration that brings speed `v` to `vt` at `dist - margin` metres (F-20809):
@@ -3269,7 +3286,13 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
     let next_lane = r.next.map(|n| nav.links[n].lane);
     // wanted speed (F-70324): the lane's speed and the next lane's, with the offset, and in a race its holds (the
     // car's heading from its instance matrix as the frame began)
-    let holds = if env.event && !r.ty.proxy && r.race_lane != Some(lane) {
+    // (slot 19, F-35476: on a lane it is false - the path's lane +64 has no 0x800 / 0x1000 in its word +4, no lane of the
+    // file has, and the curve / join rails are run-time rails, never this lane; `path_rail_counts`)
+    let slot19 = r.race_lane.is_some_and(|pl| {
+        let flags = env.lanes.links.get(pl).and_then(|v| v.first()).map_or(0, |&k| nav.links[k].flags);
+        path_rail_counts(Some(lane as u32), None, None, Some((pl as u32, flags)))
+    });
+    let holds = if env.event && !r.ty.proxy && !slot19 {
         let b = env.others[me].back;
         let (d, pj) = env.player_ahead.map_or(((0.0, 0.0), None), |(d, j)| (d, Some(j)));
         let into = match pj {
@@ -9984,7 +10007,7 @@ impl Vehicles {
         r.ds_lane = usize::MAX;
         r.choose_next(nav, &mut self.park_rng);
         r.born = self.clock;
-        r.race_lane = (route.rails.len() < 2 && nav.links[link].flags & 0x1800 == 0).then_some(route.lane);
+        r.race_lane = Some(route.lane);
         if !route.rails.is_empty() {
             r.route = Some(Box::new(route));
             r.state = 9;
@@ -11558,7 +11581,7 @@ impl Vehicles {
             }
             let pos = owner_pos.unwrap_or_else(|| ghost_point(r, nav).0);
             if let Some(ride) = r.ghost.as_mut() {
-                ride.dest = (ride.flags & crate::ghostroute::FLAG_DEST_SPEED != 0 && crate::ghostroute::end_plane(&ride.route, pos) > 0.0).then(|| (ride.dest_speed, crate::ghostroute::dest_dist(&ride.route, pos)));
+                ride.dest = crate::ghostroute::dest_entry(&ride.route, pos, ride.flags, ride.dest_speed);
             }
             // (the proxy type has no bound: half length 0)
             step(r, &env, me, 0.0, true, dt);
@@ -12234,6 +12257,29 @@ mod controller_pick_tests {
     /// -MaxDecel / random / NaN / infinities, the slots' on bits, standing and moving, the start delay, the player across or
     /// along our rail): the acceleration, the entry chosen (+420), +440, every slot's on bit and, for the active ones, its
     /// +0 / +4 equal [`pick`]'s to the bit.
+    /// F-35476 run offline on the original's code (work/traffic-detail/s19): every combination of the path (none or one),
+    /// its curve / join / lane rails (each none or one), their words +4 (0, 1, 0x800, 0x1000, 0x1800, 0x2001, all but
+    /// 0x1800) and the follower's rail (none, the curve, the join, the lane, another rail) - 13,725 cases, the answer equal
+    /// to [`path_rail_counts`]'s on every one.
+    #[test]
+    fn path_rail_counts_matches_the_original() {
+        let (mut n, mut yes) = (0, 0);
+        for l in include_str!("testdata/path_rail_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let (a, b) = l.split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split_whitespace().collect();
+            let bit = |k: usize| w[k] == "1";
+            let fl = |k: usize| u32::from_str_radix(w[k], 16).unwrap();
+            let path = bit(0);
+            let rail = |on: bool, id: u32, k: usize| (path && on).then_some((id, fl(k)));
+            let cur: u32 = w[7].parse().unwrap();
+            let got = path_rail_counts((cur != 0).then_some(cur), rail(bit(1), 1, 4), rail(bit(2), 2, 5), rail(bit(3), 3, 6));
+            assert_eq!(got, b == "1", "{l}");
+            n += 1;
+            yes += got as usize;
+        }
+        assert_eq!((n, yes), (13725, 1617));
+    }
+
     #[test]
     fn controller_pick_matches_the_original() {
         let mut n = 0;
