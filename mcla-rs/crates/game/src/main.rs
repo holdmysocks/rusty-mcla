@@ -643,10 +643,6 @@ struct App {
     /// 1 the fade down asked, 2 the fade up, then Racer_PlayIgnition and Racer_Activate (0x1322 / 0x132c)
     f02c_fade: u8,
     f02c_mask: boomcam::CutMask,
-    /// the scene set dressing in the prop manager's one slot (`World::load_dressing`): the scene that loaded it and
-    /// its flag (true: FinishScene takes it); `scene_set_unload`: a script's UnloadSetDressing asked (F-50072)
-    scene_set: Option<(String, bool)>,
-    scene_set_unload: bool,
     /// a scene's own fade down and up (`cine::SCENE_FADES`)
     scene_fade: boomcam::CutMask,
     /// the opening's `Graphics_WarpToTimeOfDay(17, 100)`: the hour aimed at, while the clock is moved there
@@ -1592,8 +1588,6 @@ impl App {
             audio_trace_t: 0.0,
             intro_mask: Default::default(),
             f02c_fade: 0,
-            scene_set: None,
-            scene_set_unload: false,
             f02c_mask: Default::default(),
             scene_fade: Default::default(),
             intro_tod: None,
@@ -8462,8 +8456,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if self.f02c_mask.full() {
                 self.f02c_mask.release(1.0);
                 self.f02c_fade = 2;
-                // (0xfdf: UnloadSetDressing('cut_hk2_24_set_items') under the black)
-                self.scene_set_unload = true;
             }
         } else if self.f02c_fade == 2 && !self.f02c_mask.is_on() {
             self.f02c_fade = 0;
@@ -8841,7 +8833,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.police.create_units(self.game.mc4_police_unlocked());
         }
 
-        self.dressing_tick(&mut gpu, &mut world);
         self.vehicles.finish_tick(sim_dt);
         self.input.pending_keys.clear();
         self.world = Some(world);
@@ -14414,36 +14405,6 @@ impl App {
         self.game.opening_black = self.intro_stage == 4 || (self.intro_stage == 3 && !self.game.fresh_game);
     }
 
-    /// The scenes' set dressing (docs/reference/cutscenes/set_dressing.md): a scene whose description names one loads it
-    /// at its start (core_rolling_prototype 0x8e4, flag 1: FinishScene F-65984 -> F-54343(1) unloads it at the scene's
-    /// end); FIND_SH_02C's core loads its own with the flag 0 and unloads it after its fade down (`scene_set_unload`). The
-    /// slot takes no second set while one is loaded (F-19063). Drawn in world coordinates (F-51002), with no bound.
-    fn dressing_tick(&mut self, gpu: &mut Gpu, world: &mut World) {
-        let now = self.cine.playing.as_ref().map(|s| s.name.clone());
-        let ended = self.scene_set.as_ref().is_some_and(|(scene, auto)| *auto && now.as_deref() != Some(scene.as_str()));
-        if ended || std::mem::take(&mut self.scene_set_unload) {
-            world.drop_dressing();
-            self.scene_set = None;
-        }
-        let Some(scene) = now else { return };
-        if self.scene_set.is_some() {
-            return;
-        }
-        let pick = if let Some(set) = cine::scene_dressing(&scene) {
-            Some((set, true))
-        } else if scene.eq_ignore_ascii_case(cine::FIND_02C_DRESSING.0) {
-            Some((cine::FIND_02C_DRESSING.1, false))
-        } else {
-            None
-        };
-        // (taken by the scene even when the slot was full or the file is missing: it is not asked again;
-        // MCLA_DRESS_OLD=1: none, as before)
-        if let Some((set, auto)) = pick.filter(|_| std::env::var_os("MCLA_DRESS_OLD").is_none()) {
-            world.load_dressing(gpu, set);
-            self.scene_set = Some((scene, auto));
-        }
-    }
-
     /// The cine scenes' lamp switches (vehicles.rs `CINE_LAMP_EVENTS`): at a scene's start every car's switch
     /// is kept (F-32153), the scene's events set the car of their slot as its clock passes them, and when
     /// it ends the kept switches come back (FinishScene, F-62501).
@@ -17030,8 +16991,14 @@ fn garage_spot(ray: &dyn Fn(Vec3, Vec3, f32) -> Option<physics::collision::Hit>,
         let a = k as f32 / 12.0 * std::f32::consts::TAU;
         Vec3::new(a.cos(), 0.0, a.sin())
     }).collect();
+    // (the room never exceeds 9 m and a later cell must have more to win: the scan ends at a 9 m spot, and a cell
+    // ends once it can no longer win - under 3 m, or no more than the best - with the same answer as the full scan,
+    // which took 1.6 s of one tick in the Hollywood garage)
     let mut x = mn.x + 3.0;
-    while x < mx.x - 3.0 {
+    'scan: while x < mx.x - 3.0 {
+        if best.is_some_and(|b| b.1 >= 9.0) {
+            break 'scan;
+        }
         let mut z = mn.z + 3.0;
         while z < mx.z - 3.0 {
             let zz = z;
@@ -17045,19 +17012,119 @@ fn garage_spot(ray: &dyn Fn(Vec3, Vec3, f32) -> Option<physics::collision::Hit>,
                     if let Some(hit) = ray(g.point + Vec3::Y * h, *d, clear) {
                         clear = clear.min(hit.t);
                     }
+                    if clear < 3.0 || best.is_some_and(|b| clear <= b.1) {
+                        break;
+                    }
                 }
-                if clear < 3.0 {
+                if clear < 3.0 || best.is_some_and(|b| clear <= b.1) {
                     break;
                 }
             }
             if clear >= 3.0 && best.map_or(true, |b| clear > b.1) {
                 best = Some((g.point, clear));
+                if clear >= 9.0 {
+                    break 'scan;
+                }
             }
         }
         x += 1.5;
     }
     log::info!("garage spot in {:.0?}..{:.0?}: {:?}", mn, mx, best);
     best
+}
+
+#[cfg(test)]
+mod garage_spot_tests {
+    use super::*;
+    use physics::collision::{Hit, Surface};
+
+    /// garage_spot as it was before its scan ended early: every cell, every ray
+    fn full_scan(ray: &dyn Fn(Vec3, Vec3, f32) -> Option<Hit>, mn: Vec3, mx: Vec3) -> Option<(Vec3, f32)> {
+        let mut best: Option<(Vec3, f32)> = None;
+        let dirs: Vec<Vec3> = (0..12).map(|k| {
+            let a = k as f32 / 12.0 * std::f32::consts::TAU;
+            Vec3::new(a.cos(), 0.0, a.sin())
+        }).collect();
+        let mut x = mn.x + 3.0;
+        while x < mx.x - 3.0 {
+            let mut z = mn.z + 3.0;
+            while z < mx.z - 3.0 {
+                let zz = z;
+                z += 1.5;
+                let floor = [1.6f32, 3.6, 5.6].iter().find_map(|h| ray(Vec3::new(x, mn.y + h, zz), -Vec3::Y, 2.2).filter(|g| g.normal.y > 0.97 && ray(g.point + Vec3::Y * 2.2, Vec3::Y, 40.0).is_some()));
+                let Some(g) = floor else { continue };
+                let mut clear = 9.0f32;
+                for h in [0.3f32, 0.9] {
+                    for d in &dirs {
+                        if let Some(hit) = ray(g.point + Vec3::Y * h, *d, clear) {
+                            clear = clear.min(hit.t);
+                        }
+                    }
+                    if clear < 3.0 {
+                        break;
+                    }
+                }
+                if clear >= 3.0 && best.map_or(true, |b| clear > b.1) {
+                    best = Some((g.point, clear));
+                }
+            }
+            x += 1.5;
+        }
+        best
+    }
+
+    /// the nearest box a ray meets within `t_max` (slab test), with the face's normal
+    fn boxes_ray(boxes: &[(Vec3, Vec3)], o: Vec3, d: Vec3, t_max: f32) -> Option<Hit> {
+        let mut best: Option<Hit> = None;
+        for (a, b) in boxes {
+            let (mut t0, mut t1, mut n) = (0.0f32, t_max, Vec3::ZERO);
+            let mut ok = true;
+            for k in 0..3 {
+                if d[k].abs() < 1e-9 {
+                    if o[k] < a[k] || o[k] > b[k] { ok = false; break; }
+                    continue;
+                }
+                let (mut ta, mut tb) = ((a[k] - o[k]) / d[k], (b[k] - o[k]) / d[k]);
+                let mut nk = Vec3::ZERO;
+                nk[k] = -d[k].signum();
+                if ta > tb { std::mem::swap(&mut ta, &mut tb); }
+                if ta > t0 { t0 = ta; n = nk; }
+                t1 = t1.min(tb);
+                if t0 > t1 { ok = false; break; }
+            }
+            if ok && t0 > 0.0 && best.as_ref().map_or(true, |h| t0 < h.t) {
+                best = Some(Hit { t: t0, point: o + d * t0, normal: n, surface: Surface::Interior });
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn early_end_gives_the_full_scans_spot() {
+        let mut seed = 0x2545_f491u32;
+        let mut rnd = move || { seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223); (seed >> 8) as f32 / 16_777_216.0 };
+        let (mut same, mut nine, mut part, mut none) = (0, 0, 0, 0);
+        for case in 0..400 {
+            let (mn, mx) = (Vec3::new(0.0, 0.0, 0.0), Vec3::new(20.0 + rnd() * 40.0, 12.0, 20.0 + rnd() * 40.0));
+            // floor, a raised floor, the roof, the walls, and pillars (more in later cases: fewer open spots)
+            let mut boxes = vec![(Vec3::new(-5.0, -1.0, -5.0), Vec3::new(mx.x + 5.0, 0.5, mx.z + 5.0)), (Vec3::new(-5.0, 10.0, -5.0), Vec3::new(mx.x + 5.0, 11.0, mx.z + 5.0))];
+            let (hx, hz) = (rnd() * mx.x, rnd() * mx.z);
+            boxes.push((Vec3::new(hx, 0.0, hz), Vec3::new(hx + 6.0, 2.5, hz + 6.0)));
+            boxes.push((Vec3::new(-1.0, 0.0, -1.0), Vec3::new(0.5, 10.0, mx.z + 1.0)));
+            boxes.push((Vec3::new(mx.x - 0.5, 0.0, -1.0), Vec3::new(mx.x + 1.0, 10.0, mx.z + 1.0)));
+            for _ in 0..(case % 40) * (case % 7) {
+                let (px, pz, w) = (rnd() * mx.x, rnd() * mx.z, 0.3 + rnd() * 2.0);
+                boxes.push((Vec3::new(px, 0.0, pz), Vec3::new(px + w, 10.0, pz + w)));
+            }
+            let ray = |o: Vec3, d: Vec3, t: f32| boxes_ray(&boxes, o, d, t);
+            let (a, b) = (full_scan(&ray, mn, mx), garage_spot(&ray, mn, mx));
+            assert_eq!(a.map(|v| (v.0.to_array().map(f32::to_bits), v.1.to_bits())), b.map(|v| (v.0.to_array().map(f32::to_bits), v.1.to_bits())), "case {}", case);
+            same += 1;
+            match a { Some((_, c)) if c >= 9.0 => nine += 1, None => none += 1, _ => part += 1 }
+        }
+        assert!(nine > 20 && part > 50 && none > 5, "{} {} {} {}", same, nine, part, none);
+        eprintln!("garage_spot: {} cases equal bit for bit ({} with a 9 m spot, {} with a smaller one, {} with none)", same, nine, part, none);
+    }
 }
 
 /// The city map on the GPU (see `citymap.rs`).
