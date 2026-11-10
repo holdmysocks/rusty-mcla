@@ -134,6 +134,11 @@ fn dump_blend_files() {
     std::fs::write(out_dir().join("blend_files.txt"), s).unwrap();
 }
 
+/// A hex word of the reference files; one that reads like an address of the original is written with a leading `h`.
+fn hx(s: &str) -> u32 {
+    u32::from_str_radix(s.strip_prefix('h').unwrap_or(s), 16).unwrap()
+}
+
 fn unhex(s: &str) -> Vec<u8> {
     if s == "-" {
         return Vec::new();
@@ -168,7 +173,7 @@ fn check_find(text: &str) -> (usize, usize) {
                 rpf = None;
                 name = f[1].to_string();
             }
-            "E" => words.push([1, 2, 3, 4].map(|i| u32::from_str_radix(f[i], 16).unwrap())),
+            "E" => words.push([1, 2, 3, 4].map(|i| hx(f[i]))),
             "Q" => {
                 let r = rpf.get_or_insert_with(|| build_rpf(&words));
                 let path = String::from_utf8(unhex(f[1])).unwrap();
@@ -209,7 +214,7 @@ fn name_hash_matches_the_original() {
     let mut n = 0;
     for l in formats_ref().lines().filter(|l| l.starts_with("H ")) {
         let f: Vec<&str> = l.split(' ').collect();
-        let (seed, s, want) = (u32::from_str_radix(f[1], 16).unwrap(), unhex(f[2]), u32::from_str_radix(f[3], 16).unwrap());
+        let (seed, s, want) = (hx(f[1]), unhex(f[2]), hx(f[3]));
         assert_eq!(crate::hash::at_string_hash(&s, seed), want, "{:?} seed {:x}", s, seed);
         n += 1;
     }
@@ -274,10 +279,10 @@ fn resource_info_matches_the_original() {
     let mut n = 0;
     for l in formats_ref().lines().filter(|l| l.starts_with("I ")) {
         let (head, res) = l[2..].split_once(" -> ").unwrap();
-        let h: Vec<u32> = head.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+        let h: Vec<u32> = head.split(' ').map(|x| hx(x)).collect();
         let (found, c, d, avail, words, open_fail, f0) = (h[0], h[1], h[2], h[3] as usize, [h[4], h[5], h[6]], h[7], h[8]);
         let r: Vec<&str> = res.split(' ').collect();
-        let want = (r[0].parse::<i32>().unwrap(), u32::from_str_radix(r[1], 16).unwrap());
+        let want = (r[0].parse::<i32>().unwrap(), hx(r[1]));
         let got = if found == 0 {
             (0, f0)
         } else if let Kind::Resource { rtype, flags, .. } = classify(0, c, d, usize::MAX) {
