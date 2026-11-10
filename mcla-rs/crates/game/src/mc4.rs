@@ -6730,6 +6730,31 @@ pub fn stat_add_bits(ty: StatType, record: u32, value: u32) -> u32 {
     }
 }
 
+/// The save's setting statistics, as F-54482 writes them (operation 3, set) before it copies the statistics into the
+/// save at every save: tCIN = the profile's cinematics (+1192), tCAM = its default camera (+1208), tLNG = its language
+/// (+1320), tDL2 / tDL1 = the two content mask words (F-68286's start-up values, `CONTENT_MASK_START`), tSPE = 1,
+/// tINP = the controller configuration (the wheel's, profile +2, when F-84924 finds the pad's device type 4, else the
+/// pad's, +0, sign-extended), tIME = the date (KeQuerySystemTime through RtlTimeToTimeFields: the year - 2000, 0 below
+/// 2000, in bits 24..30, the month, day and hour in the bytes below). Nothing else reads them: no script names the
+/// codes and F-54482 is the executable's only user of the strings; they are the save's content. The port has no wheel
+/// device, so tINP is always the pad's.
+pub fn setting_stats(o: &Options, wheel: bool, year: u32, month: u32, day: u32, hour: u32) -> [(&'static str, f64); 8] {
+    let inp = if wheel { o.control_config_wheel } else { o.control_config_pad } as i16;
+    let md = (month.rotate_left(8) | day).rotate_left(8) & 0xFFFF_FF00 | hour;
+    let y = (year as i32 - 2000).max(0) as u32;
+    let time = y.rotate_left(24) & 0x7F00_0000 | md;
+    [
+        ("tCIN", o.cinematics as i32 as f64),
+        ("tCAM", o.camera as i32 as f64),
+        ("tLNG", o.language as i32 as f64),
+        ("tDL2", CONTENT_MASK_START[1] as f64),
+        ("tDL1", CONTENT_MASK_START[0] as f64),
+        ("tSPE", 1.0),
+        ("tINP", inp as f64),
+        ("tIME", time as i32 as f64),
+    ]
+}
+
 /// F-80717: value < record by the record's type.
 pub fn stat_less_bits(ty: StatType, record: u32, value: u32) -> bool {
     match ty {
@@ -12458,6 +12483,28 @@ impl Game {
             self.career.stats.remove(code);
         }
         true
+    }
+
+    /// F-54482's setting statistics (`setting_stats`) written into the career block of a save about to be written, through
+    /// the submit's own rules (F-79933 by the manager's vtable +40: the refusals, the 1000-record limit, the record's type).
+    pub fn mc4_setting_stats_into(&self, cs: &mut crate::career::SaveState, now: chrono::DateTime<chrono::Utc>) {
+        use chrono::{Datelike, Timelike};
+        let def = Options::default();
+        let o = self.mc4.as_ref().map_or(&def, |m| &m.options);
+        let goal = self.goal_attack && self.race.is_some();
+        for (code, v) in setting_stats(o, false, now.year().max(0) as u32, now.month(), now.day(), now.hour()) {
+            if stat_refused(code, crate::rewards::cheat_gate_on(), self.test_drive.is_some(), goal) {
+                continue;
+            }
+            let key = format!("{code}/0");
+            if !cs.ostats.contains_key(&key) && !cs.stats.contains_key(code) && cs.ostats.len() >= STAT_RECORDS {
+                continue;
+            }
+            let ty = stat_type(code);
+            let nv = stat_from_bits(ty, stat_bits(ty, v));
+            cs.ostats.insert(key, nv);
+            cs.stats.insert(code.to_string(), nv as i64);
+        }
     }
 
     /// StatsManager_UpdateStatInt(code, sub, 3 (set), v).
@@ -19672,6 +19719,23 @@ mod tests {
         assert_eq!(f("kTST/0"), -2147483648.0, "a signed record wraps");
         assert_eq!(f("kARS/0"), 0.5f32 as f64);
         assert_eq!(back.stats.get("gBRN"), Some(&(old.ostats["gBRN/0"] as i64 + 1)));
+    }
+
+    /// F-54482's setting statistics against the imported PS3 save (testdata/old_save_ostats.json: saved 2011-07-31 at
+    /// 14 h with the default camera Boom 1, cinematics 1, english, the custom pad configuration 4), and a save writes them.
+    #[test]
+    fn setting_statistics_are_the_original_saves() {
+        let old: crate::career::SaveState = serde_json::from_str(include_str!("testdata/old_save_ostats.json")).unwrap();
+        let o = Options { camera: 2, cinematics: 1, language: 0, control_config_pad: 4, ..Options::default() };
+        for (code, v) in setting_stats(&o, false, 2011, 7, 31, 14) {
+            assert_eq!(Some(&v), old.ostats.get(&format!("{code}/0")), "{code}");
+        }
+        assert_eq!(setting_stats(&o, true, 1999, 12, 1, 0)[6..], [("tINP", 5.0), ("tIME", (12 << 16 | 1 << 8) as f64)], "the wheel's, no year below 2000");
+        let g = Game::new(Vec::new(), 0);
+        let mut cs = g.career.save();
+        g.mc4_setting_stats_into(&mut cs, chrono::DateTime::from_timestamp(1_762_700_000, 0).unwrap());
+        assert_eq!(cs.ostats["tIME/0"], (25 << 24 | 11 << 16 | 9 << 8 | 14) as f64, "2025-11-09 14 h UTC as 25.11.9.14");
+        assert_eq!((cs.ostats["tDL1/0"], cs.ostats["tDL2/0"], cs.ostats["tSPE/0"], cs.stats["tCAM"]), (319.0, 317.0, 1.0, 4));
     }
 }
 
