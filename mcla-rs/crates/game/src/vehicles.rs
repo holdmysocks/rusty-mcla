@@ -2384,7 +2384,7 @@ impl Vehicles {
 
     /// The build of `dir` in `cfg`: its CPU part (`prep_car`) made on a worker thread now, for `load_model_cfg` to
     /// take - when the car has been read (`parsed`) and the build is neither made nor being made.
-    fn prepare_ahead(&mut self, dir: &Path, cfg: &CarConfig) {
+    pub fn prepare_ahead(&mut self, dir: &Path, cfg: &CarConfig) {
         let key = parsed_key(dir);
         let name = dir.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         if self.models.iter().any(|m| m.name == name && m.cfg == *cfg) || self.preps.iter().any(|(k, c, _)| *k == key && c == cfg) {

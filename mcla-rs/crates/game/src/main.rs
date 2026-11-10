@@ -132,20 +132,19 @@ mod floormirror;
 mod titlecam;
 mod startwarp;
 
+/// Where the pause cameras' frame sits in the car (x right, y up, z rear from the
+/// car's origin). Measured in the original (CAREER_RACES.md "Race end: camera and
+/// timing", second run): the settled PauseCamera3 and PauseCamera2 both stand at their
+/// tuned place + (0, 1.42, 0.08) from the S281's instance origin, the look the tune's to
+/// 0.003. (approx.: the port's car origin taken as the original's instance origin; was
+/// (0, 1.38, -0.25), fitted by eye)
 /// VEHICLE SELECT's music (CarSelection 0xedb: mcMusicManager_PlayCustomMusic('MUSIC_CARSELECT_MASTER'))
 const CARSELECT_MUSIC: &str = "MUSIC_CARSELECT_MASTER";
 /// INTRO FAST (DECISIONS.md D24): the film `intro720.bik` (68.47 s) ends with the arrival CUT_INTRO shows (10.3 s), the
 /// two ending together - the film's time of the scene's first frame (the close-up's cut: film 66.30 s, scene 8.1 s;
 /// CUTSCENES.md "The opening scenes' audio (session `cut-audio`, 2026-10-23)")
 const FILM_CUT_INTRO_AT: f32 = 58.2;
-/// Where the pause cameras' frame (the HUD frame 14, F-32331) stands: the car's composite box's top
-/// centre, turned by the car (`racemark::pause_origin`); the frame's axes the heading only. The race-end
-/// fit on the S281 (CAREER_RACES.md "Race end: second run": (0, 1.42, 0.08 rear)) is this to 1 cm.
-/// (approx.: the port's car origin taken as the original's matrix origin)
-fn pause_origin(car: &vehicles::CarInstance, s: &physics::CarState) -> Vec3 {
-    let (hi, lo) = racemark::bound_box(car);
-    racemark::pause_origin(s.pos, s.rot, hi, lo, car.model.bike)
-}
+const PAUSE_FRAME: Vec3 = Vec3::new(0.0, 1.42, 0.08);
 /// The point RACE_GH_06_READY_TO_START_ON_ENTER.sco gives AmbientMgr_SetRoadDensity (0x8be .. 0x8dc, 0xab1): the
 /// road of CUT_STORY_RACE_GH_06 (F-86195 finds it), index 0 for the scene, -1 after it.
 const GH_06_SCENE_ROAD: Vec3 = Vec3::new(-234.0, 21.0, -733.0);
@@ -649,8 +648,10 @@ struct App {
     intro_tod: Option<f32>,
     /// VEHICLE SELECT: where the first of the three starters stands
     starters_made: bool,
-    /// the pending race whose guessed grid was read ahead (`grid_ahead`)
-    grid_warm: Option<(usize, bool)>,
+    /// the pending race whose guessed grid was read ahead (`grid_ahead`), with the career generator's state it was
+    /// guessed on, and the tick of the guess
+    grid_warm: Option<((usize, bool), (u32, u32))>,
+    grid_warm_at: u64,
     /// a new career's opening read ahead on worker threads (`opening_read_ahead`): 1 the three starters, 2 the
     /// first story scene's cars and people
     opening_read: u8,
@@ -1591,6 +1592,7 @@ impl App {
             intro_tod: None,
             starters_made: false,
             grid_warm: None,
+            grid_warm_at: 0,
             opening_read: 0,
             starter_stand: None,
             sel_cam: None,
@@ -9307,7 +9309,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let fwd = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or(Vec3::NEG_Z);
                         let right = Vec3::new(-fwd.z, 0.0, fwd.x);
                         let off: Vec<f32> = std::env::var("MCLA_PAUSE_OFF").ok().map(|v| v.split(',').filter_map(|x| x.parse().ok()).collect()).unwrap_or_default();
-                        let origin = if off.len() == 3 { render_state.pos + right * off[0] + Vec3::Y * off[1] - fwd * off[2] } else { pause_origin(car, &render_state) };
+                        let off = if off.len() == 3 { Vec3::new(off[0], off[1], off[2]) } else { PAUSE_FRAME };
+                        let origin = render_state.pos + right * off.x + Vec3::Y * off.y - fwd * off.z;
                         let place = |p: Vec3| origin + right * p.x + Vec3::Y * p.y - fwd * p.z;
                         self.chase.pos = place(eye);
                         self.chase.look = place(look);
@@ -10069,7 +10072,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         let fwd = render_state.forward();
                         let fwd = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or(Vec3::NEG_Z);
                         let right = Vec3::new(-fwd.z, 0.0, fwd.x);
-                        let origin = pause_origin(car, &render_state);
+                        let origin = render_state.pos + right * PAUSE_FRAME.x + Vec3::Y * PAUSE_FRAME.y - fwd * PAUSE_FRAME.z;
                         let place = |p: Vec3| origin + right * p.x + Vec3::Y * p.y - fwd * p.z;
                         if self.race_end_cam.is_none() {
                             let logic = menu3d::UiLogic::load(&self.opt.data_dir);
@@ -13515,6 +13518,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                         }
                     }
+                    // (and their set-ups' builds made on workers now, read as they are: the dressing a tick later takes them -
+                    // `Vehicles::dress_setups`, which started them itself and waited, docs/PERFORMANCE.md 2026-11-10 (1))
+                    for r in &grid {
+                        if let (Some(d), Some(dir)) = (self.game.mc4_dress_of(&r.car, &r.config), dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(&r.car)))) {
+                            self.vehicles.prepare_ahead(dir, &d.cfg);
+                        }
+                    }
                     log::info!("grid: {}", grid.iter().map(|r| format!("{} {} [{}]", self.game.career.name_of(&r.id), r.car, r.plate)).collect::<Vec<_>>().join(", "));
                     self.game.grid_rivals = grid;
                 }
@@ -15269,11 +15279,16 @@ impl App {
         let pending = self.roam.challenge.as_ref().map(|c| (c.race, true))
             .or(self.game.bmt_go)
             .or_else(|| self.game.current_race.filter(|_| self.game.race.is_none()).map(|r| (r, self.game.hookman_race)));
-        if pending.is_none() || pending == self.grid_warm {
+        // (guessed again when the career's generator has moved since: the draw at StartRace is on its state then - a guess
+        // made before it was seeded had read 6 of 7 wrong cars and the start's tick waited 0.3 - 1.6 s for the grid's
+        // reads, docs/PERFORMANCE.md 2026-11-10 (1); for the same race at most once a second)
+        let Some((race, hookman)) = pending else { return };
+        let rng = { let r = *oppick::career_rng(); (r.lo, r.carry) };
+        if self.grid_warm == Some(((race, hookman), rng)) || (self.grid_warm.map(|w| w.0) == pending && self.tick_no < self.grid_warm_at + 30) {
             return;
         }
-        self.grid_warm = pending;
-        let Some((race, hookman)) = pending else { return };
+        self.grid_warm = Some(((race, hookman), rng));
+        self.grid_warm_at = self.tick_no;
         let was = (self.game.current_race, self.game.hookman_race);
         (self.game.current_race, self.game.hookman_race) = (Some(race), hookman);
         let t = Instant::now();
