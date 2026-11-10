@@ -324,26 +324,37 @@ pub struct Spot {
 /// makes a ring (F-32756), otherwise a row across the way from `pos` to `second`
 /// (F-10244). Each spot is probed from 2 m above to 20 m below; the height is 5.
 pub fn hand_spots(pos: Vec3, width: f32, second: Vec3) -> Vec<Spot> {
+    use crate::physics::exact::{dot3, fma, fms, guest_cos, guest_sin};
     let spot = |p: Vec3| Spot { at: p, up: 2.0, down: 20.0, height: 5.0, last: false };
     if second == Vec3::ZERO {
-        // a ring of radius `width`: 5 sources from 15 m, 4 from 10 m, else 3
+        // a ring of radius `width` (F-32756): 5 sources from 15 m, 4 from 10 m, else 3; the angle (i / n x 360) x 0.0174532924 through the
+        // guest's sine and cosine, the offset (cos w + sin 0, cos 0 - sin w) in fused operations
         let n = if width >= 15.0 { 5 } else if width >= 10.0 { 4 } else { 3 };
         return (0..n)
             .map(|i| {
-                let a = (i as f32 / n as f32 * 360.0) * 0.017453292;
-                spot(pos + Vec3::new(a.cos() * width, 0.0, -a.sin() * width))
+                let a = ((i as f32 / n as f32) * 360.0) * 0.017453292;
+                let (s, c) = (guest_sin(a as f64) as f32, guest_cos(a as f64) as f32);
+                spot(pos + Vec3::new(fma(c, width, s * 0.0), 0.0, fms(c, 0.0, s * width)))
             })
             .collect();
     }
-    // the way from pos to second, normalised, turned a quarter round the up axis
+    // the row (F-10244): the way from pos to second, as a unit vector by the vector unit's reciprocal square root (left as it is where
+    // every lane is zero), turned a quarter (+pi/2 through the guest's sine and cosine) round the up axis
     let d = second - pos;
-    let d = if d.length_squared() > 0.0 { d.normalize() } else { d };
-    let d = Vec3::new(d.z, d.y, -d.x);
-    // 5 from 13 m, 4 from 10, 3 from 6.5, 2 from 3, else 1 in the middle; spread over
-    // -width .. +width
+    let d = if d.x == 0.0 && d.y == 0.0 && d.z == 0.0 { d } else { d * (1.0 / dot3(d, d).sqrt()) };
+    let (s, c) = (guest_sin(1.570_796_370_506_286_6) as f32, guest_cos(1.570_796_370_506_286_6) as f32);
+    let d = Vec3::new(fma(d.x, c, d.z * s), d.y, fms(d.z, c, d.x * s));
+    // 5 from 13 m, 4 from 10, 3 from 6.5, 2 from 3, else 1 in the middle; spread over -width .. +width, the offset added up
+    // from -width by the step (width x 2) / (n - 1) each source
     let n = if width >= 13.0 { 5 } else if width >= 10.0 { 4 } else if width >= 6.5 { 3 } else if width >= 3.0 { 2 } else { 1 };
-    let (start, step) = if n == 1 { (0.0, 0.0) } else { (-width, width * 2.0 / (n - 1) as f32) };
-    (0..n).map(|i| spot(pos + d * (start + step * i as f32))).collect()
+    let (mut at, step) = if n == 1 { (0.0, 0.0) } else { (-width, (width * 2.0) / (n - 1) as f32) };
+    (0..n)
+        .map(|_| {
+            let p = spot(pos + d * at);
+            at += step;
+            p
+        })
+        .collect()
 }
 
 /// The lateral places of 1..5 sources (0x820B4950: x 6 m) and the unordered layout's
@@ -377,22 +388,27 @@ pub struct CpIn {
 /// to the next checkpoint (ordered) or in a cluster (unordered); 1..5, and an even number when
 /// ordered. 6 m apart, probed 1 m up and down from the checkpoint's height.
 pub fn checkpoint_spots(cps: &[CpIn], ordered: bool) -> Vec<Spot> {
+    use crate::physics::exact::{fma, fms, fnms, guest_cos, guest_sin, unit_or_zero};
     let n = cps.len();
     let mut out = Vec::new();
     let mut dir = Vec3::ZERO;
+    // (the quarter turn of a line's way: +pi/2 through the guest's sine and cosine)
+    let (sn, cs) = (guest_sin(1.570_796_370_506_286_6) as f32, guest_cos(1.570_796_370_506_286_6) as f32);
     for k in 0..n {
         let last = k + 1 == n;
         let rec = if last && n >= 2 { cps[n - 2] } else { cps[k] };
         let mut count;
         if let Some(b) = rec.line_end {
-            let mut l = (rec.pos - b).length();
+            // (the length in the scalar unit's fused operations: sqrt(dy dy + (dz dz + dx dx)))
+            let (dx, dy, dz) = (rec.pos.x - b.x, rec.pos.y - b.y, rec.pos.z - b.z);
+            let mut l = fma(dy, dy, fma(dz, dz, dx * dx)).sqrt();
             if l >= 5.0 {
                 l -= 5.0;
             }
             count = ((l * THIRD) as i32).clamp(1, 5);
+            // (the way along the line, b - pos, turned a quarter: x' = cos x + sin z, z' = cos z - sin x; then as a unit vector)
             let d = b - rec.pos;
-            let r = Vec3::new(d.z, 0.0, -d.x);
-            dir = if r.length_squared() > 0.0 { r.normalize() } else { Vec3::ZERO };
+            dir = unit_or_zero(Vec3::new(fma(cs, d.x, sn * d.z), 0.0, fms(cs, d.z, sn * d.x)));
         } else {
             let mut f = rec.radius - 3.0;
             if f >= 3.0 {
@@ -402,8 +418,7 @@ pub fn checkpoint_spots(cps: &[CpIn], ordered: bool) -> Vec<Spot> {
             if ordered {
                 let next = if last && n >= 2 { cps[n - 2].pos } else { cps.get(k + 1).map_or(rec.pos, |c| c.pos) };
                 let d = next - rec.pos;
-                let d = Vec3::new(d.x, 0.0, d.z);
-                dir = if d.length_squared() > 0.0 { d.normalize() } else { Vec3::ZERO };
+                dir = unit_or_zero(Vec3::new(d.x, 0.0, d.z));
             }
         }
         if count % 2 == 1 && ordered {
@@ -411,13 +426,14 @@ pub fn checkpoint_spots(cps: &[CpIn], ordered: bool) -> Vec<Spot> {
         }
         for i in 0..count.max(0) as usize {
             let mut p = rec.pos;
+            // (the offsets x 6 m added in fused operations)
             if !ordered && rec.line_end.is_none() {
-                p.x += CLUSTER[count as usize - 1][i][0] * 6.0;
-                p.z += CLUSTER[count as usize - 1][i][1] * 6.0;
+                p.x = fma(CLUSTER[count as usize - 1][i][0], 6.0, p.x);
+                p.z = fma(CLUSTER[count as usize - 1][i][1], 6.0, p.z);
             } else {
                 let t = ROW[count as usize - 1][i];
-                p.x += t * dir.z * 6.0;
-                p.z -= t * dir.x * 6.0;
+                p.x = fma(t * dir.z, 6.0, p.x);
+                p.z = fnms(t * dir.x, 6.0, p.z);
             }
             out.push(Spot { at: p, up: 1.0, down: 1.0, height: rec.height, last });
         }
@@ -664,6 +680,21 @@ pub struct Shot {
     pub wait: f32,
 }
 
+impl Shot {
+    /// A shot's frame (F-66683, the clock = the frame time): until targets are found it searches each frame (F-33277: `search`) and
+    /// restarts its clock at 0; the clock then runs on, and once it is over 0.25 s the found targets are returned for the landing
+    /// (every frame from then on).
+    pub fn step(&mut self, dt: f32, search: impl FnOnce() -> Vec<usize>) -> Option<Vec<usize>> {
+        if !self.found {
+            self.targets = search();
+            self.found = !self.targets.is_empty();
+            self.wait = 0.0;
+        }
+        self.wait += dt;
+        (self.wait > 0.25).then(|| self.targets.clone())
+    }
+}
+
 /// An effect on the car (+236) and its time left (+12).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Effect {
@@ -735,13 +766,14 @@ pub struct CarFx {
     pub t3_clock: f32,
     /// Shield +392: FX_Timer3 (a random number in [0, 1))
     pub t3: f32,
-    /// a random state for FX_Timer3 (the original's generator 0x82860880 is shared by the game)
-    pub rng: u32,
+    /// the generator FX_Timer3 draws from: the game's multiply-with-carry pair (the original's one is shared by the whole game;
+    /// here one per car)
+    pub rng: crate::pu_bolt::Mwc,
 }
 
 impl Default for CarFx {
     fn default() -> Self {
-        CarFx { flash: 1.0, t2: 0.0, t3_clock: 0.0, t3: 0.0, rng: 0x1234_5678 }
+        CarFx { flash: 1.0, t2: 0.0, t3_clock: 0.0, t3: 0.0, rng: crate::pu_bolt::Mwc { lo: 0x1234_5678, carry: 1 } }
     }
 }
 
@@ -749,30 +781,23 @@ impl CarFx {
     /// The Shield's per-frame update (F-32841; 1/60 = the clock object's +8, 0x827D7508):
     /// HitByAgro's (F-74161) is the same with the flash held at 1.
     pub fn shield_tick(&mut self, dt: f32) {
-        self.flash = (self.flash + 1.0 * dt).min(1.0);
-        self.t2 += 0.18 * dt;
+        use crate::physics::exact::fma;
+        // (the scalar unit's fused multiply-adds: flash = +380 dt + flash, t2 = +368 dt + t2; the rates are the constructor's 1.0 and 0.18)
+        self.flash = fma(1.0, dt, self.flash).min(1.0);
+        self.t2 = fma(0.18, dt, self.t2);
         self.t3_clock += dt;
         if self.t3_clock > 0.24 {
             // (two numbers are drawn, +392 and +396; +396 is read by nothing)
-            self.t3 = self.next();
-            let _ = self.next();
+            self.t3 = self.rng.unit();
+            let _ = self.rng.unit();
             self.t3_clock = 0.0;
         }
-    }
-
-    fn next(&mut self) -> f32 {
-        let mut x = self.rng;
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        self.rng = x;
-        (x & 0x7f_ffff) as f32 * 1.192_092_9e-7
     }
 }
 
 impl Holder {
     pub fn new(car: usize) -> Holder {
-        Holder { car, slots: [NONE; 2], shot: None, effect: None, back: false, ctl: 0, agro_prev: None, prev: None, finished: false, veh_ok: true, icon: None, bolts: None, lasers: Vec::new(), fx: CarFx { rng: (0x9e37_79b9 ^ (car as u32).wrapping_mul(0x85eb_ca6b)) | 1, ..Default::default() } }
+        Holder { car, slots: [NONE; 2], shot: None, effect: None, back: false, ctl: 0, agro_prev: None, prev: None, finished: false, veh_ok: true, icon: None, bolts: None, lasers: Vec::new(), fx: CarFx { rng: crate::pu_bolt::Mwc { lo: (0x9e37_79b9 ^ (car as u32).wrapping_mul(0x85eb_ca6b)) | 1, carry: 1 }, ..Default::default() } }
     }
 
     /// Two megas in hand (the manager's test, F-28572): slot 1 not empty and both >= 11.
@@ -922,10 +947,22 @@ pub const TICK: f32 = 1.0 / 60.0;
 /// the force and torque the next tick integrates over its dt and clears (F-94789): the
 /// change of speed is Force / 60 - (2.5, 5, 0) m/s in the car's frame for Pulse.
 pub fn pulse_push(rot: Quat, t: &TypeTune) -> (Vec3, Vec3) {
-    let sgn = |v: f32| if v > 0.0 { 1.0 } else if v < 0.0 { -1.0 } else { 0.0 };
-    let sx = sgn((rot * Vec3::X).dot(t.force_dir));
-    let s4 = sgn(-(rot * Vec3::Z).dot(t.force_dir)) * sx;
-    (rot * Vec3::new(t.force.x * sx, t.force.y, t.force.z), rot * (t.torque * s4))
+    pulse_push_rows(&[rot * Vec3::X, rot * Vec3::Y, rot * Vec3::Z], t)
+}
+
+/// `pulse_push` from the car's matrix rows (the original reads them at the vehicle +16): the signs are the scalar unit's select
+/// chain (1, 0 or -1; NaN gives -1) of dot products in its fused order, the world vectors the vector unit's three-term sums of the
+/// matrix's columns, (0 + z z') + (y y' + x x').
+pub fn pulse_push_rows(rows: &[Vec3; 3], t: &TypeTune) -> (Vec3, Vec3) {
+    use crate::physics::exact::{dot3, dot_xyz};
+    let sg = |v: f32| if v >= 0.0 { if -v >= 0.0 { 0.0 } else { 1.0 } } else { -1.0 };
+    let sx = sg(dot_xyz(rows[0], t.force_dir));
+    let s4 = sg(-dot_xyz(rows[2], t.force_dir)) * sx;
+    let world = |v: Vec3| {
+        let col = |f: fn(Vec3) -> f32| Vec3::new(f(rows[0]), f(rows[1]), f(rows[2]));
+        Vec3::new(dot3(v, col(|r| r.x)), dot3(v, col(|r| r.y)), dot3(v, col(|r| r.z)))
+    };
+    (world(Vec3::new(t.force.x * sx, t.force.y, t.force.z)), world(t.torque * s4))
 }
 
 /// The vehicle's own "may it fire" (its slot 12, F-71660): chassis +592 nothing, or - on
@@ -958,45 +995,69 @@ pub fn assign(dst: &mut [u8; 28], src: &[u8; 28]) {
 /// the ARCADE record's bits instead (the step 19e reading).
 pub const SESSION_TYPES: [u8; 2] = [0xff, 0xe0];
 
-/// How a target ranks for a shot (F-47137): a car under Stealth 1e6; with a negative
-/// width the distance; else the target in the shooter's frame - out of the box (|x| or |y|
-/// over the width) 1e6, in it the distance ahead.
-pub fn rank(shooter_pos: Vec3, shooter_rot: Quat, target_pos: Vec3, width: f32, stealth: bool) -> f32 {
+/// A car's frame as the original keeps it (the vehicle's matrix at +16: three rows, the car's axes in the world, then its place).
+pub fn frame_of(pos: Vec3, rot: Quat) -> [Vec3; 4] {
+    [rot * Vec3::X, rot * Vec3::Y, rot * Vec3::Z, pos]
+}
+
+/// How a target ranks for a shot (F-47137): a car under Stealth 1e6; with a negative width the distance, sqrt(dx dx + (dz dz +
+/// dy dy)) in the scalar unit's fused operations, the differences taken shooter - target; else the target's place carried through
+/// the inverse of the shooter's frame (F-43153 -> F-30106 = `inverse_frame`; where it refuses the original goes on with the frame
+/// itself) as a point (w = 1) by the vector unit's four-term sums, (w + z) + (y + x) - out of the box (|x| or |y| over the width)
+/// 1e6, in it the distance ahead, -z. `frame` = `frame_of`: the shooter's three rows and place.
+pub fn rank_frame(frame: &[Vec3; 4], target_pos: Vec3, width: f32, stealth: bool) -> f32 {
+    use crate::physics::exact::{fma, inverse_frame};
     if stealth {
         return 1e6;
     }
     if width < 0.0 {
-        return (target_pos - shooter_pos).length();
+        let (dx, dy, dz) = (frame[3].x - target_pos.x, frame[3].y - target_pos.y, frame[3].z - target_pos.z);
+        return fma(dx, dx, fma(dz, dz, dy * dy)).sqrt();
     }
-    let l = shooter_rot.inverse() * (target_pos - shooter_pos);
-    if l.x.abs() > width || l.y.abs() > width {
+    let inv = inverse_frame(&[frame[0], frame[1], frame[2]], frame[3]).unwrap_or(*frame);
+    let t = target_pos;
+    let comp = |f: fn(Vec3) -> f32| (f(inv[3]) + t.z * f(inv[2])) + (t.y * f(inv[1]) + t.x * f(inv[0]));
+    let (x, y) = (comp(|v| v.x), comp(|v| v.y));
+    if x.abs() > width || y.abs() > width {
         return 1e6;
     }
-    -l.z
+    -comp(|v| v.z)
 }
 
-/// The targets of a shot (F-33277): every other racer whose rank is between 0 and the
-/// range - backwards (LOOKBACK) the rank turned round, but not for a mega -, the nearest one,
-/// or all of them for a mega (types 12..20).
-pub fn targets(cars: &[(usize, Vec3, Quat, bool)], shooter: usize, kind: u8, back: bool, t: &TypeTune) -> Vec<usize> {
-    let mega = kind > 11 && kind < 21;
-    let Some(&(_, sp, sr, _)) = cars.iter().find(|c| c.0 == shooter) else { return Vec::new() };
+/// `rank_frame` from the port's position and orientation (the original has the matrix; the port keeps a quaternion and takes its
+/// axes: `frame_of`).
+pub fn rank(shooter_pos: Vec3, shooter_rot: Quat, target_pos: Vec3, width: f32, stealth: bool) -> f32 {
+    rank_frame(&frame_of(shooter_pos, shooter_rot), target_pos, width, stealth)
+}
+
+/// A mega type's shot (12 .. 20) goes to every racer in range, not the nearest (the search's mega flag, F-37047 / F-66683: 11 < type < 21).
+pub fn is_mega_shot(kind: u8) -> bool {
+    kind > 11 && kind < 21
+}
+
+/// The targets of a shot (F-33277), the cars as (index, frame, hidden by Stealth): every other racer whose rank is between 0 and the
+/// range - backwards (LOOKBACK) the rank turned round, but not for a mega -, the nearest one (the first of equals), or all of them
+/// for a mega (types 12..20), in the list's order. The original also skips a racer whose team equals the shooter's non-zero one
+/// (online team modes; no teams offline).
+pub fn targets_frames(cars: &[(usize, [Vec3; 4], bool)], shooter: usize, kind: u8, back: bool, t: &TypeTune) -> Vec<usize> {
+    let mega = is_mega_shot(kind);
+    let Some((_, sf, _)) = cars.iter().find(|c| c.0 == shooter) else { return Vec::new() };
     let mut best = t.shoot_range;
     let mut out = Vec::new();
     let mut near = None;
-    for &(i, p, _, stealth) in cars {
-        if i == shooter {
+    for (i, f, stealth) in cars {
+        if *i == shooter {
             continue;
         }
-        let mut d = rank(sp, sr, p, t.width, stealth);
+        let mut d = rank_frame(sf, f[3], t.width, *stealth);
         if back && !mega {
             d = -d;
         }
         if d < best && d > 0.0 {
             if mega {
-                out.push(i);
+                out.push(*i);
             } else {
-                near = Some(i);
+                near = Some(*i);
                 best = d;
             }
         }
@@ -1005,6 +1066,12 @@ pub fn targets(cars: &[(usize, Vec3, Quat, bool)], shooter: usize, kind: u8, bac
         out.push(i);
     }
     out
+}
+
+/// `targets_frames` from the port's cars (index, position, orientation, hidden).
+pub fn targets(cars: &[(usize, Vec3, Quat, bool)], shooter: usize, kind: u8, back: bool, t: &TypeTune) -> Vec<usize> {
+    let fr: Vec<_> = cars.iter().map(|&(i, p, r, s)| (i, frame_of(p, r), s)).collect();
+    targets_frames(&fr, shooter, kind, back, t)
 }
 
 // ---------------------------------------------------------------------------------
@@ -1434,21 +1501,14 @@ impl PowerUps {
                     self.end_shot(hi);
                 } else {
                     let car = self.holders[hi].car;
-                    if !s.found {
+                    let (kind, back) = (s.kind, self.holders[hi].back);
+                    let landing = s.step(dt, || {
                         let cars = self.racer_cars(vehicles);
-                        s.targets = if no_target_hook() { Vec::new() } else { targets(&cars, car, s.kind, self.holders[hi].back, &self.types[s.kind as usize]) };
-                        s.found = !s.targets.is_empty();
-                        s.wait = 0.0;
-                    }
-                    s.wait += dt;
-                    if s.wait > 0.25 {
-                        let (kind, list) = (s.kind, s.targets.clone());
-                        self.holders[hi].shot = Some(s);
-                        for to in list {
-                            self.land(car, to, kind, vehicles, ability, 0);
-                        }
-                    } else {
-                        self.holders[hi].shot = Some(s);
+                        if no_target_hook() { Vec::new() } else { targets(&cars, car, kind, back, &self.types[kind as usize]) }
+                    });
+                    self.holders[hi].shot = Some(s);
+                    for to in landing.unwrap_or_default() {
+                        self.land(car, to, kind, vehicles, ability, 0);
                     }
                 }
             }
@@ -1703,7 +1763,9 @@ mod tests {
         let line = CpIn { pos: Vec3::ZERO, line_end: Some(Vec3::new(0.0, 0.0, 20.0)), radius: 5.0, height: 50.0 };
         let l = checkpoint_spots(&[line, cp(100.0, 9.0)], true);
         assert_eq!(l.iter().filter(|s| !s.last).count(), 4);
-        assert!(l.iter().all(|s| s.at.x == 0.0));
+        // (the original's quarter turn is the single-precision cosine of pi / 2, -4.4e-8, so the spots are off the line by micrometres:
+        // checkpoint_spots_match_the_original)
+        assert!(l.iter().all(|s| s.at.x.abs() < 1e-4));
         assert_eq!((l[0].up, l[0].down, l[0].height), (1.0, 1.0, 50.0));
     }
 
@@ -2279,3 +2341,6 @@ mod original_holder_tests {
     }
 }
 
+
+#[cfg(test)]
+mod verify;
