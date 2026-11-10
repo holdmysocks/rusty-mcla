@@ -201,6 +201,12 @@ pub struct Race {
     /// `checkpoints.rs`; empty: the port's own reach (its street races, missions without a
     /// script table)
     pub cp_specs: Vec<crate::checkpoints::CpSpec>,
+    /// the racers' state words of the checkpoints (`checkpoints::CpStates`), set by the race cores' Activate / Deactivate
+    /// as the port's progress moves on; racer = place in `participants`
+    pub cp_state: crate::checkpoints::CpStates,
+    /// an unordered race's GPS target as the core leaves it (`UILogic_SetGPSDestination` with the closest open checkpoint,
+    /// kept while none is open)
+    pub gps_cp: Option<Vec3>,
 }
 
 /// Take the little loops out of a line laid along the lane network: junction connectors
@@ -4155,6 +4161,8 @@ impl Game {
             } else {
                 Vec::new()
             },
+            cp_state: Default::default(),
+            gps_cp: None,
         });
         if let Some(r) = self.race.as_ref() {
             log::info!("race checkpoints: {} of a lap from the script ({} lines, radii {:?})", r.cp_specs.len(), r.cp_specs.iter().filter(|c| c.second.is_some()).count(), r.cp_specs.iter().map(|c| c.radius).collect::<Vec<_>>());
@@ -4254,7 +4262,7 @@ impl Game {
         let lap_len = checkpoints.len();
         self.race_dmg_out = false;
         self.race_wreck_over = false;
-        self.race = Some(Race { path: None, route, checkpoints, next: vec![0; n], finish_time: vec![None; n], time: 0.0, countdown: 3.5, total_len: total, participants, lap_len, laps: 1, name: "Street race".into(), goal_time: 0.0, kind: RaceKind::Race, time_limit: 0.0, target: None, failed: None, cp_radius: Vec::new(), cp_gate: Vec::new(), prev_pos: Vec::new(), shortcuts: Vec::new(), cop_zones: Vec::new(), shortcut_lines: Default::default(), rivals_checkpoints: None, cp_specs: Vec::new() });
+        self.race = Some(Race { path: None, route, checkpoints, next: vec![0; n], finish_time: vec![None; n], time: 0.0, countdown: 3.5, total_len: total, participants, lap_len, laps: 1, name: "Street race".into(), goal_time: 0.0, kind: RaceKind::Race, time_limit: 0.0, target: None, failed: None, cp_radius: Vec::new(), cp_gate: Vec::new(), prev_pos: Vec::new(), shortcuts: Vec::new(), cop_zones: Vec::new(), shortcut_lines: Default::default(), rivals_checkpoints: None, cp_specs: Vec::new(), cp_state: Default::default(), gps_cp: None });
         vehicles.fragile = None;
         self.mode = Mode::Race;
         true
@@ -4489,6 +4497,24 @@ impl Game {
             }
         }
         let mut lap_nitro: Vec<usize> = Vec::new();
+        // (the racers' checkpoint states: every one closed as the list is made (F-64962), then the cores' first
+        // activations - the ordered core gives each racer its next checkpoint, the unordered core 0 .. n - 2 and
+        // deactivates the finish - and every frame the manager's timers, F-76770)
+        if race.cp_state.len() != n && n > 0 {
+            race.cp_state = crate::checkpoints::CpStates::new(n);
+            let unordered = race.rivals_checkpoints.is_some();
+            for (r, &ci) in race.participants.iter().enumerate() {
+                if unordered {
+                    for j in 0..n - 1 {
+                        race.cp_state.activate(r, j);
+                    }
+                    race.cp_state.deactivate(r, n - 1);
+                } else if let Some(&k) = race.next.get(ci).filter(|&&k| k < n) {
+                    race.cp_state.activate(r, k);
+                }
+            }
+        }
+        race.cp_state.step(dt);
         for (i, c) in vehicles.cars.iter().enumerate() {
             if race.finish_time[i].is_some() || race.kind == RaceKind::Payback {
                 continue;
@@ -4502,17 +4528,25 @@ impl Game {
             if c.is_player && race.rivals_checkpoints.is_some() && k + 1 < n {
                 let p = c.state.pos;
                 let prev = race.prev_pos.get(i).copied().filter(|q| q.distance(p) < 30.0).unwrap_or(p);
-                let got = (k..n - 1).find(|&j| {
+                let r = race.participants.iter().position(|&q| q == i).unwrap_or(usize::MAX);
+                // (GetWhichHitCheckpoint, F-37765: the first checkpoint open or opening for the racer that is hit)
+                let got = crate::checkpoints::which_hit(n, |j| race.cp_state.state(r, j), |j| {
                     let cp = race.checkpoints[j];
                     match crate::checkpoints::spec_at(&race.cp_specs, cp) {
-                        // (GetWhichHitCheckpoint, F-37765: the first open one hit)
                         Some(s) => s.hit(crate::checkpoints::ahead_point(p, c.state.vel), prev),
                         None => Vec3::new(p.x - cp.x, 0.0, p.z - cp.z).length() < 24.0 && (p.y - cp.y).abs() < 12.0,
                     }
                 });
                 if let Some(j) = got {
+                    // (the port keeps the cleared ones in front: the states move with their checkpoints)
                     race.checkpoints.swap(k, j);
+                    race.cp_state.st.swap(k, j);
+                    // (the core deactivates the hit one, and with every other cleared activates the finish)
+                    race.cp_state.deactivate(r, k);
                     race.next[i] += 1;
+                    if race.next[i] == n - 1 {
+                        race.cp_state.activate(r, n - 1);
+                    }
                 }
                 continue;
             }
@@ -4541,6 +4575,16 @@ impl Game {
                 hit = s.hit(crate::checkpoints::ahead_point(p, c.state.vel), prev);
             }
             if hit {
+                // (the ordered core: Deactivate the hit checkpoint, Activate the racer's next; an unordered race's
+                // computer drivers count their own list)
+                if race.rivals_checkpoints.is_none() || c.is_player {
+                    if let Some(r) = race.participants.iter().position(|&q| q == i) {
+                        race.cp_state.deactivate(r, k);
+                        if k + 1 < n {
+                            race.cp_state.activate(r, k + 1);
+                        }
+                    }
+                }
                 race.next[i] += 1;
                 if race.next[i] >= n {
                     race.finish_time[i] = Some(race.time);
@@ -4551,6 +4595,23 @@ impl Game {
                     // a lap done, not the last: OrderedCheckpointCore 0x2cfb, Racer_ResetNitros (F-24381) on
                     // every racer - count = most where below (the player's lap refill is main.rs's)
                     lap_nitro.push(i);
+                }
+            }
+        }
+        // (the unordered core, every frame while the race runs: FindClosestOpenCheckpoint (F-98939) for racer 0 - the
+        // checkpoints open to him (state 0, not those still opening), from his position - and the GPS on it; none open
+        // leaves the GPS where it was)
+        if race.rivals_checkpoints.is_some() {
+            if let Some(pi) = vehicles.cars.iter().position(|c| c.is_player).filter(|&pi| race.finish_time.get(pi).is_some_and(|t| t.is_none())) {
+                if let Some(r) = race.participants.iter().position(|&q| q == pi) {
+                    let p = vehicles.cars[pi].state.pos;
+                    let cps = race.checkpoints.iter().enumerate().map(|(j, &m)| {
+                        let at = crate::checkpoints::spec_at(&race.cp_specs, m).map_or(m, |s| s.pos);
+                        (at, race.cp_state.state(r, j) == crate::checkpoints::STATE_OPEN)
+                    });
+                    if let Some(j) = crate::checkpoints::closest_open(cps, p) {
+                        race.gps_cp = Some(race.checkpoints[j]);
+                    }
                 }
             }
         }
@@ -10536,7 +10597,11 @@ impl Game {
                         // degrees from straight ahead)
                         let gps = self.race.as_ref().and_then(|race| {
                             // (an unordered race: the nearest open checkpoint - checkpoints::gps_target)
-                            let cp = crate::checkpoints::gps_target(&race.checkpoints, race.next.first().copied().unwrap_or(0), race.rivals_checkpoints.is_some(), hud.player_pos)?;
+                            // (the core's GPS target once it set one: `Race::gps_cp`)
+                            let cp = match race.gps_cp.filter(|_| race.rivals_checkpoints.is_some()) {
+                                Some(t) => t,
+                                None => crate::checkpoints::gps_target(&race.checkpoints, race.next.first().copied().unwrap_or(0), race.rivals_checkpoints.is_some(), hud.player_pos)?,
+                            };
                             let d = cp - hud.player_pos;
                             Some(((d.x.atan2(-d.z) - hud.player_heading).to_degrees(), d))
                         });
@@ -16336,7 +16401,7 @@ mod tests {
         assert!(!g.ro_grey(11) && !g.ro_grey(21) && !g.ro_grey(22));
         // (in a GOAL ATTACK race only the base's rows)
         g.goal_attack = true;
-        g.race = Some(super::Race { path: None, route: Vec::new(), checkpoints: Vec::new(), next: Vec::new(), finish_time: Vec::new(), time: 0.0, countdown: 0.0, total_len: 0.0, participants: Vec::new(), lap_len: 0, laps: 1, name: String::new(), goal_time: 0.0, kind: super::RaceKind::Race, time_limit: 0.0, target: None, failed: None, cp_radius: Vec::new(), cp_gate: Vec::new(), prev_pos: Vec::new(), shortcuts: Vec::new(), cop_zones: Vec::new(), shortcut_lines: Default::default(), rivals_checkpoints: None, cp_specs: Vec::new() });
+        g.race = Some(super::Race { path: None, route: Vec::new(), checkpoints: Vec::new(), next: Vec::new(), finish_time: Vec::new(), time: 0.0, countdown: 0.0, total_len: 0.0, participants: Vec::new(), lap_len: 0, laps: 1, name: String::new(), goal_time: 0.0, kind: super::RaceKind::Race, time_limit: 0.0, target: None, failed: None, cp_radius: Vec::new(), cp_gate: Vec::new(), prev_pos: Vec::new(), shortcuts: Vec::new(), cop_zones: Vec::new(), shortcut_lines: Default::default(), rivals_checkpoints: None, cp_specs: Vec::new(), cp_state: Default::default(), gps_cp: None });
         assert!(g.ro_grey(9) && g.ro_grey(13) && g.ro_grey(0) && !g.ro_grey(2) && !g.ro_grey(12) && !g.ro_grey(24));
     }
 
@@ -16361,7 +16426,7 @@ mod tests {
         assert_eq!(g.end_race_speech(), Some("WIN"));
         g.career.tt_last = None;
         // (a delivery: WIN is not said in a delivery race; a failed delivery or payback did not finish: nothing)
-        let mut race = super::Race { path: None, route: Vec::new(), checkpoints: Vec::new(), next: Vec::new(), finish_time: Vec::new(), time: 0.0, countdown: 0.0, total_len: 0.0, participants: Vec::new(), lap_len: 0, laps: 1, name: String::new(), goal_time: 0.0, kind: super::RaceKind::Delivery, time_limit: 0.0, target: None, failed: None, cp_radius: Vec::new(), cp_gate: Vec::new(), prev_pos: Vec::new(), shortcuts: Vec::new(), cop_zones: Vec::new(), shortcut_lines: Default::default(), rivals_checkpoints: None, cp_specs: Vec::new() };
+        let mut race = super::Race { path: None, route: Vec::new(), checkpoints: Vec::new(), next: Vec::new(), finish_time: Vec::new(), time: 0.0, countdown: 0.0, total_len: 0.0, participants: Vec::new(), lap_len: 0, laps: 1, name: String::new(), goal_time: 0.0, kind: super::RaceKind::Delivery, time_limit: 0.0, target: None, failed: None, cp_radius: Vec::new(), cp_gate: Vec::new(), prev_pos: Vec::new(), shortcuts: Vec::new(), cop_zones: Vec::new(), shortcut_lines: Default::default(), rivals_checkpoints: None, cp_specs: Vec::new(), cp_state: Default::default(), gps_cp: None };
         g.race = Some(race.clone());
         assert_eq!(g.end_race_speech(), None);
         race.failed = Some("TIME");

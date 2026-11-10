@@ -426,6 +426,67 @@ pub fn deactivated(state: i32, timer: f32) -> (i32, f32) {
     }
 }
 
+/// The racers' state words of the active checkpoint list: per checkpoint and racer (16) the state (+200 + 4 x racer) and
+/// its timer (+264 + 4 x racer). The constructor `F-64962` leaves every one closed (3) with the timer 0; the race cores
+/// change them only through Activate (`F-37816`) / Deactivate (`F-15277`), the manager's update `F-76770` runs the timers.
+#[derive(Clone, Debug, Default)]
+pub struct CpStates {
+    pub st: Vec<[(i32, f32); 16]>,
+}
+
+impl CpStates {
+    pub fn new(n: usize) -> CpStates {
+        CpStates { st: vec![[(STATE_CLOSED, 0.0); 16]; n] }
+    }
+
+    pub fn len(&self) -> usize {
+        self.st.len()
+    }
+
+    /// A racer's state of a checkpoint (closed past the list or the 16 racers).
+    pub fn state(&self, racer: usize, cp: usize) -> i32 {
+        self.st.get(cp).and_then(|s| s.get(racer)).map_or(STATE_CLOSED, |x| x.0)
+    }
+
+    pub fn activate(&mut self, racer: usize, cp: usize) {
+        if let Some(x) = self.st.get_mut(cp).and_then(|s| s.get_mut(racer)) {
+            *x = ACTIVATED;
+        }
+    }
+
+    pub fn deactivate(&mut self, racer: usize, cp: usize) {
+        if let Some(x) = self.st.get_mut(cp).and_then(|s| s.get_mut(racer)) {
+            *x = deactivated(x.0, x.1);
+        }
+    }
+
+    /// `F-76770`'s state step, every checkpoint, racers 0 .. 15: opening (2) timer = fmadds(dt, 1 / 0.5, t) (the rate
+    /// fdivs(1.0, 0.5), the image's constants 1.0 and 0.5), open (0) with the timer 0 once it is not
+    /// below 1; closing (1) timer = fmadds(dt, 4, t), closed (3) with the timer 0 once it is not below 1.
+    pub fn step(&mut self, dt: f32) {
+        let open_rate = 1.0f32 / 0.5;
+        for s in &mut self.st {
+            for x in s.iter_mut() {
+                match x.0 {
+                    STATE_OPENING => {
+                        x.1 = fmadds(dt, open_rate, x.1);
+                        if !(x.1 < 1.0) {
+                            *x = (STATE_OPEN, 0.0);
+                        }
+                    }
+                    STATE_CLOSING => {
+                        x.1 = fmadds(dt, 4.0, x.1);
+                        if !(x.1 < 1.0) {
+                            *x = (STATE_CLOSED, 0.0);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 /// `F-66886` on the ground plane (x, z): where the line a0 -> a1 meets b0 -> b1, as the
 /// fractions (t along a, u along b); None when they are parallel.
 pub fn cross_xz(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> Option<(f32, f32)> {
@@ -876,6 +937,45 @@ impl Markers {
 
 #[cfg(test)]
 mod tests {
+    /// The racers' state words (F-64962 / F-37816 / F-15277 / F-76770 as read): closed at first, Activate opens over 0.5 s
+    /// (2 a second), Deactivate closes over 0.25 s (4 a second), a closed one stays closed, racers apart.
+    #[test]
+    fn checkpoint_states_follow_the_cores_and_the_timers() {
+        let mut s = CpStates::new(3);
+        assert_eq!((s.state(0, 0), s.state(15, 2), s.state(16, 0), s.state(0, 3)), (STATE_CLOSED, STATE_CLOSED, STATE_CLOSED, STATE_CLOSED));
+        s.activate(0, 1);
+        assert_eq!((s.state(0, 1), s.state(1, 1)), (STATE_OPENING, STATE_CLOSED));
+        let dt = 1.0f32 / 30.0;
+        let mut frames = 0;
+        while s.state(0, 1) == STATE_OPENING {
+            s.step(dt);
+            frames += 1;
+        }
+        assert_eq!((s.state(0, 1), s.st[1][0].1), (STATE_OPEN, 0.0));
+        assert!((15..=16).contains(&frames), "{frames}");
+        s.deactivate(0, 1);
+        assert_eq!(s.st[1][0], (STATE_CLOSING, 0.0));
+        let mut frames = 0;
+        while s.state(0, 1) == STATE_CLOSING {
+            s.step(dt);
+            frames += 1;
+        }
+        assert_eq!(s.state(0, 1), STATE_CLOSED);
+        assert!((7..=8).contains(&frames), "{frames}");
+        s.deactivate(0, 1);
+        assert_eq!(s.state(0, 1), STATE_CLOSED);
+        // (Activate is unconditional: an open checkpoint opens again)
+        s.activate(0, 2);
+        for _ in 0..20 {
+            s.step(dt);
+        }
+        s.activate(0, 2);
+        assert_eq!(s.st[2][0], (STATE_OPENING, 0.0));
+        // (the unordered GPS: the opening finish is not open, so nothing is found)
+        let at = [Vec3::ZERO, Vec3::X, Vec3::Z];
+        assert_eq!(closest_open(at.iter().enumerate().map(|(j, &c)| (c, s.state(0, j) == STATE_OPEN)), Vec3::ZERO), None);
+    }
+
     use super::*;
 
     /// F-78389 (with F-27331) and F-76392 run as the original's generated code off line
