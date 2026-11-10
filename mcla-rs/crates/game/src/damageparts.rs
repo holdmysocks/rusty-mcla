@@ -1,5 +1,5 @@
 //! The moving damage parts of a car as the original's car anim object has them (D = mcCar+84, per-frame
-//! `sub_823424F0`): the hood and the trunk lid ("flaps", D+1456 / D+1664) - a virtual hinged particle that falls
+//! `F-24651`): the hood and the trunk lid ("flaps", D+1456 / D+1664) - a virtual hinged particle that falls
 //! open once the front / rear zone is wrecked - and the two bumpers (mcCarAnimBreakablePartInst, *(D+1876) front,
 //! *(D+1872) rear) - two hanging ends, attached / loose / broken, that sag, shake and finally tear off.
 //! Rules: `docs/reference/audio/DAMAGE_PARTS_RULE.md`; log in `docs/CAR_PARTS.md` ("Moving damage parts").
@@ -36,7 +36,7 @@ pub struct PartHit {
 pub enum PartEvent {
     /// a flap (0 hood, 1 trunk) hit its closed stop (`open` false) or its open stop at angular speed `rate` (rad/s)
     FlapStop { flap: u8, open: bool, rate: f32, pos: Vec3 },
-    /// a bumper (0 rear, 1 front) tore off (sub_8234A868)
+    /// a bumper (0 rear, 1 front) tore off (F-82611)
     BumperOff { bumper: u8, pos: Vec3 },
     /// the fallen bumper struck something: the largest approach speed (m/s) of its new contacts this tick
     BumperImpact { bumper: u8, speed: f32, pos: Vec3 },
@@ -44,7 +44,7 @@ pub enum PartEvent {
     BumperScrape { bumper: u8, speed: f32, pos: Vec3 },
 }
 
-// ---------------------------------------------------------------- Perlin (sub_8261E060)
+// ---------------------------------------------------------------- Perlin (F-52219)
 
 /// Ken Perlin's improved-noise permutation (0x828252B8).
 const PERM: [u8; 256] = [
@@ -152,8 +152,10 @@ fn clamp01(x: f32) -> f32 {
 /// The hood or the trunk lid: a unit-length rod hinged at (0, 2, 0) in car space, closed along +z.
 #[derive(Clone, Debug)]
 pub struct Flap {
-    /// a = 0.2 (hood) / 0.15 (trunk): the open stop
+    /// flap+80: the open stop's angle (0.20000005 hood, 0.15 trunk)
     pub ang_open: f32,
+    /// unit(Po - P0): where the open stop puts the arm (the refined unit of F-50514)
+    pub open_dir: Vec3,
     /// flap+88: falls open (set when the zone reaches 1, cleared by a repair)
     pub loose: bool,
     /// flap+189 NoMovement (drawn and heard at 0), flap+188 ReverseMovement (drawn the other way)
@@ -169,13 +171,31 @@ pub struct Flap {
 
 const FLAP_P0: Vec3 = Vec3::new(0.0, 2.0, 0.0);
 const FLAP_R: Vec3 = Vec3::new(0.0, 2.0, 1.0);
+/// The open stop as the binding F-53023 and the set-up F-71271 leave it (flap +48 and +80): Po = P0 + the rest arm
+/// turned by -0.2 (hood) / -0.15 (trunk) in F-43547, angOpen = atan2 of unit(Po - P0) - the words of the original's
+/// run (tools/flap_step_reference.py; test `flap_step_matches_the_original` checks them).
+const HOOD_OPEN: ([u32; 2], u32) = ([0x400c_b700, 0x3f7a_e5a5], 0x3e4c_ccd3);
+const TRUNK_OPEN: ([u32; 2], u32) = ([0x4009_9065, 0x3f7d_201a], 0x3e19_999a);
 
 impl Flap {
+    /// `a` = 0.2 the hood, 0.15 the trunk lid.
     pub fn new(a: f32, movement: u32) -> Flap {
-        Flap { ang_open: a, loose: false, locked: movement == 0, reversed: movement == 2, p: Vec3::ZERO, q: Vec3::ZERO, angle: 0.0, prev_angle: 0.0 }
+        let (po, open) = if a < 0.175 { TRUNK_OPEN } else { HOOD_OPEN };
+        let po = Vec3::new(0.0, f32::from_bits(po[0]), f32::from_bits(po[1]));
+        Flap {
+            ang_open: f32::from_bits(open),
+            open_dir: unit(po - FLAP_P0),
+            loose: false,
+            locked: movement == 0,
+            reversed: movement == 2,
+            p: Vec3::ZERO,
+            q: Vec3::ZERO,
+            angle: 0.0,
+            prev_angle: 0.0,
+        }
     }
 
-    /// `sub_8233C638`: back to rest (closed) at the car's matrix.
+    /// `F-97771`: back to rest (closed) at the car's matrix.
     pub fn reset(&mut self, c: &Mat4) {
         self.p = c.transform_point3(FLAP_R);
         self.q = self.p;
@@ -183,42 +203,51 @@ impl Flap {
         self.prev_angle = 0.0;
     }
 
-    /// `sub_8233F140` (from `sub_82341330`) for one frame; returns a stop event.
-    fn step(&mut self, c: &Mat4, ci: &Mat4, speed: f32, dt: f32, which: u8) -> Option<PartEvent> {
+    /// F-16752 and F-50514 for one frame, in the original's operations; returns a stop event. Checked word for word
+    /// (test `flap_step_matches_the_original`).
+    fn step(&mut self, c: &Mat4, speed: f32, dt: f32, which: u8) -> Option<PartEvent> {
+        // (F-16752) the hinge in the world; a flap that is not loose sits closed (its last angle kept)
+        let r = rows4(c);
+        let hinge_w = through(FLAP_P0, &r);
         if !self.loose {
             self.angle = 0.0;
             return None;
         }
-        let hinge_w = c.transform_point3(FLAP_P0);
-        // world-space Verlet, gravity only
-        let p = self.p + (self.p - self.q) * (dt * 30.0) + GRAVITY * dt * dt;
+        // Verlet in the world, gravity only: p + ((p - q) (dt x 30) + (g dt) dt), the vector unit's unfused lanes
+        let p = self.p + ((self.p - self.q) * (dt * 30.0) + GRAVITY * dt * dt);
         self.q = self.p;
-        // to car space, with the wind lift (sub_8233C740)
-        let mut l = ci.transform_point3(p);
+        self.p = p;
+        // (F-50514) to car space by the inverse F-30106, the wind lift (F-66314) added fused: y = fma(lift dt, 30, y)
+        let mut l = through(p, &inverse_rows(&r));
         let o = c.w_axis;
-        let lift = clamp01(0.2 * speed) * clamp01(perlin(5.0 * (o.y + o.z + o.x))) * 0.05 * clamp01(1.0 + self.angle / 0.05);
-        l.y += lift * dt * 30.0;
-        let mut d = (l - FLAP_P0).normalize_or(Vec3::Z);
-        let t = d.y.atan2(d.z);
-        let rate = (self.prev_angle - self.angle).abs() / dt.max(1e-6);
+        let lift = clamp01(0.2 * speed) * clamp01(perlin(5.0 * ((o.z + o.y) + o.x))) * 0.05 * clamp01(1.0 + self.angle / 0.05);
+        l.y = crate::physics::exact::fma(lift * dt, 30.0, l.y);
+        let mut d = unit(l - FLAP_P0);
+        let t = crate::physics::exact::guest_atan2(d.y as f64, d.z as f64) as f32;
+        // the stops (closed: angClosed +84 = 0, the arm to unit(Pc - P0); open: +80, unit(Po - P0)); the sound's rate
+        // is |last angle - angle| times the frame block's 1 / dt
+        let rate = (self.prev_angle - self.angle).abs() * (1.0 / dt);
         let mut ev = None;
         if t < 0.0 {
-            d = Vec3::Z;
+            d = unit(FLAP_R - FLAP_P0);
             ev = Some(PartEvent::FlapStop { flap: which, open: false, rate, pos: p });
         } else if t > self.ang_open {
-            // Po - P0 = (0, sin a, cos a)
-            d = Vec3::new(0.0, self.ang_open.sin(), self.ang_open.cos());
+            d = self.open_dir;
             ev = Some(PartEvent::FlapStop { flap: which, open: true, rate, pos: p });
         }
-        // L = P0 + d*len with its x then set to the rest point's (flap+32, 0): the particle goes back into the car's
-        // YZ plane, shorter by what it had swung sideways (0x8233F3FC `stfs f0,80(r1)`; recorded 2026-10-19)
-        let mut l = FLAP_P0 + d;
+        // L = d len + P0 (len +176 = 1), its x then the rest point's (flap+32, 0): back into the car's YZ plane
+        // (A-15101 `stfs f0,80(r1)`; recorded 2026-10-19)
+        let mut l = d * 1.0 + FLAP_P0;
         l.x = FLAP_R.x;
-        self.p = c.transform_point3(l);
-        let rest_w = c.transform_point3(FLAP_R);
+        self.p = through(l, &r);
+        let rest_w = through(FLAP_R, &r);
         self.prev_angle = self.angle;
-        let dot = (self.p - hinge_w).normalize_or_zero().dot((rest_w - hinge_w).normalize_or_zero());
-        self.angle = -dot.clamp(-1.0, 1.0).acos();
+        // the angle: -acos of the fused dot of the two refined units, kept in [-1, 1] by two fsel
+        let (u, v) = (unit(self.p - hinge_w), unit(rest_w - hinge_w));
+        let dot = crate::physics::exact::fma(u.x, v.x, crate::physics::exact::fma(u.y, v.y, u.z * v.z));
+        let dot = if dot - -1.0 >= 0.0 { dot } else { -1.0 };
+        let dot = if dot - 1.0 >= 0.0 { 1.0 } else { dot };
+        self.angle = -(crate::physics::exact::guest_acos(dot as f64) as f32);
         // (the one-shot plays at flap+112 as it is at the check - the integrated particle, P+20)
         ev
     }
@@ -227,12 +256,12 @@ impl Flap {
         if self.reversed { -1.0 } else { 1.0 }
     }
 
-    /// `sub_8233C850`: the drawn angle (signed)
+    /// `F-76270`: the drawn angle (signed)
     pub fn drawn(&self) -> f32 {
         self.sign() * if self.locked { 0.0 } else { self.angle }
     }
 
-    /// `sub_8233C890`: last frame's angle (not zeroed when locked)
+    /// `F-15658`: last frame's angle (not zeroed when locked)
     pub fn drawn_prev(&self) -> f32 {
         self.sign() * self.prev_angle
     }
@@ -292,7 +321,7 @@ pub struct Bumper {
 impl Bumper {
     pub fn new(front: bool, m_rest: Mat4, movement: u32) -> Bumper {
         let mut b = Bumper { front, m_rest, a: End::default(), b: End::default(), clock: 0.0, max_state: movement.min(2) as u8, detached: None, pose: Mat4::IDENTITY, delta: Mat4::IDENTITY };
-        // `sub_8233F648`: the half vector (0.5, 0, 0) both ways
+        // `F-92886`: the half vector (0.5, 0, 0) both ways
         b.a.rest = m_rest.transform_point3(Vec3::new(0.5, 0.0, 0.0));
         b.b.rest = m_rest.transform_point3(Vec3::new(-0.5, 0.0, 0.0));
         b
@@ -354,7 +383,7 @@ impl Bumper {
         }
     }
 
-    /// `sub_823414C8` for one frame.
+    /// `F-44446` for one frame.
     fn step(&mut self, c: &Mat4, ci: &Mat4, speed: f32, dt: f32, which: u8, ground: &dyn Fn(Vec3) -> Option<(f32, Vec3)>, events: &mut Vec<PartEvent>) {
         self.a.state = self.a.state.min(self.max_state);
         self.b.state = self.b.state.min(self.max_state);
@@ -508,7 +537,7 @@ impl Bumper {
         }
     }
 
-    /// `sub_8233D208`: the fastest moving end relative to the car (m/s) and where it is; None when both are gone.
+    /// `F-57399`: the fastest moving end relative to the car (m/s) and where it is; None when both are gone.
     pub fn creak(&self, dt: f32) -> Option<(f32, Vec3)> {
         if (self.a.state == 2 && self.b.state == 2) || self.detached.is_some() {
             return None;
@@ -552,7 +581,7 @@ fn step_loose(b: &mut Loose, dt: f32, which: u8, ground: &dyn Fn(Vec3) -> Option
     }
     const HALF: Vec3 = Vec3::new(0.9, 0.1665, 0.25);
     const MASS: f32 = 4.0;
-    // the inertia of a box 2.25 x 0.416 x 0.625 (x 1.25 of the bound, sub_825A42C8)
+    // the inertia of a box 2.25 x 0.416 x 0.625 (x 1.25 of the bound, F-30573)
     let s = HALF * 2.0 * 1.25;
     let inertia = Vec3::new(s.y * s.y + s.z * s.z, s.x * s.x + s.z * s.z, s.x * s.x + s.y * s.y) * (MASS / 12.0);
     b.vel += GRAVITY * dt;
@@ -582,7 +611,7 @@ fn step_loose(b: &mut Loose, dt: f32, which: u8, ground: &dyn Fn(Vec3) -> Option
         let r = w - b.pos;
         let v = b.vel + b.ang_vel.cross(r);
         let vn = v.dot(n);
-        // (sub_8234CF80: an approach - dot(n, v) at least 0.1 of the speed - on a contact that was not there
+        // (F-80340: an approach - dot(n, v) at least 0.1 of the speed - on a contact that was not there
         // before is an impact; any other contact is a slide at the whole relative speed)
         let speed = v.length();
         if pass == 1 {
@@ -689,7 +718,7 @@ pub struct PartRig {
 }
 
 impl DamageParts {
-    /// `sub_823404E0`: the per-car settings.
+    /// `F-53023`: the per-car settings.
     pub fn rig(&mut self, rig: &PartRig) {
         let [front, rear, hood, trunk] = rig.movement;
         self.hood = Flap::new(0.2, hood);
@@ -704,7 +733,7 @@ impl DamageParts {
         self.hood.loose || self.trunk.loose || self.bumpers.iter().flatten().any(|b| b.a.state != 0 || b.b.state != 0 || b.detached.is_some())
     }
 
-    /// `sub_8233E1B0`: the repair - flaps shut and not loose, bumpers on.
+    /// `F-75221`: the repair - flaps shut and not loose, bumpers on.
     pub fn repair(&mut self, c: &Mat4) {
         for f in [&mut self.hood, &mut self.trunk] {
             f.loose = false;
@@ -773,7 +802,7 @@ impl DamageParts {
     }
 
     /// The pieces this car put into a level that its bumpers no longer have (repair, reset): to be taken out of
-    /// whichever car's level holds them now (sub_8233CF78).
+    /// whichever car's level holds them now (F-40944).
     pub fn dropped(&mut self) -> Vec<u64> {
         let live: Vec<u64> = self.bumpers.iter().flatten().filter_map(|b| b.detached.and_then(|d| d.level)).collect();
         let out = self.level_ids.iter().copied().filter(|id| !live.contains(id)).collect();
@@ -782,7 +811,7 @@ impl DamageParts {
     }
 
     /// Each piece's frame and contacts read back from the level that holds it (`find`, by id), every tick: the drawn
-    /// pose and the impact and scrape sounds (sub_8234CF80, 2.5).
+    /// pose and the impact and scrape sounds (F-80340, 2.5).
     pub fn read_pieces(&mut self, c: &Mat4, find: &dyn Fn(u64) -> Option<PieceView>) {
         let ci = c.inverse();
         let mut evs = Vec::new();
@@ -803,7 +832,7 @@ impl DamageParts {
             body.rot = rot;
             body.pos = pos;
             b.pose = ci * f;
-            // (sub_8234CF80: of the piece's enabled contacts this tick, an approach at least 0.1 of the speed is an
+            // (F-80340: of the piece's enabled contacts this tick, an approach at least 0.1 of the speed is an
             // impact - the largest counts - any other a slide; the thresholds in mph are the sound's, caraudio.rs)
             let (mut impact, mut scrape, mut at_i, mut at_s) = (0.0f32, 0.0f32, m[3], m[3]);
             for k in view.contacts.iter() {
@@ -831,7 +860,7 @@ impl DamageParts {
         }
     }
 
-    /// `sub_823424F0` for one car and one frame. `heavy` = damage / MaxDamage > 0.66; `ground(p)` = the ground's
+    /// `F-24651` for one car and one frame. `heavy` = damage / MaxDamage > 0.66; `ground(p)` = the ground's
     /// height and normal under a point (for the fallen-off bumpers).
     pub fn step(&mut self, c: Mat4, speed: f32, heavy: bool, dt: f32, ground: &dyn Fn(Vec3) -> Option<(f32, Vec3)>) {
         if !self.placed {
@@ -839,7 +868,7 @@ impl DamageParts {
             self.repair(&c);
             self.last_c = c;
         }
-        // (sub_823411B8, the teleport: the flaps re-rested, the bumpers' points carried with the car - here a
+        // (F-18198, the teleport: the flaps re-rested, the bumpers' points carried with the car - here a
         // jump of more than 10 m in a frame)
         if (c.w_axis - self.last_c.w_axis).truncate().length() > 10.0 {
             let carry = c * self.last_c.inverse();
@@ -862,11 +891,11 @@ impl DamageParts {
             }
         }
         let mut evs = Vec::new();
-        // trunk, hood, rear bumper, front bumper (sub_82341DB8)
-        if let Some(e) = self.trunk.step(&c, &ci, speed, dt, 1) {
+        // trunk, hood, rear bumper, front bumper (F-98654)
+        if let Some(e) = self.trunk.step(&c, speed, dt, 1) {
             evs.push(e);
         }
-        if let Some(e) = self.hood.step(&c, &ci, speed, dt, 0) {
+        if let Some(e) = self.hood.step(&c, speed, dt, 0) {
             evs.push(e);
         }
         for (i, b) in self.bumpers.iter_mut().enumerate() {
@@ -887,13 +916,13 @@ impl DamageParts {
         slot_move(slot, &a, HOOD_SCALE) * slot.inverse()
     }
 
-    /// The trunk bone turned in place by RotX(s*ang) (sub_82227DE0), as a delta on the car-space drawing.
+    /// The trunk bone turned in place by RotX(s*ang) (F-52786), as a delta on the car-space drawing.
     pub fn trunk_delta(&self, bone: &Mat4) -> Mat4 {
         *bone * Mat4::from_rotation_x(self.trunk.drawn()) * bone.inverse()
     }
 }
 
-/// The gate of the zone damage (`sub_82356D98` @82357444): only a hit above 0.12 of the way up from the car's
+/// The gate of the zone damage (`F-74840` @A-82665): only a hit above 0.12 of the way up from the car's
 /// origin (car-local direction) counts for the zones and the bumpers.
 pub fn hit_counts(local: Vec3) -> bool {
     local.normalize_or_zero().y > f32::from_bits(0x3df5_c28f)
@@ -943,6 +972,64 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 3000);
+    }
+
+    /// The hood's / trunk lid's frame step against F-16752 with F-50514 run offline (tools/flap_step_reference.py,
+    /// testdata/flap_step_ref.txt: 3,000 random cars, flaps built by the binding's set-up F-71271 and reset F-97771,
+    /// loose or not, particles, angles and speeds; the stop sounds logged): the particle, its last place, the angle,
+    /// the last angle, which stop sounded and its rate - every word equal.
+    #[test]
+    fn flap_step_matches_the_original() {
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let m4 = |w: &[f32]| Mat4::from_cols(Vec4::from_slice(&w[0..4]), Vec4::from_slice(&w[4..8]), Vec4::from_slice(&w[8..12]), Vec4::from_slice(&w[12..16]));
+        let v3 = |w: &[f32], k: usize| Vec3::new(w[k], w[k + 1], w[k + 2]);
+        let (mut n, mut bad) = (0, [0usize; 5]);
+        let mut first: Vec<String> = Vec::new();
+        for line in include_str!("testdata/flap_step_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let iv: Vec<&str> = i.split_whitespace().collect();
+            let w: Vec<f32> = iv[..27].iter().map(|x| f(x)).collect();
+            let ints: Vec<u8> = iv[27..].iter().map(|x| x.parse().unwrap()).collect();
+            let ov: Vec<u32> = o.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let c = m4(&w[0..16]);
+            let trunk = ints[0] != 0;
+            // the set-up's open stop (flap +52 / +56 and +80) as the port keeps it
+            let (po, open) = if trunk { TRUNK_OPEN } else { HOOD_OPEN };
+            assert_eq!((ov[13], ov[14], ov[20]), (po[0], po[1], open), "open stop: {line}");
+            // and the rest of the set-up as the port's constants: P0 +0, R +32, Pc +64, angClosed +84, len +176
+            let b3 = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+            assert_eq!([&ov[0..3], &ov[8..11], &ov[16..19]], [&b3(FLAP_P0)[..], &b3(FLAP_R)[..], &b3(FLAP_R)[..]], "set-up points: {line}");
+            assert_eq!((ov[21], ov[44]), (0, 1.0f32.to_bits()), "angClosed / len: {line}");
+            let mut fl = Flap::new(if trunk { 0.15 } else { 0.2 }, 1);
+            fl.loose = ints[1] != 0;
+            (fl.p, fl.q, fl.angle, fl.prev_angle) = (v3(&w, 16), v3(&w, 20), w[24], w[25]);
+            let ev = fl.step(&c, w[26], DamageParts::FRAME, u8::from(trunk));
+            let bits = |v: Vec3| vec![v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+            let (kind, rate) = match ev {
+                Some(PartEvent::FlapStop { open, rate, .. }) => (if open { 2 } else { 1 }, rate.to_bits()),
+                _ => (0, 0),
+            };
+            let checks = [
+                bits(fl.p) == ov[28..31].to_vec(),
+                bits(fl.q) == ov[32..35].to_vec(),
+                fl.angle.to_bits() == ov[45],
+                fl.prev_angle.to_bits() == ov[46],
+                (kind, rate) == (ov[48], ov[49]),
+            ];
+            for (k, ok) in checks.iter().enumerate() {
+                if !ok {
+                    bad[k] += 1;
+                    if first.len() < 6 {
+                        first.push(format!("check {k}: got p {:?} q {:?} a {:08x} prev {:08x} ev {kind} {rate:08x}: {line}", bits(fl.p), bits(fl.q), fl.angle.to_bits(), fl.prev_angle.to_bits()));
+                    }
+                }
+            }
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+        assert_eq!(bad, [0; 5], "mismatches (p, q, angle, prev, event): {bad:?}
+{}", first.join("
+"));
     }
 
     /// The bumper's reset against F-40944 run offline (tools/bumper_reset_hit_reference.py, testdata/bumper_reset_ref.txt:
@@ -1089,7 +1176,7 @@ mod tests {
         assert!(min >= -0.2 - 1e-4, "{min}");
     }
 
-    /// A particle swung sideways is put back into the car's YZ plane (0x8233F3FC), so the hood never opens past its
+    /// A particle swung sideways is put back into the car's YZ plane (A-15101), so the hood never opens past its
     /// stop: recorded 2026-10-19, an R8 rammed into a wall and driven on with the hood loose, 2,399 frames, deepest
     /// -0.20001 rad; without the rule the port's hood reached -1.02 rad on the same frames.
     #[test]

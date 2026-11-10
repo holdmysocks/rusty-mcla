@@ -23,13 +23,15 @@ import recomp_closure  # (imports memcap: the harness runs capped)
 import recomp_leaf
 
 recomp_closure.EXTRA += '#define ctr r2\n#define REX_CALL_INDIRECT_FUNC(a) throw std::runtime_error("unexpected indirect call")\n'
-recomp_closure.shim = lambda: recomp_leaf.shim(0x8000)
+recomp_closure.shim = lambda *_: recomp_leaf.shim(0x8000)
 _vshim = recomp_closure.vector_shim
 
 
-def vector_shim():
-    s = '#include <simde/x86/sse4.1.h>' + chr(10) + _vshim()
+def vector_shim(scratch_end=0x3000):
+    s = '#include <simde/x86/sse4.1.h>' + chr(10) + _vshim(scratch_end)
     cond = 'bool eq{}, lt{}, gt{};'
+    if s.count(cond) == 0:
+        return s  # (the shared shim has Condition::setFromMask itself since 206bec8b)
     assert s.count(cond) == 1
     return s.replace(cond, 'bool eq{}, lt{}, gt{}, so{}; void setFromMask(simde__m128 mask,int imm){int m=simde_mm_movemask_ps(mask);'
                      'lt=m==imm;gt=0;eq=m==0;so=0;}', 1)
