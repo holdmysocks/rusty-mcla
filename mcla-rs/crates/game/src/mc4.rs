@@ -18617,6 +18617,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Issue #49: the map's fixed places only while their set-ups run (`hudmap::place_setup`): a new career's map has
+    /// the Hollywood garage and none of the hangouts, deliveries or the payback; the 100 % save's has every one.
+    #[test]
+    fn map_places_follow_their_setups() {
+        let places = |g: &Game| -> Vec<u32> {
+            let v = crate::vehicles::Vehicles::new();
+            let mut u: Vec<u32> = crate::hudmap::elements(g, &v, false).iter().filter(|e| (500..600).contains(&e.uid)).map(|e| e.uid).collect();
+            u.sort();
+            u
+        };
+        let Some((g, dir, _)) = career_game("newgame_import.json", "map49a") else { return };
+        let p = places(&g);
+        assert!(p.contains(&505), "the Hollywood garage: {p:?}");
+        assert!(!p.iter().any(|u| [500, 501, 502, 503, 504, 513, 510, 511, 520, 521, 530, 531, 540, 541, 542].contains(u)), "a new career: {p:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+        let Some((g, dir, _)) = career_game("full_import.json", "map49b") else { return };
+        let p = places(&g);
+        let held: Vec<u32> = g.place_hold.keys().copied().collect();
+        for u in [500, 501, 502, 503, 504, 505, 510, 511, 512, 513, 520, 521, 530, 531, 540, 541, 542, 543] {
+            assert!(p.contains(&u) || held.contains(&u), "the 100 % save lacks {u}: {p:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Step 21: the pink slip lot - five slots, the newest first, the oldest lost; a removed
     /// slot closes up; the id counter.
     #[test]

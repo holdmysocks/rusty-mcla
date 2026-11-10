@@ -485,6 +485,33 @@ pub const PLACES: [(u32, Kind, [f32; 3]); 18] = [
     (513, Kind::Payback, [-3067.87, -24.82, 189.82]),
 ];
 
+/// The set-up script that adds each place's element (`rule_elements.md` 5a: the place's state script - the
+/// `<key>_setup` a mission's script starts, `mc4::MISSION_SCRIPTS` - finds it by UID and AddElement()s it while it
+/// runs; a place whose set-up has not been started is not on the map).
+pub fn place_setup(uid: u32) -> Option<&'static str> {
+    Some(match uid {
+        500 => "hw_local_hangout1_setup",
+        501 => "hw_local_hangout2_setup",
+        502 => "hw_local_hangout3_setup",
+        510 => "be_local_hangout1_setup",
+        520 => "hl_local_hangout1_setup",
+        530 => "dt_local_hangout1_setup",
+        540 => "sc_local_hangout1_setup",
+        503 => "hw_wager_hangout1_setup",
+        511 => "be_wager_hangout1_setup",
+        521 => "hl_wager_hangout1_setup",
+        531 => "dt_wager_hangout1_setup",
+        541 => "sc_wager_hangout1_setup",
+        505 => "hw_garage_setup",
+        512 => "be_garage_setup",
+        543 => "sc_garage_setup",
+        504 => "hw_delivery_setup",
+        542 => "sc_delivery_setup",
+        513 => "be_payback_setup",
+        _ => return None,
+    })
+}
+
 /// The port's state as the map's element lists, layer by layer (each list in the order its
 /// producer adds; capacities enforced).
 /// A car's place and back (its -forward) on the map as the car is drawn this frame: its pose between the last two ticks
@@ -519,10 +546,16 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
     let career = game.career.loaded();
     let suspended = game.suspend_all_opponents();
     // (each place back by its own core's test once the flag is clear - `Game::update_place_holds`)
-    let places = !career || game.career.reached("GARAGE_HOLLYWOOD");
-    let held = |uid: &u32| game.place_hold.contains_key(uid);
+    // (each place while its set-up script runs - the career's script list, as a save written now would hold it; with
+    // the list not known - a save of the port without the block - every place once the garage is reached, as before)
+    let running = game.mc4_running_scripts();
+    let started = |uid: &u32| match (&running, place_setup(*uid)) {
+        (Some(l), Some(s)) => l.iter().any(|n| n.eq_ignore_ascii_case(s)),
+        _ => !career || game.career.reached("GARAGE_HOLLYWOOD"),
+    };
+    let held = |uid: &u32| game.place_hold.contains_key(uid) || !started(uid);
     let pick = game.gps_pick;
-    if places {
+    {
         for (uid, kind, p) in PLACES.iter().filter(|x| !matches!(x.1, Kind::Delivery | Kind::Payback) && !held(&x.0)) {
             let mut e = Element::at(*kind, Vec3::from(*p));
             e.uid = *uid;
@@ -673,7 +706,7 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
         push(Element::at(Kind::Checkpoint(5), g));
     }
     // deliveries and paybacks wait at their garages (layer 4)
-    if places {
+    {
         for (uid, kind, p) in PLACES.iter().filter(|x| matches!(x.1, Kind::Delivery | Kind::Payback) && !held(&x.0)) {
             let mut e = Element::at(*kind, Vec3::from(*p));
             e.uid = *uid;
