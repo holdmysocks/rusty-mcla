@@ -152,6 +152,30 @@ impl crate::audio::MusicEnv for MusicHere<'_> {
     fn console_start(&mut self, _entry: u32) {}
     fn console_stop(&mut self) {}
     fn changed(&mut self) {}
+    fn user_music(&self) -> bool {
+        // (no custom soundtrack on the PC: docs/FUTURE_WORK.md)
+        false
+    }
+    fn song_state(&self, _h: u32) -> u16 {
+        if self.a.song_live() { 2 } else { 0 }
+    }
+    fn song_position(&self, _h: u32) -> u32 {
+        self.a.song_ms()
+    }
+    fn song_length(&mut self, _h: u32) -> u32 {
+        self.a.song_len_ms()
+    }
+    fn hard_stop(&mut self, _h: u32) {
+        self.a.stop_song();
+    }
+    fn next_place(&mut self) -> (u32, u32) {
+        // (the radio's order moves on at the song start, Audio::next_track)
+        log::info!("music: next song");
+        (0, 0)
+    }
+    fn same_song(&mut self) {
+        self.a.replay_song();
+    }
 }
 
 #[derive(Default)]
@@ -692,6 +716,14 @@ impl Sound {
                 a.mgr.suspend = None;
             }
             a.mgr.song = a.song_live().then_some(1);
+            // (the manager's state handler, every frame: the playing one, F-61726)
+            if a.mgr.handler == crate::audio::Handler::Playing {
+                if let Some(t) = lib.game.get_name("MUSIC_0_MANAGER").and_then(crate::audio::MusicTune::read) {
+                    let mut m = std::mem::take(&mut a.mgr);
+                    m.playing(&t, dt, &mut MusicHere { lib, a, jingle: &mut self.music_jingle });
+                    a.mgr = m;
+                }
+            }
             for c in std::mem::take(&mut a.obj_cmds) {
                 match c {
                     crate::audio::ObjCmd::MusicPlay { arg } => {

@@ -709,6 +709,12 @@ pub struct Audio {
     music_gain: f32,
     /// the next start's predelay and start offset (ms), the music manager's request (F-62155)
     start_delay: (u32, u32),
+    /// the playing song's predelay and start offset (ms) and its length (ms; the wave info's samples / rate)
+    song_clock: (u32, u32),
+    song_len_ms: u32,
+    /// the next song start plays the song that played last again (F-62155 plays the manager's +68, which only the next
+    /// song F-51486 moves on; the port's start moves on unless this is set)
+    song_replay: bool,
     /// the music manager (MusicMgr): its Play / suspend state, run by `sound.rs` where the mixer is
     pub(crate) mgr: MusicMgr,
     pub now_playing: String,
@@ -857,6 +863,9 @@ impl Audio {
             music_volume: 0.35,
             music_gain: 1.0,
             start_delay: (0, 0),
+            song_clock: (0, 0),
+            song_len_ms: 0,
+            song_replay: false,
             mgr: MusicMgr::default(),
             now_playing: String::new(),
             music_meta: Vec::new(),
@@ -1098,6 +1107,23 @@ impl Audio {
     /// A song in the sink, paused or not (the manager's +384).
     pub(crate) fn song_live(&self) -> bool {
         self.music.as_ref().is_some_and(|s| !s.empty())
+    }
+
+    /// The song's place (ms): the sound's +172, its start offset and what the sink played after the predelay.
+    pub(crate) fn song_ms(&self) -> u32 {
+        let (pre, off) = self.song_clock;
+        let played = self.music.as_ref().map_or(0, |s| s.get_pos().as_millis() as u64);
+        off.saturating_add(played.saturating_sub(pre as u64).min(u32::MAX as u64) as u32)
+    }
+
+    /// The song's length (ms), as the Streaming duration F-96939 gives it (-1 unknown).
+    pub(crate) fn song_len_ms(&self) -> u32 {
+        self.song_len_ms
+    }
+
+    /// The next song start plays the last song again (see `song_replay`).
+    pub(crate) fn replay_song(&mut self) {
+        self.song_replay = true;
     }
 
     pub fn music_playing(&self) -> bool {
@@ -1498,8 +1524,10 @@ impl Audio {
         }
         // (the radio's first start is the Boot script's mcMusicManager_Play(0), F-33831: its jingle, its song behind
         // the predelay; after it a song that ended is followed by the next - the playing handler F-61726 is not ported)
-        if self.mgr.handler == Handler::None && self.objects {
-            if !self.obj_cmds.iter().any(|c| matches!(c, ObjCmd::MusicPlay { .. })) {
+        // (with the sound objects the manager's playing handler F-61726 starts the next song, sound.rs; its idle handler
+        // none)
+        if self.objects {
+            if self.mgr.handler == Handler::None && !self.obj_cmds.iter().any(|c| matches!(c, ObjCmd::MusicPlay { .. })) {
                 self.obj_cmds.push(ObjCmd::MusicPlay { arg: 0 });
             }
             return;
@@ -1513,6 +1541,16 @@ impl Audio {
         let txt = std::fs::read_to_string(format!("{}.txt", p.display())).unwrap_or_default();
         let h0 = txt.lines().filter_map(|l| l.split(TAB).nth(5)?.trim().parse::<i32>().ok()).min().unwrap_or(0);
         mcla_formats::audcfg::db2lin(-(h0 as f32) * 0.01)
+    }
+
+    /// A converted stream's length (ms) from its wave info (samples, rate); -1 when it has none.
+    fn stream_len_ms(p: &Path) -> u32 {
+        let txt = std::fs::read_to_string(format!("{}.txt", p.display())).unwrap_or_default();
+        let w: Vec<&str> = txt.lines().next().map(|l| l.split(TAB).collect()).unwrap_or_default();
+        match (w.get(3).and_then(|v| v.trim().parse::<u64>().ok()), w.get(4).and_then(|v| v.trim().parse::<u64>().ok())) {
+            (Some(n), Some(r)) if r > 0 => (n * 1000 / r).min(i32::MAX as u64) as u32,
+            _ => u32::MAX,
+        }
     }
 
     /// Title of a track from the converter's channel list ("ARTIST_SONG_LEFT").
@@ -1608,6 +1646,11 @@ impl Audio {
         if self.music_files.is_empty() || self.handle.is_none() {
             return;
         }
+        // (the song that played last, again: F-62155 without the next song F-51486 before it)
+        if std::mem::take(&mut self.song_replay) {
+            self.start_track();
+            return;
+        }
         // (a song put on by name: it, F-62155 plays +68)
         if let Some(f) = self.lists.as_ref().and_then(|l| l.lock().ok().and_then(|mut l| std::mem::take(&mut l.cued).then(|| l.now_file()).flatten())).filter(|f| *f < self.music_files.len()) {
             self.music_next = f;
@@ -1656,6 +1699,8 @@ impl Audio {
             self.music_gain = Self::stream_gain(&p);
             s.set_volume(self.music_volume * self.music_gain);
             let (pre, off) = self.start_delay;
+            self.song_clock = (pre, off);
+            self.song_len_ms = Self::stream_len_ms(&p);
             s.append(dec.skip_duration(std::time::Duration::from_millis(off as u64)).delay(std::time::Duration::from_millis(pre as u64)));
             s.play();
             self.now_playing = match self.music_meta.get(self.music_next).cloned().flatten() {
@@ -1757,7 +1802,13 @@ pub(crate) struct MusicMgr {
     /// +76 the start offset (ms)
     pub offset: u32,
     pub handler: Handler,
-    /// +72, +80, +84, +36, +40, +48 / +52
+    /// +44 (0 from the constructor F-96264; no function of the manager writes it): the playing handler's song-line clock
+    /// waits while it is set
+    pub hold: bool,
+    /// +68 the song at the order's place
+    pub cur: u32,
+    /// +72 the song's place (fraction), +76 (`offset`) its position, +80 its length, +84 the position kept at a stop
+    /// (ms), +36 / +40 the song-line clock, +48 / +52 the order's place and list
     pub pos: f32,
     pub w80: u32,
     pub w84: u32,
@@ -1807,6 +1858,18 @@ pub(crate) trait MusicEnv {
     fn console_stop(&mut self);
     /// the song change callback (+520)
     fn changed(&mut self);
+    /// the custom-soundtrack flag (F-15700)
+    fn user_music(&self) -> bool;
+    /// the song's sound: its state (+6; 2 playing), its position (+172, ms) and length (F-96939, ms)
+    fn song_state(&self, h: u32) -> u16;
+    fn song_position(&self, h: u32) -> u32;
+    fn song_length(&mut self, h: u32) -> u32;
+    /// the hard stop (F-93800); it empties its slot
+    fn hard_stop(&mut self, h: u32);
+    /// the order's next place (F-44754) and the song at it (+48, +68); the song's name logged (F-77135, F-47121)
+    fn next_place(&mut self) -> (u32, u32);
+    /// the next song start plays the song +68 holds (no next song before it)
+    fn same_song(&mut self);
 }
 
 impl MusicMgr {
@@ -1878,6 +1941,87 @@ impl MusicMgr {
             self.change(e);
         }
         self.handler = Handler::Playing;
+    }
+
+    /// The playing handler (F-61726, +376 while a song is wanted, every frame; `dt` the frame's time, s): the song before
+    /// released; while MUSIC_USER is above -95 dB and no custom soundtrack plays, a playing song's position (+76), length
+    /// (+80) and place (+72 = +76 / +80) kept and the song-line clock run (+36 -= dt, below 0 F-17609); with no song, the
+    /// restart byte (+526) cleared and the state (+496) taken (0 the song started, 1 reset F-14624, 2 stopped F-79064),
+    /// else the next song (F-51486, at a place of 0.99 or more) and the song started (F-62155). Muted (or a custom
+    /// soundtrack), a playing song's place kept in +84 / +76 and the song hard stopped (F-93800): the next start takes it
+    /// up at +76.
+    pub fn playing(&mut self, t: &MusicTune, dt: f32, e: &mut impl MusicEnv) {
+        if let Some(v) = self.old.take() {
+            e.release(v);
+        }
+        let place = |p: u32, l: u32| p as i32 as f32 / l as i32 as f32;
+        if e.music_user_db() > -95.0 && !e.user_music() {
+            match self.song {
+                None => {
+                    if self.console {
+                        return;
+                    }
+                    if self.restart {
+                        self.restart = false;
+                        match self.state {
+                            0 => {
+                                e.same_song();
+                                self.start(t, 0, e);
+                            }
+                            1 => self.reset(e),
+                            // (F-79064(-1) with no song and no console player: only the idle handler)
+                            2 => self.handler = Handler::Idle,
+                            _ => {}
+                        }
+                        return;
+                    }
+                    if self.pos >= 0.99 {
+                        self.next_song(e);
+                    } else {
+                        e.same_song();
+                    }
+                    self.start(t, 0, e);
+                }
+                Some(s) => {
+                    if e.song_state(s) != 2 {
+                        return;
+                    }
+                    self.offset = e.song_position(s);
+                    self.w80 = e.song_length(s);
+                    self.w84 = 0;
+                    self.pos = place(self.offset, self.w80);
+                    if !self.hold {
+                        self.f36 -= dt;
+                        if self.f36 < 0.0 {
+                            self.change(e);
+                        }
+                    }
+                }
+            }
+        } else if let Some(s) = self.song {
+            if e.song_state(s) == 2 {
+                self.offset = e.song_position(s);
+                self.w84 = self.offset;
+                self.w80 = e.song_length(s);
+                self.pos = place(self.offset, self.w80);
+            }
+            e.hard_stop(s);
+            self.song = None;
+        }
+    }
+
+    /// F-51486 as the playing handler reaches it (MUSIC_USER above -95 dB, no song, no console player): the restart byte,
+    /// the song's place, position, kept position and length cleared, the order's next place and its song (the name
+    /// logged).
+    fn next_song(&mut self, e: &mut impl MusicEnv) {
+        self.restart = false;
+        self.offset = 0;
+        self.w84 = 0;
+        self.pos = 0.0;
+        self.w80 = 0;
+        let (p, song) = e.next_place();
+        self.list.0 = p;
+        self.cur = song;
     }
 
     /// F-14624: the song's clock and offset cleared, the idle handler, the song stopped: the console's player, or its
@@ -1975,6 +2119,27 @@ mod tests {
             fn changed(&mut self) {
                 self.out += " B";
             }
+            fn user_music(&self) -> bool {
+                unreachable!()
+            }
+            fn song_state(&self, _h: u32) -> u16 {
+                unreachable!()
+            }
+            fn song_position(&self, _h: u32) -> u32 {
+                unreachable!()
+            }
+            fn song_length(&mut self, _h: u32) -> u32 {
+                unreachable!()
+            }
+            fn hard_stop(&mut self, _h: u32) {
+                unreachable!()
+            }
+            fn next_place(&mut self) -> (u32, u32) {
+                unreachable!()
+            }
+            fn same_song(&mut self) {
+                unreachable!()
+            }
         }
         let mut lines = include_str!("testdata/music_play_ref.txt").lines();
         let mut n = 0;
@@ -2033,6 +2198,134 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 1500);
+    }
+
+    /// verify_audio_b1.md batch 53: the music manager's playing handler (F-61726), with the stop F-79064, the reset
+    /// F-14624 and the next song F-51486 it reaches, run offline (tools/music_playing_reference.py) on 3,000 random
+    /// manager states: every call with its arguments in order and every field after (+36, +72, +76, +80, +84, +526, +48,
+    /// +68 and the handler), as the original's
+    #[test]
+    fn music_playing_matches_the_original() {
+        use super::{Handler, MusicEnv, MusicMgr, MusicTune};
+        const SONG: u32 = 0x4100_0010;
+        const V388: u32 = 0x4100_0020;
+        // (+40: F-17609 is a recorder in the harness, here the port's own, which sets +36 from it)
+        const MARK: u32 = 0x7FC0_BEEF;
+        struct Rec<'a> {
+            out: String,
+            w: &'a [u32],
+        }
+        impl MusicEnv for Rec<'_> {
+            fn music_user_db(&self) -> f32 {
+                f32::from_bits(self.w[1])
+            }
+            fn scene_start(&mut self) -> Option<u32> {
+                unreachable!()
+            }
+            fn scene_stop(&mut self, _h: u32) {
+                unreachable!()
+            }
+            fn sound_stop(&mut self, _h: u32) {
+                unreachable!()
+            }
+            fn jingle(&mut self, _hash: u32) -> Option<u32> {
+                unreachable!()
+            }
+            fn release(&mut self, h: u32) {
+                self.out += if h == V388 { " Ro e0" } else { " Rx e0" };
+            }
+            fn pick(&mut self) -> u32 {
+                0
+            }
+            fn song_start(&mut self, _hash: u32, _offset: u32, _predelay: u32, arg: u32) -> Option<u32> {
+                self.out += &format!(" T e{arg}");
+                None
+            }
+            fn place(&mut self, _a: u32, _b: u32) {}
+            fn console_ready(&mut self) -> bool {
+                unreachable!()
+            }
+            fn console_start(&mut self, _entry: u32) {
+                unreachable!()
+            }
+            fn console_stop(&mut self) {
+                unreachable!()
+            }
+            fn changed(&mut self) {
+                self.out += " B";
+            }
+            fn user_music(&self) -> bool {
+                self.w[2] != 0
+            }
+            fn song_state(&self, h: u32) -> u16 {
+                assert_eq!(h, SONG);
+                self.w[4] as u16
+            }
+            fn song_position(&self, _h: u32) -> u32 {
+                self.w[5]
+            }
+            fn song_length(&mut self, h: u32) -> u32 {
+                self.out += if h == SONG { " Ds e0" } else { " Dx e0" };
+                self.w[6]
+            }
+            fn hard_stop(&mut self, h: u32) {
+                self.out += if h == SONG { " Qs" } else { " Qx" };
+            }
+            fn next_place(&mut self) -> (u32, u32) {
+                self.out += " Om Gm";
+                (self.w[17], 0x5000 + self.w[17])
+            }
+            fn same_song(&mut self) {}
+        }
+        let t = MusicTune { jingle: 0, pre: [900, 0, 0] };
+        let mut lines = include_str!("testdata/music_playing_ref.txt").lines();
+        let mut n = 0;
+        while let Some(c) = lines.next() {
+            let w: Vec<u32> = c.split(' ').skip(1).map(|t| t[1..].parse().unwrap()).collect();
+            let (want_calls, want_after) = (lines.next().unwrap(), lines.next().unwrap());
+            let mut m = MusicMgr {
+                console: w[7] == 1,
+                song: (w[3] != 0).then_some(SONG),
+                old: (w[0] != 0).then_some(V388),
+                on_change: true,
+                restart: w[8] != 0,
+                state: w[9],
+                pos: f32::from_bits(w[10]),
+                hold: w[11] != 0,
+                f36: f32::from_bits(w[12]),
+                f40: f32::from_bits(MARK),
+                offset: w[14],
+                w84: w[15],
+                w80: w[16],
+                handler: Handler::Playing,
+                ..MusicMgr::default()
+            };
+            let mut e = Rec { out: "L".into(), w: &w };
+            m.playing(&t, f32::from_bits(w[13]), &mut e);
+            assert_eq!(e.out, want_calls.trim_end(), "case {n}: {c}");
+            // (the song line: +36 = +40 in the port, the harness's +36 as F-17609 found it)
+            let f36 = if e.out.contains(" B") {
+                assert_eq!(m.f36.to_bits(), MARK, "case {n}: {c}");
+                u32::from_str_radix(&want_after[3..11], 16).unwrap()
+            } else {
+                m.f36.to_bits()
+            };
+            let after = format!(
+                "A x{:08x} x{:08x} x{:08x} x{:08x} x{:08x} b{} x{:08x} x{:08x} x{:08x}",
+                f36,
+                m.pos.to_bits(),
+                m.offset,
+                m.w80,
+                m.w84,
+                m.restart as u8,
+                m.list.0,
+                m.cur,
+                if m.handler == Handler::Idle { 0x8213_0008u32 } else { 0x1111_1111 }
+            );
+            assert_eq!(after, want_after, "case {n}: {c}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
     }
 
     /// Issue #40: every cutoff the mixer can send (0..23900 Hz) gives a stable section at the mix rate
