@@ -1446,7 +1446,7 @@ pub fn lanes_ahead(assets: &std::sync::Arc<Assets>, data_dir: &str) {
     let a = assets.clone();
     let _ = std::thread::Builder::new().name("lane curves".into()).spawn(move || {
         if let Some(n) = nav_file(&a).and_then(|p| load_resource_file(&p).and_then(|r| NavSys::parse(&r)).ok()) {
-            let _ = crate::vehicles::traffic::rail_nav(&n);
+            crate::vehicles::traffic::ahead(crate::vehicles::traffic::rail_nav(&n), &a.root);
         }
     });
     let d = data_dir.to_string();

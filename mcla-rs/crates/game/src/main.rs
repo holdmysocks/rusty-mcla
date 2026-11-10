@@ -15248,7 +15248,7 @@ impl App {
             // (what the first frames would read: the UI's art and movies, the traffic's lane curves)
             self.game.load_ui(ctx);
             if let Some(nav) = world.nav.as_ref() {
-                let _ = vehicles::traffic::rail_nav(nav);
+                vehicles::traffic::ahead(vehicles::traffic::rail_nav(nav), &world.assets.root);
             }
             let _ = occluder::city(&self.opt.data_dir);
             self.take_citymap(&mut gpu, true);

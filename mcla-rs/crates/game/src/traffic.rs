@@ -94,7 +94,22 @@ impl Default for AmbType {
 }
 
 impl AmbType {
+    /// The type's tune and bound (`read`), read once per data folder and type and kept: read for every type on a
+    /// thread while the game loads (`ahead`), not in the first spawner frame (58 ms of it, docs/PERFORMANCE.md).
     pub fn load(root: &std::path::Path, model: &str) -> AmbType {
+        type Cache = std::sync::Mutex<hashbrown::HashMap<(std::path::PathBuf, String), AmbType>>;
+        static CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
+        let cache = CACHE.get_or_init(Default::default);
+        let key = (root.to_path_buf(), model.to_ascii_lowercase());
+        if let Some(t) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+            return *t;
+        }
+        let t = Self::read(root, model);
+        cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key, t);
+        t
+    }
+
+    fn read(root: &std::path::Path, model: &str) -> AmbType {
         let _ = DATA_ROOT.set(root.to_path_buf());
         crate::cruisedrive::prewarm();
         let d = AmbType::default();
@@ -515,6 +530,29 @@ static RAIL_NAV: std::sync::OnceLock<NavSys> = std::sync::OnceLock::new();
 pub fn rail_nav_made() -> Option<&'static NavSys> {
     RAIL_NAV.get()
 }
+
+/// What the traffic's first spawner frames would make (the lanes as rails and their ends, the spawner's roads and junctions,
+/// every traffic type's tune and bound, the riders' route net: 18 + 20 + 58 + 20 ms of the first ticks, docs/PERFORMANCE.md 2026-11-10), made on a
+/// thread once the lane curves are: the same tables, only earlier.
+pub fn ahead(nav: &'static NavSys, root: &std::path::Path) {
+    let root = root.to_path_buf();
+    let _ = std::thread::Builder::new().name("traffic tables".into()).spawn(move || {
+        let _ = lanes(nav);
+        let _ = lane_ends(nav);
+        let sp = Spawner::new(nav, &root);
+        *SPAWNER_AHEAD.lock().unwrap_or_else(|e| e.into_inner()) = Some((root.clone(), sp));
+        let mut names: Vec<String> = std::fs::read_dir(root.join("tune/ambients/traffic")).map(|d| d.flatten().filter_map(|e| e.file_name().into_string().ok()).collect()).unwrap_or_default();
+        names.sort();
+        for n in names {
+            let _ = AmbType::load(&root, &n);
+        }
+        // (the route net the riders' next lane is chosen on: read once the data folder is known, the first type's load)
+        let _ = ghost_net();
+    });
+}
+
+/// The spawner made by `ahead` (with its data folder), taken by the first `spawn_traffic`.
+static SPAWNER_AHEAD: std::sync::Mutex<Option<(std::path::PathBuf, Spawner)>> = std::sync::Mutex::new(None);
 
 /// The lanes of the city, made once.
 pub fn lanes(nav: &NavSys) -> &'static Lanes {
@@ -7912,7 +7950,8 @@ impl Vehicles {
     pub(super) fn spawn_traffic(&mut self, gpu: &crate::render::Gpu, world: &crate::world::World, center: Vec3, dt: f32) {
         let Some(nav) = world.nav.as_ref().map(rail_nav) else { return };
         if self.spawner.is_none() {
-            self.spawner = Some(Spawner::new(nav, &world.assets.root));
+            let made = SPAWNER_AHEAD.lock().unwrap_or_else(|e| e.into_inner()).take().filter(|(r, _)| *r == world.assets.root);
+            self.spawner = Some(made.map_or_else(|| Spawner::new(nav, &world.assets.root), |m| m.1));
         }
         let mut sp = self.spawner.take().unwrap();
         // (test hook MCLA_TRAFFIC_PLACE=<type>,x,y,z,heading[,steer[,colour row[,drawn y]]]: one parked car of that type as a
