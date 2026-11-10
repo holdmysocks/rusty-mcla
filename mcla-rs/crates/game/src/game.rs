@@ -13144,16 +13144,20 @@ impl Game {
             self.mission_log.2 = false;
         }
         let (mut tab, mut sel, hidden) = self.mission_log;
-        if guided {
-            // (two tabs, and they do not go round: `ng_mlog_tutorials` has RB dark)
-            if tab_next && tab == 0 {
-                (tab, sel) = (2, 0);
-            } else if tab_prev && tab == 2 {
-                (tab, sel) = (0, 0);
+        // (the log's tabs are a UITabbedContainer's (mcMissionLog's input F-52078 hands every other event to F-81920):
+        // LB / RB, the d-pad's and the left stick's left / right step them and they do not go round (`tab_step`); the
+        // guided log has two, ACTIVE and TUTORIALS - `ng_mlog_tutorials` has RB dark. Left / right steer the map's
+        // cursor only while the log is put away)
+        let tabs: &[usize] = if guided { &[0, 2] } else { &[0, 1, 2] };
+        for (press, right) in [(tab_prev, false), (left && !hidden, false), (tab_next, true), (right && !hidden, true)] {
+            if press {
+                let at = tabs.iter().position(|&t| t == tab).unwrap_or(0) as u32;
+                let (to, snd) = tab_step(at, tabs.len() as u32, false, right);
+                if to != at {
+                    (tab, sel) = (tabs[to as usize], 0);
+                }
+                self.opt_x.s23b.ui_obj = Some(snd);
             }
-        } else if tab_prev || tab_next {
-            tab = (tab + if tab_next { 1 } else { 2 }) % 3;
-            sel = 0;
         }
         if hidden && self.x_hit(ctx) {
             self.map_legend = !self.map_legend;
@@ -16463,6 +16467,27 @@ mod tests {
         assert!(keeps(None, Some(9968)) && keeps(None, Some(9961)), "LICENSE PLATES and SOUTH CENTRAL RIMS are no part lists");
     }
 
+    /// F-87194 / F-12609 run offline (tools/tab_step_reference.py, testdata/tab_step_ref.txt: 440 indices, counts and
+    /// wrap bytes, both ways): the index after and the sound (a move's NAV with one TAB_SELECTION_CHANGED, else ERROR)
+    /// equal on every case.
+    #[test]
+    fn tab_step_matches_the_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/tab_step_ref.txt").lines() {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let w: Vec<u32> = i.split_whitespace().map(|w| w.parse().unwrap()).collect();
+            let want: Vec<u32> = o.split_whitespace().map(|w| w.parse().unwrap()).collect();
+            let (t, snd) = super::tab_step(w[1], w[2], w[3] != 0, w[0] != 0);
+            let moved = snd != "UI_MENU_ERROR";
+            assert_eq!((t, if moved { 1 } else { 2 }, moved as u32), (want[0], want[1], want[2]), "{l}");
+            if moved {
+                assert_eq!(snd, if w[0] != 0 { "UI_MENU_NAV_RIGHT" } else { "UI_MENU_NAV_LEFT" });
+            }
+            n += 1;
+        }
+        assert_eq!(n, 440);
+    }
+
     /// F-75783 / F-97172: LT / RT on a race's or the collectables' statistics stop at the ends
     #[test]
     fn stat_pages_stop_at_the_ends() {
@@ -16730,6 +16755,22 @@ pub fn combo_event(i: i32, n: i32, wrap: bool, ev: u32, live: bool) -> (bool, Op
     };
     t = t.wrapping_rem(n);
     (true, Some(t), Some(snd))
+}
+
+/// A tabbed container's step (UITabbedContainer, F-81920 -> F-87194 left / F-12609 right) of the tab index (+72) over
+/// `count` tabs (+68): left at 0 goes to count - 1 and right at count - 1 to 0 only with `wrap` (+76, AllowWrap: the
+/// constructor F-59174 clears it and no shipped scene sets it), else they stay; any other press moves by one. A move
+/// plays UI_MENU_NAV_LEFT / _RIGHT (and posts TAB_SELECTION_CHANGED), no move UI_MENU_ERROR. Returns (index, sound).
+/// Checked offline: `tab_step_matches_the_original`.
+pub fn tab_step(index: u32, count: u32, wrap: bool, right: bool) -> (u32, &'static str) {
+    let t = if right {
+        if index == count.wrapping_sub(1) { if wrap { 0 } else { index } } else { index.wrapping_add(1) }
+    } else if index == 0 {
+        if wrap { count.wrapping_sub(1) } else { index }
+    } else {
+        index - 1
+    };
+    (t, if t == index { "UI_MENU_ERROR" } else if right { "UI_MENU_NAV_RIGHT" } else { "UI_MENU_NAV_LEFT" })
 }
 
 pub fn wager_range(base: i32, d: u32) -> (i32, i32, i32, i32) {
