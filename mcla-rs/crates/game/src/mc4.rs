@@ -2522,18 +2522,24 @@ impl Game {
                     })
                     .collect()
             };
+            // (F-60473 writes the city the race is saved in to byte 1043 (Los Angeles: 3), then the count through the
+            // setter F-84156 - so beside a city number byte 1042 holds it and the word at 0 is cleared, whatever the slot
+            // held before. Bytes 1040 / 1041 come from the race (+11968 / +11969): kept as the slot had them.)
             if let Some(r) = races.get_mut(k) {
                 if r.points() != *pts {
                     r.checkpoints = cps(Some(&*r));
-                    r.count = pts.len() as u32;
-                    r.count_byte = pts.len() as u32;
+                    r.city = EDITOR_CITY_LA;
+                    editor_set_count(r, pts.len() as u32);
+                    r.count = editor_count(r);
+                    r.count_from_word = None;
                     r.in_use = true;
                 }
             } else {
                 let slot = (0..20u32).find(|s| !races.iter().any(|r| r.slot == *s)).unwrap_or(races.len() as u32);
-                // (the city's number, byte 1043: 3 in the 100 % save's own race - the only
-                // value seen for this city; the word at 0 is written 0 beside a city number)
-                races.push(EditorRace { slot, name: format!("LosAngeles{slot}"), in_use: true, count: pts.len() as u32, city: 3, grid_variant: 0, flag_1041: 0, count_word: 0, count_byte: pts.len() as u32, checkpoints: cps(None), ..Default::default() });
+                let mut r = EditorRace { slot, name: format!("LosAngeles{slot}"), in_use: true, city: EDITOR_CITY_LA, checkpoints: cps(None), ..Default::default() };
+                editor_set_count(&mut r, pts.len() as u32);
+                r.count = editor_count(&r);
+                races.push(r);
             }
         }
         races.truncate(self.user_races.len());
@@ -12145,6 +12151,21 @@ pub fn editor_city_ok(city: u32, current: u32) -> bool {
     city == current || ((city == 0 || city == 0xCD) && (current == 0 || current == 3))
 }
 
+/// A slot's checkpoint count (F-71298): the word at 0 when the city byte is 0xCD (never written), else byte 1042.
+pub fn editor_count(r: &EditorRace) -> u32 {
+    if r.city == 0xCD { r.count_word } else { r.count_byte }
+}
+
+/// The count set as F-84156 sets it: city 0xCD - the word only; city 0 - byte 1042 and the word; any other city - byte
+/// 1042, the word cleared. (Byte 1042 takes the count's low byte.)
+pub fn editor_set_count(r: &mut EditorRace, n: u32) {
+    match r.city {
+        0xCD => r.count_word = n,
+        0 => (r.count_byte, r.count_word) = (n & 255, n),
+        _ => (r.count_byte, r.count_word) = (n & 255, 0),
+    }
+}
+
 /// The achievements: id, the console's number, title (the table F-53715 builds with
 /// F-47825; titles from the executable's achievement resource - `mc4save/small.py`).
 pub const ACHIEVEMENTS: [(&str, u32, &str); 55] = [
@@ -14315,7 +14336,7 @@ mod tests {
         let m = Mc4::from_value(&b).unwrap();
         assert_eq!(b["editor"]["races"][0], save["mc4"]["editor"]["races"][0], "the save's race is untouched");
         let r = &m.editor.races[1];
-        assert_eq!((r.slot, r.name.as_str(), r.count, r.city), (1, "LosAngeles1", 3, 3));
+        assert_eq!((r.slot, r.name.as_str(), r.count, r.city, r.count_byte, r.count_word), (1, "LosAngeles1", 3, 3, 3, 0), "the count in byte 1042 beside a city (F-84156)");
         assert_eq!((r.checkpoints[2].pos[2].0, r.checkpoints[2].activation_radius, r.checkpoints[2].activation_height), (9.25, 25, 25));
         assert_eq!(b["editor"]["received"], save["mc4"]["editor"]["received"]);
         assert_eq!(b["vinyl_packages"][2]["livery"], b["vinyl_packages"][1]["livery"]);
@@ -19870,6 +19891,22 @@ mod tests {
     /// F-29366 run offline (tools/arrow_rect_reference.py, testdata/arrow_rect_ref.txt: 4,000 screens - common and odd line
     /// counts, line scales, BlitPosition.y and BlitScale of the tune and random, shape ratios and centres): the rectangle it
     /// hands the quad draw equal bit for bit.
+    #[test]
+    fn editor_count_matches_the_original() {
+        // (tools/editor_count_reference.py: F-84156 then F-71298 run offline on every city byte, old words and bytes)
+        let mut n = 0;
+        for l in include_str!("testdata/editor_count_ref.txt").lines() {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let v = |s: &str| -> Vec<u32> { s.split_whitespace().map(|w| w.parse().unwrap()).collect() };
+            let (i, o) = (v(i), v(o));
+            let mut r = EditorRace { city: i[0], count_word: i[1], count_byte: i[2], ..Default::default() };
+            editor_set_count(&mut r, i[3]);
+            assert_eq!([r.count_word, r.count_byte, editor_count(&r)], [o[0], o[1], o[2]], "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 1536);
+    }
+
     #[test]
     fn top_arrow_blit_matches_the_original() {
         let mut n = 0;
