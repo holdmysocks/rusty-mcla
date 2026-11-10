@@ -786,67 +786,24 @@ impl Brain {
         self.next = at;
     }
 
-    /// F-34392: the racer is far behind - onto the next shortcut.
+    /// F-34392: the racer is far behind - onto the next shortcut (the pick: `catch_up_pick`).
     fn catch_up(&mut self) {
-        let n = self.course.cps.len();
-        let flags_of = |b: &Brain| -> u32 {
-            let g = &b.plan.goals;
-            if g.is_empty() {
-                0
-            } else if b.cur == g.len() {
-                g[g.len() - 1].flags
-            } else {
-                g.get(b.cur).map_or(0, |x| x.flags)
-            }
-        };
-        let f = flags_of(self);
-        let c = ((f >> 6) & 0x7F) as usize;
-        let cur_lap = ((f >> 2) & 0xF) as usize;
-        let mut found: Option<(usize, usize)> = None;
-        for (k, p) in self.course.paths.iter().enumerate() {
-            if p.before > c + 1 {
-                break;
-            }
-            if !p.shortcut {
-                continue;
-            }
-            if p.before == c + 1 {
-                if cur_lap + 1 >= self.plan.laps && p.before >= n {
-                    return;
-                }
-                found = Some((k, cur_lap));
-                break;
-            }
-            if cur_lap + 1 < self.plan.laps && p.before == 0 && c + 1 == n {
-                found = Some((k, cur_lap + 1));
-                break;
-            }
-        }
-        let Some((k, lap)) = found else { return };
-        let before = self.course.paths[k].before;
-        self.plan.lock = (before as i32, lap as i32);
+        let flags: Vec<u32> = self.plan.goals.iter().map(|g| g.flags).collect();
+        let paths: Vec<(i32, i32, bool)> = self.course.paths.iter().map(|p| (p.before as i32, p.skip as i32, p.shortcut)).collect();
+        let Some(pick) = catch_up_pick(&flags, self.cur, self.plan.laps as i32, &paths, self.course.cps.len() as i32) else { return };
+        let (before, lap) = pick.at;
+        self.plan.lock = (before, lap);
         log::info!("BrainRacing: opponent {} switching to catch up on shorter alt path leading to checkpoint {}", self.plan.opponent, before);
-        // (the goals from the first at or after (lap, before) are rebuilt with the shortcut forced)
-        let mut cut = self.plan.goals.len();
-        for i in self.cur..self.plan.goals.len() {
-            let g = &self.plan.goals[i];
-            if g.lap() > lap as i32 || (g.lap() == lap as i32 && g.checkpoint() >= before as i32) {
-                cut = i;
-                break;
-            }
+        // (the goals from the first at or after (lap, before) are rebuilt with the shortcut forced; with none the
+        // original sets the count to 0xFFFF - a race's goals run to its end, so that is not reached; the port keeps them)
+        if let Some(cut) = pick.cut {
+            self.plan.goals.truncate(cut);
         }
-        self.plan.goals.truncate(cut);
         let course = self.course.clone();
-        self.plan.build(&course, before, lap, &mut rng());
+        self.plan.build(&course, before.max(0) as usize, lap.max(0) as usize, &mut rng());
         let at = self.cur;
         self.replan(at);
-        let mut cp = before + self.course.paths[k].skip;
-        let mut lp = lap;
-        if cp >= n && n > 0 {
-            cp -= n;
-            lp += 1;
-        }
-        self.plan.lock = (cp as i32, lp as i32);
+        self.plan.lock = pick.lock;
     }
 
     /// One frame: F-13552 (goals, routes, the line) then F-17058 (the pedals) and
@@ -1033,6 +990,61 @@ impl Brain {
     pub fn hit(&mut self) {
         self.collision = 1.5;
     }
+}
+
+/// What F-34392 picks: the alt path, the (checkpoint, lap) the goals are rebuilt from, the first goal at or after it (None:
+/// the original sets the count to 0xFFFF) and the lock after the skip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CatchUpPick {
+    pub path: usize,
+    pub at: (i32, i32),
+    pub cut: Option<usize>,
+    pub lock: (i32, i32),
+}
+
+/// F-34392's decision on the goal flags words, the current goal, the laps, the alt paths (checkpoint before, skipped,
+/// shortcut; in the course's order) and the checkpoint count. The current goal's checkpoint / lap (the last goal's when
+/// the current is the count, 0 with no goals) sign-extended as F-68139 / F-60424; the paths walked until one starts after
+/// the next checkpoint: a shortcut to the next checkpoint (not past the last one on the last lap) at this lap, or one from
+/// checkpoint 0 at the next lap when this is the last checkpoint and not the last lap. The lock is the path's end: its
+/// checkpoint plus the skipped, wrapped to the next lap at the count.
+pub fn catch_up_pick(flags: &[u32], cur: usize, laps: i32, paths: &[(i32, i32, bool)], n: i32) -> Option<CatchUpPick> {
+    let lap_of = |f: u32| ((f as i32) << 26) >> 28;
+    let cp_of = |f: u32| ((f as i32) << 19) >> 25;
+    let f = if flags.is_empty() { None } else if cur == flags.len() { Some(flags[flags.len() - 1]) } else { flags.get(cur).copied() };
+    let (c, cur_lap) = f.map_or((0, 0), |f| (cp_of(f), lap_of(f)));
+    let mut found = None;
+    for (k, &(before, _, shortcut)) in paths.iter().enumerate() {
+        if before > c + 1 {
+            return None;
+        }
+        if !shortcut {
+            continue;
+        }
+        if before == c + 1 {
+            if cur_lap >= laps - 1 && before >= n {
+                return None;
+            }
+            found = Some((k, cur_lap));
+            break;
+        }
+        if cur_lap < laps - 1 && before == 0 && c == n - 1 {
+            found = Some((k, cur_lap + 1));
+            break;
+        }
+    }
+    let (k, lap) = found?;
+    let (before, skip, _) = paths[k];
+    let cut = (cur..flags.len()).find(|&i| {
+        let (gl, gc) = (lap_of(flags[i]), cp_of(flags[i]));
+        gl > lap || (gl == lap && gc >= before)
+    });
+    let (mut cp, mut lp) = (before + skip, lap);
+    if cp >= n {
+        cp -= n;
+        lp += 1;
+    }
+    Some(CatchUpPick { path: k, at: (before, lap), cut, lock: (cp, lp) })
 }
 
 /// F-17058's in-air pitch axis (input +32, written with flag 1 when no wheel is down): clamp(fma(-(s a), -2.5465,
@@ -1412,6 +1424,45 @@ pub fn run(v: &mut crate::vehicles::Vehicles, i: usize, brain: &mut Brain, to_go
 
 #[cfg(test)]
 mod tests {
+
+    /// F-34392 run offline with its goal list builder recorded (tools/catch_up_reference.py, verify_catch_up.md): whether it
+    /// builds, the builder's (checkpoint, lap), the lock, the goal count (0xFFFF with no goal at or after the point) and
+    /// the three goal indices equal to catch_up_pick in every case.
+    #[test]
+    fn catch_up_matches_the_original() {
+        let text = include_str!("testdata/catch_up_ref.txt");
+        let hex = |w: &str| u32::from_str_radix(&w.replace('_', ""), 16).unwrap();
+        const MARK: u32 = 0x7EAD_BEEF;
+        let (mut n_cases, mut built, mut bad) = (0, 0, 0);
+        for line in text.lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let arrow = w.iter().position(|x| *x == "->").unwrap();
+            let v: Vec<u32> = w[1..arrow].iter().map(|x| hex(x)).collect();
+            let o: Vec<u32> = w[arrow + 1..].iter().map(|x| hex(x)).collect();
+            let (n, laps, cur, cnt, np) = (v[0] as i32, v[1] as i32, v[2] as usize, v[3] as usize, v[4] as usize);
+            let flags = &v[5..5 + cnt];
+            let paths: Vec<(i32, i32, bool)> = (0..np).map(|j| {
+                let p = &v[5 + cnt + 3 * j..5 + cnt + 3 * j + 3];
+                (p[0] as i32, p[1] as i32, p[2] != 0)
+            }).collect();
+            let got = catch_up_pick(flags, cur, laps, &paths, n);
+            let want: Vec<u32> = match got {
+                None => vec![0, MARK, MARK, MARK, MARK, cnt as u32, MARK, cur as u32, MARK],
+                Some(p) => vec![1, p.at.0 as u32, p.at.1 as u32, p.lock.0 as u32, p.lock.1 as u32, p.cut.map_or(0xFFFF, |c| c as u32), cur as u32, cur as u32, cur as u32],
+            };
+            n_cases += 1;
+            built += got.is_some() as usize;
+            if want != o {
+                if bad < 5 {
+                    println!("{line}{}  port {:08x?}", char::from(10), want);
+                }
+                bad += 1;
+            }
+        }
+        println!("catch up: {n_cases} cases, {built} rebuilt, {bad} differ");
+        assert!(n_cases >= 8000);
+        assert_eq!(bad, 0);
+    }
 
     /// F-17058's in-air pitch axis, run offline in its racing case with no wheel down (tools/air_axis_reference.py,
     /// verify_air_axis.md): flag 1 set and +32 equal to air_axis on the sim's rows and angular velocity in every case.
