@@ -1503,7 +1503,7 @@ fn search_points_on(nav: &NavSys, mesh: Option<&mcla_formats::rage::navmesh::Nav
             // (F-59248: the node's lane at its middle; F-90092 on a road, else F-53622 - the road polygon within 10 m,
             // which moves it there -, else nav_ok)
             let Some(lane) = nav.node_rect(n).lane else { break };
-            let Some(q) = nav.curves.get(lane).map(|c| c.eval(0.5).0) else { break };
+            let Some(q) = nav.curves.get(lane).map(|c| crate::railroute::point(c, 0.5)) else { break };
             let q = match mesh {
                 None => Some(q),
                 Some(m) if m.on_road(q) => Some(q),
