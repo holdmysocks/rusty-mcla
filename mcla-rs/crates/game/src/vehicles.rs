@@ -622,7 +622,9 @@ pub struct AmbLamps {
 /// 6.0) + 0.5 + the offset, or when the weather term (the viewport table 0x827E1B10 +8 + +12, wet /
 /// foggy weather - the port's `wet`) is over the offset; off on a car fading out (+484 < 0.1).
 pub fn traffic_lights_due(hour: f32, offset: f32, wet: bool) -> bool {
-    hour > 18.0 - 0.333 - offset || hour < offset + 6.0 + 0.5 || wet
+    // (`lights_on`, the original's operations: the sunrise's 0.5 is added first, then the offset; the weather terms' sum is the
+    // port's bool, any value over the largest offset 0.25 for wet weather, 0 otherwise)
+    crate::vehicles::vehicles_words::lights_on(1.0, true, false, 6.0, 18.0, hour, offset, if wet { 1.0 } else { 0.0 })
 }
 
 #[cfg(test)]
@@ -640,18 +642,8 @@ fn traffic_lights_due_hours() {
 /// sides a / b, reversing): brake 0.25 head + 0.75 brake, tail 0.25 head, 2 brake, 3 and 5 head,
 /// 7 .. 9 always 1, 11 reversing, 13 / 15 side a, 14 / 16 side b, the rest 0.
 pub fn traffic_state(s: [f32; 5], att: u8) -> f32 {
-    let [h, b, sa, sb, r] = s;
-    match att {
-        0 => 0.25 * h + 0.75 * b,
-        1 => 0.25 * h,
-        2 => b,
-        3 | 5 => h,
-        7..=9 => 1.0,
-        11 => r,
-        13 | 15 => sa,
-        14 | 16 => sb,
-        _ => 0.0,
-    }
+    // (`vehicles_words::traffic_table`: the original's operations, the first entry fused)
+    crate::vehicles::vehicles_words::traffic_table(s).get(att as usize).copied().unwrap_or(0.0)
 }
 
 /// F-96984's state table by attachment for a set-up car (mcCar: the player, rivals, cops), from
@@ -662,18 +654,9 @@ pub fn traffic_state(s: [f32; 5], att: u8) -> f32 {
 /// HEADLIGHTS held (F-44589; F-10129 overwrites it only under the "always rain" debug byte); attachment 5
 /// is the state at +188, eased from the head state's target, so equal to it.
 pub fn setup_state(s: [f32; 5], att: u8) -> f32 {
+    // (`vehicles_words::setup_table`: the original's operations, the first entry fused and the sum held by two `fsel`s)
     let [h, b, siren, flash, r] = s;
-    match att {
-        0 => 0.25 * h + 0.75 * b,
-        1 => 0.25 * h,
-        2 => b,
-        3 => (h + flash).min(1.0),
-        4 => flash,
-        5 | 6 => h,
-        7..=9 => siren,
-        11 => r,
-        _ => 0.0,
-    }
+    crate::vehicles::vehicles_words::setup_table(h, h, b, siren, flash, r).get(att as usize).copied().unwrap_or(0.0)
 }
 
 /// The garage's head lamp state (F-10129 with the light manager's byte 14546 set: the byte +39229 of
@@ -824,7 +807,8 @@ pub const CINE_LAMP_EVENTS: &[(&str, bool, u8, f32)] = &[
 /// F-81135's fade of a traffic car's glow levels with its depth `d` along the camera's
 /// axis: (1 - sat((d - 50) / 325))^2.
 pub fn traffic_fade(d: f32) -> f32 {
-    (1.0 - ((d - 50.0) / 325.0).clamp(0.0, 1.0)).powi(2)
+    // (`vehicles_words::traffic_fade`: the original multiplies by the constant 1 / 325 and holds the term by two `fsel`s)
+    crate::vehicles::vehicles_words::traffic_fade(d)
 }
 
 /// F-24995: one frame of a lamp state's easing at 9 a second.
@@ -1048,7 +1032,9 @@ pub struct WindowCtl {
 
 impl Default for WindowCtl {
     fn default() -> Self {
-        WindowCtl { state: 1, time: 0.0 }
+        // (F-42929's reset: state word 0 takes the target 1 = closed at the first update; time 0)
+        let r = crate::vehicles::vehicles_words::window_reset(false);
+        WindowCtl { state: r.target as u8, time: r.time }
     }
 }
 
@@ -1538,8 +1524,9 @@ pub const TRAFFIC_PALETTE: [[f32; 4]; 10] = [
 /// paint rows (c124, c125: recorded (0.21764, 0.13321, 0) for a taxi, work/trafpaint/tp_caps.py), the
 /// vertex program lerps them and takes sat(4 x) of it (work/trafpaint/tp_px.py: o6).
 pub fn ambient_paint(c: [f32; 4]) -> [f32; 4] {
-    let f = |x: f32| (4.0 * x.max(0.0).powf(2.2)).min(1.0);
-    [f(c[0]), f(c[1]), f(c[2]), c[3]]
+    let p = crate::vehicles::vehicles_words::paint_pow([c[0].max(0.0), c[1].max(0.0), c[2].max(0.0), c[3]]);
+    let f = |x: f32| (4.0 * x).min(1.0);
+    [f(p[0]), f(p[1]), f(p[2]), c[3]]
 }
 
 /// Traffic and parked cars cast no sun shadow (`Vehicles::draw_shadow`); MCLA_TRAFFIC_CASTS=1: they do, as before.
@@ -2170,7 +2157,7 @@ impl CarInstance {
     /// memory, docs/AI.md 2026-11-08.)
     pub fn nitro_reset(&mut self) {
         let Some(vt) = self.params().veh.as_ref() else { return };
-        let shots = (vt.t.nitro_shots as u16 as i16).min(100).max(0) as u8;
+        let shots = crate::vehicles::vehicles_words::nitro_count(100, vt.t.nitro_shots as u16 as i16).max(0) as u8;
         self.state.nitro_max = shots;
         self.state.nitro_shots = shots;
     }
@@ -6311,7 +6298,11 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // the gear's upshift point, the transmission's +76 + 4 gear = `VehTune::shift[g][0]`; reverse and
             // neutral hold 0 there, so it is lit in them. Not switched by +597.)
             let shift_on = match (c.model.params.veh.as_ref(), c.state.veh.as_ref()) {
-                (Some(vt), Some(vs)) => vs.gear <= 0 || vt.shift.get(vs.gear as usize).is_some_and(|s| vs.engine_w / 0.104_719_76 >= s[0]),
+                // (F-12794's speed and the gear's point, `vehicles_words::shift_light`; the table holds 0 for reverse and neutral)
+                (Some(vt), Some(vs)) => {
+                    let point = if vs.gear <= 0 { Some(0.0) } else { vt.shift.get(vs.gear as usize).map(|s| s[0]) };
+                    point.is_some_and(|p| crate::vehicles::vehicles_words::shift_light(crate::vehicles::vehicles_words::engine_rpm(vs.engine_w), p))
+                }
                 _ => false,
             };
             a.shift = traffic_ease(a.shift, shift_on, dt);
@@ -7077,7 +7068,7 @@ impl ExtNeon {
     /// siColor2 (c59) of the car's draws: F-96984 car+2680 = ((pulse x ExtNeonIntensity) x car+268 (1.0)) x 0.3
     /// ([0x8200FEB4]), car+2656 = ExtNeonColor; F-31618 sets their product, all four lanes. No gate.
     pub fn si_color(&self) -> [f32; 4] {
-        let s = ((self.pulse * self.intensity) * 1.0) * f32::from_bits(0x3e99_999a);
+        let s = crate::vehicles::vehicles_words::neon_scale(self.pulse, self.intensity, 1.0);
         self.color.map(|c| c * s)
     }
 
@@ -8883,3 +8874,11 @@ mod ext_neon_tests {
         assert_eq!((n, on), (403, 16));
     }
 }
+
+/// Word-level forms of the original routines this file ports (run offline against the original, `vehicles_small_tests`).
+#[path = "vehicles_words.rs"]
+pub mod vehicles_words;
+
+#[cfg(test)]
+#[path = "vehicles_small_tests.rs"]
+mod vehicles_small_tests;
