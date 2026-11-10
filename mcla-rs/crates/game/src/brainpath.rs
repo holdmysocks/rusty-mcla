@@ -148,13 +148,19 @@ fn goal_node(mesh: &NavMesh, path: &QuickestPath) -> Option<u32> {
 /// nav state to 0, F-71636).
 #[allow(clippy::too_many_arguments)]
 pub fn path_to_aiv_at(aiv: &mut Aiv, mesh: &NavMesh, path: &QuickestPath, goals: &mut Vec<Goal>, current: usize, next: &mut usize, looping: bool, final_heading: Vec3, final_speed: f32) -> bool {
+    let node = if path.portals.is_empty() { goal_node(mesh, path) } else { None };
+    path_to_aiv_with(aiv, mesh, path, node, goals, current, next, looping, final_heading, final_speed)
+}
+
+/// [`path_to_aiv_at`] with the point element's goal node (+20) given (used only by a path with no portal).
+#[allow(clippy::too_many_arguments)]
+fn path_to_aiv_with(aiv: &mut Aiv, mesh: &NavMesh, path: &QuickestPath, node: Option<u32>, goals: &mut Vec<Goal>, current: usize, next: &mut usize, looping: bool, final_heading: Vec3, final_speed: f32) -> bool {
     // count = elements of the list (portals + the goal point)
     let count = path.portals.len() as i32 + 1;
     let (mut left, long) = if count + 1 >= 96 { (64, true) } else { (count, false) };
     if left + 1 > Aiv::PORTAL_CAP - aiv.portal_count() {
         return false;
     }
-    let mut pushed: Vec<Portal> = Vec::new();
     let mut last: Option<&Portal56> = None;
     for p in &path.portals {
         if left < 0 {
@@ -163,25 +169,22 @@ pub fn path_to_aiv_at(aiv: &mut Aiv, mesh: &NavMesh, path: &QuickestPath, goals:
         if last.is_none() {
             // drop the previous leg's far edge
             aiv.pop_portal();
-            // (approx.: the original tests aiv+22560 + aiv+22552 == 1 (portal ring base + count);
-            // aiv.rs exposes no base - it should add `pub fn portal_end(&self) -> i32` - so the
-            // port takes the base as 0)
-            if current >= *next || aiv.portal_count() == 1 {
+            // (a leg planned from the car, or only the car's own portal left: base + count == 1)
+            if current >= *next || aiv.portal_end() == 1 {
                 aiv.pop_portal();
-                pushed.extend(push_far_edge(aiv, mesh, p, true));
+                push_far_edge(aiv, mesh, p, true);
             }
         }
-        pushed.push(push_path_portal(aiv, mesh, p));
+        push_path_portal(aiv, mesh, p);
         last = Some(p);
         left -= 1;
     }
     if let Some(p) = last {
-        pushed.extend(push_far_edge(aiv, mesh, p, false));
+        push_far_edge(aiv, mesh, p, false);
     } else if !aiv.has_path() {
-        if let Some(id) = goal_node(mesh, path) {
+        if let Some(id) = node {
             for p in single_polygon(mesh, id) {
                 aiv.push_portal(&p);
-                pushed.push(p);
             }
         }
     }
@@ -195,14 +198,12 @@ pub fn path_to_aiv_at(aiv: &mut Aiv, mesh: &NavMesh, path: &QuickestPath, goals:
         // of the polygon it enters), radius 100 (0x82007928), max speed -1 (0x82003770); it
         // keeps the following goal's lap / checkpoint bits with bits 0 and 1 cleared, and its
         // +16 / +28 (F-89800 shifts the array up and fills only +0..+12)
-        // (approx.: the original reads the two midpoints from the aiv ring's stored ends; the
-        // port uses the ends it passed - the same middles up to rounding, push_portal moves both
-        // ends of a road portal inward by the same amount)
-        let n = pushed.len();
-        let (pl, ps) = if n >= 2 { (pushed[n - 1], pushed[n - 2]) } else { (tmpl_portal(&tmpl), tmpl_portal(&tmpl)) };
+        // The two middles are those of the ends the aiv ring stored (push_portal moves a road
+        // portal's ends inward).
+        let ((pa, pb), (la, lb)) = aiv.last_two_ends();
         let half = Vec3::splat(0.5);
-        let m_prev = (ps.a + ps.b) * half;
-        let m_last = (pl.a + pl.b) * half;
+        let m_prev = (pb + pa) * half;
+        let m_last = (lb + la) * half;
         dir = m_last - m_prev;
         let pos = (m_last + m_prev) * half;
         let g = Goal { pos, w: 100.0, p1: tmpl.p1, speed: tmpl.speed, flags: tmpl.flags & !3 };
@@ -230,10 +231,6 @@ pub fn path_to_aiv_at(aiv: &mut Aiv, mesh: &NavMesh, path: &QuickestPath, goals:
         aiv.push_goal(dir, g.pos, g.w, g.p1, speed, g.flags);
     }
     true
-}
-
-fn tmpl_portal(g: &Goal) -> Portal {
-    Portal { a: g.pos, b: g.pos, normal: Vec3::Y, offroad: false, ext: (0.0, 0.0) }
 }
 
 /// [`path_to_aiv_at`] without the brain's +216.
@@ -384,6 +381,109 @@ mod tests {
         }
         println!("race line feeders: {} edge, {} single, {} portal cases, {bad} differ", counts[0], counts[1], counts[2]);
         assert!(counts[0] >= 8000 && counts[1] >= 2000 && counts[2] >= 2000);
+        assert_eq!(bad, 0);
+    }
+
+    /// F-47058 run offline with its feeders, the aiv's push / pop and the goal insert as generated (tools/path_to_aiv_reference.py,
+    /// verify_path_to_aiv.md): whether the path is consumed, the portal ring (start, count, base, every live portal's ends,
+    /// shrunk ends, normal and flag), the goal push's arguments and the brain's goals, flags and +220 equal.
+    #[test]
+    fn path_to_aiv_matches_the_original() {
+        let text = include_str!("testdata/path_to_aiv_ref.txt");
+        let hex = |w: &str| u32::from_str_radix(&w.replace('_', ""), 16).unwrap();
+        let fnv = |h: u32, v: u32| v.to_le_bytes().iter().fold(h, |h, b| (h ^ *b as u32).wrapping_mul(16_777_619));
+        const CL: [f32; 4] = [0.0, 0.4, 1.5, 100.0];
+        const TUNE: [u32; 27] = [
+            0x14, 0, 1, 0x3f000000, 0x41c80000, 3, 0x3e4ccccd, 0x3dcccccd, 0x40a00000, 0x3f800000, 0x41200000, 0x3dcccccd, 0x3f400000, 0x3dcccccd,
+            0x3f800000, 0x3dcac083, 0x3f800000, 0x40c00000, 0x3f800000, 0x3f800000, 0x3f400000, 0x3f800000, 0x3f000000, 0x40a00000, 0x41c80000,
+            0x42c80000, 0x40d68f5c,
+        ];
+        let (mut cases, mut consumed, mut long, mut bad) = (0, 0, 0, 0);
+        for line in text.lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let arrow = w.iter().position(|x| *x == "->").unwrap();
+            let v: Vec<u32> = w[1..arrow].iter().map(|x| hex(x)).collect();
+            let o: Vec<u32> = w[arrow + 1..].iter().map(|x| hex(x)).collect();
+            let f = |i: usize| f32::from_bits(v[i]);
+            let v3 = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let (ng, nd, np) = (v[14] as usize, v[15], v[16] as usize);
+            let (g0, p0) = (17, 17 + 9 * ng);
+            let t0 = p0 + 84;
+            // the aiv: an image of the original's bytes (big endian), read as the recorder's states are
+            let mut img = vec![0u8; 31232];
+            let mut put = |off: usize, x: u32| img[off..off + 4].copy_from_slice(&x.to_be_bytes());
+            let (st, ct, bs) = (v[0], v[1], v[2]);
+            for (off, x) in [(22544, (st + ct) % 128), (22548, st), (22552, ct), (22560, bs), (22704, (st + ct) % 128), (22708, st), (22712, ct), (30832, v[3])] {
+                put(off, x);
+            }
+            for i in 0..3 {
+                put(25168 + 4 * i, v[4 + i]);
+            }
+            for (i, x) in TUNE.iter().enumerate() {
+                put(25332 + 4 * i, *x);
+            }
+            let mut aiv = Aiv::new(tune());
+            aiv.import_original(&img);
+            // the mesh: four polygons (chunk rows the identity)
+            let mut m = NavMesh::default();
+            m.chunk_rows = vec![[Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO]];
+            m.chunk_first = vec![0];
+            for k in 0..4 {
+                let b = p0 + 21 * k;
+                let verts = [v3(b + 1), v3(b + 4), v3(b + 7), v3(b + 10)];
+                let flags = if v[b + 19] != 0 { v[b + 20] } else { 0 };
+                m.polys.push(NavPoly { chunk: 0, material: 1, flags, area: 1.0, center: v3(b + 13), normal: v3(b + 16), nv: v[b] as u8, verts, first_link: 0, n_links: 0 });
+                m.local.push(PolyLocal { verts, n: v3(b + 16), d: 0.0 });
+            }
+            let portals = (0..np)
+                .map(|i| {
+                    let x = v[t0 + i];
+                    let (l, n, ia, ib) = (x & 7, (x >> 3) & 7, (x >> 6) & 3, (x >> 8) & 3);
+                    let vt = |k: u32| m.polys[l as usize].verts[k as usize];
+                    Portal56 { a: vt(ia), b: vt(ib), clear_a: CL[(x >> 10) as usize & 3], clear_b: CL[(x >> 12) as usize & 3], left: l, entered: n, flags: 0, normal: Vec3::Y }
+                })
+                .collect();
+            let path = QuickestPath { portals, goal: Vec3::ZERO, reached: true };
+            let mut goals: Vec<Goal> = (0..ng).map(|i| {
+                let b = g0 + 9 * i;
+                Goal { pos: v3(b), w: f(b + 3), p1: v3(b + 4), speed: f(b + 7), flags: v[b + 8] }
+            }).collect();
+            let r30 = v[8] as usize;
+            let mut next = r30;
+            crate::aiv::GOAL_LOG.with(|l| l.borrow_mut().clear());
+            let ok = path_to_aiv_with(&mut aiv, &m, &path, Some(nd), &mut goals, v[7] as usize, &mut next, v[9] != 0, v3(10), f(13));
+            let ((ps, pc, pb, _), cells) = aiv.portal_ring_dbg();
+            let mut h = 2_166_136_261u32;
+            for (q, off) in &cells {
+                for e in q {
+                    for x in [e.x, e.y, e.z] {
+                        h = fnv(h, x.to_bits());
+                    }
+                }
+                h = fnv(h, *off as u32);
+            }
+            let log = crate::aiv::GOAL_LOG.with(|l| l.borrow().clone());
+            let mut got = vec![ok as u32, ps as u32, pc as u32, pb as u32, cells.len() as u32, h, log.len() as u32];
+            for (dir, p, gw, q, speed, flags) in &log {
+                got.extend([dir.x, dir.y, dir.z, p.x, p.y, p.z, *gw, q.x, q.y, q.z, goals[r30].speed].map(f32::to_bits));
+                got.extend([*flags, speed.to_bits()]);
+            }
+            let gh = goals.iter().flat_map(|g| [g.pos.x, g.pos.y, g.pos.z, g.w, g.p1.x, g.p1.y, g.p1.z, g.speed]).fold(2_166_136_261u32, |h, x| fnv(h, x.to_bits()));
+            let fh = goals.iter().fold(2_166_136_261u32, |h, g| fnv(h, g.flags));
+            got.extend([goals.len() as u32, goals.len() as u32, next as u32, gh, fh]);
+            cases += 1;
+            consumed += ok as usize;
+            long += (np + 2 >= 96) as usize;
+            if got != o {
+                if bad < 5 {
+                    println!("{}{}  port {:08x?}", &line[..line.len().min(300)], char::from(10), got);
+                    println!("  orig {:08x?}", o);
+                }
+                bad += 1;
+            }
+        }
+        println!("path to aiv: {cases} cases, {consumed} consumed, {long} long, {bad} differ");
+        assert!(cases >= 3000);
         assert_eq!(bad, 0);
     }
 

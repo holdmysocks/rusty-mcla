@@ -609,6 +609,12 @@ const UP: Vec3 = Vec3::Y;
 
 // ---------------------------------------------------------------------------------------------
 
+#[cfg(test)]
+thread_local! {
+    /// (tests) every push_goal's arguments, on this thread
+    pub static GOAL_LOG: std::cell::RefCell<Vec<(Vec3, Vec3, f32, Vec3, f32, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 pub struct Aiv {
     pub tun: AivTuning,
     veh: Veh,
@@ -746,6 +752,28 @@ impl Aiv {
     /// aiv+22992: goals popped so far (the goal ring's base)
     pub fn goals_done(&self) -> i32 {
         self.goals.base
+    }
+    /// aiv+22560 + aiv+22552: the portal ring's base + count
+    pub fn portal_end(&self) -> i32 {
+        self.portals.end()
+    }
+    /// The ends +0 / +16 of the ring slots (start + count - 1) and (start + count) mod 128 - the last two portals stored,
+    /// read by slot as F-47058 reads them (whatever the slots hold when fewer are stored)
+    pub fn last_two_ends(&self) -> ((Vec3, Vec3), (Vec3, Vec3)) {
+        let e = self.portals.start + self.portals.count;
+        let c = |k: i32| {
+            let c = &self.portals.d[k.rem_euclid(128) as usize];
+            (c.a, c.b)
+        };
+        (c(e - 1), c(e))
+    }
+    /// (diagnostics) the portal ring's start, count, base and planes-built index, and each portal's a, b, sa, sb, n, offroad
+    pub fn portal_ring_dbg(&self) -> ((i32, i32, i32, i32), Vec<([Vec3; 5], bool)>) {
+        let cells = (self.portals.base..self.portals.end()).map(|i| {
+            let c = self.portals.get(i);
+            ([c.a, c.b, c.sa, c.sb, c.n], c.offroad)
+        });
+        ((self.portals.start, self.portals.count, self.portals.base, self.planes_upto), cells.collect())
     }
     /// aiv+22560 + aiv+22552 != 0
     pub fn has_path(&self) -> bool {
@@ -960,24 +988,30 @@ impl Aiv {
     // ---- input from the brain ---------------------------------------------------------------
 
     /// F-95594: append a portal (shrunk by half the car width + BufferZone).
+    /// As generated: the width from fused squares (z, then y, then x), the direction times the reciprocal refined once
+    /// (vrefp, vnmsubfp, vmaddfp), the limits fused (fmadds / fmsubs), the near ends as vnmsubfp: -(d k - a).
     pub fn push_portal(&mut self, p: &Portal) {
+        // (fmadds / fmsubs as the recomp evaluates them: fma in double, rounded to single)
+        let fma = |x: f32, y: f32, z: f32| (x as f64).mul_add(y as f64, z as f64) as f32;
         let (mut a, mut b) = (p.a, p.b);
         let mut c = Cell { n: p.normal, offroad: p.offroad, ..Cell::default() };
         let d = b - a;
-        let w = d.length();
+        let w = (fma(d.x, d.x, fma(d.y, d.y, d.z * d.z)) as f64).sqrt() as f32;
         if w > 0.2 {
             let (e1, e2) = p.ext;
-            let d = d * (1.0 / w);
-            let lim = self.size.x * 0.5 + self.tun.buffer_zone;
-            let half = (w + e1 + e2) * 0.5 - 0.05;
+            let r = 1.0 / w;
+            let inv = r * -(r * w - 1.0) + r;
+            let d = d * inv;
+            let lim = fma(self.size.x, 0.5, self.tun.buffer_zone);
+            let half = fma(w + e1 + e2, 0.5, -0.05);
             let m = if lim - half >= 0.0 { half } else { lim };
             c.sb = d * (e2 - m) + b;
-            c.sa = a - d * (e1 - m);
+            c.sa = -(d * (e1 - m) - a);
             if p.offroad {
-                let h = w * 0.5 - 0.05;
+                let h = fma(w, 0.5, -0.05);
                 let m2 = if m - h >= 0.0 { h } else { m };
                 a = d * m2 + a;
-                b = b - d * m2;
+                b = -(d * m2 - b);
             }
         } else {
             c.sa = a;
@@ -1001,6 +1035,8 @@ impl Aiv {
     /// segment p0-p1); `dir` = exit direction; `speed` = target speed (-1 none); `flags` = the
     /// brain's flags/tag (low 13 bits kept).
     pub fn push_goal(&mut self, dir: Vec3, p0: Vec3, w: f32, p1: Vec3, speed: f32, flags: u32) {
+        #[cfg(test)]
+        GOAL_LOG.with(|l| l.borrow_mut().push((dir, p0, w, p1, speed, flags)));
         self.goal_dir = dir;
         self.j_prev = 1e8;
         self.ln.j = 1e8;
