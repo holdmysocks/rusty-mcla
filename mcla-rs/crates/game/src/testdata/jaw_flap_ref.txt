@@ -1,0 +1,16 @@
+0 0 0 0 -> 0
+1 0 0 0 -> 0
+0 1 0 0 -> 1
+1 1 0 0 -> 0 overlay_end(blend 3e800000)
+0 0 1 0 -> 0
+1 0 1 0 -> 0 clipset(slot 0)
+0 1 1 0 -> 1
+1 1 1 0 -> 1
+0 0 0 1 -> 0
+1 0 0 1 -> 0
+0 1 0 1 -> 1
+1 1 0 1 -> 0 overlay_end(blend 3e800000)
+0 0 1 1 -> 0
+1 0 1 1 -> 1 clipset(slot 0) find(DRV_GEST_JAWFLAP) overlay(1234, flag 1, blend 3e800000)
+0 1 1 1 -> 1
+1 1 1 1 -> 1

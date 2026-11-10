@@ -164,6 +164,11 @@ impl Seq {
         }
     }
 
+    /// F-25506: holder +44 + 4 i holds an animation node with a clip.
+    pub fn slot_clipped(&mut self, i: usize) -> bool {
+        self.clipped(i).is_some()
+    }
+
     /// The player of holder +44 + 4 i when it holds an animation node with a clip, and the clip.
     fn clipped(&mut self, i: usize) -> Option<(&mut Player, Clip)> {
         self.player(i).and_then(|p| p.clip.map(|c| (p, c)))

@@ -85,7 +85,8 @@ impl DrvIn {
     /// original's reverse-first order), the burnout charge, the nitrous, the wheels' slide (+520) and contact records, the
     /// grid and deactivated bits of chassis +592; the race, horn, crash, damage, water and replay inputs from `DrvWorld`, the
     /// view's camera test from its view. Approximate (docs/reference/people/car_anim_machine.md "Wiring"): no GPS warp or
-    /// powerup inputs, the player manager's cockpit tests false, the racer's +656 and the sim's alarm value 0.
+    /// powerup inputs, the player manager's cockpit tests false, the sim's alarm value 0; the racer's +656 is 3 (loaded, as
+    /// recorded for the player; every drawn driver's car is taken as a loaded racer, as the gatherer's `racer`).
     pub fn of(st: &crate::physics::CarState, input: &crate::physics::CarInput, sp: &crate::steer_parts::SteerParts, player: bool, cutscene: bool, ckpt: bool, look: f32, w: &DrvWorld) -> DrvIn {
         let vs = st.veh.as_deref();
         let (r0, r1, r2) = (st.rot * Vec3::X, st.rot * Vec3::Y, st.rot * Vec3::Z);
@@ -133,7 +134,7 @@ impl DrvIn {
         };
         // (the damage object, vehicle +20: +44 the wipe-out / damage-out timer - the player's crash timer -, +48 the visible hit)
         let dmg = [w.crash.map_or(0.0, |c| c.1), if st.visible_hit { 1.0 } else { 0.0 }];
-        DrvIn { g, needle: sp.needle, divisor: sp.divisor, out: sp.out, scale: sp.scale, racer: dm::Racer { human: player, ..dm::Racer::default() }, cutscene, look, dmg }
+        DrvIn { g, needle: sp.needle, divisor: sp.divisor, out: sp.out, scale: sp.scale, racer: dm::Racer { human: player, mode3: true, ..dm::Racer::default() }, cutscene, look, dmg }
     }
 }
 
@@ -281,6 +282,7 @@ fn apply_cmds(seq: &mut da::Seq, m: &dm::Machine, cmds: &[dm::Cmd], dict: &HashM
                 (ids.len() == 5).then(|| da::five(&look, dur, [ids[0], ids[1], ids[2], ids[3], ids[4]], *b, *l))
             }
             dm::Cmd::Overlay(n, b, l) => id(n).and_then(|x| da::overlay(seq, &look, x, *b, *l)),
+            dm::Cmd::OverlayEnd(b) => da::stop_overlay(seq, &look, *b),
             dm::Cmd::Phase(v) => {
                 seq.set_phase(*v);
                 None
@@ -334,7 +336,7 @@ impl CarAnim {
     /// commands into the sequencer, the pan smoother, the motion tree's update. Returns what the gatherer wrote into the
     /// steering part. (The order of these against each other and against the car's update is the harness's, not traced live.)
     #[allow(clippy::too_many_arguments)]
-    fn step(&mut self, rig: &Rig, d: &DrvIn, k: &dm::Tune, dt: f32, odd: bool, culled: bool, rng: &mut [u32; 2], car: &str) -> Option<SteerOut> {
+    fn step(&mut self, rig: &Rig, d: &DrvIn, k: &dm::Tune, dt: f32, odd: bool, culled: bool, rng: &mut [u32; 2], car: &str, jaw: bool) -> Option<SteerOut> {
         self.ctx.culled = culled;
         self.ctx.opponent = !d.racer.human;
         self.gm.dmg = Some(d.dmg);
@@ -370,7 +372,13 @@ impl CarAnim {
         let env = dm::Env { remaining: self.seq.remaining(), phase: self.seq.phase(), cutscene: d.cutscene };
         self.m.rng = *rng;
         let mut cmds = Vec::new();
-        self.m.step(&mut self.ctx, k, &env, &d.racer, &mut cmds);
+        // (the racer's jaw flap F-72268 before the step, while the racer is loaded - F-90764)
+        let racer = dm::Racer { jaw, ..d.racer };
+        if racer.mode3 {
+            let clip0 = self.seq.slot_clipped(0);
+            self.m.jaw_flap(&racer, clip0, &mut cmds);
+        }
+        self.m.step(&mut self.ctx, k, &env, &racer, &mut cmds);
         *rng = self.m.rng;
         apply_cmds(&mut self.seq, &self.m, &cmds, &rig.dict, &|c| rig.clips.get(c as usize).map_or(0.0, |c| c.anim.duration), car);
         // the pan's smoother (driver +48, F-36491: centre 0.5, rate 5, hold 0.5) while +112 is set, then the pan clip's time
@@ -2032,7 +2040,8 @@ impl Drivers {
                 let set = self.sets[si].0.trim_end_matches("_h").to_string();
                 let a = self.cars.entry(s.uid).or_insert_with(|| CarAnim::new(&set, [0x2f6b_6f5d, 0x0000_3039]));
                 let culled = self.frozen.get(&s.uid).copied().unwrap_or(false);
-                if let Some(o) = a.step(rig, d, &k, dt, self.frame & 1 == 1, culled, &mut self.rng, s.car) {
+                let jaw = self.acting.get(&s.id).map_or(false, |x| x.jaw);
+                if let Some(o) = a.step(rig, d, &k, dt, self.frame & 1 == 1, culled, &mut self.rng, s.car, jaw) {
                     self.steer_out.insert(s.uid, o);
                 }
                 // (the gatherer took the damage object's +48: main.rs clears the car's visible hit)
@@ -2076,6 +2085,8 @@ impl Drivers {
             p.reverse += ((if s.reversing && s.speed.abs() > 0.3 { 1.0 } else { 0.0 }) - p.reverse) * (dt * 4.0).min(1.0);
             let p = *p;
             let Some(Some(rig)) = self.rigs.get(&(car_key(s.car), s.player, female, si)) else { continue };
+            // (a car driver posed by its machine: its jaw flap is the machine's overlay, F-72268, not the one below)
+            let mut by_machine = false;
             if let (true, Some(b)) = (s.bike, rig.bike.as_ref()) {
                 let ride = self.rides.entry(s.id).or_default();
                 let i = RideIn { ck: s.player && self.ckpt_view, ..s.ride };
@@ -2092,6 +2103,7 @@ impl Drivers {
                 }
             } else if let Some(fr) = self.cars.get(&s.uid).filter(|_| machines && !s.bike).and_then(|a| a.seq.compose(&RigPoser(rig))) {
                 finish(&fr, &rig.model.bones, &mut local);
+                by_machine = true;
             } else {
             // the sweep runs from full left lock to full right lock
             let last = rig.steer.last_frame();
@@ -2163,7 +2175,7 @@ impl Drivers {
                 if a.jaw {
                     a.jaw_t += dt;
                 }
-                if let (true, Some(c), Some(head)) = (a.jaw_k > 0.0, rig.gestures.get("drv_gest_jawflap"), rig.model.head) {
+                if let (true, false, Some(c), Some(head)) = (a.jaw_k > 0.0, by_machine, rig.gestures.get("drv_gest_jawflap"), rig.model.head) {
                     // (the shared jaw flap clip is the Challenger's whole driver; laid over the bones
                     // below the head only - the jaw. The original's overlay mask is not read.)
                     c.local(&rig.model.bones, c.frame(a.jaw_t, true), &mut other);
@@ -3254,7 +3266,7 @@ mod recorded_tests {
             c.side_vals = [bf(132), bf(136), bf(140), bf(144)];
             dm::context_step(&mut c, &inp, &k, dt);
             let env = dm::Env { remaining: seq.remaining(), phase: seq.phase(), cutscene: false };
-            let r = dm::Racer { human: true, mode3: fw[3] == 3, alarm: 0.0, engine_off: fw[4] & 0x20 != 0 };
+            let r = dm::Racer { human: true, mode3: fw[3] == 3, alarm: 0.0, engine_off: fw[4] & 0x20 != 0, jaw: false };
             m.rng = [fw[1], fw[2]];
             let overlay_was = m.overlay;
             let mut cmds = Vec::new();
@@ -3276,6 +3288,7 @@ mod recorded_tests {
                     dm::Cmd::PhaseAll(v) => format!("set 5 {}", b8(*v)),
                     dm::Cmd::Weight(v) => format!("set 6 {}", b8(*v)),
                     dm::Cmd::Overlay(n, t, l) => format!("overlay {} {} {}", name(n), b8(*t), *l as u8),
+                    dm::Cmd::OverlayEnd(t) => format!("overlay_end {}", b8(*t)),
                     dm::Cmd::EngineStart | dm::Cmd::EngineStop | dm::Cmd::HandBack => continue,
                 });
             }

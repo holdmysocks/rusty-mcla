@@ -1161,6 +1161,8 @@ pub enum Cmd {
     Weight(f32),
     /// F-19950: an overlay clip, the blend time, its flag
     Overlay(Clip, f32, bool),
+    /// F-72270: the overlay's end over the blend time
+    OverlayEnd(f32),
     /// the racer's vehicle +16: vt+56(1) when the start-car impact begins, vt+52(0) when it is done
     EngineStart,
     EngineStop,
@@ -1179,6 +1181,8 @@ pub struct Racer {
     pub alarm: f32,
     /// the sim's +592 bit 5: the start-car impact does not start the engine
     pub engine_off: bool,
+    /// +688: the jaw flap (a scene's gesture event with f3 1.0, `prerace::jaw_start`)
+    pub jaw: bool,
 }
 
 const PAN: Clip = "DRV_PAN_SWEEP_OVERLAY";
@@ -1223,7 +1227,9 @@ pub struct Machine {
     pub state: State,
     /// +108: the cruising face state (0 none yet, 1 neutral, 2 anger, 3 alarmed)
     pub face_state: i32,
-    /// +45: the gestures add the jaw flap overlay (cleared by the start's action)
+    /// +44: the jaw flap is followed (set by the start's action; the reset F-50857 clears it)
+    pub jaw_on: bool,
+    /// +45: the jaw flap overlay is on (the gestures add it again; cleared by the start's action)
     pub jawflap: bool,
     /// +68 .. +100: the pickers' counters (neutral, left, right, talk left, talk right, mild, win, fidget, disappointed)
     pub counters: [i32; 9],
@@ -1246,6 +1252,7 @@ impl Machine {
         Machine {
             state: State::StartHere,
             face_state: 0,
+            jaw_on: false,
             jawflap: false,
             counters: [0; 9],
             set: set.to_string(),
@@ -1305,7 +1312,24 @@ impl Machine {
         self.pan(r);
         out.push(Cmd::Play(IDLE_STP, 0.0, true, true));
         out.push(Cmd::PhaseAll(0.0));
+        self.jaw_on = true;
         self.jawflap = false;
+    }
+
+    /// F-72268, in the anim update before the step while the racer is loaded (+656 == 3, F-90764): once the start has run
+    /// (+44), the racer's jaw flap (+688) rising starts `DRV_GEST_JAWFLAP` as the overlay (0.25 s, its flag set) when the
+    /// anim player's slot 0 holds a clip (F-25506), falling ends the overlay (0.25 s); +45 keeps which.
+    pub fn jaw_flap(&mut self, r: &Racer, slot0_clip: bool, out: &mut Vec<Cmd>) {
+        if !self.jaw_on {
+            return;
+        }
+        if !self.jawflap && r.jaw && slot0_clip {
+            self.jawflap = true;
+            out.push(Cmd::Overlay("DRV_GEST_JAWFLAP", 0.25, true));
+        } else if self.jawflap && !r.jaw {
+            self.jawflap = false;
+            out.push(Cmd::OverlayEnd(0.25));
+        }
     }
 
     fn update(&mut self, c: &mut Ctx, k: &Tune, e: &Env, r: &Racer, out: &mut Vec<Cmd>) {
@@ -2111,6 +2135,7 @@ mod tests {
                 Cmd::PhaseAll(v) => format!("phaseall {}", b(*v)),
                 Cmd::Weight(v) => format!("weight {}", b(*v)),
                 Cmd::Overlay(a, t, x) => format!("overlay {} {} {}", lc(a), b(*t), *x as u8),
+                Cmd::OverlayEnd(t) => format!("overlay_end {}", b(*t)),
                 Cmd::EngineStart => "engine56 1".into(),
                 Cmd::EngineStop => "engine52 0".into(),
                 Cmd::HandBack => "handback".into(),
@@ -2151,7 +2176,7 @@ mod tests {
             c.timer_b += f(13);
             c.timer_c += f(13);
             let e = Env { remaining: f(14), phase: f(15), cutscene: w[16] != 0 };
-            let r = Racer { human: w[17] & 0xff != 0, mode3, alarm: f(19), engine_off: w[18] & 0x20 != 0 };
+            let r = Racer { human: w[17] & 0xff != 0, mode3, alarm: f(19), engine_off: w[18] & 0x20 != 0, jaw: false };
             let mut out = Vec::new();
             m.step(&mut c, &k, &e, &r, &mut out);
             got.extend(out.iter().map(cmd));
@@ -2181,5 +2206,34 @@ mod tests {
         }
         assert_eq!(got.len(), want.len());
         assert!(frames > 10_000, "{frames}");
+    }
+
+    /// The jaw flap update against the original's F-72268 run offline (work/driverlight/jaw/flap_ref.py): all 16 cases of
+    /// (+44, +45, racer +688, slot 0 holds a clip) - +45 after and the overlay calls in order equal.
+    #[test]
+    fn jaw_flap_matches_the_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/jaw_flap_ref.txt").lines() {
+            let (lhs, rhs) = l.split_once(" -> ").unwrap();
+            let v: Vec<bool> = lhs.split(' ').map(|x| x == "1").collect();
+            let mut m = Machine::new("drv_mp_01_set", [0, 0]);
+            m.jaw_on = v[0];
+            m.jawflap = v[1];
+            let r = Racer { jaw: v[2], mode3: true, ..Racer::default() };
+            let mut out = Vec::new();
+            m.jaw_flap(&r, v[3], &mut out);
+            let calls: Vec<String> = out.iter().map(|c| match c {
+                Cmd::Overlay(n, b, f) => format!("overlay({}, flag {}, blend {:08x})", n, *f as u8, b.to_bits()),
+                Cmd::OverlayEnd(b) => format!("overlay_end(blend {:08x})", b.to_bits()),
+                c => format!("{c:?}"),
+            }).collect();
+            // (the original's log also names its slot 0 test and the clip lookup; the port asks the sequencer directly)
+            let mut want = rhs.split(' ');
+            assert_eq!(want.next().unwrap() == "1", m.jawflap, "{l}");
+            let rest = want.collect::<Vec<_>>().join(" ").replace("clipset(slot 0) ", "").replace("clipset(slot 0)", "").replace("find(DRV_GEST_JAWFLAP) ", "").replace("overlay(1234,", "overlay(DRV_GEST_JAWFLAP,");
+            assert_eq!(calls.join(" "), rest.trim(), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 16);
     }
 }
