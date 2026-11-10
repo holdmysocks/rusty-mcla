@@ -1092,6 +1092,26 @@ pub fn laser_vertices(pu: &PowerUps, vehicles: &crate::vehicles::Vehicles, color
 mod tests {
     use super::*;
 
+    /// The text tokenizer's number read (GetFloat F-18899: the CRT atof to double, then frsp) run offline on every
+    /// distinct number token of the 13 shipped text meshes (`tools/mesh_atof_reference.py`, 10,228 tokens): the port's
+    /// `str::parse::<f32>` (what `parse_mesh`, the wheel blur disc and the wheel backside read with) gives the same
+    /// float bits for every one, and the original reads the whole token every time.
+    #[test]
+    fn mesh_numbers_read_as_the_original() {
+        let t = include_str!("testdata/mesh_atof_ref.txt");
+        let mut n = 0;
+        for l in t.lines() {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            // (the tool writes '_' after every three characters of the token)
+            let tok = w[0].replace('_', "");
+            assert_eq!((w[1], w[2].parse::<usize>().unwrap()), ("0", tok.len()), "{l}");
+            let want: u32 = w[4].parse().unwrap();
+            assert_eq!(tok.parse::<f32>().unwrap().to_bits(), want, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 10228);
+    }
+
     /// F-18740 run offline (`tools/key_slope_reference.py`): 1,500 curves, 7,865 keys (times rising, equal, falling,
     /// NaN / inf, values with NaN / inf): every slope word equal (the last key's and the non-rising ones cleared to 0).
     #[test]
