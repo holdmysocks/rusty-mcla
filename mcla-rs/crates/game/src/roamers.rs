@@ -116,6 +116,9 @@ pub struct Special {
 }
 
 pub struct Roamers {
+    /// the player's chassis state word +592 as the flash test F-96972 reads it: the port keeps the player's crash bits
+    /// in main.rs (`crash_bits`, set before each `update`), not in the car's `crash`
+    pub player_state: u32,
     /// the last route of a man put down (`NavSys::route_through`) and what it was made from (the nav, start, heading,
     /// points and radius, to the bit): a man whose placing fails is tried again a second later from the same place
     /// and got the same route from a search of up to ~40 ms each time
@@ -367,6 +370,7 @@ pub fn rail_place(world: &World, p: Vec3) -> Option<(Vec3, Vec3, Vec3, f32)> {
 impl Roamers {
     pub fn new() -> Roamers {
         Roamers {
+            player_state: 0,
             route_memo: None,
             series_of: None,
             setup_cfg: Default::default(),
@@ -797,8 +801,8 @@ impl Roamers {
         }
         let Some(player) = vehicles.player() else { return None };
         let (pp, pf, pname, pspeed) = (player.state.pos, player.state.forward(), player.model.name.clone(), player.state.speed());
-        // (the chassis state word +592 the flash test reads: the port's crash bits)
-        let pstate = player.crash.bits as u32;
+        // (the chassis state word +592 the flash test reads: the port's crash bits of the player, main.rs's)
+        let pstate = self.player_state;
         self.sync_timer -= dt;
         if self.sync_timer <= 0.0 {
             self.sync_timer = 1.0;

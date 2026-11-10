@@ -7072,7 +7072,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.roam.near = None;
                         self.roam.near_is_rival = false;
                         self.roam.near_mission = None;
-                    } else if let Some(race) = (if self.game.bmt_end.is_some() { None } else { self.roam.update(&mut self.game, &mut self.vehicles, &mut gpu, &mut world, flash, sim_dt) }).filter(|&race| {
+                    } else if let Some(race) = (if self.game.bmt_end.is_some() { None } else { self.roam.player_state = self.crash_bits as u32; self.roam.update(&mut self.game, &mut self.vehicles, &mut gpu, &mut world, flash, sim_dt) }).filter(|&race| {
                         // (a beat me there run's end comes first: its race-over sequence or menu - `Game::bmt_end`)
                         let Some((place, rep, wrecked)) = self.roam.bmt_over.take() else { return true };
                         self.game.bmt_end = Some(game::BmtEnd { race, hookman: self.roam.won_against_rival, place, rep, wrecked, t: 0.0, sel: 0 });
