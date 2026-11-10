@@ -997,8 +997,9 @@ impl Runtime {
                 match a {
                     Action::Ambient(i) => self.fire_path(vehicles, gpu, world, *i),
                     Action::Intersection { center, toward, green } => {
-                        let a1 = vehicles.signals.force(*center, *toward - *center, *green);
-                        let a2 = other_signals.force(*center, *toward - *center, *green);
+                        // F-11036: vDirection is a point (the arm it lies on from the junction's centre)
+                        let a1 = vehicles.signals.force(world.nav.as_ref(), *center, *toward, *green);
+                        let a2 = other_signals.force(world.nav.as_ref(), *center, *toward, *green);
                         if a1 || a2 {
                             self.lights += 1;
                         }

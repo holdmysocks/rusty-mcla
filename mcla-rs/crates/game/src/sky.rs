@@ -61,6 +61,23 @@ impl Track {
     }
 }
 
+/// The weather manager's mix of its four weathers' tracks, as the colour filter F-94045 and the fog step F-82205 make every value:
+/// each weather's track sampled at `t` by the key sampler's rule (`Track::sample_kf`), times its weight x (1 / the row's sum), summed
+/// from 0 with a fused multiply-add per weather in the order Nice, Cloudy, Stormy, Foggy. With one weather's weight 1 and the others'
+/// 0 (the start of every row) the result is that weather's `sample_kf` exactly.
+pub fn weather_mix(tracks: [&Track; 4], weights: [f32; 4], sum: f32, t: f32) -> [f32; 4] {
+    let f = 1.0 / sum;
+    let mut acc = [0.0f32; 4];
+    for k in 0..4 {
+        let w = weights[k] * f;
+        let v = tracks[k].sample_kf(t);
+        for c in 0..4 {
+            acc[c] = v[c].mul_add(w, acc[c]);
+        }
+    }
+    acc
+}
+
 /// The sun direction sampler F-19682: the key sampler's vector with its xyz normalised as the original's vector unit does it.
 /// The squared length is (x x + y y) + z z (one lane sum), its reciprocal root is 1 / sqrt (an infinite root, from a zero vector,
 /// is replaced by 0), refined by one Newton step y + (1 - l2 y y) x (0.5 y) with every product and sum rounded to single; the
@@ -845,8 +862,9 @@ impl Sky {
         let lum = self.luminance.sample(t);
         let ad = if self.adaption.keys.is_empty() { [0.186, 0.15, 0.2, 0.0] } else { self.adaption.sample(t) };
         let of = if self.occlusion_fades.keys.is_empty() { [1.0, 1.0, 0.0, 0.0] } else { self.occlusion_fades.sample(t) };
-        let cc = if self.color_correct.keys.is_empty() { [0.5, 0.5, 0.5, 0.0] } else { self.color_correct.sample(t) };
-        let fog = if self.fog_max.keys.is_empty() { [0.1, 0.125, 0.15, 0.665] } else { self.fog_max.sample(t) };
+        // the weather manager's tracks as F-94045 / F-82205 sample them (`weather_mix` with this weather's weight 1: `sample_kf`)
+        let cc = if self.color_correct.keys.is_empty() { [0.5, 0.5, 0.5, 0.0] } else { self.color_correct.sample_kf(t) };
+        let fog = if self.fog_max.keys.is_empty() { [0.1, 0.125, 0.15, 0.665] } else { self.fog_max.sample_kf(t) };
         Some(Tod {
             light: Vec3::new(c[0], c[1], c[2]),
             ambient: Vec3::new(a[0], a[1], a[2]),
@@ -863,10 +881,10 @@ impl Sky {
             dof: if self.dof.keys.is_empty() { [0.0; 4] } else { self.dof.sample(t) },
             color_correct: Vec3::new(cc[0], cc[1], cc[2]),
             fog_color: fog,
-            fog_near: if self.fog_near.keys.is_empty() { 50.0 } else { self.fog_near.sample(t)[0] },
-            fog_far: if self.fog_far.keys.is_empty() { 500.0 } else { self.fog_far.sample(t)[0] },
-            fog_min: if self.fog_min.keys.is_empty() { [0.0; 4] } else { self.fog_min.sample(t) },
-            fog_height: if self.fog_height.keys.is_empty() { 1000.0 } else { self.fog_height.sample(t)[0] },
+            fog_near: if self.fog_near.keys.is_empty() { 50.0 } else { self.fog_near.sample_kf(t)[0] },
+            fog_far: if self.fog_far.keys.is_empty() { 500.0 } else { self.fog_far.sample_kf(t)[0] },
+            fog_min: if self.fog_min.keys.is_empty() { [0.0; 4] } else { self.fog_min.sample_kf(t) },
+            fog_height: if self.fog_height.keys.is_empty() { 1000.0 } else { self.fog_height.sample_kf(t)[0] },
         })
     }
 }
@@ -1276,5 +1294,81 @@ mod original_tracks {
             assert!(!t[0].keys.is_empty(), "{n}");
         }
         assert_eq!(x.matches("<sm_Key").count(), 24);
+    }
+
+    /// The 24 weather tracks as the running original holds them after its KFData loader F-27811 and the slope pass F-18740
+    /// (testdata/map_weather_keys_ref.txt, read out of the recomp's guest memory at the title screen: key count, then per key the
+    /// time, four values and four slopes as single-precision bits). The port's `tracks` reader and `key_slope` give the same bits
+    /// for every key of the shipped file (skipped without the data).
+    #[test]
+    fn weather_track_values_match_the_original_loader() {
+        let Ok(x) = std::fs::read_to_string("D:/MCLA/extracted/cache/tune/lighting/0xa838c380") else { return };
+        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let mut keys = 0;
+        let mut cur: Option<Track> = None;
+        let mut name = String::new();
+        for l in include_str!("testdata/map_weather_keys_ref.txt").lines() {
+            let f: Vec<&str> = l.split(' ').collect();
+            if f[0] == "TRK" {
+                let t = tracks(&x, f[1]).into_iter().next().unwrap_or_default();
+                assert_eq!(t.keys.len(), f[2].parse::<usize>().unwrap(), "{}", f[1]);
+                name = f[1].to_string();
+                cur = Some(t);
+                continue;
+            }
+            let t = cur.as_ref().unwrap();
+            let k: usize = f[1].parse().unwrap();
+            let (time, v) = t.keys[k];
+            assert_eq!(time.to_bits(), h(f[2]), "{name} key {k} time");
+            for c in 0..4 {
+                assert_eq!(v[c].to_bits(), h(f[3 + c]), "{name} key {k} value {c}");
+            }
+            let slope = if k + 1 < t.keys.len() { crate::pu_fx::key_slope(time, v, t.keys[k + 1].0, t.keys[k + 1].1) } else { [0.0; 4] };
+            for c in 0..4 {
+                assert_eq!(slope[c].to_bits(), h(f[7 + c]), "{name} key {k} slope {c}");
+            }
+            keys += 1;
+        }
+        assert_eq!(keys, 100);
+    }
+
+    /// The colour filter F-94045 and the fog step F-82205 run offline as generated on the keys above (tools/map_weather_blend_reference.py
+    /// -> testdata/map_weather_blend_ref.txt): 6,000 cases of hour (any, the keys' own times, outside 0 .. 24), weight table (one-hot
+    /// rows, random weights, the row sums the fourth row also reads) and row. Every output is `weather_mix` of its kind's four tracks:
+    /// the colour (3), the min and max fog colour (4 each), the fog height's x and y, near z and far z (skipped without the data).
+    #[test]
+    fn weather_mix_matches_the_original() {
+        let Ok(x) = std::fs::read_to_string("D:/MCLA/extracted/cache/tune/lighting/0xa838c380") else { return };
+        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let kind = |k: &str| -> Vec<Track> {
+            ["Nice", "Cloudy", "Stormy", "Foggy"].iter().map(|w| tracks(&x, &weather_track_name(k, w)).into_iter().next().unwrap()).collect()
+        };
+        let (cc, min, max, height, near, far) = (kind("ColorCorrect"), kind("MinFogColor"), kind("MaxFogColor"), kind("FogHeight"), kind("FogNearZ"), kind("FogFarZ"));
+        let mut n = 0;
+        for l in include_str!("testdata/map_weather_blend_ref.txt").lines() {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let i: Vec<&str> = i.split(' ').collect();
+            let t = f32::from_bits(h(i[1]));
+            let row: usize = i[3].parse().unwrap();
+            let tab: Vec<f32> = i[4..20].iter().map(|s| f32::from_bits(h(s))).collect();
+            let (w, sum) = ([tab[4 * row], tab[4 * row + 1], tab[4 * row + 2], tab[4 * row + 3]], tab[12 + row]);
+            let mix = |k: &[Track]| weather_mix([&k[0], &k[1], &k[2], &k[3]], w, sum, t);
+            let (c, mn, mx, hg) = (mix(&cc), mix(&min), mix(&max), mix(&height));
+            let got = format!(
+                "{:08x} {:08x} {:08x} | {} | {} | {:08x} {:08x} {:08x} {:08x}",
+                c[0].to_bits(),
+                c[1].to_bits(),
+                c[2].to_bits(),
+                mn.iter().map(|v| format!("{:08x}", v.to_bits())).collect::<Vec<_>>().join(" "),
+                mx.iter().map(|v| format!("{:08x}", v.to_bits())).collect::<Vec<_>>().join(" "),
+                hg[0].to_bits(),
+                hg[1].to_bits(),
+                mix(&near)[0].to_bits(),
+                mix(&far)[0].to_bits()
+            );
+            assert_eq!(got, o, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 6000);
     }
 }

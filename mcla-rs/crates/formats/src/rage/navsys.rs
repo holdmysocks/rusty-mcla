@@ -452,6 +452,17 @@ pub struct NodeRect {
     pub dir: [f32; 2],
 }
 
+/// F-35347's arithmetic (vfunc 4 of a road and of a junction): `p`'s squared x / z distance from `mid` and whether `p` is inside
+/// the box - across along `side` strictly within half of `width`, along `dir` strictly within half of `len`. Each product and sum
+/// rounded as the code does (fmuls, fmadds; the y parts are multiplied by 0).
+fn box_test(mid: Vec3, dir: Vec3, side: Vec3, width: f32, len: f32, p: Vec3) -> (f32, bool) {
+    let (dx, dz) = (p.x - mid.x, p.z - mid.z);
+    let dist2 = dz.mul_add(dz, dx * dx);
+    let across = side.y.mul_add(0.0, side.z.mul_add(dz, side.x * dx));
+    let along = dir.y.mul_add(0.0, dir.z.mul_add(dz, dir.x * dx));
+    (dist2, across.abs() < width * 0.5 && along.abs() < len * 0.5)
+}
+
 impl NodeRect {
     /// F-46547: the squared distance from `p` (x / z) to the rectangle when it is within `r`
     /// (0 inside). A pre-test on 0.70711 x the length + r from the centre (dz² fused onto dx²), then `p - c` turned
@@ -513,6 +524,9 @@ pub struct NavSys {
     pub junction_rects: Vec<NodeRect>,
     /// per junction: the +0x50 point (a road's `mid`; the radio's junction ahead test, F-78553)
     pub junction_mid: Vec<Vec3>,
+    /// per junction: the box's along (+0x60) and across (+0x70) axes, as a road's `dir` / `side` (the box test F-35347)
+    pub junction_dir: Vec<Vec3>,
+    pub junction_side: Vec<Vec3>,
     /// the connection list (root +0x3c, 16 bytes per node id +0x20: -> u32 node pointers, u16 count;
     /// count root +0x4c), per road and per junction, in the file's order: a junction lists roads, a
     /// road junctions and roads (docs/reference/hookmen/search_and_connections.md 1)
@@ -678,11 +692,31 @@ impl NavSys {
     /// the code does (fmuls, fmadds; the y parts are multiplied by 0).
     pub fn road_box(&self, road: usize, p: Vec3) -> (f32, bool) {
         let z = &self.zones[road];
-        let (dx, dz) = (p.x - z.mid.x, p.z - z.mid.z);
-        let dist2 = dz.mul_add(dz, dx * dx);
-        let across = z.side.y.mul_add(0.0, z.side.z.mul_add(dz, z.side.x * dx));
-        let along = z.dir.y.mul_add(0.0, z.dir.z.mul_add(dz, z.dir.x * dx));
-        (dist2, across.abs() < z.width * 0.5 && along.abs() < z.rect_len * 0.5)
+        box_test(z.mid, z.dir, z.side, z.width, z.rect_len, p)
+    }
+
+    /// F-35347 for junction `j` (its +0x50 middle, +0x60 / +0x70 axes, +0x3c / +0x40 extents), as [`NavSys::road_box`].
+    pub fn junction_box(&self, j: usize, p: Vec3) -> (f32, bool) {
+        let r = &self.junction_rects[j];
+        box_test(self.junction_mid[j], self.junction_dir[j], self.junction_side[j], r.width, r.len, p)
+    }
+
+    /// F-44023 with type mask 4 (the junctions): as [`NavSys::road_hits`], with the nodes' junctions and their box test.
+    pub fn junction_hits(&self, p: Vec3, max: usize) -> Vec<(usize, f32)> {
+        self.quad_hits(p, max, true)
+    }
+
+    /// The junction at `p` (F-56988, the race events' intersection fire F-11036 and the intersection natives): of the first 8
+    /// junctions whose box holds `p` ([`NavSys::junction_hits`]) the one nearest its middle (strictly nearer than the one before,
+    /// from f32::MAX: the first on ties); none when no box holds it.
+    pub fn junction_at(&self, p: Vec3) -> Option<usize> {
+        let mut best = (f32::MAX, None);
+        for (j, d2) in self.junction_hits(p, 8) {
+            if d2 < best.0 {
+                best = (d2, Some(j));
+            }
+        }
+        best.1
     }
 
     /// F-44023 with type mask 2 (the roads): the roads whose box holds `p`, at most `max`, in the
@@ -691,9 +725,13 @@ impl NavSys {
     /// split `p` lies on picks (beyond the split by more than -1e-6 in x: 2, in z: 1), then its own
     /// roads. Each hit with its squared distance from the road's middle.
     pub fn road_hits(&self, p: Vec3, max: usize) -> Vec<(usize, f32)> {
+        self.quad_hits(p, max, false)
+    }
+
+    fn quad_hits(&self, p: Vec3, max: usize, junctions: bool) -> Vec<(usize, f32)> {
         const ORDER: [[usize; 4]; 4] = [[0, 1, 2, 3], [1, 3, 0, 2], [2, 0, 3, 1], [3, 2, 1, 0]];
         const EPS: f32 = -1.0e-6;
-        fn walk(nav: &NavSys, q: usize, p: Vec3, max: usize, hits: &mut Vec<(usize, f32)>) {
+        fn walk(nav: &NavSys, q: usize, p: Vec3, max: usize, junctions: bool, hits: &mut Vec<(usize, f32)>) {
             let Some(n) = nav.quad.get(q) else { return };
             if p.x < n.min[0] || !(p.x < n.max[0]) || p.z < n.min[1] || !(p.z < n.max[1]) {
                 return;
@@ -704,14 +742,14 @@ impl NavSys {
                     break;
                 }
                 if let Some(c) = n.kids[k] {
-                    walk(nav, c, p, max, hits);
+                    walk(nav, c, p, max, junctions, hits);
                 }
             }
-            for &r in &n.roads {
+            for &r in if junctions { &n.junctions } else { &n.roads } {
                 if hits.len() >= max {
                     break;
                 }
-                let (d2, inside) = nav.road_box(r, p);
+                let (d2, inside) = if junctions { nav.junction_box(r, p) } else { nav.road_box(r, p) };
                 if inside {
                     hits.push((r, d2));
                 }
@@ -719,7 +757,7 @@ impl NavSys {
         }
         let mut hits = Vec::new();
         if !self.quad.is_empty() {
-            walk(self, 0, p, max, &mut hits);
+            walk(self, 0, p, max, junctions, &mut hits);
         }
         hits
     }
@@ -906,6 +944,8 @@ impl NavSys {
             nav.junction_centers.push(Vec3::new(rd.f32(o + 0x80), rd.f32(o + 0x84), rd.f32(o + 0x88)));
             nav.junction_c.push([rd.f32(o + 0x34), rd.f32(o + 0x38)]);
             nav.junction_mid.push(Vec3::new(rd.f32(o + 0x50), rd.f32(o + 0x54), rd.f32(o + 0x58)));
+            nav.junction_dir.push(Vec3::new(rd.f32(o + 0x60), rd.f32(o + 0x64), rd.f32(o + 0x68)));
+            nav.junction_side.push(Vec3::new(rd.f32(o + 0x70), rd.f32(o + 0x74), rd.f32(o + 0x78)));
             nav.junction_rects.push(NodeRect { lane: rd.ptr(o + 0x24).and_then(link_index), c: [rd.f32(o + 0x34), rd.f32(o + 0x38)], width: rd.f32(o + 0x3c), len: rd.f32(o + 0x40), dir: [rd.f32(o + 0x60), rd.f32(o + 0x68)] });
             let mut out = Vec::new();
             walk(&rd, o, false, &link_index, &mut out, 0);
@@ -2433,7 +2473,11 @@ mod speed_tests {
 /// executable: work/map/signal_rule.md.
 #[derive(Debug, Clone)]
 pub struct NavJunction {
+    /// its index in the file's junction array (as `NavSys::junction_rects`, `NavSys::junction_at`)
+    pub index: usize,
     pub center: glam::Vec3,
+    /// the middle of its box (+0x50; F-97162 measures a point from it)
+    pub mid: glam::Vec3,
     pub arms: Vec<glam::Vec3>,
     pub half: [f32; 2],
 }
@@ -2512,7 +2556,7 @@ pub fn parse_junctions(res: &crate::rsc::Resource) -> Vec<NavJunction> {
         if arms.is_empty() || !center.is_finite() {
             continue;
         }
-        out.push(NavJunction { center, arms, half: [rd.f32(o + 0x3c), rd.f32(o + 0x40)] });
+        out.push(NavJunction { index: i, center, mid: v(o + 0x50), arms, half: [rd.f32(o + 0x3c), rd.f32(o + 0x40)] });
     }
     out
 }

@@ -9,7 +9,7 @@
 //!   on that arm). Heads are bound to arms greedily by that dot product; a head no junction
 //!   takes shows green. Every lamp of a head shows the same state.
 //!
-//! * Each junction keeps its own state (`Signals::step`, the original's update sub_8273ABC0):
+//! * Each junction keeps its own state (`Signals::step`, the original's update F-86376):
 //!   the current arm, the phase timer and a demand counter per arm. A car waiting at a red arm
 //!   adds to that arm's demand every tick; when the phase is over the arm with the largest
 //!   demand is next (arm 0 when nobody waits), and the switch waits - up to 5 s - while a car is
@@ -24,7 +24,7 @@
 
 use glam::Vec3;
 use hashbrown::HashMap;
-use mcla_formats::rage::navsys::NavJunction;
+use mcla_formats::rage::navsys::{NavJunction, NavSys};
 
 const GREEN: f32 = 6.5;
 const YELLOW: f32 = 2.0;
@@ -58,7 +58,7 @@ pub struct Junction {
     /// reach of the box from its centre (m)
     pub radius: f32,
     /// the junction's +0x40 (its second box half extent): a refused car this close to the
-    /// centre counts as waiting (sub_827A3458)
+    /// centre counts as waiting (F-16850)
     pub reach: f32,
     /// held by a race script: -1 free, -2 red all round, otherwise the arm held green
     pub forced: i8,
@@ -127,6 +127,31 @@ impl Junction {
         at
     }
 
+    /// F-97162 with a point: the point with its y taken as 0 minus `mid`, the middle of the junction's box (its +0x50, `Signals::nav_mid`; its y stays), normalised as the vector
+    /// unit does it (the three-lane dot (x x + y y) + z z, 1 / sqrt, one Newton step, denormals flushed), against every arm
+    /// (`unit_exact` of the raw arm, as `build` holds them): the largest dot, the first of equals, strictly above -FLT_MAX; none
+    /// without arms (the original's -1).
+    pub fn arm_of_point(&self, mid: Vec3, p: Vec3) -> Option<usize> {
+        let ftz = |x: f32| if x.is_subnormal() { 0.0f32.copysign(x) } else { x };
+        let (x, y, z) = (ftz(p.x - mid.x), ftz(0.0 - mid.y), ftz(p.z - mid.z));
+        let s = ftz(ftz(ftz(x * x) + ftz(y * y)) + ftz(z * z));
+        let r0 = ftz(1.0 / s.sqrt());
+        let v9 = ftz(r0 * r0);
+        let v8 = ftz(0.5 * r0);
+        let v7 = -ftz(ftz(s * v9) - 1.0);
+        let r = ftz(ftz(v7 * v8) + r0);
+        let n = [ftz(x * r), ftz(y * r), ftz(z * r)];
+        let (mut best, mut at) = (f32::MIN, None);
+        for (k, a) in self.arms.iter().enumerate() {
+            let d = ftz(ftz(ftz(a.x * n[0]) + ftz(a.y * n[1])) + ftz(a.z * n[2]));
+            if d > best {
+                best = d;
+                at = Some(k);
+            }
+        }
+        at
+    }
+
     /// State of an arm: 0 red, 1 yellow, 2 green. (`_t` is not used any more: the state is the
     /// junction's own.) Only the current arm and the timer count, as in the original's tests (F-23734 / F-23525 /
     /// F-59460, the lane tests F-78185 / F-16432 and the lamp's F-83493 read J +160 / +164 only): a forced arm is green because `step` makes it current
@@ -138,7 +163,7 @@ impl Junction {
 
     /// May traffic enter a junction lane whose first two control points are P0, P1 (`entry` =
     /// P0 - P1, pointing back out along the street it comes from)? The original's test
-    /// (sub_8273A178 / sub_8273A360): only while the phase is green (timer < 6.5) and the
+    /// (F-78185 / F-16432): only while the phase is green (timer < 6.5) and the
     /// current arm lies within 25 degrees of the lane's entry, `lane_dot(arm, P0 - P1) > cos 25` (the image's 0.9063078).
     /// The car's own heading does not count: on a street that bends into the junction it can
     /// be far off the arm while the lane's first span still runs along it. 2 green, 1 yellow
@@ -192,6 +217,11 @@ pub struct Signals {
     /// the warp to the start ('REDLIGHT', WAIT(150), then Race_SetTimer(-7000)) and to 0 once Race_GetTimer >= 0
     /// (the go). Port: `Game::alt_after_start` and `Game::update_race`.
     pub red_light_race: bool,
+    /// per junction: its index in the road network's junction array (`NavJunction::index`), how the original's lookup
+    /// F-56988 names it (`force`)
+    pub nav_index: Vec<usize>,
+    /// per junction: the middle of its box (`NavJunction::mid`, the +0x50 F-97162 measures a forced point from)
+    pub nav_mid: Vec<Vec3>,
 }
 
 /// The riders' light (F-16850): may a car enter the junction lane? `green` = the lane's green test (F-78185, `lane_state`
@@ -208,33 +238,35 @@ fn cell(p: Vec3) -> (i32, i32) {
 }
 
 impl Signals {
-    /// Hold the lights of the junction at `center`: green for the arm that `dir` (from the
-    /// centre: the race scripts give a point on the racers' approach) lies on, or red all
-    /// round. Returns false if there is no signalled junction there.
-    pub fn force(&mut self, center: Vec3, dir: Vec3, green: bool) -> bool {
-        let near = self
-            .junctions
-            .iter_mut()
-            .filter(|j| (j.center.y - center.y).abs() < 9.0)
-            .map(|j| (Vec3::new(j.center.x - center.x, 0.0, j.center.z - center.z).length(), j))
-            .filter(|e| e.0 < e.1.radius + 22.0)
-            .min_by(|a, b| a.0.total_cmp(&b.0));
-        match near {
-            Some((_, j)) => {
-                j.forced = if !green {
-                    -2
-                } else if dir.length_squared() < 1e-6 {
-                    return true;
-                } else {
-                    j.arm_towards(dir) as i8
-                };
-                true
-            }
-            None => false,
-        }
+    /// The middle of junction `ji`'s box (J +0x50, which F-97162 and the refused car's reach test measure from): `nav_mid`,
+    /// else (junctions made without the road network) its centre.
+    pub fn mid_of(&self, ji: usize) -> Vec3 {
+        self.nav_mid.get(ji).copied().or_else(|| self.junctions.get(ji).map(|j| j.center)).unwrap_or_default()
     }
 
-    /// The original's reset (sub_8273A4A8): nothing forced, arm 0, red all round for 1.5 s more,
+    /// The race events' intersection fire F-11036 (`vIntersectionCenter` = `center`, `vDirection` = `point`,
+    /// `bGreenElseAllRed` = `green`): the junction whose box holds `center` (F-56988: `NavSys::junction_at`); nothing when
+    /// there is none or when x, y and z of `point` are all zero (a float compare: -0 is zero, NaN is not), red all round
+    /// included; otherwise the arm of `point` (F-97162, `Junction::arm_of_point`) is held green, or the junction red all round.
+    /// (The original also does nothing while the command-line switch `-notriggeredintersections` is given, or for a junction
+    /// without arms but its free flag; the port's junctions all have arms.) Returns whether a junction was found.
+    pub fn force(&mut self, nav: Option<&NavSys>, center: Vec3, point: Vec3, green: bool) -> bool {
+        let Some(ni) = nav.and_then(|n| n.junction_at(center)) else { return false };
+        if point.x == 0.0 && point.y == 0.0 && point.z == 0.0 {
+            return true;
+        }
+        let Some(k) = self.nav_index.iter().position(|&i| i == ni) else { return true };
+        let mid = self.nav_mid.get(k).copied().unwrap_or_default();
+        let Some(j) = self.junctions.get_mut(k) else { return true };
+        j.forced = match j.arm_of_point(mid, point) {
+            None => -1,
+            Some(a) if green => a as i8,
+            Some(_) => -2,
+        };
+        true
+    }
+
+    /// The original's reset (F-35280): nothing forced, arm 0, red all round for 1.5 s more,
     /// no demand - every junction in step.
     pub fn release(&mut self) {
         for j in self.junctions.iter_mut() {
@@ -264,10 +296,10 @@ impl Signals {
     /// are up - in the first 1.5 s of a race to the player's arm, otherwise to the arm with the
     /// largest demand, arm 0 if there is none.
     /// Demand: every traffic car the light refused since the last step and within the
-    /// junction's reach adds one to the arm it stands on (`wait`, sub_827A3458). Box held:
-    /// `blocked[ji]` per junction = sub_8273A848(J, 0) (`Vehicles::junction_blocked`: the
+    /// junction's reach adds one to the arm it stands on (`wait`, F-16850). Box held:
+    /// `blocked[ji]` per junction = F-50959(J, 0) (`Vehicles::junction_blocked`: the
     /// player on one of its lanes within 3 m, or ambient cars on its rails).
-    /// The player's demand (`demand`, sub_826F61D8 -> sub_8273A540, the junction ahead of the
+    /// The player's demand (`demand`, F-42082 -> F-11273, the junction ahead of the
     /// player's lane found by `traffic::player_junction_record`): see `player_demand`.
     pub fn step(&mut self, dt: f32, blocked: &[bool], demand: Option<(usize, Vec3, bool)>, player: Option<(Vec3, Vec3)>, race: Option<(f32, f32)>) {
         for (ji, arm) in std::mem::take(&mut self.waiting) {
@@ -279,6 +311,7 @@ impl Signals {
             self.player_demand(ji, pos, prio);
         }
         let red_light_race = self.red_light_race;
+        let mids = &self.nav_mid;
         for (ji, j) in self.junctions.iter_mut().enumerate() {
             if race.map_or(false, |r| r.0 > 0.0) || j.forced == -2 || red_light_race {
                 j.timer = PHASE;
@@ -295,7 +328,8 @@ impl Signals {
             }
             j.timer = 0.0;
             let next = match (race, player) {
-                (Some((_, clock)), Some((pos, _))) if clock < 1.5 => j.arm_towards(pos - j.center),
+                // (F-97162 on the player's position, measured from the box middle +0x50)
+                (Some((_, clock)), Some((pos, _))) if clock < 1.5 => j.arm_of_point(mids.get(ji).copied().unwrap_or(j.center), pos).unwrap_or(0),
                 // (the first of the largest counters above 0, compared as signed words; 0 if none)
                 _ => {
                     let (mut best, mut at) = (0i32, 0);
@@ -316,7 +350,7 @@ impl Signals {
     }
 
     /// The road network's junctions, and for every signal head (position, z axis) the junction
-    /// and arm it is bound to (`UNBOUND`: none). Binding as the original's `sub_8273AF48`: the
+    /// and arm it is bound to (`UNBOUND`: none). Binding as the original's `F-83643`: the
     /// heads round a junction's centre - within 0.66 of its half extent, counting a head's own
     /// reach of about 6.5 m - are matched to the arms greedily by the dot product of head axis
     /// and arm direction, one head an arm, the dot not negative, the head within 2.5 m of the
@@ -368,21 +402,23 @@ impl Signals {
         for (i, j) in out.iter().enumerate() {
             grid.entry(cell(j.center)).or_default().push(i as u32);
         }
-        (Signals { junctions: out, grid, waiting: Vec::new(), red_light_race: false }, of_head)
+        (Signals { junctions: out, grid, waiting: Vec::new(), red_light_race: false, nav_index: junctions.iter().map(|j| j.index).collect(), nav_mid: junctions.iter().map(|j| j.mid).collect() }, of_head)
     }
 
-    /// sub_8273A540(J, pos, vel, 1, prio, hold = prio): the player adds demand to junction `ji`
+    /// F-11273(J, pos, vel, 1, prio, hold = prio): the player adds demand to junction `ji`
     /// (the one ahead of its lane). The arm is the one nearest the player's bearing from the
-    /// centre (sub_8273E210). Not `prio` (free roam): +1 to that arm unless it is current.
+    /// centre (F-97162). Not `prio` (free roam): +1 to that arm unless it is current.
     /// `prio` (a race running and above 10 mph): green (timer < 6.5) on the player's own arm
     /// -> held (timer 0); on another arm -> demand +1 and the timer to 6.5 (yellow at once);
     /// yellow -> demand +1, timer at least 8.25; red all round -> demand +1, timer at least 9.75.
     pub fn player_demand(&mut self, ji: usize, pos: Vec3, prio: bool) {
+        let mid = self.mid_of(ji);
         let Some(j) = self.junctions.get_mut(ji) else { return };
         if j.arms.is_empty() {
             return;
         }
-        let arm = j.arm_towards(pos - j.center);
+        // (F-97162 on the position, from the box middle +0x50)
+        let arm = j.arm_of_point(mid, pos).unwrap_or(0);
         let add = |j: &mut Junction| {
             if let Some(c) = j.demand.get_mut(arm) {
                 *c = c.saturating_add(1);
@@ -408,16 +444,16 @@ impl Signals {
         }
     }
 
-    /// A traffic car at `pos` that the light of junction `ji` refused this frame (sub_827A3458):
-    /// within the junction's reach of its centre it adds one to the demand of the arm it stands
-    /// on (sub_8273E210: the arm nearest its bearing from the centre), at the next step.
+    /// A traffic car at `pos` that the light of junction `ji` refused this frame (F-16850):
+    /// within the junction's reach of the middle of its box (J +80 = +0x50, `mid_of`) it adds one to the demand of the arm it
+    /// stands on (F-97162 on the position, from the same middle), at the next step.
     pub fn wait(&mut self, ji: usize, pos: Vec3) {
+        let mid = self.mid_of(ji);
         let Some(j) = self.junctions.get(ji) else { return };
-        let off = Vec3::new(pos.x - j.center.x, 0.0, pos.z - j.center.z);
         // (F-16850: dz * dz + dx * dx fused, against the reach squared)
-        let (dx, dz) = (j.center.x - pos.x, j.center.z - pos.z);
+        let (dx, dz) = (mid.x - pos.x, mid.z - pos.z);
         if dz.mul_add(dz, dx * dx) < j.reach * j.reach && !j.arms.is_empty() {
-            self.waiting.push((ji as u32, j.arm_towards(off) as u8));
+            self.waiting.push((ji as u32, j.arm_of_point(mid, pos).unwrap_or(0) as u8));
         }
     }
 
@@ -557,7 +593,7 @@ mod tests {
     }
 
     fn one() -> Signals {
-        let nj = NavJunction { center: Vec3::ZERO, arms: vec![Vec3::X, Vec3::Z, -Vec3::X, -Vec3::Z], half: [12.0, 12.0] };
+        let nj = NavJunction { index: 0, center: Vec3::ZERO, mid: Vec3::ZERO, arms: vec![Vec3::X, Vec3::Z, -Vec3::X, -Vec3::Z], half: [12.0, 12.0] };
         Signals::build(&[nj], &[]).0
     }
 
@@ -611,7 +647,7 @@ mod tests {
         assert!((0..4).all(|a| s.junctions[0].arm_state(a, 0.0) == 0), "held while the box is occupied");
         run(&mut s, 4.0, &crossing, None);
         assert_eq!(s.junctions[0].arm_state(0, 0.0), 2, "but not beyond 5 s");
-        // the player's demand (sub_8273A540): free roam adds one to the arm at its bearing unless
+        // the player's demand (F-11273): free roam adds one to the arm at its bearing unless
         // that arm is current; in a race above 10 mph a green on another arm is cut short
         let mut s = one();
         s.player_demand(0, Vec3::new(0.0, 0.0, 9.0), false);
@@ -705,7 +741,7 @@ mod tests {
         assert!(n.iter().all(|&k| k >= 900), "{n:?}");
     }
 
-    /// The original's lane test (sub_8273A178): the lane's first span (P0 - P1) within 25
+    /// The original's lane test (F-78185): the lane's first span (P0 - P1) within 25
     /// degrees of the current arm, green only before 6.5 s, yellow to 8.5 s.
     #[test]
     fn lane_test_reads_the_lanes_first_span() {
@@ -729,7 +765,7 @@ mod tests {
     /// Heads are taken by the arm they point along; a stray head stays unbound.
     #[test]
     fn heads_bind_to_the_arm_they_point_along() {
-        let nj = NavJunction { center: Vec3::new(100.0, 5.0, 50.0), arms: vec![Vec3::X, -Vec3::X, Vec3::Z], half: [12.0, 12.0] };
+        let nj = NavJunction { index: 0, center: Vec3::new(100.0, 5.0, 50.0), mid: Vec3::new(100.0, 0.0, 50.0), arms: vec![Vec3::X, -Vec3::X, Vec3::Z], half: [12.0, 12.0] };
         let heads = [(Vec3::new(108.0, 5.2, 58.0), Vec3::Z), (Vec3::new(92.0, 5.1, 42.0), -Vec3::X), (Vec3::new(108.0, 5.0, 42.0), Vec3::X), (Vec3::new(300.0, 5.0, 50.0), Vec3::X)];
         let (s, of) = Signals::build(&[nj], &heads);
         assert_eq!(s.junctions.len(), 1);
@@ -868,5 +904,57 @@ mod original_signal_heads {
         }
         assert_eq!(n, 600);
         assert_eq!(frames_checked, 600 * 240);
+    }
+
+    /// The race events' intersection fire F-11036 with its junction lookup F-56988 (the quadtree query F-44023 with mask 4 and
+    /// the junctions' box test F-35347) and the arm of the point F-97162, run whole offline on the real city navsys
+    /// (tools/junction_force_reference.py -> testdata/junction_force_ref.txt): 6,000 events - centres at, in and about the
+    /// junctions' boxes, on their edges to the float and anywhere in the city; points on and between the arms, anywhere, and
+    /// zero (+0, -0, NaN, a denormal); green byte 0 / 1 / 0x80; the command-line switch and the manager word now and then.
+    /// The lookup's junction must be `NavSys::junction_at`'s and every junction's held state after the fire the original's
+    /// (+176 the arm or -1, +180 red all round; the port's `forced`).
+    #[test]
+    fn junction_force_matches_the_original() {
+        let root = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into()));
+        let Ok(res) = crate::assets::load_resource_file(&root.join("resources/city/sc/0x9960fcd8.r66")) else { return };
+        let nav = NavSys::parse(&res).unwrap();
+        let (mut s, _) = Signals::build(&mcla_formats::rage::navsys::parse_junctions(&res), &[]);
+        let h = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let (mut n, mut found, mut wrote) = (0, 0, 0);
+        for l in include_str!("testdata/junction_force_ref.txt").lines().filter(|l| !l.is_empty()) {
+            let (c, o) = l.split_once(" -> ").unwrap();
+            let w: Vec<u32> = c.split(' ').skip(1).map(h).collect();
+            let v = |k: usize| Vec3::new(f32::from_bits(w[k]), f32::from_bits(w[k + 1]), f32::from_bits(w[k + 2]));
+            let (centre, point) = (v(3), v(6));
+            let (q, writes) = o.split_once(" |").unwrap();
+            assert_eq!(nav.junction_at(centre).map_or(-1, |j| j as i64), q.parse::<i64>().unwrap(), "lookup: {l}");
+            for j in s.junctions.iter_mut() {
+                j.forced = 99;
+            }
+            // (the switch and the manager are the original's guards before anything; the port has neither)
+            if w[0] == 0 && w[1] != 0 {
+                s.force(Some(&nav), centre, point, w[2] & 0xFF != 0);
+            }
+            let mut got: Vec<String> = s
+                .junctions
+                .iter()
+                .zip(s.nav_index.iter())
+                .filter(|(j, _)| j.forced != 99)
+                .map(|(j, &ni)| match j.forced {
+                    -2 => format!("{ni} ffffffff 01"),
+                    -1 => format!("{ni} ffffffff 00"),
+                    a => format!("{ni} {:08x} 00", a),
+                })
+                .collect();
+            if got.is_empty() {
+                got.push("-".into());
+            }
+            assert_eq!(got.join(" "), writes.trim(), "writes: {l}");
+            found += (q != "-1") as usize;
+            wrote += (writes.trim() != "-") as usize;
+            n += 1;
+        }
+        assert_eq!(n, 6000);
+        eprintln!("junction force: {n} events, {found} with a junction, {wrote} holding one");
     }
 }
