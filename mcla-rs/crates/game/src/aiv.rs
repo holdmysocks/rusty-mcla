@@ -714,6 +714,36 @@ impl Aiv {
     }
 
     /// F-71106: drop corridor, goals and line.
+    /// The racing brain's enable F-92836 (Activate): +25168 the car's size (2 x the bound's half extents), +25292 /
+    /// +25308 the nitrous / slingshot tunes, +25324 g = -9.8 x the car's gravity factor, +25328 = 1.0 / g.
+    pub fn activate(&mut self, car: &AivCar) {
+        self.size = car.size;
+        self.b1 = car.nitro_tune;
+        self.b2 = car.sling_tune;
+        self.g = car.gravity;
+        self.inv_g = 1.0 / car.gravity;
+    }
+
+    /// The aiv init's car values (written by its init, which BrainRacing_Reset F-69438 runs again): size (2, 1.5, 5),
+    /// the tunes (2, 12, 2.5) / (2, 25, 2.5), g -9.8 and 1 / g.
+    pub fn car_defaults(&mut self) {
+        self.size = Vec3::new(2.0, 1.5, 5.0);
+        self.b1 = [2.0, 12.0, 2.5];
+        self.b2 = [2.0, 25.0, 2.5];
+        self.g = -9.8;
+        self.inv_g = -0.102_040_81;
+    }
+
+    /// +25168, the car's size as the aiv holds it.
+    pub fn size(&self) -> Vec3 {
+        self.size
+    }
+
+    /// +25324 / +25328 and the two tunes (for tests).
+    pub fn car_values(&self) -> (Vec3, [f32; 3], [f32; 3], f32, f32) {
+        (self.size, self.b1, self.b2, self.g, self.inv_g)
+    }
+
     pub fn reset(&mut self) {
         self.next_goal = 0;
         self.cached = 0;
@@ -1080,12 +1110,8 @@ impl Aiv {
     }
 
     /// F-12813 alone.
+    /// (the car's size, g and boost tunes are not F-12813's: `activate` / `car_defaults` set them)
     pub fn update_state(&mut self, car: &AivCar, dt: f32) {
-        self.size = car.size;
-        self.g = car.gravity;
-        self.inv_g = 1.0 / car.gravity;
-        self.b1 = car.nitro_tune;
-        self.b2 = car.sling_tune;
         self.pos = car.pos;
         self.f = car.forward;
         self.vel = car.vel;
@@ -2712,6 +2738,47 @@ mod tests {
         println!("boost benefit: {ran} cases, {mid} answers strictly inside 0 .. 1, {bad} differ");
         assert!(ran >= 8000);
         assert_eq!(bad, 0);
+    }
+
+    /// The aiv's car values in a race (+25168 size, +25292 / +25308 the tunes, +25324 g, +25328 1 / g) as the live R8
+    /// race holds them (work/racerai/follow/in_rec.bin, 201 states): the aiv init's, the enable F-92836's values put
+    /// back by BrainRacing_Reset F-69438; `car_defaults` and a fresh aiv equal them bit for bit, F-12813 keeps them.
+    #[test]
+    fn race_car_values_are_the_recorded_ones() {
+        let tune = Arc::new(mcla_formats::rage::aitune::AiTune::from_floats(&vec![0.0; 4096]).unwrap());
+        let bits = |v: (Vec3, [f32; 3], [f32; 3], f32, f32)| {
+            let mut w: Vec<u32> = v.0.to_array().iter().chain(&v.1).chain(&v.2).map(|x| x.to_bits()).collect();
+            w.extend([v.3.to_bits(), v.4.to_bits()]);
+            w
+        };
+        let fresh = Aiv::new(tune.clone());
+        assert_eq!(fresh.inv_g.to_bits(), 0xbdd0_fac6);
+        assert_eq!(fresh.g.to_bits(), 0xc11c_cccd);
+        let mut a = Aiv::new(tune.clone());
+        let car = AivCar {
+            pos: Vec3::ZERO, right: Vec3::X, forward: Vec3::Z, vel: Vec3::ZERO, ang_vel: Vec3::ZERO, nitro_tune: [1.0; 3], nitro_t: 0.0,
+            sling_tune: [3.0; 3], sling_t: 0.0, speed_cap: -1.0, size: Vec3::splat(7.0), gravity: -13.72,
+        };
+        a.update_state(&car, 1.0 / 60.0);
+        assert_eq!(bits(a.car_values()), bits(fresh.car_values()), "F-12813 keeps the car values");
+        a.activate(&car);
+        assert_eq!(a.size(), Vec3::splat(7.0));
+        assert_eq!(a.inv_g, 1.0 / -13.72f32);
+        a.car_defaults();
+        assert_eq!(bits(a.car_values()), bits(fresh.car_values()));
+        const BS: usize = 31232;
+        let Ok(inp) = std::fs::read("D:/MCLA/work/racerai/follow/in_rec.bin") else {
+            println!("recording missing: skipped");
+            return;
+        };
+        let n = inp.len() / (BS + 96);
+        for k in 0..n {
+            let mut r = Aiv::new(tune.clone());
+            r.import_original(&inp[k * (BS + 96)..k * (BS + 96) + BS]);
+            assert_eq!(bits(r.car_values()), bits(fresh.car_values()), "recorded state {k}");
+        }
+        println!("{n} recorded states hold the defaults");
+        assert!(n >= 200);
     }
 
     #[test]

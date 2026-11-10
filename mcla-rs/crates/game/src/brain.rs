@@ -630,6 +630,10 @@ pub struct Brain {
     /// +404 the throttle cap has been written: only the normal-driving branch of F-17058 writes it, before that it holds
     /// the brain's fill 0xCDCDCDCD (recorded on the grid; the engine audio's blend reads it, F-98304)
     pub cap_written: bool,
+    /// The enable F-92836 (Activate) still to run on the next update (it copies the car's size, g and boost tunes
+    /// into the aiv). A race's computer racers are enabled, then reset by the race core's BrainRacing_Reset F-69438
+    /// (its aiv init puts the defaults back): false from `setup_race`, the live R8 race holds the defaults throughout.
+    pub activate_due: bool,
     dbg_t: f32,
 }
 
@@ -673,6 +677,7 @@ impl Brain {
             rubber: None,
             ignore: 0,
             cap_written: false,
+            activate_due: false,
             dbg_t: 0.0,
         };
         let u = rng().float();
@@ -685,6 +690,7 @@ impl Brain {
     pub fn police(tune: Arc<AiTune>) -> Brain {
         let mut b = Brain::setup_race(Arc::new(Course::default()), tune, 0, 1, 0, false);
         b.stage = 3;
+        b.activate_due = true;
         let u = rng().float();
         b.rev.set_enabled(false, u);
         b
@@ -696,6 +702,8 @@ impl Brain {
     pub fn run_to(tune: Arc<AiTune>, goal: Vec3) -> Brain {
         let mut b = Brain::police(tune);
         b.set_goals(&[goal], -1.0);
+        // (CreateBrainRacing and AppendGoal: no Reset, the enable's values stand)
+        b.activate_due = true;
         b.avoid_handbrake = true;
         b
     }
@@ -716,6 +724,7 @@ impl Brain {
         b.allow_nitro = false;
         b.looping = true;
         b.max_speed = 32.0;
+        b.activate_due = true;
         b
     }
 
@@ -730,6 +739,9 @@ impl Brain {
         }
         self.final_speed = final_speed;
         self.final_heading = Vec3::ZERO;
+        // (F-69438's aiv init: the car values back to the defaults, after the enable)
+        self.aiv.car_defaults();
+        self.activate_due = false;
     }
 
     /// The cruising brain's rail goals (F-90991 / F-12584): the racing reset (F-69438), AppendGoal for each (point,
@@ -745,6 +757,8 @@ impl Brain {
             self.final_heading = h;
         }
         self.final_speed = final_speed;
+        self.aiv.car_defaults();
+        self.activate_due = false;
     }
 
     /// The search route (F-55529: GoToPosition F-19329 for the first point, AppendGoal F-13831 for the others): the
@@ -842,6 +856,10 @@ impl Brain {
             size: car.size,
             gravity: car.gravity,
         };
+        if self.activate_due {
+            self.aiv.activate(&acar);
+            self.activate_due = false;
+        }
         self.aiv.update(&acar, dt);
         // (unlimited nitrous: far enough behind - rubber.md 2.7)
         if let Some((t, s)) = rb {
@@ -1311,7 +1329,8 @@ pub fn run(v: &mut crate::vehicles::Vehicles, i: usize, brain: &mut Brain, to_go
         pos: car.pos,
         right: car.right,
         back: -car.forward,
-        size: car.size,
+        // (aiv +25168)
+        size: brain.aiv.size(),
         wheels: [w[0].world_pos, w[2].world_pos, w[1].world_pos, w[3].world_pos],
         wheel_count,
         drive: vs.map_or(0, |s| s.drive as u32),
