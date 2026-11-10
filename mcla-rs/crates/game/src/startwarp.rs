@@ -86,6 +86,16 @@ pub struct StartWarp {
 }
 
 impl StartWarp {
+    /// The flight's GPSJump and its clock: the climb's (Entering_Map_MaxHeight, up over 1 of the ease_in clock), the
+    /// way down's (`NavExit::gps_jump`); none while held.
+    pub fn gps_jump(&self) -> Option<(crate::hudmap::GpsJump, f32)> {
+        match self.phase {
+            Phase::Climb => Some((crate::hudmap::GpsJump::up(1.0), crate::hudmap::ease_in_clock(CLIMB_T, self.t))),
+            Phase::Hold => None,
+            Phase::Down => self.down.as_ref().and_then(|d| d.gps_jump()),
+        }
+    }
+
     /// START: from the shot's camera (eye, the point looked at, the lens in degrees).
     pub fn start(eye: Vec3, look: Vec3, lens_deg: f32, car: Vec3, aspect: f32) -> StartWarp {
         let mut climb = NavCam::default();

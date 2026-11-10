@@ -592,6 +592,10 @@ struct App {
     goto_garage: Option<usize>,
     /// pulling into a hangout: the ease to pause, the warp to its wait camera (`hangoutin`)
     hangout_entry: Option<hangoutin::Entry>,
+    /// UITransition_GPSJump's fog (hudmap::GpsFog) and the fog it saved at an upward jump's start (the fog colour,
+    /// the fog's near / far, the particles' MinFog colour and height)
+    gps_fog: hudmap::GpsFog,
+    gps_fog_saved: Option<([f32; 4], [f32; 2], [f32; 5])>,
     /// the place's band of a hangout entry: the clock from the warp's start
     hangout_title: Option<(usize, f32)>,
     /// the player's position a frame before (the entry lines' move: racer+400 -> the matrix)
@@ -1578,6 +1582,8 @@ impl App {
             garage_in: None,
             goto_garage: None,
             hangout_entry: None,
+            gps_fog: Default::default(),
+            gps_fog_saved: None,
             hangout_title: None,
             hangout_prev: None,
             place_view: None,
@@ -1900,6 +1906,52 @@ impl App {
             st.tod = Some(gt);
         }
         st
+    }
+
+    /// The running flight's GPSJump and its clock (`hudmap::GpsJump`), and whether any flight runs at all: the map
+    /// opening, its close, the start-up warp, the climbs and dives of the warper (race starts, garages, hangouts).
+    fn gps_jump_now(&self) -> (Option<(hudmap::GpsJump, f32)>, bool) {
+        let mut any = false;
+        let mut jump = None;
+        let mut take = |j: Option<(hudmap::GpsJump, f32)>| {
+            any = true;
+            if jump.is_none() {
+                jump = j;
+            }
+        };
+        if self.nav.gps_jump().is_some() {
+            take(self.nav.gps_jump());
+        }
+        if let Some(ex) = self.nav.exit.as_ref() {
+            take(ex.gps_jump());
+        }
+        if let Some(w) = self.startwarp.as_ref() {
+            take(w.gps_jump());
+        }
+        if let Some((c, _)) = self.climb.as_ref() {
+            take(c.gps_jump());
+        }
+        if let Some(c) = self.arcade_climb.as_ref() {
+            take(c.gps_jump());
+        }
+        if let Some(w) = self.warp.as_ref() {
+            take(w.gps_jump());
+        }
+        if let Some(w) = self.payback_in.as_ref().and_then(|p| p.1.as_ref()) {
+            take(w.gps_jump());
+        }
+        if let Some(g) = self.garage_in.as_ref() {
+            if let Some(c) = g.climb.as_ref() {
+                take(c.gps_jump());
+            }
+            if let Some(w) = g.dive.as_ref().or(g.warp.as_ref()) {
+                take(w.gps_jump());
+            }
+        }
+        if let Some(w) = self.hangout_entry.as_ref().and_then(|h| h.warp.as_ref()) {
+            take(w.gps_jump());
+        }
+        (jump, any)
     }
 
     fn lighting(&self, vp: glam::Mat4) -> Globals {
@@ -11018,8 +11070,31 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         // sun shadow map: an orthographic box around the area in front of the camera
         let shadow_on = globals.shadow_params[0] > 0.0 && !self.opt.no_shadows && !map3d && (self.game.mode != Mode::Garage || gar_light.is_some());
-        if map3d {
-            // from the air: only a thin haze
+        // UITransition_GPSJump (F-69531 / F-94973 / F-48130, hudmap::GpsFog): an upward jump saves the fog shown now and
+        // fades it to none, the map keeps none, a downward one fades the saved fog back in and hands it back to the
+        // time cycle (whose writer F-37382 waits while the jump's byte is set). Each value the saved one times the share.
+        if !map_baked {
+            let scale = |s: ([f32; 4], [f32; 2], [f32; 5]), k: f32| (s.0.map(|v| v * k), s.1.map(|v| v * k), s.2.map(|v| v * k));
+            let (jump, any) = self.gps_jump_now();
+            let shown = match (self.gps_fog.shown, self.gps_fog_saved) {
+                (Some(k), Some(sv)) => scale(sv, k),
+                _ => (globals.fog_color, [globals.params[0], globals.params[1]], self.fx.fog_min),
+            };
+            if self.gps_fog.step(jump, !any && !map3d) {
+                self.gps_fog_saved = Some(shown);
+            }
+            if std::env::var_os("MCLA_GPSFOG_LOG").is_some() {
+                log::info!("gps fog: share {:?} jump {:?} any {} map3d {} fog a {:.4}", self.gps_fog.shown, jump, any, map3d, shown.0[3]);
+            }
+            if let (Some(k), Some(sv)) = (self.gps_fog.shown, self.gps_fog_saved) {
+                let (c, p, _) = scale(sv, k);
+                globals.fog_color = c;
+                globals.params[0] = p[0];
+                globals.params[1] = p[1];
+            }
+        }
+        if map3d && self.gps_fog.shown.is_none() {
+            // from the air: only a thin haze (while a GPSJump holds the fog, its share decides)
             let d = self.cam.pos.distance(self.chase.look);
             globals.params[0] = d * 0.9;
             globals.params[1] = d * 6.0 + 6000.0;
@@ -12097,6 +12172,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let k = (d.light + d.ambient).lerp(Vec3::ONE, d.light_w);
             [d.fog_min[0] * k.x, d.fog_min[1] * k.y, d.fog_min[2] * k.z, d.fog_min[3], d.fog_height]
         });
+        // (the particles' MinFog colour and height under the GPSJump's share, as the fog above)
+        if let (Some(k), Some(sv)) = (self.gps_fog.shown, self.gps_fog_saved) {
+            self.fx.fog_min = sv.2.map(|v| v * k);
+        }
         self.fx.prepare(&gpu, self.cam.pos, if std::env::var_os("MCLA_DRAW_HELD").is_some() { 1.0 } else { self.vehicles.render_alpha });
         // (the rain and the lamps' cones in it, as the original draws them - rain.rs)
         rain::prepare(&gpu, &rain::Frame { cam_pos: globals.cam_pos, inv_view_proj: globals.inv_view_proj, rain: self.rain_amount(), light: self.sky_now().tod.map(|t| (t.light + t.ambient, t.nfl)), car: self.vehicles.player().filter(|_| self.drive).map(|c| c.render_pose(self.vehicles.render_alpha).pos), lamps: &self.props.prop_lamps, weather: match self.weather { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 }, next: self.sky_next.as_ref().map(|(_, w, f)| (match w { sky::Weather::Cloudy => 1, sky::Weather::Stormy => 2, sky::Weather::Foggy => 3, _ => 0 }, *f)), hour: self.time_of_day, collider: Some((&world.collider, &world.set_collider)) });

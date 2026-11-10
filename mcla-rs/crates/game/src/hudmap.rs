@@ -2665,6 +2665,8 @@ pub struct NavCam {
     vel: Vec3,
     vel_prev: Option<Vec3>,
     vel_t: f32,
+    /// the opening's real time (Entering_Map_MaxHeight, its GPSJump), while it runs
+    jump_t: Option<f32>,
 }
 
 /// The map camera's lens, NM+712: the Lerp_Float transition, a UITransition_Value (start
@@ -2719,7 +2721,7 @@ impl NavLens {
 
 impl Default for NavCam {
     fn default() -> NavCam {
-        NavCam { eye: Vec3::new(NAV_CENTRE.x, NAV_HIGH, NAV_CENTRE.z), look: NAV_CENTRE, cursor: NAV_CENTRE, bounds: nav_bounds(NAV_HIGH, 16.0 / 9.0), mv: None, acc: 0.0, open_rows: None, exit: None, lens: NavLens::done(), cursor_on: true, vel: Vec3::ZERO, vel_prev: None, vel_t: 0.0 }
+        NavCam { eye: Vec3::new(NAV_CENTRE.x, NAV_HIGH, NAV_CENTRE.z), look: NAV_CENTRE, cursor: NAV_CENTRE, bounds: nav_bounds(NAV_HIGH, 16.0 / 9.0), mv: None, acc: 0.0, open_rows: None, exit: None, lens: NavLens::done(), cursor_on: true, vel: Vec3::ZERO, vel_prev: None, vel_t: 0.0, jump_t: None }
     }
 }
 
@@ -2742,6 +2744,13 @@ impl NavCam {
         self.vel = Vec3::ZERO;
         self.vel_prev = Some(game_eye);
         self.vel_t = 0.0;
+        self.jump_t = Some(0.0);
+    }
+
+    /// The opening's GPSJump (Entering_Map_MaxHeight: a Parallel on an ease_in clock over 1.5 s, the jump up
+    /// over 1 of it) and the clock it has had.
+    pub fn gps_jump(&self) -> Option<(GpsJump, f32)> {
+        self.jump_t.map(|t| (GpsJump::up(1.0), ease_in_clock(1.5, t)))
     }
 
     /// VIEW RACE (`F-29182` with the transition RacePickerUp of tune/ui/transitions/Main.sc.xml): from
@@ -2877,6 +2886,14 @@ impl NavCam {
     /// One frame: RT (`zoom_in`) / LT (`zoom_out`) held, `cursor_move` = the left stick shaped
     /// (-1..1, x east, y south).
     pub fn update(&mut self, dt: f32, zoom_in: bool, zoom_out: bool, cursor_move: Vec2, aspect: f32) {
+        if let Some(t) = self.jump_t.as_mut() {
+            *t += dt;
+            // (the summed 60 Hz frame times end a hair under 1.5; the original's 30 Hz ones reach it on frame 45,
+            // whose update is the finish's 0 - recorded, work/ui2/gf/rec1.jsonl)
+            if *t >= 1.5 - 1e-4 {
+                self.jump_t = None;
+            }
+        }
         if let Some(m) = self.mv.as_mut() {
             m.t += dt;
             if m.t >= m.span {
@@ -3401,6 +3418,101 @@ fn catmull(p: [Vec3; 4], u: f32) -> Vec3 {
     c0 * (u * u * u) + c1 * (u * u) + c2 * u + p[1]
 }
 
+/// A flight's UITransition_GPSJump child (transitions/Main.sc.xml; start F-69531, update F-94973, finish F-48130):
+/// `up` (the climb to the map) or down, its delay_start_time and total_time, on the clock its parent hands it
+/// (a Lean's or an eased Parallel's C, a plain Parallel's real time).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GpsJump {
+    pub up: bool,
+    pub delay: f32,
+    pub total: f32,
+}
+
+impl GpsJump {
+    /// (delay and total as the transitions' base reads them: snapped to frames, `ui_time`)
+    pub fn up(total: f32) -> GpsJump {
+        GpsJump { up: true, delay: 0.0, total: ui_time(total) }
+    }
+    pub fn down(delay: f32) -> GpsJump {
+        GpsJump { up: false, delay: ui_time(delay), total: ui_time(1.0) }
+    }
+
+    /// The share of the saved fog the update writes at elapsed clock `e`, or None before the delay (the update
+    /// then writes what it wrote last, `GpsFog`): p = (e - delay) / total, kept from below at 0 only; up 1 - p,
+    /// down p (each fog value is the saved one times that, single precision).
+    pub fn share(self, e: f32) -> Option<f32> {
+        if e < self.delay {
+            return None;
+        }
+        let p = ((e - self.delay) / self.total).max(0.0);
+        Some(if self.up { 1.0 - p } else { p })
+    }
+}
+
+/// The fog a GPSJump fades (F-94973): the renderer's MinFog (+368) and MaxFog (+384) colours and its fog
+/// parameters (+400: the height fog's two values, near, far), saved when an upward jump starts (F-69531); the
+/// time-cycle's fog writer F-37382 is skipped while the GPS-jumping byte (+0x51381 of the UI manager) is set,
+/// from that start until a downward jump's finish, so the saved values stand through the map and the way down.
+/// Up: share x saved, at its finish 0 (the constant at 0x82008220). Down: the last written share until its delay,
+/// then share x saved, at its finish the saved values and the writer again.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GpsFog {
+    /// the share now in the renderer's fog (None: the writer's own values)
+    pub shown: Option<f32>,
+    /// the share the update last wrote (its globals; a down's update writes them back before its delay)
+    written: f32,
+    /// the jump being run: up, and whether it has finished
+    cur: Option<(bool, bool)>,
+}
+
+impl GpsFog {
+    /// One frame: `jump` = the running flight's GPSJump and its elapsed clock (None: no flight with one runs);
+    /// `on_ground` = no flight runs and the map is not up (the port's stand-in for the career scripts' clear of the
+    /// byte after a landing that had no downward jump). Returns whether the fog must be saved now (an up starts:
+    /// the renderer's fog as it is shown this frame, before this step).
+    pub fn step(&mut self, jump: Option<(GpsJump, f32)>, on_ground: bool) -> bool {
+        let mut save = false;
+        match jump {
+            Some((j, e)) => {
+                if self.cur.map(|c| c.0) != Some(j.up) {
+                    // (a start: up saves the fog and copies it into the update's globals)
+                    self.cur = Some((j.up, false));
+                    if j.up {
+                        save = true;
+                        self.written = 1.0;
+                    }
+                }
+                if self.cur == Some((j.up, false)) {
+                    if let Some(k) = j.share(e) {
+                        self.written = k;
+                    }
+                    // (no finish at delay + total: the jump runs, and p grows past 1, until its parent flight ends -
+                    // the original's map-open climb writes 1 - C down to -0.4477 before its finish's 0)
+                    self.shown = Some(self.written);
+                }
+            }
+            None => {
+                if self.cur.is_some_and(|c| !c.1) {
+                    self.finish();
+                }
+                self.cur = None;
+                if on_ground {
+                    self.shown = None;
+                }
+            }
+        }
+        save
+    }
+
+    /// F-48130: up -> the constant 0; down -> the saved values back, the byte cleared (the writer again).
+    fn finish(&mut self) {
+        if let Some(c) = self.cur.as_mut() {
+            self.shown = if c.0 { Some(0.0) } else { None };
+            c.1 = true;
+        }
+    }
+}
+
 /// Which closing flight (`F-60031`, GPS branch, rule_exitcam.md 10).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExitKind {
@@ -3457,6 +3569,17 @@ impl ExitKind {
         }
     }
 
+    /// Its GPSJump (in the top Lean, on the ease_out clock): down, delay HighAltitude 2, LowAltitude_FarAway 2.5,
+    /// SouthSideCloseCar .5, SharpAngle and AboveCar 1; total 1.
+    pub fn gps_jump(self) -> GpsJump {
+        GpsJump::down(match self {
+            ExitKind::HighAltitude => 2.0,
+            ExitKind::LowAltitudeFarAway => 2.5,
+            ExitKind::SouthSideCloseCar => 0.5,
+            ExitKind::SharpAngle | ExitKind::AboveCar => 1.0,
+        })
+    }
+
     fn lean_factor(self) -> f32 {
         if self == ExitKind::HighAltitude {
             1.0
@@ -3495,6 +3618,11 @@ pub struct NavExit {
 }
 
 impl NavExit {
+    /// Its GPSJump and the clock it has had (the Lean's C of the last step).
+    pub fn gps_jump(&self) -> Option<(GpsJump, f32)> {
+        Some((self.kind.gps_jump(), self.c_prev))
+    }
+
     /// the flight's length: 3.0 s (HighAltitude), 3.5 (LowAltitude_FarAway), 2.0 (AboveCar, SharpAngle),
     /// 1.533 (SouthSideCloseCar)
     pub fn total(&self) -> f32 {
@@ -3794,6 +3922,16 @@ impl CineKind {
         }
     }
 
+    /// Its GPSJump (a child of the top Parallel, which has no easing: real time): down, delay HighAltitude,
+    /// SouthSideCloseCar, SharpAngle and AboveCar 2, LowAltitude_FarAway 4.25; total 1. The two Lerp states have none.
+    pub fn gps_jump(self) -> Option<GpsJump> {
+        match self {
+            CineKind::HighAltitude | CineKind::SouthSideCloseCar | CineKind::SharpAngle | CineKind::AboveCar => Some(GpsJump::down(2.0)),
+            CineKind::LowAltitudeFarAway => Some(GpsJump::down(4.25)),
+            CineKind::CloseToTarget | CineKind::TargetClose => None,
+        }
+    }
+
     fn lean_factor(self) -> f32 {
         if self == CineKind::CloseToTarget || self == CineKind::TargetClose {
             0.0
@@ -3851,6 +3989,11 @@ pub struct CineWarp {
 }
 
 impl CineWarp {
+    /// Its GPSJump and the real time it has run.
+    pub fn gps_jump(&self) -> Option<(GpsJump, f32)> {
+        self.kind.gps_jump().map(|j| (j, self.t))
+    }
+
     /// `fov_from` = the current lens (warper+284), `fov_to` = the scene camera's (req+96); any unit.
     pub fn new(s: CamRows, e: CamRows, vel: Vec3, fov_from: f32, fov_to: f32) -> CineWarp {
         let kind = CineKind::choose(&s, &e);
@@ -4145,6 +4288,12 @@ impl ClimbKind {
         }
     }
 
+    /// Its GPSJump (a child of the top Parallel, on its ease_in clock): up, no delay, total FocusOnCar .6, the others 1
+    /// (the Warp_* and the Entering_Map_* states alike).
+    pub fn gps_jump(self) -> GpsJump {
+        GpsJump::up(if self == ClimbKind::FocusOnCar { 0.6 } else { 1.0 })
+    }
+
     /// The Entering_Map_* versions: FocusOnCar's Y 1.25 -> 37/30 (GPSJump .6); the Sharp_Angle ones
     /// as the Warp's (Y 2.05); FromNorth 2.
     pub fn total_enter(self) -> f32 {
@@ -4156,7 +4305,7 @@ impl ClimbKind {
 }
 
 /// ease_in on the top Parallel (`F-17563`): C = T (1 - cos(pi t / 2T)).
-fn ease_in_clock(tl: f32, t: f32) -> f32 {
+pub(crate) fn ease_in_clock(tl: f32, t: f32) -> f32 {
     tl * (1.0 - ((t / tl).clamp(0.0, 1.0) * PI * 0.5).cos())
 }
 
@@ -4182,6 +4331,11 @@ pub struct CineClimb {
 }
 
 impl CineClimb {
+    /// Its GPSJump and the clock it has had (the Parallel's C of the last step).
+    pub fn gps_jump(&self) -> Option<(GpsJump, f32)> {
+        Some((self.kind.gps_jump(), self.c_prev))
+    }
+
     /// `s` = the render camera, `e` = the player car's matrix, the lens from `fov_from` to `fov_to`
     /// (25 degrees; any unit), `v` = the render camera's velocity (y set to 0 here).
     pub fn new(s: CamRows, e: CamRows, fov_from: f32, fov_to: f32, v: Vec3) -> CineClimb {
@@ -4379,6 +4533,98 @@ mod tests {
         }
         // (the GPS map: per icon |p - camera| * 7e-05 + 0.04; the hangout at 9104.5 m)
         assert!((139.0f32 * (9104.5 * 7e-5 + 0.04) - 94.157).abs() < 0.02);
+    }
+
+    /// UITransition_GPSJump's share (F-94973): up 1 - p, down p, p = (e - delay) / total kept at 0 from below only,
+    /// nothing before a delay; and the fog's run through a climb, the map and a way down (F-69531, F-48130).
+    #[test]
+    fn gps_jump_fades_the_fog_as_the_transition_does() {
+        let up = GpsJump::up(0.6);
+        assert!((up.share(0.3).unwrap() - 0.5).abs() < 1e-6);
+        assert_eq!(up.share(0.0), Some(1.0));
+        let down = GpsJump::down(2.0);
+        assert_eq!(down.share(1.9), None);
+        assert!((down.share(2.25).unwrap() - 0.25).abs() < 1e-6);
+        // (4.25 s snaps to 127 frames)
+        assert!((GpsJump::down(4.25).delay - 127.0 / 30.0).abs() < 1e-5);
+        let mut f = GpsFog::default();
+        // (the original's map-open climb, recorded (work/ui2/gf/rec1.jsonl): NavCam's ease_in clock over 1.5 s,
+        // total 1; every recorded frame n = 1..44 is 1 - C(n / 30), then the finish's 0 at the flight's end)
+        let rec: [(u32, f32); 6] = [(1, 0.999086), (10, 0.909539), (30, 0.25), (33, 0.110105), (40, -0.239528), (44, -0.447651)];
+        let mut saves = 0;
+        for n in 0..=45u32 {
+            let t = n as f32 / 30.0;
+            let jump = (n < 45).then(|| (GpsJump::up(1.0), ease_in_clock(1.5, t)));
+            saves += f.step(jump, false) as u32;
+            if let Some(&(_, k)) = rec.iter().find(|r| r.0 == n) {
+                assert!((f.shown.unwrap() - k).abs() < 2e-6, "frame {n}: {:?} vs {k}", f.shown);
+            }
+        }
+        assert_eq!(saves, 1, "saved once, at the start");
+        assert_eq!(f.shown, Some(0.0), "the up's finish at the flight's end: none");
+        // (the map: no flight, not on the ground)
+        for _ in 0..30 {
+            assert!(!f.step(None, false));
+        }
+        assert_eq!(f.shown, Some(0.0));
+        // (the way down, recorded: Exiting_Map_GPS_HighAltitude, delay 2 of its 3 s ease_out clock; before the delay
+        // the up's last write (-0.4477) again, then p = C - 2: 3 sin(pi n / 180) - 2 from n = 42, the restore at 90)
+        let kind = ExitKind::HighAltitude;
+        let w = f.written;
+        assert!((w + 0.447651).abs() < 2e-6, "the up's last write ({w})");
+        for n in 1..=90u32 {
+            let t = n as f32 / 30.0;
+            let c = kind.total() * (t / kind.total() * PI * 0.5).sin();
+            let jump = (n < 90).then(|| (kind.gps_jump(), c));
+            assert!(!f.step(jump, false));
+            match f.shown {
+                Some(k) if c < kind.gps_jump().delay => assert_eq!(k, w, "before the delay: the last write again"),
+                Some(k) => assert!((k - (3.0 * (PI * n as f32 / 180.0).sin() - 2.0)).abs() < 2e-6),
+                None => assert_eq!(n, 90),
+            }
+        }
+        assert_eq!(f.shown, None, "the down's finish: the time cycle's fog again");
+        // (a climb with no way down: back once on the ground)
+        f.step(Some((GpsJump::up(1.0), 1.0)), false);
+        f.step(None, false);
+        assert_eq!(f.shown, Some(0.0));
+        f.step(None, true);
+        assert_eq!(f.shown, None);
+    }
+
+    /// The GPSJump of every flight the port runs is the one tune/ui/transitions/Main.sc.xml gives its state.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the extracted disc"]
+    fn gps_jumps_are_the_transition_files() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let x = std::fs::read_to_string(std::path::Path::new(&dir).join("tune/ui/transitions/Main.sc.xml")).unwrap();
+        let state = |id: &str| -> Option<GpsJump> {
+            let a = x.find(&format!("id=\"{id}\""))?;
+            let rest = &x[a..];
+            let end = rest[1..].find("<state id=").map_or(rest.len(), |e| e + 1);
+            let body = &rest[..end];
+            let g = body.find("UITransition_GPSJump")?;
+            let j = &body[g..body[g..].find("</state>").unwrap() + g];
+            let num = |n: &str| {
+                let key = format!("name=\"{n}\" expr=\"");
+                j.find(&key).map(|i| (i, key.len()))
+            };
+            let num = |n: &str| num(n).map(|(i, l)| {
+                let v = &j[i + l..];
+                v[..v.find('"').unwrap()].parse::<f32>().unwrap()
+            });
+            Some(GpsJump { up: j.contains("name=\"up\""), delay: ui_time(num("delay_start_time").unwrap_or(0.0)), total: ui_time(num("total_time").unwrap()) })
+        };
+        for (k, id) in [(ExitKind::HighAltitude, "Exiting_Map_GPS_HighAltitude"), (ExitKind::LowAltitudeFarAway, "Exiting_Map_GPS_LowAltitude_FarAway"), (ExitKind::AboveCar, "Exiting_Map_GPS_AboveCar"), (ExitKind::SharpAngle, "Exiting_Map_GPS_SharpAngle"), (ExitKind::SouthSideCloseCar, "Exiting_Map_GPS_SouthSideCloseCar")] {
+            assert_eq!(Some(k.gps_jump()), state(id), "{id}");
+        }
+        for (k, id) in [(CineKind::HighAltitude, "Warp_HighAltitude_Cinematically"), (CineKind::LowAltitudeFarAway, "Warp_LowAltitude_FarAway_Cinematically"), (CineKind::AboveCar, "Warp_AboveCar_Cinematically"), (CineKind::SharpAngle, "Warp_SharpAngle_Cinematically"), (CineKind::SouthSideCloseCar, "Warp_SouthSideCloseCar_Cinematically"), (CineKind::CloseToTarget, "Warp_CloseToTarget"), (CineKind::TargetClose, "Warp_Target_Close")] {
+            assert_eq!(k.gps_jump(), state(id), "{id}");
+        }
+        for (k, id) in [(ClimbKind::FocusOnCar, "Warp_FocusOnCar_Cinematically"), (ClimbKind::SharpAngleRight, "Warp_Sharp_Angle_Right_Cinematically"), (ClimbKind::SharpAngleLeft, "Warp_Sharp_Angle_Left_Cinematically"), (ClimbKind::FocusOnCar, "Entering_Map_FocusOnCar"), (ClimbKind::FromNorth, "Entering_Map_FromNorth"), (ClimbKind::SharpAngleRight, "Entering_Map_Sharp_Angle_Right")] {
+            assert_eq!(Some(k.gps_jump()), state(id), "{id}");
+        }
+        assert_eq!(state("Entering_Map_MaxHeight"), Some(GpsJump::up(1.0)), "the map opening's (NavCam, StartWarp)");
     }
 
     /// Every racer icon a script sets (`Racer_SetIconType` 3, 4, 5, 7, 8) has its mesh, the time
