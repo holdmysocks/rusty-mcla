@@ -3463,6 +3463,9 @@ pub struct GpsFog {
     written: f32,
     /// the jump being run: up, and whether it has finished
     cur: Option<(bool, bool)>,
+    /// a downward jump finished this frame (SetGameDof F-97647 ran: the game's depth of field vector is the
+    /// default 500 / 1000 / 0.75 / 1 for this frame, until the time cycle writes it again)
+    pub landed: bool,
 }
 
 impl GpsFog {
@@ -3472,6 +3475,7 @@ impl GpsFog {
     /// the renderer's fog as it is shown this frame, before this step).
     pub fn step(&mut self, jump: Option<(GpsJump, f32)>, on_ground: bool) -> bool {
         let mut save = false;
+        self.landed = false;
         match jump {
             Some((j, e)) => {
                 if self.cur.map(|c| c.0) != Some(j.up) {
@@ -3508,8 +3512,22 @@ impl GpsFog {
     fn finish(&mut self) {
         if let Some(c) = self.cur.as_mut() {
             self.shown = if c.0 { Some(0.0) } else { None };
+            self.landed = !c.0;
             c.1 = true;
         }
+    }
+
+    /// The share the update wrote this frame while a jump runs (None: none runs). F-94973 also writes it into the
+    /// light manager's +4, 1 - m_ShadowFade (the time cycle's F-70200 writes it first each frame, the jump right
+    /// after - recorded), so the shadows' strength is the saved one times this share, as the fog.
+    pub fn running_share(&self) -> Option<f32> {
+        self.cur.filter(|c| !c.1).map(|_| self.written)
+    }
+
+    /// The GPS-jumping byte (+0x51381): set from an up's start to a down's finish. While it is set the post's depth
+    /// of field is the jump's (F-69531: mode 3, the game's vector with near 10000, F-46556 / F-79229).
+    pub fn jumping(&self) -> bool {
+        self.shown.is_some()
     }
 }
 

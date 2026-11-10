@@ -596,6 +596,11 @@ struct App {
     /// the fog's near / far, the particles' MinFog colour and height)
     gps_fog: hudmap::GpsFog,
     gps_fog_saved: Option<([f32; 4], [f32; 2], [f32; 5])>,
+    /// the shadows' strength and the game's depth of field vector saved at that start (F-69531)
+    gps_shadow_saved: f32,
+    gps_dof_saved: Option<[f32; 4]>,
+    /// the post's depth of field vector as it approaches its target (F-90102's |diff| / 0.1 a second)
+    dof_post: Option<[f32; 4]>,
     /// the place's band of a hangout entry: the clock from the warp's start
     hangout_title: Option<(usize, f32)>,
     /// the player's position a frame before (the entry lines' move: racer+400 -> the matrix)
@@ -1584,6 +1589,9 @@ impl App {
             hangout_entry: None,
             gps_fog: Default::default(),
             gps_fog_saved: None,
+            gps_shadow_saved: 0.0,
+            gps_dof_saved: None,
+            dof_post: None,
             hangout_title: None,
             hangout_prev: None,
             place_view: None,
@@ -11068,8 +11076,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         if let Some((_, gt)) = gar_light.as_ref() {
             globals.shadow_params[0] = gt.shadow_fade.clamp(0.0, 1.0);
         }
-        // sun shadow map: an orthographic box around the area in front of the camera
-        let shadow_on = globals.shadow_params[0] > 0.0 && !self.opt.no_shadows && !map3d && (self.game.mode != Mode::Garage || gar_light.is_some());
         // UITransition_GPSJump (F-69531 / F-94973 / F-48130, hudmap::GpsFog): an upward jump saves the fog shown now and
         // fades it to none, the map keeps none, a downward one fades the saved fog back in and hands it back to the
         // time cycle (whose writer F-37382 waits while the jump's byte is set). Each value the saved one times the share.
@@ -11082,9 +11088,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             };
             if self.gps_fog.step(jump, !any && !map3d) {
                 self.gps_fog_saved = Some(shown);
+                // (F-69531 also saves the light manager's +4, 1 - m_ShadowFade, and the game's depth of field vector)
+                self.gps_shadow_saved = globals.shadow_params[0];
+                self.gps_dof_saved = self.sky_now().tod.map(|t| t.dof);
+            }
+            // (F-94973's +4: 1 - (1 - s) k up and alike down, i.e. the shadows' strength = saved x the share; only
+            // while a jump runs - on the map the time cycle's own value stands)
+            if let Some(k) = self.gps_fog.running_share() {
+                globals.shadow_params[0] = self.gps_shadow_saved * k;
             }
             if std::env::var_os("MCLA_GPSFOG_LOG").is_some() {
-                log::info!("gps fog: share {:?} jump {:?} any {} map3d {} fog a {:.4}", self.gps_fog.shown, jump, any, map3d, shown.0[3]);
+                log::info!("gps fog: share {:?} jump {:?} any {} map3d {} fog a {:.4} shadow {:.5}", self.gps_fog.shown, jump, any, map3d, shown.0[3], globals.shadow_params[0]);
             }
             if let (Some(k), Some(sv)) = (self.gps_fog.shown, self.gps_fog_saved) {
                 let (c, p, _) = scale(sv, k);
@@ -11093,6 +11107,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 globals.params[1] = p[1];
             }
         }
+        // sun shadow map: an orthographic box around the area in front of the camera
+        let shadow_on = globals.shadow_params[0] > 0.0 && !self.opt.no_shadows && !map3d && (self.game.mode != Mode::Garage || gar_light.is_some());
         if map3d && self.gps_fog.shown.is_none() {
             // from the air: only a thin haze (while a GPSJump holds the fog, its share decides)
             let d = self.cam.pos.distance(self.chase.look);
@@ -13146,6 +13162,30 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if let Some(c) = self.vehicles.player() {
                     let x = (self.cam.pos - c.state.pos).length() + 2.0;
                     tune.dof = [x, x + 73.0, 0.8, 1.0];
+                }
+            }
+            // (a GPS flight: from an up's start (F-69531: mode 3 by F-46556, the game's vector with near 10000 by
+            // F-79229) to a down's finish the post takes that vector, on the map too; the finish's SetGameDof F-97647
+            // leaves the default 500 / 1000 / 0.75 / 1 for that one frame, until the time cycle writes the hour's -
+            // recorded, work/ui2/gf/rec2.jsonl)
+            if self.gps_fog.jumping() {
+                if let Some(d) = self.gps_dof_saved {
+                    tune.dof = [10000.0, d[1], d[2], d[3]];
+                }
+            } else if self.gps_fog.landed {
+                tune.dof = [500.0, 1000.0, 0.75, 1.0];
+            }
+            // (the post's vector approaches its target, F-48241: x, y, z each by F-90102 at the rate |target - now| /
+            // 0.1 (0x827E5744, at least 1e-9) times the frame time - a third of the way a 30 Hz frame, recorded; w is
+            // not approached. The port's "no depth of field" (all 0) is not an original vector: taken at once.)
+            if tune.dof == [0.0; 4] {
+                self.dof_post = None;
+            } else {
+                let now = self.dof_post.get_or_insert(tune.dof);
+                render::post::dof_approach(now, tune.dof, dt);
+                tune.dof = *now;
+                if std::env::var_os("MCLA_GPSFOG_LOG").is_some() {
+                    log::info!("gps dof: {:?}", tune.dof);
                 }
             }
             tune.inv_view_proj = globals.inv_view_proj;

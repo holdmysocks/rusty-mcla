@@ -764,3 +764,38 @@ impl Post {
         }
     }
 }
+
+/// The post's depth of field vector one frame on toward `target` (F-48241): x, y and z each by F-90102 at the rate
+/// |target - now| / 0.1 (the transition time 0x827E5744, at least 1e-9) times the frame time `dt`; w is not
+/// approached (the port takes the target's). The rate's reciprocal is the original's refined estimate, here 1 / 0.1.
+pub fn dof_approach(now: &mut [f32; 4], target: [f32; 4], dt: f32) {
+    for i in 0..3 {
+        let rate = (target[i] - now[i]).abs() * (1.0 / 0.1f32);
+        crate::caraudio::approach_fma(&mut now[i], target[i], rate, dt);
+    }
+    now[3] = target[3];
+}
+
+#[cfg(test)]
+mod dof_approach_tests {
+    use super::dof_approach;
+
+    /// The original's landing after a GPS flight (work/ui2/gf/rec2.jsonl, post +240 at 30 Hz): from the jump's
+    /// 10000 / 3000 / 50 toward SetGameDof's 500 / 1000 / 0.75 for one frame, then the hour's 517.24 / 3000 / 50.
+    #[test]
+    fn dof_approaches_as_the_recording() {
+        let dt = 1.0f32 / 30.0;
+        let mut v = [10000.0, 3000.0, 50.0, 1.0];
+        dof_approach(&mut v, [500.0, 1000.0, 0.75, 1.0], dt);
+        let rec = [[6833.3, 2333.3, 33.6], [4728.0, 2555.6, 39.1], [3324.4, 2703.7, 42.7], [2388.7, 2802.5, 45.1], [1764.9, 2868.3, 46.8]];
+        let hour = [517.241_33, 3000.0, 50.0, 1.0];
+        for (n, r) in rec.iter().enumerate() {
+            if n > 0 {
+                dof_approach(&mut v, hour, dt);
+            }
+            for i in 0..3 {
+                assert!((v[i] - r[i]).abs() < 0.06, "frame {n} [{i}]: {} vs {}", v[i], r[i]);
+            }
+        }
+    }
+}
