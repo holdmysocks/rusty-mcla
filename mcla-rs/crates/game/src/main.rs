@@ -5809,10 +5809,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         } else {
                             true
                         };
-                        // (the line through F-23328: waiting in the ring behind the radio's line)
-                        if took {
-                            talk_sync(&mut self.speech, &mut self.radio);
-                            self.speech.request_taunt(line, "");
+                        if took && !self.speech.busy() {
+                            self.speech.say(line);
                         }
                     }
                     // (approx.: a cruiser waits at the armed zone once the player comes near - which
@@ -7594,8 +7592,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if self.radio.loaded() && !s19d_goons && !self.police.goons {
                     let rctx = radio_ctx(&self.vehicles, &world, self.time_of_day);
                     self.radio.note(&rctx, world.nav.as_ref());
-                    // (the one speech manager: each speaker sees the other's scenario playing)
-                    talk_sync(&mut self.speech, &mut self.radio);
                     // (the speech update F-85023: a queued request when no line plays)
                     self.radio.pump(&rctx);
                     match ev {
@@ -7644,11 +7640,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                         Some(police::Event::LostAi) => {
                             self.radio.stop();
-                            // (the report's +28 line through F-23328 once the radio took it: it waits in the ring behind
-                            // the radio's line, F-14569)
-                            if self.radio.say("REPORT_END_PURSUIT", &rctx) {
-                                talk_sync(&mut self.speech, &mut self.radio);
-                                self.speech.request_taunt("PLAYER_LOSE_POLICE", "");
+                            if self.radio.say("REPORT_END_PURSUIT", &rctx) && !self.speech.busy() {
+                                self.speech.say("PLAYER_LOSE_POLICE");
                             }
                         }
                         // busted and ticket: the radio line is cut, no scenario
@@ -8526,7 +8519,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.speech.update(a, real_dt);
             self.radio.units = self.sound.radio_units();
             self.radio.update(a, dt);
-            talk_sync(&mut self.speech, &mut self.radio);
             // pedestrians shouting as they jump clear (their speech banks looked up ahead)
             self.peds.scan_voices_ahead(a.root());
             // (with the sound objects: F-39461 - the type's AMBIENT_PED object, the kind's sound, at the walker and
@@ -10125,6 +10117,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         // diagnostics: look at the nearest parked ("parked") or moving ("traffic") ambient car
         if let Ok(v) = std::env::var("MCLA_CAR_CAM") {
+            // ("pov:dx,dy,dz": the view as it is (the cockpit's) moved by a car-local offset, right / up / forward - to put the
+            // roof near the eye on purpose: the in-car depth offset's near cut, GitHub #43)
+            if let Some(o) = v.strip_prefix("pov:") {
+                let n: Vec<f32> = o.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                if let (Some(c), 3) = (self.vehicles.player(), n.len()) {
+                    let rs = c.render_state(self.vehicles.render_alpha);
+                    let d = rs.right() * n[0] + rs.up() * n[1] + rs.forward() * n[2];
+                    self.chase.pos += d;
+                    self.chase.look += d;
+                    self.cam.pos = self.chase.pos;
+                }
+            }
             // ("player_side": beside the player's car at its tail, looking at the exhaust - carfx.rs checks)
             if v == "player_side" {
                 if let Some(c) = self.vehicles.player() {
@@ -15882,17 +15886,6 @@ fn siren_clock_ms() -> u64 {
 
 /// What the police radio may say about the player: his street, the nearest cross street,
 /// his heading and his car.
-/// The one speech manager the player's speaker and the police radio share in the original (F-95157, `speech::PLAYER` /
-/// `speech::RADIO`): the port's two players see each other's scenario playing, and a player request's cut of the radio
-/// (rank 1 above 0) stops its line.
-fn talk_sync(sp: &mut speech::Speech, r: &mut radio::Radio) {
-    if std::mem::take(&mut sp.cut_radio) {
-        r.cut();
-    }
-    sp.radio_on = r.busy();
-    r.speech_on = sp.busy();
-}
-
 fn radio_ctx(vehicles: &vehicles::Vehicles, world: &world::World, hour: f32) -> radio::Ctx {
     let mut ctx = radio::Ctx { hour, ..Default::default() };
     let Some(p) = vehicles.player() else { return ctx };

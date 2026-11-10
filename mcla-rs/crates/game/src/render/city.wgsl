@@ -1279,9 +1279,15 @@ fn vs_body(in: VsIn) -> VsOut {
     if (obj.params.w < 15.5 && in.uv1.y > 76.5 && in.uv1.y < 77.5) {
         o.clip.z = o.clip.z + obj.lamp_b[18].x * o.clip.w;
     }
-    // (the in-car view's car: params.w bit 512, render state 12 = G+5700 = 0.275 around the body and each part - vehicles.rs)
+    // (the in-car view's car: params.w bit 512, render state 12 = G+5700 = 0.275 around the body and each part - vehicles.rs.
+    // The device adds the polygon offset after clipping and clamps the depth to 1: the near plane cuts at its own 0.2 m, a point
+    // between 0.2 and 0.2 / 0.725 m is drawn at depth 1. Here the offset depth is held at w (depth 1) and fs_main drops what lies
+    // before the near plane by the unoffset depth (`incar_cut`), so the cut is the near plane's, not 0.276 m (GitHub #43: the
+    // 240SX's roof and A-pillar cut away at speed). Approx.: across a triangle with a held vertex the depth is the straight
+    // blend, not the clamp. MCLA_DEBUG_VIEW=786: the offset on the clip z as before)
     if (obj.params.w > 15.5 && (u32(round(obj.params.w)) & 512u) != 0u) {
         o.clip.z = o.clip.z + 0.275 * o.clip.w;
+        if (!(g.params.w > 785.5 && g.params.w < 786.5)) { o.clip.z = min(o.clip.z, o.clip.w); }
     }
     // (car paint's directional fade, per vertex; the material's mode is not visible to this stage -
     // only the paint branch of the pixel stage reads it)
@@ -2002,8 +2008,16 @@ fn oct_dec(e: vec2<f32>) -> vec3<f32> {
     return normalize(v);
 }
 
+// (the in-car view's car, params.w bit 512: before the near plane by its depth without the offset - vs_body holds the offset
+// depth at 1 there, the device would have clipped it; in.wpos is the drawn place, so its clip position is the vertex stage's)
+fn incar_cut(wpos: vec3<f32>) -> bool {
+    if (!(obj.params.w > 15.5 && (u32(round(obj.params.w)) & 512u) != 0u) || (g.params.w > 785.5 && g.params.w < 786.5)) { return false; }
+    let c = g.view_proj * vec4<f32>(wpos, 1.0);
+    return c.z > c.w;
+}
 @fragment
 fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32> {
+    if (incar_cut(in.wpos)) { discard; }
     car_wp = in.wpos;
     // (a badge's map - PS_BumpedChrome's NormalSampler, normal in rgb, outline in alpha - is read one level sharper: its
     // fetch constant has LOD bias -1 and anisotropy 4 : 1 (word 4 0x003e0dc3, word 3 0x06a80d10 of the recorded frame);
