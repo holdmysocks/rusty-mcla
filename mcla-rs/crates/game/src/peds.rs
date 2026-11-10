@@ -132,15 +132,11 @@ struct Ped {
     /// walking speed factor 0.85 .. 1.15 (beh +1336) and the speed now (ped +412)
     scale: f32,
     speed: f32,
-    /// the rail's end point; `true` for a rail around something in the way
-    rail: Option<(Vec3, bool)>,
     /// stop timer and the stops in a row (behaviour +500, +532 >> 3)
     stop: f32,
     stops: u32,
     /// sidestep or dodge: from, to, seconds into it, length
     slide: Option<(Vec3, Vec3, f32, f32)>,
-    /// the last path was requested facing backwards: turn round to walk it
-    turn_round: bool,
     /// yaw still to turn after the Pivot clip, and what follows the turn (angry after a dodge)
     turn_rest: f32,
     then_angry: bool,
@@ -156,8 +152,8 @@ struct Ped {
     blend_len: f32,
     /// U, the forward ring, sphere 0 and the target facing (F-49074)
     ground: Ground,
-    /// the path rail ridden (F-61656) and its phase
-    ride: Option<(crate::tcp_rail::TcpRail, f32)>,
+    /// the rail follower (behaviour +32, F-50894): the path rail (F-61656) or a detour rail, and its phase
+    follow: Follow,
     /// the clip slots (+4784 .. +4884): the locomotion clip playing, its rate, the one-off clip (F-29547 / F-52026)
     clips: ClipSlots,
 }
@@ -796,6 +792,8 @@ struct Ground {
     face: Vec3,
     /// this frame's target facing (the rail's, or the push's while sliding aside)
     t_face: Vec3,
+    /// T's place is the follower's pose this frame (F-74567: the rail point, its height included)
+    t_full: bool,
     /// sphere 1 (F-59837 with k = 1): its centre (+48, T's place at the draw) and pending flag (+20); tested at the next
     /// manager frame's start, read by that frame's sidestep (F-26402)
     centre1: Vec3,
@@ -838,8 +836,10 @@ fn walker_ground(p: &mut Ped, col: &WorldCollider, cur: Vec3, frames: u32, draw0
         g.t_face = g.face;
     }
     let face = if g.t_face != Vec3::ZERO { g.t_face } else { flat(p.rot * -Vec3::Z).normalize_or(Vec3::Z) };
-    // (the port's rails are flat: T's height is where the walker was drawn; the original's is the rail's, F-74567)
-    let t_place = if clip { p.pos } else { Vec3::new(p.pos.x, cur.y, p.pos.z) };
+    // (walking, T is the follower's pose F-74567, the rail point with its height; otherwise - the slide's push, no rail -
+    // the port keeps the height the walker was drawn at)
+    let t_place = if clip || g.t_full { p.pos } else { Vec3::new(p.pos.x, cur.y, p.pos.z) };
+    g.t_full = false;
     if frames > 0 {
         g.hits.clear();
         if g.pending {
@@ -950,6 +950,133 @@ pub(crate) fn next_rail(pts: &[Vec3], p: Vec3, h0: Vec3, r: f32) -> Option<crate
         }
     }
     rail_to_mid(pts, i, p, h0, r, RAIL_TURN_LAST)
+}
+
+// ---- The walker's rail follower (F-50894 on the behaviour's +32) with the sidewalk behaviour's next rail F-95960 (slot
+// 15; slot 16 F-31992 gives no rail after it, phase 0), the attach F-48384, the pose F-74567 and the turn round F-94431.
+// Decode and evidence: docs/reference/people/ped_walk_rule.md section 9 (work/traffic-detail/walk/off).
+
+/// The follower of a walker (behaviour +32): the rail +156 (the behaviour's own mcRailAmbientTCP at +1364, or a detour
+/// rail) with its phase +176, and +192 the tangent its slot 9 last wrote (made unit at an attach). The TCP class has no
+/// curve speed (slot 11 returns 0), so +180 stays 0 and the advance is step / length (slot 6, F-70353).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Follow {
+    pub rail: Option<crate::tcp_rail::TcpRail>,
+    pub phase: f32,
+    pub tan: crate::physics::artic::V4,
+}
+
+/// F-50894's least phase change for the carry (1e-6) and F-95960's least tangent for the old rail's heading (1e-5).
+const FOLLOW_MIN_MOVE: f32 = f32::from_bits(0x3586_37BD);
+const NEXT_MIN_TANGENT: f32 = f32::from_bits(0x3727_C5AC);
+/// F-94431: beyond this turn (0x3F490FDB, pi / 4) a Pivot clip; a clip with an anim ends 8 frames (8 x 1/30, fused)
+/// before its length.
+const TURN_PIVOT: f32 = f32::from_bits(0x3F49_0FDB);
+
+fn v4(v: Vec3) -> crate::physics::artic::V4 {
+    crate::physics::artic::V4::new(v.x, v.y, v.z, 0.0)
+}
+
+fn v3(v: crate::physics::artic::V4) -> Vec3 {
+    Vec3::new(v.0[0], v.0[1], v.0[2])
+}
+
+impl Follow {
+    /// F-48384: the rail at `phase`; +180 = 0 and +192 = slot 9's tangent there made unit (guarded: zero stays zero).
+    pub(crate) fn set(&mut self, rail: Option<crate::tcp_rail::TcpRail>, phase: f32) {
+        self.rail = rail;
+        self.phase = phase;
+        self.tan = crate::physics::artic::V4::ZERO;
+        if let Some(r) = rail {
+            self.tan = crate::vehicles::traffic::vu_unit(v4(r.tangent(phase)), true);
+        }
+    }
+
+    /// F-74567: the target T while walking - the rail's point at the phase and row 2 = 0 - the tangent slot 9 writes
+    /// (kept at +192), made unit (guarded); with no rail none (slot 80 does not run that frame).
+    pub(crate) fn pose(&mut self) -> Option<(Vec3, Vec3)> {
+        let r = self.rail?;
+        let t = v4(r.tangent(self.phase));
+        self.tan = t;
+        let r2 = crate::vehicles::traffic::vu_unit(crate::physics::artic::V4::ZERO.sub(t), true);
+        Some((r.point(self.phase), v3(r2)))
+    }
+}
+
+/// F-50894 for a walker: the phase moved by `speed` x `dt` (single products; only a step above 0 moves it, backwards
+/// when the follower's +152 has both 0x80 and 0x40), and past phase 1 once: the rest (phase - 1) x step / fsel(moved -
+/// 1e-6, moved, 1e-6) onto the rail `next` gives for the old one at its phase (F-95960, start phase 0), attached at 0
+/// (F-48384) and, when the rest is above 0, advanced by it and clamped to 0 .. 1 by `fsel`. True when it changed rail.
+pub(crate) fn follow_step(f: &mut Follow, speed: f32, dt: f32, reverse: bool, next: &mut dyn FnMut(&crate::tcp_rail::TcpRail, f32) -> Option<crate::tcp_rail::TcpRail>) -> bool {
+    let Some(r) = f.rail else { return false };
+    let old = f.phase;
+    let step = speed * dt;
+    if step > 0.0 {
+        f.phase = r.advance(f.phase, if reverse { -step } else { step });
+    }
+    if !(f.phase > 1.0) {
+        return false;
+    }
+    let moved = f.phase - old;
+    let den = if moved - FOLLOW_MIN_MOVE >= 0.0 { moved } else { FOLLOW_MIN_MOVE };
+    let rest = ((f.phase - 1.0) * step) / den;
+    let n = next(&r, f.phase);
+    f.set(n, 0.0);
+    if let (Some(n), true) = (f.rail, rest > 0.0) {
+        let p = n.advance(f.phase, rest);
+        let p0 = if p >= 0.0 { p } else { 0.0 };
+        f.phase = if p0 - 1.0 >= 0.0 { 1.0 } else { p0 };
+    }
+    true
+}
+
+/// What F-95960 did: the next rail (none: the follower rides none), whether it gave the path up (F-50795), and the
+/// point the walker turns round to face (F-94431) when it took the rail backwards.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NextRail {
+    pub rail: Option<crate::tcp_rail::TcpRail>,
+    pub give_up: bool,
+    pub turn_to: Option<Vec3>,
+}
+
+/// F-95960 (the sidewalk behaviour's slot 15): the next rail along the path `pts`. From the old rail's point at its
+/// phase when it is past 1 (slot 8) and its tangent made unit (F-41334 `aiv::norm_or`, 1e-5, else `fwd`), otherwise from
+/// the walker's `place` and `fwd` (0 - its matrix's row 2); with no path points none (nothing given up); a reversed
+/// path - stops (`stops` = M+260 >> 3) more than one and even - heads 0 - H. The rail F-61656 at the type's radius `r`:
+/// valid, taken (turning round to P + H when reversed); not valid, the path given up.
+pub(crate) fn walk_next_rail(pts: &[Vec3], old: Option<(&crate::tcp_rail::TcpRail, f32)>, place: Vec3, fwd: Vec3, stops: u32, r: f32) -> NextRail {
+    let (mut p, mut h) = (place, fwd);
+    if let Some((o, ph)) = old {
+        if ph > 1.0 {
+            p = o.point(ph);
+            h = crate::aiv::norm_or(o.tangent(ph), NEXT_MIN_TANGENT, fwd);
+        }
+    }
+    let none = NextRail { rail: None, give_up: false, turn_to: None };
+    if pts.is_empty() {
+        return none;
+    }
+    let rev = (stops as i32) > 1 && stops & 1 == 0;
+    if rev {
+        h = crate::tcp_rail::vdiff(Vec3::ZERO, h);
+    }
+    match next_rail(pts, p, h, r) {
+        Some(q) => NextRail { rail: Some(q), give_up: false, turn_to: rev.then(|| crate::tcp_rail::vadd3(p, h)) },
+        None => NextRail { give_up: true, ..none },
+    }
+}
+
+/// F-94431's turn: the angle F-32060 from the walker's ahead (0, 0, -1) to `point` seen in its own frame (`rows` = r0, r1,
+/// r2 and the place of its matrix; the vector unit's three-lane dots of each row with point - place).
+pub(crate) fn turn_angle(rows: [Vec3; 4], point: Vec3) -> f32 {
+    let d = v4(point).sub(v4(rows[3]));
+    let l = |r: Vec3| v4(r).dot3(d).0[0];
+    crate::aiv::ang_xz(Vec3::new(l(rows[0]), l(rows[1]), l(rows[2])), Vec3::new(0.0, 0.0, -1.0))
+}
+
+/// F-94431's clip timer for a Pivot clip of length `len`: len - 8 x (1/30), fused.
+pub(crate) fn turn_clip_end(len: f32) -> f32 {
+    crate::physics::exact::fma(-f32::from_bits(0x4100_0000), f32::from_bits(0x3D08_8889), len)
 }
 
 /// F-92375: the slide's speed, its plan distance over its time (at least 1e-6 s).
@@ -1075,11 +1202,6 @@ pub(crate) fn clip_start(s: &mut ClipSlots, idx: i32, rate: f32, resident: bool)
     s.oneoff = 0;
     s.rate = rate;
     k
-}
-
-fn rotate_y(v: Vec3, a: f32) -> Vec3 {
-    let (s, c) = a.sin_cos();
-    Vec3::new(v.x * c + v.z * s, v.y, -v.x * s + v.z * c)
 }
 
 /// Signed yaw from direction `a` to direction `b` (both flat), in the port's yaw sense.
@@ -2198,9 +2320,8 @@ fn dodge_cars(p: &mut Ped, ty: &PedType, threats: &[Threat], side: &[SideSlot], 
     let m = p.dodge;
     let clip = m.clip.and_then(|e| ty.avoid.get(e)?.clip);
     if world.dropped {
-        p.rail = None;
         give_up_path(p);
-        p.ride = None;
+        p.follow.set(None, 0.0);
         p.dodged = m.car.and_then(|j| threats.get(j)).map(|t| t.pos);
         *evades += 1;
         match clip {
@@ -2298,6 +2419,71 @@ fn loco_clip(p: &mut Ped, ty: &PedType, st: u32, flags: u32, slide: f32) -> f32 
 /// playback rate.
 #[allow(clippy::too_many_arguments)]
 fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[Obst], col: Option<&WorldCollider>, nav: Option<&NavSys>, threats: &[Threat], side: &[SideSlot], due: u8, dt: f32, rand: &mut dyn FnMut() -> f32, rng: &mut DodgeRng, evades: &mut u32, speech: &mut Vec<Speech>, remark: &mut Remarks, frame: u32, stamp: &mut u32) -> f32 {
+    // the walker's matrix as F-95960 and F-94431 read it (the place and rows drawn last; this frame's slot 80 is later)
+    let rows = [p.rot * Vec3::X, p.rot * Vec3::Y, p.rot * Vec3::Z, p.pos];
+    let mut rate = sidewalk_core(p, ty, me, peds, props, col, nav, threats, side, due, dt, rand, rng, evades, speech, remark, frame, stamp);
+    // the follower F-50894, after the take, every frame (a slide's start F-83234 has unloaded the rail): the phase at the
+    // walker's speed, past 1 once onto F-95960's next rail from the old one's end
+    let (pts, stops, radius) = (p.wp.points().to_vec(), p.stops, ty.turn_radius);
+    let mut nx = None;
+    follow_step(&mut p.follow, p.speed, dt, false, &mut |o, ph| {
+        let n = walk_next_rail(&pts, Some((o, ph)), rows[3], crate::tcp_rail::vdiff(Vec3::ZERO, rows[2]), stops, radius);
+        nx = Some(n);
+        n.rail
+    });
+    if let Some(n) = nx {
+        // (attached and carried on by the follower itself)
+        if n.give_up {
+            give_up_path(p);
+        }
+        if n.turn_to.is_some_and(|pt| turn_round(p, ty, pt, rows)) {
+            rate = 1.0;
+        }
+    }
+    // T while walking (F-94626 -> F-74567, M+260 bits 0x4 / 0x2 clear and no one-off clip): the rail's point and
+    // facing at the phase; with no rail the port keeps the walker where it is
+    if p.slide.is_none() && !matches!(p.state, State::Evade(_) | State::Angry(_) | State::Turn(_)) {
+        if let Some((at, r2)) = p.follow.pose() {
+            p.pos = at;
+            let face = crate::tcp_rail::vdiff(Vec3::ZERO, r2);
+            p.ground.face = face;
+            p.ground.t_face = face;
+            p.ground.t_full = true;
+        }
+    }
+    rate
+}
+
+/// F-95960's result taken: the path given up (F-50795, the rail kept), the rail attached at phase 0 (F-48384) and, taken
+/// backwards, the turn round F-94431 to face P + H; true when it started a Pivot clip.
+fn rail_taken(p: &mut Ped, ty: &PedType, nx: NextRail, rows: [Vec3; 4]) -> bool {
+    if nx.give_up {
+        give_up_path(p);
+    }
+    p.follow.set(nx.rail, 0.0);
+    nx.turn_to.is_some_and(|pt| turn_round(p, ty, pt, rows))
+}
+
+/// F-94431 for a walker that took its path backwards: the turn to `pt` (`turn_angle` in the walker's drawn frame `rows`);
+/// beyond 45 degrees (NaN too: `ble`) the stop timer 0 and the Pivot clip F-21043 picks for that angle, its rest the
+/// turn left after it (M+252; M+256 0), the clip a one-off; at most 45 degrees nothing (the rail turns the walker). Its
+/// sliding branch (M+252 = -angle and F-73407) is not reached from here: a slide's start unloads the rail and the take
+/// needs M+260 bit 0x4 clear.
+fn turn_round(p: &mut Ped, ty: &PedType, pt: Vec3, rows: [Vec3; 4]) -> bool {
+    let ang = turn_angle(rows, pt);
+    if ang.abs() <= TURN_PIVOT {
+        return false;
+    }
+    p.stop = 0.0;
+    let Some((k, rest)) = pivot_pick(ty, -ang) else { return false };
+    p.turn_rest = rest;
+    p.then_angry = false;
+    set_clip_state(p, State::Turn(k));
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sidewalk_core(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[Obst], col: Option<&WorldCollider>, nav: Option<&NavSys>, threats: &[Threat], side: &[SideSlot], due: u8, dt: f32, rand: &mut dyn FnMut() -> f32, rng: &mut DodgeRng, evades: &mut u32, speech: &mut Vec<Speech>, remark: &mut Remarks, frame: u32, stamp: &mut u32) -> f32 {
     // (the behaviour's facing: the rail's, kept apart from the drawn one, which is the mean of the last 8 frames')
     let fwd = if p.ground.face != Vec3::ZERO { p.ground.face } else { flat(p.rot * -Vec3::Z).normalize_or(Vec3::Z) };
     p.ground.t_face = fwd;
@@ -2306,23 +2492,29 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
     // the car dodge, every frame (F-15352 from F-97113, no gate of its own): a dodge's clip slides the walker here
     let dodging = dodge_frame(p, ty, threats, side, col, nav, dt, rand, rng, evades, speech, remark);
     // then the path (F-30466 from the behaviour's update F-72378): the request F-73065 - backwards after an even number
-    // of stops in a row, more than one - and the take F-23649 of a path delivered; a path taken drops the rails, the
-    // next rail F-95960 turns round when the stops ask backwards. M+260: bit 0x4 sliding, 0x2 a clip of its own.
+    // of stops in a row, more than one - and the take F-23649 of a path delivered: with M+260 bits 0x4 (sliding) and 0x2
+    // (a clip of its own) clear, the next rail F-95960 from the walker's matrix (no old rail), attached at phase 0; it
+    // turns round (F-94431) when the stops ask backwards.
     let m_flags = p.dodge.flags | if p.slide.is_some() { 4 } else { 0 } | if matches!(p.state, State::Evade(_) | State::Angry(_) | State::Turn(_)) { 2 } else { 0 };
     let rev = p.stops > 1 && p.stops % 2 == 0;
     let mat = ped_mat(p);
     // (the filter type +96 and the length type +124 x scale are carried; the port's walk reads neither)
     p.wp.request(m_flags, frame, stamp, &mat, rev, AI_SIDEWALK as u32, 0.0);
     if p.wp.take(m_flags) {
-        p.rail = None;
-        p.ride = None;
-        p.turn_round = rev && !p.wp.points().is_empty();
+        let nx = walk_next_rail(p.wp.points(), None, p.pos, crate::tcp_rail::vdiff(Vec3::ZERO, p.rot * Vec3::Z), p.stops, ty.turn_radius);
+        let rows = [p.rot * Vec3::X, p.rot * Vec3::Y, p.rot * Vec3::Z, p.pos];
+        if rail_taken(p, ty, nx, rows) {
+            return 1.0;
+        }
     }
     if dodging {
         return 1.0;
     }
-    // clips playing (angry, turn): the caller moves the walker by their root
+    // clips playing (angry, turn): the caller moves the walker by their root; the wanted speed is 0 (F-33058 state 3)
+    // and the follower rides on at the speed left (F-72378 runs it whatever M does)
     if matches!(p.state, State::Evade(_) | State::Angry(_) | State::Turn(_)) {
+        let (_, want, lag) = locomotion(2, 0.0, true, p.scale, true, || 0.0, &ty.a28, &ty.a36);
+        p.speed += (want - p.speed) * (dt / lag).min(1.0);
         return 1.0;
     }
     if p.hold > 0.0 {
@@ -2344,20 +2536,6 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
         // (F-56160: no end on the slide's first step, when the time was 0.0)
         p.slide = if t0 != 0.0 && t >= len { None } else { Some((a, b, t, len)) };
         return loco_clip(p, ty, st, 4, s);
-    }
-    // a reversed path: turn round as it is taken (F-95960; a Pivot clip beyond
-    // 45 degrees), which ends the wait
-    if p.turn_round {
-        p.turn_round = false;
-        let want = yaw_between(fwd, -fwd);
-        if let Some((k, rest)) = (want.abs() > std::f32::consts::FRAC_PI_4).then(|| pivot_pick(ty, want)).flatten() {
-            p.turn_rest = rest;
-            p.then_angry = false;
-            p.stop = 0.0;
-            p.speed = 0.0;
-            set_state(p, State::Turn(k));
-            return 1.0;
-        }
     }
     // stopped: wait; when the time is up, still in the way -> stop again, two or more stops in
     // a row -> give up the path (the next one may be asked for backwards)
@@ -2390,7 +2568,7 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
         // not a walker or traffic (F-10083: type & 0x1020 -> r29 = 0); the radius F-36195 at the walker's speed with
         // its type's fMinTurningRadius. The sweep F-23371 (mask 0x383E, 0.3 + the type's +492 up) is the port's
         // capsule test along the rail's chords (its world, not the level's query).
-        let (sp, sh) = match p.ride {
+        let (sp, sh) = match p.follow.rail.map(|r| (r, p.follow.phase)) {
             Some((r, ph)) => {
                 let mut t = r.tangent(ph);
                 t.y = 0.0;
@@ -2423,9 +2601,9 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
         }
         match pass {
             Some(r) => {
-                // (the rail ridden by phase to its end T, then the path's rails again)
-                p.rail = Some((r.t, false));
-                p.ride = Some((r, 0.0));
+                // (F-79428 attaches it at the phase its result holds, 0: ridden to its end T, then F-95960's next rail
+                // from its end)
+                p.follow.set(Some(r), 0.0);
                 p.stops = 0;
             }
             None => {
@@ -2435,7 +2613,7 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
                 p.stop = stop_time(ty.idle.anim.duration, &mut p.mwc);
                 p.stops += 1;
                 if expired && p.stops > 1 {
-                    p.rail = None;
+                    // (F-72378: the path given up; the rail being ridden is kept to its end)
                     give_up_path(p);
                 }
                 set_state(p, State::Idle);
@@ -2447,72 +2625,15 @@ fn sidewalk_step(p: &mut Ped, ty: &PedType, me: usize, peds: &[Vec3], props: &[O
         // nothing in the slot: the stops in a row start again
         p.stops = 0;
     }
-    // along the rails, at the walking speed (F-33058: the speed scale x the walk clip's speed)
-    let mut step = {
-        let (_, want, lag) = locomotion(0, 0.0, true, p.scale, false, || 0.0, &ty.a28, &ty.a36);
-        p.speed += (want - p.speed) * (dt / lag).min(1.0);
-        p.speed * dt
-    };
-    let mut heading = fwd;
-    for _ in 0..3 {
-        if p.rail.is_none() {
-            // the next path rail (F-61656): an arc-line-arc rail to a segment's middle; none drops the path and the
-            // walker stands until the next one
-            let pts: Vec<Vec3> = p.wp.points().to_vec();
-            match next_rail(&pts, p.pos, heading, ty.turn_radius) {
-                Some(r) => {
-                    p.rail = Some((r.t, false));
-                    p.ride = Some((r, 0.0));
-                }
-                None => {
-                    // (F-95960 gives up a path it cannot rail; with no points held nothing is given up, so a request
-                    // out is not cancelled - whether the follower asks F-95960 without a path is not decoded)
-                    if !p.wp.points().is_empty() {
-                        give_up_path(p);
-                    }
-                    break;
-                }
-            }
-        }
-        let (target, around) = p.rail.unwrap();
-        if let (false, Some((r, ph))) = (around, p.ride) {
-            // ridden by phase (the phase advance F-70353, the point F-56929, the heading its tangent F-28568); what is
-            // left past its end goes on to the next rail (the follower's carry for walkers is not decoded: the port's)
-            let ph2 = r.advance(ph, step);
-            let at = r.point(ph2);
-            p.pos = Vec3::new(at.x, p.pos.y, at.z);
-            heading = flat(r.tangent(ph2)).normalize_or(heading);
-            if ph2 >= 1.0 {
-                step = (ph2 - 1.0) * r.len();
-                p.rail = None;
-                p.ride = None;
-                continue;
-            }
-            p.ride = Some((r, ph2));
-            break;
-        }
-        let to = flat(target - p.pos);
-        let dist = to.length();
-        // an arc of the turning radius, then straight on
-        let turn = yaw_between(heading, to.normalize_or(heading));
-        let a = turn.clamp(-step / ty.turn_radius.max(0.01), step / ty.turn_radius.max(0.01));
-        heading = rotate_y(heading, a);
-        if dist <= step && turn.abs() < 0.2 {
-            p.pos = Vec3::new(target.x, p.pos.y, target.z);
-            step -= dist;
-            p.rail = None;
-            continue;
-        }
-        p.pos += heading * step;
-        break;
-    }
-    if p.rail.is_none() && p.wp.points().is_empty() {
+    // walking at the wanted speed (F-33058: the speed scale x the walk clip's speed; no rail: idle) - the follower rides
+    // the rail by it after this (`sidewalk_step`)
+    if p.follow.rail.is_none() {
         set_state(p, State::Idle);
         p.speed = 0.0;
         return 1.0;
     }
-    p.ground.face = heading;
-    p.ground.t_face = heading;
+    let (_, want, lag) = locomotion(0, 0.0, true, p.scale, false, || 0.0, &ty.a28, &ty.a36);
+    p.speed += (want - p.speed) * (dt / lag).min(1.0);
     loco_clip(p, ty, 1, 0, 0.0)
 }
 
@@ -3439,11 +3560,9 @@ impl Peds {
                 query: None,
                 scale,
                 speed: 0.0,
-                rail: None,
                 stop: 0.0,
                 stops: 0,
                 slide: None,
-                turn_round: false,
                 turn_rest: 0.0,
                 then_angry: false,
                 dodged: None,
@@ -3454,7 +3573,7 @@ impl Peds {
                 life: 8.0,
                 blend_len: 0.25,
                 ground: Ground::default(),
-                ride: None,
+                follow: Follow::default(),
                 clips: ClipSlots::default(),
             });
             spawned += 1;
@@ -3481,7 +3600,7 @@ impl Peds {
                 State::Angry(_) => "angry",
                 State::Turn(_) => "turn",
             };
-            let _ = writeln!(w, "{:.2}	P	{}	{:.2}	{:.2}	{:.2}	{}	{}	{:.2}	{}	{}	{}	{}", t, p.key.1, p.pos.x, p.pos.y, p.pos.z, (p.state == State::Walk) as u8, st, p.stop, p.stops, p.wp.points().len(), p.rail.map_or(0, |r| 1 + r.1 as u8), p.slide.is_some() as u8);
+            let _ = writeln!(w, "{:.2}	P	{}	{:.2}	{:.2}	{:.2}	{}	{}	{:.2}	{}	{}	{}	{}", t, p.key.1, p.pos.x, p.pos.y, p.pos.z, (p.state == State::Walk) as u8, st, p.stop, p.stops, p.wp.points().len(), p.follow.rail.is_some() as u8, p.slide.is_some() as u8);
         }
         let _ = w.flush();
     }
@@ -3575,11 +3694,9 @@ impl Peds {
                     query: None,
                     scale: 1.0,
                     speed: 0.0,
-                    rail: None,
                     stop: 0.0,
                     stops: 0,
                     slide: None,
-                    turn_round: false,
                     turn_rest: 0.0,
                     then_angry: false,
                     dodged: None,
@@ -3590,7 +3707,7 @@ impl Peds {
                     life: 8.0,
                     blend_len: 0.25,
                     ground: Ground::default(),
-                    ride: None,
+                    follow: Follow::default(),
                     clips: ClipSlots::default(),
                 });
             }
@@ -4110,11 +4227,9 @@ impl Peds {
             query: None,
             scale: 1.0,
             speed: 0.0,
-            rail: None,
             stop: 0.0,
             stops: 0,
             slide: None,
-            turn_round: false,
             turn_rest: 0.0,
             then_angry: false,
             dodged: None,
@@ -4125,7 +4240,7 @@ impl Peds {
             life,
             blend_len: 0.25,
             ground: Ground::default(),
-            ride: None,
+            follow: Follow::default(),
             clips: ClipSlots::default(),
         });
         true
@@ -5221,6 +5336,240 @@ mod tests {
             let (c, o) = l[2..].split_once(" -> ").unwrap();
             (c.split(' ').map(ref_word).collect(), o)
         })
+    }
+
+    /// The walker's follower step F-50894 and the path take F-23649 run offline whole (`work/traffic-detail/walk/off`:
+    /// the sidewalk behaviour's slots 15 F-95960 / 16 F-31992 from its vtable, F-61656 and its closure, the give-up
+    /// F-50795, the turn round F-94431 with the angle F-32060, the TCP rail class's slots 6 / 8 / 9 / 11, the attach
+    /// F-48384 and the unload as generated; the Pivot clip pick and F-73407 logging stubs) on 4,000 cases - sidewalk-like
+    /// paths of 0 - 48 points, the walker on or about them facing along, against or across, its own or a physical
+    /// instance's matrix, rails F-61656 builds from its place, phases about the end, speeds 0 / below 0 / any, dt 1/30 or
+    /// any, every stop count and M bit, the follower's reverse bits: [`follow_step`] with [`walk_next_rail`],
+    /// [`Follow::set`] and [`turn_angle`] give the same changed rail, phase, +180, +192, the new rail's record, the
+    /// give-up, whether the Pivot clip is asked for and with which angle, M+192 / +208, the stop timer, M+240 / +244 /
+    /// +248 / +256 / +260, and M+252 with the after-turn call while sliding.
+    #[test]
+    fn walk_follow_matches_the_original() {
+        use crate::tcp_rail::TcpRail;
+        let (mut n, mut crossed, mut turns, mut pivots, mut gave, mut takes) = (0, 0, 0, 0, 0, 0);
+        let h = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let bits = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+        let rail_of = |w: &[u32]| {
+            let f = |i: usize| f32::from_bits(w[i]);
+            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            TcpRail { a: v(0), b: v(4), a1: f(8), a2: f(9), c1: v(12), c2: v(16), r: f(20), p: v(24), t: v(28), h0: v(32), h1: v(36), flags: (w[40] >> 24) as u8 }
+        };
+        let same_rail = |o: &[u32], q: &TcpRail| -> bool {
+            let v = |i: usize, w: Vec3| o[i] == w.x.to_bits() && o[i + 1] == w.y.to_bits() && o[i + 2] == w.z.to_bits();
+            v(0, q.a) && v(4, q.b) && o[8] == q.a1.to_bits() && o[9] == q.a2.to_bits() && v(12, q.c1) && v(16, q.c2) && o[20] == q.r.to_bits()
+                && v(24, q.p) && v(28, q.t) && v(32, q.h0) && v(36, q.h1) && (o[40] >> 24) as u8 & 0xE0 == q.flags & 0xE0
+        };
+        for l in include_str!("testdata/walk_follow_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+            let p: Vec<&str> = l.split(" | ").collect();
+            let a: Vec<&str> = p[0].split_whitespace().collect();
+            let b: Vec<u32> = p[1].split_whitespace().map(h).collect();
+            let o: Vec<u32> = p[2].split_whitespace().map(h).collect();
+            let fa = |i: usize| f32::from_bits(h(a[i]));
+            let (dt, speed, old, f152, sw) = (fa(0), fa(1), fa(2), h(a[3]), h(a[4]));
+            let (cnt, r, b109, clip, dur): (usize, f32, u32, u32, f32) = (a[5].parse().unwrap(), fa(6), a[7].parse().unwrap(), h(a[10]), fa(11));
+            let fb = |i: usize| f32::from_bits(b[i]);
+            let vb = |i: usize| Vec3::new(fb(i), fb(i + 1), fb(i + 2));
+            let pts: Vec<Vec3> = (0..cnt).map(|k| vb(3 + 4 * k)).collect();
+            let q0 = 3 + 4 * cnt;
+            let inst = b[0] & 0x20 != 0 && b[1] != 0 && b[2] != 0;
+            let m0 = if inst { q0 + 60 } else { q0 + 44 };
+            let rows = [vb(m0), vb(m0 + 4), vb(m0 + 8), vb(m0 + 12)];
+            let (place, fwd) = (rows[3], crate::tcp_rail::vdiff(Vec3::ZERO, rows[2]));
+            let k = q0 + 76 + 7;
+            let (rail, mode, dl) = (b[k] != 0, b[k + 1], b[k + 2] != 0);
+            let mut f = Follow { rail: rail.then(|| rail_of(&b[q0..q0 + 44])), phase: old, tan: crate::physics::artic::V4::ZERO };
+            let mut got: Option<NextRail> = None;
+            let set = if mode == 0 {
+                let c = follow_step(&mut f, speed, dt, f152 & 0xC0 == 0xC0, &mut |q, ph| {
+                    let nx = walk_next_rail(&pts, Some((q, ph)), place, fwd, sw >> 3, r);
+                    got = Some(nx);
+                    nx.rail
+                });
+                assert_eq!(o[0], c as u32, "crossed | {l}");
+                if c {
+                    assert_eq!((o[2], o[3]), (0, 0), "+160 / +164 | {l}");
+                }
+                crossed += c as u32;
+                c
+            } else if dl && sw & 6 == 0 {
+                let nx = walk_next_rail(&pts, None, place, fwd, sw >> 3, r);
+                got = Some(nx);
+                f.set(nx.rail, 0.0);
+                takes += 1;
+                true
+            } else {
+                false
+            };
+            assert_eq!(o[1] != 0, f.rail.is_some(), "rail | {l}");
+            assert_eq!(o[4], f.phase.to_bits(), "phase | {l}");
+            if set {
+                assert_eq!(o[5], 0, "+180 | {l}");
+                assert_eq!(&o[6..9], &bits(v3(f.tan)), "+192 | {l}");
+                if let Some(q) = f.rail {
+                    assert!(same_rail(&o[10..54], &q), "next rail {q:?} | {l}");
+                }
+            }
+            let nx = got.unwrap_or(NextRail { rail: None, give_up: false, turn_to: None });
+            gave += nx.give_up as u32;
+            let cnt_after: usize = p[2].split_whitespace().nth(54).unwrap().parse().unwrap();
+            assert_eq!(cnt_after, if nx.give_up { 0 } else { cnt }, "give-up | {l}");
+            assert_eq!(o[80], nx.give_up as u32, "query release | {l}");
+            let mut m260 = sw;
+            if let Some(pt) = nx.turn_to {
+                turns += 1;
+                let ang = turn_angle(rows, pt);
+                let piv = ang.abs() > TURN_PIVOT;
+                assert_eq!(&o[57..60], &bits(crate::tcp_rail::vadd3(place, fwd)), "M+192 | {l}");
+                assert_eq!(&o[61..64], &bits(pt), "M+208 | {l}");
+                assert_eq!(o[72], piv as u32, "pivot asked, angle {ang} | {l}");
+                let anim = piv && clip != 1 && clip != 0;
+                if piv {
+                    pivots += 1;
+                    assert_eq!((o[73], o[74]), ((b109 == 1) as u32, ang.to_bits()), "pivot args | {l}");
+                    assert_eq!((o[65], o[70], o[69]), (0, 0, h(a[9])), "stop timer, M+256, M+252 | {l}");
+                    assert_eq!(o[68], if clip == 1 { 0 } else { 0x24C00 }, "M+248 | {l}");
+                } else {
+                    assert_eq!(o[68], 0, "M+248 | {l}");
+                }
+                if anim {
+                    m260 |= 2;
+                    assert_eq!((o[66], o[67]), (0, turn_clip_end(dur).to_bits()), "M+240 / +244 | {l}");
+                } else if sw & 4 != 0 {
+                    assert_eq!((o[69], o[75], o[76]), ((-ang).to_bits(), 1, (-ang).to_bits()), "sliding: M+252, F-73407 | {l}");
+                }
+                if !(anim || sw & 4 != 0) {
+                    assert_eq!(o[75], 0, "F-73407 | {l}");
+                }
+            } else {
+                assert_eq!((o[72], o[75]), (0, 0), "no turn | {l}");
+            }
+            assert_eq!(o[71], m260, "M+260 | {l}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
+        assert!(crossed > 800 && turns > 100 && pivots > 50 && gave > 400 && takes > 300, "{crossed} {turns} {pivots} {gave} {takes}");
+    }
+
+    /// One walker update of the follower recording (work/traffic-detail/walk/rec, `MCLA_PED_FOLLOW`): what F-15352's
+    /// entry sees at the start of the walker's M update.
+    struct WalkRec {
+        dt: f32,
+        speed: f32,
+        phase: f32,
+        rail: Option<crate::tcp_rail::TcpRail>,
+        rail_words: Vec<u32>,
+        m260: u32,
+        m228: u32,
+        m248: u32,
+        rows: [Vec3; 4],
+        r: f32,
+        b784: u32,
+        pts: Vec<Vec3>,
+    }
+
+    fn walk_rec(l: &str) -> WalkRec {
+        let p: Vec<&str> = l.split(" | ").collect();
+        let w = |i: usize| -> Vec<u32> { p[i].split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect() };
+        let f = |b: u32| f32::from_bits(b);
+        let h: Vec<&str> = p[0].split_whitespace().collect();
+        let a = w(1);
+        let rw = w(2);
+        let m = w(3);
+        let b = w(4);
+        let rv = |q: &[u32], i: usize| Vec3::new(f(q[i]), f(q[i + 1]), f(q[i + 2]));
+        let mat = if b[1] != 0 { w(6) } else { w(5) };
+        let rows = [rv(&mat, 0), rv(&mat, 4), rv(&mat, 8), rv(&mat, 12)];
+        let t = w(7);
+        let c: Vec<&str> = p[8].split_whitespace().collect();
+        let cnt: usize = c[0].parse().unwrap();
+        let pw = if p.len() > 9 { w(9) } else { Vec::new() };
+        let cnt = cnt.min(pw.len() / 4);
+        let rail = (a[5] != 0).then(|| crate::tcp_rail::TcpRail {
+            a: rv(&rw, 0), b: rv(&rw, 4), a1: f(rw[8]), a2: f(rw[9]), c1: rv(&rw, 12), c2: rv(&rw, 16), r: f(rw[20]),
+            p: rv(&rw, 24), t: rv(&rw, 28), h0: rv(&rw, 32), h1: rv(&rw, 36), flags: (rw[40] >> 24) as u8,
+        });
+        WalkRec {
+            dt: f(u32::from_str_radix(h[3], 16).unwrap()), speed: f(a[0]), phase: f(a[1]), rail, rail_words: rw,
+            m260: m[0], m228: m[1], m248: m[2], rows, r: f(t[0]), b784: u32::from_str_radix(c[1], 16).unwrap(),
+            pts: (0..cnt).map(|k| rv(&pw, 4 * k)).collect(),
+        }
+    }
+
+    /// The follower against the recording (`MCLA_WALK_REC=<pairs file>`, work/traffic-detail/walk/rec/pairs.py): from
+    /// one update's rail, phase, speed, dt, matrix and path, [`follow_step`] with [`walk_next_rail`] (alone, or after the
+    /// take F-23649 of the next update's path) gives the next update's rail and phase.
+    #[test]
+    fn walk_follow_replays_the_recording() {
+        let text = match std::env::var("MCLA_WALK_REC") {
+            Ok(path) => std::fs::read_to_string(path).unwrap(),
+            Err(_) => include_str!("testdata/walk_follow_rec.txt").to_string(),
+        };
+        let same = |o: &[u32], q: &crate::tcp_rail::TcpRail| -> bool {
+            let v = |i: usize, w: Vec3| o[i] == w.x.to_bits() && o[i + 1] == w.y.to_bits() && o[i + 2] == w.z.to_bits();
+            v(0, q.a) && v(4, q.b) && o[8] == q.a1.to_bits() && o[9] == q.a2.to_bits() && v(12, q.c1) && v(16, q.c2) && o[20] == q.r.to_bits()
+                && v(24, q.p) && v(28, q.t) && v(32, q.h0) && v(36, q.h1) && (o[40] >> 24) as u8 & 0xE0 == q.flags & 0xE0
+        };
+        let mut c = std::collections::BTreeMap::<&str, u32>::new();
+        let mut shown = 0;
+        for l in text.lines() {
+            let (la, lb) = l.split_once(" || ").unwrap();
+            let (a, b) = (walk_rec(la), walk_rec(lb));
+            let fwd = crate::tcp_rail::vdiff(Vec3::ZERO, a.rows[2]);
+            let stops = b.m260 >> 3;
+            let ok = |f: &Follow| -> bool {
+                f.rail.is_some() == b.rail.is_some() && f.phase.to_bits() == b.phase.to_bits() && f.rail.as_ref().is_none_or(|q| same(&b.rail_words, q))
+            };
+            // (a) the follower alone
+            let mut fa = Follow { rail: a.rail, phase: a.phase, tan: crate::physics::artic::V4::ZERO };
+            let mut turned = None;
+            let moved = follow_step(&mut fa, a.speed, a.dt, false, &mut |o, ph| {
+                let n = walk_next_rail(&a.pts, Some((o, ph)), a.rows[3], fwd, stops, a.r);
+                turned = n.turn_to;
+                n.rail
+            });
+            let kind = if ok(&fa) {
+                if moved { if turned.is_some() { "follower: carried, turned" } else { "follower: carried" } } else if a.rail.is_some() { "follower: rode" } else { "no rail, none" }
+            } else {
+                // (b) the take of the next update's path, then the follower
+                let nx = walk_next_rail(&b.pts, None, a.rows[3], fwd, stops, a.r);
+                let mut fb = Follow::default();
+                fb.set(nx.rail, 0.0);
+                follow_step(&mut fb, a.speed, a.dt, false, &mut |o, ph| walk_next_rail(&b.pts, Some((o, ph)), a.rows[3], fwd, stops, a.r).rail);
+                if ok(&fb) {
+                    if nx.turn_to.is_some() { "take: turned" } else { "take" }
+                } else if b.rail.is_none() {
+                    "other: rail dropped"
+                } else if b.m260 & 4 != 0 || a.m260 & 4 != 0 {
+                    "other: sliding"
+                } else if a.rail.is_some() && b.rail.is_some() && a.rail_words == b.rail_words {
+                    if shown < 8 {
+                        shown += 1;
+                        eprintln!("phase off: {} -> {} want {} speed {} dt {} m260 {:x} {:x}", a.phase, fa.phase, b.phase, a.speed, a.dt, a.m260, b.m260);
+                    }
+                    "MISMATCH: same rail, phase"
+                } else {
+                    let to = b.rail.unwrap().t;
+                    if b.phase == 0.0 && !b.pts.contains(&to) {
+                        "detour (F-79428, its sweep not in the recording)"
+                    } else {
+                        "MISMATCH: a new rail"
+                    }
+                }
+            };
+            *c.entry(kind).or_default() += 1;
+            let _ = (a.m228, a.m248);
+        }
+        for (k, v) in &c {
+            eprintln!("{v:7}  {k}");
+        }
+        assert!(!c.keys().any(|k| k.starts_with("MISMATCH")), "{c:?}");
+        let n = |k: &str| c.get(k).copied().unwrap_or(0);
+        assert!(n("follower: rode") > 100 && n("follower: carried") > 50 && n("take") > 50, "{c:?}");
     }
 
     /// The next path rail F-61656 (with F-93741, F-17399, F-16360, F-85722, F-65534, F-62306) and F-16360 alone against the

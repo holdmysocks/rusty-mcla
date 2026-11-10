@@ -4637,7 +4637,7 @@ impl VRing {
 
 /// A vector made unit by the vector unit: dot3, the estimate refined once ((1 - l2 e^2)(0.5 e) + e); `guard`: an
 /// estimate of +inf (a zero vector) taken as 0 (the start-up +inf / 0 constants).
-fn vu_unit(v: crate::physics::artic::V4, guard: bool) -> crate::physics::artic::V4 {
+pub(crate) fn vu_unit(v: crate::physics::artic::V4, guard: bool) -> crate::physics::artic::V4 {
     use crate::physics::artic::V4;
     let l2 = v.dot3(v);
     let est = l2.rsqrte();
