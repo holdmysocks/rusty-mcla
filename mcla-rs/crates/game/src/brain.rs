@@ -996,14 +996,7 @@ impl Brain {
                 // s = the sign of up.y (0 at 0, -1 for NaN), a = asin(row 2 .y) - row 2 the back - and w = row 0 . the angular
                 // velocity (vmsum3fp), the clamps the original's fsel pair: the bike's in-air control levels it, vehsim section 12)
                 if car.wheels_down == 0 {
-                    use crate::physics::exact as ex;
-                    let uy = car.up.y;
-                    let s = if uy >= 0.0 { if -uy >= 0.0 { 0.0 } else { 1.0 } } else { -1.0 };
-                    let a = ex::guest_asin(-car.forward.y as f64) as f32;
-                    let w = ex::dot3(car.right, car.ang_vel);
-                    let v = ex::fma(-(s * a), f32::from_bits(0xc022_f983), w * -4.0);
-                    let v = if v - -1.0 >= 0.0 { v } else { -1.0 };
-                    air = (true, if v - 1.0 >= 0.0 { 1.0 } else { v });
+                    air = (true, air_axis(car.up.y, -car.forward.y, car.right, car.ang_vel));
                 }
             } else {
                 t = Pedals { throttle: 1.0, brake: 0.0, handbrake: 0.0, steer: match self.man.turn { 1 => -1.0, 2 => 1.0, _ => 0.0 } };
@@ -1040,6 +1033,19 @@ impl Brain {
     pub fn hit(&mut self) {
         self.collision = 1.5;
     }
+}
+
+/// F-17058's in-air pitch axis (input +32, written with flag 1 when no wheel is down): clamp(fma(-(s a), -2.5465,
+/// w x -4), -1, 1) by the original's fsel pair, s the sign of the sim's up.y (1; 0 at +-0; -1 below or NaN), a =
+/// asin(row 2's y, the back's) as the guest's asin, w = row 0 (right) . the angular velocity as vmsum3fp.
+pub fn air_axis(up_y: f32, back_y: f32, right: Vec3, ang_vel: Vec3) -> f32 {
+    use crate::physics::exact as ex;
+    let s = if up_y >= 0.0 { if -up_y >= 0.0 { 0.0 } else { 1.0 } } else { -1.0 };
+    let a = ex::guest_asin(back_y as f64) as f32;
+    let w = ex::dot3(right, ang_vel);
+    let v = ex::fma(-(s * a), f32::from_bits(0xc022_f983), w * -4.0);
+    let v = if v - -1.0 >= 0.0 { v } else { -1.0 };
+    if v - 1.0 >= 0.0 { 1.0 } else { v }
 }
 
 /// F-50530, mcCarNitro's fire test (the brain's and the pad's): not burning (+32), the view at rest (+24 == +20, an
@@ -1406,6 +1412,34 @@ pub fn run(v: &mut crate::vehicles::Vehicles, i: usize, brain: &mut Brain, to_go
 
 #[cfg(test)]
 mod tests {
+
+    /// F-17058's in-air pitch axis, run offline in its racing case with no wheel down (tools/air_axis_reference.py,
+    /// verify_air_axis.md): flag 1 set and +32 equal to air_axis on the sim's rows and angular velocity in every case.
+    #[test]
+    fn air_axis_matches_the_original() {
+        let text = include_str!("testdata/air_axis_ref.txt");
+        let hex = |w: &str| u32::from_str_radix(&w.replace('_', ""), 16).unwrap();
+        let (mut n, mut mid, mut bad) = (0, 0, 0);
+        for line in text.lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let v: Vec<u32> = w[1..54].iter().map(|x| hex(x)).collect();
+            let (flags, axis) = (hex(w[55]), hex(w[57]));
+            let f = |i: usize| f32::from_bits(v[i]);
+            let row = |k: usize| Vec3::new(f(41 + 3 * k), f(42 + 3 * k), f(43 + 3 * k));
+            let got = air_axis(f(45), f(48), row(0), row(3));
+            n += 1;
+            mid += (axis & 0x7fff_ffff != 0x3f80_0000) as usize;
+            if flags & 1 == 0 || got.to_bits() != axis {
+                if bad < 5 {
+                    println!("{line}  port {:08x}", got.to_bits());
+                }
+                bad += 1;
+            }
+        }
+        println!("air axis: {n} cases, {mid} inside -1 .. 1, {bad} differ");
+        assert!(n >= 6000);
+        assert_eq!(bad, 0);
+    }
 
     /// F-50530 and F-29462, the nitrous and slingshot can-fire tests, run offline (tools/boost_ready_reference.py,
     /// verify_boost_ready.md): every answer of nitro_can_fire and SsTurbo::can_fire equals the original's.
