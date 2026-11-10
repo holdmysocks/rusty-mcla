@@ -2545,6 +2545,8 @@ impl App {
             }
         }
         self.cam_mode = new;
+        // (each new view sounds: F-93286 after F-41662 sets it, on both buttons)
+        self.sound.camera_changes += 1;
     }
 
     /// The pad as the original's poll has it (`mc4::PadState`).

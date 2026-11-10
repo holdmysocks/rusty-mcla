@@ -387,6 +387,60 @@ pub struct CarIn {
     pub full_torque: f32,
     pub limiter: bool,
     pub gear_idx: i32,
+    /// the reverse whine's inputs (F-96287): reversing (byte 1946: trans +20 reverse and chassis +224 above 1 m/s), the
+    /// chassis speed +224 (m/s) and its throttle +136 (which drives whichever way the gear points: the port's brake in
+    /// reverse)
+    pub reversing: bool,
+    pub speed: f32,
+    pub sim_throttle: f32,
+}
+
+/// What the reverse whine (F-96287) does this frame: the slots to stop (0 the 'on' sound +1392, 1 the 'off' one +1396)
+/// and the slot to start when it is empty, with its start offset in percent when the request has one (P+70 bit 0x40).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Whine {
+    pub stop: [bool; 2],
+    pub start: Option<(usize, Option<f32>)>,
+}
+
+/// F-96287's rule. `t` the times (+296 while the throttle is on, +300 while it is off), `mph` chassis +224 x 2.237,
+/// `min_mph` ONESHOT_PARAMS +56. Reversing with throttle: the 'off' time is cleared and its sound stopped and the 'on'
+/// sound started when the 'on' time is 0.15 s or more or the car is under 6 mph, its offset (min(mph, 40) - +56) /
+/// (40 - +56) x 100 (truncated) from +56 mph up; the 'on' time grows. Without throttle at +56 mph or more: from 0.15 s
+/// of 'off' time the 'on' time is cleared, its sound stopped and the 'off' sound started, its offset (1 - mph x 0.025)
+/// x 100 under 40 mph; the 'off' time grows. Not reversing: both stop and both times are 0. The comparisons are the
+/// original's branches (a NaN goes the way they let it).
+pub(crate) fn whine_step(t: &mut [f32; 2], reversing: bool, throttle: f32, mph: f32, min_mph: f32, dt: f32) -> Whine {
+    let mut out = Whine::default();
+    if !reversing {
+        out.stop = [true, true];
+        *t = [0.0, 0.0];
+        return out;
+    }
+    if throttle > 0.0 {
+        if t[0] >= 0.15 || !(mph >= 6.0) {
+            t[1] = 0.0;
+            out.stop[1] = true;
+            let pct = (!(mph < min_mph)).then(|| {
+                let m = if mph - 40.0 >= 0.0 { 40.0 } else { mph };
+                ((m - min_mph) / (40.0 - min_mph) * 100.0) as i32 as f32
+            });
+            out.start = Some((0, pct));
+        }
+        t[0] += dt;
+    } else {
+        if mph < min_mph {
+            return out;
+        }
+        if !(t[1] < 0.15) {
+            t[0] = 0.0;
+            out.stop[0] = true;
+            let pct = (mph < 40.0).then(|| ((-(mph.mul_add(0.025, -1.0))) * 100.0) as i32 as f32);
+            out.start = Some((1, pct));
+        }
+        t[1] += dt;
+    }
+    out
 }
 
 /// What the air-intake one-shot (F-26427) does this frame.
@@ -485,6 +539,15 @@ pub struct CarSounds {
     /// ONESHOT_PARAMS +68 HIGHBEAMS_ON, +72 HIGHBEAMS_OFF; the state last played (+1953)
     beam_hash: [u32; 2],
     beam_prev: bool,
+    /// the reverse whine (F-96287): ONESHOT_PARAMS +40 / +48 the 'on' / 'off' sounds, +44 / +52 their volumes (0.01 dB),
+    /// +46 / +54 their pitches (cents), +56 the speed (mph) the offsets start from; the slots (+1392 / +1396) and the
+    /// times (+296 / +300)
+    whine_hash: [u32; 2],
+    whine_vol: [f32; 2],
+    whine_pitch: [i32; 2],
+    whine_mph: f32,
+    whine: [Option<Handle>; 2],
+    whine_t: [f32; 2],
     nitro_obj: Vec<u8>,
     police: Vec<u8>,
     w: [WheelRec; 5],
@@ -579,6 +642,12 @@ impl CarSounds {
             horn_hash: be_u32(&oneshot, 64),
             beam_hash: [be_u32(&oneshot, 68), be_u32(&oneshot, 72)],
             beam_prev: false,
+            whine_hash: [be_u32(&oneshot, 40), be_u32(&oneshot, 48)],
+            whine_vol: [be_s16(&oneshot, 44) * 0.01, be_s16(&oneshot, 52) * 0.01],
+            whine_pitch: [be_s16(&oneshot, 46) as i32, be_s16(&oneshot, 54) as i32],
+            whine_mph: oneshot.get(56..60).map_or(0.0, |b| f32::from_be_bytes([b[0], b[1], b[2], b[3]])),
+            whine: [None, None],
+            whine_t: [0.0, 0.0],
             whoosh_hash: be_u32(&oneshot, 92),
             whoosh_at: -10.0,
             nitro_obj: obj(42, "TUNERS_NITRO"),
@@ -658,6 +727,9 @@ impl CarSounds {
         for s in self.steam.iter_mut() {
             stop(lib, s);
         }
+        for s in self.whine.iter_mut() {
+            stop(lib, s);
+        }
         for s in [&mut self.two_loop, &mut self.horn, &mut self.siren, &mut self.turbo_v, &mut self.intake_v, &mut self.nitro_empty, &mut self.pings, &mut self.sst_burn, &mut self.sst_loop, &mut self.sst_full] {
             stop(lib, s);
         }
@@ -693,6 +765,8 @@ impl CarSounds {
         if c.limiter {
             self.cut_at = self.clock;
         }
+        // (the update F-96287 sits after the kick and the load volume, before the intake)
+        self.reverse_whine(lib, c, dt);
         self.intake(lib, c);
         self.turbo(lib, c, dt);
         self.tyres(lib, mats, c, dt);
@@ -983,6 +1057,29 @@ impl CarSounds {
             lib.set(h, self.req(c.pos));
         }
         self.prev_two = c.two_wheels;
+    }
+
+    /// F-96287: the reverse whine (`whine_step`); a started sound follows the car (the entity's tracker, vt+20).
+    fn reverse_whine(&mut self, lib: &mut SoundLib, c: &CarIn, dt: f32) {
+        let w = whine_step(&mut self.whine_t, c.reversing, c.sim_throttle, mixer_mph(c.speed), self.whine_mph, dt);
+        for i in 0..2 {
+            if w.stop[i] {
+                stop(lib, &mut self.whine[i]);
+            }
+        }
+        if let Some((i, pct)) = w.start {
+            if free(lib, &self.whine[i]) {
+                self.whine[i] = if is_null(self.whine_hash[i]) {
+                    None
+                } else {
+                    let req = Req { volume: self.whine_vol[i], pitch: self.whine_pitch[i], start_pct: pct.unwrap_or(0.0), ..self.req(c.pos) };
+                    lib.play_hash(self.whine_hash[i], req)
+                };
+            }
+        }
+        for h in self.whine.iter().flatten() {
+            lib.set_pos(*h, c.pos);
+        }
     }
 
     // ---- 4. horn: ONESHOT_PARAMS +64 while the button is held
@@ -1648,6 +1745,10 @@ pub fn car_in(c: &CarInstance) -> CarIn {
         },
         limiter: vs.is_some_and(|v| v.rev.on),
         gear_idx: vs.map_or(st.gear, |v| v.gear) + 1,
+        reversing: vs.map_or(st.gear, |v| v.gear) == -1 && st.speed() > 1.0,
+        speed: st.speed(),
+        // (chassis +136 drives whichever way the gear points; the port's pedals drive reverse with the brake)
+        sim_throttle: if vs.map_or(st.gear, |v| v.gear) == -1 { c.input.brake } else { c.input.throttle },
         ..Default::default()
     }
 }
@@ -3626,5 +3727,52 @@ mod window_sound_tests {
         }
         assert_eq!((cases, steps), (1500, 60000));
         assert!(calls > 10000, "{calls}");
+    }
+}
+
+#[cfg(test)]
+mod whine_tests {
+    use super::*;
+
+    /// F-96287 by its branches (ONESHOT_PARAMS +56 = 10 mph, as on every car).
+    #[test]
+    fn the_reverse_whine_follows_the_throttle() {
+        let mut t = [0.0; 2];
+        // (not reversing: both stop, times cleared)
+        assert_eq!(whine_step(&mut t, false, 1.0, 3.0, 10.0, 0.1), Whine { stop: [true, true], start: None });
+        // (throttle under 6 mph: 'on' at once, no offset under 10 mph)
+        assert_eq!(whine_step(&mut t, true, 1.0, 3.0, 10.0, 0.1), Whine { stop: [false, true], start: Some((0, None)) });
+        assert_eq!(t, [0.1, 0.0]);
+        // (8 mph, 'on' time 0.1: nothing)
+        assert_eq!(whine_step(&mut t, true, 1.0, 8.0, 10.0, 0.1), Whine::default());
+        // (0.2 s on, 25 mph: offset (25 - 10) / 30 x 100 = 50)
+        assert_eq!(whine_step(&mut t, true, 1.0, 25.0, 10.0, 0.1), Whine { stop: [false, true], start: Some((0, Some(50.0))) });
+        // (over 40 mph: 100)
+        assert_eq!(whine_step(&mut t, true, 1.0, 55.0, 10.0, 0.1).start, Some((0, Some(100.0))));
+        // (off the throttle: 0.15 s first, then the 'off' sound, (1 - 20 x 0.025) x 100 = 50)
+        let mut t = [0.5, 0.0];
+        assert_eq!(whine_step(&mut t, true, 0.0, 20.0, 10.0, 0.1), Whine::default());
+        assert_eq!(whine_step(&mut t, true, 0.0, 20.0, 10.0, 0.1), Whine::default());
+        assert_eq!(whine_step(&mut t, true, 0.0, 20.0, 10.0, 0.1), Whine { stop: [true, false], start: Some((1, Some(50.0))) });
+        assert_eq!(t[0], 0.0);
+        // (under +56 mph off the throttle: nothing, the times kept)
+        let before = t;
+        assert_eq!(whine_step(&mut t, true, 0.0, 9.0, 10.0, 0.1), Whine::default());
+        assert_eq!(t, before);
+        // (40 mph and up: no offset)
+        assert_eq!(whine_step(&mut t, true, 0.0, 45.0, 10.0, 0.1).start, Some((1, None)));
+    }
+
+    /// ONESHOT_PARAMS +40..+56 of the disc's cars: a player car's whine, the opponents' NULL.
+    #[test]
+    fn reverse_whine_records_from_the_disc() {
+        let Ok(d) = std::env::var("MCLA_DATA_DIR") else { return };
+        let Ok(b) = std::fs::read(std::path::Path::new(&d).join("audio/X360/config/game.dat")) else { return };
+        let Some(g) = mcla_formats::audcfg::Dat::parse(&b) else { return };
+        let o = g.get_name("VP_AUD_R8_08_ONESHOT_PARAMS").unwrap();
+        assert_eq!((be_u32(o, 40), be_u32(o, 48)), (0x92a77ed4, 0xb35735e7));
+        assert_eq!(f32::from_be_bytes([o[56], o[57], o[58], o[59]]), 10.0);
+        let o = g.get_name("VP_AUD_R8_08_O_ONESHOT_PARAMS").unwrap();
+        assert!(is_null(be_u32(o, 40)) && is_null(be_u32(o, 48)));
     }
 }

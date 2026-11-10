@@ -7,7 +7,7 @@
 //! The start (F-44510, `start`) runs the ignition machine of the update (F-10725): the ignition one-shot, the crank,
 //! the rev flare and the settle (ENGINE_AUDIO_RULE.md 2.2); a sound made with `new` starts running (state 4).
 //! Not ported (open there): the stop states 2 / 3 (F-29108, vt+56: no caller in the port), the layer-B overlay (off on
-//! every player car), the reverse whine (NULL on the cars looked at).
+//! every player car). The reverse whine (F-96287) is caraudio.rs's `reverse_whine`.
 
 use crate::sndobj::{Handle, Req, SoundLib};
 use glam::Vec3;

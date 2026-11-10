@@ -279,6 +279,11 @@ impl RadarBeep {
     }
 }
 
+/// MANAGER_CAMERA (game.dat) +10: the camera change's sound (F-93286)
+pub fn camera_sound(o: &[u8]) -> Option<u32> {
+    o.get(10..14).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]])).filter(|&h| h != 0)
+}
+
 #[derive(Default)]
 pub struct Sound {
     /// the reverb object the probes chose (F-26357; REVERB_DEFAULT until the first choice)
@@ -384,6 +389,9 @@ pub struct Sound {
     pub cops_suspended: bool,
     /// the radar detector (F-92562): its level (+2188), the clock (+156) and its last beep (+2184)
     radar: RadarBeep,
+    /// the camera views changed by the camera button since the last update (F-93286: each change plays the record
+    /// MANAGER_CAMERA's sound, CAMERA_CHANGES_MASTER)
+    pub camera_changes: u32,
     /// the names the UI movies started (`flash::Player::sounds_started`), played by name (F-42664: no position, the
     /// default parameters)
     pub movie_sounds: Vec<std::rc::Rc<str>>,
@@ -1143,6 +1151,13 @@ impl Sound {
                 let shown = game.flash_hud.is_some() && self.detector_shown;
                 if let Some((volume, pitch)) = self.radar.step(&t, dt, self.active_radar, shown, !hud || self.cops_suspended || chase) {
                     lib.play_hash(t.sound, crate::sndobj::Req { volume, pitch, ..crate::sndobj::Req::default() });
+                }
+            }
+            // the camera change (F-93286, from the camera button F-67519 each time it sets a new view: MANAGER_CAMERA
+            // +10 at 0 dB, no position - F-87864 defaults)
+            for _ in 0..std::mem::take(&mut self.camera_changes) {
+                if let Some(h) = lib.game.get_name("MANAGER_CAMERA").and_then(camera_sound) {
+                    lib.play_hash(h, crate::sndobj::Req::default());
                 }
             }
             for n in std::mem::take(&mut self.movie_sounds) {
@@ -2126,6 +2141,16 @@ mod radar_tests {
 
     fn tune() -> RadarTune {
         RadarTune { sound: 1, slow: 1000, fast: 80, pitch: 50, rate: 2.0, vol: [0, 0, 0, 0, 0, -300] }
+    }
+
+    /// MANAGER_CAMERA's sound as on the disc: CAMERA_CHANGES_MASTER.
+    #[test]
+    fn camera_change_sound_from_the_disc() {
+        let Ok(d) = std::env::var("MCLA_DATA_DIR") else { return };
+        let Ok(b) = std::fs::read(std::path::Path::new(&d).join("audio/X360/config/game.dat")) else { return };
+        let Some(g) = mcla_formats::audcfg::Dat::parse(&b) else { return };
+        assert_eq!(g.get_name("MANAGER_CAMERA").and_then(camera_sound), Some(0x336c09f1));
+        assert_eq!(camera_sound(&[0; 14]), None);
     }
 
     /// GLOBAL_RADAR_DETECTOR as on the disc.
