@@ -12,7 +12,7 @@ use super::collision::WorldCollider;
 use glam::{Mat3, Quat, Vec3};
 use mcla_formats::rage::simtune::{SimTune, WheelTune};
 
-const RPM: f32 = 0.104_719_76; // original float at 0x8207D3E8: rpm -> rad/s
+pub(super) const RPM: f32 = 0.104_719_76; // original float at 0x8207D3E8: rpm -> rad/s
 
 /// The engine's built-in torque curve F-91323 (no control values: the ambient cars) around the speed of best power,
 /// with the golden ratio's terms of the engine's ctor F-48129 (+96 = (sqrt 5 - 1) / 2, +92 = (sqrt 5 + 1) / 2)
@@ -23,7 +23,7 @@ pub fn builtin_torque(e: &mcla_formats::rage::simtune::EngineScalars, w: f32) ->
     let s5 = 5.0f32.sqrt();
     let (a, b) = ((s5 - 1.0) * 0.5, (s5 + 1.0) * 0.5);
     let span = max - opt;
-    let (c84, c88) = (1.0 / (span * span), 1.0 / ((opt * opt) * opt));
+    let (c84, c88) = super::vehsim_words::init_reciprocals(opt, max);
     if !(w > opt) {
         (((fma(a, opt, w) * fms(b, opt, w)) * c88) * e.max_hp) * 550.0
     } else if w > max {
@@ -378,7 +378,7 @@ impl VehTune {
             return curve.evaluate(w);
         }
         let opt = e.opt_rpm * RPM;
-        (e.idle_rpm * RPM - w).signum() * (e.max_hp * 550.0 / opt) * (w / opt)
+        super::vehsim_words::idle_fallback(e.max_hp, opt, e.idle_rpm * RPM, w)
     }
 }
 
@@ -1452,13 +1452,9 @@ fn update_engine(vs: &mut VehState, vt: &VehTune, input: CarInput, pedal_release
     vs.engine_pedal = vs.gear_change.update(pedal, vs.gear, vt.ratios.len() - 1,
         ratio, vs.engine_w, vs.omega[0], e, vt.t.trans.s.gear_change_match_rpm, dt);
     let pedal = vs.engine_pedal;
-    let torque = if pedal > 0.5 {
-        let base = vs.torque_mult * vt.torque_at(vs.engine_w);
-        let boost = if e.boost_duration > 0.0 { (vs.boost_timer / e.boost_duration) * e.boost_torque } else { 0.0 };
-        ((pedal - 0.5) * 2.0) * (boost + base)
-    } else {
-        vt.idle_torque_at(vs.engine_w) * (-pedal.mul_add(2.0, -1.0))
-    };
+    // (F-48349: the torque for the pedal, vehsim_words::pedal_torque)
+    let torque = super::vehsim_words::pedal_torque(pedal, vs.boost_timer, vs.torque_mult, e.boost_duration, e.boost_torque,
+        || vt.torque_at(vs.engine_w), || vt.idle_torque_at(vs.engine_w));
     let out = super::engine::update_prepared(super::engine::PreparedEngine {
         speed: vs.engine_w, torque, pedal, idle_speed: e.idle_rpm * 0.104_719_76,
         max_speed: e.max_rpm * 0.104_719_76, inertia: e.inertia, engage_rpm: if computer { e.idle_rpm } else { e.engage_rpm },
@@ -3263,7 +3259,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     };
     let nitro_try = {
         let up_y = vs.body.as_ref().filter(|b| b.snap == (st.pos, st.rot, st.vel, st.ang_vel)).map(|b| b.rows[1].y).unwrap_or_else(|| Mat3::from_quat(st.rot).y_axis.y);
-        let upset = !(vs.air584 > 0.0) && up_y < 0.1;
+        let upset = super::vehsim_words::lying_on_ground(vs.air584, up_y);
         fire_exact && pressed && !upset && !wiped
     };
     let backup = (st.pos, st.rot, st.wheels);
@@ -3665,10 +3661,12 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
     let hyd_wheels = hyd_fitted.then(|| {
         let fit = |w: &mcla_formats::rage::simtune::WheelTune| {
             let mut w = w.clone();
-            w.travel_extent = t.hydraulics.suspension_extent;
-            w.suspension_extent = t.hydraulics.suspension_extent;
-            w.suspension_damp_coef = t.hydraulics.suspension_damp;
-            w.suspension_clamp = 1.5;
+            // (F-10823: the extent into +76 and +88, 1.5 into +92, the damping into +100)
+            let [travel, extent, clamp, damp] = super::vehsim_words::hyd_wheel_tune(t.hydraulics.suspension_extent, t.hydraulics.suspension_damp);
+            w.travel_extent = travel;
+            w.suspension_extent = extent;
+            w.suspension_damp_coef = damp;
+            w.suspension_clamp = clamp;
             w
         };
         (fit(&t.wheel_front), fit(&t.wheel_back))
@@ -3720,7 +3718,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             None => if front { &t.wheel_front } else { &t.wheel_back },
         };
         let w_static = if hyd_fitted && hyd.on {
-            (t.hydraulics.suspension_stiffness - 1.0).clamp(0.0, 10.0) * mass
+            super::vehsim_words::hyd_static_load(t.hydraulics.suspension_stiffness, mass)
         } else if front {
             w_front
         } else {
@@ -4692,7 +4690,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             // (F-84636: every tick that comes in burning, the human's pad rumble 8 - also the tick it runs out)
             st.rumble.play(8);
             vs.nitro_level = fnms32(1.0 / t.nitro.boost_time, dt, vs.nitro_level);
-            let upset = !(vs.air584 > 0.0) && body_rows[1].y < 0.1;
+            let upset = super::vehsim_words::lying_on_ground(vs.air584, body_rows[1].y);
             if !(vs.nitro_level > 0.0) || upset {
                 vs.nitro_level = 0.0;
                 vs.nitro_burning = false;
@@ -4727,7 +4725,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
         vs.sst.reset();
     }
     if vs.sst.burning {
-        let upset = !(vs.air584 > 0.0) && body_rows[1].y < 0.1;
+        let upset = super::vehsim_words::lying_on_ground(vs.air584, body_rows[1].y);
         let k = vs.sst.burn(&t.ss_turbo, upset, dt);
         // (F-60935: every tick that comes in burning, the human's pad rumble 8)
         st.rumble.play(8);
@@ -5619,8 +5617,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             }
         }
         let speed = fma32(v.z, v.z, fma32(v.x, v.x, v.y * v.y)).sqrt();
-        let top = t.trans.s.high_gear_mph * f32::from_bits(0x3ee4dd2f);
-        let over = 1.0 / ((top as f64 * top as f64) as f32);
+        let over = super::vehsim_words::drag_over(t.trans.s.high_gear_mph);
         // (mcCarSim::Update A-63908: the aero's byte +40 picks DragMin. Four wheels: a slipstream target.
         // Two wheels (A-68612): the rider's stick, input +32, under -0.5 with an air time under 0.5 -
         // the stoppie's lean; the ZX-14's DragMin is 3 against DragMax 2. MCLA_DBG_A1: cars' rule for all.)
@@ -7362,7 +7359,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
                 }
                 if !dbg_flag("MCLA_DBG_NOSETTLE") {
                     for _ in 0..walls {
-                        vs.cg[0] = super::exact::fma(super::exact::fms(t.s.settle_cg, t.s.model_offset_y, vs.cg[0]), f32::from_bits(0x3f4c_cccd), vs.cg[0]);
+                        vs.cg[0] = super::vehsim_words::settle_step(vs.cg[0], t.s.settle_cg, t.s.model_offset_y);
                     }
                 }
             }
@@ -7558,7 +7555,7 @@ pub fn set_pose(st: &mut CarState, vt: &VehTune, world: &WorldCollider, m: [Vec3
     }
     let t = &vt.t;
     let e = &t.engine.s;
-    let fwd = -ex::fma(rows[2].x, vel.x, ex::fma(rows[2].z, vel.z, rows[2].y * vel.y));
+    let fwd = super::vehsim_words::set_down_forward([rows[2].x, rows[2].y, rows[2].z], [vel.x, vel.y, vel.z]);
     let drive = if vs.drive == 255 { t.drivetrain_type as u8 } else { vs.drive };
     let (power_r, free_r, all) = match drive {
         0 => (t.wheel_back.radius, t.wheel_front.radius, false),
@@ -7581,8 +7578,8 @@ pub fn set_pose(st: &mut CarState, vt: &VehTune, world: &WorldCollider, m: [Vec3
         vs.gear_change.start(was, g, e.gcl);
     }
     let ratio = if g < 0 { -vt.ratios[0] } else { vt.ratios[g as usize] };
-    let peak = vt.torque_curve.as_ref().map_or(e.opt_rpm * RPM, |c| c.peak().0);
-    vs.engine_w = (ratio * power).min(peak).max(e.idle_rpm * RPM);
+    // (F-72737: minus the ratio x the shaft's speed, which is minus `power`; held from the idle speed up, then down to +72)
+    vs.engine_w = super::vehsim_words::set_down_engine(ratio, -power, e.idle_rpm * RPM, vt.best_power_speed());
 }
 
 /// F-24547, the gear for a forward speed: reverse under -1 m/s, first under 10, else the lowest gear whose ratio is

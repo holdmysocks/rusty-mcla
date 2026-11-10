@@ -22,6 +22,9 @@ pub mod wipeout;
 pub mod hull;
 pub mod loose;
 pub mod loose_words;
+pub mod vehsim_words;
+#[cfg(test)]
+mod vehsim_small_tests;
 pub mod pad;
 pub mod replay;
 pub mod softpush;
