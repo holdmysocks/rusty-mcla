@@ -133,14 +133,7 @@ impl Junction {
     /// with the timer at 0 every update, and is red all round while `step` holds the timer at 10 (a race's countdown,
     /// the red light race flag).
     pub fn arm_state(&self, arm: usize, _t: f32) -> u8 {
-        let (current, timer) = (self.current as usize, self.timer);
-        if arm != current || timer >= GREEN + YELLOW {
-            0
-        } else if timer < GREEN {
-            2
-        } else {
-            1
-        }
+        arm_light(self.current as i64, self.timer, arm as i64)
     }
 
     /// May traffic enter a junction lane whose first two control points are P0, P1 (`entry` =
@@ -169,6 +162,20 @@ impl Junction {
     /// the car is on the arm that points back the way it came.
     pub fn state_for(&self, heading: Vec3, t: f32) -> u8 {
         self.arm_state(self.arm_towards(-heading), t)
+    }
+}
+
+/// The colour a head shows for the junction's arm `arm` (0 red, 1 yellow, 2 green), from the junction's current arm and phase timer
+/// alone, as F-83493 chooses it: the head's index in the junction's list is the arm; green while it is the current arm and the timer
+/// is below 6.5, yellow from 6.5 up to 8.5, red otherwise (tests/`original_signal_heads`). The original also forces green for every
+/// head when the ambient manager's all-green byte is set, which only its online mode sets (not modelled).
+pub fn arm_light(current: i64, timer: f32, arm: i64) -> u8 {
+    if arm != current || timer >= GREEN + YELLOW {
+        0
+    } else if timer < GREEN {
+        2
+    } else {
+        1
     }
 }
 
@@ -727,5 +734,139 @@ mod tests {
         let (s, of) = Signals::build(&[nj], &heads);
         assert_eq!(s.junctions.len(), 1);
         assert_eq!(of, vec![(0, 2), (0, 1), (0, 0), (UNBOUND, 0)]);
+    }
+}
+
+#[cfg(test)]
+mod original_signal_heads {
+    use super::*;
+
+    /// F-83493 run offline as generated over 6000 junction/head/timer states (heads in or out of the list, a missing junction, the
+    /// current arm any int, timers around the 6.5 and 8.5 edges, a head without its shader block, the all-green byte): the head's
+    /// SignalColor is the port's `arm_light` (a head no junction took shows green, as the port's UNBOUND), the original sets nothing
+    /// without a block, and the all-green byte (online only, not modelled) makes it green.
+    #[test]
+    fn head_colour_matches_the_original() {
+        let (mut n, mut seen) = (0, [0usize; 3]);
+        for l in include_str!("testdata/map_signal_state_ref.txt").lines() {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let f: Vec<&str> = i.split(' ').collect();
+            let (jp, idx, cur): (u32, i64, i64) = (f[1].parse().unwrap(), f[3].parse().unwrap(), f[4].parse::<i64>().unwrap());
+            let cur = if cur == 0xFFFF_FFFF { -1 } else { cur };
+            let timer = f32::from_bits(u32::from_str_radix(f[5], 16).unwrap());
+            let (byte, bp, cnt): (u8, u32, u32) = (f[6].parse().unwrap(), f[7].parse().unwrap(), f[8].parse().unwrap());
+            let w: Vec<&str> = o.split(' ').collect();
+            if bp == 0 || cnt == 0 {
+                assert_eq!(w[0], "0", "{l}");
+                n += 1;
+                continue;
+            }
+            assert_eq!(w[0], "1", "{l}");
+            let rgb: Vec<u32> = w[1..4].iter().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let got = if byte != 0 || jp == 0 || idx < 0 { 2 } else { arm_light(cur, timer, idx) };
+            let want = match (rgb[0], rgb[1], rgb[2]) {
+                (0x3f80_0000, 0, 0) => 0,
+                (0, 0x3f80_0000, 0) => 1,
+                (0, 0, 0x3f80_0000) => 2,
+                _ => panic!("{l}"),
+            };
+            assert_eq!(got, want, "{l}");
+            if byte == 0 && jp != 0 && idx >= 0 {
+                seen[got as usize] += 1;
+            }
+            n += 1;
+        }
+        assert_eq!(n, 6000);
+        assert!(seen.iter().all(|&k| k > 100), "{seen:?}");
+    }
+
+    /// F-77331 (every junction stepped by the frame time) with F-86376 inside it, run offline as generated over 600 cases of 240 frames
+    /// (1 .. 6 junctions of 2 .. 4 arms at any phase, frame times from 1/60 to 0.2, the race clock and its event byte, the red light race
+    /// flag changing mid-run, a forced arm or all-red set mid-run, a refused car raising a demand word, the box-clear answer changing
+    /// every frame): the junctions' current arm, timer and demand words equal the port's `Signals::step` after every frame (a hash of
+    /// them per frame) and at the end.
+    #[test]
+    fn junction_loop_matches_the_original() {
+        let h = |w: &str| u32::from_str_radix(w, 16).unwrap();
+        let f = |w: &str| f32::from_bits(h(w));
+        let (mut n, mut frames_checked) = (0, 0usize);
+        for l in include_str!("testdata/map_signals_ref.txt").lines() {
+            // (words that look like a code address carry an underscore after four digits)
+            let l = &l.replace('_', "");
+            let (case, out) = l[2..].split_once(" -> ").unwrap();
+            let (hashes, fin) = out.split_once(" |").unwrap();
+            let w: Vec<&str> = case.split(' ').collect();
+            let (m, frames) = (h(w[0]) as usize, h(w[1]) as usize);
+            let dt = f(w[2]);
+            let (event, clock0, cstep) = (h(w[3]) != 0, h(w[4]), h(w[5]));
+            let (flag0, flagframe, flag1) = (h(w[6]) != 0, h(w[7]), h(w[8]) != 0);
+            let (forceframe, forcej, forceval, forcered) = (h(w[9]), h(w[10]) as usize, h(w[11]), h(w[12]) != 0);
+            let (waitperiod, waitj, waitarm) = (h(w[13]), h(w[14]) as usize, h(w[15]) as usize);
+            let player = Vec3::new(f(w[16]), f(w[17]), f(w[18]));
+            let mut s = Signals { red_light_race: flag0, ..Default::default() };
+            let mut masks = Vec::new();
+            for j in 0..m {
+                let q = &w[19 + j * 21..19 + (j + 1) * 21];
+                let k = h(q[0]) as usize;
+                let arms: Vec<Vec3> = (0..k).map(|a| Vec3::new(f(q[1 + 2 * a]), 0.0, f(q[2 + 2 * a]))).collect();
+                s.junctions.push(Junction {
+                    center: Vec3::new(f(q[9]), f(q[10]), f(q[11])),
+                    arms,
+                    radius: 12.0,
+                    reach: 12.0,
+                    forced: if h(q[15]) != 0 { -2 } else { h(q[14]) as i32 as i8 },
+                    current: h(q[12]) as u8,
+                    timer: f(q[13]),
+                    demand: (0..k).map(|a| h(q[16 + a])).collect(),
+                });
+                masks.push(h(q[20]));
+            }
+            let fnv = |s: &Signals| {
+                let mut x = 2166136261u32;
+                let mut mix = |v: u32| {
+                    for b in v.to_le_bytes() {
+                        x = (x ^ b as u32).wrapping_mul(16777619);
+                    }
+                };
+                for j in &s.junctions {
+                    mix(j.current as u32);
+                    mix(j.timer.to_bits());
+                    for d in &j.demand {
+                        mix(*d);
+                    }
+                }
+                x
+            };
+            let want: Vec<u32> = hashes.split_whitespace().map(h).collect();
+            assert_eq!(want.len(), frames, "{l}");
+            for fr in 0..frames {
+                if fr as u32 == flagframe {
+                    s.red_light_race = flag1;
+                }
+                if fr as u32 == forceframe {
+                    s.junctions[forcej].forced = if forcered { -2 } else { forceval as i32 as i8 };
+                }
+                if waitperiod > 0 && fr as u32 % waitperiod == 0 && waitarm < s.junctions[waitj].demand.len() {
+                    s.junctions[waitj].demand[waitarm] += 1;
+                }
+                let blocked: Vec<bool> = masks.iter().map(|m| (m >> (fr % 32)) & 1 != 0).collect();
+                let clock = clock0.wrapping_add(fr as u32 * cstep) as i32;
+                let race = event.then(|| if clock < 0 { (-clock as f32 / 1000.0, 0.0) } else { (0.0, clock as f32 / 1000.0) });
+                s.step(dt, &blocked, None, Some((player, Vec3::ZERO)), race);
+                assert_eq!(fnv(&s), want[fr], "{l}: frame {fr}");
+                frames_checked += 1;
+            }
+            let mut got = Vec::new();
+            for j in &s.junctions {
+                got.push(j.current as u32);
+                got.push(j.timer.to_bits());
+                got.extend((0..4).map(|a| j.demand.get(a).copied().unwrap_or(0)));
+            }
+            let fin: Vec<u32> = fin.split_whitespace().map(h).collect();
+            assert_eq!(got, fin, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 600);
+        assert_eq!(frames_checked, 600 * 240);
     }
 }

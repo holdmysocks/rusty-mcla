@@ -36,6 +36,43 @@ impl Track {
         let v = self.sample(t);
         Vec3::new(v[0], v[1], v[2])
     }
+
+    /// The original's key-record sampler F-72455 (48-byte records: time, four values, four slopes). The slopes are derived once
+    /// when the track is loaded (F-18740, called by the KFData loader F-27811): `(next value - value) x (1 / (next time - time))`
+    /// where the next time is later, else 0; the last key's is 0. The segment is the key before the first one (from the second
+    /// on) whose time is not below `t`, or the last key; the value is `value + slope x (t - time)` with a fused multiply-add.
+    /// A time before the first key extrapolates backwards with the first slope, a time after the last stays at the last value.
+    /// (The clamped `sample` above is the port's older rule for the tracks whose evaluator has not been run.)
+    pub fn sample_kf(&self, t: f32) -> [f32; 4] {
+        let k = &self.keys;
+        let n = k.len();
+        if n == 0 {
+            return [0.0; 4];
+        }
+        let mut i = 1;
+        while i < n && k[i].0 < t {
+            i += 1;
+        }
+        let s = if i < n { i - 1 } else { n - 1 };
+        let dt = t - k[s].0;
+        // (the slope of the key before: F-18740, the same pass the effects' curves use)
+        let slope = if s + 1 < n { crate::pu_fx::key_slope(k[s].0, k[s].1, k[s + 1].0, k[s + 1].1) } else { [0.0; 4] };
+        std::array::from_fn(|c| dt.mul_add(slope[c], k[s].1[c]))
+    }
+}
+
+/// The sun direction sampler F-19682: the key sampler's vector with its xyz normalised as the original's vector unit does it.
+/// The squared length is (x x + y y) + z z (one lane sum), its reciprocal root is 1 / sqrt (an infinite root, from a zero vector,
+/// is replaced by 0), refined by one Newton step y + (1 - l2 y y) x (0.5 y) with every product and sum rounded to single; the
+/// vector is multiplied by the result (so a zero vector stays zero). The vector unit's flush of denormals is not applied (the
+/// shipped keys are unit-length vectors).
+pub fn sun_direction_normalise(v: [f32; 3]) -> Vec3 {
+    let l2 = (v[0] * v[0] + v[1] * v[1]) + v[2] * v[2];
+    let y0 = 1.0 / l2.sqrt();
+    let y = if y0 == f32::INFINITY { 0.0 } else { y0 };
+    let e = -(l2 * (y * y) - 1.0);
+    let r = e * (0.5 * y) + y;
+    Vec3::new(v[0] * r, v[1] * r, v[2] * r)
 }
 
 /// All `<name>` keyframe tracks of a document, in order of appearance.
@@ -505,6 +542,22 @@ pub fn shadow_ray_cutscene(ray: Vec3) -> Vec3 {
     (-ray + Vec3::new(-0.2, 0.0, 0.1)).normalize_or(-ray) * -1.0
 }
 
+/// The suffix of a weather's colour-correction and fog tracks in the weather manager's file (the original's table, in its order:
+/// Nice, Cloudy, Stormy, Foggy; it has no set of its own for the port's `Clear`, which takes Nice's).
+fn weather_suffix(w: Weather) -> &'static str {
+    match w {
+        Weather::Clear | Weather::Nice => "Nice",
+        Weather::Cloudy => "Cloudy",
+        Weather::Foggy => "Foggy",
+        Weather::Stormy => "Stormy",
+    }
+}
+
+/// The track name the registrations F-57705 / F-47246 format (`sm_Key<kind>Default<suffix>`).
+fn weather_track_name(kind: &str, suffix: &str) -> String {
+    format!("sm_Key{}Default{}", kind, suffix)
+}
+
 /// `<tag x="" y="" z=""/>` of a tune file.
 fn xyz(x: &str, tag: &str) -> Option<[f32; 3]> {
     let r = &x[x.find(&format!("<{} ", tag))?..];
@@ -554,13 +607,8 @@ impl Sky {
         // the weather manager's file: this weather's colour correction and fog (the older
         // suffix-less set has none of its own: Nice's)
         if let Ok(x) = std::fs::read_to_string(Path::new(data_dir).join("tune/lighting/0xa838c380")) {
-            let w = match weather {
-                Weather::Clear | Weather::Nice => "Nice",
-                Weather::Cloudy => "Cloudy",
-                Weather::Foggy => "Foggy",
-                Weather::Stormy => "Stormy",
-            };
-            let one = |n: &str| tracks(&x, &format!("sm_Key{}Default{}", n, w)).into_iter().next().unwrap_or_default();
+            let w = weather_suffix(weather);
+            let one = |n: &str| tracks(&x, &weather_track_name(n, w)).into_iter().next().unwrap_or_default();
             s.color_correct = one("ColorCorrect");
             s.fog_max = one("MaxFogColor");
             s.fog_near = one("FogNearZ");
@@ -644,7 +692,10 @@ impl Sky {
                 hat: None,
             };
         }
-        let sd = self.sun_dir.rgb(t).normalize_or(Vec3::Y);
+        let sd = {
+            let v = self.sun_dir.sample_kf(t);
+            sun_direction_normalise([v[0], v[1], v[2]])
+        };
         // the game stores +y up; x = east at sunrise
         let mut day = ((sd.y + 0.08) / 0.30).clamp(0.0, 1.0);
         // (the weather's own schedule of night: its night lighting fades in as the day goes)
@@ -1139,5 +1190,91 @@ mod garage_tests {
         // (outside every outline: the weather's own colour correction at 19:00)
         let o = garage_tod(&root, Weather::Nice, Vec3::new(0.0, 0.0, 0.0)).unwrap();
         assert!(near(o.color_correct, [0.49569, 0.5, 0.5], 1e-4));
+    }
+}
+
+#[cfg(test)]
+mod original_tracks {
+    use super::*;
+
+    fn bits(s: &str) -> u32 {
+        u32::from_str_radix(s, 16).unwrap()
+    }
+
+    /// The key sampler F-72455 (after the slope derivation F-18740) and the sun-direction sampler F-19682, run offline as generated
+    /// (tools/map_sky_reference.py): 12,000 random tracks of 1 - 12 keys (repeated and decreasing times, zero and large vectors) and
+    /// times (on a key, either side of one, outside the ends). Every output bit equals: the sampled vector, and the normalised
+    /// xyz (the fourth lane is not read by the port).
+    #[test]
+    fn key_sampler_and_sun_direction_match_the_original() {
+        let (mut n, mut before, mut after) = (0, 0, 0);
+        for l in include_str!("testdata/map_sky_ref.txt").lines() {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let i: Vec<&str> = i.split(' ').collect();
+            let t = f32::from_bits(bits(i[1]));
+            let cnt: usize = i[2].parse().unwrap();
+            let mut tr = Track::default();
+            for k in 0..cnt {
+                let w: Vec<f32> = i[3 + 5 * k..8 + 5 * k].iter().map(|s| f32::from_bits(bits(s))).collect();
+                tr.keys.push((w[0], [w[1], w[2], w[3], w[4]]));
+            }
+            let o: Vec<u32> = o.split(' ').map(bits).collect();
+            let s = tr.sample_kf(t);
+            for c in 0..3 {
+                assert_eq!(s[c].to_bits(), o[c], "{l} sample lane {c}");
+            }
+            assert_eq!(s[3].to_bits(), o[3], "{l} sample lane w");
+            let d = sun_direction_normalise([s[0], s[1], s[2]]);
+            for c in 0..3 {
+                assert_eq!(d[c].to_bits(), o[4 + c], "{l} normalised lane {c}");
+            }
+            n += 1;
+            before += (t < tr.keys[0].0) as u32;
+            after += (t > tr.keys[cnt - 1].0) as u32;
+        }
+        assert_eq!(n, 12000);
+        assert!(before > 300 && after > 300, "{before} {after}");
+    }
+
+    /// The weather manager's registrations F-57705 / F-47246 run as generated (tools/map_weather_reference.py): the 4 colour-correction
+    /// and the 5 x 4 fog tracks, named from the suffix table Nice, Cloudy, Stormy, Foggy. The port's `load_weather` asks the weather file
+    /// for exactly these names, and the shipped file holds exactly these 24 tracks (skipped without the data).
+    #[test]
+    fn weather_track_names_match_the_registrations() {
+        let reg: Vec<(&str, &str)> = include_str!("testdata/map_weather_ref.txt")
+            .lines()
+            .filter_map(|l| {
+                let f: Vec<&str> = l.split(' ').collect();
+                (f[0] == "REG").then(|| (f[3], f[4]))
+            })
+            .collect();
+        assert_eq!(reg.len(), 24);
+        let mut names: Vec<String> = Vec::new();
+        for w in ["Nice", "Cloudy", "Stormy", "Foggy"] {
+            for k in ["ColorCorrect", "MinFogColor", "MaxFogColor", "FogHeight", "FogNearZ", "FogFarZ"] {
+                names.push(weather_track_name(k, w));
+            }
+        }
+        let mut a: Vec<&str> = reg.iter().map(|r| r.0).collect();
+        let mut b: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        a.sort();
+        b.sort();
+        assert_eq!(a, b);
+        // distinct member slots (40 bytes apart within each array)
+        let mut slots: Vec<&str> = reg.iter().map(|r| r.1).collect();
+        slots.sort();
+        slots.dedup();
+        assert_eq!(slots.len(), 24);
+        // every weather the port can load maps to one of the four suffixes
+        for w in Weather::ALL {
+            assert!(["Nice", "Cloudy", "Stormy", "Foggy"].contains(&weather_suffix(w)));
+        }
+        let Ok(x) = std::fs::read_to_string("D:/MCLA/extracted/cache/tune/lighting/0xa838c380") else { return };
+        for n in &names {
+            let t = tracks(&x, n);
+            assert_eq!(t.len(), 1, "{n}");
+            assert!(!t[0].keys.is_empty(), "{n}");
+        }
+        assert_eq!(x.matches("<sm_Key").count(), 24);
     }
 }

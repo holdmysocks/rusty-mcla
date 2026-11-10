@@ -1,0 +1,28 @@
+REG 0 0 sm_KeyColorCorrectDefaultNice A0:0
+REG 0 1 sm_KeyColorCorrectDefaultCloudy A0:1
+REG 0 2 sm_KeyColorCorrectDefaultStormy A0:2
+REG 0 3 sm_KeyColorCorrectDefaultFoggy A0:3
+REG 1 0 sm_KeyMinFogColorDefaultNice A5:0
+REG 1 1 sm_KeyMaxFogColorDefaultNice A1:0
+REG 1 2 sm_KeyFogHeightDefaultNice A3:0
+REG 1 3 sm_KeyFogNearZDefaultNice A2:0
+REG 1 4 sm_KeyFogFarZDefaultNice A4:0
+REG 1 5 sm_KeyMinFogColorDefaultCloudy A5:1
+REG 1 6 sm_KeyMaxFogColorDefaultCloudy A1:1
+REG 1 7 sm_KeyFogHeightDefaultCloudy A3:1
+REG 1 8 sm_KeyFogNearZDefaultCloudy A2:1
+REG 1 9 sm_KeyFogFarZDefaultCloudy A4:1
+REG 1 10 sm_KeyMinFogColorDefaultStormy A5:2
+REG 1 11 sm_KeyMaxFogColorDefaultStormy A1:2
+REG 1 12 sm_KeyFogHeightDefaultStormy A3:2
+REG 1 13 sm_KeyFogNearZDefaultStormy A2:2
+REG 1 14 sm_KeyFogFarZDefaultStormy A4:2
+REG 1 15 sm_KeyMinFogColorDefaultFoggy A5:3
+REG 1 16 sm_KeyMaxFogColorDefaultFoggy A1:3
+REG 1 17 sm_KeyFogHeightDefaultFoggy A3:3
+REG 1 18 sm_KeyFogNearZDefaultFoggy A2:3
+REG 1 19 sm_KeyFogFarZDefaultFoggy A4:3
+SUF 0 Nice
+SUF 1 Cloudy
+SUF 2 Stormy
+SUF 3 Foggy

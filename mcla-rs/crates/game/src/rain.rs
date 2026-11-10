@@ -298,12 +298,118 @@ fn lamp_glows(data_dir: &str, name: &str) -> Option<[f32; 4]> {
     None
 }
 
+/// The keys of `raintuning.xml` in the order the original's loader F-55174 asks for them. It reads the file with its tokenizer, one
+/// key after the other: the key is checked against the next token (F-29310, case-sensitive); on a match the token is consumed and the
+/// next token read as a number (F-48331); on a mismatch the token stays for the next key. So a key that is out of order, an unknown
+/// word or a missing value costs every key after it (checked on 124 variants of the file, tools/map_rain_reference.py).
+pub const TUNE_KEYS: [&str; 31] = [
+    "NearSlice", "FarSlice", "SplashSizeScale", "RainOpacity", "SplashOpacity", "WindX", "WindY", "WindZ", "WindRandomRangeX", "WindRandomRangeY",
+    "WindRandomRangeZ", "Rainthreshold", "Rainstrength", "Streakthickness", "Streaklength", "EmitterCamdistance", "EmitterPosX", "EmitterPosY",
+    "EmitterPosZ", "EmitterPosRangeX", "EmitterPosRangeY", "EmitterPosRangeZ", "RainOpacityNight", "SplashOpacityNight", "SplashOffset",
+    "RainAmbientRed", "RainAmbientGreen", "RainAmbientBlue", "RainSpotLightRed", "RainSpotLightGreen", "RainSpotLightBlue",
+];
+
+/// The tokenizer's tokens as far as they were checked: blanks (space, tab, CR, LF) separate; a `;` starts a comment to the end of the
+/// line; a token in double quotes is the text inside (a `#`, `//` or `{` is an ordinary word). Nothing else is special (`=` and `,` are
+/// part of a word).
+fn tune_tokens(text: &str) -> Vec<String> {
+    let b = text.as_bytes();
+    let (mut i, mut out) = (0, Vec::new());
+    while i < b.len() {
+        match b[i] {
+            b' ' | b'\t' | b'\r' | b'\n' => i += 1,
+            b';' => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'"' => {
+                let s = i + 1;
+                i = s;
+                while i < b.len() && b[i] != b'"' {
+                    i += 1;
+                }
+                out.push(String::from_utf8_lossy(&b[s..i]).into_owned());
+                i += 1;
+            }
+            _ => {
+                let s = i;
+                while i < b.len() && !matches!(b[i], b' ' | b'\t' | b'\r' | b'\n') {
+                    i += 1;
+                }
+                out.push(String::from_utf8_lossy(&b[s..i]).into_owned());
+            }
+        }
+    }
+    out
+}
+
+/// The C runtime's `atof` as the number read F-48331 gets it, rounded to single: the longest prefix of an optional `-`, digits with at
+/// most one `.`, and an exponent (`e` or `E`, an optional sign, digits; an incomplete exponent is left out), read as a double and
+/// rounded to single (so a number just above a single's midpoint can round down: the double rounding is the original's); no digits, or
+/// a leading `+`, give 0 (observed: the original reads `+3` as 0).
+fn c_atof(t: &str) -> f32 {
+    let b = t.as_bytes();
+    let mut i = 0;
+    if b.first() == Some(&b'-') {
+        i = 1;
+    }
+    let ds = i;
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    let mut digits = i - ds;
+    if i < b.len() && b[i] == b'.' {
+        i += 1;
+        let fs = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        digits += i - fs;
+    }
+    if digits == 0 {
+        return 0.0;
+    }
+    if i < b.len() && (b[i] == b'e' || b[i] == b'E') {
+        let mut j = i + 1;
+        if j < b.len() && (b[j] == b'+' || b[j] == b'-') {
+            j += 1;
+        }
+        let es = j;
+        while j < b.len() && b[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j > es {
+            i = j;
+        }
+    }
+    t[..i].parse::<f64>().unwrap_or(0.0) as f32
+}
+
+/// What the original's loader stores from the file's text: one entry per key, in `TUNE_KEYS` order, `None` for a key it did not find
+/// (that key keeps the rain object's constructor value, which the port holds as the default at each use).
+pub fn parse_tune(text: &str) -> Vec<Option<f32>> {
+    let toks = tune_tokens(text);
+    let mut at = 0;
+    let mut out = Vec::with_capacity(TUNE_KEYS.len());
+    for k in TUNE_KEYS {
+        if toks.get(at).map_or(false, |t| t == k) {
+            at += 1;
+            let v = toks.get(at).map_or(0.0, |t| c_atof(t));
+            at += 1;
+            out.push(Some(v));
+        } else {
+            out.push(None);
+        }
+    }
+    out
+}
+
 pub fn load(gpu: &mut Gpu, data_dir: &str) {
     let mut tune = std::collections::HashMap::new();
     if let Ok(t) = std::fs::read_to_string(std::path::Path::new(data_dir).join("tune/rmptfx/raintuning.xml")) {
-        for l in t.lines() {
-            let mut it = l.split_whitespace();
-            if let (Some(k), Some(v)) = (it.next(), it.next().and_then(|v| v.parse::<f32>().ok())) {
+        for (k, v) in TUNE_KEYS.iter().zip(parse_tune(&t)) {
+            if let Some(v) = v {
                 tune.insert(k.to_string(), v);
             }
         }
@@ -882,5 +988,66 @@ mod cone_mesh_tests {
         assert_eq!(n, 1500);
         assert!(worst < 2e-6, "worst {worst}");
         eprintln!("light inverse: worst relative difference {worst:e}");
+    }
+}
+
+#[cfg(test)]
+mod original_tuning {
+    use super::*;
+
+    fn unescape(s: &str) -> String {
+        let b = s.as_bytes();
+        let (mut i, mut out) = (0, Vec::new());
+        while i < b.len() {
+            if b[i] == b'%' {
+                out.push(u8::from_str_radix(&s[i + 1..i + 3], 16).unwrap());
+                i += 3;
+            } else {
+                out.push(b[i]);
+                i += 1;
+            }
+        }
+        String::from_utf8(out).unwrap()
+    }
+
+    /// F-55174 run offline as generated on the shipped file and 123 variants of it (keys out of order, left out, repeated, odd number
+    /// spellings, comments, line ends, 60 files of random numbers): the port's reader stores the same bits in the same fields and
+    /// leaves the same keys unread.
+    #[test]
+    fn tuning_loader_matches_the_original() {
+        let (mut n, mut found) = (0, 0);
+        for l in include_str!("testdata/map_rain_ref.txt").lines() {
+            let (i, o) = l.split_once(" ->").unwrap();
+            let f: Vec<&str> = i.split(' ').collect();
+            let text = unescape(f[2]);
+            let want: Vec<u32> = o.split_whitespace().map(|w| u32::from_str_radix(w, 16).unwrap()).collect();
+            assert_eq!(want.len(), 31);
+            let got = parse_tune(&text);
+            // the fields come in key order without the two slices (keys 2 ..), then the two slices
+            let cases = (2..31).map(|k| (k, want[k - 2])).chain([(0, want[29]), (1, want[30])]);
+            for (k, w) in cases {
+                match got[k] {
+                    Some(v) => {
+                        assert_eq!(v.to_bits(), w, "{l} {}", TUNE_KEYS[k]);
+                        found += 1;
+                    }
+                    None if k >= 2 => assert_eq!(w & 0xFFFF_0000, 0xC0DE_0000, "{l} {}", TUNE_KEYS[k]),
+                    // (the slices keep what the loader's end stores when the file gives none: 1 and 100)
+                    None => assert!(w == 1.0f32.to_bits() || w == 100.0f32.to_bits(), "{l} {}", TUNE_KEYS[k]),
+                }
+            }
+            n += 1;
+        }
+        assert_eq!(n, 124);
+        assert!(found > 3000, "{found}");
+    }
+
+    /// The shipped file gives every key a value.
+    #[test]
+    fn shipped_tuning_reads_in_full() {
+        let Ok(t) = std::fs::read_to_string("D:/MCLA/extracted/cache/tune/rmptfx/raintuning.xml") else { return };
+        let v = parse_tune(&t);
+        assert!(v.iter().all(|x| x.is_some()));
+        assert_eq!(v[TUNE_KEYS.iter().position(|k| *k == "WindY").unwrap()], Some(-7.25));
     }
 }
