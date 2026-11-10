@@ -1632,7 +1632,7 @@ fn cos_pi(x: f32) -> f32 {
 
 /// F-49999: the rows made orthonormal: row 2 kept and normalised, row 0 = row 1 x row 2
 /// normalised, row 1 = row 2 x row 0 (the vector unit's products, each rounded).
-fn orthonormal(r: &[Vec3; 3]) -> [Vec3; 3] {
+pub(crate) fn orthonormal(r: &[Vec3; 3]) -> [Vec3; 3] {
     use crate::physics::exact::dot3;
     let unit = |v: Vec3| {
         let l2 = dot3(v, v);
@@ -1641,7 +1641,8 @@ fn orthonormal(r: &[Vec3; 3]) -> [Vec3; 3] {
         let e = if e == 0.0 { 0.0 } else { e };
         v * ((1.0 - l2 * (e * e)) * (0.5 * e) + e)
     };
-    let cross = |a: Vec3, b: Vec3| Vec3::new(a.z * b.y - a.y * b.z, a.x * b.z - a.z * b.x, a.y * b.x - a.x * b.y);
+    // (the vector unit's negated multiply-subtract: -(p - q), so an equal pair gives -0)
+    let cross = |a: Vec3, b: Vec3| Vec3::new(-(a.y * b.z - a.z * b.y), -(a.z * b.x - a.x * b.z), -(a.x * b.y - a.y * b.x));
     let r2 = unit(r[2]);
     let r0 = unit(cross(r2, r[1]));
     let r1 = cross(r0, r2);

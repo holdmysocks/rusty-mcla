@@ -3224,6 +3224,19 @@ pub fn top_arrow_frame(rows: [glam::Vec3; 3], place: glam::Vec3, target: glam::V
     (local, top_arrow_axes(local), rot)
 }
 
+/// The level frame both GPS arrows are handed (F-32331's frame 6): row 1 = (0, 1, 0), row 2 = the car's z row with its y set
+/// to 0, made orthonormal by F-49999 (`boomcam::orthonormal`), then row 0 again as F-32331 makes it after the call:
+/// row 1 x (0 - row 2), each product rounded and the difference rounded. Checked offline with F-30300 on it:
+/// `top_arrow_level_matches_the_original`.
+pub fn top_arrow_level_rows(car_z: glam::Vec3) -> [glam::Vec3; 3] {
+    use glam::Vec3;
+    let [_, r1, r2] = crate::boomcam::orthonormal(&[Vec3::ZERO, Vec3::Y, Vec3::new(car_z.x, 0.0, car_z.z)]);
+    let n = Vec3::ZERO - r2;
+    let (p, q) = (Vec3::new(r1.z, r1.x, r1.y) * Vec3::new(n.y, n.z, n.x), Vec3::new(r1.y, r1.z, r1.x) * Vec3::new(n.z, n.x, n.y));
+    // (-(q - p) as the vector unit's negated multiply-subtract gives it: an equal pair is -0)
+    [-(q - p), r1, r2]
+}
+
 /// One corner of the arrow as the vertex program hands it on: where it is in the target
 /// (0..1 from the left and from the top), how far from the eye, its colour and opacity.
 #[derive(Clone, Copy, Debug)]
@@ -19977,6 +19990,33 @@ mod tests {
         assert_eq!(f("kTST/0"), -2147483648.0, "a signed record wraps");
         assert_eq!(f("kARS/0"), 0.5f32 as f64);
         assert_eq!(back.stats.get("gBRN"), Some(&(old.ostats["gBRN/0"] as i64 + 1)));
+    }
+
+    /// F-32331's level frame (frame 6) from the car's z row, F-49999 and F-30300 on it, run offline
+    /// (tools/arrow_level_reference.py, testdata/arrow_level_ref.txt: 3,000 turned, level and identity cars, targets far, near,
+    /// above and on the car): the frame's rows, the arrow's axes and gpsArrowRotation equal bit for bit.
+    #[test]
+    fn top_arrow_level_matches_the_original() {
+        use glam::Vec3;
+        let mut n = 0;
+        for l in include_str!("testdata/arrow_level_ref.txt").lines() {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let f = |s: &str| -> Vec<f32> { s.split_whitespace().map(|w| f32::from_bits(w.parse().unwrap())).collect() };
+            let (i, o) = (f(i), f(o));
+            let v = |k: usize, a: &[f32]| Vec3::new(a[k], a[k + 1], a[k + 2]);
+            let bits = |a: Vec3| [a.x.to_bits(), a.y.to_bits(), a.z.to_bits()];
+            let rows = top_arrow_level_rows(v(6, &i));
+            for r in 0..3 {
+                assert_eq!(bits(rows[r]), bits(v(3 * r, &o)), "frame row {r}: {l}");
+            }
+            let (_, m, rot) = top_arrow_frame(rows, v(9, &i), v(12, &i));
+            for r in 0..3 {
+                assert_eq!(bits(m[r]), bits(v(9 + 3 * r, &o)), "axis {r}: {l}");
+            }
+            assert_eq!(rot.to_bits(), o[18].to_bits(), "rotation: {l}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
     }
 
     /// F-30300 run offline (tools/arrow_frame_reference.py, testdata/arrow_frame_ref.txt: 3,000 cars and targets - turned
