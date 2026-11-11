@@ -116,12 +116,12 @@ def main():
         v, t = o.split()[1:]
         if int(v) >= 0:
             assert int(t, 16) == 0x2000 + 0x100 * int(v), o
-        w = ['V', '%08x' % frame] + ['%08x' % fb(x) for x in vw] + ['%d' % len(rows)]
+        w = ['V', 'x%08x' % frame] + ['x%08x' % fb(x) for x in vw] + ['%d' % len(rows)]
         for r in rows:
-            w += ['|', '%08x' % r[0], '%d' % r[1]] + ['%08x' % fb(x) for x in r[2:]]
+            w += ['|', 'x%08x' % r[0], '%d' % r[1]] + ['x%08x' % fb(x) for x in r[2:]]
         lines.append(' '.join(w) + ' -> ' + v)
     for (m, s), o in zip(scases, ss):
-        lines.append(' '.join(['S'] + ['%08x' % fb(x) for x in sum(m, []) + s]) + ' -> ' + ' '.join(o.split()[1:]))
+        lines.append(' '.join(['S'] + ['x%08x' % fb(x) for x in sum(m, []) + s]) + ' -> ' + ' '.join('x' + w for w in o.split()[1:]))
     a.out_dir.mkdir(parents=True, exist_ok=True)
     (a.out_dir / 'pool_evict_ref.txt').write_text(nl.join(lines) + nl)
     took = sum(1 for x in vs if x.split()[1] != '-1')

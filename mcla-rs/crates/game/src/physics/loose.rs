@@ -6566,12 +6566,13 @@ mod pool_tests {
     /// testdata/pool_evict_ref.txt (tools/pool_evict_reference.py): F-18636 run offline with the pool full and the viewer
     /// sphere set, 1,500 lists of 1 - 24 entries (stamps about the frame, kept types, spheres in and out of the sphere,
     /// equal ones, a few NaN), and F-94385 on 1,500 matrices and spheres: the port's victim and sphere bit for bit.
+    /// (Words are written x + 8 hex digits, so float bits are not read as addresses by `registry check`.)
     #[test]
     fn pool_victim_matches_the_original() {
         let (mut nv, mut ns) = (0, 0);
         for line in include_str!("../testdata/pool_evict_ref.txt").lines() {
             let (case, out) = line.split_once(" -> ").unwrap();
-            let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+            let h = |s: &str| u32::from_str_radix(s.strip_prefix('x').unwrap(), 16).unwrap();
             let f = |s: &str| f32::from_bits(h(s));
             if let Some(rest) = case.strip_prefix("V ") {
                 let mut parts = rest.split(" | ");
