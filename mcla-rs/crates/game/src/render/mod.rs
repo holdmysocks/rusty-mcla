@@ -1571,7 +1571,9 @@ pub struct Gpu {
 
 impl Gpu {
     pub async fn new(window: Arc<winit::window::Window>) -> Result<Gpu> {
-        Ok(Gpu::build(Gpu::base(window).await?))
+        let gpu = Gpu::build(Gpu::base(window).await?);
+        vram_ballast(&gpu.device, &gpu.queue);
+        Ok(gpu)
     }
 
     /// The device, queue and configured surface: what the start-up movie needs to be drawn while the rest of
@@ -4355,6 +4357,44 @@ impl Gpu {
             idle -= bytes;
         }
     }
+}
+
+/// Test hook MCLA_VRAM_BALLAST=<GB>: that much video memory taken by textures nothing draws, written once so the driver
+/// commits them, kept for the whole run - a smaller card on a big one (a 24 GB card with 20 GB taken is a 4 GB card for
+/// the game's allocations; docs/PERFORMANCE.md 2026-11-11 (5)).
+fn vram_ballast(device: &wgpu::Device, queue: &wgpu::Queue) {
+    static KEEP: std::sync::Mutex<Vec<wgpu::Texture>> = std::sync::Mutex::new(Vec::new());
+    let Some(gb) = std::env::var("MCLA_VRAM_BALLAST").ok().and_then(|v| v.parse::<f32>().ok()) else { return };
+    let n = (gb * 4.0).round() as usize; // 256 MB each: 8192 x 8192 RGBA8
+    let row = vec![0x5au8; 8192 * 4 * 64];
+    let mut keep = KEEP.lock().unwrap_or_else(|e| e.into_inner());
+    for i in 0..n {
+        let t = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("vram ballast"),
+            size: wgpu::Extent3d { width: 8192, height: 8192, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        for y in (0..8192).step_by(64) {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo { texture: &t, mip_level: 0, origin: wgpu::Origin3d { x: 0, y, z: 0 }, aspect: wgpu::TextureAspect::All },
+                &row,
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(8192 * 4), rows_per_image: Some(64) },
+                wgpu::Extent3d { width: 8192, height: 64, depth_or_array_layers: 1 },
+            );
+        }
+        queue.submit([]);
+        let _ = device.poll(wgpu::Maintain::Wait);
+        keep.push(t);
+        if i % 8 == 7 {
+            log::info!("vram ballast: {} MB", (i + 1) * 256);
+        }
+    }
+    log::info!("vram ballast: {} MB taken", n * 256);
 }
 
 fn make_object_binding(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, u: &ObjectUniform, dmg: &wgpu::TextureView) -> ObjectBinding {

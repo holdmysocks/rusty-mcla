@@ -6507,6 +6507,34 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
             }
+            // (test hook MCLA_SOAK=<minutes>: mixed play for memory soak runs, a cycle of that length - at 25 % a race of
+            // MCLA_SOAK_RACES (comma list, in turn) from free roam, at 60 % QUIT RACE, at 70 % GO TO GARAGE, at 80 % BACK;
+            // with --drive --auto the car drives itself between - docs/PERFORMANCE.md 2026-11-11 (5))
+            if let Some(per) = std::env::var("MCLA_SOAK").ok().and_then(|v| v.parse::<f32>().ok()).map(|m| ((m * 60.0 / fixed_step::DT) as u64).max(400)) {
+                let (k, n) = (self.tick_no as u64 % per, self.tick_no as u64 / per);
+                let at = |f: f32| k == (per as f32 * f) as u64;
+                if at(0.25) && self.game.mode == Mode::FreeRoam {
+                    let list = std::env::var("MCLA_SOAK_RACES").unwrap_or_else(|_| "hl_ordered_ts_01".into());
+                    let names: Vec<&str> = list.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+                    let name = names[n as usize % names.len().max(1)];
+                    self.game.current_race = self.game.race_defs.iter().position(|r| r.name.contains(name));
+                    log::info!("soak: cycle {} race {} ({:?})", n, name, self.game.current_race);
+                    if self.game.current_race.is_some() {
+                        self.pending_action = MenuAction::StartRace;
+                    }
+                } else if at(0.60) && matches!(self.game.mode, Mode::Race | Mode::Results) {
+                    log::info!("soak: cycle {} quit race ({:?})", n, self.game.mode);
+                    self.pending_action = MenuAction::QuitRace;
+                } else if at(0.70) && self.game.mode == Mode::FreeRoam {
+                    log::info!("soak: cycle {} go to garage", n);
+                    self.pending_action = MenuAction::GoToGarage;
+                } else if at(0.80) {
+                    log::info!("soak: cycle {} back ({:?})", n, self.game.mode);
+                    if self.game.mode == Mode::Garage {
+                        self.pending_action = MenuAction::Back;
+                    }
+                }
+            }
             // (test hook MCLA_GOTO_GARAGE=tick: GO TO GARAGE at that tick in free roam)
             if std::env::var("MCLA_GOTO_GARAGE").ok().and_then(|v| v.parse::<u64>().ok()) == Some(self.tick_no as u64) {
                 log::info!("go to garage test: mode {:?}", self.game.mode);
