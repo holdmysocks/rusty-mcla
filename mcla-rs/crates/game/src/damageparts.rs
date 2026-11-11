@@ -322,9 +322,12 @@ pub struct Bumper {
 impl Bumper {
     pub fn new(front: bool, m_rest: Mat4, movement: u32) -> Bumper {
         let mut b = Bumper { front, m_rest, a: End::default(), b: End::default(), clock: 0.0, max_state: movement.min(2) as u8, detached: None, pose: Mat4::IDENTITY, delta: Mat4::IDENTITY };
-        // `F-92886`: the half vector (0.5, 0, 0) both ways
-        b.a.rest = m_rest.transform_point3(Vec3::new(0.5, 0.0, 0.0));
-        b.b.rest = m_rest.transform_point3(Vec3::new(-0.5, 0.0, 0.0));
+        // `F-92886`: the caller's point (0.5, 0, 0) and its x negated through the rest matrix (the 4-term dots); the
+        // movement byte +484 is kept raw there and capped where it is read (`max_state`). Checked word for word
+        // (test `bumper_new_matches_the_original`); its closing reset F-40944 is the caller's `reset` here.
+        let r = rows4(&m_rest);
+        b.a.rest = through(Vec3::new(0.5, 0.0, 0.0), &r);
+        b.b.rest = through(Vec3::new(-0.5, 0.0, 0.0), &r);
         b
     }
 
@@ -1081,6 +1084,32 @@ mod tests {
             for (got, k, what) in [(b.a.pos, 0, "A"), (b.a.prev, 4, "A prev"), (b.b.pos, 20, "B"), (b.b.prev, 24, "B prev")] {
                 assert_eq!(bits(got), ov[k..k + 3].to_vec(), "{what}: {line}");
             }
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
+
+    /// The bumper's set-up F-92886 run offline (tools/bumper_new_reference.py, testdata/bumper_new_ref.txt: 3,000 rest
+    /// matrices, movements 0 - 3): both rest points, the rest frame copy and the movement byte - every word equal.
+    #[test]
+    fn bumper_new_matches_the_original() {
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let mut n = 0;
+        for line in include_str!("testdata/bumper_new_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let t: Vec<&str> = i.split_whitespace().collect();
+            let w: Vec<f32> = t[0..16].iter().map(|x| f(x)).collect();
+            let mv: u32 = t[16].parse().unwrap();
+            let ov: Vec<&str> = o.split_whitespace().collect();
+            let m = Mat4::from_cols(Vec4::from_slice(&w[0..4]), Vec4::from_slice(&w[4..8]), Vec4::from_slice(&w[8..12]), Vec4::from_slice(&w[12..16]));
+            let b = Bumper::new(true, m, mv);
+            let words = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits(), 1f32.to_bits()];
+            let mut got: Vec<u32> = words(b.a.rest).into_iter().chain(words(b.b.rest)).collect();
+            got.extend(m.to_cols_array().iter().map(|x| x.to_bits()));
+            let want: Vec<u32> = ov[0..24].iter().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            assert_eq!(got, want, "{line}");
+            assert_eq!((u32::from_str_radix(ov[24], 16).unwrap(), ov[25]), (mv, "1"), "{line}");
+            assert_eq!(b.max_state, mv.min(2) as u8);
             n += 1;
         }
         assert_eq!(n, 3000);
