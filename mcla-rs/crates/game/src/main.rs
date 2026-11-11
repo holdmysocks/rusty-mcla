@@ -13644,8 +13644,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.game.payback_keys = false;
                 self.police.destroy_all(&mut self.vehicles);
                 let c = self.vehicles.player_mut().unwrap();
+                // (Racer_ZeroVelocity, F-96168: F-72737 with the zero vector - no velocities, then the shafts, wheels, gear
+                // and engine set down for that speed)
                 c.state.vel = Vec3::ZERO;
                 c.state.ang_vel = Vec3::ZERO;
+                if let Some(vt) = c.params().veh.clone() {
+                    let z = c.state.rot * Vec3::Z;
+                    physics::vehsim::set_down_speeds(&mut c.state, &vt, z);
+                }
                 let hold = (c.state.pos, c.state.rot);
                 self.game.hangout_slow.set(1.0, 1.0 / 0.5, false, true, 1.0);
                 self.game.hangout_slow.visible = false;

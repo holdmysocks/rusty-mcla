@@ -7579,9 +7579,18 @@ pub fn set_pose(st: &mut CarState, vt: &VehTune, world: &WorldCollider, m: [Vec3
     if vs.sst.burning {
         vs.sst.reset();
     }
+    set_down_speeds(st, vt, rows[2]);
+}
+
+/// F-72737 after the velocities are set (vfuncs 164 / 172 of the physics instance): the car's speed along its back row
+/// z (-(z . v)) gives both shafts and their wheels, the differentials even, the gear for the speed (F-24547) and the
+/// engine's speed. Racer_ZeroVelocity is this with no velocity (handler F-96168 -> F-72737 with the zero vector).
+pub fn set_down_speeds(st: &mut CarState, vt: &VehTune, z: Vec3) {
+    let vel = st.vel;
+    let Some(vs) = st.veh.as_deref_mut() else { return };
     let t = &vt.t;
     let e = &t.engine.s;
-    let fwd = super::vehsim_words::set_down_forward([rows[2].x, rows[2].y, rows[2].z], [vel.x, vel.y, vel.z]);
+    let fwd = super::vehsim_words::set_down_forward([z.x, z.y, z.z], [vel.x, vel.y, vel.z]);
     let drive = if vs.drive == 255 { t.drivetrain_type as u8 } else { vs.drive };
     let (power_r, free_r, all) = match drive {
         0 => (t.wheel_back.radius, t.wheel_front.radius, false),
