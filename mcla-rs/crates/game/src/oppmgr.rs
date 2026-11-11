@@ -271,6 +271,86 @@ pub fn racer_order(ids: &[usize], human: impl Fn(usize) -> bool) -> Vec<usize> {
     l.list.into_iter().flatten().collect()
 }
 
+/// A racer's stream fields as F-60675 (racer vfunc 116) steps them: +656 the state (0 out, 1 waiting to load, 3 in, 4
+/// evicting), +16 the evict request, +17 the load request, +28 the load wait, +664, +668 the evict wait.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct RacerStream {
+    pub state: u32,
+    pub evict_req: u8,
+    pub load_req: u8,
+    pub wait: i32,
+    pub w664: i32,
+    pub evict_wait: i32,
+}
+
+/// What F-60675 calls, in order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StreamCall {
+    /// its debug print (F-47121)
+    Log,
+    /// the car taken out of the world (F-98197)
+    TakeOut,
+    /// the vinyl test (F-70250): true = still waiting on vinyls
+    VinylTest,
+    /// the vinyl pump (F-88873)
+    VinylPump,
+    /// racer vfunc 128 (F-62032): the car streamed in, state 3
+    StreamIn,
+    /// racer vfunc 132 (F-55459): the vehicle deleted, state 0
+    Unload,
+}
+
+/// F-60675, once a frame for every opponent (F-45069 in the post-update F-69595). `wait_word` = the word copied to
+/// +28 on the load request (6 in the image, written by no function); `vinyls_busy` = the vinyl test's answer.
+/// State 0: a load request -> state 1, requests +17 cleared, +664 = 30, +28 = wait_word. State 1: +28 above 0 counts
+/// down, else the car is streamed in. State 3: an evict request -> state 4, +668 = 8, +16 cleared, the car out of the
+/// world. State 4: +668 above 0 counts down with a vinyl pump; else while the vinyls are busy a pump, else the
+/// vehicle is deleted. State 2 and above 4: nothing.
+pub fn stream_step(r: &mut RacerStream, wait_word: i32, vinyls_busy: bool) -> Vec<StreamCall> {
+    use StreamCall::*;
+    let mut out = Vec::new();
+    match r.state {
+        0 if r.load_req != 0 => {
+            r.state = 1;
+            r.load_req = 0;
+            r.w664 = 30;
+            r.wait = wait_word;
+            out.push(Log);
+        }
+        1 => {
+            if r.wait > 0 {
+                r.wait -= 1;
+            } else {
+                out.extend([Log, StreamIn]);
+            }
+        }
+        3 if r.evict_req != 0 => {
+            r.state = 4;
+            r.evict_wait = 8;
+            r.evict_req = 0;
+            out.extend([TakeOut, Log]);
+        }
+        4 => {
+            if r.evict_wait > 0 {
+                r.evict_wait -= 1;
+                out.push(VinylPump);
+            } else {
+                out.push(VinylTest);
+                if vinyls_busy {
+                    out.extend([VinylPump, Log]);
+                } else {
+                    out.push(Unload);
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// The load wait F-60675 copies on a load request (the image's word; nothing writes it).
+pub const LOAD_WAIT: i32 = 6;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,5 +519,44 @@ mod tests {
             assert!(ok == n, "{path}: {ok} of {n}");
             eprintln!("{path}: {ok} of {n}");
         }
+    }
+    /// F-60675 run offline on 4,000 random racer states (tools/stream_state_reference.py, seed 60675; states 0..5 and 7,
+    /// both requests, waits around 0, the load wait word, with and without a car instance, the vinyl test either way):
+    /// the fields after and the calls in order (with the take-out's and the vinyl calls' arguments) equal stream_step's.
+    #[test]
+    fn stream_state_matches_the_original() {
+        let text = include_str!("testdata/stream_state_ref.txt");
+        let (mut n, mut bad) = (0, 0);
+        for line in text.lines().filter(|l| !l.is_empty()) {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let a = w.iter().position(|x| *x == "->").unwrap();
+            let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+            let v: Vec<u32> = w[1..a].iter().map(|x| h(x)).collect();
+            let mut r = RacerStream { state: v[0], evict_req: v[1] as u8, load_req: v[2] as u8, wait: v[3] as i32, w664: 0, evict_wait: v[4] as i32 };
+            let calls = stream_step(&mut r, v[5] as i32, v[7] != 0);
+            let inst = if v[6] != 0 { v[6] - 16 } else { 0 };
+            let mut ev = String::new();
+            for c in calls {
+                ev += &match c {
+                    StreamCall::Log => " L".to_string(),
+                    StreamCall::TakeOut => format!(" T {:08x} {:08x}", 0x4024_0000u32, inst),
+                    StreamCall::VinylTest => format!(" V {:08x}", inst),
+                    StreamCall::VinylPump => format!(" W {:08x}", inst),
+                    StreamCall::StreamIn => " A".to_string(),
+                    StreamCall::Unload => " B".to_string(),
+                };
+            }
+            let got = format!("{:08x} {:02x} {:02x} {:08x} {:08x} {:08x}{}", r.state, r.evict_req, r.load_req, r.wait as u32, r.w664 as u32, r.evict_wait as u32, ev);
+            let want = w[a + 1..].join(" ");
+            n += 1;
+            if got != want {
+                bad += 1;
+                if bad < 5 {
+                    eprintln!("{line}
+  got  {got}");
+                }
+            }
+        }
+        assert!(n == 4000 && bad == 0, "{bad} of {n} differ");
     }
 }

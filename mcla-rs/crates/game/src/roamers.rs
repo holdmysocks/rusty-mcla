@@ -137,10 +137,13 @@ pub struct Roamers {
     /// Where each man with no car near the player is shown this frame (by his key): on the nearest rail with ground
     /// under it (`rail_place`) to his place on his loop - `Roamers::shown`
     on_road: HashMap<String, (Vec3, Vec3)>,
-    /// The man whose car the racer manager's streaming walk asked for (its "Reload car", load request +17) and
-    /// that is not in the world yet: his racer is loading (+656 neither 0 nor 3), which holds every other reload
-    /// (F-31748's busy count) - `oppmgr::stream`
-    loading: Option<String>,
+    /// Each man's racer between out and in of the world (by his key), with the stream fields the racer's state machine
+    /// F-60675 (racer vfunc 116, `oppmgr::stream_step`) keeps: from the walk's request until his car is in the world
+    /// (states 0 -> 1, the load wait counted down; `true` once it has run out and the car is to be put down) or until
+    /// the racer is out (3 -> 4, the evict wait counted down). Either holds every other reload (F-31748's busy count)
+    phase: HashMap<String, (crate::oppmgr::RacerStream, bool)>,
+    /// the game-frame clock of the streaming walk and the state machines (`brain::frame_due`)
+    stream_acc: f32,
     /// The story mission whose series the man just flashed starts, and his (name, car, set-up):
     /// `Game::story_series_start`
     pub series_of: Option<(String, String, String, String)>,
@@ -391,7 +394,8 @@ impl Roamers {
             player_state: 0,
             route_memo: None,
             on_road: HashMap::new(),
-            loading: None,
+            phase: HashMap::new(),
+            stream_acc: 0.0,
             series_of: None,
             setup_cfg: Default::default(),
             wanted: 2,
@@ -877,10 +881,13 @@ impl Roamers {
         // port - D47 - so never the 200 m one) and within the slots his car is asked for, one a frame and none while
         // one is loading; a car more than 600 m beyond its 100 m head start, i.e. past 700 m, or past the slots is
         // evicted. The port's own drop at 420 m and put-down at 120 - 330 m are gone)
+        // (once a game frame, F-28020's walk in the update, then each opponent's state machine in the post-update,
+        // F-69595 -> F-45069 -> F-60675)
         let streaming = only.is_none() && self.challenge.is_none() && !self.suspended;
+        let due = crate::brain::frame_due(&mut self.stream_acc, dt);
         let mut reload: Option<usize> = None;
         let mut evict: Vec<u32> = Vec::new();
-        if streaming {
+        if streaming && due {
             use crate::oppmgr::{StreamAction, StreamRacer, LOADED, UNLOADED};
             let mut list = vec![Some(StreamRacer { load_state: LOADED, pin: 0, reset_on_eviction: false, not_counted: true, x: pp.x, z: pp.z })];
             for m in &self.men {
@@ -889,7 +896,7 @@ impl Roamers {
                     None => {
                         let p = if m.fresh || m.reset { m.start.or(m.pts.first().copied()).unwrap_or(Vec3::ZERO) } else { self.on_road.get(&m.key).map_or_else(|| loop_at(&m.pts, m.at).0, |x| x.0) };
                         // (a racer whose load was asked for and is not in the world yet: neither 0 nor 3)
-                        let st = if self.loading.as_deref() == Some(m.key.as_str()) { 1 } else { UNLOADED };
+                        let st = self.phase.get(&m.key).map_or(UNLOADED, |p| p.0.state);
                         StreamRacer { load_state: st, pin: 0, reset_on_eviction: false, not_counted: false, x: p.x, z: p.z }
                     }
                 };
@@ -906,13 +913,37 @@ impl Roamers {
                     StreamAction::Reset { .. } => {}
                 }
             }
+            // (the requests the walk made: +17 / +16 on the racer)
             if let Some(k) = reload {
-                self.loading = Some(self.men[k].key.clone());
+                let r = crate::oppmgr::RacerStream { load_req: 1, ..Default::default() };
+                self.phase.insert(self.men[k].key.clone(), (r, false));
             }
-        } else {
-            self.loading = None;
+            for &uid in &evict {
+                if let Some(m) = self.men.iter().find(|m| vehicles.cars.iter().any(|c| c.uid == uid && m.owns(c))) {
+                    let r = crate::oppmgr::RacerStream { state: crate::oppmgr::LOADED, evict_req: 1, ..Default::default() };
+                    self.phase.insert(m.key.clone(), (r, false));
+                }
+            }
+            // (the post-update: each racer's state machine, the ones just asked for included. Taken out: the car leaves
+            // the world now (`evict`, removed in the loop below); streamed in: the car is put down; deleted: out. No
+            // vinyl is ever waited on in the port: its liveries are made with the car)
+            let mut gone = Vec::new();
+            for (key, (r, go)) in self.phase.iter_mut() {
+                for c in crate::oppmgr::stream_step(r, crate::oppmgr::LOAD_WAIT, false) {
+                    match c {
+                        crate::oppmgr::StreamCall::StreamIn => *go = true,
+                        crate::oppmgr::StreamCall::Unload => gone.push(key.clone()),
+                        _ => {}
+                    }
+                }
+            }
+            for key in gone {
+                self.phase.remove(&key);
+            }
+        } else if !streaming {
+            self.phase.clear();
         }
-        let loading = self.loading.clone();
+        let loading = self.phase.iter().find(|(_, p)| p.1).map(|(k, _)| k.clone());
         for (k, m) in self.men.iter_mut().enumerate() {
             // (suspended, a man waits at his reset position, his car streamed out: CruisingHookmanCore 0x497..0x523)
             if self.suspended && m.reset {
@@ -1058,6 +1089,7 @@ impl Roamers {
             }
         }
         let tried = ready.is_some();
+        let loading_now = loading.clone();
         let Some(nav) = world.nav.as_ref() else { return None };
         if let Some((k, m, model)) = ready.filter(|(_, _, model)| is_racer_model(&model.name) || only.is_some()) {
             {
@@ -1158,10 +1190,10 @@ impl Roamers {
         // (the racer asked for is in the world: loaded. A man whose car could not be put down - no rail with ground
         // near him, another car on the spot, a car that is no racer's - goes back to out of the world and is asked
         // for again by a later walk, so he does not hold every other man's load)
-        if let Some(key) = self.loading.clone() {
+        if let Some(key) = loading_now {
             let has = self.men.iter().find(|m| m.key == key).map_or(true, |m| vehicles.cars.iter().any(|c| m.owns(c)));
             if has || tried {
-                self.loading = None;
+                self.phase.remove(&key);
             }
         }
         // the run to the start line

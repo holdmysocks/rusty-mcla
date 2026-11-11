@@ -456,6 +456,27 @@ fn in_map_order(list: Vec<PickDriver>) -> Vec<PickDriver> {
 mod tests {
     use super::*;
 
+    /// rage::atMap built and walked by the original's code offline (tools/atmap_order_reference.py, 2,000 random key
+    /// lists of 0 .. 399 keys, seed 2186: small, wide, repeated and bucket-multiple keys; the insert F-14328 with its set-up
+    /// F-52791, grow F-82002 / F-36760, the find F-18909 first as the callers do, Begin F-46639 / Next F-44769): the walk
+    /// order equals `atmap_order` on every case.
+    #[test]
+    fn atmap_order_matches_the_original() {
+        let text = include_str!("testdata/atmap_order_ref.txt");
+        let (mut n, mut bad) = (0, 0);
+        for line in text.lines().filter(|l| !l.is_empty()) {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let a = w.iter().position(|x| *x == "->").unwrap();
+            let keys: Vec<u32> = w[2..a].iter().map(|x| u32::from_str_radix(&x.replace('_', ""), 16).unwrap()).collect();
+            let want: Vec<usize> = w[a + 1..].iter().map(|x| x.parse().unwrap()).collect();
+            n += 1;
+            if atmap_order(&keys) != want {
+                bad += 1;
+            }
+        }
+        assert!(n == 2000 && bad == 0, "{bad} of {n} differ");
+    }
+
     fn data() -> Option<OpPick> {
         let dir = "D:/MCLA/extracted/cache";
         Path::new(dir).join("tune/vehicle").is_dir().then(|| OpPick::load(dir, ""))
