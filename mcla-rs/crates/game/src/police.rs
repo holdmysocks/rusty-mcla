@@ -1442,7 +1442,8 @@ struct PlanIn {
     /// brain +640: the target's position last seen (the quick re-aim's goal)
     last_seen: Vec3,
     speed: f32,
-    d: f32,
+    /// the squared distance cop - target (F-39842's order)
+    dsq: f32,
     safe: f32,
     along: f32,
     /// fMinSetGoalTime (tune +208) as the brains read it: not halved head-on (only the countdown is), the head-on
@@ -1450,6 +1451,22 @@ struct PlanIn {
     per: f32,
     moving_speed: f32,
     pull_dist: f32,
+}
+
+/// The Pursuit brain's final speed (F-49680) when F-42951 holds: the target stopped (F-43975) 0; not within 2 x fSafeDist
+/// (F-39842: the squared distance strictly under the single product's square) -1, full pace; within it, going the same way
+/// (F-80249) and ahead of the cop (F-53459) 1.2 x the target's speed (single); else -1.
+fn pursuit_final_speed(t_moving: bool, dsq: f32, safe: f32, same_dir: bool, ahead: bool, speed: f32) -> f32 {
+    let r = safe * 2.0;
+    if !t_moving {
+        0.0
+    } else if !(dsq < r * r) {
+        -1.0
+    } else if same_dir && ahead {
+        speed * 1.2
+    } else {
+        -1.0
+    }
 }
 
 /// The brain's nav test as F-72689 / F-45363 make it: over the navigation mesh, or a polygon within 10 m - then the point
@@ -1470,7 +1487,7 @@ fn nav_snap(q: &mut Vec3) -> bool {
 
 /// The cop brain's goal plan (see `PlanIn`): the two goals and the speed to reach the last with.
 fn cop_plan(nav: Option<&NavSys>, i: &PlanIn) -> ([Vec3; 2], f32) {
-    let PlanIn { bcmd, ed78, head_on, quick, turned, t_moving, same_dir, ahead, wrong_way, lane_tan, side, ppos, pvel, pfwd, pright, cpos, last_seen, speed, d, safe, along, per, moving_speed, pull_dist } = *i;
+    let PlanIn { bcmd, ed78, head_on, quick, turned, t_moving, same_dir, ahead, wrong_way, lane_tan, side, ppos, pvel, pfwd, pright, cpos, last_seen, speed, dsq, safe, along, per, moving_speed, pull_dist } = *i;
     let on_road = |q: Vec3| crate::offroad::mesh().map_or(true, |m| m.on_road(q));
     let ho = if head_on { 2.0 } else { 1.0 };
     
@@ -1578,7 +1595,7 @@ fn cop_plan(nav: Option<&NavSys>, i: &PlanIn) -> ([Vec3; 2], f32) {
             }
             4 => {
                 let b = if t_moving { ppos } else { ppos + (cpos - ppos).normalize_or(Vec3::X) * safe };
-                let v = if !t_moving { 0.0 } else if d >= 2.0 * safe { -1.0 } else if same_dir && ahead { 1.2 * speed } else { -1.0 };
+                let v = pursuit_final_speed(t_moving, dsq, safe, same_dir, ahead, speed);
                 (chain(b, per * ho), v)
             }
             // PullOver brain (F-51787): one point, both goals - the target; 15 m behind it stopped
@@ -5133,7 +5150,7 @@ impl Police {
                 if plans && (normal || quick || empty) {
                     // (the target's lane tangent, its +624, at its kept phase)
                     let lane_tan = world.nav.as_ref().zip(lane_of_player).and_then(|(n, (l, bt))| Some(n.curves.get(l)?.eval(bt).1));
-                    let pin = PlanIn { bcmd: bcmd as u8, ed78, head_on: tac.head_on, quick, turned, t_moving, same_dir, ahead, wrong_way: self.against_traffic, lane_tan, side: tac.brain.side as u8, ppos, pvel, pfwd, pright, cpos, last_seen: tac.last_seen, speed, d, safe, along, per: period, moving_speed: t("fMovingSpeed", 1.0), pull_dist: t("fPullOverDist", 15.0) };
+                    let pin = PlanIn { bcmd: bcmd as u8, ed78, head_on: tac.head_on, quick, turned, t_moving, same_dir, ahead, wrong_way: self.against_traffic, lane_tan, side: tac.brain.side as u8, ppos, pvel, pfwd, pright, cpos, last_seen: tac.last_seen, speed, dsq: geo.dsq, safe, along, per: period, moving_speed: t("fMovingSpeed", 1.0), pull_dist: t("fPullOverDist", 15.0) };
                     let (g, v) = cop_plan(world.nav.as_ref(), &pin);
                     tac.replan = per;
                     tac.plan_fwd = pfwd;
@@ -5860,6 +5877,42 @@ mod tests {
         assert_eq!(running_arm(1.0, 1, &arms), Vec3::Z);
         assert_eq!(running_arm(7.0, 0, &arms), Vec3::X);
         assert_eq!(running_arm(8.5, 0, &arms), Vec3::ZERO);
+    }
+
+    #[test]
+    fn final_speed_matches_the_original() {
+        // (F-49680 run offline with its tests unchanged, tools/final_speed_reference.py: 4,000 cases - the 2 x fSafeDist ring
+        // to the last bits, targets stopped / around the moving speed, the cop object's three ways through F-42951)
+        let src = include_str!("testdata/final_speed_ref.txt");
+        let hx = |w: &str| u32::from_str_radix(w, 16).unwrap();
+        let v3 = |w: &[&str]| Vec3::new(f32::from_bits(hx(w[0])), f32::from_bits(hx(w[1])), f32::from_bits(hx(w[2])));
+        let mut bad = Vec::new();
+        let mut n = 0;
+        for l in src.lines() {
+            let (lhs, want) = l.split_once(" -> ").unwrap();
+            let w: Vec<&str> = lhs.split(' ').collect();
+            let safe = f32::from_bits(hx(&w[0][1..]));
+            let mv = f32::from_bits(hx(&w[1][1..]));
+            let mode: u8 = w[2][1..].parse().unwrap();
+            let c: Vec<&str> = w[3][1..].split(',').collect();
+            let t: Vec<&str> = w[4][1..].split(',').collect();
+            let (cpos, back, cvel) = (v3(&c[0..3]), v3(&c[3..6]), v3(&c[6..9]));
+            let (tpos, tvel, speed) = (v3(&t[0..3]), v3(&t[3..6]), f32::from_bits(hx(t[6])));
+            // (F-42951: no cop object, or its +872 clear, or no race)
+            let ed78 = mode != 3;
+            let got = if ed78 {
+                let g = swipe_geo(cpos, Vec3::ZERO, back, cvel, tpos, tvel);
+                pursuit_final_speed(moving(speed, mv), g.dsq, safe, g.same_dir, g.ahead, speed)
+            } else {
+                default_final_speed(Some(speed), mv)
+            };
+            if got.to_bits() != hx(want) {
+                bad.push(format!("{l} got {:08x}", got.to_bits()));
+            }
+            n += 1;
+        }
+        assert_eq!(n, 4000);
+        assert!(bad.is_empty(), "{} of {n}: {:#?}", bad.len(), &bad[..bad.len().min(8)]);
     }
 
     #[test]
@@ -7040,7 +7093,7 @@ mod tests {
                 cpos,
                 last_seen: v3(&v[46..]),
                 speed: tspeed,
-                d: (tpos - cpos).length(),
+                dsq: geo.dsq,
                 safe,
                 along,
                 per,
