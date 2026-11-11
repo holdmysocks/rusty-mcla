@@ -3763,6 +3763,39 @@ mod whine_tests {
         assert_eq!(whine_step(&mut t, true, 0.0, 45.0, 10.0, 0.1).start, Some((1, None)));
     }
 
+    /// F-96287 against the recording (`MCLA_WHINE_REC=<file>`, work/audio2/spdrec/whine_rec.py over the batch 61 drive):
+    /// each recorded call's inputs (reversing byte, chassis +224 / +136, the times +296 / +300, the frame time) give the
+    /// times the next call saw and the start the call made, with its request value, word for word.
+    #[test]
+    fn the_reverse_whine_replays_the_recording() {
+        let text = match std::env::var("MCLA_WHINE_REC") {
+            Ok(path) => std::fs::read_to_string(path).unwrap(),
+            Err(_) => include_str!("testdata/whine_rec.txt").to_string(),
+        };
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let (mut n, mut starts) = (0, 0);
+        for l in text.lines().filter(|l| !l.starts_with('#') && !l.is_empty()) {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            let mut t = [f(w[3]), f(w[4])];
+            let out = whine_step(&mut t, w[0] != "0", f(w[2]), mixer_mph(f(w[1])), 10.0, f(w[5]));
+            assert_eq!((t[0].to_bits(), t[1].to_bits()), (f(w[6]).to_bits(), f(w[7]).to_bits()), "{l}");
+            let pct: i32 = w[9].parse().unwrap();
+            let want = match w[8] {
+                "on" => Some((0, (pct >= 0).then_some(pct as f32))),
+                "off" => Some((1, (pct >= 0).then_some(pct as f32))),
+                _ => None,
+            };
+            // (a start is requested only into an empty slot: the recorded start, if any, is one the rule asked for)
+            if want.is_some() {
+                assert_eq!(out.start, want, "{l}");
+                starts += 1;
+            }
+            n += 1;
+        }
+        eprintln!("reverse whine: {n} recorded calls, {starts} starts equal");
+        assert!(n > 0 && starts > 0);
+    }
+
     /// ONESHOT_PARAMS +40..+56 of the disc's cars: a player car's whine, the opponents' NULL.
     #[test]
     fn reverse_whine_records_from_the_disc() {
