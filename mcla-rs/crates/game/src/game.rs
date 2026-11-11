@@ -3821,9 +3821,7 @@ impl Game {
         // race line: road route through every checkpoint in order
         let (gpos, gyaw) = def.grid[0];
         let fwd0 = Vec3::new(-gyaw.sin(), 0.0, -gyaw.cos());
-        let (path, missing) = nav.route_through(gpos, fwd0, &checkpoints, 9.0);
         // checkpoints that are not on a road (plazas, car parks): leave the line there
-        let mut path = path;
         let off_road_fix = |path: &mut Vec<Vec3>| -> usize {
             let mut from = 0usize;
             let mut off_road = 0;
@@ -3851,12 +3849,18 @@ impl Game {
             }
             off_road
         };
-        let mut off_road = off_road_fix(&mut path);
-        let is_cp = |p: Vec3| checkpoints.iter().any(|c| *c == p);
-        let n_loops = drop_loops(&mut path, &is_cp);
-        if n_loops > 0 {
-            log::info!("race {}: {} points of junction loops taken out of the line", def.name, n_loops);
-        }
+        // (the road route through the checkpoints: the line of a race without the script's routes, or whose line
+        // from them is too short; made only then - 20 - 40 ms of the race start's tick, docs/PERFORMANCE.md 2026-11-11 (3))
+        let road_line = || -> (Vec<Vec3>, usize, usize) {
+            let (mut path, missing) = nav.route_through(gpos, fwd0, &checkpoints, 9.0);
+            let off_road = off_road_fix(&mut path);
+            let is_cp = |p: Vec3| checkpoints.iter().any(|c| *c == p);
+            let n_loops = drop_loops(&mut path, &is_cp);
+            if n_loops > 0 {
+                log::info!("race {}: {} points of junction loops taken out of the line", def.name, n_loops);
+            }
+            (path, off_road, missing)
+        };
         // with the script's routes: through the nodes of the likeliest route of each stretch
         let circuit = laps > 1 || def.sub_type == "Circuit";
         let cuts_on = std::env::var("MCLA_SHORTCUTS").map_or(true, |v| v != "0");
@@ -3956,20 +3960,65 @@ impl Game {
         };
         let mut shortcuts: Vec<Shortcut> = Vec::new();
         let routed = course.as_ref().filter(|c| c.routes.iter().any(|r| r.weight > 0.0));
-        if let Some(c) = routed {
-            let (l, off, cuts) = course_line(c, None);
-            if l.len() > 4 {
-                path = l;
-                off_road = off;
-                shortcuts = cuts;
-            }
-        }
+        let kind = match def.race_type.as_str() {
+            "Delivery" => RaceKind::Delivery,
+            "Payback" => RaceKind::Payback,
+            _ => RaceKind::Race,
+        };
+        let n_opp = match kind {
+            RaceKind::Delivery => 0,
+            RaceKind::Payback => 1,
+            RaceKind::Race if self.career.is_time_trial(&def.id) || self.mc4_tt_of(&def.id).is_some() => 0,
+            RaceKind::Race if self.wager.is_some() => 1,
+            // (a pink slip race: wager_hangout_core makes one opponent, 0x54c3 - step 21)
+            RaceKind::Race if self.mc4_pink_on() => 1,
+            // (a hookman flashed on the road races alone against the player: "2/2" in the
+            // recomp's first career race - `ng_race_*`)
+            RaceKind::Race if self.hookman_race => 1,
+            // (step 19d: a generic local hookman's race is his and three more racers' -
+            // generic_local_hookman.sco's argument 3)
+            RaceKind::Race if self.mc4_local_man_race() => 4.min(def.grid.len().saturating_sub(1)).max(1),
+            // (a story series is the player and the man: its script's +3080 = 2, +3084 = 0)
+            RaceKind::Race if self.story_series() => 1,
+            // (a hangout's series is four cars - `sr_results`)
+            RaceKind::Race if self.series.is_some() => 3.min(def.grid.len().saturating_sub(1)),
+            RaceKind::Race => def.opponents.clamp(1, 7).min(def.grid.len().saturating_sub(1)),
+        };
         let mut seed = (self.rand() * 4.0e9) as u32 | 1;
         let mut lcg = move || {
             seed ^= seed << 13;
             seed ^= seed >> 17;
             seed ^= seed << 5;
             (seed >> 8) as f32 / 16777216.0
+        };
+        // (each opponent's pick of the routes, drawn in turn on the generator - the same draws in the same order as the
+        // grid's loop below made them; the player's line draws none - and every line built side by side: the player's
+        // 15 - 45 ms and the opponents' 10 - 22 ms each were in the race start's tick one after the other,
+        // docs/PERFORMANCE.md 2026-11-10 (3) and 2026-11-11 (3); MCLA_RACE_LINES_AHEAD=0: in turn)
+        let opp_legs: Vec<Vec<Vec<(Vec3, f32)>>> = match routed {
+            Some(c) => (0..n_opp).map(|_| c.pick(circuit, Some(&mut lcg as &mut dyn FnMut() -> f32))).collect(),
+            None => Vec::new(),
+        };
+        let (own_line, opp_lines): (_, Vec<(Vec<Vec3>, usize, Vec<Shortcut>)>) = match routed {
+            Some(c) if std::env::var("MCLA_RACE_LINES_AHEAD").map_or(true, |v| v.trim() != "0") => std::thread::scope(|sc| {
+                let hs: Vec<_> = opp_legs.iter().map(|per_leg| sc.spawn(|| course_build(c, per_leg))).collect();
+                let own = course_line(c, None);
+                (Some(own), hs.into_iter().map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect())
+            }),
+            Some(c) => (Some(course_line(c, None)), opp_legs.iter().map(|per_leg| course_build(c, per_leg)).collect()),
+            None => (None, Vec::new()),
+        };
+        let from_course = own_line.filter(|(l, _, _)| l.len() > 4);
+        // (MCLA_ROAD_LINE_ALWAYS=1: the road route made as before, also when the script's line replaces it)
+        let road = (from_course.is_none() || std::env::var("MCLA_ROAD_LINE_ALWAYS").is_ok()).then(road_line);
+        let missing = road.as_ref().map_or(0, |r| r.2);
+        let (path, off_road) = match (from_course, road) {
+            (Some((l, off, cuts)), _) => {
+                shortcuts = cuts;
+                (l, off)
+            }
+            (None, Some((l, off, _))) => (l, off),
+            (None, None) => unreachable!(),
         };
         let mut total = 0.0;
         for w in path.windows(2) {
@@ -4015,11 +4064,6 @@ impl Game {
         let route: Vec<usize> = Vec::new();
         let path = std::sync::Arc::new(path);
         log::info!("race {}: {} checkpoints x {} laps, race line {} points, {:.0} m ({} legs without a road route)", def.name, def.checkpoints.len(), laps, path.len(), total, missing);
-        let kind = match def.race_type.as_str() {
-            "Delivery" => RaceKind::Delivery,
-            "Payback" => RaceKind::Payback,
-            _ => RaceKind::Race,
-        };
         // mission time limits come in four difficulty steps; the career moves through them
         let diff = ((self.rep as f32 / crate::catalog::MAX_REP as f32) * 4.0).floor().clamp(0.0, 3.0) as usize;
         let time_limit = if kind == RaceKind::Race { 0.0 } else { def.target_times.get(diff).or(def.target_times.first()).copied().unwrap_or(0.0) };
@@ -4027,25 +4071,6 @@ impl Game {
         // grid
         vehicles.cars.retain(|c| c.is_player);
         let pi = 0;
-        let n_opp = match kind {
-            RaceKind::Delivery => 0,
-            RaceKind::Payback => 1,
-            RaceKind::Race if self.career.is_time_trial(&def.id) || self.mc4_tt_of(&def.id).is_some() => 0,
-            RaceKind::Race if self.wager.is_some() => 1,
-            // (a pink slip race: wager_hangout_core makes one opponent, 0x54c3 - step 21)
-            RaceKind::Race if self.mc4_pink_on() => 1,
-            // (a hookman flashed on the road races alone against the player: "2/2" in the
-            // recomp's first career race - `ng_race_*`)
-            RaceKind::Race if self.hookman_race => 1,
-            // (step 19d: a generic local hookman's race is his and three more racers' -
-            // generic_local_hookman.sco's argument 3)
-            RaceKind::Race if self.mc4_local_man_race() => 4.min(def.grid.len().saturating_sub(1)).max(1),
-            // (a story series is the player and the man: its script's +3080 = 2, +3084 = 0)
-            RaceKind::Race if self.story_series() => 1,
-            // (a hangout's series is four cars - `sr_results`)
-            RaceKind::Race if self.series.is_some() => 3.min(def.grid.len().saturating_sub(1)),
-            RaceKind::Race => def.opponents.clamp(1, 7).min(def.grid.len().saturating_sub(1)),
-        };
         if kind == RaceKind::Race {
             // (the race core scripts bind the start scene to RaceGrid_GetPosition(grid, 0) and its
             // heading - CineScript_SetGameCoordSysBinding, OrderedCheckpointCore / UnorderedCheckpointCore)
@@ -4073,7 +4098,7 @@ impl Game {
         // (a wager is one on one, against the car nearest to the difficulty paid for)
         let wager_model = self.wager.filter(|_| kind == RaceKind::Race).and_then(|(_, d)| models.iter().min_by_key(|m| (self.difficulty_of(&m.name) - d as i32).abs()).cloned());
         // (each opponent's pick of the routes, drawn in turn on the generator; its line is built after the loop)
-        let mut opp_picks: Vec<(usize, Vec<Vec<(Vec3, f32)>>)> = Vec::new();
+        let mut opp_idx: Vec<usize> = Vec::new();
         for k in 0..n_opp {
             let (p, yaw) = def.grid[(k + 1).min(def.grid.len() - 1)];
             let mut model = wager_model.clone().unwrap_or_else(|| models[(k + 1) % models.len()].clone());
@@ -4130,9 +4155,7 @@ impl Game {
             d.aggression = 0.8;
             // every opponent makes his own choice of the routes he knows
             d.path = Some(path.clone());
-            if let Some(c) = routed {
-                opp_picks.push((idx, c.pick(circuit, Some(&mut lcg as &mut dyn FnMut() -> f32))));
-            }
+            opp_idx.push(idx);
             if kind == RaceKind::Payback {
                 // the mark runs for it
                 d.target_speed = (top * 0.7).clamp(24.0, 48.0);
@@ -4146,18 +4169,9 @@ impl Game {
             vehicles.cars[idx].ai = Some(d);
             participants.push(idx);
         }
-        // (the opponents' lines, 10 - 22 ms each in the race start's tick, built on threads: the same function of the
-        // same picks, put in in the opponents' order - docs/PERFORMANCE.md 2026-11-10 (3); MCLA_RACE_LINES_AHEAD=0: in turn)
-        if let Some(c) = routed {
-            let lines: Vec<(Vec<Vec3>, usize, Vec<Shortcut>)> = if std::env::var("MCLA_RACE_LINES_AHEAD").map_or(true, |v| v.trim() != "0") {
-                std::thread::scope(|sc| {
-                    let hs: Vec<_> = opp_picks.iter().map(|(_, per_leg)| sc.spawn(|| course_build(c, per_leg))).collect();
-                    hs.into_iter().map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
-                })
-            } else {
-                opp_picks.iter().map(|(_, per_leg)| course_build(c, per_leg)).collect()
-            };
-            for ((idx, _), (l, _, cuts)) in opp_picks.iter().zip(lines) {
+        // (the opponents' lines, built above, put in in the opponents' order)
+        if routed.is_some() {
+            for (idx, (l, _, cuts)) in opp_idx.iter().zip(opp_lines) {
                 if l.len() > 4 {
                     shortcuts.extend(cuts.into_iter().map(|mut s| {
                         s.car = *idx;

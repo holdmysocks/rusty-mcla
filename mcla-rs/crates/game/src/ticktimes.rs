@@ -27,9 +27,17 @@ struct T {
     at: Option<(S, Instant)>,
     sum: [f64; 11],
     ticks: u32,
+    // (this tick's sections, for MCLA_SLOWTICK)
+    one: [f64; 11],
 }
 
-thread_local!(static T_: RefCell<T> = RefCell::new(T { at: None, sum: [0.0; 11], ticks: 0 }));
+thread_local!(static T_: RefCell<T> = RefCell::new(T { at: None, sum: [0.0; 11], ticks: 0, one: [0.0; 11] }));
+
+// (MCLA_SLOWTICK=<ms>: a tick longer than that is logged with its sections - docs/PERFORMANCE.md)
+fn slowtick() -> Option<f64> {
+    static V: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("MCLA_SLOWTICK").ok().and_then(|v| v.parse().ok()))
+}
 
 /// The tick begins (its time goes to "other" until the first mark).
 pub fn start() {
@@ -43,7 +51,9 @@ pub fn mark(s: S) {
     T_.with(|t| {
         let mut t = t.borrow_mut();
         if let Some((prev, at)) = t.at.replace((s, now)) {
-            t.sum[prev as usize] += (now - at).as_secs_f64() * 1000.0;
+            let ms = (now - at).as_secs_f64() * 1000.0;
+            t.sum[prev as usize] += ms;
+            t.one[prev as usize] += ms;
         }
     });
 }
@@ -63,7 +73,17 @@ pub fn end(level_objs: usize) {
     T_.with(|t| {
         let mut t = t.borrow_mut();
         let Some((prev, at)) = t.at.take() else { return };
-        t.sum[prev as usize] += (now - at).as_secs_f64() * 1000.0;
+        let ms = (now - at).as_secs_f64() * 1000.0;
+        t.sum[prev as usize] += ms;
+        t.one[prev as usize] += ms;
+        if let Some(lim) = slowtick() {
+            let total: f64 = t.one.iter().sum();
+            if total > lim {
+                let list: Vec<String> = t.one.iter().enumerate().filter(|(_, ms)| **ms >= 0.5).map(|(i, ms)| format!("{} {:.1}", NAMES[i], ms)).collect();
+                log::info!("slowtick: {:.1} ms: {}", total, list.join(", "));
+            }
+        }
+        t.one = [0.0; 11];
         t.ticks += 1;
         if t.ticks < TICKS {
             return;

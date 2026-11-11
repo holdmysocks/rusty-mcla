@@ -415,6 +415,9 @@ pub struct CarInstance {
     pub roam_key: String,
     pub vinyl: Option<Arc<wgpu::BindGroup>>,
     vinyl_done: bool,
+    /// The set-up's rim size's wheels (rim folder, ratio), held off while the car waits for its dressing, which puts
+    /// the set-up's own on it (`dress_setups`); made only if it is not dressed after all (`size_wheels_now`)
+    size_wheels: Option<(std::path::PathBuf, f32)>,
     /// The low-res opponent vinyl slot the car took at its set-up (F-60786 -> +6496, F-95508): 0..14, -1 when none
     /// was free (the car then draws without its livery), `VINYL_SLOT_NONE` before it took one or for a car that
     /// takes none (the player, who has the hi-res pool, traffic and parked cars, which are not mcCars).
@@ -3719,6 +3722,13 @@ impl Vehicles {
         }
     }
 
+    /// The wheels `assign_vinyls` held for car `i` (`CarInstance::size_wheels`), made and put on it now.
+    fn size_wheels_now(&mut self, gpu: &mut Gpu, world: &mut World, i: usize) {
+        if let Some((dir, ratio)) = self.cars[i].size_wheels.take() {
+            self.cars[i].wheels = self.wheel_set(gpu, world, &dir, "tir_car", ratio);
+        }
+    }
+
     fn wheel_set(&mut self, gpu: &mut Gpu, world: &mut World, rim_dir: &Path, tyre: &str, rim_ratio: f32) -> Option<Arc<WheelModel>> {
         // (every tyre has a set of textures: the one chosen, else the first of the garage's
         // list - a zero in a vehicle's record)
@@ -3739,10 +3749,10 @@ impl Vehicles {
     /// set-up)` reads the set-up (`Game::mc4_dress_of`). Returns the car dressed.
     pub fn dress_setups(&mut self, gpu: &mut Gpu, world: &mut World, resolve: &mut dyn FnMut(&str, &str) -> Option<Dress>) -> Option<usize> {
         let t_dress = std::time::Instant::now();
-        let i = self.cars.iter().position(|c| !c.is_player && !c.dressed && !c.vinyl_name.is_empty() && c.parked.is_none())?;
+        let i = self.cars.iter().position(dress_waits)?;
         // (the builds of every car waiting to be dressed made ahead on workers, once each: the cars are still dressed one
         // a call, as before, and each finds its build's CPU part made - docs/PERFORMANCE.md 2026-10-27 (14))
-        let waiting: Vec<(String, String)> = self.cars.iter().filter(|c| !c.is_player && !c.dressed && !c.vinyl_name.is_empty() && c.parked.is_none()).map(|c| (c.model.name.clone(), c.vinyl_name.clone())).collect();
+        let waiting: Vec<(String, String)> = self.cars.iter().filter(|c| dress_waits(c)).map(|c| (c.model.name.clone(), c.vinyl_name.clone())).collect();
         for (car, setup) in waiting {
             if self.dress_ahead.insert((car.clone(), setup.clone())) {
                 if let Some(d) = resolve(&car, &setup) {
@@ -3758,7 +3768,10 @@ impl Vehicles {
         }
         self.cars[i].dressed = true;
         let name = self.cars[i].model.name.clone();
-        let d = resolve(&name, &self.cars[i].vinyl_name)?;
+        let Some(d) = resolve(&name, &self.cars[i].vinyl_name) else {
+            self.size_wheels_now(gpu, world, i);
+            return None;
+        };
         let dir = world.assets.root.join("resources/vehicle").join(&name);
         let model = match self.models.iter().find(|m| m.name == name && m.cfg == d.cfg) {
             Some(m) => m.clone(),
@@ -3793,6 +3806,11 @@ impl Vehicles {
                     }
                 };
             }
+        }
+        if wheels.is_some() {
+            self.cars[i].size_wheels = None;
+        } else {
+            self.size_wheels_now(gpu, world, i);
         }
         let c = &mut self.cars[i];
         c.model = model;
@@ -3841,7 +3859,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, rotor_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, crash: Default::default(), parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), roam_key: String::new(), vinyl: None, vinyl_done: false, vinyl_slot: VINYL_SLOT_NONE, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), win_req: [[false; 2]; 2], spoiler: WindowCtl::default(), roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), valve: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, rotor_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, crash: Default::default(), parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), roam_key: String::new(), vinyl: None, vinyl_done: false, size_wheels: None, vinyl_slot: VINYL_SLOT_NONE, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), win_req: [[false; 2]; 2], spoiler: WindowCtl::default(), roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), valve: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
         self.cars.len() - 1
     }
 
@@ -4260,6 +4278,12 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// (first UV set; unpainted-side parts all point at one empty corner texel).
     pub fn assign_vinyls(&mut self, gpu: &mut Gpu, world: &mut World) {
         self.take_vinyl_slots();
+        // (a car whose wheels were held for a dressing it no longer waits for gets them now)
+        for i in 0..self.cars.len() {
+            if self.cars[i].size_wheels.is_some() && !dress_waits(&self.cars[i]) {
+                self.size_wheels_now(gpu, world, i);
+            }
+        }
         if !self.cars.iter().any(|c| !c.vinyl_done && !c.vinyl_name.is_empty()) {
             return;
         }
@@ -4279,7 +4303,13 @@ if keep || c.state.pos.distance(center) < 450.0 {
             if let (Some(dir), false, Some(inches)) = (model.rim_dir.as_ref(), model.bike, config_rim_inches(&world.assets.root, &name)) {
                 let ratio = rim_ratio_for(inches, model.params.wheel_radius);
                 if (ratio - model.rim_ratio).abs() > 0.01 {
-                    self.cars[i].wheels = self.wheel_set(gpu, world, dir, "tir_car", ratio);
+                    // (a car waiting for its set-up's dressing gets the set-up's wheels there, one car a tick: these were
+                    // made and replaced in turn, 5 - 20 ms each in the race start warp's tick - docs/PERFORMANCE.md
+                    // 2026-11-11 (3); MCLA_SIZE_WHEELS_OLD=1: made here as before)
+                    self.cars[i].size_wheels = Some((dir.clone(), ratio));
+                    if !dress_waits(&self.cars[i]) || std::env::var_os("MCLA_SIZE_WHEELS_OLD").is_some() {
+                        self.size_wheels_now(gpu, world, i);
+                    }
                 }
             }
             if self.cars[i].vinyl_slot == -1 {
@@ -7556,6 +7586,11 @@ fn load_wheels(gpu: &mut Gpu, world: &mut World) -> Option<WheelModel> {
 }
 
 /// The rim's share of the wheel diameter for a rim of so many inches.
+/// A car that waits for its set-up's dressing (`Vehicles::dress_setups`).
+fn dress_waits(c: &CarInstance) -> bool {
+    !c.is_player && !c.dressed && !c.vinyl_name.is_empty() && c.parked.is_none()
+}
+
 fn rim_ratio_for(inches: f32, wheel_radius: f32) -> f32 {
     // (leave at least 4.5 cm of tyre)
     (inches * 0.0254 / (2.0 * wheel_radius)).clamp(0.5, (1.0 - 0.045 / wheel_radius).min(0.9))
