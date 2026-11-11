@@ -482,8 +482,17 @@ pub fn shadow_cutout(mode: MatMode) -> bool {
 }
 
 /// Shared texture dictionaries (common.r1 etc.) kept resident on the CPU side.
+///
+/// Two of them hold five names both (the sea's diffuse and ripple maps among them): `city/sc/0x5674b600.r1` with whole
+/// chains (the sea's 6 / 7 levels) and `common.r1` with short ones (3 / 4). The original's sector draws bind the short
+/// copies and its far models' draws the whole ones (the sea's fetch constants: beach captures, detailed draws 554 - 559
+/// mips 0 .. 2 / 0 .. 3; GPS capture `work/mm/cap/gps_whole`, the far sea's 30 draws 0 .. 5 / 0 .. 6). So a sector looks
+/// a name up with `get` (the far dictionary last), a far model with `get_far` (it first); a far model's copy of a name
+/// both hold is cached under its own key (`World::upload`).
 pub struct SharedTextures {
     dicts: Vec<(Resource, Dictionary)>,
+    /// the far models' dictionary (`city/sc/0x5674b600.r1`), an index into `dicts`
+    far: Option<usize>,
 }
 
 impl SharedTextures {
@@ -524,17 +533,25 @@ impl SharedTextures {
                 Err(e) => log::warn!("{}: {:#}", f, e),
             }
         }
-        SharedTextures { dicts }
+        // (MCLA_FAR_DICT_OLD=1: one order for both, the far dictionary first, as before)
+        let far = if std::env::var_os("MCLA_FAR_DICT_OLD").is_some() { None } else { files.iter().position(|f| f.ends_with("0x5674b600.r1")).filter(|i| *i < dicts.len()) };
+        SharedTextures { dicts, far }
     }
+    fn get_in(&self, i: usize, hash: u32) -> Option<Texture> {
+        let (r, d) = &self.dicts[i];
+        d.get(hash).and_then(|o| Texture::parse(&Rd::new(r), o).ok())
+    }
+    /// A sector's (and everything else's) lookup: the dictionaries in order, the far models' one last.
     pub fn get(&self, hash: u32) -> Option<Texture> {
-        for (r, d) in &self.dicts {
-            if let Some(o) = d.get(hash) {
-                if let Ok(t) = Texture::parse(&Rd::new(r), o) {
-                    return Some(t);
-                }
-            }
-        }
-        None
+        (0..self.dicts.len()).filter(|i| Some(*i) != self.far).chain(self.far).find_map(|i| self.get_in(i, hash))
+    }
+    /// A far model's lookup: the far models' dictionary first.
+    pub fn get_far(&self, hash: u32) -> Option<Texture> {
+        self.far.into_iter().chain((0..self.dicts.len()).filter(|i| Some(*i) != self.far)).find_map(|i| self.get_in(i, hash))
+    }
+    /// Does the far models' dictionary hold this name AND another dictionary too (a far model's copy differs)?
+    pub fn far_differs(&self, hash: u32) -> bool {
+        self.far.is_some_and(|f| self.dicts[f].1.get(hash).is_some() && (0..self.dicts.len()).any(|i| i != f && self.dicts[i].1.get(hash).is_some()))
     }
 }
 
@@ -2156,7 +2173,13 @@ impl World {
         // draw 3954). Whichever was uploaded first won for both. Their keys get a mark of their own.
         const SET_TEX_KEY: u32 = 0x5345_5421;
         let own: std::collections::HashSet<u32> = if sector_id >= SET_ID && sector_id < FAR_ID { cs.textures.iter().map(|(h, _)| *h).collect() } else { Default::default() };
-        let sk = |h: u32| if own.contains(&h) { h ^ SET_TEX_KEY } else { h };
+        // (a far model's copy of a name the far dictionary shares with another: its own key - `SharedTextures`)
+        const FAR_TEX_KEY: u32 = 0x4641_5254;
+        let far_model = sector_id >= FAR_ID;
+        let shared = self.shared.clone();
+        let fk = |h: u32| if far_model && shared.far_differs(h) { h ^ FAR_TEX_KEY } else { h };
+        let sget = |h: u32| if far_model { shared.get_far(h) } else { shared.get(h) };
+        let sk = |h: u32| if own.contains(&h) { h ^ SET_TEX_KEY } else { fk(h) };
         for (h, t) in &cs.textures {
             // (diagnostics, MCLA_TEX_FIND: a sector's OWN texture of that name)
             if let Ok(v) = std::env::var("MCLA_TEX_FIND") {
@@ -2206,9 +2229,9 @@ impl World {
                     if sector_id < SET_ID {
                         gpu.texture_evictable(sk(hs) ^ RAW_KEY, t);
                     }
-                } else if let Some(t) = self.shared.get(hs) {
-                    raw.insert(hs, gpu.upload_texture_raw(hs ^ RAW_KEY, &t));
-                    gpu.texture_evictable(hs ^ RAW_KEY, &t);
+                } else if let Some(t) = sget(hs) {
+                    raw.insert(hs, gpu.upload_texture_raw(fk(hs) ^ RAW_KEY, &t));
+                    gpu.texture_evictable(fk(hs) ^ RAW_KEY, &t);
                 }
             }
         }
@@ -2235,9 +2258,9 @@ impl World {
                         if sector_id < SET_ID {
                             gpu.texture_evictable(sk(h) ^ RAW_KEY, t);
                         }
-                    } else if let Some(t) = self.shared.get(h) {
-                        sign_raw.insert(h, gpu.upload_texture_raw(h ^ RAW_KEY, &t));
-                        gpu.texture_evictable(h ^ RAW_KEY, &t);
+                    } else if let Some(t) = sget(h) {
+                        sign_raw.insert(h, gpu.upload_texture_raw(fk(h) ^ RAW_KEY, &t));
+                        gpu.texture_evictable(fk(h) ^ RAW_KEY, &t);
                     }
                 }
             }
@@ -2249,16 +2272,16 @@ impl World {
             if let Some(t) = local.get(&h) {
                 return t.clone();
             }
-            if let Some(t) = gpu.textures.get(&h) {
+            if let Some(t) = gpu.textures.get(&fk(h)) {
                 return t.clone();
             }
             if self.tex_fail.contains(&h) {
                 return gpu.white.clone();
             }
-            match self.shared.get(h) {
+            match sget(h) {
                 Some(t) => {
-                    gpu.texture_evictable(h, &t);
-                    gpu.upload_texture(h, &t)
+                    gpu.texture_evictable(fk(h), &t);
+                    gpu.upload_texture(fk(h), &t)
                 }
                 None => {
                     self.tex_fail.insert(h);
