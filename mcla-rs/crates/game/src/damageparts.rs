@@ -550,21 +550,38 @@ impl Bumper {
     }
 
     /// `F-57399`: the fastest moving end relative to the car (m/s) and where it is; None when both are gone.
+    /// `dt` is the anim frame's; the original multiplies by the frame block's 1 / dt (F-75502's 1.0 / dt).
     pub fn creak(&self, dt: f32) -> Option<(f32, Vec3)> {
         if (self.a.state == 2 && self.b.state == 2) || self.detached.is_some() {
             return None;
         }
-        let mut best: Option<(f32, Vec3)> = None;
-        for e in [&self.a, &self.b] {
-            if e.state != 0 {
-                let v = (e.local - e.local_prev).length() / dt.max(1e-6);
-                if best.map_or(true, |b| v >= b.0) {
-                    best = Some((v, e.pos));
-                }
-            }
-        }
-        Some(best.unwrap_or((0.0, self.a.pos)))
+        let end = |e: &End| (e.state, e.local, e.local_prev, e.pos);
+        let (v, at) = creak_of(end(&self.a), end(&self.b), 1.0 / dt);
+        Some((v, at.unwrap_or(self.a.pos)))
     }
+}
+
+/// F-57399's body on the two ends (state, car-space place, its last, world place): -1 and no place when neither
+/// end is loose; end A's speed when it is (set, not compared); end B's unless it is below that (a NaN takes B). Speed =
+/// sqrt(x x + (z z + y y)) of the car-space move, fused adds, times `inv_dt`. Checked word for word (test
+/// `creak_matches_the_original`).
+pub fn creak_of(a: (u8, Vec3, Vec3, Vec3), b: (u8, Vec3, Vec3, Vec3), inv_dt: f32) -> (f32, Option<Vec3>) {
+    use crate::physics::exact::fma;
+    let speed = |now: Vec3, last: Vec3| {
+        let d = now - last;
+        fma(d.x, d.x, fma(d.z, d.z, d.y * d.y)).sqrt() * inv_dt
+    };
+    let mut out = (-1.0f32, None);
+    if a.0 != 0 {
+        out = (speed(a.1, a.2), Some(a.3));
+    }
+    if b.0 != 0 {
+        let v = speed(b.1, b.2);
+        if !(v < out.0) {
+            out = (v, Some(b.3));
+        }
+    }
+    out
 }
 
 fn scale_axes(m: Mat4, s: f32) -> Mat4 {
@@ -811,6 +828,11 @@ impl DamageParts {
                 None => body.own_body = true,
             }
         }
+    }
+
+    /// The pieces this car's bumpers hold in a level now (the bumper's handle +532).
+    pub fn held(&self) -> impl Iterator<Item = u64> + '_ {
+        self.bumpers.iter().flatten().filter_map(|b| b.detached.and_then(|d| d.level))
     }
 
     /// The pieces this car put into a level that its bumpers no longer have (repair, reset): to be taken out of
@@ -1060,6 +1082,40 @@ mod tests {
                 assert_eq!(bits(got), ov[k..k + 3].to_vec(), "{what}: {line}");
             }
             n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
+
+    /// The creak's speed getter F-57399 run offline (tools/creak_reference.py, testdata/creak_ref.txt: 3,000 random
+    /// end states, places and moves, ties among them): the speed and the place written (or none) - every word equal.
+    /// A bumper with no part (+0 null) gives -1 and no place; the port has no bumper then.
+    #[test]
+    fn creak_matches_the_original() {
+        let inv_dt = 1.0 / DamageParts::FRAME;
+        assert_eq!(inv_dt.to_bits(), 0x41ef_ffff);
+        let f = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let v3 = |w: &[f32], k: usize| Vec3::new(w[k], w[k + 1], w[k + 2]);
+        let mut n = 0;
+        for line in include_str!("testdata/creak_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let t: Vec<&str> = i.split_whitespace().collect();
+            let ints: Vec<u8> = t[0..3].iter().map(|x| x.parse().unwrap()).collect();
+            let w: Vec<f32> = t[3..].iter().map(|x| f(x)).collect();
+            let ov: Vec<u32> = o.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            n += 1;
+            if ints[0] == 0 {
+                assert_eq!(ov, vec![0xbf80_0000, 0xdead_beef, 0xdead_beef, 0xdead_beef, 0xdead_beef], "{line}");
+                continue;
+            }
+            let (v, at) = creak_of((ints[1], v3(&w, 0), v3(&w, 3), v3(&w, 6)), (ints[2], v3(&w, 10), v3(&w, 13), v3(&w, 16)), inv_dt);
+            let both_gone = ints[1] == 2 && ints[2] == 2;
+            let got: Vec<u32> = if both_gone {
+                vec![0xbf80_0000, 0xdead_beef, 0xdead_beef, 0xdead_beef, 0xdead_beef]
+            } else {
+                let p = at.map_or([0xdead_beef; 4], |p| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits(), 0x3f80_0000]);
+                vec![v.to_bits(), p[0], p[1], p[2], p[3]]
+            };
+            assert_eq!(got, ov, "{line}");
         }
         assert_eq!(n, 3000);
     }

@@ -6984,6 +6984,9 @@ fn torn_pieces(cars: &mut [CarInstance], world: &crate::physics::loose::LooseWor
         for id in &dropped {
             level.remove_piece(*id);
         }
+        // (a piece whose car is gone goes with it: the car's destructor takes its bumpers' pieces out)
+        let held: std::collections::HashSet<u64> = cars.iter().flat_map(|c| c.state.parts.held()).collect();
+        level.keep_pieces(&|id| held.contains(&id));
         let mut views: std::collections::HashMap<u64, crate::damageparts::PieceView> = std::collections::HashMap::new();
         for id in level.piece_ids() {
             if let Some((matrix, contacts, _)) = level.piece(id) {
@@ -7008,6 +7011,13 @@ fn torn_pieces(cars: &mut [CarInstance], world: &crate::physics::loose::LooseWor
                     v.loose.remove_piece(*id);
                 }
             }
+        }
+    }
+    // (a piece whose car is gone goes with it, from whichever car's level holds it now)
+    let held: std::collections::HashSet<u64> = cars.iter().flat_map(|c| c.state.parts.held()).collect();
+    for c in cars.iter_mut() {
+        if let Some(v) = c.state.veh.as_deref_mut() {
+            v.loose.keep_pieces(&|id| held.contains(&id));
         }
     }
     if cars.iter().any(|c| c.state.veh.as_ref().is_some_and(|v| !v.loose.pieces.is_empty())) {

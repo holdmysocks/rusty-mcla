@@ -5331,6 +5331,17 @@ impl LooseState {
         self.manis.retain(|m| m.a != Who::Obj(o) && m.b != Who::Obj(o));
     }
 
+    /// Take out every piece no car's bumper holds any more: the original removes a torn-off piece only with its
+    /// bumper, on the reset (F-40944) or when the car itself goes (the car's destructor F-81512 -> the anim object's
+    /// F-13108 -> the bumper's, which takes the level handle +532 out, F-27119). Returns how many went.
+    pub fn keep_pieces(&mut self, held: &dyn Fn(u64) -> bool) -> usize {
+        let gone: Vec<u64> = self.pieces.iter().map(|p| p.id).filter(|id| !held(*id)).collect();
+        for id in &gone {
+            self.remove_piece(*id);
+        }
+        gone.len()
+    }
+
     /// A piece's matrix as the level has it, its contacts of the last tick and whether it is asleep
     /// (None: not in this level).
     pub fn piece(&self, id: u64) -> Option<([Vec3; 4], &[PieceContact], bool)> {
@@ -6039,6 +6050,20 @@ mod piece_tests {
         assert!((a.inertia[0] - 0.187963).abs() < 1e-5 && (a.inertia[1] - 1.817708).abs() < 1e-5 && (a.inertia[2] - 1.745255).abs() < 1e-5, "{:?}", a.inertia);
         let b = t.parts[0].bound.as_ref().unwrap();
         assert_eq!((b.kind, b.max, b.margin, b.cg), (3, [0.9, 0.1665, 0.25], 0.04, [0.0, 0.0, 0.15]));
+    }
+
+    /// A piece no bumper holds (its car gone) leaves the level with its body; the held one stays.
+    #[test]
+    fn a_piece_goes_with_its_car() {
+        let world = LooseWorld::new(Vec::new(), Vec::new());
+        let mut s = LooseState::default();
+        let kept = s.add_piece(&world, [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(10.0, 0.3, 0.0)], Vec3::ZERO, Vec3::ZERO).unwrap();
+        let gone = s.add_piece(&world, [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(20.0, 0.3, 0.0)], Vec3::ZERO, Vec3::ZERO).unwrap();
+        let o = s.pieces[1].obj;
+        assert_eq!(s.keep_pieces(&|id| id == kept), 1);
+        assert!(s.piece(kept).is_some() && s.piece(gone).is_none());
+        assert!(s.objs[o].body.is_none());
+        assert_eq!(s.keep_pieces(&|id| id == kept), 0);
     }
 
     /// A piece its car has left goes, body and sleep state and all, to the level of the car that comes to it.
