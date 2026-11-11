@@ -1,5 +1,6 @@
 use super::*;
 use crate::paths::*;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 fn tmp(name: &str) -> PathBuf {
@@ -269,6 +270,53 @@ fn set_key_changes_one_key_only() {
     // (the cycle)
     assert_eq!((WindowMode::Windowed.next(), WindowMode::Borderless.next(), WindowMode::Fullscreen.next()), (WindowMode::Borderless, WindowMode::Fullscreen, WindowMode::Windowed));
     let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn atomic_write_does_not_overwrite_unrelated_stale_temp_file() {
+    let dir = tmp("atomic-stale-temp");
+    let path = dir.join("settings.toml");
+    let stale = dir.join("settings.toml.tmp");
+    std::fs::write(&stale, b"unfinished settings from an earlier process").unwrap();
+    atomic_write(&path, b"schema = 1\n").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"schema = 1\n");
+    assert_eq!(
+        std::fs::read(&stale).unwrap(),
+        b"unfinished settings from an earlier process",
+        "a fresh save must not clobber another process's staged settings",
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn concurrent_atomic_writes_leave_one_complete_file() {
+    use std::sync::{Arc, Barrier};
+
+    let dir = tmp("atomic-parallel");
+    let path = dir.join("settings.toml");
+    let gate = Arc::new(Barrier::new(4));
+    let mut workers = Vec::new();
+    let mut contents = Vec::new();
+    for i in 0..4 {
+        let data = format!("version = {i}\n").repeat(4096).into_bytes();
+        let worker_data = data.clone();
+        contents.push(data);
+        let worker_path = path.clone();
+        let worker_gate = gate.clone();
+        workers.push(std::thread::spawn(move || {
+            worker_gate.wait();
+            for _ in 0..4 {
+                atomic_write(&worker_path, &worker_data).unwrap();
+            }
+        }));
+    }
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    let result = std::fs::read(&path).unwrap();
+    assert!(contents.contains(&result), "settings must contain one complete writer payload");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "staging files must be removed");
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

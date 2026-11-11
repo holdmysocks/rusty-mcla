@@ -16,7 +16,7 @@ pub use schema::{schema, schema_toml, KeyInfo};
 /// The TOML crate this one uses (for [`set_key`]'s value).
 pub use toml;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use toml::{Table, Value};
 
 /// The only schema this crate writes. A file with a higher number is still read key by key.
@@ -420,25 +420,43 @@ impl Settings {
     }
 }
 
-/// Write a file atomically: `<name>.tmp` beside it, flushed, then renamed over it. Creates the folder.
+/// Atomically replace a file via a uniquely owned staging file in the same directory.
+/// Never reuse `<name>.tmp`: overlapping launcher/game writes could otherwise truncate
+/// one another's staging data, and a stale temporary file would be overwritten.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
+    use std::io::{self, Write};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)?;
     }
-    let mut tmp: PathBuf = path.to_path_buf();
-    let mut name = tmp.file_name().map(|n| n.to_os_string()).unwrap_or_else(|| "file".into());
-    name.push(".tmp");
-    tmp.set_file_name(name);
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
+    let name = path.file_name().unwrap_or_else(|| std::ffi::OsStr::new("file"));
+    for _ in 0..32 {
+        let mut temp_name = name.to_os_string();
+        temp_name.push(format!(
+            ".tmp.{}.{}", std::process::id(), NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        let tmp = path.with_file_name(temp_name);
+        let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        };
+        let write_result = file.write_all(bytes).and_then(|_| file.sync_all());
+        drop(file); // Windows cannot rename an open staging file.
+        if let Err(e) = write_result {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+        return std::fs::rename(&tmp, path).inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        });
     }
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        e
-    })
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not reserve a unique settings staging file",
+    ))
 }
 
 /// Change one key of the settings file and nothing else (the game's Alt+Enter, the launcher's single rows): the file
