@@ -532,7 +532,7 @@ fn own_sg(t: texture_2d<f32>, on: u32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f3
 
 struct Material {
     mode: u32,     // see MatMode in render/mod.rs
-    _pad0: u32,
+    nofog: u32,    // 1: no fog laid - the sea where the stencil holds 1 (render/mod.rs `pipeline_sea`)
     _pad1: u32,
     _pad2: u32,
 };
@@ -5434,7 +5434,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     lit = mix(lit, floor_refl.rgb, floor_refl.a);
     if (!(g.params.w > 310.5 && g.params.w < 311.5)) { lit = min(lit, vec3<f32>(1.9921875)); }
     // (754, water work: no fog at all - beside an override of the original's fog pass, alpha 0)
-    let col = mix(lit, fog_rgb, select(clamp(fg * g.fog_color.a, 0.0, 1.0), 0.0, g.params.w > 753.5 && g.params.w < 754.5));
+    // (the sea over the sky's or the ground dome's stencil mark: the original's fog pass leaves those pixels alone)
+    let col = mix(lit, fog_rgb, select(clamp(fg * g.fog_color.a, 0.0, 1.0), 0.0, (g.params.w > 753.5 && g.params.w < 754.5) || mat.nofog == 1u));
     // (a set-up car's blended bucket: PS_BumpSpec* o0.w = gLightAmbient.w x gInvColorExpBias.x x A, PS_BumpedChrome
     // the same x (2A - 1); the bias 1/16 undoes the target's exp bias 4 and gLightAmbient.w is 1: A, 2A - 1)
     if (setup_b1_bs) { alpha = albedo.a; amb_keep_a = true; }

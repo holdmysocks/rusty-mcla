@@ -12907,7 +12907,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let seen = world.record_boxes().iter().map(|&(a, b)| frustum.intersects_aabb(a, b) && !sector_occluded.hides_aabb(a, b)).collect();
             world.set_view(point, seen);
         }
-        let sector_view = SectorView { gpu: &gpu, occluded: &sector_occluded, frustum: &frustum, cam_pos, lens, only: self.opt.only.as_deref(), hide: self.opt.hide.as_deref() };
+        let sector_view = SectorView { gpu: &gpu, occluded: &sector_occluded, frustum: &frustum, cam_pos, lens, only: self.opt.only.as_deref(), hide: self.opt.hide.as_deref(), sea_late: sea_late_on() && !map_baked };
         let (sky_bind, citymap, loaded, sets) = (self.sky_bind.as_ref(), self.citymap.as_ref(), &world.loaded, &world.sets);
         // (2026-10-27 (3): A in two halves of the sector list, A1 with the sky, and B's ground sheet and props (B1) each on
         // a worker too, each a pass of its own that loads what the one before stored; this thread records the rest of B.
@@ -12981,6 +12981,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             let gpu = &gpu;
             ground_sheet::draw(pass, gpu, vp_px);
+            // (the sea after the ground dome, as the original draws it - `draw_sectors` phase 2)
+            if sector_view.sea_late {
+                pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
+                draw_sectors(pass, &sector_view, secs.iter().copied(), 2, false, draws, None);
+            }
             pass.set_pipeline(&gpu.pipeline_inst);
             pass.set_bind_group(3, &gpu.identity_obj.bg, &[]);
             props.draw_scene(pass, gpu, cam_eye, frustum_r, Some(occluded_r), draws);
@@ -16413,9 +16418,25 @@ struct SectorView<'a> {
     lens: f32,
     only: Option<&'a str>,
     hide: Option<&'a str>,
+    /// the sea left out of the opaque phase and drawn after the ground sheet (phase 2, `draw_sectors`)
+    sea_late: bool,
 }
 
-/// The city's sector batches of one phase: 0 the opaque ones, 1 the blended ones.
+/// The sea's batches (CityOceanWater, CityOceanWaterLOD).
+fn is_sea(m: MatMode) -> bool {
+    matches!(m, MatMode::OceanWater | MatMode::OceanWaterLod)
+}
+
+/// MCLA_SEA_STENCIL_OLD=1: the sea in the opaque sectors and fogged everywhere, as before (`SectorView::sea_late`).
+fn sea_late_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MCLA_SEA_STENCIL_OLD").is_err())
+}
+
+/// The city's sector batches of one phase: 0 the opaque ones, 1 the blended ones, 2 the sea after the ground sheet
+/// (`SectorView::sea_late`: the original draws its sea after the ground dome, keeping the stencil; its fog pass fogs only
+/// where the stencil is not 1 - the sky's and the dome's mark - so the sea is drawn twice through the stencil, fogged where
+/// it is not 1 and unfogged where it is: `Gpu::pipeline_sea`).
 /// `probe`: a probe frame's stamps (gpuprof.rs), one before each draw, labelled with its material and shader.
 fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: impl Iterator<Item = &'a world::GpuSector>, phase: usize, pane_zw: bool, draws: &mut usize, mut probe: Option<&mut gpuprof::Probe>) {
     let gpu = v.gpu;
@@ -16438,7 +16459,7 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
             if !v.frustum.intersects_aabb(bmin, bmax) || v.occluded.hides_aabb(bmin, bmax) {
                 continue;
             }
-            if bundles_on {
+            if bundles_on && !(v.sea_late && sec.batches.iter().any(|b| is_sea(b.mode))) {
                 let (b, n) = far_bundle(gpu, sec, vb, ib);
                 pending.push(b);
                 *draws += n;
@@ -16460,6 +16481,9 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
         for b in &sec.batches {
             let blend = matches!(b.mode, MatMode::Blend | MatMode::StoreGlass);
             if blend != (phase == 1) {
+                continue;
+            }
+            if (phase == 2) != (v.sea_late && is_sea(b.mode)) {
                 continue;
             }
             if sec.far.is_none() && !v.frustum.intersects_aabb(b.min, b.max) {
@@ -16561,6 +16585,22 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
                         let _ = writeln!(l, "{phase} {} {:?} {:.1} {:.1} {:.1} {:.1} {:.1} {:.1} {:p} {counts:?} {} {runs:?}", b.shader, b.mode, mn.x, mn.y, mn.z, mx.x, mx.y, mx.z, sec as *const _, b.count);
                     }
                 }
+            }
+            if phase == 2 {
+                // (fogged where the stencil is not 1, then unfogged where it is; neither writes the stencil)
+                pass.set_stencil_reference(1);
+                for (k, pipe) in gpu.pipeline_sea.iter().enumerate() {
+                    pass.set_pipeline(pipe.at(render::ms::current()));
+                    pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32 | if k == 1 { render::SEA_NOFOG } else { 0 })], &[]);
+                    for r in &runs {
+                        pass.draw_indexed(r.0..r.0 + r.1, 0, 0..1);
+                        *draws += 1;
+                    }
+                }
+                pass.set_stencil_reference(0);
+                last_mode = u32::MAX;
+                mode_pipe = true;
+                continue;
             }
             for r in &runs {
                 pass.draw_indexed(r.0..r.0 + r.1, 0, 0..1);

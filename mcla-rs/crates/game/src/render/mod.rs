@@ -940,6 +940,9 @@ impl Default for Globals {
     }
 }
 
+/// `mat_bgs` key bit of the sea's unfogged material (`pipeline_sea`)
+pub const SEA_NOFOG: u32 = 0x100;
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug)]
 pub struct MaterialUniform {
@@ -1407,6 +1410,8 @@ pub struct Gpu {
     /// the same for one material (`mode_constant`, `MODE_PIPES`; None, or not `ready` yet: that material draws with
     /// `pipeline_opaque`), by MatMode
     pub pipeline_opaque_mode: Vec<Option<ms::MsPipe>>,
+    /// the sea after the ground dome: [0] where the stencil is not 1 (fogged), [1] where it is (`SEA_NOFOG`, unfogged)
+    pub pipeline_sea: [ms::MsPipe; 2],
     /// a set-up car's opaque batches with back faces culled (`GpuBatch::cull`): the view as is, a mirrored view
     pub pipeline_opaque_cull: ms::MsPipe,
     pub pipeline_opaque_cull_m: ms::MsPipe,
@@ -2358,6 +2363,21 @@ impl Gpu {
             });
             mat_bgs.insert(mode, bg);
         }
+        // (the sea where the stencil holds 1 - the sky's or the ground dome's pixels: the original's fog pass leaves them
+        // alone; `MaterialUniform::_pad[0]` = 1 tells city.wgsl to lay no fog; keyed mode | SEA_NOFOG - `pipeline_sea`)
+        for mode in [MatMode::OceanWater as u32, MatMode::OceanWaterLod as u32] {
+            let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("mat sea unfogged"),
+                contents: bytemuck::bytes_of(&MaterialUniform { mode, _pad: [1, 0, 0] }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("mat bg sea unfogged"),
+                layout: &mat_layout,
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }],
+            });
+            mat_bgs.insert(mode | SEA_NOFOG, bg);
+        }
         // (binding 1: a car's vertex damage map, crate::damagemap - DmgTex; everything else has the
         // empty one, as the original's blank_dmg.dds: all zero)
         let obj_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -2389,9 +2409,10 @@ impl Gpu {
             push_constant_ranges: &[],
         });
         // (every city pipeline per ms::Variant: the scene's are multisampled and write the stencil reference)
-        let city_build = {
+        // (`sea`: a stencil test against reference 1 that writes nothing, in place of the usual REPLACE - `pipeline_sea`)
+        let city_build_x = {
             let (pl, shader) = (pl.clone(), shader.clone());
-            Arc::new(move |device: &wgpu::Device, v: ms::Variant, blend: bool, vs: &'static str, cull: Option<wgpu::Face>, zwrite: bool, writes: wgpu::ColorWrites, mode: Option<u32>| {
+            Arc::new(move |device: &wgpu::Device, v: ms::Variant, blend: bool, vs: &'static str, cull: Option<wgpu::Face>, zwrite: bool, writes: wgpu::ColorWrites, mode: Option<u32>, sea: Option<wgpu::CompareFunction>| {
             let constants: std::collections::HashMap<String, f64> = mode.map(|m| ("MODE_K".to_string(), m as f64)).into_iter().collect();
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(if blend { "city blend" } else { "city opaque" }),
@@ -2418,12 +2439,23 @@ impl Gpu {
                     front_face: wgpu::FrontFace::Cw,
                     ..Default::default()
                 },
-                depth_stencil: Some(v.ds(zwrite, wgpu::CompareFunction::GreaterEqual, true, Default::default())),
+                depth_stencil: Some({
+                    let mut ds = v.ds(zwrite, wgpu::CompareFunction::GreaterEqual, sea.is_none(), Default::default());
+                    if let Some(compare) = sea {
+                        let f = wgpu::StencilFaceState { compare, fail_op: wgpu::StencilOperation::Keep, depth_fail_op: wgpu::StencilOperation::Keep, pass_op: wgpu::StencilOperation::Keep };
+                        ds.stencil = wgpu::StencilState { front: f, back: f, read_mask: 0xff, write_mask: 0 };
+                    }
+                    ds
+                }),
                 multisample: v.ms(),
                 multiview: None,
                 cache: None,
             })
             })
+        };
+        let city_build = {
+            let x = city_build_x.clone();
+            Arc::new(move |device: &wgpu::Device, v: ms::Variant, blend: bool, vs: &'static str, cull: Option<wgpu::Face>, zwrite: bool, writes: wgpu::ColorWrites, mode: Option<u32>| x(device, v, blend, vs, cull, zwrite, writes, mode, None))
         };
         let make_pipeline_x = |blend: bool, vs: &'static str, cull: Option<wgpu::Face>, zwrite: bool| {
             let b = city_build.clone();
@@ -2466,6 +2498,14 @@ impl Gpu {
             })
             .collect();
         let pipeline_opaque_cull_m = make_pipeline_x(false, "vs_main", Some(if glass_flip { wgpu::Face::Back } else { wgpu::Face::Front }), true);
+        // (the sea, drawn after the ground dome: the original's sea keeps the stencil, and its fog pass
+        // (PSBlendedHeightFogInFogNoPFog, depth control 0x00700561) fogs only where the stencil is not 1 - the sky's and the
+        // dome's mark. The port lays the fog in each draw, so the sea is drawn twice through the stencil: [0] where it is
+        // not 1, fogged, [1] where it is 1, unfogged (`SEA_NOFOG`). Both test against reference 1 and write no stencil.)
+        let pipeline_sea = [wgpu::CompareFunction::NotEqual, wgpu::CompareFunction::Equal].map(|cmp| {
+            let b = city_build_x.clone();
+            ms::MsPipe::new(&device, move |d, v| b(d, v, false, "vs_main", None, true, wgpu::ColorWrites::ALL, None, Some(cmp)))
+        });
         let pipeline_blend = make_pipeline(true, "vs_main");
         // (the wheels' blur discs, F-49519: colour writes off, depth tested and not written, no cull, the stencil
         // replaced - recorded registers 0x2104 = 0, 0x2200 = 0x00708763, 0x2205 = 0x18000)
@@ -3089,6 +3129,7 @@ impl Gpu {
             identity_obj,
             pipeline_opaque,
             pipeline_opaque_mode,
+            pipeline_sea,
             pipeline_opaque_cull_mode,
             pipeline_opaque_cull,
             pipeline_opaque_cull_m,
