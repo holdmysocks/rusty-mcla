@@ -9755,12 +9755,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // clear, "vehicle\lookback" starts every frame and the LOOKBACK scene with it;
                         // landed (air <= 0) both are released every frame; the look back's end releases
                         // them too (F-39925). Not in a replay (Open: whether its camera can be the reverse one).
+                        // (F-38892 is the camera's update, once a 30 Hz game frame after the frame's sim, and the start
+                        // F-85638 takes its own step on that frame's real time, 1/30 s: so the restart and the release
+                        // run on a drawn frame that follows a new game frame, not on every drawn frame's dt - else the
+                        // hold's level depended on the frame rate. Below 30 fps two game frames in one drawn frame
+                        // still give one restart: approximate.)
                         let scale_now = self.wipe_scale.min(self.ability.time_scale());
+                        let new_frame = self.boom_frames > 0;
                         if self.cam_switch.look_off {
                             self.warp_look.release(scale_now);
                             lookback_scene(&mut self.look_scene, self.audio.as_mut(), false);
                         }
-                        if self.look_back && chase && replay_drive.is_none() && self.crash_bits == 0 && !self.crash_cam.active(&self.cam_switch.blend) {
+                        if new_frame && self.look_back && chase && replay_drive.is_none() && self.crash_bits == 0 && !self.crash_cam.active(&self.cam_switch.blend) {
                             // (chassis vt+52 = +584, the air time: negative in the tick of a landing)
                             let air = render_state.veh.as_ref().map_or(render_state.airborne_time, |v| v.air584());
                             if air > 0.25 {
@@ -9768,7 +9774,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                     let a = render_state.pos + render_state.rot * Vec3::Y * 0.5;
                                     let b = a + (render_state.vel - Vec3::new(0.0, 2.5, 0.0)) * 2.0;
                                     if !cam_level.line(a, b) {
-                                        self.warp_look.start(scale_now, dt);
+                                        self.warp_look.start(scale_now, boomcam::GAME_FRAME);
                                         lookback_scene(&mut self.look_scene, self.audio.as_mut(), true);
                                     }
                                 }
@@ -10009,8 +10015,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                     self.cam_switch.mask.start(0.01, 0.1, 0.01);
                                 }
                                 if self.crash_exploding {
+                                    // (F-37740, in the camera's update after the frame's sim: F-85638 on racer +1064 takes
+                                    // its own step on the frame's real time, 1/30 s - not none; the frame's update F-25863
+                                    // has run already)
                                     let now = self.wipe_scale;
-                                    self.warp_expl.start(now, 0.0);
+                                    self.warp_expl.start(now, boomcam::GAME_FRAME);
                                 }
                                 self.shake_wipe = true;
                             }

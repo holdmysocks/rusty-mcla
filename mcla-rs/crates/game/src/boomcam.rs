@@ -2567,6 +2567,10 @@ impl CrashStart {
     }
 }
 
+/// One game frame's real time, 1/30 s: the frame time the camera's update (F-38892) and the warpers' starts in it (F-85638's own step)
+/// run on; the port's game frame is two fixed ticks.
+pub const GAME_FRAME: f32 = 1.0 / 30.0;
+
 impl CrashCam {
     /// The wipeout camera's +432: 1.5 (its constructor's; no file sets it), the blend back to the drive view of
     /// F-53665's setView F-41662 when the wipeout is over (recorded in the original: the push's time word 0x3FC00000).
@@ -6084,6 +6088,50 @@ mod original_warper_tests {
             w.update(d[k]);
             scale = w.cur;
         }
+    }
+
+    /// The look-back slow motion in the air at any frame rate (main.rs): each game frame the player's update runs the warper (F-25863,
+    /// F-16834 at the frame's first tick) and then the camera's update restarts it (F-38892 -> F-85638 with its own step on the
+    /// frame's 1/30 s). The port runs the restart on the first drawn frame after a new game frame, so the scale per game frame is the
+    /// 30 fps run's at 60 / 75 / 144 / 240 fps; restarted on every drawn frame with that frame's time (the port before), the hold
+    /// depended on the frame rate.
+    #[test]
+    fn lookback_hold_at_any_fps() {
+        let tune = [0.0, 0.239, 2.009, 3.009];
+        // per game frame: (game frames so far, the scale) for `fps` drawn frames a second over 1.5 s, the air rule holding
+        let run = |fps: f32, old: bool| {
+            let (mut w, mut out) = (TimeWarper::new(tune), Vec::new());
+            let (mut drawn, mut frames, mut due) = (0u32, 0u32, 0u32);
+            let draw = 1.0 / fps;
+            while frames < 45 {
+                // (the game frames due by this drawn frame, counted exactly: drawn x 30 / fps)
+                drawn += 1;
+                while ((drawn as f64 * 30.0 / fps as f64) + 1e-9).floor() as u32 > frames {
+                    frames += 1;
+                    due += 1;
+                    w.update(GAME_FRAME);
+                    out.push((frames, w.cur));
+                }
+                let now = w.cur;
+                if old {
+                    w.start(now, draw);
+                } else if due > 0 {
+                    w.start(now, GAME_FRAME);
+                }
+                due = 0;
+            }
+            out
+        };
+        let base = run(30.0, false);
+        assert!(base.iter().any(|&(_, s)| s < 0.5), "the slow motion takes hold");
+        for fps in [60.0, 75.0, 144.0, 240.0] {
+            let got = run(fps, false);
+            for (k, (a, b)) in base.iter().zip(&got).enumerate() {
+                assert!(a.0 == b.0 && (a.1 - b.1).abs() <= 1e-6, "{fps} fps, game frame {k}: {a:?} {b:?}");
+            }
+        }
+        let worst = run(144.0, true).iter().zip(&base).map(|(a, b)| (a.1 - b.1).abs()).fold(0.0f32, f32::max);
+        assert!(worst > 0.01, "the old per-drawn-frame restart differs: {worst}");
     }
 }
 
