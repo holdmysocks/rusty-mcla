@@ -8519,7 +8519,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         }
         self.sim_time += dt;
         if self.tick_no % 240 == 0 {
-            log::info!("perf: {:.0} fps, {:.2} ms frame, {} draws", self.fps, self.frame_ms, self.draws);
+            // (and what is in video memory: the textures alive, the car models and their vertex / index buffers - GitHub #48)
+            let tex_mb = render::TEX_BYTES.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1048576.0;
+            let tex_n = render::TEX_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+            let (cars_n, cars_mb) = (self.vehicles.models.len(), self.vehicles.model_bytes() as f64 / 1048576.0);
+            log::info!("perf: {:.0} fps, {:.2} ms frame, {} draws; video memory: textures {:.0} MB ({}), car models {} ({:.0} MB buffers)", self.fps, self.frame_ms, self.draws, tex_mb, tex_n, cars_n, cars_mb);
         }
         if self.tick_no % 240 == 1 || (self.opt.wot && self.tick_no % 60 == 1) {
             if let Some(c) = self.vehicles.player() {

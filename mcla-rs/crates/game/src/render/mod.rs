@@ -1243,6 +1243,81 @@ pub struct GpuTexture {
     pub view: wgpu::TextureView,
     pub width: u32,
     pub height: u32,
+    /// its size in video memory (all levels), counted in `TEX_BYTES` while it lives
+    bytes: TexBytes,
+}
+
+/// A texture's share of `TEX_BYTES` / `TEX_COUNT`, given back when it goes.
+pub struct TexBytes(u64);
+
+impl Drop for TexBytes {
+    fn drop(&mut self) {
+        TEX_BYTES.fetch_sub(self.0, std::sync::atomic::Ordering::Relaxed);
+        TEX_COUNT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The bytes and the number of the `GpuTexture`s alive (the perf line, GitHub #48: a 4 GB card ran out of video memory).
+pub static TEX_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static TEX_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+impl GpuTexture {
+    pub fn new(texture: wgpu::Texture, view: wgpu::TextureView, width: u32, height: u32) -> GpuTexture {
+        let bytes = texture_bytes(&texture);
+        TEX_BYTES.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+        TEX_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        GpuTexture { texture, view, width, height, bytes: TexBytes(bytes) }
+    }
+}
+
+/// What a texture takes in video memory: every level's blocks times the block's size, the layers and samples.
+pub fn texture_bytes(t: &wgpu::Texture) -> u64 {
+    let f = t.format();
+    let (bw, bh) = f.block_dimensions();
+    let block = f.block_copy_size(None).or_else(|| f.block_copy_size(Some(wgpu::TextureAspect::DepthOnly))).unwrap_or(4) as u64;
+    let s = t.size();
+    let mut sum = 0u64;
+    for l in 0..t.mip_level_count() {
+        let (w, h) = ((s.width >> l).max(1), (s.height >> l).max(1));
+        sum += w.div_ceil(bw) as u64 * h.div_ceil(bh) as u64 * block;
+    }
+    sum * s.depth_or_array_layers as u64 * t.sample_count() as u64
+}
+
+/// `create_texture` with an out-of-memory failure caught (wgpu's default handler panics on it - GitHub #48, a licence
+/// plate's texture on a full 4 GB card): None then, logged.
+pub fn try_create_texture(device: &wgpu::Device, desc: &wgpu::TextureDescriptor) -> Option<wgpu::Texture> {
+    device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let t = device.create_texture(desc);
+    match pollster::block_on(device.pop_error_scope()) {
+        None => Some(t),
+        Some(e) => {
+            log::warn!("video memory full: texture {:?} ({}x{}) not made, drawn white: {e}", desc.label, desc.size.width, desc.size.height);
+            None
+        }
+    }
+}
+
+/// The stand-in for a texture that could not be made: one white texel (`try_create_texture`).
+fn white_texel(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> GpuTexture {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("out of memory"),
+        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: if format.is_srgb() { wgpu::TextureFormat::Rgba8UnormSrgb } else { wgpu::TextureFormat::Rgba8Unorm },
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        &[255, 255, 255, 255],
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: Some(1) },
+        wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+    );
+    let view = texture.create_view(&Default::default());
+    GpuTexture::new(texture, view, 1, 1)
 }
 
 /// [`Gpu::base`]: the device and the window's surface, before the renderer's programs are made.
@@ -4297,16 +4372,19 @@ pub fn create_rgba(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, r
 
 /// `gamma` as for `upload_as`: false keeps the texels as they are on sampling (a car's map, `car_tex_raw`).
 pub fn create_rgba_as(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, rgba: &[u8], label: &str, gamma: bool) -> GpuTexture {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let format = if gamma { wgpu::TextureFormat::Rgba8UnormSrgb } else { wgpu::TextureFormat::Rgba8Unorm };
+    let Some(texture) = try_create_texture(device, &wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: if gamma { wgpu::TextureFormat::Rgba8UnormSrgb } else { wgpu::TextureFormat::Rgba8Unorm },
+        format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
-    });
+    }) else {
+        return white_texel(device, queue, format);
+    };
     queue.write_texture(
         wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
         rgba,
@@ -4314,7 +4392,7 @@ pub fn create_rgba_as(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32
         wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
     );
     let view = texture.create_view(&Default::default());
-    GpuTexture { texture, view, width: w, height: h }
+    GpuTexture::new(texture, view, w, h)
 }
 
 /// Build GPU texture from a decoded RAGE texture. Uses BC formats directly when
@@ -4359,7 +4437,7 @@ pub fn upload_as(device: &wgpu::Device, queue: &wgpu::Queue, tex: &Texture, bc: 
         lh = (lh / 2).max(1);
     }
     let levels = levels.max(1);
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let Some(texture) = try_create_texture(device, &wgpu::TextureDescriptor {
         label: Some(&tex.name),
         size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         mip_level_count: levels,
@@ -4368,7 +4446,9 @@ pub fn upload_as(device: &wgpu::Device, queue: &wgpu::Queue, tex: &Texture, bc: 
         format: fmt,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
-    });
+    }) else {
+        return white_texel(device, queue, fmt);
+    };
     let (mut lw, mut lh) = (w, h);
     for level in 0..levels {
         let data = &tex.levels[level as usize];
@@ -4390,7 +4470,7 @@ pub fn upload_as(device: &wgpu::Device, queue: &wgpu::Queue, tex: &Texture, bc: 
         lh = (lh / 2).max(1);
     }
     let view = texture.create_view(&Default::default());
-    GpuTexture { texture, view, width: w, height: h }
+    GpuTexture::new(texture, view, w, h)
 }
 
 /// What the original's frustum builder F-53768 scales a plane by, from its normal's squared length: the reciprocal square

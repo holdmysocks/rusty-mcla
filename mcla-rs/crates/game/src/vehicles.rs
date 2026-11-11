@@ -1496,7 +1496,13 @@ pub struct Vehicles {
     vinyl_index: Option<hashbrown::HashMap<String, std::path::PathBuf>>,
     vinyl_painted: hashbrown::HashSet<String>,
     vinyls: hashbrown::HashMap<String, Option<Arc<wgpu::BindGroup>>>,
+    /// how long each car's models (by name, every set-up) have been held by nothing but `models` (`free_idle_models`)
+    model_idle: hashbrown::HashMap<String, f32>,
+    model_idle_check: f32,
 }
+
+/// A car's models nothing has held for this long are freed (`Vehicles::free_idle_models`).
+const MODEL_IDLE_FREE: f32 = 120.0;
 
 /// Trailers are towed, never driven.
 fn is_trailer(n: &str) -> bool {
@@ -1667,11 +1673,10 @@ pub fn car_tex_raw() -> bool {
 
 /// A car's map from its own dictionary, as stored or gamma-decoded by `car_tex_raw`, with the key it is under.
 fn car_upload(gpu: &mut Gpu, key: u32, t: &mcla_formats::rage::texture::Texture) -> (Arc<GpuTexture>, u32) {
-    if car_tex_raw() {
-        (gpu.upload_texture_raw(key ^ 0x0052_4157, t), key ^ 0x0052_4157)
-    } else {
-        (gpu.upload_texture(key, t), key)
-    }
+    // (evictable: once no model draws with it, it goes with the unused city textures - `Vehicles::free_idle_models`)
+    let (g, k) = if car_tex_raw() { (gpu.upload_texture_raw(key ^ 0x0052_4157, t), key ^ 0x0052_4157) } else { (gpu.upload_texture(key, t), key) };
+    gpu.texture_evictable(k, t);
+    (g, k)
 }
 
 /// ... and a global or shared one (`World::texture_any`).
@@ -2447,6 +2452,57 @@ impl Vehicles {
         x ^= x << 5;
         self.rng = x;
         (x % 100000) as f32 / 100000.0
+    }
+
+    /// A car's models (all its set-ups together) that nothing but `models` has held for `MODEL_IDLE_FREE` seconds are
+    /// freed, with their buffers; their textures are then unused and go with the city's (`Gpu::trim_textures`, car
+    /// textures are evictable: `car_upload`). Before, every car and set-up ever built stayed in video memory for the
+    /// session (GitHub #48: 111 models of 61 cars in 40 minutes of races filled a 4 GB card). A car that comes back is built
+    /// again from the same files: the same model. Traffic and police models are kept (the traffic's and the police's pools
+    /// are the loaded models). All of a name go at once, so a name never comes back as a set-up without its plain build
+    /// ahead of it (`models.iter().find(name)` takes the first). MCLA_MODELS_KEEP=1: none freed, as before.
+    fn free_idle_models(&mut self, dt: f32) {
+        self.model_idle_check += dt;
+        if self.model_idle_check < 1.0 {
+            return;
+        }
+        let step = std::mem::take(&mut self.model_idle_check);
+        if std::env::var("MCLA_MODELS_KEEP").is_ok() {
+            return;
+        }
+        let mut held: hashbrown::HashMap<String, bool> = hashbrown::HashMap::new();
+        for m in &self.models {
+            let n = m.name.to_ascii_lowercase();
+            if n.starts_with("va_") || n.contains("police") {
+                continue;
+            }
+            *held.entry(n).or_insert(false) |= Arc::strong_count(m) > 1;
+        }
+        self.model_idle.retain(|n, _| held.get(n) == Some(&false));
+        // (test hook MCLA_MODEL_IDLE=<s>: another time than MODEL_IDLE_FREE)
+        let free_after = std::env::var("MCLA_MODEL_IDLE").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(MODEL_IDLE_FREE);
+        let mut gone: Vec<String> = Vec::new();
+        for (n, h) in held {
+            if h {
+                continue;
+            }
+            let t = self.model_idle.entry(n.clone()).or_insert(0.0);
+            *t += step;
+            if *t >= free_after {
+                gone.push(n);
+            }
+        }
+        for n in gone {
+            let before = self.models.len();
+            self.models.retain(|m| !m.name.eq_ignore_ascii_case(&n));
+            self.model_idle.remove(&n);
+            log::info!("vehicles: car model {} freed ({} builds, unused for {:.0} s)", n, before - self.models.len(), free_after);
+        }
+    }
+
+    /// The bytes of the car models' vertex and index buffers (every level of detail): the perf line's (GitHub #48).
+    pub fn model_bytes(&self) -> u64 {
+        self.models.iter().map(|m| m.batches.iter().chain(m.lods.iter().flat_map(|l| l.0.iter())).map(|b| b.vb.size() + b.ib.size()).sum::<u64>()).sum()
     }
 
     /// Load a car directory into a shared GPU model.
@@ -4179,6 +4235,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// Physics + AI for every car.
     pub fn update(&mut self, world: &World, player_input: CarInput, dt: f32) {
         self.clock += dt;
+        self.free_idle_models(dt);
         // (test hook MCLA_GROUND_PROBE=x,y,z;x,y,z;...: the parked cars' ground probe (traffic::probe_ground) at each
         // point, printed once all of them are loaded - for comparing with the original's probe records)
         if let Ok(v) = std::env::var("MCLA_GROUND_PROBE") {

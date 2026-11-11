@@ -298,7 +298,7 @@ impl Impostors {
             let picture = |gpu: &Gpu, label: &str, format: wgpu::TextureFormat| -> Arc<GpuTexture> {
                 let texture = target(gpu, label, format, 1);
                 let view = texture.create_view(&Default::default());
-                Arc::new(GpuTexture { texture, view, width: TILE, height: TILE })
+                Arc::new(GpuTexture::new(texture, view, TILE, TILE))
             };
             let color = picture(gpu, "impostor colour", COLOR_FORMAT);
             let normal = picture(gpu, "impostor normal", NORMAL_FORMAT);
@@ -327,7 +327,7 @@ impl Impostors {
             let mask = {
                 let texture = mask_target(gpu, "impostor shadow mask", MASK_FORMAT, 1, msize);
                 let view = texture.create_view(&Default::default());
-                Arc::new(GpuTexture { texture, view, width: msize, height: msize })
+                Arc::new(GpuTexture::new(texture, view, msize, msize))
             };
             let mask_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("impostor mask tile"), contents: bytemuck::bytes_of(&TileUniform::zeroed()), usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST });
             let mask_bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("impostor mask tile bg"), layout: &tile_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: mask_buf.as_entire_binding() }] });
