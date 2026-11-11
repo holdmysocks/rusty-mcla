@@ -137,6 +137,10 @@ pub struct Roamers {
     /// Where each man with no car near the player is shown this frame (by his key): on the nearest rail with ground
     /// under it (`rail_place`) to his place on his loop - `Roamers::shown`
     on_road: HashMap<String, (Vec3, Vec3)>,
+    /// The man whose car the racer manager's streaming walk asked for (its "Reload car", load request +17) and
+    /// that is not in the world yet: his racer is loading (+656 neither 0 nor 3), which holds every other reload
+    /// (F-31748's busy count) - `oppmgr::stream`
+    loading: Option<String>,
     /// The story mission whose series the man just flashed starts, and his (name, car, set-up):
     /// `Game::story_series_start`
     pub series_of: Option<(String, String, String, String)>,
@@ -387,6 +391,7 @@ impl Roamers {
             player_state: 0,
             route_memo: None,
             on_road: HashMap::new(),
+            loading: None,
             series_of: None,
             setup_cfg: Default::default(),
             wanted: 2,
@@ -864,6 +869,50 @@ impl Roamers {
             let men = &self.men;
             vehicles.cars.retain(|c| c.roam_key.is_empty() || men.iter().any(|m| m.owns(c)));
         }
+        // (mcRacerManager's streaming walk, F-31748, every frame: the player first - he takes one of the 8 slots and
+        // is not walked (racer vfunc 40) -, then each man's racer at his car, or with none at his place (the
+        // reset position while his core is about to put him there, else where he is shown). No hookman script
+        // pins a racer or sets ResetOnEviction / DeleteOnEviction (CruisingHookmanCore and the men's scripts call
+        // none of those natives), so: within the reach of 400 m (the map streamer has no request pending in the
+        // port - D47 - so never the 200 m one) and within the slots his car is asked for, one a frame and none while
+        // one is loading; a car more than 600 m beyond its 100 m head start, i.e. past 700 m, or past the slots is
+        // evicted. The port's own drop at 420 m and put-down at 120 - 330 m are gone)
+        let streaming = only.is_none() && self.challenge.is_none() && !self.suspended;
+        let mut reload: Option<usize> = None;
+        let mut evict: Vec<u32> = Vec::new();
+        if streaming {
+            use crate::oppmgr::{StreamAction, StreamRacer, LOADED, UNLOADED};
+            let mut list = vec![Some(StreamRacer { load_state: LOADED, pin: 0, reset_on_eviction: false, not_counted: true, x: pp.x, z: pp.z })];
+            for m in &self.men {
+                let r = match vehicles.cars.iter().find(|c| m.owns(c)) {
+                    Some(c) => StreamRacer { load_state: LOADED, pin: 0, reset_on_eviction: false, not_counted: false, x: c.state.pos.x, z: c.state.pos.z },
+                    None => {
+                        let p = if m.fresh || m.reset { m.start.or(m.pts.first().copied()).unwrap_or(Vec3::ZERO) } else { self.on_road.get(&m.key).map_or_else(|| loop_at(&m.pts, m.at).0, |x| x.0) };
+                        // (a racer whose load was asked for and is not in the world yet: neither 0 nor 3)
+                        let st = if self.loading.as_deref() == Some(m.key.as_str()) { 1 } else { UNLOADED };
+                        StreamRacer { load_state: st, pin: 0, reset_on_eviction: false, not_counted: false, x: p.x, z: p.z }
+                    }
+                };
+                list.push(Some(r));
+            }
+            for a in crate::oppmgr::stream(&list, pp.x, pp.z, &crate::oppmgr::Limits::default(), 10000.0) {
+                match a {
+                    StreamAction::Reload { index, .. } => reload = Some(index - 1),
+                    StreamAction::Evict { index } => {
+                        if let Some(c) = vehicles.cars.iter().find(|c| self.men[index - 1].owns(c)) {
+                            evict.push(c.uid);
+                        }
+                    }
+                    StreamAction::Reset { .. } => {}
+                }
+            }
+            if let Some(k) = reload {
+                self.loading = Some(self.men[k].key.clone());
+            }
+        } else {
+            self.loading = None;
+        }
+        let loading = self.loading.clone();
         for (k, m) in self.men.iter_mut().enumerate() {
             // (suspended, a man waits at his reset position, his car streamed out: CruisingHookmanCore 0x497..0x523)
             if self.suspended && m.reset {
@@ -895,7 +944,8 @@ impl Roamers {
                             game.mc4_slot_found(m.district, i);
                         }
                     }
-                    if cp.distance(pp) > 420.0 && self.challenge.is_none() {
+                    if evict.contains(&vehicles.cars[ci].uid) {
+                        log::info!("roamers: {} evicted ({:.0} m)", m.key, cp.distance(pp));
                         vehicles.cars.remove(ci);
                     }
                 }
@@ -907,9 +957,12 @@ impl Roamers {
                     if (m.fresh || m.reset) && m.start.or(m.pts.first().copied()).map_or(false, |p| p.distance(pp) < 450.0) {
                         ahead.push((m.car.clone(), m.config.clone()));
                     }
-                    if (m.fresh || m.reset) && m.start.or(m.pts.first().copied()).map_or(false, |p| p.distance(pp) < 330.0) && only.is_none() {
+                    // (he waits there while the streaming walk would ask for his car - within its reach -, one racer a
+                    // frame being asked for)
+                    let st = m.start.or(m.pts.first().copied()).map(|p| crate::oppmgr::flat_distance(p.x, p.z, pp.x, pp.z));
+                    if (m.fresh || m.reset) && st.map_or(false, |d| d < crate::oppmgr::Limits::default().far_reach) && streaming {
                         m.at = 0.0;
-                        if self.challenge.is_none() {
+                        if loading.as_deref() == Some(m.key.as_str()) {
                             spawn = Some(k);
                         }
                         continue;
@@ -925,9 +978,14 @@ impl Roamers {
                     }
                     // (test hook MCLA_HOOKMAN_TEST=<key prefix>: that man alone, put near the player)
                     let wanted = only.as_deref().map_or(true, |o| m.key.starts_with(o) && !vehicles.cars.iter().any(|c| c.racer));
-                    if wanted && spawn.is_none() && self.challenge.is_none() && ((d > 120.0 && d < 330.0) || only.is_some()) {
+                    if only.is_some() {
+                        if wanted && spawn.is_none() && self.challenge.is_none() {
+                            spawn = Some(k);
+                        }
+                    } else if loading.as_deref() == Some(m.key.as_str()) {
                         spawn = Some(k);
                     }
+                    let _ = d;
                 }
             }
         }
@@ -969,7 +1027,8 @@ impl Roamers {
             }
         }
         let mut ready = None;
-        if let Some(k) = spawn.filter(|_| self.timer <= 0.0) {
+        // (the test hook keeps its second between men; the streaming walk's own one-a-frame rule holds otherwise)
+        if let Some(k) = spawn.filter(|_| self.timer <= 0.0 || only.is_none()) {
             let m = self.men[k].clone();
             // (his car as his set-up builds it: dressing him then finds it - docs/PERFORMANCE.md 2026-10-23 (6))
             if !self.setup_cfg.contains_key(&m.config) {
@@ -998,6 +1057,7 @@ impl Roamers {
                 Some(model) => ready = Some((k, m, model)),
             }
         }
+        let tried = ready.is_some();
         let Some(nav) = world.nav.as_ref() else { return None };
         if let Some((k, m, model)) = ready.filter(|(_, _, model)| is_racer_model(&model.name) || only.is_some()) {
             {
@@ -1093,6 +1153,15 @@ impl Roamers {
                         }
                     }
                 }
+            }
+        }
+        // (the racer asked for is in the world: loaded. A man whose car could not be put down - no rail with ground
+        // near him, another car on the spot, a car that is no racer's - goes back to out of the world and is asked
+        // for again by a later walk, so he does not hold every other man's load)
+        if let Some(key) = self.loading.clone() {
+            let has = self.men.iter().find(|m| m.key == key).map_or(true, |m| vehicles.cars.iter().any(|c| m.owns(c)));
+            if has || tried {
+                self.loading = None;
             }
         }
         // the run to the start line
@@ -1302,12 +1371,18 @@ impl Roamers {
             match m.kind {
                 ManKind::TimeTrial => {
                     log::info!("roamers: the time trial man of {} flashed", DISTRICTS[m.district.min(4)]);
-                    game.mc4_tt_panel_open(m.district);
+                    // (the original's script always opens form 65; the port cannot without its Flash menu - logged)
+                    if !game.mc4_tt_panel_open(m.district) {
+                        log::warn!("roamers: the time trial panel of {} could not open (no Flash menu)", DISTRICTS[m.district.min(4)]);
+                    }
                     return None;
                 }
                 ManKind::Tournament => {
                     log::info!("roamers: the tournament man of {} flashed ({})", DISTRICTS[m.district.min(4)], m.event);
-                    game.mc4_tournament_open(&m.event);
+                    // (the original's script always opens form 66; the port cannot without its Flash menu or the race - logged)
+                    if !game.mc4_tournament_open(&m.event) {
+                        log::warn!("roamers: the tournament panel of {} could not open (no Flash menu, or its race not found)", m.event);
+                    }
                     return None;
                 }
                 ManKind::RedLight | ManKind::Freeway => {
@@ -1320,21 +1395,22 @@ impl Roamers {
         }
         // the hookman's own event, if the career names one
         let scripted = if vehicles.cars[ri].driver.is_empty() { None } else { game.career.hookman_race() }.and_then(|r| (0..game.race_defs.len()).find(|&i| game.race_defs[i].id.to_ascii_lowercase().ends_with(r.as_str()))).and_then(|i| game.race_start(i).map(|s| (i, s, s.distance(pp))));
-        // (mcRaceArray_FindBeatMeThereRaceIndex draws from the career's generator)
-        let rnd = crate::oppick::career_rng().next() & 0x7FFF_FFFF;
+        // (mcRaceArray_Fill F-50395 and FindBeatMeThereRaceIndex F-73402 draw from the career's generator, each only when it
+        // finds no race - Fill first)
+        let mut rnd = || crate::oppick::career_rng().next() & 0x7FFF_FFFF;
         // (a story man's OrderedSeriesCore: his series, its first race the beat-me-there pick from the
         // player - `Game::story_series_first`)
         self.series_of = None;
         let scripted = scripted.or_else(|| {
             let m = man.as_ref()?;
-            let i = game.story_series_first(&m.mission, pp, pf, rnd)?;
+            let i = game.story_series_first(&m.mission, pp, pf, &mut rnd)?;
             let s = game.race_start(i)?;
             self.series_of = Some((m.mission.clone(), m.name.clone(), m.car.clone(), m.config.clone()));
             Some((i, s, s.distance(pp)))
         });
         // a local hookman's choice (mcRaceArray_*: `mc4_local_races`)
         let (rpos, rfwd, top) = (vehicles.cars[ri].state.pos, vehicles.cars[ri].state.forward(), vehicles.cars[ri].model.params.top_speed);
-        let kept = if scripted.is_some() { Vec::new() } else { game.mc4_local_races(rpos, rfwd, man.as_ref().map_or(6, |m| m.district as i32), rnd) };
+        let kept = if scripted.is_some() { Vec::new() } else { game.mc4_local_races(rpos, rfwd, man.as_ref().map_or(6, |m| m.district as i32), &mut rnd) };
         let pick = scripted.or_else(|| kept.first().and_then(|&t| game.mc4_table_race(t)).map(|(i, s)| (i, s, s.distance(pp))));
         let Some((race, goal, dist)) = pick else {
             game.show_message("NO EVENT NEARBY");
