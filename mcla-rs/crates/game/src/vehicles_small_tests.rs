@@ -270,3 +270,32 @@ fn lamp_controller_matches_the_original() {
     assert!(n == 2000 && heads > 300 && heads < 1700 && shifts > 300 && shifts < 1700, "{n} {heads} {shifts}");
     assert!(played > 500, "{played}");
 }
+
+/// F-40379 keeps the count signed 16 bits (min(cap 100, the tune's s16 shot count)); the port stores min(...).max(0) in a u8.
+/// The two differ only for a tune whose u16 count reads negative (32768 and up). Every car tune of the disc, base and mods (the
+/// blend of the two stays between them): the count is in 0 ..= 100 after the cap - the port's store gives the original's.
+/// MCLA_DATA_DIR = the data folder (cache).
+#[test]
+#[ignore]
+fn nitro_counts_of_the_disc_fit_the_ports_store() {
+    let dir = std::path::PathBuf::from(std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR")).join("resources/vehicle");
+    let (mut files, mut seen) = (0, std::collections::BTreeSet::new());
+    for e in std::fs::read_dir(&dir).unwrap().flatten() {
+        for f in std::fs::read_dir(e.path()).into_iter().flatten().flatten() {
+            if f.path().extension().map_or(true, |x| x != "r50") {
+                continue;
+            }
+            let Ok(res) = crate::assets::load_resource_file(&f.path()) else { continue };
+            let Some(st) = mcla_formats::rage::simtune::SimTunes::parse(&res) else { continue };
+            files += 1;
+            for shots in [st.base.nitro_shots, st.mods.nitro_shots] {
+                let original = vw::nitro_count(100, shots as u16 as i16);
+                assert!((0..=100).contains(&original), "{:?}: {shots}", f.path());
+                assert_eq!(crate::vehicles::nitro_start(shots) as i16, original);
+                seen.insert(shots as u32);
+            }
+        }
+    }
+    println!("{files} tunes, shot counts {seen:?}");
+    assert!(files > 100);
+}
