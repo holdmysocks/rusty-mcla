@@ -4285,6 +4285,21 @@ impl Gpu {
     /// the shared dictionaries (docs/MAP.md), so nothing drawn changes. Bind groups come first: a cached one
     /// nothing draws with would keep its textures alive.
     pub fn trim_textures(&mut self, budget: u64) {
+        let t0 = std::time::Instant::now();
+        let (n_bind, n_tex, b_tex) = (self.bind_cache.len(), self.textures.len(), TEX_BYTES.load(std::sync::atomic::Ordering::Relaxed));
+        self.trim_textures_in(budget);
+        // (MCLA_TRIMLOG=<ms>: a trim longer than that is logged with what it let go)
+        static LIM: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+        if let Some(lim) = *LIM.get_or_init(|| std::env::var("MCLA_TRIMLOG").ok().and_then(|v| v.parse().ok())) {
+            let ms = t0.elapsed().as_secs_f32() * 1000.0;
+            if ms >= lim {
+                let b_now = TEX_BYTES.load(std::sync::atomic::Ordering::Relaxed);
+                log::info!("texture trim: {:.2} ms, bind groups {} -> {}, cache {} -> {}, texture MB {} -> {}", ms, n_bind, self.bind_cache.len(), n_tex, self.textures.len(), b_tex >> 20, b_now >> 20);
+            }
+        }
+    }
+
+    fn trim_textures_in(&mut self, budget: u64) {
         self.tex_trims += 1;
         self.bind_cache.retain(|_, e| Arc::strong_count(&e.0) > 1);
         let (mut idle, mut order) = (0u64, Vec::new());
