@@ -5381,7 +5381,9 @@ impl LooseState {
                     let other = if piece_is_a { m.b } else { m.a };
                     for s in m.slots.iter().filter(|s| s.enabled) {
                         let at = if piece_is_a { s.t.a.point } else { s.t.b.point };
-                        let v = (b.v + cross(b.w, at - b.at)) - vel_of(other, at);
+                        // (each body's velocity at its own point of the contact: the pair's +48 / +64, F-80340)
+                        let other_at = if piece_is_a { s.t.b.point } else { s.t.a.point };
+                        let v = (b.v + cross(b.w, at - b.at)) - vel_of(other, other_at);
                         let n = if piece_is_a { Vec3::ZERO - s.t.normal } else { s.t.normal };
                         out.push(PieceContact { v, n, point: at });
                         if *DBG_PIECE.get_or_init(|| std::env::var_os("MCLA_DBG_PIECE").is_some()) {

@@ -255,6 +255,34 @@ fn voice_cents(ratio: f32) -> i32 {
     pitch_cents_f32(ratio) as i32
 }
 
+/// F-80340's impact level from TUNERS_DAMAGE `d`: min(mph, +139) by fsel (a NaN keeps the mph), t = (that - +131) /
+/// (+139 - +131), the gain t (+143 - +135) + +135 fused, in dB.
+fn bumper_impact_db(mph: f32, d: &[u8]) -> f32 {
+    lin2db(bumper_impact_gain(mph, d))
+}
+
+fn bumper_impact_gain(mph: f32, d: &[u8]) -> f32 {
+    let (lo, top, g0, g1) = (be_f32(d, 131), be_f32(d, 139), be_f32(d, 135), be_f32(d, 143));
+    let m = if mph - top >= 0.0 { top } else { mph };
+    let t = (m - lo) / (top - lo);
+    crate::physics::exact::fma(t, g1 - g0, g0)
+}
+
+/// F-80340's scrape loop levels from TUNERS_DAMAGE `d`, set once when the loop starts: the gain over
+/// min(mph, +155) from +151 (+159 .. +163) and the pitch ratio over mph held in [+167, +171] (+175 .. +179), each
+/// t (span) + start fused, the clamps by fsel; the gain in dB, the ratio in cents.
+fn bumper_scrape_levels(mph: f32, d: &[u8]) -> (f32, i32) {
+    let fma = crate::physics::exact::fma;
+    let (lo, hi, g0, g1) = (be_f32(d, 151), be_f32(d, 155), be_f32(d, 159), be_f32(d, 163));
+    let (plo, phi, r0, r1) = (be_f32(d, 167), be_f32(d, 171), be_f32(d, 175), be_f32(d, 179));
+    let m = if mph - hi >= 0.0 { hi } else { mph };
+    let gain = fma((m - lo) / (hi - lo), g1 - g0, g0);
+    let p = if mph - plo >= 0.0 { mph } else { plo };
+    let p = if p - phi >= 0.0 { phi } else { p };
+    let ratio = fma((p - plo) / (phi - plo), r1 - r0, r0);
+    (lin2db(gain), cents(ratio))
+}
+
 /// The cents of a pitch ratio before the truncation: `float(log10) * 3.321928 * 1200`, single precision.
 pub(crate) fn pitch_cents_f32(ratio: f32) -> f32 {
     let l = log10_guest(ratio.max(1e-6) as f64) as f32;
@@ -1578,10 +1606,7 @@ impl CarSounds {
             }
         }
         // the one-shots of this frame's events
-        let (imp_mph, imp_top, imp_lo, imp_hi) = (be_f32(&d, 131), be_f32(&d, 139), be_f32(&d, 135), be_f32(&d, 143));
-        let (scr_lo_mph, scr_hi_mph, scr_lo, scr_hi) = (be_f32(&d, 151), be_f32(&d, 155), be_f32(&d, 159), be_f32(&d, 163));
-        let (pit_lo_mph, pit_hi_mph, pit_lo, pit_hi) = (be_f32(&d, 167), be_f32(&d, 171), be_f32(&d, 175), be_f32(&d, 179));
-        let lerp = |x: f32, x0: f32, x1: f32, y0: f32, y1: f32| y0 + (y1 - y0) * (x.clamp(x0, x1) - x0) / (x1 - x0).max(1e-6);
+        let (imp_mph, scr_lo_mph) = (be_f32(&d, 131), be_f32(&d, 151));
         // (events from before this car's sounds were made are not heard)
         let seen = *self.parts_seen.get_or_insert(parts.serial);
         for &(serial, e) in parts.events.iter().filter(|(n, _)| *n > seen) {
@@ -1607,9 +1632,8 @@ impl CarSounds {
                 PartEvent::BumperImpact { speed, pos, .. } => {
                     let mph = speed * MPH;
                     let h = be_u32(&d, 127);
-                    if mph >= imp_mph && !is_null(h) {
-                        let vol = lin2db(lerp(mph.min(imp_top), imp_mph, imp_top, imp_lo, imp_hi));
-                        lib.play_hash(h, self.req(pos).vol(vol));
+                    if !(mph < imp_mph) && !is_null(h) {
+                        lib.play_hash(h, self.req(pos).vol(bumper_impact_db(mph, &d)));
                     }
                 }
                 // (a slide from +151 (5 mph) keeps the scrape loop +147 going; its volume dB(0.25 .. 0.5 over 5 .. 60 mph)
@@ -1618,11 +1642,10 @@ impl CarSounds {
                     let mph = speed * MPH;
                     let h = be_u32(&d, 147);
                     let slot = &mut self.scrape[bumper as usize & 1];
-                    if mph >= scr_lo_mph && !is_null(h) {
+                    if !(mph < scr_lo_mph) && !is_null(h) {
                         slot.1 = clock;
                         if slot.0.map_or(true, |s| !lib.playing(s)) {
-                            let vol = lin2db(lerp(mph.min(scr_hi_mph), scr_lo_mph, scr_hi_mph, scr_lo, scr_hi));
-                            let pitch = cents(lerp(mph, pit_lo_mph, pit_hi_mph, pit_lo, pit_hi));
+                            let (vol, pitch) = bumper_scrape_levels(mph, &d);
                             slot.0 = lib.play_hash(h, Req { player, occluder: self.occ, ..Req::at(pos) }.vol(vol).pitch(pitch));
                         }
                     }
@@ -3521,6 +3544,86 @@ mod tests {
         s.clock += 0.1;
         s.damage_parts(&mut lib, &parts);
         assert!(s.scrape[1].0.is_none());
+    }
+
+    /// The torn-off bumper's contact callback F-80340 run offline (tools/piece_contact_reference.py,
+    /// testdata/piece_contact_ref.txt: 3,000 ticks of 0 - 6 contacts, enabled or not, the piece first, second or neither
+    /// of the pair, bodies missing, still and moving; the scrape loop running or not): the impact's level, the scrape's
+    /// start with its level and pitch, its clock and loop - every word equal. The relative velocity and the normal are
+    /// formed here as the callback forms them (the bodies' velocities at the point, the normal turned when the piece is
+    /// first); the port's level hands them to `piece_contact_events` the same way.
+    #[test]
+    fn piece_contacts_match_the_original() {
+        let d: Vec<u8> = {
+            let mut d = vec![0u8; 184];
+            let mut put = |o: usize, w: u32| d[o..o + 4].copy_from_slice(&w.to_be_bytes());
+            for (o, v) in [(131, 3.0f32), (135, 1.5), (139, 70.0), (143, 2.0), (151, 5.0), (155, 60.0), (159, 0.25), (163, 0.5), (167, 5.0), (171, 100.0), (175, 0.7), (179, 1.5)] {
+                put(o, v.to_bits());
+            }
+            put(127, 0x1111_1111);
+            put(147, 0x2222_2222);
+            d
+        };
+        let hx = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let (imp_mph, scr_mph) = (be_f32(&d, 131), be_f32(&d, 151));
+        let (mut n, mut log2_last_bit) = (0, 0);
+        for line in include_str!("testdata/piece_contact_ref.txt").lines() {
+            let (i, o) = line.split_once(" -> ").unwrap();
+            let mut parts = i.split(" | ");
+            let head: Vec<&str> = parts.next().unwrap().split_whitespace().collect();
+            let (mut looping, now) = (head[0] == "1", hx(head[1]));
+            let mut cs = Vec::new();
+            for p in parts {
+                let w: Vec<&str> = p.split_whitespace().collect();
+                let r: Vec<u32> = w[0..4].iter().map(|x| x.parse().unwrap()).collect();
+                let f: Vec<f32> = w[4..].iter().map(|x| f32::from_bits(hx(x))).collect();
+                if r[0] & 0x80 == 0 {
+                    continue;
+                }
+                let mut v = if r[2] != 0 { Vec3::new(f[0], f[1], f[2]) } else { Vec3::ZERO };
+                if r[3] != 0 {
+                    v = v - Vec3::new(f[3], f[4], f[5]);
+                }
+                let nn = Vec3::new(f[6], f[7], f[8]);
+                cs.push((v, if r[1] == 1 { Vec3::ZERO - nn } else { nn }));
+            }
+            let (best, slides) = crate::damageparts::piece_contact_events(&cs);
+            let mut got = String::new();
+            let mph = best * MPH;
+            got += &if best > 0.0 && !(mph < imp_mph) { format!("{:08x} | ", bumper_impact_db(mph, &d).to_bits()) } else { "- | ".into() };
+            // (the dB's log2: the recomp runs the console's vlogefp estimate as the C library's single log2f, the port's
+            // lin2db the correctly rounded log2 - the two may differ in the last bit; counted, nothing else may differ)
+            if got != o[..got.len().min(o.len())] {
+                let g = bumper_impact_gain(mph, &d);
+                let f32_db = if g - 1e-5 >= 0.0 { g.log2() * 0.301 * 20.0 } else { -100.0 };
+                if format!("{:08x} | ", f32_db.to_bits()) == o[..11] {
+                    log2_last_bit += 1;
+                    got = o[..11].to_string();
+                }
+            }
+            let (mut time, mut started) = (0u32, None);
+            for s in slides {
+                let mph = s * MPH;
+                if !(mph < scr_mph) {
+                    time = now;
+                    if !looping {
+                        looping = true;
+                        started = Some(bumper_scrape_levels(mph, &d));
+                    }
+                }
+            }
+            got += &match started {
+                Some((v, p)) => format!("{:08x} {:08x} | ", v.to_bits(), p as u32),
+                None => "- | ".into(),
+            };
+            let lp = if started.is_some() { 0x8888 } else if head[0] == "1" { 0x7777 } else { 0 };
+            got += &format!("{time:08x} {lp:08x}");
+            assert_eq!(got, o, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+        eprintln!("piece contacts: {log2_last_bit} impact levels differ only by log2's last bit");
+        assert!(log2_last_bit <= 30, "{log2_last_bit}");
     }
 
     /// The air-intake one-shot against the original's F-26427 run offline (tools/intake_oneshot_reference.py): 250 cars,

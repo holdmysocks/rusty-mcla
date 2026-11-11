@@ -564,6 +564,32 @@ impl Bumper {
     }
 }
 
+/// F-80340's choice over a torn-off piece's contacts of a tick, each (relative velocity, normal) as the callback forms
+/// them: the direction u = v x (1 / sqrt((x x + y y) + z z)) (the recomp's dot and rsqrt); n.u = x + (y + z) fused, not
+/// below 0.1 (a NaN counts) - an impact: the approach v.n (same order) kept when above the largest so far, from 0 - else
+/// a slide at |v| = sqrt(x x + (y y + z z)) fused. Returns the largest approach and the slides' speeds in order. Checked
+/// with the sound levels (test `caraudio::tests::piece_contacts_match_the_original`).
+pub fn piece_contact_events(contacts: &[(Vec3, Vec3)]) -> (f32, Vec<f32>) {
+    use crate::physics::exact::fma;
+    let mut best = 0.0f32;
+    let mut slides = Vec::new();
+    for &(v, n) in contacts {
+        let dp = (v.x * v.x + v.y * v.y) + v.z * v.z;
+        let inv = 1.0 / dp.sqrt();
+        let u = Vec3::new(v.x * inv, v.y * inv, v.z * inv);
+        let d = fma(n.x, u.x, fma(n.y, u.y, n.z * u.z));
+        if !(d < 0.1) {
+            let a = fma(v.x, n.x, fma(v.y, n.y, v.z * n.z));
+            if a > best {
+                best = a;
+            }
+        } else {
+            slides.push(fma(v.x, v.x, fma(v.y, v.y, v.z * v.z)).sqrt());
+        }
+    }
+    (best, slides)
+}
+
 /// F-57399's body on the two ends (state, car-space place, its last, world place): -1 and no place when neither
 /// end is loose; end A's speed when it is (set, not compared); end B's unless it is below that (a NaN takes B). Speed =
 /// sqrt(x x + (z z + y y)) of the car-space move, fused adds, times `inv_dt`. Checked word for word (test
@@ -869,27 +895,16 @@ impl DamageParts {
             body.rot = rot;
             body.pos = pos;
             b.pose = ci * f;
-            // (F-80340: of the piece's enabled contacts this tick, an approach at least 0.1 of the speed is an
-            // impact - the largest counts - any other a slide; the thresholds in mph are the sound's, caraudio.rs)
-            let (mut impact, mut scrape, mut at_i, mut at_s) = (0.0f32, 0.0f32, m[3], m[3]);
-            for k in view.contacts.iter() {
-                let speed = k.v.length();
-                if speed > 0.0 && k.n.dot(k.v / speed) >= 0.1 {
-                    let a = k.v.dot(k.n);
-                    if a > impact {
-                        impact = a;
-                        at_i = k.point;
-                    }
-                } else if speed > scrape {
-                    scrape = speed;
-                    at_s = k.point;
-                }
-            }
+            // (F-80340: the piece's enabled contacts of this tick in their order; both sounds play at the piece, the
+            // instance's place, not at a contact. The thresholds in mph are the sound's, caraudio.rs)
+            let cs: Vec<(Vec3, Vec3)> = view.contacts.iter().map(|k| (k.v, k.n)).collect();
+            let (impact, slides) = piece_contact_events(&cs);
             if impact > 0.0 {
-                evs.push(PartEvent::BumperImpact { bumper: i as u8, speed: impact, pos: at_i });
+                evs.push(PartEvent::BumperImpact { bumper: i as u8, speed: impact, pos: m[3] });
             }
-            if scrape > 0.0 {
-                evs.push(PartEvent::BumperScrape { bumper: i as u8, speed: scrape, pos: at_s });
+            // (every slide in order: the first at the scrape's speed starts the loop, each one keeps it going)
+            for speed in slides {
+                evs.push(PartEvent::BumperScrape { bumper: i as u8, speed, pos: m[3] });
             }
         }
         for e in evs {
