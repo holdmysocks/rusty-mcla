@@ -5790,10 +5790,15 @@ impl App {
                 let sides = res.len().max(2);
                 self.game.award_race(if won { 1 } else { sides }, sides);
                 // (a team game's panel is form 58, the end of battle, index 3 of the race-over list: up for its
-                // WAITUNWARPED(4400) instead of the standings' 2200 - F-34603)
+                // WAITUNWARPED(4400) instead of the standings' 2200 - F-34603; `race_slow_tick` makes the waits from `eob`)
                 if let Some(t) = self.game.flag.as_ref().and_then(|fg| fg.team_scores()) {
                     self.game.eob = Some(t);
-                    self.game.race_end_w.w2.ms = 4400;
+                }
+                // (the race-over list runs after EndOfRaceSequence, as a race's: its WAITUNWARPED(200) and slow motion,
+                // then the panel's wait - without the clock the splash only counted down RACE_END_MENU)
+                if std::env::var("MCLA_NO_RACE_SLOW").is_err() {
+                    self.game.race_slow_wait = Some(game::Game::RACE_END_PANEL);
+                    self.game.race_end_t = Some(0.0);
                 }
                 // (the REWARDS page's give posts the race's reputation itself: `give_pending`)
                 if !self.game.rewards_ask() {
