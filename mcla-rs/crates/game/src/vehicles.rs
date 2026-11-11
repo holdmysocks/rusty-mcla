@@ -125,6 +125,10 @@ pub struct CarModel {
     pub needles: [Option<Arc<vehicle_model::BoneClip>>; 3],
     /// where the add-on gauge stands (its placement in car space): its needle's deltas are P x D x P^-1
     pub needle_place: Mat4,
+    /// the pop-up headlights' clip (`light_flip` of the fitted headlight part's own file on its own skeleton, D+52 ->
+    /// D+672) and the part's placement (its deltas are P x D x P^-1); the j-th moved bone's meshes are FLIP_GROUP + j
+    pub light_flip: Option<Arc<vehicle_model::BoneClip>>,
+    pub flip_place: Mat4,
     /// the skinned roof's batches (group 31): batch index, the vertices at rest (car space) and each vertex's four bones of
     /// the roof's skeleton and weights; and where the roof part stands (its placement in car space)
     pub roof_skin: Vec<(usize, Vec<Vertex>, Vec<([u16; 4], [f32; 4])>)>,
@@ -486,6 +490,10 @@ pub struct CarInstance {
     pub win_req: [[bool; 2]; 2],
     /// the auto spoiler's controller (D+864, the windows' class at rate 1.0)
     pub spoiler: WindowCtl,
+    /// the pop-up headlights' controller (D+672, the windows' class at rate 1.0) and its request this frame (the lamp
+    /// controller F-10129's byte: Some(true) +2161 raise, Some(false) +2162 lower; taken and cleared by F-35036)
+    pub light_flip: WindowCtl,
+    pub flip_req: Option<bool>,
     /// the convertible roof's players and requests (`RoofCtl`)
     pub roof: RoofCtl,
     /// the moving damage parts' objects (hood, trunk lid, rear bumper, front bumper): the body's, moved by
@@ -956,6 +964,11 @@ const DENT_GROUP: u32 = TURN_GROUP + 4;
 /// (`susp_parts::SUSP_BONES`) or below, moved by its vehSuspension's M as the pose F-98654 copies it into the bone
 /// (`CarModel::susp_draw`).
 const SUSP_GROUP: u32 = DENT_GROUP + 5;
+
+/// The pop-up headlights' draw groups (after the suspension's 12): + j the meshes of the fitted headlight part on the j-th
+/// bone its `light_flip` clip moves (`CarModel::light_flip`).
+const FLIP_GROUP: u32 = SUSP_GROUP + 12;
+const FLIP_BONES: usize = 8;
 
 /// The vertex-dent parameters of a car's draw, dmgParams (VS_CarPaint and the other body programs: the vertex moves
 /// dent x w towards xyz, in the car's rest space): the image words the car's draw object's constructor F-60786 puts
@@ -2012,6 +2025,8 @@ struct CarPrep {
     roof_place: Mat4,
     /// the fitted add-on gauge's needle clip and placement (CarModel::needles [2], needle_place)
     upgrade: Option<(Arc<vehicle_model::BoneClip>, Mat4, std::path::PathBuf)>,
+    /// the fitted headlight part's `light_flip` clip and placement (CarModel::light_flip, flip_place)
+    flip: Option<(Arc<vehicle_model::BoneClip>, Mat4, std::path::PathBuf)>,
 }
 
 impl MeshGeo {
@@ -2701,7 +2716,7 @@ impl Vehicles {
         let t_load = std::time::Instant::now();
         let car = self.car_asset(world, dir)?;
         let ms_parse = t_load.elapsed().as_secs_f32() * 1000.0;
-        let CarPrep { car_is_ambient, rest_rot, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, susp_draw, roof_place, upgrade } = match self.take_prep(dir, cfg) {
+        let CarPrep { car_is_ambient, rest_rot, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, susp_draw, roof_place, upgrade, flip } = match self.take_prep(dir, cfg) {
             Some(p) => p,
             None => Self::prep_car(&car, dir, cfg),
         };
@@ -2925,7 +2940,7 @@ impl Vehicles {
         // (F-74884, a bike's set-up: +4092 / +4096 = |max - min| of the translation limits, crBoneData +144 / +160, of the
         // first bone named wheel_0 / wheel_2 in the base fragment's skeleton, then the parts' - F-20921)
         let bike_wheel_width = ["wheel_0", "wheel_2"].map(|n| car.skeleton.as_ref().and_then(|s| s.bones.iter().find(|b| b.name == n)).map_or(params.wheel_width, |b| (b.trans_limits.1 - b.trans_limits.0).length()));
-        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, glow_sides, font_bones, batches, params, params_mods, simtunes, vehmods: car.vehmods.clone(), fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, susp_lever: car.susp_lever, susp_bones: (!car.susp_bones.is_empty()).then(|| Arc::new(car.susp_bones.clone())), bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), needles: [car.needles[0].clone().map(Arc::new), car.needles[1].clone().map(Arc::new), upgrade.as_ref().map(|u| u.0.clone())], needle_place: upgrade.as_ref().map_or(Mat4::IDENTITY, |u| u.1), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, susp_draw, fx_anchors, fx_anchor_rear, rest_rot: rest_table(&rest_rot) });
+        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, glow_sides, font_bones, batches, params, params_mods, simtunes, vehmods: car.vehmods.clone(), fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, susp_lever: car.susp_lever, susp_bones: (!car.susp_bones.is_empty()).then(|| Arc::new(car.susp_bones.clone())), bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), needles: [car.needles[0].clone().map(Arc::new), car.needles[1].clone().map(Arc::new), upgrade.as_ref().map(|u| u.0.clone())], needle_place: upgrade.as_ref().map_or(Mat4::IDENTITY, |u| u.1), light_flip: flip.as_ref().map(|f| f.0.clone()), flip_place: flip.as_ref().map_or(Mat4::IDENTITY, |f| f.1), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, susp_draw, fx_anchors, fx_anchor_rear, rest_rot: rest_table(&rest_rot) });
         Ok(m)
     }
 
@@ -3059,6 +3074,20 @@ impl Vehicles {
         if let Some(u) = upgrade.as_ref() {
             log::info!("car {}: add-on gauge needle tach_upgrade {:.3} s, {} bones", car.name, u.0.duration, u.0.bones.len());
         }
+        // (the pop-up headlights: `light_flip` of the fitted headlight part (slot 11), played on the part's own skeleton,
+        // posed from D+52's frame by F-75243; the Camaro SS 69's, the Ford GT 06's headlight2, the Miura's, the RX-7's
+        // headlight_rotator. Of the part's two files the drawn one has no clip: it is read from the other, its tracks
+        // found by bone tag in the drawn file's skeleton)
+        let flip: Option<(Arc<vehicle_model::BoneClip>, Mat4, std::path::PathBuf)> = fitted.iter().filter(|(p, _)| !p.is_base && p.primary.to_ascii_lowercase().starts_with("headlight")).find_map(|(p, x)| {
+            let psk = p.skeleton.as_ref()?;
+            car.parts.iter().filter(|q| !q.is_base && q.primary == p.primary).find_map(|q| {
+                let res = crate::assets::load_resource_file(&q.file).ok()?;
+                vehicle_model::BoneClip::load(&res, psk, "light_flip")
+            }).map(|c| (Arc::new(c), *x, p.file.clone()))
+        });
+        if let Some(f) = flip.as_ref() {
+            log::info!("car {}: pop-up headlights light_flip {:.3} s, {} bones", car.name, f.0.duration, f.0.bones.len());
+        }
         let part_group = |part: &vehicle_model::CarPart, part_xf: &Mat4, mi: usize| -> u32 {
             if let Some(kind) = vehicle_model::roof_part(&part.primary).filter(|_| roof_moves) {
                 return ROOF_GROUP + kind as u32;
@@ -3083,6 +3112,13 @@ impl Vehicles {
                 }
             }
             let part_xf = &part_xf;
+            // (a mesh of the pop-up headlights on a bone their `light_flip` moves)
+            if let Some((cl, _, _)) = flip.as_ref().filter(|f| !part.is_base && f.2 == part.file) {
+                let b = part.mesh_tag.get(mi).and_then(|&t| part.skeleton.as_ref().and_then(|s| s.bone_by_tag(t)));
+                if let Some(j) = b.and_then(|b| cl.bones.iter().position(|&x| x == b)).filter(|&j| j < FLIP_BONES) {
+                    return FLIP_GROUP + j as u32;
+                }
+            }
             // (a mesh of the add-on gauge on a bone its `tach_upgrade` moves)
             if let Some((cl, _, _)) = upgrade.as_ref().filter(|u| !part.is_base && u.2 == part.file) {
                 let b = part.mesh_tag.get(mi).and_then(|&t| part.skeleton.as_ref().and_then(|s| s.bone_by_tag(t)));
@@ -3719,7 +3755,7 @@ impl Vehicles {
                 glow_sides.push(side);
             }
         }
-        CarPrep { car_is_ambient, rest_rot, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, susp_draw, roof_place, upgrade }
+        CarPrep { car_is_ambient, rest_rot, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, susp_draw, roof_place, upgrade, flip }
     }
 
     /// Tyre + rim model for a rim directory, loaded once.
@@ -3903,7 +3939,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, rotor_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, crash: Default::default(), parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), roam_key: String::new(), vinyl: None, vinyl_done: false, size_wheels: None, vinyl_slot: VINYL_SLOT_NONE, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), win_req: [[false; 2]; 2], spoiler: WindowCtl::default(), roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), valve: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, rotor_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, crash: Default::default(), parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), roam_key: String::new(), vinyl: None, vinyl_done: false, size_wheels: None, vinyl_slot: VINYL_SLOT_NONE, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), win_req: [[false; 2]; 2], spoiler: WindowCtl::default(), light_flip: WindowCtl::default(), flip_req: None, roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), valve: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
         self.cars.len() - 1
     }
 
@@ -4515,6 +4551,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
         let roof_test = *ROOF_TEST.get_or_init(|| std::env::var("MCLA_ROOF_TEST").ok().and_then(|v| v.parse::<f32>().ok()));
         static SPOILER_TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let spoiler_test = *SPOILER_TEST.get_or_init(|| std::env::var("MCLA_SPOILER_TEST").is_ok_and(|v| v == "1"));
+        static FLIP_TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let flip_test = *FLIP_TEST.get_or_init(|| std::env::var("MCLA_LIGHT_FLIP_TEST").is_ok_and(|v| v == "1"));
         for c in self.cars.iter_mut() {
             // (the light bar's clip: its own time from the car's making, the game frame's step each frame, back to 0 at
             // its end - F-35036 / F-27851; docs/reference/hookmen/cop_lamps.md)
@@ -4551,6 +4589,16 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // (test hook: MCLA_SPOILER_TEST=1 raises it at any speed)
                 c.spoiler.request(c.state.speed() * 2.237 > 60.0 || (spoiler_test && c.is_player), clip.duration);
                 c.spoiler.update_at(WindowCtl::SPOILER_RATE, dt, clip.duration);
+            }
+            // (the pop-up headlights, F-35036: the lamp controller's request - +2161 raise, +2162 lower - to the
+            // controller's open / close slot, taken only at the matching end, the byte cleared either way; then its update)
+            if let Some(clip) = c.model.light_flip.as_ref() {
+                // (test hook: MCLA_LIGHT_FLIP_TEST=1 raises the player's at any hour)
+                let req = if flip_test && c.is_player { Some(true) } else { c.flip_req.take() };
+                if let Some(open) = req {
+                    c.light_flip.request(open, clip.duration);
+                }
+                c.light_flip.update_at(WindowCtl::SPOILER_RATE, dt, clip.duration);
             }
         }
         // (diagnostics, N-VP-3: MCLA_WHEEL_GROUND="<update>[;x,y,z,R...]" prints at that update the
@@ -6236,9 +6284,15 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 // (the add-on gauge's bones are its own skeleton's: moved about its placement)
                 if k == 2 { d.iter().map(|x| c.model.needle_place * *x * c.model.needle_place.inverse()).collect() } else { d }
             }).unwrap_or_default());
+            // (the pop-up headlights' bones are the headlight part's own skeleton's: moved about its placement)
+            let flip_d: Vec<Mat4> = c.model.light_flip.as_ref().map(|cl| {
+                cl.deltas(c.light_flip.clip_time(cl.duration)).iter().map(|x| c.model.flip_place * *x * c.model.flip_place.inverse()).collect()
+            }).unwrap_or_default();
             for (k, pb) in c.part_bindings.iter().enumerate() {
                 let parts = &c.state.parts;
                 let pm = match k {
+                    // (a bone of the pop-up headlights)
+                    n if n + 3 >= FLIP_GROUP as usize => flip_d.get(n + 3 - FLIP_GROUP as usize).map_or(m, |d| m * *d),
                     // (the dent groups: hood_wide on the hood's pose, the others the body's)
                     // (a suspension bone: its local is the vehSuspension's M as F-98654 copies it - the w words as a 3x4's)
                     n if n + 3 >= SUSP_GROUP as usize => {
@@ -6680,6 +6734,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
             // neutral hold 0 there. Not switched by +597.)
             let shift_on = shift_in.is_some() && t.shift;
             a.shift = traffic_ease(a.shift, shift_on, dt);
+            // (the lamp set's byte for the pop-up headlights' controller, F-35036 takes it)
+            c.flip_req = Some(t.set_byte == 2161);
         }
     }
 
@@ -9019,8 +9075,8 @@ mod roof_tests {
 
 /// The dmgParams of a set-up car's draw group (`DMG_BODY`): the hood (3, DENT_GROUP + 4) the hood's; a bumper (5 / 6,
 /// DENT_GROUP + 2 / + 3) its own while the tune moves it (`movement` = [front +184, rear +188, ..]); conv_topup
-/// (ROOF_GROUP), conv_top (ROOF_GROUP + 2), the blower (TURN_GROUP + 2 / + 3) and DENT_GROUP none; a motorcycle none;
-/// the rest the body's.
+/// (ROOF_GROUP), conv_top (ROOF_GROUP + 2), the blower (TURN_GROUP + 2 / + 3), DENT_GROUP and the suspension's none; a
+/// motorcycle none; the rest the body's (the pop-up headlights, slot 11, too).
 pub fn dmg_params(group: u32, bike: bool, movement: [u32; 4]) -> [f32; 4] {
     if bike {
         return DMG_NONE;
@@ -9032,7 +9088,7 @@ pub fn dmg_params(group: u32, bike: bool, movement: [u32; 4]) -> [f32; 4] {
         g if g == DENT_GROUP + 2 => if movement[1] != 0 { DMG_BUMPER_R } else { DMG_BODY },
         6 => if movement[0] != 0 { DMG_BUMPER_F } else { DMG_BODY },
         g if g == DENT_GROUP + 3 => if movement[0] != 0 { DMG_BUMPER_F } else { DMG_BODY },
-        g if g == ROOF_GROUP || g == ROOF_GROUP + 2 || g == TURN_GROUP + 2 || g == TURN_GROUP + 3 || g == DENT_GROUP || g >= SUSP_GROUP => DMG_NONE,
+        g if g == ROOF_GROUP || g == ROOF_GROUP + 2 || g == TURN_GROUP + 2 || g == TURN_GROUP + 3 || g == DENT_GROUP || (SUSP_GROUP..FLIP_GROUP).contains(&g) => DMG_NONE,
         _ => DMG_BODY,
     }
 }

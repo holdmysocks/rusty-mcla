@@ -648,8 +648,9 @@ pub struct CarSounds {
     steam: [Option<Handle>; 2],
     /// the last window event heard (damagemap::CarDamage::glass)
     glass_seen: Option<u64>,
-    /// the side windows' motors (left, right) and the auto spoiler's: the car's ANIM_PACKAGE +26 / +30 / +50
-    window_snd: [AnimSound<Handle>; 5],
+    /// the side windows' motors (left, right), the auto spoiler's, the roof's hatch and top and the pop-up headlights': the
+    /// car's ANIM_PACKAGE +26 / +30 / +50 / +34 / +38 / +42
+    window_snd: [AnimSound<Handle>; 6],
 }
 
 impl CarSounds {
@@ -1529,8 +1530,8 @@ impl CarSounds {
     /// A window's hit sum passing 1 or 2 (F-66214 -> `F-45199` on the car's sound entity): the
     /// entity's GLOBAL_CAR_PARTICLES (+1256) +18 - CAR_BANGERS_GLASS_LARGE - once at the window's place,
     /// 0 dB, LPF field 23900, flags 4; heard whether or not the car is drawn.
-    pub fn windows(&mut self, lib: &mut SoundLib, ctl: &[crate::vehicles::WindowCtl; 2], spoiler: &crate::vehicles::WindowCtl, roof: &crate::vehicles::RoofCtl, pos: Vec3, rot: glam::Quat) {
-        for (w, c) in self.window_snd.iter_mut().zip(ctl.iter().chain([spoiler, &roof.hatch, &roof.top])) {
+    pub fn windows(&mut self, lib: &mut SoundLib, ctl: &[crate::vehicles::WindowCtl; 2], spoiler: &crate::vehicles::WindowCtl, roof: &crate::vehicles::RoofCtl, flip: &crate::vehicles::WindowCtl, pos: Vec3, rot: glam::Quat) {
+        for (w, c) in self.window_snd.iter_mut().zip(ctl.iter().chain([spoiler, &roof.hatch, &roof.top, flip])) {
             // (the request's place is a pointer to the tracker's +48, the part's place under the car's matrix this frame)
             let Some(at) = w.obj.map(|o| o.at) else { continue };
             let req = Req { player: self.player, occluder: self.occ, ..Req::at(pos + rot * at) };
@@ -2550,7 +2551,7 @@ impl Fleet {
                 s.damage_parts(lib, &p.state.parts);
                 s.glass(lib, &p.state.dmg, p.state.pos, p.state.rot);
                 s.debris(lib, &p.state.dmg, p.state.pos, p.state.rot);
-                s.windows(lib, &p.windows, &p.spoiler, &p.roof, p.state.pos, p.state.rot);
+                s.windows(lib, &p.windows, &p.spoiler, &p.roof, &p.light_flip, p.state.pos, p.state.rot);
                 // a police car's horn button chirps the siren (F-44589)
                 if (p.cop || ctl.police_class) && ctl.horn {
                     log::debug!("audio: the police car's horn button - the siren alert (slot free: {})", free(lib, &s.siren));
@@ -2739,7 +2740,7 @@ impl Fleet {
                 s.damage_parts(lib, &c.state.parts);
                 s.glass(lib, &c.state.dmg, c.state.pos, c.state.rot);
                 s.debris(lib, &c.state.dmg, c.state.pos, c.state.rot);
-                s.windows(lib, &c.windows, &c.spoiler, &c.roof, c.state.pos, c.state.rot);
+                s.windows(lib, &c.windows, &c.spoiler, &c.roof, &c.light_flip, c.state.pos, c.state.rot);
                 if c.cop && !c.goon {
                     if stop_all {
                         s.siren_stop(lib);
@@ -3032,10 +3033,10 @@ impl AnimObj {
 /// The side windows', the auto spoiler's and the convertible roof's objects of a car: its VP_ object's +58 is its
 /// ANIM_PACKAGE, whose +26 / +30 are VEH_ANIM_WINDOW_LEFT / RIGHT (F-53023; every car's package names the _DEFAULT ones),
 /// +50 the spoiler's (VEH_ANIM_SPOILER on the Murcielago's, _SHORT on the R8's, none on the others), +34 the roof's
-/// hatch player's (+480, `clamshell`) and +38 its top's (+576, `skinned_top`).
-fn window_objects(lib: &SoundLib, def: &[u8]) -> [Option<AnimObj>; 5] {
+/// hatch player's (+480, `clamshell`) and +38 its top's (+576, `skinned_top`); +42 the pop-up headlights' (+672, `light_flip`).
+fn window_objects(lib: &SoundLib, def: &[u8]) -> [Option<AnimObj>; 6] {
     let pkg = lib.game.get(be_u32(def, 58));
-    [26, 30, 50, 34, 38].map(|at| pkg.and_then(|p| lib.game.get(be_u32(p, at))).and_then(AnimObj::read))
+    [26, 30, 50, 34, 38, 42].map(|at| pkg.and_then(|p| lib.game.get(be_u32(p, at))).and_then(AnimObj::read))
 }
 
 /// What a part's sound player asks of the voices: a one-shot (F-55796), a loop into the part's handle (F-30971),

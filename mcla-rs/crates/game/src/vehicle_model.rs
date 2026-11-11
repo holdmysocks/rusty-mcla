@@ -2037,6 +2037,41 @@ mod tests {
         assert!(!front.is_empty() || !rear.is_empty());
     }
 
+    /// Which part files carry the pop-up headlights' `light_flip` / the stereo's `stereo_open` (played by the controllers
+    /// D+672 / D+768 on the part's own skeleton, F-75243).
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn part_clips() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let assets = crate::assets::Assets::new(&dir);
+        let root = std::path::Path::new(&dir).join("resources/vehicle");
+        let mut cars: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        cars.sort();
+        for p in cars {
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            let Ok(car) = super::load_car(&assets, &p) else { continue };
+            let mut seen = std::collections::HashSet::new();
+            for pt in car.parts.iter() {
+                if !seen.insert(pt.file.clone()) {
+                    continue;
+                }
+                let Ok(res) = super::load_resource_file(&pt.file) else { continue };
+                for clip in ["light_flip", "stereo_open"] {
+                    let Some(a) = mcla_formats::rage::anim::animation_by_name(&res, clip) else { continue };
+                    let on = pt.skeleton.as_ref().and_then(|sk| super::BoneClip::load(&res, sk, clip)).map(|c| (c.bones.len(), pt.mesh_tag.iter().any(|&t| pt.skeleton.as_ref().unwrap().bone_by_tag(t).is_some_and(|b| c.bones.contains(&b)))));
+                    println!("{name} {} base {} {clip} {:.4} s {} frames {} tracks, own skeleton (bones, mesh on them) {on:?}", pt.primary, pt.is_base, a.duration, a.frames, a.tracks.len());
+                    if let Some(c) = pt.skeleton.as_ref().and_then(|sk| super::BoneClip::load(&res, sk, clip)) {
+                        let turn = |t: f32| c.deltas(t).iter().map(|d| {
+                            let (_, r, tr) = d.to_scale_rotation_translation();
+                            format!("{:.1}deg/{:.3}m", r.to_axis_angle().1.to_degrees(), tr.length())
+                        }).collect::<Vec<_>>().join(" ");
+                        println!("    t=0: {}\n    t=end: {}", turn(0.0), turn(c.duration));
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
     fn needle_clips() {
