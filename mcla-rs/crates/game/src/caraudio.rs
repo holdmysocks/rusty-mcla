@@ -3684,7 +3684,8 @@ mod window_sound_tests {
             let r = |k: usize| Vec3::from_array([0, 1, 2].map(|j| f32::from_bits(w[2 + 3 * k + j])));
             let m = Mat4::from_cols(r(0).extend(0.0), r(1).extend(0.0), r(2).extend(0.0), r(3).extend(1.0));
             let obj = objs[w[0] as usize];
-            let (mut ctl, mut snd, mut log) = (WindowCtl::default(), AnimSound::new(Some(obj)), Log(Vec::new(), 0));
+            // (the recorded cases start with the controller already closed, state 1 time 0: the harness ran its first update)
+            let (mut ctl, mut snd, mut log) = (WindowCtl { state: 1, time: 0.0 }, AnimSound::new(Some(obj)), Log(Vec::new(), 0));
             let mut updated = false;
             let toks: Vec<&str> = run.split_whitespace().collect();
             let mut i = 0;
