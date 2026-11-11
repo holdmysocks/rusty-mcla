@@ -16952,6 +16952,22 @@ mod tests {
     }
 
     /// `career_game` with the race table and the race definitions read.
+    /// Every delivery's set-up (the race's CarConfigName, which its script loads onto the player) is on the disc and reads.
+    #[test]
+    fn delivery_setups_load() {
+        let dir = data_dir();
+        let defs = crate::races::load(&dir);
+        let dl: Vec<_> = defs.iter().filter(|d| d.race_type == "Delivery").collect();
+        if dl.is_empty() {
+            return;
+        }
+        for d in dl {
+            let f = crate::render::car_lamps::setup_file(std::path::Path::new(&dir), &d.car_config).unwrap_or_else(|| panic!("{} {}", d.id, d.car_config));
+            assert!(setup_parts(&std::fs::read(f).unwrap()).is_some(), "{}", d.car_config);
+            assert!(d.car_config.to_ascii_lowercase().ends_with(&d.car), "{} {}", d.car_config, d.car);
+        }
+    }
+
     /// TournamentCore's own race set-up (the script's code, pc 0x1c6 and 0x1f0): push 4 -> +3080, push 3 -> +3084 = `TOURNAMENT_OPPONENTS`.
     #[test]
     fn tournament_core_sets_three_opponents() {

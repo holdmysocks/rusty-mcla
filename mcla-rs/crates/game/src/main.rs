@@ -13998,6 +13998,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // `pyback_plr_vp_buk_grandnational_87`, PaybackCore 0x26; the run's later
                     // legs go on in it as it stands)
                     let s18_tt = s18_tt.or_else(|| (def.race_type == "Payback").then(|| (mc4::PAYBACK_PLAYER.0.to_string(), mc4::PAYBACK_PLAYER.1.to_string(), 0.0)));
+                    // (a delivery's car is its race's set-up: GetCarConfigName -> mcCarConfig_Load -> Racer_ChangeCarByConfig on
+                    // the player, Hangouts/0x37c63b19 0x15fb..0x1627 - its paint, parts and performance)
+                    let s18_tt = s18_tt.or_else(|| (def.race_type == "Delivery" && !def.car.is_empty() && !def.car_config.is_empty()).then(|| (def.car.clone(), def.car_config.clone(), 0.0)));
                     let s19d_keep = def.race_type == "Payback" && self.game.borrowed && self.vehicles.player().map_or(false, |c| c.model.name.eq_ignore_ascii_case(mc4::PAYBACK_PLAYER.0));
                     let s18_car = match s18_tt.as_ref() {
                         Some((car, _, _)) => car.clone(),

@@ -31,6 +31,10 @@ pub struct RaceDef {
     /// the record holds a global byte (7 in the image and never written; read back from all 227 records of the running
     /// original), without one 0. ARCADE's NUMBER OF OPPONENTS row is limited by it.
     pub opp_allowed: u8,
+    /// CarConfigName as the original's record +99 keeps it (a copy of at most 31 characters, F-95490): the set-up a
+    /// delivery's script loads and puts the player in (Hangouts/0x37c63b19: RaceDescription_GetCarConfigName ->
+    /// mcCarConfig_Load -> Racer_ChangeCarByConfig).
+    pub car_config: String,
     pub dev_only: bool,
     /// time limits per difficulty (Easy, Medium, Hard, Impossible); 0 = none
     pub target_times: Vec<f32>,
@@ -147,6 +151,7 @@ fn parse(text: &str) -> Vec<RaceDef> {
             "GoalTargetTime" => r.goal_time = f(0),
             "TargetTime" => r.target_times.push(f(0)),
             "CarConfigName" => {
+                r.car_config = vals.first().map_or(String::new(), |v| v.chars().take(31).collect());
                 let v = vals.join(" ").to_ascii_lowercase();
                 if let Some(i) = v.find("vp") {
                     r.car = v[i..].to_string();
@@ -247,5 +252,8 @@ mod opp_allowed_tests {
         }
         let r = &super::parse("game/Race/x/Ordered/b\n{\nRaceType Ordered\n}\n")[0];
         assert_eq!(r.opp_allowed, 0);
+        // (CarConfigName: the record keeps the name as it is, at most 31 characters; the port's `car` is the model's part)
+        let r = &super::parse("game/Race/x/Delivery/c\n{\nRaceType Delivery\nCarConfigName   Delivery_vp_am_vantage_07\n}\n")[0];
+        assert_eq!((r.car_config.as_str(), r.car.as_str()), ("Delivery_vp_am_vantage_07", "vp_am_vantage_07"));
     }
 }
