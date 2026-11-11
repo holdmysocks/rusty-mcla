@@ -1,5 +1,6 @@
 //! wgpu renderer: device setup, static-geometry pipeline, texture cache.
 
+pub mod aniso;
 pub mod car_lamps;
 pub mod mb;
 pub mod ms;
@@ -1393,6 +1394,9 @@ pub struct Gpu {
     /// the city pipelines' four groups (globals, textures, material, object)
     pub globals_layout: wgpu::BindGroupLayout,
     pub tex_layout: wgpu::BindGroupLayout,
+    /// a draw's own sampler by the code's value field (render/aniso.rs: none, 2:1, 4:1, 16:1) and its fetch masks (0 .. 15)
+    pub own_samplers: [wgpu::Sampler; 4],
+    pub own_masks: Vec<wgpu::Buffer>,
     pub mat_layout: wgpu::BindGroupLayout,
     pub mat_bgs: HashMap<u32, wgpu::BindGroup>,
     pub obj_layout: wgpu::BindGroupLayout,
@@ -2286,7 +2290,10 @@ impl Gpu {
                     ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
                     count: None,
                 },
-                // (binding 1, the sampler, is in group 0: globals binding 16 / shadow binding 1 / sky hat binding 1)
+                // (the texture sampler is in group 0: globals binding 15 / 16, shadow binding 1, sky hat binding 1. Binding 1 here is the
+                // draw's own sampler, binding 5 which fetches take it: a car effect's own anisotropy, render/aniso.rs)
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry { binding: 5, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -2307,6 +2314,27 @@ impl Gpu {
                 },
             ],
         });
+        // (a draw's own sampler, the material sampler's state 9 that F-15464 lays over the default table: render/aniso.rs.
+        // Index 0, no own value, is never read: its mask is 0)
+        let own_samplers = aniso::OWN_MAX.map(|a| {
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("own aniso"),
+                address_mode_u: wgpu::AddressMode::Repeat,
+                address_mode_v: wgpu::AddressMode::Repeat,
+                address_mode_w: wgpu::AddressMode::Repeat,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::FilterMode::Linear,
+                anisotropy_clamp: a,
+                ..Default::default()
+            })
+        });
+        let own_masks: Vec<wgpu::Buffer> = (0u32..16)
+            .map(|m| {
+                let w = [m & 1, (m >> 1) & 1, (m >> 2) & 1, (m >> 3) & 1];
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("own aniso mask"), contents: bytemuck::cast_slice(&w), usage: wgpu::BufferUsages::UNIFORM })
+            })
+            .collect();
         let mat_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("mat layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -3052,6 +3080,8 @@ impl Gpu {
             lamp_data,
             globals_layout: globals_layout.clone(),
             tex_layout,
+            own_samplers,
+            own_masks,
             mat_layout,
             mat_bgs,
             obj_layout,
@@ -4112,19 +4142,26 @@ impl Gpu {
     }
 
     pub fn texture_bind_group(&mut self, diffuse: &Arc<GpuTexture>, second: &Arc<GpuTexture>, k0: u32, k1: u32) -> Arc<wgpu::BindGroup> {
+        self.texture_bind_group_c(diffuse, second, k0, k1, 0)
+    }
+
+    /// `texture_bind_group` with a draw's own sampler code (render/aniso.rs).
+    pub fn texture_bind_group_c(&mut self, diffuse: &Arc<GpuTexture>, second: &Arc<GpuTexture>, k0: u32, k1: u32, code: u32) -> Arc<wgpu::BindGroup> {
         let third = self.clear_tex.clone();
-        self.texture_bind_group3(diffuse, second, &third, k0, k1, 0)
+        self.texture_bind_group3_c(diffuse, second, &third, k0, k1, 0, code)
     }
 
     /// A bind group of its own, kept out of `bind_cache`: for a texture made for one user (a licence plate), which then goes
     /// with its last holder - the cache keeps what it holds until the next `trim_textures` (GitHub #48: about 13 plates a second
     /// with the traffic, 512 x 256 RGBA each).
-    pub fn texture_bind_group_own(&self, diffuse: &GpuTexture, second: &GpuTexture) -> Arc<wgpu::BindGroup> {
+    pub fn texture_bind_group_own(&self, diffuse: &GpuTexture, second: &GpuTexture, code: u32) -> Arc<wgpu::BindGroup> {
         Arc::new(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.tex_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&diffuse.view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.own_samplers[((code >> 4) & 3) as usize]) },
+                wgpu::BindGroupEntry { binding: 5, resource: self.own_masks[(code & 15) as usize].as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&second.view) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&self.clear_tex.view) },
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&self.clear_tex.view) },
@@ -4135,20 +4172,32 @@ impl Gpu {
     /// Three-texture material (ground shaders: diffuse, decal atlas, grime).
     /// The sky dome's textures (see `skyhat::SkyHat::bind`).
     pub fn bind_sky_hat(&mut self, stars: &GpuTexture, galaxy: &GpuTexture, detail: &GpuTexture, noise1: &GpuTexture) {
-        self.sky_hat.bind(&self.device, &self.tex_layout, stars, galaxy, detail, noise1, &self.clear_tex);
+        self.sky_hat.bind(&self.device, &self.tex_layout, (&self.own_samplers[0], &self.own_masks[0]), stars, galaxy, detail, noise1, &self.clear_tex);
         // (the reflection pass draws the dome too: the Perlin pass's target and the detail noise)
         self.refl_bg = make_refl_bg(&self.device, &self.refl_layout, &self.refl_buf, &self.sky_hat.buf, &self.sky_hat.perlin_view, &detail.view, &self.sampler);
     }
 
     pub fn texture_bind_group3(&mut self, diffuse: &Arc<GpuTexture>, second: &Arc<GpuTexture>, third: &Arc<GpuTexture>, k0: u32, k1: u32, k2: u32) -> Arc<wgpu::BindGroup> {
+        self.texture_bind_group3_c(diffuse, second, third, k0, k1, k2, 0)
+    }
+
+    /// `texture_bind_group3` with a draw's own sampler code (render/aniso.rs).
+    #[allow(clippy::too_many_arguments)]
+    pub fn texture_bind_group3_c(&mut self, diffuse: &Arc<GpuTexture>, second: &Arc<GpuTexture>, third: &Arc<GpuTexture>, k0: u32, k1: u32, k2: u32, code: u32) -> Arc<wgpu::BindGroup> {
         let fourth = self.clear_tex.clone();
-        self.texture_bind_group4(diffuse, second, third, &fourth, k0, k1, k2, 0)
+        self.texture_bind_group4_c(diffuse, second, third, &fourth, k0, k1, k2, 0, code)
     }
 
     /// Four-texture material (terrain: channel map and the three textures it mixes).
     #[allow(clippy::too_many_arguments)]
     pub fn texture_bind_group4(&mut self, diffuse: &Arc<GpuTexture>, second: &Arc<GpuTexture>, third: &Arc<GpuTexture>, fourth: &Arc<GpuTexture>, k0: u32, k1: u32, k2: u32, k3: u32) -> Arc<wgpu::BindGroup> {
-        let k2 = k2 ^ k3.rotate_left(7);
+        self.texture_bind_group4_c(diffuse, second, third, fourth, k0, k1, k2, k3, 0)
+    }
+
+    /// `texture_bind_group4` with a draw's own sampler code (render/aniso.rs; 0 = every fetch through the global sampler).
+    #[allow(clippy::too_many_arguments)]
+    pub fn texture_bind_group4_c(&mut self, diffuse: &Arc<GpuTexture>, second: &Arc<GpuTexture>, third: &Arc<GpuTexture>, fourth: &Arc<GpuTexture>, k0: u32, k1: u32, k2: u32, k3: u32, code: u32) -> Arc<wgpu::BindGroup> {
+        let k2 = k2 ^ k3.rotate_left(7) ^ code.wrapping_mul(0x9E37_79B1);
         if let Some((b, _)) = self.bind_cache.get(&(k0, k1, k2)) {
             return b.clone();
         }
@@ -4157,6 +4206,8 @@ impl Gpu {
             layout: &self.tex_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&diffuse.view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.own_samplers[((code >> 4) & 3) as usize]) },
+                wgpu::BindGroupEntry { binding: 5, resource: self.own_masks[(code & 15) as usize].as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&second.view) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&third.view) },
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&fourth.view) },

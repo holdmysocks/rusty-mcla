@@ -512,6 +512,23 @@ struct LightSet {
 @group(1) @binding(2) var t_second: texture_2d<f32>;
 @group(1) @binding(3) var t_third: texture_2d<f32>;
 @group(1) @binding(4) var t_fourth: texture_2d<f32>;
+// (a draw's own sampler: its car effect's maximum anisotropy, state 9, which the sampler set F-15464 lays over the
+// default F-23692 writes; `own_mask` says which fetches take it - x the first texture, y the second, z the third (the
+// livery), w the scrape map. All zero for every draw whose effect declares none: render/aniso.rs)
+@group(1) @binding(1) var s_own: sampler;
+@group(1) @binding(5) var<uniform> own_mask: vec4<u32>;
+fn own_s(t: texture_2d<f32>, on: u32, uv: vec2<f32>) -> vec4<f32> {
+    if (on != 0u) { return textureSample(t, s_own, uv); }
+    return textureSample(t, s_diffuse, uv);
+}
+fn own_sb(t: texture_2d<f32>, on: u32, uv: vec2<f32>, b: f32) -> vec4<f32> {
+    if (on != 0u) { return textureSampleBias(t, s_own, uv, b); }
+    return textureSampleBias(t, s_diffuse, uv, b);
+}
+fn own_sg(t: texture_2d<f32>, on: u32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
+    if (on != 0u) { return textureSampleGrad(t, s_own, uv, dx, dy); }
+    return textureSampleGrad(t, s_diffuse, uv, dx, dy);
+}
 
 struct Material {
     mode: u32,     // see MatMode in render/mod.rs
@@ -2033,8 +2050,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     // dot(plane.xyz, world) + plane.w in o0.w and PS_ParallaxRubber2 8 kills where it is above 0, so a tyre does not show
     // through its wing above mcCarModelTune's FenderClip; a zero plane - traffic, parked cars - never kills)
     if (mat.mode == 18u && in.uv1.x > 9.5 && obj.dents[3].y > 0.5 && dot(obj.dents[5].xyz, in.wpos) + obj.dents[5].w > 0.0) { discard; }
-    var albedo = textureSampleBias(t_diffuse, s_diffuse, in.uv0, select(0.0, -1.0, badge_px));
-    if (tyre_grad) { albedo = textureSampleGrad(t_diffuse, s_diffuse, in.uv0, vec2<f32>(obj.dents[3].z, 0.0), vec2<f32>(obj.dents[3].z, 0.0)); }
+    var albedo = own_sb(t_diffuse, own_mask.x, in.uv0, select(0.0, -1.0, badge_px));
+    if (tyre_grad) { albedo = own_sg(t_diffuse, own_mask.x, in.uv0, vec2<f32>(obj.dents[3].z, 0.0), vec2<f32>(obj.dents[3].z, 0.0)); }
     // (the cars' maps: no car program's fetch constant asks for gamma - every DiffuseSampler, NormalSampler,
     // IllumMapSampler, PlateBgSampler, FontSampler of the recorded frame has word 0 bits 2 - 9 clear - so the
     // program filters the stored texels and its own rule follows (PS_Plate: ^1.6 after the filter). vehicles.rs
@@ -2335,11 +2352,11 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             second_uv = (second_uv + vec2<f32>(frame - nu * row, row - nv * floor(row / nv))) / vec2<f32>(nu, nv);
         }
     }
-    var second = textureSample(t_second, s_diffuse, second_uv);
+    var second = own_s(t_second, own_mask.y, second_uv);
     // (the tyre's maps: as the lettering map above, `tyre_grad`)
     if (tyre_grad) {
         let tg = vec2<f32>(obj.dents[3].z, 0.0);
-        second = textureSampleGrad(t_second, s_diffuse, in.uv0, tg, tg);
+        second = own_sg(t_second, own_mask.y, in.uv0, tg, tg);
     }
     if (car_raw_tex) { second = vec4<f32>(srgb_decode(second.rgb), second.a); }
     // (the story characters' maps - `char_shade`; read here, where the control flow is uniform: the
@@ -2731,12 +2748,12 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
         let s6 = in.dmg.x;
         var k6 = 0.0;
         if (s6 > 0.0) {
-            let sc = textureSample(t_scrape, s_diffuse, in.uv0 * vec2<f32>(4.0, 3.0));
+            let sc = own_s(t_scrape, own_mask.w, in.uv0 * vec2<f32>(4.0, 3.0));
             k6 = clamp(2.0 * sc.a * (0.75 * s6 + 0.25 * select(0.0, 1.0, s6 > 0.125)), 0.0, 1.0);
             rubbed = sc.g * s6;
         }
         // livery: the vinyl texture lies in the body's unwrap (first UV set)
-        var vinyl = textureSample(t_third, s_diffuse, in.uv0);
+        var vinyl = own_s(t_third, own_mask.z, in.uv0);
         // (an unpainted area - a part the quick fix put on, area_a.w 2 - takes the all-zero blank_dmg in the
         // vinyl's place, F-13513)
         let v_area = paint_area(in.uv2.y);
@@ -3714,7 +3731,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             let cf_old = g.params.w > 519.5 && g.params.w < 520.5;
             var n_cf = normalize(mat3x3<f32>(normalize(obj.model[0].xyz), normalize(obj.model[1].xyz), normalize(obj.model[2].xyz)) * n);
             if (cf_old) { n_cf = n; }
-            var wv_cf = textureSample(t_second, s_diffuse, in.uv0);
+            var wv_cf = own_s(t_second, own_mask.y, in.uv0);
             if (cf_old || (g.params.w > 520.5 && g.params.w < 521.5) || textureDimensions(t_second).x < 8u) { wv_cf = vec4<f32>(0.5, 0.5, 1.0, 0.5); }
             if (g.params.w > 521.5 && g.params.w < 522.5) { return vec4<f32>(to_scene(n_cf * 0.5 + 0.5), 1.0); }
             if (g.params.w > 522.5 && g.params.w < 523.5) { return vec4<f32>(to_scene(wv_cf.rgb), 1.0); }

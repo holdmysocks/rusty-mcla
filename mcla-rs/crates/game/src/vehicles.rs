@@ -245,6 +245,7 @@ const PARK_NO_GROUND: f32 = -2.0;
 
 /// The brake model in `dir`, as modelled: `brake_place` puts it behind the wheel.
 fn load_brakes(gpu: &mut Gpu, world: &mut World, dir: &Path) -> Option<BrakeModel> {
+    crate::render::aniso::init_from(dir);
     let (mut r63, mut r83) = (None, None);
     for e in std::fs::read_dir(dir).ok()?.flatten() {
         let p = e.path();
@@ -324,7 +325,7 @@ fn load_brakes(gpu: &mut Gpu, world: &mut World, dir: &Path) -> Option<BrakeMode
         });
         let caliper_prog = lower == "brakecaliper" && base_color.is_some();
         let (zone, paint, own_tex) = if is_rotor { (8.0, [255u8, 255, 255], 0.0) } else if caliper_prog { (9.0, base_color.unwrap().map(|x| (x.clamp(0.0, 1.0) * 255.0).round() as u8), 2.0) } else if lower.contains("rotor") && plain { (9.0, [150, 6, 6], 0.0) } else { (9.0, [255, 255, 255], 1.0) };
-        let mut b = mesh_to_batch_xf(gpu, mesh, &sname, mode, tex.clone(), tex, key, key, xf);
+        let mut b = mesh_to_batch_xf(gpu, mesh, &sname, mode, tex.clone(), tex, key, key, xf, [crate::render::aniso::ph::DIFFUSE; 2]);
         // (as on the rims the first colour channel is baked occlusion, the others empty:
         // the generic path would draw the brake black)
         let verts: Vec<Vertex> = (0..mesh.positions.len())
@@ -1670,7 +1671,7 @@ fn car_mode(shader: &str) -> MatMode {
 }
 
 fn mesh_to_batch(gpu: &mut Gpu, mesh: &mcla_formats::rage::geometry::Mesh, sname: &str, mode: MatMode, d: Arc<GpuTexture>, s2: Arc<GpuTexture>, k0: u32, k1: u32) -> GpuBatch {
-    mesh_to_batch_xf(gpu, mesh, sname, mode, d, s2, k0, k1, Mat4::IDENTITY)
+    mesh_to_batch_xf(gpu, mesh, sname, mode, d, s2, k0, k1, Mat4::IDENTITY, [0; 2])
 }
 
 /// The stored tangent word's sign w (raw 1 = +1, raw 3 = -1; the game's programs hand the pixel
@@ -1687,8 +1688,10 @@ fn car_binormal_mark(mesh: &mcla_formats::rage::geometry::Mesh, i: usize, nrm: V
     }
 }
 
-fn mesh_to_batch_xf(gpu: &mut Gpu, mesh: &mcla_formats::rage::geometry::Mesh, sname: &str, mode: MatMode, d: Arc<GpuTexture>, s2: Arc<GpuTexture>, k0: u32, k1: u32, xf: Mat4) -> GpuBatch {
-    let bind = gpu.texture_bind_group(&d, &s2, k0, k1);
+/// `slots`: the samplers (name hashes) the two textures stand for, for the effect's own anisotropy (render/aniso.rs).
+#[allow(clippy::too_many_arguments)]
+fn mesh_to_batch_xf(gpu: &mut Gpu, mesh: &mcla_formats::rage::geometry::Mesh, sname: &str, mode: MatMode, d: Arc<GpuTexture>, s2: Arc<GpuTexture>, k0: u32, k1: u32, xf: Mat4, slots: [u32; 2]) -> GpuBatch {
+    let bind = gpu.texture_bind_group_c(&d, &s2, k0, k1, crate::render::aniso::code(sname, [slots[0], slots[1], 0, 0]));
     let n = mesh.positions.len();
     let mut verts = Vec::with_capacity(n);
     let identity = xf == Mat4::IDENTITY;
@@ -1784,6 +1787,12 @@ fn carbon_weave(gpu: &mut Gpu, world: &World) -> (Arc<GpuTexture>, u32) {
 /// = window_detail_mask.dds (DetailMaskSampler: its alpha keeps the shards of a broken pane) and
 /// `__glassdmg` = glass_test.dds (GlassDmgSampler: the crack's normal in rgb, the crack in alpha) of
 /// cars/globaltex.list - as stored, not gamma-decoded (a normal map and masks). None when missing.
+/// A livery's draw code: CarPaintCustomizable's VinylSampler and ScrapeSampler declare their own anisotropy (render/aniso.rs).
+fn vinyl_aniso() -> u32 {
+    use crate::render::aniso::ph;
+    crate::render::aniso::code("CarPaintCustomizable", [0, 0, ph::VINYL, ph::SCRAPE])
+}
+
 fn glass_maps(gpu: &mut Gpu, world: &World) -> Option<((Arc<GpuTexture>, u32), (Arc<GpuTexture>, u32))> {
     let raw = |gpu: &mut Gpu, name: &str| -> Option<(Arc<GpuTexture>, u32)> {
         // (kept apart from a gamma-decoded upload of the same file)
@@ -2743,7 +2752,7 @@ impl Vehicles {
         let mut batch_window: Vec<u8> = Vec::new();
         let mut roof_skin: Vec<(usize, Vec<Vertex>, Vec<([u16; 4], [f32; 4])>)> = Vec::new();
         let mut lods: [(Vec<GpuBatch>, Vec<u8>); 2] = Default::default();
-        keys.sort_by_key(|k| (k.2 & !0x7000, k.0, k.1, k.2 & 0x7000));
+        keys.sort_by_key(|k| (k.2 & !0x7FC0, k.0, k.1, k.2 & 0x7FC0));
         if std::env::var("MCLA_WHEEL_DUMP").is_ok() {
             if let Some(h) = car.hubs {
                 // profile of the body over the front and rear wheel and at mid-car
@@ -2780,8 +2789,8 @@ impl Vehicles {
             // (the windows with the glass maps also carry the in-car program's noise as their third texture)
             let win_noise = if k.0 == mcla_formats::hash::joaat("window_detail_mask.dds") ^ 0x0052_4157 && acc.mode == MatMode::CarGlass { glass_noise(gpu, world) } else { None };
             let bind = match win_noise {
-                Some((t3, k2)) => gpu.texture_bind_group3(&acc.d, &acc.s2, &t3, k.0, k.1, k2),
-                None => gpu.texture_bind_group(&acc.d, &acc.s2, k.0, k.1),
+                Some((t3, k2)) => gpu.texture_bind_group3_c(&acc.d, &acc.s2, &t3, k.0, k.1, k2, (k.2 >> 6) & 63),
+                None => gpu.texture_bind_group_c(&acc.d, &acc.s2, k.0, k.1, (k.2 >> 6) & 63),
             };
             // (the skinned roof's vertices are written again while it moves: `Vehicles::upload_uniforms`)
             let skinned = !acc.skin.is_empty() && acc.skin.len() == acc.verts.len() && (k.2 >> 24) & 3 == 0;
@@ -2795,6 +2804,10 @@ impl Vehicles {
             let (group, lod) = ((k.2 >> 16) as u8, ((k.2 >> 24) & 3) as usize);
             if group != 0 {
                 log::debug!("car {}: moving group {} (1/2 windows, 3 hood, 4 trunk, 5/6 bumpers) batch shader {} tris {}", car.name, group, acc.sname, acc.indices.len() / 3);
+            }
+            if std::env::var("MCLA_ANISO_LOG").is_ok() {
+                // (each draw's own-anisotropy code, render/aniso.rs: mask of the fetches, then the value field)
+                log::info!("aniso {} {}: mask {:04b} max {}", car.name, acc.sname, (k.2 >> 6) & 15, crate::render::aniso::OWN_MAX[((k.2 >> 10) & 3) as usize]);
             }
             let b = GpuBatch { shader: acc.sname, vb, ib, count: acc.indices.len() as u32, bind, mode: acc.mode, min: acc.min, max: acc.max, bucket: (k.2 >> 31) as u8, cull: ((k.2 >> 12) & 7) as u8, base_lens: (k.2 >> 15) & 1 != 0 };
             if lod == 0 {
@@ -2903,6 +2916,7 @@ impl Vehicles {
     /// that it can run on a worker thread (docs/PERFORMANCE.md 2026-10-27 (14)). The textures are found, and the
     /// batches made and uploaded, by `load_model_cfg` on the main thread.
     fn prep_car(car: &CarAsset, dir: &Path, cfg: &CarConfig) -> CarPrep {
+        crate::render::aniso::init_from(dir);
         let car_is_ambient = dir.file_name().map_or(false, |n| n.to_string_lossy().to_ascii_lowercase().starts_with("va_"));
         // (which colour group each zone of the cabin trim takes: the vehicle's own table, its .r83)
         let zone_table = crate::mc4::zone_groups_dir(dir);
@@ -3344,7 +3358,24 @@ impl Vehicles {
                 }
                 // (bit 15: a lamp lens of the base fragment, which the depth pass does not cast - `GpuBatch::base_lens`)
                 let base_lens = part.is_base && sname.eq_ignore_ascii_case("BumpedGlass");
-                let kbits = mode as u32 | cull << 12 | (base_lens as u32) << 15 | win_side << 16 | lod << 24;
+                // (bits 6 - 11: the material's own anisotropy, the effect's state 9 for the sampler behind each fetch -
+                // render/aniso.rs; the windows' second map is the glass damage map, the carbon weave the NormalSampler's)
+                let aniso_code = {
+                    use crate::render::aniso::ph;
+                    let tex_h = |n: &Option<String>| n.as_deref().and_then(|n| sh.and_then(|s| s.textures().find(|(_, t)| *t == n).map(|(h, _)| h))).unwrap_or(0);
+                    let (h0, h1) = if win_cand {
+                        (0, ph::GLASS_DMG)
+                    } else if plate {
+                        (ph::PLATE_BG, ph::PLATE_BG)
+                    } else if carbon {
+                        (tex_h(&dn), ph::NORMAL)
+                    } else {
+                        (tex_h(&dn), tex_h(&sn))
+                    };
+                    let (h2, h3) = if mode == MatMode::Paint { (ph::VINYL, ph::SCRAPE) } else { (0, 0) };
+                    crate::render::aniso::code(sname, [h0, h1, h2, h3])
+                };
+                let kbits = mode as u32 | aniso_code << 6 | cull << 12 | (base_lens as u32) << 15 | win_side << 16 | lod << 24;
                 // The draw bucket, header byte +0x09 of the shader (`Shader::bucket`): grmModel's draw (F-73936)
                 // draws a geometry only in the pass whose bucket number equals its shader's, and the traffic car's
                 // lit draw (F-73627) asks for bucket 0 in the main opaque pass (2 at LOD 2) and bucket 1 in the main
@@ -4211,7 +4242,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
         let tex = Arc::new(crate::render::create_rgba(&gpu.device, &gpu.queue, w, h, px, "vinyl"));
         let white = gpu.white.clone();
         let key = mcla_formats::hash::joaat(&format!("vinyl:{name}")) | 1;
-        let bind = gpu.texture_bind_group3(&white, &white, &tex, key, key, key);
+        let bind = gpu.texture_bind_group3_c(&white, &white, &tex, key, key, key, vinyl_aniso());
         self.vinyls.insert(name, Some(bind));
     }
 
@@ -4275,7 +4306,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     let tex = Arc::new(crate::render::create_rgba(&gpu.device, &gpu.queue, w, h, &px, "vinyl"));
                     let white = gpu.white.clone();
                     let key = mcla_formats::hash::joaat(&format!("vinyl:{name}")) | 1;
-                    gpu.texture_bind_group3(&white, &white, &tex, key, key, key)
+                    gpu.texture_bind_group3_c(&white, &white, &tex, key, key, key, vinyl_aniso())
                 });
                 log::info!("vehicles: livery {} {} ({:.0} ms)", name, if bind.is_some() { "loaded" } else { "not found" }, t_liv.elapsed().as_secs_f32() * 1000.0);
                 self.vinyls.insert(name.clone(), bind);
@@ -4372,7 +4403,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 let tex = crate::render::create_rgba_as(&gpu.device, &gpu.queue, w as u32, h as u32, &px, "plate", gamma);
                 PLATES_MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 // (its own bind group: the plate goes with the last car showing it, not at the cache's next trim)
-                let bind = gpu.texture_bind_group_own(&tex, &tex);
+                let bind = gpu.texture_bind_group_own(&tex, &tex, crate::render::aniso::code("LicensePlate", [crate::render::aniso::ph::PLATE_BG; 4]));
                 self.plates.insert(slot.clone(), (Arc::downgrade(&bind), Arc::new(tex)));
                 self.cars[i].plate = Some(bind);
             } else {
@@ -4784,6 +4815,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
         self.amb_pool_step();
         if self.data_root != world.assets.root {
             self.data_root = world.assets.root.clone();
+            crate::render::aniso::init_from(&self.data_root);
         }
         if let Some(nav) = world.nav.as_ref() {
             self.ride_traffic(nav, &world.collider, dt.min(1.0 / 30.0));
@@ -7845,8 +7877,8 @@ pub fn load_wheels_with(gpu: &mut Gpu, world: &mut World, rim_dir: &Path, tyre: 
                 log::info!("wheel texture src {} shader {} {:?} key {:08x} own {} {}x{}", src_i, sname, texname, k, own.is_some(), tex.width, tex.height);
             }
             let mut b = match tire_tex.as_ref().filter(|_| rubber) {
-                Some([s, n]) => mesh_to_batch_xf(gpu, mesh, &sname, mode, s.0.clone(), n.0.clone(), s.1, n.1, xf),
-                None => mesh_to_batch_xf(gpu, mesh, &sname, mode, tex.clone(), tex, k, k, xf),
+                Some([s, n]) => mesh_to_batch_xf(gpu, mesh, &sname, mode, s.0.clone(), n.0.clone(), s.1, n.1, xf, [crate::render::aniso::ph::DIFFUSE, crate::render::aniso::ph::NORMAL]),
+                None => mesh_to_batch_xf(gpu, mesh, &sname, mode, tex.clone(), tex, k, k, xf, [crate::render::aniso::ph::DIFFUSE; 2]),
             };
             if mode == MatMode::Rim || badge {
                 // rims need the baked occlusion (vertex colour alpha) the generic path drops; the badge, as
@@ -7903,7 +7935,7 @@ fn wheel_blur_disc(gpu: &mut Gpu, root: &Path, xf: Mat4) -> Option<GpuBatch> {
         return None;
     }
     let white = gpu.white.clone();
-    Some(mesh_to_batch_xf(gpu, &m, "BlackMatte", car_mode("BlackMatte"), white.clone(), white, 0, 0, xf))
+    Some(mesh_to_batch_xf(gpu, &m, "BlackMatte", car_mode("BlackMatte"), white.clone(), white, 0, 0, xf, [0; 2]))
 }
 
 /// `whl_backside` of vehicle/shared_utility (F-31291): its entity's two shaders in order (RimMain, BlackMatte)
@@ -7953,7 +7985,7 @@ fn wheel_backside(gpu: &mut Gpu, root: &Path, xf: Mat4) -> Vec<GpuBatch> {
         }
         let rim = sname.eq_ignore_ascii_case("RimMain");
         let white = gpu.white.clone();
-        let mut b = mesh_to_batch_xf(gpu, &m, sname, if rim { MatMode::Rim } else { car_mode(sname) }, white.clone(), white, 0, 0, xf);
+        let mut b = mesh_to_batch_xf(gpu, &m, sname, if rim { MatMode::Rim } else { car_mode(sname) }, white.clone(), white, 0, 0, xf, [0; 2]);
         if rim {
             // (as the rim's: the zone in uv1, the occlusion in the colour's alpha; uv2.y: its colours are the rim's x 0.125 -
             // F-94854 hands the entity the rim's hookups and its colours x 0.125, city.wgsl's PS_Multi branch)
