@@ -147,10 +147,19 @@ pub struct SteerOut {
     pub needle_scale2: f32,
     pub hold_ease: f32,
     pub hold_rate: f32,
+    /// a rider's (the gatherer's rider branch): the steering pair's rates, the hold and the rescale F-52244
+    pub bike: Option<RiderParts>,
 }
 
 impl SteerOut {
     pub fn apply(&self, d: &mut crate::steer_parts::SteerParts) {
+        if let Some(b) = self.bike {
+            d.rate = b.rate;
+            d.ease = b.ease;
+            (d.hold_ease, d.hold_rate) = b.hold;
+            d.rescale(b.scale);
+            return;
+        }
         d.needle_rate = self.needle_rate;
         d.needle_scale = self.needle_scale;
         d.needle_scale2 = self.needle_scale2;
@@ -361,7 +370,7 @@ impl CarAnim {
         }
         let out = self.gm.parts.map(|p| {
             self.parts = (p.f1128, p.f1132);
-            SteerOut { needle_rate: p.f1112, needle_scale: p.f1108, needle_scale2: p.f1156, hold_ease: p.f1148, hold_rate: p.f1152 }
+            SteerOut { needle_rate: p.f1112, needle_scale: p.f1108, needle_scale2: p.f1156, hold_ease: p.f1148, hold_rate: p.f1152, bike: None }
         });
         // (the driver's update F-83924: the anim update F-32205 - the machine, its clips, the pan smoother, the anim player's
         // update - is not run on a frame of no time (dt under 1e-6) while the replay stream records or plays (+76 0x80 /
@@ -720,6 +729,10 @@ struct Ride {
     /// the rider's anim player (`ride_step`) and its +112, the pan clip
     seq: da::Seq,
     pan_clip: Option<da::ClipId>,
+    /// the context words the riding states write (`RideCtx`) and the driver's +408 the gatherer eases (the driver's
+    /// constructor F-96481 and reset F-20325: 1; None = 1)
+    ctx: RideCtx,
+    drv408: Option<f32>,
 }
 
 /// The human rider's look at a racer beside him (the driver's +380 state; F-70536 with the test F-48336), which the gatherer
@@ -1088,6 +1101,135 @@ fn ride_update(s: St, i: &RideIn, ta: f32, o: &mut dyn RideSink) {
     }
 }
 
+/// The rider's context words the riding states write and the gatherer's rider branch reads (mcMotorcycleAnimMachine +28;
+/// `tools/rider_ctx_reference.py` runs every writer offline). Default: the context reset F-81756.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RideCtx {
+    /// +12: the machine's own flags (bit 3 while nos boosting or reversing on the throttle: the steering part's hold 7 / 10)
+    pub flags2: u32,
+    /// +24 / +28: the steering and the smoothed steering (the context step writes them each frame; the rescale keeps the
+    /// angle +64 x +28)
+    pub steer: f32,
+    pub smooth: f32,
+    /// +52: what the gatherer eases the driver's +408 toward
+    pub ease_to: f32,
+    /// +56 / +60: the steering part's slew and ease rates (+1140 / +1144)
+    pub smooth_k: [f32; 2],
+    /// +64: the steering scale (the part's +1136 = driver +408 x +64)
+    pub scale: f32,
+}
+
+impl Default for RideCtx {
+    fn default() -> Self {
+        RideCtx { flags2: 0, steer: 0.0, smooth: 0.0, ease_to: 1.0, smooth_k: [7.0, 20.0], scale: 1.0 }
+    }
+}
+
+/// mcAnimMachineConstantData +124 / +128 / +132 as its constructor F-40144 fills them: the riding smoothing rates and the
+/// steering scale.
+const RIDE_K: [f32; 2] = [2.0, 4.0];
+const RIDE_SCALE: f32 = 0.9;
+
+impl RideCtx {
+    /// F-34842: a new steering scale, the steering rescaled so the angle (+64 x +28) stays.
+    fn rescale(&mut self, s: f32) {
+        let q = self.scale / s;
+        self.scale = s;
+        self.steer *= q;
+        self.smooth *= q;
+    }
+
+    /// +52 = 1 - 0.9 w (fnmsubs), w the fast sweep's weight - 1 with the dev param `bikefakehispeed` (`dev`).
+    fn ease_to_speed(&mut self, speed: f32, dev: bool) {
+        let w = if dev { 1.0 } else { ride_speed_weight(speed) };
+        self.ease_to = -w.mul_add(0.9, -1.0);
+    }
+}
+
+/// The start's action F-88016: the steering scale to the tune's +132 (F-34842), the rates to +124 / +128 (and the jaw
+/// byte +45 = 0, `Machine::jaw_flap`'s).
+fn ride_ctx_start(c: &mut RideCtx) {
+    c.rescale(RIDE_SCALE);
+    c.smooth_k = RIDE_K;
+}
+
+/// The context half of a riding state's enter: cruise F-27733 the scale (F-34842), wheelie F-33885 +52 = 1, nos boost
+/// F-22152 sets +12 bit 3, reverse F-93384 clears it; the others write none.
+fn ride_ctx_enter(n: St, c: &mut RideCtx) {
+    match n {
+        St::Cruise => c.rescale(RIDE_SCALE),
+        St::Wheelie => c.ease_to = 1.0,
+        St::Nos => c.flags2 |= 8,
+        St::Reverse => c.flags2 &= !8,
+        _ => {}
+    }
+}
+
+/// The context half of a riding state's update (`x` = ctx+44, the phase input): cruise F-61324 (the burnouts' too) +52
+/// from the speed and the rates 1 / 3 while the remapped phase lies outside [0.124, 0.876] (a NaN inside), else the tune's;
+/// tuck F-77590 +52 and the tune's rates; endo F-14383 +52; stopped idle F-63745 the tune's rates; reverse F-30945 +12 bit 3
+/// while the throttle (ctx+92) is not below 0 (`bge`: a NaN sets it). The others write none.
+fn ride_ctx_update(s: St, c: &mut RideCtx, x: f32, throttle: f32, speed: f32, dev: bool) {
+    match s {
+        St::Cruise | St::BurnC | St::BurnL | St::BurnR => {
+            c.ease_to_speed(speed, dev);
+            let ph = ride_remap(x);
+            c.smooth_k = if ph < 0.124 || ph > 0.876 { [1.0, 3.0] } else { RIDE_K };
+        }
+        St::Tuck => {
+            c.ease_to_speed(speed, dev);
+            c.smooth_k = RIDE_K;
+        }
+        St::Endo => c.ease_to_speed(speed, dev),
+        St::Stopped => c.smooth_k = RIDE_K,
+        St::Reverse => {
+            if throttle < 0.0 {
+                c.flags2 &= !8;
+            } else {
+                c.flags2 |= 8;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The context half of a riding state's exit: nos boost's and reverse's F-64876 clear +12 bit 3.
+fn ride_ctx_exit(s: St, c: &mut RideCtx) {
+    if matches!(s, St::Nos | St::Reverse) {
+        c.flags2 &= !8;
+    }
+}
+
+/// What the gatherer F-28290 writes into a motorcycle's steering part (vehicle +84) on its rider branch (a driver without the
+/// steering wheel byte +370), for main.rs to hand the part before its next step.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RiderParts {
+    /// +1140 / +1144 = context +56 / +60
+    pub rate: f32,
+    pub ease: f32,
+    /// +1148 / +1152 from context +12: 25 / 20 (bit 2), 7 / 10 (bit 3), else 0 / 10
+    pub hold: (f32, f32),
+    /// the part's rescale F-52244 to driver +408 x context +64
+    pub scale: f32,
+}
+
+/// The gatherer's rider branch: the hold by context +12, the rates from +56 / +60, the driver's +408 eased toward
+/// context +52 (fma((+52 - p) dt, 9, p)) and the part rescaled to +408 x +64. Also whether the frame's shift (context
+/// +124) is zeroed: +408 inside (0.101, 0.999) - and, by the caller, |+1164 / +1136| above 0.501.
+fn rider_parts(c: &RideCtx, drv408: &mut f32, dt: f32) -> (RiderParts, bool) {
+    let hold = if c.flags2 & 4 != 0 {
+        (25.0, 20.0)
+    } else if c.flags2 & 8 != 0 {
+        (7.0, 10.0)
+    } else {
+        (0.0, 10.0)
+    };
+    let p = *drv408;
+    let n = crate::physics::exact::fma((c.ease_to - p) * dt, 9.0, p);
+    *drv408 = n;
+    (RiderParts { rate: c.smooth_k[0], ease: c.smooth_k[1], hold, scale: n * c.scale }, n < 0.999 && n > 0.101)
+}
+
 /// The rider machine's frame without the pose (the graph's transitions in the builder's order, the enters' timers and the
 /// crossfade they start, the cruise update's timer B): what `ride_pose` poses from. `time`: the clock the start's idle runs on.
 fn ride_state(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32) {
@@ -1116,6 +1258,7 @@ fn ride_state_to(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32, o:
     // IsBurnout, F-61324)
     let update = |r: &mut Ride, o: &mut dyn RideSink| {
         ride_update(r.state, i, r.timer_a, o);
+        ride_ctx_update(r.state, &mut r.ctx, i.x, i.throttle, i.speed, false);
         if matches!(r.state, St::Cruise | St::BurnC | St::BurnL | St::BurnR) && i.burnout {
             r.timer_b = 0.0;
         }
@@ -1124,6 +1267,7 @@ fn ride_state_to(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32, o:
     update(r, o);
     for _ in 0..3 {
         let Some(n) = next_of(r, o) else { break };
+        ride_ctx_exit(r.state, &mut r.ctx);
         match r.state {
             // (the stopped idle's exit F-63058: the pan back in)
             St::Stopped => o.cmd(RCmd::Pan(pan)),
@@ -1138,6 +1282,7 @@ fn ride_state_to(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32, o:
             St::Start => {
                 o.cmd(RCmd::Pan(pan));
                 o.cmd(RCmd::Play("drv_idle_low", 0.25, true, true));
+                ride_ctx_start(&mut r.ctx);
             }
             _ => {}
         }
@@ -1171,6 +1316,7 @@ fn ride_state_to(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32, o:
         // as the cruise left it - recorded 2026-11-05)
         r.pan = if n == St::Shift { r.pan && !ck } else { matches!(n, St::Cruise | St::Stopped | St::BurnC) && !ck && pan };
         ride_enter(n, ck, edge, pan, r.fidgets, i.speed, o);
+        ride_ctx_enter(n, &mut r.ctx);
         update(r, o);
     }
 }
@@ -2098,7 +2244,17 @@ impl Drivers {
             let mut by_machine = false;
             if let (true, Some(b)) = (s.bike, rig.bike.as_ref()) {
                 let ride = self.rides.entry(s.id).or_default();
-                let i = RideIn { ck: s.player && self.ckpt_view, ..s.ride };
+                let mut i = RideIn { ck: s.player && self.ckpt_view, ..s.ride };
+                // (the gatherer's rider branch, F-28290, before the machine: the steering part's rates, hold and scale
+                // from the context the states left last frame, the driver's +408 eased; the frame's shift is 0 while +408
+                // lies inside (0.101, 0.999) or the smoothed steering is above 0.501)
+                let mut d408 = ride.drv408.unwrap_or(1.0);
+                let (parts, mid) = rider_parts(&ride.ctx, &mut d408, dt);
+                ride.drv408 = Some(d408);
+                if mid || i.x.abs() > 0.501 {
+                    i.shift = 0;
+                }
+                self.steer_out.insert(s.uid, SteerOut { bike: Some(parts), ..SteerOut::default() });
                 // (the anim player's tree, as the car drivers'; MCLA_DRV_OLD or a pack without its dictionary: the
                 // hand-built pose)
                 let fr = (machines && !rig.dict.is_empty()).then(|| {
@@ -2932,6 +3088,79 @@ mod cabin_tests {
 mod ride_tests {
     use super::*;
 
+    /// The riding states' context writes against the original's callbacks run offline (tools/rider_ctx_reference.py: 400
+    /// random contexts each of the start's action, five enters, six updates and the exit, the dev param on in a fifth): the
+    /// words +12 / +24 / +28 / +52 / +56 / +60 / +64 equal; the tune's +124 / +128 / +132 and the context reset too.
+    #[test]
+    fn the_rider_context_matches_the_original() {
+        let hex = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let mut lines = include_str!("testdata/rider_ctx_ref.txt").lines();
+        let t: Vec<u32> = lines.next().unwrap().split(' ').skip(1).map(hex).collect();
+        assert_eq!(t, [RIDE_K[0].to_bits(), RIDE_K[1].to_bits(), RIDE_SCALE.to_bits()]);
+        let r: Vec<u32> = lines.next().unwrap().split(' ').skip(1).map(hex).collect();
+        let d = RideCtx::default();
+        assert_eq!(r, [d.flags2, d.ease_to.to_bits(), d.smooth_k[0].to_bits(), d.smooth_k[1].to_bits(), d.scale.to_bits()]);
+        let mut n = 0;
+        for line in lines {
+            let (inp, out) = line.split_once(" -> ").unwrap();
+            let v: Vec<&str> = inp.split(' ').collect();
+            let w: Vec<u32> = v[2..].iter().map(|s| hex(s)).collect();
+            let f = |k: usize| f32::from_bits(w[k]);
+            // (w: +8 +12 +24 +28 +44 +52 +56 +60 +64 +92 +96)
+            let mut c = RideCtx { flags2: w[1], steer: f(2), smooth: f(3), ease_to: f(5), smooth_k: [f(6), f(7)], scale: f(8) };
+            let (x, throttle, speed, dev) = (f(4), f(9), f(10), v[1] == "1");
+            match v[0] {
+                "F-88016" => ride_ctx_start(&mut c),
+                "F-27733" => ride_ctx_enter(St::Cruise, &mut c),
+                "F-33885" => ride_ctx_enter(St::Wheelie, &mut c),
+                "F-23193" => ride_ctx_enter(St::Endo, &mut c),
+                "F-22152" => ride_ctx_enter(St::Nos, &mut c),
+                "F-93384" => ride_ctx_enter(St::Reverse, &mut c),
+                "F-61324" => ride_ctx_update(St::Cruise, &mut c, x, throttle, speed, dev),
+                "F-77590" => ride_ctx_update(St::Tuck, &mut c, x, throttle, speed, dev),
+                "F-14383" => ride_ctx_update(St::Endo, &mut c, x, throttle, speed, dev),
+                "F-23398" => ride_ctx_update(St::Nos, &mut c, x, throttle, speed, dev),
+                "F-63745" => ride_ctx_update(St::Stopped, &mut c, x, throttle, speed, dev),
+                "F-30945" => ride_ctx_update(St::Reverse, &mut c, x, throttle, speed, dev),
+                "F-64876" => {
+                    // (the exit of both: the same)
+                    let mut c2 = c;
+                    ride_ctx_exit(St::Reverse, &mut c2);
+                    ride_ctx_exit(St::Nos, &mut c);
+                    assert_eq!(c, c2);
+                }
+                o => panic!("{o}"),
+            }
+            let o: Vec<u32> = out.split(' ').take(7).map(hex).collect();
+            let got = [c.flags2, c.steer.to_bits(), c.smooth.to_bits(), c.ease_to.to_bits(), c.smooth_k[0].to_bits(), c.smooth_k[1].to_bits(), c.scale.to_bits()];
+            assert_eq!(got.as_slice(), o.as_slice(), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 5200);
+    }
+
+    /// The gatherer's rider branch on the steering part (F-28290 with F-52244, the branch's numbers as `drvmachine`'s offline
+    /// check of the gatherer has them): the rates and hold from the context, +408 eased at 9 a second, the part rescaled so
+    /// +1164 / +1136 stays.
+    #[test]
+    fn rider_parts_set_the_steering_part() {
+        let mut c = RideCtx::default();
+        ride_ctx_start(&mut c);
+        c.flags2 = 8;
+        c.ease_to = 0.1;
+        let mut p = 1.0;
+        let (r, mid) = rider_parts(&c, &mut p, 1.0 / 30.0);
+        assert_eq!((r.rate, r.ease, r.hold), (2.0, 4.0, (7.0, 10.0)));
+        assert_eq!(p, crate::physics::exact::fma((0.1 - 1.0) * (1.0 / 30.0), 9.0, 1.0));
+        assert!(mid);
+        assert_eq!(r.scale, p * 0.9);
+        let mut d = crate::steer_parts::SteerParts { mid: 0.2, out: 0.3, ..Default::default() };
+        let x = d.out / d.scale;
+        SteerOut { bike: Some(r), ..SteerOut::default() }.apply(&mut d);
+        assert_eq!((d.rate, d.ease, d.hold_ease, d.hold_rate, d.scale), (2.0, 4.0, 7.0, 10.0, r.scale));
+        assert!((d.out / d.scale - x).abs() < 1e-6);
+    }
+
     /// F-25740 run offline on 3,012 steering values (work/cameras2/bikegraph/remap_ref.py; the bits as decimal words): equal.
     #[test]
     fn ride_remap_matches_the_original() {
@@ -3489,6 +3718,11 @@ mod ride_recorded_tests {
         let hex = |s: &str| u32::from_str_radix(s, 16).unwrap();
         let lines: Vec<&str> = fix.lines().collect();
         let mut r = Ride::default();
+        // (the driver's +408 before / after each frame's update, from the same recording: work/driverlight/cmp/d408.py)
+        let d408: Vec<(u32, u32)> = std::fs::read_to_string(format!("D:/MCLA/work/driverlight/cmp/{run}.d408"))
+            .map(|t| t.lines().map(|l| l.split_once(' ').map(|(a, z)| (hex(a), hex(z))).unwrap()).collect())
+            .unwrap_or_default();
+        let (mut bad_ctx, mut bad_408, mut bad_gate) = (0, 0, 0);
         // (the fidget counter before the recording, from the first fidget's clip: look left after an odd count - the
         // picker pre-increments and takes counter % 2 of (look_lft, look_rgt))
         r.fidgets = if lines.iter().find(|l| l.contains("_drv_gest_look_")).is_some_and(|l| l.to_ascii_lowercase().contains("look_lft")) { 1 } else { 0 };
@@ -3523,6 +3757,8 @@ mod ride_recorded_tests {
                 r.state = riding.into_iter().find(|s| name(*s) == state).unwrap();
                 r.ck = fl & 0x20_0000 != 0;
                 (r.timer_a, r.timer_b) = (f(&a, 148), f(&a, 152));
+                r.ctx = RideCtx { flags2: a[3], steer: f(&a, 24), smooth: f(&a, 28), ease_to: f(&a, 52), smooth_k: [f(&a, 56), f(&a, 60)], scale: f(&a, 64) };
+                r.drv408 = d408.first().map(|x| f32::from_bits(x.0));
                 first = false;
                 // (the anim player as the stopped idle's enter left it, outside the cockpit)
                 ride_enter(St::Stopped, r.ck, false, true, 0, 0.0, &mut RideSeq { seq: &mut r.seq, pan: &mut r.pan_clip, dict, clips, rec: None });
@@ -3549,7 +3785,30 @@ mod ride_recorded_tests {
             let was = r.state;
             time += dt;
             let mut got = Vec::new();
+            // (the gatherer's rider branch before the machine: +408 and the shift's gate, against the recording)
+            if let Some(&(_, after)) = d408.get(frames) {
+                let mut p = r.drv408.unwrap_or(1.0);
+                let (_, mid) = rider_parts(&r.ctx, &mut p, dt);
+                r.drv408 = Some(p);
+                if p.to_bits() != after {
+                    bad_408 += 1;
+                    if notes.len() < 30 {
+                        notes.push(format!("frame {frames}: +408 {p} want {}", f32::from_bits(after)));
+                    }
+                }
+                if (mid || inp.x.abs() > 0.501) && inp.shift != 0 {
+                    bad_gate += 1;
+                }
+            }
             ride_step(&mut r, dict, clips, b, &inp, time, dt, Some(&mut got));
+            // (the context words the riding states write: +12, +52, +56, +60, +64)
+            let c = r.ctx;
+            if [c.flags2, c.ease_to.to_bits(), c.smooth_k[0].to_bits(), c.smooth_k[1].to_bits(), c.scale.to_bits()] != [w[3], w[13], w[14], w[15], w[16]] {
+                bad_ctx += 1;
+                if notes.len() < 30 {
+                    notes.push(format!("frame {frames} ({state}): context {:08x} {} {:?} {} want {:08x} {} {} {} {}", c.flags2, c.ease_to, c.smooth_k, c.scale, w[3], f(&w, 52), f(&w, 56), f(&w, 60), f(&w, 64)));
+                }
+            }
             frames += 1;
             // the frame's commands, every one, against the recorded calls in order
             let got: Vec<String> = got.iter().filter_map(rec_of).collect();
@@ -3640,11 +3899,11 @@ mod ride_recorded_tests {
                 }
             }
         }
-        eprintln!("{run}: {frames} frames, {enters} enters, {sets} phase / weight values, {cmds} calls; state differs on {bad_state}, timers on {bad_timer}, enters on {bad_enter}, pan on {bad_pan}, values on {bad_set}, the frame's calls on {bad_cmds}");
+        eprintln!("{run}: {frames} frames, {enters} enters, {sets} phase / weight values, {cmds} calls; state differs on {bad_state}, timers on {bad_timer}, enters on {bad_enter}, pan on {bad_pan}, values on {bad_set}, the frame's calls on {bad_cmds}, context on {bad_ctx}, +408 on {bad_408} ({} frames), shift gate on {bad_gate}", d408.len());
         for n in &notes {
             eprintln!("  {n}");
         }
-        assert!(bad_state == 0 && bad_timer == 0 && bad_enter == 0 && bad_pan == 0 && bad_set == 0 && bad_cmds == 0, "{run}");
+        assert!(bad_state == 0 && bad_timer == 0 && bad_enter == 0 && bad_pan == 0 && bad_set == 0 && bad_cmds == 0 && bad_ctx == 0 && bad_408 == 0 && bad_gate == 0, "{run}");
     }
 }
 

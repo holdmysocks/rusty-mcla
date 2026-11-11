@@ -14,7 +14,7 @@ pub struct SteerParts {
     /// +1120 / +1124: the speedo pair's slewed and eased values
     pub needle_mid: f32,
     pub needle: f32,
-    /// +1136: the steering's scale (F-52244 rescales the pair with it; 1 in every frame of play, see `rider_rates`)
+    /// +1136: the steering's scale (F-52244 rescales the pair with it: a rider's gatherer each frame, drivers.rs `rider_parts`)
     pub scale: f32,
     /// +1140 / +1144: the steering pair's slew and ease rates
     pub rate: f32,
@@ -109,16 +109,13 @@ impl SteerParts {
         (self.mid, self.out) = (m, o);
     }
 
-    /// What F-28290 sets on a motorcycle's driver each frame (the branch of a driver without the steering wheel byte
-    /// +370): the rates from the driver tune (mcAnimMachineConstantData +56 / +60, its constructor's 55 / 100; no
-    /// data file sets it). The tune's +52 / +64 term rescales +1136 (F-52244) only while the driver's +408, moved to
-    /// +52 = 25 at 9 a second, lies inside (0.101, 0.999) - never after the first frame - so +1136 stays 1. The tune's
-    /// flag word +12 (0x3E000000) has neither 0x4 nor 0x8: +1148 / +1152 = 0 / 10.
-    pub fn rider_rates(&mut self) {
-        self.rate = 55.0;
-        self.ease = 100.0;
-        self.hold_ease = 0.0;
-        self.hold_rate = 10.0;
+    /// F-52244: a new steering scale (+1136), the steering pair (+1160 / +1164) rescaled by new / old. A rider's gatherer
+    /// (F-28290's rider branch, drivers.rs `rider_parts`) calls it each frame with the driver's +408 x context +64.
+    pub fn rescale(&mut self, s: f32) {
+        let q = s / self.scale;
+        self.scale = s;
+        self.mid *= q;
+        self.out *= q;
     }
 }
 

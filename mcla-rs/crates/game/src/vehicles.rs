@@ -5340,15 +5340,12 @@ if keep || c.state.pos.distance(center) < 450.0 {
 
         // ---- the eased steering, every frame (F-98654 -> F-69494, steer_parts.rs): the racer's values as F-80793 copies
         // them in (a player: its pad's +36, +24 and +88 - F-13138, F-54401, F-51971; a computer driver: its input's +36 and
-        // +24 and 1 - F-73863, F-72992, F-35724), the rider's rates (F-28290); a car's rates are what its driver's gatherer
-        // wrote (drivers.rs `SteerOut`, handed on by main.rs) ----
+        // +24 and 1 - F-73863, F-72992, F-35724); the rates, the hold and (a rider's) the scale are what the driver's
+        // gatherer F-28290 wrote (drivers.rs `SteerOut`, handed on by main.rs) ----
         for c in self.cars.iter_mut() {
             let Some(vs) = c.state.veh.as_deref() else { continue };
             let Some(vt) = c.tuned.as_deref().unwrap_or(&c.model.params).veh.as_ref() else { continue };
             let d = &mut c.steer_parts;
-            if c.model.bike {
-                d.rider_rates();
-            }
             if c.input.ai {
                 // (approximate: the opponent input's +36 is the frame's steering out of its brain, F-17058's local
                 // +100, which the port does not keep apart from +24)
