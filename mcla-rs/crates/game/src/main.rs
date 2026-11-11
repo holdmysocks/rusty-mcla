@@ -5296,6 +5296,8 @@ impl App {
         // (a new career's starters and first story scene read ahead on worker threads - docs/PERFORMANCE.md 2026-10-25)
         self.opening_read_ahead(&world);
         self.grid_ahead(&world);
+        // (and the guessed grid's cars built, one a tick, for the start to take - `Vehicles::build_ahead`)
+        self.vehicles.build_ahead(&mut gpu, &mut world);
         // CarSelection (game/career/0xebb682f7, 0x214 - 0x35a) makes the three starters before the film: opponents
         // loaded into the lot (OpponentManager_LoadOpponent, AddOpponentToWorld), deactivated, their icons hidden;
         // VEHICLE SELECT only moves the camera between them (`sel_cam`), and the one taken stays in the lot. The
@@ -15632,7 +15634,10 @@ impl App {
         // (guessed again when the career's generator has moved since: the draw at StartRace is on its state then - a guess
         // made before it was seeded had read 6 of 7 wrong cars and the start's tick waited 0.3 - 1.6 s for the grid's
         // reads, docs/PERFORMANCE.md 2026-11-10 (1); for the same race at most once a second)
-        let Some((race, hookman)) = pending else { return };
+        let Some((race, hookman)) = pending else {
+            self.vehicles.clear_ahead();
+            return;
+        };
         let rng = { let r = *oppick::career_rng(); (r.lo, r.carry) };
         if self.grid_warm == Some(((race, hookman), rng)) || (self.grid_warm.map(|w| w.0) == pending && self.tick_no < self.grid_warm_at + 30) {
             return;
@@ -15644,16 +15649,21 @@ impl App {
         let t = Instant::now();
         let guess = self.guess_grid();
         (self.game.current_race, self.game.hookman_race) = was;
+        let mut build: Vec<std::path::PathBuf> = Vec::new();
         for (car, setup) in &guess {
             if let Some(d) = self.game.car_dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(car))).cloned() {
                 if !self.vehicles.models.iter().any(|m| m.name.eq_ignore_ascii_case(car)) {
                     self.vehicles.prefetch(world, &d);
+                    if !build.contains(&d) {
+                        build.push(d);
+                    }
                 }
             }
             if let Some(d) = self.game.mc4_dress_of(car, setup) {
                 vehicles::warm_dress(&world.assets.root, &d);
             }
         }
+        self.vehicles.queue_ahead(build);
         log::info!("grid ahead: race {} guessed {:?} ({} ms)", self.game.race_defs.get(race).map_or("?", |d| d.id.as_str()), guess.iter().map(|g| g.0.as_str()).collect::<Vec<_>>(), t.elapsed().as_millis());
     }
 

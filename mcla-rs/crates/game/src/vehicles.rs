@@ -1565,6 +1565,9 @@ pub struct Vehicles {
     /// how long each car's models (by name, every set-up) have been held by nothing but `models` (`free_idle_models`)
     model_idle: hashbrown::HashMap<String, f32>,
     model_idle_check: f32,
+    /// a guessed grid's cars to build ahead and those built (`queue_ahead`, `build_ahead`)
+    ahead: Vec<std::path::PathBuf>,
+    staged: Vec<Arc<CarModel>>,
 }
 
 /// A car's models nothing has held for this long are freed (`Vehicles::free_idle_models`).
@@ -2593,6 +2596,69 @@ impl Vehicles {
     }
 
     pub fn load_model_cfg(&mut self, gpu: &mut Gpu, world: &mut World, dir: &Path, cfg: &CarConfig) -> Result<Arc<CarModel>> {
+        // (built ahead in an earlier tick - `build_ahead`: the same build, put in the list here as before)
+        let name = dir.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let m = match self.staged.iter().position(|m| m.name == name && m.cfg == *cfg) {
+            Some(i) => self.staged.remove(i),
+            None => self.build_model(gpu, world, dir, cfg)?,
+        };
+        self.models.push(m.clone());
+        if self.wheels.is_none() {
+            self.wheels = load_wheels(gpu, world).map(Arc::new);
+        }
+        Ok(m)
+    }
+
+    /// The cars a race's guessed grid will build (`queue_ahead`, from main.rs `grid_ahead`): one built a tick here, once
+    /// its files are read on their worker, into `staged` - not into `models`, whose order the race start's build keeps
+    /// (`load_model_cfg` takes it from there). The race start's tick had built them all: 5 - 6 models, 68 - 80 ms of
+    /// texture uploads, buffers and wheels (docs/PERFORMANCE.md 2026-11-10 (5)). Guessed cars not drawn are dropped at the
+    /// next guess or when no race is about to start. MCLA_GRID_BUILD_AHEAD=0: none.
+    pub fn queue_ahead(&mut self, dirs: Vec<std::path::PathBuf>) {
+        if std::env::var("MCLA_GRID_BUILD_AHEAD").is_ok_and(|v| v == "0") {
+            return;
+        }
+        let names: Vec<String> = dirs.iter().filter_map(|d| d.file_name().map(|s| s.to_string_lossy().to_string())).collect();
+        self.staged.retain(|m| names.iter().any(|n| *n == m.name));
+        self.ahead = dirs;
+    }
+
+    /// Nothing to build ahead any more (no race about to start): the queue and the unused builds go.
+    pub fn clear_ahead(&mut self) {
+        self.ahead.clear();
+        self.staged.clear();
+    }
+
+    /// One of `ahead` built into `staged` (see `queue_ahead`): the first whose plain build is neither in `models` nor
+    /// staged, when its files have been read (never read here on the game thread).
+    pub fn build_ahead(&mut self, gpu: &mut Gpu, world: &mut World) {
+        while let Some(dir) = self.ahead.first().cloned() {
+            let name = dir.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            let have = |m: &Arc<CarModel>| m.name == name && m.cfg == CarConfig::default();
+            if self.models.iter().any(have) || self.staged.iter().any(have) {
+                self.ahead.remove(0);
+                continue;
+            }
+            let ready = match self.parsed.get(&parsed_key(&dir)) {
+                Some(Parsed::Read(..)) => true,
+                Some(Parsed::Reading(h, _)) => h.is_finished(),
+                None => false,
+            };
+            if !ready {
+                return;
+            }
+            self.ahead.remove(0);
+            let t = std::time::Instant::now();
+            if let Ok(m) = self.build_model(gpu, world, &dir, &CarConfig::default()) {
+                log::info!("vehicles: {} built ahead for the race in {:.1} ms", name, t.elapsed().as_secs_f32() * 1000.0);
+                self.staged.push(m);
+            }
+            return;
+        }
+    }
+
+    /// A car's model built (`load_model_cfg` puts it in `models`).
+    fn build_model(&mut self, gpu: &mut Gpu, world: &mut World, dir: &Path, cfg: &CarConfig) -> Result<Arc<CarModel>> {
         let t_load = std::time::Instant::now();
         let car = self.car_asset(world, dir)?;
         let ms_parse = t_load.elapsed().as_secs_f32() * 1000.0;
@@ -2816,10 +2882,6 @@ impl Vehicles {
         // first bone named wheel_0 / wheel_2 in the base fragment's skeleton, then the parts' - F-20921)
         let bike_wheel_width = ["wheel_0", "wheel_2"].map(|n| car.skeleton.as_ref().and_then(|s| s.bones.iter().find(|b| b.name == n)).map_or(params.wheel_width, |b| (b.trans_limits.1 - b.trans_limits.0).length()));
         let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, glow_sides, font_bones, batches, params, params_mods, simtunes, vehmods: car.vehmods.clone(), fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, susp_lever: car.susp_lever, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), needles: [car.needles[0].clone().map(Arc::new), car.needles[1].clone().map(Arc::new), upgrade.as_ref().map(|u| u.0.clone())], needle_place: upgrade.as_ref().map_or(Mat4::IDENTITY, |u| u.1), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, fx_anchors, fx_anchor_rear, rest_rot: rest_table(&rest_rot) });
-        self.models.push(m.clone());
-        if self.wheels.is_none() {
-            self.wheels = load_wheels(gpu, world).map(Arc::new);
-        }
         Ok(m)
     }
 
