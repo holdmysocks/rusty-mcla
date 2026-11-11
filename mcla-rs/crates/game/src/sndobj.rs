@@ -2090,7 +2090,7 @@ impl SoundLib {
                 } else {
                     let ratio = 2f32.powf(ctx.pitch as f32 / 1200.0);
                     let headroom = wave.as_ref().map(|w| w.headroom as f32 * 0.01).unwrap_or(0.0);
-                    out.push(Leaf { voice: *voice, clip: c.clone(), ctx, headroom, start_frame: (*pos_ms * 0.001 * c.rate as f32) as f64, looping: *looping, stereo: false });
+                    out.push(Leaf { voice: *voice, clip: c.clone(), ctx, headroom, start_frame: xma_start_frame(*pos_ms, c.rate), looping: *looping, stereo: false });
                     *pos_ms += ms * ratio;
                     if *looping && *pos_ms >= *dur_ms {
                         let ls = wave.as_ref().and_then(|w| w.loop_ms).unwrap_or(c.loop_start as f32 * 1000.0 / c.rate as f32);
@@ -2909,6 +2909,20 @@ fn apply_stop(inst: &mut Instance, now: u32) -> bool {
     false
 }
 
+/// The frame an XMA voice starts at when played from `ms` in (F-86924, vt+28 of the XMA voice, from the voice cycle with
+/// the record's whole ms): n = floor(rate x ms x 0.001) in single precision, then whole 128-sample subframes,
+/// floor(n x 0.0078125) x 128 - also the voice's played-sample base +328; the seek F-68498 hands it to XAudio. 0 ms is no
+/// seek (the start).
+pub(crate) fn xma_start_frame(ms: f32, rate: u32) -> f64 {
+    let ms = ms as u32;
+    if ms == 0 {
+        return 0.0;
+    }
+    let n = ((rate as f32 * ms as f32) * 0.001f32).floor() as i64 as u32;
+    let sub = ((n as f32 * 0.0078125f32) as f64).floor() as f32;
+    ((sub as i64 as u32) << 7) as f64
+}
+
 /// A voice the manager stops (F-71842): its record's position (ms, synced from the playing voice every update) moves 80 on;
 /// past the length a voice with no loop start ends (-1), else it wraps into the loop: start + (pos - start) mod (len - start),
 /// the start itself when the loop is empty.
@@ -3281,6 +3295,20 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 3934);
+    }
+
+    /// The XMA start (F-86924): every play-from-ms of a recorded drive (ms, the voice's rate, the start sample handed to the
+    /// seek F-68498; work/audio2/spdrec x1, verify_audio_b1.md batch 63) equals `xma_start_frame`.
+    #[test]
+    fn xma_start_matches_the_recorded_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/xma_start.txt").lines().filter(|l| !l.starts_with('#')) {
+            let w: Vec<u32> = l.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            assert_eq!(xma_start_frame(w[0] as f32, w[1]), w[2] as f64, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 111);
+        assert_eq!(xma_start_frame(0.0, 44100), 0.0);
     }
 
     /// The stop's position jump (F-71842) against the running original: every stop of a recorded drive (the record's
