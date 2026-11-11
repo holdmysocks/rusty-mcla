@@ -122,6 +122,9 @@ mod park_spawn_tests;
 #[cfg(test)]
 #[path = "park_unspawn_tests.rs"]
 mod park_unspawn_tests;
+#[cfg(test)]
+#[path = "item_spawn_tests.rs"]
+mod item_spawn_tests;
 
 /// A layout item's parked car has no spot (car +44 = 0; +40 the item).
 pub const ITEM_SPOT: usize = usize::MAX;
@@ -244,6 +247,52 @@ pub fn node_count(tree: &ParkingTree, ni: u32, occupied: &[bool], cruise: bool) 
         }
     }
     (occ, occ + free)
+}
+
+/// F-94309's inputs: the type's slots 6 (a car type) and 7 (a person type), the manager's gates (the bytes S+0x642C5 /
+/// +0x642C8 for cars, +0x642C6 for people, the constructor's 1; the density scale S+0x64240), the path copy's path
+/// (+64 lane found, +164 bParked) and the item (+140 a script's, its path's +188 referenced / +189 fired).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ItemSpawnIn {
+    pub car: bool,
+    pub person: bool,
+    pub cars_on: bool,
+    pub peds_on: bool,
+    pub density: f32,
+    pub path: Option<(bool, bool)>,
+    pub item: Option<(bool, Option<(bool, bool)>)>,
+}
+
+/// F-94309's request: a parked car (F-90920 path, with its colour), a car on the path's lane (with its colour), a person.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ItemSpawn {
+    Parked(u32),
+    Lane(u32),
+    Person,
+}
+
+/// F-94309 (offline: the network test false, the type given): a car type needs the car bytes and a density scale other
+/// than 0 (an ARCADE race's TRAFFIC none), a person type the people's byte. A car draws its colour u31 % 20; it is parked
+/// when the path is bParked, the item a script's, or the item's path referenced and not fired (an item is needed);
+/// else it rides the path's lane when the path found one and is not parked; else nothing. A person needs the item.
+pub(crate) fn item_spawn_choice(inp: ItemSpawnIn, rng: &mut Mwc) -> Option<ItemSpawn> {
+    if inp.car {
+        if !inp.cars_on || inp.density == 0.0 {
+            return None;
+        }
+    } else if inp.person && !inp.peds_on {
+        return None;
+    }
+    if inp.car {
+        let colour = rng.index(20);
+        let lane = inp.path.is_some_and(|(l, p)| l && !p);
+        let parked = inp.path.is_some_and(|(_, p)| p) || inp.item.is_some_and(|(s, ip)| s || ip.is_some_and(|(r, f)| r && !f));
+        if parked {
+            return inp.item.is_some().then_some(ItemSpawn::Parked(colour));
+        }
+        return lane.then_some(ItemSpawn::Lane(colour));
+    }
+    (inp.person && inp.item.is_some()).then_some(ItemSpawn::Person)
 }
 
 /// The parked unspawner's world (F-53207): the ambient manager's pools 0 (cars) and 2 (people) and their objects.
@@ -858,25 +907,37 @@ impl Vehicles {
         if item.path.is_some_and(|p| p.referenced && (p.fired || p.spawn_when_triggered)) {
             return false;
         }
-        let Some(mi) = self.models.iter().position(|m| m.name.eq_ignore_ascii_case(&item.name)) else {
-            // a person type (the people's spawner places it)
-            if crate::peds::is_person_type(&item.name) {
+        // F-54839: the type by its name (the original matches the name's hash); a car type or a person type
+        let mi = self.models.iter().position(|m| m.name.eq_ignore_ascii_case(&item.name));
+        let person = mi.is_none() && crate::peds::is_person_type(&item.name);
+        if mi.is_none() && !person {
+            self.park_why[2] += 1;
+            return false;
+        }
+        // F-94309 (the bytes S+0x642C5 / C6 / C8 stay the constructor's 1: nothing else writes them)
+        let inp = ItemSpawnIn {
+            car: mi.is_some(),
+            person,
+            cars_on: true,
+            peds_on: true,
+            density: self.density_scale.unwrap_or(1.0),
+            path: item.path.map(|p| (p.lane, p.parked)),
+            item: Some((item.script, item.path.map(|p| (p.referenced, p.fired)))),
+        };
+        let shade = match item_spawn_choice(inp, &mut self.park_rng) {
+            None => return false,
+            Some(ItemSpawn::Person) => {
+                // (the people's spawner places it)
                 self.item_peds_due.push(h);
                 return true;
             }
-            self.park_why[2] += 1;
-            return false;
-        };
-        let shade = super::traffic::test_shade(self.park_rng.index(20) as usize);
-        let path = item.path.unwrap_or_default();
-        let parked = item.script || path.parked || (path.referenced && !path.fired);
-        if !parked {
-            if !path.lane {
-                return false;
+            Some(ItemSpawn::Lane(c)) => {
+                self.item_followers_due.push((h, super::traffic::test_shade(c as usize)));
+                return true;
             }
-            self.item_followers_due.push((h, shade));
-            return true;
-        }
+            Some(ItemSpawn::Parked(c)) => super::traffic::test_shade(c as usize),
+        };
+        let Some(mi) = mi else { return false };
         let mname = self.models[mi].name.clone();
         let root = std::path::PathBuf::from(&sp.data_dir);
         let ty = *self.amb_types.entry(mname.clone()).or_insert_with(|| super::traffic::AmbType::load(&root, &mname));
