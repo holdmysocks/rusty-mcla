@@ -236,6 +236,9 @@ pub const CONTROL_CONFIGS: [&str; 9] = ["Throttle_Stick", "Throttle_Trigger", "T
 pub const GPS_ARROWS: [&str; 3] = ["option_arrow_compass", "option_arrow_top", "option_arrow_none"];
 pub const CAMERAS: [&str; 5] = ["Bumper", "POV", "Boom 1", "Boom 2", "Boom 3"];
 pub const LANGUAGES: [&str; 5] = ["english", "spanish", "french", "german", "italian"];
+/// The opponents of a tournament's leg: TournamentCore (`script_obj/game/race/0x039dd301`) writes the race data's +3080 = 4
+/// (cars) and +3084 = 3 itself before its car draw, which loops over +3084; the race file's OpponentsAllowed is not read.
+pub const TOURNAMENT_OPPONENTS: usize = 3;
 pub const MUSIC_GENRES: [&str; 9] = ["MUSIC_GENRE_ECLECTIC", "MUSIC_GENRE_ELECTRONIC", "MUSIC_GENRE_HARDROCK", "MUSIC_GENRE_HIPHOP", "MUSIC_GENRE_ROCK", "MUSIC_GENRE_TECHNO", "MUSIC_GENRE_WEST_RAP", "MUSIC_GENRE_ALL", "MUSIC_GENRE_ON_THE_FLY"];
 
 impl Default for Options {
@@ -16949,6 +16952,17 @@ mod tests {
     }
 
     /// `career_game` with the race table and the race definitions read.
+    /// TournamentCore's own race set-up (the script's code, pc 0x1c6 and 0x1f0): push 4 -> +3080, push 3 -> +3084 = `TOURNAMENT_OPPONENTS`.
+    #[test]
+    fn tournament_core_sets_three_opponents() {
+        let Some(sco) = std::fs::read(std::path::Path::new(&data_dir()).join("script_obj/game/race/0x039dd301")).ok().and_then(|d| mcla_formats::sco::decode(&d).ok()) else { return };
+        // (small constants are one-byte pushes, op 96 + n; local2 = op 56; push16 = op 40; iadd 1; set 50)
+        let store = |n: u8, off: u16| { let o = off.to_le_bytes(); vec![96 + n, 56, 96 + 16, 1, 40, o[0], o[1], 1, 50] };
+        assert_eq!(sco.data[0x1c6..0x1cf], store(4, 3080)[..], "+3080 = 4");
+        assert_eq!(sco.data[0x1f0..0x1f9], store(3, 3084)[..], "+3084 = 3");
+        assert_eq!(TOURNAMENT_OPPONENTS, 3);
+    }
+
     fn race_game(name: &str, tag: &str) -> Option<(Game, String, Value)> {
         let (mut g, dir, save) = career_game(name, tag)?;
         g.race_defs = crate::races::load(&data_dir());

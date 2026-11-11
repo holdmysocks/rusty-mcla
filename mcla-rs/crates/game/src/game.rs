@@ -3982,6 +3982,10 @@ impl Game {
             RaceKind::Race if self.story_series() => 1,
             // (a hangout's series is four cars - `sr_results`)
             RaceKind::Race if self.series.is_some() => 3.min(def.grid.len().saturating_sub(1)),
+            // (a tournament's leg: TournamentCore writes the race data's +3080 = 4 cars and +3084 = 3 drawn opponents
+            // itself, whatever the race file says - `mc4::TOURNAMENT_OPPONENTS`; an ARCADE or telephone start of the same
+            // race keeps its own count)
+            RaceKind::Race if self.arcade_restore.is_none() && !self.phone_race && self.career.tournament_of(&def.id).is_some() => crate::mc4::TOURNAMENT_OPPONENTS.min(def.grid.len().saturating_sub(1)),
             RaceKind::Race => def.opponents.clamp(1, 7).min(def.grid.len().saturating_sub(1)),
         };
         let mut seed = (self.rand() * 4.0e9) as u32 | 1;
