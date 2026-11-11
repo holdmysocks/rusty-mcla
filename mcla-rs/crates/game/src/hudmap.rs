@@ -3564,6 +3564,64 @@ impl GpsFog {
     }
 }
 
+/// The city's "high LOD off" byte (0x827E0DC8 + 28, the one City_SetHighLodEnable writes as !arg) as a GPSJump's apply
+/// F-25207 keeps it: every frame its parent applies its children (a Parallel's clock past its delay, F-57282), the camera
+/// height it is handed (+52 of the matrix) against 750 m with the jump's latch +385 (1 from its constructor F-66438): latched,
+/// a height at 750 or over (or NaN) sets the byte and unlatches; unlatched, a height under 750 clears it and latches. The
+/// engine's F-39721 then writes "detail models on" (0x827E0E5C) = byte clear each frame, which the level-of-detail fade
+/// F-89177 and the sector draw F-75080 read: above 750 m every sector goes to its far model.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HighLod {
+    /// the byte: high LOD off
+    pub off: bool,
+    /// the running jump's +385 (None: no flight with a GPSJump runs)
+    latch: Option<bool>,
+}
+
+impl Default for HighLod {
+    fn default() -> Self {
+        HighLod { off: false, latch: None }
+    }
+}
+
+impl HighLod {
+    /// F-25207 on height `y` with latch `latch` and byte `off`: the latch and the byte after.
+    pub fn apply(latch: bool, off: bool, y: f32) -> (bool, bool) {
+        if latch {
+            if !(y < 750.0) {
+                return (false, true);
+            }
+        } else if y < 750.0 {
+            return (true, false);
+        }
+        (latch, off)
+    }
+
+    /// One frame: `jump` = the running flight's GPSJump and its clock, `y` = the camera's height this frame. A flight
+    /// that starts gets a fresh latch (approx.: the original's jump objects keep theirs from their last run, which
+    /// differs only when the byte was changed by a script between two runs of one jump).
+    pub fn step(&mut self, jump: Option<(GpsJump, f32)>, y: f32) {
+        let Some((_, c)) = jump else {
+            self.latch = None;
+            return;
+        };
+        let latch = self.latch.unwrap_or(true);
+        // (the parent applies its children once its clock is past its delay, 0 for every flight's top)
+        if c > 0.0 {
+            let (l, o) = HighLod::apply(latch, self.off, y);
+            self.latch = Some(l);
+            self.off = o;
+        } else {
+            self.latch = Some(latch);
+        }
+    }
+
+    /// F-39721's "detail models on" (0x827E0E5C)
+    pub fn detail_on(&self) -> bool {
+        !self.off
+    }
+}
+
 /// Which closing flight (`F-60031`, GPS branch, rule_exitcam.md 10).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExitKind {
@@ -4584,6 +4642,39 @@ mod tests {
         }
         // (the GPS map: per icon |p - camera| * 7e-05 + 0.04; the hangout at 9104.5 m)
         assert!((139.0f32 * (9104.5 * 7e-5 + 0.04) - 94.157).abs() < 0.02);
+    }
+
+    /// F-25207 run offline as generated (tools/high_lod_reference.py: every latch / byte pair at 3,013 heights - round
+    /// 750 m by one ulp, 0, -0, the infinities, NaN, 3,000 random): `HighLod::apply` leaves the same latch and byte.
+    #[test]
+    fn high_lod_byte_matches_the_original() {
+        let (mut n, mut set) = (0, 0);
+        for l in include_str!("testdata/high_lod_ref.txt").lines() {
+            let (i, o) = l.split_once(" -> ").unwrap();
+            let i: Vec<&str> = i.split(' ').collect();
+            let o: Vec<&str> = o.split(' ').collect();
+            let y = f32::from_bits(u32::from_str_radix(i[2], 16).unwrap());
+            let (lt, off) = HighLod::apply(i[0] == "1", i[1] == "1", y);
+            assert_eq!((lt as u32, off as u32), (o[0].parse().unwrap(), o[1].parse().unwrap()), "{l}");
+            n += 1;
+            set += off as u32;
+        }
+        assert_eq!(n, 12052);
+        assert!(set > 3000);
+        // (a climb through 750 m sets it at the first frame there, a way down clears it at the first frame under)
+        let mut h = HighLod::default();
+        let up = Some((GpsJump::up(1.0), 0.5));
+        for (y, off) in [(100.0, false), (749.9, false), (750.0, true), (9000.0, true)] {
+            h.step(up, y);
+            assert_eq!(h.off, off, "{y}");
+        }
+        h.step(None, 9000.0);
+        assert!(h.off, "the map: no flight, the byte stays");
+        let down = Some((GpsJump::down(2.0), 0.5));
+        for (y, off) in [(9000.0, true), (751.0, true), (749.0, false), (20.0, false)] {
+            h.step(down, y);
+            assert_eq!(h.off, off, "{y}");
+        }
     }
 
     /// UITransition_GPSJump's share (F-94973): up 1 - p, down p, p = (e - delay) / total kept at 0 from below only,

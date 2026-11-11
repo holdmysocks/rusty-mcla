@@ -239,7 +239,7 @@ fn fade_freeze() -> bool {
 
 /// A sector record's level-of-detail fade as F-89177 keeps it: +295 the state (1 steady, 2 fading to detail, 4 fading to
 /// far), +288 t, +296 the frame's choice (4 loaded, 2 detail, 1 far). The shipped game's settings: cross-fade on
-/// (0x827E0E26), detail models on (0x827E0E5C), no snap (0x8287C795), the far drawable present (0x8287C7D4), no forced
+/// (0x827E0E26), detail models on (0x827E0E5C: the city's high LOD byte clear, `World::high_lod_off`), no snap (0x8287C795), the far drawable present (0x8287C7D4), no forced
 /// fade (0x827E0E88 = -1), 3.0 a second (0x827E0E1C) - all read in the running original.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LodFade {
@@ -1558,6 +1558,9 @@ pub struct World {
     tx: Sender<Result<CpuSector>>,
     rx: Receiver<Result<CpuSector>>,
     pub load_radius: f32,
+    /// the city's "high LOD off" byte (City_SetHighLodEnable's; a GPS jump sets it above 750 m, `hudmap::HighLod`):
+    /// while set every sector is drawn by its far model (F-39721 -> F-89177)
+    pub high_lod_off: bool,
     pub unload_radius: f32,
     pub tex_fail: hashbrown::HashSet<u32>,
     pub stats_tris: u64,
@@ -1686,6 +1689,7 @@ impl World {
             tx,
             rx,
             load_radius: 450.0,
+            high_lod_off: false,
             unload_radius: 540.0,
             tex_fail: Default::default(),
             stats_tris: 0,
@@ -1989,7 +1993,9 @@ impl World {
             let d = Self::lod_dist(&self.rec_box[id], pos);
             // (test hook MCLA_FADE_FREEZE=1: every fade that has started leaves the view - what one sector in many meets, for all)
             let freeze = fade_freeze() && self.fades[id].state != 1;
-            self.fades[id].step(loaded, d < detail, seen.get(id).copied().unwrap_or(false) && !freeze, dt);
+            // (F-89177's detail test also needs "detail models on", 0x827E0E5C: F-39721 writes it each frame as the city's
+            // "high LOD off" byte clear - set above 750 m by a GPS jump, hudmap::HighLod)
+            self.fades[id].step(loaded, d < detail && !self.high_lod_off, seen.get(id).copied().unwrap_or(false) && !freeze, dt);
             if !loaded {
                 continue;
             }
@@ -2466,16 +2472,17 @@ mod lod_option_tests {
     /// F-89177 run offline as generated (tools/map_reach_reference.py, section FDE: 12,000 sector records of every state
     /// (+252 0 .. 5), distance against the detail distance (equal, one ulp over, infinite), t, +292 flags, fade state, last choice,
     /// frame time): at the shipped settings (cross-fade on, detail models on, no snap, far drawable present) `LodFade::step`
-    /// leaves the same fade state, the same t bit for bit (dt x 3.0 + t fused) and the same choice byte. The settings are
-    /// constants of the port; the other settings' cases of the fixture are skipped.
+    /// leaves the same fade state, the same t bit for bit (dt x 3.0 + t fused) and the same choice byte - detail models on
+    /// and off (the high LOD byte, `World::high_lod_off`; 63 cases off). The other settings are constants of the port; their cases of the
+    /// fixture are skipped.
     #[test]
     fn lod_fade_matches_the_original() {
-        let (mut n, mut skipped, mut started, mut running, mut finished) = (0, 0, 0, 0, 0);
+        let (mut n, mut skipped, mut started, mut running, mut finished, mut det_off) = (0, 0, 0, 0, 0, 0);
         for l in include_str!("testdata/map_reach_ref.txt").lines().filter(|l| l.starts_with("FDE ")) {
             let (i, o) = l.split_once(" -> ").unwrap();
             let i: Vec<&str> = i.split(' ').collect();
             let (cross, det, snap, far): (u32, u32, u32, u32) = (i[9].parse().unwrap(), i[10].parse().unwrap(), i[11].parse().unwrap(), i[12].parse().unwrap());
-            if (cross, det, snap, far) != (1, 1, 0, 1) {
+            if (cross, snap, far) != (1, 0, 1) {
                 skipped += 1;
                 continue;
             }
@@ -2484,7 +2491,8 @@ mod lod_option_tests {
             let (fl, fs, ch): (u32, u32, u32) = (i[5].parse().unwrap(), i[6].parse().unwrap(), i[7].parse().unwrap());
             let dt = bits(i[8]);
             let mut f = super::LodFade { state: fs as u8, t, choice: ch as u8 };
-            f.step(st == 3, dist < thr, fl & 2 != 0, dt);
+            f.step(st == 3, det == 1 && dist < thr, fl & 2 != 0, dt);
+            det_off += (det == 0) as u32;
             let o: Vec<&str> = o.split(' ').collect();
             assert_eq!((f.state as u32, f.t.to_bits(), f.choice as u32), (o[0].parse().unwrap(), u32::from_str_radix(o[1], 16).unwrap(), o[2].parse().unwrap()), "{l}");
             started += (fs == 1 && f.state != 1) as u32;
@@ -2492,7 +2500,7 @@ mod lod_option_tests {
             finished += (fs != 1 && f.state == 1 && st == 3 && ch != 0) as u32;
             n += 1;
         }
-        assert!(n > 10000 && skipped > 500 && started > 300 && running > 500 && finished > 300, "{n} {skipped} {started} {running} {finished}");
+        assert!(n > 10000 && skipped > 500 && started > 300 && running > 500 && finished > 300 && det_off >= 63, "{n} {skipped} {started} {running} {finished} {det_off}");
     }
 
     /// F-50083's lens scale and sector detail distance, run offline with its callees stubbed (section LNS, 4,400 cases (the 1,684 at other constants are skipped) of lens

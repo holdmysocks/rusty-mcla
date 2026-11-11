@@ -596,6 +596,9 @@ struct App {
     /// UITransition_GPSJump's fog (hudmap::GpsFog) and the fog it saved at an upward jump's start (the fog colour,
     /// the fog's near / far, the particles' MinFog colour and height)
     gps_fog: hudmap::GpsFog,
+    /// the city's "high LOD off" byte as the running flight's GPSJump keeps it (F-25207, `hudmap::HighLod`), handed to
+    /// `World::high_lod_off` before the next tick's world update
+    high_lod: hudmap::HighLod,
     gps_fog_saved: Option<([f32; 4], [f32; 2], [f32; 5])>,
     /// the shadows' strength and the game's depth of field vector saved at that start (F-69531)
     gps_shadow_saved: f32,
@@ -1249,6 +1252,8 @@ impl App {
                         if self.cine.held.is_none() && out.is_some_and(|w| t >= w) {
                             self.cine.held = self.cine.camera();
                             self.pink_hold = self.cine.held;
+                            // (that branch drains the warper's requests, F-88382, which also clears the city's high LOD byte)
+                            self.high_lod.off = false;
                             log::info!("pink slip lost: cam_gps_warp_out at {t:.3} s - the camera held");
                         }
                     }
@@ -1591,6 +1596,7 @@ impl App {
             goto_garage: None,
             hangout_entry: None,
             gps_fog: Default::default(),
+            high_lod: Default::default(),
             gps_fog_saved: None,
             gps_shadow_saved: 0.0,
             gps_dof_saved: None,
@@ -3508,6 +3514,7 @@ impl App {
                 .filter(|_| !unlocked)
                 .and_then(|w| self.vehicles.player().and_then(|c| w.stream_lock(c.state.pos))),
         );
+        world.high_lod_off = self.high_lod.off;
         world.update(&mut gpu, world.view_point().unwrap_or(focus), 6.0);
         crate::ticktimes::mark(crate::ticktimes::S::Other);
         self.fl_stream_ms += t_stream.elapsed().as_secs_f32() * 1000.0;
@@ -11206,6 +11213,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // UITransition_GPSJump (F-69531 / F-94973 / F-48130, hudmap::GpsFog): an upward jump saves the fog shown now and
         // fades it to none, the map keeps none, a downward one fades the saved fog back in and hands it back to the
         // time cycle (whose writer F-37382 waits while the jump's byte is set). Each value the saved one times the share.
+        // (and its apply F-25207: the camera's height this frame against 750 m - the city's high LOD byte)
+        {
+            let (jump, _) = self.gps_jump_now();
+            self.high_lod.step(jump, self.cam.pos.y);
+        }
         if !map_baked {
             let scale = |s: ([f32; 4], [f32; 2], [f32; 5]), k: f32| (s.0.map(|v| v * k), s.1.map(|v| v * k), s.2.map(|v| v * k));
             let (jump, any) = self.gps_jump_now();
@@ -14744,6 +14756,10 @@ impl App {
                 if self.startwarp.take().is_some() {
                     log::info!("start warp: released under CarSelection's black");
                 }
+                // (the career script's City_SetHighLodEnable(1), 0x6ed, on this branch before its UnPauseCamera - the
+                // held camera at 9000 m has no sector in detail distance either way; CarSelection's own off / on pair,
+                // 0x7d7 / 0xafb, both fall under its black and film)
+                self.high_lod.off = false;
                 let film = hooks::intro_film() && (self.opt.shot.is_none() || std::env::var("MCLA_MOVIE").is_ok());
                 // (the film carries the phone call: the subtitles of CUT_INTRO's table. The film's start F-32379 loads them
                 // through F-16426, which loads a table only with the SUBTITLES option on; MCLA_SUBTITLES=1 shows them anyway)
