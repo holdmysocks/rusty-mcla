@@ -5306,8 +5306,13 @@ impl App {
             // Opponent_ToggleDeleteOnEviction - they go when the opponent manager evicts them, below; the one taken
             // is given to the player (AddVehicleToPlayer) and its racer is SetUID(208) - it stays in the lot, and
             // the original's story scene shows all three behind the player)
+            // (`starter_taken` keeps its lock: Racer_SetUID(208) - RACE_GH_06_READY_TO_START_ON_ENTER finds it by that UID
+            // (0x8ff) and deletes it after its scene (0xa6e / 0xa78); `starter_left`: Racer_SetStreamingUnlocked (0x1430),
+            // Opponent_ToggleDeleteOnEviction(1) (0x1444) - `Roamers::walk`)
+            let taken = self.game.car_dirs.get(self.game.current_car).and_then(|d| d.file_name()).map(|n| n.to_string_lossy().to_string());
             for c in self.vehicles.cars.iter_mut().filter(|c| c.driver == "starter") {
-                c.driver = "starter_left".into();
+                let is_taken = taken.as_deref().map_or(false, |n| c.model.name.eq_ignore_ascii_case(n));
+                c.driver = if is_taken { "starter_taken" } else { "starter_left" }.into();
             }
             if let Some(dir) = self.game.car_dirs.get(self.game.current_car).cloned() {
                 let (color, cfg) = (self.game.paint_color(), self.game.cfg.clone());
@@ -5331,12 +5336,13 @@ impl App {
             c.state.vel = Vec3::ZERO;
             c.state.ang_vel = Vec3::ZERO;
         }
-        // (the starters not taken, deleted on eviction: the opponent manager's walk, F-31748 - a car in the world
-        // whose horizontal distance to the player less M+896 (100 m) is over M+892 (600 m) is evicted, and one marked
-        // DeleteOnEviction is deleted (F-28020); the constructor's values, docs/reference/ai/brain.md 2.9. Out of
-        // the slots (8) is not reached by two cars and the hookman)
-        if let Some(me) = self.vehicles.player().map(|c| c.state.pos) {
-            self.vehicles.cars.retain(|c| c.driver != "starter_left" || (Vec3::new(c.state.pos.x - me.x, 0.0, c.state.pos.z - me.z).length() - 100.0).max(0.0) <= 600.0);
+        // (mcRacerManager's streaming walk and the racers' stream state machines, every gameplay frame - the starters
+        // always, the hookmen while the cruise runs (the condition `Roamers::update` is called on, below): the starters
+        // not taken are evicted and deleted as the original's walk does it - `Roamers::walk`)
+        {
+            let climbing = self.climb.is_some() || self.climb_end.is_some() || self.climb_wait.is_some();
+            let men_on = self.game.mode == Mode::FreeRoam && self.game.race.is_none() && self.vehicles.traffic_target > 0 && !self.vehicles.frozen && !climbing && self.game.bmt_end.is_none();
+            self.roam.walk(&mut self.vehicles, men_on, sim_dt);
         }
         // (a new career's starters and first story scene read ahead on worker threads - docs/PERFORMANCE.md 2026-10-25)
         self.opening_read_ahead(&world);
@@ -6979,6 +6985,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.vehicles.set_road_density(GH_06_SCENE_ROAD, 0);
                             self.pending_log = Some(c.trim_start_matches("SIDEKICK_").to_string());
                         } else {
+                            // (no scene played: its script deletes the starter taken all the same, 0xa6e / 0xa78)
+                            if c == "SIDEKICK_RACE_GH_06" {
+                                self.vehicles.cars.retain(|c| c.driver != "starter_taken");
+                            }
                             self.game.career.call_delivered(c.trim_start_matches("SIDEKICK_"));
                         }
                         // (after its story scene a mission is on the phone as its reminder -
@@ -7077,6 +7087,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 if let Some(id) = self.pending_log.take() {
                     log::info!("career: {} enters the log after its scene", id);
                     if id == "RACE_GH_06" {
+                        // (RACE_GH_06_READY_TO_START_ON_ENTER 0xa6e / 0xa78: the starter taken - UID 208, found at 0x8ff -
+                        // taken out of the world and deleted)
+                        self.vehicles.cars.retain(|c| c.driver != "starter_taken");
                         // (RACE_GH_06_READY_TO_START_ON_ENTER 0xab1: the scene's road given back, -1)
                         self.vehicles.set_road_density(GH_06_SCENE_ROAD, -1);
                     }
