@@ -237,14 +237,14 @@ pub struct Feed {
     pub icon_ripple: bool,
     pub icon_category: i32,
     pub distance: f32,
+    pub bomb_meter: f32,
 }
 
 /// The gates of `F-76855` and the feeder: kind 10 only while no race has checkpoints, kind
-/// 14 always, every other kind not while a race runs (a police pursuit is one - `[0x8286EBF8]`);
-/// kind 12 never. Kind 3 (a racer) is measured from its car, the rest from 2 m above the
-/// candidate; at or beyond IconFadeoutDist nothing is fed (the fade `1 - d / 400` itself only
-/// gates - its colour is not handed on). `icon_subtype` 2 (vehicle +113) was 0 on every car read
-/// and is not modelled.
+/// 14 always, every other kind not while a race runs or the police level F-35540 is 2 or more
+/// (`racing`); kind 12 never. Kind 3 (a racer) is measured from its car, the rest from 2 m above the
+/// candidate; then `feed_raw`. `icon_subtype` 2 (vehicle +113) was 0 on every car read and the bomb
+/// meter (vehicle +68's +128 over a tune's +8, when its +114 is set) is not read - both are fed as 0.
 pub fn feed(t: &MarkTune, c: &Candidate, cam: Vec3, racing: bool, checkpoints: bool) -> Option<Feed> {
     match c.kind {
         10 if checkpoints => return None,
@@ -254,18 +254,46 @@ pub fn feed(t: &MarkTune, c: &Candidate, cam: Vec3, racing: bool, checkpoints: b
         _ => {}
     }
     let pos = if c.kind == 3 && c.racer { c.pos } else { c.pos + LIFT };
-    let d = pos.distance(cam);
-    if 1.0 - (d / t.icon_fadeout).min(1.0) == 0.0 {
+    let cat = if c.kind == 3 && c.racer { 0 } else { c.category };
+    feed_raw(c.kind, cat, pos.to_array(), c.colour, t.icon_fadeout, cam.to_array(), false, c.flash, c.ripple, 0.0)
+}
+
+/// `F-87716` on plain values (its caller `F-76855`'s arguments: the vehicle's +113 `sub2`, the candidate's +68 `flash` and +56
+/// `ripple`, the bomb meter; no labels). The distance sqrt(fma(dx, dx, fma(dz, dz, dy dy))) from the camera, each step rounded to
+/// single; `1 - min(d / IconFadeoutDist, 1)` 0 or icon type 0: nothing fed. Subtype 2 with `sub2`, else 1 with `flash`.
+#[allow(clippy::too_many_arguments)]
+pub fn feed_raw(kind: i32, category: i32, pos: [f32; 3], colour: [f32; 4], fadeout: f32, cam: [f32; 3], sub2: bool, flash: bool, ripple: bool, bomb: f32) -> Option<Feed> {
+    let fma = |a: f32, b: f32, s: f32| (a as f64).mul_add(b as f64, s as f64) as f32;
+    let (dx, dy, dz) = (cam[0] - pos[0], cam[1] - pos[1], cam[2] - pos[2]);
+    let d = fma(dx, dx, fma(dz, dz, dy * dy)).sqrt();
+    let q = d / fadeout;
+    let q = if q > 1.0 { 1.0 } else { q };
+    if 1.0 - q == 0.0 || kind == 0 {
         return None;
     }
     Some(Feed {
-        icon_type: c.kind,
-        icon_subtype: if c.flash { 1 } else { 0 },
-        icon_color: colour_word(c.colour),
-        icon_ripple: c.ripple,
-        icon_category: if c.kind == 3 && c.racer { 0 } else { c.category },
+        icon_type: kind,
+        icon_subtype: if sub2 { 2 } else if flash { 1 } else { 0 },
+        icon_color: colour_word(colour),
+        icon_ripple: ripple,
+        icon_category: category,
         distance: d,
+        bomb_meter: bomb,
     })
+}
+
+/// The globals `F-87716` sets, in its order (`showpanel` 0: its caller passes no labels).
+pub fn feed_globals(f: &Feed) -> [(&'static str, Value); 8] {
+    [
+        ("icon_type", Value::Int(f.icon_type)),
+        ("icon_subtype", Value::Int(f.icon_subtype)),
+        ("showpanel", Value::Int(0)),
+        ("icon_color", Value::Int(f.icon_color)),
+        ("icon_ripple", Value::Bool(f.icon_ripple)),
+        ("icon_category", Value::Int(f.icon_category)),
+        ("distance", Value::Float(f.distance)),
+        ("bomb_meter", Value::Float(f.bomb_meter)),
+    ]
 }
 
 /// A slot shown this frame: its frame, its distance from the camera (the queue's sort key),
@@ -342,13 +370,9 @@ impl HookIcons {
             }
             let m = &mut self.movies[s];
             let p = &mut m.player;
-            p.set_global("icon_type", Value::Int(f.icon_type));
-            p.set_global("icon_subtype", Value::Int(f.icon_subtype));
-            p.set_global("icon_color", Value::Int(f.icon_color));
-            p.set_global("icon_ripple", Value::Bool(f.icon_ripple));
-            p.set_global("icon_category", Value::Int(f.icon_category));
-            p.set_global("distance", Value::Float(f.distance));
-            p.set_global("bomb_meter", Value::Float(0.0));
+            for (k, v) in feed_globals(&f) {
+                p.set_global(k, v);
+            }
             p.set_global("cur_visibility", Value::Int(1));
             p.update(dt);
             let mut nodes = crate::menu3d::read_scene(p).map(|sc| sc.nodes).unwrap_or_default();
@@ -456,6 +480,39 @@ impl HookIcons {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn icon_feed_matches_the_original() {
+        // (F-87716 run offline as F-76855 calls it: tools/icon_feed_reference.py, the globals it sets logged)
+        let mut n = 0;
+        let mut bad = Vec::new();
+        for l in include_str!("testdata/icon_feed_ref.txt").lines() {
+            let (lhs, rhs) = l.split_once(" -> ").unwrap();
+            let v: Vec<&str> = lhs.split(' ').collect();
+            let h = |t: &str| u32::from_str_radix(t, 16).unwrap();
+            let fs = |t: &str| t.split(',').map(|x| f32::from_bits(h(x))).collect::<Vec<f32>>();
+            let (p, c, e) = (fs(&v[2][1..]), fs(&v[3][1..]), fs(&v[6][1..]));
+            let got = feed_raw(v[0][1..].parse().unwrap(), v[1][1..].parse().unwrap(), [p[0], p[1], p[2]], [c[0], c[1], c[2], c[3]], f32::from_bits(h(&v[5][1..])),
+                [e[0], e[1], e[2]], &v[7][1..] == "1", v[8] == "1", v[9] == "1", f32::from_bits(h(&v[10][1..])));
+            let want = match got {
+                None => ".".to_string(),
+                Some(f) => feed_globals(&f).iter().map(|(k, v)| match v {
+                    Value::Int(i) => format!("{k}={i};"),
+                    Value::Bool(b) => format!("{k}=b{};", *b as u8),
+                    Value::Float(x) => format!("{k}=f{:08x};", x.to_bits()),
+                    _ => unreachable!(),
+                }).collect::<String>() + "show1;",
+            };
+            if want != rhs {
+                bad.push(format!("{l} :: {want}"));
+            }
+            n += 1;
+        }
+        assert!(bad.is_empty(), "{} of {n}:
+{}", bad.len(), bad[..bad.len().min(4)].join("
+"));
+        assert_eq!(n, 3000);
+    }
 
     fn el(kind: Kind, pos: [f32; 3], uid: u32) -> Element {
         let mut e = Element::at(kind, Vec3::from(pos));

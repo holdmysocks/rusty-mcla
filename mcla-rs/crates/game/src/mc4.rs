@@ -7492,6 +7492,59 @@ pub fn fill_fallback(n: usize, rnd: &mut dyn FnMut() -> u32) -> usize {
     ((rnd() & 0x7FFF_FFFF) as i32 % n.max(1) as i32) as usize
 }
 
+/// The vector unit's normalise of FindBeatMeThereRaceIndex (F-73402): d = z z + (y y + x x), y = 1 / sqrt(d), one Newton step
+/// y + (1 - d y y) (0.5 y), each lane times y. (y = 0, d infinite: the constant at +2240, 0.)
+fn bmt_norm(v: [f32; 3]) -> [f32; 3] {
+    let d = v[2] * v[2] + (v[1] * v[1] + v[0] * v[0]);
+    let y = 1.0 / d.sqrt();
+    let y = if y == 0.0 { 0.0 } else { y };
+    let s = -(d * (y * y) - 1.0) * (0.5 * y) + y;
+    [v[0] * s, v[1] * s, v[2] * s]
+}
+
+/// mcRaceArray_FindBeatMeThereRaceIndex (F-73402) on plain values: `row_c` and `pos` the racer's matrix row c (+32) and place
+/// (+48), `recs` the district and start of each race of the array (in its order), `history` the history place of the k-th (-1:
+/// not in it). The candidates (the races of `district`, any with 6): their distance on the map sqrt(fma(dz, dz, dx dx)) and the
+/// dot fma(cx, ux, fma(cy, uy, cz uz)) of the normalised row c and direction (`bmt_norm`), each rounded to single; sorted on the
+/// dot, lowest first, equal dots in the C runtime qsort's order (F-79639 with F-33494: `crt_qsort`). Of those further than `min_dist` the first with no place, else the lowest place
+/// (the first such). None: `fill_fallback` of the candidates' count (or the array's, with none) - an index into the whole
+/// array. The array's index; None with an empty array (the original traps).
+pub fn bmt_pick(row_c: [f32; 3], pos: [f32; 3], recs: &[(i32, [f32; 3])], district: i32, min_dist: f32, history: &dyn Fn(usize) -> i32, rnd: &mut dyn FnMut() -> u32) -> Option<usize> {
+    if recs.is_empty() {
+        return None;
+    }
+    let c = bmt_norm(row_c);
+    let fma = |a: f32, b: f32, s: f32| (a as f64).mul_add(b as f64, s as f64) as f32;
+    let mut cands: Vec<(usize, f32, f32)> = Vec::new();
+    for (k, &(d, p)) in recs.iter().enumerate() {
+        if d != district && district != 6 {
+            continue;
+        }
+        let (dx, dz) = (pos[0] - p[0], pos[2] - p[2]);
+        let flat = fma(dz, dz, dx * dx).sqrt();
+        let u = bmt_norm([p[0] - pos[0], p[1] - pos[1], p[2] - pos[2]]);
+        cands.push((k, flat, fma(c[0], u[0], fma(c[1], u[1], c[2] * u[2]))));
+    }
+    crate::racemark::crt_qsort(&mut cands, |a, b| bmt_order(a.2, b.2));
+    let mut best: Option<(usize, i32)> = None;
+    for &(k, flat, _) in &cands {
+        if !(flat > min_dist) {
+            continue;
+        }
+        let h = history(k);
+        if h == -1 {
+            return Some(k);
+        }
+        if best.map_or(true, |b| h < b.1) {
+            best = Some((k, h));
+        }
+    }
+    Some(match best {
+        Some((k, _)) => k,
+        None => fill_fallback(if cands.is_empty() { recs.len() } else { cands.len() }, rnd),
+    })
+}
+
 /// One row of a page of the rewards screen after the first: (the row's kind - 17 the
 /// REWARDED header, 13 the UNLOCKED header, 19 an item -, its text, the header's count).
 pub type RewardRow = (i32, String, String);
@@ -10561,36 +10614,13 @@ impl Game {
     /// when a race was found); the index is taken of the candidates of the district and used on the whole array
     /// (A-76493..A-63524), as here.
     pub fn mc4_bmt_race(&self, arr: &[usize], district: i32, pos: glam::Vec3, forward: glam::Vec3, min_dist: f32, rnd: &mut dyn FnMut() -> u32) -> Option<usize> {
-        if arr.is_empty() {
-            return None;
-        }
-        let back = -forward.normalize_or_zero();
-        let mut cands: Vec<(usize, f32, f32)> = Vec::new();
-        for (k, &t) in arr.iter().enumerate() {
-            if district != 6 && self.mc4_race_record(&self.race_table[t]).0 != district {
-                continue;
-            }
-            let Some((_, p)) = self.mc4_table_race(t) else { continue };
-            let flat = ((pos.x - p.x).powi(2) + (pos.z - p.z).powi(2)).sqrt();
-            cands.push((k, flat, back.dot((p - pos).normalize_or_zero())));
-        }
-        cands.sort_by(|a, b| bmt_order(a.2, b.2).cmp(&0));
-        let mut best: Option<(usize, usize)> = None;
-        for c in cands.iter().filter(|c| c.1 > min_dist) {
-            match self.mc4_history_at(arr[c.0]) {
-                None => return Some(arr[c.0]),
-                Some(p) => {
-                    if best.map_or(true, |b| p < b.1) {
-                        best = Some((c.0, p));
-                    }
-                }
-            }
-        }
-        match best {
-            Some((k, _)) => Some(arr[k]),
-            None if !cands.is_empty() => Some(arr[rnd() as usize % cands.len()]),
-            None => Some(arr[rnd() as usize % arr.len()]),
-        }
+        // (a race of the array without a start in the port's data is left out)
+        let arr: Vec<(usize, glam::Vec3)> = arr.iter().filter_map(|&t| self.mc4_table_race(t).map(|(_, p)| (t, p))).collect();
+        let recs: Vec<(i32, [f32; 3])> = arr.iter().map(|&(t, p)| (self.mc4_race_record(&self.race_table[t]).0, p.to_array())).collect();
+        // (row c of the racer's matrix: a vehicle drives along -c)
+        let row_c = (-forward).to_array();
+        let hist = |k: usize| self.mc4_history_at(arr[k].0).map_or(-1, |p| p as i32);
+        bmt_pick(row_c, pos.to_array(), &recs, district, min_dist, &hist, rnd).map(|k| arr[k].0)
     }
 
     /// The race a local hookman who has been flashed goes to, and the three he keeps
@@ -14021,6 +14051,36 @@ mod tests {
             assert_eq!(want, rhs, "{l}");
             n += 1;
         }
+        assert_eq!(n, 3000);
+    }
+
+    #[test]
+    fn bmt_pick_matches_the_original() {
+        let mut n = 0;
+        let mut bad = Vec::new();
+        for l in include_str!("testdata/bmt_ref.txt").lines() {
+            let (lhs, rhs) = l.split_once(" -> ").unwrap();
+            let v: Vec<&str> = lhs.split(' ').collect();
+            let h = |t: &str| u32::from_str_radix(t, 16).unwrap();
+            let f3 = |t: &str| { let q: Vec<f32> = t.split(',').map(|x| f32::from_bits(h(x))).collect(); [q[0], q[1], q[2]] };
+            let (d, rd, p, c) = (v[0][1..].parse::<i32>().unwrap(), f32::from_bits(h(&v[1][1..])), f3(&v[2][1..]), f3(&v[3][1..]));
+            let k = v.len();
+            let mut g = crate::vehicles::parked::Mwc { lo: h(&v[k - 2][1..]), carry: h(&v[k - 1][1..]) };
+            let ents: Vec<(usize, i32, [f32; 3], i32)> = v[4..k - 2].iter().map(|e| {
+                let w: Vec<&str> = e.split(':').collect();
+                (w[0].parse().unwrap(), w[1].parse().unwrap(), f3(w[2]), w[3].parse().unwrap())
+            }).collect();
+            let recs: Vec<(i32, [f32; 3])> = ents.iter().map(|e| (e.1, e.2)).collect();
+            let got = bmt_pick(c, p, &recs, d, rd, &|i| ents[i].3, &mut || g.next()).unwrap();
+            let want = format!("{} g{:08x} g{:08x}", ents[got].0, g.lo, g.carry);
+            if want != rhs {
+                bad.push(format!("{l} :: {want}"));
+            }
+            n += 1;
+        }
+        assert!(bad.is_empty(), "{} of {n}:
+{}", bad.len(), bad[..bad.len().min(4)].join("
+"));
         assert_eq!(n, 3000);
     }
 

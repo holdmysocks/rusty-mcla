@@ -11771,8 +11771,9 @@ impl Game {
         }
         let tune = self.mark_tune.get_or_insert_with(|| crate::racemark::MarkTune::load(&self.data_dir)).clone();
         let els = crate::hudmap::elements(self, vehicles, hud.heat >= 2);
-        // (a police pursuit is a race to the icon manager: `[0x8286EBF8]`)
-        let racing = self.race_current() || hud.heat >= 2;
+        // (F-76855: no icon but kinds 10 / 14 while CheckPoliceActivity(1) (F-35540) is 2 or more - a Search, a pursuit, the arrest's
+        // hold, the race's cop zone, a pull-over - or a race runs)
+        let racing = self.race_current() || hud.police_state >= 2;
         let checkpoints = self.race.as_ref().map_or(false, |r| !r.checkpoints.is_empty());
         let dt = ctx.input(|i| i.stable_dt).min(0.1);
         if self.hook_icons.is_none() {
