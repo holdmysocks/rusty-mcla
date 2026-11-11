@@ -11003,7 +11003,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
             let (eye, view, vp) = if self.drive && self.vehicles.player().is_some() { (self.chase.pos, self.chase.view(), self.cam.proj(aspect) * self.chase.view()) } else { (self.cam.pos, self.cam.view(), self.cam.view_proj(aspect)) };
             let axis = -Vec3::new(view.x_axis.z, view.y_axis.z, view.z_axis.z);
-            self.vehicles.traffic_lamps(eye, axis, &Frustum::from_view_proj(vp), night, sim_dt);
+            // (F-75961's weather term: the viewport table's +8 and +12, the Stormy and the Foggy weight)
+            let weather = self.weather_weight(sky::Weather::Stormy) + self.weather_weight(sky::Weather::Foggy);
+            self.vehicles.traffic_lamps(eye, axis, &Frustum::from_view_proj(vp), weather, sim_dt);
             // (and for the wheels' side test - F-57869)
             self.vehicles.set_wheel_eye(eye);
         }
@@ -11012,12 +11014,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // garage by its view, `garage_lamps_due`)
         self.cine_lamps_tick();
         {
-            let due = if self.game.mode == Mode::Garage {
-                vehicles::garage_lamps_due(self.game.garage_view())
-            } else {
-                self.time_of_day > 18.0 || self.time_of_day < 6.0 || self.weather_weight(sky::Weather::Stormy) > 0.85 || self.weather_weight(sky::Weather::Foggy) > 0.85
+            let garage = self.game.mode == Mode::Garage;
+            let world = vehicles::LampWorld {
+                garage,
+                cabin: garage && vehicles::garage_lamps_due(self.game.garage_view()),
+                hour: self.time_of_day,
+                storm: self.weather_weight(sky::Weather::Stormy),
+                fog: self.weather_weight(sky::Weather::Foggy),
             };
-            self.vehicles.setup_lamps(due, sim_dt);
+            self.vehicles.setup_lamps(&world, sim_dt);
         }
         // (each traffic and parked car's light-slot order, F-99357)
         self.traffic_light_slots();

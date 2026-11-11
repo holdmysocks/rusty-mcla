@@ -586,6 +586,9 @@ pub struct AmbSlotLights {
 pub struct AmbLamps {
     /// head (lights on), brake, the two signal sides, reversing
     pub s: [f32; 5],
+    /// a set-up car's second head state (the record at +180, value +188, eased towards the copy of the head target +184, rate
+    /// 9 like the head's: `setup_state`'s attachment 5)
+    pub head2: f32,
     /// the head lamps' flag (instance byte +557 + view, bit 0x4; `s[0]` eases towards it)
     pub head_on: bool,
     /// the glows' levels by table entry, once drawn
@@ -624,25 +627,38 @@ pub struct AmbLamps {
     pub faded_in: bool,
 }
 
+/// An ambient car's fade as F-82632 keeps it in the car's +484 (`traffic::fade_step` runs on the cars with a rail or a
+/// parking place); a car outside that update is taken as risen.
+pub fn amb_fade(c: &CarInstance) -> f32 {
+    if c.rail.is_some() || c.parked.is_some() {
+        c.amb_lamps.fade
+    } else {
+        1.0
+    }
+}
+
 /// An ambient car's lights (F-75961, bit 2 of the render flags): on when the hour is past the
 /// light manager's sunset (+14568, 18.0) - 0.333 - the car's offset, or before its sunrise (+14564,
-/// 6.0) + 0.5 + the offset, or when the weather term (the viewport table 0x827E1B10 +8 + +12, wet /
-/// foggy weather - the port's `wet`) is over the offset; off on a car fading out (+484 < 0.1).
-pub fn traffic_lights_due(hour: f32, offset: f32, wet: bool) -> bool {
-    // (`lights_on`, the original's operations: the sunrise's 0.5 is added first, then the offset; the weather terms' sum is the
-    // port's bool, any value over the largest offset 0.25 for wet weather, 0 otherwise)
-    crate::vehicles::vehicles_words::lights_on(1.0, true, false, 6.0, 18.0, hour, offset, if wet { 1.0 } else { 0.0 })
+/// 6.0) + 0.5 + the offset, or when the offset is under `weather`, the viewport table's two weights +8 and +12 added
+/// (the Stormy and the Foggy weather's weights, `Game::weather_weight`; WEATHER_AUDIO_RULE.md); off on a car whose fade
+/// (+484, `AmbLamps::fade`) is under 0.1. The object at +452 and its virtual slot 72 (a yes puts the lights out) are
+/// taken as present and answering no.
+pub fn traffic_lights_due(fade: f32, hour: f32, offset: f32, weather: f32) -> bool {
+    // (`lights_on`, the original's operations: the sunrise's 0.5 is added first, then the offset)
+    crate::vehicles::vehicles_words::lights_on(fade, true, false, 6.0, 18.0, hour, offset, weather)
 }
 
 #[cfg(test)]
 #[test]
 fn traffic_lights_due_hours() {
     // start-screen shot 2 at 6.498 h: on for every offset (before 6.5 + offset)
-    assert!(traffic_lights_due(6.498, 0.0, false) && traffic_lights_due(6.498, 0.25, false));
-    assert!(!traffic_lights_due(6.6, 0.0, false) && traffic_lights_due(6.6, 0.2, false));
-    assert!(!traffic_lights_due(12.0, 0.25, false) && traffic_lights_due(12.0, 0.0, true));
+    assert!(traffic_lights_due(1.0, 6.498, 0.0, 0.0) && traffic_lights_due(1.0, 6.498, 0.25, 0.0));
+    assert!(!traffic_lights_due(1.0, 6.6, 0.0, 0.0) && traffic_lights_due(1.0, 6.6, 0.2, 0.0));
+    assert!(!traffic_lights_due(1.0, 12.0, 0.25, 0.0) && traffic_lights_due(1.0, 12.0, 0.0, 1.0));
     // 17.6 h: past 17.667 - offset only for offsets over 0.067
-    assert!(!traffic_lights_due(17.6, 0.05, false) && traffic_lights_due(17.6, 0.1, false));
+    assert!(!traffic_lights_due(1.0, 17.6, 0.05, 0.0) && traffic_lights_due(1.0, 17.6, 0.1, 0.0));
+    // a car fading in or out under 0.1 has them off
+    assert!(!traffic_lights_due(0.09, 12.0, 0.0, 1.0) && traffic_lights_due(0.1, 12.0, 0.0, 1.0));
 }
 
 /// F-81135's state table by attachment, from the five eased states (head, brake, signal
@@ -659,11 +675,53 @@ pub fn traffic_state(s: [f32; 5], att: u8) -> f32 {
 /// state (+308, the police lamps 13 / 14), 11 reversing, the rest 0.
 /// The flash state (+248, `s[3]`) eases to the target +244 that the player's pad input writes from
 /// HEADLIGHTS held (F-44589; F-10129 overwrites it only under the "always rain" debug byte); attachment 5
-/// is the state at +188, eased from the head state's target, so equal to it.
-pub fn setup_state(s: [f32; 5], att: u8) -> f32 {
+/// is the state at +188 (`head2`), eased from the copy of the head state's target.
+pub fn setup_state(s: [f32; 5], head2: f32, att: u8) -> f32 {
     // (`vehicles_words::setup_table`: the original's operations, the first entry fused and the sum held by two `fsel`s)
     let [h, b, siren, flash, r] = s;
-    crate::vehicles::vehicles_words::setup_table(h, h, b, siren, flash, r).get(att as usize).copied().unwrap_or(0.0)
+    crate::vehicles::vehicles_words::setup_table(h, head2, b, siren, flash, r).get(att as usize).copied().unwrap_or(0.0)
+}
+
+/// What F-10129 reads of the world for the head lamps' target: the garage (light manager byte 14546) and the garage
+/// object's cabin-view byte (+39229, `garage_lamps_due`), the hour, and the Stormy and Foggy weather weights (the viewport
+/// table's +8 and +12; `Game::weather_weight`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LampWorld {
+    pub garage: bool,
+    pub cabin: bool,
+    pub hour: f32,
+    pub storm: f32,
+    pub fog: f32,
+}
+
+/// F-10129's targets for one set-up car, from the port's state: the car's lamp switch (+597) is `!off`, its driver input's
+/// brake pedal `brake` (every set-up car has the input object), the stealth check `stealth` (the power-up state), the
+/// gearbox in reverse (`gear` < 0 is the original's gear index 0: `vehsim` maps the port's reverse to 0 and gear g to
+/// g + 1), and for the shift light `shift` = the engine's speed in rpm and the gear's shift point (None: the car has no
+/// sim tune or state; the shift light is then off). The light manager's sunrise 6.0 and sunset 18.0. Inputs of outputs the
+/// port does not use (the speed target, the neon flashes) are 0.
+pub fn setup_lamp_targets(w: &LampWorld, off: bool, stealth: bool, brake: f32, gear: i32, shift: Option<(f32, f32)>) -> crate::vehicles::vehicles_words::LampOut {
+    let (rpm, shift_point) = shift.unwrap_or((0.0, 1.0));
+    crate::vehicles::vehicles_words::lamp_targets(&crate::vehicles::vehicles_words::LampIn {
+        switch: !off,
+        pedal: Some(brake),
+        stealth,
+        reverse_gear: gear < 0,
+        speed: 0.0,
+        garage: w.garage,
+        hour: w.hour,
+        sunrise: 6.0,
+        sunset: 18.0,
+        storm: w.storm,
+        fog: w.fog,
+        cabin: w.cabin,
+        always_rain: false,
+        rpm,
+        shift_point,
+        ext_rate: 0,
+        int_rate: 0,
+        clock: 0.0,
+    })
 }
 
 /// The garage's head lamp state (F-10129 with the light manager's byte 14546 set: the byte +39229 of
@@ -816,6 +874,14 @@ pub const CINE_LAMP_EVENTS: &[(&str, bool, u8, f32)] = &[
 pub fn traffic_fade(d: f32) -> f32 {
     // (`vehicles_words::traffic_fade`: the original multiplies by the constant 1 / 325 and holds the term by two `fsel`s)
     crate::vehicles::vehicles_words::traffic_fade(d)
+}
+
+/// F-81135's state and glow level of one entry of a traffic car (attachment `att`, eased states `s`, camera depth `d`):
+/// the state `traffic_state` and ((state x the depth fade) x the draw holder's per-thread scale, which F-82632 copies from
+/// the car's fade +484 each frame - `car_fade`) x the type's fGlowIntensityScale (record +84, `glow_scale`).
+pub fn traffic_glow(s: [f32; 5], att: u8, d: f32, car_fade: f32, glow_scale: f32) -> (f32, f32) {
+    let st = traffic_state(s, att);
+    (st, crate::vehicles::vehicles_words::traffic_level(st, traffic_fade(d), car_fade, glow_scale))
 }
 
 /// F-24995: one frame of a lamp state's easing at 9 a second.
@@ -2166,6 +2232,13 @@ fn drawn_wheel_pose(c: &CarInstance, i: usize) -> Option<(Quat, Vec3)> {
     Some((rot, posed[3] - m[3]))
 }
 
+/// F-40379's count for a tune's shot count (the tune holds the s16 as a float): the signed smaller of the cap (+16, 100) and
+/// the tune's value, stored in the port's u8 (`CarState::nitro_shots`) from 0 up. The original keeps the signed 16-bit
+/// value; a negative tune count gives 0 here.
+pub fn nitro_start(tune: f32) -> u8 {
+    crate::vehicles::vehicles_words::nitro_count(100, tune as u16 as i16).max(0) as u8
+}
+
 impl CarInstance {
     /// mcCarNitro's reset (F-40379, run by mcCarSim's reset F-47310): count (+18) = most (+14) = the car's
     /// nitro tune's shot count (s16 +0) where it is below the cap (+16, 100). A car without a sim tune keeps
@@ -2173,7 +2246,7 @@ impl CarInstance {
     /// memory, docs/AI.md 2026-11-08.)
     pub fn nitro_reset(&mut self) {
         let Some(vt) = self.params().veh.as_ref() else { return };
-        let shots = crate::vehicles::vehicles_words::nitro_count(100, vt.t.nitro_shots as u16 as i16).max(0) as u8;
+        let shots = nitro_start(vt.t.nitro_shots);
         self.state.nitro_max = shots;
         self.state.nitro_shots = shots;
     }
@@ -5843,7 +5916,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 }
             }
             if !ambient_rows {
-                lamp_rows.0[1][3] = setup_state(c.amb_lamps.s, 0);
+                lamp_rows.0[1][3] = setup_state(c.amb_lamps.s, c.amb_lamps.head2, 0);
                 lamp_rows.0[2][3] = c.amb_lamps.s[0];
                 // (the shift light's state, lamp id 19 - `setup_lamps`)
                 lamp_rows.0[4][3] = c.amb_lamps.shift;
@@ -6265,13 +6338,11 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// with the car's blink (`traffic::signals`, F-41231 / F-81289), reversing; a trailer with its cab
     /// takes the cab's five flags instead (F-46062 copies 0x40, 0x20, 0x10, 0x8 and 0x4 from the cab's
     /// record). Parked cars have every flag off, as recorded.
-    pub fn traffic_lamps(&mut self, eye: Vec3, axis: Vec3, frustum: &crate::render::Frustum, night: f32, dt: f32) {
+    pub fn traffic_lamps(&mut self, eye: Vec3, axis: Vec3, frustum: &crate::render::Frustum, weather: f32, dt: f32) {
         let alpha = self.render_alpha;
         let lights_off = self.lights_off;
         let hour = self.hour;
         let nav = traffic::rail_nav_made();
-        // (the hour window of F-75961; `night` over 0.5 inside 6 .. 18 h is the weather's own term)
-        let wet = night > 0.5 && (6.0..=18.0).contains(&hour);
         let mut flags: Vec<[bool; 5]> = Vec::with_capacity(self.cars.len());
         for c in self.cars.iter_mut() {
             // (the blink: + dt each update, back to 0 past 0.75 + the car's +3576 - F-46062)
@@ -6281,7 +6352,8 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 a.blink = 0.0;
             }
             let driven = c.parked.is_none();
-            let due = traffic_lights_due(hour, c.amb_lamps.hour_offset, wet) && c.removing.map_or(true, |f| f >= 0.1);
+            // (F-75961 reads the car's +484, the fade `traffic::fade_step` keeps for the cars of the ambient update)
+            let due = traffic_lights_due(amb_fade(c), hour, c.amb_lamps.hour_offset, weather);
             let (sa, sb) = match (nav, c.rail.as_ref()) {
                 (Some(nav), Some(r)) if driven => traffic::signals(nav, r, c.state.pos, c.amb_lamps.blink, c.amb_lamps.blink_on),
                 _ => (false, false),
@@ -6310,16 +6382,16 @@ if keep || c.state.pos.distance(center) < 450.0 {
             if d > TRAFFIC_LAMP_REACH || !frustum.intersects_aabb(pos - r, pos + r) {
                 continue;
             }
+            let car_fade = amb_fade(c);
             let a = &mut c.amb_lamps;
             for (v, on) in a.s.iter_mut().zip(flags) {
                 *v = traffic_ease(*v, on, dt);
             }
-            let fade = traffic_fade(d);
             let mut lv = [0.0; crate::render::car_lamps::IDS];
             for i in 0..crate::render::car_lamps::IDS {
-                let st = traffic_state(a.s, rows.att[i]);
+                let (st, level) = traffic_glow(a.s, rows.att[i], d, car_fade, rows.glow_scale);
                 a.lens[i] = st;
-                lv[i] = st * fade * rows.glow_scale;
+                lv[i] = level;
             }
             a.levels = Some(lv);
             // (diagnostics: MCLA_TLAMP_DUMP prints every drawn traffic car's depth, states and levels)
@@ -6338,7 +6410,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// gearbox in its first (reverse) gear; in the garage (light manager byte 14546) the head lamps
     /// follow the view instead (the caller's `lights_due`, `garage_lamps_due`). All three need the car's
     /// switch (`AmbLamps::off`, +597) and no Stealth (F-54047: the power-up's state 3 or 14).
-    pub fn setup_lamps(&mut self, lights_due: bool, dt: f32) {
+    pub fn setup_lamps(&mut self, world: &LampWorld, dt: f32) {
         let lights_off = self.lights_off;
         let sirens = self.sirens;
         let flash = self.player_flash;
@@ -6356,10 +6428,20 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 Some(v) if c.is_player && v.pad.live => v.pad.pedals.brake,
                 _ => c.input.brake,
             };
-            // (all three need the car's switch +597; Stealth / MegaStealth - F-54047 - puts them out)
-            let on = !c.amb_lamps.off && !c.pu_stealth;
+            // (the shift light's inputs, F-12794's speed and the gear's point: the transmission's +76 + 4 gear =
+            // `VehTune::shift[g][0]`; reverse and neutral hold 0 there, so it is lit in them. None: no sim tune or state)
+            let shift_in = match (c.model.params.veh.as_ref(), c.state.veh.as_ref()) {
+                (Some(vt), Some(vs)) => {
+                    let point = if vs.gear <= 0 { Some(0.0) } else { vt.shift.get(vs.gear as usize).map(|s| s[0]) };
+                    point.map(|p| (crate::vehicles::vehicles_words::engine_rpm(vs.engine_w), p))
+                }
+                _ => None,
+            };
+            // (F-10129's targets through the checked form: the head, brake and reversing need the car's switch +597 and no
+            // Stealth / MegaStealth - F-54047)
+            let t = setup_lamp_targets(world, c.amb_lamps.off, c.pu_stealth, brake, c.state.gear, shift_in);
             // (the flash, +240 at rate 9: the pad input's target, not switched by +597 - F-44589)
-            let flags = [on && lights_due && !lights_off, on && brake > 0.001, false, c.is_player && flash, on && c.state.gear < 0];
+            let flags = [t.head && !lights_off, t.brake, false, c.is_player && flash, t.reverse];
             // (the siren state +300, rate 18: its target +304 is what the car's police tactic writes each update -
             // F-63286 -> F-78189, 1 in pull-over / pursuit / arrow trap, cleared at the tactic's end; the
             // port's police has one state for all its cars: `sirens` on a cruiser)
@@ -6370,21 +6452,15 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 *v = if k == 2 { ease_at(*v, siren, 18.0, dt) } else { traffic_ease(*v, on, dt) };
             }
             a.siren_on = siren;
+            // (the second head record, +180: the copy of the head target +184, rate 9 - LIGHTING.md "read live")
+            a.head2 = traffic_ease(a.head2, flags[0], dt);
             for i in 0..crate::render::car_lamps::IDS {
-                a.lens[i] = setup_state(a.s, att[i]);
+                a.lens[i] = setup_state(a.s, a.head2, att[i]);
             }
             a.levels = Some(a.lens);
-            // (the 20th entry, the shift light: the engine's revs - F-12794, engine +8 x 9.5493 - at or past
-            // the gear's upshift point, the transmission's +76 + 4 gear = `VehTune::shift[g][0]`; reverse and
-            // neutral hold 0 there, so it is lit in them. Not switched by +597.)
-            let shift_on = match (c.model.params.veh.as_ref(), c.state.veh.as_ref()) {
-                // (F-12794's speed and the gear's point, `vehicles_words::shift_light`; the table holds 0 for reverse and neutral)
-                (Some(vt), Some(vs)) => {
-                    let point = if vs.gear <= 0 { Some(0.0) } else { vt.shift.get(vs.gear as usize).map(|s| s[0]) };
-                    point.is_some_and(|p| crate::vehicles::vehicles_words::shift_light(crate::vehicles::vehicles_words::engine_rpm(vs.engine_w), p))
-                }
-                _ => false,
-            };
+            // (the 20th entry, the shift light: lit at or past the gear's upshift point (`shift_light` of F-10129); reverse and
+            // neutral hold 0 there. Not switched by +597.)
+            let shift_on = shift_in.is_some() && t.shift;
             a.shift = traffic_ease(a.shift, shift_on, dt);
         }
     }
@@ -8203,7 +8279,7 @@ mod ambient_paint_tests {
     fn setup_levels_as_recorded() {
         use super::setup_state;
         let rows = crate::render::car_lamps::R8;
-        let lv = |s: [f32; 5]| -> Vec<f32> { (0..19).map(|i| setup_state(s, rows.att[i])).collect() };
+        let lv = |s: [f32; 5]| -> Vec<f32> { (0..19).map(|i| setup_state(s, s[0], rows.att[i])).collect() };
         let want = [0.25, 0.25, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         assert_eq!(lv([1.0, 0.0, 0.0, 0.0, 0.0]), want.to_vec());
         let b = lv([1.0, 0.4260, 0.0, 0.0, 0.2556]);

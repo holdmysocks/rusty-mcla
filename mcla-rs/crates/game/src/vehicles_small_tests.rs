@@ -50,7 +50,7 @@ fn paint_pow_matches_the_original() {
 /// F-75961: the lights-on getter (the hour getter F-22302 real, the object's slot a stub answering from the case).
 #[test]
 fn traffic_lights_getter_matches_the_original() {
-    let (mut n, mut on) = (0, 0);
+    let (mut n, mut on, mut played) = (0, 0, 0);
     for (i, o) in cases("lights") {
         // (the table row the selector byte picks: the first index for a set byte, else the second; the harness stores the
         // second index's row last, so it wins where they are equal. The hour slot: the first index's for a set byte, else
@@ -61,20 +61,35 @@ fn traffic_lights_getter_matches_the_original() {
         assert_eq!(o[0], got as u32, "{i:08x?}");
         on += got as u32;
         n += 1;
+        // (the play function: the light manager's 6.0 / 18.0, the object at +452 present and answering no)
+        if i[10] == 0x40c0_0000 && i[11] == 0x4190_0000 && i[1] != 0 && i[2] == 0 {
+            let play = crate::vehicles::traffic_lights_due(f(i[0]), hour, f(i[14]), weather);
+            assert_eq!(o[0], play as u32, "play {i:08x?}");
+            played += 1;
+        }
     }
     assert!(n == 4000 && on > 500 && on < 3500, "{n} {on}");
+    assert!(played > 300, "{played}");
 }
 
 /// F-40379: the nitro counter's reset.
 #[test]
 fn nitro_reset_matches_the_original() {
-    let mut n = 0;
+    let (mut n, mut played, mut negative) = (0, 0, 0);
     for (i, o) in cases("nitro") {
         let c = vw::nitro_count(i[1] as u16 as i16, i[0] as u16 as i16) as u16 as u32;
         assert_eq!(o, [c, c, 0, 0, 0], "{i:08x?}");
         n += 1;
+        // (the play function, the cap 100 as `CarInstance::nitro_reset` has it; the u8 store clamps a negative count at 0)
+        if i[1] == 100 {
+            let play = crate::vehicles::nitro_start((i[0] as u16) as f32);
+            assert_eq!(play as i16, (c as u16 as i16).max(0), "play {i:08x?}");
+            played += 1;
+            negative += ((c as u16 as i16) < 0) as u32;
+        }
     }
     assert_eq!(n, 3000);
+    assert!(played > 500 && negative > 100, "{played} {negative}");
 }
 
 /// F-42929: the window controller's reset (the sound stop F-31667 a stub that records r3 and r4).
@@ -90,6 +105,9 @@ fn window_reset_matches_the_original() {
         }
         // (+16 untouched)
         assert_eq!(o[7], 0xa5a50004);
+        // (the play default: the state the reset's target leads to, and the reset's time)
+        let w = crate::vehicles::WindowCtl::default();
+        assert_eq!((w.state as u32, w.time.to_bits()), (o[3], o[1]), "play {i:08x?}");
         n += 1;
     }
     assert_eq!(n, 1000);
@@ -105,11 +123,9 @@ fn lamp_state_levels_match_the_original() {
         for e in 0..19 {
             let att = i[13 + 9 * e + 8] as usize;
             all_same(&[table[att].to_bits()], &[o[e]], &format!("{i:08x?} entry {e}"));
-            // (the port's table: the second head state is the head's, equal by construction while both ease to the same target)
-            if h2.to_bits() == h.to_bits() {
-                let got = crate::vehicles::setup_state([h, b, siren, flash, rev], att as u8);
-                all_same(&[got.to_bits()], &[o[e]], &format!("port {i:08x?} entry {e}"));
-            }
+            // (the play table, with the second head state as the car keeps it)
+            let got = crate::vehicles::setup_state([h, b, siren, flash, rev], h2, att as u8);
+            all_same(&[got.to_bits()], &[o[e]], &format!("port {i:08x?} entry {e}"));
         }
         // (the 20th entry: the default row 0.5, 0.125, 0 and the shift state +392 as the cover's w)
         all_same(&o[19..23], &[i[6], 0x3f000000, 0x3e000000, 0], &format!("{i:08x?}"));
@@ -165,9 +181,9 @@ fn traffic_lamps_match_the_original() {
             all_same(&[st.to_bits()], &[o[29 + e]], &format!("{i:08x?} state {e}"));
             if !over {
                 // (the port's table and fade: the same numbers)
-                let ps = crate::vehicles::traffic_state(s, att as u8);
-                let pl = crate::vehicles::vehicles_words::traffic_level(ps, crate::vehicles::traffic_fade(d), scale, factor);
+                let (ps, pl) = crate::vehicles::traffic_glow(s, att as u8, d, scale, factor);
                 all_same(&[pl.to_bits()], &[o[10 + e]], &format!("port {i:08x?} level {e}"));
+                all_same(&[ps.to_bits()], &[o[29 + e]], &format!("port {i:08x?} state {e}"));
             }
             let lanes: Vec<u32> = (0..4).map(|k| (f(i[39 + 9 * e + k]) * f(i[39 + 9 * e + 4 + k])).to_bits()).collect();
             all_same(&lanes, &o[48 + 4 * e..52 + 4 * e], &format!("{i:08x?} row {e}"));
@@ -184,7 +200,7 @@ fn traffic_lamps_match_the_original() {
 /// helper and cos are real.
 #[test]
 fn lamp_controller_matches_the_original() {
-    let (mut n, mut heads, mut shifts) = (0, 0, 0);
+    let (mut n, mut heads, mut shifts, mut played) = (0, 0, 0, 0);
     for (i, o) in cases("lamps") {
         let input = vw::LampIn {
             switch: i[0] != 0,
@@ -237,9 +253,20 @@ fn lamp_controller_matches_the_original() {
         // (the record at +260's target is not written: its input stays; its value is forced to 1 after the easing)
         want[10] = i[53];
         all_same(&want, &o, &format!("{i:08x?}"));
+        // (the play targets: the light manager's 6.0 / 18.0, a driver input present, the port's gear numbering: reverse -1,
+        // else the gear index - 1 of the original's; the lamp set's byte 2161 is the head lamps' sun / weather / garage test)
+        if i[1] != 0 && i[20] == 0x40c0_0000 && i[21] == 0x4190_0000 {
+            let w = crate::vehicles::LampWorld { garage: i[18] != 0, cabin: i[27] != 0, hour: f(i[19]), storm: f(i[26]), fog: f(i[25]) };
+            let gear = if i[5] == 0 { -1 } else { i[5] as i32 - 1 };
+            let shift = Some((f(i[16]), f(i[6 + i[5] as usize])));
+            let t = crate::vehicles::setup_lamp_targets(&w, i[0] == 0, i[3] != 0 && i[4] != 0, f(i[2]), gear, shift);
+            assert_eq!((t.head as u32, t.brake as u32, t.reverse as u32, t.shift as u32), (o[0], o[4], o[6], o[17]), "play {i:08x?}");
+            played += 1;
+        }
         heads += out.head as u32;
         shifts += out.shift as u32;
         n += 1;
     }
     assert!(n == 2000 && heads > 300 && heads < 1700 && shifts > 300 && shifts < 1700, "{n} {heads} {shifts}");
+    assert!(played > 500, "{played}");
 }
