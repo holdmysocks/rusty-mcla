@@ -806,9 +806,10 @@ fn rival_side(pos: Vec3, right: Vec3, back: Vec3, p: Vec3, side: f32) -> f32 {
     d2
 }
 
-/// The cruise state's steering to sweep phase (F-25740): slope 0.75 within |x| <= 0.5, 0.25 outside.
+/// The cruise state's steering to sweep phase (F-25740): slope 0.75 within |x| <= 0.5, 0.25 outside (`bgt`: a NaN takes the
+/// inner line and stays as it is).
 fn ride_remap(x: f32) -> f32 {
-    if x.abs() <= 0.5 {
+    if !(x.abs() > 0.5) {
         (x * 1.5 + 1.0) * 0.5
     } else {
         let side = if x >= 0.0 { 1.0 } else { -1.0 };
@@ -968,6 +969,9 @@ enum RCmd {
     /// SetPanOverlay (+112): the pan-sweep overlay in the trees built from now on - F-56423's lookup, the local human's only -
     /// or none (the enters' 0; with it +108 is set to 0, which no rider has set)
     Pan(bool),
+    /// F-96595 with 0: +108 (the spine pan overlay) cleared - before the pan's 0 in every enter that takes the pan out (the
+    /// cruise / stopped idle enters only in the cockpit); no rider tree reads it (`da::Look::pan_spine` is none)
+    SpinePanOff,
     /// F-24441: clip, blend, looping, no blend
     Play(&'static str, f32, bool, bool),
     /// F-85393: A, B, looping, blend
@@ -1009,11 +1013,17 @@ fn ride_enter(n: St, ck: bool, edge: bool, pan: bool, fidgets: i32, speed: f32, 
     use RCmd::*;
     let e = |b: f32| if edge { 0.01 } else { b };
     let k = |a: &'static str, b: &'static str| if ck { a } else { b };
+    // (the pan out: +108 then +112 to 0; the cruise / stopped idle enters outside the cockpit set +112 from F-56423 alone)
+    let off = |o: &mut dyn RideSink| {
+        o.cmd(SpinePanOff);
+        o.cmd(Pan(false));
+    };
+    let pan_in = |o: &mut dyn RideSink| if ck { off(o) } else { o.cmd(Pan(pan)) };
     match n {
         St::Start => {}
         // F-27733 (the suspended state's enter too): in the cockpit the pan out, else F-56423's
         St::Cruise => {
-            o.cmd(Pan(!ck && pan));
+            pan_in(o);
             o.cmd(Pair(k("drv_low_lean_sweep_ckpt", "drv_low_lean_sweep"), k("drv_fst_lean_sweep_ckpt", "drv_fst_lean_sweep"), false, e(0.45)));
             o.cmd(Rate5(0.0));
             o.cmd(Phase2(0.5));
@@ -1021,39 +1031,39 @@ fn ride_enter(n: St, ck: bool, edge: bool, pan: bool, fidgets: i32, speed: f32, 
         }
         // F-73617
         St::Stopped | St::BurnC => {
-            o.cmd(Pan(!ck && pan));
+            pan_in(o);
             o.cmd(Play(k("drv_idle_stp_sweep_ckpt", "drv_idle_stp_sweep"), e(0.35), false, false));
             o.cmd(Rate(0.0));
         }
         // F-14953
         St::Tuck => {
-            o.cmd(Pan(false));
+            off(o);
             o.cmd(Pair(k("drv_low_lean_sweep_ckpt", "drv_low_leanFwd_sweep"), k("drv_fst_lean_sweep_ckpt", "drv_fst_leanFwd_sweep"), false, e(0.25)));
             o.cmd(Rate5(0.0));
         }
         // F-33885
         St::Wheelie => {
-            o.cmd(Pan(false));
+            off(o);
             o.cmd(Pair(k("drv_wheelie_ckpt", "drv_wheelie"), k("drv_wheelie_ckpt", "drv_low_lean_sweep"), false, e(0.25)));
             o.cmd(Rate5(0.0));
         }
         // F-23193, F-22152
         St::Endo | St::Nos => {
-            o.cmd(Pan(false));
+            off(o);
             let c = if n == St::Endo { k("drv_endo_ckpt", "drv_endo") } else { k("drv_nos_lean_sweep_ckpt", "drv_nos_lean_sweep") };
             o.cmd(Play(c, e(0.25), false, false));
             o.cmd(Rate(0.0));
         }
         // F-13481 / F-26376: no rate (the clip plays at 1, the cruise update sets its phase)
         St::BurnL | St::BurnR => {
-            o.cmd(Pan(false));
+            off(o);
             let c = if n == St::BurnL { "drv_burnout_L" } else { "drv_burnout_R" };
             o.cmd(Play(k("drv_idle_stp_sweep_ckpt", c), e(0.25), false, false));
         }
         // F-54589: the pan out only in the cockpit; no edge blend
         St::Shift => {
             if ck {
-                o.cmd(Pan(false));
+                off(o);
             }
             o.cmd(PairOverlay(k("drv_shft_low_ckpt_overlay", "drv_shft_low_overlay"), k("drv_shft_fst_ckpt_overlay", "drv_shft_fst_overlay"), false, 0.25));
             o.cmd(Rate5(0.0));
@@ -1061,7 +1071,7 @@ fn ride_enter(n: St, ck: bool, edge: bool, pan: bool, fidgets: i32, speed: f32, 
         }
         // F-93384
         St::Reverse => {
-            o.cmd(Pan(false));
+            off(o);
             o.cmd(Play(k("drv_rev_sweep_ckpt", "drv_rev_sweep"), e(0.35), false, false));
             o.cmd(OneOverlay("drv_rev_overlay", true, 0.25));
             o.cmd(Rate(0.0));
@@ -1069,10 +1079,17 @@ fn ride_enter(n: St, ck: bool, edge: bool, pan: bool, fidgets: i32, speed: f32, 
         }
         // F-87252 with the picker F-61316 (the counter already moved on)
         St::Fidget => {
-            o.cmd(Pan(false));
+            off(o);
             o.cmd(Play(["drv_gest_look_lft", "drv_gest_look_rgt"][(fidgets % 2) as usize], 0.25, false, false));
         }
     }
+}
+
+/// The start's transition action F-88016 (its anim player half): the pan overlay from F-56423's lookup (`pan`), then
+/// `drv_idle_low` looped with no blend.
+fn ride_action_start(pan: bool, o: &mut dyn RideSink) {
+    o.cmd(RCmd::Pan(pan));
+    o.cmd(RCmd::Play("drv_idle_low", 0.25, true, true));
 }
 
 /// A riding state's update: the cruise's F-61324 (the burnouts' too), stopped idle F-63745, tuck F-77590, wheelie F-56690,
@@ -1280,8 +1297,7 @@ fn ride_state_to(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32, o:
             }
             // (the transition's action F-88016: the pan in, drv_idle_low looped with no blend)
             St::Start => {
-                o.cmd(RCmd::Pan(pan));
-                o.cmd(RCmd::Play("drv_idle_low", 0.25, true, true));
+                ride_action_start(pan, o);
                 ride_ctx_start(&mut r.ctx);
             }
             _ => {}
@@ -1348,6 +1364,7 @@ impl RideSink for RideSeq<'_> {
                 *self.pan = if on { id("DRV_PAN_SWEEP_OVERLAY") } else { None };
                 None
             }
+            RCmd::SpinePanOff => None,
             RCmd::Play(n, b, l, nb) => id(n).map(|x| da::play(&look, &dur, x, b, l, nb)),
             RCmd::Pair(a, z, l, b) => id(a).zip(id(z)).map(|(x, y)| da::pair(&look, &dur, x, y, l, b)),
             RCmd::PairOverlay(a, z, l, b) => id(a).zip(id(z)).and_then(|(x, y)| da::pair_overlay(s, &look, &dur, x, y, l, b)),
@@ -3161,6 +3178,88 @@ mod ride_tests {
         assert!((d.out / d.scale - x).abs() < 1e-6);
     }
 
+    /// The riding states' anim player calls against the original's callbacks run offline (tools/rider_cmd_reference.py: 150
+    /// random contexts each of the start's action, ten enters and eight updates, the pan clip found in two thirds): every call,
+    /// its clips, flags and float argument equal, in order - the endo, nos boost and start halves no ride recorded among them.
+    #[test]
+    fn the_rider_calls_match_the_original() {
+        struct Log(Vec<String>);
+        impl RideSink for Log {
+            fn cmd(&mut self, c: RCmd) {
+                use RCmd::*;
+                let b = |v: bool| v as u8;
+                let v = &mut self.0;
+                match c {
+                    SpinePanOff => v.push("F-96595 0".into()),
+                    Pan(on) => v.push(format!("F-63058 {}", if on { "DRV_PAN_SWEEP_OVERLAY" } else { "0" })),
+                    Play(n, bl, l, nb) => v.push(format!("F-24441 {n} {} {} {:08x}", b(l), b(nb), bl.to_bits())),
+                    Pair(a, z, l, bl) => v.push(format!("F-85393 {a} {z} {} {:08x}", b(l), bl.to_bits())),
+                    PairOverlay(a, z, l, bl) => v.push(format!("F-42342 {a} {z} {} {:08x}", b(l), bl.to_bits())),
+                    OneOverlay(n, l, bl) => v.push(format!("F-85022 {n} {} {:08x}", b(l), bl.to_bits())),
+                    StopOverlay(bl) => v.push(format!("F-72270 {:08x}", bl.to_bits())),
+                    Phase(x) => v.push(format!("F-40742 {:08x}", x.to_bits())),
+                    Rate(x) => v.push(format!("F-53423 {:08x}", x.to_bits())),
+                    Rate5(x) => v.push(format!("F-84631 {:08x}", x.to_bits())),
+                    Phase2(x) => v.push(format!("F-62772 {:08x}", x.to_bits())),
+                    Weight(x) => v.push(format!("F-22341 {:08x}", x.to_bits())),
+                    OverlayRate(x) => v.push(format!("F-72214 {:08x}", x.to_bits())),
+                }
+            }
+            fn left(&mut self) -> Option<(f32, f32)> {
+                None
+            }
+        }
+        // the reference's call "<F-id> <r4 ...> <f1>" in the same form (the +108 / +112 setters read r4 alone)
+        let canon = |c: &str| -> String {
+            let p: Vec<&str> = c.split(' ').collect();
+            let flag = |s: &str| u32::from_str_radix(s, 16).unwrap().to_string();
+            let reg = |s: &str| if s == "00000000" { "0".to_string() } else { s.to_string() };
+            match p[0] {
+                "F-96595" | "F-63058" => format!("{} {}", p[0], reg(p[1])),
+                "F-24441" => format!("{} {} {} {} {}", p[0], p[1], flag(p[2]), flag(p[3]), p[4]),
+                "F-85393" | "F-42342" => format!("{} {} {} {} {}", p[0], p[1], p[2], flag(p[3]), p[4]),
+                "F-85022" => format!("{} {} {} {}", p[0], p[1], flag(p[2]), p[3]),
+                _ => format!("{} {}", p[0], p[1]),
+            }
+        };
+        let st = |f: &str| match f {
+            "F-27733" | "F-61324" => St::Cruise,
+            "F-73617" | "F-63745" => St::Stopped,
+            "F-14953" | "F-77590" => St::Tuck,
+            "F-33885" | "F-56690" => St::Wheelie,
+            "F-23193" | "F-14383" => St::Endo,
+            "F-22152" | "F-23398" => St::Nos,
+            "F-13481" => St::BurnL,
+            "F-26376" => St::BurnR,
+            "F-54589" | "F-32007" => St::Shift,
+            "F-93384" | "F-30945" => St::Reverse,
+            _ => St::Start,
+        };
+        let mut n = 0;
+        for line in include_str!("testdata/rider_cmd_ref.txt").lines() {
+            let (inp, out) = line.split_once(" -> ").unwrap();
+            let v: Vec<&str> = inp.split(' ').collect();
+            let w: Vec<u32> = v[2..].iter().map(|s| u32::from_str_radix(s, 16).unwrap()).collect();
+            let f = |k: usize| f32::from_bits(w[k]);
+            // (w: +8 +44 +92 +96 +148)
+            let (ck, edge, pan) = (w[0] & 0x200000 != 0, w[0] & 0x180000 != 0, v[1] == "1");
+            let i = RideIn { ck, x: f(1), throttle: f(2), speed: f(3), ..Default::default() };
+            let enter = !matches!(v[0], "F-88016" | "F-61324" | "F-63745" | "F-77590" | "F-56690" | "F-14383" | "F-23398" | "F-32007" | "F-30945");
+            let mut log = Log(Vec::new());
+            if v[0] == "F-88016" {
+                ride_action_start(pan, &mut log);
+            } else if enter {
+                ride_enter(st(v[0]), ck, edge, pan, 0, i.speed, &mut log);
+            } else {
+                ride_update(st(v[0]), &i, f(4), &mut log);
+            }
+            let want: Vec<String> = out.split("; ").filter(|c| !c.is_empty()).map(canon).collect();
+            assert_eq!(log.0, want, "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 2850);
+    }
+
     /// F-25740 run offline on 3,012 steering values (work/cameras2/bikegraph/remap_ref.py; the bits as decimal words): equal.
     #[test]
     fn ride_remap_matches_the_original() {
@@ -3710,7 +3809,7 @@ mod ride_recorded_tests {
             RCmd::Rate5(v) => set(2, v),
             RCmd::Phase2(v) => set(3, v),
             RCmd::Weight(v) => set(6, v),
-            RCmd::PairOverlay(..) | RCmd::OneOverlay(..) | RCmd::StopOverlay(_) | RCmd::OverlayRate(_) => None,
+            RCmd::PairOverlay(..) | RCmd::OneOverlay(..) | RCmd::StopOverlay(_) | RCmd::OverlayRate(_) | RCmd::SpinePanOff => None,
         }
     }
 
