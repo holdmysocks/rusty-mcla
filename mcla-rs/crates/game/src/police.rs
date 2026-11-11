@@ -8048,6 +8048,8 @@ pub fn station_reset(vehicles: &mut Vehicles, world: &World, n: u32) -> Option<u
         c.state.vel = Vec3::ZERO;
         c.state.ang_vel = Vec3::ZERO;
     }
+    // (the safe matrix: F-15222's level one at the place as given)
+    crate::physics::vehsim::init_reset_position(&mut c.state, at, q);
     c.pose_history.reset();
     // (ResetWithDamageIntact, F-39106: the scene show flag off, cinedriver.rs)
     c.show_driver = false;
@@ -8103,6 +8105,7 @@ pub fn scene_frame_at(vehicles: &mut Vehicles, world: &World, place: (Vec3, f32)
         c.state.vel = Vec3::ZERO;
         c.state.ang_vel = Vec3::ZERO;
     }
+    crate::physics::vehsim::init_reset_position(&mut c.state, pos, q);
     c.pose_history.reset();
     // (ResetWithDamageIntact, F-39106: racer +676 = 0 and the driver instance's reset - its scene show flag off,
     // cinedriver.rs; the car scenes' UseRacerNativeCharacter(0) shows it again, the bikestand's script does not)

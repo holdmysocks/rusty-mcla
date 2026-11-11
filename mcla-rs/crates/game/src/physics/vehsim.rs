@@ -7592,7 +7592,15 @@ pub fn set_pose(st: &mut CarState, vt: &VehTune, world: &WorldCollider, m: [Vec3
         rows = [x, y, z];
         at = point;
     }
-    st.relocate(at, Quat::from_mat3(&Mat3::from_cols(rows[0], rows[1], rows[2])).normalize());
+    set_pose_at(st, vt, [rows[0], rows[1], rows[2], at], vel, ang_vel);
+}
+
+/// F-86308 without its probe (its byte argument 0, as F-12529 calls it): the matrix as given into the chassis' (+288),
+/// the previous one (+352) and the racer's safe matrix (+224), the velocities (+432 / +448), then as `set_pose`.
+pub fn set_pose_at(st: &mut CarState, vt: &VehTune, m: [Vec3; 4], vel: Vec3, ang_vel: Vec3) {
+    let rows = [m[0], m[1], m[2]];
+    st.relocate(m[3], Quat::from_mat3(&Mat3::from_cols(rows[0], rows[1], rows[2])).normalize());
+    st.safe = Some(m);
     st.vel = vel;
     st.ang_vel = ang_vel;
     let Some(vs) = st.veh.as_deref_mut() else { return };
@@ -7610,6 +7618,45 @@ pub fn set_pose(st: &mut CarState, vt: &VehTune, world: &WorldCollider, m: [Vec3
         vs.sst.reset();
     }
     set_down_speeds(st, vt, rows[2]);
+}
+
+/// Racer_InitializeResetPosition (F-15222): the racer's reset place (+192) and heading (+204) make a level matrix (the
+/// identity turned by the heading about y: the car's yaw, `rot`) stored into the chassis' (+288), the previous (+352) and the
+/// safe matrix (+224); the car is then put there (its own set-down, ResetWithDamageIntact's probe). Here only the safe
+/// matrix: the callers place the car.
+pub fn init_reset_position(st: &mut CarState, at: Vec3, rot: Quat) {
+    st.safe = Some([rot * Vec3::X, rot * Vec3::Y, rot * Vec3::Z, at]);
+}
+
+/// The racer's safe place, F-12529 (racer vtable +112, run by the racer update F-36768 every frame for each racer whose
+/// car is loaded - the player, opponents, AI racers and police alike; docs/reference/vehicle/water_rule.md 4). Under
+/// -75 m (the matrix' y, +340) the car is set down at the safe matrix, F-86308 without its probe, standing still -
+/// returns true (the player then has its camera reset). Otherwise the car's matrix becomes the safe one unless the
+/// crash timer runs (mcCarDamage +44, `crash_runs`), the car is in the water (chassis +12), in the air (+584), stuck
+/// (mcCarStuck +56), less than 10 m from the last (squared distance under 100), or a wheel stands on a material deeper
+/// than 0.075.
+pub fn safe_place(st: &mut CarState, vt: Option<&VehTune>, crash_runs: bool) -> bool {
+    if st.pos.y < f32::from_bits(0xc296_0000) {
+        let Some(m) = st.safe else { return false };
+        log::info!("car fell under -75 m at {:.1} {:.1} {:.1}: set down at its safe place {:.1} {:.1} {:.1}", st.pos.x, st.pos.y, st.pos.z, m[3].x, m[3].y, m[3].z);
+        match vt {
+            Some(vt) => set_pose_at(st, vt, m, Vec3::ZERO, Vec3::ZERO),
+            None => {
+                st.relocate(m[3], Quat::from_mat3(&Mat3::from_cols(m[0], m[1], m[2])).normalize());
+                st.vel = Vec3::ZERO;
+                st.ang_vel = Vec3::ZERO;
+            }
+        }
+        return true;
+    }
+    use crate::physics::collision::{surface_depth, Surface};
+    let stuck = st.veh.as_ref().map_or(false, |v| v.stuck != 0);
+    let wet = st.wheels.iter().any(|w| surface_depth(Surface::from_u8(w.surface)) > f32::from_bits(0x3d99_999a));
+    let far = st.safe.map_or(true, |m| (st.pos - m[3]).length_squared() >= 100.0);
+    if !crash_runs && !st.in_water() && st.airborne_time == 0.0 && !stuck && far && !wet {
+        st.safe = Some([st.rot * Vec3::X, st.rot * Vec3::Y, st.rot * Vec3::Z, st.pos]);
+    }
+    false
 }
 
 /// F-72737 after the velocities are set (vfuncs 164 / 172 of the physics instance): the car's speed along its back row
@@ -8708,6 +8755,45 @@ mod stuck_flip_tests {
             n += 1;
         }
         assert!(n == 4000 && flips > 500, "{n} {flips}");
+    }
+}
+
+#[cfg(test)]
+mod safe_place_tests {
+    use super::*;
+
+    /// F-12529's rule (water_rule.md 4; the recording of 2026-11-11, saferec s1: under -75 m the body is put at the safe
+    /// matrix exactly, standing still): the set-down, the 10 m step and the crash timer / air tests.
+    #[test]
+    fn safe_place_sets_down_and_saves_as_the_original() {
+        let mut st = CarState::new(Vec3::new(10.0, 2.0, 5.0), 0.3);
+        assert!(!safe_place(&mut st, None, false));
+        let first = st.safe.unwrap();
+        assert_eq!(first[3], Vec3::new(10.0, 2.0, 5.0));
+        st.pos = Vec3::new(10.0 + 9.99, 2.0, 5.0);
+        safe_place(&mut st, None, false);
+        assert_eq!(st.safe.unwrap()[3], first[3], "under 10 m: kept");
+        st.pos = Vec3::new(20.0, 2.0, 5.0);
+        safe_place(&mut st, None, true);
+        assert_eq!(st.safe.unwrap()[3], first[3], "crash timer running: kept");
+        st.airborne_time = 0.1;
+        safe_place(&mut st, None, false);
+        assert_eq!(st.safe.unwrap()[3], first[3], "in the air: kept");
+        st.airborne_time = 0.0;
+        safe_place(&mut st, None, false);
+        assert_eq!(st.safe.unwrap()[3], Vec3::new(20.0, 2.0, 5.0), "10 m on: taken");
+        let saved = st.safe.unwrap();
+        st.pos = Vec3::new(-2950.0, -75.0, -820.0);
+        assert!(!safe_place(&mut st, None, false), "-75 itself is not under it");
+        assert_eq!(st.safe.unwrap()[3], Vec3::new(-2950.0, -75.0, -820.0), "and is saved there, 10 m on");
+        let saved = st.safe.unwrap();
+        st.pos = Vec3::new(-2950.0, -79.29, -820.0);
+        st.vel = Vec3::new(3.0, -9.0, 1.0);
+        st.ang_vel = Vec3::new(0.5, 0.1, 0.0);
+        assert!(safe_place(&mut st, None, false));
+        assert_eq!((st.pos, st.vel, st.ang_vel), (saved[3], Vec3::ZERO, Vec3::ZERO));
+        assert!((st.rot.dot(Quat::from_rotation_y(0.3))).abs() > 0.99999);
+        assert_eq!(st.safe.unwrap(), saved);
     }
 }
 

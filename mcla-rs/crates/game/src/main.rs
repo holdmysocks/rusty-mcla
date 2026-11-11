@@ -713,9 +713,6 @@ struct App {
     crash_bits: u8,
     crash_timer: f32,
     crash_exploding: bool,
-    /// the player racer's safe matrix (racer +224, F-12529): its place and turn where it last drove
-    /// on firm ground, what QUICK FIX puts a damaged-out car back at (water_rule.md 4, 5)
-    safe_matrix: Option<(Vec3, glam::Quat)>,
     /// the wipeout camera (mcPlayerCamera +72)
     crash_cam: boomcam::CrashCam,
     /// standing still: seconds so far, the car's "Idle" view once looked up, how far it is blended in
@@ -1656,7 +1653,6 @@ impl App {
             crash_bits: 0,
             crash_timer: 0.0,
             crash_exploding: false,
-            safe_matrix: None,
             crash_cam: Default::default(),
             idle_time: 0.0,
             view_mode: 0,
@@ -3794,30 +3790,16 @@ impl App {
                 let max = c.model.simtunes.as_ref().map_or(400.0, |s| s.base.damage.max_damage);
                 log::info!("water t {:.3} tick {} pos {:.3} {:.3} {:.3} fwd {:.2} {:.2} gear {} in {:.2}/{:.2}/{} speed {:.2} damage {:.3} in {} level {:.4} buoyancy {:.4} flow {:.1} wheels {:?} bits {:#x} timer {:.2} safe {:?}", self.sim_time, self.tick_no, c.state.pos.x, c.state.pos.y, c.state.pos.z, c.state.forward().x, c.state.forward().z, c.state.gear, c.input.throttle, c.input.brake, c.input.handbrake, c.state.speed(), c.state.damage * max,
                     fl.map_or(false, |f| f.inside), fl.map_or(0.0, |f| f.level), fl.map_or(0.0, |f| f.buoyancy), fl.map_or(0.0, |f| f.flow.x),
-                    c.state.wheels.iter().map(|w| physics::collision::Surface::from_u8(w.surface).material()).collect::<Vec<_>>(), self.crash_bits, self.crash_timer, self.safe_matrix.map(|(p, _)| (p.x, p.y, p.z)));
+                    c.state.wheels.iter().map(|w| physics::collision::Surface::from_u8(w.surface).material()).collect::<Vec<_>>(), self.crash_bits, self.crash_timer, c.state.safe.map(|m| (m[3].x, m[3].y, m[3].z)));
             }
         }
         let mut set_down = false;
         if let Some(c) = self.vehicles.player_mut() {
-            if c.state.pos.y < f32::from_bits(0xc296_0000) {
-                if let Some((pos, rot)) = self.safe_matrix {
-                    // (approx.: F-86308 is not read through; the car is put there standing still, as the port's other set-downs)
-                    log::info!("car fell under -75 m at {:.1} {:.1} {:.1}: set down at its safe place {:.1} {:.1} {:.1}", c.state.pos.x, c.state.pos.y, c.state.pos.z, pos.x, pos.y, pos.z);
-                    c.state.relocate(pos, rot);
-                    c.state.vel = Vec3::ZERO;
-                    c.state.ang_vel = Vec3::ZERO;
-                    c.pose_history.reset();
-                    // (then the player camera's reset, F-28350 - the player has one)
-                    set_down = true;
-                }
-            } else {
-                let timer = self.crash_bits != 0 && self.crash_timer > 0.0;
-                let stuck = c.state.veh.as_ref().map_or(false, |v| v.stuck != 0);
-                let wet = c.state.wheels.iter().any(|w| physics::collision::surface_depth(physics::collision::Surface::from_u8(w.surface)) > f32::from_bits(0x3d99_999a));
-                let far = self.safe_matrix.map_or(true, |(pos, _)| (c.state.pos - pos).length_squared() >= 100.0);
-                if !timer && !c.state.in_water() && c.state.airborne_time == 0.0 && !stuck && far && !wet {
-                    self.safe_matrix = Some((c.state.pos, c.state.rot));
-                }
+            let vt = c.params().veh.clone();
+            if physics::vehsim::safe_place(&mut c.state, vt.as_deref(), self.crash_bits != 0 && self.crash_timer > 0.0) {
+                c.pose_history.reset();
+                // (then the player camera's reset, F-28350 - the player has one)
+                set_down = true;
             }
         }
         if set_down {
@@ -8992,7 +8974,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // ---- the race-over menu's quick fix ----
         if std::mem::take(&mut self.game.quick_fix) {
             let damaged_out = self.vehicles.player().map_or(false, |p| p.state.damage >= 1.0);
-            let safe = self.safe_matrix.filter(|_| damaged_out);
+            let safe = self.vehicles.player().and_then(|p| p.state.safe).filter(|_| damaged_out)
+                .map(|m| (m[3], glam::Quat::from_mat3(&glam::Mat3::from_cols(m[0], m[1], m[2])).normalize()));
             if let Some(a) = self.audio.as_mut() {
                 a.obj("QUICK_FIX_MASTER");
             }

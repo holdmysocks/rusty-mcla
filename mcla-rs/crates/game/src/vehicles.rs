@@ -5160,6 +5160,16 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         crate::physics::vehsim::reset(state, &vt, &world.collider);
                     }
                 }
+                // (the racer's safe place, F-12529: every racer whose car is loaded runs it from the racer update
+                // F-36768 - mcOpponent, mcAiRacer and mcPolice have it at vtable +112 as mcPlayer; traffic and parked
+                // cars are no racers)
+                if c.racer || c.pinned || c.cop || c.goon || !c.roam_key.is_empty() {
+                    let runs = c.crash.bits != 0 && c.crash.timer > 0.0;
+                    let vt = c.tuned.as_deref().unwrap_or(&c.model.params).veh.clone();
+                    if crate::physics::vehsim::safe_place(&mut c.state, vt.as_deref(), runs) {
+                        c.pose_history.reset();
+                    }
+                }
             }
             match post {
                 StepPost::Settle => {

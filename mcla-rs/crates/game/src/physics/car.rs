@@ -280,6 +280,10 @@ pub struct CarState {
     /// the car's underside as the bound box has it (0.2 m above its floor, world corners): the hydrant's
     /// water collides with it (vehsim.rs; propfx.rs)
     pub underside: Option<[Vec3; 4]>,
+    /// the racer's safe matrix (racer +224: rows x, y, z and the place). F-12529 keeps it and sets the car down at it
+    /// under -75 m (`vehsim::safe_place`); every set-down F-86308 (`vehsim::set_pose_at`) and
+    /// Racer_InitializeResetPosition (F-15222, `vehsim::init_reset_position`) write it. None before the first.
+    pub safe: Option<[Vec3; 4]>,
     pub pos: Vec3,
     pub rot: Quat,
     pub vel: Vec3,
@@ -456,6 +460,7 @@ impl CarState {
     pub fn new(pos: Vec3, yaw: f32) -> CarState {
         CarState {
             underside: None,
+            safe: None,
             pos,
             rot: Quat::from_rotation_y(yaw),
             vel: Vec3::ZERO,
