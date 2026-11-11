@@ -875,6 +875,18 @@ impl Sound {
                         }
                     }
                     crate::audio::ObjCmd::MusicBackground { on } => a.mgr.background = on,
+                    crate::audio::ObjCmd::MusicSuspendUser { arg } => {
+                        let mut m = std::mem::take(&mut a.mgr);
+                        m.suspend_user(arg, &mut MusicHere { lib, a, jingle: &mut self.music_jingle, slots: &mut self.music_slots });
+                        a.mgr = m;
+                    }
+                    crate::audio::ObjCmd::MusicResumeUser => {
+                        if let Some(t) = lib.game.get_name("MUSIC_0_MANAGER").and_then(crate::audio::MusicTune::read) {
+                            let mut m = std::mem::take(&mut a.mgr);
+                            m.resume_user(&t, &mut MusicHere { lib, a, jingle: &mut self.music_jingle, slots: &mut self.music_slots });
+                            a.mgr = m;
+                        }
+                    }
                     crate::audio::ObjCmd::MusicSuspend => {
                         let tune = lib.game.get_name("MUSIC_0_MANAGER").and_then(crate::audio::MusicTune::read);
                         if let Some(t) = tune {

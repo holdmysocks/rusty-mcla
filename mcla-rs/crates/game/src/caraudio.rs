@@ -2161,6 +2161,11 @@ struct Entry {
     sounds: Option<CarSounds>,
     engine: Option<EngineSound>,
     traffic: Option<Traffic>,
+    /// an opponent's audio entity of the pool of 15 (F-13454): 0 not asked yet, 1 held, 2 the pool was full (no
+    /// engine sound for this car)
+    opp: u8,
+    /// the PLAYER_WAVESHAPER bus it holds: its place in the pool of 7 (`Fleet::buses`)
+    bus: Option<usize>,
 }
 
 /// Every non-player car's sounds, and the player car's extras.
@@ -2169,6 +2174,8 @@ pub struct Fleet {
     /// traffic model -> its `szAudioType`
     types: HashMap<String, TrafficType>,
     cars: HashMap<usize, Entry>,
+    /// the opponents' 7 PLAYER_WAVESHAPER buses (0x8288DEE8, made once by F-12426), as chain ids
+    buses: [u32; 7],
     /// the car that owns the worldized chatter (global 0x8288DCE0), its handle and timer (this+280)
     chatter: Option<(usize, Handle, f32)>,
     trace_t: f32,
@@ -2325,6 +2332,7 @@ impl Fleet {
             mats: Materials::load(data_dir),
             types,
             cars: HashMap::new(),
+            buses: std::array::from_fn(|_| EngineSound::new_bus()),
             chatter: None,
             trace_t: 0.0,
             pol: PoliceAudio::default(),
@@ -2477,7 +2485,8 @@ impl Fleet {
                 Self::release(lib, &mut e);
             }
         }
-        // the 7 nearest opponents get engine loops (F-25575), the 8 nearest traffic cars engine and tyres
+        // the opponents' engines (15 at most), the 7 nearest into a PLAYER_WAVESHAPER bus (F-25575); the 8 nearest
+        // traffic cars engine and tyres
         let mut opp: Vec<(f32, usize)> = Vec::new();
         let mut amb: Vec<(f32, usize)> = Vec::new();
         let mut parked: Vec<usize> = Vec::new();
@@ -2659,28 +2668,61 @@ impl Fleet {
                 pa.warn_barred.clear();
             }
         }
+        // the opponent entities (pool of 15, F-13454 when the car is made, called by F-93957): the first free one, none
+        // when all 15 are held - that car has no engine sound while it lives. Its engine starts at the car's rpm.
+        let mut held = self.cars.values().filter(|e| e.opp == 1).count();
+        for &(_, i) in &opp {
+            let c = &v.cars[i];
+            let e = entry(&mut self.cars, &self.types, lib, i, c, false);
+            if e.opp == 0 {
+                e.opp = if held < 15 { 1 } else { 2 };
+                if e.opp == 1 {
+                    held += 1;
+                    e.engine = EngineSound::new_opponent(lib, &c.model.name, c.model.bike);
+                    if let Some(en) = &mut e.engine {
+                        en.start_at(engine_rpm(c));
+                        en.set_bus(lib, 0);
+                    }
+                }
+            }
+        }
+        // F-25575 (every frame): the held entities by squared distance to the listener; from the 8th on a bus is given
+        // back (F-45193), then the 7 nearest without one take the first free of the pool (F-14435); vt+112 on both
+        let near: Vec<usize> = opp.iter().map(|&(_, i)| i).filter(|i| self.cars.get(i).is_some_and(|e| e.opp == 1)).collect();
+        for &i in near.iter().skip(7) {
+            if let Some(e) = self.cars.get_mut(&i) {
+                if e.bus.take().is_some() {
+                    if let Some(en) = &mut e.engine {
+                        en.set_bus(lib, 0);
+                    }
+                }
+            }
+        }
+        for &i in near.iter().take(7) {
+            if self.cars.get(&i).is_some_and(|e| e.bus.is_none()) {
+                let used: Vec<usize> = self.cars.values().filter_map(|e| e.bus).collect();
+                if let Some(k) = (0..7).find(|k| !used.contains(k)) {
+                    let id = self.buses[k];
+                    let e = self.cars.get_mut(&i).unwrap();
+                    e.bus = Some(k);
+                    if let Some(en) = &mut e.engine {
+                        en.set_bus(lib, id);
+                    }
+                }
+            }
+        }
         // computer racers and cruisers
-        for (rank, &(_, i)) in opp.iter().enumerate() {
+        for &(_, i) in opp.iter() {
             let c = &v.cars[i];
             let e = entry(&mut self.cars, &self.types, lib, i, c, false);
             // the car's occluder (entity +96) into every request of its car audio
             let occ = self.occ.get(&c.uid).copied().unwrap_or(0);
             let mut ci = car_in(c);
             ci.wet = wet;
-            if rank < 7 {
-                if e.engine.is_none() {
-                    e.engine = EngineSound::new_opponent(lib, &c.model.name, c.model.bike);
-                    if let Some(en) = &mut e.engine {
-                        en.start_at(engine_rpm(c));
-                    }
-                }
-                if let Some(en) = &mut e.engine {
-                    let inp = engine_in(c, racing && !c.cop && c.ai.is_some());
-                    en.occ = occ;
-                    en.update(lib, &inp, dt);
-                }
-            } else if let Some(mut en) = e.engine.take() {
-                en.stop(lib);
+            if let Some(en) = &mut e.engine {
+                let inp = engine_in(c, racing && !c.cop && c.ai.is_some());
+                en.occ = occ;
+                en.update(lib, &inp, dt);
             }
             if let Some(s) = &mut e.sounds {
                 s.occ = occ;
@@ -2953,6 +2995,8 @@ fn entry<'a>(cars: &'a mut HashMap<usize, Entry>, types: &HashMap<String, Traffi
                 sounds: (!traffic).then(|| CarSounds::new(lib, &c.model.name, c.model.bike, player)),
                 engine: None,
                 traffic: amb,
+                opp: 0,
+                bus: None,
             }
         })
     }

@@ -4541,6 +4541,11 @@ impl App {
                 // (right after the MISSION_EVENT the core calls AudioManager_EnterHangoutState(<location id>), F-35228:
                 // the ambience's hangout district and the speech stopped, F-60295 - before the entry scene's own lines)
                 self.game.hangout_audio = Some((si, false));
+                // (and right after it mcMusicManager_SuspendUserState(-1), F-42736: local_hangout_core 0x10e8,
+                // wager_hangout_core 0x15ee)
+                if let Some(a) = self.audio.as_mut() {
+                    a.obj_cmds.push(audio::ObjCmd::MusicSuspendUser { arg: -1 });
+                }
                 // (CineScript_SetForceCutsceneLighting(1) right before that MISSION_EVENT - `Game::force_cut_light`)
                 self.game.force_cut_light = true;
                 self.speech.stop();
@@ -7334,7 +7339,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.roam.suspend(self.game.suspend_all_opponents(), self.game.race.is_some(), &mut self.vehicles);
             let pp = self.vehicles.player().map(|c| c.state.pos);
             self.game.update_place_holds(pp, sim_dt);
+            let in_hangout = self.game.hangout_audio.is_some();
             self.game.step_hangout_audio();
+            // (mcMusicManager_ResumeUserState, F-18629, when the player drives off: local_hangout_core 0x20fc,
+            // wager_hangout_core 0x64f3; a race of the hangout leaves the radio to the race)
+            if in_hangout && self.game.hangout_audio.is_none() && self.game.race.is_none() {
+                if let Some(a) = self.audio.as_mut() {
+                    a.obj_cmds.push(audio::ObjCmd::MusicResumeUser);
+                }
+            }
             // (SetForceCutsceneLighting(0): the hangout left - its exit state passed, the exit scene and the exit warp's
             // climb over)
             if self.game.force_cut_light && self.game.hangout_audio.is_none() && self.cine.playing.is_none() && self.climb.is_none() {

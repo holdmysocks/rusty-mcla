@@ -769,6 +769,10 @@ pub enum ObjCmd {
     MusicSuspend,
     /// the script native mcMusicManager_SetAllowBackgroundPlay (F-50556): the manager's background play (+528)
     MusicBackground { on: bool },
+    /// mcMusicManager_SuspendUserState (F-42736): the hangout cores' -1 right after AudioManager_EnterHangoutState
+    MusicSuspendUser { arg: i32 },
+    /// mcMusicManager_ResumeUserState (F-18629): the hangout cores when the player drives off
+    MusicResumeUser,
     /// the HUD's music buttons (F-49672 / F-78917 / F-29546): the manager's Pause(-1) (F-70924), NextSong / PreviousSong
     /// with the chime (F-51486 / F-87381)
     MusicPause,
@@ -2076,6 +2080,26 @@ impl MusicMgr {
             e.same_song();
         }
         self.handler = Handler::Idle;
+    }
+
+    /// SuspendUserState (F-42736): with the playing handler (+376 / +380 the playing one, F-61726), the stop F-79064
+    /// with `arg`; the state (+496) stays.
+    pub fn suspend_user(&mut self, arg: i32, e: &mut impl MusicEnv) {
+        if self.handler == Handler::Playing {
+            self.stop(arg, e);
+        }
+    }
+
+    /// ResumeUserState (F-18629): the restart byte (+526) cleared; by the state (+496): 0 the song started (F-62155
+    /// with 0), 1 reset (F-14624), 2 the stop F-79064 with -1, else nothing.
+    pub fn resume_user(&mut self, t: &MusicTune, e: &mut impl MusicEnv) {
+        self.restart = false;
+        match self.state {
+            0 => self.start(t, 0, e),
+            1 => self.reset(e),
+            2 => self.stop(-1, e),
+            _ => {}
+        }
     }
 
     /// NextSong (F-51486) and PreviousSong (F-87381), `chime` their argument's byte: with MUSIC_USER above -95 dB, the

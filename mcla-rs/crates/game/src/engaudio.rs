@@ -347,6 +347,20 @@ impl EngineSound {
         Self::make(lib, car, bike, false)
     }
 
+    /// A PLAYER_WAVESHAPER bus of the opponents' pool of 7 (made once with the pool, F-12426).
+    pub fn new_bus() -> u32 {
+        NEXT_CHAIN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// An opponent entity is handed a bus of the pool (+1280, F-14435) or gives it back (`bus` 0, F-45193), then
+    /// vt+112: the loops stop, and the next update makes them again (F-51617 has no gate) into the bus or, with bus 0
+    /// as in every sound's default request, dry only; F-65630 (the chain's step) does nothing without one. The rest of
+    /// the engine (its rpm, load, slews, timers) is the entity's and runs on.
+    pub fn set_bus(&mut self, lib: &mut SoundLib, bus: u32) {
+        self.stop_loops(lib);
+        self.chain = if self.eff.is_empty() { 0 } else { bus };
+    }
+
     fn make(lib: &SoundLib, car: &str, bike: bool, player: bool) -> Option<EngineSound> {
         let g = &lib.game;
         let def = default_object(lib, car, bike, player)?;
