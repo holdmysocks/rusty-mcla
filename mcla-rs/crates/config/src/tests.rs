@@ -319,6 +319,58 @@ fn concurrent_atomic_writes_leave_one_complete_file() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+// This is run through the test binary by the parent regression below. Running it
+// as an ordinary unit test intentionally does nothing.
+#[test]
+fn atomic_write_child_writer() {
+    let Some(path) = std::env::var_os("MCLA_CONFIG_ATOMIC_CHILD_PATH") else {
+        return;
+    };
+    let id = std::env::var("MCLA_CONFIG_ATOMIC_CHILD_ID").unwrap();
+    let payload = format!("writer={id}\n").repeat(4096).into_bytes();
+    for _ in 0..12 {
+        atomic_write(std::path::Path::new(&path), &payload).unwrap();
+    }
+}
+
+#[test]
+fn concurrent_processes_leave_one_complete_settings_file() {
+    use std::process::{Command, Stdio};
+
+    let dir = tmp("atomic-processes");
+    let path = dir.join("settings.toml");
+    let mut children = Vec::new();
+    let mut possible = Vec::new();
+    for i in 0..4 {
+        possible.push(format!("writer={i}\n").repeat(4096).into_bytes());
+        children.push(
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "tests::atomic_write_child_writer"])
+                .env("MCLA_CONFIG_ATOMIC_CHILD_PATH", &path)
+                .env("MCLA_CONFIG_ATOMIC_CHILD_ID", i.to_string())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+    }
+    for child in children {
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "writer failed: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(
+        possible.contains(&std::fs::read(&path).unwrap()),
+        "final data must contain exactly one writer's full payload"
+    );
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no orphan staging files");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn fps_monitor_is_read_and_written() {
     let t: Table = "[display]\nfps_monitor = \"frame_time\"\n".parse().unwrap();
