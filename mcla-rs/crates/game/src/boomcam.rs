@@ -5948,6 +5948,44 @@ SSFovMin 60
         eprintln!("{seen} cars' camera files read");
     }
 
+    /// Every car of the disc has its five drive views and its look-back file (`modfs::camera_text` finds the five files
+    /// the installer stored under a wrong recovered name), so no view shifts onto the next one's file. The Challenger 06
+    /// DUB's POV is the tune the original's cockpit camera held in a recording (work/driverlight/ckpt/cap/chal_s.txt,
+    /// P2 dump of mcPlayerCamera +48): Offset (-0.375, 1.2, 0.525), Focus (-0.375, 1.2, -2.2025), RevOffset
+    /// (0, 1.25, 0.085), RevFocus (0, 1.25, 2.5475); the GTO 66's boom2 (cap/gto_v.txt, +56): Offset (0, 1.625, 10),
+    /// Focus (0, 1.425, -1.25).
+    #[test]
+    fn every_disc_car_has_its_camera_files() {
+        let data = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| r"D:\MCLA\extracted\cache".into());
+        let dir = std::path::Path::new(&data).join("resources/vehicle/configs");
+        let Ok(rd) = std::fs::read_dir(&dir) else { return };
+        let mut cars: Vec<String> = rd
+            .flatten()
+            .filter_map(|e| e.path().file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase()))
+            .filter(|n| n.starts_with("vp_") || n.starts_with("vpd_"))
+            .collect();
+        cars.sort();
+        cars.dedup();
+        let mut n = 0;
+        for car in &cars {
+            let Some(set) = BoomSet::load(&data, car) else { continue };
+            n += 1;
+            assert_eq!(set.views.len(), 5, "{car}");
+            assert!(set.reverse.is_some(), "{car}: no look-back file");
+        }
+        assert!(n > 60, "{n} cars with camera files");
+        let v = |t: &BoomTune, k: &str| t.v3(k).to_array();
+        let dub = BoomSet::load(&data, "vp_dge_challenger_06_dub").unwrap();
+        assert_eq!(v(&dub.views[3], "Offset"), [-0.375, 1.2, 0.525]);
+        assert_eq!(v(&dub.views[3], "Focus"), [-0.375, 1.2, -2.2025]);
+        assert_eq!(v(&dub.views[3], "RevOffset"), [0.0, 1.25, 0.085]);
+        assert_eq!(v(&dub.views[3], "RevFocus"), [0.0, 1.25, 2.5475]);
+        let gto = BoomSet::load(&data, "vpd_pon_gto_66").unwrap();
+        assert_eq!(v(&gto.views[1], "Offset"), [0.0, 1.625, 10.0]);
+        assert_eq!(v(&gto.views[1], "Focus"), [0.0, 1.425, -1.25]);
+        eprintln!("{n} cars: five views and the look back each");
+    }
+
     /// Photo mode's free camera reads PHOTO_CAM_* (DECISIONS.md D35): every one of the disc's
     /// control styles binds them where the prompt bar shows them - ROTATE the right stick, ZOOM
     /// the triggers, PAN the left stick.
