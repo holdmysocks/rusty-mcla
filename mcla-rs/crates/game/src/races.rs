@@ -27,6 +27,10 @@ pub struct RaceDef {
     pub checkpoints: Vec<Vec3>,
     pub goal_time: f32,
     pub opponents: usize,
+    /// the original's race record +18 (F-95490): with an OpponentsAllowed line the file's number is read and dropped and
+    /// the record holds a global byte (7 in the image and never written; read back from all 227 records of the running
+    /// original), without one 0. ARCADE's NUMBER OF OPPONENTS row is limited by it.
+    pub opp_allowed: u8,
     pub dev_only: bool,
     /// time limits per difficulty (Easy, Medium, Hard, Impossible); 0 = none
     pub target_times: Vec<f32>,
@@ -76,6 +80,10 @@ impl RaceDef {
         d
     }
 }
+
+/// The global the race record loader F-95490 stores at record +18 for an OpponentsAllowed line (its value in the image
+/// and in the running original at the title: every one of the 227 records read back holds 7).
+pub const OPP_ALLOWED_GLOBAL: u8 = 7;
 
 fn parse(text: &str) -> Vec<RaceDef> {
     let mut out = Vec::new();
@@ -144,7 +152,10 @@ fn parse(text: &str) -> Vec<RaceDef> {
                     r.car = v[i..].to_string();
                 }
             }
-            "OpponentsAllowed" => r.opponents = f(0) as usize,
+            "OpponentsAllowed" => {
+                r.opponents = f(0) as usize;
+                r.opp_allowed = OPP_ALLOWED_GLOBAL;
+            }
             "AllowRaceStarter" => r.no_starter = f(0) == 0.0,
             "SafetyCam" => r.safety_cam = f(0) != 0.0,
             "GridType" => {
@@ -220,4 +231,21 @@ pub fn default_start(data_dir: &str) -> Option<(Vec3, f32)> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod opp_allowed_tests {
+    /// Record +18 as the original's loader F-95490 leaves it (all 227 records read back from the running original hold 7):
+    /// an OpponentsAllowed line gives the global whatever its number, no line gives 0.
+    #[test]
+    fn opp_allowed_is_the_records_global() {
+        let with = |n: &str| super::parse(&format!("game/Race/x/Ordered/a\n{{\nRaceType Ordered\nOpponentsAllowed {n}\n}}\n"));
+        for n in ["0", "1", "4", "7"] {
+            let r = &with(n)[0];
+            assert_eq!(r.opp_allowed, 7);
+            assert_eq!(r.opponents, n.parse::<usize>().unwrap());
+        }
+        let r = &super::parse("game/Race/x/Ordered/b\n{\nRaceType Ordered\n}\n")[0];
+        assert_eq!(r.opp_allowed, 0);
+    }
 }

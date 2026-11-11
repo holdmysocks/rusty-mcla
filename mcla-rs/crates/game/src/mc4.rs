@@ -7017,7 +7017,7 @@ impl Game {
     /// The rows of the ARCADE menu's options page for a race (F-71627, the off line
     /// branch A-67715..A-92713; the widgets and their lists: F-14101; the
     /// defaults: F-84256):
-    /// NUMBER OF OPPONENTS 1 .. the race's `OpponentsAllowed` (default 3, or that if less);
+    /// NUMBER OF OPPONENTS 1 .. the race record's +18 (7 when the race has an OpponentsAllowed line; default 3, or that if less);
     /// LAST MAN OUT off / on - a circuit only; DIFFICULTY Easy / Medium / Hard / Impossible
     /// (default Medium); NUMBER OF LAPS 1 .. 5 (default the race's `NumLaps`) - a circuit
     /// only; POWER UPS off / on / Custom; TRAFFIC none / low / default (default the last);
@@ -7028,7 +7028,8 @@ impl Game {
         let list = |keys: &[(&str, &str)]| keys.iter().map(|(k, d)| st(k, d)).collect::<Vec<_>>();
         let def = race.and_then(|i| self.race_defs.get(i));
         let circuit = def.map_or(false, |d| d.sub_type.eq_ignore_ascii_case("Circuit"));
-        let allowed = def.map_or(7, |d| d.opponents).clamp(1, 15);
+        // (the limit is the race record's +18, which holds a global (7) - not the file's OpponentsAllowed number - F-95490)
+        let allowed = def.map_or(7, |d| d.opp_allowed as usize).clamp(1, 15);
         let laps = def.map_or(2, |d| d.laps as usize).clamp(1, 5);
         // (a telephone challenge's list, form 17's +8532, F-71627: the laps of a circuit, the difficulty, nothing else)
         if self.phone_race {
@@ -17309,7 +17310,9 @@ mod tests {
         let at = |g: &Game, id: &str| g.race_defs.iter().position(|d| d.id.eq_ignore_ascii_case(&format!("game/Race/{id}"))).unwrap();
         let ord = at(&g, "Hollywood/Ordered/hw_ordered_jp_11");
         let o = g.mc4_arcade_rows(Some(ord));
-        let allowed = g.race_defs[ord].opponents;
+        // (the limit is the record's +18 = 7, not the file's OpponentsAllowed number)
+        let allowed = g.race_defs[ord].opp_allowed as usize;
+        assert_eq!(allowed, 7);
         assert_eq!(o.iter().map(|r| (r.slot, r.choices.len(), r.default)).collect::<Vec<_>>(), vec![(0, allowed, allowed.min(3) - 1), (1, 4, 1), (2, 3, 0), (3, 3, 2), (4, 5, 0), (5, 5, 0)]);
         assert_eq!(o[1].choices, vec!["EASIEST", "MEDIUM", "HARD", "HARDEST"]);
         assert_eq!(o[4].choices, vec!["DYNAMIC", "CLEAR", "PARTLY CLOUDY", "CLOUDY", "RAINY"]);
