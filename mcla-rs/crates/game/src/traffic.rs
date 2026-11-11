@@ -5181,7 +5181,7 @@ impl Vehicles {
             if c.rail.is_some() || (c.parked.is_none() && !c.park_held) {
                 continue;
             }
-            // (the velocity every update, the render update's gate or not: sub_826E9A40 before F-37359)
+            // (the velocity every update, the render update's gate or not: F-53150 before F-37359)
             let m = instance_matrix(c);
             let vel = amb_velocity(&mut c.amb_place, m[3], dt);
             if !parked_render_runs(false, c.amb_hit, c.amb_frames, false) {
