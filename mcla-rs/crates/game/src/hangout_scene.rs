@@ -314,6 +314,8 @@ fn stand_car(game: &mut Game, vehicles: &mut Vehicles, gpu: &mut Gpu, world: &mu
     // (the headings are the race files' convention: the yaw itself, in degrees)
     let idx = vehicles.spawn(gpu, m, pos + Vec3::Y * 0.4, heading.to_radians(), color, false);
     let c = &mut vehicles.cars[idx];
+    // (Racer_InitializeResetPosition at the spot: the racer's safe matrix, F-15222)
+    crate::physics::vehsim::init_reset_position(&mut c.state, pos, glam::Quat::from_rotation_y(heading.to_radians()));
     c.ai = None;
     c.pinned = true;
     c.placed = false;

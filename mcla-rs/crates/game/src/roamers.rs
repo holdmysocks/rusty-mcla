@@ -1135,6 +1135,12 @@ impl Roamers {
                             let idx = vehicles.spawn(gpu, model, at, (-dir.x).atan2(-dir.z), color, false);
                             let c = &mut vehicles.cars[idx];
                             c.racer = true;
+                            if at_reset {
+                                // (the core's Racer_InitializeResetPosition at point 0 with his heading: the racer's safe
+                                // matrix, F-15222; the cruising brain's teleport, F-86308, writes it again where it puts him)
+                                let p0 = m.start.unwrap_or(m.pts[0]);
+                                crate::physics::vehsim::init_reset_position(&mut c.state, p0, glam::Quat::from_rotation_y((-dir.x).atan2(-dir.z)));
+                            }
                             // (going at the rail's speed along it, as the teleport's F-86308 sets it)
                             c.state.vel = dir * rail_v;
                             // (the man the career is waiting for answers to his name)

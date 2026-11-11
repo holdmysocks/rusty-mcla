@@ -6644,6 +6644,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 c.state.keep_damage(&old);
                                 c.pose_history.reset();
                                 c.state.rot = rot;
+                                // (`<x>_garage_enter_cine` puts the car there with Racer_InitializeResetPosition: the racer's
+                                // safe matrix too, F-15222 - recorded 861.77 17.06 -809.72 at the Hollywood garage)
+                                physics::vehsim::init_reset_position(&mut c.state, p, rot);
                                 // already on the floor: the usual drop from above would land on the roof
                                 c.placed = true;
                             }
