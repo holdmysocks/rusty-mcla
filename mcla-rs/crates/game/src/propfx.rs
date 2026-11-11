@@ -28,11 +28,13 @@ pub struct PropFx {
     started: u64,
     hydrant: u32,
     log: bool,
+    /// the level's numbering of its objects the followed indices are in (`LooseState::renum_gen`)
+    gen: u64,
 }
 
 impl PropFx {
     pub fn new() -> PropFx {
-        PropFx { active: Vec::new(), started: 0, hydrant: mcla_formats::hash::joaat("water_hydrant"), log: std::env::var_os("MCLA_PROPFX_LOG").is_some() }
+        PropFx { active: Vec::new(), started: 0, hydrant: mcla_formats::hash::joaat("water_hydrant"), log: std::env::var_os("MCLA_PROPFX_LOG").is_some(), gen: 0 }
     }
 
     fn rot_of(m: &[Vec3; 4]) -> Quat {
@@ -41,7 +43,22 @@ impl PropFx {
 
     /// Start the events the physics and the props queued this tick. Effects are never refused here but by the
     /// effect list itself (the original's pool of 250 instances; the port's own cap is `particles::MAX_EFFECTS`).
+    /// The followed objects' indices into the level's numbering of now (it drops what it no longer needs: `prune`);
+    /// one that went keeps its last place.
+    fn renumber(&mut self, level: &LooseState) {
+        if self.gen == level.renum_gen {
+            return;
+        }
+        for a in self.active.iter_mut() {
+            if let FxAt::Follow { obj, .. } = &mut a.at {
+                *obj = level.renumbered(self.gen, *obj).unwrap_or(usize::MAX);
+            }
+        }
+        self.gen = level.renum_gen;
+    }
+
     pub fn start(&mut self, plays: Vec<FxPlay>, level: &LooseState, world: Option<&LooseWorld>, fx: &mut Particles, cam: Vec3) {
+        self.renumber(level);
         for p in plays {
             let effect = mcla_formats::hash::joaat(&p.effect);
             if !fx.has_effect(effect) {
@@ -86,6 +103,7 @@ impl PropFx {
     /// Every frame before the particles step: the followed effects to their matrices, the hydrant's water its
     /// collision polygon and evolution. `car`: the player's vehicle's place and its underside quad.
     pub fn step(&mut self, level: &LooseState, world: Option<&LooseWorld>, fx: &mut Particles, cam: Vec3, car: Option<(Vec3, [Vec3; 4])>) {
+        self.renumber(level);
         let mut i = 0;
         while i < self.active.len() {
             let a = &mut self.active[i];

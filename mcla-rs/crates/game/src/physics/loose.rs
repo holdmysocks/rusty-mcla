@@ -655,6 +655,10 @@ pub struct LooseState {
     pub extras: Vec<ExtraCar>,
     /// (the game's level step) the stepping car's own object in the level (the other cars' steps name it so)
     pub lead: Option<usize>,
+    /// how many times `prune` has renumbered the objects, and the last renumberings (generation, old index -> new,
+    /// `usize::MAX` gone): what holds an object's index across ticks outside the level (propfx.rs) catches up by them
+    pub renum_gen: u64,
+    pub renums: std::collections::VecDeque<(u64, Vec<usize>)>,
 }
 
 /// An effect a prop's event starts: its name and where it is played.
@@ -4662,6 +4666,139 @@ impl LooseState {
         self.manis.iter().any(|m| m.a == Who::Obj(o) || m.b == Who::Obj(o))
     }
 
+    /// The objects the level holds by kind (the perf line, GitHub #48): untouched props, moved or broken props,
+    /// pieces (made objects: torn bumpers, broken-off parts), vehicles here, vehicles not here, ambient cars,
+    /// empty slots.
+    pub fn census(&self) -> [usize; 7] {
+        let mut n = [0; 7];
+        for o in &self.objs {
+            let k = match (&o.amb, &o.veh, o.inst) {
+                (Some(_), _, _) => 5,
+                (None, Some(v), _) if v.index == u32::MAX => 6,
+                (None, Some(v), _) if v.here => 3,
+                (None, Some(_), _) => 4,
+                (None, None, Some(_)) if Self::untouched(o) => 0,
+                (None, None, Some(_)) => 1,
+                (None, None, None) => 2,
+            };
+            n[k] += 1;
+        }
+        n
+    }
+
+    /// A prop instance as the level has it before anything met it: inactive at its file matrix, no cache
+    /// entry, never moved or broken, its sleep object as made. The port makes such an object on first need
+    /// (`obj_of`) - the original's level holds every instance of a resident sector inactive - so one made
+    /// again later is the same object.
+    fn untouched(o: &Obj) -> bool {
+        o.inst.is_some() && o.body.is_none() && o.entry.is_none() && !o.hit && !o.dormant && o.veh.is_none() && o.amb.is_none() && o.sleep.state == 1 && o.sleep.a == 12 && o.sleep.b == 17
+    }
+
+    /// The port's own bookkeeping out of the level, before a tick (GitHub #48: the list only grew, and every
+    /// car's step walks it): an untouched prop no car and no loose body is near - farther than the collide's
+    /// reach (8 m about each, then the type's radius + 3.2) by 16 m - is dropped (`obj_of` makes the same object
+    /// again when one comes near: no behaviour of the original changes); a vehicle object whose car the game no
+    /// longer has (`alive` by its id; the original takes a car out of the level with it, F-36702 -> F-27119), and
+    /// an ambient car's left slot. Nothing a contact, a piece, a constraint or an extra car names goes. The
+    /// others keep their order; every index held is renumbered (`renums` for those outside). Returns how many went.
+    pub fn prune(&mut self, world: &LooseWorld, near: &[Vec3], alive: &dyn Fn(u32) -> bool) -> usize {
+        let mut about: Vec<Vec3> = near.to_vec();
+        about.extend(self.objs.iter().filter(|o| o.body.is_some() || o.amb.as_ref().is_some_and(|a| a.posed)).map(|o| o.matrix[3]));
+        let named = |s: &LooseState, o: usize| {
+            s.in_pairs(o)
+                || s.pieces.iter().any(|p| p.obj == o)
+                || s.extras.iter().any(|e| e.obj == o)
+                || s.lead == Some(o)
+                || s.merged.contains(&o)
+                || s.fx_events.iter().any(|f| matches!(f.at, FxAt::Follow { obj, .. } if obj == o))
+        };
+        let gone: Vec<bool> = (0..self.objs.len())
+            .map(|o| {
+                let obj = &self.objs[o];
+                let drop = if Self::untouched(obj) {
+                    let t = &world.types[obj.ty];
+                    let centre = xf(&obj.matrix, v(t.centroid));
+                    let keep = 8.0 + t.radius + 3.2 + 16.0;
+                    about.iter().all(|p| (centre - *p).length_squared() > keep * keep)
+                } else {
+                    match (&obj.amb, &obj.veh) {
+                        (None, Some(vh)) => obj.body.is_none() && !vh.here && (vh.index == u32::MAX || !alive(vh.index)),
+                        _ => false,
+                    }
+                };
+                drop && !named(self, o)
+            })
+            .collect();
+        let n = gone.iter().filter(|g| **g).count();
+        if n == 0 {
+            return 0;
+        }
+        let mut map = vec![usize::MAX; self.objs.len()];
+        let mut k = 0;
+        for o in 0..self.objs.len() {
+            if !gone[o] {
+                map[o] = k;
+                k += 1;
+            }
+        }
+        let mut i = 0;
+        self.objs.retain(|_| {
+            i += 1;
+            !gone[i - 1]
+        });
+        let re = |o: usize| map[o];
+        self.by_inst = self.objs.iter().enumerate().filter_map(|(k, o)| o.inst.filter(|_| o.veh.is_none() && o.amb.is_none()).map(|i| (i, k))).collect();
+        for m in self.manis.iter_mut() {
+            for w in [&mut m.a, &mut m.b] {
+                if let Who::Obj(o) = *w {
+                    *w = Who::Obj(re(o));
+                }
+            }
+        }
+        for p in self.pieces.iter_mut() {
+            p.obj = re(p.obj);
+        }
+        for e in self.extras.iter_mut() {
+            e.obj = re(e.obj);
+        }
+        self.lead = self.lead.map(re);
+        for o in self.merged.iter_mut() {
+            *o = re(*o);
+        }
+        for f in self.fx_events.iter_mut() {
+            if let FxAt::Follow { obj, .. } = &mut f.at {
+                *obj = re(*obj);
+            }
+        }
+        self.renum_gen += 1;
+        self.renums.push_back((self.renum_gen, map));
+        while self.renums.len() > 64 {
+            self.renums.pop_front();
+        }
+        n
+    }
+
+    /// An object's index of an older numbering (`seen`: the `renum_gen` it was taken at) in today's; None when it went
+    /// (or more renumberings passed than are kept).
+    pub fn renumbered(&self, seen: u64, o: usize) -> Option<usize> {
+        if seen == self.renum_gen {
+            return Some(o);
+        }
+        if self.renums.front().map_or(true, |f| f.0 > seen + 1) {
+            return None;
+        }
+        let mut o = o;
+        for (g, map) in &self.renums {
+            if *g > seen {
+                o = *map.get(o)?;
+                if o == usize::MAX {
+                    return None;
+                }
+            }
+        }
+        Some(o)
+    }
+
     /// An inactive ambient car the rider's contact meets is made active as a car's does (A-28475 -> F-24099).
     pub fn ambient_wake(&mut self, o: usize) {
         if self.objs.get(o).is_some_and(|x| x.amb.is_some()) {
@@ -5870,6 +6007,36 @@ mod piece_tests {
         let mut cars = [CarLevel { at: Vec3::new(9.0, 0.0, 0.0), reach: 4.0, level: &mut a }, CarLevel { at: Vec3::new(12.0, 0.0, 0.0), reach: 4.0, level: &mut b }];
         hand_over_pieces(&world, &mut cars);
         assert!(b.piece(id).is_some());
+    }
+
+    /// GitHub #48: an untouched prop far from everything leaves the level, the near one and a piece stay; every
+    /// index held follows the renumbering, and the prop made again is the object it was.
+    #[test]
+    fn prune_drops_only_far_untouched_props() {
+        let ty = FragType { off: 1, radius: 0.5, ..Default::default() };
+        let inst = |x: f32| FragInstance { frag: 1, state: 1, matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [x, 0.0, 0.0]], ..Default::default() };
+        let world = LooseWorld::new(vec![ty], vec![inst(0.0), inst(100.0)]);
+        let mut s = LooseState::default();
+        let (a, b) = (s.obj_of(&world, 0), s.obj_of(&world, 1));
+        assert_eq!((a, b), (0, 1));
+        let before = format!("{:?}", s.objs[1]);
+        let id = s.add_piece(&world, [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(200.0, 0.3, 0.0)], Vec3::ZERO, Vec3::ZERO).unwrap();
+        let p = s.objs.len() - 1;
+        assert_eq!(p, 2);
+        s.fx_events.push(FxPlay { effect: "x".into(), at: FxAt::Follow { obj: p, part: None, offset: Vec3::ZERO }, vel: Vec3::ZERO });
+        assert_eq!(s.prune(&world, &[Vec3::ZERO], &|_| true), 1);
+        assert_eq!(s.objs.len(), 2);
+        assert_eq!(s.objs[0].inst, Some(0));
+        assert!(matches!(s.fx_events[0].at, FxAt::Follow { obj: 1, .. }));
+        assert_eq!(s.pieces[0].obj, 1);
+        assert!(s.piece(id).is_some());
+        assert_eq!((s.renumbered(0, 2), s.renumbered(0, 1), s.renumbered(0, 0), s.renumbered(1, 1)), (Some(1), None, Some(0), Some(1)));
+        // (nothing more to drop: the piece is not a prop, the near prop is near)
+        assert_eq!(s.prune(&world, &[Vec3::ZERO], &|_| true), 0);
+        // (made again when a car comes near: the same object, at the end)
+        let again = s.obj_of(&world, 1);
+        assert_eq!(again, 2);
+        assert_eq!(format!("{:?}", s.objs[2]), before);
     }
 
     fn flat() -> WorldCollider {

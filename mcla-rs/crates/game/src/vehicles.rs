@@ -4687,6 +4687,15 @@ if keep || c.state.pos.distance(center) < 450.0 {
         if let Some(lw) = shared.as_deref() {
             self.level.live = true;
             self.ambient_into_level(step_dt);
+            // (the port's own objects nothing needs out of the level: GitHub #48, `LooseState::prune`)
+            let near: Vec<Vec3> = self.cars.iter().map(|c| c.state.pos).collect();
+            let ids: std::collections::HashSet<u32> = self.cars.iter().map(|c| c.uid).collect();
+            // (MCLA_NO_PRUNE: as before, for a comparison)
+            static NO_PRUNE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if !*NO_PRUNE.get_or_init(|| std::env::var_os("MCLA_NO_PRUNE").is_some()) {
+                self.level.prune(lw, &near, &|u| ids.contains(&u));
+            }
+            crate::ticktimes::census(self.level.census());
             self.level.pre_collide(lw, step_dt);
         }
         // (the cars' steps of the tick - which car, its input, what follows its step: run together after this walk,

@@ -48,6 +48,15 @@ pub fn mark(s: S) {
     });
 }
 
+thread_local! {
+    static CENSUS: std::cell::Cell<[usize; 7]> = const { std::cell::Cell::new([0; 7]) };
+}
+
+/// The physics level's objects by kind this tick (`LooseState::census`), logged with the means.
+pub fn census(n: [usize; 7]) {
+    CENSUS.with(|c| c.set(n));
+}
+
 /// The tick is over; `level_objs`: the physics level's object count (logged with the means).
 pub fn end(level_objs: usize) {
     let now = Instant::now();
@@ -63,7 +72,11 @@ pub fn end(level_objs: usize) {
         let mut parts: Vec<(usize, f64)> = t.sum.iter().copied().enumerate().collect();
         parts.sort_by(|a, b| b.1.total_cmp(&a.1));
         let list: Vec<String> = parts.iter().map(|(i, ms)| format!("{} {:.2}", NAMES[*i], ms / TICKS as f64)).collect();
-        log::info!("ticktimes: {:.2} ms a tick ({} ticks; physics level {} objects): {}", total / TICKS as f64, TICKS, level_objs, list.join(", "));
+        let c = CENSUS.with(|c| c.get());
+        log::info!(
+            "ticktimes: {:.2} ms a tick ({} ticks; physics level {} objects - props {} untouched / {} moved, pieces {}, vehicles {} here / {} not, ambient {}, slots {}): {}",
+            total / TICKS as f64, TICKS, level_objs, c[0], c[1], c[2], c[3], c[4], c[5], c[6], list.join(", ")
+        );
         t.sum = [0.0; 11];
         t.ticks = 0;
     });
