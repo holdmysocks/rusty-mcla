@@ -8522,7 +8522,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let tex_mb = render::TEX_BYTES.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1048576.0;
             let tex_n = render::TEX_COUNT.load(std::sync::atomic::Ordering::Relaxed);
             let (cars_n, cars_mb) = (self.vehicles.models.len(), self.vehicles.model_bytes() as f64 / 1048576.0);
-            log::info!("perf: {:.0} fps, {:.2} ms frame, {} draws; video memory: textures {:.0} MB ({}), car models {} ({:.0} MB buffers)", self.fps, self.frame_ms, self.draws, tex_mb, tex_n, cars_n, cars_mb);
+            // (the texture cache: the city's and cars' textures, which go when unused past the budget, and the others, which stay; the rest of
+            // the count is outside the cache - plates, effects, targets)
+            let (c, cn) = gpu.texture_census();
+            let mb = |b: u64| b as f64 / 1048576.0;
+            log::info!(
+                "perf: {:.0} fps, {:.2} ms frame, {} draws; video memory: textures {:.0} MB ({}), car models {} ({:.0} MB buffers); texture cache {:.0} MB ({}): city / cars {:.0} MB ({:.0} unused), others {:.0} MB ({:.0} unused), outside {:.0} MB ({} plates made so far); sectors {} in memory ({} past the margin)",
+                self.fps, self.frame_ms, self.draws, tex_mb, tex_n, cars_n, cars_mb, mb(c[0]), cn, mb(c[1]), mb(c[2]), mb(c[3]), mb(c[4]), tex_mb - mb(c[0]),
+                vehicles::PLATES_MADE.load(std::sync::atomic::Ordering::Relaxed), world.stats_sectors.0, world.stats_sectors.1
+            );
         }
         if self.tick_no % 240 == 1 || (self.opt.wot && self.tick_no % 60 == 1) {
             if let Some(c) = self.vehicles.player() {

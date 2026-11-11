@@ -232,6 +232,11 @@ pub struct SectorBatch {
     pub parts: Vec<Part>,
 }
 
+fn fade_freeze() -> bool {
+    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *F.get_or_init(|| std::env::var("MCLA_FADE_FREEZE").is_ok_and(|v| v == "1"))
+}
+
 /// A sector record's level-of-detail fade as F-89177 keeps it: +295 the state (1 steady, 2 fading to detail, 4 fading to
 /// far), +288 t, +296 the frame's choice (4 loaded, 2 detail, 1 far). The shipped game's settings: cross-fade on
 /// (0x827E0E26), detail models on (0x827E0E5C), no snap (0x8287C795), the far drawable present (0x8287C7D4), no forced
@@ -1489,6 +1494,8 @@ pub struct World {
     /// the last main view's LOD view position and which records were in it ([`World::set_view`])
     view: std::sync::Mutex<Option<(Vec3, Vec<bool>)>>,
     last_fade: std::time::Instant,
+    /// the last `Gpu::trim_textures`
+    last_trim: std::time::Instant,
     /// what is left of this frame's upload time (`new_frame`), shared by the frame's ticks
     frame_left_ms: f32,
     /// where the streaming is locked ([`World::lock_streaming`]): loads and drops are measured from here, the
@@ -1501,6 +1508,9 @@ pub struct World {
     pub unload_radius: f32,
     pub tex_fail: hashbrown::HashSet<u32>,
     pub stats_tris: u64,
+    /// (the perf line) the city's sectors in memory, and of them those past the drop distance kept only by a fade that stopped
+    /// out of view (the 600 m rule drops them - `update`)
+    pub stats_sectors: (usize, usize),
     pub collider: WorldCollider,
     /// the collider holds the city's own collision: the drawn sectors add none
     pub own_bound: bool,
@@ -1616,6 +1626,7 @@ impl World {
             lod_scale: 1.0,
             view: std::sync::Mutex::new(None),
             last_fade: std::time::Instant::now(),
+            last_trim: std::time::Instant::now(),
             frame_left_ms: f32::INFINITY,
             stream_lock: None,
             pending: Default::default(),
@@ -1625,6 +1636,7 @@ impl World {
             unload_radius: 540.0,
             tex_fail: Default::default(),
             stats_tris: 0,
+            stats_sectors: (0, 0),
             collider,
             own_bound,
             globaltex: HashMap::new(),
@@ -1909,10 +1921,22 @@ impl World {
         // otherwise the one chosen now. A sector out of view keeps its fade where it is (record +292 bit 1).
         let seen = self.view.lock().unwrap().as_ref().map(|v| v.1.clone()).unwrap_or_default();
         let mut gone: Vec<usize> = Vec::new();
+        // The original unloads a sector as soon as its streaming distance is 600 m or more, whatever its fade (F-66099, state 4
+        // at dist260 >= 600; lod_rule.md "Streaming"). Here a sector goes once it is drawn far, past the margin - and a sector
+        // that left the view during its third of a second's fade keeps that fade (+292 bit 1 clear, F-89177), its alpha above 0
+        // until it is seen again: driven away from, it stayed loaded with its textures for the rest of the session (GitHub #48,
+        // a 4 GB card: the textures 450 MB -> 7 GB in 27 minutes). So the 600 m rule as well (with DETAIL LEVEL's multiplier,
+        // as the loading cap). MCLA_SECTOR_DROP_OLD=1: alpha only, as before.
+        static DROP_OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let drop_old = *DROP_OLD.get_or_init(|| std::env::var("MCLA_SECTOR_DROP_OLD").is_ok_and(|v| v == "1"));
+        let drop_dist = STREAM_DIST * crate::props::Lod::now().detail.max(1.0);
+        let (mut n_in, mut n_held) = (0usize, 0usize);
         for id in 0..self.rec_box.len() {
             let loaded = self.loaded.contains_key(&id) || self.resident.contains_key(&id);
             let d = Self::lod_dist(&self.rec_box[id], pos);
-            self.fades[id].step(loaded, d < detail, seen.get(id).copied().unwrap_or(false), dt);
+            // (test hook MCLA_FADE_FREEZE=1: every fade that has started leaves the view - what one sector in many meets, for all)
+            let freeze = fade_freeze() && self.fades[id].state != 1;
+            self.fades[id].step(loaded, d < detail, seen.get(id).copied().unwrap_or(false) && !freeze, dt);
             if !loaded {
                 continue;
             }
@@ -1936,15 +1960,26 @@ impl World {
             }
             // (dropped once it is drawn far and out of the margin - of the lock, while there is one)
             let d_keep = if self.stream_lock.is_some() { Self::lod_dist(&self.rec_box[id], spos) } else { d };
+            n_in += 1;
             if alpha <= 0.0 && d_keep > self.unload_radius {
                 gone.push(id);
+            } else if d_keep > self.unload_radius {
+                n_held += 1;
+                if !drop_old && d_keep >= drop_dist {
+                    gone.push(id);
+                }
             }
         }
         // (what the sectors just dropped leave in the texture cache: this much stays for a quick return)
         const IDLE_TEXTURES: u64 = 512 << 20;
-        let trim = !gone.is_empty();
+        self.stats_sectors = (n_in, n_held);
+        // (and once a second: what only the bind group cache holds - a gone car's licence plate, a freed model's maps - waited
+        // for the next sector to drop, which a standing or circling player may not drop for minutes. MCLA_TRIM_OLD=1: drops only)
+        static TRIM_OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let trim_old = *TRIM_OLD.get_or_init(|| std::env::var("MCLA_TRIM_OLD").is_ok_and(|v| v == "1"));
+        let trim = !gone.is_empty() || (!trim_old && self.last_trim.elapsed().as_secs_f32() >= 1.0);
         for id in gone {
-            if let Some(s) = self.resident.remove(&id) {
+            if let Some(s) = self.resident.remove(&id).or_else(|| self.loaded.remove(&id)) {
                 self.stats_tris -= s.tris as u64;
             }
             if !self.own_bound {
@@ -1953,6 +1988,7 @@ impl World {
         }
         if trim {
             gpu.trim_textures(IDLE_TEXTURES);
+            self.last_trim = std::time::Instant::now();
         }
         // The far city: a sector's simple model is drawn while its far alpha is above 0.
         let sector_of = |id: usize| (id - FAR_ID) % FAR_SLOTS;

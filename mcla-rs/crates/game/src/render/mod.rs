@@ -1268,6 +1268,11 @@ impl GpuTexture {
         TEX_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         GpuTexture { texture, view, width, height, bytes: TexBytes(bytes) }
     }
+
+    /// What it takes in video memory (`texture_bytes`).
+    pub fn bytes(&self) -> u64 {
+        self.bytes.0
+    }
 }
 
 /// What a texture takes in video memory: every level's blocks times the block's size, the layers and samples.
@@ -1285,11 +1290,16 @@ pub fn texture_bytes(t: &wgpu::Texture) -> u64 {
 }
 
 /// `create_texture` with an out-of-memory failure caught (wgpu's default handler panics on it - GitHub #48, a licence
-/// plate's texture on a full 4 GB card): None then, logged.
+/// plate's texture on a full 4 GB card): None then, logged. Both filters: wgpu 24 files the allocator's "Not enough memory
+/// left" of `create_texture` as a validation error (its OutOfMemory test does not see through CreateTextureError - the
+/// reporter's 0.20.0 crash), and the port's own descriptors are valid, so either error here is the memory.
 pub fn try_create_texture(device: &wgpu::Device, desc: &wgpu::TextureDescriptor) -> Option<wgpu::Texture> {
     device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    device.push_error_scope(wgpu::ErrorFilter::Validation);
     let t = device.create_texture(desc);
-    match pollster::block_on(device.pop_error_scope()) {
+    let validation = pollster::block_on(device.pop_error_scope());
+    let oom = pollster::block_on(device.pop_error_scope());
+    match validation.or(oom) {
         None => Some(t),
         Some(e) => {
             log::warn!("video memory full: texture {:?} ({}x{}) not made, drawn white: {e}", desc.label, desc.size.width, desc.size.height);
@@ -4106,6 +4116,22 @@ impl Gpu {
         self.texture_bind_group3(diffuse, second, &third, k0, k1, 0)
     }
 
+    /// A bind group of its own, kept out of `bind_cache`: for a texture made for one user (a licence plate), which then goes
+    /// with its last holder - the cache keeps what it holds until the next `trim_textures` (GitHub #48: about 13 plates a second
+    /// with the traffic, 512 x 256 RGBA each).
+    pub fn texture_bind_group_own(&self, diffuse: &GpuTexture, second: &GpuTexture) -> Arc<wgpu::BindGroup> {
+        Arc::new(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.tex_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&diffuse.view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&second.view) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&self.clear_tex.view) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&self.clear_tex.view) },
+            ],
+        }))
+    }
+
     /// Three-texture material (ground shaders: diffuse, decal atlas, grime).
     /// The sky dome's textures (see `skyhat::SkyHat::bind`).
     pub fn bind_sky_hat(&mut self, stars: &GpuTexture, galaxy: &GpuTexture, detail: &GpuTexture, noise1: &GpuTexture) {
@@ -4138,6 +4164,22 @@ impl Gpu {
         }));
         self.bind_cache.insert((k0, k1, k2), (bg.clone(), [diffuse.clone(), second.clone(), third.clone(), fourth.clone()]));
         bg
+    }
+
+    /// What `textures` holds, in bytes (the perf line, GitHub #48): [all, the city's and cars' (`texture_evictable`), of those
+    /// unused now, the others (never dropped), of those unused now], and the count of `textures`.
+    pub fn texture_census(&self) -> ([u64; 5], usize) {
+        let mut c = [0u64; 5];
+        for (k, t) in &self.textures {
+            let (b, unused) = (t.bytes(), Arc::strong_count(t) == 1);
+            c[0] += b;
+            let i = if self.tex_idle.contains_key(k) { 1 } else { 3 };
+            c[i] += b;
+            if unused {
+                c[i + 1] += b;
+            }
+        }
+        (c, self.textures.len())
     }
 
     /// `key` in `textures` is a copy of a texture of the city: `trim_textures` may drop it when nothing uses it.
@@ -4373,9 +4415,11 @@ pub fn create_rgba(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, r
 /// `gamma` as for `upload_as`: false keeps the texels as they are on sampling (a car's map, `car_tex_raw`).
 pub fn create_rgba_as(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, rgba: &[u8], label: &str, gamma: bool) -> GpuTexture {
     let format = if gamma { wgpu::TextureFormat::Rgba8UnormSrgb } else { wgpu::TextureFormat::Rgba8Unorm };
+    // (test hook MCLA_TEX_FAIL_TEST=<label>: those textures asked far past the device's limit, so `create_texture` fails as on a full card)
+    let fail = std::env::var("MCLA_TEX_FAIL_TEST").is_ok_and(|v| v == label);
     let Some(texture) = try_create_texture(device, &wgpu::TextureDescriptor {
         label: Some(label),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d { width: if fail { 1 << 20 } else { w }, height: h, depth_or_array_layers: 1 },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,

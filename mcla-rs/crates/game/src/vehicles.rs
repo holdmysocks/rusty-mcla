@@ -1559,7 +1559,8 @@ pub struct Vehicles {
     /// plate background and font (RGBA; shared, not copied for each plate), and the finished plates by text (the cars hold them: every traffic car
     /// has a plate of its own, a plate of a car that has gone goes with `Gpu::trim_textures`)
     plate_art: Option<(Option<Arc<PlateBg>>, Arc<Vec<u8>>)>,
-    plates: hashbrown::HashMap<String, std::sync::Weak<wgpu::BindGroup>>,
+    /// (with each its texture: the bind group keeps the GPU's copy alive, this the count of `render::TEX_BYTES`; pruned each second)
+    plates: hashbrown::HashMap<String, (std::sync::Weak<wgpu::BindGroup>, Arc<GpuTexture>)>,
     plate_serial: u32,
     /// the background of the player's plate (a name of `resources/license_plates/backgrounds`:
     /// the vehicle record's LicenseBG - `mc4`; none = the California plate), and those loaded
@@ -1710,6 +1711,9 @@ fn mesh_to_batch_xf(gpu: &mut Gpu, mesh: &mcla_formats::rage::geometry::Mesh, sn
     let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&mesh.indices), usage: wgpu::BufferUsages::INDEX });
     GpuBatch { shader: sname.to_string(), vb, ib, count: mesh.indices.len() as u32, bind, mode, min: mn, max: mx, bucket: 0, cull: 0, base_lens: false }
 }
+
+/// The licence plates made so far (the perf line).
+pub static PLATES_MADE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The California plate background of the disc (`resources/license_plates/backgrounds`),
 /// uploaded once. The files hold a single texture object behind the root pointer.
@@ -2550,6 +2554,8 @@ impl Vehicles {
             return;
         }
         let step = std::mem::take(&mut self.model_idle_check);
+        // (the plates of the cars gone since)
+        self.plates.retain(|_, b| b.0.strong_count() > 0);
         if std::env::var("MCLA_MODELS_KEEP").is_ok() {
             return;
         }
@@ -4354,19 +4360,20 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 Some((n, a)) => (format!("{text}@{n}"), a),
                 None => (text.clone(), ca.clone()),
             };
-            let made = self.plates.get(&slot).and_then(|b| b.upgrade());
+            let made = self.plates.get(&slot).and_then(|b| b.0.upgrade());
             if made.is_none() {
-                self.plates.retain(|_, b| b.strong_count() > 0);
+                self.plates.retain(|_, b| b.0.strong_count() > 0);
                 let (w, h) = (bg.w, bg.h);
                 let px = compose_plate(&bg, &font, &text);
                 // (as stored, like the car's other maps: city.wgsl decodes the sample once and PS_Plate's ^1.6 gets the
                 // stored value back through car_raw. A gamma upload was decoded twice - the plate dark and saturated, its
                 // blue 4, 17, 192 where the original's is 56, 100, 250. MCLA_PLATE_GAMMA_OLD=1: as before)
                 let gamma = !car_tex_raw() || std::env::var("MCLA_PLATE_GAMMA_OLD").is_ok();
-                let tex = Arc::new(crate::render::create_rgba_as(&gpu.device, &gpu.queue, w as u32, h as u32, &px, "plate", gamma));
-                let key = mcla_formats::hash::joaat(&format!("plate:{slot}")) | 1;
-                let bind = gpu.texture_bind_group(&tex, &tex, key, key);
-                self.plates.insert(slot.clone(), Arc::downgrade(&bind));
+                let tex = crate::render::create_rgba_as(&gpu.device, &gpu.queue, w as u32, h as u32, &px, "plate", gamma);
+                PLATES_MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // (its own bind group: the plate goes with the last car showing it, not at the cache's next trim)
+                let bind = gpu.texture_bind_group_own(&tex, &tex);
+                self.plates.insert(slot.clone(), (Arc::downgrade(&bind), Arc::new(tex)));
                 self.cars[i].plate = Some(bind);
             } else {
                 self.cars[i].plate = made;
