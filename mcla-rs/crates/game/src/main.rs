@@ -7255,13 +7255,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             .iter()
                             .filter(|m| !m.hidden)
                             .map(|m| {
-                                let (p, d) = match self.vehicles.cars.iter().find(|c| c.racer && c.vinyl_name == m.config) {
-                                    Some(c) => (c.state.pos, c.state.forward()),
-                                    None => {
-                                        let (p, d, _) = roamers::loop_at(&m.pts, m.at);
-                                        (p, d)
-                                    }
-                                };
+                                let (p, d) = self.roam.shown(m, &self.vehicles);
                                 // (the flash of the icon: the man the current objective of his mission points at -
                                 // `Career::pulse_objective`, `mc4::target_objective`)
                                 let mission = !m.mission.is_empty() && self.game.career.pulse_objective(&m.mission) == Some(crate::mc4::target_objective(&m.mission, &m.name));

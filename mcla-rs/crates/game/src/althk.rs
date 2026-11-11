@@ -523,7 +523,7 @@ impl Game {
                 start
             }
             AltKind::Freeway => {
-                let hook = vehicles.cars.iter().find(|c| c.racer && c.vinyl_name == man.config)?;
+                let hook = vehicles.cars.iter().find(|c| man.owns(c))?;
                 let hp = hook.state.pos;
                 // RAND_INT_RANGE(4, 6), inclusive
                 let count = self.althk.rng().int_range(4, 6) as usize;

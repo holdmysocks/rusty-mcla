@@ -105,6 +105,17 @@ pub struct Man {
     pub reset: bool,
 }
 
+impl Man {
+    /// The car is his: the one put down for him (`CarInstance::roam_key`), in his set-up as it is now. Two men can
+    /// share a set-up (GH_04 a Hollywood slot man and the freeway man 300 at once, GH_06 two districts' slot men),
+    /// each with a racer and a car of his own in the original: the set-up's name alone gave both men one car, the
+    /// maps and the 3D icons put both men's icons on it, which swapped as either man's car was put down again, and a
+    /// flash took the first man of that set-up (GitHub #49).
+    pub fn owns(&self, c: &crate::vehicles::CarInstance) -> bool {
+        c.racer && c.roam_key == self.key && c.vinyl_name == self.config
+    }
+}
+
 /// A hookman script of a district's special man: (kind, district, id, character, set-up, loop).
 pub struct Special {
     pub kind: ManKind,
@@ -123,6 +134,9 @@ pub struct Roamers {
     /// points and radius, to the bit): a man whose placing fails is tried again a second later from the same place
     /// and got the same route from a search of up to ~40 ms each time
     route_memo: Option<(Vec<u32>, (Vec<Vec3>, usize))>,
+    /// Where each man with no car near the player is shown this frame (by his key): on the nearest rail with ground
+    /// under it (`rail_place`) to his place on his loop - `Roamers::shown`
+    on_road: HashMap<String, (Vec3, Vec3)>,
     /// The story mission whose series the man just flashed starts, and his (name, car, set-up):
     /// `Game::story_series_start`
     pub series_of: Option<(String, String, String, String)>,
@@ -372,6 +386,7 @@ impl Roamers {
         Roamers {
             player_state: 0,
             route_memo: None,
+            on_road: HashMap::new(),
             series_of: None,
             setup_cfg: Default::default(),
             wanted: 2,
@@ -738,14 +753,31 @@ impl Roamers {
         }
     }
 
+    /// Where a man is shown (the maps, his 3D icon): at his car; with none, near the player on the road (`on_road`), else
+    /// at his place on his loop. The original's man always has his racer, which streamed out is posed on its ghost
+    /// riding the ambient rail - on the road (brain_cruising.md 4, state 5). The port has no ghost for a man with no
+    /// car and carries him along his loop's straight chords, which run under the road on crests and through blocks up
+    /// to 30 m off a lane: his icon was seen driving under the map (GitHub #49). *Approx.:* the nearest rail with
+    /// ground to that point, not the ghost's own place on its route.
+    pub fn shown(&self, m: &Man, vehicles: &Vehicles) -> (Vec3, Vec3) {
+        if let Some(c) = vehicles.cars.iter().find(|c| m.owns(c)) {
+            return (c.state.pos, c.state.forward());
+        }
+        if let Some(&s) = self.on_road.get(&m.key) {
+            return s;
+        }
+        let (p, d, _) = loop_at(&m.pts, m.at);
+        (p, d)
+    }
+
     /// The cruising men for the maps: place, direction, difficulty.
     pub fn marks(&self, vehicles: &Vehicles) -> Vec<(Vec3, Vec3, usize)> {
         self.men
             .iter()
             .filter(|m| !m.hidden && m.kind == ManKind::Slot)
-            .map(|m| match vehicles.cars.iter().find(|c| c.racer && c.vinyl_name == m.config) {
-                Some(c) => (c.state.pos, c.state.forward(), m.difficulty.clamp(0, 3) as usize),
-                None => { let (p, d, _) = loop_at(&m.pts, m.at); (p, d, m.difficulty.clamp(0, 3) as usize) }
+            .map(|m| {
+                let (p, d) = self.shown(m, vehicles);
+                (p, d, m.difficulty.clamp(0, 3) as usize)
             })
             .collect()
     }
@@ -763,7 +795,7 @@ impl Roamers {
             self.alt_suspended = true;
             let racing = self.alt_racing.take();
             for m in self.men.iter_mut().filter(|m| m.uid == 0 || Some(m.uid) != racing) {
-                let car = vehicles.cars.iter().position(|c| c.racer && c.vinyl_name == m.config);
+                let car = vehicles.cars.iter().position(|c| m.owns(c));
                 // (the run keeps only the flashed man's car)
                 if self.challenge.is_some() && car.is_some() {
                     continue;
@@ -825,12 +857,19 @@ impl Roamers {
         self.load_timer -= dt;
         let mut spawn: Option<usize> = None;
         let mut ahead: Vec<(String, String)> = Vec::new();
+        // (a car put down for a man who is no longer out, or drawn again in another set-up - a slot given to someone
+        // else, a red light / freeway man drawn again on a vehicle change -: his racer is not that car any more, it goes.
+        // Left, it drove on as a racer no man owned)
+        if self.challenge.is_none() && !self.suspended {
+            let men = &self.men;
+            vehicles.cars.retain(|c| c.roam_key.is_empty() || men.iter().any(|m| m.owns(c)));
+        }
         for (k, m) in self.men.iter_mut().enumerate() {
             // (suspended, a man waits at his reset position, his car streamed out: CruisingHookmanCore 0x497..0x523)
             if self.suspended && m.reset {
                 continue;
             }
-            match vehicles.cars.iter().position(|c| c.racer && c.vinyl_name == m.config) {
+            match vehicles.cars.iter().position(|c| m.owns(c)) {
                 Some(ci) => {
                     let cp = vehicles.cars[ci].state.pos;
                     m.at = loop_project(&m.pts, cp);
@@ -892,6 +931,25 @@ impl Roamers {
                 }
             }
         }
+        // (the men with no car near the player, put on the road for the maps and the icons - `shown`)
+        self.on_road.clear();
+        for m in self.men.iter().filter(|m| !m.hidden) {
+            if vehicles.cars.iter().any(|c| m.owns(c)) {
+                continue;
+            }
+            let (p, d, _) = loop_at(&m.pts, m.at);
+            if p.distance(pp) < 450.0 {
+                if let Some((at, _, f, _)) = rail_place(world, p) {
+                    self.on_road.insert(m.key.clone(), (at, if f.dot(d) < 0.0 { -f } else { f }));
+                }
+                // (test log, once a second: the loop's point and the point shown, each against the city's surface under it)
+                if self.sync_timer == 1.0 && std::env::var("MCLA_ALT_LOG").is_ok() {
+                    let under = |q: Vec3| world.collider.ground(q, 60.0, 60.0).map_or(f32::NAN, |g| q.y - g.point.y);
+                    let s = self.on_road.get(&m.key).map_or(p, |x| x.0);
+                    log::info!("roamers mark: {} at ({:.1}, {:.1}, {:.1}) {:.0} m away, {:.2} m over the surface; shown ({:.1}, {:.1}, {:.1}), {:.2} m over it", m.key, p.x, p.y, p.z, p.distance(pp), under(p), s.x, s.y, s.z, under(s));
+                }
+            }
+        }
         for (car, config) in ahead {
             // (and his set-up's rim, tyres and brakes into the file cache - `vehicles::warm_dress`)
             if !self.setup_cfg.contains_key(&config) {
@@ -941,7 +999,7 @@ impl Roamers {
             }
         }
         let Some(nav) = world.nav.as_ref() else { return None };
-        if let Some((k, m, model)) = ready.filter(|(_, m, model)| (is_racer_model(&model.name) && (model.name != pname || m.fresh)) || only.is_some()) {
+        if let Some((k, m, model)) = ready.filter(|(_, _, model)| is_racer_model(&model.name) || only.is_some()) {
             {
                 {
                     self.timer = 1.0;
@@ -990,6 +1048,7 @@ impl Roamers {
                             // (the man the career is waiting for answers to his name)
                             c.driver = if !m.mission.is_empty() && game.career.hookman_mission() == Some(m.mission.as_str()) { m.name.clone() } else { String::new() };
                             c.vinyl_name = m.config.clone();
+                            c.roam_key = m.key.clone();
                             // (step 19d: the vehicle's mod value is the hookman's - Racer_SetModValue)
                             if m.mod_value >= 0 {
                                 c.set_perf(m.mod_value.clamp(0, 100) as f32 / 100.0);
@@ -1098,7 +1157,7 @@ impl Roamers {
             let dists: Vec<f32> = vehicles.cars.iter().filter(|c| c.racer).map(|c| reach(&c.state)).collect();
             let step = ch.close.step(player_d, &dists, 20.0, dt);
             if step == crate::mc4::BmtStep::FirstIn {
-                let who = vehicles.cars.iter().filter(|c| c.racer).min_by(|a, b| a.state.pos.distance_squared(ch.goal).partial_cmp(&b.state.pos.distance_squared(ch.goal)).unwrap()).map(|c| if c.driver.is_empty() { self.men.iter().find(|m| m.config == c.vinyl_name).map(|m| game.career.name_of(&m.name).to_uppercase()).unwrap_or_else(|| crate::game::pretty_car_name(&c.model.name).to_uppercase()) } else { game.career.name_of(&c.driver).to_uppercase() }).unwrap_or_default();
+                let who = vehicles.cars.iter().filter(|c| c.racer).min_by(|a, b| a.state.pos.distance_squared(ch.goal).partial_cmp(&b.state.pos.distance_squared(ch.goal)).unwrap()).map(|c| if c.driver.is_empty() { self.men.iter().find(|m| m.owns(c)).map(|m| game.career.name_of(&m.name).to_uppercase()).unwrap_or_else(|| crate::game::pretty_car_name(&c.model.name).to_uppercase()) } else { game.career.name_of(&c.driver).to_uppercase() }).unwrap_or_default();
                 let text = game.career.strings.get("PLAYER_FINISHED").filter(|s| s.contains("<D>")).map(|s| { let a = s.find("<D>").unwrap_or(0); let b = s.find("</D>").map_or(s.len(), |e| e + 4); format!("{}{}{}", &s[..a], who, &s[b..]).to_uppercase() }).unwrap_or_else(|| format!("{who} FINISHED"));
                 game.show_message(&text);
             }
@@ -1219,7 +1278,7 @@ impl Roamers {
             log::info!("headlights flashed: {}; taken by {:?}", self.flash_report(vehicles, world), best.map(|b| vehicles.cars[b.0].vinyl_name.clone()));
         }
         let Some((ri, _)) = best else { return None };
-        let man = self.men.iter().find(|m| m.config == vehicles.cars[ri].vinyl_name).cloned();
+        let man = self.men.iter().find(|m| m.owns(&vehicles.cars[ri])).cloned();
         self.near = Some(match (&man, vehicles.cars[ri].driver.is_empty()) {
             (_, false) => game.career.name_of(&vehicles.cars[ri].driver),
             (Some(m), _) => game.career.name_of(&m.name),
@@ -1342,8 +1401,8 @@ impl Roamers {
             return Some(race);
         }
         // (the others go back to being places on their loops)
-        let keep = vehicles.cars[ri].vinyl_name.clone();
-        vehicles.cars.retain(|c| !c.racer || c.vinyl_name == keep);
+        let keep = vehicles.cars[ri].uid;
+        vehicles.cars.retain(|c| !c.racer || c.uid == keep);
         // (step 19d: every police car goes underground for the run and the race -
         // PoliceManager_SetAllPoliceUnderground(1, 1))
         vehicles.cars.retain(|c| !c.cop);
