@@ -342,3 +342,83 @@ fn world_matrix_matches_the_original() {
     }
     assert_eq!(n, 4000);
 }
+
+/// F-92070's texture swaps against the original's draw run offline (the "TX" lines of testdata/flash_mask_ref.txt): 3,000
+/// trees, a clip's texture (+148) one time in four, alpha 0 one time in twelve. The original makes a clip's texture current
+/// (F-12960) before its alpha test and never puts the previous one back; a shape (F-19892) whose swap flag (+80, the
+/// parent's, set by a clip with a texture) is set keeps the current texture, else takes its own. The port's shapes, each
+/// with a bitmap fill of its own, must draw with `Swap(the last texture made current)` exactly where the original's flag is
+/// set and with their own bitmap elsewhere.
+#[test]
+fn texture_swaps_match_the_original() {
+    use crate::draw::{Item, TexRef};
+    use mcla_formats::rage::swf::{FillStyle, Matrix, Shape, ShapeCmd};
+    let shape = |k: i32| {
+        Some(Character::Shape(Shape {
+            bounds: [0, 0, 0, 0],
+            fills: vec![FillStyle { kind: 0x41, color: 0xff80_8080, matrix: Matrix::IDENTITY, bitmap: Some(1000 + k as u16), gradient: None }],
+            lines: Vec::new(),
+            cmds: vec![ShapeCmd::Fill(1), ShapeCmd::FanInt(vec![[k * 200, 0], [k * 200 + 100, 0], [k * 200, 100]])],
+        }))
+    };
+    let mut chars = vec![None, Some(Character::Sprite(Sprite { frames: Vec::new() }))];
+    chars.extend((0..40).map(shape));
+    let movie = Arc::new(Movie { stage: [0.0, 1280.0, 0.0, 720.0], fps: 30, root: Sprite { frames: Vec::new() }, chars, exports: Vec::new() });
+    let (mut n, mut swapped, mut kept) = (0, 0, 0);
+    for line in include_str!("testdata/flash_mask_ref.txt").lines().filter(|l| l.starts_with("TX ")) {
+        let (spec, log) = line.split_once(" -> ").unwrap();
+        let w: Vec<&str> = spec.split_whitespace().collect();
+        let count: usize = w[1].parse().unwrap();
+        let node = |i: usize| -> (u16, u32, u8, i32) { (w[2 + 4 * i].parse().unwrap(), w[3 + 4 * i].parse().unwrap(), w[4 + 4 * i].parse().unwrap(), w[5 + 4 * i].parse().unwrap()) };
+        let has_kids: Vec<bool> = (0..count).map(|i| (0..count).any(|j| node(j).3 == i as i32)).collect();
+        let mut p = Player::new(movie.clone());
+        let mut ids = vec![p.root];
+        for i in 1..count {
+            let (d, _, _, parent) = node(i);
+            let ch = if has_kids[i] { 1 } else { 2 + i as u16 };
+            let id = p.alloc_inst(Inst::new(ch, d, Some(ids[parent as usize])));
+            p.inst_mut(ids[parent as usize]).unwrap().children.insert(d, id);
+            ids.push(id);
+        }
+        for i in 0..count {
+            let (d, tex, alpha, _) = node(i);
+            let inst = p.inst_mut(ids[i]).unwrap();
+            inst.depth = d;
+            inst.tex_swap = tex;
+            inst.placed_by = Some(u64::MAX);
+            if i == 0 && !has_kids[0] {
+                inst.character = 2;
+            }
+            if alpha == 0 {
+                inst.cxform.mult[3] = 0;
+            }
+        }
+        // the original's draws with the texture each shape takes
+        let mut current = 0;
+        let mut want = Vec::new();
+        for t in log.split_whitespace() {
+            if let Some(k) = t.strip_prefix('T') {
+                current = k.parse().unwrap();
+            } else if let Some(d) = t.strip_prefix('D') {
+                let (node, flag) = d.split_once(',').unwrap();
+                let node: u16 = node.parse().unwrap();
+                want.push((node, if flag != "0" { TexRef::Swap(current) } else { TexRef::Bitmap(1000 + node) }));
+            }
+        }
+        let list = crate::draw::build(&p);
+        let mut got = Vec::new();
+        for it in &list.items {
+            if let Item::Triangles { verts, tex, .. } = it {
+                for t in verts.chunks_exact(3) {
+                    let node = (t[0].pos[0] / 10.0).round() as u16;
+                    got.push((node, *tex));
+                }
+            }
+        }
+        assert_eq!(got, want, "{line}");
+        swapped += want.iter().filter(|(_, t)| matches!(t, TexRef::Swap(_))).count();
+        kept += want.iter().filter(|(_, t)| matches!(t, TexRef::Bitmap(_))).count();
+        n += 1;
+    }
+    assert!(n == 3000 && swapped > 3000 && kept > 3000, "{n} {swapped} {kept}");
+}

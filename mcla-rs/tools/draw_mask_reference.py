@@ -11,14 +11,18 @@ A tree: a top instance (depth 0..3, or 65500.. so the 16-bit sums wrap), up to 4
 ascending depth (+188 / +192), each a mask (+168 = its depth + 1..12) one time in four and of alpha 0 one time in twelve;
 the end-depth global (0x82901F9C) cleared before each case. Writes <out>: "MK <n> (<depth> <clip> <alpha> <parent>)* ->
 <log>" per case; then 4,000 world matrices: "WM <local a b c d tx ty> <parent's world a .. ty> -> <world a .. ty>" (float
-bits; the instance's alpha byte 0, so the draw returns after storing them). The port: `draw::Builder` (draw.rs) through the test `masks_match_the_original` (testdata/flash_mask_ref.txt).
+bits; the instance's alpha byte 0, so the draw returns after storing them); then 3,000 texture trees: "TX <n> (<depth> <tex>
+<alpha> <parent>)* -> <log>", no masks, an instance's +148 a texture one time in four (the texture stub F-12960 logs
+"T<texture>"), alpha 0 one time in twelve, each draw logged "D<node>,<+80>" (the swap flag the shape draw F-19892 reads).
+The port: `draw::Builder` (draw.rs) through the tests `masks_match_the_original`, `world_matrix_matches_the_original`,
+`texture_swaps_match_the_original` (testdata/flash_mask_ref.txt).
 """
 import argparse
 import subprocess
 from pathlib import Path
 from recomp_closure import index, build
 
-STUBS = ['F-57014', 'F-12960', 'F-54245', 'F-54006', 'F-74625']
+STUBS = ['F-57014', 'F-54245', 'F-54006', 'F-74625']
 
 
 def addr(tool, fid):
@@ -29,6 +33,7 @@ MAIN = r'''
 static uint32_t rnd(uint32_t&s){s^=s<<13;s^=s>>17;s^=s<<5;return s;}
 struct N{uint32_t depth,clip,alpha;int parent;std::vector<int> kids;};
 static std::vector<N> nodes;
+static std::vector<uint32_t> texs;
 static uint32_t at(int i){return 0x1000+224*i;}
 static void gen(int me,int level,uint32_t&s){
   int n=level>=3?0:int(rnd(s)%5);
@@ -90,6 +95,37 @@ int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.
   sub_DRAW(c,nullptr);
   printf("WM");for(int i=0;i<12;i++)printf(" %08x",in[i]);printf(" ->");
   for(int i=0;i<6;i++)printf(" %08x",load(a+32+4*i));printf("\n");
+ }
+ // texture swaps: +148 a texture (F-12960 makes it current, +80 = 1; +80 is otherwise the parent's), no masks
+ txmode=true;
+ for(uint32_t seed=1;seed<=3000;seed++){
+  uint32_t s=seed*3266489917u|1;
+  nodes.clear();texs.clear();
+  N top{rnd(s)%4,0,64,-1,{}};
+  nodes.push_back(top);
+  gen(0,0,s);
+  for(auto&n:nodes){n.clip=0;n.alpha=rnd(s)%12==0?0:64;}
+  nodes[0].alpha=64;
+  for(size_t i=0;i<nodes.size();i++)texs.push_back(rnd(s)%4==0?1+rnd(s)%250:0);
+  std::memset(objects,0,sizeof objects);
+  for(size_t i=0;i<nodes.size();i++){
+   uint32_t a=at(int(i));const N&n=nodes[i];
+   store(a+4,0x7000);
+   store16(a+166,uint16_t(n.depth));store16(a+168,0);
+   *pointer(a+67)=uint8_t(n.alpha);*pointer(a+177)=1;*pointer(a+81)=0;
+   store(a+148,texs[i]);store(a+152,0xFFFFFFFFu);
+   store(a+184,n.parent<0?0:at(n.parent));
+   store(a+188,n.kids.empty()?0:at(n.kids[0]));
+  }
+  for(size_t i=0;i<nodes.size();i++)for(size_t k=0;k+1<nodes[i].kids.size();k++)store(at(nodes[i].kids[k])+192,at(nodes[i].kids[k+1]));
+  store(0x7000,0x7010);
+  store16(0x82901F9C,0);store(0x828FF97C,0);*pointer(0x7800+72)=0;
+  ev.clear();
+  Context c{};c.r1.u32=0x7f00;c.r3.u32=at(0);c.r4.u32=0x7800;
+  sub_DRAW(c,nullptr);
+  printf("TX %d",int(nodes.size()));
+  for(size_t i=0;i<nodes.size();i++)printf(" %u %u %u %d",nodes[i].depth,texs[i],nodes[i].alpha,nodes[i].parent);
+  printf(" -> %s\n",ev.c_str());
  }}
 '''
 
@@ -104,11 +140,14 @@ def main():
     a = ap.parse_args()
     import recomp_closure
     recomp_closure.EXTRA += ('#include <string>\n#include <vector>\nstatic std::string ev;\n'
-                             'static void drawn(uint32_t r4){ev+="D"+std::to_string((r4-8-0x1000)/224)+" ";}\n'
+                             'static bool txmode=false;\n'
+                             'static void drawn(uint32_t r4){ev+="D"+std::to_string((r4-8-0x1000)/224);'
+                             'if(txmode)ev+=","+std::to_string(*pointer(r4+72));ev+=" ";}\n'
                              '#define REX_CALL_INDIRECT_FUNC(a) drawn(ctx.r4.u32)\n')
     idx = index(a.recomp)
     draw = addr(a.tool, 'F-92070')
     stubs = {'sub_' + addr(a.tool, f): '' for f in STUBS}
+    stubs['sub_' + addr(a.tool, 'F-12960')] = 'ev+="T"+std::to_string(ctx.r3.u32)+" ";'
     stubs['sub_' + addr(a.tool, 'F-33110')] = 'ev+="S"+std::to_string(ctx.r3.u32)+","+std::to_string(ctx.r4.u32)+" ";'
     src = MAIN.replace('sub_DRAW', 'sub_' + draw)
     exe = build(idx, ['sub_' + draw], src, a.work, 'draw_mask', stubs=stubs, scratch_end=0x8000)
@@ -116,7 +155,8 @@ def main():
     a.out.write_text(r.stdout)
     rows = [l for l in r.stdout.splitlines() if l.startswith('MK')]
     print(len(rows), 'cases,', sum(1 for l in rows if 'S20,0' in l), 'with the test turned off,',
-          sum(1 for l in rows if 'S16,0' in l), 'with a mask;', r.stdout.count('WM '), 'world matrices')
+          sum(1 for l in rows if 'S16,0' in l), 'with a mask;', r.stdout.count('WM '), 'world matrices;',
+          r.stdout.count('TX '), 'texture trees,', sum(1 for l in r.stdout.splitlines() if l.startswith('TX') and ',1 ' in l), 'with a swapped draw')
 
 
 if __name__ == '__main__':

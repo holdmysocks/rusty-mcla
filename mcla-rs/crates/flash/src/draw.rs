@@ -153,8 +153,12 @@ pub struct Builder<'a> {
     pub out: DrawList,
     /// alpha byte of the instance being drawn
     alpha: u8,
-    /// host texture of the clip being drawn (0 = the movie's own bitmaps)
+    /// the host texture last made current by a clip with one (`F-92070` through `F-12960`, a global the original never
+    /// restores: after a swap clip inside another, the outer clip's later shapes take the inner one's texture)
     swap: u32,
+    /// inside a swap clip (the instance flag +80: the parent's, set by a clip with a texture; `F-19892`'s fills then
+    /// keep the current texture)
+    swap_on: bool,
     /// draw the clips of `Player::key_caps` as authored (measuring them)
     no_caps: bool,
     /// the original's clip-depth end (`F-92070`'s 16-bit global): a mask sets it to its clip depth plus its summed
@@ -164,7 +168,7 @@ pub struct Builder<'a> {
 
 impl<'a> Builder<'a> {
     pub fn new(movie: &'a Movie) -> Self {
-        Builder { movie, out: DrawList::default(), alpha: 255, swap: 0, no_caps: false, mask_end: 0 }
+        Builder { movie, out: DrawList::default(), alpha: 255, swap: 0, swap_on: false, no_caps: false, mask_end: 0 }
     }
 
     /// Draw an instance's children in depth order (`F-92070`'s loop over +188 / +192; masks are the instances' own,
@@ -194,6 +198,10 @@ impl<'a> Builder<'a> {
         // alpha test below, and sets the end depth: its clip depth plus the sum of its own and every ancestor's depth
         // (+166 along +184), in 16 bits
         let sum = depth_sum(p, id);
+        // (the clip's texture is made current before the mask and the alpha test: a clip of alpha 0 still makes it current)
+        if inst.tex_swap != 0 {
+            self.swap = inst.tex_swap;
+        }
         if inst.clip_depth > 0 {
             self.out.items.push(Item::MaskBegin);
             self.mask_end = inst.clip_depth.wrapping_add(sum);
@@ -225,10 +233,11 @@ impl<'a> Builder<'a> {
             }
         }
         if inst.tex_swap != 0 {
-            // (this clip and what it holds take the host's texture)
-            let outer = std::mem::replace(&mut self.swap, inst.tex_swap);
+            // (this clip and what it holds take the current host texture; the flag is the subtree's, the texture is not
+            // put back)
+            let outer = std::mem::replace(&mut self.swap_on, true);
             self.instance_body(p, id, inst, &world, &cx);
-            self.swap = outer;
+            self.swap_on = outer;
             return;
         }
         self.instance_body(p, id, inst, &world, &cx);
@@ -303,7 +312,7 @@ impl<'a> Builder<'a> {
                     for p in pts {
                         buf.push(self.fill_vertex(fill, world, cx, p[0], p[1]));
                     }
-                    let tex = fill.bitmap.map_or(TexRef::None, |b| if self.swap != 0 { TexRef::Swap(self.swap) } else { TexRef::Bitmap(b) });
+                    let tex = fill.bitmap.map_or(TexRef::None, |b| if self.swap_on { TexRef::Swap(self.swap) } else { TexRef::Bitmap(b) });
                     self.out.tris(tex, fill.kind, &buf);
                 }
                 ShapeCmd::FanInt(pts) => {
@@ -313,7 +322,7 @@ impl<'a> Builder<'a> {
                             buf.push(self.fill_vertex(fill, world, cx, p[0] as f32, p[1] as f32));
                         }
                     }
-                    let tex = fill.bitmap.map_or(TexRef::None, |b| if self.swap != 0 { TexRef::Swap(self.swap) } else { TexRef::Bitmap(b) });
+                    let tex = fill.bitmap.map_or(TexRef::None, |b| if self.swap_on { TexRef::Swap(self.swap) } else { TexRef::Bitmap(b) });
                     self.out.tris(tex, fill.kind, &buf);
                 }
                 ShapeCmd::LineStrip(pts) => {
