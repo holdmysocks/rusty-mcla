@@ -265,59 +265,85 @@ impl WheelShape {
             return;
         }
         let (sx, sy) = (half / v.x.abs(), want / across);
-        let scale = |p: Vec3| Vec3::new(sx * p.x, p.y * sy, p.z * sy);
-        for c in corners.iter_mut() {
-            *c = scale(*c);
-        }
+        scale_corners(corners, sx, sy);
         for e in edges.iter_mut() {
-            e.centre = scale(e.centre);
-            let (a, b) = (corners[e.ends[0]] - e.centre, corners[e.ends[1]] - e.centre);
-            let c = cross(a, b);
-            let l2 = fma(c.x, c.x, fma(c.z, c.z, c.y * c.y));
-            if l2 > f32::from_bits(0x2b8cbccc) {
-                // (the scalar unit's 1 / sqrt: the single estimate, two Newton steps in double)
-                let l = l2 as f64;
-                let x = ((1.0 / l.sqrt()) as f32) as f64;
-                let x = (-(x * x).mul_add(l, -1.0)).mul_add(x * 0.5, x);
-                let x = (-(x * x).mul_add(l, -1.0)).mul_add(x * 0.5, x);
-                let mut n = c * (x as f32);
-                if fma(e.normal.x, n.x, fma(e.normal.z, n.z, e.normal.y * n.y)) < 0.0 {
-                    n = Vec3::ZERO - n;
-                }
-                e.normal = n;
-            }
-            let d = e.centre - corners[e.ends[0]];
-            e.radius = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y)).sqrt();
+            edge_update(e, corners, sx, sy);
         }
         for f in faces.iter_mut() {
-            let old = f.centre;
-            f.centre = scale(old);
-            let first = edges[f.edges[0]];
-            if f.cap {
-                let d = f.centre - corners[f.corner];
-                f.outer = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y)).sqrt();
-                let k = first.radius / f.outer;
-                let m = fnms(k, k, 1.0);
-                f.least = if m > 0.0 { m.sqrt() } else { 0.0 };
-                f.inner = 0.0;
-            } else {
-                let other = edges[if f.count != 2 { f.edges[2] } else { f.edges[1] }];
-                let axis = other.centre - first.centre;
-                let len = fma(axis.x, axis.x, fma(axis.y, axis.y, axis.z * axis.z)).sqrt();
-                let axis = axis * recip(len);
-                // (a direction across the axis, F-95825)
-                let across = if axis.x.abs() >= axis.y.abs() { Vec3::new(-axis.z, 0.0, axis.x) } else { Vec3::new(0.0, axis.z, -axis.y) };
-                let across = across * rsqrt_or_zero(dot(across, across));
-                let a = across * f.inner + old;
-                let b = across * first.radius + first.centre;
-                let d = Vec3::new(a.x * sx - b.x, a.y * sy - b.y, a.z * sy - b.z);
-                f.outer = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y)).sqrt();
-                let k = (len / f.outer) * 0.5;
-                let m = fnms(k, k, 1.0);
-                f.least = if m > 0.0 { m.sqrt() } else { 0.0 };
-                f.inner = fnms(f.outer, f.least, first.radius);
-            }
+            face_update(f, edges, corners, sx, sy);
         }
+    }
+}
+
+/// F-90069's vertex loops: every corner's x times `sx`, its y and z times `sy` - an axis whose factor is not above 0 (NaN
+/// too) is left alone.
+fn scale_corners(corners: &mut [Vec3], sx: f32, sy: f32) {
+    for c in corners.iter_mut() {
+        if sx > 0.0 {
+            c.x = sx * c.x;
+        }
+        if sy > 0.0 {
+            c.y = c.y * sy;
+        }
+        if sy > 0.0 {
+            c.z = c.z * sy;
+        }
+    }
+}
+
+/// F-17852: a curved edge after its corners were scaled by (`sx`, `sy`, `sy`) - its centre scaled, its normal made again from the
+/// centre and its two corners (a cross product longer than 1e-12 squared; the scalar unit's 1 / sqrt: the single estimate, two
+/// Newton steps in double; turned to the old normal's side), its radius the distance from its first corner.
+fn edge_update(e: &mut Edge, corners: &[Vec3], sx: f32, sy: f32) {
+    e.centre = Vec3::new(e.centre.x * sx, e.centre.y * sy, e.centre.z * sy);
+    let (a, b) = (corners[e.ends[0]] - e.centre, corners[e.ends[1]] - e.centre);
+    let c = cross(a, b);
+    let l2 = fma(c.x, c.x, fma(c.z, c.z, c.y * c.y));
+    if l2 > f32::from_bits(0x2b8cbccc) {
+        let l = l2 as f64;
+        let x = ((1.0 / l.sqrt()) as f32) as f64;
+        let x = (-(x * x).mul_add(l, -1.0)).mul_add(x * 0.5, x);
+        let x = (-(x * x).mul_add(l, -1.0)).mul_add(x * 0.5, x);
+        let mut n = c * (x as f32);
+        if fma(e.normal.x, n.x, fma(e.normal.z, n.z, e.normal.y * n.y)) < 0.0 {
+            n = Vec3::ZERO - n;
+        }
+        e.normal = n;
+    }
+    let d = e.centre - corners[e.ends[0]];
+    e.radius = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y)).sqrt();
+}
+
+/// F-22892: a curved face after its edges were updated: its centre scaled; a cap's outer radius from its corner, `least`
+/// from its first edge's radius, `inner` 0; a band's axis between its first and last edge centres, the direction across it
+/// (F-95825), the outer radius between the two scaled points, `least` and `inner`.
+fn face_update(f: &mut Face, edges: &[Edge], corners: &[Vec3], sx: f32, sy: f32) {
+    let old = f.centre;
+    f.centre = Vec3::new(sx * old.x, old.y * sy, old.z * sy);
+    let first = edges[f.edges[0]];
+    if f.cap {
+        let d = f.centre - corners[f.corner];
+        f.outer = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y)).sqrt();
+        let k = first.radius / f.outer;
+        let m = fnms(k, k, 1.0);
+        f.least = if m > 0.0 { m.sqrt() } else { 0.0 };
+        f.inner = 0.0;
+    } else {
+        let other = edges[if f.count != 2 { f.edges[2] } else { f.edges[1] }];
+        let axis = other.centre - first.centre;
+        let len = fma(axis.x, axis.x, fma(axis.y, axis.y, axis.z * axis.z)).sqrt();
+        let axis = axis * recip(len);
+        // (a direction across the axis, F-95825)
+        let across = if axis.x.abs() >= axis.y.abs() { Vec3::new(-axis.z, 0.0, axis.x) } else { Vec3::new(0.0, axis.z, -axis.y) };
+        let across = across * rsqrt_or_zero(dot(across, across));
+        let a = across * f.inner + old;
+        let b = across * first.radius + first.centre;
+        let d = Vec3::new(a.x * sx - b.x, a.y * sy - b.y, a.z * sy - b.z);
+        f.outer = fma(d.x, d.x, fma(d.z, d.z, d.y * d.y)).sqrt();
+        let k = (len / f.outer) * 0.5;
+        let m = fnms(k, k, 1.0);
+        f.least = if m > 0.0 { m.sqrt() } else { 0.0 };
+        f.inner = fnms(f.outer, f.least, first.radius);
     }
 }
 
@@ -1232,3 +1258,7 @@ pub fn convex_contact(a: &impl Support, margin_a: f32, b: &impl Support, margin_
     }
     result
 }
+
+#[cfg(test)]
+#[path = "gjk_offline.rs"]
+mod offline;

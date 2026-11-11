@@ -118,3 +118,7 @@ impl Curve {
         (speed, self.evaluate(speed))
     }
 }
+
+#[cfg(test)]
+#[path = "engine_curve_offline.rs"]
+mod offline;

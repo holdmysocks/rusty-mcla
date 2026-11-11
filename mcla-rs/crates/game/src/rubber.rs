@@ -85,12 +85,7 @@ impl RubberBand {
         }
         let t = Tuning::load(p);
         let g = |k: &str| t.get(k, DEFAULTS.iter().find(|d| d.0 == k).map_or(0.0, |d| d.1));
-        let mut behind = arr8(float_array(&text, "BehindDistOffsets"));
-        // (LoadTuning: Behind[1..6] = Behind[2..7]; [0] and [7] kept)
-        for i in 1..7 {
-            behind[i] = behind[i + 1];
-        }
-        Some(RubberBand {
+        let mut band = RubberBand {
             max_throttle: g("MaxThrottle"),
             min_speed: g("MinSpeed"),
             min_dist: g("MinDist"),
@@ -101,16 +96,30 @@ impl RubberBand {
             behind_max_throttle: g("BehindMaxThrottle"),
             dist_behind_before_shortcuts: g("DistBehindBeforeTakingShortcuts"),
             nitro_min_dist_from_start: g("UseNitroMinDistFromStart"),
-            nitro_min_dist_from_finish: g("UseNitroMinDistFromFinish") * 2.0,
+            nitro_min_dist_from_finish: g("UseNitroMinDistFromFinish"),
             nitro_min_dist_behind_player: g("UseNitroMinDistBehindPlayer"),
-            unlimited_nitro_min_dist_behind_player: g("UnlimitedNitroMinDistBehindPlayer") * 2.5,
+            unlimited_nitro_min_dist_behind_player: g("UnlimitedNitroMinDistBehindPlayer"),
             home_stretch_behind_max_throttle: g("HomeStretchBehindMaxThrottle"),
-            home_stretch_distance: g("HomeStretchDistance") * 2.0,
+            home_stretch_distance: g("HomeStretchDistance"),
             player_close_max_throttle: g("PlayerCloseMaxThrottle"),
             player_close_distance: g("PlayerCloseDistance"),
             ahead_offsets: arr8(float_array(&text, "AheadDistOffsets")),
-            behind_offsets: behind,
-        })
+            behind_offsets: arr8(float_array(&text, "BehindDistOffsets")),
+        };
+        band.after_load();
+        Some(band)
+    }
+
+    /// What F-12436 does to each tune record after the file is read: three scalars scaled (UseNitroMinDistFromFinish x 2,
+    /// UnlimitedNitroMinDistBehindPlayer x 2.5, HomeStretchDistance x 2) and the BehindDistOffsets' [2..7] moved down to
+    /// [1..6] ([0] and [7] stay).
+    fn after_load(&mut self) {
+        self.nitro_min_dist_from_finish = self.nitro_min_dist_from_finish * 2.0;
+        self.unlimited_nitro_min_dist_behind_player = self.unlimited_nitro_min_dist_behind_player * 2.5;
+        self.home_stretch_distance = self.home_stretch_distance * 2.0;
+        for i in 1..7 {
+            self.behind_offsets[i] = self.behind_offsets[i + 1];
+        }
     }
 
     /// The gap shifted by the racer's rank difference `k` to the human (+384): k places ahead
@@ -528,3 +537,7 @@ mod tests {
         assert!((c.to_finish(ChainPos { p: 1, d: 30.0 }) - 160.0).abs() < 1e-4);
     }
 }
+
+#[cfg(test)]
+#[path = "rubber_offline.rs"]
+mod offline;

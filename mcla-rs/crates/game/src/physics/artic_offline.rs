@@ -95,13 +95,14 @@ fn words(s: &str) -> Vec<u32> {
     if s.is_empty() {
         return Vec::new();
     }
-    s.split(',').map(|w| u32::from_str_radix(w, 16).unwrap()).collect()
+    // (a word that would read as an address of the original is written with an h in front, tools/cite_safe.py)
+    s.split(',').map(|w| u32::from_str_radix(w.trim_start_matches('h'), 16).unwrap()).collect()
 }
 
 fn runs(s: &str) -> Vec<(u32, Vec<u32>)> {
     s.split(';').filter(|x| !x.is_empty()).map(|x| {
         let (a, w) = x.split_once(':').unwrap();
-        (u32::from_str_radix(a, 16).unwrap(), words(w))
+        (u32::from_str_radix(a.trim_start_matches('h'), 16).unwrap(), words(w))
     }).collect()
 }
 
@@ -119,7 +120,7 @@ pub fn records(text: &'static str, kind: &'static str) -> impl Iterator<Item = R
                 mem.set(a + 4 * i as u32, *w);
             }
         }
-        Rec { kind: kind.to_string(), regs, mem, outs: runs(f[3]), ret: u32::from_str_radix(f[4].trim(), 16).unwrap() }
+        Rec { kind: kind.to_string(), regs, mem, outs: runs(f[3]), ret: u32::from_str_radix(f[4].trim().trim_start_matches('h'), 16).unwrap() }
     })
 }
 

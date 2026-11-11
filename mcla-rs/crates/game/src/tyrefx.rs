@@ -156,10 +156,22 @@ impl TyreFx {
         // (a wheel without a material - in the air - leaves its effect as it is)
         let Some(m) = w.ground.and_then(|g| self.mats.get(&g)) else { return };
         let (ix, thr) = *m;
-        // the suspension's compression over SuspensionLimit (F-92300; 0 under rest)
+        // the suspension's compression, held in its range (F-92300)
         let cc = crate::physics::exact::wheel_comp(w.comp, wt.travel_extent, wt.travel_limit);
-        let comp = if cc < 0.0 || wt.suspension_limit == 0.0 { 0.0 } else { cc / wt.suspension_limit };
-        let (slide, on, vlong) = (w.slide, w.record, w.velocity_long);
+        let wheel = WheelIn { ix, thr, cc, limit: wt.suspension_limit, slide: w.slide, on: w.record, vlong: w.velocity_long, vlat: w.velocity_lat, radius: wt.radius };
+        self.decide_in(s, &wheel, flag_a, drive, vel, dt);
+    }
+
+    /// F-42446 from the numbers it reads of the wheel (its material's indices and thresholds, the held compression, ...).
+    /// Every sum, product and root as the original forms it: the scalar unit's multiply-adds fused, its fsel for the clamps
+    /// (a NaN takes the second value), the speed from the sum of squares in the order of the two copies of the code.
+    fn decide_in(&self, s: &mut State, i: &WheelIn, flag_a: bool, drive: u8, vel: Vec3, dt: f32) {
+        use crate::physics::exact::{fma, fnms};
+        let fsel = |a: f32, b: f32, c: f32| if a >= 0.0 { b } else { c };
+        let (ix, thr) = (i.ix, i.thr);
+        // (the compression over SuspensionLimit: 0 under rest; a limit of 0 gives the quotient's infinity or NaN)
+        let comp = if i.cc < 0.0 { 0.0 } else { i.cc / i.limit };
+        let (slide, on, vlong) = (i.slide, i.on, i.vlong);
         let mut rule = None;
         if flag_a && vlong.abs() < 8.0 {
             rule = self.col(3, ix[0]);
@@ -194,22 +206,32 @@ impl TyreFx {
                 }
             }
         }
-        let r = wt.radius;
-        s.tire_size = if r <= 0.18 { 0.0 } else if r >= 0.64 { 1.0 } else { (r - 0.18) * 2.173_913_2 };
+        let r = i.radius;
+        s.tire_size = if !(r > 0.18) { 0.0 } else if r >= 0.64 { 1.0 } else { (r - 0.18) * 2.173_913_2 };
         s.fwd = drive == 1 || drive == 3;
         if !flag_a {
             s.donut = 1.1;
         }
-        let v = vel.length();
-        s.speed = if v <= 15.0 { 0.0 } else if v < 25.0 { (v - 15.0) / 10.0 } else { 1.0 };
+        // (the speed ramp 15 .. 25 m/s: where an effect starts or goes on with new values the length is z z + (x x + y y), where
+        // one lingers with the old ones it is x x + (y y + z z) - two copies of the code, the sums in another order)
+        let ramp = |v: f32| if !(v > 15.0) { 0.0 } else if v < 25.0 { (v - 15.0) / (25.0 - 15.0) } else { 1.0 };
         match rule {
             Some(rl) => {
-                s.skid = ((slide - thr[0]) / (1.0 - thr[0])).clamp(0.0, 1.0);
-                s.rainy = (vlong.abs() * 0.04).clamp(0.0, 1.0).mul_add((self.wet - 0.9) * 0.909_090_9, s.skid);
+                s.speed = ramp(fma(vel.z, vel.z, fma(vel.x, vel.x, vel.y * vel.y)).sqrt());
+                let t = (slide - thr[0]) / (1.0 - thr[0]);
+                let t = fsel(t, t, 0.0);
+                s.skid = fsel(t - 1.0, 1.0, t);
+                let a = vlong.abs() * 0.04;
+                let a = fsel(a, a, 0.0);
+                let a = fsel(a - 1.0, 1.0, a);
+                s.rainy = fma(a, (self.wet - 0.9) * 0.909_090_9, s.skid);
                 if flag_a {
-                    let tgt = ((w.velocity_lat * w.velocity_lat + vlong * vlong).sqrt() * 0.125).clamp(0.0, 1.0);
+                    let tgt = fma(i.vlat, i.vlat, vlong * vlong).sqrt() * 0.125;
+                    let tgt = fsel(tgt, tgt, 0.0);
+                    let tgt = fsel(tgt - 1.0, 1.0, tgt);
                     if s.donut > tgt {
-                        s.donut = (s.donut - dt * 0.25).max(tgt);
+                        let eased = fnms(dt, 0.25, s.donut);
+                        s.donut = fsel(eased - tgt, eased, tgt);
                     } else if s.donut < tgt {
                         s.donut = tgt;
                     }
@@ -217,6 +239,7 @@ impl TyreFx {
                 s.rule = rl;
             }
             None => {
+                s.speed = ramp(fma(vel.x, vel.x, fma(vel.y, vel.y, vel.z * vel.z)).sqrt());
                 // (10 more frames with the last rule and values, then a soft stop - particles live out)
                 if s.linger <= 0 {
                     s.rule = 0;
@@ -226,6 +249,20 @@ impl TyreFx {
             }
         }
     }
+}
+
+/// What F-42446 reads of a wheel: its ground material's indices and thresholds (record +44 .. +52), the compression held
+/// in its range, SuspensionLimit, the slide, whether it is on the ground, the velocities along and across it, its radius.
+struct WheelIn {
+    ix: [i16; 2],
+    thr: [f32; 2],
+    cc: f32,
+    limit: f32,
+    slide: f32,
+    on: bool,
+    vlong: f32,
+    vlat: f32,
+    radius: f32,
 }
 
 /// The instance's frame from the matrix's rows (x side, y normal, z backward): its turn, and
@@ -371,3 +408,7 @@ mod tests {
         assert!((q * Vec3::X - Vec3::X).length() < 1e-5);
     }
 }
+
+#[cfg(test)]
+#[path = "tyrefx_offline.rs"]
+mod offline;

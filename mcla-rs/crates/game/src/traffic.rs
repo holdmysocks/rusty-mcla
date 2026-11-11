@@ -365,6 +365,18 @@ fn seat_poses(r: &Rider) -> bool {
     !r.active && !matches!(r.state, 4 | 5)
 }
 
+/// F-82909's spring arithmetic, each product, quotient and root rounded to a single in the original's order: the weight
+/// on a wheel `wq` = (mass x gravity x 9.8) x 0.25; the suspension's spring `ks` = ((Ts x W) x 0.25) / travel (W the weight
+/// on the four wheels), its damping `cs` = (sqrt(wq x ks) x Sd) x 2; the tyre's spring `kt` = ((Tt / stretch) x wq) x 2,
+/// its damping `ct` = (sqrt(wq x kt) x Td) x 2. Returns [ks, cs, kt, ct].
+pub fn amb_springs(mass: f32, gravity: f32, ts: f32, sd: f32, travel: f32, tt: f32, td: f32, st: f32) -> [f32; 4] {
+    let w = mass * gravity * 9.8;
+    let wq = w * 0.25;
+    let ks = ts * w * 0.25 / travel;
+    let kt = tt / st * wq * 2.0;
+    [ks, (wq * ks).sqrt() * sd * 2.0, kt, (wq * kt).sqrt() * td * 2.0]
+}
+
 /// An ambient type's physics (loose.rs `AmbTune`): `mcAmbientTypePhysicsTuning.xml`,
 /// `mcAmbientWheelTuning.xml`, `iWheelCount` / `bIsTrailer` of `mcAmbientType.xml`, the `.r155`
 /// root bound, the model's wheel bones (`hubs`). Read once a type.
@@ -402,11 +414,7 @@ pub fn amb_tune(root: &std::path::Path, model: &str, hubs: Option<[Option<Vec3>;
         let gravity = v(&phys, "fGravityFactor").unwrap_or(1.0);
         let (cog_sim, cog_off) = (v(&wheel, "fCogSim")?, v(&wheel, "fCogOffset")?);
         let (grip, ts, sd, travel, tt, td, st) = (v(&wheel, "fTireGrip")?, v(&wheel, "fSuspensionTension")?, v(&wheel, "fSuspensionDamping")?, v(&wheel, "fSuspensionTravel")?, v(&wheel, "fTireTension")?, v(&wheel, "fTireDamping")?, v(&wheel, "fTireStretch")?);
-        // (F-82909)
-        let wq = mass * gravity * 9.8 / 4.0;
-        let ks = ts * wq / travel;
-        let kt = 2.0 * wq * tt / st;
-        let (cs, ct) = (2.0 * sd * (wq * ks).sqrt(), 2.0 * td * (wq * kt).sqrt());
+        let [ks, cs, kt, ct] = amb_springs(mass, gravity, ts, sd, travel, tt, td, st);
         // (the bound)
         let file = std::fs::read_dir(root.join("resources/ambients").join(model)).ok()?.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "r155"))?;
         let res = crate::assets::load_resource_file(&file).ok()?;
@@ -12632,3 +12640,7 @@ mod controller_pick_tests {
         assert_eq!(n, 4000);
     }
 }
+
+#[cfg(test)]
+#[path = "traffic_offline.rs"]
+mod offline;

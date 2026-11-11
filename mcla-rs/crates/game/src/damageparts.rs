@@ -1510,3 +1510,7 @@ mod piece_replay {
         println!("detach {det_tick}: port piece at rest from tick {:?} ({} ticks after the detach)", rest_tick, rest_tick.map_or(-1, |t| t as i64 - det_tick as i64));
     }
 }
+
+#[cfg(test)]
+#[path = "damageparts_offline.rs"]
+mod offline;
