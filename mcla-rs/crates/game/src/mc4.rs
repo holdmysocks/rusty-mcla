@@ -7486,6 +7486,12 @@ pub fn race_passes(record: (i32, i32, i32), district: i32, types: i32, subs: i32
     (record.0 == district || district == 6) && bit(record.1, types) && bit(record.2, subs)
 }
 
+/// mcRaceArray_Fill's race when it finds none (F-50395): one draw of the career's generator, (lo & 0x7FFFFFFF) mod the table's
+/// count +32 (signed; the count is never 0 - the original traps on 0).
+pub fn fill_fallback(n: usize, rnd: &mut dyn FnMut() -> u32) -> usize {
+    ((rnd() & 0x7FFF_FFFF) as i32 % n.max(1) as i32) as usize
+}
+
 /// One row of a page of the rewards screen after the first: (the row's kind - 17 the
 /// REWARDED header, 13 the UNLOCKED header, 19 an item -, its text, the header's count).
 pub type RewardRow = (i32, String, String);
@@ -10515,13 +10521,23 @@ impl Game {
 
     /// mcRaceArray_Fill (F-50395): the races of the table - in its order - of the
     /// district (6 = all), the type mask and the sub type mask that are unlocked and are not
-    /// test-only. (With none the original puts one random race in; the port leaves the array
-    /// empty.)
+    /// test-only. (With none the original puts one random race in: `mc4_race_array_filled`.)
     pub fn mc4_race_array(&self, district: i32, types: i32, subs: i32) -> Vec<usize> {
         (0..self.race_table.len())
             .filter(|&k| race_passes(self.mc4_race_record(&self.race_table[k]), district, types, subs))
             .filter(|&k| self.mc4_table_race(k).map_or(false, |(i, _)| !self.race_defs[i].dev_only && self.mc4_race_unlocked(&self.race_defs[i].id)))
             .collect()
+    }
+
+    /// mcRaceArray_Fill (F-50395) whole: `mc4_race_array`, and when that finds none ('No races were found') one race of the
+    /// whole table, unfiltered: the career's generator's (lo & 0x7FFFFFFF) mod the table's count (+32), signed (`rnd`, drawn
+    /// only then).
+    pub fn mc4_race_array_filled(&self, district: i32, types: i32, subs: i32, rnd: &mut dyn FnMut() -> u32) -> Vec<usize> {
+        let arr = self.mc4_race_array(district, types, subs);
+        if !arr.is_empty() || self.race_table.is_empty() {
+            return arr;
+        }
+        vec![fill_fallback(self.race_table.len(), rnd)]
     }
 
     /// The district argument the local hookman gives mcRaceArray_Fill
@@ -10541,9 +10557,10 @@ impl Game {
     /// (+32 - a vehicle drives along -c, so the smallest is the race most straight ahead)
     /// and the direction to the race, lowest first: among those more than `min_dist` away
     /// (on the map, x / z) the first that is not in the history, else the one run longest
-    /// ago. None further away: a random one (`rnd`); the index is taken of the candidates of
-    /// the district and used on the whole array (A-76493..A-63524), as here.
-    pub fn mc4_bmt_race(&self, arr: &[usize], district: i32, pos: glam::Vec3, forward: glam::Vec3, min_dist: f32, rnd: u32) -> Option<usize> {
+    /// ago. None further away: a random one (`rnd`, the career's generator's (lo & 0x7FFFFFFF), drawn only then - no draw
+    /// when a race was found); the index is taken of the candidates of the district and used on the whole array
+    /// (A-76493..A-63524), as here.
+    pub fn mc4_bmt_race(&self, arr: &[usize], district: i32, pos: glam::Vec3, forward: glam::Vec3, min_dist: f32, rnd: &mut dyn FnMut() -> u32) -> Option<usize> {
         if arr.is_empty() {
             return None;
         }
@@ -10571,8 +10588,8 @@ impl Game {
         }
         match best {
             Some((k, _)) => Some(arr[k]),
-            None if !cands.is_empty() => Some(arr[rnd as usize % cands.len()]),
-            None => Some(arr[rnd as usize % arr.len()]),
+            None if !cands.is_empty() => Some(arr[rnd() as usize % cands.len()]),
+            None => Some(arr[rnd() as usize % arr.len()]),
         }
     }
 
@@ -10582,8 +10599,8 @@ impl Game {
     /// the beat-me-there pick in the district the hookman is in, 400 m; then the array is
     /// sorted by the distance from him (mcRaceArray_SortByDistance, F-25597: on the map,
     /// nearest first) and cut to three (mcRaceArray_LocalHookmanFilter).
-    pub fn mc4_local_races(&self, pos: glam::Vec3, forward: glam::Vec3, hookman_district: i32, rnd: u32) -> Vec<usize> {
-        let arr = self.mc4_race_array(self.mc4_local_district(), 2, 6);
+    pub fn mc4_local_races(&self, pos: glam::Vec3, forward: glam::Vec3, hookman_district: i32, rnd: &mut dyn FnMut() -> u32) -> Vec<usize> {
+        let arr = self.mc4_race_array_filled(self.mc4_local_district(), 2, 6, rnd);
         let Some(first) = self.mc4_bmt_race(&arr, hookman_district, pos, forward, 400.0, rnd) else { return Vec::new() };
         let mut sorted: Vec<(usize, f32)> = arr.iter().filter_map(|&t| self.mc4_table_race(t).map(|(_, p)| (t, ((pos.x - p.x).powi(2) + (pos.z - p.z).powi(2)).sqrt()))).collect();
         sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -13978,6 +13995,35 @@ impl Game {
 
 #[cfg(test)]
 mod tests {
+    /// mcRaceArray_Fill F-50395 run offline (tools/fill_reference.py, testdata/fill_ref.txt: 3,000 tables of 1 - 200 records,
+    /// districts, type and sub type masks incl. -1, shifts of 32 and more, test-only records with the dev switch on / off,
+    /// locked ones; 2,818 of them find nothing): the indices pushed equal `race_passes` with the test-only and unlock tests,
+    /// in the table's order, else the one of `fill_fallback`, and the career's generator after equals the port's draws.
+    #[test]
+    fn race_fill_matches_the_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/fill_ref.txt").lines() {
+            let (lhs, rhs) = l.split_once(" -> ").unwrap();
+            let v: Vec<&str> = lhs.split(' ').collect();
+            let num = |t: &str| t.parse::<i64>().unwrap() as i32;
+            let (d, ty, su, dev) = (num(v[0]), num(&v[1][1..]), num(&v[2][1..]), v[3] == "1");
+            let h = |t: &str| u32::from_str_radix(&t[1..], 16).unwrap();
+            let k = v.len();
+            let mut g = crate::vehicles::parked::Mwc { lo: h(v[k - 2]), carry: h(v[k - 1]) };
+            let recs: Vec<Vec<i32>> = v[4..k - 2].iter().map(|r| r.split(':').map(num).collect()).collect();
+            let mut got: Vec<usize> = (0..recs.len())
+                .filter(|&i| { let r = &recs[i]; (r[3] == 0 || dev) && race_passes((r[0], r[1], r[2]), d, ty, su) && r[4] != 0 })
+                .collect();
+            if got.is_empty() {
+                got.push(fill_fallback(recs.len(), &mut || g.next()));
+            }
+            let want = format!("{} g{:08x} g{:08x}", got.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "), g.lo, g.carry);
+            assert_eq!(want, rhs, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+    }
+
     // (the single-pass picture as it was: the reference for the bands)
     fn top_arrow_picture_ref(t: &TopArrowTune, m: &TopArrowModel, size: usize, local: [f32; 3]) -> Vec<u8> {
         const SS: usize = 3;
@@ -17589,7 +17635,7 @@ mod tests {
         // than 400 m off, and not in the history while such a race exists; the three he
         // keeps begin with it and are different races)
         let (pos, fwd) = (glam::Vec3::new(0.0, 10.0, -500.0), glam::Vec3::NEG_Z);
-        let first = g.mc4_bmt_race(&arr, 0, pos, fwd, 400.0, 7).unwrap();
+        let first = g.mc4_bmt_race(&arr, 0, pos, fwd, 400.0, &mut || 7).unwrap();
         let (_, p) = g.mc4_table_race(first).unwrap();
         assert_eq!(g.mc4_race_record(&g.race_table[first]).0, 0);
         assert!(((p.x - pos.x).powi(2) + (p.z - pos.z).powi(2)).sqrt() > 400.0);
@@ -17599,13 +17645,13 @@ mod tests {
         let ahead = |t: usize| fwd.dot((g.mc4_table_race(t).unwrap().1 - pos).normalize());
         assert!(fresh.iter().all(|&t| ahead(t) <= ahead(first) + 1e-6));
         // (facing the other way he picks another)
-        assert_ne!(g.mc4_bmt_race(&arr, 0, pos, -fwd, 400.0, 7), Some(first));
-        let kept = g.mc4_local_races(pos, fwd, 0, 7);
+        assert_ne!(g.mc4_bmt_race(&arr, 0, pos, -fwd, 400.0, &mut || 7), Some(first));
+        let kept = g.mc4_local_races(pos, fwd, 0, &mut || 7);
         assert_eq!((kept.len(), kept[0]), (3, first));
         assert!(kept[0] != kept[1] && kept[1] != kept[2] && kept[0] != kept[2]);
         // (a race that was just run is no longer his first choice)
         g.mc4.as_mut().unwrap().career.add_race_to_history(first as i64, None);
-        assert_ne!(g.mc4_bmt_race(&arr, 0, pos, fwd, 400.0, 7), Some(first));
+        assert_ne!(g.mc4_bmt_race(&arr, 0, pos, fwd, 400.0, &mut || 7), Some(first));
         // (the time trial man's panel in the 100 % save: every row can be taken)
         assert_eq!(Game::mc4_tt_panel_district("timetrial_dt"), Some(3));
         assert_eq!(Game::mc4_tt_panel_district("hw_tournament1"), None);
@@ -18360,8 +18406,8 @@ mod tests {
         let table: Vec<usize> = arr.iter().map(|&i| g.mc4_race_index(&g.race_defs[i].id).unwrap()).collect();
         // (the first: F-73402 over the array from the player, 400 m)
         let (pos, fwd) = (glam::Vec3::new(824.3, 16.75, -791.7), glam::Vec3::new(0.0, 0.0, -1.0));
-        let first = g.story_series_first("BESTOF_GH_04", pos, fwd, 7).unwrap();
-        let want = g.mc4_bmt_race(&table, district_of_place(&data_dir(), pos).unwrap() as i32, pos, fwd, 400.0, 7).unwrap();
+        let first = g.story_series_first("BESTOF_GH_04", pos, fwd, &mut || 7).unwrap();
+        let want = g.mc4_bmt_race(&table, district_of_place(&data_dir(), pos).unwrap() as i32, pos, fwd, 400.0, &mut || 7).unwrap();
         assert_eq!(g.mc4_table_race(want).unwrap().0, first);
         g.man_diff = Some(2);
         g.story_series_start(&("BESTOF_GH_04".to_string(), "NIKOLAI".to_string(), String::new(), String::new()), first);

@@ -4434,9 +4434,11 @@ impl App {
                         self.delivery_ease = Some((0.0, i));
                         log::info!("delivery: triggered at {:?}, ease to pause", cur);
                     }
-                } else if let Some((si, j)) = line.filter(|&(_, j)| free && self.cuts.idle() && self.hangout_entry.is_none() && std::env::var("MCLA_NO_CINE").is_err() && self.game.mc4_hangout_open(&self.hangouts[j].0) && !matches!(self.police.heat, police::Heat::Pursuit | police::Heat::Search | police::Heat::Busted)) {
+                } else if let Some((si, j)) = line.filter(|&(_, j)| free && self.cuts.idle() && self.hangout_entry.is_none() && std::env::var("MCLA_NO_CINE").is_err() && self.game.mc4_hangout_open(&self.hangouts[j].0) && self.police.activity().0 <= 1) {
                     // the core's entry line crossed - no speed test, not with the police activity above 1 (the
-                    // barrier's test): "ease to pause" (0.2 s), then the warp to the wait camera (`hangoutin`)
+                    // barrier's test, F-35540 `Police::activity`: a pull-over too, and the race's cop zone counting down; the
+                    // core waits 100 ms and tries again, nothing shown): "ease to pause" (0.2 s), then the warp to the wait
+                    // camera (`hangoutin`)
                     log::info!("hangout entry: {} line crossed at {:?}, speed {:.1}", hangoutin::SETUPS[si].key, cur, speed);
                     self.game.hangout_slow.set(0.0, 1.0 / hangoutin::SLOW_IN, false, true, 1.0);
                     self.game.hangout_slow.visible = true;
@@ -5689,10 +5691,11 @@ impl App {
             }
             self.props.set_race_props(&gpu, &mut world, &items);
         }
-        // (the hangouts' barriers shut the lots only while the police are after the player, and
-        // a local hangout's while one is in it - MAP_WORK.md pass 6)
+        // (the hangouts' barriers shut the lots only while the police are after the player - the cores'
+        // PoliceManager_CheckPoliceActivity(1) > 1, F-35540 `Police::activity` - and a local hangout's while one is in it -
+        // MAP_WORK.md pass 6)
         {
-            let chase = matches!(self.police.heat, police::Heat::Pursuit | police::Heat::Search | police::Heat::Busted);
+            let chase = self.police.activity().0 > 1;
             let inside = self.hangout_in.filter(|_| self.game.mode == Mode::RaceSelect).map(|h| self.hangouts[h].1);
             self.props.set_barriers(&mut world, chase, inside);
         }
@@ -6202,8 +6205,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // from the door) - which is what keeps a car that has just come out from going straight back in;
                         // the drive-out scene leaves it about 26 m from the door)
                         let held = garagein::at_door(p).map_or(false, |g| self.game.garage_held(g));
-                        // (0x3ca..0x3ee: PoliceManager_CheckPoliceActivity(1) > 1 waits 100 ms - a pursuit, a search or
-                        // a bust; a pull-over or a dispatch on its way does not stop it - `Police::activity`, F-35540)
+                        // (0x3ca..0x3ee: PoliceManager_CheckPoliceActivity(1) > 1 waits 100 ms - a pull-over, a pursuit, a
+                        // search, a bust or the race's cop zone counting down; a dispatch on its way or a cop's Follow does
+                        // not stop it - `Police::activity`, F-35540)
                         let quiet = self.police.activity().0 <= 1;
                         let door = garagein::at_door(p).filter(|&g| !self.game.career.loaded() || self.game.garage_running(g));
                         let drive_in = self.game.flash_hud.is_some() && self.game.cruising_offline() && !held && self.garage_in.is_none() && quiet && door.is_some() && self.opt.shot.is_none() | std::env::var("MCLA_DOOR_IN").is_ok();
@@ -7049,8 +7053,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // (each flash the gates below drop is logged with the nearest racer: GitHub #22)
                 let pressed = flash && self.drive;
                 let refused = |why: &str, roam: &roamers::Roamers, v: &vehicles::Vehicles, w: &world::World| log::info!("headlights flashed, no challenge ({why}): {}", roam.flash_report(v, w));
-                if flash && self.roam.challenge.is_none() && !matches!(self.police.heat, police::Heat::None) {
-                    if pressed { refused(&format!("police activity {:?}", self.police.heat), &self.roam, &self.vehicles, &world); }
+                if flash && self.roam.challenge.is_none() && self.police.activity().0 >= 2 {
+                    if pressed { refused(&format!("police activity {}", self.police.activity().0), &self.roam, &self.vehicles, &world); }
                     flash = false;
                 }
                 if flash && self.roam.near_is_rival && self.roam.challenge.is_none() && std::env::var("MCLA_ROAM_TEST").is_err() {

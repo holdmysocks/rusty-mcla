@@ -15364,7 +15364,7 @@ impl Game {
     /// The first race of a story series (OrderedSeriesCore 0x581..0x5cb, taken when the story launcher's +3256
     /// is 1): mcRaceArray_FindBeatMeThereRaceIndex (F-73402) over the series' array from the race data's racer 0,
     /// the player - his district (Racer_GetCurrentDistrict), place and heading -, 400 m.
-    pub fn story_series_first(&self, id: &str, pos: Vec3, forward: Vec3, rnd: u32) -> Option<usize> {
+    pub fn story_series_first(&self, id: &str, pos: Vec3, forward: Vec3, rnd: &mut dyn FnMut() -> u32) -> Option<usize> {
         let (order, _) = self.story_series_array(id)?;
         let arr: Vec<usize> = order.iter().filter_map(|&i| self.mc4_race_index(&self.race_defs[i].id)).collect();
         let district = crate::mc4::district_of_place(&self.data_dir, pos).unwrap_or(0) as i32;

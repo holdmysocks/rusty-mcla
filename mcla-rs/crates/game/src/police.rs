@@ -1130,6 +1130,51 @@ pub(crate) fn zone_tick(state: u8, target: bool, timer: f32, dt: f32, delay: f32
     }
 }
 
+/// PoliceManager_CheckPoliceActivity's inputs (F-35540): the manager there, the argument (the native's `!= 0`), the Dispatch's
+/// +160 +12 (the tactic of type 0, F-10826), a tactic of the argument in its Search with the clock running (F-63053) / in it
+/// (F-77780), the manager's +56 byte, its +196 (the cop zone's state) and the tactics of types 1..4 present.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ActIn {
+    pub mgr: bool,
+    pub arg: u8,
+    pub dsp: Option<i32>,
+    pub srch_clock: bool,
+    pub srch: bool,
+    pub held: bool,
+    pub zone: i32,
+    pub types: [bool; 4],
+}
+
+/// F-35540 (tools/activity_reference.py, 3,000 cases): no manager 0; the Dispatch with +12 above 0 -1; the Search with its
+/// clock 3, the Search 2; +56 100; the argument with the zone at 2 / 3, or an Arrow Trap, 7; Double Pursuit 6, Pursuit 5,
+/// Pull-over 4; a unit (side +872, the brain's command +568 or without a brain the cop's +1076 != 0 as 2 - F-57281) of the
+/// argument's side with command 2 (Follow) 1; else 0. The units: (side, the brain's command, +1076).
+pub(crate) fn activity_rule(a: &ActIn, units: impl IntoIterator<Item = (u8, Option<u32>, u32)>) -> i32 {
+    if !a.mgr {
+        return 0;
+    }
+    if a.dsp.is_some_and(|w| w > 0) {
+        return -1;
+    }
+    if a.srch_clock {
+        return 3;
+    }
+    if a.srch {
+        return 2;
+    }
+    if a.held {
+        return 100;
+    }
+    if (a.arg != 0 && matches!(a.zone, 2 | 3)) || a.types[3] {
+        return 7;
+    }
+    if let Some(k) = (0..3).rev().find(|&k| a.types[k]) {
+        return 4 + k as i32;
+    }
+    let cmd = |b: Option<u32>, w: u32| b.unwrap_or(if w != 0 { 2 } else { 0 });
+    if units.into_iter().any(|(side, b, w)| side == a.arg && cmd(b, w) == 2) { 1 } else { 0 }
+}
+
 /// The zone's target (manager +200): a racer of the race (its index) or an entry of the AI list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ZoneTgt {
@@ -3441,48 +3486,38 @@ impl Police {
         }
     }
 
-    /// PoliceManager_CheckPoliceActivity(1) (F-35540) as far as the port's states reach: -1 a dispatch (group 0) to
-    /// the player past its wait (state > 0, tested first), 2 a pursuit, its search or the arrest, 1 a pull-over, else 0.
-    /// With -1 the dispatch's state (F-48923 reads it: 2 = Respond).
+    /// PoliceManager_CheckPoliceActivity(1) (F-35540, `activity_rule`) on the port's state, and the Dispatch's state (F-48923
+    /// reads it: 2 = Respond) for -1. The inputs: the Dispatch (type 0, tested first, whatever its target); a tactic on the
+    /// player (F-10826 finds the argument's: none while the tactic is on an AI racer) in its Search with the clock running
+    /// (3) or in it (2); the arrest's hold +56 (100: F-22530 sets it on the success frame, CutSceneDone clears it - the
+    /// port's posted arrest, held as `Heat::Busted` through the scene); the race's cop zone set off or in its radio delay
+    /// (+196 2 / 3: 7); the tactic's type (Arrow Trap 7, Double Pursuit 6, Pursuit 5, Pull-over 4); a unit in its random
+    /// Follow (command 2: 1; the units are the city's cops, +872 = 1). Checked: 3,000 cases offline
+    /// (`activity_matches_the_original`).
     pub fn activity(&self) -> (i32, u8) {
-        if let Some(d) = self.dsp.as_ref().filter(|d| d.st > 0) {
-            return (-1, d.st);
-        }
-        (match self.heat {
-            Heat::None => 0,
-            Heat::PullOver => 1,
-            Heat::Pursuit | Heat::Search | Heat::Busted => 2,
-        }, 0)
+        let me = self.target.is_none();
+        let a = ActIn {
+            mgr: true,
+            arg: 1,
+            dsp: self.dsp.as_ref().map(|d| d.st as i32),
+            srch_clock: me && self.heat == Heat::Search && search_clock_runs(self.search),
+            srch: me && self.heat == Heat::Search,
+            held: self.heat == Heat::Busted && self.arrest_posted,
+            zone: self.zone.as_ref().map_or(0, |z| z.state as i32),
+            types: if me {
+                [TacKind::PullOver, TacKind::Pursuit, TacKind::PursuitDbl, TacKind::ArrowTrap].map(|k| self.kind == k)
+            } else {
+                [false; 4]
+            },
+        };
+        let units = self.units.iter().map(|u| (1u8, Some(if u.follow { 2 } else { 0 }), 0));
+        (activity_rule(&a, units), self.dsp.as_ref().map_or(0, |d| d.st))
     }
 
-    /// PoliceManager_CheckPoliceActivity(1) (F-35540) in full for the strip's look: -1 a Dispatch (type 0) on the player past
-    /// its wait (tested first); then over the tactics on the player, 3 one in its Search with the clock running (vt+44, the
-    /// target lost - F-63053), 2 one in its Search (vt+40, F-77780); then the tactic of type 4 / 3 / 2 / 1 (Arrow Trap,
-    /// Double Pursuit, Pursuit, Pull-over: 7 / 6 / 5 / 4 - F-10826); else 0. (The manager's +56 byte -> 100, the +196 test
-    /// -> 7 and the units' test -> 1 give the strip's look 0 or 1 as their neighbours; the +196 and units' tests are not
-    /// reached by the port.) +56 is the arrest's hold: F-22530 sets it on the success frame (on both of its arrest paths, before
-    /// COP_ARREST) and CutSceneDone clears it - the port's posted arrest, held as `Heat::Busted` through the scene.
+    /// The police strip's state: PoliceManager_CheckPoliceActivity(1) (F-35540), as `activity` gives it (the strip's table
+    /// F-61846 shows 100 as look 0).
     pub fn hud_state(&self) -> i32 {
-        if self.dsp.as_ref().is_some_and(|d| d.st > 0) {
-            return -1;
-        }
-        if self.target.is_some() {
-            return 0;
-        }
-        if self.heat == Heat::Search {
-            return if search_clock_runs(self.search) { 3 } else { 2 };
-        }
-        // (after the Search tests, before the tactics' types, as F-35540 tests it)
-        if self.heat == Heat::Busted && self.arrest_posted {
-            return 100;
-        }
-        match self.kind {
-            TacKind::ArrowTrap => 7,
-            TacKind::PursuitDbl => 6,
-            TacKind::Pursuit => 5,
-            TacKind::PullOver => 4,
-            _ => 0,
-        }
+        self.activity().0
     }
 
     /// The tactic's radio, once a game frame (F-26639, from the tactic's update): the countdown always; a line only in a
@@ -8484,12 +8519,48 @@ mod scene_tests {
 
     #[test]
     fn the_police_level_for_the_phone() {
+        // (F-35540: the tactic's type gives 4 - 7, a pull-over 4 - not 1, which is a unit's Follow; the Search 2 or 3)
         let mut p = Police::new();
         assert_eq!(p.activity(), (0, 0));
-        for (h, l) in [(Heat::PullOver, 1), (Heat::Pursuit, 2), (Heat::Search, 2), (Heat::Busted, 2)] {
-            p.heat = h;
-            assert_eq!(p.activity().0, l);
+        for (k, l) in [(TacKind::PullOver, 4), (TacKind::Pursuit, 5), (TacKind::PursuitDbl, 6), (TacKind::ArrowTrap, 7)] {
+            p.start_tactic(k, vec![], true, 25.0);
+            p.heat = if k == TacKind::PullOver { Heat::PullOver } else { Heat::Pursuit };
+            assert_eq!(p.activity().0, l, "{k:?}");
         }
+        p.heat = Heat::Search;
+        assert!(matches!(p.activity().0, 2 | 3));
+    }
+
+    /// PoliceManager_CheckPoliceActivity F-35540 run offline (tools/activity_reference.py, testdata/activity_ref.txt: 3,000
+    /// cases - the manager there or not, the argument 0 / 1, the Dispatch's +12, the two Search tests, +56, the zone's +196,
+    /// the tactics of types 1..4, 0 - 5 units of sides 0 / 1 / 2 with or without a brain, their commands and +1076): the level
+    /// equals `activity_rule`.
+    #[test]
+    fn activity_matches_the_original() {
+        let mut n = 0;
+        for l in include_str!("testdata/activity_ref.txt").lines() {
+            let (lhs, rhs) = l.split_once(" -> ").unwrap();
+            let v: Vec<&str> = lhs.split(' ').collect();
+            let (mgr, arg) = match v[0].strip_prefix('x') { Some(a) => (false, a), None => (true, v[0]) };
+            let d = &v[1][1..];
+            let a = ActIn {
+                mgr,
+                arg: arg.parse().unwrap(),
+                dsp: (d != "-").then(|| d.parse().unwrap()),
+                srch_clock: v[2] == "1",
+                srch: v[3] == "1",
+                held: v[4] != "0",
+                zone: v[5].parse().unwrap(),
+                types: { let t: u32 = v[6][1..].parse().unwrap(); [0, 1, 2, 3].map(|k| t >> k & 1 == 1) },
+            };
+            let units: Vec<(u8, Option<u32>, u32)> = v[7..].iter().filter(|u| **u != ".").map(|u| {
+                let w: Vec<&str> = u.split(':').collect();
+                (w[0].parse().unwrap(), (w[1] != "-").then(|| w[1].parse::<i64>().unwrap() as u32), w[2].parse::<i64>().unwrap() as u32)
+            }).collect();
+            assert_eq!(activity_rule(&a, units).to_string(), rhs, "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 3000);
     }
 
     #[test]
