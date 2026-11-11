@@ -257,6 +257,91 @@ pub fn bound_centre(root: &std::path::Path, model: &str) -> Option<glam::Vec3> {
 /// The drawn wheels turn only within 75 m of the focus, horizontally (F-37033: d^2 < 5625).
 pub const SPIN_REACH2: f32 = 5625.0;
 
+/// Whether the drawn wheels roll (F-37033): (focus - car) flattened, dz dz + dx dx fused, under 75 m squared.
+pub fn spin_near(focus: Vec3, pos: Vec3) -> bool {
+    let (dx, dz) = (focus.x - pos.x, focus.z - pos.z);
+    dz.mul_add(dz, dx * dx) < SPIN_REACH2
+}
+
+/// A drawn wheel's roll over one render update (F-37033, its wheel loop), in the original's angle: `a` the wheel's angle
+/// (draw object +64 + 4i), `rows` the instance matrix's rows X, Y, Z, `vel` the car's velocity (+208: its place's change
+/// over the frame / dt), `steer` the drawn steer (the ring's mean, f25), `hub_y` the wheel's hub height (wheel record +96's
+/// y: the roll's radius). The direction u = v (1 / sqrt(v.v), one Newton step, 0 for a zero v) and its local axes by the
+/// vector unit's dot; a front wheel (0, 1) rolls along its steered axis, -(cos s (Z.u) + sin s (X.u)) |v|, the others
+/// -(Z.u) |v|; the turn ((d dt) / (r 2 pi)) 2 pi, none while locked (F-70315, bit 0x80), x 0.2 for a parked car (no
+/// behaviour, no trailer); the angle - 0.6 x the turn, fused, then one 2 pi off above 2 pi and one on below 0. The port's
+/// wheel spin is this angle negated (it turns forwards positive).
+#[allow(clippy::too_many_arguments)]
+pub fn wheel_roll(a: f32, rows: [Vec3; 3], vel: Vec3, steer: f32, front: bool, hub_y: f32, dt: f32, locked: bool, parked: bool) -> f32 {
+    use mcla_formats::guest_math::{guest_cos, guest_sin};
+    let tau = std::f32::consts::TAU;
+    let len = vel.z.mul_add(vel.z, vel.x.mul_add(vel.x, vel.y * vel.y)).sqrt();
+    // (vmsum3fp as the recomp's dpps adds it: (x + y) + (z + the masked lane's +0), which sets the sign of a zero sum)
+    let dot = |p: Vec3, q: Vec3| (p.x * q.x + p.y * q.y) + (p.z * q.z + 0.0);
+    // (not flushed: a velocity of ~1e-20 gives a NaN direction - 1 / sqrt of the denormal, squared, is infinite)
+    let dd = dot(vel, vel);
+    let mut y = 1.0 / dd.sqrt();
+    if y == f32::INFINITY {
+        y = 0.0;
+    }
+    let k = -(dd * (y * y) - 1.0) * (0.5 * y) + y;
+    let u = vel * k;
+    let (l0, l1, l2) = (dot(rows[0], u), dot(rows[1], u), dot(rows[2], u));
+    let d = if front {
+        let (c, s) = (guest_cos(steer as f64) as f32, guest_sin(steer as f64) as f32);
+        let f0 = l2 * c;
+        let f12 = l1.mul_add(-0.0, -f0);
+        -s.mul_add(l0, -f12) * len
+    } else {
+        let f12 = l2 * 1.0;
+        let f11 = l1.mul_add(0.0, f12);
+        -l0.mul_add(0.0, f11) * len
+    };
+    let mut t = d * dt / (hub_y * tau) * tau;
+    if locked {
+        t = 0.0;
+    } else if parked {
+        t *= 0.2;
+    }
+    let mut a = -t.mul_add(0.6, -a);
+    if a > tau {
+        a -= tau;
+    }
+    if a < 0.0 {
+        a += tau;
+    }
+    // (a NaN as the recomp leaves it: the x86 default NaN, its sign set)
+    if a.is_nan() {
+        return f32::from_bits(0xffc0_0000);
+    }
+    a
+}
+
+/// The car's velocity as its update makes it (car +208 = (+176 - +192) / dt, then +192 = +176): the instance's place
+/// against the last update's; 0 at the first.
+pub fn amb_velocity(last: &mut Option<Vec3>, at: Vec3, dt: f32) -> Vec3 {
+    let v = match *last {
+        Some(p) if dt != 0.0 => (at - p) / dt,
+        _ => Vec3::ZERO,
+    };
+    *last = Some(at);
+    v
+}
+
+/// F-37033's wheel loop on the port's wheels: each wheel's roll by [`wheel_roll`] with its own hub's height (the model's
+/// wheel bone; the tuned radius for a model without them, approx.), the fronts (0, 1) along their steer, within 75 m. The
+/// port's spin is the original's angle negated. (A six-wheeled model's second rear axle is drawn with the first's spin.)
+#[allow(clippy::too_many_arguments)]
+pub fn roll_wheels(wheels: &mut [crate::physics::car::WheelState], hubs: Option<[Option<Vec3>; 6]>, radius: f32, m: &[Vec3; 4], vel: Vec3, steer: f32, near: bool, dt: f32, locked: bool, parked: bool) {
+    if !near {
+        return;
+    }
+    for (i, w) in wheels.iter_mut().enumerate() {
+        let hub_y = hubs.and_then(|h| h.get(i).copied().flatten()).map_or(radius, |h| h.y);
+        w.spin = -wheel_roll(-w.spin, [m[0], m[1], m[2]], vel, steer, i <= 1, hub_y, dt, locked, parked);
+    }
+}
+
 /// A drawn wheel's angle kept in [0, 2 pi] (F-37033: one 2 pi off above, one on below 0).
 pub fn wrap_spin(a: f32) -> f32 {
     let tau = std::f32::consts::TAU;
@@ -5093,14 +5178,21 @@ impl Vehicles {
         }
         let focus = self.amb_focus();
         for c in self.cars.iter_mut() {
-            if c.rail.is_some() || (c.parked.is_none() && !c.park_held) || !parked_render_runs(false, c.amb_hit, c.amb_frames, false) {
+            if c.rail.is_some() || (c.parked.is_none() && !c.park_held) {
                 continue;
             }
+            // (the velocity every update, the render update's gate or not: sub_826E9A40 before F-37359)
             let m = instance_matrix(c);
+            let vel = amb_velocity(&mut c.amb_place, m[3], dt);
+            if !parked_render_runs(false, c.amb_hit, c.amb_frames, false) {
+                continue;
+            }
             let s = parked_drawn_steer(&mut c.amb_steer, c.park_steer, c.amb_frames, focus.x - m[3].x, focus.z - m[3].z);
             for (i, w) in c.state.wheels.iter_mut().enumerate() {
                 w.steer = if i <= 1 { s } else { 0.0 };
             }
+            // (a parked car's roll: x 0.2, never locked - it has no behaviour, its bit 0x80 is not worked out)
+            roll_wheels(&mut c.state.wheels, c.model.own_wheels, c.model.params.wheel_radius, &m, vel, s, spin_near(focus, m[3]), dt, false, true);
             c.amb_frames = (c.amb_frames + 1).min(3);
         }
     }
@@ -5354,11 +5446,8 @@ impl Vehicles {
                 let _ = writeln!(w, "{:.2}	{}	{}	{:.2}	{:.2}	{:.2}	{:.3}	{:.2}	{}	{:.0}	{}{}{}	{:.2}	{:.2}	{:.2}	{:.3}	{}	{}	{}	{:.3}	{:.2}	{:.2}	{:.1}", self.clock, r.rng_id(), c.model.name, c.state.pos.x, c.state.pos.y, c.state.pos.z, v, lim, junction as u8, r.off, r.on[0] as u8, r.on[1] as u8, r.on[2] as u8, r.gap, r.ahead.0, r.ahead.1, r.a, r.state, r.obst_id.and_then(|j| others.get(j)).map_or(0, |o| o.key), nav.links[r.link].flags, col.ground(c.state.pos, 3.0, 6.0).map_or(f32::NAN, |g| g.point.y - c.state.pos.y), r.tilt.degrees().0, r.tilt.degrees().1, c.state.forward().z.atan2(c.state.forward().x).to_degrees());
             }
             c.state.ang_vel = Vec3::ZERO;
-            let wr = c.model.params.wheel_radius.max(0.2);
-            // (the drawn wheels turn at 0.6 of the rolling rate, within 75 m: F-37033)
-            let turn = if dist2 < SPIN_REACH2 && !r.lock.drawn() { 0.6 * if back { -v } else { v } / wr * dt } else { 0.0 };
+            // (the drawn wheels' roll: the drawn steer pass, `roll_wheels`)
             for w in c.state.wheels.iter_mut() {
-                w.spin = wrap_spin(w.spin + turn);
                 w.steer = 0.0;
                 w.grounded = true;
             }
@@ -5397,6 +5486,10 @@ impl Vehicles {
                 let x = d.map_or(0.0, |d| steer_of(-m[2], d));
                 c.amb_steer.push(x);
                 r.steer = if near { c.amb_steer.mean() } else { 0.0 };
+                // (then the wheels' roll with this steer and the lock bit of the update before)
+                let vel = amb_velocity(&mut c.amb_place, m[3], dt);
+                let locked = r.lock.drawn();
+                roll_wheels(&mut c.state.wheels, c.model.own_wheels, c.model.params.wheel_radius, &m, vel, r.steer, spin_near(focus, m[3]), dt, locked, false);
             }
             for (i, w) in c.state.wheels.iter_mut().enumerate() {
                 w.steer = if i <= 1 { r.steer } else { 0.0 };
@@ -5505,7 +5598,6 @@ impl Vehicles {
     /// the spawner's next step removes it - the cars are not removed in the middle of the
     /// vehicles' update).
     fn tow_trailers(&mut self, col: &WorldCollider, dt: f32) {
-        let focus = self.amb_focus();
         let ids: hashbrown::HashMap<u32, usize> = self.cars.iter().enumerate().filter_map(|(i, c)| c.rail.as_ref().filter(|r| r.state != 0).map(|r| (r.rng_id(), i))).collect();
         for i in 0..self.cars.len() {
             let Some(r) = self.cars[i].rail.as_mut().filter(|r| r.state == 0) else { continue };
@@ -5539,12 +5631,8 @@ impl Vehicles {
             t.state.relocate(pos, rot);
             t.state.vel = v;
             t.state.ang_vel = Vec3::ZERO;
-            let speed = v.dot(rot * Vec3::NEG_Z);
-            let wr = t.model.params.wheel_radius.max(0.2);
-            let near = Vec3::new(pos.x - focus.x, 0.0, pos.z - focus.z).length_squared() < SPIN_REACH2;
+            // (the drawn wheels' roll: the drawn steer pass, `roll_wheels`)
             for w in t.state.wheels.iter_mut() {
-                // (the drawn wheels at 0.6 of the rolling rate, as the riding cars': F-37033)
-                w.spin = wrap_spin(w.spin + if near { 0.6 * speed / wr * dt } else { 0.0 });
                 w.steer = 0.0;
                 w.grounded = true;
             }
@@ -12644,3 +12732,7 @@ mod controller_pick_tests {
 #[cfg(test)]
 #[path = "traffic_offline.rs"]
 mod offline;
+
+#[cfg(test)]
+#[path = "wheel_roll_tests.rs"]
+mod wheel_roll_tests;

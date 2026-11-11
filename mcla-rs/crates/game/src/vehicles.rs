@@ -533,6 +533,9 @@ pub struct CarInstance {
     pub amb_frames: u8,
     /// a parked car once made active (+500 bit 0x10, F-37359 then runs its render update every frame)
     pub amb_hit: bool,
+    /// the instance's place at the last update (car +192; the velocity +208 is the change over the frame / dt, F-37033's
+    /// wheel roll reads it; none before the first update)
+    pub amb_place: Option<Vec3>,
 }
 
 /// A traffic or parked car's two slot lights (render instance +576 / +624, F-99357): each slot's point
@@ -3939,7 +3942,7 @@ impl Vehicles {
         }
         self.next_uid += 1;
         let uid = self.next_uid;
-        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, rotor_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, crash: Default::default(), parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), roam_key: String::new(), vinyl: None, vinyl_done: false, size_wheels: None, vinyl_slot: VINYL_SLOT_NONE, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), win_req: [[false; 2]; 2], spoiler: WindowCtl::default(), light_flip: WindowCtl::default(), flip_req: None, roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), valve: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false });
+        self.cars.push(CarInstance { uid, model, binding, wheel_bindings, caliper_bindings, rotor_bindings, state: CarState::new(pos, yaw), input: CarInput::default(), color, ai, brain: None, placed: false, is_player, wheels: None, lean: 0.0, perf: 0.0, tuned: None, cop: false, stunned: 0.0, crash: Default::default(), parked: None, item: None, amb_born: 0.0, amb_life: 8.0, amb_id: -1, removing: None, settle: 0.0, racer: false, pinned: false, deactivated: false, boost: 0.0, driver: String::new(), plate_text: String::new(), plate: None, vinyl_name: String::new(), roam_key: String::new(), vinyl: None, vinyl_done: false, size_wheels: None, vinyl_slot: VINYL_SLOT_NONE, setup: None, stages: None, pose_history: Default::default(), inflict: 1.0, goon: false, look: None, brake: None, dressed: false, driver_set: String::new(), pu_ctl: 0, lock: 0, pu_ghost: false, pu_mirror: 0.0, pu_stealth: false, engine_off: false, show_driver: false, hi_driver: false, window_bindings, windows: Default::default(), win_req: [[false; 2]; 2], spoiler: WindowCtl::default(), light_flip: WindowCtl::default(), flip_req: None, roof: RoofCtl::default(), part_bindings, rail: None, amb_lamps: AmbLamps::default(), park_steer: 0.0, park_held: false, amb_lift: [0.0; 6], sst_trail: Default::default(), siren: false, light_t: 0.0, steer_parts: Default::default(), valve: Default::default(), amb_slot: amb_slot_start(), amb_light: AmbSlotLights::default(), amb_steer: Default::default(), amb_frames: 0, amb_hit: false, amb_place: None });
         self.cars.len() - 1
     }
 
@@ -5938,18 +5941,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 continue;
             };
             let rot = Quat::from_mat3(&glam::Mat3::from_cols(m[0], m[1], m[2])).normalize();
-            // (the drawn wheels of a physical car: the same render update as a riding one's -
-            // F-37033 with car +208, the instance position's change over the frame, along the
-            // car's forward (the steer is 0 in states 4 / 5), x 0.6 / r, within 75 m)
-            let moved = if dt > 0.0 { (m[3] - c.state.pos) / dt } else { Vec3::ZERO };
-            let near = Vec3::new(m[3].x - focus.x, 0.0, m[3].z - focus.z).length_squared() < traffic::SPIN_REACH2;
-            let wr = c.model.params.wheel_radius.max(0.2);
-            let rate = if c.park_held { 0.6 * traffic::PARKED_SPIN } else { 0.6 };
-            // (none while the lock holds: traffic.rs `Lock`)
-            let locked = c.rail.as_ref().is_some_and(|r| r.lock.drawn());
-            let turn = if near && !locked { rate * moved.dot(rot * Vec3::NEG_Z) / wr * dt } else { 0.0 };
+            // (the drawn wheels' roll of a physical car: its render update, as a riding one's - traffic.rs `roll_wheels`
+            // from the drawn steer pass and `parked_render`)
             for (i, wh) in c.state.wheels.iter_mut().enumerate() {
-                wh.spin = traffic::wrap_spin(wh.spin + turn);
                 // (a riding car's front wheels: its drawn steer, traffic.rs `Rider::steer`)
                 // (a parked one's: traffic.rs `parked_render`)
                 wh.steer = if i > 1 { 0.0 } else if c.park_held { wh.steer } else { c.rail.as_ref().map_or(0.0, |r| r.steer) };
