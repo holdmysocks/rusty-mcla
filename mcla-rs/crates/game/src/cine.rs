@@ -643,13 +643,6 @@ fn dof_rot(a: &Animation, kind: u8, t: f32) -> Option<Quat> {
     crate::drvanim::sample_dof(a, kind, 0, DOF_QUATERNION, t).map(Quat::from_array)
 }
 
-/// A scene mover's place at time `t`: its mover track and its root's, each sampled as F-15435 (a missing one: zero / identity).
-fn mover_at(a: &Animation, t: f32) -> (Vec3, Quat) {
-    let p = dof_vec(a, KIND_MOVER_TRANSLATION, t).unwrap_or(Vec3::ZERO) + dof_vec(a, KIND_TRANSLATION, t).unwrap_or(Vec3::ZERO);
-    let r = dof_rot(a, KIND_MOVER_ROTATION, t).unwrap_or(Quat::IDENTITY) * dof_rot(a, KIND_ROTATION, t).unwrap_or(Quat::IDENTITY);
-    (p, r)
-}
-
 /// A scene character's body at clip time `t` as the original's clip sampler fills its frame (F-47152 -> F-12216: the block,
 /// key and fraction of `sample_block`, each DOF from the block's own track, the mapped loop unless the character's frame
 /// layout is the clip's) and the finish writes it: only the DOFs the character's frame has (the skeleton data's +27 / +26),
@@ -1149,7 +1142,9 @@ impl Cine {
             let (o, _) = pack_entries(&res).into_iter().find(|(_, n)| n == name)?;
             let a = animation_named(&rd, o)?;
             let t = if end { a.duration } else { 0.0 };
-            let (p, r) = mover_at(&a, t);
+            // (a scene car's pose, F-31853's step 2: identity, then track 5 -> the place, track 6 -> the turn; the clip's root
+            // tracks 0 / 1 are not read - South Central's scenes hold the mover's inverse there)
+            let (p, r) = mover_of(&a, t);
             return Some((p, r.normalize()));
         }
         None
@@ -1332,7 +1327,7 @@ impl Cine {
     pub fn mover(&self, label: &str) -> Option<(Vec3, Quat)> {
         let sc = self.playing.as_ref()?;
         let m = sc.movers.iter().find(|m| m.label == label)?;
-        let (p, r) = mover_at(&m.anim, sc.t);
+        let (p, r) = mover_of(&m.anim, sc.t);
         let (_, or, _) = sc.origin.to_scale_rotation_translation();
         Some((sc.origin.transform_point3(p), (or * r).normalize()))
     }
@@ -1665,5 +1660,30 @@ mod draw_between_tests {
         sc.t_prev = sc.t;
         sc.t = 1.0;
         assert_eq!(sc.draw_t(0.25), 1.0);
+    }
+}
+
+
+#[cfg(test)]
+mod hangout_pose_tests {
+    use super::*;
+
+    /// Every hangout set-up's `_ent` scene (the scene its enter script plays) leaves the player's car next to the set-up's
+    /// entry line, South Central's too (their clips hold the mover's inverse in the root tracks, which a scene car does not
+    /// read - F-31853).
+    #[test]
+    fn hangout_scenes_park_the_car_at_their_lines() {
+        let c = Cine::load("D:/MCLA/extracted/cache");
+        if c.scenes("hangout/").is_empty() {
+            eprintln!("no disc data, skipped");
+            return;
+        }
+        for s in &crate::hangoutin::SETUPS {
+            let (p, _) = c.car_pose(s.scene, &is_player_car, true).expect(s.scene);
+            let mid = (s.line[0] + s.line[1]) * 0.5;
+            let d = glam::Vec2::new(p.x - mid.x, p.z - mid.z).length();
+            eprintln!("{} {}: end {:.1} {:.1} {:.1}, {:.1} m from the line's middle", s.key, s.scene, p.x, p.y, p.z, d);
+            assert!(d < 60.0, "{}", s.key);
+        }
     }
 }

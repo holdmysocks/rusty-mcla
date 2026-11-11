@@ -4383,9 +4383,8 @@ impl App {
                 _ => None,
             };
             self.hangout_prev = cur;
-            // (port guard: only a hangout whose scene parks the car near its line - South Central's scenes' car
-            // poses are not in the city's frame in the port, CUTSCENES.md)
-            let line = line.and_then(|s| self.hangouts.iter().position(|h| hangoutin::SETUPS[s].scene.starts_with(&format!("{}_", h.0))).filter(|&j| self.hangouts[j].1.distance(hangoutin::SETUPS[s].line[0]) < 60.0).map(|j| (s, j)));
+            // (the port's hangout of the set-up: the one its `_ent` scene names)
+            let line = line.and_then(|s| self.hangouts.iter().position(|h| hangoutin::SETUPS[s].scene.starts_with(&format!("{}_", h.0))).map(|j| (s, j)));
             if let (Some((i, d)), Some((_, speed))) = (near, pp) {
                 if self.tick_no % 120 == 0 && std::env::var("MCLA_HANGOUT_TRACE").is_ok() {
                     log::info!("hangout trace: nearest {} (spot {:?}) at {:.1} m, speed {:.1}, free {} (race {} challenge {} cine {} cuts {} movie {}), in {:?}, armed {}, mode {:?}", self.hangouts[i].0, self.hangouts[i].1, d, speed, free, self.game.race.is_some(), self.roam.challenge.is_some(), self.cine.playing.is_some(), self.cuts.playing.is_some(), self.game.movie.is_some(), self.hangout_in, self.delivery_armed, self.game.mode as u8);
@@ -15426,7 +15425,7 @@ impl App {
         }
         log::info!("garage doors: {:?}", self.game.garage_doors);
         // (the wager hangouts are the scenes 04, 06, 08, 10 and South Central's second)
-        self.game.hangout_wager = self.hangouts.iter().map(|h| ["_04", "_06", "_08", "_10", "sc_cut_hangout_02"].iter().any(|n| h.0.ends_with(n))).collect();
+        self.game.hangout_wager = self.hangouts.iter().map(|h| ["_04", "_06", "_08", "_10", "sc_cut_hangout_01"].iter().any(|n| h.0.ends_with(n))).collect();
         self.redlights = redlight::RedLights::load(&self.cine, &self.opt.data_dir);
         self.roam.load_slots(&self.opt.data_dir);
         physics::collision::load_surfaces(&self.opt.data_dir);

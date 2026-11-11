@@ -11407,9 +11407,10 @@ pub fn marker_script(kind: u8, key_or_district: &str) -> String {
 }
 
 /// A hangout's key (its set-up's name without `_setup`) by its pull-in scene, in the order
-/// main.rs names them (`cut_hangout_01` = hw_local_hangout1 .. `sc_cut_hangout_02`).
+/// main.rs names them (`cut_hangout_01` = hw_local_hangout1 ..; South Central as its set-ups' enter scripts play them:
+/// `sc_cut_hangout_02` = sc_local_hangout1, `_01` = sc_wager_hangout1).
 pub fn hangout_key_of_scene(scene: &str) -> Option<&'static str> {
-    const KEYS: [(&str, &str); 12] = [("/cut_hangout_01", "hw_local_hangout1"), ("/cut_hangout_02", "hw_local_hangout2"), ("/cut_hangout_03", "hw_local_hangout3"), ("/cut_hangout_04", "hw_wager_hangout1"), ("/cut_hangout_05", "be_local_hangout1"), ("/cut_hangout_06", "be_wager_hangout1"), ("/cut_hangout_07", "dt_local_hangout1"), ("/cut_hangout_08", "dt_wager_hangout1"), ("/cut_hangout_09", "hl_local_hangout1"), ("/cut_hangout_10", "hl_wager_hangout1"), ("/sc_cut_hangout_01", "sc_local_hangout1"), ("/sc_cut_hangout_02", "sc_wager_hangout1")];
+    const KEYS: [(&str, &str); 12] = [("/cut_hangout_01", "hw_local_hangout1"), ("/cut_hangout_02", "hw_local_hangout2"), ("/cut_hangout_03", "hw_local_hangout3"), ("/cut_hangout_04", "hw_wager_hangout1"), ("/cut_hangout_05", "be_local_hangout1"), ("/cut_hangout_06", "be_wager_hangout1"), ("/cut_hangout_07", "dt_local_hangout1"), ("/cut_hangout_08", "dt_wager_hangout1"), ("/cut_hangout_09", "hl_local_hangout1"), ("/cut_hangout_10", "hl_wager_hangout1"), ("/sc_cut_hangout_02", "sc_local_hangout1"), ("/sc_cut_hangout_01", "sc_wager_hangout1")];
     let l = scene.to_ascii_lowercase();
     KEYS.iter().find(|k| l.ends_with(k.0)).map(|k| k.1)
 }
@@ -18582,7 +18583,8 @@ mod tests {
         let Some((g, dir, _)) = career_game("newgame_import.json", "s20bmk") else { return };
         assert!(g.mc4_setup_shown("hw_garage_setup") && !g.mc4_setup_shown("hw_local_hangout1_setup") && !g.mc4_setup_shown("hw_redlight_hk1"));
         assert!(!g.mc4_hangout_open("hangout/cut_hangout_01"));
-        assert_eq!(hangout_key_of_scene("x/sc_cut_hangout_02"), Some("sc_wager_hangout1"));
+        assert_eq!(hangout_key_of_scene("x/sc_cut_hangout_02"), Some("sc_local_hangout1"));
+        assert_eq!(hangout_key_of_scene("x/sc_cut_hangout_01"), Some("sc_wager_hangout1"));
         assert_eq!(g.mc4_district_code(glam::Vec3::new(860.0, 17.0, -810.0)), "hw");
         let _ = std::fs::remove_dir_all(&dir);
         let Some((mut g, dir, _)) = career_game("full_import.json", "s20bmk2") else { return };
