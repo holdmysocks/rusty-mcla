@@ -4780,6 +4780,7 @@ impl App {
                         };
                         self.climb_view = None;
                         let w = hudmap::CineWarp::new(s, e, Vec3::ZERO, fov_from, fov);
+                        crate::ticktimes::point("warp made");
                         log::info!("race start warp: {:?} ({:.3} s) from {:?} to {:?} ({})", w.kind(), w.total(), s.eye, e.eye, plan.0[0]);
                         self.warp = Some(w);
                         // the next song: every race-start warp type (ARCADE, DEFAULT_WITH_CUT, EXIT_TO_CUT, BEAT_ME_THERE_*)
@@ -4832,6 +4833,7 @@ impl App {
         }
         // (the red light's start scene over - 0x5b91 IsChildFinished, ReplayMgr_Begin, 0x5c05 DisableTraffic(0): the traffic
         // on again)
+        crate::ticktimes::point("g4836");
         if !self.cine_prerace {
             if let Some(n) = self.redlight_traffic.take() {
                 self.vehicles.traffic_target = n;
@@ -5222,6 +5224,7 @@ impl App {
         self.game.cine_black = self.cine_hold.is_some();
         let subtitles = self.game.opts.subtitles;
         self.game.cine = self.cuts.playing.as_ref().map(|_| self.cuts.subtitle().filter(|_| subtitles).unwrap_or("").to_string());
+        crate::ticktimes::point("g5226");
         self.game.cine_style = self.cuts.subtitle_style();
         if self.cine_free && self.cine.playing.is_some() {
             // letterbox with the name of the race / what happened
@@ -5239,6 +5242,7 @@ impl App {
         // (the bike gyro's T[+84]: the global scale as the main loop leaves it, never under 0.1)
         crate::physics::vehsim::TIME_SCALE84.store(self.game.mc4_time_scale().max(0.1).to_bits(), std::sync::atomic::Ordering::Relaxed);
         let sim_dt = if self.game.mode == Mode::Paused || self.cuts.playing.is_some() || self.game.movie.is_some() || self.game.show_map || self.game.tutorial_hold() || self.photo.is_some() { 0.0 } else { dt * self.wipe_scale.min(self.ability.time_scale()).max(0.1) * self.game.mc4_time_scale() };
+        crate::ticktimes::point("g5243");
         self.vehicles.rescue_fallen(&world, focus);
         // (VEHICLE SELECT: the three starters stand deactivated in the lot - the screen's loop calls no racer native;
         // the traffic and the people about them go on. The player has no car yet - AddVehicleToPlayer comes after
@@ -5301,6 +5305,7 @@ impl App {
         }
         // (a new career's starters and first story scene read ahead on worker threads - docs/PERFORMANCE.md 2026-10-25)
         self.opening_read_ahead(&world);
+        crate::ticktimes::point("g5305");
         self.grid_ahead(&world);
         // (and the guessed grid's cars built, one a tick, for the start to take - `Vehicles::build_ahead`)
         self.vehicles.build_ahead(&mut gpu, &mut world);
@@ -5618,6 +5623,7 @@ impl App {
         // (the trigger manager runs them every frame, F-55598, for the racers of the racer list: the race's in a race, the
         // player in free roam. A WHOOSHES object (type 1) plays its sound by the player's speed and throttle, F-77205; a
         // DISPATCH object (type 3) always starts a Dispatch to Location on the player, F-94691 -> F-86831)
+        crate::ticktimes::point("g5622");
         let racers: Vec<usize> = match (self.game.mode, self.game.race.as_ref()) {
             (Mode::Race, Some(r)) => r.participants.clone(),
             _ => self.vehicles.cars.iter().position(|c| c.is_player).into_iter().collect(),
@@ -5700,6 +5706,7 @@ impl App {
             self.props.set_barriers(&mut world, chase, inside);
         }
         // ---- the race's script: its traffic, lights and nitro points ----
+        crate::ticktimes::point("g5704");
         if self.game.race.is_none() && self.dress.is_some() {
             // (Race_UnloadAmbientPathArray: the paths' items go, racescript.rs `Runtime::unload`)
             if let Some(rt) = self.dress.take() {
@@ -5786,6 +5793,7 @@ impl App {
         }
         let mut race_finished = false;
         // ---- flag games ----
+        crate::ticktimes::point("g5790");
         if self.game.mode == Mode::Race && sim_dt > 0.0 {
             let done = self.game.flag.as_mut().and_then(|fg| fg.update(&mut self.vehicles, sim_dt));
             if let Some(res) = done {
@@ -5826,6 +5834,7 @@ impl App {
         }
         if self.game.mode == Mode::Race && sim_dt > 0.0 {
             // (for VIEW REPLAY: the race's cars as they run)
+            crate::ticktimes::point("h5837");
             if let Some(r) = self.game.race.as_ref() {
                 self.game.replay_rec.record(sim_dt, r.time, r.countdown, &self.vehicles.cars, &r.participants);
             }
@@ -5838,6 +5847,7 @@ impl App {
             // Racer_SetDamagePercent(0.95) - F-73522 -> F-92305: 95 % of MaxDamage, the damaged-out bit 0x04 off - so the race
             // counts. The finish is $IsRaceFinish for the driver: its impact states go to cruising without the
             // wreck's "what next", and a stopped engine sound stays stopped)
+            crate::ticktimes::point("h5849");
             if race_finished && !self.game.race_wreck_over && self.game.race.as_ref().is_some_and(|r| r.kind == game::RaceKind::Race) {
                 if let Some(p) = self.vehicles.player_mut().filter(|p| p.state.damage >= 1.0) {
                     p.state.damage = 0.95;
@@ -5860,6 +5870,7 @@ impl App {
                     self.game.mc4_lead_rank(rank);
                 }
             }
+            crate::ticktimes::point("h5871");
             self.game.ui_sim_dt += sim_dt;
             // (test hook MCLA_GO_TRACE=1: the race clock and the player's car around GO, every tick)
             if std::env::var("MCLA_GO_TRACE").is_ok() {
@@ -5869,6 +5880,7 @@ impl App {
                     }
                 }
             }
+            crate::ticktimes::point("h5880");
             if !(self.cine_prerace && self.cine.playing.is_some()) {
                 self.game.scene_hud_off = false;
             }
@@ -5876,6 +5888,7 @@ impl App {
             // starts with the scene, grid_hold_rule.md 1; the port's dive in front of the scene stands for
             // the arrival, so the racers are held with no pedals until 0.8 s before its end)
             self.vehicles.grid_wait = self.game.prerace.is_some() && self.warp.is_some();
+            crate::ticktimes::point("h5887");
             if std::env::var("MCLA_STUCK_DUMP").is_ok() && self.tick_no % 60 == 0 {
                 if let Some(race) = self.game.race.as_ref().filter(|r| r.time > 6.0) {
                     for &ci in race.participants.iter().skip(1) {
@@ -5899,6 +5912,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             // what stands beside the road around the racers (they steer round it)
+            crate::ticktimes::point("h5910");
             if self.tick_no % 8 == 0 {
                 let mut solids = std::mem::take(&mut self.vehicles.solids);
                 solids.clear();
@@ -5932,6 +5946,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // racer in it sets it off and the pursuit starts 5.5 + 2 s later (police.rs `zone_step`)
             // (F-96166 / F-71212: the player's car's vehicle-table class, police or not - `Police::player_police`)
             self.police.player_police = self.player_police();
+            crate::ticktimes::point("h5943");
             if self.game.race.is_none() {
                 self.police.zone_clear();
                 self.police.race_left();
@@ -5989,6 +6004,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // Off-road stretches of the racing lines get their real line as soon as the city
             // around them is loaded (one per frame).
+            crate::ticktimes::point("h6000");
             if let (Some(race), Some(nav)) = (self.game.race.as_mut(), world.nav.as_ref()) {
                 let now = race.time.max(0.0) + (4.5 - race.countdown.clamp(0.0, 4.5));
                 let line_of = |vehicles: &vehicles::Vehicles, race: &game::Race, car: usize| if car == usize::MAX { race.path.clone() } else { vehicles.cars.get(car).and_then(|c| c.ai.as_ref()).and_then(|a| a.path.clone()) };
@@ -6089,12 +6105,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         self.pink_end_tick(&mut gpu, &mut world);
         if self.game.race.is_none() && self.tick_no % 60 == 0 {
             // cruisers still waiting for a race that is over go home
+            crate::ticktimes::point("h6100");
             self.vehicles.cars.retain(|c| !(c.cop && c.pinned && c.parked.is_some()));
         }
         if sim_dt > 0.0 {
             // (each cruiser has its own siren target now, `CarInstance::siren` set by the police; this one forces them all)
             self.vehicles.sirens = false;
             // (test hook MCLA_SIREN_TEST: the player's car is a cruiser with its siren on - the police lamps' states and glows)
+            crate::ticktimes::point("h6106");
             if std::env::var("MCLA_SIREN_TEST").is_ok() {
                 self.vehicles.sirens = true;
                 if let Some(c) = self.vehicles.player_mut() {
@@ -6115,14 +6133,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 self.props.signals.sync_from(&self.vehicles.signals);
             }
+            crate::ticktimes::point("h6126");
             self.props.update_signals(&gpu, focus, self.vehicles.clock);
             // (the particle props: fountains, steam, smoke - MAP_WORK.md)
             let stormy = self.weather_weight(sky::Weather::Stormy);
+            crate::ticktimes::point("h6129");
             self.props.emit(&mut self.fx, self.cam.pos, self.tick_no, self.vehicles.player().map(|c| (c.state.pos, c.state.vel, c.state.rot)), stormy);
             props::set_lens(self.cam.fov_y);
             self.vehicles.hide_player = self.hide_player || (self.game.fresh_game && self.intro_stage != 0) || self.game.starter_pick.is_some();
             // (the scene is over: its animated brains are deleted with it, BrainFactory_DeleteBrain)
             static AFTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            crate::ticktimes::point("h6134");
             if self.cine.playing.is_none() && !self.cine_events.0.is_empty() {
                 self.cine_events = (String::new(), Vec::new());
                 for c in self.vehicles.cars.iter_mut() {
@@ -6144,6 +6165,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // nothing would end the start: no hold then, the engine runs at once.)
             // (the pedals and the gearbox are written in the car's update after the pad's code, as F-17997 writes them
             // after mcPlayerInput: vehsim.rs, `first_gear`)
+            crate::ticktimes::point("h6155");
             if self.audio.is_some() && self.sound.engine_held() {
                 player_input.first_gear = true;
                 if let Some(c) = self.vehicles.player_mut() {
@@ -6156,12 +6178,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.vehicles.race_event = self.game.race.as_ref().is_some_and(|r| r.kind != game::RaceKind::Payback)
                 && !(self.game.mode == Mode::Results || self.game.race_end_t.is_some());
             crate::ticktimes::mark(crate::ticktimes::S::Vehicles);
+            crate::ticktimes::point("h6167");
             self.vehicles.update(&world, player_input, sim_dt);
             crate::ticktimes::mark(crate::ticktimes::S::Other);
             if std::env::var_os("MCLA_STEER_DBG").is_some() && self.tick_no % 30 == 0 {
                 log::info!("steer dbg: tick {} drive {} menu {} mode {:?} in steer {:.2} thr {:.2} -> car input steer {:?} state steer {:?} veh steer {:?}", self.tick_no, self.drive, menu_open, self.game.mode, player_input.steer, player_input.throttle, self.vehicles.player().map(|c| c.input.steer), self.vehicles.player().map(|c| c.state.steer), self.vehicles.player().and_then(|c| c.state.veh.as_ref().map(|v| (v.pad_steer, v.steer))));
             }
             crate::ticktimes::mark(crate::ticktimes::S::Props);
+            crate::ticktimes::point("h6173");
             self.props.collide(&gpu, &world, &mut self.vehicles.cars, sim_dt);
             crate::ticktimes::mark(crate::ticktimes::S::Other);
             // ---- the pad's rumble (crate::rumble): the player car's tick asked its effects (hits, landing,
@@ -6261,6 +6285,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             // ---- driving into a garage (`garagein`): the warp to the sign, the event, the scene, the fade up ----
+            crate::ticktimes::point("h6272");
             if let Some(mut gi) = self.garage_in.take() {
                 gi.t += dt;
                 gi.clock += dt;
@@ -6443,6 +6468,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // garage_core's CAREER_AUTOSAVE after leaving a street garage: 1 s, then once no scene plays and no menu
             // is up (NET_UNLOADCAREER, the online unload, is never set offline)
+            crate::ticktimes::point("h6454");
             if let Some(t) = self.garage_save.as_mut() {
                 *t += dt;
                 if *t >= 1.0 && self.cine.playing.is_none() && self.game.mode == Mode::FreeRoam {
@@ -6456,6 +6482,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.game.place_title = None;
             }
             // (the payback intro's event script: 3 s, then its fade up, waited - `pb_intro_hold`)
+            crate::ticktimes::point("h6467");
             if let Some(t) = self.pb_intro_hold.as_mut() {
                 *t += dt;
                 if *t >= 3.0 {
@@ -6468,6 +6495,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             self.game.place_mask = self.garage_mask.update(dt).max(self.arrest_mask.update(dt)).max(self.f02c_mask.update(dt)).max(self.scene_fade.update(dt));
             // (test hook MCLA_ARREST_TRACE=1: the arrest's black each frame it is on)
+            crate::ticktimes::point("h6479");
             if self.scene_fade.is_on() && std::env::var_os("MCLA_ARREST_TRACE").is_some() {
                 log::info!("scene fade tick {} opacity {:.3} full {} ticket wait {} scene {:?} form {} hold {}", self.tick_no, self.game.place_mask, self.scene_fade.full(), self.ticket_wait.is_some(), self.cine.playing.as_ref().map(|sc| (sc.name.clone(), sc.t)), self.game.arrest_panel.is_some(), self.vehicles.player_hold);
             }
@@ -6476,6 +6504,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // (test hook MCLA_GARAGE_TEST=0..2: at 4 s the car is put 14 m from that garage's door point, towards
             // its wait camera, facing away from the door, at 14 s 7 m from it - the place streamed in by then)
+            crate::ticktimes::point("h6487");
             if let Some(g) = std::env::var("MCLA_GARAGE_TEST").ok().and_then(|v| v.parse::<usize>().ok()).filter(|g| *g < 3) {
                 // (and MCLA_GARAGE_BACK=tick: BACK out of the garage at that tick)
                 if std::env::var("MCLA_GARAGE_BACK").ok().and_then(|v| v.parse::<u64>().ok()) == Some(self.tick_no as u64) && self.game.mode == Mode::Garage {
@@ -6500,6 +6529,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             // (test hook MCLA_GARAGE_SHOTS=dir: a frame every 6 ticks while a garage entry runs and its black is up)
+            crate::ticktimes::point("h6511");
             if let Ok(dir) = std::env::var("MCLA_GARAGE_SHOTS") {
                 if (self.garage_in.is_some() || self.hangout_entry.is_some() || self.hangout_title.is_some() || self.game.place_mask > 0.0 || self.cine.playing.is_some()) && self.tick_no % 6 == 0 {
                     log::info!("garage shot {} stage {:?} mask {:.2} title {} placed {:?} car {:?}", self.tick_no, self.garage_in.as_ref().map(|g| (g.stage, g.clock)), self.game.place_mask, self.game.place_title.is_some(), self.garage_return.is_some(), self.vehicles.player().map(|c| c.state.pos));
@@ -6624,8 +6654,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // in between. `intro_stage`, `intro_mask`.
             // (CarSelection runs once the start-up checks are over - mc.loadSuccess after the save boxes,
             // `Game::save_boxes_step` - and, after START, under the camera held over the city: `StartWarp::stay`)
+            crate::ticktimes::point("h6635");
             let boxes_done = self.game.message_box.is_none() && (self.game.save_box == 2 || self.game.flash_popup.is_none() || std::env::var("MCLA_NO_SAVE_BOX").is_ok());
             let warp_held = self.startwarp.as_ref().map_or(true, |w| w.phase() == startwarp::Phase::Hold);
+            crate::ticktimes::point("h6637");
             if self.game.fresh_game && self.game.mode == Mode::FreeRoam && !self.intro_played && boxes_done && warp_held {
                 self.intro_played = true;
                 self.intro_stage = 1;
@@ -6636,6 +6668,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.game.hold_starter = self.game.fresh_game && (!self.intro_played || self.intro_stage < 3);
             // (also on the start screen: a new career's first call must not go out - and bring its story scene - before
             // VEHICLE SELECT is over)
+            crate::ticktimes::point("h6647");
             let held = self.game.fresh_game;
             for n in if held { Vec::new() } else { std::mem::take(&mut self.game.career.news) } {
                 match n {
@@ -6725,6 +6758,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // (test hook: MCLA_SAVE_AT=n writes the save - the MCLA_SAVE_FILE copy - at frame n,
             // even in a screenshot run: step 20b)
+            crate::ticktimes::point("h6736");
             if let Some(n) = std::env::var("MCLA_SAVE_AT").ok().and_then(|v| v.parse::<u64>().ok()) {
                 static SAVED_AT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
                 // (step 22b: by the frame, as --frames counts - a scene stops the ticks)
@@ -6747,6 +6781,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // (the calls and tips are the career's mission scripts', which run once the career is loaded: none during the
             // start warp or before its loadSuccess, 1 s after the landing - LOADING still up)
+            crate::ticktimes::point("h6758");
             let career_up = self.startwarp.is_none() && self.game.loading_tag <= 0.0;
             // (a police tactic started: StartTactic F-33550 -> the phone's interrupt F-51256 hides the phone and marks
             // its call done - dropped, not queued again)
@@ -6769,6 +6804,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // race, hangout, garage, hookman and story scripts, the UI charts' throwEvent) except mc.cutsceneDone: F-17084
             // throws it by index at every scene's end (the cine manager's finish callback, F-65984 -> +232, set by F-91527);
             // only an online dialog listens. Nothing throws mc.cutscene)
+            crate::ticktimes::point("h6780");
             let cruising = self.game.cruising_offline() && self.pending_log.is_none() && !self.out_of_cruise_warp();
             if cruising != self.phone_cruise {
                 self.phone_cruise = cruising;
@@ -6779,6 +6815,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.game.phone_prompt.clear();
                 }
             }
+            crate::ticktimes::point("h6790");
             if let Some(t) = self.phone_resume.as_mut() {
                 *t -= dt;
                 if *t <= 0.0 {
@@ -6789,6 +6826,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if self.phone_was_up && self.game.tip.is_none() {
                 self.phone_done = true;
             }
+            crate::ticktimes::point("h6800");
             let gates = self.phone_held();
             // (F-37697's tail, once its gates let it run: the call cleaned away, +788 = 1 and, in Cruising_Offline,
             // sidekickResume after SidekickDelayTime)
@@ -6800,6 +6838,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.phone_resume = Some(*self.phone_delay.get_or_insert_with(|| menu3d::UiLogic::load(&data_dir).sidekick_delay));
                 }
             }
+            crate::ticktimes::point("h6811");
             let phone_held = gates || self.phone_hold || self.phone_done;
             // (PaybackLegCore's calls: the script lifts the phone's hold itself - Sidekick_Delay(0) (F-53206: the phone's +788 =
             // its argument), or UIManager_ReplaceDelayedEvent(sidekickResume, 0.1) (F-93433) - and the call waits for the phone's other gates; once the
@@ -6813,6 +6852,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 Some(_) => self.phone_resume = Some(0.1),
                 None => {}
             }
+            crate::ticktimes::point("h6824");
             if self.game.tip.is_none() && !gates && !self.phone_hold && !self.phone_done {
                 if let Some((who, text, secs, scenario)) = self.game.opt_x.arcade.d.phone_wait.take() {
                     if !text.is_empty() {
@@ -6828,6 +6868,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if self.game.tip.is_none() {
                 self.tip_shown = false;
             }
+            crate::ticktimes::point("h6839");
             self.tip_clock += dt;
             tip_waiters_wake(&mut self.tip_waiters, &mut self.tips, self.tip_shown, self.tip_clock);
             // the mechanic rings when nothing else is going on
@@ -6849,6 +6890,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (the nav map's +628, `map_target_selected`), its vt+104 (F-67356, bit 0x100 of its +16;
             // not traced further - the free-roam mode here keeps the open map out), no warp, no cine script, Cruising_Offline, no reminder waiting - then Career::reminder_tick.
             // *(approx.)* the global flag F-12937 also reads (CAREER_RACES reference) and F-42050's restart on a navigator event are not ported)
+            crate::ticktimes::point("h6860");
             if let Some(spoke) = self.reminder_on {
                 if if spoke { !self.speech.busy() } else { self.game.tip.is_none() } {
                     self.reminder_on = None;
@@ -6863,6 +6905,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.reminder_wait = Some((self.game.career.caller_of(i), rem, id != "RACE_GH_06"));
                 }
             }
+            crate::ticktimes::point("h6874");
             if self.reminder_wait.is_some() && career_up && !phone_held && self.game.tip.is_none() && matches!(self.game.mode, Mode::FreeRoam) {
                 let (who, rem, log_prompt) = self.reminder_wait.take().unwrap();
                 if let Some(text) = self.game.career.strings.get(&rem).map(|s| s.to_string()).filter(|_| self.game.flash_phone.is_some()) {
@@ -6877,6 +6920,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             self.news_timer = (self.news_timer - dt).max(-30.0);
             // (a splash line is no call: only the calls wait for the phone)
+            crate::ticktimes::point("h6888");
             if career_up && self.news_timer <= 0.0 && matches!(self.game.mode, Mode::FreeRoam) && self.news.front().map_or(false, |n| n.1.is_none() || !phone_held) {
                 if let Some((m, call)) = self.news.pop_front() {
                     log::info!("news: {:?} call {:?}", m, call);
@@ -6991,11 +7035,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
             }
+            crate::ticktimes::point("h7002");
             if self.game.tip.is_none() && std::mem::take(&mut self.game.phone_challenge) {
                 // (not taken)
                 self.speech.say_as("HOOKMAN_PHONE_PLAYER_DECLINES", self.phone_caller);
             }
             self.phone_was_up = self.game.tip.is_some();
+            crate::ticktimes::point("h7007");
             if std::mem::take(&mut self.game.phone_accept) {
                 self.game.phone_race = true;
                 self.pending_action = MenuAction::OpenRaceSelect;
@@ -7012,6 +7058,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             // the reminder kept for after a story scene
+            crate::ticktimes::point("h7023");
             if self.pending_call.is_some() && self.cuts.idle() && self.game.movie.is_none() && self.game.tip.is_none() && matches!(self.game.mode, Mode::FreeRoam) && !self.game.fresh_game && !phone_held {
                 if let Some((who, text)) = self.pending_call.take() {
                     let secs = (6.0 + text.len() as f32 * 0.055).min(22.0);
@@ -7021,6 +7068,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // (HEADLIGHTS held - pad or key - is the player car's flash lamp target: the high beams, F-44589)
             let held = (self.pad_flash || self.game.opt_x.ctrl.kbd.binds.down(crate::keybinds::HEADLIGHTS, |k| self.input.down(k))) && self.drive && !self.game.in_menu();
+            crate::ticktimes::point("h7032");
             if held != self.vehicles.player_flash {
                 let lv = self.vehicles.player().map(|c| (c.amb_lamps.s[3], c.amb_lamps.lens));
                 log::info!("headlights: high beams {} (flash state, lamp levels {:?})", if held { "on" } else { "off" }, lv);
@@ -7030,6 +7078,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // F-64470) toggles the input flag 0x400 (F-56064), which F-44589 copies into the car's siren byte +304,
             // starting or stopping the siren (F-39258 / F-59693): the player's cruiser's light bar. MCLA_PLAYER_SIREN_OLD=1: none)
             // (test hook MCLA_FLASH_AT=<tick>[,<tick>..]: HEADLIGHTS pressed at those ticks)
+            crate::ticktimes::point("h7041");
             if std::env::var("MCLA_FLASH_AT").is_ok_and(|v| v.split(',').any(|s| s.parse::<u64>().ok() == Some(self.tick_no as u64))) {
                 self.flash = true;
             }
@@ -7321,12 +7370,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             // (the run's race is current while it lasts - `Game::race_current`)
+            crate::ticktimes::point("h7332");
             self.game.bmt_goal = self.roam.challenge.as_ref().map(|c| c.goal);
             // (Script_SuspendAllOpponents: the hookmen's cores and the place cores - `Roamers::suspend`,
             // `Game::update_place_holds`)
             self.roam.suspend(self.game.suspend_all_opponents(), self.game.race.is_some(), &mut self.vehicles);
+            crate::ticktimes::point("h7336");
             let pp = self.vehicles.player().map(|c| c.state.pos);
             self.game.update_place_holds(pp, sim_dt);
+            crate::ticktimes::point("h7338");
             self.game.step_hangout_audio();
             // (SetForceCutsceneLighting(0): the hangout left - its exit state passed, the exit scene and the exit warp's
             // climb over)
@@ -7334,6 +7386,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.game.force_cut_light = false;
             }
             crate::ticktimes::mark(crate::ticktimes::S::Other);
+            crate::ticktimes::point("h7345");
             if std::env::var("MCLA_SIGNAL_TEST").is_ok() && self.tick_no % 600 == 0 {
                 let moving = self.vehicles.cars.iter().filter(|c| !c.is_player && c.parked.is_none() && c.state.speed() > 3.0).count();
                 log::info!("signals: car-frames braking for red {}, standing at red {}, traffic moving now {}", self.vehicles.held_at_red, self.vehicles.stopped_at_red, moving);
@@ -7346,6 +7399,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             // the player's livery follows the garage's choice for this car
+            crate::ticktimes::point("h7357");
             if let Some(pcar) = self.vehicles.player().map(|c| c.model.name.clone()) {
                 if self.game.vinyl_for != pcar {
                     // the player's own, the presets of the disc, then the opponents' finished ones
@@ -7402,13 +7456,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
             self.vehicles.assign_plates(&mut gpu, &world);
+            crate::ticktimes::point("h7413");
             self.vehicles.assign_vinyls(&mut gpu, &mut world);
+            crate::ticktimes::point("vinyls done");
             // (step 19d: a car that came with a set-up's name is put into it - parts, rims,
             // tires, brakes, paints, upgrades: one car a frame)
             {
                 let game = &self.game;
                 self.vehicles.dress_setups(&mut gpu, &mut world, &mut |car, cfg| game.mc4_dress_of(car, cfg));
             }
+            crate::ticktimes::point("setups done");
             // (step 19d: what the rules of `mc4` want said and played)
             {
                 let (over, say, sounds, tick) = self.game.mc4_say_take();
@@ -7438,6 +7495,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
             }
+            crate::ticktimes::point("said");
             // ---- pedestrians ----
             if let Some(nav) = world.nav.as_ref() {
                 // (and on the start screen, the ambient manager's front-end mode: the camera's view)
@@ -7681,6 +7739,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.fx.update(sim_dt);
             }
             crate::ticktimes::mark(crate::ticktimes::S::Police);
+            crate::ticktimes::point("h7692");
             if matches!(self.game.mode, Mode::FreeRoam | Mode::Race) && !self.vehicles.frozen {
                 if let Ok(v) = std::env::var("MCLA_COP_TEST") {
                     // ("park": a cruiser waiting at the kerb ahead of the player, no pursuit - to look at it)
@@ -8029,6 +8088,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.arrest_mask.release(1.0);
                 self.game.arrest_scene = if started_scene { 1 } else { 2 };
             }
+            crate::ticktimes::point("h8040");
             self.ticket_tick(&mut gpu, &mut world);
             crate::ticktimes::mark(crate::ticktimes::S::Other);
             if let (Ok(t), 90) = (std::env::var("MCLA_PROPFX_AIM"), self.tick_no) {
@@ -8055,6 +8115,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
             }
+            crate::ticktimes::point("h8066");
             if let Some(kind) = self.opt.aim_prop.clone() {
                 // test helper: line the player up with the nearest prop of the given kind
                 if self.tick_no == 90 {
@@ -8094,6 +8155,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
             }
         }
+        crate::ticktimes::point("g8098");
         if self.game.mode == Mode::Race {
             if race_finished {
                 // player finished: gather results
@@ -8541,6 +8603,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 vehicles::PLATES_MADE.load(std::sync::atomic::Ordering::Relaxed), world.stats_sectors.0, world.stats_sectors.1
             );
         }
+        crate::ticktimes::point("g8545");
         if self.tick_no % 240 == 1 || (self.opt.wot && self.tick_no % 60 == 1) {
             if let Some(c) = self.vehicles.player() {
                 if std::env::var("MCLA_CADENCE_TRACE").is_ok() {
@@ -9011,6 +9074,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // (the cheat gate F-68910: no race money, no reward, no mission progress while one is on)
         rewards::set_cheat_gate(rewards::cheat_gate(&self.game.cheats, false));
         // (NO FINES: the fine routine itself returns 0, F-83946)
+        crate::ticktimes::point("g9015");
         self.police.no_charges = self.game.cheats[5];
         // (and none before the career has unlocked them: `mc4`, flags.police_unlocked)
         // (and none in a red light race: its script destroys them all - althk.rs)
@@ -9043,7 +9107,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             self.police.create_units(self.game.mc4_police_unlocked());
         }
 
+        crate::ticktimes::point("dressing");
         self.dressing_tick(&mut gpu, &mut world);
+        crate::ticktimes::point("dressed");
         self.vehicles.finish_tick(sim_dt);
         self.input.pending_keys.clear();
         self.world = Some(world);
@@ -13637,6 +13703,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.payback_in = Some((0.0, warp, hold));
             }
             MenuAction::StartRace | MenuAction::RestartRace => {
+                    crate::ticktimes::point("sr begin");
                 // (p080: delivery_hangout_core plays the walk to the car only when the panel is
                 // accepted; a restart or the next delivery goes straight to the intro)
                 let p080_again = action == MenuAction::RestartRace || self.game.race.as_ref().map_or(false, |r| r.kind == game::RaceKind::Delivery);
@@ -13797,6 +13864,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             s.rivals = grid.clone();
                         }
                     }
+                    crate::ticktimes::point("picked");
                     // (the grid's cars read side by side on worker threads first, then built - docs/PERFORMANCE.md 2026-10-23 (5))
                     for r in &grid {
                         if let Some(d) = dirs.iter().find(|d| d.file_name().map_or(false, |f| f.to_string_lossy().eq_ignore_ascii_case(&r.car))) {
@@ -13814,6 +13882,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             }
                         }
                     }
+                    crate::ticktimes::point("models");
                     // (and their set-ups' builds made on workers now, read as they are: the dressing a tick later takes them -
                     // `Vehicles::dress_setups`, which started them itself and waited, docs/PERFORMANCE.md 2026-11-10 (1))
                     for r in &grid {
@@ -13821,6 +13890,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             self.vehicles.prepare_ahead(dir, &d.cfg);
                         }
                     }
+                    crate::ticktimes::point("prepared");
                     log::info!("grid: {}", grid.iter().map(|r| format!("{} {} [{}]", self.game.career.name_of(&r.id), r.car, r.plate)).collect::<Vec<_>>().join(", "));
                     self.game.grid_rivals = grid;
                 }
@@ -13835,6 +13905,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                     }
                 }
+                crate::ticktimes::point("grid");
                 let racers = self.vehicles.models.iter().filter(|m| !m.name.starts_with("va_")).count();
                 if racers < 5 {
                     // load opponent cars spread over the car list
@@ -13904,6 +13975,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                     }
                 }
+                crate::ticktimes::point("pre-start");
                 let flag_def = self.game.current_race.and_then(|i| self.game.race_defs.get(i)).filter(|d| flags::FlagGame::is_flag_event(d)).cloned();
                 let started = match (flag_def, self.game.current_race) {
                     (Some(def), _) => {
@@ -13933,6 +14005,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                     (None, None) => self.game.start_race(world, &mut self.vehicles, gpu),
                 };
+                crate::ticktimes::point("started");
                 // (a race against a red light or freeway man: its checkpoints' radius; a freeway
                 // race goes on from where the two are - althk.rs)
                 if started {
@@ -14104,6 +14177,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.game.mode = Mode::FreeRoam;
                 }
                 self.game.menu_sel = 0;
+                crate::ticktimes::point("sr end");
             }
             MenuAction::OpenArcade(goal) => {
                 // (the type list first, the flag set: F-40647 / F-35999)
