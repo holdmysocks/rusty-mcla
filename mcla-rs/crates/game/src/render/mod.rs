@@ -940,6 +940,9 @@ impl Default for Globals {
     }
 }
 
+/// `mat_bgs` key bit of the surf strip's material (`pipeline_shore`): the blended mode with `MaterialUniform::_pad[1]` = 1,
+/// which tells city.wgsl to run the game's programs on the strip (world.rs `mark_shore`)
+pub const SHORE_PROGRAM: u32 = 0x200;
 /// `mat_bgs` key bit of the sea's unfogged material (`pipeline_sea`)
 pub const SEA_NOFOG: u32 = 0x100;
 
@@ -1412,6 +1415,8 @@ pub struct Gpu {
     pub pipeline_opaque_mode: Vec<Option<ms::MsPipe>>,
     /// the sea after the ground dome: [0] where the stencil is not 1 (fogged), [1] where it is (`SEA_NOFOG`, unfogged)
     pub pipeline_sea: [ms::MsPipe; 2],
+    /// the surf strip after the sea (`SHORE_PROGRAM`, world.rs `mark_shore`)
+    pub pipeline_shore: ms::MsPipe,
     /// a set-up car's opaque batches with back faces culled (`GpuBatch::cull`): the view as is, a mirrored view
     pub pipeline_opaque_cull: ms::MsPipe,
     pub pipeline_opaque_cull_m: ms::MsPipe,
@@ -2344,7 +2349,8 @@ impl Gpu {
             label: Some("mat layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                // (the vertex stage too: the surf strip's vertex program runs in its own draw only - `SHORE_PROGRAM`)
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
                 count: None,
             }],
@@ -2378,6 +2384,20 @@ impl Gpu {
             });
             mat_bgs.insert(mode | SEA_NOFOG, bg);
         }
+        {
+            let mode = MatMode::Blend as u32;
+            let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("mat shore"),
+                contents: bytemuck::bytes_of(&MaterialUniform { mode, _pad: [0, 1, 0] }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("mat bg shore"),
+                layout: &mat_layout,
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }],
+            });
+            mat_bgs.insert(mode | SHORE_PROGRAM, bg);
+        }
         // (binding 1: a car's vertex damage map, crate::damagemap - DmgTex; everything else has the
         // empty one, as the original's blank_dmg.dds: all zero)
         let obj_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -2401,7 +2421,7 @@ impl Gpu {
         let identity_obj = make_object_binding(&device, &obj_layout, &ObjectUniform::default(), &blank_dmg);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("city"),
-            source: wgpu::ShaderSource::Wgsl(mode_constant(&xs::split_consts(&trim_tuned(&paint_tuned(&[include_str!("city.wgsl"), xs::text("xs_road.wgsl"), xs::text("xs_roadn.wgsl"), xs::text("xs_water.wgsl"), xs::text("xs_pond.wgsl")].concat())))).replace("const HALF_PX_DP: f32 = 1.0;", if half_pixel_on() { "const HALF_PX_DP: f32 = 1.0;" } else { "const HALF_PX_DP: f32 = 0.0;" }).into()),
+            source: wgpu::ShaderSource::Wgsl(mode_constant(&xs::split_consts(&trim_tuned(&paint_tuned(&[include_str!("city.wgsl"), xs::text("xs_road.wgsl"), xs::text("xs_roadn.wgsl"), xs::text("xs_water.wgsl"), xs::text("xs_pond.wgsl"), xs::text("xs_shore.wgsl")].concat())))).replace("const HALF_PX_DP: f32 = 1.0;", if half_pixel_on() { "const HALF_PX_DP: f32 = 1.0;" } else { "const HALF_PX_DP: f32 = 0.0;" }).into()),
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("city pl"),
@@ -2502,6 +2522,12 @@ impl Gpu {
         // (PSBlendedHeightFogInFogNoPFog, depth control 0x00700561) fogs only where the stencil is not 1 - the sky's and the
         // dome's mark. The port lays the fog in each draw, so the sea is drawn twice through the stencil: [0] where it is
         // not 1, fogged, [1] where it is 1, unfogged (`SEA_NOFOG`). Both test against reference 1 and write no stencil.)
+        // (the surf strip, right after the sea: blended SrcAlpha / InvSrcAlpha, depth written, the stencil replaced by the
+        // pass's reference (0) - the recorded state of its draws (blend 0x07060706, depth control 0x00708767, ref 0))
+        let pipeline_shore = {
+            let b = city_build_x.clone();
+            ms::MsPipe::new(&device, move |d, v| b(d, v, true, "vs_main", None, true, wgpu::ColorWrites::ALL, None, None))
+        };
         let pipeline_sea = [wgpu::CompareFunction::NotEqual, wgpu::CompareFunction::Equal].map(|cmp| {
             let b = city_build_x.clone();
             ms::MsPipe::new(&device, move |d, v| b(d, v, false, "vs_main", None, true, wgpu::ColorWrites::ALL, None, Some(cmp)))
@@ -3130,6 +3156,7 @@ impl Gpu {
             pipeline_opaque,
             pipeline_opaque_mode,
             pipeline_sea,
+            pipeline_shore,
             pipeline_opaque_cull_mode,
             pipeline_opaque_cull,
             pipeline_opaque_cull_m,

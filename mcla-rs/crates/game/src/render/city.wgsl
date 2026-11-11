@@ -533,7 +533,7 @@ fn own_sg(t: texture_2d<f32>, on: u32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f3
 struct Material {
     mode: u32,     // see MatMode in render/mod.rs
     nofog: u32,    // 1: no fog laid - the sea where the stencil holds 1 (render/mod.rs `pipeline_sea`)
-    _pad1: u32,
+    shore: u32,    // 1: the surf strip's own draw - the game's programs run on it (render/mod.rs `SHORE_PROGRAM`)
     _pad2: u32,
 };
 @group(2) @binding(0) var<uniform> mat: Material;
@@ -1076,6 +1076,101 @@ fn water_program(in: VsOut) -> vec3<f32> {
     return max(xs_water_ps(o).rgb, vec3<f32>(0.0));
 }
 
+// ---- The surf strip on the sand as the game's own programs draw it (effect city/0x6940ee63 CityOceanShore:
+// VSCityOceanShore + PSCityOceanShore, xs_shore.wgsl appended to this file; world.rs `mark_shore`). Recorded at the
+// beach at 9:00, 12:00, 18:15 and 23:30 (work/water/cap/beach_*.gpu.bin): the same two programs at every hour, drawn
+// right after the sea draws of the sector. The vertex program moves the strip with its waves, so it runs PER VERTEX
+// (vs_body: `shore_vertex`); its eight outputs the pixel program reads ride in the vertex's slots - o0 normal, o1 wpos,
+// o3 uv0 / uv1, o4 color, o5 color1, o6 lpos, o7 fill.xyz - and o2 (the screen place) is made again per pixel from
+// the place, as the sea's. Samplers (the draw's fetch constants): s0 DiffuseSampler, s1 WaveFoamSampler and s2
+// FoamSampler gamma-decoded, s3 WaveSampler as stored (the batch's third, a raw copy), s4 ReflectionSampler (the
+// road's picture); s2 clamps along v and has its first level only (mips 0 .. 0).
+fn xs_shore_s0(uv: vec2<f32>) -> vec4<f32> {
+    let t = textureSample(t_diffuse, s_diffuse, uv);
+    if (xenos_gamma_on()) { return vec4<f32>(xenos_gamma(t.rgb), t.a); }
+    return t;
+}
+fn xs_shore_s1(uv: vec2<f32>) -> vec4<f32> {
+    let t = textureSample(t_second, s_diffuse, uv);
+    if (xenos_gamma_on()) { return vec4<f32>(xenos_gamma(t.rgb), t.a); }
+    return t;
+}
+fn xs_shore_s2(uv: vec2<f32>) -> vec4<f32> {
+    // (clamp_last along v: the coordinate held half a texel inside the edge, as the clamp with linear filtering does)
+    let h = f32(textureDimensions(t_fourth, 0).y);
+    let t = textureSampleLevel(t_fourth, s_diffuse, vec2<f32>(uv.x, clamp(uv.y, 0.5 / h, 1.0 - 0.5 / h)), 0.0);
+    if (xenos_gamma_on()) { return vec4<f32>(xenos_gamma(t.rgb), t.a); }
+    return t;
+}
+fn xs_shore_s3(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(t_third, s_diffuse, uv);
+}
+var<private> xs_shore_pic: bool;
+var<private> xs_shore_refl: vec3<f32>;
+fn xs_shore_s4(uv: vec2<f32>) -> vec4<f32> {
+    if (xs_shore_pic) {
+        return vec4<f32>(textureSampleLevel(t_refl, s_env, uv, 0.0).rgb, 1.0);
+    }
+    return vec4<f32>(xs_shore_refl, 1.0);
+}
+// VSCityOceanShore: c8 .. c11 world x view x projection, c63 ShaderGlobals (y: the clock). Fetches: the place, the
+// colour, (uv0, uv1), uv2 - the runtime fetch words are the compiled ones with the halves of each word swapped (as the
+// sea's), so the components go in the mesh's order.
+fn shore_vertex(in: VsIn, wp: vec3<f32>, o_in: VsOut) -> VsOut {
+    var o = o_in;
+    xs_c[8] = g.view_proj[0];
+    xs_c[9] = g.view_proj[1];
+    xs_c[10] = g.view_proj[2];
+    xs_c[11] = g.view_proj[3];
+    xs_c[63] = vec4<f32>(g.sun_color.w, g.cloud_shade.a / 0.0022, 0.2, 3.0);
+    var vin: array<vec4<f32>, 16>;
+    vin[0] = vec4<f32>(wp, 1.0);
+    vin[1] = in.color;
+    vin[2] = vec4<f32>(in.uv0, in.uv1);
+    vin[3] = vec4<f32>(in.uv2, 0.0, 1.0);
+    let vs = xs_shore_vs(vin);
+    o.clip = vs.pos;
+    o.normal = vs.o[0].xyz;
+    o.wpos = vs.o[1].xyz;
+    o.uv0 = vs.o[3].xy;
+    o.uv1 = vs.o[3].zw;
+    o.color = vs.o[4];
+    o.color1 = vs.o[5];
+    o.lpos = vs.o[6].xyz;
+    o.fill = vec4<f32>(vs.o[7].xyz, 0.0);
+    return o;
+}
+// PSCityOceanShore: c15 the camera, c26 gLightAmbient, c27 gInvColorExpBias, c39 gLightColor, c63 ShaderGlobals.
+// Returns rgb and the blend alpha; alpha -1: the programs are missing (xs.rs's stub).
+fn shore_program(in: VsOut) -> vec4<f32> {
+    var o: array<vec4<f32>, 16>;
+    o[0] = vec4<f32>(in.normal, 0.0);
+    o[1] = vec4<f32>(in.wpos, 0.0);
+    let c = g.view_proj * vec4<f32>(in.wpos, 1.0);
+    o[2] = vec4<f32>(0.5 * (c.x + c.w), 0.5 * (c.w - c.y), c.w, 0.0);
+    o[3] = vec4<f32>(in.uv0, in.uv1);
+    o[4] = in.color;
+    o[5] = in.color1;
+    o[6] = vec4<f32>(in.lpos, 0.0);
+    o[7] = vec4<f32>(in.fill.xyz, 0.0);
+    xs_c[15] = vec4<f32>(g.cam_pos.xyz, 1.0);
+    // (the light as the sea's program takes it: by day the sun's, with the night programs the key light's)
+    if (g.tone.w > 0.5) {
+        xs_c[39] = vec4<f32>(g.key_col.rgb, -1.0);
+    } else {
+        xs_c[39] = vec4<f32>(g.sun_color.rgb * g.sun_dir.w, -1.0);
+    }
+    xs_c[26] = vec4<f32>(g.ambient_sky.rgb, 1.0);
+    xs_c[27] = vec4<f32>(0.0625, 0.0, 1.875, 0.0);
+    xs_c[63] = vec4<f32>(g.sun_color.w, g.cloud_shade.a / 0.0022, 0.2, 3.0);
+    xs_shore_pic = g.collector.w > 0.5;
+    xs_shore_refl = env_color(reflect(normalize(in.wpos - g.cam_pos.xyz), vec3<f32>(0.0, 1.0, 0.0)));
+    let r = xs_shore_ps(o);
+    if (r.a < -0.5) { return r; }
+    // (alpha: c26.w x gInvColorExpBias.x x ... - the scene target's bias 4 (x 16) is not the port's: x 16 here, as the pond's)
+    return vec4<f32>(max(r.rgb, vec3<f32>(0.0)), clamp(r.a * 16.0, 0.0, 1.0));
+}
+
 // ---- The pond water (fountain basins) as the game's own programs draw it (map2 pond work, 2026-10-22;
 // xs_pond.wgsl, appended to this file - effect city/0x5a516d4c CityPondWater: VSCityPondWater +
 // PSCityPondWater). Recorded at noon (work/map2/fcap/cap/fountain.gpu.bin draws 2719 - 2721, the Beverly
@@ -1346,6 +1441,8 @@ fn vs_body(in: VsIn) -> VsOut {
     }
     // the sea: the game's vertex program on this vertex (world::mark_water, `water_vertex`)
     if (in.uv2.x < -77000.0) { o = water_vertex(in, wp.xyz, o); }
+    // the surf strip, in its own draw: the game's vertex program on this vertex (world::mark_shore, `shore_vertex`)
+    if (mat.shore == 1u && in.normal.x < -66000.0 && in.normal.x > -67000.0) { o = shore_vertex(in, wp.xyz, o); }
     return o;
 }
 
@@ -5356,6 +5453,14 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     // without the reflection picture - the stand-in.)
     if (mat.mode == 27u || mat.mode == 28u) {
         lit = water_program(in);
+    }
+    // The surf strip (world.rs `mark_shore`), in its own draw (`mat.shore`): the game's own programs at every hour
+    if (mat.shore == 1u) {
+        let sw = shore_program(in);
+        if (sw.a > -0.5) {
+            lit = sw.rgb;
+            alpha = sw.a;
+        }
     }
     // The pond water (world.rs `mark_pond`: uv2.x = POND_MARK in the blended mode): the game's own programs
     // (pond_program above) by day in the main view; run for every blended pixel (the samples need uniform

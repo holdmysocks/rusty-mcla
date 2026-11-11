@@ -16418,11 +16418,13 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
         // which of its batches are interiors - world.rs `GpuSector::obj`)
         let mut last_obj = 0u8;
         for b in &sec.batches {
-            let blend = matches!(b.mode, MatMode::Blend | MatMode::StoreGlass);
+            // (the surf strip: drawn after the sea of its sector, in phase 2 - world.rs `mark_shore`)
+            let shore = v.sea_late && b.mode == MatMode::Blend && world::is_shore(&b.shader);
+            let blend = matches!(b.mode, MatMode::Blend | MatMode::StoreGlass) && !shore;
             if blend != (phase == 1) {
                 continue;
             }
-            if (phase == 2) != (v.sea_late && is_sea(b.mode)) {
+            if (phase == 2) != (v.sea_late && (is_sea(b.mode) || shore)) {
                 continue;
             }
             if sec.far.is_none() && !v.frustum.intersects_aabb(b.min, b.max) {
@@ -16524,6 +16526,17 @@ fn draw_sectors<'a>(pass: &mut wgpu::RenderPass<'_>, v: &SectorView<'a>, secs: i
                         let _ = writeln!(l, "{phase} {} {:?} {:.1} {:.1} {:.1} {:.1} {:.1} {:.1} {:p} {counts:?} {} {runs:?}", b.shader, b.mode, mn.x, mn.y, mn.z, mx.x, mx.y, mx.z, sec as *const _, b.count);
                     }
                 }
+            }
+            if phase == 2 && shore {
+                pass.set_pipeline(gpu.pipeline_shore.at(render::ms::current()));
+                pass.set_bind_group(2, &gpu.mat_bgs[&(b.mode as u32 | render::SHORE_PROGRAM)], &[]);
+                for r in &runs {
+                    pass.draw_indexed(r.0..r.0 + r.1, 0, 0..1);
+                    *draws += 1;
+                }
+                last_mode = u32::MAX;
+                mode_pipe = true;
+                continue;
             }
             if phase == 2 {
                 // (fogged where the stencil is not 1, then unfogged where it is; neither writes the stencil)

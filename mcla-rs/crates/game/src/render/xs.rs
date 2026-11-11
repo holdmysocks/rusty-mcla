@@ -1,6 +1,6 @@
 //! The game's own sky, road and ocean shader programs, as WGSL, loaded at start-up.
 //!
-//! The nine `xs_*.wgsl` files are a mechanical translation of the original's shader microcode, made on the player's machine from the
+//! The ten `xs_*.wgsl` files are a mechanical translation of the original's shader microcode, made on the player's machine from the
 //! player's disc (the installer's stage "Translate shaders", crate `mcla-shaders`) into `<data>/shaders_wgsl/`. They are not part of
 //! the source tree, so the shader modules that append them (the city / road / sea module, the sky dome, the Perlin and mini-sky passes,
 //! the road reflection) take their text from [`text`].
@@ -9,7 +9,7 @@
 //! useful (vertex programs put every vertex at the origin, pixel programs return black), the log gets one error saying what to do, and
 //! [`problem`] gives the same sentence for the on-screen notice. What degrades: with `xs_sky`, `xs_perlin`, `xs_sky_cheap`,
 //! `xs_sky_env` or `xs_minisky` missing the sky dome, the clouds and the sky reflections are black; with `xs_road` / `xs_roadn` missing
-//! the roads are not drawn (day / night); with `xs_water` missing the sea is not drawn; with `xs_pond` missing the ponds keep the generic blended look. Everything else (cars, buildings, sound, menus,
+//! the roads are not drawn (day / night); with `xs_water` missing the sea is not drawn; with `xs_pond` missing the ponds keep the generic blended look; with `xs_shore` missing the surf strip keeps the generic one. Everything else (cars, buildings, sound, menus,
 //! driving) runs as usual.
 
 use std::collections::HashMap;
@@ -52,18 +52,32 @@ fn stub(name: &str) -> &'static str {
             "fn xs_pond_vs(vin: array<vec4<f32>, 16>) -> XsVsOut { return XsVsOut(vec4<f32>(0.0, 0.0, 0.0, 1.0), array<vec4<f32>, 16>()); }\n",
             "fn xs_pond_ps(rin: array<vec4<f32>, 16>) -> vec4<f32> { return vec4<f32>(0.0); }\n"
         ),
+        // (a missing surf strip file: alpha -1 from this stub tells city.wgsl to draw the strip with the generic blended rule)
+        "xs_shore.wgsl" => concat!(
+            "fn xs_shore_vs(vin: array<vec4<f32>, 16>) -> XsVsOut { return XsVsOut(vec4<f32>(0.0, 0.0, 0.0, 1.0), array<vec4<f32>, 16>()); }
+",
+            "fn xs_shore_ps(rin: array<vec4<f32>, 16>) -> vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, -1.0); }
+"
+        ),
         _ => "",
     }
 }
 
-/// Read the nine files from `<data>/shaders_wgsl/`. The first call decides (later calls change nothing); one error is logged when
-/// anything is missing.
+/// Read the ten files from `<data>/shaders_wgsl/`. The first call decides (later calls change nothing); one error is logged when
+/// anything is missing. A file an older install did not write (its effect is in the data folder, the translator has a newer list) is
+/// translated here once, as the install stage would (`mcla_shaders::write_output`).
 pub fn load(data: &Path) {
     PROGRAMS.get_or_init(|| {
         let dir = data.join(mcla_shaders::OUT_DIR);
         let mut text = HashMap::new();
         let mut bad: Vec<&'static str> = Vec::new();
         for name in mcla_shaders::OUTPUTS {
+            if !dir.join(name).is_file() {
+                match mcla_shaders::write_output(data, name) {
+                    Ok(_) => log::info!("shader programs: {name} was not there; translated from the data folder"),
+                    Err(e) => log::warn!("shader programs: {name} was not there and could not be translated: {e}"),
+                }
+            }
             match std::fs::read_to_string(dir.join(name)) {
                 Ok(t) if t.contains("fn xs_") => {
                     text.insert(name, split_regs(&unroll_copy(&t)));
@@ -176,7 +190,7 @@ pub fn text(name: &str) -> &'static str {
     PROGRAMS.get().and_then(|p| p.text.get(name)).map(|s| s.as_str()).unwrap_or("")
 }
 
-/// The sentence for the on-screen notice when a file could not be read; `None` when all nine were.
+/// The sentence for the on-screen notice when a file could not be read; `None` when all ten were.
 pub fn problem() -> Option<&'static str> {
     PROGRAMS.get().and_then(|p| p.problem.as_deref())
 }

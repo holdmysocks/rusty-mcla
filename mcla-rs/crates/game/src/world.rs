@@ -597,6 +597,10 @@ fn classify(shader: &str, flags: u32) -> MatMode {
         MatMode::OceanWaterLod
     } else if s.contains("oceanwater") {
         MatMode::OceanWater
+    } else if s.contains("oceanshore") && !shore_old() {
+        // (the surf strip on the sand, CityOceanShore: drawn blended right after the sea, as the original draws it -
+        // `mark_shore`; its batch flags 3 made it a cut-out until 2026-11-11)
+        MatMode::Blend
     } else if s.contains("water") || s.contains("glass") {
         MatMode::Blend
     } else if s.contains("decal") || s.contains("alpha") || s.contains("fence") || s.contains("tree") || s.contains("foliage") || s.contains("cutout") || s.contains("grass") || flags & 3 != 0 {
@@ -835,6 +839,31 @@ fn mark_pond(vertices: &mut [Vertex], sh: &mcla_formats::rage::drawable::Shader,
     }
 }
 
+/// The surf strip (CityOceanShore batches: the beaches' foam band, eight sectors). The original draws it with
+/// VSCityOceanShore + PSCityOceanShore at every hour, blended (SrcAlpha / InvSrcAlpha), depth written, the stencil
+/// replaced by 0, right after the sea draws of its sector (work/water/cap/beach_*.gpu.bin draws 555 / 557). Its vertex
+/// (28 bytes) holds the place, the colour, (uv0, uv1) and uv2 - all read by its vertex program - and no normal: the normal
+/// carries SHORE_MARK, and city.wgsl runs the game's programs on the marked vertices (`shore_vertex`, `shore_program`,
+/// xs_shore.wgsl) in the shore's own draw (main.rs `draw_sectors` phase 2, `render::SHORE_PROGRAM`). Textures:
+/// DiffuseSampler first, WaveFoamSampler second, WaveSampler third (as stored), FoamSampler fourth.
+/// MCLA_SHORE_OLD=1: the generic cut-out rule, as before.
+pub const SHORE_MARK: f32 = -66666.0;
+fn shore_old() -> bool {
+    static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OLD.get_or_init(|| std::env::var("MCLA_SHORE_OLD").map_or(false, |v| v == "1"))
+}
+pub fn is_shore(shader: &str) -> bool {
+    !shore_old() && shader.to_ascii_lowercase().contains("cityoceanshore")
+}
+fn mark_shore(vertices: &mut [Vertex], sh: &mcla_formats::rage::drawable::Shader, mode: MatMode) {
+    if mode != MatMode::Blend || !is_shore(&sh.name) {
+        return;
+    }
+    for v in vertices.iter_mut() {
+        v.normal = [SHORE_MARK, 0.0, 0.0];
+    }
+}
+
 fn mark_tunnel_road(vertices: &mut [Vertex], sh: &mcla_formats::rage::drawable::Shader, mode: MatMode, interior: bool) {
     if mode != MatMode::Road || !interior || !sh.name.to_ascii_lowercase().contains("citytunnelroad") {
         return;
@@ -970,6 +999,8 @@ fn extra_textures_at(sh: &mcla_formats::rage::drawable::Shader, mode: MatMode, i
         MatMode::OceanWater | MatMode::OceanWaterLod => (tex(0x00a67acd).unwrap_or(0), 0),
         // (the pond water's WaveSampler - the same ripple map, also read as stored: third)
         MatMode::Blend if is_pond(&sh.name) => (tex(0x00a67acd).unwrap_or(0), 0),
+        // (the surf strip: WaveSampler third, as stored; FoamSampler fourth - `mark_shore`)
+        MatMode::Blend if is_shore(&sh.name) => (tex(0x00a67acd).unwrap_or(0), tex(mcla_formats::hash::joaat("foamsampler")).unwrap_or(0)),
         MatMode::Terrain => {
             let a = tex(ph::GRASS_A).unwrap_or(0);
             let b = tex(mcla_formats::hash::joaat("diffusesamplerb")).unwrap_or(a);
@@ -998,6 +1029,8 @@ fn pick_textures(sh: &mcla_formats::rage::drawable::Shader, mode: MatMode) -> (u
         MatMode::StoreSign => tex(0xdc27608e), // NightSampler
         // (the sea: WaveFoamSampler second, WaveSampler third - `extra_textures_at`)
         MatMode::OceanWater | MatMode::OceanWaterLod => tex(0x63f7c0e8),
+        // (the surf strip: WaveFoamSampler second - `mark_shore`)
+        MatMode::Blend if is_shore(&sh.name) => tex(0x63f7c0e8),
         // (shop panes mirror a fixed picture, the game's `__WindowReflection`: ReflectSphereDay.dds
         // of the shared dictionary by day - the night one goes into the third slot)
         MatMode::StoreGlass => Some(mcla_formats::hash::joaat("reflectsphereday.dds")),
@@ -1181,6 +1214,7 @@ pub fn decode_set(id: usize, path: &Path) -> Result<CpuSector> {
             }
             mark_water(&mut vertices, mode);
             mark_pond(&mut vertices, sh, mode);
+            mark_shore(&mut vertices, sh, mode);
             batches.push(CpuBatch { vertices, indices: m.indices.clone(), diffuse, second, third, fourth, mode, min: mn, max: mx, shader: sh.name.clone(), interior: false, parts: Vec::new() });
         }
     }
@@ -1297,6 +1331,7 @@ pub fn decode_sector(id: usize, path: &Path) -> Result<CpuSector> {
         mark_binormal(&mut vertices, &m.tangents, sh);
         mark_water(&mut vertices, mode);
         mark_pond(&mut vertices, sh, mode);
+        mark_shore(&mut vertices, sh, mode);
         batches.push(CpuBatch {
             vertices,
             indices: m.indices.clone(),
@@ -1409,6 +1444,7 @@ pub fn decode_far(path: &Path, sectors: &[SectorInfo], records: &[SectorRecord])
             mark_binormal(&mut vertices, &mesh.tangents, sh);
             mark_water(&mut vertices, mode);
             mark_pond(&mut vertices, sh, mode);
+            mark_shore(&mut vertices, sh, mode);
             // (the geometry's own sphere - F-73936's test, not used in the main view; the draw-list dump prints it)
             let parts = sphere(if gc > 1 { g + 1 } else { 0 }).map_or(Vec::new(), |(c, r)| vec![(0, mesh.indices.len() as u32, c, r, 0, Vec3::ZERO)]);
             batches.push(CpuBatch { vertices, indices: mesh.indices, diffuse, second, third, fourth, mode, min: mn, max: mx, shader: sh.name.clone(), interior: false, parts });
@@ -2147,6 +2183,8 @@ impl World {
                 MatMode::OceanWater | MatMode::OceanWaterLod => b.third,
                 // (the pond water's ripple map: the third)
                 MatMode::Blend if is_pond(&b.shader) => b.third,
+                // (the surf strip's ripple map: the third)
+                MatMode::Blend if is_shore(&b.shader) => b.third,
                 // (and the walls with a decal and a grime layer: the fourth too)
                 MatMode::Ground | MatMode::Decal => b.fourth,
                 _ => 0,
@@ -2265,7 +2303,8 @@ impl World {
             let bind = if b.fourth != 0 {
                 // (walls with a fourth texture - the interior mirror picture of metal walls and
                 // tunnel tiles: their height / specular map stays the raw copy, as below)
-                let wall4 = matches!(b.mode, MatMode::Opaque | MatMode::AlphaTest);
+                // (and the surf strip's ripple map, as stored - `mark_shore`)
+                let wall4 = matches!(b.mode, MatMode::Opaque | MatMode::AlphaTest) || (b.mode == MatMode::Blend && is_shore(&b.shader));
                 // (the road, ground and decal programs' third texture is their grime layer, laid over
                 // by its own alpha: a batch without one gets the transparent texture, as it does when
                 // it has no fourth either - `resolve(0)` is opaque white, which painted South
