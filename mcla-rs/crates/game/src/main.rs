@@ -4537,7 +4537,11 @@ impl App {
                 self.speech.stop();
                 if let Some(s) = story {
                     self.cuts.queue(s);
-                } else if self.cine.start(&mut gpu, &hangoutin::SETUPS[si].scene, glam::Mat4::IDENTITY) {
+                } else if {
+                    // (the default `<key>_enter_cine`: PropManager_ResetProps before the scene - `Props::reset_city`)
+                    self.props.reset_city(&mut self.vehicles.level, &gpu, &world);
+                    self.cine.start(&mut gpu, &hangoutin::SETUPS[si].scene, glam::Mat4::IDENTITY)
+                } {
                     self.hangout_in = Some(i);
                     self.cine_free = true;
                     self.cine_caption = Some(String::new());
@@ -13988,6 +13992,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // (the railnet's reset F-44338: every road's script density index back to -1, F-46490)
                 self.vehicles.reset_road_density();
                 self.props.signals.release();
+                // (OrderedCheckpointCore 0x73e / UnorderedCheckpointCore 0x707 at the start: ResetTriggers, then
+                // PropManager_ResetProps - `Props::reset_city`; the cores of every RaceKind::Race but the time trials
+                // (CruisingHookmen/0xbb4f8a9f), not the payback legs', deliveries' or flag games' own, which do not call it)
+                let core = self.game.race.as_ref().is_some_and(|r| r.kind == game::RaceKind::Race)
+                    && self.game.flag.is_none()
+                    && !self.game.current_race.and_then(|i| self.game.race_defs.get(i)).is_some_and(|d| self.game.career.is_time_trial(&d.id) || self.game.mc4_tt_of(&d.id).is_some());
+                if started && core {
+                    self.props.reset_city(&mut self.vehicles.level, gpu, world);
+                }
                 if started && std::env::var("MCLA_NO_DRESS").is_err() {
                     if let Some(d) = self.game.active_def.as_ref().or(self.game.current_race.and_then(|i| self.game.race_defs.get(i))).and_then(|def| racescript::load(&self.opt.data_dir, &def.id, def.checkpoints.first().copied())) {
                         log::info!("race script: {} props, {} triggers, {} scripted cars, checkpoint radii {:?}", d.props.len(), d.triggers.len(), d.paths.len(), d.cp_radius);

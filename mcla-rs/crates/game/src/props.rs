@@ -598,6 +598,8 @@ pub struct Props {
     defl_done: std::collections::HashSet<u32>,
     /// props knocked over so far (stat)
     pub knocked: u32,
+    /// the instance as the map placed it of every collider knocked since the last reset (`reset_props`)
+    placed: HashMap<u32, Inst>,
     rng: u32,
     /// the loose props are the cars' physics level's (physics/loose.rs): this file's knock leaves them be,
     /// and they are drawn where their bodies are (`follow_level`); the collider each level instance is
@@ -848,7 +850,7 @@ fn prop_mode(shader: &str) -> MatMode {
 
 impl Props {
     pub fn empty() -> Props {
-        Props { hedge_low: HashMap::new(), impostors: None, signal_glows: SignalGlows::default(), glow_buf: None, glow_count: 0, lights: Vec::new(), prop_lamps: Vec::new(), glow_lamps: Vec::new(), glow_cull: Vec::new(), glow_signal: Vec::new(), glow_gfx: Vec::new(), glow_boxes: Vec::new(), light_grid: HashMap::new(), models: Vec::new(), inst_buf: None, cells: HashMap::new(), instances: 0, insts: Vec::new(), colliders: Vec::new(), gas_stations: Vec::new(), col_grid: HashMap::new(), debris: Vec::new(), hits: Vec::new(), scrapes: Vec::new(), deflects: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, moving: HashMap::new(), between: HashMap::new(), between_tick: 0, between_log: std::env::var_os("MCLA_DRAW_STEPS").map(|_| Vec::new()), heads: Vec::new(), signals: Default::default(), race_models: HashMap::new(), race_buf: None, race_runs: Vec::new(), barriers: Vec::new(), barrier_buf: None, barrier_on: 0, emitters: Vec::new(), trash: Vec::new() }
+        Props { hedge_low: HashMap::new(), impostors: None, signal_glows: SignalGlows::default(), glow_buf: None, glow_count: 0, lights: Vec::new(), prop_lamps: Vec::new(), glow_lamps: Vec::new(), glow_cull: Vec::new(), glow_signal: Vec::new(), glow_gfx: Vec::new(), glow_boxes: Vec::new(), light_grid: HashMap::new(), models: Vec::new(), inst_buf: None, cells: HashMap::new(), instances: 0, insts: Vec::new(), colliders: Vec::new(), gas_stations: Vec::new(), col_grid: HashMap::new(), debris: Vec::new(), hits: Vec::new(), scrapes: Vec::new(), deflects: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, placed: HashMap::new(), rng: 12345, level_on: false, level_map: None, moving: HashMap::new(), between: HashMap::new(), between_tick: 0, between_log: std::env::var_os("MCLA_DRAW_STEPS").map(|_| Vec::new()), heads: Vec::new(), signals: Default::default(), race_models: HashMap::new(), race_buf: None, race_runs: Vec::new(), barriers: Vec::new(), barrier_buf: None, barrier_on: 0, emitters: Vec::new(), trash: Vec::new() }
     }
 
     pub fn load(gpu: &mut Gpu, world: &mut World, data_dir: &str) -> Props {
@@ -1666,7 +1668,7 @@ impl Props {
             SignalGlows { lit: Vec::new(), cull, buf: None, count: 0, lamps, sizes: four("sm_fSignalGlowSizes", [4.52, 5.25, 8.7675, 10.0]), intensities: four("sm_fSignalGlowIntensitys", [4.52, 5.0, 5.0, 3.0]) }
         };
         let impostors = impostor::Impostors::new(gpu, data_dir, &mut models, &imp_types, &slot_infos);
-        Props { hedge_low, impostors, signal_glows, glow_buf, glow_count: glows.len() as u32, lights, prop_lamps, glow_lamps, glow_boxes, glow_cull, glow_signal, glow_gfx, light_grid, models, inst_buf, cells, instances: total, insts, colliders, gas_stations, col_grid, debris: Vec::new(), hits: Vec::new(), scrapes: Vec::new(), deflects: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, rng: 12345, level_on: false, level_map: None, moving: HashMap::new(), between: HashMap::new(), between_tick: 0, between_log: std::env::var_os("MCLA_DRAW_STEPS").map(|_| Vec::new()), heads, signals, race_models, race_buf: None, race_runs: Vec::new(), barriers, barrier_buf, barrier_on: 0, emitters, trash: load_resource_file(&Path::new(data_dir).join("resources/city/sc/0xad0a8b94.r66")).map(|r| trash_rails(&r)).unwrap_or_default() }
+        Props { hedge_low, impostors, signal_glows, glow_buf, glow_count: glows.len() as u32, lights, prop_lamps, glow_lamps, glow_boxes, glow_cull, glow_signal, glow_gfx, light_grid, models, inst_buf, cells, instances: total, insts, colliders, gas_stations, col_grid, debris: Vec::new(), hits: Vec::new(), scrapes: Vec::new(), deflects: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, placed: HashMap::new(), rng: 12345, level_on: false, level_map: None, moving: HashMap::new(), between: HashMap::new(), between_tick: 0, between_log: std::env::var_os("MCLA_DRAW_STEPS").map(|_| Vec::new()), heads, signals, race_models, race_buf: None, race_runs: Vec::new(), barriers, barrier_buf, barrier_on: 0, emitters, trash: load_resource_file(&Path::new(data_dir).join("resources/city/sc/0xad0a8b94.r66")).map(|r| trash_rails(&r)).unwrap_or_default() }
     }
 
     /// Keep the effects of the particle props near the camera playing, and the litter on the
@@ -2506,6 +2508,9 @@ impl Props {
                             }
                             c.knocked = true;
                             self.knocked += 1;
+                            if c.inst != u32::MAX {
+                                self.placed.entry(ci).or_insert(self.insts[c.inst as usize]);
+                            }
                             self.hits.push(crate::sound::PropHit { pos: c.pos, inst: c.inst, kind: c.foot.snd, model: c.foot.audio, speed, knocked: true });
                             st.vel *= 1.0 - ratio * 0.9;
                             st.last_impact = st.last_impact.max(speed * ratio * 2.0);
@@ -2652,6 +2657,7 @@ impl Props {
             if !c.knocked {
                 c.knocked = true;
                 self.knocked += 1;
+                self.placed.entry(ci).or_insert(self.insts[c.inst as usize]);
                 self.hits.push(crate::sound::PropHit { pos: c.pos, inst: c.inst, kind: c.foot.snd, model: c.foot.audio, speed: o.body.map_or(0.0, |b| b.v.length()), knocked: true });
             }
             let m = o.matrix;
@@ -2667,6 +2673,33 @@ impl Props {
 }
 
 impl Props {
+    /// The whole city's props as new (PropManager_ResetProps, `LooseState::reset_props`; GitHub #48): every knocked prop
+    /// stands again where the map put it, drawn there and met as before. Returns how many.
+    pub fn reset_props(&mut self, gpu: &Gpu) -> usize {
+        let n = self.placed.len();
+        for (ci, inst) in std::mem::take(&mut self.placed) {
+            let c = &mut self.colliders[ci as usize];
+            c.knocked = false;
+            self.between.remove(&c.inst);
+            self.moving.remove(&ci);
+            self.insts[c.inst as usize] = inst;
+            if let Some(buf) = self.inst_buf.as_ref() {
+                gpu.queue.write_buffer(buf, c.inst as u64 * std::mem::size_of::<Inst>() as u64, bytemuck::bytes_of(&inst));
+            }
+        }
+        self.debris.clear();
+        n
+    }
+
+    /// PropManager_ResetProps (F-27147, the native): the fragment cache emptied and every prop of the city as the map
+    /// placed it - `LooseState::reset_props` and `reset_props` above. The scripts call it at every race core's start (after
+    /// TriggerManager_ResetTriggers) and in each hangout's `<key>_enter_cine` before its `_ent` scene (GitHub #48).
+    pub fn reset_city(&mut self, level: &mut crate::physics::loose::LooseState, gpu: &Gpu, world: &World) {
+        let (objs, gone) = world.collider.loose.as_deref().map_or((0, 0), |lw| level.reset_props(lw));
+        let drawn = self.reset_props(gpu);
+        log::info!("props reset (PropManager_ResetProps): {objs} level objects as new, {gone} broken-off pieces out, {drawn} props drawn back");
+    }
+
     /// A game tick starts (main.rs `update_gameplay`): what moves in it is drawn between its start and end.
     pub fn begin_tick(&mut self) {
         self.between_tick += 1;

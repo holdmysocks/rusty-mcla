@@ -4729,6 +4729,12 @@ impl LooseState {
                 drop && !named(self, o)
             })
             .collect();
+        self.remove_objs(&gone)
+    }
+
+    /// Take the objects marked `gone` out of the level (prune, reset_props): the others keep their order; every index
+    /// held is renumbered (`renums` for those outside). Returns how many went.
+    fn remove_objs(&mut self, gone: &[bool]) -> usize {
         let n = gone.iter().filter(|g| **g).count();
         if n == 0 {
             return 0;
@@ -4776,6 +4782,52 @@ impl LooseState {
             self.renums.pop_front();
         }
         n
+    }
+
+    /// The whole city's props as new (PropManager_ResetProps, F-27147 -> F-87948; GitHub #48): first the fragment cache's
+    /// sweep (F-48442 -> F-86846: every entry of the pool's used list released, F-74663 - the teardown takes a broken-off
+    /// piece's own instance out of the level -; an instance whose type always holds one gets a new entry), then every prop instance's reset (the prop resource's slot 3,
+    /// F-12466, calls the instance's vt+168 F-79581): its flags cleared, back at its file matrix (rebuilt from the packed
+    /// placement, F-57499), inactive. Here: a broken-off piece (an object of a cache entry: no instance, `entry.from`) goes, and every
+    /// prop object is as `obj_of` makes it (no body, no entry, not hit, its sleep object as made, at its file matrix) in its
+    /// place in the list; the pairs that name one of them go (the next step meets them anew). The torn bumpers (`pieces`:
+    /// a phInst of their own, no cache entry) are not the cache's and stay. Returns (props reset, pieces gone).
+    pub fn reset_props(&mut self, world: &LooseWorld) -> (usize, usize) {
+        let named = |s: &LooseState, o: usize| s.pieces.iter().any(|p| p.obj == o) || s.extras.iter().any(|e| e.obj == o) || s.lead == Some(o) || s.merged.contains(&o);
+        let mut changed = vec![false; self.objs.len()];
+        let mut gone = vec![false; self.objs.len()];
+        let mut reset = 0;
+        for o in 0..self.objs.len() {
+            let obj = &self.objs[o];
+            if obj.veh.is_some() || obj.amb.is_some() {
+                continue;
+            }
+            match obj.inst {
+                None => {
+                    if obj.entry.is_some_and(|e| e.from.is_some()) && !named(self, o) {
+                        gone[o] = true;
+                        changed[o] = true;
+                    }
+                }
+                Some(i) => {
+                    if Self::untouched(obj) && obj.matrix == m4(&world.instances[i as usize].0.matrix) {
+                        continue;
+                    }
+                    let obj = &mut self.objs[o];
+                    obj.matrix = m4(&world.instances[i as usize].0.matrix);
+                    obj.body = None;
+                    obj.entry = None;
+                    obj.hit = false;
+                    obj.dormant = false;
+                    obj.sleep = Sleep::reset();
+                    changed[o] = true;
+                    reset += 1;
+                }
+            }
+        }
+        self.manis.retain(|m| ![m.a, m.b].iter().any(|w| matches!(*w, Who::Obj(o) if changed[o])));
+        self.fx_events.retain(|f| !matches!(f.at, FxAt::Follow { obj, .. } if gone[obj]));
+        (reset, self.remove_objs(&gone))
     }
 
     /// An object's index of an older numbering (`seen`: the `renum_gen` it was taken at) in today's; None when it went
@@ -6037,6 +6089,47 @@ mod piece_tests {
         let again = s.obj_of(&world, 1);
         assert_eq!(again, 2);
         assert_eq!(format!("{:?}", s.objs[2]), before);
+    }
+
+    /// PropManager_ResetProps on the level: a moved, broken prop stands untouched at its file matrix in its place, a piece
+    /// broken off one (a cache entry's object) goes with its pair and its effect, a torn bumper and a car stay.
+    #[test]
+    fn reset_props_puts_the_city_back() {
+        let ty = FragType { off: 1, radius: 0.5, ..Default::default() };
+        let inst = |x: f32| FragInstance { frag: 1, state: 1, matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [x, 0.0, 0.0]], ..Default::default() };
+        let world = LooseWorld::new(vec![ty], vec![inst(0.0), inst(5.0)]);
+        let mut s = LooseState::default();
+        let (a, b) = (s.obj_of(&world, 0), s.obj_of(&world, 1));
+        let fresh = format!("{:?}", s.objs[a]);
+        let e = Entry { absent: 1, from: Some(0), ..Default::default() };
+        s.objs[a].matrix[3] = Vec3::new(1.0, 0.2, 3.0);
+        s.objs[a].entry = Some(e);
+        s.objs[a].hit = true;
+        s.objs[a].dormant = true;
+        // (the piece that broke off it: no instance, the entry's)
+        let mut piece = s.objs[a].clone();
+        piece.inst = None;
+        s.objs.push(piece);
+        let p = s.objs.len() - 1;
+        let id = s.add_piece(&world, [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(20.0, 0.3, 0.0)], Vec3::ZERO, Vec3::ZERO).unwrap();
+        let bumper = s.objs.len() - 1;
+        s.fx_events.push(FxPlay { effect: "x".into(), at: FxAt::Follow { obj: p, part: None, offset: Vec3::ZERO }, vel: Vec3::ZERO });
+        s.fx_events.push(FxPlay { effect: "y".into(), at: FxAt::Follow { obj: bumper, part: None, offset: Vec3::ZERO }, vel: Vec3::ZERO });
+        s.manis.push(Mani { a: Who::Car, b: Who::Obj(p), part_a: 0, part_b: 0, cell: 0, stale: false, visited: true, island: 0, order: 0, slots: Vec::new(), rope: false, owner: 0 });
+        s.manis.push(Mani { a: Who::Car, b: Who::Obj(b), part_a: 0, part_b: 0, cell: 0, stale: false, visited: true, island: 0, order: 0, slots: Vec::new(), rope: false, owner: 0 });
+        assert_eq!(s.reset_props(&world), (1, 1));
+        assert_eq!(s.objs.len(), 3);
+        assert_eq!(format!("{:?}", s.objs[a]), fresh);
+        assert_eq!(s.objs[b].inst, Some(1));
+        assert_eq!(s.pieces[0].obj, 2);
+        assert!(s.piece(id).is_some());
+        assert_eq!(s.fx_events.len(), 1);
+        assert!(matches!(s.fx_events[0].at, FxAt::Follow { obj: 2, .. }));
+        // (the untouched prop's pair stays; the gone piece's goes)
+        assert_eq!(s.manis.len(), 1);
+        assert!(s.manis[0].b == Who::Obj(b));
+        // (nothing left to reset)
+        assert_eq!(s.reset_props(&world), (0, 0));
     }
 
     fn flat() -> WorldCollider {
