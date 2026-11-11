@@ -767,6 +767,8 @@ pub enum ObjCmd {
     /// the music manager's Play (its argument) or the race scene's suspend (racer_enablemusic): `MusicMgr`
     MusicPlay { arg: u32 },
     MusicSuspend,
+    /// the script native mcMusicManager_SetAllowBackgroundPlay (F-50556): the manager's background play (+528)
+    MusicBackground { on: bool },
     /// the HUD's music buttons (F-49672 / F-78917 / F-29546): the manager's Pause(-1) (F-70924), NextSong / PreviousSong
     /// with the chime (F-51486 / F-87381)
     MusicPause,

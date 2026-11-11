@@ -4332,6 +4332,13 @@ impl App {
                     a.play_stream(None, 0.0);
                 }
             }
+            // (RACE_GH_06_READY_TO_START_ON_ENTER waits for its scene in a 10 ms loop that calls
+            // mcMusicManager_SetAllowBackgroundPlay(0) every time round: the racer_enablemusic below has it for one frame)
+            if self.cuts.playing.as_ref().is_some_and(|p| p.def.name.eq_ignore_ascii_case("CUT_STORY_RACE_GH_06")) {
+                if let Some(a) = self.audio.as_mut() {
+                    a.obj_cmds.push(audio::ObjCmd::MusicBackground { on: false });
+                }
+            }
             // (the scene's music events, cutscene::STORY_MUSIC: racer_enablemusic the music manager's suspend, musicplay
             // its Play(0))
             for ev in std::mem::take(&mut self.cuts.music) {

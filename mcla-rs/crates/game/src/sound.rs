@@ -874,6 +874,7 @@ impl Sound {
                             a.mgr = m;
                         }
                     }
+                    crate::audio::ObjCmd::MusicBackground { on } => a.mgr.background = on,
                     crate::audio::ObjCmd::MusicSuspend => {
                         let tune = lib.game.get_name("MUSIC_0_MANAGER").and_then(crate::audio::MusicTune::read);
                         if let Some(t) = tune {
