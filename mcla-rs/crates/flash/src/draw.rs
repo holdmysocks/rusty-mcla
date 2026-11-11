@@ -175,6 +175,13 @@ impl<'a> Builder<'a> {
                     break;
                 }
             }
+            // F-92070 draws nothing of a child whose placed byte (+177) is clear: a goto's wrap clears it on every
+            // child (F-85946) and only the frames' PlaceObject commands set it again (F-70772), so a child that a
+            // later frame placed and no RemoveObject took out stays in the list unseen once the clip goes back to
+            // an earlier frame (the HUD's slipstream meter: its last frame's nitro bar overlay)
+            if !ci.placed() {
+                continue;
+            }
             if ci.clip_depth > 0 {
                 self.out.items.push(Item::MaskBegin);
                 self.instance(p, c, world, cx, tint);

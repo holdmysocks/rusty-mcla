@@ -12,7 +12,8 @@
 //!   (`F-48063`, `F-41374`, `F-85946`). Children follow.
 //! * `goto` only steps forward, wrapping through the last frame; at the wrap the
 //!   children's "placed" marks are cleared so frame 0 places them again. Nothing
-//!   is removed except by RemoveObject commands.
+//!   is removed except by RemoveObject commands, but the draw (`F-92070`) skips
+//!   a child whose mark is clear: one a later frame placed is not seen after a wrap.
 //! * `_x`/`_y` are offsets added to the timeline translation; `_xscale`/`_yscale`
 //!   replace the timeline scale when either differs from 100; `_rotation`
 //!   replaces the timeline rotation when non-zero (`F-74625`).
@@ -116,6 +117,13 @@ pub struct Inst {
 }
 
 impl Inst {
+    /// The original's placed byte +177 (0 from the constructor F-44617; 1 when a PlaceObject places the
+    /// child, F-70772, or attachMovie makes it, F-27970; cleared on every child at a goto's wrap, F-85946):
+    /// the draw F-92070 skips a child (and all it holds) while it is clear.
+    pub fn placed(&self) -> bool {
+        self.placed_by.is_some()
+    }
+
     fn new(character: u16, depth: u16, parent: Option<InstId>) -> Inst {
         Inst {
             character,
@@ -558,6 +566,8 @@ impl Player {
     pub fn preview(&mut self, ch: u16) -> InstId {
         let root = self.root;
         let mut i = Inst::new(ch, 0xffff, Some(root));
+        // (a tool's preview: shown as placed)
+        i.placed_by = Some(u64::MAX);
         if let Some(Character::EditText(e)) = self.movie.char(ch) {
             i.text = Some(Rc::from(e.initial.as_str()));
         }
@@ -1166,6 +1176,8 @@ impl Player {
         self.remove_child(parent, depth);
         let mut i = Inst::new(ch, depth, Some(parent));
         i.name = name.clone();
+        // (F-27970 sets +177: drawn until a wrap of its parent's timeline)
+        i.placed_by = Some(u64::MAX);
         let id = self.alloc_inst(i);
         if let Some(p) = self.inst_mut(parent) {
             p.children.insert(depth, id);

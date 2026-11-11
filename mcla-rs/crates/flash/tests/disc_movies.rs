@@ -63,6 +63,46 @@ fn hud_shows_speed_and_gear_from_globals() {
     assert_eq!(p.inst(gear).unwrap().text.as_deref(), Some("3"));
 }
 
+/// Opt-in: the HUD's slipstream meter (`speedometer.SST.meter`, 131 frames) goes to frame 1 + 130 x SSTvalue. Only its
+/// last frame (SSTvalue 1, green) places a second child, the nitro bar overlay (sprite 442 at depth 2), and no frame
+/// removes it. Back to an earlier value the goto wraps (F-85946 clears every child's placed byte) and frame 0 places
+/// depth 1 only, so the overlay stays in the list but the draw (F-92070) skips it: the nitro bar shows its own colour
+/// again. Triangles of the meter as the original draws them: the same count before and after a full charge.
+#[test]
+#[ignore]
+fn hud_slipstream_overlay_goes_after_a_full_charge() {
+    use mcla_flash::value::Value;
+    let dir = PathBuf::from(std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR"));
+    let movie = Arc::new(Movie::parse(&load(&dir.join("resources/ui/hud/0x1f0e1cda.r27"))).unwrap());
+    let mut p = Player::new(movie);
+    let mut run = |p: &mut Player, v: f32, n: usize| {
+        for _ in 0..n {
+            for (k, x) in [("Speedisvisible", 1), ("Nitroisvisible", 1), ("Nitrovalue", 2), ("SSTisvisible", 1)] {
+                p.set_global(k, Value::Int(x));
+            }
+            p.set_global("SSTvalue", Value::Float(v));
+            p.tick();
+        }
+    };
+    let meter = |p: &Player| p.find("HUD.speedometer.SST.meter").expect("meter");
+    let tris = |p: &Player| mcla_flash::draw::build_instance(p, meter(p)).triangle_count();
+    let overlay = |p: &Player| p.inst(meter(p)).unwrap().children.get(&2).copied();
+    run(&mut p, 0.5, 6);
+    let half = tris(&p);
+    assert!(overlay(&p).is_none());
+    run(&mut p, 1.0, 3);
+    let full_overlay = overlay(&p).expect("the last frame places the overlay");
+    assert_eq!(p.inst(full_overlay).unwrap().character, 442);
+    assert!(p.inst(full_overlay).unwrap().placed());
+    run(&mut p, 0.5, 3);
+    // (still in the list, as in the original: no RemoveObject; not drawn)
+    let kept = overlay(&p).expect("kept");
+    assert!(!p.inst(kept).unwrap().placed());
+    assert_eq!(tris(&p), half, "the meter at 0.5 after a full charge draws as before it");
+    run(&mut p, 0.0, 3);
+    assert!(!p.inst(overlay(&p).unwrap()).unwrap().placed());
+}
+
 /// Opt-in: the letters the five text languages use (the string table `ui/0xa4c1e8fa`, blocks 0..4) against the glyphs
 /// of the movies' fonts. Prints, per font name, the letters some language uses that no instance of that font has.
 #[test]
