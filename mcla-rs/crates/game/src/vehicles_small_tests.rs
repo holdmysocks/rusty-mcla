@@ -105,9 +105,11 @@ fn window_reset_matches_the_original() {
         }
         // (+16 untouched)
         assert_eq!(o[7], 0xa5a50004);
-        // (the play default: the state the reset's target leads to, and the reset's time)
-        let w = crate::vehicles::WindowCtl::default();
-        assert_eq!((w.state as u32, w.time.to_bits()), (o[3], o[1]), "play {i:08x?}");
+        // (the play default: the reset's state and time; its first update takes the target)
+        let mut w = crate::vehicles::WindowCtl::default();
+        assert_eq!((w.state as u32, w.time.to_bits()), (o[2], o[1]), "play {i:08x?}");
+        w.update(1.0 / 30.0, 1.0);
+        assert_eq!((w.state as u32, w.time.to_bits()), (o[3], o[1]), "play first update {i:08x?}");
         n += 1;
     }
     assert_eq!(n, 1000);

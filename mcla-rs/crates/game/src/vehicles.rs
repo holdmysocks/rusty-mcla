@@ -1094,8 +1094,8 @@ pub fn take_window_requests(windows: &mut [WindowCtl; 2], req: &mut [[bool; 2]; 
 }
 
 /// A side window's controller as the original's (vtable 0x82046958; open F-85820, close
-/// F-82826, update F-27851): `state` 1 closed (up), 2 open (down), 3 opening,
-/// 4 closing; `time` runs at rate 0.5 (A-15115) over the clip, so rolling down takes twice
+/// F-82826, update F-27851): `state` 0 as reset (F-42929: the first update takes the target, closed), 1 closed (up),
+/// 2 open (down), 3 opening, 4 closing; `time` runs at rate 0.5 (A-15115) over the clip, so rolling down takes twice
 /// the clip's length; the clip is played at clamp(time, 0, duration).
 #[derive(Debug, Clone, Copy)]
 pub struct WindowCtl {
@@ -1105,9 +1105,9 @@ pub struct WindowCtl {
 
 impl Default for WindowCtl {
     fn default() -> Self {
-        // (F-42929's reset: state word 0 takes the target 1 = closed at the first update; time 0)
+        // (F-42929's reset: state word 0, time 0; the first update takes the target, 1 = closed - `update_at`)
         let r = crate::vehicles::vehicles_words::window_reset(false);
-        WindowCtl { state: r.target as u8, time: r.time }
+        WindowCtl { state: r.state as u8, time: r.time }
     }
 }
 
@@ -1145,6 +1145,8 @@ impl WindowCtl {
     /// The same at the controller's own rate (+68).
     pub fn update_at(&mut self, rate: f32, dt: f32, duration: f32) {
         match self.state {
+            // (the reset's state 0: the target taken, 1 = closed)
+            0 => self.state = crate::vehicles::vehicles_words::window_reset(false).target as u8,
             1 => self.time = 0.0,
             2 => self.time = duration,
             3 => {
@@ -8751,13 +8753,16 @@ mod tyre_clip_tests {
 mod roof_tests {
     use super::{RoofCtl, WindowCtl};
 
+    /// a window after its first update (the reset's state 0 takes the target 1)
+    const CLOSED: WindowCtl = WindowCtl { state: 1, time: 0.0 };
+
     /// F-35036's window requests (its part after the roof): close first, then open; a request is cleared (both bytes of
     /// its side) only when the slot takes it, so an up request made while the window is still going down waits and
     /// rolls it up once it is fully down; an open request at the open end waits for the next close.
     #[test]
     fn window_requests_wait_until_taken() {
         let l = 1.0;
-        let mut w = [WindowCtl::default(); 2];
+        let mut w = [CLOSED; 2];
         let mut req = [[false; 2]; 2];
         // down requested on the left: taken at once (closed)
         req[0][1] = true;
@@ -8774,7 +8779,7 @@ mod roof_tests {
         super::take_window_requests(&mut w, &mut req, [Some(l), Some(l)]);
         assert_eq!((w[0].state, req[0]), (4, [false; 2]));
         // both bytes set on a closed window: the close is not taken, the open is, and both clear
-        let mut w = [WindowCtl::default(); 2];
+        let mut w = [CLOSED; 2];
         let mut req = [[true, true], [false; 2]];
         super::take_window_requests(&mut w, &mut req, [Some(l), Some(l)]);
         assert_eq!((w[0].state, req[0]), (3, [false; 2]));
@@ -8813,13 +8818,13 @@ mod roof_tests {
             r.step(down, player, dt, lens, w, wl, &mut req);
             super::take_window_requests(w, &mut req, wl);
         };
-        let mut w = [WindowCtl::default(); 2];
+        let mut w = [CLOSED; 2];
         // (made with the option down: at the end, windows down, no motion)
         let mut r = RoofCtl::default();
         st(&mut r, true, true, 0.0, lens, &mut w, wl);
         assert_eq!((r.hatch.state, r.top.state, r.top.time, w[0].state, w[1].time), (2, 2, 7.0, 2, 0.667));
         // (not the player's car: nothing at the start)
-        let (mut r2, mut w2) = (RoofCtl::default(), [WindowCtl::default(); 2]);
+        let (mut r2, mut w2) = (RoofCtl::default(), [CLOSED; 2]);
         st(&mut r2, true, false, 0.0, lens, &mut w2, wl);
         assert_eq!((r2.top.state, w2[0].state), (1, 1));
         // (raised: both close, the windows go up; the hatch ends first)
@@ -8833,7 +8838,7 @@ mod roof_tests {
         assert_eq!(r.top.state, 4);
         st(&mut r, true, true, 2.0, lens, &mut w, wl);
         assert_eq!((r.top.state, r.hatch.state), (1, 1));
-        w = [WindowCtl::default(); 2];
+        w = [CLOSED; 2];
         st(&mut r, true, true, 0.1, lens, &mut w, wl);
         assert_eq!((r.top.state, r.hatch.state, r.lower, w[0].state), (3, 3, false, 3));
         // (the player's car only)
