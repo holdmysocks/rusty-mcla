@@ -119,6 +119,9 @@ mod rng_tests;
 #[cfg(test)]
 #[path = "park_spawn_tests.rs"]
 mod park_spawn_tests;
+#[cfg(test)]
+#[path = "park_unspawn_tests.rs"]
+mod park_unspawn_tests;
 
 /// A layout item's parked car has no spot (car +44 = 0; +40 the item).
 pub const ITEM_SPOT: usize = usize::MAX;
@@ -241,6 +244,146 @@ pub fn node_count(tree: &ParkingTree, ni: u32, occupied: &[bool], cruise: bool) 
         }
     }
     (occ, occ + free)
+}
+
+/// The parked unspawner's world (F-53207): the ambient manager's pools 0 (cars) and 2 (people) and their objects.
+pub(crate) trait UnspawnEnv {
+    /// the pool's active count (F-92034 / F-69170: S+12, +20 / +124)
+    fn pool_len(&self, pool: u8) -> u32;
+    /// F-50439: the pool's i-th object (None: none)
+    fn get(&self, pool: u8, i: u32) -> Option<usize>;
+    /// F-23063(+476): owned by another peer
+    fn net_other(&self, pool: u8, h: usize) -> bool;
+    /// +500 bit 0x4: already on its way out
+    fn removing(&self, pool: u8, h: usize) -> bool;
+    /// +44 (a spot's car): the spot's node (+24)
+    fn spot_node(&self, h: usize) -> Option<u32>;
+    /// +40 (a layout item's car or person): the item's node (+24)
+    fn item_node(&self, pool: u8, h: usize) -> Option<u32>;
+    /// F-14502 (the clock - +464) and +468
+    fn age(&self, pool: u8, h: usize) -> (f32, f32);
+    /// F-58860's x and z
+    fn xz(&self, pool: u8, h: usize) -> (f32, f32);
+    /// F-48973: (taken, taken + free)
+    fn node_count(&mut self, node: u32) -> (i32, i32);
+    /// the type's (+448) slot 6: the car type's gives 1, the person type's 0
+    fn type_slot6(&mut self, pool: u8, h: usize) -> bool;
+}
+
+/// What F-53207 removes: the pool, the object and the reason F-79896 stores (+488).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Unspawned {
+    pub pool: u8,
+    pub h: usize,
+    pub reason: u32,
+}
+
+/// F-53207, the parked unspawner: `tries` (M+2132) tries, at most one removal. Each draws U (u23 2^-23). U < 0.8: a
+/// random car of pool 0 (F-30673 -> F-92034: no draw for an empty pool, else u31 % count); none, another peer's, on its
+/// way out or not a spot's car: the next try; nearer than `radius` (M+12, dz dz + dx dx fused against r r): the next
+/// try; its node off the lists, or the node holding more than its limit (F-48973, `node_limit` with M+152): removed,
+/// reason 7. Else a second U: below 0.5 a car of pool 0, else a person of pool 2 (F-46838 -> F-69170); none, another
+/// peer's, on its way out, not a layout item's, younger than its life, near, or its node on the lists: the next try;
+/// else removed, reason 7 for the car type (slot 6 gives 1), 9 for the person type.
+pub(crate) fn park_unspawn_core(env: &mut dyn UnspawnEnv, rng: &mut Mwc, tries: i32, lists: &[u32], focus: (f32, f32), radius: f32, density: f32) -> Option<Unspawned> {
+    fn pick(env: &dyn UnspawnEnv, rng: &mut Mwc, pool: u8) -> Option<usize> {
+        let n = env.pool_len(pool);
+        if n == 0 {
+            return None;
+        }
+        env.get(pool, rng.index(n))
+    }
+    let near = |env: &dyn UnspawnEnv, pool: u8, h: usize| {
+        let (x, z) = env.xz(pool, h);
+        let (dx, dz) = (focus.0 - x, focus.1 - z);
+        dz.mul_add(dz, dx * dx) < radius * radius
+    };
+    for _ in 0..tries {
+        if rng.float() < 0.8 {
+            let Some(h) = pick(env, rng, 0) else { continue };
+            if env.net_other(0, h) || env.removing(0, h) {
+                continue;
+            }
+            let Some(node) = env.spot_node(h) else { continue };
+            if near(env, 0, h) {
+                continue;
+            }
+            if lists.contains(&node) {
+                let (taken, total) = env.node_count(node);
+                if taken <= node_limit(total, density) {
+                    continue;
+                }
+            }
+            return Some(Unspawned { pool: 0, h, reason: 7 });
+        }
+        let pool = if rng.float() < 0.5 { 0 } else { 2 };
+        let Some(h) = pick(env, rng, pool) else { continue };
+        if env.net_other(pool, h) || env.removing(pool, h) {
+            continue;
+        }
+        let Some(node) = env.item_node(pool, h) else { continue };
+        let (age, life) = env.age(pool, h);
+        if age < life || near(env, pool, h) || lists.contains(&node) {
+            continue;
+        }
+        let reason = if env.type_slot6(pool, h) { 7 } else { 9 };
+        return Some(Unspawned { pool, h, reason });
+    }
+    None
+}
+
+/// The port's world as F-53207 sees it: pool 0 the ambient cars (`ambient_listed`, in the cars' order), pool 2 the
+/// people's layout items (`ped_list`; a person is old enough when the people's side says so).
+struct PortUnspawnEnv<'a> {
+    cars: &'a [super::CarInstance],
+    amb: Vec<usize>,
+    peds: &'a [(Option<u32>, Vec3, bool)],
+    parking: &'a ParkingTree,
+    layout: &'a [Option<LayoutItem>],
+    occ: Vec<bool>,
+    cruise: bool,
+    clock: f32,
+}
+
+impl UnspawnEnv for PortUnspawnEnv<'_> {
+    fn pool_len(&self, pool: u8) -> u32 {
+        if pool == 0 { self.amb.len() as u32 } else { self.peds.len() as u32 }
+    }
+    fn get(&self, pool: u8, i: u32) -> Option<usize> {
+        Some(if pool == 0 { self.amb[i as usize] } else { i as usize })
+    }
+    /// offline an id's low 5 bits are the peer F-78245 gives, 0, the one F-23063 compares with
+    fn net_other(&self, pool: u8, h: usize) -> bool {
+        pool == 0 && self.cars[h].amb_id >= 0 && self.cars[h].amb_id & 31 != 0
+    }
+    fn removing(&self, pool: u8, h: usize) -> bool {
+        pool == 0 && self.cars[h].removing.is_some()
+    }
+    fn spot_node(&self, h: usize) -> Option<u32> {
+        let si = self.cars[h].parked.filter(|&s| s != ITEM_SPOT)?;
+        Some(self.parking.spots.get(si).map_or(u32::MAX, |s| s.node))
+    }
+    fn item_node(&self, pool: u8, h: usize) -> Option<u32> {
+        let it = if pool == 0 { self.cars[h].item } else { self.peds[h].0 }?;
+        Some(self.layout.get(it as usize).and_then(|i| i.as_ref()).map_or(u32::MAX, |i| i.node))
+    }
+    fn age(&self, pool: u8, h: usize) -> (f32, f32) {
+        if pool == 2 {
+            return (if self.peds[h].2 { 1.0 } else { 0.0 }, 1.0);
+        }
+        let c = &self.cars[h];
+        if let Some(r) = c.rail.as_ref() { (self.clock - r.born, r.life) } else { (self.clock - c.amb_born, c.amb_life) }
+    }
+    fn xz(&self, pool: u8, h: usize) -> (f32, f32) {
+        let p = if pool == 0 { self.cars[h].state.pos } else { self.peds[h].1 };
+        (p.x, p.z)
+    }
+    fn node_count(&mut self, node: u32) -> (i32, i32) {
+        node_count(self.parking, node, &self.occ, self.cruise)
+    }
+    fn type_slot6(&mut self, pool: u8, _h: usize) -> bool {
+        pool == 0
+    }
 }
 
 /// The most occupied spots a node may hold: 1 up to 2 counted, 2 up to 4, else
@@ -764,88 +907,26 @@ impl Vehicles {
     /// F-53207: up to 30 tries, at most one car marked for removal (F-79896, reason 7 / 9: it goes
     /// half a second later, when its fade has run out - `CarInstance::removing`).
     pub(super) fn parked_unspawn(&mut self, sp: &Spawner, focus: Vec3) {
-        // S car list 0: the ambient cars (riding and parked)
         let amb: Vec<usize> = (0..self.cars.len()).filter(|&i| self.ambient_listed(i)).collect();
-        let r_in = sp.tune.unspawn_inner;
-        for _ in 0..30 {
-            if self.park_rng.float() >= 0.8 {
-                // an item's car (list 0) or person (list 2), half and half: older than its
-                // least age, 120 m off at least, its node off the lists -> removed (reason 7 / 9)
-                if self.park_rng.float() < 0.5 {
-                    if amb.is_empty() {
-                        continue;
-                    }
-                    let i = amb[self.park_rng.index(amb.len() as u32) as usize];
-                    let c = &self.cars[i];
-                    // (already on its way out: car +500 bit 0x4)
-                    if c.removing.is_some() {
-                        continue;
-                    }
-                    let Some(h) = c.item else { continue };
-                    let age = if let Some(r) = c.rail.as_ref() { (self.clock - r.born, r.life) } else { (self.clock - c.amb_born, c.amb_life) };
-                    if age.0 < age.1 || Vec2::new(focus.x - c.state.pos.x, focus.z - c.state.pos.z).length_squared() < r_in * r_in {
-                        continue;
-                    }
-                    if self.item_listed(h) {
-                        continue;
-                    }
-                    if std::env::var("MCLA_PARK_DUMP").is_ok() {
-                        log::info!("layout item {} unspawn {}", h, c.model.name);
-                    }
-                    // (F-79896: marked, removed when its fade has run out - `spawn_traffic`)
-                    self.cars[i].removing = Some(1.0);
-                    return;
-                }
-                if self.ped_list.is_empty() {
-                    continue;
-                }
-                let k = self.park_rng.index(self.ped_list.len() as u32) as usize;
-                let (h, p, old) = self.ped_list[k];
-                let Some(h) = h else { continue };
-                if !old || Vec2::new(focus.x - p.x, focus.z - p.z).length_squared() < r_in * r_in || self.item_listed(h) {
-                    continue;
-                }
-                if std::env::var("MCLA_PARK_DUMP").is_ok() {
-                    log::info!("layout item {} person unspawn dist {:.1}", h, Vec2::new(focus.x - p.x, focus.z - p.z).length());
-                }
-                self.ped_remove = Some(h);
-                return;
+        let (occ, cruise) = (self.spots_taken(), self.cruise());
+        let mut env = PortUnspawnEnv { cars: &self.cars, amb, peds: &self.ped_list, parking: &self.parking, layout: &self.layout, occ, cruise, clock: self.clock };
+        // (M+2132: the constructor's 30)
+        let Some(u) = park_unspawn_core(&mut env, &mut self.park_rng, 30, &self.park_lists, (focus.x, focus.z), sp.tune.unspawn_inner, sp.tune.parked_density) else { return };
+        let dump = std::env::var("MCLA_PARK_DUMP").is_ok();
+        if u.pool == 2 {
+            if dump {
+                let p = self.ped_list[u.h].1;
+                log::info!("layout item {:?} person unspawn dist {:.1}", self.ped_list[u.h].0, Vec2::new(focus.x - p.x, focus.z - p.z).length());
             }
-            if amb.is_empty() {
-                continue;
-            }
-            let i = amb[self.park_rng.index(amb.len() as u32) as usize];
-            if self.cars[i].removing.is_some() {
-                continue;
-            }
-            // (a spot's car: car +44)
-            let Some(si) = self.cars[i].parked.filter(|&s| s != ITEM_SPOT) else { continue };
-            let p = self.cars[i].state.pos;
-            let d = Vec2::new(focus.x - p.x, focus.z - p.z);
-            if d.length_squared() < r_in * r_in {
-                continue;
-            }
-            let ni = self.parking.spots.get(si).map_or(u32::MAX, |s| s.node);
-            let remove = if !self.park_lists.contains(&ni) {
-                true
-            } else {
-                let occ = self.spots_taken();
-                let (o, t) = node_count(&self.parking, ni, &occ, self.cruise());
-                o > node_limit(t, sp.tune.parked_density)
-            };
-            if remove {
-                if std::env::var("MCLA_PARK_DUMP").is_ok() {
-                    log::info!("parked unspawn {} spot {} dist {:.1} listed {}", self.cars[i].model.name, si, d.length(), self.park_lists.contains(&ni));
-                }
-                self.cars[i].removing = Some(1.0);
-                return;
-            }
+            self.ped_remove = self.ped_list[u.h].0;
+            return;
         }
-    }
-
-    /// An item's node is in the active lists.
-    fn item_listed(&self, h: u32) -> bool {
-        self.layout.get(h as usize).and_then(|i| i.as_ref()).is_some_and(|i| self.park_lists.contains(&i.node))
+        if dump {
+            let c = &self.cars[u.h];
+            log::info!("parked unspawn {} spot {:?} item {:?} dist {:.1}", c.model.name, c.parked, c.item, Vec2::new(focus.x - c.state.pos.x, focus.z - c.state.pos.z).length());
+        }
+        // (F-79896: marked with the reason, removed when its fade has run out - `spawn_traffic`)
+        self.cars[u.h].removing = Some(1.0);
     }
 
     /// In the system's ambient car list (list 0): riding traffic and parked cars.
