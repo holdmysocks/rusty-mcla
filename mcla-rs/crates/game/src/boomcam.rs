@@ -2051,14 +2051,52 @@ impl CamShake {
         }
     }
 
-    /// Shakes the camera (eye `pos`, `look`, `up`) about the car at `car` (F-10707).
+    /// Shakes the camera (eye `pos`, `look`, `up`) about the car at `car` (F-10707). The port keeps the camera as eye, look
+    /// and up: its rows are made from them here (right = up x back, as the cameras' look-at) and given back the same way.
     pub fn apply(&mut self, dt: f32, pos: &mut Vec3, look: &mut Vec3, up: &mut Vec3, car: Vec3) {
         let reach = pos.distance(*look).max(0.1);
         // the camera's rows: a right, b up, c back
-        let mut c = (*pos - *look).normalize_or(Vec3::Z);
-        let mut a = up.cross(c).normalize_or(Vec3::X);
-        let mut b = c.cross(a);
-        let mut d = *pos;
+        let c = (*pos - *look).normalize_or(Vec3::Z);
+        let a = up.cross(c).normalize_or(Vec3::X);
+        let mut m = [a, c.cross(a), c, *pos];
+        self.apply_rows(dt, &mut m, car);
+        *pos = m[3];
+        *look = m[3] - m[2] * reach;
+        *up = m[1];
+    }
+
+    /// F-10707 on the camera's matrix (rows a right, b up, c back, d the place), word for word as the original's (checked
+    /// offline on 1,500 cases: test camera_shake_apply_matches_the_original). Per block: a one-shot's timer runs down by dt
+    /// (off at 0); m = the two factors x the timer; the three oscillators (F-17992: CarRot, Rot, Tran, in that order on the
+    /// generator); CarRot, when not zero and the camera is more than sqrt(0.02) from the car, turns the line car - camera
+    /// (look-at F-97951 with up y, then about its x F-52786, its z F-83846 and the world's y F-53646) and the camera's rows the
+    /// other way (y, -z, -x), the camera put back at its distance along the turned line; then Tran along the rows and Rot's
+    /// EulerXYZ rows (F-28753) times the rows, the vector unit's products rounded before each sum.
+    pub fn apply_rows(&mut self, dt: f32, m: &mut [Vec3; 4], car: Vec3) {
+        use crate::physics::exact::{fma, guest_cos, guest_sin};
+        let sc = |t: f32| (guest_sin(t as f64) as f32, guest_cos(t as f64) as f32);
+        // F-52786 about the rows' own x: b' = c s + b c; c' = -(b s - c c)
+        let turn_x = |r: &mut [Vec3; 4], t: f32| {
+            let (s, co) = sc(t);
+            let (b, c) = (r[1], r[2]);
+            r[1] = c * s + b * co;
+            r[2] = -(b * s - c * co);
+        };
+        // F-83846 about their own z: a' = b s + a c; b' = -(a s - b c)
+        let turn_z = |r: &mut [Vec3; 4], t: f32| {
+            let (s, co) = sc(t);
+            let (a, b) = (r[0], r[1]);
+            r[0] = b * s + a * co;
+            r[1] = -(a * s - b * co);
+        };
+        // F-53646 about the world's y (rows (c, 0, -s), (0, 1, 0), (s, 0, c)), the place untouched
+        let turn_y = |r: &mut [Vec3; 4], t: f32| {
+            let (s, co) = sc(t);
+            let (y0, y1, y2) = (Vec3::new(co, 0.0, -s), Vec3::Y, Vec3::new(s, 0.0, co));
+            for v in r.iter_mut().take(3) {
+                *v = (y1 * v.y + y0 * v.x) + y2 * v.z;
+            }
+        };
         for i in 0..self.blocks.len() {
             if self.blocks[i].state == 0 {
                 continue;
@@ -2070,62 +2108,48 @@ impl CamShake {
                     continue;
                 }
             }
-            let m = self.blocks[i].scale * self.blocks[i].magnitude * self.blocks[i].timer;
-            if m == 0.0 {
+            let mult = self.blocks[i].scale * self.blocks[i].magnitude * self.blocks[i].timer;
+            if mult == 0.0 {
                 continue;
             }
             // the oscillator (F-17992): phase += freq dt; (amp sin phase + uniform(-r, r)) m
             let mut out = [Vec3::ZERO; 3];
             for k in 0..3 {
-                out[k] = oscillate(&mut self.blocks[i].parts[k], dt, m, &mut self.rng);
+                out[k] = oscillate(&mut self.blocks[i].parts[k], dt, mult, &mut self.rng);
             }
             let [cr, rt, tr] = out;
-            // CarRot: the camera orbits the car, turning with it
-            if cr.length_squared() != 0.0 && (d - car).length_squared() > 0.02 {
-                // (F = look-at frame along car - camera, world up: its c from the camera to the car)
-                let dist = (car - d).length();
-                let fc = (car - d).normalize_or(-c);
-                let fa = Vec3::Y.cross(fc).normalize_or(a);
-                let fb = fc.cross(fa);
-                let (mut fa, mut fb, mut fc) = (fa, fb, fc);
-                let rot_local_x = |b: &mut Vec3, c: &mut Vec3, t: f32| {
-                    let (s, co) = t.sin_cos();
-                    let (nb, nc) = (*b * co + *c * s, *c * co - *b * s);
-                    *b = nb;
-                    *c = nc;
-                };
-                let rot_local_z = |a: &mut Vec3, b: &mut Vec3, t: f32| {
-                    let (s, co) = t.sin_cos();
-                    let (na, nb) = (*a * co + *b * s, *b * co - *a * s);
-                    *a = na;
-                    *b = nb;
-                };
-                let ry = |v: Vec3, t: f32| {
-                    let (s, co) = t.sin_cos();
-                    Vec3::new(co, 0.0, -s) * v.x + Vec3::Y * v.y + Vec3::new(s, 0.0, co) * v.z
-                };
-                rot_local_x(&mut fb, &mut fc, cr.x);
-                rot_local_z(&mut fa, &mut fb, cr.z);
-                fc = ry(fc, cr.y);
-                let _ = (fa, fb);
-                a = ry(a, cr.y);
-                b = ry(b, cr.y);
-                c = ry(c, cr.y);
-                rot_local_z(&mut a, &mut b, -cr.z);
-                rot_local_x(&mut b, &mut c, -cr.x);
-                d = car - fc * dist;
-            }
-            // Rot and Tran in the camera's own frame (EulerXYZ, F-28753)
-            d += tr.x * a + tr.y * b + tr.z * c;
             let [s0, s1, s2] = euler_xyz(rt);
-            let (na, nb, nc) = (s0.x * a + s0.y * b + s0.z * c, s1.x * a + s1.y * b + s1.z * c, s2.x * a + s2.y * b + s2.z * c);
-            a = na;
-            b = nb;
-            c = nc;
+            // (the local matrix's place row: 0 + Tran)
+            let tr = Vec3::ZERO + tr;
+            // CarRot: the camera orbits the car, turning with it
+            if fma(cr.x, cr.x, fma(cr.y, cr.y, cr.z * cr.z)) != 0.0 {
+                let d = m[3];
+                let (dx, dy, dz) = (d.x - car.x, d.y - car.y, d.z - car.z);
+                if fma(dx, dx, fma(dz, dz, dy * dy)) > 0.02 {
+                    // F: the look-at along car - camera (its c from the camera to the car), placed at the car
+                    let [fa, fb, fc] = look_rows(car - d, Vec3::Y);
+                    let mut f = [fa, fb, fc, car];
+                    turn_x(&mut f, cr.x);
+                    turn_z(&mut f, cr.z);
+                    turn_y(&mut f, cr.y);
+                    let (ex, ey, ez) = (car.x - d.x, car.y - d.y, car.z - d.z);
+                    let dist = fma(ex, ex, fma(ez, ez, ey * ey)).sqrt();
+                    // F x (0, 0, -dist, 1): the vector unit's 4-term dot, (p0 + p1) + (p2 + p3)
+                    let along = |j: usize| (0.0 * f[0][j] + 0.0 * f[1][j]) + (-dist * f[2][j] + 1.0 * f[3][j]);
+                    let place = Vec3::new(along(0), along(1), along(2));
+                    turn_y(m, cr.y);
+                    turn_z(m, -cr.z);
+                    turn_x(m, -cr.x);
+                    m[3] = place;
+                }
+            }
+            // Rot and Tran in the camera's own frame
+            let [a, b, c, d] = *m;
+            m[3] = ((a * tr.x + d) + b * tr.y) + c * tr.z;
+            m[0] = (a * s0.x + b * s0.y) + c * s0.z;
+            m[1] = (a * s1.x + b * s1.y) + c * s1.z;
+            m[2] = (a * s2.x + b * s2.y) + c * s2.z;
         }
-        *pos = d;
-        *look = d - c * reach;
-        *up = b;
     }
 }
 
@@ -5564,6 +5588,44 @@ SSFovMin 60
         }
     }
 
+    /// F-92343, the event camera's update slot, against the original's code run offline (tools/track_lens_reference.py ->
+    /// testdata/track_lens_ref.txt, 5,000 random cases; F-63744 and the two output turns stubbed - the turns' +776 / +772 have no
+    /// writer, so they turn by 0): the filtered speed +768, the lens +168, DistMin +304 / DistMax +300 equal word for word with
+    /// `TrackCam::lens`. Not ported, with no effect: the weight k kept at +180 (handed to the viewport by F-12344 and F-98562,
+    /// which the port's projection does not take) and the probe's mask bit 0x200 below 22.35 m/s (no archetype has it,
+    /// camprobe.rs CamQuery::CARS).
+    #[test]
+    fn track_lens_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let mut n = 0;
+        for line in include_str!("testdata/track_lens_ref.txt").lines() {
+            let Some(rest) = line.strip_prefix("TL ") else { continue };
+            let (a, b) = rest.split_once(" -> ").unwrap();
+            let c: Vec<u32> = a.split(' ').map(h).collect();
+            let o: Vec<u32> = b.split(' ').map(h).collect();
+            let f = |k: usize| f32::from_bits(c[k]);
+            let mut t = TrackTune::wipeout(Vec3::ZERO);
+            t.car_lens = true;
+            t.ss_filter = f(7);
+            t.ss_speed = (f(9), f(10));
+            t.fov = (f(11), f(12));
+            t.dist_scale = f(13);
+            t.dist = (f(14), f(15));
+            let mut car = TrackCar { pos: Vec3::ZERO, rot: Quat::IDENTITY, vel: Vec3::ZERO, speed: f(0), reverse_gear: c[1] == 0, steer: 0.0, front_z: None, slope: None, air_time: 0.0, aero: 1.0, model_offset_y: 0.0, sst: (0.0, 1.0), nitro_view: 0.0, grounded: 4, wheels: 4, ang_mom: Vec3::ZERO, follow: None, bike_wiped: false };
+            if c[2] != 0 {
+                car.sst = (f(3), f(4));
+            }
+            if c[5] != 0 {
+                car.nitro_view = f(6);
+            }
+            let mut cam = TrackCam { speed: f(8), ..Default::default() };
+            let (fov, dist) = cam.lens(&t, &car, 1.0);
+            assert_eq!([fov.to_bits(), dist.1.to_bits(), dist.0.to_bits(), cam.speed.to_bits()], [o[0], o[2], o[3], o[4]], "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 5000);
+    }
+
     /// The same over a whole export (`MCLA_TRACK_FIXTURE` = a file of work/cameras2/trk/track_testdata.py); skipped
     /// without it.
     #[test]
@@ -6200,6 +6262,48 @@ mod original_osc_tests {
             n += 1;
         }
         assert_eq!(n, 2000);
+    }
+}
+
+/// F-10707: the shake's apply on the camera's matrix against the original's own code run offline
+/// (tools/camera_shake_apply_reference.py -> testdata/camera_shake_apply_ref.txt: 1,500 random camera matrices, car places (far,
+/// about sqrt(0.02) away, on the camera) and five blocks each (off / one-shot / continuous, timers running out, parts off or
+/// not), generator states; the matrix, every block's timer, state and phases and the generator compared word for word).
+#[cfg(test)]
+mod original_shake_apply_tests {
+    use super::*;
+
+    #[test]
+    fn camera_shake_apply_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        let f = |x: &str| f32::from_bits(h(x));
+        let mut n = 0;
+        for line in include_str!("testdata/camera_shake_apply_ref.txt").lines() {
+            let (a, b) = line.strip_prefix("SA ").unwrap().split_once(" -> ").unwrap();
+            let w: Vec<&str> = a.split(' ').collect();
+            let v3 = |i: usize| Vec3::new(f(w[i]), f(w[i + 1]), f(w[i + 2]));
+            let blocks = (0..5)
+                .map(|k| {
+                    let o = 18 + 40 * k;
+                    let part = |p: usize| [v3(o + 4 + 12 * p), v3(o + 7 + 12 * p), v3(o + 10 + 12 * p), v3(o + 13 + 12 * p)];
+                    ShakeBlock { parts: [part(0), part(1), part(2)], timer: f(w[o + 1]), magnitude: f(w[o + 2]), scale: f(w[o + 3]), state: h(w[o]) as u8 }
+                })
+                .collect();
+            let mut cs = CamShake { blocks, rng: (h(w[0]), h(w[1])) };
+            let mut m = [v3(6), v3(9), v3(12), v3(15)];
+            cs.apply_rows(f(w[2]), &mut m, v3(3));
+            let mut got: Vec<u32> = m.iter().flat_map(|r| r.to_array()).map(f32::to_bits).collect();
+            for bl in &cs.blocks {
+                got.extend([bl.timer.to_bits(), bl.state as u32]);
+                got.extend(bl.parts.iter().flat_map(|p| p[3].to_array()).map(f32::to_bits));
+            }
+            got.extend([cs.rng.0, cs.rng.1]);
+            let want: Vec<u32> = b.split(' ').map(h).collect();
+            let diff: Vec<(usize, u32, u32)> = (0..want.len().max(got.len())).filter(|&i| got.get(i) != want.get(i)).map(|i| (i, got.get(i).copied().unwrap_or(0), want.get(i).copied().unwrap_or(0))).collect();
+            assert!(diff.is_empty(), "case {n}: (word, port, original) {diff:x?} in {line}");
+            n += 1;
+        }
+        assert_eq!(n, 1500);
     }
 }
 
