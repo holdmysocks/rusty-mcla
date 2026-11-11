@@ -4,6 +4,7 @@
 //! rasteriser for headless checks ([`raster`]).
 
 pub mod draw;
+pub mod mask;
 pub mod player;
 pub mod raster;
 pub mod textures;

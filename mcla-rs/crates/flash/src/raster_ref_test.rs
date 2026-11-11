@@ -19,7 +19,7 @@ fn list(r: &mut Rng) -> DrawList {
         let k = r.f();
         if k < 0.08 { items.push(Item::MaskBegin); }
         else if k < 0.16 { items.push(Item::MaskEnd); depth += 1; }
-        else if k < 0.2 && depth > 0 { items.push(Item::MaskPop); depth -= 1; }
+        else if k < 0.2 && depth > 0 { items.push(Item::MaskOff); depth -= 1; }
         else {
             let tex = if r.f() < 0.5 { TexRef::None } else { TexRef::Bitmap(0) };
             let kind = [0x40u8, 0x41, 0x42, 0x43][(r.f() * 4.0) as usize];
@@ -62,4 +62,40 @@ fn round_pos_is_round() {
         x = f32::from_bits(x.to_bits() + 1);
     }
     assert_eq!(super::raster::round_pos_for_test(f32::NAN) as u8, f32::NAN.round() as u8);
+}
+
+/// `mask::resolve` (masks cut out of the triangles) against the stencil kept per sample: random lists of one-colour
+/// triangles with masks, test-off and test-on items, drawn both ways.
+#[test]
+fn resolved_masks_match_the_stencil() {
+    let mut r = Rng(777);
+    let (mut px, mut diff, mut masked) = (0usize, 0usize, 0usize);
+    for case in 0..300 {
+        let mut l = list(&mut r);
+        for it in &mut l.items {
+            if let Item::Triangles { tex, verts, .. } = it {
+                *tex = TexRef::None;
+                for t in verts.chunks_mut(3) {
+                    let c = t[0].color;
+                    for v in t {
+                        v.color = c;
+                    }
+                }
+            }
+        }
+        if l.items.iter().any(|i| matches!(i, Item::MaskEnd)) {
+            masked += 1;
+        }
+        let samples: &[(f32, f32)] = if case % 2 == 0 { &crate::raster::SAMPLES_4X } else { &[(0.5, 0.5)] };
+        let mut a = crate::raster::Canvas::with_samples(100, 90, [10, 20, 30, 40], samples);
+        a.draw(&l, 1.0, [0.0, 0.0], &|_| None);
+        let mut b = crate::raster::Canvas::with_samples(100, 90, [10, 20, 30, 40], samples);
+        b.draw(&crate::mask::resolve(&l), 1.0, [0.0, 0.0], &|_| None);
+        px += a.rgba.len() / 4;
+        diff += a.rgba.chunks_exact(4).zip(b.rgba.chunks_exact(4)).filter(|(x, y)| x != y).count();
+    }
+    println!("resolve vs stencil: {diff} of {px} pixels differ, {masked} lists with masks");
+    assert!(masked > 100, "{masked}");
+    // (measured 2026-11-11: 0 of 2,700,000; a sample exactly on a cut edge could differ, none does with this seed)
+    assert_eq!(diff, 0, "{diff} of {px}");
 }

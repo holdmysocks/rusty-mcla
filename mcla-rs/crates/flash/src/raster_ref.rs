@@ -2,7 +2,7 @@
 //! `raster_ref_test.rs` hold the current rasteriser to it byte for byte. Test-only.
 
 //! Minimal software rasteriser for draw lists: pixel-centre sampling,
-//! textures modulated by the vertex colour, source-alpha blending, nested masks.
+//! textures modulated by the vertex colour, source-alpha blending, the original's clip-depth stencil (`crate::mask`).
 //! Used for headless checks and the `mcla-tool swf png` command.
 
 use crate::draw::{DrawList, Item, TexRef, Vertex};
@@ -54,8 +54,11 @@ pub struct Canvas {
     samples: Vec<(f32, f32)>,
     /// RGBA per sample, `samples.len()` per pixel
     buf: Vec<u8>,
+    /// the last mask's samples (at most one: the stencil reference of the last mask, `F-90239`)
     masks: Vec<Vec<bool>>,
     defining: Option<Vec<bool>>,
+    /// the stencil test / mark enabled (`Item::MaskOff` clears it, `MaskBegin` / `MaskEnd` set it)
+    on: bool,
 }
 
 /// D3D's standard 4x pattern, (-2,-6) (6,-2) (-6,2) (2,6) / 16 px from the pixel's centre: what the recomp's
@@ -76,7 +79,7 @@ impl Canvas {
         for p in buf.chunks_exact_mut(4) {
             p.copy_from_slice(&background);
         }
-        let mut c = Canvas { w, h, rgba: Vec::new(), samples: samples.to_vec(), buf, masks: Vec::new(), defining: None };
+        let mut c = Canvas { w, h, rgba: Vec::new(), samples: samples.to_vec(), buf, masks: Vec::new(), defining: None, on: false };
         c.resolve();
         c
     }
@@ -95,15 +98,19 @@ impl Canvas {
         let n = (self.w * self.h) as usize * self.samples.len();
         for item in &list.items {
             match item {
-                Item::MaskBegin => self.defining = Some(vec![false; n]),
+                // (a new reference: marked with ALWAYS / REPLACE, colour writes off)
+                Item::MaskBegin => {
+                    self.defining = Some(vec![false; n]);
+                    self.on = true;
+                }
+                // (colour writes on, EQUAL against the last mask's reference)
                 Item::MaskEnd => {
                     if let Some(m) = self.defining.take() {
-                        self.masks.push(m);
+                        self.masks = vec![m];
                     }
+                    self.on = true;
                 }
-                Item::MaskPop => {
-                    self.masks.pop();
-                }
+                Item::MaskOff => self.on = false,
                 Item::Triangles { tex: t, kind, verts } => {
                     let image = if *t == TexRef::None { None } else { tex(*t) };
                     for tri in verts.chunks_exact(3) {
@@ -130,6 +137,9 @@ impl Canvas {
             let e = |a: &Vertex, b: &Vertex| (b.pos[0] - a.pos[0]) * (py - a.pos[1]) - (px - a.pos[0]) * (b.pos[1] - a.pos[1]);
             (e(&v[1], &v[2]) / area, e(&v[2], &v[0]) / area, e(&v[0], &v[1]) / area)
         };
+        if (self.defining.is_some() && !self.on) || (self.defining.is_none() && self.on && self.masks.is_empty()) {
+            return;
+        }
         for y in miny..maxy {
             for x in minx..maxx {
                 let mut colour: Option<[f32; 4]> = None;
@@ -139,7 +149,7 @@ impl Canvas {
                         continue;
                     }
                     let idx = (y as u32 * self.w + x as u32) as usize * ns + si;
-                    if !self.masks.iter().all(|m| m[idx]) {
+                    if self.defining.is_none() && self.on && !self.masks.iter().all(|m| m[idx]) {
                         continue;
                     }
                     if let Some(d) = &mut self.defining {

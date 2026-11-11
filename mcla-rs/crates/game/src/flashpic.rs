@@ -5,8 +5,9 @@
 //! (wgpu's 4x pattern is the same); the colour once per pixel at its centre, the vertex colour times the texel, the
 //! texel from the straight-alpha picture (bilinear for kinds 0x40 / 0x41, else the nearest; wrapped for 0x40 / 0x42,
 //! else clamped - done in the shader with `textureLoad`, as `TexImage::sample`); blended "over" (colour by source
-//! alpha, alpha a + d (1 - a)) over transparent black; masks per sample (a stencil: each mask raises the samples it
-//! covers inside the masks before it, its pop lowers them); the samples averaged. egui's renderer filters its
+//! alpha, alpha a + d (1 - a)) over transparent black; masks per sample as the original's stencil (`mcla_flash::mask`:
+//! a mask marks its samples with a new reference, the content after it is drawn where the stencil equals it, until the
+//! test is turned off); the samples averaged. egui's renderer filters its
 //! textures premultiplied and in linear light, which brightened the icon's glyph edges by up to 100 levels against
 //! the CPU's picture (docs/PERFORMANCE.md, 2026-10-23); this pipeline gives the CPU's picture.
 //!
@@ -33,11 +34,10 @@ struct V {
 }
 
 enum Cmd {
-    Draw { range: Range<u32>, tex: Option<Arc<TexImage>>, level: u32 },
-    /// a mask's triangles: the samples at `level` they cover go up one
-    Raise { range: Range<u32>, level: u32 },
-    /// a popped mask's triangles again: its samples at `level` go down one
-    Lower { range: Range<u32>, level: u32 },
+    /// `test`: drawn only where the stencil equals this reference (the stencil test on)
+    Draw { range: Range<u32>, tex: Option<Arc<TexImage>>, test: Option<u32> },
+    /// a mask's triangles: the samples they cover take `reference` (F-90239: REPLACE, ALWAYS, colour writes off)
+    Mark { range: Range<u32>, reference: u32 },
 }
 
 struct Job {
@@ -55,36 +55,34 @@ pub fn queue(key: &str, size: [u32; 2], list: &DrawList, scale: f32, offset: [f3
     let (w, h) = (size[0] as f32, size[1] as f32);
     let mut verts: Vec<V> = Vec::new();
     let mut cmds = Vec::new();
-    let mut level = 0u32;
-    let mut masks: Vec<Range<u32>> = Vec::new();
-    let mut defining: Option<u32> = None;
+    // F-92070 / F-90239 / F-71617: colour writes, the stencil test (or mark) enabled, the 6-bit counter's reference
+    let (mut colour, mut on, mut counter) = (true, false, 0u32);
     for item in &list.items {
         match item {
-            Item::MaskBegin => defining = Some(verts.len() as u32),
+            Item::MaskBegin => {
+                counter = (counter + 1) & 63;
+                colour = false;
+                on = true;
+            }
             Item::MaskEnd => {
-                if let Some(s) = defining.take() {
-                    let range = s..verts.len() as u32;
-                    cmds.push(Cmd::Raise { range: range.clone(), level });
-                    level += 1;
-                    masks.push(range);
-                }
+                colour = true;
+                on = true;
             }
-            Item::MaskPop => {
-                if let Some(range) = masks.pop() {
-                    cmds.push(Cmd::Lower { range, level });
-                    level -= 1;
-                }
-            }
+            Item::MaskOff => on = false,
             Item::Triangles { tex: t, kind, verts: vs } => {
-                let image = if defining.is_some() || *t == TexRef::None { None } else { tex(*t) };
+                if !colour && !on {
+                    continue;
+                }
+                let image = if !colour || *t == TexRef::None { None } else { tex(*t) };
                 let mode = if image.is_some() { 1 | if *kind == 0x40 || *kind == 0x42 { 2 } else { 0 } | if *kind == 0x40 || *kind == 0x41 { 4 } else { 0 } } else { 0 };
                 let s = verts.len() as u32;
                 for v in &vs[..vs.len() / 3 * 3] {
                     let (x, y) = (v.pos[0] * scale + offset[0], v.pos[1] * scale + offset[1]);
                     verts.push(V { pos: [x / w * 2.0 - 1.0, 1.0 - y / h * 2.0], color: [v.color[0] as f32, v.color[1] as f32, v.color[2] as f32, v.color[3] as f32], uv: v.uv, mode });
                 }
-                if defining.is_none() && verts.len() as u32 > s {
-                    cmds.push(Cmd::Draw { range: s..verts.len() as u32, tex: image, level });
+                if verts.len() as u32 > s {
+                    let range = s..verts.len() as u32;
+                    cmds.push(if colour { Cmd::Draw { range, tex: image, test: on.then_some(counter + 128) } } else { Cmd::Mark { range, reference: counter + 128 } });
                 }
             }
         }
@@ -105,8 +103,8 @@ struct Target {
 
 struct State {
     draw: wgpu::RenderPipeline,
-    raise: wgpu::RenderPipeline,
-    lower: wgpu::RenderPipeline,
+    test: wgpu::RenderPipeline,
+    mark: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     white: wgpu::BindGroup,
     /// the movies' pictures, by their `Arc` (kept, so the address stays theirs)
@@ -145,8 +143,8 @@ impl State {
             entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None }],
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("flashpic"), bind_group_layouts: &[&layout], push_constant_ranges: &[] });
-        let make = |colour: bool, pass_op: wgpu::StencilOperation| {
-            let face = wgpu::StencilFaceState { compare: wgpu::CompareFunction::Equal, fail_op: wgpu::StencilOperation::Keep, depth_fail_op: wgpu::StencilOperation::Keep, pass_op };
+        let make = |colour: bool, compare: wgpu::CompareFunction, pass_op: wgpu::StencilOperation| {
+            let face = wgpu::StencilFaceState { compare, fail_op: wgpu::StencilOperation::Keep, depth_fail_op: wgpu::StencilOperation::Keep, pass_op };
             let blend = wgpu::BlendState {
                 color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add },
                 alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add },
@@ -179,11 +177,11 @@ impl State {
                 cache: None,
             })
         };
-        let draw = make(true, wgpu::StencilOperation::Keep);
-        let raise = make(false, wgpu::StencilOperation::IncrementClamp);
-        let lower = make(false, wgpu::StencilOperation::DecrementClamp);
+        let draw = make(true, wgpu::CompareFunction::Always, wgpu::StencilOperation::Keep);
+        let test = make(true, wgpu::CompareFunction::Equal, wgpu::StencilOperation::Keep);
+        let mark = make(false, wgpu::CompareFunction::Always, wgpu::StencilOperation::Replace);
         let white = texture(device, queue, &layout, 1, 1, &[255; 4]);
-        State { draw, raise, lower, layout, white, textures: HashMap::new(), targets: HashMap::new() }
+        State { draw, test, mark, layout, white, textures: HashMap::new(), targets: HashMap::new() }
     }
 
     fn target(&mut self, device: &wgpu::Device, key: &str, size: [u32; 2]) -> &Target {
@@ -240,14 +238,13 @@ pub fn render(device: &wgpu::Device, queue: &wgpu::Queue) {
         let Some(vb) = vb.as_ref() else { continue };
         pass.set_vertex_buffer(0, vb.slice(..));
         for c in &job.cmds {
-            let (pipe, range, level, bg) = match c {
-                Cmd::Draw { range, tex, level } => (&st.draw, range, level, tex.as_ref().map_or(&st.white, |t| &st.textures[&(Arc::as_ptr(t) as usize)].1)),
-                Cmd::Raise { range, level } => (&st.raise, range, level, &st.white),
-                Cmd::Lower { range, level } => (&st.lower, range, level, &st.white),
+            let (pipe, range, reference, bg) = match c {
+                Cmd::Draw { range, tex, test } => (if test.is_some() { &st.test } else { &st.draw }, range, test.unwrap_or(0), tex.as_ref().map_or(&st.white, |t| &st.textures[&(Arc::as_ptr(t) as usize)].1)),
+                Cmd::Mark { range, reference } => (&st.mark, range, *reference, &st.white),
             };
             pass.set_pipeline(pipe);
             pass.set_bind_group(0, bg, &[]);
-            pass.set_stencil_reference(*level);
+            pass.set_stencil_reference(reference);
             pass.draw(range.clone(), 0..1);
         }
     }

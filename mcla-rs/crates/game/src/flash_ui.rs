@@ -1,7 +1,7 @@
 //! The game's own Flash UI movies (`resources/ui/**/*.r27`) played with
 //! `mcla-flash` and drawn through egui: textures uploaded on first use, the
-//! 1280x720 stage fitted to the screen height and centred, masks approximated
-//! by the clip rectangle of their geometry.
+//! 1280x720 stage fitted to the screen height and centred, masks cut out of the
+//! triangles as the original's stencil (`mcla_flash::mask`).
 //!
 //! [`FlashHud`] drives `hud/hud.swf` the way the original game does: it writes
 //! the movie's `_global` variables (names and units read from the movie's
@@ -332,9 +332,8 @@ impl FlashMovie {
     }
 
     /// Draw the movie through a matrix (stage pixels -> clip space): the movie as
-    /// the texture of a mesh in the menus' 3D scene (`menu3d`). Masks and the
-    /// stage edge clip in stage space, where they are rectangles; `alpha`
-    /// (0..1) is the mesh's own.
+    /// the texture of a mesh in the menus' 3D scene (`menu3d`). Masks (`mcla_flash::mask`) and the
+    /// stage edge clip in stage space; `alpha` (0..1) is the mesh's own.
     pub fn paint_warped(&mut self, ctx: &egui::Context, painter: &egui::Painter, list: &DrawList, m: glam::Mat4, screen: Rect, alpha: f32, part: Option<[f32; 4]>) {
         let s = self.player.movie.stage;
         // (`part`: the piece of the stage the mesh carries, when it is not all of it)
@@ -342,29 +341,10 @@ impl FlashMovie {
             Some(p) => p,
             None => [s[0], s[2], s[1], s[3]],
         };
-        let mut clips: Vec<[f32; 4]> = vec![stage];
-        let mut mask: Option<[f32; 4]> = None;
-        let meet = |a: [f32; 4], b: [f32; 4]| [a[0].max(b[0]), a[1].max(b[1]), a[2].min(b[2]), a[3].min(b[3])];
+        let list = mcla_flash::mask::resolve(list);
         for it in &list.items {
             match it {
-                Item::MaskBegin => mask = Some([f32::MAX, f32::MAX, f32::MIN, f32::MIN]),
-                Item::MaskEnd => {
-                    let r = mask.take().unwrap_or([0.0; 4]);
-                    let top = *clips.last().unwrap();
-                    clips.push(if r[2] > r[0] && r[3] > r[1] { meet(top, r) } else { top });
-                }
-                Item::MaskPop => {
-                    if clips.len() > 1 {
-                        clips.pop();
-                    }
-                }
                 Item::Triangles { tex, kind, verts } => {
-                    if let Some(r) = &mut mask {
-                        for v in verts {
-                            *r = [r[0].min(v.pos[0]), r[1].min(v.pos[1]), r[2].max(v.pos[0]), r[3].max(v.pos[1])];
-                        }
-                        continue;
-                    }
                     let handle = if *tex == TexRef::None { None } else { self.texture(ctx, *tex, *kind == 0x40 || *kind == 0x42) };
                     if *tex != TexRef::None && handle.is_none() {
                         continue;
@@ -373,7 +353,7 @@ impl FlashMovie {
                         Some(h) => Mesh::with_texture(h.id()),
                         None => Mesh::default(),
                     };
-                    let clip = *clips.last().unwrap();
+                    let clip = stage;
                     let mut poly: Vec<WarpVert> = Vec::with_capacity(8);
                     for t in verts.chunks_exact(3) {
                         poly.clear();
@@ -404,6 +384,8 @@ impl FlashMovie {
                         painter.add(egui::Shape::mesh(mesh));
                     }
                 }
+                // (none left after `resolve`)
+                _ => {}
             }
         }
     }
@@ -424,7 +406,7 @@ impl FlashMovie {
     }
 
     /// The movie drawn flat into a picture of its own (`selfmovie`, the original's "fullscreenself"):
-    /// the stage squeezed onto `size` pixels, masks as clip rectangles as on the screen.
+    /// the stage squeezed onto `size` pixels, masks as on the screen.
     pub fn self_shapes(&mut self, ctx: &egui::Context, list: &DrawList, size: [f32; 2]) -> Vec<egui::epaint::ClippedShape> {
         let s = self.player.movie.stage;
         let (kx, ky) = (size[0] / (s[1] - s[0]).max(1.0), size[1] / (s[3] - s[2]).max(1.0));
@@ -437,67 +419,13 @@ impl FlashMovie {
         out
     }
 
-    /// The list's triangles as egui shapes, stage (x, y) at `o + (x k0, y k1)`, each with its clip rectangle.
+    /// The list's triangles as egui shapes, stage (x, y) at `o + (x k0, y k1)`, clipped to `screen`.
     fn emit_list(&mut self, ctx: &egui::Context, list: &DrawList, k: [f32; 2], o: Pos2, screen: Rect, sink: &mut dyn FnMut(Rect, egui::Shape)) {
-        let mut clips: Vec<Rect> = vec![screen];
-        // the shape of each mask (its triangles), beside its box
-        let mut shapes: Vec<Vec<Pos2>> = vec![Vec::new()];
-        let mut shape: Vec<Pos2> = Vec::new();
-        let mut mask: Option<Rect> = None;
+        // (the masks cut out as the original's stencil: `mcla_flash::mask`)
+        let list = mcla_flash::mask::resolve(list);
         for it in &list.items {
             match it {
-                Item::MaskBegin => {
-                    mask = Some(Rect::NOTHING);
-                    shape.clear();
-                }
-                Item::MaskEnd => {
-                    shapes.push(std::mem::take(&mut shape));
-                    let m = mask.take().unwrap_or(Rect::NOTHING);
-                    let top = *clips.last().unwrap();
-                    if std::env::var("MCLA_FLASH_MASK_LOG").is_ok() {
-                        log::info!("flash: {} mask {:?} within {:?}", self.name, m, top);
-                    }
-                    clips.push(if m.is_positive() { top.intersect(m) } else { top });
-                }
-                Item::MaskPop => {
-                    if clips.len() > 1 {
-                        clips.pop();
-                        shapes.pop();
-                    }
-                }
                 Item::Triangles { tex, kind, verts } => {
-                    if let Some(m) = &mut mask {
-                        for v in verts {
-                            let at = Pos2::new(o.x + v.pos[0] * k[0], o.y + v.pos[1] * k[1]);
-                            *m = m.union(Rect::from_min_size(at, egui::Vec2::ZERO));
-                            shape.push(at);
-                        }
-                        continue;
-                    }
-                    // A plain fill of one colour that covers its whole mask is drawn as the
-                    // mask's own shape: the box of a mask would square off what the movie
-                    // rounds (the replay legend's `BG_masked` under the rounded `BG`).
-                    if let (true, Some(sh), Some(first)) = (*tex == TexRef::None && clips.len() > 1, shapes.last().filter(|s| s.len() >= 3), verts.first()) {
-                        let same = verts.iter().all(|v| v.color == first.color);
-                        let mut cover = Rect::NOTHING;
-                        for v in verts {
-                            cover = cover.union(Rect::from_min_size(Pos2::new(o.x + v.pos[0] * k[0], o.y + v.pos[1] * k[1]), egui::Vec2::ZERO));
-                        }
-                        let mut need = Rect::NOTHING;
-                        for q in sh {
-                            need = need.union(Rect::from_min_size(*q, egui::Vec2::ZERO));
-                        }
-                        if same && cover.expand(0.5).contains_rect(need) {
-                            let mut mesh = Mesh::default();
-                            let color = plain_color(first.color[0], first.color[1], first.color[2], first.color[3]);
-                            for q in sh {
-                                mesh.vertices.push(egui::epaint::Vertex { pos: *q, uv: egui::epaint::WHITE_UV, color });
-                            }
-                            mesh.indices = (0..mesh.vertices.len() as u32).collect();
-                            sink(clips[clips.len() - 2], egui::Shape::mesh(mesh));
-                            continue;
-                        }
-                    }
                     let handle = if *tex == TexRef::None { None } else { self.texture(ctx, *tex, *kind == 0x40 || *kind == 0x42) };
                     if *tex != TexRef::None && handle.is_none() {
                         continue;
@@ -515,8 +443,10 @@ impl FlashMovie {
                         });
                     }
                     mesh.indices = (0..mesh.vertices.len() as u32).collect();
-                    sink(*clips.last().unwrap(), egui::Shape::mesh(mesh));
+                    sink(screen, egui::Shape::mesh(mesh));
                 }
+                // (none left after `resolve`)
+                _ => {}
             }
         }
     }

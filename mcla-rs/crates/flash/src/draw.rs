@@ -35,11 +35,14 @@ pub struct Vertex {
 pub enum Item {
     /// triangle list; `kind` is the SWF fill type for bitmap fills (0x40 repeat, 0x41 clamp ...)
     Triangles { tex: TexRef, kind: u8, verts: Vec<Vertex> },
-    /// following triangles until [`Item::MaskEnd`] define a mask instead of drawing
+    /// a clip-depth mask starts (`F-92070` with `F-90239`): colour writes off, the following triangles mark the
+    /// stencil with a new reference until [`Item::MaskEnd`]
     MaskBegin,
+    /// the mask is drawn (`F-71617`): colour writes on, the following triangles drawn only where the last mask
+    /// marked (the stencil test on again, even after a [`Item::MaskOff`])
     MaskEnd,
-    /// remove the innermost mask
-    MaskPop,
+    /// the stencil test off (`F-92070`: a shape drawn past the mask's end depth); colour writes as they were
+    MaskOff,
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -154,27 +157,22 @@ pub struct Builder<'a> {
     swap: u32,
     /// draw the clips of `Player::key_caps` as authored (measuring them)
     no_caps: bool,
+    /// the original's clip-depth end (`F-92070`'s 16-bit global): a mask sets it to its clip depth plus its summed
+    /// depth; the first shape drawn after it whose summed depth is greater turns the stencil test off and clears it
+    mask_end: u16,
 }
 
 impl<'a> Builder<'a> {
     pub fn new(movie: &'a Movie) -> Self {
-        Builder { movie, out: DrawList::default(), alpha: 255, swap: 0, no_caps: false }
+        Builder { movie, out: DrawList::default(), alpha: 255, swap: 0, no_caps: false, mask_end: 0 }
     }
 
-    /// Draw an instance's children (depth order, with clip-depth masks).
+    /// Draw an instance's children in depth order (`F-92070`'s loop over +188 / +192; masks are the instances' own,
+    /// see [`Builder::instance`]).
     fn children(&mut self, p: &Player, id: InstId, world: &Matrix, cx: &CxForm, tint: [u8; 4]) {
         let Some(inst) = p.inst(id) else { return };
-        let mut masks: Vec<u16> = Vec::new();
         for &c in inst.children.values() {
             let Some(ci) = p.inst(c) else { continue };
-            while let Some(&end) = masks.last() {
-                if ci.depth > end {
-                    masks.pop();
-                    self.out.items.push(Item::MaskPop);
-                } else {
-                    break;
-                }
-            }
             // F-92070 draws nothing of a child whose placed byte (+177) is clear: a goto's wrap clears it on every
             // child (F-85946) and only the frames' PlaceObject commands set it again (F-70772), so a child that a
             // later frame placed and no RemoveObject took out stays in the list unseen once the clip goes back to
@@ -182,17 +180,7 @@ impl<'a> Builder<'a> {
             if !ci.placed() {
                 continue;
             }
-            if ci.clip_depth > 0 {
-                self.out.items.push(Item::MaskBegin);
-                self.instance(p, c, world, cx, tint);
-                self.out.items.push(Item::MaskEnd);
-                masks.push(ci.clip_depth);
-                continue;
-            }
             self.instance(p, c, world, cx, tint);
-        }
-        for _ in masks {
-            self.out.items.push(Item::MaskPop);
         }
     }
 
@@ -200,11 +188,35 @@ impl<'a> Builder<'a> {
     /// has any, else its character.
     pub fn instance(&mut self, p: &Player, id: InstId, parent: &Matrix, pcx: &CxForm, ptint: [u8; 4]) {
         let Some(inst) = p.inst(id) else { return };
-        let world = parent.concat(&inst.matrix);
+        let world = world_matrix(parent, &inst.matrix);
         let cx = combine_cx(&inst.cxform, pcx, ptint);
+        // F-92070: a mask (clip depth +168) turns colour writes off and starts a stencil mark (F-90239) before the
+        // alpha test below, and sets the end depth: its clip depth plus the sum of its own and every ancestor's depth
+        // (+166 along +184), in 16 bits
+        let sum = depth_sum(p, id);
+        if inst.clip_depth > 0 {
+            self.out.items.push(Item::MaskBegin);
+            self.mask_end = inst.clip_depth.wrapping_add(sum);
+        }
+        // (an instance whose alpha is 0 returns here: a mask's MaskEnd is not reached, as in the original)
         if cx.mult[3] == 0 {
             return;
         }
+        if inst.children.is_empty() && self.mask_end != 0 && sum > self.mask_end {
+            // a shape (an instance with no children) drawn past the end: the stencil test off (states 5 = 3,
+            // 20 = 0) and the end cleared
+            self.out.items.push(Item::MaskOff);
+            self.mask_end = 0;
+        }
+        self.instance_inner(p, id, inst, parent, &world, &cx);
+        if inst.clip_depth > 0 {
+            // the mask drawn: colour writes on, the stencil test on the mask's reference (F-71617)
+            self.out.items.push(Item::MaskEnd);
+        }
+    }
+
+    fn instance_inner(&mut self, p: &Player, id: InstId, inst: &crate::player::Inst, parent: &Matrix, world: &Matrix, cx: &CxForm) {
+        let (world, cx) = (*world, *cx);
         if !self.no_caps && !p.key_caps.is_empty() {
             if let Some((_, t, argb)) = p.key_caps.iter().find(|(n, ..)| inst.name.eq_ignore_ascii_case(n)) {
                 self.alpha = inst.tint[3];
@@ -520,6 +532,30 @@ fn wrap<'t>(s: &'t str, width: f32, adv: &dyn Fn(char) -> f32) -> Vec<&'t str> {
     out
 }
 
+/// `F-92070`'s world matrix of an instance: the local matrix `l` (+8 .. +28) through the parent's world `p`, with the
+/// original's fused multiply-adds and operand order (+32 .. +52).
+pub fn world_matrix(p: &Matrix, l: &Matrix) -> Matrix {
+    Matrix {
+        a: l.a.mul_add(p.a, l.b * p.c),
+        b: l.a.mul_add(p.b, l.b * p.d),
+        c: p.a.mul_add(l.c, l.d * p.c),
+        d: p.d.mul_add(l.d, p.b * l.c),
+        tx: p.a.mul_add(l.tx, l.ty * p.c) + p.tx,
+        ty: p.d.mul_add(l.ty, p.b * l.tx) + p.ty,
+    }
+}
+
+/// `F-92070`'s summed depth of an instance: its own depth (+166) and every ancestor's, added in 16 bits.
+pub fn depth_sum(p: &Player, id: InstId) -> u16 {
+    let mut sum = 0u16;
+    let mut at = Some(id);
+    while let Some(i) = at.and_then(|i| p.inst(i)) {
+        sum = sum.wrapping_add(i.depth);
+        at = i.parent;
+    }
+    sum
+}
+
 /// Draw a whole player from its root at the stage origin.
 pub fn build(p: &Player) -> DrawList {
     let mut b = Builder::new(&p.movie);
@@ -529,6 +565,7 @@ pub fn build(p: &Player) -> DrawList {
 
 /// Draw one instance subtree as if it were placed at the stage origin.
 pub fn build_instance(p: &Player, id: InstId) -> DrawList {
+    // (masks take their end depth from the instance's real place in the display list)
     let mut b = Builder::new(&p.movie);
     b.instance(p, id, &Matrix::IDENTITY, &CxForm::IDENTITY, [255; 4]);
     b.out

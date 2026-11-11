@@ -218,3 +218,127 @@ fn value_pop_matches_the_original() {
     }
     assert_eq!(n, 200);
 }
+
+/// F-92070's clip-depth masks against the original's draw run offline (tools/draw_mask_reference.py -> testdata/flash_mask_ref.txt):
+/// 3,000 random instance trees (masks one in four, alpha 0 one in twelve, depths near 65535 so the sums wrap); the original's
+/// render-state calls read as mask begin (F-90239's states), mask end (F-71617's) and test off (5 = 3, 20 = 0), its owner draws as
+/// the shapes drawn, against `draw::build`'s MaskBegin / MaskEnd / MaskOff and triangles, in order.
+#[test]
+fn masks_match_the_original() {
+    use crate::draw::Item;
+    use mcla_formats::rage::swf::{FillStyle, Matrix, Shape, ShapeCmd};
+    let shape = |k: i32| {
+        Some(Character::Shape(Shape {
+            bounds: [0, 0, 0, 0],
+            fills: vec![FillStyle { kind: 0, color: 0xff80_8080, matrix: Matrix::IDENTITY, bitmap: None, gradient: None }],
+            lines: Vec::new(),
+            cmds: vec![ShapeCmd::Fill(1), ShapeCmd::FanInt(vec![[k * 200, 0], [k * 200 + 100, 0], [k * 200, 100]])],
+        }))
+    };
+    let mut chars = vec![None, Some(Character::Sprite(Sprite { frames: Vec::new() }))];
+    chars.extend((0..40).map(shape));
+    let movie = Arc::new(Movie { stage: [0.0, 1280.0, 0.0, 720.0], fps: 30, root: Sprite { frames: Vec::new() }, chars, exports: Vec::new() });
+    let (mut n, mut masked, mut off, mut wrapped) = (0, 0, 0, 0);
+    for line in include_str!("testdata/flash_mask_ref.txt").lines().filter(|l| l.starts_with("MK ")) {
+        let (spec, log) = line.split_once(" -> ").unwrap();
+        let w: Vec<&str> = spec.split_whitespace().collect();
+        let count: usize = w[1].parse().unwrap();
+        // (the guest keeps depths in 16 bits: a clip of 65,500 + .. is stored cut)
+        let node = |i: usize| -> (u16, u16, u8, i32) { (w[2 + 4 * i].parse::<u32>().unwrap() as u16, w[3 + 4 * i].parse::<u32>().unwrap() as u16, w[4 + 4 * i].parse().unwrap(), w[5 + 4 * i].parse().unwrap()) };
+        let has_kids: Vec<bool> = (0..count).map(|i| (0..count).any(|j| node(j).3 == i as i32)).collect();
+        let mut p = Player::new(movie.clone());
+        let mut ids = vec![p.root];
+        for i in 1..count {
+            let (d, _, _, parent) = node(i);
+            let ch = if has_kids[i] { 1 } else { 2 + i as u16 };
+            let id = p.alloc_inst(Inst::new(ch, d, Some(ids[parent as usize])));
+            p.inst_mut(ids[parent as usize]).unwrap().children.insert(d, id);
+            ids.push(id);
+        }
+        for i in 0..count {
+            let (d, clip, alpha, _) = node(i);
+            let inst = p.inst_mut(ids[i]).unwrap();
+            inst.depth = d;
+            inst.clip_depth = clip;
+            inst.placed_by = Some(u64::MAX);
+            if i == 0 && !has_kids[0] {
+                inst.character = 2;
+            }
+            if alpha == 0 {
+                inst.cxform.mult[3] = 0;
+            }
+            if d >= 65500 {
+                wrapped += 1;
+            }
+        }
+        // the original's log as tokens
+        let s: Vec<&str> = log.split_whitespace().collect();
+        let mut want = Vec::new();
+        let mut i = 0;
+        let st = |t: &str| -> (u32, u32) {
+            let (a, b) = t[1..].split_once(',').unwrap();
+            (a.parse().unwrap(), b.parse().unwrap())
+        };
+        while i < s.len() {
+            if s[i].starts_with('D') {
+                want.push(s[i].to_string());
+                i += 1;
+                continue;
+            }
+            let seq: Vec<(u32, u32)> = s[i..(i + 6).min(s.len())].iter().filter(|t| t.starts_with('S')).map(|t| st(t)).collect();
+            let at = |k: usize| seq.get(k).copied().unwrap_or((99, 99));
+            if at(0) == (16, 0) && at(1) == (5, 3) && at(2) == (23, 2) && at(3).0 == 25 && at(4) == (20, 1) && at(5) == (24, 1) {
+                want.push("B".into());
+                i += 6;
+            } else if at(0) == (16, 15) && at(1) == (5, 5) && at(2) == (23, 0) && at(3).0 == 25 && at(4) == (20, 1) && at(5) == (24, 4) {
+                want.push("E".into());
+                i += 6;
+            } else if at(0) == (5, 3) && at(1) == (20, 0) {
+                want.push("O".into());
+                i += 2;
+            } else {
+                panic!("unknown state calls at {i}: {line}");
+            }
+        }
+        let list = crate::draw::build(&p);
+        let mut got = Vec::new();
+        for it in &list.items {
+            match it {
+                Item::MaskBegin => got.push("B".to_string()),
+                Item::MaskEnd => got.push("E".to_string()),
+                Item::MaskOff => got.push("O".to_string()),
+                Item::Triangles { verts, .. } => {
+                    for t in verts.chunks_exact(3) {
+                        got.push(format!("D{}", (t[0].pos[0] / 10.0).round() as i32));
+                    }
+                }
+            }
+        }
+        assert_eq!(got, want, "{line}");
+        masked += want.iter().any(|t| t == "B") as usize;
+        off += want.iter().any(|t| t == "O") as usize;
+        n += 1;
+    }
+    assert!(n == 3000 && masked > 2000 && off > 1000 && wrapped > 100, "{n} {masked} {off} {wrapped}");
+}
+
+/// F-92070's world matrix against the original's draw run offline (the "WM" lines of testdata/flash_mask_ref.txt): 4,000 local and parent
+/// matrices, floats of mixed size and raw bit patterns; `draw::world_matrix` bit for bit.
+#[test]
+fn world_matrix_matches_the_original() {
+    use mcla_formats::rage::swf::Matrix;
+    let mut n = 0;
+    for line in include_str!("testdata/flash_mask_ref.txt").lines().filter(|l| l.starts_with("WM ")) {
+        let w: Vec<u32> = line[3..].split_whitespace().filter(|t| *t != "->").map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
+        let m = |o: usize| Matrix { a: f32::from_bits(w[o]), b: f32::from_bits(w[o + 1]), c: f32::from_bits(w[o + 2]), d: f32::from_bits(w[o + 3]), tx: f32::from_bits(w[o + 4]), ty: f32::from_bits(w[o + 5]) };
+        let got = crate::draw::world_matrix(&m(6), &m(0));
+        let got = [got.a, got.b, got.c, got.d, got.tx, got.ty].map(|f| f.to_bits());
+        // (NaN results: any NaN; the original's payload is the PowerPC's)
+        for k in 0..6 {
+            let want = w[12 + k];
+            assert!(got[k] == want || (f32::from_bits(got[k]).is_nan() && f32::from_bits(want).is_nan()), "{line}: field {k} {:08x}", got[k]);
+        }
+        n += 1;
+    }
+    assert_eq!(n, 4000);
+}
