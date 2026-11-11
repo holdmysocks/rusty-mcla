@@ -209,6 +209,64 @@ pub fn pool_victim(used: &[PoolSeen], frame: u32, viewer: [f32; 4]) -> Option<us
 
 /// F-94385: a bound sphere (centre, w = radius) carried by a matrix (rows 0..2 and the place): the centre (x, y, z, 1)
 /// against each column (vmsum4fp), the radius times the longest row: l2 = the largest squared row length (vmsum3fp,
+
+/// One side of the level's broad phase (F-84048): box min / max, bound centroid, radius, matrix now, matrix before the
+/// move (collider +32; None: inactive).
+pub type BroadSide = (Vec3, Vec3, Vec3, f32, [Vec3; 4], Option<[Vec3; 4]>);
+
+/// F-84048's sphere for the octree query: the bound's centroid through the matrix (vmsum4fp on its columns), moved half the
+/// tick's way back, the radius grown by half that way's length - the length by vrsqrtefp and one Newton step (an estimate of
+/// inf taken as 0), as the original computes it.
+pub fn broad_sphere(own: &BroadSide) -> [f32; 4] {
+    use super::artic::V4;
+    let m = &own.4;
+    let col = |i: usize| V4::new(m[0][i], m[1][i], m[2][i], m[3][i]);
+    let c = V4::new(own.2.x, own.2.y, own.2.z, 1.0);
+    let mut centre = V4::new(c.dot4(col(0)).x(), c.dot4(col(1)).x(), c.dot4(col(2)).x(), 0.0);
+    let mut radius = own.3;
+    if let Some(prev) = own.5.as_ref() {
+        let d = V4::new(m[3].x - prev[3].x, m[3].y - prev[3].y, m[3].z - prev[3].z, 0.0);
+        let half = V4::splat(0.5);
+        centre = d.nmsub(half, centre);
+        let l2 = d.dot3(d);
+        let est = l2.rsqrte();
+        let e = est.sel(V4::ZERO, est.eq(V4::splat(f32::INFINITY)));
+        let k = l2.nmsub(e.mul(e), V4::splat(1.0)).madd(half.mul(e), e);
+        radius = l2.mul(k).madd(half, V4::splat(radius)).x();
+    }
+    [centre.0[0], centre.0[1], centre.0[2], radius]
+}
+
+/// F-84048's box test of a candidate the query gave: the two whole boxes - each grown to hold itself at its matrix before the
+/// move, if it is active - along their six face axes (eps 1e-6).
+pub fn broad_boxes(own: &BroadSide, other: &BroadSide) -> bool {
+    let (m, n) = (&own.4, &other.4);
+    let swept = |s: &(Vec3, Vec3, Vec3, f32, [Vec3; 4], Option<[Vec3; 4]>)| {
+        let (mut h, mut c) = ((s.1 - s.0) * 0.5, (s.1 + s.0) * 0.5);
+        if let Some(l) = s.5.as_ref() {
+            let m = &s.4;
+            let r: [Vec3; 3] = std::array::from_fn(|i| inv(m, l[i]));
+            let t = inv(m, l[3] - m[3]);
+            let c2 = t + r[0] * c.x + r[1] * c.y + r[2] * c.z;
+            let e2 = r[0].abs() * h.x + r[1].abs() * h.y + r[2].abs() * h.z;
+            let (hi, lo) = ((c + h).max(c2 + e2), (c - h).min(c2 - e2));
+            c = (hi + lo) * 0.5;
+            h = hi - c;
+        }
+        (xf(&s.4, c), h)
+    };
+    let ((wa, ha), (wb, hb)) = (swept(own), swept(other));
+    let eps = Vec3::splat(1e-6);
+    let r: [Vec3; 3] = std::array::from_fn(|i| Vec3::new(dot3(m[i], n[0]), dot3(m[i], n[1]), dot3(m[i], n[2])));
+    let ab: [Vec3; 3] = std::array::from_fn(|i| r[i].abs() + eps);
+    let tw = wa - wb;
+    let t = Vec3::new(dot3(tw, n[0]), dot3(tw, n[1]), dot3(tw, n[2]));
+    let q = Vec3::ZERO - Vec3::new(dot3(r[0], t), dot3(r[1], t), dot3(r[2], t));
+    let w = Vec3::new(dot3(Vec3::new(r[0].x, r[1].x, r[2].x), q), dot3(Vec3::new(r[0].y, r[1].y, r[2].y), q), dot3(Vec3::new(r[0].z, r[1].z, r[2].z), q));
+    let col = |k: usize| Vec3::new(ab[0][k], ab[1][k], ab[2][k]);
+    (0..3).all(|i| ha[i] + dot3(ab[i], hb) > q[i].abs()) && (0..3).all(|k| hb[k] + dot3(col(k), ha) > w[k].abs())
+}
+
 /// vmaxfp row 0 and 1, then 2), y = vrsqrtefp(l2) (an infinite estimate made 0), y + (1 - l2 y y)(0.5 y), times l2.
 pub fn sphere_through(m: &[Vec3; 4], s: [f32; 4]) -> [f32; 4] {
     use super::artic::V4;
@@ -1145,49 +1203,19 @@ impl LooseState {
     /// the tick's way back and grown by half its length, against the other's as it stands; then the two whole
     /// boxes - each grown to hold itself at its matrix before the move, if it is active - along their six face
     /// axes. Each side: box min / max, centroid, radius, matrix now, matrix before the move (None: inactive).
-    fn broad(own: &(Vec3, Vec3, Vec3, f32, [Vec3; 4], Option<[Vec3; 4]>), other: &(Vec3, Vec3, Vec3, f32, [Vec3; 4], Option<[Vec3; 4]>)) -> bool {
-        let (m, n) = (&own.4, &other.4);
-        let mut centre = xf(m, own.2);
-        let mut radius = own.3;
-        if let Some(prev) = own.5.as_ref() {
-            let d = m[3] - prev[3];
-            centre = centre - d * 0.5;
-            let l2 = dot3(d, d);
-            radius = (if l2 == 0.0 { 0.0 } else { l2.sqrt() }) * 0.5 + radius;
-        }
-        let oc = xf(n, other.2);
+    fn broad(own: &BroadSide, other: &BroadSide) -> bool {
+        let [cx, cy, cz, radius] = broad_sphere(own);
+        let centre = Vec3::new(cx, cy, cz);
+        let oc = xf(&other.4, other.2);
         let dd = centre - oc;
         let sum = radius + other.3;
         if !(sum * sum > dot3(dd, dd)) {
             return false;
         }
-        let swept = |s: &(Vec3, Vec3, Vec3, f32, [Vec3; 4], Option<[Vec3; 4]>)| {
-            let (mut h, mut c) = ((s.1 - s.0) * 0.5, (s.1 + s.0) * 0.5);
-            if let Some(l) = s.5.as_ref() {
-                let m = &s.4;
-                let r: [Vec3; 3] = std::array::from_fn(|i| inv(m, l[i]));
-                let t = inv(m, l[3] - m[3]);
-                let c2 = t + r[0] * c.x + r[1] * c.y + r[2] * c.z;
-                let e2 = r[0].abs() * h.x + r[1].abs() * h.y + r[2].abs() * h.z;
-                let (hi, lo) = ((c + h).max(c2 + e2), (c - h).min(c2 - e2));
-                c = (hi + lo) * 0.5;
-                h = hi - c;
-            }
-            (xf(&s.4, c), h)
-        };
-        let ((wa, ha), (wb, hb)) = (swept(own), swept(other));
-        let eps = Vec3::splat(1e-6);
-        let r: [Vec3; 3] = std::array::from_fn(|i| Vec3::new(dot3(m[i], n[0]), dot3(m[i], n[1]), dot3(m[i], n[2])));
-        let ab: [Vec3; 3] = std::array::from_fn(|i| r[i].abs() + eps);
-        let tw = wa - wb;
-        let t = Vec3::new(dot3(tw, n[0]), dot3(tw, n[1]), dot3(tw, n[2]));
-        let q = Vec3::ZERO - Vec3::new(dot3(r[0], t), dot3(r[1], t), dot3(r[2], t));
-        let w = Vec3::new(dot3(Vec3::new(r[0].x, r[1].x, r[2].x), q), dot3(Vec3::new(r[0].y, r[1].y, r[2].y), q), dot3(Vec3::new(r[0].z, r[1].z, r[2].z), q));
-        let col = |k: usize| Vec3::new(ab[0][k], ab[1][k], ab[2][k]);
-        (0..3).all(|i| ha[i] + dot3(ab[i], hb) > q[i].abs()) && (0..3).all(|k| hb[k] + dot3(col(k), ha) > w[k].abs())
+        broad_boxes(own, other)
     }
 
-    fn broad_side(&self, world: &LooseWorld, o: usize) -> (Vec3, Vec3, Vec3, f32, [Vec3; 4], Option<[Vec3; 4]>) {
+    fn broad_side(&self, world: &LooseWorld, o: usize) -> BroadSide {
         let (lo, hi, c, r) = self.whole_bound(world, o);
         (lo, hi, c, r, self.objs[o].matrix, self.objs[o].body.as_ref().map(|b| b.prev))
     }
@@ -6558,6 +6586,60 @@ mod amb_wheel_tests {
 #[cfg(test)]
 #[path = "loose_small_tests.rs"]
 mod loose_small_tests;
+
+#[cfg(test)]
+mod broad_tests {
+    use super::*;
+
+    /// testdata/broad_ref.txt (tools/broad_reference.py): the level's broad-phase worker F-84048 run offline with the octree
+    /// query stubbed to hand back every object: per active object the sphere it gives the query (centre, radius) and the
+    /// pairs its box test writes, against broad_sphere / broad_boxes with the worker's own filter (an active candidate only
+    /// above the object's index; the pair written lower index first).
+    #[test]
+    fn broad_matches_the_original() {
+        let (mut nq, mut np, mut nt) = (0, 0, 0);
+        for line in include_str!("../testdata/broad_ref.txt").lines() {
+            let (case, out) = line.split_once(" -> ").unwrap();
+            let h = |s: &str| u32::from_str_radix(s.strip_prefix('x').unwrap(), 16).unwrap();
+            let f = |s: &str| f32::from_bits(h(s));
+            let mut parts = case.split(" | ");
+            let n: usize = parts.next().unwrap().strip_prefix("B ").unwrap().parse().unwrap();
+            let list: Vec<usize> = parts.next().unwrap().split_whitespace().map(|x| x.parse().unwrap()).collect();
+            let orders: Vec<Vec<usize>> = (0..list.len()).map(|_| parts.next().unwrap().split_whitespace().map(|x| x.parse().unwrap()).collect()).collect();
+            let objs: Vec<(BroadSide, bool)> = (0..n)
+                .map(|_| {
+                    let w: Vec<&str> = parts.next().unwrap().split_whitespace().collect();
+                    let v3 = |k: usize| Vec3::new(f(w[k]), f(w[k + 1]), f(w[k + 2]));
+                    let rows = |b: usize| [v3(b), v3(b + 4), v3(b + 8), v3(b + 12)];
+                    let active = w[45] == "0";
+                    ((v3(36), v3(32), v3(40), f(w[44]), rows(0), active.then(|| rows(16))), active)
+                })
+                .collect();
+            let mut want = out.split(" P");
+            let qs: Vec<Vec<u32>> = want.next().unwrap().split("Q ").filter(|x| !x.trim().is_empty()).map(|q| q.split_whitespace().map(h).collect()).collect();
+            let pairs: Vec<u32> = want.next().unwrap().split_whitespace().map(|x| x.parse().unwrap()).collect();
+            assert_eq!(qs.len(), list.len());
+            let mut got = Vec::new();
+            for ((&me, order), q) in list.iter().zip(&orders).zip(&qs) {
+                let s = broad_sphere(&objs[me].0);
+                assert_eq!([s[0].to_bits(), s[1].to_bits(), s[2].to_bits(), s[3].to_bits()], [q[0], q[1], q[2], q[4]], "sphere of {me}: {line}");
+                nq += 1;
+                for &c in order {
+                    nt += 1;
+                    if objs[c].1 && me >= c {
+                        continue;
+                    }
+                    if broad_boxes(&objs[me].0, &objs[c].0) {
+                        got.extend_from_slice(&[me.min(c) as u32, me.max(c) as u32, 0]);
+                    }
+                }
+            }
+            assert_eq!(got, pairs, "{line}");
+            np += pairs.len() / 3;
+        }
+        assert!(nq > 500 && np > 500, "{nq} {np} {nt}");
+    }
+}
 
 #[cfg(test)]
 mod pool_tests {
