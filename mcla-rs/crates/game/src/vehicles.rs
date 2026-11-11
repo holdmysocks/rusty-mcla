@@ -6488,7 +6488,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// frame: lights on at night, the brake lamp (`traffic::brake_lamp`, F-56024), the turn signals
     /// with the car's blink (`traffic::signals`, F-41231 / F-81289), reversing; a trailer with its cab
     /// takes the cab's five flags instead (F-46062 copies 0x40, 0x20, 0x10, 0x8 and 0x4 from the cab's
-    /// record). Parked cars have every flag off, as recorded.
+    /// record) and its glow the cab's fade (the record's +44). Parked cars have every flag off, as recorded.
     pub fn traffic_lamps(&mut self, eye: Vec3, axis: Vec3, frustum: &crate::render::Frustum, weather: f32, dt: f32) {
         let alpha = self.render_alpha;
         let lights_off = self.lights_off;
@@ -6511,15 +6511,18 @@ if keep || c.state.pos.distance(center) < 450.0 {
             };
             flags.push([driven && !lights_off && due, driven && c.rail.as_ref().is_some_and(traffic::brake_lamp), sa, sb, driven && c.state.gear < 0]);
         }
-        // a trailer with its cab: the cab's flags
+        // a trailer with its cab: the cab's flags, and its draw holder's scale (+44, the fade F-82632 writes there) the
+        // cab's (the order of the cab's update against the trailer's slot 6 in a frame is not traced)
+        let mut fades: Vec<f32> = self.cars.iter().map(amb_fade).collect();
         for i in 0..self.cars.len() {
             let Some(r) = self.cars[i].rail.as_ref().filter(|r| r.ty.trailer) else { continue };
             let Some(id) = r.partner else { continue };
             if let Some(k) = self.cars.iter().position(|c| c.rail.as_ref().is_some_and(|x| x.rng_id() == id && x.state != 0)) {
                 flags[i] = flags[k];
+                fades[i] = fades[k];
             }
         }
-        for (c, flags) in self.cars.iter_mut().zip(flags) {
+        for ((c, flags), car_fade) in self.cars.iter_mut().zip(flags).zip(fades) {
             if c.is_player {
                 continue;
             }
@@ -6533,7 +6536,6 @@ if keep || c.state.pos.distance(center) < 450.0 {
             if d > TRAFFIC_LAMP_REACH || !frustum.intersects_aabb(pos - r, pos + r) {
                 continue;
             }
-            let car_fade = amb_fade(c);
             let a = &mut c.amb_lamps;
             for (v, on) in a.s.iter_mut().zip(flags) {
                 *v = traffic_ease(*v, on, dt);

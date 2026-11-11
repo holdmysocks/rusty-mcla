@@ -125,6 +125,9 @@ mod park_unspawn_tests;
 #[cfg(test)]
 #[path = "item_spawn_tests.rs"]
 mod item_spawn_tests;
+#[cfg(test)]
+#[path = "type_lookup_tests.rs"]
+mod type_lookup_tests;
 
 /// A layout item's parked car has no spot (car +44 = 0; +40 the item).
 pub const ITEM_SPOT: usize = usize::MAX;
@@ -247,6 +250,12 @@ pub fn node_count(tree: &ParkingTree, ni: u32, occupied: &[bool], cruise: bool) 
         }
     }
     (occ, occ + free)
+}
+
+/// F-54839: the first type of the list whose name equals `name` with the case of A - Z ignored (F-40755, the original's
+/// stricmp: no other byte is folded); the port's list is its car models' names.
+pub(crate) fn type_by_name<'a>(names: impl IntoIterator<Item = &'a [u8]>, name: &[u8]) -> Option<usize> {
+    names.into_iter().position(|n| n.eq_ignore_ascii_case(name))
 }
 
 /// F-94309's inputs: the type's slots 6 (a car type) and 7 (a person type), the manager's gates (the bytes S+0x642C5 /
@@ -907,8 +916,8 @@ impl Vehicles {
         if item.path.is_some_and(|p| p.referenced && (p.fired || p.spawn_when_triggered)) {
             return false;
         }
-        // F-54839: the type by its name (the original matches the name's hash); a car type or a person type
-        let mi = self.models.iter().position(|m| m.name.eq_ignore_ascii_case(&item.name));
+        // F-54839: the type by its name; a car type or a person type
+        let mi = type_by_name(self.models.iter().map(|m| m.name.as_bytes()), item.name.as_bytes());
         let person = mi.is_none() && crate::peds::is_person_type(&item.name);
         if mi.is_none() && !person {
             self.park_why[2] += 1;
