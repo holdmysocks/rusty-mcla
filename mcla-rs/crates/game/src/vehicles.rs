@@ -7,7 +7,7 @@ use crate::render::{Gpu, GpuTexture, MatMode, ObjectBinding, ObjectUniform, Vert
 use crate::vehicle_model::{self, CarAsset, CarConfig, Slot};
 use crate::world::{GpuBatch, World};
 use anyhow::Result;
-use glam::{Mat3, Mat4, Quat, Vec3};
+use glam::{Mat3, Mat4, Quat, Vec3, Vec4};
 use std::path::Path;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -94,6 +94,8 @@ pub struct CarModel {
     pub bike: bool,
     /// the first suspension bone the bike gyro's reverse drive leans on (`vehicle_model::CarAsset::susp_lever`)
     pub susp_lever: Option<crate::physics::vehsim::SuspLever>,
+    /// the suspension bones for the sim's vehSuspension parts (`vehicle_model::CarAsset::susp_bones`)
+    pub susp_bones: Option<Arc<Vec<(usize, [[f32; 4]; 4], [[f32; 4]; 4])>>>,
     /// a bike's front and rear tyre and rim are twice this wide: the span of the wheel_0 / wheel_2
     /// bones' translation limits (F-74884)
     pub bike_wheel_width: [f32; 2],
@@ -142,6 +144,11 @@ pub struct CarModel {
     /// `steer` (a motorcycle's bars and fork), the one the fitted steering wheel hangs on, the fitted blower's valve,
     /// the fitted blower's own bone
     pub turn_bones: [Option<Mat4>; 4],
+    /// per suspension holder (`susp_parts::SUSP_BONES`) found on a fitted part: the bone's parent's world in car space
+    /// (the part's placement times the parent's world in its file), the inverse of the bone's own at rest, and whether
+    /// the part hangs on the `steer` bone or below (the turn then applies on top). The drawn delta with M the part's
+    /// matrix (F-98654 copies it into the bone's local): pre x M x post.
+    pub susp_draw: [Option<(Mat4, Mat4, bool)>; 12],
     /// where the exhaust and nitrous effects come out (car space, at most two, each with whether it moves with the
     /// rear bumper) and whether the first is a
     /// bone of the rear bumper (`CarAsset::fx_anchors`, `carfx.rs`)
@@ -944,6 +951,11 @@ const TURN_GROUP: u32 = NEEDLE_GROUP + 3 * NEEDLE_BONES as u32;
 /// axle), + 1 hood_wide on the hood's pose (the body's dent), + 2 / + 3 a rear / front bumper with no rest bone,
 /// + 4 a hood with no hood bone (`dmg_params`).
 const DENT_GROUP: u32 = TURN_GROUP + 4;
+
+/// The draw groups of the suspension bones (after the dent groups'): + h the meshes on the h-th holder's bone
+/// (`susp_parts::SUSP_BONES`) or below, moved by its vehSuspension's M as the pose F-98654 copies it into the bone
+/// (`CarModel::susp_draw`).
+const SUSP_GROUP: u32 = DENT_GROUP + 5;
 
 /// The vertex-dent parameters of a car's draw, dmgParams (VS_CarPaint and the other body programs: the vertex moves
 /// dent x w towards xyz, in the car's rest space): the image words the car's draw object's constructor F-60786 puts
@@ -1996,6 +2008,7 @@ struct CarPrep {
     trunk_bone: Option<Mat4>,
     slot_bones: [Option<Mat4>; 3],
     turn_bones: [Option<Mat4>; 4],
+    susp_draw: [Option<(Mat4, Mat4, bool)>; 12],
     roof_place: Mat4,
     /// the fitted add-on gauge's needle clip and placement (CarModel::needles [2], needle_place)
     upgrade: Option<(Arc<vehicle_model::BoneClip>, Mat4, std::path::PathBuf)>,
@@ -2341,6 +2354,7 @@ impl CarInstance {
             let mut vt = crate::physics::vehsim::VehTune::new(tune);
             vt.bike = self.model.bike;
             vt.susp_lever = self.model.susp_lever;
+            vt.susp_bones = self.model.susp_bones.clone();
             if let Some(h) = self.model.rest_height {
                 vt.seat(h);
             }
@@ -2687,7 +2701,7 @@ impl Vehicles {
         let t_load = std::time::Instant::now();
         let car = self.car_asset(world, dir)?;
         let ms_parse = t_load.elapsed().as_secs_f32() * 1000.0;
-        let CarPrep { car_is_ambient, rest_rot, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, roof_place, upgrade } = match self.take_prep(dir, cfg) {
+        let CarPrep { car_is_ambient, rest_rot, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, susp_draw, roof_place, upgrade } = match self.take_prep(dir, cfg) {
             Some(p) => p,
             None => Self::prep_car(&car, dir, cfg),
         };
@@ -2831,6 +2845,7 @@ impl Vehicles {
             let mut vt = crate::physics::vehsim::VehTune::new(base);
             vt.bike = car.bike;
             vt.susp_lever = car.susp_lever;
+            vt.susp_bones = (!car.susp_bones.is_empty()).then(|| Arc::new(car.susp_bones.clone()));
             if let Some(hubs) = car.hubs {
                 vt.seat((hubs[0].y + hubs[2].y) * 0.5);
             }
@@ -2910,7 +2925,7 @@ impl Vehicles {
         // (F-74884, a bike's set-up: +4092 / +4096 = |max - min| of the translation limits, crBoneData +144 / +160, of the
         // first bone named wheel_0 / wheel_2 in the base fragment's skeleton, then the parts' - F-20921)
         let bike_wheel_width = ["wheel_0", "wheel_2"].map(|n| car.skeleton.as_ref().and_then(|s| s.bones.iter().find(|b| b.name == n)).map_or(params.wheel_width, |b| (b.trans_limits.1 - b.trans_limits.0).length()));
-        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, glow_sides, font_bones, batches, params, params_mods, simtunes, vehmods: car.vehmods.clone(), fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, susp_lever: car.susp_lever, bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), needles: [car.needles[0].clone().map(Arc::new), car.needles[1].clone().map(Arc::new), upgrade.as_ref().map(|u| u.0.clone())], needle_place: upgrade.as_ref().map_or(Mat4::IDENTITY, |u| u.1), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, fx_anchors, fx_anchor_rear, rest_rot: rest_table(&rest_rot) });
+        let m = Arc::new(CarModel { lods, lod_radius, lod_centre, lod_steps, bound_box, own_wheels, name: car.name.clone(), lamps, glow_bones, glow_sides, font_bones, batches, params, params_mods, simtunes, vehmods: car.vehmods.clone(), fit: car.fit, aitunes: car.aitune.clone(), rest_height: car.hubs.map(|h| (h[0].y + h[2].y) * 0.5), wheels, brakes, brake_dir, rim_dir, rim_ratio, bike: car.bike, susp_lever: car.susp_lever, susp_bones: (!car.susp_bones.is_empty()).then(|| Arc::new(car.susp_bones.clone())), bike_wheel_width, min: car.min, max: car.max, cfg: cfg.clone(), variants, variant_labels, extra_variants, batch_window, windows: car.windows.clone(), spoiler: car.spoiler.clone().map(Arc::new), clamshell: car.clamshell.clone().filter(|_| car.skinned_top.is_some()).map(Arc::new), skinned_top: car.skinned_top.clone().filter(|_| car.clamshell.is_some()).map(Arc::new), needles: [car.needles[0].clone().map(Arc::new), car.needles[1].clone().map(Arc::new), upgrade.as_ref().map(|u| u.0.clone())], needle_place: upgrade.as_ref().map_or(Mat4::IDENTITY, |u| u.1), roof_skin, roof_place, cop_lights: car.cop_lights.clone().map(Arc::new), damage_layout: car.damage_layout.clone().map(Arc::new), part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, susp_draw, fx_anchors, fx_anchor_rear, rest_rot: rest_table(&rest_rot) });
         Ok(m)
     }
 
@@ -3005,6 +3020,27 @@ impl Vehicles {
         let blower_bone = fitted.iter().find_map(|(p, x)| blower_of(p).map(|i| *x * p.skeleton.as_ref().unwrap().bones[i].world));
         let turn_bones = [steer_i.and_then(|i| sk.map(|s| s.bones[i].world)), wheel_bone, valve_bone, blower_bone];
         log::info!("car {}: turned bones (steer, steering wheel, blower valve, blower) at {:?}", car.name, turn_bones.map(|b| b.map(|m| m.w_axis.truncate())));
+        // (the suspension bones F-13644 finds - FindBone F-59267: the base skeleton first, then the fitted parts' - and
+        // the part each hangs in: which part's meshes the vehSuspension's M moves, `CarModel::susp_draw`)
+        let susp_src: [Option<(String, usize)>; 12] = std::array::from_fn(|h| {
+            let n = crate::susp_parts::SUSP_BONES[h];
+            if sk.is_some_and(|s| s.bones.iter().any(|b| b.name == n)) {
+                return None;
+            }
+            fitted.iter().filter(|(p, _)| !p.is_base).find_map(|(p, _)| p.skeleton.as_ref()?.bones.iter().position(|b| b.name == n).map(|i| (p.file.to_string_lossy().to_string(), i)))
+        });
+        let susp_draw: [Option<(Mat4, Mat4, bool)>; 12] = std::array::from_fn(|h| {
+            let (file, i) = susp_src[h].as_ref()?;
+            let (p, x) = fitted.iter().find(|(p, _)| !p.is_base && p.file.to_string_lossy() == file.as_str())?;
+            let psk = p.skeleton.as_ref()?;
+            let b = &psk.bones[*i];
+            let parent = psk.bones.get(b.parent).map_or(Mat4::IDENTITY, |q| q.world);
+            let under_steer = steer_i.is_some_and(|si| sk.is_some_and(|s| bone_under(s, p.matrix_index as usize, si)));
+            Some((*x * parent, (*x * b.world).inverse(), under_steer))
+        });
+        if susp_draw.iter().any(|d| d.is_some()) {
+            log::info!("car {}: suspension bones drawn {:?}", car.name, susp_draw.iter().enumerate().filter(|(_, d)| d.is_some()).map(|(h, _)| crate::susp_parts::SUSP_BONES[h]).collect::<Vec<_>>());
+        }
         // (the exhaust tips are drawn at the outlet bones of the part that holds them, as those bones stand:
         // they move with that part - a hanging rear bumper takes them along)
         let outlet_src = car.outlet_part(cfg).map(|o| (o.primary.to_ascii_lowercase(), o.is_base, o.transform));
@@ -3026,6 +3062,14 @@ impl Vehicles {
         let part_group = |part: &vehicle_model::CarPart, part_xf: &Mat4, mi: usize| -> u32 {
             if let Some(kind) = vehicle_model::roof_part(&part.primary).filter(|_| roof_moves) {
                 return ROOF_GROUP + kind as u32;
+            }
+            // (on a suspension bone or below it, in the part that holds the bone)
+            if let Some(psk) = part.skeleton.as_ref().filter(|_| !part.is_base) {
+                let file = part.file.to_string_lossy();
+                let b = part.mesh_tag.get(mi).and_then(|&t| psk.bone_by_tag(t));
+                if let Some(h) = susp_src.iter().position(|s| s.as_ref().is_some_and(|(f, i)| f.as_str() == file && b.is_some_and(|b| bone_under(psk, b, *i)))) {
+                    return SUSP_GROUP + h as u32;
+                }
             }
             let mut p = part.primary.to_ascii_lowercase();
             let mut part_xf = *part_xf;
@@ -3675,7 +3719,7 @@ impl Vehicles {
                 glow_sides.push(side);
             }
         }
-        CarPrep { car_is_ambient, rest_rot, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, roof_place, upgrade }
+        CarPrep { car_is_ambient, rest_rot, meshes, lamp_acc, own_hubs, glow_bones, glow_sides, font_bones, variants, variant_labels, extra_variants, part_rig, hood_slot, trunk_bone, slot_bones, turn_bones, susp_draw, roof_place, upgrade }
     }
 
     /// Tyre + rim model for a rim directory, loaded once.
@@ -6189,6 +6233,20 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 let parts = &c.state.parts;
                 let pm = match k {
                     // (the dent groups: hood_wide on the hood's pose, the others the body's)
+                    // (a suspension bone: its local is the vehSuspension's M as F-98654 copies it - the w words as a 3x4's)
+                    n if n + 3 >= SUSP_GROUP as usize => {
+                        let h = n + 3 - SUSP_GROUP as usize;
+                        let held = c.state.veh.as_deref().and_then(|v| v.susp.as_ref()).and_then(|s| s.iter().find(|(k, _)| *k == h));
+                        match (c.model.susp_draw.get(h).copied().flatten(), held) {
+                            (Some((pre, post, under_steer)), Some((_, sp))) => {
+                                let r = sp.m;
+                                let mm = Mat4::from_cols(Vec4::new(r[0][0], r[0][1], r[0][2], 0.0), Vec4::new(r[1][0], r[1][1], r[1][2], 0.0), Vec4::new(r[2][0], r[2][1], r[2][2], 0.0), Vec4::new(r[3][0], r[3][1], r[3][2], 1.0));
+                                let steer = if under_steer { c.model.turn_bones[0].map_or(Mat4::IDENTITY, |w| w * crate::steer_parts::turn(false, c.steer_parts.steer_bone_angle()) * w.inverse()) } else { Mat4::IDENTITY };
+                                m * steer * pre * mm * post
+                            }
+                            _ => m,
+                        }
+                    }
                     n if n + 3 == DENT_GROUP as usize + 1 => c.model.hood_slot.map_or(m, |s| m * parts.hood_delta(&s)),
                     n if n + 3 >= DENT_GROUP as usize => m,
                     // (a bone F-98654 turns: its local times the turn, steer_parts.rs)
@@ -8967,7 +9025,7 @@ pub fn dmg_params(group: u32, bike: bool, movement: [u32; 4]) -> [f32; 4] {
         g if g == DENT_GROUP + 2 => if movement[1] != 0 { DMG_BUMPER_R } else { DMG_BODY },
         6 => if movement[0] != 0 { DMG_BUMPER_F } else { DMG_BODY },
         g if g == DENT_GROUP + 3 => if movement[0] != 0 { DMG_BUMPER_F } else { DMG_BODY },
-        g if g == ROOF_GROUP || g == ROOF_GROUP + 2 || g == TURN_GROUP + 2 || g == TURN_GROUP + 3 || g == DENT_GROUP => DMG_NONE,
+        g if g == ROOF_GROUP || g == ROOF_GROUP + 2 || g == TURN_GROUP + 2 || g == TURN_GROUP + 3 || g == DENT_GROUP || g >= SUSP_GROUP => DMG_NONE,
         _ => DMG_BODY,
     }
 }

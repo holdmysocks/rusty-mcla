@@ -50,6 +50,7 @@ mod fixed_step;
 mod vehicle_pose;
 mod wheel_pose;
 mod steer_parts;
+mod susp_parts;
 mod subfont;
 mod video;
 mod cine;

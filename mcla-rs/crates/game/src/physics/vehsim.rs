@@ -61,6 +61,9 @@ pub struct VehTune {
     pub wheel_shape: [std::sync::Arc<super::hull::HullShape>; 2],
     /// the first vehSuspension's bone (a motorcycle's; see `SuspLever`)
     pub susp_lever: Option<SuspLever>,
+    /// the car's suspension bones (`vehicle_model::CarAsset::susp_bones`: holder, local and global rows), from which
+    /// the first update makes the vehSuspension parts (`VehState::susp`, susp_parts.rs `SuspPart`)
+    pub susp_bones: Option<std::sync::Arc<Vec<(usize, [[f32; 4]; 4], [[f32; 4]; 4])>>>,
     torque_curve: Option<super::engine_curve::Curve>,
     idle_curve: Option<super::engine_curve::Curve>,
 }
@@ -309,7 +312,7 @@ impl VehTune {
         // (a width a set-up gave - the tuning files' own TireWidth is a placeholder of 0.1)
         let fitted = |w: f32| if w >= 0.15 { w } else { 0.0 };
         let tyre_width = [fitted(t.wheel_front.width), fitted(t.wheel_back.width)];
-        let mut vt = VehTune { t, ratios, top_speed, gravity, bike: false, shift: Vec::new(), sync_torque: 0.0, inertia_yaw, tyre_width, wheel_shape, susp_lever: None, torque_curve, idle_curve };
+        let mut vt = VehTune { t, ratios, top_speed, gravity, bike: false, shift: Vec::new(), sync_torque: 0.0, inertia_yaw, tyre_width, wheel_shape, susp_lever: None, susp_bones: None, torque_curve, idle_curve };
         (vt.shift, vt.sync_torque) = vt.shift_points();
         vt
     }
@@ -1242,11 +1245,14 @@ pub struct VehState {
     pub grid_reset: bool,
     /// the special-ability contact hook (F-46500; agro.rs): the human player's car only
     pub agro: super::agro::Hook,
+    /// the vehSuspension parts the car builder F-70909 makes (holder index into `susp_parts::SUSP_BONES`, the part):
+    /// updated by F-17019 every tick after the wheels; the pose F-98654 draws the bones by their M
+    pub susp: Option<Vec<(usize, crate::susp_parts::SuspPart)>>,
 }
 
 impl Default for VehState {
     fn default() -> Self {
-        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, rider: None, rider_out: None, rider_job: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, stuck_cool: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_shake: 0.0, shake_rng: [0x2545_F491, 1], engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), air: AirRide::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, fric_boost: false, grip_h: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false, goal: 0.0 }, kick_fwd: None, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default(), engine_stopped: false, deact_seen: false }
+        VehState { fluid: None, shaft_speed_in: 0.0, wipe_dir: Vec3::ZERO, set_down: false, prev_up: None, body_exact: None, seen_exact: None, body_now: None, rest_exact: None, body_at_exact: None, sums_gyro: [Vec3::ZERO; 4], gyro_sums_exact: None, com_exact: None, body: None, momentum_exact: None, drift_level: 1.0, wheel_grip: [1.0; 4], hull_kept: Vec::new(), manifolds: Vec::new(), wipe: None, wipe_hit: false, rider_vel: None, rider: None, rider_out: None, rider_job: None, loose: Default::default(), hull_last: None, cell_ball: None, by: BurnTick { exact: false, state_in: 0, held: false, brake_layout: None, cg: None, cg_return: true, launch: None, launch_layout: 0 }, lift_err: 0.0, rev: RevLimit { cut: 0.0, timer: 0.0, on: false, left: 0.0, pad: 0.0 }, last_seen: None, push_turn_left: Vec3::ZERO, deep_count: 0, last_set: false, stuck: 0, stuck_at: Vec3::ZERO, stuck_timer: 0.0, stuck_cool: 0.0, still_timer: 0.0, last_speed: 0.0, drive: 255, engine_w: 100.0, gear: 1, shift_timer: 0.0, gear_change: GearChange::default(), engine_pedal: 0.0, engine_torque: 0.0, engine_roll: 0.0, engine_shake: 0.0, shake_rng: [0x2545_F491, 1], engine_auxiliary: 0.0, trans_inhibited: false, shift_mod: [1.0; 2], pedal_was: 0.0, hyd: Hydraulics::default(), air: AirRide::default(), two: 0, two_target: 0.0, two_err: 0.0, two_trim: 0.0, two_wait: 0, two_acc: 0.0, omega: [0.0; 2], diff: [1.0; 2], wheels: [WheelSim::default(); 4], boost_timer: 0.0, steer: 0.0, nitro_timer: 0.0, turn_err: 0.0, turn_force: 0.0, melt: 0.0, sst: super::sst::SsTurbo::default(), lean: 0.0, lean_acc: 0.0, wheelie: 0, wheelie_boost: 0.0, wheelie_pitch: 0.0, wheelie_err: 0.0, wheelie_lift: 0.0, air_roll: 0.0, air_acc: [0.0; 3], torque_mult: 1.0, clutch: true, auto_brake: 0.0, started: false, nitro_level: 0.0, nitro_held: false, nitro_burning: false, nitro_records: 0, nitro_fires: 0, air584: 0.0, air584_before: 0.0, nitro_rest: 0.0, nitro_view: 0.0, nitro_pad: 0.0, nitro_left: false, aero_damp: 1.0, fric_boost: false, grip_h: 1.0, air_time: 0.0, burn_state: 0, burn: 0.0, burn_yaw: 0.0, bump_phase: 0.0, rng: [0x2545_F491, 0x1234_5678], gauss_spare: None, last_force: Vec3::ZERO, last_torque: Vec3::ZERO, pulse: None, last_gyro: Vec3::ZERO, cg: [0.0; 2], cg_set: false, bike_vel: Vec3::ZERO, bike_acc: Vec3::ZERO, lean_scale: 0.0, lean_lat: 0.0, lean_target: 0.0, bike_turn: Vec3::ZERO, bike_push: Vec3::ZERO, sss_chassis: 1.0, pad_steer: 0.0, w_then: [0.0; 4], bg: BikeGyro::default(), bike_spin: None, bike_pending: None, sss_chassis_exact: 1.0, way_after: 0, pad: super::pad::PadHeld { pedals: super::pad::Pedals { state: 0, throttle: 0.0, brake: 0.0, way: 1 }, steer_next: 0.0, stick_y: 0.0, stick_next: 0.0, second_tick: false, live: false, cruise: super::pad::CruiseHeld { on: false, speed: 0.0 }, button: false, handbrake: false, goal: 0.0 }, kick_fwd: None, steer_back: 0.0, out_steer: None, grid_reset: false, agro: Default::default(), engine_stopped: false, deact_seen: false, susp: None }
     }
 }
 
@@ -4547,6 +4553,30 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             let world = [rows[0], rows[1], rows[2], place];
             vs.wheels[i].world = Some(world);
             vs.wheels[i].part = Some(super::gjk::part_matrix(&world, &body_rows));
+        }
+        // (vehAuto::Update F-98311 after the wheels and axles: the vehSuspension parts, F-17019, each from its wheel's
+        // axle displacement F-48387 - made at the first update from the bones, F-70909 / F-66627: the wheel's rest place
+        // +384 and SteeringLimit; the rear shocks with the rear axle's two wheels)
+        if let Some(bones) = vt.susp_bones.as_ref().filter(|_| rebuilt.iter().all(|r| r.is_some())) {
+            let wtune = |i: usize| match hyd_wheels.as_ref() {
+                Some((f, b)) => if i < 2 { f } else { b },
+                None => if i < 2 { &t.wheel_front } else { &t.wheel_back },
+            };
+            let d: [f32; 4] = std::array::from_fn(|i| {
+                let wt = wtune(i);
+                super::exact::axle_disp(vs.wheels[i].comp, wt.travel_extent, wt.travel_limit, offsets[i])
+            });
+            let parts = vs.susp.get_or_insert_with(|| {
+                bones.iter().filter_map(|&(h, local, global)| {
+                    let (w, partner) = crate::susp_parts::susp_slot(h)?;
+                    let r = wheel_rest[w]?;
+                    Some((h, crate::susp_parts::SuspPart::new(local, global, [r.x, r.y, r.z], wtune(w).steering_limit, partner)))
+                }).collect()
+            });
+            for (h, part) in parts.iter_mut() {
+                let (w, _) = crate::susp_parts::susp_slot(*h).unwrap_or((0, false));
+                part.update(d[w], (d[2], d[3]));
+            }
         }
     }
 
