@@ -1798,6 +1798,23 @@ impl Switch {
         self.pan = (0.0, 0.0);
     }
 
+    /// The player camera's reset (F-28350) on the views: the look back off (F-39925(0) - unless `refused`: a cut back
+    /// with the quick mask, the turn 0, when it was on), then setView's cut (type 4, F-41662) to the drive view `view`
+    /// and the director's reset (F-81630: the current camera's reset, vt+36). Returns whether a look back went off.
+    pub fn player_reset(&mut self, view: u8, refused: bool, cam: &mut BoomCam) -> bool {
+        let was_back = self.last.map_or(false, |(_, b)| b);
+        let off = was_back && !refused;
+        if off {
+            self.mask.start(0.01, 0.1, 0.01);
+            self.pan = (0.0, 0.0);
+        }
+        self.blend.stop();
+        self.shown = None;
+        self.last = Some((view, was_back && refused));
+        cam.reset();
+        off
+    }
+
     /// The view whose camera runs (the blend's target, or the director's camera after it), for
     /// the chosen view `view`.
     pub fn shown(&self, view: u8) -> u8 {
@@ -3656,6 +3673,10 @@ impl EventDirector {
     /// the camera buttons act on it.
     pub fn running(&self) -> bool {
         self.on
+    }
+    /// The camera's event field +784 as it stands (kept after the off until the next set-event).
+    pub fn last_event(&self) -> usize {
+        self.ev
     }
     /// The event running (cam +784), if any.
     pub fn event(&self) -> Option<usize> {
@@ -6326,6 +6347,40 @@ mod director_blend_tests {
         let (tune, _) = tune_for(set, sw.shown(view), false);
         let out = cam.update(tune, &car, dt);
         sw.blend.apply(&car, out, &[], dt);
+    }
+
+    /// The player camera's reset on the views (F-28350): a running look back goes off (F-39925(0): the quick mask, the
+    /// turn 0) and the director cuts to the drive view (setView type 4); a refused off keeps the look back; a running
+    /// blend between views is cut.
+    #[test]
+    fn the_player_camera_reset_cuts_to_the_drive_view() {
+        let set = views();
+        let dt = 1.0 / 30.0;
+        let (mut sw, mut cam) = (Switch::default(), BoomCam::default());
+        for _ in 0..5 {
+            sw.frame(&set, 0, true, false, false, &mut cam, dt);
+        }
+        sw.pan = (0.3, 0.1);
+        sw.mask = CutMask::default();
+        assert!(sw.player_reset(0, false, &mut cam));
+        assert!(sw.mask.is_on() && sw.pan == (0.0, 0.0) && !sw.blend.active() && sw.last == Some((0, false)));
+        // (refused: still looking back, no mask)
+        let (mut sw, mut cam) = (Switch::default(), BoomCam::default());
+        for _ in 0..5 {
+            sw.frame(&set, 0, true, false, false, &mut cam, dt);
+        }
+        sw.mask = CutMask::default();
+        assert!(!sw.player_reset(0, true, &mut cam));
+        assert!(!sw.mask.is_on() && sw.last == Some((0, true)));
+        // (a blend between two views: cut, nothing queued)
+        let (mut sw, mut cam) = (Switch::default(), BoomCam::default());
+        for _ in 0..5 {
+            sw.frame(&set, 0, false, false, false, &mut cam, dt);
+        }
+        sw.frame(&set, 1, false, false, false, &mut cam, dt);
+        assert!(sw.blend.active());
+        assert!(!sw.player_reset(1, false, &mut cam));
+        assert!(!sw.blend.active() && sw.blend.queued.is_none() && sw.shown(1) == 1);
     }
 
     /// The director's queue and finish (F-98424 -> F-43758, F-70013): a view change while the views

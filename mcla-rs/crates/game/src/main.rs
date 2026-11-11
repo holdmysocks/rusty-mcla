@@ -731,6 +731,8 @@ struct App {
     /// the camera shake (boomcam::CamShake, camFX's blocks), the last impact seen, the time in
     /// the air, a wipeout already shaken for
     shake: Option<boomcam::CamShake>,
+    /// a player camera reset (F-28350) asked inside `handle_action`, run right after it
+    cam_reset_pending: bool,
     shake_impact: f32,
     shake_air: f32,
     /// the wipeout camera's start asks for its jolt (F-37740)
@@ -1656,6 +1658,7 @@ impl App {
             replay_prerace: None,
             replay_wall: 0.0,
             shake: None,
+            cam_reset_pending: false,
             shake_impact: 0.0,
             shake_air: 0.0,
             shake_wipe: false,
@@ -2574,6 +2577,34 @@ impl App {
     /// CAM_UP (`up`) / CAM_DOWN (F-67519): the previous / the next of the five views.
     /// Nothing while looking back or while a wreck is watched (the reverse and wipeout cameras
     /// hold the buttons). The new view is the save's DEFAULT CAMERA as well (F-93502).
+    /// The player camera's reset (mcPlayerCamera F-28350), run by the original after the -75 m set-down (F-12529), the
+    /// QUICK FIX's restore (F-39432), the FULL FIX outside the garage's showroom (F-12181 -> its repair), Racer_Reset
+    /// (F-41331) and Racer_ResetWithDamageIntact (F-67152 -> mcPlayer vt+80, F-35632). In its order: the event camera off
+    /// (F-94591(0, -1, -1)), the look back off (F-39925(0): refused, as every frame, while the wipeout camera runs or the
+    /// event camera has event 11, 12 or >= 14), setView's cut (type 4) to the drive view, the shake's blocks off (F-29203),
+    /// the director's reset (F-81630: the view camera afresh, F-83404 - its turn, pitch and rise 0), set-event(-1)
+    /// (F-26269); the held look angles +108 / +112 / +116 are 0. The CINEMATIC CAMERA / CAMERA SHAKE words it latches
+    /// are read every frame in the port (D58).
+    fn player_camera_reset(&mut self) {
+        let dir = &self.cam_switch.blend;
+        let refused = self.crash_cam.active(dir)
+            || ((self.event_dir.running() || self.event_dir.leaving(dir)) && matches!(self.event_dir.last_event(), e if e == 11 || e == 12 || e >= 14));
+        self.event_dir.cut_out();
+        let mode = self.cam_mode;
+        if self.cam_switch.player_reset(mode, refused, &mut self.boom) {
+            let scale_now = self.wipe_scale.min(self.ability.time_scale());
+            self.warp_look.release(scale_now);
+            lookback_scene(&mut self.look_scene, self.audio.as_mut(), false);
+        }
+        if !refused {
+            self.look_back = false;
+        }
+        if let Some(sh) = self.shake.as_mut() {
+            sh.reset();
+        }
+        self.look.reset();
+    }
+
     fn camera_button(&mut self, up: bool) {
         // (and not while the ability camera has the view, F-38892)
         if self.look_back || self.crash_bits != 0 || self.ability_cam.active(&self.cam_switch.blend) {
@@ -3759,6 +3790,7 @@ impl App {
                     c.state.wheels.iter().map(|w| physics::collision::Surface::from_u8(w.surface).material()).collect::<Vec<_>>(), self.crash_bits, self.crash_timer, self.safe_matrix.map(|(p, _)| (p.x, p.y, p.z)));
             }
         }
+        let mut set_down = false;
         if let Some(c) = self.vehicles.player_mut() {
             if c.state.pos.y < f32::from_bits(0xc296_0000) {
                 if let Some((pos, rot)) = self.safe_matrix {
@@ -3768,6 +3800,8 @@ impl App {
                     c.state.vel = Vec3::ZERO;
                     c.state.ang_vel = Vec3::ZERO;
                     c.pose_history.reset();
+                    // (then the player camera's reset, F-28350 - the player has one)
+                    set_down = true;
                 }
             } else {
                 let timer = self.crash_bits != 0 && self.crash_timer > 0.0;
@@ -3778,6 +3812,9 @@ impl App {
                     self.safe_matrix = Some((c.state.pos, c.state.rot));
                 }
             }
+        }
+        if set_down {
+            self.player_camera_reset();
         }
         // ---- crashes (crash_camera_rule.md 4): the player's car wiped out (chassis +592 bit 0x10) or
         // damaged out (0x04); a wreck is put back on the road, repaired, a moment later ----
@@ -8981,6 +9018,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // (F-39432 also sets the engine sound running at once, vt+48 F-79364: state 4, no crank)
             self.sound.engine_set_running();
+            // (and resets the player camera, F-28350)
+            self.player_camera_reset();
         }
         // ---- nitrous: none until the garage's nitrous part is fitted, then as many canisters
         // as the tuning counts (up to 4 fully fitted). They are filled when the part changes
@@ -9101,6 +9140,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         self.gpu = Some(gpu);
         let action = std::mem::replace(&mut self.pending_action, MenuAction::None);
         self.handle_action(action);
+        // (a player camera reset asked by the action, F-28350 - run here, outside the action's borrows)
+        if std::mem::take(&mut self.cam_reset_pending) {
+            self.player_camera_reset();
+        }
     }
 
     fn render(&mut self) {
@@ -13481,6 +13524,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         self.gpu = Some(gpu);
         let action = std::mem::replace(&mut self.pending_action, MenuAction::None);
         self.handle_action(action);
+        // (a player camera reset asked by the action, F-28350 - run here, outside the action's borrows)
+        if std::mem::take(&mut self.cam_reset_pending) {
+            self.player_camera_reset();
+        }
     }
 
     fn handle_action(&mut self, action: MenuAction) {
@@ -13579,8 +13626,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     if let Some(v) = self.vehicles.player_mut().and_then(|c| c.state.veh.as_deref_mut()) {
                         v.air = physics::vehsim::AirRide::default();
                     }
-                    // (the player's Racer_Reset is F-41331, which runs the driving flush F-15445 first)
+                    // (the player's Racer_Reset is F-41331, which runs the driving flush F-15445 first; it resets the
+                    // player camera as well, F-28350)
                     self.game.mc4_drive_flush();
+                    self.cam_reset_pending = true;
                 }
                 // (the race object goes: its destructor's Race_Reset, F-83102 - kMRS, xRRT)
                 if self.game.race.is_some() && !self.game.goal_attack {
@@ -14014,6 +14063,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         c.engine_off = false;
                         c.deactivated = false;
                     }
+                    // (the native, F-67152, runs mcPlayer vt+80 F-35632, which resets the player camera too: F-28350)
+                    self.cam_reset_pending = true;
                 }
                 // a delivery from the garage lot opens with the walk to the customer's car
                 // (p080, the original's order - delivery_hangout_core `Hangouts/0x37c63b19`: ACCEPT ->
@@ -14395,6 +14446,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // (and the unpainted flags cleared, the tyres' effects killed: F-12181, F-74884)
                         self.game.mc4_set_unpainted([false; 6]);
                         self.kill_player_tyre_fx();
+                        // (its repair resets the player camera outside the garage's showroom, F-28350: the station's
+                        // event view is cut away here, so the close's 0.7 s blend below has nothing left to end)
+                        self.player_camera_reset();
                     }
                     if let Some(a) = self.audio.as_mut() {
                         a.obj(if fix { "QUICK_FIX_MASTER" } else { "NITROUS_REFILL_MASTER" });
