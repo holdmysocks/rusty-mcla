@@ -4551,6 +4551,19 @@ if keep || c.state.pos.distance(center) < 450.0 {
             self.opp_start = next;
         }
         let order: Vec<usize> = rot.iter().map(|&k| racers[k]).chain((0..n).filter(|i| !racers.contains(i))).collect();
+        // (the racers' brains whose turn below is theirs - not a scene's car, the player, a cruising man - get their aiv's
+        // frame worked out ahead side by side; each takes it only if nothing it reads changed before its turn: brain.rs `ahead`)
+        if !self.frozen && !(self.grid_hold.is_some() && self.grid_wait) {
+            let ahead: Vec<usize> = racers
+                .iter()
+                .copied()
+                .filter(|&i| {
+                    let c = &self.cars[i];
+                    c.rail.is_none() && c.brain.is_none() && c.parked.is_none() && !c.is_player && !crate::cruisedrive::is_cruiser(c)
+                })
+                .collect();
+            crate::brain::ahead(self, &ahead, self.grid_hold, dt);
+        }
         for i in order {
             // (traffic has no pedals: on its lane it rides, physical it rolls to rest -
             // traffic.rs; the original's physical ambient car's brakes are not decoded)

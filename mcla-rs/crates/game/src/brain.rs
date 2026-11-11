@@ -635,6 +635,9 @@ pub struct Brain {
     /// (its aiv init puts the defaults back): false from `setup_race`, the live R8 race holds the defaults throughout.
     pub activate_due: bool,
     dbg_t: f32,
+    /// (the port's, GitHub #48) the frame's aiv steps worked out ahead on another thread (`ahead`), taken by `update` when
+    /// they were worked out from its very state and inputs (`Aiv::take_ahead`)
+    pub ahead: Option<Box<crate::aiv::AivAhead>>,
 }
 
 impl Brain {
@@ -679,6 +682,7 @@ impl Brain {
             cap_written: false,
             activate_due: false,
             dbg_t: 0.0,
+            ahead: None,
         };
         let u = rng().float();
         b.rev.set_enabled(true, u);
@@ -824,6 +828,24 @@ impl Brain {
 
     /// One frame: F-13552 (goals, routes, the line) then F-17058 (the pedals) and
     /// mcOpponentInput. `rb` = the rubber band's tuning and this racer's measures (None: off).
+    /// The aiv's car of an update (A-59878).
+    fn aiv_car(&self, car: &BrainCar) -> AivCar {
+        AivCar {
+            pos: car.pos,
+            right: car.right,
+            forward: car.forward,
+            vel: car.vel,
+            ang_vel: car.ang_vel,
+            nitro_tune: car.nitro_tune,
+            nitro_t: car.nitro_t,
+            sling_tune: car.sling_tune,
+            sling_t: car.sling_t,
+            speed_cap: self.max_speed,
+            size: car.size,
+            gravity: car.gravity,
+        }
+    }
+
     pub fn update(&mut self, car: &BrainCar, turn: &crate::brainturn::TurnCar, mesh: &NavMesh, obstacles: &[crate::aiv::Obstacle], rb: Option<(&crate::rubber::RubberBand, crate::ai::RbState)>, dt: f32) -> BrainOut {
         let mut out = BrainOut::default();
         // ---- F-13552 ----
@@ -841,26 +863,18 @@ impl Brain {
                 }
             }
         }
-        self.aiv.set_obstacles(obstacles);
-        let acar = AivCar {
-            pos: car.pos,
-            right: car.right,
-            forward: car.forward,
-            vel: car.vel,
-            ang_vel: car.ang_vel,
-            nitro_tune: car.nitro_tune,
-            nitro_t: car.nitro_t,
-            sling_tune: car.sling_tune,
-            sling_t: car.sling_t,
-            speed_cap: self.max_speed,
-            size: car.size,
-            gravity: car.gravity,
-        };
-        if self.activate_due {
-            self.aiv.activate(&acar);
+        let acar = self.aiv_car(car);
+        // (the steps below as `ahead` worked them out, if it did so from this state)
+        if self.ahead.take().is_some_and(|a| self.aiv.take_ahead(*a, obstacles, &acar, self.activate_due, dt)) {
             self.activate_due = false;
+        } else {
+            self.aiv.set_obstacles(obstacles);
+            if self.activate_due {
+                self.aiv.activate(&acar);
+                self.activate_due = false;
+            }
+            self.aiv.update(&acar, dt);
         }
-        self.aiv.update(&acar, dt);
         // (unlimited nitrous: far enough behind - rubber.md 2.7)
         if let Some((t, s)) = rb {
             out.unlimited_nitro = s.gap < -t.unlimited_nitro_min_dist_behind_player;
@@ -1242,27 +1256,8 @@ pub fn tick(v: &mut crate::vehicles::Vehicles, i: usize, to_go: Option<f32>, dt:
     input
 }
 
-/// `tick` with the brain held outside the car (the cruising brain runs its racing brain inside its own update,
-/// F-64718 -> F-13552).
-pub fn run(v: &mut crate::vehicles::Vehicles, i: usize, brain: &mut Brain, to_go: Option<f32>, dt: f32) -> CarInput {
-    let Some(mesh) = crate::offroad::mesh() else { return CarInput { brake: 1.0, ai: true, ..Default::default() } };
-    // (the brain runs once per game frame, 1/30 s, with that dt: the chassis ticks twice in between - the original's aiv position,
-    // mcOpponentInput targets and aiv dt (0.0333) change on every second chassis tick, work/ai-record. The pedals go on through the
-    // other ticks; the one-shot nitrous / slingshot flags do not repeat.)
-    if let Some(held) = brain.held.filter(|_| dt > 0.0) {
-        if !frame_due(&mut brain.frame_acc, dt) {
-            let mut input = held;
-            input.nitro = false;
-            input.sst = false;
-            return input;
-        }
-    }
-    let dt = if dt > 0.0 { FRAME } else { dt };
-    if v.cars[i].ai.as_mut().map_or(false, |a| std::mem::take(&mut a.hit_pending)) {
-        brain.hit();
-    }
-    let rb = v.cars[i].ai.as_ref().and_then(|a| a.rb);
-    script_grid(brain, to_go);
+/// What a brain update reads of its car and of the cars and props round it: the car (`BrainCar`) and its obstacles.
+fn frame_inputs(v: &crate::vehicles::Vehicles, i: usize, brain: &Brain, to_go: Option<f32>) -> (BrainCar, Vec<crate::aiv::Obstacle>) {
     let c = &v.cars[i];
     let st = &c.state;
     let vt = c.params().veh.clone();
@@ -1323,6 +1318,73 @@ pub fn run(v: &mut crate::vehicles::Vehicles, i: usize, brain: &mut Brain, to_go
     // (half_length: F-98453(car + 8) +24, the composite bound box's max z)
     let sel = crate::brainturn::SelCar { pos: car.pos, forward: car.forward, vel: car.vel, speed: car.speed, half_length: c.params().composite_box().1.z };
     let obstacles = crate::brainturn::select_obstacles_car(i, &objects, &line, &sel, brain.ignore, &crate::brainturn::ObjectGrid::city(), &brain.aiv.tun);
+    (car, obstacles)
+}
+
+/// (the port's, GitHub #48) the aiv steps of the racers' brains that update this tick, worked out ahead side by side
+/// (`Aiv::ahead`, the rayon pool): the optimiser is nearly all of a racer's update and each racer's reads only its own aiv
+/// and its frame's inputs; the original runs it as a job too. Each brain's update takes its result only when its aiv's
+/// state and inputs are still the very ones it was worked out from (`Aiv::take_ahead`) - otherwise it runs the steps
+/// itself, as before - so the cars' inputs are the same bit for bit. `cars`: the racers whose brain the tick may run, in
+/// any order. MCLA_AIV_AHEAD=0: off.
+pub fn ahead(v: &mut crate::vehicles::Vehicles, cars: &[usize], to_go: Option<f32>, dt: f32) {
+    use rayon::prelude::*;
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if dt <= 0.0 || crate::offroad::mesh().is_none() || !*ON.get_or_init(|| std::env::var("MCLA_AIV_AHEAD").map_or(true, |x| x != "0")) {
+        return;
+    }
+    let jobs: Vec<(usize, &Aiv, Vec<crate::aiv::Obstacle>, AivCar, bool)> = cars
+        .iter()
+        .filter_map(|&i| {
+            let ai = v.cars[i].ai.as_ref()?;
+            let b = ai.brain.0.as_deref()?;
+            // (an update this tick: `run`'s frame clock)
+            if b.held.is_some() && !frame_due(&mut b.frame_acc.clone(), dt) {
+                return None;
+            }
+            if ai.hit_pending {
+                return None;
+            }
+            let (car, obstacles) = frame_inputs(v, i, b, to_go);
+            Some((i, &b.aiv, obstacles, b.aiv_car(&car), b.activate_due))
+        })
+        .collect();
+    if jobs.len() < 2 {
+        return;
+    }
+    let done: Vec<(usize, crate::aiv::AivAhead)> = jobs.par_iter().map(|(i, aiv, obstacles, car, activate)| (*i, aiv.ahead(obstacles, car, *activate, FRAME))).collect();
+    for (i, a) in done {
+        if let Some(b) = v.cars[i].ai.as_mut().and_then(|ai| ai.brain.0.as_deref_mut()) {
+            b.ahead = Some(Box::new(a));
+        }
+    }
+}
+
+/// `tick` with the brain held outside the car (the cruising brain runs its racing brain inside its own update,
+/// F-64718 -> F-13552).
+pub fn run(v: &mut crate::vehicles::Vehicles, i: usize, brain: &mut Brain, to_go: Option<f32>, dt: f32) -> CarInput {
+    let Some(mesh) = crate::offroad::mesh() else { return CarInput { brake: 1.0, ai: true, ..Default::default() } };
+    // (the brain runs once per game frame, 1/30 s, with that dt: the chassis ticks twice in between - the original's aiv position,
+    // mcOpponentInput targets and aiv dt (0.0333) change on every second chassis tick, work/ai-record. The pedals go on through the
+    // other ticks; the one-shot nitrous / slingshot flags do not repeat.)
+    if let Some(held) = brain.held.filter(|_| dt > 0.0) {
+        if !frame_due(&mut brain.frame_acc, dt) {
+            let mut input = held;
+            input.nitro = false;
+            input.sst = false;
+            return input;
+        }
+    }
+    let dt = if dt > 0.0 { FRAME } else { dt };
+    if v.cars[i].ai.as_mut().map_or(false, |a| std::mem::take(&mut a.hit_pending)) {
+        brain.hit();
+    }
+    let rb = v.cars[i].ai.as_ref().and_then(|a| a.rb);
+    script_grid(brain, to_go);
+    let (car, obstacles) = frame_inputs(v, i, brain, to_go);
+    let c = &v.cars[i];
+    let vs = c.state.veh.as_ref();
+    let wheel_count = if c.model.bike { 2 } else { 4 };
     // (the chassis lists its wheels FL, RL, FR, RR at +412 .. +424; the port's order is FL, FR, RL, RR)
     let w = &v.cars[i].state.wheels;
     let turn = crate::brainturn::TurnCar {

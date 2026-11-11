@@ -146,6 +146,32 @@ pub struct AivCar {
     pub gravity: f32,
 }
 
+/// (the port's) a frame's aiv steps worked out ahead (`Aiv::ahead`): the state and inputs they were worked out from, and
+/// the aiv they left.
+pub struct AivAhead {
+    epoch: u64,
+    obstacles: Vec<Obstacle>,
+    car: AivCar,
+    activate: bool,
+    dt: f32,
+    out: Aiv,
+}
+
+fn obstacle_bits(o: &Obstacle) -> [u32; 12] {
+    let b = |x: f32| x.to_bits();
+    [b(o.pos.x), b(o.pos.y), b(o.pos.z), b(o.vel.x), b(o.vel.y), b(o.vel.z), b(o.dir.x), b(o.dir.y), b(o.dir.z), b(o.extent.0), b(o.extent.1), o.flags as u32]
+}
+
+fn aiv_car_bits(c: &AivCar) -> Vec<u32> {
+    let mut w = Vec::with_capacity(32);
+    for v in [c.pos, c.right, c.forward, c.vel, c.ang_vel, c.size] {
+        w.extend([v.x.to_bits(), v.y.to_bits(), v.z.to_bits()]);
+    }
+    w.extend(c.nitro_tune.iter().chain(&c.sling_tune).map(|x| x.to_bits()));
+    w.extend([c.nitro_t, c.sling_t, c.speed_cap, c.gravity].map(f32::to_bits));
+    w
+}
+
 /// The chassis pedals of F-28541 as written (before mcOpponentInput's smoothing).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AivOut {
@@ -159,7 +185,7 @@ pub struct AivOut {
 // ---------------------------------------------------------------------------------------------
 // rings and state
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Ring<T: Copy, const N: usize> {
     d: [T; N],
     start: i32,
@@ -209,7 +235,7 @@ impl<T: Copy, const N: usize> Ring<T, N> {
 
 /// A portal as stored (176 bytes in the original): raw ends, shrunk ends, normal and the planes
 /// of the cell to the next portal (F-68053), plus the flag byte (0x80 = off-road).
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 struct Cell {
     a: Vec3,
     b: Vec3,
@@ -225,7 +251,7 @@ struct Cell {
     offroad: bool,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 struct Goal {
     p0: Vec3,
     /// p0.w: radius, or the lerp fraction of a gate
@@ -285,7 +311,7 @@ struct Sample {
 const NS: usize = 66;
 
 /// The block the optimiser saves and restores (aiv+25440..+30480).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Line {
     pts: Ring<Vec3, 64>,
     /// point -> portal << 1 | collision bit
@@ -298,6 +324,7 @@ struct Line {
 }
 
 /// The job's scratch (F-61160): backup states, dirty bits, spline coefficients.
+#[derive(Clone, Debug)]
 struct Scratch {
     backup: [Line; 4],
     dirty: [u32; 2],
@@ -306,6 +333,7 @@ struct Scratch {
 }
 
 /// The vehicle tables (aivVehicleTuning) with the derived scales of F-49493.
+#[derive(Clone, Debug)]
 struct Veh {
     t: Arc<AiTune>,
     spd_k: f32,
@@ -615,6 +643,7 @@ thread_local! {
     pub static GOAL_LOG: std::cell::RefCell<Vec<(Vec3, Vec3, f32, Vec3, f32, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+#[derive(Clone, Debug)]
 pub struct Aiv {
     pub tun: AivTuning,
     veh: Veh,
@@ -655,6 +684,10 @@ pub struct Aiv {
     next_goal: i32,
     last_push_ok: bool,
     sc: Box<Scratch>,
+    /// (the port's) a number no other state of any aiv has had: a new one at every change through a `&mut self` method
+    /// (`touch`), kept by a copy - so an aiv whose number is the one a copy was taken at holds that copy's state
+    /// (`ahead` / `take_ahead`). Every field change outside `impl Aiv` must go through a method that touches.
+    epoch: u64,
 }
 
 impl Aiv {
@@ -704,12 +737,70 @@ impl Aiv {
             next_goal: 0,
             last_push_ok: false,
             sc: Box::new(Scratch { backup: [empty_line; 4], dirty: [0; 2], coef: [[Vec3::ZERO; 4]; 64], legs: 0 }),
+            epoch: 0,
         };
+        a.touch();
         a.reset();
         a
     }
 
+    /// (the port's) a new state number (`epoch`).
+    fn touch(&mut self) {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.epoch = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// (the port's, GitHub #48) the racing brain's aiv steps of a frame - `set_obstacles`, `activate` when due, `update` -
+    /// worked out on a copy, ahead of the frame and on another thread (vehicles.rs, `brain::ahead`): the optimiser is
+    /// most of a racer's tick and each racer's is its own.
+    pub fn ahead(&self, obstacles: &[Obstacle], car: &AivCar, activate: bool, dt: f32) -> AivAhead {
+        let mut out = self.clone();
+        out.set_obstacles(obstacles);
+        if activate {
+            out.activate(car);
+        }
+        out.update(car, dt);
+        AivAhead { epoch: self.epoch, obstacles: obstacles.to_vec(), car: *car, activate, dt, out }
+    }
+
+    /// The frame's steps as `ahead` did them, when it did them from this state with these inputs, bit for bit (then the
+    /// result is the steps' own: they read nothing else); false: not taken, the caller runs them.
+    /// (MCLA_AIV_AHEAD_CHECK=1: a taken result is checked against the steps run here, a difference logged)
+    pub fn take_ahead(&mut self, ahead: AivAhead, obstacles: &[Obstacle], car: &AivCar, activate: bool, dt: f32) -> bool {
+        let same = ahead.epoch == self.epoch
+            && ahead.activate == activate
+            && ahead.dt.to_bits() == dt.to_bits()
+            && aiv_car_bits(&ahead.car) == aiv_car_bits(car)
+            && ahead.obstacles.len() == obstacles.len()
+            && ahead.obstacles.iter().zip(obstacles).all(|(a, b)| obstacle_bits(a) == obstacle_bits(b));
+        if !same {
+            return false;
+        }
+        static CHECK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *CHECK.get_or_init(|| std::env::var("MCLA_AIV_AHEAD_CHECK").is_ok_and(|v| v == "1")) {
+            let mut here = self.clone();
+            here.set_obstacles(obstacles);
+            if activate {
+                here.activate(car);
+            }
+            here.update(car, dt);
+            here.epoch = ahead.out.epoch;
+            let (a, b) = (format!("{:?}", here), format!("{:?}", ahead.out));
+            static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            static BAD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            let bad = BAD.load(std::sync::atomic::Ordering::Relaxed) + (a != b) as u64;
+            BAD.store(bad, std::sync::atomic::Ordering::Relaxed);
+            if a != b || n % 500 == 0 {
+                log::info!("aiv ahead check: {n} taken, {bad} different from the steps run in place");
+            }
+        }
+        *self = ahead.out;
+        true
+    }
+
     pub fn set_vehicle(&mut self, tune: Arc<AiTune>) {
+        self.touch();
         self.veh = Veh::new(tune);
     }
 
@@ -717,6 +808,7 @@ impl Aiv {
     /// The racing brain's enable F-92836 (Activate): +25168 the car's size (2 x the bound's half extents), +25292 /
     /// +25308 the nitrous / slingshot tunes, +25324 g = -9.8 x the car's gravity factor, +25328 = 1.0 / g.
     pub fn activate(&mut self, car: &AivCar) {
+        self.touch();
         self.size = car.size;
         self.b1 = car.nitro_tune;
         self.b2 = car.sling_tune;
@@ -727,6 +819,7 @@ impl Aiv {
     /// The aiv init's car values (written by its init, which BrainRacing_Reset F-69438 runs again): size (2, 1.5, 5),
     /// the tunes (2, 12, 2.5) / (2, 25, 2.5), g -9.8 and 1 / g.
     pub fn car_defaults(&mut self) {
+        self.touch();
         self.size = Vec3::new(2.0, 1.5, 5.0);
         self.b1 = [2.0, 12.0, 2.5];
         self.b2 = [2.0, 25.0, 2.5];
@@ -745,6 +838,7 @@ impl Aiv {
     }
 
     pub fn reset(&mut self) {
+        self.touch();
         self.next_goal = 0;
         self.cached = 0;
         self.planes_upto = 0;
@@ -845,6 +939,7 @@ impl Aiv {
     /// (+0 .. +31232, read from the running recomp, big endian) into this one: the portal / goal / obstacle /
     /// point / sample rings, the car state, and the optimiser's cursor. Planes are recomputed.
     pub fn import_original(&mut self, b: &[u8]) {
+        self.touch();
         let f = |o: usize| f32::from_be_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
         let i = |o: usize| i32::from_be_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
         let v3 = |o: usize| Vec3::new(f(o), f(o + 4), f(o + 8));
@@ -1021,6 +1116,7 @@ impl Aiv {
     /// As generated: the width from fused squares (z, then y, then x), the direction times the reciprocal refined once
     /// (vrefp, vnmsubfp, vmaddfp), the limits fused (fmadds / fmsubs), the near ends as vnmsubfp: -(d k - a).
     pub fn push_portal(&mut self, p: &Portal) {
+        self.touch();
         // (fmadds / fmsubs as the recomp evaluates them: fma in double, rounded to single)
         let fma = |x: f32, y: f32, z: f32| (x as f64).mul_add(y as f64, z as f64) as f32;
         let (mut a, mut b) = (p.a, p.b);
@@ -1054,6 +1150,7 @@ impl Aiv {
 
     /// F-82126: drop the last portal.
     pub fn pop_portal(&mut self) {
+        self.touch();
         if self.portals.count == 0 {
             return;
         }
@@ -1065,6 +1162,7 @@ impl Aiv {
     /// segment p0-p1); `dir` = exit direction; `speed` = target speed (-1 none); `flags` = the
     /// brain's flags/tag (low 13 bits kept).
     pub fn push_goal(&mut self, dir: Vec3, p0: Vec3, w: f32, p1: Vec3, speed: f32, flags: u32) {
+        self.touch();
         #[cfg(test)]
         GOAL_LOG.with(|l| l.borrow_mut().push((dir, p0, w, p1, speed, flags)));
         self.goal_dir = dir;
@@ -1088,6 +1186,7 @@ impl Aiv {
 
     /// F-69761 + F-70624 for each (up to 32).
     pub fn set_obstacles(&mut self, list: &[Obstacle]) {
+        self.touch();
         self.n_obst = 0;
         for o in list.iter().take(32) {
             let dir = norm_or(Vec3::new(o.dir.x, 0.0, o.dir.z), 1e-5, Vec3::X);
@@ -1103,6 +1202,7 @@ impl Aiv {
     /// (approx.: the original runs the optimiser as an async job joined on the next update, and
     /// only when brain+253 is clear; here it runs at once)
     pub fn update(&mut self, car: &AivCar, dt: f32) {
+        self.touch();
         self.update_state(car, dt);
         if !self.line_used_up() {
             self.optimise();
@@ -1112,6 +1212,7 @@ impl Aiv {
     /// F-12813 alone.
     /// (the car's size, g and boost tunes are not F-12813's: `activate` / `car_defaults` set them)
     pub fn update_state(&mut self, car: &AivCar, dt: f32) {
+        self.touch();
         self.pos = car.pos;
         self.f = car.forward;
         self.vel = car.vel;
@@ -1194,6 +1295,7 @@ impl Aiv {
     /// `min_wheel` is passed by the brain but not read; `rpm_ratio` = the f3 term of
     /// F-28541; `collision` = the brain's collision timer running.
     pub fn output(&mut self, gear: i32, _min_wheel: f32, rpm_ratio: f32, collision: bool) -> AivOut {
+        self.touch();
         if self.progress >= self.ln.pts.end() {
             return AivOut { throttle: 0.0, steer: 0.0, brake: 1.0, handbrake: 0.0, valid: false };
         }
@@ -1822,6 +1924,7 @@ impl Aiv {
 
     /// F-62607: evaluate the line, then coordinate descent over the control points.
     pub fn optimise(&mut self) {
+        self.touch();
         let end = self.window_end();
         if self.tun.restart_every_update {
             self.cursor = self.progress;
@@ -3054,6 +3157,49 @@ mod tests {
         for _ in 0..frames {
             aiv.update(c, 1.0 / 60.0);
         }
+    }
+
+    /// (GitHub #48) the frame's steps worked out ahead on another thread are the steps run in place, bit for bit, and are
+    /// taken only from the very state and inputs they were worked out from.
+    #[test]
+    fn steps_worked_out_ahead_are_the_steps_in_place() {
+        let state = |a: &Aiv| {
+            let mut c = a.clone();
+            c.epoch = 0;
+            format!("{c:?}")
+        };
+        let mut aiv = Aiv::new(tune());
+        let c = car(Vec3::ZERO, Vec3::Z, 12.0);
+        aiv.update_state(&c, 1.0 / 60.0);
+        for i in 0..61 {
+            let z = i as f32 * 10.0;
+            let x = (z * 0.02).sin() * 8.0;
+            aiv.push_portal(&portal(Vec3::new(x + 6.0, 0.0, z), Vec3::new(x - 6.0, 0.0, z)));
+        }
+        aiv.push_goal(Vec3::Z, Vec3::new(0.0, 0.0, 600.0), 5.0, Vec3::ZERO, -1.0, 0);
+        settle(&mut aiv, &c, 20);
+        let obst = [Obstacle { pos: Vec3::new(1.0, 0.0, 30.0), vel: Vec3::new(0.0, 0.0, 6.0), dir: Vec3::Z, extent: (2.0, 4.5), flags: 0 }];
+        let c2 = car(Vec3::new(0.2, 0.0, 3.0), Vec3::new(0.05, 0.0, 1.0).normalize(), 14.0);
+        let dt = 1.0 / 30.0;
+        let mut here = aiv.clone();
+        here.set_obstacles(&obst);
+        here.activate(&c2);
+        here.update(&c2, dt);
+        let ahead = || std::thread::scope(|s| s.spawn(|| aiv.ahead(&obst, &c2, true, dt)).join().unwrap());
+        let mut a = aiv.clone();
+        assert!(a.take_ahead(ahead(), &obst, &c2, true, dt));
+        assert_eq!(state(&a), state(&here));
+        // (not taken: the aiv changed since, another obstacle - a -0 for a 0 - another car value, no activation)
+        let mut b = aiv.clone();
+        b.push_goal(Vec3::Z, Vec3::new(0.0, 0.0, 600.0), 5.0, Vec3::ZERO, -1.0, 0);
+        assert!(!b.take_ahead(ahead(), &obst, &c2, true, dt));
+        let mut o2 = obst;
+        o2[0].pos.y = -0.0;
+        assert!(!aiv.clone().take_ahead(ahead(), &o2, &c2, true, dt));
+        let mut c3 = c2;
+        c3.speed_cap = 30.0;
+        assert!(!aiv.clone().take_ahead(ahead(), &obst, &c3, true, dt));
+        assert!(!aiv.clone().take_ahead(ahead(), &obst, &c2, false, dt));
     }
 
     #[test]
