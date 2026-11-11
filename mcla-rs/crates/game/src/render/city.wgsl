@@ -514,19 +514,29 @@ struct LightSet {
 @group(1) @binding(4) var t_fourth: texture_2d<f32>;
 // (a draw's own sampler: its car effect's maximum anisotropy, state 9, which the sampler set F-15464 lays over the
 // default F-23692 writes; `own_mask` says which fetches take it - x the first texture, y the second, z the third (the
-// livery), w the scrape map. All zero for every draw whose effect declares none: render/aniso.rs)
-@group(1) @binding(1) var s_own: sampler;
+// livery), w the scrape map, each by the value's index (1 = 2:1, 2 = 4:1, 3 = 16:1; 0 = the texture sampler). All zero
+// for every draw whose effect declares none: render/aniso.rs. The three samplers sit in group 0, not in the texture group:
+// DX12 gives every bind group holding a sampler its own slots of a 2,048-entry heap, GitHub #48)
+@group(0) @binding(17) var s_own2: sampler;
+@group(0) @binding(18) var s_own4: sampler;
+@group(0) @binding(19) var s_own16: sampler;
 @group(1) @binding(5) var<uniform> own_mask: vec4<u32>;
 fn own_s(t: texture_2d<f32>, on: u32, uv: vec2<f32>) -> vec4<f32> {
-    if (on != 0u) { return textureSample(t, s_own, uv); }
+    if (on == 1u) { return textureSample(t, s_own2, uv); }
+    if (on == 2u) { return textureSample(t, s_own4, uv); }
+    if (on == 3u) { return textureSample(t, s_own16, uv); }
     return textureSample(t, s_diffuse, uv);
 }
 fn own_sb(t: texture_2d<f32>, on: u32, uv: vec2<f32>, b: f32) -> vec4<f32> {
-    if (on != 0u) { return textureSampleBias(t, s_own, uv, b); }
+    if (on == 1u) { return textureSampleBias(t, s_own2, uv, b); }
+    if (on == 2u) { return textureSampleBias(t, s_own4, uv, b); }
+    if (on == 3u) { return textureSampleBias(t, s_own16, uv, b); }
     return textureSampleBias(t, s_diffuse, uv, b);
 }
 fn own_sg(t: texture_2d<f32>, on: u32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
-    if (on != 0u) { return textureSampleGrad(t, s_own, uv, dx, dy); }
+    if (on == 1u) { return textureSampleGrad(t, s_own2, uv, dx, dy); }
+    if (on == 2u) { return textureSampleGrad(t, s_own4, uv, dx, dy); }
+    if (on == 3u) { return textureSampleGrad(t, s_own16, uv, dx, dy); }
     return textureSampleGrad(t, s_diffuse, uv, dx, dy);
 }
 

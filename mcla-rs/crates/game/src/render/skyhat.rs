@@ -204,7 +204,7 @@ impl SkyHat {
     /// The dome's textures: `starfield.dds`, `galaxy.dds`, `noise16_p.dds` (the high detail
     /// noise) and `perlinnoise_small.dds` (what the Perlin pass reads) of the disc's sky folder.
     #[allow(clippy::too_many_arguments)]
-    pub fn bind(&mut self, device: &wgpu::Device, tex_layout: &wgpu::BindGroupLayout, own: (&wgpu::Sampler, &wgpu::Buffer), stars: &GpuTexture, galaxy: &GpuTexture, detail: &GpuTexture, noise1: &GpuTexture, spare: &GpuTexture) {
+    pub fn bind(&mut self, device: &wgpu::Device, tex_layout: &wgpu::BindGroupLayout, own_mask: &wgpu::Buffer, stars: &GpuTexture, galaxy: &GpuTexture, detail: &GpuTexture, noise1: &GpuTexture, spare: &GpuTexture) {
         let make = |a: &wgpu::TextureView, b: &wgpu::TextureView, c: &wgpu::TextureView, d: &wgpu::TextureView| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("sky hat textures"),
@@ -212,8 +212,7 @@ impl SkyHat {
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(a) },
                     // (no own sampler: render/aniso.rs)
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(own.0) },
-                    wgpu::BindGroupEntry { binding: 5, resource: own.1.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 5, resource: own_mask.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(b) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(c) },
                     wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(d) },

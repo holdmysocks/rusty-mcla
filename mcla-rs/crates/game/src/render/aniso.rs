@@ -14,7 +14,7 @@
 //!
 //! A draw's code (`code`): bits 0 - 3 say which fetches take the material's own sampler (0 the first texture, 1 the
 //! second, 2 the third - the livery, 3 the scrape map); bits 4 - 5 its anisotropy (1 = 2:1, 2 = 4:1, 3 = 16:1).
-//! city.wgsl reads the mask from group 1 binding 5 and samples through group 1 binding 1.
+//! city.wgsl reads the mask from group 1 binding 5 (each fetch's value index) and samples through globals bindings 17 - 19.
 //! MCLA_ANISO_OWN_OFF=1: every fetch through the global sampler, as before.
 
 use std::collections::HashMap;
@@ -183,6 +183,13 @@ pub fn code(sname: &str, slots: [u32; 4]) -> u32 {
     code_of(own(sname), slots)
 }
 
+/// The fetch words of a code (group 1 binding 5): for each fetch the own sampler's index (1 = 2:1, 2 = 4:1, 3 = 16:1;
+/// globals bindings 17 - 19), 0 = the texture sampler.
+pub fn mask_words(code: u32) -> [u32; 4] {
+    let (m, v) = (code & 15, (code >> 4) & 3);
+    [m & 1, (m >> 1) & 1, (m >> 2) & 1, (m >> 3) & 1].map(|b| b * v)
+}
+
 /// The name hashes of the samplers the port binds.
 pub mod ph {
     pub const DIFFUSE: u32 = 0xf1fe2b71; // DiffuseSampler
@@ -196,6 +203,22 @@ pub mod ph {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mask_words_pick_the_samplers_the_texture_group_did() {
+        // (before the move to globals 17 - 19: binding 1 = OWN_MAX[(code >> 4) & 3], taken by fetch i when bit i is set)
+        for v in 1..4u32 {
+            for m in 1..16u32 {
+                let w = mask_words(m | v << 4);
+                for (i, x) in w.iter().enumerate() {
+                    let old = if m >> i & 1 == 1 { Some(OWN_MAX[v as usize]) } else { None };
+                    let new = if *x != 0 { Some(OWN_MAX[*x as usize]) } else { None };
+                    assert_eq!(old, new, "code {:#x} fetch {}", m | v << 4, i);
+                }
+            }
+        }
+        assert_eq!(mask_words(0), [0; 4]);
+    }
 
     #[test]
     fn code_packs_mask_and_value() {
