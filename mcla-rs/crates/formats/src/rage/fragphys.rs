@@ -144,6 +144,9 @@ pub struct FragType {
     pub name: String,
     /// +0x133
     pub flags: u8,
+    /// The type always holds a cache entry (fragInst vt[44], F-51573): +0x135 (byte), +0xdc (u16), +0xe0 (word) or a
+    /// child whose +0x98 object has a u16 +8 not zero. The pool never takes such an entry for another (F-18636).
+    pub keeps_entry: bool,
     pub root_groups: u8,
     pub min_move: f32,
     pub elasticity: f32,
@@ -307,6 +310,11 @@ pub fn parse_frag_types(res: &Resource) -> Vec<FragType> {
         }
         t.type_events = event_set(&rd, rd.ptr(fr + 0x10c));
         t.bones = bones_of(&rd, fr);
+        t.keeps_entry = rd.u8(fr + 0x135) != 0 || rd.u16(fr + 0xdc) != 0 || rd.u32(fr + 0xe0) != 0 || {
+            let c = rd.u8(fr + 0x12f) as usize;
+            rd.ptr(fr + 0xd4).is_some_and(|cp| (0..c).any(|k| rd.ptr(cp + 4 * k).and_then(|ch| rd.ptr(ch + 0x98)).is_some_and(|o| rd.u16(o + 8) != 0)))
+        };
+
         let (ng, nc) = (rd.u8(fr + 0x12e) as usize, rd.u8(fr + 0x12f) as usize);
         if let Some(g) = rd.ptr(fr + 0xd0) {
             for k in 0..ng {
@@ -507,7 +515,34 @@ mod event_tests {
         assert!(types.iter().filter(|t| t.type_events.first().is_some_and(|e| e.effect == "col_metal_pole")).count() >= 40);
     }
 
+    /// Which types take a cache entry on activation (+0x133 bit 0) and which keep theirs for good (vt[44]): the instances
+    /// of the latter are the 102 entries the running original's pool holds at the title and in free roam (fountains,
+    /// oil pumps, planes, the ferris wheel; physics2 2026-11-11, work/physics2/poolrec/census.py).
+    #[test]
+    fn prop_entry_kinds_of_the_types() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Ok(d) = std::fs::read(std::path::Path::new(&root).join("resources/prop/0x0e66973c.r131")) else { return };
+        if d.len() < 16 || &d[0..4] != b"MCLR" {
+            return;
+        }
+        let u = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let data = d[16..].to_vec();
+        let vs = (u(12) as usize).min(data.len());
+        let res = Resource { rtype: u(4), flags: u(8), virtual_size: vs, physical_size: data.len() - vs, data };
+        let types = parse_frag_types(&res);
+        let kinds = |f: u8, k: bool| types.iter().filter(|t| t.flags & 1 == f && t.keeps_entry == k).count();
+        assert_eq!((kinds(1, false), kinds(1, true), kinds(0, true)), (85, 4, 19));
+        let of = |n: &str| types.iter().find(|t| t.name == n).unwrap();
+        assert!(of("la_prop_fire_hydrant_01x").flags & 1 == 1 && !of("la_prop_fire_hydrant_01x").keeps_entry);
+        assert!(of("la_prop_oil_pump_01x").keeps_entry && of("la_prop_pt_fountain_01x").keeps_entry);
+        let insts = parse_frag_instances(&res);
+        let kept = insts.iter().filter(|i| i.state != 3 && types.iter().find(|t| t.off == i.frag).is_some_and(|t| t.keeps_entry)).count();
+        assert_eq!(kept, 102);
+
+    }
+
     /// The parts' bounds as the collision tests read them: the composite's tested count, the kinds, a box's size.
+
     #[test]
     fn prop_bounds_of_the_types() {
         let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());

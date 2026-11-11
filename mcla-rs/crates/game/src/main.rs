@@ -6197,6 +6197,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if let Some(lw) = world.collider.loose.as_deref() {
                 self.props.follow_level(&gpu, &self.vehicles.level, lw);
             }
+            // (the prop manager's update hands the camera's place to the fragment cache's viewer sphere, F-44865)
+            self.vehicles.level.set_viewer(self.cam.pos);
             crate::ticktimes::mark(crate::ticktimes::S::Other);
             // ---- pulling up at a garage opens it ----
             {

@@ -31,6 +31,9 @@ pub struct LooseWorld {
     cells: HashMap<(i32, i32), Vec<u32>>,
     /// the corners of every polyhedron part (bound type 4), by type and part: what its core scans (bound +186)
     polyhedra: HashMap<(usize, usize), Vec<Vec3>>,
+    /// the cache entries held for good: one for every instance in the level whose type keeps one (F-30607 gives it
+    /// as the instance is put in; 102 in the city, as the running original holds at the title and in free roam)
+    pub kept_entries: usize,
 }
 
 fn cell_of(x: f32, z: f32) -> (i32, i32) {
@@ -67,7 +70,7 @@ impl LooseWorld {
                 }
             }
         }
-        let mut out = LooseWorld { types, instances: Vec::new(), cells: HashMap::new(), polyhedra };
+        let mut out = LooseWorld { types, instances: Vec::new(), cells: HashMap::new(), polyhedra, kept_entries: 0 };
         // (the torn bumpers' own type, made by the game's code rather than read from the file)
         out.types.push(piece_type());
         for inst in instances {
@@ -78,6 +81,7 @@ impl LooseWorld {
             }
             let i = out.instances.len() as u32;
             out.cells.entry(cell_of(inst.matrix[3][0], inst.matrix[3][2])).or_default().push(i);
+            out.kept_entries += out.types[t].keeps_entry as usize;
             out.instances.push((inst, t));
         }
         out
@@ -137,13 +141,92 @@ pub struct Entry {
     pub inv_inertia: Vec3,
     /// (the port's own: the prop instance a piece broke off, for drawing it, props.rs `follow_level`)
     pub from: Option<u32>,
+    /// the pool's frame it was last stamped in (+12, F-95559: when taken and on every contact run, F-17408)
+    pub stamp: u32,
+    /// (the port's own) its place in the pool's list: the higher, the nearer the front (`LooseState::pool_take`), and
+    /// whether F-18636 has taken it for another this tick (its teardown waits for the tick's end, `pool_teardown`)
+    pub slot: u64,
+    pub taken: bool,
 }
 
 fn group_of(t: &FragType, child: usize) -> usize {
     t.children.get(child).map_or(0, |c| c.group as usize)
 }
 
+// ---------------------------------------------------------------------------------------------
+// The fragment cache's pool (F-56091, F-18636; reference/vehicle/prop_reset_2026-11-10.md "The pool"): 160 entries in
+// one list, the used ones in front. An entry is taken from the back and put in front; when none is free a used one is
+// taken from what it serves (F-74663). The instances whose type always holds one (vt[44], `FragType::keeps_entry`) hold
+// theirs from the moment they are put in the level (F-30607), never given up: 102 in the city, as the running original
+// shows at the title and in free roam.
+
+/// The pool's size (F-47157 hands 160 to F-56091).
+pub const POOL_CAP: usize = 160;
+
+/// One used entry as F-18636's walk sees it: its stamp (+12), whether its instance's type keeps its entry (vt[44]),
+/// and the instance's bound sphere (+96: centre, w = radius).
+#[derive(Clone, Copy, Debug)]
+pub struct PoolSeen {
+    pub stamp: u32,
+    pub keeps: bool,
+    pub sphere: [f32; 4],
+}
+
+/// F-18636's victim when the pool is full, among the used entries in the list's order (`used[0]` the front): only an
+/// entry not stamped this frame or the last (stamp < frame - 1, unsigned) whose type does not keep its entry. With
+/// the viewer sphere set (manager +776; F-44865 sets it every frame from the prop manager's update, camera place and
+/// radius 300): the gap g = (R + r)^2 - |c - p|^2 (each step rounded: vsubfp, vaddfp of the splats, vmsum3fp, vmulfp,
+/// vsubfp); the first entry whose g is not >= 0 (outside the sphere, or NaN) is taken at once, else the one with the
+/// least g (a g not >= the best so far takes its place; the best starts at FLT_MAX). None: no candidate.
+pub fn pool_victim(used: &[PoolSeen], frame: u32, viewer: [f32; 4]) -> Option<usize> {
+    use super::artic::V4;
+    let c = V4(viewer);
+    let big = V4::splat(viewer[3]);
+    let mask = [true, true, true, false];
+    let (zero, w1) = (V4::ZERO, V4::new(0.0, 0.0, 0.0, 1.0));
+    let mut best = V4::new(f32::MAX, f32::MAX, f32::MAX, 0.0);
+    let mut out = None;
+    for (k, e) in used.iter().enumerate() {
+        if e.stamp >= frame.wrapping_sub(1) || e.keeps {
+            continue;
+        }
+        let p = V4(e.sphere);
+        let d = c.sub(p);
+        let rr = big.add(V4::splat(e.sphere[3]));
+        let g = rr.mul(rr).sub(d.dot3(d));
+        let g4 = zero.sel(g, mask).sel(w1, [false, false, false, true]);
+        if !g4.ge(zero).iter().all(|x| *x) {
+            return Some(k);
+        }
+        let b4 = zero.sel(best, mask);
+        if !g4.ge(b4).iter().all(|x| *x) {
+            out = Some(k);
+            best = g;
+        }
+    }
+    out
+}
+
+/// F-94385: a bound sphere (centre, w = radius) carried by a matrix (rows 0..2 and the place): the centre (x, y, z, 1)
+/// against each column (vmsum4fp), the radius times the longest row: l2 = the largest squared row length (vmsum3fp,
+/// vmaxfp row 0 and 1, then 2), y = vrsqrtefp(l2) (an infinite estimate made 0), y + (1 - l2 y y)(0.5 y), times l2.
+pub fn sphere_through(m: &[Vec3; 4], s: [f32; 4]) -> [f32; 4] {
+    use super::artic::V4;
+    let row = |r: Vec3| V4::new(r.x, r.y, r.z, 0.0);
+    let (r0, r1, r2, r3) = (row(m[0]), row(m[1]), row(m[2]), V4::new(m[3].x, m[3].y, m[3].z, 1.0));
+    let c = V4::new(s[0], s[1], s[2], 1.0);
+    let col = |i: usize| V4::new(r0.0[i], r1.0[i], r2.0[i], r3.0[i]);
+    let (x, y, z) = (c.dot4(col(0)).x(), c.dot4(col(1)).x(), c.dot4(col(2)).x());
+    let l2 = r0.dot3(r0).max(r1.dot3(r1)).max(r2.dot3(r2));
+    let est = l2.rsqrte();
+    let e = est.sel(V4::ZERO, est.eq(V4::splat(f32::INFINITY)));
+    let k = l2.nmsub(e.mul(e), V4::splat(1.0)).madd(V4::splat(0.5).mul(e), e);
+    let r = V4::splat(s[3]).mul(l2.mul(k)).x();
+    [x, y, z, r]
+}
+
 /// Is part `child` in an entry: the type has a bound there and its group has not left.
+
 pub fn part_present(t: &FragType, absent: u64, child: usize) -> bool {
     t.parts.get(child).map_or(false, |p| p.bound.is_some()) && absent & (1 << group_of(t, child)) == 0
 }
@@ -619,6 +702,15 @@ pub struct LooseState {
     pub tick: u32,
     /// the cache entries made so far: each took the next instance of the pool (0x90 bytes, downwards)
     entries_made: i64,
+    /// the pool's frame counter (+8: one a tick, F-89933), the place the next entry taken from the back gets
+    /// (`Entry::slot`), the viewer sphere (manager +736: the camera's place and 300, F-44865 every frame; None: never
+    /// set)
+    pool_frame: u32,
+    pool_slot: u64,
+    viewer: Option<[f32; 4]>,
+    /// the prop instances F-74663 took out of the level when the pool took their entry (+80 bit 0x20: not met, not drawn,
+    /// F-92987) until the whole city is reset (`reset_props`)
+    pub out: std::collections::BTreeSet<u32>,
     /// the level indices handed out in the update `.0` so far
     indices_taken: (i64, usize),
     /// the place of the car's own pair with the city in its island's tree (None: no such pair this tick)
@@ -778,6 +870,12 @@ fn car_last96() -> bool {
 fn dbg() -> bool {
     static D: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *D.get_or_init(|| std::env::var_os("MCLA_DBG_LOOSE").is_some())
+}
+
+/// MCLA_DBG_POOL: log every entry the pool takes from another (F-18636).
+fn pool_dbg() -> bool {
+    static D: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *D.get_or_init(|| std::env::var_os("MCLA_DBG_POOL").is_some())
 }
 
 /// A convex part with its matrix: what the detector is handed.
@@ -1334,7 +1432,8 @@ impl LooseState {
             for inst in world.near(p, 8.0) {
                 let (fi, ty) = &world.instances[inst as usize];
                 // (only what can be knocked: level state 1)
-                if fi.state != 1 {
+                // (nor what the pool took out of the level, F-74663)
+                if fi.state != 1 || self.out.contains(&inst) {
                     continue;
                 }
                 let t = &world.types[*ty];
@@ -1667,6 +1766,8 @@ impl LooseState {
         // before its solve: a prop moving faster than 1.2 m/s would meet no ground)
         let again = self.live && self.refreshed;
         self.refreshed = true;
+        // (the instances' contact callbacks stamp their cache entries, F-17408)
+        self.pool_stamp_contacts();
         for k in 0..self.manis.len() {
             if again && self.manis[k].a != Who::Car && self.manis[k].b != Who::Car {
                 continue;
@@ -3066,10 +3167,14 @@ impl LooseState {
                 }
                 return None;
             }
-            // (the prop gets an entry that holds every group, F-44697)
+            // (the prop gets an entry that holds every group, F-44697; from the pool, F-18636 - a type that keeps one
+            // has held it since it was put in the level)
             let mut e = Entry::default();
             let mass = entry_mass(t, 0);
             entry_refresh(t, &mut e, mass);
+            if !t.keeps_entry {
+                (e.slot, e.stamp) = self.pool_take(world);
+            }
             self.objs[w].entry = Some(e);
             // (the entry has an instance of its own, which a prop's does not use)
             self.entry_instance();
@@ -3109,6 +3214,9 @@ impl LooseState {
         let mut e = Entry { absent: all & !bits, age: parent.age, from: self.objs[w].inst.or(parent.from), ..Default::default() };
         let mass = entry_mass(t, e.absent);
         entry_refresh(t, &mut e, mass);
+        // (its own entry from the pool, F-18636)
+        (e.slot, e.stamp) = self.pool_take(world);
+
         let matrix = self.objs[w].matrix;
         let mut body = PBody::new(&matrix, e.cg, &e, max_speed, max_spin);
         // (broken off a moving parent it takes the parent's motion with it, F-47138 / F-74100)
@@ -3679,6 +3787,10 @@ impl LooseState {
             }
             self.objs[o].entry = Some(e);
         }
+        // (F-89933: after the entries' updates the pool's frame steps; the contacts of the tick have stamped theirs)
+        self.pool_stamp_contacts();
+        self.pool_frame = self.pool_frame.wrapping_add(1);
+        self.pool_teardown();
         if dbg() {
             let h = |v: Vec3| format!("{:08x} {:08x} {:08x}", v.x.to_bits(), v.y.to_bits(), v.z.to_bits());
             for o in self.objs.iter() {
@@ -4784,7 +4896,99 @@ impl LooseState {
         n
     }
 
+    /// The camera's place for the pool's viewer sphere (F-44865 from the prop manager's update every frame: radius 300).
+    pub fn set_viewer(&mut self, at: Vec3) {
+        self.viewer = Some([at.x, at.y, at.z, 300.0]);
+    }
+
+    /// The objects holding an entry from the pool (not one their type keeps for good, not one taken this tick).
+    fn pool_users(&self, world: &LooseWorld) -> Vec<usize> {
+        (0..self.objs.len())
+            .filter(|o| {
+                let obj = &self.objs[*o];
+                obj.entry.is_some_and(|e| !e.taken) && obj.veh.is_none() && !(obj.inst.is_some() && world.types[obj.ty].keeps_entry)
+            })
+            .collect()
+    }
+
+    /// F-18636: an entry from the pool - its place in the list and its stamp. Room (F-56091's 160, less the entries kept
+    /// for good and those in use): the back one, put in front. Full: the victim `pool_victim` picks among the used ones in
+    /// the list's order, by their instances' bound spheres (+96 = F-94385 of the bound's centroid and radius by the
+    /// matrix: `whole_bound`), whose place the new one takes; its own teardown waits for the tick's end (`pool_teardown`).
+    /// No victim (every candidate stamped this frame or the last, or no viewer sphere): the port gives it all the same.
+    fn pool_take(&mut self, world: &LooseWorld) -> (u64, u32) {
+        let mut users = self.pool_users(world);
+        if world.kept_entries + users.len() < POOL_CAP {
+            self.pool_slot += 1;
+            return (self.pool_slot, self.pool_frame);
+        }
+        users.sort_by_key(|o| std::cmp::Reverse(self.objs[*o].entry.map_or(0, |e| e.slot)));
+        let seen: Vec<PoolSeen> = users
+            .iter()
+            .map(|&o| {
+                let (_, _, c, r) = self.whole_bound(world, o);
+                let e = self.objs[o].entry.unwrap();
+                PoolSeen { stamp: e.stamp, keeps: world.types[self.objs[o].ty].keeps_entry, sphere: sphere_through(&self.objs[o].matrix, [c.x, c.y, c.z, r]) }
+            })
+            .collect();
+        match self.viewer.and_then(|vw| pool_victim(&seen, self.pool_frame, vw)) {
+            Some(k) => {
+                let o = users[k];
+                if dbg() || pool_dbg() {
+                    eprintln!("POOLTAKE tick {} frame {} obj {o} inst {:?} at {:?} of {}", self.tick, self.pool_frame, self.objs[o].inst, self.objs[o].matrix[3], users.len());
+                }
+                let e = self.objs[o].entry.as_mut().unwrap();
+                e.taken = true;
+                (e.slot, self.pool_frame)
+            }
+            None => {
+                self.pool_slot += 1;
+                (self.pool_slot, self.pool_frame)
+            }
+        }
+    }
+
+    /// F-17408 (an instance's contact callback, for every run of contacts it has): its entry stamped with the frame.
+    fn pool_stamp_contacts(&mut self) {
+        let frame = self.pool_frame;
+        for k in 0..self.manis.len() {
+            if self.manis[k].slots.is_empty() {
+                continue;
+            }
+            for w in [self.manis[k].a, self.manis[k].b] {
+                if let Who::Obj(o) = w {
+                    if let Some(e) = self.objs[o].entry.as_mut() {
+                        e.stamp = frame;
+                    }
+                }
+            }
+        }
+    }
+
+    /// F-74663 on the entries F-18636 took this tick: a piece's own instance leaves the level (vt[40]); a prop's entry -
+    /// manager byte +778 is 1 in play (F-47157 sets it) - takes the prop out of the level and flags it +80 0x20, which
+    /// the draw visit F-92987 skips: it is neither met nor drawn until the whole city is reset (F-79581 clears the flag).
+    /// Here both objects go (the prop's instance into `out`, which the collide does not take in again).
+    fn pool_teardown(&mut self) {
+        let named = |s: &LooseState, o: usize| s.pieces.iter().any(|p| p.obj == o) || s.extras.iter().any(|e| e.obj == o) || s.lead == Some(o) || s.merged.contains(&o);
+        let mut gone = vec![false; self.objs.len()];
+        for o in 0..self.objs.len() {
+            // (one a piece, an extra car or a rider's merge still names waits for a later tick)
+            if !self.objs[o].entry.is_some_and(|e| e.taken) || named(self, o) {
+                continue;
+            }
+            gone[o] = true;
+            if let Some(i) = self.objs[o].inst {
+                self.out.insert(i);
+            }
+        }
+        self.manis.retain(|m| ![m.a, m.b].iter().any(|w| matches!(*w, Who::Obj(o) if gone[o])));
+        self.fx_events.retain(|f| !matches!(f.at, FxAt::Follow { obj, .. } if gone[obj]));
+        self.remove_objs(&gone);
+    }
+
     /// The whole city's props as new (PropManager_ResetProps, F-27147 -> F-87948; GitHub #48): first the fragment cache's
+
     /// sweep (F-48442 -> F-86846: every entry of the pool's used list released, F-74663 - the teardown takes a broken-off
     /// piece's own instance out of the level -; an instance whose type always holds one gets a new entry), then every prop instance's reset (the prop resource's slot 3,
     /// F-12466, calls the instance's vt+168 F-79581): its flags cleared, back at its file matrix (rebuilt from the packed
@@ -4796,7 +5000,9 @@ impl LooseState {
         let named = |s: &LooseState, o: usize| s.pieces.iter().any(|p| p.obj == o) || s.extras.iter().any(|e| e.obj == o) || s.lead == Some(o) || s.merged.contains(&o);
         let mut changed = vec![false; self.objs.len()];
         let mut gone = vec![false; self.objs.len()];
-        let mut reset = 0;
+        // (what the pool took out of the level is put back: F-79581 clears +80 0x20 and the file matrix stands)
+        let mut reset = self.out.len();
+        self.out.clear();
         for o in 0..self.objs.len() {
             let obj = &self.objs[o];
             if obj.veh.is_some() || obj.amb.is_some() {
@@ -6352,3 +6558,92 @@ mod amb_wheel_tests {
 #[cfg(test)]
 #[path = "loose_small_tests.rs"]
 mod loose_small_tests;
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+
+    /// testdata/pool_evict_ref.txt (tools/pool_evict_reference.py): F-18636 run offline with the pool full and the viewer
+    /// sphere set, 1,500 lists of 1 - 24 entries (stamps about the frame, kept types, spheres in and out of the sphere,
+    /// equal ones, a few NaN), and F-94385 on 1,500 matrices and spheres: the port's victim and sphere bit for bit.
+    #[test]
+    fn pool_victim_matches_the_original() {
+        let (mut nv, mut ns) = (0, 0);
+        for line in include_str!("../testdata/pool_evict_ref.txt").lines() {
+            let (case, out) = line.split_once(" -> ").unwrap();
+            let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+            let f = |s: &str| f32::from_bits(h(s));
+            if let Some(rest) = case.strip_prefix("V ") {
+                let mut parts = rest.split(" | ");
+                let head: Vec<&str> = parts.next().unwrap().split_whitespace().collect();
+                let frame = h(head[0]);
+                let viewer = [f(head[1]), f(head[2]), f(head[3]), f(head[4])];
+                let used: Vec<PoolSeen> = parts
+                    .map(|p| {
+                        let w: Vec<&str> = p.split_whitespace().collect();
+                        PoolSeen { stamp: h(w[0]), keeps: w[1] == "1", sphere: [f(w[2]), f(w[3]), f(w[4]), f(w[5])] }
+                    })
+                    .collect();
+                assert_eq!(used.len(), head[5].parse::<usize>().unwrap());
+                let want: i64 = out.trim().parse().unwrap();
+                let got = pool_victim(&used, frame, viewer).map_or(-1, |k| k as i64);
+                assert_eq!(got, want, "{line}");
+                nv += 1;
+            } else if let Some(rest) = case.strip_prefix("S ") {
+                let w: Vec<f32> = rest.split_whitespace().map(f).collect();
+                let m = [Vec3::new(w[0], w[1], w[2]), Vec3::new(w[3], w[4], w[5]), Vec3::new(w[6], w[7], w[8]), Vec3::new(w[9], w[10], w[11])];
+                let got = sphere_through(&m, [w[12], w[13], w[14], w[15]]);
+                let want: Vec<u32> = out.split_whitespace().map(h).collect();
+                assert_eq!(got.map(f32::to_bits).to_vec(), want, "{line}");
+                ns += 1;
+            }
+        }
+        assert_eq!((nv, ns), (1500, 1500));
+    }
+
+    /// The pool in the level: 160 entries taken with room; the 161st takes the newest stale one outside the viewer
+    /// sphere, which leaves the level at the tick's end (its instance `out`: not taken in again) and is back after the
+    /// city's reset.
+    #[test]
+    fn a_full_pool_takes_a_prop_out_until_the_reset() {
+        let ty = FragType { off: 1, radius: 0.5, flags: 1, ..Default::default() };
+        let inst = |x: f32| FragInstance { frag: 1, state: 1, matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [x, 0.0, 0.0]], ..Default::default() };
+        let world = LooseWorld::new(vec![ty], (0..161).map(|i| inst(10.0 * i as f32)).collect());
+        assert_eq!(world.kept_entries, 0);
+        let mut s = LooseState::default();
+        s.set_viewer(Vec3::ZERO);
+        for i in 0..160 {
+            let o = s.obj_of(&world, i);
+            let mut e = Entry::default();
+            (e.slot, e.stamp) = s.pool_take(&world);
+            assert_eq!(e.slot, i as u64 + 1);
+            s.objs[o].entry = Some(e);
+            s.objs[o].hit = true;
+        }
+        assert!(s.objs.iter().all(|o| !o.entry.unwrap().taken));
+        s.pool_frame += 2;
+        let o = s.obj_of(&world, 160);
+        let (slot, stamp) = s.pool_take(&world);
+        // (the walk starts with the newest: instance 159 at 1590 m, outside the 300 m sphere)
+        assert_eq!((slot, stamp), (160, 2));
+        assert!(s.objs[159].entry.unwrap().taken);
+        s.objs[o].entry = Some(Entry { slot, stamp, ..Default::default() });
+        s.pool_teardown();
+        assert_eq!(s.objs.len(), 160);
+        assert!(s.out.contains(&159) && s.out.len() == 1);
+        assert!(s.objs.iter().all(|o| o.inst != Some(159)));
+        // (all within the sphere and stale: the least gap, the farthest - instance 29 at 290 m of 0 .. 29 and 160)
+        let mut t = LooseState::default();
+        t.set_viewer(Vec3::ZERO);
+        for i in (0..30).chain(160..161) {
+            let o = t.obj_of(&world, i);
+            t.objs[o].entry = Some(Entry { slot: i as u64 + 1, ..Default::default() });
+        }
+        t.pool_frame = 5;
+        let seen: Vec<PoolSeen> = (0..31).rev().map(|k| PoolSeen { stamp: 0, keeps: false, sphere: sphere_through(&t.objs[k].matrix, [0.0, 0.0, 0.0, 0.5]) }).collect();
+        assert_eq!(pool_victim(&seen, 5, [0.0, 0.0, 0.0, 300.0]), Some(0));
+        assert_eq!(pool_victim(&seen[1..], 5, [0.0, 0.0, 0.0, 300.0]), Some(0));
+        assert_eq!(s.reset_props(&world).0, 161);
+        assert!(s.out.is_empty());
+    }
+}

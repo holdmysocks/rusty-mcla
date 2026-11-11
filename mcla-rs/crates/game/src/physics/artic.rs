@@ -168,7 +168,13 @@ impl V4 {
     pub fn sel(self, b: V4, m: [bool; 4]) -> V4 {
         V4([0, 1, 2, 3].map(|i| if m[i] { b.0[i] } else { self.0[i] }))
     }
+    /// vmaxfp as the recompiled code does it (the second lane unless the first is greater).
+    #[inline]
+    pub fn max(self, b: V4) -> V4 {
+        V4([0, 1, 2, 3].map(|i| if self.0[i] > b.0[i] { self.0[i] } else { b.0[i] }))
+    }
 }
+
 
 /// a x b as the code forms it: -(a.zxy b.yzx - a.yzx b.zxy).
 #[inline]

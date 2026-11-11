@@ -2648,6 +2648,7 @@ impl Props {
                 best.insert(ci, (mass, k));
             }
         }
+        let followed: std::collections::HashSet<u32> = best.keys().copied().collect();
         for (ci, (_, k)) in best {
             let o = &level.objs[k];
             if let Some(b) = &o.body {
@@ -2668,6 +2669,22 @@ impl Props {
             note_between(&mut self.between, self.between_tick, c.inst, self.insts[c.inst as usize], inst);
             self.insts[c.inst as usize] = inst;
             gpu.queue.write_buffer(buf, c.inst as u64 * std::mem::size_of::<Inst>() as u64, bytemuck::bytes_of(&inst));
+        }
+        // (a prop whose cache entry the pool took is out of the level and not drawn, F-74663 / F-92987, until the city is
+        // reset - unless a piece broken off it still moves, which the port draws as the whole prop)
+        for &i in &level.out {
+            let Some((fi, _)) = lw.instances.get(i as usize) else { continue };
+            let at = Vec3::new(fi.matrix[3][0], fi.matrix[3][1], fi.matrix[3][2]);
+            let Some(&ci) = self.level_map.as_ref().unwrap().get(&key(at)) else { continue };
+            let ii = self.colliders[ci as usize].inst as usize;
+            if followed.contains(&ci) || self.insts[ii].pos_scale[3] == 0.0 {
+                continue;
+            }
+            self.placed.entry(ci).or_insert(self.insts[ii]);
+            self.between.remove(&(ii as u32));
+            self.moving.remove(&ci);
+            self.insts[ii].pos_scale[3] = 0.0;
+            gpu.queue.write_buffer(buf, ii as u64 * std::mem::size_of::<Inst>() as u64, bytemuck::bytes_of(&self.insts[ii]));
         }
     }
 }
