@@ -1560,6 +1560,28 @@ fn manifold_of(manifolds: &mut Vec<Manifold>, part: u8, cell: usize) -> usize {
     }
 }
 
+/// The sink (F-90136) for the hull's and the wheels' contacts with the city: the nearest kept contact (age != 0) within
+/// 2 cm by the body's point (F-74262) takes the new one's place - its multipliers stay, and when it was the deeper its
+/// element ids +168 / +170 (the hull's triangle, the city's polygon and with it the material) stay too -; else the new
+/// one is appended up to six (F-28977), else F-55965 picks the one it replaces, or none. MCLA_DBG_RA3: never replaced.
+fn sink(slots: &mut Vec<Slot>, slot: Slot) {
+    match nearest_kept(slots.iter().map(|s| (s.c.local, s.age)), slot.c.local) {
+        Some(k) => {
+            let old = slots[k];
+            let keep = old.c.depth >= slot.c.depth;
+            let (element, polygon, surface) = if keep { (old.element, old.polygon, old.surface) } else { (slot.element, slot.polygon, slot.surface) };
+            slots[k] = Slot { c: Contact { kept: old.c.kept, pushed: old.c.pushed, ..slot.c }, element, polygon, surface, ..slot };
+        }
+        None if slots.len() < 6 => slots.push(slot),
+        None => {
+            let k = seventh_contact(std::array::from_fn(|i| slots[i].c.local), slot.c.local);
+            if k < 6 && !super::vehsim::dbg_flag("MCLA_DBG_RA3") {
+                slots[k] = slot;
+            }
+        }
+    }
+}
+
 /// Everything one wheel's shape touches, laid into `manifolds` as the hull's contacts are
 /// (F-82759 for a wheel's part): the same narrow phase, edge test and cone as `wheel_touch`,
 /// every contact kept. `now`: the body's matrix (rows and the model's origin).
@@ -1633,17 +1655,8 @@ pub fn wheel_collide(world: &WorldCollider, core: &super::gjk::WheelCore, part: 
         let fresh = Contact { depth: 0.0 - r.distance, local, on_body: r.on_a, on_world: r.on_b, normal, ..Default::default() };
         let at = manifold_of(manifolds, part, cell);
         let m = &mut manifolds[at];
-        let near = nearest_kept(m.slots.iter().map(|s| (s.c.local, s.age)), local);
         let surface = Surface::from_u8(mesh.mats.get(i).copied().unwrap_or(0));
-        let slot = Slot { c: fresh, age: 0, enabled: true, surface, polygon: i as u32, element: 0, part };
-        match near {
-            Some(k) => {
-                let old = m.slots[k];
-                m.slots[k] = Slot { c: Contact { kept: old.c.kept, pushed: old.c.pushed, ..fresh }, ..slot };
-            }
-            None if m.slots.len() < 6 => m.slots.push(slot),
-            None => {}
-        }
+        sink(&mut m.slots, Slot { c: fresh, age: 0, enabled: true, surface, polygon: i as u32, element: 0, part });
     });
     manifolds.retain(|m| !m.slots.is_empty());
 }
@@ -1859,30 +1872,11 @@ pub fn collide(hull: &HullShape, bbox: (Vec3, Vec3), now: &[Vec3; 4], last: &[Ve
         let fresh = Contact { depth: 0.0 - r.distance, local, on_body: on_a, on_world: on_b, normal, ..Default::default() };
         let at = manifold_of(manifolds, 0, cell);
         let m = &mut manifolds[at];
-        // (F-74262: the contact it replaces - the nearest, by the body's point, within 2 cm
-        // among those a refresh has seen)
-        let near = nearest_kept(m.slots.iter().map(|s| (s.c.local, s.age)), local);
         let surface = Surface::from_u8(mesh.mats.get(i).copied().unwrap_or(0));
         // (which of the hull's triangles: by the corners the loop ended on, F-26668)
         let back = Vec3::ZERO - r.normal;
         let element = hull.element(&r.corners.0[..r.corners.1], Vec3::new(dot3(now[0], back), dot3(now[1], back), dot3(now[2], back)));
-        let slot = Slot { c: fresh, age: 0, enabled: true, surface, polygon: i as u32, element, part: 0 };
-        match near {
-            Some(k) => {
-                // (the one it replaces hands on its multipliers, and - if it was the deeper - its element)
-                let old = m.slots[k];
-                m.slots[k] = Slot { c: Contact { kept: old.c.kept, pushed: old.c.pushed, ..fresh }, element: if old.c.depth >= fresh.depth { old.element } else { element }, ..slot };
-            }
-            None if m.slots.len() < 6 => m.slots.push(slot),
-            // (the seventh, F-55965: it takes the place of the kept one that spans least - or is not taken.
-            // MCLA_DBG_RA3: never taken, as before.)
-            None => {
-                let k = seventh_contact(std::array::from_fn(|i| m.slots[i].c.local), local);
-                if k < 6 && !super::vehsim::dbg_flag("MCLA_DBG_RA3") {
-                    m.slots[k] = slot;
-                }
-            }
-        }
+        sink(&mut m.slots, Slot { c: fresh, age: 0, enabled: true, surface, polygon: i as u32, element, part: 0 });
     });
     // (a cell's record that ends the pass with nothing in it is given up)
     manifolds.retain(|m| !m.slots.is_empty());
@@ -2213,6 +2207,24 @@ mod tests {
     /// The manifold refresh F-26862 run offline with its callees (F-33100, F-86309) unchanged
     /// (tools/manifold_refresh_reference.py, testdata/manifold_refresh_ref.txt, 2,000 manifolds of 1 - 6 contacts against
     /// the city): which contacts stay and in which order, each one's age, depth, body point and target, every word.
+    #[test]
+    fn sink_keeps_the_deeper_contacts_ids() {
+        // (F-90136: a new contact within 2 cm of a kept one takes its place; the element ids +168 / +170 - the hull's
+        // triangle, the city's polygon and its material - stay the old one's when it was the deeper, as the rider's sink)
+        let at = |x: f32, depth: f32, polygon: u32, surface: Surface, element: u16, age: u16| Slot {
+            c: Contact { depth, local: Vec3::new(x, 0.0, 0.0), ..Default::default() }, age, enabled: true, surface, polygon, element, part: 0 };
+        // (depth is 0 less the distance: the deeper, the larger)
+        let mut slots = vec![at(0.0, 0.05, 3, Surface::CarSide, 7, 1)];
+        sink(&mut slots, at(0.01, 0.02, 5, Surface::from_u8(1), 9, 0));
+        assert_eq!((slots.len(), slots[0].polygon, slots[0].element, slots[0].surface, slots[0].c.depth), (1, 3, 7, Surface::CarSide, 0.02));
+        // (the replaced one is age 0 now: not the nearest kept, so the next one is appended)
+        sink(&mut slots, at(0.01, 0.01, 6, Surface::from_u8(1), 2, 0));
+        assert_eq!((slots.len(), slots[1].polygon), (2, 6));
+        slots[1].age = 1;
+        sink(&mut slots, at(0.012, 0.03, 8, Surface::from_u8(2), 4, 0));
+        assert_eq!((slots.len(), slots[1].polygon, slots[1].element, slots[1].c.depth), (2, 8, 4, 0.03));
+    }
+
     #[test]
     fn polygon_contact_matches_the_original() {
         // (tools/polygon_contact_reference.py: F-35118 run offline with its detector, on a polyhedron against a city polygon)
