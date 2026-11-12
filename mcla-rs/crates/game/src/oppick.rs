@@ -355,19 +355,7 @@ impl OpPick {
             taken[ci] = true;
             let ch = &self.drivers[ci];
             // mcCharacterConfigData_GetCarConfigDataByVehicleName (F-46809, class mask 255)
-            let class_ok = |car: &str| self.car(car).map_or(true, |c| (1i64 << c.info.class) as i32 & 255 != 0);
-            let cfg = ch.cars.iter().filter(|c| class_ok(&c.0)).find(|c| c.0 == drawn).or_else(|| {
-                // (his car whose difficulty class at its band mod value is nearest d; the first wins a tie)
-                let cls = |car: &str| self.car(car).map(|c| gap_difficulty(setup_perf(c.samples, setup_mod_value(c.samples, p, d)) - p));
-                let mut best: Option<(&(String, Vec<String>), i32)> = None;
-                for c in ch.cars.iter().filter(|c| class_ok(&c.0)) {
-                    let Some(k) = cls(&c.0) else { continue };
-                    if best.map_or(true, |b| (k - d).abs() < (b.1 - d).abs()) {
-                        best = Some((c, k));
-                    }
-                }
-                best.map(|b| b.0)
-            });
+            let cfg = car_config(&ch.cars, |c| c.0.as_str(), &drawn, p, d, 255, &|car| self.class_of(car), &|car| self.car(car).map(|c| c.samples), &setup_mod_value).map(|k| &ch.cars[k]);
             let Some(cfg) = cfg else {
                 out.push(Pick { driver: ch.id.clone(), car: "vp_vw_golf_83".into(), setup: "vp_vw_golf_83".into(), drawn });
                 continue;
@@ -378,6 +366,45 @@ impl OpPick {
         }
         out
     }
+}
+
+/// mcCharacterConfigData_GetCarConfigDataByVehicleName (F-46809): the index of the character's car (`cars`, in his car map's
+/// order) an opponent gets for the car drawn, the player's performance `p`, the difficulty `d` and the class `mask`. Over his
+/// cars: one whose vehicle record (`class`) has a class outside the mask is passed over (none with mask -1 or no record; a
+/// class of 32 or more shifts the bit out, as `slw` does); the drawn car itself (exact name) is returned at once; else the
+/// first car is kept, and a later one replaces it when its difficulty class (F-56889: the class of its performance at its
+/// band mod value, less `p`) is strictly nearer `d` than the kept one's. None when every car is passed over. A car without
+/// samples is passed over here (the original would read its record at 0: every car of Opponent.lst has samples).
+/// `mod_value` = F-83091 ([`setup_mod_value`]). (The original also writes the kept car's mod value at its +76, and the
+/// drawn car's when the flag argument is set; the port computes the opponent's mod value where it sets his car up.)
+/// Checked against the original run offline: test `car_config_matches_the_original`.
+#[allow(clippy::too_many_arguments)]
+pub fn car_config<T>(cars: &[T], name: impl Fn(&T) -> &str, drawn: &str, p: f32, d: i32, mask: i32, class: &dyn Fn(&str) -> Option<u32>, samples: &dyn Fn(&str) -> Option<[f32; 3]>, mod_value: &dyn Fn([f32; 3], f32, i32) -> i32) -> Option<usize> {
+    let class_of = |s: [f32; 3], m: i32| gap_difficulty(setup_perf(s, m) - p);
+    let mut best: Option<(usize, [f32; 3], i32)> = None;
+    for (k, c) in cars.iter().enumerate() {
+        let n = name(c);
+        if let Some(cl) = class(n) {
+            let bit = if cl < 32 { 1u32 << cl } else { 0 };
+            if bit & mask as u32 == 0 && mask != -1 {
+                continue;
+            }
+        }
+        if n == drawn {
+            return Some(k);
+        }
+        let Some(s) = samples(n) else { continue };
+        let m = mod_value(s, p, d);
+        match best {
+            None => best = Some((k, s, m)),
+            Some((_, bs, bm)) => {
+                if (class_of(s, m) - d).abs() < (class_of(bs, bm) - d).abs() {
+                    best = Some((k, s, m));
+                }
+            }
+        }
+    }
+    best.map(|b| b.0)
 }
 
 /// `Character { Name <id> Car { Name <vehicle> Config { Name <setup> } .. } .. }` in the map orders
@@ -475,6 +502,50 @@ mod tests {
             }
         }
         assert!(n == 2000 && bad == 0, "{bad} of {n} differ");
+    }
+
+    /// mcCharacterConfigData_GetCarConfigDataByVehicleName (F-46809) run offline (tools/car_config_pick_reference.py: 3,000
+    /// characters of 1 .. 8 cars, seed 4680, the original's own maps and lookups, the career steps set to the port's): the car
+    /// returned equals `car_config`'s on every case, and the mod value the original writes at the returned car's +76 equals
+    /// F-83091's. The original's F-83091 gives 0x80000000 where the band's two samples are equal (0 / 0, `fctiwz` of NaN;
+    /// never in the disc's data: no car of the 68 has two equal samples); `setup_mod_value` gives the segment's start there, so
+    /// the cases are run with that one value as the original's.
+    #[test]
+    fn car_config_matches_the_original() {
+        let text = include_str!("testdata/car_config_pick_ref.txt");
+        let f = |x: &str| f32::from_bits(u32::from_str_radix(x, 16).unwrap());
+        let orig_mod = |s: [f32; 3], p: f32, d: i32| {
+            let (lo, hi) = diff_window(p, d);
+            let a = if lo < s[0] { if hi > s[0] { s[0] } else { hi } } else { lo };
+            let b = if hi > s[2] { if lo < s[2] { s[2] } else { lo } } else { hi };
+            let (va, vb) = if (b - a) * 0.5 + lo < s[1] { (s[0], s[1]) } else { (s[1], s[2]) };
+            if va == vb { i32::MIN } else { setup_mod_value(s, p, d) }
+        };
+        let (mut n, mut bad, mut nan) = (0, 0, 0);
+        for line in text.lines().filter(|l| !l.is_empty()) {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let (p, d, mask, flag, drawn, k) = (f(w[1]), w[2].parse::<i32>().unwrap(), w[3].parse::<i32>().unwrap(), w[4] == "1", w[5], w[6].parse::<usize>().unwrap());
+            let cars: Vec<(&str, i32, [f32; 3])> = (0..k).map(|i| { let c = &w[7 + 5 * i..12 + 5 * i]; (c[0], c[1].parse().unwrap(), [f(c[2]), f(c[3]), f(c[4])]) }).collect();
+            let r: i32 = w[8 + 5 * k].parse().unwrap();
+            let words: Vec<i32> = w[9 + 5 * k..].iter().map(|x| x.parse().unwrap()).collect();
+            // (his cars in the car map's order)
+            let order = atmap_order(&cars.iter().map(|c| joaat(c.0)).collect::<Vec<_>>());
+            let mapped: Vec<&(&str, i32, [f32; 3])> = order.iter().map(|&i| &cars[i]).collect();
+            let look = |nm: &str| cars.iter().find(|c| c.0 == nm).unwrap();
+            let got = car_config(&mapped, |c| c.0, drawn, p, d, mask, &|nm| { let c = look(nm).1; (c >= 0).then_some(c as u32) }, &|nm| Some(look(nm).2), &orig_mod).map_or(-1, |m| order[m] as i32);
+            let word_ok = got < 0 || {
+                let c = &cars[got as usize];
+                words[got as usize] == if c.0 == drawn && !flag { 0 } else { orig_mod(c.2, p, d) }
+            };
+            n += 1;
+            if cars.iter().any(|c| orig_mod(c.2, p, d) == i32::MIN) {
+                nan += 1;
+            }
+            if got != r || !word_ok {
+                bad += 1;
+            }
+        }
+        assert!(n == 3000 && bad == 0, "{bad} of {n} differ ({nan} cases with an equal-samples band)");
     }
 
     fn data() -> Option<OpPick> {
