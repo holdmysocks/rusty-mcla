@@ -188,6 +188,11 @@ impl Cutscenes {
         }
     }
 
+    /// A scene is queued to start.
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
     pub fn clear_pending(&mut self) {
         self.pending.clear();
     }

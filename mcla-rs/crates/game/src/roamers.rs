@@ -103,9 +103,16 @@ pub struct Man {
     /// 0x485..0x490); once it clears he is set up from there again (0x571, 0x65a -> 0x1a1: the brain to the
     /// nearest rail, the point nearest him first)
     pub reset: bool,
-    /// his story core parks him (`PARKED_CORES`): his car stands at the core's place, deactivated, with no driving
-    /// brain, its lamps and its exhaust off; he never goes round a loop
+    /// his story core parks or stands him (`park_of`): his car stands at the core's place until his meeting; he never
+    /// goes round a loop
     pub parked: bool,
+    /// his FIND_ core's meeting is over: Racer_Activate and Opponent_ToggleDeleteOnEviction - his car stays where it
+    /// stands until it leaves the world, and he is not put down again (`core_met`)
+    pub met: bool,
+    /// ... and switched off (`PARKED_CORES`: deactivated, lamps and exhaust off) or only standing (`STANDING_CORES`)
+    pub off: bool,
+    /// ... with nobody in the car (Racer_SetVehicleDriverEnable 0)
+    pub no_driver: bool,
 }
 
 impl Man {
@@ -155,6 +162,12 @@ pub struct Roamers {
     /// The story mission whose series the man just flashed starts, and his (name, car, set-up):
     /// `Game::story_series_start`
     pub series_of: Option<(String, String, String, String)>,
+    /// a parked story man's meeting, the mission (BESTOF_SH_05 / BEAT_SH_02_EXOTIC, `Career::story_meet_at`): once its
+    /// scene is over (`scene_busy` clear) his core goes on as a flash would - Racer_Activate, driver and exhaust on, his
+    /// OrderedSeriesCore (BESTOF_SH_05_CORE 0xd93..0xdc4, then 0x11b5 -> 0xdf0)
+    pub meet_go: Option<String>,
+    /// a story scene is playing or queued (main.rs, before `update`)
+    pub scene_busy: bool,
     /// each set-up's model parts (`Game::mc4_dress_of`, read once a run: it reads the set-up's file), for the
     /// read-ahead and the build of the men's cars
     setup_cfg: std::collections::HashMap<String, crate::vehicle_model::CarConfig>,
@@ -229,6 +242,26 @@ pub struct Roamers {
     /// the alternative man whose race is starting: his core has left by its flashed exit, no reset
     alt_racing: Option<u32>,
     alt_suspended: bool,
+}
+
+/// The story cores that stand their man at a place of their own without switching him off (mission, place, heading,
+/// driver): CreateOpponent, LoadOpponent, AddOpponentToWorld, his name and mod value, then only
+/// Racer_InitializeResetPosition(place, heading) and Racer_Reset - no Racer_Deactivate, no headlights or exhaust call, no
+/// brain: he stands there, lamps and exhaust on, until his meeting. FIND_SH_02_CORE (`Story/0xe83e2f54` 0x93..0x14f) also
+/// sets Racer_SetVehicleDriverEnable 0 (0x137), FIND_SH_03_CORE (`0x82bce8eb` 0x91..0x142) not. (RACE_SH_01_CORE
+/// `0xc6518ca3` 0xa5..0x16c stands his the same way at (-152.1, 18.26, -775.27), heading 212.13, but no mission list
+/// names him: the port has no man for it. RACE_GH_02_CORE runs CruisingHookmanCore.)
+pub const STANDING_CORES: [(&str, [f32; 3], f32, bool); 2] = [
+    ("FIND_SH_02", [-3132.6, -19.73, 537.87], 358.61, false),
+    ("FIND_SH_03", [233.51, 9.75, -412.47], 267.94, true),
+];
+
+/// A parked or standing core's (place, heading, switched off, driver): `PARKED_CORES`, `STANDING_CORES`.
+pub fn park_of(mission: &str) -> Option<([f32; 3], f32, bool, bool)> {
+    if mission.is_empty() {
+        return None;
+    }
+    PARKED_CORES.iter().find(|c| c.0 == mission).map(|c| (c.1, c.2, true, false)).or_else(|| STANDING_CORES.iter().find(|c| c.0 == mission).map(|c| (c.1, c.2, false, c.3)))
 }
 
 /// The story cores that park their man rather than run CruisingHookmanCore (mission, place, heading in degrees): each
@@ -441,6 +474,8 @@ impl Roamers {
             walk_evict: Vec::new(),
             starters: Vec::new(),
             series_of: None,
+            meet_go: None,
+            scene_busy: false,
             setup_cfg: Default::default(),
             wanted: 2,
             timer: 3.0,
@@ -706,15 +741,17 @@ impl Roamers {
                 // it - `core_loop` - and every story core puts him at point 0 with the heading as
                 // it starts: Racer_InitializeResetPosition + Racer_Reset, `0x40a56c35` 0x19b..0x1a4,
                 // `0x05a65d81` 0xf9..0x102)
-                // (six story cores park him instead, at their own place and heading: `PARKED_CORES`)
-                let park = PARKED_CORES.iter().find(|c| !h.mission.is_empty() && c.0 == h.mission);
+                // (eight story cores park or stand him instead, at their own place and heading: `PARKED_CORES`,
+                // `STANDING_CORES`)
+                let park = park_of(&h.mission);
                 let parked = park.is_some();
+                let (off, no_driver) = park.map_or((false, false), |p| (p.2, p.2 || !p.3));
                 let (pts, heading, start) = match (park, self.cores.get(&h.mission)) {
-                    (Some(&(_, p, hd)), _) => (vec![Vec3::from(p)], Some(hd), Some(Vec3::from(p))),
+                    (Some((p, hd, _, _)), _) => (vec![Vec3::from(p)], Some(hd), Some(Vec3::from(p))),
                     (None, Some((p, hd, st))) if !h.mission.is_empty() => (p.clone(), *hd, *st),
                     _ => (pts.clone(), self.heads.get(&stem).copied(), None),
                 };
-                men.push(Man { key: format!("slot:{d}:{i}"), kind: ManKind::Slot, district: d, name: h.name.clone(), car: h.car.clone(), config: h.config.clone(), difficulty: h.difficulty, mission: h.mission.clone(), event: String::new(), hidden: s.hidden && h.mission.is_empty(), pts, at: 0.0, mod_value: h.mod_value, uid: 0, heading, start, fresh: !h.mission.is_empty(), reset: false, parked });
+                men.push(Man { key: format!("slot:{d}:{i}"), kind: ManKind::Slot, district: d, name: h.name.clone(), car: h.car.clone(), config: h.config.clone(), difficulty: h.difficulty, mission: h.mission.clone(), event: String::new(), hidden: s.hidden && h.mission.is_empty(), pts, at: 0.0, mod_value: h.mod_value, uid: 0, heading, start, fresh: !h.mission.is_empty(), reset: false, parked, met: false, off, no_driver });
             }
         }
         for sp in &self.specials {
@@ -730,7 +767,7 @@ impl Roamers {
             // (generic_timetrial_hookman.sco 0x137 / 0x167: difficulty 1; the tournament man's 1 while his
             // mission is open, else 2 - `mc4_tournament_man_diff`)
             let diff = if sp.kind == ManKind::TimeTrial { 1 } else { game.mc4_tournament_man_diff(sp.district) };
-            men.push(Man { key: format!("{}:{}", if sp.kind == ManKind::TimeTrial { "tt" } else { "tour" }, sp.district), kind: sp.kind, district: sp.district, name: sp.name.clone(), car, config: sp.config.clone(), difficulty: diff, mission: String::new(), event, hidden: false, pts: sp.pts.clone(), at: 0.0, mod_value: -1, uid: 0, heading: None, start: None, fresh: false, reset: false, parked: false });
+            men.push(Man { key: format!("{}:{}", if sp.kind == ManKind::TimeTrial { "tt" } else { "tour" }, sp.district), kind: sp.kind, district: sp.district, name: sp.name.clone(), car, config: sp.config.clone(), difficulty: diff, mission: String::new(), event, hidden: false, pts: sp.pts.clone(), at: 0.0, mod_value: -1, uid: 0, heading: None, start: None, fresh: false, reset: false, parked: false, met: false, off: false, no_driver: false });
         }
         // the red light and freeway racers whose scripts run
         self.alt_men(game, player_car, &mut men);
@@ -741,6 +778,7 @@ impl Roamers {
                 m.at = o.at;
                 m.fresh = o.fresh;
                 m.reset = o.reset;
+                m.met = o.met;
             }
         }
         if men.len() != self.men.len() || men.iter().zip(self.men.iter()).any(|(a, b)| a.key != b.key || a.config != b.config) {
@@ -807,7 +845,7 @@ impl Roamers {
             // (his reset position: OpponentManager_LoadOpponent's - the last point of his loop, heading 0 (red light
             // 0x36e9..0x36f9, freeway 0x7b1..0x7c1; the AI racer keeps it, car_pick.md 3.6) - until his race moves it)
             let reset = self.alt_reset.get(&d.id).copied().unwrap_or((d.pts.last().copied().unwrap_or_default(), 0.0));
-            men.push(Man { key, kind, district: d.district, name: r.name.clone(), car: r.car.clone(), config: r.config.clone(), difficulty: r.difficulty, mission: if r.mission { "REDLIGHT_GH_01".into() } else { String::new() }, event: String::new(), hidden: !game.alt_visible(d.id), pts: d.pts.clone(), at: 0.0, mod_value: r.mod_value, uid: d.id, heading: Some(reset.1), start: Some(reset.0), fresh: false, reset: false, parked: false });
+            men.push(Man { key, kind, district: d.district, name: r.name.clone(), car: r.car.clone(), config: r.config.clone(), difficulty: r.difficulty, mission: if r.mission { "REDLIGHT_GH_01".into() } else { String::new() }, event: String::new(), hidden: !game.alt_visible(d.id), pts: d.pts.clone(), at: 0.0, mod_value: r.mod_value, uid: d.id, heading: Some(reset.1), start: Some(reset.0), fresh: false, reset: false, parked: false, met: false, off: false, no_driver: false });
         }
     }
 
@@ -842,6 +880,23 @@ impl Roamers {
 
     /// Returns the race to start when a run to the start line has just ended.
     /// Script_SuspendAllOpponents (`Game::suspend_all_opponents`), every frame. As it is set every hookman's
+    /// A FIND_ core's meeting is over (`Career::core_meet`): Racer_Activate - no driver, the exhaust left off -, then
+    /// Opponent_ToggleDeleteOnEviction and mcSlotSystem_RequestSlotRemoval (FIND_SH_01B_CORE 0x11b6 / 0x123a / 0x124d,
+    /// FIND_SH_02C_CORE 0x132c / 0x13f7, FIND_SH_03B_CORE 0xaaf / 0xb6f): his car stays where it stands until it leaves
+    /// the world, and he is not put down again.
+    pub fn core_met(&mut self, mission: &str, vehicles: &mut Vehicles) {
+        for m in self.men.iter_mut().filter(|m| m.parked && !m.met && m.mission == mission && mission.starts_with("FIND_")) {
+            m.met = true;
+            // (no brain was ever given him: nothing drives the car)
+            for c in vehicles.cars.iter_mut().filter(|c| m.owns(c)) {
+                c.deactivated = false;
+                c.ai = None;
+                c.input = crate::physics::CarInput::default();
+            }
+            log::info!("roamers: {} met, his car activated, deleted when it leaves the world", mission);
+        }
+    }
+
     /// CruisingHookmanCore (0x3d9..0x490) takes his element away, locks his racer out of streaming and resets it:
     /// Racer_Reset (F-89258 through the racer's vfunc 76) puts the car at its reset position, which his script set to
     /// point 0 of his loop with the heading (generic_local_hookman.sco 0x164..0x181, the time trial's and the
@@ -1085,13 +1140,13 @@ impl Roamers {
                     // car is in the world from then on - OpponentManager_AddOpponentToWorld,
                     // Racer_InitializeResetPosition, Racer_Reset, `0x40a56c35` 0x76..0x1a4 -: he
                     // stays there until his car is made, if the player is in reach of it)
-                    if (m.fresh || m.reset || m.parked) && m.start.or(m.pts.first().copied()).map_or(false, |p| p.distance(pp) < 450.0) {
+                    if (m.fresh || m.reset || (m.parked && !m.met)) && m.start.or(m.pts.first().copied()).map_or(false, |p| p.distance(pp) < 450.0) {
                         ahead.push((m.car.clone(), m.config.clone()));
                     }
                     // (he waits there while the streaming walk would ask for his car - within its reach -, one racer a
                     // frame being asked for)
                     let st = m.start.or(m.pts.first().copied()).map(|p| crate::oppmgr::flat_distance(p.x, p.z, pp.x, pp.z));
-                    if (m.fresh || m.reset || m.parked) && st.map_or(false, |d| d < crate::oppmgr::Limits::default().far_reach) && streaming {
+                    if (m.fresh || m.reset || (m.parked && !m.met)) && st.map_or(false, |d| d < crate::oppmgr::Limits::default().far_reach) && streaming {
                         m.at = 0.0;
                         if loading.as_deref() == Some(m.key.as_str()) {
                             spawn = Some(k);
@@ -1227,13 +1282,19 @@ impl Roamers {
                 } else {
                     c.set_stages(crate::tunebuild::Stages::of_config(&game.data_dir, &m.config));
                 }
-                // (Racer_SetVehicleDriverEnable 0 and Racer_Deactivate: no brain drives him, the chassis' +592 bit 0x1)
-                c.ai = None;
-                c.deactivated = true;
+                // (Racer_Deactivate: the chassis' +592 bit 0x1 - nothing drives him; his AI waits for the Racer_Activate.
+                // Racer_SetVehicleDriverEnable 0: nobody in the car)
+                c.deactivated = m.off;
+                c.driver_off = m.no_driver;
                 // (Racer_SetHeadlights 0, Racer_SetExhaust 0)
-                c.amb_lamps.off = true;
-                c.exhaust = false;
-                log::info!("roamers: {} ({}) parked in his {} at ({:.1}, {:.1}, {:.1}), heading {:.2}, {:.0} m away", m.name, m.mission, c.model.name, p0.x, p0.y, p0.z, yaw.to_degrees(), p0.distance(pp));
+                c.amb_lamps.off = m.off;
+                c.exhaust = !m.off;
+                // (a standing man and the FIND_ men have no brain: nothing drives the car; the two whose cores
+                // start a series after the meeting keep theirs for it, `meet_go`)
+                if !m.off || !matches!(m.mission.as_str(), "BESTOF_SH_05" | "BEAT_SH_02_EXOTIC") {
+                    c.ai = None;
+                }
+                log::info!("roamers: {} ({}) {} in his {} at ({:.1}, {:.1}, {:.1}), heading {:.2}, {:.0} m away", m.name, m.mission, if m.off { "parked" } else { "standing" }, c.model.name, p0.x, p0.y, p0.z, yaw.to_degrees(), p0.distance(pp));
                 None
             }
             r => r,
@@ -1529,6 +1590,21 @@ impl Roamers {
                 best = Some((i, d));
             }
         }
+        // (a parked story man met, his scene over: his core starts his series at once - no flash, `meet_go`)
+        let mut flash = flash;
+        if !self.scene_busy {
+            if let Some(mis) = self.meet_go.take() {
+                match vehicles.cars.iter().position(|c| self.men.iter().any(|m| m.parked && m.mission == mis && m.owns(c))) {
+                    Some(i) => {
+                        log::info!("roamers: {} met, his core starts his series", mis);
+                        best = Some((i, 0.0));
+                        flash = true;
+                    }
+                    // (his car not in the world yet: next frame)
+                    None => self.meet_go = Some(mis),
+                }
+            }
+        }
         if flash {
             log::info!("headlights flashed: {}; taken by {:?}", self.flash_report(vehicles, world), best.map(|b| vehicles.cars[b.0].vinyl_name.clone()));
         }
@@ -1551,6 +1627,14 @@ impl Roamers {
         };
         if !flash {
             return None;
+        }
+        // (a parked story man: Racer_Activate, Racer_SetVehicleDriverEnable 1, Racer_SetExhaust 1 - BESTOF_SH_05_CORE
+        // 0xd93 / 0xdb9 / 0xdc4 - before his series)
+        if man.as_ref().is_some_and(|m| m.parked) {
+            let c = &mut vehicles.cars[ri];
+            c.deactivated = false;
+            c.driver_off = false;
+            c.exhaust = true;
         }
         // the time trial's and the tournament's man: their panels (forms 65 and 66)
         if let Some(m) = man.as_ref() {
@@ -1710,9 +1794,11 @@ mod tests {
             "FIND_SH_01B" => "game/career/Story/0xa46bcc85",
             "FIND_SH_02C" => "game/career/Story/0xb27d6524",
             "FIND_SH_03B" => "game/career/Story/0xe604e9f6",
+            "FIND_SH_02" => "game/career/Story/0xe83e2f54",
+            "FIND_SH_03" => "game/career/Story/0x82bce8eb",
             _ => "sc/career/Story/0x4e56ff33",
         };
-        for (m, p, h) in PARKED_CORES {
+        for (m, p, h) in PARKED_CORES.into_iter().chain(STANDING_CORES.map(|c| (c.0, c.1, c.2))) {
             let Ok(d) = std::fs::read(root.join(file(m))) else { return };
             let sco = mcla_formats::sco::decode(&d).expect(m);
             use mcla_formats::sco::Tok;

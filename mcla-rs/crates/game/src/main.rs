@@ -4696,8 +4696,12 @@ impl App {
                     let pursued = matches!(self.police.heat, police::Heat::Pursuit | police::Heat::Search);
                     // (step 23: FIND_SH_02C waits at his place with the money box)
                     self.game.mc4_find02c_meet([p.x, p.y, p.z], pursued);
-                    if self.game.career.story_meet_at([p.x, p.y, p.z], pursued).is_some() {
+                    if let Some(id) = self.game.career.story_meet_at([p.x, p.y, p.z], pursued) {
                         self.game.dirty = true;
+                        // (a parked story man's core goes on after its scene: `Roamers::meet_go`)
+                        if roamers::PARKED_CORES.iter().any(|c| c.0 == id) {
+                            self.roam.meet_go = Some(id);
+                        }
                     }
                 }
             }
@@ -7245,7 +7249,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.roam.near = None;
                         self.roam.near_is_rival = false;
                         self.roam.near_mission = None;
-                    } else if let Some(race) = (if self.game.bmt_end.is_some() { None } else { self.roam.player_state = self.crash_bits as u32; self.roam.update(&mut self.game, &mut self.vehicles, &mut gpu, &mut world, flash, sim_dt) }).filter(|&race| {
+                    } else if let Some(race) = (if self.game.bmt_end.is_some() { None } else { self.roam.player_state = self.crash_bits as u32; self.roam.scene_busy = self.cuts.playing.is_some() || self.cuts.has_pending() || self.cine.playing.is_some(); self.roam.update(&mut self.game, &mut self.vehicles, &mut gpu, &mut world, flash, sim_dt) }).filter(|&race| {
                         // (a beat me there run's end comes first: its race-over sequence or menu - `Game::bmt_end`)
                         let Some((place, rep, wrecked)) = self.roam.bmt_over.take() else { return true };
                         self.game.bmt_end = Some(game::BmtEnd { race, hookman: self.roam.won_against_rival, place, rep, wrecked, t: 0.0, sel: 0 });
@@ -7385,6 +7389,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                             // (a FIND_ core's meeting: `Career::core_meet`)
                             if let Some(m) = self.roam.near_mission.clone() {
                                 self.game.career.core_meet(&m);
+                                self.roam.core_met(&m, &mut self.vehicles);
                             }
                         }
                     }
@@ -12495,7 +12500,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (VEHICLE SELECT: the three stand empty - `ng_vsel_0`)
                     // (the cruiser has no driver: mcRacer::LoadDriver, F-39898, returns before it makes one when
                     // the car is vp_chv_police_96 - its own black interior is what shows; GitHub #17)
-                    c.placed && c.parked.is_none() && !modcars::hides_driver(&c.model.name) && !c.model.name.eq_ignore_ascii_case(police::COP_CAR) && !n.starts_with("va_") && self.game.mode != Mode::Garage && !staged && !self.vehicles.lights_off && !c.driver.starts_with("hangout:")
+                    c.placed && c.parked.is_none() && !modcars::hides_driver(&c.model.name) && !c.model.name.eq_ignore_ascii_case(police::COP_CAR) && !n.starts_with("va_") && self.game.mode != Mode::Garage && !staged && !self.vehicles.lights_off && !c.driver.starts_with("hangout:") && !c.driver_off
                 })
                 .map(|(i, c)| {
                     let pose = c.render_pose(self.vehicles.render_alpha);

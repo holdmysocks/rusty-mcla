@@ -16,6 +16,8 @@
 //!   top, so its items stay.)
 //! - career/Story/0x81d83d96 ("beat me there"): AddRandomCarToLayout(group 0, ...) x 15 at the
 //!   strip garage while cut_story_rep_on_strip_garage plays, removed when it ends.
+//! - BESTOF_SH_05_CORE (`career/Story/0x007eebc2`): AddRandomCarToLayout(group 0, ...) at his meeting place
+//!   while his core runs (`BESTOF_SH_05_CARS`).
 
 use crate::game::Game;
 use crate::peds::Peds;
@@ -60,6 +62,18 @@ pub const STRIP_GARAGE: [([f32; 3], f32); 15] = [
 ];
 pub const STRIP_GARAGE_SCENE: &str = "cut_story_rep_on_strip_garage";
 
+/// BESTOF_SH_05_CORE's cars at his meeting place (place, heading in degrees): the core's arrays local57 / local112
+/// (18 long, 0x306..0x31a) get entries 0..3 (0x31b..0x3a8; the headings integers), and once the man's state is no
+/// longer 1 (0x75b..0x7a3) it adds the 18 entries with AddRandomCarToLayout(0, place, heading) (0x7a8..0x7f1); they are
+/// removed after his series (0x11c5..0x11fd). Entries 4..17 are never written (what they hold is the frame's start
+/// value, not decoded): only 0..3 are put down. The port keeps them while the mission is in the log.
+pub const BESTOF_SH_05_CARS: [([f32; 3], f32); 4] = [
+    ([1353.21, -9.97, 266.883], -90.0),
+    ([1337.084, -9.97, 272.275], 1.0),
+    ([1337.041, -9.97, 267.183], 2.0),
+    ([1337.162, -9.97, 262.045], 0.0),
+];
+
 /// AddAmbientToLayout's heading: degrees x 0.01745329.
 fn rad(deg: f32) -> f32 {
     deg * 0.017_453_29
@@ -77,6 +91,7 @@ struct Core {
 pub struct Layout {
     cores: Vec<Core>,
     strip: Option<Vec<u32>>,
+    bestof: Option<Vec<u32>>,
 }
 
 impl Layout {
@@ -147,6 +162,27 @@ impl Layout {
                 }
             }
         }
+        // BESTOF_SH_05_CORE's cars, while his mission is in the log (its core runs)
+        let bestof = game.career.mission_in_log("BESTOF_SH_05");
+        if bestof && self.bestof.is_none() {
+            let mut v = Vec::new();
+            for (p, d) in BESTOF_SH_05_CARS {
+                let p = Vec3::from(p);
+                let name = vehicles.random_layout_car(data_dir, p, 0).unwrap_or_default();
+                if let Some(x) = vehicles.add_layout_item(&name, p, rad(d), None) {
+                    v.push(x);
+                }
+            }
+            log::info!("layout: BESTOF_SH_05 core - {} cars", v.len());
+            self.bestof = Some(v);
+        } else if !bestof {
+            if let Some(v) = self.bestof.take() {
+                for x in v {
+                    vehicles.remove_layout_item(x);
+                }
+                log::info!("layout: BESTOF_SH_05 core ended, its cars removed");
+            }
+        }
     }
 
     /// The people's side of the items, after the spawners ran: the persons the spawner drew,
@@ -167,5 +203,25 @@ impl Layout {
         peds.remove_items(&live);
         vehicles.item_peds = peds.item_peds();
         vehicles.ped_list = peds.item_list();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// BESTOF_SH_05_CORE's car places are its own floats, to the bit: x, y (negated), z, then 3 and the entry's index
+    /// (skipped without the extracted data).
+    #[test]
+    fn bestof_cars_are_the_scripts_places() {
+        let Ok(d) = std::fs::read("D:/MCLA/extracted/cache/script_obj/game/career/Story/0x007eebc2") else { return };
+        let sco = mcla_formats::sco::decode(&d).expect("BESTOF_SH_05_CORE");
+        use mcla_formats::sco::Tok;
+        let t = sco.consts();
+        let num = |i: usize| match t.get(i) { Some(Tok::Num(v)) => Some(*v as f32), _ => None };
+        for (k, (p, _)) in BESTOF_SH_05_CARS.iter().enumerate() {
+            let hits = (0..t.len()).filter(|&i| (0..3).all(|j| num(i + j).map(f32::to_bits) == Some(p[j].to_bits())) && num(i + 3) == Some(3.0) && num(i + 4) == Some(k as f32)).count();
+            assert_eq!(hits, 1, "entry {k}");
+        }
     }
 }
