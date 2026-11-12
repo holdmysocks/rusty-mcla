@@ -1623,7 +1623,7 @@ fn signal_stop(env: &Env, r: &Rider, pos: Vec3) -> Option<(usize, f32, u8, usize
     };
     let nj = lane_junction(nav, nav.links[first].lane)?;
     let ji = signals_junction(env.signals, nav, nj)?;
-    let d = Vec3::new(p0.x - pos.x, 0.0, p0.z - pos.z).length();
+    let d = stop_distance(p0, pos);
     Some((ji, d, env.signals.junctions[ji].lane_state(p0 - p1), nj))
 }
 
@@ -1779,6 +1779,51 @@ fn needed(v: f32, vt: f32, dist: f32, margin: f32, up: f32, down: f32) -> f32 {
     (vt - v) / t
 }
 
+/// F-10623's entry 0 (after the search): from the car's place (F-58860, its instance's row 3) to the obstacle's (slot 1
+/// +48), |d| = sqrt(fma(x, x, fma(z, z, y y))); the target its velocity's length (slot 2, y^2 then x and z fused on),
+/// times the two cars' rows 2 in x and z (fma(z, z', x x')) unless the obstacle is an ambient car (kind 2) riding a lane
+/// (F-96472: behaviour +452 with a +188 rail without 0x1800), at least 0 (fsel). Returns (the distance, the target).
+pub fn ahead_tail(me_place: Vec3, me_back: Vec3, o_place: Vec3, o_back: Vec3, o_vel: Vec3, rides_lane: bool) -> (f32, f32) {
+    use crate::physics::exact::fma;
+    let (dx, dy, dz) = (me_place.x - o_place.x, me_place.y - o_place.y, me_place.z - o_place.z);
+    let d = fma(dx, dx, fma(dz, dz, dy * dy)).sqrt();
+    let mut s = fma(o_vel.z, o_vel.z, fma(o_vel.x, o_vel.x, o_vel.y * o_vel.y)).sqrt();
+    if !rides_lane {
+        s *= fma(me_back.z, o_back.z, me_back.x * o_back.x);
+    }
+    (d, if s >= 0.0 { s } else { 0.0 })
+}
+
+/// F-10623's margin (+12): the obstacle's half length plus ours (slot 6 x 0.5 each), plus the context's gap +28 x
+/// fma(m, 2, 1), m = the car's speed +412 x 2.2369363 x 0.014285714 (0x400F29F7, 0x3C6A0EA1), between 0 and 1 (fsel).
+pub fn ahead_margin(my_half: f32, o_half: f32, speed: f32, gap: f32) -> f32 {
+    use crate::physics::exact::fma;
+    let m = speed * f32::from_bits(0x400F_29F7) * f32::from_bits(0x3C6A_0EA1);
+    let m = if m >= 0.0 { m } else { 0.0 };
+    let m = if m - 1.0 >= 0.0 { 1.0 } else { m };
+    (o_half + my_half) + fma(m, 2.0, 1.0) * gap
+}
+
+/// F-83573's stop distance: from the car's place (F-58860) to the stop point (the light lane's slot 12), xz only, |d| =
+/// sqrt(fma(x, x, z z)).
+pub fn stop_distance(point: Vec3, place: Vec3) -> f32 {
+    use crate::physics::exact::fma;
+    let (dx, dz) = (point.x - place.x, point.z - place.z);
+    fma(dx, dx, dz * dz).sqrt()
+}
+
+/// An entry's identity word (+24 the obstacle, +20 the stop's junction) and its new-entry bit 0x40 as F-10623 /
+/// F-83573 keep them: `new` none (no obstacle; no light lane or the light says go) clears it; an entry that is not made
+/// (`made` false: the obstacle at distance 0 - a NaN is made -, a stop distance below 0) leaves it; else it becomes `new`, with the bit
+/// when it differs.
+pub fn entry_id<K: PartialEq + Copy>(prev: Option<K>, new: Option<K>, made: bool) -> (Option<K>, bool) {
+    match new {
+        None => (None, false),
+        Some(_) if !made => (prev, false),
+        Some(k) => (Some(k), prev != Some(k)),
+    }
+}
+
 /// What another car is to a rider looking for the car ahead (an obstacle).
 pub struct Other {
     pub pos: Vec3,
@@ -1805,8 +1850,6 @@ pub struct Other {
     /// its standing time +872 (F-16834)
     pub lane640: Option<(usize, bool)>,
     pub idle: f32,
-    /// on a lane, kinematic: (its lane, its next lane, junction lane)
-    pub on: Option<(usize, Option<usize>, bool)>,
     pub player: bool,
     /// ambient traffic (parked cars too); else the player, police, racers
     pub ambient: bool,
@@ -2153,15 +2196,9 @@ fn find_ahead(env: &Env, me: usize, me_rows: ([f32; 3], [f32; 3], [f32; 3]), me_
             player_across = true;
         }
     }
-    let Some(j) = near else { return Ahead { j: usize::MAX, d: 0.0, vt: 0.0, blocking: block, player_across } };
-    let o = &others[j];
-    let d = (o.pos - pos).length();
-    // its speed along our heading, but not for a car turning through a junction
-    let vt = match o.on {
-        Some((_, _, true)) => o.vel.length(),
-        _ => o.vel.dot(fwd),
-    };
-    Ahead { j, d, vt: vt.max(0.0), blocking: block, player_across }
+    // (the distance and the target are F-10623's: `search_ahead` after the mark test)
+    let j = near.unwrap_or(usize::MAX);
+    Ahead { j, d: 0.0, vt: 0.0, blocking: block, player_across }
 }
 
 /// A rail as the obstacle gather sees it (F-47175's context +12 / +16 / +20): a navsys lane (rail word +4 without
@@ -2435,7 +2472,7 @@ fn search_ahead(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, run: 
     let keep = search_kept(vel, last, &mut m);
     env.shared.set(m);
     let ahead = match r.kept {
-        Some((j, blocking)) if keep => Ahead { j, d: env.others[j].pos.distance(pos), vt: 0.0, blocking, player_across: false },
+        Some((j, blocking)) if keep => Ahead { j, d: 0.0, vt: 0.0, blocking, player_across: false },
         _ => {
             let cands = gather_obstacles(&EnvGather { env, me, me_rows }, me, g[0], g[1], g[2]);
             // (the selection's rails: context +12 / +16 as the gather has them; a run-time rail is the car's own)
@@ -2457,6 +2494,11 @@ fn search_ahead(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, run: 
     let key_of = |j: usize| env.others.get(j).filter(|o| o.ambient && o.beh.is_some()).map(|o| o.key);
     if raw != usize::MAX && r.mark.is_some() && key_of(raw) == r.mark {
         ahead = Ahead { j: usize::MAX, d: 0.0, vt: 0.0, blocking: ahead.blocking, player_across: ahead.player_across };
+    }
+    // (F-10623's distance and target, from the car's place and row 2: `me_rows`)
+    if let Some(o) = env.others.get(ahead.j) {
+        let rides_lane = o.kind == 2 && matches!(o.beh, Some((Some(SelRail::Lane(_)), _)));
+        (ahead.d, ahead.vt) = ahead_tail(Vec3::from(me_rows.1), Vec3::from(me_rows.0), o.pos, o.back, o.vel, rides_lane);
     }
     let our_lane = matches!(g[0], Some(GatherRail::Lane(_)));
     r.mark = None;
@@ -3266,29 +3308,32 @@ fn control(r: &mut Rider, v: f32, want: f32, half_len: f32, ahead: &Ahead, other
     let ty = r.ty;
     let max_decel = if ahead.player_across { ty.max_decel * 3.0 } else { ty.max_decel };
     let up = ty.max_accel + r.bonus;
-    let mph = v / MPH;
     let mut entries: [Option<(f32, f32, bool)>; 4] = [None; 4];
     // 0: the car ahead (F-10623): centre to centre, half lengths and the standing gap
     // stretched with speed
+    // (at distance 0 no entry and the identity kept: F-10623)
     let obst = (ahead.j != usize::MAX).then_some(ahead.j);
-    if obst != r.obst_id {
+    let (id, new) = entry_id(r.obst_id, obst, ahead.d != 0.0);
+    r.obst_id = id;
+    if new {
         r.on[0] = false;
-        r.obst_id = obst;
     }
     r.obst_v = obst.map(|j| obst_speed(others[j].vel));
-    if let Some(j) = obst {
+    if let Some(j) = obst.filter(|_| ahead.d != 0.0) {
         let o = &others[j];
-        let margin = half_len + o.half_len + r.gap * (1.0 + 2.0 * (mph / 70.0).min(1.0));
+        let margin = ahead_margin(half_len, o.half_len, v, r.gap);
         entries[0] = Some((needed(v, ahead.vt, ahead.d, margin, up, max_decel), ahead.d - margin, o.player));
         r.ahead = (ahead.d, margin);
     }
-    // 1: the stop line while the light says stop (F-83573), half our length short of it
-    let sid = stop.map(|s| s.0);
-    if sid != r.stop_id {
+    // 1: the stop line while the light says stop (F-83573), half our length short of it; a distance below 0 (bge: a
+    // NaN makes the entry) would make none and keep the identity
+    let made = stop.is_some_and(|s| !(s.1 < 0.0));
+    let (id, new) = entry_id(r.stop_id, stop.map(|s| s.0), made);
+    r.stop_id = id;
+    if new {
         r.on[1] = false;
-        r.stop_id = sid;
     }
-    if let Some((_, d)) = stop {
+    if let Some((_, d)) = stop.filter(|_| made) {
         entries[1] = Some((needed(v, 0.0, d, half_len, up, max_decel), d - half_len, false));
     }
     // 2: the next lane slower than we go: by its start (the lane's last vertex, straight on)
@@ -3468,7 +3513,9 @@ pub fn step(r: &mut Rider, env: &Env, me: usize, half_len: f32, upright: bool, d
     // F-16850: go = green for the lane (or a car of the bIsProxy pool while the red light race byte is set) and the
     // junction's box not held by anything but this car (`Blockers`); a refused car stops at the line as at red (and
     // `waits` counts its demand)
-    let stop = signal_stop(env, r, pos)
+    // (F-83573 measures from the car's place, F-58860)
+    let place = env.others.get(me).map_or(pos, |o| o.pos);
+    let stop = signal_stop(env, r, place)
         .filter(|x| !crate::signals::light_go(x.2 == 2, r.ty.proxy, env.signals.red_light_race, || env.blockers.get(&x.3).is_some_and(|b| b.blocks(me))))
         .map(|x| (x.0, x.1));
     // (entry 2: held where it is, its distance 0)
@@ -5262,10 +5309,6 @@ impl Vehicles {
             .map(|(k, c)| {
                 let (hl, hw) = half_size(c);
                 let r = c.rail.as_ref();
-                let on = r.filter(|r| r.state == 1).map(|r| {
-                    let l = &nav.links[r.link];
-                    (l.lane, r.next.map(|n| nav.links[n].lane), rail_speed(nav, r.link).1)
-                });
                 Other {
                     pos: c.state.pos,
                     fwd: c.state.forward(),
@@ -5281,7 +5324,6 @@ impl Vehicles {
                     beh: self.sel_behaviour(nav, k, r),
                     lane640: if c.is_player { self.driver_lanes.get(&c.uid).and_then(|d| d.best).map(|(l, _)| (l, self.lane_freeway(nav, l))) } else { None },
                     idle: if c.is_player { self.player_idle } else { 0.0 },
-                    on,
                     player: c.is_player,
                     ambient: r.is_some() || c.parked.is_some(),
                     active: r.is_some_and(|r| r.state == 4) || (r.is_none() && c.parked.is_none()),
@@ -11839,10 +11881,6 @@ impl Vehicles {
             .map(|(k, c)| {
                 let (hl, hw) = half_size(c);
                 let r = c.rail.as_ref();
-                let on = r.filter(|r| r.state == 1).map(|r| {
-                    let l = &nav.links[r.link];
-                    (l.lane, r.next.map(|n| nav.links[n].lane), rail_speed(nav, r.link).1)
-                });
                 Other {
                     pos: c.state.pos,
                     fwd: c.state.forward(),
@@ -11858,7 +11896,6 @@ impl Vehicles {
                     beh: self.sel_behaviour(nav, k, r),
                     lane640: if c.is_player { self.driver_lanes.get(&c.uid).and_then(|d| d.best).map(|(l, _)| (l, self.lane_freeway(nav, l))) } else { None },
                     idle: if c.is_player { self.player_idle } else { 0.0 },
-                    on,
                     player: c.is_player,
                     ambient: r.is_some() || c.parked.is_some(),
                     active: r.is_some_and(|r| r.state == 4) || (r.is_none() && c.parked.is_none()),
@@ -12758,6 +12795,56 @@ mod controller_pick_tests {
             yes += got as usize;
         }
         assert_eq!((n, yes), (13725, 1617));
+    }
+
+    #[test]
+    fn ahead_and_stop_entries_match_the_original() {
+        // tools/ahead_stop_reference.py: the car-ahead entry F-10623 and the stop entry F-83573 as generated, run offline
+        // (the search F-47175, the light F-16850 and the getters F-58860 / F-88657 the case's): the record's words, its
+        // byte +16 and the identity word (+24 / +20)
+        let text = include_str!("testdata/ahead_stop_ref.txt");
+        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let f = f32::from_bits;
+        let v3 = |c: &[u32]| Vec3::new(f(c[0]), f(c[1]), f(c[2]));
+        let (mut na, mut ns) = (0, 0);
+        for line in text.lines() {
+            let (case, out) = line.split_once(" -> ").unwrap();
+            let mut it = case.split(' ');
+            let tag = it.next().unwrap();
+            let c: Vec<u32> = it.map(h).collect();
+            let o: Vec<u32> = out.split(' ').map(h).collect();
+            let mut b = (*c.last().unwrap() as u8) & 0x3F;
+            let mut rec = [0u32; 4];
+            let id;
+            if tag == "A" {
+                let prev = [None, Some(0x1800u32), Some(0x1E00)][c[2] as usize];
+                // (a nearest equal to the mark is none)
+                let near = (c[0] != 0 && c[1] == 0).then_some(0x1800u32);
+                let rides_lane = c[22] == 2 && c[23] != 0 && c[24] != 0 && c[25] & 0x1800 == 0;
+                let (d, vt) = ahead_tail(v3(&c[5..]), v3(&c[8..]), v3(&c[12..]), v3(&c[15..]), v3(&c[18..]), rides_lane);
+                let (i, new) = entry_id(prev, near, d != 0.0);
+                id = i;
+                if near.is_some() && d != 0.0 {
+                    let m = ahead_margin(f(c[11]) * 0.5, f(c[21]) * 0.5, f(c[3]), f(c[4]));
+                    rec = [0x1800, d.to_bits(), vt.to_bits(), m.to_bits()];
+                    b |= 0x80 | if new { 0x40 } else { 0 };
+                }
+                na += 1;
+            } else {
+                let prev = [None, Some(0x3000u32), Some(0x3100)][c[2] as usize];
+                let stop = (c[0] != 0 && c[1] == 0).then_some(c[3]);
+                let d = stop_distance(v3(&c[7..]), v3(&c[4..]));
+                let (i, new) = entry_id(prev, stop, !(d < 0.0));
+                id = i;
+                if stop.is_some() && !(d < 0.0) {
+                    rec = [0, d.to_bits(), 0, (f(c[10]) * 0.5).to_bits()];
+                    b |= 0x80 | if new { 0x40 } else { 0 };
+                }
+                ns += 1;
+            }
+            assert_eq!((&o[..4], o[4] as u8, o[5]), (&rec[..], b, id.unwrap_or(0)), "{line}");
+        }
+        assert_eq!((na, ns), (4000, 4000));
     }
 
     #[test]
