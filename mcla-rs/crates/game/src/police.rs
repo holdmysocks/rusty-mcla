@@ -1771,19 +1771,35 @@ fn search_points_on(nav: &NavSys, mesh: Option<&mcla_formats::rage::navmesh::Nav
     pts
 }
 
-/// F-94676: the cop sees the target - within `r` (3D), within `half` degrees of its forward when `half` > 0, and a
-/// clear line from 2 m above the target to 2 m above the cop (F-69576).
-fn cop_sees(world: &World, cop: &crate::vehicles::CarInstance, tpos: Vec3, r: f32, half: f32) -> bool {
-    let to = tpos - cop.state.pos;
-    if r > 0.0 && to.length_squared() > r * r {
-        return false;
-    }
-    if half > 0.0 && cop.state.forward().angle_between(to) >= half.to_radians() {
-        return false;
-    }
-    let (a, b) = (tpos + Vec3::Y * 2.0, cop.state.pos + Vec3::Y * 2.0);
+/// F-94676: the cop sees the target: `sees_pre`, then a clear line from 2 m above the target to 2 m above the cop
+/// (F-69576). `under`: the cars of the underground units (+880; every unit is a police racer, +465).
+fn cop_sees(world: &World, under: &[u32], cop: &crate::vehicles::CarInstance, tpos: Vec3, r: f32, half: f32) -> bool {
+    let Some((a, b)) = sees_pre(under.contains(&cop.uid), cop.state.pos, cop.state.forward(), tpos, r, half) else { return false };
     let d = a.distance(b);
     d < 1e-4 || world.collider.raycast(a, (b - a) / d, d).is_none()
+}
+
+/// F-94676 up to its line test, as the original's arithmetic (tools/cop_sees_reference.py): a police racer underground
+/// (+465 and +880) sees nothing; with `r` > 0 the squared distance (`arrest_d2`, cop minus target) over r x r -> no;
+/// with `half` > 0 the 3D angle (F-88594, `aiv::ang3`) of target minus cop (the vector unit's subtract, denormals
+/// flushed) and the cop's forward (0 - row 2) not under half x 0.0174533 -> no. Else the line's ends: the target's
+/// and the cop's origins with 2 added to y.
+pub(crate) fn sees_pre(under: bool, cop: Vec3, fwd: Vec3, tpos: Vec3, r: f32, half: f32) -> Option<(Vec3, Vec3)> {
+    if under {
+        return None;
+    }
+    if r > 0.0 && arrest_d2(tpos, cop) > r * r {
+        return None;
+    }
+    if half > 0.0 {
+        let ftz = |a: f32| if a.abs() < f32::MIN_POSITIVE { 0.0 * a } else { a };
+        let sub = |a: f32, b: f32| ftz(ftz(a) - ftz(b));
+        let to = Vec3::new(sub(tpos.x, cop.x), sub(tpos.y, cop.y), sub(tpos.z, cop.z));
+        if !(crate::aiv::ang3(to, fwd) < half * f32::from_bits(0x3C8E_FA35)) {
+            return None;
+        }
+    }
+    Some((Vec3::new(tpos.x, tpos.y + 2.0, tpos.z), Vec3::new(cop.x, cop.y + 2.0, cop.z)))
 }
 
 /// The squared distance as the original's code forms it (F-39842 and the +144 test of F-63286): the y step squared, then
@@ -2635,6 +2651,11 @@ impl Police {
     }
 
     /// A unit's car (index) when it is up.
+    /// The uids of the cars of the units underground (+880): a unit the arrest scene cast keeps its car while under.
+    fn under_cars(&self, vehicles: &Vehicles) -> Vec<u32> {
+        self.units.iter().filter(|u| u.under).filter_map(|u| Self::unit_car(vehicles, u.id)).map(|i| vehicles.cars[i].uid).collect()
+    }
+
     fn unit_car(vehicles: &Vehicles, id: u32) -> Option<usize> {
         let tag = format!("police_unit:{id}");
         vehicles.cars.iter().position(|c| c.cop && c.vinyl_name == tag)
@@ -2807,6 +2828,7 @@ impl Police {
     /// end sets +1104 = fFollowDownTime. True while it follows (and in the frame it ends). (The player is the only
     /// racer; the port's driver steers to the goal at the rail's speed for the brain's traffic ghost.)
     fn follow_step(&mut self, world: &World, vehicles: &mut Vehicles, tun: &Tuning, ui: usize, i: usize, dt: f32) -> bool {
+        let under = self.under_cars(vehicles);
         let Some(p) = vehicles.player() else { return false };
         let (ppos, pvel, prow2) = (p.state.pos, p.state.vel, -p.state.forward());
         let lane_pt = vehicles.driver_lanes.get(&p.uid).and_then(|d| Some((d.best?.0, d.best_t))).and_then(|(l, t)| Some(world.nav.as_ref()?.curves.get(l)?.eval(t).0));
@@ -2818,7 +2840,7 @@ impl Police {
             if self.units[ui].fol_t > 0.0 || self.kind != TacKind::None || self.units.iter().any(|u| u.follow) {
                 return false;
             }
-            let ok = cop_sees(world, c, ppos, tun.get("fDetectDist", 40.0), 45.0) && crow2.dot(d) < 0.0 && crow2.dot(prow2) > 0.0 && cvel.dot(pvel) > 0.0;
+            let ok = cop_sees(world, &under, c, ppos, tun.get("fDetectDist", 40.0), 45.0) && crow2.dot(d) < 0.0 && crow2.dot(prow2) > 0.0 && cvel.dot(pvel) > 0.0;
             if !ok {
                 return false;
             }
@@ -3819,6 +3841,8 @@ impl Police {
         self.start_report = None;
         self.report_bits = None;
         self.tick_law = 0;
+        // (the cars of the underground units, for the sight test F-94676)
+        let under = self.under_cars(vehicles);
         // (F-52240 clears the word at the end of a scored tick and in the grace: one payment a frame at most)
         let law_word = vehicles.player_mut().and_then(|c| c.state.veh.as_deref_mut()).map_or(0, |v| std::mem::take(&mut v.agro.law_word));
         match self.heat {
@@ -3897,7 +3921,7 @@ impl Police {
                 // as its request cop. The trap's delay 5.0 has no counterpart in the port's trap)
                 let vision = self.tun.get("fVisionDist", 500.0);
                 let seer = vehicles.player().and_then(|p| {
-                    self.cops.iter().filter_map(|k| vehicles.cars.iter().find(|c| c.uid == *k)).find(|c| cop_sees(world, c, p.state.pos, vision, 0.0)).map(|c| (c.uid, p.state.pos, p.state.forward(), p.state.vel))
+                    self.cops.iter().filter_map(|k| vehicles.cars.iter().find(|c| c.uid == *k)).find(|c| cop_sees(world, &under, c, p.state.pos, vision, 0.0)).map(|c| (c.uid, p.state.pos, p.state.forward(), p.state.vel))
                 });
                 log::info!("police: AI racer {} chased with no race - the tactic ends{}", u, if seer.is_some() { ", the player seen" } else { "" });
                 self.end_tactic(true);
@@ -3987,7 +4011,7 @@ impl Police {
         let pick = first_detecting(cands.len(), true, true, 1, |i| {
             let (ui, c) = cands[i];
             Some((self.units.get(ui).map_or(true, |u| u.may_check), pursuer(c) || Some(c.uid) == dsp_cop, if c.goon { 0 } else { 1 }))
-        }, |i| cop_sees(world, cands[i].1, ppos, detect, det_half));
+        }, |i| cop_sees(world, &under, cands[i].1, ppos, detect, det_half));
         if let Some(i) = pick {
             detector = Some((cands[i].1.state.pos.distance(ppos), cands[i].1.uid));
         }
@@ -3995,7 +4019,7 @@ impl Police {
         if detector.is_none() {
             if let Some(c) = vehicles.cars.iter().find(|c| Some(c.uid) == dsp_cop) {
                 let d = c.state.pos.distance(ppos);
-                if d <= detect && cop_sees(world, c, ppos, detect, det_half) {
+                if d <= detect && cop_sees(world, &under, c, ppos, detect, det_half) {
                     detector = Some((d, c.uid));
                 }
             }
@@ -4340,7 +4364,7 @@ impl Police {
         // (the tactic's radius vt+32: fPullOverDist in a pull-over (F-66453), fSafeDist in the others (F-54202))
         let arr_r = if self.heat == Heat::PullOver { t("fPullOverDist", 15.0) } else { t("fSafeDist", 30.0) };
         let bike_r = t("fBikerWipeoutArrestDist", 50.0);
-        let seer = |r: f32| vehicles.cars.iter().filter(|c| pursuer(c)).any(|c| cop_sees(world, c, ppos, r, 0.0));
+        let seer = |r: f32| vehicles.cars.iter().filter(|c| pursuer(c)).any(|c| cop_sees(world, &under, c, ppos, r, 0.0));
         let (seer_r1, seer_bike) = (seer(arr_r + 1.0), bike_down && seer(bike_r));
         // (F-29443: some tactic cop not damaged out with its car strictly within the radius of the target, no sight needed)
         let cop_in = vehicles.cars.iter().filter(|c| pursuer(c)).any(|c| !damaged_out(c.state.damage) && within_sq(ppos, c.state.pos, arr_r));
@@ -4471,7 +4495,7 @@ impl Police {
                 let mut know = false;
                 for u in self.cops.clone() {
                     let Some(c) = vehicles.cars.iter().find(|c| c.uid == u) else { continue };
-                    let sees = cop_sees(world, c, ppos, vision, 0.0);
+                    let sees = cop_sees(world, &under, c, ppos, vision, 0.0);
                     let e = self.eyes.entry(u).or_default();
                     if sees {
                         e.unseen = 0.0;
@@ -4605,10 +4629,10 @@ impl Police {
                     let e = self.eyes.entry(s.uid).or_default();
                     e.unseen += dt;
                     if !s.no_goals {
-                        if cop_sees(world, c, ppos, if s.started { 15.0 } else { vision }, 0.0) {
+                        if cop_sees(world, &under, c, ppos, if s.started { 15.0 } else { vision }, 0.0) {
                             e.cone_t = reacq;
                             e.unseen = 0.0;
-                        } else if cop_sees(world, c, ppos, vision, t("fSearchHalfAngle", 45.0)) {
+                        } else if cop_sees(world, &under, c, ppos, vision, t("fSearchHalfAngle", 45.0)) {
                             e.cone_t += dt;
                             if e.cone_t > reacq {
                                 e.unseen = 0.0;
@@ -4618,7 +4642,7 @@ impl Police {
                         }
                     }
                     let lost = track_flag && e.unseen > thr;
-                    found |= !lost || (s.no_goals && cop_sees(world, c, ppos, vision, 0.0));
+                    found |= !lost || (s.no_goals && cop_sees(world, &under, c, ppos, vision, 0.0));
                 }
                 if self.srch.is_empty() {
                     found = !track_flag;
@@ -4693,7 +4717,7 @@ impl Police {
                             }
                             for &(cu, cp, c) in &cops {
                                 let d2 = cp.distance_squared(r.state.pos);
-                                if best.map_or(true, |b| d2 < b.0) && cop_sees(world, c, r.state.pos, 300.0, 0.0) {
+                                if best.map_or(true, |b| d2 < b.0) && cop_sees(world, &under, c, r.state.pos, 300.0, 0.0) {
                                     best = Some((d2, cu, r.uid));
                                 }
                             }
@@ -4814,7 +4838,7 @@ impl Police {
                 Some(c) => {
                     // (Respond / WaitAtLocation: the cop sees the target within fRdoVicinityDist and fDetectHalfAngle,
                     // line of sight, over 0.5 s; F-87106)
-                    if d.st >= 2 && cop_sees(world, c, ppos, t("fRdoVicinityDist", 100.0), t("fDetectHalfAngle", 180.0)) {
+                    if d.st >= 2 && cop_sees(world, &under, c, ppos, t("fRdoVicinityDist", 100.0), t("fDetectHalfAngle", 180.0)) {
                         d.seen_t += dt;
                         if d.seen_t > 0.5 {
                             result = 1;
@@ -4994,7 +5018,7 @@ impl Police {
         for c in vehicles.cars.iter_mut().filter(|c| pursuer(c) || Some(c.uid) == dsp_cop) {
             let is_dsp = Some(c.uid) == dsp_cop && !pursuer(c);
             // (the head-on test's sight: this cop's own, 2 m up, no range and no cone)
-            let own_sight = tactic && cop_sees(world, c, ppos, 0.0, 0.0);
+            let own_sight = tactic && cop_sees(world, &under, c, ppos, 0.0, 0.0);
             let Some(ai) = c.ai.as_mut() else { continue };
             ai.chase_exact = false;
             if self.flee_hold > 0.0 && self.heat == Heat::Pursuit && !is_dsp {
@@ -6026,6 +6050,33 @@ mod tests {
     /// tools/zone_pick_reference.py: the original's EvaluateCopZones body F-88125 run offline (3,120 cases: the dev override,
     /// 0 - 5 police, 0 - 11 zones, no race / a race (its +8 word 1 or 0), laps 0 - 8 and -1, random generator states): the
     /// zone, the lap, the armed state, the underground call and the generator after equal `zone_pick`.
+    /// tools/cop_sees_reference.py: the original's sight test F-94676 run offline (6,000 cases: police racer or not,
+    /// underground or not, radius 0 / negative / on the edge, half angle 0 / negative / up to 180 and on the cone's
+    /// edge, level and tilted cops, the target on the cop): whether the line is tested and its two ends equal
+    /// `sees_pre` (the line test F-69576 is the case's answer).
+    #[test]
+    fn cop_sees_matches_the_original() {
+        let f = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
+        let mut n = 0;
+        for l in include_str!("testdata/cop_sees_ref.txt").lines() {
+            let (lhs, rhs) = l.split_once(" -> ").unwrap();
+            let v: Vec<&str> = lhs.split(' ').collect();
+            let w = |i: usize| f(v[2 + i]);
+            let ftz = |a: f32| if a.abs() < f32::MIN_POSITIVE { 0.0 * a } else { a };
+            let fwd = Vec3::new(ftz(0.0 - w(3)), ftz(0.0 - w(4)), ftz(0.0 - w(5)));
+            let under = v[0] == "1" && v[1] == "1";
+            let line = v[13] == "1";
+            let got = match sees_pre(under, Vec3::new(w(0), w(1), w(2)), fwd, Vec3::new(w(6), w(7), w(8)), w(9), w(10)) {
+                None => "0 0".to_string(),
+                Some((a, b)) => format!("{} 1 {}", line as u32,
+                    [a.x, a.y, a.z, b.x, b.y, b.z].iter().map(|x| format!("{:08x}", x.to_bits())).collect::<Vec<_>>().join(" ")),
+            };
+            assert_eq!(got, rhs, "{lhs}");
+            n += 1;
+        }
+        assert_eq!(n, 6000);
+    }
+
     #[test]
     fn zone_pick_matches_the_original() {
         let g = |t: &str| u32::from_str_radix(&t[1..], 16).unwrap();
