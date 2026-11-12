@@ -3213,6 +3213,66 @@ mod tests {
         }
     }
 
+    /// The aiv constructor F-64269 (with F-50004, its tuning defaults F-46101 and F-36694) run offline on a block filled with
+    /// 0xCD (work/racerai/follow/ctor.py): every ring's start / count / base, the car values, the line's words, the planes-built
+    /// index, the obstacle count (and the flag bytes' own count +25152 = 0) and the 27 tuning words at +25332 equal `Aiv::new`.
+    /// The obstacle clear F-69761 on the 1,211 recorded / variant aivs: both counts 0 after, `set_obstacles(&[])`'s n_obst
+    /// (docs/reference/ai/verify_follower.md section 13).
+    #[test]
+    fn constructor_and_clear_are_the_originals() {
+        let dir = "D:/MCLA/work/racerai/follow";
+        const BS: usize = 31232;
+        let Ok(b) = std::fs::read(format!("{dir}/ctor.bin")) else {
+            println!("fixtures missing: skipped");
+            return;
+        };
+        let w = |b: &[u8], o: usize| u32::from_be_bytes(b[o..o + 4].try_into().unwrap());
+        let a = Aiv::new(tune());
+        let mut o = Aiv::new(tune());
+        o.import_original(&b);
+        let hdr = |a: &Aiv| {
+            format!("{:?} {:?} {:?} {:?} {:?}", (a.portals.start, a.portals.count, a.portals.base), (a.goals.start, a.goals.count, a.goals.base),
+                (a.pg.start, a.pg.count, a.pg.base), (a.ln.pts.start, a.ln.pts.count, a.ln.pts.base), (a.ln.pp.start, a.ln.pp.count, a.ln.pp.base))
+        };
+        let vals = |a: &Aiv| {
+            format!("{:?} {:?} {:?} {:?}", (a.n_obst, a.size, a.pos, a.h, a.f, a.vel, a.ang_vel, a.goal_dir, a.v_fwd), (a.cap, a.dt, a.b1, a.t1, a.b2, a.t2, a.g, a.inv_g, a.right),
+                (a.ln.n, a.ln.f, a.ln.j, a.ln.t, a.last_reached, a.j_prev, a.cursor), (a.step, a.mode, a.progress, a.cached, a.next_goal, a.planes_upto))
+        };
+        assert_eq!(hdr(&a), hdr(&o));
+        assert_eq!(vals(&a), vals(&o));
+        assert_eq!(w(&b, 25152), 0);
+        let t = &a.tun;
+        let fl = |x: f32| x.to_bits();
+        let port = [
+            t.max_steps_ahead as u32, (t.restart_every_update as u32) << 24, t.max_steps_to_recurse as u32, fl(t.recursive_falloff), fl(t.initial_segment_length),
+            t.samples_per_segment as u32, fl(t.length_variance_weight), fl(t.off_road_weight), fl(t.max_curvature_penalty), fl(t.linear_adjustment),
+            fl(t.angular_adjustment), fl(t.angular_adjustment_threshold), fl(t.angular_adjustment_falloff), fl(t.adjustment_falloff), fl(t.adjustment_falloff_trigger),
+            fl(t.adjustment_reset_threshold), fl(t.buffer_zone), fl(t.obstacle_lookahead_time), fl(t.max_speed_scalar), fl(t.max_total_accel_scalar),
+            fl(t.max_total_decel_scalar), fl(t.max_brake_decel_scalar), fl(t.average_speed_weight), fl(t.max_obstacle_height_delta), fl(t.max_obstacle_flat_delta),
+            fl(t.max_obstacle_prediction_dist), fl(t.collision_speed_penalty),
+        ];
+        // (+4: the flag byte, then 3 bytes the constructor leaves as they were)
+        let orig: Vec<u32> = (0..27).map(|k| if k == 1 { w(&b, 25336) & 0xFF00_0000 } else { w(&b, 25332 + 4 * k) }).collect();
+        assert_eq!(port.to_vec(), orig);
+        for (set, inp, stride) in [("rec", format!("{dir}/in_rec.bin"), BS + 96), ("var", "D:/MCLA/work/ai-verify/scalar/chain_in_var.bin".to_string(), BS)] {
+            let (Ok(inp), Ok(out)) = (std::fs::read(&inp), std::fs::read(format!("{dir}/clear_{set}.bin"))) else {
+                println!("{set}: fixtures missing: skipped");
+                continue;
+            };
+            let n = inp.len() / stride;
+            assert_eq!(out.len(), n * BS);
+            for k in 0..n {
+                let mut a = Aiv::new(tune());
+                a.import_original(&inp[k * stride..k * stride + BS]);
+                assert!(a.n_obst > 0);
+                a.set_obstacles(&[]);
+                let r = &out[k * BS..(k + 1) * BS];
+                assert_eq!((a.n_obst as u32, a.n_obst as u32), (w(r, 25104), w(r, 25152)), "{set} case {k}");
+            }
+            println!("{set}: {n} clears equal");
+        }
+    }
+
     /// F-82126 (drop the last portal) run offline (work/racerai/follow/pop.py) on the 201 recorded R8 aivs and the 1,010 variants,
     /// the planes-built index set to the portal end + 4 first: the ring's start / count / base and the built index equal
     /// `pop_portal`'s, and the original's own tail words (portals +22544, flag bytes +22704 / +22712) stay the ring's start + count
