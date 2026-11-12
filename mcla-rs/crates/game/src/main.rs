@@ -748,6 +748,8 @@ struct App {
     /// the player's VehState::nitro_fires last frame (stats gNIT / nNIT)
     nitro_fires: u32,
     shake_jolts: Vec<(f32, f32)>,
+    /// the game frames the boom stepped in this drawn frame (the shake runs once each, `CamShake::apply_framed`)
+    shake_frames: u32,
     district_timer: f32,
     /// the GPS target last routed (place bits, mission): a change re-makes the route at once
     gps_key: (Option<[u32; 3]>, Option<String>),
@@ -1672,6 +1674,7 @@ impl App {
             sst_fires: 0,
             nitro_fires: 0,
             shake_jolts: Vec::new(),
+            shake_frames: 0,
             district_timer: 0.0,
             gps_key: (None, None),
             flash: false,
@@ -9932,6 +9935,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 self.boom.reset();
                             }
                             let frames = std::mem::take(&mut self.boom_frames).min(4);
+                            self.shake_frames = frames;
                             if let Some((pos, rot, vel, ang_vel, g)) = self.boom_sample.filter(|_| frames > 0 || !self.boom.stepped()) {
                                 let at = boomcam::BoomTarget { pos, rot, vel, ang_vel, ..target };
                                 // (one step per game frame on that frame's own pose and ground: with several game frames in this
@@ -10417,11 +10421,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // (none while the player's Zone runs or the police hold the car - chassis +592 bit 0x8, set with the bust's
                 // 0x20: the blocks keep their state, F-36289)
                 let zone = self.ability.kind == ability::Kind::Zone && self.ability.active > 0.0;
-                if shake_on && sim_dt > 0.0 && !zone && self.crash_bits & 0x8 == 0 {
+                // (once a 30 Hz game frame, as the original's look-around frame, drawn between the last two by the boom's
+                // share: CamShake::apply_framed)
+                let shake_frames = std::mem::take(&mut self.shake_frames);
+                if shake_on && !zone && self.crash_bits & 0x8 == 0 {
                     if let Some(sh) = self.shake.as_mut() {
                         let mut up = self.boom_up.unwrap_or(Vec3::Y);
                         let (mut pos, mut look) = (self.chase.pos, self.chase.look);
-                        sh.apply(dt, &mut pos, &mut look, &mut up, render_state.pos);
+                        let share = self.cam_switch.blend.share.unwrap_or(1.0);
+                        // (the frame's game time, real time on the wipeout camera: the port's slow motion spaces its game
+                        // frames out, so a game frame there is 1/30 s over the time scale)
+                        let step = if self.crash_cam.active(&self.cam_switch.blend) && sim_dt > 0.0 && dt > 0.0 { boomcam::GAME_FRAME * dt / sim_dt } else { boomcam::GAME_FRAME };
+                        sh.apply_framed(shake_frames, step, share, &mut pos, &mut look, &mut up, render_state.pos);
                         if !boom_corrected {
                             (self.chase.pos, self.chase.look) = (pos, look);
                             self.boom_up = Some(up);

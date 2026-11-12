@@ -1993,6 +1993,9 @@ struct ShakeBlock {
 pub struct CamShake {
     blocks: Vec<ShakeBlock>,
     rng: (u32, u32),
+    /// the port's: what the last two game frames' shakes did to the camera, in its own frame (turn, then the place moved
+    /// along its rows), oldest first; `apply_framed` draws between them
+    drawn: [Option<(Quat, Vec3)>; 2],
 }
 
 pub const SHAKE_DRIVING: usize = 2;
@@ -2035,7 +2038,7 @@ impl CamShake {
                 ShakeBlock { parts: [part("CarRot"), part("Rot"), part("Tran")], magnitude: mag, scale: 2.0, ..Default::default() }
             })
             .collect();
-        CamShake { blocks, rng: (0x1234_5678, 0) }
+        CamShake { blocks, rng: (0x1234_5678, 0), drawn: [None; 2] }
     }
 
     /// Every block off (F-29203: the phases are kept).
@@ -2044,6 +2047,7 @@ impl CamShake {
             b.timer = 0.0;
             b.state = 0;
         }
+        self.drawn = [None; 2];
     }
 
     /// A one-shot on the Shake block (F-68650 -> F-48972): `fixed_mount` (bumper /
@@ -2068,18 +2072,37 @@ impl CamShake {
         }
     }
 
-    /// Shakes the camera (eye `pos`, `look`, `up`) about the car at `car` (F-10707). The port keeps the camera as eye, look
-    /// and up: its rows are made from them here (right = up x back, as the cameras' look-at) and given back the same way.
-    pub fn apply(&mut self, dt: f32, pos: &mut Vec3, look: &mut Vec3, up: &mut Vec3, car: Vec3) {
+    /// The shake as the original runs it, once a 30 Hz game frame (F-36289 ends with F-10707 on the frame time), drawn above
+    /// 30 fps between the last two game frames. `frames` game frames have passed since the last drawn frame: each runs
+    /// F-10707 on the camera with the frame's `step` (the game frame's 1/30 s; real time on a camera flagged +184, the
+    /// wipeout camera: F-76427's choice, shake_rule.md section 3) (its timers, phases and random draws once a game frame, as the
+    /// original's) and keeps what it did to the camera in the camera's own frame; the drawn camera then gets the turn and move
+    /// `share` of the way from the frame before the last to the last (the boom's share, `BoomCam::draw_at`). At share 1 it is
+    /// F-10707's own result on the camera it is given; between game frames it is the port's interpolation (the original draws
+    /// at 30 fps). The game frames' shakes are taken on the camera as it is drawn now, not on each game frame's own camera.
+    /// The port keeps the camera as eye, look and up: its rows are made from them (right = up x back, as the cameras' look-at)
+    /// and given back the same way.
+    pub fn apply_framed(&mut self, frames: u32, step: f32, share: f32, pos: &mut Vec3, look: &mut Vec3, up: &mut Vec3, car: Vec3) {
         let reach = pos.distance(*look).max(0.1);
-        // the camera's rows: a right, b up, c back
         let c = (*pos - *look).normalize_or(Vec3::Z);
         let a = up.cross(c).normalize_or(Vec3::X);
-        let mut m = [a, c.cross(a), c, *pos];
-        self.apply_rows(dt, &mut m, car);
-        *pos = m[3];
-        *look = m[3] - m[2] * reach;
-        *up = m[1];
+        let m = [a, c.cross(a), c, *pos];
+        let r0 = Mat3::from_cols(m[0], m[1], m[2]);
+        for _ in 0..frames.min(4) {
+            let mut s = m;
+            self.apply_rows(step, &mut s, car);
+            let r1 = Mat3::from_cols(s[0], s[1], s[2]);
+            let turn = Quat::from_mat3(&(r0.transpose() * r1)).normalize();
+            let moved = r0.transpose() * (s[3] - m[3]);
+            self.drawn = [self.drawn[1].or(Some((turn, moved))), Some((turn, moved))];
+        }
+        let (Some(from), Some(to)) = (self.drawn[0], self.drawn[1]) else { return };
+        let share = share.clamp(0.0, 1.0);
+        let (turn, moved) = if share >= 1.0 { to } else { (from.0.slerp(to.0, share), from.1.lerp(to.1, share)) };
+        let r = r0 * Mat3::from_quat(turn);
+        *pos = m[3] + r0 * moved;
+        *look = *pos - r.z_axis * reach;
+        *up = r.y_axis;
     }
 
     /// F-10707 on the camera's matrix (rows a right, b up, c back, d the place), word for word as the original's (checked
@@ -6225,6 +6248,43 @@ mod original_warper_tests {
 mod original_shake_tests {
     use super::*;
 
+    /// The shake runs once a game frame whatever the drawn frame rate: drawn frames between game frames take no timer, phase
+    /// or random draw, and at share 1 the camera is F-10707's own result for the game frame (the port's interpolation between).
+    #[test]
+    fn the_shake_runs_once_a_game_frame() {
+        let part = |amp: f32, rnd: f32| [Vec3::splat(amp), Vec3::new(50.0, 35.0, 75.0), Vec3::splat(rnd), Vec3::ZERO];
+        let block = ShakeBlock { parts: [part(0.01, 0.002), part(0.02, 0.003), part(0.05, 0.004)], magnitude: 3.0, scale: 1.0, timer: 1.0, state: 2 };
+        let new = || CamShake { blocks: vec![block.clone()], rng: (7, 0), drawn: [None; 2] };
+        let (car, eye, look) = (Vec3::new(10.0, 1.0, 20.0), Vec3::new(10.0, 2.5, 26.0), Vec3::new(10.0, 1.2, 20.0));
+        // (the old way's matrix from eye, look and up)
+        let rows = |e: Vec3, l: Vec3, u: Vec3| {
+            let c = (e - l).normalize();
+            let a = u.cross(c).normalize();
+            [a, c.cross(a), c, e]
+        };
+        let (mut once, mut framed) = (new(), new());
+        for frame in 0..12 {
+            let mut m = rows(eye, look, Vec3::Y);
+            once.apply_rows(GAME_FRAME, &mut m, car);
+            // (four drawn frames in this game frame, the first one with the step)
+            for k in 0..4 {
+                let (mut p, mut l, mut u) = (eye, look, Vec3::Y);
+                framed.apply_framed(if k == 0 { 1 } else { 0 }, GAME_FRAME, if k == 3 { 1.0 } else { 0.25 * (k + 1) as f32 }, &mut p, &mut l, &mut u, car);
+                if k == 3 {
+                    assert!(p.distance(m[3]) < 1e-5, "frame {frame}: {p} {}", m[3]);
+                    assert!(u.distance(m[1]) < 1e-5 && (p - l).normalize().distance(m[2]) < 1e-5, "frame {frame}");
+                }
+            }
+            assert_eq!(once.rng, framed.rng, "one random draw set a game frame");
+            assert_eq!(once.blocks[0].parts[1][3].to_array(), framed.blocks[0].parts[1][3].to_array(), "phases advance once a game frame");
+        }
+        // (a reset: no shake drawn until the next game frame)
+        framed.reset();
+        let (mut p, mut l, mut u) = (eye, look, Vec3::Y);
+        framed.apply_framed(0, GAME_FRAME, 0.5, &mut p, &mut l, &mut u, car);
+        assert_eq!((p, l, u), (eye, look, Vec3::Y));
+    }
+
     #[test]
     fn shake_setters_match_the_original() {
         let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
@@ -6236,7 +6296,7 @@ mod original_shake_tests {
             let blocks: Vec<ShakeBlock> = (0..5)
                 .map(|i| ShakeBlock { timer: f(w[4 * i]), magnitude: f(w[4 * i + 1]), scale: f(w[4 * i + 2]), state: w[4 * i + 3].parse().unwrap(), ..Default::default() })
                 .collect();
-            let mut cs = CamShake { blocks, rng: (1, 0) };
+            let mut cs = CamShake { blocks, rng: (1, 0), drawn: [None; 2] };
             for (op, row) in w[21..].iter().zip(b.split(" | ")) {
                 let args: Vec<&str> = op[1..].split(',').collect();
                 match op.as_bytes()[0] {
@@ -6310,7 +6370,7 @@ mod original_shake_apply_tests {
                     ShakeBlock { parts: [part(0), part(1), part(2)], timer: f(w[o + 1]), magnitude: f(w[o + 2]), scale: f(w[o + 3]), state: h(w[o]) as u8 }
                 })
                 .collect();
-            let mut cs = CamShake { blocks, rng: (h(w[0]), h(w[1])) };
+            let mut cs = CamShake { blocks, rng: (h(w[0]), h(w[1])), drawn: [None; 2] };
             let mut m = [v3(6), v3(9), v3(12), v3(15)];
             cs.apply_rows(f(w[2]), &mut m, v3(3));
             let mut got: Vec<u32> = m.iter().flat_map(|r| r.to_array()).map(f32::to_bits).collect();
