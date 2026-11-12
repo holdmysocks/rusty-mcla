@@ -638,6 +638,11 @@ struct App {
     phone_challenge_in: f32,
     /// the racer whose telephone challenge is up (GH_03 ..): his voice says the invite and the decline
     phone_caller: &'static str,
+    /// TelephoneChallenge's wait for the player (0x347..0x469) once the call's line is over and the sidekick's wait
+    /// flag holds it: the count of 100 ms passes left (local 6, from 50) and the time to the next pass
+    phone_wait: Option<(i32, f32)>,
+    /// its decline line playing (0x3b8..0x452), the call still held
+    phone_declining: bool,
     /// the racer's countdown has run out: his call waits for the phone's gates
     phone_challenge_due: bool,
     /// the phone form's +788 (held: sidekickDelay, after each call) and the delayed sidekickResume that clears it
@@ -1629,6 +1634,8 @@ impl App {
             garage_out: None,
             garage_save: None,
             phone_challenge_in: 0.0,
+            phone_wait: None,
+            phone_declining: false,
             phone_caller: "",
             phone_challenge_due: false,
             phone_hold: false,
@@ -7160,6 +7167,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.game.tip = Some((who, st("Lets Race", "LET'S RACE.  YOU PICK THE LOCATION."), 12.0));
                         self.game.phone_prompt = st("Back To Accept", "ACCEPT").to_uppercase();
                         self.game.phone_challenge = true;
+                        // (Sidekick_AppendData's argument 9 is 0: the call waits for the script once its line is over)
+                        self.game.tip_waits = Some(false);
+                        self.phone_wait = None;
+                        self.phone_declining = false;
                         self.speech.say_as("HOOKMAN_PHONE_INVITE_PLAYER", caller);
                     }
                 }
@@ -7167,9 +7178,51 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (the sidekick's wait-for-script flag: a waiting call's line over holds it, `Game::sidekick_wait_step`;
             // "over" here is the speech queue empty, where F-37697 compares the playing line with the call's)
             self.game.sidekick_wait_step(!self.speech.busy());
-            if self.game.tip.is_none() && std::mem::take(&mut self.game.phone_challenge) {
-                // (not taken)
-                self.speech.say_as("HOOKMAN_PHONE_PLAYER_DECLINES", self.phone_caller);
+            // TelephoneChallenge.sco after its call (0x308..0x469): it waits for the call to be done (Sidekick_IsDataDirty,
+            // F-37697's mark when the line is over); then, while Sidekick_SidekickIsWaitForScriptFlagSet, a pass every
+            // 100 ms (WAITUNWARPED(100)): police activity > 1 ends the script (the call stays held); in Cruising_Offline, not
+            // paused (Game_IsPaused) and not in the idle camera the count (50) goes down one, and below 0 - the flag still set -
+            // Sidekick_IgnoreSelect(1), the card's prompt emptied (PropertyCtrl_SetPropertyString(HUD ctrl 12, 3, '')),
+            // HOOKMAN_PHONE_PLAYER_DECLINES played and waited for (police > 1 ends it), then
+            // Sidekick_SidekickToggleWaitForScriptFlag(0): the call goes. A call done with the flag clear (taken, dismissed,
+            // interrupted) leaves the loop at once: 0x46e, the accepted path or the end - no decline line.
+            if self.phone_declining {
+                if self.police.activity().0 > 1 {
+                    self.phone_declining = false;
+                } else if !self.speech.busy() {
+                    self.phone_declining = false;
+                    self.game.sidekick_toggle_wait(false);
+                }
+            } else if self.game.phone_challenge {
+                if self.game.tip.is_none() {
+                    self.game.phone_challenge = false;
+                    self.phone_wait = None;
+                } else if self.game.sidekick_wait {
+                    let (cruising, paused) = (self.game.cruising_offline(), self.game.mode == Mode::Paused);
+                    let (count, next) = self.phone_wait.get_or_insert((50, 0.0));
+                    *next -= dt;
+                    while *next <= 0.0 {
+                        *next += 0.1;
+                        if self.police.activity().0 > 1 {
+                            self.game.phone_challenge = false;
+                            break;
+                        }
+                        if cruising && !paused && !self.game.idle_cam {
+                            *count -= 1;
+                            if *count < 0 {
+                                // (IgnoreSelect: the call can no longer be taken)
+                                self.game.phone_challenge = false;
+                                self.game.phone_prompt.clear();
+                                self.speech.say_as("HOOKMAN_PHONE_PLAYER_DECLINES", self.phone_caller);
+                                self.phone_declining = true;
+                                break;
+                            }
+                        }
+                    }
+                    if !self.game.phone_challenge {
+                        self.phone_wait = None;
+                    }
+                }
             }
             self.phone_was_up = self.game.tip.is_some();
             if std::mem::take(&mut self.game.phone_accept) {
