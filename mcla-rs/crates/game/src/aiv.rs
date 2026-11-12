@@ -2848,6 +2848,42 @@ mod tests {
     /// zero, the two bools, any old flag byte). The stored position, velocity, direction (its y set to 0, normalised),
     /// half extent (lanes 0 and 2) and the flag byte's two top bits equal bit for bit. (The byte's low 6 bits are the
     /// slot's old ones, which only this writes and nothing reads; the port keeps them 0.)
+    /// F-80559 run offline (tools/aiv_reach_reference.py, seed 80559, 6,000 cases: corridors of 2 .. 12 portals with bends,
+    /// reversed, degenerate and random ones, the ring's start 0 .. 127 so it wraps, b above, below and equal to a, x and p near
+    /// their cells or anywhere; 3,345 true): `reach` equals the original on every case. On the same ring the corridor point
+    /// ahead F-43876 (904 cases on the two-portal mean): `corridor_ahead` equal to the bit.
+    #[test]
+    fn reach_matches_the_original() {
+        let text = include_str!("testdata/aiv_reach_ref.txt");
+        let tune = Arc::new(mcla_formats::rage::aitune::AiTune::from_floats(&vec![0.0; 4096]).unwrap());
+        let (mut n, mut bad, mut bad_c) = (0, 0, 0);
+        for line in text.lines().filter(|l| !l.is_empty()) {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let int = |i: usize| w[i].parse::<i32>().unwrap();
+            let f = |i: usize| f32::from_bits(u32::from_str_radix(&w[i].replace('_', ""), 16).unwrap());
+            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let (start, base, k, ca, cb) = (int(1), int(2), int(3), int(4), int(5));
+            let mut a = Aiv::new(tune.clone());
+            a.portals.start = start;
+            a.portals.base = base;
+            a.portals.count = k;
+            for j in 0..k {
+                let at = 12 + 12 * j as usize;
+                a.portals.set(base + j, Cell { sa: v(at), sb: v(at + 3), a: v(at + 6), b: v(at + 9), ..Cell::default() });
+            }
+            let r = w.len() - 4;
+            n += 1;
+            if a.reach(base + ca, v(6), base + cb, v(9)) != (w[r] == "1") {
+                bad += 1;
+            }
+            let c = a.corridor_ahead();
+            if [c.x, c.y, c.z].map(f32::to_bits) != [f(r + 1), f(r + 2), f(r + 3)].map(f32::to_bits) {
+                bad_c += 1;
+            }
+        }
+        assert!(n == 6000 && bad == 0 && bad_c == 0, "reach {bad} / corridor {bad_c} of {n} differ");
+    }
+
     #[test]
     fn obstacle_add_matches_the_original() {
         let text = include_str!("testdata/obstacle_add_ref.txt");
