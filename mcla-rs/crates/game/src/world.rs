@@ -2407,7 +2407,13 @@ impl World {
         };
         // (a detailed sector comes in over a third of a second; interiors and far models are just there)
         let u = if sector_id < SET_ID { 0.0 } else { 1.0 };
-        let obj = Some((gpu.new_object(&sector_uniform(u, false)), gpu.new_object(&sector_uniform(u, true))));
+        // (in slots of the shared object buffers: a buffer of its own each took 64 KB on DX12, ~940 of them - GitHub #48;
+        // MCLA_SECTOR_OBJ_OLD=1: a buffer each, as before)
+        let obj = if std::env::var_os("MCLA_SECTOR_OBJ_OLD").is_some() {
+            Some((gpu.new_object(&sector_uniform(u, false)), gpu.new_object(&sector_uniform(u, true))))
+        } else {
+            Some((gpu.new_pooled_object(&sector_uniform(u, false)), gpu.new_pooled_object(&sector_uniform(u, true))))
+        };
         // (its CPU copy is many blocks: freed off the frame)
         rayon::spawn(move || drop(cs));
         GpuSector { vb, ib, batches, caster_count, caster_min, caster_max, caster_batches, tris, obj, u, shown: u, far, bundle: Default::default() }

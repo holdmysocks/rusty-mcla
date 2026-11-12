@@ -230,6 +230,9 @@ struct Egui {
     ui4: Option<uipass::Ui4>,
     /// the same pass at 2 samples (ANTI-ALIASING 2X, aamode.rs), drawn with `renderer2`
     ui2: Option<uipass::Ui4>,
+    /// when `ui2` / `ui4` was last drawn (one unused for 60 s goes: GitHub #48, the 4x pass held 40 MB at 1080p for the
+    /// rest of a session after a menu; made again in a few ms; MCLA_SCENE_SETS_KEEP=1 keeps them, as the scene sets)
+    ui_used: [Option<std::time::Instant>; 2],
     /// the self movies' pictures (selfmovie.rs): 2 samples, 960 x 640
     renderer2: egui_wgpu::Renderer,
     selfs: std::sync::Arc<std::sync::Mutex<selfmovie::Shared>>,
@@ -8747,6 +8750,23 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let mut v: Vec<_> = by.into_iter().collect();
                     v.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
                     log::info!("allocator by name: {}", v.iter().take(12).map(|(n, (c, s))| format!("{n} {c} {:.0} MB", mb(*s))).collect::<Vec<_>>().join(", "));
+                    // (what grew since the last report, by name with its trailing digits cut, "(no name)" for an empty one)
+                    static PREV: std::sync::Mutex<Option<std::collections::HashMap<String, (i64, i64)>>> = std::sync::Mutex::new(None);
+                    let mut now: std::collections::HashMap<String, (i64, i64)> = std::collections::HashMap::new();
+                    for a in &r.allocations {
+                        let n = a.name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '_' || c == ' ');
+                        let e = now.entry(if n.is_empty() { "(no name)".to_string() } else { n.to_string() }).or_default();
+                        e.0 += 1;
+                        e.1 += a.size as i64;
+                    }
+                    let mut prev = PREV.lock().unwrap();
+                    if let Some(p) = prev.as_ref() {
+                        let mut d: Vec<(&String, i64, i64)> = now.iter().map(|(n, (c, s))| { let o = p.get(n).copied().unwrap_or_default(); (n, c - o.0, s - o.1) }).collect();
+                        for (n, (c, s)) in p { if !now.contains_key(n) { d.push((n, -c, -s)); } }
+                        d.sort_by(|a, b| b.2.abs().cmp(&a.2.abs()));
+                        log::info!("allocator growth: {}", d.iter().filter(|x| x.2 != 0).take(12).map(|(n, c, s)| format!("{n} {c:+} {:+.1} MB", *s as f64 / 1048576.0)).collect::<Vec<_>>().join(", "));
+                    }
+                    *prev = Some(now);
                 }
             }
         }
@@ -13498,6 +13518,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "ui");
             gpu.depth_to_ui(&mut enc);
         }
+        if let Some(eg) = self.egui.as_mut().filter(|_| std::env::var_os("MCLA_SCENE_SETS_KEEP").is_none()) {
+            let now = std::time::Instant::now();
+            for (k, pass) in [&mut eg.ui2, &mut eg.ui4].into_iter().enumerate() {
+                if pass.is_some() && eg.ui_used[k].is_some_and(|t| now.duration_since(t) > std::time::Duration::from_secs(60)) {
+                    *pass = None;
+                    eg.ui_used[k] = None;
+                    log::info!("ui pass: the {}x targets freed (unused 60 s)", if k == 0 { 2 } else { 4 });
+                }
+            }
+        }
         // (no menus or HUD over a car picture's frames)
         if pic.is_none() {
             if let (Some(eg), Some((jobs, desc, _, n))) = (self.egui.as_mut(), egui_jobs.as_ref().filter(|j| j.3 > 1)) {
@@ -13506,6 +13536,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 let (pass, r) = if *n == 2 { (&mut eg.ui2, &eg.renderer2) } else { (&mut eg.ui4, &eg.renderer4) };
                 let p = pass.get_or_insert_with(|| uipass::Ui4::new(&gpu.device, gpu.config.format, plain, w, h, if *n == 2 { selfmovie::samples() } else { uipass::SAMPLES }));
                 p.run(&gpu.device, &mut enc, &frame.texture, &ui_view, plain, r, jobs, desc);
+                eg.ui_used[if *n == 2 { 0 } else { 1 }] = Some(std::time::Instant::now());
             } else if let (Some(eg), Some((jobs, desc, _, 1))) = (self.egui.as_mut(), egui_jobs.as_ref()) {
                 let pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("ui"),
@@ -15434,7 +15465,7 @@ impl App {
         flashpic::init(device, queue);
         minimap_gpu::init(device, queue);
         toparrow_gpu::init(device);
-        Egui { ctx, state, renderer, renderer4, ui4: None, ui2: None, renderer2, selfs }
+        Egui { ctx, state, renderer, renderer4, ui4: None, ui2: None, ui_used: [None; 2], renderer2, selfs }
     }
 
     /// Whether the start-up movie plays (OPTIONS > PERFORMANCE > INTRO = settings.toml game.intro; not in a headless

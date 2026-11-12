@@ -3551,7 +3551,16 @@ impl Gpu {
     }
 
     pub fn update_object(&self, b: &ObjectBinding, u: &ObjectUniform) {
-        self.queue.write_buffer(&b.buf, 0, bytemuck::bytes_of(u));
+        let v = bytemuck::bytes_of(u);
+        // (a pooled object: its value also into the pool's mirror, so a later flush of a changed range around it writes
+        // this value; the write itself stays here, at once, as for an object of its own)
+        if let Some(s) = b.slot.as_ref() {
+            if let Ok(mut p) = s.pool.lock() {
+                let o = b.off as usize;
+                p.mirror[s.buf as usize][o..o + v.len()].copy_from_slice(v);
+            }
+        }
+        self.queue.write_buffer(&b.buf, b.off, v);
     }
 
     /// Writes a batch's uniforms (`UniformBatch::flush`).
@@ -4705,8 +4714,10 @@ pub fn upload_as(device: &wgpu::Device, queue: &wgpu::Queue, tex: &Texture, bc: 
         lh = (lh / 2).max(1);
     }
     let levels = levels.max(1);
+    // (a texture read without a name gets one from its size, so the allocator report can tell them apart - GitHub #48)
+    let unnamed = if tex.name.is_empty() { format!("unnamed texture {w}x{h}") } else { String::new() };
     let Some(texture) = try_create_texture(device, &wgpu::TextureDescriptor {
-        label: Some(&tex.name),
+        label: Some(if tex.name.is_empty() { &unnamed } else { &tex.name }),
         size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         mip_level_count: levels,
         sample_count: 1,

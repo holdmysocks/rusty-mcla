@@ -60,7 +60,6 @@ pub fn queue(key: &str, shapes: Vec<egui::epaint::ClippedShape>) {
 }
 
 struct Pic {
-    msaa: wgpu::TextureView,
     resolve: wgpu::TextureView,
     bg: wgpu::BindGroup,
 }
@@ -70,6 +69,9 @@ pub struct Shared {
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     pics: HashMap<String, Pic>,
+    /// the multisampled target, one per format for all the movies (as the original's one "fullscreenself"): each job
+    /// clears it, draws, resolves into its movie's picture and discards it (GitHub #48: one each, ~8 MB on DX12)
+    msaa: HashMap<wgpu::TextureFormat, wgpu::TextureView>,
 }
 
 impl Shared {
@@ -91,13 +93,16 @@ impl Shared {
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
-        Arc::new(Mutex::new(Shared { layout, sampler, pics: HashMap::new() }))
+        Arc::new(Mutex::new(Shared { layout, sampler, pics: HashMap::new(), msaa: HashMap::new() }))
     }
 
-    fn pic(&mut self, device: &wgpu::Device, key: &str, format: wgpu::TextureFormat) -> &Pic {
+    fn pic(&mut self, device: &wgpu::Device, key: &str, format: wgpu::TextureFormat) -> (&Pic, &wgpu::TextureView) {
+        let size = wgpu::Extent3d { width: W, height: H, depth_or_array_layers: 1 };
+        self.msaa.entry(format).or_insert_with(|| {
+            let t = device.create_texture(&wgpu::TextureDescriptor { label: Some("fullscreenself"), size, mip_level_count: 1, sample_count: samples(), dimension: wgpu::TextureDimension::D2, format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT, view_formats: &[] });
+            t.create_view(&Default::default())
+        });
         if !self.pics.contains_key(key) {
-            let size = wgpu::Extent3d { width: W, height: H, depth_or_array_layers: 1 };
-            let msaa = device.create_texture(&wgpu::TextureDescriptor { label: Some("fullscreenself"), size, mip_level_count: 1, sample_count: samples(), dimension: wgpu::TextureDimension::D2, format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT, view_formats: &[] });
             let resolve = device.create_texture(&wgpu::TextureDescriptor { label: Some("fullscreenself resolved"), size, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] });
             let rv = resolve.create_view(&Default::default());
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -105,9 +110,9 @@ impl Shared {
                 layout: &self.layout,
                 entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&rv) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) }],
             });
-            self.pics.insert(key.to_string(), Pic { msaa: msaa.create_view(&Default::default()), resolve: rv, bg });
+            self.pics.insert(key.to_string(), Pic { resolve: rv, bg });
         }
-        &self.pics[key]
+        (&self.pics[key], &self.msaa[&format])
     }
 }
 
@@ -120,13 +125,13 @@ pub fn render_jobs(ctx: &egui::Context, device: &wgpu::Device, queue: &wgpu::Que
     let desc = egui_wgpu::ScreenDescriptor { size_in_pixels: [W, H], pixels_per_point: 1.0 };
     for job in jobs {
         let prims = ctx.tessellate(job.shapes, 1.0);
-        let pic = sh.pic(device, &job.key, format);
+        let (pic, msaa) = sh.pic(device, &job.key, format);
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("fullscreenself") });
         let extra = renderer.update_buffers(device, queue, &mut enc, &prims, &desc);
         {
             let pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("fullscreenself"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &pic.msaa, resolve_target: Some(&pic.resolve), ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Discard } })],
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: msaa, resolve_target: Some(&pic.resolve), ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Discard } })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
