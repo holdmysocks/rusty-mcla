@@ -1093,7 +1093,8 @@ impl Aiv {
 
     /// F-13872: the car is off the planned line (clamped position more than 0.25 m away in
     /// plan, more than 5 m below it, or the next point not reachable through the portals).
-    /// Returns the test and the clamped position.
+    /// Returns the test and the clamped position. Checked against the original run offline (test
+    /// off_line_matches_the_original, 6,000 cases).
     pub fn off_line(&self) -> (bool, Vec3) {
         if self.progress >= self.ln.pts.end() {
             return (false, self.pos);
@@ -1103,7 +1104,8 @@ impl Aiv {
         self.clamp_cell(&mut idx, &mut x);
         self.surface_y(idx, &mut x);
         let (dx, dz) = (x.x - self.pos.x, x.z - self.pos.z);
-        if dz * dz + dx * dx > 0.0625 || self.pos.y < x.y - 5.0 {
+        // (dx dx rounded, then dz dz + it in one rounding: the original's fmuls / fmadds)
+        if fma(dz, dz, dx * dx) > 0.0625 || self.pos.y < x.y - 5.0 {
             return (true, x);
         }
         let pb = self.ln.pp.get(self.progress) >> 1;
@@ -2882,6 +2884,54 @@ mod tests {
             }
         }
         assert!(n == 6000 && bad == 0 && bad_c == 0, "reach {bad} / corridor {bad_c} of {n} differ");
+    }
+
+    /// F-13872 run offline (tools/aiv_off_line_reference.py, seed 13872, 6,000 cases: corridors of 2 .. 10 portals with
+    /// their planes, 1 .. 10 control points, the car near the line, about 0.25 m off it, 5 m below it or anywhere, the line
+    /// used up in some): `off_line`'s test and its clamped position equal the original's on every case (the position only
+    /// where the original writes it: the line not used up, the out pointer given).
+    #[test]
+    fn off_line_matches_the_original() {
+        let text = include_str!("testdata/aiv_off_line_ref.txt");
+        let tune = Arc::new(mcla_formats::rage::aitune::AiTune::from_floats(&vec![0.0; 4096]).unwrap());
+        let (mut n, mut bad, mut bad_x) = (0, 0, 0);
+        for line in text.lines().filter(|l| !l.is_empty()) {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            let int = |i: usize| w[i].parse::<i32>().unwrap();
+            let f = |i: usize| f32::from_bits(u32::from_str_radix(&w[i].replace('_', ""), 16).unwrap());
+            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let (ps, pb, k, qs, qb, m, ws, prog, out) = (int(1), int(2), int(3), int(4), int(5), int(6), int(7), int(8), int(9) != 0);
+            let mut a = Aiv::new(tune.clone());
+            a.pos = v(10);
+            (a.portals.start, a.portals.count, a.portals.base) = (ps, k, pb);
+            let mut at = 13;
+            for j in 0..k {
+                let c = Cell { a: v(at), b: v(at + 3), sa: v(at + 6), sb: v(at + 9), n: v(at + 12), fwd: v(at + 15), back: v(at + 18), side_a: v(at + 21), side_b: v(at + 24), sside_a: v(at + 27), sside_b: v(at + 30), ..Cell::default() };
+                a.portals.set(pb + j, c);
+                at += 33;
+            }
+            (a.ln.pts.start, a.ln.pts.count, a.ln.pts.base) = (qs, m, qb);
+            for i in 0..m {
+                a.ln.pts.set(qb + i, v(at));
+                at += 3;
+            }
+            (a.ln.pp.start, a.ln.pp.count, a.ln.pp.base) = (ws, m, qb);
+            for i in 0..m {
+                a.ln.pp.set(qb + i, int(at));
+                at += 1;
+            }
+            a.progress = prog;
+            assert_eq!(w[at], "->");
+            let (got, x) = a.off_line();
+            n += 1;
+            if got != (w[at + 1] == "1") {
+                bad += 1;
+            }
+            if out && prog < qb + m && [x.x, x.y, x.z].map(f32::to_bits) != [f(at + 2), f(at + 3), f(at + 4)].map(f32::to_bits) {
+                bad_x += 1;
+            }
+        }
+        assert!(n == 6000 && bad == 0 && bad_x == 0, "test {bad} / position {bad_x} of {n} differ");
     }
 
     #[test]
