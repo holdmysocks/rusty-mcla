@@ -103,6 +103,9 @@ pub struct Man {
     /// 0x485..0x490); once it clears he is set up from there again (0x571, 0x65a -> 0x1a1: the brain to the
     /// nearest rail, the point nearest him first)
     pub reset: bool,
+    /// his story core parks him (`PARKED_CORES`): his car stands at the core's place, deactivated, with no driving
+    /// brain, its lamps and its exhaust off; he never goes round a loop
+    pub parked: bool,
 }
 
 impl Man {
@@ -227,6 +230,25 @@ pub struct Roamers {
     alt_racing: Option<u32>,
     alt_suspended: bool,
 }
+
+/// The story cores that park their man rather than run CruisingHookmanCore (mission, place, heading in degrees): each
+/// makes its opponent, loads him in his set-up at the place (OpponentManager_CreateOpponent / LoadOpponent(opponent,
+/// mcHookman_GetCarConfigName, place, 0) / AddOpponentToWorld), gives him his name and mod value, then
+/// Racer_SetVehicleDriverEnable 0, Racer_SetHeadlights 0, Racer_SetExhaust 0, Racer_InitializeResetPosition(place,
+/// heading), Racer_Reset and Racer_Deactivate - BESTOF_SH_05_CORE (`Story/0x007eebc2` 0x76..0x190), BEAT_SH_02_EXOTIC_CORE
+/// (`0x7e804c05` 0x77..0x192), FIND_SH_01B_CORE (`0xa46bcc85` 0x76..: there the lamps and the exhaust after the reset,
+/// before the deactivate), FIND_SH_02C_CORE (`0xb27d6524` 0x76..), FIND_SH_03B_CORE (`0xe604e9f6` 0x77..) and
+/// FIND_GH_27_CORE (`sc/.../0x4e56ff33`, the same place as FIND_SH_03B's). He stands there until his meeting (the
+/// player within 30 m / 20 m of the core's registered point, not chased - the cores' Racer_DistanceToPoint loop).
+/// The constants are the scripts' floats to the bit.
+pub const PARKED_CORES: [(&str, [f32; 3], f32); 6] = [
+    ("BESTOF_SH_05", [1350.78, -9.94, 263.73], 269.53),
+    ("BEAT_SH_02_EXOTIC", [-2649.97, -4.81, 33.44], 268.96),
+    ("FIND_SH_01B", [1675.63, -2.99, 219.23], 148.78),
+    ("FIND_SH_02C", [13.28, 26.38, -905.93], 178.54),
+    ("FIND_SH_03B", [-2897.459, -4.767, 97.989], 0.0),
+    ("FIND_GH_27", [-2897.459, -4.767, 97.989], 0.0),
+];
 
 fn is_racer_model(n: &str) -> bool {
     !n.starts_with("va_") && !n.contains("police") && !n.contains("citybus")
@@ -684,11 +706,15 @@ impl Roamers {
                 // it - `core_loop` - and every story core puts him at point 0 with the heading as
                 // it starts: Racer_InitializeResetPosition + Racer_Reset, `0x40a56c35` 0x19b..0x1a4,
                 // `0x05a65d81` 0xf9..0x102)
-                let (pts, heading, start) = match self.cores.get(&h.mission) {
-                    Some((p, hd, st)) if !h.mission.is_empty() => (p.clone(), *hd, *st),
+                // (six story cores park him instead, at their own place and heading: `PARKED_CORES`)
+                let park = PARKED_CORES.iter().find(|c| !h.mission.is_empty() && c.0 == h.mission);
+                let parked = park.is_some();
+                let (pts, heading, start) = match (park, self.cores.get(&h.mission)) {
+                    (Some(&(_, p, hd)), _) => (vec![Vec3::from(p)], Some(hd), Some(Vec3::from(p))),
+                    (None, Some((p, hd, st))) if !h.mission.is_empty() => (p.clone(), *hd, *st),
                     _ => (pts.clone(), self.heads.get(&stem).copied(), None),
                 };
-                men.push(Man { key: format!("slot:{d}:{i}"), kind: ManKind::Slot, district: d, name: h.name.clone(), car: h.car.clone(), config: h.config.clone(), difficulty: h.difficulty, mission: h.mission.clone(), event: String::new(), hidden: s.hidden && h.mission.is_empty(), pts, at: 0.0, mod_value: h.mod_value, uid: 0, heading, start, fresh: !h.mission.is_empty(), reset: false });
+                men.push(Man { key: format!("slot:{d}:{i}"), kind: ManKind::Slot, district: d, name: h.name.clone(), car: h.car.clone(), config: h.config.clone(), difficulty: h.difficulty, mission: h.mission.clone(), event: String::new(), hidden: s.hidden && h.mission.is_empty(), pts, at: 0.0, mod_value: h.mod_value, uid: 0, heading, start, fresh: !h.mission.is_empty(), reset: false, parked });
             }
         }
         for sp in &self.specials {
@@ -704,7 +730,7 @@ impl Roamers {
             // (generic_timetrial_hookman.sco 0x137 / 0x167: difficulty 1; the tournament man's 1 while his
             // mission is open, else 2 - `mc4_tournament_man_diff`)
             let diff = if sp.kind == ManKind::TimeTrial { 1 } else { game.mc4_tournament_man_diff(sp.district) };
-            men.push(Man { key: format!("{}:{}", if sp.kind == ManKind::TimeTrial { "tt" } else { "tour" }, sp.district), kind: sp.kind, district: sp.district, name: sp.name.clone(), car, config: sp.config.clone(), difficulty: diff, mission: String::new(), event, hidden: false, pts: sp.pts.clone(), at: 0.0, mod_value: -1, uid: 0, heading: None, start: None, fresh: false, reset: false });
+            men.push(Man { key: format!("{}:{}", if sp.kind == ManKind::TimeTrial { "tt" } else { "tour" }, sp.district), kind: sp.kind, district: sp.district, name: sp.name.clone(), car, config: sp.config.clone(), difficulty: diff, mission: String::new(), event, hidden: false, pts: sp.pts.clone(), at: 0.0, mod_value: -1, uid: 0, heading: None, start: None, fresh: false, reset: false, parked: false });
         }
         // the red light and freeway racers whose scripts run
         self.alt_men(game, player_car, &mut men);
@@ -781,7 +807,7 @@ impl Roamers {
             // (his reset position: OpponentManager_LoadOpponent's - the last point of his loop, heading 0 (red light
             // 0x36e9..0x36f9, freeway 0x7b1..0x7c1; the AI racer keeps it, car_pick.md 3.6) - until his race moves it)
             let reset = self.alt_reset.get(&d.id).copied().unwrap_or((d.pts.last().copied().unwrap_or_default(), 0.0));
-            men.push(Man { key, kind, district: d.district, name: r.name.clone(), car: r.car.clone(), config: r.config.clone(), difficulty: r.difficulty, mission: if r.mission { "REDLIGHT_GH_01".into() } else { String::new() }, event: String::new(), hidden: !game.alt_visible(d.id), pts: d.pts.clone(), at: 0.0, mod_value: r.mod_value, uid: d.id, heading: Some(reset.1), start: Some(reset.0), fresh: false, reset: false });
+            men.push(Man { key, kind, district: d.district, name: r.name.clone(), car: r.car.clone(), config: r.config.clone(), difficulty: r.difficulty, mission: if r.mission { "REDLIGHT_GH_01".into() } else { String::new() }, event: String::new(), hidden: !game.alt_visible(d.id), pts: d.pts.clone(), at: 0.0, mod_value: r.mod_value, uid: d.id, heading: Some(reset.1), start: Some(reset.0), fresh: false, reset: false, parked: false });
         }
     }
 
@@ -1059,17 +1085,22 @@ impl Roamers {
                     // car is in the world from then on - OpponentManager_AddOpponentToWorld,
                     // Racer_InitializeResetPosition, Racer_Reset, `0x40a56c35` 0x76..0x1a4 -: he
                     // stays there until his car is made, if the player is in reach of it)
-                    if (m.fresh || m.reset) && m.start.or(m.pts.first().copied()).map_or(false, |p| p.distance(pp) < 450.0) {
+                    if (m.fresh || m.reset || m.parked) && m.start.or(m.pts.first().copied()).map_or(false, |p| p.distance(pp) < 450.0) {
                         ahead.push((m.car.clone(), m.config.clone()));
                     }
                     // (he waits there while the streaming walk would ask for his car - within its reach -, one racer a
                     // frame being asked for)
                     let st = m.start.or(m.pts.first().copied()).map(|p| crate::oppmgr::flat_distance(p.x, p.z, pp.x, pp.z));
-                    if (m.fresh || m.reset) && st.map_or(false, |d| d < crate::oppmgr::Limits::default().far_reach) && streaming {
+                    if (m.fresh || m.reset || m.parked) && st.map_or(false, |d| d < crate::oppmgr::Limits::default().far_reach) && streaming {
                         m.at = 0.0;
                         if loading.as_deref() == Some(m.key.as_str()) {
                             spawn = Some(k);
                         }
+                        continue;
+                    }
+                    // (a parked man does not drive: he stays at his place out of reach too)
+                    if m.parked && only.is_none() {
+                        m.at = 0.0;
                         continue;
                     }
                     m.fresh = false;
@@ -1101,6 +1132,12 @@ impl Roamers {
                 continue;
             }
             let (p, d, _) = loop_at(&m.pts, m.at);
+            if m.parked {
+                // (his racer stands at his place, streamed out or not)
+                let h = m.heading.unwrap_or(0.0).to_radians();
+                self.on_road.insert(m.key.clone(), (p, Vec3::new(-h.sin(), 0.0, -h.cos())));
+                continue;
+            }
             if p.distance(pp) < 450.0 {
                 if let Some((at, _, f, _)) = rail_place(world, p) {
                     self.on_road.insert(m.key.clone(), (at, if f.dot(d) < 0.0 { -f } else { f }));
@@ -1164,6 +1201,43 @@ impl Roamers {
         }
         let tried = ready.is_some();
         let loading_now = loading.clone();
+        // (a parked story man: put down at his core's place with its heading - LoadOpponent there,
+        // Racer_InitializeResetPosition + Racer_Reset -, deactivated, no driver brain, lamps and exhaust off: `PARKED_CORES`)
+        let ready = match ready {
+            Some((k, m, model)) if m.parked && only.is_none() => {
+                self.timer = 1.0;
+                if let Some(x) = self.men.get_mut(k) {
+                    x.fresh = false;
+                    x.reset = false;
+                }
+                let p0 = m.start.unwrap_or(m.pts[0]);
+                let yaw = m.heading.unwrap_or(0.0).to_radians();
+                let rgb = game.rivals.paint_of(&m.config);
+                let color = rgb.map(|c| [c[0], c[1], c[2], 1.0]).unwrap_or(PALETTE[(self.rand() * PALETTE.len() as f32) as usize % PALETTE.len()]);
+                // (as the hangout cores' standing cars are put down: hangout_scene `stand_car`)
+                let idx = vehicles.spawn(gpu, model, p0 + Vec3::Y * 0.4, yaw, color, false);
+                let c = &mut vehicles.cars[idx];
+                crate::physics::vehsim::init_reset_position(&mut c.state, p0, glam::Quat::from_rotation_y(yaw));
+                c.racer = true;
+                c.driver = if game.career.hookman_mission() == Some(m.mission.as_str()) { m.name.clone() } else { String::new() };
+                c.vinyl_name = m.config.clone();
+                c.roam_key = m.key.clone();
+                if m.mod_value >= 0 {
+                    c.set_perf(m.mod_value.clamp(0, 100) as f32 / 100.0);
+                } else {
+                    c.set_stages(crate::tunebuild::Stages::of_config(&game.data_dir, &m.config));
+                }
+                // (Racer_SetVehicleDriverEnable 0 and Racer_Deactivate: no brain drives him, the chassis' +592 bit 0x1)
+                c.ai = None;
+                c.deactivated = true;
+                // (Racer_SetHeadlights 0, Racer_SetExhaust 0)
+                c.amb_lamps.off = true;
+                c.exhaust = false;
+                log::info!("roamers: {} ({}) parked in his {} at ({:.1}, {:.1}, {:.1}), heading {:.2}, {:.0} m away", m.name, m.mission, c.model.name, p0.x, p0.y, p0.z, yaw.to_degrees(), p0.distance(pp));
+                None
+            }
+            r => r,
+        };
         let Some(nav) = world.nav.as_ref() else { return None };
         if let Some((k, m, model)) = ready.filter(|(_, _, model)| is_racer_model(&model.name) || only.is_some()) {
             {
@@ -1622,6 +1696,34 @@ mod tests {
         assert_eq!(first_dest(&pts, pts[0]), 1);
         assert_eq!(first_dest(&pts, Vec3::new(-10.0, 0.0, 0.0)), 0);
         assert_eq!(first_dest(&pts, Vec3::new(10.0, 0.0, 3.0)), 1);
+    }
+
+    /// The parked story men's places and headings are the cores' own floats, to the bit: each core pushes the place
+    /// (x, y, z, 3 - the implode into local7), then the heading into local 10, before its OpponentManager_CreateOpponent
+    /// (skipped without the extracted data).
+    #[test]
+    fn parked_cores_are_the_scripts_places() {
+        let root = std::path::Path::new("D:/MCLA/extracted/cache/script_obj");
+        let file = |m: &str| match m {
+            "BESTOF_SH_05" => "game/career/Story/0x007eebc2",
+            "BEAT_SH_02_EXOTIC" => "game/career/Story/0x7e804c05",
+            "FIND_SH_01B" => "game/career/Story/0xa46bcc85",
+            "FIND_SH_02C" => "game/career/Story/0xb27d6524",
+            "FIND_SH_03B" => "game/career/Story/0xe604e9f6",
+            _ => "sc/career/Story/0x4e56ff33",
+        };
+        for (m, p, h) in PARKED_CORES {
+            let Ok(d) = std::fs::read(root.join(file(m))) else { return };
+            let sco = mcla_formats::sco::decode(&d).expect(m);
+            use mcla_formats::sco::Tok;
+            let t = sco.consts();
+            let num = |i: usize| match t.get(i) { Some(Tok::Num(v)) => Some(*v as f32), _ => None };
+            let hits = (0..t.len()).filter(|&i| {
+                (0..3).all(|k| num(i + k).map(f32::to_bits) == Some(p[k].to_bits())) && num(i + 3) == Some(3.0)
+                    && num(i + 4).map(f32::to_bits) == Some(h.to_bits()) && num(i + 5) == Some(10.0)
+            }).count();
+            assert_eq!(hits, 1, "{m}");
+        }
     }
 
     /// RACE_GH_06_CORE (`0x40a56c35` 0xdb..0x1a4) and RACE_GH_02_CORE (`0x81d83d96` 0x3d0..0x57d)
