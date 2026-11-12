@@ -2760,6 +2760,49 @@ mod original_tests {
         assert!(is_female("drv_fh_01_set") && is_female("drv_fa_001_set") && !is_female("drv_mp_01_set") && !is_female(""));
     }
 
+    /// The bike machine's gesture switch enter F-32265 run on the original's code with its pickers (tools/bike_gesture_switch_reference.py:
+    /// 120 cases of 16 gestures, the counters carried over, clips left out of the pack at random): for every id the port makes, the
+    /// clip the original looks up is `bike_gesture_clip`'s, the original plays it (F-24441, not looping, blend 0.25 =
+    /// GESTURE_BLEND) exactly when the pack has it, and the ids the port does not make move no counter.
+    #[test]
+    fn the_bike_gesture_switch_matches_the_original() {
+        const NAMES: [&str; 19] = ["drv_gest_disapnt", "drv_gest_agro_lft", "drv_gest_thm_dwn_lft", "drv_gest_thm_up_lft",
+            "drv_gest_look_lft", "drv_gest_cas_lft", "drv_gest_agro_rgt", "drv_gest_thm_dwn_rgt", "drv_gest_thm_up_rgt",
+            "drv_gest_look_rgt", "drv_gest_cas_rgt", "drv_win", "drv_gest_listen_lft", "drv_gest_listen_rgt",
+            "drv_gest_cas_rgt_01", "drv_gest_mild_rgt_01", "Drv_Idle_Low", "drv_gest_arrest", "drv_find_sh_04"];
+        let ids = [Gesture::Neutral, Gesture::Left, Gesture::Right, Gesture::TalkLeft, Gesture::TalkRight, Gesture::Mild,
+            Gesture::Win, Gesture::ListenLeft, Gesture::ListenRight, Gesture::ThumbDownLeft, Gesture::ThumbDownRight];
+        let (mut cases, mut checked) = (0, 0);
+        for line in include_str!("testdata/bike_gesture_switch_ref.txt").lines() {
+            let mut parts = line.split(" | ");
+            let mask = u32::from_str_radix(parts.next().unwrap().split(' ').next().unwrap(), 16).unwrap();
+            let mut rr = [0usize; 7];
+            for grp in parts {
+                let (id, calls) = grp.split_once(" -> ").unwrap();
+                let id: usize = id.parse().unwrap();
+                let calls: Vec<&str> = calls.split(" ; ").collect();
+                // every id's enter takes the pan out first (F-63058 with 0)
+                assert_eq!(calls[0], "F-63058 0 00000000", "{line}");
+                let g = match id {
+                    0..=10 => ids[id],
+                    17 => Gesture::CopFidget,
+                    18 => Gesture::CopHandsUp,
+                    _ => continue,
+                };
+                let name = bike_gesture_clip(g, &mut rr);
+                let looked = calls[1].split(' ').nth(1).unwrap();
+                assert_eq!(looked, name, "{line}");
+                let missing = mask >> NAMES.iter().position(|n| *n == name).unwrap() & 1 != 0;
+                let played = calls.iter().find(|c| c.starts_with("F-24441 ")).copied();
+                let want = format!("F-24441 {name} 0 0 {:08x}", GESTURE_BLEND.to_bits());
+                assert_eq!(played, if missing { None } else { Some(want.as_str()) }, "{line}");
+                checked += 1;
+            }
+            cases += 1;
+        }
+        assert_eq!((cases, checked > 1500), (120, true));
+    }
+
     /// The bike machine's pickers (F-24572, F-99511, F-51244: the counter's old value modulo the table, then counter + 1).
     #[test]
     fn bike_gestures() {
