@@ -5010,6 +5010,137 @@ pub fn lock_rule(slot: Option<usize>, sum: f32, n: u8, max_decel: f32, v: Vec3) 
     !(fma(v.z, v.z, fma(v.x, v.x, v.y * v.y)) < f32::from_bits(0x409F_E034))
 }
 
+/// One call an ambient car's slot 6 after the tick (F-43567) makes, in the order it makes them: first the car update
+/// F-50624, then the lock's ring push and the rest rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CarStep {
+    /// +456's slot 9 with dt (when there is one); then +460 = dt
+    Slot456,
+    /// the obstacle filing F-27899
+    File,
+    /// the +208 tracker F-53150
+    Track,
+    /// +472's slot 11, for a car with a behaviour or with +500 bit 0x10
+    Slot472,
+    /// car slot 10, the lane entries F-93055
+    Entries,
+    /// the fade F-82632
+    Fade,
+    /// the render update F-37359
+    Render,
+    /// the body active (F-17857) and not +500 bit 0x20: +412 = |car +208| (`measured_speed`), the matrix kept, nothing more
+    Measured,
+    /// behaviour slot 3, its frame (F-87488)
+    Frame,
+    /// F-35182: behaviour slot 8 (F-98368), slot 9 (F-20872), slot 4 the pose out (F-74063)
+    Slot8,
+    Slot9,
+    PoseOut,
+    /// the frame's end code (1 slot 8, 2 slot 9): the peer test F-23063, and unless it answers true the removal
+    PeerTest,
+    /// the removal request F-51512 with its code (1, 2 or 12)
+    Remove(u32),
+    /// car slot 30, the asked acceleration into +408 (F-30960), then the integrator F-58614
+    Accel,
+    Integrate,
+    /// car slot 29 the trailer's cab (F-99638); with a cab slot 28 the tow (F-16044), and when its bit 0 is set slot 20 the
+    /// seat (F-22467), whose 0 asks for removal 12
+    Cab,
+    Tow,
+    Seat,
+    /// the matrix kept for this update index (car + 64 (U + 4)): the proxy's instance's with +500 bit 0x20 and one, else
+    /// the car's own
+    Keep { proxy: bool },
+    /// F-43567: the lock's ring push of +408 (F-60856), then the rest rule F-72067 unless +500 bit 0x20 or the car's own
+    /// level state & 3 != 0
+    LockPush,
+    Rest,
+}
+
+/// What F-43567 / F-50624 branch on (car +500 bit 0x20 the proxy pool, bit 0x10; +456 / +472 / +452 there; +52 -> +48 the
+/// proxy's instance; F-17857 the body active; the car's own level state & 3 == 0; the behaviour's slot 8 / 9 answers,
+/// the peer test's, the trailer's cab, the tow's bit 0, the seat's answer).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CarUpdateIn {
+    pub proxy: bool,
+    pub bit10: bool,
+    pub has456: bool,
+    pub has472: bool,
+    pub behaviour: bool,
+    pub proxy_inst: bool,
+    pub active: bool,
+    pub own_free: bool,
+    pub slot8: bool,
+    pub slot9: bool,
+    pub peer: bool,
+    pub cab: bool,
+    pub tow: bool,
+    pub seat: bool,
+}
+
+/// F-50624's early return: the body active (F-17857) and not a proxy-pool car (+500 bit 0x20) - +412 = |car +208|, no
+/// behaviour frame, no acceleration, no integrator (so no offset timer) that update.
+pub fn update_measures_only(proxy: bool, active: bool) -> bool {
+    !proxy && active
+}
+
+/// The calls F-43567 makes for a car (F-50624 inlined), in order.
+pub fn car_update_steps(i: &CarUpdateIn) -> Vec<CarStep> {
+    use CarStep::*;
+    let mut s = Vec::with_capacity(16);
+    if i.has456 {
+        s.push(Slot456);
+    }
+    s.extend([File, Track]);
+    if i.has472 && (i.behaviour || i.bit10) {
+        s.push(Slot472);
+    }
+    s.extend([Entries, Fade, Render]);
+    'update: {
+        if update_measures_only(i.proxy, i.active) {
+            s.extend([Measured, Keep { proxy: false }]);
+            break 'update;
+        }
+        let mut end = 0;
+        if i.behaviour {
+            s.extend([Frame, Slot8]);
+            if i.slot8 {
+                end = 1;
+            } else {
+                s.push(Slot9);
+                if i.slot9 {
+                    end = 2;
+                } else {
+                    s.push(PoseOut);
+                }
+            }
+        }
+        if end != 0 {
+            s.push(PeerTest);
+            if !i.peer {
+                s.push(Remove(end));
+            }
+            break 'update;
+        }
+        s.extend([Accel, Integrate, Cab]);
+        if i.cab {
+            s.push(Tow);
+            if i.tow {
+                s.push(Seat);
+                if !i.seat {
+                    s.push(Remove(12));
+                }
+            }
+        }
+        s.push(Keep { proxy: i.proxy && i.proxy_inst });
+    }
+    s.push(LockPush);
+    if !i.proxy && i.own_free {
+        s.push(Rest);
+    }
+    s
+}
+
 /// |car +208| as the car update stores it in +412 with no rail (F-50624 with the body active, F-30960 without a rail):
 /// fsqrts(fmadds(z, z, fmadds(x, x, y y))).
 pub fn measured_speed(v: Vec3) -> f32 {
@@ -5404,7 +5535,7 @@ impl Vehicles {
                     let measured = r.lock.track(c.state.pos, dt).map(measured_speed);
                     // (F-17857: with the body active the update returns after +412 in every state - a woken car at rest
                     // takes no recovery try while the physics moves it)
-                    let body_active = r.in_level && r.active;
+                    let body_active = update_measures_only(false, r.in_level && r.active);
                     if let Some(v) = measured.filter(|_| r.state == 4 || body_active) {
                         r.v = v;
                     }
@@ -12795,6 +12926,90 @@ mod controller_pick_tests {
             yes += got as usize;
         }
         assert_eq!((n, yes), (13725, 1617));
+    }
+
+    #[test]
+    fn car_update_steps_match_the_original() {
+        // tools/car_update_reference.py: F-43567 with F-50624, F-35182, F-17857 and F-39469 as generated, run offline,
+        // every other callee a recorder: the calls in order, +412 / +408 / +460 and the matrix kept for the update index
+        let text = include_str!("testdata/car_update_ref.txt");
+        let h = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let mut n = 0;
+        for line in text.lines() {
+            let (case, out) = line.split_once(" -> ").unwrap();
+            let c: Vec<u32> = case.split(' ').map(h).collect();
+            let o: Vec<&str> = out.split(' ').collect();
+            let (flags, chain, own, prox) = (c[0], c[4], c[5], c[7]);
+            let proxy = flags & 0x20 != 0;
+            // (the level's state table: the proxy's index written after the car's own)
+            let state = |idx: u32| if idx == prox { c[8] } else { c[6] };
+            // F-17857: the proxy's instance with bit 0x20 and one, else the car's own; no index, not active
+            let idx = if proxy && chain == 2 { prox } else { own };
+            let i = CarUpdateIn {
+                proxy,
+                bit10: flags & 0x10 != 0,
+                has456: c[1] != 0,
+                has472: c[2] != 0,
+                behaviour: c[3] != 0,
+                proxy_inst: chain == 2,
+                active: idx != 0xFFFF && state(idx) & 3 == 0,
+                own_free: state(own) & 3 == 0,
+                slot8: c[9] != 0,
+                slot9: c[10] != 0,
+                peer: c[11] != 0,
+                cab: c[13] != 0,
+                tow: c[14] & 1 != 0,
+                seat: c[15] != 0,
+            };
+            let steps = car_update_steps(&i);
+            let mut log = String::new();
+            let (mut w412, mut w408, mut keep) = (0xDEAD_0412u32, 0xDEAD_0408u32, None);
+            for st in &steps {
+                log += &match st {
+                    CarStep::Slot456 => "a".into(),
+                    CarStep::File => "F".into(),
+                    CarStep::Track => "T".into(),
+                    CarStep::Slot472 => "b".into(),
+                    CarStep::Entries => "c".into(),
+                    CarStep::Fade => "D".into(),
+                    CarStep::Render => "R".into(),
+                    CarStep::Measured => {
+                        let f = f32::from_bits;
+                        w412 = measured_speed(Vec3::new(f(c[16]), f(c[17]), f(c[18]))).to_bits();
+                        String::new()
+                    }
+                    CarStep::Frame => "e".into(),
+                    CarStep::Slot8 => "g".into(),
+                    CarStep::Slot9 => "h".into(),
+                    CarStep::PoseOut => "i".into(),
+                    CarStep::PeerTest => "N".into(),
+                    CarStep::Remove(k) => format!("X{k}"),
+                    CarStep::Accel => {
+                        w408 = c[12];
+                        "j".into()
+                    }
+                    CarStep::Integrate => "I".into(),
+                    CarStep::Cab => "k".into(),
+                    CarStep::Tow => "l".into(),
+                    CarStep::Seat => "m".into(),
+                    CarStep::Keep { proxy } => {
+                        keep = Some(if *proxy { 0x2222_0000u32 } else { 0x1111_0000 });
+                        String::new()
+                    }
+                    CarStep::LockPush => "P".into(),
+                    CarStep::Rest => "Z".into(),
+                };
+            }
+            let slots = match keep {
+                None => [0, 0],
+                Some(k) if c[19] == 0 => [k, 0],
+                Some(k) => [0, k],
+            };
+            let got = [h(o[1]), h(o[2]), h(o[3]), h(o[4]), h(o[5])];
+            assert_eq!((o[0], got), (log.as_str(), [w412, w408, c[20], slots[0], slots[1]]), "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 6000);
     }
 
     #[test]
