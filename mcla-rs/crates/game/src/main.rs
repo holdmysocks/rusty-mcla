@@ -8494,6 +8494,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 s_decided = true;
                                 if won {
                                     s_series_won = Some((sr.story.as_ref().map(|s| s.0.clone()), sr.key.clone()));
+                                    // (a parked man's core sends him away after a won series: `Roamers::drive_away`)
+                                    if let (Some((id, _)), Some(r)) = (sr.story.as_ref(), sr.rivals.first()) {
+                                        if matches!(id.as_str(), "BESTOF_SH_05" | "BEAT_SH_02_EXOTIC") {
+                                            self.roam.leave_after = Some((id.clone(), r.config.clone()));
+                                        }
+                                    }
                                 }
                                 if won && sr.story.is_none() {
                                     // (SERIES_COMPLETE: the event of the hangout completes at the
@@ -13841,7 +13847,13 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     self.vehicles.cars.retain(|c| c.is_player || !(c.pinned && !c.cop && !c.goon));
                 } else {
                     self.police.reset(&mut self.vehicles);
-                    self.vehicles.cars.retain(|c| c.is_player);
+                    // (the man of a won story series keeps his car: his core drives him away, `Roamers::drive_away`)
+                    let leave = self.roam.leave_after.take();
+                    let keep = leave.as_ref().and_then(|(_, cfg)| self.vehicles.cars.iter().find(|c| !c.is_player && c.pinned && c.vinyl_name == *cfg).map(|c| c.uid));
+                    self.vehicles.cars.retain(|c| c.is_player || Some(c.uid) == keep);
+                    if let (Some((m, _)), Some(uid)) = (leave, keep) {
+                        self.roam.drive_away(&m, uid, &mut self.vehicles, &world.collider);
+                    }
                 }
                 self.vehicles.traffic_target = self.opt.traffic.max(10);
                 self.vehicles.parked_target = 36;

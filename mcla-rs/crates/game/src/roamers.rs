@@ -168,6 +168,11 @@ pub struct Roamers {
     pub meet_go: Option<String>,
     /// a story scene is playing or queued (main.rs, before `update`)
     pub scene_busy: bool,
+    /// a parked man's series won: (mission, his set-up) - main.rs keeps his race car at the return to cruise and
+    /// hands it to `drive_away`
+    pub leave_after: Option<(String, String)>,
+    /// his car driving away (uid): deleted on its eviction
+    leaving: Option<u32>,
     /// each set-up's model parts (`Game::mc4_dress_of`, read once a run: it reads the set-up's file), for the
     /// read-ahead and the build of the men's cars
     setup_cfg: std::collections::HashMap<String, crate::vehicle_model::CarConfig>,
@@ -281,6 +286,23 @@ pub const PARKED_CORES: [(&str, [f32; 3], f32); 6] = [
     ("FIND_SH_02C", [13.28, 26.38, -905.93], 178.54),
     ("FIND_SH_03B", [-2897.459, -4.767, 97.989], 0.0),
     ("FIND_GH_27", [-2897.459, -4.767, 97.989], 0.0),
+];
+
+/// The man driving away's car (`Roamers::drive_away`): its roam key.
+const LEAVING: &str = "leaving";
+
+/// The routes BESTOF_SH_05_CORE and BEAT_SH_02_EXOTIC_CORE give their man's cruising brain after a won series
+/// (BrainCruising_AppendDest in order; cases 0..6 of the switch at 0x1383 / 0x13ab, the two alike; RAND_INT_RANGE's 7
+/// falls to the default, 0x18ba / 0x18e2, whose points are case 1's). The scripts' floats to the bit.
+pub const DRIVE_AWAY: [&[[f32; 3]]; 8] = [
+    &[[-2171.86, -3.73355, 38.2942], [-2082.38, -0.150024, -103.202], [-1848.6, -5.57857, 181.021], [-1889.23, -4.57721, 322.555], [-2098.78, 0.623314, 382.108]],
+    &[[-1394.98, 1.90915, 382.569], [-1399.92, 2.64949, 191.428], [-1284.03, -0.438019, 78.4054], [-1146.79, -3.56482, 83.3016], [-1056.79, -3.82222, 231.915], [-1028.64, -1.64497, 336.496], [-1156.35, -6.13051, 495.91]],
+    &[[-529.196, -8.41289, 203.315], [-241.864, -13.1316, 306.687], [-24.9188, -8.92001, 127.65], [-134.135, 18.2821, -9.99714], [-502.507, -1.23221, -3.32185], [-593.266, -5.1629, 79.92]],
+    &[[364.965, -4.43402, 120.526], [366.118, -11.8294, 326.516], [568.537, -13.1919, 359.886], [778.476, -10.1129, 213.564], [772.173, -4.87628, 26.1546], [697.668, 1.48578, -89.3486], [492.799, 2.23468, -31.1908]],
+    &[[1132.48, 19.5945, -995.254], [1181.5, 14.85, -668.24], [1027.25, 14.85, -587.388], [886.057, 14.8471, -666.398], [1027.84, 19.0699, -984.565]],
+    &[[1930.96, -7.88059, 519.85], [1974.67, -5.14804, 317.939], [2161.5, -3.14887, -3.44634], [2279.15, -5.8414, -37.9429], [2287.03, -10.1456, 150.248], [2089.7, -10.1458, 494.101]],
+    &[[2337.39, -0.149963, -661.406], [2278.43, 1.57553, -911.264], [2154.28, 5.34701, -921.462], [2065.79, 6.84834, -679.637], [2196.87, 4.55591, -512.556]],
+    &[[-1394.98, 1.90915, 382.569], [-1399.92, 2.64949, 191.428], [-1284.03, -0.438019, 78.4054], [-1146.79, -3.56482, 83.3016], [-1056.79, -3.82222, 231.915], [-1028.64, -1.64497, 336.496], [-1156.35, -6.13051, 495.91]],
 ];
 
 fn is_racer_model(n: &str) -> bool {
@@ -476,6 +498,8 @@ impl Roamers {
             series_of: None,
             meet_go: None,
             scene_busy: false,
+            leave_after: None,
+            leaving: None,
             setup_cfg: Default::default(),
             wanted: 2,
             timer: 3.0,
@@ -880,6 +904,37 @@ impl Roamers {
 
     /// Returns the race to start when a run to the start line has just ended.
     /// Script_SuspendAllOpponents (`Game::suspend_all_opponents`), every frame. As it is set every hookman's
+    /// BESTOF_SH_05_CORE / BEAT_SH_02_EXOTIC_CORE after a won series (mission state 5: 0x1205 -> 0x12ef, BEAT 0x122d ->
+    /// 0x1317): "Deleting Story Hookman", BrainFactory_CreateBrainCruising on his racer, RAND_INT_RANGE(0, 7) of the core's
+    /// generator picks a route (`DRIVE_AWAY`, the switch at 0x1383 / 0x13ab), BrainCruising_SetLooping(1),
+    /// DriveToNearestRail, Opponent_ToggleDeleteOnEviction and mcSlotSystem_RequestSlotRemoval (0x1362..0x19d1). `uid` is
+    /// his car from the last race (main.rs keeps it at the return to cruise).
+    pub fn drive_away(&mut self, mission: &str, uid: u32, vehicles: &mut Vehicles, col: &crate::physics::collision::WorldCollider) {
+        let Some(i) = vehicles.cars.iter().position(|c| c.uid == uid) else { return };
+        let route = crate::vehicles::parked::Mwc::script().int_range(0, 7) as usize;
+        let pts: Vec<Vec3> = DRIVE_AWAY[route.min(7)].iter().map(|p| Vec3::from(*p)).collect();
+        let c = &mut vehicles.cars[i];
+        c.pinned = false;
+        c.racer = true;
+        c.roam_key = LEAVING.to_string();
+        c.deactivated = false;
+        c.driver_off = false;
+        c.exhaust = true;
+        let tune = c.model.aitunes.as_ref().map(|t| std::sync::Arc::new(mcla_formats::rage::aitune::AiTune::lerp(&t.base, &t.mods, c.perf)));
+        if c.ai.is_none() {
+            c.ai = Some(crate::ai::AiDriver::new(uid));
+        }
+        if let (Some(ai), Some(t)) = (c.ai.as_mut(), tune) {
+            ai.tune = Some(t);
+            ai.brain.0 = None;
+            ai.path = None;
+        }
+        let pos = c.state.pos;
+        let ok = crate::cruisedrive::setup(vehicles, col, i, &pts, 0, false, pos);
+        log::info!("roamers: {} won - his man drives away on route {} ({} points, brain {})", mission, route, pts.len(), ok);
+        self.leaving = Some(uid);
+    }
+
     /// A FIND_ core's meeting is over (`Career::core_meet`): Racer_Activate - no driver, the exhaust left off -, then
     /// Opponent_ToggleDeleteOnEviction and mcSlotSystem_RequestSlotRemoval (FIND_SH_01B_CORE 0x11b6 / 0x123a / 0x124d,
     /// FIND_SH_02C_CORE 0x132c / 0x13f7, FIND_SH_03B_CORE 0xaaf / 0xb6f): his car stays where it stands until it leaves
@@ -1062,6 +1117,21 @@ impl Roamers {
         if flash && std::env::var("MCLA_ALT_LOG").is_ok() {
             log::info!("roamers: update with a flash ({} men, challenge {})", self.men.len(), self.challenge.is_some());
         }
+        // (the man driving away: Opponent_ToggleDeleteOnEviction - gone once the streaming walk would evict him, his flat
+        // distance less the loaded bonus past the eviction reach, `oppmgr::priority`)
+        if let Some(uid) = self.leaving {
+            let lim = crate::oppmgr::Limits::default();
+            let pp = vehicles.player().map_or(Vec3::ZERO, |c| c.state.pos);
+            match vehicles.cars.iter().position(|c| c.uid == uid) {
+                Some(i) if crate::oppmgr::flat_distance(vehicles.cars[i].state.pos.x, vehicles.cars[i].state.pos.z, pp.x, pp.z) - lim.loaded_bonus > lim.evict => {
+                    log::info!("roamers: the story man who drove away evicted, deleted");
+                    vehicles.cars.remove(i);
+                    self.leaving = None;
+                }
+                Some(_) => {}
+                None => self.leaving = None,
+            }
+        }
         let Some(player) = vehicles.player() else { return None };
         let (pp, pf, pname, pspeed) = (player.state.pos, player.state.forward(), player.model.name.clone(), player.state.speed());
         // (the chassis state word +592 the flash test reads: the port's crash bits of the player, main.rs's)
@@ -1093,7 +1163,7 @@ impl Roamers {
         // Left, it drove on as a racer no man owned)
         if self.challenge.is_none() && !self.suspended {
             let men = &self.men;
-            vehicles.cars.retain(|c| c.roam_key.is_empty() || men.iter().any(|m| m.owns(c)));
+            vehicles.cars.retain(|c| c.roam_key.is_empty() || c.roam_key == LEAVING || men.iter().any(|m| m.owns(c)));
         }
         // (the walk and the racers' state machines ran this frame before the cruise - `Roamers::walk`)
         let streaming = only.is_none() && self.challenge.is_none() && !self.suspended;
@@ -1565,7 +1635,8 @@ impl Roamers {
         let test = std::env::var("MCLA_ROAM_TEST").is_ok();
         let mut best: Option<(usize, f32)> = None;
         for (i, c) in vehicles.cars.iter().enumerate() {
-            if !c.racer {
+            // (a man driving away has left the slot system: `drive_away`)
+            if !c.racer || c.roam_key == LEAVING {
                 continue;
             }
             let rel = c.state.pos - pp;
@@ -1809,6 +1880,29 @@ mod tests {
                     && num(i + 4).map(f32::to_bits) == Some(h.to_bits()) && num(i + 5) == Some(10.0)
             }).count();
             assert_eq!(hits, 1, "{m}");
+        }
+    }
+
+    /// The drive-away routes are the two cores' own points, to the bit and in order: each point x, y, z and 3 (its
+    /// implode) in the const stream of BESTOF_SH_05_CORE and of BEAT_SH_02_EXOTIC_CORE, the routes one after the other
+    /// (case 0 .. 6, then the default's, case 1's again).
+    #[test]
+    fn drive_away_routes_are_the_cores() {
+        for f in ["game/career/Story/0x007eebc2", "game/career/Story/0x7e804c05"] {
+            let Ok(d) = std::fs::read(std::path::Path::new("D:/MCLA/extracted/cache/script_obj").join(f)) else { return };
+            let sco = mcla_formats::sco::decode(&d).expect(f);
+            use mcla_formats::sco::Tok;
+            let t = sco.consts();
+            let num = |i: usize| match t.get(i) { Some(Tok::Num(v)) => Some(*v as f32), _ => None };
+            let want: Vec<[f32; 3]> = DRIVE_AWAY.iter().flat_map(|r| r.iter().copied()).collect();
+            let at = |i: usize, p: &[f32; 3]| (0..3).all(|k| num(i + k).map(f32::to_bits) == Some(p[k].to_bits())) && num(i + 3) == Some(3.0);
+            let start = (0..t.len()).find(|&i| at(i, &want[0])).expect(f);
+            let mut i = start;
+            for p in &want {
+                i = (i..t.len()).find(|&j| at(j, p)).unwrap_or_else(|| panic!("{f}: {p:?}"));
+                i += 4;
+            }
+            assert_eq!(DRIVE_AWAY[7], DRIVE_AWAY[1]);
         }
     }
 
