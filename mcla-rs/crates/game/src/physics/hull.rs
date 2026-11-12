@@ -1713,20 +1713,7 @@ pub fn part_touches(core: &impl super::gjk::Support, margin: f32, bbox: (Vec3, V
         };
         let Some(r) = found else { return };
         let (on_a, on_b) = (r.on_a + origin, r.on_b + origin);
-        let from = on_a - now[3];
-        let local = Vec3::new(dot3(now[0], from), dot3(now[1], from), dot3(now[2], from));
-        let moved = Vec3::new(
-            (delta[3].x + delta[2].x * local.z) + (delta[1].x * local.y + delta[0].x * local.x),
-            (delta[3].y + delta[2].y * local.z) + (delta[1].y * local.y + delta[0].y * local.x),
-            (delta[3].z + delta[2].z * local.z) + (delta[1].z * local.y + delta[0].z * local.x),
-        );
-        if dot3(moved, face) > MILLIONTH {
-            return;
-        }
-        let about = [Vec3::ZERO, tri[1] - origin, tri[2] - origin];
-        if edge_test(&about, other.map(|o| o.is_some()), &edge, r.on_b, r.normal).is_some() {
-            return;
-        }
+        let Some(local) = polygon_kept(&r, &tri, face, other.map(|o| o.is_some()), &edge, now, &delta, false) else { return };
         if !(f32::from_bits(0x3ca3_d70a) > r.distance) {
             return;
         }
@@ -1752,6 +1739,65 @@ pub fn swept_ball(now: &[Vec3; 4], last: &[Vec3; 4], lo: Vec3, hi: Vec3) -> (Vec
     let (a, b) = ((-half).min(q - e_last), half.max(q + e_last));
     let m = (a + b) * 0.5;
     (c + r[0] * m.x + r[1] * m.y + r[2] * m.z, ((b - a) * 0.5).length())
+}
+
+/// One polygon of a fixed mesh whose matrix is the identity (the city) against a convex part: F-35118 with the pair's
+/// flag +280 set and +282 clear, the discrete detector. `tri` the polygon's corners and `face` its normal in the world,
+/// `has` the edges with a neighbour, `edge` per edge its bisector (handed to the detector as the polygon's) and the second
+/// vector of the edge test, `now` the part's matrix and `delta` its change since the last (now less last). The detector
+/// is run about the first corner (the points come back about it); a contact whose point of the part has come out along
+/// the polygon's normal since the last matrix, or that the edge test turns away, is none. Returns what F-35118 hands its
+/// sink (the points still about the first corner) and the part's point in its own frame.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn polygon_contact(core: &super::gjk::HullCore, tri: &[Vec3; 3], face: Vec3, has: [bool; 3], edge: &[(Vec3, Vec3); 3], now: &[Vec3; 4], delta: &[Vec3; 4], dbg: bool) -> Option<(super::gjk::Nearest, Vec3)> {
+    let found = super::gjk::contact_about(core, tri, face, [edge[0].0, edge[1].0, edge[2].0], PART_MARGIN, POLYGON_MARGIN);
+    // (MCLA_DBG_HULLGJK=<file>: every call as a case of tools/hull_reference.py, the answer here after the '#')
+    {
+        use std::io::Write;
+        static OUT: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> = std::sync::OnceLock::new();
+        if let Some(out) = OUT.get_or_init(|| std::env::var_os("MCLA_DBG_HULLGJK").and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok()).map(std::sync::Mutex::new)) {
+            let mut line = format!("{:x}", core.corners.len());
+            let all = core.corners.iter().chain(core.rows.iter()).chain([&core.at]).chain(tri.iter()).chain([&face, &edge[0].0, &edge[1].0, &edge[2].0]);
+            for v in all {
+                line.push_str(&format!(" {:08x} {:08x} {:08x}", v.x.to_bits(), v.y.to_bits(), v.z.to_bits()));
+            }
+            match found {
+                Some(r) => line.push_str(&format!(" # 1,{},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x}", r.deep as u8, r.normal.x.to_bits(), r.normal.y.to_bits(), r.normal.z.to_bits(), r.on_a.x.to_bits(), r.on_a.y.to_bits(), r.on_a.z.to_bits(), r.on_b.x.to_bits(), r.on_b.y.to_bits(), r.on_b.z.to_bits(), r.distance.to_bits())),
+                None => line.push_str(" # 0"),
+            }
+            let _ = writeln!(out.lock().unwrap(), "{line}");
+        }
+    }
+    let r = found?;
+    polygon_kept(&r, tri, face, has, edge, now, delta, dbg).map(|local| (r, local))
+}
+
+/// F-35118 after its detector: `r` what the detector found, about the polygon's first corner. The part's point in its own
+/// frame, or none where it has come out along the polygon's normal since the last matrix or the edge test turns it away.
+#[allow(clippy::too_many_arguments)]
+fn polygon_kept(r: &super::gjk::Nearest, tri: &[Vec3; 3], face: Vec3, has: [bool; 3], edge: &[(Vec3, Vec3); 3], now: &[Vec3; 4], delta: &[Vec3; 4], dbg: bool) -> Option<Vec3> {
+    let origin = tri[0];
+    // (the part's point of it, in the part's frame)
+    let from = (r.on_a + origin) - now[3];
+    let local = Vec3::new(dot3(now[0], from), dot3(now[1], from), dot3(now[2], from));
+    // (where that point of the part has gone since the last matrix: along the polygon's normal it must not have come out)
+    let moved = Vec3::new(
+        (delta[3].x + delta[2].x * local.z) + (delta[1].x * local.y + delta[0].x * local.x),
+        (delta[3].y + delta[2].y * local.z) + (delta[1].y * local.y + delta[0].y * local.x),
+        (delta[3].z + delta[2].z * local.z) + (delta[1].z * local.y + delta[0].z * local.x),
+    );
+    if dot3(moved, face) > MILLIONTH {
+        if dbg { eprintln!("HULLPOLY   moving out: none"); }
+        return None;
+    }
+    // (the edges with a neighbour that the polygon's point lies on: the contact's direction, taken across the edge,
+    // must lie within what the two faces allow)
+    let about = [Vec3::ZERO, tri[1] - origin, tri[2] - origin];
+    if let Some(e) = edge_test(&about, has, edge, r.on_b, r.normal) {
+        if dbg { eprintln!("HULLPOLY   edge {e}: none"); }
+        return None;
+    }
+    Some(local)
 }
 
 pub fn collide(hull: &HullShape, bbox: (Vec3, Vec3), now: &[Vec3; 4], last: &[Vec3; 4], world: &WorldCollider, ball: Option<(Vec3, f32)>, manifolds: &mut Vec<Manifold>) {
@@ -1799,50 +1845,11 @@ pub fn collide(hull: &HullShape, bbox: (Vec3, Vec3), now: &[Vec3; 4], last: &[Ve
             }
             None => (face, face),
         });
-        let found = super::gjk::contact_about(&core, &tri, face, [edge[0].0, edge[1].0, edge[2].0], PART_MARGIN, POLYGON_MARGIN);
-        // (MCLA_DBG_HULLGJK=<file>: every call as a case of tools/hull_reference.py, the answer here after the '#')
-        {
-            use std::io::Write;
-            static OUT: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> = std::sync::OnceLock::new();
-            if let Some(out) = OUT.get_or_init(|| std::env::var_os("MCLA_DBG_HULLGJK").and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok()).map(std::sync::Mutex::new)) {
-                let mut line = format!("{:x}", core.corners.len());
-                let all = core.corners.iter().chain(core.rows.iter()).chain([&core.at]).chain(tri.iter()).chain([&face, &edge[0].0, &edge[1].0, &edge[2].0]);
-                for v in all {
-                    line.push_str(&format!(" {:08x} {:08x} {:08x}", v.x.to_bits(), v.y.to_bits(), v.z.to_bits()));
-                }
-                match found {
-                    Some(r) => line.push_str(&format!(" # 1,{},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x}", r.deep as u8, r.normal.x.to_bits(), r.normal.y.to_bits(), r.normal.z.to_bits(), r.on_a.x.to_bits(), r.on_a.y.to_bits(), r.on_a.z.to_bits(), r.on_b.x.to_bits(), r.on_b.y.to_bits(), r.on_b.z.to_bits(), r.distance.to_bits())),
-                    None => line.push_str(" # 0"),
-                }
-                let _ = writeln!(out.lock().unwrap(), "{line}");
-            }
-        }
-        let Some(r) = found else { return };
+        let Some((r, local)) = polygon_contact(&core, &tri, face, other.map(|o| o.is_some()), &edge, now, &delta, dbg) else { return };
         let origin = tri[0];
         let (on_a, on_b) = (r.on_a + origin, r.on_b + origin);
-        // (the body's point of it, in the body's frame)
-        let from = on_a - now[3];
-        let local = Vec3::new(dot3(now[0], from), dot3(now[1], from), dot3(now[2], from));
         if dbg {
             eprintln!("HULLPOLY cell {cell} polygon {i} face {:?} depth {:?} n {:?} local {:?} on_b {:?} deep {}", face, -r.distance, r.normal, local, on_b, r.deep);
-        }
-        // (where that point of the body has gone since the last tick: along the polygon's
-        // normal it must not have come out)
-        let moved = Vec3::new(
-            (delta[3].x + delta[2].x * local.z) + (delta[1].x * local.y + delta[0].x * local.x),
-            (delta[3].y + delta[2].y * local.z) + (delta[1].y * local.y + delta[0].y * local.x),
-            (delta[3].z + delta[2].z * local.z) + (delta[1].z * local.y + delta[0].z * local.x),
-        );
-        if dot3(moved, face) > MILLIONTH {
-            if dbg { eprintln!("HULLPOLY   moving out: none"); }
-            return;
-        }
-        // (the edges with a neighbour that the polygon's point lies on: the contact's
-        // direction, taken across the edge, must lie within what the two faces allow)
-        let about = [Vec3::ZERO, tri[1] - origin, tri[2] - origin];
-        if let Some(e) = edge_test(&about, other.map(|o| o.is_some()), &edge, r.on_b, r.normal) {
-            if dbg { eprintln!("HULLPOLY   edge {e}: none"); }
-            return;
         }
         // (the sink: nothing farther than 2 cm)
         if !(f32::from_bits(0x3ca3_d70a) > r.distance) {
@@ -2206,6 +2213,63 @@ mod tests {
     /// The manifold refresh F-26862 run offline with its callees (F-33100, F-86309) unchanged
     /// (tools/manifold_refresh_reference.py, testdata/manifold_refresh_ref.txt, 2,000 manifolds of 1 - 6 contacts against
     /// the city): which contacts stay and in which order, each one's age, depth, body point and target, every word.
+    #[test]
+    fn polygon_contact_matches_the_original() {
+        // (tools/polygon_contact_reference.py: F-35118 run offline with its detector, on a polyhedron against a city polygon)
+        let h = |x: &str| u32::from_str_radix(x.trim_start_matches('x'), 16).unwrap();
+        let f = |x: &str| f32::from_bits(h(x));
+        let (mut n, mut hits, mut bad, mut why) = (0, 0, Vec::new(), [0usize; 3]);
+        for (k, line) in include_str!("testdata/polygon_contact_ref.txt").lines().enumerate() {
+            let (lhs, rhs) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = lhs.split(' ').skip(1).collect();
+            let v = |o: usize| Vec3::new(f(w[o]), f(w[o + 1]), f(w[o + 2]));
+            let m = h(w[0]) as usize;
+            let corners: Vec<Vec3> = (0..m).map(|i| v(1 + 3 * i)).collect();
+            let o = 1 + 3 * m;
+            let now: [Vec3; 4] = std::array::from_fn(|i| v(o + 3 * i));
+            let last: [Vec3; 4] = std::array::from_fn(|i| v(o + 12 + 3 * i));
+            let tri: [Vec3; 3] = std::array::from_fn(|i| v(o + 24 + 3 * i));
+            let face = v(o + 33);
+            let edge: [(Vec3, Vec3); 3] = std::array::from_fn(|e| (v(o + 36 + 3 * e), v(o + 45 + 3 * e)));
+            let mask: u32 = w[o + 54].parse().unwrap();
+            let has = [mask & 1 != 0, mask & 2 != 0, mask & 4 != 0];
+            let delta = [now[0] - last[0], now[1] - last[1], now[2] - last[2], now[3] - last[3]];
+            let core = super::super::gjk::HullCore { corners: &corners, rows: [now[0], now[1], now[2]], at: now[3] };
+            let got = polygon_contact(&core, &tri, face, has, &edge, &now, &delta, false).map(|(r, _)| {
+                let b = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+                let mut q = vec![1u32];
+                q.extend(b(r.normal));
+                q.extend(b(r.on_a + tri[0]));
+                q.extend(b(r.on_b + tri[0]));
+                q.push(r.distance.to_bits());
+                q
+            }).unwrap_or(vec![0]);
+            let want: Vec<u32> = rhs.split(' ').map(h).collect();
+            hits += (want[0] == 1) as usize;
+            // (which test turned it away: none from the detector, the moving-out test, the edge test)
+            if let Some(r) = super::super::gjk::contact_about(&core, &tri, face, [edge[0].0, edge[1].0, edge[2].0], PART_MARGIN, POLYGON_MARGIN) {
+                let about = [Vec3::ZERO, tri[1] - tri[0], tri[2] - tri[0]];
+                let edged = edge_test(&about, has, &edge, r.on_b, r.normal).is_some();
+                if want[0] == 0 {
+                    if polygon_contact(&core, &tri, face, [false; 3], &edge, &now, &delta, false).is_none() { why[1] += 1 } else if edged { why[2] += 1 }
+                }
+            } else {
+                why[0] += 1;
+            }
+            if got != want {
+                bad.push(format!("case {k}: port {got:08x?} original {want:08x?}"));
+            }
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+        eprintln!("{hits} handed on; none from the detector {}, moving out {}, the edge test {}", why[0], why[1], why[2]);
+        // (the detector answers every case: the 2 cm bound is the sink's)
+        assert!(hits > 500 && why[1] > 50 && why[2] > 50, "{hits} {why:?}");
+        assert!(bad.is_empty(), "{} of {n} differ:
+{}", bad.len(), bad[..bad.len().min(12)].join("
+"));
+    }
+
     #[test]
     fn manifold_refresh_matches_the_original() {
         let h = |x: &str| u32::from_str_radix(x.trim_start_matches('x'), 16).unwrap();
