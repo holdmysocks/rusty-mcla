@@ -2982,7 +2982,7 @@ mod cabin_tests {
             module: &module,
             entry_point: Some("main"),
             compilation_options: Default::default(),
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         let inb = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(cases), usage: wgpu::BufferUsages::STORAGE });
         let size = (n * 16) as u64;

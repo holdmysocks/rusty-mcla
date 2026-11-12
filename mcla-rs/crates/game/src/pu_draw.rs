@@ -138,7 +138,7 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
             depth_stencil: Some(v.ds(false, wgpu::CompareFunction::GreaterEqual, false, Default::default())),
             multisample: v.ms(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         })
         })
     };

@@ -1,6 +1,7 @@
 //! wgpu renderer: device setup, static-geometry pipeline, texture cache.
 
 pub mod aniso;
+pub mod pcache;
 pub mod car_lamps;
 pub mod mb;
 pub mod ms;
@@ -1245,6 +1246,24 @@ fn dxil_cache_dir() {
     std::env::set_var("MCLA_DXIL_CACHE", dir);
 }
 
+/// The device's memory blocks: wgpu's default (`Performance`: on DX12 gpu-allocator's 256 MB blocks, freed only when
+/// empty). `MCLA_MEM_BLOCK_MB=<n>`: blocks of n MB (a test hook, GitHub #48: DX12 held ~1.1 GB more than Vulkan for the
+/// same textures); `MCLA_MEM_BLOCK_MB=usage`: wgpu's `MemoryUsage` (8 MB).
+fn memory_hints() -> wgpu::MemoryHints {
+    match std::env::var("MCLA_MEM_BLOCK_MB").ok().as_deref().map(str::trim) {
+        Some("usage") => wgpu::MemoryHints::MemoryUsage,
+        Some(v) => match v.parse::<u64>() {
+            Ok(n) if n > 0 => {
+                let b = n << 20;
+                log::info!("memory blocks: {n} MB");
+                wgpu::MemoryHints::Manual { suballocated_device_memory_block_size: b..b }
+            }
+            _ => wgpu::MemoryHints::Performance,
+        },
+        None => wgpu::MemoryHints::Performance,
+    }
+}
+
 pub struct GpuTexture {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
@@ -1664,6 +1683,8 @@ impl Gpu {
             }
             // (the timestamps of the `gputimes:` log line, where the adapter has them - gpuprof.rs)
             required |= crate::gpuprof::features(feats);
+            // (the game's own Vulkan pipeline cache - pcache.rs)
+            required |= pcache::feature(&info, feats);
             let limits = adapter.limits();
             let (device, queue) = adapter
                 .request_device(
@@ -1675,12 +1696,13 @@ impl Gpu {
                             max_buffer_size: limits.max_buffer_size,
                             ..wgpu::Limits::default()
                         },
-                        memory_hints: wgpu::MemoryHints::Performance,
+                        memory_hints: memory_hints(),
                     },
                     None,
                 )
                 .await
                 .context("request device")?;
+            pcache::init(&device, &info);
             let size = window.inner_size();
             let mut config = surface
                 .get_default_config(&adapter, size.width.max(1), size.height.max(1))
@@ -2216,7 +2238,7 @@ impl Gpu {
             depth_stencil: None,
             multisample: Default::default(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         // the cube's levels 1 .. 3, each a 4 x 4 box of the level above (env_mip.wgsl)
         let env_mip_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -2260,7 +2282,7 @@ impl Gpu {
             depth_stencil: None,
             multisample: Default::default(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         // the cube filled from the two paraboloid halves (env_fill.wgsl), drawn inside a face's pass
         let env_fill_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -2298,7 +2320,7 @@ impl Gpu {
             depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: false, depth_compare: wgpu::CompareFunction::Always, stencil: Default::default(), bias: Default::default() }),
             multisample: Default::default(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         // (six for the cube's faces, two for the paraboloid halves)
         let env_globals: Vec<wgpu::Buffer> = (0..8)
@@ -2479,7 +2501,7 @@ impl Gpu {
                 }),
                 multisample: v.ms(),
                 multiview: None,
-                cache: None,
+                cache: crate::render::pcache::get(),
             })
             })
         };
@@ -2592,7 +2614,7 @@ impl Gpu {
                 }),
                 multisample: Default::default(),
                 multiview: None,
-                cache: None,
+                cache: crate::render::pcache::get(),
             })
         };
         let pipeline_shadow = make_shadow(false);
@@ -2636,7 +2658,7 @@ impl Gpu {
                 }),
                 multisample: Default::default(),
                 multiview: None,
-                cache: None,
+                cache: crate::render::pcache::get(),
             })
         };
         let pipeline_casc = make_casc(false, false);
@@ -2720,7 +2742,7 @@ impl Gpu {
             }),
             multisample: Default::default(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         let pipeline_fc_blur = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("fast collector blur"),
@@ -2731,7 +2753,7 @@ impl Gpu {
             depth_stencil: None,
             multisample: Default::default(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         // The night fast collector (F-55997's night branch): the casters drawn with the shadow passes' vertex programs
         // and PS_ShadowNight's constant, back faces culled as the recorded draws (0x18002: those turned to its eye
@@ -2751,7 +2773,7 @@ impl Gpu {
                 depth_stencil: None,
                 multisample: Default::default(),
                 multiview: None,
-                cache: None,
+                cache: crate::render::pcache::get(),
             })
         };
         let pipeline_nfc = make_nfc(false);
@@ -2772,7 +2794,7 @@ impl Gpu {
             depth_stencil: None,
             multisample: Default::default(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         let inst_build = {
             let (pl, shader) = (pl.clone(), shader.clone());
@@ -2797,7 +2819,7 @@ impl Gpu {
             depth_stencil: Some(v.ds(true, wgpu::CompareFunction::GreaterEqual, true, Default::default())),
             multisample: v.ms(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         })
             })
         };
@@ -2835,7 +2857,7 @@ impl Gpu {
             depth_stencil: Some(v.ds(false, wgpu::CompareFunction::GreaterEqual, true, Default::default())),
             multisample: v.ms(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         }))
         };
         let glow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -2870,7 +2892,7 @@ impl Gpu {
             depth_stencil: Some(v.ds(false, wgpu::CompareFunction::GreaterEqual, false, Default::default())),
             multisample: v.ms(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         }))
         };
         let env_glow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -2914,7 +2936,7 @@ impl Gpu {
             }),
             multisample: Default::default(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         let env_glow_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("environment glows"),
@@ -2966,7 +2988,7 @@ impl Gpu {
                 depth_stencil: Some(v.ds(false, wgpu::CompareFunction::GreaterEqual, false, Default::default())),
                 multisample: v.ms(),
                 multiview: None,
-                cache: None,
+                cache: crate::render::pcache::get(),
             }))
         };
         let pipeline_particle = make_particle(false);
@@ -3039,7 +3061,7 @@ impl Gpu {
             }),
             multisample: Default::default(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         let pipeline_refl = make_refl("fs_refl");
         let pipeline_refl_win = make_refl("fs_refl_win");
@@ -3063,7 +3085,7 @@ impl Gpu {
             }),
             multisample: Default::default(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         // (the rear-view mirror's sky - refl.wgsl `fs_mirror_sky`: into the scene target, writing the far depth
         // with the test off, so that it clears the strip's depth as well)
@@ -3083,7 +3105,7 @@ impl Gpu {
             depth_stencil: Some(v.ds(true, wgpu::CompareFunction::Always, true, Default::default())),
             multisample: v.ms(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         }))
         };
         let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -3111,7 +3133,7 @@ impl Gpu {
             depth_stencil: Some(v.ds(false, wgpu::CompareFunction::Always, true, Default::default())),
             multisample: v.ms(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         }))
         };
         let white = Arc::new(create_rgba(&device, &queue, 1, 1, &[255, 255, 255, 255], "white"));
@@ -4519,7 +4541,7 @@ struct O {{ @builtin(frag_depth) z: f32, @location(0) s: vec4<f32> }};
             depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: true, depth_compare: wgpu::CompareFunction::Always, stencil: Default::default(), bias: Default::default() }),
             multisample: Default::default(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         (layout, pipe)
     };
@@ -4561,7 +4583,7 @@ struct K { k: vec4<f32> };
         depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: true, depth_compare: wgpu::CompareFunction::Always, stencil: Default::default(), bias: Default::default() }),
         multisample: Default::default(),
         multiview: None,
-        cache: None,
+        cache: crate::render::pcache::get(),
     });
     (layout, pipe)
 }

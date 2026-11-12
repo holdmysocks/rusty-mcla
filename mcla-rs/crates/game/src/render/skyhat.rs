@@ -117,7 +117,7 @@ impl SkyHat {
             depth_stencil: Some(v.ds(false, wgpu::CompareFunction::Always, true, Default::default())),
             multisample: v.ms(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         let pipeline = {
             let (pl, shader) = (pl.clone(), shader.clone());
@@ -136,7 +136,7 @@ impl SkyHat {
                     depth_stencil: Some(v.ds(false, wgpu::CompareFunction::Always, true, Default::default())),
                     multisample: v.ms(),
                     multiview: None,
-                    cache: None,
+                    cache: crate::render::pcache::get(),
                 });
                 make_v(d, v, "fs_hat")
             })
@@ -165,7 +165,7 @@ impl SkyHat {
             depth_stencil: None,
             multisample: Default::default(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         let mini_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sky mini"),
@@ -185,7 +185,7 @@ impl SkyHat {
             depth_stencil: None,
             multisample: Default::default(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         let perlin_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("sky perlin"),

@@ -309,7 +309,7 @@ impl Post {
                 depth_stencil: None,
                 multisample: Default::default(),
                 multiview: None,
-                cache: None,
+                cache: crate::render::pcache::get(),
             })
         };
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -358,7 +358,7 @@ impl Post {
             depth_stencil: None,
             multisample: Default::default(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         let pipe_copy = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("fs_copy"),
@@ -374,7 +374,7 @@ impl Post {
             depth_stencil: None,
             multisample: Default::default(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         let down_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("render scale down"),
@@ -401,7 +401,7 @@ impl Post {
                 depth_stencil: None,
                 multisample: Default::default(),
                 multiview: None,
-                cache: None,
+                cache: crate::render::pcache::get(),
             })
         };
         let dof_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("dof params"), contents: bytemuck::bytes_of(&DofU::default()), usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST });

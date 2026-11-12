@@ -235,7 +235,7 @@ impl XrayRes {
             depth_stencil: depth.then(|| wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: false, depth_compare: wgpu::CompareFunction::Always, stencil: Default::default(), bias: Default::default() }),
             multisample: wgpu::MultisampleState { count: samples, mask: !0, alpha_to_coverage_enabled: false },
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         let pipeline = make(if std::env::var("MCLA_XRAY_CULL").map_or(true, |v| v.trim() != "0") { Some(wgpu::Face::Back) } else { None });
         let pipeline_both = make(None);

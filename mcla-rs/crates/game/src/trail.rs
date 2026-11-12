@@ -457,7 +457,7 @@ pub fn load(gpu: &Gpu) {
         depth_stencil: None,
         multisample: Default::default(),
         multiview: None,
-        cache: None,
+        cache: crate::render::pcache::get(),
     });
     let uniform = device.create_buffer(&wgpu::BufferDescriptor { label: Some("trail proj"), size: 64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
     let buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("trail verts"), size: (MAX_VERTS * std::mem::size_of::<Vertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });

@@ -176,7 +176,7 @@ pub fn load(gpu: &mut Gpu) {
         depth_stencil: None,
         multisample: v.ms(),
         multiview: None,
-        cache: None,
+        cache: crate::render::pcache::get(),
     }))
     };
     let probe = load_probe(device, &globals_layout, &shader);
@@ -228,7 +228,7 @@ fn load_probe(device: &wgpu::Device, globals_layout: &wgpu::BindGroupLayout, sha
         depth_stencil: Some(v.ds(false, wgpu::CompareFunction::GreaterEqual, false, Default::default())),
         multisample: v.ms(),
         multiview: None,
-        cache: None,
+        cache: crate::render::pcache::get(),
     }));
     let count_src = include_str!("render/sun_probe_count.wgsl");
     let mk = |ms: bool| {
@@ -242,7 +242,7 @@ fn load_probe(device: &wgpu::Device, globals_layout: &wgpu::BindGroupLayout, sha
         let src = count_src.replace("MARK_TYPE", if ms { "texture_multisampled_2d<f32>" } else { "texture_2d<f32>" }).replace("SAMPLES", if ms { "textureNumSamples(marks)" } else { "1u" });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("sun probe count"), source: wgpu::ShaderSource::Wgsl(src.into()) });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("sun probe count pl"), bind_group_layouts: &[&layout], push_constant_ranges: &[] });
-        let pipe = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("sun probe count"), layout: Some(&pl), module: &module, entry_point: Some("cs_count"), compilation_options: Default::default(), cache: None });
+        let pipe = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("sun probe count"), layout: Some(&pl), module: &module, entry_point: Some("cs_count"), compilation_options: Default::default(), cache: crate::render::pcache::get() });
         (layout, pipe)
     };
     let (l1, p1) = mk(false);

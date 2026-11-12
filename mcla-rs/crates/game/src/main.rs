@@ -15933,7 +15933,11 @@ impl ApplicationHandler for App {
             }
         }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                // (the pipelines made since the last write - render/pcache.rs)
+                render::pcache::save();
+                event_loop.exit()
+            }
             WindowEvent::Resized(size) => {
                 if let Some(g) = self.gpu.as_mut() {
                     g.resize(size.width, size.height);
@@ -16105,6 +16109,7 @@ impl ApplicationHandler for App {
             }
         }
         if self.quit {
+            render::pcache::save();
             event_loop.exit();
         }
         if let Some(w) = self.window.as_ref() {

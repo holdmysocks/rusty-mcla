@@ -185,7 +185,7 @@ pub fn load(gpu: &Gpu, data_dir: &str) {
         depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: false, depth_compare: wgpu::CompareFunction::GreaterEqual, stencil: Default::default(), bias: Default::default() }),
         multisample: Default::default(),
         multiview: None,
-        cache: None,
+        cache: crate::render::pcache::get(),
     });
     let buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("siglrefl rects"), size: (MAX * std::mem::size_of::<Rect>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
     *STATE.lock().unwrap() = Some(State { pipeline, bind, buf, count: 0 });

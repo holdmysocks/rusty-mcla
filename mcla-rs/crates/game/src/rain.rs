@@ -493,7 +493,7 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
             depth_stencil: Some(v.ds(false, wgpu::CompareFunction::GreaterEqual, false, Default::default())),
             multisample: v.ms(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         }))
     };
     let drop_pipeline = make("vs_drop", "fs_drop", &DROP_ATTRS, std::mem::size_of::<DropInst>() as u64, wgpu::PrimitiveTopology::TriangleStrip);
@@ -535,7 +535,7 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
             depth_stencil: Some(v.ds(false, wgpu::CompareFunction::GreaterEqual, false, Default::default())),
             multisample: v.ms(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         }))
     };
     let cone_mesh = {

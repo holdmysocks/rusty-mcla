@@ -109,7 +109,7 @@ pub fn load(gpu: &mut Gpu) {
                 depth_stencil: ds.map(|(w, c, b)| v.ds(w, c, false, b)),
                 multisample: v.ms(),
                 multiview: None,
-                cache: None,
+                cache: crate::render::pcache::get(),
             })
         })
     };
@@ -159,7 +159,7 @@ pub fn load(gpu: &mut Gpu) {
                 depth_stencil: Some(ds),
                 multisample: v.ms(),
                 multiview: None,
-                cache: None,
+                cache: crate::render::pcache::get(),
             })
         })
     };
@@ -189,7 +189,7 @@ pub fn load(gpu: &mut Gpu) {
                 depth_stencil: Some(ds),
                 multisample: v.ms(),
                 multiview: None,
-                cache: None,
+                cache: crate::render::pcache::get(),
             })
         })
     };

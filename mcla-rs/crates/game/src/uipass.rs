@@ -41,7 +41,7 @@ impl Ui4 {
             depth_stencil: None,
             multisample: wgpu::MultisampleState { count: samples, mask: !0, alpha_to_coverage_enabled: false },
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         let (msaa, base, bg) = Self::targets(device, &layout, surface, plain, w, h, samples);
         Ui4 { samples, size: (w, h), msaa, base, bg, layout, pipeline }

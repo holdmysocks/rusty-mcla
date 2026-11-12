@@ -174,7 +174,7 @@ impl State {
                 }),
                 multisample: wgpu::MultisampleState { count: SAMPLES, mask: !0, alpha_to_coverage_enabled: false },
                 multiview: None,
-                cache: None,
+                cache: crate::render::pcache::get(),
             })
         };
         let draw = make(true, wgpu::CompareFunction::Always, wgpu::StencilOperation::Keep);

@@ -94,7 +94,7 @@ impl State {
             ],
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("top arrow"), bind_group_layouts: &[&layout], push_constant_ranges: &[] });
-        let pipe = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("top arrow"), layout: Some(&pl), module: &shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
+        let pipe = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("top arrow"), layout: Some(&pl), module: &shader, entry_point: Some("main"), compilation_options: Default::default(), cache: crate::render::pcache::get() });
         let lut = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("top arrow egui premultiply"), contents: bytemuck::cast_slice(&lut_words()), usage: wgpu::BufferUsages::STORAGE });
         State { pipe, layout, lut, target: None }
     }

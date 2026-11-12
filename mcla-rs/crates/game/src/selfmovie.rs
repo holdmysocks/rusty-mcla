@@ -181,7 +181,7 @@ impl SelfRes {
             depth_stencil: depth.then(|| wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: false, depth_compare: wgpu::CompareFunction::Always, stencil: Default::default(), bias: Default::default() }),
             multisample: wgpu::MultisampleState { count: samples, mask: !0, alpha_to_coverage_enabled: false },
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         SelfRes { pipeline, shared, bufs: HashMap::new() }
     }

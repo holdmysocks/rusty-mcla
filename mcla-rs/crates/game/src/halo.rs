@@ -645,7 +645,7 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
         depth_stencil: None,
         multisample: Default::default(),
         multiview: None,
-        cache: None,
+        cache: crate::render::pcache::get(),
     });
     let buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("halo glows"), size: (MAX * std::mem::size_of::<Glow>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
     *STATE.lock().unwrap() = Some(Halo { tune, pipeline, layout, sampler, star, buf, count: 0 });

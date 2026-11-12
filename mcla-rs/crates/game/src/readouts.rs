@@ -278,7 +278,7 @@ pub fn load(gpu: &mut Gpu, data_dir: &str) {
             depth_stencil: Some(wgpu::DepthStencilState { format: v.depth_format(), depth_write_enabled: false, depth_compare: wgpu::CompareFunction::GreaterEqual, stencil: Default::default(), bias: Default::default() }),
             multisample: v.ms(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         })
     });
     *STATE.lock().unwrap() = Some(State { pipe, vb, bgs });

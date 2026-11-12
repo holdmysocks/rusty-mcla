@@ -147,7 +147,7 @@ fn build(device: &wgpu::Device) -> Sheet {
         depth_stencil: Some(v.ds(false, wgpu::CompareFunction::GreaterEqual, true, Default::default())),
         multisample: v.ms(),
         multiview: None,
-        cache: None,
+        cache: crate::render::pcache::get(),
     }))
     };
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {

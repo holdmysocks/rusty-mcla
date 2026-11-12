@@ -214,6 +214,7 @@ pub fn build_behind(pipes: Vec<MsPipe>, variants: Vec<Variant>) {
             }
             if left.fetch_sub(1, Ordering::AcqRel) == 1 {
                 log::info!("pipeline: {} built behind the loading in {} ms ({} threads)", jobs.len(), t.elapsed().as_millis(), threads);
+                super::pcache::save();
             }
         });
     }
@@ -312,6 +313,7 @@ pub fn warm(variants: Vec<Variant>) {
             }
             if left.fetch_sub(1, Ordering::AcqRel) == 1 {
                 log::info!("pipeline: {} scene pipelines built ahead in {} ms ({} threads)", jobs.len(), t.elapsed().as_millis(), threads);
+                super::pcache::save();
             }
         });
     }

@@ -339,7 +339,7 @@ impl State {
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState { count: 4, mask: !0, alpha_to_coverage_enabled: false },
                 multiview: None,
-                cache: None,
+                cache: crate::render::pcache::get(),
             })
         };
         let icons = make(false);
@@ -354,7 +354,7 @@ impl State {
             depth_stencil: None,
             multisample: Default::default(),
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         let white = texture(device, queue, &t_layout, &Img::from_rgba8(1, 1, &[255; 4]));
         State { icons, rims, resolve, t_layout, r_layout, white, textures: HashMap::new(), targets: HashMap::new(), masks: HashMap::new(), roads: None }

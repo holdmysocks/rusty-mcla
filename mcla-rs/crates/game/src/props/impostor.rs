@@ -252,7 +252,7 @@ impl Impostors {
             depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: true, depth_compare: wgpu::CompareFunction::Less, stencil: Default::default(), bias: Default::default() }),
             multisample: wgpu::MultisampleState { count: SAMPLES, mask: !0, alpha_to_coverage_enabled: false },
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         let (pipeline, pipeline_trunk) = (make("fs_leaf"), make("fs_trunk"));
         let make_mask = |entry: &str| gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -264,7 +264,7 @@ impl Impostors {
             depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: true, depth_compare: wgpu::CompareFunction::Less, stencil: Default::default(), bias: Default::default() }),
             multisample: wgpu::MultisampleState { count: SAMPLES, mask: !0, alpha_to_coverage_enabled: false },
             multiview: None,
-            cache: None,
+            cache: crate::render::pcache::get(),
         });
         let (pipeline_mask, pipeline_mask_trunk) = (make_mask("fs_mask_leaf"), make_mask("fs_mask_trunk"));
         let ms_mask = [TILE, MASK_BIG].map(|s| mask_target(gpu, "impostor ms mask", MASK_FORMAT, SAMPLES, s).create_view(&Default::default()));
