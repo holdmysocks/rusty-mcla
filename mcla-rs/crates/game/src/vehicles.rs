@@ -1692,6 +1692,10 @@ fn car_mode(shader: &str) -> MatMode {
         MatMode::BlackGloss
     } else if s.contains("glass") {
         MatMode::CarGlass
+    } else if s.starts_with("interiortexturedemissive") && std::env::var("MCLA_EMISSIVE_OLD").is_err() {
+        // (interiortexturedemissive(alpha).fxc, VS_Emissive + PS_Emissive(Alpha) of cars/0xf295c729 / 0xce0ceed4 - the
+        // dial faces and their needles: a car part with its own program, marked below for city.wgsl)
+        MatMode::Object
     } else if s.contains("alphachrome") && std::env::var("MCLA_BADGE_OLD").is_ok() {
         MatMode::AlphaTest
     } else if s.contains("chrome") || s.contains("brushedmetal") || (s.contains("metal") && !s.contains("grime")) {
@@ -3526,7 +3530,7 @@ impl Vehicles {
                 // domes (BumpSpecAlpha, A = 0.69) show the lit lenses under them. (MCLA_SETUP_BUCKET_OLD=1: cut out, opaque)
                 let setup_b1 = !car_is_ambient
                     && sh.map_or(0, |s| s.bucket) == 1
-                    && (["BumpSpec", "BumpSpecAlpha", "GrillOpaque"].iter().any(|n| sname.eq_ignore_ascii_case(n)) || badge)
+                    && (["BumpSpec", "BumpSpecAlpha", "GrillOpaque", "InteriorTexturedEmissiveAlpha"].iter().any(|n| sname.eq_ignore_ascii_case(n)) || badge)
                     && std::env::var("MCLA_SETUP_BUCKET_OLD").is_err();
                 let bucket1 = bucket1 || setup_b1;
                 let kbits = if bucket1 {
@@ -3607,6 +3611,33 @@ impl Vehicles {
                                 v.uv2 = [-(1.0 + by(s, 200.0) + 256.0 * by(k, 200.0)), 1.0 + by(bc.x, 255.0) + 256.0 * by(bc.y, 255.0)];
                                 v.uv1 = [by(bc.z, 255.0) + 256.0 * by(e, 32.0), 0.0];
                                 v.color[3] = a;
+                            }
+                        } else if sname.to_ascii_lowercase().starts_with("interiortexturedemissive") && std::env::var("MCLA_EMISSIVE_OLD").is_err() {
+                            // (render only - PS_Emissive / PS_EmissiveAlpha, city.wgsl: the material's terms in the vertices,
+                            // uv2 = (-(1 + 200 smoothness + 256 x 100 ambientMod), 1 + 255 base r + 256 x 255 base g), uv1.y =
+                            // -(1 + 255 base b + 256 x the S600 flag) (the mark: below -0.5), uv1.x kept - VS_Emissive's row
+                            // c[153 + trunc(uv1.x)] of the gauge rows; colour alpha = 10 metallic + 32 cabin part + 128 blended
+                            // bucket; uv0 x detailTiling as VS_Emissive hands it on (o0). The S600 flag is the car's byte +6466
+                            // (F-60786 sets it 1 for the model vp_mbz_s600_07 alone): F-96984 then hands gauge row 0 and row 2
+                            // unscaled by the head lamp state)
+                            let (bc, am, sm, m, dt) = (pv(0x1468b111, 1.0), pv(0xfd110c9f, 1.0).x, pv(0x5e315fd1, 0.0).x, pv(0x83697767, 0.0).x, pv(0x250f72fc, 1.0).x);
+                            let s600 = car.name.eq_ignore_ascii_case("vp_mbz_s600_07");
+                            let a = (by(m, 10.0).min(15.0) + if cabin { 32.0 } else { 0.0 } + if setup_b1 { 128.0 } else { 0.0 }) as u8;
+                            for v in &mut acc.verts[first..] {
+                                v.uv2 = [-(1.0 + by(sm, 200.0) + 256.0 * by(am, 100.0)), 1.0 + by(bc.x, 255.0) + 256.0 * by(bc.y, 255.0)];
+                                v.uv1[1] = -(1.0 + by(bc.z, 255.0) + if s600 { 256.0 } else { 0.0 });
+                                v.color[3] = a;
+                                if dt.is_finite() {
+                                    v.uv0 = [v.uv0[0] * dt, v.uv0[1] * dt];
+                                }
+                            }
+                            if std::env::var("MCLA_EMISSIVE_DUMP").is_ok() {
+                                let rows: std::collections::BTreeSet<i32> = acc.verts[first..].iter().map(|v| v.uv1[0].trunc() as i32).collect();
+                                let c0 = acc.verts.get(first).map(|v| (v.color, v.color1));
+                                let tx: Vec<String> = sh.map(|s| s.textures().map(|(_, n)| n.to_string()).collect()).unwrap_or_default();
+                                let mut cs: std::collections::BTreeMap<(u8, u8, u8, u8), usize> = Default::default();
+                                for v in &acc.verts[first..] { *cs.entry((v.color[0], v.color[1], v.color[2], v.color1[3])).or_default() += 1; }
+                                eprintln!("emissive {} {} {} bucket {} cabin {} b1 {} base {:?} sm {} m {} am {} dt {} rows {:?} first colours {:?} tex {:?} n {} colours {:?}", car.name, part.primary, sname, sh.map_or(0, |s| s.bucket), cabin, setup_b1, bc, sm, m, am, dt, rows, c0, tx, acc.verts.len() - first, cs.iter().take(6).collect::<Vec<_>>());
                             }
                         } else if sname.eq_ignore_ascii_case("BrushedMetal") {
                             let rc = pv(0xaffa32ba, 1.0).x;
@@ -6294,6 +6325,18 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 (false, Some(l)) => l.trim,
                 (false, None) => [[0.0; 4]; 12],
             };
+            // (its gauge rows as F-96984 hands them, the cabin parts' siColor0 / siColor1 and VS_Emissive's c153 / c154:
+            // DashGaugeColor x (the S600's byte +6466 ? 1 : the head lamp state, lamp object +168) and DashGaugeColorB x
+            // the head state - by day 0, the recorded noon frame work/intglass/cap/pov_noon; MCLA_EMISSIVE_OLD=1: as stored)
+            let mut body_trim = body_trim;
+            if std::env::var("MCLA_EMISSIVE_OLD").is_err() {
+                let head = c.amb_lamps.s[0];
+                let fa = if c.model.name.eq_ignore_ascii_case("vp_mbz_s600_07") { 1.0 } else { head };
+                for k in 0..3 {
+                    body_trim[10][k] *= fa;
+                    body_trim[11][k] *= head;
+                }
+            }
             // (the brushed metal's tint, BrushedMetalTintDownload[0]: the record's m_vBrushedMetalColorA - F-91597)
             let body_brushed = match (c.is_player, c.look.as_ref()) {
                 (true, _) => self.player_brushed,

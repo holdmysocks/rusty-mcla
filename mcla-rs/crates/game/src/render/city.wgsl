@@ -2410,7 +2410,9 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     // keeps its alpha to the end (below)
     let setup_b1_badge = mat.mode == 7u && obj.params.w > 15.5 && in.uv2.y > 2.5 && in.uv2.y < 3.5 && in.uv2.x < -0.5;
     let setup_b1_bs = mat.mode == 9u && in.uv2.y > 0.5 && obj.params.w > 15.5 && obj.lamp_a[0].w < 0.5 && (u32(round(in.color.a * 255.0)) & 128u) != 0u;
-    if ((setup_b1_badge && 2.0 * albedo.a - 1.0 <= 0.0) || (setup_b1_bs && albedo.a <= 4.0 / 255.0)) {
+    // (the dials' blended program, PS_EmissiveAlpha - marked uv1.y < 0: its alpha is the texture's ^ 1.6, tested so)
+    let setup_b1_a = select(albedo.a, pow(max(albedo.a, 0.0), 1.6), in.uv1.y < -0.5);
+    if ((setup_b1_badge && 2.0 * albedo.a - 1.0 <= 0.0) || (setup_b1_bs && setup_b1_a <= 4.0 / 255.0)) {
         discard;
     }
     if (mat.mode == 7u && obj.params.w > 15.5 && in.uv2.y > 2.5 && in.uv2.y < 3.5 && !setup_b1_badge && albedo.a <= 0.5) {
@@ -4237,6 +4239,82 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             base = vec3<f32>(0.0);
             emissive = vec3<f32>(0.0);
             spec_k = 0.0;
+        } else if (mat.mode == 9u && in.uv2.y > 0.5 && in.uv1.y < -0.5 && cp_on) {
+            // VS_Emissive + PS_Emissive / PS_EmissiveAlpha of interiortexturedemissive(alpha).fxc (cars/0xf295c729,
+            // 0xce0ceed4: the dial faces and needles), exact against both programs on the recorded night frame
+            // (work/carparts2/emprobe2.py, work/lighting/cap/fix_night draws 768 and 778: 113 random inputs each, 6e-8):
+            //   a16    = texture alpha^1.6;  occ = sat(baked occlusion + 0.5 a16)
+            //   L0     = the first light x sat(n.l) x sat(4 n.l) x 1.33333 sat(collector - 0.25) x occ
+            //   L1     = the second light x sat(n.l) x sat(4 n.l) x occ   (no collector on it)
+            //   lt     = screen(screen(screen(L0, L1), ambYPos x ambientMod x occ), own) + a16 x row;  lt = screen(lt, own)
+            //            own = the own-lamp light (a cabin part: the gauge rows A / B, as the trim's), row = c[153 + trunc(uv1.x)]
+            //            of the three gauge rows: DashGaugeColor x f, DashGaugeColorB x head, (f, f, f); f = the head lamp
+            //            state (1 on the S600) - the rows' head scaling vehicles.rs, F-96984
+            //   colr   = texture^1.6 x baseColor;  dif = colr x lt
+            //   mirror = 0.5 x surroundings x (1 + metallic (1 - (1 - sat(n.v))^5)(colr - 1)) x occ
+            //   out    = lerp(dif, mirror, w),  w = sm^5 + (sm - sm^5)(1 - sat|n.v|)^5;  alpha (the blended one) = a16
+            // The surroundings are read as PS_BumpSpec_true_true reads its dpFrontSampler (the same instructions).
+            // The terms ride in the vertices (vehicles.rs): uv2.y - 1 = 255 (base r + 256 g), -uv1.y - 1 = 255 base b +
+            // 256 x the S600 flag, -uv2.x - 1 = 200 smoothness + 256 x 100 ambientMod, colour alpha x 255 = 10 metallic
+            // (+ 32 cabin, + 128 blended).  (MCLA_EMISSIVE_OLD=1: drawn as before, the generic part)
+            let pae = u32(round(in.uv2.y)) - 1u;
+            let pbe = u32(round(max(-in.uv1.y, 1.0))) - 1u;
+            let pce = u32(round(max(-in.uv2.x, 1.0))) - 1u;
+            let pde = u32(round(in.color.a * 255.0));
+            let tex_e = select(car_raw(albedo.rgb), albedo.rgb, g.params.w > 102.5 && g.params.w < 103.5);
+            let a16_e = pow(max(albedo.a, 0.0), 1.6);
+            let base_e = vec3<f32>(f32(pae & 255u), f32((pae >> 8u) & 255u), f32(pbe & 255u)) / 255.0;
+            let s600_e = ((pbe >> 8u) & 1u) != 0u;
+            let sm_e = f32(pce & 255u) / 200.0;
+            let am_e = f32((pce >> 8u) & 255u) / 100.0;
+            let m_e = f32(pde & 15u) / 10.0;
+            let occ_e = clamp(in.color1.a + 0.5 * a16_e, 0.0, 1.0);
+            var fc_e = 127.0 / 255.0;
+            if (g.tone.w < 0.5 && g.shadow_params.x > 0.0) {
+                fc_e = car_collector(in.wpos);
+            } else if (g.tone.w > 0.5 && g.car_amb.w < 0.5) {
+                fc_e = night_collector(in.wpos);
+            }
+            let sc_e = clamp(fc_e * FC_LIT - 0.25, 0.0, 1.0);
+            let att_e = select(0.9, 1.0, g.params.w > 98.5 && g.params.w < 99.5);
+            let nls_e = max(dot(n, g.sun_dir.xyz), 0.0);
+            let nlk_e = max(dot(n, car_kd()), 0.0);
+            let nlc_e = max(dot(n, car_ld()), 0.0);
+            let lh_e = (g.sun_color.rgb * (g.sun_dir.w * nls_e * clamp(4.0 * nls_e, 0.0, 1.0)) + car_kc() * (nlk_e * clamp(4.0 * nlk_e, 0.0, 1.0))) * att_e;
+            let ll_e = car_lc() * (nlc_e * clamp(4.0 * nlc_e, 0.0, 1.0) * att_e);
+            let lf_e = car_lamp_first();
+            let l0_e = select(lh_e, ll_e, lf_e) * (1.33333 * sc_e * occ_e);
+            let l1_e = select(ll_e, lh_e, lf_e) * occ_e;
+            var lt_e = l0_e + l1_e - clamp(l0_e * l1_e, vec3<f32>(0.0), vec3<f32>(1.0));
+            let amb_e = hemi * (am_e * occ_e);
+            lt_e = lt_e + amb_e - clamp(lt_e * amb_e, vec3<f32>(0.0), vec3<f32>(1.0));
+            var own_e = car_own_lamps(vec4<f32>(in.color.rgb, 0.0));
+            if ((pde & 32u) != 0u) {
+                let ga = obj.trim[10].rgb * (in.color.r * obj.trim[10].w);
+                let gb = obj.trim[11].rgb * (in.color.g * obj.trim[11].w);
+                own_e = ga + gb - clamp(ga * gb, vec3<f32>(0.0), vec3<f32>(1.0));
+            }
+            if (g.params.w > 72.5 && g.params.w < 73.5) { own_e = vec3<f32>(0.0); }
+            lt_e = lt_e + own_e - clamp(lt_e * own_e, vec3<f32>(0.0), vec3<f32>(1.0));
+            let ri_e = clamp(i32(trunc(in.uv1.x)), 0, 2);
+            let f_e = select(obj.lamp_a[2].w, 1.0, s600_e);
+            var row_e = vec3<f32>(f_e);
+            if (ri_e == 0) { row_e = obj.trim[10].rgb; } else if (ri_e == 1) { row_e = obj.trim[11].rgb; }
+            lt_e = lt_e + a16_e * row_e;
+            lt_e = lt_e + own_e - clamp(lt_e * own_e, vec3<f32>(0.0), vec3<f32>(1.0));
+            let colr_e = pow(max(tex_e, vec3<f32>(0.0)), vec3<f32>(1.6)) * base_e;
+            let dif_e = colr_e * lt_e;
+            let nv_e = dot(n, v);
+            let f5_e = pow(1.0 - clamp(nv_e, 0.0, 1.0), 5.0);
+            let g5_e = pow(1.0 - clamp(abs(nv_e), 0.0, 1.0), 5.0);
+            let s5_e = sm_e * sm_e * sm_e * sm_e * sm_e;
+            let w_e = s5_e + (sm_e - s5_e) * g5_e;
+            let mir_e = env * 0.5 * (vec3<f32>(1.0) + (colr_e - vec3<f32>(1.0)) * (m_e * (1.0 - f5_e))) * occ_e;
+            lit = dif_e + (mir_e - dif_e) * w_e;
+            if (g.params.w > 73.5 && g.params.w < 74.5) { lit = own_e; }
+            base = vec3<f32>(0.0);
+            emissive = vec3<f32>(0.0);
+            spec_k = 0.0;
         } else if (mat.mode == 9u && in.uv2.y > 0.5 && cp_on) {
             // PS_BumpSpec_true_true of bumpspec.fxc / bumpspecalpha.fxc (cars/0x601ee749,
             // 0x297774d0: dark trim, mirror glass, badges ...), exact against the program for
@@ -4286,6 +4364,13 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
             let am9 = hemi * occ9;
             lt9 = lt9 + am9 - clamp(lt9 * am9, vec3<f32>(0.0), vec3<f32>(1.0));
             var own9 = car_own_lamps(in.color);
+            // (a cabin part, bit 32: its siColor0 / siColor1 are the gauge rows - every cabin BumpSpec draw of the recorded
+            // night frame work/lighting/cap/fix_night carries c153 / c154, si2 0 - as the trim's own light. Diagnostics 836: none, as before)
+            if ((pd9 & 32u) != 0u && !(g.params.w > 835.5 && g.params.w < 836.5)) {
+                let ga = obj.trim[10].rgb * (in.color.r * obj.trim[10].w);
+                let gb = obj.trim[11].rgb * (in.color.g * obj.trim[11].w);
+                own9 = ga + gb - clamp(ga * gb, vec3<f32>(0.0), vec3<f32>(1.0));
+            }
             if (g.params.w > 72.5 && g.params.w < 73.5) { own9 = vec3<f32>(0.0); }
             lt9 = lt9 + own9 - clamp(lt9 * own9, vec3<f32>(0.0), vec3<f32>(1.0));
             lt9 = lt9 + own9 - clamp(lt9 * own9, vec3<f32>(0.0), vec3<f32>(1.0));
@@ -5553,7 +5638,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32>
     let col = mix(lit, fog_rgb, select(clamp(fg * g.fog_color.a, 0.0, 1.0), 0.0, (g.params.w > 753.5 && g.params.w < 754.5) || mat.nofog == 1u));
     // (a set-up car's blended bucket: PS_BumpSpec* o0.w = gLightAmbient.w x gInvColorExpBias.x x A, PS_BumpedChrome
     // the same x (2A - 1); the bias 1/16 undoes the target's exp bias 4 and gLightAmbient.w is 1: A, 2A - 1)
-    if (setup_b1_bs) { alpha = albedo.a; amb_keep_a = true; }
+    if (setup_b1_bs) { alpha = select(albedo.a, pow(max(albedo.a, 0.0), 1.6), in.uv1.y < -0.5); amb_keep_a = true; }
     if (setup_b1_badge) { alpha = clamp(2.0 * albedo.a - 1.0, 0.0, 1.0); amb_keep_a = true; }
     if (mat.mode != 2u && mat.mode != 12u && mat.mode != 22u && !amb_keep_a) { alpha = 1.0; }
     return vec4<f32>(tonemap(col), alpha);
