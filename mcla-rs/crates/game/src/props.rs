@@ -72,8 +72,8 @@ impl Inst {
 }
 
 struct PropBatch {
-    vb: wgpu::Buffer,
-    ib: wgpu::Buffer,
+    vb: crate::world::BufPart,
+    ib: crate::world::BufPart,
     count: u32,
     bind: Arc<wgpu::BindGroup>,
     mode: MatMode,
@@ -917,6 +917,12 @@ impl Props {
         let mut insts: Vec<Inst> = Vec::new();
         let mut cells: HashMap<(i32, i32), Vec<Run>> = HashMap::new();
         let mut total = 0usize;
+        // (the models' vertices and indices go into one shared vertex and one index buffer, made at the end of `load`;
+        // each batch's part points into them. A buffer pair per batch took 64 KB each on DX12, 753 + 753 of them -
+        // GitHub #48. MCLA_PROP_PACK_OLD=1: a buffer pair per batch, as before)
+        let pack_old = std::env::var_os("MCLA_PROP_PACK_OLD").is_some();
+        let pack_dummy = Arc::new(gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("prop pack (unset)"), size: 4, usage: wgpu::BufferUsages::VERTEX, mapped_at_creation: false }));
+        let pack: std::cell::RefCell<(Vec<Vertex>, Vec<u32>)> = Default::default();
         // GPU model of prop `pi` (built on first use)
         let mut model_for = |gpu: &mut Gpu, world: &mut World, models: &mut Vec<PropModel>, pi: usize| -> Option<usize> {
             if let Some(m) = model_of.get(&pi) {
@@ -1056,8 +1062,19 @@ impl Props {
                 if verts.is_empty() || mesh.indices.is_empty() {
                     continue;
                 }
-                let vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("prop vb"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
-                let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("prop ib"), contents: bytemuck::cast_slice(&mesh.indices), usage: wgpu::BufferUsages::INDEX });
+                let (vb, ib) = if pack_old {
+                    let vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("prop vb"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
+                    let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("prop ib"), contents: bytemuck::cast_slice(&mesh.indices), usage: wgpu::BufferUsages::INDEX });
+                    (crate::world::BufPart::whole(vb), crate::world::BufPart::whole(ib))
+                } else {
+                    let mut pk = pack.borrow_mut();
+                    let vsz = std::mem::size_of::<Vertex>() as u64;
+                    let v = crate::world::BufPart { buf: pack_dummy.clone(), off: pk.0.len() as u64 * vsz, len: verts.len() as u64 * vsz };
+                    let i = crate::world::BufPart { buf: pack_dummy.clone(), off: pk.1.len() as u64 * 4, len: mesh.indices.len() as u64 * 4 };
+                    pk.0.extend_from_slice(&verts);
+                    pk.1.extend_from_slice(&mesh.indices);
+                    (v, i)
+                };
                 let (bind, mode) = match &lamp {
                     Some(((lit, lk), _)) if *lk != 0 => (gpu.texture_bind_group(&tex, lit, k, *lk), MatMode::StoreSign),
                     _ => match (&prop_bump, prop_mode(sname)) {
@@ -1155,6 +1172,7 @@ impl Props {
                     let vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("plant card vb"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
                     let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("plant card ib"), contents: bytemuck::cast_slice(&indices), usage: wgpu::BufferUsages::INDEX });
                     let bind = gpu.texture_bind_group(&tex, &tex, key, key);
+                    let (vb, ib) = (crate::world::BufPart::whole(vb), crate::world::BufPart::whole(ib));
                     models.push(PropModel { batches: vec![PropBatch { vb, ib, count: indices.len() as u32, bind, mode: MatMode::Foliage }], radius, sphere, kind: 3 });
                     models.len() - 1
                 });
@@ -1667,6 +1685,19 @@ impl Props {
             log::info!("props: lamp locators on {} of {} signal heads", lamps.iter().filter(|l| l.iter().flatten().any(|x| x.is_some())).count(), heads.len());
             SignalGlows { lit: Vec::new(), cull, buf: None, count: 0, lamps, sizes: four("sm_fSignalGlowSizes", [4.52, 5.25, 8.7675, 10.0]), intensities: four("sm_fSignalGlowIntensitys", [4.52, 5.0, 5.0, 3.0]) }
         };
+        // (the packed batches' two buffers: each batch's part points into them)
+        let (pack_v, pack_i) = pack.into_inner();
+        if !pack_v.is_empty() {
+            let vb = Arc::new(gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("prop vb"), contents: bytemuck::cast_slice(&pack_v), usage: wgpu::BufferUsages::VERTEX }));
+            let ib = Arc::new(gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("prop ib"), contents: bytemuck::cast_slice(&pack_i), usage: wgpu::BufferUsages::INDEX }));
+            log::info!("props: models' vertices {:.1} MB, indices {:.1} MB in one buffer each", vb.size() as f64 / 1048576.0, ib.size() as f64 / 1048576.0);
+            for b in models.iter_mut().flat_map(|m| m.batches.iter_mut()) {
+                if Arc::ptr_eq(&b.vb.buf, &pack_dummy) {
+                    b.vb.buf = vb.clone();
+                    b.ib.buf = ib.clone();
+                }
+            }
+        }
         let impostors = impostor::Impostors::new(gpu, data_dir, &mut models, &imp_types, &slot_infos);
         Props { hedge_low, impostors, signal_glows, glow_buf, glow_count: glows.len() as u32, lights, prop_lamps, glow_lamps, glow_boxes, glow_cull, glow_signal, glow_gfx, light_grid, models, inst_buf, cells, instances: total, insts, colliders, gas_stations, col_grid, debris: Vec::new(), hits: Vec::new(), scrapes: Vec::new(), deflects: Vec::new(), fx: Vec::new(), defl_done: Default::default(), knocked: 0, placed: HashMap::new(), rng: 12345, level_on: false, level_map: None, moving: HashMap::new(), between: HashMap::new(), between_tick: 0, between_log: std::env::var_os("MCLA_DRAW_STEPS").map(|_| Vec::new()), heads, signals, race_models, race_buf: None, race_runs: Vec::new(), barriers, barrier_buf, barrier_on: 0, emitters, trash: load_resource_file(&Path::new(data_dir).join("resources/city/sc/0xad0a8b94.r66")).map(|r| trash_rails(&r)).unwrap_or_default() }
     }
@@ -2027,7 +2058,7 @@ impl Props {
         if !glass && !old {
             group_ranges(out);
         }
-        let (mut bind, mut mode, mut vb, mut ib): (*const wgpu::BindGroup, u32, *const wgpu::Buffer, *const wgpu::Buffer) = (std::ptr::null(), u32::MAX, std::ptr::null(), std::ptr::null());
+        let (mut bind, mut mode, mut vb, mut ib): (*const wgpu::BindGroup, u32, *const crate::world::BufPart, *const crate::world::BufPart) = (std::ptr::null(), u32::MAX, std::ptr::null(), std::ptr::null());
         let mut i = 0;
         while i < out.len() {
             let m = out[i].0;

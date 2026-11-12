@@ -62,6 +62,11 @@ pub(crate) fn create_buffer_resource(
             .map(|resource| (resource, None));
     }
 
+    // MCLA patch (GitHub #48): a buffer of 16 MB or more gets a committed resource of its own (`commit_own`)
+    if commit_own(&device.raw, &raw_desc) {
+        return create_committed_buffer_resource(device, desc, raw_desc).map(|resource| (resource, None));
+    }
+
     let location = match (is_cpu_read, is_cpu_write) {
         (true, true) => MemoryLocation::CpuToGpu,
         (true, false) => MemoryLocation::GpuToCpu,
@@ -123,6 +128,24 @@ fn small_aligned(dev: &Direct3D12::ID3D12Device, raw_desc: Direct3D12::D3D12_RES
     }
 }
 
+/// The resources that get a committed resource of their own (see `create_texture_resource` / `create_buffer_resource`).
+fn commit_own(dev: &Direct3D12::ID3D12Device, raw_desc: &Direct3D12::D3D12_RESOURCE_DESC) -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *OFF.get_or_init(|| std::env::var("MCLA_DX12_COMMITTED").is_ok_and(|v| v.trim() == "0")) {
+        return false;
+    }
+    const LARGE: u64 = 16 << 20;
+    if raw_desc.Dimension == Direct3D12::D3D12_RESOURCE_DIMENSION_BUFFER {
+        return raw_desc.Width >= LARGE;
+    }
+    let targets = Direct3D12::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | Direct3D12::D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+    if (raw_desc.Flags & targets).0 != 0 || raw_desc.SampleDesc.Count != 1 {
+        return true;
+    }
+    let info = unsafe { dev.GetResourceAllocationInfo(0, std::slice::from_ref(raw_desc)) };
+    info.SizeInBytes >= LARGE
+}
+
 pub(crate) fn create_texture_resource(
     device: &crate::dx12::Device,
     desc: &crate::TextureDescriptor,
@@ -132,6 +155,14 @@ pub(crate) fn create_texture_resource(
     if !device.private_caps.suballocation_supported {
         return create_committed_texture_resource(device, desc, raw_desc)
             .map(|resource| (resource, None));
+    }
+
+    // MCLA patch (GitHub #48): render / depth targets, multisampled textures and textures of 16 MB or more get a committed
+    // resource of their own (D3D12MA commits large ones too). Placed, the scene sets, menu targets and plates that come and
+    // go left holes in the shared 256 MB blocks that long-lived textures then filled, so a block was never empty again and
+    // DX12 kept its high-water mark (2,432 MB reserved for 1,653 MB allocated after 15 min). MCLA_DX12_COMMITTED=0: placed.
+    if commit_own(&device.raw, &raw_desc) {
+        return create_committed_texture_resource(device, desc, raw_desc).map(|resource| (resource, None));
     }
 
     let location = MemoryLocation::GpuOnly;

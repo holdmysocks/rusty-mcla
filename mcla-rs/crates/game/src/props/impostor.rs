@@ -319,7 +319,7 @@ impl Impostors {
             let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("impostor card ib"), contents: bytemuck::cast_slice(&indices), usage: wgpu::BufferUsages::INDEX });
             let (k0, k1) = (mcla_formats::hash::joaat(&format!("impostor:{}", info.name)), mcla_formats::hash::joaat(&format!("impostor normal:{}", info.name)));
             let bind = gpu.texture_bind_group(&color, &normal, k0, k1);
-            models.push(PropModel { batches: vec![PropBatch { vb, ib, count: 6, bind, mode: MatMode::Foliage }], radius: info.radius, sphere: info.sphere, kind: 3 });
+            models.push(PropModel { batches: vec![PropBatch { vb: crate::world::BufPart::whole(vb), ib: crate::world::BufPart::whole(ib), count: 6, bind, mode: MatMode::Foliage }], radius: info.radius, sphere: info.sphere, kind: 3 });
             let card_ix = models.len() - 1;
             // The shadow impostor: the mask and the quad the shadow pass draws for the type
             // (render/shadow.wgsl `vs_shadow_inst` builds it from the light direction, uv1.y = 105).
@@ -340,7 +340,7 @@ impl Impostors {
             let mib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("impostor shadow card ib"), contents: bytemuck::cast_slice(&indices), usage: wgpu::BufferUsages::INDEX });
             let km = mcla_formats::hash::joaat(&format!("impostor shadow:{}", info.name));
             let mbind = gpu.texture_bind_group(&mask, &mask, km, km);
-            models.push(PropModel { batches: vec![PropBatch { vb: mvb, ib: mib, count: 6, bind: mbind, mode: MatMode::Foliage }], radius: info.radius, sphere: info.sphere, kind: 3 });
+            models.push(PropModel { batches: vec![PropBatch { vb: crate::world::BufPart::whole(mvb), ib: crate::world::BufPart::whole(mib), count: 6, bind: mbind, mode: MatMode::Foliage }], radius: info.radius, sphere: info.sphere, kind: 3 });
             let mask_card = models.len() - 1;
             if info.baked < by_baked.len() {
                 by_baked[info.baked] = types.len() as u32;
