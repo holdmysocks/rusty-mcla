@@ -1390,6 +1390,8 @@ pub struct Vehicles {
     /// the fixed props (physics level state 2) around the racers as the object grid's kind-3
     /// objects (F-47614), for the racer brains' obstacle scan; refreshed with `solids`
     pub prop_objects: Vec<crate::brainturn::ObjectInfo>,
+    /// the object grid's cell lists (F-66511), kept from frame to frame: the cars as they were last filed
+    pub grid_lists: crate::brainturn::GridLists,
     /// the glows of the cars' lamps this frame (instances of the glow pipeline)
     glow_buf: Option<wgpu::Buffer>,
     glow_count: u32,
@@ -2465,6 +2467,11 @@ const PREFETCH_KEEP: usize = 8;
 /// `Vehicles::parsed`'s key: the car's folder name (the callers spell the path differently).
 fn parsed_key(dir: &Path) -> String {
     dir.file_name().map_or_else(|| dir.to_string_lossy().to_string(), |n| n.to_string_lossy().to_ascii_lowercase())
+}
+
+/// An mcAmbientCar of the object grid's (riding or parked; the player, cops, racers and scene cars are racers there).
+fn grid_ambient(c: &CarInstance) -> bool {
+    !c.is_player && !c.cop && !c.racer && !c.pinned && (c.rail.is_some() || c.parked.is_some())
 }
 
 impl Vehicles {
@@ -4730,10 +4737,26 @@ if keep || c.state.pos.distance(center) < 450.0 {
         // approx.: the list's order taken as the cars' order; each brain keeps its own frame clock)
         let racers: Vec<usize> = (0..n).filter(|&i| self.cars[i].ai.as_ref().map_or(false, |a| a.brain.0.is_some())).collect();
         let (rot, next) = crate::oppmgr::update_order(self.opp_start, racers.len(), false);
-        if dt > 0.0 && !self.frozen && crate::brain::frame_due(&mut self.opp_frame, dt) {
+        let game_frame = dt > 0.0 && !self.frozen && crate::brain::frame_due(&mut self.opp_frame, dt);
+        if game_frame {
             self.opp_start = next;
         }
         let order: Vec<usize> = rot.iter().map(|&k| racers[k]).chain((0..n).filter(|i| !racers.contains(i))).collect();
+        // (the object grid the racers' brains read their obstacles from, F-66511: the ambient layer's frame (F-60206 in the
+        // layer update before the game's, F-86168) files every ambient car at the start of its update F-50624 (F-27899),
+        // where it stands then - here before the brains, as the cars stand - except a car of the bIsProxy pool (car +500
+        // bit 0x20: a racer's ghost; the racer is filed itself); then in the game's update F-53597 each racer files itself
+        // in its own update F-80793, just before its brain, below. A removed car leaves its list. The walkers file
+        // themselves too (F-27899 from their update), kind 4, which every brain ignores: left out. approx.: the ambient cars
+        // in the list's order, not the manager's pool order)
+        let grid = crate::brainturn::ObjectGrid::city();
+        if game_frame {
+            let live: hashbrown::HashSet<u32> = self.cars.iter().map(|c| c.uid).collect();
+            self.grid_lists.retain(&grid, |id| live.contains(&id));
+            for c in self.cars.iter().filter(|c| grid_ambient(c) && !c.rail.as_ref().is_some_and(|r| r.ty.proxy)) {
+                self.grid_lists.file(&grid, c.uid, c.state.pos);
+            }
+        }
         // (the racers' brains whose turn below is theirs - not a scene's car, the player, a cruising man - get their aiv's
         // frame worked out ahead side by side; each takes it only if nothing it reads changed before its turn: brain.rs `ahead`)
         if !self.frozen && !(self.grid_hold.is_some() && self.grid_wait) {
@@ -4748,6 +4771,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
             crate::brain::ahead(self, &ahead, self.grid_hold, dt);
         }
         for i in order {
+            if game_frame && !grid_ambient(&self.cars[i]) {
+                let c = &self.cars[i];
+                self.grid_lists.file(&grid, c.uid, c.state.pos);
+            }
             // (traffic has no pedals: on its lane it rides, physical it rolls to rest -
             // traffic.rs; the original's physical ambient car's brakes are not decoded)
             if let Some(r) = self.cars[i].rail.as_ref() {

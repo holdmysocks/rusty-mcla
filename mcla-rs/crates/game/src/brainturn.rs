@@ -568,6 +568,141 @@ impl ObjectGrid {
     }
 }
 
+/// The object grid's cell lists as the original keeps them from frame to frame, by the object's id (a car's uid): each
+/// object's u16 cell word (+4, 0xFFFF from its constructor) and its prev / next links (+8 / +12), the cells' heads (grid
+/// +28). F-66511 files an object: its cell number from where it stands (F-59709: (iz nx + ix) as u16, off the grid
+/// 0xFFFF); the same number does nothing, else F-60332 unlinks it (nothing when the word is not below the cell count;
+/// else a head's next becomes the head, or the prev and next are joined; the word 0xFFFF) and, unless the number is 0,
+/// the word takes it and, below the cell count, the object goes to the head of that cell's list. An object leaves its
+/// list only so, or when it is destroyed. The racers' brains walk each cell's list from its head: the objects that last
+/// moved in, newest first. (A grid of more than 65,536 cells can link a number that wraps to 0xFFFF; the original's
+/// unlink then reads an unlinked word as that cell's - kept as it is. Unbounded grid, the port's own when there is no
+/// city: any cell, no count, no cell 0.)
+#[derive(Debug, Default, Clone)]
+pub struct GridLists {
+    obj: hashbrown::HashMap<u32, GridLink>,
+    heads: hashbrown::HashMap<i64, u32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GridLink {
+    cell: i64,
+    prev: Option<u32>,
+    next: Option<u32>,
+}
+
+impl GridLists {
+    /// the "no cell" word: 0xFFFF on the bounded grid
+    fn none(grid: &ObjectGrid) -> i64 {
+        if grid.bounded { 0xFFFF } else { i64::MIN }
+    }
+    fn count(grid: &ObjectGrid) -> i64 {
+        if grid.bounded { grid.n[0] as i64 * grid.n[1] as i64 } else { i64::MAX }
+    }
+    /// F-66511 for object `id` at `pos`.
+    pub fn file(&mut self, grid: &ObjectGrid, id: u32, pos: Vec3) {
+        let none = Self::none(grid);
+        let new = match grid.cell(pos.x, pos.z) {
+            Some((x, z)) if grid.bounded => (z.wrapping_mul(grid.n[0]).wrapping_add(x) as u32 & 0xFFFF) as i64,
+            Some((x, z)) => grid.key(x, z).unwrap_or(none),
+            None => none,
+        };
+        let link = *self.obj.entry(id).or_insert(GridLink { cell: none, prev: None, next: None });
+        if link.cell == new {
+            return;
+        }
+        self.unlink_in(grid, id);
+        if grid.bounded && new == 0 {
+            return;
+        }
+        let count = Self::count(grid);
+        let next = if new < count { self.heads.get(&new).copied() } else { None };
+        let o = self.obj.get_mut(&id).unwrap();
+        o.cell = new;
+        if new < count {
+            o.prev = None;
+            o.next = next;
+            if let Some(h) = next {
+                if let Some(l) = self.obj.get_mut(&h) {
+                    l.prev = Some(id);
+                }
+            }
+            self.heads.insert(new, id);
+        }
+    }
+    /// F-60332 as the grid's own routine (`grid`: its cell count and "no cell" word).
+    pub fn unlink_in(&mut self, grid: &ObjectGrid, id: u32) {
+        let Some(&o) = self.obj.get(&id) else { return };
+        if o.cell >= Self::count(grid) {
+            return;
+        }
+        match o.prev {
+            None => {
+                match o.next {
+                    Some(n) => {
+                        self.heads.insert(o.cell, n);
+                        if let Some(l) = self.obj.get_mut(&n) {
+                            l.prev = None;
+                        }
+                    }
+                    None => {
+                        self.heads.remove(&o.cell);
+                    }
+                }
+            }
+            Some(p) => {
+                if let Some(l) = self.obj.get_mut(&p) {
+                    l.next = o.next;
+                }
+                if let Some(n) = o.next {
+                    if let Some(l) = self.obj.get_mut(&n) {
+                        l.prev = Some(p);
+                    }
+                }
+            }
+        }
+        let none = Self::none(grid);
+        let l = self.obj.get_mut(&id).unwrap();
+        *l = GridLink { cell: none, prev: None, next: None };
+    }
+    /// Every object `live` no longer holds, out of its list and forgotten (its destructor's F-60332).
+    pub fn retain(&mut self, grid: &ObjectGrid, live: impl Fn(u32) -> bool) {
+        let dead: Vec<u32> = self.obj.keys().copied().filter(|&id| !live(id)).collect();
+        for id in dead {
+            self.unlink_in(grid, id);
+            self.obj.remove(&id);
+        }
+    }
+    /// The list of cell `k`, from its head (at most 64, as a guard).
+    pub fn list(&self, k: i64) -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut at = self.heads.get(&k).copied();
+        while let Some(id) = at {
+            if out.len() >= 64 {
+                break;
+            }
+            out.push(id);
+            at = self.obj.get(&id).and_then(|l| l.next);
+        }
+        out
+    }
+    /// The lists as `select_obstacles_cells` takes them: each id through `index` (an id it does not know is left out).
+    pub fn cells(&self, index: impl Fn(u32) -> Option<usize>) -> hashbrown::HashMap<i64, Vec<usize>> {
+        self.heads.keys().map(|&k| (k, self.list(k).into_iter().filter_map(&index).collect::<Vec<usize>>())).filter(|(_, l)| !l.is_empty()).collect()
+    }
+}
+
+/// The objects by the cell they stand in, in the slice's order.
+pub fn cells_by_pos(objects: &[ObjectInfo], grid: &ObjectGrid) -> hashbrown::HashMap<i64, Vec<usize>> {
+    let mut cells: hashbrown::HashMap<i64, Vec<usize>> = hashbrown::HashMap::new();
+    for (j, o) in objects.iter().enumerate() {
+        if let Some(k) = grid.cell(o.pos.x, o.pos.z).and_then(|(x, z)| grid.key(x, z)) {
+            cells.entry(k).or_default().push(j);
+        }
+    }
+    cells
+}
+
 /// What F-86521 reads of the brain's own car.
 #[derive(Debug, Clone, Copy)]
 pub struct SelCar {
@@ -596,11 +731,16 @@ pub struct SelCar {
 /// Kept with direction -(forward_xz normalised; (1, 0, 0) when |forward_xz|^2 <= 1e-5), flag 0x80
 /// when v > V - 10, 0x40 for kind 0. After each point t += |P - car| / max(speed, 10); past
 /// ObstacleLookaheadTime the walk stops.
-/// (approx.: within a cell the original's list is in the order objects last moved into it, newest
-/// first; here the slice's order. An object's cell is taken from `pos`, the original's from where it
-/// was at its own last update)
+/// (Here by the objects' `pos`, in the slice's order; the game's brains take `select_obstacles_cells` over the grid's
+/// lists, `GridLists`.)
 #[allow(clippy::too_many_arguments)]
 pub fn select_obstacles_car(me: usize, objects: &[ObjectInfo], line: &[Vec3], car: &SelCar, ignore: u32, grid: &ObjectGrid, tuning: &AivTuning) -> Vec<Obstacle> {
+    select_obstacles_cells(me, objects, line, car, ignore, grid, &cells_by_pos(objects, grid), tuning)
+}
+
+/// `select_obstacles_car` over the grid's cell lists `cells` (object indices into `objects`, each list from its head).
+#[allow(clippy::too_many_arguments)]
+pub fn select_obstacles_cells(me: usize, objects: &[ObjectInfo], line: &[Vec3], car: &SelCar, ignore: u32, grid: &ObjectGrid, cells: &hashbrown::HashMap<i64, Vec<usize>>, tuning: &AivTuning) -> Vec<Obstacle> {
     let ignore = ignore | 16;
     let mut out: Vec<Obstacle> = Vec::new();
     let mut taken: Vec<usize> = Vec::new();
@@ -609,13 +749,6 @@ pub fn select_obstacles_car(me: usize, objects: &[ObjectInfo], line: &[Vec3], ca
     let dir = crate::aiv::norm_or(car.vel, 1.0, car.forward);
     let v_car = fma(car.vel.x, dir.x, fma(car.vel.y, dir.y, car.vel.z * dir.z));
     let inv = 1.0 / car.speed.max(10.0);
-    // objects by cell key
-    let mut cells: hashbrown::HashMap<i64, Vec<usize>> = hashbrown::HashMap::new();
-    for (j, o) in objects.iter().enumerate() {
-        if let Some(k) = grid.cell(o.pos.x, o.pos.z).and_then(|(x, z)| grid.key(x, z)) {
-            cells.entry(k).or_default().push(j);
-        }
-    }
     let mut t = 0.0f32;
     for &p in line {
         let (ix, iz, centre) = match grid.cell(p.x, p.z) {
@@ -1196,3 +1329,7 @@ mod original_tests {
         assert_eq!((cases, obst), (300, 654));
     }
 }
+
+#[cfg(test)]
+#[path = "grid_lists_tests.rs"]
+mod grid_lists_tests;

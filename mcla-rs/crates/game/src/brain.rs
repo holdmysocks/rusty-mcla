@@ -1317,7 +1317,16 @@ fn frame_inputs(v: &crate::vehicles::Vehicles, i: usize, brain: &Brain, to_go: O
     let line: Vec<Vec3> = brain.aiv.points().collect();
     // (half_length: F-98453(car + 8) +24, the composite bound box's max z)
     let sel = crate::brainturn::SelCar { pos: car.pos, forward: car.forward, vel: car.vel, speed: car.speed, half_length: c.params().composite_box().1.z };
-    let obstacles = crate::brainturn::select_obstacles_car(i, &objects, &line, &sel, brain.ignore, &crate::brainturn::ObjectGrid::city(), &brain.aiv.tun);
+    // (each cell's list as the grid holds it - the cars as they were last filed, newest mover first, `Vehicles::grid_lists`
+    // - then the props standing in it, filed when they came in, so behind every car; approx.: the props' own order)
+    let grid = crate::brainturn::ObjectGrid::city();
+    let uids: hashbrown::HashMap<u32, usize> = v.cars.iter().enumerate().map(|(j, c)| (c.uid, j)).collect();
+    let mut cells = v.grid_lists.cells(|id| uids.get(&id).copied());
+    let n = v.cars.len();
+    for (k, l) in crate::brainturn::cells_by_pos(&objects[n..], &grid) {
+        cells.entry(k).or_default().extend(l.into_iter().map(|j| j + n));
+    }
+    let obstacles = crate::brainturn::select_obstacles_cells(i, &objects, &line, &sel, brain.ignore, &grid, &cells, &brain.aiv.tun);
     (car, obstacles)
 }
 
