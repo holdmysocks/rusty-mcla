@@ -406,6 +406,88 @@ fn three_processes_writing_one_file_all_succeed() {
 }
 
 #[test]
+fn retry_denied_waits_out_a_passing_refusal_and_nothing_else() {
+    use std::io::{Error, ErrorKind};
+    let denied = || Error::from(ErrorKind::PermissionDenied);
+    // refused twice, then fine: the third call's value comes back
+    let mut calls = 0;
+    let got = retry_denied(5, 0, || {
+        calls += 1;
+        if calls < 3 { Err(denied()) } else { Ok(calls) }
+    });
+    assert_eq!(got.unwrap(), 3);
+    // refused for good: it gives up after the first try plus `tries` more, with the same error kind
+    let mut calls = 0;
+    let got: std::io::Result<()> = retry_denied(4, 0, || {
+        calls += 1;
+        Err(denied())
+    });
+    assert_eq!(got.unwrap_err().kind(), ErrorKind::PermissionDenied);
+    assert_eq!(calls, 5);
+    // any other error is returned at once
+    let mut calls = 0;
+    let got: std::io::Result<()> = retry_denied(4, 0, || {
+        calls += 1;
+        Err(Error::from(ErrorKind::NotFound))
+    });
+    assert_eq!(got.unwrap_err().kind(), ErrorKind::NotFound);
+    assert_eq!(calls, 1);
+}
+
+#[test]
+fn settings_readers_see_a_missing_file_as_missing_and_a_good_one_as_ok() {
+    let d = tmp("rd-basic");
+    let p = d.join("settings.toml");
+    assert_eq!(read_text(&p).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(Settings::load(&p).status, Status::Missing);
+    atomic_write(&p, b"schema = 1\n").unwrap();
+    assert_eq!(read_text(&p).unwrap(), "schema = 1\n");
+    assert_eq!(read_bytes(&p).unwrap(), b"schema = 1\n");
+    assert_eq!(Settings::load(&p).status, Status::Ok);
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn a_reader_never_fails_or_sees_a_torn_file_while_writers_replace_it() {
+    let d = tmp("rd-race");
+    let p = d.join("settings.toml");
+    let payloads: Vec<String> = (0..4).map(|i| format!("w{i}
+").repeat(4000)).collect();
+    atomic_write(&p, payloads[0].as_bytes()).unwrap();
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writers: Vec<_> = payloads
+        .iter()
+        .cloned()
+        .map(|data| {
+            let p = p.clone();
+            std::thread::spawn(move || {
+                for _ in 0..15 {
+                    atomic_write(&p, data.as_bytes()).unwrap();
+                }
+            })
+        })
+        .collect();
+    let reader = {
+        let (p, done, payloads) = (p.clone(), done.clone(), payloads.clone());
+        std::thread::spawn(move || {
+            let mut reads = 0;
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                let text = read_text(&p).expect("a read while the file is being replaced");
+                assert!(payloads.contains(&text), "a torn or mixed file of {} bytes", text.len());
+                reads += 1;
+            }
+            reads
+        })
+    };
+    for w in writers {
+        w.join().unwrap();
+    }
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(reader.join().unwrap() > 0);
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
 fn fps_monitor_is_read_and_written() {
     let t: Table = "[display]\nfps_monitor = \"frame_time\"\n".parse().unwrap();
     let (s, warn) = Settings::from_table(&t);

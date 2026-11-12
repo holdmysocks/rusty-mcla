@@ -1014,7 +1014,7 @@ pub fn migrate_hq_traffic(was_on: bool) {
     if !was_on || rt.settings_ignored {
         return;
     }
-    let present = std::fs::read_to_string(&rt.settings_path)
+    let present = mcla_config::read_text(&rt.settings_path)
         .ok()
         .and_then(|t| t.parse::<mcla_config::toml::Table>().ok())
         .is_some_and(|t| t.get("game").and_then(|g| g.get("detail_level")).is_some());

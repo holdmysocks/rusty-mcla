@@ -63,7 +63,7 @@ pub struct Read {
 }
 
 fn load(path: &Path) -> Result<(String, Value), SaveError> {
-    let bytes = match std::fs::read(path) {
+    let bytes = match crate::read_bytes(path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(SaveError::NotFound(path.to_path_buf())),
         Err(e) => return Err(SaveError::Io(path.to_path_buf(), e)),

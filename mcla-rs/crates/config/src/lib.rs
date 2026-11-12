@@ -280,7 +280,7 @@ pub struct Loaded {
 impl Settings {
     /// Read a file. Never fails: see [`Status`].
     pub fn load(path: &Path) -> Loaded {
-        let text = match std::fs::read_to_string(path) {
+        let text = match read_text(path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Loaded { settings: Settings::default(), status: Status::Missing, warnings: Vec::new() },
             Err(e) => return Self::broken(path, format!("cannot read: {e}")),
@@ -439,20 +439,10 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
             // Saves of one process take turns at the rename; several processes still race and use the retry.
             static RENAME_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
             let _turn = RENAME_TURN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            let mut tries = 0u32;
-            loop {
-                match std::fs::rename(&from, to) {
-                    Ok(()) => return Ok(()),
-                    Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && tries < 20 => {
-                        tries += 1;
-                        std::thread::sleep(std::time::Duration::from_millis(2 * u64::from(tries)));
-                    }
-                    Err(e) => {
-                        let _ = std::fs::remove_file(&from);
-                        return Err(step_error("rename onto", to, e));
-                    }
-                }
-            }
+            retry_denied(20, 2, || std::fs::rename(&from, to)).inspect_err(|_| {
+                let _ = std::fs::remove_file(&from);
+            })
+            .map_err(|e| step_error("rename onto", to, e))
         }
     }
     impl Drop for Staging {
@@ -488,6 +478,35 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         }
     }
     Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no free staging name beside the settings file"))
+}
+
+/// Run `op`; while it fails with `PermissionDenied`, wait `step_ms x attempt` ms and run it again, at most `tries` more
+/// times, then return the last result. On Windows a file that another process is just replacing or has open without
+/// sharing can be refused for a few milliseconds ("access denied", a sharing violation) although it is fine a moment
+/// later, so a reader or a writer that gives up at the first refusal takes a passing state for a broken file. Every
+/// other error (a missing file, bad data) comes back at once.
+pub fn retry_denied<T>(tries: u32, step_ms: u64, mut op: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let mut attempt = 0;
+    loop {
+        match op() {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && attempt < tries => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(step_ms * u64::from(attempt)));
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Read a whole file as text, retrying a few milliseconds on `PermissionDenied` (see [`retry_denied`]); what the
+/// settings and key binding readers use, since the game and the launcher replace those files while the other reads.
+pub fn read_text(path: &Path) -> std::io::Result<String> {
+    retry_denied(10, 3, || std::fs::read_to_string(path))
+}
+
+/// Like [`read_text`], for bytes.
+pub fn read_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+    retry_denied(10, 3, || std::fs::read(path))
 }
 
 /// The same error kind with the step and file named, so a log line says which part of a save failed.
@@ -532,7 +551,7 @@ fn sweep_staging(dir: &Path, name: &str) {
 /// lossless round trip). A missing file is created with `schema = 1` and that key. A file that is not valid TOML is
 /// **not** overwritten (the player's text stays): `InvalidData`. Atomic write.
 pub fn set_key(path: &Path, table: &str, key: &str, value: Value) -> std::io::Result<()> {
-    let mut t = match std::fs::read_to_string(path) {
+    let mut t = match read_text(path) {
         Ok(text) => text
             .trim_start_matches('\u{feff}')
             .parse::<Table>()
