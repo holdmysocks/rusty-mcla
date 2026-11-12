@@ -461,6 +461,12 @@ struct App {
     ticket_wait: Option<(Vec3, f32)>,
     /// CopPullover's ticket form (47) is up, over the ticket scene's held black (0xc45)
     ticket_form: bool,
+    /// the police camera (post +340, setter F-77562): Graphics_SetCopCamera (F-29933) in CopPullover.sco - on at 0x7b5
+    /// before the officer's walk, off at 0xb51 when the walk's script is done - and the scenes' bw_toggle_on / _off
+    /// events (F-86832); render/post.rs `Tune::police`
+    police_cam: bool,
+    /// the playing scene and its clock at the last frame, for the bw_toggle events' starts
+    bw_last: Option<(String, f32)>,
     /// CopPullover.sco 0x48e / 0x49b: the traffic switched off after the waited fade down (the port's target kept)
     ticket_traffic: Option<usize>,
     /// the time since the payback's intro ended, until its event script's fade up is over (`Game::payback_hold`)
@@ -1016,6 +1022,8 @@ impl App {
                     // (CopPullover.sco after Racer_PreRaceBurnout: scramble 0x600 - the handbrake held on and no
                     // steering, so the throttle alone spins the held car)
                     self.vehicles.player_scramble = 0x600;
+                    // (0x7b5: Graphics_SetCopCamera(1) - the dash camera's look over the walk)
+                    self.police_cam = true;
                 }
             }
             return;
@@ -1058,6 +1066,8 @@ impl App {
             Some(_) => {}
             None if bolt.is_some() => {
                 self.ticket_run = None;
+                // (0xb51: the walk's script done - Graphics_SetCopCamera(0))
+                self.police_cam = false;
                 // (0xb6c -> 0xcf8: the fade up fn 0x11a6(0, 1, 1.0, 0), not waited - it lifts the walk's own fade_to_black
                 // at 5.867 s, which the walk plays after a bolt too; Racer_Activate again, scramble 0)
                 self.scene_fade.release(1.0);
@@ -1076,6 +1086,8 @@ impl App {
             None if !second => {
                 // (the walk's end: 0x404, no throttle and no steering)
                 self.vehicles.player_scramble = 0x404;
+                // (0xb51: the walk's script done - Graphics_SetCopCamera(0), before the ticket scene)
+                self.police_cam = false;
                 // (the walk's FinishScene stops its gesture_left, F-65984 -> F-26895: the player's gesture blends out and the
                 // ticket scene's copfidget is taken)
                 if let Some(i) = self.vehicles.cars.iter().position(|c| c.is_player) {
@@ -1535,6 +1547,8 @@ impl App {
             ticket_run: None,
             ticket_wait: None,
             ticket_form: false,
+            police_cam: false,
+            bw_last: None,
             ticket_traffic: None,
             pb_intro_hold: None,
             pink_end: (0, false),
@@ -13444,6 +13458,19 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 tune.motion_blur = false;
                 tune.dt = 0.0;
             }
+            // (the police camera: the scenes' bw_toggle events as the scene's clock passes them, F-91263 -> F-86832)
+            let now = self.cine.playing.as_ref().map(|sc| (sc.name.clone(), sc.t));
+            if let Some((name, t)) = &now {
+                let prev = self.bw_last.as_ref().filter(|(n, _)| n == name).map_or(f32::NEG_INFINITY, |l| l.1);
+                for &(at, on) in prerace::bw_toggles(name) {
+                    if prev < at && *t >= at {
+                        self.police_cam = on;
+                    }
+                }
+            }
+            self.bw_last = now;
+            tune.police = self.police_cam && pic.is_none() && std::env::var_os("MCLA_POLICE_CAM_OFF").is_none()
+                || std::env::var_os("MCLA_POLICE_CAM").is_some();
             gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "post");
             gpu.post.run(&gpu.device, &gpu.queue, &mut enc, &view, &gpu.depth, &gpu.stencil_copy, &tune);
             gpuprof::stamp(&gpu.device, &gpu.queue, &mut enc, "ui");
@@ -15814,6 +15841,7 @@ impl App {
             halo::load(&mut gpu, &self.opt.data_dir);
             cutlights::init(&self.opt.data_dir);
             render::post::init(&self.opt.data_dir);
+            gpu.post.set_noise(&gpu.device, &gpu.queue, &self.opt.data_dir);
             sky::init_cloud_speed(&self.opt.data_dir);
             siglrefl::load(&gpu, &self.opt.data_dir);
             sunglow::load(&mut gpu);

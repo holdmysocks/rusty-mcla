@@ -56,25 +56,81 @@ pub struct Tune {
     pub bloom: bool,
     pub dof_on: bool,
     pub motion_blur: bool,
+    /// the police camera (post +340, set by Graphics_SetCopCamera F-29933 and the cine events bw_toggle_on / _off
+    /// F-86832, setter F-77562): the bright pass takes the settings file's second set and the final pass F-34349 draws
+    /// ToneMapFogPoliceCam (post.wgsl `fs_police`)
+    pub police: bool,
 }
 
 /// `numofframesinlumhistory` of the post-processing settings (`tune/lighting/0xa0829ade`, read by the settings loader F-15434):
 /// the slots of the luminance history the adapt pass compares
 pub static LUM_FRAMES: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
 
+/// The police camera's keys of the post-processing settings (`tune/lighting/0xa0829ade`, F-15434): the second bright-pass
+/// set (threshold, offset, middle grey, white - squared by F-31612 as the first set's), saturationpolicecam,
+/// grainintensity, interlaceintensity, timeframe (the timer's wrap), interference.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PoliceSet {
+    pub threshold: f32,
+    pub offset: f32,
+    pub middle_grey: f32,
+    pub white: f32,
+    pub saturation: f32,
+    pub grain: f32,
+    pub interlace: f32,
+    pub timeframe: f32,
+    pub interference: f32,
+}
+
+pub static POLICE: std::sync::OnceLock<PoliceSet> = std::sync::OnceLock::new();
+
+/// A float key of the settings file (`<key content="ascii">value</key>`).
+fn key(t: &str, k: &str) -> Option<f32> {
+    let i = t.find(&format!("<{k} "))?;
+    let r = &t[i..];
+    r[r.find('>')? + 1..r.find("</")?].trim().parse::<f32>().ok()
+}
+
+/// The police set of a settings file's text (the shipped file's values where a key is missing).
+pub fn police_set(t: &str) -> PoliceSet {
+    PoliceSet {
+        threshold: key(t, "brightpassthresholdtwo").unwrap_or(1.5),
+        offset: key(t, "brightpassoffsettwo").unwrap_or(2.0),
+        middle_grey: key(t, "middlegraytwo").unwrap_or(0.18),
+        white: key(t, "brightpasswhitetwo").unwrap_or(1.0),
+        saturation: key(t, "saturationpolicecam").unwrap_or(0.427),
+        grain: key(t, "grainintensity").unwrap_or(0.031),
+        interlace: key(t, "interlaceintensity").unwrap_or(7.7),
+        timeframe: key(t, "timeframe").unwrap_or(88.4),
+        interference: key(t, "interference").unwrap_or(0.0015),
+    }
+}
+
 pub fn init(data_dir: &str) {
-    let n = std::fs::read_to_string(std::path::Path::new(data_dir).join("tune/lighting/0xa0829ade")).ok().and_then(|t| {
-        let i = t.find("<numofframesinlumhistory")?;
+    let t = std::fs::read_to_string(std::path::Path::new(data_dir).join("tune/lighting/0xa0829ade")).unwrap_or_default();
+    let n = t.find("<numofframesinlumhistory").and_then(|i| {
         let r = &t[i..];
         r[r.find('>')? + 1..r.find("</")?].trim().parse::<u32>().ok()
     });
     let _ = LUM_FRAMES.set(n.unwrap_or(5));
+    let _ = POLICE.set(police_set(&t));
+}
+
+/// The police camera's timer (F-34349: its global timer += 10 x the game frame time, back to 0 once it reaches timeframe; it
+/// runs only while the camera is on and is not reset when it goes off).
+pub fn police_timer(t: f32, dt: f32, timeframe: f32) -> f32 {
+    let n = dt.mul_add(10.0, t);
+    if n >= timeframe {
+        0.0
+    } else {
+        n
+    }
 }
 
 impl Default for Tune {
     fn default() -> Self {
         // noon in the Nice weather
-        Tune { middle_grey: 0.25, white: 0.21646, bright: [1.6203, 4.6213, 0.032782], limits: [0.15, 0.2], lambda: 3.7266, lum_frames: *LUM_FRAMES.get().unwrap_or(&5), saturation: 0.9, color_correct: [0.5862, 0.53442, 0.43101], dt: 1.0 / 60.0, radial: 0.0, center: [0.5, 0.5], plain: false, force_lum: None, dof: [0.0; 4], inv_view_proj: [[0.0; 4]; 4], cam_pos: [0.0; 3], mb_mtx: [[[0.0; 4]; 4]; super::mb::RECORDS], bloom: true, dof_on: true, motion_blur: true }
+        Tune { middle_grey: 0.25, white: 0.21646, bright: [1.6203, 4.6213, 0.032782], limits: [0.15, 0.2], lambda: 3.7266, lum_frames: *LUM_FRAMES.get().unwrap_or(&5), saturation: 0.9, color_correct: [0.5862, 0.53442, 0.43101], dt: 1.0 / 60.0, radial: 0.0, center: [0.5, 0.5], plain: false, force_lum: None, dof: [0.0; 4], inv_view_proj: [[0.0; 4]; 4], cam_pos: [0.0; 3], mb_mtx: [[[0.0; 4]; 4]; super::mb::RECORDS], bloom: true, dof_on: true, motion_blur: true, police: false }
     }
 }
 
@@ -88,6 +144,10 @@ struct Params {
     e: [f32; 4],
     /// tone map: x = 1: no bloom (OPTIONS > DISPLAY > BLOOM off)
     f: [f32; 4],
+    /// the police camera: ElapsedTime, intensityGrain, intensityInterlace, interference
+    g: [f32; 4],
+    /// the police camera: deSat, Contrast, Gamma
+    h: [f32; 4],
 }
 
 /// What the depth of field's pass is drawn with (post.wgsl `DofU`).
@@ -202,6 +262,11 @@ pub struct Post {
     pipe_bright: wgpu::RenderPipeline,
     pipe_gauss: wgpu::RenderPipeline,
     pipe_tonemap: wgpu::RenderPipeline,
+    /// ToneMapFogPoliceCam (post.wgsl `fs_police`), its noise (textures/random3d.dds) and sampler, and its timer
+    pipe_police: wgpu::RenderPipeline,
+    noise: wgpu::TextureView,
+    noise_sampler: wgpu::Sampler,
+    police_t: std::sync::Mutex<f32>,
     bufs: Vec<wgpu::Buffer>,
     /// [adapted target of this frame][step]
     groups: [Vec<wgpu::BindGroup>; 2],
@@ -255,6 +320,21 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 }
 "#;
 
+fn noise_placeholder(device: &wgpu::Device) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("noise placeholder"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&Default::default())
+}
+
 impl Post {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, w: u32, h: u32) -> Post {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("post"), source: wgpu::ShaderSource::Wgsl(include_str!("post.wgsl").into()) });
@@ -291,6 +371,8 @@ impl Post {
                     ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
                     count: None,
                 },
+                tex_entry(8),
+                wgpu::BindGroupLayoutEntry { binding: 9, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
             ],
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("post pl"), bind_group_layouts: &[&layout], push_constant_ranges: &[] });
@@ -434,6 +516,19 @@ impl Post {
             pipe_bright: make("fs_bright", SCENE_FORMAT),
             pipe_gauss: make("fs_gauss", SCENE_FORMAT),
             pipe_tonemap: make("fs_tonemap", format),
+            pipe_police: make("fs_police", format),
+            noise: noise_placeholder(device),
+            // (NoiseSampler's states in the effect: address 0 / 1 = 0 (wrap), filters 4 / 5 / 6 = 1 (linear))
+            noise_sampler: device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("police noise"),
+                address_mode_u: wgpu::AddressMode::Repeat,
+                address_mode_v: wgpu::AddressMode::Repeat,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            }),
+            police_t: std::sync::Mutex::new(0.0),
             layout,
             sampler,
             bufs,
@@ -446,6 +541,32 @@ impl Post {
         };
         p.rebuild_groups(device);
         p
+    }
+
+    /// The police camera's noise: `__noisemap`, which F-22695 registers as the post's textures/random3d.dds (64 x 64 DXT1).
+    pub fn set_noise(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, data_dir: &str) {
+        let p = std::path::Path::new(data_dir).join("textures/random3d.dds");
+        let Some(t) = std::fs::read(&p).ok().and_then(|d| mcla_formats::dds::parse_dds("random3d.dds", &d).ok()).filter(|t| t.width > 0 && t.height > 0 && !t.levels.is_empty()) else {
+            log::warn!("random3d.dds missing: the police camera has no noise");
+            return;
+        };
+        let tex = device.create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label: Some("random3d"),
+                size: wgpu::Extent3d { width: t.width, height: t.height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &t.to_rgba8(),
+        );
+        self.noise = tex.create_view(&Default::default());
+        self.rebuild_groups(device);
     }
 
     fn rebuild_groups(&mut self, device: &wgpu::Device) {
@@ -462,6 +583,8 @@ impl Post {
                     wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.halo.view) },
                     wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&self.dof.view) },
                     wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(h) },
+                    wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&self.noise) },
+                    wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::Sampler(&self.noise_sampler) },
                 ],
             })
         };
@@ -609,14 +732,29 @@ impl Post {
         let dof_w = t.dof[2] > 0.0 && t.dof_on && dof_enabled();
         // (the streak pass runs for either part; with neither the tone map reads the scene alone)
         let mb_on = t.motion_blur && !t.plain && dof_enabled();
-        let dof_on = (dof_w || mb_on) && !t.plain;
+        // (the police program reads no depth of field buffer)
+        let dof_on = (dof_w || mb_on) && !t.plain && !t.police;
+        // the police camera: F-31612 takes the second bright-pass set (the tone map's BrightPassValues too), F-34349 steps
+        // the timer
+        let pset = POLICE.get().copied().unwrap_or_else(|| police_set(""));
+        let pt = {
+            let mut g = self.police_t.lock().unwrap();
+            if t.police {
+                *g = police_timer(*g, t.dt, pset.timeframe);
+            }
+            *g
+        };
+        let bpv = if t.police { [pset.middle_grey, pset.threshold, pset.offset, pset.white * pset.white] } else { [t.middle_grey, t.bright[0], t.bright[1], t.bright[2]] };
         let grade = Params {
-            a: [t.middle_grey, t.bright[0], t.bright[1], t.bright[2]],
+            a: bpv,
             b: [t.limits[0], t.limits[1], t.white, t.saturation],
             c: [t.color_correct[0], t.color_correct[1], t.color_correct[2], t.radial],
             d: [t.center[0], t.center[1], aspect, if let Some(l) = t.force_lum { 2.0 + l.max(0.0) } else if t.plain { 1.0 } else { 0.0 }],
             e: [if dof_on { 1.0 } else { 0.0 }, dof_view() as f32, 0.5 / self.dof.w as f32, 0.5 / self.dof.h as f32],
             f: [if t.bloom { 0.0 } else { 1.0 }, 0.0, 0.0, 0.0],
+            // (Contrast 1 - 1.061 only with a debug byte; Gamma the tone map's 0.45455, docs/LIGHTING.md)
+            g: [pt, pset.grain, pset.interlace, pset.interference],
+            h: [pset.saturation, 1.0, 0.45455, 0.0],
         };
         let only = |a: [f32; 4]| Params { a, ..Default::default() };
         let ps = [
@@ -663,7 +801,7 @@ impl Post {
             (&self.bloom_a.view, &self.pipe_bright, 7),
             (&self.bloom_b.view, &self.pipe_gauss, 8),
             (&self.bloom_a.view, &self.pipe_gauss, 9),
-            (self.display.as_ref().map_or(out, |d| &d.0.view), &self.pipe_tonemap, 10),
+            (self.display.as_ref().map_or(out, |d| &d.0.view), if t.police { &self.pipe_police } else { &self.pipe_tonemap }, 10),
         ];
         if dof_on {
             let u = DofU {
@@ -797,5 +935,26 @@ mod dof_approach_tests {
                 assert!((v[i] - r[i]).abs() < 0.06, "frame {n} [{i}]: {} vs {}", v[i], r[i]);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod police_tests {
+    use super::*;
+
+    #[test]
+    fn police_set_reads_the_settings_keys() {
+        let t = "<brightpassthresholdtwo content=\"ascii\">1.500000</brightpassthresholdtwo>\n<brightpassoffsettwo content=\"ascii\">2.000000</brightpassoffsettwo>\n<brightpasswhitetwo content=\"ascii\">1.000000</brightpasswhitetwo>\n<middlegraytwo content=\"ascii\">0.180000</middlegraytwo>\n<saturationpolicecam content=\"ascii\">0.427000</saturationpolicecam>\n<grainintensity content=\"ascii\">0.031000</grainintensity>\n<interlaceintensity content=\"ascii\">7.700000</interlaceintensity>\n<timeframe content=\"ascii\">88.400002</timeframe>\n<interference content=\"ascii\">0.001500</interference>";
+        let p = police_set(t);
+        assert_eq!((p.threshold, p.offset, p.middle_grey, p.white), (1.5, 2.0, 0.18, 1.0));
+        assert_eq!((p.saturation, p.grain, p.interlace, p.timeframe, p.interference), (0.427, 0.031, 7.7, 88.400002, 0.0015));
+    }
+
+    #[test]
+    fn police_timer_wraps_to_zero() {
+        // (F-34349: fmadds dt x 10 + t; at or past timeframe it is set to 0.0, not wrapped by the excess)
+        assert_eq!(police_timer(0.0, 0.5, 88.4), 5.0);
+        assert_eq!(police_timer(88.0, 0.05, 88.4), 0.0);
+        assert_eq!(police_timer(88.0, 0.02, 88.4), 88.2);
     }
 }

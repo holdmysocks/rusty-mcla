@@ -304,6 +304,18 @@ pub const EVENT_TYPES: [&str; 97] = [
     "cam_to_gps_tutorial", "bw_toggle_on", "bw_toggle_off",
 ];
 
+/// The scenes' bw_toggle_on / bw_toggle_off events (types 95 / 96: F-91263 -> F-86832, the police camera's setter
+/// F-77562 with 1 / 0), by their start in the scene. Only `sc_cut_delivery_get_keys` has them (the 315 generated scene
+/// scripts, racestart/0x462c63e9): on at 2.83333 s, off at 8.63333 s.
+pub fn bw_toggles(scene: &str) -> &'static [(f32, bool)] {
+    const DELIVERY: [(f32, bool); 2] = [(2.83333, true), (8.63333, false)];
+    if scene.rsplit('/').next().unwrap_or(scene).eq_ignore_ascii_case("sc_cut_delivery_get_keys") {
+        &DELIVERY
+    } else {
+        &[]
+    }
+}
+
 /// An event name's type (F-49543): the first table name the event name contains (the C runtime's strstr, case
 /// kept), else -1 (logged; the event is still made).
 pub fn event_type(name: &str) -> i32 {

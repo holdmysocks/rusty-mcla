@@ -24,6 +24,11 @@ struct P {
     e: vec4<f32>,
     // tone map: x = 1: no bloom (OPTIONS > DISPLAY > BLOOM off)
     f: vec4<f32>,
+    // the police camera (fs_police): x = ElapsedTime (the post's timer), y = intensityGrain, z = intensityInterlace,
+    // w = interference
+    g: vec4<f32>,
+    // the police camera: x = deSat (saturationpolicecam), y = Contrast, z = Gamma
+    h: vec4<f32>,
 };
 
 @group(0) @binding(0) var t0: texture_2d<f32>;
@@ -37,6 +42,9 @@ struct P {
 @group(0) @binding(5) var t3: texture_2d<f32>;
 // the depth of field's buffer (fs_dof): rgb = the scene blurred, a = its weight / 4
 @group(0) @binding(6) var t4: texture_2d<f32>;
+// the police camera's noise (`__noisemap` = textures/random3d.dds, F-22695) and its sampler (wrap, linear)
+@group(0) @binding(8) var t_noise: texture_2d<f32>;
+@group(0) @binding(9) var s_noise: sampler;
 
 // fs_dof's own bindings
 struct DofU {
@@ -448,6 +456,70 @@ fn fs_tonemap(in: VsOut) -> @location(0) vec4<f32> {
     // (the lamps' glow pass lands here: added to the encoded frame, before the display ramp)
     let enc = clamp(enc0 + textureSampleLevel(t3, samp, in.uv, 0.0).rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     o = select(pow((enc + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4)), enc / 12.92, enc <= vec3<f32>(0.04045));
+    let sig = select(1.099 * pow(o, vec3<f32>(0.45)) - vec3<f32>(0.099), o * 4.5, o < vec3<f32>(0.018));
+    o = select(pow((sig + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4)), sig / 12.92, sig <= vec3<f32>(0.04045));
+    return vec4<f32>(clamp(o, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
+}
+
+// PSToneMapFogPoliceCam (rage_postfx, technique ToneMapFogPoliceCam: VS_ragePassThroughNoXform4TexAndScrPos), drawn by
+// the post's final pass F-34349 instead of the tone map while the police camera is on (post +340, render/post.rs
+// `police`). Read from its microcode (work/lighting-trails/pc): the vertex program hands the pixel's place in pixels
+// (D3D9's centres: integers) and in clip space, and the adapted luminance clamped to the two limits.
+//   n   = noise(1.5 x clip.xy + ElapsedTime x (1.234, 1.678)).r - 0.2
+//   j   = uv + n x interference                                   (the whole picture shakes)
+//   six scene taps at j + (1, 0), (2, -2), (2, 2), (-2, -2), (-1, 0), (-2, 2) texels (a .. f), per channel:
+//   m1  = a > b ? (c > a ? a : max(b, c)) : (c > b ? b : max(a, c))
+//   m2  = e > d ? (f > e ? e : max(d, f)) : (f > d ? d : max(e, f))
+//   rows: frac(y / 2) > 0 (odd rows) (m1 + m2) / 2 + n x intensityGrain, else (m1 + m2) x intensityInterlace / 2
+//   then the bloom added and PSToneMap's Yxy rule (BrightPassValues.z, White), deSat, x 2 ColorCorrect, Contrast
+//   about 0.5, and the game's own encode (x <= 0.00304: 12.92 x, else 1.055 x^Gamma - 0.055), not clamped before.
+fn pc_tap(j: vec2<f32>, off: vec2<f32>, texel: vec2<f32>) -> vec3<f32> {
+    return textureSampleLevel(t0, samp, j + off * texel, 0.0).rgb;
+}
+
+// (the program up to its output: the encoded colour)
+fn police_enc(in: VsOut) -> vec3<f32> {
+    let dims = vec2<f32>(textureDimensions(t0));
+    let texel = 1.0 / dims;
+    // (the pixel's place as the original's quad hands it: D3D9 puts the pixel centres on integers)
+    let px = floor(in.clip.xy);
+    let clip = vec2<f32>(2.0 * px.x / dims.x - 1.0, 1.0 - 2.0 * px.y / dims.y);
+    let t = p.g.x;
+    let n = textureSampleLevel(t_noise, s_noise, clip * 1.5 + t * vec2<f32>(1.234, 1.678), 0.0).r - 0.2;
+    let j = in.uv + vec2<f32>(n * p.g.w);
+    let a = pc_tap(j, vec2<f32>(1.0, 0.0), texel);
+    let b = pc_tap(j, vec2<f32>(2.0, -2.0), texel);
+    let c = pc_tap(j, vec2<f32>(2.0, 2.0), texel);
+    let d = pc_tap(j, vec2<f32>(-2.0, -2.0), texel);
+    let e = pc_tap(j, vec2<f32>(-1.0, 0.0), texel);
+    let f = pc_tap(j, vec2<f32>(-2.0, 2.0), texel);
+    let m1 = select(select(max(a, c), b, c > b), select(max(b, c), a, c > a), a > b);
+    let m2 = select(select(max(e, f), d, f > d), select(max(d, f), e, f > e), e > d);
+    let sum = m1 + m2;
+    var s = sum * (p.g.z * 0.5);
+    if (fract(px.y * 0.5) > 0.0) {
+        s = sum * 0.5 + vec3<f32>(n * p.g.y);
+    }
+    var cc = textureSampleLevel(t2, samp, in.uv, 0.0).rgb + s;
+    let xyz = to_xyz(cc);
+    let su = select(xyz.x + xyz.y + xyz.z, 0.001, xyz.x + xyz.y + xyz.z == 0.0);
+    let l = xyz.y * p.a.x / (adapted() + 0.001);
+    let ld = l * (1.0 + l / p.b.z) / (1.0 + l);
+    let xy = xyz.xy / su;
+    let yy = select(xy.y, 0.001, xy.y == 0.0);
+    var o = from_xyz(vec3<f32>(ld * xy.x / yy, ld, ld * (1.0 - xy.x - xy.y) / yy));
+    let luma = dot(o, LUMINANCE);
+    o = mix(vec3<f32>(luma), o, p.h.x);
+    o = (o * 2.0 * p.c.rgb - vec3<f32>(0.5)) * p.h.y + vec3<f32>(0.5);
+    return select(1.055 * pow(abs(o), vec3<f32>(p.h.z)) - vec3<f32>(0.055), o * 12.92, o <= vec3<f32>(0.00304));
+}
+
+@fragment
+fn fs_police(in: VsOut) -> @location(0) vec4<f32> {
+    let enc0 = police_enc(in);
+    // (then as the tone map: the lamps' glow added to the encoded frame and the display ramp - fs_tonemap)
+    let enc = clamp(enc0 + textureSampleLevel(t3, samp, in.uv, 0.0).rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    var o = select(pow((enc + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4)), enc / 12.92, enc <= vec3<f32>(0.04045));
     let sig = select(1.099 * pow(o, vec3<f32>(0.45)) - vec3<f32>(0.099), o * 4.5, o < vec3<f32>(0.018));
     o = select(pow((sig + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4)), sig / 12.92, sig <= vec3<f32>(0.04045));
     return vec4<f32>(clamp(o, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
