@@ -100,6 +100,21 @@ pub fn box_prompt_key(options: usize, chart: bool) -> &'static str {
     }
 }
 
+/// The prompt strip of a message box, F-90208: a state chart box (`attrs`, its data as F-65053 stores them) by its
+/// prompt mode +108 - 0 no prompt, 7 the strip its state's `onshow` set (`nav.SetPrompt`; PromptAccept is the only
+/// one the boxes use), 5 `prompt_cancel` with iconID 2 (B), any other value or none one A entry by the choices
+/// (`box_prompt_key`). The port's own boxes (`attrs` None) take the general branch.
+pub fn box_prompts(options: usize, attrs: Option<&crate::flash_ui::BoxAttrs>) -> Vec<(&'static str, i32)> {
+    use crate::flash_ui::{ICON_A, ICON_B};
+    match attrs.map(|a| (a.prompt_mode, a.onshow_prompt.as_deref())) {
+        Some((Some(0), _)) => vec![],
+        Some((Some(7), Some("PromptAccept"))) => vec![("prompt_accept", ICON_A)],
+        Some((Some(7), _)) => vec![],
+        Some((Some(5), _)) => vec![("prompt_cancel", ICON_B)],
+        _ => vec![(box_prompt_key(options, attrs.is_some()), ICON_A)],
+    }
+}
+
 fn full_volume() -> u8 {
     10
 }
@@ -1040,9 +1055,9 @@ pub struct Game {
     /// The box is of type 5 (F-48904 jump table: no option rows, the one prompt BACK (B) from the
     /// pair {2, `prompt_back`}, UI.md): A does nothing, B closes it
     pub box_back_only: bool,
-    /// The box is a state chart's UIMessageBox (`open_message_box`): its one prompt is CONTINUE with at most one
-    /// choice, ACCEPT with more (the prompt strip F-90208 on the child count F-65917; no BACK entry)
-    pub box_chart: bool,
+    /// The box is a state chart's UIMessageBox (`open_message_box`), with its data as F-65053 stores them: the
+    /// prompt strip F-90208 goes by their prompt mode (`box_prompts`)
+    pub box_chart: Option<crate::flash_ui::BoxAttrs>,
     /// the cheat page's confirm box is up (F-71949 opened it: the page's close was asked with a cheat on that the
     /// gate F-68910 counts); its answer goes to F-12731 - `message_box_ui`
     pub cheat_box: bool,
@@ -1704,7 +1719,7 @@ impl Game {
             flash_popup: None,
             message_box: None,
             box_back_only: false,
-            box_chart: false,
+            box_chart: None,
             cheat_box: false,
             arcade_info: None,
             nav_busy: false,
@@ -12957,7 +12972,7 @@ impl Game {
             // (a box without choices only says something: ACCEPT closes it)
             Some(def) if !def.options.is_empty() || !def.description.is_empty() => {
                 self.message_box = Some((def, 0, confirm));
-                self.box_chart = true;
+                self.box_chart = Some(crate::flash_ui::BoxAttrs::load(&self.data_dir, id).unwrap_or_default());
                 true
             }
             _ => false,
@@ -13036,7 +13051,7 @@ impl Game {
         }
         let Some((def, mut sel, confirm)) = self.message_box.clone() else {
             self.box_back_only = false;
-            self.box_chart = false;
+            self.box_chart = None;
             // The LOADING tag (the popup movie's `save_mc`: `savegame_text`, `savegame_anim`
             // 1 = come in, 2 = go) while the game moves between the city and the garage
             // (reference `t28`). (approx.) The original shows it for as long as it loads,
@@ -13128,7 +13143,7 @@ impl Game {
             prompts: if self.box_back_only {
                 vec![(st("prompt_back").to_uppercase(), crate::flash_ui::ICON_B)]
             } else {
-                vec![(st(box_prompt_key(def.options.len(), self.box_chart)).to_uppercase(), ICON_A)]
+                box_prompts(def.options.len(), self.box_chart.as_ref()).into_iter().map(|(k, icon)| (st(k).to_uppercase(), icon)).collect()
             },
             ..MenuPage::default()
         };
@@ -13151,7 +13166,7 @@ impl Game {
         }
         if self.message_box.is_none() {
             self.box_back_only = false;
-            self.box_chart = false;
+            self.box_chart = None;
         }
         // (the cheat page's box answered: F-12731 - YES (form result 3) keeps the cheats, NO or BACK (2 / 1) turns all
         // nine bytes off (F-72804); then the page closes - its close asked again, now with the answer given, +4480)

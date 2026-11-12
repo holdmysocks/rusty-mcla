@@ -893,6 +893,62 @@ impl MessageBoxDef {
     }
 }
 
+/// A state chart UIMessageBox's own data as its attribute setter F-65053 stores it on the box: `popuptype`
+/// "animated" -> +124, `priority` (+129 = the value is "1"), `pause` -> +125, and the prompt mode +108 with +127:
+/// allowPrompts 7, promptOk 1, promptContinue 6 (each +127 = 1), noPrompts 0 (+127 = 0), promptCancel 5. The data
+/// are set in the file's order, so a later one wins. No constructor writes +108 (`prompt_mode` None: the prompt
+/// strip's general branch, seen in the original - `box_prompts`).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct BoxAttrs {
+    pub prompt_mode: Option<u32>,
+    pub allow_prompts: bool,
+    pub animated: bool,
+    pub pause: bool,
+    pub priority: bool,
+    /// the prompt the box's `onshow` sets with `nav.SetPrompt(<name>, 'POPUPMOVIE')` (mode 7 keeps it)
+    pub onshow_prompt: Option<String>,
+}
+
+impl BoxAttrs {
+    pub fn load(data_dir: &str, id: &str) -> Option<BoxAttrs> {
+        for file in ["tune/ui/MessageBoxes.sc.xml", "tune/ui/garage/Main.sc.xml", "tune/ui/garage/Vinyls.sc.xml"] {
+            if let Some(a) = std::fs::read_to_string(Path::new(data_dir).join(file)).ok().and_then(|text| BoxAttrs::parse(&text, id)) {
+                return Some(a);
+            }
+        }
+        None
+    }
+
+    pub fn parse(text: &str, id: &str) -> Option<BoxAttrs> {
+        let start = text.find(&format!("<state id=\"{id}\""))?;
+        // the box's own part: up to its first child state (or its end)
+        let rest = &text[start + 1..];
+        let own = &rest[..rest.find("<state").or_else(|| rest.find("</state")).unwrap_or(rest.len())];
+        let attr = |s: &str, name: &str| -> Option<String> {
+            let t = s.split_once(&format!("{name}=\""))?.1;
+            Some(t[..t.find('"')?].to_string())
+        };
+        let mut a = BoxAttrs::default();
+        for d in own.split("<data ").skip(1) {
+            let head = d.split('>').next().unwrap_or("");
+            let value = attr(head, "expr").unwrap_or_default();
+            match attr(head, "name").as_deref() {
+                Some("popuptype") if value == "animated" => a.animated = true,
+                Some("priority") => a.priority = value == "1",
+                Some("pause") => a.pause = true,
+                Some("allowPrompts") => (a.allow_prompts, a.prompt_mode) = (true, Some(7)),
+                Some("promptOk") => (a.allow_prompts, a.prompt_mode) = (true, Some(1)),
+                Some("promptContinue") => (a.allow_prompts, a.prompt_mode) = (true, Some(6)),
+                Some("noPrompts") => (a.allow_prompts, a.prompt_mode) = (false, Some(0)),
+                Some("promptCancel") => a.prompt_mode = Some(5),
+                _ => {}
+            }
+        }
+        a.onshow_prompt = own.split("<onshow ").nth(1).and_then(|o| attr(o, "expr")).and_then(|e| Some(e.split_once("nav.SetPrompt(")?.1.split(',').next()?.trim().to_string()));
+        Some(a)
+    }
+}
+
 impl FlashMenu {
     /// `offset`: where the stage goes, in 720p pixels. The original shows the
     /// pause movie on a panel in the 3D scene, left of the car; the port places
@@ -2149,6 +2205,50 @@ mod tests {
         assert_eq!(key("G_PurchaseVehicle"), "prompt_accept");
         assert_eq!(crate::game::box_prompt_key(0, false), "prompt_continue");
         assert_eq!(crate::game::box_prompt_key(1, false), "prompt_accept");
+    }
+
+    /// F-65053's data on a box, and the prompt strip F-90208 by the mode: 0 none, 5 BACK-button cancel, 7 the
+    /// state's own nav.SetPrompt, else one A entry by the choices (the disc's QuitRaceMenu and garage boxes).
+    #[test]
+    fn box_data_sets_the_prompt_mode() {
+        let xml = r#"<scxml>
+   <state id="QuitRaceMenu" class="UIMessageBox">
+      <data name="title"         expr="Dialog_Title_QuitRace" ></data>
+      <data name="allowPrompts" ></data>
+      <onshow expr="nav.SetPrompt(PromptAccept,'POPUPMOVIE')"  ></onshow>
+      <state id="QRM_No" desc="No" class="UIComponent"><data name="pause" expr="1"></data></state>
+      <state id="QRM_Yes" desc="Yes" class="UIComponent"></state>
+   </state>
+   <state id="Box_B" class="UIMessageBox">
+      <data name="popuptype" expr="animated"></data>
+      <data name="priority" expr="1"></data>
+      <data name="promptOk"></data>
+      <data name="promptCancel"></data>
+      <state id="B_Ok" desc="Common_Ok" class="UIComponent"></state>
+   </state>
+   <state id="Box_C" class="UIMessageBox">
+      <data name="popuptype" expr="plain"></data>
+      <data name="priority" expr="2"></data>
+      <data name="pause"></data>
+      <data name="promptContinue"></data>
+      <data name="noPrompts"></data>
+   </state>
+</scxml>"#;
+        let q = BoxAttrs::parse(xml, "QuitRaceMenu").unwrap();
+        assert_eq!((q.prompt_mode, q.allow_prompts, q.pause, q.onshow_prompt.as_deref()), (Some(7), true, false, Some("PromptAccept")));
+        let b = BoxAttrs::parse(xml, "Box_B").unwrap();
+        assert_eq!((b.prompt_mode, b.allow_prompts, b.animated, b.priority), (Some(5), true, true, true));
+        let c = BoxAttrs::parse(xml, "Box_C").unwrap();
+        assert_eq!((c.prompt_mode, c.allow_prompts, c.animated, c.priority, c.pause), (Some(0), false, false, false, true));
+        use crate::game::box_prompts;
+        assert_eq!(box_prompts(2, Some(&q)), vec![("prompt_accept", ICON_A)]);
+        assert_eq!(box_prompts(1, Some(&b)), vec![("prompt_cancel", ICON_B)]);
+        assert_eq!(box_prompts(1, Some(&c)), vec![]);
+        let none = BoxAttrs::default();
+        assert_eq!(box_prompts(1, Some(&none)), vec![("prompt_continue", ICON_A)]);
+        assert_eq!(box_prompts(2, Some(&BoxAttrs { prompt_mode: Some(6), ..none.clone() })), vec![("prompt_accept", ICON_A)]);
+        assert_eq!(box_prompts(1, None), vec![("prompt_accept", ICON_A)]);
+        assert_eq!(box_prompts(0, None), vec![("prompt_continue", ICON_A)]);
     }
 
     #[test]
