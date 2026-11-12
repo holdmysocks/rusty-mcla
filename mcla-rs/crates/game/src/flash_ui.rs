@@ -2128,6 +2128,29 @@ mod tests {
         assert!(MessageBoxDef::parse(xml, "Missing").is_none());
     }
 
+    /// F-90208's prompt on the child count, against the original (work/ui2/popcap box1.png: Layer_NoShapeError,
+    /// OK, CONTINUE (A); box2_purchase.png: G_PurchaseVehicle, YES / NO, ACCEPT (A); no BACK in either).
+    #[test]
+    fn chart_boxes_prompt_by_their_choices() {
+        let xml = r#"<scxml>
+  <state id="Layer_NoShapeError" class="UIMessageBox">
+    <data name="title" expr="G_invalidLayer"></data>
+    <data name="description" expr="G_PlaceAShapeBeforeEditing"></data>
+    <state id="LayerError_Ok" desc="Common_Ok" class="UIComponent"></state>
+  </state>
+  <state id="G_PurchaseVehicle" class="UIMessageBox">
+    <data name="title" expr="G_PurchaseVehicle"></data>
+    <state id="PV_Yes" desc="Common_Yes" class="UIComponent"></state>
+    <state id="PV_No" desc="Common_No" class="UIComponent"></state>
+  </state>
+</scxml>"#;
+        let key = |id: &str| crate::game::box_prompt_key(MessageBoxDef::parse(xml, id).unwrap().options.len(), true);
+        assert_eq!(key("Layer_NoShapeError"), "prompt_continue");
+        assert_eq!(key("G_PurchaseVehicle"), "prompt_accept");
+        assert_eq!(crate::game::box_prompt_key(0, false), "prompt_continue");
+        assert_eq!(crate::game::box_prompt_key(1, false), "prompt_accept");
+    }
+
     #[test]
     fn race_clock_text_follows_the_games_format() {
         // F-26034: "%s%02d:%02d.%02d", from an hour "%s%d:%02d:%02d.%02d"

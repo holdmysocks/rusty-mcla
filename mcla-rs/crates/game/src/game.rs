@@ -87,6 +87,19 @@ pub struct Options {
     pub rear_view: bool,
 }
 
+/// The one prompt of a message box. A state chart's UIMessageBox (`chart`) with no prompt data: the prompt strip
+/// F-90208 writes one entry, iconID 1 (A), `prompt_continue` when the box's child count (F-65917) is at most 1,
+/// else `prompt_accept` (seen in the original: Vinyls.sc.xml Layer_NoShapeError / VinylPasteError with OK say
+/// CONTINUE, garage/Main.sc.xml G_PurchaseVehicle with YES / NO says ACCEPT). The port's other boxes keep
+/// CONTINUE only without choices.
+pub fn box_prompt_key(options: usize, chart: bool) -> &'static str {
+    if options == 0 || (chart && options == 1) {
+        "prompt_continue"
+    } else {
+        "prompt_accept"
+    }
+}
+
 fn full_volume() -> u8 {
     10
 }
@@ -1027,6 +1040,9 @@ pub struct Game {
     /// The box is of type 5 (F-48904 jump table: no option rows, the one prompt BACK (B) from the
     /// pair {2, `prompt_back`}, UI.md): A does nothing, B closes it
     pub box_back_only: bool,
+    /// The box is a state chart's UIMessageBox (`open_message_box`): its one prompt is CONTINUE with at most one
+    /// choice, ACCEPT with more (the prompt strip F-90208 on the child count F-65917; no BACK entry)
+    pub box_chart: bool,
     /// the cheat page's confirm box is up (F-71949 opened it: the page's close was asked with a cheat on that the
     /// gate F-68910 counts); its answer goes to F-12731 - `message_box_ui`
     pub cheat_box: bool,
@@ -1674,6 +1690,7 @@ impl Game {
             flash_popup: None,
             message_box: None,
             box_back_only: false,
+            box_chart: false,
             cheat_box: false,
             arcade_info: None,
             nav_busy: false,
@@ -12897,6 +12914,7 @@ impl Game {
             // (a box without choices only says something: ACCEPT closes it)
             Some(def) if !def.options.is_empty() || !def.description.is_empty() => {
                 self.message_box = Some((def, 0, confirm));
+                self.box_chart = true;
                 true
             }
             _ => false,
@@ -12975,6 +12993,7 @@ impl Game {
         }
         let Some((def, mut sel, confirm)) = self.message_box.clone() else {
             self.box_back_only = false;
+            self.box_chart = false;
             // The LOADING tag (the popup movie's `save_mc`: `savegame_text`, `savegame_anim`
             // 1 = come in, 2 = go) while the game moves between the city and the garage
             // (reference `t28`). (approx.) The original shows it for as long as it loads,
@@ -13066,7 +13085,7 @@ impl Game {
             prompts: if self.box_back_only {
                 vec![(st("prompt_back").to_uppercase(), crate::flash_ui::ICON_B)]
             } else {
-                vec![(st(if def.options.is_empty() { "prompt_continue" } else { "prompt_accept" }).to_uppercase(), ICON_A)]
+                vec![(st(box_prompt_key(def.options.len(), self.box_chart)).to_uppercase(), ICON_A)]
             },
             ..MenuPage::default()
         };
@@ -13089,6 +13108,7 @@ impl Game {
         }
         if self.message_box.is_none() {
             self.box_back_only = false;
+            self.box_chart = false;
         }
         // (the cheat page's box answered: F-12731 - YES (form result 3) keeps the cheats, NO or BACK (2 / 1) turns all
         // nine bytes off (F-72804); then the page closes - its close asked again, now with the answer given, +4480)
