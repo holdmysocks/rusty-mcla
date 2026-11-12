@@ -1281,6 +1281,27 @@ pub struct DriverLanes {
     pub best_tan: Vec3,
 }
 
+/// F-93055 (ambient car slot 10): what becomes of the car's lane entries this frame. Some(true): the lane update (the
+/// obstacle's slot 11, F-58331); Some(false): every entry dropped (slot 14); None: the list as it is. `active`: F-17857 (the
+/// instance's body there and not at rest); `v2`: fma(z, z, fma(x, x, y y)) of the velocity +208; `hit`: +500 bit 0x10; `beh`:
+/// a behaviour (+452); `on_lane`: its rail's +4 & 0x1800 == 0 (F-96472).
+pub fn lane_entry_rule(active: bool, proxy: bool, v2: f32, trailer: bool, hit: bool, beh: bool, on_lane: bool) -> Option<bool> {
+    if active {
+        // (6 mph squared, 0x40E6389E)
+        return (proxy || v2 < f32::from_bits(0x40E6_389E)).then_some(true);
+    }
+    if trailer {
+        return Some(true);
+    }
+    if hit && !beh {
+        return None;
+    }
+    if on_lane {
+        return Some(false);
+    }
+    beh.then_some(true)
+}
+
 /// A lane's first two control points (F-78185 reads P0 - P1); the link's ends without them.
 fn lane_entry(nav: &NavSys, link: usize) -> (Vec3, Vec3) {
     let c = nav.curves.get(nav.links[link].lane);
@@ -5675,6 +5696,7 @@ impl Vehicles {
         // matrix the request's) ends by writing it the spawn place and zeroing the velocity +96 and its change +112 -
         // so the first render update's velocity, F-53150, is the move from the spawn place over that frame)
         c.amb_place = Some(c.state.pos);
+        c.amb_mwc = Some(d.car);
         c.amb_born = self.clock;
         c.amb_life = d.life;
         c.amb_lamps.hour_offset = d.hour;
@@ -10147,19 +10169,46 @@ impl Vehicles {
     /// as before; not - added with its phase when within w and the list has fewer than 12
     /// (F-94578). The lane reported: the entry whose point at its kept phase is nearest
     /// (squared distance, the first of equals).
+    ///
+    /// The ambient cars too, by their slot 10 F-93055 (`lane_entry_rule`): the same update with the car's LOD radius (car
+    /// +492, the obstacle's slot 7 F-24749) and the car's own MWC (the obstacle's +16 is its car); all entries dropped
+    /// (slot 14 F-11956); or the list left as it is.
     fn update_driver_lanes(&mut self, nav: &NavSys) {
         let mut live: Vec<u32> = Vec::new();
         for i in 0..self.cars.len() {
             let c = &self.cars[i];
-            if c.rail.is_some() || c.parked.is_some() {
-                continue;
-            }
+            let ambient = c.rail.is_some() || c.parked.is_some();
             live.push(c.uid);
-            let (lo, hi) = c.model.params.composite_box();
-            let (hx, hz) = (lo.x.abs().max(hi.x.abs()), lo.z.abs().max(hi.z.abs()));
-            let w = 4.5f32.mul_add(0.5, hz.mul_add(hz, hx * hx).sqrt());
+            let (r, own) = if ambient {
+                let rail = c.rail.as_ref();
+                let active = self.level.ambient_pose(c.uid).is_some();
+                let ty = rail.map(|r| r.ty);
+                let on_lane = rail.is_some_and(|r| r.state != 0 && matches!(rail_key(nav, r), Some((RailKey::Lane(_), _))));
+                let beh = rail.is_some_and(|r| r.state != 0);
+                let v = c.state.vel;
+                let v2 = v.z.mul_add(v.z, v.x.mul_add(v.x, v.y * v.y));
+                match lane_entry_rule(active, ty.is_some_and(|t| t.proxy), v2, ty.is_some_and(|t| t.trailer), c.amb_hit, beh, on_lane) {
+                    Some(true) => {}
+                    Some(false) => {
+                        if let Some(dl) = self.driver_lanes.get_mut(&c.uid) {
+                            dl.list.clear();
+                        }
+                        continue;
+                    }
+                    None => continue,
+                }
+                let mwc = rail.map(|r| r.mwc).or(c.amb_mwc);
+                (c.model.lod_radius, mwc)
+            } else {
+                let (lo, hi) = c.model.params.composite_box();
+                let (hx, hz) = (lo.x.abs().max(hi.x.abs()), lo.z.abs().max(hi.z.abs()));
+                (hz.mul_add(hz, hx * hx).sqrt(), None)
+            };
+            let w = 4.5f32.mul_add(0.5, r);
             let p = c.state.pos;
             let uid = c.uid;
+            // (the draws: the car's own MWC when the obstacle has a car, else the shared one)
+            let mut mwc = own.unwrap_or(self.park_rng);
             let found = nav.lanes_near(p, w, 1, 48);
             let near = |lane: usize| -> (f32, f32) {
                 let cv = &nav.curves[lane];
@@ -10170,7 +10219,7 @@ impl Vehicles {
             let mut dl = self.driver_lanes.remove(&uid).unwrap_or_default();
             let mut checked: Option<usize> = None;
             if !dl.list.is_empty() {
-                let k = self.park_rng.index(dl.list.len() as u32) as usize;
+                let k = mwc.index(dl.list.len() as u32) as usize;
                 let lane = dl.list[k].0;
                 match found.iter().position(|&l| l == lane) {
                     Some(fi) => {
@@ -10188,7 +10237,7 @@ impl Vehicles {
                 }
             }
             if !found.is_empty() {
-                let fi = self.park_rng.index(found.len() as u32) as usize;
+                let fi = mwc.index(found.len() as u32) as usize;
                 if checked != Some(fi) {
                     let lane = found[fi];
                     let (t, d2) = near(lane);
@@ -10230,6 +10279,12 @@ impl Vehicles {
             dl.best_t = best.and_then(|b| dl.list.iter().find(|e| e.0 == b.0)).map_or(0.0, |e| e.1);
             dl.best = best;
             self.driver_lanes.insert(uid, dl);
+            let c = &mut self.cars[i];
+            match (own.is_some(), c.rail.as_mut()) {
+                (false, _) => self.park_rng = mwc,
+                (true, Some(r)) => r.mwc = mwc,
+                (true, None) => c.amb_mwc = Some(mwc),
+            }
         }
         self.driver_lanes.retain(|k, _| live.contains(k));
     }
@@ -12757,3 +12812,6 @@ mod offline;
 #[cfg(test)]
 #[path = "wheel_roll_tests.rs"]
 mod wheel_roll_tests;
+#[cfg(test)]
+#[path = "lane_entry_tests.rs"]
+mod lane_entry_tests;
