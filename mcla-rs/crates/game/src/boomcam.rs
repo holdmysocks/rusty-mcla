@@ -1784,6 +1784,9 @@ pub struct Switch {
     seed: u32,
     /// the look back went off this frame (F-39925: the look-back slow motion is released)
     pub look_off: bool,
+    /// the special ability runs (ab +48 == 3), set by the caller before `frame` / `player_reset`: the look
+    /// back's off from the reverse camera then cuts to the ability camera (F-39925)
+    pub ability_on: bool,
     /// the view the director shows when it is not the player's chosen one (a change pushed
     /// while blending only queues the new view, or turns the blend round)
     shown: Option<u8>,
@@ -1803,8 +1806,13 @@ impl Switch {
     /// and the director's reset (F-81630: the current camera's reset, vt+36). Returns whether a look back went off.
     pub fn player_reset(&mut self, view: u8, refused: bool, cam: &mut BoomCam) -> bool {
         let was_back = self.last.map_or(false, |(_, b)| b);
-        let off = was_back && !refused;
-        if off {
+        let mut off = was_back && !refused;
+        if off && self.ability_back(self.last.map_or(view, |(v, _)| v)) {
+            // (the off's ability branch: a cut to the ability camera, no release - setView's cut below
+            // takes the view camera anyway)
+            self.mask.start(0.01, 0.1, 0.01);
+            off = false;
+        } else if off {
             self.mask.start(0.01, 0.1, 0.01);
             self.pan = (0.0, 0.0);
         }
@@ -1813,6 +1821,15 @@ impl Switch {
         self.last = Some((view, was_back && refused));
         cam.reset();
         off
+    }
+
+    /// F-39925's off, its first branch: while the ability runs (ab +48 == 3) and the reverse camera (+64: a chase view
+    /// looking back) is current or the blend's target, the off is a cut (F-53309) to the ability camera (+68) with the
+    /// quick mask and nothing else - the pans are not zeroed, the view camera is not touched, the look-back slow
+    /// motion and its LOOKBACK scene are not released (no StopSlot 5). From bumper / POV (no reverse camera) the
+    /// common off runs.
+    fn ability_back(&self, was_view: u8) -> bool {
+        self.ability_on && VIEW_OF_PORT[(was_view as usize).min(5)] >= 2 && self.blend.current_or_target(CamId::View(self.blend.view))
     }
 
     /// The view whose camera runs (the blend's target, or the director's camera after it), for
@@ -1846,7 +1863,12 @@ impl Switch {
         };
         let chase = VIEW_OF_PORT[(view as usize).min(5)] >= 2;
         self.look_off = was_back && !back;
-        if back != was_back {
+        if self.look_off && self.ability_back(was_view) {
+            self.look_off = false;
+            self.blend.cut(CamId::Ability);
+            self.shown = None;
+            self.mask.start(0.01, 0.1, 0.01);
+        } else if back != was_back {
             // (both ways a cut with the mask's quick fade: 0.01, 0.1, 0.01)
             self.blend.stop();
             self.shown = None;
@@ -1937,7 +1959,7 @@ pub struct CamFx {
     pub zoom_in: f32,
     pub look_lerp: f32,
     /// LookaroundDelayTime (+40): the cockpit's parked free look waits this long with no pedal
-    /// and the car still (approx.: the constructor's own value not read; the file's 3)
+    /// and the car still (the constructor F-25608's 3, the file's 3)
     pub look_delay: f32,
 }
 
@@ -6407,6 +6429,35 @@ mod director_blend_tests {
         let (tune, _) = tune_for(set, sw.shown(view), false);
         let out = cam.update(tune, &car, dt);
         sw.blend.apply(&car, out, &[], dt);
+    }
+
+    /// F-39925's off while the ability runs: from a chase view's reverse camera it cuts to the ability camera with the
+    /// quick mask and releases nothing (the pans kept); from bumper / POV, or with no ability, the common off.
+    #[test]
+    fn the_look_back_off_cuts_to_the_ability_camera() {
+        let set = views();
+        let dt = 1.0 / 30.0;
+        for (view, ability, to_ability) in [(0u8, true, true), (2, true, true), (0, false, false), (4, true, false), (3, true, false)] {
+            let (mut sw, mut cam) = (Switch::default(), BoomCam::default());
+            sw.ability_on = ability;
+            for _ in 0..3 {
+                sw.frame(&set, view, true, false, false, &mut cam, dt);
+            }
+            sw.pan = (0.3, 0.1);
+            sw.mask = CutMask::default();
+            sw.frame(&set, view, false, false, false, &mut cam, dt);
+            assert_eq!(sw.blend.is_current(CamId::Ability), to_ability, "view {view} ability {ability}");
+            assert_eq!(sw.look_off, !to_ability);
+            assert!(sw.mask.is_on() && !sw.blend.active());
+            assert_eq!(sw.pan, if to_ability { (0.3, 0.1) } else { (0.0, 0.0) });
+            // (the reset's F-39925(0) takes the same branch: nothing to release)
+            let (mut sw, mut cam) = (Switch::default(), BoomCam::default());
+            sw.ability_on = ability;
+            sw.frame(&set, view, true, false, false, &mut cam, dt);
+            sw.frame(&set, view, true, false, false, &mut cam, dt);
+            assert_eq!(sw.player_reset(view, false, &mut cam), !to_ability);
+            assert!(sw.blend.is_current(CamId::View(view)));
+        }
     }
 
     /// The player camera's reset on the views (F-28350): a running look back goes off (F-39925(0): the quick mask, the

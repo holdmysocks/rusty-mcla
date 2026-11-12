@@ -2613,6 +2613,7 @@ impl App {
             || ((self.event_dir.running() || self.event_dir.leaving(dir)) && matches!(self.event_dir.last_event(), e if e == 11 || e == 12 || e >= 14));
         self.event_dir.cut_out();
         let mode = self.cam_mode;
+        self.cam_switch.ability_on = self.ability.running();
         if self.cam_switch.player_reset(mode, refused, &mut self.boom) {
             let scale_now = self.wipe_scale.min(self.ability.time_scale());
             self.warp_look.release(scale_now);
@@ -9899,6 +9900,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // (a change of view blends or cuts, a look back cuts - mcPlayerCamera; the
                         // CINEMATIC CAMERA option turns the look back of a moving car to one side)
                         let cinematic = self.game.mc4.as_ref().map_or(true, |m| m.options.idle_camera);
+                        self.cam_switch.ability_on = self.ability.running();
                         self.cam_switch.frame(&set, mode, self.look_back, cinematic, render_state.speed() > 0.0, &mut self.boom, dt);
                         // (the camera that runs: a change pushed while blending is queued or turns the blend
                         // round - the director's queue F-43758 / finish F-70013)
