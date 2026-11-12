@@ -1817,19 +1817,8 @@ pub fn collide(hull: &HullShape, bbox: (Vec3, Vec3), now: &[Vec3; 4], last: &[Ve
     let corners = &hull.verts[..];
     let dbg = { static D: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *D.get_or_init(|| std::env::var_os("MCLA_DBG_HIT").is_some()) };
     let core = super::gjk::HullCore { corners: hull.scanned(), rows: [now[0], now[1], now[2]], at: now[3] };
-    // (the box a polygon has to cut, F-55826: the hull's box as it stands grown to take in
-    // the same box where it stood, and the mesh's 5 mm)
-    let (mid, half) = ((bbox.0 + bbox.1) * 0.5, (bbox.1 - bbox.0) * 0.5);
-    let centre = |m: &[Vec3; 4]| m[3] + m[0] * mid.x + m[1] * mid.y + m[2] * mid.z;
-    let reach = {
-        let (c, r) = (centre(now), [now[0], now[1], now[2]]);
-        let d = centre(last) - c;
-        let q = Vec3::new(d.dot(r[0]), d.dot(r[1]), d.dot(r[2]));
-        let e_last = Vec3::from_array(std::array::from_fn(|i| (0..3).map(|j| r[i].dot(last[j]).abs() * half[j]).sum()));
-        let (lo, hi) = ((-half).min(q - e_last), half.max(q + e_last));
-        let m = (lo + hi) * 0.5;
-        WheelBox { centre: c + r[0] * m.x + r[1] * m.y + r[2] * m.z, axes: r, half: (hi - lo) * 0.5 + Vec3::splat(super::collision::WORLD_MARGIN) }
-    };
+    let reach = hull_reach(bbox, now, last);
+    let away = moved_away(now, last, hull_sphere(&hull.verts).1);
     let (mut mn, mut mx) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
     for i in 0..8 {
         let s = Vec3::new(if i & 1 == 0 { -1.0 } else { 1.0 }, if i & 2 == 0 { -1.0 } else { 1.0 }, if i & 4 == 0 { -1.0 } else { 1.0 }) * reach.half;
@@ -1837,7 +1826,6 @@ pub fn collide(hull: &HullShape, bbox: (Vec3, Vec3), now: &[Vec3; 4], last: &[Ve
         mn = mn.min(w);
         mx = mx.max(w);
     }
-    let r2 = (f32::from_bits(0x3f85_2bd3) * POLYGON_MARGIN) * POLYGON_MARGIN;
     let delta = [now[0] - last[0], now[1] - last[1], now[2] - last[2], now[3] - last[3]];
     let ball = ball.filter(|_| !grid_old());
     world.triangles_by_cell(mn, mx, ball, |cell, mesh, i| {
@@ -1845,41 +1833,82 @@ pub fn collide(hull: &HullShape, bbox: (Vec3, Vec3), now: &[Vec3; 4], last: &[Ve
             return;
         }
         let (tri, face) = (mesh.tris[i], mesh.faces[i]);
-        if face == Vec3::ZERO || !reach.touches(&tri, face) {
+        if face == Vec3::ZERO {
             return;
         }
-        // (F-23797: across each edge the neighbour's normal, and between the two where
-        // they meet in a ridge)
         let other: [Option<Vec3>; 3] = mesh.beside[i].map(|n| n.map(|j| mesh.faces[j as usize]));
-        let edge: [(Vec3, Vec3); 3] = std::array::from_fn(|e| match other[e] {
-            Some(nn) => {
-                let (b, ridge) = super::gjk::edge_bisector(face, nn, tri[e], tri[(e + 1) % 3]);
-                (b, if ridge { nn } else { face })
-            }
-            None => (face, face),
-        });
-        let Some((r, local)) = polygon_contact(&core, &tri, face, other.map(|o| o.is_some()), &edge, now, &delta, dbg) else { return };
-        let origin = tri[0];
-        let (on_a, on_b) = (r.on_a + origin, r.on_b + origin);
-        if dbg {
-            eprintln!("HULLPOLY cell {cell} polygon {i} face {:?} depth {:?} n {:?} local {:?} on_b {:?} deep {}", face, -r.distance, r.normal, local, on_b, r.deep);
-        }
-        // (the sink: nothing farther than 2 cm)
-        if !(f32::from_bits(0x3ca3_d70a) > r.distance) {
-            return;
-        }
-        let normal = if old_cone() { cone_normal(&tri, face, &other, on_b, r.normal) } else { cone_exact(&tri, face, &other, on_b, r.normal) };
-        let fresh = Contact { depth: 0.0 - r.distance, local, on_body: on_a, on_world: on_b, normal, ..Default::default() };
         let at = manifold_of(manifolds, 0, cell);
-        let m = &mut manifolds[at];
         let surface = Surface::from_u8(mesh.mats.get(i).copied().unwrap_or(0));
-        // (which of the hull's triangles: by the corners the loop ended on, F-26668)
-        let back = Vec3::ZERO - r.normal;
-        let element = hull.element(&r.corners.0[..r.corners.1], Vec3::new(dot3(now[0], back), dot3(now[1], back), dot3(now[2], back)));
-        sink(&mut m.slots, Slot { c: fresh, age: 0, enabled: true, surface, polygon: i as u32, element, part: 0 });
+        let slot = |r: &super::gjk::Nearest, c: Contact| {
+            // (which of the hull's triangles: by the corners the loop ended on, F-26668)
+            let back = Vec3::ZERO - r.normal;
+            let element = hull.element(&r.corners.0[..r.corners.1], Vec3::new(dot3(now[0], back), dot3(now[1], back), dot3(now[2], back)));
+            Slot { c, age: 0, enabled: true, surface, polygon: i as u32, element, part: 0 }
+        };
+        if dbg {
+            eprintln!("HULLPOLY cell {cell} polygon {i}");
+        }
+        hull_polygon(&core, &reach, away, now, &delta, &tri, face, other, dbg, slot, &mut manifolds[at].slots);
     });
     // (a cell's record that ends the pass with nothing in it is given up)
     manifolds.retain(|m| !m.slots.is_empty());
+}
+
+/// F-29567's box a polygon has to cut (its test F-55826): the hull's box (`bbox`: min, max) as it stands grown to take
+/// in the same box where it stood, and the mesh's 5 mm.
+pub(super) fn hull_reach(bbox: (Vec3, Vec3), now: &[Vec3; 4], last: &[Vec3; 4]) -> WheelBox {
+    let (mid, half) = ((bbox.0 + bbox.1) * 0.5, (bbox.1 - bbox.0) * 0.5);
+    let centre = |m: &[Vec3; 4]| m[3] + m[0] * mid.x + m[1] * mid.y + m[2] * mid.z;
+    let (c, r) = (centre(now), [now[0], now[1], now[2]]);
+    let d = centre(last) - c;
+    let q = Vec3::new(d.dot(r[0]), d.dot(r[1]), d.dot(r[2]));
+    let e_last = Vec3::from_array(std::array::from_fn(|i| (0..3).map(|j| r[i].dot(last[j]).abs() * half[j]).sum()));
+    let (lo, hi) = ((-half).min(q - e_last), half.max(q + e_last));
+    let m = (lo + hi) * 0.5;
+    WheelBox { centre: c + r[0] * m.x + r[1] * m.y + r[2] * m.z, axes: r, half: (hi - lo) * 0.5 + Vec3::splat(super::collision::WORLD_MARGIN) }
+}
+
+/// F-29567's test of a polygon by how the part has moved (the mesh's matrix the identity): the part's move since the
+/// last matrix, and how far along a polygon's normal it may have gone and still touch it - the part's margin and the
+/// mesh's, 0.1 (a global), and the part's radius (its bound's +8) times the angle it has turned (twice the arc cosine of
+/// the turn's quaternion's w, F-86413 then F-49700). A polygon it has moved away from by more is passed over.
+pub(super) fn moved_away(now: &[Vec3; 4], last: &[Vec3; 4], radius: f32) -> (Vec3, f32) {
+    let trace = dot3(last[0], now[0]) + (dot3(last[1], now[1]) + (dot3(last[2], now[2]) + 1.0));
+    let w = if trace == 0.0 { 0.0 } else { trace * rs(trace) } * 0.5;
+    let half = vec_acos(w.max(-1.0).min(1.0));
+    let limit = ((PART_MARGIN + POLYGON_MARGIN) + f32::from_bits(0x3dcc_cccd)) + radius * (2.0 * half);
+    (now[3] - last[3], limit)
+}
+
+/// F-29567 for one triangle of the mesh (`tri` its corners, `face` its normal, `other` its neighbours' normals across
+/// its edges): the test by the part's move (`away`, `moved_away`), the box test, the edge bisectors (F-23797), the per-polygon contact (F-35118), the sink's 2 cm, the cone
+/// of the contact's normal, and the sink (F-90136) into `slots`. `slot` makes the record of what was found.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn hull_polygon(core: &super::gjk::HullCore, reach: &WheelBox, away: (Vec3, f32), now: &[Vec3; 4], delta: &[Vec3; 4], tri: &[Vec3; 3], face: Vec3, other: [Option<Vec3>; 3], dbg: bool, slot: impl FnOnce(&super::gjk::Nearest, Contact) -> Slot, slots: &mut Vec<Slot>) {
+    if dot3(face, away.0) > away.1 || !reach.touches(tri, face) {
+        return;
+    }
+    // (F-23797: across each edge the neighbour's normal, and between the two where they meet in a ridge)
+    let edge: [(Vec3, Vec3); 3] = std::array::from_fn(|e| match other[e] {
+        Some(nn) => {
+            let (b, ridge) = super::gjk::edge_bisector(face, nn, tri[e], tri[(e + 1) % 3]);
+            (b, if ridge { nn } else { face })
+        }
+        None => (face, face),
+    });
+    let Some((r, local)) = polygon_contact(core, tri, face, other.map(|o| o.is_some()), &edge, now, delta, dbg) else { return };
+    let origin = tri[0];
+    let (on_a, on_b) = (r.on_a + origin, r.on_b + origin);
+    if dbg {
+        eprintln!("HULLPOLY   face {:?} depth {:?} n {:?} local {:?} on_b {:?} deep {}", face, -r.distance, r.normal, local, on_b, r.deep);
+    }
+    // (the sink: nothing farther than 2 cm)
+    if !(f32::from_bits(0x3ca3_d70a) > r.distance) {
+        return;
+    }
+    let normal = if old_cone() { cone_normal(tri, face, &other, on_b, r.normal) } else { cone_exact(tri, face, &other, on_b, r.normal) };
+    let fresh = Contact { depth: 0.0 - r.distance, local, on_body: on_a, on_world: on_b, normal, ..Default::default() };
+    sink(slots, slot(&r, fresh));
 }
 
 /// F-74262: the kept contact a new one takes the place of - the nearest by side A's point (`kept`: each one's point and
@@ -2280,6 +2309,97 @@ mod tests {
         assert!(bad.is_empty(), "{} of {n} differ:
 {}", bad.len(), bad[..bad.len().min(12)].join("
 "));
+    }
+
+    #[test]
+    fn polygon_loop_matches_the_original() {
+        // (tools/polygon_loop_reference.py: F-29567 run offline - the hull against a quantised piece of the city, through
+        // the culled list, each polygon's tests, the per-polygon contact, the sink into the manifold and the cone)
+        let mut n = 0;
+        let (mut kept, mut bad, mut passed, mut decided) = (0, Vec::new(), 0, 0);
+        for (k, line) in include_str!("testdata/polygon_loop_ref.txt").lines().enumerate() {
+            let (lhs, rhs) = line.split_once(" -> ").unwrap();
+            let w: Vec<u32> = lhs.split(' ').skip(1).map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let f = |o: usize| f32::from_bits(w[o]);
+            let v = |o: usize| Vec3::new(f(o), f(o + 1), f(o + 2));
+            let m = w[0] as usize;
+            let corners: Vec<Vec3> = (0..m).map(|i| v(1 + 3 * i)).collect();
+            let mut o = 1 + 3 * m;
+            let now: [Vec3; 4] = std::array::from_fn(|i| v(o + 3 * i));
+            let last: [Vec3; 4] = std::array::from_fn(|i| v(o + 12 + 3 * i));
+            o += 24;
+            let (bmax, bmin, radius) = (v(o), v(o + 3), f(o + 6));
+            o += 7;
+            let (scale, centre) = (v(o), v(o + 3));
+            o += 6;
+            let nv = w[o] as usize;
+            o += 1;
+            // (the corners as the bound's quantised ones are read: F-54719, as the city's loader reads them)
+            let verts: Vec<Vec3> = (0..nv).map(|i| Vec3::from_array(std::array::from_fn(|c| w[o + 3 * i + c] as u16 as i16 as f32 * scale[c] + centre[c]))).collect();
+            o += 3 * nv;
+            let np = w[o] as usize;
+            o += 1;
+            let polys: Vec<&[u32]> = (0..np).map(|i| &w[o + 7 * i..o + 7 * i + 7]).collect();
+            o += 7 * np;
+            let tris: Vec<[Vec3; 3]> = polys.iter().map(|p| [verts[p[1] as usize], verts[p[2] as usize], verts[p[3] as usize]]).collect();
+            let faces: Vec<Vec3> = polys.iter().zip(&tris).map(|(p, t)| super::super::gjk::polygon_normal(t, f32::from_bits(p[0]))).collect();
+            let nl = w[o] as usize;
+            let list = &w[o + 1..o + 1 + nl];
+            let core = super::super::gjk::HullCore { corners: &corners, rows: [now[0], now[1], now[2]], at: now[3] };
+            let reach = hull_reach((bmin, bmax), &now, &last);
+            let away = moved_away(&now, &last, radius);
+            let delta = [now[0] - last[0], now[1] - last[1], now[2] - last[2], now[3] - last[3]];
+            let mut slots: Vec<Slot> = Vec::new();
+            for &i in list {
+                let i = i as usize;
+                let other: [Option<Vec3>; 3] = std::array::from_fn(|e| (polys[i][4 + e] != 0xffff).then(|| faces[polys[i][4 + e] as usize]));
+                let slot = |_: &super::super::gjk::Nearest, c: Contact| Slot { c, age: 0, enabled: true, surface: Surface::Road, polygon: i as u32, element: 0, part: 0 };
+                hull_polygon(&core, &reach, away, &now, &delta, &tris[i], faces[i], other, false, slot, &mut slots);
+                // (whether the test by the move decides it: without it the port would keep a contact)
+                if dot3(faces[i], away.0) > away.1 {
+                    let mut without = Vec::new();
+                    hull_polygon(&core, &reach, (Vec3::ZERO, f32::INFINITY), &now, &delta, &tris[i], faces[i], other, false, slot, &mut without);
+                    decided += !without.is_empty() as usize;
+                    passed += 1;
+                }
+            }
+            // (each record: its depth +12, the hull's point +16 and in the world +48, the polygon's +32 (the mesh's frame is
+            // the world's) and +64, the normal +80 and -(it) +96, the push and velocity multipliers +0 / +128, the polygon +170)
+            let b = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+            let neg = |x: Vec3| Vec3::new(0.0 - x.x, 0.0 - x.y, 0.0 - x.z);
+            let got: Vec<u32> = std::iter::once(slots.len() as u32)
+                .chain(slots.iter().flat_map(|s| {
+                    let c = &s.c;
+                    let mut q = vec![c.depth.to_bits()];
+                    for x in [c.local, c.on_world, c.on_body, c.on_world, c.normal, neg(c.normal), c.pushed, c.kept] {
+                        q.extend(b(x));
+                    }
+                    q.push(s.polygon);
+                    q
+                }))
+                .collect();
+            let r: Vec<u32> = rhs.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let want: Vec<u32> = std::iter::once(r[0])
+                .chain((0..r[0] as usize).flat_map(|s| {
+                    let rec = &r[1 + 44 * s..1 + 44 * s + 44];
+                    let mut q = vec![rec[3]];
+                    for at in [4, 8, 12, 16, 20, 24, 0, 32] {
+                        q.extend(&rec[at..at + 3]);
+                    }
+                    // (+170: the polygon's number)
+                    q.push(rec[42] & 0xffff);
+                    q
+                }))
+                .collect();
+            kept += r[0] as usize;
+            if got != want {
+                bad.push(format!("case {k}: port {got:08x?}\n   original {want:08x?}"));
+            }
+            n += 1;
+        }
+        eprintln!("{n} cases, {kept} contacts kept; {passed} polygons passed over by the move, {decided} of them would give a contact");
+        assert!(n >= 200);
+        assert!(bad.is_empty(), "{} of {n} differ:\n{}", bad.len(), bad[..bad.len().min(6)].join("\n"));
     }
 
     #[test]
