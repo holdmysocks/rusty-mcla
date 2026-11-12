@@ -609,6 +609,8 @@ struct App {
     hangout_title: Option<(usize, f32)>,
     /// the player's position a frame before (the entry lines' move: racer+400 -> the matrix)
     hangout_prev: Option<Vec3>,
+    /// the soak hook's drive over a hangout's entry line: ticks of throttle left (MCLA_SOAK)
+    soak_drive: u32,
     /// the camera of that warp and the wait after it (eye, look point, up, lens in radians)
     place_view: Option<(Vec3, Vec3, Vec3, f32)>,
     /// ACCEPT on the payback's panel (form 68): the warp to the place's wait camera - (time, the warp, where
@@ -1600,6 +1602,7 @@ impl App {
             dof_post: None,
             hangout_title: None,
             hangout_prev: None,
+            soak_drive: 0,
             place_view: None,
             payback_in: None,
             payback_hold: false,
@@ -6200,6 +6203,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (the ambient manager's race byte +0x64251, F-86550: a current race, not a payback - race type 5 - and not over)
             self.vehicles.race_event = self.game.race.as_ref().is_some_and(|r| r.kind != game::RaceKind::Payback)
                 && !(self.game.mode == Mode::Results || self.game.race_end_t.is_some());
+            // (the soak hook's drive over a hangout's entry line: straight on, half throttle, instead of the auto driver)
+            if self.soak_drive > 0 {
+                self.soak_drive -= 1;
+                player_input = physics::car::CarInput { throttle: 0.5, ..Default::default() };
+            }
             crate::ticktimes::mark(crate::ticktimes::S::Vehicles);
             self.vehicles.update(&world, player_input, sim_dt);
             crate::ticktimes::mark(crate::ticktimes::S::Other);
@@ -6541,7 +6549,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             }
             // (test hook MCLA_SOAK=<minutes>: mixed play for memory soak runs, a cycle of that length - at 25 % a race of
             // MCLA_SOAK_RACES (comma list, in turn) from free roam, at 60 % QUIT RACE, at 70 % GO TO GARAGE, at 80 % BACK;
-            // with --drive --auto the car drives itself between - docs/PERFORMANCE.md 2026-11-11 (5))
+            // with MCLA_SOAK_HANGOUT=1 also at 86 % the car put 10 m outside the entry line of an open hangout (in turn), driven
+            // over it, and at 97 % BACK out of its panel; with --drive --auto the car drives itself between -
+            // docs/PERFORMANCE.md 2026-11-11 (5), (6))
             if let Some(per) = std::env::var("MCLA_SOAK").ok().and_then(|v| v.parse::<f32>().ok()).map(|m| ((m * 60.0 / fixed_step::DT) as u64).max(400)) {
                 let (k, n) = (self.tick_no as u64 % per, self.tick_no as u64 / per);
                 let at = |f: f32| k == (per as f32 * f) as u64;
@@ -6563,6 +6573,39 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 } else if at(0.80) {
                     log::info!("soak: cycle {} back ({:?})", n, self.game.mode);
                     if self.game.mode == Mode::Garage {
+                        self.pending_action = MenuAction::Back;
+                    }
+                } else if at(0.86) && self.game.mode == Mode::FreeRoam && std::env::var("MCLA_SOAK_HANGOUT").is_ok_and(|v| v == "1") {
+                    // (the hangouts this career has open, by the set-up's entry line)
+                    let open: Vec<(usize, Vec3)> = hangoutin::SETUPS
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(si, su)| self.hangouts.iter().find(|h| su.scene.starts_with(&format!("{}_", h.0))).filter(|h| self.game.mc4_hangout_open(&h.0)).map(|h| (si, h.1)))
+                        .collect();
+                    if let Some(&(si, spot)) = open.get(n as usize % open.len().max(1)) {
+                        let [a, b] = hangoutin::SETUPS[si].line;
+                        let m = (a + b) * 0.5;
+                        let along = (b - a).with_y(0.0).normalize_or_zero();
+                        let mut out = Vec3::new(-along.z, 0.0, along.x);
+                        if (m + out).distance(spot) < (m - out).distance(spot) {
+                            out = -out;
+                        }
+                        let from = m + out * 10.0;
+                        let yaw = (out.x).atan2(out.z);
+                        if let Some(c) = self.vehicles.player_mut() {
+                            c.state = crate::physics::CarState::new(Vec3::new(from.x, m.y + 0.5, from.z), yaw);
+                            c.placed = false;
+                            c.pose_history.reset();
+                        }
+                        self.hangout_prev = None;
+                        self.soak_drive = (4.0 / fixed_step::DT) as u32;
+                        log::info!("soak: cycle {} hangout {} from {:?}", n, hangoutin::SETUPS[si].key, from);
+                    } else {
+                        log::info!("soak: cycle {} no open hangout", n);
+                    }
+                } else if at(0.97) && std::env::var("MCLA_SOAK_HANGOUT").is_ok_and(|v| v == "1") {
+                    log::info!("soak: cycle {} back from the hangout ({:?})", n, self.game.mode);
+                    if self.game.mode == Mode::RaceSelect {
                         self.pending_action = MenuAction::Back;
                     }
                 }
@@ -8633,6 +8676,27 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.fps, self.frame_ms, self.draws, tex_mb, tex_n, cars_n, cars_mb, mb(c[0]), cn, mb(c[1]), mb(c[2]), mb(c[3]), mb(c[4]), tex_mb - mb(c[0]),
                 vehicles::PLATES_MADE.load(std::sync::atomic::Ordering::Relaxed), world.stats_sectors.0, world.stats_sectors.1
             );
+            // (test hook MCLA_ALLOC_REPORT=1: the device allocator's own numbers, where the backend gives them - DX12's
+            // gpu-allocator: what its blocks hold and reserve, the textures' share and the allocations under 64 KB - GitHub #48)
+            if self.tick_no % 3600 == 0 && std::env::var("MCLA_ALLOC_REPORT").is_ok() {
+                if let Some(r) = gpu.device.generate_allocator_report() {
+                    let small = r.allocations.iter().filter(|a| a.size < 65536).count();
+                    let tex: u64 = r.allocations.iter().filter(|a| !a.name.contains("buffer") && !a.name.contains("Buffer")).map(|a| a.size).sum();
+                    log::info!(
+                        "allocator: {} allocations {:.0} MB in {} blocks {:.0} MB reserved; not named *buffer* {:.0} MB; {} under 64 KB",
+                        r.allocations.len(), mb(r.total_allocated_bytes), r.blocks.len(), mb(r.total_reserved_bytes), mb(tex), small
+                    );
+                    let mut by: std::collections::HashMap<&str, (usize, u64)> = std::collections::HashMap::new();
+                    for a in &r.allocations {
+                        let e = by.entry(a.name.as_str()).or_default();
+                        e.0 += 1;
+                        e.1 += a.size;
+                    }
+                    let mut v: Vec<_> = by.into_iter().collect();
+                    v.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
+                    log::info!("allocator by name: {}", v.iter().take(12).map(|(n, (c, s))| format!("{n} {c} {:.0} MB", mb(*s))).collect::<Vec<_>>().join(", "));
+                }
+            }
         }
         if self.tick_no % 240 == 1 || (self.opt.wot && self.tick_no % 60 == 1) {
             if let Some(c) = self.vehicles.player() {

@@ -104,6 +104,25 @@ pub(crate) fn create_buffer_resource(
     Ok((resource, Some(AllocationWrapper { allocation })))
 }
 
+fn small_aligned(dev: &Direct3D12::ID3D12Device, raw_desc: Direct3D12::D3D12_RESOURCE_DESC) -> Direct3D12::D3D12_RESOURCE_DESC {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *OFF.get_or_init(|| std::env::var("MCLA_DX12_SMALL_ALIGN").is_ok_and(|v| v.trim() == "0")) {
+        return raw_desc;
+    }
+    let targets = Direct3D12::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | Direct3D12::D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+    if raw_desc.Dimension == Direct3D12::D3D12_RESOURCE_DIMENSION_BUFFER || (raw_desc.Flags & targets).0 != 0 || raw_desc.SampleDesc.Count != 1 {
+        return raw_desc;
+    }
+    let mut small = raw_desc;
+    small.Alignment = Direct3D12::D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT as u64;
+    let info = unsafe { dev.GetResourceAllocationInfo(0, std::slice::from_ref(&small)) };
+    if info.Alignment == small.Alignment {
+        small
+    } else {
+        raw_desc
+    }
+}
+
 pub(crate) fn create_texture_resource(
     device: &crate::dx12::Device,
     desc: &crate::TextureDescriptor,
@@ -120,6 +139,11 @@ pub(crate) fn create_texture_resource(
     let name = desc.label.unwrap_or("Unlabeled texture");
 
     let mut allocator = device.mem_allocator.lock();
+    // MCLA patch (GitHub #48): a texture that may sit on a 4 KB boundary (not a render target or depth target, one sample)
+    // is placed so when the runtime grants it, as D3D12MA does; otherwise every placed texture took 64 KB at least
+    // (the game's ~10,000 textures average ~50 KB). Asked first, so the alignment is only set where it is granted.
+    // MCLA_DX12_SMALL_ALIGN=0: always 64 KB, as before.
+    let raw_desc = small_aligned(&device.raw, raw_desc);
     let allocation_desc = AllocationCreateDesc::from_d3d12_resource_desc(
         allocator.allocator.device(),
         &raw_desc,
