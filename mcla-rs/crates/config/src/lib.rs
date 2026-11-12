@@ -420,25 +420,110 @@ impl Settings {
     }
 }
 
-/// Write a file atomically: `<name>.tmp` beside it, flushed, then renamed over it. Creates the folder.
+/// Write a file atomically: the bytes go to a staging file of their own beside it (`<name>.stage.<pid>.<n>`: this
+/// process's id and a counter, so the game, the launcher and two saves of one process never share one), flushed,
+/// then renamed over `path`. Creates the folder. The staging file is removed again if any step fails; staging files
+/// a dead process left behind are swept by [`sweep_staging`] on the way in.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir)?;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    /// Owns the staging file until it has been renamed into place.
+    struct Staging(Option<PathBuf>);
+    impl Staging {
+        fn promote(mut self, to: &Path) -> std::io::Result<()> {
+            let from = self.0.take().expect("staging file");
+            // On Windows a rename onto a file that another rename or a reader has open for a moment fails with
+            // "access denied" (a sharing violation); it passes within milliseconds, so try again a few times.
+            // Saves of one process take turns at the rename; several processes still race and use the retry.
+            static RENAME_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let _turn = RENAME_TURN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut tries = 0u32;
+            loop {
+                match std::fs::rename(&from, to) {
+                    Ok(()) => return Ok(()),
+                    Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && tries < 20 => {
+                        tries += 1;
+                        std::thread::sleep(std::time::Duration::from_millis(2 * u64::from(tries)));
+                    }
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&from);
+                        return Err(step_error("rename onto", to, e));
+                    }
+                }
+            }
+        }
     }
-    let mut tmp: PathBuf = path.to_path_buf();
-    let mut name = tmp.file_name().map(|n| n.to_os_string()).unwrap_or_else(|| "file".into());
-    name.push(".tmp");
-    tmp.set_file_name(name);
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
+    impl Drop for Staging {
+        fn drop(&mut self) {
+            if let Some(p) = self.0.take() {
+                let _ = std::fs::remove_file(p);
+            }
+        }
     }
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        e
-    })
+
+    let dir = match path.parent() {
+        Some(d) if !d.as_os_str().is_empty() => {
+            std::fs::create_dir_all(d)?;
+            d
+        }
+        _ => Path::new("."),
+    };
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    sweep_staging(dir, name);
+    for _ in 0..64 {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let candidate = dir.join(format!("{name}{STAGE_MARK}{}.{n}", std::process::id()));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&candidate) {
+            Ok(mut f) => {
+                let staging = Staging(Some(candidate));
+                f.write_all(bytes).map_err(|e| step_error("write", staging.0.as_deref().unwrap_or(path), e))?;
+                f.sync_all().map_err(|e| step_error("flush", path, e))?;
+                drop(f); // Windows will not rename a file that is still open
+                return staging.promote(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(step_error("create staging file for", path, e)),
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no free staging name beside the settings file"))
+}
+
+/// The same error kind with the step and file named, so a log line says which part of a save failed.
+fn step_error(step: &str, file: &Path, e: std::io::Error) -> std::io::Error {
+    std::io::Error::new(e.kind(), format!("{step} {}: {e}", file.display()))
+}
+
+/// What sits between a file's name and the `<pid>.<n>` of its staging files.
+const STAGE_MARK: &str = ".stage.";
+/// A staging file lives for the milliseconds of one write; one this old was left by a process that died mid-write.
+const STAGE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Remove the files beside `name` that an interrupted write left: `<name>.stage.<pid>.<n>` (digits only) and the
+/// `<name>.tmp` of the old fixed-name scheme, each only when last written more than [`STAGE_MAX_AGE`] ago, so a
+/// write in progress is never touched. Best effort: every error is ignored.
+fn sweep_staging(dir: &Path, name: &str) {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let file = e.file_name();
+        let Some(file) = file.to_str().and_then(|f| f.strip_prefix(name)) else { continue };
+        let ours = file == ".tmp"
+            || file.strip_prefix(STAGE_MARK).and_then(|r| r.split_once('.')).is_some_and(|(a, b)| digits(a) && digits(b));
+        if !ours {
+            continue;
+        }
+        let stale = e
+            .metadata()
+            .ok()
+            .filter(|m| m.is_file())
+            .and_then(|m| m.modified().ok())
+            .is_some_and(|t| t.elapsed().is_ok_and(|age| age > STAGE_MAX_AGE));
+        if stale {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 /// Change one key of the settings file and nothing else (the game's Alt+Enter, the launcher's single rows): the file

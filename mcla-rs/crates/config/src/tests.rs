@@ -271,6 +271,140 @@ fn set_key_changes_one_key_only() {
     let _ = std::fs::remove_dir_all(d);
 }
 
+fn files_in(dir: &std::path::Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    v.sort();
+    v
+}
+
+fn age_file(p: &std::path::Path, secs: u64) {
+    let t = std::time::SystemTime::now() - std::time::Duration::from_secs(secs);
+    std::fs::File::options().write(true).open(p).unwrap().set_modified(t).unwrap();
+}
+
+#[test]
+fn atomic_write_replaces_and_leaves_no_staging_file() {
+    let d = tmp("aw-replace");
+    let p = d.join("sub").join("settings.toml");
+    atomic_write(&p, b"first\n").unwrap();
+    atomic_write(&p, b"second, longer than the first\n").unwrap();
+    assert_eq!(std::fs::read(&p).unwrap(), b"second, longer than the first\n");
+    assert_eq!(files_in(&d.join("sub")), vec!["settings.toml".to_string()]);
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn atomic_write_does_not_use_the_old_shared_tmp_name() {
+    // A young `<name>.tmp` belongs to someone else's write (an older build): it must survive and stay unread.
+    let d = tmp("aw-shared-tmp");
+    let p = d.join("settings.toml");
+    std::fs::write(d.join("settings.toml.tmp"), b"half written by another process").unwrap();
+    atomic_write(&p, b"mine\n").unwrap();
+    assert_eq!(std::fs::read(&p).unwrap(), b"mine\n");
+    assert_eq!(std::fs::read(d.join("settings.toml.tmp")).unwrap(), b"half written by another process");
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn atomic_write_keeps_no_staging_file_when_the_rename_fails() {
+    // The target is a directory, so the rename cannot succeed: the error comes back and nothing is left behind.
+    let d = tmp("aw-fail");
+    let p = d.join("settings.toml");
+    std::fs::create_dir(&p).unwrap();
+    assert!(atomic_write(&p, b"x").is_err());
+    assert_eq!(files_in(&d), vec!["settings.toml".to_string()]);
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn atomic_write_sweeps_only_old_staging_files_of_its_own_name() {
+    let d = tmp("aw-sweep");
+    let p = d.join("settings.toml");
+    let make = |n: &str, age: u64| {
+        let f = d.join(n);
+        std::fs::write(&f, b"x").unwrap();
+        age_file(&f, age);
+    };
+    make("settings.toml.stage.100.1", 7200); // a dead writer's: goes
+    make("settings.toml.stage.100.2", 60); // may be a live writer's: stays
+    make("settings.toml.tmp", 7200); // the old fixed-name scheme, stale: goes
+    make("keybinds.toml.stage.100.1", 7200); // another file's: stays
+    make("settings.toml.stage.x.1", 7200); // not a staging name: stays
+    make("settings.toml.stage.100", 7200); // not a staging name: stays
+    atomic_write(&p, b"v\n").unwrap();
+    assert_eq!(
+        files_in(&d),
+        vec!["keybinds.toml.stage.100.1", "settings.toml", "settings.toml.stage.100", "settings.toml.stage.100.2", "settings.toml.stage.x.1"]
+    );
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn eight_threads_writing_one_file_leave_one_whole_payload() {
+    let d = tmp("aw-threads");
+    let p = d.join("settings.toml");
+    let payloads: Vec<Vec<u8>> = (0..8).map(|i| format!("w{i}\n").repeat(5000).into_bytes()).collect();
+    let start = std::sync::Arc::new(std::sync::Barrier::new(payloads.len()));
+    let handles: Vec<_> = payloads
+        .iter()
+        .cloned()
+        .map(|data| {
+            let (p, start) = (p.clone(), start.clone());
+            std::thread::spawn(move || {
+                start.wait();
+                for _ in 0..10 {
+                    atomic_write(&p, &data).unwrap();
+                }
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+    assert!(payloads.contains(&std::fs::read(&p).unwrap()));
+    assert_eq!(files_in(&d), vec!["settings.toml".to_string()]);
+    let _ = std::fs::remove_dir_all(d);
+}
+
+/// Helper of `three_processes_writing_one_file_all_succeed`: does nothing unless the parent set MCLA_TEST_AW_FILE.
+#[test]
+fn aw_process_helper() {
+    let (Some(file), Ok(who)) = (std::env::var_os("MCLA_TEST_AW_FILE"), std::env::var("MCLA_TEST_AW_WHO")) else { return };
+    let data = format!("proc{who}
+").repeat(3000).into_bytes();
+    for _ in 0..8 {
+        atomic_write(std::path::Path::new(&file), &data).unwrap();
+    }
+}
+
+#[test]
+fn three_processes_writing_one_file_all_succeed() {
+    let d = tmp("aw-procs");
+    let p = d.join("settings.toml");
+    let me = std::env::current_exe().unwrap();
+    let mut running: Vec<_> = (0..3)
+        .map(|who| {
+            std::process::Command::new(&me)
+                .args(["--exact", "tests::aw_process_helper", "--nocapture"])
+                .env("MCLA_TEST_AW_FILE", &p)
+                .env("MCLA_TEST_AW_WHO", who.to_string())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for k in running.drain(..) {
+        let out = k.wait_with_output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let end = std::fs::read(&p).unwrap();
+    assert!((0..3).any(|w| end == format!("proc{w}
+").repeat(3000).into_bytes()), "not one whole payload");
+    assert_eq!(files_in(&d), vec!["settings.toml".to_string()]);
+    let _ = std::fs::remove_dir_all(d);
+}
+
 #[test]
 fn fps_monitor_is_read_and_written() {
     let t: Table = "[display]\nfps_monitor = \"frame_time\"\n".parse().unwrap();
