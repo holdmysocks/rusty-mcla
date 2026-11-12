@@ -3178,6 +3178,41 @@ mod tests {
         }
     }
 
+    /// F-71106 (the reset) run offline (work/racerai/follow/reset.py) on the 201 recorded R8 aivs and the 1,010 variants: the
+    /// portal, goal, point, point-portal and point-goal rings, the line's n / f / J / T, step, progress, cursor, previous J, mode,
+    /// cached and next-goal words and the planes-built index equal `reset`'s (docs/reference/ai/verify_follower.md section 12).
+    #[test]
+    fn reset_is_the_originals() {
+        let dir = "D:/MCLA/work/racerai/follow";
+        let tune = tune();
+        const BS: usize = 31232;
+        for (set, inp, stride) in [("rec", format!("{dir}/in_rec.bin"), BS + 96), ("var", "D:/MCLA/work/ai-verify/scalar/chain_in_var.bin".to_string(), BS)] {
+            let (Ok(inp), Ok(out)) = (std::fs::read(&inp), std::fs::read(format!("{dir}/reset_{set}.bin"))) else {
+                println!("{set}: fixtures missing: skipped");
+                continue;
+            };
+            let n = inp.len() / stride;
+            assert_eq!(out.len(), n * BS);
+            let show = |a: &Aiv| {
+                format!("{:?} {:?} {:?} {:?} {:?} {} {} {:?} {:?} {:?} {} {} {:?} {} {} {} {}", a.portals, a.goals, a.pg, a.ln.pts, a.ln.pp, a.ln.n, a.ln.f,
+                    a.ln.j, a.ln.t, a.step, a.progress, a.cursor, a.j_prev, a.mode, a.cached, a.next_goal, a.planes_upto)
+            };
+            let mut bad = 0;
+            for k in 0..n {
+                let mut a = Aiv::new(tune.clone());
+                a.import_original(&inp[k * stride..k * stride + BS]);
+                a.reset();
+                let mut o = Aiv::new(tune.clone());
+                o.import_original(&out[k * BS..(k + 1) * BS]);
+                if show(&a) != show(&o) {
+                    bad += 1;
+                }
+            }
+            println!("{set}: {n} cases, {bad} differ");
+            assert_eq!(bad, 0);
+        }
+    }
+
     /// F-82126 (drop the last portal) run offline (work/racerai/follow/pop.py) on the 201 recorded R8 aivs and the 1,010 variants,
     /// the planes-built index set to the portal end + 4 first: the ring's start / count / base and the built index equal
     /// `pop_portal`'s, and the original's own tail words (portals +22544, flag bytes +22704 / +22712) stay the ring's start + count
