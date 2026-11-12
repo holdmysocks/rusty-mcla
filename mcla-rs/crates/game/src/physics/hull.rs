@@ -2166,35 +2166,86 @@ pub fn refresh(now: &[Vec3; 4], manifolds: &mut Vec<Manifold>) {
             s.c.target = Vec3::ZERO;
             s.age = s.age.saturating_add(1);
         }
-        let mut worst = (0.0f32, None);
-        let mut k = 0;
-        while k < m.slots.len() {
-            let s = m.slots[k];
-            if !(s.c.depth > f32::from_bits(0xbd23_d70a)) {
-                m.slots.swap_remove(k);
-                continue;
-            }
-            // (older than the count at 0x828127F0, which the game's own simulator sets to 1: F-51097)
-            if s.age > 1 {
-                let back = Vec3::ZERO - s.c.normal;
-                let slid = s.c.on_world - (-(back * s.c.depth - s.c.on_body));
-                let d2 = dot3(slid, slid);
-                if !(worst.0 >= d2) && !(f32::from_bits(0x39d1_b717) >= d2) {
-                    worst = (d2, Some(k));
-                }
-            }
-            k += 1;
-        }
-        if let Some(k) = worst.1 {
-            m.slots.swap_remove(k);
-        }
+        drop_contacts(&mut m.slots, |s| (s.c.depth, s.age, Vec3::ZERO - s.c.normal, s.c.on_body, s.c.on_world));
     }
     manifolds.retain(|m| !m.slots.is_empty());
+}
+
+/// F-26862's drop after the refresh (the hull's and the loose objects' manifolds alike): from the first, a contact whose
+/// depth is not over -0.04 is replaced by the last and its slot looked at again; of those older than the bound (0x828127F0,
+/// which the game's own simulator sets to 1: F-51097) the one whose point has slid farthest - |B - (A - back x depth)|^2,
+/// mul, sub, negate as the generated code, the vector unit's dot - if over 0.0004, is replaced by the last after the loop.
+/// `of` gives a contact's depth, age, back normal and its points on A and B.
+pub(super) fn drop_contacts<S: Copy>(slots: &mut Vec<S>, of: impl Fn(&S) -> (f32, u16, Vec3, Vec3, Vec3)) {
+    let mut worst = (0.0f32, None);
+    let mut k = 0;
+    while k < slots.len() {
+        let (depth, age, back, a, b) = of(&slots[k]);
+        if !(depth > f32::from_bits(0xbd23_d70a)) {
+            slots.swap_remove(k);
+            continue;
+        }
+        if age > 1 {
+            let slid = b - (-(back * depth - a));
+            let d2 = dot3(slid, slid);
+            if !(worst.0 >= d2) && !(f32::from_bits(0x39d1_b717) >= d2) {
+                worst = (d2, Some(k));
+            }
+        }
+        k += 1;
+    }
+    if let Some(k) = worst.1 {
+        slots.swap_remove(k);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The manifold refresh F-26862 run offline with its callees (F-33100, F-86309) unchanged
+    /// (tools/manifold_refresh_reference.py, testdata/manifold_refresh_ref.txt, 2,000 manifolds of 1 - 6 contacts against
+    /// the city): which contacts stay and in which order, each one's age, depth, body point and target, every word.
+    #[test]
+    fn manifold_refresh_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x.trim_start_matches('x'), 16).unwrap();
+        let f = |x: &str| f32::from_bits(h(x));
+        let (mut n, mut bad) = (0, Vec::new());
+        for line in include_str!("testdata/manifold_refresh_ref.txt").lines() {
+            let (lhs, rhs) = line.split_once(" -> ").unwrap();
+            let mut parts = lhs.split(" | ");
+            let head: Vec<&str> = parts.next().unwrap().split(' ').collect();
+            let now: [Vec3; 4] = std::array::from_fn(|r| Vec3::new(f(head[2 + 4 * r]), f(head[3 + 4 * r]), f(head[4 + 4 * r])));
+            let v = |w: &[&str], o: usize| Vec3::new(f(w[o]), f(w[o + 1]), f(w[o + 2]));
+            let slots: Vec<Slot> = parts
+                .map(|p| {
+                    let w: Vec<&str> = p.split(' ').collect();
+                    let back = v(&w, 8);
+                    let c = Contact { depth: f(w[1]), local: v(&w, 2), on_world: v(&w, 5), normal: Vec3::new(-back.x, -back.y, -back.z), on_body: v(&w, 12), target: Vec3::splat(0.5), ..Default::default() };
+                    Slot { c, age: w[0].parse().unwrap(), enabled: true, surface: Surface::CarSide, polygon: w[11].parse().unwrap(), element: 0, part: 0 }
+                })
+                .collect();
+            let mut ms = vec![Manifold { part: 0, cell: 0, slots }];
+            refresh(&now, &mut ms);
+            let got = ms.first().map_or(&[][..], |m| &m.slots[..]);
+            let o: Vec<&str> = rhs.split(' ').collect();
+            let k: usize = o[0].parse().unwrap();
+            let same = |g: f32, e: &str| g.to_bits() == h(e);
+            let mut ok = got.len() == k;
+            for (i, s) in got.iter().enumerate().take(k) {
+                let e = &o[1 + 9 * i..1 + 9 * i + 9];
+                ok &= s.polygon == e[0].parse::<u32>().unwrap() && s.age == e[1].parse::<u16>().unwrap() && same(s.c.depth, e[2]);
+                ok &= same(s.c.on_body.x, e[3]) && same(s.c.on_body.y, e[4]) && same(s.c.on_body.z, e[5]);
+                ok &= same(s.c.target.x, e[6]) && same(s.c.target.y, e[7]) && same(s.c.target.z, e[8]);
+            }
+            n += 1;
+            if !ok {
+                bad.push(line);
+            }
+        }
+        assert_eq!(n, 2000);
+        assert!(bad.is_empty(), "{} mismatches, first {:?}", bad.len(), &bad[..bad.len().min(1)]);
+    }
 
     /// The contact refresh F-33100 run offline (tools/force_leaves_reference.py, testdata/contact_refresh_ref.txt, 1,200
     /// cases): the body's side of a kept contact (age != 0, kind 0) - its point in the body's frame as it stands and the depth

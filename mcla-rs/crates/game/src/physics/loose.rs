@@ -1818,27 +1818,7 @@ impl LooseState {
                 s.t.target = Vec3::ZERO;
                 s.age = s.age.saturating_add(1);
             }
-            let mut worst = (0.0f32, None);
-            let mut i = 0;
-            while i < m.slots.len() {
-                let s = m.slots[i];
-                if !(s.t.depth > f32::from_bits(0xbd23_d70a)) {
-                    m.slots.swap_remove(i);
-                    continue;
-                }
-                if s.age > 1 {
-                    let q = -(s.t.back * s.t.depth - s.t.a.point);
-                    let slid = s.t.b.point - q;
-                    let d2 = dot3(slid, slid);
-                    if !(worst.0 >= d2) && !(f32::from_bits(0x39d1_b717) >= d2) {
-                        worst = (d2, Some(i));
-                    }
-                }
-                i += 1;
-            }
-            if let Some(i) = worst.1 {
-                m.slots.swap_remove(i);
-            }
+            super::hull::drop_contacts(&mut m.slots, |s| (s.t.depth, s.age, s.t.back, s.t.a.point, s.t.b.point));
         }
         self.manis.retain(|m| !m.slots.is_empty());
         let prop = surface_touch(Surface::Prop);

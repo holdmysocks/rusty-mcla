@@ -7607,6 +7607,8 @@ pub fn set_pose_at(st: &mut CarState, vt: &VehTune, m: [Vec3; 4], vel: Vec3, ang
     vs.manifolds.clear();
     vs.hull_kept.clear();
     vs.hull_last = None;
+    // (F-68574 clears the collider's +660, as the stand-up: a deep push in the next collide renews the last matrix, F-32811)
+    vs.last_set = false;
     vs.last_seen = None;
     vs.set_down = true;
     vs.still_timer = 0.0;
