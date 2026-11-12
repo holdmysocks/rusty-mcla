@@ -12659,6 +12659,8 @@ pub enum SstTut {
 #[derive(Clone, Debug, Default)]
 pub struct S23Live {
     pub slow: SlowMo,
+    /// the FIND_ story cores' meeting loops (`FindMeet`), one per mission
+    pub find_meet: Vec<(String, FindMeet)>,
     pub queue: Vec<TutRun>,
     pub run: Option<TutRun>,
     /// RACE_GH_02's lesson: 0 not begun, 1 eased to pause (box 76), 2 the log's lesson (its
@@ -12727,6 +12729,75 @@ pub struct S23In {
 /// FIND_SH_02C_CORE (`game/career/Story/0xb27d6524`): the place registered (location 605,
 /// 0x42) and the meeting loop's radius (0x5b9: 20 m; asked again after 30 m away, 0x6ec).
 pub const FIND_SH_02C_AT: [f32; 3] = [12.892, 30.144, -886.856];
+
+/// The FIND_ story cores' meeting places (their local3, built right after mcHookman_SetState(man, 3) at 0x2b, f32 read
+/// from the scripts): FIND_SH_01B `game/career/Story/0xa46bcc85`, FIND_SH_02 `0xe83e2f54`, FIND_SH_02B `0x0dcd4c73`,
+/// FIND_SH_03 `0x82bce8eb`, FIND_SH_03B `0xe604e9f6`, FIND_GH_27 `sc/career/Story/0x4e56ff33` (03B's place). FIND_SH_02C
+/// meets at its own place with its own loop (`mc4_find02c_meet`); FIND_SH_05 at the downtown hangout; FIND_SH_01's core
+/// has no meeting loop. (FIND_SH_02B and FIND_GH_27 are on neither mission list: the game never offers them.)
+pub const FIND_POINTS: [(&str, [f32; 3]); 6] = [
+    ("FIND_SH_01B", [1658.652, -1.997, 224.921]),
+    ("FIND_SH_02", [-3129.594, -17.735, 521.781]),
+    ("FIND_SH_02B", [1569.6, -11.67, 580.54]),
+    ("FIND_SH_03", [254.619, 11.925, -411.482]),
+    ("FIND_SH_03B", [-2896.788, -3.767, 97.989]),
+    ("FIND_GH_27", [-2896.788, -3.767, 97.989]),
+];
+
+/// What one pass of a FIND core's meeting loop does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FindStep {
+    None,
+    /// SplashManager_Splash('LOSE_COPS'): within 20 m with the police on the player
+    LoseCops,
+    /// the meeting: the core goes on to its scene, Racer_Activate and MISSION_EVENT <id>_OBJ_01_COMPLETE
+    Meet,
+}
+
+/// A FIND core's meeting loop (FIND_SH_01B 0x3b6..0x464, the same in every core of `FIND_POINTS`): a pass every 30 ms
+/// (the loop's tail WAITUNWARPED(30), 0x11cc), 100 ms after the police branch (0x455, back to the loop's head).
+/// `cops_wait` is its local 17, the LOSE_COPS splash's count-down.
+#[derive(Clone, Debug, Default)]
+pub struct FindMeet {
+    pub wait: f32,
+    pub cops_wait: i32,
+    /// the meeting came: the core has left its loop (for its scene and the rest of its flow)
+    pub met: bool,
+}
+
+impl FindMeet {
+    /// One frame. `dist`: Racer_DistanceToPoint(player, point); `cruising`: vhsmState_IsListener(Cruising_Offline);
+    /// `activity`: PoliceManager_CheckPoliceActivity(1).
+    pub fn step(&mut self, dt: f32, dist: f32, cruising: bool, paused: bool, activity: i32) -> FindStep {
+        self.wait -= dt;
+        if self.wait > 0.0 {
+            return FindStep::None;
+        }
+        self.wait = 0.03;
+        if !(cruising && !paused) {
+            return FindStep::None;
+        }
+        // (0x3ce: the splash's count-down runs while the police are not holding an arrest, 100)
+        if self.cops_wait > 0 && activity != 100 {
+            self.cops_wait -= 1;
+        }
+        if !(!paused && dist < 20.0) {
+            return FindStep::None;
+        }
+        // (0x413 Warper_SetIsWarpingToCutscene(1) here, before the police test - not ported)
+        if activity > 1 {
+            let out = if self.cops_wait == 0 {
+                self.cops_wait = 100;
+                FindStep::LoseCops
+            } else {
+                FindStep::None
+            };
+            self.wait = 0.1;
+            return out;
+        }
+        FindStep::Meet
+    }
+}
 
 impl Game {
     // ---- the race editor ----
@@ -13374,6 +13445,45 @@ impl Game {
     /// tPAR (every part free) and the meeting's scene plays, the objective met
     /// (FIND_SH_02C_OBJ_01_COMPLETE); NO, or without the money the box _MONEY_RESTRICTION (OK):
     /// he waits until the player has been 30 m away. Returns true when the scene is due.
+    /// The FIND_ cores' meeting loops (`FindMeet`, `FIND_POINTS`), once a frame: each open FIND mission's loop at its own
+    /// place - LOSE_COPS as the core's splash, and at the meeting its MISSION_EVENT (`Career::core_meet`; the core posts
+    /// it after its scene). Returns the missions met this frame (their cores go on to the scene and Racer_Activate).
+    /// `p`: the player's position; `cruising`: the UI state is Cruising_Offline; `activity`: CheckPoliceActivity(1).
+    pub fn mc4_find_meets(&mut self, p: [f32; 3], cruising: bool, paused: bool, activity: i32, dt: f32) -> Vec<String> {
+        let mut met = Vec::new();
+        for (id, at) in FIND_POINTS {
+            let open = self.career.mission_no(id).map_or(false, |i| self.career.log_order().contains(&i));
+            let loops = &mut self.opt_x.s23.find_meet;
+            let k = match loops.iter().position(|l| l.0 == id) {
+                Some(k) if open => k,
+                Some(k) => {
+                    loops.remove(k);
+                    continue;
+                }
+                None if open => {
+                    loops.push((id.to_string(), FindMeet::default()));
+                    loops.len() - 1
+                }
+                None => continue,
+            };
+            if loops[k].1.met {
+                continue;
+            }
+            let d = crate::brain::racer_distance_to_point(Some(glam::Vec3::from(p)), glam::Vec3::from(at));
+            match loops[k].1.step(dt, d, cruising, paused, activity) {
+                FindStep::LoseCops => self.mc4_splash("LOSE_COPS", "LOSE THE COPS"),
+                FindStep::Meet => {
+                    loops[k].1.met = true;
+                    log::info!("career: {} met at its place ({:.1} m)", id, d);
+                    self.career.core_meet(id);
+                    met.push(id.to_string());
+                }
+                FindStep::None => {}
+            }
+        }
+        met
+    }
+
     pub fn mc4_find02c_meet(&mut self, p: [f32; 3], pursued: bool) -> bool {
         let open = self.career.mission_no("FIND_SH_02C").map_or(false, |i| self.career.log_order().contains(&i));
         if !open {
@@ -16977,6 +17087,68 @@ mod tests {
         assert_eq!(sco.data[0x1c6..0x1cf], store(4, 3080)[..], "+3080 = 4");
         assert_eq!(sco.data[0x1f0..0x1f9], store(3, 3084)[..], "+3084 = 3");
         assert_eq!(TOURNAMENT_OPPONENTS, 3);
+    }
+
+    /// The FIND cores' places as their scripts build them (pc 0x2b: three pushf, op 42 + f32, each maybe followed by
+    /// fneg, op 19), bit for bit.
+    #[test]
+    fn find_points_are_the_scripts() {
+        let files = [("FIND_SH_01B", "game/career/Story/0xa46bcc85"), ("FIND_SH_02", "game/career/Story/0xe83e2f54"), ("FIND_SH_02B", "game/career/Story/0x0dcd4c73"), ("FIND_SH_03", "game/career/Story/0x82bce8eb"), ("FIND_SH_03B", "game/career/Story/0xe604e9f6"), ("FIND_GH_27", "sc/career/Story/0x4e56ff33")];
+        for (id, f) in files {
+            let Some(sco) = std::fs::read(std::path::Path::new(&data_dir()).join("script_obj").join(f)).ok().and_then(|d| mcla_formats::sco::decode(&d).ok()) else { return };
+            let (d, mut o, mut v) = (&sco.data, 0x2b, Vec::new());
+            while v.len() < 3 || d[o] == 19 {
+                match d[o] {
+                    42 => {
+                        v.push(f32::from_le_bytes([d[o + 1], d[o + 2], d[o + 3], d[o + 4]]));
+                        o += 5;
+                    }
+                    19 => {
+                        *v.last_mut().unwrap() = -*v.last().unwrap();
+                        o += 1;
+                    }
+                    op => panic!("{id}: op {op} at {o:#x}"),
+                }
+            }
+            let at = FIND_POINTS.iter().find(|p| p.0 == id).unwrap().1;
+            assert_eq!(v.iter().map(|x| x.to_bits()).collect::<Vec<_>>(), at.iter().map(|x| x.to_bits()).collect::<Vec<_>>(), "{id}");
+        }
+    }
+
+    /// A FIND core's meeting loop: a pass every 30 ms; within 20 m (strictly) the meeting, unless the police are on the
+    /// player (activity above 1): LOSE_COPS then, again only after 100 passes of the count-down (each 100 ms in the
+    /// zone), the count-down held while the police hold an arrest (100); nothing out of the cruise or paused.
+    #[test]
+    fn find_meeting_loop() {
+        let mut m = FindMeet::default();
+        // (the first frame passes; the next pass is 30 ms on)
+        assert_eq!(m.step(0.016, 25.0, true, false, 0), FindStep::None);
+        assert_eq!(m.step(0.016, 19.0, true, false, 0), FindStep::None);
+        assert_eq!(m.step(0.016, 19.0, true, false, 0), FindStep::Meet);
+        let mut m = FindMeet::default();
+        assert_eq!(m.step(0.03, 20.0, true, false, 0), FindStep::None);
+        assert_eq!(m.step(0.03, 5.0, false, false, 0), FindStep::None);
+        assert_eq!(m.step(0.03, 5.0, true, true, 0), FindStep::None);
+        // (the police: the splash at once, then 100 passes of 100 ms before the next)
+        assert_eq!(m.step(0.03, 5.0, true, false, 5), FindStep::LoseCops);
+        assert_eq!(m.cops_wait, 100);
+        let mut n = 0;
+        let mut first = None;
+        for k in 0..250 {
+            if m.step(0.1, 5.0, true, false, 5) == FindStep::LoseCops {
+                n += 1;
+                first.get_or_insert(k);
+            }
+        }
+        assert_eq!((first, n), (Some(99), 2));
+        // (an arrest held, 100: no count-down, no splash - activity above 1)
+        m.cops_wait = 3;
+        for _ in 0..50 {
+            assert_eq!(m.step(0.1, 5.0, true, false, 100), FindStep::None);
+        }
+        assert_eq!(m.cops_wait, 3);
+        // (the police gone: the meeting)
+        assert_eq!(m.step(0.1, 5.0, true, false, 1), FindStep::Meet);
     }
 
     fn race_game(name: &str, tag: &str) -> Option<(Game, String, Value)> {

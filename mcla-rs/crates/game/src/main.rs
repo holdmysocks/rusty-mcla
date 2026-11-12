@@ -4705,6 +4705,15 @@ impl App {
                     }
                 }
             }
+            // (the FIND_ cores' meeting loops, each open FIND mission at its place: `mc4_find_meets`)
+            if let Some(p) = self.vehicles.player().map(|c| c.state.pos) {
+                let (cruising, paused, act) = (self.game.cruising_offline(), self.game.mode == Mode::Paused, self.police.activity().0);
+                for m in self.game.mc4_find_meets([p.x, p.y, p.z], cruising, paused, act, dt) {
+                    // (after the meeting the core activates its man: `Roamers::core_met`)
+                    self.roam.core_met(&m, &mut self.vehicles);
+                    self.game.dirty = true;
+                }
+            }
         }
         // ---- the race's start: the original's warp onto the start scene, then the scene ----
         if self.game.race.is_none() {
@@ -7386,8 +7395,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                                 let line = self.game.career.strings.get("tutorial_flash_desc").map(|s| s.trim_end_matches('.').to_uppercase()).unwrap_or_else(|| "FLASH HEADLIGHTS TO RACE".into());
                                 self.game.show_message(&line);
                             }
-                            // (a FIND_ core's meeting: `Career::core_meet`)
-                            if let Some(m) = self.roam.near_mission.clone() {
+                            // (a FIND_ core's meeting: `Career::core_meet` - the cores with their own place meet there, `mc4_find_meets`)
+                            if let Some(m) = self.roam.near_mission.clone().filter(|m| !mc4::FIND_POINTS.iter().any(|f| f.0 == m.as_str())) {
                                 self.game.career.core_meet(&m);
                                 self.roam.core_met(&m, &mut self.vehicles);
                             }
