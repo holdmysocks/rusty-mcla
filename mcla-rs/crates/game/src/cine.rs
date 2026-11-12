@@ -732,6 +732,32 @@ pub fn cast_scene(scene: &str, in_use: impl Fn(&str) -> bool) -> Vec<(&'static s
     calls.iter().map(|&(girl, slot, entity)| (entity, cast_pick(girl, slot, &mut ctr, &in_use))).collect()
 }
 
+/// The bystanders of the story scenes: each mission's core script loads its hangout characters before the scene
+/// (LoadHangoutCharacters: CineScript_Characters_LoadType per character, then the pack
+/// `cutscene/hangout/<scene>_peds`, then Characters_LaunchAnimAt of each `*_loop` and PushKillBuffer, popped after
+/// the scene), from four arrays it fills at its start: the type `character/<set>`, the slot name, the pack, the anim.
+/// Here the pack's entities with their type's set, in the cores' order. The champs' cores take the `_night` scene and
+/// pack unless 6 < Graphics_GetTimeOfDay() < 18. REP_ON_STRIP's second man is the type `ped_m1_001_set` (slot name
+/// ped_ma_001_set): no such set is on the disc, so nobody stands there (what the original does with the failed type
+/// is not seen). Every pack's entities are the core's list (test `story_peds_are_the_cores`).
+pub const STORY_PEDS: [(&str, &[(&str, &str)]); 9] = [
+    ("cut_story_bestof_sh_05_peds", &[("m_ped00_loop", "ped_mc_007_set"), ("m_ped01_loop", "ped_mc_006_set"), ("m_ped02_loop", "ped_mc_001_set"), ("f_ped00_loop", "ped_fc_003_set"), ("f_ped01_loop", "ped_fb_002_set")]),
+    ("cut_story_beat_sh_02_exotic_peds", &[("m_ped00_loop", "ped_mb_004_set"), ("m_ped01_loop", "ped_mh_002_set"), ("m_ped02_loop", "ped_mh_003_set"), ("m_ped03_loop", "ped_mc_004_set"), ("f_ped01_loop", "ped_fc_002_set"), ("f_ped02_loop", "ped_fc_003_set")]),
+    ("cut_story_rep_on_strip_garage_peds", &[("m_ped00_loop", "ped_mb_002_set"), ("m_ped01_loop", "ped_m1_001_set"), ("f_ped00_loop", "ped_fh_001_set")]),
+    ("cut_story_district_champs_peds", &[("m_ped00_loop", "ped_mc_006_set"), ("m_ped01_loop", "ped_mc_001_set"), ("f_ped00_loop", "ped_fc_003_set"), ("f_ped01_loop", "ped_fh_007_set"), ("f_ped02_loop", "ped_fa_003_set"), ("f_ped03_loop", "ped_fh_005_set"), ("m_ped02_loop", "ped_mh_003_set")]),
+    ("cut_story_district_champs_night_peds", &[("m_ped00_loop", "ped_ma_005_set"), ("m_ped01_loop", "ped_mh_008_set"), ("f_ped00_loop", "ped_fb_001_set"), ("f_ped01_loop", "ped_fh_009_set"), ("f_ped02_loop", "ped_fb_004_set"), ("f_ped03_loop", "ped_fb_002_set"), ("m_ped02_loop", "ped_mc_001_set")]),
+    ("cut_story_find_sh_02c_peds", &[("m_ped00_loop", "ped_ma_005_set"), ("m_ped01_loop", "ped_ma_002_set"), ("m_ped03_loop", "ped_mc_009_set")]),
+    ("cut_story_city_champ_peds", &[("f_ped00_loop", "ped_fa_003_set"), ("f_ped01_loop", "ped_fc_009_set"), ("f_ped02_loop", "ped_fh_006_set"), ("f_ped03_loop", "ped_fb_006_set"), ("m_ped00_loop", "ped_mh_001_set"), ("f_ped04_loop", "ped_fb_005_set"), ("m_ped01_loop", "ped_mh_003_set")]),
+    ("cut_story_city_champ_night_peds", &[("m_ped00_loop", "ped_ma_005_set"), ("m_ped01_loop", "ped_mh_008_set"), ("f_ped00_loop", "ped_fc_012_set"), ("f_ped01_loop", "ped_fc_012_set"), ("f_ped02_loop", "ped_fh_009_set"), ("m_ped02_loop", "ped_mh_001_set"), ("m_ped03_loop", "ped_mh_008_set")]),
+    ("cut_story_races_in_beach_peds", &[("m_ped00_loop", "ped_mh_002_set"), ("m_ped01_loop", "ped_mh_001_set"), ("f_ped01_loop", "ped_fb_004_set")]),
+];
+
+/// The set a story core loads for an entity of its hangout pack (`STORY_PEDS`), by the pack's short name.
+fn story_ped(pack: &str, entity: &str) -> Option<&'static str> {
+    let short = pack.rsplit('/').next().unwrap_or(pack);
+    STORY_PEDS.iter().find(|(p, _)| p.eq_ignore_ascii_case(short))?.1.iter().find(|(e, _)| e.eq_ignore_ascii_case(entity)).map(|(_, s)| *s)
+}
+
 fn default_set(scene: &str, entity: &str, n: usize) -> &'static str {
     const RACERS: [&str; 4] = ["drv_mb_02_set", "drv_mc_02_set", "drv_ma_02_set", "drv_mh_02_set"];
     let player = entity.starts_with("player") || entity == "cut_drv00";
@@ -861,6 +887,8 @@ impl Cine {
                 // the actors, which only `start` knows. In the police scenes: every set the officers' counter could give it,
                 // the five - docs/PERFORMANCE.md 2026-10-27 (11))
                 if let Some((_, s)) = ent.split_once("_name_") {
+                    sets.push(cutscene_set(s, self.player_bike));
+                } else if let Some(s) = story_ped(&part, &ent) {
                     sets.push(cutscene_set(s, self.player_bike));
                 } else if key.contains("cut_cop") {
                     for c in COPS {
@@ -994,7 +1022,7 @@ impl Cine {
                     }
                     let (label, set) = match ent.split_once("_name_") {
                         Some((l, s)) => (l, s.to_string()),
-                        None => (ent.as_str(), cast.iter().find(|c| c.0.eq_ignore_ascii_case(&ent)).map_or_else(|| default_set(&key, &ent, sc.actors.len()), |c| c.1).to_string()),
+                        None => (ent.as_str(), story_ped(&part, &ent).or_else(|| cast.iter().find(|c| c.0.eq_ignore_ascii_case(&ent)).map(|c| c.1)).unwrap_or_else(|| default_set(&key, &ent, sc.actors.len())).to_string()),
                     };
                     // (props - the arrests' pistols and shotguns, prp_handgun_001_set / prp_shotgun_001_set - are
                     // characters of the scene like the others, with their own root path next to their officer: the
@@ -1446,6 +1474,35 @@ mod tests {
 
     /// LookupDriverToCutsceneName's two maps as Boot.sco fills them: the HackedScale column, and on a bike the jacket one
     /// (the player's set only differs).
+    /// Each core's four arrays as its code fills them (type, slot name, pack, anim, by index), and each pack's
+    /// entities in the cine index exactly the core's list.
+    #[test]
+    fn story_peds_are_the_cores() {
+        let dir = std::path::Path::new("D:/MCLA/extracted/cache/script_obj/game/career/Story");
+        let cores = ["0x007eebc2", "0x7e804c05", "0x81d83d96", "0xa46bcc85", "0xa46bcc85", "0xb27d6524", "0xb9c20be5", "0xb9c20be5", "0xe604e9f6"];
+        let Ok(index) = std::fs::read_to_string("D:/MCLA/extracted/cache/cine_index.tsv") else {
+            eprintln!("no disc data, skipped");
+            return;
+        };
+        for ((pack, peds), core) in STORY_PEDS.iter().zip(cores) {
+            let d = std::fs::read(dir.join(core)).expect(core);
+            let strs: Vec<String> = mcla_formats::sco::decode(&d).unwrap().consts().into_iter().filter_map(|t| if let mcla_formats::sco::Tok::Str(s) = t { Some(s) } else { None }).collect();
+            let want: Vec<String> = peds.iter().flat_map(|(e, set)| {
+                // (REP_ON_STRIP's slot name differs from its type: the only one)
+                let name = if *set == "ped_m1_001_set" { "ped_ma_001_set" } else { set };
+                [format!("character/{set}"), name.to_string(), format!("cutscene/hangout/{pack}"), e.to_string()]
+            }).collect();
+            assert!(strs.windows(want.len()).any(|w| w == want.as_slice()), "{pack}: {core}");
+            let mut ents: Vec<&str> = index.lines().filter_map(|l| l.split('\t').next()?.strip_prefix(&format!("hangout/{pack}/"))).collect();
+            let mut mine: Vec<&str> = peds.iter().map(|p| p.0).collect();
+            ents.sort();
+            mine.sort();
+            assert_eq!(ents, mine, "{pack}");
+        }
+        assert_eq!(story_ped("hangout/cut_story_bestof_sh_05_peds", "f_ped01_loop"), Some("ped_fb_002_set"));
+        assert_eq!(story_ped("hangout/cut_story_hangout_pinkslip_downtown_peds", "m_ped00_loop"), None);
+    }
+
     #[test]
     fn cutscene_set_by_the_mappings() {
         assert_eq!(cutscene_set("drv_mp_01_set", false), "drv_mp_01_set_hackedscale");
