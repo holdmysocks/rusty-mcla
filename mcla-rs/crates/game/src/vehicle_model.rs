@@ -2037,6 +2037,39 @@ mod tests {
         assert!(!front.is_empty() || !rear.is_empty());
     }
 
+    /// The traffic models' own wheel bones (`wheel_0` .. `wheel_5`): each one's hub, for the models with more than four. (Of
+    /// the 41 va_ models one has six, the semi cab: all six hubs at y 0x3f129079 - its second rear axle rolls as the first,
+    /// F-37033, bit for bit.)
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn own_wheel_hubs() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let assets = crate::assets::Assets::new(&dir);
+        let root = std::path::Path::new(&dir).join("resources/vehicle");
+        let mut cars: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        cars.sort();
+        for p in cars {
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            if !name.starts_with("va_") {
+                continue;
+            }
+            let Ok(car) = super::load_car(&assets, &p) else { continue };
+            let mut hubs: [Option<glam::Vec3>; 6] = [None; 6];
+            for pt in car.parts.iter().filter(|pt| pt.is_base) {
+                for (k, w) in pt.mesh_wheel.iter().enumerate() {
+                    if let Some(i) = *w {
+                        hubs[i] = Some(pt.mesh_bone[k].w_axis.truncate());
+                    }
+                }
+            }
+            let n = hubs.iter().filter(|h| h.is_some()).count();
+            if n > 4 {
+                let f = |h: Option<glam::Vec3>| h.map_or("-".to_string(), |h| format!("({:.4} {:.6} {:.4}) {:08x}", h.x, h.y, h.z, h.y.to_bits()));
+                println!("{name} {n}: {}", hubs.iter().map(|h| f(*h)).collect::<Vec<_>>().join(" | "));
+            }
+        }
+    }
+
     /// Which part files carry the pop-up headlights' `light_flip` / the stereo's `stereo_open` (played by the controllers
     /// D+672 / D+768 on the part's own skeleton, F-75243).
     #[test]

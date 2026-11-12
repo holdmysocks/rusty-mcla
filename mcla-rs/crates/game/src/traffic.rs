@@ -5671,6 +5671,10 @@ impl Vehicles {
         // (the manager's byte +0x64234, read by F-60230: its writer is not traced; 0 as everywhere in the port)
         let d = init_draws(seed, &mut self.amb_rng2, spot, ty.cab, ty.proxy, false);
         let c = &mut self.cars[idx];
+        // (the instance's place before, inst +80 = car +192: F-92604's instance init (the function after its flags, its
+        // matrix the request's) ends by writing it the spawn place and zeroing the velocity +96 and its change +112 -
+        // so the first render update's velocity, F-53150, is the move from the spawn place over that frame)
+        c.amb_place = Some(c.state.pos);
         c.amb_born = self.clock;
         c.amb_life = d.life;
         c.amb_lamps.hour_offset = d.hour;
