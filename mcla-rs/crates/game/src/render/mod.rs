@@ -1381,6 +1381,8 @@ pub struct Gpu {
     /// original's 8888 copy of its depth-stencil that PSStreakMotionBlur reads), the resolve's programs.
     pub scene_n: u32,
     scene_sets: [Option<SceneSet>; 3],
+    /// when each set was last the frame's (`set_scene_samples` frees one unused for `SCENE_SET_IDLE`)
+    scene_used: [Option<std::time::Instant>; 3],
     pub stencil_copy: wgpu::TextureView,
     resolve_layouts: [wgpu::BindGroupLayout; 2],
     resolve_pipes: [wgpu::RenderPipeline; 2],
@@ -3159,6 +3161,7 @@ impl Gpu {
             depth_down_bg: None,
             scene_n: 1,
             scene_sets: [None, None, None],
+            scene_used: [None, None, None],
             stencil_copy,
             resolve_layouts,
             resolve_pipes,
@@ -3364,9 +3367,26 @@ impl Gpu {
         };
         self.scene_n = n;
         let i = ms::scene(n).slot() - 1;
+        let now = std::time::Instant::now();
         if self.scene_sets[i].is_none() {
             let (w, h) = (self.scene_w.max(1), self.scene_h.max(1));
             self.scene_sets[i] = Some(SceneSet::new(&self.device, &self.resolve_layouts, w, h, n));
+            log::info!("scene targets: {n} samples made in {:.2} ms", now.elapsed().as_secs_f64() * 1000.0);
+        }
+        self.scene_used[i] = Some(now);
+        // (a set of another sample count nothing has drawn into for SCENE_SET_IDLE goes - GitHub #48: the garage's and the
+        // menus' 4x set, 164 MB at 1080p, stayed for the session after them; the original's multisampled targets are its
+        // EDRAM's, which hold nothing between uses. Never the driving set (`aamode::scene_samples(false)`), which comes
+        // back after every garage and menu; making the 4x set takes ~15 ms. MCLA_SCENE_SETS_KEEP=1: kept, as before)
+        if std::env::var_os("MCLA_SCENE_SETS_KEEP").is_none() {
+            let drive = ms::scene(match crate::aamode::scene_samples(false) { 0 | 1 => 1, 2 => 2, _ => 4 }).slot() - 1;
+            for j in 0..3 {
+                if j != i && j != drive && self.scene_sets[j].is_some() && self.scene_used[j].is_some_and(|t| now.duration_since(t) > SCENE_SET_IDLE) {
+                    self.scene_sets[j] = None;
+                    self.scene_used[j] = None;
+                    log::info!("scene targets: slot {} freed (unused {} s)", j + 1, SCENE_SET_IDLE.as_secs());
+                }
+            }
         }
     }
 
@@ -4472,6 +4492,9 @@ fn make_refl_bg(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, buf: &wgp
         ],
     })
 }
+
+/// How long a scene target set of another sample count is kept unused (`Gpu::set_scene_samples`).
+const SCENE_SET_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The scene's multisampled colour (none at 1 sample) and depth-stencil, and the resolve's bindings of it.
 struct SceneSet {

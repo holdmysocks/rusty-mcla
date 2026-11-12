@@ -348,7 +348,7 @@ fn load_brakes(gpu: &mut Gpu, world: &mut World, dir: &Path) -> Option<BrakeMode
                 Vertex { pos: p.to_array(), normal: nr.to_array(), uv0: mesh.uv0.get(i).copied().unwrap_or_default().to_array(), uv1, color, color1: [0, 0, 0, 255], uv2: [0.0, 0.0] }
             })
             .collect();
-        b.vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("brake vb"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
+        b.vb = crate::world::BufPart::whole(gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("brake vb"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX }));
         list.push(b);
     }
     (!out.rotor.is_empty()).then_some(out)
@@ -1745,9 +1745,9 @@ fn mesh_to_batch_xf(gpu: &mut Gpu, mesh: &mcla_formats::rage::geometry::Mesh, sn
         let c1 = mesh.colors1.get(i).copied().unwrap_or([c[0], 255, 255, 255]); // (no second colour set: its alpha slot carries the first set's alpha, the body's baked occlusion - the lighting reads it there; the first set's own alpha stays the baked-paint flag)
         verts.push(Vertex { pos: pos.to_array(), normal: nrm.to_array(), uv0: uv0.to_array(), uv1: uv1.to_array(), color: [c[1], c[2], c[3], 0], color1: [c1[1], c1[2], c1[3], c1[0]], uv2: [0.0, 0.0] });
     }
-    let vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
-    let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&mesh.indices), usage: wgpu::BufferUsages::INDEX });
-    GpuBatch { shader: sname.to_string(), vb, ib, count: mesh.indices.len() as u32, bind, mode, min: mn, max: mx, bucket: 0, cull: 0, base_lens: false }
+    let vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("car part vb"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
+    let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("car part ib"), contents: bytemuck::cast_slice(&mesh.indices), usage: wgpu::BufferUsages::INDEX });
+    GpuBatch { shader: sname.to_string(), vb: crate::world::BufPart::whole(vb), ib: crate::world::BufPart::whole(ib), count: mesh.indices.len() as u32, bind, mode, min: mn, max: mx, bucket: 0, cull: 0, base_lens: false }
 }
 
 /// The licence plates made so far (the perf line).
@@ -1885,7 +1885,7 @@ fn roof_skin_write(gpu: &Gpu, model: &CarModel, top: &vehicle_model::BoneClip, t
             let (q, n) = vehicle_model::skin_vertex(&by_bone, Vec3::from(v.pos), Vec3::from(v.normal), *b, *w);
             Vertex { pos: q.to_array(), normal: n.to_array(), ..*v }
         }).collect();
-        gpu.queue.write_buffer(&batch.vb, 0, bytemuck::cast_slice(&out));
+        gpu.queue.write_buffer(&batch.vb.buf, batch.vb.off, bytemuck::cast_slice(&out));
     }
 }
 
@@ -2820,6 +2820,10 @@ impl Vehicles {
                 log::info!("body lowest vertex y {:.3} in shader {}", lo, which);
             }
         }
+        let pack_old = std::env::var_os("MCLA_CAR_PACK_OLD").is_some();
+        let pack_dummy = Arc::new(gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("car pack (unset)"), size: 4, usage: wgpu::BufferUsages::VERTEX, mapped_at_creation: false }));
+        let mut pack_v: Vec<Vertex> = Vec::new();
+        let mut pack_i: Vec<u32> = Vec::new();
         for k in keys {
             let acc = merged.remove(&k).unwrap();
             if acc.indices.is_empty() {
@@ -2833,12 +2837,25 @@ impl Vehicles {
             };
             // (the skinned roof's vertices are written again while it moves: `Vehicles::upload_uniforms`)
             let skinned = !acc.skin.is_empty() && acc.skin.len() == acc.verts.len() && (k.2 >> 24) & 3 == 0;
-            let usage = if skinned { wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST } else { wgpu::BufferUsages::VERTEX };
-            let vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&acc.verts), usage });
+            // (a skinned roof keeps a vertex buffer of its own, written while it moves; the other batches' vertices and
+            // indices go into the model's two shared buffers, made after this loop - `pack`; MCLA_CAR_PACK_OLD=1: a buffer
+            // pair per batch, as before)
+            let (vb, ib) = if skinned || pack_old {
+                let usage = if skinned { wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST } else { wgpu::BufferUsages::VERTEX };
+                let vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("car vb"), contents: bytemuck::cast_slice(&acc.verts), usage });
+                let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("car ib"), contents: bytemuck::cast_slice(&acc.indices), usage: wgpu::BufferUsages::INDEX });
+                (crate::world::BufPart::whole(vb), crate::world::BufPart::whole(ib))
+            } else {
+                let vsz = std::mem::size_of::<Vertex>() as u64;
+                let v = crate::world::BufPart { buf: pack_dummy.clone(), off: pack_v.len() as u64 * vsz, len: acc.verts.len() as u64 * vsz };
+                let i = crate::world::BufPart { buf: pack_dummy.clone(), off: pack_i.len() as u64 * 4, len: acc.indices.len() as u64 * 4 };
+                pack_v.extend_from_slice(&acc.verts);
+                pack_i.extend_from_slice(&acc.indices);
+                (v, i)
+            };
             if skinned {
                 roof_skin.push((batches.len(), acc.verts.clone(), acc.skin.clone()));
             }
-            let ib = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&acc.indices), usage: wgpu::BufferUsages::INDEX });
             // (bit 31: a traffic mesh of the blended bucket, bits 26 - 30 its place among them - `prep_car`)
             let (group, lod) = ((k.2 >> 16) as u8, ((k.2 >> 24) & 3) as usize);
             if group != 0 {
@@ -2855,6 +2872,17 @@ impl Vehicles {
             } else {
                 lods[lod - 1].1.push(group);
                 lods[lod - 1].0.push(b);
+            }
+        }
+        // (the packed batches' two buffers: each batch's part points into them)
+        if !pack_v.is_empty() {
+            let vb = Arc::new(gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("car vb"), contents: bytemuck::cast_slice(&pack_v), usage: wgpu::BufferUsages::VERTEX }));
+            let ib = Arc::new(gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("car ib"), contents: bytemuck::cast_slice(&pack_i), usage: wgpu::BufferUsages::INDEX }));
+            for b in batches.iter_mut().chain(lods.iter_mut().flat_map(|l| l.0.iter_mut())) {
+                if Arc::ptr_eq(&b.vb.buf, &pack_dummy) {
+                    b.vb.buf = vb.clone();
+                    b.ib.buf = ib.clone();
+                }
             }
         }
         let mut params = car_params(&car);
@@ -8111,7 +8139,7 @@ pub fn load_wheels_with(gpu: &mut Gpu, world: &mut World, rim_dir: &Path, tyre: 
                         Vertex { pos: p.to_array(), normal: nr.to_array(), uv0: mesh.uv0.get(i).copied().unwrap_or_default().to_array(), uv1, color: [255, 255, 255, alpha], color1: [0, 0, 0, 255], uv2: [0.0, 0.0] }
                     })
                     .collect();
-                b.vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("rim vb"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
+                b.vb = crate::world::BufPart::whole(gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("rim vb"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX }));
             }
             batches.push(b);
         }
@@ -8211,7 +8239,7 @@ fn wheel_backside(gpu: &mut Gpu, root: &Path, xf: Mat4) -> Vec<GpuBatch> {
                     Vertex { pos: xf.transform_point3(m.positions[i]).to_array(), normal: nr.to_array(), uv0: m.uv0[i].to_array(), uv1: m.uv1[i].to_array(), color: [255, 255, 255, m.colors[i][0]], color1: [0, 0, 0, 255], uv2: [0.0, 0.125] }
                 })
                 .collect();
-            b.vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("whl_backside vb"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
+            b.vb = crate::world::BufPart::whole(gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("whl_backside vb"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX }));
         } else if sname.to_ascii_lowercase().contains("blackmatte") && std::env::var("MCLA_BLACKMATTE_OLD").is_err() {
             // (the disc: PS_BlackMatte, black - recorded draws 2112 ... 2118 of the original, uv2.x = 4 as the car's BlackMatte parts)
             let verts: Vec<Vertex> = (0..n)
@@ -8220,7 +8248,7 @@ fn wheel_backside(gpu: &mut Gpu, root: &Path, xf: Mat4) -> Vec<GpuBatch> {
                     Vertex { pos: xf.transform_point3(m.positions[i]).to_array(), normal: nr.to_array(), uv0: m.uv0[i].to_array(), uv1: m.uv1[i].to_array(), color: [255, 255, 255, 255], color1: [0, 0, 0, 255], uv2: [4.0, 0.0] }
                 })
                 .collect();
-            b.vb = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("whl_backside disc vb"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX });
+            b.vb = crate::world::BufPart::whole(gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("whl_backside disc vb"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX }));
         }
         out.push(b);
     }

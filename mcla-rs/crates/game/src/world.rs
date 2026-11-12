@@ -198,10 +198,34 @@ pub struct CpuBatch {
 /// one by it as the original's visibility walk does (main.rs `draw_sectors`).
 pub type Part = (u32, u32, Vec3, f32, u32, Vec3);
 
+/// A batch's vertices or indices: its own buffer, or its range of one buffer shared by a car model's batches (GitHub #48:
+/// D3D12 places every buffer on 64 KB, and a car's ~50 small batches took 64 KB each). No `Deref` to the buffer on purpose:
+/// a write must go through `buf` at `off`.
+#[derive(Clone)]
+pub struct BufPart {
+    pub buf: Arc<wgpu::Buffer>,
+    pub off: u64,
+    pub len: u64,
+}
+
+impl BufPart {
+    pub fn whole(b: wgpu::Buffer) -> BufPart {
+        let len = b.size();
+        BufPart { buf: Arc::new(b), off: 0, len }
+    }
+    /// The batch's range (only the whole range is asked for).
+    pub fn slice(&self, _: std::ops::RangeFull) -> wgpu::BufferSlice<'_> {
+        self.buf.slice(self.off..self.off + self.len)
+    }
+    pub fn size(&self) -> u64 {
+        self.len
+    }
+}
+
 pub struct GpuBatch {
     pub shader: String,
-    pub vb: wgpu::Buffer,
-    pub ib: wgpu::Buffer,
+    pub vb: BufPart,
+    pub ib: BufPart,
     pub count: u32,
     pub bind: Arc<wgpu::BindGroup>,
     pub mode: MatMode,
