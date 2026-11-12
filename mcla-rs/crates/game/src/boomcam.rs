@@ -1965,8 +1965,10 @@ pub struct CamFx {
 
 impl Default for CamFx {
     fn default() -> CamFx {
-        // (the constructor's defaults, F-25608)
-        CamFx { idle_delay: 10.0, burnout_turn: 1.5, pan: (1.0472, 1.0472), limit: (1.0, 1.0, 0.471_239, 0.471_239), rise_up: 0.75, zoom_in: 15.0, look_lerp: 0.2, look_delay: 3.0 }
+        // (the constructor's defaults, F-25608, checked word for word: test camfx_defaults_match_the_constructor; the
+        // pans are pi / 3 = 0x3F860A92, the pitch limits 0x3EF1463B)
+        let (pan, lim) = (f32::from_bits(0x3F86_0A92), f32::from_bits(0x3EF1_463B));
+        CamFx { idle_delay: 10.0, burnout_turn: 1.5, pan: (pan, pan), limit: (1.0, 1.0, lim, lim), rise_up: 0.75, zoom_in: 15.0, look_lerp: 0.2, look_delay: 3.0 }
     }
 }
 
@@ -6746,5 +6748,42 @@ Focus 0 1 0
             n += 1;
         }
         assert_eq!(n, 5000);
+    }
+}
+
+/// The camera effects tune's constructor (camFX, F-25608) against the original's own code run offline
+/// (tools/camfx_ctor_reference.py -> testdata/camfx_ctor_ref.txt: the 1,216-byte object after the constructor).
+#[cfg(test)]
+mod camfx_ctor_tests {
+    use super::*;
+
+    /// The defaults a `camera/default` file that leaves a key out gets: the scalars the port reads (`CamFx::default`)
+    /// and the five shake blocks (`CamShake::load` with no file) equal the constructor's words bit for bit. Rumble and
+    /// DrivingRumble take the 0.01 Magnitude mcPlayerCamera's constructor (F-42437) writes over the camFX one before the file.
+    #[test]
+    fn camfx_defaults_match_the_constructor() {
+        let w: Vec<u32> = include_str!("testdata/camfx_ctor_ref.txt").split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+        assert_eq!(w.len(), 304);
+        let at = |off: usize| w[off / 4];
+        let fx = CamFx::default();
+        for (off, v) in [(16, fx.rise_up), (32, fx.zoom_in), (36, fx.idle_delay), (40, fx.look_delay), (44, fx.burnout_turn), (48, fx.look_lerp), (60, fx.pan.0), (64, fx.pan.1), (68, fx.limit.0), (72, fx.limit.1), (76, fx.limit.2), (80, fx.limit.3)] {
+            assert_eq!(v.to_bits(), at(off), "camFX +{off}");
+        }
+        let sh = CamShake::load("no such data dir");
+        assert_eq!(sh.blocks.len(), 5);
+        for (i, b) in sh.blocks.iter().enumerate() {
+            let base = 96 + 224 * i;
+            for (p, part) in b.parts.iter().enumerate() {
+                for (k, v) in part.iter().enumerate() {
+                    for (c, x) in v.to_array().into_iter().enumerate() {
+                        assert_eq!(x.to_bits(), at(base + 64 * p + 16 * k + 4 * c), "block {i} part {p} field {k}.{c}");
+                    }
+                }
+            }
+            let mag = if i == 1 || i == 2 { 0.01f32.to_bits() } else { at(base + 196) };
+            assert_eq!([b.timer.to_bits(), b.magnitude.to_bits(), b.scale.to_bits(), b.state as u32], [at(base + 192), mag, at(base + 200), at(base + 212)], "block {i}");
+            // (the Rot / Tran frequency factors kR / kT: 1, as every trigger writes them - the port's apply takes 1)
+            assert_eq!([at(base + 204), at(base + 208)], [1.0f32.to_bits(); 2]);
+        }
     }
 }
