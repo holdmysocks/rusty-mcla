@@ -1368,6 +1368,18 @@ fn go_to_arrived(arrived: bool, near_t: f32, state_t: f32, route_done: bool) -> 
     arrived || near_t > 5.0 || (state_t > 0.0 && route_done)
 }
 
+/// The Double Pursuit's Search enter (F-68396): its cop nearer the target - the squared distances of its two cops (cop -
+/// target, F-39842's order), cop 0 only when strictly nearer - searches straight on (0); the other turns by
+/// `dbl_search_turn`, one draw of the shared generator after the first command; the enter's timer +16 is set to 0.
+fn dbl_search_nearer(d0: f32, d1: f32) -> usize {
+    if d0 < d1 { 0 } else { 1 }
+}
+
+/// The other cop's turn: +pi/2 when the draw `(lo & 0x7FFFFF) x 2^-23` is under 0.5, else -pi/2.
+fn dbl_search_turn(draw: f32) -> f32 {
+    if draw < 0.5 { std::f32::consts::FRAC_PI_2 } else { -std::f32::consts::FRAC_PI_2 }
+}
+
 /// A cop's brain Search starting: the state's reset F-97098 (no points, the route not set - its last index +344 is written only),
 /// then its enter's point list (F-57507 -> F-52110).
 fn search_start(uid: u32, pts: Vec<(Vec3, Option<NavNode>)>, random: bool, angle: f32) -> CopSearch {
@@ -4492,8 +4504,14 @@ impl Police {
                     self.search = 0.0;
                     self.seen_time = 0.0;
                     self.srch.clear();
-                    let mut order: Vec<(f32, u32)> = self.cops.iter().filter_map(|u| vehicles.cars.iter().find(|c| c.uid == *u)).map(|c| (c.state.pos.distance_squared(ppos), c.uid)).collect();
-                    if self.kind.squad() {
+                    let dbl = self.kind == TacKind::PursuitDbl;
+                    let mut order: Vec<(f32, u32)> = self.cops.iter().filter_map(|u| vehicles.cars.iter().find(|c| c.uid == *u))
+                        .map(|c| (if dbl { zone_d2(c.state.pos, ppos) } else { c.state.pos.distance_squared(ppos) }, c.uid)).collect();
+                    if dbl && order.len() == 2 {
+                        if dbl_search_nearer(order[0].0, order[1].0) == 1 {
+                            order.swap(0, 1);
+                        }
+                    } else if self.kind.squad() {
                         order.sort_by(|a, b| a.0.total_cmp(&b.0));
                     } else {
                         order.truncate(1);
@@ -4503,8 +4521,8 @@ impl Police {
                         for (k, (_, u)) in order.into_iter().enumerate() {
                             let angle = if k == 0 {
                                 0.0
-                            } else if self.kind == TacKind::PursuitDbl {
-                                if crate::brain::rng().float() < 0.5 { std::f32::consts::FRAC_PI_2 } else { -std::f32::consts::FRAC_PI_2 }
+                            } else if dbl {
+                                dbl_search_turn(crate::brain::rng().float())
                             } else {
                                 let a = sign * std::f32::consts::FRAC_PI_2;
                                 sign = -sign;
@@ -5877,6 +5895,41 @@ mod tests {
         assert_eq!(running_arm(1.0, 1, &arms), Vec3::Z);
         assert_eq!(running_arm(7.0, 0, &arms), Vec3::X);
         assert_eq!(running_arm(8.5, 0, &arms), Vec3::ZERO);
+    }
+
+    #[test]
+    fn dbl_search_matches_the_original() {
+        // (F-68396 run offline with its block init, the brain command logged, tools/dbl_search_reference.py: 3,000 cases -
+        // ties at one place, mirrored through the target, the last bit apart)
+        let src = include_str!("testdata/dbl_search_ref.txt");
+        let hx = |w: &str| u32::from_str_radix(w, 16).unwrap();
+        let v3 = |w: &str| {
+            let c: Vec<f32> = w.split(',').map(|q| f32::from_bits(hx(q))).collect();
+            Vec3::new(c[0], c[1], c[2])
+        };
+        let mut bad = Vec::new();
+        let mut n = 0;
+        for l in src.lines() {
+            let (lhs, want) = l.split_once(" -> ").unwrap();
+            let w: Vec<&str> = lhs.split(' ').collect();
+            let (t, a, b) = (v3(&w[0][1..]), v3(&w[1][1..]), v3(&w[2][1..]));
+            let mut g = crate::vehicles::parked::Mwc { lo: hx(&w[3][1..]), carry: hx(&w[4][1..]) };
+            let near = dbl_search_nearer(zone_d2(a, t), zone_d2(b, t));
+            let mut got = String::new();
+            for (k, angle) in [(near, 0.0), (1 - near, f32::NAN)] {
+                let angle = if angle.is_nan() { dbl_search_turn(g.float()) } else { angle };
+                let blk = search_block(false, angle);
+                got += &format!("{k} 7 {:08x} {:08x} {:08x} {:08x} {:08x} ", blk[3], blk[4], blk[5], blk[6], blk[7]);
+            }
+            got += &format!("+16 00000000 g{:08x} g{:08x}", g.lo, g.carry);
+            if got != want {
+                bad.push(format!("{l}
+   got {got}"));
+            }
+            n += 1;
+        }
+        assert_eq!(n, 3000);
+        assert!(bad.is_empty(), "{} of {n}: {:#?}", bad.len(), &bad[..bad.len().min(6)]);
     }
 
     #[test]
