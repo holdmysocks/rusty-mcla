@@ -507,20 +507,12 @@ mod tests {
     /// mcCharacterConfigData_GetCarConfigDataByVehicleName (F-46809) run offline (tools/car_config_pick_reference.py: 3,000
     /// characters of 1 .. 8 cars, seed 4680, the original's own maps and lookups, the career steps set to the port's): the car
     /// returned equals `car_config`'s on every case, and the mod value the original writes at the returned car's +76 equals
-    /// F-83091's. The original's F-83091 gives 0x80000000 where the band's two samples are equal (0 / 0, `fctiwz` of NaN;
-    /// never in the disc's data: no car of the 68 has two equal samples); `setup_mod_value` gives the segment's start there, so
-    /// the cases are run with that one value as the original's.
+    /// `setup_mod_value` (F-83091), also where a band's two samples are equal (0x80000000; never in the disc's data).
     #[test]
     fn car_config_matches_the_original() {
         let text = include_str!("testdata/car_config_pick_ref.txt");
         let f = |x: &str| f32::from_bits(u32::from_str_radix(x, 16).unwrap());
-        let orig_mod = |s: [f32; 3], p: f32, d: i32| {
-            let (lo, hi) = diff_window(p, d);
-            let a = if lo < s[0] { if hi > s[0] { s[0] } else { hi } } else { lo };
-            let b = if hi > s[2] { if lo < s[2] { s[2] } else { lo } } else { hi };
-            let (va, vb) = if (b - a) * 0.5 + lo < s[1] { (s[0], s[1]) } else { (s[1], s[2]) };
-            if va == vb { i32::MIN } else { setup_mod_value(s, p, d) }
-        };
+        let orig_mod = setup_mod_value;
         let (mut n, mut bad, mut nan) = (0, 0, 0);
         for line in text.lines().filter(|l| !l.is_empty()) {
             let w: Vec<&str> = line.split_whitespace().collect();

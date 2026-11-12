@@ -10079,7 +10079,10 @@ pub fn setup_can_reach(s: [f32; 3], perf: f32, d: i32) -> bool {
 }
 
 /// F-83091: the upgrade percentage ("mod value", 0..100) at which the vehicle sits in
-/// the middle of the part of the band it can reach.
+/// the middle of the part of the band it can reach. As the original computes it: (t - va) / (vb - va) (fdivs), times the
+/// segment's width plus its start in one rounding (fmadds), + 0.5, `fctiwz`: a NaN - the segment's two samples equal, 0 / 0 -
+/// gives 0x80000000 (i32::MIN), out of range saturates (as `as i32`). No car of the disc has two equal samples; a mod car can.
+/// Checked against the original: work/verify-save stage 1 (3,000 cases) and docs/reference/ai/verify_car_config.md.
 pub fn setup_mod_value(s: [f32; 3], perf: f32, d: i32) -> i32 {
     let (lo, hi) = diff_window(perf, d);
     let mut a = lo;
@@ -10092,11 +10095,9 @@ pub fn setup_mod_value(s: [f32; 3], perf: f32, d: i32) -> i32 {
     }
     let target = (b - a) * 0.5 + lo;
     let (pa, va, pb, vb) = if target < s[1] { (0.0, s[0], 50.0, s[1]) } else { (50.0, s[1], 100.0, s[2]) };
-    if vb == va {
-        return pa as i32;
-    }
     let t = target.max(va).min(vb);
-    ((t - va) / (vb - va) * (pb - pa) + pa + 0.5) as i32
+    let v = ((t - va) / (vb - va)).mul_add(pb - pa, pa) + 0.5;
+    if v.is_nan() { i32::MIN } else { v as i32 }
 }
 
 /// F-34010: the vehicle's performance value at a mod value.
@@ -17725,6 +17726,10 @@ mod tests {
         // (a strong one cannot be Easy: stock)
         assert!(!setup_can_reach([0.9, 1.0, 1.1], 0.5, 0));
         assert_eq!(setup_mod_value([0.9, 1.0, 1.1], 0.5, 0), 0);
+        // (two equal samples in the band's segment: 0 / 0, fctiwz of the NaN = 0x80000000, as the original - the stage 1
+        // cases and docs/reference/ai/verify_car_config.md; never in the disc's data)
+        assert_eq!(setup_mod_value([0.4, 0.6, 0.6], 0.5, 2), i32::MIN);
+        assert_eq!(setup_mod_value([0.6, 0.6, 0.9], 0.2, 0), i32::MIN);
         assert_eq!(setup_perf(s, 0), 0.4);
         assert_eq!(setup_perf(s, 50), 0.6);
         assert_eq!(setup_perf(s, 100), 0.9);
@@ -20155,12 +20160,10 @@ mod tests {
                     match op {
                         "D" => format!("D {}", setup_can_reach(s, perf, d) as i32),
                         "M" => {
+                            // (two neighbouring samples equal: 0 / 0, the NaN converted to 0x80000000, as the original)
                             let v = setup_mod_value(s, perf, d);
-                            if w.trim() == "M -2147483648" && v != i32::MIN {
-                                // two neighbouring samples equal: the original divides 0 by 0 and converts the NaN (0x80000000); the port returns the segment's start
-                                assert!(s[0] == s[1] || s[1] == s[2], "case {c}");
-                                *counts.entry("M-equal-samples-differ".to_string()).or_default() += 1;
-                                continue;
+                            if v == i32::MIN {
+                                *counts.entry("M-equal-samples".to_string()).or_default() += 1;
                             }
                             format!("M {}", v)
                         }
