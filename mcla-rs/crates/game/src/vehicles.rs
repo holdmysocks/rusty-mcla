@@ -152,7 +152,7 @@ pub struct CarModel {
     /// (the part's placement times the parent's world in its file), the inverse of the bone's own at rest, and whether
     /// the part hangs on the `steer` bone or below (the turn then applies on top). The drawn delta with M the part's
     /// matrix (F-98654 copies it into the bone's local): pre x M x post.
-    pub susp_draw: [Option<(Mat4, Mat4, bool)>; 12],
+    pub susp_draw: [Option<(Mat4, Mat4, bool)>; 13],
     /// where the exhaust and nitrous effects come out (car space, at most two, each with whether it moves with the
     /// rear bumper) and whether the first is a
     /// bone of the rear bumper (`CarAsset::fx_anchors`, `carfx.rs`)
@@ -974,7 +974,7 @@ const SUSP_GROUP: u32 = DENT_GROUP + 5;
 
 /// The pop-up headlights' draw groups (after the suspension's 12): + j the meshes of the fitted headlight part on the j-th
 /// bone its `light_flip` clip moves (`CarModel::light_flip`).
-const FLIP_GROUP: u32 = SUSP_GROUP + 12;
+const FLIP_GROUP: u32 = SUSP_GROUP + 13;
 const FLIP_BONES: usize = 8;
 
 /// The vertex-dent parameters of a car's draw, dmgParams (VS_CarPaint and the other body programs: the vertex moves
@@ -2028,7 +2028,7 @@ struct CarPrep {
     trunk_bone: Option<Mat4>,
     slot_bones: [Option<Mat4>; 3],
     turn_bones: [Option<Mat4>; 4],
-    susp_draw: [Option<(Mat4, Mat4, bool)>; 12],
+    susp_draw: [Option<(Mat4, Mat4, bool)>; 13],
     roof_place: Mat4,
     /// the fitted add-on gauge's needle clip and placement (CarModel::needles [2], needle_place)
     upgrade: Option<(Arc<vehicle_model::BoneClip>, Mat4, std::path::PathBuf)>,
@@ -2365,6 +2365,8 @@ impl CarInstance {
                     wt.width = fit.width[axle];
                     wt.suspension_offset = fit.offset[axle];
                 }
+                // (F-67116's fender shift by the set-up's wide body)
+                tune.fender_shift = s.fender_shift(fit.wide);
                 for (i, w) in p.wheel_pos.iter_mut().enumerate() {
                     if fit.half_track[i / 2] > 0.0 {
                         w.x = w.x.signum() * fit.half_track[i / 2];
@@ -3072,14 +3074,15 @@ impl Vehicles {
         log::info!("car {}: turned bones (steer, steering wheel, blower valve, blower) at {:?}", car.name, turn_bones.map(|b| b.map(|m| m.w_axis.truncate())));
         // (the suspension bones F-13644 finds - FindBone F-59267: the base skeleton first, then the fitted parts' - and
         // the part each hangs in: which part's meshes the vehSuspension's M moves, `CarModel::susp_draw`)
-        let susp_src: [Option<(String, usize)>; 12] = std::array::from_fn(|h| {
-            let n = crate::susp_parts::SUSP_BONES[h];
+        // (holder 12: the live rear axle's bone `axle0`, D+1224 - the rear vehAxle's L)
+        let susp_src: [Option<(String, usize)>; 13] = std::array::from_fn(|h| {
+            let n = crate::susp_parts::SUSP_BONES.get(h).copied().unwrap_or("axle0");
             if sk.is_some_and(|s| s.bones.iter().any(|b| b.name == n)) {
                 return None;
             }
             fitted.iter().filter(|(p, _)| !p.is_base).find_map(|(p, _)| p.skeleton.as_ref()?.bones.iter().position(|b| b.name == n).map(|i| (p.file.to_string_lossy().to_string(), i)))
         });
-        let susp_draw: [Option<(Mat4, Mat4, bool)>; 12] = std::array::from_fn(|h| {
+        let susp_draw: [Option<(Mat4, Mat4, bool)>; 13] = std::array::from_fn(|h| {
             let (file, i) = susp_src[h].as_ref()?;
             let (p, x) = fitted.iter().find(|(p, _)| !p.is_base && p.file.to_string_lossy() == file.as_str())?;
             let psk = p.skeleton.as_ref()?;
@@ -3089,7 +3092,7 @@ impl Vehicles {
             Some((*x * parent, (*x * b.world).inverse(), under_steer))
         });
         if susp_draw.iter().any(|d| d.is_some()) {
-            log::info!("car {}: suspension bones drawn {:?}", car.name, susp_draw.iter().enumerate().filter(|(_, d)| d.is_some()).map(|(h, _)| crate::susp_parts::SUSP_BONES[h]).collect::<Vec<_>>());
+            log::info!("car {}: suspension bones drawn {:?}", car.name, susp_draw.iter().enumerate().filter(|(_, d)| d.is_some()).map(|(h, _)| crate::susp_parts::SUSP_BONES.get(h).copied().unwrap_or("axle0")).collect::<Vec<_>>());
         }
         // (the exhaust tips are drawn at the outlet bones of the part that holds them, as those bones stand:
         // they move with that part - a hanging rear bumper takes them along)
@@ -6371,10 +6374,15 @@ if keep || c.state.pos.distance(center) < 450.0 {
                     // (a suspension bone: its local is the vehSuspension's M as F-98654 copies it - the w words as a 3x4's)
                     n if n + 3 >= SUSP_GROUP as usize => {
                         let h = n + 3 - SUSP_GROUP as usize;
-                        let held = c.state.veh.as_deref().and_then(|v| v.susp.as_ref()).and_then(|s| s.iter().find(|(k, _)| *k == h));
+                        let veh = c.state.veh.as_deref();
+                        // (holder 12: the live rear axle's L, as F-98654 copies it into `axle0`)
+                        let held: Option<[[f32; 3]; 4]> = if h == 12 {
+                            veh.and_then(|v| v.live_axle.as_ref()).map(|a| a.l)
+                        } else {
+                            veh.and_then(|v| v.susp.as_ref()).and_then(|s| s.iter().find(|(k, _)| *k == h)).map(|(_, sp)| std::array::from_fn(|i| [sp.m[i][0], sp.m[i][1], sp.m[i][2]]))
+                        };
                         match (c.model.susp_draw.get(h).copied().flatten(), held) {
-                            (Some((pre, post, under_steer)), Some((_, sp))) => {
-                                let r = sp.m;
+                            (Some((pre, post, under_steer)), Some(r)) => {
                                 let mm = Mat4::from_cols(Vec4::new(r[0][0], r[0][1], r[0][2], 0.0), Vec4::new(r[1][0], r[1][1], r[1][2], 0.0), Vec4::new(r[2][0], r[2][1], r[2][2], 0.0), Vec4::new(r[3][0], r[3][1], r[3][2], 1.0));
                                 let steer = if under_steer { c.model.turn_bones[0].map_or(Mat4::IDENTITY, |w| w * crate::steer_parts::turn(false, c.steer_parts.steer_bone_angle()) * w.inverse()) } else { Mat4::IDENTITY };
                                 m * steer * pre * mm * post

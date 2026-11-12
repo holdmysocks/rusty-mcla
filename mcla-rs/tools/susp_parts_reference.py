@@ -10,7 +10,8 @@ rest place), partner axle 0x3000 (+84 = 0x3400, +88 = 0x3800: two wheels with th
 the local matrix M 0x4800 (the copy the part owns), the global matrix 0x4C00.
 
 Writes <out-dir>/susp_parts_ref.txt: one case a line, "in -> out" (hex words): in = partner(0/1) steer rest(3)
-local(16) global(16) then per tick dw dl dr (the wheel's, the partner's two); out = mode(+96 as i16) inv(+92) then
+local(16) global(16) then per tick dw dl dr (the wheel's, the partner's two), then f1 for the width setter F-12544
+(+88 = fma(+92, f1, 1.0); 0 = not called); out = mode(+96 as i16) inv(+92) then
 per tick the 16 words of M. Test `steer_parts::tests::susp_parts_match_the_original`."""
 import argparse
 import random
@@ -34,7 +35,7 @@ def main():
     ap.add_argument('--tool', default='mcla-tool')
     ap.add_argument('--cases', type=int, default=3000)
     a = ap.parse_args()
-    ctor, init, upd, disp = ('sub_' + addr(a.tool, k) for k in ('F-18804', 'F-66627', 'F-17019', 'F-48387'))
+    ctor, init, upd, disp, width = ('sub_' + addr(a.tool, k) for k in ('F-18804', 'F-66627', 'F-17019', 'F-48387', 'F-12544'))
     rnd = random.Random(29)
 
     def unit(v):
@@ -68,8 +69,10 @@ def main():
         ticks = []
         for t in range(TICKS):
             ticks += [rnd.choice((0.0, rnd.uniform(-0.15, 0.15), rnd.uniform(-0.02, 0.02))) for _ in range(3)]
-        cases.append(([partner], [steer] + rest + local + glob + ticks))
-    n = 1 + 1 + 3 + 32 + 3 * TICKS
+        # (F-67116's f1 = 0.2 - width - fender shift; 0: F-12544 not called)
+        f1 = 0.0 if rnd.random() < 0.3 else rnd.choice((rnd.uniform(-0.2, 0.05), rnd.uniform(-1.5, 1.5)))
+        cases.append(([partner], [steer] + rest + local + glob + ticks + [f1]))
+    n = 1 + 1 + 3 + 32 + 3 * TICKS + 1
     rows = ',\n'.join('{%s}' % ','.join(['%d' % x for x in ints] + ['0x%08x' % fb(float(x)) for x in f]) for ints, f in cases)
     nl = chr(10)
     setup = ('memset(objects,0,0x7000);'
@@ -83,6 +86,8 @@ def main():
             'for(auto&cc:C){const uint32_t*c=cc;' + setup +
             '{' + call(ctor, 'ctx.r3.u32=0x4000;') + '}' +
             '{' + call(init, 'ctx.r3.u32=0x4000;ctx.r4.u32=0x1000;ctx.r5.u32=0x2000;ctx.r6.u32=0x4800;ctx.r7.u32=0x4C00;ctx.r8.u32=c[0]?0x3000:0;') + '}' +
+            'if(c[37+3*' + str(TICKS) + ']){uint32_t u=c[37+3*' + str(TICKS) + '];float f;memcpy(&f,&u,4);Context ctx{};ctx.r3.u32=0x4000;ctx.f1.f64=f;'
+            'ctx.r13.u32=0x5800;ctx.r1.u32=0x7F00;' + width + '(ctx,nullptr);}'
             'printf("%d %08x",(int)(int16_t)(load(0x4000+96)>>16),load(0x4000+92));'
             'for(int t=0;t<' + str(TICKS) + ';t++){store(0x2000+600,c[37+3*t]);store(0x3400+600,c[38+3*t]);store(0x3800+600,c[39+3*t]);'
             '{' + call(upd, 'ctx.r3.u32=0x4000;') + '}'
@@ -91,7 +96,7 @@ def main():
                 'image.assign(std::istreambuf_iterator<char>(bin),{});' + nl + body + '}' + nl)
     stubs = {disp: '{uint32_t u=load(ctx.r3.u32+600);float f;memcpy(&f,&u,4);ctx.f1.f64=f;}'}
     idx = recomp_closure.index(a.recomp)
-    exe = recomp_closure.build(idx, [ctor, init, upd], main_src, a.out_dir, 'susp_parts', stubs=stubs, vector=True)
+    exe = recomp_closure.build(idx, [ctor, init, upd, width], main_src, a.out_dir, 'susp_parts', stubs=stubs, vector=True)
     # (the xyz compare mask the set-up ands the bone's place with is zero in the image and xyz all ones in the running
     # original - docs/MAP.md, 2026-11-10: filled in a copy)
     img = bytearray(a.image.read_bytes())

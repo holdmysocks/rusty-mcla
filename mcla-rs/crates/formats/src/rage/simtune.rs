@@ -265,6 +265,9 @@ pub struct SimTune {
     pub axle_bone_z: Option<f32>,
     /// that bone's matrix as authored: its three rows and its place
     pub axle_bone: Option<[[f32; 3]; 4]>,
+    /// with the set-up's wide body (+2203 not 0): mcCarModelTune's FenderEdge stock - wide, front and rear (F-67116 takes
+    /// it off its width term); None without it
+    pub fender_shift: Option<[f32; 2]>,
     /// the front wheel's steering axis in the car's frame where it is not straight up (a
     /// motorcycle's raked fork: the second row of its fork bone's matrix; wheel +400)
     pub steer_axis: Option<[f32; 3]>,
@@ -369,6 +372,7 @@ impl SimTune {
             nitro_shots: lerp_i(a.nitro_shots as u16 as i16 as i32, b.nitro_shots as u16 as i16 as i32, t) as u16 as f32,
             axle_bone_z: a.axle_bone_z,
             axle_bone: a.axle_bone,
+            fender_shift: a.fender_shift,
             steer_axis: a.steer_axis,
         }
     }
@@ -512,14 +516,21 @@ impl SimTunes {
             let edge = self.fender_edge[axle][wide];
             fit.half_track[axle] = if edge > 0.5 { edge - fit.width[axle] * 0.5 } else { 0.0 };
         }
+        let shift = self.fender_shift(fit.wide);
         for set in [&mut self.base, &mut self.mods] {
             for (axle, wt) in [&mut set.wheel_front, &mut set.wheel_back].into_iter().enumerate() {
                 wt.radius = fit.radius[axle];
                 wt.width = fit.width[axle];
                 wt.suspension_offset = fit.offset[axle];
             }
+            set.fender_shift = shift;
         }
         Some(fit)
+    }
+
+    /// F-67116's fender shift for a set-up with (`wide`) or without the wide body: FenderEdge stock - wide per axle.
+    pub fn fender_shift(&self, wide: bool) -> Option<[f32; 2]> {
+        wide.then(|| [self.fender_edge[0][0] - self.fender_edge[0][1], self.fender_edge[1][0] - self.fender_edge[1][1]])
     }
 
     /// The garage's wheel check (F-97327 -> F-82553) for one axle of a set-up's wheel figures `d` (+2106..+2114 of the
