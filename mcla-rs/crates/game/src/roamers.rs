@@ -203,6 +203,10 @@ pub struct Roamers {
     /// a story man whose core warps has just been flashed: his greeting; the race returned
     /// with it is a Warper_Warp('DEFAULT_WITH_CUT'), no run to the line
     pub warp_greeting: Option<String>,
+    /// the man's car (uid) whose driver plays the mild gesture now: the cores' greeting at the meeting is followed by
+    /// Racer_PlayGestureMild(racer 0) (F-82224: racer +684 = 5; e.g. game/race/0xb8b948b6 0xa0b) - not with the police
+    /// too close (COPS_TOO_CLOSE greets without it)
+    pub greet_gesture: Option<u32>,
     /// the story men whose core makes him the GPS target while he cruises (`core_gps`)
     pub gps_cores: Vec<String>,
     /// the red light and freeway racers' scripts (`althk.rs`)
@@ -436,6 +440,7 @@ impl Roamers {
             cores: HashMap::new(),
             warp_cores: HashMap::new(),
             warp_greeting: None,
+            greet_gesture: None,
             gps_cores: Vec::new(),
             specials: Vec::new(),
             sys: SlotSystem::default(),
@@ -1585,6 +1590,7 @@ impl Roamers {
         }
         // (the others go back to being places on their loops)
         let keep = vehicles.cars[ri].uid;
+        self.greet_gesture = Some(keep);
         vehicles.cars.retain(|c| !c.racer || c.uid == keep);
         // (step 19d: every police car goes underground for the run and the race -
         // PoliceManager_SetAllPoliceUnderground(1, 1))

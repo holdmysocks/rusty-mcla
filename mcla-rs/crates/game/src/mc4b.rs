@@ -349,6 +349,16 @@ impl GasVisit {
     /// the trigger's rDelay 0.5 are left out: the port's start and the generic trigger's delay
     /// were not decoded.)
     pub fn step(&mut self, dt: f32, pos: Vec3, speed: f32, menu_open: bool, paused: bool, police: bool, menu_state: bool) -> GasStep {
+        self.step_car(dt, pos, speed, menu_open, paused, police, menu_state, false, true)
+    }
+
+    /// `step` with the player car's two gates: `damaged_out` (Racer_IsDamagedOut, damage at MaxDamage: the
+    /// visit's frame does nothing but the leaving test at 0x716) and `timer_run` (Racer_CheckDamageTimer F-17777:
+    /// 1 when mcCarDamage +44, the crash timer, is not above 0). With the timer running the visit is spent
+    /// (0x45d: armed = 0) and the stop branch is shut (0x542); the rolling refill (0x6b8) does not test it, so
+    /// the frame that spends the visit can still refill.
+    #[allow(clippy::too_many_arguments)]
+    pub fn step_car(&mut self, dt: f32, pos: Vec3, speed: f32, menu_open: bool, paused: bool, police: bool, menu_state: bool, damaged_out: bool, timer_run: bool) -> GasStep {
         self.clock += dt;
         let flat = |c: [f32; 3]| Vec3::new(pos.x - c[0], 0.0, pos.z - c[2]).length();
         // (the trigger: bTriggerMultipleTimes, not only on entry, also while moving)
@@ -356,8 +366,11 @@ impl GasVisit {
             self.at = Some(i);
         }
         let mut out = GasStep::None;
-        if self.at.is_some() && self.armed {
-            if speed < 7.0 && !paused {
+        if self.at.is_some() && self.armed && !damaged_out {
+            if !timer_run {
+                self.armed = false;
+            }
+            if speed < 7.0 && timer_run && !paused {
                 if !police && self.clock >= self.last + 2.0 && menu_state {
                     out = GasStep::Menu;
                     self.armed = false;
@@ -740,6 +753,23 @@ mod tests {
         let mut g = GasVisit::default();
         assert_eq!(g.step(dt, c, 0.0, false, false, false, false), GasStep::None);
         assert_eq!(g.step(dt, c, 20.0, false, false, false, false), GasStep::RefillOne);
+        // (the crash timer running, F-17777 = 0: stopping gives no menu and spends the visit, until it ends)
+        let mut g = GasVisit { clock: 5.0, ..Default::default() };
+        assert_eq!(g.step_car(dt, c, 0.0, false, false, false, true, false, false), GasStep::None);
+        assert!(!g.armed);
+        assert_eq!(g.step_car(dt, c, 0.0, false, false, false, true, false, true), GasStep::None);
+        // (rolling in with it running: that frame's refill still comes, the visit spent after it)
+        let mut g = GasVisit::default();
+        assert_eq!(g.step_car(dt, c, 20.0, false, false, false, true, false, false), GasStep::RefillOne);
+        assert!(!g.armed);
+        // (damaged out: nothing in the station, but the visit still ends outside it)
+        let mut g = GasVisit { clock: 5.0, ..Default::default() };
+        assert_eq!(g.step_car(dt, c, 0.0, false, false, false, true, true, true), GasStep::None);
+        assert_eq!(g.step_car(dt, c, 20.0, false, false, false, true, true, true), GasStep::None);
+        assert!(g.armed && g.at == Some(9));
+        g.step_car(dt, c + Vec3::new(22.5, 0.0, 0.0), 0.0, false, false, false, true, true, true);
+        assert_eq!(g.at, None);
+        assert_eq!(g.step_car(dt, c, 0.0, false, false, false, true, false, true), GasStep::Menu);
     }
 
     /// kLED: the original's CalculateRankOrdered / Unordered (F-37138 / F-90700, generated code run off line by

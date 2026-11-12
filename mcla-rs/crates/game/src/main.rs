@@ -3933,6 +3933,15 @@ impl App {
                     }
                     let big = std::mem::take(&mut c.state.wipeout);
                     if self.crash_bits == 0 {
+                        // (the damage object's update F-32386 runs +44 down whatever the crash flags: a timer a
+                        // repair or a reset left above 0 when it cleared the bits still runs out - the gas
+                        // stations' Racer_CheckDamageTimer F-17777 reads it)
+                        if self.crash_timer > 0.0 {
+                            let all_down = !c.state.wheels.is_empty() && c.state.wheels.iter().enumerate().all(|(i, w)| w.grounded || (c.model.bike && i % 2 == 1));
+                            if speed < 4.47 || all_down {
+                                self.crash_timer -= dt;
+                            }
+                        }
                         // a head-on into the nose of a traffic car or into something fixed above
                         // 22.35 m/s (F-43509, physics::headon, which added its damage): a wipeout
                         // and the slow motion
@@ -8721,6 +8730,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         let rain_snd = self.rain_amount();
         // (the start scene's events on the racers: gestures, windows, the taunt's speech and jaws)
         self.prerace_acts_tick(dt);
+        // (the meeting's greeting: Racer_PlayGestureMild on the man, F-82224 - racer +684 = 5, no duration)
+        if let Some(uid) = self.roam.greet_gesture.take() {
+            if let Some(i) = self.vehicles.cars.iter().position(|c| c.uid == uid) {
+                self.drivers.gesture(i, drivers::Gesture::Mild, 0.0, false);
+            }
+        }
         // the arrests' gesture_cophandsup on racer slot 0, the player (event 53: racer+684 = 18 until its end call)
         match self.cine.playing.as_ref().and_then(|sc| police::arrest_gesture(&sc.name).map(|h| (h, sc.t))) {
             Some(((g, t, dur), now)) if now >= t && !self.arrest_hands => {
@@ -9120,13 +9135,15 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // a gas station (`game/MiscTasks/GasStations`, career2 `gasphoto/notes.md`): rolling
                 // through above 7.1 m/s fills one canister, once a visit, in any race too; stopping below
                 // 7.0 in the cruise or a payback race with no police about opens the SERVICE STATION menu
-                // (form 61), once a visit; the visit ends 10 m outside the station's radius
-                if self.drive && p.state.damage < 1.0 {
+                // (form 61), once a visit; the visit ends 10 m outside the station's radius. Damaged out
+                // (Racer_IsDamagedOut) only the leaving test runs; while the crash timer runs (Racer_CheckDamageTimer
+                // F-17777, mcCarDamage +44 = crash_timer) the visit is spent and the menu shut.
+                if self.drive {
                     let paused = !matches!(self.game.mode, Mode::FreeRoam | Mode::Race);
                     let police = matches!(self.police.heat, police::Heat::Pursuit | police::Heat::Search);
                     let state = self.game.race.as_ref().map_or(self.game.flag.is_none(), |r| r.kind == game::RaceKind::Payback);
                     let menu_open = self.game.hangout_key.as_deref() == Some(game::GAS_MENU);
-                    match self.gas.step(dt, p.state.pos, p.state.vel.length(), menu_open, paused, police, state) {
+                    match self.gas.step_car(dt, p.state.pos, p.state.vel.length(), menu_open, paused, police, state, police::damaged_out(p.state.damage), !(self.crash_timer > 0.0)) {
                         mc4b::GasStep::RefillOne => {
                             // (mcCareer_RefillOneNitro, F-21838: one more while below the most)
                             if p.state.nitro_shots < p.state.nitro_max {
@@ -15261,6 +15278,7 @@ impl App {
             self.vehicles.cars[idx].vinyl_name = config;
             self.vehicles.cars[idx].ai = None;
             self.vehicles.cars[idx].cop = car.contains("police");
+            self.vehicles.cars[idx].exhaust = !cinedriver::exhaust_off(&scene, &label);
             self.vehicles.pose_car(idx, pos, rot);
             // (the scene's car is its set-up's whole car - RACE_GH_06_READY_TO_START_ON_ENTER loads
             // GH_06_0_vp_dsn_280z_75 with OpponentManager_LoadOpponent and waits for it to stream before the

@@ -323,6 +323,8 @@ fn stand_car(game: &mut Game, vehicles: &mut Vehicles, gpu: &mut Gpu, world: &mu
     c.vinyl_name = setup.to_string();
     // (Racer_SetHeadlights(car, 0) of the hangout cores and the payback's set-up: its lamps switched off)
     c.amb_lamps.off = true;
+    // (and Racer_SetExhaust(car, 0) beside it in every core: no idle exhaust smoke)
+    c.exhaust = false;
     true
 }
 

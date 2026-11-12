@@ -31,14 +31,14 @@ pub fn step(fx: &mut Particles, cars: &[CarInstance], cam: Vec3, player_hidden: 
         // nitro: while the shot burns; never on a police unit (chassis +819, F-37253); with the car's velocity
         // (test hook MCLA_CARFX_FORCE=1: the player's nitro effect on all the time, also standing)
         let nitro_on = !gate && !c.cop && (st.nitro_on() || (c.is_player && std::env::var_os("MCLA_CARFX_FORCE").is_some()));
-        // exhaust: engine running (`engine_off`: a scene's car_off), not in stealth, the car drawn, below 1.5 m/s;
+        // exhaust: engine running (`engine_off`: a scene's car_off), the model's switch +598 on (`exhaust`), not in stealth, the car drawn, below 1.5 m/s;
         // "drawn" = G+118, bit 0 of the racer's draw mode (F-95074, F-16712 reads it): 0 only for the player's car in
         // the bumper view - not during the crash camera, the Damageout event, a cutscene or a menu - which is the
         // port's `hide_player`; every other car always (no cull or distance test)
         // evolution "throttle" = the chassis' throttle +136 as the sim's tick left it (F-21480 copies it as it is):
         // the pedal after the pad's dead zone and the rev limiter's cut, 1 while the nitrous burns; no velocity
         let drawn = !(c.is_player && player_hidden);
-        let exhaust_on = !gate && !c.engine_off && !c.pu_stealth && drawn && st.speed() < EXHAUST_MAX_SPEED;
+        let exhaust_on = !gate && !c.engine_off && c.exhaust && !c.pu_stealth && drawn && st.speed() < EXHAUST_MAX_SPEED;
         let throttle = chassis_throttle(st, &c.input);
         let car_m = Mat4::from_rotation_translation(st.rot, st.pos);
         // (the original pushes a bone's matrix, one 60 Hz frame old, on by the body's velocity / 60 - with a side

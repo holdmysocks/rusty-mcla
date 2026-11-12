@@ -664,6 +664,13 @@ pub const SCENE_SETUPS: &[(&str, &str, &str, &str)] = &[
     ("story/cut_story_hangout_pinkslip_downtown", "jin", "vp_nsn_350z_06", "pinkslip_vp_nsn_350z_06"),
 ];
 
+/// The scene cars whose caller switches the exhaust off when it loads them (Racer_SetExhaust(racer, 0), F-12677):
+/// REDLIGHT_GH_01_GARAGE_ON_ENTER (0x132) and GARAGE_BEACHES_PAYBACK_ON_ENTER (0x5f8) - the downtown hangouts' ON_ENTER
+/// scripts call neither SetExhaust nor SetHeadlights. Neither turns it on again.
+pub fn exhaust_off(scene: &str, label: &str) -> bool {
+    scene_setup(scene, label).is_some() && ["story/cut_story_hollywood_garage_intro", "story/cut_story_payback_intro"].iter().any(|s| s.eq_ignore_ascii_case(scene))
+}
+
 /// The fixed set-up's (car, set-up) of the scene's car `label` (`SCENE_SETUPS`).
 pub fn scene_setup(scene: &str, label: &str) -> Option<(&'static str, &'static str)> {
     SCENE_SETUPS.iter().find(|r| r.0.eq_ignore_ascii_case(scene) && r.1 == label).map(|r| (r.2, r.3))
@@ -794,6 +801,9 @@ mod tests {
         }
         assert!(no_driver("story/cut_story_hollywood_garage_intro", "repair"));
         assert_eq!(scene_setup("story/cut_story_race_gh_06", "henry"), None);
+        // (the exhaust off: the two garage scenes' set-up cars, not the downtown hangouts', not a hookman's)
+        assert!(exhaust_off("story/cut_story_hollywood_garage_intro", "repair") && exhaust_off("story/cut_story_payback_intro", "shop2"));
+        assert!(!exhaust_off("story/cut_story_hangout_series_downtown", "hugo") && !exhaust_off("story/cut_story_race_gh_06", "henry"));
         assert!(!no_driver("story/cut_story_race_gh_06", "henry"));
     }
 }
