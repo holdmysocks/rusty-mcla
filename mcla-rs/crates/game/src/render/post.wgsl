@@ -473,26 +473,31 @@ fn fs_tonemap(in: VsOut) -> @location(0) vec4<f32> {
 //   rows: frac(y / 2) > 0 (odd rows) (m1 + m2) / 2 + n x intensityGrain, else (m1 + m2) x intensityInterlace / 2
 //   then the bloom added and PSToneMap's Yxy rule (BrightPassValues.z, White), deSat, x 2 ColorCorrect, Contrast
 //   about 0.5, and the game's own encode (x <= 0.00304: 12.92 x, else 1.055 x^Gamma - 0.055), not clamped before.
-fn pc_tap(j: vec2<f32>, off: vec2<f32>, texel: vec2<f32>) -> vec3<f32> {
-    return textureSampleLevel(t0, samp, j + off * texel, 0.0).rgb;
+// (FullResMapSampler is point-filtered and clamped, as recorded on the tone map's draws (fetch word 3 min / mag 0,
+// clamp 2): the texel floor(u x size) + the fetch's texel offset, held to the picture)
+fn pc_tap(j: vec2<f32>, off: vec2<f32>, dims: vec2<f32>) -> vec3<f32> {
+    let q = clamp(floor(j * dims + off), vec2<f32>(0.0), dims - vec2<f32>(1.0));
+    return textureLoad(t0, vec2<i32>(q), 0).rgb;
 }
 
 // (the program up to its output: the encoded colour)
 fn police_enc(in: VsOut) -> vec3<f32> {
     let dims = vec2<f32>(textureDimensions(t0));
-    let texel = 1.0 / dims;
     // (the pixel's place as the original's quad hands it: D3D9 puts the pixel centres on integers)
     let px = floor(in.clip.xy);
     let clip = vec2<f32>(2.0 * px.x / dims.x - 1.0, 1.0 - 2.0 * px.y / dims.y);
     let t = p.g.x;
     let n = textureSampleLevel(t_noise, s_noise, clip * 1.5 + t * vec2<f32>(1.234, 1.678), 0.0).r - 0.2;
-    let j = in.uv + vec2<f32>(n * p.g.w);
-    let a = pc_tap(j, vec2<f32>(1.0, 0.0), texel);
-    let b = pc_tap(j, vec2<f32>(2.0, -2.0), texel);
-    let c = pc_tap(j, vec2<f32>(2.0, 2.0), texel);
-    let d = pc_tap(j, vec2<f32>(-2.0, -2.0), texel);
-    let e = pc_tap(j, vec2<f32>(-1.0, 0.0), texel);
-    let f = pc_tap(j, vec2<f32>(-2.0, 2.0), texel);
+    // (the quad's uv at the pixel: F-59602 (through F-36137) draws (-1, 1) - (1, -1) with uv 0 - 1 and no half-pixel offset, the pass's
+    // state 10 = 0, so the pixel (i, j) reads uv (i / W, j / H) - the texel's corner, not its centre)
+    let uv0 = px / dims;
+    let j = uv0 + vec2<f32>(n * p.g.w);
+    let a = pc_tap(j, vec2<f32>(1.0, 0.0), dims);
+    let b = pc_tap(j, vec2<f32>(2.0, -2.0), dims);
+    let c = pc_tap(j, vec2<f32>(2.0, 2.0), dims);
+    let d = pc_tap(j, vec2<f32>(-2.0, -2.0), dims);
+    let e = pc_tap(j, vec2<f32>(-1.0, 0.0), dims);
+    let f = pc_tap(j, vec2<f32>(-2.0, 2.0), dims);
     let m1 = select(select(max(a, c), b, c > b), select(max(b, c), a, c > a), a > b);
     let m2 = select(select(max(e, f), d, f > d), select(max(d, f), e, f > e), e > d);
     let sum = m1 + m2;
@@ -500,7 +505,7 @@ fn police_enc(in: VsOut) -> vec3<f32> {
     if (fract(px.y * 0.5) > 0.0) {
         s = sum * 0.5 + vec3<f32>(n * p.g.y);
     }
-    var cc = textureSampleLevel(t2, samp, in.uv, 0.0).rgb + s;
+    var cc = textureSampleLevel(t2, samp, uv0, 0.0).rgb + s;
     let xyz = to_xyz(cc);
     let su = select(xyz.x + xyz.y + xyz.z, 0.001, xyz.x + xyz.y + xyz.z == 0.0);
     let l = xyz.y * p.a.x / (adapted() + 0.001);
