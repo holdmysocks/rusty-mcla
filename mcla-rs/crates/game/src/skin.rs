@@ -263,6 +263,8 @@ pub struct SkinModel {
     pub neck_bones: Vec<bool>,
     /// the bones of the spine00 subtree: a driver's filter +92 (F-29730)
     pub spine_bones: Vec<bool>,
+    /// the bones a walker's anim LOD drops beyond 30 m (F-62015): Facial_root, wrist_l and wrist_r, each with its subtree
+    pub lod_bones: Vec<bool>,
     /// the layout signature of the character's frame (`Character::frame_layout`)
     pub layout: u32,
     /// per bone: the frame holds its translation / its rotation (the record's +26 / +27); a clip's track for a DOF the frame
@@ -474,9 +476,10 @@ impl SkinModel {
             binds4 = binds.clone();
         }
         let [face_bones, neck_bones, spine_bones] = bone_masks(&c);
+        let lod_bones = subtree_mask(&bones, &ids, &LOD_BONE_IDS);
         let layout = c.frame_layout;
         let dofs: Vec<(bool, bool)> = c.bones.iter().map(|b| (b.dof_trans, b.dof_rot)).collect();
-        Some(SkinModel { bones, ids, lods, cockpit, binds, binds4, mats, head: c.bone("head"), morph, face_bones, neck_bones, spine_bones, layout, dofs })
+        Some(SkinModel { bones, ids, lods, cockpit, binds, binds4, mats, head: c.bone("head"), morph, face_bones, neck_bones, spine_bones, lod_bones, layout, dofs })
     }
 }
 
@@ -518,6 +521,26 @@ fn load_morph(path: &Path, c: &Character, high: &[Part]) -> Option<Morph> {
         parts.push(g);
     }
     Some(Morph { shapes, parts })
+}
+
+/// The bone ids F-62015 sets to weight 0 beyond 30 m (the u16 table it reads): Facial_root, wrist_l, wrist_r.
+pub const LOD_BONE_IDS: [u16; 3] = [0x988B, 0x905C, 0x9002];
+
+/// The bones with one of `tops`' ids, each with every bone below it (F-62015 -> F-98542, the weight set with its subtree walk F-10233;
+/// an id the skeleton lacks changes nothing).
+pub fn subtree_mask(bones: &[Bone], ids: &[u16], tops: &[u16]) -> Vec<bool> {
+    (0..bones.len())
+        .map(|i| {
+            let mut b = Some(i);
+            while let Some(j) = b {
+                if ids.get(j).is_some_and(|id| tops.contains(id)) {
+                    return true;
+                }
+                b = bones[j].parent;
+            }
+            false
+        })
+        .collect()
 }
 
 /// The bones under Facial_root, neck and spine00 (each with the bone itself): the driver's frame filters as F-29730 builds
@@ -1511,5 +1534,42 @@ mod tests {
             assert!(main.iter().any(|n| n.contains("head")), "{set}: {main:?}");
             assert!(c.cockpit.iter().all(|i| !c.lods[0].contains(i)), "{set}");
         }
+    }
+}
+
+#[cfg(test)]
+mod lod_bone_tests {
+    /// The walkers' sets (resources/character/ped_*): Facial_root, wrist_l and wrist_r by id (F-62015's table) in each,
+    /// and the size of the subtree the anim LOD drops.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc"]
+    fn walker_sets_have_the_lod_bones() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let root = std::path::Path::new(&dir).join("resources/character");
+        let mut sets = 0;
+        let mut sizes = std::collections::BTreeMap::new();
+        for e in std::fs::read_dir(&root).unwrap().flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if !name.starts_with("ped_") {
+                continue;
+            }
+            let Some(r6) = std::fs::read_dir(e.path()).ok().and_then(|d| d.flatten().map(|f| f.path()).find(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("r6")))) else { continue };
+            let Some(c) = super::SkinModel::read(&r6) else { continue };
+            let found: Vec<bool> = super::LOD_BONE_IDS.iter().map(|id| c.bones.iter().any(|b| b.id == *id)).collect();
+            let n = (0..c.bones.len()).filter(|&i| {
+                let mut b = Some(i);
+                while let Some(j) = b {
+                    if super::LOD_BONE_IDS.contains(&c.bones[j].id) {
+                        return true;
+                    }
+                    b = c.bones[j].parent;
+                }
+                false
+            }).count();
+            *sizes.entry((found, n, c.bones.len())).or_insert(0) += 1;
+            sets += 1;
+        }
+        println!("{sets} walker sets: (ids found, bones dropped, bones) -> sets {sizes:?}");
+        assert!(sets > 0);
     }
 }

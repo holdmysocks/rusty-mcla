@@ -104,6 +104,8 @@ struct Ped {
     from: Vec<(Quat, Vec3)>,
     blend: f32,
     cur: Vec<(Quat, Vec3)>,
+    /// the anim LOD's state (I+4896, F-62015): its face and hands dropped - past 30 m from the focus, back within 20 m
+    lod_out: bool,
     /// the walker as the tick before the last one left it (`Peds::begin_tick`): what `prepare` draws it between
     prev: Option<Between>,
     /// stands around instead of walking
@@ -1128,6 +1130,30 @@ pub(crate) enum AnimCmd {
 /// one-off unless it is the one playing; 1 / 2 -> clip 1 / 2 at the speed scale, sliding at the slide's speed over the
 /// clip's, clamped to 0.75 .. 1.25; the clip playing gets the rate when it differs (walk) or is
 /// higher (run: a lower one is kept). `cur` = +4788, `rate` = +4880, `oneoff` = +4804, `clip` = F-71036's.
+/// The walker's anim LOD (F-62015, every frame from F-29547): d2 = fma(dx, dx, fma(dz, dz, dy dy)), 3-D from the focus
+/// to its place; out past 900 (30 m) while in, in again at 400 (20 m) or under while out. The state byte I+4896.
+pub(crate) fn bone_lod(out: bool, at: Vec3, focus: Vec3) -> bool {
+    let (dx, dy, dz) = (at.x - focus.x, at.y - focus.y, at.z - focus.z);
+    let d2 = dx.mul_add(dx, dz.mul_add(dz, dy * dy));
+    d2 > if out { 400.0 } else { 900.0 }
+}
+
+/// What the LOD's weight 0 does to the pose: Facial_root's and the wrists' subtrees (`SkinModel::lod_bones`) lose
+/// their translation, rotation and scale tracks in every clip the walker plays (the filter test F-40876, weight > 0); a frame
+/// with a DOF holding no value makes the composer's finish (F-12563) reset the skeleton's locals to the skeleton data's
+/// defaults (F-89389) before it writes the frame (F-34596) - those bones show their rest pose. Both sides of a crossfade
+/// carry the filter, so neither gives them a value: after the blend.
+pub(crate) fn drop_lod_bones(local: &mut [(Quat, Vec3)], m: &SkinModel, out: bool) {
+    if !out {
+        return;
+    }
+    for ((l, &drop), b) in local.iter_mut().zip(&m.lod_bones).zip(&m.bones) {
+        if drop {
+            *l = (b.rot, b.pos);
+        }
+    }
+}
+
 pub(crate) fn anim_choice(st: u32, cur: i32, rate: f32, oneoff: u32, clip: u32, flags: u32, scale: f32, slide: impl FnOnce() -> f32, a28: &[f32; 3], a36: &[f32; 3]) -> AnimCmd {
     match st {
         0 if cur != 0 => AnimCmd::Start(0, 1.0),
@@ -3546,7 +3572,7 @@ impl Peds {
                 time: ((seed >> 8) & 0xff) as f32 / 40.0,
                 from: Vec::new(),
                 blend: 0.0,
-                cur: Vec::new(), prev: None,
+                cur: Vec::new(), lod_out: false, prev: None,
                 loiter: false,
                 calm: 0.0,
                 seed,
@@ -3680,7 +3706,7 @@ impl Peds {
                     time: ((h >> 8) & 0xff) as f32 / 40.0,
                     from: Vec::new(),
                     blend: 0.0,
-                    cur: Vec::new(), prev: None,
+                    cur: Vec::new(), lod_out: false, prev: None,
                     loiter,
                     calm: 0.0,
                     seed: h,
@@ -3781,6 +3807,7 @@ impl Peds {
         for i in 0..self.list.len() {
             let Some(Some(ty)) = self.types.get(&self.list[i].ty) else { continue };
             let p = &mut self.list[i];
+            p.lod_out = bone_lod(p.lod_out, p.pos, center);
             if p.item.is_some() {
                 // (an item's person, F-39915: flag 0x08 clear - no walking, no avoiding;
                 // no rail - locomotion state 0, the set's clip 0 (`*Ped_Idle*`) looped from 0
@@ -4213,7 +4240,7 @@ impl Peds {
             time: 0.0,
             from: Vec::new(),
             blend: 0.0,
-            cur: Vec::new(), prev: None,
+            cur: Vec::new(), lod_out: false, prev: None,
             loiter: true,
             calm: 0.0,
             seed: hash(id, item),
@@ -4312,6 +4339,7 @@ impl Peds {
             if p.blend > 0.0 && p.from.len() == local.len() {
                 blend_pose(&mut local, &p.from, (p.blend / p.blend_len).clamp(0.0, 1.0));
             }
+            drop_lod_bones(&mut local, &ty.model, p.lod_out);
             p.cur.clone_from(&local);
             if !visible || hidden {
                 continue;
@@ -4326,6 +4354,7 @@ impl Peds {
                         if blend > 0.0 && p.from.len() == local.len() {
                             blend_pose(&mut local, &p.from, (blend / p.blend_len).clamp(0.0, 1.0));
                         }
+                        drop_lod_bones(&mut local, &ty.model, p.lod_out);
                     }
                     (b.pos.lerp(p.pos, alpha), b.rot.slerp(p.rot, alpha))
                 }
@@ -5661,6 +5690,24 @@ mod tests {
     /// The anim update F-29547's clip choice against the original's code on 3,000 cases (part e: every locomotion state,
     /// current clip, rate, one-off clip and parked index, the slides and clip speeds of part b): the one-off start, the
     /// clip start with its rate, the rate change and the parked retry it asks for, in order.
+    #[test]
+    fn the_bone_lod_drops_face_and_hands_past_30_m() {
+        // (F-62015: 3-D, out past 30 m, in again within 20 m)
+        let f = Vec3::new(10.0, 2.0, -5.0);
+        let at = |d: f32| f + Vec3::new(0.6, 0.0, 0.8) * d;
+        assert!(!bone_lod(false, at(29.99), f));
+        assert!(bone_lod(false, at(30.01), f));
+        assert!(bone_lod(true, at(25.0), f));
+        assert!(bone_lod(true, at(20.01), f));
+        assert!(!bone_lod(true, at(19.99), f));
+        assert!(bone_lod(false, f + Vec3::new(0.0, 30.5, 0.0), f), "the height counts");
+        // (each id's subtree; a missing id changes nothing)
+        let b = |parent: Option<usize>| crate::skin::Bone { parent, pos: Vec3::ZERO, rot: Quat::IDENTITY, bind: Vec3::ZERO, rest: [[0.0; 4]; 2] };
+        let bones = [b(None), b(Some(0)), b(Some(1)), b(Some(2)), b(Some(0)), b(Some(4))];
+        let ids = [0u16, 1, 0x905C, 7, 0x988B, 9];
+        assert_eq!(crate::skin::subtree_mask(&bones, &ids, &crate::skin::LOD_BONE_IDS), [false, false, true, true, true, true]);
+    }
+
     #[test]
     fn anim_choice_matches_the_original() {
         let mut n = 0;
