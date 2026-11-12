@@ -4132,6 +4132,53 @@ impl Vehicles {
 
     /// Cars that left the world (through a hole, or off the edge of what is loaded).
     pub fn rescue_fallen(&mut self, world: &World, center: Vec3) {
+        // (test hook MCLA_FALL_TRACE=1: each traffic car's last 3 s of frames - place, velocity, turn, up, rail state,
+        // riding / physical / in the level - written out when it falls out of the world)
+        static TRACE: std::sync::Mutex<Option<hashbrown::HashMap<u32, std::collections::VecDeque<String>>>> = std::sync::Mutex::new(None);
+        let tracing = std::env::var_os("MCLA_FALL_TRACE").is_some();
+        if tracing {
+            let mut g = TRACE.lock().unwrap();
+            let map = g.get_or_insert_with(Default::default);
+            map.retain(|uid, _| self.cars.iter().any(|c| c.uid == *uid));
+            for c in self.cars.iter().filter(|c| !c.is_player) {
+                let q = map.entry(c.uid).or_default();
+                let r = c.rail.as_ref();
+                q.push_back(format!("t {:.3} pos {:.2} {:.2} {:.2} vel {:.2} {:.2} {:.2} w {:.2} {:.2} {:.2} up {:.3} state {:?} active {:?} physical {:?} level {}",
+                    self.clock, c.state.pos.x, c.state.pos.y, c.state.pos.z, c.state.vel.x, c.state.vel.y, c.state.vel.z, c.state.ang_vel.x, c.state.ang_vel.y, c.state.ang_vel.z,
+                    c.state.up().y, r.map(|r| r.state), r.map(|r| r.active), r.map(|r| r.physical), self.level.ambient_pose(c.uid).is_some()));
+                if q.len() > 180 {
+                    q.pop_front();
+                }
+            }
+            // a car that moved more than 15 m in one frame, and its semi partner
+            let rid = |c: &CarInstance| c.rail.as_ref().map(|r| (r.rng_id(), r.state, r.partner));
+            for c in self.cars.iter().filter(|c| !c.is_player) {
+                let Some(q) = map.get(&c.uid) else { continue };
+                if q.len() < 2 { continue; }
+                let p = |l: &str| -> Option<Vec3> { let w: Vec<f32> = l.split_whitespace().skip(3).take(3).filter_map(|x| x.parse().ok()).collect(); (w.len() == 3).then(|| Vec3::new(w[0], w[1], w[2])) };
+                let (Some(a), Some(b)) = (p(&q[q.len() - 2]), p(&q[q.len() - 1])) else { continue };
+                if a.distance(b) < 15.0 { continue; }
+                log::warn!("jump trace {} {} {:?}:{}", c.model.name, c.uid, rid(c), q.iter().map(|l| format!("
+  {l}")).collect::<String>());
+                if let Some((me, st, pa)) = rid(c) {
+                    for o in self.cars.iter().filter(|o| o.uid != c.uid) {
+                        let Some((oid, ost, opa)) = rid(o) else { continue };
+                        if (st == 0 && pa == Some(oid)) || (ost == 0 && opa == Some(me)) {
+                            if let Some(oq) = map.get(&o.uid) {
+                                log::warn!("jump partner {} {} {:?}:{}", o.model.name, o.uid, rid(o), oq.iter().map(|l| format!("
+  {l}")).collect::<String>());
+                            }
+                        }
+                    }
+                }
+            }
+            for c in self.cars.iter().filter(|c| c.state.vel.y <= -50.0 && !c.is_player) {
+                if let Some(q) = map.get(&c.uid) {
+                    log::warn!("fall trace {} {}:{}", c.model.name, c.uid, q.iter().map(|l| format!("
+  {l}")).collect::<String>());
+                }
+            }
+        }
         // a car that dropped through a hole in the world: traffic is taken away, anything that
         // matters goes back onto the road nearest to where it left the ground
         for c in self.cars.iter_mut() {
@@ -5823,8 +5870,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
             }
         }
         // (a semi's other car: a trailer's cab is the car its id names; a cab's trailer the one that names it)
-        let cabs: std::collections::HashMap<u32, u32> = self.cars.iter().filter_map(|c| c.rail.as_ref().filter(|r| r.state != 0).map(|r| (r.rng_id(), c.uid))).collect();
-        let trailers: std::collections::HashMap<u32, u32> = self.cars.iter().filter_map(|c| c.rail.as_ref().filter(|r| r.state == 0).and_then(|r| r.partner).map(|p| (p, c.uid))).collect();
+        // (each by its id and the id its link names: `Rider::pairs_with`)
+        let cabs: std::collections::HashMap<(u32, Option<u32>), u32> = self.cars.iter().filter_map(|c| c.rail.as_ref().filter(|r| r.state != 0).map(|r| ((r.rng_id(), r.partner), c.uid))).collect();
+        let trailers: std::collections::HashMap<(u32, u32), u32> = self.cars.iter().filter_map(|c| c.rail.as_ref().filter(|r| r.state == 0).and_then(|r| r.partner.map(|p| ((p, r.rng_id()), c.uid)))).collect();
         for k in 0..self.cars.len() {
             let c = &self.cars[k];
             let Some(r) = c.rail.as_ref() else { continue };
@@ -5832,7 +5880,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 self.cars[k].rail.as_mut().unwrap().in_level = false;
                 continue;
             };
-            let partner = if r.state == 0 { r.partner.and_then(|p| cabs.get(&p)).copied() } else if r.ty.cab { trailers.get(&r.rng_id()).copied() } else { None };
+            let partner = if r.state == 0 { r.partner.and_then(|p| cabs.get(&(p, Some(r.rng_id())))).copied() } else if r.ty.cab { r.partner.and_then(|p| trailers.get(&(r.rng_id(), p))).copied() } else { None };
             let m = traffic::instance_matrix(c);
             self.level.ambient_place(c.uid, &tune, m, partner, c.inflict, dt);
             if r.pairs_inactive() {
@@ -5897,7 +5945,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             if T.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 15 == 0 {
                 for c in self.cars.iter().filter(|c| c.rail.as_ref().is_some_and(|r| r.active)) {
                     let r = c.rail.as_ref().unwrap();
-                    let gap = r.partner.and_then(|p| self.cars.iter().find(|o| o.rail.as_ref().is_some_and(|x| x.rng_id() == p))).and_then(|o| {
+                    let gap = self.cars.iter().find(|o| o.rail.as_ref().is_some_and(|x| x.pairs_with(r))).and_then(|o| {
                         let (a, b) = (self.level.ambient_pose(c.uid)?, self.level.ambient_pose(o.uid)?);
                         let x = |m: &[Vec3; 4], p: Vec3| m[3] + m[0] * p.x + m[1] * p.y + m[2] * p.z;
                         let (ha, hb) = if r.ty.trailer { (traffic::TRAILER_HITCH_PUB, traffic::CAB_HITCH_PUB) } else { (traffic::CAB_HITCH_PUB, traffic::TRAILER_HITCH_PUB) };
@@ -6629,8 +6677,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
         let mut fades: Vec<f32> = self.cars.iter().map(amb_fade).collect();
         for i in 0..self.cars.len() {
             let Some(r) = self.cars[i].rail.as_ref().filter(|r| r.ty.trailer) else { continue };
-            let Some(id) = r.partner else { continue };
-            if let Some(k) = self.cars.iter().position(|c| c.rail.as_ref().is_some_and(|x| x.rng_id() == id && x.state != 0)) {
+            if let Some(k) = self.cars.iter().position(|c| c.rail.as_ref().is_some_and(|x| x.state != 0 && x.pairs_with(r))) {
                 flags[i] = flags[k];
                 fades[i] = fades[k];
             }

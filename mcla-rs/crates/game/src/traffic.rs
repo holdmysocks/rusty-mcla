@@ -445,9 +445,11 @@ pub fn instance_matrix(c: &super::CarInstance) -> [Vec3; 4] {
 /// rest (5) the instance is where the collider left it - the car's place, which the body's pose kept (the
 /// original's recording: no instance moves when its body goes, th.0 / th7.0, 10 of 10 at 0.000 - 0.001 m). A
 /// seat from before the hit would move it there in one frame, and the next activation takes that jump over
-/// the frame as its velocity (1.4 m: 78 m/s).
+/// the frame as its velocity (1.4 m: 78 m/s). A trailer (state 0) once physical is never towed again (+500 bit 0x10,
+/// `tow_trailers`): its seat is the last tow's, and only the collider moves its instance - at rest too. (Posed back
+/// there, its cab's next activation tied the two by constraints 66 m long, F-15252, and the push threw both 30 m.)
 fn seat_poses(r: &Rider) -> bool {
-    !r.active && !matches!(r.state, 4 | 5)
+    !r.active && !matches!(r.state, 4 | 5) && !(r.state == 0 && r.physical)
 }
 
 /// F-82909's spring arithmetic, each product, quotient and root rounded to a single in the original's order: the weight
@@ -1066,6 +1068,14 @@ impl Rider {
     /// a stable id for traces and for the cab / trailer link
     pub fn rng_id(&self) -> u32 {
         self.id
+    }
+
+    /// A semi's two cars: each one's link (+3604) names the other. The original's link id is unique among the cabs and
+    /// trailers (F-92604 draws again while a car holds it, F-10061); the port's rider ids are free draws that another car
+    /// can share, so the link is taken only when it names this car back. (Taken by the id alone, a trailer whose cab's
+    /// id a CL500 also had was towed to each in turn and thrown 290 m in one frame.)
+    pub fn pairs_with(&self, other: &Rider) -> bool {
+        self.partner == Some(other.id) && other.partner == Some(self.id)
     }
 
     pub fn rand(&mut self) -> f32 {
@@ -5598,11 +5608,13 @@ impl Vehicles {
     /// the spawner's next step removes it - the cars are not removed in the middle of the
     /// vehicles' update).
     fn tow_trailers(&mut self, col: &WorldCollider, dt: f32) {
-        let ids: hashbrown::HashMap<u32, usize> = self.cars.iter().enumerate().filter_map(|(i, c)| c.rail.as_ref().filter(|r| r.state != 0).map(|r| (r.rng_id(), i))).collect();
+        // (a cab by its id and its link: `Rider::pairs_with`)
+        let ids: hashbrown::HashMap<(u32, Option<u32>), usize> = self.cars.iter().enumerate().filter_map(|(i, c)| c.rail.as_ref().filter(|r| r.state != 0).map(|r| ((r.rng_id(), r.partner), i))).collect();
         for i in 0..self.cars.len() {
             let Some(r) = self.cars[i].rail.as_mut().filter(|r| r.state == 0) else { continue };
+            let me = r.rng_id();
             // (F-99638: no cab id, or no car with it - removed, reason 16)
-            let (Some(cab), _) = trailer_cab(true, r.partner.map_or(-1, |id| id as i32), |id| ids.get(&(id as u32)).copied()) else {
+            let (Some(cab), _) = trailer_cab(true, r.partner.map_or(-1, |id| id as i32), |id| ids.get(&(id as u32, Some(me))).copied()) else {
                 r.partner = None;
                 continue;
             };
@@ -5715,8 +5727,8 @@ impl Vehicles {
             }
             r.physical = true;
             r.wake = true;
-            let partner = r.partner;
-            let cab = partner.and_then(|id| self.cars.iter().position(|c| c.rail.as_ref().is_some_and(|x| x.rng_id() == id && x.state != 0)));
+            let (me, partner) = (r.rng_id(), r.partner);
+            let cab = self.cars.iter().position(|c| c.rail.as_ref().is_some_and(|x| x.state != 0 && partner == Some(x.rng_id()) && x.partner == Some(me)));
             if let Some(cab) = cab {
                 self.let_go(cab, _world);
             }
@@ -6912,6 +6924,11 @@ mod tests {
             r.state = state;
             assert!(seat_poses(&r), "state {state}");
         }
+        // (a trailer: towed, its seat poses it; once physical, never again)
+        r.state = 0;
+        assert!(seat_poses(&r));
+        r.physical = true;
+        assert!(!seat_poses(&r));
     }
 
     #[test]
