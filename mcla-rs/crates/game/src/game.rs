@@ -1250,6 +1250,15 @@ pub struct Game {
     pub garage_doors: Vec<Vec3>,
     /// the call up is a racer's telephone challenge: Back accepts and opens ARCADE
     pub phone_challenge: bool,
+    /// The sidekick's wait-for-script flag (the manager's byte +0x117EC; Sidekick_SidekickIsWaitForScriptFlagSet
+    /// F-27566 reads it, Sidekick_SidekickToggleWaitForScriptFlag F-53928 sets it to arg != 0). The update F-37697 sets it
+    /// to 1 when the call up has a line and its +16 is 0 (AppendData's argument 9, F-73532 -> F-33914) and that line is
+    /// over: the call is done, but is not removed (the phone stays up) while the flag is set. Sidekick_Interrupt
+    /// (F-67246 -> F-51256) marks the call done and clears it. A call without a line ends on its timer and never sets it.
+    pub sidekick_wait: bool,
+    /// The call up was appended with argument 9 = 0 and has a line: Some(false) while it is spoken, Some(true) once the
+    /// flag holds it (`sidekick_wait`). The telephone challenge's call is such a call; the reminders pass 2.
+    pub tip_waits: Option<bool>,
     /// the challenge was taken: main opens the race menu
     pub phone_accept: bool,
     /// the mission's man on the road: where, his name, his car's folder
@@ -1790,6 +1799,8 @@ impl Game {
             idle_cam: false,
             garage_doors: Vec::new(),
             phone_challenge: false,
+            sidekick_wait: false,
+            tip_waits: None,
             phone_accept: false,
             rival_mark: None,
             hold_starter: false,
@@ -3693,6 +3704,32 @@ impl Game {
             return crate::mc4::DISTRICTS[d.min(4)].to_string();
         }
         self.races_near(p, 1).first().map(|(i, _, _)| self.race_defs[*i].district.clone()).unwrap_or_default()
+    }
+
+    /// Sidekick_SidekickToggleWaitForScriptFlag (F-53928): the flag set to `on`. Cleared, the call it held (done) is
+    /// removed at the next update (F-37697), so the phone goes.
+    pub fn sidekick_toggle_wait(&mut self, on: bool) {
+        self.sidekick_wait = on;
+        if !on && self.tip_waits == Some(true) {
+            self.tip = None;
+            self.tip_waits = None;
+        }
+    }
+
+    /// The sidekick update's part for a waiting call (F-37697): its line over (`spoken`), the flag set and the call held.
+    /// A call gone any other way (Sidekick_Interrupt F-51256: the select, a police tactic, leaving the cruise, the
+    /// dismiss) takes the flag with it.
+    pub fn sidekick_wait_step(&mut self, spoken: bool) {
+        if self.tip.is_none() {
+            if self.tip_waits.take().is_some() {
+                self.sidekick_wait = false;
+            }
+            return;
+        }
+        if self.tip_waits == Some(false) && spoken {
+            self.tip_waits = Some(true);
+            self.sidekick_wait = true;
+        }
     }
 
     /// The MAP action (D-pad up, "OVERHEAD MAP"; rule_frame.md 9): blocked in a replay (form+5708);
@@ -5737,7 +5774,7 @@ impl Game {
             let dt = ctx.input(|i| i.stable_dt).min(0.1);
             // (the phone is put away for an event: none of the race captures shows it)
             let msg = self.tip.as_ref().filter(|_| self.race.is_none()).map(|(title, body, _)| (title.to_uppercase(), body.to_uppercase()));
-            if let Some((title, body, left)) = self.tip.clone() {
+            if let Some((title, body, left)) = self.tip.clone().filter(|_| self.tip_waits != Some(true)) {
                 self.tip = if left > dt && !matches!(self.mode, Mode::MainMenu) { Some((title, body, left - dt)) } else { None };
             }
             if msg.is_some() || fp.is_active() {
@@ -5760,8 +5797,8 @@ impl Game {
         } else if panel_up && self.flash_phone.is_some() {
             // (the call waits behind the panel)
         } else if let Some((title, body, left)) = self.tip.clone() {
-            let dt = ctx.input(|i| i.stable_dt);
-            self.tip = if left > dt && !matches!(self.mode, Mode::MainMenu) { Some((title.clone(), body.clone(), left - dt)) } else { None };
+            let dt = if self.tip_waits == Some(true) { 0.0 } else { ctx.input(|i| i.stable_dt) };
+            self.tip = if (left > dt || dt == 0.0) && !matches!(self.mode, Mode::MainMenu) { Some((title.clone(), body.clone(), left - dt)) } else { None };
             let sc = (screen.height() / 900.0).clamp(0.5, 2.0);
             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("tip")));
             let w = 430.0 * sc;

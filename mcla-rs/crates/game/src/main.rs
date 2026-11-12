@@ -7164,6 +7164,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     }
                 }
             }
+            // (the sidekick's wait-for-script flag: a waiting call's line over holds it, `Game::sidekick_wait_step`;
+            // "over" here is the speech queue empty, where F-37697 compares the playing line with the call's)
+            self.game.sidekick_wait_step(!self.speech.busy());
             if self.game.tip.is_none() && std::mem::take(&mut self.game.phone_challenge) {
                 // (not taken)
                 self.speech.say_as("HOOKMAN_PHONE_PLAYER_DECLINES", self.phone_caller);
