@@ -5397,6 +5397,11 @@ impl App {
                     c.pinned = true;
                     // (Racer_Deactivate: chassis +592 bit 0x1 - work/ui2/starter_hold/notes.md)
                     c.deactivated = true;
+                    // (and beside it in the same loop of the career start, game/career/0xebb682f7 0x31e..0x34d, for
+                    // each of the three: Racer_SetHeadlights(racer, 0) - its lamps off - and Racer_SetExhaust(racer, 0),
+                    // F-12677 - no idle exhaust smoke; the script never turns either on again)
+                    c.amb_lamps.off = true;
+                    c.exhaust = false;
                     c.driver = "starter".into();
                 }
             }
