@@ -2889,12 +2889,13 @@ mod tests {
     /// F-13872 run offline (tools/aiv_off_line_reference.py, seed 13872, 6,000 cases: corridors of 2 .. 10 portals with
     /// their planes, 1 .. 10 control points, the car near the line, about 0.25 m off it, 5 m below it or anywhere, the line
     /// used up in some): `off_line`'s test and its clamped position equal the original's on every case (the position only
-    /// where the original writes it: the line not used up, the out pointer given).
+    /// where the original writes it: the line not used up, the out pointer given); the getters line used up F-65527 and
+    /// next point F-28749, run on the same aiv, equal too.
     #[test]
     fn off_line_matches_the_original() {
         let text = include_str!("testdata/aiv_off_line_ref.txt");
         let tune = Arc::new(mcla_formats::rage::aitune::AiTune::from_floats(&vec![0.0; 4096]).unwrap());
-        let (mut n, mut bad, mut bad_x) = (0, 0, 0);
+        let (mut n, mut bad, mut bad_x, mut bad_g) = (0, 0, 0, 0);
         for line in text.lines().filter(|l| !l.is_empty()) {
             let w: Vec<&str> = line.split_whitespace().collect();
             let int = |i: usize| w[i].parse::<i32>().unwrap();
@@ -2930,8 +2931,13 @@ mod tests {
             if out && prog < qb + m && [x.x, x.y, x.z].map(f32::to_bits) != [f(at + 2), f(at + 3), f(at + 4)].map(f32::to_bits) {
                 bad_x += 1;
             }
+            // (the getters F-65527 line used up, F-28749 next point)
+            let np = a.next_point();
+            if a.line_used_up() != (w[at + 5] == "1") || [np.x, np.y, np.z].map(f32::to_bits) != [f(at + 6), f(at + 7), f(at + 8)].map(f32::to_bits) {
+                bad_g += 1;
+            }
         }
-        assert!(n == 6000 && bad == 0 && bad_x == 0, "test {bad} / position {bad_x} of {n} differ");
+        assert!(n == 6000 && bad == 0 && bad_x == 0 && bad_g == 0, "test {bad} / position {bad_x} / getters {bad_g} of {n} differ");
     }
 
     #[test]

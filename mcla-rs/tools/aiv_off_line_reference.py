@@ -11,8 +11,9 @@ the progress +30784. Slot of index i = (i - base + start + 1) mod N.
 Each case: a corridor of 2 .. 10 portals (bends, widths, jitter; planes from the corridor's directions), 1 .. 10 control
 points near the corridor with their cells, the progress (10 % at the ring's end: the line used up), the car near the line,
 sometimes off it in plan by about 0.25 m, sometimes 5 m below or anywhere, the out pointer null in 10 %. Writes
-<out-dir>/aiv_off_line_ref.txt, one line a case: "case" and the inputs (ints decimal, floats hex) "-> result out3" (out as
-written, or the zeros it was cleared to)."""
+<out-dir>/aiv_off_line_ref.txt, one line a case: "case" and the inputs (ints decimal, floats hex) "-> result out3 used next3" (out as
+written, or the zeros it was cleared to; used = the line-used-up getter F-65527, next = the point the next-point getter
+F-28749 points at)."""
 import argparse
 import math
 import random
@@ -106,7 +107,7 @@ def main():
     ap.add_argument('--tool', default='mcla-tool')
     ap.add_argument('--cases', type=int, default=6000)
     a = ap.parse_args()
-    off = addr(a.tool, 'F-13872')
+    off, used, nxt = addr(a.tool, 'F-13872'), addr(a.tool, 'F-65527'), addr(a.tool, 'F-28749')
     inits = [addr(a.tool, f) for f in INITS]
     rnd = random.Random(13872)
     cases = [case(rnd) for _ in range(a.cases)]
@@ -144,12 +145,15 @@ for(int c=0;c<@N@;c++){
  for(uint32_t o=0;o<16;o+=4)store(@OUT@+o,0);
  Context k=fresh();k.r3.u32=A;k.r4.u32=out?@OUT@:0;k.r5.u32=0;
  sub_@OFF@(k,nullptr);
- printf(" -> %u",k.r3.u32&0xff);for(int i=0;i<3;i++)printf(" %08x",load(@OUT@+4*i));printf("\n");}}
+ printf(" -> %u",k.r3.u32&0xff);for(int i=0;i<3;i++)printf(" %08x",load(@OUT@+4*i));
+ {Context g=fresh();g.r3.u32=A;sub_@USED@(g,nullptr);printf(" %u",g.r3.u32&0xff);}
+ {Context g=fresh();g.r3.u32=A;sub_@NEXT@(g,nullptr);for(int i=0;i<3;i++)printf(" %08x",load(g.r3.u32+4*i));}
+ printf("\n");}}
 ''')
-    for kk, v in (('@N@', str(a.cases)), ('@AIV@', '%du' % AIV), ('@OUT@', '%du' % OUT), ('@OFF@', off),
+    for kk, v in (('@N@', str(a.cases)), ('@AIV@', '%du' % AIV), ('@OUT@', '%du' % OUT), ('@OFF@', off), ('@USED@', used), ('@NEXT@', nxt),
                   ('@INITS@', ''.join('{Context k=fresh();sub_%s(k,nullptr);}' % f for f in inits))):
         src = src.replace(kk, v)
-    exe = rd.build(rd.index(a.recomp), ['sub_' + off] + ['sub_' + f for f in inits], src, a.out_dir, 'offline',
+    exe = rd.build(rd.index(a.recomp), ['sub_' + off, 'sub_' + used, 'sub_' + nxt] + ['sub_' + f for f in inits], src, a.out_dir, 'offline',
                    image=rd.load_image(a.image))
     lines = [x.strip() for x in rd.run(exe, a.image).split(nl) if x.strip()]
     assert len(lines) == a.cases, len(lines)
