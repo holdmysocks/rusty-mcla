@@ -2032,6 +2032,18 @@ impl Career {
         STORY_SECOND_OBJECTIVE.contains(&self.missions[i].id.as_str()) && self.ext_ok(i) && self.missions[i].objectives.len() >= 2 && self.ext[i].obj_always[1]
     }
 
+    /// The story CORE scripts' Warper_SetIsWarpingToCutscene(1) in their meeting loop: within the place's radius (not
+    /// paused), before the police test - so on a LOSE_COPS pass too (BESTOF_SH_05_CORE 0x86a, CITY_CHAMP_CORE 0x76f,
+    /// RACE_SH_01_CORE 0x469). BEAT_SH_02_EXOTIC_CORE calls it only at the meeting, past its police and class tests (0x951).
+    pub fn story_cut_near(&self, p: [f32; 3]) -> bool {
+        self.order.iter().any(|&i| {
+            let id = self.missions[i].id.as_str();
+            id != "BEAT_SH_02_EXOTIC"
+                && self.story_waits(i)
+                && STORY_POINTS.iter().find(|s| s.0 == id).is_some_and(|(_, at, r)| crate::brain::racer_distance_to_point(Some(glam::Vec3::from(p)), glam::Vec3::from(*at)) < *r)
+        })
+    }
+
     /// The player at `p` (police on the tail: `pursued`): a story hookman met. Its CORE
     /// script satisfies the first objective and shows the second (0x7f4..0x822 in
     /// CITY_CHAMP_CORE). Returns the mission met.

@@ -643,6 +643,8 @@ struct App {
     phone_wait: Option<(i32, f32)>,
     /// its decline line playing (0x3b8..0x452), the call still held
     phone_declining: bool,
+    /// a cine or story scene played last tick (its end is FinishScene F-65984, which clears `Game::cine_warp`)
+    scene_was: bool,
     /// the racer's countdown has run out: his call waits for the phone's gates
     phone_challenge_due: bool,
     /// the phone form's +788 (held: sidekickDelay, after each call) and the delayed sidekickResume that clears it
@@ -1636,6 +1638,7 @@ impl App {
             phone_challenge_in: 0.0,
             phone_wait: None,
             phone_declining: false,
+            scene_was: false,
             phone_caller: "",
             phone_challenge_due: false,
             phone_hold: false,
@@ -3158,6 +3161,13 @@ impl App {
         self.props.begin_tick();
         // (and the scenes' cast, the hangout people and the scene camera - cine.rs `draw_t`, `draw_camera`)
         self.cine.begin_tick();
+        // (FinishScene F-65984 clears Warper_SetIsWarpingToCutscene's global byte (the native F-63924 stores it by F-20114): a scene of the
+        // port's ended last tick)
+        let scene = self.cine.playing.is_some() || self.cuts.playing.is_some();
+        if self.scene_was && !scene {
+            self.game.cine_warp = false;
+        }
+        self.scene_was = scene;
         // --- input / simulation -------------------------------------------------
         if self.input.rmb {
             self.cam.yaw += self.input.mouse_dx * 0.0025;
@@ -4596,6 +4606,9 @@ impl App {
                 }
             }
             if let Some((si, i)) = enter {
+                // (the hangout's script before its scene, Warper_SetIsWarpingToCutscene(1) - the Hangouts script's 0x1127, and
+                // HANGOUT_SERIES / PINKSLIP_DOWNTOWN_HANGOUT_ON_ENTER's 0x56f / 0x59c where their scene takes the entry's place)
+                self.game.cine_warp = true;
                 // (step 21b: <HANGOUT>_ENTER - a mission's event script plays its story scene in
                 // place of the hangout's own entry; the hangout follows once it is over)
                 let night = self.time_of_day > 18.5 || self.time_of_day < 5.5;
@@ -4707,8 +4720,14 @@ impl App {
                     let pursued = matches!(self.police.heat, police::Heat::Pursuit | police::Heat::Search);
                     // (step 23: FIND_SH_02C waits at his place with the money box)
                     self.game.mc4_find02c_meet([p.x, p.y, p.z], pursued);
+                    // (BESTOF_SH_05 / CITY_CHAMP / RACE_SH_01_CORE's Warper_SetIsWarpingToCutscene(1) within the place, before
+                    // their police test: `Career::story_cut_near`; BEAT_SH_02_EXOTIC_CORE's at the meeting, 0x951)
+                    if self.game.career.story_cut_near([p.x, p.y, p.z]) {
+                        self.game.cine_warp = true;
+                    }
                     if let Some(id) = self.game.career.story_meet_at([p.x, p.y, p.z], pursued) {
                         self.game.dirty = true;
+                        self.game.cine_warp = true;
                         // (a parked story man's core goes on after its scene: `Roamers::meet_go`)
                         if roamers::PARKED_CORES.iter().any(|c| c.0 == id) {
                             self.roam.meet_go = Some(id);
@@ -6325,12 +6344,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         // the listener state still first)
                         let goto = self.goto_garage.filter(|_| self.game.cruising_offline() && self.garage_in.is_none());
                         if drive_in || goto.is_some() {
-                            // 0x42d: PoliceManager_DestroyAllPolice, ThrowEvent 'garage', Warper_SetIsWarpingToCutscene(1),
+                            // 0x42d: PoliceManager_DestroyAllPolice, ThrowEvent 'garage', Warper_SetIsWarpingToCutscene(1) (0x446,
+                            // `Game::cine_warp`),
                             // Warper_TransitionTo('STORY_LOCATION_CUT_SIMPLE', ..): from the render camera to the garage's
                             // wait camera - Warp_Target_Close within 100 of it (F-47096); else the climb over the car
                             // (type 17's state 15, F-98643) and, the scene loaded, the dive onto it (state 26)
                             let g = goto.or(door).unwrap_or(0);
                             self.goto_garage = None;
+                            self.game.cine_warp = true;
                             self.police.destroy_all(&mut self.vehicles);
                             let c = self.vehicles.player().unwrap();
                             let e = garagein::wait_rows(&garagein::SETUPS[g]);
@@ -14960,7 +14981,9 @@ impl App {
         // (the new career's opening: the save boxes, the film, VEHICLE SELECT, the black to the first scene)
         let opening = g.fresh_game || g.starter_pick.is_some() || g.hold_starter || g.opening_black || self.intro_stage != 0;
         // (cinematics: story scenes, a race's opening shots, the film)
-        let cinematic = self.cuts.playing.is_some() || self.cine.playing.is_some() || g.movie.is_some();
+        // and Warper_SetIsWarpingToCutscene's byte (F-46334), from the script's call before its warp into a scene to that
+        // scene's FinishScene
+        let cinematic = self.cuts.playing.is_some() || self.cine.playing.is_some() || g.movie.is_some() || g.cine_warp;
         // (the warper's moves: the start-up flight, the race-start warp, the climb, garage / hangout /
         // payback entries and the garage's way out - *(approx.)* which of the gates above holds them is
         // not read; the port's warps hold the car as a scene does)

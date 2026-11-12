@@ -1250,6 +1250,11 @@ pub struct Game {
     pub garage_doors: Vec<Vec3>,
     /// the call up is a racer's telephone challenge: Back accepts and opens ARCADE
     pub phone_challenge: bool,
+    /// Warper_SetIsWarpingToCutscene's global byte (F-20114 stores it; every script passes 1): set by the scripts that warp
+    /// into a scene (`App::warp_cut_on`'s sites), cleared only by a scene's FinishScene (F-65984). While it is set the pause
+    /// gate (F-38972 through F-46334) opens nothing - near a story or FIND place with the police on the player too, until
+    /// the next scene ends.
+    pub cine_warp: bool,
     /// The sidekick's wait-for-script flag (the manager's byte +0x117EC; Sidekick_SidekickIsWaitForScriptFlagSet
     /// F-27566 reads it, Sidekick_SidekickToggleWaitForScriptFlag F-53928 sets it to arg != 0). The update F-37697 sets it
     /// to 1 when the call up has a line and its +16 is 0 (AppendData's argument 9, F-73532 -> F-33914) and that line is
@@ -1799,6 +1804,7 @@ impl Game {
             idle_cam: false,
             garage_doors: Vec::new(),
             phone_challenge: false,
+            cine_warp: false,
             sidekick_wait: false,
             tip_waits: None,
             phone_accept: false,

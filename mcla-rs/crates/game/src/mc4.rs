@@ -12764,6 +12764,8 @@ pub struct FindMeet {
     pub cops_wait: i32,
     /// the meeting came: the core has left its loop (for its scene and the rest of its flow)
     pub met: bool,
+    /// the pass reached the core's Warper_SetIsWarpingToCutscene(1) (within 20 m, not paused)
+    pub cut: bool,
 }
 
 impl FindMeet {
@@ -12785,7 +12787,9 @@ impl FindMeet {
         if !(!paused && dist < 20.0) {
             return FindStep::None;
         }
-        // (0x413 Warper_SetIsWarpingToCutscene(1) here, before the police test - not ported)
+        // (0x413 Warper_SetIsWarpingToCutscene(1) here, before the police test - in every core of `FIND_POINTS` but
+        // FIND_SH_02B's, which has no call: `mc4_find_meets`)
+        self.cut = true;
         if activity > 1 {
             let out = if self.cops_wait == 0 {
                 self.cops_wait = 100;
@@ -13471,7 +13475,11 @@ impl Game {
                 continue;
             }
             let d = crate::brain::racer_distance_to_point(Some(glam::Vec3::from(p)), glam::Vec3::from(at));
-            match loops[k].1.step(dt, d, cruising, paused, activity) {
+            let step = loops[k].1.step(dt, d, cruising, paused, activity);
+            if std::mem::take(&mut loops[k].1.cut) && id != "FIND_SH_02B" {
+                self.cine_warp = true;
+            }
+            match step {
                 FindStep::LoseCops => self.mc4_splash("LOSE_COPS", "LOSE THE COPS"),
                 FindStep::Meet => {
                     loops[k].1.met = true;
@@ -13542,6 +13550,8 @@ impl Game {
         }
         self.money -= 1_000_000;
         self.mc4_stat_set("tPAR", 0, 1.0);
+        // (0x7b9: Warper_SetIsWarpingToCutscene(1) before the scene)
+        self.cine_warp = true;
         self.career.news.push(crate::career::News::Scene("FIND_SH_02C".to_string()));
         self.career.mission_event("FIND_SH_02C_OBJ_01_COMPLETE");
         self.dirty = true;
@@ -17119,6 +17129,21 @@ mod tests {
     /// A FIND core's meeting loop: a pass every 30 ms; within 20 m (strictly) the meeting, unless the police are on the
     /// player (activity above 1): LOSE_COPS then, again only after 100 passes of the count-down (each 100 ms in the
     /// zone), the count-down held while the police hold an arrest (100); nothing out of the cruise or paused.
+    /// The loop's Warper_SetIsWarpingToCutscene(1) (FIND_SH_01B 0x413): within 20 m and not paused, on a LOSE_COPS pass
+    /// too; not out of the cruise, nor farther.
+    #[test]
+    fn find_meeting_loop_sets_the_cutscene_byte() {
+        let mut m = FindMeet::default();
+        m.step(0.03, 25.0, true, false, 0);
+        assert!(!m.cut);
+        m.step(0.03, 5.0, false, false, 0);
+        assert!(!m.cut);
+        assert_eq!(m.step(0.03, 5.0, true, false, 5), FindStep::LoseCops);
+        assert!(std::mem::take(&mut m.cut));
+        assert_eq!(m.step(0.1, 5.0, true, false, 0), FindStep::Meet);
+        assert!(m.cut);
+    }
+
     #[test]
     fn find_meeting_loop() {
         let mut m = FindMeet::default();
@@ -18732,6 +18757,9 @@ mod tests {
         g.career.event(crate::career::Ev::Race { district: "Downtown", place: 1, hookman: true, class: "TUNER", race: &race, beat_goal: false });
         assert!(!races.is_empty());
         assert_eq!((shown(&g), g.career.save().missions["CITY_CHAMP"].progress.clone()), (1, vec![0, 0]));
+        // (CITY_CHAMP_CORE 0x76f: Warper_SetIsWarpingToCutscene(1) within its 20 m, chased or not)
+        assert!(!g.career.story_cut_near([1658.652, -1.997, 224.921 + 25.0]));
+        assert!(g.career.story_cut_near([1658.652, -1.997, 224.921 + 5.0]));
         assert!(g.career.story_meet_at([1658.652, -1.997, 224.921 + 25.0], false).is_none());
         assert!(g.career.story_meet_at([1658.652, -1.997, 224.921 + 5.0], true).is_none());
         assert_eq!(g.career.story_meet_at([1658.652, -1.997, 224.921 + 5.0], false).as_deref(), Some("CITY_CHAMP"));
