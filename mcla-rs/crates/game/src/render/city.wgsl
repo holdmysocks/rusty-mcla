@@ -33,7 +33,7 @@ struct Globals {
     car_key2_col: vec4<f32>, // ... its colour x strength
     car_amb: vec4<f32>,      // the garage: rgb = the cars' own ambient (ambYPos), w = 1: in force; car_key2 is then a position (its w = 2)
     lod: vec4<f32>,          // OPTIONS > PERFORMANCE: x = DRAW DISTANCE, y = DETAIL LEVEL (1 = the original), z = the plants' model angle factor (0.9 while paused, else 1) - props.rs `Lod`, w = the clock of the plants' wind
-    lod2: vec4<f32>,         // x = the plants' night factor (1 by day, 2 at night: props.rs `Lod::night`)
+    lod2: vec4<f32>,         // x = the plants' night factor (1 by day, 2 at night: props.rs `Lod::night`), y = gReflectionParams.w (sky.rs `road_reflection_w`)
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(0) @binding(2) var t_shadow: texture_depth_2d;
@@ -765,7 +765,7 @@ fn road_program(wpos: vec3<f32>, nrm: vec3<f32>, color: vec4<f32>, occlusion: f3
     // VSCityRoad: c8 .. c11 world x view x projection (the position: the pixel program makes
     // the screen place of the reflection picture from it), c15 the
     // camera, c16 gLightPosDir, c39 gLightColor, c43 gReflectionParams (m_RoadReflection twice,
-    // the reflection plane's height, 1), c56 OcclusionInfo, c72 FresnelExponent, c73
+    // the reflection plane's height, the dawn / dusk ramp: sky.rs road_reflection_w), c56 OcclusionInfo, c72 FresnelExponent, c73
     // SpecularExponent - the materials' values are the same on every road of the city
     xs_c[8] = g.view_proj[0];
     xs_c[9] = g.view_proj[1];
@@ -774,7 +774,7 @@ fn road_program(wpos: vec3<f32>, nrm: vec3<f32>, color: vec4<f32>, occlusion: f3
     xs_c[15] = vec4<f32>(g.cam_pos.xyz, 1.0);
     xs_c[16] = vec4<f32>(-g.sun_dir.xyz, 100.0);
     xs_c[39] = vec4<f32>(g.sun_color.rgb * g.sun_dir.w, -1.0);
-    xs_c[43] = vec4<f32>(g.key_dir.w, g.key_col.w, g.cam_pos.y - 2.0, 1.0);
+    xs_c[43] = vec4<f32>(g.key_dir.w, g.key_col.w, g.cam_pos.y - 2.0, g.lod2.y);
     xs_c[56] = vec4<f32>(g.ambient_ground.y, 0.05, 1.0, g.grade.w);
     xs_c[72] = vec4<f32>(10.0, 0.0, 0.0, 0.0);
     xs_c[73] = vec4<f32>(8.0, 0.0, 0.0, 0.0);
@@ -895,7 +895,7 @@ fn road_night_program(wpos: vec3<f32>, nrm: vec3<f32>, color: vec4<f32>, color1:
     xs_c[10] = g.view_proj[2];
     xs_c[11] = g.view_proj[3];
     xs_c[15] = vec4<f32>(g.cam_pos.xyz, 1.0);
-    xs_c[43] = vec4<f32>(g.key_dir.w, g.key_col.w, g.cam_pos.y - 2.0, 1.0);
+    xs_c[43] = vec4<f32>(g.key_dir.w, g.key_col.w, g.cam_pos.y - 2.0, g.lod2.y);
     xs_c[56] = vec4<f32>(g.ambient_ground.y, 0.05, g.ambient_ground.z, 0.0);
     var vin: array<vec4<f32>, 16>;
     vin[0] = vec4<f32>(wpos, 1.0);

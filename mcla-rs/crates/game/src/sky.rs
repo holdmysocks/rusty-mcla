@@ -574,6 +574,46 @@ pub fn shadows_drawn(strength: f32) -> bool {
     1.0 - strength <= 0.95_f32
 }
 
+/// gReflectionParams.w (F-45287, after ShaderGlobals): 1, but (h - 6) x 2 from 6:00 to 6:30 and 1 - (h - 17.5) x 2
+/// (one fused step) from 17:30 to 18:00, with h the light manager's hour (F-22302). VSCityRoad multiplies a term
+/// by it (`r2.z * c43.w`), so the day road's term fades in after dawn and out before dusk.
+pub fn road_reflection_w(h: f32) -> f32 {
+    let mut w = 1.0_f32;
+    if !(h < 6.0 || h > 6.5) {
+        w = (h - 6.0) * 2.0;
+    }
+    if !(h > 18.0 || h < 17.5) {
+        // (fnmsubs: -((h - 17.5) x 2 - 1) in one rounding, so 18:00 gives -0.0 as recorded)
+        w = -(h - 17.5).mul_add(2.0, -1.0);
+    }
+    w
+}
+
+#[cfg(test)]
+mod road_reflection_tests {
+    use super::road_reflection_w;
+
+    #[test]
+    fn the_ramps_at_dawn_and_dusk() {
+        // the recordings of the original (work/lighting/cap/tg_<hour>.gpu.bin, VSCityRoad c43.w): 6.0 0, 6.03 0.0600004,
+        // 6.1 0.1999998, 6.25 0.5, 6.5 1, 17.75 0.5, 17.9 0.2000008, 17.97 0.0600014, 18.0 -0.0, every other hour 1
+        assert_eq!(road_reflection_w(5.99), 1.0);
+        assert_eq!(road_reflection_w(6.0), 0.0);
+        assert_eq!(road_reflection_w(6.25), 0.5);
+        assert_eq!(road_reflection_w(6.5), 1.0);
+        assert_eq!(road_reflection_w(12.0), 1.0);
+        assert_eq!(road_reflection_w(17.5), 1.0);
+        assert_eq!(road_reflection_w(17.75), 0.5);
+        assert_eq!(road_reflection_w(18.0).to_bits(), (-0.0_f32).to_bits());
+        assert_eq!(road_reflection_w(18.01), 1.0);
+        // bit for bit against the recorded c43.w at the recordings' hours
+        for (h, w) in [(6.0, 0.0_f32), (6.03, 0.060000420), (6.1, 0.19999981), (6.25, 0.5), (6.5, 1.0), (17.5, 1.0), (17.75, 0.5),
+            (17.9, 0.20000076), (17.97, 0.060001373), (17.0, 1.0), (7.0, 1.0), (5.97, 1.0), (18.03, 1.0)] {
+            assert_eq!(road_reflection_w(h).to_bits(), w.to_bits(), "hour {h}");
+        }
+    }
+}
+
 /// The hour the light manager (F-70200) evaluates every weather's keys at a second time for the
 /// shadows: 9 + (h - 5) / 12 x 6 between 5:00 and 18:00 (9:00 .. 15:30), none outside.
 pub fn shadow_hour(h: f32) -> Option<f32> {

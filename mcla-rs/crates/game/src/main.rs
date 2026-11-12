@@ -2239,7 +2239,8 @@ impl App {
             cloud_color: [cloud_c.x, cloud_c.y, cloud_c.z, cover],
             cloud_shade: [cloud_s.x, cloud_s.y, cloud_s.z, self.sim_time * 0.0022],
             lod: { let k = crate::props::Lod::now(); [k.draw, k.detail, k.plant_angle, std::env::var("MCLA_WIND_CLOCK").ok().and_then(|v| v.parse().ok()).unwrap_or(self.wind_clock)] },
-            lod2: [crate::props::Lod::now().night, 0.0, 0.0, 0.0],
+            // y: gReflectionParams.w at the light manager's hour (the garage's own in the garage)
+            lod2: [crate::props::Lod::now().night, sky::road_reflection_w(gar.as_ref().map_or(self.time_of_day, |g| g.0.hour)), 0.0, 0.0],
             ..Globals::default()
         }
     }
