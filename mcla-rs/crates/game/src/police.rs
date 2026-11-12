@@ -1784,6 +1784,18 @@ fn cop_sees(world: &World, under: &[u32], cop: &crate::vehicles::CarInstance, tp
 /// with `half` > 0 the 3D angle (F-88594, `aiv::ang3`) of target minus cop (the vector unit's subtract, denormals
 /// flushed) and the cop's forward (0 - row 2) not under half x 0.0174533 -> no. Else the line's ends: the target's
 /// and the cop's origins with 2 added to y.
+/// The facing / velocity part of the wrong-way condition F-29334 (the shortcut, lane and car gates are the caller's): at a speed
+/// under fMovingSpeed x 0.447 the matrix's row 2 (the backward axis) along the kept tangent over 0, else the velocity against
+/// it; both dot products y first, then z and x fused, as the original (test wrong_way_matches_the_original).
+pub(crate) fn wrong_way_pre(speed: f32, moving: f32, row2: Vec3, vel: Vec3, tan: Vec3) -> bool {
+    let dot = |a: Vec3| a.x.mul_add(tan.x, a.z.mul_add(tan.z, tan.y * a.y));
+    if speed < moving * f32::from_bits(0x3EE4_DD2F) {
+        dot(row2) > 0.0
+    } else {
+        dot(vel) < 0.0
+    }
+}
+
 pub(crate) fn sees_pre(under: bool, cop: Vec3, fwd: Vec3, tpos: Vec3, r: f32, half: f32) -> Option<(Vec3, Vec3)> {
     if under {
         return None;
@@ -4124,11 +4136,7 @@ impl Police {
             match (shortcut, lane, world.nav.as_ref()) {
                 (false, Some((l, bt)), Some(nav)) => nav.curves.get(l).map_or(false, |cv| {
                     let tan = cv.eval(bt).1.normalize_or_zero();
-                    if speed < t("fMovingSpeed", 1.0) * 0.447 {
-                        (-pfwd).dot(tan) > 0.0
-                    } else {
-                        pvel.dot(tan) < 0.0
-                    }
+                    wrong_way_pre(speed, t("fMovingSpeed", 1.0), -pfwd, pvel, tan)
                 }),
                 _ => false,
             }
@@ -6075,6 +6083,23 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 6000);
+    }
+
+    #[test]
+    fn wrong_way_matches_the_original() {
+        let f = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
+        let mut n = 0;
+        for l in include_str!("testdata/wrong_way_ref.txt").lines() {
+            let (lhs, rhs) = l.split_once(" -> ").unwrap();
+            let v: Vec<&str> = lhs.split(' ').collect();
+            let w = |i: usize| f(v[5 + i]);
+            let v3 = |i: usize| Vec3::new(w(i), w(i + 1), w(i + 2));
+            let gates = v[0] == "0" && v[1..5].iter().all(|x| *x == "1");
+            let got = gates && wrong_way_pre(w(0), w(1), v3(2), v3(8), v3(5));
+            assert_eq!(got as u32, rhs.parse::<u32>().unwrap(), "{lhs}");
+            n += 1;
+        }
+        assert_eq!(n, 8000);
     }
 
     #[test]
