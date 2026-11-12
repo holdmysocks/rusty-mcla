@@ -2464,6 +2464,11 @@ impl GatherWorld for EnvGather<'_, '_> {
 /// the override's +60 - a lane-change rail's target phase).
 #[allow(clippy::too_many_arguments)]
 fn search_ahead(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, run: Option<RunRail>, lanes: (Option<usize>, Option<usize>), next_start: Option<Vec3>, g: [Option<GatherRail>; 3], b_start: f32) -> Ahead {
+    // (a car whose race path has bParked: F-33409 skips on its context byte +16 bit 0x8 (behaviour slot 18), so no
+    // search F-47175 - no shared draw, the result words and the mark stay)
+    if r.quiet {
+        return Ahead { j: usize::MAX, d: 0.0, vt: 0.0, blocking: None, player_across: false };
+    }
     let mine = env.others.get(me);
     let me_rows = mine.map_or(((-fwd).to_array(), pos.to_array()), |o| (o.back.to_array(), o.pos.to_array()));
     let vel = mine.map_or((fwd * r.v).to_array(), |o| o.vel.to_array());
@@ -3308,6 +3313,14 @@ fn control(r: &mut Rider, v: f32, want: f32, half_len: f32, ahead: &Ahead, other
     let ty = r.ty;
     let max_decel = if ahead.player_across { ty.max_decel * 3.0 } else { ty.max_decel };
     let up = ty.max_accel + r.bonus;
+    // a car whose race path has bParked (behaviour slot 18 -> the context byte +16 bit 0x8): F-33409 makes no entry and
+    // writes neither +152 nor +156, so F-30960 sees them as F-39469 left them - no entry active, want 0, +156 0: free
+    // driving 0 (its +156 > 0 test); the identities, the on bits and the mark stay
+    if r.quiet {
+        let t = SlotTune { band_d: ty.min_decel_band, min_d: ty.min_decel, max_d: max_decel, band_a: ty.min_accel_band, min_a: ty.min_accel, up };
+        let mut on = [r.on[0], r.on[1], r.on[2], r.ghost.as_ref().is_some_and(|g| g.on3)];
+        return pick_div(&[None; 4], &mut on, &t, 0.0, 0.0, v, dt, &mut r.waited, r.wait);
+    }
     let mut entries: [Option<(f32, f32, bool)>; 4] = [None; 4];
     // 0: the car ahead (F-10623): centre to centre, half lengths and the standing gap
     // stretched with speed
@@ -3360,6 +3373,12 @@ fn control(r: &mut Rider, v: f32, want: f32, half_len: f32, ahead: &Ahead, other
 /// (+420; none -1).
 #[allow(clippy::too_many_arguments)]
 pub fn pick(entries: &[Option<(f32, f32, bool)>; 4], on: &mut [bool; 4], t: &SlotTune, want: f32, v: f32, dt: f32, waited: &mut f32, wait: f32) -> (f32, Option<usize>) {
+    pick_div(entries, on, t, want, 1.0, v, dt, waited, wait)
+}
+
+/// `pick` with the controller's +156 (F-33409 stores 1.0; 0 as F-39469 leaves it when F-33409 skips).
+#[allow(clippy::too_many_arguments)]
+pub fn pick_div(entries: &[Option<(f32, f32, bool)>; 4], on: &mut [bool; 4], t: &SlotTune, want: f32, div: f32, v: f32, dt: f32, waited: &mut f32, wait: f32) -> (f32, Option<usize>) {
     // (F-30960's pick over the four slots: a > 0 the smallest stored gap - slot 3 keeps the gap it beats -, a <= 0 the
     // least; both start at FLT_MAX and take only a strictly smaller value, so a NaN never wins)
     let (mut pos_gap, mut pos_a, mut pos_k) = (f32::MAX, f32::MAX, None);
@@ -3386,9 +3405,9 @@ pub fn pick(entries: &[Option<(f32, f32, bool)>; 4], on: &mut [bool; 4], t: &Slo
         }
     }
     let (mut a, chosen) = if pos_a == f32::MAX && neg_a == f32::MAX {
-        // free driving: F-54830 (want - v) / the controller's +156 (1.0), at most (MaxAccel + bonus + MinAccel) / 2, at
-        // least -(MaxDecel + MinDecel) / 2 with this frame's MaxDecel (x 3 with the player across)
-        let mut a = (want - v) / 1.0;
+        // free driving: F-54830 (want - v) / the controller's +156 when it is > 0, else 0; at most (MaxAccel + bonus +
+        // MinAccel) / 2, at least -(MaxDecel + MinDecel) / 2 with this frame's MaxDecel (x 3 with the player across)
+        let mut a = if div > 0.0 { (want - v) / div } else { 0.0 };
         let (upf, dnf) = ((t.up + t.min_a) * 0.5, (t.max_d + t.min_d) * 0.5);
         if a > upf {
             a = upf;
@@ -5625,8 +5644,8 @@ impl Vehicles {
                     let p = step(r, &env, i, half, upright, dt);
                     rider_offset(r, env.clock);
                     // refused by the light this frame (the stop entry is made only then): the
-                    // junction counts it as waiting (F-16850)
-                    if let Some(ji) = r.stop_id {
+                    // junction counts it as waiting (F-16850; not asked when F-33409 skips, `quiet`)
+                    if let Some(ji) = r.stop_id.filter(|_| !r.quiet) {
                         waits.push((ji, c.state.pos));
                     }
                     p
@@ -13064,8 +13083,19 @@ mod controller_pick_tests {
 
     #[test]
     fn controller_pick_matches_the_original() {
+        assert_eq!(check_pick(include_str!("testdata/controller_pick_ref.txt"), 1.0), 4000);
+    }
+
+    #[test]
+    fn controller_skipped_matches_the_original() {
+        // tools/controller_pick_reference.py --quiet: F-30960 as F-33409's skip leaves its context (no entry active,
+        // want 0, +156 0): free driving 0, none chosen, the start delay 0
+        assert_eq!(check_pick(include_str!("testdata/controller_quiet_ref.txt"), 0.0), 2000);
+    }
+
+    fn check_pick(text: &str, div: f32) -> usize {
         let mut n = 0;
-        for l in include_str!("testdata/controller_pick_ref.txt").lines().filter(|l| !l.starts_with('#')) {
+        for l in text.lines().filter(|l| !l.starts_with('#')) {
             let (a, b) = l.split_once(" -> ").unwrap();
             let w: Vec<u32> = a.split_whitespace().map(|t| u32::from_str_radix(t, 16).unwrap()).collect();
             let o: Vec<&str> = b.split_whitespace().collect();
@@ -13086,7 +13116,7 @@ mod controller_pick_tests {
             let max_d = if across { f(t0 + 5) * 3.0 } else { f(t0 + 5) };
             let t = SlotTune { band_d: f(t0 + 3), min_d: f(t0 + 4), max_d, band_a: f(t0), min_a: f(t0 + 1), up: f(t0 + 6) + f(t0 + 2) };
             let mut waited = f(t0 + 9);
-            let (acc, chosen) = pick(&entries, &mut on, &t, f(t0 + 8), f(t0 + 7), f(t0 + 11), &mut waited, f(t0 + 10));
+            let (acc, chosen) = pick_div(&entries, &mut on, &t, f(t0 + 8), div, f(t0 + 7), f(t0 + 11), &mut waited, f(t0 + 10));
             assert_eq!(acc.to_bits(), h(0), "a {l}");
             assert_eq!(chosen.map_or(-1, |k| k as i32), o[1].parse::<i32>().unwrap(), "chosen {l}");
             assert_eq!(waited.to_bits(), h(2), "waited {l}");
@@ -13103,7 +13133,7 @@ mod controller_pick_tests {
             }
             n += 1;
         }
-        assert_eq!(n, 4000);
+        n
     }
 }
 

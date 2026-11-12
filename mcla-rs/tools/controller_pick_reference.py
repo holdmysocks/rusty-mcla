@@ -64,11 +64,20 @@ def main():
     ap.add_argument('--out', type=Path, default=Path('work_controller_pick'))
     ap.add_argument('--tool', default='mcla-tool')
     ap.add_argument('--n', type=int, default=4000)
+    ap.add_argument('--quiet', action='store_true', help='the cases of a car whose race path has bParked: F-33409 skips '
+                    '(behaviour slot 18, its context byte +16 bit 0x8), so the context is as F-39469 leaves it - no entry '
+                    'active, +152 want 0, +156 0 (the on bits and the rest as drawn)')
     a = ap.parse_args()
     idx = index(a.recomp)
     fn = addr(a.tool, 'F-30960')
     rng = random.Random(30960)
     cases = [case(rng) for _ in range(a.n)]
+    if a.quiet:
+        for c in cases:
+            for e in range(4):
+                c[7 * e] = 0
+            c[32 + 8] = 0
+    div = '0u' if a.quiet else '0x3F800000u'
     width = len(cases[0])
     arr = ','.join(','.join('0x%08Xu' % w for w in c) for c in cases)
     nl = chr(92) + 'n'
@@ -88,7 +97,7 @@ def main():
             '    be(0x1500 + 4 * e, x[3]); (*pointer(0x1000 + 60 + 12 * e + 8)) = q[28 + e] ? 0x40 : 0; }\n'
             '  const uint32_t *t = q + 32;\n'
             '  for (int j = 0; j < 6; j++) be(0x1600 + 128 + 4 * j, t[j]);\n'
-            '  be(0x1000 + 428, t[6]); be(0x1000 + 412, t[7]); be(0x1200 + 152, t[8]); pf(0x1200 + 156, 1.0f);\n'
+            '  be(0x1000 + 428, t[6]); be(0x1000 + 412, t[7]); be(0x1200 + 152, t[8]); be(0x1200 + 156, DIV);\n'
             '  be(0x1000 + 440, t[9]); be(0x1000 + 444, t[10]); be(0x1000 + 448, 0x1600); be(0x1000 + 452, 0x1700);\n'
             '  be(0x1700 + 188, 0x1780); be(0x1700 + 192, 0x17A0);\n'
             '  uint32_t across = q[%d];\n' % (width - 1) +
@@ -113,7 +122,7 @@ def main():
     hi = next(int(x.split(',')[1]) for x in reversed(asm[:k]) if x.startswith('lis r11,'))
     lo = next(int(x.split(',')[2]) for x in reversed(asm[:k]) if x.startswith('addi r11,r11,'))
     gptr = ((hi & 0xFFFF) << 16) + lo
-    body = body.replace('GAMEPTR', '0x%08Xu' % gptr)
+    body = body.replace('GAMEPTR', '0x%08Xu' % gptr).replace('DIV', div)
     body = body.replace('%%', '%')  # (the lines with no % operator keep theirs doubled)
     main_src = ('int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);'
                 'image.assign(std::istreambuf_iterator<char>(bin),{});\n' + body + '}\n')
@@ -123,7 +132,7 @@ def main():
         f'sub_{addr(a.tool, "F-65049")}': 'ctx.r3.u32 = 0x1C00;',
         f'sub_{addr(a.tool, "F-14900")}': 'throw std::runtime_error("F-14900 reached");',
     }
-    exe = build(idx, [f'sub_{fn}'], main_src, a.out, 'controller_pick', stubs=stubs, vector=True)
+    exe = build(idx, [f'sub_{fn}'], main_src, a.out, 'controller_quiet' if a.quiet else 'controller_pick', stubs=stubs, vector=True)
     print('# entries x 4 (active reset player a dist margin target), on x 4, band_a min_a max_a band_d min_d max_d bonus speed want waited wait dt across'
           ' -> f1 +420 +440 flags x 4, (+0 +4) x 4 (F-30960)')
     print(run(exe, a.image), end='')
