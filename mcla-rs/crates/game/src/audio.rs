@@ -403,6 +403,8 @@ struct MixSource {
 }
 
 const BLOCK: usize = 256;
+/// a radio song as the sink plays it: the decoder skipped to its offset, behind its predelay
+type SongSource = Box<dyn Source<Item = i16> + Send>;
 /// the offline capture's stream voice ([`Audio::play_stream`])
 const STREAM_VOICE: u64 = u64::MAX - 1;
 
@@ -697,6 +699,9 @@ pub struct Audio {
     /// wave names per bank folder (from `_index.tsv`)
     index: HashMap<String, Arc<Vec<String>>>,
     music: Option<Sink>,
+    /// the song's decoder while a thread skips it to its start offset (`start_track`); the sink above is made, empty,
+    /// until it comes
+    music_wait: Option<std::sync::mpsc::Receiver<SongSource>>,
     /// one-shot dialogue stream (story scenes)
     voice: Option<Sink>,
     /// what `voice` plays (diagnostics)
@@ -869,6 +874,7 @@ impl Audio {
             engines: HashMap::new(),
             index: HashMap::new(),
             music: None,
+            music_wait: None,
             music_next: (seed as usize) % music_files.len().max(1),
             music_files,
             music_on: true,
@@ -1119,7 +1125,7 @@ impl Audio {
     /// The radio's song, if it plays (diagnostics).
     /// A song in the sink, paused or not (the manager's +384).
     pub(crate) fn song_live(&self) -> bool {
-        self.music.as_ref().is_some_and(|s| !s.empty())
+        self.music.as_ref().is_some_and(|s| !s.empty() || self.music_wait.is_some())
     }
 
     /// The song's place (ms): the sound's +172, its start offset and what the sink played after the predelay.
@@ -1147,7 +1153,7 @@ impl Audio {
     }
 
     pub fn music_playing(&self) -> bool {
-        self.music.as_ref().is_some_and(|s| !s.is_paused() && !s.empty())
+        self.music.as_ref().is_some_and(|s| !s.is_paused() && (!s.empty() || self.music_wait.is_some()))
     }
 
     fn push(&mut self, v: Voice) {
@@ -1335,7 +1341,7 @@ impl Audio {
         self.pulled.store(0, Ordering::Relaxed);
         self.watch = Instant::now();
         if let Some((pos, paused)) = music {
-            self.start_track();
+            self.start_track_now();
             self.track_changed = false;
             if let Some(s) = self.music.as_ref() {
                 let _ = s.try_seek(pos);
@@ -1352,6 +1358,7 @@ impl Audio {
     }
 
     fn drop_output(&mut self) {
+        self.music_wait = None;
         for s in [self.music.take(), self.voice.take(), self._sink.take()].into_iter().flatten() {
             s.stop();
         }
@@ -1527,6 +1534,7 @@ impl Audio {
     /// Keep the radio playing: starts the next track when the current one ends.
     pub fn update_music(&mut self, playing: bool) {
         self.watch_output();
+        self.song_arrived();
         if !self.music_on || !playing || self.music_files.is_empty() {
             if let Some(s) = self.music.as_ref() {
                 s.pause();
@@ -1538,7 +1546,7 @@ impl Audio {
             if s.is_paused() {
                 s.play();
             }
-            if !s.empty() {
+            if !s.empty() || self.music_wait.is_some() {
                 return;
             }
         }
@@ -1708,8 +1716,35 @@ impl Audio {
         self.start_track();
     }
 
-    /// The track `music_next` starts.
+    /// The track `music_next` starts. Its skip to the start offset (rodio's `skip_duration` decodes every sample before
+    /// it: ~1.25 ms per second of song on one core, 150 - 190 ms two minutes in - the tick of the garage exit's radio
+    /// start, docs/PERFORMANCE.md) runs on a thread of its own from 2 s in; the sink waits, empty, and gets the same
+    /// samples when it is done (`song_arrived`). A decoder seek would be ~1 ms but lands 3 - 300 frames off.
     fn start_track(&mut self) {
+        self.start_track_with(false);
+    }
+
+    /// `start_track` with the skip done here (the output's restore seeks the sink right after).
+    fn start_track_now(&mut self) {
+        self.start_track_with(true);
+    }
+
+    /// The skipped song a thread hands back (`start_track`).
+    fn song_arrived(&mut self) {
+        let Some(rx) = self.music_wait.as_ref() else { return };
+        match rx.try_recv() {
+            Ok(src) => {
+                self.music_wait = None;
+                if let Some(s) = self.music.as_ref() {
+                    s.append(src);
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.music_wait = None,
+        }
+    }
+
+    fn start_track_with(&mut self, now: bool) {
         if self.music_files.is_empty() || self.handle.is_none() {
             return;
         }
@@ -1722,6 +1757,7 @@ impl Audio {
         if let Some(old) = self.music.take() {
             old.stop();
         }
+        self.music_wait = None;
         let Some(handle) = self.handle.as_ref() else { return };
         if let Ok(s) = Sink::try_new(handle) {
             self.music_gain = Self::stream_gain(&p);
@@ -1729,7 +1765,21 @@ impl Audio {
             let (pre, off) = self.start_delay;
             self.song_clock = (pre, off);
             self.song_len_ms = Self::stream_len_ms(&p);
-            s.append(dec.skip_duration(std::time::Duration::from_millis(off as u64)).delay(std::time::Duration::from_millis(pre as u64)));
+            let song = move || -> SongSource { Box::new(dec.skip_duration(std::time::Duration::from_millis(off as u64)).delay(std::time::Duration::from_millis(pre as u64))) };
+            if now || off < 2000 {
+                s.append(song());
+            } else {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let spawned = std::thread::Builder::new().name("song skip".into()).spawn(move || {
+                    let t = Instant::now();
+                    let src = song();
+                    log::info!("audio: song skipped {off} ms in on its thread in {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+                    let _ = tx.send(src);
+                });
+                if spawned.is_ok() {
+                    self.music_wait = Some(rx);
+                }
+            }
             s.play();
             self.now_playing = match self.music_meta.get(self.music_next).cloned().flatten() {
                 Some((title, _)) => title,
@@ -1788,6 +1838,7 @@ impl Audio {
 
     /// The song stops (the voice's release, F-63886).
     pub(crate) fn stop_song(&mut self) {
+        self.music_wait = None;
         if let Some(s) = self.music.take() {
             s.stop();
         }
