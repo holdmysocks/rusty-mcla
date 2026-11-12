@@ -5687,9 +5687,6 @@ mod tests {
         assert_eq!(n, 3000);
     }
 
-    /// The anim update F-29547's clip choice against the original's code on 3,000 cases (part e: every locomotion state,
-    /// current clip, rate, one-off clip and parked index, the slides and clip speeds of part b): the one-off start, the
-    /// clip start with its rate, the rate change and the parked retry it asks for, in order.
     #[test]
     fn the_bone_lod_drops_face_and_hands_past_30_m() {
         // (F-62015: 3-D, out past 30 m, in again within 20 m)
@@ -5708,6 +5705,38 @@ mod tests {
         assert_eq!(crate::skin::subtree_mask(&bones, &ids, &crate::skin::LOD_BONE_IDS), [false, false, true, true, true, true]);
     }
 
+    /// F-62015 against the original's code run offline (tools/anim_lod_reference.py, 4,000 cases: the state byte, +500,
+    /// the matrix through +52 or the getter, the focus, places an ulp either side of 20 m and 30 m): the bone filter's three
+    /// removes going out, its three adds coming in, and the state byte after.
+    #[test]
+    fn bone_lod_matches_the_original() {
+        let mut n = [0; 3];
+        for line in include_str!("testdata/anim_lod_ref.txt").lines() {
+            let (inp, want) = line.split_once(" -> ").unwrap();
+            let w: Vec<&str> = inp.split_whitespace().collect();
+            let int = |i: usize| w[i].parse::<u32>().unwrap();
+            let v = |i: usize| {
+                let f = |k: usize| f32::from_bits(u32::from_str_radix(w[k], 16).unwrap());
+                Vec3::new(f(i), f(i + 1), f(i + 2))
+            };
+            let (st, b500, p52, p48) = (int(0), int(1), int(2) != 0, int(3) != 0);
+            // (the walker's matrix: through +52 -> +48 when +500 bit 0x20 and both are set, else the getter's, as F-33765)
+            let at = if b500 & 0x20 != 0 && p52 && p48 { v(7) } else { v(10) };
+            let out = bone_lod(st != 0, at, v(4));
+            let calls = match (st != 0, out) {
+                (false, true) => "DDD",
+                (true, false) => "EEE",
+                _ => "-",
+            };
+            assert_eq!(format!("{calls} {}", out as u8), want, "{line}");
+            n[["DDD", "EEE", "-"].iter().position(|k| *k == calls).unwrap()] += 1;
+        }
+        assert!(n[0] > 300 && n[1] > 700 && n[2] > 2000, "{n:?}");
+    }
+
+    /// The anim update F-29547's clip choice against the original's code on 3,000 cases (part e: every locomotion state,
+    /// current clip, rate, one-off clip and parked index, the slides and clip speeds of part b): the one-off start, the
+    /// clip start with its rate, the rate change and the parked retry it asks for, in order.
     #[test]
     fn anim_choice_matches_the_original() {
         let mut n = 0;
