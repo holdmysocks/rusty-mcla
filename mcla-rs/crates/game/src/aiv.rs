@@ -3135,6 +3135,49 @@ mod tests {
         let _ = ran;
     }
 
+    /// F-29767 (push a goal) run offline (work/racerai/follow/goal.py) on the 201 recorded R8 aivs and the 1,010 variants with
+    /// random goals (15 % with the point rings emptied, 7 % with the portal end below 2): the goal direction, J / T / previous J,
+    /// the goal ring, the point / point-portal / point-goal rings, the last point reached, the planes-built index and every
+    /// portal's planes equal `push_goal`'s (docs/reference/ai/verify_follower.md section 11).
+    #[test]
+    fn push_goal_is_the_originals() {
+        let dir = "D:/MCLA/work/racerai/follow";
+        let tune = tune();
+        const BS: usize = 31232;
+        for set in ["rec", "var"] {
+            let Ok(b) = std::fs::read(format!("{dir}/goal_{set}.bin")) else {
+                println!("{set}: fixtures missing: skipped");
+                continue;
+            };
+            let stride = 2 * BS + 64;
+            assert_eq!(b.len() % stride, 0);
+            let n = b.len() / stride;
+            let (mut bad, mut first, mut modes) = (0, String::new(), [0; 3]);
+            for k in 0..n {
+                let r = &b[k * stride..(k + 1) * stride];
+                let w = |q: usize| u32::from_be_bytes(r[2 * BS + 4 * q..2 * BS + 4 * q + 4].try_into().unwrap());
+                let f = |q: usize| f32::from_bits(w(q));
+                let mut a = Aiv::new(tune.clone());
+                a.import_original(&r[..BS]);
+                a.push_goal(Vec3::new(f(0), f(1), f(2)), Vec3::new(f(3), f(4), f(5)), f(6), Vec3::new(f(7), f(8), f(9)), f(10), w(11));
+                modes[w(12) as usize] += 1;
+                let mut o = Aiv::new(tune.clone());
+                o.import_original(&r[BS..2 * BS]);
+                let pa = format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}", a.goal_dir, a.j_prev, a.ln.j, a.ln.t, a.goals, a.ln.pts, a.ln.pp, a.pg, a.last_reached, a.planes_upto, a.portals);
+                let po = format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}", o.goal_dir, o.j_prev, o.ln.j, o.ln.t, o.goals, o.ln.pts, o.ln.pp, o.pg, o.last_reached, o.planes_upto, o.portals);
+                if pa != po {
+                    bad += 1;
+                    if first.is_empty() {
+                        let i = pa.bytes().zip(po.bytes()).position(|(x, y)| x != y).unwrap_or(0);
+                        first = format!("case {k} mode {}: port ..{}.. original ..{}..", w(12), &pa[i.saturating_sub(60)..(i + 60).min(pa.len())], &po[i.saturating_sub(60)..(i + 60).min(po.len())]);
+                    }
+                }
+            }
+            println!("{set}: {n} cases (modes {modes:?}), {bad} differ {first}");
+            assert_eq!(bad, 0);
+        }
+    }
+
     /// F-82126 (drop the last portal) run offline (work/racerai/follow/pop.py) on the 201 recorded R8 aivs and the 1,010 variants,
     /// the planes-built index set to the portal end + 4 first: the ring's start / count / base and the built index equal
     /// `pop_portal`'s, and the original's own tail words (portals +22544, flag bytes +22704 / +22712) stay the ring's start + count
