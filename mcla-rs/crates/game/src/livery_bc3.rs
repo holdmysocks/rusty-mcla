@@ -759,4 +759,21 @@ mod tests_bc3 {
         assert_eq!(images, 15);
         assert_eq!(bad, 0, "{bad} of {blocks} blocks differ");
     }
+
+    /// (timing only, D59 audit: the livery's mip chain and compression at 1024 and 512, a noisy painted image)
+    #[test]
+    #[ignore = "timing"]
+    fn compression_time() {
+        for size in [1024usize, 512] {
+            let mut x = 0x1234_5678u32;
+            let px: Vec<u8> = (0..size * size * 4).map(|i| { x ^= x << 13; x ^= x >> 17; x ^= x << 5; if i % 4 == 3 { 255 } else { (x >> 24) as u8 } }).collect();
+            for _ in 0..2 {
+                let t0 = std::time::Instant::now();
+                let chain = super::mip_chain(&px, size, size);
+                let t1 = t0.elapsed();
+                let n: usize = chain.iter().map(|(l, w, h)| super::encode_image(l, *w, *h).len()).sum();
+                println!("livery {size}: mips {:.1} ms, total {:.1} ms ({n} bytes)", t1.as_secs_f64() * 1000.0, t0.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+    }
 }

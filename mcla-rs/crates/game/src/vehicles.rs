@@ -1315,7 +1315,11 @@ impl CarInstance {
     pub fn set_vinyl(&mut self, name: &str) {
         if self.vinyl_name != name {
             self.vinyl_name = name.to_string();
-            self.vinyl = None;
+            // (the old livery stays on until `assign_vinyls` puts the new one on - in the same frame when it is ready,
+            // when its compression is done otherwise; none at once when the car has none now)
+            if name.is_empty() {
+                self.vinyl = None;
+            }
             self.vinyl_done = false;
         }
     }
@@ -1620,6 +1624,8 @@ pub struct Vehicles {
     vinyl_index: Option<hashbrown::HashMap<String, std::path::PathBuf>>,
     vinyl_painted: hashbrown::HashSet<String>,
     vinyls: hashbrown::HashMap<String, Option<Arc<wgpu::BindGroup>>>,
+    /// painted liveries being compressed on a worker (`add_vinyl_texture`): name -> (size, the levels when done)
+    vinyl_jobs: hashbrown::HashMap<String, (u32, u32, VinylJob)>,
     /// how long each car's models (by name, every set-up) have been held by nothing but `models` (`free_idle_models`)
     model_idle: hashbrown::HashMap<String, f32>,
     model_idle_check: f32,
@@ -4464,15 +4470,17 @@ if keep || c.state.pos.distance(center) < 450.0 {
         }
     }
 
-    /// Is a livery of this name ready (loaded or painted)?
+    /// Is a livery of this name ready (loaded or painted), or being compressed?
     pub fn has_vinyl(&self, name: &str) -> bool {
-        self.vinyls.get(&name.to_ascii_lowercase()).map_or(false, |v| v.is_some())
+        let name = name.to_ascii_lowercase();
+        self.vinyls.get(&name).map_or(false, |v| v.is_some()) || self.vinyl_jobs.contains_key(&name)
     }
 
     /// Forget the painted liveries whose name starts with `prefix`, except `keep`.
     pub fn drop_vinyls(&mut self, prefix: &str, keep: &str) {
         let (prefix, keep) = (prefix.to_ascii_lowercase(), keep.to_ascii_lowercase());
         self.vinyls.retain(|k, _| !k.starts_with(&prefix) || *k == keep);
+        self.vinyl_jobs.retain(|k, _| !k.starts_with(&prefix) || *k == keep);
     }
 
     /// Add a livery painted at run time (plain colour RGBA in the body's unwrap).
@@ -4480,24 +4488,53 @@ if keep || c.state.pos.distance(center) < 450.0 {
         let name = name.to_ascii_lowercase();
         // The livery job (F-80492) leaves the painted vinyl in the car's texture as DXT5: its surface copy F-60873 with the
         // block encoder F-45145 (livery_bc3, bit for bit). MCLA_DEBUG_VIEW=838 keeps the uncompressed paint.
-        let tex = if w % 4 == 0 && h % 4 == 0 && std::env::var("MCLA_DEBUG_VIEW").map_or(true, |v| v.trim() != "838") {
-            let t = mcla_formats::rage::texture::Texture {
-                name: format!("vinyl {name}"),
-                width: w,
-                height: h,
-                format: mcla_formats::rage::xenos::TexFormat::Dxt5,
-                // (every level of the work target, each compressed: livery_bc3::mip_chain)
-                levels: crate::livery_bc3::mip_chain(px, w as usize, h as usize).iter().map(|(l, lw, lh)| crate::livery_bc3::encode_image(l, *lw, *lh)).collect(),
-                fetch: [0; 6],
-            };
-            Arc::new(crate::render::upload_as(&gpu.device, &gpu.queue, &t, gpu.bc_supported, true))
-        } else {
-            Arc::new(crate::render::create_rgba(&gpu.device, &gpu.queue, w, h, px, "vinyl"))
-        };
+        // D59: the compression (about 100 ms for the 1024 livery, 30 - 45 ms for the editor's 512, on every core) runs on a
+        // worker and the car keeps the livery it shows until it is in (`finish_vinyl_jobs`), as the original's job runs on
+        // its worker F-93625 while the old texture stays on the car; the blocks are the same (`vinyl_levels`).
+        // MCLA_VINYL_SYNC=1: compressed here, as before.
+        if w % 4 == 0 && h % 4 == 0 && std::env::var("MCLA_DEBUG_VIEW").map_or(true, |v| v.trim() != "838") {
+            let job: VinylJob = Arc::new(std::sync::Mutex::new(None));
+            if std::env::var_os("MCLA_VINYL_SYNC").is_some() {
+                *job.lock().unwrap() = Some(vinyl_levels(&name, px, w, h));
+            } else {
+                let (j, px, n) = (job.clone(), px.to_vec(), name.clone());
+                std::thread::Builder::new().name("livery".into()).spawn(move || {
+                    let lv = vinyl_levels(&n, &px, w, h);
+                    *j.lock().unwrap() = Some(lv);
+                }).expect("livery worker");
+            }
+            self.vinyls.remove(&name);
+            self.vinyl_jobs.insert(name, (w, h, job));
+            self.finish_vinyl_jobs(gpu);
+            return;
+        }
+        let tex = Arc::new(crate::render::create_rgba(&gpu.device, &gpu.queue, w, h, px, "vinyl"));
         let white = gpu.white.clone();
         let key = mcla_formats::hash::joaat(&format!("vinyl:{name}")) | 1;
         let bind = gpu.texture_bind_group3_c(&white, &white, &tex, key, key, key, vinyl_aniso());
         self.vinyls.insert(name, Some(bind));
+    }
+
+    /// The painted liveries whose compression is done: put on the GPU, and the cars wearing that name take them
+    /// (`assign_vinyls`). Until then a car keeps the livery it showed (`CarInstance::set_vinyl`).
+    pub fn finish_vinyl_jobs(&mut self, gpu: &mut Gpu) {
+        if self.vinyl_jobs.is_empty() {
+            return;
+        }
+        let done: Vec<String> = self.vinyl_jobs.iter().filter(|(_, (_, _, j))| j.lock().map_or(false, |l| l.is_some())).map(|(k, _)| k.clone()).collect();
+        for name in done {
+            let Some((w, h, job)) = self.vinyl_jobs.remove(&name) else { continue };
+            let Some(levels) = job.lock().ok().and_then(|mut l| l.take()) else { continue };
+            let t = mcla_formats::rage::texture::Texture { name: format!("vinyl {name}"), width: w, height: h, format: mcla_formats::rage::xenos::TexFormat::Dxt5, levels, fetch: [0; 6] };
+            let tex = Arc::new(crate::render::upload_as(&gpu.device, &gpu.queue, &t, gpu.bc_supported, true));
+            let white = gpu.white.clone();
+            let key = mcla_formats::hash::joaat(&format!("vinyl:{name}")) | 1;
+            let bind = gpu.texture_bind_group3_c(&white, &white, &tex, key, key, key, vinyl_aniso());
+            self.vinyls.insert(name.clone(), Some(bind));
+            for c in self.cars.iter_mut().filter(|c| c.vinyl_name.eq_ignore_ascii_case(&name)) {
+                c.vinyl_done = false;
+            }
+        }
     }
 
     /// The ready-made liveries the disc has for a car (set-up names, sorted).
@@ -4514,6 +4551,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// (first UV set; unpainted-side parts all point at one empty corner texel).
     pub fn assign_vinyls(&mut self, gpu: &mut Gpu, world: &mut World) {
         self.take_vinyl_slots();
+        self.finish_vinyl_jobs(gpu);
         // (a car whose wheels were held for a dressing it no longer waits for gets them now)
         for i in 0..self.cars.len() {
             if self.cars[i].size_wheels.is_some() && !dress_waits(&self.cars[i]) {
@@ -4526,6 +4564,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
         self.ensure_vinyl_index(world);
         for i in 0..self.cars.len() {
             if self.cars[i].vinyl_done || self.cars[i].vinyl_name.is_empty() {
+                continue;
+            }
+            // (a painted livery still compressing: the car keeps the one it shows, taken when done)
+            if self.vinyl_jobs.contains_key(&self.cars[i].vinyl_name.to_ascii_lowercase()) {
                 continue;
             }
             self.cars[i].vinyl_done = true;
@@ -4680,6 +4722,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
 
     /// Physics + AI for every car.
     pub fn update(&mut self, world: &World, player_input: CarInput, dt: f32) {
+        let _ct = car_times::Span::new(0);
         self.clock += dt;
         self.free_idle_models(dt);
         // (test hook MCLA_GROUND_PROBE=x,y,z;x,y,z;...: the parked cars' ground probe (traffic::probe_ground) at each
@@ -6269,7 +6312,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
 
     /// Write every car's transform and lamp state to the GPU.
     pub fn upload_uniforms(&mut self, gpu: &Gpu, night: f32) {
+        let _ct = car_times::Span::new(1);
+        let mut lap = car_times::Lap::new();
         self.damage_maps(gpu);
+        lap.to(3);
         let player_lamps = self.player_lamps.clone();
         let mut batch = std::mem::take(&mut self.uniforms);
         let mut wheel_back = std::mem::take(&mut self.wheel_back);
@@ -6283,7 +6329,9 @@ if keep || c.state.pos.distance(center) < 450.0 {
         let player_tach_rpm = self.player_tach_rpm;
         // (siColor2 of each car's draws: its exterior neon, F-96984 / F-56246 - `ExtNeon::si_color`)
         let neon_si: Vec<[f32; 4]> = self.cars.iter().map(|c| self.ext_neon(c).map_or([0.0; 4], |n| n.si_color())).collect();
+        lap.to(4);
         for (ci, c) in self.cars.iter_mut().enumerate() {
+            lap.to(7);
             let pose = c.render_pose(self.render_alpha);
             let mut m = Mat4::from_rotation_translation(pose.rot, pose.pos);
             if self.hide_player && c.is_player {
@@ -6437,6 +6485,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
             };
             let body_u = ObjectUniform { model: m.to_cols_array_2d(), color: body_color, params: [lights, c.input.brake, c.state.damage, siren + reversing + 16.0 + 32.0 * s19d_look.0 as f32 + int_glass], dents: body_slots, color2: s19d_look.1, tint: s19d_look.2, interior: s19d_look.3, fade_min: c.model.min.extend(c.pu_mirror).to_array(), fade_size: (c.model.max - c.model.min).max(Vec3::splat(0.01)).extend(c.amb_lamps.tint).to_array(), fill: car_fill, lamp_a: lamp_rows.0, lamp_b: lamp_rows.1, area_a: s19d_look.4, area_b: s19d_look.5, slots: amb_slots, glass_tint: gv.tint, glass_bumped: gv.bumped, rest_rot: c.model.rest_rot, neon_si: neon_si[ci], trim: body_trim, brushed: body_brushed };
             batch.push_object(&c.binding, &body_u);
+            lap.to(5);
             // (the side windows: the body's object moved by the window bone's clip)
             for (k, wb) in c.window_bindings.iter().enumerate() {
                 let Some(clip) = c.model.windows[k].as_ref() else { continue };
@@ -6714,7 +6763,10 @@ if keep || c.state.pos.distance(center) < 450.0 {
                 }
             }
         }
+        lap.to(7);
+        car_times::objects(self.cars.iter().map(|c| 1 + c.part_bindings.len() + c.window_bindings.len()).sum(), std::mem::size_of::<ObjectUniform>());
         gpu.flush_uniforms(&mut batch);
+        lap.to(6);
         self.uniforms = batch;
         self.wheel_back = wheel_back;
         self.blur_wheels = blur_wheels;
@@ -6724,6 +6776,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
     /// (`tune/vehicle`: head 2, tail 2 - the player's 1 - brake 2 / 0.3, reverse 0.53, third
     /// brake 0.35). A lamp glows towards where it points: head lamps ahead, the others astern.
     pub fn update_glows(&mut self, gpu: &Gpu, night: f32, cam: Vec3) {
+        let _ct = car_times::Span::new(2);
         use crate::props::Inst;
         const MAX: usize = 320;
         let mut out: Vec<Inst> = Vec::new();
@@ -9514,3 +9567,91 @@ pub mod vehicles_words;
 #[cfg(test)]
 #[path = "vehicles_small_tests.rs"]
 mod vehicles_small_tests;
+
+/// A painted livery's compression on its worker: the DXT5 levels when done.
+type VinylJob = Arc<std::sync::Mutex<Option<Vec<Vec<u8>>>>>;
+
+/// A painted livery as the original's job leaves it in the car's texture: every level of the work target compressed
+/// (`livery_bc3::mip_chain`, `encode_image`, bit for bit), timed in the log.
+fn vinyl_levels(name: &str, px: &[u8], w: u32, h: u32) -> Vec<Vec<u8>> {
+    let t0 = std::time::Instant::now();
+    let lv: Vec<Vec<u8>> = crate::livery_bc3::mip_chain(px, w as usize, h as usize).iter().map(|(l, lw, lh)| crate::livery_bc3::encode_image(l, *lw, *lh)).collect();
+    log::info!("vinyls: {name} compressed ({w} x {h}, {} levels) in {:.1} ms", lv.len(), t0.elapsed().as_secs_f64() * 1000.0);
+    lv
+}
+
+#[cfg(test)]
+mod vinyl_job_tests {
+    /// D59: a livery compressed on its worker is the same, byte for byte, as compressed on the game thread.
+    #[test]
+    fn worker_levels_equal_inline() {
+        for size in [64u32, 512] {
+            let mut x = 0x9e37_79b9u32;
+            let px: Vec<u8> = (0..size * size * 4).map(|_| { x ^= x << 13; x ^= x >> 17; x ^= x << 5; (x >> 24) as u8 }).collect();
+            let inline = super::vinyl_levels("t", &px, size, size);
+            let (p2, s2) = (px.clone(), size);
+            let worker = std::thread::spawn(move || super::vinyl_levels("t", &p2, s2, s2)).join().unwrap();
+            assert_eq!(inline, worker);
+            assert_eq!(inline.len(), if size == 512 { 8 } else { 5 });
+        }
+    }
+}
+
+/// MCLA_CARTIMES=1: the CPU time of the cars' tick (`Vehicles::update`), uniform build (`upload_uniforms`: poses,
+/// part skeletons, turned bones, lamps) and glows (`update_glows`), logged as means of 240 calls (`cartimes:`), for the
+/// D59 cost audit (docs/PERFORMANCE.md). Without the variable a span is one flag read.
+mod car_times {
+    use std::sync::Mutex;
+    use std::time::Instant;
+    const NAMES: [&str; 8] = ["update", "uniforms", "glows", "u:damage maps", "u:set-up", "u:car head", "u:flush", "u:parts"];
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    static SUMS: Mutex<[(f64, u32, f64); 8]> = Mutex::new([(0.0, 0, 0.0); 8]);
+    /// Laps inside one call: `to(k)` adds the time since the last mark to slot k (sums per uniform build).
+    pub struct Lap(Option<Instant>);
+    impl Lap {
+        pub fn new() -> Lap {
+            Lap(ON.get_or_init(|| std::env::var("MCLA_CARTIMES").is_ok()).then(Instant::now))
+        }
+        pub fn to(&mut self, k: usize) {
+            let Some(t) = self.0 else { return };
+            let now = Instant::now();
+            let ms = (now - t).as_secs_f64() * 1000.0;
+            let mut s = SUMS.lock().unwrap();
+            s[k].0 += ms;
+            s[k].1 += 1;
+            self.0 = Some(now);
+        }
+    }
+    static OBJS: Mutex<(usize, usize)> = Mutex::new((0, 0));
+    /// The body, part and window objects written this build and an object's size (logged with the means).
+    pub fn objects(n: usize, size: usize) {
+        if *ON.get_or_init(|| std::env::var("MCLA_CARTIMES").is_ok()) {
+            *OBJS.lock().unwrap() = (n, size);
+        }
+    }
+    pub struct Span(usize, Option<Instant>);
+    impl Span {
+        pub fn new(k: usize) -> Span {
+            let on = *ON.get_or_init(|| std::env::var("MCLA_CARTIMES").is_ok());
+            Span(k, on.then(Instant::now))
+        }
+    }
+    impl Drop for Span {
+        fn drop(&mut self) {
+            let Some(t0) = self.1 else { return };
+            let ms = t0.elapsed().as_secs_f64() * 1000.0;
+            let mut s = SUMS.lock().unwrap();
+            let e = &mut s[self.0];
+            e.0 += ms;
+            e.1 += 1;
+            e.2 = e.2.max(ms);
+            if self.0 == 1 && e.1 >= 240 {
+                let n1 = s[1].1.max(1) as f64;
+                let line: Vec<String> = s.iter().enumerate().map(|(i, e)| if i < 3 { format!("{} {:.3} (max {:.2})", NAMES[i], e.0 / e.1.max(1) as f64, e.2) } else { format!("{} {:.3}", NAMES[i], e.0 / n1) }).collect();
+                let (no, sz) = *OBJS.lock().unwrap();
+                log::info!("cartimes: {} ms (means over {} uniform builds; last build {} body / part / window objects of {} B)", line.join(", "), s[1].1, no, sz);
+                *s = [(0.0, 0, 0.0); 8];
+            }
+        }
+    }
+}
