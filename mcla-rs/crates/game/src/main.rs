@@ -219,6 +219,19 @@ fn cursor_wanted(menu: bool, cutscene: bool, mouse_woke: bool, rmb: bool) -> boo
     menu && !cutscene && mouse_woke && !rmb
 }
 
+/// Whether the window's key-repeat event (a key held past the OS's delay) counts as another press (GitHub #53). The pad's
+/// held-button repeat (F-68423) is the UI's alone: only the directions (d-pad, stick) and LB / RB, and only while the pad
+/// is read as a menu (`ui`: a menu, the GPS map, a film, a box taking menu input). The keyboard's are the arrows, WASD
+/// and Q / E there; every other key counts once a press, so a held M (the phone's Back) no longer takes the call and
+/// then toggles the map, and a held Escape / Enter or action key acts once, as the pad's buttons do.
+fn key_repeat_counts(code: KeyCode, ui: bool) -> bool {
+    use KeyCode as K;
+    ui && matches!(code, K::ArrowUp | K::ArrowDown | K::ArrowLeft | K::ArrowRight | K::KeyW | K::KeyA | K::KeyS | K::KeyD | K::KeyQ | K::KeyE)
+}
+
+/// (test hook MCLA_KEY_TEST "..:r": the held key, the frame it was pressed, how many frames it is held - `key_test_repeats`)
+static KEY_TEST_REP: std::sync::Mutex<Option<(KeyCode, u64, u64)>> = std::sync::Mutex::new(None);
+
 impl Input {
     fn down(&self, k: KeyCode) -> bool {
         self.keys.contains(&k) || self.pending_keys.contains(&k)
@@ -2545,6 +2558,39 @@ impl App {
         }
     }
 
+    /// Test hook MCLA_KEY_TEST "from-to:KEY:r", each frame: the held key's window repeats from 30 frames after the press,
+    /// every 2 frames, through the handler's rule (`key_repeat_counts`; MCLA_KEY_REPEAT_ALL=1 lets every repeat through,
+    /// as before GitHub #53). A repeat that counts goes where the handler sends a press: the fixed keys' nav flags, else
+    /// `key_action`.
+    pub(crate) fn key_test_repeats(&mut self) {
+        let Some((code, start, len)) = *KEY_TEST_REP.lock().unwrap() else { return };
+        let n = self.frame_no.saturating_sub(start);
+        if n > len {
+            *KEY_TEST_REP.lock().unwrap() = None;
+            return;
+        }
+        if n < 30 || n % 2 != 0 {
+            return;
+        }
+        let all = std::env::var_os("MCLA_KEY_REPEAT_ALL").is_some();
+        if !(all || key_repeat_counts(code, self.key_repeat_ui())) {
+            return;
+        }
+        log::info!("key test: {:?} repeat at frame {} (map {} menu {})", code, self.frame_no, self.game.show_map, self.game.in_menu());
+        match code {
+            KeyCode::Escape => self.game.nav_back = true,
+            KeyCode::Enter => self.game.nav_enter = true,
+            _ => self.key_action(code),
+        }
+    }
+
+    /// The pad is read as a menu (F-68423's repeats run): a menu, the GPS map, a film, a box taking menu input, the
+    /// photo album - where a held key's repeats may count (`key_repeat_counts`).
+    fn key_repeat_ui(&self) -> bool {
+        let watching = self.cine.playing.is_some() || self.cuts.playing.is_some() || self.game.movie.is_some();
+        self.game.in_menu() || self.game.show_map || watching || self.game.takes_menu_input() || self.photo.is_some()
+    }
+
     /// A key was pressed that no fixed key of the window's handler took: the action the
     /// keyboard's table has for it (`keybinds`; the defaults are the keys named here).
     fn key_action(&mut self, code: KeyCode) {
@@ -4232,12 +4278,18 @@ impl App {
         if let Ok(v) = std::env::var("MCLA_KEY_TEST") {
             for step in v.split(',') {
                 let Some((at, name)) = step.trim().split_once(':') else { continue };
+                let name = name.strip_suffix(":r").unwrap_or(name);
                 let Some(code) = crate::keybinds::key_from_name(&name.replace('_', " ")) else { continue };
                 let (from, to) = at.split_once('-').unwrap_or((at, at));
                 let (Ok(from), Ok(to)) = (from.trim().parse::<u64>(), to.trim().parse::<u64>()) else { continue };
                 if self.tick_no == from {
                     self.input.keys.insert(code);
                     self.key_action(code);
+                }
+                // ("from-to:KEY:r": the window's repeats of the held key too, for to - from frames after the press -
+                // by frame, as the OS sends them, since a menu or the GPS map stops the ticks: `key_test_repeats`)
+                if self.tick_no == from && step.trim().ends_with(":r") {
+                    *KEY_TEST_REP.lock().unwrap() = Some((code, self.frame_no, to - from));
                 }
                 if self.tick_no == to + 1 {
                     self.input.keys.remove(&code);
@@ -16548,6 +16600,12 @@ impl ApplicationHandler for App {
                     if event.state == ElementState::Pressed && !is_synthetic && crate::glyphs::use_keyboard() {
                         log::info!("prompts: keyboard keys");
                     }
+                    // (a held key's repeats: only the menus' directions repeat, as the pad's - `key_repeat_counts`)
+                    if event.state == ElementState::Pressed && event.repeat {
+                        if !key_repeat_counts(code, self.key_repeat_ui()) {
+                            return;
+                        }
+                    }
                     match event.state {
                         ElementState::Pressed if self.photo.is_some() => {
                             // (the camera keys only while SnapShot has the camera input; the
@@ -16985,6 +17043,27 @@ mod option_tests {
         input.keys.insert(KeyCode::KeyW);
         input.pending_keys.clear();
         assert!(input.down(KeyCode::KeyW));
+    }
+
+    /// GitHub #53: a held key's window repeats count as presses only as the pad's menu repeat (F-68423) does - the
+    /// directions and LB / RB in a menu-read state. The phone's Back on the keyboard (GPS_MAP: M, Tab), Escape, Enter
+    /// and every action key count once, in a menu or not, so a held M takes the call once and nothing after it.
+    #[test]
+    fn a_held_key_repeats_only_the_menu_directions() {
+        use KeyCode as K;
+        let binds = crate::keybinds::KeyBinds::default();
+        for code in [K::KeyM, K::Tab] {
+            assert_eq!(binds.action_of(code), Some(crate::keybinds::GPS_MAP));
+        }
+        for ui in [false, true] {
+            for code in [K::KeyM, K::Tab, K::Escape, K::Enter, K::NumpadEnter, K::Space, K::KeyO, K::KeyF, K::KeyR, K::KeyG, K::KeyL, K::KeyN, K::KeyB] {
+                assert!(!key_repeat_counts(code, ui), "{code:?} ui {ui}");
+            }
+        }
+        for code in [K::ArrowUp, K::ArrowDown, K::ArrowLeft, K::ArrowRight, K::KeyW, K::KeyA, K::KeyS, K::KeyD, K::KeyQ, K::KeyE] {
+            assert!(key_repeat_counts(code, true), "{code:?}");
+            assert!(!key_repeat_counts(code, false), "{code:?} driving");
+        }
     }
 }
 

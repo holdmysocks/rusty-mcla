@@ -1371,6 +1371,7 @@ impl App {
 
     /// After every rendered frame: the screenshot key's confirmation, the frame limiter, the test hooks.
     pub(crate) fn after_frame(&mut self) {
+        self.key_test_repeats();
         // (a row of OPTIONS > DISPLAY was changed in the menu)
         if let Some((row, fwd)) = self.game.display_step.take() {
             self.display_step(row, fwd);

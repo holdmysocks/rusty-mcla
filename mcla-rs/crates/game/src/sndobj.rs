@@ -1784,6 +1784,10 @@ impl SoundLib {
         let id = self.next;
         self.next += 1;
         let timer = Some(self.timer_of(&root.h));
+        // (test hook MCLA_SOUND_STARTS=1: every converted wave started too, by its key)
+        if std::env::var_os("MCLA_SOUND_STARTS").is_some() {
+            log::info!("sound start: clip {key} ({category})");
+        }
         self.insts.push(Instance { loading: Vec::new(), id, hash: 0, root, req, prev_pos: None, frame_pos: None, doppler: 1.0, stop: false, kill: false, stop_ms: -1, timer });
         Some(Handle(id))
     }
