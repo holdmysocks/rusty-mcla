@@ -188,6 +188,16 @@ impl Cutscenes {
         }
     }
 
+    /// The scene that starts next, if one is queued.
+    pub fn front_pending(&self) -> Option<usize> {
+        self.pending.front().copied()
+    }
+
+    /// Take the scene that would start next off the queue.
+    pub fn drop_front(&mut self) -> Option<usize> {
+        self.pending.pop_front()
+    }
+
     /// A scene is queued to start.
     pub fn has_pending(&self) -> bool {
         !self.pending.is_empty()

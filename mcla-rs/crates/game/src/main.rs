@@ -659,6 +659,8 @@ struct App {
     story_in: Option<storywarp::Entry>,
     /// the next story scene comes after that warp: no black hold before it (the place is in view)
     story_warp_start: bool,
+    /// (scene, set-up): a queued story scene whose STORY_LOCATION_CUT_SIMPLE warp comes first, when the scene would start
+    story_warp_for: Option<(usize, usize)>,
     payback_hold: bool,
     /// its black (the scene's fade_to_black, garage_core's fade up)
     garage_mask: boomcam::CutMask,
@@ -1676,6 +1678,7 @@ impl App {
             payback_in: None,
             story_in: None,
             story_warp_start: false,
+            story_warp_for: None,
             payback_hold: false,
             garage_mask: Default::default(),
             garage_out: None,
@@ -4552,7 +4555,12 @@ impl App {
         }
         // (a new career's first scene waits for ACCEPT's black and the car's hand-over - `opening_tick`)
         if self.game.mode == Mode::FreeRoam && self.game.race.is_none() && settled && self.roam.challenge.is_none() && self.game.movie.is_none() && self.game.starter_pick.is_none() {
-            if let Some(stream) = self.cuts.start_pending() {
+            let warp_first = self.story_warp_for.filter(|&(i, _)| self.story_in.is_none() && self.cuts.playing.is_none() && self.cuts.front_pending() == Some(i));
+            if let Some((i, k)) = warp_first {
+                self.story_warp_for = None;
+                self.cuts.drop_front();
+                self.begin_story_warp(k, i);
+            } else if let Some(stream) = self.cuts.start_pending() {
                 self.speech.stop();
                 // the scene's own animation (camera, characters, cars), if the disc has it
                 let scene = self.cuts.playing.as_ref().map(|p| format!("story/{}", p.def.name.to_ascii_lowercase())).unwrap_or_default();
@@ -7230,21 +7238,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         log::info!("career: story scene of {} ({:?})", id, scene.map(|i| self.cuts.scenes[i].name.clone()));
                         if let Some(i) = scene.filter(|_| std::env::var("MCLA_NO_CUTS").is_err() && (self.opt.shot.is_none() || std::env::var("MCLA_CUTS").is_ok())) {
                             // (the nine cores that warp first: Warper_TransitionTo('STORY_LOCATION_CUT_SIMPLE') - `storywarp`)
-                            let w = storywarp::of_id(&id).filter(|_| self.story_in.is_none() && std::env::var("MCLA_NO_STORY_WARP").is_err());
-                            match (w, self.vehicles.player().map(|c| (c.state.pos, c.state.rot))) {
-                                (Some(k), Some(hold)) => {
-                                    let e = storywarp::wait_rows(&storywarp::SETUPS[k]);
-                                    let look = (self.chase.look - self.chase.pos).normalize_or(Vec3::NEG_Z);
-                                    let st = hudmap::CamRows::look_at(self.cam.pos, self.cam.pos + look, self.boom_up.unwrap_or(Vec3::Y));
-                                    let close = st.eye.distance(e.eye) < garagein::CLOSE;
-                                    let warp = close.then(|| hudmap::CineWarp::target_close(st, e, self.cam.fov_y, garagein::LENS_DEG.to_radians()));
-                                    let car = hudmap::CamRows { r0: hold.1 * Vec3::X, r1: hold.1 * Vec3::Y, r2: hold.1 * Vec3::Z, eye: hold.0 };
-                                    let climb = (!close).then(|| hudmap::CineClimb::new(st, car, self.cam.fov_y, garagein::FAR_LENS_DEG.to_radians(), self.screen_v));
-                                    log::info!("story warp: {} from {:?} to {:?} ({:.1} m, warp {}, climb {:?})", id, st.eye, e.eye, st.eye.distance(e.eye), warp.is_some(), climb.as_ref().map(|c| c.kind()));
-                                    self.story_in = Some(storywarp::Entry { setup: k, scene: i, stage: storywarp::Stage::Warp, t: 0.0, clock: 0.0, warp, climb, dive: None, hold });
-                                }
-                                _ => self.cuts.queue(i),
+                            // (the warp itself starts where the scene would: `begin_story_warp` from the scenes' start below - after the
+                            // results, in the cruise, as the core runs it after its race's end sequence)
+                            if let Some(k) = storywarp::of_id(&id).filter(|_| self.story_in.is_none() && std::env::var("MCLA_NO_STORY_WARP").is_err()) {
+                                self.story_warp_for = Some((i, k));
                             }
+                            self.cuts.queue(i);
                         }
                     }
                     career::News::Money(m) => {
@@ -16858,6 +16857,26 @@ impl App {
         let t = Instant::now();
         self.update_gameplay(fixed_step::DT);
         log::info!("startup: the start screen's first tick run behind LOADING in {} ms", t.elapsed().as_millis());
+    }
+}
+
+impl App {
+    /// A story meeting's STORY_LOCATION_CUT_SIMPLE warp, from the camera where it stands now (`storywarp`); the scene `i`
+    /// is queued again at the warp's end. Without the player's car the scene is queued at once.
+    fn begin_story_warp(&mut self, k: usize, i: usize) {
+        let Some(hold) = self.vehicles.player().map(|c| (c.state.pos, c.state.rot)) else {
+            self.cuts.queue(i);
+            return;
+        };
+        let e = storywarp::wait_rows(&storywarp::SETUPS[k]);
+        let look = (self.chase.look - self.chase.pos).normalize_or(Vec3::NEG_Z);
+        let st = hudmap::CamRows::look_at(self.cam.pos, self.cam.pos + look, self.boom_up.unwrap_or(Vec3::Y));
+        let close = st.eye.distance(e.eye) < garagein::CLOSE;
+        let warp = close.then(|| hudmap::CineWarp::target_close(st, e, self.cam.fov_y, garagein::LENS_DEG.to_radians()));
+        let car = hudmap::CamRows { r0: hold.1 * Vec3::X, r1: hold.1 * Vec3::Y, r2: hold.1 * Vec3::Z, eye: hold.0 };
+        let climb = (!close).then(|| hudmap::CineClimb::new(st, car, self.cam.fov_y, garagein::FAR_LENS_DEG.to_radians(), self.screen_v));
+        log::info!("story warp: {} from {:?} to {:?} ({:.1} m, warp {}, climb {:?})", storywarp::SETUPS[k].id, st.eye, e.eye, st.eye.distance(e.eye), warp.is_some(), climb.as_ref().map(|c| c.kind()));
+        self.story_in = Some(storywarp::Entry { setup: k, scene: i, stage: storywarp::Stage::Warp, t: 0.0, clock: 0.0, warp, climb, dive: None, hold });
     }
 }
 
