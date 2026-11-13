@@ -1051,21 +1051,12 @@ impl RiderRagdoll {
         for (r, v) in rd16.iter().enumerate() {
             wr(raw, 32 + 16 * r, *v);
         }
-        let (deep, count, set) = (raw[658], raw[659], raw[660]);
-        if deep == 0 {
+        let took;
+        (took, raw[658], raw[659], raw[660]) = super::solver::end_matrix(raw[658], raw[659], raw[660]);
+        if took {
             for (r, v) in rd16.iter().enumerate() {
                 wr(raw, 96 + 16 * r, *v);
             }
-            raw[660] = 1;
-        } else if set == 0 || count > 8 {
-            for (r, v) in rd16.iter().enumerate() {
-                wr(raw, 96 + 16 * r, *v);
-            }
-        }
-        if deep != 0 {
-            raw[658] = 0;
-        } else {
-            raw[659] = 0;
         }
     }
 

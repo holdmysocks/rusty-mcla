@@ -3752,15 +3752,10 @@ impl LooseState {
             self.matrix_from_body(world, o);
             let now = self.objs[o].matrix;
             let b = self.objs[o].body.as_mut().unwrap();
-            if !b.deep {
+            let (took, deep, count, set) = super::solver::end_matrix(b.deep as u8, b.deep_count, b.last_set as u8);
+            (b.deep, b.deep_count, b.last_set) = (deep != 0, count, set != 0);
+            if took {
                 b.last = now;
-                b.last_set = true;
-                b.deep_count = 0;
-            } else {
-                if !b.last_set || b.deep_count > 8 {
-                    b.last = now;
-                }
-                b.deep = false;
             }
             // (then the instance's vtable[27] (F-18540 -> F-42894) calls the prop's "moved" callback F-33764: an
             // active prop, or a piece broken off one, whose place is below y -300 is taken out of the simulator

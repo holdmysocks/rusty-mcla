@@ -7302,20 +7302,19 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             }
             // (F-32811: the matrix the next tick's collision takes for the last one)
             let end = [rows1[0], rows1[1], rows1[2], origin1];
-            if !pushed.deep {
-                vs.hull_last = Some(end);
-                vs.last_set = true;
-                vs.deep_count = 0;
-            } else {
+            if pushed.deep {
                 vs.deep_count = vs.deep_count.saturating_add(1).min(254);
-                if !vs.last_set || vs.deep_count > 8 {
-                    vs.hull_last = Some(end);
-                }
+            }
+            let (took, _, count, set) = super::solver::end_matrix(pushed.deep as u8, vs.deep_count, vs.last_set as u8);
+            (vs.deep_count, vs.last_set) = (count, set != 0);
+            if took {
+                vs.hull_last = Some(end);
             }
         } else if exact_collide {
+            // (no push: F-32811 with +658 clear)
+            let (_, _, count, set) = super::solver::end_matrix(0, vs.deep_count, vs.last_set as u8);
+            (vs.deep_count, vs.last_set) = (count, set != 0);
             vs.hull_last = Some([rows1[0], rows1[1], rows1[2], origin1]);
-            vs.last_set = true;
-            vs.deep_count = 0;
         }
         // (stage P: the loose bodies' integration, their push applied, the entries' ages)
         if exact_collide && !dbg_flag("MCLA_DBG_P1") {

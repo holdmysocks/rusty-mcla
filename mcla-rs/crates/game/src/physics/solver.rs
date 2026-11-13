@@ -1176,6 +1176,35 @@ pub fn island_push_jointed(bodies: &[Body], touches: &mut [Touch], solved: &mut 
     island_apply_limits(solved, jointed);
 }
 
+/// The collider's end of tick (F-32811), its flags: `deep` +658 (a deep push this tick), `count` +659 (deep-push ticks in a
+/// row), `set` +660 (the "last" matrix is valid; the set-down F-68574 clears it). Gives whether the instance's matrix
+/// becomes the "last" one (+96) the next tick's collision takes, and the three bytes after it: with no deep push it is
+/// taken and +660 = 1; with one only while +660 is clear or after more than 8 such ticks. Then +658 is cleared if it was
+/// set, else +659. Checked over every state against the original run offline (`end_matrix_matches_the_original`).
+pub fn end_matrix(deep: u8, count: u8, set: u8) -> (bool, u8, u8, u8) {
+    if deep == 0 {
+        (true, 0, 0, 1)
+    } else {
+        (set == 0 || count > 8, 0, count, set)
+    }
+}
+
+#[cfg(test)]
+mod end_matrix_tests {
+    /// tools/end_matrix_reference.py: F-32811 run offline over +658 / +660 in {0, 1, 2, 0x80, 0xff} and +659 0 .. 255.
+    #[test]
+    fn end_matrix_matches_the_original() {
+        let mut n = 0;
+        for line in include_str!("testdata/end_matrix_ref.txt").lines() {
+            let w: Vec<u32> = line.split(' ').filter(|x| *x != "->").map(|x| x.parse().unwrap()).collect();
+            let (took, d, c, s) = super::end_matrix(w[0] as u8, w[1] as u8, w[2] as u8);
+            assert_eq!([took as u32, d as u32, c as u32, s as u32], [w[3], w[4], w[5], w[6]], "{line}");
+            n += 1;
+        }
+        assert_eq!(n, 6400);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

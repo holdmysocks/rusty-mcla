@@ -1560,6 +1560,11 @@ fn manifold_of(manifolds: &mut Vec<Manifold>, part: u8, cell: usize) -> usize {
     }
 }
 
+/// The sink's first test (F-90136): a contact is taken only nearer than 2 cm (the image's constant; a NaN is not).
+pub(super) fn sinks(distance: f32) -> bool {
+    f32::from_bits(0x3ca3_d70a) > distance
+}
+
 /// The sink (F-90136) for the hull's and the wheels' contacts with the city: the nearest kept contact (age != 0) within
 /// 2 cm by the body's point (F-74262) takes the new one's place - its multipliers stay, and when it was the deeper its
 /// element ids +168 / +170 (the hull's triangle, the city's polygon and with it the material) stay too -; else the new
@@ -1619,7 +1624,7 @@ pub fn wheel_collide(world: &WorldCollider, core: &super::gjk::WheelCore, part: 
             None => (face, face),
         });
         let Some(r) = super::gjk::contact(core, &tri, face, [edge[0].0, edge[1].0, edge[2].0], super::gjk::WHEEL_MARGIN, super::collision::WORLD_MARGIN) else { return };
-        if r.distance >= 0.02 {
+        if !sinks(r.distance) {
             return;
         }
         let about = [Vec3::ZERO, tri[1] - tri[0], tri[2] - tri[0]];
@@ -1902,8 +1907,7 @@ pub(super) fn hull_polygon(core: &super::gjk::HullCore, reach: &WheelBox, away: 
     if dbg {
         eprintln!("HULLPOLY   face {:?} depth {:?} n {:?} local {:?} on_b {:?} deep {}", face, -r.distance, r.normal, local, on_b, r.deep);
     }
-    // (the sink: nothing farther than 2 cm)
-    if !(f32::from_bits(0x3ca3_d70a) > r.distance) {
+    if !sinks(r.distance) {
         return;
     }
     let normal = if old_cone() { cone_normal(tri, face, &other, on_b, r.normal) } else { cone_exact(tri, face, &other, on_b, r.normal) };
@@ -2715,6 +2719,72 @@ mod nearest_kept_tests {
             n += 1;
         }
         assert_eq!(n, 20000);
+    }
+
+    /// The sink F-90136 run offline (tools/sink_reference.py): a new contact into a manifold holding 0 .. 6 kept ones (ages
+    /// 0 and not, near it within 2 cm or just beyond, on a face of the part or anywhere, the new one inside or outside
+    /// their outline) - the record it makes (its constructor), the nearest kept one F-74262, the replace F-96165, the add
+    /// F-28977 and the seventh contact F-55965: the manifold after it, every record's words the port holds, equal.
+    #[test]
+    fn sink_matches_the_original() {
+        let h = |x: &str| u32::from_str_radix(x, 16).unwrap();
+        // (a record's words as the port's slot: +0 pushed, +12 depth, +16 local, +28 friction, +32 = +64 the world's point,
+        // +44 elasticity, +48 the body's, +80 normal (+96 its negative), +112 impulse, +128 kept, +144 target, byte +165's top
+        // bit, +168 element, +170 polygon, +174 age)
+        let slot = |r: &[u32]| {
+            let f = |i: usize| f32::from_bits(r[i]);
+            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            assert_eq!(&r[8..11], &r[16..19]);
+            let n = v(20);
+            assert_eq!([r[24], r[25], r[26]], [(0.0 - n.x).to_bits(), (0.0 - n.y).to_bits(), (0.0 - n.z).to_bits()]);
+            Slot {
+                c: Contact { depth: f(3), friction: f(7), elasticity: f(11), local: v(4), on_body: v(12), on_world: v(8), normal: n, pushed: v(0), kept: v(32), target: v(36), impulse: v(28) },
+                age: (r[43] & 0xffff) as u16,
+                enabled: r[41] >> 16 & 0x80 != 0,
+                surface: Surface::Road,
+                polygon: r[42] & 0xffff,
+                element: (r[42] >> 16) as u16,
+                part: 0,
+            }
+        };
+        let words = |s: &Slot| {
+            let c = &s.c;
+            let b = |x: Vec3| [x.x.to_bits(), x.y.to_bits(), x.z.to_bits()];
+            let mut q = vec![c.depth.to_bits(), c.friction.to_bits(), c.elasticity.to_bits()];
+            for x in [c.local, c.on_body, c.on_world, c.normal, c.pushed, c.kept, c.target, c.impulse] {
+                q.extend(b(x));
+            }
+            q.extend([s.age as u32, s.enabled as u32, s.polygon, s.element as u32]);
+            q
+        };
+        let (mut n, mut kinds) = (0, [0usize; 5]);
+        for line in include_str!("../testdata/sink_ref.txt").lines() {
+            let (case, out) = line[2..].split_once(" -> ").unwrap();
+            let w: Vec<u32> = case.split(' ').map(h).collect();
+            let distance = f32::from_bits(w[23]);
+            let count = w[24] as usize;
+            let mut slots: Vec<Slot> = (0..count).map(|k| slot(&w[25 + 44 * k..25 + 44 * k + 44])).collect();
+            let (fresh, after) = out.split_once(" | ").unwrap();
+            let a: Vec<u32> = after.split(' ').map(h).collect();
+            let want: Vec<Slot> = (0..a[0] as usize).map(|k| slot(&a[2 + 44 * k..2 + 44 * k + 44])).collect();
+            assert_eq!(fresh == "none", !sinks(distance), "{n}");
+            let before: Vec<Vec<u32>> = slots.iter().map(&words).collect();
+            let mut near = None;
+            if fresh != "none" {
+                let r: Vec<u32> = fresh.split(' ').map(h).collect();
+                let new = slot(&r);
+                near = nearest_kept(slots.iter().map(|s| (s.c.local, s.age)), new.c.local);
+                sink(&mut slots, new);
+            }
+            let got: Vec<Vec<u32>> = slots.iter().map(&words).collect();
+            assert_eq!(got, want.iter().map(&words).collect::<Vec<_>>(), "case {n}");
+            // (what happened: refused, appended, replaced the near one, a seventh taken, a seventh dropped)
+            let kind = if fresh == "none" { 0 } else if near.is_some() { 2 } else if count < 6 { 1 } else if got == before { 4 } else { 3 };
+            kinds[kind] += 1;
+            n += 1;
+        }
+        eprintln!("sink: refused / added / replaced / seventh taken / dropped: {kinds:?}");
+        assert_eq!(n, 3000);
     }
 }
 
