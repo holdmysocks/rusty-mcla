@@ -2529,6 +2529,12 @@ impl Vehicles {
             let p = Vehicles::prep_car(&c, &d, &cfg);
             (c, p, cfg)
         });
+        // (and its stock rims' parts, which every build of the car makes on the game thread - `stock_rim_dirs`, D59)
+        if let Some(name) = dir.file_name().map(|n| n.to_string_lossy().to_string()) {
+            for d in stock_rim_dirs(&world.assets.root, &name) {
+                wheel_ahead(&d);
+            }
+        }
         if let Ok(h) = std::thread::Builder::new().name("car read".into()).spawn(read) {
             log::info!("vehicles: reading {} ahead", dir.display());
             self.parsed.insert(key, Parsed::Reading(h, stamp));
@@ -2953,13 +2959,7 @@ impl Vehicles {
         log::info!("car model {}: {} batches (LOD 1 {}, LOD 2 {}), mass {:.0}, built in {:.0} ms ({:.0} reading the files)", car.name, batches.len(), lods[0].0.len(), lods[1].0.len(), params.mass, t_load.elapsed().as_secs_f32() * 1000.0, ms_parse);
         // stock wheels: whl_stk_<car> for the base cars, whld_stk_<car> for the DLC set
         let base_name = car.name.to_ascii_lowercase().replace("_dub", "");
-        let rims_root = world.assets.root.join("resources/rims");
-        let cands = [
-            base_name.strip_prefix("vpd_").map(|n| format!("whld_stk_{n}")),
-            base_name.strip_prefix("vp_").map(|n| format!("whl_stk_{n}")),
-            // a few are stored without the model year
-            base_name.strip_prefix("vp_").and_then(|n| n.rsplit_once('_').map(|(a, _)| format!("whl_stk_{a}"))),
-        ];
+        let cands = stock_rim_dirs(&world.assets.root, &car.name);
         let tyre = if car.bike { "tir_bike" } else { "tir_car" };
         // (a bike's rim: 0.82 of its tyre's diameter, the constructor F-60786's +4084 / +4088, F-43091)
         let rim_ratio = if car.bike { 0.82 } else { stock_rim_ratio(&world.assets.root, &car.name, params.wheel_radius) };
@@ -2967,7 +2967,7 @@ impl Vehicles {
         let mut rim_dir = None;
         // (a mod car's stock rims: its own folder or its manifest's `donors.rims` - modcars.rs)
         let mod_rims = crate::modcars::car(&car.name).and_then(|c| c.rims.clone());
-        for dir in mod_rims.into_iter().chain(cands.iter().flatten().map(|c| rims_root.join(c))) {
+        for dir in mod_rims.into_iter().chain(cands.iter().cloned()) {
             if dir.is_dir() {
                 wheels = self.wheel_set(gpu, world, &dir, tyre, rim_ratio);
                 rim_dir = Some(dir);
@@ -8053,6 +8053,22 @@ fn config_rim_inches(root: &Path, config: &str) -> Option<f32> {
     if (13.0..=26.0).contains(&v) { Some(v) } else { None }
 }
 
+/// A car's stock rim folders, in the order its build tries them (the first that is a folder is used): whl_stk_<car>
+/// for the base cars, whld_stk_<car> for the DLC set, and a few stored without the model year.
+fn stock_rim_dirs(root: &Path, car: &str) -> Vec<std::path::PathBuf> {
+    let base_name = car.to_ascii_lowercase().replace("_dub", "");
+    let rims_root = root.join("resources/rims");
+    [
+        base_name.strip_prefix("vpd_").map(|n| format!("whld_stk_{n}")),
+        base_name.strip_prefix("vp_").map(|n| format!("whl_stk_{n}")),
+        base_name.strip_prefix("vp_").and_then(|n| n.rsplit_once('_').map(|(a, _)| format!("whl_stk_{a}"))),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|c| rims_root.join(c))
+    .collect()
+}
+
 /// Stock rim size of a car: the starter cars have a set-up file; the others get the
 /// size of their time (15 inch classics, 17 inch in the nineties, 19 inch since).
 fn stock_rim_ratio(root: &Path, car: &str, wheel_radius: f32) -> f32 {
@@ -8139,6 +8155,15 @@ pub fn wheel_ahead(dir: &Path) {
     let mut g = WHEEL_SOURCES.lock().unwrap_or_else(|e| e.into_inner());
     if g.iter().any(|(d, _)| d == dir) {
         return;
+    }
+    // (parts read ahead for cars never built are not taken: the oldest finished ones go past 32)
+    while g.len() >= 32 {
+        match g.iter().position(|(_, s)| s.as_ref().map_or_else(|h| h.is_finished(), |_| true)) {
+            Some(i) => {
+                g.remove(i);
+            }
+            None => break,
+        }
     }
     let d = dir.to_path_buf();
     if let Ok(h) = std::thread::Builder::new().name("wheel read".into()).spawn(move || wheel_source(&d).map(Arc::new)) {
@@ -8616,6 +8641,17 @@ pub fn compose_plate(bg: &PlateBg, font: &[u8], text: &str) -> Vec<u8> {
 #[cfg(test)]
 mod traffic_light_set_tests {
     use super::*;
+
+    /// The stock rim folders read ahead are the ones the build tries, in its order (D59: the read moved to a worker).
+    #[test]
+    fn stock_rim_dirs_are_the_builds() {
+        let r = Path::new("R");
+        let rims = |v: Vec<std::path::PathBuf>| v.iter().map(|p| p.strip_prefix("R/resources/rims").unwrap().to_string_lossy().to_string()).collect::<Vec<_>>();
+        assert_eq!(rims(stock_rim_dirs(r, "vp_frd_gt_06")), ["whl_stk_frd_gt_06", "whl_stk_frd_gt"]);
+        assert_eq!(rims(stock_rim_dirs(r, "vp_lam_murcielago_06_dub")), ["whl_stk_lam_murcielago_06", "whl_stk_lam_murcielago"]);
+        assert_eq!(rims(stock_rim_dirs(r, "VPD_CHV_BELAIR_55")), ["whld_stk_chv_belair_55"]);
+        assert!(stock_rim_dirs(r, "va_taxi_96").is_empty());
+    }
 
     /// A traffic car's light set (the traffic object's reset F-14696 sets the set's +0 to 0 and +4 to its
     /// drawable, so F-70785 takes the second source F-74049): per kind the drawable's bones whose name is exactly
