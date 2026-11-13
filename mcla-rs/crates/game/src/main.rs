@@ -14189,6 +14189,12 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.police.pending_eval = self.game.police_eval_last;
                     }
                 }
+                // (NEXT RACE IN SERIES / CONTINUE TOURNAMENT: the first opponent's GREETING_MEET_ME_THERE_EVENT - `Game::next_greet`)
+                if std::mem::take(&mut self.game.next_greet) && action == MenuAction::StartRace {
+                    let voice = self.game.race.as_ref().and_then(|r| r.participants.get(1)).and_then(|k| self.drivers.set_of.get(k)).map(|set| prerace::voice_of(&self.opt.data_dir, set).unwrap_or_default()).unwrap_or_default();
+                    let ok = self.speech.say_as("GREETING_MEET_ME_THERE_EVENT", &voice);
+                    log::info!("next race: GREETING_MEET_ME_THERE_EVENT in {:?} ({})", voice, ok);
+                }
                 // (RESTART SERIES from a race's pause: its first race again, the tally at nought)
                 if action == MenuAction::RestartRace {
                     if let Some(sr) = self.game.series.as_mut() {

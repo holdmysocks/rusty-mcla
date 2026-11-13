@@ -1261,6 +1261,10 @@ pub struct Game {
     /// results screen: state of the career event the race belonged to, and its next race
     pub event_line: String,
     pub next_event_race: Option<usize>,
+    /// NEXT RACE IN SERIES / CONTINUE TOURNAMENT was taken: the next race's start says GREETING_MEET_ME_THERE_EVENT
+    /// in record 1's racer's voice (OrderedSeriesCore 0x3bc2..0x3bf7, TournamentCore 0x20c8: mcCareerSpeech_PlayScenario of
+    /// the scenario found at the script's start, when it exists, by Racer_GetVehicleDriverName of slot 1, to the PLAYER)
+    pub next_greet: bool,
     /// test runs: MCLA_NAV asked for the screenshot now
     pub shot_now: bool,
     /// where deliveries are taken up
@@ -1826,6 +1830,7 @@ impl Game {
             cine_black: false,
             event_line: String::new(),
             next_event_race: None,
+            next_greet: false,
             shot_now: false,
             delivery_spots: Vec::new(),
             cruiser_marks: Vec::new(),
@@ -9998,6 +10003,7 @@ impl Game {
                             }
                             _ => {
                                 if let Some(n) = self.next_event_race.take() {
+                                    self.next_greet = matches!(self.race_owner(), crate::raceleave::Owner::Series | crate::raceleave::Owner::Tournament);
                                     self.current_race = Some(n);
                                     self.police_eval = Some(self.next_event_police());
                                     action = MenuAction::StartRace;
@@ -10288,6 +10294,7 @@ impl Game {
                         self.menu_sel = 0;
                         action = match self.next_event_race.take() {
                             Some(n) => {
+                                self.next_greet = matches!(self.race_owner(), crate::raceleave::Owner::Series | crate::raceleave::Owner::Tournament);
                                 self.current_race = Some(n);
                                 self.warp_with_cut = true;
                                 self.police_eval = Some(self.next_event_police());
