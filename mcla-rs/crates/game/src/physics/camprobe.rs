@@ -5705,3 +5705,65 @@ mod tests {
         assert_eq!((cases, hits, by_kind, wheel_hits, masked, wheel_diff), (4000, 488, [127, 103, 50, 208], 0, 1425, 111), "coverage");
     }
 }
+
+#[cfg(test)]
+mod level_ignores_car_list_tests {
+    use super::*;
+
+    /// D59: with the level present every camera query answers from it, so the per-frame list of the other cars' world
+    /// hulls (`CamLevel::cars`, no longer built by the game) changes nothing - the same contacts, touches, sweeps and
+    /// helicopter sweeps with boxes put right where the queries are as with no list. Needs the city's bound
+    /// (MCLA_DATA_DIR); skipped without it.
+    #[test]
+    fn level_queries_ignore_the_car_list() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let Ok(d) = std::fs::read(std::path::Path::new(&root).join("resources/city/sc/0x3e5fd91d.r1")) else {
+            eprintln!("skipped: the city's bound (MCLA_DATA_DIR) is missing");
+            return;
+        };
+        let u32le = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let data = d[16..].to_vec();
+        let vs = (u32le(12) as usize).min(data.len());
+        let res = mcla_formats::rsc::Resource { rtype: u32le(4), flags: u32le(8), virtual_size: vs, physical_size: data.len() - vs, data };
+        let city = ProbeBound::of_city(&mcla_formats::rage::bound::CityBound::parse(&res).unwrap());
+        let col = WorldCollider { city: Some(std::sync::Arc::new(city)), ..Default::default() };
+        let state = crate::physics::loose::LooseState::default();
+        let level = crate::vehicles::traffic::RailLevel::new(&col, &[], std::path::Path::new(""), &[], &state);
+        // a 4 x 1.4 x 2 m box hull
+        let (x, y, z) = (1.0f32, 0.7f32, 2.0f32);
+        let verts: Vec<Vec3> = (0..8).map(|i| Vec3::new(if i & 1 != 0 { x } else { -x }, if i & 2 != 0 { y } else { -y }, if i & 4 != 0 { z } else { -z })).collect();
+        let tris: [[u16; 3]; 12] = [[0, 2, 3], [0, 3, 1], [4, 5, 7], [4, 7, 6], [0, 1, 5], [0, 5, 4], [2, 6, 7], [2, 7, 3], [0, 4, 6], [0, 6, 2], [1, 3, 7], [1, 7, 5]];
+        let hull = HullShape::new(verts, &tris);
+        let mut rng = 0x1234_5678u32;
+        let mut rnd = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            rng as f32 / u32::MAX as f32
+        };
+        let start = Vec3::new(824.3, 19.8, -817.0);
+        let (mut n, mut hits) = (0, 0);
+        for _ in 0..400 {
+            let a = start + Vec3::new(rnd() * 40.0 - 20.0, rnd() * 6.0 - 2.0, rnd() * 40.0 - 20.0);
+            let b = a + Vec3::new(rnd() * 16.0 - 8.0, rnd() * 4.0 - 2.0, rnd() * 16.0 - 8.0);
+            let r = 0.1 + rnd() * 1.5;
+            // boxes on the ball and along the sweep, turned
+            let cars: Vec<CamObj> = [a, (a + b) * 0.5, b].iter().map(|&p| CamObj::of_hull(&hull, p, Quat::from_rotation_y(rnd() * 6.28))).collect();
+            let with = CamLevel { city: &col, cars, level: Some(&level), skip: 0 };
+            let without = CamLevel { city: &col, cars: Vec::new(), level: Some(&level), skip: 0 };
+            for q in [CamQuery::CARS, CamQuery::FIXED, CamQuery::AIR] {
+                let (c1, c2) = (with.contacts(a, r, q, 4), without.contacts(a, r, q, 4));
+                hits += c1.len();
+                assert_eq!(c1, c2);
+                assert_eq!(with.touches(a, r, q), without.touches(a, r, q));
+            }
+            for cars in [true, false] {
+                assert_eq!(format!("{:?}", with.sweep_hit(a, b, r, cars)), format!("{:?}", without.sweep_hit(a, b, r, cars)));
+            }
+            assert_eq!(format!("{:?}", with.heli_hit(a, b, r, 0.5)), format!("{:?}", without.heli_hit(a, b, r, 0.5)));
+            n += 1;
+        }
+        assert_eq!(n, 400);
+        eprintln!("{n} cases, {hits} level contacts");
+    }
+}

@@ -97,6 +97,7 @@ mod cutlights;
 mod siglrefl;
 mod sunglow;
 mod ticktimes;
+mod camtime;
 mod carblob;
 mod carshadow;
 mod peds;
@@ -9955,24 +9956,17 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if let Some(car) = self.vehicles.player() {
                 let render_state = car.render_state(self.vehicles.render_alpha);
                 // the level the cameras' probes see (physics/camprobe.rs): the level's objects as the original's level
-                // holds them for the ball (F-87651, the camera's target skipped); the city and every other placed car's
-                // hull where it is drawn for the sweep
+                // holds them for the ball and the sweep (F-87651, the camera's target skipped). With the level every query
+                // answers from it, so the cars' world hulls (`CamLevel::cars`, the queries' old way without it) are not
+                // built: D59, they were 0.27 - 0.48 ms a frame with traffic and never read
+                crate::camtime::begin();
                 let probe_level = self.vehicles.probe_level(&world.collider);
+                crate::camtime::mark(1);
                 let cam_level = physics::camprobe::CamLevel {
                     level: Some(&probe_level),
                     skip: self.vehicles.cars.iter().position(|c| c.is_player).map_or(0, vehicles::Vehicles::probe_inst),
                     city: &world.collider,
-                    cars: self
-                        .vehicles
-                        .cars
-                        .iter()
-                        .filter(|c| c.placed && !c.is_player && !c.pu_ghost)
-                        .filter_map(|c| {
-                            let h = c.tuned.as_deref().unwrap_or(&c.model.params).hull.as_ref()?;
-                            let s = c.render_state(self.vehicles.render_alpha);
-                            Some(physics::camprobe::CamObj::of_hull(h, s.pos, s.rot))
-                        })
-                        .collect(),
+                    cars: Vec::new(),
                 };
                 // the garage's own cameras: the view that goes with the highlighted row
                 let mut own_view = false;
@@ -10091,8 +10085,8 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // (and the lens of the last frame: the shared viewport's, which sizes the director's test ball, F-51014)
                 let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
                 let car_view = replay::CarView::of(&render_state, car.model.max.y);
-                // (and the watched car's own hull, for the polar camera's push-out)
-                let own_hull = car.tuned.as_deref().unwrap_or(&car.model.params).hull.as_ref().map(|h| physics::camprobe::CamObj::of_hull(h, render_state.pos, render_state.rot));
+                // (and the watched car's own hull, for the polar camera's push-out - only a replay reads it, D59)
+                let own_hull = self.game.replay.as_ref().and_then(|_| car.tuned.as_deref().unwrap_or(&car.model.params).hull.as_ref()).map(|h| physics::camprobe::CamObj::of_hull(h, render_state.pos, render_state.rot));
                 let pad_st = self.pad_state();
                 if let Some(p) = self.game.replay.as_mut() {
                     // (the polar camera reads the pad record's right stick and trigger bytes itself, F-63907; without a pad
@@ -10246,6 +10240,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         own_view = true;
                     }
                 }
+                crate::camtime::mark(2);
                 let mut boom_view = false;
                 // (the boom's collision hit this frame: the director shows its corrected matrix +80, byte +156 - F-12669)
                 let mut boom_corrected = false;
@@ -10686,6 +10681,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         if self.crash_cam.follows_rider(&self.cam_switch.blend) && self.crash_timer > 0.0 {
                             self.crash_cam.set_rider(self.rider_off.matrix(seat_matrix(car, self.vehicles.render_alpha)));
                         }
+                        crate::camtime::mark(3);
                         let aspect = gpu.config.width as f32 / gpu.config.height.max(1) as f32;
                         let mut others: Vec<(boomcam::CamId, boomcam::BoomOut)> = Vec::new();
                         if let Some(o) = self.crash_cam.frame(&self.cam_switch.blend, &track_car, dt, sim_dt, &cam_level, aspect) {
@@ -10715,6 +10711,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         if self.event_dir.idle_reset {
                             self.idle_time = 0.0;
                         }
+                        crate::camtime::mark(4);
                         // the ability camera (F-38892): pushed over InTime while the ability runs in a
                         // chase view (no look back, no blend; the event camera's event cleared), handed
                         // back over OutTime when it stops; not while the wipeout camera has the view.
@@ -10924,6 +10921,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         }
                     }
                     self.game.idle_cam = self.event_dir.idle(&self.cam_switch.blend);
+                    crate::camtime::end();
                 }
                 self.hide_player = boom_view && self.view_mode == 4 && !self.look_back && !(self.crash_cam.active(&self.cam_switch.blend) || self.event_dir.event() == Some(boomcam::EV_DAMAGEOUT));
                 // keep the camera out of walls and hillsides (camBoomCS CollideType): pull it in
