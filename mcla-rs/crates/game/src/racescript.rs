@@ -1305,3 +1305,43 @@ mod tests {
         assert!((d2 - 4.0).abs() < 0.2 && (p.distance_squared(q) - d2).abs() < 1e-3);
     }
 }
+
+#[cfg(test)]
+mod grid_tests {
+    /// Every race script's RaceGrid_SetPosition (0x2e41808e: slot, position, heading in degrees; one call in most scripts) puts
+    /// a position and heading the port already has at that slot (its yaw, in radians): the race file's grid, or for a flag game the other team's grid. Disc data:
+    /// 218 races, 277 calls, 217 in the grid and 60 in the other team's; skipped without the extracted data.
+    #[test]
+    fn the_scripts_grid_slots_are_the_race_files() {
+        let root = std::path::Path::new("D:/MCLA/extracted/cache/script_obj");
+        if !root.exists() {
+            eprintln!("no disc data, skipped");
+            return;
+        }
+        let races = crate::races::load("D:/MCLA/extracted/cache");
+        let (mut grid, mut team2) = (0, 0);
+        for r in &races {
+            let rel = r.id.to_ascii_lowercase();
+            let Some((folder, name)) = rel.rsplit_once('/') else { continue };
+            let dir = root.join(folder);
+            let hashed = dir.join(format!("0x{:08x}", mcla_formats::hash::joaat(name)));
+            let Some(p) = [dir.join(format!("{name}.sco")), hashed].into_iter().find(|p| p.exists()) else { continue };
+            let sco = mcla_formats::sco::decode(&std::fs::read(&p).unwrap()).unwrap();
+            for c in sco.calls().into_iter().filter(|c| c.hash == 0x2e41_808e) {
+                let v = glam::Vec3::from(c.args[2].vec3().unwrap());
+                let slot = c.args[1].num().unwrap() as usize;
+                let gy = if r.grid.get(slot).is_some_and(|g| (g.0 - v).length() < 0.01) { r.grid[slot].1 } else { r.grid2.get(slot).map_or(f32::NAN, |g| g.1) };
+                let d = (c.args[3].num().unwrap() as f32 - gy.to_degrees()).abs();
+                assert!(d < 1e-3 || (d - 360.0).abs() < 1e-3, "{} slot {slot}: heading {:?}, yaw {gy}", r.id, c.args[3]);
+                let near = |g: Option<&(glam::Vec3, f32)>| g.is_some_and(|g| (g.0 - v).length() < 0.01);
+                if near(r.grid.get(slot)) {
+                    grid += 1;
+                } else {
+                    assert!(near(r.grid2.get(slot)), "{} slot {slot}: {v:?}", r.id);
+                    team2 += 1;
+                }
+            }
+        }
+        assert_eq!((grid, team2), (217, 60));
+    }
+}
