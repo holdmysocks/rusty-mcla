@@ -10145,6 +10145,130 @@ pub fn slot_lane_clear(p: Vec3, own: (f32, f32), joined: bool, cars: &[(Vec3, f3
     true
 }
 
+/// What the start speed (F-30683) reads from the car's getters (`Vehicles::path_start_speed`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StartIn {
+    /// the path's start speed (path params +152 x 0.44704, 0 when standing); None: no path params
+    pub start: Option<f32>,
+    /// the follower's rail speed (rail vfunc 68) and the car's offset (+424); None: no behaviour or no rail
+    pub rail: Option<(f32, f32)>,
+    /// the rail is a junction lane (F-50269)
+    pub junction: bool,
+    /// the car's place (F-58860), its bound's length (F-88657, vfunc 24), its type's fMaxDecel (+148)
+    pub pos: Vec3,
+    pub len: f32,
+    pub max_decel: f32,
+    /// the car ahead (F-90496): place, velocity (+208), length
+    pub ahead: Option<(Vec3, Vec3, f32)>,
+    /// the car behind: place, velocity, length, its type's fMaxDecel
+    pub behind: Option<(Vec3, Vec3, f32, f32)>,
+    /// the next rail when it is a junction lane: its first control point (vfunc 48) and its speed
+    /// when the car may go (F-78185 green and not F-50959 blocked), else 0
+    pub light: Option<(Vec3, f32)>,
+    /// the slot test F-12899 (None: not asked - no bound at type +104 / +12, or exempt)
+    pub slot_clear: Option<bool>,
+    /// car +500 bit 0x20 (the second pool), type +111 / +112 (trailer, cab): a failed slot test does not remove
+    pub pool2: bool,
+    pub cab: bool,
+    pub trailer: bool,
+    /// bIsProxy (type +108): never removed
+    pub proxy: bool,
+}
+
+/// The start speed rule (car vfunc 84 F-30683): the speed stored at +412 / +416 and whether the car is
+/// removed (F-51512, reason 17). FLT_MAX stands for "none" as in the original (a start of FLT_MAX is none).
+/// f25 = the rail's speed + the offset (no rail: 0). No rail or a junction lane: v = start, else f25. Else, with
+/// d = |our place - theirs| (fused, dy first) less their half length, then ours (fnmsubs): the car ahead caps at
+/// sqrt(|v_a|^2 + 2 (fMaxDecel x 0.5)(d - 2)), the car behind asks at least sqrt(|v_b|^2 - 2 (fMaxDecel_b x 0.5)(d - 2));
+/// the light caps at sqrt(v_n^2 + 2 fMaxDecel max(|p0 - us| - len / 2, 0)) (the factor 2 on the full fMaxDecel: the
+/// register that held 0.5 holds the distance by then); a term under 0 removes (bge: a NaN is not under), a failed slot
+/// test removes (not for the second pool, cabs and trailers). f25 = max(f25, 0) (fsel); removed when the least is over
+/// the cap, over f25, over the light's, or the light under 0; v = min(start or f25, cap, light) (fsel), removed when
+/// under the least (0 without one). bIsProxy: never removed.
+pub fn start_speed_rule(c: &StartIn) -> (f32, bool) {
+    // (the recomp's fused ops: f32 operands, fused in f64, rounded to f32)
+    let fmadds = |a: f32, b: f32, d: f32| (a as f64).mul_add(b as f64, d as f64) as f32;
+    let fnmsubs = |a: f32, b: f32, d: f32| (-(a as f64).mul_add(b as f64, -(d as f64))) as f32;
+    let dist = |a: Vec3, b: Vec3| {
+        let (dx, dy, dz) = (a.x - b.x, a.y - b.y, a.z - b.z);
+        fmadds(dx, dx, fmadds(dz, dz, dy * dy)).sqrt()
+    };
+    let sq = |v: Vec3| fmadds(v.z, v.z, fmadds(v.x, v.x, v.y * v.y));
+    const NONE: f32 = f32::MAX;
+    let f23 = c.start.unwrap_or(NONE);
+    let mut f25 = c.rail.map_or(0.0, |(s, o)| s + o);
+    let (mut f24, mut f26, mut f28, mut f29) = (NONE, NONE, NONE, 0.0f32);
+    let mut removed = false;
+    if c.rail.is_some() && !c.junction {
+        let gap = |p: Vec3, l: f32| fnmsubs(c.len, 0.5, fnmsubs(l, 0.5, dist(c.pos, p)));
+        if let Some((p, v, l)) = c.ahead {
+            let x = fmadds((c.max_decel * 0.5) * (gap(p, l) - 2.0), 2.0, sq(v));
+            if x < 0.0 {
+                removed = true;
+            } else {
+                f24 = x.sqrt();
+            }
+        }
+        if let Some((p, v, l, md)) = c.behind {
+            let x = fnmsubs((md * 0.5) * (gap(p, l) - 2.0), 2.0, sq(v));
+            if x < 0.0 {
+                removed = true;
+            } else {
+                f28 = x.sqrt();
+            }
+        }
+        if let Some((p0, vn)) = c.light {
+            let d = fnmsubs(c.len, 0.5, dist(c.pos, p0));
+            let d = if -d >= 0.0 { 0.0 } else { d };
+            let x = fmadds(c.max_decel * d, 2.0, vn * vn);
+            if x < 0.0 {
+                removed = true;
+            } else {
+                f26 = x.sqrt();
+            }
+        }
+        if c.slot_clear == Some(false) && !c.pool2 && !c.trailer && !c.cab {
+            removed = true;
+        }
+        f25 = if -f25 >= 0.0 { 0.0 } else { f25 };
+        if f28 != NONE {
+            if f24 != NONE && f28 > f24 {
+                removed = true;
+            }
+            if f28 > f25 {
+                removed = true;
+            }
+        }
+        if f26 != NONE {
+            if f28 != NONE && f26 < f28 {
+                removed = true;
+            }
+            if f26 < 0.0 {
+                removed = true;
+            }
+        }
+        if f28 != NONE {
+            f29 = f28;
+        }
+    }
+    let mut v = if f23 != NONE { f23 } else { f25 };
+    if f24 != NONE && v - f24 >= 0.0 {
+        v = f24;
+    }
+    if f26 != NONE && v - f26 >= 0.0 {
+        v = f26;
+    }
+    if v < f29 {
+        removed = true;
+    }
+    (v, removed && !c.proxy)
+}
+
+/// The path's start speed stands (F-30683 reads the path params): bParked (+164), or referenced (+188) and not fired (+189).
+pub fn path_start_standing(parked: bool, referenced: bool, fired: bool) -> bool {
+    (referenced && !fired) || parked
+}
+
 impl Vehicles {
     /// The shared random numbers (the MWC at 0x82860890) for the race script's draws.
     pub fn shared_mwc(&mut self) -> &mut super::parked::Mwc {
@@ -10170,142 +10294,73 @@ impl Vehicles {
 
     /// The start speed (car vfunc 84 F-30683, called by the spawn slot 5 F-77422 for
     /// every ambient car - traffic too - and at a race path's trigger; listings
-    /// work/people2/racepaths/v84.txt, work/people2/racepaths2/m.txt). `start`: the path's
-    /// fPathStartSpeed x 0.44704 (0 when bParked, or referenced and not fired); None for a car
-    /// without a path. f25 = the rail's speed + the car's offset (+424). No rail, a junction lane
-    /// (the rail's owner or its parent flagged 4) or online: v = start, else f25, removed when
-    /// under 0. Else the cars on the rail (F-90496; phase = behaviour +208): the one ahead
-    /// (least phase ahead, else the least on the next rail) caps it at sqrt(|v_a|^2 + fMaxDecel
-    /// (gap - 2)) with our fMaxDecel, the one behind (greatest phase behind) asks at least
-    /// sqrt(|v_b|^2 - fMaxDecel_b (gap - 2)), gap = the centres' distance less both half lengths,
-    /// a negative term removes; the light (`light_start_cap`); the slot test (`slot_clear`), which
-    /// removes a car that is no cab and no trailer (nor car +500 bit 0x20: the cars of the ambient
-    /// manager's second pool, F-86868 -> F-53584 with 1, which serves the bIsProxy
-    /// types, F-12577 -> F-21879; such a car is never removed anyway).
-    /// Then f25 = max(f25, 0); removed when the least is over the cap, over f25 or over the
-    /// light's speed; v = min(start or f25, cap, light), removed when under the least. A bIsProxy
-    /// type (+108) is never removed. Removed: None (F-51512, reason 17). `size`: the car's
-    /// bound (width, length); `me`: the car's own index when it is in the list already.
+    /// work/people2/racepaths/v84.txt, work/people2/racepaths2/m.txt): the car's getters gathered
+    /// for `start_speed_rule`, which holds the rule. `start`: the path's fPathStartSpeed x 0.44704
+    /// (0 when standing, `path_start_standing`); None for a car without a path. The rail's speed
+    /// (vfunc 68) + the car's offset (+424); no rail: none. The cars on the rail (F-90496; phase =
+    /// behaviour +208): the one ahead (least phase ahead, else the least on the next rail) and the
+    /// one behind (greatest phase behind), each with its place, velocity and length; the light
+    /// (`light_start_point`); the slot test (`slot_clear`), not asked for a cab, a trailer or a car of
+    /// the ambient manager's second pool (car +500 bit 0x20: F-86868 -> F-53584 with 1, which serves
+    /// the bIsProxy types, F-12577 -> F-21879). Removed: None (F-51512, reason 17). `size`: the
+    /// car's bound (width, length); `me`: the car's own index when it is in the list already.
     #[allow(clippy::too_many_arguments)]
     fn path_start_speed(&self, nav: &NavSys, rider: &Rider, pos: Vec3, size: (f32, f32), start: Option<f32>, me: Option<usize>) -> Option<f32> {
         let log = std::env::var_os("MCLA_RACEPATH_LOG").is_some() || std::env::var_os("MCLA_START_LOG").is_some();
-        let proxy = rider.ty.proxy;
-        let half_len = size.1 * 0.5;
-        // f25: the rail's speed (vfunc 68) + the offset (+424)
-        let f25 = match (&rider.route, rider.state) {
+        let speed = match (&rider.route, rider.state) {
             (Some(rt), 9) => rt.speed,
             _ => rail_speed(nav, rider.link).0,
-        } + rider.off;
+        };
+        let mut c = StartIn { start, pos, len: size.1, max_decel: rider.ty.max_decel, proxy: rider.ty.proxy, ..Default::default() };
         // where the car is: (rail key, phase); the next rail
         use RailKey as Key;
-        let Some((here, ph)) = rail_key(nav, rider) else {
-            // (no rail: f25 is 0)
-            let v = start.unwrap_or(0.0);
-            return (v >= 0.0 || proxy).then_some(v);
-        };
-        if matches!(here, Key::Lane(_)) && junction_lane(&nav.links[rider.link]) {
-            let v = start.unwrap_or(f25);
-            if v < 0.0 && !proxy {
-                if log {
-                    log::info!("  start: on a junction lane at {v:.2} < 0: removed");
+        if let Some((here, ph)) = rail_key(nav, rider) {
+            c.rail = Some((speed, rider.off));
+            c.junction = matches!(here, Key::Lane(_)) && junction_lane(&nav.links[rider.link]);
+            if !c.junction {
+                let next = match (&rider.route, here) {
+                    (Some(rt), Key::Path(p, i)) => Some(if i + 1 < rt.rails.len() { Key::Path(p, i + 1) } else { Key::Lane(rt.lane) }),
+                    _ => rider.next.map(|n| Key::Lane(nav.links[n].lane)),
+                };
+                // F-90496: the rail's car list (F-83161: in the order the cars took the rail,
+                // the first 64, the car itself among them and then passed over): the greatest phase
+                // under ours behind, the least over ours ahead (the first of equals); none ahead: the
+                // least phase on the next rail's list (behaviour +192)
+                let not_me = |v: Vec<(usize, f32)>| v.into_iter().filter(|&(j, _)| Some(j) != me).collect::<Vec<_>>();
+                let here_list = not_me(self.rail_list(nav, here, 64));
+                let next_list = next.map(|nk| not_me(self.rail_list(nav, nk, 64)));
+                let (ahead, behind) = start_neighbours(ph, &here_list, next_list.as_deref());
+                let car = |j: usize| (self.cars[j].state.pos, self.cars[j].state.vel, 2.0 * half_size(&self.cars[j]).0);
+                c.ahead = ahead.map(car);
+                c.behind = behind.map(|j| {
+                    let (p, v, l) = car(j);
+                    (p, v, l, self.cars[j].rail.as_ref().map_or(0.0, |o| o.ty.max_decel))
+                });
+                c.light = self.light_start_point(nav, rider, me);
+                c.pool2 = rider.ty.proxy;
+                c.cab = rider.ty.cab;
+                c.trailer = rider.ty.trailer;
+                if !c.cab && !c.trailer && !c.pool2 {
+                    c.slot_clear = Some(self.slot_clear(nav, rider, size, me));
                 }
-                return None;
-            }
-            return Some(v);
-        }
-        let next = match (&rider.route, here) {
-            (Some(rt), Key::Path(p, i)) => Some(if i + 1 < rt.rails.len() { Key::Path(p, i + 1) } else { Key::Lane(rt.lane) }),
-            _ => rider.next.map(|n| Key::Lane(nav.links[n].lane)),
-        };
-        // F-90496: the rail's car list (F-83161: in the order the cars took the rail,
-        // the first 64, the car itself among them and then passed over): the greatest phase
-        // under ours behind, the least over ours ahead (the first of equals); none ahead: the
-        // least phase on the next rail's list (behaviour +192)
-        let not_me = |v: Vec<(usize, f32)>| v.into_iter().filter(|&(j, _)| Some(j) != me).collect::<Vec<_>>();
-        let here_list = not_me(self.rail_list(nav, here, 64));
-        let next_list = next.map(|nk| not_me(self.rail_list(nav, nk, 64)));
-        let (ahead, behind) = start_neighbours(ph, &here_list, next_list.as_deref());
-        let ahead = ahead.map(|j| (j, 0.0));
-        let behind = behind.map(|j| (j, 0.0));
-        let gap = |j: usize| self.cars[j].state.pos.distance(pos) - half_len - half_size(&self.cars[j]).0;
-        let mut why: Option<String> = None;
-        // f24: the car ahead's cap
-        let mut cap = None::<f32>;
-        if let Some((j, _)) = ahead {
-            let va = self.cars[j].state.vel.length_squared();
-            let x = va + rider.ty.max_decel * (gap(j) - 2.0);
-            if x < 0.0 {
-                why.get_or_insert_with(|| format!("the car ahead {} gap {:.1} speed {:.1}: {x:.1} < 0", self.cars[j].model.name, gap(j), va.sqrt()));
-            } else {
-                cap = Some(x.sqrt());
             }
         }
-        // f28: what the car behind asks
-        let mut least = None::<f32>;
-        if let Some((j, _)) = behind {
-            let o = self.cars[j].rail.as_ref().unwrap();
-            let x = self.cars[j].state.vel.length_squared() - o.ty.max_decel * (gap(j) - 2.0);
-            if x < 0.0 {
-                why.get_or_insert_with(|| format!("the car behind {} gap {:.1} speed {:.1}: {x:.1} < 0", self.cars[j].model.name, gap(j), self.cars[j].state.vel.length()));
-            } else {
-                least = Some(x.sqrt());
-            }
+        let (v, removed) = start_speed_rule(&c);
+        if log && removed {
+            log::info!("  start: {v:.2} {c:?}{}", if c.proxy { " (bIsProxy: kept)" } else { ": removed" });
         }
-        // f26: the light
-        let light = self.light_start_cap(nav, rider, pos, half_len, me);
-        // the slot test (exempt: cabs, trailers, car +500 bit 0x20 = a car of the bIsProxy pool)
-        if !rider.ty.cab && !rider.ty.trailer && !rider.ty.proxy && !self.slot_clear(nav, rider, size, me) {
-            why.get_or_insert_with(|| "the slot is not clear".to_string());
-        }
-        let want = if f25 <= 0.0 { 0.0 } else { f25 };
-        let mut lo = 0.0f32;
-        if let Some(l) = least {
-            if cap.is_some_and(|c| l > c) {
-                why.get_or_insert_with(|| format!("the car behind asks {l:.2} over the cap {:.2}", cap.unwrap_or(0.0)));
-            }
-            if l > want {
-                why.get_or_insert_with(|| format!("the car behind asks {l:.2} over the wanted {want:.2}"));
-            }
-            if light.is_some_and(|s| s < l) {
-                why.get_or_insert_with(|| format!("the car behind asks {l:.2} over the light's {:.2}", light.unwrap_or(0.0)));
-            }
-            lo = l;
-        }
-        let mut v = start.unwrap_or(want);
-        if let Some(c) = cap {
-            if v - c >= 0.0 {
-                v = c;
-            }
-        }
-        if let Some(s) = light {
-            if v - s >= 0.0 {
-                v = s;
-            }
-        }
-        if v < lo {
-            why.get_or_insert_with(|| format!("{v:.2} under the least {lo:.2}"));
-        }
-        if let Some(w) = why {
-            if log {
-                log::info!("  start: {w}{}", if proxy { " (bIsProxy: kept)" } else { ": removed" });
-            }
-            if !proxy {
-                return None;
-            }
-        }
-        Some(v)
+        (!removed).then_some(v)
     }
 
-    /// The light's start speed (F-30683 at A-11634): when the next rail (behaviour +192)
-    /// is a junction lane (F-50269: its owner or the owner's parent flagged 4), its junction
-    /// J (F-41621) lets the car go when the lane is green (F-78185: the lane's first
+    /// The light's part of the start speed (F-30683 at A-11634): when the next rail
+    /// (behaviour +192) is a junction lane (F-50269: its owner or the owner's parent flagged 4),
+    /// its junction J (F-41621) lets the car go when the lane is green (F-78185: the lane's first
     /// span within 25 degrees of the current arm, timer < 6.5 s; `Junction::lane_state` 2) and J
-    /// is not blocked (F-50959, `junction_blocked`). d = |the lane's first control point (rail
-    /// vfunc 12) - the car| less half its length, at least 0; v = sqrt(vn^2 + 2 (fMaxDecel / 2) d),
-    /// vn the lane's speed when the car may go, else 0: the speed that still stops at the line
-    /// (or reaches the lane's speed there). None: no such lane. (J of a junction without arms:
-    /// never green - the car is held to the stopping speed.)
-    fn light_start_cap(&self, nav: &NavSys, rider: &Rider, pos: Vec3, half_len: f32, me: Option<usize>) -> Option<f32> {
+    /// is not blocked (F-50959, `junction_blocked`): the lane's first control point (rail vfunc
+    /// 12) and the lane's speed when the car may go, else 0 (`start_speed_rule` makes the cap).
+    /// None: no such lane. (J of a junction without arms: never green - the car is held to the
+    /// stopping speed.)
+    fn light_start_point(&self, nav: &NavSys, rider: &Rider, me: Option<usize>) -> Option<(Vec3, f32)> {
         let nlink = match (&rider.route, rider.state) {
             (Some(rt), 9) => {
                 if rt.i + 1 < rt.rails.len() {
@@ -10323,14 +10378,11 @@ impl Vehicles {
         let ji = lane_junction(nav, lane)?;
         let (p0, _) = lane_entry(nav, nlink);
         let go = junction_green(&self.signals, nav, ji, nlink) && !self.junction_blocked(nav, ji, me);
-        let d = (p0 - pos).length() - half_len;
-        let dist = if -d >= 0.0 { 0.0 } else { d };
         let vn = if go { rail_speed(nav, nlink).0 } else { 0.0 };
-        let x = vn * vn + 2.0 * (rider.ty.max_decel * 0.5) * dist;
         if std::env::var_os("MCLA_START_LOG").is_some() {
-            log::info!("  start light: junction {ji} lane {lane} go {go} d {dist:.1} vn {vn:.2} -> {:.2}", x.max(0.0).sqrt());
+            log::info!("  start light: junction {ji} lane {lane} go {go} vn {vn:.2}");
         }
-        (x >= 0.0).then(|| x.sqrt())
+        Some((p0, vn))
     }
 
     /// F-50959: is navsys junction `ji` blocked for a car to enter? (1) A driver's car (the
@@ -13168,6 +13220,44 @@ mod controller_pick_tests {
             yes += got as usize;
         }
         assert_eq!((n, yes), (13725, 1617));
+    }
+
+    #[test]
+    fn start_speed_matches_the_original() {
+        // tools/start_speed_reference.py: F-30683 run offline whole (F-50269 / F-41621 real; the neighbours, places,
+        // lengths, green / block, slot test and the rails' speeds from the case): +412 / +416, +48 and the removal
+        let (mut n, mut gone) = (0, 0);
+        for l in include_str!("testdata/start_speed_ref.txt").lines() {
+            let (c, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<u32> = c.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let o: Vec<u32> = o.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let f = |i: usize| f32::from_bits(c[i]);
+            let v = |i: usize| Vec3::new(f(i), f(i + 1), f(i + 2));
+            let lane = |i: usize| LaneBits { owner: if c[i] != 0 { c[i + 1] } else { 0 }, parent: if c[i] != 0 && c[i + 2] != 0 { c[i + 3] } else { 0 }, flags: 0 };
+            let rail = c[5] != 0 && c[6] != 0;
+            let standing = path_start_standing(c[2] != 0, c[3] != 0, c[4] != 0);
+            let s = StartIn {
+                start: (c[0] != 0).then(|| if standing { 0.0 } else { f(1) * MPH }),
+                rail: rail.then(|| (f(11), f(12))),
+                junction: rail && lane(7).junction(),
+                pos: v(16),
+                len: f(19),
+                max_decel: f(20),
+                ahead: (c[14] != 0).then(|| (v(21), v(24), f(27))),
+                behind: (c[15] != 0).then(|| (v(28), v(31), f(34), f(35))),
+                light: (c[5] != 0 && c[36] != 0 && lane(37).junction()).then(|| (v(42), if c[45] != 0 && c[46] == 0 { f(41) } else { 0.0 })),
+                slot_clear: (c[47] != 0 && c[48] != 0).then_some(c[49] != 0),
+                pool2: c[50] & 0x20 != 0,
+                trailer: c[51] != 0,
+                cab: c[52] != 0,
+                proxy: c[53] != 0,
+            };
+            let (sp, removed) = start_speed_rule(&s);
+            assert_eq!((sp.to_bits(), sp.to_bits(), if c[0] != 0 { 0x1500 } else { 0 }, if removed { 17 } else { 0 }), (o[0], o[1], o[2], o[3]), "{l}");
+            n += 1;
+            gone += removed as usize;
+        }
+        assert_eq!((n, gone), (6000, 2050));
     }
 
     #[test]

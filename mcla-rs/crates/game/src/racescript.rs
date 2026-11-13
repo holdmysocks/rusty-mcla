@@ -993,7 +993,7 @@ impl Runtime {
             let p = &self.d.paths[i];
             let fired = vehicles.layout.get(h as usize).and_then(|x| x.as_ref()).and_then(|x| x.path).is_some_and(|x| x.fired);
             let referenced = vehicles.layout.get(h as usize).and_then(|x| x.as_ref()).and_then(|x| x.path).is_some_and(|x| x.referenced);
-            let standing = p.parked || (referenced && !fired);
+            let standing = traffic::path_start_standing(p.parked, referenced, fired);
             if vehicles.spawn_path_car(gpu, world, h, shade, &pr, i, p.speed[0], standing) == PathSpawn::NoGround && age + dt <= 3.0 {
                 keep.push((h, shade, age + dt));
             }
