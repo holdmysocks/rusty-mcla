@@ -40,6 +40,19 @@ const BOOM_DEFAULTS: &[(&str, &[f32])] = &[
     ("ShiftTime3", &[0.75]),
 ];
 
+/// The keys camDynamicBoomCS's parse slot F-60019 registers (the camera's base keys F-76581, then the tune's F-77242: the
+/// original's tables run offline, work/cameras2/d34/boom_fields.txt); the reader compares names case for case.
+const BOOM_REGISTERED: [&str; 87] = [
+    "BlendTime", "BlendGoal", "CameraFOV", "CameraNear", "CameraFar", "Center", "Offset", "Focus", "Collide", "RevOffset", "RevFocus", "HomingTime", "ApproachRate", "CollideType", "SpeedThreshold", "OrientationFactor", "OrientationFilter", "DirectionFilter", "VelocityFilter", "AccelFilter", "FishtailFactor", "HillPitchUp", "HillPitchDn", "LinVelRange", "LinAccRange", "AngVelRange", "AngAccRange", "SSFovMin", "SSFovMax", "SSDistScale", "SpeedZOffsetZ", "SpeedZOffsetY", "SpeedZFocusY", "GsZOffsetZ", "GsZOffsetY", "GsZFocusY", "GsWOffsetZ", "GsWOffsetY", "GsWFocusY", "GsWFocusZ", "SpeedXOffsetX", "SpeedXOffsetY", "SpeedXOffsetZ", "SpeedXFocusZ", "SpeedXFocusY", "SpeedXFocusX", "SpeedXRollZ", "TurnYOffsetX", "TurnYOffsetY", "TurnYOffsetZ", "TurnYFocusZ", "TurnYFocusY", "TurnYFocusX", "TurnYRollZ", "TurnZRollZ", "GsXOffsetX", "GsXOffsetZ", "GsXFocusZ", "GsXFocusX", "GsXRollZ", "AsYOffsetX", "AsYOffsetZ", "AsYFocusZ", "AsYFocusX", "AsYRollZ", "AsZRollZ", "SpeedYOffsetY", "SpeedYFocusY", "TurnXOffsetY", "TurnXFocusY", "GsYOffsetY", "GsYFocusY", "AsYOffsetY", "AsYFocusY", "AngleXOffsetY", "AngleXOffsetZ", "ShiftZOffsetZ", "ShiftZOffsetY", "ShiftZFocusY", "ShiftDuration", "ShiftMagnitude", "ShiftTime1", "ShiftValue1", "ShiftTime2", "ShiftValue2", "ShiftTime3", "ShiftValue3"
+];
+
+/// A fixture's file name as tools/tune_read_reference.py writes it: a hashed name as `#<decimal>` (some hashes equal an address
+/// of the original, which tracked files may not hold), others as they are.
+#[cfg(test)]
+pub(crate) fn fixture_file(n: &str) -> String {
+    n.strip_prefix('#').and_then(|d| d.parse::<u32>().ok()).map_or_else(|| n.to_string(), |h| format!("0x{h:08x}"))
+}
+
 /// One camera's parameters (the text file's fields by name).
 #[derive(Clone, Debug)]
 pub struct BoomTune {
@@ -54,10 +67,33 @@ impl BoomTune {
         // a key the file leaves out keeps the tune's constructor value (F-13319; every other
         // registered key is 0 there)
         let mut f: HashMap<String, Vec<f32>> = BOOM_DEFAULTS.iter().map(|(k, v)| (k.to_string(), v.to_vec())).collect();
-        for l in text.lines() {
+        // A name the class does not register (compared case for case: `AsYfocusY` is not AsYFocusY) is passed over as the
+        // original's member walk F-66614 does: the next token is read and the rest of the line skipped (F-91946). The token
+        // consumes the character that ends it, so when the value is the last thing on its line the skip takes the whole next
+        // line: 12 shipped files lose their ShiftZOffsetZ after `AsYfocusY 0` that way (test boom_files_read_as_the_original).
+        // (the header `type: a` and the class's name with its `{` come first: the members start after the brace)
+        let (mut skip, mut open) = (false, false);
+        for l in text.split('\n') {
+            if l.contains('{') {
+                open = true;
+                continue;
+            }
+            if !open || std::mem::take(&mut skip) {
+                continue;
+            }
             let mut it = l.split_whitespace();
             let Some(k) = it.next() else { continue };
-            let v: Vec<f32> = it.filter_map(|x| x.parse().ok()).collect();
+            let rest: Vec<&str> = it.collect();
+            if k == "}" {
+                continue;
+            }
+            if !BOOM_REGISTERED.contains(&k) {
+                // (the value read is the line's last token with nothing after it, or the key stands alone)
+                let ends = l.chars().last().is_some_and(|c| !c.is_whitespace());
+                skip = rest.len() <= 1 && (rest.is_empty() || ends);
+                continue;
+            }
+            let v: Vec<f32> = rest.iter().filter_map(|x| x.parse().ok()).collect();
             if !v.is_empty() {
                 f.insert(k.to_string(), v);
             }
@@ -2325,6 +2361,38 @@ impl LookAround {
 pub const EVENT_NAMES: [&str; 18] = [
     "SSTurbo", "Nitrous", "Tuck", "Wheelie", "Nosie", "TwoWheelSide", "TwoWheelUp", "Burnout", "Air", "Turn", "Reverse", "Hydraulics", "AirRide", "Idle", "Finish", "Results", "Over", "Damageout",
 ];
+/// The event records' values after camTrackCS's constructor F-13135, per event (EVENT_NAMES order) as words: BlendTime,
+/// ReturnTime, TrackTo x y z, Offset x y z, ApproachOn (byte, word as stored), AppXRot, RevAppXZPos, Min / MaxAppXZPos,
+/// Min / MaxAppYPos, Min / MaxFOV, DistScale, DistMin, DistMax (the original's reader on an empty file, testdata/camtrack_ctor_ref.txt).
+const EVENT_CTOR: [[u32; 20]; 18] = [
+    [0x3F000000, 0x3FC00000, 0x00000000, 0x40000000, 0x00000000, 0x00000000, 0x00000000, 0x40400000, 0x00000000, 0x41200000, 0x41200000, 0x41200000, 0x41400000, 0x41200000, 0x41200000, 0x42200000, 0x42700000, 0x3F4CCCCD, 0x40400000, 0x40800000],
+    [0x00000000, 0x00000000, 0x00000000, 0x40000000, 0x00000000, 0x00000000, 0x00000000, 0x40400000, 0x00000000, 0x41200000, 0x41200000, 0x41200000, 0x41400000, 0x41200000, 0x41200000, 0x42200000, 0x42700000, 0x3F4CCCCD, 0x40400000, 0x40800000],
+    [0x3F333333, 0x00000000, 0x00000000, 0x3F8CCCCD, 0x00000000, 0x00000000, 0x3DCCCCCD, 0x3F000000, 0x01000000, 0x41200000, 0x41200000, 0x40800000, 0x41100000, 0x41200000, 0x41200000, 0x42200000, 0x42700000, 0x3F4CCCCD, 0x3F000000, 0x3F333333],
+    [0x3F333333, 0x00000000, 0x00000000, 0x3F99999A, 0x00000000, 0x00000000, 0x3E23D70A, 0x3F000000, 0x01000000, 0x41200000, 0x41200000, 0x40800000, 0x41100000, 0x41200000, 0x41200000, 0x42200000, 0x42700000, 0x3F4CCCCD, 0x3F99999A, 0x3FA66666],
+    [0x3F333333, 0x00000000, 0x00000000, 0x3F800000, 0x00000000, 0x40000000, 0x3F800000, 0xC0C00000, 0x01000000, 0x41200000, 0x41200000, 0x40C00000, 0x41000000, 0x41200000, 0x41200000, 0x42200000, 0x42700000, 0x3F4CCCCD, 0x40C00000, 0x40E00000],
+    [0x3F333333, 0x00000000, 0x3F800000, 0x40000000, 0xBFC00000, 0x00000000, 0x3F333333, 0x40400000, 0x01000000, 0x41200000, 0x41200000, 0x40800000, 0x41100000, 0x41200000, 0x41200000, 0x42200000, 0x42700000, 0x3F4CCCCD, 0x40400000, 0x40A00000],
+    [0x3F333333, 0x00000000, 0x00000000, 0x3F800000, 0x00000000, 0x00000000, 0x40400000, 0x40E9999A, 0x01000000, 0x41200000, 0x41200000, 0x40800000, 0x41100000, 0x41200000, 0x41200000, 0x42200000, 0x42700000, 0x3F4CCCCD, 0x40800000, 0x41100000],
+    [0x3F333333, 0x00000000, 0x00000000, 0x3F800000, 0x00000000, 0x40200000, 0x3FC00000, 0x41026666, 0x01000000, 0x41200000, 0x00000000, 0x00000000, 0x00000000, 0x41200000, 0x41200000, 0x42200000, 0x42700000, 0x3F4CCCCD, 0x40F4FC22, 0x411A7E11],
+    [0x3F333333, 0x00000000, 0x00000000, 0x3F800000, 0x00000000, 0x40400000, 0x40A00000, 0x40A00000, 0x01000000, 0x41200000, 0x41200000, 0x40800000, 0x41100000, 0x41200000, 0x41200000, 0x42200000, 0x42700000, 0x3F4CCCCD, 0x40C00000, 0x41000000],
+    [0x3F333333, 0x00000000, 0x80000000, 0x3F800000, 0x00000000, 0xBE8A3D71, 0x3E4CCCCD, 0x3F666666, 0x01000000, 0x41200000, 0x41200000, 0x40800000, 0x41100000, 0x41200000, 0x41200000, 0x42200000, 0x42700000, 0x3F4CCCCD, 0x3F4CCCCD, 0x3F800000],
+    [0x3F333333, 0x00000000, 0x00000000, 0x3F800000, 0x00000000, 0x00000000, 0x40200000, 0x41000000, 0x01000000, 0x41200000, 0x00000000, 0x00000000, 0x00000000, 0x41200000, 0x41200000, 0x42200000, 0x42700000, 0x3F4CCCCD, 0x40EC3578, 0x41161ABC],
+    [0x3F333333, 0x00000000, 0x00000000, 0x3F800000, 0x00000000, 0x00000000, 0x3F000000, 0x40E00000, 0x01000000, 0x3DCCCCCD, 0x41200000, 0x40800000, 0x41100000, 0x3DCCCCCD, 0x41200000, 0x42200000, 0x42700000, 0x3F4CCCCD, 0x40C00000, 0x41000000],
+    [0x3F333333, 0x00000000, 0x00000000, 0x3F8CCCCD, 0x3F000000, 0x40600000, 0xBF000000, 0x40A00000, 0x01000000, 0x3C23D70A, 0x41200000, 0x40800000, 0x41100000, 0x00000000, 0x40A00000, 0x42200000, 0x42700000, 0x3F4CCCCD, 0x40800000, 0x40C00000],
+    [0x3FC00000, 0x00000000, 0x00000000, 0x3F8CCCCD, 0xBF000000, 0x40200000, 0x3FA00000, 0x40C00000, 0x01000000, 0x41200000, 0x41200000, 0x40800000, 0x41100000, 0x00000000, 0x40A00000, 0x42200000, 0x42700000, 0x3F4CCCCD, 0x40A00000, 0x40E00000],
+    [0x3E4CCCCD, 0x00000000, 0x00000000, 0x3F800000, 0x00000000, 0x00000000, 0x40200000, 0x41000000, 0x01000000, 0x41200000, 0x00000000, 0x00000000, 0x00000000, 0x41200000, 0x41200000, 0x42200000, 0x42700000, 0x3F4CCCCD, 0x40EC3578, 0x41161ABC],
+    [0x00000000, 0x00000000, 0x00000000, 0x3F99999A, 0x00000000, 0x00000000, 0x3ECCCCCD, 0x40A00000, 0x01000000, 0x41200000, 0x00000000, 0x00000000, 0x00000000, 0x41200000, 0x41200000, 0x42200000, 0x42700000, 0x3F4CCCCD, 0x408082DD, 0x40C082DD],
+    [0x00000000, 0x00000000, 0x00000000, 0x3FC00000, 0x00000000, 0x00000000, 0x3F800000, 0x40C00000, 0x01000000, 0x41200000, 0x41200000, 0x40800000, 0x41100000, 0x41200000, 0x41200000, 0x42200000, 0x42700000, 0x3F4CCCCD, 0x40A2A5FE, 0x40E2A5FE],
+    [0x3FC00000, 0x00000000, 0x00000000, 0x3F19999A, 0xBF000000, 0xBF800000, 0x3F400000, 0xC0800000, 0x01000000, 0x41200000, 0x41200000, 0x40800000, 0x41100000, 0x41200000, 0x41200000, 0x42200000, 0x42700000, 0x3F4CCCCD, 0x40400000, 0x40E00000],
+];
+const EVENT_CTOR_APPROACH: [bool; 18] = {
+    let mut a = [false; 18];
+    let mut i = 0;
+    while i < 18 {
+        a[i] = EVENT_CTOR[i][8] >> 24 != 0;
+        i += 1;
+    }
+    a
+};
 pub const EV_BURNOUT: usize = 7;
 pub const EV_IDLE: usize = 13;
 
@@ -2438,25 +2506,26 @@ impl TrackTune {
 
     /// One event of a `<car>_cinematic.camtrackcs` text (its base block and the event's own block).
     pub fn from_text(text: &str, event: &str) -> TrackTune {
-        // The 18 event records are always there (F-87722 builds them; F-91063, the record's constructor,
-        // gives each its values); F-68099 registers the 16 keys of an event block, so a key or a whole block
-        // the file leaves out keeps the constructor's value: BlendTime 0.7, ReturnTime 0, TrackTo (0, 1, 0.5),
-        // Offset (0, 0, 2), ApproachOn 1, AppXRot 10, RevAppXZPos 10, Min/MaxAppXZPos 4 / 9, Min/MaxAppYPos
-        // 10 / 10, Min/MaxFOV 40 / 60, DistScale 0.8, DistMin / DistMax 2 / 5 (dumped from the original's code
-        // run offline, docs/reference/cameras/verify_cameras_offline.md). On the disc 8 cars' files have no
-        // Damageout block and the police Caprice's none for TwoWheelSide / TwoWheelUp: those run on these values.
+        // The 18 event records are always there: camTrackCS's constructor F-13135 builds them (the record constructor F-91063)
+        // and then writes each event's own values (EVENT_CTOR); F-68099 registers the 16 keys of an event block, so a key or a
+        // whole block the file leaves out keeps that value (the original's reader run on an empty file:
+        // testdata/camtrack_ctor_ref.txt). On the disc 8 cars' files have no Damageout block and the police Caprice's none for
+        // TwoWheelSide / TwoWheelUp: those run on these values (test camtrack_files_read_as_the_original).
         let (b, e) = (track_block(text, None), track_block(text, Some(event)));
+        let c = EVENT_CTOR[EVENT_NAMES.iter().position(|n| *n == event).unwrap_or(0)].map(f32::from_bits);
         let f = |m: &HashMap<String, Vec<f32>>, k: &str, d: f32| m.get(k).and_then(|v| v.first()).copied().unwrap_or(d);
         let v = |m: &HashMap<String, Vec<f32>>, k: &str, d: Vec3| m.get(k).filter(|v| v.len() >= 3).map_or(d, |v| Vec3::new(v[0], v[1], v[2]));
-        let x_rot = f(&e, "AppXRot", 10.0);
+        let x_rot = f(&e, "AppXRot", c[9]);
+        // (ApproachOn is a bool byte: +64's top byte)
+        let approach_on = f(&e, "ApproachOn", if EVENT_CTOR_APPROACH[EVENT_NAMES.iter().position(|n| *n == event).unwrap_or(0)] { 1.0 } else { 0.0 });
         TrackTune {
-            blend: f(&e, "BlendTime", 0.7),
-            ret: f(&e, "ReturnTime", 0.0),
-            track: v(&e, "TrackTo", Vec3::new(0.0, 1.0, 0.5)),
-            offset: v(&e, "Offset", Vec3::new(0.0, 0.0, 2.0)),
-            dist: (f(&e, "DistMin", 2.0), f(&e, "DistMax", 5.0)),
-            dist_scale: f(&e, "DistScale", 0.8),
-            fov: (f(&e, "MinFOV", 40.0), f(&e, "MaxFOV", 60.0)),
+            blend: f(&e, "BlendTime", c[0]),
+            ret: f(&e, "ReturnTime", c[1]),
+            track: v(&e, "TrackTo", Vec3::new(c[2], c[3], c[4])),
+            offset: v(&e, "Offset", Vec3::new(c[5], c[6], c[7])),
+            dist: (f(&e, "DistMin", c[18]), f(&e, "DistMax", c[19])),
+            dist_scale: f(&e, "DistScale", c[17]),
+            fov: (f(&e, "MinFOV", c[15]), f(&e, "MaxFOV", c[16])),
             app_rot: f(&b, "AppRot", 60.0),
             app_x_rot: if x_rot != 0.0 { x_rot } else { f(&b, "AppRot", 60.0) },
             app_app: f(&b, "AppApp", 0.7),
@@ -2464,9 +2533,9 @@ impl TrackTune {
             look_at: f(&b, "LookAt", 1.0),
             ss_speed: (f(&b, "SSSpeedMin", 15.0), f(&b, "SSSpeedMax", 55.0)),
             ss_filter: f(&b, "SSFilter", 0.1),
-            app_xz: (f(&e, "MinAppXZPos", 4.0), f(&e, "MaxAppXZPos", 9.0)),
-            app_y: (f(&e, "MinAppYPos", 10.0), f(&e, "MaxAppYPos", 10.0)),
-            rev_app_xz: f(&e, "RevAppXZPos", 10.0),
+            app_xz: (f(&e, "MinAppXZPos", c[11]), f(&e, "MaxAppXZPos", c[12])),
+            app_y: (f(&e, "MinAppYPos", c[13]), f(&e, "MaxAppYPos", c[14])),
+            rev_app_xz: f(&e, "RevAppXZPos", c[10]),
             app_speed: if event == "Hydraulics" { (2.0, 10.0) } else { (10.0, 25.0) },
             app_inc: f(&b, "AppInc", 3.0),
             app_dec: f(&b, "AppDec", 8.0),
@@ -2475,12 +2544,14 @@ impl TrackTune {
             // offline; every shipped file sets them all; the near plane is the load's 0.2, F-89557)
             base_app_xz: f(&b, "MaxAppXZPos", 9.5),
             hill: (f(&b, "HillMin", -0.8), f(&b, "HillMax", 1.25), f(&b, "HillLerp", 0.15)),
-            approach_on: f(&e, "ApproachOn", 1.0) != 0.0,
+            approach_on: approach_on != 0.0,
             car_lens: true,
             collide_type: f(&b, "CollideType", 1.0) as i32,
             collide_min: f(&b, "CollideMinDist", 2.0),
-            near: { let n = f(&b, "CameraNear", 0.2); if n > 0.0 { n } else { 0.2 } },
-            collide_height: if f(&e, "ApproachOn", 1.0) != 0.0 { 0.5 } else { 0.0 },
+            // (camTrackCS's parse F-87722 registers no CameraNear: +172 keeps the constructor's 1 until the car load F-89557
+            // stores 0.2; test camtrack_files_read_as_the_original)
+            near: 0.2,
+            collide_height: if approach_on != 0.0 { 0.5 } else { 0.0 },
             reverse_on: 0,
         }
     }
@@ -4257,46 +4328,145 @@ mod tests {
 
     use super::*;
 
-    /// The event record's values where a file leaves a key or the whole block out: the original's record
-    /// constructor F-91063 and the key table of F-68099, both run offline (work/cameras2/close/ev_fields.py;
-    /// words as decimal). A block-less event and an empty block give the constructor's words bit for bit.
+    /// An event block the file leaves out, or a key an event block leaves out, keeps the value camTrackCS's constructor F-13135
+    /// gives that event's record (after the record constructor F-91063): the original's reader on a file with one empty block
+    /// (tools/tune_read_reference.py -> testdata/camtrack_ctor_ref.txt), every event, bit for bit.
     #[test]
-    fn missing_event_keys_take_the_record_constructor() {
+    fn missing_event_keys_take_the_camera_constructor() {
         let text = "camTrackCS {
-  AppRot 60
-  Tuck {
+  SSTurbo {
   }
 }
 ";
-        for ev in ["Damageout", "Tuck"] {
+        let w: Vec<u32> = include_str!("testdata/camtrack_ctor_ref.txt").split_whitespace().skip(1).map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+        let at = |off: usize| w[off / 4];
+        for (e, ev) in EVENT_NAMES.iter().enumerate() {
             let t = TrackTune::from_text(text, ev);
-            let mut n = 0;
-            for line in include_str!("testdata/cam_event_record_ref.txt").lines().filter(|l| !l.starts_with('#')) {
-                let w: Vec<&str> = line.split_whitespace().collect();
-                let want: Vec<u32> = w[3..].iter().map(|s| s.parse().unwrap()).collect();
-                let got: Vec<u32> = match w[0] {
-                    "BlendTime" => vec![t.blend.to_bits()],
-                    "ReturnTime" => vec![t.ret.to_bits()],
-                    "TrackTo" => [t.track.x, t.track.y, t.track.z].map(f32::to_bits).to_vec(),
-                    "Offset" => [t.offset.x, t.offset.y, t.offset.z].map(f32::to_bits).to_vec(),
-                    "ApproachOn" => vec![t.approach_on as u32],
-                    "DistMin" => vec![t.dist.0.to_bits()],
-                    "DistMax" => vec![t.dist.1.to_bits()],
-                    "AppXRot" => vec![t.app_x_rot.to_bits()],
-                    "RevAppXZPos" => vec![t.rev_app_xz.to_bits()],
-                    "MinAppXZPos" => vec![t.app_xz.0.to_bits()],
-                    "MaxAppXZPos" => vec![t.app_xz.1.to_bits()],
-                    "MinAppYPos" => vec![t.app_y.0.to_bits()],
-                    "MaxAppYPos" => vec![t.app_y.1.to_bits()],
-                    "MinFOV" => vec![t.fov.0.to_bits()],
-                    "MaxFOV" => vec![t.fov.1.to_bits()],
-                    "DistScale" => vec![t.dist_scale.to_bits()],
-                    k => panic!("key {k} not mapped"),
-                };
-                assert_eq!(got, want, "{ev} {line}");
-                n += 1;
+            let r = 800 + 112 * e;
+            let got = [t.blend, t.ret, t.track.x, t.track.y, t.track.z, t.offset.x, t.offset.y, t.offset.z, t.rev_app_xz, t.app_xz.0, t.app_xz.1, t.app_y.0, t.app_y.1, t.fov.0, t.fov.1, t.dist_scale, t.dist.0, t.dist.1]
+                .map(f32::to_bits);
+            let want = [20, 24, 32, 36, 40, 48, 52, 56, 72, 76, 80, 84, 88, 92, 96, 100, 104, 108].map(|o| at(r + o));
+            assert_eq!(got, want, "{ev}");
+            assert_eq!(t.approach_on, at(r + 64) >> 24 != 0, "{ev}");
+            let x = f32::from_bits(at(r + 68));
+            assert_eq!(t.app_x_rot, if x != 0.0 { x } else { t.app_rot }, "{ev}");
+        }
+    }
+
+    /// Every `<car>_cinematic.camtrackcs` on the disc (the 69 camTrackCS files with the event blocks) read by the original's own
+    /// reader run offline: camTrackCS's constructor F-13135, its parse slot F-87722 (the base keys F-59327, the 18 event records
+    /// F-68099), the text reader F-65466 over the file's bytes (tools/tune_read_reference.py -> testdata/camtrack_files_ref.txt,
+    /// the object's 712 words per file). `TrackTune::from_text` on the same text, every event: every value the port reads from
+    /// the file equal to the bit (the event record at +800 + 112 e, the base block's keys). Skipped without the extracted data.
+    #[test]
+    fn camtrack_files_read_as_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let dir = Path::new(&root).join("tune/camera");
+        if !dir.exists() {
+            eprintln!("skipped: tune/camera (MCLA_DATA_DIR) is missing");
+            return;
+        }
+        let mut files = 0;
+        for line in include_str!("testdata/camtrack_files_ref.txt").lines() {
+            let mut it = line.split_whitespace();
+            let name = fixture_file(it.next().unwrap());
+            let w: Vec<u32> = it.map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            assert_eq!(w.len(), 712);
+            let at = |off: usize| w[off / 4];
+            let text = std::fs::read_to_string(dir.join(&name)).unwrap();
+            for (e, ev) in EVENT_NAMES.iter().enumerate() {
+                let t = TrackTune::from_text(&text, ev);
+                let r = 800 + 112 * e;
+                let x_rot = f32::from_bits(at(r + 68));
+                let got = [
+                    t.blend, t.ret, t.track.x, t.track.y, t.track.z, t.offset.x, t.offset.y, t.offset.z, t.dist.0, t.dist.1, t.rev_app_xz,
+                    t.app_xz.0, t.app_xz.1, t.app_y.0, t.app_y.1, t.fov.0, t.fov.1, t.dist_scale,
+                    t.app_rot, t.app_app, t.app_rot_min, t.app_pos_min, t.look_at, t.ss_speed.0, t.ss_speed.1, t.ss_filter, t.app_inc,
+                    t.app_dec, t.base_app_xz, t.hill.0, t.hill.1, t.hill.2, t.collide_min,
+                ]
+                .map(f32::to_bits);
+                let want = [
+                    r + 20, r + 24, r + 32, r + 36, r + 40, r + 48, r + 52, r + 56, r + 104, r + 108, r + 72, r + 76, r + 80, r + 84, r + 88,
+                    r + 92, r + 96, r + 100, 264, 280, 284, 288, 308, 736, 740, 764, 516, 520, 496, 548, 552, 556, 476,
+                ]
+                .map(at);
+                assert_eq!(got, want, "{name} {ev}");
+                // (AppXRot 0 takes the base AppRot: F-26269's rule at the event's start, not the reader's)
+                assert_eq!(t.app_x_rot.to_bits(), if x_rot != 0.0 { x_rot.to_bits() } else { at(264) }, "{name} {ev} AppXRot");
+                assert_eq!(t.approach_on, at(r + 64) >> 24 != 0, "{name} {ev} ApproachOn");
+                assert_eq!(t.collide_type, at(464) as i32, "{name} {ev} CollideType");
+                // (the reader leaves the near plane at the constructor's 1, whatever the file says; the car load F-89557 sets 0.2)
+                assert_eq!(at(172), 1.0f32.to_bits(), "{name} CameraNear not read");
+                assert_eq!(t.near, 0.2);
             }
-            assert_eq!(n, 16);
+            files += 1;
+        }
+        assert_eq!(files, 69);
+    }
+
+    /// Every camBoomCS file on the disc (430: each car's chase, bumper, cockpit and reverse cameras) read by the original's own
+    /// reader run offline: camDynamicBoomCS's constructor F-85771 (it news the 560-byte tune at +240, F-13319), its parse slot
+    /// F-60019 (the camera's base keys F-76581, then the tune's F-77242), the text reader F-65466 over the file's bytes
+    /// (tools/tune_read_reference.py --deref 240:140 -> testdata/boom_files_ref.txt: the camera's 64 words, then the tune's 140).
+    /// `BoomTune::parse` on the same text: every registered key (76 of the tune's 82, from F-77242's table run offline,
+    /// work/cameras2/d34/boom_fields.txt) and the base block's BlendTime / BlendGoal / CameraNear equal to the bit. Not compared:
+    /// the shift curve's six keys (ShiftTime1..3 / ShiftValue1..3: they fill the curve object, not the tune). Skipped without
+    /// the extracted data.
+    #[test]
+    fn boom_files_read_as_the_original() {
+        const BOOM_KEYS: &[(&str, u8, usize)] = &[("Center", 8, 16), ("Offset", 8, 32), ("Focus", 8, 48), ("Collide", 8, 64), ("RevOffset", 8, 80), ("RevFocus", 8, 96), ("HomingTime", 8, 112), ("ApproachRate", 6, 128), ("CollideType", 5, 132), ("SpeedThreshold", 6, 208), ("OrientationFactor", 6, 212), ("OrientationFilter", 6, 216), ("DirectionFilter", 6, 220), ("VelocityFilter", 6, 224), ("AccelFilter", 6, 228), ("FishtailFactor", 6, 232), ("HillPitchUp", 6, 236), ("HillPitchDn", 6, 240), ("LinVelRange", 9, 144), ("LinAccRange", 9, 176), ("AngVelRange", 8, 160), ("AngAccRange", 8, 192), ("SSFovMin", 6, 244), ("SSFovMax", 6, 248), ("SSDistScale", 6, 252), ("SpeedZOffsetZ", 6, 256), ("SpeedZOffsetY", 6, 260), ("SpeedZFocusY", 6, 264), ("GsZOffsetZ", 6, 268), ("GsZOffsetY", 6, 272), ("GsZFocusY", 6, 276), ("GsWOffsetZ", 6, 280), ("GsWOffsetY", 6, 284), ("GsWFocusY", 6, 288), ("GsWFocusZ", 6, 292), ("SpeedXOffsetX", 6, 296), ("SpeedXOffsetY", 6, 300), ("SpeedXOffsetZ", 6, 304), ("SpeedXFocusZ", 6, 308), ("SpeedXFocusY", 6, 312), ("SpeedXFocusX", 6, 316), ("SpeedXRollZ", 6, 320), ("TurnYOffsetX", 6, 324), ("TurnYOffsetY", 6, 328), ("TurnYOffsetZ", 6, 332), ("TurnYFocusZ", 6, 336), ("TurnYFocusY", 6, 340), ("TurnYFocusX", 6, 344), ("TurnYRollZ", 6, 348), ("TurnZRollZ", 6, 352), ("GsXOffsetX", 6, 356), ("GsXOffsetZ", 6, 360), ("GsXFocusZ", 6, 364), ("GsXFocusX", 6, 368), ("GsXRollZ", 6, 372), ("AsYOffsetX", 6, 376), ("AsYOffsetZ", 6, 380), ("AsYFocusZ", 6, 384), ("AsYFocusX", 6, 388), ("AsYRollZ", 6, 392), ("AsZRollZ", 6, 396), ("SpeedYOffsetY", 6, 400), ("SpeedYFocusY", 6, 404), ("TurnXOffsetY", 6, 408), ("TurnXFocusY", 6, 412), ("GsYOffsetY", 6, 416), ("GsYFocusY", 6, 420), ("AsYOffsetY", 6, 424), ("AsYFocusY", 6, 428), ("AngleXOffsetY", 6, 540), ("AngleXOffsetZ", 6, 544), ("ShiftZOffsetZ", 6, 528), ("ShiftZOffsetY", 6, 532), ("ShiftZFocusY", 6, 536), ("ShiftDuration", 6, 432), ("ShiftMagnitude", 6, 436)];
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let dir = Path::new(&root).join("tune/camera");
+        if !dir.exists() {
+            eprintln!("skipped: tune/camera (MCLA_DATA_DIR) is missing");
+            return;
+        }
+        let mut files = 0;
+        for line in include_str!("testdata/boom_files_ref.txt").lines() {
+            // (a few files carry recovered names with spaces: the name is everything before the 204 words)
+            let toks: Vec<&str> = line.split_whitespace().collect();
+            let name = fixture_file(&toks[..toks.len() - 204].join(" "));
+            let w: Vec<u32> = toks[toks.len() - 204..].iter().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let text = String::from_utf8_lossy(&std::fs::read(dir.join(&name)).unwrap()).into_owned();
+            let t = BoomTune::parse(&text).unwrap();
+            let get = |k: &str, n: usize| -> Vec<f32> { (0..n).map(|i| t.f.get(k).and_then(|v| v.get(i)).copied().unwrap_or(0.0)).collect() };
+            for &(k, ty, off) in BOOM_KEYS {
+                let n = match ty { 8 => 3, 9 => 4, _ => 1 };
+                let want: Vec<u32> = (0..n).map(|i| w[64 + off / 4 + i]).collect();
+                let got: Vec<u32> = if ty == 5 { vec![get(k, 1)[0] as i32 as u32] } else { get(k, n).iter().map(|x| x.to_bits()).collect() };
+                assert_eq!(got, want, "{name} {k}");
+            }
+            for (k, off) in [("BlendTime", 160), ("BlendGoal", 164), ("CameraNear", 172)] {
+                assert_eq!(get(k, 1)[0].to_bits(), w[off / 4], "{name} {k}");
+            }
+            files += 1;
+        }
+        assert_eq!(files, 430);
+    }
+
+    /// The two time warper files on the disc (`tune/vehicle/explosion.timewarper`, `wipeout.timewarper`; `lookback` is not on
+    /// the disc) read by the original's own reader run offline (mcTimeWarperTune's constructor F-49780, its parse slot F-63465,
+    /// the text reader F-65466: tools/tune_read_reference.py -> testdata/timewarper_files_ref.txt): `TimeWarper::load`'s four
+    /// values equal +12 .. +24 to the bit. Skipped without the extracted data.
+    #[test]
+    fn timewarper_files_read_as_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        if !Path::new(&root).join("tune/vehicle").exists() {
+            eprintln!("skipped: tune/vehicle (MCLA_DATA_DIR) is missing");
+            return;
+        }
+        let refs: HashMap<String, Vec<u32>> = include_str!("testdata/timewarper_files_ref.txt")
+            .lines()
+            .map(|l| {
+                let mut it = l.split_whitespace();
+                (fixture_file(it.next().unwrap()), it.map(|x| u32::from_str_radix(x, 16).unwrap()).collect())
+            })
+            .collect();
+        for name in ["explosion", "wipeout"] {
+            let h = format!("0x{:08x}", mcla_formats::hash::joaat(&format!("{name}.timewarper")));
+            let w = &refs[h.as_str()];
+            let t = TimeWarper::load(&root, name, [7.0; 4]);
+            assert_eq!(t.tune.map(f32::to_bits), [w[3], w[4], w[5], w[6]], "{name}");
         }
     }
 
@@ -6784,6 +6954,39 @@ mod camfx_ctor_tests {
             assert_eq!([b.timer.to_bits(), b.magnitude.to_bits(), b.scale.to_bits(), b.state as u32], [at(base + 192), mag, at(base + 200), at(base + 212)], "block {i}");
             // (the Rot / Tran frequency factors kR / kT: 1, as every trigger writes them - the port's apply takes 1)
             assert_eq!([at(base + 204), at(base + 208)], [1.0f32.to_bits(); 2]);
+        }
+    }
+
+    /// `camera/default` (tune/camera/default.camfx) read by the original's own reader run offline (the constructor F-25608, the
+    /// member table F-53685, the text reader F-65466 (tokenizer F-46449, member walk F-66614) over the file's bytes: tools/tune_read_reference.py -> testdata/camfx_file_ref.txt)
+    /// against `CamFx::load` / `CamShake::load` on the same file: every field the port holds equal to the bit. Skipped without
+    /// the extracted data (MCLA_DATA_DIR).
+    #[test]
+    fn camfx_file_reads_as_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let h = mcla_formats::hash::joaat("default.camfx");
+        if !std::path::Path::new(&root).join("tune/camera").join(format!("0x{h:08x}")).exists() {
+            eprintln!("skipped: tune/camera/default.camfx (MCLA_DATA_DIR) is missing");
+            return;
+        }
+        let w: Vec<u32> = include_str!("testdata/camfx_file_ref.txt").split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+        assert_eq!(w.len(), 304);
+        let at = |off: usize| w[off / 4];
+        let fx = CamFx::load(&root);
+        for (off, v) in [(16, fx.rise_up), (32, fx.zoom_in), (36, fx.idle_delay), (40, fx.look_delay), (44, fx.burnout_turn), (48, fx.look_lerp), (60, fx.pan.0), (64, fx.pan.1), (68, fx.limit.0), (72, fx.limit.1), (76, fx.limit.2), (80, fx.limit.3)] {
+            assert_eq!(v.to_bits(), at(off), "camFX +{off}");
+        }
+        let sh = CamShake::load(&root);
+        for (i, b) in sh.blocks.iter().enumerate() {
+            let base = 96 + 224 * i;
+            for (p, part) in b.parts.iter().enumerate() {
+                for (k, v) in part.iter().enumerate() {
+                    for (c, x) in v.to_array().into_iter().enumerate() {
+                        assert_eq!(x.to_bits(), at(base + 64 * p + 16 * k + 4 * c), "block {i} part {p} field {k}.{c}");
+                    }
+                }
+            }
+            assert_eq!([b.timer.to_bits(), b.magnitude.to_bits(), b.scale.to_bits(), b.state as u32], [at(base + 192), at(base + 196), at(base + 200), at(base + 212)], "block {i}");
         }
     }
 }

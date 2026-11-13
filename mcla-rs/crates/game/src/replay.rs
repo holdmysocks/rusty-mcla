@@ -317,58 +317,62 @@ impl CamTune {
         // (the cut GT-R has no camera files: the R8's, catalog::camera_car)
         let car = crate::catalog::camera_car(car);
         let mut t = CamTune::default();
-        let read = |ext: &str| -> Vec<(String, Vec<f32>)> {
+        for ext in ["", "polar", "fixed", "heli"] {
             // (a mod car: its own file, then its manifest's camera donor - modfs.rs; the name hash ignores case)
             let text = crate::modfs::car_camera_text(data_dir, car, &format!("_replay.mcreplaycamera{ext}"), crate::modfs::Donor::Cameras).unwrap_or_default();
-            text.lines()
-                .filter_map(|l| {
-                    let mut it = l.split_whitespace();
-                    let key = it.next()?.to_string();
-                    let v: Vec<f32> = it.filter_map(|x| x.parse().ok()).collect();
-                    (!v.is_empty()).then_some((key, v))
-                })
-                .collect()
-        };
-        const MOUNTS: [&str; 6] = ["SideFwdOffset", "SideRearOffset", "WheelFwdOffset", "WheelRearOffset", "RoofOffset", "HoodLookbackOffset"];
-        const CUT: [&str; 4] = ["AverageCutDuration", "CutDurationVariance", "MinCutDuration", "MaxCutDuration"];
-        for (k, v) in read("") {
-            if let (Some(i), true) = (MOUNTS.iter().position(|m| *m == k), v.len() >= 3) {
-                t.mounts[i] = Vec3::new(v[0], v[1], v[2]);
-            } else if let Some(i) = CUT.iter().position(|m| *m == k) {
-                t.cut[i] = v[0];
-            }
-        }
-        for (k, v) in read("polar") {
-            match k.as_str() {
-                "MinFOV" => t.polar_fov_range[0] = v[0],
-                "MaxFOV" => t.polar_fov_range[1] = v[0],
-                "DefaultFOV" => t.polar_fov_range[2] = v[0],
-                _ => {}
-            }
-        }
-        for (k, v) in read("fixed") {
-            if k == "CameraFOV" {
-                t.fixed_fov = v[0];
-            }
-        }
-        for (k, v) in read("heli") {
-            match k.as_str() {
-                "MinFOV" => t.heli_fov[0] = v[0],
-                "MaxFOV" => t.heli_fov[1] = v[0],
-                "DefaultFOV" => t.heli_fov[2] = v[0],
-                "MatchSpeedFactor" => t.heli_match[0] = v[0],
-                "MatchPositionFactor" => t.heli_match[1] = v[0],
-                "LinearDampingFactor" => t.heli_match[2] = v[0],
-                "FOVApproachRate" => t.heli_rates[0] = v[0],
-                "LookAtApproachRate" => t.heli_rates[1] = v[0],
-                _ => {
-                    if let Some(i) = CUT.iter().position(|m| *m == k) {
-                        t.heli_cut[i] = v[0];
-                    }
-                }
-            }
+            t.read(ext, &text);
         }
         t
+    }
+
+    /// One of the car's four replay files (`ext` "" the director, "polar", "fixed", "heli"): the keys the port uses.
+    pub fn read(&mut self, ext: &str, text: &str) {
+        let t = self;
+        let keys = text.lines().filter_map(|l| {
+            let mut it = l.split_whitespace();
+            let key = it.next()?.to_string();
+            let v: Vec<f32> = it.filter_map(|x| x.parse().ok()).collect();
+            (!v.is_empty()).then_some((key, v))
+        });
+        const MOUNTS: [&str; 6] = ["SideFwdOffset", "SideRearOffset", "WheelFwdOffset", "WheelRearOffset", "RoofOffset", "HoodLookbackOffset"];
+        const CUT: [&str; 4] = ["AverageCutDuration", "CutDurationVariance", "MinCutDuration", "MaxCutDuration"];
+        for (k, v) in keys {
+            match ext {
+                "" => {
+                    if let (Some(i), true) = (MOUNTS.iter().position(|m| *m == k), v.len() >= 3) {
+                        t.mounts[i] = Vec3::new(v[0], v[1], v[2]);
+                    } else if let Some(i) = CUT.iter().position(|m| *m == k) {
+                        t.cut[i] = v[0];
+                    }
+                }
+                "polar" => match k.as_str() {
+                    "MinFOV" => t.polar_fov_range[0] = v[0],
+                    "MaxFOV" => t.polar_fov_range[1] = v[0],
+                    "DefaultFOV" => t.polar_fov_range[2] = v[0],
+                    _ => {}
+                },
+                "fixed" => {
+                    if k == "CameraFOV" {
+                        t.fixed_fov = v[0];
+                    }
+                }
+                _ => match k.as_str() {
+                    "MinFOV" => t.heli_fov[0] = v[0],
+                    "MaxFOV" => t.heli_fov[1] = v[0],
+                    "DefaultFOV" => t.heli_fov[2] = v[0],
+                    "MatchSpeedFactor" => t.heli_match[0] = v[0],
+                    "MatchPositionFactor" => t.heli_match[1] = v[0],
+                    "LinearDampingFactor" => t.heli_match[2] = v[0],
+                    "FOVApproachRate" => t.heli_rates[0] = v[0],
+                    "LookAtApproachRate" => t.heli_rates[1] = v[0],
+                    _ => {
+                        if let Some(i) = CUT.iter().position(|m| *m == k) {
+                            t.heli_cut[i] = v[0];
+                        }
+                    }
+                },
+            }
+        }
     }
 }
 
@@ -1928,5 +1932,65 @@ mod original_director_tests {
 
     fn b32(x: f32) -> u32 {
         x.to_bits()
+    }
+}
+
+/// The four replay camera files of every car (`<car>_replay.mcreplaycamera`, `polar`, `fixed`, `heli`) read by the original's own
+/// reader run offline: each class's constructor (the director F-48429, polar F-38251, fixed F-76186, heli F-75429), its parse slot
+/// (F-94055, F-77600, F-76581, F-33194), the text reader F-65466 over the file's bytes (tools/tune_read_reference.py ->
+/// testdata/replay_files_ref.txt: per file the class, the name and the object's words). `CamTune::read` on the same text: every
+/// value the port reads equal to the bit. Skipped without the extracted data (MCLA_DATA_DIR).
+#[cfg(test)]
+mod tune_file_tests {
+    use super::*;
+
+    #[test]
+    fn replay_files_read_as_the_original() {
+        let root = std::env::var("MCLA_DATA_DIR").unwrap_or_else(|_| "D:/MCLA/extracted/cache".into());
+        let dir = std::path::Path::new(&root).join("tune/camera");
+        if !dir.exists() {
+            eprintln!("skipped: tune/camera (MCLA_DATA_DIR) is missing");
+            return;
+        }
+        let mut n = [0; 4];
+        for line in include_str!("testdata/replay_files_ref.txt").lines() {
+            let mut it = line.split_whitespace();
+            let (cls, name) = (it.next().unwrap(), crate::boomcam::fixture_file(it.next().unwrap()));
+            let w: Vec<u32> = it.map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let at = |off: usize| w[off / 4];
+            let text = std::fs::read_to_string(dir.join(&name)).unwrap();
+            let mut t = CamTune::default();
+            let (got, want): (Vec<f32>, Vec<usize>) = match cls {
+                "mcReplayCamera" => {
+                    t.read("", &text);
+                    n[0] += 1;
+                    let mut g: Vec<f32> = t.mounts.iter().flat_map(|v| v.to_array()).collect();
+                    g.extend(t.cut);
+                    (g, (0..6).flat_map(|i| (0..3).map(move |c| 64 + 16 * i + 4 * c)).chain([160, 164, 168, 172]).collect())
+                }
+                "mcReplayCameraPolar" => {
+                    t.read("polar", &text);
+                    n[1] += 1;
+                    (t.polar_fov_range.to_vec(), vec![280, 284, 288])
+                }
+                "mcReplayCameraFixed" => {
+                    t.read("fixed", &text);
+                    n[2] += 1;
+                    (vec![t.fixed_fov], vec![168])
+                }
+                _ => {
+                    t.read("heli", &text);
+                    n[3] += 1;
+                    let mut g = t.heli_fov.to_vec();
+                    g.extend(t.heli_match);
+                    g.extend(t.heli_rates);
+                    g.extend(t.heli_cut);
+                    (g, vec![280, 284, 288, 320, 324, 328, 340, 344, 348, 352, 356, 360])
+                }
+            };
+            let want: Vec<u32> = want.into_iter().map(at).collect();
+            assert_eq!(got.iter().map(|x| x.to_bits()).collect::<Vec<_>>(), want, "{cls} {name}");
+        }
+        assert_eq!(n, [69; 4]);
     }
 }
