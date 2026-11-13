@@ -4658,6 +4658,35 @@ pub fn pass_moved(at: Vec3, now: Option<Vec3>) -> bool {
 /// One frame on a rail off the lanes (states 6 - 8). Returns the new pose, or None when the
 /// car turns physical (the footprint probe hit something).
 pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half_len: f32, upright: bool, dt: f32) -> Option<(Vec3, Vec3)> {
+    // the state check F-94409, before the switch (in a race event too): states 6 and 7 the footprint probe F-39379 on
+    // the instance as the frame starts (its early 0 for a cab or a trailer); a hit writes state 4, so the switch runs
+    // state 4 (the tracker and the recovery's standing time cleared: no follow, search or speed this frame) and the
+    // tail after it; the car turns physical unless the tail takes a rail
+    // (states 1 - 3 ride the same code and nothing reads which of them is stored; the port has no source for the flags -
+    // the two dev bytes, the manager's +0x642D1 / +0x642D2 - so it keeps state 1)
+    if matches!(r.state, 6 | 7) {
+        let hw = r.ty.width.max(1.6) * 0.5;
+        let semi = r.ty.trailer || r.ty.cab;
+        let st = state_check(r.state, false, (false, false), (false, false), &mut || {
+            !semi && env.others.get(me).is_some_and(|o| probe_hit(env, me, &o.inst, half_len, hw))
+        });
+        if st == 4 {
+            r.state = 4;
+            frame_switch(4, env.event, false, false, &mut |k| {
+                match k {
+                    "clear_tracker" => clear_tracker(r),
+                    "clear_recovery" => r.stand = 0.0,
+                    _ => {}
+                }
+                false
+            });
+            if r.ghost.is_none() {
+                let speed = r.path.as_ref().map_or(0.0, |p| p.speed);
+                after_switch(r, env, me, pos, fwd, r.slot, speed, upright, dt);
+            }
+            return (r.state != 4).then(|| r.path.as_mut().map_or((pos, fwd), |q| q.pose()));
+        }
+    }
     let out = step_path_switch(r, env, me, pos, fwd, half_len, upright, dt)?;
     // F-87488's tail after the switch (the pass tracker F-73744 in every state); the rail's speed (slot 17)
     if r.ghost.is_none() {
@@ -4667,11 +4696,26 @@ pub fn step_path(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half
     Some(out)
 }
 
+/// The state check F-94409, the first call of the behaviour's frame: a = the dev byte at [+0] or the manager's +0x642D1,
+/// b = the byte at [+1] or +0x642D2 (both false for a proxy-pool car, +500 bit 0x20); state 1: a -> 2, else b -> 3;
+/// 2: not a -> 1; 3: not b -> 1; 6 and 7: the footprint probe F-39379, a hit -> 4; every other state kept
+/// (tools/state_check_reference.py, test `state_check_matches_the_original`).
+pub(crate) fn state_check(state: u8, proxy: bool, dev: (bool, bool), mgr: (bool, bool), probe: &mut dyn FnMut() -> bool) -> u8 {
+    let (a, b) = if proxy { (false, false) } else { (dev.0 || mgr.0, dev.1 || mgr.1) };
+    match state {
+        1 if a => 2,
+        1 if b => 3,
+        2 if !a => 1,
+        3 if !b => 1,
+        6 | 7 if probe() => 4,
+        s => s,
+    }
+}
+
 /// F-87488's switch in states 6 - 8 (the port's rail follower).
 #[allow(clippy::too_many_arguments)]
 fn step_path_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, half_len: f32, upright: bool, dt: f32) -> Option<(Vec3, Vec3)> {
     let hw = r.ty.width.max(1.6) * 0.5;
-    let semi = r.ty.trailer || r.ty.cab;
     // (F-87488: states 6 and 8 do nothing in a race event)
     let mut runs = false;
     frame_switch(r.state, env.event, false, false, &mut |_| {
@@ -4685,6 +4729,10 @@ fn step_path_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, h
         // standing, waiting for a rail; then (state 6, not ended) the recovery try
         r.v = 0.0;
         if r.state == 6 {
+            // (F-87488's search step with no rail: F-10623 hands F-47175 a rail word 0, so its gather takes the 3 x 3
+            // grid as for a run-time rail (its +188 == 0 test), and the kept test's shared draw, the result words and
+            // the mark are as on a rail; F-30960 then takes its no-rail exit, a = 0)
+            search_ahead(r, env, me, pos, fwd, None, (None, None), None, [None; 3], 0.0);
             let mut took = false;
             frame_switch(6, env.event, false, false, &mut |k| {
                 if k == "recovery" {
@@ -4722,16 +4770,13 @@ fn step_path_switch(r: &mut Rider, env: &Env, me: usize, pos: Vec3, fwd: Vec3, h
     let over = path.step(d);
     let (p, dd) = path.pose();
     let f = if path.reverse { -dd } else { dd };
-    // the footprint probe
+    // state 8's footprint probe (F-82779 inline, semis too; states 6 / 7 probe at the frame's start, `step_path`)
     let inst = env.others.get(me).map(|o| o.inst);
-    if (!semi || r.state == 8) && inst.is_some_and(|i| probe_hit(env, me, &i, half_len, hw)) {
-        if r.state == 8 {
-            r.path = None;
-            r.state = 6;
-            r.stuck.1 = 0.0;
-            return Some((p, f));
-        }
-        return None;
+    if r.state == 8 && inst.is_some_and(|i| probe_hit(env, me, &i, half_len, hw)) {
+        r.path = None;
+        r.state = 6;
+        r.stuck.1 = 0.0;
+        return Some((p, f));
     }
     if r.state == 8 {
         // (F-82779: the standing time zeroed, the backing timer; past 4 s the car waits for a recovery rail and the
@@ -12999,6 +13044,25 @@ mod controller_pick_tests {
             yes += got as usize;
         }
         assert_eq!((n, yes), (13725, 1617));
+    }
+
+    #[test]
+    fn state_check_matches_the_original() {
+        // tools/state_check_reference.py: F-94409 run offline, the probe stubbed: the state after, whether it probed
+        let mut n = 0;
+        for l in include_str!("testdata/state_check_ref.txt").lines() {
+            let (c, o) = l.split_once(" -> ").unwrap();
+            let c: Vec<u32> = c.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let o: Vec<u32> = o.split(' ').map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
+            let mut probed = false;
+            let st = state_check(c[0] as u8, c[1] & 0x20 != 0, (c[2] != 0, c[3] != 0), (c[4] != 0, c[5] != 0), &mut || {
+                probed = true;
+                c[6] != 0
+            });
+            assert_eq!((st as u32, probed as u32), (o[0], o[1]), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 1408);
     }
 
     #[test]
