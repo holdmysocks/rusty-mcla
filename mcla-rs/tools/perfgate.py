@@ -4,10 +4,13 @@
 # the largest sim time of a frame (all ticks run in it), phases = the means of the frame's phases (MCLA_FRAMETIMES),
 # GPU = the mean of the `gputimes:` lines after the first two, VRAM / private = the largest sample.
 # With two builds: the change of each number, and REGRESSION where fps or the 1 % low fell by more than 5 %.
+# A run on a busy machine (all processes over BUSY % CPU on average) is left out and named.
 import os, re, statistics as st, sys
 from collections import defaultdict
 
 T0 = 40.0
+# A run whose machine (all processes) averaged more CPU than this is left out: another program's load, not the build's.
+BUSY = 35.0
 
 
 def pct(v, q):
@@ -30,6 +33,8 @@ def one(d, tag):
                  passes=st.mean(r[8] for r in rows), submit=st.mean(r[9] for r in rows), draws=st.mean(r[10] for r in rows))
     res = [l.strip().split(',') for l in open(os.path.join(d, tag + '.res.csv'))][1:]
     res = [[float(x) for x in r] for r in res if len(r) == 7 and float(r[0]) >= T0]
+    if res and st.mean(r[6] for r in res) > BUSY:
+        raise ValueError(f'machine busy: {st.mean(r[6] for r in res):.0f} % CPU on average, left out')
     if res:
         o.update(cpu=st.mean(r[1] for r in res), gpu3d=st.mean(r[2] for r in res), vram=max(r[3] for r in res), priv=max(r[4] for r in res))
     err = open(os.path.join(d, tag + '.err'), encoding='utf-8', errors='replace').read().splitlines()
