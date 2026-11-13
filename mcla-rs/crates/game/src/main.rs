@@ -11431,6 +11431,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             // (F-75961's weather term: the viewport table's +8 and +12, the Stormy and the Foggy weight)
             let weather = self.weather_weight(sky::Weather::Stormy) + self.weather_weight(sky::Weather::Foggy);
             self.vehicles.traffic_lamps(eye, axis, &Frustum::from_view_proj(vp), weather, sim_dt);
+            self.vehicles.nitro_fx_step(sim_dt);
             // (and for the wheels' side test - F-57869)
             self.vehicles.set_wheel_eye(eye);
         }
@@ -11442,7 +11443,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let garage = self.game.mode == Mode::Garage;
             let world = vehicles::LampWorld {
                 garage,
-            self.vehicles.nitro_fx_step(sim_dt);
                 cabin: garage && vehicles::garage_lamps_due(self.game.garage_view()),
                 hour: self.time_of_day,
                 storm: self.weather_weight(sky::Weather::Stormy),
