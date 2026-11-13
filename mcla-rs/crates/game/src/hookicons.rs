@@ -63,6 +63,10 @@ pub fn candidates(els: &[Element], garage_colour: [f32; 4], gas_colour: [f32; 4]
     let mut out = Vec::new();
     for e in els {
         if let Kind::Racer(_) = e.kind {
+            // (a racer in Stealth / MegaStealth that is not the local player gets no icon: F-54047, F-65988)
+            if e.stealth {
+                continue;
+            }
             let k = e.icon as i32;
             if k == 0 || k == 10 || k == 11 {
                 continue;
@@ -480,6 +484,18 @@ impl HookIcons {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F-80153's racer list skips a racer in Stealth that is not the local player (F-54047, F-65988); the places stay.
+    #[test]
+    fn stealth_racers_get_no_icon() {
+        let mut r = Element::at(Kind::Racer(1), Vec3::new(1.0, 0.0, 2.0));
+        r.icon = 3;
+        let g = Element::at(Kind::Garage, Vec3::ZERO);
+        assert_eq!(candidates(&[r.clone(), g.clone()], [1.0; 4], [1.0; 4]).len(), 2);
+        r.stealth = true;
+        let c = candidates(&[r, g], [1.0; 4], [1.0; 4]);
+        assert_eq!((c.len(), c[0].kind), (1, 9));
+    }
 
     #[test]
     fn icon_feed_matches_the_original() {

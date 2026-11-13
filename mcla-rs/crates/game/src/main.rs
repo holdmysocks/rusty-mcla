@@ -12638,7 +12638,9 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     // (VEHICLE SELECT: the three stand empty - `ng_vsel_0`)
                     // (the cruiser has no driver: mcRacer::LoadDriver, F-39898, returns before it makes one when
                     // the car is vp_chv_police_96 - its own black interior is what shows; GitHub #17)
-                    c.placed && c.parked.is_none() && !modcars::hides_driver(&c.model.name) && !c.model.name.eq_ignore_ascii_case(police::COP_CAR) && !n.starts_with("va_") && self.game.mode != Mode::Garage && !staged && !self.vehicles.lights_off && !c.driver.starts_with("hangout:") && !c.driver_off
+                    // (the figure's draw F-25791 draws no one in a car under Stealth / MegaStealth - F-54047 - but the
+                    // local player's, F-65988; the player's goes to the Stealth pass: not ported)
+                    c.placed && !hudmap::in_stealth(c) && c.parked.is_none() && !modcars::hides_driver(&c.model.name) && !c.model.name.eq_ignore_ascii_case(police::COP_CAR) && !n.starts_with("va_") && self.game.mode != Mode::Garage && !staged && !self.vehicles.lights_off && !c.driver.starts_with("hangout:") && !c.driver_off
                 })
                 .map(|(i, c)| {
                     let pose = c.render_pose(self.vehicles.render_alpha);

@@ -439,11 +439,14 @@ pub struct Element {
     /// `+32` the id (location UID, `vehicle+140`); the port's own numbers for the hookmen.
     /// The 3D icons (hookicons.rs) keep their slots by it.
     pub uid: u32,
+    /// the element's vehicle (`+120`) is in Stealth / MegaStealth (F-54047) and is not the local player (F-65988):
+    /// the map's walk F-83806 and the 3D icons' racer list F-80153 pass over it
+    pub stealth: bool,
 }
 
 impl Element {
     pub fn at(kind: Kind, pos: Vec3) -> Element {
-        Element { kind, pos, back: Vec3::Z, colour: [1.0; 4], selected: false, mission: false, flags: 0, icon: 1, uid: 0 }
+        Element { kind, pos, back: Vec3::Z, colour: [1.0; 4], selected: false, mission: false, flags: 0, icon: 1, uid: 0, stealth: false }
     }
 }
 
@@ -521,6 +524,12 @@ pub fn place_setup(uid: u32) -> Option<&'static str> {
 pub fn shown(c: &crate::vehicles::CarInstance, alpha: f32) -> (Vec3, Vec3) {
     let p = c.render_pose(alpha);
     (p.pos, p.rot * Vec3::Z)
+}
+
+/// A map element's vehicle the map and the 3D icons pass over: in Stealth / MegaStealth (F-54047, `pu_stealth_on`,
+/// no fade test) and not the local player (F-65988) - the map's walk F-83806 and the icons' racer list F-80153 alike.
+pub fn in_stealth(c: &crate::vehicles::CarInstance) -> bool {
+    c.pu_stealth_on && !c.is_player
 }
 
 pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, pursuit: bool) -> Vec<Element> {
@@ -604,6 +613,7 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
             let mut e = Element::at(Kind::Racer(1), pos);
             e.uid = 4000 + i as u32;
             e.back = back;
+            e.stealth = in_stealth(c);
             e.colour = DIFFICULTY[game.difficulty_of(&c.model.name).clamp(0, 3) as usize];
             e.icon = 3;
             push(e);
@@ -614,6 +624,7 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
             e.uid = 4999;
             if let Some(c) = car.filter(|c| c.state.pos.distance(*p) < 60.0) {
                 (e.pos, e.back) = shown(c, alpha);
+                e.stealth = in_stealth(c);
             }
             e.colour = DIFFICULTY[game.mc4_hookman_diff().unwrap_or(1).min(3)];
             e.icon = 4;
@@ -639,6 +650,7 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
             let mut e = Element::at(Kind::Racer(3), pos);
             e.uid = 4800 + i as u32;
             e.back = back;
+            e.stealth = in_stealth(c);
             e.icon = 4;
             push(e);
         }
@@ -655,6 +667,7 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
             let mut e = Element::at(Kind::OtherCar, pos);
             e.uid = 5000 + k as u32;
             e.back = back;
+            e.stealth = in_stealth(c);
             push(e);
         }
     }
@@ -668,6 +681,7 @@ pub fn elements(game: &crate::game::Game, vehicles: &crate::vehicles::Vehicles, 
         let (pos, back) = shown(c, alpha);
         let mut e = Element::at(Kind::Cop, pos);
         e.back = back;
+        e.stealth = in_stealth(c);
         if pursuit {
             e.flags |= 0x20;
         }
@@ -1165,6 +1179,10 @@ pub fn build(tune: &Tune, assets: &mut Assets, f: &Frame, elements: &[Element], 
     let mut f = *f;
     let mut cp_count = 0u32;
     for e in elements {
+        // (a vehicle's element while it is in Stealth, unless it is the local player's: F-54047 / F-65988)
+        if e.stealth {
+            continue;
+        }
         // (filter 1: while the race draws its checkpoints only checkpoints and the player go on)
         if f.race_checkpoints && !matches!(e.kind, Kind::Checkpoint(_) | Kind::Player) {
             continue;
@@ -4601,6 +4619,37 @@ pub fn nav_open_rows(s: CamRows, t: f32) -> CamRows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The map's walk F-83806 passes over a vehicle's element while it is in Stealth and not the local player's
+    /// (F-54047, F-65988): a cop, a racer and a race car beside the player, with and without the flag.
+    #[test]
+    fn stealth_cars_leave_the_map() {
+        let tune = Tune::new(&HashMap::new());
+        let mut assets = Assets::new("no-such-dir");
+        let eye = Vec3::new(0.0, 1891.0, 0.0);
+        let view_proj = Mat4::perspective_rh(35f32.to_radians(), 1.0, 10.0, 9000.0) * Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Z);
+        let (a, b) = Frame::bases(&tune, 0, eye.y);
+        let f = Frame { mode: 0, view_proj, cam_pos: eye, theta: 0.0, scale_a: a, scale_b: b, nav_scale: None, t468: 1.0, tg: 1.0, frame_no: 0, race: false, race_checkpoints: false, police: 0, police0: 0, target_set: false, strobe: 0.0, pulse: 0.0, cap_lift: false, h473: false, strobe_on: true };
+        let cars = |stealth: bool| -> Vec<Element> {
+            [Kind::Cop, Kind::Racer(1), Kind::OtherCar]
+                .into_iter()
+                .enumerate()
+                .map(|(i, k)| {
+                    let mut e = Element::at(k, Vec3::new(20.0 * i as f32, 0.0, 30.0));
+                    e.stealth = stealth;
+                    e
+                })
+                .collect()
+        };
+        let player = Element::at(Kind::Player, Vec3::ZERO);
+        let seen = build(&tune, &mut assets, &f, &cars(false), &[], false);
+        let hid = build(&tune, &mut assets, &f, &cars(true), &[], false);
+        let alone = build(&tune, &mut assets, &f, &[player.clone()], &[], false);
+        let with = build(&tune, &mut assets, &f, &[cars(true), vec![player]].concat(), &[], false);
+        assert!(!seen.draws.is_empty());
+        assert!(hid.draws.is_empty() && hid.rim.is_empty());
+        assert_eq!(with.draws.len(), alone.draws.len());
+    }
 
     /// A screen wider than 16:9 keeps the GPS map's 16:9 view and bounds; 16:9 and 4:3 are as before.
     #[test]
