@@ -84,6 +84,23 @@ pub fn spin_len(w: [f32; 3]) -> f32 {
     w[2].mul_add(w[2], w[0].mul_add(w[0], w[1] * w[1])).sqrt()
 }
 
+/// Piece 6, the aero object's damping factor: `level` out of the water with a gyro whose +16 / +18 are 0; `air` the
+/// chassis' +584 after piece 3.
+pub fn aero_step(aero: f32, level: bool, air: f32, up_y: f32, factor: f32, delay: f32, dt: f32) -> f32 {
+    if level && (air > delay || up_y < 0.0) {
+        return factor;
+    }
+    if aero < 1.0 {
+        let a = aero + dt;
+        if a > 1.0 { 1.0 } else { a }
+    } else if aero > 1.0 {
+        let a = aero - dt;
+        if a < 1.0 { 1.0 } else { a }
+    } else {
+        aero
+    }
+}
+
 /// F-97237's pieces; `still` the chassis' +588 as it comes in.
 pub fn update(i: &In, still: f32) -> Out {
     // (+576 bit 2: the player options' byte)
@@ -139,21 +156,7 @@ pub fn update(i: &In, still: f32) -> Out {
     // (slot 13 below 0 - the landing tick: no change of gear for GearChangeDelay)
     let trans28 = if air < 0.0 { 0.0 } else { i.trans28 };
     // (the aero factor: on four wheels with a gyro, out of the water, long in the air or upside down; else towards 1)
-    if !i.in_water && i.gyro == Some((0, 0)) && (air > i.aero_delay || i.up_y < 0.0) {
-        aero = i.aero_factor;
-    } else if aero != 1.0 {
-        if aero < 1.0 {
-            aero += i.dt;
-            if aero > 1.0 {
-                aero = 1.0;
-            }
-        } else {
-            aero -= i.dt;
-            if aero < 1.0 {
-                aero = 1.0;
-            }
-        }
-    }
+    aero = aero_step(aero, !i.in_water && i.gyro == Some((0, 0)), air, i.up_y, i.aero_factor, i.aero_delay, i.dt);
     // (+578 > 0: [+16] +8 at least +580 x [+16] +72)
     let mut s16_8 = i.s16_8;
     if i.f578 > 0 {

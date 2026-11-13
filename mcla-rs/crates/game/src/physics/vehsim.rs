@@ -2570,7 +2570,25 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     // angular damping: AeroDampFactor after AeroDampDelay in the air, LandingDampFactor on
     // touching down after a quarter second of flight, back to 1 over a second
     // (A-55250: "in the air" is no wheel with a contact record, F-33415)
-    if (if exact_nitro { vs.nitro_records } else { grounded_now }) == 0 {
+    // (F-97237 on a car, `chassis_update` pieces 3 and 6: the landing's LandingDampFactor when chassis +584 ended above
+    // 0.25 s, then AeroDampFactor while out of the water with the gyro's +16 / +18 at 0 (no wheelie, four wheels) and
+    // +584 past AeroDampDelay or the car upside down; else one dt towards 1. mcCarSim::Update's melt (A-78018) comes
+    // first, on the ground. MCLA_DBG_OLDAERO: the port's counter as before. A motorcycle keeps that one: its gyro's
+    // +18 is not decoded.)
+    let car_aero = exact_nitro && !vt.bike && !dbg_flag("MCLA_DBG_OLDAERO") && !dbg_flag("MCLA_DBG_OLDSUMS");
+    if car_aero {
+        let grounded = vs.nitro_records != 0;
+        vs.air_time = if grounded { 0.0 } else { vs.air_time + dt };
+        if grounded && t.s.tire_melt_damp_factor < 1.0 && melt_before > 0.01 {
+            vs.aero_damp = fma32(t.s.tire_melt_damp_factor - 1.0, melt_before, 1.0);
+        }
+        if vs.air584 < 0.0 && -vs.air584 > 0.25 {
+            vs.aero_damp = t.s.landing_damp_factor;
+        }
+        let in_water = vs.fluid.as_ref().is_some_and(|f| f.inside);
+        let up_y = (st.rot * Vec3::Y).y;
+        vs.aero_damp = super::chassis_update::aero_step(vs.aero_damp, !in_water && vs.wheelie == 0 && vs.two == 0, vs.air584, up_y, t.s.aero_damp_factor, t.s.aero_damp_delay, dt);
+    } else if (if exact_nitro { vs.nitro_records } else { grounded_now }) == 0 {
         vs.air_time += dt;
         if vs.air_time > t.s.aero_damp_delay.max(0.0) && t.s.aero_damp_factor > 0.0 {
             vs.aero_damp = t.s.aero_damp_factor;
@@ -3523,9 +3541,30 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
         vs.cg = [held.y, held.z];
         held_x = Some(held.x);
     }
+    // (a car, F-97237 piece 2: wiped out - +592 0x10, the port's upset share as timer / WipeoutDelay - or damaged out -
+    // 0x04 - with UpsetCG > 0 out of the water, chassis +112 = CenterOfMass + (ModelOffset - CenterOfMass) x s, s =
+    // clamp(q) x UpsetCG or UpsetCG; stored, so that afterwards its height comes back at 0.5 m/s (mcCarSim::Update's
+    // rules above) instead of at once. MCLA_DBG_OLDCG: the port's blend below as before.)
+    let car_cg = vs.by.exact && !vt.bike && t.s.upset_cg > 0.0 && !in_fluid && !dbg_flag("MCLA_DBG_OLDCG");
+    let car_s = if !car_cg {
+        None
+    } else if st.upset > 0.0 {
+        let q = if st.upset - 1.0 >= 0.0 { 1.0 } else { st.upset };
+        Some(q * t.s.upset_cg)
+    } else if crate::police::damaged_out(st.damage) {
+        Some(t.s.upset_cg)
+    } else {
+        None
+    };
+    if let Some(s) = car_s {
+        let com = glam::Vec4::new(t.s.com_x, t.s.com_y, t.s.com_z, 0.0);
+        let held = (glam::Vec4::new(t.s.model_offset_x, t.s.model_offset_y, t.s.model_offset_z, 0.0) - com) * glam::Vec4::splat(s) + com;
+        vs.cg = [held.y, held.z];
+        held_x = Some(held.x);
+    }
     let com_local = {
         let tuned = Vec3::new(held_x.unwrap_or(t.s.com_x), vs.cg[0], vs.cg[1]);
-        let k = if in_fluid { 0.0 } else if st.damage >= 1.0 { 1.0 } else { st.upset };
+        let k = if in_fluid || car_cg { 0.0 } else if st.damage >= 1.0 { 1.0 } else { st.upset };
         tuned + (Vec3::new(t.s.model_offset_x, t.s.model_offset_y, t.s.model_offset_z) - tuned) * (t.s.upset_cg.clamp(0.0, 1.0) * k)
     };
     let com_local = vs.com_exact.take().unwrap_or(com_local);
