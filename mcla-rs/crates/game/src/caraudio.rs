@@ -555,6 +555,8 @@ pub struct CarSounds {
     /// the car's occluder (entity +96; every request of the car audio carries it at +32: F-74444, F-51617, F-79321, F-50805, F-24302 ...)
     /// as a slot of the sound library's occlusion table plus one, 0 = none
     pub occ: u16,
+    /// the entity's tag in every request (`Req::owner`), set by `Fleet` when the entry is made
+    pub owner: u32,
     /// ONESHOT_PARAMS +92: the pass-by whoosh (F-50805) and when it last played (5 s apart)
     whoosh_hash: u32,
     whoosh_at: f32,
@@ -663,6 +665,7 @@ impl CarSounds {
         CarSounds {
             player,
             occ: 0,
+            owner: 0,
             skid_db: be_s16(&skids, 10) * 0.01,
             skid_cents: be_s16(&skids, 12) as i32,
             susp: obj(26, "TUNERS_SUSPENSION"),
@@ -738,7 +741,7 @@ impl CarSounds {
     }
 
     fn req(&self, pos: Vec3) -> Req {
-        Req { player: self.player, occluder: self.occ, ..Req::at(pos) }
+        Req { player: self.player, occluder: self.occ, owner: self.owner, ..Req::at(pos) }
     }
 
     /// Every sound of the car stops (the car left or its entity was released).
@@ -936,7 +939,7 @@ impl CarSounds {
             // skid_voice (F-75975): GLOBAL_SKIDS' offsets on top; the LPF (voice +88) = trunc(map(curve +218,
             // +206, +210, +222, 1, t)) - 8 kHz to 20 kHz on ROAD
             let lpf = map(lib, be_u32(&o, 218), f(206), f(210), f(222), 1.0, r.t) as u16;
-            let req = Req { volume: lin2db(r.gain) + self.skid_db, pitch: cents(r.ratio) + self.skid_cents, start_pct: if car_level { 0.0 } else { 25.0 * i as f32 }, player, lpf, occluder: self.occ, ..Req::at(pos) };
+            let req = Req { volume: lin2db(r.gain) + self.skid_db, pitch: cents(r.ratio) + self.skid_cents, start_pct: if car_level { 0.0 } else { 25.0 * i as f32 }, player, lpf, occluder: self.occ, owner: self.owner, ..Req::at(pos) };
             keep(lib, &mut r.skid, hash, req);
         } else {
             stop(lib, &mut r.skid);
@@ -1160,7 +1163,7 @@ impl CarSounds {
             return;
         }
         self.whoosh_at = self.clock;
-        lib.play_hash(self.whoosh_hash, Req { occluder: self.occ, ..Req::at(pos) }.vol(vol).pitch(pitch));
+        lib.play_hash(self.whoosh_hash, Req { occluder: self.occ, owner: self.owner, ..Req::at(pos) }.vol(vol).pitch(pitch));
     }
 
     /// warn(cop, on) (F-12823): on - the INTERSECTION loop (+14) if the siren slot is free; off - the siren starts
@@ -1358,7 +1361,7 @@ impl CarSounds {
         }
         let (level, burning) = c.sst.unwrap_or((0.0, false));
         // every start: 0 dB at the entity (P+20 = this+80), flags |0x20
-        let at = Req { player: self.player, occluder: self.occ, ..Req::at(c.pos) };
+        let at = Req { player: self.player, occluder: self.occ, owner: self.owner, ..Req::at(c.pos) };
         let live = |lib: &SoundLib, h: &Option<Handle>| h.is_some_and(|h| lib.playing(h));
         // a slot's stop (F-31667) is only made when the slot holds a handle
         let halt = |lib: &mut SoundLib, slot: &mut Option<Handle>, what: &str| {
@@ -1492,9 +1495,9 @@ impl CarSounds {
             let slots = self.nitro.get_or_insert((None, None));
             // both fire loops are emitter type 1 (F-96250, set by F-79321)
             let (fire_pos, fire_doppler) = self.loop_place.filter(|_| self.player).unwrap_or((c.pos, 1.0));
-            keep(lib, &mut slots.0, fire, Req { volume: world_db, doppler: fire_doppler, ..Req { player: self.player, occluder: self.occ, ..Req::at(fire_pos) } });
+            keep(lib, &mut slots.0, fire, Req { volume: world_db, doppler: fire_doppler, ..Req { player: self.player, occluder: self.occ, owner: self.owner, ..Req::at(fire_pos) } });
             if self.player {
-                keep(lib, &mut slots.1, fire_fe, Req { volume: fe_db, doppler: fire_doppler, ..Req { player: true, occluder: self.occ, ..Req::at(fire_pos) } });
+                keep(lib, &mut slots.1, fire_fe, Req { volume: fe_db, doppler: fire_doppler, ..Req { player: true, occluder: self.occ, owner: self.owner, ..Req::at(fire_pos) } });
             }
             if first && self.player {
                 self.launch_chirp(lib, mats, c);
@@ -1534,7 +1537,7 @@ impl CarSounds {
         for (w, c) in self.window_snd.iter_mut().zip(ctl.iter().chain([spoiler, &roof.hatch, &roof.top, flip])) {
             // (the request's place is a pointer to the tracker's +48, the part's place under the car's matrix this frame)
             let Some(at) = w.obj.map(|o| o.at) else { continue };
-            let req = Req { player: self.player, occluder: self.occ, ..Req::at(pos + rot * at) };
+            let req = Req { player: self.player, occluder: self.occ, owner: self.owner, ..Req::at(pos + rot * at) };
             let mut v = Voices { lib: &mut *lib, req };
             w.follow(&mut v, c.state);
             if let Some(h) = w.looping() {
@@ -1647,7 +1650,7 @@ impl CarSounds {
                         slot.1 = clock;
                         if slot.0.map_or(true, |s| !lib.playing(s)) {
                             let (vol, pitch) = bumper_scrape_levels(mph, &d);
-                            slot.0 = lib.play_hash(h, Req { player, occluder: self.occ, ..Req::at(pos) }.vol(vol).pitch(pitch));
+                            slot.0 = lib.play_hash(h, Req { player, occluder: self.occ, owner: self.owner, ..Req::at(pos) }.vol(vol).pitch(pitch));
                         }
                     }
                 }
@@ -2167,6 +2170,14 @@ struct Entry {
     opp: u8,
     /// the PLAYER_WAVESHAPER bus it holds: its place in the pool of 7 (`Fleet::buses`)
     bus: Option<usize>,
+    /// the tag of this car audio entity's requests (`Req::owner`): its detach ends them all (`Fleet::detach`)
+    owner: u32,
+}
+
+/// A new car audio entity's request tag (never 0).
+fn new_owner() -> u32 {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Every non-player car's sounds, and the player car's extras.
@@ -2483,6 +2494,7 @@ impl Fleet {
         let gone: Vec<usize> = self.cars.keys().copied().filter(|i| !alive.contains(i)).collect();
         for i in gone {
             if let Some(mut e) = self.cars.remove(&i) {
+                Self::detach(lib, &mut e);
                 Self::release(lib, &mut e);
             }
         }
@@ -2681,6 +2693,7 @@ impl Fleet {
                     held += 1;
                     e.engine = EngineSound::new_opponent(lib, &c.model.name, c.model.bike);
                     if let Some(en) = &mut e.engine {
+                        en.owner = e.owner;
                         en.start_at(engine_rpm(c));
                         en.set_bus(lib, 0);
                     }
@@ -2915,6 +2928,17 @@ impl Fleet {
         }
     }
 
+    /// A car destroyed (the mcCar destructor F-81512 calls its audio entity's detach, vt+8 of the +16 object: the
+    /// player's F-35488 / an opponent's F-57548, both through F-35196 -> F-14992 -> F-35179 with the
+    /// flag 0): every sound its entity asked for, play-and-forget ones included, gets the release override 0 (settings
+    /// +192, unless it is already releasing) and the stop - it ends at its next update with no release. Traffic cars have
+    /// another entity class (not decoded): their entries are released as before.
+    fn detach(lib: &mut SoundLib, e: &mut Entry) {
+        if e.sounds.is_some() {
+            lib.cut_owner(e.owner);
+        }
+    }
+
     fn release(lib: &mut SoundLib, e: &mut Entry) {
         if let Some(s) = &mut e.sounds {
             s.stop_all(lib);
@@ -2947,6 +2971,7 @@ fn entry<'a>(cars: &'a mut HashMap<usize, Entry>, types: &HashMap<String, Traffi
             }
         }
         cars.entry(i).or_insert_with(|| {
+            let owner = new_owner();
             let amb = traffic.then(|| {
                 // the type's object by name, else "<name>_0<0|1>" (F-89483)
                 let tt = types.get(&c.model.name.to_ascii_lowercase()).cloned().unwrap_or(TrafficType { audio: "AMBIENT_SEDAN".into(), bound_group: 0, max_decel: 22.5, tire_stretch: 0.15 });
@@ -2993,8 +3018,12 @@ fn entry<'a>(cars: &'a mut HashMap<usize, Entry>, types: &HashMap<String, Traffi
             Entry {
                 uid: c.uid,
                 model: c.model.name.clone(),
-                sounds: (!traffic).then(|| CarSounds::new(lib, &c.model.name, c.model.bike, player)),
+                sounds: (!traffic).then(|| CarSounds::new(lib, &c.model.name, c.model.bike, player)).map(|mut s| {
+                    s.owner = owner;
+                    s
+                }),
                 engine: None,
+                owner,
                 traffic: amb,
                 opp: 0,
                 bus: None,

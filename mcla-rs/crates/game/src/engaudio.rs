@@ -194,6 +194,8 @@ pub struct EngineSound {
     /// the car's occluder (entity +96), which every request of the car audio carries at +32 (the loops: F-74444 /
     /// F-51617 store it there): a slot of the sound library's occlusion table plus one, 0 = none
     pub occ: u16,
+    /// the car audio entity's tag in every request (`Req::owner`), set by `Fleet`
+    pub owner: u32,
     recs: Vec<Rec>,
     /// XF+12 cents, XF+14 mB as dB, EFFECT+10 mB as dB
     pitch_off: f32,
@@ -383,6 +385,7 @@ impl EngineSound {
         log::info!("audio: engine {} - {} loops {}..{} rpm", lib.game.name_of(be_u32(def, 14)).unwrap_or("?"), n, recs[0].start, recs[n - 1].end);
         Some(EngineSound {
             occ: 0,
+            owner: 0,
             player,
             wobble_target: (be_f32(amp, 30), be_f32(amp, 34)),
             wobble_rate: (be_f32(amp, 38), be_f32(amp, 42)),
@@ -656,7 +659,7 @@ impl EngineSound {
         } else if a.play {
             // its Duration taken before its first step (the total with +80 / +84 still 0)
             self.revs_made = false;
-            self.revs = lib.play_hash(self.revs_sound, Req { pos: Some(e.pos), player: self.player, occluder: self.occ, ..Default::default() });
+            self.revs = lib.play_hash(self.revs_sound, Req { pos: Some(e.pos), player: self.player, occluder: self.occ, owner: self.owner, ..Default::default() });
             self.revs_t = self.revs.map(|h| (0.0, lib.duration_ms(h)));
         } else if let Some((t, d)) = self.revs_t {
             self.revs_t = Some((t + dt * 1000.0, d));
@@ -679,7 +682,7 @@ impl EngineSound {
                     lib.stop(h);
                 }
                 if self.state == 0 {
-                    self.ign = lib.play_hash(self.ign_sound, Req { pos: Some(e.pos), player: self.player, occluder: self.occ, ..Default::default() });
+                    self.ign = lib.play_hash(self.ign_sound, Req { pos: Some(e.pos), player: self.player, occluder: self.occ, owner: self.owner, ..Default::default() });
                     self.state = 1;
                     self.timer = lib.rand_int(self.crank.0, self.crank.1) as f32 * 0.001;
                     log::info!("engine: ignition at {:.3} s (one-shot {}), crank {:.3} s", self.clock, self.ign.is_some(), self.timer);
@@ -700,7 +703,7 @@ impl EngineSound {
                 if let Some(h) = self.ign.take() {
                     lib.stop(h);
                 }
-                self.ign = lib.play_hash(self.kaput_sound, Req { pos: Some(e.pos), player: self.player, occluder: self.occ, ..Default::default() });
+                self.ign = lib.play_hash(self.kaput_sound, Req { pos: Some(e.pos), player: self.player, occluder: self.occ, owner: self.owner, ..Default::default() });
                 self.state = 3;
             }
             self.end_frame(lib, e, dt);
@@ -808,7 +811,7 @@ impl EngineSound {
             // the loops' category (create params +28): the player's PLAYER_VEHICLES_ENGINES (entity +1696, set by F-30010),
             // a computer racer's OPPONENT_VEHICLES_ENGINE (F-51617); recorded in the running original (category index 128 / 25)
             let category = joaat(if self.player { "PLAYER_VEHICLES_ENGINES" } else { "OPPONENT_VEHICLES_ENGINE" });
-            let req = Req { pos: Some(loop_pos), volume: vol, vol2: self.vol2, pitch: cents, doppler: self.doppler, player: self.player, dry, fx_send, chain: self.chain, pans_chain: i == 0, category, occluder: self.occ, ..Default::default() };
+            let req = Req { pos: Some(loop_pos), volume: vol, vol2: self.vol2, pitch: cents, doppler: self.doppler, player: self.player, dry, fx_send, chain: self.chain, pans_chain: i == 0, category, occluder: self.occ, owner: self.owner, ..Default::default() };
             match self.voices[i] {
                 Some(h) if lib.playing(h) => lib.set(h, req),
                 _ => self.voices[i] = lib.play_hash(r.sound, req),
@@ -898,7 +901,7 @@ impl EngineSound {
         }
         if let Some((t, snd)) = self.pending_gear {
             if t <= 0.0 {
-                lib.play_hash(snd, Req { pos: Some(e.pos), volume: self.gear_vol, pitch: self.gear_pitch, player: self.player, occluder: self.occ, ..Default::default() });
+                lib.play_hash(snd, Req { pos: Some(e.pos), volume: self.gear_vol, pitch: self.gear_pitch, player: self.player, occluder: self.occ, owner: self.owner, ..Default::default() });
                 self.pending_gear = None;
             } else {
                 self.pending_gear = Some((t - dt, snd));
@@ -912,7 +915,7 @@ impl EngineSound {
             if e.throttle_in <= 0.0 && e.rpm < self.prev_rpm {
                 let t = t - dt;
                 if t <= 0.0 {
-                    lib.play_hash(self.backfire, Req { player: self.player, occluder: self.occ, ..Req::at(e.pos) });
+                    lib.play_hash(self.backfire, Req { player: self.player, occluder: self.occ, owner: self.owner, ..Req::at(e.pos) });
                     self.backfire_armed = None;
                 } else {
                     self.backfire_armed = Some(t);

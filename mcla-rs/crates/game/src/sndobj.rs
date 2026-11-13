@@ -89,11 +89,14 @@ pub struct Req {
     /// plus one, 0 = none. Every frame the voice takes the occluder's volume and cutoff (F-19918 into entry +160 / +164),
     /// which the pan applies (F-56973: the speaker gains times the volume, the low-pass at most the cutoff)
     pub occluder: u16,
+    /// the port's tag of the car audio entity that asked (its request's client, sound +120): 0 = none; a car's
+    /// detach ends every sound of its tag (`SoundLib::cut_owner`)
+    pub owner: u32,
 }
 
 impl Default for Req {
     fn default() -> Self {
-        Req { pos: None, volume: 0.0, vol2: 0.0, pitch: 0, pan: -1, doppler: 1.0, player: false, start_ms: 0.0, start_pct: 0.0, lpf: 23900, hpf: 0, dry: 1.0, fx_send: 0.0, chain: 0, pans_chain: false, category: 0, occluder: 0 }
+        Req { pos: None, volume: 0.0, vol2: 0.0, pitch: 0, pan: -1, doppler: 1.0, player: false, start_ms: 0.0, start_pct: 0.0, lpf: 23900, hpf: 0, dry: 1.0, fx_send: 0.0, chain: 0, pans_chain: false, category: 0, occluder: 0, owner: 0 }
     }
 }
 
@@ -1747,6 +1750,21 @@ impl SoundLib {
         if let Some(i) = self.insts.iter_mut().find(|i| i.id == h.0) {
             i.stop = true;
             i.stop_ms = ms;
+        }
+    }
+
+    /// A car audio entity's detach (F-35179 with the flag 0): every playing sound of the tag `owner` (`Req::owner`)
+    /// gets the release override 0 - unless it is already releasing (sound +56 bit 0x04: its release stands) - and the
+    /// stop request.
+    pub fn cut_owner(&mut self, owner: u32) {
+        if owner == 0 {
+            return;
+        }
+        for i in self.insts.iter_mut().filter(|i| i.req.owner == owner) {
+            if !i.root.clock.stopped {
+                i.stop_ms = 0;
+            }
+            i.stop = true;
         }
     }
 
@@ -4223,6 +4241,27 @@ mod tests {
         }
         assert_eq!(pos(&lib, game), g0, "the game sound holds");
         assert!((pos(&lib, ui) - u0 - 500.0).abs() < 1.0, "the UI sound plays on");
+    }
+
+    /// A car audio entity's detach (F-35179 with the flag 0, batch 69): every sound of its tag - the scrape loop and the
+    /// play-and-forget break-off - ends at the next update with no release; another car's sound plays on.
+    #[test]
+    #[ignore = "requires MCLA_DATA_DIR with the user's extracted disc and the converted audio"]
+    fn detach_cuts_every_sound_of_the_car() {
+        let dir = std::env::var("MCLA_DATA_DIR").expect("MCLA_DATA_DIR");
+        let mut a = crate::audio::Audio::new_offline(&dir).expect("audio");
+        let mut lib = SoundLib::load(a.root(), &a.cfg).expect("sound objects");
+        let at = |owner: u32| Req { owner, ..Req::at(Vec3::new(5.0, 0.0, 0.0)) };
+        let scrape = lib.play("DAMAGE_BUMPER_SCRAPE_MASTER", at(7)).expect("scrape");
+        let off = lib.play("DAMAGE_BUMPER_BREAK_OFF", at(7)).expect("break-off");
+        let other = lib.play("DAMAGE_BUMPER_SCRAPE_MASTER", at(8)).expect("other car's scrape");
+        lib.update(0.033, &mut a);
+        assert!(lib.playing(scrape) && lib.playing(off) && lib.playing(other));
+        lib.cut_owner(7);
+        lib.update(0.033, &mut a);
+        assert!(!lib.playing(scrape), "the loop ends with no release");
+        assert!(!lib.playing(off), "the one-shot ends too");
+        assert!(lib.playing(other), "another car's sound plays on");
     }
 
     /// A career speech line as the original plays it (work/slipstream/audio4/cap/n2.txt): PLAYER_NITROUS through the player
