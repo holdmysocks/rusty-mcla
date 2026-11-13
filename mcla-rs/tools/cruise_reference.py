@@ -92,7 +92,7 @@ def case(rnd):
     w(S + 108, bits(held))
     w(0x40000000 | (S + 101), ch([0, 1, 1]))
     w(0x40000000 | (S + 102), ch([0, 1]))
-    w(S + 40, rnd.getrandbits(32))
+    w(S + 40, rnd.getrandbits(31))  # (top bit clear: no word that reads as an address)
     w(S + 12, bits(ch([0.0, 1.0, lo, hi, f(lo + 1e-6), U(0, 1), U(lo, hi), U(hi, 1), U(0, lo)])))
     w(TR + 148, bits(ch([0.0, 0.0, 0.05, f(0.1), 0.5, f(0.9), 0.95, 1.0, U(0, 1)])))
     w(0x40000000 | (NB + 32), ch([0, 0, 0, 0, 1]))
