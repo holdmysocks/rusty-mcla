@@ -252,6 +252,27 @@ pub struct CarInput {
     pub neutral_slow: bool,
     /// the car's driver record is the player's (+24 == 3; F-55998 reads it), whoever drives
     pub player: bool,
+    /// chassis +144 as a float when it is not what `handbrake` says (1 / 0): an opponent's handbrake on its way
+    /// (mcOpponentInput +20, 10 /s), the +624 overrides' 0.25 (F-17997 P3). Every test of +144 is > 0 / == 0, so
+    /// `handbrake` is +144 > 0; `hand` is the float the pedal torque, the launch push, the gyro and P36 take.
+    pub hand_share: Option<f32>,
+}
+
+impl CarInput {
+    /// chassis +144: 0 with the handbrake off, else the share (1 when none is set)
+    pub fn hand(&self) -> f32 {
+        if self.handbrake { self.hand_share.unwrap_or(1.0) } else { 0.0 }
+    }
+    /// +144 written 1 / 0
+    pub fn set_handbrake(&mut self, on: bool) {
+        self.handbrake = on;
+        self.hand_share = None;
+    }
+    /// +144 written a share (> 0 is on)
+    pub fn set_hand(&mut self, x: f32) {
+        self.handbrake = x > 0.0;
+        self.hand_share = Some(x);
+    }
 }
 
 pub const HYD_FITTED: u8 = 0x40;

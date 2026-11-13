@@ -60,7 +60,7 @@ impl Overrides {
             }
         }
         if self.handbrake == Some(true) {
-            inp.handbrake = true;
+            inp.set_handbrake(true);
         }
         if let Some(s) = self.steer {
             inp.steer = s;

@@ -912,9 +912,9 @@ pub fn apply_ctl(input: &mut crate::physics::car::CarInput, ctl: u32) {
         input.brake = 1.0;
     }
     if ctl & 0x100 != 0 {
-        input.handbrake = false;
+        input.set_handbrake(false);
     } else if ctl & 0x200 != 0 {
-        input.handbrake = true;
+        input.set_handbrake(true);
     }
     if ctl & 0x8 != 0 {
         input.throttle = 1.0;
@@ -930,10 +930,13 @@ pub fn apply_ctl(input: &mut crate::physics::car::CarInput, ctl: u32) {
     } else if ctl & 0x40 != 0 {
         input.steer = -input.steer;
     }
+    // (F-17997 P3: both also write the handbrake +144 = 0.25)
     if ctl & 0x800 != 0 {
         input.throttle = 0.0;
+        input.set_hand(0.25);
     } else if ctl & 0x1000 != 0 {
         input.steer = -input.steer;
+        input.set_hand(0.25);
     }
     if ctl & 0x80 != 0 {
         input.ice = true;

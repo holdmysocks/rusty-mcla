@@ -254,6 +254,51 @@ pub fn strength(t: &SsTurboTune, leader: &DraftCar, me: Vec3) -> f32 {
     across * along * share
 }
 
+/// One racer of the list as the leader search F-69277 sees it: `car` its entry and the entry's car (+48) are there, `me`
+/// that car is the searching one's, `sst` the car's SST object ([[car+8]+668]) is there with its +4 set, `gyro18` its
+/// gyro's +18 (None: no gyro).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Racer {
+    pub car: bool,
+    pub me: bool,
+    pub sst: bool,
+    pub gyro18: Option<u16>,
+}
+
+/// F-69277, the slipstream turbo's leader search: `ready` the SST object has its tune and car, `speed` the car's
+/// chassis +224, `min` the tune's +32. Over the racer list (each asked of F-27863 first): not this car, an SST object,
+/// not a motorcycle (F-54299, `moto`), no gyro or one at +18 0 - the strongest slipstream (F-22877, `strength`),
+/// strictly greater, the first of equals. Gives (the result, the strength written - None: not written - and the index
+/// written, -1 when none). Checked offline: tools/sst_leader_reference.py, test `find_leader_matches_the_original`.
+pub fn find_leader(
+    ready: bool,
+    speed: f32,
+    min: f32,
+    racers: &[Racer],
+    mut alive: impl FnMut() -> bool,
+    mut moto: impl FnMut(usize) -> bool,
+    mut strength: impl FnMut(usize) -> f32,
+) -> (bool, Option<f32>, i32) {
+    if !ready {
+        return (false, None, -1);
+    }
+    if speed < min {
+        return (false, Some(0.0), -1);
+    }
+    let (mut best, mut at) = (0.0f32, -1i32);
+    for (k, r) in racers.iter().enumerate() {
+        if !alive() || !r.car || r.me || !r.sst || moto(k) || r.gyro18.is_some_and(|h| h != 0) {
+            continue;
+        }
+        let x = strength(k);
+        if x > best {
+            at = k as i32;
+            best = x;
+        }
+    }
+    (best > 0.0, Some(best), at)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -551,6 +596,81 @@ mod tests {
         }
         println!("form arguments of the calls: {:?}", ids);
         println!("{} scripts, {n} calls", files.len());
+    }
+
+    /// F-69277 against the original run offline (tools/sst_leader_reference.py): the result, both outputs and every
+    /// call in order.
+    #[test]
+    fn find_leader_matches_the_original() {
+        use std::collections::HashMap;
+        use std::fmt::Write;
+        let text = include_str!("testdata/sst_leader_ref.txt");
+        let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+        let words = |t: &str| t.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect::<Vec<u32>>();
+        let head = words(lines.next().unwrap());
+        let mut n = 0;
+        for line in lines {
+            let (inp, out) = line.split_once(" -> ").unwrap();
+            let (res, calls) = out.split_once('|').unwrap();
+            let mut m: HashMap<u32, u32> = HashMap::new();
+            let mut b: HashMap<u32, u8> = HashMap::new();
+            let mut h: HashMap<u32, u16> = HashMap::new();
+            let mut ret = [0u32; 32];
+            for p in head.chunks(2) {
+                m.insert(p[0], p[1]);
+            }
+            for p in words(inp).chunks(2) {
+                let (a, v) = (p[0], p[1]);
+                if a >= 0xF000_0000 {
+                    ret[(a - 0xF000_0000) as usize] = v;
+                } else if a & 0x4000_0000 != 0 {
+                    b.insert(a & 0x3FFF_FFFF, v as u8);
+                } else if a & 0x2000_0000 != 0 {
+                    h.insert(a & 0x1FFF_FFFF, v as u16);
+                } else {
+                    m.insert(a, v);
+                }
+            }
+            let w = |a: u32| *m.get(&a).unwrap_or(&0);
+            let me = w(0x1000 + 8);
+            let ready = w(0x1000 + 4) != 0 && me != 0;
+            let side = *b.get(&(0x1240 + 72)).unwrap_or(&0) != 0;
+            let list = w(0x828745E4);
+            let count = w(list + if side { 804 } else { 400 }) as usize;
+            let racers: Vec<Racer> = (0..count)
+                .map(|k| {
+                    let e = w(list + if side { 404 } else { 0 } + 4 * k as u32);
+                    let car = if e != 0 { w(e + 48) } else { 0 };
+                    let so = if car != 0 { w(w(car + 8) + 668) } else { 0 };
+                    let gy = if car != 0 { w(car + 48) } else { 0 };
+                    Racer { car: car != 0, me: car == me, sst: so != 0 && w(so + 4) != 0, gyro18: (gy != 0).then(|| *h.get(&(gy + 18)).unwrap_or(&0)) }
+                })
+                .collect();
+            let log = std::cell::RefCell::new(String::new());
+            let (got, x, at) = find_leader(
+                ready,
+                f32::from_bits(w(0x1100 + 224)),
+                f32::from_bits(w(0x1040 + 32)),
+                &racers,
+                || {
+                    log.borrow_mut().push_str(" K");
+                    ret[0] != 0
+                },
+                |k| {
+                    write!(log.borrow_mut(), " M{k}").unwrap();
+                    ret[1 + k] != 0
+                },
+                |k| {
+                    write!(log.borrow_mut(), " S{k},1000").unwrap();
+                    f32::from_bits(ret[9 + k])
+                },
+            );
+            let want = format!("{:x} {:08x} {:08x}", got as u32, x.map_or(0x1111_1111, f32::to_bits), at as u32);
+            assert_eq!(want, res.trim(), "case {n}: {inp}");
+            assert_eq!(log.borrow().trim(), calls.trim(), "case {n} calls: {inp}");
+            n += 1;
+        }
+        assert_eq!(n, 4000);
     }
 
     /// The disc's slipstream tunings, every car (MCLA_DATA_DIR=...\extracted\cache).

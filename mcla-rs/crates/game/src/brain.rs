@@ -1009,13 +1009,14 @@ impl Brain {
             }
         }
         let p = self.input.update(t, self.collision > 0.0, dt);
+        // (the handbrake +20 goes into chassis +144 as it is, F-17997 P1: on while above 0, its share in `hand_share`)
         // (the chassis takes the pedals as written - CarInput::animated: no pad code, no computer-driver
         // share, the gearbox kept at first or above, as the brain's max(gear, 2); backing up goes
         // through the port's reverse: in reverse the brake is the pedal that drives)
         out.input = if reverse {
-            CarInput { throttle: 0.0, brake: p.throttle.max(0.11), steer: p.steer, handbrake: p.handbrake > 0.5, ai: true, ..Default::default() }
+            CarInput { throttle: 0.0, brake: p.throttle.max(0.11), steer: p.steer, handbrake: p.handbrake > 0.0, hand_share: Some(p.handbrake), ai: true, ..Default::default() }
         } else {
-            CarInput { throttle: p.throttle, brake: p.brake, steer: p.steer, handbrake: p.handbrake > 0.5, ai: true, animated: true, neutral_slow, xfer: air.0, lean: air.1, ..Default::default() }
+            CarInput { throttle: p.throttle, brake: p.brake, steer: p.steer, handbrake: p.handbrake > 0.0, hand_share: Some(p.handbrake), ai: true, animated: true, neutral_slow, xfer: air.0, lean: air.1, ..Default::default() }
         };
         out
     }

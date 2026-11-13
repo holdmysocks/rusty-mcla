@@ -1332,7 +1332,7 @@ struct DmgMap {
 /// The chassis' scramble word applied to the pad's pedals (mcCarSim::Update after its copy of the input, before the
 /// grid block and the burnout): 0x1 brake 0, else 0x2 brake 1; 0x100 handbrake off, else 0x200 on; 0x8 throttle 1,
 /// else 0x4 throttle 0; 0x400 steer 0, else 0x10 -1, 0x20 +1, 0x40 negated; 0x800 throttle 0 and handbrake 0.25,
-/// else 0x1000 steer negated and handbrake 0.25 (the port's handbrake is on or off: 0.25 counts as on).
+/// else 0x1000 steer negated and handbrake 0.25 (`CarInput::hand_share`).
 pub fn scramble(mut i: CarInput, f: u32) -> CarInput {
     if f & 0x1 != 0 {
         i.brake = 0.0;
@@ -1340,9 +1340,9 @@ pub fn scramble(mut i: CarInput, f: u32) -> CarInput {
         i.brake = 1.0;
     }
     if f & 0x100 != 0 {
-        i.handbrake = false;
+        i.set_handbrake(false);
     } else if f & 0x200 != 0 {
-        i.handbrake = true;
+        i.set_handbrake(true);
     }
     if f & 0x8 != 0 {
         i.throttle = 1.0;
@@ -1360,10 +1360,10 @@ pub fn scramble(mut i: CarInput, f: u32) -> CarInput {
     }
     if f & 0x800 != 0 {
         i.throttle = 0.0;
-        i.handbrake = true;
+        i.set_hand(0.25);
     } else if f & 0x1000 != 0 {
         i.steer = -i.steer;
-        i.handbrake = true;
+        i.set_hand(0.25);
     }
     i
 }
@@ -4110,28 +4110,21 @@ impl Vehicles {
     /// tune), the first of equals. The follower's speed is its own chassis +224 of this tick (the speed it comes
     /// in with), the leader's the +224 its last update wrote.
     fn sst_search(&self, i: usize) -> (f32, i32) {
-        use crate::physics::sst::{strength, DraftCar};
+        use crate::physics::sst::{find_leader, strength, DraftCar, Racer};
         let me = &self.cars[i];
         let Some(vt) = me.params().veh.as_ref() else { return (0.0, -1) };
-        if !Self::has_sst(me) || me.state.vel.length() < vt.t.ss_turbo.min_speed {
-            return (0.0, -1);
-        }
-        let mut best = (0.0f32, -1i32);
-        for (j, o) in self.cars.iter().enumerate() {
-            if j == i || o.model.bike || !Self::has_sst(o) {
-                continue;
-            }
-            let (Some(ov), Some(ot)) = (o.state.veh.as_ref(), o.params().veh.as_ref()) else { continue };
-            if ov.two != 0 {
-                continue;
-            }
-            let st = &o.state;
-            let s = strength(&ot.t.ss_turbo, &DraftCar { pos: st.pos, up: st.up(), vel: st.vel, speed: ov.last_speed }, me.state.pos);
-            if s > best.0 {
-                best = (s, j as i32);
-            }
-        }
-        best
+        // (the racer list: every car; one with no turbo has no SST object; a car's gyro +18 is the side it is up on.
+        // F-27863, asked before each racer, is taken as true; F-54299's SportBike class as the model's bike flag;
+        // the car's +224 is its speed as this tick came in, |vel| before its step)
+        let racers: Vec<Racer> = self.cars.iter().enumerate()
+            .map(|(j, o)| Racer { car: true, me: j == i, sst: Self::has_sst(o) && o.params().veh.is_some(), gyro18: o.state.veh.as_ref().map(|v| v.two as u16) })
+            .collect();
+        let (_, s, j) = find_leader(Self::has_sst(me), me.state.vel.length(), vt.t.ss_turbo.min_speed, &racers, || true, |j| self.cars[j].model.bike, |j| {
+            let o = &self.cars[j];
+            let (Some(ov), Some(ot)) = (o.state.veh.as_ref(), o.params().veh.as_ref()) else { return 0.0 };
+            strength(&ot.t.ss_turbo, &DraftCar { pos: o.state.pos, up: o.state.up(), vel: o.state.vel, speed: ov.last_speed }, me.state.pos)
+        });
+        (s.unwrap_or(0.0), j)
     }
 
     /// The search half of car `idx`'s mcCarSSTurbo::Update (F-60935), made right before the car's step - in
@@ -5061,7 +5054,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                             if positions[i].2 < 0.8 {
                                 // queued up: stand still rather than back away
                                 input.brake = 0.0;
-                                input.handbrake = true;
+                                input.set_handbrake(true);
                                 boxed_in = true;
                             }
                         }

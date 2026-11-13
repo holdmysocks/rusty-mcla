@@ -2256,7 +2256,7 @@ TUNEINPUT {:?} nitro {:?} steering limit {:?}", t.engine.s, t.trans.s, vt.sync_t
     }
     if vs.by.exact {
         let (thr, brk) = if vs.gear < 0 { (input.brake, input.throttle) } else { (input.throttle, input.brake) };
-        let hand: f32 = if input.handbrake { 1.0 } else { 0.0 };
+        let hand: f32 = input.hand();
         // (A-82101: with charge left and the handbrake on, the centre of mass stays where it is)
         vs.by.cg_return = !(vs.burn > 0.0 && hand != 0.0);
         let grounded = st.wheels.iter().filter(|w| w.grounded).count();
@@ -3502,8 +3502,9 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
             if let Some(z) = vs.by.cg {
                 vs.cg = [0.0, z];
             }
-            if t.s.drift_cg > 0.0 && input.handbrake {
-                let target = fma32(super::exact::fms(tuned[0], t.s.drift_cg, tuned[0]), 1.0, tuned[0]);
+            // (F-17997 P36: by the handbrake +144 as a float, gate > 0)
+            if t.s.drift_cg > 0.0 && input.hand() > 0.0 {
+                let target = fma32(super::exact::fms(tuned[0], t.s.drift_cg, tuned[0]), input.hand(), tuned[0]);
                 super::exact::approach(&mut vs.cg[0], target, 1.5, dt);
             }
             super::exact::approach(&mut vs.cg[0], tuned[0], 0.5, dt);
@@ -3681,7 +3682,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
     // first wheel's radius)
     let shaft_speed_then = if exact_sums_early { vs.shaft_speed_in } else { vs.omega[0] * if vs.drive == 0 { t.wheel_back.radius } else { t.wheel_front.radius } };
     let mut grounded_count = 0;
-    let handbrake = if input.handbrake { 1.0 } else { 0.0 };
+    let handbrake = input.hand();
     // (rolling slowly off the throttle the original brakes by itself, see `auto_brake`)
     let hold = vs.auto_brake;
     let reversing = vs.gear < 0;
@@ -5390,7 +5391,7 @@ async fn physics_frame(st: &mut CarState, vs: &mut VehState, p: &CarParams, vt: 
         // ---- mcCarGyro, A-80595..A-89112, operation for operation ----
         use super::exact::{approach, ease, fma, unit_or_zero};
         if t.gyro.drift_thrust > 0.0 && vs.burn == 0.0 {
-            let hb: f32 = if input.handbrake { 1.0 } else { 0.0 };
+            let hb: f32 = input.hand();
             if hb > vs.drift_level {
                 vs.drift_level = hb;
             } else if hb < vs.drift_level {
