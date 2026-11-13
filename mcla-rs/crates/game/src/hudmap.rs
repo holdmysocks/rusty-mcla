@@ -3331,10 +3331,11 @@ impl CamRows {
 
     /// pitch about its own r0 (`F-52786`)
     fn pitch(mut self, th: f32) -> CamRows {
-        let (s, c) = th.sin_cos();
+        // (F-52786 as steer_parts::turn_rows: the guest's cos / sin, r1' = r2 s + r1 c, r2' = -(r1 s - r2 c), unfused)
+        let (c, s) = (crate::physics::exact::guest_cos(th as f64) as f32, crate::physics::exact::guest_sin(th as f64) as f32);
         let (r1, r2) = (self.r1, self.r2);
-        self.r1 = r1 * c + r2 * s;
-        self.r2 = r2 * c - r1 * s;
+        self.r1 = r2 * s + r1 * c;
+        self.r2 = -(r1 * s - r2 * c);
         self
     }
 }

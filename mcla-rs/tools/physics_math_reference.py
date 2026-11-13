@@ -1,5 +1,6 @@
 """Small vehicle-physics routines run offline on their generated code (recomp_dispatch):
   ROTX / ROTZ  rotation about X / Z by an angle (F-67091, F-16906)       ->  the 3 rows (9 words)
+  PTCH         rows 1 / 2 turned about the own x (F-52786)                   ->  the 3 rows with w (12 words)
   ROTU         rotation about a unit axis (F-65964, already verified; the TURN helper)
   INV          3x3 + translation inverse (F-30106; wrapper F-43153)      ->  success flag, the 4 output rows (16 words)
   TURN         a matrix turned by the rotation about an axis (F-42980)   ->  the 3 rows
@@ -15,7 +16,7 @@ import subprocess
 from pathlib import Path
 import recomp_dispatch as rd
 
-IDS = dict(ROTX='F-67091', ROTZ='F-16906', INV='F-30106', INVW='F-43153', TURN='F-42980', ROTU='F-65964', SSS='F-40603', DMG='F-10364', PERL='F-52219', SSP='F-40620', HEAD='F-94892', ROLL='F-83846', G1='F-50173', G2='F-33402', G3='F-26199', G4='F-55749')
+IDS = dict(ROTX='F-67091', ROTZ='F-16906', INV='F-30106', INVW='F-43153', TURN='F-42980', ROTU='F-65964', SSS='F-40603', DMG='F-10364', PERL='F-52219', SSP='F-40620', HEAD='F-94892', ROLL='F-83846', PTCH='F-52786', G1='F-50173', G2='F-33402', G3='F-26199', G4='F-55749')
 
 MAIN = r'''
 static float fl(uint32_t w){float f;memcpy(&f,&w,4);return f;}
@@ -58,6 +59,10 @@ int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.
    for(int i=0;i<3;i++){store(0x1000+4*i,v[i]);store(0x1010+4*i,v[3+i]);}store(0x100c,0);store(0x101c,0);
    c.r3.u32=0x1000;c.f1.f64=double(fl(an));sub_ROLL(c,nullptr);
    printf("ROLL");for(int i=0;i<6;i++)printf(" %08x",v[i]);printf(" %08x ->",an);for(int i=0;i<3;i++)printf(" %08x",load(0x1000+4*i));for(int i=0;i<3;i++)printf(" %08x",load(0x1010+4*i));printf("\n");}
+  else if(op=="PTCH"){uint32_t v[12],an;for(int i=0;i<12;i++)v[i]=rd32(in);an=rd32(in);
+   for(int i=0;i<12;i++)store(0x1000+4*i,v[i]);
+   c.r3.u32=0x1000;c.f1.f64=double(fl(an));sub_PTCH(c,nullptr);
+   printf("PTCH");for(int i=0;i<12;i++)printf(" %08x",v[i]);printf(" %08x ->",an);for(int i=0;i<12;i++)printf(" %08x",load(0x1000+4*i));printf("\n");}
   else if(op=="PERL"){uint32_t x=rd32(in);c.f1.f64=double(fl(x));sub_PERL(c,nullptr);printf("PERL %08x -> %08x\n",x,bi(float(c.f1.f64)));}
   else if(op=="DMG"){uint32_t mx=rd32(in),med=rd32(in),dm=rd32(in);
    store(0x1000+8,0x1400);store(0x1400+24,mx);store(0x1400+28,med);store(0x1000+36,dm);
@@ -153,6 +158,14 @@ def main():
     for _ in range(3000):
         x = r.choice([r.uniform(-300, 300), r.uniform(-4, 4), float(r.randint(-300, 300)), r.randint(-300, 300) + 0.5, r.uniform(-1e4, 1e4)])
         L.append(f'PERL {b(x):08x}')
+    # F-52786 (a bone's local / camera rows about their own x): three rows with their w lanes, angles of a part's turn
+    rp = random.Random(20261112)
+    for i in range(1200):
+        rows = [rp.uniform(-1, 1) * rp.choice([1, 1, 0.01, 100]) for _ in range(12)]
+        if i % 4 == 0:
+            rows[3] = rows[7] = rows[11] = 0.0
+        an = rp.choice([0.0, -0.0, 1.5707964, -1.5707964, 3.1415927, rp.uniform(-0.5, 0.5), rp.uniform(-4, 4), rp.uniform(-4, 4), rp.uniform(-100, 100)])
+        L.append('PTCH ' + ' '.join(f'{b(x):08x}' for x in rows) + f' {b(an):08x}')
     cases = a.work / 'physics_math_cases.txt'
     cases.write_text('\n'.join(L) + '\n')
     p = subprocess.run([str(exe), str(a.image), str(cases)], capture_output=True, text=True)

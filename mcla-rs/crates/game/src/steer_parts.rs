@@ -213,9 +213,111 @@ pub fn turn(about_x: bool, a: f32) -> glam::Mat4 {
     }
 }
 
+/// F-52786 (about x: rows 1 and 2) or F-83846 (about z: rows 0 and 1) on a matrix's rows in place, all four lanes, as the
+/// original does it: the guest's cos / sin, then the vector unit's unfused products, a' = b s + a c, b' = -(a s - b c).
+pub fn turn_rows(rows: &mut [[f32; 4]], about_x: bool, t: f32) {
+    let c = crate::physics::exact::guest_cos(f64::from(t)) as f32;
+    let s = crate::physics::exact::guest_sin(f64::from(t)) as f32;
+    let (i, j) = if about_x { (1, 2) } else { (0, 1) };
+    let (a, b) = (rows[i], rows[j]);
+    for k in 0..4 {
+        rows[i][k] = b[k] * s + a[k] * c;
+        rows[j][k] = -(a[k] * s - b[k] * c);
+    }
+}
+
+/// A bone F-98654 turns, held the original's way: its local and its parent's global as the skeleton update F-97374 makes
+/// it (`exact_mat::chain` from the root, whose global is its local), and the placement the port draws the skeleton by.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TurnBone {
+    pub local: glam::Mat4,
+    pub parent: Option<glam::Mat4>,
+    pub place: glam::Mat4,
+}
+
+/// F-97374's global of bone `i` (no parent matrix: the root's global is its local, copied).
+pub fn chain_global(bones: &[mcla_formats::rage::skeleton::Bone], i: usize) -> glam::Mat4 {
+    let b = &bones[i];
+    if b.parent >= bones.len() || b.parent == i {
+        b.local
+    } else {
+        crate::physics::exact_mat::chain(&b.local, &chain_global(bones, b.parent))
+    }
+}
+
+impl TurnBone {
+    pub fn of(bones: &[mcla_formats::rage::skeleton::Bone], i: usize, place: glam::Mat4) -> TurnBone {
+        let p = bones[i].parent;
+        TurnBone { local: bones[i].local, parent: (p < bones.len() && p != i).then(|| chain_global(bones, p)), place }
+    }
+
+    /// The bone's global with its local `l`, as F-97374 makes it.
+    fn global(&self, l: &glam::Mat4) -> glam::Mat4 {
+        self.parent.map_or(*l, |p| crate::physics::exact_mat::chain(l, &p))
+    }
+
+    /// The bone's global after F-52786 / F-83846 turned its local by `a` (the rows of the guest's matrix are glam's columns).
+    pub fn turned(&self, about_x: bool, a: f32) -> glam::Mat4 {
+        let mut rows = self.local.to_cols_array_2d();
+        turn_rows(&mut rows, about_x, a);
+        self.global(&glam::Mat4::from_cols_array_2d(&rows))
+    }
+
+    /// What the port multiplies its baked (rest, model-space) vertices by: placement x turned global x the rest's inverse.
+    /// *(approx.: the original draws bone-local vertices by the turned global; this inverse is the port's baking)*
+    pub fn delta(&self, about_x: bool, a: f32) -> glam::Mat4 {
+        let rest = self.place * self.global(&self.local);
+        self.place * self.turned(about_x, a) * rest.inverse()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The turned bone: angle 0 gives the rest, and the turn is the old W R W^-1 to float accuracy.
+    #[test]
+    fn turn_bone_delta() {
+        use mcla_formats::rage::skeleton::Bone;
+        let mk = |local: glam::Mat4, parent: usize| Bone { local, world: local, name: String::new(), tag: 0, parent, trans_limits: (glam::Vec3::ZERO, glam::Vec3::ZERO), dof_trans: false, dof_rot: false, dof_id: 0 };
+        let bones = vec![
+            mk(glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.5, 1.0)), usize::MAX),
+            mk(glam::Mat4::from_rotation_y(0.3) * glam::Mat4::from_translation(glam::Vec3::new(0.2, 0.7, -0.4)), 0),
+        ];
+        let place = glam::Mat4::from_translation(glam::Vec3::new(1.0, 2.0, 3.0));
+        let t = TurnBone::of(&bones, 1, place);
+        assert!(t.delta(false, 0.0).abs_diff_eq(glam::Mat4::IDENTITY, 1e-6));
+        let w = place * bones[0].local * bones[1].local;
+        for (x, a) in [(false, 0.4), (true, -0.7), (false, 2.5)] {
+            let old = w * turn(x, a) * w.inverse();
+            assert!(t.delta(x, a).abs_diff_eq(old, 1e-5), "{x} {a}");
+        }
+    }
+
+    /// F-52786 run offline (tools/physics_math_reference.py, op PTCH: 1,200 cases of three rows with their w lanes, the
+    /// angles of the parts' turns among them): every word of the three rows after equals `turn_rows`'s.
+    #[test]
+    fn turn_rows_match_the_original() {
+        let w = |s: &str| u32::from_str_radix(s, 16).unwrap();
+        let (mut n, mut bad) = (0, 0);
+        for line in include_str!("physics/testdata/physics_math_ref.txt").lines().filter(|l| l.starts_with("PTCH ")) {
+            let (i, o) = line[5..].split_once(" -> ").unwrap();
+            let v: Vec<u32> = i.split(' ').map(w).collect();
+            let mut rows: [[f32; 4]; 3] = std::array::from_fn(|r| std::array::from_fn(|k| f32::from_bits(v[4 * r + k])));
+            turn_rows(&mut rows, true, f32::from_bits(v[12]));
+            let got: Vec<u32> = rows.iter().flatten().map(|x| x.to_bits()).collect();
+            let want: Vec<u32> = o.split(' ').map(w).collect();
+            if got != want {
+                if bad < 4 {
+                    eprintln!("{line}\n  port {got:08x?}");
+                }
+                bad += 1;
+            }
+            n += 1;
+        }
+        eprintln!("turn_rows: {bad} of {n} differ");
+        assert_eq!((n, bad), (1200, 0));
+    }
 
     /// F-52244 run offline on the original's code (tools/steer_rescale_reference.py, 2,000 cases with 0, -0, inf and NaN
     /// among them): the scale +1136 and the pair +1160 / +1164 after equal `rescale`'s bit for bit.

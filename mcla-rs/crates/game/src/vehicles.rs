@@ -147,7 +147,7 @@ pub struct CarModel {
     /// the bones the car-parts update F-98654 turns each frame, in car space (steer_parts.rs): the base skeleton's
     /// `steer` (a motorcycle's bars and fork), the one the fitted steering wheel hangs on, the fitted blower's valve,
     /// the fitted blower's own bone
-    pub turn_bones: [Option<Mat4>; 4],
+    pub turn_bones: [Option<crate::steer_parts::TurnBone>; 4],
     /// per suspension holder (`susp_parts::SUSP_BONES`) found on a fitted part: the bone's parent's world in car space
     /// (the part's placement times the parent's world in its file), the inverse of the bone's own at rest, and whether
     /// the part hangs on the `steer` bone or below (the turn then applies on top). The drawn delta with M the part's
@@ -2045,7 +2045,7 @@ struct CarPrep {
     hood_slot: Option<Mat4>,
     trunk_bone: Option<Mat4>,
     slot_bones: [Option<Mat4>; 3],
-    turn_bones: [Option<Mat4>; 4],
+    turn_bones: [Option<crate::steer_parts::TurnBone>; 4],
     susp_draw: [Option<(Mat4, Mat4, bool)>; 13],
     roof_place: Mat4,
     /// the fitted add-on gauge's needle clip and placement (CarModel::needles [2], needle_place)
@@ -3074,14 +3074,14 @@ impl Vehicles {
         // hangs on it or below; the bone the fitted `steer_whl` (slot 52) hangs on - D +1200, its matrix index -; the
         // fitted blower's `blowervalve<n>` - D +1212 - in the part's own skeleton)
         let steer_i = sk.and_then(|s| s.bones.iter().position(|b| b.name.eq_ignore_ascii_case("steer")));
-        let wheel_bone = own_bone(&|p| p.starts_with("steer_whl"));
+        let wheel_bone = fitted.iter().find(|(p, _)| !p.is_base && p.primary.to_ascii_lowercase().starts_with("steer_whl")).and_then(|(p, _)| sk.filter(|s| (p.matrix_index as usize) < s.bones.len()).map(|s| crate::steer_parts::TurnBone::of(&s.bones, p.matrix_index as usize, Mat4::IDENTITY)));
         let valve_of = |p: &vehicle_model::CarPart| -> Option<usize> {
             if p.is_base || !p.primary.to_ascii_lowercase().starts_with("blower") {
                 return None;
             }
             p.skeleton.as_ref()?.bones.iter().position(|b| b.name.to_ascii_lowercase().starts_with("blowervalve"))
         };
-        let valve_bone = fitted.iter().find_map(|(p, x)| valve_of(p).map(|i| *x * p.skeleton.as_ref().unwrap().bones[i].world));
+        let valve_bone = fitted.iter().find_map(|(p, x)| valve_of(p).map(|i| crate::steer_parts::TurnBone::of(&p.skeleton.as_ref().unwrap().bones, i, *x)));
         // (D +1208: the fitted blower's own `blower<n>` bone, the valve's parent)
         let blower_of = |p: &vehicle_model::CarPart| -> Option<usize> {
             if p.is_base || !p.primary.to_ascii_lowercase().starts_with("blower") {
@@ -3092,9 +3092,9 @@ impl Vehicles {
                 n.starts_with("blower") && !n.starts_with("blowervalve")
             })
         };
-        let blower_bone = fitted.iter().find_map(|(p, x)| blower_of(p).map(|i| *x * p.skeleton.as_ref().unwrap().bones[i].world));
-        let turn_bones = [steer_i.and_then(|i| sk.map(|s| s.bones[i].world)), wheel_bone, valve_bone, blower_bone];
-        log::info!("car {}: turned bones (steer, steering wheel, blower valve, blower) at {:?}", car.name, turn_bones.map(|b| b.map(|m| m.w_axis.truncate())));
+        let blower_bone = fitted.iter().find_map(|(p, x)| blower_of(p).map(|i| crate::steer_parts::TurnBone::of(&p.skeleton.as_ref().unwrap().bones, i, *x)));
+        let turn_bones = [steer_i.and_then(|i| sk.map(|s| crate::steer_parts::TurnBone::of(&s.bones, i, Mat4::IDENTITY))), wheel_bone, valve_bone, blower_bone];
+        log::info!("car {}: turned bones (steer, steering wheel, blower valve, blower) at {:?}", car.name, turn_bones.map(|b| b.map(|t| t.turned(false, 0.0).w_axis.truncate())));
         // (the suspension bones F-13644 finds - FindBone F-59267: the base skeleton first, then the fitted parts' - and
         // the part each hangs in: which part's meshes the vehSuspension's M moves, `CarModel::susp_draw`)
         // (holder 12: the live rear axle's bone `axle0`, D+1224 - the rear vehAxle's L)
@@ -6494,7 +6494,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         match (c.model.susp_draw.get(h).copied().flatten(), held) {
                             (Some((pre, post, under_steer)), Some(r)) => {
                                 let mm = Mat4::from_cols(Vec4::new(r[0][0], r[0][1], r[0][2], 0.0), Vec4::new(r[1][0], r[1][1], r[1][2], 0.0), Vec4::new(r[2][0], r[2][1], r[2][2], 0.0), Vec4::new(r[3][0], r[3][1], r[3][2], 1.0));
-                                let steer = if under_steer { c.model.turn_bones[0].map_or(Mat4::IDENTITY, |w| w * crate::steer_parts::turn(false, c.steer_parts.steer_bone_angle()) * w.inverse()) } else { Mat4::IDENTITY };
+                                let steer = if under_steer { c.model.turn_bones[0].map_or(Mat4::IDENTITY, |t| t.delta(false, c.steer_parts.steer_bone_angle())) } else { Mat4::IDENTITY };
                                 m * steer * pre * mm * post
                             }
                             _ => m,
@@ -6507,7 +6507,7 @@ if keep || c.state.pos.distance(center) < 450.0 {
                         let i = n + 3 - TURN_GROUP as usize;
                         // (the blower: about z by the engine's shake x 0.5 while its word +46 is set - the engine runs)
                         let shake = c.state.veh.as_deref().filter(|v| !v.engine_stopped).map(|v| v.engine_shake);
-                        let turned = |i: usize, x: bool, a: f32| c.model.turn_bones.get(i).copied().flatten().map_or(Mat4::IDENTITY, |w| w * crate::steer_parts::turn(x, a) * w.inverse());
+                        let turned = |i: usize, x: bool, a: f32| c.model.turn_bones.get(i).copied().flatten().map_or(Mat4::IDENTITY, |t| t.delta(x, a));
                         let blower = shake.map_or(Mat4::IDENTITY, |s| turned(3, false, crate::steer_parts::blower_angle(s)));
                         m * match i {
                             0 => turned(0, false, c.steer_parts.steer_bone_angle()),

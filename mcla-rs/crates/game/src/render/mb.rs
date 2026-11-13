@@ -196,7 +196,10 @@ impl MotionBlur {
             for (i, &(w, spin)) in c.wheels.iter().take(4).enumerate() {
                 // (the turn over one of the original's frames; the record: the car's, after the rim turned)
                 let d = prev.get(i).filter(|_| !still).map_or(0.0, |p| (spin - p) * s);
-                let step = steps[ci] * w * Mat4::from_rotation_x(blur_turn(d)) * w.inverse();
+                // (the rim's rows turned in place about its own x by F-52786, steer_parts::turn_rows)
+                let mut rows = w.to_cols_array_2d();
+                crate::steer_parts::turn_rows(&mut rows, true, blur_turn(d));
+                let step = steps[ci] * Mat4::from_cols_array_2d(&rows) * w.inverse();
                 if k < RECORDS {
                     out[k] = (pv * step).to_cols_array_2d();
                     refs[ci].2[i] = 4 * k as u32;
