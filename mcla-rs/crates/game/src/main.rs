@@ -440,7 +440,7 @@ struct App {
     pu_dust: pu_dust::Dust,
     dust_lights: Vec<pu_dust::Light>,
     /// vinyl shapes (loaded when a livery is first painted) and the cars' zone layouts
-    shape_lib: Option<vinyl::ShapeLib>,
+    shape_lib: Option<Arc<std::sync::Mutex<vinyl::ShapeLib>>>,
     car_zones: hashbrown::HashMap<String, Option<Arc<vinyl::CarZones>>>,
     /// The livery the player's car shows while a new one is drawn and compressed (`LiveryPace`).
     livery_pace: livery_bc3::LiveryPace,
@@ -8015,14 +8015,16 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         };
                         let dir = if s19a_setup.is_some() { Some(std::path::Path::new(&self.opt.data_dir).join("resources/vehicle").join(&pcar)) } else { self.game.car_dirs.get(self.game.current_car).cloned() };
                         let zones = dir.as_deref().and_then(|d| self.car_zones.entry(pcar.clone()).or_insert_with(|| vinyl::CarZones::load(d).map(Arc::new)).clone());
-                        let lib = self.shape_lib.get_or_insert_with(|| vinyl::ShapeLib::load(&self.opt.data_dir));
+                        let lib = self.shape_lib.get_or_insert_with(|| Arc::new(std::sync::Mutex::new(vinyl::ShapeLib::load(&self.opt.data_dir)))).clone();
                         match zones {
                             Some(z) => {
-                                let t = Instant::now();
-                                let px = vinyl::compose(&z, &livery, lib, size);
-                                log::info!("vinyls: painted {} ({} layers) in {:.0} ms", key, livery.layer_count(), t.elapsed().as_secs_f32() * 1000.0);
+                                // (painted and compressed on a worker, D59 - `Vehicles::add_vinyl_job`)
+                                log::info!("vinyls: painting {} ({} layers)", key, livery.layer_count());
                                 layers = Some(livery.layer_count());
-                                self.vehicles.add_vinyl_texture(&mut gpu, &key, size as u32, size as u32, &px);
+                                self.vehicles.add_vinyl_job(&mut gpu, &key, size as u32, size as u32, move || {
+                                    let mut lib = lib.lock().unwrap_or_else(|e| e.into_inner());
+                                    vinyl::compose(&z, &livery, &mut lib, size)
+                                });
                             }
                             None => {
                                 log::warn!("vinyls: {} has no zone data", pcar);

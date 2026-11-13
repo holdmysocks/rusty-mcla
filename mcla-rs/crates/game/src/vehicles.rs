@@ -4515,6 +4515,30 @@ if keep || c.state.pos.distance(center) < 450.0 {
         self.vinyls.insert(name, Some(bind));
     }
 
+    /// Add a livery painted at run time by `paint` (the vinyl generator, `vinyl::compose`: plain colour RGBA, w x h, in the
+    /// body's unwrap). D59: painted and compressed on a worker - the painting took 50 - 90 ms on the game thread - with
+    /// the car keeping the livery it shows until it is in (`finish_vinyl_jobs`), as `add_vinyl_texture`. The texture is
+    /// the same: `paint` is the same function, run once. MCLA_VINYL_SYNC=1 (or a size the job does not take): painted here.
+    pub fn add_vinyl_job(&mut self, gpu: &mut Gpu, name: &str, w: u32, h: u32, paint: impl FnOnce() -> Vec<u8> + Send + 'static) {
+        if w % 4 != 0 || h % 4 != 0 || std::env::var("MCLA_DEBUG_VIEW").map_or(false, |v| v.trim() == "838") || std::env::var_os("MCLA_VINYL_SYNC").is_some() {
+            let px = paint();
+            self.add_vinyl_texture(gpu, name, w, h, &px);
+            return;
+        }
+        let name = name.to_ascii_lowercase();
+        let job: VinylJob = Arc::new(std::sync::Mutex::new(None));
+        let (j, n) = (job.clone(), name.clone());
+        std::thread::Builder::new().name("livery".into()).spawn(move || {
+            let t0 = std::time::Instant::now();
+            let px = paint();
+            log::info!("vinyls: {n} painted on the worker in {:.0} ms", t0.elapsed().as_secs_f64() * 1000.0);
+            let lv = vinyl_levels(&n, &px, w, h);
+            *j.lock().unwrap() = Some(lv);
+        }).expect("livery worker");
+        self.vinyls.remove(&name);
+        self.vinyl_jobs.insert(name, (w, h, job));
+    }
+
     /// The painted liveries whose compression is done: put on the GPU, and the cars wearing that name take them
     /// (`assign_vinyls`). Until then a car keeps the livery it showed (`CarInstance::set_vinyl`).
     pub fn finish_vinyl_jobs(&mut self, gpu: &mut Gpu) {
