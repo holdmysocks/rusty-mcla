@@ -2950,6 +2950,10 @@ pub struct Peds {
     /// the ambient manager's front-end mode (F-95688, the start screen): the spawner has no
     /// visibility test (F-33044, A-29552); the focus and view are the camera's
     pub frontend: bool,
+    /// the ambient manager's cutscene mode (F-97032, a scene playing): the viewport's planes. The spawner (F-33044) then
+    /// takes no x10 weight ahead and no side band, and rejects only a point inside all six planes (no distance, cone or
+    /// occluder test); the unspawner keeps its rules round the camera's eye (docs/PEOPLE_TRAFFIC.md "Cutscene mode")
+    pub cutscene: Option<Frustum>,
     /// the traffic region list's count (traffic.rs `Vehicles::traffic_regions`, M +1792; None: no traffic spawner):
     /// the unspawners' dispatcher F-75661 runs the people's unspawner F-39594 only while it is not 0
     pub traffic_regions: Option<usize>,
@@ -3057,6 +3061,7 @@ impl Peds {
         Peds {
             draw_log: std::env::var_os("MCLA_DRAW_STEPS").map(|_| Vec::new()),
             frontend: false,
+            cutscene: None,
             preroll: 0,
             traffic_regions: None,
             threat_prev: Vec::new(),
@@ -3120,6 +3125,11 @@ impl Peds {
             self.preroll = crate::vehicles::traffic::FRONT_END_PREROLL;
         }
         self.frontend = on;
+    }
+
+    /// The ambient manager's cutscene mode: the viewport's planes while a scene plays (None: off).
+    pub fn set_cutscene(&mut self, planes: Option<Frustum>) {
+        self.cutscene = planes;
     }
 
     /// The player's view the spawner works with: the car's forward direction and speed.
@@ -3500,7 +3510,9 @@ impl Peds {
         }
         // polygons ahead weigh ten times their area
         let dir = self.view_dir;
-        let weights: Vec<f32> = self.cands.iter().map(|&(i, a)| if (mesh.polys[i as usize].center - focus).dot(dir) > 0.0 { a * 10.0 } else { a }).collect();
+        // (not in the cutscene mode, F-33044's first test of F-97032)
+        let cut = self.cutscene;
+        let weights: Vec<f32> = self.cands.iter().map(|&(i, a)| if cut.is_none() && (mesh.polys[i as usize].center - focus).dot(dir) > 0.0 { a * 10.0 } else { a }).collect();
         let wsum: f32 = weights.iter().sum();
         let mut spawned = 0;
         let mut occ: Option<Option<crate::occluder::Selected>> = None;
@@ -3522,12 +3534,16 @@ impl Peds {
             let (r1, r2) = (self.rand(), self.rand());
             let mut pos = random_point(q, r1, r2);
             let v = pos - focus;
-            if (v.z * dir.x - v.x * dir.z).abs() > self.tune.box_width * 0.5 {
+            if cut.is_none() && (v.z * dir.x - v.x * dir.z).abs() > self.tune.box_width * 0.5 {
                 continue;
             }
-            // in view, unless an occluder hides it from just above the player (no test in the
-            // front-end mode)
-            if !self.frontend && self.in_view(v) {
+            // the cutscene mode: in view when inside all six of the viewport's planes (the outcode 0: every
+            // (-n) . p - w not above 0), whatever the distance; no occluder test
+            if let Some(f) = cut {
+                if cutscene_sees(&f, pos) {
+                    continue;
+                }
+            } else if !self.frontend && self.in_view(v) {
                 if occ.is_none() {
                     occ = Some(crate::occluder::city(&self.data_dir).map(|c| c.select_around(focus + Vec3::Y * OCC_EYE, crate::occluder::RANGE * OCC_RANGE_SCALE)));
                 }
@@ -4452,6 +4468,20 @@ fn scan_voice_banks(audio_root: &Path) -> HashMap<String, String> {
 
 #[cfg(test)]
 mod tests {
+    /// The spawner's cutscene visibility: in view only inside all six planes, at any distance (no 95 m limit), and not
+    /// behind the camera or past the far plane.
+    #[test]
+    fn cutscene_sees_inside_the_frustum_only() {
+        let view = glam::Mat4::look_at_rh(glam::Vec3::ZERO, glam::Vec3::NEG_Z, glam::Vec3::Y);
+        let proj = glam::Mat4::perspective_rh(1.0, 16.0 / 9.0, 0.5, 1000.0);
+        let f = crate::render::Frustum::from_view_proj(proj * view);
+        assert!(super::cutscene_sees(&f, glam::Vec3::new(0.0, 0.0, -10.0)));
+        assert!(super::cutscene_sees(&f, glam::Vec3::new(0.0, 0.0, -400.0)));
+        assert!(!super::cutscene_sees(&f, glam::Vec3::new(0.0, 0.0, 10.0)));
+        assert!(!super::cutscene_sees(&f, glam::Vec3::new(500.0, 0.0, -10.0)));
+        assert!(!super::cutscene_sees(&f, glam::Vec3::new(0.0, 0.0, -1200.0)));
+    }
+
     /// F-10083 with F-79428 against the original's code run offline (tools/ped_ahead_reference.py, 4,000 cases; the
     /// passing rail's builder F-92334 stubbed, verified on its own): the gate, the empty slot and the instance with no
     /// archetype, the type's class and the obstacle's chain, the request words F-92334 is handed, the stop on a refusal
@@ -6300,4 +6330,10 @@ mod tests {
             eprintln!("FREE {l}");
         }
     }
+}
+
+/// The walker spawner's cutscene visibility (F-33044 with F-97032): a point inside every one of the viewport's six planes
+/// (no plane with (-n) . p - w above 0, the planes as F-53768 lays them) is in view.
+pub(crate) fn cutscene_sees(f: &Frustum, p: Vec3) -> bool {
+    f.outside_bits(p, 0.0) == 0
 }

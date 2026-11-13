@@ -8106,9 +8106,14 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                     let props = &self.props;
                     let signals = if self.vehicles.signals.junctions.is_empty() { None } else { Some((&self.vehicles.signals, self.vehicles.clock)) };
                     // the original's spawner looks along the player car (speed in mph)
-                    match self.vehicles.player().filter(|_| self.drive && frontend.is_none()) {
-                        Some(c) => self.peds.set_view(c.state.forward(), c.state.speed() * 2.236_936),
-                        None => self.peds.set_view(frontend.map_or(self.cam.forward(), |f| f.dir), 0.0),
+                    // (the cutscene mode, F-97032: the camera's eye - `focus` - and its forward made flat, speed 0; the
+                    // spawner's visibility the viewport's planes, here the last frame's view)
+                    let cut = self.vehicles.amb_cutscene.filter(|_| frontend.is_none());
+                    self.peds.set_cutscene(cut.and(self.last_frustum));
+                    match (cut, self.vehicles.player().filter(|_| self.drive && frontend.is_none())) {
+                        (Some((_, f)), _) => self.peds.set_view(Vec3::new(f.x, 0.0, f.z).normalize_or(Vec3::NEG_Z), 0.0),
+                        (None, Some(c)) => self.peds.set_view(c.state.forward(), c.state.speed() * 2.236_936),
+                        (None, None) => self.peds.set_view(frontend.map_or(self.cam.forward(), |f| f.dir), 0.0),
                     }
                     self.peds.read_ahead_also(frontend.and(self.vehicles.player().map(|c| c.state.pos)).map(|p| (p, self.titlecam.saved_hour().unwrap_or(self.time_of_day))));
                     // (the people's unspawner runs only while the traffic's region list has roads, F-75661)
