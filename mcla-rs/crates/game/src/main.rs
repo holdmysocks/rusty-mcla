@@ -13957,9 +13957,11 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 self.game.event_diff = None;
                 // (back to the cruise leaves GOAL ATTACK: F-65087 clears the mode's +796)
                 self.game.goal_attack = false;
-                // (a story series left undecided: its wins go, the man runs it from race 1 again)
+                // (a story series left undecided: its wins go, the man runs it from race 1 again - and his
+                // core waits for the meeting again, `Career::story_series_left`)
                 if let Some((id, _)) = self.game.series.as_ref().and_then(|s| s.story.clone()) {
                     self.game.career.series_drop(&id);
+                    self.game.career.story_series_left(&id);
                 }
                 self.game.series = None;
                 self.game.series_first = false;

@@ -2728,6 +2728,18 @@ impl Career {
         }
     }
 
+    /// A story series left without a win (QUIT SERIES, the cruise after a lost series): its CORE's
+    /// OrderedSeriesCore child is over and the mission is not complete (mcMission_GetState != 5), so the
+    /// core puts the meeting back - Satisfy(objective 0, 0), AlwaysHide(1, 1), Hide(1, 1) - and loops
+    /// to its meeting (BESTOF_SH_05_CORE 0x1202..0x12ea; the man re-parked: `roamers::PARKED_CORES`).
+    pub fn story_series_left(&mut self, id: &str) {
+        let Some(&i) = self.index.get(id) else { return };
+        if self.state[i].stage == Stage::Complete {
+            return;
+        }
+        self.story_reset(i);
+    }
+
     /// ... and goes back when the series is lost.
     fn story_reset(&mut self, i: usize) {
         if !STORY_SECOND_OBJECTIVE.contains(&self.missions[i].id.as_str()) || !self.ext_ok(i) || self.missions[i].objectives.len() < 2 {
@@ -4477,6 +4489,33 @@ mod tests {
         assert!(c.mission_active("BEAT_SH_04"), "case counts");
         c.core_race_end("BEAT_SH_04", 1, true, 0);
         assert!(c.mission_complete("BEAT_SH_04"));
+    }
+
+    /// BESTOF_SH_05_CORE after its OrderedSeriesCore child, the mission not complete (0x1202..0x12ea):
+    /// the meeting goes back, so the man can be met again at his point - as the original did after
+    /// QUIT SERIES with the story save fixture (docs/HOOKMEN_POLICE.md, "story save fixture").
+    #[test]
+    fn a_quit_story_series_waits_for_its_meeting_again() {
+        let dir = std::env::var("MCLA_DATA").unwrap_or_else(|_| "D:/MCLA/extracted/cache".to_string());
+        if !std::path::Path::new(&dir).join("tune/career").is_dir() {
+            return;
+        }
+        let mut c = Career::load(&dir);
+        c.new_game();
+        let mut s = c.save();
+        let mut st = MState::default();
+        st.stage = Stage::Active;
+        s.missions.insert("BESTOF_SH_05".to_string(), st);
+        s.order.push("BESTOF_SH_05".to_string());
+        c.restore(&s);
+        let at = [1390.364, -6.993, 284.309];
+        assert!(c.story_cut_near(at), "waits for the meeting");
+        assert_eq!(c.story_meet_at(at, false).as_deref(), Some("BESTOF_SH_05"));
+        assert!(!c.story_cut_near(at) && c.story_meet_at(at, false).is_none(), "met: the series is on");
+        c.series_drop("BESTOF_SH_05");
+        c.story_series_left("BESTOF_SH_05");
+        assert!(c.story_cut_near(at), "the series quit: the meeting is back");
+        assert_eq!(c.story_meet_at(at, false).as_deref(), Some("BESTOF_SH_05"));
     }
 
     #[test]
