@@ -4654,7 +4654,16 @@ impl App {
         {
             let pp = self.vehicles.player().map(|c| (c.state.pos, c.state.speed()));
             let near = pp.and_then(|(p, _)| self.hangouts.iter().enumerate().map(|(i, h)| (i, h.1.distance(p))).min_by(|a, b| a.1.partial_cmp(&b.1).unwrap()));
-            let name = near.filter(|n| n.1 < 170.0).map(|n| self.hangouts[n.0].0.clone());
+            // (the people are the hangout core's: its set-up script (e.g. hw_local_hangout1_setup, `Hangouts/0x270459e2`)
+            // starts local_hangout_core / wager_hangout_core, whose LoadHangoutCharacters runs at its start
+            // (`0xe166126d` 0xa72 / 0xd2b, no distance test) and whose end releases them - so none while the set-up does
+            // not run: before its mission starts it (hw_local_hangout1 after REP_ON_HW_STRIP's 400 reputation), or after a
+            // visit until its restarter starts it again. CineScript_Special_NoHangoutPeds, the core's only test, is the
+            // debug switch `nohangoutpeds` (F-48761 reads its value, 0 unless set on the command line).)
+            let name = near
+                .filter(|n| n.1 < 170.0)
+                .map(|n| self.hangouts[n.0].0.clone())
+                .filter(|h| mc4::hangout_key_of_scene(h).map_or(true, |k| self.game.mc4_hangout_core_running(k)));
             // (their people's character sets read ahead from 250 m - cine.rs `read_ahead_ambient`)
             if near.is_some_and(|n| n.1 < 250.0) {
                 self.cine.read_ahead_ambient();
