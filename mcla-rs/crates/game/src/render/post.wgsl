@@ -56,6 +56,9 @@ struct DofU {
     // xy = one pixel of the original's 1280 x 720 frame in uv; z = 1: the motion part on; w = 1: the depth of
     // field's weight on
     px: vec4<f32>,
+    // x = blurEffectTintFade (c166), y = blurEffectDesatScale (c167): F-12598 uploads post +512 / +516, which F-55690
+    // writes from the player car's frame update F-16712 (render/post.rs `Tune::blur_fx`)
+    fx: vec4<f32>,
     // Mc4MotionBlurVehicleMtxs: world -> the previous frame's clip space, per stencil id / 4 (render/mb.rs)
     mtx: array<mat4x4<f32>, 24>,
 };
@@ -109,7 +112,7 @@ fn dof_texel(uv: vec2<f32>) -> vec2<i32> {
 //     the point at that same scene pixel; 0 where the stencil is 1 - the sky and its ground dome
 //     (read with a bilinear tap on the corner: two of the four pixels being sky are enough).
 // Left out: the velocity's share of `a` and of the taps' spread (a moving camera's streaks), the
-// taps' weights by stencil (other cars' outlines), blurEffectDesatScale (the abilities' effect).
+// taps' weights by stencil (other cars' outlines), TintFade / DesatScale (1 / 0 here; `streak` below takes them).
 // PSInitialScaleBuffer as the streak pass reads it: texel m = one bilinear tap a scene pixel down-right of its
 // centre (the 2 x 2 box of scene pixels 2m+1, 2m+2; LIGHTING.md, depth of field (a)).
 @fragment
@@ -129,8 +132,9 @@ fn fs_copy(in: VsOut) -> @location(0) vec4<f32> {
 //   1/64 or more above the pixel's (a vehicle drawn after this one), else 1
 //   rgb = (the scene's point tap + sum of the weighted copy taps) / (1 + sum of the weights)
 //   a   = sat(M + (sky ? 0 : A)), A the depth of field's weight below.
-// Left out: blurEffectDesatScale / TintFade (c167 / c166: 0 / 1 in every capture; an effect blend towards the
-// screen's centre, not traced).
+// With T = blurEffectTintFade, D = blurEffectDesatScale (1 / 0 in a plain frame) and r = |uv - 0.5|^1.2:
+//   B'  = B T + D ((uv - 0.5) / 8 - B T): the taps' spread, towards a zoom out of the screen's centre
+//   a   = sat(mix(M, r, D) + (sky ? 0 : mix(A, r, D)))
 fn copy_tap(p: vec2<f32>) -> vec3<f32> {
     return max(textureSampleLevel(d_copy, d_samp, p, 0.0).rgb, vec3<f32>(0.0));
 }
@@ -173,6 +177,14 @@ fn streak(uv: vec2<f32>) -> vec4<f32> {
             }
         }
     }
+    // the abilities' and the nitrous' share (c166 / c167): r4.xz x TintFade, then mad by DesatScale towards (uv - 0.5) / 8
+    let tint = du.fx.x;
+    let desat = du.fx.y;
+    b = b * tint;
+    b = b + desat * ((uv - vec2<f32>(0.5)) * 0.125 - b);
+    let cd = length(uv - vec2<f32>(0.5));
+    // (exp(1.2 log d): 0 at the centre, as the program's exp of -inf)
+    let rad = select(0.0, exp2(1.2 * log2(cd)), cd > 0.0);
     let h = v;
     let q_m50 = copy_tap(uv - 0.5 * b - h);
     let q_p50 = copy_tap(uv + 0.5 * b - h);
@@ -202,7 +214,10 @@ fn streak(uv: vec2<f32>) -> vec4<f32> {
     if (du.px.w < 0.5 || (sky && !(view > 505.5 && view < 506.5))) {
         a = 0.0;
     }
-    return vec4<f32>(rgb, clamp(m + a, 0.0, 1.0));
+    if (!(du.px.w < 0.5 || (sky && !(view > 505.5 && view < 506.5)))) {
+        a = mix(a, rad, desat);
+    }
+    return vec4<f32>(rgb, clamp(mix(m, rad, desat) + a, 0.0, 1.0));
 }
 
 // The standing frame's reading as it was (MCLA_DEBUG_VIEW 503 - 505 only: the 7e3 tests and the taps without the

@@ -364,6 +364,10 @@ struct App {
     pending_action: MenuAction,
     /// a cops' bust in a race: the StartFreeRoam it queues on the success frame keeps the police and the traffic
     cruise_keep_police: bool,
+    /// the post object's +512 / +516 (blurEffectTintFade / DesatScale), kept between F-55690's writes
+    blur_fx: [f32; 2],
+    /// the game object's +5: +4 (paused) as it was the frame before (F-84158 copies it once a frame)
+    was_paused: bool,
     audio: Option<audio::Audio>,
     sound: sound::Sound,
     police: police::Police,
@@ -1509,6 +1513,8 @@ impl App {
             cruise_keep_police: false,
             audio: None,
             sound: sound::Sound::default(),
+            blur_fx: [1.0, 0.0],
+            was_paused: false,
             police: police::Police::new(),
             fx: particles::Particles::new(),
             tyre_fx: None,
@@ -11412,6 +11418,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             let garage = self.game.mode == Mode::Garage;
             let world = vehicles::LampWorld {
                 garage,
+            self.vehicles.nitro_fx_step(sim_dt);
                 cabin: garage && vehicles::garage_lamps_due(self.game.garage_view()),
                 hour: self.time_of_day,
                 storm: self.weather_weight(sky::Weather::Stormy),
@@ -13526,6 +13533,18 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
             if std::env::var("MCLA_TOD_DUMP").is_ok() && self.frame_no == 60 { eprintln!("post tune: grey {} white {} bright {:?} limits {:?} sat {} cc {:?}", tune.middle_grey, tune.white, tune.bright, tune.limits, tune.saturation, tune.color_correct); }
             // the lamps' glow pass: reads the scene's depth, the tone map adds its picture
             // the sun's glow quad over the finished scene (sunglow.rs), then the lamps' pass
+            // F-16712 -> F-55690 for the local player's car: by the running ability (ab +52 kind, +48 == 3) - Agro (1) the
+            // streaks x 4 (TintFade = 1 + 3), grip (4, the port has none) DesatScale 1 - and the car's nitrous ease +328;
+            // with the game object's +5 (paused the frame before) or +11 every term is 0 (TintFade 1, DesatScale 0).
+            // Open: +11 (the frame before's +10) is not decoded and taken as never set.
+            if let Some(c) = self.vehicles.player() {
+                let (agro, grip) = if self.was_paused { (0.0, 0.0) } else { (if self.ability.running() && self.ability.kind == ability::Kind::Agro { 1.0 } else { 0.0 }, 0.0) };
+                let e = if self.was_paused { 0.0 } else { c.nitro_fx };
+                let s: f32 = grip + e;
+                self.blur_fx = [3.0f32.mul_add(agro, 1.0), if s >= 0.0 { if s - 1.0 >= 0.0 { 1.0 } else { s } } else { 0.0 }];
+            }
+            tune.blur_fx = self.blur_fx;
+            self.was_paused = self.game.mode == Mode::Paused;
             // the occlusion blobs under the cars (carblob.rs): over the finished scene, before the glow passes
             if !map3d && pic.is_none() {
                 carblob::run(&gpu, &mut enc, &self.vehicles, self.cam.pos, self.game.mode != Mode::Garage && (self.time_of_day > 18.0 || self.time_of_day < 6.0), Some(&world.collider));

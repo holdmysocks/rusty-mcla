@@ -60,6 +60,10 @@ pub struct Tune {
     /// F-86832, setter F-77562): the bright pass takes the settings file's second set and the final pass F-34349 draws
     /// ToneMapFogPoliceCam (post.wgsl `fs_police`)
     pub police: bool,
+    /// the streak pass' blurEffectTintFade / blurEffectDesatScale (post +512 / +516, uploaded by F-12598): F-55690 writes
+    /// them from the player car's frame update F-16712 - TintFade = 1 + 3 x (Agro running), DesatScale = sat(grip running
+    /// + the car's nitrous ease); they keep the last values written (1 / 0 in every recorded plain frame)
+    pub blur_fx: [f32; 2],
 }
 
 /// `numofframesinlumhistory` of the post-processing settings (`tune/lighting/0xa0829ade`, read by the settings loader F-15434):
@@ -130,7 +134,7 @@ pub fn police_timer(t: f32, dt: f32, timeframe: f32) -> f32 {
 impl Default for Tune {
     fn default() -> Self {
         // noon in the Nice weather
-        Tune { middle_grey: 0.25, white: 0.21646, bright: [1.6203, 4.6213, 0.032782], limits: [0.15, 0.2], lambda: 3.7266, lum_frames: *LUM_FRAMES.get().unwrap_or(&5), saturation: 0.9, color_correct: [0.5862, 0.53442, 0.43101], dt: 1.0 / 60.0, radial: 0.0, center: [0.5, 0.5], plain: false, force_lum: None, dof: [0.0; 4], inv_view_proj: [[0.0; 4]; 4], cam_pos: [0.0; 3], mb_mtx: [[[0.0; 4]; 4]; super::mb::RECORDS], bloom: true, dof_on: true, motion_blur: true, police: false }
+        Tune { middle_grey: 0.25, white: 0.21646, bright: [1.6203, 4.6213, 0.032782], limits: [0.15, 0.2], lambda: 3.7266, lum_frames: *LUM_FRAMES.get().unwrap_or(&5), saturation: 0.9, color_correct: [0.5862, 0.53442, 0.43101], dt: 1.0 / 60.0, radial: 0.0, center: [0.5, 0.5], plain: false, force_lum: None, dof: [0.0; 4], inv_view_proj: [[0.0; 4]; 4], cam_pos: [0.0; 3], mb_mtx: [[[0.0; 4]; 4]; super::mb::RECORDS], bloom: true, dof_on: true, motion_blur: true, police: false, blur_fx: [1.0, 0.0] }
     }
 }
 
@@ -160,6 +164,8 @@ struct DofU {
     /// xy = one pixel of the original's 1280 x 720 frame in uv (half a texel of the buffer); z = 1: the motion part
     /// on; w = 1: the depth of field's weight on
     px: [f32; 4],
+    /// x = blurEffectTintFade, y = blurEffectDesatScale (`Tune::blur_fx`)
+    fx: [f32; 4],
     mtx: [[[f32; 4]; 4]; super::mb::RECORDS],
 }
 
@@ -810,6 +816,7 @@ impl Post {
                 dof: t.dof,
                 // one pixel of the original's 1280 x 720 frame in uv (half a texel of the buffer)
                 px: [0.5 / self.dof.w as f32, 0.5 / self.dof.h as f32, if mb_on { 1.0 } else { 0.0 }, if dof_w { 1.0 } else { 0.0 }],
+                fx: [t.blur_fx[0], t.blur_fx[1], 0.0, 0.0],
                 mtx: t.mb_mtx,
             };
             queue.write_buffer(&self.dof_buf, 0, bytemuck::bytes_of(&u));
