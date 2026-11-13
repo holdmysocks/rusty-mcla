@@ -15,7 +15,8 @@ use mcla_formats::rage::navsys::{NavNode, NavSys};
 use std::path::Path;
 
 pub const COP_CAR: &str = "vp_chv_police_96";
-const MPH: f32 = 2.236_94;
+/// m/s to mph as the original multiplies (2.237, the image's constant; F-36879, F-?(82716B20) and the others load it)
+const MPH: f32 = 2.237;
 
 #[derive(Default)]
 pub struct Tuning {
@@ -1784,6 +1785,26 @@ fn cop_sees(world: &World, under: &[u32], cop: &crate::vehicles::CarInstance, tp
 /// with `half` > 0 the 3D angle (F-88594, `aiv::ang3`) of target minus cop (the vector unit's subtract, denormals
 /// flushed) and the cop's forward (0 - row 2) not under half x 0.0174533 -> no. Else the line's ends: the target's
 /// and the cop's origins with 2 added to y.
+/// The speeding test F-36879 past its car and manager gates: the road node's limit (`node_limit`, m/s; none when no road node
+/// is within reach) x 2.237, none or 0 -> fSpeedLimitLow; each band the larger of limit + offset and float(percent + 100) x
+/// limit x 0.01 (the first unless the difference is negative); the speed x 2.237 over the high, mid, low band -> 3, 2, 1, else
+/// 0. Returns (level, mph, limit, [low, mid, high]) (test speed_level_matches_the_original).
+pub(crate) fn speed_level(speed: f32, node_limit: Option<f32>, low: f32, off: [f32; 3], pct: [i32; 3]) -> (u8, f32, f32, [f32; 3]) {
+    let limit = match node_limit.map(|l| l * MPH) {
+        Some(l) if l != 0.0 => l,
+        _ => low,
+    };
+    let band = |k: usize| {
+        let a = limit + off[k];
+        let b = (pct[k].wrapping_add(100) as f32) * limit * 0.01;
+        if a - b >= 0.0 { a } else { b }
+    };
+    let bands = [band(0), band(1), band(2)];
+    let mph = speed * MPH;
+    let lvl = if mph > bands[2] { 3 } else if mph > bands[1] { 2 } else if mph > bands[0] { 1 } else { 0 };
+    (lvl, mph, limit, bands)
+}
+
 /// The facing / velocity part of the wrong-way condition F-29334 (the shortcut, lane and car gates are the caller's): at a speed
 /// under fMovingSpeed x 0.447 the matrix's row 2 (the backward axis) along the kept tangent over 0, else the velocity against
 /// it; both dot products y first, then z and x fused, as the original (test wrong_way_matches_the_original).
@@ -4091,17 +4112,10 @@ impl Police {
         // (F-36879: the road's limit in mph, `fSpeedLimitLow` where there is none; a band starts
         // at the larger of limit + offset and limit x (100 + percent) / 100)
         // (F-36879: the road node within 10 m of the car, F-55639; none or a limit of 0: fSpeedLimitLow)
-        let limit = world.nav.as_ref().and_then(|n| match n.node_within(ppos, 10.0, false) { Some(NavNode::Road(r)) => n.zones.get(r).map(|z| z.speed_limit), _ => None }).filter(|l| *l != 0.0).map_or(t("fSpeedLimitLow", 50.0), |l| l * MPH);
-        let band = |off: &str, pct: &str, d_off: f32, d_pct: f32| (limit + t(off, d_off)).max(limit * (t(pct, d_pct) + 100.0) * 0.01);
-        let lvl: u8 = if mph > band("fSpeedLimitHiOffset", "iSpeedLimitHiPrcnt", 45.0, 80.0) {
-            3
-        } else if mph > band("fSpeedLimitMidOffset", "iSpeedLimitMidPrcnt", 30.0, 50.0) {
-            2
-        } else if mph > band("fSpeedLimitLowOffset", "iSpeedLimitLowPrcnt", 15.0, 1.0) {
-            1
-        } else {
-            0
-        };
+        let node_limit = world.nav.as_ref().and_then(|n| match n.node_within(ppos, 10.0, false) { Some(NavNode::Road(r)) => n.zones.get(r).map(|z| z.speed_limit), _ => None });
+        let lvl = speed_level(speed, node_limit, t("fSpeedLimitLow", 50.0),
+            [t("fSpeedLimitLowOffset", 15.0), t("fSpeedLimitMidOffset", 30.0), t("fSpeedLimitHiOffset", 45.0)],
+            [t("iSpeedLimitLowPrcnt", 1.0) as i32, t("iSpeedLimitMidPrcnt", 50.0) as i32, t("iSpeedLimitHiPrcnt", 80.0) as i32]).0;
         if watching && lvl > 0 {
             breaking = true;
             self.offences |= LAW_SPEED;
@@ -6083,6 +6097,27 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 6000);
+    }
+
+    #[test]
+    fn speed_level_matches_the_original() {
+        let f = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
+        let mut n = 0;
+        for l in include_str!("testdata/speed_limit_ref.txt").lines() {
+            let (lhs, rhs) = l.split_once(" -> ").unwrap();
+            let v: Vec<&str> = lhs.split(' ').collect();
+            let w = |i: usize| f(v[4 + i]);
+            let p = |i: usize| v[10 + i].parse::<i32>().unwrap();
+            let got = if v[..3].iter().all(|x| *x == "1") {
+                let (lvl, mph, lim, b) = speed_level(w(1), (v[3] == "1").then(|| w(0)), w(2), [w(3), w(4), w(5)], [p(0), p(1), p(2)]);
+                format!("{} {lvl} {:08x} {:08x} {:08x} {:08x} {:08x}", (lvl != 0) as u32, mph.to_bits(), lim.to_bits(), b[0].to_bits(), b[1].to_bits(), b[2].to_bits())
+            } else {
+                "0 -".to_string()
+            };
+            assert_eq!(got, rhs, "{lhs}");
+            n += 1;
+        }
+        assert_eq!(n, 10000);
     }
 
     #[test]
