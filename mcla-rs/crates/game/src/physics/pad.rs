@@ -180,11 +180,13 @@ pub fn lean_step(held: f32, byte: u8, button_was: bool, dt: f32) -> f32 {
     v
 }
 
-/// What the cruise keeps between frames: input byte +101 (on) and +108, the car's speed smoothed.
+/// What the cruise keeps between frames: input byte +101 (on) and +108, the car's speed smoothed; byte +102, set this
+/// frame while it holds the road's speed (the throttle between CruiseThrottleMin and Max; it clears the stomp, +40 0x2000).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct CruiseHeld {
     pub on: bool,
     pub speed: f32,
+    pub quiet: bool,
 }
 
 /// What the cruise reads besides its own state.
@@ -212,6 +214,18 @@ pub struct CruiseIn {
 /// so a half-pressed trigger holds the road's speed (0.5 is the engine's coasting pedal). Returns the
 /// throttle and whether the stomp flag is to be cleared.
 pub fn cruise(held: &mut CruiseHeld, throttle: f32, t: &InputTune, i: &CruiseIn) -> (f32, bool) {
+    let (out, quiet) = cruise_in(held, throttle, t, i);
+    held.quiet = quiet;
+    (out, quiet)
+}
+
+/// The road's limit as F-43388 writes input +104: F-87157's speed (m/s) x 2.237, one rounding; the caller keeps the
+/// last one when there is no road (the player manager's road object [+640] or F-86691 missing).
+pub fn limit_mph(road_speed: f32) -> f32 {
+    road_speed * f32::from_bits(0x400F_2B02)
+}
+
+fn cruise_in(held: &mut CruiseHeld, throttle: f32, t: &InputTune, i: &CruiseIn) -> (f32, bool) {
     let mph = f32::from_bits(0x400F_2B02);
     held.speed = fma(i.speed - held.speed, f32::from_bits(0x3E4C_CCCD), held.speed);
     let limit = i.limit_mph;
@@ -533,7 +547,7 @@ mod tests {
             // its gear, the gyro's +18, the nitrous burning as the frame found it)
             let q = &g[7];
             let hq = |k: usize| u32::from_str_radix(q[k], 16).unwrap();
-            let mut ch = CruiseHeld { on: hq(1) != 0, speed: f32::from_bits(hq(0)) };
+            let mut ch = CruiseHeld { on: hq(1) != 0, speed: f32::from_bits(hq(0)), ..Default::default() };
             let driving = extra[2] & 0x38 == 0 && hq(7) >= 2 && hq(8) == 0 && hq(9) == 0;
             let (throttle, quiet) = cruise(&mut ch, p.throttle, &t, &CruiseIn { speed, limit_mph: f32::from_bits(hq(2)), driving, modulation: f32::from_bits(hq(6)) });
             miss("cruise on", ch.on == (hq(4) != 0));
@@ -587,7 +601,7 @@ mod tests {
     #[test]
     fn a_half_pressed_trigger_holds_the_roads_speed() {
         let t = InputTune { cruise_throttle_min: 0.2, cruise_throttle_max: 0.8, cruise_activation_speed_range: 0.33, ..tune() };
-        let mut c = CruiseHeld { on: false, speed: 24.0 };
+        let mut c = CruiseHeld { on: false, speed: 24.0, quiet: false };
         let at = |speed: f32, modulation: f32| CruiseIn { speed, limit_mph: 55.0, driving: true, modulation };
         // 24 m/s = 53.7 mph on a 55 mph road, the gearbox settled: on; a little slow -> a little over the half
         let (thr, quiet) = cruise(&mut c, 0.6769, &t, &at(24.0, 0.0));
@@ -601,7 +615,7 @@ mod tests {
         // wheelspin / a launch (the modulator at 1) ends it; no road speed, no cruise
         assert_eq!(cruise(&mut c, 0.6769, &t, &at(27.0, 1.0)), (0.6769, false));
         assert!(!c.on);
-        let mut c = CruiseHeld { on: false, speed: 24.0 };
+        let mut c = CruiseHeld { on: false, speed: 24.0, quiet: false };
         assert_eq!(cruise(&mut c, 0.6769, &t, &CruiseIn { speed: 24.0, limit_mph: 0.0, driving: true, modulation: 0.0 }), (0.6769, false));
     }
 
@@ -627,5 +641,51 @@ mod tests {
         assert_eq!(p, 0.5);
         let back = steer_step(p, 0.0, &t, &i);
         assert!((back - (0.5 - 6.0 / 60.0)).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod cruise_offline {
+    use super::*;
+
+    /// F-43388 against the original run offline (tools/cruise_reference.py): 6,000 frames - the road object there or not,
+    /// F-87157's speed, the driving gates one by one (slot 12, F-80284, the nitrous byte, the gyro's +18), speeds and the
+    /// smoothed speed about the limit and 4.47 m/s, the modulator at and around 0.1 / 0.9, throttles at and between
+    /// CruiseThrottleMin and Max. +12, +40, +101, +102, +104 and +108 after the frame equal `cruise` with its caller's
+    /// +104 rule (`limit_mph`, the last limit kept without a road).
+    #[test]
+    fn cruise_matches_the_original() {
+        let text = include_str!("testdata/cruise_ref.txt");
+        let mut lines = text.lines();
+        let hex = |t: &str| u32::from_str_radix(t, 16).unwrap();
+        let base: Vec<u32> = lines.next().unwrap().split_whitespace().map(hex).collect();
+        let (s, tune, gy, ch, tr, nb) = (0x1000u32, 0x1100u32, 0x1280u32, 0x1300u32, 0x1800u32, 0x1880u32);
+        let (mut n, mut on, mut quiet) = (0, 0, 0);
+        for line in lines.filter(|l| !l.is_empty()) {
+            let (pairs, out) = line.split_once(" -> ").unwrap();
+            let (state, _calls) = out.split_once(" |").unwrap();
+            let mut m = std::collections::HashMap::new();
+            let mut ret = [0u32; 8];
+            for c in base.chunks(2).chain(pairs.split_whitespace().map(hex).collect::<Vec<_>>().chunks(2)) {
+                if c[0] >= 0xF000_0000 { ret[(c[0] - 0xF000_0000) as usize] = c[1]; } else { m.insert(c[0], c[1]); }
+            }
+            let g = |a: u32| *m.get(&a).unwrap_or(&0);
+            let gf = |a: u32| f32::from_bits(g(a));
+            let t = InputTune { cruise_throttle_min: gf(tune + 100), cruise_throttle_max: gf(tune + 104), cruise_activation_speed_range: gf(tune + 108), ..Default::default() };
+            let mut held = CruiseHeld { on: g(0x4000_0000 | (s + 101)) & 0xFF != 0, speed: gf(s + 108), quiet: g(0x4000_0000 | (s + 102)) & 0xFF != 0 };
+            // (+104: the manager's road object [+640] and F-86691's road, else kept)
+            let road_obj = if ret[0] == 0x1900 { g(0x1900 + 640) } else { 0 };
+            let limit = if road_obj != 0 && ret[1] != 0 { limit_mph(f32::from_bits(ret[2])) } else { gf(s + 104) };
+            let driving = ret[3] & 0xFF != 0 && (ret[4] as i32) > 0 && g(0x4000_0000 | (nb + 32)) & 0xFF == 0 && g(0x2000_0000 | (gy + 18)) & 0xFFFF == 0;
+            let throttle = gf(s + 12);
+            let (thr, q) = cruise(&mut held, throttle, &t, &CruiseIn { speed: gf(ch + 224), limit_mph: limit, driving, modulation: gf(tr + 148) });
+            let w40 = if q { g(s + 40) & !0x2000 } else { g(s + 40) };
+            let want = format!("{:08x} {:08x} {:x} {:x} {:08x} {:08x}", thr.to_bits(), w40, held.on as u8, held.quiet as u8, limit.to_bits(), held.speed.to_bits());
+            assert_eq!(want, state, "{pairs}");
+            n += 1;
+            on += held.on as usize;
+            quiet += held.quiet as usize;
+        }
+        assert_eq!((n, on, quiet), (6000, 306, 117));
     }
 }

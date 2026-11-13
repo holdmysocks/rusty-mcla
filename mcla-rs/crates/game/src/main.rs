@@ -3259,55 +3259,25 @@ impl App {
                     player_input.shift = kbd_shift;
                 }
             }
-            // ---- the cruise assist (mcPlayerInput F-43388): cruising within
-            // CruiseActivationSpeedRange of the speed limit with the pedal between
-            // CruiseThrottleMin and Max, the game holds the car at the limit - "press the gas
-            // lightly to stay under the limit". Under Min the pedal coasts, over Max it is the
-            // upper half of the engine's range; a hard brake lets go. ----
-            self.cruise_hold = false;
-            // Original road accessor F-87157; keep the last limit through
-            // junctions without a road owner (F-43388).
+            // ---- the cruise assist (mcPlayerInput F-43388) runs in the car's pad code (vehsim, physics::pad::cruise);
+            // this gives it input +104, the road's limit: F-87157's speed x 2.237 where the car is on a road, the last
+            // one kept where it is not (approximate: the port finds the road by distance, physics/pad.rs limit_mph; and
+            // it gives no limit outside free roam, as the port had it). The HUD's flag is +102. ----
             if let (Some(nav), Some(c)) = (self.world.as_ref().and_then(|w| w.nav.as_ref()), self.vehicles.player()) {
                 if let Some(speed) = nav.speed_limit_at(c.state.pos) {
-                    if (speed / 0.44704 - self.cruise_limit_mph).abs() > 0.01 && std::env::var_os("MCLA_CRUISE_TRACE").is_some() {
-                        log::info!("cruise road limit: {:.0} mph at {:?}", speed / 0.44704, c.state.pos);
+                    let mph = physics::pad::limit_mph(speed);
+                    if mph != self.cruise_limit_mph && std::env::var_os("MCLA_CRUISE_TRACE").is_some() {
+                        log::info!("cruise road limit: {:.0} mph at {:?}", mph, c.state.pos);
                     }
-                    self.cruise_limit_mph = speed / 0.44704;
+                    self.cruise_limit_mph = mph;
                 }
             }
-            let limit = self.cruise_limit_mph;
             let cruising = self.game.mode == Mode::FreeRoam && self.game.race.is_none() && self.roam.challenge.is_none();
-            if let Some(c) = self.vehicles.player() {
-                let v = c.state.speed();
-                self.cruise_v += (v - self.cruise_v) * 0.2;
-                let it = c.model.simtunes.as_ref().map(|s| s.base.input.clone());
-                let ok = cruising && c.state.gear > 0 && !c.state.nitro_on() && v > 4.47 && limit > 0.0 && c.state.wheels.iter().any(|w| w.grounded);
-                if let (true, Some(it)) = (ok, it) {
-                    if player_input.brake < 0.1 {
-                        if (self.cruise_v * 2.237 - limit).abs() < it.cruise_activation_speed_range * limit {
-                            self.cruise_on = true;
-                        }
-                    } else if player_input.brake > 0.9 {
-                        self.cruise_on = false;
-                    }
-                    if self.cruise_on && it.cruise_throttle_max > it.cruise_throttle_min && it.cruise_throttle_min > 0.0 {
-                        let p = player_input.throttle;
-                        let (lo, hi) = (it.cruise_throttle_min, it.cruise_throttle_max.min(0.99));
-                        player_input.throttle = if p > lo && p <= hi {
-                            self.cruise_hold = true;
-                            let e = self.cruise_v - limit * 0.447;
-                            let k = (e.abs() * 0.745712).clamp(0.0, 1.0) * 0.4;
-                            if e > 0.0 { 0.5 - k } else { 0.5 + k }
-                        } else if p <= lo {
-                            (p / lo * 0.5).clamp(0.0, 0.5)
-                        } else {
-                            ((p - hi) * 0.5 / (1.0 - hi) + 0.5).clamp(0.5, 1.0)
-                        };
-                    }
-                } else {
-                    self.cruise_on = false;
-                }
+            if std::env::var_os("MCLA_REPLAY_PAD").is_none() {
+                let limit = if cruising { self.cruise_limit_mph } else { 0.0 };
+                physics::vehsim::CRUISE_LIMIT_MPH.store(limit.to_bits(), std::sync::atomic::Ordering::Relaxed);
             }
+            self.cruise_hold = self.vehicles.player().and_then(|c| c.state.veh.as_ref()).is_some_and(|v| v.pad.cruise.on && v.pad.cruise.quiet);
             // (test hook: MCLA_TWO=1 drives off and goes up on two wheels after 700 ticks; a bike
             // pulls the stick back as well - a wheelie wants the button and stickY > 0.8)
             if std::env::var("MCLA_TWO").is_ok() {
