@@ -271,8 +271,12 @@ pub struct VinylEdit {
     /// with the garage movie: 0 CHOOSE GROUP, 1 CHOOSE LAYER, 2 the shape strip, 3 EDIT
     /// LAYER's tabs, 4 LAYER OPTIONS (9: the port's own list, without the movie)
     pub page: u8,
-    /// EDIT LAYER's tab (position, scale, rotate, skew, mask, colour) / the options' cursor
+    /// EDIT LAYER's tab (position, scale, rotate, skew, mask, colour)
     pub tab: usize,
+    /// the layer's option (the chart's second generation under the layer, `SetVinylOptionIndex`
+    /// 0..6: COPY, CUT, DELETE, PASTE, INSERT, MARK ALL, UNMARK ALL); up / down move it on CHOOSE
+    /// LAYER and LAYER OPTIONS alike (`MenuInput.sc.xml` arg 2), Y only shows it (template 113)
+    pub option: usize,
     /// the shape strip: what to put back on BACK (the layer's shape, or None = the layer
     /// was added for the strip and goes again)
     pub undo_shape: Option<u16>,
@@ -13860,6 +13864,10 @@ impl Game {
                 let n = (count + 1).min(cap).max(1);
                 if d != 0 {
                     ed.layer = (ed.layer as isize + d).rem_euclid(n as isize) as usize;
+                    ed.option = 0;
+                }
+                if dv != 0 {
+                    ed.option = (ed.option as isize - dv).rem_euclid(7) as usize;
                 }
                 ed.layer = ed.layer.min(n - 1);
                 if enter {
@@ -13882,8 +13890,8 @@ impl Game {
                         warn = true;
                     }
                 } else if y_key {
+                    // (`garage.ToggleLayerSelectTemplate(-1)`: the same chart state on template 113)
                     ed.page = 4;
-                    ed.tab = 0;
                 } else if back {
                     ed.page = 0;
                 }
@@ -13958,17 +13966,26 @@ impl Game {
                 }
             }
             _ => {
-                const N: usize = 7;
-                if dv != 0 {
-                    ed.tab = (ed.tab as isize - dv).rem_euclid(N as isize) as usize;
+                // (the same chart state as CHOOSE LAYER, `VinylLayerSelect`: left / right the layer -
+                // generation 1 - up / down its option - generation 2 -, both with wrap; Y back to template 101)
+                let n = (count + 1).min(cap).max(1);
+                if d != 0 {
+                    ed.layer = (ed.layer as isize + d).rem_euclid(n as isize) as usize;
+                    ed.option = 0;
                 }
-                if enter {
-                    match ed.tab {
+                if dv != 0 {
+                    ed.option = (ed.option as isize - dv).rem_euclid(7) as usize;
+                }
+                ed.layer = ed.layer.min(n - 1);
+                if y_key {
+                    ed.page = 1;
+                } else if enter {
+                    match ed.option {
                         // COPY / CUT / DELETE / PASTE / INSERT work on the layer under the cursor
                         // (the original's marks are not kept - its COPY LAYER(S), F-60961, copies every marked layer: approx.)
                         0 | 1 => {
                             self.vinyl_clip = livery.zones[zone].get(ed.layer).cloned().map(|l| (zone, l));
-                            if ed.tab == 1 && ed.layer < count {
+                            if ed.option == 1 && ed.layer < count {
                                 livery.zones[zone].remove(ed.layer);
                             }
                         }
@@ -13978,7 +13995,7 @@ impl Game {
                         3 | 4 => {
                             // (F-64893: mirrored by the pair of zones, nothing when the zone has no room)
                             if let Some((from, l)) = self.vinyl_clip.clone() {
-                                let at = if ed.tab == 4 { ed.layer.min(livery.zones[zone].len()) } else { livery.zones[zone].len() };
+                                let at = if ed.option == 4 { ed.layer.min(livery.zones[zone].len()) } else { livery.zones[zone].len() };
                                 crate::vinyl::paste(&mut livery.zones[zone], zone, cap, std::slice::from_ref(&l), from, at);
                             }
                         }
@@ -14102,14 +14119,15 @@ impl Game {
             }
             _ => {
                 pictures = strip(self, first);
-                let rows = [("VE_Copy_Layer", "COPY LAYER(S)"), ("VE_Cut_Layer", "CUT LAYER(S)"), ("VE_Delete_Layer", "DELETE LAYER(S)"), ("VE_Paste_Layer", "PASTE LAYER(S)"), ("VE_Insert_Layer", "INSERT LAYER(S)"), ("VE_Mark_All_Layers", "MARK ALL LAYERS"), ("VE_UnMark_All_Layers", "UNMARK ALL LAYERS")];
+                // (template 113 names the seven options from its own `VE_layers_menu`; the list is the
+                // layers', as on CHOOSE LAYER, and the cursor stands on the layer's option)
                 (
                     MenuPage {
-                        layout: MenuLayout::VinylOptions { group: zone as i32 },
+                        layout: MenuLayout::VinylOptions { group: zone as i32, option: ed.option.min(6) as i32 },
                         icon: 10,
                         title: st("VE_Vinyls", "CHOOSE LAYER"),
-                        rows: rows.iter().map(|(k, d2)| row(st(k, d2))).collect(),
-                        select: ed.tab.min(6),
+                        rows: (0..(count + 1).min(cap).max(1)).map(|_| row(String::new())).collect(),
+                        select: ed.layer,
                         ..MenuPage::default()
                     },
                     vec![(st("prompt_accept", "ACCEPT"), ICON_A), (st("VE_Hide_Options", "HIDE OPTIONS"), ICON_B), (st("VE_Mark_layer", "MARK/UNMARK"), ICON_LB_RB)],

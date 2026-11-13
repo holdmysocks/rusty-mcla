@@ -748,8 +748,10 @@ pub enum MenuLayout {
     /// (colour strip); the figures go in `VElayer_dimension`, the labels are the movie's
     /// own by `cur_tab`; `colors` fill the strip
     VinylEditTab { template: i32, dims: [i32; 2], colors: Vec<u32> },
-    /// LAYER OPTIONS (`template_VE_layer_menu`, 113): a list over the layer strip
-    VinylOptions { group: i32 },
+    /// LAYER OPTIONS (`template_VE_layer_menu`, 113): the layer strip's list (`select` the layer)
+    /// with the seven options of the movie's own `VE_layers_menu` over it; the cursor stands on
+    /// `menu.elements[select].select`, the layer's `option` (0..6), its list `count` 7
+    VinylOptions { group: i32, option: i32 },
     /// the GPS map's own panel (`template_Navsys`, 10): rank, vehicle rank and class,
     /// money, and - with `legend` - the key to the map's icons. `globals` are the
     /// movie's text variables by name.
@@ -1158,7 +1160,7 @@ impl FlashMenu {
                 }
                 *template
             }
-            MenuLayout::VinylOptions { group } => {
+            MenuLayout::VinylOptions { group, .. } => {
                 p.set_global("cur_VE_group_type", Value::Int(0));
                 p.set_global("cur_VE_group_ID", Value::Int(*group));
                 113
@@ -1341,6 +1343,12 @@ impl FlashMenu {
                 p.set_path(&format!("menu.elements.{}.ID", i), Value::Int(0));
                 p.set_path(&format!("menu.elements.{}.property1", i), Value::Int(page.row_props.get(i).copied().unwrap_or(r.enabled as i32)));
             }
+        }
+        // (LAYER OPTIONS: after the rows, which reset every row's own list - the layer's option list)
+        if let MenuLayout::VinylOptions { option, .. } = &page.layout {
+            let sel = page.select.min(page.rows.len().saturating_sub(1));
+            p.set_path(&format!("menu.elements.{sel}.select"), Value::Int(*option));
+            p.set_path(&format!("menu.elements.{sel}.count"), Value::Int(7));
         }
         if let MenuLayout::GoalAttack { goals } = &page.layout {
             // (two columns, `Option` / `Value`: F-82755 in goal attack)
