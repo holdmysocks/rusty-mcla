@@ -6121,6 +6121,58 @@ mod tests {
     }
 
     #[test]
+    fn block_traffic_matches_the_original() {
+        // (F-60011 run offline with its world calls stubbed by the case, tools/block_traffic_reference.py: the gates, the
+        // polygon tests, no road node, the racer without its lane, the limit 0 / NaN, the junction reach and its arms near
+        // 150 degrees, the bound box and the probe's S / E word for word)
+        let f = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
+        let (mut n, mut probed) = (0, 0);
+        for l in include_str!("testdata/block_traffic_ref.txt").lines() {
+            let (lhs, rhs) = l.split_once(" -> ").unwrap();
+            let v: Vec<&str> = lhs.split(' ').collect();
+            let i = |k: usize| v[k].parse::<i64>().unwrap();
+            let w = |k: usize| f(v[17 + k]);
+            let v3 = |k: usize| Vec3::new(w(k), w(k + 1), w(k + 2));
+            let gates = i(0) == 1 && !(i(1) == 1 && i(2) == 1) && i(3) == 1 && i(4) == 1;
+            let b = BlockIn {
+                road_poly: i(5) == 1,
+                shortcut: i(6) == 1,
+                sidewalk: i(7) == 1,
+                grass: i(8) == 1,
+                road: i(9) == 1,
+                junction: (i(10) == 1).then(|| BlockJunction { arms: i(11) as u16, center: v3(18), reach: w(21), green: v3(22), yellow: v3(25) }),
+                racer: i(12) == 1,
+                lane: i(13) == 1,
+                speed: w(0),
+                limit: w(1),
+                low: w(2),
+                pct: i(16) as i32,
+                pos: v3(3),
+                row_b: v3(6),
+                row_c: v3(9),
+                bound: (i(14) == 1).then(|| (v3(12), v3(15))),
+            };
+            let r: Vec<&str> = rhs.split(' ').collect();
+            let got = if gates { block_rule(&b) } else { Block::No };
+            match got {
+                Block::Probe(s, e) => {
+                    let bits = [s.x, s.y, s.z, e.x, e.y, e.z].map(|x| format!("{:08x}", x.to_bits()));
+                    assert_eq!(r.len(), 7, "probe expected none: {lhs}");
+                    assert_eq!(bits.to_vec(), r[1..].to_vec(), "{lhs}");
+                    assert_eq!(r[0], if i(15) == 1 { "0" } else { "1" }, "{lhs}");
+                    probed += 1;
+                }
+                Block::Yes | Block::No => {
+                    assert_eq!(r.len(), 1, "probe expected: {lhs}");
+                    assert_eq!(r[0], if got == Block::Yes { "1" } else { "0" }, "{lhs}");
+                }
+            }
+            n += 1;
+        }
+        assert_eq!((n, probed), (8000, 925));
+    }
+
+    #[test]
     fn wrong_way_matches_the_original() {
         let f = |t: &str| f32::from_bits(u32::from_str_radix(t, 16).unwrap());
         let mut n = 0;
@@ -8298,60 +8350,149 @@ fn offence_gate(cond: bool, started: bool, timer: &mut f32, thr: f32, dt: f32) -
     false
 }
 
-/// Block traffic (F-60011): over an ai_road polygon and not over an ai_shortcut / ai_sidewalk / ai_grass one (F-66554,
-/// F-75972, F-86151); no road node within 3 m (a junction box): slow (under 2.235 m/s) is blocking; else under
-/// iBlockTrafficSpeedPrcnt % of the road's limit (the limit 0: fSpeedLimitLow x 0.447), not on the arm that has green or
-/// yellow now of the junction ahead (F-65298, F-75755, F-93041: within half its reach + 10 m, the arm at 150 degrees or
-/// more from the direction to the junction centre), and an 8 m level probe forward from half the box length ahead and
-/// half its height up hits nothing.
+/// A junction ahead as block traffic reads it (F-60011): the arm count +48, the centre +80, the second half extent +64 and the
+/// arms F-75755 (green) / F-93041 (yellow) hand back now.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BlockJunction {
+    pub arms: u16,
+    pub center: Vec3,
+    pub reach: f32,
+    pub green: Vec3,
+    pub yellow: Vec3,
+}
+
+/// What F-60011 reads after its tactic gate: the polygon tests at the car's origin (ai_road F-90092, ai_shortcut F-66554,
+/// ai_sidewalk F-75972, ai_grass F-86151), the road node within 3 m and the junction ahead (F-65298), the racer's slot 40
+/// and its lane +640, the chassis speed +224, the road's limit (F-87157) with fSpeedLimitLow and iBlockTrafficSpeedPrcnt, the
+/// matrix (origin, rows b and c) and the bound box (+16, +32; `None` when the car +28 -> +4 -> +12 chain breaks).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BlockIn {
+    pub road_poly: bool,
+    pub shortcut: bool,
+    pub sidewalk: bool,
+    pub grass: bool,
+    pub road: bool,
+    pub junction: Option<BlockJunction>,
+    pub racer: bool,
+    pub lane: bool,
+    pub speed: f32,
+    pub limit: f32,
+    pub low: f32,
+    pub pct: i32,
+    pub pos: Vec3,
+    pub row_b: Vec3,
+    pub row_c: Vec3,
+    pub bound: Option<(Vec3, Vec3)>,
+}
+
+/// F-60011's answer: blocking or not, or the forward probe from S to E decides (no hit: blocking).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Block {
+    No,
+    Yes,
+    Probe(Vec3, Vec3),
+}
+
+/// Block traffic (F-60011) from its polygon tests on: over an ai_road polygon and not over an ai_shortcut / ai_sidewalk /
+/// ai_grass one; no road node within 3 m (a junction box): slow (under 2.235 m/s) is blocking; a racer without its lane is
+/// not; else under iBlockTrafficSpeedPrcnt x 0.01 of the road's limit (a limit of 0: fSpeedLimitLow x 0.447); a junction
+/// ahead with arms, when the squared distance to its centre (the car's y taken as 0, the y step squared, then z and x fused)
+/// is not at least (0.5 x reach + 10, fused)^2: the arm with green, else with yellow - none (all three words 0) not
+/// blocking, and at under 2.61799 rad (F-88594) from the direction to the centre not blocking; then the bound box must be
+/// there, and the 8 m probe from S = origin + row c x (ext.z x -0.5) + row b x (ext.y x 0.5) to S + row c x -8 decides
+/// (ext = box +16 - box +32; the vector products unfused, as the generated vmaddfp). Every compare as the code's fcmpu
+/// branch (bge / blt test the lt bit only: a NaN speed is not blocking, a NaN distance skips the arm test, a NaN angle
+/// passes it). Test block_traffic_matches_the_original.
+pub(crate) fn block_rule(b: &BlockIn) -> Block {
+    if !b.road_poly || b.shortcut || b.sidewalk || b.grass {
+        return Block::No;
+    }
+    if !b.road {
+        return if b.speed < f32::from_bits(0x400F_0A3D) { Block::Yes } else { Block::No };
+    }
+    if b.racer && !b.lane {
+        return Block::No;
+    }
+    let limit = if b.limit == 0.0 { b.low * f32::from_bits(0x3EE4_DD2F) } else { b.limit };
+    if !(b.speed < b.pct as f32 * f32::from_bits(0x3C23_D70A) * limit) {
+        return Block::No;
+    }
+    if let Some(j) = b.junction.filter(|j| j.arms != 0) {
+        let d2 = arrest_d2(j.center, Vec3::new(b.pos.x, 0.0, b.pos.z));
+        let r = (j.reach as f64).mul_add(0.5, 10.0) as f32;
+        let r2 = (r as f64 * r as f64) as f32;
+        if d2 < r2 {
+            let arm = if j.green != Vec3::ZERO { j.green } else { j.yellow };
+            if arm == Vec3::ZERO {
+                return Block::No;
+            }
+            let to = Vec3::new(j.center.x - b.pos.x, j.center.y, j.center.z - b.pos.z);
+            if crate::aiv::ang3(arm, to) < f32::from_bits(0x4027_8D36) {
+                return Block::No;
+            }
+        }
+    }
+    let Some((hi, lo)) = b.bound else { return Block::No };
+    let ext = hi - lo;
+    let (kz, ky) = (ext.z * -0.5, ext.y * 0.5);
+    let s = (b.row_b * ky) + ((b.row_c * kz) + b.pos);
+    Block::Probe(s, (b.row_c * -8.0) + s)
+}
+
+/// Block traffic (F-60011) for a car: the facts `block_rule` reads, from the port's world (the junction ahead is the port's
+/// F-65298: the road's junction ends, A first; the first one ahead along the facing, or the velocity from 2.235 m/s), and
+/// the 8 m level probe forward.
 fn block_traffic_cond(world: &World, vehicles: &Vehicles, p: &crate::vehicles::CarInstance, peds: &[Vec3], tun: &Tuning) -> bool {
     let (Some(nav), Some(mesh)) = (world.nav.as_ref(), crate::offroad::mesh()) else { return false };
     let pos = p.state.pos;
     let fwd = p.state.forward();
     let vel = p.state.vel;
     let v = vel.length();
-    if !mesh.on_road(pos) || mesh.on_flag(pos, 8) || mesh.on_flag(pos, 1) || mesh.on_flag(pos, 4) {
-        return false;
-    }
     let flat = Vec3::new(pos.x, 0.0, pos.z);
-    let Some(NavNode::Road(road)) = nav.node_within(flat, 3.0, false) else { return v < 2.235 };
-    if vehicles.driver_lanes.get(&p.uid).map_or(true, |d| d.best.is_none()) {
-        return false;
-    }
-    let limit = nav.zones.get(road).map(|z| z.speed_limit).filter(|l| l.is_finite() && *l > 0.0).unwrap_or(tun.get("fSpeedLimitLow", 50.0) * 0.447);
-    if v >= tun.get("iBlockTrafficSpeedPrcnt", 10.0) * 0.01 * limit {
-        return false;
-    }
-    // (F-65298: the road's junction ends, A first; the first one ahead along the facing, or the velocity from 2.235 m/s)
+    let road = match nav.node_within(flat, 3.0, false) {
+        Some(NavNode::Road(r)) => Some(r),
+        _ => None,
+    };
     let dir = if v < 2.235 { fwd } else { vel };
-    let ahead = nav
-        .next_of(NavNode::Road(road))
-        .iter()
-        .filter_map(|n| if let NavNode::Junction(j) = n { Some(*j) } else { None })
-        .take(2)
-        .find(|&j| nav.junction_rects.get(j).map_or(false, |r| (r.c[0] - pos.x) * dir.x + (r.c[1] - pos.z) * dir.z > 0.0));
+    let ahead = road.and_then(|road| {
+        nav.next_of(NavNode::Road(road))
+            .iter()
+            .filter_map(|n| if let NavNode::Junction(j) = n { Some(*j) } else { None })
+            .take(2)
+            .find(|&j| nav.junction_rects.get(j).map_or(false, |r| (r.c[0] - pos.x) * dir.x + (r.c[1] - pos.z) * dir.z > 0.0))
+    });
     // (the navsys junction list has 351 entries, the signals' only those with arms: matched by the centre)
     let sig = ahead.and_then(|j| nav.junction_centers.get(j)).and_then(|c| vehicles.signals.junctions.iter().find(|s| (s.center - *c).length_squared() < 0.01));
-    if let Some(j) = sig.filter(|j| !j.arms.is_empty()) {
-        let d = pos - j.center;
-        let d2 = d.x * d.x + j.center.y * j.center.y + d.z * d.z;
-        let reach = 0.5 * j.reach + 10.0;
-        if d2 < reach * reach {
-            // (green below 6.5, yellow to 8.5, red all round after; J +160 / +164 only, a forced arm or forced red through
-            // `step`)
-            let arm = running_arm(j.timer, j.current as i32, &j.arms);
-            if arm == Vec3::ZERO {
-                return false;
-            }
-            let to = Vec3::new(j.center.x - pos.x, j.center.y, j.center.z - pos.z);
-            if arm.dot(to.normalize_or_zero()).clamp(-1.0, 1.0).acos() < 2.61799 {
-                return false;
-            }
-        }
+    let junction = sig.map(|j| BlockJunction {
+        arms: j.arms.len() as u16,
+        center: j.center,
+        reach: j.reach,
+        green: arm_green(j.timer, j.current as i32, &j.arms),
+        yellow: arm_yellow(j.timer, j.current as i32, &j.arms),
+    });
+    let b = BlockIn {
+        road_poly: mesh.on_road(pos),
+        shortcut: mesh.on_flag(pos, 8),
+        sidewalk: mesh.on_flag(pos, 1),
+        grass: mesh.on_flag(pos, 4),
+        road: road.is_some(),
+        junction,
+        racer: true,
+        lane: vehicles.driver_lanes.get(&p.uid).map_or(false, |d| d.best.is_some()),
+        speed: v,
+        limit: road.and_then(|r| nav.zones.get(r)).map_or(0.0, |z| z.speed_limit),
+        low: tun.get("fSpeedLimitLow", 50.0),
+        pct: tun.get("iBlockTrafficSpeedPrcnt", 10.0) as i32,
+        pos,
+        row_b: p.state.up(),
+        row_c: -fwd,
+        bound: Some((p.model.max, p.model.min)),
+    };
+    match block_rule(&b) {
+        Block::Yes => true,
+        Block::No => false,
+        Block::Probe(s, e) => !level_probe_front(world, vehicles, peds, p.uid, s, (e - s).normalize_or_zero(), 8.0),
     }
-    let ext = p.model.max - p.model.min;
-    let s = pos + fwd * (0.5 * ext.z) + p.state.up() * (0.5 * ext.y);
-    !level_probe_front(world, vehicles, peds, p.uid, s, fwd, 8.0)
 }
 
 /// F-20855 as the seen test and block traffic call it: a one-sided line probe from `o` along `d` for `len`, any hit
