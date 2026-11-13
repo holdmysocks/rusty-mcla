@@ -5543,6 +5543,29 @@ impl Police {
         self.sq = Squad::default();
     }
 
+    /// The port's police scene flows - the pull-over, the ticket and the arrest (their scenes and the manager's
+    /// scene hold +56, F-22530 / CutSceneDone F-30655) and the payback's chase - keep running through their own
+    /// scenes; `cine_frame` is for every other scene.
+    pub fn in_scene_flow(&self) -> bool {
+        matches!(self.heat, Heat::PullOver | Heat::Busted) || self.ticketing || self.goons
+    }
+
+    /// The manager update F-54211 while a cine script runs (F-52539: the cine manager there and its +288 byte or
+    /// its F-48345 test - a story, hangout or race-start scene): the first active tactic whose target is the player
+    /// (F-59036) ends silently (F-41497 with flag 1 - the escape's end, no arrest), and the law step F-52240, the
+    /// tactics' updates (F-22530) and the patrol loop F-24233 are skipped - no cop moves on, scores or starts a
+    /// tactic until the scene is over. A tactic on an AI racer is left as it is. Not compared with a recording.
+    pub fn cine_frame(&mut self) {
+        if self.target.is_none() && self.kind != TacKind::None {
+            log::info!("police: a scene runs - the tactic on the player ({:?}) ends", self.kind);
+            let dispatch = self.kind == TacKind::Dispatch;
+            self.end_tactic(true);
+            if dispatch {
+                self.dsp = None;
+            }
+        }
+    }
+
     fn clear(&mut self) {
         self.heat = Heat::None;
         self.target = None;
@@ -6548,6 +6571,29 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 24);
+    }
+
+    #[test]
+    fn a_scene_ends_the_players_tactic_only() {
+        // (F-54211's cine branch: F-59036 finds a tactic on the player -> F-41497 ends it with flag 1; one on an AI
+        // racer stays; the port's own police scene flows are not this branch)
+        let mut p = Police::new();
+        p.start_tactic(TacKind::Pursuit, vec![], true, 25.0);
+        p.heat = Heat::Pursuit;
+        assert!(!p.in_scene_flow());
+        p.cine_frame();
+        assert_eq!(p.kind, TacKind::None);
+        assert_eq!(p.heat, Heat::None);
+        assert_eq!(p.activity().0, 0);
+        let mut p = Police::new();
+        p.start_tactic(TacKind::Pursuit, vec![], true, 25.0);
+        p.heat = Heat::Pursuit;
+        p.target = Some(7);
+        p.cine_frame();
+        assert_eq!(p.kind, TacKind::Pursuit);
+        let mut p = Police::new();
+        p.heat = Heat::PullOver;
+        assert!(p.in_scene_flow());
     }
 
     #[test]

@@ -3374,6 +3374,11 @@ impl App {
         // (FinishScene F-65984 clears Warper_SetIsWarpingToCutscene's global byte (the native F-63924 stores it by F-20114): a scene of the
         // port's ended last tick)
         let scene = self.cine.playing.is_some() || self.cuts.playing.is_some();
+        // (F-54211's scene branch: a tactic on the player ends when a scene runs - the story scenes hold the whole
+        // simulation, so it is called here and not only from the police step)
+        if scene && !self.police.in_scene_flow() {
+            self.police.cine_frame();
+        }
         if self.scene_was && !scene {
             self.game.cine_warp = false;
         }
@@ -8401,7 +8406,10 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 }
                 let heat_before = self.police.heat;
                 let score_before = self.police.score;
-                if self.police.enabled {
+                // (F-54211: while a cine script runs (F-52539) the manager ends a tactic on the player and skips the law step,
+                // the tactics and the patrol loop - `Police::cine_frame`; the port's own police scene flows run on)
+                let scene_skip = (self.cine.playing.is_some() || self.cuts.playing.is_some()) && !self.police.in_scene_flow();
+                if self.police.enabled && !scene_skip {
                     self.police.update_units(&gpu, &world, &mut self.vehicles);
                 }
                 // (F-83946 takes system 0 of the experience tables, Progression, through F-68013 / F-14176)
@@ -8413,7 +8421,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 // between; their timers and per-frame tests (the +144 "still" step) take that dt. The level probe
                 // meets the walkers' capsules too, F-20855)
                 let mut chat = None;
-                let ev = if brain::frame_due(&mut self.police_acc, sim_dt) {
+                let ev = if brain::frame_due(&mut self.police_acc, sim_dt) && !scene_skip {
                     self.police.peds = self.peds.capsule_feet();
                     self.police.untimed_race = self.game.race.as_ref().is_some_and(|r| r.time_limit <= 0.0);
                     self.police.player_police = self.player_police();
