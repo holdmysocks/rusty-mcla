@@ -9821,6 +9821,28 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
         // --fast fixes simulation time, not the measured rendering throughput.
         self.fps = self.fps * 0.95 + (1.0 / wall_dt.max(1e-4)) * 0.05;
         self.frame_ms = wall_dt * 1000.0;
+        // (MCLA_FRAMETIMES=<file>: every frame's interval and the phases of the frame before it, one CSV row a frame -
+        // tools/perfgate.ps1 reads it for fps, the 1 % low and the phase means; docs/PERFORMANCE.md "Perf gate")
+        {
+            use std::io::Write;
+            type FrameTimes = Option<(Instant, std::sync::Mutex<std::io::BufWriter<std::fs::File>>)>;
+            static FT: std::sync::OnceLock<FrameTimes> = std::sync::OnceLock::new();
+            let ft = FT.get_or_init(|| {
+                let f = std::fs::File::create(std::env::var_os("MCLA_FRAMETIMES")?).ok()?;
+                let mut w = std::io::BufWriter::new(f);
+                let _ = writeln!(w, "t_s,frame_ms,ticks,sim_ms,stream_ms,prep_ms,acquire_ms,ui_ms,passes_ms,submit_ms,draws");
+                Some((Instant::now(), std::sync::Mutex::new(w)))
+            });
+            if let Some((t0, m)) = ft {
+                let p = self.fl_prev;
+                if let Ok(mut w) = m.lock() {
+                    let _ = writeln!(w, "{:.3},{:.3},{:.0},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{}", t0.elapsed().as_secs_f64(), self.frame_ms, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], self.draws);
+                    if self.frame_no % 120 == 0 {
+                        let _ = w.flush();
+                    }
+                }
+            }
+        }
         // (MCLA_FRAMELOG=<ms>: a frame whose whole interval passed the limit, with the phases of the frame
         // that took it - the interval of frame N is known when frame N+1 starts)
         if let Some(limit) = self.framelog {

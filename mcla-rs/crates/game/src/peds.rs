@@ -90,6 +90,19 @@ enum State {
     Turn(usize),
 }
 
+fn cur_old() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("MCLA_PED_CUR_OLD").is_some())
+}
+
+fn cur_check() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("MCLA_PED_CUR_CHECK").is_some())
+}
+
+/// (`MCLA_PED_CUR_CHECK`: kept poses checked, of them different - over all threads)
+static CUR_CHECK: [std::sync::atomic::AtomicU64; 2] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+
 struct Ped {
     ty: usize,
     key: (usize, u32),
@@ -104,6 +117,9 @@ struct Ped {
     from: Vec<(Quat, Vec3)>,
     blend: f32,
     cur: Vec<(Quat, Vec3)>,
+    /// what `cur` was worked out from (`prepare`): type, state, time, blend, blend_len (bits), lod_out; and `from` then
+    cur_key: Option<(usize, State, u32, u32, u32, bool)>,
+    cur_from: Vec<(Quat, Vec3)>,
     /// the anim LOD's state (I+4896, F-62015): its face and hands dropped - past 30 m from the focus, back within 20 m
     lod_out: bool,
     /// the walker as the tick before the last one left it (`Peds::begin_tick`): what `prepare` draws it between
@@ -3588,7 +3604,7 @@ impl Peds {
                 time: ((seed >> 8) & 0xff) as f32 / 40.0,
                 from: Vec::new(),
                 blend: 0.0,
-                cur: Vec::new(), lod_out: false, prev: None,
+                cur: Vec::new(), cur_key: None, cur_from: Vec::new(), lod_out: false, prev: None,
                 loiter: false,
                 calm: 0.0,
                 seed,
@@ -3722,7 +3738,7 @@ impl Peds {
                     time: ((h >> 8) & 0xff) as f32 / 40.0,
                     from: Vec::new(),
                     blend: 0.0,
-                    cur: Vec::new(), lod_out: false, prev: None,
+                    cur: Vec::new(), cur_key: None, cur_from: Vec::new(), lod_out: false, prev: None,
                     loiter,
                     calm: 0.0,
                     seed: h,
@@ -4256,7 +4272,7 @@ impl Peds {
             time: 0.0,
             from: Vec::new(),
             blend: 0.0,
-            cur: Vec::new(), lod_out: false, prev: None,
+            cur: Vec::new(), cur_key: None, cur_from: Vec::new(), lod_out: false, prev: None,
             loiter: true,
             calm: 0.0,
             seed: hash(id, item),
@@ -4351,14 +4367,45 @@ impl Peds {
             let lod = self.lod_pick.get(&p.key).copied().unwrap_or_else(|| crate::vehicles::Vehicles::lod_by(ty.lod_switch, dist, frustum.intersects_sphere(p.pos, 0.9), k));
             let visible = lod >= 0;
             let (clip, looped) = ty.clip(p.state);
-            clip.local(&ty.model.bones, clip.frame(p.time, looped), &mut local);
-            if p.blend > 0.0 && p.from.len() == local.len() {
-                blend_pose(&mut local, &p.from, (p.blend / p.blend_len).clamp(0.0, 1.0));
+            // (the pose at the tick's time changes only with a tick: worked out again only when what it is made of
+            // changed - the type, state, clip time, cross-fade and LOD, and the faded-out pose while one runs - so the
+            // same pose as working it out every frame; D59, docs/PERFORMANCE.md 2026-11-13 (3))
+            let key = (p.ty, p.state, p.time.to_bits(), p.blend.to_bits(), p.blend_len.to_bits(), p.lod_out);
+            let blending = p.blend > 0.0;
+            // (MCLA_PED_CUR_OLD=1: worked out every frame, as before)
+            let fresh = cur_old() || p.cur_key != Some(key) || (blending && p.cur_from != p.from);
+            if fresh {
+                clip.local(&ty.model.bones, clip.frame(p.time, looped), &mut local);
+                if blending && p.from.len() == local.len() {
+                    blend_pose(&mut local, &p.from, (p.blend / p.blend_len).clamp(0.0, 1.0));
+                }
+                drop_lod_bones(&mut local, &ty.model, p.lod_out);
+                p.cur.clone_from(&local);
+                p.cur_key = Some(key);
+                if blending {
+                    p.cur_from.clone_from(&p.from);
+                }
+            } else if cur_check() {
+                // (MCLA_PED_CUR_CHECK=1: the kept pose against one worked out again, counted in the log)
+                let mut again = Vec::new();
+                clip.local(&ty.model.bones, clip.frame(p.time, looped), &mut again);
+                if blending && p.from.len() == again.len() {
+                    blend_pose(&mut again, &p.from, (p.blend / p.blend_len).clamp(0.0, 1.0));
+                }
+                drop_lod_bones(&mut again, &ty.model, p.lod_out);
+                let same = again.len() == p.cur.len() && again.iter().zip(&p.cur).all(|(a, b)| a.0.to_array().map(f32::to_bits) == b.0.to_array().map(f32::to_bits) && a.1.to_array().map(f32::to_bits) == b.1.to_array().map(f32::to_bits));
+                use std::sync::atomic::Ordering::Relaxed;
+                let n = CUR_CHECK[0].fetch_add(1, Relaxed) + 1;
+                let bad = CUR_CHECK[1].fetch_add(u64::from(!same), Relaxed) + u64::from(!same);
+                if n % 10_000 == 0 || (!same && bad <= 5) {
+                    log::info!("peds: kept poses checked {n}, {bad} different");
+                }
             }
-            drop_lod_bones(&mut local, &ty.model, p.lod_out);
-            p.cur.clone_from(&local);
             if !visible || hidden {
                 continue;
+            }
+            if !fresh {
+                local.clone_from(&p.cur);
             }
             // (drawn between the last tick's start and end: a jump of 2 m or more - a placement - is drawn at once;
             // the clip's time only while the same clip runs on, not over a restart)
