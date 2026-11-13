@@ -5,6 +5,7 @@ contexts every transition of every state is tested with the original's test F-15
 the expression evaluator). Stubbed, as inputs of the case: the clip's time remaining, the overlay's time remaining, the phase (0) and
 IsCutscenePlaying.
 Usage: bike_cond_reference.py <out-dir> --symtab <pairs> --graph <graph_table.txt> [--tool mcla-tool] [--recomp D:/MCLA-static]
+With --gesture: ctx +4 a gesture id or none (ride_cond_gest_ref.txt).
 Writes <out-dir>/ride_cond_ref.txt: "w0 .. w13 -> bits" (hex words: ctx +4 gesture, +8 flags, +12 flags2, +20 goal, +28 smoothed
 steering, +48 bytes, +92 throttle, +96 speed, +124 shift, +148 timer A, +152 timer B; the clip's remaining, the overlay's remaining,
 cutscene; one 0/1 per transition in build order) and ride_graph_raw.txt (per state its transition objects)."""
@@ -80,6 +81,7 @@ def main():
     ap.add_argument('--symtab', type=Path, required=True, help='the bike symbol table, lines "name 0xaddr" (F-35793 run offline)')
     ap.add_argument('--graph', type=Path, required=True, help="the bike graph table (F-71745 run offline): its 'if fn' conditions")
     ap.add_argument('--n', type=int, default=4000)
+    ap.add_argument('--gesture', action='store_true', help='ctx +4 a gesture id (0 .. 18, 20 = none) and +8 bit 29 (IsPostPauseMenu, not fed in the port) clear; writes ride_cond_gest_ref.txt')
     a = ap.parse_args()
     work = a.out.resolve(); work.mkdir(parents=True, exist_ok=True)
     ids = ('F-71745', 'F-49795', 'F-15065', 'F-40144', 'F-35793', 'F-87745', 'F-70114', 'F-96834', 'F-91845', 'F-14201', 'F-35685',
@@ -113,7 +115,7 @@ def main():
     if g.returncode:
         raise SystemExit(g.stderr[-800:] or f'exit {g.returncode}')
     (work / 'ride_graph_raw.txt').write_text(g.stdout)
-    rnd = random.Random(20261107)
+    rnd = random.Random(20261112 if a.gesture else 20261107)
     stop = f2w(0.15)
     stop = struct.unpack('>f', struct.pack('>f', struct.unpack('>f', struct.pack('>I', stop))[0] * 0.44704))[0]
     near = [0.0, 0.02, -0.02, 0.1, -0.1, 0.25, 0.5, -0.5, 0.75, 1.5, 15.0, 0.033, stop, stop + 0.5, 1.0, -1.0, 3.0]
@@ -129,6 +131,9 @@ def main():
         ctx[1] = 20                                      # +4 gesture: none (the gesture switch is not part of the riding states)
         f8 = rnd.getrandbits(32) & rnd.getrandbits(32) if rnd.random() < 0.7 else rnd.getrandbits(32)
         ctx[2] = f8 & ~((1 << 15) | (1 << 17))           # +8: no impact / damage-out rising edge (the ragdoll's, not the riding states')
+        if a.gesture:
+            ctx[1] = rnd.choice((20, 20) + tuple(range(19)))  # +4: a gesture asked for, or none (19, find_sh_04, no rider is asked for)
+            ctx[2] &= ~(1 << 29)
         ctx[3] = rnd.getrandbits(32)                     # +12
         ctx[12] = rnd.getrandbits(32) & 0x0001FFFF       # +48 IsUpdateCulled 0, +49 IsOpponentDefined 0 / 1
         ctx[31] = rnd.choice((0, 0, 1, 0xFFFFFFFF, 2))   # +124 shift
@@ -144,7 +149,7 @@ def main():
         raise SystemExit(r.stderr[-800:] or f'exit {r.returncode}')
     out = r.stdout.splitlines()
     assert len(out) == len(cases), (len(out), len(cases))
-    (work / 'ride_cond_ref.txt').write_text(''.join(' '.join(f'{c[i]:08x}' for i in USED + [43, 44, 45]) + f' -> {o}\n' for c, o in zip(cases, out)))
+    (work / ('ride_cond_gest_ref.txt' if a.gesture else 'ride_cond_ref.txt')).write_text(''.join(' '.join(f'{c[i]:08x}' for i in USED + [43, 44, 45]) + f' -> {o}\n' for c, o in zip(cases, out)))
     print(len(out), 'cases', len(out[0]) if out else 0, 'transitions')
 
 

@@ -641,6 +641,8 @@ pub struct RideIn {
     pub opponent: bool,
     /// ctx+120, the look the pan-sweep overlay turns the head to (-1 .. 1; main.rs `rider_look` for the local human)
     pub look: f32,
+    /// ctx+4, the racer's +684: the gesture a scene asked for (None = 20, IsGestureNotPlaying)
+    pub gesture: Option<Gesture>,
 }
 
 impl RideIn {
@@ -675,6 +677,7 @@ impl RideIn {
             cutscene,
             opponent: !player,
             look: 0.0,
+            gesture: None,
         }
     }
 }
@@ -696,6 +699,8 @@ enum St {
     Shift,
     Reverse,
     Fidget,
+    /// "gesture switch": a scene's gesture (ctx+4 != 20) played as the rider's whole pose (enter F-32265, exit F-53813)
+    Gesture,
 }
 
 /// A rider in the bike pose machine: its state, the cockpit flag of the last frame (its change is the edge the enters and the
@@ -733,6 +738,10 @@ struct Ride {
     /// constructor F-96481 and reset F-20325: 1; None = 1)
     ctx: RideCtx,
     drv408: Option<f32>,
+    /// the gesture pickers' counters (machine +68 .. +92; +100, the ticket fidget's, is not kept: one clip)
+    gest_rr: [usize; 7],
+    /// the gesture state's exit ran this frame: ctx+4 and the racer's +684 are 20 again (F-90946)
+    gest_done: bool,
 }
 
 /// The human rider's look at a racer beside him (the driver's +380 state; F-70536 with the test F-48336), which the gatherer
@@ -878,6 +887,9 @@ fn ride_next(s: St, i: &RideIn, ck: bool, edge: bool, ta: f32, tb: f32, left_cli
     let burn_side = |i: &RideIn| if i.burnout && i.goal_steer < -0.5 { Some(St::BurnL) } else if i.burnout && i.goal_steer > 0.5 { Some(St::BurnR) } else { None };
     match s {
         St::Start => Some(St::Cruise),
+        // (the stopped idle's, the cruise's and the fidget's test after damage-out and impact: F-31271, ctx+4 != 20; the
+        // cruise's suspended test before it is not here)
+        St::Stopped | St::Cruise | St::Fidget if i.gesture.is_some() => Some(St::Gesture),
         St::Stopped => {
             if let Some(s) = burn_side(i) {
                 Some(s)
@@ -949,6 +961,9 @@ fn ride_next(s: St, i: &RideIn, ck: bool, edge: bool, ta: f32, tb: f32, left_cli
                 None
             }
         }
+        // (IsPostPauseMenu and the find_sh_04 term are not mapped: no rider is asked for gesture 19, and the pause layer's
+        // flag is not fed, as for the car drivers)
+        St::Gesture => if left_clip < 0.033 || i.gesture.is_none() || edge { Some(St::Stopped) } else { None },
         St::Fidget => {
             if i.reversing {
                 Some(St::Reverse)
@@ -1009,7 +1024,8 @@ impl RideSink for () {
 /// A riding state's enter (the callbacks of F-71745, listed at `BikeClips`), after the bookkeeping `ride_state` does. `pan`:
 /// F-56423 finds the pan clip (the local human, the clip in the pack); `edge`: a cockpit flag edge this frame (bits 19 / 20:
 /// the 0.01 s blend). The dev params `bikeforcelowturnsweep` / `bikefakehispeed` are off in play.
-fn ride_enter(n: St, ck: bool, edge: bool, pan: bool, fidgets: i32, speed: f32, o: &mut dyn RideSink) {
+#[allow(clippy::too_many_arguments)]
+fn ride_enter(n: St, ck: bool, edge: bool, pan: bool, fidgets: i32, speed: f32, gclip: Option<&'static str>, o: &mut dyn RideSink) {
     use RCmd::*;
     let e = |b: f32| if edge { 0.01 } else { b };
     let k = |a: &'static str, b: &'static str| if ck { a } else { b };
@@ -1082,6 +1098,28 @@ fn ride_enter(n: St, ck: bool, edge: bool, pan: bool, fidgets: i32, speed: f32, 
             off(o);
             o.cmd(Play(["drv_gest_look_lft", "drv_gest_look_rgt"][(fidgets % 2) as usize], 0.25, false, false));
         }
+        // F-32265: the pan out (F-63058 with 0 alone), then the picker's clip from 0, not looping, over 0.25 s (the cockpit
+        // edge does not shorten it); a clip the pack lacks plays nothing (the sink finds no id)
+        St::Gesture => {
+            o.cmd(Pan(false));
+            if let Some(c) = gclip {
+                o.cmd(Play(c, 0.25, false, false));
+            }
+        }
+    }
+}
+
+/// A riding state's exit, its anim player half: the stopped idle's (F-52588) arms the pan (F-63058 with F-56423's lookup); the
+/// fidget's and the gesture's (F-53813) end the overlay at once (F-72270 with 0) and arm the pan - its branch for the game
+/// manager's +300 (find_sh_04 playing: `drv_idle_low` looped with no blend) is not mapped, no rider is asked for gesture 19.
+fn ride_exit(s: St, pan: bool, o: &mut dyn RideSink) {
+    match s {
+        St::Stopped => o.cmd(RCmd::Pan(pan)),
+        St::Fidget | St::Gesture => {
+            o.cmd(RCmd::StopOverlay(0.0));
+            o.cmd(RCmd::Pan(pan));
+        }
+        _ => {}
     }
 }
 
@@ -1098,7 +1136,7 @@ fn ride_update(s: St, i: &RideIn, ta: f32, o: &mut dyn RideSink) {
     use RCmd::*;
     let ph = ride_remap(i.x);
     match s {
-        St::Start | St::Fidget => {}
+        St::Start | St::Fidget | St::Gesture => {}
         St::Cruise | St::BurnC | St::BurnL | St::BurnR | St::Tuck => {
             o.cmd(Phase2(ph));
             o.cmd(Weight(ride_speed_weight(i.speed)));
@@ -1285,15 +1323,15 @@ fn ride_state_to(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32, o:
     for _ in 0..3 {
         let Some(n) = next_of(r, o) else { break };
         ride_ctx_exit(r.state, &mut r.ctx);
+        ride_exit(r.state, pan, o);
         match r.state {
-            // (the stopped idle's exit F-63058: the pan back in)
-            St::Stopped => o.cmd(RCmd::Pan(pan)),
-            // (the fidget's exit F-53813: the overlay's end at once, the pan back in, timer A = 0; its branch for the
-            // global +300 flag - drv_idle_low looped with no blend - is not mapped)
-            St::Fidget => {
-                o.cmd(RCmd::StopOverlay(0.0));
-                o.cmd(RCmd::Pan(pan));
+            // (the fidget's and the gesture's exit F-53813 also sets timer A = 0; the gesture's writes ctx+4 = 20 and the
+            // racer's +684 = 20, F-90946)
+            St::Fidget | St::Gesture => {
                 r.timer_a = 0.0;
+                if r.state == St::Gesture {
+                    r.gest_done = true;
+                }
             }
             // (the transition's action F-88016: the pan in, drv_idle_low looped with no blend)
             St::Start => {
@@ -1310,7 +1348,7 @@ fn ride_state_to(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32, o:
         r.from_idle = if r.state == St::Start { Some(time) } else { None };
         r.from = r.last.clone();
         r.fade = 0.0;
-        r.rate = 1.0 / if edge && n != St::Shift { 0.01 } else { blend };
+        r.rate = 1.0 / if edge && !matches!(n, St::Shift | St::Gesture) { 0.01 } else { blend };
         r.fade2 = if n == St::Reverse { Some((0.0, 1.0 / 0.25)) } else { None };
         r.t = 0.0;
         match n {
@@ -1331,7 +1369,8 @@ fn ride_state_to(r: &mut Ride, b: &BikeClips, i: &RideIn, time: f32, dt: f32, o:
         // (the shift's enter F-54589 takes the pan out only in the cockpit, context +8 bit 21; outside it the pan stays
         // as the cruise left it - recorded 2026-11-05)
         r.pan = if n == St::Shift { r.pan && !ck } else { matches!(n, St::Cruise | St::Stopped | St::BurnC) && !ck && pan };
-        ride_enter(n, ck, edge, pan, r.fidgets, i.speed, o);
+        let gclip = if n == St::Gesture { i.gesture.map(|g| bike_gesture_clip(g, &mut r.gest_rr)) } else { None };
+        ride_enter(n, ck, edge, pan, r.fidgets, i.speed, gclip, o);
         ride_ctx_enter(n, &mut r.ctx);
         update(r, o);
     }
@@ -1427,7 +1466,7 @@ fn ride_step(r: &mut Ride, dict: &HashMap<String, u32>, clips: &[Clip], b: &Bike
 fn ride_sets(r: &Ride, i: &RideIn) -> (Option<f32>, Option<f32>) {
     let ph = ride_remap(i.x);
     match r.state {
-        St::Start | St::Fidget => (None, None),
+        St::Start | St::Fidget | St::Gesture => (None, None),
         St::Cruise | St::BurnC | St::BurnL | St::BurnR | St::Tuck => (Some(ph), Some(ride_speed_weight(i.speed))),
         St::Wheelie => {
             let k = r.timer_a - 1.0;
@@ -1552,6 +1591,8 @@ fn ride_pose<'a>(r: &mut Ride, b: &'a BikeClips, bones: &[crate::skin::Bone], ne
             Some(c) => c.local(bones, c.frame(r.t, false), out),
             None => one(stp, 0.5, out),
         },
+        // (the hand-built pose, MCLA_DRV_OLD: never fed a gesture)
+        St::Gesture => one(stp, 0.5, out),
     }
     if let Some((c, t)) = pan_t {
         c.local(bones, c.frame(t, false), tmp);
@@ -1660,6 +1701,9 @@ struct Acting {
     playing: Option<Playing>,
     /// a gesture asked for, its clip chosen when the driver is next posed
     asked: Option<(Gesture, f32, bool)>,
+    /// a rider's racer +684 (None = 20): the gesture its machine's gesture state plays, until that state's exit, the
+    /// event's stop or the scene's end write 20
+    ride: Option<Gesture>,
     /// fading out of a gesture that ended: (clip, its time - it plays on under the fade, weight)
     leaving: Option<(String, f32, f32)>,
     jaw: bool,
@@ -1846,11 +1890,11 @@ const BIKE_MILD: [&str; 2] = ["drv_gest_agro_lft", "drv_gest_agro_rgt"];
 /// `drv_gest_disapnt` (F-38624: a one-clip table, its `_rspnd` tests never hold), left / right / mild round robins, talk
 /// left / right `drv_gest_look_lft` / `_rgt` (F-44243 / F-57458), win `drv_win` (F-49380), the listen and thumb-down clips
 /// by name, the ticket fidget `drv_gest_disapnt` (F-80672) and hands up `drv_gest_arrest`. Each picker steps its counter.
-fn bike_gesture_clip(g: Gesture, rr: &mut [usize; 7]) -> String {
-    let mut next = |k: usize, list: &[&str]| -> String {
+fn bike_gesture_clip(g: Gesture, rr: &mut [usize; 7]) -> &'static str {
+    let mut next = |k: usize, list: &[&'static str]| -> &'static str {
         let c = list[rr[k] % list.len()];
         rr[k] += 1;
-        c.to_string()
+        c
     };
     match g {
         Gesture::Neutral => next(0, &["drv_gest_disapnt"]),
@@ -1860,12 +1904,12 @@ fn bike_gesture_clip(g: Gesture, rr: &mut [usize; 7]) -> String {
         Gesture::TalkRight => next(4, &["drv_gest_look_rgt"]),
         Gesture::Mild => next(5, &BIKE_MILD),
         Gesture::Win => next(6, &["drv_win"]),
-        Gesture::ListenLeft => "drv_gest_listen_lft".into(),
-        Gesture::ListenRight => "drv_gest_listen_rgt".into(),
-        Gesture::ThumbDownLeft => "drv_gest_thm_dwn_lft".into(),
-        Gesture::ThumbDownRight => "drv_gest_thm_dwn_rgt".into(),
-        Gesture::CopHandsUp => "drv_gest_arrest".into(),
-        Gesture::CopFidget => "drv_gest_disapnt".into(),
+        Gesture::ListenLeft => "drv_gest_listen_lft",
+        Gesture::ListenRight => "drv_gest_listen_rgt",
+        Gesture::ThumbDownLeft => "drv_gest_thm_dwn_lft",
+        Gesture::ThumbDownRight => "drv_gest_thm_dwn_rgt",
+        Gesture::CopHandsUp => "drv_gest_arrest",
+        Gesture::CopFidget => "drv_gest_disapnt",
     }
 }
 
@@ -2116,6 +2160,9 @@ impl Drivers {
         if a.playing.as_ref().map_or(true, |p| p.left <= 0.0) && a.asked.is_none() {
             a.asked = Some((g, if dur > 0.0 { dur } else { f32::INFINITY }, human));
         }
+        if a.ride.is_none() {
+            a.ride = Some(g);
+        }
     }
 
     /// A scene's gesture event stopped (FinishScene F-65984 -> F-10326 -> F-81612 stops every active event; the gesture
@@ -2127,6 +2174,7 @@ impl Drivers {
                 p.left = 0.0;
             }
             a.asked = None;
+            a.ride = None;
         }
     }
 
@@ -2183,6 +2231,7 @@ impl Drivers {
         for a in self.acting.values_mut() {
             a.playing = None;
             a.asked = None;
+            a.ride = None;
             a.jaw = false;
         }
     }
@@ -2259,9 +2308,15 @@ impl Drivers {
             let Some(Some(rig)) = self.rigs.get(&(car_key(s.car), s.player, female, si)) else { continue };
             // (a car driver posed by its machine: its jaw flap is the machine's overlay, F-72268, not the one below)
             let mut by_machine = false;
+            let mut rider_machine = false;
             if let (true, Some(b)) = (s.bike, rig.bike.as_ref()) {
                 let ride = self.rides.entry(s.id).or_default();
                 let mut i = RideIn { ck: s.player && self.ckpt_view, ..s.ride };
+                // (ctx+4: the racer's +684, the scene's gesture - the machine's own path only)
+                rider_machine = machines && !rig.dict.is_empty();
+                if rider_machine {
+                    i.gesture = self.acting.get(&s.id).and_then(|a| a.ride);
+                }
                 // (the gatherer's rider branch, F-28290, before the machine: the steering part's rates, hold and scale
                 // from the context the states left last frame, the driver's +408 eased; the frame's shift is 0 while +408
                 // lies inside (0.101, 0.999) or the smoothed steering is above 0.501)
@@ -2274,10 +2329,15 @@ impl Drivers {
                 self.steer_out.insert(s.uid, SteerOut { bike: Some(parts), ..SteerOut::default() });
                 // (the anim player's tree, as the car drivers'; MCLA_DRV_OLD or a pack without its dictionary: the
                 // hand-built pose)
-                let fr = (machines && !rig.dict.is_empty()).then(|| {
+                let fr = rider_machine.then(|| {
                     ride_step(ride, &rig.dict, &rig.clips, b, &i, self.time, dt, None);
                     ride.seq.compose(&RigPoser(rig))
                 });
+                if std::mem::take(&mut ride.gest_done) {
+                    if let Some(a) = self.acting.get_mut(&s.id) {
+                        a.ride = None;
+                    }
+                }
                 match fr {
                     Some(Some(fr)) => finish(&fr, &rig.model.bones, &mut local),
                     Some(None) => finish(&da::Poser::blank(&RigPoser(rig)), &rig.model.bones, &mut local),
@@ -2305,8 +2365,12 @@ impl Drivers {
             }
             // a scene's gesture over the driving pose, and the jaw flap over that
             if let Some(a) = self.acting.get_mut(&s.id) {
+                // (a rider on its machine plays the gesture as its state, above)
+                if rider_machine {
+                    a.asked = None;
+                }
                 if let Some((g, left, human)) = a.asked.take() {
-                    let name = if s.bike { bike_gesture_clip(g, &mut a.rr) } else { gesture_clip(g, &mut a.rr, human) };
+                    let name = if s.bike { bike_gesture_clip(g, &mut a.rr).to_string() } else { gesture_clip(g, &mut a.rr, human) };
                     if rig.gestures.contains_key(&name) {
                         log::info!("drivers: seat {} plays {}", s.id, name);
                         // (a stopped gesture still on: it blends out under the new one, `end_gesture`)
@@ -2796,6 +2860,19 @@ mod original_tests {
                 let played = calls.iter().find(|c| c.starts_with("F-24441 ")).copied();
                 let want = format!("F-24441 {name} 0 0 {:08x}", GESTURE_BLEND.to_bits());
                 assert_eq!(played, if missing { None } else { Some(want.as_str()) }, "{line}");
+                // (the port's gesture state enter: the pan out, then the play the sink drops when the pack lacks the clip)
+                struct V(Vec<RCmd>);
+                impl RideSink for V {
+                    fn cmd(&mut self, c: RCmd) {
+                        self.0.push(c);
+                    }
+                    fn left(&mut self) -> Option<(f32, f32)> {
+                        None
+                    }
+                }
+                let mut v = V(Vec::new());
+                ride_enter(St::Gesture, false, false, true, 0, 0.0, Some(name), &mut v);
+                assert_eq!(v.0, [RCmd::Pan(false), RCmd::Play(name, 0.25, false, false)], "{line}");
                 checked += 1;
             }
             cases += 1;
@@ -2807,9 +2884,9 @@ mod original_tests {
     #[test]
     fn bike_gestures() {
         let mut rr = [0usize; 7];
-        let left: Vec<String> = (0..6).map(|_| bike_gesture_clip(Gesture::Left, &mut rr)).collect();
+        let left: Vec<&str> = (0..6).map(|_| bike_gesture_clip(Gesture::Left, &mut rr)).collect();
         assert_eq!(left, ["drv_gest_agro_lft", "drv_gest_thm_dwn_lft", "drv_gest_thm_up_lft", "drv_gest_look_lft", "drv_gest_cas_lft", "drv_gest_agro_lft"]);
-        assert_eq!((bike_gesture_clip(Gesture::Mild, &mut rr), bike_gesture_clip(Gesture::Mild, &mut rr)), ("drv_gest_agro_lft".into(), "drv_gest_agro_rgt".into()));
+        assert_eq!((bike_gesture_clip(Gesture::Mild, &mut rr), bike_gesture_clip(Gesture::Mild, &mut rr)), ("drv_gest_agro_lft", "drv_gest_agro_rgt"));
         assert_eq!(bike_gesture_clip(Gesture::Neutral, &mut rr), "drv_gest_disapnt");
         assert_eq!(bike_gesture_clip(Gesture::CopHandsUp, &mut rr), "drv_gest_arrest");
         assert_eq!(rr, [1, 6, 0, 0, 0, 2, 0]);
@@ -3287,12 +3364,16 @@ mod ride_tests {
             // (w: +8 +44 +92 +96 +148)
             let (ck, edge, pan) = (w[0] & 0x200000 != 0, w[0] & 0x180000 != 0, v[1] == "1");
             let i = RideIn { ck, x: f(1), throttle: f(2), speed: f(3), ..Default::default() };
-            let enter = !matches!(v[0], "F-88016" | "F-61324" | "F-63745" | "F-77590" | "F-56690" | "F-14383" | "F-23398" | "F-32007" | "F-30945");
+            let enter = !matches!(v[0], "F-88016" | "F-61324" | "F-63745" | "F-77590" | "F-56690" | "F-14383" | "F-23398" | "F-32007" | "F-30945" | "F-52588" | "F-53813");
             let mut log = Log(Vec::new());
             if v[0] == "F-88016" {
                 ride_action_start(pan, &mut log);
+            } else if v[0] == "F-52588" {
+                ride_exit(St::Stopped, pan, &mut log);
+            } else if v[0] == "F-53813" {
+                ride_exit(St::Gesture, pan, &mut log);
             } else if enter {
-                ride_enter(st(v[0]), ck, edge, pan, 0, i.speed, &mut log);
+                ride_enter(st(v[0]), ck, edge, pan, 0, i.speed, None, &mut log);
             } else {
                 ride_update(st(v[0]), &i, f(4), &mut log);
             }
@@ -3300,7 +3381,7 @@ mod ride_tests {
             assert_eq!(log.0, want, "{line}");
             n += 1;
         }
-        assert_eq!(n, 2850);
+        assert_eq!(n, 3150);
     }
 
     /// F-25740 run offline on 3,012 steering values (work/cameras2/bikegraph/remap_ref.py; the bits as decimal words): equal.
@@ -3780,6 +3861,7 @@ mod ride_recorded_tests {
             St::Shift => "shift",
             St::Reverse => "reverse",
             St::Fidget => "fidget",
+            St::Gesture => "gesture switch",
         }
     }
 
@@ -3796,7 +3878,7 @@ mod ride_recorded_tests {
             St::Nos => "drv_nos_lean_sweep",
             St::Reverse => "drv_rev_sweep",
             St::Fidget => ["drv_gest_look_lft", "drv_gest_look_rgt"][(r.fidgets % 2) as usize],
-            St::Start => return None,
+            St::Start | St::Gesture => return None,
         })
     }
 
@@ -3903,7 +3985,7 @@ mod ride_recorded_tests {
                 r.drv408 = d408.first().map(|x| f32::from_bits(x.0));
                 first = false;
                 // (the anim player as the stopped idle's enter left it, outside the cockpit)
-                ride_enter(St::Stopped, r.ck, false, true, 0, 0.0, &mut RideSeq { seq: &mut r.seq, pan: &mut r.pan_clip, dict, clips, rec: None });
+                ride_enter(St::Stopped, r.ck, false, true, 0, 0.0, None, &mut RideSeq { seq: &mut r.seq, pan: &mut r.pan_clip, dict, clips, rec: None });
             }
             let inp = RideIn {
                 ck: fl & 0x20_0000 != 0,
@@ -3923,6 +4005,7 @@ mod ride_recorded_tests {
                 cutscene: false,
                 opponent: (w[12] >> 16) & 0xff != 0,
                 look: f(&w, 120),
+                gesture: None,
             };
             let was = r.state;
             time += dt;
@@ -4056,8 +4139,9 @@ mod ride_transition_tests {
     /// The riding states' transitions against the original's own tests (the bike machine built by its Init with the bike's symbol
     /// table and graph builder F-71745, every transition tested by F-15065 on 4,000 random contexts with the tune its constructor
     /// F-40144 makes: `tools/bike_cond_reference.py`). Per riding state the first true transition's target is compared with
-    /// `ride_next`; the cases hold no gesture, no impact / damage-out rising edge and the update not culled, so the graph's
-    /// gesture / impact / damage-out / suspended transitions must test false (they are the port's own paths).
+    /// `ride_next`; the cases hold no impact / damage-out rising edge and the update not culled, so the graph's impact /
+    /// damage-out / suspended transitions must test false (they are the port's own paths). A second 4,000 (`--gesture`) ask for
+    /// a gesture (ctx+4 0 .. 18) or none, with IsPostPauseMenu clear: the gesture state's ins and its way out compared too.
     #[test]
     fn ride_transitions_match_the_original() {
         // (the states in the order the Init built them, each with its transitions' targets: `ride_graph_raw.txt`)
@@ -4107,12 +4191,15 @@ mod ride_transition_tests {
             "shift" => Some(St::Shift),
             "reverse" => Some(St::Reverse),
             "fidget" => Some(St::Fidget),
+            "gesture switch" => Some(St::Gesture),
             _ => None,
         };
-        let other = ["damageout switch", "impact switch", "gesture switch", "suspended"];
+        let other = ["damageout switch", "impact switch", "suspended"];
         assert_eq!(GRAPH.iter().map(|g| g.1.len()).sum::<usize>(), 107);
-        let (mut n, mut compared, mut fired) = (0, 0, [0usize; 13]);
-        for line in include_str!("testdata/ride_cond_ref.txt").lines() {
+        let (mut n, mut compared, mut fired) = (0, 0, [0usize; 14]);
+        // (the second file: ctx+4 a gesture id 0 .. 18 or none, IsPostPauseMenu clear - `--gesture`)
+        let refs = [include_str!("testdata/ride_cond_ref.txt"), include_str!("testdata/ride_cond_gest_ref.txt")];
+        for line in refs.iter().flat_map(|t| t.lines()) {
             let (a, bits) = line.split_once(" -> ").unwrap();
             let w: Vec<u32> = a.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect();
             let f = |k: usize| f32::from_bits(w[k]);
@@ -4136,8 +4223,10 @@ mod ride_transition_tests {
                 cutscene: w[13] != 0,
                 opponent: (w[5] >> 16) & 0xff != 0,
                 look: 0.0,
+                gesture: (w[0] != 20).then_some(Gesture::Neutral),
             };
-            assert_eq!((w[0], w[5] >> 24), (20, 0), "{line}");
+            // (IsPostPauseMenu, +8 bit 29, is not fed in the port: clear where a gesture is asked for; with none the state leaves anyway)
+            assert!(w[5] >> 24 == 0 && (w[0] == 20 || fl >> 29 & 1 == 0) && w[0] != 19, "{line}");
             let edge = bit(19) || bit(20);
             let bits = bits.as_bytes();
             let mut k = 0;
@@ -4158,9 +4247,9 @@ mod ride_transition_tests {
             assert_eq!(k, bits.len());
             n += 1;
         }
-        assert_eq!((n, compared), (4000, 4000 * 13));
+        assert_eq!((n, compared), (8000, 8000 * 14));
         // (the start always leaves; every other riding state took a transition in some cases and kept its state in others)
-        assert!(fired[0] == 4000 && fired[1..].iter().all(|&c| c > 50 && c < 4000 - 50), "{fired:?}");
+        assert!(fired[0] == 8000 && fired[1..].iter().all(|&c| c > 50 && c < 8000 - 50), "{fired:?}");
     }
 }
 

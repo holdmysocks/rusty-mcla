@@ -1,7 +1,8 @@
 """The bike rider's riding states' anim player calls run offline on the original's code (generated code unchanged): the start's
 action F-88016, the enters of cruise F-27733, stopped idle / burnout centre F-73617, tuck F-14953, wheelie F-33885, endo F-23193,
 nos boost F-22152, burnout left F-13481 / right F-26376, shift F-54589 and reverse F-93384, and the updates of cruise F-61324,
-stopped idle F-63745, tuck F-77590, wheelie F-56690, endo F-14383, nos boost F-23398, shift F-32007 and reverse F-30945. Each
+stopped idle F-63745, tuck F-77590, wheelie F-56690, endo F-14383, nos boost F-23398, shift F-32007 and reverse F-30945, and the
+exits of stopped idle F-52588 and of the fidget / gesture F-53813 (machine +40 a zeroed racer, the game manager zeroed). Each
 callback takes r3 the machine (+28 the context, +32 the anim player). The anim player's entry points are stubs that log their
 arguments; the clip lookup F-66148 answers the name's own address (so a logged clip is its name), the pan lookup F-56423 the
 same or 0 (the case's pan bit); the phase remap F-25740 and the context's rescale F-34842 run.
@@ -20,7 +21,8 @@ import memcap
 import recomp_dispatch as rd
 
 CALLBACKS = ['F-88016', 'F-27733', 'F-73617', 'F-14953', 'F-33885', 'F-23193', 'F-22152', 'F-13481', 'F-26376', 'F-54589',
-             'F-93384', 'F-61324', 'F-63745', 'F-77590', 'F-56690', 'F-14383', 'F-23398', 'F-32007', 'F-30945']
+             'F-93384', 'F-61324', 'F-63745', 'F-77590', 'F-56690', 'F-14383', 'F-23398', 'F-32007', 'F-30945',
+             'F-52588', 'F-53813']
 # the anim player's entry points (logged): +108 / +112 setters, play, pair, pair overlay, one overlay, stop overlay, the phase /
 # rate / rate5 / phase2 / weight / overlay rate setters, the time left readers
 LOGGED = ['F-96595', 'F-63058', 'F-24441', 'F-85393', 'F-42342', 'F-85022', 'F-72270', 'F-40742', 'F-53423', 'F-84631',
@@ -86,7 +88,7 @@ static const uint32_t J[][7]={
 };
 static const uint32_t OFF[]={''' + offs + r'''};
 int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.assign(std::istreambuf_iterator<char>(bin),{});
- const uint32_t M=0x40800000u, CTX=0x40810000u, TUNE=0x40820000u, P=0x40830000u, DEV=0x828CD2A8u, PANW=0x40840000u;
+ const uint32_t M=0x40800000u, CTX=0x40810000u, TUNE=0x40820000u, P=0x40830000u, DEV=0x828CD2A8u, PANW=0x40840000u, RACER=0x40850000u, MGR=0x40860000u;
  for(auto&j:J){ rt_reset();
   for(uint32_t x=M;x<M+0x100;x++) *pointer(x)=0;
   for(uint32_t x=CTX;x<CTX+0x200;x++) *pointer(x)=0;
@@ -96,6 +98,9 @@ int main(int argc,char**argv){std::ifstream bin(argv[1],std::ios::binary);image.
   store(M+28,CTX); store(M+32,P);
   for(int i=0;i<5;i++) store(CTX+OFF[i],j[2+i]);
   store(DEV,0); store(PANW,j[1]);
+  for(uint32_t x=RACER;x<RACER+0x400;x++) *pointer(x)=0;
+  for(uint32_t x=MGR;x<MGR+0x200;x++) *pointer(x)=0;
+  if(j[0]>=19){ store(M+40,RACER); store(0x8286D8F0u,MGR); }   // (the exits: F-90946 writes the racer's +684)
   Context c=fresh(); c.r3.u64=M;
   switch(j[0]){
 ''' + calls + r'''
