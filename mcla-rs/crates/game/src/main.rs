@@ -6681,7 +6681,6 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                 si.t += dt;
                 si.clock += dt;
                 let su = &storywarp::SETUPS[si.setup];
-                let scene_name = format!("story/{}", self.cuts.scenes[si.scene].name.to_ascii_lowercase());
                 let mut keep = true;
                 if si.stage != storywarp::Stage::Scene {
                     // (the car stands where the core's Racer_Deactivate left it)
@@ -6704,6 +6703,7 @@ log::info!("stuck2: car {} {} grounded {} up.y {:.2} speed {:.2} rpm {:.0} veh {
                         self.game.dive_k = 1.0;
                         // (IsReadyToLoadStuff at the flight's end, seen at the core's next 100 ms poll; then the scene's script)
                         if si.t >= storywarp::ready_at(flight) {
+                            let scene_name = format!("story/{}", self.cuts.scenes[si.scene].name.to_ascii_lowercase());
                             let dive_to = si.climb.as_ref().filter(|_| std::env::var("MCLA_NO_CINE").is_err()).and_then(|c| {
                                 let (eye, fwd, up, fov) = self.cine.peek_camera(&scene_name, glam::Mat4::IDENTITY, hudmap::CINE_HANDOVER)?;
                                 let (s, lens) = c.end();
@@ -16251,6 +16251,7 @@ impl App {
         self.game.data_dir = self.opt.data_dir.clone();
         {
             self.dispatch_zones = racescript::global_sounds(&self.opt.data_dir);
+            racescript::warm_race_scripts(&self.opt.data_dir);
             log::info!("global triggers: {} ({} with a dispatcher's report)", self.dispatch_zones.len(), self.dispatch_zones.iter().filter(|z| z.object.starts_with("DISPATCH")).count());
         }
         // collectables: the script fills an array of 60 positions (x, y, z, 3, index, 3, ...)

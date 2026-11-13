@@ -354,6 +354,31 @@ const GLOBAL_SCRIPTS: [&str; 6] = ["0xda391e92", "0x04f8c8be", "0x7b905d04", "0x
 /// Every trigger of the city's GlobalTriggers scripts, each with its one `Sound` event: the 1,131 WHOOSHES_* lines and
 /// radii (tunnels, overpasses, freeway signs, pillars) and the 271 DISPATCH_REPORT_VIOLATION_* lines, in the scripts'
 /// order. The files overlap in places; the original loads every trigger, so does this.
+/// Reads every race script once on a thread of its own, so a race's start finds them in the system's file cache
+/// (D59: a cold read of one race's script took up to 41 ms at the start warp, a warm one under 4 ms; nothing the
+/// game computes changes - `load` and `course` read the same files as before).
+pub fn warm_race_scripts(data_dir: &str) {
+    let root = Path::new(data_dir).join("script_obj/game/Race");
+    let _ = std::thread::Builder::new().name("race-scripts".into()).spawn(move || {
+        let t = std::time::Instant::now();
+        let (mut n, mut bytes) = (0usize, 0usize);
+        let mut dirs = vec![root];
+        while let Some(d) = dirs.pop() {
+            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                } else if let Ok(b) = std::fs::read(&p) {
+                    n += 1;
+                    bytes += b.len();
+                }
+            }
+        }
+        log::info!("race scripts read ahead: {} files, {:.1} MB in {} ms", n, bytes as f64 / 1e6, t.elapsed().as_millis());
+    });
+}
+
 pub fn global_sounds(data_dir: &str) -> Vec<GlobalSound> {
     let dir = Path::new(data_dir).join("script_obj/game/race/global/0x2b7901de");
     let mut out: Vec<GlobalSound> = Vec::new();
