@@ -1031,8 +1031,17 @@ pub struct SkinBuffer {
     /// and each draw's figure and material
     char_draws: Vec<(usize, CharMat)>,
     char_objs: Vec<crate::render::ObjectBinding>,
-    /// the objects' uniforms of this frame, written in one upload
+    /// the objects' uniforms of this frame, written in one upload (D59: the figures' objects sit in the shared object pool,
+    /// `Gpu::new_pooled_object`, so their values go through the pool's mirror and one `write_buffer`: no copy pass and
+    /// queue submit of their own each frame - 0.23 - 0.5 ms a frame for the player's driver alone; same values, written
+    /// before the frame's draws as before)
     uniforms: crate::render::UniformBatch,
+}
+
+/// A figure's object (D59): in the shared object pool; `MCLA_FIG_OBJ_OLD=1`: a buffer of its own written by the batch's
+/// copy pass, as before (the same picture, the A / B check).
+fn fig_object(gpu: &Gpu, u: &crate::render::ObjectUniform) -> crate::render::ObjectBinding {
+    if std::env::var_os("MCLA_FIG_OBJ_OLD").is_some() { gpu.new_object(u) } else { gpu.new_pooled_object(u) }
 }
 
 impl SkinBuffer {
@@ -1247,7 +1256,7 @@ impl SkinBuffer {
                 if i < self.char_objs.len() {
                     self.uniforms.push_object(&self.char_objs[i], &u);
                 } else {
-                    self.char_objs.push(gpu.new_object(&u));
+                    self.char_objs.push(fig_object(gpu, &u));
                 }
             }
         }
@@ -1258,7 +1267,7 @@ impl SkinBuffer {
             if i < self.lane_objs.len() {
                 self.uniforms.push_object(&self.lane_objs[i], &u);
             } else {
-                self.lane_objs.push(gpu.new_object(&u));
+                self.lane_objs.push(fig_object(gpu, &u));
             }
         }
         gpu.flush_uniforms(&mut self.uniforms);
